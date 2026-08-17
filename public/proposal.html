@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>行程方案书 · 云途定制旅行</title>
+<style>
+  :root { --ink:#14161b; --sub:#6b7280; --faint:#9aa0aa; --line:#e7e5e0; --gold:#b78a3e;
+          --gold-soft:#f3ecdd; --bg:#f6f5f2; --card:#fff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC",sans-serif;
+         color:var(--ink); background:var(--bg); -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:720px; margin:0 auto; padding:0 18px 64px; }
+
+  header { text-align:center; padding:44px 18px 30px; background:linear-gradient(180deg,#fff,var(--bg));
+           border-bottom:1px solid var(--line); }
+  /* 微信分享缩略图候选，必须可见；同时也是方案书的品牌头 */
+  .cover { display:block; width:56px; height:56px; margin:0 auto 14px; border-radius:14px;
+    box-shadow:0 6px 20px rgba(0,0,0,.10); }
+  .brand { display:inline-flex; align-items:center; gap:9px; color:var(--gold); font-size:12.5px;
+           letter-spacing:2px; margin-bottom:14px; }
+  .brand i { width:22px; height:1px; background:var(--gold); display:block; }
+  h1 { font-size:23px; line-height:1.45; letter-spacing:.3px; }
+  .meta { margin-top:12px; color:var(--sub); font-size:13.5px; }
+  .meta b { color:var(--ink); font-weight:600; }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px;
+          padding:22px 22px 24px; margin-top:18px; }
+  .cap { font-size:11.5px; font-weight:600; letter-spacing:1.5px; color:var(--faint); margin-bottom:14px; }
+
+  /* 报价条 */
+  .quote { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  .quote .big { font-size:30px; letter-spacing:-1px; }
+  .quote .per { font-size:13.5px; color:var(--sub); }
+  .quote .note { margin-top:9px; font-size:12.5px; color:var(--gold); background:var(--gold-soft);
+                 display:inline-block; padding:3px 10px; border-radius:999px; }
+
+  /* 逐日行程时间轴 */
+  .day { display:grid; grid-template-columns:auto 1fr; gap:14px; padding-bottom:20px; position:relative; }
+  .day:last-child { padding-bottom:0; }
+  .dnum { width:34px; height:34px; border-radius:11px; background:var(--ink); color:#fff;
+          font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center; flex:none; }
+  .day::before { content:""; position:absolute; left:16px; top:38px; bottom:2px; width:1px; background:var(--line); }
+  .day:last-child::before { display:none; }
+  .dt { font-size:15px; font-weight:600; }
+  .dd { font-size:13.5px; color:var(--sub); margin-top:5px; }
+  .dmeta { display:flex; gap:8px; flex-wrap:wrap; margin-top:9px; }
+  .tag { font-size:11.5px; color:var(--sub); border:1px solid var(--line); border-radius:7px; padding:2px 9px; }
+  .tag b { color:var(--ink); font-weight:500; }
+
+  .fee { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .fee ul { list-style:none; }
+  .fee li { font-size:13px; color:var(--sub); padding-left:15px; position:relative; margin-bottom:8px; line-height:1.6; }
+  .fee li::before { content:"·"; position:absolute; left:3px; color:var(--gold); font-weight:700; }
+  .fee .no li::before { content:"×"; color:var(--faint); font-size:11px; top:1px; }
+  .fee h4 { font-size:13px; margin-bottom:11px; }
+
+  footer { text-align:center; margin-top:28px; color:var(--faint); font-size:12px; line-height:1.9; }
+  .badge { display:inline-block; background:#fff5e6; color:#a8710f; border:1px solid #f0dcae;
+           padding:4px 13px; border-radius:999px; margin-bottom:10px; font-size:12px; }
+  .state { text-align:center; padding:70px 20px; color:var(--sub); }
+  @media (max-width:620px){ .fee { grid-template-columns:1fr; gap:14px; } h1 { font-size:20px; } }
+</style>
+</head>
+<body>
+<div id="app"><div class="state">正在生成行程方案…</div></div>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const yuan = n => '¥' + Number(n).toLocaleString('zh-CN');
+
+// 路径形如 /proposal/:routeId/:travelers[/:departDate]
+const seg = location.pathname.split('/').filter(Boolean);
+const [, routeId, travelers, departDate] = seg;
+
+(async () => {
+  const app = document.getElementById('app');
+  try {
+    const qs = new URLSearchParams({ travelers: travelers || '2' });
+    if (departDate) qs.set('departDate', departDate);
+    const res = await fetch('/api/proposal/' + encodeURIComponent(routeId) + '?' + qs);
+    if (!res.ok) throw new Error('not found');
+    const d = await res.json();
+    const r = d.route, q = d.quote;
+
+    const days = (r.itinerary || []).map(x => `
+      <div class="day">
+        <div class="dnum">D${x.day}</div>
+        <div>
+          <div class="dt">${esc(x.title)}</div>
+          <div class="dd">${esc(x.detail)}</div>
+          <div class="dmeta">
+            <span class="tag">住宿 <b>${esc(x.hotel)}</b></span>
+            <span class="tag">用餐 <b>${esc(x.meals)}</b></span>
+          </div>
+        </div>
+      </div>`).join('');
+
+    const li = arr => (arr || []).map(x => `<li>${esc(x)}</li>`).join('');
+
+    app.innerHTML = `
+      <header>
+        <img class="cover" src="/share-cover.png" alt="云途定制旅行" width="240" height="240">
+        <div class="brand"><i></i>云途定制旅行 · 行程方案书<i></i></div>
+        <h1>${esc(r.title)}</h1>
+        <div class="meta">
+          <b>${r.days}</b> 天 · <b>${d.travelers}</b> 位出行${d.departDate ? ' · <b>' + esc(d.departDate) + '</b> 出发' : ''} · ${esc(r.hotelLevel)}
+        </div>
+      </header>
+      <div class="wrap">
+        <div class="card">
+          <div class="cap">方 案 报 价</div>
+          <div class="quote">
+            <span class="big">${yuan(q.total)}</span>
+            <span class="per">${d.travelers} 位合计 · 每人 ${yuan(q.perPerson)}</span>
+          </div>
+          <div class="note">${esc(q.note)}</div>
+        </div>
+
+        <div class="card">
+          <div class="cap">逐 日 行 程</div>
+          ${days}
+        </div>
+
+        <div class="card">
+          <div class="cap">费 用 说 明</div>
+          <div class="fee">
+            <div><h4>费用包含</h4><ul>${li(r.inclusions)}</ul></div>
+            <div class="no"><h4>费用不含</h4><ul>${li(r.exclusions)}</ul></div>
+          </div>
+        </div>
+
+        <footer>
+          <div class="badge">演示环境 · 非真实交易</div><br>
+          方案由系统按产品库与报价规则生成，价格为标准起价，最终以合同为准。<br>
+          如需调整酒店档次、人数或日期，直接在微信里告诉顾问即可。
+        </footer>
+      </div>`;
+    // 服务端已注入真实标题；只有直接开静态文件（无服务端渲染）时才需要在这兜底
+    if (document.title.startsWith('行程方案书')) document.title = r.title + ' · 行程方案书';
+  } catch (e) {
+    app.innerHTML = '<div class="state">方案不存在或已失效<br><span style="font-size:13px">请联系您的专属顾问重新生成</span></div>';
+  }
+})();
+</script>
+</body>
+</html>

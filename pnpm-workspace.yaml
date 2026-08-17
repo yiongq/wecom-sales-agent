@@ -1,0 +1,6 @@
+# pnpm 10+ 不再读 package.json 里的 pnpm.onlyBuiltDependencies，改到这里。
+# 两处都保留只是跨版本冗余：Dockerfile 与 CI 都钉 pnpm@10（读本文件），
+# 而 package.json 里那份留给可能用 pnpm 9 的人。缺这项配置时，
+# pnpm 会因 esbuild 的构建脚本被忽略而直接失败。
+onlyBuiltDependencies:
+  - esbuild

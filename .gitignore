@@ -1,0 +1,6 @@
+node_modules/
+var/
+.env
+*.log
+.playwright-mcp/
+.deploy.env

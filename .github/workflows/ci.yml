@@ -1,0 +1,31 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 与 Dockerfile 保持同一套依赖解析（含 pnpm 大版本）：CI 用 npm install 会拉到和
+      # 生产不同的版本，「CI 绿了」并不能证明生产镜像构建得出来。
+      # 版本必须钉死（与 Dockerfile、本地开发同为 pnpm 10）——不钉时 corepack 取最新版，
+      # 大版本漂移会让 onlyBuiltDependencies 的读取位置对不上，esbuild 构建脚本被忽略直接 exit 1。
+      - run: corepack enable && corepack prepare pnpm@10 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: npx tsx src/engine.selftest.ts
+      # 企微发送链路：分段不劈开 URL/emoji、多链接不硬做卡片、剥离链接不吞正文。
+      # 这几条只有对着微信实机才看得见，没有断言就会悄悄坏掉。
+      - run: npx tsx src/adapters/wecom.selftest.ts
+      # 中文话术夹带英文的出口护栏：重点验证不误伤产品库里的酒店品牌名
+      - run: npx tsx src/dejargon.selftest.ts
+      # 价格出口护栏：两侧都要钉——编价拦得住，真实报价与「人均 X 万」档位话术零误杀
+      - run: npx tsx src/price-guard.selftest.ts
+      # 回归评测（mock 模式，秒级）：改 SOP/提示词/护栏后自动回归，防止话术悄悄退化
+      - run: LLM_MOCK=1 npx tsx eval/run.ts

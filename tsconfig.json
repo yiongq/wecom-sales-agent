@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "_comment": "eval/ 必须包含进来：CI 会真的执行 eval/run.ts，而 tsx 只剥类型不检查——不包含就等于这个文件从不过类型检查",
+  "include": ["src/**/*.ts", "eval/**/*.ts"]
+}

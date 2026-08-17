@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏝️</text></svg>">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>收银台 · 云途定制旅行</title>
+<style>
+  /* 仿微信支付收银台。orderId 从路径 /pay/:id 或 ?orderId= 取。 */
+  :root {
+    --green: #07c160;
+    --text: #191919;
+    --sub: #888;
+    --hairline: rgba(0, 0, 0, .07);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* 内联线性图标：继承文字大小与颜色 */
+  .ic { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.15em; }
+  .secure .ic { color: var(--green); margin-right: 1px; }
+  html, body { height: 100%; }
+  body {
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    background: #23252b;
+    display: flex;
+    justify-content: center;
+  }
+
+  /* 手机外框：移动端为透明包裹层，桌面端变成手机 mockup（见媒体查询） */
+  .device {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+  }
+  .phone {
+    position: relative;
+    width: 100%;
+    min-height: 100dvh;
+    background: #ededed;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* iOS 伪状态栏（仅桌面手机外框内显示） */
+  .statusbar {
+    display: none;
+    flex: none;
+    position: relative;
+    align-items: center;
+    justify-content: space-between;
+    height: 44px;
+    padding: 0 24px 0 30px;
+    background: #fff;
+    color: #191919;
+  }
+  .sb-time { font-size: 15px; font-weight: 600; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
+  .sb-island {
+    position: absolute; left: 50%; top: 9px; transform: translateX(-50%);
+    width: 82px; height: 25px; border-radius: 14px;
+    background: #000;
+  }
+  .sb-icons { display: flex; align-items: center; gap: 7px; }
+  .sb-icons svg { display: block; }
+
+  .topbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    background: #fff;
+    border-bottom: .5px solid var(--hairline);
+  }
+  .topbar .close { font-size: 20px; color: #333; width: 28px; cursor: pointer; text-decoration: none; }
+  .topbar .title { flex: 1; text-align: center; font-size: 17px; font-weight: 600; margin-right: 28px; }
+  /* 微信内置浏览器已有自带导航栏，隐藏自绘顶栏免得两个 navbar */
+  .in-wechat .topbar { display: none; }
+
+  /* 顶部琥珀色演示提示条 */
+  .demo-tip {
+    flex: none;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    background: linear-gradient(#fff8e8, #fdf0d2);
+    color: #9a6b12;
+    font-size: 12.5px;
+    padding: 8px 16px;
+    border-bottom: .5px solid rgba(154, 107, 18, .12);
+  }
+  .demo-tip::before { content: "⚠️"; font-size: 12px; }
+
+  .main { flex: 1; padding: 20px 16px; }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 28px 20px 8px;
+    animation: rise .3s ease-out;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+  .merchant { text-align: center; font-size: 14px; color: var(--sub); }
+  .amount { text-align: center; margin: 10px 0 10px; font-weight: 600; }
+  .amount .cny { font-size: 26px; vertical-align: 6px; margin-right: 2px; }
+  .amount .num { font-size: 46px; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+
+  /* 订单支付倒计时 */
+  .ddl { text-align: center; font-size: 12.5px; color: var(--sub); margin: 0 0 22px; }
+  .ddl b { color: #e8820c; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .rows { border-top: .5px solid var(--hairline); }
+  .krow {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 13px 0;
+    font-size: 14.5px;
+    border-bottom: .5px solid var(--hairline);
+  }
+  .krow:last-child { border-bottom: none; }
+  .krow .k { color: var(--sub); flex: none; }
+  .krow .v { text-align: right; word-break: break-all; }
+  .pay-method { display: inline-flex; align-items: center; }
+  .wx-ico-row { width: 18px; height: 16px; flex: none; margin-right: 5px; }
+
+  .paybar { padding: 22px 16px calc(24px + env(safe-area-inset-bottom)); }
+  .paybtn {
+    width: 100%;
+    border: none;
+    border-radius: 8px;
+    background: var(--green);
+    color: #fff;
+    font: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    padding: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: filter .15s, opacity .15s;
+  }
+  .paybtn:active { filter: brightness(.92); }
+  .paybtn:disabled { opacity: .55; cursor: default; }
+  .wxlogo { display: inline-flex; align-items: center; gap: 7px; font-size: 16px; font-weight: 600; }
+  .wx-ico { width: 21px; height: 21px; flex: none; }
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255, 255, 255, .4);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 底部信任底注 */
+  .secure {
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    margin-top: 15px;
+    font-size: 12px;
+    color: #9a9a9a;
+  }
+
+  /* 成功态 */
+  .success { position: relative; text-align: center; padding: 56px 20px 30px; display: none; }
+  .success .circle {
+    width: 72px; height: 72px;
+    margin: 0 auto 18px;
+    border-radius: 50%;
+    background: var(--green);
+    display: flex; align-items: center; justify-content: center;
+    animation: popIn .35s cubic-bezier(.2, 1.4, .5, 1);
+  }
+  @keyframes popIn { from { transform: scale(.3); opacity: 0; } }
+  .success .circle svg { width: 36px; height: 36px; }
+  .success .circle svg path {
+    stroke-dasharray: 30;
+    stroke-dashoffset: 30;
+    animation: draw .5s .18s cubic-bezier(.6, 0, .3, 1) forwards;
+  }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  .success h2 { font-size: 20px; margin-bottom: 6px; }
+  .success p { font-size: 14px; color: var(--sub); margin-bottom: 22px; }
+  .success .amt { font-size: 32px; font-weight: 600; margin-bottom: 34px; font-variant-numeric: tabular-nums; }
+  .success .done {
+    display: inline-block;
+    border: 1px solid var(--green);
+    color: var(--green);
+    border-radius: 6px;
+    padding: 9px 38px;
+    font-size: 15px;
+    text-decoration: none;
+  }
+
+  /* 成交礼花画布，覆盖整个屏幕，不拦截点击 */
+  #confetti {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 6;
+  }
+
+  .err { text-align: center; padding: 70px 20px; color: var(--sub); display: none; }
+  .foot {
+    text-align: center;
+    font-size: 11px;
+    color: #a8a8a8;
+    padding: 6px 0 calc(10px + env(safe-area-inset-bottom));
+  }
+
+  /* 桌面端：把 app 包进居中的手机 mockup */
+  @media (min-width: 640px) {
+    body { align-items: center; padding: 28px 16px; }
+    .device {
+      flex: none;
+      width: min(390px, 94vw);
+      padding: 13px;
+      border-radius: 58px;
+      background: linear-gradient(150deg, #43464f 0%, #23252c 46%, #191b21 100%);
+      box-shadow:
+        0 34px 70px -14px rgba(0, 0, 0, .68),
+        0 0 0 1px rgba(255, 255, 255, .05) inset,
+        0 0 54px 2px rgba(228, 190, 120, .12),
+        0 0 100px 10px rgba(228, 190, 120, .05);
+    }
+    .phone {
+      min-height: 0;
+      height: min(840px, 88vh);
+      border-radius: 45px;
+    }
+    .statusbar { display: flex; }
+  }
+</style>
+</head>
+<body>
+<!-- 内联 SVG 图标精灵（Lucide 风格），供 <use href="#ic-xxx"> 引用 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="ic-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+</defs></svg>
+<div class="device">
+  <div class="phone">
+    <div class="statusbar">
+      <span class="sb-time">9:41</span>
+      <span class="sb-island"></span>
+      <span class="sb-icons">
+        <svg width="18" height="12" viewBox="0 0 18 12" fill="#191919" aria-hidden="true">
+          <rect x="0" y="8" width="3" height="4" rx="1"/>
+          <rect x="5" y="5.5" width="3" height="6.5" rx="1"/>
+          <rect x="10" y="3" width="3" height="9" rx="1"/>
+          <rect x="15" y=".5" width="3" height="11.5" rx="1"/>
+        </svg>
+        <svg width="18" height="13" viewBox="0 0 18 13" fill="#191919" aria-hidden="true">
+          <path d="M9 3.2c2.6 0 5 1 6.8 2.6l1.5-1.7A12 12 0 0 0 9 .8 12 12 0 0 0 .7 4.1l1.5 1.7A10 10 0 0 1 9 3.2Z"/>
+          <path d="M9 7c1.4 0 2.7.5 3.7 1.4l1.5-1.7A8 8 0 0 0 9 4.8a8 8 0 0 0-5.2 1.9l1.5 1.7A5.6 5.6 0 0 1 9 7Z"/>
+          <path d="M9 10.8l2.2-2.5A4 4 0 0 0 9 7.6a4 4 0 0 0-2.2.7L9 10.8Z"/>
+        </svg>
+        <svg width="27" height="13" viewBox="0 0 27 13" aria-hidden="true">
+          <rect x="1" y="1" width="22" height="11" rx="3.2" fill="none" stroke="#191919" stroke-opacity=".35"/>
+          <rect x="2.6" y="2.6" width="16.5" height="7.8" rx="1.7" fill="#191919"/>
+          <rect x="24.4" y="4.4" width="1.8" height="4.2" rx="1" fill="#191919" fill-opacity=".4"/>
+        </svg>
+      </span>
+    </div>
+
+    <div class="topbar">
+      <a class="close" href="javascript:void(0)" onclick="closeWebview()">✕</a>
+      <div class="title">收银台</div>
+    </div>
+
+    <div class="demo-tip">演示环境 · 模拟支付，不产生真实扣款</div>
+
+    <div class="main">
+      <div id="payView" style="display:none">
+        <div class="card">
+          <div class="merchant">云途定制旅行</div>
+          <div class="amount"><span class="cny">¥</span><span class="num" id="amount">--</span></div>
+          <div class="ddl">支付剩余时间 <b id="payCountdown">15:00</b></div>
+          <div class="rows">
+            <div class="krow"><span class="k">商品</span><span class="v" id="routeTitle">--</span></div>
+            <div class="krow"><span class="k">出行人数</span><span class="v" id="travelers">--</span></div>
+            <div class="krow"><span class="k">出发日期</span><span class="v" id="departDate">--</span></div>
+            <div class="krow"><span class="k">付款方式</span><span class="v pay-method"><svg class="wx-ico-row" viewBox="0 0 30 27" aria-hidden="true"><g fill="#09bb5f"><ellipse cx="10" cy="11" rx="8.5" ry="7"/><path d="M4 16 L2 20.5 L7.8 17.2 Z"/><ellipse cx="20.5" cy="17.5" rx="6.8" ry="5.6"/><path d="M25 21.3 L27.8 25.3 L22.4 22.6 Z"/></g><g fill="#fff"><circle cx="7" cy="10" r="1.15"/><circle cx="13" cy="10" r="1.15"/><circle cx="18.2" cy="16.4" r=".95"/><circle cx="22.8" cy="16.4" r=".95"/></g></svg>微信支付 · 零钱</span></div>
+            <div class="krow"><span class="k">订单号</span><span class="v" id="orderId" style="color:#aaa;font-size:12.5px">--</span></div>
+          </div>
+        </div>
+        <div class="paybar">
+          <button class="paybtn" id="payBtn"><span class="wxlogo"><svg class="wx-ico" viewBox="-3 -3 36 33" aria-hidden="true"><rect x="-3" y="-3" width="36" height="33" rx="9" fill="#fff"/><g fill="#07c160"><ellipse cx="10" cy="11" rx="8.5" ry="7"/><path d="M4 16 L2 20.5 L7.8 17.2 Z"/><ellipse cx="20.5" cy="17.5" rx="6.8" ry="5.6"/><path d="M25 21.3 L27.8 25.3 L22.4 22.6 Z"/></g><g fill="#fff"><circle cx="7" cy="10" r="1.15"/><circle cx="13" cy="10" r="1.15"/><circle cx="18.2" cy="16.4" r=".95"/><circle cx="22.8" cy="16.4" r=".95"/></g></svg>微信支付</span><span id="btnAmt"></span></button>
+          <div class="secure"><svg class="ic"><use href="#ic-shield"/></svg> 安全支付 · 财付通提供技术支持</div>
+        </div>
+      </div>
+
+      <div class="success" id="successView">
+        <div class="circle">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M5 12.5l4.2 4.2L19 7" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h2>支付成功</h2>
+        <p>顾问将与您确认行程，请留意会话消息</p>
+        <div class="amt" id="successAmt"></div>
+        <a class="done" href="javascript:void(0)" onclick="closeWebview()">返回会话</a>
+      </div>
+
+      <div class="err" id="errView">订单不存在或已失效</div>
+    </div>
+
+    <div class="foot">演示环境·模拟支付</div>
+
+    <canvas id="confetti"></canvas>
+  </div>
+</div>
+
+<script>
+(() => {
+  // /pay/:orderId 路径优先，?orderId= 兜底
+  const m = location.pathname.match(/^\/pay\/([A-Za-z0-9_-]+)/);
+  const orderId = (m && m[1]) || new URLSearchParams(location.search).get('orderId');
+
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => Number(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let order = null;
+
+  // 微信内置浏览器：用微信 API 真正关窗（history.back 在微信里常失效）；
+  // 并隐藏自绘顶栏，避免与微信自带导航栏重叠成「两个 navbar」。
+  const inWechat = /MicroMessenger/i.test(navigator.userAgent);
+  if (inWechat) document.documentElement.classList.add('in-wechat');
+  window.closeWebview = function () {
+    try {
+      if (window.WeixinJSBridge) { window.WeixinJSBridge.invoke('closeWindow'); return; }
+    } catch (e) { /* 不在微信环境 */ }
+    if (history.length > 1) history.back();
+    else window.close();
+  };
+
+  // 微信绿标（白底徽章 + 绿色气泡），用于失败后还原按钮，保持与静态 HTML 一致
+  const WX_BTN_SVG = '<svg class="wx-ico" viewBox="-3 -3 36 33" aria-hidden="true"><rect x="-3" y="-3" width="36" height="33" rx="9" fill="#fff"/><g fill="#07c160"><ellipse cx="10" cy="11" rx="8.5" ry="7"/><path d="M4 16 L2 20.5 L7.8 17.2 Z"/><ellipse cx="20.5" cy="17.5" rx="6.8" ry="5.6"/><path d="M25 21.3 L27.8 25.3 L22.4 22.6 Z"/></g><g fill="#fff"><circle cx="7" cy="10" r="1.15"/><circle cx="13" cy="10" r="1.15"/><circle cx="18.2" cy="16.4" r=".95"/><circle cx="22.8" cy="16.4" r=".95"/></g></svg>';
+  const payBtnHTML = (amtText) => '<span class="wxlogo">' + WX_BTN_SVG + '微信支付</span><span id="btnAmt">' + amtText + '</span>';
+
+  function show(view) {
+    $('payView').style.display = view === 'pay' ? 'block' : 'none';
+    $('successView').style.display = view === 'success' ? 'block' : 'none';
+    $('errView').style.display = view === 'err' ? 'block' : 'none';
+  }
+
+  // 订单支付倒计时（纯展示，走到 0 停）
+  let cdTimer = null;
+  function startCountdown() {
+    if (cdTimer) return;
+    let s = 15 * 60;
+    const el = $('payCountdown');
+    const tick = () => {
+      const mm = Math.floor(s / 60), ss = s % 60;
+      el.textContent = mm + ':' + String(ss).padStart(2, '0');
+      if (s <= 0) { clearInterval(cdTimer); cdTimer = null; return; }
+      s--;
+    };
+    tick();
+    cdTimer = setInterval(tick, 1000);
+  }
+
+  // 成交礼花：约 40 粒品牌绿 + 香槟金，约 1 秒，纯手写 canvas
+  function celebrate() {
+    const canvas = $('confetti');
+    if (!canvas || !canvas.getContext) return;
+    const W = canvas.clientWidth, H = canvas.clientHeight;
+    if (!W || !H) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const colors = ['#07c160', '#3ad07f', '#e7c789', '#d4af6e'];
+    const ox = W / 2, oy = H * 0.30;
+    const parts = [];
+    for (let i = 0; i < 40; i++) {
+      const ang = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.15;
+      const sp = 3 + Math.random() * 4.5;
+      parts.push({
+        x: ox, y: oy,
+        vx: Math.cos(ang) * sp,
+        vy: Math.sin(ang) * sp,
+        w: 5 + Math.random() * 4,
+        h: 8 + Math.random() * 5,
+        rot: Math.random() * Math.PI,
+        vr: (Math.random() - 0.5) * 0.35,
+        color: colors[i % colors.length],
+      });
+    }
+    const DUR = 1000;
+    const t0 = performance.now();
+    function frame(now) {
+      const el = now - t0;
+      ctx.clearRect(0, 0, W, H);
+      const alpha = Math.max(0, 1 - el / DUR);
+      for (const p of parts) {
+        p.vy += 0.16; p.vx *= 0.99;
+        p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+      if (el < DUR) requestAnimationFrame(frame);
+      else ctx.clearRect(0, 0, W, H);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function renderSuccess() {
+    $('successAmt').textContent = '¥' + fmt(order.totalPrice);
+    show('success');
+    celebrate();
+  }
+
+  async function load() {
+    if (!orderId) return show('err');
+    try {
+      const res = await fetch('/api/orders/' + encodeURIComponent(orderId));
+      if (!res.ok) return show('err');
+      order = await res.json();
+      if (order.status === 'paid') return renderSuccess();
+      if (order.status === 'cancelled') return show('err');
+      $('amount').textContent = fmt(order.totalPrice);
+      $('btnAmt').textContent = '¥' + fmt(order.totalPrice);
+      $('routeTitle').textContent = order.routeTitle;
+      $('travelers').textContent = order.travelers + ' 人';
+      $('departDate').textContent = order.departDate || '待定';
+      $('orderId').textContent = order.id;
+      show('pay');
+      startCountdown();
+    } catch { show('err'); }
+  }
+
+  $('payBtn').addEventListener('click', async () => {
+    const btn = $('payBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>支付中…';
+    try {
+      const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/pay', { method: 'POST' });
+      if (!res.ok) throw new Error();
+      // 留一点「支付处理」的仪式感
+      await new Promise((r) => setTimeout(r, 600));
+      renderSuccess();
+    } catch {
+      btn.disabled = false;
+      btn.innerHTML = payBtnHTML('¥' + fmt(order.totalPrice));
+      alert('支付失败，请重试');
+    }
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+[
+  {
+    "id": "h-atlantis-sanya",
+    "name": "Atlantis Sanya 三亚亚特兰蒂斯",
+    "destination": "三亚",
+    "stars": "五星",
+    "nightlyFrom": 3000,
+    "roomType": "水族馆家庭房",
+    "highlights": [
+      "大使环礁水族馆隔窗即景，孩子与鲨鱼共眠",
+      "水世界主题乐园无限畅玩，海豚互动零距离",
+      "海棠湾一线海景，C秀水舞剧场震撼演出"
+    ],
+    "tags": [
+      "亲子",
+      "海景"
+    ]
+  },
+  {
+    "id": "h-park-hyatt-sanya",
+    "name": "Park Hyatt Sanya Sunny Bay Resort 三亚太阳湾柏悦",
+    "destination": "三亚",
+    "stars": "奢华",
+    "nightlyFrom": 3800,
+    "roomType": "山海景大床房",
+    "highlights": [
+      "隐于太阳湾私属海湾，依山面海远离喧嚣",
+      "无边泳池垂海而落，日落时分海天一色",
+      "地中海风格建筑群，私家沙滩与礁石浮潜"
+    ],
+    "tags": [
+      "蜜月",
+      "海景",
+      "亲海"
+    ]
+  },
+  {
+    "id": "h-songtsam-meili",
+    "name": "松赞梅里山居",
+    "destination": "云南",
+    "stars": "顶奢",
+    "nightlyFrom": 4800,
+    "roomType": "雪山景观套房",
+    "highlights": [
+      "推窗正对卡瓦格博主峰，日照金山不用出门等",
+      "藏式庭院与暖房图书馆，海拔 3400 米配备制氧",
+      "管家安排明永冰川徒步与雨崩村深度线"
+    ],
+    "tags": [
+      "雪山",
+      "藏地",
+      "秘境"
+    ]
+  },
+  {
+    "id": "h-songtsam-shangrila",
+    "name": "松赞香格里拉林卡",
+    "destination": "云南",
+    "stars": "顶奢",
+    "nightlyFrom": 3800,
+    "roomType": "湖景庭院房",
+    "highlights": [
+      "纳帕海草原与藏式庄园环绕，清晨可见黑颈鹤",
+      "唐卡与藏香手作工坊，寺院由僧人带路讲解",
+      "松赞环线各站点间专车串联，行李免搬运"
+    ],
+    "tags": [
+      "藏地",
+      "文化",
+      "亲子"
+    ]
+  },
+  {
+    "id": "h-aman-summer-palace",
+    "name": "颐和安缦",
+    "destination": "北京",
+    "stars": "顶奢",
+    "nightlyFrom": 7800,
+    "roomType": "四合院庭院套房",
+    "highlights": [
+      "专属侧门直入颐和园，闭园后仍可在园内散步",
+      "四合院格局与老砖木结构，闹市中的绝对安静",
+      "私人厨房定制宫廷宴，可安排京剧与古琴雅集"
+    ],
+    "tags": [
+      "文化",
+      "顶奢",
+      "私密"
+    ]
+  },
+  {
+    "id": "h-puxuan",
+    "name": "北京璞瑄酒店",
+    "destination": "北京",
+    "stars": "顶奢",
+    "nightlyFrom": 4200,
+    "roomType": "故宫景观房",
+    "highlights": [
+      "王府井与故宫步行可达，高层客房俯瞰紫禁城屋脊",
+      "璞泉水疗与恒温泳池，看故宫角楼日落",
+      "中餐厅富春居主打江南本味，可安排主厨定制席"
+    ],
+    "tags": [
+      "城市",
+      "文化",
+      "商务"
+    ]
+  },
+  {
+    "id": "h-songtsam-linzhi",
+    "name": "松赞林芝林卡",
+    "destination": "西藏",
+    "stars": "顶奢",
+    "nightlyFrom": 4200,
+    "roomType": "南迦巴瓦景观房",
+    "highlights": [
+      "正对南迦巴瓦峰，晴天清晨可见峰顶染金",
+      "海拔 2900 米较拉萨舒适，客房配弥散式供氧",
+      "雅鲁藏布大峡谷与鲁朗林海由本地向导带路"
+    ],
+    "tags": [
+      "雪山",
+      "藏地",
+      "供氧"
+    ]
+  },
+  {
+    "id": "h-shangri-la-lhasa",
+    "name": "拉萨香格里拉大酒店",
+    "destination": "西藏",
+    "stars": "五星",
+    "nightlyFrom": 1800,
+    "roomType": "布达拉宫景观房",
+    "highlights": [
+      "客房与顶层餐厅可远眺布达拉宫夜景",
+      "全楼弥散供氧，抵达首日高反关照到位",
+      "步行可至八廓街与大昭寺，位置省心"
+    ],
+    "tags": [
+      "城市",
+      "供氧",
+      "性价比"
+    ]
+  },
+  {
+    "id": "h-xiaji-sichuan",
+    "name": "既下山·稻城",
+    "destination": "四川",
+    "stars": "顶奢",
+    "nightlyFrom": 3600,
+    "roomType": "雪山景观套房",
+    "highlights": [
+      "亚丁景区门口，早班车前一小时即可入沟避开人潮",
+      "海拔 3700 米配制氧设备与高原关照方案",
+      "藏式石木建筑与星空露台，夜观银河"
+    ],
+    "tags": [
+      "雪山",
+      "秘境",
+      "摄影"
+    ]
+  },
+  {
+    "id": "h-temple-house-chengdu",
+    "name": "成都博舍",
+    "destination": "四川",
+    "stars": "顶奢",
+    "nightlyFrom": 2600,
+    "roomType": "庭院露台房",
+    "highlights": [
+      "太古里核心，清代笔帖式古宅改建，闹中取静",
+      "米其林餐厅谧寻茶室与庭院早茶",
+      "可安排熊猫基地专家通道与川菜私厨课"
+    ],
+    "tags": [
+      "城市",
+      "亲子",
+      "美食"
+    ]
+  },
+  {
+    "id": "h-banyan-tree-lijiang",
+    "name": "丽江悦榕庄",
+    "destination": "云南",
+    "stars": "顶奢",
+    "nightlyFrom": 3200,
+    "roomType": "带私汤纳西庭院别墅",
+    "highlights": [
+      "每栋别墅带纳西风格独立庭院与户外私汤",
+      "正对玉龙雪山，清晨在庭院里就能看见雪线",
+      "束河古镇车程十分钟，可安排纳西东巴文化体验"
+    ],
+    "tags": [
+      "蜜月",
+      "雪山",
+      "私汤"
+    ]
+  },
+  {
+    "id": "h-anantara-guiyang",
+    "name": "贵阳安纳塔拉度假酒店",
+    "destination": "贵州",
+    "stars": "五星",
+    "nightlyFrom": 1500,
+    "roomType": "山景阳台房",
+    "highlights": [
+      "群山环抱的度假式布局，露台正对喀斯特山景",
+      "泰式水疗与户外温水泳池，山地徒步归来放松",
+      "作为荔波、西江千户苗寨的舒适中转落脚点"
+    ],
+    "tags": [
+      "山景",
+      "度假",
+      "性价比"
+    ]
+  },
+  {
+    "id": "h-w-xian",
+    "name": "西安 W 酒店",
+    "destination": "西安",
+    "stars": "五星",
+    "nightlyFrom": 1400,
+    "roomType": "城墙景观房",
+    "highlights": [
+      "曲江新区，露台泳池远眺大雁塔与城墙灯火",
+      "设计感强、适合出片，年轻客群与亲子都合适",
+      "距兵马俑约四十分钟，可安排早场避开团客"
+    ],
+    "tags": [
+      "城市",
+      "历史",
+      "设计"
+    ]
+  },
+  {
+    "id": "h-sofitel-legend-xian",
+    "name": "西安索菲特传奇酒店",
+    "destination": "西安",
+    "stars": "顶奢",
+    "nightlyFrom": 2200,
+    "roomType": "唐风庭院套房",
+    "highlights": [
+      "唐大明宫风格庭院建筑，园林与回廊自成一景",
+      "紧邻大唐芙蓉园，晚间可步行看灯光水舞",
+      "可安排陕博讲解员随行与何家村窖藏专题导览"
+    ],
+    "tags": [
+      "历史",
+      "文化",
+      "顶奢"
+    ]
+  },
+  {
+    "id": "h-tashi-kashgar",
+    "name": "喀什其尼瓦克国际酒店",
+    "destination": "新疆",
+    "stars": "五星",
+    "nightlyFrom": 900,
+    "roomType": "老城景观房",
+    "highlights": [
+      "紧邻喀什噶尔老城，步行即入高台民居与百年茶馆",
+      "南疆线最舒适的落脚点，帕米尔出发前补给充分",
+      "可安排维吾尔手工艺人作坊探访与老城摄影早拍"
+    ],
+    "tags": [
+      "历史",
+      "南疆",
+      "摄影"
+    ]
+  },
+  {
+    "id": "h-kanas-village",
+    "name": "禾木山庄",
+    "destination": "新疆",
+    "stars": "精品",
+    "nightlyFrom": 1200,
+    "roomType": "河谷木屋",
+    "highlights": [
+      "图瓦人木屋群中心位置，出门就是禾木河晨雾机位",
+      "观景台步行可达，日落时俯拍全村炊烟",
+      "可安排图瓦人家访与苏尔琴、呼麦私宴"
+    ],
+    "tags": [
+      "秘境",
+      "摄影",
+      "北疆"
+    ]
+  },
+  {
+    "id": "h-atlantis-sanya-rf",
+    "name": "三亚亚特兰蒂斯 皇家梯形套房",
+    "destination": "三亚",
+    "stars": "顶奢",
+    "nightlyFrom": 6800,
+    "roomType": "水族景观套房",
+    "highlights": [
+      "落地窗直面失落的空间水族馆，躺床上看鲨鱼游过",
+      "水世界与水族馆无限次通票，专属管家全程安排",
+      "含亲子俱乐部托管，父母可安排双人水疗"
+    ],
+    "tags": [
+      "亲子",
+      "海景",
+      "顶奢"
+    ]
+  },
+  {
+    "id": "h-soneva-jani",
+    "name": "Soneva Jani 索娜娃贾尼",
+    "destination": "马尔代夫",
+    "stars": "顶奢",
+    "nightlyFrom": 30000,
+    "roomType": "带滑梯水上别墅",
+    "highlights": [
+      "别墅私人泳池直连潟湖，屋顶电动天窗躺看银河",
+      "全球最大水上私人天文台，天文向导带看南十字星",
+      "赤脚管家一价全包，冰淇淋房与巧克力房免费畅享"
+    ],
+    "tags": [
+      "蜜月",
+      "一价全包",
+      "海景"
+    ]
+  },
+  {
+    "id": "h-landaa-fourseasons",
+    "name": "Four Seasons Landaa Giraavaru 芙花芬四季",
+    "destination": "马尔代夫",
+    "stars": "奢华",
+    "nightlyFrom": 13000,
+    "roomType": "海景泳池别墅",
+    "highlights": [
+      "海洋研究中心保育蝠鲼，随生物学家科考浮潜",
+      "环礁世界级冲浪点，专业教练一对一带练",
+      "Ayurvedic Retreat 阿育吠陀理疗，双人排毒疗程"
+    ],
+    "tags": [
+      "蜜月",
+      "海景",
+      "亲子"
+    ]
+  },
+  {
+    "id": "h-fullmoon-sheraton",
+    "name": "Sheraton Maldives Full Moon Resort 喜来登满月岛",
+    "destination": "马尔代夫",
+    "stars": "五星",
+    "nightlyFrom": 4800,
+    "roomType": "泻湖水上别墅",
+    "highlights": [
+      "距马累机场15分钟快艇，落地即达免转机",
+      "岛屿环礁潜水中心，PADI初体验课程适合新手",
+      "六间主题餐厅，日式铁板烧与海景自助任选"
+    ],
+    "tags": [
+      "海景",
+      "海岛"
+    ]
+  },
+  {
+    "id": "h-centara-grand",
+    "name": "Centara Grand Island Resort 中央格兰德海岛",
+    "destination": "马尔代夫",
+    "stars": "五星",
+    "nightlyFrom": 4200,
+    "roomType": "沙滩别墅",
+    "highlights": [
+      "餐食酒水与浮潜全包，度假不再额外掏钱",
+      "出别墅即入 Home Reef，浮潜看小丑鱼与海龟",
+      "水上运动中心免费畅玩帆船皮划艇与桨板"
+    ],
+    "tags": [
+      "一价全包",
+      "入门",
+      "亲海"
+    ]
+  },
+  {
+    "id": "h-hoshinoya-kyoto",
+    "name": "HOSHINOYA Kyoto 虹夕诺雅京都",
+    "destination": "日本",
+    "stars": "顶奢",
+    "nightlyFrom": 8000,
+    "roomType": "岚山河景和室",
+    "highlights": [
+      "唯有屋形船摆渡可达，深藏岚山大堰川畔",
+      "私人庭园与百年町屋改建，一室一景四季流转",
+      "怀石料理主厨定制菜单，配茶道与香道体验"
+    ],
+    "tags": [
+      "蜜月"
+    ]
+  },
+  {
+    "id": "h-aman-tokyo",
+    "name": "Aman Tokyo 东京安缦",
+    "destination": "日本",
+    "stars": "奢华",
+    "nightlyFrom": 12000,
+    "roomType": "大手町塔景套房",
+    "highlights": [
+      "大手町塔顶六层，落地窗俯瞰皇居与富士山",
+      "30米挑高和纸大堂与2500平米安缦水疗",
+      "客房和式浸浴缸，尽享城市天际线夜景"
+    ],
+    "tags": [
+      "蜜月",
+      "城景"
+    ]
+  }
+]

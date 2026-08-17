@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>云途 · 销售作战室</title>
+<style>
+  :root {
+    --bg:#0e1013; --panel:#15181e; --card:#1a1d24; --card2:#14161b;
+    --border:rgba(255,255,255,.08); --border2:rgba(255,255,255,.14);
+    --text:#e7e9ee; --text2:#aeb4be; --sub:#9ca2ac; --faint:#8c929c;
+    --accent:#5C8DFF; --accent-soft:rgba(92,141,255,.16); --accent-line:rgba(92,141,255,.30);
+    --accent-tx:#73A4FF; --accent-fill:#3E6FE1;
+    --green:#34d399; --gold:#c9a961; --red:#f2707b; --amber:#e0a94a;
+    --hover:rgba(255,255,255,.05); --sel:rgba(92,141,255,.12);
+    --st-greeting:#8a9099; --st-discovery:#5C8DFF; --st-recommend:#2dd4bf; --st-quote:#e0a94a;
+    --st-objection:#f0894a; --st-closing:#a78bfa; --st-paid:#34d399; --st-handoff:#f2707b;
+  }
+  :root[data-theme="light"] {
+    --bg:#F7F7F8; --panel:#ffffff; --card:#ffffff; --card2:#fafafa;
+    --border:rgba(0,0,0,.08); --border2:rgba(0,0,0,.14);
+    --text:#16181D; --text2:#3F444D; --sub:#5B616B; --faint:#6A707A;
+    --accent:#3B6FE0; --accent-soft:rgba(59,111,224,.08); --accent-line:rgba(59,111,224,.30);
+    --accent-tx:#2E62D3; --accent-fill:#3B6FE0;
+    --green:#0E732D; --gold:#a87c33; --red:#C92C39; --amber:#835400;
+    --hover:rgba(0,0,0,.04); --sel:rgba(59,111,224,.08);
+    --st-greeting:#5A606A; --st-discovery:#2356C6; --st-recommend:#0E5B51; --st-quote:#825400;
+    --st-objection:#984811; --st-closing:#553CAD; --st-paid:#126C2E; --st-handoff:#A6111E;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    background:var(--bg); color:var(--text); overflow:hidden;
+    font:14px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono { font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:rgba(128,128,128,.28); border-radius:10px; border:3px solid transparent; background-clip:content-box; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  input::placeholder, textarea::placeholder { color:var(--faint); }
+  @keyframes rise { from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:none;} }
+  /* 数据更新导致的重绘不该重播入场动画——每来一条消息整屏闪一下很廉价。
+     只有首次加载和切换会话时才播，靠 .quiet 关掉。 */
+  .quiet *, .quiet { animation: none !important; }
+  @keyframes slideIn { from{opacity:0; transform:translateX(14px);} to{opacity:1; transform:none;} }
+  @keyframes grow { from{transform:scaleX(0);} to{transform:scaleX(1);} }
+  @keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
+  @keyframes ping { 0%{box-shadow:0 0 0 0 rgba(52,211,153,.35);} 70%{box-shadow:0 0 0 7px rgba(52,211,153,0);} 100%{box-shadow:0 0 0 0 rgba(52,211,153,0);} }
+  @keyframes bounceDot { 0%,80%,100%{transform:translateY(0); opacity:.35;} 40%{transform:translateY(-4px); opacity:1;} }
+
+  .app { height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  header { flex:none; height:54px; display:flex; align-items:center; gap:18px; padding:0 16px; border-bottom:1px solid var(--border); background:var(--panel); }
+  /* 演示模式徽标 + 登录框。页面本身免密可看，凭据只用来换「真实客户会话 + 写权限」。 */
+  .mode { flex:none; display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px;
+          border:1px solid var(--border2); background:var(--card); font-size:11.5px; color:var(--text2); cursor:pointer; transition:.15s; }
+  .mode:hover { border-color:var(--accent-line); color:var(--accent-tx); }
+  .mode i { width:6px; height:6px; border-radius:50%; background:var(--amber); flex:none; }
+  .mode.on i { background:var(--green); }
+  .mask { position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
+          display:flex; align-items:center; justify-content:center; z-index:90; }
+  .mask[hidden] { display:none; }
+  .login { width:min(360px, calc(100vw - 32px)); background:var(--panel); border:1px solid var(--border2);
+           border-radius:14px; padding:22px; box-shadow:0 18px 50px rgba(0,0,0,.4); }
+  .login h3 { font-size:15px; font-weight:600; margin-bottom:6px; }
+  .login .tip { font-size:12px; color:var(--sub); line-height:1.6; margin-bottom:16px; }
+  .login label { display:block; font-size:11.5px; color:var(--faint); margin:0 0 5px; }
+  .login input { width:100%; background:var(--card2); border:1px solid var(--border2); border-radius:9px;
+                 padding:9px 11px; color:var(--text); font:13px inherit; margin-bottom:12px; }
+  .login input:focus { outline:none; border-color:var(--accent); }
+  .login .err { font-size:12px; color:var(--red); margin-bottom:10px; min-height:16px; }
+  .login .row { display:flex; gap:9px; }
+  .login .row button { flex:1; border-radius:9px; padding:9px; font:600 13px inherit; cursor:pointer; border:1px solid var(--border2); }
+  .login .row .go { background:var(--accent-fill); color:#fff; border-color:transparent; }
+  .login .row .no { background:transparent; color:var(--text2); }
+  .brand { display:flex; align-items:center; gap:10px; flex:none; }
+  .brand .mark { width:26px; height:26px; display:flex; align-items:center; justify-content:center; border-radius:8px; font-size:13px; font-weight:700; color:#1A1408; background:var(--gold); }
+  .brand .name { font-size:13.5px; font-weight:600; letter-spacing:.2px; }
+  .grow { flex:1; }
+  .live { display:inline-flex; align-items:center; gap:7px; font-size:11px; letter-spacing:.5px; color:var(--sub); }
+  .live i { width:6px; height:6px; border-radius:50%; background:var(--green); animation:ping 2s ease-out infinite; }
+  /* 断线时才用红色——红是告警语义，连接正常时用它会让人以为出故障了 */
+  .live.off i { background:var(--red); animation:none; }
+  .live.off { color:var(--red); }
+  .iconbtn { width:30px; height:30px; flex:none; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--text2); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:.15s; }
+  .iconbtn:hover { background:var(--hover); color:var(--text); }
+  .avatar { width:26px; height:26px; flex:none; border-radius:50%; background:var(--hover); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--text2); }
+  .ic { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+  .body { flex:1; display:flex; overflow:hidden; min-height:0; }
+  aside { width:318px; flex:none; display:flex; flex-direction:column; overflow:hidden; border-right:1px solid var(--border); background:var(--panel); }
+  .search { flex:none; padding:14px 14px 10px; }
+  .search .box { display:flex; align-items:center; gap:8px; background:var(--hover); border:1px solid var(--border); border-radius:8px; padding:7px 10px; }
+  .search input { flex:1; min-width:0; background:none; border:none; outline:none; color:var(--text); font:13px inherit; }
+  /* 原来是个 ⌘K 提示，但并没有实现这个快捷键——写了做不到不如不写。
+     换成有输入时才出现的清除按钮，点一下回到全部会话。 */
+  .search .clr { display:none; align-items:center; justify-content:center; width:18px; height:18px;
+                 border-radius:50%; background:var(--border2); color:var(--sub); cursor:pointer;
+                 flex:none; transition:.15s; }
+  .search .clr:hover { background:var(--border2); color:var(--text); }
+  .search .clr.show { display:flex; }
+  /* 视图切换：客服工作台的通用做法（Intercom/Zendesk/Front 都是 Views/Tabs）。
+     关键是每个 tab 必须带计数——切走之后看不到「需跟进 7」的话，人不敢切。 */
+  .views { display:flex; gap:2px; padding:0 10px 8px; }
+  .views .tb { flex:1; display:flex; align-items:center; justify-content:center; gap:5px;
+              font-size:12px; color:var(--sub); padding:6px 4px; border-radius:8px; cursor:pointer;
+              transition:.15s; white-space:nowrap; }
+  .views .tb:hover { background:var(--hover); }
+  .views .tb.on { background:var(--card2); color:var(--text); font-weight:500; }
+  .views .tb .n { font-size:10.5px; padding:0 5px; border-radius:6px; background:var(--border2); color:var(--sub); min-width:16px; text-align:center; }
+  .views .tb.on .n { background:var(--accent-fill); color:#fff; }
+  .views .tb.live .n { background:var(--accent-fill); color:#fff; animation:pulseAccent 2s ease-out infinite; }
+  .list { flex:1; overflow-y:auto; padding:0 8px 16px; }
+  .grp-head { display:flex; align-items:center; gap:7px; padding:9px 8px 7px; position:sticky; top:0; background:var(--panel); z-index:1; }
+  .grp-head .dot { width:5px; height:5px; border-radius:50%; flex:none; }
+  .grp-head .t { font-size:11px; font-weight:600; letter-spacing:.6px; color:var(--sub); }
+  .grp-head .c { font-size:11px; color:var(--faint); }
+  .row { position:relative; padding:11px 12px; border-radius:9px; cursor:pointer; margin-bottom:2px; transition:.15s; }
+  .row:hover { background:var(--hover); }
+  .row.on { background:var(--sel); box-shadow:inset 0 0 0 1px var(--accent-line); }
+  .row .top { display:flex; align-items:center; gap:8px; }
+  .row .nm { font-size:13.5px; font-weight:600; letter-spacing:.2px; }
+  .row .idle { font-size:11px; flex:none; }
+  .badge { font-size:10.5px; font-weight:500; letter-spacing:.2px; border-radius:5px; padding:2px 6px; flex:none; }
+  /* 实时分组的呼吸点：ping 动画的光晕写死了红色，这里单独用主色 */
+  @keyframes pulseAccent { 0%{box-shadow:0 0 0 0 rgba(90,140,255,.40);} 70%{box-shadow:0 0 0 7px rgba(90,140,255,0);} 100%{box-shadow:0 0 0 0 rgba(90,140,255,0);} }
+  .grp-head .dot.pulse { animation: pulseAccent 2s ease-out infinite; }
+  .row .pv { font-size:12.5px; color:var(--sub); margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row .meta { display:flex; align-items:center; gap:9px; margin-top:9px; }
+  .row .bar { flex:1; height:2px; border-radius:2px; background:var(--border2); overflow:hidden; }
+  .row .bar > i { display:block; height:100%; border-radius:2px; }
+  .row .sc { font-size:11px; flex:none; }
+  .row .amt { font-size:11px; flex:none; }
+
+  main { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+  .scroll { flex:1; overflow-y:auto; }
+  /* 工作台目标：常见屏幕一屏放下，不出现主区滚动条 */
+  .pad { padding:13px 24px 6px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 1px 2px rgba(0,0,0,.14); }
+  :root[data-theme="light"] .card { box-shadow:0 1px 2px rgba(16,24,40,.05); }
+
+  .h1row { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:12px; animation:rise .4s cubic-bezier(.16,1,.3,1) both; }
+  .h1row h1 { font-size:19px; font-weight:600; letter-spacing:-.2px; }
+  .h1row .sub { font-size:12.5px; color:var(--sub); margin-top:5px; }
+  .ranges { display:flex; gap:2px; background:var(--hover); border:1px solid var(--border); border-radius:9px; padding:3px; }
+  .ranges .r { font-size:12.5px; color:var(--sub); padding:5px 13px; border-radius:7px; cursor:pointer; transition:.15s; }
+  .ranges .r.on { color:var(--text); background:var(--border2); font-weight:600; }
+
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:12px; }
+  .kpi { padding:11px 14px 12px; animation:rise .45s cubic-bezier(.16,1,.3,1) both; }
+  .kpi .lb { font-size:11.5px; font-weight:500; letter-spacing:.3px; color:var(--sub); }
+  .kpi .v { font-size:22px; letter-spacing:-.8px; margin-top:6px; }
+  .kpi .nt { font-size:11.5px; color:var(--faint); margin-top:5px; }
+
+  .two { display:grid; grid-template-columns:repeat(auto-fit,minmax(400px,1fr)); gap:12px; margin-bottom:12px; }
+  .gmv { padding:13px 18px 0; overflow:hidden; animation:rise .5s cubic-bezier(.16,1,.3,1) .08s both; position:relative; }
+  .gmv .lb { font-size:11.5px; font-weight:500; letter-spacing:.4px; color:var(--sub); }
+  .gmv .big { font-size:clamp(28px,3.6vw,36px); letter-spacing:-1.4px; }
+  .gmv .side { display:flex; gap:26px; flex:none; }
+  .gmv .side .n { font-size:17px; }
+  .gmv .side .l { font-size:11px; color:var(--sub); margin-top:6px; }
+
+  .funnel { padding:13px 18px 14px; animation:rise .5s cubic-bezier(.16,1,.3,1) .14s both; }
+  .funnel .hd { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .funnel .hd .t { font-size:13px; font-weight:600; }
+  .funnel .hd .s { font-size:11.5px; color:var(--faint); }
+  .funnel .lvl { margin-bottom:8px; }
+  .funnel .lvl .r { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; }
+  .funnel .lvl .nm { font-size:12.5px; color:var(--text2); letter-spacing:.3px; }
+  .funnel .lvl .ct { font-size:13px; }
+  .funnel .lvl .dp { font-size:11px; min-width:56px; text-align:right; }
+  .funnel .lvl .track { height:6px; border-radius:6px; background:var(--border2); overflow:hidden; }
+  .funnel .lvl .track > i { display:block; height:100%; border-radius:6px; transform-origin:left; animation:grow .6s cubic-bezier(.16,1,.3,1) both; }
+  .handoff-chip { margin-top:2px; display:inline-flex; align-items:center; gap:7px; font-size:11.5px; color:var(--sub); background:var(--hover); border-radius:8px; padding:4px 10px; }
+
+  .alerts { padding:13px 18px; animation:rise .5s cubic-bezier(.16,1,.3,1) .2s both; }
+  .alerts .hd, .insights .hd { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .alerts .hd .p { width:6px; height:6px; border-radius:50%; background:var(--red); animation:ping 2s ease-out infinite; }
+  .alerts .hd .t, .insights .hd .t { font-size:13px; font-weight:600; }
+  .alerts .hd .c { font-size:11px; color:var(--faint); }
+  .alert { display:flex; align-items:center; gap:11px; cursor:pointer; padding:8px 10px; margin:0 -10px; border-radius:9px; transition:.15s; }
+  .alert:hover { background:var(--hover); }
+  .alert .nm { font-size:13px; font-weight:500; }
+  .alert .rs { font-size:11.5px; color:var(--sub); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .alert .id { font-size:11.5px; color:var(--red); flex:none; }
+  .alert .ar { color:var(--faint); flex:none; }
+  .insights { padding:13px 18px; animation:rise .5s cubic-bezier(.16,1,.3,1) .26s both; }
+  .insights .badge2 { font-size:11px; color:var(--faint); border:1px solid var(--border); border-radius:5px; padding:2px 6px; }
+  .ins { display:flex; gap:11px; margin-bottom:9px; }
+  .ins .n { font-size:11px; color:var(--faint); flex:none; padding-top:2px; }
+  .ins .tx { font-size:12.5px; color:var(--text2); line-height:1.6; }
+  .empty { color:var(--faint); font-size:12.5px; padding:6px 0; }
+
+  .dhead { flex:none; display:flex; align-items:center; gap:12px; padding:0 20px; height:54px; border-bottom:1px solid var(--border); background:var(--panel); }
+  .back { width:26px; height:26px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:7px; color:var(--sub); cursor:pointer; font-size:16px; transition:.15s; }
+  .back:hover { background:var(--hover); color:var(--text); }
+  .dhead .nm { font-size:14.5px; font-weight:600; }
+  .dhead .id { font-size:11.5px; color:var(--faint); }
+  .dhead .idle { font-size:11.5px; flex:none; }
+  .takeover { border:none; border-radius:8px; padding:7px 15px; font:500 12.5px inherit; flex:none; cursor:pointer; transition:.15s; }
+  .split { flex:1; display:flex; overflow:hidden; min-height:0; }
+  .conv { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; border-right:1px solid var(--border); }
+  .stepper { flex:none; padding:15px 24px 13px; border-bottom:1px solid var(--border); display:flex; align-items:flex-start; }
+  .step { display:flex; align-items:flex-start; min-width:0; }
+  .step .col { display:flex; flex-direction:column; align-items:center; gap:7px; flex:none; }
+  .step .d { width:9px; height:9px; border-radius:50%; transition:.2s; }
+  .step .lb { font-size:11px; letter-spacing:.3px; white-space:nowrap; }
+  .step .link { flex:1; height:1.5px; margin:4px 8px 0; border-radius:2px; }
+  /* 链接卡片预览：企微渠道会把回复里的方案书/支付链接抽成原生卡片单独发，
+     后台若仍显示裸链接，顾问看到的就和客户看到的不是一回事。这里 1:1 还原。 */
+  .lcard { margin-top:7px; display:flex; gap:10px; align-items:flex-start; max-width:330px;
+    border:1px solid var(--border); background:var(--card2); border-radius:10px; padding:10px 11px;
+    text-decoration:none; cursor:pointer; transition:border-color .15s, background .15s; }
+  .lcard:hover { border-color:var(--accent-line); background:var(--sel); }
+  /* 正文里保留的站内链接（模拟器渠道不发卡片）同样可点 */
+  .bub a.slink { color:var(--accent-tx); text-decoration:none; border-bottom:1px solid var(--accent-line); }
+  .bub a.slink:hover { border-bottom-color:var(--accent-tx); }
+  .lcard .tx { min-width:0; flex:1; }
+  .lcard .t { font-size:12.5px; line-height:1.45; color:var(--text); display:-webkit-box;
+    -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .lcard .d { margin-top:5px; font-size:11px; line-height:1.5; color:var(--sub); display:-webkit-box;
+    -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .lcard img { flex:none; width:44px; height:44px; border-radius:6px; object-fit:cover; }
+  .lcard .badge2 { margin-top:6px; font-size:10px; color:var(--faint); }
+  .msgs { flex:1; overflow-y:auto; padding:20px 24px 22px; display:flex; flex-direction:column; gap:14px; }
+  .m { display:flex; }
+  .m .wrap { max-width:72%; display:flex; flex-direction:column; animation:rise .35s cubic-bezier(.16,1,.3,1) both; }
+  .m .who { font-size:10.5px; letter-spacing:.4px; color:var(--faint); margin-bottom:5px; }
+  .m .bub { padding:10px 14px; font-size:13.5px; line-height:1.7; white-space:pre-wrap; word-break:break-word; }
+  .m .at { font-size:10px; color:var(--faint); margin-top:5px; }
+  .m.cust { justify-content:flex-end; }
+  .m.cust .wrap { align-items:flex-end; }
+  .m.cust .bub { background:var(--accent-fill); color:#fff; border-radius:14px 4px 14px 14px; }
+  .m.agent .bub { background:var(--hover); color:var(--text); border-radius:4px 14px 14px 14px; }
+  .typing { display:flex; align-items:center; gap:9px; animation:fadeIn .3s ease both; }
+  .typing .dots { display:flex; gap:4px; background:var(--hover); border:1px solid var(--border); border-radius:14px; padding:11px 14px; }
+  .typing .dots i { width:5px; height:5px; border-radius:50%; background:var(--sub); animation:bounceDot 1.2s infinite; }
+  .typing .lb { font-size:11.5px; color:var(--faint); }
+  .replybar { flex:none; display:flex; gap:10px; padding:13px 24px; border-top:1px solid var(--border); }
+  .replybar textarea { flex:1; resize:none; background:var(--hover); border:1px solid var(--border); border-radius:9px; padding:10px 13px; color:var(--text); font:13.5px/1.6 inherit; outline:none; }
+  .replybar textarea:focus { border-color:var(--accent); }
+  .replybar button { flex:none; border:none; border-radius:9px; background:var(--accent-fill); color:#fff; font:600 13px inherit; padding:0 20px; cursor:pointer; }
+
+  /* 右侧栏目标：常见笔记本高度（~800px 可用区）一屏放下四张卡不出滚动条 */
+  .rightbar { width:326px; flex:none; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:9px; background:var(--panel); animation:slideIn .28s cubic-bezier(.16,1,.3,1) both; }
+  .rc { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:12px 13px; }
+  .rc .cap { font-size:11.5px; font-weight:500; letter-spacing:.4px; color:var(--sub); }
+  .rc .score { font-size:25px; letter-spacing:-1px; }
+  .rc .track { height:5px; border-radius:5px; background:var(--border2); overflow:hidden; margin-top:9px; }
+  .rc .track > i { display:block; height:100%; border-radius:5px; transform-origin:left; animation:grow .55s cubic-bezier(.16,1,.3,1) .1s both; }
+  .prow { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid var(--border); }
+  .prow .k { font-size:12.5px; color:var(--sub); flex:none; }
+  .prow .v { font-size:12.5px; text-align:right; word-break:break-all; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
+  .chip { font-size:11.5px; color:var(--text2); background:var(--hover); border-radius:6px; padding:3px 8px; }
+  .ord { border:1px solid var(--border); border-radius:10px; padding:9px 11px; background:var(--card2); }
+  .ord .t { display:flex; justify-content:space-between; gap:9px; align-items:flex-start; }
+  .ord .meta { display:flex; justify-content:space-between; align-items:baseline; margin-top:7px; }
+  .sug { background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:13px; padding:12px 13px; }
+  .sug .hd { display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; letter-spacing:.4px; color:var(--accent-tx); }
+  .sug .tx { font-size:12.5px; color:var(--text2); line-height:1.65; margin-top:8px; }
+  .sug button { margin-top:10px; width:100%; border:1px solid var(--accent-line); background:var(--accent-soft); color:var(--accent-tx); border-radius:8px; padding:8px; font:500 12.5px inherit; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand" id="home" style="cursor:pointer" title="回到概览"><div class="mark">云</div><div class="name">云途 · 销售作战室</div></div>
+    <div class="grow"></div>
+    <div class="live" title="数据推送连接状态"><i></i><span id="liveTxt">实时</span></div>
+    <div class="mode" id="modeBtn" title="点击登录后可查看真实客户会话并接管"><i></i><span id="modeTxt">演示模式</span></div>
+    <button class="iconbtn" id="themeBtn" title="切换主题"></button>
+  </header>
+  <div class="body">
+    <aside>
+      <div class="search"><div class="box">
+        <svg class="ic" viewBox="0 0 24 24" style="width:14px;height:14px;color:var(--sub)"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" placeholder="搜索会话">
+        <span class="clr" id="qclr" title="清除搜索"><svg class="ic" viewBox="0 0 24 24" style="width:11px;height:11px;stroke-width:2.6"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+      </div></div>
+      <div class="views" id="views"></div>
+      <div class="list" id="list"></div>
+    </aside>
+    <main id="main"></main>
+  </div>
+</div>
+
+<div class="mask" id="loginMask" hidden>
+  <form class="login" id="loginForm">
+    <h3>登录顾问账号</h3>
+    <div class="tip" id="loginTip">演示模式下只显示演示数据。登录后可查看真实客户会话，并接管、代客户发消息。</div>
+    <label for="lgUser">用户名</label>
+    <input id="lgUser" autocomplete="username" value="admin">
+    <label for="lgPass">密码</label>
+    <input id="lgPass" type="password" autocomplete="current-password">
+    <div class="err" id="lgErr"></div>
+    <div class="row">
+      <button type="button" class="no" id="lgCancel">返回演示</button>
+      <button type="submit" class="go" id="lgGo">登录</button>
+    </div>
+  </form>
+</div>
+
+<script>
+// ---------------- 登录态 ----------------
+// 页面免密可开，进来就是「演示模式」：服务端只吐演示会话，写操作一律 401。
+// 凭据只存 sessionStorage（关标签页即失效），不落 localStorage——共用电脑上
+// 下一个人不该直接继承顾问权限（能给真实微信客户发消息）。
+const AUTH = {
+  get token() { return sessionStorage.getItem('adminAuth') || ''; },
+  set token(v) { v ? sessionStorage.setItem('adminAuth', v) : sessionStorage.removeItem('adminAuth'); },
+  get on() { return !!this.token; }
+};
+const b64 = s => btoa(String.fromCharCode.apply(null, new TextEncoder().encode(s)));
+
+/** 后台请求统一入口：登录后自动带 Authorization。401 不静默吞，调用方据此唤起登录框。 */
+function api(url, opts) {
+  const o = Object.assign({}, opts);
+  o.headers = Object.assign({}, o.headers);
+  if (AUTH.on) o.headers['authorization'] = 'Basic ' + AUTH.token;
+  return fetch(url, o);
+}
+
+const loginMask = document.getElementById('loginMask');
+const DEFAULT_TIP = '演示模式下只显示演示数据。登录后可查看真实客户会话，并接管、代客户发消息。';
+let loginPending = null; // 被拦下的动作，登录成功后原样重放
+
+function openLogin(msg) {
+  document.getElementById('lgErr').textContent = '';
+  document.getElementById('loginTip').textContent = msg || DEFAULT_TIP;
+  loginMask.hidden = false;
+  setTimeout(() => document.getElementById('lgPass').focus(), 30);
+}
+function closeLogin() { loginMask.hidden = true; loginPending = null; }
+
+/** 顶栏徽标始终反映当前身份，避免「以为自己登着、其实早掉了」。 */
+function syncMode() {
+  const b = document.getElementById('modeBtn');
+  b.classList.toggle('on', AUTH.on);
+  document.getElementById('modeTxt').textContent = AUTH.on ? '顾问已登录' : '演示模式';
+  b.title = AUTH.on ? '点击退出登录，回到演示模式' : '点击登录后可查看真实客户会话并接管';
+}
+function logout() { AUTH.token = ''; syncMode(); S.selected = null; load(); }
+
+/** 写操作统一入口：未登录先弹登录框，登录成功后把这个动作补上。 */
+function requireAuth(action) {
+  if (AUTH.on) return action();
+  loginPending = action;
+  openLogin('这一步需要顾问身份。登录后即可接管会话并代客户发消息。');
+}
+/** 写请求返回 401（密码被改、或服务端重启换了密码）时就地降级并重新要登录。 */
+function onAuthLost() {
+  AUTH.token = ''; syncMode(); load();
+  openLogin('登录已失效（密码可能已更改），请重新登录。');
+}
+
+document.getElementById('modeBtn').onclick = () => AUTH.on ? logout() : openLogin();
+document.getElementById('lgCancel').onclick = closeLogin;
+loginMask.onclick = e => { if (e.target === loginMask) closeLogin(); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !loginMask.hidden) closeLogin(); });
+
+document.getElementById('loginForm').onsubmit = async e => {
+  e.preventDefault();
+  const err = document.getElementById('lgErr'), go = document.getElementById('lgGo');
+  const pw = document.getElementById('lgPass');
+  const u = document.getElementById('lgUser').value.trim(), p = pw.value;
+  if (!p) { err.textContent = '请输入密码'; return; }
+  go.disabled = true; go.textContent = '验证中…';
+  const token = b64(u + ':' + p);
+  let r = null;
+  try { r = await fetch('/api/admin/whoami', { headers: { authorization: 'Basic ' + token } }); } catch (_) {}
+  go.disabled = false; go.textContent = '登录';
+  if (!r) { err.textContent = '网络异常，请重试'; return; }
+  if (r.status === 503) { err.textContent = '服务端未配置 ADMIN_PASS，无法登录'; return; }
+  if (!r.ok) { err.textContent = '用户名或密码错误'; pw.select(); return; }
+  AUTH.token = token;
+  const replay = loginPending;
+  closeLogin();
+  syncMode();
+  await load();
+  if (replay) replay();
+};
+
+const STAGES = {
+  greeting:{label:'开场',v:'--st-greeting'}, discovery:{label:'问需',v:'--st-discovery'},
+  recommend:{label:'推荐',v:'--st-recommend'}, quote:{label:'报价',v:'--st-quote'},
+  objection:{label:'异议',v:'--st-objection'}, closing:{label:'促成',v:'--st-closing'},
+  paid:{label:'已成交',v:'--st-paid'}, handoff:{label:'转人工',v:'--st-handoff'}
+};
+const STEP_ORDER = ['greeting','discovery','recommend','quote','objection','closing','paid'];
+const SCORE = { greeting:10, discovery:25, recommend:45, quote:65, objection:55, closing:82, paid:100, handoff:88 };
+const REACH = { greeting:0, discovery:1, recommend:2, quote:3, objection:3, closing:4, paid:5 };
+// 卡片预览需要线路标题/天数/酒店档，按 routeId 懒加载一次即缓存。
+// 用 pending 去重，避免同一 routeId 在多条消息里触发多次请求。
+const routeMetaPending = new Set();
+function loadRouteMeta(routeId) {
+  if (S.routeMeta[routeId] || routeMetaPending.has(routeId)) return;
+  routeMetaPending.add(routeId);
+  fetch('/api/proposal/' + encodeURIComponent(routeId))
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (d && d.route) { S.routeMeta[routeId] = d.route; render(); }
+    })
+    .catch(() => {})
+    .finally(() => routeMetaPending.delete(routeId));
+}
+
+const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const yuan = v => '¥' + Math.round(v).toLocaleString('en-US');
+const num = v => Math.round(v).toLocaleString('en-US');
+const alpha = (v, a) => 'color-mix(in srgb, var(' + v + ') ' + a + '%, transparent)';
+
+// drafts 按会话 id 存：共用一个 draft 会让 A 的草稿出现在 B 的输入框里，一回车就发错客户
+let S = { sessions:[], orders:[], selected:null, query:'', range:'今日', tab:'全部', drafts:{}, taken:{}, aiInsights:null, sugText:{}, insAt:0, usage:null, routeMeta:{} };
+const draftOf = id => (id && S.drafts[id]) || '';
+const setDraft = (id, v) => { if (id) S.drafts[id] = v; };
+
+// 只有数据/选中/范围/主题变化时才重绘——否则轮询重绘会让进场动画每 2 秒重播（闪烁）
+let lastSig = '';
+function sigOf() {
+  return JSON.stringify([
+    S.sessions.map(s => [s.id, s.updatedAt, s.stage, s.handedOver, (s.messages||[]).length]),
+    S.orders.map(o => [o.id, o.status, o.totalPrice]),
+    S.selected, S.range, document.documentElement.getAttribute('data-theme'),
+    S.usage && [S.usage.totalCalls, S.usage.totalCny] // 成本变了也要重绘 KPI
+  ]);
+}
+let rangeAutoPicked = false;
+async function load() {
+  try {
+    const [a,b,u] = await Promise.all([api('/api/sessions'), api('/api/orders'), api('/api/usage').catch(()=>null)]);
+    S.sessions = await a.json(); S.orders = await b.json();
+    if (u && u.ok) S.usage = await u.json().catch(()=>null);
+    // 首次加载自动选一个"有数据"的范围：demo 数据往往不是今天灌的，
+    // 默认死守「今日」会让工作台 KPI/漏斗全是 0，像坏了一样
+    if (!rangeAutoPicked) {
+      rangeAutoPicked = true;
+      const day = rangeStart('今日'), wk = rangeStart('本周');
+      if (S.sessions.length && !S.sessions.some(s => s.createdAt >= day)) {
+        S.range = S.sessions.some(s => s.createdAt >= wk) ? '本周' : '本月';
+      }
+    }
+    const sig = sigOf();
+    if (sig !== lastSig) render();
+  } catch (e) {}
+}
+
+const idleMin = s => Math.max(0, Math.round((Date.now() - s.updatedAt) / 60000));
+// 396 分钟这种大数字既难读又满屏飘红——超过 1 小时换算成小时/天展示
+const fmtIdle = m => m < 60 ? m + ' 分钟' : (m < 1440 ? Math.round(m/60) + ' 小时' : Math.floor(m/1440) + ' 天');
+const lastMsg = s => { const m = (s.messages||[]).filter(x => x.role==='customer'||x.role==='agent'); return m[m.length-1]; };
+const sessOrders = s => S.orders.filter(o => o.sessionId === s.id);
+const isUrgent = s => s.handedOver || (['quote','objection','closing'].includes(s.stage) && idleMin(s) >= 10);
+// 优先显示企微拉到的微信昵称；没有昵称时用「目的地客户/访客 + 短码」兜底。
+// 短码剥掉 wecom:/sim-/cust_ 前缀和下划线，避免显示成「· _E01」这种残码。
+const shortIdOf = s => s.id.replace(/^wecom:/,'').replace(/^sim-/,'').replace(/^cust_?/,'').replace(/[^A-Za-z0-9]/g,'').slice(-4).toUpperCase();
+const nameOf = s => s.profile.nickname || ((s.profile.destinationInterest ? s.profile.destinationInterest+'客户' : '访客') + ' · ' + (shortIdOf(s) || '····'));
+function rangeStart(r) { const d = new Date(); d.setHours(0,0,0,0);
+  if (r === '本周') { const w = (d.getDay()+6)%7; d.setDate(d.getDate()-w); }
+  else if (r === '本月') { d.setDate(1); } return d.getTime(); }
+function urgentReason(s) { const i = idleMin(s);
+  // 已被顾问接管的会话别再喊「等待资深顾问」——顾问就在处理它
+  if (S.taken[s.id]) return '顾问已接管，等待回复客户';
+  if (s.stage==='handoff') return '已转人工，等待资深顾问';
+  if (s.stage==='quote') return '报价后沉默 ' + fmtIdle(i) + '，未回应价格';
+  if (s.stage==='objection') return '客户提出异议，未回复';
+  if (s.stage==='closing') return '订单待支付，未完成';
+  return '需跟进'; }
+function suggestionFor(stage) { return ({
+  greeting:'客户刚进入，先问清目的地方向与出行场景。',
+  discovery:'意向尚模糊，用二选一提问（自然风光 / 城市人文）快速收敛，避免开放式提问导致流失。',
+  recommend:'已推线路，趁热追问出行日期与人数，用「旺季每人上浮 10%」的真实价差推动进入报价。',
+  quote:'报价已发出但客户沉默。5 分钟内追发行程亮点卡片 + 低门槛动作（小额定金锁位、限期可退）。',
+  objection:'针对异议点补充实拍 / 案例 / 兜底政策，给出替代档位，不硬顶价格。',
+  closing:'临门一脚：确认线路、人数、日期无误，发送支付链接并给「名额以付款为准」的轻推。',
+  paid:'已成交。24h 内推《行前准备清单》，做好行前服务与答疑，不再推销（见 SOP）。',
+  handoff:'高价值 / 投诉线索，AI 不宜继续应答。资深顾问尽快电话跟进。'
+})[stage] || '继续跟进该客户。'; }
+function scoreNote(stage) { return ({
+  quote:'报价已发，缺临门一脚', objection:'异议可解，金额较高', closing:'即将成交',
+  paid:'已支付，转向加购', handoff:'高价值，人工跟进', recommend:'意向明确，缺日期',
+  discovery:'早期线索，需收敛', greeting:'刚进入'
+})[stage] || ''; }
+
+// 上一次渲染的是哪个会话——用来判断这次是「换了个会话」还是「同一个会话有新数据」
+let lastRendered = '\u0000';
+function render() {
+  // 全量重绘会踩三个坑：把正在往上翻聊天记录的人拽回底部、打断正在输入的回复、
+  // 丢掉光标位置。重绘前先记住这三样，重绘后原样恢复。
+  const oldBox = document.querySelector('.msgs');
+  const wasAtBottom = !oldBox || oldBox.scrollHeight - oldBox.scrollTop - oldBox.clientHeight < 60;
+  const oldScrollTop = oldBox ? oldBox.scrollTop : 0;
+  const oldReply = document.getElementById('reply');
+  const typing = oldReply && document.activeElement === oldReply
+    ? { start: oldReply.selectionStart, end: oldReply.selectionEnd } : null;
+
+  renderList();
+  // 同一个会话内的数据更新：静默重绘，不播入场动画
+  const main = document.getElementById('main');
+  const quiet = lastRendered === String(S.selected);
+  main.classList.toggle('quiet', quiet);
+  lastRendered = String(S.selected);
+  // 选中的会话滚进视野——从工作台介入队列点进来、或列表很长时，否则得自己找
+  if (S.selected) {
+    const row = document.querySelector('.row[data-id="' + CSS.escape(S.selected) + '"]');
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+  const sel = S.sessions.find(s => s.id === S.selected);
+  document.getElementById('main').innerHTML = sel ? detailHTML(sel) : dashHTML();
+  wire();
+  lastSig = sigOf();
+  if (sel) {
+    const box = document.querySelector('.msgs');
+    // 只有原本就贴着底（在看最新消息）才自动跟随；正在翻历史时保持原位
+    if (box) box.scrollTop = wasAtBottom ? box.scrollHeight : oldScrollTop;
+    const rep = document.getElementById('reply');
+    if (rep && typing) { rep.focus(); rep.setSelectionRange(typing.start, typing.end); }
+    ensureSuggestion(sel.id);
+  } else ensureInsights();
+}
+
+// AI 洞察：拉 LLM 版（10 分钟节流），到手后原地替换洞察卡内容
+async function ensureInsights() {
+  if (Date.now() - S.insAt < 10*60*1000 && S.aiInsights) return;
+  S.insAt = Date.now();
+  try {
+    const r = await api('/api/insights'); const d = await r.json();
+    if (d.insights && d.insights.length) {
+      S.aiInsights = d.insights;
+      const el = document.getElementById('insList');
+      if (el) { el.innerHTML = d.insights.map((t,i)=>'<div class="ins"><span class="n mono">0'+(i+1)+'</span><span class="tx">'+esc(t)+'</span></div>').join('');
+        const tag = el.parentElement && el.parentElement.querySelector('.badge2'); if (tag) tag.textContent = 'LLM 生成'; }
+    }
+  } catch(e) {}
+}
+// 下一步建议：拉 LLM 定制版，到手后原地替换文案 + 标记
+// 建议按「会话 + 消息数」缓存，对话一有新消息就重新拉——此前只按会话 id 缓存，
+// 取过一次就永久不刷新：客户发了新消息、甚至发「重置」清空会话之后，
+// 右侧还挂着上一轮的建议（实测重置回到推荐阶段，建议仍是转人工阶段的「先致歉安抚情绪」）。
+async function ensureSuggestion(id) {
+  const s = S.sessions.find(x => x.id === id);
+  const key = id + ':' + ((s && s.messages ? s.messages.length : 0));
+  if (S.sugText[key]) return;
+  try {
+    const r = await api('/api/sessions/'+encodeURIComponent(id)+'/suggestion'); const d = await r.json();
+    if (d.suggestion && S.selected === id) {
+      S.sugText[key] = d.suggestion;
+      const tx = document.getElementById('sugTx'); if (tx) tx.textContent = d.suggestion;
+      const tag = document.getElementById('sugTag'); if (tag) tag.textContent = 'AI 定制';
+    } else if (!d.suggestion) { const tag = document.getElementById('sugTag'); if (tag) tag.textContent = '规则版'; }
+  } catch(e) { const tag = document.getElementById('sugTag'); if (tag) tag.textContent = '规则版'; }
+}
+
+function stageBadge(stage) {
+  const st = STAGES[stage]; return '<span class="badge" style="color:var('+st.v+');background:'+alpha(st.v,16)+'">'+st.label+'</span>';
+}
+
+function renderList() {
+  const q = S.query.trim().toLowerCase();
+  // 搜索要覆盖用户实际看得见的东西：显示名/昵称、目的地、阶段、最后一句话，
+  // 只搜 id + 目的地时按屏幕上的名字（如「Momo酱」）根本搜不出来
+  const haystack = s => [
+    s.id, nameOf(s), s.profile.nickname || '', s.profile.destinationInterest || '',
+    (STAGES[s.stage] || {}).label || '', (lastMsg(s) || {}).content || '',
+  ].join(' ').toLowerCase();
+  const matched = S.sessions.filter(s => !q || haystack(s).includes(q));
+  // 三分钟内有动静 = 客户此刻正在说话，这是最该被看见的一屏
+  const isLive = s => idleMin(s) < 3;
+  const isDone = s => s.stage === 'paid';
+  const live = matched.filter(isLive);
+  const urgent = matched.filter(s => !isLive(s) && isUrgent(s));
+  const rest = matched.filter(s => !isLive(s) && !isUrgent(s));
+
+  // 视图 tab：计数始终基于全量（不受当前 tab 影响），否则切走就看不见别处的积压
+  const TABS = [
+    { k:'全部', n: matched.length },
+    { k:'实时', n: live.length, live: true },
+    { k:'需跟进', n: urgent.length },
+    { k:'已成交', n: matched.filter(isDone).length },
+  ];
+  // 搜索期间 tab 整体置灰：此刻列表展示的是全量搜索结果，不受 tab 约束，
+  // 高亮某个 tab 会误导人以为还在该视图内
+  document.getElementById('views').innerHTML = TABS.map(t =>
+    '<div class="tb'+(!q && S.tab===t.k?' on':'')+(t.live&&t.n?' live':'')+'" data-tab="'+t.k+'"'
+    + (q ? ' style="opacity:.45"' : '') + '>'
+    + t.k + '<span class="n mono">' + t.n + '</span></div>').join('');
+
+  // 搜索时无视 tab，在全部会话里找——业界通行做法（Gmail/Intercom 的搜索都会跳出当前视图）。
+  // 否则在「需跟进」里搜一个已成交客户会得到空列表，人会以为查无此人。
+  const searching = !!q;
+  let groups;
+  if (searching) groups = [{ t:'搜索结果', c:matched.length, items:matched, color:'var(--accent)' }];
+  else if (S.tab === '实时') groups = [{ t:'实时对话', c:live.length, items:live, color:'var(--accent)', live:true }];
+  else if (S.tab === '需跟进') groups = [{ t:'需要跟进', c:urgent.length, items:urgent, color:'var(--red)' }];
+  else if (S.tab === '已成交') {
+    const done = matched.filter(isDone);
+    groups = [{ t:'已成交', c:done.length, items:done, color:'var(--green)' }];
+  } else {
+    groups = [
+      { t:'实时对话', c:live.length, items:live, color:'var(--accent)', live:true },
+      { t:'需要跟进', c:urgent.length, items:urgent, color:'var(--red)' },
+      { t:'进行中', c:rest.length, items:rest, color:'var(--green)' },
+    ];
+  }
+  groups = groups.filter(g => g.items.length);
+  let html = '';
+  for (const g of groups) {
+    html += '<div style="margin-bottom:10px"><div class="grp-head"><span class="dot'+(g.live?' pulse':'')+'" style="background:'+g.color+'"></span><span class="t">'+g.t+'</span><span class="c mono">'+g.c+'</span></div>';
+    for (const s of g.items) {
+      const st = STAGES[s.stage], sc = SCORE[s.stage]||0, hot = sc>=70, i = idleMin(s);
+      const os = sessOrders(s), paid = os.find(o=>o.status==='paid');
+      const amt = paid ? yuan(paid.totalPrice) : (os[0] ? yuan(os[0].totalPrice) : '');
+      const lm = lastMsg(s), on = s.id === S.selected;
+      html += '<div class="row'+(on?' on':'')+'" data-id="'+esc(s.id)+'">'
+        + '<div class="top"><span class="nm">'+esc(nameOf(s))+'</span>'+stageBadge(s.stage)
+        + '<span class="grow"></span><span class="idle mono" style="color:'+(isUrgent(s)?'var(--red)':'var(--faint)')+'">'+fmtIdle(i)+'</span></div>'
+        + '<div class="pv">'+esc(lm?lm.content:'（无消息）')+'</div>'
+        + '<div class="meta"><div class="bar"><i style="width:'+sc+'%;background:'+(hot?'var(--accent)':'var(--border2)')+'"></i></div>'
+        + '<span class="sc mono" style="color:'+(hot?'var(--accent-tx)':'var(--faint)')+'">'+sc+'</span>'
+        + '<span class="amt mono" style="color:'+(paid?'var(--green)':'var(--sub)')+'">'+amt+'</span></div>'
+        + '</div>';
+    }
+    html += '</div>';
+  }
+  if (!html) html = '<div class="empty" style="padding:16px 8px">'
+    + (S.query ? '没有匹配的会话' : (S.tab==='实时' ? '当前没有正在进行的对话' : (S.tab==='需跟进' ? '没有待跟进的会话 👍' : (S.tab==='已成交' ? '本范围暂无成交' : '暂无会话'))))
+    + '</div>';
+  document.getElementById('list').innerHTML = html;
+}
+
+function dashHTML() {
+  const rs = rangeStart(S.range);
+  const sess = S.sessions.filter(s => s.createdAt >= rs);
+  const ords = S.orders.filter(o => o.createdAt >= rs);
+  const total = sess.length || 1;
+  const paidOrders = ords.filter(o => o.status === 'paid');
+  const paidSids = new Set(paidOrders.map(o => o.sessionId));
+  const paidSess = sess.filter(s => paidSids.has(s.id)).length;
+  const handoff = sess.filter(s => s.handedOver).length;
+  const gmv = paidOrders.reduce((a,o)=>a+o.totalPrice,0);
+  const conv = Math.round(paidSess/total*100), handRate = Math.round(handoff/total*100), autoRate = Math.round((sess.length-handoff)/total*100);
+  const aov = paidOrders.length ? gmv/paidOrders.length : 0;
+
+  const active = sess.filter(s => s.stage !== 'handoff');
+  const names = ['问需','推荐','报价','促成','成交'];
+  const cnt = [1,2,3,4,5].map(min => active.filter(s => (REACH[s.stage] != null ? REACH[s.stage] : -1) >= min).length);
+  const top = cnt[0] || 1;
+
+  const kpi = (lb,v,nt) => '<div class="kpi card"><div class="lb">'+lb+'</div><div class="v mono">'+v+'</div><div class="nt">'+nt+'</div></div>';
+  const kpis = kpi('会话数', num(sess.length), '本范围累计')
+    + kpi('成交率', conv+'%', paidSess+' / '+sess.length+' 会话成交')
+    + kpi('人工接管率', handRate+'%', 'AI 独立完成 '+autoRate+'%')
+    + kpi('AI 自动化率', autoRate+'%', handoff+' 单需人工兜底')
+    // 模型成本：这是唯一能回答「这套系统跑起来一天多少钱、一个客户成交要花多少」的数字
+    // 缓存命中率跟成本放在一起：省下的钱只有和花掉的钱并排看才有意义。
+    // 用 > 0 而不是 != null 判断——旧版本服务端不返回这个字段，没有就不显示，别渲染出 NaN%
+    + kpi('今日模型成本', S.usage ? '¥'+S.usage.totalCny.toFixed(2) : '—',
+          S.usage ? S.usage.totalCalls+' 次调用 · 单会话均 ¥'+S.usage.avgCnyPerSession.toFixed(3)
+                    + (S.usage.cacheHitRate > 0 ? ' · 缓存命中 '+(S.usage.cacheHitRate*100).toFixed(0)+'%' : '')
+                  : '统计中');
+
+  const sorted = paidOrders.slice().sort((a,b)=>(a.paidAt||a.createdAt)-(b.paidAt||b.createdAt));
+  let accv = 0; const pts = sorted.map(o => { accv += o.totalPrice; return accv; });
+  const spark = pts.length >= 2 ? sparkPath(pts, 600, 130) : { line:'M0 118 L600 114', fill:'' };
+
+  // 先算出最大流失比例，渲染时只有这一档标警示色
+  let maxDropPct = 0;
+  for (let i=1; i<names.length; i++) if (cnt[i-1]>0) maxDropPct = Math.max(maxDropPct, Math.round((cnt[i-1]-cnt[i])/cnt[i-1]*100));
+
+  let funnel = '';
+  names.forEach((nm,i) => {
+    const c = cnt[i], w = c/top*100;
+    let drop = '起点', dd = 0;
+    // 「−27%」这种裸负号看不懂——写明白：相对上一档流失了多少
+    if (i>0) { if (cnt[i-1]>0) { dd = Math.round((cnt[i-1]-c)/cnt[i-1]*100); drop = dd>0?'流失 '+dd+'%':'无流失'; } else drop='—'; }
+    // 只有「最大流失点」用警示色。漏斗逐级流失是常态，档档标红等于没有重点，
+    // 反而让人以为整条链路都出了问题
+    const worst = dd>0 && dd===maxDropPct;
+    const barColor = i===names.length-1 ? 'var(--green)' : 'var(--accent)';
+    funnel += '<div class="lvl"><div class="r"><span class="nm">'+nm+'</span><span class="grow"></span>'
+      + '<span class="ct mono">'+c+'</span><span class="dp mono" style="color:'+(worst?'var(--amber)':'var(--faint)')+'">'+drop+'</span></div>'
+      + '<div class="track"><i style="width:'+w+'%;background:'+barColor+';opacity:'+(1-i*0.1).toFixed(2)+';animation-delay:'+(120+i*70)+'ms"></i></div></div>';
+  });
+
+  // 注意用全量会话而非按时间范围过滤：昨天报价、今天还没回的客户才是最该救的，
+  // 按「今日」过滤会把他们从介入队列里藏起来，与左侧「需要跟进」计数也对不上
+  const urgent = S.sessions.filter(isUrgent);
+  // 卡片高度有限只显示 4 条，所以先按紧急度排序（未接管优先 → 金额高优先 → 沉默久优先），
+  // 否则截断可能恰好把最该处理的客户切掉
+  const urgentSorted = urgent.slice().sort((a, b) => {
+    const t = (S.taken[a.id] ? 1 : 0) - (S.taken[b.id] ? 1 : 0);
+    if (t) return t;
+    const amt = s => { const o = sessOrders(s)[0]; return o ? o.totalPrice : 0; };
+    return (amt(b) - amt(a)) || (idleMin(b) - idleMin(a));
+  });
+  const alerts = urgent.length ? urgentSorted.slice(0, 4).map(s =>
+    '<div class="alert" data-id="'+esc(s.id)+'">'+stageBadge(s.stage)
+    + '<div class="grow" style="min-width:0"><div class="nm">'+esc(nameOf(s))+'</div>'
+    + '<div class="rs">'+esc(urgentReason(s))+'</div></div>'
+    + '<span class="id mono">'+fmtIdle(idleMin(s))+'</span><span class="ar">›</span></div>'
+  ).join('') + (urgent.length > 4 ? '<div style="font-size:11.5px;color:var(--faint);padding-top:8px">还有 '+(urgent.length-4)+' 条，见左侧「需要跟进」</div>' : '')
+  : '<div class="empty">当前没有需要介入的会话 👍</div>';
+
+  const insights = (S.aiInsights && S.aiInsights.length) ? S.aiInsights : buildInsights(cnt, names, sess, handoff, paidOrders, gmv);
+  const insHTML = insights.map((t,i)=>'<div class="ins"><span class="n mono">0'+(i+1)+'</span><span class="tx">'+esc(t)+'</span></div>').join('');
+
+  const acc = cssv('--accent');
+  return '<div class="scroll"><div class="pad">'
+    + '<div class="h1row"><div><h1>经营概览</h1><div class="sub">'+rangeNote()+' · 实时推送更新</div></div>'
+    + '<div class="ranges">'+['今日','本周','本月'].map(r=>'<div class="r'+(S.range===r?' on':'')+'" data-range="'+r+'">'+r+'</div>').join('')+'</div></div>'
+    + '<div class="kpis">'+kpis+'</div>'
+    + '<div class="two">'
+    +   '<div class="gmv card"><div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">'
+    +     '<div><div class="lb">成交额</div><div style="margin-top:10px"><span class="big mono">'+yuan(gmv)+'</span></div></div>'
+    +     '<div class="side"><div><div class="n mono">'+paidOrders.length+'</div><div class="l">成交单</div></div>'
+    +       '<div><div class="n mono">'+yuan(aov)+'</div><div class="l">客单价</div></div></div></div>'
+    +     '<svg viewBox="0 0 600 130" preserveAspectRatio="none" style="display:block;width:calc(100% + 36px);height:92px;margin:8px -18px 0">'
+    +       '<defs><linearGradient id="gf" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="'+acc+'" stop-opacity=".26"/><stop offset="100%" stop-color="'+acc+'" stop-opacity="0"/></linearGradient></defs>'
+    +       (spark.fill?'<path d="'+spark.fill+'" fill="url(#gf)"/>':'')
+    +       '<path d="'+spark.line+'" fill="none" stroke="'+acc+'" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/></svg>'
+    +   '</div>'
+    +   '<div class="funnel card"><div class="hd"><span class="t">销售漏斗</span><span class="s">已剔除转人工</span><span class="grow"></span>'
+    +     '<span class="mono" style="font-size:13px">'+Math.round(cnt[4]/top*100)+'%</span><span class="s">整体转化</span></div>'
+    +     funnel + '<div class="handoff-chip">人工接管 '+handoff+' 人 · 单独统计，不计入漏斗</div></div>'
+    + '</div>'
+    + '<div class="two" style="margin-bottom:0">'
+    +   '<div class="alerts card"><div class="hd"><span class="p"></span><span class="t">需要介入</span><span class="c mono">'+urgent.length+'</span></div>'+alerts+'</div>'
+    +   '<div class="insights card"><div class="hd"><span class="t">AI 洞察</span><span class="badge2">'+((S.aiInsights&&S.aiInsights.length)?'LLM 生成':'规则版')+'</span></div><div id="insList">'+insHTML+'</div></div>'
+    + '</div>'
+    + '</div></div>';
+}
+
+function buildInsights(cnt, names, sess, handoff, paidOrders, gmv) {
+  const out = [];
+  let maxDrop = -1, di = -1;
+  for (let i=1;i<cnt.length;i++){ if (cnt[i-1]>0){ const d=(cnt[i-1]-cnt[i])/cnt[i-1]; if (d>maxDrop){maxDrop=d; di=i;} } }
+  if (di>0 && maxDrop>0) out.push(names[di-1]+' → '+names[di]+' 是最大流失点（流失 '+Math.round(maxDrop*100)+'%），建议在'+names[di-1]+'后 5 分钟内追发行程亮点卡片。');
+  else out.push('各阶段转化平稳，暂无显著流失点，保持当前跟进节奏。');
+  const hoGmv = paidOrders.filter(o => (sess.find(s=>s.id===o.sessionId)||{}).handedOver).reduce((a,o)=>a+o.totalPrice,0);
+  if (handoff>0) { const pct = gmv>0 ? Math.round(hoGmv/gmv*100) : 0;
+    out.push('转人工线索共 '+handoff+' 条'+(gmv>0?('，贡献 GMV '+pct+'%'):'')+'，多为高价值 / 投诉客户，建议单独设资深顾问通道。');
+  } else out.push('本范围暂无转人工，AI 独立完成全部接待。');
+  const quoteStuck = sess.filter(s=>['quote','closing'].includes(s.stage) && idleMin(s)>=10).length;
+  const quoteTotal = sess.filter(s=>['quote','closing'].includes(s.stage)).length;
+  if (quoteTotal>0) out.push('报价 / 促成档共 '+quoteTotal+' 条会话，其中 '+quoteStuck+' 条已沉默超 10 分钟，需优先跟进催单。');
+  else out.push('暂无处于报价 / 促成档的会话，重点在前端问需与推荐。');
+  return out.slice(0,3);
+}
+
+function sparkPath(vals, w, h) {
+  const max = Math.max.apply(null, vals) || 1;
+  const pts = vals.map((v,i)=>[i/(vals.length-1)*w, h - v/max*(h-16) - 8]);
+  let d='';
+  pts.forEach((p,i)=>{ if(!i){d+='M'+p[0].toFixed(1)+' '+p[1].toFixed(1); return;} const q=pts[i-1], cx=(q[0]+p[0])/2;
+    d+=' C'+cx.toFixed(1)+' '+q[1].toFixed(1)+','+cx.toFixed(1)+' '+p[1].toFixed(1)+','+p[0].toFixed(1)+' '+p[1].toFixed(1); });
+  return { line:d, fill:d+' L'+w+' '+h+' L0 '+h+' Z' };
+}
+
+function rangeNote() { return ({ '今日':'今日 00:00 起', '本周':'本周一 00:00 起', '本月':'本月 1 日 00:00 起' })[S.range]; }
+
+function detailHTML(s) {
+  const st = STAGES[s.stage], taken = !!S.taken[s.id] || s.handedOver;
+  const idx = STEP_ORDER.indexOf(s.stage), sc = SCORE[s.stage]||0, hot = sc>=70, i = idleMin(s);
+  let steps = '';
+  STEP_ORDER.forEach((k,j) => {
+    const done = idx>=0 && j<idx, now = j===idx, faint = s.stage==='handoff';
+    const bg = done ? 'var(--accent)' : (now ? 'var(--bg)' : 'var(--border2)');
+    const bd = now ? '2px solid var(--accent)' : 'none';
+    const sh = now ? '0 0 0 4px '+alpha('--accent',16) : 'none';
+    steps += '<div class="step" style="flex:'+(j===STEP_ORDER.length-1?'none':'1')+';opacity:'+(faint?'.4':'1')+'">'
+      + '<div class="col"><div class="d" style="background:'+bg+';border:'+bd+';box-shadow:'+sh+'"></div>'
+      + '<div class="lb" style="color:'+(now?'var(--text)':(done?'var(--sub)':'var(--faint)'))+';font-weight:'+(now?600:400)+'">'+STAGES[k].label+'</div></div>'
+      + (j<STEP_ORDER.length-1 ? '<div class="link" style="background:'+(done?'var(--accent)':'var(--border2)')+';opacity:'+(done?'.6':'1')+'"></div>' : '')
+      + '</div>';
+  });
+  // 与 src/adapters/wecom.ts 的 extractCard 同规则：正文里恰好一条站内链接才做卡片
+  const LINK_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g;
+  const cardOf = (text) => {
+    const all = text.match(LINK_RE) || [];
+    if (all.length !== 1) return null;
+    const raw = all[0];
+    const prop = raw.match(/\/proposal\/([A-Za-z0-9_-]+)\/(\d+)/);
+    if (prop) {
+      const r = S.routeMeta[prop[1]];
+      if (!r) { loadRouteMeta(prop[1]); return null; }
+      return { raw, href: raw.replace(/^https?:\/\/[^/]+/, ''), t: r.title+' · 行程方案书',
+               d: r.days+' 天 · '+prop[2]+' 位出行 · '+r.hotelLevel+'｜含逐日行程与费用说明' };
+    }
+    const pay = raw.match(/\/pay\/([A-Za-z0-9_-]+)/);
+    const o = pay && S.orders.find(x => x.id === pay[1]);
+    if (!o) return null;
+    return { raw, href: raw.replace(/^https?:\/\/[^/]+/, ''), t: o.routeTitle+' · '+(o.status==='paid'?'已支付':'待支付'),
+             d: o.travelers+' 位出行 · '+o.departDate+' 出发 · 合计 '+yuan(o.totalPrice) };
+  };
+  // 与 stripLink 同规则：只挖掉 URL 本身，不删整行（链接常和报价写在一起）
+  const stripLink = (body, raw) => body.split('\n')
+    .map(l => l.includes(raw) ? l.replace(raw,'').replace(/[ \t]{2,}/g,' ').replace(/^[\s，,：:、]+|[\s，,：:、]+$/g,'') : l)
+    .filter((l,i,a) => l.trim() || (i>0 && i<a.length-1 && a[i-1].trim() && a[i+1].trim()))
+    .join('\n').replace(/\n{3,}/g,'\n\n').trim();
+
+  // 先转义再把站内路径替换成链接，顺序不能反——反了等于把消息内容当 HTML 执行
+  const linkify = (escaped) => escaped.replace(
+    /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g,
+    (u) => '<a class="slink" target="_blank" rel="noopener" href="' + u.replace(/^https?:\/\/[^/]+/, '') + '">' + u + '</a>');
+
+  let msgs = (s.messages||[]).map((m,j) => {
+    if (m.role==='system') return '<div class="m" style="justify-content:center"><div class="bub" style="background:var(--hover);color:var(--sub);border-radius:20px;padding:3px 11px;font-size:10.5px">'+esc(m.content)+'</div></div>';
+    const cust = m.role==='customer';
+    // 只有企微渠道才发卡片；模拟器是把链接直接放正文里的，照实显示
+    const card = (!cust && s.channel === 'wecom') ? cardOf(m.content) : null;
+    const body = card ? stripLink(m.content, card.raw) : m.content;
+    return '<div class="m '+(cust?'cust':'agent')+'"><div class="wrap" style="animation-delay:'+(j*30)+'ms">'
+      + '<div class="who">'+(cust?'客户':'AI 顾问')+'</div>'
+      + (body ? '<div class="bub">'+linkify(esc(body))+'</div>' : '')
+      + (card ? '<a class="lcard" target="_blank" rel="noopener" href="'+esc(card.href)+'">'
+                + '<div class="tx"><div class="t">'+esc(card.t)+'</div>'
+                + '<div class="d">'+esc(card.d)+'</div>'
+                + '<div class="badge2">微信中以链接卡片发送 · 点击查看客户所见</div></div>'
+                + '<img src="/share-cover.png" alt=""></a>' : '')
+      + '<div class="at mono">'+fmtTime(m.at)+'</div></div></div>';
+  }).join('');
+  const lm = (s.messages||[])[(s.messages||[]).length-1];
+  if (lm && lm.role==='customer' && !taken) msgs += '<div class="typing"><div class="dots"><i></i><i style="animation-delay:.15s"></i><i style="animation-delay:.3s"></i></div><span class="lb">AI 正在生成回复</span></div>';
+
+  const os = sessOrders(s);
+  const P = [['客群',s.profile.segment],['目的地',s.profile.destinationInterest],['人数',s.profile.travelers],['日期',s.profile.dates],['预算',s.profile.budget]];
+  const profile = P.map(([k,v]) => '<div class="prow"><span class="k">'+k+'</span><span class="v" style="color:'+(v?'var(--text)':'var(--faint)')+';font-weight:'+(v?500:400)+'">'+esc(v||'未获取')+'</span></div>').join('');
+  const notes = (s.profile.notes && s.profile.notes.length) ? s.profile.notes : [s.profile.segment, s.profile.budget && ('预算 '+s.profile.budget), s.profile.travelers, s.profile.destinationInterest].filter(Boolean);
+  const chips = notes.map(n=>'<span class="chip">'+esc(n)+'</span>').join('');
+  const orders = os.length ? os.map(o => '<div class="ord"><div class="t"><span style="font-size:12.5px;font-weight:500">'+esc(o.routeTitle)+'</span>'
+    + '<span class="badge" style="color:'+(o.status==='paid'?'var(--green)':'var(--amber)')+';background:'+(o.status==='paid'?alpha('--green',14):alpha('--amber',14))+'">'+(o.status==='paid'?'已支付':'待支付')+'</span></div>'
+    + '<div class="meta"><span style="font-size:11.5px;color:var(--sub)">'+o.travelers+' 人 · '+esc(o.departDate)+' 出发</span><span class="mono" style="font-size:14px">'+yuan(o.totalPrice)+'</span></div></div>').join('')
+    : '<div class="empty">暂无订单</div>';
+
+  const tag = hot ? '高意向' : (sc>=40?'培育中':'早期');
+  const sugKey = s.id + ':' + ((s.messages || []).length);
+  const sug = S.sugText[sugKey] || suggestionFor(s.stage);
+  const sugIsAI = !!S.sugText[sugKey];
+
+  return '<div class="dhead"><div class="back" id="back">‹</div>'
+    + '<div style="display:flex;align-items:center;gap:9px;min-width:0"><span class="nm">'+esc(nameOf(s))+'</span>'+stageBadge(s.stage)+'<span class="id mono">'+esc(s.id)+'</span></div>'
+    + '<div class="grow"></div><span class="idle mono" style="color:'+(isUrgent(s)?'var(--red)':'var(--sub)')+'">'+fmtIdle(i)+'未回应</span>'
+    + '<button class="takeover" id="takeover" style="color:'+(taken?'var(--sub)':'#fff')+';background:'+(taken?'var(--hover)':'var(--accent-fill)')+';cursor:'+(taken?'default':'pointer')+'">'+(taken?'已接管':'接管会话')+'</button>'
+    + (taken ? '<button class="takeover" id="resume" style="color:var(--accent-tx);background:var(--accent-soft);border:1px solid var(--accent-line)">交还 AI</button>' : '')
+    + '</div>'
+    + '<div class="split"><div class="conv">'
+    +   '<div class="stepper">'+steps+'</div>'
+    +   '<div class="msgs">'+msgs+'</div>'
+    +   (taken ? '<div class="replybar"><textarea id="reply" rows="2" placeholder="以顾问身份回复客户…  ⏎ 发送">'+esc(draftOf(s.id))+'</textarea><button id="send">发送</button></div>' : '')
+    + '</div>'
+    + '<div class="rightbar">'
+    +   '<div class="rc"><div style="display:flex;align-items:center;justify-content:space-between"><span class="cap">成交概率</span>'
+    +     '<span class="badge" style="color:'+(hot?'var(--green)':'var(--sub)')+';background:'+(hot?alpha('--green',12):'var(--hover)')+'">'+tag+'</span></div>'
+    +     '<div style="display:flex;align-items:baseline;gap:8px;margin-top:8px"><span class="score mono">'+sc+'%</span><span style="font-size:12px;color:var(--sub)">'+scoreNote(s.stage)+'</span></div>'
+    +     '<div class="track"><i style="width:'+sc+'%;background:'+(hot?'var(--green)':'var(--accent)')+'"></i></div></div>'
+    +   '<div class="rc"><div class="cap" style="margin-bottom:9px">客户画像</div>'+profile+'<div class="chips">'+chips+'</div></div>'
+    +   '<div class="rc"><div class="cap" style="margin-bottom:9px">订单</div>'+orders+'</div>'
+    +   '<div class="sug"><div class="hd"><svg class="ic" viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>下一步建议<span id="sugTag" style="font-size:10px;color:var(--faint);font-weight:400;margin-left:auto">'+(sugIsAI?'AI 定制':'生成中…')+'</span></div>'
+    +     '<div class="tx" id="sugTx">'+esc(sug)+'</div>'
+    +     (taken ? '<button id="useSug">AI 代拟回复并填入</button>'
+                 : '<button disabled style="opacity:.45;cursor:not-allowed" title="接管会话后，AI 可为你起草一条直接发给客户的回复">接管后可由 AI 代拟回复</button>')+'</div>'
+    + '</div></div>';
+}
+
+function fmtTime(ms) { const d = new Date(ms); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+
+function wire() {
+  // 会话行与介入队列的点击走事件委托（见下方 delegate）——它们会被 renderList()
+  // 单独重画（搜索时就是），逐个绑 onclick 会在重画后全部失效，点了没反应。
+  document.querySelectorAll('.ranges .r').forEach(el => el.onclick = () => { S.range = el.dataset.range; render(); });
+  const back = document.getElementById('back'); if (back) back.onclick = () => { S.selected = null; render(); };
+  // 接管是写操作：未登录先弹登录框，登录成功后这个动作会被原样重放。
+  const to = document.getElementById('takeover'); if (to) to.onclick = () => requireAuth(async () => {
+    const s = S.sessions.find(x=>x.id===S.selected); if (!s || s.handedOver || S.taken[s.id]) return;
+    S.taken[s.id] = true; render();
+    // 接管失败必须回滚并告知：否则 UI 显示「已接管」，服务端 AI 其实还在自动回复客户
+    try {
+      const r = await api('/api/sessions/'+encodeURIComponent(s.id)+'/handoff', {method:'POST'});
+      if (r.status === 401) { delete S.taken[s.id]; render(); onAuthLost(); return; }
+      if (!r.ok) throw new Error('http '+r.status);
+    } catch(e){
+      delete S.taken[s.id]; render();
+      alert('接管失败：服务端未响应，AI 仍在自动应答。请刷新后重试。');
+      return;
+    }
+    load();
+  });
+  const rep = document.getElementById('reply'); if (rep) {
+    rep.oninput = e => setDraft(S.selected, e.target.value);
+    rep.onkeydown = e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } };
+  }
+  const send = document.getElementById('send'); if (send) send.onclick = doSend;
+  // 「AI 代拟」只在接管后可用（接管是显式动作，不能作为点按钮的副作用静默触发）。
+  // 注意填入的是 /draft 起草的客户可读正文——上方的「下一步建议」是给顾问看的教练话术，
+  // 直接发给客户会非常尴尬，所以两者分开。
+  const us = document.getElementById('useSug'); if (us) us.onclick = () => requireAuth(async () => {
+    const s = S.sessions.find(x=>x.id===S.selected); if (!s || us.disabled) return;
+    us.disabled = true; us.textContent = 'AI 起草中…';
+    let draft = '';
+    try {
+      const r = await api('/api/sessions/'+encodeURIComponent(s.id)+'/draft');
+      if (r.status === 401) { us.disabled = false; us.textContent = 'AI 代拟回复并填入'; onAuthLost(); return; }
+      const d = await r.json(); draft = (d.draft||'').trim();
+    } catch(e) {}
+    us.disabled = false;
+    us.textContent = draft ? 'AI 代拟回复并填入' : '起草失败，请手动输入';
+    if (!draft) { setTimeout(() => { us.textContent = 'AI 代拟回复并填入'; }, 2000); return; }
+    if (S.selected !== s.id) return; // 起草期间用户切走了，别把草稿塞进别人的输入框
+    setDraft(s.id, draft);
+    const t = document.getElementById('reply'); if (t){ t.value = draft; t.focus(); }
+  });
+  // 交还 AI：解除接管，AI 恢复自动应答
+  const rs = document.getElementById('resume'); if (rs) rs.onclick = () => requireAuth(async () => {
+    const s = S.sessions.find(x=>x.id===S.selected); if (!s) return;
+    try {
+      const r = await api('/api/sessions/'+encodeURIComponent(s.id)+'/resume', {method:'POST'});
+      if (r.status === 401) { onAuthLost(); return; }
+      if (!r.ok) throw new Error('http '+r.status);
+      delete S.taken[s.id];
+    } catch(e){ alert('交还失败：服务端未响应，会话仍处于人工接管状态。'); return; }
+    await load(); render();
+  });
+}
+function doSend() { requireAuth(sendNow); }
+async function sendNow() {
+  const id = S.selected; const txt = draftOf(id).trim(); if (!txt || !id) return;
+  setDraft(id, '');
+  const t = document.getElementById('reply'); if (t) t.value = '';
+  try {
+    const r = await api('/api/sessions/'+encodeURIComponent(id)+'/reply', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text:txt})});
+    // 401 时同样把原文放回去：登录失效不该顺带吃掉顾问写好的消息
+    if (r.status === 401) { setDraft(id, txt); if (t) t.value = txt; onAuthLost(); return; }
+    const d = await r.json().catch(()=>null);
+    // 发送失败时把原文放回输入框，别让顾问白写一遍
+    if (!r.ok || (d && d.ok === false)) { setDraft(id, txt); if (t) t.value = txt; alert((d && d.error) || '发送失败：消息未送达客户'); }
+  } catch(e) { setDraft(id, txt); if (t) t.value = txt; alert('发送失败：网络异常，请重试'); }
+  load();
+}
+
+// 事件委托：绑在永不重建的容器上，列表怎么重画（搜索过滤、SSE 刷新）点击都还能用。
+// 点已打开的会话不重绘，否则会白白清掉正在写的回复。
+document.addEventListener('click', e => {
+  const hit = e.target.closest('.row, .alert');
+  if (!hit || !hit.dataset.id) return;
+  if (hit.dataset.id === S.selected) return;
+  S.selected = hit.dataset.id;
+  render();
+});
+
+document.addEventListener('click', e => {
+  const tb = e.target.closest('.views .tb');
+  if (!tb) return;
+  S.tab = tb.dataset.tab;
+  // 从搜索结果里点 tab = 想回到该视图，顺手清掉搜索词，否则点了没反应
+  if (S.query) { S.query = ''; qInput.value = ''; syncClear(); }
+  renderList();
+});
+
+const qInput = document.getElementById('q');
+const qClr = document.getElementById('qclr');
+function syncClear() { qClr.classList.toggle('show', !!qInput.value); }
+function clearSearch() {
+  qInput.value = ''; S.query = ''; syncClear(); renderList(); qInput.focus();
+}
+qInput.addEventListener('input', e => { S.query = e.target.value; syncClear(); renderList(); });
+qInput.addEventListener('keydown', e => { if (e.key === 'Escape') clearSearch(); });
+qClr.addEventListener('click', clearSearch);
+document.getElementById('home').addEventListener('click', () => { S.selected = null; S.query = ''; document.getElementById('q').value = ''; render(); });
+
+function setTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('adm-theme', t);
+  // 图标路径按 24×24 坐标画，必须带 viewBox；否则在 16px 画布上会被裁掉大半
+  const sun = '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+  const moon = '<svg class="ic" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>';
+  document.getElementById('themeBtn').innerHTML = t==='dark' ? sun : moon;
+  render();
+}
+document.getElementById('themeBtn').onclick = () => setTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark');
+setTheme(localStorage.getItem('adm-theme') || 'dark');
+
+// 实时：SSE 数据变更即推（服务端 storeEvents），EventSource 自动重连；30s 兜底轮询
+syncMode();
+load();
+const liveDot = document.querySelector('.live');
+try {
+  const es = new EventSource('/api/admin/stream');
+  es.addEventListener('change', () => load());
+  // 指示灯反映真实连接状态：绿=推送通着，红=断了（此时只剩 30s 兜底轮询）。
+  // 恒亮的指示灯没有信息量，断线时还在骗人说「实时」。
+  es.onopen = () => { liveDot.classList.remove('off'); document.getElementById('liveTxt').textContent = '实时'; };
+  es.onerror = () => { liveDot.classList.add('off'); document.getElementById('liveTxt').textContent = '连接中'; };
+} catch (e) { liveDot.classList.add('off'); document.getElementById('liveTxt').textContent = '轮询'; }
+setInterval(load, 30000);
+</script>
+</body>
+</html>
