@@ -59,6 +59,13 @@ export interface Session {
     total?: number;
     departDate?: string;
   };
+  /**
+   * 被转人工「吸」走之前的销售阶段，交还 AI 时原样还原。
+   * 没有它就只能从 orderIds/lastQuote 反推，而反推对「阶段已经推进、但推进过程
+   * 不是本系统记录的」会话必然失真——比如种子演示会话 stage=quote 却没有 lastQuote，
+   * 一次「接管→交还」就把客户从报价打回问需，漏斗数字跟着倒退且不可逆。
+   */
+  stageBeforeHandoff?: SalesStage;
 }
 
 /** data/routes.json 的条目结构 */

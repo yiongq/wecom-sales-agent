@@ -313,6 +313,9 @@ app.get('/api/sessions/:id', sessionReadAuth, (c) => {
 app.post('/api/sessions/:id/handoff', sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
+  // 记下被「吸」走前的阶段，交还时才还得回去。重复接管不覆盖，否则第二次接管
+  // 会把已经变成 handoff 的值存进去，交还后原阶段永久丢失。
+  if (s.stage !== 'handoff') s.stageBeforeHandoff = s.stage;
   s.handedOver = true;
   s.stage = 'handoff';
   s.updatedAt = Date.now();
@@ -326,12 +329,17 @@ app.post('/api/sessions/:id/resume', sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   s.handedOver = false;
-  // 阶段按事实回推：有已支付订单=paid，有订单=closing，报过价=quote，否则回问需。
-  // 只在原阶段是 handoff（被转人工"吸"走）时才回推——否则会把 closing 的客户
+  // 只在原阶段是 handoff（被转人工"吸"走）时才还原——否则会把 closing 的客户
   // 拉回 quote，成交概率、漏斗计数跟着倒退，且已落盘不可逆。
   if (s.stage === 'handoff') {
+    // 优先用接管前记下的真实阶段。反推只是没有该记录时的兜底：它对「阶段已推进、
+    // 但推进过程不由本系统记录」的会话必然失真（种子演示会话 stage=quote 却无
+    // lastQuote，反推会一路掉到 discovery——现场演一次接管就把客户打回问需）。
     const paid = s.orderIds.map((id) => getOrder(id)).some((o) => o?.status === 'paid');
-    s.stage = paid ? 'paid' : s.orderIds.length ? 'closing' : s.lastQuote ? 'quote' : 'discovery';
+    const inferred = paid ? 'paid' : s.orderIds.length ? 'closing' : s.lastQuote ? 'quote' : 'discovery';
+    // 已支付是既成事实，优先级高于记录值（接管期间完成支付的情况）
+    s.stage = paid ? 'paid' : (s.stageBeforeHandoff ?? inferred);
+    delete s.stageBeforeHandoff;
   }
   s.messages.push({ role: 'system', content: '顾问已将会话交还 AI，自动应答恢复', at: Date.now() });
   s.updatedAt = Date.now();
