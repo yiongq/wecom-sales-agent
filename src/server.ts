@@ -187,13 +187,47 @@ const lookupLimit: MiddlewareHandler = async (c, next) => {
 
 // 全站请求体上限。验签/限流都发生在读 body 之后，没有上限时几条慢速大 body 请求
 // 就能把容器内存吃满（docker run 未设 -m）。企微回调和聊天请求都只有几 KB 量级。
-// 注：只看 Content-Length，挡不住 chunked 编码——那一层交给 Caddy 的 request_body。
 const MAX_BODY_BYTES = Math.max(1024, numEnv('MAX_BODY_BYTES', 64 * 1024));
 app.use('/*', async (c, next) => {
-  const len = Number(c.req.header('content-length') ?? 0);
-  if (len > MAX_BODY_BYTES) return c.text('payload too large', 413);
+  const declared = c.req.header('content-length');
+  if (declared !== undefined && Number(declared) > MAX_BODY_BYTES) {
+    return c.text('payload too large', 413);
+  }
+  // 缺 Content-Length 就是 chunked 编码，上面那行按「声明值」判断对它完全无效：
+  // 实测 8MB / 32MB 的 chunked body 能直达应用并被整个读进内存。此前把这层
+  // 兜底口头委托给了 Caddy 的 request_body，但线上并没有配，于是两层皆空。
+  // 这里的客户端只有企微服务器和浏览器 fetch，两者必然带 Content-Length，
+  // 所以直接拒掉「有 body 却不声明长度」的请求——比事后截断简单，也更难写错。
+  if (declared === undefined && c.req.raw.body !== null) {
+    return c.text('length required', 411);
+  }
   return next();
 });
+
+/**
+ * 从 XML 里取第一个 `<tag>` 的文本（自动剥 CDATA），索引扫描而非正则。
+ *
+ * 原先用 `/<Tag><!\[CDATA\[([\s\S]*?)\]\]><\/Tag>/` 这种「惰性通配 + 多字符终止符」的写法，
+ * 遇到「大量重复开标签且永不闭合」的构造输入会二次回溯。而它跑在 /wecom/callback 的
+ * **验签之前**、作用于未鉴权可达的完整 body 上——实测一条 4MB 构造请求就让整站
+ * 不可用约两分钟（Node 单线程，事件循环被同步正则占死，客户端断开也不会停）。
+ * 索引扫描是线性的，且这里本来就只需要第一个匹配。
+ */
+function extractTag(xml: string, tag: string): string | undefined {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const s = xml.indexOf(open);
+  if (s < 0) return undefined;
+  const e = xml.indexOf(close, s + open.length);
+  if (e < 0) return undefined;
+  const inner = xml.slice(s + open.length, e);
+  const CDATA_OPEN = '<![CDATA[';
+  const CDATA_CLOSE = ']]>';
+  if (inner.startsWith(CDATA_OPEN) && inner.endsWith(CDATA_CLOSE)) {
+    return inner.slice(CDATA_OPEN.length, inner.length - CDATA_CLOSE.length);
+  }
+  return inner;
+}
 
 app.post('/api/chat', async (c) => {
   if (chatRateLimited(clientKey(c))) return c.json({ error: '发送太频繁了，请稍后再试' }, 429);
@@ -499,7 +533,7 @@ app.post('/wecom/callback', async (c) => {
   }
   const { msg_signature: sig, timestamp, nonce } = c.req.query();
   const raw = await c.req.text();
-  const encrypt = raw.match(/<Encrypt><!\[CDATA\[([\s\S]*?)\]\]><\/Encrypt>/)?.[1] ?? raw.match(/<Encrypt>([\s\S]*?)<\/Encrypt>/)?.[1];
+  const encrypt = extractTag(raw, 'Encrypt');
   if (!sig || !timestamp || !nonce || !encrypt) {
     console.error('[wecom] 回调参数不完整（缺 msg_signature/timestamp/nonce/Encrypt），已丢弃');
     return c.text('success');
@@ -515,7 +549,7 @@ app.post('/wecom/callback', async (c) => {
     const { msg, receiveId } = decryptWecom(aesKey, encrypt);
     if (!receiveIdOk(receiveId)) return c.text('success');
     // kf 事件明文里带 <Token>，用它调 sync_msg 才不限频
-    const syncToken = msg.match(/<Token><!\[CDATA\[([\s\S]*?)\]\]><\/Token>/)?.[1] ?? msg.match(/<Token>([\s\S]*?)<\/Token>/)?.[1];
+    const syncToken = extractTag(msg, 'Token');
     console.log(`[wecom] 收到回调事件${syncToken ? '（含 token，立即拉取）' : '（无 token）'}`);
     if (syncToken) void syncFromCallback(syncToken);
   } catch (err) {
