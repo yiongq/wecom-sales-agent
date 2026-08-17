@@ -297,10 +297,16 @@ function customHandoffReply(customerText: string): string {
 }
 
 /** 承诺了链接却没有链接：这只是模型少调了一次工具，不是对客户许了做不到的承诺，
- *  **不该永久转人工**。回一句不提链接的话，让对话继续走。 */
-const DANGLING_LINK_REPLY =
-  '不好意思，刚才那条没把方案链接带出来。我这就重新生成一份发您——\n' +
-  '顺便确认下出发日期定了吗？定了我一并把准确报价算进去。';
+ *  **不该永久转人工**。回一句不提链接的话，让对话继续走。
+ *
+ *  出发日期已经在画像里时不能再问一遍：客户上一句刚说完「12月10号」，兜底话术却回
+ *  「确认下出发日期定了吗」，读起来就是没在听人说话——而这恰恰是演示里最容易被抓住的破绽。 */
+function danglingLinkReply(profile: CustomerProfile): string {
+  const head = '不好意思，刚才那条没把方案链接带出来。我这就重新生成一份发您——\n';
+  return profile.dates
+    ? `${head}还是按您说的 ${profile.dates} 出发算，稍等一下。`
+    : `${head}顺便确认下出发日期定了吗？定了我一并把准确报价算进去。`;
+}
 
 // 客户明写了一个过去的完整日期（「2020年1月1号出发」）。模型会自作主张把年份滚到未来
 // 直接建单——等于替客户改了出行时间还照常收钱。这类改动只能由客户确认，不能由模型代劳。
@@ -681,7 +687,16 @@ async function handleMessageInner(
   // 承诺改行程：系统真的做不到，转人工是对的（真人顾问能重排）
   if (CUSTOM_PROMISE.test(visible)) {
     console.error(`[engine] ⚠️ 拦截空头承诺·承诺重排行程（会话 ${session.id}）：${visible.slice(0, 80)}`);
-    const reply = customHandoffReply(text);
+    // 只摘掉许下空头承诺的那几句，其余照常发给客户。客户常在同一条消息里问两件事
+    // （「能改成 5 天吗」+「能保证看到极光吗」），整条替换会把第二个问题的回答一起吞掉，
+    // 客户看到的是答非所问。转人工仍然立刻执行——系统确实改不了行程，这条不能松。
+    // 一并滤掉承诺链接的句子：这里不会再补链接，留着就是第二个空头承诺。
+    const kept = visible
+      .split(/(?<=[。！？\n])/)
+      .filter((s) => s.trim() && !CUSTOM_PROMISE.test(s) && !LINK_PROMISE.test(s))
+      .join('')
+      .trim();
+    const reply = kept ? `${kept}\n\n${customHandoffReply(text)}` : customHandoffReply(text);
     session.handedOver = true;
     session.stage = 'handoff';
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
@@ -692,7 +707,7 @@ async function handleMessageInner(
   // 换一句不提链接的话继续对话即可，不转人工——否则一次工具漏调就吃掉一条线索
   if (LINK_PROMISE.test(visible) && !hasLink) {
     console.warn(`[engine] ⚠️ 回复承诺了链接但正文无链接，已改写（会话 ${session.id}）：${visible.slice(0, 60)}`);
-    visible = DANGLING_LINK_REPLY;
+    visible = danglingLinkReply(session.profile);
   }
 
   // 身份诚实安全网：客户直接问了，但模型的回复里没承认 —— 补一句在最前面。

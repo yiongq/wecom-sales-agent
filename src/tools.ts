@@ -195,6 +195,14 @@ function summarize(r: Route) {
   };
 }
 
+/**
+ * 预算滤空后放宽的倍数。1.5 是「值得开口谈」与「离谱」之间的分界：
+ * 客户说两万、给他看 26,800（+34%）是一次正常的降档/加预算对话；
+ * 给他看 68,800（+244%）只会让人觉得没在听。放宽后仍为空时不再兜底，
+ * 直接按价格升序把最便宜的几条交给模型去如实解释。
+ */
+const BUDGET_RELAX = 1.5;
+
 export interface SearchRoutesArgs {
   query?: string;
   destination?: string;
@@ -254,14 +262,33 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
   }
   // 非银发客群只作为排序偏好，并入下面的最终排序（单独排会被最终排序冲掉）
   const preferSeg = args.segment && args.segment !== '银发' ? args.segment : null;
+  // 预算是**软约束**，不能像银发那样硬过滤。硬过滤在「符合条件的线路全都超预算」时
+  // 返回空列表，模型没料可用，实测会退回复述自己上一轮的话——对客户说出「西藏线只有
+  // 一条、人均 6 万以上」，而库里明明躺着 26,800 的那条（只超 34%）。
+  // 手里有货却告诉客户「没有适合你的」，是销售最坏的失败模式：线索当场就死，
+  // 而且客户不会回来核对。所以滤空了就放宽重来，并给结果打上 overBudget 标记，
+  // 让模型照实讲超了多少——不藏产品，把差价摆在明面上谈（SOP 里本来就有降档话术）。
+  let overBudget = false;
   if (args.maxBudgetPerPerson) {
-    list = list.filter((r) => r.priceFrom <= args.maxBudgetPerPerson!);
+    const cap = args.maxBudgetPerPerson;
+    const within = list.filter((r) => r.priceFrom <= cap);
+    if (within.length) {
+      list = within;
+    } else {
+      overBudget = true;
+      const relaxed = list.filter((r) => r.priceFrom <= cap * BUDGET_RELAX);
+      // 放宽后仍为空就保留原列表：下面会按价格升序取前 3，
+      // 客户至少能看到最接近他预算的几条，而不是一句「没有」。
+      if (relaxed.length) list = relaxed;
+    }
   }
   if (args.days) {
     list = list.filter((r) => Math.abs(r.days - args.days!) <= 2);
   }
 
-  const rank = (r: Route): number => (order ? (order.get(r.id) ?? 99) : r.priceFrom);
+  // 超预算时一律按价格升序：语义召回的顺序是「最贴需求」，但客户已经明说了预算，
+  // 此刻最该先看到的是「最接近他出得起的价」那几条，而不是最贴描述的那几条。
+  const rank = (r: Route): number => (order && !overBudget ? (order.get(r.id) ?? 99) : r.priceFrom);
   const sorted = [...list].sort((a, b) => {
     if (preferSeg) {
       // 匹配客群的排前面，但不排除不匹配的——蜜月客户去珠峰线没问题，
@@ -272,6 +299,15 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
     return rank(a) - rank(b);
   });
   const out = sorted.slice(0, 3).map(summarize);
+  if (overBudget && args.maxBudgetPerPerson) {
+    for (const r of out) {
+      const over = Math.round(((r.priceFrom - args.maxBudgetPerPerson) / args.maxBudgetPerPerson) * 100);
+      (r as Record<string, unknown>).overBudget =
+        `这条每人 ${r.priceFrom} 元，超出客户说的每人 ${args.maxBudgetPerPerson} 元约 ${over}%。` +
+        '**不要说「没有合适的线路」**——库里就是这些，超了就照实讲超多少、这个差价买到了什么，' +
+        '再问客户是愿意加预算，还是要换更短的天数 / 更低的酒店档次。';
+    }
+  }
   if (segmentMismatch) {
     for (const r of out) {
       (r as Record<string, unknown>).segmentMismatch =
