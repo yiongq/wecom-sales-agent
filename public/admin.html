@@ -54,8 +54,11 @@
   header { flex:none; height:54px; display:flex; align-items:center; gap:18px; padding:0 16px; border-bottom:1px solid var(--border); background:var(--panel); }
   /* 演示模式徽标 + 登录框。页面本身免密可看，凭据只用来换「真实客户会话 + 写权限」。 */
   .mode { flex:none; display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px;
-          border:1px solid var(--border2); background:var(--card); font-size:11.5px; color:var(--text2); cursor:pointer; transition:.15s; }
+          border:1px solid var(--border2); background:var(--card); font:inherit; font-size:11.5px; color:var(--text2); cursor:pointer; transition:.15s; }
   .mode:hover { border-color:var(--accent-line); color:var(--accent-tx); }
+  .mode:focus-visible { outline:2px solid var(--accent-line); outline-offset:2px; }
+  /* 只写「演示模式」时没人看得出这是登录入口，动作单独写出来 */
+  .mode b { font-weight:600; color:var(--accent-tx); padding-left:8px; border-left:1px solid var(--border2); }
   .mode i { width:6px; height:6px; border-radius:50%; background:var(--amber); flex:none; }
   .mode.on i { background:var(--green); }
   .mask { position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(3px);
@@ -78,7 +81,7 @@
   .brand .mark { width:26px; height:26px; display:flex; align-items:center; justify-content:center; border-radius:8px; font-size:13px; font-weight:700; color:#1A1408; background:var(--gold); }
   .brand .name { font-size:13.5px; font-weight:600; letter-spacing:.2px; }
   .grow { flex:1; }
-  .live { display:inline-flex; align-items:center; gap:7px; font-size:11px; letter-spacing:.5px; color:var(--sub); }
+  .live { flex:none; white-space:nowrap; display:inline-flex; align-items:center; gap:7px; font-size:11px; letter-spacing:.5px; color:var(--sub); }
   .live i { width:6px; height:6px; border-radius:50%; background:var(--green); animation:ping 2s ease-out infinite; }
   /* 断线时才用红色——红是告警语义，连接正常时用它会让人以为出故障了 */
   .live.off i { background:var(--red); animation:none; }
@@ -272,6 +275,8 @@
     /* iOS 地址栏收放时 100vh 比可视区高，回复框会被压到屏幕外 */
     .app { height:100vh; height:100dvh; }
     header { gap:10px; padding:0 12px; }
+    /* 手机顶栏放不下「实时」二字，只留状态点（断线变红、悬停有说明），把位置让给登录按钮 */
+    .live span { display:none; }
     .mnav { display:flex; flex:none; gap:2px; margin:8px 12px 0; padding:3px; background:var(--hover); border:1px solid var(--border); border-radius:9px; }
     .mnav button { flex:1; border:none; background:none; font:inherit; font-size:12.5px; color:var(--sub); padding:6px; border-radius:7px; cursor:pointer; }
     .mnav button.on { color:var(--text); background:var(--border2); font-weight:600; }
@@ -304,7 +309,7 @@
     <div class="brand" id="home" style="cursor:pointer" title="回到概览"><div class="mark">云</div><div class="name">云途 · 销售作战室</div></div>
     <div class="grow"></div>
     <div class="live" title="数据推送连接状态"><i></i><span id="liveTxt">实时</span></div>
-    <div class="mode" id="modeBtn" title="演示模式：只显示演示会话和你自己在网页聊天里的会话。点击登录可查看真实客户会话并接管"><i></i><span id="modeTxt">演示模式</span></div>
+    <button type="button" class="mode" id="modeBtn" title="演示模式：只显示演示会话和你自己在网页聊天里的会话。点击登录可查看真实客户会话并接管"><i></i><span id="modeTxt">演示模式</span><b id="modeAct">登录</b></button>
     <button class="iconbtn" id="themeBtn" title="切换主题"></button>
   </header>
   <!-- 只在手机上显示，见样式里的「手机端」一节 -->
@@ -389,6 +394,7 @@ function syncMode() {
   const b = document.getElementById('modeBtn');
   b.classList.toggle('on', AUTH.on);
   document.getElementById('modeTxt').textContent = AUTH.on ? '顾问已登录' : '演示模式';
+  document.getElementById('modeAct').textContent = AUTH.on ? '退出' : '登录';
   b.title = AUTH.on ? '点击退出登录，回到演示模式' : '演示模式：只显示演示会话和你自己在网页聊天里的会话。点击登录可查看真实客户会话并接管';
 }
 function logout() { AUTH.token = ''; syncMode(); S.selected = null; load(); }
