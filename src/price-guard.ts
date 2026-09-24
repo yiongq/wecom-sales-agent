@@ -488,16 +488,24 @@ function parseRangeEndpoints(text: string): number[] {
 }
 
 /**
- * 客户自己说过的金额：当前这句 + 全部历史消息，「¥/元」「万」、中文数字和区间几种写法都算。
+ * 一句客户原话里说到的钱：「¥/元」「万」、中文数字和区间几种写法都算；rangeEnds 单列区间端点。
+ * 引擎判断「客户到底说没说过预算、说的是多少」（见 engine.ts 的 statedBudgetCap）用的也是这一套——
+ * 两边口径一旦不一致，护栏放行的「客户说过的数」和引擎认的「客户预算」就会对不上。
+ */
+export function spokenMoney(text: string): { amounts: number[]; rangeEnds: number[] } {
+  const t = normalizeMoneyText(text);
+  const rangeEnds = parseRangeEndpoints(t);
+  return { amounts: [...parseAmounts(t), ...parseCnAmounts(t), ...rangeEnds], rangeEnds };
+}
+
+/**
+ * 客户自己说过的金额：当前这句 + 全部历史消息。
  * 此前「万」换算只对当前这句做，客户首轮说「预算每人3万」、几轮后模型复述
  * 「我给您控制在 30,000元 以内」会被判成编价，客户看到 AI 突然不认自己的预算。
  */
 function customerAmounts(session: Session, customerText: string): number[] {
-  const texts = [
-    customerText,
-    ...(session.messages ?? []).filter((m) => m.role === 'customer').map((m) => m.content),
-  ].map(normalizeMoneyText);
-  return texts.flatMap((t) => [...parseAmounts(t), ...parseCnAmounts(t), ...parseRangeEndpoints(t)]);
+  const texts = [customerText, ...(session.messages ?? []).filter((m) => m.role === 'customer').map((m) => m.content)];
+  return texts.flatMap((t) => spokenMoney(t).amounts);
 }
 
 interface Allowed {

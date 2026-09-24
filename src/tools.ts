@@ -32,10 +32,10 @@ export const toolDefs: ToolDef[] = [
             enum: ['家庭', '亲子', '蜜月', '商务', '银发'],
             description:
               '客群。客户透露了同行人构成就一定要带上——带孩子=亲子、带爸妈/长辈=银发、' +
-              '蜜月/新婚=蜜月、公司团建或接待客户=商务、多代同行=家庭。' +
+              '蜜月/新婚=蜜月、公司团建或接待客户=商务、多代同行=家庭。客户没提就不传，别按目的地或人数去猜。' +
               '银发会自动排除高海拔和长途颠簸的线路，亲子会优先有孩子玩点的线路。',
           },
-          maxBudgetPerPerson: { type: 'number', description: '每人预算上限（元）' },
+          maxBudgetPerPerson: { type: 'number', description: '每人预算上限（元），只填客户自己说过的数；客户没说预算就不传' },
           days: { type: 'number', description: '期望行程天数（±2 天内算匹配）' },
         },
       },
@@ -78,7 +78,7 @@ export const toolDefs: ToolDef[] = [
         properties: {
           routeId: { type: 'string' },
           travelers: { type: 'number', description: '出行人数' },
-          departDate: { type: 'string', description: '出发日期 YYYY-MM-DD，可选' },
+          departDate: { type: 'string', description: '出发日期 YYYY-MM-DD。客户说过出发时间（含国庆、五一这类节假日）就带上，旺季价按它算' },
         },
         required: ['routeId', 'travelers'],
       },
@@ -93,7 +93,8 @@ export const toolDefs: ToolDef[] = [
         '客户想看详细安排时调用——**包括他第一句话就要「详细方案/详细行程」的情况**：' +
         '先用 search_routes 拿到 routeId，同一轮接着调本工具，不必等到下一轮；' +
         '会话状态里「最近查到的线路」已列出这条线的 id 时直接用，不必重查。' +
-        'travelers 用客户说过的人数（「两个人」=2）；departDate 可选，客户没说就不传，别为了凑参数专门去问。',
+        'travelers 用客户说过的人数（「两个人」=2）；departDate 客户说过出发时间（含国庆、五一这类节假日）就带上，' +
+        '没说就不传，别为了凑参数专门去问。',
       parameters: {
         type: 'object',
         properties: {
@@ -561,7 +562,8 @@ export async function executeTool(
       // 记住报价上下文，供成单安全网兜底下单；金额同时是价格护栏的白名单来源
       session.lastQuote = rememberQuote(args.routeId, q, args.departDate as string | undefined);
       saveSession(session);
-      return JSON.stringify(q);
+      // 日期可能是引擎按客户原话补上的（见 engine.ts groundToolArgs），带回去模型才知道这是按哪天算的价
+      return JSON.stringify(args.departDate ? { ...q, departDate: args.departDate } : q);
     }
     case 'generate_proposal': {
       if (typeof args.routeId !== 'string' || !args.routeId) return toolError('routeId 必填');
@@ -610,8 +612,9 @@ export async function executeTool(
             o && o.status === 'pending_payment' && o.routeId === args.routeId &&
             o.travelers === travelers && o.departDate === args.departDate,
         );
+      // 结果带上订单的出发日期：引擎可能按客户明说的那天改过模型传的日期，模型要照这个写给客户
       if (dup) {
-        return JSON.stringify({ orderId: dup.id, payUrl: '/pay/' + dup.id, total: dup.totalPrice });
+        return JSON.stringify({ orderId: dup.id, payUrl: '/pay/' + dup.id, total: dup.totalPrice, departDate: dup.departDate });
       }
       const quote = createQuote({ routeId: args.routeId, travelers, departDate: args.departDate });
       const order = createOrder({
@@ -626,7 +629,7 @@ export async function executeTool(
       session.lastQuote = undefined; // 已成单即清除，防安全网对同一报价重复建单
       saveSession(session);
       // payUrl 为相对路径，渠道层负责拼 PUBLIC_BASE_URL
-      return JSON.stringify({ orderId: order.id, payUrl: '/pay/' + order.id, total: order.totalPrice });
+      return JSON.stringify({ orderId: order.id, payUrl: '/pay/' + order.id, total: order.totalPrice, departDate: order.departDate });
     }
     case 'handoff_to_human': {
       enterHandoff(session);

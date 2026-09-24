@@ -795,6 +795,294 @@ const searchYunnan: Step[] = [
   assert.ok(r.text.includes('6,800') && r.text.includes('20,000'), `工具算好的差额与客户预算不该被当成编价（实际：${r.text}）`);
 }
 
+// G：预算和客群只认客户原话。glm-5.3-flashx 实测：客户只说了「有点贵」，它调 search_routes 时自己加上
+// maxBudgetPerPerson=20000、segment=亲子/蜜月，画像被记成「每人2万」「亲子」，工具还据此算出超预算差额
+{
+  const seen: { sid: string; name: string; args: Record<string, unknown> }[] = [];
+  const off = onToolCall((name, args, s) => { seen.push({ sid: s, name, args: { ...args } }); });
+  const argsOf = (sid: string): Record<string, unknown>[] =>
+    seen.filter((c) => c.sid === sid && c.name === 'search_routes').map((c) => c.args);
+  const toolResults = (): string =>
+    (requests[requests.length - 1]?.messages ?? []).filter((m) => m.role === 'tool').map((m) => m.content ?? '').join('\n');
+
+  // G1：cmp/verify 里 s11 的原样复现（两次编造：亲子 + 2 万，蜜月）
+  const g1 = newSid('g1');
+  await fakeSay(g1, '北京故宫那条多少钱，两个人', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-beijing', travelers: 2 } }] },
+    { content: '这条每人 ¥28,800，2 位总价 ¥57,600。' },
+  ]);
+  await fakeSay(g1, '我考虑一下，有点贵', [
+    { toolCalls: [
+      { name: 'search_routes', args: { destination: '北京', maxBudgetPerPerson: 20000, segment: '亲子' } },
+      { name: 'search_routes', args: { destination: '北京', segment: '蜜月' } },
+    ] },
+    { content: '理解，这条确实不便宜，主要贵在颐和安缦和全程私导。您是想保留行程核心，还是换个目的地看看？' },
+  ]);
+  const g1Args = argsOf(g1).slice(-2); // 第一轮点了北京，引擎预取过一次，不算
+  assert.ok(g1Args.length === 2 && g1Args.every((a) => a.maxBudgetPerPerson === undefined && a.segment === undefined),
+    `客户没说过预算和客群，不能带着模型编的去查（实际 ${JSON.stringify(g1Args)}）`);
+  const g1s = getSession(g1)!;
+  assert.equal(g1s.profile.budget, undefined, `画像不能记下模型编的预算（实际 ${g1s.profile.budget}）`);
+  assert.equal(g1s.profile.segment, undefined, `画像不能记下模型编的客群（实际 ${g1s.profile.segment}）`);
+  assert.equal(g1s.budgetGaps, undefined, '没有客户预算就不该算出超预算差额');
+  const g1Tool = toolResults();
+  assert.ok(!/overBudget|gapPerPerson/.test(g1Tool) && g1Tool.includes('budgetNote'), `工具结果不能按编的预算标超预算，并要提醒模型别替客户定预算（实际 ${g1Tool.slice(0, 200)}）`);
+
+  // G2：客户真说了预算和客群——保留，且以客户说的为准（模型传 3 万、亲子，客户说的是每人两万、带爸妈）；
+  // 超预算软过滤照常：西藏两条线都超两万，放宽后留 26,800 那条并算出每人差额 6,800（同 E3）
+  const g2 = newSid('g2');
+  await fakeSay(g2, '想带爸妈去西藏，每人两万左右', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '西藏', maxBudgetPerPerson: 30000, segment: '亲子' } }] },
+    { content: '带爸妈去西藏，海拔我得先给您把住。您几位出行？' },
+  ]);
+  const g2Model = argsOf(g2).pop()!;
+  assert.equal(g2Model.maxBudgetPerPerson, 20000, `预算以客户说的每人两万为准（实际 ${JSON.stringify(g2Model)}）`);
+  assert.equal(g2Model.segment, '银发', `客群以客户说的带爸妈为准（实际 ${JSON.stringify(g2Model)}）`);
+  const g2s = getSession(g2)!;
+  assert.equal(g2s.profile.budget, '每人两万');
+  assert.equal(g2s.profile.segment, '银发');
+  assert.ok(g2s.budgetGaps?.includes(6800), `客户说过预算时超预算差额照常算（实际 ${JSON.stringify(g2s.budgetGaps)}）`);
+
+  // G3：改口以最新为准——模型还拿着旧的两万去查
+  const g3 = newSid('g3');
+  await fakeSay(g3, '想去西藏，每人两万', [{ content: '好的，您几位出行？' }]);
+  await fakeSay(g3, '算了，每人三万也行，两个人', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '西藏', maxBudgetPerPerson: 20000 } }] },
+    { content: '好的，按新的预算给您再挑一挑。' },
+  ]);
+  assert.equal(argsOf(g3).pop()!.maxBudgetPerPerson, 30000, '客户改了预算，按最新说的查');
+  assert.equal(getSession(g3)!.profile.budget, '每人三万', '画像预算跟着客户改口');
+
+  // G4：说的是总预算——模型除以客户说的人数得出的每人数对得上原话，照用；对不上的丢掉
+  const g4 = newSid('g4');
+  await fakeSay(g4, '两个人预算5万，想去西藏', [
+    { toolCalls: [
+      { name: 'search_routes', args: { destination: '西藏', maxBudgetPerPerson: 25000 } },
+      { name: 'search_routes', args: { destination: '西藏', maxBudgetPerPerson: 20000 } },
+    ] },
+    { content: '好的，给您挑了西藏这几条。' },
+  ]);
+  assert.deepEqual(argsOf(g4).map((a) => a.maxBudgetPerPerson), [25000, undefined], '5 万 ÷ 2 人对得上原话，2 万对不上');
+
+  // G5：区间只认上端当上限；下限（「3万以上」）不是上限，当成上限会把更贵的线路藏掉
+  const g5 = newSid('g5');
+  await fakeSay(g5, '云南，每人一万到两万', [
+    { toolCalls: [
+      { name: 'search_routes', args: { destination: '云南', maxBudgetPerPerson: 10000 } },
+      { name: 'search_routes', args: { destination: '云南', maxBudgetPerPerson: 20000 } },
+    ] },
+    { content: '云南这边给您挑了几条。' },
+  ]);
+  assert.deepEqual(argsOf(g5).map((a) => a.maxBudgetPerPerson), [undefined, 20000], '「一万到两万」只认两万当上限');
+  await fakeSay(g5, '西藏的话每人3万以上也行', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '西藏', maxBudgetPerPerson: 30000 } }] },
+    { content: '西藏这边给您挑了几条。' },
+  ]);
+  assert.equal(argsOf(g5).pop()!.maxBudgetPerPerson, undefined, '「3万以上」是下限，不当上限');
+
+  // G6：模型传的银发不剥。它是唯一的硬安全过滤：传错了只是把高原线标出来，剥错了就是给老人推 5200 米。
+  // 客户的说法引擎认不出时（「老寿星」）照样用模型的判断，并记进画像，后面几轮模型忘传时自动补上
+  const g6 = newSid('g6');
+  await fakeSay(g6, '陪家里的老寿星去西藏看看', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '西藏', segment: '银发' } }] },
+    { content: '西藏海拔高，老人家去我得先给您把住。' },
+  ]);
+  assert.equal(argsOf(g6).pop()!.segment, '银发', '模型传的银发要留着');
+  const g6Rows = JSON.parse(toolResults().split('\n').pop()!) as { id: string; segmentMismatch?: string }[];
+  assert.ok(g6Rows.length > 0 && g6Rows.every((r) => r.segmentMismatch), `西藏线要带上不适合老人的提示（实际 ${JSON.stringify(g6Rows).slice(0, 200)}）`);
+  assert.equal(getSession(g6)!.profile.segment, '银发', '模型认出的银发记进画像');
+  // 常见的带老人说法引擎自己要认得：模型没传也按银发查，四川那条高原线不能出现
+  for (const [tag, say] of [['g6b', '我们老两口想去四川玩'], ['g6c', '我父亲80岁了，想去四川'], ['g6d', '想带我母亲去四川看看']]) {
+    const sid = newSid(tag);
+    await fakeSay(sid, say, [
+      { toolCalls: [{ name: 'search_routes', args: { destination: '四川' } }] },
+      { content: '四川这边给您挑了一条节奏舒缓的。' },
+    ]);
+    assert.equal(argsOf(sid).pop()!.segment, '银发', `「${say}」要按银发查`);
+    assert.ok(!toolResults().includes('r-sichuan-lux'), `「${say}」不能推高原线（实际 ${toolResults().slice(0, 200)}）`);
+  }
+
+  // G7：客户说过每人两万，之后评价某条线的价、说别家的价、说机票钱，都不是改了预算——
+  // 此前只看最近一句说到钱的话：「一万八的有点贵」让两万被丢掉，「机票每人2000左右」被当成每人上限，整库标超预算
+  for (const [tag, later, dest] of [
+    ['g7a', '那个一万八的还是有点贵', '云南'],
+    ['g7b', '我看别家一个人才一万五，再帮我看看贵州', '贵州'],
+    ['g7c', '机票我们自己订，每人2000左右', '云南'],
+    ['g7d', '机票我们自己订，每人两千左右', '云南'],
+  ]) {
+    const sid = newSid(tag);
+    await fakeSay(sid, '每人两万预算，想去云南', [{ content: '好的，云南这边给您挑了几条。' }]);
+    await fakeSay(sid, later, [
+      { toolCalls: [{ name: 'search_routes', args: { destination: dest, maxBudgetPerPerson: 20000 } }] },
+      { content: '好的，给您再看看。' },
+    ]);
+    assert.equal(argsOf(sid).pop()!.maxBudgetPerPerson, 20000, `「${later}」不是改预算，客户说的每人两万要留着`);
+    assert.ok(!toolResults().includes('budgetNote'), `「${later}」之后不能提醒模型「客户没说过预算」`);
+    assert.equal(getSession(sid)!.profile.budget, '每人两万', `「${later}」不能冲掉画像里的预算`);
+  }
+
+  // G8：「一起」「至少玩5天」「最少也得住五星」说的不是钱的下限，客户说的两万照用
+  for (const [i, say] of [
+    '一个人两万左右，我跟老公一起去', '预算两万，我和老公一起去', '我们三个一起去，预算一共6万',
+    '预算两万，至少玩5天', '两万一个人，最少也得住五星',
+  ].entries()) {
+    const sid = newSid(`g8${i}`);
+    await fakeSay(sid, say, [
+      { toolCalls: [{ name: 'search_routes', args: { destination: '云南', maxBudgetPerPerson: 20000 } }] },
+      { content: '云南这边给您挑了几条。' },
+    ]);
+    assert.equal(argsOf(sid).pop()!.maxBudgetPerPerson, 20000, `「${say}」里的两万是客户说的预算，要留着`);
+  }
+  off();
+}
+
+// D：客户说过出发时间，模型报价/出方案时漏传 departDate——引擎按客户原话补上。
+// glm-5.2 实测：客户说「国庆假期出发，一共3个人」，generate_proposal 没传日期，报了平日价 59,400
+// 外加一条不带日期的链接，下一轮又报国庆价 65,340，前后对不上
+{
+  const { todayIso } = await import('./env.js');
+  const today = todayIso();
+  const y = Number(today.slice(0, 4));
+  const next = (md: string): string => (`${y}-${md}` >= today ? `${y}-${md}` : `${y + 1}-${md}`);
+  const guoqing = next('10-01');
+  const seen: { sid: string; name: string; args: Record<string, unknown> }[] = [];
+  const off = onToolCall((name, args, s) => { seen.push({ sid: s, name, args: { ...args } }); });
+  const lastArgs = (sid: string, name: string): Record<string, unknown> | undefined =>
+    seen.filter((c) => c.sid === sid && c.name === name).pop()?.args;
+  const payUrlOf = (msgs: WireMsg[]): string => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = /"payUrl":"([^"]+)"/.exec(msgs[i].content ?? '');
+      if (m) return m[1];
+    }
+    return '/pay/NONE';
+  };
+  const quoteYunnan = (): Step[] => [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-yunnan-mid', travelers: 2 } }] },
+    { content: '丽江大理这条报价出来了，您看看。' },
+  ];
+
+  // D1：s01 复现——方案书补上国庆的日期，按旺季价出；下一轮报价同样带上，前后一致
+  const d1 = newSid('d1');
+  await fakeSay(d1, '想带老婆孩子去四川玩，孩子8岁', [{ content: '四川这边熊猫·九寨 6 日亲子很合适，您几位出行？' }]);
+  const r1 = await fakeSay(d1, '国庆假期出发，一共3个人', [
+    { toolCalls: [{ name: 'generate_proposal', args: { routeId: 'r-sichuan-mid', travelers: 3 } }] },
+    { content: '详细方案发您看看：' },
+  ]);
+  assert.equal(lastArgs(d1, 'generate_proposal')?.departDate, guoqing, '客户说了国庆，方案书要带上国庆的日期');
+  assert.ok(r1.text.includes(`/proposal/r-sichuan-mid/3/${guoqing}`), `方案书链接带日期（实际：${r1.text}）`);
+  assert.equal(getSession(d1)!.lastQuote?.total, 65340, '国庆是这条线的旺季，按旺季价 21,780 × 3 算');
+  await fakeSay(d1, '熊猫那条吧，报个价', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-sichuan-mid', travelers: 3 } }] },
+    { content: '这条每人 ¥21,780，3 位总价 ¥65,340。' },
+  ]);
+  assert.equal(lastArgs(d1, 'create_quote')?.departDate, guoqing, '后面几轮的报价同样补上客户说过的日期');
+  // D2：下单时模型把「10月2号」写成了国庆当天——按客户明说的那天建单
+  const oct2 = next('10-02');
+  const r2 = await fakeSay(d1, '行，就订这个，10月2号出发', [
+    { toolCalls: [{ name: 'create_order', args: { routeId: 'r-sichuan-mid', travelers: 3, departDate: guoqing } }] },
+    { content: (m) => `好的，已为您锁定名额，点此完成支付：${payUrlOf(m)}` },
+  ]);
+  assert.equal(getOrder(r2.orderId ?? '')?.departDate, oct2, '客户明说了 10月2号，订单就按这天建');
+
+  // D3：节假日只是个大概，模型下单时给的具体日子在假期里就照用，不改成节日当天
+  const d3 = newSid('d3');
+  await fakeSay(d3, '国庆出发，丽江大理两个人报个价', quoteYunnan());
+  assert.equal(getSession(d3)!.lastQuote?.departDate, guoqing);
+  const oct3 = next('10-03');
+  const r3 = await fakeSay(d3, '就订这个', [
+    { toolCalls: [{ name: 'create_order', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: oct3 } }] },
+    { content: (m) => `好的，已为您锁定名额，点此完成支付：${payUrlOf(m)}` },
+  ]);
+  assert.equal(getOrder(r3.orderId ?? '')?.departDate, oct3, '「国庆」不是具体哪天，不覆盖模型问清后的日期');
+  // 成单安全网同理：客户只说了「国庆」，模型在问哪天，引擎不能替他按 10月1日 建单；说了具体哪天才兜底建单
+  const d3b = newSid('d3b');
+  await fakeSay(d3b, '国庆出发，丽江大理两个人报个价', quoteYunnan());
+  const ask = '好的～国庆具体哪天出发？我按那天给您下单。';
+  const r3b = await fakeSay(d3b, '就订这个', [{ content: ask }]);
+  assert.ok(getSession(d3b)!.orderIds.length === 0 && r3b.text === ask, `节假日不够下单，留着模型的问句（实际：${r3b.text}）`);
+  const r3c = await fakeSay(d3b, '就订这个，10月3号出发', [{ content: '好的～' }]);
+  assert.equal(getOrder(r3c.orderId ?? '')?.departDate, oct3, '客户说了具体哪天，安全网照常建单');
+
+  // D4：反例——没说日期不补；返程、过去的经历不算出发日期
+  for (const [tag, say] of [
+    ['d4a', '丽江大理两个人报个价'],
+    ['d4b', '10月7号回来，丽江大理两个人报个价'],
+    ['d4c', '去年国庆去过四川，这次想去云南，丽江大理两个人报个价'],
+  ]) {
+    const sid = newSid(tag);
+    await fakeSay(sid, say, quoteYunnan());
+    assert.equal(lastArgs(sid, 'create_quote')?.departDate, undefined, `「${say}」不该补出发日期`);
+    assert.equal(getSession(sid)!.lastQuote?.departDate, undefined);
+  }
+
+  // D5：改口以最新一次为准；改成说不准的日子（「11月」）就不能拿前一个日期去补
+  const d5 = newSid('d5');
+  await fakeSay(d5, '10月2号出发，丽江大理两个人', [{ content: '好的，丽江大理这条很合适。' }]);
+  await fakeSay(d5, '改成12月10号吧，报个价', quoteYunnan());
+  assert.equal(lastArgs(d5, 'create_quote')?.departDate, next('12-10'), '按客户改口后的日期补');
+  const d5b = newSid('d5b');
+  await fakeSay(d5b, '10月2号出发，丽江大理两个人', [{ content: '好的，丽江大理这条很合适。' }]);
+  await fakeSay(d5b, '改到11月吧，报个价', quoteYunnan());
+  assert.equal(lastArgs(d5b, 'create_quote')?.departDate, undefined, '客户改成了说不准的日子，旧日期不能再补');
+
+  // D6：「下个月15号」（cmp 里 s12 的说法）
+  const now = new Date();
+  const nm = new Date(now.getFullYear(), now.getMonth() + 1, 15);
+  const nextMonth15 = todayIso(nm);
+  const d6 = newSid('d6');
+  await fakeSay(d6, '下个月15号出发去贵州，两个人，报个价', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-guizhou', travelers: 2 } }] },
+    { content: '贵州这条报价出来了，您看看。' },
+  ]);
+  assert.equal(lastArgs(d6, 'create_quote')?.departDate, nextMonth15, '「下个月15号」按下个月补');
+
+  // D7：同一句里后面那个日子是返程、上班，不是改口——模型按出发那天下的单不能被改成返程那天
+  for (const [tag, say, md] of [
+    ['d7a', '想去云南，3个人，10月1号出发，玩到10月7号', '10-01'],
+    ['d7b', '想去云南，3个人，10月1号走，10月5号回', '10-01'],
+    ['d7c', '想去云南，3个人，10月2号出发，10月8号要上班', '10-02'],
+  ]) {
+    const sid = newSid(tag);
+    await fakeSay(sid, say, [{ content: '好的，丽江大理这条很合适。' }]);
+    const r = await fakeSay(sid, '就订丽江大理这条', [
+      { toolCalls: [{ name: 'create_order', args: { routeId: 'r-yunnan-mid', travelers: 3, departDate: next(md) } }] },
+      { content: (m) => `好的，已为您锁定名额，点此完成支付：${payUrlOf(m)}` },
+    ]);
+    assert.equal(getOrder(r.orderId ?? '')?.departDate, next(md), `「${say}」出发是 ${md}，订单不能改成别的日子`);
+  }
+
+  // D8：后面随口说的「这个周末」「下个月」「明年」不是改了出发时间，客户说过的国庆照补
+  for (const [tag, turns, tool] of [
+    ['d8a', ['想去云南', '国庆假期出发，一共3个人', '这个周末我跟家人商量一下，先把详细方案发我看看'], 'generate_proposal'],
+    ['d8b', ['想去云南', '国庆出发吧，孩子下个月还要考试，一共3个人，先报个价'], 'create_quote'],
+    ['d8c', ['想去云南', '国庆假期出发，一共3个人', '先去云南，明年再考虑日本，报个价吧'], 'create_quote'],
+  ] as const) {
+    const sid = newSid(tag);
+    for (const t of turns.slice(0, -1)) await fakeSay(sid, t, [{ content: '好的～' }]);
+    await fakeSay(sid, turns[turns.length - 1], [
+      { toolCalls: [{ name: tool, args: { routeId: 'r-yunnan-mid', travelers: 3 } }] },
+      { content: '给您出好了。' },
+    ]);
+    assert.equal(lastArgs(sid, tool)?.departDate, guoqing, `「${turns[turns.length - 1]}」没改出发时间，国庆照补`);
+  }
+
+  // D9：客户把 10月5号 改成国庆，成单安全网不能把 10月5号那张旧单重发给他
+  const d9 = newSid('d9');
+  const oct5 = next('10-05');
+  await fakeSay(d9, '想去云南，3个人，10月5号出发', [
+    { toolCalls: [{ name: 'create_order', args: { routeId: 'r-yunnan-mid', travelers: 3, departDate: oct5 } }] },
+    { content: (m) => `好的，已为您锁定名额，点此完成支付：${payUrlOf(m)}` },
+  ]);
+  await fakeSay(d9, '算了，改成国庆出发吧，重新报个价', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-yunnan-mid', travelers: 3 } }] },
+    { content: '国庆的报价给您出好了。' },
+  ]);
+  assert.equal(getSession(d9)!.lastQuote?.departDate, guoqing);
+  const r9 = await fakeSay(d9, '好的，就订这个', [{ content: ask }]);
+  assert.ok(r9.text === ask && getSession(d9)!.orderIds.length === 1, `不能重发 10月5号的旧单（实际：${r9.text}）`);
+  off();
+}
+
 // L2/L3/L6/L7：看引擎真正发给模型的请求——预取结果、会话状态的位置、system 是否逐字节不变、画像白名单
 {
   const sid = newSid('wire');

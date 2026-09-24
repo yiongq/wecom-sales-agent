@@ -9,7 +9,7 @@ import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, saveSe
 import { enterHandoff, executeTool, loadRoutes, rememberShownRoutes, searchRoutes, toolDefs } from './tools.js';
 import { chat, type PrefetchedCall } from './llm.js';
 import { tryReserveVisitorLLM } from './budget.js';
-import { findUnbackedPrices } from './price-guard.js';
+import { findUnbackedPrices, spokenMoney } from './price-guard.js';
 import { todayIso } from './env.js';
 
 // 阶段排序，用于「只前进不倒退」地推导销售阶段（handoff/paid 另行处理）
@@ -132,11 +132,14 @@ function dejargon(text: string, sessionId: string): string {
 // 不指望模型每轮都记得把 segment 传给 search_routes：客户往往在闲聊里带出来
 //（「想带我爸妈去转转」），模型下一轮就忘了。所以从原话确定性提取并沉淀到画像。
 // 顺序即优先级：更具体的先判，「带孩子和爸妈一起」按亲子+银发里更受限的银发算。
+// 这也是 search_routes 的 segment 的依据（见 groundToolArgs）：模型传的客群要在这里对得上客户原话才用
+// （银发除外，见那里），所以同义说法要认全（「我妈」「过寿」「俩娃」「老两口」）；
+// 「孩子妈妈」「孩子他爸」说的是配偶，不是长辈；「你们公司」「贵公司」问的是我们，不是商务出行
 const SEGMENT_RULES: [SalesSegment, RegExp][] = [
-  ['银发', /爸妈|父母|老人|长辈|家里老的|岳父|岳母|公婆|爷爷|奶奶|外公|外婆|退休|老年|上了年纪|六十|七十/],
-  ['亲子', /带娃|孩子|小孩|宝宝|儿子|女儿|亲子|小朋友|幼儿|读小学|读初中|几岁/],
+  ['银发', /爸妈|父母|老人|长辈|家里老的|岳父|岳母|公婆|爷爷|奶奶|外公|外婆|姥姥|姥爷|老爸|老妈|我爸|我妈|(?<!孩子[他她]?|[娃宝他她])(?:妈妈|爸爸)|母亲|父亲|婆婆|丈母娘|老丈人|老两口|老伴|过寿|祝寿|大寿|退休|老年|上了年纪|六十|七十|[八九]十多?岁|(?<!\d)[6-9]\d\s*岁/],
+  ['亲子', /带娃|[俩两几个]娃|孩子|小孩|宝宝|儿子|女儿|亲子|小朋友|幼儿|读小学|读初中|几岁/],
   ['蜜月', /蜜月|新婚|结婚|求婚|纪念日|二人世界|两个人的旅行|领证/],
-  ['商务', /商务|团建|公司|员工|奖励旅游|客户接待|接待客户|考察|年会/],
+  ['商务', /商务|团建|(?<!你们|您们|贵|咱们|你家)公司|员工|奖励旅游|客户接待|接待客户|考察|年会/],
   ['家庭', /一家人|全家|家庭出行|我们一家|拖家带口|三代/],
 ];
 
@@ -150,7 +153,9 @@ function detectSegment(text: string): SalesSegment | undefined {
 const BUDGET_RE =
   /(?:每人|人均)?\s*(?:[0-9.]+|[一二两三四五六七八九十]+)\s*万(?:\s*[一二两三四五六七八九1-9](?![0-9])\s*千?)?|(?:每人|人均|预算)\s*(?:[0-9]|[一二两三四五六七八九])\s*千(?![米克年])/;
 
-/** 从工具参数 + 客户原话沉淀画像（增量，只补不清空） */
+/** 从工具参数 + 客户原话沉淀画像（增量，只补不清空）。
+ *  预算和客群只认客户原话，不从工具参数取（银发除外，见下）：glm-5.3-flashx 实测客户只说了「有点贵」，它调 search_routes
+ *  时自己加上每人 2 万、亲子/蜜月，画像就记成「每人2万」「亲子」，后台代拟回复和下一轮提示词都拿它当真 */
 function deriveProfile(base: CustomerProfile, calls: ToolCall[], customerText: string): CustomerProfile {
   const out: CustomerProfile = { ...base };
   const routeDest = (routeId: unknown): string | undefined =>
@@ -170,26 +175,21 @@ function deriveProfile(base: CustomerProfile, calls: ToolCall[], customerText: s
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       if (a.departDate >= today) out.dates = a.departDate;
     }
-    // 不做整万取整：客户说「每人八千」会被记成「每人1万」（比真实预算高 25%），
-    // 说「每人三千」直接记成「每人0万」。后台顾问和下一轮提示词都按这个错值推线路。
-    if (typeof a.maxBudgetPerPerson === 'number' && a.maxBudgetPerPerson > 0) {
-      const n = a.maxBudgetPerPerson;
-      out.budget = n < 10000 ? `每人${n}元` : `每人${(n / 10000).toFixed(1).replace(/\.0$/, '')}万`;
-    }
   }
-  // 客群：工具参数优先（模型明确判断过），否则从客户原话认。只补不覆盖——
-  // 客户中途说「这次是带爸妈」才该改，模型漏传参数不该把已识别的客群抹掉
-  for (const c of calls) {
-    const seg = c.args.segment;
-    if (typeof seg === 'string' && (SALES_SEGMENTS as string[]).includes(seg)) out.segment = seg as SalesSegment;
-  }
+  // 客群：这句话里认出来才改。只补不覆盖——客户中途说「这次是带爸妈」才该改，没提就留着已识别的。
+  // 模型查线路时传的银发例外（groundToolArgs 也不剥它）：客户的说法引擎认不全，记下来后面几轮模型忘传时
+  // executeTool 才补得上；记错的代价只是高原线被标出来，漏记就是下一轮给老人推 5200 米
   const spokenSeg = detectSegment(customerText);
   if (spokenSeg) out.segment = spokenSeg;
+  else if (calls.some((c) => c.name === 'search_routes' && c.args.segment === '银发')) out.segment = '银发';
 
-  // 预算多为客户口述、未必进工具，补一个正则兜底。区间和下限要连着记（「每人一万到两万」「至少每人3万」）：
-  // 只记「每人一万」，后台看到的预算就错了，下一轮预取还会把它当成每人上限（见 perPersonBudget）
+  // 预算原样记客户的说法。区间和下限要连着记（「每人一万到两万」「至少每人3万」）：
+  // 只记「每人一万」，后台看到的预算就错了，下一轮预取还会把它当成每人上限（见 perPersonBudget）。
+  // 客户改口（「算了，每人三万也行」）以最新为准，但只有带着「每人/人均/预算」说的才覆盖旧值——
+  // 「去年有三万人去过」里的「三万」不能把记下的预算冲掉；「机票每人两千左右」「一万八的有点贵」说的也不是预算（见 isBudgetTalk）
   const b = BUDGET_RE.exec(customerText);
-  if (b && !out.budget) {
+  if (b && isBudgetTalk(customerText) &&
+    (!out.budget || /每人|人均|预算/.test(customerText.slice(Math.max(0, b.index - 4), b.index + b[0].length)))) {
     const before = customerText.slice(0, b.index).match(BUDGET_NOT_CAP_BEFORE)?.[0] ?? '';
     const after = customerText.slice(b.index + b[0].length).match(BUDGET_NOT_CAP_AFTER)?.[0] ?? '';
     out.budget = (before + b[0] + after).trim();
@@ -1089,49 +1089,186 @@ function isHandoffIntent(text: string): boolean {
   );
 }
 
-/**
- * 解析出发日期为 YYYY-MM-DD。优先客户原话（「X月Y号」按未来最近年份），
- * 因为模型给的 profile.dates 年份常写错；客户没说具体日才回退到画像 ISO。
- */
 /** y-m-d 是否真实存在的日历日期（拒绝 2 月 31 日这类） */
 function isRealDate(y: number, m: number, d: number): boolean {
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
 
-function resolveDepartDate(profile: CustomerProfile, text: string): string | undefined {
-  const now = new Date();
-  // 客户明写了年份就按他说的算，不许改。此前只匹配「X月Y号」会把年份丢掉：
-  // 客户说「2020年1月1号出发」，系统顺手滚到 2027 建了单——等于替客户改了出行时间。
-  const ymd = text.match(/([0-9]{4})\s*年\s*([0-9]{1,2})\s*月\s*([0-9]{1,2})\s*[号日]/);
-  if (ymd) {
-    const [y, m, d] = [Number(ymd[1]), Number(ymd[2]), Number(ymd[3])];
-    if (!isRealDate(y, m, d)) return undefined;
-    const iso = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    return iso < today ? undefined : iso; // 过去日期交给工具层报错，让模型去问客户
+const isoOf = (y: number, m: number, d: number): string | undefined =>
+  isRealDate(y, m, d) ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : undefined;
+
+// ---------- 客户原话里的出发日期 ----------
+// 客户说过出发时间，模型报价/出方案时却常漏传 departDate，工具就按平日价算：glm-5.2 实测客户说
+// 「国庆假期出发，一共3个人」，方案书报了平日价 59,400、链接不带日期，下一轮又报国庆价 65,340。
+// 所以日期由引擎按客户原话补（见 groundToolArgs）。这里是「客户说的出发日期」唯一的解析口径，
+// 画像、补发方案书、成单安全网（resolveDepartDate）走的也是它。
+
+/** 农历节日的公历日期没有固定规则，只能逐年查表。表只覆盖到 2028 年，超出就当说不准、不补——
+ *  宁可按平日价报，也不能拿错的日期去报价。2027 年春节是 2 月 6 日（朔在北京时间 6 日 23:56）；
+ *  Node 的 Intl chinese 历会算成 7 日，别拿它来「校正」这张表 */
+const LUNAR_HOLIDAYS: Record<string, string[]> = {
+  春节: ['2026-02-17', '2027-02-06', '2028-01-26'],
+  端午: ['2026-06-19', '2027-06-09', '2028-05-28'],
+  中秋: ['2026-09-25', '2027-09-15', '2028-10-03'],
+};
+/** 节日按当天算（国庆 = 10月1日）。这只是个大概，所以只拿来补报价、方案书，不拿来改下单日期（见 groundToolArgs） */
+const SOLAR_HOLIDAYS: Record<string, string> = { 国庆: '10-01', 五一: '05-01', 元旦: '01-01' };
+const HOLIDAY_ALIAS: Record<string, string> = { 十一: '国庆', 劳动节: '五一', 大年初一: '春节', 八月十五: '中秋' };
+
+/** 认得出具体哪天的说法。只认阿拉伯数字的月日（与此前口径一致）；「十一」只在跟着假期说法时算国庆，
+ *  不然「十一个人」「十一天」都成了国庆 */
+const DATE_MENTION = new RegExp([
+  '(\\d{4})\\s*年\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[号日]',
+  '(明年)?\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[号日]',
+  '(\\d{4})-(\\d{2})-(\\d{2})',
+  '(下个?月|这个?月|本月)\\s*(\\d{1,2})\\s*[号日]',
+  '(今年|明年|\\d{4}\\s*年)?\\s*(国庆|十一(?=\\s*(?:假期|长假|小长假|黄金周|期间))|五一|劳动节|元旦|春节|大年初一|端午|中秋|八月十五)',
+].join('|'), 'g');
+/** 说了时间、但说不准哪天（「11月」「月底」「下周」「十月三号」「5号」）。客户最近一次说的是这种时，
+ *  不能拿他更早说过的日期去补——他已经改口了，只是改成了引擎认不准的说法。
+ *  不收「明天」「周一」：销售对话里它们几乎都是在约联系时间（「明天再说」「周一给你答复」），
+ *  算进来的话一句客套就让之后整段对话都补不上日期 */
+const VAGUE_DATE = new RegExp([
+  '\\d{1,2}\\s*月份?',
+  '(?:[一二三四五六七八九]|十[一二]?)\\s*月',
+  '月[底初中末]|[上中下]旬',
+  '下个?月|这个?月|本月',
+  '(?:下|这|本)个?(?:周末?|星期|礼拜)|周末',
+  '年[底初]|明年|后年|寒假|暑假',
+  '(?<![\\d第])\\d{1,2}\\s*号(?![线楼院房])',
+].join('|'), 'g');
+/** 不是这次的出发日期：返程（「7号回来」「10月5号回」「玩到7号」）、过去的经历（「去年国庆」「10月去过」）、
+ *  不去了（「国庆人太多，不去了」）、改掉的旧日子（「原定10月2号」）、约的是联系时间（「下周再说」「月底答复您」） */
+const NOT_DEPART_BEFORE =
+  /(?:返程|回程|回来|返回|回国|玩到|待到|呆到|住到|一直到|去年|前年|上次|上回|那次|原定|原计划|原先|原来|避开|错开|除了|不想|不要)[^，。,！？!?；;\n]{0,3}$/;
+const NOT_DEPART_AFTER =
+  /^\s*(?:节|假期|长假|期间|那天|当天|左右|前后)?\s*(?:就|再|才|要|得)?\s*(?:回来|回程|返程|返回|回国|回家|到家|结束|不去|不行|去不了|走不了|没空|太挤|人太多|再说|再聊|再联系|联系|答复|回复|商量|回)/;
+/** 时间后面跟的是别的安排（「这个周末我跟家人商量一下」「明年再考虑日本」「这个月底前给你答复」「孩子下个月还要考试」
+ *  「10月8号要上班」）：说的不是出发。只看同一小句里紧跟着的几个字，而且后面明说了出发/走/去的不算（见 DEPART_AFTER） */
+const OTHER_PLAN_AFTER =
+  /^[^，。,！？!?；;\n]{0,6}?(?:商量|考虑|答复|回复|给你|给您|联系|再说|再聊|定下来|考试|开学|上学|上班|开会|生日)/;
+/** 读起来就是出发：后面跟着出发/走/去 */
+const DEPART_AFTER = /^\s*(?:节|假期|长假|小长假|黄金周|期间|那天|当天|左右)?\s*(?:再|就|才)?\s*(?:出发|动身|启程|走|去|飞)/;
+/** 同一句里后面的日子算改口：前面带「改到/改成/推到…」，或后面紧跟「出发/走」（不含「去」：「10月1号出发，3号去丽江」是行程里的一站） */
+const SWITCH_BEFORE = /(?:改到|改成|改为|改在|换到|换成|推到|推迟到|延到|延后到|提前到|挪到|定在|定到)\s*$/;
+const SWITCH_AFTER = /^\s*(?:节|假期|长假|小长假|黄金周|期间|那天|当天|左右)?\s*(?:再|就|才)?\s*(?:出发|动身|启程|走)/;
+/** 「国庆前 / 10月1号之后」：在那天前后，不是那天 */
+const NEAR_NOT_ON = /^\s*(?:节|假期|长假|期间)?\s*(?:前(?!后)|之前|以前|后|之后|以后)/;
+
+type SpokenDate =
+  /** iso 为空：说的是一个用不了的日子（2 月 31 日、写明年份的过去日期、这个月已过的日子） */
+  | { kind: 'date'; iso?: string; exact: boolean }
+  | { kind: 'vague' };
+
+/**
+ * 一句话里客户说的出发日期（pick）和他在这句里明说的所有具体出发日子（exact，下单核日期用）。
+ * 先说的那个就是出发日期；后面的只有像改口时才换（「原定10月2号，改到10月5号」「国庆人多，10月3号出发」），
+ * 或是把前面说不准的说具体了。此前一律取最后一处，「10月1号出发，玩到10月7号」成了 7 号出发，
+ * 「国庆出发吧，孩子下个月还要考试」成了说不准哪天。返程、经历、区间终点（「10月1号到7号」的 7 号）、
+ * 别的安排（「这个周末商量一下」）不算；一处都没有返回 pick=null。
+ * 节假日取最近的未来那一次，exact=false；today 参数只为自测能模拟任意日期。
+ */
+function readDepartDates(text: string, today = todayIso()): { pick: SpokenDate | null; exact: string[] } {
+  const year = Number(today.slice(0, 4));
+  const month = Number(today.slice(5, 7));
+  const spans: { at: number; end: number; date: SpokenDate }[] = [];
+  for (const m of text.matchAll(DATE_MENTION)) {
+    const at = m.index ?? 0;
+    let date: SpokenDate;
+    if (m[1]) {
+      // 客户明写了年份就按他说的算，不许改：此前只认「X月Y号」，「2020年1月1号出发」被顺手滚到明年建了单。
+      // 过去的日期不给——交给工具层报错，让模型去问客户
+      const iso = isoOf(Number(m[1]), Number(m[2]), Number(m[3]));
+      date = { kind: 'date', iso: iso && iso >= today ? iso : undefined, exact: true };
+    } else if (m[5]) {
+      // 「X月Y号」按未来最近的那一次；今年已过（含当月已过的日子）就是明年，客户说了「明年」就是明年
+      const [mo, d] = [Number(m[5]), Number(m[6])];
+      const thisYear = isoOf(year, mo, d);
+      const nextYear = !!m[4] || (!!thisYear && thisYear < today);
+      date = { kind: 'date', iso: isoOf(nextYear ? year + 1 : year, mo, d), exact: true };
+    } else if (m[7]) {
+      date = { kind: 'date', iso: isoOf(Number(m[7]), Number(m[8]), Number(m[9])), exact: true };
+    } else if (m[10]) {
+      // 「下个月15号」：下个月（跨年）的那天；「这个月20号」已过就是说错了，不往后滚
+      const next = !m[10].startsWith('这') && !m[10].startsWith('本');
+      const [y, mo] = next ? (month === 12 ? [year + 1, 1] : [year, month + 1]) : [year, month];
+      const iso = isoOf(y, mo, Number(m[11]));
+      date = { kind: 'date', iso: iso && iso >= today ? iso : undefined, exact: true };
+    } else {
+      // 没说哪年就取最近的未来那一次；说了（「明年国庆」「2028年春节」）就是那年的，已经过去的不给
+      const name = HOLIDAY_ALIAS[m[13]] ?? m[13];
+      const solar = SOLAR_HOLIDAYS[name];
+      const want = !m[12] ? undefined : m[12] === '今年' ? year : m[12] === '明年' ? year + 1 : Number(m[12].slice(0, 4));
+      const iso = solar
+        ? `${want ?? (`${year}-${solar}` >= today ? year : year + 1)}-${solar}`
+        : LUNAR_HOLIDAYS[name].find((d) => (want ? d.startsWith(`${want}-`) : d >= today));
+      date = !iso ? { kind: 'vague' } : { kind: 'date', iso: iso >= today ? iso : undefined, exact: false };
+    }
+    spans.push({ at, end: at + m[0].length, date });
   }
-  // 只认客户明说的「X月Y号」完整日期。只说「X月」不猜具体哪天——猜出来的 15 号
-  // 会顺着画像流进成单安全网，替客户创建一个他从未确认过日期的真实订单。
-  const md = text.match(/([0-9]{1,2})\s*月\s*([0-9]{1,2})\s*[号日]/);
-  if (md) {
-    const month = Number(md[1]);
-    const day = Number(md[2]);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      // 该月日在今年已过则进位到明年（含当月已过的日子，此前只比较月份不进位）
-      let year = now.getFullYear();
-      const today = new Date(year, now.getMonth(), now.getDate()).getTime();
-      if (new Date(year, month - 1, day).getTime() < today) year += 1;
-      if (!isRealDate(year, month, day)) return undefined; // 2月31日这类假日期：让模型和客户确认
-      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const items = spans.map((s) => ({ ...s, mention: true }));
+  // 说不准的说法只在不和上面认出来的日子重叠时才算（「10月2号」里的「10月」「2号」不算）
+  for (const m of text.matchAll(VAGUE_DATE)) {
+    const at = m.index ?? 0;
+    const end = at + m[0].length;
+    if (spans.some((s) => at < s.end && end > s.at)) continue;
+    items.push({ at, end, date: { kind: 'vague' }, mention: false });
+  }
+  items.sort((a, b) => a.at - b.at);
+  let found: SpokenDate | null = null;
+  const exact: string[] = [];
+  let prevEnd = -1;
+  for (const it of items) {
+    const before = text.slice(0, it.at);
+    const after = text.slice(it.end);
+    const rangeEnd = prevEnd >= 0 && /^\s*(?:到|至|-|~|～|—)\s*$/.test(text.slice(prevEnd, it.at));
+    prevEnd = it.end;
+    if (rangeEnd || NOT_DEPART_BEFORE.test(before) || NOT_DEPART_AFTER.test(after) || PAST_TRIP_AFTER.test(after)) continue;
+    if (!DEPART_AFTER.test(after) && OTHER_PLAN_AFTER.test(after)) continue;
+    const date: SpokenDate = it.mention && NEAR_NOT_ON.test(after) ? { kind: 'vague' } : it.date;
+    if (date.kind === 'date' && date.exact && date.iso) exact.push(date.iso);
+    if (!found || SWITCH_BEFORE.test(before) || SWITCH_AFTER.test(after) || (found.kind === 'vague' && date.kind === 'date')) {
+      found = date;
     }
   }
-  const iso = text.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? (profile.dates ?? '').match(/\d{4}-\d{2}-\d{2}/)?.[0];
-  if (iso) {
-    const [y, m, d] = iso.split('-').map(Number);
-    if (!isRealDate(y, m, d)) return undefined;
+  return { pick: found, exact };
+}
+
+function spokenDepartDate(text: string, today = todayIso()): SpokenDate | null {
+  return readDepartDates(text, today).pick;
+}
+
+/** 会话里客户最近一次说出发时间的那句话读出来的（从最新一句往前找，改口以最新为准） */
+function latestDepart(customerTexts: string[]): { pick: SpokenDate; exact: string[] } | null {
+  for (let i = customerTexts.length - 1; i >= 0; i--) {
+    const r = readDepartDates(customerTexts[i]);
+    if (r.pick) return { pick: r.pick, exact: r.exact };
   }
-  return iso;
+  return null;
+}
+
+/**
+ * 解析出发日期为 YYYY-MM-DD：这句话里客户说了就按他说的（见 spokenDepartDate；说的是「11月」这种
+ * 说不准的日子就是没有，不回退到画像里的旧日期——他已经改口了）；这句没提时间才回退到画像 ISO。
+ * 只说「X月」不猜具体哪天——猜出来的 15 号会顺着画像流进成单安全网，替客户创建一个他从未确认过日期的真实订单。
+ */
+function resolveDepartDate(profile: CustomerProfile, text: string): string | undefined {
+  const said = spokenDepartDate(text);
+  if (said) return said.kind === 'date' ? said.iso : undefined;
+  const iso = (profile.dates ?? '').match(/(\d{4})-(\d{2})-(\d{2})/);
+  return iso ? isoOf(Number(iso[1]), Number(iso[2]), Number(iso[3])) : undefined;
+}
+
+/**
+ * 成单安全网用的出发日期。客户最近一次说的是「国庆」这种节假日时不给：节假日只是个大概（国庆有七天），
+ * 补进报价没问题（整段假期同一个季节价），但下单是真实副作用，引擎不替客户把「国庆」定成 10 月 1 日——
+ * 留着模型那句「具体哪天出发」让客户说清
+ */
+function orderDepartDate(session: Session, text: string): string | undefined {
+  const latest = latestDepart(session.messages.filter((m) => m.role === 'customer').map((m) => m.content))?.pick;
+  if (latest?.kind === 'date' && !latest.exact) return undefined;
+  return resolveDepartDate(session.profile, text);
 }
 
 const yuan = (n: number): string => '¥' + n.toLocaleString('zh-CN');
@@ -1293,6 +1430,175 @@ function planPrefetch(session: Session, text: string): Record<string, unknown>[]
   }));
 }
 
+// ---------- 只有客户说了算的参数：按客户原话核一遍 ----------
+// 预算、客群、出发日期是客户的事，模型却会替他编：glm-5.3-flashx 实测客户只说了「有点贵」，
+// 它调 search_routes 时自己加上每人 2 万、亲子（另一次 2 人北京游加的是蜜月），工具据此算出
+// 「超预算」差额，模型对客户说「比两万的档高出一些」；反过来客户说了「国庆出发」，报价时它又常漏传日期。
+// 提示词压不住这种偶发，按本项目一贯做法放在代码层：模型发起的调用和引擎预取都经 runTool 走到这里。
+
+/** 「至少每人3万」「3万以上」「5万起」「8000以上」：说的是下限，当成上限会把更贵的线路藏掉。
+ *  必须连着钱说：此前单位可省，「一起去」的「一起」、「至少玩5天」「最少也得住五星」都被当成预算下限，
+ *  客户说过的两万跟着被丢掉。不带单位的只认三位数以上（「8000以上」），「5天以上」「3人以上」不算 */
+const BUDGET_FLOOR = new RegExp([
+  '(?:至少|起码|最少|不低于|不少于)[^，。,！？!?\\d一二两三四五六七八九十]{0,4}[\\d一二两三四五六七八九十][\\d.一二两三四五六七八九十]*\\s*(?:万|千|元|块)',
+  '[\\d一二两三四五六七八九十]\\s*(?:万|千|元|块)[\\d一二三四五六七八九]?\\s*(?:以上|起步|起(?!码)|往上|打底)',
+  '\\d{3,}\\s*(?:以上|起步|起(?![码飞])|往上|打底)',
+].join('|'));
+
+/** 说到钱、但说的不是这趟的预算：机票门票这类单项、别家的价、以前花的；或是在评价某条线的价
+ *  （「那个一万八的还是有点贵」）。这种话不能当成客户改了预算——按它改，要么把客户说过的每人两万丢掉，
+ *  要么把「机票每人2000左右」当成每人上限、整库线路都标成超预算（差额还进了价格护栏的白名单）。
+ *  带「预算」二字的一律算预算；评价价格的话里带了「每人/以内/左右」这类说法也算（「太贵了，每人一万五以内吧」）。
+ *  「机票」「别家」要说在钱前面（同一句里）或同一小句里才算：「每人两万，含机票吗」说的还是预算；
+ *  以前花的钱只看同一小句（「上次去日本每人花了两万」）——「去年国庆去过云南，这次每人两万」说的就是预算 */
+const MONEY_NOT_BUDGET = /机票|车票|门票|签证|保险|小费|别家|别人家|其他家|报价|标价/;
+const PAST_SPEND = /上次|上回|去年|前年|花了|花过/;
+const PRICE_REMARK = /贵|便宜|划算|值不值|性价比/;
+const MONEY_AT = /[\d一二两三四五六七八九十]\s*(?:万|千|元|块)|\d{3,}/g;
+function isBudgetTalk(text: string): boolean {
+  if (/预算/.test(text)) return true;
+  if (PRICE_REMARK.test(text) && !/每人|人均|以内|以下|之内|不超过|控制在|左右|上下/.test(text)) return false;
+  let money = false;
+  for (const m of text.matchAll(MONEY_AT)) {
+    money = true;
+    const at = m.index ?? 0;
+    const sentence = text.slice(0, at).split(/[。！？!?\n]/).pop() ?? '';
+    const clauseBefore = sentence.split(/[，,；;]/).pop() ?? '';
+    const clauseAfter = text.slice(at).split(/[，。,！？!?；;\n]/)[0];
+    if (MONEY_NOT_BUDGET.test(sentence) || MONEY_NOT_BUDGET.test(clauseAfter)) continue;
+    if (PAST_SPEND.test(clauseBefore) || PAST_SPEND.test(clauseAfter)) continue;
+    return true;
+  }
+  return !money;
+}
+
+/** 「一万到两万」「8000-12000」：区间只有上端能当上限。价格护栏的区间解析只认「两三万」「八到九千」这种，
+ *  「一万到两万」两头各读成一个数，这里单独认 */
+const BUDGET_RANGE = /[\d一二两三四五六七八九十]\s*(?:万|千|元|块)?\s*(?:到|至|-|－|~|～|—)\s*[\d一二两三四五六七八九十]/;
+
+/** 「我们三个」「我们俩」「一家三口」：没带「人」字的人数，HEADCOUNT 认不到。只拿来核总预算 ÷ 人数
+ *  （「我们三个一起去，预算一共6万」→ 每人两万），不进报价、方案书那几处按人数把关的地方 */
+function groupSizeIn(s: string): number | undefined {
+  if (/我们俩|咱们俩|咱俩|我俩|两口子/.test(s)) return 2;
+  const m = /(?:我们|咱们|俺们|一家)\s*(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:个|口)(?![月天晚周星礼小钟])/.exec(s);
+  return m ? (parseDayCount(m[1]) ?? undefined) : undefined;
+}
+
+/**
+ * 按客户原话核过的每人预算上限；undefined 表示不传 maxBudgetPerPerson。看客户最近一次说预算的那句话（改口以最新为准；
+ * 说机票钱、别家的价、嫌某条线贵的话跳过，见 isBudgetTalk）：
+ *   · 读得出每人上限（「每人两万」「人均8000」）→ 用客户的数，模型传的不一样也换成客户的；
+ *   · 说了钱但不是每人上限（「预算5万」「一万到两万」）→ 模型传的数对得上原话才用：就是客户说的数，
+ *     或是总数 ÷ 客户说过的人数；区间只认上端。说的是下限（「3万以上」）就不传；
+ *   · 客户从没说过钱 → 不传。
+ * 金额的读法与价格护栏的「客户说过的数」同一套（spokenMoney），两边才不会一个认、一个不认。
+ */
+function statedBudgetCap(said: string[], modelCap: number, session: Session): number | undefined {
+  for (let i = said.length - 1; i >= 0; i--) {
+    const { amounts, rangeEnds } = spokenMoney(said[i]);
+    if (!amounts.length || !isBudgetTalk(said[i])) continue;
+    const cap = perPersonBudget(said[i]);
+    if (cap) return cap;
+    if (BUDGET_FLOOR.test(said[i])) return undefined;
+    const pool = rangeEnds.length || BUDGET_RANGE.test(said[i]) ? [Math.max(...amounts)] : amounts;
+    const heads = [...said.map(headcountIn), ...said.map(groupSizeIn), /^(\d+)人$/.exec(session.profile.travelers ?? '')?.[1]]
+      .map(Number).filter((n) => Number.isInteger(n) && n > 1);
+    return pool.some((a) => a === modelCap || heads.some((h) => Math.round(a / h) === modelCap)) ? modelCap : undefined;
+  }
+  return undefined;
+}
+
+/** 客户在会话里提到过的客群（带孩子又带爸妈就两样都算） */
+function segmentsSaid(said: string[]): Set<SalesSegment> {
+  return new Set(SEGMENT_RULES.filter(([, re]) => said.some((t) => re.test(t))).map(([seg]) => seg));
+}
+
+/** 客户最近一次说出来的客群，与画像同一口径（deriveProfile 也是这句认出来才改） */
+function latestSegment(said: string[]): SalesSegment | undefined {
+  for (let i = said.length - 1; i >= 0; i--) {
+    const seg = detectSegment(said[i]);
+    if (seg) return seg;
+  }
+  return undefined;
+}
+
+/**
+ * 执行前把只有客户说了算的参数按原话核一遍，返回核过的参数和要附进工具结果、提醒模型的话：
+ *   · search_routes：预算见 statedBudgetCap；客群只在客户说过时才用，对不上的换成客户说的、客户没说就不传
+ *    （银发除外，模型传了就留着；模型没传时同样补上客户这句刚说的——画像要等本轮结束才更新，「带爸妈去西藏」这句就得按银发查）；
+ *     标签里的客群名同理，标签是硬过滤，编一个「亲子」就能把整个目的地滤空。
+ *   · create_quote / generate_proposal 漏传出发日期：客户说过就补上（节假日也算），客户没说不补。
+ *   · create_order 的日期模型传了、却不是客户最近明说的出发日子：按客户说的。「国庆」这种节假日只是个大概，
+ *     模型问清后下单用的具体日子不改；客户写明年份的过去日期由 runTool 前面的 statedPastDate 拦，这里不碰。
+ */
+function groundToolArgs(
+  name: string, args: Record<string, unknown>, session: Session,
+): { args: Record<string, unknown>; notes: Record<string, string> } {
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  const out: Record<string, unknown> = { ...args };
+  const notes: Record<string, string> = {};
+  const fixed: string[] = [];
+  if (name === 'search_routes') {
+    if (out.maxBudgetPerPerson !== undefined) {
+      const cap = statedBudgetCap(said, Number(out.maxBudgetPerPerson), session);
+      if (cap !== out.maxBudgetPerPerson) fixed.push(`预算 ${String(out.maxBudgetPerPerson)}→${cap ?? '不传'}`);
+      if (cap) out.maxBudgetPerPerson = cap;
+      else {
+        delete out.maxBudgetPerPerson;
+        notes.budgetNote = '客户没说过每人预算（或说的不是每人上限），这次没按预算筛。不要替客户假设预算，' +
+          '也不要说「比您的预算高/低多少」；想按价位挑，直接问客户每人预算大概多少。';
+      }
+    }
+    const segs = segmentsSaid(said);
+    // 银发不剥：它是唯一的硬安全过滤，传错了只是高原线被标出来（点了目的地时）或少看几条，剥错了就是给老人推
+    // 5200 米的西藏线——而「我母亲」「老两口」这类说法 SEGMENT_RULES 总有认不全的
+    if (out.segment !== undefined && out.segment !== '银发' && !segs.has(out.segment as SalesSegment)) {
+      notes.segmentNote = `客户没说过是${String(out.segment)}出行，不要替客户认定同行人，也不要把线路说成是为${String(out.segment)}挑的。`;
+      fixed.push(`客群 ${String(out.segment)}→不认`);
+      delete out.segment;
+    }
+    if (out.segment === undefined) {
+      const seg = latestSegment(said);
+      if (seg) out.segment = seg;
+    }
+    if (Array.isArray(out.tags)) {
+      const tags = out.tags.filter((t) => !(SALES_SEGMENTS as unknown[]).includes(t) || segs.has(t as SalesSegment));
+      if (tags.length < out.tags.length) fixed.push(`标签 ${out.tags.join('/')}→${tags.join('/') || '不传'}`);
+      if (tags.length) out.tags = tags;
+      else delete out.tags;
+    }
+  } else if (name === 'create_quote' || name === 'generate_proposal' || name === 'create_order') {
+    const latest = latestDepart(said);
+    const d = latest?.pick;
+    const iso = d?.kind === 'date' && d.iso && d.iso >= todayIso() ? d.iso : undefined;
+    if (iso && !out.departDate && name !== 'create_order') {
+      out.departDate = iso;
+      fixed.push(`补出发日期 ${iso}`);
+    } else if (
+      // 模型的日子是客户在那句话里明说过的出发日子就不改：一句话里说了两个日子时引擎的读法未必比模型准，
+      // 改错了就是按返程那天建了真实订单。只看最近说日期的那句——更早说过、后来改掉的日子不算
+      iso && d?.kind === 'date' && d.exact && name === 'create_order' && out.departDate !== iso &&
+      !latest?.exact.includes(String(out.departDate))
+    ) {
+      fixed.push(`下单日期 ${String(out.departDate)}→${iso}`);
+      out.departDate = iso;
+    }
+  }
+  if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${session.id}）：${fixed.join('；')}`);
+  return { args: out, notes };
+}
+
+/** 把提醒附进 search_routes 的每一条结果（与 overBudget / daysMiss 同一个位置，模型才看得到） */
+function withNotes(result: string, notes: Record<string, string>): string {
+  if (!Object.keys(notes).length) return result;
+  try {
+    const rows: unknown = JSON.parse(result);
+    return Array.isArray(rows) ? JSON.stringify(rows.map((r) => (r && typeof r === 'object' ? { ...r, ...notes } : r))) : result;
+  } catch {
+    return result;
+  }
+}
+
 /**
  * 工具调用观测钩子。评测器订阅它来断言「这一轮该调的工具调了没」，
  * 生产上也可用来统计工具使用分布（哪个工具最常用、哪个从来没被调过）。
@@ -1405,8 +1711,9 @@ async function handleMessageInner(
 
   // 记录本轮工具调用，用于事后推导阶段/画像
   const calls: ToolCall[] = [];
-  /** 本轮所有工具调用的唯一入口：模型发起的和引擎预取的走同一条路，calls 记录、观测者通知、日期拦截都一致 */
-  const runTool = (name: string, args: Record<string, unknown>, meta?: ToolCallMeta): Promise<string> => {
+  /** 本轮所有工具调用的唯一入口：模型发起的和引擎预取的走同一条路，calls 记录、观测者通知、日期拦截、
+   *  参数核正（groundToolArgs）都一致 */
+  const runTool = (name: string, modelArgs: Record<string, unknown>, meta?: ToolCallMeta): Promise<string> => {
     // 客户明说了一个过去日期，模型却拿另一个日期去建单/报价——不许替客户改出行时间，
     // 退回工具错误让它回去问客户（工具层只校验「不是过去」，看不到客户原话说的是哪天）
     // 只比对模型真传了日期的调用：create_quote 的日期可选，不传时 undefined !== said 恒成立，
@@ -1414,17 +1721,23 @@ async function handleMessageInner(
     const said = statedPastDate(text);
     if (
       said && (name === 'create_order' || name === 'create_quote') &&
-      args.departDate !== undefined && args.departDate !== said
+      modelArgs.departDate !== undefined && modelArgs.departDate !== said
     ) {
       return Promise.resolve(JSON.stringify({
         error: `客户说的出发日期是 ${said}，这是过去的日期。不要自行改成其他年份，` +
           '请直接问客户确认真实的出发日期后再下单。',
       }));
     }
+    // 预算、客群、出发日期按客户原话核过再执行；记进 calls（画像、阶段从这里推）、通知观测者的也是核过的参数
+    const { args, notes } = groundToolArgs(name, modelArgs, session);
     const call: ToolCall = { name, args };
     calls.push(call);
     for (const fn of toolObservers) { try { fn(name, args, sessionId, meta); } catch { /* 观测者出错不影响对话 */ } }
-    return executeTool(name, args, session).then((r) => { call.result = r; return r; });
+    return executeTool(name, args, session).then((r) => {
+      const out = withNotes(r, notes);
+      call.result = out;
+      return out;
+    });
   };
   // 公开链接会被陌生人（和脚本）随便点，网页访客的真实 LLM 轮次有日预算上限。
   // 超额后降级到离线脚本回复——演示流程照样走得完，只是话术固定；
@@ -1440,7 +1753,9 @@ async function handleMessageInner(
   const prefetch: PrefetchedCall[] = [];
   try {
     for (const args of planPrefetch(session, text)) {
-      prefetch.push({ name: 'search_routes', args, result: await runTool('search_routes', args, { prefetch: true }) });
+      const result = await runTool('search_routes', args, { prefetch: true });
+      // 还原给模型的「自己调过的参数」取实际执行的那份（runTool 按客户原话核过），和结果里的提醒对得上
+      prefetch.push({ name: 'search_routes', args: calls[calls.length - 1]?.args ?? args, result });
     }
   } catch (e) {
     // 预取只是优化：线路数据读不出来时模型自己调工具也会拿到同样的报错，这里不能先把整轮炸掉
@@ -1498,12 +1813,15 @@ async function handleMessageInner(
   ) {
     const quote = session.lastQuote;
     // 已有完全同参（线路+人数+日期）的待支付订单才重发原链接，否则重新建单。
-    // 只按线路匹配会让「改了出发日期再说就订」的客户拿回旧单的旧日期。
-    const wantDate = resolveDepartDate(session.profile, text);
+    // 只按线路匹配会让「改了出发日期再说就订」的客户拿回旧单的旧日期。客户最近说的是「国庆」这种
+    // 下不了单的日子时（wantDate 为空），按最近那次报价的日期找：「10月5号」改成「国庆」后再说「就订这个」，
+    // 不能把 10月5号 那张旧单重发给他，留着模型问具体哪天
+    const wantDate = orderDepartDate(session, text);
+    const matchDate = wantDate ?? quote.departDate;
     const existing = session.orderIds
       .map((id) => getOrder(id))
       .find((o) => o && o.status === 'pending_payment' && o.routeId === quote.routeId
-        && o.travelers === quote.travelers && (!wantDate || o.departDate === wantDate));
+        && o.travelers === quote.travelers && (!matchDate || o.departDate === matchDate));
     if (existing) {
       session.stage = 'closing';
       visible =
@@ -1511,7 +1829,7 @@ async function handleMessageInner(
         `${existing.departDate} 出发，总价 ${yuan(existing.totalPrice)}。\n` +
         `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
     } else {
-      const departDate = resolveDepartDate(session.profile, text);
+      const departDate = wantDate;
       if (departDate) {
         // 安全网建单失败（如线路被手工删掉/数据文件损坏）不能炸掉整轮回复：
         // 保留模型原话继续对话，错误进日志供排查
@@ -1703,4 +2021,5 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
 export const __engineTest = {
   dejargon, CUSTOM_PROMISE, LINK_PROMISE, PROPOSAL_PROMISE, promiseInsertAt, markLinkHoles, requestedDays, isObjection, PURCHASE_INTENT, IDENTITY_QUESTION, detectSegment,
   isHandoffIntent, keptBesideCustomPromise, statedPastDate, BUDGET_RE, planPrefetch, perPersonBudget, buildSystemPrompt,
+  spokenDepartDate, isBudgetTalk, BUDGET_FLOOR,
 };

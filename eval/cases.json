@@ -242,6 +242,24 @@
     ]
   },
   {
+    "id": "guard-08b-holiday-date",
+    "desc": "客户说了「国庆出发」，报价时模型漏传日期也要按国庆算（贵州 10 月是旺季，每人 17,380 而不是平日 15,800）",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "想去贵州，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "国庆出发，两个人多少钱",
+        "expectTool": "create_quote",
+        "expectText": "17,?380"
+      }
+    ]
+  },
+  {
     "id": "talk-01-direct-question",
     "desc": "要信息直接问，不用是非问句",
     "tags": [
