@@ -386,6 +386,15 @@ async function uploadThumb(cfg: WecomConfig): Promise<string | null> {
 /** 正文里出现的所有站内链接（方案书/支付） */
 const ALL_LINKS_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g;
 
+/** 卡片上的出发日期写成正文里的样子（「10月12日」），跨年才带年份。
+ *  此前直接拼 YYYY-MM-DD：正文刚说完「10月12日出发」，紧跟着的卡片却是「2026-10-12 出发」，像系统单据 */
+function cnDate(iso: string, now = new Date()): string {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso);
+  if (!m) return iso;
+  const md = `${Number(m[2])}月${Number(m[3])}日`;
+  return Number(m[1]) === now.getFullYear() ? md : `${m[1]}年${md}`;
+}
+
 /** 从回复正文里认出方案书/支付链接，并取出用于卡片的标题与摘要。
  *  正文里出现多条链接时返回 null——卡片一次只能带一条 URL，硬做卡片会让第二条链接
  *  （尤其是支付链接）在剥离正文时被一起吞掉，客户永远拿不到付款入口。 */
@@ -409,7 +418,7 @@ function extractCard(text: string, baseUrl: string): { title: string; desc: stri
     if (!o) return null;
     return {
       title: `${o.routeTitle} · 待支付`,
-      desc: `${o.travelers} 位出行 · ${o.departDate} 出发 · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`,
+      desc: `${o.travelers} 位出行 · ${o.departDate ? cnDate(o.departDate) + '出发' : '日期待定'} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`,
       url: `${baseUrl}/pay/${o.id}`,
       raw: pay[0],
     };
@@ -417,13 +426,16 @@ function extractCard(text: string, baseUrl: string): { title: string; desc: stri
   return null;
 }
 
-/** 发链接卡片。缩略图拿不到或接口报错时返回 false，调用方退回纯文本 */
-async function sendLinkCard(cfg: WecomConfig, externalUserId: string, card: { title: string; desc: string; url: string }): Promise<boolean> {
+/** 发链接卡片（缩略图由调用方先备好，见 sendRich）。接口报错或网络异常时返回 false，调用方退回纯文本 */
+async function sendLinkCard(
+  cfg: WecomConfig,
+  externalUserId: string,
+  card: { title: string; desc: string; url: string },
+  thumb: string,
+): Promise<boolean> {
   // 整体包 try/catch：callApi 用 AbortSignal.timeout，网络抖动会 reject 而不是返回 errcode。
   // 漏掉会让异常冲出 push()，调用方的纯文本兜底永不执行——正文已经发出去了、链接却没了。
   try {
-    const thumb = await uploadThumb(cfg);
-    if (!thumb) return false;
     const data = await callApi<{ errcode?: number; errmsg?: string }>(cfg, 'kf/send_msg', {
       touser: externalUserId,
       open_kfid: cfg.openKfId,
@@ -441,29 +453,89 @@ async function sendLinkCard(cfg: WecomConfig, externalUserId: string, card: { ti
   }
 }
 
+/** 挖掉链接后只剩的标签（「· 支付链接」「方案书」「2. 付款入口」「这是您的专属支付链接」「👉 立即支付」）。
+ *  标签本是给链接起的名字，链接改走卡片后它独占一行、后面什么都没有——卡片要等整段正文发完才到，
+ *  客户读到这里会以为链接漏发了。前面可以带列表序号和「这是您的专属」这类修饰 */
+const LINK_LABEL_RE = new RegExp(
+  '^(?:\\d{1,2}\\s*[.、．)）]\\s*|[①-⑩]\\s*)?(?:这是|这里是)?(?:您|你)?的?(?:专属)?的?(?:本单|订单)?的?' +
+    '(?:(?:支付|付款|订单|下单)(?:链接|入口|页面|地址)?|(?:立即|马上|去|点击)(?:支付|付款)' +
+    '|(?:详细|完整)?的?(?:行程)?(?:方案书?|计划书|行程单)(?:链接|地址)?|(?:详细|完整)?的?行程|(?:方案|行程)?链接)$',
+);
+/** 列表序号开头的：整行删掉会让「1. 2. 3.」断号，改成「2. 支付链接见下方卡片」 */
+const NUMBERED_RE = /^(?:\d{1,2}\s*[.、．)）]|[①-⑩])/;
+const linkLabelCore = (s: string): string => s.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+const isLinkLabel = (s: string): boolean => LINK_LABEL_RE.test(linkLabelCore(s));
+/** 紧挨着链接、指着它的符号（「点这里付款 👉 <url>」「<url> 👈」）：链接挖走后一并拿掉，留着就是指向空气 */
+const POINTER_BEFORE_RE = /(?:\s*(?:👉|👈|👇|➡️?|⬇️?|→|↓))+\s*$/u;
+const POINTER_AFTER_RE = /^\s*(?:(?:👉|👈|👇|➡️?|⬇️?|→|↓)\s*)+/u;
+
+/** 把指着链接的说法改成指着卡片。「在这儿」「如下」「点这里」原本指的是紧跟着的那串网址，
+ *  网址挖走后就指向了空气；「发您」「做好了」收尾的补一句「见下方卡片」，客户知道东西在后面 */
+function pointToCard(s: string): string {
+  if (!s || /下方|卡片/.test(s)) return s; // 模型已经这么写了，别再补一遍
+  // 「支付链接：<url>（24 小时内有效）」：标签后面还跟着话，整行删不得，标签改成指着卡片
+  if (isLinkLabel(s)) return `${s}见下方卡片`;
+  const tap = s.replace(/(?:点击|点|戳)(?:这里|这儿|此处)/, '点下方卡片');
+  if (tap !== s) return tap;
+  // 「付款请点：<url>」：只认付款/请 + 点，「景点」「重点」这类收尾不能接「下方卡片」
+  if (/(?:请|烦请|麻烦|支付|付款)点击?$/.test(s)) return `${s}下方卡片`;
+  // 只认「方案/链接…在这儿」这种名词带指代的说法：「我放在这里」这类动词短语换掉会变成病句
+  const here = s.replace(/(方案书?|计划书?|行程单?|链接|入口|明细|详情)(?:就|都)?(?:在这里|在这儿|在这|如下)(?=$|[，,。！!～~；;])/, '$1见下方卡片');
+  if (here !== s) return here;
+  if (/(?:发(?:给)?您|给您|(?:做|生成|准备|整理|出)好了?|已生成)(?:看看|过目)?(?:了|啦)?$/.test(s)) return `${s}，见下方卡片`;
+  return s;
+}
+
 /** 从正文里挖掉那条 URL，保留同一行的其余内容。
  *  不能按整行删——链接常和报价写在一起（「方案书在这 <url> 人均 15,800」），
  *  整行删会把报价一起删掉，客户只收到一张卡片、正文凭空少一句。 */
 function stripLink(body: string, raw: string): string {
-  const lines = body.split('\n');
+  const tidy = (s: string) => s.replace(/[ \t]{2,}/g, ' ').replace(/^[\s，,：:、]+|[\s，,：:、]+$/g, '');
+  const lines: (string | null)[] = body.split('\n'); // null = 整行拿掉（与原文里的空行区分开，段落间距照旧）
   for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].includes(raw)) continue;
-    const rest = lines[i].replace(raw, '').replace(/[ \t]{2,}/g, ' ').replace(/^[\s，,：:、]+|[\s，,：:、]+$/g, '');
-    if (/[\p{L}\p{N}]/u.test(rest)) {
-      lines[i] = rest;
+    const line = lines[i];
+    if (line === null || !line.includes(raw)) continue;
+    const at = line.indexOf(raw);
+    const beforeRaw = line.slice(0, at).replace(POINTER_BEFORE_RE, (m) => (/^\s/.test(m) ? ' ' : ''));
+    const afterRaw = line.slice(at + raw.length).replace(POINTER_AFTER_RE, (m) => (/\s$/.test(m) ? ' ' : ''));
+    // 冒号原本指着链接，后面紧跟逗号或括号时就悬空了（「总价：，30 分钟内有效」）
+    const rest = tidy(beforeRaw + afterRaw).replace(/[：:][ \t]*([，,、；;])/, '$1').replace(/[：:][ \t]*(?=[（(])/, '');
+    const core = linkLabelCore(rest);
+    if (core && !LINK_LABEL_RE.test(core)) {
+      const before = tidy(beforeRaw);
+      const after = tidy(afterRaw);
+      const pointed = pointToCard(before);
+      if (pointed === before) lines[i] = rest;
+      // 后面只剩表情（「😊」）不加逗号；句读、括号开头的直接接
+      else if (!after) lines[i] = pointed;
+      else if (!/[\p{L}\p{N}]/u.test(after)) lines[i] = `${pointed} ${after}`;
+      else lines[i] = pointed + (/^[。！!？?～~（(]/.test(after) ? '' : '，') + after;
       continue;
     }
-    // 链接独占一行（或只剩「👉」「·」这类指着它的符号）：整行拿掉。上一行以冒号收尾的，
-    // 冒号原本指着这条链接——链接改走卡片后就指向了空气（「费用明细：」后面接一句不相干的话），换成句号
-    lines[i] = '';
+    if (core && NUMBERED_RE.test(core)) {
+      lines[i] = `${rest}见下方卡片`;
+      continue;
+    }
+    // 链接独占一行、或只剩「👉」「·」这类符号、或只剩「支付链接」这类标签：整行拿掉，再看上一行：
+    //  · 上一行也只是个标签（「· 支付链接：」换行接链接）：同样整行拿掉，此前留下「· 支付链接。」；
+    //  · 上一行以冒号收尾：冒号原本指着这条链接，链接改走卡片后就指向了空气（「费用明细：」后面接一句不相干的话），
+    //    换成句号，「详细方案书在这儿，…：」「方案给您做好了：」这种再改成指着卡片；
+    //  · 紧挨着的上一行没冒号、但在指着链接（「详细方案书发您」换行接链接）：同样改成指着卡片
+    lines[i] = null;
     for (let j = i - 1; j >= 0; j--) {
-      if (!lines[j].trim()) continue;
-      lines[j] = lines[j].replace(/[：:]\s*$/, '。');
+      const prev = lines[j];
+      if (prev === null || !prev.trim()) continue;
+      const colon = /[：:]\s*$/.test(prev);
+      const p = prev.replace(/[：:]?\s*$/, '');
+      if ((colon || j === i - 1) && isLinkLabel(p)) lines[j] = NUMBERED_RE.test(linkLabelCore(p)) ? `${p}见下方卡片` : null;
+      else if (colon) lines[j] = `${pointToCard(p)}。`;
+      else if (j === i - 1) lines[j] = pointToCard(p);
       break;
     }
   }
   return lines
-    .filter((l, i, arr) => l.trim() || (i > 0 && i < arr.length - 1 && arr[i - 1].trim() && arr[i + 1].trim()))
+    .filter((l): l is string => l !== null)
+    .map((l) => (l.trim() ? l : ''))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -475,10 +547,16 @@ function stripLink(body: string, raw: string): string {
 async function sendRich(cfg: WecomConfig, uid: string, body: string): Promise<boolean> {
   const card = cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
   if (!card) return sendText(cfg, uid, body);
+  // 先把缩略图备好再动正文。stripLink 会把「方案书在这儿」改成「见下方卡片」，
+  // 此前先发了改过的正文才去传缩略图，缩略图一失败（接口报错、之后 60 秒冷却期内每一张都算），
+  // 客户读到「见下方卡片」，下方却是一条纯文本链接。拿不到缩略图就原样发正文，链接留在原处
+  const thumb = await uploadThumb(cfg).catch(() => null);
+  if (!thumb) return sendText(cfg, uid, body);
   const prose = stripLink(body, card.raw);
   const textOk = prose ? await sendText(cfg, uid, prose) : true;
-  if (await sendLinkCard(cfg, uid, card)) return textOk;
-  // 卡片发不出去（缩略图缺失、接口报错、网络异常）：把链接补发成文本，绝不能让客户拿不到链接
+  if (await sendLinkCard(cfg, uid, card, thumb)) return textOk;
+  // 缩略图就绪、卡片本身却发送失败（接口报错、网络异常，少见）：正文已按「见下方卡片」发出，收不回来了。
+  // 把链接补发在正文下方——「下方」来的是一条带标题的链接而不是卡片，措辞差一点，但链接一定送达
   return (await sendText(cfg, uid, `${card.title}\n${card.url}`)) && textOk;
 }
 

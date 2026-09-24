@@ -87,6 +87,58 @@
     "realOnly": true
   },
   {
+    "id": "flow-05-unknown-destination",
+    "desc": "我们没有的目的地（南极）：照实说没有，推荐最接近的现成线路和人均价，不直接转人工",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "想去南极",
+        "expectTool": "search_routes",
+        "expectStage": "recommend",
+        "expectText": "(?:人均|每人).{0,8}\\d",
+        "denyText": "随时告诉我|随时找我"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "flow-06-silver-highland",
+    "desc": "带爸妈去西藏：讲清海拔风险，直接给全程低海拔的替代线路和价格，不举要上三四千米的线、不问要不要看",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "带我爸妈去西藏",
+        "expectTool": "search_routes",
+        "expectText": "(?:贵州|西安|北京)[\\s\\S]*\\d{1,2},?\\d{3}",
+        "denyText": "香格里拉|丽江|九寨|要不要看|没有.{0,6}减压"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "flow-07-kid-headcount",
+    "desc": "提过带娃、只报了人数：照这个人数报价，顺带说明孩子算没算",
+    "tags": [
+      "话术"
+    ],
+    "turns": [
+      {
+        "say": "不用倒时差 带娃能玩水的地方",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "两位 12号",
+        "expectTool": "create_quote",
+        "expectText": "孩子|小朋友"
+      }
+    ],
+    "realOnly": true
+  },
+  {
     "id": "flow-02b-alias-destination",
     "desc": "目的地只在标签/别名里也要查得到（九寨沟）",
     "tags": [
@@ -199,6 +251,25 @@
         "say": "你们靠谱吗，不会是骗人的吧",
         "expectStage": "discovery",
         "denyText": "非常抱歉|转接"
+      }
+    ]
+  },
+  {
+    "id": "guard-06c-handoff-plain",
+    "desc": "只说「转人工」不道歉（此前一律回「非常抱歉给您带来不好的体验」），之后照样静默",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "转人工",
+        "expectStage": "handoff",
+        "expectText": "转接资深顾问",
+        "denyText": "抱歉|不好的体验"
+      },
+      {
+        "say": "在吗",
+        "expectSilent": true
       }
     ]
   },

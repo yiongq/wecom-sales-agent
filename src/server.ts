@@ -449,7 +449,12 @@ app.get('/pay/:orderId', async (c) => {
   if (!o) return c.html(html);
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
   const title = `${o.routeTitle} · 订单支付`;
-  const desc = `${o.travelers} 位出行 · ${o.departDate} 出发 · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
+  // 出发日期与企微卡片、网页支付卡片同一写法（「10月12日出发」，跨年才带年份），别是「2026-10-12 出发」
+  const d = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(o.departDate ?? '');
+  const when = !o.departDate ? '日期待定'
+    : !d ? `${o.departDate}出发`
+    : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
+  const desc = `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
   return c.html(html.replace(/<title>[\s\S]*?<\/title>/,
     `<title>${esc(title)}</title>\n` +
     `<meta name="description" content="${esc(desc)}">\n` +

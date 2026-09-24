@@ -143,8 +143,19 @@ const SEGMENT_RULES: [SalesSegment, RegExp][] = [
   ['家庭', /一家人|全家|家庭出行|我们一家|拖家带口|三代/],
 ];
 
+// 说的是不同行的人：「我和老婆去西藏，爸妈在家带娃」此前被认成银发（接着是亲子），预取的结果里
+// 给长辈配了低海拔替代线、提示模型问「长辈多大年纪、身体怎么样」——可爸妈根本不去。
+// 这类小句不参与客群识别。只认说得很明白的「在家 / 不去 / 帮忙带娃」，
+// 「我爸妈不去高原」这种带着要求的照样算（「不去」必须在小句末尾）
+const NOT_TRAVELLING = /在家|留在家|看家|帮(?:忙|我们|我)?(?:带|看)(?:娃|孩子|小孩)|不(?:跟|和)(?:我们|着)|不一起去|(?<![要想])不去了?$/;
+/** 客户原话里说同行者的部分（按小句去掉说不同行的人）。微信里常用空格断句，空格也算 */
+function travellingText(text: string): string {
+  return text.split(/[，,。；;！!？?\n\s]+/).filter((c) => !NOT_TRAVELLING.test(c)).join('，');
+}
+
 function detectSegment(text: string): SalesSegment | undefined {
-  for (const [seg, re] of SEGMENT_RULES) if (re.test(text)) return seg;
+  const t = travellingText(text);
+  for (const [seg, re] of SEGMENT_RULES) if (re.test(t)) return seg;
   return undefined;
 }
 
@@ -687,8 +698,54 @@ function customHandoffReply(customerText: string): string {
   return (
     '这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n' +
     `我已经把您的需求转给资深顾问了，他能${days}重排并给您准确报价，稍后会联系您～\n` +
-    '如果不想等，也可以先看看我们其他天数更短的线路，我随时帮您找。'
+    // 此前是「如果不想等，也可以先看看其他天数更短的线路，我随时帮您找」——可转人工后 AI 就不再应答，
+    // 客户真回一句「那看看短的」没人理。换成顾问能兑现的说法
+    '顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。'
   );
+}
+
+/** 本轮已转人工、护栏又要整条换掉模型原文时发的兜底：只交代已转接，不追问、不许诺 */
+const HANDED_OVER_FALLBACK = '已为您转接资深顾问，顾问会尽快与您联系，请稍候～';
+
+// 转人工后 AI 不再应答，这一轮之后的「随时告诉我 / 我马上帮您查」都兑现不了。
+// 主要靠 handoff_to_human 的工具结果和 SOP 把话说在前面（见 tools.ts HANDOFF_NOTE）；这里是出口兜底，
+// 只在本轮已转人工时生效：
+//   · 不提顾问/转接的句子，含许诺就整句删——「想听听国内线路的话，随时告诉我」只删后半句会留下半截条件句；
+//   · 提到顾问/转接的句子只删许诺那几个小句，转接说明留着。此前这类句子整句放行，
+//     「已为您转接资深顾问，稍后联系您，期间有任何问题随时告诉我～」原样发了出去。
+const AFTER_HANDOFF_PROMISE = new RegExp([
+  '随时(?:告诉|找|联系|问|叫|喊|跟|和)?我',
+  '(?:我|这边)(?:都|也)?(?:可以|会|能)?(?:马上|随时|立刻|立即|继续|再)(?:帮|为|给)您(?:查|看|推荐|安排|找|挑|对比|算)',
+  // 「您跟我说的日期」是在复述，不是许诺
+  '(?:跟|和)我说(?:一声|一下)?(?![的过])|再(?:找|问|联系)我|找我就(?:行|好|可以)',
+].join('|'));
+const HANDOFF_WORDS = /顾问|转接|人工/;
+/** 许诺小句前面挂着的条件小句（「如果还想看别的线路，」「期间有任何问题，」），许诺删了它也得跟着删 */
+const LEADS_TO_PROMISE = /^(?:如果|要是|若|假如|万一|期间|另外|您要是|有(?:任何|什么)?(?:问题|需要))|的话[，,；;]?$/;
+function dropPromiseClauses(sentence: string): string {
+  const end = /[。！？!?\n～~]+$/.exec(sentence)?.[0] ?? '';
+  const clauses = sentence.slice(0, sentence.length - end.length).split(/(?<=[，,；;])/);
+  const kept: string[] = [];
+  for (const c of clauses) {
+    if (!AFTER_HANDOFF_PROMISE.test(c) || HANDOFF_WORDS.test(c)) {
+      kept.push(c);
+      continue;
+    }
+    while (kept.length && LEADS_TO_PROMISE.test(kept[kept.length - 1].trim())) kept.pop();
+  }
+  if (kept.length === clauses.length) return sentence;
+  const body = kept.join('').replace(/[，,；;\s]+$/, '');
+  return body ? body + end : '';
+}
+function dropPostHandoffPromises(text: string): string {
+  const kept = text
+    .split(/(?<=[。！？!?\n～~])/)
+    .map((s) => (!AFTER_HANDOFF_PROMISE.test(s) ? s : HANDOFF_WORDS.test(s) ? dropPromiseClauses(s) : ''))
+    .join('');
+  const out = tidyLinkText(kept);
+  if (out === text.trim()) return text;
+  console.warn(`[engine] 转人工后删掉兑现不了的许诺：${text.slice(0, 80)}`);
+  return /顾问/.test(out) ? out : `${out ? out + '\n' : ''}资深顾问会尽快与您联系，请稍候～`;
 }
 
 /** 2026-12-10 → 12月10号（不是今年的带上年份）。ISO 日期直接发给微信客户读着像系统日志 */
@@ -1081,12 +1138,45 @@ const STRONG_DOUBT = /不会|会不会|是不是|是否|有没有|靠谱|有人|
 /** 说的是别人的投诉，或自己否认要投诉。「有没有投诉电话」里的「没有投诉」不是否认 */
 const NOT_OWN_COMPLAINT =
   /有人|别人|听说|看到|网上|被投诉|投诉(?:多|率|记录)|(?<!有)(?:不是|不想|不会|不打算|没有?|不)\s*[来去要]?\s*投诉/;
-function isHandoffIntent(text: string): boolean {
-  if (HANDOFF_REQUEST.test(text)) return true;
+/** 投诉或指控（按小句判，规则见上） */
+function isComplaint(text: string): boolean {
   return text.split(/[，,。！!；;~～\n]+/).some((c) =>
     (c.includes('投诉') && !NOT_OWN_COMPLAINT.test(c)) ||
     (COMPLAINT_WORD.test(c) && (!DOUBT_CLAUSE.test(c) || (RHETORICAL.test(c) && !STRONG_DOUBT.test(c)))),
   );
+}
+function isHandoffIntent(text: string): boolean {
+  return HANDOFF_REQUEST.test(text) || isComplaint(text);
+}
+
+// 转人工安全网的确认语按诉求分三种。此前一律「非常抱歉给您带来不好的体验 🙏」：客户刚下完单说一句
+// 「转人工」也被平白道歉（实测 3/3），读着像这单出了什么问题。只有投诉/指控才道歉。
+// 退订、取消、改日期/人数这类说法只用来挑措辞、不触发转人工：没付款前改日期就是重新报价，模型自己能办。
+// 但客户已经在「转人工」的同一句里说了要取消或改单，就不能再按普通诉求回「付款卡片仍然有效」——
+// 那是在催他为一张他正要取消、或日期人数都要改的订单付款（实测「转人工，我想取消订单」就这么回的）。
+// 改日期/人数/线路只在手里有订单时才算「退改」：还没下单的人说「转人工，想换条线路」，回「退改由顾问处理」就答非所问
+const REFUND_REQUEST = /退款|退订|退钱|退我钱|退改|取消|不想去|不去了|不要了/;
+const CHANGE_REQUEST =
+  /改期|改签|推迟|延期|(?:日期|时间|人数|天数|行程|线路)[^，,。！？]{0,3}(?:改|换|调)|(?:改|换|调)[^，,。！？]{0,4}(?:日期|时间|人数|天数|行程|线路)/;
+function handoffReply(session: Session, text: string): string {
+  // 会话里有订单就把它一并交代给顾问。只能从 orderIds 取：create_order 成功后 lastQuote 已经清空
+  const order = session.orderIds.map((id) => getOrder(id)).reverse().find((o) => o && o.status !== 'cancelled');
+  const kind = isComplaint(text) ? 'complaint'
+    : REFUND_REQUEST.test(text) || (order && CHANGE_REQUEST.test(text)) ? 'refund'
+    : 'request';
+  const head = {
+    complaint: '非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～',
+    refund: '退改由资深顾问为您处理，马上为您转接，请稍候～',
+    request: '好的，马上为您转接资深顾问，请稍候～',
+  }[kind];
+  if (!order) return head;
+  const title = `《${order.routeTitle}》`;
+  if (kind === 'refund') return `${head}\n${title}这笔订单顾问会一并为您处理。`;
+  if (kind === 'complaint') return `${head}\n${title}这笔订单顾问会一并跟进。`;
+  if (order.status === 'paid') return `${head}\n您预订的${title}顾问会一并跟进。`;
+  // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的
+  const payEntry = session.channel === 'wecom' ? '付款卡片' : '付款链接';
+  return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的${payEntry}仍然有效。`;
 }
 
 /** y-m-d 是否真实存在的日历日期（拒绝 2 月 31 日这类） */
@@ -1510,7 +1600,7 @@ function statedBudgetCap(said: string[], modelCap: number, session: Session): nu
 
 /** 客户在会话里提到过的客群（带孩子又带爸妈就两样都算） */
 function segmentsSaid(said: string[]): Set<SalesSegment> {
-  return new Set(SEGMENT_RULES.filter(([, re]) => said.some((t) => re.test(t))).map(([seg]) => seg));
+  return new Set(SEGMENT_RULES.filter(([, re]) => said.some((t) => re.test(travellingText(t)))).map(([seg]) => seg));
 }
 
 /** 客户最近一次说出来的客群，与画像同一口径（deriveProfile 也是这句认出来才改） */
@@ -1583,17 +1673,73 @@ function groundToolArgs(
       fixed.push(`下单日期 ${String(out.departDate)}→${iso}`);
       out.departDate = iso;
     }
+    const n = Number(out.travelers);
+    if (Number.isInteger(n) && n > 0 && kidsHeadcountUnclear(said)) {
+      notes.headcountNote = name === 'create_order'
+        ? `客户提过带孩子，但没说清这 ${n} 位里算没算上小朋友。确认订单时复述一句「这单按 ${n} 位出行下的」，` +
+          '并说如果小朋友还没算进去，告诉你孩子几岁，按实际人数重新下单。'
+        : `客户提过带孩子，但没说清这 ${n} 位里算没算上小朋友，这次先按 ${n} 位算的。回复里顺带一句口径：` +
+          `「先按 ${n} 位报的；如果是 ${n} 位大人再带小朋友，告诉我孩子几岁，我按实际人数重算」。只顺带说这一句，不要另起一轮追问。`;
+    }
   }
   if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${session.id}）：${fixed.join('；')}`);
   return { args: out, notes };
 }
 
-/** 把提醒附进 search_routes 的每一条结果（与 overBudget / daysMiss 同一个位置，模型才看得到） */
+// 客户提过带娃、却只报了个人数（「不用倒时差 带娃能玩水」→「两位 12号」），这个数算没算孩子没人知道。
+// 实测 3/3 按 2 人报价、2/3 按 2 人下了单，从没确认过——而三亚那条按人头计价，水世界通票也是每人一份。
+// SOP 里写了要顺带说口径，但模型照不照做看运气，所以由引擎按客户原话判断，把提醒附进报价/方案书/下单的工具结果。
+// 说清了的不提醒：大人小孩各几位、总人数、一家几口、孩子几岁（知道有个几岁的孩子，模型自会按人头算）
+const KID_MENTION = /带娃|[俩两几个]娃|孩子|小孩|宝宝|儿子|女儿|小朋友|幼儿|儿童|亲子/;
+const HEADCOUNT_SPLIT = new RegExp(
+  '(?:\\d{1,2}|[一二两三四五六七八九十])\\s*(?:个|位|名)?\\s*大人?\\s*(?:[，,、和加带+]\\s*)?' +
+  '(?:\\d{1,2}|[一二两三四五六七八九十])\\s*(?:个|位|名)?\\s*(?:小孩|孩子|儿童|娃|小朋友|宝宝|婴儿|小)',
+);
+const KIDS_SETTLED = new RegExp([
+  '一家[三四五六七]口',
+  '(?:孩子|小孩|小朋友|娃|宝宝|儿子|女儿)\\s*(?:\\d{1,2}|[一二两三四五六七八九十]{1,2})\\s*(?:周)?岁',
+  '(?:\\d{1,2}|[一二两三四五六七八九十]{1,2})\\s*(?:周)?岁的?(?:孩子|小孩|小朋友|娃|宝宝|儿子|女儿)',
+  '(?:孩子|小孩|小朋友|娃)(?:也|都)?(?:算上|算|不算|含|包括)',
+  '(?:含|包括|算上)(?:了)?(?:孩子|小孩|小朋友|娃)',
+  // 「我和儿子两个人」：孩子就在这个数里
+  '和(?:孩子|小孩|儿子|女儿|娃|宝宝)[^，。,.]{0,3}(?:\\d|[两俩三四五])\\s*(?:个人|个|人|位)',
+  // 「不带孩子」「孩子不去」：说清了没有孩子
+  '(?:不|没|没有)(?:带|有)?(?:孩子|小孩|小朋友|娃)|(?:孩子|小孩|小朋友|娃)(?:不|没)(?:去|跟|带|来)',
+  // 「大人两个，小孩一个」：数字写在后面
+  '大人\\s*(?:\\d{1,2}|[一二两三四五六七八九十])\\s*(?:个|位|名)?[^。.]{0,3}(?:小孩|孩子|儿童|小朋友|娃)\\s*(?:\\d{1,2}|[一二两三四五六七八九十])',
+  // 「我们俩带个娃」「我和老公带女儿」「两口子带一个孩子」：两个大人加几个孩子，组成说清了
+  '(?:我们俩|我俩|咱俩|两口子|小两口|夫妻俩|我(?:和|跟)(?:老公|老婆|爱人|先生|太太|媳妇|对象))[^，。,.]{0,4}' +
+    '带(?:着)?(?:个|一个|两个|俩|三个)?(?:娃|孩子|小孩|小朋友|宝宝|儿子|女儿)',
+  // 「两个孩子，四个人」：孩子几个、总共几个都说了
+  '(?:\\d|[一二两三四五])\\s*个(?:孩子|小孩|娃|小朋友)[^。.]{0,6}(?:\\d{1,2}|[两三四五六七八九十])\\s*(?:个人|口人|位)',
+  '(?:\\d{1,2}|[两三四五六七八九十])\\s*(?:个人|口人|位)[^。.]{0,6}(?:\\d|[一二两三四五])\\s*个(?:孩子|小孩|娃|小朋友)',
+].join('|'));
+// 儿子/女儿不一定是随行的小朋友：「女儿给我们老两口订的」「儿子让我们出去走走」说的是成年子女。
+// 此前照样当成带娃，报价时追问一对老夫妻「孩子几岁」
+const GROWN_CHILD_BOOKER = /(?:儿子|女儿|孩子|儿女|子女)(?:们)?(?:给|帮|让|替|陪|带|送)(?:我们|我俩|咱们|我和|老两口|爸妈|我爸|我妈)/g;
+const ELDER_CONTEXT = /老两口|老伴|我们老|退休|我(?:和|跟)老伴/;
+function kidsHeadcountUnclear(said: string[]): boolean {
+  const elder = said.some((t) => ELDER_CONTEXT.test(t));
+  const mentionsKid = (t: string): boolean => {
+    let s = travellingText(t).replace(GROWN_CHILD_BOOKER, '');
+    if (elder) s = s.replace(/儿子|女儿|儿女|子女/g, ''); // 老两口嘴里的儿子女儿是成年人；孙辈另有说法（孩子/娃/孙子）
+    return KID_MENTION.test(s);
+  };
+  return said.some(mentionsKid) &&
+    !said.some((t) => HEADCOUNT_SPLIT.test(t) || TOTAL_HEADCOUNT.test(t) || KIDS_SETTLED.test(t));
+}
+
+/**
+ * 把提醒附进工具结果，模型才看得到：search_routes 附在每一条线路上（与 overBudget / daysMiss 同一个位置），
+ * 报价、方案书、下单的结果是单个对象，直接并进去。工具报错时不附——模型要先改参数重试，提醒留给成功的那次
+ */
 function withNotes(result: string, notes: Record<string, string>): string {
   if (!Object.keys(notes).length) return result;
   try {
-    const rows: unknown = JSON.parse(result);
-    return Array.isArray(rows) ? JSON.stringify(rows.map((r) => (r && typeof r === 'object' ? { ...r, ...notes } : r))) : result;
+    const parsed: unknown = JSON.parse(result);
+    if (Array.isArray(parsed)) return JSON.stringify(parsed.map((r) => (r && typeof r === 'object' ? { ...r, ...notes } : r)));
+    if (parsed && typeof parsed === 'object' && !('error' in parsed)) return JSON.stringify({ ...parsed, ...notes });
+    return result;
   } catch {
     return result;
   }
@@ -1692,7 +1838,7 @@ async function handleMessageInner(
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
   if (isHandoffIntent(text)) {
     enterHandoff(session);
-    const reply = '非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～';
+    const reply = handoffReply(session, text);
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
     return { text: reply, stage: 'handoff', handoff: true };
@@ -1933,8 +2079,10 @@ async function handleMessageInner(
   // 下面几道护栏命中时通常把整条换成兜底话术，但兜底话术都在追问线路/人数/预算——
   // 这一轮已经转人工、AI 之后不再应答，追问只会让客户白等。所以改行程转人工时，
   // 护栏命中就整段丢掉模型原文，只发转人工说明。
-  const replaceVisible = (fallback: string): void => {
-    visible = customHandoff ? '' : fallback;
+  // 模型这轮自己调了 handoff_to_human 也一样：此前价格护栏在这时换上「告诉我线路和人数，我马上给您报价」，
+  // 客户照做了却再没人应，而且整条回复里一个字都没提已经转了顾问。换成转人工口径的兜底（handedOver）
+  const replaceVisible = (fallback: string, handedOver = HANDED_OVER_FALLBACK): void => {
+    visible = customHandoff ? '' : session.handedOver ? handedOver : fallback;
   };
 
   // 注入劫持安全网：输入像注入，且回复已经不在聊旅行了（没有任何业务词）或夹带了被劫持的
@@ -1945,8 +2093,10 @@ async function handleMessageInner(
   }
 
   // 百科式回答护栏：客户提到了我们在卖的目的地，回复却像本地理教科书且不含任何产品信息
-  if (customHandoff && ENCYCLOPEDIA_HINT.test(visible) && !HAS_PRODUCT.test(visible)) {
-    visible = ''; // 已转人工，不再改写成线路推荐，只留转人工说明
+  if (session.handedOver && ENCYCLOPEDIA_HINT.test(visible) && !HAS_PRODUCT.test(visible)) {
+    // 已转人工，不再改写成线路推荐（推荐末尾要客户「告诉我几位出行」，之后没人应）。
+    // 改行程转人工只留后面附的转人工说明；模型自己转的，原文里就有它的转接说明，照发
+    if (customHandoff) visible = '';
   } else if (ENCYCLOPEDIA_HINT.test(visible) && !HAS_PRODUCT.test(visible)) {
     const dests = destinationsInText(text);
     if (dests.length) {
@@ -1977,6 +2127,7 @@ async function handleMessageInner(
             `每人 ${yuan(q.perPerson)}，总价 ${yuan(q.total)}（起价，按最终行程微调）。\n` +
             '想调人数、日期或换一档线路，直接跟我说～'
         : '不好意思，价格我得按系统核准的来。告诉我线路和出行人数，我马上给您一个准确报价～',
+      '具体价格由资深顾问为您核准，已为您转接，顾问会尽快与您联系，请稍候～',
     );
   }
 
@@ -1989,6 +2140,7 @@ async function handleMessageInner(
   }
 
   if (customHandoff) visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
+  if (session.handedOver) visible = dropPostHandoffPromises(visible);
 
   session.messages.push({ role: 'agent', content: visible, at: Date.now() });
   saveSession(session);

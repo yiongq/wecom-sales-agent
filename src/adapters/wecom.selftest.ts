@@ -27,8 +27,8 @@ process.env.WECOM_APP_SECRET = 'selftest-secret';
 process.env.WECOM_KF_OPEN_KFID = 'selftest-kf';
 process.env.PUBLIC_BASE_URL = ''; // 不走链接卡片（缩略图上传），测试只关心文本收发
 
-const { __test, syncFromCallback } = await import('./wecom.js');
-const { runShutdownHooks, getSession, getOrCreateSession, saveSession } = await import('../store.js');
+const { __test, syncFromCallback, wecomAdapter } = await import('./wecom.js');
+const { runShutdownHooks, getSession, getOrCreateSession, saveSession, createOrder } = await import('../store.js');
 
 const { splitForWecom, extractCard, stripLink } = __test;
 const BASE = 'https://travel.example.com'; // 占位域名：自测只关心 URL 形态，与真实部署无关
@@ -135,8 +135,95 @@ function check(name: string, cond: boolean, detail = ''): void {
   check('s11 只剩「👉」的那行一起拿掉', !prose.s11.includes('👉') && prose.s11.includes('报价也附了'), `得到「${prose.s11}」`);
   // 冒号原本指着那条链接；链接改走卡片后留着冒号，读起来就是「明细：」后面接了一句不相干的话
   check('s01 指向链接的冒号换成句号', prose.s01.includes('费用明细。') && prose.s01.includes('国庆的准确报价'), `得到「${prose.s01}」`);
-  // 同行还有别的内容时冒号照旧，只挖 URL
-  check('同行有正文时不动前一行', stripLink(`报价如下：\n方案 ${BASE}/proposal/r-guizhou/2 人均 15,800`, `${BASE}/proposal/r-guizhou/2`) === '报价如下：\n方案 人均 15,800');
+  // 同行还有别的内容时上一行的冒号照旧，只动链接所在的这一行（「方案」是给链接起的名字，改成指着卡片）
+  const sameLine = stripLink(`报价如下：\n方案 ${BASE}/proposal/r-guizhou/2 人均 15,800`, `${BASE}/proposal/r-guizhou/2`);
+  check('同行有正文时不动前一行', sameLine === '报价如下：\n方案见下方卡片，人均 15,800', `得到「${sameLine}」`);
+}
+
+// ---------------- 正文剥离：指着链接的标签/指代句不能留下指向空气 ----------------
+// 用户实测（按线上配置重放 c1/c4 + 线上一条）的原文照搬。卡片要等整段正文发完才作为下一条到达，
+// 客户读到单独一行「· 支付链接」「详细方案书在这儿」，以为链接漏发了。
+// 每条写成「原文里哪一段 → 应变成什么」，其余正文必须一字不动。
+const LEFTOVER_CASES: [name: string, body: string, from: string, to: string][] = [
+  ['c1 第2遍 · 支付链接',
+    "订单已为您创建好啦 🎉\n\n· 线路：三亚亲子奢华度假 5 日\n· 出发：10月12日，两位\n· 总价：34760 元\n· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n\n名额以付款为准，付好后会有专属顾问联系您发行程确认书，拉服务群对接细节～",
+    '· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n', ''],
+  ['c1 第3遍 独占一段的支付链接',
+    "帮您订好了！🎉\n\n三亚亲子奢华度假 5 日，两位\n10月12日出发，总价 34760 元\n\n支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n名额以付款为准，付完款后顾问会把行程确认书发您，再拉个服务群，出行前有任何问题随时找我～",
+    '支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n', ''],
+  ['c4 第1遍 上一行「在这儿」',
+    "贵州这条 6 天线正合适：荔波小七孔 + 西江千户苗寨，两个人出行。\n\n· 小七孔开园首波入园，卧龙潭拍慢门流水不用抢机位\n· 瑶山古寨看白裤瑶猴鼓舞，亲手做一方靛蓝染布\n· 宿丹寨温泉酒店，五星精选标准\n\n详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起，两人合计 31600 起（标准价）。您大概几号出发？旺季价格会有浮动，我按日期给您出准确报价。",
+    '详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n', '详细方案书见下方卡片，逐日行程、住宿、含餐、费用含不含都在里面。\n'],
+  ['c4 第2遍 同行「发您」',
+    "找到一条正好 6 天的贵州线路：荔波小七孔·西江千户苗寨 6 日\n\n详细方案书发您：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐、费用含与不含，和报价（人均 15800 起，两位共 31600）。\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨体验白裤瑶蜡染，收一方自染方巾\n· 全程五星精选酒店，含丹寨温泉酒店\n\n您计划几号出发？旺季和淡季价格会有差别，我按日期给您出准确报价。",
+    '详细方案书发您：/proposal/r-guizhou/2', '详细方案书发您，见下方卡片'],
+  ['c4 第3遍 同行「在这里」',
+    "正好有条 6 天的，和您的天数完全对上。\n\n贵州 荔波小七孔·西江千户苗寨 6 日（两人）\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作，傍晚看猴鼓舞\n· 石桥村古法造纸，宿丹寨温泉酒店\n\n详细行程计划书在这里：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐和费用说明，您先过一遍。\n\n计划书里按标准价显示人均 15800 起，两人共 31600 起。您计划几号出发？国庆前后是旺季，我可以按具体日期给您出准确报价。",
+    '详细行程计划书在这里：/proposal/r-guizhou/2', '详细行程计划书见下方卡片'],
+  ['线上 上一行「做好了」',
+    "正好，我们有一条 6 天的贵州线路，跟您需求完全对上，详细方案给您做好了：\n\n/proposal/r-guizhou/2\n贵州 荔波小七孔·西江千户苗寨 6 日，两人出行\n\n里面包含逐日行程、住宿、含餐和费用明细。亮点几个：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作体验\n· 入住丹寨温泉酒店\n\n人均 15800 起，总价 31600（标准价，按最终行程微调）。\n\n您大概几号出发？旺季日期价格会有浮动，我按日期给您出准确报价。",
+    '详细方案给您做好了：\n\n/proposal/r-guizhou/2\n', '详细方案给您做好了，见下方卡片。\n\n'],
+  // 下面几条不是实测原文：点这里 → 点下方卡片；标签后面还跟着实际内容的不能整行删，标签改成指着卡片
+  ['点这里付款', '确认无误的话点这里付款：/pay/ord_x1\n名额以付款为准', '点这里付款：/pay/ord_x1', '点下方卡片付款'],
+  ['标签后还有内容', '· 支付链接：/pay/ord_x2（24 小时内有效）', '· 支付链接：/pay/ord_x2（24 小时内有效）', '· 支付链接见下方卡片（24 小时内有效）'],
+  ['标签后接逗号', '支付链接：/pay/ord_x3，30 分钟内有效', '支付链接：/pay/ord_x3', '支付链接见下方卡片'],
+  ['标签后隔空格接括号', '· 支付链接：/pay/ord_x4 （30 分钟内有效）', '：/pay/ord_x4 ', '见下方卡片'],
+  // 标签单独一行、链接换到下一行（模型发方案书时常这么排）：标签那行一起拿掉，不能剩「· 支付链接。」
+  ['上一行是标签', '· 总价：34760 元\n· 支付链接：\n/pay/ord_a1\n\n名额以付款为准', '· 支付链接：\n/pay/ord_a1\n', ''],
+  ['上一行是方案书标签', '亮点如下\n\n详细方案书：\n/proposal/r-guizhou/2\n\n人均 15800 起', '详细方案书：\n/proposal/r-guizhou/2\n\n', ''],
+  ['上一行是标签、链接前有 👉', '订单已创建～\n付款入口：\n👉 /pay/ord_a5\n名额以付款为准', '付款入口：\n👉 /pay/ord_a5\n', ''],
+  // 上一行没冒号、但在指着链接
+  ['上一行「发您」无冒号', '详细方案书发您\n/proposal/r-guizhou/2\n人均 15800 起', '发您\n/proposal/r-guizhou/2', '发您，见下方卡片'],
+  ['上一行无关（景点）不动', '推荐几个景点\n/proposal/r-guizhou/2\n人均 15800 起', '\n/proposal/r-guizhou/2', ''],
+  // 紧挨着链接的指向符号、结尾表情
+  ['链接后的 👈', '方案书在这儿：/proposal/r-guizhou/2 👈\n人均 15800 起', '在这儿：/proposal/r-guizhou/2 👈', '见下方卡片'],
+  ['链接后的表情不加逗号', '详细方案发您 /proposal/r-guizhou/2 😊', '详细方案发您 /proposal/r-guizhou/2 😊', '详细方案发您，见下方卡片 😊'],
+  ['链接前的 👉', '点这里付款 👉 /pay/ord_a6\n名额以付款为准', '点这里付款 👉 /pay/ord_a6', '点下方卡片付款'],
+  // 标签的其他说法
+  ['👉 立即支付', '订单已创建～\n👉 立即支付：/pay/ord_a7\n名额以付款为准', '👉 立即支付：/pay/ord_a7\n', ''],
+  ['您的专属支付链接', '订单已创建～\n这是您的专属支付链接：/pay/ord_a8\n名额以付款为准', '这是您的专属支付链接：/pay/ord_a8\n', ''],
+  ['订单支付链接', '订单已创建～\n· 订单支付链接：/pay/ord_a9\n名额以付款为准', '· 订单支付链接：/pay/ord_a9\n', ''],
+  ['行程标签', '贵州这条很合适～\n行程：/proposal/r-guizhou/2\n人均 15800 起', '行程：/proposal/r-guizhou/2\n', ''],
+  // 带序号的整行删会断号，改成指着卡片
+  ['带序号的标签', '1. 线路：三亚 5 日\n2. 支付链接：/pay/ord_b1\n3. 名额以付款为准', '：/pay/ord_b1', '见下方卡片'],
+  ['点击此处', '请点击此处付款：/pay/ord_b2\n名额以付款为准', '点击此处付款：/pay/ord_b2', '点下方卡片付款'],
+  ['付款请点', '付款请点：/pay/ord_b3\n名额以付款为准', '付款请点：/pay/ord_b3', '付款请点下方卡片'],
+];
+const SITE_LINK = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/;
+for (const [name, body, from, to] of LEFTOVER_CASES) {
+  const raw = body.match(SITE_LINK)![0];
+  if (raw.startsWith('/proposal/')) check(`${name} 能做成卡片`, extractCard(body, BASE)?.raw === raw);
+  const want = body.replace(from, to);
+  const got = stripLink(body, raw);
+  check(`${name} 剥离后不留指向空气的标签/指代`, body.includes(from) && got === want, `得到「${got}」`);
+  check(`${name}「见下方卡片」不重复`, (got.match(/见下方卡片/g) ?? []).length <= 1, `得到「${got}」`);
+}
+
+// 网页模拟器（public/chat.html）有同一逻辑的副本，支付卡片同样排在正文之后：
+// 两边规则一旦分叉，同一条回复在网页和微信里读起来就不一样。拿页面里的函数真跑一遍对照
+{
+  const chat = fs.readFileSync(path.resolve('public/chat.html'), 'utf8');
+  const fnSrc = /function stripLink\(body, raw\) \{[\s\S]*?\n {2}\}/.exec(chat)?.[0];
+  check('chat.html 有 stripLink()', !!fnSrc);
+  if (fnSrc) {
+    const webStrip = new Function(`${fnSrc}; return stripLink;`)() as (b: string, r: string) => string;
+    for (const [name, body] of LEFTOVER_CASES) {
+      const raw = body.match(SITE_LINK)![0];
+      check(`${name} 网页与企微剥离结果一致`, webStrip(body, raw) === stripLink(body, raw), `网页「${webStrip(body, raw)}」`);
+    }
+  }
+}
+
+// ---------------- 支付卡片摘要的出发日期 ----------------
+// 正文写「10月12日出发」，紧跟的卡片却是「2026-10-12 出发」，像系统单据（实测 c1 第2、3遍）
+{
+  const y = new Date().getFullYear();
+  const mk = (departDate: string) =>
+    createOrder({ sessionId: 'wecom:selftest-card', routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+  const same = extractCard(`· 支付链接：/pay/${mk(`${y}-10-12`).id}`, BASE);
+  check('支付卡片日期写成「10月12日出发」', same?.desc === '2 位出行 · 10月12日出发 · 合计 ¥34,760', `得到「${same?.desc}」`);
+  const next = extractCard(`· 支付链接：/pay/${mk(`${y + 1}-01-05`).id}`, BASE);
+  check('跨年的出发日期带年份', next?.desc === `2 位出行 · ${y + 1}年1月5日出发 · 合计 ¥34,760`, `得到「${next?.desc}」`);
 }
 
 // ======================================================================
@@ -177,7 +264,9 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   const ep = new URL(String(input)).pathname.replace(/^\/cgi-bin\//, '');
   const json = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
   if (ep === 'gettoken') return json({ errcode: 0, access_token: 'selftest-token', expires_in: 7200 });
-  const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
+  // 缩略图上传一律失败：卡片发不出去时的退路见下方「缩略图传不上去」
+  if (ep === 'media/upload') return json({ errcode: 40004, errmsg: 'selftest: 缩略图上传失败' });
+  const body =(init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
   if (ep === 'kf/sync_msg') {
     syncCalls += 1;
     const [g, i] = String(body.cursor ?? '').split(':');
@@ -200,6 +289,21 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   if (ep === 'kf/customer/batchget') return json({ errcode: 0, customer_list: [] });
   return json({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
 }) as typeof fetch;
+
+// ---------------- 缩略图传不上去：正文原样发（链接留在原处），不能说「见下方卡片」 ----------------
+// 此前先发了改成「见下方卡片」的正文才去传缩略图；缩略图一失败（假服务端对 media/upload 回错误码），
+// 客户读到「见下方卡片」，下方却是一条纯文本链接
+{
+  process.env.PUBLIC_BASE_URL = BASE;
+  const from = sent.length;
+  const body = '详细方案书在这儿，逐日行程都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起';
+  const ok = await wecomAdapter.push('wecom:u-thumbfail', body);
+  process.env.PUBLIC_BASE_URL = '';
+  const msgs = sent.slice(from).filter((m) => m.to === 'u-thumbfail').map((m) => m.content);
+  check('缩略图失败：照样送达', ok);
+  check('缩略图失败：正文不提卡片', msgs.length > 0 && msgs.every((m) => !m.includes('卡片')), JSON.stringify(msgs));
+  check('缩略图失败：一条消息、链接留在原处', msgs.length === 1 && msgs[0] === body.replace('/proposal/', `${BASE}/proposal/`), JSON.stringify(msgs));
+}
 
 let seq = 0;
 function customerMsg(uid: string, content: string, ageMs = 0, msgtype = 'text'): FakeMsg {

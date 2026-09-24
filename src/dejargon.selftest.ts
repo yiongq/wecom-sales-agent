@@ -310,6 +310,12 @@ eq('空字符串', dejargon('', S), '');
     // 问的是我们公司，不是商务出行（此前命中「公司」被记成商务客群）
     ['你们公司在哪里', undefined],
     ['贵公司靠谱吗', undefined],
+    // 说的是不同行的人：爸妈在家带娃，出门的是小两口（此前认成银发，还配了长辈替代线）
+    ['我和老婆去西藏，爸妈在家带娃', undefined],
+    ['我和老婆去西藏 爸妈帮忙带孩子', undefined],
+    // 不同行的只是那一句，同行的长辈照样认；「不去高原」是要求，不是不去
+    ['带爸妈去三亚 孩子在家', '银发'],
+    ['我爸妈不去高原，想去三亚', '银发'],
   ];
   for (const [text, want] of cases) {
     const got = detectSegment(text);
@@ -454,6 +460,23 @@ eq('空字符串', dejargon('', S), '');
   eq('每人八千', String('每人八千够吗'.match(BUDGET_RE)?.[0]), '每人八千');
   eq('阿拉伯数字照旧', String('预算每人3万'.match(BUDGET_RE)?.[0]), '每人3万');
   eq('海拔不是预算', String('海拔三千米会不会高反'.match(BUDGET_RE)?.[0]), 'undefined');
+}
+
+// ---------------- 工具提示会被模型原样照抄：新加的提示同样不能带内部用语 ----------------
+// 盲评里模型把工具提示整句抄进回复（「库里没有…」），所以 tools.ts 的提示只用对客户也说得出口的词。
+// 银发替代、转人工这几段是后加的长提示，逐条过一遍，防以后改提示时顺手写回「库里 / 系统」
+{
+  const { searchRoutes, HANDOFF_NOTE } = await import('./tools.js');
+  const rows = [
+    ...(await searchRoutes({ destination: '西藏', segment: '银发' })),
+    ...(await searchRoutes({ destination: '云南', segment: '银发' })), // 银发标签线上的海拔提醒（altitudeNote）
+    ...(await searchRoutes({ destination: '北欧', segment: '银发' })), // 只是节奏不合适、不配替代的那种
+  ] as Record<string, unknown>[];
+  const hints = [HANDOFF_NOTE, ...rows.flatMap((r) => [r.segmentMismatch, r.alternative, r.altitudeNote])]
+    .filter((h): h is string => typeof h === 'string');
+  eq('银发标签线的海拔提醒在', String(hints.some((h) => h.includes('能带长辈'))), 'true');
+  eq('银发替代与转人工提示都在', String(hints.some((h) => h.includes('替代线路')) && hints.length > 2), 'true');
+  for (const h of hints) eq(`提示不带内部用语「${h.slice(0, 16)}…」`, String(/库里|产品库|线路库|系统|查库/.test(h)), 'false');
 }
 
 if (fails.length) {

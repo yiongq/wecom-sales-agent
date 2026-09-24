@@ -100,7 +100,8 @@
     "segments": [
       "蜜月",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 4700
   },
   {
     "aliases": [
@@ -190,9 +191,13 @@
       "亲子",
       "家庭",
       "银发"
-    ]
+    ],
+    "maxAltitude": 3550
   },
   {
+    "aliases": [
+      "藏区"
+    ],
     "id": "r-tibet-lux",
     "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
     "destination": "西藏",
@@ -297,9 +302,13 @@
     "segments": [
       "蜜月",
       "商务"
-    ]
+    ],
+    "maxAltitude": 5190
   },
   {
+    "aliases": [
+      "藏区"
+    ],
     "id": "r-tibet-mid",
     "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
     "destination": "西藏",
@@ -389,9 +398,13 @@
     ],
     "segments": [
       "家庭"
-    ]
+    ],
+    "maxAltitude": 5200
   },
   {
+    "aliases": [
+      "滇西北"
+    ],
     "id": "r-yunnan-lux",
     "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
     "destination": "云南",
@@ -489,9 +502,13 @@
     "segments": [
       "蜜月",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 4200
   },
   {
+    "aliases": [
+      "滇西北"
+    ],
     "id": "r-yunnan-mid",
     "title": "云南 丽江大理·洱海古城 6 日",
     "destination": "云南",
@@ -576,7 +593,8 @@
       "蜜月",
       "家庭",
       "银发"
-    ]
+    ],
+    "maxAltitude": 4500
   },
   {
     "id": "r-guizhou",
@@ -663,7 +681,8 @@
       "家庭",
       "亲子",
       "银发"
-    ]
+    ],
+    "maxAltitude": 1200
   },
   {
     "aliases": [
@@ -747,7 +766,8 @@
       "银发",
       "亲子",
       "商务"
-    ]
+    ],
+    "maxAltitude": 500
   },
   {
     "id": "r-beijing",
@@ -826,7 +846,8 @@
       "家庭",
       "银发",
       "商务"
-    ]
+    ],
+    "maxAltitude": 1150
   },
   {
     "id": "r-xinjiang-lux",
@@ -940,7 +961,8 @@
     "segments": [
       "家庭",
       "商务"
-    ]
+    ],
+    "maxAltitude": 4100
   },
   {
     "aliases": [
@@ -1022,7 +1044,8 @@
       "亲子",
       "家庭",
       "银发"
-    ]
+    ],
+    "maxAltitude": 50
   },
   {
     "id": "r-xinjiang",
@@ -1127,7 +1150,8 @@
     ],
     "segments": [
       "家庭"
-    ]
+    ],
+    "maxAltitude": 3500
   },
   {
     "aliases": [
@@ -1215,7 +1239,8 @@
     "segments": [
       "蜜月",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 600
   },
   {
     "id": "r-japan",
@@ -1310,7 +1335,8 @@
       "家庭",
       "银发",
       "商务"
-    ]
+    ],
+    "maxAltitude": 100
   },
   {
     "aliases": [
@@ -1414,9 +1440,13 @@
       "蜜月",
       "亲子",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 550
   },
   {
+    "aliases": [
+      "马代"
+    ],
     "id": "r-maldives",
     "title": "马尔代夫 Soneva Jani 蜜月 6 日",
     "destination": "马尔代夫",
@@ -1499,7 +1529,8 @@
     "segments": [
       "蜜月",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 10
   },
   {
     "aliases": [
@@ -1610,9 +1641,13 @@
       "亲子",
       "家庭",
       "银发"
-    ]
+    ],
+    "maxAltitude": 3571
   },
   {
+    "aliases": [
+      "马代"
+    ],
     "id": "r-maldives-mid",
     "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
     "destination": "马尔代夫",
@@ -1694,9 +1729,13 @@
     "segments": [
       "蜜月",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 10
   },
   {
+    "aliases": [
+      "马代"
+    ],
     "id": "r-maldives-lite",
     "title": "马尔代夫 中央格兰德·一价全包海岛5日",
     "destination": "马尔代夫",
@@ -1771,7 +1810,8 @@
     "segments": [
       "蜜月",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 10
   },
   {
     "id": "r-japan-family",
@@ -1861,6 +1901,7 @@
     "segments": [
       "亲子",
       "家庭"
-    ]
+    ],
+    "maxAltitude": 100
   }
 ]

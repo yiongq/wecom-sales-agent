@@ -112,6 +112,11 @@ export interface Route {
   /** 目的地别名：客户/模型常用、但标题和 destination 里都没有的叫法（海南→三亚、川西→四川）。
    *  search_routes 与引擎的目的地识别共用，只放这条线真正覆盖的地方，不做模糊扩写 */
   aliases?: string[];
+  /** 全程到达的最高海拔（米），逐条按行程核过：行程里写了数的照写（「四千五百米观景台」），
+   *  没写数的按该地公认海拔（那根拉山口 5190、斯芬克斯观景台 3571）。
+   *  银发的适配标签管不到单日的索道和垭口——丽江大理线打着银发标签，第 2 天冰川大索道照样上 4500 米——
+   *  给长辈挑「全程低海拔」的替代线路时只认这个数（见 tools.ts lowlandAlternatives） */
+  maxAltitude?: number;
   /** 逐日行程。定制旅行的核心交付物是行程书，不能让模型凭 highlights 现编 */
   itinerary?: { day: number; title: string; detail: string; hotel: string; meals: string }[];
   inclusions?: string[];

@@ -889,8 +889,10 @@ const searchYunnan: Step[] = [
     { content: '西藏海拔高，老人家去我得先给您把住。' },
   ]);
   assert.equal(argsOf(g6).pop()!.segment, '银发', '模型传的银发要留着');
-  const g6Rows = JSON.parse(toolResults().split('\n').pop()!) as { id: string; segmentMismatch?: string }[];
-  assert.ok(g6Rows.length > 0 && g6Rows.every((r) => r.segmentMismatch), `西藏线要带上不适合老人的提示（实际 ${JSON.stringify(g6Rows).slice(0, 200)}）`);
+  const g6Rows = JSON.parse(toolResults().split('\n').pop()!) as { id: string; segmentMismatch?: string; alternative?: string }[];
+  // 西藏线之后附的是给长辈的低海拔替代（见 U3），它们不带 segmentMismatch
+  const g6Tibet = g6Rows.filter((r) => !r.alternative);
+  assert.ok(g6Tibet.length > 0 && g6Tibet.every((r) => r.id.startsWith('r-tibet') && r.segmentMismatch), `西藏线要带上不适合老人的提示（实际 ${JSON.stringify(g6Rows).slice(0, 200)}）`);
   assert.equal(getSession(g6)!.profile.segment, '银发', '模型认出的银发记进画像');
   // 常见的带老人说法引擎自己要认得：模型没传也按银发查，四川那条高原线不能出现
   for (const [tag, say] of [['g6b', '我们老两口想去四川玩'], ['g6c', '我父亲80岁了，想去四川'], ['g6d', '想带我母亲去四川看看']]) {
@@ -1135,6 +1137,293 @@ const searchYunnan: Step[] = [
   const wire = JSON.stringify(all);
   assert.ok(!wire.includes('qlogo') && !wire.includes('打一折'), '昵称、头像不能进 prompt');
   assert.ok(noteOf(t4).includes('"destinationInterest":"贵州"'), '业务画像照常带上');
+}
+
+// ======================================================================
+// U：用户真机实测（2026-09）重放出的问题——转人工话术、库外目的地、银发替代、带娃人数口径、转人工后的许诺
+// ======================================================================
+{
+  /** 最近一次发给假模型的请求里，name 这个工具最后一次调用的结果 */
+  const toolResult = (name: string): unknown => {
+    const msgs = requests[requests.length - 1]?.messages ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const call = msgs[i].tool_calls?.find((c) => c.function.name === name);
+      if (!call) continue;
+      const res = msgs.slice(i + 1).find((m) => m.role === 'tool' && m.tool_call_id === call.id);
+      return res?.content ? JSON.parse(res.content) : undefined;
+    }
+    return undefined;
+  };
+  type Row = Record<string, unknown> & { id: string };
+
+  // U1：只说「转人工」不道歉；刚下过单的把订单交代给顾问，待支付的说明付款入口仍有效；只有投诉才道歉
+  {
+    const plain = await fakeSay(newSid('u1a'), '转人工', []);
+    assert.equal(plain.stage, 'handoff');
+    assert.ok(!/抱歉|不好的体验/.test(plain.text) && plain.text.includes('转接资深顾问'), `只说转人工不该道歉（实际：${plain.text}）`);
+
+    const { getOrCreateSession } = await import('./store.js');
+    const withOrder = async (tag: string, status: 'pending_payment' | 'paid', channel = 'wecom'): Promise<string> => {
+      const sid = channel === 'wecom' ? newSid(tag) : `sim-selftest-${tag}-${Date.now().toString(36)}`;
+      getOrCreateSession(sid, channel);
+      const o = createOrder({
+        sessionId: sid, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate: '2026-12-10', totalPrice: 34760,
+      });
+      if (status === 'paid') markOrderPaid(o.id);
+      getSession(sid)!.orderIds.push(o.id);
+      return sid;
+    };
+    const r2 = await fakeSay(await withOrder('u1b', 'pending_payment'), '转人工', []);
+    assert.ok(!/抱歉/.test(r2.text), `刚下完单说转人工不该道歉（实际：${r2.text}）`);
+    assert.ok(r2.text.includes('《三亚亲子奢华度假 5 日》') && r2.text.includes('付款卡片仍然有效'), `待支付订单要交代给顾问、说明付款卡片仍有效（实际：${r2.text}）`);
+    const r3 = await fakeSay(await withOrder('u1c', 'pending_payment', 'simulator'), '人工客服', [], 'simulator');
+    assert.ok(r3.text.includes('付款链接仍然有效'), `网页上说的是付款链接（实际：${r3.text}）`);
+    const r4 = await fakeSay(await withOrder('u1d', 'pending_payment'), '我要退款', []);
+    assert.ok(r4.text.includes('退改由资深顾问') && !/抱歉|仍然有效/.test(r4.text), `退款：交给顾问处理，不道歉、不提付款（实际：${r4.text}）`);
+    const r5 = await fakeSay(await withOrder('u1e', 'paid'), '转人工', []);
+    assert.ok(r5.text.includes('您预订的《三亚亲子奢华度假 5 日》') && !r5.text.includes('付款'), `已付款的只说顾问跟进（实际：${r5.text}）`);
+    const r6 = await fakeSay(newSid('u1f'), '你们这是欺骗消费者，我要投诉', []);
+    assert.ok(r6.text.includes('非常抱歉'), `投诉照旧道歉（实际：${r6.text}）`);
+    for (const r of [plain, r2, r3, r4, r5, r6]) assert.ok(!/AI|机器人/.test(r.text), '转人工确认不主动提 AI');
+  }
+
+  // U2：库外目的地（南极）——模型传不传 query，结果都是最接近的现成线路 + destinationMiss；坚持才转人工
+  {
+    for (const args of [{ destination: '南极' }, { destination: '南极', query: '想去南极旅游' }]) {
+      const got = await searchRoutes(args, { customerText: '想去南极' }) as Row[];
+      assert.ok(got.length > 0, `库外目的地不能返回空列表（参数 ${JSON.stringify(args)}）`);
+      assert.ok(got.every((r) => String(r.destinationMiss ?? '').includes('南极') && String(r.destinationMiss).includes('坚持')),
+        '每条都要标明「不是南极」，并写明坚持才转人工');
+    }
+    // 走一遍引擎：模型只传了 destination，拿到的仍是非空结果，没被转人工
+    const sid = newSid('u2');
+    const r = await fakeSay(sid, '想去南极', [
+      { toolCalls: [{ name: 'search_routes', args: { destination: '南极' } }] },
+      { content: '南极我们暂时没有现成线路，最接近的是北欧芬兰极光这条。您计划什么时候出发、几位？' },
+    ]);
+    const rows = toolResult('search_routes') as Row[];
+    assert.ok(Array.isArray(rows) && rows.length > 0 && rows.every((x) => x.destinationMiss), `模型没传 query 也要拿到最接近的线路（实际：${JSON.stringify(rows)?.slice(0, 120)}）`);
+    assert.ok(r.stage !== 'handoff' && !getSession(sid)!.handedOver, '推荐替代时不转人工');
+    assert.ok(getSession(sid)!.lastShownRoutes?.length, '推荐过的替代线路要记进会话，客户下一轮能直接报价');
+
+    // 口径写进 SOP 与工具描述：不再「超出现有线路就转人工」，坚持才转
+    const sys = __engineTest.buildSystemPrompt();
+    assert.ok(!sys.includes('明显超出我们现有线路的范围'), 'SOP 不能再让「超出现有线路」直接转人工');
+    assert.ok(sys.includes('明确坚持只要原目的地'), 'SOP 要写明坚持才转人工');
+    const { toolDefs } = await import('./tools.js');
+    assert.ok(toolDefs.find((t) => t.function.name === 'handoff_to_human')!.function.description.includes('坚持'), 'handoff 工具描述同一口径');
+
+    // 客户坚持：模型转人工，reason 记进后台；转完还许诺「随时告诉我」的那句删掉
+    const h = await fakeSay(sid, '就要去南极，别的不考虑', [
+      { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户坚持去南极，出行时间、人数未知' } }] },
+      { content: '明白，南极这类定制我马上为您转接资深顾问评估，稍后会联系您。\n\n如果您也想听听国内的高端线路，随时告诉我，我可以马上帮您查～' },
+    ]);
+    assert.equal(h.handoff, true);
+    assert.ok(String((toolResult('handoff_to_human') as Row)?.note ?? '').includes('不会再回复'), 'handoff 工具结果要告诉模型之后不会再回复');
+    assert.ok(!/随时告诉我|马上帮您查/.test(h.text) && h.text.includes('转接资深顾问'), `转人工后不能留兑现不了的许诺（实际：${h.text}）`);
+    assert.ok(getSession(sid)!.messages.some((m) => m.role === 'system' && m.content.includes('坚持去南极')), '转人工原因要记进会话，后台顾问看得到');
+    // 整条都是许诺时补一句顾问会联系，不能发空
+    const h2 = await fakeSay(newSid('u2b'), '要真人', [
+      { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户要真人' } }] },
+      { content: '有问题随时找我～' },
+    ]);
+    assert.ok(h2.text.includes('顾问') && !h2.text.includes('随时找我'), `只剩许诺时换成顾问会联系（实际：${h2.text}）`);
+
+    // 「境外」是范围不是地名：不能说成「我们暂时没有境外线路」
+    const abroad = await searchRoutes({ destination: '境外' }) as Row[];
+    assert.ok(abroad.length && abroad.every((x) => !x.destinationMiss && !(x.tags as string[]).includes('国内')), '「境外」按非国内线路查');
+  }
+
+  // U3：带爸妈去西藏——结果里直接附全程低海拔的替代线路；高原线的提示讲真实海拔、不说「没有减压安排」
+  {
+    const { loadRoutes, LOWLAND_MAX_ALTITUDE } = await import('./tools.js');
+    const routes = loadRoutes();
+    const altOf = new Map(routes.map((r) => [r.id, r.maxAltitude]));
+    // maxAltitude 要逐条核过：行程里写到的海拔（≥1000 米的）不能高过它
+    const cn: Record<string, number> = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    const cnNum = (s: string): number => {
+      if (/^\d+$/.test(s)) return Number(s);
+      let total = 0, cur = 0;
+      for (const ch of s) {
+        if (ch in cn) cur = cn[ch];
+        else { total += (cur || 1) * ({ 十: 10, 百: 100, 千: 1000 }[ch] ?? 0); cur = 0; }
+      }
+      return total + cur;
+    };
+    for (const r of routes) {
+      assert.ok(typeof r.maxAltitude === 'number', `${r.id} 缺 maxAltitude`);
+      const text = [...r.highlights, ...(r.itinerary ?? []).map((d) => d.detail)].join('。');
+      for (const m of text.matchAll(/([零一二两三四五六七八九十百千\d]+)\s*米/g)) {
+        const v = cnNum(m[1]);
+        if (v >= 1000) assert.ok(v <= r.maxAltitude!, `${r.id} 行程写到 ${m[0]}，maxAltitude=${r.maxAltitude} 偏低`);
+      }
+    }
+    assert.ok(LOWLAND_MAX_ALTITUDE <= 3000);
+
+    const got = await searchRoutes({ destination: '西藏', segment: '银发' }) as Row[];
+    const tibet = got.filter((x) => x.segmentMismatch);
+    const alts = got.filter((x) => x.alternative);
+    assert.ok(tibet.length && tibet.every((x) => /^r-tibet/.test(x.id)), '点名的西藏线照样摆出来并标明不适配');
+    assert.ok(alts.length >= 1 && alts.length <= 2, `要附 1~2 条替代线路（实际 ${alts.map((x) => x.id)}）`);
+    for (const a of alts) {
+      assert.ok(!['r-yunnan-lux', 'r-sichuan-lux', 'r-yunnan-mid', 'r-sichuan-mid'].includes(a.id) && !/^r-tibet/.test(a.id), `替代不能是要上三四千米的线（${a.id}）`);
+      assert.ok((altOf.get(a.id) ?? Infinity) < 3000, `替代线路全程要低于 3000 米（${a.id}=${altOf.get(a.id)}）`);
+      assert.ok(typeof a.priceFrom === 'number' && (a.highlights as string[]).length === 1, '替代给出人均起价和一条亮点');
+    }
+    assert.equal(alts[0].id, 'r-guizhou', '西藏的替代先挑同在西南的贵州');
+    for (const x of tibet) {
+      const hint = String(x.segmentMismatch);
+      assert.ok(/约 \d{4} 米/.test(hint), `提示要带上真实海拔（实际：${hint}）`);
+      assert.ok(hint.includes('不要说成没有减压安排') && !hint.includes('再问他要不要看'), '不能引导是非问句，也不能让模型说自家没有减压安排');
+      assert.ok((x.highlights as string[]).some((h) => /供氧|缓降/.test(h)), `${x.id} 要带上供氧/缓降那条亮点`);
+    }
+    // 新疆的替代先挑同在西北的西安
+    const xj = (await searchRoutes({ destination: '新疆', segment: '银发' }) as Row[]).filter((x) => x.alternative);
+    assert.equal(xj[0]?.id, 'r-xian', '新疆的替代先挑西安');
+
+    // 走一遍引擎：「带我爸妈去西藏」预取的结果里就带着替代，模型一次往返就能摆出具体线路和价格
+    const sid = newSid('u3');
+    await fakeSay(sid, '带我爸妈去西藏', [{ content: '带爸妈去西藏海拔风险大，更推荐贵州这条，人均 15800 起。爸妈多大年纪？' }]);
+    const pre = toolResult('search_routes') as Row[];
+    assert.ok(pre?.some((x) => x.id === 'r-guizhou' && x.alternative), '预取结果里要有替代线路');
+    assert.ok(getSession(sid)!.lastShownRoutes?.some((r) => r.id === 'r-guizhou'), '替代线路记进会话，下一轮能直接报价');
+  }
+
+  // U4：提过带娃、只报了人数——报价/下单的工具结果里附人数口径；说清了大人小孩的不附
+  {
+    const sid = newSid('u4');
+    await fakeSay(sid, '不用倒时差 带娃能玩水的地方', [
+      { toolCalls: [{ name: 'search_routes', args: { query: '不用倒时差 带娃能玩水的地方', segment: '亲子' } }] },
+      { content: '带娃玩水最对味的是三亚这条。您几位出行、大概什么时候走？' },
+    ]);
+    await fakeSay(sid, '两位 12号', [
+      { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-sanya', travelers: 2 } }] },
+      { content: '三亚这条的报价给您出好了。' },
+    ]);
+    const q = toolResult('create_quote') as Row;
+    assert.ok(String(q?.headcountNote ?? '').includes('先按 2 位报的'), `带娃只报了人数，报价要附口径提醒（实际：${JSON.stringify(q)}）`);
+    const departDate = getSession(sid)!.lastQuote?.departDate ?? new Date(Date.now() + 40 * 864e5).toISOString().slice(0, 10);
+    await fakeSay(sid, '可以', [
+      { toolCalls: [{ name: 'create_order', args: { routeId: 'r-sanya', travelers: 2, departDate } }] },
+      { content: '好的，这单给您下好了。' },
+    ]);
+    const o = toolResult('create_order') as Row;
+    assert.ok(o?.orderId && String(o.headcountNote ?? '').includes('这单按 2 位出行下的'), `下单时要复述人数口径（实际：${JSON.stringify(o)}）`);
+
+    for (const [tag, first, n] of [
+      ['u4b', '两大一小，想去三亚玩水', 3], ['u4c', '想去三亚，一家三口', 3], ['u4d', '想去三亚，两个人，不带孩子', 2], ['u4e', '想去三亚', 2],
+      ['u4f', '我和儿子两个人，想去三亚', 2],
+    ] as const) {
+      const s2 = newSid(tag);
+      await fakeSay(s2, first, [{ content: '三亚这条很合适。' }]);
+      await fakeSay(s2, '报个价', [
+        { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-sanya', travelers: n } }] },
+        { content: '报价给您出好了。' },
+      ]);
+      assert.equal((toolResult('create_quote') as Row)?.headcountNote, undefined, `「${first}」人数已说清，不附口径提醒`);
+    }
+  }
+  // U5：复核找出的漏洞——取消/改单时不催付款、转人工那轮的护栏兜底、人数已说清的带娃说法、银发标签管不到的索道、
+  // 简称和大区、标签滤空、同句里的许诺、不同行的爸妈、境外节奏不合适不配国内替代、行程里点名的垭口海拔
+  {
+    const { getOrCreateSession } = await import('./store.js');
+    const { loadRoutes, LOWLAND_MAX_ALTITUDE } = await import('./tools.js');
+    const routes = loadRoutes();
+    const altOf = new Map(routes.map((r) => [r.id, r.maxAltitude ?? Infinity]));
+    const destOf = new Map(routes.map((r) => [r.id, r.destination]));
+
+    // ① 转人工那句里就说了要取消、改日期/人数：按退改口径回，不能说「付款卡片仍然有效」
+    for (const [i, said] of ['转人工，我想取消订单', '转人工 我不想去了', '能转人工吗我想改日期', '转人工，想换个出发时间', '人工客服，订单人数要改成3个'].entries()) {
+      const sid = newSid(`u5a${i}`);
+      getOrCreateSession(sid, 'wecom');
+      const o = createOrder({ sessionId: sid, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate: '2026-12-10', totalPrice: 34760 });
+      getSession(sid)!.orderIds.push(o.id);
+      const r = await fakeSay(sid, said, []);
+      assert.ok(r.handoff && !/仍然有效|付款/.test(r.text) && r.text.includes('《三亚亲子奢华度假 5 日》'), `「${said}」不能催付款（实际：${r.text}）`);
+    }
+    // 还没下单的人说要换线路：没有可「退改」的，照普通转人工回
+    const noOrder = await fakeSay(newSid('u5a9'), '转人工，想换条线路', []);
+    assert.ok(noOrder.text.includes('好的，马上为您转接资深顾问') && !noOrder.text.includes('退改'), `没订单不说退改（实际：${noOrder.text}）`);
+
+    // ② 模型自己转了人工、价格护栏又拦下编的价：兜底要交代已转顾问，不能让客户「告诉我线路和人数」
+    const hp = await fakeSay(newSid('u5b'), '就要去南极，别的不考虑', [
+      { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户坚持去南极' } }] },
+      { content: '明白，南极定制一般每人 12 万左右，我马上为您转接资深顾问评估，稍后会联系您。' },
+    ]);
+    assert.ok(hp.handoff && hp.text.includes('顾问') && !/告诉我|跟我说|12 万/.test(hp.text), `转人工那轮的价格兜底要交代顾问（实际：${hp.text}）`);
+
+    // ③ 大人小孩的组成已经说清的，不附「孩子几岁」的口径提醒；老两口嘴里的儿子女儿是成年人
+    for (const [tag, msgs, n] of [
+      ['u5c1', ['大人两个，小孩一个，想去三亚'], 3], ['u5c2', ['我们俩带个娃去三亚'], 3], ['u5c3', ['我和老公带女儿去三亚'], 3],
+      ['u5c4', ['两口子带一个孩子去三亚'], 3], ['u5c5', ['两个孩子，四个人，去三亚'], 4],
+      ['u5c6', ['女儿给我们老两口订的，想去三亚', '两位'], 2], ['u5c7', ['儿子让我们老两口出去走走，三亚', '2个人'], 2],
+    ] as const) {
+      const s2 = newSid(tag);
+      for (const m of msgs.slice(0, -1)) await fakeSay(s2, m, [{ content: '好的～' }]);
+      await fakeSay(s2, msgs[msgs.length - 1], [
+        { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-sanya', travelers: n } }] },
+        { content: '报价给您出好了。' },
+      ]);
+      assert.equal((toolResult('create_quote') as Row)?.headcountNote, undefined, `「${msgs.join(' → ')}」人数组成已说清，不附口径提醒`);
+    }
+
+    // ④ 打着银发标签、单日要上三四千米的线：结果里带海拔提醒；目的地我们没有时，推给长辈的只能是低海拔线
+    const yn = await searchRoutes({ destination: '云南', segment: '银发' }) as Row[];
+    assert.ok(yn.some((x) => x.id === 'r-yunnan-mid' && String(x.altitudeNote ?? '').includes('4500')), `丽江大理带长辈要提 4500 米那一段（实际：${JSON.stringify(yn).slice(0, 200)}）`);
+    for (const [dest, said] of [['冰岛', '想带爸妈去冰岛'], ['南极', '带我爸妈去南极']]) {
+      const got = await searchRoutes({ destination: dest, segment: '银发' }, { customerText: said }) as Row[];
+      assert.ok(got.length && got.every((x) => x.destinationMiss && altOf.get(x.id)! < LOWLAND_MAX_ALTITUDE),
+        `${dest}+银发：推给长辈的替代全程要低于 ${LOWLAND_MAX_ALTITUDE} 米（实际 ${got.map((x) => `${x.id}=${altOf.get(x.id)}`)}）`);
+    }
+
+    // ⑤ 简称和大区叫法：我们有的地方不能被说成「暂时没有」
+    for (const [dest, want] of [['马代', ['马尔代夫']], ['藏区', ['西藏']], ['滇西北', ['云南']], ['西北', ['新疆', '西安']], ['东南亚', ['巴厘岛']]] as const) {
+      const got = await searchRoutes({ destination: dest }, { customerText: `想去${dest}` }) as Row[];
+      assert.ok(got.length && got.every((x) => !x.destinationMiss && (want as readonly string[]).includes(destOf.get(x.id)!)),
+        `「${dest}」应直接命中 ${want.join('/')}（实际 ${got.map((x) => `${x.id}${x.destinationMiss ? '[miss]' : ''}`)}）`);
+    }
+
+    // ⑥ 目的地我们没有，模型顺手传了标签：标签只当偏好，不能把最接近的线路滤空
+    for (const tags of [['极地'], ['探险']]) {
+      const got = await searchRoutes({ destination: '南极', tags }, { customerText: '想去南极' }) as Row[];
+      assert.ok(got.length && got.every((x) => x.destinationMiss), `南极 + 标签 ${tags} 不能返回空列表`);
+    }
+
+    // ⑦ 转人工后的许诺和转接说明写在同一句里：只删许诺那几个小句；「再跟我说」也是许诺
+    for (const [tag, reply, keep, drop] of [
+      ['u5g1', '已为您转接资深顾问，稍后联系您，期间有任何问题随时告诉我～', '已为您转接资深顾问，稍后联系您～', /随时告诉我|期间/],
+      ['u5g2', '好的。南极这类行程需要顾问来定制。您先想想出行时间，有什么需要再跟我说哦～', '需要顾问来定制', /跟我说/],
+      ['u5g3', '已为您转接资深顾问，如果还想看别的线路，随时告诉我～', '已为您转接资深顾问～', /如果|随时/],
+    ] as const) {
+      const r = await fakeSay(newSid(tag), '就要去南极', [
+        { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户坚持去南极' } }] },
+        { content: reply },
+      ]);
+      assert.ok(r.text.includes(keep) && !drop.test(r.text), `转人工后同句里的许诺要删、转接说明要留（实际：${r.text}）`);
+    }
+
+    // ⑧ 说的是不同行的爸妈：不按银发查，不配长辈替代线
+    const s8 = newSid('u5h');
+    await fakeSay(s8, '我和老婆去西藏，爸妈在家带娃', [{ content: '西藏这两条线给您看看，您计划什么时候出发？' }]);
+    const pre8 = toolResult('search_routes') as Row[] | undefined;
+    assert.ok(!pre8?.some((x) => x.segmentMismatch || x.alternative), `爸妈不去，不能按银发劝退（实际：${JSON.stringify(pre8)?.slice(0, 160)}）`);
+    assert.notEqual(getSession(s8)!.profile.segment, '银发', '画像不能记成银发');
+
+    // ⑨ 境外线只是节奏不适合长辈（北欧极光）：不配国内低海拔替代（此前配的是三亚海滩）
+    const nordic = await searchRoutes({ destination: '北欧', segment: '银发' }) as Row[];
+    assert.ok(nordic.length && nordic.every((x) => x.segmentMismatch && !x.alternative) && !String(nordic[0].segmentMismatch).includes('alternative'),
+      `北欧+银发不配低海拔替代（实际 ${nordic.map((x) => x.id)}）`);
+
+    // ⑩ 行程里点名、但没写海拔数的垭口：maxAltitude 不能低于它的公认海拔
+    const NAMED_PASS: Record<string, number> = { 剪子弯山: 4659 };
+    for (const r of routes) {
+      const text = (r.itinerary ?? []).map((d) => d.detail).join('。');
+      for (const [pass, h] of Object.entries(NAMED_PASS)) {
+        if (text.includes(pass)) assert.ok(r.maxAltitude! >= h, `${r.id} 行程经过${pass}（约 ${h} 米），maxAltitude=${r.maxAltitude} 偏低`);
+      }
+    }
+  }
+  console.log('SELFTEST PASS: 实测问题（转人工按诉求 / 库外目的地走替代 / 银发低海拔替代 / 带娃人数口径 / 转人工后不许诺）');
 }
 
 assert.equal(scriptOverrun, 0, '假模型被多调了（脚本耗尽后仍有请求）');

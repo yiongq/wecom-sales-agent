@@ -126,7 +126,10 @@ export const toolDefs: ToolDef[] = [
     type: 'function',
     function: {
       name: 'handoff_to_human',
-      description: '转接人工顾问。客户明确要求人工、投诉、退款或连续两轮无法理解时调用。',
+      description:
+        '转接人工顾问。客户明确要求人工、投诉、退款或连续两轮无法理解时调用。' +
+        '客户想去的地方我们没有现成线路时先别调：先推荐最接近的现成线路，客户坚持只要原目的地才调，' +
+        'reason 里写清目的地、出行时间、人数。转人工后你不会再回复这位客户。',
       parameters: {
         type: 'object',
         properties: { reason: { type: 'string' } },
@@ -230,39 +233,128 @@ export interface SearchRoutesArgs {
 }
 
 /**
+ * 「全程低海拔」的上限（米）。高原反应一般从 2500 米上下开始出现，给长辈挑替代线路按这条线卡，
+ * 比银发标签严：丽江大理（冰川大索道 4500 米）、九寨黄龙（黄龙索道 3500 米）都打着银发标签，
+ * 刚以海拔为由劝退西藏，转头把它们当「海拔友好」推出去就是自相矛盾（实测说过香格里拉「海拔温和」，那条要翻 4200 米垭口）。
+ */
+export const LOWLAND_MAX_ALTITUDE = 2500;
+
+/** 国内几大片区。替代线路先挑同一片区的：想去西藏的客户，贵州的山地和少数民族人文比北京更接近他本来想看的 */
+const REGION: Record<string, string> = {
+  四川: '西南', 西藏: '西南', 云南: '西南', 贵州: '西南',
+  新疆: '西北', 西安: '西北', 北京: '华北', 三亚: '华南',
+};
+
+/**
+ * 银发客户点名的目的地没有适配的线路时，给 1~2 条带长辈走得了的国内替代线路。
+ * 此前结果里只有被劝退的那几条（实测「带我爸妈去西藏」3/3 只劝退、不给具体替代），模型只能空口说
+ * 「换个海拔友好的地方」，替代目的地靠它自己举——举出来的香格里拉要上 4200 米。
+ * 候选只认 maxAltitude（逐条按行程核过），不认银发标签；排序依次看：同一片区、主题标签重合、最佳季节重合、价位接近。
+ */
+function lowlandAlternatives(all: Route[], mismatched: Route[], max = 2): Route[] {
+  if (!mismatched.length) return [];
+  const shown = new Set(mismatched.map((r) => r.id));
+  const regions = new Set(mismatched.map((r) => REGION[r.destination]).filter(Boolean));
+  // 「国内」和目的地名这类标签人人都有，算进重合只会让排序失真
+  const themes = new Set(mismatched.flatMap((r) => r.tags).filter((t) => t !== '国内' && !(t in REGION)));
+  const months = new Set(mismatched.flatMap((r) => [...peakMonths(r.bestSeason)]));
+  const refPrice = Math.min(...mismatched.map((r) => r.priceFrom));
+  const score = (r: Route): number[] => [
+    Number(regions.has(REGION[r.destination])),
+    r.tags.filter((t) => themes.has(t)).length,
+    [...peakMonths(r.bestSeason)].filter((m) => months.has(m)).length,
+  ];
+  return all
+    .filter((r) =>
+      !shown.has(r.id) && r.segments?.includes('银发') && r.tags.includes('国内') &&
+      typeof r.maxAltitude === 'number' && r.maxAltitude < LOWLAND_MAX_ALTITUDE)
+    .map((r) => ({ r, s: score(r) }))
+    .sort((a, b) =>
+      a.s.reduce((d, v, i) => d || b.s[i] - v, 0) ||
+      Math.abs(a.r.priceFrom - refPrice) - Math.abs(b.r.priceFrom - refPrice))
+    .slice(0, max)
+    .map(({ r }) => r);
+}
+
+// 「出国 / 境外」说的是范围不是地名：没有哪条线叫「境外」，按关键词必然落空，落空就走 destinationMiss，
+// 让模型对客户说「我们暂时没有境外的现成线路」——日本、马尔代夫明明都在。按「国内」标签反选
+const ABROAD = /^(?:国外|境外|海外|出境|出国|国际)(?:游|线|线路|旅游)?$/;
+
+/** 境外线路所在的大区，只给「东南亚」「欧洲」这类叫法反查用（国内的见 REGION） */
+const REGION_ABROAD: Record<string, string> = {
+  巴厘岛: '东南亚', 马尔代夫: '南亚', 日本: '东亚', 北欧极光: '欧洲', 瑞士: '欧洲',
+};
+
+/**
+ * 大区叫法（「西北」「西南」「东南亚」）同理：说的是一片地方，按关键词对不上任何一条线，却不等于我们没有。
+ * 此前「西北」落空后语义召回出新疆、西安，再被标成「我们暂时没有西北的现成线路」——自己的主力线被说成没有。
+ * 按片区反查；不是大区叫法返回 null，照常按目的地关键词匹配
+ */
+function regionMatcher(q: string): ((r: Route) => boolean) | null {
+  const w = q.trim().replace(/(?:地区|片区|一带|那边|方向)$/, '');
+  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w;
+  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w;
+  return null;
+}
+
+/**
  * 召回 + 硬过滤 + 排序。
  * 有 query 且语义索引就绪时走「语义召回 → 硬条件过滤 → 按相似度排序」；
  * 否则退回关键词匹配 + 按价格升序（原行为，保证 embedding 不可用时功能不降级）。
+ * ctx.customerText 是客户这轮的原话：目的地我们没有、模型又没传 query 时，拿它补做语义召回（见下）。
  */
-export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<typeof summarize>[]> {
+export async function searchRoutes(
+  args: SearchRoutesArgs,
+  ctx: { customerText?: string } = {},
+): Promise<ReturnType<typeof summarize>[]> {
   const all = loadRoutes();
   let list = all;
   let order: Map<string, number> | null = null;
+  const byId = new Map(all.map((r) => [r.id, r]));
+  const recall = async (q: string): Promise<{ order: Map<string, number>; list: Route[] } | null> => {
+    const hits = await semanticRecall(q, 8);
+    if (!hits?.length) return null;
+    return {
+      order: new Map(hits.map((h, i) => [h.id, i])),
+      list: hits.map((h) => byId.get(h.id)).filter((r): r is Route => !!r),
+    };
+  };
 
   if (args.query?.trim() && indexReady()) {
-    const hits = await semanticRecall(args.query, 8);
-    if (hits?.length) {
-      order = new Map(hits.map((h, i) => [h.id, i]));
-      const byId = new Map(all.map((r) => [r.id, r]));
-      list = hits.map((h) => byId.get(h.id)).filter((r): r is Route => !!r);
-    }
+    const got = await recall(args.query);
+    if (got) ({ order, list } = got);
   }
 
   let destinationMiss = false;
   if (args.destination) {
     const q = args.destination;
+    const match = ABROAD.test(q.trim())
+      ? (r: Route) => !r.tags.includes('国内')
+      : regionMatcher(q) ?? ((r: Route) => matchesDestination(r, q));
     // 语义召回已按需求排过序，目的地在这里只当过滤条件；召回结果里没有该目的地时
     // 退回全量再按关键词过滤，避免语义召回把明确点名的目的地漏掉
-    const hit = list.filter((r) => matchesDestination(r, q));
-    const fromAll = hit.length ? hit : all.filter((r) => matchesDestination(r, q));
+    const hit = list.filter(match);
+    const fromAll = hit.length ? hit : all.filter(match);
     if (fromAll.length) list = fromAll;
-    // 库里确实没有这个目的地、但语义召回有结果：留着语义结果并标明「不是该目的地」。
-    // 此前这里一律变成空列表，连带把语义召回的结果也清掉了，模型两手空空。
-    else if (order) destinationMiss = true;
-    else list = [];
+    else {
+      // 我们确实没有这个目的地。模型传不传 query 是随机的，结果却天差地别：此前没传 query 就返回空列表，
+      // 模型两手空空，实测「想去南极」2/3 直接转了人工，AI 从此不再应答，演示第一句就断；
+      // 传了 query 的那 1/3 推荐了最接近的芬兰极光——这才是要的口径（sop.md 转人工条件）。
+      // 所以没传 query 时拿目的地和客户原话补做一次语义召回，两种传法走同一条路、结果形态一致。
+      if (!order && !args.query?.trim() && indexReady()) {
+        const got = await recall([q, ctx.customerText?.slice(0, 200)].filter(Boolean).join('。'));
+        if (got) ({ order, list } = got);
+      }
+      // 语义召回有结果：留着并标明「不是该目的地」。召回不可用（索引没建起来）时只能返回空列表
+      if (order) destinationMiss = true;
+      else list = [];
+    }
   }
   if (args.tags?.length) {
-    list = list.filter((r) => args.tags!.some((t) => r.tags.some((rt) => rt.includes(t))));
+    const tagged = list.filter((r) => args.tags!.some((t) => r.tags.some((rt) => rt.includes(t))));
+    // 目的地我们没有时，手里是按需求排好的语义结果，标签只当偏好：模型顺手传的「极地」「探险」
+    // 会把最接近的那几条全滤掉，又回到空列表——等于没走上面的补救
+    if (tagged.length || !destinationMiss) list = tagged;
   }
   // 客群处理，分两档——这个区别很重要，第一版没分导致线上评测直接挂了：
   //
@@ -275,11 +367,20 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
   //   线路删掉，让 AI 报不出价也成不了单（实测就是这么挂的）。所以只做排序加权，
   //   匹配的排前面，不匹配的仍然可选。
   let segmentMismatch = false;
+  const silver = (r: Route): boolean => !!r.segments?.includes('银发');
+  const lowland = (r: Route): boolean => typeof r.maxAltitude === 'number' && r.maxAltitude < LOWLAND_MAX_ALTITUDE;
   if (args.segment === '银发') {
-    const hit = list.filter((r) => r.segments?.includes('银发'));
+    const hit = list.filter(silver);
     if (hit.length) list = hit;
-    else if (args.destination) segmentMismatch = true;
-    else list = all.filter((r) => r.segments?.includes('银发'));
+    // 目的地我们本来就没有（destinationMiss）时，手里的是语义结果、不是客户点名的线路，没什么可「如实劝退」的
+    else if (args.destination && !destinationMiss) segmentMismatch = true;
+    else list = all.filter(silver);
+    // 目的地我们没有时只推荐排第一的那条，那条必须是长辈全程走得了的低海拔线。银发标签管不到单日的索道：
+    // 此前「带爸妈去冰岛」排第一的是九寨黄龙（索道上 3500 米），而且没有任何海拔提示
+    if (destinationMiss) {
+      const low = list.filter(lowland);
+      list = low.length ? low : all.filter((r) => silver(r) && lowland(r));
+    }
   }
   // 非银发客群只作为排序偏好，并入下面的最终排序（单独排会被最终排序冲掉）
   const preferSeg = args.segment && args.segment !== '银发' ? args.segment : null;
@@ -375,17 +476,65 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
     }
   }
   if (destinationMiss) {
+    const want = args.destination;
     for (const r of out) {
       (r as Record<string, unknown>).destinationMiss =
-        `我们暂时没有「${args.destination}」的现成线路，这条（${r.destination}）是按客户需求语义最接近的。` +
-        `照实说明，不要把它说成${args.destination}的线路。`;
+        `我们暂时没有「${want}」的现成线路，这条（${r.destination}）是按客户需求最接近的，越靠前越接近。` +
+        `照实说没有现成的${want}线路，只推荐排第一的这条：讲 1~2 个亮点、报人均起价，再问出行时间和几位出行（客户说过的别再问）。` +
+        `不要把它说成${want}的线路，也不要答应能去${want}；客户明确坚持只要${want}、别的不考虑，才转人工。`;
+    }
+  }
+  if (args.segment === '银发' && !segmentMismatch) {
+    for (const row of out) {
+      const r = byId.get(row.id);
+      if (!r || lowland(r) || r.maxAltitude === undefined) continue;
+      // 打着银发标签、单日却要上三四千米的线（丽江大理的冰川大索道 4500 米、九寨黄龙的索道 3500 米）：
+      // 能推，但海拔那一段得照实讲在前面。那一段写在哪条亮点里不一定，摘要只带前 3 条，全给模型
+      const rec = row as Record<string, unknown>;
+      rec.highlights = r.highlights;
+      rec.altitudeNote =
+        `这条能带长辈，但行程里有一段要上到约 ${r.maxAltitude} 米（见 highlights）。推荐时照实提一句这一段的海拔和随行备氧，` +
+        '顺带问长辈多大年纪、身体怎么样；不要说成全程海拔温和、没有高原段。';
     }
   }
   if (segmentMismatch) {
-    for (const r of out) {
-      (r as Record<string, unknown>).segmentMismatch =
-        `这条线不在「${args.segment}」适配范围内（适配：${r.segments.join('/')}）。` +
-        '照实告诉客户为什么不太合适，再问他要不要看更合适的目的地，不要装作没这回事。';
+    const mismatched = out.map((s) => byId.get(s.id)).filter((r): r is Route => !!r);
+    // 只有海拔不合适时才给低海拔替代。节奏不合适的多是境外线（北欧极光、马尔代夫），
+    // 替代候选却只有国内低海拔线：此前「带爸妈看极光」被推了三亚海滩，理由是「没有高原段」，风马牛不相及
+    const alts = lowlandAlternatives(all, mismatched.filter((r) => (r.maxAltitude ?? 0) >= LOWLAND_MAX_ALTITUDE));
+    const ask = '问长辈多大年纪、身体怎么样，不要问「要不要看看」这类是非问句。';
+    const offer = alts.length
+      ? '② 直接摆出结果里带 alternative 的第一条线路，讲 1 个亮点和人均起价；③ 问长辈多大年纪、身体怎么样。' +
+        '替代线路只能用带 alternative 的这几条，别的目的地一个都不要自己举（我们不少线路单日要坐索道、翻垭口上三四千米，' +
+        '说它们海拔温和就是说错）；不要问「要不要看看」这类是非问句。'
+      : `② ${ask}`;
+    for (const row of out) {
+      const r = byId.get(row.id);
+      if (!r) continue;
+      const alt = r.maxAltitude ?? 0;
+      const rec = row as Record<string, unknown>;
+      if (alt >= LOWLAND_MAX_ALTITUDE) {
+        // 供氧、缓降这类安排多在第 4 条亮点（藏线都是），摘要只带前 3 条时模型看不到，
+        // 实测就对客户说自家两条藏线「都没有针对长辈做高海拔减压设计」——替产品说了假话
+        rec.highlights = r.highlights;
+        rec.segmentMismatch =
+          `这条最高要到约 ${alt} 米，带长辈有高原反应的真实风险，不在「${args.segment}」适配范围内。回复按这个顺序：` +
+          '① 一句话照实讲清风险，海拔按这里和 highlights 说；highlights 里的供氧、缓降这些安排是真的，不要说成没有减压安排，' +
+          `只是对长辈仍有风险；${offer}`;
+      } else {
+        rec.segmentMismatch =
+          `这条线不在「${args.segment}」适配范围内（适配：${r.segments.join('/')}）。回复按这个顺序：` +
+          `① 按 highlights 里的行程节奏照实说为什么不太适合带长辈，不要编；② ${ask}`;
+      }
+    }
+    for (const r of alts) {
+      out.push({
+        ...summarize(r),
+        highlights: r.highlights.slice(0, 1),
+        alternative:
+          `给长辈的替代线路：全程最高约 ${r.maxAltitude} 米，没有高原段。推荐时报人均 ${r.priceFrom} 起，` +
+          '正式报价等人数定了再出。',
+      } as ReturnType<typeof summarize>);
     }
   }
   return out;
@@ -495,6 +644,14 @@ function pastDateError(s: string): string | null {
 }
 
 /**
+ * handoff_to_human 回给模型的话。转人工后引擎让 AI 彻底沉默（engine.ts handleMessageInner），模型却不知道：
+ * 实测转完还写「想听听别的线路随时告诉我，我可以马上帮您查～」，客户真回一句就没人应了。
+ */
+export const HANDOFF_NOTE =
+  '已转人工：这是你给这位客户的最后一条回复，之后由资深顾问接手，你不会再回复他。' +
+  '这条只安抚一句、说明顾问会尽快联系，不要再推荐线路或报价，也不要说「随时告诉我 / 随时找我 / 我马上帮您查」这类之后兑现不了的话。';
+
+/**
  * 进入转人工。引擎的各条转人工路径（明确诉求安全网、改行程护栏）和 handoff_to_human 工具
  * 都必须走这里：此前只有后台「接管」会记 stageBeforeHandoff，引擎触发的转人工（包括正则
  * 误伤）一律不记，顾问点「交还 AI」时只能反推阶段，recommend 的客户被打回 discovery。
@@ -533,7 +690,9 @@ export async function executeTool(
       // 引擎已用确定性正则把客群沉淀到 profile，这里兜底注入，模型显式传的优先。
       const a = args as SearchRoutesArgs;
       if (!a.segment && session.profile.segment) a.segment = session.profile.segment;
-      const found = await searchRoutes(a);
+      // 引擎在调工具前已把客户这句话记进会话，最后一条客户消息就是这轮的原话
+      const customerText = session.messages.filter((m) => m.role === 'customer').at(-1)?.content;
+      const found = await searchRoutes(a, { customerText });
       // 工具替模型算好的超预算差额记进会话：价格护栏据此认出「比您预算多 6,800 元」
       // 是工具给的数。只留最近几次搜索的，旧的差额早已不在对话焦点里
       const gaps = found
@@ -633,8 +792,12 @@ export async function executeTool(
     }
     case 'handoff_to_human': {
       enterHandoff(session);
+      const reason = String(args.reason ?? '').trim().slice(0, 200);
+      // 原因此前只回给了模型，接手的顾问在后台看不到客户要什么（「想去南极，10 月两位」），得从头翻聊天记录。
+      // system 消息只在后台显示，不发给客户、也不进模型历史
+      if (reason) session.messages.push({ role: 'system', content: `AI 已转人工：${reason}`, at: Date.now() });
       saveSession(session);
-      return JSON.stringify({ ok: true, reason: args.reason ?? '' });
+      return JSON.stringify({ ok: true, reason, note: HANDOFF_NOTE });
     }
     default:
       return JSON.stringify({ error: `未知工具: ${name}` });

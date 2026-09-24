@@ -378,6 +378,19 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   }
 }
 
+// ---------------- 支付页的摘要：出发日期与企微卡片同一写法 ----------------
+// 卡片写「10月12日出发」，同一笔订单的支付页 description / og:description 却是「2026-10-12 出发」
+{
+  const y = new Date().getFullYear();
+  const s = mkSession(simId(), 'simulator', '支付页日期');
+  for (const [departDate, want] of [[`${y}-10-12`, '10月12日出发'], [`${y + 1}-01-05`, `${y + 1}年1月5日出发`]] as const) {
+    const o = createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+    const html = await (await app.request(`/pay/${o.id}`)).text();
+    const desc = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? '';
+    check(`支付页摘要日期写成「${want}」`, desc === `2 位出行 · ${want} · 合计 ¥34,760`, desc);
+  }
+}
+
 if (fails.length) {
   console.error(`SERVER SELFTEST FAIL: ${fails.length} 项未通过`);
   for (const f of fails) console.error('  ✗ ' + f);
