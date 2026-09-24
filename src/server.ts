@@ -35,8 +35,8 @@ function adapterFor(channel: string): ChannelAdapter {
 
 // ---------------- 管理面鉴权 ----------------
 // 分两层，而不是一个「读写一起开关」的总闸：
-//   · 读：免密可看，但服务端只吐演示数据（种子会话 wecom:cust_* 与网页访客 sim-*）。
-//     真实企微客户会话在未登录时**根本不进入响应体**，不是靠前端隐藏。
+//   · 读：免密可看，但服务端只吐演示数据：种子会话 wecom:cust_*，外加请求者**本人**的网页访客会话。
+//     真实企微客户与其他访客的会话在未登录时**根本不进入响应体**，不是靠前端隐藏。
 //   · 写：接管 / 发消息 / 交还，以及所有走 LLM 计费的端点，一律要 ADMIN_PASS。
 //
 // 早先的写法是一个「免密公开」开关同时打开读和写。那种设计的问题不在默认值，而在于
@@ -45,8 +45,34 @@ function adapterFor(channel: string): ChannelAdapter {
 // 现在没有任何环境变量能放行写操作，配错的最坏结果是「后台不可用」，而不是「全网可写」。
 // 未配 ADMIN_PASS 时：读仍是演示模式（可用），写返回 503。
 
-/** 演示模式下可见的会话：种子演示会话与网页模拟器访客，绝不含真实企微客户。 */
-const DEMO_VISIBLE_RE = /^(?:wecom:cust_|sim-)/;
+/**
+ * 演示数据：种子会话与网页访客，绝不含真实企微客户。凭 ID 直读放行、启动自检不计入真实客户，都按它判断。
+ * 它**不是**列表的可见范围：此前列表按它过滤，sim-* 人人可见——演示链接一公开，任何人打开后台就能
+ * 翻陌生访客在网页里留的手机号，拿他们的订单号去点「已支付」。列表口径见 anonVisible。
+ */
+const DEMO_DATA_RE = /^(?:wecom:cust_|sim-)/;
+/** 种子演示会话：未登录人人可见，后台演示要有内容 */
+const SEED_SESSION_RE = /^wecom:cust_/;
+
+/**
+ * 访客「本人」的凭据：chat.html 把会话 id 存在同源 localStorage，admin.html 读出来经 x-sim-session 头带上。
+ * 访客一边在网页里聊、一边在作战室里实时看到自己那段对话——这个演示效果靠它保留。
+ *
+ * 只认满熵的 id（chat.html 与 /api/chat 生成的都是 24 位十六进制 = 96 bit）。列表接口跟着全站 SSE
+ * 变更信号高频刷新，挂不了 /api/sessions/:id 那样的查询限流（开着后台的访客会被自己刷到 429）；
+ * 能不限流的前提是这个头只接受猜不中的值。旧版 chat.html 的 id 是 Math.random 取 8 位 36 进制
+ * （约 41 bit），在这里一律不认——否则这个头就成了不限速的穷举探针。旧 id 照常能聊、能凭 id 直读，
+ * 只是后台不显示；chat.html 发现服务端已没有这段会话（404）时自动换成新格式，点「新会话」也会换。
+ * 只走请求头、不认查询参数：URL 会进反代访问日志。
+ */
+const OWN_SIM_RE = /^sim-[0-9a-f]{24,64}$/;
+
+/** 未登录时列表接口对这个请求可见的会话：种子演示会话 + 请求者本人的访客会话（id 完全一致才算）。 */
+function anonVisible(c: Context): (sessionId: string) => boolean {
+  const cred = c.req.header('x-sim-session') ?? '';
+  const own = OWN_SIM_RE.test(cred) ? cred : null;
+  return (id) => SEED_SESSION_RE.test(id) || id === own;
+}
 
 /** 请求是否携带有效管理凭据。只判定、不拒绝——供「免密只读、登录后全量」分层使用。 */
 function isAdminReq(c: Context): boolean {
@@ -76,7 +102,7 @@ async function adminAuth(c: Context, next: Next): Promise<Response | void> {
 /** 单会话读取：演示会话（种子/访客）凭自身不可猜的 ID 直读，真实客户会话必须登录。
  *  demo 分支额外走一道限流：ID 是凭据，不限流就等于允许慢速穷举。 */
 async function sessionReadAuth(c: Context, next: Next): Promise<Response | void> {
-  if (DEMO_VISIBLE_RE.test(c.req.param('id') ?? '')) return lookupLimit(c, next);
+  if (DEMO_DATA_RE.test(c.req.param('id') ?? '')) return lookupLimit(c, next);
   return adminAuth(c, next);
 }
 
@@ -271,7 +297,8 @@ app.get('/api/stream/:sessionId', lookupLimit, (c) => {
 app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.env.ADMIN_USER || 'admin' }));
 
 // 后台实时推送：数据变更时下发 change，前端据此拉取（替代轮询）。
-// 只推「变了」这个信号、不带任何数据，故免密——真正的数据仍由下面的读端点按登录态过滤。
+// 只推「变了」这个信号、不带任何数据（没有会话 id、没有原文），故免密——真正的数据仍由下面的读端点
+// 按登录态与本人凭据过滤。它因此也不需要访客凭据，凭据不必进 URL。
 // 也必须免密：EventSource 无法自定义请求头，带不了 Authorization。
 app.get('/api/admin/stream', (c) => {
   return streamSSE(c, async (stream) => {
@@ -298,11 +325,13 @@ app.get('/api/sessions/:id/suggestion', adminAuth, async (c) => {
   catch { return c.json({ suggestion: '' }); }
 });
 
-// 会话列表：未登录只返回演示会话。过滤发生在服务端——真实客户会话不进响应体，
-// 而不是前端拿到全量再隐藏（后者用 devtools 一看就穿）。
+// 会话列表：未登录只返回种子会话与本人的访客会话。过滤发生在服务端——真实客户和其他访客的会话
+// 不进响应体，而不是前端拿到全量再隐藏（后者用 devtools 一看就穿）。
 app.get('/api/sessions', (c) => {
   const all = listSessions();
-  return c.json(isAdminReq(c) ? all : all.filter((s) => DEMO_VISIBLE_RE.test(s.id)));
+  if (isAdminReq(c)) return c.json(all);
+  const visible = anonVisible(c);
+  return c.json(all.filter((s) => visible(s.id)));
 });
 
 app.get('/api/sessions/:id', sessionReadAuth, (c) => {
@@ -379,13 +408,16 @@ app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
 
 // ---------------- 订单与支付 ----------------
 
-// 订单列表：同会话列表，未登录只返回演示会话名下的订单
+// 订单列表：同会话列表口径。订单号是 /pay 的凭据、sessionId 是读对话全文的凭据，
+// 漏一条别人的订单就等于把这两样都交了出去
 app.get('/api/orders', (c) => {
   const all = listOrders();
-  return c.json(isAdminReq(c) ? all : all.filter((o) => DEMO_VISIBLE_RE.test(o.sessionId)));
+  if (isAdminReq(c)) return c.json(all);
+  const visible = anonVisible(c);
+  return c.json(all.filter((o) => visible(o.sessionId)));
 });
 
-// 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，且列表接口已加鉴权不可枚举）
+// 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）
 app.get('/api/orders/:id', lookupLimit, (c) => {
   const o = getOrder(c.req.param('id'));
   if (!o) return c.json({ error: 'order not found' }, 404);
@@ -595,13 +627,18 @@ app.onError((err, c) => {
   return c.json({ error: '服务暂时不可用，请稍后重试' }, 500);
 });
 
+// server.selftest.ts 直接 import app、走 app.request 测路由：自测不能占端口，更不能起企微轮询与
+// 自动跟进（本机 .env 若配了企微，自测进程会去拉真实客户消息、以 AI 身份回复）。
+export { app };
+const SELFTEST = process.env.SERVER_SELFTEST === '1';
+
 const port = Number(process.env.PORT) || 3200;
-serve({ fetch: app.fetch, port }, (info) => {
+if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
   console.log(`[server] 已启动 http://localhost:${info.port}`);
   // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
   // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
   // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
-  const realSessions = listSessions().filter((s) => !DEMO_VISIBLE_RE.test(s.id)).length;
+  const realSessions = listSessions().filter((s) => !DEMO_DATA_RE.test(s.id)).length;
   if (!process.env.ADMIN_PASS) {
     console.warn('[server] ADMIN_PASS 未配置：后台为演示模式（免密只读、仅演示数据），接管与发消息一律 503。');
     if (realSessions > 0) {
@@ -656,4 +693,4 @@ serve({ fetch: app.fetch, port }, (info) => {
     return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
   });
 });
-startWecom();
+if (!SELFTEST) startWecom();

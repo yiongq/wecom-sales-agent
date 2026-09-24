@@ -381,9 +381,17 @@
   const inputEl = document.getElementById('input');
   const sendBtn = document.getElementById('sendBtn');
   const chipsEl = document.getElementById('chips');
+  // 会话 ID 就是凭据：凭它直读对话全文，后台列表也只凭它把「你自己的会话」放给同一浏览器的 admin.html。
+  // 必须是密码学随机、给足熵（与服务端生成的一致：12 字节 = 24 位十六进制）。此前用 Math.random 取
+  // 8 位 36 进制，约 41 bit 且可预测；服务端的后台列表不认这种旧 id，restore() 会在合适的时机换掉它。
+  const STRONG_ID_RE = /^sim-[0-9a-f]{24,64}$/; // 与服务端 OWN_SIM_RE 一致
+  function newSessionId() {
+    const b = crypto.getRandomValues(new Uint8Array(12));
+    return 'sim-' + Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  }
   let sessionId = localStorage.getItem(LS_KEY);
   if (!sessionId) {
-    sessionId = 'sim-' + Math.random().toString(36).slice(2, 10);
+    sessionId = newSessionId();
     localStorage.setItem(LS_KEY, sessionId);
   }
   let lastTs = 0;
@@ -562,9 +570,16 @@
   }
 
   // 恢复历史（服务端重启丢会话则重新开场）
+  // 顺带升级旧版短 id：上面只在存储为空时才生成新 id，上线前来过的访客会无限期沿用旧 id，后台永远
+  // 认不出他本人。服务端没有这段会话（404：从没聊过，或闲置被清理）时换成满熵新 id，没有历史可丢；
+  // 会话还在就先留着，清理后下次来访再换。只认 404：429 限流、5xx、断网都不说明会话不存在，换了会丢历史。
   async function restore() {
     try {
       const res = await fetch('/api/sessions/' + encodeURIComponent(sessionId));
+      if (res.status === 404 && !STRONG_ID_RE.test(sessionId)) {
+        sessionId = newSessionId();
+        localStorage.setItem(LS_KEY, sessionId);
+      }
       if (!res.ok) return welcome();
       const s = await res.json();
       const visible = (s.messages || []).filter((m) => m.role !== 'system');
@@ -596,6 +611,9 @@
     inputEl.value = '';
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
+    // 等 restore() 定下最终的 id 再发：页面一开就点开场气泡时，第一句会抢先落进旧 id，对话被劈成两段。
+    // 也让开场白与历史先上屏，不插到这句后面。restore() 自己兜住所有异常，这里不会抛
+    await restored;
     hideChips(); // 客户发出第一条即隐藏开场气泡
     const myRow = addMsg('customer', text);
     showTyping();
@@ -664,8 +682,9 @@
   tickClock();
   setInterval(tickClock, 15000);
 
-  restore();
-  connectSSE();
+  // SSE 按 restore() 定下的 id 订阅，否则旧 id 被换掉后推送（支付跟进 / 人工回复）还挂在旧 id 上
+  const restored = restore();
+  restored.then(connectSSE);
   inputEl.focus();
 })();
 </script>

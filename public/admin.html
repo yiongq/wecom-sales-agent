@@ -304,7 +304,7 @@
     <div class="brand" id="home" style="cursor:pointer" title="回到概览"><div class="mark">云</div><div class="name">云途 · 销售作战室</div></div>
     <div class="grow"></div>
     <div class="live" title="数据推送连接状态"><i></i><span id="liveTxt">实时</span></div>
-    <div class="mode" id="modeBtn" title="点击登录后可查看真实客户会话并接管"><i></i><span id="modeTxt">演示模式</span></div>
+    <div class="mode" id="modeBtn" title="演示模式：只显示演示会话和你自己在网页聊天里的会话。点击登录可查看真实客户会话并接管"><i></i><span id="modeTxt">演示模式</span></div>
     <button class="iconbtn" id="themeBtn" title="切换主题"></button>
   </header>
   <!-- 只在手机上显示，见样式里的「手机端」一节 -->
@@ -326,7 +326,7 @@
 <div class="mask" id="loginMask" hidden>
   <form class="login" id="loginForm">
     <h3>登录顾问账号</h3>
-    <div class="tip" id="loginTip">演示模式下只显示演示数据。登录后可查看真实客户会话，并接管、代客户发消息。</div>
+    <div class="tip" id="loginTip">演示模式只显示演示会话，以及你自己在网页聊天里的会话。登录后可查看真实客户会话，并接管、代客户发消息。</div>
     <label for="lgUser">用户名</label>
     <input id="lgUser" autocomplete="username" value="admin">
     <label for="lgPass">密码</label>
@@ -341,7 +341,7 @@
 
 <script>
 // ---------------- 登录态 ----------------
-// 页面免密可开，进来就是「演示模式」：服务端只吐演示会话，写操作一律 401。
+// 页面免密可开，进来就是「演示模式」：服务端只吐种子演示会话和你自己的网页会话，写操作一律 401。
 // 凭据只存 sessionStorage（关标签页即失效），不落 localStorage——共用电脑上
 // 下一个人不该直接继承顾问权限（能给真实微信客户发消息）。
 const AUTH = {
@@ -351,16 +351,29 @@ const AUTH = {
 };
 const b64 = s => btoa(String.fromCharCode.apply(null, new TextEncoder().encode(s)));
 
+/**
+ * 同一浏览器里 chat.html 存下的访客会话 id（与 chat.html 的 LS_KEY 同名）。未登录时服务端只给
+ * 种子演示会话，外加凭这个 id 证明是「你自己」的那段网页对话——边聊边在作战室里看到自己。
+ * 格式不对就不带：localStorage 可能被手改，非 ASCII 值塞进请求头 fetch 会直接抛错。
+ */
+function ownSimSession() {
+  try {
+    const v = localStorage.getItem('ssj_session_id') || '';
+    return /^sim-[A-Za-z0-9_-]{1,64}$/.test(v) ? v : '';
+  } catch (_) { return ''; }
+}
+
 /** 后台请求统一入口：登录后自动带 Authorization。401 不静默吞，调用方据此唤起登录框。 */
 function api(url, opts) {
   const o = Object.assign({}, opts);
   o.headers = Object.assign({}, o.headers);
   if (AUTH.on) o.headers['authorization'] = 'Basic ' + AUTH.token;
+  else { const sim = ownSimSession(); if (sim) o.headers['x-sim-session'] = sim; }
   return fetch(url, o);
 }
 
 const loginMask = document.getElementById('loginMask');
-const DEFAULT_TIP = '演示模式下只显示演示数据。登录后可查看真实客户会话，并接管、代客户发消息。';
+const DEFAULT_TIP = '演示模式只显示演示会话，以及你自己在网页聊天里的会话。登录后可查看真实客户会话，并接管、代客户发消息。';
 let loginPending = null; // 被拦下的动作，登录成功后原样重放
 
 function openLogin(msg) {
@@ -376,7 +389,7 @@ function syncMode() {
   const b = document.getElementById('modeBtn');
   b.classList.toggle('on', AUTH.on);
   document.getElementById('modeTxt').textContent = AUTH.on ? '顾问已登录' : '演示模式';
-  b.title = AUTH.on ? '点击退出登录，回到演示模式' : '点击登录后可查看真实客户会话并接管';
+  b.title = AUTH.on ? '点击退出登录，回到演示模式' : '演示模式：只显示演示会话和你自己在网页聊天里的会话。点击登录可查看真实客户会话并接管';
 }
 function logout() { AUTH.token = ''; syncMode(); S.selected = null; load(); }
 

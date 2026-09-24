@@ -31,5 +31,8 @@ jobs:
       # LLM 调用层（假 fetch，不发真实请求）：思考参数按模型选、1210 自愈、最后一轮不带 tools、
       # 对冲、闸门不为已取消的请求排队、按模型计价。这些错了不报错，只会 400 或多花钱。
       - run: npx tsx src/llm.selftest.ts
+      # 管理面读接口的可见性：未登录只见种子 + 本人的网页会话，伪造凭据无效，SSE/usage 不带 id 与原文。
+      # 泄露别人的对话不会报错、页面照常，没有断言只能靠人去 devtools 里看。
+      - run: npx tsx src/server.selftest.ts
       # 回归评测（mock 模式，秒级）：改 SOP/提示词/护栏后自动回归，防止话术悄悄退化
       - run: LLM_MOCK=1 npx tsx eval/run.ts
