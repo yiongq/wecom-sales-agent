@@ -21,6 +21,20 @@ SERVER="${SERVER:?未设置 SERVER。写入 .deploy.env（如 SERVER=root@<服�
 REMOTE_DIR="${REMOTE_DIR:-/opt/wecom-sales-agent}"
 HOST_PORT="${HOST_PORT:-3210}"   # 宿主端口（容器内固定 3200，3200 已被别的容器占用）
 NAME=wecom-sales-agent
+# 新容器与回滚容器共用同一套参数，只差镜像 tag。
+# -p 绑 127.0.0.1：只让本机的 Caddy 反代进来。绑 0.0.0.0 时 docker-proxy 会绕过
+# ufw 把 3210 直接暴露在公网明文 HTTP 上（后台免密时等于全网可读客户对话）。
+# -e PORT=3200 放在 --env-file 之后强制生效：端口映射/HEALTHCHECK 都写死 3200，
+# .env 里误改 PORT 会让容器"活着但外部完全不可达"，极难排查。
+RUN_OPTS="-d --name ${NAME} -p 127.0.0.1:${HOST_PORT}:3200 -v ${REMOTE_DIR}/var:/app/var --env-file ${REMOTE_DIR}/.env -e PORT=3200 --restart unless-stopped"
+
+# tsx 运行时不做类型检查：import 路径写错、类型对不上，要到容器启动（或客户发来消息）
+# 才炸。rsync 之前先在本地拦住，别把坏代码推上去再靠回滚兜。
+echo "[0/3] 本地 typecheck"
+if ! pnpm -s typecheck; then
+  echo "错误：typecheck 未通过，中止部署（服务器上什么都没动）。" >&2
+  exit 1
+fi
 
 echo "[1/3] rsync -> ${SERVER}:${REMOTE_DIR} (exclude .env / var / .git / node_modules)"
 rsync -az --delete \
@@ -43,34 +57,55 @@ ssh "${SERVER}" "set -e; cd ${REMOTE_DIR}
   # var/ 必须归容器内 node(1000) 所有：root 属主时应用写不进去，
   # 会话/订单只活在内存、重启即丢（且表面看不出任何异常）
   mkdir -p ${REMOTE_DIR}/var && chown -R 1000:1000 ${REMOTE_DIR}/var
+  # build 会把 ${NAME} 这个 tag 挪到新镜像上，旧镜像变成无名的 <none>，出事时无从回滚。
+  # 先给「正在跑的容器」所用的镜像打 :prev——取容器的镜像而不是 :latest：上次部署若已回滚，
+  # :latest 指向的是那个坏镜像，拿它当 :prev 等于把好镜像丢了。
+  PREV_IMAGE=\$(docker container inspect --format '{{.Image}}' ${NAME} 2>/dev/null || true)
+  if [ -n \"\$PREV_IMAGE\" ]; then docker tag \"\$PREV_IMAGE\" ${NAME}:prev; fi
   docker build -t ${NAME} .
-  # 必须走 SIGTERM 而不是 docker rm -f（SIGKILL）：store 的退出 flush、企微
-  # msgid 去重集的落盘都挂在退出钩子上，直接杀会丢掉去抖窗口里的会话变更，
-  # 并让重启后的企微回调重复回复客户已经回过的消息
+  # 必须走 SIGTERM 而不是 docker rm -f（SIGKILL）：进程收到 SIGTERM 会先等进行中的
+  # 企微回复发完（store.ts 停机钩子，最多 8s）再落盘退出，直接杀会让处理到一半的消息
+  # 靠重启后重放兜底、丢掉去抖窗口里的会话变更。-t 10 必须大于那 8s，两处要一起改
   docker stop -t 10 ${NAME} 2>/dev/null || true
   docker rm ${NAME} 2>/dev/null || true
-  docker run -d --name ${NAME} \
-    -p 127.0.0.1:${HOST_PORT}:3200 \
-    -v ${REMOTE_DIR}/var:/app/var \
-    --env-file ${REMOTE_DIR}/.env \
-    -e PORT=3200 \
-    --restart unless-stopped \
-    ${NAME}
+  docker run ${RUN_OPTS} ${NAME}
   docker ps --filter name=${NAME} --format '  {{.Names}}  {{.Status}}  {{.Ports}}'"
-# -p 绑 127.0.0.1：只让本机的 Caddy 反代进来。绑 0.0.0.0 时 docker-proxy 会绕过
-# ufw 把 3210 直接暴露在公网明文 HTTP 上（后台免密时等于全网可读客户对话）。
-# -e PORT=3200 放在 --env-file 之后强制生效：端口映射/HEALTHCHECK 都写死 3200，
-# .env 里误改 PORT 会让容器"活着但外部完全不可达"，极难排查。
+
+# 约 30s 内 /healthz 通过即视为起来了
+health_ok() {
+  for _ in $(seq 1 10); do
+    if ssh "${SERVER}" "curl -fsS --max-time 3 http://127.0.0.1:${HOST_PORT}/healthz" 2>/dev/null; then
+      echo ""
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
 
 echo "[3/3] health check (http://127.0.0.1:${HOST_PORT}/healthz via ssh)"
-for i in $(seq 1 10); do
-  if ssh "${SERVER}" "curl -fsS --max-time 3 http://127.0.0.1:${HOST_PORT}/healthz" 2>/dev/null; then
-    echo ""
-    echo "OK. 部署成功。"
-    exit 0
-  fi
-  sleep 2
-done
+if health_ok; then
+  echo "OK. 部署成功。"
+  exit 0
+fi
 echo "错误：健康检查失败——容器可能起来即崩。最近日志：" >&2
 ssh "${SERVER}" "docker logs --tail 40 ${NAME}" >&2 || true
+
+# 自动回滚到 :prev。新容器在 --restart unless-stopped 下只会反复崩溃重启，
+# 不回滚的话企微回调全部 502，要一直停摆到有人手工修好重新部署。
+# 无论回滚成败都以非零退出：这次部署本身是失败的，不能让调用方当成功。
+echo "[rollback] 回滚到上一个镜像 ${NAME}:prev" >&2
+if ! ssh "${SERVER}" "docker image inspect ${NAME}:prev >/dev/null 2>&1"; then
+  echo "错误：服务器上没有 ${NAME}:prev（首次部署？），无法自动回滚，服务当前不可用！" >&2
+  exit 1
+fi
+if ssh "${SERVER}" "set -e
+  docker stop -t 10 ${NAME} 2>/dev/null || true
+  docker rm ${NAME} 2>/dev/null || true
+  docker run ${RUN_OPTS} ${NAME}:prev" >&2 && health_ok; then
+  echo "已回滚到 ${NAME}:prev，服务恢复；新版本未上线，请排查上面的日志后重新部署。" >&2
+else
+  echo "错误：回滚后健康检查仍失败，服务当前不可用，需立即人工处理！" >&2
+  ssh "${SERVER}" "docker logs --tail 40 ${NAME}" >&2 || true
+fi
 exit 1

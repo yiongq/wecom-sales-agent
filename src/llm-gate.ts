@@ -17,14 +17,49 @@ const MAX_INFLIGHT = Math.max(0, numEnv('LLM_MAX_INFLIGHT', 8));
 const MAX_RETRY = Math.max(0, numEnv('LLM_MAX_RETRY', 2));
 
 let inflight = 0;
+/** 排队中的请求。放弃了的会被摘掉，名额不会交棒给一个已经不要它的请求（那样名额就丢了） */
 const waiting: (() => void)[] = [];
 
-function acquire(): Promise<void> {
+/**
+ * 拿一个名额。排队也要响应 abort：整轮 deadline 到了、或对冲已有一方胜出，就别再等——
+ * 此前排队时不看信号，要等某个名额空出来才发现自己早过期了，LLM_ROUND_TIMEOUT_MS 标称的
+ * 墙钟上限在排队阶段并不成立。
+ */
+function acquire(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
   if (!MAX_INFLIGHT || inflight < MAX_INFLIGHT) {
     inflight += 1;
     return Promise.resolve();
   }
-  return new Promise<void>((resolve) => waiting.push(resolve));
+  return new Promise<void>((resolve, reject) => {
+    const grant = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const onAbort = (): void => {
+      const i = waiting.indexOf(grant);
+      if (i >= 0) waiting.splice(i, 1);
+      reject(signal.reason);
+    };
+    waiting.push(grant);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** 退避等待，abort 时立刻醒来抛出：对冲的输家若正在退避，不能再白占名额睡满 0.6~1.5s */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function release(): void {
@@ -52,20 +87,30 @@ export interface GateResult {
  * 返回最终的 Response（可能仍是错误状态，由调用方决定怎么处理）。
  */
 export async function gatedFetch(url: string, init: RequestInit, signalFactory: () => AbortSignal): Promise<GateResult> {
-  await acquire();
+  // 排队用的信号同样带着一个从此刻起算的单次超时，所以排队本身也不会超过 LLM_TIMEOUT_MS
+  await acquire(signalFactory());
   try {
     let last: Response | null = null;
     let lastBody = '';
     for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+      // 每次尝试（含退避之前）先看调用方是否已放弃：整轮 deadline 到期、或对冲请求
+      // 已经有一方胜出。此时 signalFactory() 拿到的都是已中止的信号，fetch 必然秒失败，
+      // 再退避重试只是白占名额约 2s——而这恰好发生在系统最拥堵的时候，排在后面的
+      // 客户请求会被一起拖慢。
+      let signal = signalFactory();
+      if (signal.aborted) throw signal.reason;
       if (attempt > 0) {
         // 指数退避 + 抖动：同一批被限流的请求不要在同一刻一起重试，否则又一起撞墙
         const base = 600 * 2 ** (attempt - 1);
         const wait = base + Math.floor(Math.random() * 300);
         console.warn(`[llm] 第 ${attempt} 次重试，等待 ${wait}ms（上次状态 ${last?.status ?? '网络异常'}）`);
-        await new Promise((r) => setTimeout(r, wait));
+        await sleep(wait, signal); // 退避中途被放弃（对冲输了、deadline 到了）就立刻让出名额
+        // 重新取一个信号，单次超时从真正发请求时起算
+        signal = signalFactory();
+        if (signal.aborted) throw signal.reason;
       }
       try {
-        const res = await fetch(url, { ...init, signal: signalFactory() });
+        const res = await fetch(url, { ...init, signal });
         if (res.ok || !retriable(res.status)) return { res, attempts: attempt + 1 };
         last = res;
         // 读出来既是释放 body（避免连接悬挂），也是保住错误原因：这个 Response
@@ -83,6 +128,11 @@ export async function gatedFetch(url: string, init: RequestInit, signalFactory: 
   } finally {
     release();
   }
+}
+
+/** 名额已满（再发就要排队）。对冲请求据此决定要不要加发：拥堵时再加一个请求只会让队更长 */
+export function gateBusy(): boolean {
+  return MAX_INFLIGHT > 0 && inflight >= MAX_INFLIGHT;
 }
 
 export function gateStatus(): { inflight: number; waiting: number; maxInflight: number } {

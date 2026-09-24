@@ -1,5 +1,8 @@
 [
   {
+    "aliases": [
+      "川西"
+    ],
     "bestSeason": "5月-10月",
     "days": 8,
     "destination": "四川",
@@ -100,6 +103,9 @@
     ]
   },
   {
+    "aliases": [
+      "九寨沟"
+    ],
     "id": "r-sichuan-mid",
     "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
     "destination": "四川",
@@ -660,6 +666,9 @@
     ]
   },
   {
+    "aliases": [
+      "陕西"
+    ],
     "bestSeason": "3月-5月、9月-11月",
     "days": 5,
     "destination": "西安",
@@ -934,6 +943,9 @@
     ]
   },
   {
+    "aliases": [
+      "海南"
+    ],
     "id": "r-sanya",
     "title": "三亚亲子奢华度假 5 日",
     "destination": "三亚",
@@ -1118,6 +1130,10 @@
     ]
   },
   {
+    "aliases": [
+      "印尼",
+      "印度尼西亚"
+    ],
     "id": "r-bali",
     "title": "巴厘岛乌布雨林蜜月 6 日",
     "destination": "巴厘岛",
@@ -1297,6 +1313,10 @@
     ]
   },
   {
+    "aliases": [
+      "欧洲",
+      "芬兰"
+    ],
     "id": "r-aurora",
     "title": "北欧芬兰极光玻璃屋 8 日",
     "destination": "北欧极光",
@@ -1482,6 +1502,9 @@
     ]
   },
   {
+    "aliases": [
+      "欧洲"
+    ],
     "id": "r-swiss",
     "title": "瑞士冰川快车全景环线 9 日",
     "destination": "瑞士",

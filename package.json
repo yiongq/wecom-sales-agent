@@ -4,6 +4,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@10.30.2",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
@@ -11,7 +12,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "hono": "^4.6.0"
+    "hono": "^4.13.9"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

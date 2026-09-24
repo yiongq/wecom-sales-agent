@@ -1,6 +1,6 @@
 // HTTP 服务：静态页面 + 模拟器 API + 管理后台 API + 企微回调。
 // 注意路由注册顺序：API 在前，serveStatic 兜底在后。
-// 管理面（admin.html 与管理 API）走 Basic 鉴权，见 adminAuth。
+// 管理 API 走 Basic 鉴权，读写分层见 adminAuth；admin.html 页面本身免密（未登录只看得到演示数据）。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -12,10 +12,10 @@ import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { handleMessage, notifyPaid } from './engine.js';
-import { createQuote, loadHotels, loadRoutes } from './tools.js';
+import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
 import { getOrder, getSession, listOrders, listSessions, markOrderPaid, saveSession, storeEvents } from './store.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
-import { activeModels, CHEAP_TIER_MODEL, llmCfg } from './llm.js';
+import { activeModels, CHEAP_TIER_MODELS, llmCfg, llmStats } from './llm.js';
 import { budgetStatus } from './budget.js';
 import { usageToday } from './usage.js';
 import { gateStatus } from './llm-gate.js';
@@ -95,9 +95,10 @@ const sameOriginOnly: MiddlewareHandler = async (c, next) => {
 };
 
 app.get('/', (c) => c.redirect('/guide.html'));
-// 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」
+// 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
+// llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵
 app.get('/healthz', (c) =>
-  c.json({ ok: true, models: activeModels(), visitorLLM: budgetStatus(), llmGate: gateStatus() }),
+  c.json({ ok: true, models: activeModels(), visitorLLM: budgetStatus(), llmGate: gateStatus(), llm: llmStats() }),
 );
 
 // 模型用量与成本（JD 明确要求的「模型调用成本」指标）
@@ -313,11 +314,8 @@ app.get('/api/sessions/:id', sessionReadAuth, (c) => {
 app.post('/api/sessions/:id/handoff', sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  // 记下被「吸」走前的阶段，交还时才还得回去。重复接管不覆盖，否则第二次接管
-  // 会把已经变成 handoff 的值存进去，交还后原阶段永久丢失。
-  if (s.stage !== 'handoff') s.stageBeforeHandoff = s.stage;
-  s.handedOver = true;
-  s.stage = 'handoff';
+  // 与引擎触发的转人工走同一个入口：记下被「吸」走前的阶段（交还时还原用），重复接管不覆盖
+  enterHandoff(s);
   s.updatedAt = Date.now();
   saveSession(s);
   return c.json(s);
@@ -471,7 +469,8 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
   // 缩略图必须是绝对 URL：微信/各类抓取方不解析相对路径。
   // 微信自带的「发送给朋友」不读 og:image，它是在页面里自己挑一张图当缩略图——
-  // 所以下面除了 meta，还往 body 里插了一张真实 <img>（1px 不行，太小会被跳过）。
+  // 这里只改 head（meta）；那张给微信挑的真实封面图由 proposal.html 在客户端渲染进 body
+  // （1px 不行，太小会被跳过）。
   const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
   const cover = base ? `${base}/share-cover.png` : '/share-cover.png';
   const withHead = html.replace(
@@ -619,13 +618,18 @@ serve({ fetch: app.fetch, port }, (info) => {
     const { apiKey, model, baseUrl } = llmCfg();
     if (apiKey) {
       const { main, cheap } = activeModels();
+      const { hedgeModel, hedgeMs, reasoningEffort, forcedThinkingModels } = llmStats();
       console.log(`[server] LLM: ${process.env.LLM_PROVIDER || 'default'} / 对话=${main} · 后台=${cheap} @ ${baseUrl}`);
+      console.log(
+        `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用）` : '关'}` +
+          (forcedThinkingModels.length ? ` · 强制思考 ${forcedThinkingModels.join('/')} 档位=${reasoningEffort}` : ''),
+      );
       // 静默降级是最难查的故障：主对话跑到便宜档上，表现只是「话术变差了」，
       // 不报错也不告警。后台跟主模型一致是正常默认，只有主对话本身掉到便宜档才该喊。
-      if (main === CHEAP_TIER_MODEL) {
+      if (CHEAP_TIER_MODELS.has(main)) {
         console.warn(
-          `[server] ⚠️ 主对话正在使用便宜档模型（${main}）。实测它在「客户说了目的地就摆线路」` +
-            '上只有 4/12 命中（glm-5.2 是 12/12）。若非有意，请检查 .env 的 ZHIPU_MODEL / LLM_MODEL。',
+          `[server] ⚠️ 主对话正在使用便宜档模型（${main}）。实测 glm-4.5-air 在「客户说了目的地就摆线路」` +
+            '上只有 4/48 命中（现用 glm-5.3-flashx 带预取是 48/48）。若非有意，请检查 .env 的 ZHIPU_MODEL / LLM_MODEL。',
         );
       }
     } else {

@@ -3,9 +3,10 @@
 // 缺失时抛清晰错误；ROUTES_PATH 仅供测试指向 fixture，默认 data/routes.json。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Hotel, Route, SalesSegment, Session } from './types.js';
+import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { createOrder, getOrder, saveSession } from './store.js';
+import { todayIso } from './env.js';
 
 export interface ToolDef {
   type: 'function';
@@ -90,7 +91,8 @@ export const toolDefs: ToolDef[] = [
       description:
         '生成正式行程方案书（逐日行程 + 住宿 + 含餐 + 费用含/不含 + 报价），返回可发给客户的方案链接。' +
         '客户想看详细安排时调用——**包括他第一句话就要「详细方案/详细行程」的情况**：' +
-        '先用 search_routes 拿到 routeId，同一轮接着调本工具，不必等到下一轮。' +
+        '先用 search_routes 拿到 routeId，同一轮接着调本工具，不必等到下一轮；' +
+        '会话状态里「最近查到的线路」已列出这条线的 id 时直接用，不必重查。' +
         'travelers 用客户说过的人数（「两个人」=2）；departDate 可选，客户没说就不传，别为了凑参数专门去问。',
       parameters: {
         type: 'object',
@@ -203,6 +205,20 @@ function summarize(r: Route) {
  */
 const BUDGET_RELAX = 1.5;
 
+/**
+ * 目的地关键词是否指向这条线。destination / 标题 / 标签 / 别名四处都要看：
+ * 只看前两处时，搜「九寨沟」查不到库里唯一的九寨线（标题写的是「九寨黄龙」，
+ * 「九寨沟」只在标签里），搜「海南」也查不到三亚——模型按 SOP 把客户原话当目的地
+ * 传进来，拿到空结果就会告诉客户「暂时没有」，而库里明明有货。
+ */
+function matchesDestination(r: Route, q: string): boolean {
+  return (
+    r.destination.includes(q) || q.includes(r.destination) || r.title.includes(q) ||
+    r.tags.some((t) => t.includes(q)) ||
+    (r.aliases ?? []).some((a) => a.includes(q) || q.includes(a))
+  );
+}
+
 export interface SearchRoutesArgs {
   query?: string;
   destination?: string;
@@ -231,14 +247,18 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
     }
   }
 
+  let destinationMiss = false;
   if (args.destination) {
     const q = args.destination;
     // 语义召回已按需求排过序，目的地在这里只当过滤条件；召回结果里没有该目的地时
     // 退回全量再按关键词过滤，避免语义召回把明确点名的目的地漏掉
-    const hit = list.filter((r) => r.destination.includes(q) || q.includes(r.destination) || r.title.includes(q));
-    list = hit.length
-      ? hit
-      : all.filter((r) => r.destination.includes(q) || q.includes(r.destination) || r.title.includes(q));
+    const hit = list.filter((r) => matchesDestination(r, q));
+    const fromAll = hit.length ? hit : all.filter((r) => matchesDestination(r, q));
+    if (fromAll.length) list = fromAll;
+    // 库里确实没有这个目的地、但语义召回有结果：留着语义结果并标明「不是该目的地」。
+    // 此前这里一律变成空列表，连带把语义召回的结果也清掉了，模型两手空空。
+    else if (order) destinationMiss = true;
+    else list = [];
   }
   if (args.tags?.length) {
     list = list.filter((r) => args.tags!.some((t) => r.tags.some((rt) => rt.includes(t))));
@@ -268,6 +288,25 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
   // 手里有货却告诉客户「没有适合你的」，是销售最坏的失败模式：线索当场就死，
   // 而且客户不会回来核对。所以滤空了就放宽重来，并给结果打上 overBudget 标记，
   // 让模型照实讲超了多少——不藏产品，把差价摆在明面上谈（SOP 里本来就有降档话术）。
+  // 天数同样是软约束，道理和预算一样：「云南玩 3 天」此前被 ±2 天硬过滤滤成空列表，模型拿到 []
+  // 就说「云南暂时没有合适的线路」，而库里 6 天的丽江大理线明明在。所以 ±2 天内有就用；
+  // 没有就退回天数最接近的那几条，打上 daysMiss 让模型照实说「最短的是 6 天」——
+  // 行程天数是固定的（sop.md 能力边界），客户坚持要按天数定制才转人工，而不是一句「没有」挡回去。
+  //
+  // ±2 天的过滤必须排在预算之前。预算的「预算内 / 放宽 / 最便宜兜底」三档得在天数收窄之后的候选集上判定：
+  // 此前天数排在后面，「四川 9 天、每人 3 万」先被预算收窄成预算内那条 6 天线，再被天数滤空——
+  // 放宽逻辑已经跳过，库里那条 8 天、只超 43% 的线就这么没了，模型又回到「没有合适的线路」。
+  // 但 ±2 天内一条都没有时，「只留天数最接近的」要排在预算**之后**：先收窄的话，「新疆 15 天、每人 2 万」
+  // 只剩 10 天那条 52,800（超 164%），预算内、只差 1 天的 9 天 19,800 被丢掉——比 BUDGET_RELAX 的上限
+  // 还离谱，正是「只会让人觉得没在听」。所以天数兜底只记下候选全集，等预算筛完再挑天数最接近的。
+  const want = Number(args.days);
+  let daysPool: Route[] | null = null; // 天数兜底时的候选全集，判「最短 / 最长」用
+  // 模型偶尔传「5-7」这种字符串，Number 出来是 NaN——此前 NaN 让每条线都「不在 ±2 天内」，返回空列表
+  if (args.days && Number.isFinite(want) && list.length) {
+    const within = list.filter((r) => Math.abs(r.days - want) <= 2);
+    if (within.length) list = within;
+    else daysPool = list;
+  }
   let overBudget = false;
   if (args.maxBudgetPerPerson) {
     const cap = args.maxBudgetPerPerson;
@@ -282,8 +321,9 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
       if (relaxed.length) list = relaxed;
     }
   }
-  if (args.days) {
-    list = list.filter((r) => Math.abs(r.days - args.days!) <= 2);
+  if (daysPool) {
+    const gap = Math.min(...list.map((r) => Math.abs(r.days - want)));
+    list = list.filter((r) => Math.abs(r.days - want) === gap);
   }
 
   // 超预算时一律按价格升序：语义召回的顺序是「最贴需求」，但客户已经明说了预算，
@@ -299,13 +339,45 @@ export async function searchRoutes(args: SearchRoutesArgs): Promise<ReturnType<t
     return rank(a) - rank(b);
   });
   const out = sorted.slice(0, 3).map(summarize);
+  // 下面几段提示是写给模型看的，但模型会原样照抄进回复（盲评里两个模型都频繁说「库里没有…」
+  // 「库里还有一条…」），所以措辞只用对客户也说得出口的（「我们现有的线路」「现成线路」），不写「库里」
   if (overBudget && args.maxBudgetPerPerson) {
+    const cap = Number(args.maxBudgetPerPerson);
     for (const r of out) {
-      const over = Math.round(((r.priceFrom - args.maxBudgetPerPerson) / args.maxBudgetPerPerson) * 100);
-      (r as Record<string, unknown>).overBudget =
-        `这条每人 ${r.priceFrom} 元，超出客户说的每人 ${args.maxBudgetPerPerson} 元约 ${over}%。` +
-        '**不要说「没有合适的线路」**——库里就是这些，超了就照实讲超多少、这个差价买到了什么，' +
-        '再问客户是愿意加预算，还是要换更短的天数 / 更低的酒店档次。';
+      // 差额和比例都由工具算好交给模型原样转述，并记进会话（见 executeTool）供价格护栏放行。
+      // 让模型自己减——哪怕减对了——护栏也认不出这个数，整条推荐会被换成兜底话术。
+      const gap = r.priceFrom - cap;
+      const over = Math.round((gap / cap) * 100);
+      const row = r as Record<string, unknown>;
+      row.gapPerPerson = gap;
+      row.overBudget =
+        `这条每人 ${r.priceFrom} 元，比客户说的每人 ${cap} 元高约 ${over}%（每人多 ${gap} 元）。` +
+        '**不要说「没有合适的线路」**——我们现有的线路就是这些。照实讲超了多少，只用这里给的每人价、百分比和每人差额，' +
+        '不要自己另算（乘人数、换算总差价都算编造价格）；再讲这个差价买到了什么，' +
+        // 天数已经对不上的（daysMiss）不能再提「换更短的天数」：同一行里 daysMiss 刚说完
+        // 「最短就是 6 天、不要答应压缩」，这里再让模型问「要不要换更短的」，两条指令打架
+        `问客户是愿意加预算，还是要换${daysPool ? '' : '更短的天数 / '}更低的酒店档次。`;
+    }
+  }
+  if (daysPool) {
+    const where = args.destination ? `「${args.destination}」` : '';
+    const minDays = Math.min(...daysPool.map((r) => r.days));
+    const maxDays = Math.max(...daysPool.map((r) => r.days));
+    for (const r of out) {
+      // 「最短 / 最长」按候选全集判定、逐行生成：预算筛过之后留下的未必是库里最短 / 最长的那条，
+      // 比如「新疆 15 天、每人 2 万」留下的是 9 天那条，而库里最长的是 10 天——说成「最长的是 9 天」就是瞎说
+      const edge = r.days === minDays && minDays > want ? '最短的是' : r.days === maxDays && maxDays < want ? '最长的是' : '这条是';
+      (r as Record<string, unknown>).daysMiss =
+        `客户想玩 ${want} 天，我们${where}的现成线路里没有 ${Math.max(1, want - 2)}~${want + 2} 天的，${edge} ${r.days} 天。` +
+        `照实说「${edge} ${r.days} 天」，不要说成 ${want} 天，也不要答应压缩或拉长成 ${want} 天——` +
+        '行程天数是固定的；客户坚持要按他的天数定制，就转人工。';
+    }
+  }
+  if (destinationMiss) {
+    for (const r of out) {
+      (r as Record<string, unknown>).destinationMiss =
+        `我们暂时没有「${args.destination}」的现成线路，这条（${r.destination}）是按客户需求语义最接近的。` +
+        `照实说明，不要把它说成${args.destination}的线路。`;
     }
   }
   if (segmentMismatch) {
@@ -408,12 +480,6 @@ function isValidIsoDate(s: unknown): s is string {
   return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
 }
 
-/** 今天（本地时区）的 YYYY-MM-DD */
-function todayIso(): string {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
-}
-
 /** 出发日期必须落在「今天 ~ 三年内」：模型常把「10月2号」解析成训练年代的过去年份，
  *  另一头也要封顶，否则 2099 年出发也能照常报价出单 */
 function pastDateError(s: string): string | null {
@@ -425,6 +491,29 @@ function pastDateError(s: string): string | null {
     return `departDate=${s} 超出可预订范围（最远 ${maxDate}）。请与客户确认真实出行年份`;
   }
   return null;
+}
+
+/**
+ * 进入转人工。引擎的各条转人工路径（明确诉求安全网、改行程护栏）和 handoff_to_human 工具
+ * 都必须走这里：此前只有后台「接管」会记 stageBeforeHandoff，引擎触发的转人工（包括正则
+ * 误伤）一律不记，顾问点「交还 AI」时只能反推阶段，recommend 的客户被打回 discovery。
+ * 已在转人工中就不覆盖——否则记下的会是 handoff 本身，原阶段永久丢失（与 server.ts 的接管同一规则）。
+ */
+export function enterHandoff(session: Session, prevStage: SalesStage = session.stage): void {
+  if (session.stage !== 'handoff' && prevStage !== 'handoff') session.stageBeforeHandoff = prevStage;
+  session.handedOver = true;
+  session.stage = 'handoff';
+}
+
+/**
+ * 记下这次查到的线路，供下一轮会话状态带给模型（见 Session.lastShownRoutes）。
+ * 新查到的排前面、与旧的去重，封顶 5 条；查空了不清——客户看过的线路还在对话里。
+ */
+export function rememberShownRoutes(session: Session, routes: { id: string; title: string; priceFrom: number }[]): void {
+  if (!routes.length) return;
+  const fresh = routes.map(({ id, title, priceFrom }) => ({ id, title, priceFrom }));
+  const older = (session.lastShownRoutes ?? []).filter((r) => !fresh.some((f) => f.id === r.id));
+  session.lastShownRoutes = [...fresh, ...older].slice(0, 5);
 }
 
 /**
@@ -443,7 +532,15 @@ export async function executeTool(
       // 引擎已用确定性正则把客群沉淀到 profile，这里兜底注入，模型显式传的优先。
       const a = args as SearchRoutesArgs;
       if (!a.segment && session.profile.segment) a.segment = session.profile.segment;
-      return JSON.stringify(await searchRoutes(a));
+      const found = await searchRoutes(a);
+      // 工具替模型算好的超预算差额记进会话：价格护栏据此认出「比您预算多 6,800 元」
+      // 是工具给的数。只留最近几次搜索的，旧的差额早已不在对话焦点里
+      const gaps = found
+        .map((r) => (r as Record<string, unknown>).gapPerPerson)
+        .filter((g): g is number => typeof g === 'number' && g > 0);
+      if (gaps.length) session.budgetGaps = [...new Set([...(session.budgetGaps ?? []), ...gaps])].slice(-9);
+      rememberShownRoutes(session, found);
+      return JSON.stringify(found);
     }
     case 'get_route_detail': {
       const route = loadRoutes().find((r) => r.id === args.routeId);
@@ -532,7 +629,7 @@ export async function executeTool(
       return JSON.stringify({ orderId: order.id, payUrl: '/pay/' + order.id, total: order.totalPrice });
     }
     case 'handoff_to_human': {
-      session.handedOver = true;
+      enterHandoff(session);
       saveSession(session);
       return JSON.stringify({ ok: true, reason: args.reason ?? '' });
     }

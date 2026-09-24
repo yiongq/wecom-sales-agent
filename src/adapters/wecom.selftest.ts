@@ -1,17 +1,34 @@
-// 企微发送链路的纯函数自测：分段切分与链接卡片识别。
+// 企微适配器自测：发送链路的纯函数 + 同步/停机/重放的可靠性（假 fetch 驱动，不连企微、不调真实 LLM）。
 // 这几条都是"实机才看得见、看不见就以为没事"的坑，必须有断言钉住：
 //   · 分段把 URL 从中间劈开 → 客户收到两条点不开的残缺网址
 //   · 按整行剥离链接 → 报价/支付链接被连带吞掉
 //   · 一条消息里两个链接硬做卡片 → 第二条（往往是支付链接）永久丢失
+//   · 状态文件丢失/损坏 → 把近 3 天的旧消息全回一遍
+//   · 同步锁包住 LLM 处理 → 一个客户的慢回复拖住所有人，新客户欢迎语过期
+//   · SIGTERM 立即退出 → 处理到一半的消息重启后被当成「已处理」，客户永远等不到回复
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 // 必须隔离数据目录：extractCard 会经 store 查订单，而 store 在模块加载时就取 VAR_DIR。
 // 不隔离的话，跑一次自测就会触发真实 var/ 里的 demo 保鲜并重写 sessions.json。
-process.env.VAR_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-selftest-'));
+// 外部给了 VAR_DIR 也在其下新建子目录：下面的场景要求从「没有状态文件」开始。
+{
+  const base = process.env.VAR_DIR ?? os.tmpdir();
+  fs.mkdirSync(base, { recursive: true });
+  process.env.VAR_DIR = fs.mkdtempSync(path.join(base, 'wecom-selftest-'));
+}
+const VAR_DIR = process.env.VAR_DIR;
+process.env.LLM_MOCK = '1'; // 引擎走离线脚本，绝不调真实模型
+// 占位凭据：只为让 readConfig() 认为企微已配置，请求全部被下面的假 fetch 接住
+process.env.WECOM_CORP_ID = 'selftest-corp';
+process.env.WECOM_APP_SECRET = 'selftest-secret';
+process.env.WECOM_KF_OPEN_KFID = 'selftest-kf';
+process.env.PUBLIC_BASE_URL = ''; // 不走链接卡片（缩略图上传），测试只关心文本收发
 
-const { __test } = await import('./wecom.js');
+const { __test, syncFromCallback } = await import('./wecom.js');
+const { runShutdownHooks, getSession, getOrCreateSession, saveSession } = await import('../store.js');
 
 const { splitForWecom, extractCard, stripLink } = __test;
 const BASE = 'https://travel.example.com'; // 占位域名：自测只关心 URL 形态，与真实部署无关
@@ -99,11 +116,481 @@ function check(name: string, cond: boolean, detail = ''): void {
   check('独占行剥离后无空行残留', !/\n\s*\n\s*\n/.test(prose) && !prose.includes('/proposal/'), `得到「${prose}」`);
   check('独占行剥离保留前后文', prose.includes('逐日行程') && prose.includes('随时问我'));
 }
+{
+  // 引擎出口修补后的样子（engine.ts repairLinks / putLink）：链接插在承诺句或占位符处、独占到行尾。
+  // 三条是盲评里真实回复修补后的原文，渠道层要能认出唯一那条链接做卡片，剥离时不吞正文
+  const cases: [string, string, string][] = [
+    ['s01', '我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n/proposal/r-sichuan-mid/3\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。', '/proposal/r-sichuan-mid/3'],
+    ['s06', '报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2', '/proposal/r-yunnan-mid/2'],
+    ['s11', '好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 /proposal/r-beijing/2\n逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。', '/proposal/r-beijing/2'],
+  ];
+  const prose: Record<string, string> = {};
+  for (const [name, body, url] of cases) {
+    const card = extractCard(body, BASE);
+    check(`${name} 修补后的链接能做成卡片`, card?.url === BASE + url, `得到「${card?.url}」`);
+    prose[name] = card ? stripLink(body, card.raw) : '';
+    check(`${name} 剥离后正文不留链接`, !prose[name].includes('/proposal/') && !!prose[name], `得到「${prose[name]}」`);
+  }
+  check('s06 剥离链接后报价还在', prose.s06.includes('16800') && prose.s06.includes('33600') && prose.s06.includes('您先看看'), `得到「${prose.s06}」`);
+  check('s11 只剩「👉」的那行一起拿掉', !prose.s11.includes('👉') && prose.s11.includes('报价也附了'), `得到「${prose.s11}」`);
+  // 冒号原本指着那条链接；链接改走卡片后留着冒号，读起来就是「明细：」后面接了一句不相干的话
+  check('s01 指向链接的冒号换成句号', prose.s01.includes('费用明细。') && prose.s01.includes('国庆的准确报价'), `得到「${prose.s01}」`);
+  // 同行还有别的内容时冒号照旧，只挖 URL
+  check('同行有正文时不动前一行', stripLink(`报价如下：\n方案 ${BASE}/proposal/r-guizhou/2 人均 15,800`, `${BASE}/proposal/r-guizhou/2`) === '报价如下：\n方案 人均 15,800');
+}
+
+// ======================================================================
+// 以下是同步 / 停机 / 重放的可靠性场景：用假 fetch 模拟企微服务端。
+// sync_msg 按 cursor 返回「服务端日志」里 cursor 之后的消息——和真实企微一样，
+// cursor 一旦推进，之前的消息再也拉不到，这正是在途消息必须带原文落盘的原因。
+// ======================================================================
+
+interface FakeMsg {
+  msgid: string;
+  open_kfid: string;
+  external_userid: string;
+  send_time: number;
+  origin: number;
+  msgtype: string;
+  text?: { content: string };
+  event?: { event_type: string; welcome_code?: string; external_userid: string };
+}
+interface Sent {
+  to: string;
+  content: string;
+}
+
+let serverGen = 0; // 换一代 = 服务端日志清空，旧 cursor 作废
+let serverLog: FakeMsg[] = [];
+let syncCalls = 0;
+const started: Sent[] = []; // 发起的 send_msg（含卡住未返回的）
+const sent: Sent[] = []; // 成功返回的 send_msg / send_msg_on_event
+const holds = new Map<string, Promise<void>>(); // 发给该客户的 send_msg 等到 promise 放行才返回
+const hangOnce = new Set<string>(); // 发给该客户的下一次 send_msg 永不返回（模拟进程死在发送途中）
+
+function resetServer(): void {
+  serverGen += 1;
+  serverLog = [];
+}
+
+globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+  const ep = new URL(String(input)).pathname.replace(/^\/cgi-bin\//, '');
+  const json = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
+  if (ep === 'gettoken') return json({ errcode: 0, access_token: 'selftest-token', expires_in: 7200 });
+  const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
+  if (ep === 'kf/sync_msg') {
+    syncCalls += 1;
+    const [g, i] = String(body.cursor ?? '').split(':');
+    const from = Number(g) === serverGen ? Number(i) : 0;
+    const list = serverLog.slice(from);
+    return json({ errcode: 0, next_cursor: `${serverGen}:${from + list.length}`, has_more: 0, msg_list: list });
+  }
+  if (ep === 'kf/send_msg') {
+    const item = { to: String(body.touser), content: String(body.text?.content ?? body.link?.url ?? '') };
+    started.push(item);
+    if (hangOnce.delete(item.to)) return new Promise<Response>(() => {});
+    await holds.get(item.to);
+    sent.push(item);
+    return json({ errcode: 0 });
+  }
+  if (ep === 'kf/send_msg_on_event') {
+    sent.push({ to: `code:${body.code}`, content: String(body.text?.content ?? '') });
+    return json({ errcode: 0 });
+  }
+  if (ep === 'kf/customer/batchget') return json({ errcode: 0, customer_list: [] });
+  return json({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
+}) as typeof fetch;
+
+let seq = 0;
+function customerMsg(uid: string, content: string, ageMs = 0, msgtype = 'text'): FakeMsg {
+  seq += 1;
+  return {
+    msgid: `msg-${seq}`,
+    open_kfid: 'selftest-kf',
+    external_userid: uid,
+    send_time: Math.floor((Date.now() - ageMs) / 1000),
+    origin: 3,
+    msgtype,
+    ...(msgtype === 'text' ? { text: { content } } : {}),
+  };
+}
+function enterEvent(uid: string, welcomeCode?: string, ageMs = 0): FakeMsg {
+  seq += 1;
+  return {
+    msgid: `evt-${seq}`,
+    open_kfid: 'selftest-kf',
+    external_userid: uid,
+    send_time: Math.floor((Date.now() - ageMs) / 1000),
+    origin: 4,
+    msgtype: 'event',
+    event: { event_type: 'enter_session', welcome_code: welcomeCode, external_userid: uid },
+  };
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+async function waitFor(cond: () => boolean, ms = 3000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (cond()) return true;
+    await sleep(10);
+  }
+  return cond();
+}
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
+const sentTo = (to: string): Sent[] => sent.filter((s) => s.to === to);
+const startedTo = (to: string): Sent[] => started.filter((s) => s.to === to);
+const inspect = __test.inspectForTest;
+const idle = (): Promise<boolean> => waitFor(() => !inspect().busy);
+/** 模拟进程重启：退出前的落盘照常做完，模块内存清空，盘上的状态文件保留 */
+const restart = (): Promise<void> => __test.resetForTest();
+
+interface DiskState {
+  cursor: string;
+  handled: [string, number][];
+  pending?: { msg: FakeMsg; tries: number }[];
+}
+function readState(): DiskState | null {
+  try {
+    return JSON.parse(fs.readFileSync(__test.STATE_FILE, 'utf8')) as DiskState;
+  } catch {
+    return null;
+  }
+}
+const pendingIds = (st: DiskState | null): string[] => (st?.pending ?? []).map((p) => p.msg.msgid);
+
+// 场景日志先收着：全过就不刷屏，有失败再倒出来帮助定位
+const logBuf: string[] = [];
+const origConsole = { log: console.log, warn: console.warn, error: console.error };
+for (const k of ['log', 'warn', 'error'] as const) {
+  console[k] = (...args: unknown[]) => {
+    logBuf.push(args.map((a) => (a instanceof Error ? a.message : typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+  };
+}
+
+// ---------------- W3 冷启动：状态文件缺失 ----------------
+// 全新目录、没有状态文件 → sync_msg 不带 cursor 会拉回近 3 天全部消息
+{
+  const old = customerMsg('u-old', '有新疆的线路吗', 40 * 3600_000);
+  const oldEnter = enterEvent('u-old-enter', undefined, 30 * 3600_000);
+  const fresh = customerMsg('u-fresh', '你好', 60_000);
+  serverLog.push(old, oldEnter, fresh);
+  void syncFromCallback('tok-cold-1');
+  await waitFor(() => sentTo('u-fresh').length > 0);
+  await idle();
+  check('冷启动（无状态文件）：启动前很久的客户消息不回复', sentTo('u-old').length === 0);
+  check('冷启动（无状态文件）：不给 3 天前扫过码的人补发欢迎', sentTo('u-old-enter').length === 0);
+  check('冷启动（无状态文件）：启动前 10 分钟内的消息照常回复', sentTo('u-fresh').length === 1);
+  check('冷启动：跳过的旧消息记为已处理', inspect().handled.includes(old.msgid) && inspect().handled.includes(oldEnter.msgid));
+  check('冷启动后拿到 cursor 并落盘', !!readState()?.cursor);
+}
+
+// ---------------- W3 冷启动：状态文件损坏 ----------------
+{
+  resetServer();
+  await restart();
+  fs.writeFileSync(__test.STATE_FILE, '{"cursor":"x:9","handled":[["msg-'); // 半截 JSON
+  const old = customerMsg('u-old-2', '有新疆的线路吗', 40 * 3600_000);
+  const fresh = customerMsg('u-fresh-2', '你好', 60_000);
+  serverLog.push(old, fresh);
+  void syncFromCallback('tok-cold-2');
+  await waitFor(() => sentTo('u-fresh-2').length > 0);
+  await idle();
+  check(
+    '损坏的状态文件改名 .corrupt-* 留现场',
+    fs.readdirSync(VAR_DIR).some((f) => f.startsWith('wecom-cursor.json.corrupt-')),
+  );
+  check('状态文件损坏按冷启动处理', inspect().coldStart);
+  check('冷启动（文件损坏）：旧消息不回复、新消息照常回复', sentTo('u-old-2').length === 0 && sentTo('u-fresh-2').length === 1);
+}
+
+// ---------------- W3 反面：有 cursor 的正常重启不能误伤旧消息 ----------------
+// 停机两天后重启，cursor 之后积压的客户消息仍要回复（那是真没回过的）
+{
+  await restart();
+  const late = customerMsg('u-backlog', '你好', 30 * 3600_000);
+  serverLog.push(late);
+  void syncFromCallback('tok-warm');
+  await waitFor(() => sentTo('u-backlog').length > 0);
+  await idle();
+  check('有 cursor 时不是冷启动', !inspect().coldStart);
+  check('有 cursor 时积压的旧消息照常回复', sentTo('u-backlog').length === 1);
+}
+
+// ---------------- W2 跨客户不排队：A 卡在发送时 B 和新客户的欢迎语照常走 ----------------
+{
+  const holdA = deferred();
+  holds.set('u-a', holdA.promise);
+  serverLog.push(customerMsg('u-a', '你好，想出去玩'));
+  void syncFromCallback('tok-a');
+  await waitFor(() => startedTo('u-a').length > 0);
+  serverLog.push(customerMsg('u-b', '在吗'), enterEvent('u-c', 'welcome-code-c'));
+  void syncFromCallback('tok-b');
+  const fast = await waitFor(() => sentTo('u-b').length > 0 && sentTo('code:welcome-code-c').length > 0, 1500);
+  check('跨批次不排队：A 的回复卡住时 B 照常收到回复、新客户照常收到欢迎语', fast);
+  check('（前提）B 回复时 A 仍卡在发送', sentTo('u-a').length === 0);
+  holdA.resolve();
+  holds.delete('u-a');
+  await waitFor(() => sentTo('u-a').length > 0);
+  await idle();
+  check('A 放行后照常送达', sentTo('u-a').length === 1);
+}
+
+// ---------------- W2 同客户保序：前一条没发完，后一条不抢先 ----------------
+{
+  const holdD = deferred();
+  holds.set('u-d', holdD.promise);
+  serverLog.push(customerMsg('u-d', '你好'));
+  void syncFromCallback('tok-d1');
+  await waitFor(() => startedTo('u-d').length > 0);
+  serverLog.push(customerMsg('u-d', '', 0, 'image')); // 图片提示不经 LLM，不排队的话会立刻抢发
+  void syncFromCallback('tok-d2');
+  await sleep(150);
+  check('同客户保序：前一条卡住时后一条不抢发', startedTo('u-d').length === 1);
+  holdD.resolve();
+  holds.delete('u-d');
+  await waitFor(() => sentTo('u-d').length >= 2);
+  await idle();
+  const d = sentTo('u-d');
+  check('同客户保序：后到的图片提示排在前一条回复之后', d.length === 2 && d[1].content.includes('图我收到了'));
+}
+
+// ---------------- W1 优雅停机：等进行中的回复发完再退出 ----------------
+{
+  const holdE = deferred();
+  holds.set('u-e', holdE.promise);
+  const eMsg = customerMsg('u-e', '你好呀');
+  serverLog.push(eMsg);
+  void syncFromCallback('tok-e');
+  await waitFor(() => startedTo('u-e').length > 0);
+  const onDisk = (readState()?.pending ?? []).find((p) => p.msg.msgid === eMsg.msgid);
+  check('处理中的消息连同原文记在盘上的在途表里', onDisk?.msg.text?.content === '你好呀');
+
+  const shutdown = runShutdownHooks(3000);
+  await sleep(30);
+  const syncsBefore = syncCalls;
+  const lateMsg = customerMsg('u-late', '在吗');
+  serverLog.push(lateMsg);
+  await syncFromCallback('tok-during-shutdown');
+  check('停机中回调不再拉取', syncCalls === syncsBefore);
+  setTimeout(() => holdE.resolve(), 200);
+  const ok = await shutdown;
+  holds.delete('u-e');
+  check('优雅停机：等进行中的回复发完才返回', ok && sentTo('u-e').length === 1);
+  const st = readState();
+  check('优雅停机：落盘时在途表已清空', !!st && pendingIds(st).length === 0 && st.handled.some(([id]) => id === eMsg.msgid));
+  check('停机期间到达的消息不认领（留给新进程）', !!st && !st.handled.some(([id]) => id === lateMsg.msgid));
+
+  await restart();
+  void syncFromCallback('tok-after-restart');
+  await waitFor(() => sentTo('u-late').length > 0);
+  await idle();
+  check('新进程补拉到停机期间到达的消息', sentTo('u-late').length === 1);
+  check('正常停机后重启不重复回复', sentTo('u-e').length === 1);
+}
+
+// ---------------- W1 停机超时：未完成的消息按原文重放（回复已生成 → 原样重发，不重跑 LLM） ----------------
+{
+  hangOnce.add('u-f');
+  const fMsg = customerMsg('u-f', '你好，想去玩');
+  serverLog.push(fMsg);
+  void syncFromCallback('tok-f');
+  await waitFor(() => startedTo('u-f').length > 0);
+  const ok = await runShutdownHooks(200);
+  check('停机等待超时如实返回 false', !ok);
+  check('超时退出时未完成的消息留在盘上的在途表', pendingIds(readState()).includes(fMsg.msgid));
+
+  await restart(); // 进程被强制退出后重启：cursor 已越过 fMsg，只能靠在途表重放
+  void syncFromCallback('tok-f-restart');
+  await waitFor(() => sentTo('u-f').length > 0);
+  await idle();
+  const s = getSession('wecom:u-f');
+  const agentMsgs = (s?.messages ?? []).filter((m) => m.role === 'agent');
+  check('重启后重放在途消息，客户收到回复', sentTo('u-f').length === 1);
+  check('重放不重复记客户消息', (s?.messages ?? []).filter((m) => m.role === 'customer').length === 1);
+  check('回复已生成则原样重发、不再跑一轮 LLM', agentMsgs.length === 1 && sentTo('u-f')[0]?.content === agentMsgs[0]?.content);
+  check('重放完成后在途表清空', await waitFor(() => !pendingIds(readState()).includes(fMsg.msgid)));
+}
+
+// ---------------- W1 重放：引擎已记下客户这句、回复还没生成 ----------------
+{
+  await restart();
+  const gMsg = customerMsg('u-g', '你好，想看看');
+  const sess = getOrCreateSession('wecom:u-g', 'wecom');
+  sess.messages.push({ role: 'customer', content: '你好，想看看', at: Date.now() });
+  saveSession(sess);
+  const st = readState();
+  fs.writeFileSync(
+    __test.STATE_FILE,
+    JSON.stringify({ cursor: st?.cursor, handled: [...(st?.handled ?? []), [gMsg.msgid, Date.now()]], pending: [{ msg: gMsg, tries: 0 }] }),
+  );
+  void syncFromCallback('tok-g');
+  await waitFor(() => sentTo('u-g').length > 0);
+  await idle();
+  const msgs = getSession('wecom:u-g')?.messages ?? [];
+  check('重放（回复未生成）：客户收到回复', sentTo('u-g').length === 1);
+  check(
+    '重放（回复未生成）：客户这句只记一次',
+    msgs.filter((m) => m.role === 'customer').length === 1 && msgs.filter((m) => m.role === 'agent').length === 1,
+  );
+}
+
+// ---------------- W1 重放上限：毒消息不能让进程重启即崩、无限循环 ----------------
+{
+  await restart();
+  const pMsg = customerMsg('u-p', '你好');
+  const sess = getOrCreateSession('wecom:u-p', 'wecom');
+  sess.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+  saveSession(sess);
+  const st = readState();
+  fs.writeFileSync(
+    __test.STATE_FILE,
+    JSON.stringify({ cursor: st?.cursor, handled: st?.handled ?? [], pending: [{ msg: pMsg, tries: 2 }] }),
+  );
+  await syncFromCallback('tok-p');
+  await idle();
+  check('重放次数到上限的消息不再重放', startedTo('u-p').length === 0 && !pendingIds(readState()).includes(pMsg.msgid));
+  check(
+    '放弃重放时在会话里给顾问留标记',
+    (getSession('wecom:u-p')?.messages ?? []).some((m) => m.role === 'system' && m.content.includes('请人工回复')),
+  );
+}
+
+// ---------------- W1 重放只认各客户的队头：排在后面、从没开始处理的消息按新消息派发 ----------------
+// 客户回复慢时常连发两遍「在吗」。此前两条都按「处理到一半」对齐：第二条撞上第一条的回复，
+// 被当成「回复已生成」原样重发，自己却从没入库；次数也一起累加，毒消息会拖着后面的无辜消息一起被放弃
+{
+  await restart();
+  hangOnce.add('u-dup');
+  const d1 = customerMsg('u-dup', '在吗');
+  const d2 = customerMsg('u-dup', '在吗');
+  serverLog.push(d1, d2);
+  void syncFromCallback('tok-dup');
+  await waitFor(() => startedTo('u-dup').length > 0);
+  const ok = await runShutdownHooks(200); // 第一条卡在发送途中，停机等待超时
+  const before = pendingIds(readState());
+  check('（前提）超时退出时两条都留在在途表', !ok && before.includes(d1.msgid) && before.includes(d2.msgid));
+
+  await restart();
+  const holdDup = deferred();
+  holds.set('u-dup', holdDup.promise);
+  void syncFromCallback('tok-dup-restart');
+  await waitFor(() => startedTo('u-dup').length > 1);
+  const tries = new Map((readState()?.pending ?? []).map((p) => [p.msg.msgid, p.tries]));
+  check('重放只给队头计次数，排在后面的不累加', tries.get(d1.msgid) === 1 && tries.get(d2.msgid) === 0, JSON.stringify([...tries]));
+  holdDup.resolve();
+  holds.delete('u-dup');
+  await waitFor(() => sentTo('u-dup').length >= 2);
+  await idle();
+  const msgs = getSession('wecom:u-dup')?.messages ?? [];
+  check(
+    '连发两条相同文本：第二条照常入库、单独回复，不拿第一条的回复顶替',
+    msgs.filter((m) => m.role === 'customer').length === 2 && msgs.filter((m) => m.role === 'agent').length === 2,
+    JSON.stringify(msgs.map((m) => m.role)),
+  );
+}
+
+// ---------------- W1 重放对齐：插在这一轮中间的欢迎语不是回复 ----------------
+// 老客户再次进入时欢迎语不排队、直接写进会话；这一轮若被强制退出，重放不能把「欢迎回来」当回复重发
+{
+  await restart();
+  const wMsg = customerMsg('u-wb', '西藏几月去合适');
+  const sess = getOrCreateSession('wecom:u-wb', 'wecom');
+  sess.messages.push({ role: 'customer', content: '西藏几月去合适', at: Date.now() });
+  sess.messages.push({ role: 'agent', content: __test.WELCOME_BACK_TEXT, at: Date.now() });
+  saveSession(sess);
+  const st = readState();
+  fs.writeFileSync(
+    __test.STATE_FILE,
+    JSON.stringify({ cursor: st?.cursor, handled: [...(st?.handled ?? []), [wMsg.msgid, Date.now()]], pending: [{ msg: wMsg, tries: 0 }] }),
+  );
+  void syncFromCallback('tok-wb');
+  await waitFor(() => sentTo('u-wb').length > 0);
+  await idle();
+  const msgs = getSession('wecom:u-wb')?.messages ?? [];
+  check('重放时不把欢迎语当成这句的回复', sentTo('u-wb').length === 1 && !sentTo('u-wb')[0].content.includes('欢迎回来'), sentTo('u-wb')[0]?.content);
+  check('重放（中间夹欢迎语）：客户这句只记一次', msgs.filter((m) => m.role === 'customer').length === 1);
+}
+
+// ---------------- W1 启动重放途中收到停机信号：钩子要等重放的回复发完 ----------------
+// 连续两次 docker restart 时可能落在这个窗口：重放已派发，钩子却没等它就返回，进程随即退出
+{
+  await restart();
+  const gMsg = customerMsg('u-giveup', '你好');
+  const rMsg = customerMsg('u-replay', '你好');
+  // 到上限的消息被放弃时会往会话里写一条标记——借这个同步点「送达 SIGTERM」：
+  // 此刻 replayInflight 已过了开头的 stopping 检查，正要 await 落盘、再派发重放
+  const trigger = getOrCreateSession('wecom:u-giveup', 'wecom');
+  const sig: { shutdown?: Promise<boolean> } = {};
+  Object.defineProperty(trigger.messages, 'push', {
+    configurable: true,
+    value(this: unknown[], ...items: unknown[]) {
+      sig.shutdown ??= runShutdownHooks(3000);
+      return Array.prototype.push.apply(this, items);
+    },
+  });
+  saveSession(trigger);
+  const holdR = deferred();
+  holds.set('u-replay', holdR.promise);
+  const st = readState();
+  fs.writeFileSync(
+    __test.STATE_FILE,
+    JSON.stringify({
+      cursor: st?.cursor,
+      handled: [...(st?.handled ?? []), [gMsg.msgid, Date.now()], [rMsg.msgid, Date.now()]],
+      pending: [{ msg: gMsg, tries: 2 }, { msg: rMsg, tries: 0 }],
+    }),
+  );
+  void syncFromCallback('tok-startup-stop');
+  await waitFor(() => !!sig.shutdown);
+  setTimeout(() => holdR.resolve(), 200);
+  const ok = sig.shutdown ? await sig.shutdown : false;
+  delete (trigger.messages as { push?: unknown }).push;
+  holds.delete('u-replay');
+  check(
+    '启动重放途中停机：钩子等重放的回复发完才返回',
+    ok && sentTo('u-replay').length === 1 && !inspect().busy,
+    `ok=${ok} sent=${sentTo('u-replay').length} busy=${inspect().busy}`,
+  );
+  check('启动重放途中停机：落盘时在途表已清空', !pendingIds(readState()).includes(rMsg.msgid));
+}
+
+// ---------------- W1 信号接线：SIGTERM 先跑完停机钩子，再以 143 退出 ----------------
+{
+  const marker = path.join(VAR_DIR, 'shutdown-hook-done');
+  const child = path.join(VAR_DIR, 'sigterm-child.mts');
+  const storeUrl = new URL('../store.ts', import.meta.url).href;
+  fs.writeFileSync(
+    child,
+    `import fs from 'node:fs';\n` +
+      `const { onShutdown } = await import(${JSON.stringify(storeUrl)});\n` +
+      `onShutdown(async () => { await new Promise((r) => setTimeout(r, 300)); fs.writeFileSync(${JSON.stringify(marker)}, 'ok'); });\n` +
+      `setInterval(() => {}, 1000); // 像 HTTP server 一样让进程常驻\n` +
+      `setTimeout(() => process.kill(process.pid, 'SIGTERM'), 50);\n`,
+  );
+  const r = spawnSync(process.execPath, ['--import', 'tsx', child], {
+    cwd: process.cwd(),
+    env: { ...process.env, VAR_DIR },
+    timeout: 20_000,
+    encoding: 'utf8',
+  });
+  check('SIGTERM 等停机钩子跑完才退出', fs.existsSync(marker), `status=${r.status} stderr=${(r.stderr ?? '').slice(0, 300)}`);
+  check('SIGTERM 退出码为 143', r.status === 143, `status=${r.status}`);
+}
+
+Object.assign(console, origConsole);
 
 // ---------------- 结果 ----------------
 if (fails.length) {
+  console.error('---- 场景日志（最近 60 行）----');
+  for (const l of logBuf.slice(-60)) console.error('  ' + l);
   console.error(`WECOM SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);
-  for (const f of fails.slice(0, 10)) console.error('  ✗ ' + f);
+  for (const f of fails.slice(0, 20)) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`WECOM SELFTEST PASS: ${pass} 项断言全通（分段边界 / 卡片识别 / 正文剥离）`);
+console.log(`WECOM SELFTEST PASS: ${pass} 项断言全通（分段 / 卡片 / 冷启动 / 跨客户不排队 / 优雅停机 / 在途重放）`);
+// 显式退出：「死在半路」的场景故意留下永不返回的假请求，不让它们成为悬念
+process.exit(0);

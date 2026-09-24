@@ -87,6 +87,19 @@ function schedulePersist(): void {
   }, 200);
 }
 
+/**
+ * 跳过 200ms 去抖、立刻同步落盘。只给「写完必须马上落地」的场景用：自动跟进先记账再外发，
+ * 记账还在去抖窗口里时进程被 SIGKILL / OOM 杀掉，重启后同一条跟进会再发一遍。
+ */
+export function flushStoreNow(): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  persistNow();
+  storeEvents.emit('change');
+}
+
 // 退出兜底：防抖窗口内的未落盘变更在进程结束前同步写出
 process.on('exit', () => {
   if (saveTimer) {
@@ -95,8 +108,53 @@ process.on('exit', () => {
     persistNow();
   }
 });
+
+// ---------------- 优雅停机 ----------------
+// 此前收到 SIGTERM 立刻 process.exit：deploy.sh 给的 `docker stop -t 10` 宽限期一秒都没用上，
+// 正在跑 LLM 的客户消息被拦腰截断——企微那条消息已记为「处理过」，重启后不会再回，客户永远等不到。
+// 现在先跑各模块注册的收尾钩子（企微：停止拉新消息、等进行中的回复发完），再退出。
+type ShutdownHook = () => unknown;
+const shutdownHooks: ShutdownHook[] = [];
+
+/** 注册停机收尾钩子。收到 SIGINT/SIGTERM 时所有钩子并发执行，总等待有上限（见下） */
+export function onShutdown(fn: ShutdownHook): void {
+  shutdownHooks.push(fn);
+}
+
+// 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
+// 连 'exit' 阶段的同步落盘都跑不到。留约 2s 给落盘和进程退出。
+const SHUTDOWN_TIMEOUT_MS = 8000;
+
+/** 跑完全部停机钩子，最多等 timeoutMs。返回 false 表示超时（仍有钩子没结束） */
+export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const all = Promise.allSettled(shutdownHooks.map((fn) => Promise.resolve().then(fn))).then((rs) => {
+    for (const r of rs) if (r.status === 'rejected') console.error('[store] 停机钩子异常:', r.reason);
+    return true;
+  });
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([all, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let shuttingDown = false;
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => process.exit(sig === 'SIGINT' ? 130 : 143));
+  process.on(sig, () => {
+    const code = sig === 'SIGINT' ? 130 : 143;
+    // 第二次信号不再等（终端里连按 Ctrl+C 就是想马上退）
+    if (shuttingDown) process.exit(code);
+    shuttingDown = true;
+    console.log(`[store] 收到 ${sig}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
+    void runShutdownHooks().then((ok) => {
+      if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
+      process.exit(code);
+    });
+  });
 }
 
 // ---------------- demo 数据保鲜 ----------------

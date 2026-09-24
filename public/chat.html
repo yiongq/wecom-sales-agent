@@ -156,7 +156,7 @@
   }
   @keyframes caretblink { 50% { opacity: 0; } }
 
-  /* 微信支付风格卡片（成交消息） */
+  /* 微信支付风格卡片（成交消息）：跟在正文气泡下面，同企微通道「正文 + 链接卡片」两条发 */
   .pay-card {
     width: 250px;
     max-width: 100%;
@@ -166,6 +166,8 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, .09);
     animation: pop .2s ease-out;
   }
+  .pay-card[hidden] { display: none; }
+  .bubble + .pay-card { margin-top: 8px; }
   .pc-head {
     display: flex; align-items: center; gap: 7px;
     padding: 11px 14px;
@@ -182,6 +184,8 @@
   }
   .pc-body { padding: 16px 16px 18px; text-align: center; }
   .pc-title { font-size: 14px; color: #333; margin-bottom: 10px; word-break: break-word; }
+  .pc-trip { font-size: 12px; color: #6b6b6b; margin: -4px 0 10px; }
+  .pc-trip[hidden], .pc-amount[hidden] { display: none; }
   .pc-amount { font-size: 30px; font-weight: 600; color: #191919; line-height: 1; }
   .pc-cur { font-size: 17px; font-weight: 600; margin-right: 3px; }
   .pc-meta { font-size: 11px; color: #b0b0b0; margin-top: 9px; }
@@ -195,6 +199,7 @@
     transition: opacity .15s;
   }
   .pc-btn:active { opacity: .85; }
+  .pc-btn.done { background: #f2f2f2; color: #576b95; }
 
   /* 打字中 */
   .typing .bubble { display: inline-flex; gap: 5px; align-items: center; padding: 14px 14px; }
@@ -386,7 +391,7 @@
 
   const esc = (s) => s.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 
-  // 转义 → **加粗** → /pay/ 链接可点 → 换行渲染
+  // 转义 → **加粗** → 站内链接（支付 / 方案书）可点 → 换行渲染
   // 行首拿 emoji 当项目符号 → 干净的「·」（句中 emoji 保留），与微信通道观感一致
   function tidyBullets(text) {
     return text.replace(/^\s*(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}]️?)\s+/gmu, '· ');
@@ -397,40 +402,85 @@
     html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/(?:https?:\/\/[^\s]+)?(\/pay\/[A-Za-z0-9_-]+)/g,
       '<a class="paylink" href="$1" target="_blank">点击支付 → $1</a>');
+    // 方案书链接（generate_proposal 产出 /proposal/<线路>/<人数>[/日期]）。此前只认 /pay/，
+    // 引导页宣传的「出个详细行程方案」在模拟器里是一串点不动的纯文本
+    html = html.replace(/(?:https?:\/\/[^\s]+)?(\/proposal\/[A-Za-z0-9_-]+(?:\/[\d-]+)*)/g,
+      '<a class="paylink" href="$1" target="_blank">查看行程方案 → $1</a>');
     return html.replace(/\n/g, '<br>');
   }
 
-  // 成交消息 → 微信支付风格卡片。解析不出金额则返回 null 回退纯文本。
-  function buildPayCard(text) {
-    const linkMatch = text.match(/(?:https?:\/\/[^\s]+)?\/pay\/[A-Za-z0-9_-]+/);
-    if (!linkMatch) return null;
-    const priceMatch = text.match(/[¥￥]\s*([\d][\d,]*(?:\.\d+)?)/);
-    if (!priceMatch) return null;
-    const href = linkMatch[0];
-    const priceFmt = Number(priceMatch[1].replace(/,/g, '')).toLocaleString('zh-CN');
-    let title = '';
-    const bracket = text.match(/[「『《【]([^」』》】\n]{2,40})[」』》】]/);
-    if (bracket) title = bracket[1];
-    if (!title) {
-      const labeled = text.match(/(?:线路|行程|产品|套餐|方案|路线|目的地)[：:]\s*([^\n，。！？;；]{2,40})/);
-      if (labeled) title = labeled[1];
+  // 成交消息 → 正文气泡 + 微信支付风格卡片，规则与企微通道（src/adapters/wecom.ts 的
+  // extractCard / stripLink）一致：正文里恰好一条站内链接、且是支付链接才出卡片。
+  // 卡片上的线路名和金额一律读订单本身（/api/orders/:id），不从正文里抠——此前取正文里
+  // 第一个 ¥ 金额，模型按 SOP 先写每人价时，卡片显示的就是每人价，点进支付页却是总价。
+  const SITE_LINK_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g;
+  function payLinkOf(text) {
+    const all = text.match(SITE_LINK_RE) || [];
+    if (all.length !== 1) return null;
+    const m = all[0].match(/\/pay\/([A-Za-z0-9_-]+)/);
+    return m ? { raw: all[0], orderId: m[1], href: '/pay/' + m[1] } : null;
+  }
+
+  // 只挖掉 URL 本身，不删整行（链接常和报价、出发日期写在同一行）。
+  // 链接独占一行（或只剩「👉」这类符号）时整行拿掉，上一行指着它的冒号换成句号——与企微 stripLink 一致
+  function stripLink(body, raw) {
+    const lines = body.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes(raw)) continue;
+      const rest = lines[i].replace(raw, '').replace(/[ \t]{2,}/g, ' ').replace(/^[\s，,：:、]+|[\s，,：:、]+$/g, '');
+      if (/[\p{L}\p{N}]/u.test(rest)) { lines[i] = rest; continue; }
+      lines[i] = '';
+      for (let j = i - 1; j >= 0; j--) {
+        if (!lines[j].trim()) continue;
+        lines[j] = lines[j].replace(/[：:]\s*$/, '。');
+        break;
+      }
     }
-    if (!title) title = '定制旅行订单';
+    return lines
+      .filter((l, i, a) => l.trim() || (i > 0 && i < a.length - 1 && a[i - 1].trim() && a[i + 1].trim()))
+      .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // 先出卡片骨架（按钮直接可点），订单读到后再填线路名与总价。
+  // 读不到（订单不存在、查询限流、断网）就不显示金额——宁可空着，也不显示一个猜的数。
+  function payCardHTML(pay) {
     return (
       '<div class="pay-card">' +
         '<div class="pc-head"><span class="pc-logo">云</span>云途定制旅行 · 订单</div>' +
         '<div class="pc-body">' +
-          '<div class="pc-title">' + esc(title) + '</div>' +
-          '<div class="pc-amount"><span class="pc-cur">¥</span>' + esc(priceFmt) + '</div>' +
+          '<div class="pc-title">订单信息加载中…</div>' +
+          '<div class="pc-trip" hidden></div>' +
+          '<div class="pc-amount"><span class="pc-cur">¥</span><span class="pc-num">--</span></div>' +
           '<div class="pc-meta">演示环境 · 模拟支付</div>' +
         '</div>' +
-        '<a class="pc-btn" href="' + esc(href) + '">立即支付</a>' +
+        '<a class="pc-btn" href="' + esc(pay.href) + '">立即支付</a>' +
       '</div>'
     );
   }
 
-  // 打字机逐字渐显：约 30ms/字，长消息总时长封顶 ~2.5s，滚动跟随。
-  function typewrite(bubble, text) {
+  async function fillPayCard(card, pay) {
+    const q = (sel) => card.querySelector(sel);
+    try {
+      const res = await fetch('/api/orders/' + encodeURIComponent(pay.orderId));
+      if (!res.ok) throw new Error('http ' + res.status);
+      const o = await res.json();
+      if (typeof o.totalPrice !== 'number') throw new Error('bad order');
+      q('.pc-title').textContent = o.routeTitle || '定制旅行订单';
+      q('.pc-num').textContent = o.totalPrice.toLocaleString('zh-CN');
+      const trip = q('.pc-trip');
+      trip.textContent = o.travelers + ' 位出行 · ' + (o.departDate || '日期待定') + ' 出发 · 合计';
+      trip.hidden = false;
+      // 翻历史时订单可能早已付过款，别再挂着「立即支付」
+      if (o.status === 'paid') { q('.pc-btn').textContent = '已支付 · 查看订单'; q('.pc-btn').classList.add('done'); }
+    } catch {
+      q('.pc-title').textContent = '定制旅行订单';
+      q('.pc-amount').hidden = true;
+      q('.pc-btn').textContent = '查看订单';
+    }
+  }
+
+  // 打字机逐字渐显：约 30ms/字，长消息总时长封顶 ~2.5s，滚动跟随。打完回调 onDone。
+  function typewrite(bubble, text, onDone) {
     const len = text.length;
     const interval = 32;
     const total = Math.min(len * 30, 2500);
@@ -442,7 +492,7 @@
       const caret = i < len ? '<span class="caret"></span>' : '';
       bubble.innerHTML = renderContent(text.slice(0, i)) + caret;
       scrollBottom();
-      if (i >= len) clearInterval(timer);
+      if (i >= len) { clearInterval(timer); if (onDone) onDone(); }
     };
     const timer = setInterval(step, interval);
     step();
@@ -468,25 +518,27 @@
     const avatar = '<div class="avatar">' + (me ? '我' : '云') + '</div>';
     const nick = me ? '' : '<div class="nick">云途定制旅行顾问 · AI</div>';
 
-    // AI 成交消息优先渲染成支付卡片，解析失败自动回退。
-    let card = null;
-    if (!me) { try { card = buildPayCard(text); } catch { card = null; } }
-    if (card) {
-      row.innerHTML = avatar + '<div class="bubble-wrap">' + nick + card + '</div>';
-      msgsEl.appendChild(row);
-      scrollBottom();
-      return;
-    }
+    // AI 成交消息：正文照常显示（只挖掉那条裸链接），支付卡片追加在正文下面。
+    // 此前是整条消息换成卡片，出发日期、「名额以付款为准」、旺季调价说明全被吞掉。
+    const pay = me ? null : payLinkOf(text);
+    const body = pay ? stripLink(text, pay.raw) : text;
 
-    row.innerHTML = avatar + '<div class="bubble-wrap">' + nick + '<div class="bubble"></div></div>';
+    row.innerHTML = avatar + '<div class="bubble-wrap">' + nick
+      + (body ? '<div class="bubble"></div>' : '')
+      + (pay ? payCardHTML(pay) : '') + '</div>';
     msgsEl.appendChild(row);
+    const card = row.querySelector('.pay-card');
+    if (card) fillPayCard(card, pay);
     const bubble = row.querySelector('.bubble');
-    if (animate) {
-      typewrite(bubble, text);
+    if (bubble && animate) {
+      // 打字机期间先藏住卡片，否则正文逐字变长会把卡片一路往下推
+      if (card) card.hidden = true;
+      typewrite(bubble, body, () => { if (card) { card.hidden = false; scrollBottom(); } });
     } else {
-      bubble.innerHTML = renderContent(text);
+      if (bubble) bubble.innerHTML = renderContent(body);
       scrollBottom();
     }
+    return row;
   }
 
   function showTyping() {
@@ -530,6 +582,14 @@
     // 断线由 EventSource 自动重连
   }
 
+  // 服务端给了 {error} 就照实显示；没给（纯文本的 413 等）按状态码补一句人话
+  function chatErrorText(status, data) {
+    if (data && typeof data.error === 'string' && data.error) return data.error;
+    if (status === 413) return '消息过长（≤1000 字）';
+    if (status === 429) return '发送太频繁了，请稍后再试';
+    return '系统开小差了，请稍后再试';
+  }
+
   async function send() {
     const text = inputEl.value.trim();
     if (!text || sendBtn.disabled) return;
@@ -537,7 +597,7 @@
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
     hideChips(); // 客户发出第一条即隐藏开场气泡
-    addMsg('customer', text);
+    const myRow = addMsg('customer', text);
     showTyping();
     try {
       const res = await fetch('/api/chat', {
@@ -545,14 +605,20 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId, text }),
       });
-      const data = await res.json();
+      // body 只能读一次，错误分支也只能用这里的 data。413/411 是中间件回的纯文本，
+      // 解析失败记 null——不能让它抛到外层 catch，被误报成「网络异常」。
+      const data = await res.json().catch(() => null);
       hideTyping();
       if (!res.ok) {
         // 限流和长度校验的服务端提示更有用，别一律糊成「系统开小差」
-        let msg = '（系统开小差了，请稍后再试）';
-        try { const d = await res.json(); if (d && d.error) msg = '（' + d.error + '）'; } catch {}
-        addMsg('agent', msg); return;
+        addMsg('agent', '（' + chatErrorText(res.status, data) + '）');
+        // 非 2xx 都是服务端在处理前就拒收了（异常兜底走 200），这条消息并没有进会话：
+        // 撤掉刚才乐观显示的气泡，把原文放回输入框，改短或稍等后可直接重发
+        myRow.remove();
+        if (!inputEl.value) { inputEl.value = text; inputEl.dispatchEvent(new Event('input')); }
+        return;
       }
+      if (!data || !data.reply) { addMsg('agent', '（系统开小差了，请稍后再试）'); return; }
       if (data.sessionId && data.sessionId !== sessionId) {
         sessionId = data.sessionId;
         localStorage.setItem(LS_KEY, sessionId);

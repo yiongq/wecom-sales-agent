@@ -25,6 +25,7 @@ const { handleMessage, onToolCall } = await import('../src/engine.js');
 const { getSession } = await import('../src/store.js');
 const { buildIndex } = await import('../src/retrieval.js');
 const { usageToday } = await import('../src/usage.js');
+const { llmStats } = await import('../src/llm.js');
 
 interface Turn {
   say: string;
@@ -63,6 +64,15 @@ interface Failure { caseId: string; turn: number; say: string; why: string; got:
 const failures: Failure[] = [];
 let checks = 0;
 const latencies: number[] = [];
+/**
+ * 逐轮耗时。汇总的 P50/P95 看不出**多轮**场景的尾巴：多轮用例后几轮历史更长、常要报价/建单，
+ * 往返次数多，正是容易冲破「单轮 8 秒」的地方；首轮快不代表整段对话每一轮都快。
+ * 开了对冲时顺带记下这一轮加发/胜出了几次，才能对上「哪几轮是对冲救回来的」。
+ */
+interface TurnLatency { caseId: string; turn: number; ms: number; multiTurn: boolean; hedgeFired: number; hedgeWon: number }
+const turnLatencies: TurnLatency[] = [];
+// 微信客服里客户等 8 秒以上就以为没人在（选型史见 src/llm.ts DEFAULT_MAIN_MODEL），这是单轮的硬线
+const SLOW_MS = 8000;
 
 function check(ok: boolean, c: Case, ti: number, t: Turn, why: string, got: string): void {
   checks += 1;
@@ -76,6 +86,7 @@ async function runCase(c: Case): Promise<boolean> {
   for (let i = 0; i < c.turns.length; i++) {
     const t = c.turns[i];
     toolCalls.length = 0;
+    const h0 = llmStats();
     const t0 = Date.now();
     let reply;
     try {
@@ -84,7 +95,13 @@ async function runCase(c: Case): Promise<boolean> {
       check(false, c, i, t, '抛异常', e instanceof Error ? e.message : String(e));
       break;
     }
-    latencies.push(Date.now() - t0);
+    const ms = Date.now() - t0;
+    const h1 = llmStats();
+    latencies.push(ms);
+    turnLatencies.push({
+      caseId: c.id, turn: i + 1, ms, multiTurn: c.turns.length > 1,
+      hedgeFired: h1.hedgeFired - h0.hedgeFired, hedgeWon: h1.hedgeWon - h0.hedgeWon,
+    });
     const text = reply.text ?? '';
 
     // expectStatus 的语义是「这轮不崩且有话可回」。此前 runner 根本不读这个字段，
@@ -127,19 +144,31 @@ for (const r of results) {
     if (r.pass) b.pass += 1;
   }
 }
-const sorted = [...latencies].sort((a, b) => a - b);
-const p50 = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
-const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 0;
+const pct = (a: number[], p: number): number => [...a].sort((x, y) => x - y)[Math.floor(a.length * p)] ?? 0;
+const p50 = pct(latencies, 0.5);
+const p90 = pct(latencies, 0.9);
+const p95 = pct(latencies, 0.95);
+const over8s = latencies.filter((ms) => ms > SLOW_MS).length;
+const maxMs = Math.max(0, ...latencies);
+const multi = turnLatencies.filter((t) => t.multiTurn).map((t) => t.ms);
+const multiOver8s = multi.filter((ms) => ms > SLOW_MS).length;
+const share = (k: number, n: number): string => `${n ? ((k / n) * 100).toFixed(1) : '0.0'}%`;
 const usage = usageToday();
+const hedge = llmStats();
 
 console.log(`\n${'='.repeat(58)}`);
 console.log(`回归评测：${passed}/${results.length} 用例通过${skipped ? `（mock 模式跳过 ${skipped} 条需真实模型的用例）` : ''} · ${checks} 项断言 · 耗时 ${((Date.now() - started) / 1000).toFixed(1)}s`);
-console.log(`响应延迟：P50 ${p50}ms · P95 ${p95}ms · 共 ${latencies.length} 轮`);
+console.log(`响应延迟：P50 ${p50}ms · P90 ${p90}ms · P95 ${p95}ms · 超8秒 ${over8s} 轮（${share(over8s, latencies.length)}）· 最大 ${maxMs}ms · 共 ${latencies.length} 轮`);
+console.log(`多轮用例逐轮：P50 ${pct(multi, 0.5)}ms · P90 ${pct(multi, 0.9)}ms · 超8秒 ${multiOver8s} 轮（${share(multiOver8s, multi.length)}）· 共 ${multi.length} 轮`);
 console.log(`模型成本：¥${usage.totalCny.toFixed(4)}（${usage.totalCalls} 次调用）`);
 // 前缀缓存的验收位。命中率长期为 0 而调用量不小，说明 buildSystemPrompt 的可缓存前缀
 // 又被什么东西截断了——这种退化不报错、只多花钱，没有这行数字就永远发现不了。
 if (!isMock) {
   console.log(`前缀缓存：命中 ${(usage.cacheHitRate * 100).toFixed(1)}% 输入 token · 省下 ¥${usage.cacheSavedCny.toFixed(4)}`);
+  // 开了对冲时，上面的延迟里有一部分是对冲模型答的，花费也有一部分记在它名下——不打出来就没法跨版本对比
+  console.log(hedge.hedgeModel
+    ? `对冲：${hedge.hedgeModel}（主模型超 ${hedge.hedgeMs}ms 加发）· 本次加发 ${hedge.hedgeFired} 次、对冲胜出 ${hedge.hedgeWon} 次，延迟与成本含对冲效果`
+    : '对冲：未开启');
 }
 console.log('='.repeat(58));
 for (const [tag, b] of Object.entries(byTag)) {
@@ -156,7 +185,12 @@ if (failures.length) {
 if (jsonOut) {
   fs.writeFileSync(jsonOut, JSON.stringify({
     at: new Date().toISOString(), passed, total: results.length, checks,
-    latencyP50: p50, latencyP95: p95, cost: usage.totalCny, results, failures,
+    latencyP50: p50, latencyP90: p90, latencyP95: p95, latencyMax: maxMs, over8s,
+    multiTurn: { turns: multi.length, p50: pct(multi, 0.5), p90: pct(multi, 0.9), over8s: multiOver8s },
+    cost: usage.totalCny, cacheHitRate: usage.cacheHitRate, byModel: usage.byModel,
+    hedge: { model: hedge.hedgeModel, ms: hedge.hedgeMs, fired: hedge.hedgeFired, won: hedge.hedgeWon },
+    reasoningEffort: hedge.reasoningEffort,
+    results, failures, turns: turnLatencies,
   }, null, 2));
   console.log(`\n结果已写入 ${jsonOut}`);
 }

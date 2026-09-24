@@ -261,6 +261,41 @@
   .sug .hd { display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; letter-spacing:.4px; color:var(--accent-tx); }
   .sug .tx { font-size:12.5px; color:var(--text2); line-height:1.65; margin-top:8px; }
   .sug button { margin-top:10px; width:100%; border:1px solid var(--accent-line); background:var(--accent-soft); color:var(--accent-tx); border-radius:8px; padding:8px; font:500 12.5px inherit; cursor:pointer; }
+
+  /* ==== 手机端（≤760px）====
+     桌面是「会话列表 | 主区 | 右栏」三栏，手机上硬塞的话主区只剩 72px 宽。
+     窄屏改成分页：概览和会话列表用顶部切换条来回切，点进会话是详情页（‹ 返回），
+     右栏的成交概率 / 画像 / 订单 / 建议挪到对话下面，往下滑就能看到。
+     配色全部沿用上面的变量，两套主题照旧生效。 */
+  .mnav { display:none; }
+  @media (max-width:760px) {
+    /* iOS 地址栏收放时 100vh 比可视区高，回复框会被压到屏幕外 */
+    .app { height:100vh; height:100dvh; }
+    header { gap:10px; padding:0 12px; }
+    .mnav { display:flex; flex:none; gap:2px; margin:8px 12px 0; padding:3px; background:var(--hover); border:1px solid var(--border); border-radius:9px; }
+    .mnav button { flex:1; border:none; background:none; font:inherit; font-size:12.5px; color:var(--sub); padding:6px; border-radius:7px; cursor:pointer; }
+    .mnav button.on { color:var(--text); background:var(--border2); font-weight:600; }
+    .app.has-sel .mnav { display:none; }
+    aside { width:auto; flex:1; border-right:none; }
+    .app[data-mv="dash"] aside, .app.has-sel aside { display:none; }
+    .app[data-mv="list"]:not(.has-sel) main { display:none; }
+
+    .pad { padding:12px 16px 6px; }
+    .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .two { grid-template-columns:minmax(0,1fr); }
+
+    .dhead { flex-wrap:wrap; height:auto; min-height:54px; padding:8px 12px; gap:8px; }
+    .dhead .id { display:none; }
+    /* 详情页整体一个滚动区：对话占满首屏（自身仍可滚），右栏卡片接在下面 */
+    .split { display:block; overflow-y:auto; }
+    .conv { height:100%; border-right:none; }
+    .stepper { padding:12px 14px 10px; }
+    .step .link { margin:4px 4px 0; }
+    .msgs { padding:14px 14px 16px; }
+    .m .wrap { max-width:86%; }
+    .replybar { padding:10px 12px; }
+    .rightbar { width:auto; overflow:visible; border-top:1px solid var(--border); animation:none; }
+  }
 </style>
 </head>
 <body>
@@ -272,6 +307,8 @@
     <div class="mode" id="modeBtn" title="点击登录后可查看真实客户会话并接管"><i></i><span id="modeTxt">演示模式</span></div>
     <button class="iconbtn" id="themeBtn" title="切换主题"></button>
   </header>
+  <!-- 只在手机上显示，见样式里的「手机端」一节 -->
+  <nav class="mnav" id="mnav"><button type="button" data-mv="dash">概览</button><button type="button" data-mv="list">会话列表</button></nav>
   <div class="body">
     <aside>
       <div class="search"><div class="box">
@@ -413,7 +450,8 @@ const num = v => Math.round(v).toLocaleString('en-US');
 const alpha = (v, a) => 'color-mix(in srgb, var(' + v + ') ' + a + '%, transparent)';
 
 // drafts 按会话 id 存：共用一个 draft 会让 A 的草稿出现在 B 的输入框里，一回车就发错客户
-let S = { sessions:[], orders:[], selected:null, query:'', range:'今日', tab:'全部', drafts:{}, taken:{}, aiInsights:null, sugText:{}, insAt:0, usage:null, routeMeta:{} };
+// mview：手机端没选中会话时显示哪一页（dash=概览 / list=会话列表），桌面端不起作用
+let S = { sessions:[], orders:[], selected:null, query:'', range:'今日', tab:'全部', drafts:{}, taken:{}, aiInsights:null, sugText:{}, insAt:0, usage:null, routeMeta:{}, mview:'dash' };
 const draftOf = id => (id && S.drafts[id]) || '';
 const setDraft = (id, v) => { if (id) S.drafts[id] = v; };
 
@@ -508,6 +546,7 @@ function render() {
     if (row) row.scrollIntoView({ block: 'nearest' });
   }
   const sel = S.sessions.find(s => s.id === S.selected);
+  syncMobileView(!!sel);
   document.getElementById('main').innerHTML = sel ? detailHTML(sel) : dashHTML();
   wire();
   lastSig = sigOf();
@@ -520,6 +559,19 @@ function render() {
     ensureSuggestion(sel.id);
   } else ensureInsights();
 }
+
+// 手机端分页：只切 .app 上的标记，由样式决定显示哪一页。不重绘，切页不打断任何状态。
+function syncMobileView(hasSel) {
+  const app = document.querySelector('.app');
+  app.dataset.mv = S.mview;
+  app.classList.toggle('has-sel', hasSel);
+  document.querySelectorAll('#mnav button').forEach(b => b.classList.toggle('on', b.dataset.mv === S.mview));
+}
+document.getElementById('mnav').addEventListener('click', e => {
+  const b = e.target.closest('button[data-mv]'); if (!b) return;
+  S.mview = b.dataset.mv;
+  syncMobileView(!!S.sessions.find(s => s.id === S.selected));
+});
 
 // AI 洞察：拉 LLM 版（10 分钟节流），到手后原地替换洞察卡内容
 async function ensureInsights() {
@@ -539,18 +591,38 @@ async function ensureInsights() {
 // 建议按「会话 + 消息数」缓存，对话一有新消息就重新拉——此前只按会话 id 缓存，
 // 取过一次就永久不刷新：客户发了新消息、甚至发「重置」清空会话之后，
 // 右侧还挂着上一轮的建议（实测重置回到推荐阶段，建议仍是转人工阶段的「先致歉安抚情绪」）。
+// 一轮对话会触发好几次重绘（客户消息落盘、工具落盘、AI 回复落盘各推一次 SSE），
+// 每次重绘都会走到这里：同一个 key 的请求还在飞就再发一次，纯属重复计费，
+// 还占着和客户对话共用的 LLM 并发名额（LLM_MAX_INFLIGHT）。所以在飞的 key 记下来。
+const sugPending = new Set();
+const sugKeyOf = s => s.id + ':' + ((s.messages || []).length);
 async function ensureSuggestion(id) {
   const s = S.sessions.find(x => x.id === id);
-  const key = id + ':' + ((s && s.messages ? s.messages.length : 0));
+  if (!s) return;
+  const key = sugKeyOf(s);
+  // 只动「当前正显示这个 key」的那张卡：请求回来时用户可能已切走，或又来了新消息
+  const showing = () => { const c = S.sessions.find(x => x.id === S.selected); return !!c && sugKeyOf(c) === key; };
+  const setTag = t => { if (!showing()) return; const tag = document.getElementById('sugTag'); if (tag) tag.textContent = t; };
   if (S.sugText[key]) return;
+  // 建议接口要顾问身份，演示模式下必然 401/503，发了也白发
+  if (!AUTH.on) { setTag('规则版'); return; }
+  // 客户刚说完、AI 还在回：此刻按「还没回复」的对话生成的建议，AI 回复一落盘（key 变了）就作废。
+  // 等回复落盘再拉。接管/转人工后 AI 不会回，照常拉。一轮有墙钟上限（LLM_ROUND_TIMEOUT_MS，
+  // 默认 2 分钟），超过 3 分钟还停在客户消息上，说明那轮已经没了（异常或重启），不再干等。
+  const msgs = s.messages || [], lm = msgs[msgs.length - 1];
+  const aiReplying = lm && lm.role === 'customer' && !(s.handedOver || S.taken[s.id]) && Date.now() - lm.at < 3*60*1000;
+  if (aiReplying) { setTag('等 AI 回复后生成'); return; }
+  if (sugPending.has(key)) return;
+  sugPending.add(key);
   try {
     const r = await api('/api/sessions/'+encodeURIComponent(id)+'/suggestion'); const d = await r.json();
-    if (d.suggestion && S.selected === id) {
+    if (d.suggestion) {
       S.sugText[key] = d.suggestion;
-      const tx = document.getElementById('sugTx'); if (tx) tx.textContent = d.suggestion;
-      const tag = document.getElementById('sugTag'); if (tag) tag.textContent = 'AI 定制';
-    } else if (!d.suggestion) { const tag = document.getElementById('sugTag'); if (tag) tag.textContent = '规则版'; }
-  } catch(e) { const tag = document.getElementById('sugTag'); if (tag) tag.textContent = '规则版'; }
+      if (showing()) { const tx = document.getElementById('sugTx'); if (tx) tx.textContent = d.suggestion; }
+      setTag('AI 定制');
+    } else setTag('规则版');
+  } catch(e) { setTag('规则版'); }
+  finally { sugPending.delete(key); }
 }
 
 function stageBadge(stage) {
@@ -835,7 +907,7 @@ function detailHTML(s) {
     : '<div class="empty">暂无订单</div>';
 
   const tag = hot ? '高意向' : (sc>=40?'培育中':'早期');
-  const sugKey = s.id + ':' + ((s.messages || []).length);
+  const sugKey = sugKeyOf(s);
   const sug = S.sugText[sugKey] || suggestionFor(s.stage);
   const sugIsAI = !!S.sugText[sugKey];
 
@@ -967,7 +1039,7 @@ function clearSearch() {
 qInput.addEventListener('input', e => { S.query = e.target.value; syncClear(); renderList(); });
 qInput.addEventListener('keydown', e => { if (e.key === 'Escape') clearSearch(); });
 qClr.addEventListener('click', clearSearch);
-document.getElementById('home').addEventListener('click', () => { S.selected = null; S.query = ''; document.getElementById('q').value = ''; render(); });
+document.getElementById('home').addEventListener('click', () => { S.selected = null; S.query = ''; S.mview = 'dash'; document.getElementById('q').value = ''; render(); });
 
 function setTheme(t) {
   document.documentElement.setAttribute('data-theme', t);

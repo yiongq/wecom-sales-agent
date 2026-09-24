@@ -1,5 +1,5 @@
 # tsx 直跑（demo 规模无需编译产物）。tini 作 PID 1 转发信号，
-# 保证 SIGTERM 能到达 node（store 退出 flush、优雅停机依赖它）。
+# 保证 SIGTERM 能到达 node（store 的停机钩子：企微等进行中的回复发完再落盘退出）。
 FROM node:22-alpine
 # upgrade：拉取 Alpine 安全补丁（基础镜像 tag 常滞后于 CVE 修复）
 RUN apk upgrade --no-cache && apk add --no-cache tini tzdata
@@ -11,8 +11,9 @@ WORKDIR /app
 # 上游发新版后"零代码改动的重新部署"也可能把服务弄坏且无从对照排查
 # pnpm-workspace.yaml 必须一起 COPY：pnpm 10 从这里读 onlyBuiltDependencies，
 # 缺了会因 esbuild 构建脚本被忽略而直接失败
+# pnpm 版本取 package.json 的 packageManager（精确版本，与 CI、本地开发同一份）
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN corepack enable && corepack prepare pnpm@10 --activate \
+RUN corepack enable && corepack install \
   && pnpm install --frozen-lockfile --prod=false
 COPY tsconfig.json ./
 COPY src ./src
@@ -31,4 +32,7 @@ EXPOSE 3200
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
   CMD wget -qO- http://127.0.0.1:3200/healthz || exit 1
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["npx", "tsx", "src/server.ts"]
+# 用 node --import tsx 而不是 npx tsx：后者实际进程链是 npm exec → tsx cli → 应用 node，
+# 多挂两个常驻 node（实测内存 105MiB → 50MiB），每次启动 npm 还会去请求 registry，
+# SIGTERM 也要多转发两跳。tsx 在上面的 pnpm install（--prod=false）里已装好。
+CMD ["node", "--import", "tsx", "src/server.ts"]

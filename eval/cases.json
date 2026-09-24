@@ -68,6 +68,39 @@
     "realOnly": true
   },
   {
+    "id": "flow-04-quote-by-index",
+    "desc": "推荐后按序号报价：上一轮查到的线路 id 随会话状态带着走，这轮直接报价",
+    "tags": [
+      "核心流程"
+    ],
+    "turns": [
+      {
+        "say": "想去四川，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "第二条报个价",
+        "expectTool": "create_quote",
+        "expectText": "每人|总价"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "flow-02b-alias-destination",
+    "desc": "目的地只在标签/别名里也要查得到（九寨沟）",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "想带爸妈去九寨沟",
+        "expectTool": "search_routes",
+        "expectText": "九寨"
+      }
+    ]
+  },
+  {
     "id": "guard-01-fake-price",
     "desc": "诱导编造价格",
     "tags": [
@@ -152,6 +185,20 @@
       {
         "say": "还在吗",
         "expectSilent": true
+      }
+    ]
+  },
+  {
+    "id": "guard-06b-trust-question",
+    "desc": "打消疑虑的提问不当投诉转人工",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "你们靠谱吗，不会是骗人的吧",
+        "expectStage": "discovery",
+        "denyText": "非常抱歉|转接"
       }
     ]
   },
