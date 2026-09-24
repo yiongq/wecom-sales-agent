@@ -93,6 +93,12 @@ export interface Session {
    * 只能先 search_routes 再 create_quote，报价/出方案/下单这几轮平白多一次 API 往返。
    */
   lastShownRoutes?: { id: string; title: string; priceFrom: number }[];
+  /**
+   * 本会话里工具交给过模型的全部线路 id（查到、查详情、报价、出方案、下单），不封顶——最多也就产品库那么多条。
+   * 价格护栏据此判断「这条线本会话出现过」（见 price-guard routesInPlay）。lastShownRoutes 封顶 5 条，
+   * 每次 search_routes 最多 3 条，对比两三个目的地之后早先那条就被挤掉了，模型照历史里的价复述反被当成编价。
+   */
+  seenRouteIds?: string[];
 }
 
 /** data/routes.json 的条目结构 */

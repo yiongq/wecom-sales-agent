@@ -104,6 +104,20 @@
     "realOnly": true
   },
   {
+    "id": "flow-05b-unknown-destination-prefetch",
+    "desc": "我们没有的目的地（埃及）由引擎预取：模型不调工具，手里也已有最接近的现成线路，编不出一条「埃及线」",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "想去埃及看金字塔",
+        "expectTool": "search_routes",
+        "expectStage": "recommend"
+      }
+    ]
+  },
+  {
     "id": "flow-06-silver-highland",
     "desc": "带爸妈去西藏：讲清海拔风险，直接给全程低海拔的替代线路和价格，不举要上三四千米的线、不问要不要看",
     "tags": [

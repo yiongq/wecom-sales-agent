@@ -3,9 +3,9 @@
 // 此前 URL/订单号有确定性护栏，价格却只有提示词约束（「严禁自己编造任何价格」）——
 // 模型真写错一个数字就直接发给客户了。对高客单价产品这是最贵的一类错误：客户按错价
 // 下单、成交后才发现，要么公司认亏要么当场翻脸。
-import { loadHotels, loadRoutes } from './tools.js';
+import { isOriginMention, loadHotels, loadRoutes, offCatalogPlaces } from './tools.js';
 import { getOrder } from './store.js';
-import type { Session } from './types.js';
+import type { Route, Session } from './types.js';
 
 /**
  * 精确金额：¥12,345 / 12,345元 / 12345 块，且 ≥1000。「3万8000元」里的 8000 是 38,000 的尾巴，不单独算。
@@ -48,9 +48,18 @@ const MAX_TRAVELERS = 50;
  * 此时金额必须来自产品库定价规则或本会话的工具结果——客户自己喊的数字不作数，
  * 否则客户只要说一句「别家 6800，你给我 6800 我立刻订」，模型顺着答
  * 「好的，就按 6800 给您锁定」就能过护栏，而客户点开支付页收的是真实价。
+ * 「就按这条走」「就按这个方案来」另算，见 ROUTE_PICK。
  */
 const CLOSING_PRICE =
   /就按|按这个价|按这个数|给您锁定|锁定名额|成交价|优惠价|这个价格给您|给您这个价|就这个价|帮您下单|为您下单/;
+/**
+ * 「就按这条走」「就按这个方案来」多半是在选线路、不是在报价：实测「两个方向您看哪个更合适：一是预算能往上提一点
+ * 就按这条走；二是我帮您找……把价格拉回 1 万 5 以内」被当成成交语境，客户说过的预算跟着不作数，复述的 1 万 5 成了编价。
+ * 但它同样能用来顺着客户砍的价成交（「好的，就按这条走，每人 6,800 元」），所以只在它所在的分句
+ * （句号之外「；」也断开——上面那句的两个选项就是分号隔开的）里没有金额时才不算
+ */
+const ROUTE_PICK = /就按[这那](?:条|个方案|个行程|个路线)/;
+const ROUTE_PICK_ALL = new RegExp(ROUTE_PICK.source, 'g');
 /** 婉拒砍价的说法。sop.md 要求「不许直接降价、可以讲价值或换更低档线路」，
  *  于是模型会写「这个价格给您安排不了」「我们没法按这个价走」——里面照样含客户
  *  报的数字和上面的成交措辞，但语义是**拒绝**，不是报成交价。不排除就会把
@@ -75,7 +84,11 @@ const HOTEL_AFTER = /^\s*(?:元|块)?\s*起?\s*(?:[/／]\s*(?:晚|间夜)|[一�
 
 /** 这条回复里有没有「在报成交价」的句子（排除婉拒句） */
 function hasClosingPrice(visible: string): boolean {
-  return sentences(visible).some((s) => CLOSING_PRICE.test(s) && !PRICE_REFUSAL.test(s));
+  return sentences(visible).some((s) => {
+    if (PRICE_REFUSAL.test(s)) return false;
+    if (CLOSING_PRICE.test(s.replace(ROUTE_PICK_ALL, '、'))) return true;
+    return s.split(/[；;]/).some((c) => ROUTE_PICK.test(c) && (amountHits(c).length > 0 || parseWanAmounts(c).length > 0));
+  });
 }
 
 /** 金额说的是人均还是总价——由紧邻的限定词决定，认不出来就两边都比 */
@@ -87,9 +100,11 @@ const TOTAL_HINT = /(?:总价|总共|一共|共计|合计|总计|总额)[^\d¥�
  * 不必再看后面跟什么。此前中文数字还要求后面落在白名单里，「人均三万八哦」「每人两万五呢」
  * 「人均三万八这个价很划算」全都漏拦——微信销售口吻句末带语气词再普遍不过。
  * 只认紧贴：「每人都能看到五千米雪山」这种隔了几个字的，「每人」说的不是这个数。
+ * 「人均起价 68800 起」「起价 68800」「每人团费 68800」同样是报价：此前「起价」隔在中间就不认，
+ * 实测模型编的「南极深度体验线……人均起价 68800 起」整句没被当成钱，护栏根本没看它。
  */
 const TIGHT_HINT =
-  /(?:人均|每人|单人|每位|一位|总价|总共|一共|共计|合计|总计|总额)\s*(?:大概|大约|约|只要|只需|才|要|是|在|也就|差不多|起码|至少|不到|最低|最少|仅|只)?\s*$/;
+  /(?:(?:人均|每人|单人|每位|一位|总价|总共|一共|共计|合计|总计|总额)(?:起价|价格|售价|报价|团费|费用|价)?|起价|售价|团费)\s*(?:大概|大约|约|只要|只需|才|要|是|在|也就|差不多|起码|至少|不到|最低|最少|仅|只)?\s*$/;
 
 interface WanAmount {
   value: number;
@@ -505,8 +520,160 @@ export function spokenMoney(text: string): { amounts: number[]; rangeEnds: numbe
  */
 function customerAmounts(session: Session, customerText: string): number[] {
   const texts = [customerText, ...(session.messages ?? []).filter((m) => m.role === 'customer').map((m) => m.content)];
-  return texts.flatMap((t) => spokenMoney(t).amounts);
+  // 不带单位的四到六位数也算（「便宜点，19999 卖不卖」）：spokenMoney 不认它，因为引擎拿同一套读预算，
+  // 「2026 年去」不能被当成预算；这里只是白名单，多放一个客户自己说过的数代价很小
+  return texts.flatMap((t) => [
+    ...spokenMoney(t).amounts,
+    ...(normalizeMoneyText(t).match(/(?<![\d.,])\d{4,6}(?![\d.,])/g) ?? []).map(Number),
+  ]);
 }
+
+// ---------------- 本会话出现过的线路 ----------------
+//
+// 产品库的价只在那条线本会话出现过时才放行。此前整库 20 条线的价全在白名单里，护栏只判「这个数有没有出处」：
+// 实测模型一个工具都没调，编了一条「南极深度体验线的替代方向……人均起价 68800 起」——68800 恰好是西藏松赞线的价，
+// 照样发给了客户。客户看到的是一条不存在的线路配一个真实价格，比明摆着的错价更难察觉。
+// 「出现过」按下面几处认，都是客户在这段对话里真能看到、或模型手里真有的线路：
+//   · 本轮的工具结果（search_routes / get_route_detail / create_quote / generate_proposal / create_order，含引擎预取）；
+//   · 会话状态里记着的：工具交给过模型的全部线路（seenRouteIds）、最近查到的线路、最近报价、已有订单；
+//   · 之前的回复里写过价的线路（顾问接管时手写的介绍、seenRouteIds 上线前的老会话）；
+//   · 对话里（含这条回复）点了名的：线路标题里的专有名词（松赞、珠峰大本营、兵马俑…），
+//     或只对应一条线的目的地（西安、贵州、瑞士…）。「西藏」「日本」这种对应好几条线的不算点名。
+//     客户说成出发地的不算（「我在北京，想去南极」没点北京那条线）；回复里跟库外目的地同一分句的也不算——
+//     「对标松赞品质的南极线」「埃及金字塔线跟西安兵马俑一样」是拿真线路给编出来的线作比，不是在推那条线。
+
+/** 本轮一次工具调用：参数和返回原文（引擎的 ToolCall 就是这个形状） */
+export interface TurnToolCall { name: string; args: Record<string, unknown>; result?: string }
+
+/** 标题里不指向某条线的修饰词：切出来的名字去掉它们（「松赞全线」→「松赞」，「洱海古城」→「洱海」） */
+const TITLE_FILLER = '全线|环线|秘境|深度|之旅|亲子|蜜月|度假|奢华|全景|双岛|浮潜|一价全包|海岛|美学|雨林|越野|摄影|纵贯|南北疆|双乐园|乐园|古城|极光|玻璃屋';
+const FILLER_EDGE = new RegExp(`^(?:${TITLE_FILLER})+|(?:${TITLE_FILLER})+$`, 'g');
+/**
+ * 标题按「·」、天数、中英文之间的空格切开；「雪山」也切（「梅里雪山松赞环线」要切出「松赞」）。
+ * 「冰川」「雪山」「极光」这类景观词不能单独算点名：编出来的「南极冰川雪原线」里全是它们
+ */
+const TITLE_SPLIT = /[·・、,，/（）()]|\d+\s*[日天]|(?<=[一-鿿])\s+|\s+(?=[一-鿿])|雪山/;
+
+/** 每条线能被「点名」的叫法。标题里的专有名词 + 只对应这一条线的目的地 / 别名 */
+function routeNames(routes: Route[]): Map<string, string[]> {
+  const places = new Map<string, string[]>();
+  for (const r of routes) {
+    for (const p of [r.destination, ...(r.aliases ?? [])]) {
+      if (p) places.set(p, [...(places.get(p) ?? []), r.id]);
+    }
+  }
+  const out = new Map<string, string[]>();
+  for (const r of routes) {
+    const own = [r.destination, ...(r.aliases ?? [])].filter(Boolean);
+    const names = new Set<string>();
+    for (let piece of r.title.split(TITLE_SPLIT)) {
+      piece = piece.trim();
+      // 「新疆伊犁」「日本京都东京」「瑞士冰川快车」：开头的目的地不算这条线自己的名字
+      for (const p of own) if (piece.startsWith(p) && piece.length > p.length) piece = piece.slice(p.length);
+      piece = piece.replace(FILLER_EDGE, '').replace(/\s+/g, '');
+      if (piece.length >= 2 && !places.has(piece)) names.add(piece);
+    }
+    for (const p of own) if (places.get(p)?.length === 1) names.add(p);
+    out.set(r.id, [...names]);
+  }
+  return out;
+}
+
+/** 这段文字点了名的线路。skip：这个叫法在原文里不算点名（客户说的出发地） */
+function namedRoutes(text: string, names: Map<string, string[]>, skip?: (name: string) => boolean): string[] {
+  const t = text.replace(/\s+/g, '');
+  return [...names].filter(([, ns]) => ns.some((n) => t.includes(n) && !skip?.(n))).map(([id]) => id);
+}
+
+/**
+ * 按句号、问叹号、换行、分号、冒号切开的分句（带在原文里的起止位置）。库外目的地和金额 / 线路名在同一个分句里，
+ * 才算说的是一回事：「南极我们暂时没有现成线路。\n最接近的是芬兰极光玻璃屋 8 日，人均 46,800 起」两句各说各的
+ */
+function clauses(text: string): { s: string; start: number; end: number }[] {
+  const out: { s: string; start: number; end: number }[] = [];
+  const re = /[^。！!？?\n；;：:]+/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) out.push({ s: m[0], start: m.index, end: m.index + m[0].length });
+  return out;
+}
+
+/** 本轮 search_routes 落空（destinationMiss）的目的地：库外地名表里没收的地方（「南美洲」「马丘比丘」）也认得出 */
+function missTargets(turnCalls: TurnToolCall[]): string[] {
+  return turnCalls
+    .filter((c) => c.name === 'search_routes' && typeof c.args?.destination === 'string' && /destinationMiss/.test(c.result ?? ''))
+    .flatMap((c) => String(c.args.destination).split(/[、,，/\s]+/))
+    .filter((d) => d.length >= 2);
+}
+
+/** 这个分句在说我们没有的目的地 */
+function talksOffCatalog(s: string, misses: string[]): boolean {
+  return offCatalogPlaces(s).length > 0 || misses.some((d) => s.includes(d));
+}
+
+/** 这段文字写到了哪些线路的价（基准价 / 旺季价；阿拉伯数字或精确到千位的口语万） */
+function pricedRoutes(text: string, routes: Route[]): string[] {
+  const t = normalizeMoneyText(text);
+  const nums = [
+    ...(t.match(/(?<![\d.,])(?:\d{1,3}(?:,\d{3})+|\d{4,6})(?!\d)/g) ?? []).map((x) => ({ value: Number(x.replace(/,/g, '')), tol: 0 })),
+    ...parseWanAmounts(t).filter((w) => w.tol < TIER_TOL),
+  ];
+  return routes
+    .filter((r) => [r.priceFrom, Math.round(r.priceFrom * 1.1)].some((p) => nums.some((n) => Math.abs(n.value - p) <= n.tol)))
+    .map((r) => r.id);
+}
+
+/** 工具返回里的线路 id：search_routes 是摘要数组，get_route_detail 是整条线路 */
+function idsInResult(result: string | undefined): string[] {
+  if (!result) return [];
+  try {
+    const parsed: unknown = JSON.parse(result);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows.map((r) => (r && typeof r === 'object' ? (r as { id?: unknown }).id : undefined))
+      .filter((id): id is string => typeof id === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/** 本会话出现过的线路 id（规则见上） */
+function routesInPlay(
+  session: Session, visible: string, customerText: string, turnCalls: TurnToolCall[], routes: Route[],
+  names: Map<string, string[]>, misses: string[],
+): Set<string> {
+  const seen = new Set<string>(session.seenRouteIds ?? []);
+  for (const c of turnCalls) {
+    if (typeof c.args?.routeId === 'string') seen.add(c.args.routeId);
+    for (const id of idsInResult(c.result)) seen.add(id);
+  }
+  for (const r of session.lastShownRoutes ?? []) seen.add(r.id);
+  if (session.lastQuote?.routeId) seen.add(session.lastQuote.routeId);
+  for (const id of session.orderIds ?? []) {
+    const o = getOrder(id);
+    if (o) seen.add(o.routeId);
+  }
+  const msgs = session.messages ?? [];
+  for (const t of [customerText, ...msgs.filter((m) => m.role === 'customer').map((m) => m.content)]) {
+    for (const id of namedRoutes(t, names, (n) => isOriginMention(t, n))) seen.add(id);
+  }
+  const agentSaid = msgs.filter((m) => m.role === 'agent').map((m) => m.content);
+  for (const t of [visible, ...agentSaid]) {
+    for (const { s } of clauses(t)) {
+      if (talksOffCatalog(s, misses)) continue;
+      for (const id of namedRoutes(s, names)) seen.add(id);
+    }
+  }
+  // 之前的回复写过价的线路：模型看得到历史，照着复述是在转述、不是在编。这条回复本身不算——它就是要核的对象
+  for (const t of agentSaid) {
+    for (const { s } of clauses(t)) if (!talksOffCatalog(s, misses)) for (const id of pricedRoutes(s, routes)) seen.add(id);
+  }
+  return seen;
+}
+
+/**
+ * 档位话术：只精确到「万」这一位的说法（「人均 5 万左右这个档」「四万多」「一万多」），容差 ±5000。
+ * 这是 SOP 教的说价位的话，说的是一个价位段、不是哪条线的价，仍按整库比对；
+ * 精确到千位以下的数（68800、3.8 万、三万八）就是某条线的价，只按本会话出现过的线路比对
+ */
+const TIER_TOL = 5000;
 
 interface Allowed {
   perPerson: Set<number>;
@@ -517,6 +684,8 @@ interface Allowed {
   authoritative: Set<number>;
   /** 酒店每晚价：只在「每晚 / 元/晚」紧贴这个数时放行（见 HOTEL_BEFORE） */
   hotelNightly: Set<number>;
+  /** 客户说的万以上的数按千位截断 / 四舍五入的读法：只给回复里口语的「万」（一万九、3.8 万）用 */
+  customerApprox: Set<number>;
 }
 
 /**
@@ -528,16 +697,17 @@ interface Allowed {
  * 生成规则严格照 tools.createQuote，不枚举不可能出现的组合——尤其 95 折只在 4 人及以上，
  * 此前对 1-3 人也算了一遍折后价，凭空多出一批根本报不出来的金额。
  */
-function allowedAmounts(session: Session, customerText: string, includeCustomerSaid: boolean): Allowed {
+function allowedAmounts(
+  session: Session, customerText: string, includeCustomerSaid: boolean, routes: { priceFrom: number }[],
+): Allowed {
   const perPerson = new Set<number>();
   const total = new Set<number>();
   const totalByCount = new Map<number, Set<number>>();
   const authoritative = new Set<number>();
   const hotelNightly = new Set<number>();
+  const customerApprox = new Set<number>();
   const add = (set: Set<number>, n: number) => { if (Number.isFinite(n) && n > 0) set.add(Math.round(n)); };
 
-  let routes: { priceFrom: number }[] = [];
-  try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警，这里不阻断对话 */ }
   for (const r of routes) {
     // 旺季 +10% 是唯一会改人均价的规则（见 createQuote），基准价与旺季价各算一套
     for (const base of [r.priceFrom, Math.round(r.priceFrom * 1.1)]) {
@@ -573,6 +743,10 @@ function allowedAmounts(session: Session, customerText: string, includeCustomerS
     // 客户说的数字不知道是人均还是总价，两边都放
     for (const n of customerAmounts(session, customerText)) {
       add(perPerson, n); add(total, n); add(authoritative, n);
+      // 万以上的数模型复述时常按千位截断或四舍五入成口语（客户「19999 卖不卖」→「两位如果预算定在一万九」），
+      // 这两个读法单独记，只给口语的「万」用：阿拉伯数字写出来的精确金额仍得跟客户的数一模一样——
+      // 否则客户说「携程上 12999」，模型回「我们这条每人 13,000 元左右」就成了客户说过的数
+      if (n >= 10000) for (const v of [Math.floor(n / 1000) * 1000, Math.round(n / 1000) * 1000]) add(customerApprox, v);
     }
     // search_routes 替模型算好的超预算差额（每人）。差额是拿客户预算减出来的，客户能借此
     // 「定」出任意数（报个预算让差额恰好等于他想要的价），所以和客户的数同等对待：
@@ -581,7 +755,7 @@ function allowedAmounts(session: Session, customerText: string, includeCustomerS
       add(perPerson, g); add(authoritative, g);
     }
   }
-  return { perPerson, total, totalByCount, authoritative, hotelNightly };
+  return { perPerson, total, totalByCount, authoritative, hotelNightly, customerApprox };
 }
 
 function setsFor(ok: Allowed, w: WanAmount): Set<number>[] {
@@ -593,17 +767,48 @@ function setsFor(ok: Allowed, w: WanAmount): Set<number>[] {
 
 /**
  * 校验回复中的金额。返回未能追溯来源的金额列表（空数组=通过）。
+ * turnCalls 是本轮的工具调用（含引擎预取），产品库的价只按其中和会话里出现过的线路放行（见 routesInPlay）。
  * PRICE_GUARD=0 可关闭（仅在排查误杀时使用）。
  *
- * 已知边界：产品库里真实存在的价位，模型即使张冠李戴地安到另一条线上也认不出来
- * （护栏只判「这个数字有没有出处」，不判「出处对不对」）。真正编造的数字挡得住。
+ * 说我们没有的目的地的分句（「南极深度体验线的替代方向……人均起价 68800 起」）更严：里面的精确金额只认
+ * 同一分句点了名、且本会话出现过的线路。「想去南极」有了引擎预取之后，松赞线就在本轮召回的结果里，
+ * 只按「出现过」核，这句原样编造照样能过。实测正常的替代推荐是把线路名和价写在一起（「最接近的是北欧芬兰极光玻璃屋
+ * 8 日，人均 46,800 起」），或者库外目的地单独一句说没有、线路另起一行，都不受影响。
+ *
+ * 已知边界：本会话出现过的几条线之间张冠李戴（把 A 线的价安到 B 线上）认不出来——同一分句里既点了真线路、
+ * 又说库外目的地的（「冰岛极光 9 日人均 62,800 起，瑞士那条也是 62,800」）同样认不出；
+ * 档位话术（「人均 5 万左右」）仍按整库比对，编造的线路配一个整万的档位说法挡不住。
  */
-export function findUnbackedPrices(visible: string, session: Session, customerText: string): number[] {
+export function findUnbackedPrices(
+  visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = [],
+): number[] {
   if (process.env.PRICE_GUARD === '0') return [];
   const text = normalizeMoneyText(visible);
   // 在报成交价：客户自己喊过的数字不能当白名单，否则等于让客户自己定价
   const closing = hasClosingPrice(text);
-  const ok = allowedAmounts(session, customerText, !closing);
+  let routes: Route[] = [];
+  try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警，这里不阻断对话 */ }
+  const misses = missTargets(turnCalls);
+  const names = routeNames(routes);
+  const seen = routesInPlay(session, visible, customerText, turnCalls, routes, names, misses);
+  // 几套白名单只差产品库价取自哪些线路：整库的只给档位话术用，其余金额按本会话出现过的线路核，
+  // 说库外目的地的分句再收窄到同一分句点了名的线路
+  const tier = allowedAmounts(session, customerText, !closing, routes);
+  const inPlay = allowedAmounts(session, customerText, !closing, routes.filter((r) => seen.has(r.id)));
+  const offCatalog = new Map<number, Allowed>();
+  const spans = clauses(text);
+  const pick = (tol: number, at: number): Allowed => {
+    if (tol >= TIER_TOL) return tier;
+    const i = spans.findIndex((c) => at >= c.start && at < c.end);
+    if (i < 0 || !talksOffCatalog(spans[i].s, misses)) return inPlay;
+    let ok = offCatalog.get(i);
+    if (!ok) {
+      const here = new Set(namedRoutes(spans[i].s, names));
+      ok = allowedAmounts(session, customerText, !closing, routes.filter((r) => seen.has(r.id) && here.has(r.id)));
+      offCatalog.set(i, ok);
+    }
+    return ok;
+  };
   const bad: number[] = [];
   const near = (set: Set<number>, v: number, tol: number): boolean => {
     if (!tol) return set.has(v);
@@ -615,15 +820,17 @@ export function findUnbackedPrices(visible: string, session: Session, customerTe
   const hotelOk = (v: number, tol: number, at: number, end: number, perPerson: boolean): boolean =>
     !closing && !perPerson &&
     (HOTEL_BEFORE.test(text.slice(Math.max(0, at - 12), at)) || HOTEL_AFTER.test(text.slice(end))) &&
-    near(ok.hotelNightly, v, tol);
+    near(inPlay.hotelNightly, v, tol);
   for (const h of amountHits(text)) {
     const perPerson = PER_PERSON_HINT.test(text.slice(Math.max(0, h.at - 14), h.at));
+    const ok = pick(h.tol, h.at);
     const backed = near(ok.perPerson, h.value, h.tol) || near(ok.total, h.value, h.tol) ||
       hotelOk(h.value, h.tol, h.at, h.end, perPerson);
     if (!backed) bad.push(h.raw);
   }
   for (const w of parseWanAmounts(text)) {
-    const backed = setsFor(ok, w).some((set) => near(set, w.value, w.tol)) ||
+    const ok = pick(w.tol, w.at);
+    const backed = setsFor(ok, w).some((set) => near(set, w.value, w.tol)) || near(ok.customerApprox, w.value, w.tol) ||
       hotelOk(w.value, w.tol, w.at, w.end, w.scope === 'perPerson');
     if (!backed) bad.push(w.value);
   }
@@ -631,4 +838,6 @@ export function findUnbackedPrices(visible: string, session: Session, customerTe
 }
 
 /** 仅供自测使用的内部函数出口 */
-export const __priceGuardTest = { parseAmounts, parseWanAmounts, parseCnAmounts, parseRangeEndpoints, CLOSING_PRICE, hasClosingPrice };
+export const __priceGuardTest = {
+  parseAmounts, parseWanAmounts, parseCnAmounts, parseRangeEndpoints, CLOSING_PRICE, hasClosingPrice, routeNames, namedRoutes,
+};

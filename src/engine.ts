@@ -6,7 +6,9 @@ import path from 'node:path';
 import type { AgentReply, CustomerProfile, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
 import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, saveSession } from './store.js';
-import { enterHandoff, executeTool, loadRoutes, rememberShownRoutes, searchRoutes, toolDefs } from './tools.js';
+import {
+  enterHandoff, executeTool, isOriginMention, loadRoutes, offCatalogPlaces, rememberShownRoutes, searchRoutes, toolDefs,
+} from './tools.js';
 import { chat, type PrefetchedCall } from './llm.js';
 import { tryReserveVisitorLLM } from './budget.js';
 import { findUnbackedPrices, spokenMoney } from './price-guard.js';
@@ -1361,6 +1363,40 @@ function orderDepartDate(session: Session, text: string): string | undefined {
   return resolveDepartDate(session.profile, text);
 }
 
+/**
+ * 转人工记录里附的出行时间参考。模型写 reason 时会把客户说的「明年2月」自己换算成「2026年2月」（今天已是 2026 年 9 月，
+ * 应为 2027），顾问照着约就差了一年。handoff_to_human 的参数说明已要求照原话写；这里再把客户最近说出行时间的那句原话
+ * 和引擎的读法附在后台那条记录后面，给顾问对照。只进后台：system 消息不发给客户、也不进模型历史。
+ * 读法：说到哪天的按 readDepartDates 的口径（「10月12号」→ 最近的未来那天）；只说到月的（「明年2月」「11月」）
+ * 这里补读到年月——报价、下单不认这种说法（说不准哪天），给顾问一个年份足够。一句话里说了好几个月份的不猜
+ */
+// 「明年1-2月」「1到2月」是个区间：前面紧挨着「数字 + 到/-」的月份不单读，否则只剩 2 月被读成「2027年2月」
+const MONTH_SAID =
+  /(明年|今年|后年|(\d{4})\s*年)?\s*(?<![\d一二三四五六七八九十]\s*(?:-|－|~|～|—|到|至)\s*)(\d{1,2}|十[一二]?|[一二三四五六七八九])\s*月(?!\s*\d{1,2}\s*[号日])/g;
+function departNoteForHandoff(session: Session, today = todayIso()): string | undefined {
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  for (let i = said.length - 1; i >= 0; i--) {
+    const { pick } = readDepartDates(said[i], today);
+    if (!pick) continue;
+    let reading = pick.kind === 'date' ? pick.iso : undefined;
+    const months = pick.kind === 'vague' ? [...said[i].matchAll(MONTH_SAID)] : [];
+    if (months.length === 1) {
+      const [, rel, y4, raw] = months[0];
+      const mo = parseDayCount(raw);
+      const year = Number(today.slice(0, 4));
+      if (mo && mo <= 12) {
+        const y = y4 ? Number(y4)
+          : rel === '明年' ? year + 1 : rel === '后年' ? year + 2 : rel === '今年' ? year
+          : mo >= Number(today.slice(5, 7)) ? year : year + 1;
+        reading = `${y}年${mo}月`;
+      }
+    }
+    const quote = said[i].length > 40 ? `${said[i].slice(0, 40)}…` : said[i];
+    return `客户原话里的出行时间：「${quote}」${reading ? `，按今天（${today}）算是 ${reading}` : ''}`;
+  }
+  return undefined;
+}
+
 const yuan = (n: number): string => '¥' + n.toLocaleString('zh-CN');
 
 // 模型极偶发返回空文本（重试后仍空）时的兜底：按阶段给一句有销售动作的话，
@@ -1482,6 +1518,9 @@ function perPersonBudget(s: string | undefined): number | undefined {
   return v >= 1000 ? v : undefined;
 }
 
+/** 这句话点到的一处目的地：关键词、在原文里的位置、是不是我们没有现成线路的地方 */
+interface Pick { kw: string; at: number; off: boolean }
+
 /** 这轮要替模型预先执行的 search_routes 参数（空数组 = 不预取） */
 function planPrefetch(session: Session, text: string): Record<string, unknown>[] {
   if (STAGE_RANK[session.stage] > STAGE_RANK.recommend) return [];
@@ -1492,32 +1531,82 @@ function planPrefetch(session: Session, text: string): Record<string, unknown>[]
   // 已经在聊的目的地不重查：上一轮查到的线路在会话状态里，模型要换条件（预算/客群）会自己查
   const known = session.profile.destinationInterest;
   const knownDests = known ? [known, ...destinationsInText(known)] : [];
-  const picked: { kw: string; at: number }[] = [];
+  // 出发地/常住地不是目的地：「我在北京，想去三亚」「四川人，想去新疆」只该查后一个
+  const isOrigin = (kw: string): boolean => isOriginMention(text, kw);
+  const inCatalog: Pick[] = [];
   for (const [dest, kw] of destinationMentions(text)) {
     if (knownDests.includes(dest) || knownDests.includes(kw)) continue;
-    // 出发地/常住地不是目的地：「我在北京，想去三亚」「四川人，想去新疆」只该查后一个
-    if (new RegExp(`(?:从|在|住|来自)\\s*${kw}|${kw}\\s*(?:出发|过去|过来|飞|本地|人(?![多少挤]))`).test(text)) continue;
-    picked.push({ kw, at: text.indexOf(kw) });
+    if (isOrigin(kw)) continue;
+    inCatalog.push({ kw, at: text.indexOf(kw), off: false });
   }
+  // 我们没有的目的地（南极、冰岛…）同样替模型查：不预取时模型偶尔一个工具都不调，直接编一条
+  // 「南极深度体验线的替代方向……人均起价 68800 起」（68800 是西藏松赞线的价）发给客户。预取走 search_routes
+  // 已有的 destinationMiss 分支：按客户原话语义召回最接近的现成线路，并标明「不是原目的地、不要答应能去」。
+  // 否定语气、过了推荐阶段、说不清的预算在前面已经挡掉；出发地、已在聊的地方、不像是想去那儿的说法（见 wantsToGo）同样跳过
+  const offFound = offCatalogPlaces(text);
+  const placeWords = [...offFound.map((p) => p.kw), ...destinationMentions(text).values()];
+  const offCatalog: Pick[] = offFound
+    .filter(({ kw, at }) => !known?.includes(kw) && !isOrigin(kw) && wantsToGo(text, kw, at, placeWords))
+    .map((p) => ({ ...p, off: true }));
+  // 库内、库外的地方跟在一起对比（「冰岛和瑞士哪个好」「想去冰岛，或者日本也行」）两边都查：此前只查库内那处，
+  // 模型手里没有冰岛的 destinationMiss，照样能编「冰岛极光 9 日」。连不成对比的（「冰岛太贵了，日本怎么样」）
+  // 库外那处不掺进来，库内的照原逻辑查
+  const both = [...inCatalog, ...offCatalog].sort((a, b) => a.at - b.at);
+  const picked = offCatalog.length && comparing(text, both) ? both : inCatalog.length ? inCatalog : offCatalog;
   // 按原文顺序排：画像的 destinationInterest 取本轮最后一次 search_routes，按库里的顺序查会随机落在某一处
   picked.sort((a, b) => a.at - b.at);
-  // 一句话点了两处，只有两者之间是「和/还是/、」这类并列时才是在对比，都查。否则多半一个是
-  // 上面没认出来的常住地（「我是三亚的，想去北京玩」）或刚否掉的（「三亚太热了，换成西藏看看」），
-  // 两个都查会把模型往客户不想去的地方带——分不清就不预取，交给模型自己判断
-  for (let i = 1; i < picked.length; i++) {
-    const between = text.slice(picked[i - 1].at + picked[i - 1].kw.length, picked[i].at);
-    if (between.length > 6 || !/^\s*$|和|跟|与|及|或|还是|、|\/|对比|比较/.test(between)) return [];
-  }
+  if (!comparing(text, picked)) return [];
   // 客群要从这句话里现取：画像要等本轮结束才更新，而银发是安全约束——「带爸妈去西藏」
   // 不带 segment 查，模型拿到的就是没有高海拔提示的 5200 米线路。画像里已有的由 executeTool 自动补
   const segment = detectSegment(text);
   const maxBudgetPerPerson = budget ?? perPersonBudget(session.profile.budget);
-  // 最多两处：「四川和云南哪个好」两个都查，再多就是在罗列，交给模型挑重点
-  return picked.slice(0, 2).map(({ kw: destination }) => ({
-    destination,
-    ...(segment ? { segment } : {}),
-    ...(maxBudgetPerPerson ? { maxBudgetPerPerson } : {}),
-  }));
+  const extra = { ...(segment ? { segment } : {}), ...(maxBudgetPerPerson ? { maxBudgetPerPerson } : {}) };
+  // 库外的地方合成一次查就够：「冰岛和挪威哪个好」两处都没有，召回的是同一批最接近的线路。
+  // 目的地写成「冰岛、挪威」，destinationMiss 才会照实说两处都没有；query 带客户原话，召回按他要的体验排。
+  // 最多两次查询：「四川和云南哪个好」两个都查，再多就是在罗列，交给模型挑重点
+  const offs = picked.filter((p) => p.off).slice(0, 2);
+  const calls: { at: number; args: Record<string, unknown> }[] = picked.filter((p) => !p.off)
+    .map((p) => ({ at: p.at, args: { destination: p.kw, ...extra } }));
+  if (offs.length) {
+    calls.push({ at: offs[0].at, args: { destination: offs.map((p) => p.kw).join('、'), query: text.slice(0, 200), ...extra } });
+  }
+  return calls.sort((a, b) => a.at - b.at).slice(0, 2).map((c) => c.args);
+}
+
+/**
+ * 一句话点了两处，只有两者之间是「和/还是/、」这类并列时才是在对比，都查。否则多半一个是
+ * 上面没认出来的常住地（「我是三亚的，想去北京玩」）或刚否掉的（「三亚太热了，换成西藏看看」），
+ * 两个都查会把模型往客户不想去的地方带——分不清就不预取，交给模型自己判断
+ */
+function comparing(text: string, picked: Pick[]): boolean {
+  for (let i = 1; i < picked.length; i++) {
+    const between = text.slice(picked[i - 1].at + picked[i - 1].kw.length, picked[i].at);
+    if (between.length > 6 || !/^\s*$|和|跟|与|及|或|还是|、|\/|对比|比较/.test(between)) return false;
+  }
+  return true;
+}
+
+const TRAVEL_CUE =
+  /去|到|玩|游|旅|行程|线路|路线|看|飞|怎么样|咋样|如何|呢|吗|哪|推荐|多少钱|价格|几天|几月|季节|值得|适合|度假|蜜月|自由行|跟团|考虑/;
+/** 去过的：「去年去了冰岛，这次呢」「上次去冰岛」。「之前 / 以前」不收——「国庆之前去冰岛」是想去 */
+const BEEN_THERE = /(?:去了|去年|上次|刚从)\s*(?:去|到|在)?\s*$/;
+/**
+ * 库外地名是不是在说「想去那儿」。只看地名所在的分句：里面有出行的说法（去、玩、看、怎么样、哪个好…），
+ * 或者去掉地名和「和 / 还是」之后这一句基本不剩什么（「南极」「冰岛和挪威」「埃及金字塔」「北海道滑雪」），才算。
+ * 地名表里的地方常出现在别的话里：「美国那边签证太难办了，换个地方」「去年去了冰岛，这次呢」——
+ * 当成目的地预取，模型会对客户说「我们暂时没有美国的线路」，画像的目的地也跟着记错。
+ * 「法国菜」「美国签证」「迪拜转机」「我叫张泰山」这类地名紧挨着当修饰语的，offCatalogPlaces 已经排除；这里管的是隔开几个字的和时态。
+ * 只用于库外地名：库内目的地的预取口径不动
+ */
+function wantsToGo(text: string, kw: string, at: number, placeWords: string[]): boolean {
+  const start = Math.max(...['，', ',', '。', '！', '!', '？', '?', '；', ';', '\n'].map((c) => text.lastIndexOf(c, at - 1))) + 1;
+  const endHit = text.slice(at + kw.length).search(/[，,。！!？?；;\n]/);
+  const clause = text.slice(start, endHit < 0 ? undefined : at + kw.length + endHit);
+  if (BEEN_THERE.test(text.slice(start, at))) return false;
+  let rest = clause;
+  for (const w of [kw, ...placeWords]) rest = rest.split(w).join('');
+  rest = rest.replace(/和|跟|与|及|或者|或|还是|[\s\p{P}\p{S}]/gu, '');
+  return TRAVEL_CUE.test(rest) || rest.length <= 3;
 }
 
 // ---------- 只有客户说了算的参数：按客户原话核一遍 ----------
@@ -1811,6 +1900,7 @@ async function handleMessageInner(
     session.lastQuote = undefined;
     session.budgetGaps = undefined;
     session.lastShownRoutes = undefined;
+    session.seenRouteIds = undefined;
     session.updatedAt = Date.now();
     const reply = '好的，我们重新开始～这次想去哪儿玩呢？😊';
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
@@ -1880,6 +1970,12 @@ async function handleMessageInner(
     calls.push(call);
     for (const fn of toolObservers) { try { fn(name, args, sessionId, meta); } catch { /* 观测者出错不影响对话 */ } }
     return executeTool(name, args, session).then((r) => {
+      // 转人工原因刚记进后台（tools.ts 推的最后一条 system 消息）：附上客户说出行时间的原话，见 departNoteForHandoff
+      const rec = session.messages.at(-1);
+      if (name === 'handoff_to_human' && rec?.role === 'system' && rec.content.startsWith('AI 已转人工：')) {
+        const note = departNoteForHandoff(session);
+        if (note) rec.content += `\n（${note}）`;
+      }
       const out = withNotes(r, notes);
       call.result = out;
       return out;
@@ -2113,7 +2209,8 @@ async function handleMessageInner(
   // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。
   // 追溯不到就是模型自己编的价——高客单价产品里这是最贵的一类错误（客户按错价下单，
   // 成交后要么公司认亏要么当场翻脸），不能只靠提示词「严禁编造价格」。
-  const unbacked = findUnbackedPrices(visible, session, text);
+  // 本轮的工具调用（含预取）一并交给护栏：产品库的价只按本会话出现过的线路放行，编一条线路配上别的线路的真价不再能过
+  const unbacked = findUnbackedPrices(visible, session, text, calls);
   if (unbacked.length) {
     console.error(`[engine] ⚠️ 拦截无出处的报价 ${unbacked.join(', ')}（会话 ${session.id}）：`, visible.slice(0, 120));
     const q = session.lastQuote;
@@ -2173,5 +2270,5 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
 export const __engineTest = {
   dejargon, CUSTOM_PROMISE, LINK_PROMISE, PROPOSAL_PROMISE, promiseInsertAt, markLinkHoles, requestedDays, isObjection, PURCHASE_INTENT, IDENTITY_QUESTION, detectSegment,
   isHandoffIntent, keptBesideCustomPromise, statedPastDate, BUDGET_RE, planPrefetch, perPersonBudget, buildSystemPrompt,
-  spokenDepartDate, isBudgetTalk, BUDGET_FLOOR,
+  spokenDepartDate, isBudgetTalk, BUDGET_FLOOR, departNoteForHandoff,
 };

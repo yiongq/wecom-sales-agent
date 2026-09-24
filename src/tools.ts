@@ -132,7 +132,15 @@ export const toolDefs: ToolDef[] = [
         'reason 里写清目的地、出行时间、人数。转人工后你不会再回复这位客户。',
       parameters: {
         type: 'object',
-        properties: { reason: { type: 'string' } },
+        properties: {
+          reason: {
+            type: 'string',
+            // 实测模型把客户说的「明年2月」写成「2026年2月」（今天已是 2026 年 9 月，应为 2027），顾问照着就约错了年份
+            description:
+              '转人工原因，给接手的顾问看：目的地、出行时间、人数（没说的写「未知」）。' +
+              '出行时间照客户原话写（客户说「明年2月」就写「明年2月」），不要自行换算成带年份的日期。',
+          },
+        },
         required: ['reason'],
       },
     },
@@ -295,6 +303,84 @@ function regionMatcher(q: string): ((r: Route) => boolean) | null {
   if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w;
   if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w;
   return null;
+}
+
+/**
+ * 目的地关键词能不能按 search_routes 的口径对上我们的现成线路：目的地 / 标题 / 标签 / 别名，
+ * 或「境外」「西北」「东南亚」这类范围叫法。引擎判断「客户点的是不是我们没有的地方」用的也是这一个口径——
+ * 两边不一致的话，引擎当成库外去预取，工具却按库内返回线路，destinationMiss 就对不上了。
+ */
+export function catalogCovers(q: string, routes: Route[] = loadRoutes()): boolean {
+  if (ABROAD.test(q.trim()) || regionMatcher(q)) return true;
+  return routes.some((r) => matchesDestination(r, q));
+}
+
+/**
+ * 客户常点名、我们却没有现成线路的旅行目的地。引擎据此预取 search_routes（见 engine.ts planPrefetch）：
+ * 此前只认得库里有的目的地，「想去南极」不预取，模型偶尔一个工具都不调，直接编一条「南极深度体验线」
+ * 配上别的线路的真实价格发给客户。
+ * 来源：实测客户问过的（南极、冰岛、埃及…）、llm.ts 离线脚本里的库外目的地（新西兰、迪拜、意大利、肯尼亚、摩洛哥、法国），
+ * 加上出境游常见的国家、海岛和国内热门目的地。口径：
+ *   · 只收说出来就是「想去那儿」的叫法。上海、广州、深圳、杭州这类常被说成出发地的大城市不收——
+ *     「上海这边两个人想出去玩」被当成目的地，模型会对客户说「我们暂时没有上海的线路」；
+ *   · 表里的地名后来有了线路（catalogCovers 对得上）自动按库内处理，不必回来删；
+ *   · 一个地名是另一个的一部分时加边界：「北海」不吃「北海道」，「北极」不吃「北极光」（说的是极光，北欧线就有），
+ *     「蒙古」不吃「内蒙古」，「罗马」不吃「罗马尼亚」。
+ */
+const OFF_CATALOG_PLACES = [
+  // 极地、欧洲、中东非洲
+  '南极', '北极(?!光)', '冰岛', '挪威', '瑞典', '丹麦', '英国', '伦敦', '苏格兰', '爱尔兰', '法国', '巴黎', '普罗旺斯',
+  '意大利', '罗马(?!尼亚)', '威尼斯', '佛罗伦萨', '西西里', '西班牙', '巴塞罗那', '葡萄牙', '德国', '奥地利', '捷克', '布拉格',
+  '匈牙利', '荷兰', '希腊', '圣托里尼', '克罗地亚', '土耳其', '伊斯坦布尔', '卡帕多奇亚', '俄罗斯', '贝加尔湖', '格鲁吉亚',
+  '埃及', '迪拜', '阿联酋', '阿布扎比', '约旦', '以色列', '摩洛哥', '肯尼亚', '坦桑尼亚', '南非', '毛里求斯', '塞舌尔',
+  '马达加斯加', '非洲',
+  // 美洲、大洋洲
+  '美国', '纽约', '夏威夷', '洛杉矶', '黄石', '阿拉斯加', '加拿大', '墨西哥', '古巴', '秘鲁', '巴西', '阿根廷', '智利', '南美',
+  '澳大利亚', '澳洲', '新西兰', '斐济', '大溪地', '关岛', '塞班',
+  // 亚洲（日本、巴厘岛、马尔代夫我们有线；北海道、冲绳不在那几条里）
+  '泰国', '普吉岛', '清迈', '苏梅岛', '越南', '岘港', '柬埔寨', '吴哥窟', '老挝', '缅甸', '新加坡', '马来西亚', '沙巴', '兰卡威',
+  '菲律宾', '长滩岛', '薄荷岛', '韩国', '首尔', '济州岛', '北海道', '冲绳', '尼泊尔', '不丹', '斯里兰卡', '(?<!内)蒙古',
+  '香港', '澳门', '台湾',
+  // 国内（海南、川西、九寨沟这些我们有线）
+  '青海湖', '青海', '甘肃', '敦煌', '张掖', '宁夏', '内蒙古', '呼伦贝尔', '额济纳', '哈尔滨', '雪乡', '长白山', '漠河', '桂林',
+  '阳朔', '张家界', '凤凰古城', '黄山', '婺源', '武夷山', '厦门', '鼓浪屿', '泰山', '华山', '峨眉山', '乐山', '西双版纳',
+  '泸沽湖', '腾冲', '冈仁波齐', '可可西里', '北海(?!道)', '涠洲岛', '千岛湖', '乌镇', '平遥', '五台山', '恩施', '神农架',
+];
+// 长的排前面：「青海湖」要整个认出来，不能先被「青海」截走
+const OFF_CATALOG_RE = new RegExp(
+  [...OFF_CATALOG_PLACES].sort((a, b) => b.length - a.length).join('|'), 'g',
+);
+
+/**
+ * 地名后面紧跟的是一样东西、不是去那儿玩：「法国菜」「泰国香米」「美国签证」「迪拜转机」「巴黎世家」「罗马仕充电宝」「黄山毛峰」；
+ * 前面是「叫」的是人名（「我叫张泰山」）。此前这些照样当库外目的地预取：客户说「美国签证办不下来，想换个地方玩」，
+ * 模型拿到的工具结果让它「照实说没有现成的美国线路」，画像的目的地也记成了美国——客户刚说完不去美国。
+ */
+const NOT_DESTINATION_AFTER =
+  /^(?:菜|料理|烤肉|香米|米粉|米线|拉面|咖啡|红酒|奶粉|化妆品|世家|仕|代购|签证|护照|绿卡|国籍|户口|保险|留学|时间|转机|中转|转飞|经停|过境|毛峰|茶叶|队|电影|口音)/;
+const NOT_DESTINATION_BEFORE = /叫\s*[一-鿿]?$/;
+
+/** 原话里点到的、我们没有现成线路的目的地（按原文顺序，同一地名只记第一次） */
+export function offCatalogPlaces(text: string): { kw: string; at: number }[] {
+  const routes = loadRoutes();
+  const out: { kw: string; at: number }[] = [];
+  for (const m of text.matchAll(OFF_CATALOG_RE)) {
+    const at = m.index ?? 0;
+    if (out.some((p) => p.kw === m[0]) || catalogCovers(m[0], routes)) continue;
+    if (NOT_DESTINATION_AFTER.test(text.slice(at + m[0].length)) || NOT_DESTINATION_BEFORE.test(text.slice(0, at))) continue;
+    out.push({ kw: m[0], at });
+  }
+  return out;
+}
+
+/**
+ * 这个地名在原话里是出发地 / 常住地（「我在北京，想去三亚」「四川人，想去新疆」「从上海出发」），不是想去的地方。
+ * 引擎预取（engine.ts planPrefetch）和价格护栏认「客户点了哪条线」（price-guard routesInPlay）共用这一个口径：
+ * 客户说「我在北京，想去南极」，北京那条线不能因此算作客户点过名
+ */
+export function isOriginMention(text: string, kw: string): boolean {
+  const k = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:从|在|住|来自)\\s*${k}|${k}\\s*(?:出发|过去|过来|飞|本地|人(?![多少挤]))`).test(text);
 }
 
 /**
@@ -649,7 +735,9 @@ function pastDateError(s: string): string | null {
  */
 export const HANDOFF_NOTE =
   '已转人工：这是你给这位客户的最后一条回复，之后由资深顾问接手，你不会再回复他。' +
-  '这条只安抚一句、说明顾问会尽快联系，不要再推荐线路或报价，也不要说「随时告诉我 / 随时找我 / 我马上帮您查」这类之后兑现不了的话。';
+  '这条只安抚一句、说明顾问会尽快联系，不要再推荐线路或报价，也不要说「随时告诉我 / 随时找我 / 我马上帮您查」这类之后兑现不了的话。' +
+  // 实测 2/6：「帮您落实明年 2 月两位的冰岛行程」「为您定制冰岛两人极光之旅」——能不能做要顾问评估，AI 先替公司答应了
+  '客户要的地方我们没有现成线路时，只说顾问会联系评估，不要替顾问承诺能去、能安排或能定制原目的地（不说「帮您落实冰岛行程」「为您定制冰岛之旅」）。';
 
 /**
  * 进入转人工。引擎的各条转人工路径（明确诉求安全网、改行程护栏）和 handoff_to_human 工具
@@ -672,6 +760,14 @@ export function rememberShownRoutes(session: Session, routes: { id: string; titl
   const fresh = routes.map(({ id, title, priceFrom }) => ({ id, title, priceFrom }));
   const older = (session.lastShownRoutes ?? []).filter((r) => !fresh.some((f) => f.id === r.id));
   session.lastShownRoutes = [...fresh, ...older].slice(0, 5);
+  rememberSeenRoutes(session, fresh.map((r) => r.id));
+}
+
+/** 记下工具交给过模型的线路，不封顶（见 Session.seenRouteIds；价格护栏据此认「本会话出现过的线路」） */
+export function rememberSeenRoutes(session: Session, ids: string[]): void {
+  const seen = new Set(session.seenRouteIds ?? []);
+  for (const id of ids) if (id) seen.add(id);
+  session.seenRouteIds = [...seen];
 }
 
 /**
@@ -704,6 +800,7 @@ export async function executeTool(
     }
     case 'get_route_detail': {
       const route = loadRoutes().find((r) => r.id === args.routeId);
+      if (route) rememberSeenRoutes(session, [route.id]);
       return JSON.stringify(route ?? { error: `线路不存在: ${String(args.routeId)}` });
     }
     case 'search_hotels':
@@ -720,6 +817,7 @@ export async function executeTool(
       const q = createQuote({ routeId: args.routeId, travelers, departDate: args.departDate as string | undefined });
       // 记住报价上下文，供成单安全网兜底下单；金额同时是价格护栏的白名单来源
       session.lastQuote = rememberQuote(args.routeId, q, args.departDate as string | undefined);
+      rememberSeenRoutes(session, [args.routeId]);
       saveSession(session);
       // 日期可能是引擎按客户原话补上的（见 engine.ts groundToolArgs），带回去模型才知道这是按哪天算的价
       return JSON.stringify(args.departDate ? { ...q, departDate: args.departDate } : q);
@@ -738,6 +836,7 @@ export async function executeTool(
       if (!route.itinerary?.length) return toolError(`线路 ${route.id} 暂无逐日行程数据，无法出方案书`);
       const q = createQuote({ routeId: args.routeId, travelers, departDate: args.departDate as string | undefined });
       session.lastQuote = rememberQuote(args.routeId, q, args.departDate as string | undefined);
+      rememberSeenRoutes(session, [route.id]);
       saveSession(session);
       // 无状态链接：参数编进 URL，页面按同一套规则重算，不引入新的持久化与清理负担
       const url = `/proposal/${route.id}/${travelers}` + (args.departDate ? `/${String(args.departDate)}` : '');
@@ -785,6 +884,7 @@ export async function executeTool(
         totalPrice: quote.total,
       });
       session.orderIds.push(order.id);
+      rememberSeenRoutes(session, [args.routeId]);
       session.lastQuote = undefined; // 已成单即清除，防安全网对同一报价重复建单
       saveSession(session);
       // payUrl 为相对路径，渠道层负责拼 PUBLIC_BASE_URL

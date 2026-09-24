@@ -222,7 +222,44 @@ assert.equal(h2.stage, 'handoff', '已转人工的会话不再走 LLM');
   assert.deepEqual(planPrefetch(fresh(), '三亚太热了，换成西藏看看'), [], '刚否掉的目的地');
   assert.deepEqual(planPrefetch(fresh(), '我们北京这边想去新疆'), [], '出发地的另一种说法');
   assert.deepEqual(planPrefetch(fresh(), '云南还是四川好').map((a) => a.destination), ['云南', '四川'], '对比时都查，按原文顺序');
-  console.log('SELFTEST PASS: 引擎预取（首轮必查库、条件判定）');
+  // 我们没有的目的地同样预取（实测「想去南极」不预取时，模型一个工具都不调、编了一条南极线配松赞线的价）：
+  // 按客户原话语义召回，走 search_routes 的 destinationMiss 分支
+  for (const [t, dest] of [['想去南极', '南极'], ['想去冰岛看极光', '冰岛'], ['埃及怎么样', '埃及'], ['我在上海，想去冰岛', '冰岛'], ['从上海出发去土耳其', '土耳其']]) {
+    assert.deepEqual(planPrefetch(fresh(), t), [{ destination: dest, query: t }], `「${t}」要按库外目的地「${dest}」预取`);
+  }
+  assert.deepEqual(planPrefetch(fresh(), '想带爸妈去冰岛'), [{ destination: '冰岛', query: '想带爸妈去冰岛', segment: '银发' }], '库外目的地同样带上客群');
+  assert.deepEqual(planPrefetch(fresh(), '冰岛和挪威哪个好'), [{ destination: '冰岛、挪威', query: '冰岛和挪威哪个好' }], '对比两处库外的地方，查一次、两处都写上');
+  assert.deepEqual(planPrefetch(fresh(), '我去过冰岛，这次想去国内'), [], '去过的地方不预取');
+  assert.deepEqual(planPrefetch(fresh(), '从北京出发去贵州'), [{ destination: '贵州' }], '出发地不当库外目的地，库内的照原逻辑');
+  // 库内、库外的地方连成对比时两边都查：此前只查日本，模型手里没有冰岛的 destinationMiss，照样能编一条冰岛线
+  assert.deepEqual(planPrefetch(fresh(), '冰岛和日本哪个好'), [{ destination: '冰岛', query: '冰岛和日本哪个好' }, { destination: '日本' }],
+    '库外和库内的地方对比，两边都查，按原文顺序');
+  for (const [t, off, cat] of [
+    ['冰岛和瑞士哪个好', '冰岛', '瑞士'], ['想去冰岛，或者日本也行', '冰岛', '日本'], ['泰国和日本比哪个好', '泰国', '日本'],
+    ['冰岛还是北欧极光好', '冰岛', '北欧极光'],
+  ]) {
+    assert.deepEqual(planPrefetch(fresh(), t), [{ destination: off, query: t }, { destination: cat }], `「${t}」库外的「${off}」也要查`);
+  }
+  assert.deepEqual(planPrefetch(fresh(), '瑞士和冰岛哪个好'), [{ destination: '瑞士' }, { destination: '冰岛', query: '瑞士和冰岛哪个好' }], '按原文顺序');
+  assert.deepEqual(planPrefetch(fresh(), '冰岛太贵了，日本怎么样'), [{ destination: '日本' }], '连不成对比的库外地名不掺进来，库内的照原逻辑查');
+  // 地名表里的地方出现在别的话里，不是想去那儿：此前一律预取，模型被告知「照实说没有现成的美国线路」
+  for (const t of [
+    '想吃正宗的法国菜', '家里吃泰国香米', '晚上想吃韩国烤肉', '美国签证办不下来，想换个地方玩', '巴黎世家的包', '买个香港保险',
+    '迪拜转机', '罗马仕充电宝能带上飞机吗', '黄山毛峰', '我叫张泰山', '桂林米粉', '去年去了冰岛，这次呢', '上次去冰岛玩得很开心',
+    '美国那边签证太难办了，换个地方',
+  ]) {
+    assert.deepEqual(planPrefetch(fresh(), t), [], `「${t}」里的地名不是目的地，不预取`);
+  }
+  for (const [t, dest] of [['南极', '南极'], ['埃及金字塔', '埃及'], ['南极多少钱', '南极'], ['北海道滑雪', '北海道'], ['国庆之前去冰岛', '冰岛']]) {
+    assert.deepEqual(planPrefetch(fresh(), t).map((a) => a.destination), [dest], `「${t}」是想去「${dest}」，照样预取`);
+  }
+  assert.deepEqual(planPrefetch(fresh(), '冰岛和挪威和瑞典').map((a) => a.destination), ['冰岛、挪威'], '只报几个地名也算');
+  assert.deepEqual(planPrefetch(fresh(), '想看北极光'), [], '「北极光」说的是极光，不是北极');
+  assert.deepEqual(planPrefetch(fresh(), '上海这边两个人想出去玩'), [], '常作出发地的大城市不在库外地名表里');
+  assert.deepEqual(planPrefetch(fresh({ stage: 'quote' }), '想去南极'), [], '过了推荐阶段不预取');
+  assert.deepEqual(planPrefetch(fresh({ stage: 'recommend', profile: { destinationInterest: '南极' } }), '南极几月去合适'), [], '已在聊的库外目的地不重查');
+  assert.deepEqual(planPrefetch(fresh(), '就要去南极，别的不考虑'), [], '坚持要去（带否定语气）不预取，交给模型转人工');
+  console.log('SELFTEST PASS: 引擎预取（首轮必查库、条件判定、库外目的地）');
 }
 
 // ---------- 历史窗口按块推进（前缀缓存的前提）----------
@@ -441,6 +478,7 @@ const searchYunnan: Step[] = [
     sessionId: sid, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate: '2026-12-10', totalPrice: 31600,
   });
   getSession(sid)!.orderIds.push(order.id);
+  getSession(sid)!.seenRouteIds = ['r-sanya'];
   const r = await handleMessage(sid, '重置', 'wecom');
   const s = getSession(sid)!;
   assert.equal(r.stage, 'greeting', `企微发「重置」应回到问需（实际：${r.stage}）`);
@@ -450,6 +488,7 @@ const searchYunnan: Step[] = [
   assert.equal(s.messages.length, 1, '聊天记录清空，只留重置回复');
   assert.equal(getOrder(order.id), undefined, '订单一并清掉');
   assert.deepEqual(s.profile, {}, '画像清空');
+  assert.equal(s.seenRouteIds, undefined, '工具交给过模型的线路一并清掉（价格护栏按它认出处，重来之后不该还算出现过）');
 
   const sim = 'sim-selftest-e6-' + Date.now().toString(36);
   await handleMessage(sim, '我要投诉', 'simulator');
@@ -1424,6 +1463,74 @@ const searchYunnan: Step[] = [
     }
   }
   console.log('SELFTEST PASS: 实测问题（转人工按诉求 / 库外目的地走替代 / 银发低海拔替代 / 带娃人数口径 / 转人工后不许诺）');
+
+  // U6：库外目的地的引擎预取 / 价格护栏按本会话出现过的线路核 / 转人工的话术与出行时间
+  {
+    // ① 南极、冰岛、埃及：模型一个工具都不调，引擎也已经替它查过，结果带 destinationMiss，线路记进会话
+    for (const [tag, said] of [['u6a1', '想去南极'], ['u6a2', '想去冰岛'], ['u6a3', '想去埃及看金字塔']]) {
+      const sid = newSid(tag);
+      const seen: { name: string; prefetch: boolean }[] = [];
+      const off = onToolCall((name, _a, s, meta) => { if (s === sid) seen.push({ name, prefetch: !!meta?.prefetch }); });
+      await fakeSay(sid, said, [{ content: '这个方向我们暂时没有现成线路。您计划什么时候出发、几位？' }]);
+      off();
+      assert.deepEqual(seen, [{ name: 'search_routes', prefetch: true }], `「${said}」要由引擎预取 search_routes（实际 ${JSON.stringify(seen)}）`);
+      const rows = toolResult('search_routes') as Row[];
+      assert.ok(Array.isArray(rows) && rows.length > 0 && rows.every((x) => String(x.destinationMiss ?? '').includes('暂时没有')),
+        `「${said}」预取结果要带 destinationMiss（实际 ${JSON.stringify(rows)?.slice(0, 160)}）`);
+      assert.ok(getSession(sid)!.lastShownRoutes?.length, '预取到的最接近线路记进会话');
+    }
+
+    // ② 价格护栏经引擎：本轮没查过、也没点名的线路，精确价拦下；本轮工具真查过的放行
+    const FAKE = '南极没有现成线路。我们有一条南极概念的替代线路：\n· 南极深度体验线的替代方向，走冰川、雪原路线，人均起价 68800 起\n您几位出行？';
+    const g = await fakeSay(newSid('u6b1'), '那有没有别的推荐', [{ content: FAKE }]);
+    assert.ok(!g.text.includes('68800') && g.text.includes('系统核准'), `编造的线路配松赞线的价要被拦（实际：${g.text}）`);
+    // 线上「想去南极」先经引擎预取，实测召回前三就有松赞线——它在本轮算「出现过」，模型照样编这一句。
+    // 自测的召回结果不一样，这里让模型先查一次松赞线的详情，造出同样的处境：说南极的分句里没点名线路，照样拦
+    const g2 = await fakeSay(newSid('u6b3'), '想去南极', [
+      { toolCalls: [{ name: 'get_route_detail', args: { routeId: 'r-tibet-lux' } }] },
+      { content: FAKE },
+    ]);
+    assert.ok(!g2.text.includes('68800'), `本轮手里有松赞线，同一句编造照样被拦（实际：${g2.text}）`);
+    const ok = await fakeSay(newSid('u6b2'), '那有没有别的推荐', [
+      { toolCalls: [{ name: 'get_route_detail', args: { routeId: 'r-tibet-lux' } }] },
+      { content: '这条线人均起价 68800 起。您几位出行？' }, // 不点名：只能靠本轮工具结果认出来
+    ]);
+    assert.ok(ok.text.includes('68800'), `本轮查过的线路价放行（实际：${ok.text}）`);
+
+    // ③ 转人工：不替顾问承诺能去原目的地；出行时间照原话写，后台记录附上引擎的读法
+    const { HANDOFF_NOTE, toolDefs } = await import('./tools.js');
+    assert.ok(HANDOFF_NOTE.includes('不要替顾问承诺能去'), 'handoff 结果要提醒不承诺能去原目的地');
+    const reasonDesc = String((toolDefs.find((t) => t.function.name === 'handoff_to_human')!.function.parameters as
+      { properties: { reason: { description?: string } } }).properties.reason.description ?? '');
+    assert.ok(reasonDesc.includes('照客户原话') && reasonDesc.includes('不要自行换算'), `reason 参数说明要写明日期照原话（实际：${reasonDesc}）`);
+    const sys = __engineTest.buildSystemPrompt();
+    assert.ok(sys.includes('不要替顾问承诺能去、能安排原目的地'), 'SOP 转人工段要写明不承诺原目的地');
+    assert.ok(sys.includes('不要把推算过程念给客户'), 'SOP 报价段要写明不念日期推算过程');
+
+    const { departNoteForHandoff } = __engineTest;
+    const at = (said: string) => departNoteForHandoff({ messages: [{ role: 'customer', content: said, at: 0 }] } as Session, '2026-09-24');
+    assert.ok(at('明年2月两个人，就要去冰岛')?.includes('2027年2月'), `「明年2月」读作 2027 年（实际：${at('明年2月两个人，就要去冰岛')}）`);
+    assert.ok(at('10月12号出发')?.includes('2026-10-12'), '说到哪天的按出发日期口径读');
+    assert.ok(at('3月去吧')?.includes('2027年3月') && at('11月份')?.includes('2026年11月'), '只说月份的取最近的未来那个月');
+    assert.ok(at('就要去冰岛，别的不考虑') === undefined, '没说时间不附');
+    // 月份区间不单读后一个月：「明年1-2月」此前读成「2027年2月」，1 月丢了
+    for (const t of ['明年1-2月', '1到2月去', '明年一至二月']) {
+      const note = at(t);
+      assert.ok(note?.includes(`「${t}」`) && !/按今天/.test(note), `「${t}」是区间，只附原话、不附读法（实际：${note}）`);
+    }
+    const hs = newSid('u6c');
+    await fakeSay(hs, '想去冰岛', [{ content: '冰岛暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？' }]);
+    await fakeSay(hs, '明年2月两个人，就要去冰岛，别的不考虑', [
+      { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户坚持去冰岛，2026年2月出发，2人' } }] },
+      { content: '明白，我马上为您转接资深顾问评估，顾问会尽快联系您。' },
+    ]);
+    const rec = getSession(hs)!.messages.find((m) => m.role === 'system' && m.content.startsWith('AI 已转人工：'));
+    const { todayIso } = await import('./env.js');
+    const nextYear = Number(todayIso().slice(0, 4)) + 1;
+    assert.ok(rec?.content.includes('「明年2月两个人') && rec.content.includes(`${nextYear}年2月`),
+      `后台的转人工记录要附上客户原话和引擎的读法（实际：${rec?.content}）`);
+  }
+  console.log('SELFTEST PASS: 库外目的地预取 / 价格按本会话出现过的线路核 / 转人工不承诺原目的地、出行时间附原话');
 }
 
 assert.equal(scriptOverrun, 0, '假模型被多调了（脚本耗尽后仍有请求）');
