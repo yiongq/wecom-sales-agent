@@ -1647,11 +1647,11 @@ async function handleMessageInner(
   text = text.slice(0, 2000); // 超长输入截断：防恶意长文刷爆 prompt token
   const session = getOrCreateSession(sessionId, channel);
 
-  // 重置口令（测试/重来便利）：清空会话并解除转人工，从头开始。
-  // 只对网页模拟器生效。企微是真实客户：已转人工（投诉/退款）的客户发一句「重新开始」
-  // 就会绕过人工、清掉顾问正在看的聊天记录、连已支付订单一起删掉（支付链接变 order not found）。
-  // 企微客户说这句话走正常对话，由模型去理解。
-  if (channel === 'simulator' && /^\s*(重置|重新开始|重来|清空会话|reset)\s*$/i.test(text)) {
+  // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
+  // 这是演示项目，拿手机微信反复走流程是主要用法（2026-09 曾限定为仅网页，被要求改回）。
+  // 代价要心里有数：接真实客户后，客户发一句「重新开始」就会绕过人工、清空聊天记录、
+  // 连已支付订单一起删掉。真用于生产时应重新收紧到测试白名单。
+  if (/^\s*(重置|重新开始|重来|清空会话|reset)\s*$/i.test(text)) {
     session.stage = 'greeting';
     session.profile = {};
     session.messages = [];

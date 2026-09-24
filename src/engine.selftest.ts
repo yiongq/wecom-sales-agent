@@ -431,30 +431,31 @@ const searchYunnan: Step[] = [
   assert.equal(s.stageBeforeHandoff, 'discovery');
 }
 
-// E6：重置口令只给网页模拟器用，企微真实客户说「重新开始」不能清会话、删订单、绕过人工
+// E6：重置口令在企微与网页都生效（演示项目要用手机微信反复走流程）：
+// 已转人工也能重来，订单一并清掉，并清掉接管前阶段（否则下次交还会恢复成重置前的阶段）
 {
   const sid = newSid('e6');
   await fakeSay(sid, '我要投诉', []);
+  getSession(sid)!.stageBeforeHandoff = 'quote';
   const order = createOrder({
     sessionId: sid, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate: '2026-12-10', totalPrice: 31600,
   });
   getSession(sid)!.orderIds.push(order.id);
-  markOrderPaid(order.id);
-  const r = await handleMessage(sid, '重新开始', 'wecom');
+  const r = await handleMessage(sid, '重置', 'wecom');
   const s = getSession(sid)!;
-  assert.equal(r.silent, true, '已转人工的企微客户说「重新开始」，AI 仍应沉默');
-  assert.equal(s.handedOver, true, '不能借重置口令绕过人工');
-  assert.ok(getOrder(order.id), '已支付订单不能被删');
-  assert.ok(s.messages.length >= 3, '顾问正在看的聊天记录不能被清空');
+  assert.equal(r.stage, 'greeting', `企微发「重置」应回到问需（实际：${r.stage}）`);
+  assert.ok(!r.silent && r.text.includes('重新开始'), `企微重置要有回复（实际：${r.text}）`);
+  assert.equal(s.handedOver, false, '重置解除转人工');
+  assert.equal(s.stageBeforeHandoff, undefined, '重置要清掉接管前阶段');
+  assert.equal(s.messages.length, 1, '聊天记录清空，只留重置回复');
+  assert.equal(getOrder(order.id), undefined, '订单一并清掉');
+  assert.deepEqual(s.profile, {}, '画像清空');
 
-  // 模拟器照旧能重置，且清掉接管前阶段（否则下次交还会恢复成重置前的阶段）
   const sim = 'sim-selftest-e6-' + Date.now().toString(36);
   await handleMessage(sim, '我要投诉', 'simulator');
-  getSession(sim)!.stageBeforeHandoff = 'quote';
-  const rs = await handleMessage(sim, '重置', 'simulator');
+  const rs = await handleMessage(sim, '重新开始', 'simulator');
   assert.equal(rs.stage, 'greeting');
   assert.equal(getSession(sim)!.handedOver, false);
-  assert.equal(getSession(sim)!.stageBeforeHandoff, undefined, '重置要清掉接管前阶段');
 }
 
 // E12：客户顺口提了个过去的完整日期，不带日期的报价不该被拦
@@ -1138,5 +1139,5 @@ const searchYunnan: Step[] = [
 
 assert.equal(scriptOverrun, 0, '假模型被多调了（脚本耗尽后仍有请求）');
 fake.close();
-console.log('SELFTEST PASS: 出口护栏（改行程+编价 / 逐日行程 / 转人工记阶段 / 生成中接管 / 企微重置 / 过去日期 / 死链接 / 超预算差额）');
+console.log('SELFTEST PASS: 出口护栏（改行程+编价 / 逐日行程 / 转人工记阶段 / 生成中接管 / 重置（企微与网页） / 过去日期 / 死链接 / 超预算差额）');
 console.log('SELFTEST PASS: 发给模型的请求（预取还原成工具往返 / 会话状态在客户消息前 / system 逐字节不变 / 线路 id 跨轮 / 画像白名单）');
