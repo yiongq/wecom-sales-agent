@@ -48,9 +48,11 @@ const fakeVec = (t: string): number[] => {
   return v;
 };
 const fake = http.createServer((req, res) => {
-  let body = '';
-  req.on('data', (c: Buffer) => (body += c));
+  // 攒齐再解码：逐块拼字符串时，切在两块之间的多字节字符会变成 U+FFFD，前缀的逐字节比对就不成立了
+  const chunks: Buffer[] = [];
+  req.on('data', (c: Buffer) => chunks.push(c));
   req.on('end', () => {
+    const body = Buffer.concat(chunks).toString('utf8');
     res.setHeader('content-type', 'application/json');
     if (req.url?.endsWith('/embeddings')) {
       const input = (JSON.parse(body) as { input: string[] }).input;
