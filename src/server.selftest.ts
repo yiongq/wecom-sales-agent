@@ -685,10 +685,18 @@ const payReq = (orderId: string) =>
   const old3 = mkSession(simId(), 'simulator', '第三旧的访客');
   [paidOldest.updatedAt, old1.updatedAt, old2.updatedAt, old3.updatedAt] = [1_000, 2_000, 3_000, 4_000];
   const startCount = visitors().length;
-  while (visitors().length < CAP) getOrCreateSession(simId(), 'simulator');
+  // 带上界：淘汰若多算一个，访客数永远到不了 CAP，这里不能死循环
+  for (let i = 0; i < CAP && visitors().length < CAP; i++) getOrCreateSession(simId(), 'simulator');
   const kept = (...xs: Session[]) => xs.every((s) => !!getSession(s.id));
   check('访客总量上限：没超上限时一个不淘汰', startCount < CAP && kept(paidOldest, old1, old2, old3), `起始 ${startCount}`);
-  const extra = [getOrCreateSession(simId(), 'simulator'), getOrCreateSession(simId(), 'simulator')];
+  // 先只超一个、立刻看：多淘汰一个会掉到 CAP-1，再建一个又补回 CAP，只看终态发现不了
+  const extra1 = getOrCreateSession(simId(), 'simulator');
+  check(
+    '访客总量上限：超出一个只淘汰一个（最旧的）',
+    visitors().length === CAP && !getSession(old1.id) && kept(old2),
+    String(visitors().length),
+  );
+  const extra = [extra1, getOrCreateSession(simId(), 'simulator')];
   check('访客总量上限：超出后总数压回上限', visitors().length === CAP, String(visitors().length));
   check('访客总量上限：淘汰的是最旧的访客会话，连同订单', !getSession(old1.id) && !getSession(old2.id) && !getOrder(o1.id));
   check('访客总量上限：只淘汰超出的个数', kept(old3, ...extra));
