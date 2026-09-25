@@ -3,6 +3,7 @@
 // 看引擎出口是否拦得住——mock 脚本只会说规矩话，复现不了这些失败。全程不出本机、不调真实 API。
 // 数据全部写进临时目录（VAR_DIR 覆盖），跑多少遍都不会污染真实 var/ 与后台看板。
 // 用法：npx tsx src/engine.selftest.ts
+import './selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -148,6 +149,7 @@ const { handleMessage, notifyPaid, historyWindow, onToolCall, promptPrefix, __en
 const { markOrderPaid, getSession, createOrder, getOrder } = await import('./store.js');
 const { searchRoutes, createQuote } = await import('./tools.js');
 const { buildIndex, indexReady } = await import('./retrieval.js');
+const { __profileTest } = await import('./profile.js');
 const { llmCfg } = await import('./llm.js');
 assert.ok(llmCfg().baseUrl.startsWith('http://127.0.0.1:'), '自测只能打本机假模型服务');
 
@@ -1697,6 +1699,13 @@ const searchYunnan: Step[] = [
       '每个请求的第一条 system 消息都要逐字节等于 promptPrefix().system',
     );
     if ('tools' in b) assert.equal(JSON.stringify(b.tools), prefix.tools, '每个带 tools 的请求，tools 都要逐字节等于 promptPrefix().tools');
+  }
+  // 断言 3：00 里没有任何开关影响前缀，prod 与 demo 逐字节相同
+  try {
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    assert.deepEqual(promptPrefix(), prefix, '切到 prod 后 promptPrefix() 要与 demo 下完全相同');
+  } finally {
+    __profileTest.reset();
   }
   const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
   console.log(`PREFIX sha256 system=${sha(prefix.system)} tools=${sha(prefix.tools)}`);

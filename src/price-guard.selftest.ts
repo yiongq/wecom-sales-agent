@@ -2,6 +2,7 @@
 //   · 漏拦 → 模型编的价直接发给客户，成交后要么公司认亏要么当场翻脸
 //   · 误杀 → 真实报价被换成「我需要重新核对一下」，客户永远拿不到价格，还会反复循环
 // 用法：npx tsx src/price-guard.selftest.ts
+import './selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

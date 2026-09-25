@@ -9,6 +9,7 @@
 //   LLM_MOCK=1 npx tsx eval/run.ts      # 离线脚本，秒出结果，用于 CI 冒烟
 //   npx tsx eval/run.ts --tags 护栏      # 只跑某类
 //   npx tsx eval/run.ts --json out.json  # 结果落文件，便于跨版本对比
+import '../src/selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import '../src/env.js';
 import fs from 'node:fs';
 import os from 'node:os';
