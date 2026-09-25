@@ -7,6 +7,7 @@
 - 实质性改动先写 spec，流程见 `docs/spec-driven-dev.md`。
 - 常规 PR 合进 `dev`。提交信息用 Conventional Commits，标题不超过 50 字符，不加 AI co-author 署名。
 - 开 PR 前跑完四个门禁：`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm test`。
+- 首次全仓格式化的提交列在 `.git-blame-ignore-revs` 里。clone 之后跑一次 `git config blame.ignoreRevsFile .git-blame-ignore-revs`，`git blame` 就会越过它，指到格式化之前的提交。
 - 没有实际需要就不加依赖、不加抽象；不从许可证不兼容或私有来源复制代码。
 - 不提交客户数据、凭据、真实企微标识、二维码、生产域名或服务器 IP。
 - issue 和 PR 用中文或英文都可以。

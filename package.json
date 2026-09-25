@@ -5,12 +5,15 @@
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.30.2",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "format:check": "echo \"TODO: oxfmt\"",
-    "lint": "echo \"TODO: oxlint\"",
+    "prepare": "if [ -e .git ]; then lefthook install; fi",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --deny-warnings && tsx scripts/check-public-boundary.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx src/engine.selftest.ts && tsx src/adapters/wecom.selftest.ts && tsx src/dejargon.selftest.ts && tsx src/price-guard.selftest.ts && tsx src/llm.selftest.ts && tsx src/server.selftest.ts && LLM_MOCK=1 tsx eval/run.ts"
   },
@@ -19,11 +22,18 @@
     "hono": "^4.13.9"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
     "@types/node": "^22.0.0",
+    "lefthook": "2.1.14",
+    "oxfmt": "0.68.0",
+    "oxlint": "1.83.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

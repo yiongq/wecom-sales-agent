@@ -86,11 +86,7 @@ async function getAccessToken(cfg: WecomConfig, force = false): Promise<string> 
 }
 
 /** 带 token 的 POST；token 过期（42001/40014）自动强刷重试一次 */
-async function callApi<T extends { errcode?: number; errmsg?: string }>(
-  cfg: WecomConfig,
-  endpoint: string,
-  body: unknown,
-): Promise<T> {
+async function callApi<T extends { errcode?: number; errmsg?: string }>(cfg: WecomConfig, endpoint: string, body: unknown): Promise<T> {
   let token = await getAccessToken(cfg);
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
@@ -281,8 +277,7 @@ const WELCOME_TEXT =
 
 // 老客户（48h 会话窗口内）再次扫码进入时，企微不下发 welcome_code——用普通消息补一条
 const WELCOME_BACK_TEXT =
-  '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n' +
-  '想继续看线路、调整行程，或者换个方向看看，直接说就行～';
+  '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n' + '想继续看线路、调整行程，或者换个方向看看，直接说就行～';
 
 // 补发欢迎的去重窗口。只用来吸收「同一次进入触发多个 enter_session」这类抖动，
 // 不该拦住客户主动的再次扫码——原本设成 30 分钟，结果是第一次扫有招呼语、
@@ -318,7 +313,10 @@ function splitForWecom(text: string): string[] {
     for (const m of rest.matchAll(/https?:\/\/\S+|\/(?:proposal|pay)\/\S+/g)) {
       const start = m.index ?? 0;
       const end = start + m[0].length;
-      if (cut > start && cut < end) { cut = start; break; }
+      if (cut > start && cut < end) {
+        cut = start;
+        break;
+      }
     }
     // 不要从代理对中间切开（emoji 等增补平面字符）
     const hi = rest.charCodeAt(cut - 1);
@@ -360,7 +358,9 @@ async function uploadThumb(cfg: WecomConfig): Promise<string | null> {
       const form = new FormData();
       form.append('media', new Blob([new Uint8Array(buf)], { type: 'image/png' }), 'proposal-thumb.png');
       const res = await fetch(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
-        method: 'POST', body: form, signal: AbortSignal.timeout(20000),
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(20000),
       });
       const d = (await res.json()) as { errcode?: number; errmsg?: string; media_id?: string };
       if (d.errcode || !d.media_id) {
@@ -491,7 +491,10 @@ function pointToCard(s: string): string {
   // 「付款请点：<url>」：只认付款/请 + 点，「景点」「重点」这类收尾不能接「下方卡片」
   if (/(?:请|烦请|麻烦|支付|付款)点击?$/.test(s)) return `${s}下方卡片`;
   // 只认「方案/链接…在这儿」这种名词带指代的说法：「我放在这里」这类动词短语换掉会变成病句
-  const here = s.replace(/(方案书?|计划书?|行程单?|链接|入口|明细|详情)(?:就|都)?(?:在这里|在这儿|在这|如下)(?=$|[，,。！!～~；;])/, '$1见下方卡片');
+  const here = s.replace(
+    /(方案书?|计划书?|行程单?|链接|入口|明细|详情)(?:就|都)?(?:在这里|在这儿|在这|如下)(?=$|[，,。！!～~；;])/,
+    '$1见下方卡片',
+  );
   if (here !== s) return here;
   if (/(?:发(?:给)?您|给您|(?:做|生成|准备|整理|出)好了?|已生成)(?:看看|过目)?(?:了|啦)?$/.test(s)) return `${s}，见下方卡片`;
   return s;
@@ -510,7 +513,9 @@ function stripLink(body: string, raw: string): string {
     const beforeRaw = line.slice(0, at).replace(POINTER_BEFORE_RE, (m) => (/^\s/.test(m) ? ' ' : ''));
     const afterRaw = line.slice(at + raw.length).replace(POINTER_AFTER_RE, (m) => (/\s$/.test(m) ? ' ' : ''));
     // 冒号原本指着链接，后面紧跟逗号或括号时就悬空了（「总价：，30 分钟内有效」）
-    const rest = tidy(beforeRaw + afterRaw).replace(/[：:][ \t]*([，,、；;])/, '$1').replace(/[：:][ \t]*(?=[（(])/, '');
+    const rest = tidy(beforeRaw + afterRaw)
+      .replace(/[：:][ \t]*([，,、；;])/, '$1')
+      .replace(/[：:][ \t]*(?=[（(])/, '');
     const core = linkLabelCore(rest);
     // 「支付链接（名额以付款为准）：<url>」「· 支付链接：<url>（24 小时内有效）」：剩下的是标签加括注，标签改成指着卡片，括注留着
     if (notedLabel(rest)) {
@@ -670,8 +675,7 @@ function absolutizePayLinks(cfg: WecomConfig, text: string): string {
  * 这里把常见 markdown 转成微信里干净的样子（emoji 保留，结构靠换行）。
  */
 // 行首用作项目符号的 emoji（含可选变体选择符 + 空格），兜底换成「·」
-const LEADING_EMOJI_BULLET =
-  /^\s*(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{2000}-\u{206F}]️?)\s+/gmu;
+const LEADING_EMOJI_BULLET = /^\s*(?:[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{2000}-\u{206F}]️?)\s+/gmu;
 
 function wechatify(text: string): string {
   return text
@@ -1037,7 +1041,12 @@ async function drainForShutdown(): Promise<void> {
   // 先等启动重放派发完，再看处理链：replayInflight 过了开头的 stopping 检查后要先 await 落盘才派发，
   // 停机信号落在这个窗口里时，先查处理链会看到空的直接跳过，重放出去的回复没人等就退出了——
   // 回复可能已送达、完成标记却没落盘，下次启动又重发一遍，还白白耗掉一次重放名额
-  const loaded = readyPromise ? await readyPromise.then(() => true, () => false) : false;
+  const loaded = readyPromise
+    ? await readyPromise.then(
+        () => true,
+        () => false,
+      )
+    : false;
   await syncTask?.catch(() => undefined); // 拉取失败不能让后面的「等处理链」被跳过
   // 刚拉到的一页可能在上面等待期间才派发出去，循环到链全部清空
   while (userChains.size || eventTasks.size) {

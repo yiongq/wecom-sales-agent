@@ -25,8 +25,22 @@ const BARE_NUM_RE = /(?<![\d,.万千¥￥])(\d[\d,]*\d)(?![\d.])/g;
  * 每处替换都是一个字换一个字，位置不变。
  */
 const CN_CAPITAL: Record<string, string> = {
-  壹: '一', 贰: '二', 貳: '二', 叁: '三', 參: '三', 肆: '四', 伍: '五', 陆: '六', 陸: '六', 柒: '七', 捌: '八',
-  玖: '九', 拾: '十', 佰: '百', 仟: '千', 萬: '万',
+  壹: '一',
+  贰: '二',
+  貳: '二',
+  叁: '三',
+  參: '三',
+  肆: '四',
+  伍: '五',
+  陆: '六',
+  陸: '六',
+  柒: '七',
+  捌: '八',
+  玖: '九',
+  拾: '十',
+  佰: '百',
+  仟: '千',
+  萬: '万',
 };
 const CN_CAPITAL_RE = /[壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬]/g;
 function normalizeMoneyText(text: string): string {
@@ -35,7 +49,8 @@ function normalizeMoneyText(text: string): string {
     .replace(/([０-９])．(?=[０-９])/g, '$1.')
     .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/[壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬万零]{2,}/g, (run) =>
-      (run.match(CN_CAPITAL_RE) ?? []).length >= 2 ? run.replace(CN_CAPITAL_RE, (c) => CN_CAPITAL[c]) : run)
+      (run.match(CN_CAPITAL_RE) ?? []).length >= 2 ? run.replace(CN_CAPITAL_RE, (c) => CN_CAPITAL[c]) : run,
+    )
     .replace(/(\d{2,}|\d\.\d+)[kK](?![A-Za-z])/g, '$1千');
 }
 
@@ -50,8 +65,7 @@ const MAX_TRAVELERS = 50;
  * 「好的，就按 6800 给您锁定」就能过护栏，而客户点开支付页收的是真实价。
  * 「就按这条走」「就按这个方案来」另算，见 ROUTE_PICK。
  */
-const CLOSING_PRICE =
-  /就按|按这个价|按这个数|给您锁定|锁定名额|成交价|优惠价|这个价格给您|给您这个价|就这个价|帮您下单|为您下单/;
+const CLOSING_PRICE = /就按|按这个价|按这个数|给您锁定|锁定名额|成交价|优惠价|这个价格给您|给您这个价|就这个价|帮您下单|为您下单/;
 /**
  * 「就按这条走」「就按这个方案来」多半是在选线路、不是在报价：实测「两个方向您看哪个更合适：一是预算能往上提一点
  * 就按这条走；二是我帮您找……把价格拉回 1 万 5 以内」被当成成交语境，客户说过的预算跟着不作数，复述的 1 万 5 成了编价。
@@ -78,7 +92,10 @@ const PRICE_REFUSAL = /做不了|安排不了|没法|无法|不能按|做不到|
 
 /** 把回复切成句子——成交措辞只作用于它所在那一句，不该让整段的其他金额跟着作废 */
 function sentences(text: string): string[] {
-  return text.split(/[。！!？?\n]+/).map((x) => x.trim()).filter(Boolean);
+  return text
+    .split(/[。！!？?\n]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -209,7 +226,14 @@ const NUM_CHAR = /[\d.一二两三四五六七八九十百千万零〇点]/;
  *  此前「档」不在表里，读成 55,800，客户问「马代和巴厘岛哪个好」收到的是一句「告诉我线路和出行人数」 */
 const CLASSIFIER_AFTER = /^\s*(?:位|个|人|晚|天|间|套|份|次|趟|家|张|日|夜|名|月|号|岁|档|条|种|类|款)/;
 
-interface Section { value: number; precision: number; end: number; firstUnit: number; arabic: boolean; bare: boolean }
+interface Section {
+  value: number;
+  precision: number;
+  end: number;
+  firstUnit: number;
+  arabic: boolean;
+  bare: boolean;
+}
 
 /**
  * 读一个小于一万的「节」：三千八百 / 两千八（=2800）/ 十五 / 一千零八 / 3.8 / 8千 / 3千5。
@@ -244,7 +268,8 @@ function readSection(t: string, start: number, afterWan: boolean): Section | 'ra
       } else {
         pending = { v: CN_NUM[ch], prec: 1, at: p };
         p += 1;
-        if (t[p] === '点' && CN_NUM[t[p + 1]] !== undefined) { // 三点八万
+        if (t[p] === '点' && CN_NUM[t[p + 1]] !== undefined) {
+          // 三点八万
           pending.v += CN_NUM[t[p + 1]] / 10;
           pending.prec = 0.1;
           p += 2;
@@ -338,20 +363,32 @@ function readNumber(t: string, start: number): SpokenNumber | 'range' | null {
     }
     p = b.end;
   }
-  return { start, end: p, value: Math.round(value * 100) / 100, precision, arabicWan: a.arabic && /^[\d.\s]+$/.test(t.slice(start, a.end)) };
+  return {
+    start,
+    end: p,
+    value: Math.round(value * 100) / 100,
+    precision,
+    arabicWan: a.arabic && /^[\d.\s]+$/.test(t.slice(start, a.end)),
+  };
 }
 
 function scanSpoken(t: string): SpokenNumber[] {
   const out: SpokenNumber[] = [];
   for (let i = 0; i < t.length;) {
     // 只在一个数的开头起读：「两万五一位」读完「两万五」后，「一」不再单独起一个数
-    if (!/[\d一二两三四五六七八九十]/.test(t[i]) || (i > 0 && NUM_CHAR.test(t[i - 1]))) { i += 1; continue; }
+    if (!/[\d一二两三四五六七八九十]/.test(t[i]) || (i > 0 && NUM_CHAR.test(t[i - 1]))) {
+      i += 1;
+      continue;
+    }
     const r = readNumber(t, i);
     if (r === 'range') {
       while (i < t.length && NUM_CHAR.test(t[i])) i += 1;
       continue;
     }
-    if (!r) { i += 1; continue; }
+    if (!r) {
+      i += 1;
+      continue;
+    }
     out.push(r);
     i = r.end;
   }
@@ -444,7 +481,9 @@ function parseWanAmounts(text: string): WanAmount[] {
       } else {
         if (!CN_FOLLOW_OK.test(a.rest)) continue;
         const money =
-          MONEY_UNIT_AFTER.test(a.rest) || PER_HEAD_AFTER.test(a.rest) || moneyCueBefore(text, n.start) ||
+          MONEY_UNIT_AFTER.test(a.rest) ||
+          PER_HEAD_AFTER.test(a.rest) ||
+          moneyCueBefore(text, n.start) ||
           (n.value >= 10000 && n.precision <= 1000);
         if (!money) continue;
       }
@@ -454,12 +493,16 @@ function parseWanAmounts(text: string): WanAmount[] {
     const before = text.slice(Math.max(0, n.start - 14), n.start);
     // 「三万八一位」「3.8万/人」：人均写在数字后面。不认的话 38,000 会拿去跟 1-50 人的全部总价比，
     // 3 人 × 12,800 = 38,400 就「对上」了
-    const scope: Scope = PER_PERSON_HINT.test(before) || PER_HEAD_AFTER.test(a.rest)
-      ? 'perPerson'
-      : TOTAL_HINT.test(before) ? 'total' : 'any';
+    const scope: Scope =
+      PER_PERSON_HINT.test(before) || PER_HEAD_AFTER.test(a.rest) ? 'perPerson' : TOTAL_HINT.test(before) ? 'total' : 'any';
     const cm = COUNT_BEFORE.exec(before);
     out.push({
-      value, tol, scope, travelers: cm ? parseCount(cm[1]) : undefined, at: n.start, end: text.length - a.rest.length,
+      value,
+      tol,
+      scope,
+      travelers: cm ? parseCount(cm[1]) : undefined,
+      at: n.start,
+      end: text.length - a.rest.length,
     });
   }
   return out;
@@ -556,10 +599,15 @@ function customerAmounts(session: Session, customerText: string): number[] {
 //     「对标松赞品质的南极线」「埃及金字塔线跟西安兵马俑一样」是拿真线路给编出来的线作比，不是在推那条线。
 
 /** 本轮一次工具调用：参数和返回原文（引擎的 ToolCall 就是这个形状） */
-export interface TurnToolCall { name: string; args: Record<string, unknown>; result?: string }
+export interface TurnToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+}
 
 /** 标题里不指向某条线的修饰词：切出来的名字去掉它们（「松赞全线」→「松赞」，「洱海古城」→「洱海」） */
-const TITLE_FILLER = '全线|环线|秘境|深度|之旅|亲子|蜜月|度假|奢华|全景|双岛|浮潜|一价全包|海岛|美学|雨林|越野|摄影|纵贯|南北疆|双乐园|乐园|古城|极光|玻璃屋';
+const TITLE_FILLER =
+  '全线|环线|秘境|深度|之旅|亲子|蜜月|度假|奢华|全景|双岛|浮潜|一价全包|海岛|美学|雨林|越野|摄影|纵贯|南北疆|双乐园|乐园|古城|极光|玻璃屋';
 const FILLER_EDGE = new RegExp(`^(?:${TITLE_FILLER})+|(?:${TITLE_FILLER})+$`, 'g');
 /**
  * 标题按「·」、天数、中英文之间的空格切开；「雪山」也切（「梅里雪山松赞环线」要切出「松赞」）。
@@ -640,7 +688,8 @@ function idsInResult(result: string | undefined): string[] {
   try {
     const parsed: unknown = JSON.parse(result);
     const rows = Array.isArray(parsed) ? parsed : [parsed];
-    return rows.map((r) => (r && typeof r === 'object' ? (r as { id?: unknown }).id : undefined))
+    return rows
+      .map((r) => (r && typeof r === 'object' ? (r as { id?: unknown }).id : undefined))
       .filter((id): id is string => typeof id === 'string');
   } catch {
     return [];
@@ -649,8 +698,13 @@ function idsInResult(result: string | undefined): string[] {
 
 /** 本会话出现过的线路 id（规则见上） */
 function routesInPlay(
-  session: Session, visible: string, customerText: string, turnCalls: TurnToolCall[], routes: Route[],
-  names: Map<string, string[]>, misses: string[],
+  session: Session,
+  visible: string,
+  customerText: string,
+  turnCalls: TurnToolCall[],
+  routes: Route[],
+  names: Map<string, string[]>,
+  misses: string[],
 ): Set<string> {
   const seen = new Set<string>(session.seenRouteIds ?? []);
   for (const c of turnCalls) {
@@ -702,7 +756,13 @@ function quotesOf(session: Session): { routeId: string; travelers: number; perPe
   if (q?.perPerson && q.total) out.push({ routeId: q.routeId, travelers: q.travelers, perPerson: q.perPerson, total: q.total });
   for (const id of session.orderIds ?? []) {
     const o = getOrder(id);
-    if (o) out.push({ routeId: o.routeId, travelers: o.travelers, perPerson: Math.round(o.totalPrice / Math.max(1, o.travelers)), total: o.totalPrice });
+    if (o)
+      out.push({
+        routeId: o.routeId,
+        travelers: o.travelers,
+        perPerson: Math.round(o.totalPrice / Math.max(1, o.travelers)),
+        total: o.totalPrice,
+      });
   }
   return out;
 }
@@ -719,9 +779,17 @@ function quoteDiffs(session: Session, routes: Route[]): { exact: number[]; appro
   const pairs = new Set<number>();
   const quotes = quotesOf(session);
   const diff = (a: { perPerson: number; total: number }, b: { perPerson: number; total: number }, into = exact) => {
-    for (const d of [Math.abs(a.perPerson - b.perPerson), Math.abs(a.total - b.total)]) if (d > 0) { exact.add(d); into.add(d); }
+    for (const d of [Math.abs(a.perPerson - b.perPerson), Math.abs(a.total - b.total)])
+      if (d > 0) {
+        exact.add(d);
+        into.add(d);
+      }
   };
-  quotes.forEach((a, i) => quotes.slice(i + 1).forEach((b) => { if (a.routeId === b.routeId) diff(a, b, pairs); }));
+  quotes.forEach((a, i) =>
+    quotes.slice(i + 1).forEach((b) => {
+      if (a.routeId === b.routeId) diff(a, b, pairs);
+    }),
+  );
   for (const q of quotes) {
     const r = routes.find((x) => x.id === q.routeId);
     if (!r) continue;
@@ -764,16 +832,16 @@ interface Allowed {
  * 生成规则严格照 tools.createQuote，不枚举不可能出现的组合——尤其 95 折只在 4 人及以上，
  * 此前对 1-3 人也算了一遍折后价，凭空多出一批根本报不出来的金额。
  */
-function allowedAmounts(
-  session: Session, customerText: string, includeCustomerSaid: boolean, routes: { priceFrom: number }[],
-): Allowed {
+function allowedAmounts(session: Session, customerText: string, includeCustomerSaid: boolean, routes: { priceFrom: number }[]): Allowed {
   const perPerson = new Set<number>();
   const total = new Set<number>();
   const totalByCount = new Map<number, Set<number>>();
   const authoritative = new Set<number>();
   const hotelNightly = new Set<number>();
   const customerApprox = new Set<number>();
-  const add = (set: Set<number>, n: number) => { if (Number.isFinite(n) && n > 0) set.add(Math.round(n)); };
+  const add = (set: Set<number>, n: number) => {
+    if (Number.isFinite(n) && n > 0) set.add(Math.round(n));
+  };
 
   for (const r of routes) {
     // 旺季 +10% 是唯一会改人均价的规则（见 createQuote），基准价与旺季价各算一套
@@ -791,11 +859,21 @@ function allowedAmounts(
     }
   }
   let hotels: { nightlyFrom: number }[] = [];
-  try { hotels = loadHotels(); } catch { /* 同上 */ }
+  try {
+    hotels = loadHotels();
+  } catch {
+    /* 同上 */
+  }
   for (const h of hotels) add(hotelNightly, h.nightlyFrom);
   const q = session.lastQuote;
-  if (q?.perPerson) { add(perPerson, q.perPerson); add(authoritative, q.perPerson); }
-  if (q?.total) { add(total, q.total); add(authoritative, q.total); }
+  if (q?.perPerson) {
+    add(perPerson, q.perPerson);
+    add(authoritative, q.perPerson);
+  }
+  if (q?.total) {
+    add(total, q.total);
+    add(authoritative, q.total);
+  }
   for (const id of session.orderIds ?? []) {
     const o = getOrder(id);
     if (o) {
@@ -809,7 +887,9 @@ function allowedAmounts(
   if (includeCustomerSaid) {
     // 客户说的数字不知道是人均还是总价，两边都放
     for (const n of customerAmounts(session, customerText)) {
-      add(perPerson, n); add(total, n); add(authoritative, n);
+      add(perPerson, n);
+      add(total, n);
+      add(authoritative, n);
       // 万以上的数模型复述时常按千位截断或四舍五入成口语（客户「19999 卖不卖」→「两位如果预算定在一万九」），
       // 这两个读法单独记，只给口语的「万」用：阿拉伯数字写出来的精确金额仍得跟客户的数一模一样——
       // 否则客户说「携程上 12999」，模型回「我们这条每人 13,000 元左右」就成了客户说过的数
@@ -819,7 +899,8 @@ function allowedAmounts(
     // 「定」出任意数（报个预算让差额恰好等于他想要的价），所以和客户的数同等对待：
     // 报成交价的语境下不放行
     for (const g of session.budgetGaps ?? []) {
-      add(perPerson, g); add(authoritative, g);
+      add(perPerson, g);
+      add(authoritative, g);
     }
   }
   return { perPerson, total, totalByCount, authoritative, hotelNightly, customerApprox };
@@ -846,25 +927,29 @@ function setsFor(ok: Allowed, w: WanAmount): Set<number>[] {
  * 又说库外目的地的（「冰岛极光 9 日人均 62,800 起，瑞士那条也是 62,800」）同样认不出；
  * 档位话术（「人均 5 万左右」）仍按整库比对，编造的线路配一个整万的档位说法挡不住。
  */
-export function findUnbackedPrices(
-  visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = [],
-): number[] {
+export function findUnbackedPrices(visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = []): number[] {
   return findUnbackedPriceHits(visible, session, customerText, turnCalls).map((h) => h.value);
 }
 
 /** 一处追溯不到出处的金额：value 同 findUnbackedPrices，at / end 是它在回复原文里的位置（引擎据此只删它所在的那一句） */
-export interface PriceHit { value: number; at: number; end: number }
+export interface PriceHit {
+  value: number;
+  at: number;
+  end: number;
+}
 
 /** 同 findUnbackedPrices，带上每个金额在原文里的位置。normalizeMoneyText 逐字替换、位置不变，所以原文位置可以直接用 */
-export function findUnbackedPriceHits(
-  visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = [],
-): PriceHit[] {
+export function findUnbackedPriceHits(visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = []): PriceHit[] {
   if (process.env.PRICE_GUARD === '0') return [];
   const text = normalizeMoneyText(visible);
   // 在报成交价：客户自己喊过的数字不能当白名单，否则等于让客户自己定价
   const closing = hasClosingPrice(text);
   let routes: Route[] = [];
-  try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警，这里不阻断对话 */ }
+  try {
+    routes = loadRoutes();
+  } catch {
+    /* 数据文件坏了另有告警，这里不阻断对话 */
+  }
   const misses = missTargets(turnCalls);
   const names = routeNames(routes);
   const seen = routesInPlay(session, visible, customerText, turnCalls, routes, names, misses);
@@ -872,7 +957,12 @@ export function findUnbackedPriceHits(
   // 几套白名单只差产品库价取自哪些线路：整库的只给档位话术用，其余金额按本会话出现过的线路核，
   // 说库外目的地的分句再收窄到同一分句点了名的线路
   const tier = allowedAmounts(session, customerText, !closing, routes);
-  const inPlay = allowedAmounts(session, customerText, !closing, routes.filter((r) => seen.has(r.id)));
+  const inPlay = allowedAmounts(
+    session,
+    customerText,
+    !closing,
+    routes.filter((r) => seen.has(r.id)),
+  );
   const offCatalog = new Map<number, Allowed>();
   const spans = clauses(text);
   const pick = (tol: number, at: number): Allowed => {
@@ -882,7 +972,12 @@ export function findUnbackedPriceHits(
     let ok = offCatalog.get(i);
     if (!ok) {
       const here = new Set(namedRoutes(spans[i].s, names));
-      ok = allowedAmounts(session, customerText, !closing, routes.filter((r) => seen.has(r.id) && here.has(r.id)));
+      ok = allowedAmounts(
+        session,
+        customerText,
+        !closing,
+        routes.filter((r) => seen.has(r.id) && here.has(r.id)),
+      );
       offCatalog.set(i, ok);
     }
     return ok;
@@ -896,7 +991,8 @@ export function findUnbackedPriceHits(
   // 酒店每晚价只在「每晚 / 元/晚」紧贴这个数时认；说的是每人价、或这条回复在报成交价时不认——
   // 客户喊「6800 给我锁定」，模型答「就按每晚 6,800 给您锁定」照样是拿客户的数当成交价
   const hotelOk = (v: number, tol: number, at: number, end: number, perPerson: boolean): boolean =>
-    !closing && !perPerson &&
+    !closing &&
+    !perPerson &&
     (HOTEL_BEFORE.test(text.slice(Math.max(0, at - 12), at)) || HOTEL_AFTER.test(text.slice(end))) &&
     near(inPlay.hotelNightly, v, tol);
   // 报价之差不知道说的是每人还是总价（「每人省 1,580」「一家三口省 4,740」），只在比价的小句里认：
@@ -915,14 +1011,20 @@ export function findUnbackedPriceHits(
   for (const h of amountHits(text)) {
     const perPerson = PER_PERSON_HINT.test(text.slice(Math.max(0, h.at - 14), h.at));
     const ok = pick(h.tol, h.at);
-    const backed = near(ok.perPerson, h.value, h.tol) || near(ok.total, h.value, h.tol) ||
-      hotelOk(h.value, h.tol, h.at, h.end, perPerson) || diffBacked(h.value, h.tol, h.at, h.end);
+    const backed =
+      near(ok.perPerson, h.value, h.tol) ||
+      near(ok.total, h.value, h.tol) ||
+      hotelOk(h.value, h.tol, h.at, h.end, perPerson) ||
+      diffBacked(h.value, h.tol, h.at, h.end);
     if (!backed) bad.push({ value: h.raw, at: h.at, end: h.end });
   }
   for (const w of parseWanAmounts(text)) {
     const ok = pick(w.tol, w.at);
-    const backed = setsFor(ok, w).some((set) => near(set, w.value, w.tol)) || near(ok.customerApprox, w.value, w.tol) ||
-      hotelOk(w.value, w.tol, w.at, w.end, w.scope === 'perPerson') || diffBacked(w.value, w.tol, w.at, w.end);
+    const backed =
+      setsFor(ok, w).some((set) => near(set, w.value, w.tol)) ||
+      near(ok.customerApprox, w.value, w.tol) ||
+      hotelOk(w.value, w.tol, w.at, w.end, w.scope === 'perPerson') ||
+      diffBacked(w.value, w.tol, w.at, w.end);
     if (!backed) bad.push({ value: w.value, at: w.at, end: w.end });
   }
   return bad;
@@ -953,8 +1055,9 @@ export function priceMentions(visible: string): { value: number; tol: number; at
  * 这次的错价被拦下、根本没发出去，客户看到的上一条明明是对的，道歉反倒让人以为之前报错了
  */
 export function saidBefore(session: Session, values: number[]): boolean {
-  return (session.messages ?? []).filter((m) => m.role === 'agent').some((m) =>
-    priceMentions(m.content).some((p) => values.some((v) => Math.abs(p.value - v) <= p.tol)));
+  return (session.messages ?? [])
+    .filter((m) => m.role === 'agent')
+    .some((m) => priceMentions(m.content).some((p) => values.some((v) => Math.abs(p.value - v) <= p.tol)));
 }
 
 // ---------------- 按句删 ----------------
@@ -973,8 +1076,11 @@ export function sentenceUnits(text: string): { start: number; end: number }[] {
     else if ('。！!？?'.includes(c)) {
       end = i + 1;
       while (end < text.length && '。！!？?」”’）)'.includes(text[end])) end += 1;
-    } else if ((c === '～' || c === '~') && !/[\d一二两三四五六七八九十万千]/.test(text[i - 1] ?? '') &&
-      !/^\s*[\d一二两三四五六七八九十]/.test(text.slice(i + 1))) {
+    } else if (
+      (c === '～' || c === '~') &&
+      !/[\d一二两三四五六七八九十万千]/.test(text[i - 1] ?? '') &&
+      !/^\s*[\d一二两三四五六七八九十]/.test(text.slice(i + 1))
+    ) {
       // 「好的～您几位」的波浪号是句末语气；「2~3 万」「五万～六万」里的是区间，不断句
       end = i + 1;
       while (end < text.length && '～~'.includes(text[end])) end += 1;
@@ -1010,7 +1116,10 @@ export function dropSentences(text: string, cuts: { at: number; end: number; rep
   // 行首的句子才可能是引出语底下的内容：先按行把句子归组
   const lineOf: number[] = [];
   let line = 0;
-  units.forEach((u, i) => { lineOf[i] = line; if (text[u.end - 1] === '\n') line += 1; });
+  units.forEach((u, i) => {
+    lineOf[i] = line;
+    if (text[u.end - 1] === '\n') line += 1;
+  });
   const lineUnits = (l: number) => units.map((_, i) => i).filter((i) => lineOf[i] === l);
   const lineBlank = (l: number) => lineUnits(l).every(blank);
   const lineBullet = (l: number) => BULLET_HEAD.test(lineUnits(l).map(body).join(''));
@@ -1047,7 +1156,10 @@ export function dropSentences(text: string, cuts: { at: number; end: number; rep
     // 紧跟在删掉那句后面、以「所以 / 因此」开头的句子：去掉这个连接词，不然接不上前文（「所以如果预算有限…」）
     if (!kill.has(i) && afterCut) s = s.replace(/^(\s*)(?:所以说?|因此|因为这样|这样一来)[，,]?\s*/, '$1');
     if (s.trim()) afterCut = kill.has(i) && kill.get(i) === undefined;
-    if (!kill.has(i)) { out += s; return; }
+    if (!kill.has(i)) {
+      out += s;
+      return;
+    }
     dropped.push(s.trim());
     const rep = kill.get(i);
     if (rep && !used.has(rep)) {
@@ -1060,8 +1172,12 @@ export function dropSentences(text: string, cuts: { at: number; end: number; rep
     }
   });
   const tidy = out
-    .split('\n').filter((l) => !/^\s*(?:[·•・\-*]|\d{1,2}\s*[.、)）]|[①-⑩])?\s*$/.test(l) || !l.trim()).join('\n')
-    .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    .split('\n')
+    .filter((l) => !/^\s*(?:[·•・\-*]|\d{1,2}\s*[.、)）]|[①-⑩])?\s*$/.test(l) || !l.trim())
+    .join('\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return { text: tidy, dropped };
 }
 
@@ -1071,9 +1187,11 @@ export function dropSentences(text: string, cuts: { at: number; end: number; rep
 // B03 删掉编的两条线后只剩一句问话（「想看雪山古城，还是想躺酒店泡泳池？」）。这种残句发出去，客户不知道在说哪条、价是多少。
 
 /** 还指着前面那条线：「这条的亮点」「上面这两条」「它的酒店」 */
-const ROUTE_BACKREF = /这条|这一条|这款|这两条|这几条|这个线路|这个行程|上面(?:这|那)?(?:条|几条|两条|款)|以上(?:这|几|两)?条|它(?:的|是|有|在|住|含)/;
+const ROUTE_BACKREF =
+  /这条|这一条|这款|这两条|这几条|这个线路|这个行程|上面(?:这|那)?(?:条|几条|两条|款)|以上(?:这|几|两)?条|它(?:的|是|有|在|住|含)/;
 /** 宣称在报价：「按 4 人重新报价」「报价如下」 */
-const QUOTE_CLAIM = /重新报价|重新报|报价如下|报价来了|报价给您|给您报(?:个)?价|价格如下|按\s*[\d一二两三四五六七八九十]+\s*(?:人|位)(?:重新)?(?:报|算)/;
+const QUOTE_CLAIM =
+  /重新报价|重新报|报价如下|报价来了|报价给您|给您报(?:个)?价|价格如下|按\s*[\d一二两三四五六七八九十]+\s*(?:人|位)(?:重新)?(?:报|算)/;
 
 /**
  * 出口护栏按句删过之后（before → after），剩下的是不是残句：原来有价、删完一个价都不剩，而且剩下的
@@ -1088,7 +1206,11 @@ export function strandedAfterDrop(before: string, after: string): boolean {
   if (QUOTE_CLAIM.test(after)) return true;
   if (ROUTE_BACKREF.test(after)) {
     let routes: Route[] = [];
-    try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警 */ }
+    try {
+      routes = loadRoutes();
+    } catch {
+      /* 数据文件坏了另有告警 */
+    }
     const names = routeNames(routes);
     // 点名分两层：具体哪条（「中央格兰德」「北欧极光」）和哪个目的地（「马代」三条线共用）。
     // 删掉的是「中央格兰德…人均 28,800」、剩下「马尔代夫度蜜月很合适～这条的亮点」：目的地还在，「这条」指的那条没了（A04）
@@ -1099,11 +1221,20 @@ export function strandedAfterDrop(before: string, after: string): boolean {
     const lost = (a: string[], b: string[]): boolean => a.some((x) => !b.includes(x));
     if (lost(namedRoutes(before, names), namedRoutes(after, names)) || lost(dests(before), dests(after))) return true;
   }
-  const statements = sentenceUnits(after).map((u) => after.slice(u.start, u.end)).filter((s) => !/[？?]\s*$/.test(s.trim()));
+  const statements = sentenceUnits(after)
+    .map((u) => after.slice(u.start, u.end))
+    .filter((s) => !/[？?]\s*$/.test(s.trim()));
   return statements.join('').replace(/[^\p{L}\p{N}]/gu, '').length < 6;
 }
 
 /** 仅供自测使用的内部函数出口 */
 export const __priceGuardTest = {
-  parseAmounts, parseWanAmounts, parseCnAmounts, parseRangeEndpoints, CLOSING_PRICE, hasClosingPrice, routeNames, namedRoutes,
+  parseAmounts,
+  parseWanAmounts,
+  parseCnAmounts,
+  parseRangeEndpoints,
+  CLOSING_PRICE,
+  hasClosingPrice,
+  routeNames,
+  namedRoutes,
 };

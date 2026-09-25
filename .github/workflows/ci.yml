@@ -25,6 +25,32 @@ jobs:
           if git log --format=%B "origin/${{ github.base_ref }}..HEAD" | grep -iE '^[[:space:]]*co-authored-by:.*(claude|codex|anthropic|openai|copilot|cursor|gemini)'; then
             echo "AI co-author trailer found in this pull request"; exit 1
           fi
+      # 密钥扫描（00 spec「CI 与部署 · 密钥扫描」）：gitleaks 钉版本并校验 sha256。PR 扫 base..HEAD，
+      # push 扫本次推送的提交（新分支或 before 不可达时扫到根）。--redact：命中的内容不进公开的 CI 日志。
+      # 它要看提交区间，所以不接进四个门禁名；本地最常见的 .env 误提交由 lint 里的路径黑名单兜住。
+      - name: Secret scan (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          # gitleaks 8.30.1 在 git log 报错（区间不存在）时照样以 0 退出、报「0 commits scanned」，所以区间两端先验过
+          if [ "$EVENT" = pull_request ]; then
+            git rev-parse --verify -q "origin/${BASE_REF}^{commit}" >/dev/null || { echo "gitleaks: origin/${BASE_REF} 不存在"; exit 1; }
+            range="origin/${BASE_REF}..HEAD"
+          elif [ -n "$BEFORE" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            range="${BEFORE}..${GITHUB_SHA}"
+          else
+            range="${GITHUB_SHA}"
+          fi
+          # -m：只在合并提交里出现的改动（例如解冲突时加进来的）也要扫；-v 列出位置，内容仍由 --redact 遮住
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact -v --log-opts="-m $range" .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -38,7 +64,11 @@ jobs:
       # 四个门禁名是唯一接口：CI、lefthook、Claude Code 的 Stop hook 都只调这四个名字，
       # 背后接什么工具只在 package.json 里改。
       - run: pnpm format:check
+      # lint 里的公开边界检查：内容黑名单的词表从仓库 secret 注入（词表本身不能进仓库），
+      # 命中只报「文件:行号」。来自 fork 的 PR 拿不到 secret，这一项会跳过。
       - run: pnpm lint
+        env:
+          SENSITIVE_PATTERNS: ${{ secrets.SENSITIVE_PATTERNS }}
       - run: pnpm typecheck
       # pnpm test 依次跑（任何一步失败即失败）：
       # - src/engine.selftest.ts：阶段/画像、出口护栏、发给模型的请求形状

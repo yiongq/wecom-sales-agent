@@ -46,7 +46,12 @@ function mkSession(id: string, channel: string, text: string): Session {
 }
 function mkOrder(s: Session): Order {
   const o = createOrder({
-    sessionId: s.id, routeId: 'r-test', routeTitle: '测试线路', travelers: 2, departDate: '2099-01-01', totalPrice: 10000,
+    sessionId: s.id,
+    routeId: 'r-test',
+    routeTitle: '测试线路',
+    travelers: 2,
+    departDate: '2099-01-01',
+    totalPrice: 10000,
   });
   s.orderIds.push(o.id);
   saveSession(s);
@@ -172,8 +177,8 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 // ---------------- 其余未登录可达的出口：只许有计数，不许有 id / 原文 ----------------
 {
   recordUsage('glm-4.5-air', 100, 50, A.id);
-  const leaks = (raw: string) => [A.id, B.id, LEGACY.id, REAL.id, oA.id, oB.id, '13911112222', '13933334444', '13800001111']
-    .filter((x) => raw.includes(x));
+  const leaks = (raw: string) =>
+    [A.id, B.id, LEGACY.id, REAL.id, oA.id, oB.id, '13911112222', '13933334444', '13800001111'].filter((x) => raw.includes(x));
   const usage = JSON.stringify((await getJson('/api/usage')).body);
   check('/api/usage 不含会话 id / 原文', leaks(usage).length === 0, leaks(usage).join(','));
   const health = JSON.stringify((await getJson('/healthz')).body);
@@ -189,10 +194,7 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
     while (!pred(raw)) {
       const left = deadline - Date.now();
       if (left <= 0) return false;
-      const chunk = await Promise.race([
-        reader.read(),
-        new Promise<null>((r) => setTimeout(() => r(null), left)),
-      ]);
+      const chunk = await Promise.race([reader.read(), new Promise<null>((r) => setTimeout(() => r(null), left))]);
       if (!chunk || chunk.done) return pred(raw);
       raw += dec.decode(chunk.value, { stream: true });
     }
@@ -210,8 +212,16 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('SSE 不含会话 id / 订单号 / 原文', sseLeaks.length === 0, sseLeaks.join(','));
   const events = [...raw.matchAll(/^event: (.*)$/gm)].map((m) => m[1]);
   const datas = [...raw.matchAll(/^data: (.*)$/gm)].map((m) => m[1]);
-  check('SSE 只有 change / ping 两种事件', events.every((e) => e === 'change' || e === 'ping'), events.join(','));
-  check('SSE 的 data 只是 init 或时间戳', datas.every((d) => d === 'init' || /^\d+$/.test(d)), datas.join(','));
+  check(
+    'SSE 只有 change / ping 两种事件',
+    events.every((e) => e === 'change' || e === 'ping'),
+    events.join(','),
+  );
+  check(
+    'SSE 的 data 只是 init 或时间戳',
+    datas.every((d) => d === 'init' || /^\d+$/.test(d)),
+    datas.join(','),
+  );
 }
 
 // ---------------- 页面侧契约 ----------------
@@ -247,7 +257,12 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   const fnSrc = /async function fillPayCard\(card, pay\) \{[\s\S]*?\n {2}\}/.exec(chat)?.[0];
   check('chat.html 有 fillPayCard()', !!fnSrc);
   if (fnSrc) {
-    for (const [status, want] of [['superseded', '已被新订单替代'], ['cancelled', '订单已取消'], ['paid', '已支付 · 查看订单'], ['pending_payment', '立即支付']]) {
+    for (const [status, want] of [
+      ['superseded', '已被新订单替代'],
+      ['cancelled', '订单已取消'],
+      ['paid', '已支付 · 查看订单'],
+      ['pending_payment', '立即支付'],
+    ]) {
       const els = new Map<string, { textContent: string; hidden: boolean; classList: { add: (c: string) => void } }>();
       const card = {
         querySelector: (sel: string) => {
@@ -255,9 +270,14 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
           return els.get(sel)!;
         },
       };
-      const fetchStub = async () => ({ ok: true, json: async () => ({ status, totalPrice: 33600, routeTitle: 'x', travelers: 2, departDate: '2026-12-10' }) });
-      const fill = new Function('fetch', 'cnDate', `${fnSrc}; return fillPayCard;`)(fetchStub, (d: string) => d) as
-        (card: unknown, pay: { orderId: string }) => Promise<void>;
+      const fetchStub = async () => ({
+        ok: true,
+        json: async () => ({ status, totalPrice: 33600, routeTitle: 'x', travelers: 2, departDate: '2026-12-10' }),
+      });
+      const fill = new Function('fetch', 'cnDate', `${fnSrc}; return fillPayCard;`)(fetchStub, (d: string) => d) as (
+        card: unknown,
+        pay: { orderId: string },
+      ) => Promise<void>;
       await fill(card, { orderId: 'ord_x' });
       const got = card.querySelector('.pc-btn').textContent;
       check(`chat.html 支付卡片：${status} 显示「${want}」`, got === want, got);
@@ -286,13 +306,19 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
         if (k === Symbol.toPrimitive) return () => '';
         if (typeof k === 'symbol') return undefined;
         if (k in own) return own[k];
-        if (k === 'addEventListener') return (t: string, fn: (...a: unknown[]) => unknown) => { (listeners[t] ??= []).push(fn); };
+        if (k === 'addEventListener')
+          return (t: string, fn: (...a: unknown[]) => unknown) => {
+            (listeners[t] ??= []).push(fn);
+          };
         if (k === 'listeners') return listeners;
         if (k === 'querySelector') return () => null;
         if (k === 'querySelectorAll') return () => [];
         return (own[k] = stubEl());
       },
-      set(_t, k, v) { own[k as string] = v; return true; },
+      set(_t, k, v) {
+        own[k as string] = v;
+        return true;
+      },
       apply: () => stubEl(),
     }) as unknown as Stub;
   }
@@ -327,8 +353,15 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
         pending.push(p);
         return p;
       },
-      EventSource: class { constructor(url: string) { sse.push(url); } addEventListener() {} },
-      Event: class { constructor(public type: string) {} },
+      EventSource: class {
+        constructor(url: string) {
+          sse.push(url);
+        }
+        addEventListener() {}
+      },
+      Event: class {
+        constructor(public type: string) {}
+      },
       location: { reload() {} },
       setInterval: () => 0,
       clearInterval: () => {},
@@ -409,8 +442,18 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 {
   const y = new Date().getFullYear();
   const s = mkSession(simId(), 'simulator', '支付页日期');
-  for (const [departDate, want] of [[`${y}-10-12`, '10月12日出发'], [`${y + 1}-01-05`, `${y + 1}年1月5日出发`]] as const) {
-    const o = createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+  for (const [departDate, want] of [
+    [`${y}-10-12`, '10月12日出发'],
+    [`${y + 1}-01-05`, `${y + 1}年1月5日出发`],
+  ] as const) {
+    const o = createOrder({
+      sessionId: s.id,
+      routeId: 'r-sanya',
+      routeTitle: '三亚亲子奢华度假 5 日',
+      travelers: 2,
+      departDate,
+      totalPrice: 34760,
+    });
     const html = await (await app.request(`/pay/${o.id}`)).text();
     const desc = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? '';
     check(`支付页摘要日期写成「${want}」`, desc === `2 位出行 · ${want} · 合计 ¥34,760`, desc);
@@ -422,7 +465,8 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 {
   const store = await import('./store.js');
   const s = mkSession(simId(), 'simulator', '改单');
-  const mk = (departDate: string) => createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+  const mk = (departDate: string) =>
+    createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
   const oldO = mk('2099-01-01');
   const newO = mk('2099-01-02');
   s.orderIds.push(oldO.id, newO.id);
@@ -450,5 +494,7 @@ if (fails.length) {
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id）`);
+console.log(
+  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id）`,
+);
 process.exit(0); // SSE 的 ping 循环还挂着 20s 的 sleep，不等它

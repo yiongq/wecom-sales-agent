@@ -75,7 +75,10 @@ function check(name: string, cond: boolean, detail = ''): void {
 {
   const text = '云途定制旅行的行程说明'.repeat(900);
   const chunks = splitForWecom(text);
-  check('每段不超 2000 字节', chunks.every((c) => Buffer.byteLength(c, 'utf8') <= 2000));
+  check(
+    '每段不超 2000 字节',
+    chunks.every((c) => Buffer.byteLength(c, 'utf8') <= 2000),
+  );
   check('分段不丢字符', chunks.join('').replace(/\s/g, '') === text.replace(/\s/g, ''));
 }
 
@@ -120,9 +123,21 @@ function check(name: string, cond: boolean, detail = ''): void {
   // 引擎出口修补后的样子（engine.ts repairLinks / putLink）：链接插在承诺句或占位符处、独占到行尾。
   // 三条是盲评里真实回复修补后的原文，渠道层要能认出唯一那条链接做卡片，剥离时不吞正文
   const cases: [string, string, string][] = [
-    ['s01', '我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n/proposal/r-sichuan-mid/3\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。', '/proposal/r-sichuan-mid/3'],
-    ['s06', '报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2', '/proposal/r-yunnan-mid/2'],
-    ['s11', '好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 /proposal/r-beijing/2\n逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。', '/proposal/r-beijing/2'],
+    [
+      's01',
+      '我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n/proposal/r-sichuan-mid/3\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。',
+      '/proposal/r-sichuan-mid/3',
+    ],
+    [
+      's06',
+      '报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2',
+      '/proposal/r-yunnan-mid/2',
+    ],
+    [
+      's11',
+      '好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 /proposal/r-beijing/2\n逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。',
+      '/proposal/r-beijing/2',
+    ],
   ];
   const prose: Record<string, string> = {};
   for (const [name, body, url] of cases) {
@@ -131,7 +146,11 @@ function check(name: string, cond: boolean, detail = ''): void {
     prose[name] = card ? stripLink(body, card.raw) : '';
     check(`${name} 剥离后正文不留链接`, !prose[name].includes('/proposal/') && !!prose[name], `得到「${prose[name]}」`);
   }
-  check('s06 剥离链接后报价还在', prose.s06.includes('16800') && prose.s06.includes('33600') && prose.s06.includes('您先看看'), `得到「${prose.s06}」`);
+  check(
+    's06 剥离链接后报价还在',
+    prose.s06.includes('16800') && prose.s06.includes('33600') && prose.s06.includes('您先看看'),
+    `得到「${prose.s06}」`,
+  );
   check('s11 只剩「👉」的那行一起拿掉', !prose.s11.includes('👉') && prose.s11.includes('报价也附了'), `得到「${prose.s11}」`);
   // 冒号原本指着那条链接；链接改走卡片后留着冒号，读起来就是「明细：」后面接了一句不相干的话
   check('s01 指向链接的冒号换成句号', prose.s01.includes('费用明细。') && prose.s01.includes('国庆的准确报价'), `得到「${prose.s01}」`);
@@ -145,27 +164,50 @@ function check(name: string, cond: boolean, detail = ''): void {
 // 客户读到单独一行「· 支付链接」「详细方案书在这儿」，以为链接漏发了。
 // 每条写成「原文里哪一段 → 应变成什么」，其余正文必须一字不动。
 const LEFTOVER_CASES: [name: string, body: string, from: string, to: string][] = [
-  ['c1 第2遍 · 支付链接',
-    "订单已为您创建好啦 🎉\n\n· 线路：三亚亲子奢华度假 5 日\n· 出发：10月12日，两位\n· 总价：34760 元\n· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n\n名额以付款为准，付好后会有专属顾问联系您发行程确认书，拉服务群对接细节～",
-    '· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n', ''],
-  ['c1 第3遍 独占一段的支付链接',
-    "帮您订好了！🎉\n\n三亚亲子奢华度假 5 日，两位\n10月12日出发，总价 34760 元\n\n支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n名额以付款为准，付完款后顾问会把行程确认书发您，再拉个服务群，出行前有任何问题随时找我～",
-    '支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n', ''],
-  ['c4 第1遍 上一行「在这儿」',
-    "贵州这条 6 天线正合适：荔波小七孔 + 西江千户苗寨，两个人出行。\n\n· 小七孔开园首波入园，卧龙潭拍慢门流水不用抢机位\n· 瑶山古寨看白裤瑶猴鼓舞，亲手做一方靛蓝染布\n· 宿丹寨温泉酒店，五星精选标准\n\n详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起，两人合计 31600 起（标准价）。您大概几号出发？旺季价格会有浮动，我按日期给您出准确报价。",
-    '详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n', '详细方案书见下方卡片，逐日行程、住宿、含餐、费用含不含都在里面。\n'],
-  ['c4 第2遍 同行「发您」',
-    "找到一条正好 6 天的贵州线路：荔波小七孔·西江千户苗寨 6 日\n\n详细方案书发您：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐、费用含与不含，和报价（人均 15800 起，两位共 31600）。\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨体验白裤瑶蜡染，收一方自染方巾\n· 全程五星精选酒店，含丹寨温泉酒店\n\n您计划几号出发？旺季和淡季价格会有差别，我按日期给您出准确报价。",
-    '详细方案书发您：/proposal/r-guizhou/2', '详细方案书发您，见下方卡片'],
-  ['c4 第3遍 同行「在这里」',
-    "正好有条 6 天的，和您的天数完全对上。\n\n贵州 荔波小七孔·西江千户苗寨 6 日（两人）\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作，傍晚看猴鼓舞\n· 石桥村古法造纸，宿丹寨温泉酒店\n\n详细行程计划书在这里：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐和费用说明，您先过一遍。\n\n计划书里按标准价显示人均 15800 起，两人共 31600 起。您计划几号出发？国庆前后是旺季，我可以按具体日期给您出准确报价。",
-    '详细行程计划书在这里：/proposal/r-guizhou/2', '详细行程计划书见下方卡片'],
-  ['线上 上一行「做好了」',
-    "正好，我们有一条 6 天的贵州线路，跟您需求完全对上，详细方案给您做好了：\n\n/proposal/r-guizhou/2\n贵州 荔波小七孔·西江千户苗寨 6 日，两人出行\n\n里面包含逐日行程、住宿、含餐和费用明细。亮点几个：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作体验\n· 入住丹寨温泉酒店\n\n人均 15800 起，总价 31600（标准价，按最终行程微调）。\n\n您大概几号出发？旺季日期价格会有浮动，我按日期给您出准确报价。",
-    '详细方案给您做好了：\n\n/proposal/r-guizhou/2\n', '详细方案给您做好了，见下方卡片。\n\n'],
+  [
+    'c1 第2遍 · 支付链接',
+    '订单已为您创建好啦 🎉\n\n· 线路：三亚亲子奢华度假 5 日\n· 出发：10月12日，两位\n· 总价：34760 元\n· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n\n名额以付款为准，付好后会有专属顾问联系您发行程确认书，拉服务群对接细节～',
+    '· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n',
+    '',
+  ],
+  [
+    'c1 第3遍 独占一段的支付链接',
+    '帮您订好了！🎉\n\n三亚亲子奢华度假 5 日，两位\n10月12日出发，总价 34760 元\n\n支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n名额以付款为准，付完款后顾问会把行程确认书发您，再拉个服务群，出行前有任何问题随时找我～',
+    '支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n',
+    '',
+  ],
+  [
+    'c4 第1遍 上一行「在这儿」',
+    '贵州这条 6 天线正合适：荔波小七孔 + 西江千户苗寨，两个人出行。\n\n· 小七孔开园首波入园，卧龙潭拍慢门流水不用抢机位\n· 瑶山古寨看白裤瑶猴鼓舞，亲手做一方靛蓝染布\n· 宿丹寨温泉酒店，五星精选标准\n\n详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起，两人合计 31600 起（标准价）。您大概几号出发？旺季价格会有浮动，我按日期给您出准确报价。',
+    '详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n',
+    '详细方案书见下方卡片，逐日行程、住宿、含餐、费用含不含都在里面。\n',
+  ],
+  [
+    'c4 第2遍 同行「发您」',
+    '找到一条正好 6 天的贵州线路：荔波小七孔·西江千户苗寨 6 日\n\n详细方案书发您：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐、费用含与不含，和报价（人均 15800 起，两位共 31600）。\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨体验白裤瑶蜡染，收一方自染方巾\n· 全程五星精选酒店，含丹寨温泉酒店\n\n您计划几号出发？旺季和淡季价格会有差别，我按日期给您出准确报价。',
+    '详细方案书发您：/proposal/r-guizhou/2',
+    '详细方案书发您，见下方卡片',
+  ],
+  [
+    'c4 第3遍 同行「在这里」',
+    '正好有条 6 天的，和您的天数完全对上。\n\n贵州 荔波小七孔·西江千户苗寨 6 日（两人）\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作，傍晚看猴鼓舞\n· 石桥村古法造纸，宿丹寨温泉酒店\n\n详细行程计划书在这里：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐和费用说明，您先过一遍。\n\n计划书里按标准价显示人均 15800 起，两人共 31600 起。您计划几号出发？国庆前后是旺季，我可以按具体日期给您出准确报价。',
+    '详细行程计划书在这里：/proposal/r-guizhou/2',
+    '详细行程计划书见下方卡片',
+  ],
+  [
+    '线上 上一行「做好了」',
+    '正好，我们有一条 6 天的贵州线路，跟您需求完全对上，详细方案给您做好了：\n\n/proposal/r-guizhou/2\n贵州 荔波小七孔·西江千户苗寨 6 日，两人出行\n\n里面包含逐日行程、住宿、含餐和费用明细。亮点几个：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作体验\n· 入住丹寨温泉酒店\n\n人均 15800 起，总价 31600（标准价，按最终行程微调）。\n\n您大概几号出发？旺季日期价格会有浮动，我按日期给您出准确报价。',
+    '详细方案给您做好了：\n\n/proposal/r-guizhou/2\n',
+    '详细方案给您做好了，见下方卡片。\n\n',
+  ],
   // 下面几条不是实测原文：点这里 → 点下方卡片；标签后面还跟着实际内容的不能整行删，标签改成指着卡片
   ['点这里付款', '确认无误的话点这里付款：/pay/ord_x1\n名额以付款为准', '点这里付款：/pay/ord_x1', '点下方卡片付款'],
-  ['标签后还有内容', '· 支付链接：/pay/ord_x2（24 小时内有效）', '· 支付链接：/pay/ord_x2（24 小时内有效）', '· 支付链接见下方卡片（24 小时内有效）'],
+  [
+    '标签后还有内容',
+    '· 支付链接：/pay/ord_x2（24 小时内有效）',
+    '· 支付链接：/pay/ord_x2（24 小时内有效）',
+    '· 支付链接见下方卡片（24 小时内有效）',
+  ],
   ['标签后接逗号', '支付链接：/pay/ord_x3，30 分钟内有效', '支付链接：/pay/ord_x3', '支付链接见下方卡片'],
   ['标签后隔空格接括号', '· 支付链接：/pay/ord_x4 （30 分钟内有效）', '：/pay/ord_x4 ', '见下方卡片'],
   // 标签单独一行、链接换到下一行（模型发方案书时常这么排）：标签那行一起拿掉，不能剩「· 支付链接。」
@@ -189,15 +231,30 @@ const LEFTOVER_CASES: [name: string, body: string, from: string, to: string][] =
   ['点击此处', '请点击此处付款：/pay/ord_b2\n名额以付款为准', '点击此处付款：/pay/ord_b2', '点下方卡片付款'],
   ['付款请点', '付款请点：/pay/ord_b3\n名额以付款为准', '付款请点：/pay/ord_b3', '付款请点下方卡片'],
   // 标签带括注（A09/C03 实测 4 次）：此前认不出是标签，链接挖走后留下一行「支付链接（名额以付款为准）。」
-  ['A09 上一行是带括注的标签',
+  [
+    'A09 上一行是带括注的标签',
     '订单已生成，10 月 24 日出发，4 位，总价 70224 元。\n\n支付链接（名额以付款为准）：\n/pay/ord_ad46bb1229d8568b9839774e\n\n付款后顾问会在微信上联系您，发行程确认书并拉服务群。',
-    '支付链接（名额以付款为准）：\n/pay/ord_ad46bb1229d8568b9839774e\n', '支付链接见下方卡片（名额以付款为准）\n'],
-  ['上一行是带括注和句号的标签', '订单已生成～\n支付链接（名额以付款为准）。\n/pay/ord_c2\n付款后顾问会发确认书',
-    '支付链接（名额以付款为准）。\n/pay/ord_c2', '支付链接见下方卡片（名额以付款为准）'],
-  ['同行是带括注的标签', '订单已生成～\n支付链接（名额以付款为准）：/pay/ord_c3\n付款后顾问会发确认书',
-    '支付链接（名额以付款为准）：/pay/ord_c3', '支付链接见下方卡片（名额以付款为准）'],
-  ['带序号、带括注的标签', '1. 线路：三亚 5 日\n2. 支付链接（24 小时内有效）：/pay/ord_c4\n3. 名额以付款为准',
-    '支付链接（24 小时内有效）：/pay/ord_c4', '支付链接见下方卡片（24 小时内有效）'],
+    '支付链接（名额以付款为准）：\n/pay/ord_ad46bb1229d8568b9839774e\n',
+    '支付链接见下方卡片（名额以付款为准）\n',
+  ],
+  [
+    '上一行是带括注和句号的标签',
+    '订单已生成～\n支付链接（名额以付款为准）。\n/pay/ord_c2\n付款后顾问会发确认书',
+    '支付链接（名额以付款为准）。\n/pay/ord_c2',
+    '支付链接见下方卡片（名额以付款为准）',
+  ],
+  [
+    '同行是带括注的标签',
+    '订单已生成～\n支付链接（名额以付款为准）：/pay/ord_c3\n付款后顾问会发确认书',
+    '支付链接（名额以付款为准）：/pay/ord_c3',
+    '支付链接见下方卡片（名额以付款为准）',
+  ],
+  [
+    '带序号、带括注的标签',
+    '1. 线路：三亚 5 日\n2. 支付链接（24 小时内有效）：/pay/ord_c4\n3. 名额以付款为准',
+    '支付链接（24 小时内有效）：/pay/ord_c4',
+    '支付链接见下方卡片（24 小时内有效）',
+  ],
 ];
 const SITE_LINK = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/;
 for (const [name, body, from, to] of LEFTOVER_CASES) {
@@ -229,7 +286,14 @@ for (const [name, body, from, to] of LEFTOVER_CASES) {
 {
   const y = new Date().getFullYear();
   const mk = (departDate: string) =>
-    createOrder({ sessionId: 'wecom:selftest-card', routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+    createOrder({
+      sessionId: 'wecom:selftest-card',
+      routeId: 'r-sanya',
+      routeTitle: '三亚亲子奢华度假 5 日',
+      travelers: 2,
+      departDate,
+      totalPrice: 34760,
+    });
   const same = extractCard(`· 支付链接：/pay/${mk(`${y}-10-12`).id}`, BASE);
   check('支付卡片日期写成「10月12日出发」', same?.desc === '2 位出行 · 10月12日出发 · 合计 ¥34,760', `得到「${same?.desc}」`);
   const next = extractCard(`· 支付链接：/pay/${mk(`${y + 1}-01-05`).id}`, BASE);
@@ -276,7 +340,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   if (ep === 'gettoken') return json({ errcode: 0, access_token: 'selftest-token', expires_in: 7200 });
   // 缩略图上传一律失败：卡片发不出去时的退路见下方「缩略图传不上去」
   if (ep === 'media/upload') return json({ errcode: 40004, errmsg: 'selftest: 缩略图上传失败' });
-  const body =(init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
+  const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
   if (ep === 'kf/sync_msg') {
     syncCalls += 1;
     const [g, i] = String(body.cursor ?? '').split(':');
@@ -309,10 +373,17 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   const body = '详细方案书在这儿，逐日行程都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起';
   const ok = await wecomAdapter.push('wecom:u-thumbfail', body);
   process.env.PUBLIC_BASE_URL = '';
-  const msgs = sent.slice(from).filter((m) => m.to === 'u-thumbfail').map((m) => m.content);
+  const msgs = sent
+    .slice(from)
+    .filter((m) => m.to === 'u-thumbfail')
+    .map((m) => m.content);
   check('缩略图失败：照样送达', ok);
   check('缩略图失败：正文不提卡片', msgs.length > 0 && msgs.every((m) => !m.includes('卡片')), JSON.stringify(msgs));
-  check('缩略图失败：一条消息、链接留在原处', msgs.length === 1 && msgs[0] === body.replace('/proposal/', `${BASE}/proposal/`), JSON.stringify(msgs));
+  check(
+    '缩略图失败：一条消息、链接留在原处',
+    msgs.length === 1 && msgs[0] === body.replace('/proposal/', `${BASE}/proposal/`),
+    JSON.stringify(msgs),
+  );
 }
 
 let seq = 0;
@@ -625,7 +696,11 @@ for (const k of ['log', 'warn', 'error'] as const) {
   await waitFor(() => sentTo('u-wb').length > 0);
   await idle();
   const msgs = getSession('wecom:u-wb')?.messages ?? [];
-  check('重放时不把欢迎语当成这句的回复', sentTo('u-wb').length === 1 && !sentTo('u-wb')[0].content.includes('欢迎回来'), sentTo('u-wb')[0]?.content);
+  check(
+    '重放时不把欢迎语当成这句的回复',
+    sentTo('u-wb').length === 1 && !sentTo('u-wb')[0].content.includes('欢迎回来'),
+    sentTo('u-wb')[0]?.content,
+  );
   check('重放（中间夹欢迎语）：客户这句只记一次', msgs.filter((m) => m.role === 'customer').length === 1);
 }
 
@@ -655,7 +730,10 @@ for (const k of ['log', 'warn', 'error'] as const) {
     JSON.stringify({
       cursor: st?.cursor,
       handled: [...(st?.handled ?? []), [gMsg.msgid, Date.now()], [rMsg.msgid, Date.now()]],
-      pending: [{ msg: gMsg, tries: 2 }, { msg: rMsg, tries: 0 }],
+      pending: [
+        { msg: gMsg, tries: 2 },
+        { msg: rMsg, tries: 0 },
+      ],
     }),
   );
   void syncFromCallback('tok-startup-stop');

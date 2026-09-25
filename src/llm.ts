@@ -72,8 +72,14 @@ function cachedTokens(u?: WireUsage): number {
 
 /** 记一次完成的调用。model 必须是**实际答出这次响应**的模型（对冲胜出时不是主模型） */
 function recordCompletion(model: string, u: WireUsage | undefined, sessionId?: string): void {
-  recordUsage(model, u?.prompt_tokens ?? 0, u?.completion_tokens ?? 0, sessionId, cachedTokens(u),
-    u?.completion_tokens_details?.reasoning_tokens ?? 0);
+  recordUsage(
+    model,
+    u?.prompt_tokens ?? 0,
+    u?.completion_tokens ?? 0,
+    sessionId,
+    cachedTokens(u),
+    u?.completion_tokens_details?.reasoning_tokens ?? 0,
+  );
 }
 
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
@@ -164,7 +170,11 @@ const DEFAULT_MAIN_MODEL = 'glm-5.3-flashx';
 // 便宜档集合仅用于识别「主对话被误配成便宜档」（启动告警）。收的是实测或同代里
 // 「几乎不查产品库」的轻量档；glm-5.3-flash / flashx 不在里面——flashx 就是现用主模型。
 export const CHEAP_TIER_MODELS: ReadonlySet<string> = new Set([
-  'glm-4.5-air', 'glm-4.5-airx', 'glm-4.5-flash', 'glm-4.7-flash', 'glm-4.7-flashx',
+  'glm-4.5-air',
+  'glm-4.5-airx',
+  'glm-4.5-flash',
+  'glm-4.7-flash',
+  'glm-4.7-flashx',
 ]);
 /** 后台模型：显式配了就用，否则跟随主模型。acceptGeneric 用来挡掉「给别家供应商配的」通用值 */
 function cheapModel(specific: string | undefined, main: string, acceptGeneric: (m: string) => boolean = () => true): string {
@@ -240,7 +250,10 @@ function roundDeadline(): AbortSignal {
 
 // ---------- 单次 API 请求 ----------
 
-interface Endpoint { baseUrl: string; apiKey: string }
+interface Endpoint {
+  baseUrl: string;
+  apiKey: string;
+}
 interface Completion {
   choices?: { message?: WireMessage; finish_reason?: string }[];
   usage?: WireUsage;
@@ -248,7 +261,11 @@ interface Completion {
 
 /** 非 2xx 响应。消息里带状态码和模型：日志里要能直接看出是哪个模型、为什么被拒 */
 class LlmHttpError extends Error {
-  constructor(readonly status: number, readonly model: string, detail: string) {
+  constructor(
+    readonly status: number,
+    readonly model: string,
+    detail: string,
+  ) {
     const hint = status === 401 || status === 403 ? '（API key 无效或无权限，请检查 LLM_API_KEY）' : '';
     super(`LLM 请求失败 ${status}${hint} model=${model}: ${detail.slice(0, 300)}`);
   }
@@ -259,14 +276,17 @@ class LlmHttpError extends Error {
  * 成功返回解析后的响应，失败抛 LlmHttpError 或网络/超时错误。不记 usage——
  * 对冲时只有胜出的那个该记，由调用方决定。
  */
-async function requestModel(
-  ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal,
-): Promise<Completion> {
-  const send = (forceThink: boolean) => gatedFetch(ep.baseUrl + '/chat/completions', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${ep.apiKey}` },
-    body: JSON.stringify({ model, ...payload, ...thinkingParams(ep.baseUrl, model, forceThink) }),
-  }, signal);
+async function requestModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
+  const send = (forceThink: boolean) =>
+    gatedFetch(
+      ep.baseUrl + '/chat/completions',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${ep.apiKey}` },
+        body: JSON.stringify({ model, ...payload, ...thinkingParams(ep.baseUrl, model, forceThink) }),
+      },
+      signal,
+    );
   let { res, errorBody } = await send(false);
   if (!res.ok) {
     // 重试过的响应 body 已被 gatedFetch 读掉，再 res.text() 会抛「Body is unusable」，
@@ -278,7 +298,9 @@ async function requestModel(
       if (res.ok) {
         learnedThinking.add(model);
         stats.thinkingSelfHeal += 1;
-        console.warn(`[llm] 模型 ${model} 不支持关闭思考（1210），已改用 thinking=enabled + reasoning_effort=${reasoningEffort()}，本进程内后续请求直接这样发`);
+        console.warn(
+          `[llm] 模型 ${model} 不支持关闭思考（1210），已改用 thinking=enabled + reasoning_effort=${reasoningEffort()}，本进程内后续请求直接这样发`,
+        );
       } else {
         detail = errorBody ?? (await res.text().catch(() => ''));
       }
@@ -289,11 +311,16 @@ async function requestModel(
   // 发了 disabled 却照样思考：多半是正则没收录的强制思考模型，在按默认最高档想，延迟会翻几倍。
   // 只告警不自动切：自动给老模型加 reasoning_effort 可能换来 400，那比慢更糟
   const think = thinkingParams(ep.baseUrl, model) as { thinking?: { type?: string } };
-  if (think.thinking?.type === 'disabled' && (data.usage?.completion_tokens_details?.reasoning_tokens ?? 0) > 0
-    && !warnedIgnoredDisabled.has(model)) {
+  if (
+    think.thinking?.type === 'disabled' &&
+    (data.usage?.completion_tokens_details?.reasoning_tokens ?? 0) > 0 &&
+    !warnedIgnoredDisabled.has(model)
+  ) {
     warnedIgnoredDisabled.add(model);
-    console.warn(`[llm] ⚠️ 模型 ${model} 收到 thinking=disabled 仍返回了思考 token，可能是强制思考模型、正按默认最高档思考（明显变慢）。` +
-      '若确认如此，请在 src/llm.ts 的 mustThink 里收录它，以便发 enabled + 低档 reasoning_effort');
+    console.warn(
+      `[llm] ⚠️ 模型 ${model} 收到 thinking=disabled 仍返回了思考 token，可能是强制思考模型、正按默认最高档思考（明显变慢）。` +
+        '若确认如此，请在 src/llm.ts 的 mustThink 里收录它，以便发 enabled + 低档 reasoning_effort',
+    );
   }
   return data;
 }
@@ -341,7 +368,11 @@ function hedgeFollowupMs(): number {
  * round 是这次请求在本轮工具循环里的序号（0 = 首次），决定用哪个对冲阈值。
  */
 function requestHedged(
-  ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal, round = 0,
+  ep: Endpoint,
+  model: string,
+  payload: Record<string, unknown>,
+  signal: () => AbortSignal,
+  round = 0,
 ): Promise<{ data: Completion; model: string }> {
   const hedge = hedgeModelFor(model);
   if (!hedge) return requestModel(ep, model, payload, signal).then((data) => ({ data, model }));
@@ -453,10 +484,18 @@ export async function completeText(system: string, user: string): Promise<string
   if (process.env.LLM_MOCK === '1' || !apiKey) return '';
   try {
     // 与主对话共用思考参数与 1210 自愈；不对冲——客户看不到这条路径，慢一点无妨，不值得多花一份钱
-    const data = await requestModel({ baseUrl, apiKey }, model, {
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      temperature: 0.5,
-    }, llmTimeout);
+    const data = await requestModel(
+      { baseUrl, apiKey },
+      model,
+      {
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        temperature: 0.5,
+      },
+      llmTimeout,
+    );
     recordCompletion(model, data.usage);
     return stripLeaked(data.choices?.[0]?.message?.content ?? '');
   } catch (e) {
@@ -530,7 +569,9 @@ function buildWire(opts: ChatOptions): WireMessage[] {
       role: 'assistant',
       content: '',
       tool_calls: opts.prefetch.map((c, i) => ({
-        id: ids[i], type: 'function', function: { name: c.name, arguments: JSON.stringify(c.args) },
+        id: ids[i],
+        type: 'function',
+        function: { name: c.name, arguments: JSON.stringify(c.args) },
       })),
     });
     opts.prefetch.forEach((c, i) => wire.push({ role: 'tool', content: c.result, tool_call_id: ids[i] }));
@@ -540,13 +581,15 @@ function buildWire(opts: ChatOptions): WireMessage[] {
 
 /** 剥掉可能渗进正文的 <think> 推理块、<tool_call> 文本型工具调用等，绝不让客户看到 */
 function stripLeaked(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    // 截断的回复里 <think> 可能没闭合，只删标签会把整段推理原样发给客户
-    .replace(/<think>[\s\S]*$/i, '')
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
-    .replace(/<\/?(?:think|tool_call|arg_key|arg_value)>/gi, '')
-    .trim();
+  return (
+    text
+      .replace(/<think>[\s\S]*?<\/think>/gi, '')
+      // 截断的回复里 <think> 可能没闭合，只删标签会把整段推理原样发给客户
+      .replace(/<think>[\s\S]*$/i, '')
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+      .replace(/<\/?(?:think|tool_call|arg_key|arg_value)>/gi, '')
+      .trim()
+  );
 }
 
 /**
@@ -601,7 +644,11 @@ async function realChat(opts: ChatOptions): Promise<string> {
       const hit = reusable.get(key);
       const moved = lastKey.get(name) !== key;
       lastKey.set(name, key);
-      if (hit && moved && opts.onReuse) void hit.then((r) => opts.onReuse!(name, args, r), () => {});
+      if (hit && moved && opts.onReuse)
+        void hit.then(
+          (r) => opts.onReuse!(name, args, r),
+          () => {},
+        );
       if (hit) {
         stats.toolReused += 1;
         trace.at(-1)?.reused.push(name);
@@ -611,7 +658,9 @@ async function realChat(opts: ChatOptions): Promise<string> {
       const run = opts.executeTool(name, args);
       reusable.set(key, run);
       // 执行失败不缓存：同一个调用再来一次可能就成了（例如线路文件刚好在写）
-      run.catch(() => { if (reusable.get(key) === run) reusable.delete(key); });
+      run.catch(() => {
+        if (reusable.get(key) === run) reusable.delete(key);
+      });
       return run;
     },
   };
@@ -642,8 +691,11 @@ function callKey(name: string, args: Record<string, unknown>): string {
     if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
     if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>;
-      return `{${Object.keys(o).sort().filter((k) => o[k] !== undefined)
-        .map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`;
+      return `{${Object.keys(o)
+        .sort()
+        .filter((k) => o[k] !== undefined)
+        .map((k) => `${JSON.stringify(k)}:${canon(o[k])}`)
+        .join(',')}}`;
     }
     return JSON.stringify(v) ?? 'null';
   };
@@ -651,7 +703,14 @@ function callKey(name: string, args: Record<string, unknown>): string {
 }
 
 /** 本轮每次模型调用的耗时与它要的工具，只在整轮超时时打出来 */
-interface CallTrace { model: string; hedged: boolean; ms: number; tools: string[]; toolMs: number; reused: string[] }
+interface CallTrace {
+  model: string;
+  hedged: boolean;
+  ms: number;
+  tools: string[];
+  toolMs: number;
+  reused: string[];
+}
 
 /**
  * 整轮超过 LLM_SLOW_TURN_MS（默认 8000，客户等到以为没人在的那条线）时，打一行逐次调用的耗时明细。
@@ -662,9 +721,7 @@ interface CallTrace { model: string; hedged: boolean; ms: number; tools: string[
 function logSlowTurn(totalMs: number, trace: CallTrace[], sessionId?: string): void {
   if (totalMs <= Math.max(0, numEnv('LLM_SLOW_TURN_MS', 8000)) || !trace.length) return;
   const steps = trace.map((c, i) => {
-    const tools = c.tools.length
-      ? ` → ${c.tools.join('+')} ${c.toolMs}ms${c.reused.length ? `（复用 ${c.reused.length} 次）` : ''}`
-      : '';
+    const tools = c.tools.length ? ` → ${c.tools.join('+')} ${c.toolMs}ms${c.reused.length ? `（复用 ${c.reused.length} 次）` : ''}` : '';
     return `#${i + 1} ${c.model}${c.hedged ? '（对冲）' : ''} ${c.ms}ms${tools}`;
   });
   console.warn(`[llm] ⚠️ 本轮工具循环耗时 ${totalMs}ms（会话 ${sessionId ?? '-'}）：${steps.join(' · ')}`);
@@ -761,14 +818,51 @@ async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise
 // SPEC 模块 1 规定的 14 个目的地，用于从自由文本里识别意向
 // 国内核心目的地在前——公司主营国内高端定制，客户提得最多的就是这几个
 const DESTINATIONS = [
-  '四川', '成都', '稻城', '九寨沟', '西藏', '拉萨', '林芝', '云南', '香格里拉', '丽江',
-  '大理', '贵州', '西安', '北京', '新疆', '喀什', '喀纳斯', '三亚',
-  '马尔代夫', '瑞士', '日本', '新西兰', '北欧', '极光', '迪拜', '巴厘岛',
-  '意大利', '肯尼亚', '南极', '摩洛哥', '法国',
+  '四川',
+  '成都',
+  '稻城',
+  '九寨沟',
+  '西藏',
+  '拉萨',
+  '林芝',
+  '云南',
+  '香格里拉',
+  '丽江',
+  '大理',
+  '贵州',
+  '西安',
+  '北京',
+  '新疆',
+  '喀什',
+  '喀纳斯',
+  '三亚',
+  '马尔代夫',
+  '瑞士',
+  '日本',
+  '新西兰',
+  '北欧',
+  '极光',
+  '迪拜',
+  '巴厘岛',
+  '意大利',
+  '肯尼亚',
+  '南极',
+  '摩洛哥',
+  '法国',
 ];
 
 const CN_NUM: Record<string, number> = {
-  一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  一: 1,
+  两: 2,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+  十: 10,
 };
 
 function findDestination(texts: string[]): string | undefined {
@@ -862,10 +956,7 @@ async function mockChat(opts: ChatOptions): Promise<string> {
   // 关键词优先级：转人工 > 下单 > 报价 > 推荐 > 问需
   if (/人工|真人客服|投诉|退款/.test(last)) {
     await opts.executeTool('handoff_to_human', { reason: '客户主动要求人工/投诉退款' });
-    return (
-      '好的，我马上为您转接专属人工顾问，请稍候，顾问会第一时间联系您～' +
-      state('handoff')
-    );
+    return '好的，我马上为您转接专属人工顾问，请稍候，顾问会第一时间联系您～' + state('handoff');
   }
 
   if (/就订|就定|下单|购买|买了|订了|就这个|就它|确定|成交|付款/.test(last)) {
@@ -874,13 +965,15 @@ async function mockChat(opts: ChatOptions): Promise<string> {
     const travelers = findTravelers(userTexts);
     const departDate = findDepartDate(userTexts);
     // 工具可能返回 {error:...}（如客户给了 2026-99-99 这类假日期）——不检查就取 total 会直接 TypeError
-    const order = JSON.parse(
-      await opts.executeTool('create_order', { routeId: routes[0].id, travelers, departDate }),
-    ) as { orderId?: string; payUrl?: string; total?: number; error?: string };
+    const order = JSON.parse(await opts.executeTool('create_order', { routeId: routes[0].id, travelers, departDate })) as {
+      orderId?: string;
+      payUrl?: string;
+      total?: number;
+      error?: string;
+    };
     if (order.error || !order.orderId || typeof order.total !== 'number') {
       return (
-        '好嘞～不过出发日期我还想跟您确认一下：方便告诉我具体哪天出发吗（比如「10月1号」）？确认后我马上为您锁定名额～' +
-        state('quote')
+        '好嘞～不过出发日期我还想跟您确认一下：方便告诉我具体哪天出发吗（比如「10月1号」）？确认后我马上为您锁定名额～' + state('quote')
       );
     }
     return (
@@ -895,9 +988,14 @@ async function mockChat(opts: ChatOptions): Promise<string> {
     const routes = await pickRoutes(opts, destination);
     if (!routes.length) return '稍等，我先帮您查下合适的线路哈～' + state('discovery');
     const travelers = findTravelers(userTexts);
-    const quote = JSON.parse(
-      await opts.executeTool('create_quote', { routeId: routes[0].id, travelers }),
-    ) as { routeTitle?: string; perPerson?: number; travelers?: number; total?: number; note?: string; error?: string };
+    const quote = JSON.parse(await opts.executeTool('create_quote', { routeId: routes[0].id, travelers })) as {
+      routeTitle?: string;
+      perPerson?: number;
+      travelers?: number;
+      total?: number;
+      note?: string;
+      error?: string;
+    };
     if (quote.error || typeof quote.total !== 'number' || typeof quote.perPerson !== 'number') {
       return '咱们几位出行呢？告诉我人数（比如「2 个人」），我马上给您出准确报价～' + state('discovery');
     }
@@ -915,7 +1013,11 @@ async function mockChat(opts: ChatOptions): Promise<string> {
 
   if (destination && last.includes(destination)) {
     const routes = await pickRoutes(opts, destination);
-    if (!routes.length) return `${destination}方向的线路我帮您定制安排，先问下几位出行、大概什么时间呢？` + state('discovery', { destinationInterest: destination });
+    if (!routes.length)
+      return (
+        `${destination}方向的线路我帮您定制安排，先问下几位出行、大概什么时间呢？` +
+        state('discovery', { destinationInterest: destination })
+      );
     const lines = routes
       .slice(0, 2)
       .map((r) => `《${r.title}》${r.days} 天，${r.hotelLevel}，每人 ${yuan(r.priceFrom)} 起，亮点：${r.highlights.slice(0, 2).join('、')}`)

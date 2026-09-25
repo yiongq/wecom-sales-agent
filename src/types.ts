@@ -45,7 +45,11 @@ export interface CustomerProfile {
 export function profileForPrompt(p: CustomerProfile): Partial<CustomerProfile> {
   const { destinationInterest, segment, travelers, dates, budget, notes } = p;
   return {
-    destinationInterest, segment, travelers, dates, budget,
+    destinationInterest,
+    segment,
+    travelers,
+    dates,
+    budget,
     ...(notes?.length ? { notes: notes.slice(0, 5).map((n) => String(n).slice(0, 40)) } : {}),
   };
 }

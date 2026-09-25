@@ -90,10 +90,7 @@ function isAdminReq(c: Context): boolean {
 // 且原生弹窗一旦取消就无法再唤起，用户退不回演示模式。
 async function adminAuth(c: Context, next: Next): Promise<Response | void> {
   if (!process.env.ADMIN_PASS) {
-    return c.json(
-      { error: '管理操作已锁定：服务端未配置 ADMIN_PASS。在 .env 设置 ADMIN_USER/ADMIN_PASS 后重建容器即可。' },
-      503,
-    );
+    return c.json({ error: '管理操作已锁定：服务端未配置 ADMIN_PASS。在 .env 设置 ADMIN_USER/ADMIN_PASS 后重建容器即可。' }, 503);
   }
   if (isAdminReq(c)) return next();
   return c.json({ error: 'unauthorized' }, 401);
@@ -166,7 +163,9 @@ function clientKey(c: Context): string {
     // ::ffff:172.17.0.1 这种形式出现。不剥掉前缀，下面的私网判定就只认裸 IPv4——
     // 线上正是 Docker 网关 172.17.0.1，结果 XFF 永不被采信、全站退化成一个限流桶。
     peer = (getConnInfo(c).remote.address ?? '').replace(/^::ffff:/i, '');
-  } catch { /* 拿不到对端地址就退回 XFF 末段 */ }
+  } catch {
+    /* 拿不到对端地址就退回 XFF 末段 */
+  }
   const chain = (c.req.header('x-forwarded-for') ?? '')
     .split(',')
     .map((s) => s.trim())
@@ -303,26 +302,40 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 app.get('/api/admin/stream', (c) => {
   return streamSSE(c, async (stream) => {
     let alive = true;
-    const onChange = () => { void stream.writeSSE({ event: 'change', data: String(Date.now()) }); };
+    const onChange = () => {
+      void stream.writeSSE({ event: 'change', data: String(Date.now()) });
+    };
     storeEvents.on('change', onChange);
-    stream.onAbort(() => { alive = false; storeEvents.off('change', onChange); });
+    stream.onAbort(() => {
+      alive = false;
+      storeEvents.off('change', onChange);
+    });
     await stream.writeSSE({ event: 'change', data: 'init' }); // 连上先触发一次首屏加载
-    while (alive) { await stream.writeSSE({ event: 'ping', data: String(Date.now()) }); await stream.sleep(20000); }
+    while (alive) {
+      await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
+      await stream.sleep(20000);
+    }
   });
 });
 
 // AI 洞察（LLM 生成，服务端缓存；失败返回空数组，前端回退规则版）
 app.get('/api/insights', adminAuth, async (c) => {
-  try { return c.json({ insights: await getInsights() }); }
-  catch { return c.json({ insights: [] }); }
+  try {
+    return c.json({ insights: await getInsights() });
+  } catch {
+    return c.json({ insights: [] });
+  }
 });
 
 // 下一步建议（按会话 LLM 生成，缓存；失败返回空，前端回退规则版）
 app.get('/api/sessions/:id/suggestion', adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ suggestion: '' }, 404);
-  try { return c.json({ suggestion: await getSuggestion(s) }); }
-  catch { return c.json({ suggestion: '' }); }
+  try {
+    return c.json({ suggestion: await getSuggestion(s) });
+  } catch {
+    return c.json({ suggestion: '' });
+  }
 });
 
 // 会话列表：未登录只返回种子会话与本人的访客会话。过滤发生在服务端——真实客户和其他访客的会话
@@ -379,8 +392,11 @@ app.post('/api/sessions/:id/resume', sameOriginOnly, adminAuth, (c) => {
 app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ draft: '' }, 404);
-  try { return c.json({ draft: await getDraftReply(s) }); }
-  catch { return c.json({ draft: '' }); }
+  try {
+    return c.json({ draft: await getDraftReply(s) });
+  } catch {
+    return c.json({ draft: '' });
+  }
 });
 
 app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
@@ -451,27 +467,37 @@ app.get('/pay/:orderId', async (c) => {
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题
   const o = getOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
-  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
+  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
   // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
   if (o.status === 'superseded') {
     const t = `${o.routeTitle} · 订单已被替代`;
     const d = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
-    return c.html(html.replace(/<title>[\s\S]*?<\/title>/,
-      `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
-      `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`));
+    return c.html(
+      html.replace(
+        /<title>[\s\S]*?<\/title>/,
+        `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
+          `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`,
+      ),
+    );
   }
   const title = `${o.routeTitle} · 订单支付`;
   // 出发日期与企微卡片、网页支付卡片同一写法（「10月12日出发」，跨年才带年份），别是「2026-10-12 出发」
   const d = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(o.departDate ?? '');
-  const when = !o.departDate ? '日期待定'
-    : !d ? `${o.departDate}出发`
-    : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
+  const when = !o.departDate
+    ? '日期待定'
+    : !d
+      ? `${o.departDate}出发`
+      : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
   const desc = `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
-  return c.html(html.replace(/<title>[\s\S]*?<\/title>/,
-    `<title>${esc(title)}</title>\n` +
-    `<meta name="description" content="${esc(desc)}">\n` +
-    `<meta property="og:title" content="${esc(title)}">\n` +
-    `<meta property="og:description" content="${esc(desc)}">`));
+  return c.html(
+    html.replace(
+      /<title>[\s\S]*?<\/title>/,
+      `<title>${esc(title)}</title>\n` +
+        `<meta name="description" content="${esc(desc)}">\n` +
+        `<meta property="og:title" content="${esc(title)}">\n` +
+        `<meta property="og:description" content="${esc(desc)}">`,
+    ),
+  );
 });
 
 /** 出发日期是否合理：真实存在的日历日 + 今天到三年内（2099 年那种也别放行） */
@@ -515,7 +541,7 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
   if (!route) return html;
   const title = `${route.title} · 行程方案书`;
   const desc = `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜${(route.highlights?.[0] ?? '').slice(0, 40)}`;
-  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
+  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
   // 缩略图必须是绝对 URL：微信/各类抓取方不解析相对路径。
   // 微信自带的「发送给朋友」不读 og:image，它是在页面里自己挑一张图当缩略图——
   // 这里只改 head（meta）；那张给微信挑的真实封面图由 proposal.html 在客户端渲染进 body
@@ -650,64 +676,65 @@ export { app };
 const SELFTEST = process.env.SERVER_SELFTEST === '1';
 
 const port = Number(process.env.PORT) || 3200;
-if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`[server] 已启动 http://localhost:${info.port}`);
-  // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
-  // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
-  // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
-  const realSessions = listSessions().filter((s) => !DEMO_DATA_RE.test(s.id)).length;
-  if (!process.env.ADMIN_PASS) {
-    console.warn('[server] ADMIN_PASS 未配置：后台为演示模式（免密只读、仅演示数据），接管与发消息一律 503。');
-    if (realSessions > 0) {
-      console.warn(`[server] ⚠️ 已有 ${realSessions} 个真实客户会话，但没配密码——你无法在后台查看或接管它们。`);
+if (!SELFTEST)
+  serve({ fetch: app.fetch, port }, (info) => {
+    console.log(`[server] 已启动 http://localhost:${info.port}`);
+    // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
+    // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
+    // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
+    const realSessions = listSessions().filter((s) => !DEMO_DATA_RE.test(s.id)).length;
+    if (!process.env.ADMIN_PASS) {
+      console.warn('[server] ADMIN_PASS 未配置：后台为演示模式（免密只读、仅演示数据），接管与发消息一律 503。');
+      if (realSessions > 0) {
+        console.warn(`[server] ⚠️ 已有 ${realSessions} 个真实客户会话，但没配密码——你无法在后台查看或接管它们。`);
+      }
+    } else if (realSessions > 0) {
+      console.log(`[server] 管理面已启用鉴权；${realSessions} 个真实客户会话仅登录后可见。`);
     }
-  } else if (realSessions > 0) {
-    console.log(`[server] 管理面已启用鉴权；${realSessions} 个真实客户会话仅登录后可见。`);
-  }
-  // 交付场景最常见的"看着正常、其实全坏"：key 没配。启动就喊，别等客户发消息才发现。
-  // 必须复用 llmCfg()——直接查 LLM_API_KEY 会与多供应商解析对不上，既误报又漏报。
-  if (process.env.LLM_MOCK === '1') {
-    console.log('[server] LLM_MOCK=1：走离线脚本回复，不调用真实模型');
-  } else {
-    const { apiKey, model, baseUrl } = llmCfg();
-    if (apiKey) {
-      const { main, cheap } = activeModels();
-      const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();
-      console.log(`[server] LLM: ${process.env.LLM_PROVIDER || 'default'} / 对话=${main} · 后台=${cheap} @ ${baseUrl}`);
-      console.log(
-        `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用 · 工具往返后 ${hedgeMsFollowup}ms）` : '关'}` +
-          (forcedThinkingModels.length ? ` · 强制思考 ${forcedThinkingModels.join('/')} 档位=${reasoningEffort}` : ''),
-      );
-      // 静默降级是最难查的故障：主对话跑到便宜档上，表现只是「话术变差了」，
-      // 不报错也不告警。后台跟主模型一致是正常默认，只有主对话本身掉到便宜档才该喊。
-      if (CHEAP_TIER_MODELS.has(main)) {
-        console.warn(
-          `[server] ⚠️ 主对话正在使用便宜档模型（${main}）。实测 glm-4.5-air 在「客户说了目的地就摆线路」` +
-            '上只有 4/48 命中（现用 glm-5.3-flashx 带预取是 48/48）。若非有意，请检查 .env 的 ZHIPU_MODEL / LLM_MODEL。',
+    // 交付场景最常见的"看着正常、其实全坏"：key 没配。启动就喊，别等客户发消息才发现。
+    // 必须复用 llmCfg()——直接查 LLM_API_KEY 会与多供应商解析对不上，既误报又漏报。
+    if (process.env.LLM_MOCK === '1') {
+      console.log('[server] LLM_MOCK=1：走离线脚本回复，不调用真实模型');
+    } else {
+      const { apiKey, baseUrl } = llmCfg();
+      if (apiKey) {
+        const { main, cheap } = activeModels();
+        const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();
+        console.log(`[server] LLM: ${process.env.LLM_PROVIDER || 'default'} / 对话=${main} · 后台=${cheap} @ ${baseUrl}`);
+        console.log(
+          `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用 · 工具往返后 ${hedgeMsFollowup}ms）` : '关'}` +
+            (forcedThinkingModels.length ? ` · 强制思考 ${forcedThinkingModels.join('/')} 档位=${reasoningEffort}` : ''),
+        );
+        // 静默降级是最难查的故障：主对话跑到便宜档上，表现只是「话术变差了」，
+        // 不报错也不告警。后台跟主模型一致是正常默认，只有主对话本身掉到便宜档才该喊。
+        if (CHEAP_TIER_MODELS.has(main)) {
+          console.warn(
+            `[server] ⚠️ 主对话正在使用便宜档模型（${main}）。实测 glm-4.5-air 在「客户说了目的地就摆线路」` +
+              '上只有 4/48 命中（现用 glm-5.3-flashx 带预取是 48/48）。若非有意，请检查 .env 的 ZHIPU_MODEL / LLM_MODEL。',
+          );
+        }
+      } else {
+        console.error(
+          `[server] ⚠️⚠️ LLM API Key 未配置（provider=${process.env.LLM_PROVIDER || 'default'}）：` +
+            '客户每条消息都会失败（收到「系统开小差了」）。请在 .env 配置对应的 API Key，或设 LLM_MOCK=1。',
         );
       }
-    } else {
-      console.error(
-        `[server] ⚠️⚠️ LLM API Key 未配置（provider=${process.env.LLM_PROVIDER || 'default'}）：` +
-          '客户每条消息都会失败（收到「系统开小差了」）。请在 .env 配置对应的 API Key，或设 LLM_MOCK=1。',
-      );
     }
-  }
-  // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-  try {
-    loadRoutes();
-    loadHotels();
-  } catch (e) {
-    console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-  }
-  // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配。
-  // buildIndex 内部已兜住异常，这里再补一道 catch——`void` 掉的 promise 一旦 reject
-  // 就是未捕获 rejection，Node 会直接退出，容器随之进入无限重启。
-  buildIndex().catch((e) => console.error('[server] 语义索引构建异常（已降级为关键词匹配）:', e));
-  // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
-  startFollowUpScheduler((sessionId, text) => {
-    const s = getSession(sessionId);
-    return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+    // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
+    try {
+      loadRoutes();
+      loadHotels();
+    } catch (e) {
+      console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+    }
+    // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配。
+    // buildIndex 内部已兜住异常，这里再补一道 catch——`void` 掉的 promise 一旦 reject
+    // 就是未捕获 rejection，Node 会直接退出，容器随之进入无限重启。
+    buildIndex().catch((e) => console.error('[server] 语义索引构建异常（已降级为关键词匹配）:', e));
+    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
+    startFollowUpScheduler((sessionId, text) => {
+      const s = getSession(sessionId);
+      return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+    });
   });
-});
 if (!SELFTEST) startWecom();

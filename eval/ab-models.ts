@@ -24,7 +24,7 @@ import path from 'node:path';
 process.env.VAR_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-ab-'));
 
 const argv = process.argv.slice(2);
-const arg = (name: string): string | null => (argv.includes(name) ? argv[argv.indexOf(name) + 1] ?? null : null);
+const arg = (name: string): string | null => (argv.includes(name) ? (argv[argv.indexOf(name) + 1] ?? null) : null);
 
 // 横评默认测的是**单个模型本身**，必须关掉对冲。.env 里开了 LLM_HEDGE_MODEL 的话：被测模型的慢请求被
 // 对冲模型接走，P50 和尾延迟都被压低；那几轮回复是对冲模型写的，命中却记在被测模型头上；花费记进
@@ -52,7 +52,10 @@ const { llmStats } = await import('../src/llm.js');
 
 // 默认四档 = README 表里已有 A/B 的两端 + 从未做过 A/B 的中间档。
 // 保留两端是因为横评必须自带基准：只跑中间档，拿到 10/12 也不知道该不该换。
-const MODELS = (arg('--models') ?? 'glm-5.2,glm-4.7,glm-4.6,glm-4.5-air').split(',').map((s) => s.trim()).filter(Boolean);
+const MODELS = (arg('--models') ?? 'glm-5.2,glm-4.7,glm-4.6,glm-4.5-air')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 // 12 次/目的地，沿用 README 里那次 A/B 的口径，否则两次结论没法直接比
 const RUNS = Number(arg('--runs') ?? 12);
 // 默认串行。并发会把延迟数据打乱（请求在网关排队的时间也算进单轮延迟里），
@@ -81,7 +84,10 @@ function markersOf(dest: string): string[] {
     if (r.destination !== dest) continue;
     out.add(r.title);
     // 「四川 稻城亚丁·色达秘境 8 日」→ 去掉目的地与「N 日…」尾巴 → 按 · 切成专有名词
-    const core = r.title.replace(r.destination, '').replace(/\s*\d+\s*[日天].*$/, '').trim();
+    const core = r.title
+      .replace(r.destination, '')
+      .replace(/\s*\d+\s*[日天].*$/, '')
+      .trim();
     for (const seg of core.split(/[·\s]+/)) if (seg.length >= 2) out.add(seg);
   }
   // 排除 SOP 里出现过的词——这条是第一版漏掉的，直接把结论带偏了。
@@ -100,9 +106,17 @@ function markersOf(dest: string): string[] {
 const RESCUED_PREFIX = /是我们的主力目的地，给您挑了这些：/;
 
 interface Trial {
-  model: string; query: string; hit: boolean; rescued: boolean; calledTool: boolean; prefetched: boolean; ms: number; reply: string;
+  model: string;
+  query: string;
+  hit: boolean;
+  rescued: boolean;
+  calledTool: boolean;
+  prefetched: boolean;
+  ms: number;
+  reply: string;
   /** 这一轮里对冲加发了几次、对冲模型赢了几次（一轮可能有多次 API 往返，每次都可能对冲） */
-  hedgeFired: number; hedgeWon: number;
+  hedgeFired: number;
+  hedgeWon: number;
 }
 
 // 引擎预取（engine.ts planPrefetch）会在调模型之前替它查一次库，观测钩子带 meta.prefetch 标记。
@@ -110,7 +124,9 @@ interface Trial {
 // 开了预取以后，端到端命中主要反映「模型会不会用好已经查到的线路」，不再是「会不会想到去查」；
 // 模型在预取之后还自己再查一遍，只是白多一次往返。
 const toolCalls: { name: string; prefetch: boolean }[] = [];
-onToolCall((name, _args, _sid, meta) => { toolCalls.push({ name, prefetch: !!meta?.prefetch }); });
+onToolCall((name, _args, _sid, meta) => {
+  toolCalls.push({ name, prefetch: !!meta?.prefetch });
+});
 
 async function trial(model: string, query: string, i: number): Promise<Trial> {
   const dest = query.replace(/^想去/, '');
@@ -129,7 +145,10 @@ async function trial(model: string, query: string, i: number): Promise<Trial> {
   const h1 = llmStats();
   const markers = markersOf(dest);
   return {
-    model, query, ms, reply,
+    model,
+    query,
+    ms,
+    reply,
     hedgeFired: h1.hedgeFired - h0.hedgeFired,
     hedgeWon: h1.hedgeWon - h0.hedgeWon,
     hit: markers.some((m) => reply.includes(m)),
@@ -180,10 +199,22 @@ if (process.env.LLM_MOCK === '1') {
 await buildIndex();
 
 interface Row {
-  model: string; hit: number; native: number; rescued: number; tool: number; prefetched: number;
-  p50: number; p90: number; over8s: number; max: number; p50Tool: number;
+  model: string;
+  hit: number;
+  native: number;
+  rescued: number;
+  tool: number;
+  prefetched: number;
+  p50: number;
+  p90: number;
+  over8s: number;
+  max: number;
+  p50Tool: number;
   /** 本行实际生效的对冲模型；没开、或与被测模型同款（llm.ts 不对冲自己）时为 null */
-  hedge: string | null; hedgeFired: number; hedgeWon: number; hedgeCny: number;
+  hedge: string | null;
+  hedgeFired: number;
+  hedgeWon: number;
+  hedgeCny: number;
   /** 发生过对冲的轮数（一轮多次往返可能加发多次，按轮算才能和超 8 秒占比对照） */
   hedgedTurns: number;
   /** 本行输入 token 里命中前缀缓存的占比 */
@@ -209,9 +240,10 @@ for (const model of MODELS) {
   const trials = await runAll(model);
   allTrials.push(...trials);
   const after = usageToday().byModel;
-  const delta = (k: 'cny' | 'promptTokens' | 'cachedTokens', m?: string): number => Object.keys(after)
-    .filter((x) => !m || x === m)
-    .reduce((a, x) => a + (after[x][k] ?? 0) - (before[x]?.[k] ?? 0), 0);
+  const delta = (k: 'cny' | 'promptTokens' | 'cachedTokens', m?: string): number =>
+    Object.keys(after)
+      .filter((x) => !m || x === m)
+      .reduce((a, x) => a + (after[x][k] ?? 0) - (before[x]?.[k] ?? 0), 0);
   const ms = trials.map((t) => t.ms);
   rows.push({
     model,
@@ -228,7 +260,10 @@ for (const model of MODELS) {
     // 少一次 API 往返，天然快一大截，于是**越偷懒的模型看起来越快**。
     // 实测 glm-5.2 有 14/48 轮没调工具，全部混在一起算 P50 就是 4042ms，
     // 只看真干活的轮次是 4856ms——跟老实调工具的 glm-4.6 差距从 1.7s 缩到 0.9s。
-    p50Tool: pct(trials.filter((t) => t.calledTool).map((t) => t.ms), 0.5),
+    p50Tool: pct(
+      trials.filter((t) => t.calledTool).map((t) => t.ms),
+      0.5,
+    ),
     hedge,
     hedgeFired: trials.reduce((a, t) => a + t.hedgeFired, 0),
     hedgeWon: trials.reduce((a, t) => a + t.hedgeWon, 0),
@@ -244,32 +279,40 @@ const pctOf = (k: number): string => `${((k / n) * 100).toFixed(1)}%`;
 console.log(`\n${'='.repeat(76)}`);
 console.log(`说了目的地就摆出真实线路（每档 ${n} 次 = ${QUERIES.length} 个目的地 × ${RUNS} 次）`);
 console.log('='.repeat(76));
-console.log('模型'.padEnd(16) + '端到端'.padEnd(10) + '模型自己'.padEnd(11) + '护栏兜底'.padEnd(11)
-  + '调了工具'.padEnd(11) + '引擎预取'.padEnd(11) + '成本');
+console.log(
+  '模型'.padEnd(16) +
+    '端到端'.padEnd(10) +
+    '模型自己'.padEnd(11) +
+    '护栏兜底'.padEnd(11) +
+    '调了工具'.padEnd(11) +
+    '引擎预取'.padEnd(11) +
+    '成本',
+);
 for (const r of rows) {
   console.log(
-    r.model.padEnd(16)
-    + `${r.hit}/${n}`.padEnd(10)
-    + `${r.native}/${n}`.padEnd(11)
-    + `${r.rescued}`.padEnd(11)
-    + `${r.tool}/${n}`.padEnd(11)
-    + `${r.prefetched}/${n}`.padEnd(11)
-    + `¥${r.cny.toFixed(4)}`,
+    r.model.padEnd(16) +
+      `${r.hit}/${n}`.padEnd(10) +
+      `${r.native}/${n}`.padEnd(11) +
+      `${r.rescued}`.padEnd(11) +
+      `${r.tool}/${n}`.padEnd(11) +
+      `${r.prefetched}/${n}`.padEnd(11) +
+      `¥${r.cny.toFixed(4)}`,
   );
 }
 console.log('-'.repeat(76));
 console.log(`单轮端到端耗时（客户发出到收到回复，超 ${SLOW_MS / 1000} 秒算超线）`);
-console.log('模型'.padEnd(16) + 'P50'.padEnd(9) + 'P90'.padEnd(9) + '超8秒'.padEnd(13) + '最大'.padEnd(9)
-  + 'P50(干活轮)'.padEnd(13) + '缓存命中');
+console.log(
+  '模型'.padEnd(16) + 'P50'.padEnd(9) + 'P90'.padEnd(9) + '超8秒'.padEnd(13) + '最大'.padEnd(9) + 'P50(干活轮)'.padEnd(13) + '缓存命中',
+);
 for (const r of rows) {
   console.log(
-    r.model.padEnd(16)
-    + `${r.p50}ms`.padEnd(9)
-    + `${r.p90}ms`.padEnd(9)
-    + `${r.over8s} (${pctOf(r.over8s)})`.padEnd(14)
-    + `${r.max}ms`.padEnd(9)
-    + `${r.p50Tool}ms`.padEnd(13)
-    + `${(r.cacheHitRate * 100).toFixed(1)}%`,
+    r.model.padEnd(16) +
+      `${r.p50}ms`.padEnd(9) +
+      `${r.p90}ms`.padEnd(9) +
+      `${r.over8s} (${pctOf(r.over8s)})`.padEnd(14) +
+      `${r.max}ms`.padEnd(9) +
+      `${r.p50Tool}ms`.padEnd(13) +
+      `${(r.cacheHitRate * 100).toFixed(1)}%`,
   );
 }
 const u = usageToday();
@@ -280,9 +323,11 @@ if (HEDGE) {
   const h = llmStats();
   console.log(`对冲：${HEDGE}（主模型单次请求超 ${h.hedgeMs}ms 加发）——以下各行的延迟、命中与成本都是「主模型 + 对冲」组合的数`);
   for (const r of rows) {
-    console.log(r.hedge
-      ? `  ${r.model.padEnd(16)}加发 ${r.hedgeFired} 次（${r.hedgedTurns}/${n} 轮）· 对冲胜出 ${r.hedgeWon} 次 · 记在对冲模型名下 ¥${r.hedgeCny.toFixed(4)}（已含在成本栏）`
-      : `  ${r.model.padEnd(16)}与对冲模型同款，本行未对冲`);
+    console.log(
+      r.hedge
+        ? `  ${r.model.padEnd(16)}加发 ${r.hedgeFired} 次（${r.hedgedTurns}/${n} 轮）· 对冲胜出 ${r.hedgeWon} 次 · 记在对冲模型名下 ¥${r.hedgeCny.toFixed(4)}（已含在成本栏）`
+        : `  ${r.model.padEnd(16)}与对冲模型同款，本行未对冲`,
+    );
   }
   // 输家被 abort 前生成的 token 供应商照样计费，但响应拿不到，usage 里没有这笔——成本栏是下界
   console.log('  被取消的那一方（输家）供应商照样计费、本地记不到，开对冲时成本栏是下界。');
@@ -301,10 +346,24 @@ if (misses.length) {
 }
 
 if (jsonOut) {
-  fs.writeFileSync(jsonOut, JSON.stringify({
-    at: new Date().toISOString(), runs: RUNS, queries: QUERIES, concurrency: CONCURRENCY,
-    hedge: HEDGE, hedgeMs: HEDGE ? llmStats().hedgeMs : null, reasoningEffort: llmStats().reasoningEffort,
-    rows, cacheHitRate: u.cacheHitRate, trials: allTrials,
-  }, null, 2));
+  fs.writeFileSync(
+    jsonOut,
+    JSON.stringify(
+      {
+        at: new Date().toISOString(),
+        runs: RUNS,
+        queries: QUERIES,
+        concurrency: CONCURRENCY,
+        hedge: HEDGE,
+        hedgeMs: HEDGE ? llmStats().hedgeMs : null,
+        reasoningEffort: llmStats().reasoningEffort,
+        rows,
+        cacheHitRate: u.cacheHitRate,
+        trials: allTrials,
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`结果已写入 ${jsonOut}\n`);
 }

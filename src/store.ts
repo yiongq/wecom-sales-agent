@@ -231,7 +231,7 @@ export function pruneStaleVisitorData(): void {
   if (!PRUNE_MS) return;
   const cutoff = Date.now() - PRUNE_MS;
   let n = 0;
-  for (const s of [...sessions.values()]) {
+  for (const s of sessions.values()) {
     if (!VISITOR_SESSION_RE.test(s.id) || s.channel !== 'simulator') continue;
     if (s.updatedAt >= cutoff) continue;
     if (hasPaidOrder(s)) continue; // 有成交记录，保留
@@ -248,7 +248,10 @@ export function pruneStaleVisitorData(): void {
 // 启动即保鲜/清理一次，此后每小时一次（unref 不阻退出）
 freshenDemoData();
 pruneStaleVisitorData();
-setInterval(() => { freshenDemoData(); pruneStaleVisitorData(); }, 60 * 60_000).unref();
+setInterval(() => {
+  freshenDemoData();
+  pruneStaleVisitorData();
+}, 60 * 60_000).unref();
 
 export function getOrCreateSession(id: string, channel: string): Session {
   let s = sessions.get(id);
@@ -343,7 +346,10 @@ export function supersedeOrder(id: string, byId: string): boolean {
 export function deleteOrdersOfSession(sessionId: string): number {
   let n = 0;
   for (const [id, o] of orders) {
-    if (o.sessionId === sessionId) { orders.delete(id); n += 1; }
+    if (o.sessionId === sessionId) {
+      orders.delete(id);
+      n += 1;
+    }
   }
   if (n) schedulePersist();
   return n;

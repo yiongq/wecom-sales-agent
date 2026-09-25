@@ -33,7 +33,8 @@ const BUDGET_TALK = /预算|budget|以内|之内|以下|不超过|控制在|封�
 const BUDGET_FLOOR_WORD = /至少|起码|最少|不低于|不少于|以上|往上|打底/;
 const PER_PERSON_WORD = /每人|人均|每位|单人|一个人|一人|[/／]\s*人|per\s*person|\bpp\b|each/i;
 const TOTAL_WORD = /一共|总共|总预算|合计|加起来|总价|总计|全家|全部/;
-const HEADS_SAID = /(?<![\d一二两三四五六七八九十])(\d{1,2}|[一二两三四五六七八九十])\s*(?:个大人|个人|位|口人|大人|人)(?![均次])|(我们俩|咱们俩|咱俩|我俩|俩人|两口子|小两口)/;
+const HEADS_SAID =
+  /(?<![\d一二两三四五六七八九十])(\d{1,2}|[一二两三四五六七八九十])\s*(?:个大人|个人|位|口人|大人|人)(?![均次])|(我们俩|咱们俩|咱俩|我俩|俩人|两口子|小两口)/;
 const CN_COUNT: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 function headsIn(t: string): number | undefined {
   const m = HEADS_SAID.exec(t);
@@ -61,7 +62,10 @@ export function liftsBudget(t: string): boolean {
  * 「两个人预算一共3万左右」只记下「3万」，是每人还是总共就丢了。金额读法与价格护栏同一套（spokenMoney）
  */
 export function budgetCap(session: Session): BudgetCap | undefined {
-  const said = (session.messages ?? []).filter((m) => m.role === 'customer').map((m) => m.content).reverse();
+  const said = (session.messages ?? [])
+    .filter((m) => m.role === 'customer')
+    .map((m) => m.content)
+    .reverse();
   for (const t of said) {
     if (liftsBudget(t)) return undefined;
     if (!BUDGET_TALK.test(t)) continue;
@@ -86,7 +90,8 @@ export function budgetCap(session: Session): BudgetCap | undefined {
  * 此前工具不比，模型自己判断：报了每人 31,680 还说「在您 3 万预算内」。gap 由调用方记进 budgetGaps，价格护栏据此放行转述的差额
  */
 export function budgetVerdict(
-  session: Session, q: { perPerson: number; total: number; travelers: number },
+  session: Session,
+  q: { perPerson: number; total: number; travelers: number },
 ): { fields: Record<string, unknown>; gap?: number } | undefined {
   const cap = budgetCap(session);
   if (!cap) return undefined;
@@ -122,11 +127,24 @@ export function budgetVerdict(
 // ---------------- 日子 → 月份 ----------------
 
 const HOLIDAY_MONTHS: Record<string, number[]> = {
-  国庆: [10], 十一: [10], 黄金周: [10], 五一: [5], 劳动节: [5], 春节: [1, 2], 过年: [1, 2], 寒假: [1, 2],
-  元旦: [1], 暑假: [7, 8], 圣诞: [12], 中秋: [9, 10], 清明: [4], 端午: [5, 6],
+  国庆: [10],
+  十一: [10],
+  黄金周: [10],
+  五一: [5],
+  劳动节: [5],
+  春节: [1, 2],
+  过年: [1, 2],
+  寒假: [1, 2],
+  元旦: [1],
+  暑假: [7, 8],
+  圣诞: [12],
+  中秋: [9, 10],
+  清明: [4],
+  端午: [5, 6],
 };
 // 「十一」只在不是数字的一部分时算国庆：「十一月」「十一个人」「十一点」都不是
-const HOLIDAY = '国庆|黄金周|五一|劳动节|春节|过年|寒假|元旦|暑假|圣诞|中秋|清明|端午|(?<![\\d一二三四五六七八九十])十一(?![月个位人天日号点多万千百年岁])';
+const HOLIDAY =
+  '国庆|黄金周|五一|劳动节|春节|过年|寒假|元旦|暑假|圣诞|中秋|清明|端午|(?<![\\d一二三四五六七八九十])十一(?![月个位人天日号点多万千百年岁])';
 const MONTH = '(?<![\\d一二三四五六七八九十])(?:1[0-2]|0?[1-9]|十[一二]?|[一二三四五六七八九])\\s*月(?:份)?';
 const WHEN_RE = new RegExp(`${HOLIDAY}|${MONTH}`, 'g');
 const CN_MONTH: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 十一: 11, 十二: 12 };
@@ -140,50 +158,70 @@ function monthsOf(word: string): number[] {
 
 /** 这段话里说到的日子（节日或几月），带位置 */
 function whensIn(s: string): { months: number[]; at: number; end: number }[] {
-  return [...s.matchAll(WHEN_RE)].map((m) => ({ months: monthsOf(m[0]), at: m.index!, end: m.index! + m[0].length }))
+  return [...s.matchAll(WHEN_RE)]
+    .map((m) => ({ months: monthsOf(m[0]), at: m.index!, end: m.index! + m[0].length }))
     .filter((w) => w.months.length);
 }
 
 // ---------------- 规则词 ----------------
 
 /** 我们根本没有的价格规则：儿童价、平日价、节假日价、月中价、早鸟……「没有儿童价」这种如实说明不算（见 NEGATED） */
-const NO_SUCH_RULE = new RegExp([
-  '儿童(?:价|票价|半价|优惠|折扣)', '(?:小孩|孩子|小朋友|宝宝)(?:半价|免费|打折|优惠价?|价)',
-  '(?:小孩|孩子|小朋友|儿童)的?(?:价格|费用|团费)[^。！？!?\\n，,]{0,4}(?:低|便宜|优惠|少|减)',
-  // 「小朋友每人少 1,680 元」「孩子不占床每人可以减 2,000 元」：数恰好是报价的上浮差额，价格护栏认得它，这里按说法拦
-  '(?:小孩|孩子|小朋友|儿童|宝宝)[^。！？!?\\n，,]{0,4}(?:少|减|便宜|优惠)\\s*[\\d一二两三四五六七八九]',
-  '不占床(?:价|的话更便宜|更便宜|便宜)', '不占床[^。！？!?\\n，,]{0,8}(?:减|少|便宜|优惠)',
-  '按(?:年龄|几岁|岁数)(?:收费|算价|计价)', '几岁按几岁收费',
-  '平日价', '节假日价', '节日价', '假日价', '假期价', '周末价', '工作日价', '月中价', '早鸟',
-].join('|'));
+const NO_SUCH_RULE = new RegExp(
+  [
+    '儿童(?:价|票价|半价|优惠|折扣)',
+    '(?:小孩|孩子|小朋友|宝宝)(?:半价|免费|打折|优惠价?|价)',
+    '(?:小孩|孩子|小朋友|儿童)的?(?:价格|费用|团费)[^。！？!?\\n，,]{0,4}(?:低|便宜|优惠|少|减)',
+    // 「小朋友每人少 1,680 元」「孩子不占床每人可以减 2,000 元」：数恰好是报价的上浮差额，价格护栏认得它，这里按说法拦
+    '(?:小孩|孩子|小朋友|儿童|宝宝)[^。！？!?\\n，,]{0,4}(?:少|减|便宜|优惠)\\s*[\\d一二两三四五六七八九]',
+    '不占床(?:价|的话更便宜|更便宜|便宜)',
+    '不占床[^。！？!?\\n，,]{0,8}(?:减|少|便宜|优惠)',
+    '按(?:年龄|几岁|岁数)(?:收费|算价|计价)',
+    '几岁按几岁收费',
+    '平日价',
+    '节假日价',
+    '节日价',
+    '假日价',
+    '假期价',
+    '周末价',
+    '工作日价',
+    '月中价',
+    '早鸟',
+  ].join('|'),
+);
 const NEGATED_BEFORE = /(?:没有|不区分|不分|不设|不存在|不单独|并没有|都按|同价|一样|也按|不搞|不做|无单独|无儿童)[^。！？!?\n]{0,8}$/;
 // 「儿童价格跟大人一样」「小朋友价格和大人一样」说的正是没有儿童价（SOP 要模型这么说），不删
-const NEGATED_AFTER = /^[^。！？!?\n]{0,4}(?:是没有|没有|不存在|不设)|^[^。！？!?\n]{0,8}?(?:(?:跟|和|与|同)大人)(?:的?价格?)?(?:一样|同价|相同|一个价)/;
+const NEGATED_AFTER =
+  /^[^。！？!?\n]{0,4}(?:是没有|没有|不存在|不设)|^[^。！？!?\n]{0,8}?(?:(?:跟|和|与|同)大人)(?:的?价格?)?(?:一样|同价|相同|一个价)/;
 /** 「3 岁以下小朋友免费入园」说的是景区门票，不是团费：同一句没提团费、报价才算门票这类事 */
 const TICKET_TALK = /入园|门票|乐园|景区|景点|乘车|坐车|乘坐|索道|缆车|游船/;
 const TOUR_PRICE = /团费|报价|线路价|这条线|总价|每人/;
 
 /** 节假日加价：定价只看出发月落不落在线路最佳季，没有「节日上浮」这一条。出发月恰好在最佳季的（10 月的三亚）说成国庆上浮不算错价，留着 */
 const HOLIDAY_SURCHARGE = new RegExp(
-  `(${HOLIDAY})(?:档期|期间|出发|那几天|的时候)?的?(?:价格|价|费用|团费)?(?:会|要|都)?(?:上浮|加价|涨价|溢价|贵一些|贵一点|更贵|偏贵|贵不少)`);
+  `(${HOLIDAY})(?:档期|期间|出发|那几天|的时候)?的?(?:价格|价|费用|团费)?(?:会|要|都)?(?:上浮|加价|涨价|溢价|贵一些|贵一点|更贵|偏贵|贵不少)`,
+);
 /** 拿别的日子比价：「比国庆便宜」「比 11 月还便宜些」「比元旦出发省了 4740 元」 */
 const DATE_COMPARE = new RegExp(
   `比\\s*(?:(${HOLIDAY}|${MONTH})|(旺季|最佳季|淡季|平时|平日))(?:出发|去|走|那会儿?|期间|档期|假期|的时候|那几天|那段|初|中|底|中旬|下旬|上旬)*` +
-  '[^。！？!?\\n]{0,10}?(便宜|实惠|划算|省(?![心事力时])|贵)');
+    '[^。！？!?\\n]{0,10}?(便宜|实惠|划算|省(?![心事力时])|贵)',
+);
 /** 拿节日给价格找理由：「价格便宜是因为避开了节日出行高峰」「过了春节旺季，地接价格回落」。
  *  「因为」只跟节日名连用：「因为您只有 5 天假期，推荐这条 5 日的线路，价格也合适」说的是请假天数 */
 const HOLIDAY_REASON = new RegExp(
-  `(?:避开|错开|躲开|过了|赶上|碰上|撞上)[^。！？!?\\n，,]{0,8}(?:${HOLIDAY}|节日|节假日|假期|出行高峰|高峰)|因为[^。！？!?\\n，,]{0,8}(?:${HOLIDAY}|节日|节假日)`);
+  `(?:避开|错开|躲开|过了|赶上|碰上|撞上)[^。！？!?\\n，,]{0,8}(?:${HOLIDAY}|节日|节假日|假期|出行高峰|高峰)|因为[^。！？!?\\n，,]{0,8}(?:${HOLIDAY}|节日|节假日)`,
+);
 // 说的是价钱高低，不是「报价」这个动作：「正好错开国庆高峰，我马上给您出准确报价」说的是人少，不是便宜
 const PRICE_WORD = /价格|价钱|价位|性价比|团费|费用|便宜|划算|省(?![心事力时])|实惠|贵|回落|上浮|涨价/;
 /** 编造的稀缺：名额 / 档期 / 房源紧张。我们看不到余位，「名额以付款为准」照说。
  *  「稀缺资源」不算：那是在讲独家资源的价值（SOP 教的拆价值），不是催客户 */
-const SCARCITY = new RegExp([
-  // 中间夹着面积、空间这类的说的是房间本身（「水屋房间面积有限，一家四口建议订两间」），不是余位
-  '(?:名额|档期|房量|房源|房间|客房|机位|机票|位置|座位|车位|房车|游艇)(?:(?!面积|空间|大小|容纳|床)[^。！？!?\\n，,]){0,6}(?:紧张|紧俏|有限|抢手|不多了?|告急|快满|满了|吃紧|难订|难抢|(?:比较|很|有点|特别|非常|挺|都)紧(?!凑))',
-  '(?:仅剩|只剩|最后)\\s*[\\d一二两三四五六七八九十几]+\\s*(?:个|间|席|组|套)?\\s*(?:名额|位置|房间?|席位|空位)',
-  '(?:很|比较|特别|非常|超)抢手',
-].join('|'));
+const SCARCITY = new RegExp(
+  [
+    // 中间夹着面积、空间这类的说的是房间本身（「水屋房间面积有限，一家四口建议订两间」），不是余位
+    '(?:名额|档期|房量|房源|房间|客房|机位|机票|位置|座位|车位|房车|游艇)(?:(?!面积|空间|大小|容纳|床)[^。！？!?\\n，,]){0,6}(?:紧张|紧俏|有限|抢手|不多了?|告急|快满|满了|吃紧|难订|难抢|(?:比较|很|有点|特别|非常|挺|都)紧(?!凑))',
+    '(?:仅剩|只剩|最后)\\s*[\\d一二两三四五六七八九十几]+\\s*(?:个|间|席|组|套)?\\s*(?:名额|位置|房间?|席位|空位)',
+    '(?:很|比较|特别|非常|超)抢手',
+  ].join('|'),
+);
 /**
  * 「在您预算内」这类断言。「如果想控制在预算内」「帮您挑预算内的」是条件或打算，不算。
  * 「预算很宽裕 / 预算够 / 绰绰有余」「刚好卡在预算内」是同一个判断换了说法：A04 两遍都这么说（两位一共 3 万、巴厘岛两位 45,600），
@@ -192,14 +230,20 @@ const SCARCITY = new RegExp([
  * 「预算够的话更推荐马代那条」这种正常的推荐跟着没了（见 BUDGET_COND_AFTER）
  */
 const BUDGET_COND_AFTER = '(?![^。！？!?\\n，,]{0,2}(?:的话|时候?|的情况))';
-const BUDGET_CLAIM = new RegExp([
-  '(?<![不没])(?:在|落在|控制在|都在|卡在)(?:您|你)?的?[^。！？!?\\n，,]{0,12}?预算(?:内|之内|以内|范围内|里)',
-  '(?:符合|满足)(?:您|你)?的?[^。！？!?\\n，,]{0,8}预算', '没(?:有)?超(?:出|过)?(?:您|你)?的?[^。！？!?\\n，,]{0,8}预算',
-  '不超(?:出|过)?(?:您|你)?的?[^。！？!?\\n，,]{0,8}预算',
-  '预算[^。！？!?\\n，,]{0,8}?(?<![不没太差才只])(?:很|挺|比较|完全|也|都|还)?(?:宽裕|充裕|充足|足够|绰绰有余|有富余|有余|够用|够(?![不吗么呢？?]))' + BUDGET_COND_AFTER,
-  '预算[^。！？!?\\n，,]{0,6}(?:完全|足够|都)?(?:能|可以)?(?:覆盖|cover)' + BUDGET_COND_AFTER,
-].join('|'), 'gi');
-const BUDGET_CLAIM_INTENT = /(?:如果|要是|若|假如|想|要|能不能|能否|可以|怎么|是否|尽量|争取|帮您|给您|压|挑|找|容易)[^。！？!?\n，,]{0,6}$/;
+const BUDGET_CLAIM = new RegExp(
+  [
+    '(?<![不没])(?:在|落在|控制在|都在|卡在)(?:您|你)?的?[^。！？!?\\n，,]{0,12}?预算(?:内|之内|以内|范围内|里)',
+    '(?:符合|满足)(?:您|你)?的?[^。！？!?\\n，,]{0,8}预算',
+    '没(?:有)?超(?:出|过)?(?:您|你)?的?[^。！？!?\\n，,]{0,8}预算',
+    '不超(?:出|过)?(?:您|你)?的?[^。！？!?\\n，,]{0,8}预算',
+    '预算[^。！？!?\\n，,]{0,8}?(?<![不没太差才只])(?:很|挺|比较|完全|也|都|还)?(?:宽裕|充裕|充足|足够|绰绰有余|有富余|有余|够用|够(?![不吗么呢？?]))' +
+      BUDGET_COND_AFTER,
+    '预算[^。！？!?\\n，,]{0,6}(?:完全|足够|都)?(?:能|可以)?(?:覆盖|cover)' + BUDGET_COND_AFTER,
+  ].join('|'),
+  'gi',
+);
+const BUDGET_CLAIM_INTENT =
+  /(?:如果|要是|若|假如|想|要|能不能|能否|可以|怎么|是否|尽量|争取|帮您|给您|压|挑|找|容易)[^。！？!?\n，,]{0,6}$/;
 
 // ---------------- 季节判断 ----------------
 // A09 两遍、B01 第 2 遍把 11 月说成淡季 /「按标准价走」/「换到 11 月中以后错开」，而丽江大理（3-5、9-11 月）、九寨（4-11 月）的
@@ -207,10 +251,20 @@ const BUDGET_CLAIM_INTENT = /(?:如果|要是|若|假如|想|要|能不能|能�
 /** 说某个月不上浮：淡季 / 不在最佳季 / 标准价 / 不上浮 / 错开旺季。「错峰」「错开」没带宾语时另看上下文（见 SEASON_CONTEXT） */
 // 「不在贵州这条线的最佳季」（B09 第 2 遍，说得对）：「不在」和「最佳季」之间夹着线路名。此前只认「不在这条线的最佳季」，
 // 这句反被 PEAK_WORD 当成「2 月是最佳季」删了。「不用上浮 / 无需加价」同理（A04 第 2 遍「改到 11 月出发…不用上浮」）
-const OFF_PEAK_WORD = new RegExp([
-  '淡季', '非旺季', '非最佳(?:出行)?季', '不(?:在|是|属于)[^，,。；;！？!?\\n]{0,10}?最佳(?:出行)?季', '过了(?:最佳(?:出行)?季|旺季)',
-  '标准价', '原价', '(?:不|无需|不用|不需要|不会|免)(?:再)?(?:上浮|加价)', '没有?上浮', '(?:错开|避开|躲开|错过)(?:了)?(?:旺季|最佳(?:出行)?季)',
-].join('|'));
+const OFF_PEAK_WORD = new RegExp(
+  [
+    '淡季',
+    '非旺季',
+    '非最佳(?:出行)?季',
+    '不(?:在|是|属于)[^，,。；;！？!?\\n]{0,10}?最佳(?:出行)?季',
+    '过了(?:最佳(?:出行)?季|旺季)',
+    '标准价',
+    '原价',
+    '(?:不|无需|不用|不需要|不会|免)(?:再)?(?:上浮|加价)',
+    '没有?上浮',
+    '(?:错开|避开|躲开|错过)(?:了)?(?:旺季|最佳(?:出行)?季)',
+  ].join('|'),
+);
 /** 只说价钱低（「价格会低一些」「11月以后就便宜了」）：同一小句没说季节词时，也算在说那个月不上浮 */
 const OFF_PEAK_PRICE = /价格?(?:会|就|能)?(?:更)?(?:低|降|回落|便宜)(?![不没])|(?:以后|之后)(?:就|会)?(?:更)?(?:便宜|实惠|划算)/;
 /** 没带宾语的「错峰 / 错开 / 避开」：前后说着最佳季、上浮时才是在讲季节价；「10月下旬错峰出行」说的是躲国庆人潮 */
@@ -239,31 +293,54 @@ const HOLIDAY_RE = new RegExp(HOLIDAY);
  * 这种小句之后也不再往下借（「如果能避开旺季，价格就能回到标准价」的后半句说的仍是那个别的日子）。
  * 泛泛讲规则的（「淡季的话就是标准价」「其他月份是标准价」）同样不借。光一个「的话」不算：「11 月出发，两位的话就是标准价」说的还是 11 月
  */
-const SEASON_SWITCH = new RegExp([
-  '换', '改(?:到|成|在|期)', '挪', '推迟', '推到', '延后', '提前', '避开', '错开', '躲开', '如果', '要是', '假如', '若是', '倘若', '想省', '其他', '别的',
-  '(?:淡季|旺季|最佳(?:出行)?季)(?:的话|的时候|的日子)', '不在最佳(?:出行)?季的(?:日子|时候|月份|日期)',
-].join('|'));
+const SEASON_SWITCH = new RegExp(
+  [
+    '换',
+    '改(?:到|成|在|期)',
+    '挪',
+    '推迟',
+    '推到',
+    '延后',
+    '提前',
+    '避开',
+    '错开',
+    '躲开',
+    '如果',
+    '要是',
+    '假如',
+    '若是',
+    '倘若',
+    '想省',
+    '其他',
+    '别的',
+    '(?:淡季|旺季|最佳(?:出行)?季)(?:的话|的时候|的日子)',
+    '不在最佳(?:出行)?季的(?:日子|时候|月份|日期)',
+  ].join('|'),
+);
 
 // ---------------- 做不到的加减 ----------------
 // 线路的天数和住宿是固定的（sop.md 能力边界）。A04 第 2 遍「还能升房型或加天数」、此前「缩短天数、降一档酒店」都是替公司答应了做不到的事
 const CANT_CHANGE = new RegExp(
   '(?:还能|还可以|可以|能|也能|都能|帮您|给您|为您|再)[^。！？!?\\n，,]{0,4}' +
-  '(?:升(?:级)?(?:一档)?(?:房型|房间|酒店|套房)|升级(?:到|成)|加(?:几|一|两|个)?天|多(?:玩|住)(?:几|一|两)?天|延长(?:几|一|两)?天?|' +
-  '(?:缩短|压缩|减少?)(?:行程|天数|几天|一天|一两天)|(?:降|换低|换便宜)(?:一)?档|(?:出|做)(?:个)?(?:轻量|精简|简化)版)');
+    '(?:升(?:级)?(?:一档)?(?:房型|房间|酒店|套房)|升级(?:到|成)|加(?:几|一|两|个)?天|多(?:玩|住)(?:几|一|两)?天|延长(?:几|一|两)?天?|' +
+    '(?:缩短|压缩|减少?)(?:行程|天数|几天|一天|一两天)|(?:降|换低|换便宜)(?:一)?档|(?:出|做)(?:个)?(?:轻量|精简|简化)版)',
+);
 /** 如实说做不到的不删：「天数和酒店都是固定的，没法加天数」 */
 const CANT_CHANGE_OK = /不能|不可以|没法|无法|改不了|换不了|加不了|减不了|做不到|固定|不支持|不行|没有这个/;
 
 // ---------------- 高反担保 ----------------
 // B03 第 2 遍：客户说「高反挺吓人的 换云南吧」，模型没查就回「线路大多在 2000 多米，基本不用担心高反」——丽江大理那条冰川大索道 4500 米。
 // 担保只在说到的线路全程都在 2500 米以下时留着（maxAltitude 逐条核过，见 tools.ts LOWLAND_MAX_ALTITUDE）
-const ALTITUDE_ASSURANCE = new RegExp([
-  '(?:不用|不必|无需|没必要|别)(?:太)?(?:担心|怕|顾虑|紧张)[^。！？!?\\n，,]{0,4}(?:高反|高原反应|海拔|缺氧)',
-  '(?<!会)(?:不会|基本不会)(?:有)?(?:什么)?(?:明显的?)?(?:高反|高原反应)',
-  '(?<!有)(?:没有|没什么|基本没有?|几乎没有?)(?:什么)?(?:明显的?)?(?:高反|高原反应|高原段)',
-  '(?:高反|高原反应)[^。！？!?\\n，,]{0,6}(?:不用担心|没问题|不存在|很小|不大|基本没有|不明显|可以忽略)',
-  // 得是在说某条线（「全程海拔温和」「这条海拔不高」）；「帮您找找海拔友好的方向」是在提议，不是担保
-  '(?:全程|整体|整条线?|这条线?|行程|线路)[^。！？!?\\n，,]{0,4}海拔(?:都)?(?:很|比较|相对)?(?:温和|友好|不高)',
-].join('|'));
+const ALTITUDE_ASSURANCE = new RegExp(
+  [
+    '(?:不用|不必|无需|没必要|别)(?:太)?(?:担心|怕|顾虑|紧张)[^。！？!?\\n，,]{0,4}(?:高反|高原反应|海拔|缺氧)',
+    '(?<!会)(?:不会|基本不会)(?:有)?(?:什么)?(?:明显的?)?(?:高反|高原反应)',
+    '(?<!有)(?:没有|没什么|基本没有?|几乎没有?)(?:什么)?(?:明显的?)?(?:高反|高原反应|高原段)',
+    '(?:高反|高原反应)[^。！？!?\\n，,]{0,6}(?:不用担心|没问题|不存在|很小|不大|基本没有|不明显|可以忽略)',
+    // 得是在说某条线（「全程海拔温和」「这条海拔不高」）；「帮您找找海拔友好的方向」是在提议，不是担保
+    '(?:全程|整体|整条线?|这条线?|行程|线路)[^。！？!?\\n，,]{0,4}海拔(?:都)?(?:很|比较|相对)?(?:温和|友好|不高)',
+  ].join('|'),
+);
 
 // ---------------- 做不到的服务：换成「由顾问确认」 ----------------
 // 我们这边能确认的只有：签电子合同、付款只走官方支付链接。开票、资金托管、付款流程、机票代订、档期余位都得顾问确认
@@ -307,23 +384,29 @@ const SERVICE_CLAIMS: { re: RegExp; skip: RegExp | ((s: string) => boolean); rep
   // 「合同发票齐全」这类泛泛的说法交给 SOP，硬换成一句专票的话反倒答非所问
   {
     re: /(?:可以|能|支持|都能|没问题|都是|齐全|合规)[^。！？!?\n]{0,10}(?:专票|专用发票|增值税发票|抬头的?发票)|(?:专票|专用发票|增值税发票)[^。！？!?\n]{0,8}(?:可以开|能开|没问题|都能开|支持|齐全|合规|都有|照开)/,
-    skip: DEFER_SKIP, replace: '发票（含专票）怎么开，由顾问跟您确认。',
+    skip: DEFER_SKIP,
+    replace: '发票（含专票）怎么开，由顾问跟您确认。',
   },
   {
     re: new RegExp(FUND_CLAIM.source),
     // 「您可以先看方案书确认行程，满意后再付款」是客户自己看方案书，照实；「下单后顾问核对了再付款」才是编的流程
-    skip: (s) => /(?:不用|无需|不需要|不走|没有|不是|不要)[^。！？!?\n，,]{0,4}(?:对公|第三方)|先看(?:看|一下)?(?:方案|行程)/.test(s) || fundDeferred(s),
-    replace: '付款只走我们发给您的官方支付链接。', already: PAY_LINK_SAID,
+    skip: (s) =>
+      /(?:不用|无需|不需要|不走|没有|不是|不要)[^。！？!?\n，,]{0,4}(?:对公|第三方)|先看(?:看|一下)?(?:方案|行程)/.test(s) ||
+      fundDeferred(s),
+    replace: '付款只走我们发给您的官方支付链接。',
+    already: PAY_LINK_SAID,
   },
   {
     re: /(?:帮您|给您|为您|帮你)[^。！？!?\n，,]{0,6}(?:订|代订|预订|询价|比价|匹配|出票)[^。！？!?\n，,]{0,4}(?:机票|航班)|(?:机票|航班)[^。！？!?\n]{0,10}(?:帮您|给您|为您|帮你)[^。！？!?\n，,]{0,6}(?:订|代订|预订|询价|比价|匹配|核算|出票)|(?<![不没未])含机票的[^。！？!?\n，,]{0,6}(?:报价|价格|总价|方案)|(?:机票|航班)[^。！？!?\n，,]{0,6}(?:一起|一并)(?:订|算|报|核算)/,
     // 「以上是不含机票的价格，往返机票需要您自理」是照 exclusions 如实说，不是答应代订
-    skip: /顾问|自理|自订|自行/, replace: '机票代订的事由顾问跟您确认。',
+    skip: /顾问|自理|自订|自行/,
+    replace: '机票代订的事由顾问跟您确认。',
   },
   {
     re: /档期(?:完全)?(?:没问题|没有问题|充足|都有|还有|够|OK|ok|可以的)|(?:还有|有)(?:余位|空位|空房)(?![吗么])|名额(?:充足|还有|够用?|没问题)(?![吗么])/,
     // 条件句（「档期没问题的话，我这边就给您下单」）是在推进下单，不是替公司担保有档期
-    skip: /[吗么？?]|如果|要是|假如|的话|若/, replace: '具体档期和余位由顾问跟您确认。',
+    skip: /[吗么？?]|如果|要是|假如|的话|若/,
+    replace: '具体档期和余位由顾问跟您确认。',
   },
 ];
 /** 企微拿不到客户手机号：顾问只能在微信上联系，「电话联系您」是一句兑现不了的话 */
@@ -353,8 +436,14 @@ function routeInFocus(session: Session, calls: TurnToolCall[], routes: Route[]):
 function travelersInPlay(session: Session, hint?: number): number | undefined {
   const fromProfile = Number(/^(\d+)人$/.exec(session.profile?.travelers ?? '')?.[1]);
   const orders = (session.orderIds ?? []).map((id) => getOrder(id)).filter((o) => !!o);
-  return [session.lastQuote?.travelers, session.quoteHistory?.at(-1)?.travelers, orders.at(-1)?.travelers, hint, fromProfile,
-    budgetCap(session)?.heads].find((n): n is number => Number.isInteger(n) && (n as number) > 0);
+  return [
+    session.lastQuote?.travelers,
+    session.quoteHistory?.at(-1)?.travelers,
+    orders.at(-1)?.travelers,
+    hint,
+    fromProfile,
+    budgetCap(session)?.heads,
+  ].find((n): n is number => Number.isInteger(n) && (n as number) > 0);
 }
 
 /** 报价上的出发月（最近报价 / 报价历史最后一次） */
@@ -372,7 +461,9 @@ function compareHolds(m: RegExpExecArray, s: string, session: Session, route: Ro
   const cheaper = m[3] !== '贵';
   const x = m[1] ?? m[2];
   const xAt = m.index + m[0].indexOf(x);
-  const said = whensIn(s).filter((w) => w.end <= xAt || w.at >= xAt + x.length).flatMap((w) => w.months);
+  const said = whensIn(s)
+    .filter((w) => w.end <= xAt || w.at >= xAt + x.length)
+    .flatMap((w) => w.months);
   if (m[2] && !said.length) return cheaper === /旺季|最佳季/.test(m[2]);
   if (!route) return false;
   const peak = peakMonths(route.bestSeason);
@@ -385,8 +476,14 @@ function compareHolds(m: RegExpExecArray, s: string, session: Session, route: Ro
 }
 
 /** 「在您预算内」对不对：同一句里说到的价（不算预算本身那个数）→ 本轮刚报的价 → 回复里离它最近的前一个价 → 最近报价 */
-function budgetClaimHolds(visible: string, u: { start: number; end: number }, claims: { at: number; end: number }[],
-  session: Session, calls: TurnToolCall[], hint?: number): boolean {
+function budgetClaimHolds(
+  visible: string,
+  u: { start: number; end: number },
+  claims: { at: number; end: number }[],
+  session: Session,
+  calls: TurnToolCall[],
+  hint?: number,
+): boolean {
   const cap = budgetCap(session);
   if (!cap) return false; // 客户没说过预算
   if (cap.floor) return true;
@@ -418,25 +515,43 @@ function budgetClaimHolds(visible: string, u: { start: number; end: number }, cl
  * 返回改过的正文和删掉的句子（给日志）。PRICE_GUARD=0 时同价格护栏一起关掉
  */
 export function dropUnbackedClaims(
-  visible: string, session: Session, calls: TurnToolCall[] = [], hints: { travelers?: number } = {},
+  visible: string,
+  session: Session,
+  calls: TurnToolCall[] = [],
+  hints: { travelers?: number } = {},
 ): { text: string; dropped: string[] } {
   if (process.env.PRICE_GUARD === '0') return { text: visible, dropped: [] };
   let text = visible;
   for (const [re, to] of PHONE_PROMISE) text = text.replace(re, to);
   let routes: Route[] = [];
-  try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警，这里不阻断对话 */ }
+  try {
+    routes = loadRoutes();
+  } catch {
+    /* 数据文件坏了另有告警，这里不阻断对话 */
+  }
   return dropClaimsIn(text, { session, calls, routes, route: routeInFocus(session, calls, routes), travelers: hints.travelers });
 }
 
 /** 核对要用的上下文：会话、本轮工具调用、线路库、说的是哪条线（见 routeInFocus）、引擎按客户原话认的人数 */
-interface ClaimCtx { session: Session; calls: TurnToolCall[]; routes: Route[]; route: Route | undefined; travelers?: number }
+interface ClaimCtx {
+  session: Session;
+  calls: TurnToolCall[];
+  routes: Route[];
+  route: Route | undefined;
+  travelers?: number;
+}
 
 /** 这句话点了名的线路：目的地、别名，或标题里目的地以外的那段名字（「丽江大理」「九寨黄龙」「中央格兰德」） */
 function routesNamedIn(s: string, routes: Route[]): Route[] {
   const t = s.replace(/\s+/g, '');
-  return routes.filter((r) =>
-    [r.destination, ...(r.aliases ?? [])].some((p) => !!p && t.includes(p)) ||
-    r.title.split(/[\s·・]+|\d+\s*[日天]/).map((x) => x.replace(r.destination, '')).some((x) => x.length >= 3 && t.includes(x)));
+  return routes.filter(
+    (r) =>
+      [r.destination, ...(r.aliases ?? [])].some((p) => !!p && t.includes(p)) ||
+      r.title
+        .split(/[\s·・]+|\d+\s*[日天]/)
+        .map((x) => x.replace(r.destination, ''))
+        .some((x) => x.length >= 3 && t.includes(x)),
+  );
 }
 
 /** 小句里说到的月份：节日、几月，以及「4-10 月」这种区间（区间按 bestSeason 同一套读法展开） */
@@ -483,11 +598,20 @@ function wrongSeasonClaim(s: string, near: string[], text: string, ctx: ClaimCtx
     else if (offWord) continue;
     // 只说价钱低、带着「比」的是在比两样东西（比国庆、比马代），比日子的由 DATE_COMPARE 核；「比如」不算。
     // 没带宾语的「错峰」小句里说着节日（「元旦后错峰」）：躲的是节日人潮，不是在说那个月不上浮
-    else if ((OFF_PEAK_PRICE.test(cs) && !/比(?!如|方)/.test(cs)) ||
-      (BARE_DODGE.test(cs) && !HOLIDAY_RE.test(cs) && near.concat(s).some((t) => SEASON_CONTEXT.test(t)))) off = true;
+    else if (
+      (OFF_PEAK_PRICE.test(cs) && !/比(?!如|方)/.test(cs)) ||
+      (BARE_DODGE.test(cs) && !HOLIDAY_RE.test(cs) && near.concat(s).some((t) => SEASON_CONTEXT.test(t)))
+    )
+      off = true;
     else continue;
     const months = said;
-    if (!candidates.some((r) => { const peak = peakMonths(r.bestSeason); return months.every((m) => peak.has(m) === !off); })) return c;
+    if (
+      !candidates.some((r) => {
+        const peak = peakMonths(r.bestSeason);
+        return months.every((m) => peak.has(m) === !off);
+      })
+    )
+      return c;
   }
   return undefined;
 }
@@ -535,7 +659,9 @@ function assuranceBacked(s: string, near: string[], text: string, ctx: ClaimCtx)
   // 分点里常把线路名写在上一行（「· 贵州荔波小七孔 6 日」「· 全程最高约 1200 米，没有高原段」）
   for (const t of [...near, text]) if (!routes.length) routes = routesNamedIn(t, ctx.routes);
   if (!routes.length) {
-    const ids = new Set(ctx.calls.flatMap((c) => [c.args?.routeId, ...idsInResult(c.result)]).filter((x): x is string => typeof x === 'string'));
+    const ids = new Set(
+      ctx.calls.flatMap((c) => [c.args?.routeId, ...idsInResult(c.result)]).filter((x): x is string => typeof x === 'string'),
+    );
     routes = ctx.routes.filter((r) => ids.has(r.id));
   }
   if (!routes.length && ctx.route) routes = [ctx.route];
@@ -584,49 +710,90 @@ function dropClaimsIn(text: string, ctx: ClaimCtx): { text: string; dropped: str
     const cutClauses = (from: number, to = from, ignore: { at: number; end: number }[] = []) => {
       const spans = clauseSpans(s);
       const i = spans.findIndex((c) => from < c.end || c === spans.at(-1));
-      const j = Math.max(i, spans.findIndex((c) => to < c.end || c === spans.at(-1)));
+      const j = Math.max(
+        i,
+        spans.findIndex((c) => to < c.end || c === spans.at(-1)),
+      );
       const [a, b] = [spans[i].at, spans[j].end];
       const prices = priceMentions(s).filter((p) => !ignore.some((g) => p.at < g.end && p.end > g.at));
       const outside = prices.some((p) => p.end <= a || p.at >= b);
       const inside = ignore.length ? prices.some((p) => p.at >= a && p.end <= b) : priceMentions(s.slice(a, b)).length > 0;
       // 有个价跨在要删的这段边上（切小句切到了数中间）：只删一半就是一个坏掉的数，整句删
       const straddle = priceMentions(s).some((p) => p.at < b && p.end > a && (p.at < a || p.end > b));
-      if (inside || straddle || !outside || (i === 0 && j === spans.length - 1)) { cut(); return; }
+      if (inside || straddle || !outside || (i === 0 && j === spans.length - 1)) {
+        cut();
+        return;
+      }
       // 连着分隔符删：前面有小句就删它前面的逗号 / 破折号，否则删后面的
       clauseCuts.push(i > 0 ? { at: u.start + spans[i - 1].end, end: u.start + b } : { at: u.start + a, end: u.start + spans[j + 1].at });
     };
     const rule = NO_SUCH_RULE.exec(s);
-    if (rule && !NEGATED_BEFORE.test(s.slice(0, rule.index)) && !NEGATED_AFTER.test(s.slice(rule.index + rule[0].length)) &&
-      !(rule[0].endsWith('免费') && TICKET_TALK.test(s) && !TOUR_PRICE.test(s))) { cutClauses(rule.index); continue; }
+    if (
+      rule &&
+      !NEGATED_BEFORE.test(s.slice(0, rule.index)) &&
+      !NEGATED_AFTER.test(s.slice(rule.index + rule[0].length)) &&
+      !(rule[0].endsWith('免费') && TICKET_TALK.test(s) && !TOUR_PRICE.test(s))
+    ) {
+      cutClauses(rule.index);
+      continue;
+    }
     const scarce = SCARCITY.exec(s);
-    if (scarce) { cutClauses(scarce.index); continue; }
+    if (scarce) {
+      cutClauses(scarce.index);
+      continue;
+    }
     // 节日当理由：价格词得在同一个小句或紧跟的下一个小句里（「过了春节旺季，地接价格都回落了」）；
     // 隔着别的话的不算（「错开国庆高峰，人少景美，性价比很高」说的是人少）
     const reason = HOLIDAY_REASON.exec(s);
     if (reason) {
       const spans = clauseSpans(s);
-      const k = Math.max(0, spans.findIndex((c) => reason.index < c.end));
+      const k = Math.max(
+        0,
+        spans.findIndex((c) => reason.index < c.end),
+      );
       const priced = [k, k + 1].filter((x) => spans[x] && PRICE_WORD.test(s.slice(spans[x].at, spans[x].end)));
-      if (priced.length) { cutClauses(reason.index, spans[priced.at(-1)!].at); continue; }
+      if (priced.length) {
+        cutClauses(reason.index, spans[priced.at(-1)!].at);
+        continue;
+      }
     }
     const hs = HOLIDAY_SURCHARGE.exec(s);
-    if (hs && !(route && monthsOf(hs[1]).some((x) => peakMonths(route.bestSeason).has(x)))) { cutClauses(hs.index); continue; }
+    if (hs && !(route && monthsOf(hs[1]).some((x) => peakMonths(route.bestSeason).has(x)))) {
+      cutClauses(hs.index);
+      continue;
+    }
     const cmp = DATE_COMPARE.exec(s);
-    if (cmp && !compareHolds(cmp, s, session, route)) { cutClauses(cmp.index); continue; }
+    if (cmp && !compareHolds(cmp, s, session, route)) {
+      cutClauses(cmp.index);
+      continue;
+    }
     // 比日子的已由 compareHolds 核过（「比国庆便宜」里的国庆是拿来比的，不是在说国庆不上浮）
     const season = cmp ? undefined : wrongSeasonClaim(s, near, text, ctx);
-    if (season) { cutClauses(season.at, Math.max(season.at, season.end - 1)); continue; }
+    if (season) {
+      cutClauses(season.at, Math.max(season.at, season.end - 1));
+      continue;
+    }
     const claims = [...s.matchAll(BUDGET_CLAIM)]
       .filter((m) => !BUDGET_CLAIM_INTENT.test(s.slice(0, m.index)))
       .map((m) => ({ at: u.start + m.index!, end: u.start + m.index! + m[0].length }));
     if (claims.length && !budgetClaimHolds(text, u, claims, session, calls, ctx.travelers)) {
-      cutClauses(claims[0].at - u.start, claims.at(-1)!.at - u.start, claims.map((c) => ({ at: c.at - u.start, end: c.end - u.start })));
+      cutClauses(
+        claims[0].at - u.start,
+        claims.at(-1)!.at - u.start,
+        claims.map((c) => ({ at: c.at - u.start, end: c.end - u.start })),
+      );
       continue;
     }
     const change = CANT_CHANGE.exec(s);
-    if (change && !CANT_CHANGE_OK.test(s)) { cutClauses(change.index); continue; }
+    if (change && !CANT_CHANGE_OK.test(s)) {
+      cutClauses(change.index);
+      continue;
+    }
     const safe = ALTITUDE_ASSURANCE.exec(s);
-    if (safe && !assuranceBacked(s, near, text, ctx)) { cutClauses(safe.index); continue; }
+    if (safe && !assuranceBacked(s, near, text, ctx)) {
+      cutClauses(safe.index);
+      continue;
+    }
     const svc = SERVICE_CLAIMS.find((c) => c.re.test(s) && !(typeof c.skip === 'function' ? c.skip(s) : c.skip.test(s)));
     if (svc) {
       // 换上去的话回复里已经有了（别处说过，或前面一句刚换过）：只删不补
@@ -641,11 +808,32 @@ function dropClaimsIn(text: string, ctx: ClaimCtx): { text: string; dropped: str
     let t = text;
     for (const c of [...clauseCuts].sort((x, y) => y.at - x.at)) t = t.slice(0, c.at) + t.slice(c.end);
     const again = dropClaimsIn(t, ctx);
-    return { text: again.text, dropped: [...clauseCuts.map((c) => text.slice(c.at, c.end).replace(/^[，,；;—]+|[，,；;—]+$/g, '').trim()), ...again.dropped] };
+    return {
+      text: again.text,
+      dropped: [
+        ...clauseCuts.map((c) =>
+          text
+            .slice(c.at, c.end)
+            .replace(/^[，,；;—]+|[，,；;—]+$/g, '')
+            .trim(),
+        ),
+        ...again.dropped,
+      ],
+    };
   }
   if (!cuts.length) return { text, dropped: [] };
   return dropSentences(text, cuts);
 }
 
 /** 仅供自测使用的内部函数出口 */
-export const __priceRulesTest = { whensIn, NO_SUCH_RULE, SCARCITY, DATE_COMPARE, BUDGET_CLAIM, OFF_PEAK_WORD, PEAK_WORD, CANT_CHANGE, ALTITUDE_ASSURANCE };
+export const __priceRulesTest = {
+  whensIn,
+  NO_SUCH_RULE,
+  SCARCITY,
+  DATE_COMPARE,
+  BUDGET_CLAIM,
+  OFF_PEAK_WORD,
+  PEAK_WORD,
+  CANT_CHANGE,
+  ALTITUDE_ASSURANCE,
+};
