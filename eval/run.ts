@@ -37,7 +37,13 @@ interface Turn {
   expectStatus?: number;
   expectOrderCount?: number;
 }
-interface Case { id: string; desc: string; tags: string[]; turns: Turn[]; realOnly?: boolean }
+interface Case {
+  id: string;
+  desc: string;
+  tags: string[];
+  turns: Turn[];
+  realOnly?: boolean;
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const cases = JSON.parse(fs.readFileSync(path.join(HERE, 'cases.json'), 'utf8')) as Case[];
@@ -60,7 +66,13 @@ console.log = () => {}; // 评测期间静音业务日志，只保留报告
 const origErr = console.error;
 console.error = () => {};
 
-interface Failure { caseId: string; turn: number; say: string; why: string; got: string }
+interface Failure {
+  caseId: string;
+  turn: number;
+  say: string;
+  why: string;
+  got: string;
+}
 const failures: Failure[] = [];
 let checks = 0;
 const latencies: number[] = [];
@@ -69,7 +81,14 @@ const latencies: number[] = [];
  * 往返次数多，正是容易冲破「单轮 8 秒」的地方；首轮快不代表整段对话每一轮都快。
  * 开了对冲时顺带记下这一轮加发/胜出了几次，才能对上「哪几轮是对冲救回来的」。
  */
-interface TurnLatency { caseId: string; turn: number; ms: number; multiTurn: boolean; hedgeFired: number; hedgeWon: number }
+interface TurnLatency {
+  caseId: string;
+  turn: number;
+  ms: number;
+  multiTurn: boolean;
+  hedgeFired: number;
+  hedgeWon: number;
+}
 const turnLatencies: TurnLatency[] = [];
 // 微信客服里客户等 8 秒以上就以为没人在（选型史见 src/llm.ts DEFAULT_MAIN_MODEL），这是单轮的硬线
 const SLOW_MS = 8000;
@@ -99,8 +118,12 @@ async function runCase(c: Case): Promise<boolean> {
     const h1 = llmStats();
     latencies.push(ms);
     turnLatencies.push({
-      caseId: c.id, turn: i + 1, ms, multiTurn: c.turns.length > 1,
-      hedgeFired: h1.hedgeFired - h0.hedgeFired, hedgeWon: h1.hedgeWon - h0.hedgeWon,
+      caseId: c.id,
+      turn: i + 1,
+      ms,
+      multiTurn: c.turns.length > 1,
+      hedgeFired: h1.hedgeFired - h0.hedgeFired,
+      hedgeWon: h1.hedgeWon - h0.hedgeWon,
     });
     const text = reply.text ?? '';
 
@@ -122,7 +145,9 @@ async function runCase(c: Case): Promise<boolean> {
 }
 
 // 订阅引擎的工具调用观测钩子，用于断言「这一轮该调的工具调了没」
-onToolCall((name) => { toolCalls.push(name); });
+onToolCall((name) => {
+  toolCalls.push(name);
+});
 
 await buildIndex();
 const started = Date.now();
@@ -157,18 +182,26 @@ const usage = usageToday();
 const hedge = llmStats();
 
 console.log(`\n${'='.repeat(58)}`);
-console.log(`回归评测：${passed}/${results.length} 用例通过${skipped ? `（mock 模式跳过 ${skipped} 条需真实模型的用例）` : ''} · ${checks} 项断言 · 耗时 ${((Date.now() - started) / 1000).toFixed(1)}s`);
-console.log(`响应延迟：P50 ${p50}ms · P90 ${p90}ms · P95 ${p95}ms · 超8秒 ${over8s} 轮（${share(over8s, latencies.length)}）· 最大 ${maxMs}ms · 共 ${latencies.length} 轮`);
-console.log(`多轮用例逐轮：P50 ${pct(multi, 0.5)}ms · P90 ${pct(multi, 0.9)}ms · 超8秒 ${multiOver8s} 轮（${share(multiOver8s, multi.length)}）· 共 ${multi.length} 轮`);
+console.log(
+  `回归评测：${passed}/${results.length} 用例通过${skipped ? `（mock 模式跳过 ${skipped} 条需真实模型的用例）` : ''} · ${checks} 项断言 · 耗时 ${((Date.now() - started) / 1000).toFixed(1)}s`,
+);
+console.log(
+  `响应延迟：P50 ${p50}ms · P90 ${p90}ms · P95 ${p95}ms · 超8秒 ${over8s} 轮（${share(over8s, latencies.length)}）· 最大 ${maxMs}ms · 共 ${latencies.length} 轮`,
+);
+console.log(
+  `多轮用例逐轮：P50 ${pct(multi, 0.5)}ms · P90 ${pct(multi, 0.9)}ms · 超8秒 ${multiOver8s} 轮（${share(multiOver8s, multi.length)}）· 共 ${multi.length} 轮`,
+);
 console.log(`模型成本：¥${usage.totalCny.toFixed(4)}（${usage.totalCalls} 次调用）`);
 // 前缀缓存的验收位。命中率长期为 0 而调用量不小，说明 buildSystemPrompt 的可缓存前缀
 // 又被什么东西截断了——这种退化不报错、只多花钱，没有这行数字就永远发现不了。
 if (!isMock) {
   console.log(`前缀缓存：命中 ${(usage.cacheHitRate * 100).toFixed(1)}% 输入 token · 省下 ¥${usage.cacheSavedCny.toFixed(4)}`);
   // 开了对冲时，上面的延迟里有一部分是对冲模型答的，花费也有一部分记在它名下——不打出来就没法跨版本对比
-  console.log(hedge.hedgeModel
-    ? `对冲：${hedge.hedgeModel}（主模型超 ${hedge.hedgeMs}ms 加发）· 本次加发 ${hedge.hedgeFired} 次、对冲胜出 ${hedge.hedgeWon} 次，延迟与成本含对冲效果`
-    : '对冲：未开启');
+  console.log(
+    hedge.hedgeModel
+      ? `对冲：${hedge.hedgeModel}（主模型超 ${hedge.hedgeMs}ms 加发）· 本次加发 ${hedge.hedgeFired} 次、对冲胜出 ${hedge.hedgeWon} 次，延迟与成本含对冲效果`
+      : '对冲：未开启',
+  );
 }
 console.log('='.repeat(58));
 for (const [tag, b] of Object.entries(byTag)) {
@@ -183,15 +216,33 @@ if (failures.length) {
   }
 }
 if (jsonOut) {
-  fs.writeFileSync(jsonOut, JSON.stringify({
-    at: new Date().toISOString(), passed, total: results.length, checks,
-    latencyP50: p50, latencyP90: p90, latencyP95: p95, latencyMax: maxMs, over8s,
-    multiTurn: { turns: multi.length, p50: pct(multi, 0.5), p90: pct(multi, 0.9), over8s: multiOver8s },
-    cost: usage.totalCny, cacheHitRate: usage.cacheHitRate, byModel: usage.byModel,
-    hedge: { model: hedge.hedgeModel, ms: hedge.hedgeMs, fired: hedge.hedgeFired, won: hedge.hedgeWon },
-    reasoningEffort: hedge.reasoningEffort,
-    results, failures, turns: turnLatencies,
-  }, null, 2));
+  fs.writeFileSync(
+    jsonOut,
+    JSON.stringify(
+      {
+        at: new Date().toISOString(),
+        passed,
+        total: results.length,
+        checks,
+        latencyP50: p50,
+        latencyP90: p90,
+        latencyP95: p95,
+        latencyMax: maxMs,
+        over8s,
+        multiTurn: { turns: multi.length, p50: pct(multi, 0.5), p90: pct(multi, 0.9), over8s: multiOver8s },
+        cost: usage.totalCny,
+        cacheHitRate: usage.cacheHitRate,
+        byModel: usage.byModel,
+        hedge: { model: hedge.hedgeModel, ms: hedge.hedgeMs, fired: hedge.hedgeFired, won: hedge.hedgeWon },
+        reasoningEffort: hedge.reasoningEffort,
+        results,
+        failures,
+        turns: turnLatencies,
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`\n结果已写入 ${jsonOut}`);
 }
 process.exit(failures.length ? 1 : 0);

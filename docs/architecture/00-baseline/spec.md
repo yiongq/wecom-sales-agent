@@ -57,12 +57,12 @@ wecom-sales-agent 现在是一个单实例 demo：Node 22 + Hono + TypeScript，
 export type DeployProfileName = 'demo' | 'prod';
 
 export interface DeployFlags {
-  reset_command: boolean;       // 「重置」口令
+  reset_command: boolean; // 「重置」口令
   anon_readonly_admin: boolean; // 后台匿名只读：种子会话 + 请求者本人的访客会话
-  seed_freshen: boolean;        // 种子演示数据的时间保鲜
-  visitor_simulator: boolean;   // 网页模拟器：匿名访客聊天、SSE 与 sim- 会话直读
-  mock_pay: boolean;            // 不带管理凭据也能调用的模拟支付
-  ai_disclosure: 'always';      // AI 显式标识。00 只有这一个取值，见「AI 显式标识」
+  seed_freshen: boolean; // 种子演示数据的时间保鲜
+  visitor_simulator: boolean; // 网页模拟器：匿名访客聊天、SSE 与 sim- 会话直读
+  mock_pay: boolean; // 不带管理凭据也能调用的模拟支付
+  ai_disclosure: 'always'; // AI 显式标识。00 只有这一个取值，见「AI 显式标识」
 }
 
 export interface DeployProfile {
@@ -128,12 +128,12 @@ export interface ChatMessage {
 
 四个名字是唯一接口。hook、CI 和 Claude Code 的 Stop hook 只调这四个名字，背后接什么工具只在 `package.json` 里改：
 
-| 名字 | 背后 |
-|---|---|
-| `format:check` | `oxfmt --check`（oxfmt 0.68） |
-| `lint` | `oxlint --deny-warnings`（oxlint 1.83），后面接公开边界检查（见「CI 与部署」） |
-| `typecheck` | `tsc --noEmit`（不变） |
-| `test` | 6 组 selftest 依次跑，再跑 `LLM_MOCK=1 eval/run.ts`（已串好，不变；不迁 vitest） |
+| 名字           | 背后                                                                             |
+| -------------- | -------------------------------------------------------------------------------- |
+| `format:check` | `oxfmt --check`（oxfmt 0.68）                                                    |
+| `lint`         | `oxlint --deny-warnings`（oxlint 1.83），后面接公开边界检查（见「CI 与部署」）   |
+| `typecheck`    | `tsc --noEmit`（不变）                                                           |
+| `test`         | 6 组 selftest 依次跑，再跑 `LLM_MOCK=1 eval/run.ts`（已串好，不变；不迁 vitest） |
 
 - lefthook 2.1：pre-commit 跑 `format:check`、`lint`、`typecheck`；commit-msg 跑 commitlint（Conventional Commits，标题不超过 50 字符）和 AI co-author 署名拦截。
 - `prepare` 脚本负责装 hook。Docker 构建和 `git archive` 出来的目录都会跑 `pnpm install`，而这两处都没有 `.git`，所以 `prepare` 在这种目录里必须什么也不做，并且不能让安装失败。
@@ -153,25 +153,25 @@ export interface ChatMessage {
 
 ## 部署 profile 与开关
 
-| 开关 | demo 默认 | prod 封顶 | 关掉后可观察的行为 | 代码位置 |
-|---|---|---|---|---|
-| `reset_command` | 开 | 关 | 「重置 / 重新开始 / 重来 / 清空会话 / reset」按普通客户消息入库。已转人工时照常静默；否则回一句固定话术「想换方向或改订单，直接告诉我新的需求就行～」，不调模型。阶段、画像、订单和转人工状态都不变 | `engine.ts` `handleMessageInner` 开头的重置分支 |
-| `anon_readonly_admin` | 开 | 关 | 不带有效管理凭据时，`GET /api/sessions`、`GET /api/orders`、`GET /api/usage`、`GET /api/sessions/<种子 id>` 一律 401 | `server.ts` 的列表路由、`sessionReadAuth`、`/api/usage` |
-| `seed_freshen` | 开 | 关 | 种子会话（`wecom:cust_*`）和它们订单的时间戳不再平移 | `store.ts` `freshenDemoData` |
-| `visitor_simulator` | 开 | 关 | `POST /api/chat`、`GET /api/stream/:id`、`GET /api/sessions/sim-…`、`/chat.html`、`/guide.html` 返回 404，`/` 改跳 `/admin.html`。没有访客，访客 LLM 预算闸不再触发，`/healthz` 的 `visitorLLM` 照常输出。访客会话清理不归这个开关管，始终运行 | `server.ts` 对应路由与静态托管；`budget.ts` `tryReserveVisitorLLM` 和 `engine.ts` 的访客预算分支不用改，入口关掉后就走不到 |
-| `mock_pay` | 开 | 关 | 不带管理凭据的 `POST /api/orders/:id/pay` 返回 404，订单状态不变。带凭据（并经过 `sameOriginOnly`）仍能标记已付，并触发 `notifyPaid`。`/pay` 页、支付卡片和话术都不变，见下文「mock_pay 与 prod 的真实客户」 | `server.ts` 支付路由 |
-| `ai_disclosure` | `always` | `always` | 00 只有 `always`，见「AI 显式标识」 | `adapters/wecom.ts` 两段欢迎语；`public/chat.html` 的开场 |
+| 开关                  | demo 默认 | prod 封顶 | 关掉后可观察的行为                                                                                                                                                                                                                             | 代码位置                                                                                                                   |
+| --------------------- | --------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `reset_command`       | 开        | 关        | 「重置 / 重新开始 / 重来 / 清空会话 / reset」按普通客户消息入库。已转人工时照常静默；否则回一句固定话术「想换方向或改订单，直接告诉我新的需求就行～」，不调模型。阶段、画像、订单和转人工状态都不变                                            | `engine.ts` `handleMessageInner` 开头的重置分支                                                                            |
+| `anon_readonly_admin` | 开        | 关        | 不带有效管理凭据时，`GET /api/sessions`、`GET /api/orders`、`GET /api/usage`、`GET /api/sessions/<种子 id>` 一律 401                                                                                                                           | `server.ts` 的列表路由、`sessionReadAuth`、`/api/usage`                                                                    |
+| `seed_freshen`        | 开        | 关        | 种子会话（`wecom:cust_*`）和它们订单的时间戳不再平移                                                                                                                                                                                           | `store.ts` `freshenDemoData`                                                                                               |
+| `visitor_simulator`   | 开        | 关        | `POST /api/chat`、`GET /api/stream/:id`、`GET /api/sessions/sim-…`、`/chat.html`、`/guide.html` 返回 404，`/` 改跳 `/admin.html`。没有访客，访客 LLM 预算闸不再触发，`/healthz` 的 `visitorLLM` 照常输出。访客会话清理不归这个开关管，始终运行 | `server.ts` 对应路由与静态托管；`budget.ts` `tryReserveVisitorLLM` 和 `engine.ts` 的访客预算分支不用改，入口关掉后就走不到 |
+| `mock_pay`            | 开        | 关        | 不带管理凭据的 `POST /api/orders/:id/pay` 返回 404，订单状态不变。带凭据（并经过 `sameOriginOnly`）仍能标记已付，并触发 `notifyPaid`。`/pay` 页、支付卡片和话术都不变，见下文「mock_pay 与 prod 的真实客户」                                   | `server.ts` 支付路由                                                                                                       |
+| `ai_disclosure`       | `always`  | `always`  | 00 只有 `always`，见「AI 显式标识」                                                                                                                                                                                                            | `adapters/wecom.ts` 两段欢迎语；`public/chat.html` 的开场                                                                  |
 
 - `sim-` 会话能不能凭 id 直读，只由 `visitor_simulator` 决定；`anon_readonly_admin` 只管列表、`/api/usage` 和种子 id 的直读。
 
 环境变量：
 
-| 变量 | 取值 | 未设置或空串时 | 其他情况 |
-|---|---|---|---|
-| `DEPLOY_PROFILE` | `demo` / `prod` | 按 `demo` | 非法值启动失败 |
-| `FLAG_RESET_COMMAND`、`FLAG_ANON_READONLY_ADMIN`、`FLAG_SEED_FRESHEN`、`FLAG_VISITOR_SIMULATOR`、`FLAG_MOCK_PAY` | `on` / `off` | 取 profile 的默认值 | 非法值启动失败；prod 下设 `on` 也启动失败 |
-| `FLAG_AI_DISCLOSURE` | `always` | `always` | 其他任何值启动失败（00 不提供 `on_ask`） |
-| `DEMO_FRESHEN`（旧变量） | `0` | 不影响 | `0` 等价于 `FLAG_SEED_FRESHEN=off`；和 `FLAG_SEED_FRESHEN=on` 同时出现时启动失败；其他值照旧忽略。现网 `.env` 里的这一项不用改 |
+| 变量                                                                                                             | 取值            | 未设置或空串时      | 其他情况                                                                                                                       |
+| ---------------------------------------------------------------------------------------------------------------- | --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `DEPLOY_PROFILE`                                                                                                 | `demo` / `prod` | 按 `demo`           | 非法值启动失败                                                                                                                 |
+| `FLAG_RESET_COMMAND`、`FLAG_ANON_READONLY_ADMIN`、`FLAG_SEED_FRESHEN`、`FLAG_VISITOR_SIMULATOR`、`FLAG_MOCK_PAY` | `on` / `off`    | 取 profile 的默认值 | 非法值启动失败；prod 下设 `on` 也启动失败                                                                                      |
+| `FLAG_AI_DISCLOSURE`                                                                                             | `always`        | `always`            | 其他任何值启动失败（00 不提供 `on_ask`）                                                                                       |
+| `DEMO_FRESHEN`（旧变量）                                                                                         | `0`             | 不影响              | `0` 等价于 `FLAG_SEED_FRESHEN=off`；和 `FLAG_SEED_FRESHEN=on` 同时出现时启动失败；其他值照旧忽略。现网 `.env` 里的这一项不用改 |
 
 启动：
 
@@ -216,13 +216,14 @@ export interface ChatMessage {
    - 启动重放时，按 `msgid` 判断这条消息的占位是否已经记过，不比对占位文本：连着发的两张图片，占位文本一模一样。
 2. **`HANDOFF_REQUEST` 认不出「人工」的几种说法。** 按下表修改 `engine.ts` 的 `HANDOFF_REQUEST` / `isHandoffIntent`，向量加进 `dejargon.selftest.ts` 的「必须转 / 不该转」两张表：
 
-   | 单独发这一句 | 期望 |
-   |---|---|
-   | `人工`、`人工！`、`找人工`、`人工服务`、`接人工`、`真人`、`要真人` | 转人工 |
+   | 单独发这一句                                                           | 期望                                             |
+   | ---------------------------------------------------------------------- | ------------------------------------------------ |
+   | `人工`、`人工！`、`找人工`、`人工服务`、`接人工`、`真人`、`要真人`     | 转人工                                           |
    | `你是真人还是机器人？`、`你是真人吗`、`你是人工智能吗`、`有真人导游吗` | 不转（身份问题走身份兜底，问服务角色不等于要人） |
-   | `三亚有人工沙滩吗`、`西湖是人工湖吗`、`那边人工费贵吗` | 不转（旅行话题里的「人工」） |
+   | `三亚有人工沙滩吗`、`西湖是人工湖吗`、`那边人工费贵吗`                 | 不转（旅行话题里的「人工」）                     |
 
    `engine.selftest.ts` 里 u2b 用例的客户原话「要真人」会因此走确定性转人工，假模型的脚本用不完，断言失败。把原话换成一句不会触发确定性转人工的说法（例如「能让顾问直接跟我聊吗」），保留它原本要测的「只剩许诺时换成顾问会联系」。这是本阶段唯一一处改动现有断言的地方。
+
 3. **`adapterFor` 遇到未知渠道时默认走模拟器。** 模拟器在没有 SSE 连接时 `push` 返回 true，于是后台显示「已回复」，实际什么也没发出去。改成返回一个推送一律失败的空适配器，并记一条点名渠道和会话的 error 日志。不能 throw：`POST /api/orders/:id/pay` 在 `markOrderPaid` 之后才调它，抛出会让一个已经付款成功的请求返回 500。支付路由在推送失败时往会话里记一条系统备注，与 `/reply` 的现有做法一致；种子会话（`wecom:cust_*`）除外，它们对应的企微客户是编造的，推送必然失败，公开演示的种子会话里不能因此多出失败备注。
 4. **老客户欢迎语里「咱们之前聊的内容我都记得」是不实承诺。** 会话不超过 30 条时，引擎把整段历史交给模型；超过后最多交 39 条（`historyWindow`）。超过 400 条的会话会被裁到 300 条，「重置」还会清空历史。新文案不承诺记忆。
 5. **身份兜底漏了两条提前返回的路径。** 兜底只在走模型那条路径的末尾执行；确定性转人工（`isHandoffIntent` → `handoffReply`）和重发支付链接（`resendPayReply`）都在它之前就返回了。实测「你是机器人吧？我要投诉」和「你是真人吗？转人工」都转了人工，回复里都没有 AI 字样。改为：这两条路径同样在客户这句命中 `IDENTITY_QUESTION`、回复里又没有 AI 字样时，把 `IDENTITY_ANSWER` 放在回复最前面。

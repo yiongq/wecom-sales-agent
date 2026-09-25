@@ -47,6 +47,7 @@
   - 需要多个实例。
 
   多租户 RLS 和 pgvector 知识库都已经排进 01–04，这些条件在路线内一定会满足。走过渡就要多迁移一次数据，多维护一种方言。
+
 - **为什么选 Drizzle。**
   - RLS 策略（`pgPolicy`）、pgvector 列（`vector` / `halfvec`）和 HNSW 索引都能直接写在 schema 里。
   - 有官方的 PGlite 驱动，drizzle-kit 也支持 `driver: "pglite"`。

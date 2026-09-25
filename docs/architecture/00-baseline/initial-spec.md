@@ -10,10 +10,12 @@
 ## 模块与文件归属
 
 ### 1. 业务数据（`data/`）
+
 - `data/routes.json`：`Route[]`，14 条高端定制旅行线路（马尔代夫、瑞士、日本、新西兰、北欧极光、迪拜、巴厘岛、意大利、肯尼亚 safari、南极、三亚、新疆、摩洛哥、法国），价格 1.5w–16w/人量级，字段见 types.ts。内容要像真产品：highlights 具体到酒店名/体验项目。
 - `data/sop.md`：销售 SOP，供引擎注入 system prompt。包含：各销售阶段的目标与话术原则（一次只问 1–2 个问题、先共情再推荐、报价必须来自工具结果不得编造、每人价 × 人数 = 总价）、异议处理套路（价格贵 → 拆价值/给替代）、转人工条件（客户明确要求、投诉、退款、连续两轮听不懂）、微信语气规范（口语化、短句、适度 emoji、不堆砌）。
 
 ### 2. 引擎（`src/store.ts`、`src/llm.ts`、`src/tools.ts`、`src/engine.ts`）
+
 - `store.ts`：内存 Map + JSON 落盘（`var/sessions.json`、`var/orders.json`，写时防抖即可）。导出：`getOrCreateSession(id, channel)`、`getSession(id)`、`listSessions()`、`saveSession(s)`、`createOrder(o)`、`getOrder(id)`、`markOrderPaid(id)`、`listOrders()`。
 - `llm.ts`：OpenAI 兼容 chat completions 封装（fetch，读 env：LLM_BASE_URL/LLM_API_KEY/LLM_MODEL），支持 `tools` 参数与多轮 tool 调用循环（最多 5 轮）。`LLM_MOCK=1` 时返回确定性脚本：按用户消息关键词依次走「问需 → 推荐(调 search_routes) → 报价(调 create_quote) → 下单(调 create_order)」，保证离线冒烟能跑通全链路。
 - `tools.ts`：function calling 工具集，实现 + JSON Schema 定义：
@@ -25,6 +27,7 @@
 - `engine.ts`：核心导出 `handleMessage(sessionId: string, text: string, channel: string): Promise<AgentReply>`。职责：取/建 session → 追加客户消息 → 组装 system prompt（sop.md + 当前画像 + 阶段 + 最近 30 条历史）→ LLM 工具循环 → 更新 stage 与 profile（让 LLM 在回复末尾以约定 JSON 块输出 stage/profile 增量，引擎解析后剥离，解析失败则沿用旧值）→ 追加 agent 消息 → 落盘 → 返回 AgentReply。已 handedOver 的会话不再走 LLM，返回固定话术「已为您转接人工顾问」。另导出 `notifyPaid(orderId): Promise<{sessionId, text} | null>`：支付成功后生成跟进话术（LLM 或模板），由调用方负责经 adapter push。
 
 ### 3. 服务与界面（`src/server.ts`、`src/adapters/simulator.ts`、`src/adapters/wecom.ts`、`public/chat.html`、`public/pay.html`、`public/admin.html`）
+
 - `server.ts`：Hono app，端口 env.PORT（默认 3200）。路由：
   - `GET /` → 302 到 `/chat.html`；静态托管 `public/`
   - `POST /api/chat` `{sessionId?, text}` → `{sessionId, reply: AgentReply}`（无 sessionId 则生成）
@@ -47,6 +50,7 @@
 - `public/admin.html`：销售后台。左侧会话列表（阶段徽标颜色区分），右侧选中会话：客户画像卡（目的地/人数/日期/预算）、当前销售阶段进度条（greeting→…→paid）、消息流、订单列表、「接管会话」按钮 + 接管后的回复输入框。轮询刷新即可（2s）。这一页是「销售阶段判断 + 画像沉淀 + 人工接管」的核心演示面。
 
 ## 验收（集成阶段执行）
+
 1. `pnpm install` 后 `pnpm typecheck` 零错误。
 2. `LLM_MOCK=1 pnpm start` 起服务，curl 依次发「你好」「想去马尔代夫蜜月」「两个人，预算每人3万」「就订这个」走完 greeting→discovery→recommend→quote→closing，最终拿到 orderId；`POST /api/orders/:id/pay` 后 session 出现支付跟进消息且 stage=paid。
 3. chat.html / pay.html / admin.html 三页在浏览器可用（用 chrome-devtools 或 playwright 截图核验布局不破）。

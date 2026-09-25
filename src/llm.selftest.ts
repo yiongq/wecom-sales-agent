@@ -13,12 +13,29 @@ process.env.VAR_DIR = varDir;
 
 // 设成空串而不是 delete：env.ts 只填「尚不存在」的变量，空串能挡住 .env 里的真实配置
 const ENV_KEYS = [
-  'LLM_PROVIDER', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL', 'LLM_MODEL_CHEAP',
-  'ZHIPU_BASE_URL', 'ZHIPU_API_KEY', 'ZHIPU_MODEL', 'ZHIPU_MODEL_CHEAP',
-  'DEEPSEEK_BASE_URL', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL', 'DEEPSEEK_MODEL_CHEAP',
-  'EMBED_BASE_URL', 'EMBED_API_KEY', 'EMBED_MODEL',
-  'LLM_REASONING_EFFORT', 'LLM_HEDGE_MODEL', 'LLM_HEDGE_MS', 'LLM_HEDGE_MS_FOLLOWUP', 'LLM_SLOW_TURN_MS',
-  'LLM_TIMEOUT_MS', 'LLM_ROUND_TIMEOUT_MS',
+  'LLM_PROVIDER',
+  'LLM_BASE_URL',
+  'LLM_API_KEY',
+  'LLM_MODEL',
+  'LLM_MODEL_CHEAP',
+  'ZHIPU_BASE_URL',
+  'ZHIPU_API_KEY',
+  'ZHIPU_MODEL',
+  'ZHIPU_MODEL_CHEAP',
+  'DEEPSEEK_BASE_URL',
+  'DEEPSEEK_API_KEY',
+  'DEEPSEEK_MODEL',
+  'DEEPSEEK_MODEL_CHEAP',
+  'EMBED_BASE_URL',
+  'EMBED_API_KEY',
+  'EMBED_MODEL',
+  'LLM_REASONING_EFFORT',
+  'LLM_HEDGE_MODEL',
+  'LLM_HEDGE_MS',
+  'LLM_HEDGE_MS_FOLLOWUP',
+  'LLM_SLOW_TURN_MS',
+  'LLM_TIMEOUT_MS',
+  'LLM_ROUND_TIMEOUT_MS',
 ];
 for (const k of ENV_KEYS) process.env[k] = '';
 process.env.LLM_MOCK = '0';
@@ -35,7 +52,11 @@ function useZhipu(model: string, cheap = ''): void {
 }
 
 // ---------- 假 fetch ----------
-interface Call { url: string; body: Record<string, any>; signal?: AbortSignal | null }
+interface Call {
+  url: string;
+  body: Record<string, any>;
+  signal?: AbortSignal | null;
+}
 let calls: Call[] = [];
 let handler: (c: Call) => Promise<Response> = async () => ok('默认回复');
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -53,42 +74,66 @@ function ok(content: string, extra: Record<string, unknown> = {}, usage: Record<
 }
 function toolCallResp(id: string, name: string, args: Record<string, unknown>, extra: Record<string, unknown> = {}): Response {
   return Response.json({
-    choices: [{
-      message: { role: 'assistant', content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }], ...extra },
-      finish_reason: 'tool_calls',
-    }],
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }],
+          ...extra,
+        },
+        finish_reason: 'tool_calls',
+      },
+    ],
     usage: { prompt_tokens: 100, completion_tokens: 10 },
   });
 }
 /** 一次响应里并列多个工具调用，id 按「第几次调用_第几个」编，便于对回 tool 消息 */
 function multiToolResp(round: number, list: [string, Record<string, unknown>][]): Response {
   return Response.json({
-    choices: [{
-      message: {
-        role: 'assistant', content: '',
-        tool_calls: list.map(([name, args], i) => ({ id: `c${round}_${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } })),
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: list.map(([name, args], i) => ({
+            id: `c${round}_${i}`,
+            type: 'function',
+            function: { name, arguments: JSON.stringify(args) },
+          })),
+        },
+        finish_reason: 'tool_calls',
       },
-      finish_reason: 'tool_calls',
-    }],
+    ],
     usage: { prompt_tokens: 100, completion_tokens: 10 },
   });
 }
-const err = (status: number, code: string, message: string): Response =>
-  Response.json({ error: { code, message } }, { status });
+const err = (status: number, code: string, message: string): Response => Response.json({ error: { code, message } }, { status });
 const ALWAYS_THINKING_1210 = () => err(400, '1210', '该模型始终思考，不支持关闭思考；请使用 low、high 或 max。');
 /** 可被 abort 的延迟：对冲的输家要能真被取消 */
 const delay = (ms: number, signal?: AbortSignal | null): Promise<void> =>
   new Promise((resolve, reject) => {
     const t = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => { clearTimeout(t); reject(signal.reason); }, { once: true });
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t);
+        reject(signal.reason);
+      },
+      { once: true },
+    );
   });
 
 /** 收集日志而不打印，断言日志内容用 */
 async function captureLogs<T>(fn: () => Promise<T>): Promise<{ out: T; logs: string[] }> {
   const logs: string[] = [];
   const orig = { log: console.log, warn: console.warn, error: console.error };
-  const grab = (...a: unknown[]) => { logs.push(a.map(String).join(' ')); };
-  console.log = grab; console.warn = grab; console.error = grab;
+  const grab = (...a: unknown[]) => {
+    logs.push(a.map(String).join(' '));
+  };
+  console.log = grab;
+  console.warn = grab;
+  console.error = grab;
   try {
     return { out: await fn(), logs };
   } finally {
@@ -103,7 +148,9 @@ const { embedCfg, buildIndex } = await import('./retrieval.js');
 const { getSuggestion, getDraftReply } = await import('./insight.js');
 type ChatOptions = Parameters<typeof chat>[0];
 
-const TOOLS = [{ type: 'function', function: { name: 'search_routes', description: 'x', parameters: { type: 'object', properties: {} } } }] as unknown as ChatOptions['tools'];
+const TOOLS = [
+  { type: 'function', function: { name: 'search_routes', description: 'x', parameters: { type: 'object', properties: {} } } },
+] as unknown as ChatOptions['tools'];
 const baseOpts = (over: Partial<ChatOptions> = {}): ChatOptions => ({
   system: 'SYS',
   messages: [{ role: 'user', content: '想去四川' }],
@@ -117,7 +164,8 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
 // ---------- L1 思考参数按模型决定 ----------
 {
   useZhipu('glm-5.2');
-  calls = []; handler = async () => ok('在');
+  calls = [];
+  handler = async () => ok('在');
   await chat(baseOpts());
   assert.deepEqual(calls[0].body.thinking, { type: 'disabled' }, 'glm-5.2 应关闭思考');
   assert.equal(calls[0].body.reasoning_effort, undefined, '能关思考的模型不带 reasoning_effort');
@@ -130,10 +178,12 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
     assert.equal(calls[0].body.reasoning_effort, 'low', `${m} 默认 reasoning_effort=low`);
   }
   process.env.LLM_REASONING_EFFORT = 'high';
-  calls = []; await chat(baseOpts());
+  calls = [];
+  await chat(baseOpts());
   assert.equal(calls[0].body.reasoning_effort, 'high', 'LLM_REASONING_EFFORT 应生效');
   process.env.LLM_REASONING_EFFORT = 'medium';
-  calls = []; await chat(baseOpts());
+  calls = [];
+  await chat(baseOpts());
   assert.equal(calls[0].body.reasoning_effort, 'low', '非法档位回落 low，而不是让每个请求 400');
   process.env.LLM_REASONING_EFFORT = '';
 
@@ -149,7 +199,8 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   process.env.DEEPSEEK_BASE_URL = 'https://api.deepseek.selftest/v1';
   process.env.DEEPSEEK_API_KEY = 'dk';
   process.env.DEEPSEEK_MODEL = 'deepseek-chat';
-  calls = []; await chat(baseOpts());
+  calls = [];
+  await chat(baseOpts());
   assert.equal('thinking' in calls[0].body, false, 'DeepSeek 不带 thinking');
   assert.equal('reasoning_effort' in calls[0].body, false, 'DeepSeek 不带 reasoning_effort');
   pass('L1 思考参数：5.3 系列 enabled+effort，其余智谱 disabled，非智谱不带，后台同源');
@@ -168,7 +219,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   assert.equal(calls[1].body.reasoning_effort, 'low');
   assert.equal(llmStats().thinkingSelfHeal, before + 1, '自愈次数 +1');
   assert.ok(llmStats().forcedThinkingModels.includes('glm-9-selftest'), '自愈后记为强制思考');
-  assert.ok(logs.some((l) => l.includes('1210') && l.includes('glm-9-selftest')), '自愈要留日志');
+  assert.ok(
+    logs.some((l) => l.includes('1210') && l.includes('glm-9-selftest')),
+    '自愈要留日志',
+  );
   calls = [];
   await chat(baseOpts());
   assert.equal(calls.length, 1, '记住之后直接发 enabled，不再先吃一次 400');
@@ -195,7 +249,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   useZhipu('glm-6-silent');
   handler = async () => ok('在', {}, { completion_tokens: 60, completion_tokens_details: { reasoning_tokens: 55 } });
   const w1 = await captureLogs(() => chat(baseOpts()));
-  assert.ok(w1.logs.some((l) => l.includes('glm-6-silent') && l.includes('disabled')), 'disabled 被无视要告警');
+  assert.ok(
+    w1.logs.some((l) => l.includes('glm-6-silent') && l.includes('disabled')),
+    'disabled 被无视要告警',
+  );
   const w2 = await captureLogs(() => chat(baseOpts()));
   assert.equal(w2.logs.length, 0, '同一模型只告警一次');
   assert.ok(!llmStats().forcedThinkingModels.includes('glm-6-silent'), '只告警不自动切换');
@@ -208,7 +265,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   handler = async () => err(404, '1211', '模型不存在');
   const { out, logs } = await captureLogs(() => completeText('s', 'u'));
   assert.equal(out, '', '失败仍回退空串，调用方走规则版');
-  assert.ok(logs.some((l) => l.includes('404') && l.includes('glm-typo')), `应打印状态码与模型，实际日志：${logs.join(' | ')}`);
+  assert.ok(
+    logs.some((l) => l.includes('404') && l.includes('glm-typo')),
+    `应打印状态码与模型，实际日志：${logs.join(' | ')}`,
+  );
   pass('completeText 非 2xx 打印状态码与模型');
 }
 
@@ -217,11 +277,23 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   useZhipu('glm-5.3-flashx');
   calls = [];
   const executed: string[] = [];
-  handler = async (c) => (c.body.messages.some((m: any) => m.role === 'tool')
-    ? ok('给您挑了两条四川线路～', { reasoning_content: 'R-SECRET-2' }, { completion_tokens: 30, completion_tokens_details: { reasoning_tokens: 25 } })
-    : toolCallResp('call_1', 'search_routes', { destination: '四川' }, { reasoning_content: 'R-SECRET-1' }));
+  handler = async (c) =>
+    c.body.messages.some((m: any) => m.role === 'tool')
+      ? ok(
+          '给您挑了两条四川线路～',
+          { reasoning_content: 'R-SECRET-2' },
+          { completion_tokens: 30, completion_tokens_details: { reasoning_tokens: 25 } },
+        )
+      : toolCallResp('call_1', 'search_routes', { destination: '四川' }, { reasoning_content: 'R-SECRET-1' });
   const reasoningBefore = usageToday().byModel['glm-5.3-flashx']?.reasoningTokens ?? 0;
-  const out = await chat(baseOpts({ executeTool: async (n) => { executed.push(n); return '[{"id":"r1"}]'; } }));
+  const out = await chat(
+    baseOpts({
+      executeTool: async (n) => {
+        executed.push(n);
+        return '[{"id":"r1"}]';
+      },
+    }),
+  );
   assert.equal(out, '给您挑了两条四川线路～');
   assert.ok(!out.includes('R-SECRET'), 'reasoning_content 绝不能进客户文本');
   assert.deepEqual(executed, ['search_routes']);
@@ -233,9 +305,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
 
   // 文本型工具调用兜底也要带回
   calls = [];
-  handler = async (c) => (c.body.messages.some((m: any) => m.role === 'assistant')
-    ? ok('稻城亚丁这条很适合您～')
-    : ok('<tool_call>search_routes<arg_key>destination</arg_key><arg_value>四川</arg_value></tool_call>', { reasoning_content: 'R-TXT' }));
+  handler = async (c) =>
+    c.body.messages.some((m: any) => m.role === 'assistant')
+      ? ok('稻城亚丁这条很适合您～')
+      : ok('<tool_call>search_routes<arg_key>destination</arg_key><arg_value>四川</arg_value></tool_call>', { reasoning_content: 'R-TXT' });
   const out2 = await chat(baseOpts());
   assert.equal(out2, '稻城亚丁这条很适合您～');
   const echoed2 = calls[1].body.messages.find((m: any) => m.role === 'assistant');
@@ -257,8 +330,14 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const out = await chat(baseOpts());
   assert.equal(out, '据已有结果回复');
   assert.equal(calls.length, 6, '6 轮后强制出文本');
-  assert.ok(calls.every((c) => !('tool_choice' in c.body)), '智谱只支持 auto，任何一轮都不发 tool_choice');
-  assert.ok(calls.slice(0, 5).every((c) => Array.isArray(c.body.tools)), '前 5 轮带 tools');
+  assert.ok(
+    calls.every((c) => !('tool_choice' in c.body)),
+    '智谱只支持 auto，任何一轮都不发 tool_choice',
+  );
+  assert.ok(
+    calls.slice(0, 5).every((c) => Array.isArray(c.body.tools)),
+    '前 5 轮带 tools',
+  );
   assert.equal('tools' in calls[5].body, false, '最后一轮不带 tools');
   const lastMsg = calls[5].body.messages.at(-1);
   assert.equal(lastMsg.role, 'system');
@@ -272,14 +351,26 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   calls = [];
   handler = async () => ok('好的');
   let executedTools = 0;
-  await chat(baseOpts({
-    messages: [{ role: 'user', content: '你好' }, { role: 'assistant', content: '您好' }, { role: 'user', content: '想去四川' }],
-    contextNote: 'NOTE-阶段=recommend',
-    prefetch: [{ name: 'search_routes', args: { destination: '四川' }, result: '[{"id":"r-sc"}]' }],
-    executeTool: async () => { executedTools++; return '[]'; },
-  }));
+  await chat(
+    baseOpts({
+      messages: [
+        { role: 'user', content: '你好' },
+        { role: 'assistant', content: '您好' },
+        { role: 'user', content: '想去四川' },
+      ],
+      contextNote: 'NOTE-阶段=recommend',
+      prefetch: [{ name: 'search_routes', args: { destination: '四川' }, result: '[{"id":"r-sc"}]' }],
+      executeTool: async () => {
+        executedTools++;
+        return '[]';
+      },
+    }),
+  );
   const msgs = calls[0].body.messages;
-  assert.deepEqual(msgs.map((m: any) => m.role), ['system', 'user', 'assistant', 'system', 'user', 'assistant', 'tool']);
+  assert.deepEqual(
+    msgs.map((m: any) => m.role),
+    ['system', 'user', 'assistant', 'system', 'user', 'assistant', 'tool'],
+  );
   assert.equal(msgs[0].content, 'SYS', 'contextNote 不能进最前面的 system（会打断前缀缓存）');
   assert.equal(msgs[3].content, 'NOTE-阶段=recommend', 'contextNote 是独立 system 消息，紧挨最新 user 之前');
   assert.equal(msgs[4].content, '想去四川', '客户原话不被改写');
@@ -292,7 +383,9 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
 
   // mock 忽略这两个字段
   process.env.LLM_MOCK = '1';
-  const mockOut = await chat(baseOpts({ contextNote: 'x', prefetch: [{ name: 'search_routes', args: {}, result: '[]' }], executeTool: async () => '[]' }));
+  const mockOut = await chat(
+    baseOpts({ contextNote: 'x', prefetch: [{ name: 'search_routes', args: {}, result: '[]' }], executeTool: async () => '[]' }),
+  );
   assert.ok(typeof mockOut === 'string' && mockOut.length > 0);
   process.env.LLM_MOCK = '0';
   pass('contextNote 作为 system 插在最新 user 前，prefetch 还原成 assistant tool_calls + tool');
@@ -317,9 +410,13 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const { maxInflight } = gateStatus();
   const hold = new AbortController();
   const safety = setTimeout(() => hold.abort(new Error('selftest 兜底释放')), 2000); // 修复前不至于卡死
-  handler = async (c) => { await delay(10_000, c.signal); return ok('占位'); };
+  handler = async (c) => {
+    await delay(10_000, c.signal);
+    return ok('占位');
+  };
   const holders = Array.from({ length: maxInflight }, () =>
-    gatedFetch('https://x.selftest/chat', { method: 'POST', body: '{}' }, () => hold.signal).catch(() => undefined));
+    gatedFetch('https://x.selftest/chat', { method: 'POST', body: '{}' }, () => hold.signal).catch(() => undefined),
+  );
   assert.equal(gateStatus().inflight, maxInflight, '（前提）名额已占满');
   const deadline = AbortSignal.timeout(200);
   const t0 = Date.now();
@@ -347,7 +444,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   // 主模型慢 → 对冲胜出，主请求被 abort，usage 记在对冲模型名下
   calls = [];
   handler = async (c) => {
-    if (c.body.model === 'glm-5.2') { await delay(3000, c.signal); return ok('主模型'); }
+    if (c.body.model === 'glm-5.2') {
+      await delay(3000, c.signal);
+      return ok('主模型');
+    }
     return ok('对冲模型', {}, { prompt_tokens: 7, completion_tokens: 3 });
   };
   const u0 = usageToday().byModel;
@@ -386,23 +486,40 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const r2 = await captureLogs(() => chat(baseOpts()));
   assert.equal(r2.out, '对冲接住');
   assert.ok(Date.now() - t1 < 1000, '主请求失败应立即对冲');
-  assert.ok(r2.logs.some((l) => l.includes('对冲到') && l.includes('400')), '主请求失败的原因要进日志，对冲接住了也要能查到主模型为什么失败');
+  assert.ok(
+    r2.logs.some((l) => l.includes('对冲到') && l.includes('400')),
+    '主请求失败的原因要进日志，对冲接住了也要能查到主模型为什么失败',
+  );
 
   // 两边都失败 → 抛主模型的错，对冲那边的失败原因也要留在日志里
   handler = async (c) => err(400, '1214', `坏了-${c.body.model}`);
-  const both = await captureLogs(() => chat(baseOpts()).then(() => null, (e: unknown) => e));
+  const both = await captureLogs(() =>
+    chat(baseOpts()).then(
+      () => null,
+      (e: unknown) => e,
+    ),
+  );
   assert.match(String(both.out), /坏了-glm-5\.2/);
-  assert.ok(both.logs.some((l) => l.includes('对冲模型 glm-5.3-flash') && l.includes('400')), `对冲失败要留痕（日志：${both.logs.join(' | ')}）`);
+  assert.ok(
+    both.logs.some((l) => l.includes('对冲模型 glm-5.3-flash') && l.includes('400')),
+    `对冲失败要留痕（日志：${both.logs.join(' | ')}）`,
+  );
 
   // 对冲模型配错（名字拼错 → 404）：主模型照常答，但对冲每次都注定失败，必须在日志里看得到
   process.env.LLM_HEDGE_MS = '30';
   handler = async (c) => {
-    if (c.body.model === 'glm-5.2') { await delay(150, c.signal); return ok('主模型答'); }
+    if (c.body.model === 'glm-5.2') {
+      await delay(150, c.signal);
+      return ok('主模型答');
+    }
     return err(404, '1211', '模型不存在');
   };
   const miss = await captureLogs(() => chat(baseOpts()));
   assert.equal(miss.out, '主模型答');
-  assert.ok(miss.logs.some((l) => l.includes('glm-5.3-flash') && l.includes('404')), `对冲模型被拒要留痕（日志：${miss.logs.join(' | ')}）`);
+  assert.ok(
+    miss.logs.some((l) => l.includes('glm-5.3-flash') && l.includes('404')),
+    `对冲模型被拒要留痕（日志：${miss.logs.join(' | ')}）`,
+  );
 
   // 主模型被限流、正在退避时对冲胜出：输家要立刻让出名额，不能睡满退避
   process.env.LLM_HEDGE_MS = '50';
@@ -420,7 +537,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   process.env.LLM_HEDGE_MODEL = 'glm-5.2';
   process.env.LLM_HEDGE_MS = '10';
   calls = [];
-  handler = async (c) => { await delay(80, c.signal); return ok('同款不对冲'); };
+  handler = async (c) => {
+    await delay(80, c.signal);
+    return ok('同款不对冲');
+  };
   assert.equal(await chat(baseOpts()), '同款不对冲');
   assert.equal(calls.length, 1);
   assert.equal(llmStats().hedgeModel, null);
@@ -449,7 +569,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   handler = async (c) => {
     if (c.body.model === 'glm-5.2') return followup(c) ? ok('对冲模型答') : toolCallResp('h1', 'search_routes', { destination: '四川' });
     // 主模型：首次 150ms 就给出工具调用（慢于后续阈值、远快于首轮阈值），拿到工具结果后卡 400ms
-    if (!followup(c)) { await delay(150, c.signal); return toolCallResp('p1', 'search_routes', { destination: '四川' }); }
+    if (!followup(c)) {
+      await delay(150, c.signal);
+      return toolCallResp('p1', 'search_routes', { destination: '四川' });
+    }
     await delay(400, c.signal);
     return ok('主模型答');
   };
@@ -464,7 +587,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   assert.equal(s1.hedgeFired - s0.hedgeFired, 1);
   assert.equal(s1.followupHedgeFired - s0.followupHedgeFired, 1, '后续调用的对冲单独计数');
   assert.equal(s1.followupHedgeWon - s0.followupHedgeWon, 1);
-  assert.ok(r.logs.some((l) => l.includes('超过 60ms') && l.includes('第 2 次调用')), `日志要写明按哪一档阈值、第几次调用触发（日志：${r.logs.join(' | ')}）`);
+  assert.ok(
+    r.logs.some((l) => l.includes('超过 60ms') && l.includes('第 2 次调用')),
+    `日志要写明按哪一档阈值、第几次调用触发（日志：${r.logs.join(' | ')}）`,
+  );
   process.env.LLM_HEDGE_MODEL = '';
   process.env.LLM_HEDGE_MS = '';
   process.env.LLM_HEDGE_MS_FOLLOWUP = '';
@@ -479,38 +605,68 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const executed: string[] = [];
   const steps: [string, Record<string, unknown>][][] = [
     // 第 2 个与引擎预取的参数完全相同
-    [['search_routes', { destination: '四川', segment: '亲子' }], ['search_routes', { destination: '四川' }]],
+    [
+      ['search_routes', { destination: '四川', segment: '亲子' }],
+      ['search_routes', { destination: '四川' }],
+    ],
     // 键顺序不同也是同一次调用；同一次响应里并列的两个相同调用只执行一次
-    [['search_routes', { segment: '亲子', destination: '四川' }], ['get_route_detail', { routeId: 'r1' }], ['get_route_detail', { routeId: 'r1' }]],
+    [
+      ['search_routes', { segment: '亲子', destination: '四川' }],
+      ['get_route_detail', { routeId: 'r1' }],
+      ['get_route_detail', { routeId: 'r1' }],
+    ],
     // 参数不同照常执行；报价、转人工不复用
-    [['search_routes', { destination: '云南' }], ['create_quote', { routeId: 'r1', travelers: 2 }], ['create_quote', { routeId: 'r1', travelers: 2 }]],
+    [
+      ['search_routes', { destination: '云南' }],
+      ['create_quote', { routeId: 'r1', travelers: 2 }],
+      ['create_quote', { routeId: 'r1', travelers: 2 }],
+    ],
   ];
   calls = [];
   handler = async () => (calls.length <= steps.length ? multiToolResp(calls.length - 1, steps[calls.length - 1]) : ok('查好了'));
   const before = llmStats().toolReused;
-  const { out, logs } = await captureLogs(() => chat(baseOpts({
-    prefetch: [{ name: 'search_routes', args: { destination: '四川' }, result: 'PF-四川' }],
-    executeTool: async (name, args) => {
-      executed.push(`${name}${JSON.stringify(args)}`);
-      return `R${executed.length}-${name}`;
-    },
-  })));
+  const { out, logs } = await captureLogs(() =>
+    chat(
+      baseOpts({
+        prefetch: [{ name: 'search_routes', args: { destination: '四川' }, result: 'PF-四川' }],
+        executeTool: async (name, args) => {
+          executed.push(`${name}${JSON.stringify(args)}`);
+          return `R${executed.length}-${name}`;
+        },
+      }),
+    ),
+  );
   assert.equal(out, '查好了');
-  assert.deepEqual(executed, [
-    'search_routes{"destination":"四川","segment":"亲子"}',
-    'get_route_detail{"routeId":"r1"}',
-    'search_routes{"destination":"云南"}',
-    'create_quote{"routeId":"r1","travelers":2}',
-    'create_quote{"routeId":"r1","travelers":2}',
-  ], '同参数的 search_routes / get_route_detail 本轮只执行一次，其余工具照常执行');
-  const toolMsg = new Map<string, string>(calls.at(-1)!.body.messages
-    .filter((m: any) => m.role === 'tool').map((m: any) => [m.tool_call_id, m.content]));
+  assert.deepEqual(
+    executed,
+    [
+      'search_routes{"destination":"四川","segment":"亲子"}',
+      'get_route_detail{"routeId":"r1"}',
+      'search_routes{"destination":"云南"}',
+      'create_quote{"routeId":"r1","travelers":2}',
+      'create_quote{"routeId":"r1","travelers":2}',
+    ],
+    '同参数的 search_routes / get_route_detail 本轮只执行一次，其余工具照常执行',
+  );
+  const toolMsg = new Map<string, string>(
+    calls
+      .at(-1)!
+      .body.messages.filter((m: any) => m.role === 'tool')
+      .map((m: any) => [m.tool_call_id, m.content]),
+  );
   assert.equal(toolMsg.get('c0_1'), 'PF-四川', '与预取同参数的调用拿到预取的结果');
   assert.equal(toolMsg.get('c1_0'), toolMsg.get('c0_0'), '键顺序不同的同一次查询拿到第一次的结果');
   assert.equal(toolMsg.get('c1_2'), toolMsg.get('c1_1'), '同一响应里并列的相同调用拿到同一个结果');
-  assert.equal([...toolMsg.keys()].filter((id) => id.startsWith('c')).length, 8, '每个 tool_call 都有对应的 tool 消息（复用的也要回，否则下一次请求 400）');
+  assert.equal(
+    [...toolMsg.keys()].filter((id) => id.startsWith('c')).length,
+    8,
+    '每个 tool_call 都有对应的 tool 消息（复用的也要回，否则下一次请求 400）',
+  );
   assert.equal(llmStats().toolReused - before, 3);
-  assert.ok(logs.some((l) => l.includes('复用') && l.includes('search_routes')), '复用要留日志，才看得出模型多久重复查一次');
+  assert.ok(
+    logs.some((l) => l.includes('复用') && l.includes('search_routes')),
+    '复用要留日志，才看得出模型多久重复查一次',
+  );
 
   // 执行失败的不缓存；下一轮不复用上一轮的结果（画像、客群可能已经变了）
   executed.length = 0;
@@ -519,7 +675,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   let fail = true;
   const flaky = async (name: string, args: Record<string, unknown>): Promise<string> => {
     executed.push(`${name}${JSON.stringify(args)}`);
-    if (fail) { fail = false; throw new Error('线路文件读取失败'); }
+    if (fail) {
+      fail = false;
+      throw new Error('线路文件读取失败');
+    }
     return 'R-ok';
   };
   await captureLogs(() => chat(baseOpts({ executeTool: flaky })));
@@ -533,14 +692,25 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   calls = [];
   const replays: string[] = [];
   const route3: [string, Record<string, unknown>][][] = [
-    [['search_routes', { destination: '北京' }]], [['search_routes', { destination: '云南' }]],
-    [['search_routes', { destination: '北京' }], ['search_routes', { destination: '北京' }]],
+    [['search_routes', { destination: '北京' }]],
+    [['search_routes', { destination: '云南' }]],
+    [
+      ['search_routes', { destination: '北京' }],
+      ['search_routes', { destination: '北京' }],
+    ],
   ];
   handler = async () => (calls.length <= route3.length ? multiToolResp(calls.length - 1, route3[calls.length - 1]) : ok('北京这条'));
-  await captureLogs(() => chat(baseOpts({
-    executeTool: async (name, args) => { executed.push(`${name}${JSON.stringify(args)}`); return `R-${String(args.destination)}`; },
-    onReuse: (name, args, result) => replays.push(`${name}:${String(args.destination)}:${result}`),
-  })));
+  await captureLogs(() =>
+    chat(
+      baseOpts({
+        executeTool: async (name, args) => {
+          executed.push(`${name}${JSON.stringify(args)}`);
+          return `R-${String(args.destination)}`;
+        },
+        onReuse: (name, args, result) => replays.push(`${name}:${String(args.destination)}:${result}`),
+      }),
+    ),
+  );
   await new Promise((r) => setImmediate(r));
   assert.equal(executed.length, 2, '北京第二次、第三次都复用，不重新执行');
   assert.deepEqual(replays, ['search_routes:北京:R-北京'], '中间查过云南：复用北京时重放一次；紧接着的同参复用不重放');
@@ -560,7 +730,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const slow = await captureLogs(() => chat(baseOpts({ sessionId: 'sess-slow' })));
   const line = slow.logs.find((l) => l.includes('本轮工具循环耗时'));
   assert.ok(line, `超过 LLM_SLOW_TURN_MS 要打明细（日志：${slow.logs.join(' | ')}）`);
-  assert.ok(line.includes('sess-slow') && /#1 glm-5\.2 \d+ms → search_routes/.test(line) && /#2 glm-5\.2 \d+ms/.test(line), `明细要有会话、每次调用的模型/耗时/工具：${line}`);
+  assert.ok(
+    line.includes('sess-slow') && /#1 glm-5\.2 \d+ms → search_routes/.test(line) && /#2 glm-5\.2 \d+ms/.test(line),
+    `明细要有会话、每次调用的模型/耗时/工具：${line}`,
+  );
   process.env.LLM_SLOW_TURN_MS = '';
   handler = async () => ok('快');
   const fast = await captureLogs(() => chat(baseOpts()));
@@ -576,8 +749,8 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   approx(costOf('glm-5.2', 0, 1e6), 28, 'glm-5.2 输出');
   approx(costOf('glm-5.1', 1e6, 0), 6, 'glm-5.1 输入 <32K 档');
   approx(costOf('glm-5', 1e6, 1e6, 1e6), 1 + 18, 'glm-5 修正为 4/18/1');
-  approx(costOf('glm-4.7', 1e6, 199), 2 + 199 * 8 / 1e6, 'glm-4.7 输出 <0.2K 档');
-  approx(costOf('glm-4.7', 1e6, 200), 3 + 200 * 14 / 1e6, 'glm-4.7 输出 ≥0.2K 档（输入价也变）');
+  approx(costOf('glm-4.7', 1e6, 199), 2 + (199 * 8) / 1e6, 'glm-4.7 输出 <0.2K 档');
+  approx(costOf('glm-4.7', 1e6, 200), 3 + (200 * 14) / 1e6, 'glm-4.7 输出 ≥0.2K 档（输入价也变）');
   approx(costOf('glm-4.5-air', 0, 1e6), 6, 'glm-4.5-air 输出 ≥0.2K 档');
   approx(costOf('deepseek-chat', 1e6, 1e6, 1e6), 2 * 0.25 + 8, 'DeepSeek 维持原数字');
   const { logs } = await captureLogs(async () => {
@@ -634,7 +807,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
 {
   process.env.LLM_MOCK = '1';
   const { logs } = await captureLogs(() => buildIndex());
-  assert.ok(logs.some((l) => l.includes('mock 模式跳过语义索引')), `实际日志：${logs.join(' | ')}`);
+  assert.ok(
+    logs.some((l) => l.includes('mock 模式跳过语义索引')),
+    `实际日志：${logs.join(' | ')}`,
+  );
   assert.ok(!logs.some((l) => l.includes('构建失败')), 'mock 下不该报「构建失败」');
   process.env.LLM_MOCK = '0';
   pass('retrieval mock 模式明确说「跳过」，不再误报构建失败');
@@ -644,8 +820,13 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
 {
   useZhipu('glm-5.2');
   calls = [];
-  handler = async () => { await delay(100); return ok('先确认出行日期再报价'); };
-  const s = { id: 'dedupe-1', stage: 'quote', profile: {}, messages: [{ role: 'customer', content: '贵吗' }] } as unknown as Parameters<typeof getSuggestion>[0];
+  handler = async () => {
+    await delay(100);
+    return ok('先确认出行日期再报价');
+  };
+  const s = { id: 'dedupe-1', stage: 'quote', profile: {}, messages: [{ role: 'customer', content: '贵吗' }] } as unknown as Parameters<
+    typeof getSuggestion
+  >[0];
   const [a, b, c] = await Promise.all([getSuggestion(s), getSuggestion(s), getSuggestion(s)]);
   assert.equal(calls.length, 1, '同 key 并发只应发 1 次请求');
   assert.ok(a === b && b === c && a.length > 0);
@@ -666,8 +847,11 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const profile = { destinationInterest: '四川', travelers: '2', nickname: NICK, avatar: 'https://wx.qlogo.cn/selftest' };
   const leaked = () => calls.filter((c) => /忽略以上规则|qlogo/.test(JSON.stringify(c.body.messages))).length;
 
-  calls = []; handler = async () => ok('先确认出行日期');
-  const s = { id: 'profile-1', stage: 'quote', profile, messages: [{ role: 'customer', content: '贵吗' }] } as unknown as Parameters<typeof getSuggestion>[0];
+  calls = [];
+  handler = async () => ok('先确认出行日期');
+  const s = { id: 'profile-1', stage: 'quote', profile, messages: [{ role: 'customer', content: '贵吗' }] } as unknown as Parameters<
+    typeof getSuggestion
+  >[0];
   await getSuggestion(s);
   await getDraftReply(s);
   assert.equal(calls.length, 2);
@@ -682,7 +866,8 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   f.updatedAt = Date.now() - 3 * 3600_000; // 报价后沉默 3 小时，过了 quote 阶段的 2 小时门槛
   f.messages.push({ role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt });
   saveSession(f, false);
-  calls = []; handler = async () => ok('出行日期定下来了吗？');
+  calls = [];
+  handler = async () => ok('出行日期定下来了吗？');
   const noon = new Date();
   noon.setHours(12, 0, 0, 0); // 避开夜间免打扰
   process.env.FOLLOWUP_ENABLED = '1';
@@ -710,12 +895,16 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
     f.messages.push({ role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt });
     saveSession(f, false);
   });
-  calls = []; handler = async () => ok(''); // 生成为空，走阶段模板
+  calls = [];
+  handler = async () => ok(''); // 生成为空，走阶段模板
   const noon = new Date();
   noon.setHours(12, 0, 0, 0);
   const pushed = new Map<string, string>();
   process.env.FOLLOWUP_ENABLED = '1';
-  await runFollowUpScan(async (id, text) => { pushed.set(id, text); return true; }, noon);
+  await runFollowUpScan(async (id, text) => {
+    pushed.set(id, text);
+    return true;
+  }, noon);
   process.env.FOLLOWUP_ENABLED = '';
   for (const id of ids) {
     const t = pushed.get(id) ?? '';
@@ -751,14 +940,20 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   let release!: () => void;
   const slowPush = async (id: string): Promise<boolean> => {
     pushed.push(id);
-    if (pushed.length === 1) await new Promise<void>((r) => { release = r; });
+    if (pushed.length === 1)
+      await new Promise<void>((r) => {
+        release = r;
+      });
     return true;
   };
   const scan = followup.runFollowUpScan(slowPush, noon);
   while (!pushed.length) await new Promise((r) => setTimeout(r, 5));
   assert.equal(await followup.runFollowUpScan(slowPush, noon), 0, '上一轮没扫完不叠一轮（两轮会给同一会话各推一次）');
   let shutdownDone = false;
-  const shutdown = runShutdownHooks(3000).then((r) => { shutdownDone = true; return r; });
+  const shutdown = runShutdownHooks(3000).then((r) => {
+    shutdownDone = true;
+    return r;
+  });
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(shutdownDone, false, '推送还在路上，停机必须等它');
   release();
@@ -775,7 +970,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   followup.__followupTest.resetForTest();
   handler = () => new Promise((r) => setTimeout(() => r(ok('出行日期定下来了吗？')), 2000));
   const pushed2: string[] = [];
-  const scan2 = followup.runFollowUpScan(async (id) => { pushed2.push(id); return true; }, noon);
+  const scan2 = followup.runFollowUpScan(async (id) => {
+    pushed2.push(id);
+    return true;
+  }, noon);
   await new Promise((r) => setTimeout(r, 50)); // 让扫描进到生成话术那一步
   const t0 = Date.now();
   assert.equal(await runShutdownHooks(3000), true);
@@ -793,7 +991,9 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   let releaseHung!: () => void;
   const scan3 = followup.runFollowUpScan(async (id) => {
     hung.push(id);
-    await new Promise<void>((r) => { releaseHung = r; });
+    await new Promise<void>((r) => {
+      releaseHung = r;
+    });
     return true;
   }, noon);
   while (!hung.length) await new Promise((r) => setTimeout(r, 5));
@@ -803,8 +1003,9 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   assert.equal(h?.count, 1, '推送还没返回，账已经记好');
   assert.deepEqual(h?.stages, ['quote']);
   assert.ok(h?.pendingAt, '推送途中挂着 pendingAt');
-  const onDisk = (JSON.parse(fs.readFileSync(path.join(varDir, 'sessions.json'), 'utf8')) as ({ id: string } & Fu)[])
-    .find((x) => x.id === hung[0]);
+  const onDisk = (JSON.parse(fs.readFileSync(path.join(varDir, 'sessions.json'), 'utf8')) as ({ id: string } & Fu)[]).find(
+    (x) => x.id === hung[0],
+  );
   assert.deepEqual(onDisk?.followup?.stages, ['quote'], '记账已同步落盘，不等 200ms 去抖');
   releaseHung();
   assert.equal(await scan3, 1);
@@ -813,7 +1014,10 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   // 明确没送达：记的账退回去、失败计数 +1，下一轮还能再追
   followup.__followupTest.resetForTest();
   const failed: string[] = [];
-  await followup.runFollowUpScan(async (id) => { failed.push(id); return false; }, noon);
+  await followup.runFollowUpScan(async (id) => {
+    failed.push(id);
+    return false;
+  }, noon);
   assert.ok(failed.length > 0, '还有没追过的会话可以测失败路径');
   const fz = (getSession(failed[0]) as Fu).followup;
   assert.ok(!fz?.count && !fz?.stages?.length, `推送失败要把账退回去（实际 ${JSON.stringify(fz)}）`);

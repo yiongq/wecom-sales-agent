@@ -59,42 +59,42 @@ Revisions: 2026-09-25 首版草稿经多角度对抗审查后就地修订（尚�
 
 ## 从 00 与总参考接过来的事项
 
-| 事项 | 来源 | 01 的处理 | 理由 |
-|---|---|---|---|
-| cookie 会话鉴权、compose 编排 | 00 非目标 | 本阶段做 | — |
-| 后台 SSE（`/api/admin/stream`）鉴权 | 00 非目标、总参考阶段 1 | 本阶段做：`anon_readonly_admin` 关闭时，要求有效的后台会话，否则 401 | `admin.html` 已有 30 秒兜底轮询，没登录后台时退回轮询 |
-| `admin.html` 列表 401 时自动弹登录框 | 00 非目标 | 推迟到 02 | 02 对齐 `admin.html` 与后台时一起改；`server.selftest.ts` 从页面里抽脚本源码做断言，01 不动页面脚本 |
-| 品牌名参数化、租户设置（`capFlags` 接线） | 00 非目标 | 推迟到 03 | 参数化会改硬性要求的字节，要有真实模型回归闸兜底；01 没有租户设置的读写方 |
-| `tenants` 带 `locale` / `region` | 总参考、ADR-001 | 本阶段做 | — |
-| 本阶段 8 张表 | 总参考、ADR-001 | 7 张，`usage_daily` 移到 02 | 裁决 R14 |
-| 检索「按条增量向量化」 | 总参考开工空缺 5 | 01 做失效与全量重建，按条缓存推到 03 | 裁决 R7 |
-| 验收「缓存命中与 p90 不退化」 | 总参考阶段 1 验收 | 改为自动断言前缀哈希，加真实模型的绝对阈值 | 验收 21 |
+| 事项                                      | 来源                    | 01 的处理                                                            | 理由                                                                                                |
+| ----------------------------------------- | ----------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| cookie 会话鉴权、compose 编排             | 00 非目标               | 本阶段做                                                             | —                                                                                                   |
+| 后台 SSE（`/api/admin/stream`）鉴权       | 00 非目标、总参考阶段 1 | 本阶段做：`anon_readonly_admin` 关闭时，要求有效的后台会话，否则 401 | `admin.html` 已有 30 秒兜底轮询，没登录后台时退回轮询                                               |
+| `admin.html` 列表 401 时自动弹登录框      | 00 非目标               | 推迟到 02                                                            | 02 对齐 `admin.html` 与后台时一起改；`server.selftest.ts` 从页面里抽脚本源码做断言，01 不动页面脚本 |
+| 品牌名参数化、租户设置（`capFlags` 接线） | 00 非目标               | 推迟到 03                                                            | 参数化会改硬性要求的字节，要有真实模型回归闸兜底；01 没有租户设置的读写方                           |
+| `tenants` 带 `locale` / `region`          | 总参考、ADR-001         | 本阶段做                                                             | —                                                                                                   |
+| 本阶段 8 张表                             | 总参考、ADR-001         | 7 张，`usage_daily` 移到 02                                          | 裁决 R14                                                                                            |
+| 检索「按条增量向量化」                    | 总参考开工空缺 5        | 01 做失效与全量重建，按条缓存推到 03                                 | 裁决 R7                                                                                             |
+| 验收「缓存命中与 p90 不退化」             | 总参考阶段 1 验收       | 改为自动断言前缀哈希，加真实模型的绝对阈值                           | 验收 21                                                                                             |
 
 ## 开工前裁决
 
 迁移计划的代码审查（另记）列出了若干空缺，总参考也给 01 留了几个开放问题。下表逐条给结论，细节见「接口与数据流」对应的小节。
 
-| # | 问题 | 裁决 | 本阶段落地 | 推迟 |
-|---|---|---|---|---|
-| R1 | 自测和 eval 直接读 `data/`，「读不到快照就启动失败」会让它们全挂 | 只有 `CONFIG_SOURCE=db` 才是 DB 模式；未设、空串或 `file` 都是文件模式，行为与开工时逐字节相同。不单看 `DATABASE_URL`：首次切换时命令行要先连库，而应用还在文件模式；开发机的 `.env` 也常带它。DB 模式下任何一步失败都拒绝启动，绝不回落去读文件 | `configMode()` / `initConfig()`；`buildSystemPrompt`、`loadRoutes`、`loadHotels` 签名不变 | — |
-| R2 | 发布闸 v0 对 SOP 不起作用：`mockChat` 不读 system prompt | 闸改成同步执行的 SOP 契约检查，查五项：节表与正文结构；锁定节未动；共享短语清单；工具名与字段名真实存在；可编辑节的字符预算。前四项在每次启动时也跑 | `src/sop/contract.ts`；源码扫描测试保证清单覆盖 `engine.selftest.ts` 里每条 SOP 短语断言，断言原文不动 | 真实模型回归闸、沙盒对话（03） |
-| R3 | 只锁四节不够；前言会破坏往返 | 按行首 `## ` 切节，第一个 `## ` 之前的前言单独成一节，共 11 节。锁定其中 7 节：各阶段目标、订单、报价纪律、定价规则、能力边界、我们没有的目的地、转人工条件。**锁定节归代码所有**：DB 模式下永远取镜像里 `data/sop.md` 的对应节 | 节表 `TRAVEL_SOP_SECTIONS`；后台只能改可编辑节的正文 | 随 policy 单一来源逐节开放（03） |
-| R4 | 哈希只算 SOP 不够；只看 system 也不够；静态 golden 会不停失效 | 四个哈希：`prompt_hash`（整段 system）、`tools_hash`（`promptPrefix().tools`）、`prefix_hash`（前两者合成）、`sop_hash`（只算 SOP 正文，跨代码版本可比）。发布时渲染一次并存下；每轮逐字节读缓存。等价性用「同一进程里文件渲染 == DB 渲染」断言，不设静态常量。硬性要求、锁定节、节表或工具定义一变，启动流程自动生成 `rerender` 版本 | `renderSystemPrompt()` 从 `buildSystemPrompt` 拆到 `src/prompt/system.ts`；已发布的行由触发器保证不可改 | 品牌与 AI 标识参数化（03） |
-| R5 | 缓存怎么失效；要不要 LISTEN/NOTIFY | 只跑单副本，写入都发生在本进程：事务提交后直接更新进程内缓存。不用 LISTEN/NOTIFY。启动时取租户级 advisory lock，第二个进程连到同一个库就拒绝启动。锁连接断开时不立即退出：配置写入暂停、对话照常，后台重连重取；只有「连上了而锁在别人手里」才走优雅停机退出 | `source.ts`；`holdTenantLock` | 多副本（05） |
-| R6 | jsonb 会重排键序；`searchHotels` 原地排序；一轮里快照会不会换 | 条目整条存进 `payload json`，另加 `ord` 列保住数组顺序。两种模式下 `loadRoutes()` / `loadHotels()` 都返回 deep-frozen 的对象。编辑是字段级补丁，写库的是请求原值按原键序递归合并的结果，不是 zod 的输出。`searchHotels` 改成先拷贝再排序。01 接受一轮之内看到不同代的快照：锁定字段不变，工具输出和护栏看到的计价与识别字段一致 | `catalog_items`；`mergeKeyOrder()`；快照冻结 | 按轮固定快照（02 放开计价字段之前） |
-| R7 | 新增的线路永远召回不到 | 加 `invalidateIndex()`；产品库变化后全量重建（20 条线路一次请求）；按代际丢弃过期的构建结果；失败按退避重试。按条向量缓存对 01 的规模是过度设计，03 换 pgvector 时一起做 | `retrieval.ts` | 按条缓存、pgvector（03） |
-| R8 | 改价会让已发出的方案书变价 | active 条目的计价、识别与条款字段在 v0 只读，清单见「编辑规则」；`id` 任何状态下都不能改。active 条目不能回到 draft，也不能删除，否则已发出的方案书会 404。锁定字段的紧急修正走停机执行的 `catalog-fix`，写审计 | `LOCKED_WHEN_ACTIVE`、`ALWAYS_LOCKED`；由服务端校验，不靠界面 | 有报价快照后逐字段开放（02） |
-| R9 | 登录相关的表不能套租户模板；公开路由拿不到租户 | `tenants`、`users`、`auth_sessions` 不启用 RLS；其余带 `tenant_id` 的表都套 RLS 模板（FORCE），豁免清单只有 `auth_sessions`。`agent_app` 对 `users`、`memberships`、`auth_sessions` 没有任何表权限，只能调 SECURITY DEFINER 认证函数。平台命令行用 `agent_platform` 连接，同样走 `withTenant`。一个容器一个租户期间，进程只装载 `DEFAULT_TENANT_SLUG` 这一个租户，公开路由都用它 | 见「数据库」 | 跨租户的平台查询（04） |
-| R10 | 鉴权细节 | 口令用 scrypt，参数随哈希存。cookie 用 `__Host-sid`，库里只存 token 的 sha256。空闲 12 小时、绝对 7 天过期。限流按 IP、按「邮箱 + IP」硬锁，按邮箱只做延迟，不存在的邮箱同样计数。写请求要带 `x-csrf` 头，同时保留 `sameOriginOnly`。`admin.html` 继续用 `ADMIN_PASS` | 见「鉴权」 | 扫码登录、成员管理页（以后） |
-| R11 | 构建链没设计 | 多阶段 Dockerfile；`/console/*` 做 SPA 回退；后台接口写成单独的链式 Hono 子应用；共用 zod 放在 `src/shared/`，只依赖 `zod`，由 lint 和产物扫描两道把关；命令行放在 `src/cli/`，受类型检查、随镜像发布 | 见「构建与部署」 | — |
-| R12 | 回滚到文件版镜像会静默丢掉 DB 里的修改 | 自动回滚落在 `:prev` 上，而 `:prev` 取自正在运行的容器，所以切换完成后它永远是能读库的镜像。回到文件模式只能手动操作，而且必须先按目标版本的锁定节导出。启动日志按节、按条目点名 DB 与镜像内 `data/` 的差异 | `src/cli/export-config.ts`；「导入、导出与回滚」 | — |
-| R13 | PGlite 默认以超级用户连接，测不了 RLS；`json` 列的字节承诺只在 PGlite 上测不够 | RLS、授权、租户锁，以及 node-postgres 驱动下的字节等价和命令行子进程，都跑在 CI 的 Postgres 服务容器上；其余用 PGlite。真实 PG 部分并进 `test`：有 `PG_TEST_URL` 就跑；`CI=true` 而没有它时直接失败，不静默跳过 | `db.selftest.ts` | — |
-| R14 | `usage_daily` 建了表，却没有迁移 `usage.ts` | 移出 01。01 没有它的写入方；它和逐轮 trace 挂在同一个模型用量回调上，02 一起做 | `usage.json` 不动 | 02 |
-| R15 | demo 匿名只读时，后台不能露出身份和未发布内容 | 审计页和会话列表一律要求登录。匿名能读的只有脱敏投影：已发布 SOP 和 active 条目，不含任何用户 id、姓名、变更说明和草稿。复用 `anon_readonly_admin`：它原本放行的是公开演示用的只读数据，这里加的也只是已公开对外说出的内容，prod 两者一起封顶 | 权限表 | — |
-| R16 | 自测默认跑哪种存储（总参考的开放问题） | 现有 6 组自测和 eval 默认跑文件模式，`test` 对它们显式设 `CONFIG_SOURCE=file`。DB 路径由新增的三组自测，加一遍 DB 模式的 mock eval 覆盖 | 见「测试与 CI」 | 02 的会话存储沿用同一原则，由 02 定 |
-| R17 | 工期吃紧时先砍什么（总参考的开放问题） | 两级砍法和可观察的触发点见 plan。Hono RPC 不砍：它是 ADR-002 定下的接口契约，链式子应用本来就要写，工作量在子应用上，不在 RPC 上 | plan「工作量与砍法」 | — |
-| R18 | 企微拉取、跟进、索引构建在配置装载之前就开跑 | 启动顺序写死：`await initConfig()` 成功之后才 `serve()`，监听成功后再依次做数据预检、`buildIndex`、`startFollowUpScheduler`、`startWecom`。装载失败时这些一个都不调，企微 cursor 不动 | `src/boot.ts` | — |
-| R19 | 三个角色的凭据怎么分发 | 按 compose 服务隔离：app 只拿 `agent_app`，migrate 只拿 `agent_owner`，platform 只拿 `agent_platform`，db 服务不对外发布端口。app 进程的环境里出现 owner 或 platform 的凭据，DB 模式拒绝启动 | 见「构建与部署」 | — |
+| #   | 问题                                                                           | 裁决                                                                                                                                                                                                                                                                                                                                                                             | 本阶段落地                                                                                              | 推迟                                |
+| --- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| R1  | 自测和 eval 直接读 `data/`，「读不到快照就启动失败」会让它们全挂               | 只有 `CONFIG_SOURCE=db` 才是 DB 模式；未设、空串或 `file` 都是文件模式，行为与开工时逐字节相同。不单看 `DATABASE_URL`：首次切换时命令行要先连库，而应用还在文件模式；开发机的 `.env` 也常带它。DB 模式下任何一步失败都拒绝启动，绝不回落去读文件                                                                                                                                 | `configMode()` / `initConfig()`；`buildSystemPrompt`、`loadRoutes`、`loadHotels` 签名不变               | —                                   |
+| R2  | 发布闸 v0 对 SOP 不起作用：`mockChat` 不读 system prompt                       | 闸改成同步执行的 SOP 契约检查，查五项：节表与正文结构；锁定节未动；共享短语清单；工具名与字段名真实存在；可编辑节的字符预算。前四项在每次启动时也跑                                                                                                                                                                                                                              | `src/sop/contract.ts`；源码扫描测试保证清单覆盖 `engine.selftest.ts` 里每条 SOP 短语断言，断言原文不动  | 真实模型回归闸、沙盒对话（03）      |
+| R3  | 只锁四节不够；前言会破坏往返                                                   | 按行首 `## ` 切节，第一个 `## ` 之前的前言单独成一节，共 11 节。锁定其中 7 节：各阶段目标、订单、报价纪律、定价规则、能力边界、我们没有的目的地、转人工条件。**锁定节归代码所有**：DB 模式下永远取镜像里 `data/sop.md` 的对应节                                                                                                                                                  | 节表 `TRAVEL_SOP_SECTIONS`；后台只能改可编辑节的正文                                                    | 随 policy 单一来源逐节开放（03）    |
+| R4  | 哈希只算 SOP 不够；只看 system 也不够；静态 golden 会不停失效                  | 四个哈希：`prompt_hash`（整段 system）、`tools_hash`（`promptPrefix().tools`）、`prefix_hash`（前两者合成）、`sop_hash`（只算 SOP 正文，跨代码版本可比）。发布时渲染一次并存下；每轮逐字节读缓存。等价性用「同一进程里文件渲染 == DB 渲染」断言，不设静态常量。硬性要求、锁定节、节表或工具定义一变，启动流程自动生成 `rerender` 版本                                            | `renderSystemPrompt()` 从 `buildSystemPrompt` 拆到 `src/prompt/system.ts`；已发布的行由触发器保证不可改 | 品牌与 AI 标识参数化（03）          |
+| R5  | 缓存怎么失效；要不要 LISTEN/NOTIFY                                             | 只跑单副本，写入都发生在本进程：事务提交后直接更新进程内缓存。不用 LISTEN/NOTIFY。启动时取租户级 advisory lock，第二个进程连到同一个库就拒绝启动。锁连接断开时不立即退出：配置写入暂停、对话照常，后台重连重取；只有「连上了而锁在别人手里」才走优雅停机退出                                                                                                                     | `source.ts`；`holdTenantLock`                                                                           | 多副本（05）                        |
+| R6  | jsonb 会重排键序；`searchHotels` 原地排序；一轮里快照会不会换                  | 条目整条存进 `payload json`，另加 `ord` 列保住数组顺序。两种模式下 `loadRoutes()` / `loadHotels()` 都返回 deep-frozen 的对象。编辑是字段级补丁，写库的是请求原值按原键序递归合并的结果，不是 zod 的输出。`searchHotels` 改成先拷贝再排序。01 接受一轮之内看到不同代的快照：锁定字段不变，工具输出和护栏看到的计价与识别字段一致                                                  | `catalog_items`；`mergeKeyOrder()`；快照冻结                                                            | 按轮固定快照（02 放开计价字段之前） |
+| R7  | 新增的线路永远召回不到                                                         | 加 `invalidateIndex()`；产品库变化后全量重建（20 条线路一次请求）；按代际丢弃过期的构建结果；失败按退避重试。按条向量缓存对 01 的规模是过度设计，03 换 pgvector 时一起做                                                                                                                                                                                                         | `retrieval.ts`                                                                                          | 按条缓存、pgvector（03）            |
+| R8  | 改价会让已发出的方案书变价                                                     | active 条目的计价、识别与条款字段在 v0 只读，清单见「编辑规则」；`id` 任何状态下都不能改。active 条目不能回到 draft，也不能删除，否则已发出的方案书会 404。锁定字段的紧急修正走停机执行的 `catalog-fix`，写审计                                                                                                                                                                  | `LOCKED_WHEN_ACTIVE`、`ALWAYS_LOCKED`；由服务端校验，不靠界面                                           | 有报价快照后逐字段开放（02）        |
+| R9  | 登录相关的表不能套租户模板；公开路由拿不到租户                                 | `tenants`、`users`、`auth_sessions` 不启用 RLS；其余带 `tenant_id` 的表都套 RLS 模板（FORCE），豁免清单只有 `auth_sessions`。`agent_app` 对 `users`、`memberships`、`auth_sessions` 没有任何表权限，只能调 SECURITY DEFINER 认证函数。平台命令行用 `agent_platform` 连接，同样走 `withTenant`。一个容器一个租户期间，进程只装载 `DEFAULT_TENANT_SLUG` 这一个租户，公开路由都用它 | 见「数据库」                                                                                            | 跨租户的平台查询（04）              |
+| R10 | 鉴权细节                                                                       | 口令用 scrypt，参数随哈希存。cookie 用 `__Host-sid`，库里只存 token 的 sha256。空闲 12 小时、绝对 7 天过期。限流按 IP、按「邮箱 + IP」硬锁，按邮箱只做延迟，不存在的邮箱同样计数。写请求要带 `x-csrf` 头，同时保留 `sameOriginOnly`。`admin.html` 继续用 `ADMIN_PASS`                                                                                                            | 见「鉴权」                                                                                              | 扫码登录、成员管理页（以后）        |
+| R11 | 构建链没设计                                                                   | 多阶段 Dockerfile；`/console/*` 做 SPA 回退；后台接口写成单独的链式 Hono 子应用；共用 zod 放在 `src/shared/`，只依赖 `zod`，由 lint 和产物扫描两道把关；命令行放在 `src/cli/`，受类型检查、随镜像发布                                                                                                                                                                            | 见「构建与部署」                                                                                        | —                                   |
+| R12 | 回滚到文件版镜像会静默丢掉 DB 里的修改                                         | 自动回滚落在 `:prev` 上，而 `:prev` 取自正在运行的容器，所以切换完成后它永远是能读库的镜像。回到文件模式只能手动操作，而且必须先按目标版本的锁定节导出。启动日志按节、按条目点名 DB 与镜像内 `data/` 的差异                                                                                                                                                                      | `src/cli/export-config.ts`；「导入、导出与回滚」                                                        | —                                   |
+| R13 | PGlite 默认以超级用户连接，测不了 RLS；`json` 列的字节承诺只在 PGlite 上测不够 | RLS、授权、租户锁，以及 node-postgres 驱动下的字节等价和命令行子进程，都跑在 CI 的 Postgres 服务容器上；其余用 PGlite。真实 PG 部分并进 `test`：有 `PG_TEST_URL` 就跑；`CI=true` 而没有它时直接失败，不静默跳过                                                                                                                                                                  | `db.selftest.ts`                                                                                        | —                                   |
+| R14 | `usage_daily` 建了表，却没有迁移 `usage.ts`                                    | 移出 01。01 没有它的写入方；它和逐轮 trace 挂在同一个模型用量回调上，02 一起做                                                                                                                                                                                                                                                                                                   | `usage.json` 不动                                                                                       | 02                                  |
+| R15 | demo 匿名只读时，后台不能露出身份和未发布内容                                  | 审计页和会话列表一律要求登录。匿名能读的只有脱敏投影：已发布 SOP 和 active 条目，不含任何用户 id、姓名、变更说明和草稿。复用 `anon_readonly_admin`：它原本放行的是公开演示用的只读数据，这里加的也只是已公开对外说出的内容，prod 两者一起封顶                                                                                                                                    | 权限表                                                                                                  | —                                   |
+| R16 | 自测默认跑哪种存储（总参考的开放问题）                                         | 现有 6 组自测和 eval 默认跑文件模式，`test` 对它们显式设 `CONFIG_SOURCE=file`。DB 路径由新增的三组自测，加一遍 DB 模式的 mock eval 覆盖                                                                                                                                                                                                                                          | 见「测试与 CI」                                                                                         | 02 的会话存储沿用同一原则，由 02 定 |
+| R17 | 工期吃紧时先砍什么（总参考的开放问题）                                         | 两级砍法和可观察的触发点见 plan。Hono RPC 不砍：它是 ADR-002 定下的接口契约，链式子应用本来就要写，工作量在子应用上，不在 RPC 上                                                                                                                                                                                                                                                 | plan「工作量与砍法」                                                                                    | —                                   |
+| R18 | 企微拉取、跟进、索引构建在配置装载之前就开跑                                   | 启动顺序写死：`await initConfig()` 成功之后才 `serve()`，监听成功后再依次做数据预检、`buildIndex`、`startFollowUpScheduler`、`startWecom`。装载失败时这些一个都不调，企微 cursor 不动                                                                                                                                                                                            | `src/boot.ts`                                                                                           | —                                   |
+| R19 | 三个角色的凭据怎么分发                                                         | 按 compose 服务隔离：app 只拿 `agent_app`，migrate 只拿 `agent_owner`，platform 只拿 `agent_platform`，db 服务不对外发布端口。app 进程的环境里出现 owner 或 platform 的凭据，DB 模式拒绝启动                                                                                                                                                                                     | 见「构建与部署」                                                                                        | —                                   |
 
 ## 接口与数据流
 
@@ -260,9 +260,9 @@ export const __configTest: { reset(): void };
 ```ts
 // src/boot.ts
 export interface BootDeps {
-  initConfig(): Promise<void>;            // 生产：先校验 CONFIG_SOURCE（非法值报 env_invalid）；是 db 就 productionConfigDeps 再 initConfig(deps)，否则 initConfig(null)
+  initConfig(): Promise<void>; // 生产：先校验 CONFIG_SOURCE（非法值报 env_invalid）；是 db 就 productionConfigDeps 再 initConfig(deps)，否则 initConfig(null)
   serve(onListening: () => void): void;
-  preflight(): void;                      // 现有的数据文件启动预检
+  preflight(): void; // 现有的数据文件启动预检
   buildIndex(): Promise<void>;
   startFollowUpScheduler(): void;
   startWecom(): void;
@@ -294,16 +294,16 @@ DB 模式下，那五处 `try { loadRoutes() } catch {}` 由启动顺序保证�
 
 环境变量：
 
-| 变量 | 进哪个 compose 服务 | 说明 |
-|---|---|---|
-| `CONFIG_SOURCE` | app | `db` 开启 DB 模式；未设、空串、`file` 都是文件模式；其他值拒绝启动 |
-| `DATABASE_URL` | app（应用与 import / export / catalog-fix 命令行） | `agent_app` 的连接串，只接受 `postgres://` 和 `postgresql://` |
-| `DEFAULT_TENANT_SLUG` | app | 本实例的租户。DB 模式下必填 |
-| `DEPLOY_PROFILE` | app | 00 定义。DB 模式下必须显式设置，不接受缺省的 demo |
-| `DATABASE_OWNER_URL` | migrate | `agent_owner`，只用来跑迁移 |
-| `DATABASE_PLATFORM_URL` | platform | `agent_platform`，用于租户与账号命令行 |
-| `POSTGRES_PASSWORD`、`AGENT_OWNER_PASSWORD`、`AGENT_APP_PASSWORD`、`AGENT_PLATFORM_PASSWORD` | db | 超级用户与三个角色的口令，只在 db 容器里 |
-| `PG_TEST_URL` | CI 与本地 `test` | 真实 Postgres 的超级用户连接串。RLS 套件用它自己建库、建角色 |
+| 变量                                                                                         | 进哪个 compose 服务                                | 说明                                                               |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------ |
+| `CONFIG_SOURCE`                                                                              | app                                                | `db` 开启 DB 模式；未设、空串、`file` 都是文件模式；其他值拒绝启动 |
+| `DATABASE_URL`                                                                               | app（应用与 import / export / catalog-fix 命令行） | `agent_app` 的连接串，只接受 `postgres://` 和 `postgresql://`      |
+| `DEFAULT_TENANT_SLUG`                                                                        | app                                                | 本实例的租户。DB 模式下必填                                        |
+| `DEPLOY_PROFILE`                                                                             | app                                                | 00 定义。DB 模式下必须显式设置，不接受缺省的 demo                  |
+| `DATABASE_OWNER_URL`                                                                         | migrate                                            | `agent_owner`，只用来跑迁移                                        |
+| `DATABASE_PLATFORM_URL`                                                                      | platform                                           | `agent_platform`，用于租户与账号命令行                             |
+| `POSTGRES_PASSWORD`、`AGENT_OWNER_PASSWORD`、`AGENT_APP_PASSWORD`、`AGENT_PLATFORM_PASSWORD` | db                                                 | 超级用户与三个角色的口令，只在 db 容器里                           |
+| `PG_TEST_URL`                                                                                | CI 与本地 `test`                                   | 真实 Postgres 的超级用户连接串。RLS 套件用它自己建库、建角色       |
 
 - 开发机同样适用：迁移和平台命令行的连接串不写进 `.env`，而是在命令行前临时给出。
 - DB 模式下如果还设了 `SOP_PATH`、`ROUTES_PATH` 或 `HOTELS_PATH`，启动时打一条 warn 并忽略它们。这三个变量只供文件模式使用（测试夹具，以及「切换后的真相来源」里的回归跑法）。
@@ -313,19 +313,19 @@ DB 模式下，那五处 `try { loadRoutes() } catch {}` 由启动顺序保证�
 
 #### 节表
 
-| key | 标题（`## ` 之后的原文） | 锁定 | 代码依赖 |
-|---|---|---|---|
-| `preamble` | 第一个 `## ` 之前的全部内容，含 `# ` 标题行 | 否 | — |
-| `stages` | 各阶段目标 | 是 | 报价时机、节假日算日期、细节只按原文答、`payUrl` / `altitudeNote` / `intensityNote` 这些字段的用法（engine.selftest 有断言） |
-| `orders` | 订单：改单、给别人再订、重发链接 | 是 | `create_order` 的改单语义与 `supersededOrderId` |
-| `tone` | 话术原则 | 否 | — |
-| `quote-discipline` | 报价纪律（硬性） | 是 | `overBudget` / `withinBudget`、按总价比预算（有断言） |
-| `price-rules` | 定价规则（只有这两条，硬性） | 是 | 与 `createQuote`、价格护栏是同一套规则（有断言） |
-| `objections` | 异议处理 | 否 | — |
-| `capabilities` | 能力边界（硬性，先看这条） | 是 | 天数与住宿固定、顾问在微信上联系（有断言） |
-| `no-destinations` | 我们没有的目的地（如南极、冰岛） | 是 | `destinationMiss`、坚持才转人工（有断言） |
-| `handoff` | 转人工条件（满足任一立即调用 handoff_to_human） | 是 | 与 `isHandoffIntent`、`handoff_to_human` 的口径一致 |
-| `wechat-style` | 微信语气规范 | 否 | — |
+| key                | 标题（`## ` 之后的原文）                        | 锁定 | 代码依赖                                                                                                                     |
+| ------------------ | ----------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `preamble`         | 第一个 `## ` 之前的全部内容，含 `# ` 标题行     | 否   | —                                                                                                                            |
+| `stages`           | 各阶段目标                                      | 是   | 报价时机、节假日算日期、细节只按原文答、`payUrl` / `altitudeNote` / `intensityNote` 这些字段的用法（engine.selftest 有断言） |
+| `orders`           | 订单：改单、给别人再订、重发链接                | 是   | `create_order` 的改单语义与 `supersededOrderId`                                                                              |
+| `tone`             | 话术原则                                        | 否   | —                                                                                                                            |
+| `quote-discipline` | 报价纪律（硬性）                                | 是   | `overBudget` / `withinBudget`、按总价比预算（有断言）                                                                        |
+| `price-rules`      | 定价规则（只有这两条，硬性）                    | 是   | 与 `createQuote`、价格护栏是同一套规则（有断言）                                                                             |
+| `objections`       | 异议处理                                        | 否   | —                                                                                                                            |
+| `capabilities`     | 能力边界（硬性，先看这条）                      | 是   | 天数与住宿固定、顾问在微信上联系（有断言）                                                                                   |
+| `no-destinations`  | 我们没有的目的地（如南极、冰岛）                | 是   | `destinationMiss`、坚持才转人工（有断言）                                                                                    |
+| `handoff`          | 转人工条件（满足任一立即调用 handoff_to_human） | 是   | 与 `isHandoffIntent`、`handoff_to_human` 的口径一致                                                                          |
+| `wechat-style`     | 微信语气规范                                    | 否   | —                                                                                                                            |
 
 #### 切分、拼接与规范化
 
@@ -341,7 +341,10 @@ export interface SectionSpec {
 export const TRAVEL_SOP_SECTIONS: readonly SectionSpec[];
 
 /** text 从标题行开始（前言从文件开头开始），到下一个「## 」行之前结束，含结尾的换行 */
-export interface SopSection { key: string; text: string }
+export interface SopSection {
+  key: string;
+  text: string;
+}
 
 export function splitSop(md: string, spec?: readonly SectionSpec[]): SopSection[];
 export function joinSop(sections: readonly SopSection[]): string;
@@ -351,18 +354,14 @@ export function sectionBody(section: SopSection, spec: SectionSpec): string;
 export function withBody(spec: SectionSpec, body: string, isLast: boolean): SopSection;
 export function normalizeBody(body: string, isLast: boolean): string;
 /** 按当前节表合并：锁定节取 image；可编辑节优先取 stored 里同 key 的，stored 没有时取 image */
-export function mergeWithImage(
-  stored: readonly SopSection[],
-  image: readonly SopSection[],
-  spec?: readonly SectionSpec[],
-): SopSection[];
+export function mergeWithImage(stored: readonly SopSection[], image: readonly SopSection[], spec?: readonly SectionSpec[]): SopSection[];
 /** 可编辑节正文的总长度（UTF-16 码元，即 String.length） */
 export function editableChars(sections: readonly SopSection[], spec?: readonly SectionSpec[]): number;
 /** 编码检查，不合格抛 SopEncodingError */
 export function assertSopEncoding(text: string): void;
 
 export class SopStructureError extends Error {} // 标题序列与节表不符；标题后缺空行；正文为空；正文里出现行首「## 」；某节不是规范形
-export class SopEncodingError extends Error {}  // 见下
+export class SopEncodingError extends Error {} // 见下
 ```
 
 - 只认行首的 `## `。切出的标题序列必须和节表逐条相同，每个标题行之后必须紧跟一个空行，否则抛 `SopStructureError`。
@@ -405,21 +404,25 @@ export const KNOWN_FIELD_SOURCES: readonly ['src/tools.ts', 'src/price-rules.ts'
 export const BUDGET_RATIO = 1.2;
 
 export type ViolationCode =
-  | 'structure'        // 节表不符、标题被改、正文为空、正文里出现行首「## 」
-  | 'locked_changed'   // 锁定节与镜像不一致
+  | 'structure' // 节表不符、标题被改、正文为空、正文里出现行首「## 」
+  | 'locked_changed' // 锁定节与镜像不一致
   | 'phrase_missing'
   | 'phrase_forbidden'
-  | 'unknown_tool'     // snake_case 标识符不是现有工具名
-  | 'unknown_field'    // camelCase 标识符不在 knownFields 里
-  | 'over_budget';     // 可编辑节正文总长 > 基线 × BUDGET_RATIO
+  | 'unknown_tool' // snake_case 标识符不是现有工具名
+  | 'unknown_field' // camelCase 标识符不在 knownFields 里
+  | 'over_budget'; // 可编辑节正文总长 > 基线 × BUDGET_RATIO
 
-export interface ContractViolation { code: ViolationCode; sectionKey: string | null; detail: string }
+export interface ContractViolation {
+  code: ViolationCode;
+  sectionKey: string | null;
+  detail: string;
+}
 
 export function checkSopContract(input: {
   sections: readonly SopSection[];
   imageSections: readonly SopSection[]; // 镜像 data/sop.md 切出的节
-  rendered: string;                     // render(joinSop(sections))
-  toolNames: readonly string[];         // toolDefs 里的 function.name
+  rendered: string; // render(joinSop(sections))
+  toolNames: readonly string[]; // toolDefs 里的 function.name
   knownFields: readonly string[];
   /** 该租户导入版本（source='import'）的 editableChars。null 表示不查预算：启动重渲染和导出都传 null */
   baselineEditableChars: number | null;
@@ -640,11 +643,11 @@ export function indexHealth(): IndexHealth;
 
 #### 角色
 
-| 角色 | 连接串 | 做什么 |
-|---|---|---|
-| `agent_owner` | `DATABASE_OWNER_URL` | 拥有库、全部表和函数，只跑迁移。不是超级用户，没有 BYPASSRLS；FORCE 之下它自己也受 RLS 约束 |
-| `agent_app` | `DATABASE_URL` | 运行时，以及 import / export / catalog-fix。NOBYPASSRLS，不是任何表的属主 |
-| `agent_platform` | `DATABASE_PLATFORM_URL` | 租户与账号命令行。NOBYPASSRLS；写带租户的表时也走 `withTenant` |
+| 角色             | 连接串                  | 做什么                                                                                      |
+| ---------------- | ----------------------- | ------------------------------------------------------------------------------------------- |
+| `agent_owner`    | `DATABASE_OWNER_URL`    | 拥有库、全部表和函数，只跑迁移。不是超级用户，没有 BYPASSRLS；FORCE 之下它自己也受 RLS 约束 |
+| `agent_app`      | `DATABASE_URL`          | 运行时，以及 import / export / catalog-fix。NOBYPASSRLS，不是任何表的属主                   |
+| `agent_platform` | `DATABASE_PLATFORM_URL` | 租户与账号命令行。NOBYPASSRLS；写带租户的表时也走 `withTenant`                              |
 
 三个运行时和命令行角色都不依赖 BYPASSRLS（ADR-001 第 3 个坑）。备份另用超级用户，见「备份与恢复」。01 没有跨租户读取的需求，所以不给 `agent_platform` 写全放行策略。
 
@@ -838,15 +841,15 @@ auth_password_rehash(p_tenant uuid, p_user_id uuid, p_old_hash text, p_new_hash 
 
 各角色对各表的期望（RLS 套件逐格断言）：
 
-| 表 | `agent_app` | `agent_platform` | `agent_owner` |
-|---|---|---|---|
-| `tenants`（无 RLS） | SELECT | SELECT、INSERT | 属主 |
-| `users`（无 RLS） | 无权限 | SELECT、INSERT、UPDATE | 属主 |
-| `auth_sessions`（无 RLS，豁免） | 无权限 | SELECT、DELETE | 属主 |
-| `memberships`（RLS） | 无权限 | SELECT、INSERT、UPDATE、DELETE | 属主，受 FORCE 约束 |
-| `sop_versions`（RLS） | SELECT、INSERT、UPDATE | 无权限 | 属主，受 FORCE 约束 |
-| `catalog_items`（RLS） | SELECT、INSERT、UPDATE | 无权限 | 属主，受 FORCE 约束 |
-| `audit_log`（RLS） | SELECT、INSERT | SELECT、INSERT | 属主，受 FORCE 约束 |
+| 表                              | `agent_app`            | `agent_platform`               | `agent_owner`       |
+| ------------------------------- | ---------------------- | ------------------------------ | ------------------- |
+| `tenants`（无 RLS）             | SELECT                 | SELECT、INSERT                 | 属主                |
+| `users`（无 RLS）               | 无权限                 | SELECT、INSERT、UPDATE         | 属主                |
+| `auth_sessions`（无 RLS，豁免） | 无权限                 | SELECT、DELETE                 | 属主                |
+| `memberships`（RLS）            | 无权限                 | SELECT、INSERT、UPDATE、DELETE | 属主，受 FORCE 约束 |
+| `sop_versions`（RLS）           | SELECT、INSERT、UPDATE | 无权限                         | 属主，受 FORCE 约束 |
+| `catalog_items`（RLS）          | SELECT、INSERT、UPDATE | 无权限                         | 属主，受 FORCE 约束 |
+| `audit_log`（RLS）              | SELECT、INSERT         | SELECT、INSERT                 | 属主，受 FORCE 约束 |
 
 对 RLS 表：有权限的格子，没设租户时 SELECT 得到 0 行、INSERT 被 RLS 拒绝；「无权限」的格子报 permission denied。
 
@@ -873,7 +876,9 @@ export function openDb(url: string): Promise<{ db: Db; close(): Promise<void> }>
  * 在 withTenant 里再嵌套 withTenant 会抛错，不管租户是否相同。
  */
 export function withTenant<T>(
-  db: Db, ctx: TenantCtx, fn: (tx: Tx) => Promise<T>,
+  db: Db,
+  ctx: TenantCtx,
+  fn: (tx: Tx) => Promise<T>,
   opts?: { isolation?: 'read committed' | 'repeatable read'; readOnly?: boolean },
 ): Promise<T>;
 /** 在 withTenant 之外调用即抛 */
@@ -896,17 +901,17 @@ export function holdTenantLock(url: string, tenantId: string, opts?: { keepAlive
 
 #### 审计
 
-| action | 什么时候写 | actor_kind | diff |
-|---|---|---|---|
-| `auth.login` / `auth.logout` | 登录成功 / 登出 | user | — |
-| `sop.publish` | 发布草稿 | user | `{ versionNo, changedKeys, rebasedFrom? }` |
-| `sop.rollback` | 回滚 | user | `{ fromVersionNo, toVersionNo, targetVersionNo, sameHashAsTarget }` |
-| `sop.discard` | 丢弃草稿 | user | — |
-| `sop.rerender` | 启动重渲染 | system | `{ causes: ('hard_rules' \| 'locked_sections' \| 'section_table' \| 'tools')[], fromVersionNo, toVersionNo, oldPromptHash, newPromptHash }` |
-| `config.import` | 导入 | platform | `{ sections, routes, hotels }` 各自的条数 |
-| `catalog.create` / `catalog.update` / `catalog.activate` | 产品库写入 | user | 变了的顶层字段 |
-| `catalog.locked_fix` | `catalog-fix` 命令行 | platform | 变了的顶层字段，加 `reason` |
-| `platform.tenant_create` / `platform.user_create` / `platform.user_password` / `platform.user_disable` / `platform.member_role` / `platform.member_remove` | 平台命令行 | platform | 永远不含口令 |
+| action                                                                                                                                                     | 什么时候写           | actor_kind | diff                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth.login` / `auth.logout`                                                                                                                               | 登录成功 / 登出      | user       | —                                                                                                                                           |
+| `sop.publish`                                                                                                                                              | 发布草稿             | user       | `{ versionNo, changedKeys, rebasedFrom? }`                                                                                                  |
+| `sop.rollback`                                                                                                                                             | 回滚                 | user       | `{ fromVersionNo, toVersionNo, targetVersionNo, sameHashAsTarget }`                                                                         |
+| `sop.discard`                                                                                                                                              | 丢弃草稿             | user       | —                                                                                                                                           |
+| `sop.rerender`                                                                                                                                             | 启动重渲染           | system     | `{ causes: ('hard_rules' \| 'locked_sections' \| 'section_table' \| 'tools')[], fromVersionNo, toVersionNo, oldPromptHash, newPromptHash }` |
+| `config.import`                                                                                                                                            | 导入                 | platform   | `{ sections, routes, hotels }` 各自的条数                                                                                                   |
+| `catalog.create` / `catalog.update` / `catalog.activate`                                                                                                   | 产品库写入           | user       | 变了的顶层字段                                                                                                                              |
+| `catalog.locked_fix`                                                                                                                                       | `catalog-fix` 命令行 | platform   | 变了的顶层字段，加 `reason`                                                                                                                 |
+| `platform.tenant_create` / `platform.user_create` / `platform.user_password` / `platform.user_disable` / `platform.member_role` / `platform.member_remove` | 平台命令行           | platform   | 永远不含口令                                                                                                                                |
 
 保存草稿不记审计，这类记录太多也没有用。版本行本身记着创建人和发布人。登录失败只打日志，不进审计。
 
@@ -923,11 +928,21 @@ export function verifyPassword(plain: string, stored: string): Promise<{ ok: boo
 
 // src/auth/session.ts
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
-export interface AuthedUser { userId: string; tenantId: string; role: Role; displayName: string; csrf: string }
+export interface AuthedUser {
+  userId: string;
+  tenantId: string;
+  role: Role;
+  displayName: string;
+  csrf: string;
+}
 export const IDLE_MS = 12 * 3_600_000;
 export const ABSOLUTE_MS = 7 * 24 * 3_600_000;
 export function login(input: {
-  email: string; password: string; ip: string | null; userAgent: string | null; now: number;
+  email: string;
+  password: string;
+  ip: string | null;
+  userAgent: string | null;
+  now: number;
 }): Promise<{ token: string; user: AuthedUser } | null>;
 export function resolveSession(token: string, now: number): Promise<AuthedUser | null>;
 export function logout(token: string): Promise<void>;
@@ -951,6 +966,7 @@ export function csrfFor(token: string): string;
   - 请求头 `x-csrf` 等于 `csrfFor(token)`，前端从 `/me` 拿到这个值。
 
   登录接口还没有会话，只过 `sameOriginOnly`，并要求 `content-type: application/json`：跨站请求要带这个类型必须先过 CORS 预检，而我们不开 CORS。
+
 - **限流。** 计数都在进程内（单副本），登录限流器单独实现，键数到上限时按 LRU 淘汰旧键，不并进全局溢出桶。IPv6 地址按 /64 前缀归桶。
   - 同一 IP 每分钟最多 10 次登录，超出返回 429。
   - 同一「邮箱（小写）+ IP」15 分钟内失败 5 次后，锁到窗口结束，返回 429；这对组合登录成功时清零。
@@ -968,11 +984,11 @@ type ConsoleEnv = { Variables: { user: AuthedUser | null; token: string | null }
 
 export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
-  .use('*', securityHeaders, requireDbMode, loadSession, guardWrites)   // guardWrites = sameOriginOnly + 会话 + x-csrf（登录接口例外）
+  .use('*', securityHeaders, requireDbMode, loadSession, guardWrites) // guardWrites = sameOriginOnly + 会话 + x-csrf（登录接口例外）
   .post('/auth/login', loginLimit, zValidator('json', LoginBody), loginHandler)
   .post('/auth/logout', logoutHandler)
   .get('/me', meHandler)
-  .get('/status', canRead, statusHandler)              // 登录后：模式、租户、当前版本、锁与索引状态、差异；匿名只有 mode
+  .get('/status', canRead, statusHandler) // 登录后：模式、租户、当前版本、锁与索引状态、差异；匿名只有 mode
   .get('/sop', canRead, sopOverviewHandler)
   .get('/sop/versions', canRead, zValidator('query', VersionsQuery), listVersionsHandler)
   .get('/sop/versions/:id', canRead, getVersionHandler)
@@ -986,7 +1002,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   .post('/catalog/:kind', canEdit, zValidator('json', CreateItemBody), createItemHandler)
   .patch('/catalog/:kind/:code', canEdit, zValidator('json', CatalogPatchBody), updateItemHandler)
   .post('/catalog/:kind/:code/activate', canEdit, zValidator('json', RevBody), activateHandler)
-  .post('/catalog/:kind/import-csv', canEdit, importCsvHandler)        // 可砍
+  .post('/catalog/:kind/import-csv', canEdit, importCsvHandler) // 可砍
   .get('/conversations', canSeeCustomers, zValidator('query', ConvQuery), listConversationsHandler) // 可砍
   .get('/audit', canAudit, zValidator('query', AuditQuery), listAuditHandler);
 
@@ -1000,12 +1016,12 @@ export type ConsoleApp = typeof consoleApi;
 
 权限（「匿名」指没有有效会话；demo / prod 指 `profile().flags.anon_readonly_admin` 取开或关）：
 
-| 操作 | owner / admin | supervisor / agent / viewer | 匿名（demo） | 匿名（prod） |
-|---|---|---|---|---|
-| 读 SOP、产品库、状态 | ✓ | ✓ | 脱敏投影（页面挂「演示只读」横幅） | 401 |
-| 改 SOP、发布、回滚、上新、编辑、上架 | ✓ | 403 | 401 | 401 |
-| 会话只读列表 | ✓ | ✓ | 401 | 401 |
-| 审计日志 | ✓ | 403 | 401 | 401 |
+| 操作                                 | owner / admin | supervisor / agent / viewer | 匿名（demo）                       | 匿名（prod） |
+| ------------------------------------ | ------------- | --------------------------- | ---------------------------------- | ------------ |
+| 读 SOP、产品库、状态                 | ✓             | ✓                           | 脱敏投影（页面挂「演示只读」横幅） | 401          |
+| 改 SOP、发布、回滚、上新、编辑、上架 | ✓             | 403                         | 401                                | 401          |
+| 会话只读列表                         | ✓             | ✓                           | 401                                | 401          |
+| 审计日志                             | ✓             | 403                         | 401                                | 401          |
 
 - **匿名投影**：SOP 只给已发布版本的 `sections`、`versionNo`、`publishedAt` 和 `promptHash` 前 12 位；产品库只给 active 条目的 `kind`、`code`、`payload`；`/status` 只给 `mode`。不含草稿、任何 user id、姓名和变更说明。匿名读取一律出自进程内缓存与快照，不查库，并挂上现有的 `lookupLimit`。
 - **会话只读列表**读的是现有的文件 store：handler 自己按 `(updatedAt desc, id)` 排序，offset 分页（`limit ≤ 100`），每条只投影 `id`、`channel`、`stage`、`handedOver`、消息条数、`updatedAt`，不带消息正文，也不把 store 里的活对象原样返回。不列 `sim-` 会话：演示访客会话凭 id 就能读全文，id 本身就是凭据。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移。详情仍在 `admin.html` 里看。
@@ -1175,6 +1191,7 @@ SOP：
    - `create_order` 与 `handoff_to_human`：把 `ord_[0-9a-f]{24}`、`payUrl` 和时间戳遮掉后，返回字符串与调用后的会话状态相同。
 
    DB 模式下 mock eval 通过的用例集合，与文件模式相同。真实 Postgres 上经 node-postgres 驱动重复一遍前两项。
+
 3. **导入 / 导出往返。**
    - import 再 export：`sop.md` 与 `data/sop.md` 逐字节相同；`routes.json`、`hotels.json` 条目顺序相同，每条的 `JSON.stringify` 相同。
    - 含 `\r\n`、NFD 字符、BOM、孤立代理项、NUL、U+2028，或某节不是规范形（如行尾空格）的 sop 文件，import 失败退出，库里没有新行。
@@ -1196,6 +1213,7 @@ SOP：
    - 把可编辑节加长到超出导入时可编辑节总长的 120% → `over_budget`。
 
    保存草稿时点名锁定节，返回 422 `locked_section`。在 `engine.selftest.ts` 里新增一条 `sys.includes('某短语')` 而不把它加进清单，`pnpm test` 失败并点出这个短语；在 `data/sop.md` 的锁定节里点名一个 `KNOWN_FIELD_SOURCES` 里没有的 camelCase 字段，`pnpm test` 失败并点出它。
+
 7. **版本不可变。**
    - 以 `agent_app` 对已发布的行执行 `UPDATE sections`、`UPDATE rendered_prompt`、`UPDATE version_no`，或把状态从 published 改回 draft，都报错，行不变。
    - 直接 `INSERT` 一行 `status='archived'` 的版本，或 `prompt_hash` 与 `rendered_prompt` 不符的 published 版本，都报错。
