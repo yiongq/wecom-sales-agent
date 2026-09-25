@@ -4,3 +4,17 @@ var/
 *.log
 .playwright-mcp/
 .deploy.env
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.pnpm-store/
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+# Claude Code: only the shared settings and hooks are tracked; local settings and agent worktrees are not
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+# lockfile (pnpm-lock.yaml) must stay committed; never add it here

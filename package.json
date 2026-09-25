@@ -5,10 +5,14 @@
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.30.2",
+  "engines": { "node": ">=22" },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "format:check": "echo \"TODO: oxfmt\"",
+    "lint": "echo \"TODO: oxlint\"",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx src/engine.selftest.ts && tsx src/adapters/wecom.selftest.ts && tsx src/dejargon.selftest.ts && tsx src/price-guard.selftest.ts && tsx src/llm.selftest.ts && tsx src/server.selftest.ts && LLM_MOCK=1 tsx eval/run.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
