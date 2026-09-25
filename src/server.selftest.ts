@@ -33,7 +33,8 @@ process.env.VISITOR_SESSION_MAX = '100';
 const { app } = await import('./server.js');
 const { getOrCreateSession, getSession, saveSession, createOrder } = await import('./store.js');
 const { getOrder, listOrders, listSessions, markOrderPaid, pruneStaleVisitorData, freshenDemoData } = await import('./store.js');
-const { resolveProfile, capFlags, profile, __profileTest, ProfileConfigError, DEMO_DEFAULTS, PROD_CEILING } = await import('./profile.js');
+const { resolveProfile, capFlags, profile, __profileTest, ProfileConfigError, DEMO_DEFAULTS, PROD_CEILING, PROFILE_ENV_NAMES } =
+  await import('./profile.js');
 const { subscribe } = await import('./adapters/simulator.js');
 const { recordUsage } = await import('./usage.js');
 
@@ -843,35 +844,52 @@ const payReq = (orderId: string) =>
   }
   check('__profileTest.reset：回到按 process.env 解析的 demo', profile().name === 'demo');
 
-  // 启动（验收 5）：profile-boot 用单个 node 进程跑，配置错误时非零退出、一行原因、没有异常栈；正常时一行列出生效值。
-  // 只给最小的环境：不经过 env.ts，本机 .env 进不来
-  const boot = (env: Record<string, string>) => {
-    const r = spawnSync(process.execPath, ['--import', 'tsx', 'src/profile-boot.ts'], {
-      env: { PATH: process.env.PATH ?? '', ...env },
-      encoding: 'utf8',
-      timeout: 30_000,
-    });
+  // 缓存：首次解析之后改 process.env 不生效，开关在启动时就定死了
+  const savedMockPay = process.env.FLAG_MOCK_PAY;
+  process.env.FLAG_MOCK_PAY = 'off';
+  check('profile()：首次解析后缓存，之后改 process.env 不生效', profile().flags.mock_pay === true);
+  restoreEnv('FLAG_MOCK_PAY', savedMockPay);
+
+  // 启动（验收 5）：单个 node 进程跑。子进程的环境只给 PATH、临时 VAR_DIR 和 profile 相关变量（全部先设空串，本机 .env 进不来）；
+  // 不 listen、不连企微、不调模型，万一入口接错了也不会真的起服务
+  const bootEnv = (env: Record<string, string>): Record<string, string> => ({
+    PATH: process.env.PATH ?? '',
+    VAR_DIR: process.env.VAR_DIR ?? '',
+    SERVER_SELFTEST: '1',
+    LLM_MOCK: '1',
+    ADMIN_PASS: '',
+    WECOM_CORP_ID: '',
+    WECOM_APP_SECRET: '',
+    WECOM_KF_OPEN_KFID: '',
+    ...Object.fromEntries(PROFILE_ENV_NAMES.map((k) => [k, ''])),
+    ...env,
+  });
+  const run = (entry: string, env: Record<string, string>) => {
+    const r = spawnSync(process.execPath, ['--import', 'tsx', entry], { env: bootEnv(env), encoding: 'utf8', timeout: 30_000 });
     return { code: r.status, out: (r.stdout + r.stderr).trim() };
   };
-  for (const [why, env] of [
-    ['DEPLOY_PROFILE=staging', { DEPLOY_PROFILE: 'staging' }],
-    ['prod 加 FLAG_RESET_COMMAND=on', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x', FLAG_RESET_COMMAND: 'on' }],
-    ['prod 但没配 ADMIN_PASS', { DEPLOY_PROFILE: 'prod' }],
-    ['FLAG_AI_DISCLOSURE=on_ask', { FLAG_AI_DISCLOSURE: 'on_ask' }],
-    ['DEMO_FRESHEN=0 加 FLAG_SEED_FRESHEN=on', { DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'on' }],
-  ] as [string, Record<string, string>][]) {
-    const r = boot(env);
+  // 配置错误走真正的入口 src/server.ts：profile-boot 必须排在任何会 import store 的模块之前。
+  // 挪到后面，store 加载时就先解析了 profile，抛出来的是一整段异常栈；删掉它，prod 没配 ADMIN_PASS 也能起来。这几种都在 listen 之前退出
+  for (const [why, env, cause] of [
+    ['DEPLOY_PROFILE=staging', { DEPLOY_PROFILE: 'staging' }, 'DEPLOY_PROFILE=staging'],
+    ['prod 加 FLAG_RESET_COMMAND=on', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x', FLAG_RESET_COMMAND: 'on' }, 'FLAG_RESET_COMMAND'],
+    ['prod 但没配 ADMIN_PASS', { DEPLOY_PROFILE: 'prod' }, 'ADMIN_PASS'],
+    ['FLAG_AI_DISCLOSURE=on_ask', { FLAG_AI_DISCLOSURE: 'on_ask' }, 'FLAG_AI_DISCLOSURE=on_ask'],
+    ['DEMO_FRESHEN=0 加 FLAG_SEED_FRESHEN=on', { DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'on' }, 'DEMO_FRESHEN=0'],
+  ] as [string, Record<string, string>, string][]) {
+    const r = run('src/server.ts', env);
     check(
-      `启动：${why} 时非零退出，一行写明原因，没有异常栈`,
+      `启动：${why} 时 server.ts 非零退出，一行写明原因（${cause}），没有异常栈`,
       r.code !== 0 &&
         r.code !== null &&
         r.out.split('\n').length === 1 &&
-        r.out.startsWith('[profile] 配置错误') &&
-        !/\n\s+at /.test(r.out),
+        r.out.startsWith('[profile] 配置错误，拒绝启动：') &&
+        r.out.includes(cause),
       JSON.stringify(r),
     );
   }
-  const ok = boot({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+  // 正常启动的那一行看 profile-boot 本身（server.ts 起来之后不会自己退出）；打出来的必须是生效值，不是默认值
+  const ok = run('src/profile-boot.ts', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
   check(
     '启动：正常时一行列出 profile 名和六个开关的生效值',
     ok.code === 0 &&
@@ -879,7 +897,15 @@ const payReq = (orderId: string) =>
         '[profile] prod · reset_command=off anon_readonly_admin=off seed_freshen=off visitor_simulator=off mock_pay=off ai_disclosure=always',
     JSON.stringify(ok),
   );
-  check('启动：demo 下没配 ADMIN_PASS 照常启动', boot({}).code === 0);
+  const demoOff = run('src/profile-boot.ts', { FLAG_MOCK_PAY: 'off' });
+  check(
+    '启动：日志里是生效值（demo 下 FLAG_MOCK_PAY=off 就显示 mock_pay=off）',
+    demoOff.code === 0 &&
+      demoOff.out ===
+        '[profile] demo · reset_command=on anon_readonly_admin=on seed_freshen=on visitor_simulator=on mock_pay=off ai_disclosure=always',
+    JSON.stringify(demoOff),
+  );
+  check('启动：demo 下没配 ADMIN_PASS 照常启动', run('src/profile-boot.ts', {}).code === 0);
 }
 
 if (fails.length) {
