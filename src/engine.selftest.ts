@@ -571,9 +571,9 @@ console.log('\nSELFTEST PASS: greeting→discovery→recommend→quote→closing
   // 每人价取整：r-tibet-mid priceFrom 26800，最佳季「4月-6月、9月-10月」。26800 × 1.1 在浮点里是 29480.000000000004，
   // 不取整的话每人价和总价都带小数尾巴
   assert.deepEqual(q('r-tibet-mid', 3, '2027-09-20'), [29480, 88440], '每人价取整：26800 × 1.1 = 29480，总价 88440');
-  assert.deepEqual(q('r-tibet-mid', 4, '2027-09-20'), [28006, 112024], '取整后的 29480 再 × 0.95 = 28006，总价 × 4');
+  // 现有 20 条线路 × 0.95 都是整数（不论先上浮与否），× 0.95 这一步的取整、以及上浮取整对 4 人价的影响，用真实数据测不到
   console.log(
-    'SELFTEST PASS: createQuote 算价向量（最佳季上浮 / 4 人 95 折 / 非最佳季与全年同价不上浮 / 每人价取整 / 总价 = 每人价 × 人数）',
+    'SELFTEST PASS: createQuote 算价向量（最佳季上浮 / 4 人 95 折 / 非最佳季与全年同价不上浮 / 上浮后每人价取整 / 总价 = 每人价 × 人数）',
   );
 }
 
