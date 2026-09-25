@@ -509,6 +509,11 @@ const idleMin = s => Math.max(0, Math.round((Date.now() - s.updatedAt) / 60000))
 const fmtIdle = m => m < 60 ? m + ' 分钟' : (m < 1440 ? Math.round(m/60) + ' 小时' : Math.floor(m/1440) + ' 天');
 const lastMsg = s => { const m = (s.messages||[]).filter(x => x.role==='customer'||x.role==='agent'); return m[m.length-1]; };
 const sessOrders = s => S.orders.filter(o => o.sessionId === s.id);
+// 改单后被替代的旧单（superseded）不算待支付：金额取仍有效的那张，标签写明「已被替代」，
+// 不然客户改一次日期，后台就挂着两张「待支付」、列表金额还可能是旧单的
+const liveOrder = s => sessOrders(s).find(o => o.status !== 'superseded' && o.status !== 'cancelled');
+const ordLabel = o => o.status==='paid' ? '已支付' : o.status==='superseded' ? '已被替代' : o.status==='cancelled' ? '已取消' : '待支付';
+const ordColor = o => o.status==='paid' ? '--green' : o.status==='pending_payment' ? '--amber' : '--faint';
 const isUrgent = s => s.handedOver || (['quote','objection','closing'].includes(s.stage) && idleMin(s) >= 10);
 // 优先显示企微拉到的微信昵称；没有昵称时用「目的地客户/访客 + 短码」兜底。
 // 短码剥掉 wecom:/sim-/cust_ 前缀和下划线，避免显示成「· _E01」这种残码。
@@ -701,8 +706,8 @@ function renderList() {
     html += '<div style="margin-bottom:10px"><div class="grp-head"><span class="dot'+(g.live?' pulse':'')+'" style="background:'+g.color+'"></span><span class="t">'+g.t+'</span><span class="c mono">'+g.c+'</span></div>';
     for (const s of g.items) {
       const st = STAGES[s.stage], sc = SCORE[s.stage]||0, hot = sc>=70, i = idleMin(s);
-      const os = sessOrders(s), paid = os.find(o=>o.status==='paid');
-      const amt = paid ? yuan(paid.totalPrice) : (os[0] ? yuan(os[0].totalPrice) : '');
+      const os = sessOrders(s), paid = os.find(o=>o.status==='paid'), live = liveOrder(s);
+      const amt = paid ? yuan(paid.totalPrice) : (live ? yuan(live.totalPrice) : '');
       const lm = lastMsg(s), on = s.id === S.selected;
       html += '<div class="row'+(on?' on':'')+'" data-id="'+esc(s.id)+'">'
         + '<div class="top"><span class="nm">'+esc(nameOf(s))+'</span>'+stageBadge(s.stage)
@@ -783,7 +788,7 @@ function dashHTML() {
   const urgentSorted = urgent.slice().sort((a, b) => {
     const t = (S.taken[a.id] ? 1 : 0) - (S.taken[b.id] ? 1 : 0);
     if (t) return t;
-    const amt = s => { const o = sessOrders(s)[0]; return o ? o.totalPrice : 0; };
+    const amt = s => { const o = liveOrder(s); return o ? o.totalPrice : 0; };
     return (amt(b) - amt(a)) || (idleMin(b) - idleMin(a));
   });
   const alerts = urgent.length ? urgentSorted.slice(0, 4).map(s =>
@@ -882,7 +887,7 @@ function detailHTML(s) {
     const pay = raw.match(/\/pay\/([A-Za-z0-9_-]+)/);
     const o = pay && S.orders.find(x => x.id === pay[1]);
     if (!o) return null;
-    return { raw, href: raw.replace(/^https?:\/\/[^/]+/, ''), t: o.routeTitle+' · '+(o.status==='paid'?'已支付':'待支付'),
+    return { raw, href: raw.replace(/^https?:\/\/[^/]+/, ''), t: o.routeTitle+' · '+ordLabel(o),
              d: o.travelers+' 位出行 · '+o.departDate+' 出发 · 合计 '+yuan(o.totalPrice) };
   };
   // 与 stripLink 同规则：只挖掉 URL 本身，不删整行（链接常和报价写在一起）
@@ -921,7 +926,7 @@ function detailHTML(s) {
   const notes = (s.profile.notes && s.profile.notes.length) ? s.profile.notes : [s.profile.segment, s.profile.budget && ('预算 '+s.profile.budget), s.profile.travelers, s.profile.destinationInterest].filter(Boolean);
   const chips = notes.map(n=>'<span class="chip">'+esc(n)+'</span>').join('');
   const orders = os.length ? os.map(o => '<div class="ord"><div class="t"><span style="font-size:12.5px;font-weight:500">'+esc(o.routeTitle)+'</span>'
-    + '<span class="badge" style="color:'+(o.status==='paid'?'var(--green)':'var(--amber)')+';background:'+(o.status==='paid'?alpha('--green',14):alpha('--amber',14))+'">'+(o.status==='paid'?'已支付':'待支付')+'</span></div>'
+    + '<span class="badge" style="color:var('+ordColor(o)+');background:'+alpha(ordColor(o),14)+'">'+ordLabel(o)+'</span></div>'
     + '<div class="meta"><span style="font-size:11.5px;color:var(--sub)">'+o.travelers+' 人 · '+esc(o.departDate)+' 出发</span><span class="mono" style="font-size:14px">'+yuan(o.totalPrice)+'</span></div></div>').join('')
     : '<div class="empty">暂无订单</div>';
 

@@ -75,6 +75,13 @@ export interface Session {
     departDate?: string;
   };
   /**
+   * 本会话 create_quote / generate_proposal 真算过的每一次报价（旧的在前，封顶 12 条）。
+   * lastQuote 只留最近一次：改了日期或人数，上一次的价就没了出处。模型如实说「比元旦出发省了 4,740 元」
+   * （两次真实报价之差），价格护栏认不出这个数，整条回复被换成「刚才的价格说得不准」——实测拦下的全是这种误拦。
+   * 护栏拿它算同一线路报价两两之差放行（见 price-guard quoteDiffs）
+   */
+  quoteHistory?: { routeId: string; travelers: number; perPerson: number; total: number; departDate?: string }[];
+  /**
    * 被转人工「吸」走之前的销售阶段，交还 AI 时原样还原。
    * 没有它就只能从 orderIds/lastQuote 反推，而反推对「阶段已经推进、但推进过程
    * 不是本系统记录的」会话必然失真——比如种子演示会话 stage=quote 却没有 lastQuote，
@@ -99,6 +106,12 @@ export interface Session {
    * 每次 search_routes 最多 3 条，对比两三个目的地之后早先那条就被挤掉了，模型照历史里的价复述反被当成编价。
    */
   seenRouteIds?: string[];
+  /**
+   * search_routes 照实告诉过客户「这里没有现成线路」的目的地（destinationMiss），at 是那次查询的时间。
+   * 转人工要看它：库外目的地只有客户坚持时才转（sop.md），模型却常在客户只答了时间人数时就转了，
+   * 之后 AI 不再应答，客户问「那你推荐的那个多少钱」没人理（见 engine.ts unwarrantedHandoff）。
+   */
+  missedDestinations?: { place: string; at: number }[];
 }
 
 /** data/routes.json 的条目结构 */
@@ -123,6 +136,11 @@ export interface Route {
    *  银发的适配标签管不到单日的索道和垭口——丽江大理线打着银发标签，第 2 天冰川大索道照样上 4500 米——
    *  给长辈挑「全程低海拔」的替代线路时只认这个数（见 tools.ts lowlandAlternatives） */
   maxAltitude?: number;
+  /** 体力强度，逐条按 itinerary 核过：level 看最累的那一天（轻松 = 以车览、酒店、城市漫步为主；
+   *  适中 = 有成段的景区步道、索道上高处、骑行骑马；较累 = 数小时徒步、野长城、长途越野连着几天）；
+   *  hardest 照行程原文概括最累的那几段，行程没写的步行量就写「行程没写」。
+   *  银发标签和海拔都管不到腿脚——北京线打着银发标签、最高才 1150 米，第 3 天却是三小时野长城（见 tools.ts intensityNote） */
+  intensity?: { level: '轻松' | '适中' | '较累'; hardest: string };
   /** 逐日行程。定制旅行的核心交付物是行程书，不能让模型凭 highlights 现编 */
   itinerary?: { day: number; title: string; detail: string; hotel: string; meals: string }[];
   inclusions?: string[];
@@ -149,9 +167,13 @@ export interface Order {
   travelers: number;
   departDate: string;
   totalPrice: number; // 元
-  status: 'pending_payment' | 'paid' | 'cancelled';
+  /** superseded：客户下单后改了人数/日期，同一条线重新下了一单，这张待付款的旧单作废（见 tools.ts create_order）。
+   *  此前旧单一直挂着待付款，模型嘴上说「之前那笔作废了」，客户点旧链接照样能付，后台也看到两张待付款 */
+  status: 'pending_payment' | 'paid' | 'cancelled' | 'superseded';
   createdAt: number;
   paidAt?: number;
+  /** 替代它的新订单号（status=superseded 时有） */
+  supersededBy?: string;
 }
 
 /** 引擎对一条客户消息的处理结果 */

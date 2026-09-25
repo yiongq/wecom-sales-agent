@@ -135,7 +135,7 @@
   },
   {
     "id": "flow-07-kid-headcount",
-    "desc": "提过带娃、只报了人数：照这个人数报价，顺带说明孩子算没算",
+    "desc": "提过带娃、只报了人数：报价也好、候选有两条先问选哪条也好，都要顺带问孩子算没算；客户没说大人，不写成「两位大人」",
     "tags": [
       "话术"
     ],
@@ -146,8 +146,8 @@
       },
       {
         "say": "两位 12号",
-        "expectTool": "create_quote",
-        "expectText": "孩子|小朋友"
+        "expectText": "孩子|小朋友",
+        "denyText": "[两2]\\s*(?:位|个)\\s*大人"
       }
     ],
     "realOnly": true
@@ -490,6 +490,449 @@
         "say": "新疆",
         "expectText": "线路|人均|行程|天",
         "denyText": "平方公里|常住人口|不可分割|简称[“\"]"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-08c-offpeak-note",
+    "desc": "不在最佳季的报价写明「不上浮」（三亚最佳季 10 月-次年 3 月，7 月出发按标准价）：此前只写「当前为标准价」，模型自己给便宜找理由（平日价、避开节日高峰）",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "想去三亚，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "明年7月1号出发，两个人多少钱",
+        "expectTool": "create_quote",
+        "expectText": "7\\s*月[^。\\n]{0,4}不在[^。\\n]{0,8}最佳(?:出行)?季[^。\\n]{0,12}(?:不上浮|没有上浮|标准价)",
+        "denyText": "当前为标准价|平日价|节假日价"
+      }
+    ]
+  },
+  {
+    "id": "talk-02b-objection-three-ways",
+    "desc": "嫌贵只给三条路（更便宜的现成线路 / 不在最佳季的日期 / 转人工），不许诺缩短天数、降一档酒店，不点名没查到的目的地（此前 SOP 自相矛盾，模型照着许诺）",
+    "tags": [
+      "话术"
+    ],
+    "turns": [
+      {
+        "say": "我们刚领证 想去巴厘岛度蜜月 两个人"
+      },
+      {
+        "say": "10月30号出发 两个人报个价",
+        "expectTool": "create_quote"
+      },
+      {
+        "say": "能再便宜点吗 就差一点点了",
+        "denyText": "缩短天数|更短的天数|压缩天数|少住|降一档|低一档的?酒店|换.{0,4}酒店档|轻量版|东南亚海岛|涠洲岛|越南|泰国"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-11-no-made-up-price-rules",
+    "desc": "定价只有「最佳季上浮 10%、4 人及以上 95 折」两条：不编儿童价、节假日价，不编名额紧张",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "三亚亲子那条，我和老公带俩娃，大的7岁小的4岁"
+      },
+      {
+        "say": "10月3号出发，4个人报个价吧",
+        "expectTool": "create_quote",
+        "expectText": "16,511|16511",
+        "denyText": "(?<!没有|无|不设|不存在|也没有)儿童价|半价|孩子免费|名额紧张|名额有限|紧俏|抢手|平日价|节假日价"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-12-budget-claim",
+    "desc": "超了预算不说「在您预算内」（每人 31,680、客户预算每人 3 万）：预算判断只照 create_quote 的 withinBudget",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "hi 想找个honeymoon的trip，budget大概per person 3w，想去马尔代夫"
+      },
+      {
+        "say": "ok 12月5号 2 pax 就中央格兰德那条 报个价",
+        "expectTool": "create_quote",
+        "denyText": "在您.{0,10}预算(?:内|之内|以内|范围内)|符合您的预算|没超预算"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-13-no-service-promise",
+    "desc": "做不到的服务不承诺：专票、资金监管、对公账户由顾问确认；企微拿不到手机号，不说电话联系。「由顾问跟您确认，顾问会在微信上联系您」不是转人工，下一句照常回；讲规矩的「付款只走官方支付链接」不删、不追加催单",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "看中你们西藏那个7天的 能开公司抬头的增值税专票吗",
+        "denyText": "支持开.{0,12}专|可以开.{0,12}专"
+      },
+      {
+        "say": "先交钱然后人跑了咋整 资金有监管吗",
+        "denyText": "有第三方(资金)?(监管|托管)|由第三方.{0,6}(监管|托管)|全程.{0,6}(监管|托管)|资金(是|都|会|已)?(由|在).{0,8}(监管|托管)|对公账户|马上给您下单"
+      },
+      {
+        "say": "你们有电话吗 我想打过去问",
+        "denyText": "电话联系您|给您打电话|致电您",
+        "expectStatus": 200
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "robust-04-resend-pay",
+    "desc": "付款链接打不开要重发：引擎直接重发那张待付款单，不转人工、不新建订单（A14）",
+    "tags": [
+      "健壮性"
+    ],
+    "turns": [
+      {
+        "say": "想去西安，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "10月5号出发，就订这个",
+        "expectTool": "create_order",
+        "expectText": "/pay/"
+      },
+      {
+        "say": "付款链接打不开 再发我一次",
+        "expectStage": "closing",
+        "expectText": "/pay/",
+        "denyText": "转接|顾问会",
+        "expectOrderCount": 1
+      }
+    ]
+  },
+  {
+    "id": "guard-14-bargain-not-order",
+    "desc": "还价不是下单：「给个实在价 1万5一个人，我今天就定」不能按原价兜底建单（B01）",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "想去西藏，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "10月18号出发，两个人报个价",
+        "expectTool": "create_quote"
+      },
+      {
+        "say": "给个实在价 1万5一个人，我今天就定",
+        "denyText": "锁定名额|/pay/",
+        "expectOrderCount": 0
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-15-holiday-ask-day",
+    "desc": "只说了「国庆」，客户说「行 订吧」要先问具体哪天，不能按 10月1日 下单（A18）",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "想去贵州，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "国庆出发，两个人多少钱",
+        "expectTool": "create_quote"
+      },
+      {
+        "say": "行 订吧",
+        "denyText": "/pay/",
+        "expectText": "哪天|几号",
+        "expectOrderCount": 0
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "robust-05-change-order",
+    "desc": "下单后改日期：重新下单，旧的待付款单作废、旧链接失效（C05/B18）",
+    "tags": [
+      "健壮性"
+    ],
+    "turns": [
+      {
+        "say": "想去西安，两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "10月5号出发，就订这个",
+        "expectTool": "create_order"
+      },
+      {
+        "say": "改成10月8号出发吧，重新下单",
+        "expectTool": "create_order",
+        "expectText": "/pay/"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-16-miss-no-handoff",
+    "desc": "库外目的地推荐了最接近的线路，客户只答了时间人数：不转人工，下一句照常回（B09）",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "想去冰岛看极光",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "明年2月，两个人",
+        "denyText": "转接|顾问会"
+      },
+      {
+        "say": "那你推荐的那个多少钱",
+        "expectStatus": 200
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "detail-01-route-facts",
+    "desc": "问走路爬山累不累：会话里有明确线路时引擎先替模型查详情",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "想带爸妈去贵州 我们4个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "贵州那条每天走路多不多 爬山累不累",
+        "expectTool": "get_route_detail"
+      }
+    ]
+  },
+  {
+    "id": "detail-02-no-guess",
+    "desc": "问细节只按行程原文答：贵州那条不去黄果树，不替长辈担保「完全没问题」「不用爬山」",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "想带爸妈去贵州 我们4个人 11月8号出发 报个价",
+        "expectTool": "create_quote"
+      },
+      {
+        "say": "贵州那条每天走路多不多 爬山累不累",
+        "expectTool": "get_route_detail",
+        "denyText": "黄果树|扶梯|完全没问题|不用爬山|全程平地"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "retrieval-01-india",
+    "desc": "「印度」不是「印度尼西亚」：按库外目的地预取，不把巴厘岛说成印度线",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "我们5个朋友想去印度 看泰姬陵",
+        "expectTool": "search_routes",
+        "denyText": "印度尼西亚"
+      }
+    ]
+  },
+  {
+    "id": "retrieval-02-visited",
+    "desc": "客户说马代去过了：库外兜底首推不是马代",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "马代去过了 这次想去普吉岛或者斐济 有没有 俩人度个蜜月",
+        "expectTool": "search_routes",
+        "expectText": "巴厘岛"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "retrieval-03-altitude-elder",
+    "desc": "客户说了婆婆 72 岁、怕高反（模型未必传银发）：九寨线照实提黄龙那一段海拔",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "我们一家人，我和老公带两个孩子，还有婆婆72岁也怕高反，孩子想去成都看熊猫",
+        "expectTool": "search_routes",
+        "expectText": "3,?5\\d\\d|三千五",
+        "denyText": "全程低海拔|没有高原段"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "quote-01-ready",
+    "desc": "线路、人数、日期一句话给齐：当轮报价，不反问说过的信息",
+    "tags": [
+      "核心流程"
+    ],
+    "turns": [
+      {
+        "say": "芬兰玻璃屋看极光那个 我俩想12月28号出发 跨个年",
+        "expectTool": "create_quote",
+        "expectText": "51,?480",
+        "denyText": "两个人出发吗|几位出行|几个人"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "quote-02-holiday",
+    "desc": "节假日也算日期已给：「明年五一 2个人 多少钱」当轮报价",
+    "tags": [
+      "核心流程"
+    ],
+    "turns": [
+      {
+        "say": "去年国庆去过云南了 明年五一想去三亚玩 2个人 多少钱",
+        "expectTool": "create_quote",
+        "expectText": "31,?600",
+        "denyText": "(?:告诉我|说一下|确认一?下|定一?下)[^。\\n]{0,6}(?:几号|哪天)[^。\\n]{0,8}(?:再|就|才)[^。\\n]{0,4}(?:报价|给您报|算价)"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "flow-08-change-headcount-keeps-answering",
+    "desc": "下单后改人数：新单回复里的「付完顾问会在微信上联系您」是正常流程，不是转人工，下一句照常回（C04/C13 误转人工后 AI 不再回复）",
+    "tags": [
+      "健壮性"
+    ],
+    "turns": [
+      {
+        "say": "北京故宫长城那个5天的 我们3个人 10月20号出发 多少钱",
+        "expectTool": "create_quote"
+      },
+      {
+        "say": "可以 下单吧",
+        "expectTool": "create_order"
+      },
+      {
+        "say": "哎不好意思 我妈也要去 改成4个人",
+        "expectTool": "create_order"
+      },
+      {
+        "say": "好 付完之后呢",
+        "expectStatus": 200
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "retrieval-04-not-indonesia",
+    "desc": "「我说的是印度啊 不是印尼」：否掉的印尼不预取，不改推巴厘岛（B10）",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "印度有线路吗 想去看泰姬陵 两个人",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "我说的是印度啊 不是印尼",
+        "denyText": "有一条印尼|印尼巴厘岛的线路|我们有一条巴厘岛"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "retrieval-05-switch-destination",
+    "desc": "「算了 听说高反挺吓人的 换云南吧」：明说换目的地，引擎照样替模型查云南（B03 此前不查就编了两条云南线）",
+    "tags": [
+      "检索"
+    ],
+    "turns": [
+      {
+        "say": "我们俩度蜜月 想去西藏",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "算了 听说高反挺吓人的 换云南吧",
+        "expectTool": "search_routes"
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "talk-02c-transfer-option-keeps-answering",
+    "desc": "嫌贵时把「或者我为您转接资深顾问」列成选项之一、以「您想先看哪个？」收尾：不是答应转接，客户下一句「订」照常建单（A09 第 2 遍此前被引擎按转人工处理，单丢了）",
+    "tags": [
+      "话术"
+    ],
+    "turns": [
+      {
+        "say": "我和3个闺蜜想去云南 丽江大理那种 拍拍照",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "那就10月24号 4个人 丽江大理那个报个价",
+        "expectTool": "create_quote"
+      },
+      {
+        "say": "姐妹们说有点贵 能便宜点不",
+        "expectStatus": 200
+      },
+      {
+        "say": "算了 就这个吧 订",
+        "expectText": "/pay/",
+        "expectOrderCount": 1
+      }
+    ],
+    "realOnly": true
+  },
+  {
+    "id": "guard-17-after-new-year-vague",
+    "desc": "「过完年去」是春节前后的大概：报价按那个月的季节价、回复不写成某一天；「行 订吧」先问具体哪天，不按模型自己挑的日子下单（B09 第 2 遍编了 2027-02-20）",
+    "tags": [
+      "护栏"
+    ],
+    "turns": [
+      {
+        "say": "想带我妈去贵州看看山水 她65了",
+        "expectTool": "search_routes"
+      },
+      {
+        "say": "过完年去 就我们娘俩 多少钱",
+        "denyText": "2\\s*月\\s*\\d{1,2}\\s*[日号]|2027-02-\\d{2}"
+      },
+      {
+        "say": "行 订吧",
+        "denyText": "/pay/",
+        "expectText": "哪天|几号",
+        "expectOrderCount": 0
       }
     ],
     "realOnly": true

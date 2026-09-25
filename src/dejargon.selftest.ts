@@ -114,7 +114,7 @@ eq('这边库里（不能变成「我们这边我们这边」）', dejargon('我
 eq('我们的库里', dejargon('我们的库里新疆有两条。', S), '我们这边新疆有两条。');
 eq('查了下库里', dejargon('我查了下库里，暂时没有峨眉山的线。', S), '我查了下我们这边，暂时没有峨眉山的线。');
 // 护栏自己的兜底话术是有意这么写的，出口替换不能碰
-unchanged('价格兜底话术', '不好意思，价格我得按系统核准的来。告诉我线路和出行人数，我马上给您一个准确报价～');
+unchanged('价格兜底话术', '价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～');
 
 // ---------------- 边界 ----------------
 unchanged('单字母不动', '房型是 A 区还是 B 区？');
@@ -243,6 +243,13 @@ eq('空字符串', dejargon('', S), '');
   for (const [t, want] of [
     ['付款链接24小时内有效，过期了跟我说一声重新生成就行～', false], ['刚才的支付链接找不到了吗', false],
     ['好的，支付链接给您：', true], ['支付链接在这：', true], ['请点此完成支付', true],
+    // 讲规矩的陈述不是在发链接（B04 两遍、guard-03/13 原句）：此前被删掉，末尾还追加「确认好我马上给您下单」
+    ['付款只走我们发给您的官方支付链接，不会让您私下转账', false], ['· 付款只走我们官方发给您的支付链接，不经任何私人账户', false],
+    ['这边没法转发外部链接，也不建议点开来路不明的付款地址——付款请认准我们官方发给您的支付链接。', false],
+    ['资质这块我得如实说：由顾问跟您确认，下单后会签电子合同，付款也只走我们发给您的官方支付链接，可以放心。', false],
+    ['付款都是通过发给您的支付链接完成的', false], ['我们发给您的支付链接24小时内有效', false],
+    // 指着那条链接说的照样算：「这是…链接」「发给您的…链接：」
+    ['这是您的支付链接：', true], ['这是发给您的支付链接：', true], ['好的，发您支付链接', true],
   ] as [string, boolean][]) {
     if ((promiseInsertAt(t, 'pay') >= 0) === want) pass += 1;
     else fails.push(`支付承诺判断错（期望 ${want}）: ${t}`);
@@ -466,16 +473,27 @@ eq('空字符串', dejargon('', S), '');
 // 盲评里模型把工具提示整句抄进回复（「库里没有…」），所以 tools.ts 的提示只用对客户也说得出口的词。
 // 银发替代、转人工这几段是后加的长提示，逐条过一遍，防以后改提示时顺手写回「库里 / 系统」
 {
-  const { searchRoutes, HANDOFF_NOTE } = await import('./tools.js');
+  const { searchRoutes, HANDOFF_NOTE, executeTool } = await import('./tools.js');
   const rows = [
     ...(await searchRoutes({ destination: '西藏', segment: '银发' })),
     ...(await searchRoutes({ destination: '云南', segment: '银发' })), // 银发标签线上的海拔提醒（altitudeNote）
     ...(await searchRoutes({ destination: '北欧', segment: '银发' })), // 只是节奏不合适、不配替代的那种
+    // 按原话认出的长辈（模型传的不是银发）、怕高反、去过的地方、带长辈的体力强度
+    ...(await searchRoutes({ destination: '西藏', segment: '家庭' }, { elder: true })),
+    ...(await searchRoutes({ destination: '云南' }, { altitudeWorry: true })),
+    ...(await searchRoutes({ destination: '北京', segment: '银发' })),
+    ...(await searchRoutes({ tags: ['海岛'] }, { visited: ['马尔代夫', '巴厘岛'] })),
   ] as Record<string, unknown>[];
-  const hints = [HANDOFF_NOTE, ...rows.flatMap((r) => [r.segmentMismatch, r.alternative, r.altitudeNote])]
+  // 问细节时替模型查的详情：答细节的口径、体力强度、海拔提醒同样会被照抄
+  const session = { id: 'dj', channel: 'wecom', stage: 'recommend', profile: {}, messages: [], orderIds: [], handedOver: false, createdAt: 0, updatedAt: 0 };
+  const detail = JSON.parse(await executeTool('get_route_detail', { routeId: 'r-sichuan-mid' }, session as never, { elder: true })) as Record<string, unknown>;
+  const hints = [HANDOFF_NOTE, detail.detailNote, detail.intensityNote, detail.altitudeNote,
+    ...rows.flatMap((r) => [r.segmentMismatch, r.alternative, r.altitudeNote, r.intensityNote, r.visited])]
     .filter((h): h is string => typeof h === 'string');
   eq('银发标签线的海拔提醒在', String(hints.some((h) => h.includes('能带长辈'))), 'true');
   eq('银发替代与转人工提示都在', String(hints.some((h) => h.includes('替代线路')) && hints.length > 2), 'true');
+  eq('新加的几类提示都在（长辈不适配 / 怕高反 / 体力 / 去过 / 细节口径）', String(
+    ['不在带长辈的适配范围内', '客户担心高反', '体力强度', '去过了', '行程里没写，我让顾问确认'].every((k) => hints.some((h) => h.includes(k)))), 'true');
   for (const h of hints) eq(`提示不带内部用语「${h.slice(0, 16)}…」`, String(/库里|产品库|线路库|系统|查库/.test(h)), 'false');
 }
 

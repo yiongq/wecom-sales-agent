@@ -30,12 +30,17 @@ export interface ChatOptions {
   /** 执行工具并返回 JSON 字符串结果；副作用（建单/转人工）由调用方闭包处理 */
   executeTool: (name: string, args: Record<string, unknown>) => Promise<string>;
   /**
-   * 引擎已替模型执行过的只读工具调用（目前只有 search_routes）。realChat 把它们还原成
+   * 引擎已替模型执行过的只读工具调用（search_routes、get_route_detail）。realChat 把它们还原成
    * 一条 assistant tool_calls 消息（id 为 prefetch_0、prefetch_1…）加对应的 tool 消息，
    * 接在最新 user 消息之后，模型「以为自己已经查过」，直接据结果回复——省掉一次往返。
    * 这些调用不经过 executeTool、不计副作用，所以**只能放只读工具**。mock 忽略。
    */
   prefetch?: PrefetchedCall[];
+  /**
+   * 同一轮里复用了之前同参数的查询结果、而这个工具中间又用别的参数查过时调用：executeTool 的副作用（search_routes 把结果
+   * 记成会话里「最近查到的线路」）由调用方按复用的结果重放一遍，会话里记着的才是模型最后看的那次
+   */
+  onReuse?: (name: string, args: Record<string, unknown>, result: string) => void;
   /**
    * 每轮都会变的会话状态（阶段、画像、最近展示过的线路等）。**不要放进 system**：
    * system 在最前面，它一变，后面整段历史都吃不到前缀缓存。realChat 把它作为一条
@@ -197,7 +202,8 @@ function reasoningEffort(): string {
 const learnedThinking = new Set<string>();
 /** 已告警过「disabled 被无视」的模型，每个只喊一次 */
 const warnedIgnoredDisabled = new Set<string>();
-const stats = { hedgeFired: 0, hedgeWon: 0, thinkingSelfHeal: 0 };
+/** hedgeFired/hedgeWon 是总数；followup* 单记工具往返后那几次调用（阈值更低），用来看调低阈值值不值 */
+const stats = { hedgeFired: 0, hedgeWon: 0, followupHedgeFired: 0, followupHedgeWon: 0, thinkingSelfHeal: 0, toolReused: 0 };
 
 const isZhipu = (baseUrl: string): boolean => baseUrl.includes('bigmodel');
 
@@ -306,6 +312,17 @@ async function requestModel(
 // 代价：输家被 abort 前生成的 token 供应商照样计费，但我们拿不到它的 usage，只能按胜者记账。
 // 只在对冲模型与主模型不同时启用——同款模型慢多半是它那条队列在堵，再发一个大概率排进同一条队；
 // 名额已满时计时器也不加发，拥堵时多一个请求只会让所有人排得更久。
+//
+// 工具往返之后的调用（同一轮第 2 次起）用单独的阈值 LLM_HEDGE_MS_FOLLOWUP（默认 2800，不超过首轮阈值）。
+// 一轮的耗时是几次往返**相加**：第二次调用卡住时要等满首轮的 4 秒才对冲、对冲模型再答几秒，整轮就冲过
+// 8 秒线（2026-09 场景测试 A04：11.8 秒，靠的正是第二次调用上的对冲）。这几次请求只是上一次原样加上
+// 工具结果，多半只写一段回复，正常比首轮快；首轮常要据预取结果直接写完整回复，本来就慢一截，不跟着调低。
+// 2026-09-25 实测 flashx（44 轮 69 次调用，未开对冲）：首轮 P50 2.6s、48% 超 2.8s；后续 P50 1.8s、30% 超 2.8s。
+//
+// 账要心里有数：flashx 的慢请求是上游抖动（34 个 token 的工具调用也要 3.4 秒，与输出长短、思考 token 无关），
+// 集中在 3.3~4.8 秒一档；对冲模型 glm-5.2 自己一次就要 4 秒上下，这一档它抢不过。调低阈值只在真正的离群
+// 请求（6~7 秒以上）上早 1.2 秒兜住，代价是后续调用里多出约一成照样计费的对冲请求（超 2.8s 30% 对超 4s 19%）。
+// /healthz 的 followupHedgeFired / followupHedgeWon 就是核对这笔账的；不划算就把它设成与 LLM_HEDGE_MS 相同。
 
 function hedgeModelFor(model: string): string | null {
   const h = (process.env.LLM_HEDGE_MODEL || '').trim();
@@ -314,13 +331,22 @@ function hedgeModelFor(model: string): string | null {
 function hedgeMs(): number {
   return Math.max(0, numEnv('LLM_HEDGE_MS', 6000));
 }
+/** 工具往返之后那几次调用的对冲阈值。不超过首轮阈值：只把首轮调到 2 秒时，后续反而等得更久说不通 */
+function hedgeFollowupMs(): number {
+  return Math.min(hedgeMs(), Math.max(0, numEnv('LLM_HEDGE_MS_FOLLOWUP', 2800)));
+}
 
-/** 带对冲的单次请求。返回响应和**实际答出它的模型**（usage 要记在它名下） */
+/**
+ * 带对冲的单次请求。返回响应和**实际答出它的模型**（usage 要记在它名下）。
+ * round 是这次请求在本轮工具循环里的序号（0 = 首次），决定用哪个对冲阈值。
+ */
 function requestHedged(
-  ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal,
+  ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal, round = 0,
 ): Promise<{ data: Completion; model: string }> {
   const hedge = hedgeModelFor(model);
   if (!hedge) return requestModel(ep, model, payload, signal).then((data) => ({ data, model }));
+  const followup = round > 0;
+  const afterMs = followup ? hedgeFollowupMs() : hedgeMs();
   return new Promise((resolve, reject) => {
     const primaryCtl = new AbortController();
     const hedgeCtl = new AbortController();
@@ -342,7 +368,10 @@ function requestHedged(
           inflight -= 1;
           if (settled) return;
           other.abort(); // 输家立即取消
-          if (isHedge) stats.hedgeWon += 1;
+          if (isHedge) {
+            stats.hedgeWon += 1;
+            if (followup) stats.followupHedgeWon += 1;
+          }
           settle(() => resolve({ data, model: m }));
         },
         (e: unknown) => {
@@ -369,12 +398,14 @@ function requestHedged(
       hedgeLaunched = true;
       if (signal().aborted) return; // 整轮 deadline 已到，再发也是秒失败
       stats.hedgeFired += 1;
+      if (followup) stats.followupHedgeFired += 1;
       // 主请求失败时带上原因：对冲接住了，客户看不出问题，主模型配错就只能从这行日志发现
-      const why = onTimer ? `超过 ${hedgeMs()}ms 未返回` : `请求失败（${cause instanceof Error ? cause.message : String(cause)}）`;
-      console.warn(`[llm] 主模型 ${model} ${why}，对冲到 ${hedge}`);
+      const why = onTimer ? `超过 ${afterMs}ms 未返回` : `请求失败（${cause instanceof Error ? cause.message : String(cause)}）`;
+      // 标出是第几次往返：首轮和工具往返后的阈值不同，日志里要分得清是哪一档触发的
+      console.warn(`[llm] 主模型 ${model} ${why}（本轮第 ${round + 1} 次调用），对冲到 ${hedge}`);
       launch(hedge, hedgeCtl, primaryCtl, true);
     };
-    timer = setTimeout(() => launchHedge(true), hedgeMs());
+    timer = setTimeout(() => launchHedge(true), afterMs);
     launch(model, primaryCtl, hedgeCtl, false);
   });
 }
@@ -386,8 +417,12 @@ export function llmStats(): {
   thinkingSelfHeal: number;
   hedgeModel: string | null;
   hedgeMs: number;
+  hedgeMsFollowup: number;
   hedgeFired: number;
   hedgeWon: number;
+  followupHedgeFired: number;
+  followupHedgeWon: number;
+  toolReused: number;
 } {
   const { baseUrl, model: main } = llmCfg();
   const cheap = llmCfg(true).model;
@@ -399,8 +434,12 @@ export function llmStats(): {
     thinkingSelfHeal: stats.thinkingSelfHeal,
     hedgeModel: hedge,
     hedgeMs: hedgeMs(),
+    hedgeMsFollowup: hedgeFollowupMs(),
     hedgeFired: stats.hedgeFired,
     hedgeWon: stats.hedgeWon,
+    followupHedgeFired: stats.followupHedgeFired,
+    followupHedgeWon: stats.followupHedgeWon,
+    toolReused: stats.toolReused,
   };
 }
 
@@ -537,29 +576,101 @@ async function realChat(opts: ChatOptions): Promise<string> {
   // temperature 抖动换个参数再建一单。所以只在「本轮没有任何工具副作用」时才重试——
   // 空回复本来也几乎只出现在纯对话轮（异议、闲聊）。
   let sideEffects = 0;
+  // 同一轮里参数完全相同的只读查询直接复用第一次的结果（含引擎预取的那几次）。模型偶尔把
+  // 刚查过的条件原样再查一遍，或把预取还原给它的调用照抄一遍；带 query 的 search_routes 要走一次
+  // embedding 请求，重复执行只是白等。缓存的是 Promise：同一次响应里并列的两个相同调用也只执行一次。
+  // 只在本轮内有效，下一轮画像、客群都可能变了，同样的参数不一定查出同样的东西。
+  const reusable = new Map<string, Promise<string>>();
+  // 每个工具上一次调用的键。search_routes 执行时会把结果记成会话里「最近查到的线路」（下一轮「第一条多少钱」按它认）：
+  // 北京 → 云南 → 北京 这样查，第三次复用就跳过了这一步，会话里记着的还是云南，回复讲的却是北京。
+  // 所以复用时上一次同名调用不是这组参数，就把复用的结果交给 onReuse 重放一遍这个记录（不重新执行查询）
+  const lastKey = new Map<string, string>();
+  for (const p of opts.prefetch ?? []) {
+    reusable.set(callKey(p.name, p.args), Promise.resolve(p.result));
+    lastKey.set(p.name, callKey(p.name, p.args));
+  }
+  const trace: CallTrace[] = [];
+  const t0 = Date.now();
   const guarded: ChatOptions = {
     ...opts,
     executeTool: (name, args) => {
       if (WRITE_TOOLS.has(name)) sideEffects++;
-      return opts.executeTool(name, args);
+      if (!REUSABLE_TOOLS.has(name)) return opts.executeTool(name, args);
+      // 键要在执行**之前**算：search_routes 执行时会往 args 里补画像的客群
+      const key = callKey(name, args);
+      const hit = reusable.get(key);
+      const moved = lastKey.get(name) !== key;
+      lastKey.set(name, key);
+      if (hit && moved && opts.onReuse) void hit.then((r) => opts.onReuse!(name, args, r), () => {});
+      if (hit) {
+        stats.toolReused += 1;
+        trace.at(-1)?.reused.push(name);
+        console.log(`[llm] 本轮已用相同参数调过 ${name}，直接复用结果（会话 ${opts.sessionId ?? '-'}）`);
+        return hit;
+      }
+      const run = opts.executeTool(name, args);
+      reusable.set(key, run);
+      // 执行失败不缓存：同一个调用再来一次可能就成了（例如线路文件刚好在写）
+      run.catch(() => { if (reusable.get(key) === run) reusable.delete(key); });
+      return run;
     },
   };
-  const first = await realChatOnce(guarded);
-  if (first.trim()) return first;
-  if (sideEffects) {
-    console.warn('[llm] 模型返回空文本，但本轮已执行写型工具，不重试（避免重复下单），交由引擎兜底');
-    return '';
+  try {
+    const first = await realChatOnce(guarded, trace);
+    if (first.trim()) return first;
+    if (sideEffects) {
+      console.warn('[llm] 模型返回空文本，但本轮已执行写型工具，不重试（避免重复下单），交由引擎兜底');
+      return '';
+    }
+    console.warn('[llm] 模型返回空文本，自动重试一次');
+    const second = await realChatOnce(guarded, trace);
+    if (!second.trim()) console.error('[llm] 重试后仍为空文本，将使用引擎兜底话术');
+    return second;
+  } finally {
+    logSlowTurn(Date.now() - t0, trace, opts.sessionId);
   }
-  console.warn('[llm] 模型返回空文本，自动重试一次');
-  const second = await realChatOnce(guarded);
-  if (!second.trim()) console.error('[llm] 重试后仍为空文本，将使用引擎兜底话术');
-  return second;
 }
 
 /** 有副作用的工具：执行过就不能重放整轮对话 */
 const WRITE_TOOLS = new Set(['create_order', 'handoff_to_human']);
+/** 只读、结果只取决于参数（和本轮不变的会话状态）的工具：同一轮里同参数的再次调用复用结果 */
+const REUSABLE_TOOLS = new Set(['search_routes', 'get_route_detail']);
 
-async function realChatOnce(opts: ChatOptions): Promise<string> {
+/** 工具调用的规范化键：键按字母序、忽略值为 undefined 的键（发给模型的 JSON 里本来就没有它们） */
+function callKey(name: string, args: Record<string, unknown>): string {
+  const canon = (v: unknown): string => {
+    if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      return `{${Object.keys(o).sort().filter((k) => o[k] !== undefined)
+        .map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`;
+    }
+    return JSON.stringify(v) ?? 'null';
+  };
+  return `${name}${canon(args)}`;
+}
+
+/** 本轮每次模型调用的耗时与它要的工具，只在整轮超时时打出来 */
+interface CallTrace { model: string; hedged: boolean; ms: number; tools: string[]; toolMs: number; reused: string[] }
+
+/**
+ * 整轮超过 LLM_SLOW_TURN_MS（默认 8000，客户等到以为没人在的那条线）时，打一行逐次调用的耗时明细。
+ * 此前线上只有企微渠道记整轮总耗时，网页 /api/chat 什么都不记；慢了也分不清是往返次数多、
+ * 某一次卡住等到了对冲，还是工具（embedding）慢——2026-09 场景测试里线上 3/17 超 8 秒就因此无从复核。
+ * 只记慢轮次，平时不刷屏。
+ */
+function logSlowTurn(totalMs: number, trace: CallTrace[], sessionId?: string): void {
+  if (totalMs <= Math.max(0, numEnv('LLM_SLOW_TURN_MS', 8000)) || !trace.length) return;
+  const steps = trace.map((c, i) => {
+    const tools = c.tools.length
+      ? ` → ${c.tools.join('+')} ${c.toolMs}ms${c.reused.length ? `（复用 ${c.reused.length} 次）` : ''}`
+      : '';
+    return `#${i + 1} ${c.model}${c.hedged ? '（对冲）' : ''} ${c.ms}ms${tools}`;
+  });
+  console.warn(`[llm] ⚠️ 本轮工具循环耗时 ${totalMs}ms（会话 ${sessionId ?? '-'}）：${steps.join(' · ')}`);
+}
+
+async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise<string> {
   const { baseUrl, apiKey, model } = llmCfg();
   // 整轮（含全部工具往返）的墙钟上限，与单次请求超时取先到者
   const deadline = roundDeadline();
@@ -578,7 +689,10 @@ async function realChatOnce(opts: ChatOptions): Promise<string> {
       temperature: 0.7,
     };
     if (!forceText) payload.tools = opts.tools;
-    const { data, model: used } = await requestHedged(ep, model, payload, signal);
+    const tCall = Date.now();
+    const { data, model: used } = await requestHedged(ep, model, payload, signal, round);
+    const step: CallTrace = { model: used, hedged: used !== model, ms: Date.now() - tCall, tools: [], toolMs: 0, reused: [] };
+    trace.push(step);
     // 一轮对话可能有多次 API 往返（工具调用），每次都要计入。
     // 同一轮里的第 2、3 次往返天然共享第 1 次的整个前缀，缓存命中率最高的就是这些。
     recordCompletion(used, data.usage, opts.sessionId);
@@ -592,7 +706,9 @@ async function realChatOnce(opts: ChatOptions): Promise<string> {
 
     if (!forceText && msg.tool_calls?.length) {
       wire.push(assistantEcho(msg, msg.content ?? null));
+      const tTools = Date.now();
       for (const tc of msg.tool_calls) {
+        step.tools.push(tc.function.name);
         let args: Record<string, unknown> = {};
         try {
           args = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>;
@@ -607,6 +723,7 @@ async function realChatOnce(opts: ChatOptions): Promise<string> {
         }
         wire.push({ role: 'tool', content: result, tool_call_id: tc.id });
       }
+      step.toolMs = Date.now() - tTools;
       continue;
     }
 
@@ -615,7 +732,9 @@ async function realChatOnce(opts: ChatOptions): Promise<string> {
     if (textCalls.length) {
       // 这条路径同样要带回 reasoning_content（理由同上），只是正文要先剥掉标签
       wire.push(assistantEcho(msg, stripLeaked(msg.content ?? '')));
+      const tTools = Date.now();
       for (const tc of textCalls) {
+        step.tools.push(tc.name);
         let result: string;
         try {
           result = await opts.executeTool(tc.name, tc.args);
@@ -627,6 +746,7 @@ async function realChatOnce(opts: ChatOptions): Promise<string> {
           content: `【系统】工具 ${tc.name} 返回：${result}\n请根据以上结果用中文微信语气回复客户，不要再输出任何工具调用或标签。`,
         });
       }
+      step.toolMs = Date.now() - tTools;
       continue;
     }
 

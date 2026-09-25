@@ -311,15 +311,27 @@ export function getOrder(id: string): Order | undefined {
   return orders.get(id);
 }
 
+/** 只有待付款的单能付。被新订单替代的旧单（superseded）不能再付：此前 status !== 'paid' 就置为已付，
+ *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成 */
 export function markOrderPaid(id: string): Order | undefined {
   const o = orders.get(id);
   if (!o) return undefined;
-  if (o.status !== 'paid') {
+  if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
     schedulePersist();
   }
   return o;
+}
+
+/** 把待付款的旧单标成被 byId 替代。已付款的单绝不动（返回 false），调用方只拿这个结果决定要不要告诉客户旧链接失效 */
+export function supersedeOrder(id: string, byId: string): boolean {
+  const o = orders.get(id);
+  if (!o || o.status !== 'pending_payment') return false;
+  o.status = 'superseded';
+  o.supersededBy = byId;
+  schedulePersist();
+  return true;
 }
 
 /**

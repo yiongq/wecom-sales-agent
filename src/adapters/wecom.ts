@@ -464,7 +464,18 @@ const LINK_LABEL_RE = new RegExp(
 /** 列表序号开头的：整行删掉会让「1. 2. 3.」断号，改成「2. 支付链接见下方卡片」 */
 const NUMBERED_RE = /^(?:\d{1,2}\s*[.、．)）]|[①-⑩])/;
 const linkLabelCore = (s: string): string => s.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
-const isLinkLabel = (s: string): boolean => LINK_LABEL_RE.test(linkLabelCore(s));
+/** 标签后面跟着的括注（「支付链接（名额以付款为准）」「方案书（含逐日行程）。」）：只是说明，不改变这一行是个标签。
+ *  此前带括注的认不出是标签，链接改走卡片后留下一行「支付链接（名额以付款为准）。」，指向空气（A09/C03） */
+const LABEL_NOTE_RE = /\s*[（(][^（）()\n]{1,24}[）)][\s。.！!～~]*$/;
+const isLinkLabel = (s: string): boolean =>
+  LINK_LABEL_RE.test(linkLabelCore(s)) || LINK_LABEL_RE.test(linkLabelCore(s.replace(LABEL_NOTE_RE, '')));
+/** 标签带着括注：括注是要留给客户的话（「24 小时内有效」「名额以付款为准」），不能整行删，改成指着卡片 */
+const notedLabel = (s: string): boolean => LABEL_NOTE_RE.test(s) && !LINK_LABEL_RE.test(linkLabelCore(s)) && isLinkLabel(s);
+/** 标签改成指着卡片，括注挪到后面：「2. 支付链接（24 小时内有效）」→「2. 支付链接见下方卡片（24 小时内有效）」 */
+function labelToCard(s: string): string {
+  const note = LABEL_NOTE_RE.exec(s)?.[0] ?? '';
+  return `${s.slice(0, s.length - note.length)}见下方卡片${note.trim().replace(/[。.！!～~]+$/, '')}`;
+}
 /** 紧挨着链接、指着它的符号（「点这里付款 👉 <url>」「<url> 👈」）：链接挖走后一并拿掉，留着就是指向空气 */
 const POINTER_BEFORE_RE = /(?:\s*(?:👉|👈|👇|➡️?|⬇️?|→|↓))+\s*$/u;
 const POINTER_AFTER_RE = /^\s*(?:(?:👉|👈|👇|➡️?|⬇️?|→|↓)\s*)+/u;
@@ -474,7 +485,7 @@ const POINTER_AFTER_RE = /^\s*(?:(?:👉|👈|👇|➡️?|⬇️?|→|↓)\s*)+
 function pointToCard(s: string): string {
   if (!s || /下方|卡片/.test(s)) return s; // 模型已经这么写了，别再补一遍
   // 「支付链接：<url>（24 小时内有效）」：标签后面还跟着话，整行删不得，标签改成指着卡片
-  if (isLinkLabel(s)) return `${s}见下方卡片`;
+  if (isLinkLabel(s)) return labelToCard(s);
   const tap = s.replace(/(?:点击|点|戳)(?:这里|这儿|此处)/, '点下方卡片');
   if (tap !== s) return tap;
   // 「付款请点：<url>」：只认付款/请 + 点，「景点」「重点」这类收尾不能接「下方卡片」
@@ -501,7 +512,12 @@ function stripLink(body: string, raw: string): string {
     // 冒号原本指着链接，后面紧跟逗号或括号时就悬空了（「总价：，30 分钟内有效」）
     const rest = tidy(beforeRaw + afterRaw).replace(/[：:][ \t]*([，,、；;])/, '$1').replace(/[：:][ \t]*(?=[（(])/, '');
     const core = linkLabelCore(rest);
-    if (core && !LINK_LABEL_RE.test(core)) {
+    // 「支付链接（名额以付款为准）：<url>」「· 支付链接：<url>（24 小时内有效）」：剩下的是标签加括注，标签改成指着卡片，括注留着
+    if (notedLabel(rest)) {
+      lines[i] = labelToCard(rest);
+      continue;
+    }
+    if (core && !isLinkLabel(rest)) {
       const before = tidy(beforeRaw);
       const after = tidy(afterRaw);
       const pointed = pointToCard(before);
@@ -513,11 +529,12 @@ function stripLink(body: string, raw: string): string {
       continue;
     }
     if (core && NUMBERED_RE.test(core)) {
-      lines[i] = `${rest}见下方卡片`;
+      lines[i] = labelToCard(rest);
       continue;
     }
     // 链接独占一行、或只剩「👉」「·」这类符号、或只剩「支付链接」这类标签：整行拿掉，再看上一行：
     //  · 上一行也只是个标签（「· 支付链接：」换行接链接）：同样整行拿掉，此前留下「· 支付链接。」；
+    //    带序号、带括注的（「支付链接（名额以付款为准）：」）不删，改成指着卡片；
     //  · 上一行以冒号收尾：冒号原本指着这条链接，链接改走卡片后就指向了空气（「费用明细：」后面接一句不相干的话），
     //    换成句号，「详细方案书在这儿，…：」「方案给您做好了：」这种再改成指着卡片；
     //  · 紧挨着的上一行没冒号、但在指着链接（「详细方案书发您」换行接链接）：同样改成指着卡片
@@ -527,7 +544,7 @@ function stripLink(body: string, raw: string): string {
       if (prev === null || !prev.trim()) continue;
       const colon = /[：:]\s*$/.test(prev);
       const p = prev.replace(/[：:]?\s*$/, '');
-      if ((colon || j === i - 1) && isLinkLabel(p)) lines[j] = NUMBERED_RE.test(linkLabelCore(p)) ? `${p}见下方卡片` : null;
+      if ((colon || j === i - 1) && isLinkLabel(p)) lines[j] = NUMBERED_RE.test(linkLabelCore(p)) || notedLabel(p) ? labelToCard(p) : null;
       else if (colon) lines[j] = `${pointToCard(p)}。`;
       else if (j === i - 1) lines[j] = pointToCard(p);
       break;

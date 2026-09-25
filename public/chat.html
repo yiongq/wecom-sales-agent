@@ -441,12 +441,19 @@
     );
     const NUMBERED = /^(?:\d{1,2}\s*[.、．)）]|[①-⑩])/;
     const labelCore = (s) => s.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
-    const isLabel = (s) => LABEL.test(labelCore(s));
+    // 标签后面跟着括注（「支付链接（名额以付款为准）」）也是标签：不整行删，改成指着卡片、括注挪到后面
+    const NOTE = /\s*[（(][^（）()\n]{1,24}[）)][\s。.！!～~]*$/;
+    const isLabel = (s) => LABEL.test(labelCore(s)) || LABEL.test(labelCore(s.replace(NOTE, '')));
+    const notedLabel = (s) => NOTE.test(s) && !LABEL.test(labelCore(s)) && isLabel(s);
+    const labelToCard = (s) => {
+      const note = (NOTE.exec(s) || [''])[0];
+      return s.slice(0, s.length - note.length) + '见下方卡片' + note.trim().replace(/[。.！!～~]+$/, '');
+    };
     const PTR_BEFORE = /(?:\s*(?:👉|👈|👇|➡️?|⬇️?|→|↓))+\s*$/u;
     const PTR_AFTER = /^\s*(?:(?:👉|👈|👇|➡️?|⬇️?|→|↓)\s*)+/u;
     const pointToCard = (s) => {
       if (!s || /下方|卡片/.test(s)) return s;
-      if (isLabel(s)) return s + '见下方卡片';
+      if (isLabel(s)) return labelToCard(s);
       const tap = s.replace(/(?:点击|点|戳)(?:这里|这儿|此处)/, '点下方卡片');
       if (tap !== s) return tap;
       if (/(?:请|烦请|麻烦|支付|付款)点击?$/.test(s)) return s + '下方卡片';
@@ -465,7 +472,8 @@
       const afterRaw = line.slice(at + raw.length).replace(PTR_AFTER, (m) => (/\s$/.test(m) ? ' ' : ''));
       const rest = tidy(beforeRaw + afterRaw).replace(/[：:][ \t]*([，,、；;])/, '$1').replace(/[：:][ \t]*(?=[（(])/, '');
       const core = labelCore(rest);
-      if (core && !LABEL.test(core)) {
+      if (notedLabel(rest)) { lines[i] = labelToCard(rest); continue; }
+      if (core && !isLabel(rest)) {
         const before = tidy(beforeRaw);
         const after = tidy(afterRaw);
         const pointed = pointToCard(before);
@@ -475,14 +483,14 @@
         else lines[i] = pointed + (/^[。！!？?～~（(]/.test(after) ? '' : '，') + after;
         continue;
       }
-      if (core && NUMBERED.test(core)) { lines[i] = rest + '见下方卡片'; continue; }
+      if (core && NUMBERED.test(core)) { lines[i] = labelToCard(rest); continue; }
       lines[i] = null;
       for (let j = i - 1; j >= 0; j--) {
         const prev = lines[j];
         if (prev === null || !prev.trim()) continue;
         const colon = /[：:]\s*$/.test(prev);
         const p = prev.replace(/[：:]?\s*$/, '');
-        if ((colon || j === i - 1) && isLabel(p)) lines[j] = NUMBERED.test(labelCore(p)) ? p + '见下方卡片' : null;
+        if ((colon || j === i - 1) && isLabel(p)) lines[j] = NUMBERED.test(labelCore(p)) || notedLabel(p) ? labelToCard(p) : null;
         else if (colon) lines[j] = pointToCard(p) + '。';
         else if (j === i - 1) lines[j] = pointToCard(p);
         break;
@@ -529,8 +537,9 @@
       const trip = q('.pc-trip');
       trip.textContent = o.travelers + ' 位出行 · ' + (o.departDate ? cnDate(o.departDate) + '出发' : '日期待定') + ' · 合计';
       trip.hidden = false;
-      // 翻历史时订单可能早已付过款，别再挂着「立即支付」
-      if (o.status === 'paid') { q('.pc-btn').textContent = '已支付 · 查看订单'; q('.pc-btn').classList.add('done'); }
+      // 翻历史时订单可能早已付过款、改单被新订单替代、或已取消，别再挂着「立即支付」
+      const done = { paid: '已支付 · 查看订单', superseded: '已被新订单替代', cancelled: '订单已取消' }[o.status];
+      if (done) { q('.pc-btn').textContent = done; q('.pc-btn').classList.add('done'); }
     } catch {
       q('.pc-title').textContent = '定制旅行订单';
       q('.pc-amount').hidden = true;

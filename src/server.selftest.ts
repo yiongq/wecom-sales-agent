@@ -239,6 +239,32 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   }
 }
 
+// ---------------- chat.html 支付卡片：翻历史时的订单状态 ----------------
+// 改单后旧订单被替代（superseded）：pay.html、下单接口、后台都认，网页聊天历史里的旧卡片却还挂着「立即支付」，点进去才报错。
+// 真跑一遍页面里的 fillPayCard（桩卡片 + 桩 fetch），看按钮上写的是什么
+{
+  const chat = fs.readFileSync(path.resolve('public/chat.html'), 'utf8');
+  const fnSrc = /async function fillPayCard\(card, pay\) \{[\s\S]*?\n {2}\}/.exec(chat)?.[0];
+  check('chat.html 有 fillPayCard()', !!fnSrc);
+  if (fnSrc) {
+    for (const [status, want] of [['superseded', '已被新订单替代'], ['cancelled', '订单已取消'], ['paid', '已支付 · 查看订单'], ['pending_payment', '立即支付']]) {
+      const els = new Map<string, { textContent: string; hidden: boolean; classList: { add: (c: string) => void } }>();
+      const card = {
+        querySelector: (sel: string) => {
+          if (!els.has(sel)) els.set(sel, { textContent: sel === '.pc-btn' ? '立即支付' : '', hidden: true, classList: { add: () => {} } });
+          return els.get(sel)!;
+        },
+      };
+      const fetchStub = async () => ({ ok: true, json: async () => ({ status, totalPrice: 33600, routeTitle: 'x', travelers: 2, departDate: '2026-12-10' }) });
+      const fill = new Function('fetch', 'cnDate', `${fnSrc}; return fillPayCard;`)(fetchStub, (d: string) => d) as
+        (card: unknown, pay: { orderId: string }) => Promise<void>;
+      await fill(card, { orderId: 'ord_x' });
+      const got = card.querySelector('.pc-btn').textContent;
+      check(`chat.html 支付卡片：${status} 显示「${want}」`, got === want, got);
+    }
+  }
+}
+
 // ---------------- chat.html 启动：旧版短 id 的升级 ----------------
 // 上线前来过的访客，localStorage 里躺着旧版 Math.random 短 id。chat.html 只在键为空时才生成新 id，
 // 旧 id 会被无限期沿用：后台列表永远不认，「边聊边在作战室看自己」对老访客就一直是断的。
@@ -389,6 +415,34 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
     const desc = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? '';
     check(`支付页摘要日期写成「${want}」`, desc === `2 位出行 · ${want} · 合计 ¥34,760`, desc);
   }
+}
+
+// ---------------- 改单后被替代的旧单：不能再付，支付页说清楚 ----------------
+// 此前付款接口只看「是不是已付」，客户翻聊天记录点开改单前那条旧链接照样付款成功，一趟行程收两笔钱
+{
+  const store = await import('./store.js');
+  const s = mkSession(simId(), 'simulator', '改单');
+  const mk = (departDate: string) => createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+  const oldO = mk('2099-01-01');
+  const newO = mk('2099-01-02');
+  s.orderIds.push(oldO.id, newO.id);
+  store.getOrder(oldO.id)!.status = 'superseded';
+  store.getOrder(oldO.id)!.supersededBy = newO.id;
+  const post = (id: string) => app.request(`/api/orders/${id}/pay`, { method: 'POST', headers: { 'x-forwarded-for': freshIp() } });
+  const rejected = await post(oldO.id);
+  check('被替代的旧单：付款接口拒绝', rejected.status === 409, String(rejected.status));
+  check('被替代的旧单：状态不变成已付', store.getOrder(oldO.id)?.status === 'superseded', String(store.getOrder(oldO.id)?.status));
+  const html = await (await app.request(`/pay/${oldO.id}`)).text();
+  const title = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? '';
+  check('被替代的旧单：支付页标题写明已被替代', title.includes('已被替代'), title);
+  const ok = await post(newO.id);
+  check('新单照常付', ok.status === 200 && store.getOrder(newO.id)?.status === 'paid', String(ok.status));
+  const supersede = (store as { supersedeOrder?: (id: string, by: string) => boolean }).supersedeOrder;
+  check('已付款的单不能被替代', !!supersede && !supersede(newO.id, oldO.id) && store.getOrder(newO.id)?.status === 'paid');
+  const payPage = fs.readFileSync(path.resolve('public/pay.html'), 'utf8');
+  check('支付页脚本对 superseded 不给付款按钮', /order\.status === 'superseded'[\s\S]{0,200}show\('err'\)/.test(payPage));
+  const adminPage = fs.readFileSync(path.resolve('public/admin.html'), 'utf8');
+  check('后台把被替代的单标成「已被替代」、金额取仍有效的那张', adminPage.includes("'已被替代'") && adminPage.includes('liveOrder(s)'));
 }
 
 if (fails.length) {

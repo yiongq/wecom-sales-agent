@@ -3,16 +3,20 @@
 // 就是 closing），可靠且反映真实行为；画像同理从工具参数沉淀。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentReply, CustomerProfile, Route, SalesSegment, SalesStage, Session } from './types.js';
+import type { AgentReply, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
 import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, saveSession } from './store.js';
 import {
-  enterHandoff, executeTool, isOriginMention, loadRoutes, offCatalogPlaces, rememberShownRoutes, searchRoutes, toolDefs,
+  enterHandoff, executeTool, isOriginMention, loadRoutes, LOWLAND_MAX_ALTITUDE, offCatalogPlaces, rememberShownRoutes, searchRoutes,
+  toolDefs, visitedDestinations, type ToolHints,
 } from './tools.js';
 import { chat, type PrefetchedCall } from './llm.js';
 import { tryReserveVisitorLLM } from './budget.js';
-import { findUnbackedPrices, spokenMoney } from './price-guard.js';
-import { todayIso } from './env.js';
+import {
+  dropSentences, findUnbackedPriceHits, priceMentions, saidBefore, spokenMoney, strandedAfterDrop, type PriceHit,
+} from './price-guard.js';
+import { BUDGET_LIFTED, dropUnbackedClaims, liftsBudget } from './price-rules.js';
+import { numEnv, todayIso } from './env.js';
 
 // 阶段排序，用于「只前进不倒退」地推导销售阶段（handoff/paid 另行处理）
 const STAGE_RANK: Record<SalesStage, number> = {
@@ -36,8 +40,9 @@ const OBJECTION_INTENT =
 /** 这轮调了哪些工具 → 该处于哪个阶段（取最靠后的），与当前阶段取较大值不回退 */
 function deriveStage(current: SalesStage, calls: ToolCall[]): SalesStage {
   let derived: SalesStage = current === 'greeting' ? 'discovery' : current; // 客户已开口，至少进问需
-  // paid 不做吸收态：已成交客户再发起新咨询（本轮有销售工具调用）视为新旅程，从问需重推
-  if (current === 'paid' && calls.length) derived = 'discovery';
+  // paid 不做吸收态：已成交客户再发起新咨询（本轮有销售工具调用）视为新旅程，从问需重推。
+  // 只查了详情不算：付完款问「第三天住哪」「几点的飞机」是在问自己这趟，引擎还会替他预取详情（planDetailPrefetch）
+  if (current === 'paid' && calls.some((c) => c.name !== 'get_route_detail')) derived = 'discovery';
   const bump = (s: SalesStage) => {
     if (STAGE_RANK[s] > STAGE_RANK[derived]) derived = s;
   };
@@ -88,7 +93,7 @@ const EN_JARGON: Record<string, string> = {
 //（车库里、仓库里、水库里…），列不全：「库里南」「地库里」「资料库里」「斯蒂芬·库里」全被改坏，
 // 「我们这边库里」还会变成「我们这边我们这边」。漏替一次只是留个内部词，替错一次是一句读不通的话，所以按白名单来。
 // 「库存」是库存，「线路库存紧张」不能改成「我们的线路存紧张」。
-// 只处理模型写的原文：护栏自己的兜底话术（如「按系统核准的来」）在这之后才拼上去，不经过这里。
+// 只处理模型写的原文：护栏自己的兜底话术（如「价格我得核准了再报给您」）在这之后才拼上去，不经过这里。
 const INTERNAL_TERMS: [RegExp, string][] = [
   [/(?:(?:我们|咱们)的?)?(?:产品|线路)库(?!存)/g, '我们的线路'],
   [/(?:(?:我们|咱们)的?)?(?:精品)?酒店库(?!存)/g, '我们合作的酒店'],
@@ -138,7 +143,7 @@ function dejargon(text: string, sessionId: string): string {
 // （银发除外，见那里），所以同义说法要认全（「我妈」「过寿」「俩娃」「老两口」）；
 // 「孩子妈妈」「孩子他爸」说的是配偶，不是长辈；「你们公司」「贵公司」问的是我们，不是商务出行
 const SEGMENT_RULES: [SalesSegment, RegExp][] = [
-  ['银发', /爸妈|父母|老人|长辈|家里老的|岳父|岳母|公婆|爷爷|奶奶|外公|外婆|姥姥|姥爷|老爸|老妈|我爸|我妈|(?<!孩子[他她]?|[娃宝他她])(?:妈妈|爸爸)|母亲|父亲|婆婆|丈母娘|老丈人|老两口|老伴|过寿|祝寿|大寿|退休|老年|上了年纪|六十|七十|[八九]十多?岁|(?<!\d)[6-9]\d\s*岁/],
+  ['银发', /爸妈|父母|老人|长辈|家里老的|岳父|岳母|公婆|爷爷|奶奶|外公|外婆|姥姥|姥爷|老爸|老妈|我爸|我妈|(?<!孩子[他她]?|[娃宝他她])(?:妈妈|爸爸)|母亲|父亲|婆婆|公公|丈母娘|老丈人|老两口|老伴|过寿|祝寿|大寿|退休|老年|上了年纪|六十|七十|[八九]十多?岁|(?<!\d)[6-9]\d\s*岁/],
   ['亲子', /带娃|[俩两几个]娃|孩子|小孩|宝宝|儿子|女儿|亲子|小朋友|幼儿|读小学|读初中|几岁/],
   ['蜜月', /蜜月|新婚|结婚|求婚|纪念日|二人世界|两个人的旅行|领证/],
   ['商务', /商务|团建|(?<!你们|您们|贵|咱们|你家)公司|员工|奖励旅游|客户接待|接待客户|考察|年会/],
@@ -183,7 +188,7 @@ function deriveProfile(base: CustomerProfile, calls: ToolCall[], customerText: s
     if (typeof a.travelers === 'number' && a.travelers > 0) out.travelers = `${a.travelers}人`;
     // 只采信「今天或之后」的日期：工具层已拒绝过去日期，画像不能反过来把它记下来
     // （模型常把「10月2号」写成训练年代的年份，后台画像会展示一个已被拦下的过去日期）
-    if (typeof a.departDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.departDate)) {
+    if (typeof a.departDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.departDate) && !MONTH_ONLY_ARGS.has(a)) {
       const now = new Date();
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       if (a.departDate >= today) out.dates = a.departDate;
@@ -201,15 +206,18 @@ function deriveProfile(base: CustomerProfile, calls: ToolCall[], customerText: s
   // 客户改口（「算了，每人三万也行」）以最新为准，但只有带着「每人/人均/预算」说的才覆盖旧值——
   // 「去年有三万人去过」里的「三万」不能把记下的预算冲掉；「机票每人两千左右」「一万八的有点贵」说的也不是预算（见 isBudgetTalk）
   const b = BUDGET_RE.exec(customerText);
-  if (b && isBudgetTalk(customerText) &&
+  // 把预算放开了（「钱不是问题 预算不设上限」）：记下这个说法，旧的「每人2万」不能留着给下一轮预取当上限
+  const lifted = liftsBudget(customerText) ? BUDGET_LIFTED.exec(customerText) : null;
+  if (lifted) out.budget = lifted[0];
+  else if (b && isBudgetTalk(customerText) &&
     (!out.budget || /每人|人均|预算/.test(customerText.slice(Math.max(0, b.index - 4), b.index + b[0].length)))) {
     const before = customerText.slice(0, b.index).match(BUDGET_NOT_CAP_BEFORE)?.[0] ?? '';
     const after = customerText.slice(b.index + b[0].length).match(BUDGET_NOT_CAP_AFTER)?.[0] ?? '';
     out.budget = (before + b[0] + after).trim();
   }
-  // 客户原话里的日期优先（模型给的 departDate 年份常错）
-  const spoken = resolveDepartDate({}, customerText);
-  if (spoken) out.dates = spoken;
+  // 客户原话里的日期优先（模型给的 departDate 年份常错）。顺口问到的节假日（「国庆期间人多吗」）不记，见 isAside
+  const said = spokenDepartDate(customerText);
+  if (said?.kind === 'date' && said.iso && !isAside(said, customerText)) out.dates = said.iso;
   return out;
 }
 
@@ -243,6 +251,119 @@ const PURCHASE_INTENT =
   /就订|就定|下单|购买|确定就|成交|去付款|可以下单|帮我订|预订吧|(?:就这个|就它|就要这个)(?:吧|啦|了)?(?=$|[，,。！!？?~～\s])/;
 // 安全网只认短促的下单指令，长段叙述交给模型自行判断，减少正则误伤
 const PURCHASE_INTENT_MAX_LEN = 40;
+
+// 还价不是下单。B01 实测「给个实在价 1万5一个人，我今天就定」命中「就定」，模型原稿已经回了「1 万 5 这个价我真批不下来」、
+// 也没调 create_order，引擎却按原价兜底建了一张 43,560 的待付款单，回复被换成「好的，已为您锁定名额」——
+// 客户要的是降价，收到的是原价订单。客户这句在砍价、在提异议，或模型原文在拒绝，安全网都不兜，保留模型原话
+const BARGAIN_WORDS =
+  /便宜|实在价|实惠|优惠|降(?!落|温|雨|雪|水|压)|打(?:个)?折|折扣|能不能少|能否少|少(?:点|一点|些|收)|再少|给个价|最低|底价|抹(?:个)?零|让(?:点|一点|些|利)|砍|太贵|好贵|有点贵|嫌贵|这么贵|贵了/;
+// 夸价格、顺口一句「能便宜更好」、说自己已经比过了，都不是还价：「挺实惠的，就订这个」「也不算贵了，就订吧」
+// 「优惠的话最好，下单吧」「不用再看看了，就订这个」「别家都比过了」。此前一律算还价，客户明说要订，安全网却不兜，
+// 模型回一句「好的～」，这单就没下成。先把这些说法去掉再认还价词和异议
+const PRICE_OK =
+  /(?:挺|很|蛮|还算|还挺|比较|真|超|够|也算)(?:实惠|优惠|划算|便宜)|(?:实惠|划算)的|(?:不算|也不|并不)(?:太)?贵|(?:便宜|优惠)[^，,。！!？?]{0,4}?(?:的话)?(?:最好|更好)|(?:不用|不必|不想|别)再看看|(?:别家|其他家|别的家|别人家)?(?:都|已经)比(?:较)?过了/g;
+const REFUSAL_IN_REPLY =
+  /批不下来|申请不下来|批不了|给不了|给不到|没(?:有)?(?:这个)?权限|权限(?:之)?外|做不到|降不了|让不了|(?:没法|无法|不能)(?:再)?(?:降|让|优惠|便宜|少)|已经是最低|最低价了|底价了/;
+/** 拒绝得是在拒绝价格：「专票这块我这边给不了」拒的是发票，客户说「就订这个」照样兜底建单 */
+const PRICE_TOPIC = /价|降|便宜|优惠|折|让|少|砍|抹零/;
+function haggling(session: Session, text: string, modelText: string): boolean {
+  const said = text.replace(PRICE_OK, '');
+  if (BARGAIN_WORDS.test(said) || isObjection(session, said)) return true;
+  if (splitSentences(modelText).some((s) => REFUSAL_IN_REPLY.test(s) && PRICE_TOPIC.test(s))) return true;
+  // 客户自己报了个数（「1万5一个人」「15000就定」）：跟报过的每人价、总价都对不上就是在还价。
+  // 不带单位的四到六位数也认（spokenMoney 不认它，见 price-guard customerAmounts），年份、ISO 日期、2026/12/10 这种写法不算
+  const q = session.lastQuote;
+  const bare = (text.match(/(?<![\d.,/-])\d{4,6}(?![\d.,/-]|\s*年)/g) ?? []).map(Number);
+  return [...spokenMoney(text).amounts, ...bare].some((n) => n !== q?.perPerson && n !== q?.total);
+}
+
+// 指着另一张单的说法：给朋友再订一份、另外那份、闺蜜那单。一个会话只有客户本人那张待付款订单，
+// 此前模型把它当成「闺蜜那份」发了出去（C06：幂等复用回来的是本人订单，回复却是「闺蜜那份也订好啦」；
+// 另一遍是修补链接时用 pendingPayLink 补进本人订单的真链接，放在「支付链接（闺蜜二人专用）」下面）。
+// 只收朋友这类关系：「给爸妈订」多半就是客户这张单本身；「另外单独问下」不是另一张单。
+// 「她们 / 他们」不算：「带爸妈去，给他们订好点的房间」「帮他们下单吧，爸妈身份证我发你」说的就是同行的爸妈；
+// 光秃秃的「再下一单」「也下单」也不算：「日期改成12月12号，再下一单」是改单，此前被当成给别人订，改单没改成
+const THIRD_PARTY = '(?:朋友|闺蜜|同事|哥们|兄弟|姐妹|同学|邻居|亲戚|别人|其他人)';
+/** 明说了是别人的那份（朋友、闺蜜…），不含「另外那份」这种说法——模型常把客户本人改单后的那张叫「另外那张」 */
+const OTHER_PARTY_ORDER = new RegExp([
+  `(?:帮|给|替)(?:我的?)?${THIRD_PARTY}[^，。！？\\n]{0,8}(?:订|下单|下一单|买|报名|报个?价)`,
+  `${THIRD_PARTY}(?:们|她们|他们)?(?:那|的|这)?(?:一)?[份单张]`,
+  // 「闺蜜她们也想去」「朋友也要报名」
+  `${THIRD_PARTY}(?:们|她们|他们)?[^，。！？\\n]{0,4}也(?:想|要|打算|准备)?(?:去|订|下单|报名)`,
+  `(?:订|下|买)(?:一|个)?[份单张][^，。！？\\n]{0,4}(?:给|帮)(?:我的?)?${THIRD_PARTY}`,
+  // 单数的「她/他」只认「她那份」「他的单」：「给她订」可能说的就是同行的爱人
+  '[她他](?:那|的)[份单张]',
+].join('|'));
+const OTHER_ORDER = new RegExp(`另(?:外)?(?:一|那|这)?[份单张](?!独)|${OTHER_PARTY_ORDER.source}`);
+/** 合成一单下（「合并吧」「一共4个人」）：说的是按总人数重下客户这张，不是另一张 */
+const MERGE_ORDER = /合并|合成一|一起下|一起订|算一单|放一单|一单下|总共|一共|加上|加到/;
+
+/** 2026-10-18 → 10月18日（不是今年的带上年份），与企微卡片、支付页同一写法 */
+function cardDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const md = `${Number(m[2])}月${Number(m[3])}日`;
+  return m[1] === todayIso().slice(0, 4) ? md : `${m[1]}年${md}`;
+}
+
+// 客户要重发支付链接（「付款链接打不开 再发我一次」）。A14 实测模型直接转了人工、没补发链接，之后 AI 不再应答，
+// 这单就卡在付款前。链接本来就在，重发没有新副作用，所以引擎确定性地重发那张单，不经过模型、不转人工。
+// 只认短句，且得是在说付款：「方案再发我一份」是方案书；说了改人数/日期、给别人订的，交给模型。
+// 只认链接本身出了问题：「支付不了，余额不够」「付不了款能分期吗」要的是回答，重发一遍链接等于没听。
+// 「再发 / 再给」得带着链接、卡片、付款这类宾语：此前光一个「再给」就算，「付款前能再给点优惠吗」「付款后再发我电子发票」
+// 都收到一条重发的支付链接——客户在还价、在要发票，引擎连模型都没问
+const RESEND_ASK = new RegExp([
+  '(?:再|重新)(?:发|给)(?:我|一下|下|一次|一遍|个){0,2}[^，,。！!？?\\s]{0,3}(?:链接|卡片|付款码|支付码|付款|支付)',
+  '(?:链接|卡片|付款码)[^，,。！!？?\\s]{0,4}(?:再|重新)(?:发|给)',
+  '重发', '打不开', '点不开', '开不了', '进不去',
+  '(?:链接|卡片)(?:没了|不见了|找不到|失效|过期|丢了)', '找不到(?:链接|卡片|付款链接|支付链接)',
+].join('|'));
+const RESEND_MAX_LEN = 30;
+/** 同一句里还问了别的（「链接打不开，另外能开专票吗」「再发下支付链接 顺便问下含保险吗」）：交给模型，一起答 */
+const OTHER_QUESTION = /吗|呢|能不能|可不可以|怎么|如何|多少|几|含|包|开票|发票|分期|保险|退|改/;
+/** 按小句看时，「能再发一下吗」这种没带宾语的也是在要重发，不算别的问题 */
+const RESEND_CLAUSE = /(?:再|重新)(?:发|给)|重发|发(?:我|一下)/;
+
+/** 客户要重发支付链接时的确定性回复；不是这种情况返回 undefined，照常交给模型 */
+function resendPayReply(session: Session, text: string): string | undefined {
+  if (text.length > RESEND_MAX_LEN || !RESEND_ASK.test(text) || /方案|行程/.test(text)) return undefined;
+  if (OTHER_ORDER.test(text) || CHANGE_REQUEST.test(text) || REFUND_REQUEST.test(text)) return undefined;
+  if (BARGAIN_WORDS.test(text) || /发票|收据|行程单|确认单|合同/.test(text)) return undefined;
+  if (text.split(/[，,。！!？?；;\s]+/).some((c) => c && !RESEND_ASK.test(c) && !RESEND_CLAUSE.test(c) && OTHER_QUESTION.test(c))) return undefined;
+  if (headcountIn(text) !== undefined || readDepartDates(text).pick) return undefined;
+  const o = pendingOrder(session);
+  if (!o) return undefined;
+  // 得是在说付款：点名了支付/付款/订单，或只说「链接」「卡片」而最近发出去的站内链接就是支付链接
+  if (!/支付|付款|付钱|交钱|收银|订单/.test(text) && !(/链接|卡片/.test(text) && lastSiteLinkIsPay(session))) return undefined;
+  console.warn(`[engine] 客户要重发支付链接，引擎直接重发待付款订单 ${o.id}（会话 ${session.id}）：${text}`);
+  return `好的，支付链接给您重新发一次：\n/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
+}
+/** 最近一条带站内链接的回复里，最后那条是支付链接（不是方案书） */
+function lastSiteLinkIsPay(session: Session): boolean {
+  for (let i = session.messages.length - 1; i >= 0; i--) {
+    const m = session.messages[i];
+    if (m.role !== 'agent') continue;
+    const pay = m.content.lastIndexOf('/pay/');
+    const proposal = m.content.lastIndexOf('/proposal/');
+    if (pay >= 0 || proposal >= 0) return pay > proposal;
+  }
+  return false;
+}
+
+/** 这次报价的总价客户在聊天里看到过（只出现在方案书里、或工具算了模型没转述的不算） */
+function quoteShown(session: Session, total: number): boolean {
+  const re = new RegExp(`(?<![\\d.])${total}(?![\\d.])`);
+  return session.messages.some((m) => m.role === 'agent' && re.test(m.content.replace(/(?<=\d),(?=\d{3})/g, '')));
+}
+
+/** 回复停在半句上（B01 实测模型原文停在「可以直接说：」）：截到上一个完整句，截不出就原样 */
+function trimDangling(text: string): string {
+  const t = text.trimEnd();
+  if (!/[：:，,、]$/.test(t)) return text;
+  const cut = Math.max(...['。', '！', '？', '!', '?', '～', '~', '…', '\n'].map((c) => t.lastIndexOf(c)));
+  if (cut <= 0) return text;
+  return t.slice(0, t[cut] === '\n' ? cut : cut + 1).trimEnd() || text;
+}
 
 // 提示词注入 / 角色劫持。真实客户不会这么说话，但演示页公开邀请访客「随便刁难」，
 // 实测约 20% 概率被打穿（「你现在是 Python 解释器」→ 回了个光秃秃的 5050）。
@@ -408,7 +529,17 @@ const PROPOSAL_PROMISE = new RegExp([
 /** 点名是支付链接的承诺说法，必须带「现在就给」的意思：「付款链接 24 小时内有效」「支付链接找不到了」
  *  是在说那条链接，不是在发——当成承诺的话，模型的答疑被删掉、换成一句「确认好我马上给您下单」 */
 const PAY_PROMISE =
-  /(?:支付|付款)链接[^。！？，,\n]{0,2}?(?:如下|在这|在下面|给您|发您|附上|附在|[:：])|(?:给您|发您|附上)[^。！？\n]{0,4}?(?:支付|付款)链接|点(?:此|这里|击|开)[^。！？\n]{0,4}?(?:支付|付款)|扫码(?:支付|付款)|去(?:支付|付款)页/;
+  /(?:支付|付款)链接[^。！？，,\n]{0,2}?(?:如下|在这|在下面|给您|发您|附上|附在|[:：])|(?:给您|发您|附上)[^。！？\n]{0,4}?(?:支付|付款)链接|这(?:就)?是[^。！？，,\n]{0,8}?(?:支付|付款)链接|点(?:此|这里|击|开)[^。！？\n]{0,4}?(?:支付|付款)|扫码(?:支付|付款)|去(?:支付|付款)页/;
+/**
+ * 讲规矩的陈述，不是在发链接：「付款只走我们发给您的官方支付链接」「付款请认准我们官方发给您的支付链接」
+ * 「不会让您私下转账，都走支付链接」。SOP 允许这么答「是不是骗子」，此前却被当成承诺了支付链接：
+ * 这句被删，末尾还追加一句「确认好我马上给您下单」（B04、guard-03/13）。
+ * 「只用」后面跟着点、扫的是在教客户怎么付（「您只用点击支付链接完成付款就行：」），是在发链接
+ */
+const LINK_RULE_TALK = /只走|只通过|仅通过|仅走|只认|认准|只用(?![点扫打])|只接受|只能(?:通过|用|走)|都走|都是|都通过|一律|不会|绝不|从不|不要|别点|谨防|小心|以外|之外/;
+/** 「发给您的支付链接」是个名词短语，得有「这是 / 如下 / 在这 / 冒号 / 点」这种指着它的说法才是在发 */
+const LINK_ATTRIBUTIVE = /(?:给您|发您)的/;
+const LINK_POINTING = /这(?:就)?是|如下|在这|在下面|[:：]|点(?:此|这|击|开)/;
 /** 没点名是哪种链接的说法，归哪一类看句子在说什么（见 genericKind）。
  *  光秃秃的「链接里」不算：「链接里的价格是起价」是在答客户对已经发过的链接的提问 */
 const GENERIC_PROMISE = new RegExp([
@@ -541,6 +672,8 @@ function promiseMatch(sentence: string, kind: LinkKind, whole: string): { index:
   const tail = cut < 0 ? after : after.slice(0, cut);
   if (NOT_SENDING.test(clause) || OTHER_SENDER.test(clause) || OFFER_ASK.test(clause)) return null;
   if (/(?:[？?]|吗[～~。！!]*)\s*$/.test(tail)) return null;
+  if (LINK_RULE_TALK.test(clause)) return null;
+  if (LINK_ATTRIBUTIVE.test(m[0]) && !LINK_POINTING.test(clause + tail)) return null;
   return { index: m.index, end };
 }
 
@@ -625,13 +758,52 @@ function linksFromCalls(calls: ToolCall[], tool: string, field: 'proposalUrl' | 
  * 只看最近一张订单；之后又报了别的线、人数或日期（lastQuote 对不上），客户要付的未必是这张，不补
  */
 function pendingPayLink(session: Session): string | undefined {
+  const o = pendingOrder(session);
+  return o ? '/pay/' + o.id : undefined;
+}
+function pendingOrder(session: Session): Order | undefined {
   const id = session.orderIds[session.orderIds.length - 1];
   const o = id ? getOrder(id) : undefined;
   if (!o || o.status !== 'pending_payment') return undefined;
   const q = session.lastQuote;
   if (q && (q.routeId !== o.routeId || q.travelers !== o.travelers || (q.departDate && q.departDate !== o.departDate))) return undefined;
-  return '/pay/' + o.id;
+  return o;
 }
+
+/**
+ * 这轮说的是另一张单（给朋友再订一份…），见 OTHER_ORDER。以客户的话为准；模型的话只认明说了别人的（「闺蜜那份的链接」）——
+ * 模型常把客户本人那张叫「您的新订单」「另外那张旧单已作废」，此前据此判成别人的单，客户要链接却只收到一句「要合并还是单独下」
+ */
+function talksOtherOrder(text: string, reply: string): boolean {
+  return OTHER_ORDER.test(text) || OTHER_PARTY_ORDER.test(reply);
+}
+
+/**
+ * 客户在说给别人另订一份，而同一条线上已有客户本人那张待付款单：在这里再下一单会把本人那张作废（改单规则），
+ * 参数相同又会复用回本人那张、被说成别人的（C06）。返回本人那张；不是这种情况返回 undefined。
+ * 看客户这句和上一句（「闺蜜她们也想去…帮她们报个价」→「行，那就订这个」）。合成一单按总人数重下（「合并吧」「一共4个」）不算；
+ * 上一句说的别人、这句明说改日期人数（「日期改成12月12号，再下一单」）的，是改客户自己那张
+ */
+function otherPartyPending(session: Session, routeId: unknown, travelers: number): Order | undefined {
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  const mine = session.orderIds.map((id) => getOrder(id)).find((o) => o?.status === 'pending_payment' && o.routeId === routeId);
+  if (!mine) return undefined;
+  const now = said.at(-1) ?? '';
+  const merging = MERGE_ORDER.test(now) || (headcountIn(now) === travelers && travelers > mine.travelers);
+  if (merging || (!OTHER_ORDER.test(now) && CHANGE_REQUEST.test(now))) return undefined;
+  return said.slice(-2).some((t) => OTHER_ORDER.test(t)) ? mine : undefined;
+}
+
+/** 说另一张单时收尾的问句：本人这张还在待付款、另一份没下，问合成一单还是请顾问单独下 */
+function askOtherOrder(o: Order, text: string): string {
+  const n = headcountIn(text);
+  // 「她们也是两个人」是另一份的人数，要加上本人这单；「一共4个人」说的已经是总数
+  const total = typeof n === 'number' ? (TOTAL_HEADCOUNT.test(text) ? n : o.travelers + n) : undefined;
+  return `您本人这张《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发的订单还在待付款；另外那份还没有下单。\n` +
+    `要合并成${total ? ` ${total} 位` : '一单'}一起下，还是请顾问另外单独下一单？`;
+}
+/** 没建单却说订好了（「闺蜜那份也订好啦」「这次已经下好了」） */
+const ORDER_DONE_CLAIM = /订好|下好|已(?:经)?(?:为您|帮您|给您|为她们|帮她们)?(?:下单|预订|锁定)|订单已(?:经)?生成|已(?:经)?生成订单|已(?:经)?提交/;
 
 /**
  * 把链接放进空位。多条时按空位所在那行点到的线路对号入座（「丽江大理 6 日：[方案链接]」），对不上的按调用顺序；
@@ -800,6 +972,153 @@ function quotedRouteForTurn(session: Session, text: string, modelText: string, c
   const { counts, delta } = spokenHeadcounts(said);
   if (delta || counts.some((n) => n !== q.travelers)) return undefined;
   return route;
+}
+
+/**
+ * 价格护栏命中后怎么改。此前一命中就整条换成兜底话术（「刚才的价格说得不准，以系统核准的为准」+ 最近报价），
+ * 场景测试 384 轮里拦下的 5 次全是误拦，客户问「马代和巴厘岛哪个好」收到「告诉我线路和出行人数」，
+ * 改期后的新日期、新报价也跟着一起没了。现在只删含可疑金额的那几句，其余照发：
+ *   · 这轮刚报了价、报价那句却被连带删了：删掉的第一句换成工具算的价；
+ *   · 删完不剩什么正经内容：确定说的是报过价的那条线、那个人数就报工具算的价，否则请客户说线路和人数；
+ *   · 「刚才的价格说得不准」只在这个错价之前真的发给过客户时才说——这次的错价根本没发出去，
+ *     客户看到的上一条明明是对的，道歉反倒像在承认之前报错了；
+ *   · 已经转人工的只留模型原文里没问题的部分，删空了就交代已转顾问——兜底里「告诉我线路和人数」之后没人应。
+ * 兜底话术不说「系统」：客户听着像在看后台（同 dejargon 的道理）。
+ */
+/** 催下单、催付款的收尾句（「要不要我帮您下单？」） */
+const ORDER_NUDGE = /下单|付款|支付|预订|订下|锁定|定下来/;
+function rewriteUnbackedPrices(
+  visible: string, hits: PriceHit[],
+  ctx: { session: Session; text: string; calls: ToolCall[]; customHandoff: boolean },
+): string {
+  const { session, text, calls } = ctx;
+  const q = session.lastQuote;
+  // 只在确定这轮说的就是那条线、那个人数时才报：客户问「换成西藏 4 个人多少钱」，接云南 2 人的价读起来就是在答西藏
+  const onQuote = !!(q?.perPerson && q.total && quotedRouteForTurn(session, text, visible, calls));
+  const quoteLine = onQuote
+    ? `《${q!.routeTitle}》${q!.travelers} 位出行，每人 ${yuan(q!.perPerson!)}，总价 ${yuan(q!.total!)}（起价，按最终行程微调）。`
+    : '';
+  const hasQuote = (t: string) => !!q?.total && t.replace(/[,，\s]/g, '').includes(String(q.total));
+  const quotedNow = calls.some((c) => c.name === 'create_quote' || c.name === 'generate_proposal');
+  const wrongBefore = saidBefore(session, hits.map((h) => h.value));
+  const firstDropped = [...hits].sort((a, b) => a.at - b.at)[0];
+  // 报价那句被连带删了：就在那个位置补上工具算的价
+  const refill = onQuote && quotedNow && !wrongBefore && !hasQuote(dropSentences(visible, hits).text);
+  const kept = dropSentences(visible, refill ? [{ ...firstDropped, replace: quoteLine }, ...hits] : hits).text;
+  // 只数字数不够：客户问「4个人多少钱」，删掉编的价后剩一句「要不要我帮您下单？」（正好 8 个字）照发，
+  // 客户问了价、一个数都没拿到，反被催着下单。剩下的没有一个金额，而客户这句在问价、或剩下的只是催下单付款的话，都按没内容兜底
+  const noPrice = !priceMentions(kept).length;
+  const onlyNudge = splitSentences(kept).every((s) => !s.trim() || ORDER_NUDGE.test(s));
+  const substantive = kept.replace(/[^\p{L}\p{N}]/gu, '').length >= 8 && !(noPrice && (PRICE_ASK.test(text) || onlyNudge));
+  if (ctx.customHandoff) return substantive ? kept : '';
+  if (session.handedOver) return substantive ? kept : '具体价格由资深顾问为您核准，已为您转接，顾问会在微信上联系您，请稍候～';
+  const sorry = '不好意思，刚才的价格说得不准，以这次核准的为准：';
+  if (substantive) {
+    if (!wrongBefore) return kept;
+    if (!onQuote) return `不好意思，刚才说的价格不准，以正式报价为准。\n${kept}`;
+    return hasQuote(kept) ? `不好意思，刚才的价格说得不准，以这次报的为准。\n${kept}` : `${sorry}\n${quoteLine}\n\n${kept}`;
+  }
+  if (onQuote) return `${wrongBefore ? sorry : '这条线的正式报价：'}\n${quoteLine}\n想调人数、日期或换一档线路，直接跟我说～`;
+  return wrongBefore
+    ? '不好意思，刚才说的价格不准。告诉我想看哪条线路、几位出行，我给您出准确报价～'
+    : '价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～';
+}
+
+/** 工具结果（JSON 字符串）解析成对象；报错或不是 JSON 时返回 undefined */
+function toolJson(result: string | undefined): Record<string, unknown> | Record<string, unknown>[] | undefined {
+  try {
+    const v: unknown = result ? JSON.parse(result) : undefined;
+    return v && typeof v === 'object' ? (v as Record<string, unknown> | Record<string, unknown>[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 客户没说过「大人」时，回复里的「两位大人」「2 个大人」（带娃、没说清孩子算不算的时候替客户下了结论） */
+const ADULTS_ONLY = /([\d一二两三四五六七八九十]+)\s*(?:位|个)\s*大人/g;
+/**
+ * 这句正是在问大人还是孩子（「是两个大人，还是一大一小？」「是 2 个大人，还是 1 个大人带 1 个小朋友？」）：
+ * flow-07 要的就是这一问，改成「两位，还是一大一小」就问不明白了（第三轮复核 K1）
+ */
+const ASKS_ADULT_OR_KID = /孩子|小孩|小朋友|宝宝|娃|儿童|一大一小|大一小|几大几小|大人[，,、\s]*(?:还是|或者?|或是)/;
+function unassumeAdults(text: string): string {
+  return splitSentences(text).map((s) => (ASKS_ADULT_OR_KID.test(s) ? s : s.replace(ADULTS_ONLY, '$1位'))).join('');
+}
+
+/**
+ * 按句删完只剩残句时（见 price-guard strandedAfterDrop）发什么。只用工具算出来、查出来的东西拼，能给多少给多少：
+ *   ① 本轮报过价：把这几次报价列出来（每人、人数、总价、定价说明）；
+ *   ② 线路、人数、出发时间都认得出（同 quoteTimingNote 的口径）：按客户最新说的实报一次——B02 改成 4 人后，
+ *      模型自己算的价被删，只剩一句「按 4 人重新报价」；
+ *   ③ 本轮查过线路，或客户这句点了我们有的目的地：列查到的前两条（名字、天数、酒店、人均起价；客户提过长辈或高反时带上最高海拔），
+ *      再问还缺的——A04 只剩「这条的亮点」，B03 编的两条线删光后只剩一句问话；
+ *   ④ 都没有：问线路和人数。
+ * 这里跑的工具（②③）和模型调的走同一个入口 runTool：参数按客户原话核过，报价记进 lastQuote，查到的线路记进会话
+ */
+async function strandedReply(ctx: LinkRepairCtx): Promise<string> {
+  const { session, text, calls, runTool } = ctx;
+  const quoteLine = (q: Record<string, unknown>, travelers: unknown): string =>
+    `《${String(q.routeTitle)}》${Number(travelers)} 位出行，每人 ${yuan(Number(q.perPerson))}，总价 ${yuan(Number(q.total))}` +
+    `${q.note ? `（${String(q.note)}）` : ''}`;
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  const n = travelersKnown(session, said);
+  const depart = latestDepart(said)?.pick;
+  // 客户说过具体哪天就不再问日子（B02 说的是「10月15号」）；只说了节假日、月份的，下单前还得问
+  const exactDay = depart?.kind === 'date' && !!depart.exact;
+  const tail = '\n起价，按最终行程微调。' + (exactDay ? '您看合适的话，跟我说一声就给您安排下单～' : '您看合适的话，告诉我具体哪天出发就能安排～');
+  // ① 本轮报过的价
+  const quotes = calls.filter((c) => c.name === 'create_quote' || c.name === 'generate_proposal')
+    .map((c) => ({ q: toolJson(c.result), n: c.args.travelers }))
+    .filter((x): x is { q: Record<string, unknown>; n: unknown } => !!x.q && !Array.isArray(x.q) && typeof x.q.total === 'number');
+  if (quotes.length) return `给您报好了：\n${quotes.map(({ q, n: k }) => quoteLine(q, k)).join('\n')}${tail}`;
+  // 这一轮已经下了单：照订单说，不再另报价、另查线路（另报一次会写 lastQuote，成单安全网可能照着再建一单）
+  const order = calls.filter((c) => c.name === 'create_order').map((c) => toolJson(c.result))
+    .find((o): o is Record<string, unknown> => !!o && !Array.isArray(o) && typeof o.payUrl === 'string');
+  if (order) return `订单已生成，总价 ${yuan(Number(order.total))}。\n请点此完成支付：${String(order.payUrl)}\n名额以付款为准～`;
+
+  // ② 三样齐全：按客户最新说的实报。日期只用 groundToolArgs 补得上的：客户说的具体日子、节假日，或只说到月份（按那个月的季节价）；
+  // 过去的日子、说不出是哪个月的不报——不带日期报出来是标准价，旺季里就是报低了
+  const route = routeInFocus(session, text);
+  const last = session.lastQuote;
+  const lastDate = last && route && last.routeId === route.id ? last.departDate : undefined;
+  const iso = depart?.kind === 'date' && depart.iso && depart.iso >= todayIso() ? depart.iso : undefined;
+  const monthOnly = depart?.kind === 'vague' && !!monthSaid(latestDepart(said)?.text ?? '');
+  if (route && n && (iso || monthOnly || lastDate)) {
+    const args: Record<string, unknown> = { routeId: route.id, travelers: n, ...(iso || monthOnly ? {} : { departDate: lastDate }) };
+    const q = toolJson(await runTool('create_quote', args));
+    if (q && !Array.isArray(q) && typeof q.total === 'number') {
+      session.stage = deriveStage(session.stage, [{ name: 'create_quote', args }]);
+      return `按 ${n} 位给您报好了：\n${quoteLine(q, n)}${tail}`;
+    }
+  }
+  // ③ 查到的线路：本轮最后一次有结果的查询；没查过就按客户这句点的目的地查一次
+  let rows: Record<string, unknown>[] = [];
+  let missed = '';
+  for (const c of calls.filter((x) => x.name === 'search_routes')) {
+    const r = toolJson(c.result);
+    if (Array.isArray(r) && r.length) { rows = r; missed = r[0].destinationMiss ? String(c.args.destination ?? '') : ''; }
+  }
+  const dest = destinationsInText(text)[0];
+  if (!rows.length && dest) {
+    const r = toolJson(await runTool('search_routes', { destination: dest }));
+    if (Array.isArray(r)) rows = r;
+    if (rows.length) session.stage = deriveStage(session.stage, [{ name: 'search_routes', args: { destination: dest } }]);
+  }
+  if (rows.length) {
+    const { elder, altitudeWorry } = toolHints(session);
+    const lines = rows.slice(0, 2).map((r) => {
+      const alt = Number(r.maxAltitude);
+      const high = (elder || altitudeWorry) && alt >= LOWLAND_MAX_ALTITUDE ? `\n  行程里最高要到约 ${alt} 米` : '';
+      // 超预算的照工具算好的每人差额说（A04 客户说的是两位一共 3 万），不自己另算
+      const gap = typeof r.gapPerPerson === 'number' ? `\n  比您的预算每人高 ${yuan(r.gapPerPerson)}` : '';
+      return `· ${String(r.title)}\n  ${String(r.days)} 天 · ${String(r.hotelLevel)} · 人均 ${yuan(Number(r.priceFrom))} 起${high}${gap}`;
+    });
+    const ask = [n ? '' : '几位出行', depart ? '' : '大概什么时候出发'].filter(Boolean);
+    const head = missed ? `「${missed}」我们暂时没有现成线路，按您的需求最接近的是：` : '给您挑了这几条现成线路：';
+    return `${head}\n\n${lines.join('\n\n')}\n\n` +
+      (ask.length ? `您${ask.join('、')}？我按人数和日期给您出准确报价～` : '您更倾向哪条？我按人数和日期给您出准确报价～');
+  }
+  return '价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～';
 }
 
 // 客户话里的总人数。「一共3个人」直接认；数得出孩子个数却没说总数（「两个大人一个孩子」「2大1小」）
@@ -994,6 +1313,8 @@ function askForProposal(t: ProposalTarget, session: Session): string {
   return `详细方案要按线路和人数出，${date}${names ? `${names}您想看哪条、` : '您想看哪条线、'}几位出行？`;
 }
 
+/** 客户在问信任、资质、资金安全 */
+const TRUST_TALK = /骗|靠谱|正规|资质|执照|许可证|跑路|跑了|监管|托管|信得过|真的假的|合法|备案|担保|放心吗|安全吗|有保障/;
 /** 承诺了支付链接却没有订单：引擎绝不替客户建单（create_order 有真实副作用），只引导他确认 */
 function askToOrder(session: Session, text: string): string {
   const q = session.lastQuote;
@@ -1049,8 +1370,16 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
 
     let links = fromCalls;
     if (!links.length && kind === 'pay') {
-      const pending = pendingPayLink(session);
-      if (pending) links = [pending];
+      const pending = pendingOrder(session);
+      // 说的是另一张单：待付款的这张是客户本人的，补进去就成了「闺蜜那单的支付链接」（C06）。
+      // 删掉承诺和「订好啦」这类没发生的事，问合成一单还是请顾问单独下；已转人工就只删不问
+      if (pending && talksOtherOrder(text, visible)) {
+        console.warn(`[engine] 回复在说另一张单，不拿本人订单补支付链接（会话 ${session.id}）：${visible.slice(0, 60)}`);
+        const rest = splitSentences(dropLinkPromise(out, kind, hole)).filter((s) => !ORDER_DONE_CLAIM.test(s)).join('').trim();
+        out = session.handedOver ? rest || tidyLinkText(strip(out)) : [rest, askOtherOrder(pending, text)].filter(Boolean).join('\n\n');
+        continue;
+      }
+      if (pending) links = ['/pay/' + pending.id];
     }
     let target: ProposalTarget | undefined;
     if (!links.length && kind === 'proposal' && !session.handedOver) {
@@ -1087,11 +1416,54 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
       out = rest || tidyLinkText(strip(out)); // 删完就空了（整条都是转人工前的那句）时留着原话
       continue;
     }
-    const ask = kind === 'pay' ? askToOrder(session, text) : askForProposal(target ?? {}, session);
+    // 客户在问靠不靠谱（「不会是骗子吧」「有营业执照吗」），手里又没有待付款的单：只删那句承诺，不追加下单问句——
+    // 此前答完资质末尾接一句「确认好我马上给您下单」，读着像在催一个还在疑虑的人掏钱（B04）
+    const ask = kind === 'pay' ? (TRUST_TALK.test(text) ? '' : askToOrder(session, text)) : askForProposal(target ?? {}, session);
     out = [rest, kind === 'proposal' && alreadyAsks(rest, target ?? {}) ? '' : ask].filter(Boolean).join('\n\n');
   }
   // 抹掉的无关网址留下的空位连同前面的空格一起去掉，「官网 https://… 预约」不留成「官网  预约」
   return tidyLinkText(out.replace(/[ \t]*[\u0001-\u0003]/g, ''));
+}
+
+// 方案书这一轮已经发了（模型调了 generate_proposal、或出口修补补上的），正文却还在问要不要发：
+// 「要看详细行程安排的话我可以把方案书发您」「如果行程满意，我也可以先把详细方案书发您」「需要我出详细方案吗？」（A03/B11/C07）。
+// 方案书就在下面（企微里是一张卡片），再问一遍，客户会以为没发出来
+const PROPOSAL_WORD = /方案书?|详细行程|行程方案|行程单|行程安排/;
+const OFFER_VERB = /发(?:给)?(?:您|你)|给(?:您|你)(?:发|出|做)|(?:出|做|整理)[^。！？，,\n]{0,8}?(?:方案|行程)/;
+const OFFER_COND = /要不要|需不需要|用不用|需要|想看|要看|的话|如果|要是|想要/;
+/** 接在要不要发后面的另一个提议（「…我把方案书链接发您，或者您定了日期，我按日期给您报价」）留着 */
+const OTHER_OFFER_HEAD = /^\s*(?:或者|或是|还是|另外|也可以)\s*/;
+/**
+ * 删掉「要不要发方案书」的那几个小句：从带条件的那一小句删到提方案的那一小句，后面跟着的是同一个提议的尾巴（「跟家里对一下日子」）一起删，
+ * 是另一个提议（「或者…」）就留下。只在正文里已有方案书链接时动；句子里带着链接的、在说付款的不动
+ */
+function dropProposalOffers(text: string): string {
+  if (!/\/proposal\//.test(text)) return text;
+  // 提议出一份别的线路的方案（「您想看其他线路的话，我给您出一份云南的行程方案」「也可以做一份西藏线的方案对比」）是下一步，
+  // 不是在问要不要发刚发的那份：此前一样整句删（第三轮复核）
+  let routes: Route[] = [];
+  try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警 */ }
+  const sentIds = new Set([...text.matchAll(/\/proposal\/([A-Za-z0-9_-]+)/g)].map((m) => m[1]));
+  const sentDests = new Set(routes.filter((r) => sentIds.has(r.id)).map((r) => r.destination));
+  const aboutOther = (s: string): boolean => /其他|其它|别的|另一|对比/.test(s) ||
+    routesIn(s, routes).some((r) => !sentIds.has(r.id) && !sentDests.has(r.destination)) || destinationsInText(s).some((d) => !sentDests.has(d));
+  const out = splitSentences(text).map((s) => {
+    if (SITE_LINK.test(s) || SAYS_PAY.test(s) || !PROPOSAL_WORD.test(s) || !OFFER_VERB.test(s) || aboutOther(s)) return s;
+    const parts = s.split(/(?<=[，,；;])/);
+    const j = parts.findIndex((p) => PROPOSAL_WORD.test(p) && OFFER_VERB.test(p));
+    if (j < 0) return s;
+    const k = j > 0 && OFFER_COND.test(parts[j - 1]) && !PROPOSAL_WORD.test(parts[j - 1]) ? j - 1 : j;
+    const offer = parts.slice(k, j + 1).join('');
+    const asking = j === parts.length - 1 && (OFFER_ASK.test(offer) || /(?:[？?]|吗[～~。！!]*)\s*$/.test(offer));
+    if (!asking && !OFFER_COND.test(offer)) return s;
+    const nl = s.endsWith('\n') ? '\n' : '';
+    const head = parts.slice(0, k).join('').replace(/[，,；;\s]+$/, '');
+    const tail = parts.slice(j + 1).join('').replace(/\n$/, '');
+    const rest = OTHER_OFFER_HEAD.test(tail) ? tail.replace(OTHER_OFFER_HEAD, '') : '';
+    const kept = [head && (/[。！？!?～~…]$/.test(head) ? head : head + '。'), rest].join('');
+    return kept ? kept + nl : nl;
+  });
+  return tidyLinkText(out.join(''));
 }
 
 /** 模型自己的最后一句已经在问引擎要问的那样（「您几位出行？」），就不再追问一遍 */
@@ -1151,6 +1523,154 @@ function isHandoffIntent(text: string): boolean {
   return HANDOFF_REQUEST.test(text) || isComplaint(text);
 }
 
+// ---------- 转人工要和客户的话、回复里的话对得上 ----------
+// 转人工后 AI 不再应答，转错一次这条线索就卡死。实测两类不一致：
+//   · 客户没坚持就转：B09 客户只答了时间和人数，模型就以「客户仍以桂林/厦门为准」转了人工，
+//     下一句「那你推荐的那个多少钱」没人回——库外目的地只有客户坚持时才转（sop.md）；
+//   · 嘴上转了、状态没转：A07/A11「我马上为您转接资深顾问」却没调 handoff_to_human，下一轮 AI 接着卖。
+/** 客户坚持原目的地的说法 */
+const INSIST_DEST =
+  /就要|只要|只去|只想去|就想去|还是想去|还是(?:要|得)去|就去|就奔着|冲着[^，。！？]{0,6}去|非[^，。！？]{0,8}不(?:可|去)|别的(?:都)?(?:不(?:考虑|要|去|看)|没兴趣|不感兴趣)|其他(?:的|地方)?(?:都)?(?:不(?:考虑|要|去|看)|没兴趣|不感兴趣)|没(?:啥|什么)?兴趣|不感兴趣|只对[^，。！？]{0,6}感兴趣|不考虑(?:别的|其他)|不换|一定要去|必须(?:去|是)|坚持|认准/;
+/** 客户自己要找人，或提了只有真人顾问办得了的事（改行程、定制） */
+/**
+ * 客户在下最后通牒、要一件只有人能拍板的事（「就是要打9折 不然不订」「必须开专票」）。
+ * 这时模型顺口说的「为您转接」照转——SOP 本来就让额外折扣、特殊要求走人工；
+ * 只是问一句（「能开专票吗」「签证能帮忙办吗」）则不整段转走，见说了转接却没调工具那段
+ */
+const DEMANDS_EXCEPTION = /就是要|不然不|否则不|必须|一定要|非要|非得|不.{0,4}就不订|才订|才定/;
+const WANTS_PERSON = /人工|真人|顾问|客服|专人|电话|打给我|联系我|找个?人|找你们的人|问问你们|定制|改行程|换景点|加景点|重新安排|重排/;
+/** 转人工说的是别的事（SOP 转人工条件 6：额外折扣、发票、特殊资源…），与库外目的地无关，不在这里拦 */
+const OTHER_HANDOFF_TOPIC = /折|优惠|便宜|降价|发票|专票|开票|报销|对公|退|改期|合同|保证|担保|承诺|资源|投诉|签证|公司|企业|年会|团建|会议/;
+
+/**
+ * 这次转人工是不是在拿「我们没有那个目的地」当理由，而客户并没有坚持。about 是模型写的转人工原因（或回复原文）。
+ * 只管库外目的地这一种：本会话告诉过客户某地没有现成线路，客户这句既没坚持、也没要找人，且这次转人工说的就是那个地方，
+ * 或者「没有」是本轮或上一轮刚说的（客户这句多半只是在答时间人数）。别的理由的转人工（折扣、发票、特殊资源…）不在这里拦：
+ * 此前最后那条「刚说过没有」的兜底不看理由，「北欧那条能打个9折吗」「公司50人年会要开专票」的转人工全被驳回了
+ */
+function unwarrantedHandoff(session: Session, text: string, about: string): boolean {
+  const miss = session.missedDestinations ?? [];
+  if (!miss.length) return false;
+  if (INSIST_DEST.test(text) || WANTS_PERSON.test(text) || TARGET_DAYS.test(text) || isHandoffIntent(text)) return false;
+  // 「还是冰岛吧」「冰岛吧，别的没兴趣」：点名要的还是那个地方
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (miss.some((m) => new RegExp(`还是(?:去)?${esc(m.place)}|${esc(m.place)}吧`).test(text))) return false;
+  if (OTHER_HANDOFF_TOPIC.test(about) || OTHER_HANDOFF_TOPIC.test(text) || BARGAIN_WORDS.test(text)) return false;
+  if (miss.some((m) => about.includes(m.place) || text.includes(m.place))) return true;
+  if (/原目的地|没有(?:现成的?)?线路|现成线路/.test(about)) return true;
+  const lastMiss = Math.max(...miss.map((m) => m.at));
+  return session.messages.filter((m) => m.role === 'customer' && m.at > lastMiss).length <= 1;
+}
+/** 驳回转人工时回给模型的话 */
+const HANDOFF_DECLINED =
+  '这次没有转人工：客户这句没有要找真人，也没有坚持只要我们没有的那个目的地（没说「就要去」「别的不考虑」）。继续回答客户这句话——' +
+  '问什么答什么，接着推荐最接近的现成线路、报价或问出行信息。回复里不要说「为您转接」「顾问会联系您」。';
+
+/** 「为您转接 / 已为您转接 / 马上转接」：现在就办的转接动作，引擎代为转人工只认这一种（见 claimsTransfer） */
+const TRANSFER_CLAIM =
+  /(?:为|帮|给)(?:您|你)(?:转接|转给|转到|转人工|接通)|(?:马上|立刻|立即|这就|现在)(?:为您|帮您|给您)?转(?:接|给|人工)|已(?:经)?(?:为您|帮您|给您)?(?:转接|转给|转交)/;
+/** 「顾问会在微信上联系您」。说的是联系客户本人：「联系您闺蜜」「联系您家人」是在说别人那一单（C06） */
+const CONTACT_CLAIM =
+  /顾问[^。！？\n]{0,10}(?:联系(?:您|你)(?!的|闺蜜|朋友|家人|爸|妈|父母|老公|老婆|先生|太太|爱人|孩子|同事|同伴|们)|加您|找您|跟您联系|与您联系)/;
+/**
+ * 「顾问会联系您」本身只是陈述，多半说的是正常流程：「付完顾问会在微信上联系您」「付完之后顾问会联系您出后续安排」
+ * （C04/C13 建单后）、「由顾问跟您确认，顾问会在微信上联系您」（guard-13 答资金监管）。此前单凭这句就由引擎转了人工，
+ * 之后 AI 不再应答，客户下一句「那就按4个人下单吧」没人回。只有同句带着「已记下 / 请稍候 / 马上请顾问」
+ * 这种现在就办的动作、又不是挂在付款下单之后，才算答应了转接（「已记录您的需求，顾问会在微信上联系您，请稍候～」）
+ */
+// 「已经帮您记下了」「帮您记下了」同样是现在就办（第三轮复核 H6：此前只认「已记下」，这句没转人工、也没给顾问留话）
+const CONTACT_NOW =
+  /已(?:经)?(?:帮您|为您|给您)?(?:记录|记下|登记|反馈|转达|通知|同步|提交)|(?:帮|为)您(?:记录|记下|登记)(?:了|好)|请?稍(?:候|等)|(?:马上|立刻|立即|这就|现在)[^，,。！？\n]{0,4}(?:请|让|安排|通知)/;
+/** 付款、下单、确认之后的联系是正常流程，不是现在转接 */
+const AFTER_EVENT = /付完|付款|支付|付了|下单|订好|确认(?:好|完|后|了)|出发前|出行前|到时|成团/;
+/** 选项里的一项：列表行（「· 我请顾问在微信上联系您闺蜜…」「2. 帮您转接顾问单独下单」），或「A 还是 B」的一半 */
+const OPTION_LINE = /^\s*(?:[·•・\-*]|\d{1,2}\s*[.、．)）]|[①-⑩]|[a-dA-D]\s*[.、)）])/;
+// 「您选的九寨线」「您挑好的日子」是定语，不是让客户挑；「还是按 10 月 18 号跟进」的「还是」是「仍然」（第三轮复核 H3/H4）
+const OPTION_WORDS = /[，,、]\s*(?:还是(?![按照会])|或者|或是|要么)|二选一|您(?:挑|选)(?![的中好定了过])/;
+/** 已经转了、马上就转（「已为您转接」「马上为您转接」）：后面跟着的「或者您有别的问题也可以先问我」不是另一个选项 */
+const TRANSFER_DONE = /^(?:已|马上|立刻|立即|这就|现在)/;
+/**
+ * 转接动作**前面**的选项连接词：A09 第 2 遍第 4 轮「两个方向您挑：换到不在最佳季的月份…；或者我为您转接资深顾问，
+ * 看看有没有申请空间。您想先看哪个？」。此前只查转接动作之后（OPTION_WORDS），排在前面的「或者」「您挑」没算进去，
+ * 这句被当成答应了转接、按转人工处理，客户下一句「算了 就这个吧 订」没人回，单丢了。
+ * 转接动作所在的那个小句（往前到最近的「，；：」；连接词自成一个小句的「或者，我为您转接」也算）挂着这些词，转接就只是其中一项，
+ * 哪怕写的是「或者马上为您转接」也一样——TRANSFER_DONE 只在前面没有这些词时才压过选项判断。
+ * 只看这个小句：此前看整句，「折扣或者赠品这块我没有权限，已为您转接资深顾问，请稍候～」里连着折扣和赠品的「或者」
+ * 也把转接当成了选项，既没转人工、也没给顾问留话，客户以为在等顾问，AI 却接着应答（第五轮复核）
+ */
+const OPTION_BEFORE = /(?:或者|或是|要么|要不(?!要)|再不然|不然的话|二是|其二|另一个是|另外也能)[，,\s]*[^，,；;：:]*$/;
+/**
+ * 「两个方向您挑：换个日期实报；我为您转接资深顾问」：先说在挑、再用「：」「；」列出几项的，列举里的转接只是其中一项，范围放到整句。
+ * 没有列举结构的不算（「您选择的日期…」「二选一的事…」后面跟着的是陈述）
+ */
+const OPTION_FRAME = /(?:二选一|两个方向|两条路|两种(?:办法|方案|选择)|(?:您|你)(?:挑|选)(?!择?[的中好定了过]))[^。！？!?\n]*[：:；;]/;
+/** 「也可以 / 也能」只看紧挨着转接动作的那个小句：「您也可以让我帮您转给顾问」；隔着逗号的「这个日期也可以，已为您转接」不算 */
+const OPTION_NEAR = /(?:也可以|也能)[^，,；;：:]{0,6}$/;
+/**
+ * 整条回复以在问客户挑哪个收尾（「您想先看哪个？」「您挑一个吧」）：前面列的是几个选项、在等客户挑，里面哪怕有一项是转接，也还没答应。
+ * 「您看哪个时间方便」问的是时间，不算。得是在问客户：「顾问会帮您看看哪种方案更合适」「顾问会跟您确认哪个抬头」
+ * 是顾问替客户挑，不是问句——此前这两句也把前面的「已为您转接…请稍候」作废了，没转人工、也没给顾问留话（第五轮复核）
+ */
+const ASKS_TO_CHOOSE =
+  /(?<![帮给跟为替])(?:您|你)(?:挑|选)(?!择?[的中好定了过])|(?<![帮给跟为替])(?:您|你)[^。！？!?\n，,]{0,8}哪(?:个|条|种|样|边|一个|一条|一种)(?!时间|时段|点|钟|电话|号码)|先看哪/;
+/** 「您挑 / 您选」本身就是在让客户挑；「您…哪个」「先看哪个」得是个问句 */
+const asksToChoose = (s: string): boolean =>
+  ASKS_TO_CHOOSE.test(s) && (/(?:[？?]|[吗呢])[～~。！!\s]*$/.test(s) || /(?<![帮给跟为替])(?:您|你)(?:挑|选)(?!择?[的中好定了过])/.test(s));
+/**
+ * 承诺前面挂着条件、只是在问、说的是不转，或是以后的事：「需要的话我可以为您转接」「要不要帮您转接？」「不用为您转接」
+ * 「目前无法为您转接」「付款后我马上为您转接」「您确认日期后…」「实在不合适，我再为您转接」「您看还是我帮您转给顾问」。
+ * 此前这几句都当成转了人工，AI 从此不再应答
+ */
+// 「不 / 别」只管紧挨着转接动作的那两个字（「不用为您转接」「不再为您转接」），不跨标点：此前 \S 连逗号也算，
+// 「折扣我这边给不了，已为您转接资深顾问，请稍候～」「这两样我都改不了，已为您转接」都被当成「不转」，没转人工（第五轮复核）
+const TRANSFER_NOT_NOW = new RegExp([
+  '如果|要是|假如|倘若|若是|需要的话|的话|如需|有需要|要不要|需不需要|是否|想要|愿意', '^\\s*那?您看[^，,。！？!?～~]{0,8}$',
+  '(?:可以|能够?|可)\\s*$', '(?:不|无需|不用|没有?|别)\\s*[^\\s，,。；;：:！？!?～~、]{0,2}$',
+  '(?:无法|没法|不便|暂时不|暂不|不能)[^，,。！？!?～~]{0,4}$',
+  // 「付款后 / 确认日期后，」挂着一件还没发生的事；光一个「之后 / 以后 / 稍后」说的是接下来就转
+  // 「付完款我马上为您转接」挂着付款这件事；「付完了 / 下完单了」是已经发生的，不算
+  '(?<![稍随然之以最])后[^。！？!?～~]{0,8}$', '(?:付完款?|下完单)(?![了啦])[^。！？!?～~]{0,8}$',
+  '等(?:您|你)|待(?:您|你)', '再\\s*$', '还是[^，,。！？!?～~]{0,4}$',
+].join('|'));
+/** 下单后的售后对接（「顾问会在微信上联系您确认行程细节」）：说的是付款后的服务，不是转人工 */
+const AFTER_SALE = /行程细节|确认行程|出行细节|出行前|出团|确认书|服务群|拉群/;
+/**
+ * 这句是现在时、不带条件、不是选项的转接动作。contact=false（付过款的客户）时「顾问会联系您」一律不算，见 saysTransfer。
+ * done：说的是已经办了、马上就办（「已为您转接」「马上为您转接」「请稍候」「已记录您的需求，顾问会联系您」）
+ */
+function transferClaim(sentence: string, contact = true): { done: boolean } | null {
+  if (OPTION_LINE.test(sentence)) return null;
+  const contactNow = contact && !AFTER_SALE.test(sentence) && !AFTER_EVENT.test(sentence) && CONTACT_NOW.test(sentence);
+  const byTransfer = TRANSFER_CLAIM.exec(sentence);
+  const m = byTransfer ?? (contactNow ? CONTACT_CLAIM.exec(sentence) : null);
+  const before = m ? sentence.slice(0, m.index) : '';
+  if (!m || TRANSFER_NOT_NOW.test(before)) return null;
+  if (OPTION_BEFORE.test(before) || OPTION_FRAME.test(before) || OPTION_NEAR.test(before)) return null;
+  if (!TRANSFER_DONE.test(m[0]) && OPTION_WORDS.test(sentence.slice(m.index))) return null;
+  if (/(?:[？?]|[吗吧][～~。！!]*)\s*$/.test(sentence)) return null;
+  return { done: TRANSFER_DONE.test(m[0]) || !byTransfer || /请?稍(?:候|等)/.test(sentence) };
+}
+function claimsTransfer(sentence: string, contact = true): boolean {
+  return !!transferClaim(sentence, contact);
+}
+/** 按句切，「～」也算句末（「马上为您转接，请稍候～北欧那条…」不能连着后半句一起摘） */
+const transferSentences = (s: string): string[] => s.split(/(?<=[。！？!?\n～~])/);
+/**
+ * 回复说了转接。付过款的客户听到「顾问会在微信上联系您」说的是售后对接（发行程确认书、拉群），不是转人工；
+ * 最后一句在问客户挑哪个（见 ASKS_TO_CHOOSE）的，前面没说已经办了的转接（「我帮您转接资深顾问，申请看看」）只是选项之一。
+ * 说了已经办了的照算：「马上为您转接资深顾问，请稍候～在等顾问的时候，您看这两条哪个更感兴趣？」问的是等顾问时的事
+ */
+const saysTransfer = (text: string, session?: Session): boolean => {
+  const paid = !!session?.orderIds.some((id) => getOrder(id)?.status === 'paid');
+  const parts = transferSentences(text);
+  const choosing = asksToChoose(parts.filter((s) => s.trim()).at(-1) ?? '');
+  return parts.some((s) => { const c = transferClaim(s, !paid); return !!c && (c.done || !choosing); });
+};
+/** 驳回了转人工、回复却说了转接：把说转接、说顾问会联系的句子摘掉 */
+function dropTransferClaims(text: string): string {
+  return tidyLinkText(transferSentences(text).filter((s) => !claimsTransfer(s) && !CONTACT_CLAIM.test(s)).join(''));
+}
+
 // 转人工安全网的确认语按诉求分三种。此前一律「非常抱歉给您带来不好的体验 🙏」：客户刚下完单说一句
 // 「转人工」也被平白道歉（实测 3/3），读着像这单出了什么问题。只有投诉/指控才道歉。
 // 退订、取消、改日期/人数这类说法只用来挑措辞、不触发转人工：没付款前改日期就是重新报价，模型自己能办。
@@ -1162,7 +1682,8 @@ const CHANGE_REQUEST =
   /改期|改签|推迟|延期|(?:日期|时间|人数|天数|行程|线路)[^，,。！？]{0,3}(?:改|换|调)|(?:改|换|调)[^，,。！？]{0,4}(?:日期|时间|人数|天数|行程|线路)/;
 function handoffReply(session: Session, text: string): string {
   // 会话里有订单就把它一并交代给顾问。只能从 orderIds 取：create_order 成功后 lastQuote 已经清空
-  const order = session.orderIds.map((id) => getOrder(id)).reverse().find((o) => o && o.status !== 'cancelled');
+  // 改单时被替代的旧单不算：交代给顾问、告诉客户「付款卡片仍然有效」的得是新的那张
+  const order = session.orderIds.map((id) => getOrder(id)).reverse().find((o) => o && o.status !== 'cancelled' && o.status !== 'superseded');
   const kind = isComplaint(text) ? 'complaint'
     : REFUND_REQUEST.test(text) || (order && CHANGE_REQUEST.test(text)) ? 'refund'
     : 'request';
@@ -1228,6 +1749,9 @@ const VAGUE_DATE = new RegExp([
   '下个?月|这个?月|本月',
   '(?:下|这|本)个?(?:周末?|星期|礼拜)|周末',
   '年[底初]|明年|后年|寒假|暑假',
+  // 「过完年 / 过年 / 年后 / 年前」：春节前后、没说哪天（B09 第 2 遍）。「三年前」「两年后」「过年好」不算
+  // 「成年后」「成年前」说的是孩子长大，不是春节
+  '过完年|过了年|过年(?!好|快乐)|(?<![\\d一二两三四五六七八九十几多半去前今明后成])年[前后]',
   '(?<![\\d第])\\d{1,2}\\s*号(?![线楼院房])',
 ].join('|'), 'g');
 /** 不是这次的出发日期：返程（「7号回来」「10月5号回」「玩到7号」）、过去的经历（「去年国庆」「10月去过」）、
@@ -1247,6 +1771,8 @@ const SWITCH_BEFORE = /(?:改到|改成|改为|改在|换到|换成|推到|推�
 const SWITCH_AFTER = /^\s*(?:节|假期|长假|小长假|黄金周|期间|那天|当天|左右)?\s*(?:再|就|才)?\s*(?:出发|动身|启程|走)/;
 /** 「国庆前 / 10月1号之后」：在那天前后，不是那天 */
 const NEAR_NOT_ON = /^\s*(?:节|假期|长假|期间)?\s*(?:前(?!后)|之前|以前|后|之后|以后)/;
+/** 「过完春节 / 过了国庆」：那个节日之后，同样不是那天 */
+const AFTER_HOLIDAY = /(?:过完|过了)\s*$/;
 
 type SpokenDate =
   /** iso 为空：说的是一个用不了的日子（2 月 31 日、写明年份的过去日期、这个月已过的日子） */
@@ -1261,7 +1787,11 @@ type SpokenDate =
  * 别的安排（「这个周末商量一下」）不算；一处都没有返回 pick=null。
  * 节假日取最近的未来那一次，exact=false；today 参数只为自测能模拟任意日期。
  */
-function readDepartDates(text: string, today = todayIso()): { pick: SpokenDate | null; exact: string[] } {
+function readDepartDates(text: string, today = todayIso()): {
+  pick: SpokenDate | null; exact: string[];
+  /** 选中的那一处在原文里的位置，和因为不是出发（「春节人太多」「过年要回老家」「玩到7号」）跳过的几处，给 monthSaid 用 */
+  pickAt?: { at: number; end: number }; skipped: { at: number; end: number }[];
+} {
   const year = Number(today.slice(0, 4));
   const month = Number(today.slice(5, 7));
   const spans: { at: number; end: number; date: SpokenDate }[] = [];
@@ -1309,35 +1839,79 @@ function readDepartDates(text: string, today = todayIso()): { pick: SpokenDate |
   }
   items.sort((a, b) => a.at - b.at);
   let found: SpokenDate | null = null;
+  let pickAt: { at: number; end: number } | undefined;
   const exact: string[] = [];
+  const skipped: { at: number; end: number }[] = [];
   let prevEnd = -1;
   for (const it of items) {
     const before = text.slice(0, it.at);
     const after = text.slice(it.end);
     const rangeEnd = prevEnd >= 0 && /^\s*(?:到|至|-|~|～|—)\s*$/.test(text.slice(prevEnd, it.at));
     prevEnd = it.end;
-    if (rangeEnd || NOT_DEPART_BEFORE.test(before) || NOT_DEPART_AFTER.test(after) || PAST_TRIP_AFTER.test(after)) continue;
-    if (!DEPART_AFTER.test(after) && OTHER_PLAN_AFTER.test(after)) continue;
-    const date: SpokenDate = it.mention && NEAR_NOT_ON.test(after) ? { kind: 'vague' } : it.date;
+    if (rangeEnd || NOT_DEPART_BEFORE.test(before) || NOT_DEPART_AFTER.test(after) || PAST_TRIP_AFTER.test(after) ||
+      (!DEPART_AFTER.test(after) && OTHER_PLAN_AFTER.test(after))) {
+      skipped.push({ at: it.at, end: it.end });
+      continue;
+    }
+    const date: SpokenDate = it.mention && (NEAR_NOT_ON.test(after) || AFTER_HOLIDAY.test(before)) ? { kind: 'vague' } : it.date;
     if (date.kind === 'date' && date.exact && date.iso) exact.push(date.iso);
     if (!found || SWITCH_BEFORE.test(before) || SWITCH_AFTER.test(after) || (found.kind === 'vague' && date.kind === 'date')) {
       found = date;
+      pickAt = { at: it.at, end: it.end };
     }
   }
-  return { pick: found, exact };
+  return { pick: found, exact, pickAt, skipped };
 }
 
 function spokenDepartDate(text: string, today = todayIso()): SpokenDate | null {
   return readDepartDates(text, today).pick;
 }
 
-/** 会话里客户最近一次说出发时间的那句话读出来的（从最新一句往前找，改口以最新为准） */
-function latestDepart(customerTexts: string[]): { pick: SpokenDate; exact: string[] } | null {
+// 顺口问到节假日、月份（「国庆期间景区人多吗」「国庆放几天」「12月冷不冷」）不是在说出发时间：是问句、后面没跟出发/走/去、
+// 也没说改。此前照样算作客户最近说的出发时间，客户早先说过的「10月3号出发」就被一句问话冲成了「国庆」这个大概——
+// 模型按 10月3号 下单被拦下，又去问一遍客户早就说过的日子
+const ASIDE_QUESTION = /吗|？|\?|呢|多不多|几天|怎么样|咋样|如何|冷不冷|热不热|好不好/;
+const ASIDE_NOT = /出发|走|去|动身|启程|飞|改|换|算了|推迟|延|提前|不去/;
+/** 出发时间说法所在的年月（节假日按那天，只说到月份的按 monthSaid）；说不出是哪个月的返回 undefined */
+function departMonth(pick: SpokenDate, text: string): string | undefined {
+  if (pick.kind === 'date') return pick.iso?.slice(0, 7);
+  const ym = monthSaid(text);
+  return ym ? `${ym.y}-${String(ym.mo).padStart(2, '0')}` : undefined;
+}
+function isAside(pick: SpokenDate, text: string): boolean {
+  return !(pick.kind === 'date' && pick.exact) && ASIDE_QUESTION.test(text) && !ASIDE_NOT.test(text);
+}
+// 只说到月份的问句（「4月去三亚会不会很热啊」「12月走冷不冷」）：带着「去 / 走」，问的却是那个月的天气人流。
+// C02 客户先说「改到明年4月5号吧」，下一句这么一问，出发日期就被降成「只说了 4 月」，报价回复被要求别写具体哪天，
+// 接着下单还会被驳回去问哪天。这种只在更早说过同一个月的具体哪天时才起作用（见 latestDepart），真改口的说法（改、换、定）不算
+const MONTH_ASIDE_QUESTION = /会不会|是不是|热吗|冷吗|热不热|冷不冷|人多|下雨|天气|温度|气温|几度|适合|好玩|值得|怎么样|咋样|如何|吗|呢|？|\?/;
+const MONTH_ASIDE_NOT = /改|换|算了|推迟|延期|延后|提前|不去|定|订|下单|别的|其他/;
+function isMonthAside(pick: SpokenDate, text: string): boolean {
+  return pick.kind === 'vague' && MONTH_ASIDE_QUESTION.test(text) && !MONTH_ASIDE_NOT.test(text);
+}
+
+/**
+ * 会话里客户最近一次说出发时间的那句话读出来的（从最新一句往前找，改口以最新为准），text 是那句原话。
+ * 最近那句只是顺口问到节假日、月份（见 isAside）时，往前找：同一个月里更早明说过具体哪天，就以那天为准
+ */
+function latestDepart(customerTexts: string[]): { pick: SpokenDate; exact: string[]; text: string } | null {
+  let aside: { pick: SpokenDate; exact: string[]; text: string; month: string } | null = null;
+  const byTheWay = (pick: SpokenDate, t: string): boolean => isAside(pick, t) || isMonthAside(pick, t);
   for (let i = customerTexts.length - 1; i >= 0; i--) {
     const r = readDepartDates(customerTexts[i]);
-    if (r.pick) return { pick: r.pick, exact: r.exact };
+    if (!r.pick) continue;
+    const got = { pick: r.pick, exact: r.exact, text: customerTexts[i] };
+    const month = departMonth(r.pick, customerTexts[i]);
+    if (!aside) {
+      if (!month || !byTheWay(r.pick, customerTexts[i])) return got;
+      aside = { ...got, month };
+      continue;
+    }
+    if (month !== aside.month) break;
+    if (r.pick.kind === 'date' && r.pick.exact) return got;
+    if (!byTheWay(r.pick, customerTexts[i])) break;
   }
-  return null;
+  return aside && { pick: aside.pick, exact: aside.exact, text: aside.text };
 }
 
 /**
@@ -1347,21 +1921,124 @@ function latestDepart(customerTexts: string[]): { pick: SpokenDate; exact: strin
  */
 function resolveDepartDate(profile: CustomerProfile, text: string): string | undefined {
   const said = spokenDepartDate(text);
-  if (said) return said.kind === 'date' ? said.iso : undefined;
   const iso = (profile.dates ?? '').match(/(\d{4})-(\d{2})-(\d{2})/);
-  return iso ? isoOf(Number(iso[1]), Number(iso[2]), Number(iso[3])) : undefined;
+  const known = iso ? isoOf(Number(iso[1]), Number(iso[2]), Number(iso[3])) : undefined;
+  if (!said) return known;
+  if (said.kind === 'date') return said.iso;
+  // 顺口问同一个月怎么样（见 isMonthAside），记着的那天照用
+  const ym = monthSaid(text);
+  return known && ym && isMonthAside(said, text) && known.startsWith(`${ym.y}-${String(ym.mo).padStart(2, '0')}-`) ? known : undefined;
 }
 
 /**
  * 成单安全网用的出发日期。客户最近一次说的是「国庆」这种节假日时不给：节假日只是个大概（国庆有七天），
  * 补进报价没问题（整段假期同一个季节价），但下单是真实副作用，引擎不替客户把「国庆」定成 10 月 1 日——
- * 留着模型那句「具体哪天出发」让客户说清
+ * 留着模型那句「具体哪天出发」让客户说清。「12月初」「明年7月」这种只说到月的同理：此前这时回退到画像里
+ * 的日期，而画像可能记着报价时按月份补的那一天，等于替客户挑了一天下单
  */
 function orderDepartDate(session: Session, text: string): string | undefined {
   const latest = latestDepart(session.messages.filter((m) => m.role === 'customer').map((m) => m.content))?.pick;
-  if (latest?.kind === 'date' && !latest.exact) return undefined;
+  if (latest?.kind === 'vague' || (latest?.kind === 'date' && !latest.exact)) return undefined;
+  // 客户明说过的那天（可能在顺口一问之前，见 latestDepart）直接用，不经画像——画像可能记着别的
+  if (latest?.kind === 'date' && latest.iso) return latest.iso;
   return resolveDepartDate(session.profile, text);
 }
+
+/** 这句话里客户说到了 iso 那一天：「10月3号」「十月三号」「10.3」，或只说日子（「国庆3号走」「1号吧」）。
+ *  下单核日期用（见 groundToolArgs）：客户最近的说法是个大概时，模型的日子得是客户说出来的 */
+function saysDay(text: string, iso: string): boolean {
+  const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return false;
+  const [mo, d] = [Number(m[1]), Number(m[2])];
+  const t = text.replace(/[一二两三四五六七八九十]{1,3}(?=\s*[月号日])/g, (w) => String(parseDayCount(w) ?? w));
+  return new RegExp(`(?<!\\d)${mo}\\s*(?:月|[./-])\\s*${d}(?!\\d)`).test(t) ||
+    new RegExp(`(?<![\\d月./-]\\s*)${d}\\s*(?:号|日(?![游行]))`).test(t);
+}
+/** 客户在答应（「可以」「对」「就这天」） */
+const AGREES = /^\s*(?:对|是|好|行|可以|没问题|嗯|确认|就这|就那|ok|没错)/i;
+/** 客户说出了 iso 那天：这句或最近说出发时间的那句里说了（「国庆当天走」就是节日那天），
+ *  或是答应了上一条回复里问的那天（「10月3日出发可以吗？」「可以」） */
+function customerNamedDay(session: Session, latestText: string, iso: string, holiday?: string): boolean {
+  const customer = session.messages.filter((m) => m.role === 'customer');
+  const now = customer.at(-1);
+  if (!now) return false;
+  if (saysDay(now.content, iso) || saysDay(latestText, iso)) return true;
+  if (holiday === iso && /当天|那天|第一天|头一天/.test(latestText)) return true;
+  if (!AGREES.test(now.content) || readDepartDates(now.content).pick) return false;
+  const prev = session.messages.slice(0, session.messages.lastIndexOf(now)).reverse().find((m) => m.role === 'agent')?.content ?? '';
+  const [, mo, d] = /^\d{4}-(\d{2})-(\d{2})$/.exec(iso) ?? [];
+  if (!mo) return false;
+  const day = new RegExp(`(?<!\\d)${Number(mo)}\\s*月\\s*${Number(d)}\\s*[日号](?!\\d)|${iso}`);
+  return splitSentences(prev).some((s) => day.test(s) && /[？?]|吗|对吧|可以吧|行吧|没问题吧/.test(s));
+}
+
+/**
+ * 说到春节前后、没说哪天的（B09 第 2 遍「过完年去」：此前认不出，模型编的 2027-02-20 直接进了 create_quote，也没有 departNote）。
+ * 按农历表读成月份——季节价只看月份：过完年 / 年后 / 春节后 = 春节假期过完（春节 +7 天）那个月，2027 年是 2 月；
+ * 过年 = 春节那个月；年前 / 春节前 = 春节前一周那个月，2027 年是 1 月。没说哪年取最近还没过去的那次，说了「明年」就是明年的春节；
+ * 表外的年份不猜。said 是客户的说法，报价时让模型照着说（「过完年出发」），不写成某一天
+ */
+const NEW_YEAR_SAID = new RegExp(
+  '(明年|今年)?\\s*(?:(过完年|过了年|过完春节|过了春节|(?:过年|春节(?:假期|长假)?(?:过)?)(?:之后|以后|后)|(?<![\\d一二两三四五六七八九十几多半去前今明后成])年后)' +
+  '|((?:过年|春节)(?:之前|以前|前)(?!后)|(?<![\\d一二两三四五六七八九十几多半去前今明后成])年前)|(过年(?!好|快乐)|春节))');
+const NEW_YEAR_SAID_ALL = new RegExp(NEW_YEAR_SAID.source, 'g');
+function newYearMonth(text: string, today = todayIso()): { y: number; mo: number; said: string } | undefined {
+  const m = NEW_YEAR_SAID.exec(text);
+  if (!m) return undefined;
+  const shift = m[2] ? 7 : m[3] ? -7 : 0;
+  const year = Number(today.slice(0, 4));
+  const want = m[1] === '明年' ? year + 1 : m[1] === '今年' ? year : undefined;
+  for (const day of LUNAR_HOLIDAYS.春节) {
+    if (want && !day.startsWith(`${want}-`)) continue;
+    const t = new Date(`${day}T00:00:00Z`);
+    t.setUTCDate(t.getUTCDate() + shift);
+    const anchor = t.toISOString().slice(0, 10);
+    if (anchor < today) continue;
+    return { y: Number(anchor.slice(0, 4)), mo: Number(anchor.slice(5, 7)), said: m[2] ?? m[3] ?? m[4] };
+  }
+  return undefined;
+}
+
+/**
+ * 只说到月的出发时间（「明年2月」「12月初」「10月中旬」「年底」「过完年」）读成年月；一句话里说了好几个月份的不猜。
+ * 春节前后的说法带着 said（见 newYearMonth）。
+ * 客户排除掉的时间（readDepartDates 跳过的：「春节人太多」「过年要回老家」「10月人太多」）不读；春节前后的说法还得是
+ * readDepartDates 选中的那一处。此前在整句里找：「春节人太多 暑假带孩子去」读成 2 月，报价被引擎改成 2 月 1 日的旺季价、
+ * 还让模型说「春节出发」（第五轮复核）
+ */
+function monthSaid(text: string, today = todayIso()): { y: number; mo: number; said?: string } | undefined {
+  const year = Number(today.slice(0, 4));
+  const read = readDepartDates(text, today);
+  // 遮掉跳过的那几处（等长替换，位置不变）
+  for (const k of read.skipped) text = text.slice(0, k.at) + '×'.repeat(k.end - k.at) + text.slice(k.end);
+  const months = [...text.matchAll(MONTH_SAID)];
+  if (months.length === 1) {
+    const [, rel, y4, raw] = months[0];
+    const mo = parseDayCount(raw);
+    if (!mo || mo > 12) return undefined;
+    const y = y4 ? Number(y4)
+      : rel === '明年' ? year + 1 : rel === '后年' ? year + 2 : rel === '今年' ? year
+      : mo >= Number(today.slice(5, 7)) ? year : year + 1;
+    return { y, mo };
+  }
+  const end = months.length ? null : /(明年|今年)?\s*年[底末]/.exec(text);
+  if (end) return { y: end[1] === '明年' ? year + 1 : year, mo: 12 };
+  const at = read.pickAt;
+  if (months.length || !at) return undefined;
+  // 「暑假或者过年去」选中的是暑假：春节不是客户说的那个出发时间，不拿它来补
+  const ny = [...text.matchAll(NEW_YEAR_SAID_ALL)].find((m) => m.index! < at.end && m.index! + m[0].length > at.at);
+  return ny ? newYearMonth(ny[0], today) : undefined;
+}
+
+/** 那个月里拿来定季节价的一天：季节价只看月份，取 1 号；当月已过 1 号就取今天，整个月都过去了就不给 */
+function dayInMonth(ym: { y: number; mo: number }, today = todayIso()): string | undefined {
+  const first = isoOf(ym.y, ym.mo, 1);
+  if (!first) return undefined;
+  if (first >= today) return first;
+  return today.startsWith(first.slice(0, 8)) ? today : undefined;
+}
+/** 按月份补进报价的日期只是拿来定季节价的，不是客户说的哪天：画像不记它（见 deriveProfile），不然会顺着画像流进下单 */
+const MONTH_ONLY_ARGS = new WeakSet<object>();
 
 /**
  * 转人工记录里附的出行时间参考。模型写 reason 时会把客户说的「明年2月」自己换算成「2026年2月」（今天已是 2026 年 9 月，
@@ -1379,18 +2056,8 @@ function departNoteForHandoff(session: Session, today = todayIso()): string | un
     const { pick } = readDepartDates(said[i], today);
     if (!pick) continue;
     let reading = pick.kind === 'date' ? pick.iso : undefined;
-    const months = pick.kind === 'vague' ? [...said[i].matchAll(MONTH_SAID)] : [];
-    if (months.length === 1) {
-      const [, rel, y4, raw] = months[0];
-      const mo = parseDayCount(raw);
-      const year = Number(today.slice(0, 4));
-      if (mo && mo <= 12) {
-        const y = y4 ? Number(y4)
-          : rel === '明年' ? year + 1 : rel === '后年' ? year + 2 : rel === '今年' ? year
-          : mo >= Number(today.slice(5, 7)) ? year : year + 1;
-        reading = `${y}年${mo}月`;
-      }
-    }
+    const ym = pick.kind === 'vague' ? monthSaid(said[i], today) : undefined;
+    if (ym) reading = `${ym.y}年${ym.mo}月`;
     const quote = said[i].length > 40 ? `${said[i].slice(0, 40)}…` : said[i];
     return `客户原话里的出行时间：「${quote}」${reading ? `，按今天（${today}）算是 ${reading}` : ''}`;
   }
@@ -1487,7 +2154,52 @@ function buildContextNote(session: Session): string {
 //     glm-5.3 系列每次往返有 2~3.5 秒固定开销，省下这一次决定了能不能守住「单轮 8 秒」。
 // 判错的代价是一次本地 JSON 查询加几百 token 的工具结果，但查错了地方会把模型往错的方向带，
 // 所以条件宁紧勿松：只在问需/推荐阶段、这句话点了一个新目的地、且不带否定语气时才预取。
+// 例外是客户明说换到哪儿（「高反挺吓人的 换云南吧」）：那处就是他现在要的，什么阶段都照查——此前一句「算了」
+// 把整句判成否定，模型没查库就编了两条云南线（B03）。
 const PREFETCH_NEGATION = /去过|来过|玩过|到过|不去|不想|不要|不考虑|不喜欢|没兴趣|太远|别推|除了|算了|排除/;
+// 否定是冲着某一处地名说的（「我说的是印度啊 不是印尼」「不去三亚了 想去云南」）：否掉的那处不查，也不算进上面的否定语气，
+// 同一句里肯定的那处照查。此前「不是」不在否定词里，「不是印尼」把印尼预取了，模型回「我们有一条印尼巴厘岛的线路」（B10）。
+// 「是不是 / 要不要 / 想不想去」是在问，「没去过」是想去，都不算否定。
+// 「别换云南了 就西藏」「不换云南」否的是换过去（第三轮复核：此前照样预取了云南）；「要不换云南」「要不要换云南」是在提议
+const NEG_BEFORE_PLACE =
+  /(?:(?<!是)不是|(?<!要)不要|(?<!去)不去|(?<!想)不想去|(?<!考虑)不考虑|除了|别推|排除|(?<![没未]有?)(?:去过|来过|玩过|到过)|(?<!要)(?:别|不要?|不想)换(?:成|到)?)\s*(?:去|到)?\s*$/;
+const NEG_AFTER_PLACE = /^\s*(?:就?算了|去过|来过|玩过|到过|太远|不去了?|不想去|不考虑|没兴趣|不感兴趣|排除|pass\b)/i;
+/** 明说换过去：「换云南吧」「换成西藏看看」「改去贵州」「还是去云南」；「那就三亚吧」「还是云南吧」要带「吧」。「不想换 / 别换」不算 */
+const SWITCH_BEFORE_PLACE = /(?<![不别没][想要用必]?)(?:换(?:成|到|去)?|改(?:去|成|到)|还是去|那就去)\s*$/;
+const SWITCH_SOFT_BEFORE = /(?:那就|还是|就)\s*$/;
+/** 地名后面跟着在比、在问（「云南还是去四川好」「换成三亚还是云南？」），那是对比，不是拍板换过去 */
+const SWITCH_ASKING = /^[^，,。！!～~\n]*?(?:[？?]|吗|呢|哪个|比较|对比|好$|好[吗呢？?])/;
+function switchesTo(text: string, kw: string, at: number): boolean {
+  const before = text.slice(Math.max(0, at - 8), at);
+  const after = text.slice(at + kw.length);
+  if (SWITCH_ASKING.test(after)) return false;
+  return SWITCH_BEFORE_PLACE.test(before) || (SWITCH_SOFT_BEFORE.test(before) && /^\s*吧/.test(after));
+}
+/** 把点名否掉的地方连同否定词换成「，」：「我说的是印度啊 不是印尼」→「我说的是印度啊 ，」。没有就原样返回 */
+function withoutNegatedPlaces(text: string): string {
+  const kws = [...new Set([...destinationMentions(text).values(), ...offCatalogPlaces(text).map((p) => p.kw)])];
+  const spans: [number, number][] = [];
+  for (const kw of kws) {
+    for (let at = text.indexOf(kw); at >= 0; at = text.indexOf(kw, at + kw.length)) {
+      const before = NEG_BEFORE_PLACE.exec(text.slice(Math.max(0, at - 8), at));
+      const after = NEG_AFTER_PLACE.exec(text.slice(at + kw.length));
+      if (!before && !after) continue;
+      let end = at + kw.length + (after?.[0].length ?? 0);
+      end += /^[了啊呀吧哈呢]*/.exec(text.slice(end))![0].length;
+      spans.push([at - (before?.[0].length ?? 0), end]);
+    }
+  }
+  if (!spans.length) return text;
+  // 从后往前换，重叠的（「不是印度尼西亚」里的别名）并成一段
+  spans.sort((a, b) => b[0] - a[0]);
+  let out = text;
+  let limit = text.length;
+  for (const [s, e] of spans) {
+    out = out.slice(0, s) + '，' + out.slice(Math.min(e, limit));
+    limit = s;
+  }
+  return out;
+}
 // 预取要带上每人预算：search_routes 只有拿到预算才会标出超预算差额，而价格护栏只认工具算好的差额——
 // 不带的话，模型自己减出来的「比您预算多 6,800 元」会被当成编价整条拦下。
 // 说了钱却认不出是不是「每人」（「预算5万」可能是两个人的总数）就不预取，交给模型自己理解。
@@ -1523,52 +2235,62 @@ interface Pick { kw: string; at: number; off: boolean }
 
 /** 这轮要替模型预先执行的 search_routes 参数（空数组 = 不预取） */
 function planPrefetch(session: Session, text: string): Record<string, unknown>[] {
-  if (STAGE_RANK[session.stage] > STAGE_RANK.recommend) return [];
-  if (PREFETCH_NEGATION.test(text)) return [];
   const budget = perPersonBudget(text);
   // 「人均8000-12000」不带单位，MENTIONS_MONEY 认不出是钱，但说了每人多少、又认不出上限，同样不预取
   if (budget === undefined && (MENTIONS_MONEY.test(text) || PER_PERSON_BUDGET.test(text))) return [];
+  // 下面都按去掉了「不是X / 不去X了」的话来认（见 NEG_BEFORE_PLACE）：否掉的地方不查
+  const said = withoutNegatedPlaces(text);
   // 已经在聊的目的地不重查：上一轮查到的线路在会话状态里，模型要换条件（预算/客群）会自己查
   const known = session.profile.destinationInterest;
   const knownDests = known ? [known, ...destinationsInText(known)] : [];
   // 出发地/常住地不是目的地：「我在北京，想去三亚」「四川人，想去新疆」只该查后一个
-  const isOrigin = (kw: string): boolean => isOriginMention(text, kw);
+  const isOrigin = (kw: string): boolean => isOriginMention(said, kw);
   const inCatalog: Pick[] = [];
-  for (const [dest, kw] of destinationMentions(text)) {
+  for (const [dest, kw] of destinationMentions(said)) {
     if (knownDests.includes(dest) || knownDests.includes(kw)) continue;
     if (isOrigin(kw)) continue;
-    inCatalog.push({ kw, at: text.indexOf(kw), off: false });
+    inCatalog.push({ kw, at: said.indexOf(kw), off: false });
   }
   // 我们没有的目的地（南极、冰岛…）同样替模型查：不预取时模型偶尔一个工具都不调，直接编一条
   // 「南极深度体验线的替代方向……人均起价 68800 起」（68800 是西藏松赞线的价）发给客户。预取走 search_routes
   // 已有的 destinationMiss 分支：按客户原话语义召回最接近的现成线路，并标明「不是原目的地、不要答应能去」。
-  // 否定语气、过了推荐阶段、说不清的预算在前面已经挡掉；出发地、已在聊的地方、不像是想去那儿的说法（见 wantsToGo）同样跳过
-  const offFound = offCatalogPlaces(text);
-  const placeWords = [...offFound.map((p) => p.kw), ...destinationMentions(text).values()];
+  // 出发地、已在聊的地方、不像是想去那儿的说法（见 wantsToGo）跳过
+  const offFound = offCatalogPlaces(said);
+  const placeWords = [...offFound.map((p) => p.kw), ...destinationMentions(said).values()];
   const offCatalog: Pick[] = offFound
-    .filter(({ kw, at }) => !known?.includes(kw) && !isOrigin(kw) && wantsToGo(text, kw, at, placeWords))
+    .filter(({ kw, at }) => !known?.includes(kw) && !isOrigin(kw) && wantsToGo(said, kw, at, placeWords))
     .map((p) => ({ ...p, off: true }));
+  // 明说换过去的那处（「三亚太热了，换成西藏看看」）只查它：同一句里的另一处是刚否掉的
+  const switched = [...inCatalog, ...offCatalog].filter((p) => switchesTo(said, p.kw, p.at));
+  if (!switched.length) {
+    if (STAGE_RANK[session.stage] > STAGE_RANK.recommend) return [];
+    if (PREFETCH_NEGATION.test(said)) return [];
+  }
   // 库内、库外的地方跟在一起对比（「冰岛和瑞士哪个好」「想去冰岛，或者日本也行」）两边都查：此前只查库内那处，
   // 模型手里没有冰岛的 destinationMiss，照样能编「冰岛极光 9 日」。连不成对比的（「冰岛太贵了，日本怎么样」）
   // 库外那处不掺进来，库内的照原逻辑查
   const both = [...inCatalog, ...offCatalog].sort((a, b) => a.at - b.at);
-  const picked = offCatalog.length && comparing(text, both) ? both : inCatalog.length ? inCatalog : offCatalog;
+  const picked = switched.length ? switched
+    : offCatalog.length && comparing(said, both) ? both : inCatalog.length ? inCatalog : offCatalog;
   // 按原文顺序排：画像的 destinationInterest 取本轮最后一次 search_routes，按库里的顺序查会随机落在某一处
   picked.sort((a, b) => a.at - b.at);
-  if (!comparing(text, picked)) return [];
+  if (!comparing(said, picked)) return [];
   // 客群要从这句话里现取：画像要等本轮结束才更新，而银发是安全约束——「带爸妈去西藏」
   // 不带 segment 查，模型拿到的就是没有高海拔提示的 5200 米线路。画像里已有的由 executeTool 自动补
   const segment = detectSegment(text);
-  const maxBudgetPerPerson = budget ?? perPersonBudget(session.profile.budget);
+  // 这句刚把预算放开的，画像里的旧预算要等本轮结束才改掉，这里先不带
+  const maxBudgetPerPerson = budget ?? (liftsBudget(text) ? undefined : perPersonBudget(session.profile.budget));
   const extra = { ...(segment ? { segment } : {}), ...(maxBudgetPerPerson ? { maxBudgetPerPerson } : {}) };
   // 库外的地方合成一次查就够：「冰岛和挪威哪个好」两处都没有，召回的是同一批最接近的线路。
   // 目的地写成「冰岛、挪威」，destinationMiss 才会照实说两处都没有；query 带客户原话，召回按他要的体验排。
+  // 原话里否掉的那处不进 query：「不是印尼」按语义召回的正是巴厘岛
   // 最多两次查询：「四川和云南哪个好」两个都查，再多就是在罗列，交给模型挑重点
+  const query = said === text ? text : said.replace(/\s*，(?:\s*，)*\s*/g, '，').replace(/^，|，$/g, '');
   const offs = picked.filter((p) => p.off).slice(0, 2);
   const calls: { at: number; args: Record<string, unknown> }[] = picked.filter((p) => !p.off)
     .map((p) => ({ at: p.at, args: { destination: p.kw, ...extra } }));
   if (offs.length) {
-    calls.push({ at: offs[0].at, args: { destination: offs.map((p) => p.kw).join('、'), query: text.slice(0, 200), ...extra } });
+    calls.push({ at: offs[0].at, args: { destination: offs.map((p) => p.kw).join('、'), query: query.slice(0, 200), ...extra } });
   }
   return calls.sort((a, b) => a.at - b.at).slice(0, 2).map((c) => c.args);
 }
@@ -1586,8 +2308,9 @@ function comparing(text: string, picked: Pick[]): boolean {
   return true;
 }
 
+// 「我说的是印度」「我指的是冰岛」是在更正想去哪儿（B10）
 const TRAVEL_CUE =
-  /去|到|玩|游|旅|行程|线路|路线|看|飞|怎么样|咋样|如何|呢|吗|哪|推荐|多少钱|价格|几天|几月|季节|值得|适合|度假|蜜月|自由行|跟团|考虑/;
+  /去|到|玩|游|旅|行程|线路|路线|看|飞|怎么样|咋样|如何|呢|吗|哪|推荐|多少钱|价格|几天|几月|季节|值得|适合|度假|蜜月|自由行|跟团|考虑|说的是|指的是/;
 /** 去过的：「去年去了冰岛，这次呢」「上次去冰岛」。「之前 / 以前」不收——「国庆之前去冰岛」是想去 */
 const BEEN_THERE = /(?:去了|去年|上次|刚从)\s*(?:去|到|在)?\s*$/;
 /**
@@ -1607,6 +2330,215 @@ function wantsToGo(text: string, kw: string, at: number, placeWords: string[]): 
   for (const w of [kw, ...placeWords]) rest = rest.split(w).join('');
   rest = rest.replace(/和|跟|与|及|或者|或|还是|[\s\p{P}\p{S}]/gu, '');
   return TRAVEL_CUE.test(rest) || rest.length <= 3;
+}
+
+// ---------- 这一轮说的是哪条线 ----------
+// 问细节的预取和「三样齐全就报价」都要先认出客户在说哪条线。认不准就不猜：查错线路的详情、按错线路催报价，
+// 比不查不催更糟——模型会照着错的那条讲给客户。
+
+/**
+ * 一段话里点到的线路：目的地（或别名）只对应一条线就是它；同一目的地有几条时看天数、标题里独有的词，
+ * 认不出是哪条就几条都算（调用方据此判「说不清」）；标题里连着的三个字、「兵马俑那条」这种指着说的也算。
+ * 出发地、这段话里说去过的地方不算（「去年国庆去过云南了 今年国庆想去三亚」说的是三亚）。只看这段话自己：
+ * 客户早先说过「马代去过了」，后来又说「那就马代吧」，这句点的就是马代
+ */
+function routesIn(said: string, routes: Route[]): Route[] {
+  const visited = new Set(visitedDestinations([said], routes));
+  const hits = new Set<Route>();
+  const mentioned = destinationMentions(said);
+  for (const [dest, kw] of mentioned) {
+    if (visited.has(dest) || isOriginMention(said, kw)) continue;
+    const same = routes.filter((r) => r.destination === dest);
+    // 同一目的地几条线共用的别名（三条马代线都叫「马代」）分不出是哪条，只看天数和标题里独有的词
+    const named = same.filter((r) =>
+      (r.aliases ?? []).some((a) => said.includes(a) && !same.some((o) => o !== r && o.aliases?.includes(a))) ||
+      [...said.matchAll(ANY_DAYS_OR_RI)].some((m) => parseDayCount(m[1]) === r.days) || titleWordHit(said, r, same));
+    for (const r of named.length ? named : same) hits.add(r);
+  }
+  // 没说目的地、只说了标题里的词（「稻城亚丁色达那条」「兵马俑那条」）。说了目的地的上面已经按天数、独有的词挑过，
+  // 不再按 routeNamed 加：它把别名也算作点名，三条马代线会因为一个「马代」全加回来
+  for (const r of routes) {
+    if (!mentioned.has(r.destination) && !visited.has(r.destination) && routeNamed(said, r, routes)) hits.add(r);
+  }
+  return [...hits];
+}
+
+/**
+ * 这一轮客户在说的那条线，认不准返回 undefined。依次看：
+ *   ① 客户这句话点了哪条（点了两条以上、又不是同一目的地里报过价的那条，就是说不清）；
+ *   ② 往前最近一条说到线路的消息（客户的或我们的，最多看 6 条）——刚报过价、刚推荐的那条都在这里；
+ *      那条消息里说到好几条时，报过价的那条算数，否则说不清；
+ *   ③ 都没说到时，报过价的那条；只查到过一条线时就是它。
+ */
+function routeInFocus(session: Session, text: string, routes = loadRoutes()): Route | undefined {
+  const quoteId = session.lastQuote?.routeId;
+  const pool = new Set<string | undefined>([quoteId, ...(session.lastShownRoutes ?? []).map((r) => r.id)]);
+  /** undefined：没说到线路；null：说到了但说不清是哪条 */
+  const pick = (hits: Route[], preferQuote: boolean): Route | null | undefined => {
+    if (!hits.length) return undefined;
+    if (hits.length === 1) return hits[0];
+    if (preferQuote && quoteId) {
+      const q = hits.find((r) => r.id === quoteId);
+      if (q) return q;
+    }
+    const shown = hits.filter((r) => pool.has(r.id));
+    return shown.length === 1 && hits.every((r) => r.destination === shown[0].destination) ? shown[0] : null;
+  };
+  const own = routesIn(text, routes);
+  const now = pick(own, own.every((r) => r.destination === own[0]?.destination));
+  if (now !== undefined) return now ?? undefined;
+  const recent = session.messages.filter((m) => m.role !== 'system').slice(0, -1).slice(-6).reverse();
+  for (const m of recent) {
+    const got = pick(routesIn(m.content, routes), true);
+    if (got !== undefined) return got ?? undefined;
+  }
+  const byId = (id: string | undefined) => routes.find((r) => r.id === id);
+  if (quoteId) return byId(quoteId);
+  const shown = session.lastShownRoutes ?? [];
+  return shown.length === 1 ? byId(shown[0].id) : undefined;
+}
+
+// ---------- 问细节先查数据 ----------
+// 客户问几点、住哪、含不含、保险、走路爬山、海拔、第几天，模型不查线路数据就凭印象答：实测「黄果树有扶梯…完全没问题」
+// （贵州那条根本不去黄果树）、建议客户另买高原险（西藏那条的费用里已含）、替长辈担保北京线「全程平地」（第 3 天是约三小时的
+// 野长城）、编出「九寨天堂洲际 + 成都博舍」。同样的问题查过详情的那几遍都答对了——所以同库外目的地一样由引擎预取：
+// 会话里有明确的线路时，调模型之前先替它查一次 get_route_detail，走同一个 runTool（记录、观测、参数核正都一致）
+const DETAIL_ASK = new RegExp([
+  '几点', '住哪|住在哪|住什么|住的是|哪家酒店|什么酒店|酒店(?:是|叫|在哪)',
+  '含不含|包不包|含吗|包吗|包含|包括|(?:含|包)(?:机票|餐|早餐|门票|保险|接送|酒水|签证|小费|吃|住)',
+  '保险|自费|另付|机票|航班|飞机|接机|送机',
+  '走路|步行|徒步|爬山|爬坡|台阶|累不累|累吗|累不|辛苦|强度|体力|腿脚|膝盖|轮椅|走得动|吃得消',
+  '海拔|高反|高原反应',
+  '第\\s*[几一二三四五六七八九十\\d]+\\s*天|最后一天|头一天|每天(?:怎么|都|几点)',
+].join('|'));
+
+/** 带着细节词、说的却不是细节：「住哪都行」「保险起见」「包括我妈在内一共3个人」「不包括孩子」「几点下班」「体力还行」 */
+const DETAIL_NOISE =
+  /住(?:哪|哪儿|哪里|什么)(?:都|也)?(?:行|可以|随便|无所谓)|保险起见|包括[^，。,！？!?]{0,8}在内|不包括|几点下班|几点放假|体力(?:还行|还可以|没问题|挺好|很好)/g;
+const asksDetail = (text: string): boolean => DETAIL_ASK.test(text.replace(DETAIL_NOISE, ''));
+
+/**
+ * 客户这句点到了焦点那条线以外的地方：我们没有的（「北海道住哪」），或别的线标题里才有的地名（「九寨海拔高吗」「稻城海拔多少」
+ * 「拉萨海拔多高」）。这些地名不是目的地名也不是别名，routesIn 认不出，此前就退回报过价的那条，把云南线的详情当成九寨的答案塞给模型
+ */
+function namesOtherPlace(text: string, focus: Route, routes: Route[]): boolean {
+  if (offCatalogPlaces(text).length) return true;
+  return routes.some((r) => r.destination !== focus.destination &&
+    (r.title.replace(r.destination, ' ').match(/[一-鿿]{2,}/g) ?? []).some((w) =>
+      [...w].slice(1).some((_, i) => {
+        const bi = w.slice(i, i + 2);
+        return text.includes(bi) && !focus.title.includes(bi) && !GENERIC_TITLE_WORD.test(bi) && !isOriginMention(text, bi) &&
+          routes.every((o) => o.destination === r.destination || !o.title.includes(bi));
+      })));
+}
+/** 标题里的泛称两字词，不算点了地名 */
+const GENERIC_TITLE_WORD = /全线|环线|秘境|深度|之旅|亲子|蜜月|度假|奢华|全景|双岛|浮潜|全包|海岛|美学|雨林|越野|摄影|纵贯|乐园|古城|极光|雪山|冰川|快车|日亲|日蜜/;
+
+/** 这轮要替模型预先查详情的线路 id（空数组 = 不预取）。客户这句自己点了两处不同的线（「北京和西安哪个累」）两条都查 */
+function planDetailPrefetch(session: Session, text: string): string[] {
+  if (!asksDetail(text)) return [];
+  const routes = loadRoutes();
+  const own = routesIn(text, routes);
+  if (own.length === 2 && own[0].destination !== own[1].destination) return own.map((r) => r.id);
+  const r = routeInFocus(session, text, routes);
+  // 这句自己没点线路、是按上下文推的焦点线：客户点了别处就不预取，交给模型自己查
+  if (r && !own.length && namesOtherPlace(text, r, routes)) return [];
+  return r ? [r.id] : [];
+}
+
+/** 客户提过高反、海拔：搜线路和查详情时附海拔提醒（见 tools.ts altitudeNoteFor） */
+const ALTITUDE_WORRY = /高反|高原反应|海拔|缺氧/;
+
+/**
+ * 按客户原话认出的、工具那边认不全的情况（见 tools.ts ToolHints）。长辈沿用画像的客群口径（SEGMENT_RULES，
+ * 按小句去掉「爸妈在家带娃」这类不同行的），不看模型传的 segment：实测客户说「婆婆72岁…也怕高反」，模型传的是「家庭」
+ */
+function toolHints(session: Session): ToolHints {
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  return { elder: segmentsSaid(said).has('银发'), altitudeWorry: said.some((t) => ALTITUDE_WORRY.test(t)) };
+}
+
+// ---------- 三样齐全就报价 ----------
+// 线路、人数、日期都已给齐，模型仍不报价、还反问客户说过的信息：「我俩想12月28号出发」→「两个人出发吗？」；
+// 「国庆 2 个人 多少钱」只回「人均 15800 起」（国庆实价 17,380）；「下个月15号 俩大人」→「我按 11月15日出个报价？」。
+// 智谱的 tool_choice 强制不了调工具；预取 create_quote 又会写 lastQuote（成单安全网据此建单），不是只读工具，
+// 所以由引擎认出三样齐全，在会话状态里点名要这一轮报价、把参数写好
+const PRICE_ASK = /多少钱|多钱|报价|报个价|价格|价钱|什么价|啥价|怎么收费|费用|算一下|算下|重新算/;
+/** 「我俩」「俺娘俩」「就俩大人」：没带数字的两个人 */
+const PAIR = /我们俩|咱们俩|咱俩|我俩|两口子|小两口|夫妻俩|(?:娘|母女|母子|父子|父女|姐妹|兄弟)俩|俩\s*(?:大人|个人|人)|就俩/;
+/** 「1万5一个人」「两万一位」说的是每人价，不是这趟一个人去 */
+const PRICE_PER_HEAD = /[\d一二两三四五六七八九十]\s*(?:万|千|元|块)[\d一二三四五六七八九]?\s*(?:一个人|一人|一位|每人)/g;
+
+/** 这句话里客户说的出行人数：数得出返回人数，说了但算不出（增减、只数了大人）返回 'unclear'，没说返回 undefined */
+function travelersSaid(s: string): number | 'unclear' | undefined {
+  const t = s.replace(PRICE_PER_HEAD, '');
+  const n = headcountIn(t);
+  if (typeof n === 'number') return n;
+  if (n !== undefined) return 'unclear';
+  return groupSizeIn(t) ?? (PAIR.test(t) ? 2 : undefined);
+}
+
+/** 这趟几个人：从客户最近说人数的那句往前找（改口以最新为准），再看报过价的人数 */
+function travelersKnown(session: Session, said: string[]): number | undefined {
+  for (let i = said.length - 1; i >= Math.max(0, said.length - 12); i--) {
+    const n = travelersSaid(said[i]);
+    if (n === 'unclear') return undefined;
+    if (n !== undefined) return n;
+  }
+  return session.lastQuote?.travelers;
+}
+
+/**
+ * 三样齐全、还没按这三样报过价时，给模型的一句「这一轮报价」（附在会话状态后面）；否则 undefined。
+ * 只在这句话本身带着报价要素（日期、人数、问价，或点名了线路而不是在问细节）时才提：客户问「住哪」时插一句报价是答非所问。
+ * 客户在下单（成单安全网与 create_order 的事）、同参数已报过价或已下过单时不提。
+ * 日期按客户原话读（节假日也算，国庆按 10 月 1 日报，和 groundToolArgs 补日期同一口径）
+ */
+function quoteTimingNote(session: Session, text: string): string | undefined {
+  if (PURCHASE_INTENT.test(text)) return undefined;
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  const d = latestDepart(said)?.pick;
+  const iso = d?.kind === 'date' && d.iso && d.iso >= todayIso() ? d.iso : undefined;
+  if (!iso) return undefined;
+  // 问细节的话里顺口带了人数、线路（「我俩都怕累，北京那条累不累」）不算，得是说了日期或在问价
+  const cue = readDepartDates(text).pick || PRICE_ASK.test(text) ||
+    (!asksDetail(text) && (travelersSaid(text) !== undefined || routesIn(text, loadRoutes()).length > 0));
+  if (!cue) return undefined;
+  const route = routeInFocus(session, text);
+  const n = travelersKnown(session, said);
+  if (!route || !n) return undefined;
+  const q = session.lastQuote;
+  if (q && q.routeId === route.id && q.travelers === n && q.departDate === iso) return undefined;
+  const ordered = session.orderIds.map((id) => getOrder(id)).some((o) =>
+    o && o.status !== 'cancelled' && o.routeId === route.id && o.travelers === n && o.departDate === iso);
+  if (ordered) return undefined;
+  // 节假日只是个大概：点名时说「国庆出发」，不写成「10月1号出发」——模型会照抄给客户，下单时却又要问具体哪天，前后矛盾
+  const holiday = d?.kind === 'date' && !d.exact ? holidayIn(latestDepart(said)?.text ?? '', iso) : undefined;
+  const when = holiday ? `${holiday}出发（按 ${Number(iso.slice(5, 7))} 月的季节价报，参数照填 ${iso}）` : `${cnDate(iso)}出发`;
+  return `报价时机：客户已给齐线路、人数、出发日期——《${route.title}》、${n} 位、${when}。` +
+    `这一轮直接调 create_quote（routeId=${route.id}，travelers=${n}，departDate=${iso}），把每人价、人数、总价报给客户，` +
+    '不要再问线路、人数、日期这几样。' +
+    (holiday ? `回复里只说「${holiday}出发」，不要写成具体哪一天；下单前再问具体哪天。` : '');
+}
+
+/**
+ * 客户提过带娃、这句只报了个人数（「两位 12号」），而线路还有两三条候选、这一轮报不了价（flow-07）：报价时的人数口径
+ * 附在 create_quote 的结果上（见 groundToolArgs 的 headcountNote），没报价就没地方附——模型只问「选哪条」，孩子算没算没人问，
+ * 还有一次写成了「两位大人」。所以放进会话状态，要它在问选哪条的同一句里顺带问一句
+ */
+function headcountAskNote(session: Session, text: string): string | undefined {
+  const n = travelersSaid(text);
+  const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  if (typeof n !== 'number' || !kidsHeadcountUnclear(said)) return undefined;
+  return `人数口径：客户提过带孩子，这句只说了 ${n} 位，没说清算没算上小朋友。能报价就按 create_quote 结果里的 headcountNote 说；` +
+    `线路还没定、要先问选哪条时，在问选哪条的同一句里顺带问一句「这 ${n} 位里算上小朋友了吗？」。客户没说「大人」，不要写成「${n} 位大人」。`;
+}
+
+/** 客户说的、落在 iso 那天的节假日叫法（「十一」按国庆说）。一句里说了几个节日时认日子：「去年国庆去过云南了 明年五一想去三亚」是五一 */
+function holidayIn(text: string, iso: string): string | undefined {
+  const names = [...text.matchAll(/国庆|十一(?=\s*(?:假期|长假|小长假|黄金周|期间|出发|去|走))|五一|劳动节|元旦|春节|大年初一|端午|中秋|八月十五/g)]
+    .map((m) => HOLIDAY_ALIAS[m[0]] ?? m[0]);
+  return names.find((n) => SOLAR_HOLIDAYS[n] === iso.slice(5) || LUNAR_HOLIDAYS[n]?.includes(iso));
 }
 
 // ---------- 只有客户说了算的参数：按客户原话核一遍 ----------
@@ -1674,6 +2606,7 @@ function groupSizeIn(s: string): number | undefined {
  */
 function statedBudgetCap(said: string[], modelCap: number, session: Session): number | undefined {
   for (let i = said.length - 1; i >= 0; i--) {
+    if (liftsBudget(said[i])) return undefined; // 「预算不是问题」：之前说的数不再是上限（见 price-rules BUDGET_LIFTED）
     const { amounts, rangeEnds } = spokenMoney(said[i]);
     if (!amounts.length || !isBudgetTalk(said[i])) continue;
     const cap = perPersonBudget(said[i]);
@@ -1683,6 +2616,33 @@ function statedBudgetCap(said: string[], modelCap: number, session: Session): nu
     const heads = [...said.map(headcountIn), ...said.map(groupSizeIn), /^(\d+)人$/.exec(session.profile.travelers ?? '')?.[1]]
       .map(Number).filter((n) => Number.isInteger(n) && n > 1);
     return pool.some((a) => a === modelCap || heads.some((h) => Math.round(a / h) === modelCap)) ? modelCap : undefined;
+  }
+  return undefined;
+}
+
+/** 明说是总数的预算：「两个人预算一共3万」「全家总预算6万」 */
+const TOTAL_BUDGET = /一共|总共|总预算|合计|加起来|总计|全家|全部/;
+
+/**
+ * 客户说过、读得准的每人预算上限——模型没传 maxBudgetPerPerson 时由引擎补上（见 groundToolArgs）。
+ * A04：客户说「两个人预算一共3万左右」，模型查线路两遍都没传预算，工具算不出差额，模型就自己判断，
+ * 对客户说「两位的话在 3 万预算内完全可行」（巴厘岛两位 45,600）。看客户最近一次说预算的那句（口径同 statedBudgetCap）：
+ *   · 每人上限（「每人两万」）→ 就是它；
+ *   · 明说是总数（「一共」「总预算」）、人数也知道 → 按人数折成每人，total 带着原话给提示用；
+ *   · 下限、说不清是每人还是总共（「两个人预算5万」）→ 不补，交给 statedBudgetCap 核模型自己传的数。
+ */
+function customerBudget(said: string[], session: Session): { cap: number; total?: number; heads?: number; text?: string } | undefined {
+  for (let i = said.length - 1; i >= 0; i--) {
+    // 客户后来把预算放开了（「算了 预算不是问题 想住好一点的」）：此前这句没带数、被跳过，照旧按「一共3万」折成每人 15000 补进去（第三轮复核 B1/B2）
+    if (liftsBudget(said[i])) return undefined;
+    const { amounts, rangeEnds } = spokenMoney(said[i]);
+    if (!amounts.length || !isBudgetTalk(said[i])) continue;
+    const cap = perPersonBudget(said[i]);
+    if (cap) return { cap };
+    if (BUDGET_FLOOR.test(said[i]) || !TOTAL_BUDGET.test(said[i])) return undefined;
+    const heads = travelersKnown(session, said);
+    const total = Math.max(...(rangeEnds.length ? rangeEnds : amounts));
+    return heads && total >= 1000 ? { cap: Math.round(total / heads), total, heads, text: said[i].slice(0, 40) } : undefined;
   }
   return undefined;
 }
@@ -1709,23 +2669,40 @@ function latestSegment(said: string[]): SalesSegment | undefined {
  *   · create_quote / generate_proposal 漏传出发日期：客户说过就补上（节假日也算），客户没说不补。
  *   · create_order 的日期模型传了、却不是客户最近明说的出发日子：按客户说的。「国庆」这种节假日只是个大概，
  *     模型问清后下单用的具体日子不改；客户写明年份的过去日期由 runTool 前面的 statedPastDate 拦，这里不碰。
+ *   · generate_proposal 的日期只认客户说的：模型自己编的删掉（A10：客户说「明年7月」，方案书链接成了 /2027-07-01）。
+ *   · create_quote 在客户只说到月份时（「12月初」「明年7月」）按那个月定季节价（B15：「12月初」按标准价报，少了旺季 10%）。
+ *   · create_order 不执行、返回 error 的两种：客户最近说的出发时间是个大概、模型的日子又不是客户说出来的；
+ *     客户在说给别人另订一份，而同一条线上已有客户本人那张待付款单（再下一单会把它作废，复用又会把它当成别人的）。
  */
 function groundToolArgs(
   name: string, args: Record<string, unknown>, session: Session,
-): { args: Record<string, unknown>; notes: Record<string, string> } {
+): { args: Record<string, unknown>; notes: Record<string, string>; error?: string } {
   const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
   const out: Record<string, unknown> = { ...args };
   const notes: Record<string, string> = {};
   const fixed: string[] = [];
+  let error: string | undefined;
   if (name === 'search_routes') {
-    if (out.maxBudgetPerPerson !== undefined) {
+    const told = customerBudget(said, session);
+    if (told) {
+      // 客户说得清的预算照客户的来：模型没传就补上，传的不一样就换掉（总预算不能当每人上限传）
+      if (out.maxBudgetPerPerson !== told.cap) fixed.push(`预算 ${String(out.maxBudgetPerPerson ?? '未传')}→${told.cap}`);
+      out.maxBudgetPerPerson = told.cap;
+      if (told.total) {
+        notes.budgetNote = `客户说的预算是「${told.text}」——一共 ${told.total} 元、${told.heads} 位，这次按折合每人 ${told.cap} 元比的。` +
+          '转述时用客户自己的说法（一共多少、几位），超了多少只用 overBudget 里给的每人差额；超了就不要说「在您预算内」「预算很宽裕」「完全可行」。';
+      }
+    } else if (out.maxBudgetPerPerson !== undefined) {
       const cap = statedBudgetCap(said, Number(out.maxBudgetPerPerson), session);
       if (cap !== out.maxBudgetPerPerson) fixed.push(`预算 ${String(out.maxBudgetPerPerson)}→${cap ?? '不传'}`);
       if (cap) out.maxBudgetPerPerson = cap;
       else {
         delete out.maxBudgetPerPerson;
-        notes.budgetNote = '客户没说过每人预算（或说的不是每人上限），这次没按预算筛。不要替客户假设预算，' +
-          '也不要说「比您的预算高/低多少」；想按价位挑，直接问客户每人预算大概多少。';
+        const lifted = [...said].reverse().find((t) => liftsBudget(t) || (spokenMoney(t).amounts.length > 0 && isBudgetTalk(t)));
+        notes.budgetNote = lifted && liftsBudget(lifted)
+          ? `客户说了「${lifted.slice(0, 30)}」，预算放开了，这次没按预算筛。不要再拿之前说的预算比、说超了多少，也不要再问预算。`
+          : '客户没说过每人预算（或说的不是每人上限），这次没按预算筛。不要替客户假设预算，' +
+            '也不要说「比您的预算高/低多少」；想按价位挑，直接问客户每人预算大概多少。';
       }
     }
     const segs = segmentsSaid(said);
@@ -1750,10 +2727,24 @@ function groundToolArgs(
     const latest = latestDepart(said);
     const d = latest?.pick;
     const iso = d?.kind === 'date' && d.iso && d.iso >= todayIso() ? d.iso : undefined;
+    // 方案书的日期印在客户手里的正式文件上，只能是客户说的那天（节假日按引擎的读法）；模型编的删掉，下面再按客户说的补
+    if (name === 'generate_proposal' && out.departDate !== undefined && out.departDate !== iso &&
+      !latest?.exact.includes(String(out.departDate))) {
+      fixed.push(`方案书日期 ${String(out.departDate)}→删（客户没说过这天）`);
+      delete out.departDate;
+    }
     if (iso && !out.departDate && name !== 'create_order') {
       out.departDate = iso;
       fixed.push(`补出发日期 ${iso}`);
-    } else if (
+    }
+    // 客户只说了节假日（「国庆」）：按那天定季节价，回复里只说「国庆出发」——和只说到月份的一样（见下面 departNote）
+    if (name !== 'create_order' && d?.kind === 'date' && !d.exact && iso && out.departDate === iso && latest &&
+      !/当天|那天|第一天|头一天/.test(latest.text)) {
+      const h = holidayIn(latest.text, iso) ?? '节假日';
+      notes.departNote = `客户只说了${h}出发、没说具体哪天，这次按 ${Number(iso.slice(5, 7))} 月的季节价算的。` +
+        `回复里只说「${h}出发」，不要写成 ${cnDate(iso)}；要下单时先问清具体哪天出发。`;
+    }
+    if (
       // 模型的日子是客户在那句话里明说过的出发日子就不改：一句话里说了两个日子时引擎的读法未必比模型准，
       // 改错了就是按返程那天建了真实订单。只看最近说日期的那句——更早说过、后来改掉的日子不算
       iso && d?.kind === 'date' && d.exact && name === 'create_order' && out.departDate !== iso &&
@@ -1761,6 +2752,40 @@ function groundToolArgs(
     ) {
       fixed.push(`下单日期 ${String(out.departDate)}→${iso}`);
       out.departDate = iso;
+    }
+    // 只说到月份：报价按那个月的季节价算（季节价只看月份，取那个月里的一天就够），回复里只说「X月出发」
+    const ym = d?.kind === 'vague' && latest ? monthSaid(latest.text) : undefined;
+    const monthDay = ym ? dayInMonth(ym) : undefined;
+    if (name === 'create_quote' && ym && monthDay) {
+      const prefix = monthDay.slice(0, 8);
+      // 「过完年」这种说法，模型填的那个月里的某天（B09 的 2027-02-20）也是它编的：一律换成拿来定季节价的那天
+      if (typeof out.departDate !== 'string' || !out.departDate.startsWith(prefix) || (ym.said && out.departDate !== monthDay)) {
+        fixed.push(`按月份定季节价 ${String(out.departDate ?? '未传')}→${monthDay}`);
+        out.departDate = monthDay;
+      }
+      MONTH_ONLY_ARGS.add(out);
+      const when = ym.said ?? `${ym.mo}月`;
+      notes.departNote = `客户只说了${when}出发、没说具体哪天，这次按${ym.mo}月的季节价算的。` +
+        `回复里只说「${when}出发」，不要写成具体哪一天；要下单时先问清具体哪天出发。`;
+    }
+    // 客户最近说的出发时间是个大概（「国庆」「12月初」「明年7月」），模型却拿一个具体日子下单：A18 实测客户说「国庆」，
+    // 报价按引擎补的 10-01 出，客户回「行 订吧」，模型直接 create_order(10-01)——客户从没说过哪天走。
+    // 下单是真实副作用，这一天必须是客户说出来的：这句或最近说出发时间的那句里说了那天（「3号」「十月三号」），
+    // 或是答应了上一条里问的那天（「10月3日出发可以吗？」「可以」）
+    if (name === 'create_order' && latest && d && (d.kind === 'vague' || !d.exact) &&
+      typeof out.departDate === 'string' && !latest.exact.includes(out.departDate) &&
+      !customerNamedDay(session, latest.text, out.departDate, d.kind === 'date' ? d.iso : undefined)) {
+      error = `客户说的出发时间还只是个大概（原话「${latest.text.slice(0, 30)}」），没说具体哪天，这次没有下单。` +
+        '先直接问客户具体哪天出发（如「国庆具体哪天走？」），客户说了日子再调 create_order；不要自己挑一天，也不要说已经下单。';
+    }
+    // 给别人另订一份（见 otherPartyPending）：成单安全网走的是同一个判断
+    if (name === 'create_order' && !error) {
+      const mine = otherPartyPending(session, out.routeId, Number(out.travelers));
+      if (mine) {
+        error = `客户是要给别人另订一份。本会话已有客户本人那张待付款订单（${mine.travelers} 位 / ${mine.departDate} 出发），` +
+          '同一条线在这里再下单会把那张作废，所以这次没有下单。不要说已经订好，也不要把客户本人那张单的链接当成别人的发出去。' +
+          '问客户：要合并成一单按总人数重新下，还是请顾问另外单独下一单（客户选单独下，就调 handoff_to_human）。';
+      }
     }
     const n = Number(out.travelers);
     if (Number.isInteger(n) && n > 0 && kidsHeadcountUnclear(said)) {
@@ -1772,7 +2797,8 @@ function groundToolArgs(
     }
   }
   if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${session.id}）：${fixed.join('；')}`);
-  return { args: out, notes };
+  if (error) console.warn(`[engine] ${name} 未执行（会话 ${session.id}）：${error.slice(0, 60)}`);
+  return { args: out, notes, error };
 }
 
 // 客户提过带娃、却只报了个人数（「不用倒时差 带娃能玩水」→「两位 12号」），这个数算没算孩子没人知道。
@@ -1898,9 +2924,11 @@ async function handleMessageInner(
     // 旧的接管前阶段不清掉，下次交还 AI 时会把新对话恢复成重置前的阶段
     delete session.stageBeforeHandoff;
     session.lastQuote = undefined;
+    session.quoteHistory = undefined;
     session.budgetGaps = undefined;
     session.lastShownRoutes = undefined;
     session.seenRouteIds = undefined;
+    session.missedDestinations = undefined;
     session.updatedAt = Date.now();
     const reply = '好的，我们重新开始～这次想去哪儿玩呢？😊';
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
@@ -1934,6 +2962,14 @@ async function handleMessageInner(
     return { text: reply, stage: 'handoff', handoff: true };
   }
 
+  // 客户要重发支付链接：确定性地重发那张待付款单，不经过模型、不转人工（见 RESEND_ASK）
+  const resend = resendPayReply(session, text);
+  if (resend) {
+    session.messages.push({ role: 'agent', content: resend, at: Date.now() });
+    saveSession(session);
+    return { text: resend, stage: session.stage };
+  }
+
   const ordersBefore = session.orderIds.length;
   // 本轮开始时的阶段。await 期间客户可能刚好付款（notifyPaid 直接改同一个 session 对象），
   // 拿被改过的 stage 去 deriveStage 会把 paid 推回 discovery/recommend，已成交客户在
@@ -1947,6 +2983,8 @@ async function handleMessageInner(
 
   // 记录本轮工具调用，用于事后推导阶段/画像
   const calls: ToolCall[] = [];
+  /** 本轮模型要转人工、被引擎驳回了（见 unwarrantedHandoff）：回复里再说「为您转接」就摘掉，不按转人工处理 */
+  let handoffDeclined = false;
   /** 本轮所有工具调用的唯一入口：模型发起的和引擎预取的走同一条路，calls 记录、观测者通知、日期拦截、
    *  参数核正（groundToolArgs）都一致 */
   const runTool = (name: string, modelArgs: Record<string, unknown>, meta?: ToolCallMeta): Promise<string> => {
@@ -1964,17 +3002,34 @@ async function handleMessageInner(
           '请直接问客户确认真实的出发日期后再下单。',
       }));
     }
-    // 预算、客群、出发日期按客户原话核过再执行；记进 calls（画像、阶段从这里推）、通知观测者的也是核过的参数
-    const { args, notes } = groundToolArgs(name, modelArgs, session);
+    // 预算、客群、出发日期按客户原话核过再执行；记进 calls（画像、阶段从这里推）、通知观测者的也是核过的参数。
+    // 核不过的下单（日期只是个大概、客户在说给别人另订）不执行，和上面的过去日期一样不记进 calls：没下成的单不能把阶段推到 closing
+    const { args, notes, error } = groundToolArgs(name, modelArgs, session);
+    if (error) return Promise.resolve(JSON.stringify({ error }));
+    // 客户没坚持库外目的地就转人工：驳回，让模型接着答（见 unwarrantedHandoff）
+    if (name === 'handoff_to_human' && unwarrantedHandoff(session, text, String(modelArgs.reason ?? ''))) {
+      handoffDeclined = true;
+      console.warn(`[engine] 驳回转人工：客户没坚持原目的地（会话 ${session.id}）：${String(modelArgs.reason ?? '').slice(0, 60)}`);
+      return Promise.resolve(JSON.stringify({ error: HANDOFF_DECLINED }));
+    }
     const call: ToolCall = { name, args };
     calls.push(call);
     for (const fn of toolObservers) { try { fn(name, args, sessionId, meta); } catch { /* 观测者出错不影响对话 */ } }
-    return executeTool(name, args, session).then((r) => {
+    return executeTool(name, args, session, toolHints(session)).then((r) => {
       // 转人工原因刚记进后台（tools.ts 推的最后一条 system 消息）：附上客户说出行时间的原话，见 departNoteForHandoff
       const rec = session.messages.at(-1);
       if (name === 'handoff_to_human' && rec?.role === 'system' && rec.content.startsWith('AI 已转人工：')) {
         const note = departNoteForHandoff(session);
         if (note) rec.content += `\n（${note}）`;
+      }
+      // 告诉过客户「这里没有现成线路」的目的地记进会话，之后判断转人工要用（见 Session.missedDestinations）
+      if (name === 'search_routes' && typeof args.destination === 'string' && r.includes('"destinationMiss"')) {
+        const at = Date.now();
+        const places = args.destination.split(/[、,，\s]+/).filter(Boolean);
+        session.missedDestinations = [
+          ...(session.missedDestinations ?? []).filter((m) => !places.includes(m.place)),
+          ...places.map((place) => ({ place, at })),
+        ].slice(-6);
       }
       const out = withNotes(r, notes);
       call.result = out;
@@ -1990,19 +3045,34 @@ async function handleMessageInner(
   const reserved = visitor && tryReserveVisitorLLM(sessionId);
   const degraded = visitor && !reserved;
 
-  // 会话状态在预取之前拼：预取的结果已经以工具消息的形式给了模型，不必在状态里再列一遍
-  const contextNote = buildContextNote(session);
+  // 会话状态在预取之前拼：预取的结果已经以工具消息的形式给了模型，不必在状态里再列一遍。
+  // 三样齐全时附一句「这一轮报价」（见 quoteTimingNote）
+  const contextNote = [buildContextNote(session), quoteTimingNote(session, text), headcountAskNote(session, text)].filter(Boolean).join('\n');
   const prefetch: PrefetchedCall[] = [];
+  // 整轮耗时分三段记（见 logSlowTurn）：llm.ts 的慢轮日志只从 chat() 里面开始算，预取（带 query 的 search_routes 要走一次
+  // embedding）和出口修补都不在里面，「预取 2.5s + 模型 6.5s」那一轮就不会有任何日志
+  const turnStart = Date.now();
+  const prefetchTimes: string[] = [];
   try {
     for (const args of planPrefetch(session, text)) {
+      const t = Date.now();
       const result = await runTool('search_routes', args, { prefetch: true });
+      prefetchTimes.push(`search_routes ${Date.now() - t}ms`);
       // 还原给模型的「自己调过的参数」取实际执行的那份（runTool 按客户原话核过），和结果里的提醒对得上
       prefetch.push({ name: 'search_routes', args: calls[calls.length - 1]?.args ?? args, result });
+    }
+    // 问细节先查数据（见 planDetailPrefetch）。get_route_detail 同样只读，和 search_routes 一样可以还原成模型自己调过的
+    for (const routeId of planDetailPrefetch(session, text)) {
+      const t = Date.now();
+      const result = await runTool('get_route_detail', { routeId }, { prefetch: true });
+      prefetchTimes.push(`get_route_detail ${Date.now() - t}ms`);
+      prefetch.push({ name: 'get_route_detail', args: { routeId }, result });
     }
   } catch (e) {
     // 预取只是优化：线路数据读不出来时模型自己调工具也会拿到同样的报错，这里不能先把整轮炸掉
     console.error('[engine] 预取线路失败（交给模型自己查）:', e);
   }
+  const modelStart = Date.now();
   const raw = await chat({
     system: buildSystemPrompt(),
     contextNote,
@@ -2012,8 +3082,20 @@ async function handleMessageInner(
     forceMock: degraded,
     sessionId,
     executeTool: (name, args) => runTool(name, args),
+    // 复用了之前同参数的 search_routes（见 llm.ts onReuse）：把那次的线路重新记成「最近查到的」，和模型最后看的那次对得上
+    onReuse: (name, _args, result) => {
+      if (name !== 'search_routes') return;
+      try {
+        const rows: unknown = JSON.parse(result);
+        if (Array.isArray(rows)) {
+          rememberShownRoutes(session, rows.filter((r): r is { id: string; title: string; priceFrom: number } =>
+            !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string'));
+        }
+      } catch { /* 结果不是 JSON（工具报错），没什么可记的 */ }
+    },
   });
   // 额度已在调用前占掉（tryReserveVisitorLLM），失败也不退还：token 是真花出去了
+  const modelMs = Date.now() - modelStart;
 
   // 兜底剥掉可能残留的 <state>/<think>/<tool_call> 标签（正常已无）
   let visible = raw
@@ -2048,12 +3130,28 @@ async function handleMessageInner(
 
   // 成单安全网：客户明确要下单，但模型这轮没真调 create_order（易幻觉假链接）。
   // 有已报价线路 + 能解析出发日期时，引擎确定性地创建订单并改写回复，杜绝假链接/假单号。
+  // 客户在还价、模型在拒绝（见 haggling），或说的是给别人另订一份（本人订单替不了，见 OTHER_ORDER），都不兜，保留模型原话。
+  // 这里的 visible 还是模型原文
   const orderedThisTurn = session.orderIds.length > ordersBefore;
+  const wantsOrder = !session.handedOver && !orderedThisTurn && !!session.lastQuote &&
+    text.length <= PURCHASE_INTENT_MAX_LEN && PURCHASE_INTENT.test(text) && !haggling(session, text, visible);
+  // 给别人另订一份（「闺蜜她们也想去…帮她们报个价」→「行，那就订这个」）：和模型调 create_order 同一个判断（见 otherPartyPending）。
+  // 此前安全网只看这一句，照 3 人的报价建了单，把客户本人那张 2 人的待付款单作废了
+  const friendsOwn = wantsOrder ? otherPartyPending(session, session.lastQuote!.routeId, session.lastQuote!.travelers) : undefined;
+  if (friendsOwn) {
+    console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${session.id}）：${text}`);
+    const rest = splitSentences(visible).filter((s) => !ORDER_DONE_CLAIM.test(s)).join('').trim();
+    if (!/[？?]/.test(rest)) visible = [rest, askOtherOrder(friendsOwn, text)].filter(Boolean).join('\n\n');
+  }
+  // 客户最近说的人数和这次报价对不上（报的 2 位，客户刚问「4个人多少钱」）：按报价的人数建单就是替客户定了人数，留给模型问
+  const saidTravelers = wantsOrder
+    ? travelersKnown(session, session.messages.filter((m) => m.role === 'customer').map((m) => m.content))
+    : undefined;
   if (
-    !session.handedOver && !orderedThisTurn && session.lastQuote &&
-    text.length <= PURCHASE_INTENT_MAX_LEN && PURCHASE_INTENT.test(text)
+    wantsOrder && !friendsOwn && !OTHER_ORDER.test(text) &&
+    (saidTravelers === undefined || saidTravelers === session.lastQuote!.travelers)
   ) {
-    const quote = session.lastQuote;
+    const quote = session.lastQuote!;
     // 已有完全同参（线路+人数+日期）的待支付订单才重发原链接，否则重新建单。
     // 只按线路匹配会让「改了出发日期再说就订」的客户拿回旧单的旧日期。客户最近说的是「国庆」这种
     // 下不了单的日子时（wantDate 为空），按最近那次报价的日期找：「10月5号」改成「国庆」后再说「就订这个」，
@@ -2068,7 +3166,7 @@ async function handleMessageInner(
       session.stage = 'closing';
       visible =
         `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、` +
-        `${existing.departDate} 出发，总价 ${yuan(existing.totalPrice)}。\n` +
+        `${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n` +
         `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
     } else {
       const departDate = wantDate;
@@ -2080,19 +3178,26 @@ async function handleMessageInner(
           // 安全网建单也要通知观测者：否则「引擎兜底建的单」在工具调用统计里凭空消失
           for (const fn of toolObservers) { try { fn('create_order', netArgs, sessionId); } catch { /* 忽略 */ } }
           const res = JSON.parse(await executeTool('create_order', netArgs, session)) as
-            { orderId?: string; payUrl?: string; total?: number };
+            { orderId?: string; payUrl?: string; total?: number; note?: string; supersededOrderId?: string };
           if (res.orderId && res.payUrl) {
             session.stage = 'closing';
             session.profile.dates = departDate;
             // 报价时客户还没给日期、建单时补上了，可能命中旺季 +10%——总价与刚发出去的
             // 报价对不上。不解释就是「上一条 6 万、下一条 6.6 万」，客户第一反应是被坑了。
+            // 原因照工具的定价说明讲（「10月为最佳出行季，价格上浮 10%」），不说含糊的「有浮动」；
+            // 只有那次报价真发到过客户眼前才提「之前报的」——C07 的 47,400 只在方案书里出现过，聊天里从没报过
             const diff =
-              typeof quote.total === 'number' && typeof res.total === 'number' && res.total !== quote.total
-                ? `\n（${departDate} 按这条线的季节定价重算过，与之前报的 ${yuan(quote.total)} 有浮动，明细随时找我核对）`
+              typeof quote.total === 'number' && typeof res.total === 'number' && res.total !== quote.total &&
+              quoteShown(session, quote.total)
+                ? `\n（之前报的是 ${yuan(quote.total)}，按 ${cardDate(departDate)}出发重新核算：${res.note ?? '按这条线的季节定价'}）`
                 : '';
+            const old = res.supersededOrderId ? getOrder(res.supersededOrderId) : undefined;
+            const replaced = old ? `\n之前那张 ${old.travelers} 位、${cardDate(old.departDate)}出发的订单已作废，旧链接失效，按这张付款就行。` : '';
+            // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
             visible =
-              `好的，已为您锁定名额 🎉\n《${quote.routeTitle}》${quote.travelers} 位出行、` +
-              `${departDate} 出发，总价 ${yuan(res.total ?? 0)}。${diff}\n请点此完成支付：${res.payUrl}\n名额以付款为准，支付后我立刻为您安排行程确认～`;
+              `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、` +
+              `${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n请点此完成支付：${res.payUrl}\n` +
+              '名额以付款为准，付款后顾问会与您确认行程细节～';
           }
         } catch (e) {
           console.error('[engine] 成单安全网建单失败（保留模型原回复）:', e);
@@ -2104,7 +3209,9 @@ async function handleMessageInner(
 
   // 最后防线：只放行本会话真实订单的 /pay/ 链接，其余 URL（模型幻觉、客户诱导复述的
   // 外部链接）一律抹掉。不能用「含 /pay/ 就跳过清洗」——幻觉链接恰恰就长这样。
-  const allowedPay = new Set(session.orderIds.map((id) => '/pay/' + id));
+  // 改单后被替代的旧单不放行：模型从历史里抄回旧链接，客户点开只会看到「已被新订单替代」。
+  // 抹成空位后照常由出口修补换成现在那张待付款单的链接（见 repairLinks）
+  const allowedPay = new Set(session.orderIds.filter((id) => getOrder(id)?.status !== 'superseded').map((id) => '/pay/' + id));
   // 方案书链接是无状态的（/proposal/线路id/人数[/日期]），本轮真调过 generate_proposal
   // 且线路 id 对得上才放行——参数都编在路径里，页面按同一套规则重算，编不出假价格
   const proposalPathOk = (pathOnly: string): boolean => {
@@ -2129,12 +3236,17 @@ async function handleMessageInner(
       if (proposalPathOk(pathOnly)) return pathOnly;
       return /^\/proposal\//.test(pathOnly) ? HOLE.proposal : HOLE.other;
     })
-    .replace(/(^|[^:\w/])\/pay\/([A-Za-z0-9_-]+)/g, (full, pre: string, id: string) =>
-      allowedPay.has('/pay/' + id) ? full : pre + HOLE.pay,
+    // 支付路径的变体和截断的半截也要抹：A18 模型写了「/p/ord_5d0b…」，引擎补上真链接后这半截还留在正文里。
+    // 认的是「/p/ /pa/ /o/ + 订单号」和 /pay/ /payment/ /order/ 开头的任何路径（后面没有 id、跟着「…」的也算），
+    // 只有 /pay/<本会话的真订单号> 放行
+    .replace(/(^|[^:\w/])\/(?:(pay)|pays|payment|orders?|(?:p|pa|o)(?=\/ord_))\/([A-Za-z0-9_-]*)(?:…+|\.{2,}|⋯+)?/g,
+      (full, pre: string, pay: string | undefined, id: string) =>
+        pay && id && !/[….⋯]$/.test(full) && allowedPay.has('/pay/' + id) ? full : pre + HOLE.pay,
     )
-    // 相对形式的方案链接同样要校验线路 id，防模型拼一个不存在的线路
-    .replace(/(^|[^:\w/])(\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?)/g, (full, pre: string, link: string) =>
-      proposalPathOk(link) ? full : pre + HOLE.proposal,
+    // 相对形式的方案链接同样要校验线路 id，防模型拼一个不存在的线路。没带人数的（「/proposal/r-guizhou」）、
+    // 截断的（「/proposal/r-sanya/3…」）同样抹成空位，出口修补换成真的
+    .replace(/(^|[^:\w/])(\/proposals?\/[A-Za-z0-9_-]*(?:\/[\d-]*)*)(…+|\.{2,}|⋯+)?/g, (full, pre: string, link: string, cut?: string) =>
+      !cut && /^\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?$/.test(link) && proposalPathOk(link) ? full : pre + HOLE.proposal,
     )
     // markdown 在微信/后台都不渲染，直接落库前就清掉（企微渠道层 wechatify 是二道保险）
     .replace(/\*\*(.+?)\*\*/g, '$1')
@@ -2169,9 +3281,40 @@ async function handleMessageInner(
   } else {
     // 承诺了链接却没链接：只是这轮少调了一次工具，不构成对客户的承诺，
     // 就地补上链接或改问一句继续对话，不转人工——否则一次工具漏调就吃掉一条线索
-    visible = await repairLinks(visible, { session, text, calls, runTool }) || fallbackReply(session.stage);
+    visible = dropProposalOffers(await repairLinks(visible, { session, text, calls, runTool })) || fallbackReply(session.stage);
   }
   visible = visible.replace(ANY_HOLE, ''); // 空位记号绝不能发给客户
+
+  // 回复说了「为您转接」，本轮却没转人工（A07/A11 实测）：状态跟着回复走，不然下一轮 AI 接着卖，
+  // 客户同时等着顾问、又收到 AI 的推销。条件句（「需要的话我可以为您转接」）不算，见 claimsTransfer。
+  // 反过来的只有一种：转人工拿的是库外目的地当理由、客户又没坚持（或这轮刚驳回过）——摘掉转接的话，继续对话
+  // 驳回过的，回复里说转接、说「顾问会在微信上联系您」的句子一律摘掉，不管 saysTransfer 认没认出来
+  if (!session.handedOver && !customHandoff && (handoffDeclined || saysTransfer(visible, session))) {
+    if (handoffDeclined || unwarrantedHandoff(session, text, visible)) {
+      const kept = dropTransferClaims(visible);
+      if (kept !== visible) console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${session.id}）：${visible.slice(0, 60)}`);
+      visible = kept || fallbackReply(session.stage);
+    } else if (!isHandoffIntent(text) && !WANTS_PERSON.test(text) && !DEMANDS_EXCEPTION.test(text)) {
+      // 客户没要找人，只是问了件要顾问确认的事（专票、资质…），模型顺口说了「我帮您转接」。
+      // 真转过去 AI 就此沉默，客户接着问资金、问电话都没人回（guard-13 实测）——演示当场卡住。
+      // 所以摘掉转接的话、改成「记下了，请顾问确认」，后台记一条待跟进，AI 照常接着聊。
+      console.warn(`[engine] 回复说了转接但客户没要找人，改为记下待顾问确认（会话 ${session.id}）：${visible.slice(0, 60)}`);
+      const kept = dropTransferClaims(visible);
+      visible = /顾问[^。！？\n]{0,12}(?:确认|核实|跟您|联系)/.test(kept)
+        ? kept
+        : `${kept ? `${kept}\n\n` : ''}这个我记下了，会请顾问在微信上跟您确认。`;
+      session.messages.push({
+        role: 'system', content: `待顾问跟进：客户问「${text.slice(0, 60)}」，AI 答应请顾问确认（未转人工）`, at: Date.now(),
+      });
+    } else {
+      console.warn(`[engine] 回复说了转接却没调 handoff_to_human，按转人工处理（会话 ${session.id}）：${visible.slice(0, 60)}`);
+      enterHandoff(session);
+      const note = departNoteForHandoff(session);
+      session.messages.push({
+        role: 'system', content: `AI 已转人工：回复里答应了转接顾问（引擎补记）${note ? `\n（${note}）` : ''}`, at: Date.now(),
+      });
+    }
+  }
   // 下面几道护栏命中时通常把整条换成兜底话术，但兜底话术都在追问线路/人数/预算——
   // 这一轮已经转人工、AI 之后不再应答，追问只会让客户白等。所以改行程转人工时，
   // 护栏命中就整段丢掉模型原文，只发转人工说明。
@@ -2206,27 +3349,42 @@ async function handleMessageInner(
     }
   }
 
+  // 价格规则 / 预算判断 / 服务承诺（见 price-rules.ts）：「儿童价」「比国庆便宜」「在您预算内」「名额紧张」「支持开专票」
+  // 这类话对不上工具结果和写死的定价规则，删掉那一句（服务承诺换成「由顾问确认」），其余照发。排在价格护栏前面：
+  // 被删的句子里的数不必再去核
+  // 删之前的样子留一份：两道护栏按句删完，拿它判剩下的是不是残句（见下面 strandedAfterDrop）
+  const beforeGuards = visible;
+  const saidAll = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  // 人数按客户原话认一份交给规则词守卫：还没报价时它自己认不出几位，「两位一共 3 万」没法折成每人去核「在预算内」
+  const claims = dropUnbackedClaims(visible, session, calls, { travelers: travelersKnown(session, saidAll) });
+  if (claims.dropped.length) {
+    console.error(`[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${session.id}）：${claims.dropped.join(' | ').slice(0, 160)}`);
+  }
+  if (claims.text !== visible) {
+    visible = claims.text || (customHandoff ? '' : session.handedOver ? HANDED_OVER_FALLBACK : fallbackReply(session.stage));
+  }
+
   // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。
   // 追溯不到就是模型自己编的价——高客单价产品里这是最贵的一类错误（客户按错价下单，
   // 成交后要么公司认亏要么当场翻脸），不能只靠提示词「严禁编造价格」。
   // 本轮的工具调用（含预取）一并交给护栏：产品库的价只按本会话出现过的线路放行，编一条线路配上别的线路的真价不再能过
-  const unbacked = findUnbackedPrices(visible, session, text, calls);
+  const unbacked = findUnbackedPriceHits(visible, session, text, calls);
   if (unbacked.length) {
-    console.error(`[engine] ⚠️ 拦截无出处的报价 ${unbacked.join(', ')}（会话 ${session.id}）：`, visible.slice(0, 120));
-    const q = session.lastQuote;
-    // 有工具算过的报价就直接把它报出来。此前回「我这就按最新规则重新算给您～」，
-    // 可引擎只在客户发消息时运行，这句「这就算」之后什么都不会送达。
-    // 但只在确定这轮说的就是那条线、那个人数时才报：客户问「换成西藏 4 个人多少钱」，
-    // 回「刚才说得不准，以系统为准」再接云南 2 人的价，读起来就是在更正西藏的价
-    replaceVisible(
-      q?.perPerson && q.total && quotedRouteForTurn(session, text, visible, calls)
-        ? `不好意思，刚才的价格说得不准，以系统核准的为准：\n《${q.routeTitle}》${q.travelers} 位出行，` +
-            `每人 ${yuan(q.perPerson)}，总价 ${yuan(q.total)}（起价，按最终行程微调）。\n` +
-            '想调人数、日期或换一档线路，直接跟我说～'
-        : '不好意思，价格我得按系统核准的来。告诉我线路和出行人数，我马上给您一个准确报价～',
-      '具体价格由资深顾问为您核准，已为您转接，顾问会尽快与您联系，请稍候～',
-    );
+    console.error(`[engine] ⚠️ 拦截无出处的报价 ${unbacked.map((h) => h.value).join(', ')}（会话 ${session.id}）：`, visible.slice(0, 120));
+    visible = rewriteUnbackedPrices(visible, unbacked, { session, text, calls, customHandoff: !!customHandoff });
   }
+
+  // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
+  if (strandedAfterDrop(beforeGuards, visible)) {
+    console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${session.id}）：${visible.slice(0, 80)}`);
+    visible = customHandoff ? '' : session.handedOver ? HANDED_OVER_FALLBACK : await strandedReply({ session, text, calls, runTool });
+  }
+  // 客户提过带娃、没说清孩子算不算：回复别替他写成「两位大人」（flow-07），人数照客户说的写
+  // 问大人还是孩子的那句不动（见 ASKS_ADULT_OR_KID）
+  if (kidsHeadcountUnclear(saidAll) && !saidAll.some((t) => /大人/.test(t))) visible = unassumeAdults(visible);
+
+  // 停在半句上的回复（「可以直接说：」）截到上一个完整句。放在整条替换的护栏之后：替换过的兜底话术本身是完整的
+  visible = trimDangling(visible);
 
   // 身份诚实安全网：客户直接问了，但模型的回复里没承认 —— 补一句在最前面。
   // 「装成真人」是这类产品最不能碰的红线，不能交给提示词碰运气。
@@ -2240,7 +3398,17 @@ async function handleMessageInner(
   if (session.handedOver) visible = dropPostHandoffPromises(visible);
 
   session.messages.push({ role: 'agent', content: visible, at: Date.now() });
+  // 回复里说了「由顾问跟您确认」「我让顾问确认」（守卫换上的，或模型照 SOP 说的）却没转人工：记一条给后台，
+  // 顾问才看得到有件事等着他确认——此前客户付款前一直等，没人知道（同「嘴上说转接却没转」是一类空头承诺）
+  if (!session.handedOver && DEFER_TO_CONSULTANT.test(visible)) {
+    session.messages.push({ role: 'system', content: `待顾问确认：客户问「${text.slice(0, 60)}」，AI 回复说由顾问确认（未转人工）`, at: Date.now() });
+  } else if (!session.handedOver && promisesContact(visible, session)) {
+    // 光一句「顾问会在微信上联系您」不算转接（见 claimsTransfer），但客户听到的是有人会来找他：同样给顾问记一条。
+    // 此前「签证这块需要专人办理，顾问会在微信上联系您～」发出去，后台什么都没有，没人知道答应过要联系（第三轮复核 H1/H2）
+    session.messages.push({ role: 'system', content: `待顾问跟进：客户问「${text.slice(0, 60)}」，AI 回复说顾问会在微信上联系（未转人工）`, at: Date.now() });
+  }
   saveSession(session);
+  logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs });
 
   const reply: AgentReply = { text: visible, stage: session.stage };
   if (session.handedOver) reply.handoff = true;
@@ -2248,6 +3416,26 @@ async function handleMessageInner(
     reply.orderId = session.orderIds[session.orderIds.length - 1];
   }
   return reply;
+}
+
+/** 「由顾问跟您确认」「我让顾问确认」「这个我请顾问确认一下」 */
+const DEFER_TO_CONSULTANT = /(?:由|让|请)顾问[^。！？\n]{0,6}确认/;
+
+/** 回复答应了顾问会联系客户本人，又不是付款下单之后的售后对接、选项里的一项；会话里已有订单的也算售后流程，不记 */
+function promisesContact(text: string, session: Session): boolean {
+  const live = session.orderIds.some((id) => { const o = getOrder(id); return !!o && o.status !== 'cancelled' && o.status !== 'superseded'; });
+  return !live && transferSentences(text).some((s) =>
+    CONTACT_CLAIM.test(s) && !OPTION_LINE.test(s) && !AFTER_SALE.test(s) && !AFTER_EVENT.test(s));
+}
+
+/**
+ * 整轮（预取 + 模型往返 + 出口护栏）超过 LLM_SLOW_TURN_MS（默认 8000）时打一行分段耗时。llm.ts 的同名日志有逐次调用的明细，
+ * 但只从 chat() 里面算起；两行对照着看，才分得清慢在预取、模型还是出口修补（补发方案书要再调一次工具）
+ */
+function logSlowTurn(sessionId: string, totalMs: number, t: { prefetchMs: number; prefetchTimes: string[]; modelMs: number }): void {
+  if (totalMs <= Math.max(0, numEnv('LLM_SLOW_TURN_MS', 8000))) return;
+  const pf = t.prefetchTimes.length ? `预取 ${t.prefetchMs}ms（${t.prefetchTimes.join(' + ')}）` : `预取 ${t.prefetchMs}ms`;
+  console.warn(`[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms`);
 }
 
 /** 支付成功后的主动跟进：写入会话并置 stage=paid，推送由调用方经 adapter 完成 */
@@ -2266,9 +3454,14 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
   return { sessionId: session.id, text };
 }
 
+/** 仅供自测：订单与转人工这组判定 */
+export const __orderTest = { haggling, OTHER_ORDER, RESEND_ASK, claimsTransfer, saysDay, trimDangling, monthSaid };
+
 /** 仅供自测使用的内部函数出口 */
 export const __engineTest = {
   dejargon, CUSTOM_PROMISE, LINK_PROMISE, PROPOSAL_PROMISE, promiseInsertAt, markLinkHoles, requestedDays, isObjection, PURCHASE_INTENT, IDENTITY_QUESTION, detectSegment,
   isHandoffIntent, keptBesideCustomPromise, statedPastDate, BUDGET_RE, planPrefetch, perPersonBudget, buildSystemPrompt,
   spokenDepartDate, isBudgetTalk, BUDGET_FLOOR, departNoteForHandoff,
+  planDetailPrefetch, quoteTimingNote, routeInFocus, routesIn, toolHints,
+  dropProposalOffers, resolveDepartDate,
 };

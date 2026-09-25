@@ -60,6 +60,16 @@ const CLOSING_PRICE =
  */
 const ROUTE_PICK = /就按[这那](?:条|个方案|个行程|个路线)/;
 const ROUTE_PICK_ALL = new RegExp(ROUTE_PICK.source, 'g');
+/**
+ * 「按这个数 / 按这个预算帮您找匹配的线路」：按客户的预算去查，不是在报成交价。A04 第 2 遍第 3 轮
+ * 「或者告诉我每人预算能放宽到多少，我按这个数帮您找匹配的线路」被当成成交语境，工具给的超预算差额 20,160 跟着被当成编价删了。
+ * 后面接着找 / 匹配 / 筛 / 推荐 / 挑 / 搜 / 查这类检索动作的不算。
+ * 带「就」的「就按这个数」一律照旧算成交；「看」不算检索（「按这个数您看行不行」「给您看看名额」是在顺着客户的价成交）；
+ * 查的是能不能下单、名额的也不算（「按这个数帮您查一下能不能下单」）。此前这三样都放过了，客户喊的「6800 一个人」
+ * 被模型顺着答「那就按这个数您看行不行：每人 6,800 元」照发（第五轮复核）
+ */
+const BUDGET_LOOKUP =
+  /(?<!就)按(?:这个|这|您说的|您给的|你说的|您的)?(?:数|预算|价位)(?:(?!下单|锁定|成交|定下|名额)[^，,。；;！？!?\n]){0,8}?(?:找|匹配|筛|推荐|挑|搜|查)(?![^，,。；;！？!?\n]{0,8}(?:下单|锁定|成交|名额|订|定下|付款))/g;
 /** 婉拒砍价的说法。sop.md 要求「不许直接降价、可以讲价值或换更低档线路」，
  *  于是模型会写「这个价格给您安排不了」「我们没法按这个价走」——里面照样含客户
  *  报的数字和上面的成交措辞，但语义是**拒绝**，不是报成交价。不排除就会把
@@ -86,13 +96,15 @@ const HOTEL_AFTER = /^\s*(?:元|块)?\s*起?\s*(?:[/／]\s*(?:晚|间夜)|[一�
 function hasClosingPrice(visible: string): boolean {
   return sentences(visible).some((s) => {
     if (PRICE_REFUSAL.test(s)) return false;
-    if (CLOSING_PRICE.test(s.replace(ROUTE_PICK_ALL, '、'))) return true;
+    // 此前还有一条：同一句里说着预算的，不带「就」的「按这个数」一律不算——「您预算 6800，行，按这个数给您安排：每人 6,800 元」
+    // 就这么放过了。按预算去查的说法上面 BUDGET_LOOKUP 已经认得，那条去掉
+    if (CLOSING_PRICE.test(s.replace(ROUTE_PICK_ALL, '、').replace(BUDGET_LOOKUP, '、'))) return true;
     return s.split(/[；;]/).some((c) => ROUTE_PICK.test(c) && (amountHits(c).length > 0 || parseWanAmounts(c).length > 0));
   });
 }
 
 /** 金额说的是人均还是总价——由紧邻的限定词决定，认不出来就两边都比 */
-type Scope = 'perPerson' | 'total' | 'any';
+export type Scope = 'perPerson' | 'total' | 'any';
 const PER_PERSON_HINT = /(?:人均|每人|单人|每位|一位)[^\d¥￥]{0,4}$/;
 const TOTAL_HINT = /(?:总价|总共|一共|共计|合计|总计|总额)[^\d¥￥]{0,4}$/;
 /**
@@ -193,8 +205,9 @@ const CN_UNIT: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
 /** 可能出现在一个数里的字，用来判断「从这里开始是不是一个数的开头」以及跳过整段区间 */
 const NUM_CHAR = /[\d.一二两三四五六七八九十百千万零〇点]/;
 /** 缩写尾数后面紧跟量词，那个数字属于量词短语：「两万一位」是每人 2 万，不是 21,000；
- *  「人均 5 万 8 月出发」的 8 是月份，不是 58,000 */
-const CLASSIFIER_AFTER = /^\s*(?:位|个|人|晚|天|间|套|份|次|趟|家|张|日|夜|名|月|号|岁)/;
+ *  「人均 5 万 8 月出发」的 8 是月份，不是 58,000；「人均 2.88 万到 5.28 万三档」的三是档数——
+ *  此前「档」不在表里，读成 55,800，客户问「马代和巴厘岛哪个好」收到的是一句「告诉我线路和出行人数」 */
+const CLASSIFIER_AFTER = /^\s*(?:位|个|人|晚|天|间|套|份|次|趟|家|张|日|夜|名|月|号|岁|档|条|种|类|款)/;
 
 interface Section { value: number; precision: number; end: number; firstUnit: number; arabic: boolean; bare: boolean }
 
@@ -555,7 +568,7 @@ const FILLER_EDGE = new RegExp(`^(?:${TITLE_FILLER})+|(?:${TITLE_FILLER})+$`, 'g
 const TITLE_SPLIT = /[·・、,，/（）()]|\d+\s*[日天]|(?<=[一-鿿])\s+|\s+(?=[一-鿿])|雪山/;
 
 /** 每条线能被「点名」的叫法。标题里的专有名词 + 只对应这一条线的目的地 / 别名 */
-function routeNames(routes: Route[]): Map<string, string[]> {
+export function routeNames(routes: Route[]): Map<string, string[]> {
   const places = new Map<string, string[]>();
   for (const r of routes) {
     for (const p of [r.destination, ...(r.aliases ?? [])]) {
@@ -580,7 +593,7 @@ function routeNames(routes: Route[]): Map<string, string[]> {
 }
 
 /** 这段文字点了名的线路。skip：这个叫法在原文里不算点名（客户说的出发地） */
-function namedRoutes(text: string, names: Map<string, string[]>, skip?: (name: string) => boolean): string[] {
+export function namedRoutes(text: string, names: Map<string, string[]>, skip?: (name: string) => boolean): string[] {
   const t = text.replace(/\s+/g, '');
   return [...names].filter(([, ns]) => ns.some((n) => t.includes(n) && !skip?.(n))).map(([id]) => id);
 }
@@ -646,6 +659,7 @@ function routesInPlay(
   }
   for (const r of session.lastShownRoutes ?? []) seen.add(r.id);
   if (session.lastQuote?.routeId) seen.add(session.lastQuote.routeId);
+  for (const q of session.quoteHistory ?? []) seen.add(q.routeId);
   for (const id of session.orderIds ?? []) {
     const o = getOrder(id);
     if (o) seen.add(o.routeId);
@@ -674,6 +688,59 @@ function routesInPlay(
  * 精确到千位以下的数（68800、3.8 万、三万八）就是某条线的价，只按本会话出现过的线路比对
  */
 const TIER_TOL = 5000;
+
+// ---------------- 报价之差 ----------------
+//
+// 改期、改人数之后，模型会拿两次真实报价作比：「比元旦出发省了 4,740 元」「每人省 1,580」「一家三口能省将近 4700」。
+// 这些数是工具算出来的两个价相减，客户拿不到它的出处，价格护栏此前也认不出——场景测试里拦下的 5 次全是这种误拦。
+// 差额只从工具真算过的金额里来（报价历史、最近报价、订单），客户说的数不参与，所以报成交价时照样放行。
+
+/** 本会话工具真算过的报价：报价历史 + 最近一次报价 + 订单（订单只有总价，单价按总价 ÷ 人数） */
+function quotesOf(session: Session): { routeId: string; travelers: number; perPerson: number; total: number }[] {
+  const out = [...(session.quoteHistory ?? [])];
+  const q = session.lastQuote;
+  if (q?.perPerson && q.total) out.push({ routeId: q.routeId, travelers: q.travelers, perPerson: q.perPerson, total: q.total });
+  for (const id of session.orderIds ?? []) {
+    const o = getOrder(id);
+    if (o) out.push({ routeId: o.routeId, travelers: o.travelers, perPerson: Math.round(o.totalPrice / Math.max(1, o.travelers)), total: o.totalPrice });
+  }
+  return out;
+}
+
+/**
+ * 同一线路报价两两之差（每人价之差、总价之差）。除了真报过的几次互相比，每次报价还跟它自己「不上浮 / 上浮」
+ * 「不打折 / 95 折」的另一种算法比——「旺季每人多 1,580」「4 位享 95 折每人省 869」说的就是这个。
+ * approx 是差额的口语约数（整百、整千）：「将近 4700」「省了近 5000」，只从真报过的两次报价之差来——
+ * 一次报价跟自己另一种算法的差再取整，整百整千的数铺得太开（1,680 → 1600、1700、2000），编的「升级加 2,000」全能对上。
+ * 差额不进通用白名单，只在比价的说法里认（见 diffBacked）
+ */
+function quoteDiffs(session: Session, routes: Route[]): { exact: number[]; approx: number[] } {
+  const exact = new Set<number>();
+  const pairs = new Set<number>();
+  const quotes = quotesOf(session);
+  const diff = (a: { perPerson: number; total: number }, b: { perPerson: number; total: number }, into = exact) => {
+    for (const d of [Math.abs(a.perPerson - b.perPerson), Math.abs(a.total - b.total)]) if (d > 0) { exact.add(d); into.add(d); }
+  };
+  quotes.forEach((a, i) => quotes.slice(i + 1).forEach((b) => { if (a.routeId === b.routeId) diff(a, b, pairs); }));
+  for (const q of quotes) {
+    const r = routes.find((x) => x.id === q.routeId);
+    if (!r) continue;
+    // 规则照 tools.createQuote：先上浮 10%，再按 4 人及以上 95 折
+    for (const base of [r.priceFrom, Math.round(r.priceFrom * 1.1)]) {
+      for (const off of q.travelers >= 4 ? [false, true] : [false]) {
+        const pp = off ? Math.round(base * 0.95) : base;
+        diff(q, { perPerson: pp, total: pp * q.travelers });
+      }
+    }
+  }
+  const approx = new Set<number>();
+  for (const d of pairs) {
+    for (const v of [Math.round(d / 100) * 100, Math.floor(d / 100) * 100, Math.ceil(d / 100) * 100, Math.round(d / 1000) * 1000]) {
+      if (v >= 1000 && v !== d) approx.add(v);
+    }
+  }
+  return { exact: [...exact], approx: [...approx] };
+}
 
 interface Allowed {
   perPerson: Set<number>;
@@ -782,6 +849,16 @@ function setsFor(ok: Allowed, w: WanAmount): Set<number>[] {
 export function findUnbackedPrices(
   visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = [],
 ): number[] {
+  return findUnbackedPriceHits(visible, session, customerText, turnCalls).map((h) => h.value);
+}
+
+/** 一处追溯不到出处的金额：value 同 findUnbackedPrices，at / end 是它在回复原文里的位置（引擎据此只删它所在的那一句） */
+export interface PriceHit { value: number; at: number; end: number }
+
+/** 同 findUnbackedPrices，带上每个金额在原文里的位置。normalizeMoneyText 逐字替换、位置不变，所以原文位置可以直接用 */
+export function findUnbackedPriceHits(
+  visible: string, session: Session, customerText: string, turnCalls: TurnToolCall[] = [],
+): PriceHit[] {
   if (process.env.PRICE_GUARD === '0') return [];
   const text = normalizeMoneyText(visible);
   // 在报成交价：客户自己喊过的数字不能当白名单，否则等于让客户自己定价
@@ -791,6 +868,7 @@ export function findUnbackedPrices(
   const misses = missTargets(turnCalls);
   const names = routeNames(routes);
   const seen = routesInPlay(session, visible, customerText, turnCalls, routes, names, misses);
+  const diffs = quoteDiffs(session, routes);
   // 几套白名单只差产品库价取自哪些线路：整库的只给档位话术用，其余金额按本会话出现过的线路核，
   // 说库外目的地的分句再收窄到同一分句点了名的线路
   const tier = allowedAmounts(session, customerText, !closing, routes);
@@ -809,7 +887,7 @@ export function findUnbackedPrices(
     }
     return ok;
   };
-  const bad: number[] = [];
+  const bad: PriceHit[] = [];
   const near = (set: Set<number>, v: number, tol: number): boolean => {
     if (!tol) return set.has(v);
     for (const a of set) if (Math.abs(v - a) <= tol) return true;
@@ -821,20 +899,208 @@ export function findUnbackedPrices(
     !closing && !perPerson &&
     (HOTEL_BEFORE.test(text.slice(Math.max(0, at - 12), at)) || HOTEL_AFTER.test(text.slice(end))) &&
     near(inPlay.hotelNightly, v, tol);
+  // 报价之差不知道说的是每人还是总价（「每人省 1,580」「一家三口省 4,740」），只在比价的小句里认：
+  // 同一小句得有「省 / 便宜 / 多 / 贵 / 差 / 比」这类比较词，而且说的不是加钱买的东西（升级、单房差、定金…）；
+  // 约数（整百整千）还得带着「将近 / 大概 / 左右」。此前差额和约数直接并进人均、总价白名单，不看上下文，
+  // 「每人再加 2,000 元就能升级海景房」「单房差 3,400 元」「总价 3,000 元的定金」全被放行
+  const diffBacked = (v: number, tol: number, at: number, end: number): boolean => {
+    const from = Math.max(...['，', ',', '。', '！', '？', '\n', '；', ';'].map((c) => text.lastIndexOf(c, at - 1))) + 1;
+    const stops = ['，', ',', '。', '！', '？', '\n', '；', ';'].map((c) => text.indexOf(c, end)).filter((i) => i >= 0);
+    const clause = text.slice(from, stops.length ? Math.min(...stops) : text.length);
+    if (!DIFF_CUE.test(clause) || ADD_ON.test(clause)) return false;
+    if (near(new Set(diffs.exact), v, tol)) return true;
+    const approxSaid = APPROX_BEFORE.test(text.slice(Math.max(0, at - 6), at)) || APPROX_AFTER.test(text.slice(end, end + 6)) || tol > 0;
+    return approxSaid && near(new Set(diffs.approx), v, tol);
+  };
   for (const h of amountHits(text)) {
     const perPerson = PER_PERSON_HINT.test(text.slice(Math.max(0, h.at - 14), h.at));
     const ok = pick(h.tol, h.at);
     const backed = near(ok.perPerson, h.value, h.tol) || near(ok.total, h.value, h.tol) ||
-      hotelOk(h.value, h.tol, h.at, h.end, perPerson);
-    if (!backed) bad.push(h.raw);
+      hotelOk(h.value, h.tol, h.at, h.end, perPerson) || diffBacked(h.value, h.tol, h.at, h.end);
+    if (!backed) bad.push({ value: h.raw, at: h.at, end: h.end });
   }
   for (const w of parseWanAmounts(text)) {
     const ok = pick(w.tol, w.at);
     const backed = setsFor(ok, w).some((set) => near(set, w.value, w.tol)) || near(ok.customerApprox, w.value, w.tol) ||
-      hotelOk(w.value, w.tol, w.at, w.end, w.scope === 'perPerson');
-    if (!backed) bad.push(w.value);
+      hotelOk(w.value, w.tol, w.at, w.end, w.scope === 'perPerson') || diffBacked(w.value, w.tol, w.at, w.end);
+    if (!backed) bad.push({ value: w.value, at: w.at, end: w.end });
   }
   return bad;
+}
+
+/** 比价的说法（报价之差只在这种小句里认，见 diffBacked） */
+const DIFF_CUE = /省(?![心事力时])|便宜|实惠|划算|多(?!加)|贵|差|比|少(?!量)|上浮|涨|高出|低/;
+/** 加钱买的东西：这些说法里的数是一笔新费用，不是两次报价之差 */
+const ADD_ON = /升级|单房差|定金|订金|押金|加购|自费|另付|不占床|附加|签证|机票|小费|加钱|补差/;
+const APPROX_BEFORE = /(?:约|近|将近|接近|大概|大约|差不多|快)\s*$/;
+const APPROX_AFTER = /^\s*(?:元|块)?\s*(?:左右|上下|出头)/;
+
+/** 回复里的金额（带位置、是人均还是总价）。出口的规则词守卫拿它核「在您预算内」这类说法指的是哪个价 */
+export function priceMentions(visible: string): { value: number; tol: number; at: number; end: number; scope: Scope }[] {
+  const text = normalizeMoneyText(visible);
+  const scopeAt = (at: number): Scope => {
+    const before = text.slice(Math.max(0, at - 14), at);
+    return PER_PERSON_HINT.test(before) ? 'perPerson' : TOTAL_HINT.test(before) ? 'total' : 'any';
+  };
+  return [
+    ...amountHits(text).map((h) => ({ value: h.value, tol: h.tol, at: h.at, end: h.end, scope: scopeAt(h.at) })),
+    ...parseWanAmounts(text).map((w) => ({ value: w.value, tol: w.tol, at: w.at, end: w.end, scope: w.scope })),
+  ].sort((a, b) => a.at - b.at);
+}
+
+/**
+ * 之前发给客户的回复里说过这个数没有。价格护栏命中后，只有错价真的发出去过，才对客户说「刚才的价格说得不准」——
+ * 这次的错价被拦下、根本没发出去，客户看到的上一条明明是对的，道歉反倒让人以为之前报错了
+ */
+export function saidBefore(session: Session, values: number[]): boolean {
+  return (session.messages ?? []).filter((m) => m.role === 'agent').some((m) =>
+    priceMentions(m.content).some((p) => values.some((v) => Math.abs(p.value - v) <= p.tol)));
+}
+
+// ---------------- 按句删 ----------------
+//
+// 出口护栏命中后只删有问题的那几句，其余照发。此前价格护栏一命中就整条换成兜底话术：客户问「马代和巴厘岛哪个好」，
+// 收到「告诉我线路和出行人数」；改期后的报价里编了一句差额，连同新日期、新报价一起没了。
+
+/** 按句读切开（句号问叹号、句末波浪号、换行都算一句的结尾），每段带着自己的结尾符 */
+export function sentenceUnits(text: string): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    let end = -1;
+    if (c === '\n') end = i + 1;
+    else if ('。！!？?'.includes(c)) {
+      end = i + 1;
+      while (end < text.length && '。！!？?」”’）)'.includes(text[end])) end += 1;
+    } else if ((c === '～' || c === '~') && !/[\d一二两三四五六七八九十万千]/.test(text[i - 1] ?? '') &&
+      !/^\s*[\d一二两三四五六七八九十]/.test(text.slice(i + 1))) {
+      // 「好的～您几位」的波浪号是句末语气；「2~3 万」「五万～六万」里的是区间，不断句
+      end = i + 1;
+      while (end < text.length && '～~'.includes(text[end])) end += 1;
+    }
+    if (end > 0) {
+      out.push({ start, end });
+      start = end;
+      i = end - 1;
+    }
+  }
+  if (start < text.length) out.push({ start, end: text.length });
+  return out;
+}
+
+const BULLET_HEAD = /^\s*(?:[·•・\-*]|\d{1,2}\s*[.、)）]|[①-⑩])/;
+
+/**
+ * 删掉 cuts 碰到的句子。cut 带 replace 时，第一处被删的句子换成这句话（保留原句开头的分点符和结尾的换行）；
+ * 同一句话只换一次，其余照删。
+ * 引出语一并处理：「报价如下：」「我们有一条替代线路：」底下那一段（一串分点，或紧跟的一段）整段删光了，
+ * 引出语自己也删——否则客户看到的是一句「我们有一条南极概念的替代线路：」后面什么都没有。
+ */
+export function dropSentences(text: string, cuts: { at: number; end: number; replace?: string }[]): { text: string; dropped: string[] } {
+  const units = sentenceUnits(text);
+  const body = (i: number) => text.slice(units[i].start, units[i].end);
+  const blank = (i: number) => !body(i).trim();
+  const kill = new Map<number, string | undefined>();
+  units.forEach((u, i) => {
+    const hit = cuts.filter((c) => c.at < u.end && c.end > u.start);
+    if (hit.length) kill.set(i, hit.find((c) => c.replace)?.replace);
+  });
+  if (!kill.size) return { text, dropped: [] };
+  // 行首的句子才可能是引出语底下的内容：先按行把句子归组
+  const lineOf: number[] = [];
+  let line = 0;
+  units.forEach((u, i) => { lineOf[i] = line; if (text[u.end - 1] === '\n') line += 1; });
+  const lineUnits = (l: number) => units.map((_, i) => i).filter((i) => lineOf[i] === l);
+  const lineBlank = (l: number) => lineUnits(l).every(blank);
+  const lineBullet = (l: number) => BULLET_HEAD.test(lineUnits(l).map(body).join(''));
+  for (let i = 0; i < units.length; i++) {
+    if (kill.has(i) || !/[：:]\s*$/.test(body(i))) continue;
+    // 引出语所在行之后：跳过空行，接着的若是分点就取整串分点（中间可夹空行），否则取紧跟的一段（到空行为止）
+    let l = lineOf[i] + 1;
+    while (l <= line && lineBlank(l)) l += 1;
+    if (l > line || !lineUnits(l).length) continue;
+    const block: number[] = [];
+    if (lineBullet(l)) {
+      for (; l <= line && (lineBlank(l) || lineBullet(l)); l += 1) block.push(...lineUnits(l).filter((j) => !blank(j)));
+    } else {
+      for (; l <= line && !lineBlank(l); l += 1) block.push(...lineUnits(l).filter((j) => !blank(j)));
+    }
+    if (block.length && block.every((j) => kill.has(j) && kill.get(j) === undefined)) kill.set(i, undefined);
+  }
+  // 删掉的是一整行分点（只删不换）：它底下缩进更深的续行（亮点、说明）一并删，直到下一个分点或空行。
+  // 此前只删了「· 贵州 荔波小七孔 6 日（人均 13,800 起）」这一行，底下的「苗寨长桌宴、非遗蜡染体验」挂到了上一条线下面
+  const indent = (l: number) => /^[ \t　]*/.exec(lineUnits(l).map(body).join(''))?.[0].length ?? 0;
+  for (let l = 0; l <= line; l++) {
+    const us = lineUnits(l);
+    if (!us.length || !lineBullet(l) || !us.every((j) => blank(j) || (kill.has(j) && kill.get(j) === undefined))) continue;
+    for (let k = l + 1; k <= line && !lineBlank(k) && !lineBullet(k) && indent(k) > indent(l); k++) {
+      for (const j of lineUnits(k)) kill.set(j, undefined);
+    }
+  }
+  const used = new Set<string>();
+  let out = '';
+  const dropped: string[] = [];
+  let afterCut = false;
+  units.forEach((u, i) => {
+    let s = body(i);
+    // 紧跟在删掉那句后面、以「所以 / 因此」开头的句子：去掉这个连接词，不然接不上前文（「所以如果预算有限…」）
+    if (!kill.has(i) && afterCut) s = s.replace(/^(\s*)(?:所以说?|因此|因为这样|这样一来)[，,]?\s*/, '$1');
+    if (s.trim()) afterCut = kill.has(i) && kill.get(i) === undefined;
+    if (!kill.has(i)) { out += s; return; }
+    dropped.push(s.trim());
+    const rep = kill.get(i);
+    if (rep && !used.has(rep)) {
+      used.add(rep);
+      const head = /^\s*(?:[·•・\-*]\s*|\d{1,2}\s*[.、)）]\s*|[①-⑩]\s*)?/.exec(s)?.[0] ?? '';
+      out += head + rep + (s.endsWith('\n') ? '\n' : '');
+    } else if (s.endsWith('\n') && out && !out.endsWith('\n')) {
+      // 删的是行尾那句、同一行前面的句子留着：换行照留，下一行不能接到这一行后面
+      out += '\n';
+    }
+  });
+  const tidy = out
+    .split('\n').filter((l) => !/^\s*(?:[·•・\-*]|\d{1,2}\s*[.、)）]|[①-⑩])?\s*$/.test(l) || !l.trim()).join('\n')
+    .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return { text: tidy, dropped };
+}
+
+// ---------------- 删完还像不像一条回复 ----------------
+//
+// 按句删之后剩下的不一定接得上：A04 删掉了线路名和价，只剩一句没有指代的「这条的亮点」；B02 说「按 4 人重新报价」却一个价都没有；
+// B03 删掉编的两条线后只剩一句问话（「想看雪山古城，还是想躺酒店泡泳池？」）。这种残句发出去，客户不知道在说哪条、价是多少。
+
+/** 还指着前面那条线：「这条的亮点」「上面这两条」「它的酒店」 */
+const ROUTE_BACKREF = /这条|这一条|这款|这两条|这几条|这个线路|这个行程|上面(?:这|那)?(?:条|几条|两条|款)|以上(?:这|几|两)?条|它(?:的|是|有|在|住|含)/;
+/** 宣称在报价：「按 4 人重新报价」「报价如下」 */
+const QUOTE_CLAIM = /重新报价|重新报|报价如下|报价来了|报价给您|给您报(?:个)?价|价格如下|按\s*[\d一二两三四五六七八九十]+\s*(?:人|位)(?:重新)?(?:报|算)/;
+
+/**
+ * 出口护栏按句删过之后（before → after），剩下的是不是残句：原来有价、删完一个价都不剩，而且剩下的
+ * ① 还在指着删掉的那条线，② 宣称在报价，或 ③ 除了问句几乎什么都没有（「好的～」）。
+ * ③ 的门槛放得很低：「南极没有现成线路。您几位出行？」只剩一句实话加一句问话，是完整的回复，不能当残句换掉。
+ * ① 只在删掉的那部分点过的线路、剩下的没再点时才算：「这条线住的是古城精品客栈」本来就指着前文（原文没点名，只删了价），
+ * 「推荐北欧极光 8 日。它的玻璃屋…」线路名还在——此前只要剩下「这条 / 它」就整条换成兜底，模型答的内容白白丢了。
+ * 原来就没有价的回复不管——那种删的是规则词，不是推荐和报价
+ */
+export function strandedAfterDrop(before: string, after: string): boolean {
+  if (before === after || !priceMentions(before).length || priceMentions(after).length) return false;
+  if (QUOTE_CLAIM.test(after)) return true;
+  if (ROUTE_BACKREF.test(after)) {
+    let routes: Route[] = [];
+    try { routes = loadRoutes(); } catch { /* 数据文件坏了另有告警 */ }
+    const names = routeNames(routes);
+    // 点名分两层：具体哪条（「中央格兰德」「北欧极光」）和哪个目的地（「马代」三条线共用）。
+    // 删掉的是「中央格兰德…人均 28,800」、剩下「马尔代夫度蜜月很合适～这条的亮点」：目的地还在，「这条」指的那条没了（A04）
+    const dests = (x: string): string[] => {
+      const t = x.replace(/\s+/g, '');
+      return routes.filter((r) => [r.destination, ...(r.aliases ?? [])].some((p) => !!p && t.includes(p))).map((r) => r.destination);
+    };
+    const lost = (a: string[], b: string[]): boolean => a.some((x) => !b.includes(x));
+    if (lost(namedRoutes(before, names), namedRoutes(after, names)) || lost(dests(before), dests(after))) return true;
+  }
+  const statements = sentenceUnits(after).map((u) => after.slice(u.start, u.end)).filter((s) => !/[？?]\s*$/.test(s.trim()));
+  return statements.join('').replace(/[^\p{L}\p{N}]/gu, '').length < 6;
 }
 
 /** 仅供自测使用的内部函数出口 */

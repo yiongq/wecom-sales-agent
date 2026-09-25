@@ -17,7 +17,7 @@ const ENV_KEYS = [
   'ZHIPU_BASE_URL', 'ZHIPU_API_KEY', 'ZHIPU_MODEL', 'ZHIPU_MODEL_CHEAP',
   'DEEPSEEK_BASE_URL', 'DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL', 'DEEPSEEK_MODEL_CHEAP',
   'EMBED_BASE_URL', 'EMBED_API_KEY', 'EMBED_MODEL',
-  'LLM_REASONING_EFFORT', 'LLM_HEDGE_MODEL', 'LLM_HEDGE_MS',
+  'LLM_REASONING_EFFORT', 'LLM_HEDGE_MODEL', 'LLM_HEDGE_MS', 'LLM_HEDGE_MS_FOLLOWUP', 'LLM_SLOW_TURN_MS',
   'LLM_TIMEOUT_MS', 'LLM_ROUND_TIMEOUT_MS',
 ];
 for (const k of ENV_KEYS) process.env[k] = '';
@@ -55,6 +55,19 @@ function toolCallResp(id: string, name: string, args: Record<string, unknown>, e
   return Response.json({
     choices: [{
       message: { role: 'assistant', content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }], ...extra },
+      finish_reason: 'tool_calls',
+    }],
+    usage: { prompt_tokens: 100, completion_tokens: 10 },
+  });
+}
+/** 一次响应里并列多个工具调用，id 按「第几次调用_第几个」编，便于对回 tool 消息 */
+function multiToolResp(round: number, list: [string, Record<string, unknown>][]): Response {
+  return Response.json({
+    choices: [{
+      message: {
+        role: 'assistant', content: '',
+        tool_calls: list.map(([name, args], i) => ({ id: `c${round}_${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } })),
+      },
       finish_reason: 'tool_calls',
     }],
     usage: { prompt_tokens: 100, completion_tokens: 10 },
@@ -416,6 +429,145 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   pass('对冲：慢则加发、先成功者胜、输家被 abort、失败立即接手、usage 按胜者记');
 }
 
+// ---------- 对冲：工具往返之后的调用用更短的阈值 ----------
+// 同一轮第 2 次起的调用前缀缓存已热，超过 3 秒多半是上游抖动。场景测试 A04：第二次调用卡住，
+// 等满首轮的 4 秒才对冲，整轮 11.8 秒。首轮仍用 LLM_HEDGE_MS
+{
+  useZhipu('glm-5.3-flashx');
+  process.env.LLM_HEDGE_MODEL = 'glm-5.2';
+  process.env.LLM_HEDGE_MS = '4000';
+  assert.equal(llmStats().hedgeMsFollowup, 2800, 'LLM_HEDGE_MS_FOLLOWUP 默认 2800');
+  process.env.LLM_HEDGE_MS = '2000';
+  assert.equal(llmStats().hedgeMsFollowup, 2000, '后续阈值不超过首轮阈值');
+  process.env.LLM_HEDGE_MS_FOLLOWUP = '0';
+  assert.equal(llmStats().hedgeMsFollowup, 0, '显式设 0 就是 0');
+
+  process.env.LLM_HEDGE_MS = '1000';
+  process.env.LLM_HEDGE_MS_FOLLOWUP = '60';
+  const followup = (c: Call): boolean => c.body.messages.some((m: any) => m.role === 'tool');
+  calls = [];
+  handler = async (c) => {
+    if (c.body.model === 'glm-5.2') return followup(c) ? ok('对冲模型答') : toolCallResp('h1', 'search_routes', { destination: '四川' });
+    // 主模型：首次 150ms 就给出工具调用（慢于后续阈值、远快于首轮阈值），拿到工具结果后卡 400ms
+    if (!followup(c)) { await delay(150, c.signal); return toolCallResp('p1', 'search_routes', { destination: '四川' }); }
+    await delay(400, c.signal);
+    return ok('主模型答');
+  };
+  const s0 = llmStats();
+  const t0 = Date.now();
+  const r = await captureLogs(() => chat(baseOpts()));
+  const took = Date.now() - t0;
+  assert.equal(r.out, '对冲模型答', '工具往返后的调用超过 LLM_HEDGE_MS_FOLLOWUP 就该对冲，而不是等满首轮阈值');
+  assert.ok(took < 450, `应在第二次调用 60ms 时对冲，实际整轮 ${took}ms`);
+  assert.ok(!calls.some((c) => c.body.model === 'glm-5.2' && !followup(c)), '首次调用 150ms 未到首轮阈值，不加发');
+  const s1 = llmStats();
+  assert.equal(s1.hedgeFired - s0.hedgeFired, 1);
+  assert.equal(s1.followupHedgeFired - s0.followupHedgeFired, 1, '后续调用的对冲单独计数');
+  assert.equal(s1.followupHedgeWon - s0.followupHedgeWon, 1);
+  assert.ok(r.logs.some((l) => l.includes('超过 60ms') && l.includes('第 2 次调用')), `日志要写明按哪一档阈值、第几次调用触发（日志：${r.logs.join(' | ')}）`);
+  process.env.LLM_HEDGE_MODEL = '';
+  process.env.LLM_HEDGE_MS = '';
+  process.env.LLM_HEDGE_MS_FOLLOWUP = '';
+  pass('对冲：首轮用 LLM_HEDGE_MS，工具往返后的调用用更短的 LLM_HEDGE_MS_FOLLOWUP（默认 2800，不超过首轮）');
+}
+
+// ---------- 同一轮里同参数的只读查询复用结果 ----------
+// 模型偶尔把刚查过的条件（或预取还原给它的调用）原样再查一遍；带 query 的 search_routes 要走一次
+// embedding 请求，重复执行只是白等。写型工具和报价不在此列
+{
+  useZhipu('glm-5.2');
+  const executed: string[] = [];
+  const steps: [string, Record<string, unknown>][][] = [
+    // 第 2 个与引擎预取的参数完全相同
+    [['search_routes', { destination: '四川', segment: '亲子' }], ['search_routes', { destination: '四川' }]],
+    // 键顺序不同也是同一次调用；同一次响应里并列的两个相同调用只执行一次
+    [['search_routes', { segment: '亲子', destination: '四川' }], ['get_route_detail', { routeId: 'r1' }], ['get_route_detail', { routeId: 'r1' }]],
+    // 参数不同照常执行；报价、转人工不复用
+    [['search_routes', { destination: '云南' }], ['create_quote', { routeId: 'r1', travelers: 2 }], ['create_quote', { routeId: 'r1', travelers: 2 }]],
+  ];
+  calls = [];
+  handler = async () => (calls.length <= steps.length ? multiToolResp(calls.length - 1, steps[calls.length - 1]) : ok('查好了'));
+  const before = llmStats().toolReused;
+  const { out, logs } = await captureLogs(() => chat(baseOpts({
+    prefetch: [{ name: 'search_routes', args: { destination: '四川' }, result: 'PF-四川' }],
+    executeTool: async (name, args) => {
+      executed.push(`${name}${JSON.stringify(args)}`);
+      return `R${executed.length}-${name}`;
+    },
+  })));
+  assert.equal(out, '查好了');
+  assert.deepEqual(executed, [
+    'search_routes{"destination":"四川","segment":"亲子"}',
+    'get_route_detail{"routeId":"r1"}',
+    'search_routes{"destination":"云南"}',
+    'create_quote{"routeId":"r1","travelers":2}',
+    'create_quote{"routeId":"r1","travelers":2}',
+  ], '同参数的 search_routes / get_route_detail 本轮只执行一次，其余工具照常执行');
+  const toolMsg = new Map<string, string>(calls.at(-1)!.body.messages
+    .filter((m: any) => m.role === 'tool').map((m: any) => [m.tool_call_id, m.content]));
+  assert.equal(toolMsg.get('c0_1'), 'PF-四川', '与预取同参数的调用拿到预取的结果');
+  assert.equal(toolMsg.get('c1_0'), toolMsg.get('c0_0'), '键顺序不同的同一次查询拿到第一次的结果');
+  assert.equal(toolMsg.get('c1_2'), toolMsg.get('c1_1'), '同一响应里并列的相同调用拿到同一个结果');
+  assert.equal([...toolMsg.keys()].filter((id) => id.startsWith('c')).length, 8, '每个 tool_call 都有对应的 tool 消息（复用的也要回，否则下一次请求 400）');
+  assert.equal(llmStats().toolReused - before, 3);
+  assert.ok(logs.some((l) => l.includes('复用') && l.includes('search_routes')), '复用要留日志，才看得出模型多久重复查一次');
+
+  // 执行失败的不缓存；下一轮不复用上一轮的结果（画像、客群可能已经变了）
+  executed.length = 0;
+  calls = [];
+  handler = async () => (calls.length <= 2 ? multiToolResp(calls.length - 1, [['get_route_detail', { routeId: 'r9' }]]) : ok('好'));
+  let fail = true;
+  const flaky = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    executed.push(`${name}${JSON.stringify(args)}`);
+    if (fail) { fail = false; throw new Error('线路文件读取失败'); }
+    return 'R-ok';
+  };
+  await captureLogs(() => chat(baseOpts({ executeTool: flaky })));
+  assert.equal(executed.length, 2, '第一次执行抛错，同参数的第二次要真执行');
+  calls = [];
+  await captureLogs(() => chat(baseOpts({ executeTool: flaky })));
+  assert.equal(executed.length, 3, '新的一轮不复用上一轮的结果（本轮内第二次照样复用）');
+
+  // 北京 → 云南 → 北京：第三次复用结果，但中间查过别的，要交给 onReuse 重放「最近查到的线路」；紧接着的同参复用不必重放
+  executed.length = 0;
+  calls = [];
+  const replays: string[] = [];
+  const route3: [string, Record<string, unknown>][][] = [
+    [['search_routes', { destination: '北京' }]], [['search_routes', { destination: '云南' }]],
+    [['search_routes', { destination: '北京' }], ['search_routes', { destination: '北京' }]],
+  ];
+  handler = async () => (calls.length <= route3.length ? multiToolResp(calls.length - 1, route3[calls.length - 1]) : ok('北京这条'));
+  await captureLogs(() => chat(baseOpts({
+    executeTool: async (name, args) => { executed.push(`${name}${JSON.stringify(args)}`); return `R-${String(args.destination)}`; },
+    onReuse: (name, args, result) => replays.push(`${name}:${String(args.destination)}:${result}`),
+  })));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(executed.length, 2, '北京第二次、第三次都复用，不重新执行');
+  assert.deepEqual(replays, ['search_routes:北京:R-北京'], '中间查过云南：复用北京时重放一次；紧接着的同参复用不重放');
+  pass('同一轮里同参数的 search_routes / get_route_detail 复用结果（含预取），失败不缓存，跨轮不复用，中间查过别的要重放记录');
+}
+
+// ---------- 慢轮次打逐次调用的耗时明细 ----------
+// 网页 /api/chat 不记耗时、企微只记整轮总数，慢了分不清是往返多、某次卡住等到对冲，还是工具慢
+{
+  useZhipu('glm-5.2');
+  process.env.LLM_SLOW_TURN_MS = '100';
+  calls = [];
+  handler = async (c) => {
+    await delay(70, c.signal);
+    return c.body.messages.some((m: any) => m.role === 'tool') ? ok('好') : toolCallResp('s1', 'search_routes', { destination: '四川' });
+  };
+  const slow = await captureLogs(() => chat(baseOpts({ sessionId: 'sess-slow' })));
+  const line = slow.logs.find((l) => l.includes('本轮工具循环耗时'));
+  assert.ok(line, `超过 LLM_SLOW_TURN_MS 要打明细（日志：${slow.logs.join(' | ')}）`);
+  assert.ok(line.includes('sess-slow') && /#1 glm-5\.2 \d+ms → search_routes/.test(line) && /#2 glm-5\.2 \d+ms/.test(line), `明细要有会话、每次调用的模型/耗时/工具：${line}`);
+  process.env.LLM_SLOW_TURN_MS = '';
+  handler = async () => ok('快');
+  const fast = await captureLogs(() => chat(baseOpts()));
+  assert.ok(!fast.logs.some((l) => l.includes('本轮工具循环耗时')), '没超线不打');
+  pass('整轮超过 LLM_SLOW_TURN_MS（默认 8 秒）时打逐次调用的耗时明细');
+}
+
 // ---------- L5 计价 ----------
 {
   approx(costOf('glm-5.3-flashx', 1e6, 1e6), 9, 'glm-5.3-flashx 2+7');
@@ -542,6 +694,38 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   pass('L7 后台建议 / 代拟 / 沉默跟进的画像同样走白名单');
 }
 
+// ---------- 沉默跟进不许诺做不到的事 ----------
+// 场景测试后 SOP 删掉了「缩短天数 / 换酒店档重新报价」（线路的天数和住宿是固定的），跟进模板却还写着
+// 「酒店档次都可以再商量」「换个思路搭配、出个新方案」。跟进是主动外发，客户照着回「那换便宜点的酒店」就接不住。
+// 排在 F1 前面：F1 跑过停机钩子后跟进模块不再扫描
+{
+  useZhipu('glm-5.2');
+  const { getOrCreateSession, saveSession } = await import('./store.js');
+  const { runFollowUpScan } = await import('./followup.js');
+  const ids = ['wecom:selftest-followup-tpl-quote', 'wecom:selftest-followup-tpl-objection'];
+  ids.forEach((id, i) => {
+    const f = getOrCreateSession(id, 'wecom');
+    f.stage = i ? 'objection' : 'quote';
+    f.updatedAt = Date.now() - 5 * 3600_000; // 过了 quote 2 小时、objection 4 小时的门槛
+    f.messages.push({ role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt });
+    saveSession(f, false);
+  });
+  calls = []; handler = async () => ok(''); // 生成为空，走阶段模板
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  const pushed = new Map<string, string>();
+  process.env.FOLLOWUP_ENABLED = '1';
+  await runFollowUpScan(async (id, text) => { pushed.set(id, text); return true; }, noon);
+  process.env.FOLLOWUP_ENABLED = '';
+  for (const id of ids) {
+    const t = pushed.get(id) ?? '';
+    assert.ok(t && !/酒店档次|换个思路|新方案|缩短|少玩/.test(t), `跟进模板不许诺改天数、换酒店档、重新搭配（${id}：${t}）`);
+  }
+  const sys = String(calls[0]?.body.messages[0]?.content ?? '');
+  assert.ok(sys.includes('天数和住宿是固定的'), `生成跟进话术的提示词要写明线路的天数和住宿是固定的（实际：${sys.slice(0, 60)}）`);
+  pass('沉默跟进（模板与生成）不许诺缩短天数、换酒店档、重新搭配');
+}
+
 // ---------- F1 停机：等手上这条跟进推完、记完账再退出 ----------
 // 跟进是「先推企微、再把 count/stages 记进会话」。SIGTERM 落在两者之间时客户已经收到，会话里却没记，
 // 重启后下一轮扫描照样判定「该追了」——同一条跟进发两遍。
@@ -656,7 +840,7 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   pass('mock 出发日期基于今天推算');
 }
 
-console.log('\nSELFTEST PASS: LLM 调用层（思考参数/自愈/回传/最后一轮/对冲/闸门/计价/embedding/去重/日期）');
+console.log('\nSELFTEST PASS: LLM 调用层（思考参数/自愈/回传/最后一轮/对冲/后续对冲阈值/同参复用/慢轮明细/闸门/计价/embedding/去重/日期）');
 fs.rmSync(varDir, { recursive: true, force: true });
 // usage.ts 的落盘防抖计时器会让进程多挂 3 秒，自测没必要等
 process.exit(0);

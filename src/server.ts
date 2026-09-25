@@ -429,6 +429,10 @@ app.post('/api/orders/:id/pay', lookupLimit, async (c) => {
   const id = c.req.param('id');
   const order = getOrder(id);
   if (!order) return c.json({ error: 'order not found' }, 404);
+  // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
+  if (order.status === 'superseded' || order.status === 'cancelled') {
+    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order }, 409);
+  }
   if (order.status !== 'paid') {
     markOrderPaid(id);
     // 引擎生成跟进话术并更新会话，服务端只负责经渠道推给客户
@@ -448,6 +452,14 @@ app.get('/pay/:orderId', async (c) => {
   const o = getOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
+  // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
+  if (o.status === 'superseded') {
+    const t = `${o.routeTitle} · 订单已被替代`;
+    const d = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
+    return c.html(html.replace(/<title>[\s\S]*?<\/title>/,
+      `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
+      `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`));
+  }
   const title = `${o.routeTitle} · 订单支付`;
   // 出发日期与企微卡片、网页支付卡片同一写法（「10月12日出发」，跨年才带年份），别是「2026-10-12 出发」
   const d = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(o.departDate ?? '');
@@ -660,10 +672,10 @@ if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
     const { apiKey, model, baseUrl } = llmCfg();
     if (apiKey) {
       const { main, cheap } = activeModels();
-      const { hedgeModel, hedgeMs, reasoningEffort, forcedThinkingModels } = llmStats();
+      const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();
       console.log(`[server] LLM: ${process.env.LLM_PROVIDER || 'default'} / 对话=${main} · 后台=${cheap} @ ${baseUrl}`);
       console.log(
-        `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用）` : '关'}` +
+        `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用 · 工具往返后 ${hedgeMsFollowup}ms）` : '关'}` +
           (forcedThinkingModels.length ? ` · 强制思考 ${forcedThinkingModels.join('/')} 档位=${reasoningEffort}` : ''),
       );
       // 静默降级是最难查的故障：主对话跑到便宜档上，表现只是「话术变差了」，

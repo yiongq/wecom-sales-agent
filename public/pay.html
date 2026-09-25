@@ -419,6 +419,11 @@
       order = await res.json();
       if (order.status === 'paid') return renderSuccess();
       if (order.status === 'cancelled') return show('err');
+      // 改单后被新订单替代的旧单：不给付款按钮，告诉客户去用新链接（服务端的付款接口同样拒绝）
+      if (order.status === 'superseded') {
+        $('errView').textContent = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
+        return show('err');
+      }
       $('amount').textContent = fmt(order.totalPrice);
       $('btnAmt').textContent = '¥' + fmt(order.totalPrice);
       $('routeTitle').textContent = order.routeTitle;
@@ -436,6 +441,11 @@
     btn.innerHTML = '<span class="spinner"></span>支付中…';
     try {
       const res = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/pay', { method: 'POST' });
+      // 页面开着的时候客户改了单：这张已被替代，别再让他重试
+      if (res.status === 409) {
+        $('errView').textContent = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
+        return show('err');
+      }
       if (!res.ok) throw new Error();
       // 留一点「支付处理」的仪式感
       await new Promise((r) => setTimeout(r, 600));

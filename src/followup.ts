@@ -31,11 +31,14 @@ const IDLE_MINUTES: Partial<Record<SalesStage, number>> = {
   recommend: 360,  // 看过线路没反应，隔久一点再问
 };
 
-/** 兜底话术：LLM 不可用时按阶段发，每条都得是能直接发给客户的正经话 */
+/** 兜底话术：LLM 不可用时按阶段发，每条都得是能直接发给客户的正经话。
+ *  线路的天数和住宿是固定的（sop.md 能力边界），只提真做得到的：换出发日期或人数重新报价、看别的现成线路。
+ *  此前写着「酒店档次都可以再商量」「换个思路搭配、出个新方案」，客户照着回就接不住 */
 const TEMPLATE: Partial<Record<SalesStage, string>> = {
-  quote: '前两天给您报的价格，不知道还有没有什么想调整的？人数、日期、酒店档次都可以再商量，您说说顾虑我帮您想办法～',
+  quote: '前两天给您报的价格，不知道您还有什么顾虑？出发日期或人数有变化的话跟我说，我按新的给您重新报～',
   closing: '您的订单我还给您留着呢～名额是以付款为准的，要是日期或人数需要改，跟我说一声我重新安排。',
-  objection: '上次您提到的顾虑我又琢磨了下，我这边可以帮您换个思路搭配，要不要我出个新方案给您看看？',
+  // 不用「要不要我…」这种是非问句（sop.md 话术原则）：客户只会答「可以」，还得再问一轮
+  objection: '上次您提到的顾虑我记着呢——您更在意价格，还是出发时间？告诉我，我按这个帮您挑别的现成线路，或换个日期重新报价～',
   recommend: '之前给您看的几条线路，感觉哪条更对味一些？或者告诉我哪里不合适，我再帮您挑～',
 };
 
@@ -88,7 +91,8 @@ async function composeFollowUp(s: Session): Promise<string> {
   const sys =
     '你是高端定制旅行的销售顾问。客户在这轮对话后沉默了一段时间，写一条主动跟进的微信消息把他拉回来。' +
     '要求：≤60 字；提一个具体的、能让他一句话回复的问题（不要「在吗」「考虑得怎么样」这种空话）；' +
-    '不要催付款、不要制造焦虑、不要用感叹号堆情绪；不出现价格数字和链接；只输出消息正文。';
+    '不要催付款、不要制造焦虑、不要用感叹号堆情绪；不出现价格数字和链接；' +
+    '线路的天数和住宿是固定的，不要提缩短天数、换酒店档次、重新搭配行程；只输出消息正文。';
   const user = `销售阶段：${s.stage}\n客户画像：${JSON.stringify(profileForPrompt(s.profile))}\n最近对话：\n${recent}`;
   const out = (await completeText(sys, user)).trim().split('\n')[0];
   // 生成内容同样不许带链接/订单号（跟进消息是主动外发，风险更高）
@@ -234,4 +238,4 @@ function resetForTest(): void {
   scanTask = null;
 }
 
-export const __followupTest = { resetForTest };
+export const __followupTest = { resetForTest, TEMPLATE };

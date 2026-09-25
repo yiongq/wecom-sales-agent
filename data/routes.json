@@ -6,6 +6,7 @@
     "bestSeason": "5月-10月",
     "days": 8,
     "destination": "四川",
+    "overseas": false,
     "exclusions": [
       "往返成都的国际及国内大交通",
       "行程未标注的正餐、酒水及客房迷你吧消费",
@@ -94,14 +95,19 @@
       "四川",
       "藏地秘境",
       "高原摄影",
-      "私人向导"
+      "私人向导",
+      "蜜月"
     ],
     "title": "四川 稻城亚丁·色达秘境 8 日",
     "segments": [
       "蜜月",
       "家庭"
     ],
-    "maxAltitude": 4700
+    "maxAltitude": 4700,
+    "intensity": {
+      "level": "较累",
+      "hardest": "第 7 天骑马穿过洛绒牛场到央迈勇脚下，再由向导控速攀升到约 4600 米的牛奶海、五色海，午后原路撤回；第 6 天徒步冲古寺到珍珠海；第 3 天起多日在近四千米的高原上"
+    }
   },
   {
     "aliases": [
@@ -110,6 +116,7 @@
     "id": "r-sichuan-mid",
     "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
     "destination": "四川",
+    "overseas": false,
     "days": 6,
     "priceFrom": 19800,
     "hotelLevel": "五星精选",
@@ -192,7 +199,11 @@
       "家庭",
       "银发"
     ],
-    "maxAltitude": 3550
+    "maxAltitude": 3550,
+    "intensity": {
+      "level": "适中",
+      "hardest": "第 4 天九寨沟栈道步行控制在五公里内，随时可乘车；第 5 天黄龙坐索道上到约 3500 米，再沿木栈道缓步约四十分钟到五彩池；第 2 天步行走完都江堰古堰"
+    }
   },
   {
     "aliases": [
@@ -201,6 +212,7 @@
     "id": "r-tibet-lux",
     "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
     "destination": "西藏",
+    "overseas": false,
     "days": 9,
     "priceFrom": 68800,
     "hotelLevel": "顶级野奢",
@@ -216,7 +228,8 @@
       "西藏",
       "顶奢",
       "松赞系列",
-      "文化深度"
+      "文化深度",
+      "蜜月"
     ],
     "itinerary": [
       {
@@ -303,7 +316,11 @@
       "蜜月",
       "商务"
     ],
-    "maxAltitude": 5190
+    "maxAltitude": 5190,
+    "intensity": {
+      "level": "适中",
+      "hardest": "全程在海拔三千米以上；第 2 天登布达拉宫；第 3 天哲蚌寺沿石阶上行；第 8 天翻那根拉山口后，在纳木错迎宾石步道走约一小时"
+    }
   },
   {
     "aliases": [
@@ -312,6 +329,7 @@
     "id": "r-tibet-mid",
     "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
     "destination": "西藏",
+    "overseas": false,
     "days": 7,
     "priceFrom": 26800,
     "hotelLevel": "五星精选",
@@ -399,15 +417,21 @@
     "segments": [
       "家庭"
     ],
-    "maxAltitude": 5200
+    "maxAltitude": 5200,
+    "intensity": {
+      "level": "较累",
+      "hardest": "第 2 天布达拉宫沿之字石阶缓行上到白宫；第 5 天一路爬升到珠峰大本营，夜宿帐篷营地（配氧气瓶）；第 7 天约四小时车程返拉萨；全程在高原上"
+    }
   },
   {
     "aliases": [
-      "滇西北"
+      "滇西北",
+      "滇西"
     ],
     "id": "r-yunnan-lux",
     "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
     "destination": "云南",
+    "overseas": false,
     "days": 8,
     "priceFrom": 45800,
     "hotelLevel": "顶级野奢",
@@ -423,7 +447,8 @@
       "云南",
       "雪山",
       "松赞环线",
-      "私人管家"
+      "私人管家",
+      "蜜月"
     ],
     "itinerary": [
       {
@@ -503,15 +528,21 @@
       "蜜月",
       "家庭"
     ],
-    "maxAltitude": 4200
+    "maxAltitude": 4200,
+    "intensity": {
+      "level": "较累",
+      "hardest": "第 3 天随护林员在冷杉林里追踪滇金丝猴近两小时；第 5 天换观光车后步行到莲花寺台地看明永冰川；第 7 天普达措属都湖木栈道徒步一小时、纳帕海骑马；第 4 天翻白马雪山垭口（约 4200 米）"
+    }
   },
   {
     "aliases": [
-      "滇西北"
+      "滇西北",
+      "滇西"
     ],
     "id": "r-yunnan-mid",
     "title": "云南 丽江大理·洱海古城 6 日",
     "destination": "云南",
+    "overseas": false,
     "days": 6,
     "priceFrom": 16800,
     "hotelLevel": "五星精选",
@@ -594,12 +625,17 @@
       "家庭",
       "银发"
     ],
-    "maxAltitude": 4500
+    "maxAltitude": 4500,
+    "intensity": {
+      "level": "适中",
+      "hardest": "第 2 天坐冰川大索道上到约 4500 米观景台，下山后步行蓝月谷；第 4 天骑行穿过千亩稻田到海舌生态公园"
+    }
   },
   {
     "id": "r-guizhou",
     "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
     "destination": "贵州",
+    "overseas": false,
     "days": 6,
     "priceFrom": 15800,
     "hotelLevel": "五星精选",
@@ -615,7 +651,8 @@
       "贵州",
       "非遗手作",
       "山地摄影",
-      "小众人文"
+      "小众人文",
+      "亲子"
     ],
     "itinerary": [
       {
@@ -682,7 +719,11 @@
       "亲子",
       "银发"
     ],
-    "maxAltitude": 1200
+    "maxAltitude": 1200,
+    "intensity": {
+      "level": "适中",
+      "hardest": "第 2 天小七孔景区内步行游览，行程没写步行距离（景区观光车含在费用里）；第 3 天走茂兰原始森林青龙潭步道；第 5 天落日前、第 6 天天亮前各登一次西江一号观景台"
+    }
   },
   {
     "aliases": [
@@ -691,6 +732,7 @@
     "bestSeason": "3月-5月、9月-11月",
     "days": 5,
     "destination": "西安",
+    "overseas": false,
     "exclusions": [
       "往返西安的大交通（机票或高铁）及行李超重费用",
       "单房差（如需单独用房）",
@@ -758,7 +800,8 @@
       "西安",
       "历史人文",
       "学者随行",
-      "博物馆特展"
+      "博物馆特展",
+      "亲子"
     ],
     "title": "西安 兵马俑·大唐不夜城 5 日",
     "segments": [
@@ -767,12 +810,17 @@
       "亲子",
       "商务"
     ],
-    "maxAltitude": 500
+    "maxAltitude": 500,
+    "intensity": {
+      "level": "轻松",
+      "hardest": "以博物馆和城区参观为主；第 1 天傍晚登城墙散步到钟鼓楼，第 3 天登大雁塔、夜里步行逛大唐不夜城"
+    }
   },
   {
     "id": "r-beijing",
     "title": "北京 故宫深度·长城秘境 5 日",
     "destination": "北京",
+    "overseas": false,
     "days": 5,
     "priceFrom": 28800,
     "hotelLevel": "顶级奢华",
@@ -847,12 +895,17 @@
       "银发",
       "商务"
     ],
-    "maxAltitude": 1150
+    "maxAltitude": 1150,
+    "intensity": {
+      "level": "较累",
+      "hardest": "第 3 天箭扣野长城：持证向导带队，沿未修缮的墙体走约三小时下到慕田峪，再坐索道下山；第 2 天故宫整日步行，闭馆后登景山万春亭；第 4 天清晨再走慕田峪十四至二十号敌楼"
+    }
   },
   {
     "id": "r-xinjiang-lux",
     "title": "新疆 喀什帕米尔·禾木喀纳斯南北疆纵贯 10 日",
     "destination": "新疆",
+    "overseas": false,
     "days": 10,
     "priceFrom": 52800,
     "hotelLevel": "顶级野奢",
@@ -962,7 +1015,11 @@
       "家庭",
       "商务"
     ],
-    "maxAltitude": 4100
+    "maxAltitude": 4100,
+    "intensity": {
+      "level": "较累",
+      "hardest": "第 3 天沿中巴公路上到约 3600 米的喀拉库勒湖，当晚住塔什库尔干；第 4 天天没亮登石头城遗址；第 8 天骑马溯禾木河；第 9 天天未亮登观景台、午后登观鱼台；10 天里疆内飞四段"
+    }
   },
   {
     "aliases": [
@@ -971,6 +1028,7 @@
     "id": "r-sanya",
     "title": "三亚亲子奢华度假 5 日",
     "destination": "三亚",
+    "overseas": false,
     "days": 5,
     "priceFrom": 15800,
     "hotelLevel": "奢华度假村",
@@ -1045,12 +1103,17 @@
       "家庭",
       "银发"
     ],
-    "maxAltitude": 50
+    "maxAltitude": 50,
+    "intensity": {
+      "level": "轻松",
+      "hardest": "以酒店和水上乐园为主；第 3 天私人游艇出海，教练一对一带浮潜"
+    }
   },
   {
     "id": "r-xinjiang",
     "title": "新疆伊犁·独库公路越野摄影 9 日",
     "destination": "新疆",
+    "overseas": false,
     "days": 9,
     "priceFrom": 19800,
     "hotelLevel": "五星+特色野奢营地",
@@ -1151,7 +1214,11 @@
     "segments": [
       "家庭"
     ],
-    "maxAltitude": 3500
+    "maxAltitude": 3500,
+    "intensity": {
+      "level": "较累",
+      "hardest": "第 2 到第 6 天每天转场赶路，第 5 天翻越玉希莫勒盖达坂、第 6 天全天穿越独库公路南段；第 3 天清晨五点出发拍日出；第 4 天那拉提骑马深度线"
+    }
   },
   {
     "aliases": [
@@ -1161,6 +1228,7 @@
     "id": "r-bali",
     "title": "巴厘岛乌布雨林蜜月 6 日",
     "destination": "巴厘岛",
+    "overseas": true,
     "days": 6,
     "priceFrom": 22800,
     "hotelLevel": "奢华度假村",
@@ -1240,12 +1308,17 @@
       "蜜月",
       "家庭"
     ],
-    "maxAltitude": 600
+    "maxAltitude": 600,
+    "intensity": {
+      "level": "轻松",
+      "hardest": "第 2 天清晨五点半出发去梯田做日出瑜伽，上午丛林秋千；第 3 天圣泉寺净化仪式、步行乌布皇宫与市集"
+    }
   },
   {
     "id": "r-japan",
     "title": "日本京都东京美学之旅 7 日",
     "destination": "日本",
+    "overseas": true,
     "days": 7,
     "priceFrom": 32800,
     "hotelLevel": "奢华旅馆+五星",
@@ -1336,7 +1409,11 @@
       "银发",
       "商务"
     ],
-    "maxAltitude": 100
+    "maxAltitude": 100,
+    "intensity": {
+      "level": "轻松",
+      "hardest": "以城市漫步和美术馆为主；第 2 天清晨走天龙寺和嵯峨野竹林，午后穿和服跟拍两小时；第 3 天沿哲学之道步行到南禅寺"
+    }
   },
   {
     "aliases": [
@@ -1346,6 +1423,7 @@
     "id": "r-aurora",
     "title": "北欧芬兰极光玻璃屋 8 日",
     "destination": "北欧极光",
+    "overseas": true,
     "days": 8,
     "priceFrom": 46800,
     "hotelLevel": "极光玻璃屋+五星",
@@ -1441,7 +1519,11 @@
       "亲子",
       "家庭"
     ],
-    "maxAltitude": 550
+    "maxAltitude": 550,
+    "intensity": {
+      "level": "适中",
+      "hardest": "在北极圈内，要穿全套极地防寒装备；第 3 天驾驶驯鹿雪橇、烟熏桑拿与冰湖冷浴；第 4 天哈士奇雪橇；第 5 天穿漂浮服下冰海仰漂；第 7 天雪地摩托"
+    }
   },
   {
     "aliases": [
@@ -1450,6 +1532,7 @@
     "id": "r-maldives",
     "title": "马尔代夫 Soneva Jani 蜜月 6 日",
     "destination": "马尔代夫",
+    "overseas": true,
     "days": 6,
     "priceFrom": 52800,
     "hotelLevel": "顶级奢华度假岛",
@@ -1530,7 +1613,11 @@
       "蜜月",
       "家庭"
     ],
-    "maxAltitude": 10
+    "maxAltitude": 10,
+    "intensity": {
+      "level": "轻松",
+      "hardest": "以海岛度假为主，浮潜、出海都在岛上安排；第 2 天坐约四十分钟水上飞机上岛"
+    }
   },
   {
     "aliases": [
@@ -1539,6 +1626,7 @@
     "id": "r-swiss",
     "title": "瑞士冰川快车全景环线 9 日",
     "destination": "瑞士",
+    "overseas": true,
     "days": 9,
     "priceFrom": 62800,
     "hotelLevel": "奢华山地酒店",
@@ -1642,7 +1730,11 @@
       "家庭",
       "银发"
     ],
-    "maxAltitude": 3571
+    "maxAltitude": 3571,
+    "intensity": {
+      "level": "适中",
+      "hardest": "多数日子坐火车、缆车；第 6 天天未亮坐日出专列上到约 3089 米观景台，午后沿五湖线徒步到苏内加；第 8 天上少女峰斯芬克斯观景台（约 3571 米）"
+    }
   },
   {
     "aliases": [
@@ -1651,6 +1743,7 @@
     "id": "r-maldives-mid",
     "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
     "destination": "马尔代夫",
+    "overseas": true,
     "days": 6,
     "priceFrom": 35800,
     "hotelLevel": "五星",
@@ -1730,7 +1823,11 @@
       "蜜月",
       "家庭"
     ],
-    "maxAltitude": 10
+    "maxAltitude": 10,
+    "intensity": {
+      "level": "适中",
+      "hardest": "第 3 天坐水上飞机到南阿里环礁外海追踪鲸鲨浮潜；第 5 天随海洋生物学家夜潜看蝠鲼；其余以海岛度假为主"
+    }
   },
   {
     "aliases": [
@@ -1739,6 +1836,7 @@
     "id": "r-maldives-lite",
     "title": "马尔代夫 中央格兰德·一价全包海岛5日",
     "destination": "马尔代夫",
+    "overseas": true,
     "days": 5,
     "priceFrom": 28800,
     "hotelLevel": "五星",
@@ -1752,7 +1850,8 @@
     "tags": [
       "海岛",
       "入门",
-      "一价全包"
+      "一价全包",
+      "蜜月"
     ],
     "itinerary": [
       {
@@ -1811,12 +1910,17 @@
       "蜜月",
       "家庭"
     ],
-    "maxAltitude": 10
+    "maxAltitude": 10,
+    "intensity": {
+      "level": "轻松",
+      "hardest": "以海岛度假为主，家礁浮潜、风帆、桨板、皮划艇都在岛边潟湖"
+    }
   },
   {
     "id": "r-japan-family",
     "title": "日本 东京迪士尼·大阪环球双乐园亲子7日",
     "destination": "日本",
+    "overseas": true,
     "days": 7,
     "priceFrom": 26800,
     "hotelLevel": "五星",
@@ -1902,6 +2006,10 @@
       "亲子",
       "家庭"
     ],
-    "maxAltitude": 100
+    "maxAltitude": 100,
+    "intensity": {
+      "level": "适中",
+      "hardest": "第 2、3 天迪士尼两个园区、第 5 天环球影城，都是整天在园区里走（有快速通行）；第 6 天奈良公园喂鹿、参观东大寺"
+    }
   }
 ]
