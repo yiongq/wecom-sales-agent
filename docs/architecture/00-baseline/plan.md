@@ -2,7 +2,7 @@
 
 对应 [spec.md](./spec.md)。本文件只记步骤和状态，不复述设计。每一步结束时仓库都是绿的：`pnpm format:check && pnpm lint && pnpm typecheck && pnpm test`。粗估共约 5–6 人日，每步的估计写在步骤后面。
 
-- [ ] 1. 公开边界与门禁（spec「门禁」「CI 与部署」前两节；约 1.5 人日）。这个 PR 是 00 的第一次推送，公开边界检查必须随它一起进仓库和 CI。开放问题 2 已定：demo 地址只留在 README「在线体验」一节，词表不收它。开工前，owner 已把内容黑名单词表放进本机 `.sensitive-patterns` 和仓库 secret `SENSITIVE_PATTERNS`。按下面的顺序提交，每个提交都要过 pre-commit，不绕过 hook：
+- [x] 1. 公开边界与门禁（spec「门禁」「CI 与部署」前两节；约 1.5 人日）。这个 PR 是 00 的第一次推送，公开边界检查必须随它一起进仓库和 CI。开放问题 2 已定：demo 地址只留在 README「在线体验」一节，词表不收它。开工前，owner 已把内容黑名单词表放进本机 `.sensitive-patterns` 和仓库 secret `SENSITIVE_PATTERNS`。按下面的顺序提交，每个提交都要过 pre-commit，不绕过 hook：
   1. 依赖与配置：装 `oxfmt@0.68`、`oxlint@1.83`、`lefthook@2.1`、`@commitlint/cli`、`@commitlint/config-conventional`，都钉精确版本，提交 lockfile；加 `prepare` 脚本并跑 `lefthook install`，实测它在 `docker build` 和 `git archive` 出来的目录里不会让 `pnpm install` 失败；oxfmt、oxlint 的配置文件（`printWidth` 在 100 / 120 / 140 里实测，取首次 diff 最小的，行数记进实施记录；排除 `data/sop.md`、`pnpm-lock.yaml`）；公开边界检查脚本（路径黑名单按 spec 全列，包括 ADR-003 决策 4 的三类：`src/packs/` 下 `travel`、`ecommerce-aftersales` 以外的子目录，根目录的 `tenants/`，`eval/real/`），`lint` 暂时只跑它；`.gitignore` 加 `.sensitive-patterns`；`ci.yml` 注入 `SENSITIVE_PATTERNS`，加钉版本的 gitleaks 一步。`format:check` 仍是占位。对全历史跑一次 gitleaks，结果和 `.gitleaksignore` 每条的理由记进实施记录。
   2. 前缀测试的断言 1、2、4（spec「前缀稳定测试」）：`engine.ts` 导出 `promptPrefix()`，`engine.selftest.ts` 的假模型服务记下原始 body。把这时的 `PREFIX sha256` 记进实施记录，它就是「00 开始前」的值。
   3. `fix(lint): …`：lint 首次命中按 spec 的取舍处理；同一个提交把 `lint` 切成 `oxlint --deny-warnings` 加公开边界检查。
@@ -105,8 +105,8 @@
 - 1b · 通过 · 51 字符的标题被 commitlint 拒（header-max-length），正好 50 字符的通过。带 `Co-Authored-By: Claude` 的提交被拒，fixup! 和合并形式的提交信息也被 no-ai-coauthor 拒。
 - 1c · 通过（本地部分）· 干净 clone 上四个门禁全绿。每个门禁各造一处失败，对应命令都以非零退出；ci.yml 里每个门禁是单独一步，没有 `continue-on-error`。PR 上 CI 变红，待第一次推送后确认。
 - 1d · 通过 · `git archive` 解出的目录里 `pnpm install --frozen-lockfile` 成功，`prepare` 什么也不做，四个门禁也全绿。`docker build` 同样成功。
-- 2a · 待合并 · 合进 `dev` 后核对。
-- 2b · 通过（分支上）· 用 `--ignore-revs-file` 做 blame，`292dc6d` 改过的行都指回更早的提交（例如 `engine.ts:11` 指回 `2ffbc159`，`README.md:13` 指回 `d71ef1c6`）；`engine.ts` 里仍有 7 行 git 无法对应到更早的行。合并后在 `dev` 上再核一次。
+- 2a · 通过 · PR #2 以 merge commit 合进 `dev`（`c9eb37b`）；`git merge-base --is-ancestor 292dc6d origin/dev` 成立，`dev` 上 `.git-blame-ignore-revs` 记的就是它的完整 sha。
+- 2b · 通过（分支上）· 用 `--ignore-revs-file` 做 blame，`292dc6d` 改过的行都指回更早的提交（例如 `engine.ts:11` 指回 `2ffbc159`，`README.md:13` 指回 `d71ef1c6`）；`engine.ts` 里仍有 7 行 git 无法对应到更早的行。合并后在 `dev` 上复核：`engine.ts:11`、`README.md:13`、`data/hotels.json:23` 分别指回 `2ffbc159`、`d71ef1c6`、`c8e6ce2`。
 - 2c · 通过 · 在 `9fec91c` 上重跑 oxfmt，结果与 `292dc6d` 的树逐字节相同。四个点的 PREFIX 和 49 行结果摘要都相同。
 - 10b · 通过（第一个值）· 见实施记录。00 结束时的值由第 9 步补记。
 - 10c · 通过 · 把 `data/sop.md` 的一个「。」改成「，」后测试照过，system 哈希变成 `b15209db…157e`，tools 不变。
@@ -114,7 +114,7 @@
 - 11b · 通过 · 用自造的词表测试：命中只报「文件:行号」；同一行多处命中只报一次；最后一行没有换行、CRLF、中文路径、只在暂存区里的内容都查得到；PNG 不崩。
 - 11c · 通过 · 一次性 clone 里造了假 `ghp_` 令牌和假 AWS 密钥，用 CI 同一版本、同一条命令扫描：PR 形式、push 形式、单个 sha 形式都以 1 退出（leaks found: 3），输出里只有 REDACTED。不含假提交的区间以 0 退出。没有推送到任何远端。
 - 11d · 通过 · 见实施记录。
-- 11e · 待 owner · 手动项。
+- 11e · 部分通过 · 2026-09-25 经 owner 同意，用 `gh api` 打开了 secret scanning 和 push protection（`security_and_analysis` 两项均为 enabled），当时没有告警。在私有测试仓库里验证推送被拒这一半没有做（owner 没有要求）。
 
 ## 起草记录（2026-09-25）
 
@@ -124,13 +124,10 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1 步的全部提交，都在分支 `chore/gates-public-boundary` 上（见实施记录）。
-- 半成品：无。第 1 步没有勾选，还差合并和两项手动：
-  - PR 合进 `dev`，只能用「Create a merge commit」。
-  - 合并后在 `dev` 上确认 `292dc6d` 是 `dev` 的祖先，并跑一次 blame 核对（验收 2a、2b）。
-  - 手动：仓库设置里打开 secret scanning 和 push protection，并在私有测试仓库里验证一次推送被拒（验收 11e）。
+- 已完成：第 1 步。PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 半成品：无。
 - 阻塞：无。
-- 下一步：第 2 步，基线补测。
+- 下一步：第 2 步，基线补测（分支 `test/00-baseline-coverage`）。
 
 ## Open
 
