@@ -3,6 +3,7 @@
 //   · 分段把 URL 从中间劈开 → 客户收到两条点不开的残缺网址
 //   · 按整行剥离链接 → 报价/支付链接被连带吞掉
 //   · 一条消息里两个链接硬做卡片 → 第二条（往往是支付链接）永久丢失
+//   · markdown 原样发出 → 微信不渲染，客户看到一堆 ** 和 #；去得太狠 → 价格、链接、句中的 # 被误伤
 //   · 状态文件丢失/损坏 → 把近 3 天的旧消息全回一遍
 //   · 同步锁包住 LLM 处理 → 一个客户的慢回复拖住所有人，新客户欢迎语过期
 //   · SIGTERM 立即退出 → 处理到一半的消息重启后被当成「已处理」，客户永远等不到回复
@@ -30,7 +31,7 @@ process.env.PUBLIC_BASE_URL = ''; // 不走链接卡片（缩略图上传），�
 const { __test, syncFromCallback, wecomAdapter } = await import('./wecom.js');
 const { runShutdownHooks, getSession, getOrCreateSession, saveSession, createOrder } = await import('../store.js');
 
-const { splitForWecom, extractCard, stripLink } = __test;
+const { splitForWecom, extractCard, stripLink, wechatify } = __test;
 const BASE = 'https://travel.example.com'; // 占位域名：自测只关心 URL 形态，与真实部署无关
 
 let pass = 0;
@@ -298,6 +299,54 @@ for (const [name, body, from, to] of LEFTOVER_CASES) {
   check('支付卡片日期写成「10月12日出发」', same?.desc === '2 位出行 · 10月12日出发 · 合计 ¥34,760', `得到「${same?.desc}」`);
   const next = extractCard(`· 支付链接：/pay/${mk(`${y + 1}-01-05`).id}`, BASE);
   check('跨年的出发日期带年份', next?.desc === `2 位出行 · ${y + 1}年1月5日出发 · 合计 ¥34,760`, `得到「${next?.desc}」`);
+}
+
+// ---------------- 去 markdown：微信客服是纯文本，符号会原样露给客户 ----------------
+// wechatify 是企微出口的最后一道（spec 不变量 21 的企微部分）。引擎出口只去 `**`、「# 」和 -/* 列表符，
+// 不带空格的「#标题」、斜体、代码围栏、行内代码、当列表符用的 emoji 都靠这里。
+// 每条写成「模型原文 → 客户收到的正文」，整条比对；列表符统一换成「·」。
+const MARKDOWN_CASES: [name: string, input: string, want: string][] = [
+  ['加粗', '人均 **15,800** 起，**两人合计 31,600**', '人均 15,800 起，两人合计 31,600'],
+  ['「# 标题」井号后带空格', '# 贵州 6 日行程\n第一天抵达贵阳', '贵州 6 日行程\n第一天抵达贵阳'],
+  ['「#标题」井号后不带空格', '#贵州 6 日行程\n第一天抵达贵阳', '贵州 6 日行程\n第一天抵达贵阳'],
+  ['多级标题', '## 行程亮点\n### 第一天', '行程亮点\n第一天'],
+  ['斜体', '国庆是*旺季*，价格会上浮', '国庆是旺季，价格会上浮'],
+  [
+    '代码围栏只去围栏行、保留内容',
+    '订单信息如下：\n```\n线路：三亚 5 日\n```\n名额以付款为准',
+    '订单信息如下：\n\n线路：三亚 5 日\n\n名额以付款为准',
+  ],
+  ['带语言标记的代码围栏', '```text\n出发：10月12日\n```', '出发：10月12日'],
+  ['行内代码', '订单号是 `ord_x1`，付款后顾问联系您', '订单号是 ord_x1，付款后顾问联系您'],
+  ['行首 emoji 当列表符', '🌟 小七孔开园首波入园\n🏨 宿丹寨温泉酒店', '· 小七孔开园首波入园\n· 宿丹寨温泉酒店'],
+  ['行首带变体选择符的 emoji 当列表符', '✈️ 贵阳直飞往返\n☀️ 十月天气晴好', '· 贵阳直飞往返\n· 十月天气晴好'],
+  ['行首 - / * 列表符', '- 含早餐\n* 含门票', '· 含早餐\n· 含门票'],
+  ['多余空行折叠成一个', '第一段\n\n\n\n第二段', '第一段\n\n第二段'],
+  [
+    '整段混排',
+    '## 贵州 6 日方案\n\n**亮点**\n- 小七孔开园首波入园\n- 宿丹寨温泉酒店\n\n#费用\n人均 15,800 起',
+    '贵州 6 日方案\n\n亮点\n· 小七孔开园首波入园\n· 宿丹寨温泉酒店\n\n费用\n人均 15,800 起',
+  ],
+];
+for (const [name, input, want] of MARKDOWN_CASES) {
+  const got = wechatify(input);
+  check(`去 markdown：${name}`, got === want, `得到「${got}」`);
+}
+// 去得太狠同样是事故：价格、链接、时间、句中的 # 和 emoji 被吃掉，客户读到的就是错的
+const PLAIN_CASES: [name: string, text: string][] = [
+  ['句中的 #', '房间号 #1203，下午 3:00 入住'],
+  ['价格与千分位', '人均 ¥15,800 起，两人合计 ¥31,600（含税）'],
+  ['站内链接与完整 URL', '支付链接：/pay/ord_x1，方案书：https://travel.example.com/proposal/r-guizhou/2/2026-10-12'],
+  ['日期与时间', '10月12日 08:30 集合，18:00 前返回酒店'],
+  ['中文标点', '好的！国庆人多——建议早订；「标准间」含早餐……名额以付款为准。'],
+  ['句中 emoji', '订好啦 🎉 祝旅途愉快～'],
+  ['行首 emoji 后不跟空格', '🎉订单已创建'],
+  ['行首的负号', '-5℃ 的早晚要带羽绒服'],
+  ['段落间的空行', '第一段\n\n第二段'],
+];
+for (const [name, text] of PLAIN_CASES) {
+  const got = wechatify(text);
+  check(`去 markdown 不误伤正文：${name}`, got === text, `得到「${got}」`);
 }
 
 // ======================================================================
@@ -783,6 +832,6 @@ if (fails.length) {
   for (const f of fails.slice(0, 20)) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`WECOM SELFTEST PASS: ${pass} 项断言全通（分段 / 卡片 / 冷启动 / 跨客户不排队 / 优雅停机 / 在途重放）`);
+console.log(`WECOM SELFTEST PASS: ${pass} 项断言全通（分段 / 卡片 / 去 markdown / 冷启动 / 跨客户不排队 / 优雅停机 / 在途重放）`);
 // 显式退出：「死在半路」的场景故意留下永不返回的假请求，不让它们成为悬念
 process.exit(0);
