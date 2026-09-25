@@ -40,14 +40,17 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          # gitleaks 8.30.1 在 git log 报错（区间不存在）时照样以 0 退出、报「0 commits scanned」，所以区间两端先验过
           if [ "$EVENT" = pull_request ]; then
+            git rev-parse --verify -q "origin/${BASE_REF}^{commit}" >/dev/null || { echo "gitleaks: origin/${BASE_REF} 不存在"; exit 1; }
             range="origin/${BASE_REF}..HEAD"
           elif [ -n "$BEFORE" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             range="${BEFORE}..${GITHUB_SHA}"
           else
             range="${GITHUB_SHA}"
           fi
-          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --log-opts="$range" .
+          # -m：只在合并提交里出现的改动（例如解冲突时加进来的）也要扫；-v 列出位置，内容仍由 --redact 遮住
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact -v --log-opts="-m $range" .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
