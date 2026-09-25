@@ -32,6 +32,7 @@ import {
 } from './price-guard.js';
 import { BUDGET_LIFTED, dropUnbackedClaims, liftsBudget } from './price-rules.js';
 import { numEnv, todayIso } from './env.js';
+import { profile } from './profile.js';
 
 // 阶段排序，用于「只前进不倒退」地推导销售阶段（handoff/paid 另行处理）
 const STAGE_RANK: Record<SalesStage, number> = {
@@ -3217,9 +3218,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
   // 这是演示项目，拿手机微信反复走流程是主要用法（2026-09 曾限定为仅网页，被要求改回）。
-  // 代价要心里有数：接真实客户后，客户发一句「重新开始」就会绕过人工、清空聊天记录、
-  // 连已支付订单一起删掉。真用于生产时应重新收紧到测试白名单。
-  if (/^\s*(重置|重新开始|重来|清空会话|reset)\s*$/i.test(text)) {
+  // 代价是接真实客户后，客户发一句「重新开始」就会绕过人工、清空聊天记录、连已支付订单一起删掉，
+  // 所以 prod 用 reset_command 开关把它关掉：口令按普通客户消息处理，见下方转人工静默之后的固定回复
+  const isReset = /^\s*(重置|重新开始|重来|清空会话|reset)\s*$/i.test(text);
+  if (isReset && profile().flags.reset_command) {
     session.stage = 'greeting';
     session.profile = {};
     session.messages = [];
@@ -3257,6 +3259,15 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     session.stage = 'handoff';
     saveSession(session); // 客户消息已在上方入库
     return { text: '', stage: 'handoff', handoff: true, silent: true };
+  }
+
+  // 重置口令被 reset_command 关掉（prod）：已入库、已转人工时照常静默（上面），否则回一句固定话术，
+  // 不调模型，阶段、画像、订单一概不动。交给模型的话，它可能顺着口令说「已经清空、重新开始」，会话其实什么都没变
+  if (isReset) {
+    const reply = '想换方向或改订单，直接告诉我新的需求就行～';
+    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    saveSession(session);
+    return { text: reply, stage: session.stage };
   }
 
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
