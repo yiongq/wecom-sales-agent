@@ -12,7 +12,7 @@
   - 合进 `dev` 只能用「Create a merge commit」。合并后在 `dev` 上确认 `.git-blame-ignore-revs` 里的 sha 是 `dev` 的祖先，并跑一次 blame 核对。
   - 手动：在仓库设置里打开 secret scanning 和 push protection，在私有测试仓库里验证一次推送被拒。
   - 对应验收 1a–1d、2、11、10b 的第一个值。
-- [ ] 2. 基线补测（spec「不变量」里标「本阶段补」的各条；约 1 人日）。只加断言和仅供测试的导出，不改任何行为；每条新断言先在当前代码上跑绿：
+- [x] 2. 基线补测（spec「不变量」里标「本阶段补」的各条；约 1 人日）。只加断言和仅供测试的导出，不改任何行为；每条新断言先在当前代码上跑绿：
   - `server.selftest.ts`：三个管理写接口的 401（缺凭据、凭据错）、503（没配 `ADMIN_PASS`）、403（带 `sec-fetch-site: cross-site` 头）；三个 LLM 计费读端点的 401、503；`POST /api/chat` 带 `wecom:` 前缀的 id 返回 400；把订单状态直接设成 cancelled 后付款返回 409；对已付款的订单再调一次付款接口，不再推送；`pruneStaleVisitorData` 只清闲置的 `sim-` / simulator 会话，真实企微会话、种子会话、有已付订单的访客会话都在；用 `getOrCreateSession` 造出超过上限的访客会话，淘汰的是最旧的、有已付订单的不动；`freshenDemoData` 只平移种子会话和它们的订单，`DEMO_FRESHEN=0` 时不动。
   - `engine.selftest.ts`：`createQuote` 的算价向量；假模型输出 `**加粗**`、`# 标题`、`- 列表` 时客户收到的正文；已支付的会话调了 `search_routes` 后阶段为 recommend；同一会话并发两条消息，第二条的模型请求里看得到第一条的回复。
   - `adapters/wecom.selftest.ts`：`wechatify` 的向量（含 `# 标题` 和 `#标题`），为此在 `__test` 里加导出。
@@ -95,6 +95,25 @@
   - CI 的 gitleaks：PR 扫 `origin/<base>..HEAD`，扫之前先验 base 存在，因为 8.30.1 遇到不存在的区间也以 0 退出。push 扫 `before..sha`，before 全零或不可达时扫到根。参数带 `-m`（合并提交里才出现的改动也扫）、`-v`、`--redact`。
   - pre-commit 的 `format:check` 查全仓，不只查暂存的文件，比 spec 严，保留。
 
+### 第 2 步（2026-09-25，分支 `test/00-baseline-coverage`）
+
+- 做法：四个自测文件由四个 agent 在各自的 worktree 里并行补断言，再由另外的 agent 逐项做变异测试（故意改坏被测的行为，确认新断言失败，再还原），审查提出的问题修一轮后，cherry-pick 到本分支。提交：`483f59f`、`68bd54c`（server），`ed38e23`、`e1b9b81`（engine），`baffaa4`、`1947ee3`（wecom），`aa8a476`、`46df577`（llm）。
+- 只加了断言和一处仅供测试的导出（`adapters/wecom.ts` 的 `__test` 加上 `wechatify`），没有改任何行为，也没有改任何已有断言；改动的只有各组的 PASS 汇总行和 import 行（验收 3a）。
+- 断言数：server 72 → 138，wecom 408 → 434；engine 多了 createQuote、去 markdown、同会话串行三块；llm 多了沉默跟进边界一块。PREFIX 哈希不变，完整测试连跑两遍结果相同。
+- 「本阶段补」的不变量指向的断言（验收 14 的一部分）：
+  - 1 → `engine.selftest.ts`「createQuote 算价向量」一块（最佳季 3 人与 4 人、非最佳季、跨年最佳季、全年同价、上浮后取整、总价）。
+  - 6（cancelled）、7 → `server.selftest.ts`「已取消的订单：付款接口返回 409」「已付款的订单再调付款接口：不再推送跟进」。
+  - 9（新旅程的正向一半）→ `engine.selftest.ts`「已支付的会话调了 search_routes，视为新旅程，阶段为 recommend」。
+  - 20（前面几条边界）→ `llm.selftest.ts`「沉默跟进只追未转人工、未支付、非种子的企微会话……同一阶段只追一次，全程最多 2 次」。另外钉住了 spec 没写的全程上限（`FOLLOWUP_MAX_PER_SESSION` 默认 2）。
+  - 21 → `engine.selftest.ts`「只去符号，文字要留着」一组（网页、企微两个渠道）；`adapters/wecom.selftest.ts` 的 `wechatify` 向量表（含「# 标题」和「#标题」，以及不误伤价格、时间、链接、标点的行）。
+  - 26 → `engine.selftest.ts`「同一会话并发两条消息，第二条的模型请求里要看得到第一条的回复」。
+  - 27 → `server.selftest.ts`「POST /api/chat 带 wecom: 前缀的会话 id 返回 400」。
+  - 28 → `server.selftest.ts`「访客清理：……」「访客总量上限：……」两组。
+  - 30 → `server.selftest.ts`「种子保鲜：……」一组。
+  - 32 → `server.selftest.ts`「管理写接口 …：缺凭据 401 / 凭据错 401 / 服务端没配 ADMIN_PASS 返回 503 / 带 sec-fetch-site: cross-site 返回 403」。
+  - 33 → `server.selftest.ts`「LLM 计费读端点 …：缺凭据 401 / 凭据错 401 / 服务端没配 ADMIN_PASS 返回 503 / 不做同源校验」。
+- 这里取定的：`ADMIN_PASS`、`DEMO_FRESHEN` 都是用到时才读，测试在进程内临时改、用完恢复；`VISITOR_SESSION_MAX=100`、`DEMO_PRUNE_HOURS=24` 在 import 之前设好。保鲜的正向用例先删掉 `DEMO_FRESHEN`，本机 `.env` 里写着 `DEMO_FRESHEN=0` 也不影响。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
@@ -124,14 +143,15 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1 步。PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 已完成：第 1、2 步。第 2 步在分支 `test/00-baseline-coverage` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
 - 半成品：无。
 - 阻塞：无。
-- 下一步：第 2 步，基线补测（分支 `test/00-baseline-coverage`）。
+- 下一步：第 3 步，`src/profile.ts` 与 `src/profile-boot.ts`。
 
 ## Open
 
 - `public/*.html` 没有纳入格式化。原因是 `server.selftest.ts` 和 `adapters/wecom.selftest.ts` 从页面里抽取脚本源码时，匹配依赖引号风格、缩进和函数签名；格式化后「chat.html 有 stripLink()」失败。要纳入，得先让这两组自测不依赖源码的排版。
+- 不变量 1 的「× 0.95 那一步取整」用现有线路数据测不到：20 条线路的 `priceFrom` × 0.95（上浮前后都是）全是整数。要测得加一条测试专用的线路 fixture；现在的向量只覆盖了 × 1.1 之后的取整。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
 ## 交接（YYYY-MM-DD）
