@@ -18,7 +18,7 @@
   - `adapters/wecom.selftest.ts`：`wechatify` 的向量（含 `# 标题` 和 `#标题`），为此在 `__test` 里加导出。
   - `llm.selftest.ts`：沉默跟进的边界：已转人工、已支付、种子会话、网页访客都不跟，同一阶段只跟一次。
   - 对应验收 3a、14 的一部分。
-- [ ] 3. `src/profile.ts` 与 `src/profile-boot.ts`（spec「接口与数据流 · 部署 profile」「部署 profile 与开关」的环境变量、启动、测试隔离；约 0.5 人日）：
+- [x] 3. `src/profile.ts` 与 `src/profile-boot.ts`（spec「接口与数据流 · 部署 profile」「部署 profile 与开关」的环境变量、启动、测试隔离；约 0.5 人日）：
   - `resolveProfile`、`capFlags`、`profile()`、`__profileTest`；空串当未设置；`DEMO_FRESHEN` 的读取从 `store.ts` 挪进来，`freshenDemoData` 改读 `seed_freshen`，demo 下行为不变。
   - `server.ts` 在 `import './env.js'` 之后紧接着 `import './profile-boot.js'`：打出一行 profile 和开关，配置错误时打一行原因并退出。
   - 六组自测和 `eval/run.ts` 在 import 业务模块之前设好 `DEPLOY_PROFILE=demo`，并把 `FLAG_*`、`DEMO_FRESHEN` 设成空串。
@@ -114,6 +114,19 @@
   - 33 → `server.selftest.ts`「LLM 计费读端点 …：缺凭据 401 / 凭据错 401 / 服务端没配 ADMIN_PASS 返回 503 / 不做同源校验」。
 - 这里取定的：`ADMIN_PASS`、`DEMO_FRESHEN` 都是用到时才读，测试在进程内临时改、用完恢复；`VISITOR_SESSION_MAX=100`、`DEMO_PRUNE_HOURS=24` 在 import 之前设好。保鲜的正向用例先删掉 `DEMO_FRESHEN`，本机 `.env` 里写着 `DEMO_FRESHEN=0` 也不影响。
 
+### 第 3 步（2026-09-26，分支 `feat/00-deploy-profile`）
+
+- 提交：`cbaabb6` 实现，`b41bf7a` 按对抗审查补测试、修 `.env.example`。
+- `src/profile.ts` 是全仓唯一读 `DEPLOY_PROFILE`、`FLAG_*`、`DEMO_FRESHEN` 的地方，也不 import 任何业务模块。`src/profile-boot.ts` 是 `server.ts` 的第二个 import。`freshenDemoData` 改读 `seed_freshen`。
+- 这里取定的：
+  - 「prod 必须配置 ADMIN_PASS」放在 `profile-boot`，不放进 `resolveProfile`（spec 列出的 `resolveProfile` 抛错条件里没有它）。所以 `__profileTest.use({ DEPLOY_PROFILE: 'prod' })` 不需要带密码。
+  - 测试隔离模块是 `src/selftest-env.ts`：六组自测和 `eval/run.ts` 的第一个 import。它把 `PROFILE_ENV_NAMES`（`profile.ts` 导出）全部设成空串，再把 `DEPLOY_PROFILE` 设成 `demo`。
+  - 启动日志的格式：`[profile] <名字> · reset_command=on|off … ai_disclosure=always`。拒绝启动时的格式：`[profile] 配置错误，拒绝启动：<原因>`，退出码 1。
+  - `.env.example` 不预填 `DEPLOY_PROFILE`（只给注释示例），这样照模板复制出来的服务器 `.env` 过不了第 7 步的「必须显式写明」检查。开关的说明写在单独的注释行：env 文件把 `=` 后面的整行都当成值。
+  - 第 2 步的保鲜测试原来靠改 `process.env.DEMO_FRESHEN`，profile 缓存之后改成用 `__profileTest.use` 切换；并补了「seed_freshen 关闭」和「prod 下手动调保鲜」两条。
+- 对抗审查：两个审查者（对照 spec 做变异测试；专找边角问题），每条发现再派一个反驳者。成立的 5 条都在 `b41bf7a` 里补上，补完后逐条把变异打回去，确认测试会失败：把 profile-boot 挪到 store 之后、删掉它、启动日志打印默认值而不是生效值、拒绝启动时不写原因、`profile()` 不缓存。
+- server 自测 138 → 171 项断言；其余各组和 PREFIX 哈希不变。server 自测多了约 7 秒：配置错误的 5 种情况各起一次真正的 `server.ts` 进程。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
@@ -133,6 +146,9 @@
 - 11b · 通过 · 用自造的词表测试：命中只报「文件:行号」；同一行多处命中只报一次；最后一行没有换行、CRLF、中文路径、只在暂存区里的内容都查得到；PNG 不崩。
 - 11c · 通过 · 一次性 clone 里造了假 `ghp_` 令牌和假 AWS 密钥，用 CI 同一版本、同一条命令扫描：PR 形式、push 形式、单个 sha 形式都以 1 退出（leaks found: 3），输出里只有 REDACTED。不含假提交的区间以 0 退出。没有推送到任何远端。
 - 11d · 通过 · 见实施记录。
+- 1e · 通过 · 临时 worktree 里放一份 `.env`（`DEPLOY_PROFILE=prod`、5 个 `FLAG_*=off`、`DEMO_FRESHEN=0`、`ADMIN_PASS`），`pnpm test` 的 50 行结果摘要与没有 `.env` 时逐行相同，自测进程的 profile 仍是 demo（2026-09-26，`cbaabb6`）。
+- 5a · 通过 · 真实的 `server.ts` 进程：`DEPLOY_PROFILE=staging`、prod 加 `FLAG_RESET_COMMAND=on`、prod 没配 `ADMIN_PASS`、`FLAG_AI_DISCLOSURE=on_ask`、`DEMO_FRESHEN=0` 加 `FLAG_SEED_FRESHEN=on`，五种都以 1 退出，只有一行原因，没有异常栈。已写进 `server.selftest.ts`。
+- 5b · 通过 · 正常启动时第一行是 `[profile] prod · reset_command=off … ai_disclosure=always`，打出的是生效值。已写进 `server.selftest.ts`。
 - 11e · 部分通过 · 2026-09-25 经 owner 同意，用 `gh api` 打开了 secret scanning 和 push protection（`security_and_analysis` 两项均为 enabled），当时没有告警。在私有测试仓库里验证推送被拒这一半没有做（owner 没有要求）。
 
 ## 起草记录（2026-09-25）
@@ -143,10 +159,10 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1、2 步。第 2 步在分支 `test/00-baseline-coverage` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 已完成：第 1–3 步。第 2 步 PR #3 已合进 `dev`（`8b52437`）；第 3 步在分支 `feat/00-deploy-profile` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
 - 半成品：无。
 - 阻塞：无。
-- 下一步：第 3 步，`src/profile.ts` 与 `src/profile-boot.ts`。
+- 下一步：第 4 步，其余四个布尔开关接到调用点。
 
 ## Open
 

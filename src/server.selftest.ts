@@ -4,6 +4,8 @@
 // 没有断言就只能靠人去 devtools 里看。
 // 直接 import app 走 app.request，不占端口；数据写进临时 VAR_DIR。
 // 用法：npx tsx src/server.selftest.ts
+import './selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +33,8 @@ process.env.VISITOR_SESSION_MAX = '100';
 const { app } = await import('./server.js');
 const { getOrCreateSession, getSession, saveSession, createOrder } = await import('./store.js');
 const { getOrder, listOrders, listSessions, markOrderPaid, pruneStaleVisitorData, freshenDemoData } = await import('./store.js');
+const { resolveProfile, capFlags, profile, __profileTest, ProfileConfigError, DEMO_DEFAULTS, PROD_CEILING, PROFILE_ENV_NAMES } =
+  await import('./profile.js');
 const { subscribe } = await import('./adapters/simulator.js');
 const { recordUsage } = await import('./usage.js');
 
@@ -741,16 +745,22 @@ const payReq = (orderId: string) =>
   const otherBefore = JSON.stringify(snap(others, otherOrders));
   const newestBefore = Math.max(...seeds.map((s) => s.updatedAt));
 
-  const savedFreshen = process.env.DEMO_FRESHEN;
+  // 开关在 profile 里解析一次后缓存，改 process.env 不生效：用 __profileTest 切换，用完 reset 回 demo
+  const unshifted = () => JSON.stringify(snap(seeds, seedOrders)) === JSON.stringify(seedBefore);
   try {
-    process.env.DEMO_FRESHEN = '0';
+    __profileTest.use({ DEPLOY_PROFILE: 'demo', DEMO_FRESHEN: '0' });
     freshenDemoData();
-    check('种子保鲜：DEMO_FRESHEN=0 时不平移', JSON.stringify(snap(seeds, seedOrders)) === JSON.stringify(seedBefore));
-    delete process.env.DEMO_FRESHEN;
+    check('种子保鲜：DEMO_FRESHEN=0 时不平移', unshifted());
+    __profileTest.use({ DEPLOY_PROFILE: 'demo', FLAG_SEED_FRESHEN: 'off' });
     freshenDemoData();
+    check('种子保鲜：seed_freshen 关闭时不平移', unshifted());
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    freshenDemoData();
+    check('种子保鲜：prod 下手动调保鲜例程也不平移', unshifted());
   } finally {
-    restoreEnv('DEMO_FRESHEN', savedFreshen);
+    __profileTest.reset();
   }
+  freshenDemoData();
   const newest = Math.max(...seeds.map((s) => s.updatedAt));
   const delta = newest - newestBefore;
   check(
@@ -772,12 +782,138 @@ const payReq = (orderId: string) =>
   );
 }
 
+// ---------------- 部署 profile：解析、封顶与启动 ----------------
+// 00 spec「部署 profile 与开关」。运行时未设 DEPLOY_PROFILE 按 demo；prod 对每个开关硬封顶，试图放宽就拒绝启动
+{
+  const rejects = (env: Record<string, string>): boolean => {
+    try {
+      resolveProfile(env);
+      return false;
+    } catch (e) {
+      return e instanceof ProfileConfigError;
+    }
+  };
+  const flagsOf = (env: Record<string, string>) => JSON.stringify(resolveProfile(env).flags);
+  const json = (x: unknown) => JSON.stringify(x);
+  check('profile：什么都不设按 demo，开关取 demo 默认值', resolveProfile({}).name === 'demo' && flagsOf({}) === json(DEMO_DEFAULTS));
+  check(
+    'profile：空串当未设置',
+    resolveProfile({ DEPLOY_PROFILE: '', FLAG_MOCK_PAY: '', DEMO_FRESHEN: '' }).name === 'demo' &&
+      flagsOf({ FLAG_MOCK_PAY: '' }) === json(DEMO_DEFAULTS),
+  );
+  check(
+    'profile：prod 的默认值就是封顶值（全关）',
+    resolveProfile({ DEPLOY_PROFILE: 'prod' }).name === 'prod' && flagsOf({ DEPLOY_PROFILE: 'prod' }) === json(PROD_CEILING),
+  );
+  check(
+    'profile：demo 下 FLAG_* 可以单独关掉某个开关',
+    json(resolveProfile({ FLAG_RESET_COMMAND: 'off' }).flags) === json({ ...DEMO_DEFAULTS, reset_command: false }),
+  );
+  check('profile：prod 下 FLAG_*=off 照常', flagsOf({ DEPLOY_PROFILE: 'prod', FLAG_MOCK_PAY: 'off' }) === json(PROD_CEILING));
+  check('profile：DEMO_FRESHEN=0 等价于 FLAG_SEED_FRESHEN=off', resolveProfile({ DEMO_FRESHEN: '0' }).flags.seed_freshen === false);
+  check('profile：DEMO_FRESHEN 的其他值照旧忽略', resolveProfile({ DEMO_FRESHEN: '1' }).flags.seed_freshen === true);
+  check(
+    'profile：DEMO_FRESHEN=0 与 FLAG_SEED_FRESHEN=off 不冲突',
+    resolveProfile({ DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'off' }).flags.seed_freshen === false,
+  );
+  for (const [why, env] of [
+    ['DEPLOY_PROFILE 取了非法值', { DEPLOY_PROFILE: 'staging' }],
+    ['FLAG_* 取了非法值', { FLAG_RESET_COMMAND: 'yes' }],
+    ['prod 下试图打开开关', { DEPLOY_PROFILE: 'prod', FLAG_RESET_COMMAND: 'on' }],
+    ['prod 下试图打开模拟支付', { DEPLOY_PROFILE: 'prod', FLAG_MOCK_PAY: 'on' }],
+    ['FLAG_AI_DISCLOSURE=on_ask（00 只有 always）', { FLAG_AI_DISCLOSURE: 'on_ask' }],
+    ['DEMO_FRESHEN=0 与 FLAG_SEED_FRESHEN=on 冲突', { DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'on' }],
+  ] as [string, Record<string, string>][]) {
+    check(`profile：${why}，解析失败（ProfileConfigError）`, rejects(env));
+  }
+  check('profile：FLAG_AI_DISCLOSURE=always 合法', !rejects({ FLAG_AI_DISCLOSURE: 'always' }));
+  const p = resolveProfile({});
+  check('profile：解析结果不可改', Object.isFrozen(p) && Object.isFrozen(p.flags));
+
+  const allOn = { reset_command: true, anon_readonly_admin: true, seed_freshen: true, visitor_simulator: true, mock_pay: true };
+  check('capFlags：prod 下任何输入都放宽不了', json(capFlags('prod', allOn)) === json(PROD_CEILING));
+  check('capFlags：prod 下没给的取封顶值', json(capFlags('prod', {})) === json(PROD_CEILING));
+  check('capFlags：demo 下就是在默认值上覆盖', json(capFlags('demo', { mock_pay: false })) === json({ ...DEMO_DEFAULTS, mock_pay: false }));
+
+  check('profile()：自测进程钉在 demo（本机 .env 进不来）', profile().name === 'demo' && json(profile().flags) === json(DEMO_DEFAULTS));
+  try {
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    check('__profileTest.use：同一进程里切到 prod', profile().name === 'prod');
+  } finally {
+    __profileTest.reset();
+  }
+  check('__profileTest.reset：回到按 process.env 解析的 demo', profile().name === 'demo');
+
+  // 缓存：首次解析之后改 process.env 不生效，开关在启动时就定死了
+  const savedMockPay = process.env.FLAG_MOCK_PAY;
+  process.env.FLAG_MOCK_PAY = 'off';
+  check('profile()：首次解析后缓存，之后改 process.env 不生效', profile().flags.mock_pay === true);
+  restoreEnv('FLAG_MOCK_PAY', savedMockPay);
+
+  // 启动（验收 5）：单个 node 进程跑。子进程的环境只给 PATH、临时 VAR_DIR 和 profile 相关变量（全部先设空串，本机 .env 进不来）；
+  // 不 listen、不连企微、不调模型，万一入口接错了也不会真的起服务
+  const bootEnv = (env: Record<string, string>): Record<string, string> => ({
+    PATH: process.env.PATH ?? '',
+    VAR_DIR: process.env.VAR_DIR ?? '',
+    SERVER_SELFTEST: '1',
+    LLM_MOCK: '1',
+    ADMIN_PASS: '',
+    WECOM_CORP_ID: '',
+    WECOM_APP_SECRET: '',
+    WECOM_KF_OPEN_KFID: '',
+    ...Object.fromEntries(PROFILE_ENV_NAMES.map((k) => [k, ''])),
+    ...env,
+  });
+  const run = (entry: string, env: Record<string, string>) => {
+    const r = spawnSync(process.execPath, ['--import', 'tsx', entry], { env: bootEnv(env), encoding: 'utf8', timeout: 30_000 });
+    return { code: r.status, out: (r.stdout + r.stderr).trim() };
+  };
+  // 配置错误走真正的入口 src/server.ts：profile-boot 必须排在任何会 import store 的模块之前。
+  // 挪到后面，store 加载时就先解析了 profile，抛出来的是一整段异常栈；删掉它，prod 没配 ADMIN_PASS 也能起来。这几种都在 listen 之前退出
+  for (const [why, env, cause] of [
+    ['DEPLOY_PROFILE=staging', { DEPLOY_PROFILE: 'staging' }, 'DEPLOY_PROFILE=staging'],
+    ['prod 加 FLAG_RESET_COMMAND=on', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x', FLAG_RESET_COMMAND: 'on' }, 'FLAG_RESET_COMMAND'],
+    ['prod 但没配 ADMIN_PASS', { DEPLOY_PROFILE: 'prod' }, 'ADMIN_PASS'],
+    ['FLAG_AI_DISCLOSURE=on_ask', { FLAG_AI_DISCLOSURE: 'on_ask' }, 'FLAG_AI_DISCLOSURE=on_ask'],
+    ['DEMO_FRESHEN=0 加 FLAG_SEED_FRESHEN=on', { DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'on' }, 'DEMO_FRESHEN=0'],
+  ] as [string, Record<string, string>, string][]) {
+    const r = run('src/server.ts', env);
+    check(
+      `启动：${why} 时 server.ts 非零退出，一行写明原因（${cause}），没有异常栈`,
+      r.code !== 0 &&
+        r.code !== null &&
+        r.out.split('\n').length === 1 &&
+        r.out.startsWith('[profile] 配置错误，拒绝启动：') &&
+        r.out.includes(cause),
+      JSON.stringify(r),
+    );
+  }
+  // 正常启动的那一行看 profile-boot 本身（server.ts 起来之后不会自己退出）；打出来的必须是生效值，不是默认值
+  const ok = run('src/profile-boot.ts', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+  check(
+    '启动：正常时一行列出 profile 名和六个开关的生效值',
+    ok.code === 0 &&
+      ok.out ===
+        '[profile] prod · reset_command=off anon_readonly_admin=off seed_freshen=off visitor_simulator=off mock_pay=off ai_disclosure=always',
+    JSON.stringify(ok),
+  );
+  const demoOff = run('src/profile-boot.ts', { FLAG_MOCK_PAY: 'off' });
+  check(
+    '启动：日志里是生效值（demo 下 FLAG_MOCK_PAY=off 就显示 mock_pay=off）',
+    demoOff.code === 0 &&
+      demoOff.out ===
+        '[profile] demo · reset_command=on anon_readonly_admin=on seed_freshen=on visitor_simulator=on mock_pay=off ai_disclosure=always',
+    JSON.stringify(demoOff),
+  );
+  check('启动：demo 下没配 ADMIN_PASS 照常启动', run('src/profile-boot.ts', {}).code === 0);
+}
+
 if (fails.length) {
   console.error(`SERVER SELFTEST FAIL: ${fails.length} 项未通过`);
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
 console.log(
-  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id / 管理写接口与 LLM 读端点的鉴权 / /api/chat 只认 sim- / 付款边界 / 访客清理与上限 / 种子保鲜）`,
+  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id / 管理写接口与 LLM 读端点的鉴权 / /api/chat 只认 sim- / 付款边界 / 访客清理与上限 / 种子保鲜 / 部署 profile 的解析、封顶与启动）`,
 );
 process.exit(0); // SSE 的 ping 循环还挂着 20s 的 sleep，不等它

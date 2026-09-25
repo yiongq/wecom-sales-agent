@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { numEnv } from './env.js';
+import { profile } from './profile.js';
 import type { Session, Order } from './types.js';
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
@@ -161,11 +162,11 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 // 种子演示会话（id 形如 wecom:cust_B01，真实企微 external_userid 不会长这样）的时间戳
 // 是灌入时定死的：放几天后后台全是「N 天未回应」，工作台像个废弃系统——对外演示时
 // 观感极差。这里定期把演示数据整体平移到「最新一条像 5 分钟前」，相对间隔不变；
-// 真实客户会话（wecom: 非 cust_ / sim-）绝不触碰。DEMO_FRESHEN=0 可关闭。
+// 真实客户会话（wecom: 非 cust_ / sim-）绝不触碰。开关 seed_freshen 关闭时不动（prod 封顶为关；旧变量 DEMO_FRESHEN=0 等价于关）。
 const DEMO_SESSION_RE = /^wecom:cust_/;
 
 export function freshenDemoData(): void {
-  if (process.env.DEMO_FRESHEN === '0') return;
+  if (!profile().flags.seed_freshen) return;
   const demo = [...sessions.values()].filter((s) => DEMO_SESSION_RE.test(s.id));
   if (!demo.length) return;
   const newest = Math.max(...demo.map((s) => s.updatedAt));

@@ -7,6 +7,7 @@
 //   · 状态文件丢失/损坏 → 把近 3 天的旧消息全回一遍
 //   · 同步锁包住 LLM 处理 → 一个客户的慢回复拖住所有人，新客户欢迎语过期
 //   · SIGTERM 立即退出 → 处理到一半的消息重启后被当成「已处理」，客户永远等不到回复
+import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
