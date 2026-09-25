@@ -4,3 +4,7 @@
 # pnpm 会因 esbuild 的构建脚本被忽略而直接失败。
 onlyBuiltDependencies:
   - esbuild
+# lefthook 的 postinstall 只是替你跑 `lefthook install`；这件事由根目录的 prepare 脚本做，
+# 并且只在有 .git 的目录里做（镜像构建和 git archive 解出的目录里什么也不做）。
+ignoredBuiltDependencies:
+  - lefthook
