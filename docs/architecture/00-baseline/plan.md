@@ -72,15 +72,69 @@
 
 （按步骤追加：日期、提交、记下的数值（`printWidth` 实测、前缀哈希、gitleaks 结果、`revision`）、以及 spec 没写、此处取定的地方）
 
+### 第 1 步（2026-09-25，分支 `chore/gates-public-boundary`）
+
+- 提交，按顺序：`33c680e` 依赖与配置、公开边界检查、CI → `a198b74` 前缀断言 1、2、4 → `9fec91c` lint 修复，`lint` 切成真实命令 → `292dc6d` 首次全仓格式化 → `bca5574` `format:check` 切成真实命令、`.git-blame-ignore-revs`。独立验收后又追加了三个修复提交：`a02040c` 边界检查加固、`b5d0751` gitleaks 区间守卫、`b678bd8` 假模型服务按整块解码。每个提交都过了 pre-commit 和 commit-msg，没有绕过 hook。
+- 工具版本（精确）：oxfmt 0.68.0、oxlint 1.83.0、lefthook 2.1.14、@commitlint/cli 与 @commitlint/config-conventional 21.2.3、gitleaks 8.30.1（CI 下载 linux_x64 包并校验 sha256 `551f6fc8…70eb`）。
+- `printWidth` 实测。首次格式化 diff 的增删行合计（含 `public/*.html`）：100 → 23,516；120 → 19,081；140 → 16,707，取 140。排除 `public/*.html` 之后，`292dc6d` 是 32 个文件、5,633 行增加、2,628 行删除。
+- `public/*.html` 不纳入格式化：格式化后 `wecom.selftest.ts` 的「chat.html 有 stripLink()」失败，见 Open。
+- `prepare` 是 `if [ -e .git ]; then lefthook install; fi`。`git archive` 解出的目录和 `docker build` 里，`pnpm install --frozen-lockfile` 都成功，`prepare` 什么也不做。lefthook 的 postinstall 由 `pnpm-workspace.yaml` 的 `ignoredBuiltDependencies` 显式忽略。
+- 前缀哈希，00 开始前（`a198b74`）：`PREFIX sha256 system=6c202d633b603a0b391634bcaf75da9d3ed42c30f848ad092a2467f713d9a423 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`。lint 修复后（`9fec91c`）、格式化后（`292dc6d`），以及 `bca5574`、`b678bd8`，打印的值都相同，各组结果也相同：wecom 408、dejargon 316、price-guard 403、server 72，eval mock 19/19。
+- lint 首次命中 15 处（只开 correctness）：
+  - 真问题 7 处，当场修：死函数 `pendingPayLink`、`server.ts` 里没用的 `model`、`store.ts` 里多余的展开、3 处 `/^…/.test` 换成 `startsWith`、selftest 的 `new Array(n)`。
+  - `no-control-regex` 8 处是故意写法：出口护栏用 `\u0001–\u0003` 当链接空位记号，用 `\u0000` 包链接占位。逐行豁免并写明理由；其中两处在长链式调用中间，格式化会把正则挪离豁免注释，所以正则原样提成常量 `HAS_HOLE`、`EMPTY_MD_LINK`。
+  - 没有关掉任何整条规则。
+- gitleaks 全历史（`--log-opts="--all"`，另加 `-m` 各跑一次）：no leaks found，因此没有 `.gitleaksignore`。
+- 词表：plan 原写「开工前 owner 已放好」，实际开工时本机和仓库 secret 都没有。本机的 `.sensitive-patterns` 由 Claude Code 按本机配置和私有笔记起草，收录范围另记。仓库 secret `SENSITIVE_PATTERNS` 在第一次推送前按它设置。
+- spec 没写、此处取定的地方：
+  - 边界检查读 git 索引里的版本（部分暂存时，以要提交的那一份为准）。不在 git 工作区根目录时（例如 `deploy.sh` 的归档目录），改查目录树里 `node_modules` 以外的文件。
+  - 路径黑名单多收一项 `.sensitive-patterns`。文件名比较不分大小写。子模块按目录算，所以 `src/packs/<白名单外>`、`tenants` 做成子模块也会被拦。`var/` 只拦仓库根目录，和运行时目录一致。
+  - 词表格式：每行一个 JavaScript 正则，区分大小写，带 u 标志；空行和 `#` 开头的行忽略。正则不合法，或者能匹配空串（多半是笔误，例如末尾多了个 `|`）时，只报行号并以 2 退出。词表也查路径，路径里命中的那段打成 `***` 再报。
+  - 判断二进制不看 NUL：`src/retrieval.ts` 的字符串字面量里本来就有原始的 NUL/SOH 字节。能按 UTF-8 解码的照常查；解不了的按 latin1 查，ASCII 的域名、IP 照样认得出。
+  - `scripts/` 纳入 `tsconfig` 的 include。
+  - CI 的 gitleaks：PR 扫 `origin/<base>..HEAD`，扫之前先验 base 存在，因为 8.30.1 遇到不存在的区间也以 0 退出。push 扫 `before..sha`，before 全零或不可达时扫到根。参数带 `-m`（合并提交里才出现的改动也扫）、`-v`、`--redact`。
+  - pre-commit 的 `format:check` 查全仓，不只查暂存的文件，比 spec 严，保留。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
+
+第 1 步完成时，由独立 agent 在一次性 clone 里复现（`bca5574`；第 9 步统一复验）：
+
+- 1a · 通过 · 干净 clone 里 `pnpm install` 装上 hook。暂存一个没格式化的 `.ts` 文件后提交，被 pre-commit 的 `oxfmt --check` 拦下；格式化好的改动能提交。
+- 1b · 通过 · 51 字符的标题被 commitlint 拒（header-max-length），正好 50 字符的通过。带 `Co-Authored-By: Claude` 的提交被拒，fixup! 和合并形式的提交信息也被 no-ai-coauthor 拒。
+- 1c · 通过（本地部分）· 干净 clone 上四个门禁全绿。每个门禁各造一处失败，对应命令都以非零退出；ci.yml 里每个门禁是单独一步，没有 `continue-on-error`。PR 上 CI 变红，待第一次推送后确认。
+- 1d · 通过 · `git archive` 解出的目录里 `pnpm install --frozen-lockfile` 成功，`prepare` 什么也不做，四个门禁也全绿。`docker build` 同样成功。
+- 2a · 待合并 · 合进 `dev` 后核对。
+- 2b · 通过（分支上）· 用 `--ignore-revs-file` 做 blame，`292dc6d` 改过的行都指回更早的提交（例如 `engine.ts:11` 指回 `2ffbc159`，`README.md:13` 指回 `d71ef1c6`）；`engine.ts` 里仍有 7 行 git 无法对应到更早的行。合并后在 `dev` 上再核一次。
+- 2c · 通过 · 在 `9fec91c` 上重跑 oxfmt，结果与 `292dc6d` 的树逐字节相同。四个点的 PREFIX 和 49 行结果摘要都相同。
+- 10b · 通过（第一个值）· 见实施记录。00 结束时的值由第 9 步补记。
+- 10c · 通过 · 把 `data/sop.md` 的一个「。」改成「，」后测试照过，system 哈希变成 `b15209db…157e`，tools 不变。
+- 11a · 通过 · 7 个规定路径逐个 `git add -f`，每个都让 `pnpm lint` 失败并列出路径；`src/packs/travel/index.ts` 不命中。补测：大小写变体和子模块也会命中（`a02040c`）。
+- 11b · 通过 · 用自造的词表测试：命中只报「文件:行号」；同一行多处命中只报一次；最后一行没有换行、CRLF、中文路径、只在暂存区里的内容都查得到；PNG 不崩。
+- 11c · 通过 · 一次性 clone 里造了假 `ghp_` 令牌和假 AWS 密钥，用 CI 同一版本、同一条命令扫描：PR 形式、push 形式、单个 sha 形式都以 1 退出（leaks found: 3），输出里只有 REDACTED。不含假提交的区间以 0 退出。没有推送到任何远端。
+- 11d · 通过 · 见实施记录。
+- 11e · 待 owner · 手动项。
 
 ## 起草记录（2026-09-25）
 
 - spec 由 Claude Code 按 owner 已拍板的决定起草（决策记录另记）。代码事实已对照 `2ffbc15` 的工作区逐条核过；函数一律按名字引用，因为 `engine.ts` 的行号已经漂移。
 - 基线数字（起草时）：`eval/cases.json` 51 条用例，其中 32 条只在真实模型下跑、19 条 mock；100 轮、147 条断言；`data/routes.json` 20 条线路，`data/hotels.json` 23 家酒店。
 - 同日按多角度审查修订（spec 仍是 draft，就地改）。主要变化：system prompt 身份那一行不改，00 不改变前缀；`ai_disclosure` 只有 `always`；prod 在 02 之前不接真实客户，成交链路的措辞整体留给 02；公开边界检查挪到第一次推送之前；补了渠道与存储、demo profile、承诺与画像几组不变量；缺陷修复从四处增加到六处。
+
+## 交接（2026-09-25）
+
+- 已完成：第 1 步的全部提交，都在分支 `chore/gates-public-boundary` 上（见实施记录）。
+- 半成品：无。第 1 步没有勾选，还差合并和两项手动：
+  - PR 合进 `dev`，只能用「Create a merge commit」。
+  - 合并后在 `dev` 上确认 `292dc6d` 是 `dev` 的祖先，并跑一次 blame 核对（验收 2a、2b）。
+  - 手动：仓库设置里打开 secret scanning 和 push protection，并在私有测试仓库里验证一次推送被拒（验收 11e）。
+- 阻塞：无。
+- 下一步：第 2 步，基线补测。
+
+## Open
+
+- `public/*.html` 没有纳入格式化。原因是 `server.selftest.ts` 和 `adapters/wecom.selftest.ts` 从页面里抽取脚本源码时，匹配依赖引号风格、缩进和函数签名；格式化后「chat.html 有 stripLink()」失败。要纳入，得先让这两组自测不依赖源码的排版。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
 ## 交接（YYYY-MM-DD）
