@@ -983,11 +983,17 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   const r3 = await scan();
   assert.deepEqual(r3.pushed, [OK_ID], '换到没追过的阶段可以再跟一次，其余会话仍然不追');
   const fu = (getSession(OK_ID) as Fu).followup;
-  assert.deepEqual(fu?.stages, ['quote', 'closing']);
+  assert.deepEqual(fu?.stages, ['quote', 'closing'], '记账是追加新阶段，已追过的阶段不被覆盖掉');
   assert.equal(fu?.count, 2);
-  assert.equal((await scan()).sent, 0, '新阶段同样只跟一次');
+
+  // 全程上限（默认 FOLLOWUP_MAX_PER_SESSION=2）：再换到第三个没追过的阶段、沉默也够久，挡住它的只有次数上限。
+  // 不在 closing 阶段再扫一轮断言「新阶段也只跟一次」：那时次数也到了上限，两条规则都在挡，分不出是哪条
+  normal.stage = 'objection';
+  normal.updatedAt = Date.now() - 5 * 3600_000; // 过了 objection 4 小时的门槛
+  saveSession(normal, false);
+  assert.equal((await scan()).sent, 0, '全程最多跟 2 次：换到没追过的阶段也不再推');
   process.env.FOLLOWUP_ENABLED = '';
-  pass('沉默跟进只追未转人工、未支付、非种子的企微会话，最后一条得是 AI 发的；同一阶段只追一次');
+  pass('沉默跟进只追未转人工、未支付、非种子的企微会话，最后一条得是 AI 发的；同一阶段只追一次，全程最多 2 次');
 }
 
 // ---------- F1 停机：等手上这条跟进推完、记完账再退出 ----------
