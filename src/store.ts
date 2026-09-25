@@ -231,7 +231,7 @@ export function pruneStaleVisitorData(): void {
   if (!PRUNE_MS) return;
   const cutoff = Date.now() - PRUNE_MS;
   let n = 0;
-  for (const s of [...sessions.values()]) {
+  for (const s of sessions.values()) {
     if (!VISITOR_SESSION_RE.test(s.id) || s.channel !== 'simulator') continue;
     if (s.updatedAt >= cutoff) continue;
     if (hasPaidOrder(s)) continue; // 有成交记录，保留

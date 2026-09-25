@@ -669,7 +669,7 @@ if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
   if (process.env.LLM_MOCK === '1') {
     console.log('[server] LLM_MOCK=1：走离线脚本回复，不调用真实模型');
   } else {
-    const { apiKey, model, baseUrl } = llmCfg();
+    const { apiKey, baseUrl } = llmCfg();
     if (apiKey) {
       const { main, cheap } = activeModels();
       const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();

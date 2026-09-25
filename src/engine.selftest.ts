@@ -39,7 +39,7 @@ const requests: { messages: WireMsg[] }[] = [];
 const rawBodies: string[] = [];
 let scriptOverrun = 0;
 const fakeVec = (t: string): number[] => {
-  const v = new Array<number>(32).fill(0);
+  const v = Array.from({ length: 32 }, () => 0);
   for (const ch of t) v[ch.codePointAt(0)! % 32] += 1;
   return v;
 };
@@ -1386,10 +1386,10 @@ const searchYunnan: Step[] = [
     const got = await searchRoutes({ destination: '西藏', segment: '银发' }) as Row[];
     const tibet = got.filter((x) => x.segmentMismatch);
     const alts = got.filter((x) => x.alternative);
-    assert.ok(tibet.length && tibet.every((x) => /^r-tibet/.test(x.id)), '点名的西藏线照样摆出来并标明不适配');
+    assert.ok(tibet.length && tibet.every((x) => x.id.startsWith('r-tibet')), '点名的西藏线照样摆出来并标明不适配');
     assert.ok(alts.length >= 1 && alts.length <= 2, `要附 1~2 条替代线路（实际 ${alts.map((x) => x.id)}）`);
     for (const a of alts) {
-      assert.ok(!['r-yunnan-lux', 'r-sichuan-lux', 'r-yunnan-mid', 'r-sichuan-mid'].includes(a.id) && !/^r-tibet/.test(a.id), `替代不能是要上三四千米的线（${a.id}）`);
+      assert.ok(!['r-yunnan-lux', 'r-sichuan-lux', 'r-yunnan-mid', 'r-sichuan-mid'].includes(a.id) && !a.id.startsWith('r-tibet'), `替代不能是要上三四千米的线（${a.id}）`);
       assert.ok((altOf.get(a.id) ?? Infinity) < 3000, `替代线路全程要低于 3000 米（${a.id}=${altOf.get(a.id)}）`);
       assert.ok(typeof a.priceFrom === 'number' && (a.highlights as string[]).length === 1, '替代给出人均起价和一条亮点');
     }

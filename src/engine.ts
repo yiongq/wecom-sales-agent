@@ -130,6 +130,7 @@ function dejargon(text: string, sessionId: string): string {
   if (internal.length) {
     console.warn(`[engine] 话术夹带内部用语已替换（会话 ${sessionId}）: ${internal.join(', ')}`);
   }
+  // oxlint-disable-next-line no-control-regex -- 链接先被换成 \u0000序号\u0000 占位，英文替换碰不到网址；正文里不会有这个字符
   return masked.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => links[Number(i)]);
 }
 
@@ -279,7 +280,7 @@ function haggling(session: Session, text: string, modelText: string): boolean {
 
 // 指着另一张单的说法：给朋友再订一份、另外那份、闺蜜那单。一个会话只有客户本人那张待付款订单，
 // 此前模型把它当成「闺蜜那份」发了出去（C06：幂等复用回来的是本人订单，回复却是「闺蜜那份也订好啦」；
-// 另一遍是修补链接时用 pendingPayLink 补进本人订单的真链接，放在「支付链接（闺蜜二人专用）」下面）。
+// 另一遍是修补链接时补进本人订单的真链接，放在「支付链接（闺蜜二人专用）」下面）。
 // 只收朋友这类关系：「给爸妈订」多半就是客户这张单本身；「另外单独问下」不是另一张单。
 // 「她们 / 他们」不算：「带爸妈去，给他们订好点的房间」「帮他们下单吧，爸妈身份证我发你」说的就是同行的爸妈；
 // 光秃秃的「再下一单」「也下单」也不算：「日期改成12月12号，再下一单」是改单，此前被当成给别人订，改单没改成
@@ -505,7 +506,7 @@ function keptBesideCustomPromise(visible: string): string {
   const kept = visible
     .split(/(?<=[。！？\n])/)
     // 链接空位（被抹掉的假链接、占位符）所在的句子同样摘掉：这里不会再补链接
-    .filter((s) => s.trim() && !CUSTOM_PROMISE.test(s) && !LINK_PROMISE.test(s) && !CUSTOM_FOLLOWUP.test(s) && !/[\u0001-\u0003]/.test(s))
+    .filter((s) => s.trim() && !CUSTOM_PROMISE.test(s) && !LINK_PROMISE.test(s) && !CUSTOM_FOLLOWUP.test(s) && !HAS_HOLE.test(s))
     .join('')
     .trim();
   return looksLikeItinerary(kept) ? '' : kept;
@@ -576,7 +577,11 @@ const BARE_ACK = /^(?:好的?|好嘞|好滴|嗯+|行|可以|没问题|收到|当
  *  插不了就连同承诺句一起删。位置不能丢：此前假链接直接抹成空串，「明细：」后面空出一大块，
  *  护栏却不知道这里曾经有过一条链接 */
 const HOLE = { proposal: '\u0001', pay: '\u0002', other: '\u0003' } as const;
+// oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
 const ANY_HOLE = /[\u0001-\u0003]/g;
+/** 有没有空位（不带 g，test 不留 lastIndex） */
+// oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
+const HAS_HOLE = /[\u0001-\u0003]/;
 /** 模型写的链接占位符：「方案书链接（此处由系统生成）」「[链接]」「（方案链接）」「{proposalUrl}」「方案书：[方案书]」。
  *  括号里必须写的就是链接本身，或是「此处插入/附上…」这种说明。此前括号里带「链接」「系统生成」就算：
  *  「门票预约（详见官网链接）」「订单信息（系统自动生成，请核对）」中间被插进一条方案书链接；
@@ -599,6 +604,10 @@ const LINK_PLACEHOLDER = new RegExp(
 /** 「方案书链接：」后面什么都没有 */
 const LINK_LABEL_EMPTY = /(?:方案书?|行程单?|支付|付款)?链接[ \t]*[:：](?=[ \t]*(?:\n|$))/g;
 
+/** 地址被抹空的 markdown 链接「[查看方案]()」，括号里可能留着空位记号 */
+// oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
+const EMPTY_MD_LINK = /\[([^\]\n]{1,20})\]\([ \t]*([\u0001-\u0003]?)[ \t]*\)/g;
+
 function holeKind(context: string): string {
   return /支付|付款/.test(context) ? HOLE.pay : HOLE.proposal;
 }
@@ -614,6 +623,7 @@ function markLinkHoles(text: string): string {
     // 抹掉的是站外链接：紧挨着它的那一小句在说方案/付款（「方案给您：https://…」「行程详情见 https://…」），
     // 或者这一行许了发链接的诺，就当成模型想发的那条；否则只是删掉的无关网址。
     // 不能只看这行有没有「行程」：「在景区官网 https://… 预约，行程里我们会帮您约好」会被插进一条方案书链接
+    // oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
     .replace(/\u0003/g, (h, at: number, s: string) => {
       const line = lineOf(s, at);
       const lead = s.slice(0, at).split(/[，。！？,!?；;\n]/).pop() ?? '';
@@ -622,7 +632,7 @@ function markLinkHoles(text: string): string {
       return h;
     })
     // markdown 链接的地址被抹空后剩下「[查看方案]()」
-    .replace(/\[([^\]\n]{1,20})\]\([ \t]*([\u0001-\u0003]?)[ \t]*\)/g, (_m, label: string, h: string) =>
+    .replace(EMPTY_MD_LINK, (_m, label: string, h: string) =>
       label + (h && h !== HOLE.other ? h : holeKind(label)))
     .replace(LINK_PLACEHOLDER, (m: string, at: number, s: string) =>
       /方案|行程/.test(m) ? HOLE.proposal : holeKind(/支付|付款/.test(m) ? m : lineOf(s, at)))
@@ -753,14 +763,10 @@ function linksFromCalls(calls: ToolCall[], tool: string, field: 'proposalUrl' | 
 }
 
 /**
- * 客户手里那张待付款订单的支付链接。「付款链接再发我一下」时模型常只写「支付链接给您：」却不调工具——
+ * 客户手里那张待付款订单。「付款链接再发我一下」时模型常只写「支付链接给您：」却不调工具——
  * 链接本来就在，补上它没有任何新副作用；此前却回「您想订哪条线…确认好我马上给您下单」，把客户往重复下单上推。
  * 只看最近一张订单；之后又报了别的线、人数或日期（lastQuote 对不上），客户要付的未必是这张，不补
  */
-function pendingPayLink(session: Session): string | undefined {
-  const o = pendingOrder(session);
-  return o ? '/pay/' + o.id : undefined;
-}
 function pendingOrder(session: Session): Order | undefined {
   const id = session.orderIds[session.orderIds.length - 1];
   const o = id ? getOrder(id) : undefined;
@@ -1422,6 +1428,7 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
     out = [rest, kind === 'proposal' && alreadyAsks(rest, target ?? {}) ? '' : ask].filter(Boolean).join('\n\n');
   }
   // 抹掉的无关网址留下的空位连同前面的空格一起去掉，「官网 https://… 预约」不留成「官网  预约」
+  // oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
   return tidyLinkText(out.replace(/[ \t]*[\u0001-\u0003]/g, ''));
 }
 
@@ -3240,7 +3247,7 @@ async function handleMessageInner(
       const pay = pathOnly.match(/^\/pay\/([A-Za-z0-9_-]+)$/);
       if (pay) return allowedPay.has('/pay/' + pay[1]) ? '/pay/' + pay[1] : HOLE.pay;
       if (proposalPathOk(pathOnly)) return pathOnly;
-      return /^\/proposal\//.test(pathOnly) ? HOLE.proposal : HOLE.other;
+      return pathOnly.startsWith('/proposal/') ? HOLE.proposal : HOLE.other;
     })
     // 支付路径的变体和截断的半截也要抹：A18 模型写了「/p/ord_5d0b…」，引擎补上真链接后这半截还留在正文里。
     // 认的是「/p/ /pa/ /o/ + 订单号」和 /pay/ /payment/ /order/ 开头的任何路径（后面没有 id、跟着「…」的也算），

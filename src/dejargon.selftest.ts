@@ -255,6 +255,7 @@ eq('空字符串', dejargon('', S), '');
     else fails.push(`支付承诺判断错（期望 ${want}）: ${t}`);
   }
   // 占位符与空位：认出来的地方换成空位记号；普通括号、普通冒号不能动
+  // oxlint-disable-next-line no-control-regex -- 断言的就是链接空位记号（engine.ts HOLE）
   const holed = (t: string) => /[\u0001-\u0003]/.test(markLinkHoles(t));
   for (const t of [
     '👉 方案书链接（此处由系统生成）：逐日行程都在里面', '方案书给您：[链接]', '点这里（链接）查看', '方案在这 {proposalUrl}',
@@ -275,6 +276,7 @@ eq('空字符串', dejargon('', S), '');
     else fails.push(`普通话术被当成链接占位: ${JSON.stringify(t)}`);
   }
   // 抹掉的站外网址（\u0003）：这一行只是提到「行程」，不是在发方案，不能变成方案书空位；紧挨着说方案的才算
+  // oxlint-disable-next-line no-control-regex -- 断言的就是链接空位记号（engine.ts HOLE）
   const siteHole = (t: string) => /[\u0001\u0002]/.test(markLinkHoles(t));
   eq('官网网址不是方案空位', String(siteHole('需要的，在景区官网 \u0003 预约，行程里我们会提前帮您约好。')), 'false');
   eq('「行程详情见 网址」是方案空位', String(siteHole('行程详情见 \u0003 您先看看')), 'true');
