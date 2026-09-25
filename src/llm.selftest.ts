@@ -915,6 +915,87 @@ const approx = (a: number, b: number, msg: string) => assert.ok(Math.abs(a - b) 
   pass('沉默跟进（模板与生成）不许诺缩短天数、换酒店档、重新搭配');
 }
 
+// ---------- 沉默跟进的边界：谁不追、同一阶段只追一次 ----------
+// 跟进是主动外发，追错人就是骚扰：人工在跟的、已成交的、种子演示的、网页访客都不追；
+// 客户刚说完话还没回他，那是该回复不是跟进。每个会话除了被测的那一条，其余条件都满足（quote 阶段、沉默 4 小时、
+// 最后一条是 AI 发的），同一轮里再放一个全都满足的正常会话做对照。
+// 排在 F1 前面（F1 跑过停机钩子后跟进模块不再扫描）；这里造的会话最后都不再可追，不影响 F1 挑会话
+{
+  useZhipu('glm-5.2');
+  const { getOrCreateSession, getSession, saveSession } = await import('./store.js');
+  const { runFollowUpScan } = await import('./followup.js');
+  type S = ReturnType<typeof getOrCreateSession>;
+  type Fu = { followup?: { count?: number; stages?: string[] } };
+  const silent = (id: string, channel: string, over: Partial<S> = {}): S => {
+    const f = getOrCreateSession(id, channel);
+    f.stage = 'quote';
+    f.updatedAt = Date.now() - 4 * 3600_000; // 过了 quote 2 小时、closing 3 小时的门槛
+    f.messages.push({ role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt });
+    Object.assign(f, over);
+    saveSession(f, false);
+    return f;
+  };
+  const OK_ID = 'wecom:selftest-edge-ok';
+  const normal = silent(OK_ID, 'wecom');
+  // 只靠 handedOver 标记挡住：阶段还停在 quote
+  silent('wecom:selftest-edge-handover', 'wecom', { handedOver: true });
+  silent('wecom:selftest-edge-paid', 'wecom', { stage: 'paid' });
+  silent('wecom:cust_selftest-edge', 'wecom');
+  silent('sim-selftest-edge', 'simulator');
+  const cust = silent('wecom:selftest-edge-customer-last', 'wecom');
+  cust.messages.push({ role: 'customer', content: '我再想想', at: cust.updatedAt });
+  saveSession(cust, false);
+  silent('wecom:selftest-edge-fresh', 'wecom', { updatedAt: Date.now() - 3600_000 }); // quote 门槛 2 小时，才沉默 1 小时
+
+  handler = async () => ok('出行日期定下来了吗？');
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0); // 避开夜间免打扰
+  const scan = async (): Promise<{ sent: number; pushed: string[] }> => {
+    const pushed: string[] = [];
+    const sent = await runFollowUpScan(async (id) => {
+      pushed.push(id);
+      return true;
+    }, noon);
+    return { sent, pushed };
+  };
+  process.env.FOLLOWUP_ENABLED = '1';
+
+  const r1 = await scan();
+  assert.ok(r1.pushed.includes(OK_ID), '未转人工、未支付的企微会话，最后一条是 AI 发的、沉默过了阶段门槛，应发出跟进');
+  assert.ok(!r1.pushed.includes('wecom:selftest-edge-handover'), '已转人工的会话不跟进（人工在跟，AI 不插嘴）');
+  assert.ok(!r1.pushed.includes('wecom:selftest-edge-paid'), '已支付的会话不跟进');
+  assert.ok(!r1.pushed.includes('wecom:cust_selftest-edge'), '种子演示会话（wecom:cust_*）不跟进');
+  assert.ok(!r1.pushed.includes('sim-selftest-edge'), '网页访客会话（sim- / simulator 渠道）不跟进');
+  assert.ok(!r1.pushed.includes('wecom:selftest-edge-customer-last'), '最后一条是客户发的不跟进（那是该回复，不是跟进）');
+  assert.ok(!r1.pushed.includes('wecom:selftest-edge-fresh'), '沉默没到阶段门槛不跟进');
+  assert.equal(r1.sent, r1.pushed.length);
+  assert.deepEqual((getSession(OK_ID) as Fu).followup?.stages, ['quote']);
+
+  // 跟进本身也是 AI 发的，最后一条仍是 AI、沉默时长也没被清零——挡住第二条的只有「这个阶段追过了」的记账
+  const r2 = await scan();
+  assert.equal(r2.sent, 0, '同一阶段只跟一次：第二轮扫描不再推');
+  assert.ok(!r2.pushed.includes(OK_ID), '同一阶段只跟一次：追过的会话第二轮不再推');
+  assert.equal((getSession(OK_ID) as Fu).followup?.count, 1);
+
+  // 进到新阶段（报价后建了单没付）：这个阶段还没追过，可以再追一次
+  normal.stage = 'closing';
+  saveSession(normal, false);
+  const r3 = await scan();
+  assert.deepEqual(r3.pushed, [OK_ID], '换到没追过的阶段可以再跟一次，其余会话仍然不追');
+  const fu = (getSession(OK_ID) as Fu).followup;
+  assert.deepEqual(fu?.stages, ['quote', 'closing'], '记账是追加新阶段，已追过的阶段不被覆盖掉');
+  assert.equal(fu?.count, 2);
+
+  // 全程上限（默认 FOLLOWUP_MAX_PER_SESSION=2）：再换到第三个没追过的阶段、沉默也够久，挡住它的只有次数上限。
+  // 不在 closing 阶段再扫一轮断言「新阶段也只跟一次」：那时次数也到了上限，两条规则都在挡，分不出是哪条
+  normal.stage = 'objection';
+  normal.updatedAt = Date.now() - 5 * 3600_000; // 过了 objection 4 小时的门槛
+  saveSession(normal, false);
+  assert.equal((await scan()).sent, 0, '全程最多跟 2 次：换到没追过的阶段也不再推');
+  process.env.FOLLOWUP_ENABLED = '';
+  pass('沉默跟进只追未转人工、未支付、非种子的企微会话，最后一条得是 AI 发的；同一阶段只追一次，全程最多 2 次');
+}
+
 // ---------- F1 停机：等手上这条跟进推完、记完账再退出 ----------
 // 跟进是「先推企微、再把 count/stages 记进会话」。SIGTERM 落在两者之间时客户已经收到，会话里却没记，
 // 重启后下一轮扫描照样判定「该追了」——同一条跟进发两遍。

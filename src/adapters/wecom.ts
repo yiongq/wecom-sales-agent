@@ -1111,4 +1111,4 @@ function inspectForTest(): { cursor: string; coldStart: boolean; handled: string
 }
 
 /** 仅供自测使用的内部函数出口（src/adapters/wecom.selftest.ts） */
-export const __test = { splitForWecom, extractCard, stripLink, resetForTest, inspectForTest, STATE_FILE, WELCOME_BACK_TEXT };
+export const __test = { splitForWecom, extractCard, stripLink, wechatify, resetForTest, inspectForTest, STATE_FILE, WELCOME_BACK_TEXT };

@@ -23,9 +23,15 @@ process.env.ADMIN_PASS = 'selftest-pass';
 process.env.LOOKUP_RATE_PER_MIN = '5';
 // env.js 只填「尚未存在」的变量：显式置空，挡住本机 .env 里可能配着的真实企微与自动跟进
 for (const k of ['WECOM_CORP_ID', 'WECOM_APP_SECRET', 'WECOM_KF_OPEN_KFID', 'FOLLOWUP_ENABLED']) process.env[k] = '';
+// store 只在加载时读这两个：闲置清理阈值显式定成默认的 24 小时（本机 .env 改不动它）；
+// 访客总量上限压到允许的最低值 100，文末才造得出「超上限」。前面各组只建十几个访客会话，碰不到它
+process.env.DEMO_PRUNE_HOURS = '24';
+process.env.VISITOR_SESSION_MAX = '100';
 
 const { app } = await import('./server.js');
 const { getOrCreateSession, getSession, saveSession, createOrder } = await import('./store.js');
+const { getOrder, listOrders, listSessions, markOrderPaid, pruneStaleVisitorData, freshenDemoData } = await import('./store.js');
+const { subscribe } = await import('./adapters/simulator.js');
 const { recordUsage } = await import('./usage.js');
 
 let pass = 0;
@@ -489,12 +495,289 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('后台把被替代的单标成「已被替代」、金额取仍有效的那张', adminPage.includes("'已被替代'") && adminPage.includes('liveOrder(s)'));
 }
 
+/** 环境变量原样恢复：原来没有就删掉（直接赋 undefined 会变成字符串 'undefined'） */
+function restoreEnv(k: string, v: string | undefined): void {
+  if (v === undefined) delete process.env[k];
+  else process.env[k] = v;
+}
+/** 服务端没配 ADMIN_PASS 的情形：鉴权每次请求时现读 process.env，临时删掉跑完再恢复 */
+async function withoutAdminPass<T>(fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.ADMIN_PASS;
+  delete process.env.ADMIN_PASS;
+  try {
+    return await fn();
+  } finally {
+    restoreEnv('ADMIN_PASS', saved);
+  }
+}
+const jsonBody = (v: unknown) => {
+  const body = JSON.stringify(v);
+  return { body, headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } };
+};
+
+// ---------------- 管理写接口：凭据、ADMIN_PASS 与跨站 ----------------
+// 接管 / 交还 / 人工回复是以顾问身份动真实客户的会话：没有任何环境变量能免密放行，没配 ADMIN_PASS 就整体锁死；
+// Basic 凭据浏览器会自动附带，跨站页面上一个自动提交的表单就能替已登录的顾问发消息，所以带跨站标记的一律拦下
+{
+  const target = mkSession(simId(), 'simulator', '管理写接口');
+  const post = (op: string, headers: Record<string, string> = {}) => {
+    const b = op === 'reply' ? jsonBody({ text: '顾问回复' }) : { body: undefined, headers: {} };
+    return app.request(`/api/sessions/${encodeURIComponent(target.id)}/${op}`, {
+      method: 'POST',
+      body: b.body,
+      headers: { 'x-forwarded-for': freshIp(), ...b.headers, ...headers },
+    });
+  };
+  const snapshot = () => JSON.stringify(getSession(target.id));
+  for (const op of ['handoff', 'resume', 'reply']) {
+    const before = snapshot();
+    const none = await post(op);
+    check(`管理写接口 ${op}：缺凭据 401`, none.status === 401, String(none.status));
+    const wrong = await post(op, WRONG);
+    check(`管理写接口 ${op}：凭据错 401`, wrong.status === 401, String(wrong.status));
+    const locked = await withoutAdminPass(async () => [(await post(op)).status, (await post(op, ADMIN)).status]);
+    check(
+      `管理写接口 ${op}：服务端没配 ADMIN_PASS 返回 503`,
+      locked.every((x) => x === 503),
+      locked.join(','),
+    );
+    const cross = await post(op, { ...ADMIN, 'sec-fetch-site': 'cross-site' });
+    check(`管理写接口 ${op}：带 sec-fetch-site: cross-site 返回 403（凭据对也拦）`, cross.status === 403, String(cross.status));
+    check(`管理写接口 ${op}：被拒的请求不改会话`, snapshot() === before);
+    const ok = await post(op, ADMIN);
+    check(`管理写接口 ${op}：凭据对、不带 sec-fetch-site 头的放行`, ok.status === 200, String(ok.status));
+  }
+  check('管理写接口放行后人工回复落进会话', getSession(target.id)?.messages.at(-1)?.content === '顾问回复');
+  // 后台自己发的 fetch 带 same-origin，地址栏直接打开的是 none，都要放行
+  for (const site of ['same-origin', 'none']) {
+    const r = await post('handoff', { ...ADMIN, 'sec-fetch-site': site });
+    check(`管理写接口：sec-fetch-site: ${site} 放行`, r.status === 200, String(r.status));
+  }
+}
+
+// ---------------- 走 LLM 计费的读端点：要凭据，不做同源校验 ----------------
+// 每调一次都花钱：未登录（或密码错）一律 401，没配 ADMIN_PASS 503；它们只读不写，所以不查 sec-fetch-site
+{
+  const target = mkSession(simId(), 'simulator', 'LLM 读端点');
+  const id = encodeURIComponent(target.id);
+  const get = (url: string, headers: Record<string, string> = {}) =>
+    app.request(url, { headers: { 'x-forwarded-for': freshIp(), ...headers } });
+  for (const [name, url] of [
+    ['/api/insights', '/api/insights'],
+    ['/api/sessions/:id/suggestion', `/api/sessions/${id}/suggestion`],
+    ['/api/sessions/:id/draft', `/api/sessions/${id}/draft`],
+  ]) {
+    const none = await get(url);
+    check(`LLM 计费读端点 ${name}：缺凭据 401`, none.status === 401, String(none.status));
+    const wrong = await get(url, WRONG);
+    check(`LLM 计费读端点 ${name}：凭据错 401`, wrong.status === 401, String(wrong.status));
+    const locked = await withoutAdminPass(async () => [(await get(url)).status, (await get(url, ADMIN)).status]);
+    check(
+      `LLM 计费读端点 ${name}：服务端没配 ADMIN_PASS 返回 503`,
+      locked.every((x) => x === 503),
+      locked.join(','),
+    );
+    const cross = await get(url, { ...ADMIN, 'sec-fetch-site': 'cross-site' });
+    check(`LLM 计费读端点 ${name}：不做同源校验（凭据对、带 cross-site 照常 200）`, cross.status === 200, String(cross.status));
+  }
+}
+
+// ---------------- POST /api/chat 只认 sim- 会话 ----------------
+// 网页聊天是匿名入口：让它指定 wecom: 前缀，就能往真实客户（或种子）的会话里写话、以客户身份跑一轮 AI
+{
+  for (const [name, sid] of [
+    ['真实客户', REAL.id],
+    ['种子', SEED.id],
+    ['不存在的企微', 'wecom:wmNOSUCHCUSTOMER9'],
+  ]) {
+    const before = JSON.stringify(getSession(sid));
+    const b = jsonBody({ sessionId: sid, text: '你好，帮我看看三亚' });
+    const res = await app.request('/api/chat', { method: 'POST', body: b.body, headers: { 'x-forwarded-for': freshIp(), ...b.headers } });
+    check(`POST /api/chat 带 wecom: 前缀的会话 id 返回 400（${name}）`, res.status === 400, String(res.status));
+    check(`POST /api/chat 带 wecom: 前缀：${name}会话不被新建或改动`, JSON.stringify(getSession(sid)) === before);
+  }
+}
+
+// ---------------- 付款接口：已取消的单不能付，已付款的单不重复推送 ----------------
+const payReq = (orderId: string) =>
+  app.request(`/api/orders/${orderId}/pay`, { method: 'POST', headers: { 'x-forwarded-for': freshIp() } });
+{
+  // 目前没有把订单改成 cancelled 的代码路径，这里直接设状态，守的是付款接口的判断本身
+  const s = mkSession(simId(), 'simulator', '已取消的单');
+  const o = mkOrder(s);
+  getOrder(o.id)!.status = 'cancelled';
+  const res = await payReq(o.id);
+  check('已取消的订单：付款接口返回 409', res.status === 409, String(res.status));
+  const after = getOrder(o.id);
+  check(
+    '已取消的订单：状态仍是 cancelled、没有付款时间',
+    after?.status === 'cancelled' && after.paidAt === undefined,
+    JSON.stringify(after),
+  );
+  check('已取消的订单：会话不进入已支付', getSession(s.id)?.stage !== 'paid', String(getSession(s.id)?.stage));
+}
+{
+  // 客户在支付页连点两下、或刷新后又点一次：第二次不能再推一条「已收到您的支付」
+  const s = mkSession(simId(), 'simulator', '重复付款');
+  const o = mkOrder(s);
+  const pushed: string[] = [];
+  const unsubscribe = subscribe(s.id, (t) => pushed.push(t));
+  const first = await payReq(o.id);
+  check(
+    '首次付款：订单变成已付并推送一次跟进',
+    first.status === 200 && getOrder(o.id)?.status === 'paid' && pushed.length === 1,
+    `${first.status} / ${pushed.length}`,
+  );
+  const paidAt = getOrder(o.id)?.paidAt;
+  const msgs = getSession(s.id)?.messages.length;
+  await payReq(o.id);
+  unsubscribe();
+  check(
+    '已付款的订单再调付款接口：订单不变（仍已付、付款时间不变）',
+    getOrder(o.id)?.status === 'paid' && getOrder(o.id)?.paidAt === paidAt,
+  );
+  check('已付款的订单再调付款接口：不再推送跟进', pushed.length === 1, String(pushed.length));
+  check(
+    '已付款的订单再调付款接口：会话里不再多记一条跟进',
+    getSession(s.id)?.messages.length === msgs,
+    `${msgs} → ${getSession(s.id)?.messages.length}`,
+  );
+}
+
+// ---------------- 访客闲置清理：只清 sim- 网页访客 ----------------
+// 真实企微会话 id 是 wecom:<external_userid>，和种子 wecom:cust_* 只差前缀；清理要是写成「非种子即可删」，
+// 真实客户会连人带订单消失。已付订单是成交凭证，访客的也不删
+{
+  const IDLE = Date.now() - 25 * 3_600_000; // 超过 DEMO_PRUNE_HOURS=24
+  const visitor = mkSession(simId(), 'simulator', '闲置访客');
+  const vOrder = mkOrder(visitor);
+  const paidVisitor = mkSession(simId(), 'simulator', '闲置但付过款的访客');
+  const pOrder = mkOrder(paidVisitor);
+  markOrderPaid(pOrder.id);
+  const active = mkSession(simId(), 'simulator', '刚聊过的访客');
+  const realIdle = mkSession('wecom:wmIDLECUSTOMER02', 'wecom', '闲置的真实客户');
+  const rOrder = mkOrder(realIdle);
+  const seedIdle = mkSession('wecom:cust_T09', 'wecom', '闲置的种子');
+  const simOnWecom = mkSession(simId(), 'wecom', 'sim- 开头但渠道是企微');
+  const otherOnSim = mkSession('web-idle01', 'simulator', '模拟器渠道但不是 sim- 开头');
+  for (const s of [visitor, paidVisitor, realIdle, seedIdle, simOnWecom, otherOnSim]) s.updatedAt = IDLE;
+  pruneStaleVisitorData();
+  check('访客清理：闲置的 sim- 网页访客会话被删', !getSession(visitor.id));
+  check('访客清理：连同它的订单一起删', !getOrder(vOrder.id));
+  check('访客清理：有已付订单的访客会话不删', !!getSession(paidVisitor.id) && getOrder(pOrder.id)?.status === 'paid');
+  check('访客清理：没闲置够的访客会话不删', !!getSession(active.id));
+  check('访客清理：闲置的真实企微会话连同订单都在', !!getSession(realIdle.id) && !!getOrder(rOrder.id));
+  check('访客清理：闲置的种子会话不删', !!getSession(seedIdle.id));
+  check('访客清理：sim- 开头但渠道不是 simulator 的不删', !!getSession(simOnWecom.id));
+  check('访客清理：simulator 渠道但不是 sim- 开头的不删', !!getSession(otherOnSim.id));
+}
+
+// ---------------- 访客总量上限：超了淘汰最旧的，有已付订单的不动 ----------------
+// /api/chat 匿名可达，脚本几分钟能刷出几十万会话；新建访客会话时就按 updatedAt 淘汰最旧的。上限在文件开头设成 100
+{
+  const CAP = 100;
+  const visitors = () => listSessions().filter((s) => s.id.startsWith('sim-') && s.channel === 'simulator');
+  const paidOldest = mkSession(simId(), 'simulator', '最旧但付过款的访客');
+  markOrderPaid(mkOrder(paidOldest).id);
+  const old1 = mkSession(simId(), 'simulator', '最旧的访客');
+  const o1 = mkOrder(old1);
+  const old2 = mkSession(simId(), 'simulator', '次旧的访客');
+  const old3 = mkSession(simId(), 'simulator', '第三旧的访客');
+  [paidOldest.updatedAt, old1.updatedAt, old2.updatedAt, old3.updatedAt] = [1_000, 2_000, 3_000, 4_000];
+  const startCount = visitors().length;
+  // 带上界：淘汰若多算一个，访客数永远到不了 CAP，这里不能死循环
+  for (let i = 0; i < CAP && visitors().length < CAP; i++) getOrCreateSession(simId(), 'simulator');
+  const kept = (...xs: Session[]) => xs.every((s) => !!getSession(s.id));
+  check('访客总量上限：没超上限时一个不淘汰', startCount < CAP && kept(paidOldest, old1, old2, old3), `起始 ${startCount}`);
+  // 先只超一个、立刻看：多淘汰一个会掉到 CAP-1，再建一个又补回 CAP，只看终态发现不了
+  const extra1 = getOrCreateSession(simId(), 'simulator');
+  check(
+    '访客总量上限：超出一个只淘汰一个（最旧的）',
+    visitors().length === CAP && !getSession(old1.id) && kept(old2),
+    String(visitors().length),
+  );
+  const extra = [extra1, getOrCreateSession(simId(), 'simulator')];
+  check('访客总量上限：超出后总数压回上限', visitors().length === CAP, String(visitors().length));
+  check('访客总量上限：淘汰的是最旧的访客会话，连同订单', !getSession(old1.id) && !getSession(old2.id) && !getOrder(o1.id));
+  check('访客总量上限：只淘汰超出的个数', kept(old3, ...extra));
+  check('访客总量上限：有已付订单的访客会话不淘汰（哪怕最旧）', kept(paidOldest));
+  check('访客总量上限：真实企微会话与种子会话不受影响', kept(REAL, SEED));
+}
+
+// ---------------- 种子保鲜：只平移 wecom:cust_* 与它们的订单 ----------------
+// 种子的时间戳是灌入时定死的，放几天后台就全是「N 天未回应」；保鲜把它们整体挪到最新一条约 5 分钟前。
+// 真实客户和网页访客的时间是事实，一毫秒都不能动
+{
+  const HOUR = 3_600_000;
+  const T = Date.now() - 3 * 24 * HOUR; // 放了三天的演示数据
+  const seedPaid = mkSession('wecom:cust_T10', 'wecom', '种子：已付款');
+  markOrderPaid(mkOrder(seedPaid).id);
+
+  const isSeed = (id: string) => id.startsWith('wecom:cust_');
+  const seeds = listSessions().filter((s) => isSeed(s.id));
+  // 非种子：前面各组留下的真实客户（REAL、闲置的那位）和网页访客，多数带订单
+  const others = listSessions().filter((s) => !isSeed(s.id));
+  // 种子之间错开几小时，订单时间落在会话里；非种子也放到同样旧，误平移就看得出来
+  seeds.forEach((s, i) => {
+    s.updatedAt = T - i * HOUR;
+    s.createdAt = s.updatedAt - HOUR;
+    for (const m of s.messages) m.at = s.updatedAt - 60_000;
+  });
+  for (const s of others) {
+    s.updatedAt = T;
+    s.createdAt = T - HOUR;
+    for (const m of s.messages) m.at = T;
+  }
+  for (const o of listOrders()) {
+    o.createdAt = (getSession(o.sessionId)?.updatedAt ?? T) - 30 * 60_000;
+    if (o.paidAt !== undefined) o.paidAt = o.createdAt + 10 * 60_000;
+  }
+  const sStamps = (s: Session) => [s.createdAt, s.updatedAt, ...s.messages.map((m) => m.at)];
+  const oStamps = (o: Order) => [o.createdAt, o.paidAt ?? 0];
+  const seedOrders = listOrders().filter((o) => isSeed(o.sessionId));
+  const otherOrders = listOrders().filter((o) => !isSeed(o.sessionId));
+  const snap = (ss: Session[], os: Order[]) => [...ss.map(sStamps), ...os.map(oStamps)];
+  const seedBefore = snap(seeds, seedOrders);
+  const otherBefore = JSON.stringify(snap(others, otherOrders));
+  const newestBefore = Math.max(...seeds.map((s) => s.updatedAt));
+
+  const savedFreshen = process.env.DEMO_FRESHEN;
+  try {
+    process.env.DEMO_FRESHEN = '0';
+    freshenDemoData();
+    check('种子保鲜：DEMO_FRESHEN=0 时不平移', JSON.stringify(snap(seeds, seedOrders)) === JSON.stringify(seedBefore));
+    delete process.env.DEMO_FRESHEN;
+    freshenDemoData();
+  } finally {
+    restoreEnv('DEMO_FRESHEN', savedFreshen);
+  }
+  const newest = Math.max(...seeds.map((s) => s.updatedAt));
+  const delta = newest - newestBefore;
+  check(
+    '种子保鲜：最新一条种子会话落在约 5 分钟前',
+    Math.abs(Date.now() - 5 * 60_000 - newest) < 5_000,
+    `${Math.round((Date.now() - newest) / 1000)}s 前`,
+  );
+  const shifted = (before: number[][], after: number[][]) =>
+    before.length === after.length &&
+    before.every((xs, i) => xs.every((x, j) => (x === 0 ? after[i][j] === 0 : after[i][j] === x + delta)));
+  check('种子保鲜：种子会话与消息整体平移，相对间隔不变', shifted(seedBefore.slice(0, seeds.length), seeds.map(sStamps)));
+  check(
+    '种子保鲜：种子的订单（含付款时间）同样平移',
+    seedOrders.some((o) => o.paidAt !== undefined) && shifted(seedBefore.slice(seeds.length), seedOrders.map(oStamps)),
+  );
+  check(
+    '种子保鲜：真实客户、网页访客的会话与订单不动',
+    others.some((s) => s.channel === 'wecom') && otherOrders.length > 0 && JSON.stringify(snap(others, otherOrders)) === otherBefore,
+  );
+}
+
 if (fails.length) {
   console.error(`SERVER SELFTEST FAIL: ${fails.length} 项未通过`);
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
 console.log(
-  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id）`,
+  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id / 管理写接口与 LLM 读端点的鉴权 / /api/chat 只认 sim- / 付款边界 / 访客清理与上限 / 种子保鲜）`,
 );
 process.exit(0); // SSE 的 ping 循环还挂着 20s 的 sleep，不等它

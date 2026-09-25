@@ -146,7 +146,7 @@ if (fs.existsSync(path.join(root, 'data', 'sop.md'))) {
 // env 就绪后再加载引擎（引擎均为调用时读 env，动态 import 双保险）
 const { handleMessage, notifyPaid, historyWindow, onToolCall, promptPrefix, __engineTest } = await import('./engine.js');
 const { markOrderPaid, getSession, createOrder, getOrder } = await import('./store.js');
-const { searchRoutes } = await import('./tools.js');
+const { searchRoutes, createQuote } = await import('./tools.js');
 const { buildIndex, indexReady } = await import('./retrieval.js');
 const { llmCfg } = await import('./llm.js');
 assert.ok(llmCfg().baseUrl.startsWith('http://127.0.0.1:'), '自测只能打本机假模型服务');
@@ -548,6 +548,36 @@ console.log('\nSELFTEST PASS: greeting→discovery→recommend→quote→closing
 }
 
 // ======================================================================
+// createQuote：报价只由写死的两条规则从 priceFrom 算出，模型不参与算钱
+// ======================================================================
+// 期望值按规则手算，不回头调代码：出发月份在最佳季时每人 round(priceFrom × 1.1)；4 人及以上每人再 round(× 0.95)；
+// 不在最佳季或全年同价不上浮；总价 = 每人价 × 人数。线路和价格取 data/routes.json 里的真实数据
+{
+  const q = (routeId: string, travelers: number, departDate?: string) => {
+    const r = createQuote({ routeId, travelers, departDate });
+    return [r.perPerson, r.total];
+  };
+  // 丽江大理 r-yunnan-mid：priceFrom 16800，最佳季「3月-5月、9月-11月」
+  assert.deepEqual(q('r-yunnan-mid', 3, '2027-10-02'), [18480, 55440], '最佳季 3 人：每人 16800 × 1.1 = 18480，总价 × 3');
+  assert.deepEqual(q('r-yunnan-mid', 4, '2027-10-02'), [17556, 70224], '最佳季 4 人：每人 18480 × 0.95 = 17556，总价 × 4');
+  assert.deepEqual(q('r-yunnan-mid', 3, '2027-07-15'), [16800, 50400], '不在最佳季（7 月）不上浮');
+  assert.deepEqual(q('r-yunnan-mid', 4, '2027-07-15'), [15960, 63840], '不在最佳季 4 人：只打 95 折，16800 × 0.95 = 15960');
+  assert.deepEqual(q('r-yunnan-mid', 2), [16800, 33600], '不带出发日期不上浮');
+  // 跨年的最佳季：r-maldives-mid priceFrom 35800，「11月-次年4月」，1 月在季内
+  assert.deepEqual(q('r-maldives-mid', 2, '2027-01-10'), [39380, 78760], '跨年最佳季的 1 月同样上浮：35800 × 1.1 = 39380');
+  // 全年同价：r-japan-family priceFrom 26800，「全年」是全年适游，不是全年旺季
+  assert.deepEqual(q('r-japan-family', 3, '2027-08-01'), [26800, 80400], '全年同价的线路不上浮');
+  assert.deepEqual(q('r-japan-family', 4, '2027-08-01'), [25460, 101840], '全年同价 4 人：只打 95 折，26800 × 0.95 = 25460');
+  // 每人价取整：r-tibet-mid priceFrom 26800，最佳季「4月-6月、9月-10月」。26800 × 1.1 在浮点里是 29480.000000000004，
+  // 不取整的话每人价和总价都带小数尾巴
+  assert.deepEqual(q('r-tibet-mid', 3, '2027-09-20'), [29480, 88440], '每人价取整：26800 × 1.1 = 29480，总价 88440');
+  // 现有 20 条线路 × 0.95 都是整数（不论先上浮与否），× 0.95 这一步的取整、以及上浮取整对 4 人价的影响，用真实数据测不到
+  console.log(
+    'SELFTEST PASS: createQuote 算价向量（最佳季上浮 / 4 人 95 折 / 非最佳季与全年同价不上浮 / 上浮后每人价取整 / 总价 = 每人价 × 人数）',
+  );
+}
+
+// ======================================================================
 // 出口护栏：用假模型按脚本吐出坏回复，看客户最终收到什么
 // ======================================================================
 process.env.LLM_MOCK = '0';
@@ -677,6 +707,24 @@ const searchYunnan: Step[] = [
   assert.equal(r.text, '');
   assert.ok(!s.messages.some((m) => m.role === 'agent' && m.content.includes('亚特兰蒂斯')), 'AI 回复不能记成已发出');
   assert.equal(s.stageBeforeHandoff, 'discovery');
+}
+
+// 同会话串行：客户手快连发两条，第二条要等第一条回完再处理，模型才看得到上一句回复。
+// 第一条的模型请求故意拖 400ms、第二条不等第一条就发：不串行的话，第二条的请求在这期间就发出去了，历史里没有第一条的回复
+{
+  const sid = newSid('serial');
+  const from = requests.length;
+  script.push({ delayMs: 400, content: '您好～这次想去哪儿玩？' }, { content: '在的～您想去哪儿玩？' });
+  const first = handleMessage(sid, '你好', 'wecom');
+  const second = handleMessage(sid, '在吗', 'wecom');
+  await Promise.all([first, second]);
+  assert.equal(script.length, 0, `同会话连发两条应恰好用完脚本（剩 ${script.length} 步）`);
+  const req2 = requests.slice(from).find((q) => q.messages.some((m) => m.role === 'user' && m.content?.includes('在吗')));
+  assert.ok(req2, '第二条消息要发出模型请求');
+  assert.ok(
+    req2.messages.some((m) => m.role === 'assistant' && m.content?.includes('这次想去哪儿玩')),
+    `同一会话并发两条消息，第二条的模型请求里要看得到第一条的回复（实际：${JSON.stringify(req2.messages.slice(1).map((m) => m.content))}）`,
+  );
 }
 
 // E6：重置口令在企微与网页都生效（演示项目要用手机微信反复走流程）：
@@ -1167,6 +1215,25 @@ const searchYunnan: Step[] = [
   const clean = '我是云途定制旅行的旅行顾问，Python 代码这块帮不上您 😄\n\n有旅行计划的话随时找我聊聊，想去哪儿玩？';
   const r = await fakeSay(newSid('inj-clean'), inj, [{ content: clean }]);
   assert.equal(r.text, clean, '模型干净拒绝时原样放行');
+}
+
+// 引擎出口去 markdown：微信和后台都不渲染，模型吐出 **加粗**、行首「# 标题」、行首「- / * 列表」时，
+// 引擎给出的正文里就不能再有这些符号（企微渠道层的 wechatify 是二道保险，网页渠道没有这一层，所以两个渠道都看引擎出口）
+{
+  const md = '# 出行准备\n**证件**最要紧，其余看季节带：\n- 防晒霜\n* 薄外套\n您打算去哪儿玩？';
+  for (const [sid, channel] of [
+    [`sim-selftest-md-${Date.now().toString(36)}`, 'simulator'],
+    [newSid('md'), 'wecom'],
+  ]) {
+    const r = await fakeSay(sid, '出门旅行要准备些什么', [{ content: md }], channel);
+    assert.ok(!r.text.includes('**'), `${channel}：** 加粗符号不能发给客户（实际：${r.text}）`);
+    assert.ok(!/^#+\s/m.test(r.text), `${channel}：行首「# 」标题符号不能发给客户（实际：${r.text}）`);
+    assert.ok(!/^\s*[-*]\s/m.test(r.text), `${channel}：行首的 - / * 列表符不能发给客户（实际：${r.text}）`);
+    assert.ok(
+      ['出行准备', '证件', '防晒霜', '薄外套'].every((w) => r.text.includes(w)),
+      `${channel}：只去符号，文字要留着（实际：${r.text}）`,
+    );
+  }
 }
 
 // 预取的边界落到画像上：区间预算原样记下，常住地不能被记成目的地
@@ -2248,6 +2315,27 @@ const searchYunnan: Step[] = [
         '付完款问细节，查的是订单那条',
       );
       assert.equal(getSession(p)!.stage, 'paid', '只查了详情，已支付的客户不能被当成新旅程');
+    }
+    // 反过来，付完款本轮调了 search_routes，是在问下一趟：视为新旅程，阶段从问需重推，落在 recommend
+    {
+      const { getOrCreateSession } = await import('./store.js');
+      const p = newSid('u7p-next');
+      getOrCreateSession(p, 'wecom');
+      const o = createOrder({
+        sessionId: p,
+        routeId: 'r-sichuan-lux',
+        routeTitle: '四川 稻城亚丁·色达秘境 8 日',
+        travelers: 2,
+        departDate: future('10-20'),
+        totalPrice: 94160,
+      });
+      getSession(p)!.orderIds.push(o.id);
+      markOrderPaid(o.id);
+      await notifyPaid(o.id);
+      assert.equal(getSession(p)!.stage, 'paid');
+      await fakeSay(p, '下次还想出去玩，有别的线路推荐吗', searchYunnan);
+      assert.equal(prefetched('search_routes').length, 0, '这一轮的 search_routes 是模型自己调的，不是引擎预取');
+      assert.equal(getSession(p)!.stage, 'recommend', '已支付的会话调了 search_routes，视为新旅程，阶段为 recommend');
     }
 
     // 带长辈推北京：C10/C14/C04 说「全程平原 / 全程平地为主 / 老人走得动」，第 3 天是约三小时的野长城
@@ -4369,6 +4457,6 @@ const searchYunnan: Step[] = [
 assert.equal(scriptOverrun, 0, '假模型被多调了（脚本耗尽后仍有请求）');
 fake.close();
 console.log(
-  'SELFTEST PASS: 出口护栏（改行程+编价 / 逐日行程 / 转人工记阶段 / 生成中接管 / 重置（企微与网页） / 过去日期 / 死链接 / 超预算差额）',
+  'SELFTEST PASS: 出口护栏（改行程+编价 / 逐日行程 / 转人工记阶段 / 生成中接管 / 重置（企微与网页） / 过去日期 / 死链接 / 超预算差额 / 去 markdown / 同会话串行）',
 );
 console.log('SELFTEST PASS: 发给模型的请求（预取还原成工具往返 / 会话状态在客户消息前 / system 逐字节不变 / 线路 id 跨轮 / 画像白名单）');
