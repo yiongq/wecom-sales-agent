@@ -85,7 +85,7 @@
   - `no-control-regex` 8 处是故意写法：出口护栏用 `\u0001–\u0003` 当链接空位记号，用 `\u0000` 包链接占位。逐行豁免并写明理由；其中两处在长链式调用中间，格式化会把正则挪离豁免注释，所以正则原样提成常量 `HAS_HOLE`、`EMPTY_MD_LINK`。
   - 没有关掉任何整条规则。
 - gitleaks 全历史（`--log-opts="--all"`，另加 `-m` 各跑一次）：no leaks found，因此没有 `.gitleaksignore`。
-- 词表：plan 原写「开工前 owner 已放好」，实际开工时本机和仓库 secret 都没有。本机的 `.sensitive-patterns` 由 Claude Code 按本机配置和私有笔记起草，收录范围另记。仓库 secret `SENSITIVE_PATTERNS` 在第一次推送前按它设置。
+- 词表：plan 原写「开工前 owner 已放好」，实际开工时本机和仓库 secret 都没有。本机的 `.sensitive-patterns` 由 Claude Code 按本机配置和私有笔记起草，收录范围另记。仓库 secret `SENSITIVE_PATTERNS` 在第一次推送前按它设置，只放正则行，不放注释和空行：GitHub 会把多行 secret 的每一行都当遮蔽词，单独一个 `#` 的行会把 CI 日志里所有的 `#` 打成 `***`。
 - spec 没写、此处取定的地方：
   - 边界检查读 git 索引里的版本（部分暂存时，以要提交的那一份为准）。不在 git 工作区根目录时（例如 `deploy.sh` 的归档目录），改查目录树里 `node_modules` 以外的文件。
   - 路径黑名单多收一项 `.sensitive-patterns`。文件名比较不分大小写。子模块按目录算，所以 `src/packs/<白名单外>`、`tenants` 做成子模块也会被拦。`var/` 只拦仓库根目录，和运行时目录一致。
