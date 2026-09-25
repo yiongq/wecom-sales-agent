@@ -763,6 +763,124 @@ const searchYunnan: Step[] = [
   assert.equal(getSession(sim)!.handedOver, false);
 }
 
+// E6p：reset_command 关掉（prod，或 demo 显式设 FLAG_RESET_COMMAND=off）时，「重置」只是一句普通客户消息：
+// 历史原样保留、追加这一句和固定回复，不调模型，阶段、画像、订单（含已付的）和转人工状态都不变；
+// 已转人工时照常静默。企微与网页都一样。两种配置各跑一遍：看的是开关，不是 profile 名字
+{
+  const RESET_OFF_REPLY = '想换方向或改订单，直接告诉我新的需求就行～';
+  /** 模型一次都没被调：fakeSay 只看得出多用了脚本，脚本为空时多出的请求要看 requests / scriptOverrun */
+  const noModelCall = async (sid: string, text: string, channel: string) => {
+    const reqFrom = requests.length;
+    const overrunFrom = scriptOverrun;
+    const r = await fakeSay(sid, text, [], channel);
+    assert.equal(requests.length, reqFrom, `reset_command 关掉时「${text}」不能调模型`);
+    assert.equal(scriptOverrun, overrunFrom, `reset_command 关掉时「${text}」不能调模型`);
+    return r;
+  };
+  const withPaidOrder = (sid: string) => {
+    const order = createOrder({
+      sessionId: sid,
+      routeId: 'r-yunnan-mid',
+      routeTitle: '丽江大理 6 日',
+      travelers: 2,
+      departDate: '2026-12-10',
+      totalPrice: 33600,
+    });
+    markOrderPaid(order.id);
+    getSession(sid)!.orderIds.push(order.id);
+    return order.id;
+  };
+
+  // demo 下重置照旧删掉已付订单（E6 只测了待付款单）
+  const demoSid = newSid('e6-paid');
+  await fakeSay(demoSid, '想去云南看看', searchYunnan);
+  const demoOrder = withPaidOrder(demoSid);
+  await handleMessage(demoSid, '重置', 'wecom');
+  assert.equal(getOrder(demoOrder), undefined, 'demo 下重置连已付订单一起删掉');
+
+  for (const [who, env] of [
+    ['prod', { DEPLOY_PROFILE: 'prod' }],
+    ['demo 设 FLAG_RESET_COMMAND=off', { DEPLOY_PROFILE: 'demo', FLAG_RESET_COMMAND: 'off' }],
+  ] as const) {
+    try {
+      __profileTest.use(env);
+      for (const [sid, word, channel] of [
+        [newSid('e6p'), '重置', 'wecom'],
+        [`sim-selftest-e6p-${Date.now().toString(36)}-${++seq}`, '重新开始', 'simulator'],
+      ] as const) {
+        await fakeSay(sid, '想去云南看看', searchYunnan, channel);
+        const orderId = withPaidOrder(sid);
+        const s = getSession(sid)!;
+        assert.equal(s.stage, 'recommend');
+        const before = structuredClone({
+          messages: s.messages,
+          stage: s.stage,
+          profile: s.profile,
+          orderIds: s.orderIds,
+          handedOver: s.handedOver,
+        });
+        const r = await noModelCall(sid, word, channel);
+        assert.equal(r.text, RESET_OFF_REPLY, `${who} 下${channel}发「${word}」回固定话术（实际：${r.text}）`);
+        assert.ok(!r.silent && !r.handoff, `${who} 下${channel}发「${word}」要有回复、不转人工`);
+        assert.equal(r.stage, 'recommend', `${who} 下${channel}发「${word}」阶段不变（实际：${r.stage}）`);
+        assert.deepEqual(
+          s.messages.slice(0, before.messages.length),
+          before.messages,
+          `${who} 下${channel}重置之前的历史原样保留、顺序不变`,
+        );
+        assert.deepEqual(
+          s.messages.slice(before.messages.length).map((m) => [m.role, m.content]),
+          [
+            ['customer', word],
+            ['agent', RESET_OFF_REPLY],
+          ],
+          `${who} 下${channel}的「${word}」和固定回复追加在历史后面`,
+        );
+        assert.equal(s.stage, before.stage, `${who} 下${channel}重置不改阶段`);
+        assert.deepEqual(s.profile, before.profile, `${who} 下${channel}重置不改画像`);
+        assert.deepEqual(s.orderIds, before.orderIds, `${who} 下${channel}重置不动订单列表`);
+        assert.equal(getOrder(orderId)?.status, 'paid', `${who} 下${channel}重置不删已付订单`);
+        assert.equal(s.handedOver, before.handedOver, `${who} 下${channel}重置不改转人工状态`);
+      }
+      // 其余三种说法同样只回固定话术
+      const rest = newSid('e6p-words');
+      for (const word of ['重来', '清空会话', 'reset']) {
+        const r = await noModelCall(rest, word, 'wecom');
+        assert.equal(r.text, RESET_OFF_REPLY, `${who} 下「${word}」回固定话术（实际：${r.text}）`);
+      }
+
+      // 已转人工：和其他消息一样只入库、不回复，也不解除转人工；画像和订单（含已付的）同样不动
+      for (const [sid, word, channel] of [
+        [newSid('e6p-h'), '重置', 'wecom'],
+        [`sim-selftest-e6p-h-${Date.now().toString(36)}-${++seq}`, 'reset', 'simulator'],
+      ] as const) {
+        await fakeSay(sid, '想去云南看看', searchYunnan, channel);
+        await fakeSay(sid, '我要投诉', [], channel);
+        const orderId = withPaidOrder(sid);
+        const s = getSession(sid)!;
+        assert.equal(s.handedOver, true);
+        assert.ok(Object.keys(s.profile).length > 0, `画像要非空，才测得出重置有没有清它（实际：${JSON.stringify(s.profile)}）`);
+        const before = structuredClone({ messages: s.messages, profile: s.profile, orderIds: s.orderIds });
+        const r = await noModelCall(sid, word, channel);
+        assert.ok(r.silent && r.text === '', `${who} 下已转人工的${channel}会话发「${word}」不回复（实际：${r.text}）`);
+        assert.equal(s.handedOver, true, `${who} 下${channel}重置不解除转人工`);
+        assert.equal(s.stage, 'handoff', `${who} 下${channel}已转人工的会话重置后仍是 handoff`);
+        assert.deepEqual(s.messages.slice(0, before.messages.length), before.messages, `${who} 下${channel}已转人工时历史原样保留`);
+        assert.deepEqual(
+          s.messages.slice(before.messages.length).map((m) => [m.role, m.content]),
+          [['customer', word]],
+          `${who} 下${channel}已转人工时「${word}」照常入库`,
+        );
+        assert.deepEqual(s.profile, before.profile, `${who} 下${channel}已转人工时重置不改画像`);
+        assert.deepEqual(s.orderIds, before.orderIds, `${who} 下${channel}已转人工时重置不动订单列表`);
+        assert.equal(getOrder(orderId)?.status, 'paid', `${who} 下${channel}已转人工时重置不删已付订单`);
+      }
+    } finally {
+      __profileTest.reset();
+    }
+  }
+}
+
 // E12：客户顺口提了个过去的完整日期，不带日期的报价不该被拦
 {
   const sid = newSid('e12');
@@ -4466,6 +4584,6 @@ const searchYunnan: Step[] = [
 assert.equal(scriptOverrun, 0, '假模型被多调了（脚本耗尽后仍有请求）');
 fake.close();
 console.log(
-  'SELFTEST PASS: 出口护栏（改行程+编价 / 逐日行程 / 转人工记阶段 / 生成中接管 / 重置（企微与网页） / 过去日期 / 死链接 / 超预算差额 / 去 markdown / 同会话串行）',
+  'SELFTEST PASS: 出口护栏（改行程+编价 / 逐日行程 / 转人工记阶段 / 生成中接管 / 重置（企微与网页；prod 下只回固定话术） / 过去日期 / 死链接 / 超预算差额 / 去 markdown / 同会话串行）',
 );
 console.log('SELFTEST PASS: 发给模型的请求（预取还原成工具往返 / 会话状态在客户消息前 / system 逐字节不变 / 线路 id 跨轮 / 画像白名单）');

@@ -25,7 +25,7 @@
   - `.env.example` 补 `DEPLOY_PROFILE` 与各个 `FLAG_*`。
   - 解析和封顶的向量写进 `server.selftest.ts`；前缀断言 3（demo 与 prod 相同）写进 `engine.selftest.ts`。切换 profile 的用例结束时调 `__profileTest.reset()`。
   - 对应验收 1e、5。
-- [ ] 4. 其余四个布尔开关接到调用点（spec「部署 profile 与开关」的表；约 0.5–1 人日）：
+- [x] 4. 其余四个布尔开关接到调用点（spec「部署 profile 与开关」的表；约 0.5–1 人日）：
   - `reset_command`：`engine.ts`，关掉时走固定回复，不改任何状态。
   - `anon_readonly_admin`：`server.ts` 的列表路由、`sessionReadAuth`、`/api/usage`。
   - `visitor_simulator`：`server.ts` 的路由和静态页；`sim-` 直读只看这个开关；访客清理不动。
@@ -127,6 +127,18 @@
 - 对抗审查：两个审查者（对照 spec 做变异测试；专找边角问题），每条发现再派一个反驳者。成立的 5 条都在 `b41bf7a` 里补上，补完后逐条把变异打回去，确认测试会失败：把 profile-boot 挪到 store 之后、删掉它、启动日志打印默认值而不是生效值、拒绝启动时不写原因、`profile()` 不缓存。
 - server 自测 138 → 171 项断言；其余各组和 PREFIX 哈希不变。server 自测多了约 7 秒：配置错误的 5 种情况各起一次真正的 `server.ts` 进程。
 
+### 第 4 步（2026-09-26，分支 `feat/00-profile-flags`）
+
+- 做法：「重置」（`engine.ts`）与另外三个开关（`server.ts`）各由一个 agent 在自己的 worktree 里实现，再由另外的 agent 逐项做变异测试，审查提的问题修一轮后 cherry-pick 到本分支。提交：`adecd34`、`e481ccf`（reset），`eee968f`、`9190bde`、`416f499`（server 与 `admin.html`）。
+- 每个开关都在用到时现读 `profile().flags`；demo 默认下走的仍是原来的分支，已有断言一条没改。server 自测 171 → 251 项断言；PREFIX 哈希不变。
+- 这里取定的：
+  - `reset_command` 关掉时，口令按普通客户消息走（包括 400 条裁到 300 条的上限），已转人工照常静默，否则回固定话术。固定回复放在转人工静默之后、确定性转人工和重发链接之前。
+  - `anon_readonly_admin` 关掉时，列表和 `/api/usage` 走 `adminAuth`：没配 `ADMIN_PASS` 时是 503，prod 下不会出现，因为不配密码起不来。种子 id 直读同样要凭据。
+  - `visitor_simulator` 关掉时，`sim-` 直读带不带凭据都是 404：spec 说它只由这个开关决定。登录后的列表里照样看得到 `sim-` 会话。`/chat.html`、`/guide.html` 在静态兜底之前按文件名、不分大小写拦下。
+  - `mock_pay` 关掉时，不带有效凭据的付款请求返回 404，在限流之前就返回，所以不计入限流；带凭据的要过 `sameOriginOnly`，跨站返回 403。
+  - `admin.html` 的 `load()` 遇到 401、503 按空列表显示，用量显示「—」。原来会把 `{error}` 当成列表存起来：后面任何一次重新渲染都会抛错，退出登录后还会继续显示登录时看到的全部会话，包括真实客户。不用 `!r.ok`，免得偶发的 500 把列表清空。
+- 对抗审查：reset 的 15 项行为、server 的 18 项行为都做过变异测试。审查提的 4 条建议都已补上：demo 加 `FLAG_RESET_COMMAND=off`、已转人工的会话带订单和画像、prod 下启动时的访客清理（起子进程验证）、`admin.html` 遇到 503。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
@@ -149,6 +161,14 @@
 - 1e · 通过 · 临时 worktree 里放一份 `.env`（`DEPLOY_PROFILE=prod`、5 个 `FLAG_*=off`、`DEMO_FRESHEN=0`、`ADMIN_PASS`），`pnpm test` 的 50 行结果摘要与没有 `.env` 时逐行相同，自测进程的 profile 仍是 demo（2026-09-26，`cbaabb6`）。
 - 5a · 通过 · 真实的 `server.ts` 进程：`DEPLOY_PROFILE=staging`、prod 加 `FLAG_RESET_COMMAND=on`、prod 没配 `ADMIN_PASS`、`FLAG_AI_DISCLOSURE=on_ask`、`DEMO_FRESHEN=0` 加 `FLAG_SEED_FRESHEN=on`，五种都以 1 退出，只有一行原因，没有异常栈。已写进 `server.selftest.ts`。
 - 5b · 通过 · 正常启动时第一行是 `[profile] prod · reset_command=off … ai_disclosure=always`，打出的是生效值。已写进 `server.selftest.ts`。
+- 3b · 通过 · demo 下「重置」在企微和网页都清空会话和订单（含已付）、解除转人工：`engine.selftest.ts` E6，外加「demo 下重置连已付订单一起删掉」；eval `robust-03-reset`（2026-09-26）。
+- 3d · 通过 · demo 下网页模拟器能聊、模拟支付能付、后台匿名只读照旧：现有的 server、engine 断言与 eval 原样通过。
+- 4a · 通过 · `engine.selftest.ts` E6p：在 prod 下，以及 demo 加 `FLAG_RESET_COMMAND=off` 时，企微和网页发四种口令：历史原样保留，口令和固定回复追加在后面，没有请求发到假模型；阶段、画像、订单（含已付）、转人工状态不变；已转人工时不回复、口令照常入库。
+- 4b · 通过 · 接口部分：prod 下匿名的会话列表、订单列表、`/api/usage`、种子 id 直读都返回 401，带凭据返回全部。页面部分：起了真实的 prod 服务，用无头 Chromium 打开 `/`，跳到 `admin.html`，显示「暂无会话」；点「登录」输入凭据后显示全部会话；退出后又回到空列表。
+- 4c · 通过 · prod 下匿名、凭据错误、匿名跨站的付款请求都返回 404，订单仍是待支付；带凭据跨站返回 403；带凭据同源返回 200，订单变成已付，并推送一条跟进。
+- 4d · 通过 · prod 下 `POST /api/chat`、`GET /api/stream/:id`、`GET /api/sessions/sim-…`、`/chat.html`、`/guide.html` 返回 404（含大小写、百分号编码、HEAD 等变体）；`/` 跳到 `/admin.html`。始终公开的路由照常能匿名访问。
+- 4e · 通过 · 见第 3 步：prod 下调保鲜例程不平移。
+- 4f · 通过 · prod 下闲置的 `sim-` 访客会话照样被清理，包括进程启动时的那一次（起子进程验证）。
 - 11e · 部分通过 · 2026-09-25 经 owner 同意，用 `gh api` 打开了 secret scanning 和 push protection（`security_and_analysis` 两项均为 enabled），当时没有告警。在私有测试仓库里验证推送被拒这一半没有做（owner 没有要求）。
 
 ## 起草记录（2026-09-25）
@@ -159,10 +179,10 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1–3 步。第 2 步 PR #3 已合进 `dev`（`8b52437`）；第 3 步在分支 `feat/00-deploy-profile` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 已完成：第 1–4 步。第 3 步 PR #4 已合进 `dev`（`a316d69`）；第 4 步在分支 `feat/00-profile-flags` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
 - 半成品：无。
 - 阻塞：无。
-- 下一步：第 4 步，其余四个布尔开关接到调用点。
+- 下一步：第 5 步，AI 显式标识。
 
 ## Open
 
