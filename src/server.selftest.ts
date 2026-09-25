@@ -906,6 +906,34 @@ const payReq = (orderId: string) =>
     JSON.stringify(demoOff),
   );
   check('启动：demo 下没配 ADMIN_PASS 照常启动', run('src/profile-boot.ts', {}).code === 0);
+
+  // 访客清理不归任何开关管（验收 4f）：prod 进程一起来，store 加载时就清一次闲置的 sim- 会话。
+  // 文末那组在本进程里直接调 pruneStaleVisitorData，给加载时 / 每小时那两处调用挂上开关它也照过；这里起一个 prod 进程只加载 store，看落盘结果
+  const pruneDir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'prune-boot-'));
+  const stale = Date.now() - 25 * 3_600_000;
+  const idle = (id: string, channel: string) => ({
+    id,
+    channel,
+    stage: 'greeting',
+    profile: {},
+    messages: [],
+    orderIds: [],
+    handedOver: false,
+    createdAt: stale,
+    updatedAt: stale,
+  });
+  const idleVisitor = simId();
+  fs.writeFileSync(
+    path.join(pruneDir, 'sessions.json'),
+    JSON.stringify([idle(idleVisitor, 'simulator'), idle('wecom:wmIDLEBOOT04', 'wecom')]),
+  );
+  const pruned = run('src/store.ts', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x', VAR_DIR: pruneDir, DEMO_PRUNE_HOURS: '24' });
+  const left = (JSON.parse(fs.readFileSync(path.join(pruneDir, 'sessions.json'), 'utf8')) as Session[]).map((s) => s.id);
+  check(
+    '启动（prod）：store 加载时照常清掉闲置 25 小时的 sim- 访客会话，闲置的真实企微会话不动（验收 4f）',
+    pruned.code === 0 && same(left, ['wecom:wmIDLEBOOT04']),
+    JSON.stringify({ pruned, left }),
+  );
 }
 
 // ---------------- 开关接到调用点：anon_readonly_admin / visitor_simulator / mock_pay ----------------
