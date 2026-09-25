@@ -1,6 +1,7 @@
 // HTTP 服务：静态页面 + 模拟器 API + 管理后台 API + 企微回调。
 // 注意路由注册顺序：API 在前，serveStatic 兜底在后。
-// 管理 API 走 Basic 鉴权，读写分层见 adminAuth；admin.html 页面本身免密（未登录只看得到演示数据）。
+// 管理 API 走 Basic 鉴权，读写分层见 adminAuth；admin.html 页面本身免密（未登录只看得到演示数据，prod 下什么都看不到）。
+// demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
 import { serve } from '@hono/node-server';
@@ -26,6 +27,7 @@ import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
+import { profile } from './profile.js';
 import type { ChannelAdapter } from './types.js';
 
 const app = new Hono();
@@ -45,9 +47,10 @@ function adapterFor(channel: string): ChannelAdapter {
 // 身份给真实微信客户发消息——永远没有免密的正当理由。于是开关被彻底移除：
 // 现在没有任何环境变量能放行写操作，配错的最坏结果是「后台不可用」，而不是「全网可写」。
 // 未配 ADMIN_PASS 时：读仍是演示模式（可用），写返回 503。
+// 免密的那一层读由开关 anon_readonly_admin 决定：prod 下关掉，读也要凭据（prod 没配 ADMIN_PASS 起不来）。
 
 /**
- * 演示数据：种子会话与网页访客，绝不含真实企微客户。凭 ID 直读放行、启动自检不计入真实客户，都按它判断。
+ * 演示数据：种子会话与网页访客，绝不含真实企微客户。启动自检不计入真实客户，按它判断；凭 ID 直读见 sessionReadAuth。
  * 它**不是**列表的可见范围：此前列表按它过滤，sim-* 人人可见——演示链接一公开，任何人打开后台就能
  * 翻陌生访客在网页里留的手机号，拿他们的订单号去点「已支付」。列表口径见 anonVisible。
  */
@@ -97,10 +100,20 @@ async function adminAuth(c: Context, next: Next): Promise<Response | void> {
   return c.json({ error: 'unauthorized' }, 401);
 }
 
+/**
+ * 会话列表、订单列表与 /api/usage 的免密读。anon_readonly_admin 关掉（prod）时没有这一层：
+ * 不带有效凭据一律按 adminAuth 拒绝，连种子会话也不给。开着时照旧放行，响应体再按 isAdminReq 过滤。
+ */
+const anonReadable: MiddlewareHandler = async (c, next) => (profile().flags.anon_readonly_admin ? next() : adminAuth(c, next));
+
 /** 单会话读取：演示会话（种子/访客）凭自身不可猜的 ID 直读，真实客户会话必须登录。
- *  demo 分支额外走一道限流：ID 是凭据，不限流就等于允许慢速穷举。 */
+ *  demo 分支额外走一道限流：ID 是凭据，不限流就等于允许慢速穷举。
+ *  两类演示会话各归一个开关：sim- 直读是网页模拟器的一部分（chat.html 靠它恢复历史），只看 visitor_simulator，
+ *  关掉时接口当作不存在，带不带凭据都是 404；种子直读属于后台免密读，anon_readonly_admin 关掉就和真实客户一样要登录。 */
 async function sessionReadAuth(c: Context, next: Next): Promise<Response | void> {
-  if (DEMO_DATA_RE.test(c.req.param('id') ?? '')) return lookupLimit(c, next);
+  const id = c.req.param('id') ?? '';
+  if (id.startsWith('sim-')) return profile().flags.visitor_simulator ? lookupLimit(c, next) : c.notFound();
+  if (SEED_SESSION_RE.test(id) && profile().flags.anon_readonly_admin) return lookupLimit(c, next);
   return adminAuth(c, next);
 }
 
@@ -118,7 +131,8 @@ const sameOriginOnly: MiddlewareHandler = async (c, next) => {
   return next();
 };
 
-app.get('/', (c) => c.redirect('/guide.html'));
+// 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
+app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
 // llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵
 app.get('/healthz', (c) =>
@@ -127,11 +141,14 @@ app.get('/healthz', (c) =>
 
 // 模型用量与成本（JD 明确要求的「模型调用成本」指标）
 // 用量与成本：聚合数字，不含任何客户信息，演示模式下也放行（这正是要展示的指标之一）
-app.get('/api/usage', (c) => c.json(usageToday()));
+app.get('/api/usage', anonReadable, (c) => c.json(usageToday()));
 
 // ---------------- 模拟器聊天 ----------------
 
 const SIM_SESSION_RE = /^sim-[A-Za-z0-9_-]{1,64}$/;
+
+/** 网页模拟器的入口：visitor_simulator 关掉（prod）时当作不存在，一律 404。访客清理不归它管，照常运行（store.ts） */
+const simulatorOnly: MiddlewareHandler = async (c, next) => (profile().flags.visitor_simulator ? next() : c.notFound());
 
 // /api/chat 是公网匿名端点且每次调真实 LLM——不加限流等于把 LLM 账单和
 // sessions.json 的增长交给任何写脚本的人。滑动窗口按 IP 计数，内存实现够用。
@@ -256,7 +273,7 @@ function extractTag(xml: string, tag: string): string | undefined {
   return inner;
 }
 
-app.post('/api/chat', async (c) => {
+app.post('/api/chat', simulatorOnly, async (c) => {
   if (chatRateLimited(clientKey(c))) return c.json({ error: '发送太频繁了，请稍后再试' }, 429);
   const body = await c.req.json<{ sessionId?: string; text?: unknown }>().catch(() => null);
   // typeof 判断不能省：可选链只挡 null/undefined，text 传数字/数组/对象时 .trim 不存在会抛
@@ -275,7 +292,7 @@ app.post('/api/chat', async (c) => {
 });
 
 // SSE 推送通道：服务端主动消息（支付跟进、人工回复）经此下发
-app.get('/api/stream/:sessionId', lookupLimit, (c) => {
+app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
   const sessionId = c.req.param('sessionId');
   return streamSSE(c, async (stream) => {
     const unsubscribe = subscribe(sessionId, (text) => {
@@ -341,7 +358,7 @@ app.get('/api/sessions/:id/suggestion', adminAuth, async (c) => {
 
 // 会话列表：未登录只返回种子会话与本人的访客会话。过滤发生在服务端——真实客户和其他访客的会话
 // 不进响应体，而不是前端拿到全量再隐藏（后者用 devtools 一看就穿）。
-app.get('/api/sessions', (c) => {
+app.get('/api/sessions', anonReadable, (c) => {
   const all = listSessions();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
@@ -427,7 +444,7 @@ app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
 
 // 订单列表：同会话列表口径。订单号是 /pay 的凭据、sessionId 是读对话全文的凭据，
 // 漏一条别人的订单就等于把这两样都交了出去
-app.get('/api/orders', (c) => {
+app.get('/api/orders', anonReadable, (c) => {
   const all = listOrders();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
@@ -441,8 +458,19 @@ app.get('/api/orders/:id', lookupLimit, (c) => {
   return c.json(o);
 });
 
+/**
+ * 谁能调模拟支付，由 mock_pay 决定。关掉（prod）时匿名请求永远标不了已付（00 spec「mock_pay 与 prod 的真实客户」）：
+ * 不带有效凭据一律 404，像这个接口不存在；带凭据的是顾问手工确认收款（验收、预演用，去留由 02 定），
+ * 它是写操作，和管理写接口一样过 sameOriginOnly。开着时照旧人人可付。
+ */
+const payAuth: MiddlewareHandler = async (c, next) => {
+  if (profile().flags.mock_pay) return next();
+  if (!isAdminReq(c)) return c.notFound();
+  return sameOriginOnly(c, next);
+};
+
 // 演示用模拟支付：真实生产必须替换为微信支付服务端回调验签，此端点仅 demo 闭环用
-app.post('/api/orders/:id/pay', lookupLimit, async (c) => {
+app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   const id = c.req.param('id');
   const order = getOrder(id);
   if (!order) return c.json({ error: 'order not found' }, 404);
@@ -657,6 +685,11 @@ app.get('/kf-qr.png', async (c) => {
 // 静态资源兜底（admin.html / chat.html / pay.html / guide.html）。
 // admin.html 页面本身不再鉴权：它进来只会看到演示数据，页面内的登录框负责换取
 // 真实客户会话与写权限。页面是空壳，凭据永远由下面的 API 层判定。
+// 网页模拟器的两个页面在 visitor_simulator 关掉（prod）时当作不存在，其余页面照常。按文件名比、不分大小写：
+// macOS 的文件系统不分大小写，/CHAT.html 也读得到 chat.html。c.req.path 已经解过码（/%63hat.html 在这里就是
+// /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这两个文件名。
+const SIMULATOR_PAGE_RE = /\/(?:chat|guide)\.html$/i;
+app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATOR_PAGE_RE.test(c.req.path) ? next() : c.notFound()));
 app.use('/*', serveStatic({ root: './public' }));
 
 // 全局兜底：此前 /api/chat 没有任何 catch，上游 LLM 抖动（超时/5xx/返回缺 choices）

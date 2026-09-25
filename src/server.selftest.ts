@@ -908,12 +908,296 @@ const payReq = (orderId: string) =>
   check('启动：demo 下没配 ADMIN_PASS 照常启动', run('src/profile-boot.ts', {}).code === 0);
 }
 
+// ---------------- 开关接到调用点：anon_readonly_admin / visitor_simulator / mock_pay ----------------
+// 00 spec「部署 profile 与开关」的表。prod 下三个都关；demo 下用 FLAG_*=off 单独关一个，其余照旧。
+// 关掉的入口像不存在一样回 404，要凭据的照 adminAuth 回 401 / 503。demo 默认的行为由前面各组守着
+{
+  const { loadRoutes } = await import('./tools.js');
+  type Init = { method?: string; headers?: Record<string, string>; body?: string };
+  const hit = async (url: string, init: Init = {}) => {
+    const res = await app.request(url, { ...init, headers: { 'x-forwarded-for': freshIp(), ...init.headers } });
+    const type = res.headers.get('content-type') ?? '';
+    // SSE 的 body 不会自己结束：只看状态和类型，看完就断开
+    const text = type.startsWith('text/event-stream') ? (await res.body?.cancel(), '') : await res.text();
+    return { status: res.status, text, type, location: res.headers.get('location') ?? '' };
+  };
+  const withProfile = async (env: Record<string, string>, fn: () => Promise<void>) => {
+    __profileTest.use(env);
+    try {
+      await fn();
+    } finally {
+      __profileTest.reset();
+    }
+  };
+  const PROD = { DEPLOY_PROFILE: 'prod' };
+  const V = mkSession(simId(), 'simulator', '开关测试访客 13966667777');
+  const vOrder = mkOrder(V);
+  const LISTS: [string, string][] = [
+    ['GET /api/sessions', '/api/sessions'],
+    ['GET /api/orders', '/api/orders'],
+    ['GET /api/usage', '/api/usage'],
+    ['GET /api/sessions/<种子 id>', `/api/sessions/${encodeURIComponent(SEED.id)}`],
+  ];
+
+  // ---- anon_readonly_admin：关掉后列表、/api/usage、种子直读都要凭据（验收 4b 的接口一半） ----
+  await withProfile(PROD, async () => {
+    for (const [name, url] of LISTS) {
+      const anon = await hit(url);
+      check(
+        `anon_readonly_admin 关（prod）：匿名 ${name} 返回 401，响应体里没有会话`,
+        anon.status === 401 && !/wecom:|sim-|ord_/.test(anon.text),
+        `${anon.status} ${anon.text.slice(0, 80)}`,
+      );
+      const self = await hit(url, { headers: own(V.id) });
+      check(`anon_readonly_admin 关（prod）：带访客本人的 x-sim-session 也是 401（${name}）`, self.status === 401, String(self.status));
+      const wrong = await hit(url, { headers: WRONG });
+      check(`anon_readonly_admin 关（prod）：凭据错 401（${name}）`, wrong.status === 401, String(wrong.status));
+      const locked = await withoutAdminPass(async () => (await hit(url)).status);
+      check(`anon_readonly_admin 关（prod）：服务端没配 ADMIN_PASS 返回 503（${name}）`, locked === 503, String(locked));
+      const ok = await hit(url, { headers: ADMIN });
+      check(`anon_readonly_admin 关（prod）：带凭据照常 200（${name}）`, ok.status === 200, String(ok.status));
+    }
+    const all = await sessionIds(ADMIN);
+    check(
+      'anon_readonly_admin 关（prod）：带凭据的会话列表是全量',
+      [SEED.id, REAL.id, V.id].every((id) => all.includes(id)),
+      JSON.stringify(all),
+    );
+    const allO = await orderIds(ADMIN);
+    check(
+      'anon_readonly_admin 关（prod）：带凭据的订单列表是全量',
+      [oSeed.id, oReal.id, vOrder.id].every((id) => allO.includes(id)),
+    );
+    const real = await hit(`/api/sessions/${encodeURIComponent(REAL.id)}`);
+    check('anon_readonly_admin 关（prod）：真实客户会话匿名直读仍是 401', real.status === 401, String(real.status));
+    const who = await hit('/api/admin/whoami', { headers: ADMIN });
+    check('anon_readonly_admin 关（prod）：登录框校验凭据照常 200', who.status === 200, String(who.status));
+  });
+  await withProfile({ DEPLOY_PROFILE: 'demo', FLAG_ANON_READONLY_ADMIN: 'off' }, async () => {
+    const lists = await Promise.all(LISTS.map(async ([, url]) => (await hit(url)).status));
+    check(
+      'demo 下 FLAG_ANON_READONLY_ADMIN=off：匿名的列表、/api/usage、种子直读都是 401',
+      lists.every((x) => x === 401),
+      lists.join(','),
+    );
+    // sim- 直读只归 visitor_simulator 管：它在 demo 下开着，访客照常凭 id 读回自己的会话
+    const direct = await hit(`/api/sessions/${V.id}`);
+    check('demo 下 FLAG_ANON_READONLY_ADMIN=off：访客照常凭 id 直读自己的 sim- 会话', direct.status === 200, String(direct.status));
+  });
+
+  // ---- visitor_simulator：关掉后网页模拟器的入口和两个页面都是 404，首页进后台（验收 4d） ----
+  // 模拟器以外、spec 列为「有意保持匿名可达」的页面与接口，prod 下照常打得开
+  const route = loadRoutes().find((r) => r.itinerary?.length);
+  fs.writeFileSync(path.join(process.env.VAR_DIR!, 'kf-qr.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  const PUBLIC: [string, string][] = [
+    ['/admin.html', '/admin.html'],
+    ['/pay.html', '/pay.html'],
+    ['/proposal.html', '/proposal.html'],
+    ['/share-cover.png', '/share-cover.png'],
+    ['/pay/:订单号', `/pay/${vOrder.id}`],
+    ['GET /api/orders/:id', `/api/orders/${vOrder.id}`],
+    ['/proposal/:线路/:人数', `/proposal/${route?.id}/2`],
+    ['GET /api/proposal/:线路', `/api/proposal/${route?.id}`],
+    ['/kf-qr.png', '/kf-qr.png'],
+    ['/healthz', '/healthz'],
+    ['/api/admin/stream', '/api/admin/stream'],
+  ];
+  const SIM_PAGES = ['/chat.html', '/guide.html', '/CHAT.HTML', '/Guide.Html', '/%63hat.html', '/%67uide.html', '/chat.html?from=qr'];
+  await withProfile(PROD, async () => {
+    const fresh = simId();
+    const before = listSessions().length;
+    for (const sid of [fresh, undefined]) {
+      const b = jsonBody({ sessionId: sid, text: '想去三亚' });
+      const r = await hit('/api/chat', { method: 'POST', ...b });
+      check(
+        `visitor_simulator 关（prod）：POST /api/chat 返回 404（${sid ? '带' : '不带'} sessionId）`,
+        r.status === 404,
+        String(r.status),
+      );
+    }
+    check('visitor_simulator 关（prod）：/api/chat 没有建出会话', !getSession(fresh) && listSessions().length === before);
+    const sse = await hit(`/api/stream/${V.id}`);
+    check('visitor_simulator 关（prod）：GET /api/stream/:id 返回 404', sse.status === 404, `${sse.status} ${sse.type}`);
+    const direct = await hit(`/api/sessions/${V.id}`);
+    check('visitor_simulator 关（prod）：GET /api/sessions/sim-… 返回 404', direct.status === 404, String(direct.status));
+    const asAdmin = await hit(`/api/sessions/${V.id}`, { headers: ADMIN });
+    check('visitor_simulator 关（prod）：sim- 直读只看这个开关，带凭据也是 404', asAdmin.status === 404, String(asAdmin.status));
+    for (const url of SIM_PAGES) {
+      const r = await hit(url);
+      check(`visitor_simulator 关（prod）：${url} 返回 404`, r.status === 404 && !r.text.includes('<html'), String(r.status));
+    }
+    for (const [method, url] of [
+      ['HEAD', '/chat.html'],
+      ['POST', '/guide.html'],
+    ]) {
+      const r = await hit(url, { method });
+      check(`visitor_simulator 关（prod）：${method} ${url} 返回 404`, r.status === 404, String(r.status));
+    }
+    const home = await hit('/');
+    check(
+      'visitor_simulator 关（prod）：/ 跳到 /admin.html',
+      home.status === 302 && home.location === '/admin.html',
+      `${home.status} ${home.location}`,
+    );
+    const health = await hit('/healthz');
+    check(
+      'visitor_simulator 关（prod）：/healthz 照常输出 visitorLLM',
+      health.status === 200 && 'visitorLLM' in JSON.parse(health.text),
+      health.text.slice(0, 80),
+    );
+    for (const [name, url] of PUBLIC) {
+      const r = await hit(url);
+      check(`prod 下有意匿名可达：${name} 返回 200`, r.status === 200, `${r.status} ${r.text.slice(0, 60)}`);
+    }
+    const pay = await hit(`/pay/${vOrder.id}`);
+    check('prod 下 /pay/:订单号 仍是带订单标题的支付页', pay.text.includes('<title>测试线路 · 订单支付</title>'));
+    // 企微回调自带签名校验：本机没配就 501，配了而参数不全就 400，总之不是 404 / 401
+    const cb = await hit('/wecom/callback');
+    check('prod 下有意匿名可达：/wecom/callback 由回调自己处理', [400, 501].includes(cb.status), `${cb.status} ${cb.text}`);
+  });
+  await withProfile({ DEPLOY_PROFILE: 'demo', FLAG_VISITOR_SIMULATOR: 'off' }, async () => {
+    const chat = await hit('/chat.html');
+    const home = await hit('/');
+    const b = jsonBody({ text: '想去三亚' });
+    const post = await hit('/api/chat', { method: 'POST', ...b });
+    check(
+      'demo 下 FLAG_VISITOR_SIMULATOR=off：/chat.html 与 /api/chat 404，/ 跳 /admin.html',
+      chat.status === 404 && post.status === 404 && home.location === '/admin.html',
+      `${chat.status} ${post.status} ${home.location}`,
+    );
+    // 前面几组又加了几个种子会话，这里只看「有种子、全是种子」
+    const got = await sessionIds();
+    check(
+      'demo 下 FLAG_VISITOR_SIMULATOR=off：后台匿名只读照旧（只看得到种子）',
+      got.includes(SEED.id) && got.every((id) => id.startsWith('wecom:cust_')),
+      JSON.stringify(got),
+    );
+  });
+  {
+    const home = await hit('/');
+    check('demo：/ 仍跳 /guide.html', home.status === 302 && home.location === '/guide.html', `${home.status} ${home.location}`);
+    const pages = await Promise.all(['/chat.html', '/guide.html'].map(async (u) => (await hit(u)).status));
+    check(
+      'demo：/chat.html 与 /guide.html 照常 200',
+      pages.every((x) => x === 200),
+      pages.join(','),
+    );
+    const sse = await hit(`/api/stream/${V.id}`);
+    check(
+      'demo：GET /api/stream/:id 照常是 SSE',
+      sse.status === 200 && sse.type.startsWith('text/event-stream'),
+      `${sse.status} ${sse.type}`,
+    );
+  }
+
+  // ---- mock_pay：关掉后匿名付不了款；带凭据、同源的仍能标成已付并推送跟进（验收 4c） ----
+  const payOnce = async (label: string, env: Record<string, string>) => {
+    const s = mkSession(simId(), 'simulator', `${label}的待付款单`);
+    const o = mkOrder(s);
+    const pushed: string[] = [];
+    const unsubscribe = subscribe(s.id, (t) => pushed.push(t));
+    const pay = (headers: Record<string, string> = {}) => hit(`/api/orders/${o.id}/pay`, { method: 'POST', headers });
+    const pending = () => getOrder(o.id)?.status === 'pending_payment';
+    try {
+      await withProfile(env, async () => {
+        for (const [name, headers] of [
+          ['匿名', {}],
+          ['凭据错', WRONG],
+          ['匿名且跨站', { 'sec-fetch-site': 'cross-site' }],
+        ] as [string, Record<string, string>][]) {
+          const r = await pay(headers);
+          check(
+            `mock_pay 关（${label}）：${name}付款返回 404，订单仍是待支付`,
+            r.status === 404 && pending(),
+            `${r.status} ${getOrder(o.id)?.status}`,
+          );
+        }
+        const cross = await pay({ ...ADMIN, 'sec-fetch-site': 'cross-site' });
+        check(`mock_pay 关（${label}）：带凭据但跨站返回 403，订单仍是待支付`, cross.status === 403 && pending(), String(cross.status));
+        check(`mock_pay 关（${label}）：被拒的付款不推送、不改会话`, pushed.length === 0 && getSession(s.id)?.stage === 'closing');
+        const ok = await pay(ADMIN);
+        check(
+          `mock_pay 关（${label}）：带凭据的付款标成已付，并推送一次跟进`,
+          ok.status === 200 && getOrder(o.id)?.status === 'paid' && pushed.length === 1 && getSession(s.id)?.stage === 'paid',
+          `${ok.status} ${getOrder(o.id)?.status} ${pushed.length}`,
+        );
+      });
+    } finally {
+      unsubscribe();
+    }
+  };
+  await payOnce('prod', PROD);
+  await payOnce('demo 下 FLAG_MOCK_PAY=off', { DEPLOY_PROFILE: 'demo', FLAG_MOCK_PAY: 'off' });
+
+  // ---- admin.html 的 load()：prod 下未登录时列表接口回 401（验收 4b 的页面一半） ----
+  // 以前把 {error} 原样当列表存进去，sigOf 一 map 就抛、被 catch 吞掉，页面停在骨架上；
+  // 退出登录时则一直挂着登录时的全量。要按空列表照常渲染，登录后同一个 load() 拿到全量。自动弹登录框属于 02
+  {
+    const admin = fs.readFileSync(path.resolve('public/admin.html'), 'utf8');
+    const loadSrc = /async function load\(\) \{[\s\S]*?\n\}/.exec(admin)?.[0];
+    const sigSrc = /function sigOf\(\) \{[\s\S]*?\n\}/.exec(admin)?.[0];
+    check('admin.html 有 load() 与 sigOf()', !!loadSrc && !!sigSrc);
+    if (loadSrc && sigSrc) {
+      const page = (headers: Record<string, string>) => {
+        // 模拟刚退出登录：手上还挂着登录时的数据
+        const S = {
+          sessions: [SEED] as unknown,
+          orders: [oSeed] as unknown,
+          usage: { totalCalls: 1 } as unknown,
+          selected: null,
+          range: '今日',
+        };
+        let rendered = 0;
+        const api = (url: string) => app.request(url, { headers: { 'x-forwarded-for': freshIp(), ...headers } });
+        const doc = { documentElement: { getAttribute: () => null } };
+        const load = new Function(
+          'S',
+          'api',
+          'render',
+          'document',
+          `let rangeAutoPicked = false, lastSig = ''; const rangeStart = () => 0; ${sigSrc}; ${loadSrc}; return load;`,
+        )(S, api, () => rendered++, doc) as () => Promise<void>;
+        return { S, load, rendered: () => rendered };
+      };
+      await withProfile(PROD, async () => {
+        const anon = page({});
+        await anon.load();
+        check(
+          'admin.html 在 prod 未登录：列表按空的渲染，成本清空（401 不把页面弄坏）',
+          same(anon.S.sessions as string[], []) && same(anon.S.orders as string[], []) && anon.S.usage === null && anon.rendered() === 1,
+          JSON.stringify(anon.S).slice(0, 120),
+        );
+        const logged = page(ADMIN);
+        await logged.load();
+        const ids = (logged.S.sessions as Session[]).map((s) => s.id);
+        check(
+          'admin.html 在 prod 登录后：同一个 load() 拿到全部会话',
+          [SEED.id, REAL.id, V.id].every((id) => ids.includes(id)) && logged.rendered() === 1,
+          `${ids.length} 个会话`,
+        );
+      });
+    }
+  }
+
+  // ---- 访客清理不归任何开关管：prod 下闲置的 sim- 会话照样清掉（验收 4f）。放在最后：会清掉前面各组闲置的访客 ----
+  await withProfile(PROD, async () => {
+    const idle = mkSession(simId(), 'simulator', 'prod 下闲置的访客');
+    const paidIdle = mkSession(simId(), 'simulator', 'prod 下闲置但付过款的访客');
+    markOrderPaid(mkOrder(paidIdle).id);
+    const realIdle = mkSession('wecom:wmIDLECUSTOMER03', 'wecom', 'prod 下闲置的真实客户');
+    for (const s of [idle, paidIdle, realIdle]) s.updatedAt = Date.now() - 25 * 3_600_000;
+    pruneStaleVisitorData();
+    check('访客清理（prod）：闲置的 sim- 访客会话照样被清理', !getSession(idle.id));
+    check('访客清理（prod）：有已付订单的访客、真实企微会话照旧不删', !!getSession(paidIdle.id) && !!getSession(realIdle.id));
+  });
+}
+
 if (fails.length) {
   console.error(`SERVER SELFTEST FAIL: ${fails.length} 项未通过`);
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
 console.log(
-  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id / 管理写接口与 LLM 读端点的鉴权 / /api/chat 只认 sim- / 付款边界 / 访客清理与上限 / 种子保鲜 / 部署 profile 的解析、封顶与启动）`,
+  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id / 管理写接口与 LLM 读端点的鉴权 / /api/chat 只认 sim- / 付款边界 / 访客清理与上限 / 种子保鲜 / 部署 profile 的解析、封顶与启动 / 开关关掉时的后台只读、网页模拟器、模拟支付与常开页面）`,
 );
 process.exit(0); // SSE 的 ping 循环还挂着 20s 的 sleep，不等它
