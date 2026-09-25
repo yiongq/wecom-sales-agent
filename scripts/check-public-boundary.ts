@@ -2,24 +2,26 @@
 // 仓库是公开的，推上去的东西自己洗不掉（PR 的 refs 也会留下），所以它挂在 `pnpm lint` 里，
 // pre-commit 在提交前就拦，CI 走同一个名字。
 //
-// 查的是 git 索引里的全部文件（已跟踪 + 已暂存），内容也读索引里的版本：
+// 查的是 git 索引里的全部文件（已跟踪 + 已暂存，子模块按目录算），内容也读索引里的版本：
 // 部分暂存时，要提交出去的是索引那一份，不是工作区那一份。不在 git 工作区根目录时
 // （deploy.sh 在 git archive 解出的目录里跑门禁），改查目录树里 node_modules 以外的文件。
 //
 // - 路径黑名单：命中时列出路径。
 // - 内容黑名单：词表来自环境变量 SENSITIVE_PATTERNS（CI 从仓库 secret 注入），没有时读被忽略的
 //   `.sensitive-patterns`；每行一个 JavaScript 正则（区分大小写，u 标志），空行和 # 开头的行忽略。
-//   两者都没有时跳过这一项并提示一行。命中时只报「文件:行号」，不回显命中的内容，也不回显词表，
-//   因为 CI 日志是公开的。
+//   两者都没有时跳过这一项并提示一行。文件内容和路径都查；不是 UTF-8 的文件按 latin1 读，
+//   ASCII 的域名、IP 照样认得出。命中时只报「文件:行号」，路径命中的那段打成 ***，
+//   不回显命中的内容，也不回显词表，因为 CI 日志是公开的。
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 
 /** src/packs/ 下允许公开的行业包。新增公开包要改这里，并在 PR 里说明（ADR-003 决策 4） */
 const PUBLIC_PACKS = new Set(['travel', 'ecommerce-aftersales']);
 
+/** 目录（子模块）以 / 结尾 */
 function pathViolation(p: string): boolean {
   const parts = p.split('/');
-  const base = parts[parts.length - 1];
+  const base = parts[parts.length - 1].toLowerCase();
   if (base === '.deploy.env' || base === '.sensitive-patterns') return true;
   if ((base === '.env' || base.startsWith('.env.')) && base !== '.env.example') return true;
   if (/\.(pem|key|p12|pfx|bundle)$/.test(base)) return true;
@@ -42,13 +44,20 @@ function loadPatterns(): RegExp[] | null {
   text.split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
     if (!line || line.startsWith('#')) return;
+    // 只报行号：正则原文本身就是要保护的内容
+    let re: RegExp;
     try {
-      patterns.push(new RegExp(line, 'gu'));
+      re = new RegExp(line, 'gu');
     } catch {
-      // 只报行号：正则原文本身就是要保护的内容
       console.error(`public-boundary: 词表第 ${i + 1} 行不是合法的正则`);
       process.exit(2);
     }
+    // 能匹配空串的多半是笔误（例如末尾多了个 |），会在每个位置都命中
+    if (re.test('')) {
+      console.error(`public-boundary: 词表第 ${i + 1} 行能匹配空串`);
+      process.exit(2);
+    }
+    patterns.push(re);
   });
   return patterns;
 }
@@ -63,16 +72,15 @@ function atGitRoot(): boolean {
   }
 }
 
-/** 索引里的文件：[路径, blob id]。跳过子模块（gitlink） */
-function indexEntries(): [string, string][] {
+/** 索引里的文件：[路径, blob id]。子模块（gitlink）没有内容，路径记成目录（以 / 结尾），blob id 为 null */
+function indexEntries(): [string, string | null][] {
   const out = execFileSync('git', ['ls-files', '--stage', '-z'], { encoding: 'utf8', maxBuffer: 64 << 20 });
-  const entries: [string, string][] = [];
+  const entries: [string, string | null][] = [];
   for (const rec of out.split('\0')) {
     if (!rec) continue;
     const tab = rec.indexOf('\t');
     const [mode, oid] = rec.slice(0, tab).split(' ');
-    if (mode === '160000') continue;
-    entries.push([rec.slice(tab + 1), oid]);
+    entries.push(mode === '160000' ? [rec.slice(tab + 1) + '/', null] : [rec.slice(tab + 1), oid]);
   }
   return entries;
 }
@@ -105,13 +113,25 @@ function walk(dir = ''): string[] {
 }
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
+function decode(buf: Buffer): string {
+  try {
+    return utf8.decode(buf);
+  } catch {
+    return buf.toString('latin1');
+  }
+}
 
 let paths: string[];
-let contents: () => Buffer[];
+/** 与 paths 一一对应；子模块没有内容 */
+let contents: () => (Buffer | null)[];
 if (atGitRoot()) {
   const entries = indexEntries();
   paths = entries.map(([p]) => p);
-  contents = () => readBlobs(entries.map(([, oid]) => oid));
+  contents = () => {
+    const blobs = readBlobs(entries.flatMap(([, oid]) => (oid ? [oid] : [])));
+    let k = 0;
+    return entries.map(([, oid]) => (oid ? blobs[k++] : null));
+  };
 } else {
   paths = walk();
   contents = () => paths.map((p) => fs.readFileSync(p));
@@ -128,22 +148,21 @@ if (badPaths.length) {
 const patterns = loadPatterns();
 if (patterns === null) {
   console.log('public-boundary: 没有 SENSITIVE_PATTERNS 或 .sensitive-patterns，跳过内容黑名单');
-} else if (patterns.length) {
+} else if (!patterns.length) {
+  console.log('public-boundary: 词表里没有正则，跳过内容黑名单');
+} else {
   const blobs = contents();
   const hits: string[] = [];
   paths.forEach((p, i) => {
-    let text: string;
-    try {
-      text = utf8.decode(blobs[i]);
-    } catch {
-      return; // 不是 UTF-8 文本（图片等）
-    }
+    const masked = patterns.reduce((s, re) => s.replace(re, '***'), p);
+    if (masked !== p) hits.push(`  ${masked}（路径）`);
+    const blob = blobs[i];
+    if (!blob) return;
+    const text = decode(blob);
     const lines = new Set<number>();
     for (const re of patterns) {
-      re.lastIndex = 0;
-      for (let m = re.exec(text); m; m = re.exec(text)) {
-        lines.add(text.slice(0, m.index).split('\n').length);
-        if (m[0] === '') re.lastIndex++;
+      for (const m of text.matchAll(re)) {
+        if (m[0]) lines.add(text.slice(0, m.index).split('\n').length);
       }
     }
     for (const n of [...lines].sort((a, b) => a - b)) hits.push(`  ${p}:${n}`);
