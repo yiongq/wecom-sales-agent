@@ -1176,6 +1176,21 @@ const payReq = (orderId: string) =>
           `${ids.length} 个会话`,
         );
       });
+      // demo 手动关掉免密只读又没配 ADMIN_PASS：三个接口回 503，登录不了，但页面同样按空的显示、不停在骨架上
+      await withProfile({ DEPLOY_PROFILE: 'demo', FLAG_ANON_READONLY_ADMIN: 'off' }, () =>
+        withoutAdminPass(async () => {
+          const locked = page({});
+          await locked.load();
+          check(
+            'admin.html 在 demo 下 FLAG_ANON_READONLY_ADMIN=off 且没配 ADMIN_PASS：503 也按空列表渲染，成本清空',
+            same(locked.S.sessions as string[], []) &&
+              same(locked.S.orders as string[], []) &&
+              locked.S.usage === null &&
+              locked.rendered() === 1,
+            JSON.stringify(locked.S).slice(0, 120),
+          );
+        }),
+      );
     }
   }
 

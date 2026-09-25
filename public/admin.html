@@ -488,11 +488,13 @@ let rangeAutoPicked = false;
 async function load() {
   try {
     const [a,b,u] = await Promise.all([api('/api/sessions'), api('/api/orders'), api('/api/usage').catch(()=>null)]);
-    // prod 没有免密只读：未登录（或刚退出）时这三个接口回 401，列表按空的显示、成本显示「—」，点「登录」后正常
-    const list = r => r.status === 401 ? [] : r.json();
+    // prod 没有免密只读：未登录（或刚退出）时这三个接口回 401，列表按空的显示、成本显示「—」，点「登录」后正常。
+    // 503 是关了免密只读又没配 ADMIN_PASS（只有 demo 手动关开关时会这样），同样按空的显示。只认这两个状态：偶发的 500 不该把列表清空
+    const locked = r => r.status === 401 || r.status === 503;
+    const list = r => locked(r) ? [] : r.json();
     S.sessions = await list(a); S.orders = await list(b);
     if (u && u.ok) S.usage = await u.json().catch(()=>null);
-    else if (u && u.status === 401) S.usage = null;
+    else if (u && locked(u)) S.usage = null;
     // 首次加载自动选一个"有数据"的范围：demo 数据往往不是今天灌的，
     // 默认死守「今日」会让工作台 KPI/漏斗全是 0，像坏了一样
     if (!rangeAutoPicked) {
