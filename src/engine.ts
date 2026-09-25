@@ -2123,6 +2123,12 @@ function buildSystemPrompt(): string {
   ].join('\n');
 }
 
+/** 发给模型的固定前缀：system 是请求里第一条 system 消息的全文，tools 是 JSON.stringify(toolDefs)。
+ *  前缀稳定测试拿它比对每个请求（00 spec「前缀稳定测试」） */
+export function promptPrefix(): { system: string; tools: string } {
+  return { system: buildSystemPrompt(), tools: JSON.stringify(toolDefs) };
+}
+
 /** 每轮会变的会话状态，经 ChatOptions.contextNote 放在最新客户消息之前（为什么不放 system 见上） */
 function buildContextNote(session: Session): string {
   const lines = [

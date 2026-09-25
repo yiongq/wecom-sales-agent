@@ -8,6 +8,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { Session } from './types.js';
 
@@ -34,6 +35,8 @@ interface WireMsg {
 interface Step { content?: string | ((msgs: WireMsg[]) => string); toolCalls?: { name: string; args: Record<string, unknown> }[]; delayMs?: number }
 const script: Step[] = [];
 const requests: { messages: WireMsg[] }[] = [];
+/** 与 requests 一一对应的原始请求体，前缀稳定测试按它逐字节比对 system 与 tools */
+const rawBodies: string[] = [];
 let scriptOverrun = 0;
 const fakeVec = (t: string): number[] => {
   const v = new Array<number>(32).fill(0);
@@ -52,6 +55,7 @@ const fake = http.createServer((req, res) => {
     }
     const reqBody = JSON.parse(body) as { messages: WireMsg[] };
     requests.push(reqBody);
+    rawBodies.push(body);
     const step = script.shift();
     if (!step) scriptOverrun += 1;
     const message = step?.toolCalls
@@ -117,7 +121,10 @@ if (!fs.existsSync(path.join(root, 'data', 'routes.json'))) {
   console.log('[selftest] data/routes.json 缺失，使用 fixture:', fixture);
 }
 
-if (!fs.existsSync(path.join(root, 'data', 'sop.md'))) {
+if (fs.existsSync(path.join(root, 'data', 'sop.md'))) {
+  // 前缀哈希必须按 data/sop.md 算：显式设成它的绝对路径，本机 .env 里的 SOP_PATH 进不来
+  process.env.SOP_PATH = path.join(root, 'data', 'sop.md');
+} else {
   const fixture = path.join(varDir, 'sop.fixture.md');
   fs.writeFileSync(
     fixture,
@@ -128,7 +135,7 @@ if (!fs.existsSync(path.join(root, 'data', 'sop.md'))) {
 }
 
 // env 就绪后再加载引擎（引擎均为调用时读 env，动态 import 双保险）
-const { handleMessage, notifyPaid, historyWindow, onToolCall, __engineTest } = await import('./engine.js');
+const { handleMessage, notifyPaid, historyWindow, onToolCall, promptPrefix, __engineTest } = await import('./engine.js');
 const { markOrderPaid, getSession, createOrder, getOrder } = await import('./store.js');
 const { searchRoutes } = await import('./tools.js');
 const { buildIndex, indexReady } = await import('./retrieval.js');
@@ -1219,6 +1226,40 @@ const searchYunnan: Step[] = [
   const wire = JSON.stringify(all);
   assert.ok(!wire.includes('qlogo') && !wire.includes('打一折'), '昵称、头像不能进 prompt');
   assert.ok(noteOf(t4).includes('"destinationInterest":"贵州"'), '业务画像照常带上');
+}
+
+// 前缀稳定（00 spec「前缀稳定测试」）：前缀缓存要求 system 和 tools 逐字节不变。网页会话从 greeting 走到 quote，
+// 含一轮预取、一轮工具调用、一轮连续 5 次工具调用（MAX_TOOL_ROUNDS 是 6，第 6 次请求因此不带 tools），再在企微会话上跑一轮。
+// 不设静态 golden：改 sop.md 只会改变打印出来的哈希；00 开始前、格式化与 lint 修复之后、00 结束时的值记在 00 plan 里
+{
+  const prefix = promptPrefix();
+  const sopFile = path.join(root, 'data', 'sop.md');
+  if (fs.existsSync(sopFile)) assert.ok(prefix.system.startsWith(fs.readFileSync(sopFile, 'utf8')), '前缀哈希要按 data/sop.md 算');
+  const from = rawBodies.length;
+  const web = `sim-selftest-prefix-${Date.now().toString(36)}`;
+  await fakeSay(web, '你好', [{ content: '您好～这次想去哪儿玩？' }], 'simulator');
+  await fakeSay(web, '想去贵州，两个人', [{ content: '贵州苗寨侗寨这条很适合您二位，您计划几月出发？' }], 'simulator');
+  assert.ok(rawBodies[rawBodies.length - 1].includes('"prefetch_0"'), '这一轮要有预取');
+  await fakeSay(web, '第一条报个价', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-guizhou', travelers: 2 } }] },
+    { content: '贵州这条每人 ¥15,800，2 位总价 ¥31,600（起价，按最终行程微调）。您计划几号出发？' },
+  ], 'simulator');
+  assert.equal(getSession(web)!.stage, 'quote', '阶段要从 greeting 走到 quote');
+  const detail: Step = { toolCalls: [{ name: 'get_route_detail', args: { routeId: 'r-guizhou' } }] };
+  const burstFrom = rawBodies.length;
+  await fakeSay(web, '嗯，再帮我核对一下', [detail, detail, detail, detail, detail, { content: '核对好了，贵州这条的安排都没问题，您计划几号出发？' }], 'simulator');
+  const burst = rawBodies.slice(burstFrom).map((b) => JSON.parse(b) as Record<string, unknown>);
+  assert.ok(burst.length === 6 && burst.slice(0, 5).every((b) => 'tools' in b) && !('tools' in burst[5]), '同一轮第 6 次请求不带 tools');
+  await fakeSay(web, '嗯嗯我看看', [{ content: '好的，有想法随时找我～' }], 'simulator');
+  await fakeSay(newSid('prefix'), '你好', [{ content: '您好～这次想去哪儿玩？' }]);
+
+  const bodies = rawBodies.slice(from).map((b) => JSON.parse(b) as { messages: WireMsg[]; tools?: unknown });
+  for (const b of bodies) {
+    assert.ok(b.messages[0].role === 'system' && b.messages[0].content === prefix.system, '每个请求的第一条 system 消息都要逐字节等于 promptPrefix().system');
+    if ('tools' in b) assert.equal(JSON.stringify(b.tools), prefix.tools, '每个带 tools 的请求，tools 都要逐字节等于 promptPrefix().tools');
+  }
+  const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+  console.log(`PREFIX sha256 system=${sha(prefix.system)} tools=${sha(prefix.tools)}`);
 }
 
 // ======================================================================
