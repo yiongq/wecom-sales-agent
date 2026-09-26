@@ -1047,7 +1047,7 @@ export function priceMentions(visible: string): { value: number; tol: number; at
   return [
     ...amountHits(text).map((h) => ({ value: h.value, tol: h.tol, at: h.at, end: h.end, scope: scopeAt(h.at) })),
     ...parseWanAmounts(text).map((w) => ({ value: w.value, tol: w.tol, at: w.at, end: w.end, scope: w.scope })),
-  ].sort((a, b) => a.at - b.at);
+  ].toSorted((a, b) => a.at - b.at);
 }
 
 /**

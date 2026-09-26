@@ -217,7 +217,7 @@ function evictExcessVisitorSessions(): void {
   if (excess <= 0) return;
   const victims = visitors
     .filter((s) => !hasPaidOrder(s))
-    .sort((a, b) => a.updatedAt - b.updatedAt)
+    .toSorted((a, b) => a.updatedAt - b.updatedAt)
     .slice(0, excess);
   for (const s of victims) {
     sessions.delete(s.id);
@@ -282,7 +282,7 @@ export function getSession(id: string): Session | undefined {
 }
 
 export function listSessions(): Session[] {
-  return [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...sessions.values()].toSorted((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**
@@ -357,5 +357,5 @@ export function deleteOrdersOfSession(sessionId: string): number {
 }
 
 export function listOrders(): Order[] {
-  return [...orders.values()].sort((a, b) => b.createdAt - a.createdAt);
+  return [...orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
 }

@@ -65,7 +65,7 @@ export function budgetCap(session: Session): BudgetCap | undefined {
   const said = (session.messages ?? [])
     .filter((m) => m.role === 'customer')
     .map((m) => m.content)
-    .reverse();
+    .toReversed();
   for (const t of said) {
     if (liftsBudget(t)) return undefined;
     if (!BUDGET_TALK.test(t)) continue;
@@ -806,7 +806,7 @@ function dropClaimsIn(text: string, ctx: ClaimCtx): { text: string; dropped: str
   if (clauseCuts.length) {
     // 先删这些小句，再对删过的正文从头核一遍（同一句里可能还有别的问题）；每轮都在变短，一定收得住
     let t = text;
-    for (const c of [...clauseCuts].sort((x, y) => y.at - x.at)) t = t.slice(0, c.at) + t.slice(c.end);
+    for (const c of clauseCuts.toSorted((x, y) => y.at - x.at)) t = t.slice(0, c.at) + t.slice(c.end);
     const again = dropClaimsIn(t, ctx);
     return {
       text: again.text,

@@ -446,7 +446,7 @@ const INJECTION_INTENT =
 const ON_TOPIC = /旅行|旅游|线路|行程|目的地|出行|出发|报价|价格|顾问|酒店|蜜月|度假|亲子|海岛|预算|几位|人数|订单|客服/;
 // 不提「AI」：客户没直接问身份时不主动自报（直接问时由身份安全网回答）
 const INJECTION_REPLY =
-  '不好意思，我是云途定制旅行的旅行顾问，只帮您处理旅行相关的事～\n' + '想去哪儿、几位出行、大概什么预算，随时告诉我，我来帮您安排！';
+  '不好意思，我是云途定制旅行的旅行顾问，只帮您处理旅行相关的事～\n想去哪儿、几位出行、大概什么预算，随时告诉我，我来帮您安排！';
 
 /**
  * 注入得逞的残留：模型先把被劫持的输出吐出来，再接一句正常的拒绝。
@@ -503,9 +503,7 @@ async function deterministicRecommend(dest: string, session: Session): Promise<s
     .map(
       (r) => `· ${r.title}\n  ${r.days} 天 · ${r.hotelLevel} · 人均 ${yuan(r.priceFrom)} 起\n  ${(r.highlights?.[0] ?? '').slice(0, 42)}`,
     );
-  return (
-    `${dest}是我们的主力目的地，给您挑了这些：\n\n${lines.join('\n\n')}\n\n` + '您几位出行、大概什么时候走？我按人数和日期给您出准确报价～'
-  );
+  return `${dest}是我们的主力目的地，给您挑了这些：\n\n${lines.join('\n\n')}\n\n您几位出行、大概什么时候走？我按人数和日期给您出准确报价～`;
 }
 
 // 客户直接追问身份。诚实回答是硬要求，但模型在「不要主动提 AI」的约束下常把这题绕过去
@@ -1136,7 +1134,7 @@ function rewriteUnbackedPrices(
     session,
     hits.map((h) => h.value),
   );
-  const firstDropped = [...hits].sort((a, b) => a.at - b.at)[0];
+  const firstDropped = hits.toSorted((a, b) => a.at - b.at)[0];
   // 报价那句被连带删了：就在那个位置补上工具算的价
   const refill = onQuote && quotedNow && !wrongBefore && !hasQuote(dropSentences(visible, hits).text);
   const kept = dropSentences(visible, refill ? [{ ...firstDropped, replace: quoteLine }, ...hits] : hits).text;
@@ -1437,7 +1435,7 @@ function proposalTarget(session: Session, text: string, modelText: string, calls
     for (const m of session.messages
       .filter((x) => x.role === 'customer')
       .slice(-12, -1)
-      .reverse()) {
+      .toReversed()) {
       found = headcountIn(m.content);
       if (found !== undefined) break;
     }
@@ -1893,7 +1891,7 @@ function handoffReply(session: Session, text: string): string {
   // 改单时被替代的旧单不算：交代给顾问、告诉客户「付款卡片仍然有效」的得是新的那张
   const order = session.orderIds
     .map((id) => getOrder(id))
-    .reverse()
+    .toReversed()
     .find((o) => o && o.status !== 'cancelled' && o.status !== 'superseded');
   const kind = isComplaint(text) ? 'complaint' : REFUND_REQUEST.test(text) || (order && CHANGE_REQUEST.test(text)) ? 'refund' : 'request';
   const head = {
@@ -2194,7 +2192,7 @@ function customerNamedDay(session: Session, latestText: string, iso: string, hol
   const prev =
     session.messages
       .slice(0, session.messages.lastIndexOf(now))
-      .reverse()
+      .toReversed()
       .find((m) => m.role === 'agent')?.content ?? '';
   const [, mo, d] = /^\d{4}-(\d{2})-(\d{2})$/.exec(iso) ?? [];
   if (!mo) return false;
@@ -2518,7 +2516,7 @@ function planPrefetch(session: Session, text: string): Record<string, unknown>[]
   // 库内、库外的地方跟在一起对比（「冰岛和瑞士哪个好」「想去冰岛，或者日本也行」）两边都查：此前只查库内那处，
   // 模型手里没有冰岛的 destinationMiss，照样能编「冰岛极光 9 日」。连不成对比的（「冰岛太贵了，日本怎么样」）
   // 库外那处不掺进来，库内的照原逻辑查
-  const both = [...inCatalog, ...offCatalog].sort((a, b) => a.at - b.at);
+  const both = [...inCatalog, ...offCatalog].toSorted((a, b) => a.at - b.at);
   const picked = switched.length ? switched : offCatalog.length && comparing(said, both) ? both : inCatalog.length ? inCatalog : offCatalog;
   // 按原文顺序排：画像的 destinationInterest 取本轮最后一次 search_routes，按库里的顺序查会随机落在某一处
   picked.sort((a, b) => a.at - b.at);
@@ -2542,7 +2540,7 @@ function planPrefetch(session: Session, text: string): Record<string, unknown>[]
     calls.push({ at: offs[0].at, args: { destination: offs.map((p) => p.kw).join('、'), query: query.slice(0, 200), ...extra } });
   }
   return calls
-    .sort((a, b) => a.at - b.at)
+    .toSorted((a, b) => a.at - b.at)
     .slice(0, 2)
     .map((c) => c.args);
 }
@@ -2649,7 +2647,7 @@ function routeInFocus(session: Session, text: string, routes = loadRoutes()): Ro
     .filter((m) => m.role !== 'system')
     .slice(0, -1)
     .slice(-6)
-    .reverse();
+    .toReversed();
   for (const m of recent) {
     const got = pick(routesIn(m.content, routes), true);
     if (got !== undefined) return got ?? undefined;
@@ -2991,7 +2989,7 @@ function groundToolArgs(
       if (cap) out.maxBudgetPerPerson = cap;
       else {
         delete out.maxBudgetPerPerson;
-        const lifted = [...said].reverse().find((t) => liftsBudget(t) || (spokenMoney(t).amounts.length > 0 && isBudgetTalk(t)));
+        const lifted = said.toReversed().find((t) => liftsBudget(t) || (spokenMoney(t).amounts.length > 0 && isBudgetTalk(t)));
         notes.budgetNote =
           lifted && liftsBudget(lifted)
             ? `客户说了「${lifted.slice(0, 30)}」，预算放开了，这次没按预算筛。不要再拿之前说的预算比、说超了多少，也不要再问预算。`
@@ -3330,7 +3328,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     ) {
       return Promise.resolve(
         JSON.stringify({
-          error: `客户说的出发日期是 ${said}，这是过去的日期。不要自行改成其他年份，` + '请直接问客户确认真实的出发日期后再下单。',
+          error: `客户说的出发日期是 ${said}，这是过去的日期。不要自行改成其他年份，请直接问客户确认真实的出发日期后再下单。`,
         }),
       );
     }
