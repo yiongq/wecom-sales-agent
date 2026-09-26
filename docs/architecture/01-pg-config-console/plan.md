@@ -2,7 +2,7 @@
 
 对应 [spec.md](./spec.md)。只记步骤和状态，不复述设计。每一步结束时仓库都是绿的：`pnpm format:check && pnpm lint && pnpm typecheck && pnpm test`。括号里是工程日估算，合计约 35 个工程日。
 
-- [ ] 1. 开工核对（0.5）：
+- [x] 1. 开工核对（0.5）：
   - 记下开工提交的 sha，验收 1 的 diff 以它为基准。
   - 逐项核对 spec「前置条件」：四个门禁接的是真实工具；格式化排除 `data/sop.md`；`profile()`；【硬性要求】身份那一行不读 profile；`promptPrefix()` 和多轮逐字节断言；`deploy.sh <tag>` 与 `/healthz.revision`。缺一项就写进 Open 并停下。
   - 查 00 是否在 `server.selftest.ts` 里断言了「prod 下 `/api/admin/stream` 匿名可连」，结论记进实施记录（验收 1 的唯一例外）。
@@ -126,9 +126,22 @@
 
 按步骤号记下实施中的实测结论与偏离 spec 的取舍；不复述 spec。
 
+### 第 1 步（2026-09-26）
+
+- 开工提交：`f6f525c`（dev）。验收 1 的 diff 以它为基准；四个门禁在它上面全绿。
+- 前置条件逐项核对，全部具备：`format:check` / `lint` / `typecheck` / `test` 接的是 oxfmt、oxlint + 公开边界脚本、tsc、6 组自测 + mock eval；`.oxfmtrc.json` 排除 `data/sop.md`；`profile().flags.anon_readonly_admin` 存在；`buildSystemPrompt` 不读 profile，`ai_disclosure` 只有 `always`、除启动日志外无人读取（欢迎语里的「AI 旅行顾问」是写死的）；`promptPrefix()` 已导出，`engine.selftest.ts` 有多轮与 prod/demo 逐字节断言；`deploy.sh <tag>` 只收 tag、保留 `:prev`，`/healthz` 返回 `revision`。
+- 00 断言过「prod 下 `/api/admin/stream` 匿名可连」：`server.selftest.ts` 的 `PUBLIC` 表含这一项，按「prod 下有意匿名可达：/api/admin/stream 返回 200」检查。验收 1 的唯一例外成立，第 10 步把这一项改成 401。
+- 00 开放问题 3 已由 owner 定（见 Open），同一步落地：`.oxlintrc.json` 开 suspicious，关掉 4 条规则；`**/*.selftest.ts` 与 `eval/run.ts` 另外豁免 `no-array-sort`、`no-array-reverse`，因为验收 1 锁住了它们的 diff。业务代码 39 处命中：`sort` / `reverse` 改成 `toSorted` / `toReversed`（都是对临时数组取返回值，语义不变；`searchHotels` 由此已不再原地排序，第 5 步那一条只剩 deep-freeze），`[...arr].sort` 去掉多余的拷贝；两处读 JSON 失败的 `throw` 带上 `cause`；5 处字面量拼接合成一个字面量（字节不变）；两处 `no-unmodified-loop-condition` 是误报（标志在回调或并发调用里改），加行内豁免并写明原因。`toSorted` 要 ES2023 的类型，`tsconfig.json` 的 `target` 从 ES2022 升到 ES2023（只影响类型检查，tsx 不读它）。
+- 改完 `PREFIX sha256` 仍是 `system=6c202d63…a423 tools=64c16fc8…92d1`，与 00 记录相同；各组断言数不变（wecom 461、dejargon 333、price-guard 403、server 269，eval mock 19/19）。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
+
+## Open
+
+- 已定（owner，2026-09-26，00 开放问题 3）：oxlint 在 correctness 之外开 suspicious，但关掉 `no-shadow`（139 处，几乎都在自测里）、`consistent-function-scoping`（52）、`no-underscore-dangle`（与 spec 定的 `__configTest` 这类命名冲突）、`no-async-endpoint-handlers`（针对 Express，Hono 的 async handler 是正常写法）。pedantic、perf、style、restriction、nursery 不开：全仓命中 1332 / 136 / 11097 / 1891 / 584，基本是风格噪音或误报（nursery 的 583 条是 `no-undef` 不认 TS 类型）。
+- 仍挂在 owner 名下（00 开放问题 1 的余下部分）：文件模式下没设 `DEPLOY_PROFILE` 却配了企微凭据时，是否也拒绝启动。第一个 prod 实例上线前定。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
 ## 交接（YYYY-MM-DD）

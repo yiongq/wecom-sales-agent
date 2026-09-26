@@ -168,7 +168,7 @@ export function loadRoutes(): Route[] {
     return JSON.parse(fs.readFileSync(p, 'utf8')) as Route[];
   } catch (e) {
     // 手工编辑线路数据改坏 JSON 是高概率事故，报错必须能直接定位到文件
-    throw new Error(`线路数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`);
+    throw new Error(`线路数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
   }
 }
 
@@ -182,7 +182,7 @@ export function loadHotels(): Hotel[] {
   try {
     return JSON.parse(fs.readFileSync(p, 'utf8')) as Hotel[];
   } catch (e) {
-    throw new Error(`酒店数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`);
+    throw new Error(`酒店数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
   }
 }
 
@@ -198,7 +198,7 @@ export function searchHotels(args: { destination?: string; tags?: string[]; maxN
   if (args.maxNightlyPrice) {
     list = list.filter((h) => h.nightlyFrom <= args.maxNightlyPrice!);
   }
-  return list.sort((a, b) => a.nightlyFrom - b.nightlyFrom).slice(0, 3);
+  return list.toSorted((a, b) => a.nightlyFrom - b.nightlyFrom).slice(0, 3);
 }
 
 /** 线路摘要（给 LLM 的搜索结果，避免整条塞爆上下文） */
@@ -310,7 +310,9 @@ function lowlandAlternatives(all: Route[], mismatched: Route[], max = 2): Route[
         r.maxAltitude < LOWLAND_MAX_ALTITUDE,
     )
     .map((r) => ({ r, s: score(r) }))
-    .sort((a, b) => a.s.reduce((d, v, i) => d || b.s[i] - v, 0) || Math.abs(a.r.priceFrom - refPrice) - Math.abs(b.r.priceFrom - refPrice))
+    .toSorted(
+      (a, b) => a.s.reduce((d, v, i) => d || b.s[i] - v, 0) || Math.abs(a.r.priceFrom - refPrice) - Math.abs(b.r.priceFrom - refPrice),
+    )
     .slice(0, max)
     .map(({ r }) => r);
 }
@@ -506,7 +508,7 @@ const OFF_CATALOG_GROUPS: { kind?: PlaceKind; abroad: boolean; places: string[] 
 ];
 const OFF_CATALOG_PLACES = OFF_CATALOG_GROUPS.flatMap((g) => g.places);
 // 长的排前面：「青海湖」要整个认出来，不能先被「青海」截走
-const OFF_CATALOG_RE = new RegExp([...OFF_CATALOG_PLACES].sort((a, b) => b.length - a.length).join('|'), 'g');
+const OFF_CATALOG_RE = new RegExp(OFF_CATALOG_PLACES.toSorted((a, b) => b.length - a.length).join('|'), 'g');
 /** 每个地名整词认回它那一组（地名里带着边界写法，按整词重新匹配一遍） */
 const PLACE_GROUP: { re: RegExp; kind?: PlaceKind; abroad: boolean }[] = OFF_CATALOG_GROUPS.flatMap((g) =>
   g.places.map((p) => ({ re: new RegExp(`^(?:${p})$`), kind: g.kind, abroad: g.abroad })),
@@ -548,7 +550,7 @@ function sameKindRoutes(q: string, all: Route[], recallOrder: Map<string, number
   const pos = (r: Route): number => recallOrder?.get(r.id) ?? 99;
   return hits
     .map((r, i) => ({ r, i }))
-    .sort((a, b) => Number(foreign(b.r) === abroad) - Number(foreign(a.r) === abroad) || pos(a.r) - pos(b.r) || a.i - b.i)
+    .toSorted((a, b) => Number(foreign(b.r) === abroad) - Number(foreign(a.r) === abroad) || pos(a.r) - pos(b.r) || a.i - b.i)
     .map(({ r }) => r);
 }
 
@@ -851,7 +853,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
         segAsked && !within.some(wantsSeg)
           ? list
               .filter((r) => wantsSeg(r) && r.priceFrom > cap && r.priceFrom <= cap * BUDGET_RELAX)
-              .sort((a, b) => a.priceFrom - b.priceFrom)[0]
+              .toSorted((a, b) => a.priceFrom - b.priceFrom)[0]
           : undefined;
       list = fit ? [...within, fit] : within;
     } else {
@@ -870,7 +872,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
   // 超预算时一律按价格升序：语义召回的顺序是「最贴需求」，但客户已经明说了预算，
   // 此刻最该先看到的是「最接近他出得起的价」那几条，而不是最贴描述的那几条。
   const rank = (r: Route): number => (order && !overBudget ? (order.get(r.id) ?? 99) : r.priceFrom);
-  const sorted = [...list].sort((a, b) => {
+  const sorted = list.toSorted((a, b) => {
     // 客户说去过的排最后（见上面 beenThere）
     const been = Number(beenThere(a)) - Number(beenThere(b));
     if (been) return been;
@@ -905,7 +907,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
       const floor = Math.min(...top.map((r) => r.priceFrom));
       const near = all
         .filter((r) => !top.includes(r) && r.priceFrom < floor && r.priceFrom <= cap * BUDGET_RELAX && hardOk(r))
-        .sort((a, b) => Math.abs(a.priceFrom - cap) - Math.abs(b.priceFrom - cap))[0];
+        .toSorted((a, b) => Math.abs(a.priceFrom - cap) - Math.abs(b.priceFrom - cap))[0];
       if (near) sorted.splice(Math.min(2, sorted.length), 0, near);
     }
   }
@@ -1018,8 +1020,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
       out.push({
         ...summarize(r),
         highlights: r.highlights.slice(0, 1),
-        alternative:
-          `给长辈的替代线路：全程最高约 ${r.maxAltitude} 米，没有高原段。推荐时报人均 ${r.priceFrom} 起，` + '正式报价等人数定了再出。',
+        alternative: `给长辈的替代线路：全程最高约 ${r.maxAltitude} 米，没有高原段。推荐时报人均 ${r.priceFrom} 起，正式报价等人数定了再出。`,
       } as ReturnType<typeof summarize>);
     }
   }

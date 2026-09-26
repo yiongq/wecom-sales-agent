@@ -1,6 +1,22 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "categories": {
-    "correctness": "warn"
-  }
+    "correctness": "warn",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "eslint/no-shadow": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "eslint/no-underscore-dangle": "off",
+    "oxc/no-async-endpoint-handlers": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.selftest.ts", "eval/run.ts"],
+      "rules": {
+        "unicorn/no-array-sort": "off",
+        "unicorn/no-array-reverse": "off"
+      }
+    }
+  ]
 }

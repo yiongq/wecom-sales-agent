@@ -165,7 +165,7 @@ if (patterns === null) {
         if (m[0]) lines.add(text.slice(0, m.index).split('\n').length);
       }
     }
-    for (const n of [...lines].sort((a, b) => a - b)) hits.push(`  ${p}:${n}`);
+    for (const n of [...lines].toSorted((a, b) => a - b)) hits.push(`  ${p}:${n}`);
   });
   if (hits.length) {
     failed = true;

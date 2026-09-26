@@ -350,6 +350,8 @@ app.get('/api/admin/stream', (c) => {
       storeEvents.off('change', onChange);
     });
     await stream.writeSSE({ event: 'change', data: 'init' }); // 连上先触发一次首屏加载
+    // alive 由上面的 onAbort 回调置 false，不是死循环
+    // oxlint-disable-next-line no-unmodified-loop-condition
     while (alive) {
       await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
       await stream.sleep(20000);

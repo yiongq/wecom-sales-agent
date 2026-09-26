@@ -288,7 +288,7 @@ const LEGACY_WELCOME_TEXTS = [
   '您好呀～欢迎来到云途定制旅行，我是您的专属旅行顾问 🌿\n' +
     '想去哪玩直接跟我说，比如「想去西藏，两个人，预算每人3万」，我马上帮您推荐线路、报价，还能在线下单～\n' +
     '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！',
-  '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n' + '想继续看线路、调整行程，或者换个方向看看，直接说就行～',
+  '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n想继续看线路、调整行程，或者换个方向看看，直接说就行～',
 ];
 const WELCOME_TEXTS = new Set([WELCOME_TEXT, WELCOME_BACK_TEXT, ...LEGACY_WELCOME_TEXTS]);
 
@@ -928,6 +928,8 @@ function syncOnce(cfg: WecomConfig, syncToken?: string): Promise<void> {
         await drainMessages(cfg, token);
         token = pendingToken;
         pendingToken = undefined;
+        // 两个标志都在 await 期间由别的调用改（syncOnce 记 pending、停机置 stopping），不是死循环
+        // oxlint-disable-next-line no-unmodified-loop-condition
       } while (pendingRequested && !stopping);
     } finally {
       syncTask = null;

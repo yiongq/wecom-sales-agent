@@ -692,7 +692,7 @@ function callKey(name: string, args: Record<string, unknown>): string {
     if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>;
       return `{${Object.keys(o)
-        .sort()
+        .toSorted()
         .filter((k) => o[k] !== undefined)
         .map((k) => `${JSON.stringify(k)}:${canon(o[k])}`)
         .join(',')}}`;
@@ -866,7 +866,7 @@ const CN_NUM: Record<string, number> = {
 };
 
 function findDestination(texts: string[]): string | undefined {
-  for (const t of [...texts].reverse()) {
+  for (const t of texts.toReversed()) {
     const hit = DESTINATIONS.find((d) => t.includes(d));
     if (hit) return hit;
   }
@@ -874,7 +874,7 @@ function findDestination(texts: string[]): string | undefined {
 }
 
 function findTravelers(texts: string[]): number {
-  for (const t of [...texts].reverse()) {
+  for (const t of texts.toReversed()) {
     const m = t.match(/([0-9]+|[一两二三四五六七八九十])\s*(?:个|位|大人)?(?:人|口|大)/);
     if (m) {
       const n = /^[0-9]+$/.test(m[1]) ? Number(m[1]) : CN_NUM[m[1]];
@@ -885,7 +885,7 @@ function findTravelers(texts: string[]): number {
 }
 
 function findBudget(texts: string[]): string | undefined {
-  for (const t of [...texts].reverse()) {
+  for (const t of texts.toReversed()) {
     const m = t.match(/(?:每人)?\s*[0-9.]+\s*万/);
     if (m) return m[0].trim();
   }
@@ -906,7 +906,7 @@ function nearestFuture(month: number, day: number, today: string): string {
  * today 参数只为自测能模拟任意日期。
  */
 export function findDepartDate(texts: string[], today = todayIso()): string {
-  for (const t of [...texts].reverse()) {
+  for (const t of texts.toReversed()) {
     const iso = t.match(/\d{4}-\d{2}-\d{2}/);
     if (iso) return iso[0];
     // 客户带了年份就照原样用——「2020年1月1号」是在测过去日期护栏，不能替他挪到明年

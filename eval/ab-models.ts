@@ -223,7 +223,7 @@ interface Row {
 }
 const rows: Row[] = [];
 const allTrials: Trial[] = [];
-const pct = (a: number[], p: number): number => [...a].sort((x, y) => x - y)[Math.floor(a.length * p)] ?? 0;
+const pct = (a: number[], p: number): number => a.toSorted((x, y) => x - y)[Math.floor(a.length * p)] ?? 0;
 // 单轮 8 秒是硬线：微信客服里客户等 8 秒以上就以为没人在（选型史见 src/llm.ts DEFAULT_MAIN_MODEL）。
 // P50 只说明平时快不快，选型卡的是尾巴，所以超线占比和最坏值必须和 P50 摆在一起
 const SLOW_MS = 8000;

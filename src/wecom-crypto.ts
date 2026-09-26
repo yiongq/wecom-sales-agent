@@ -3,7 +3,7 @@
 import { createDecipheriv, createHash, timingSafeEqual } from 'node:crypto';
 
 export function computeSignature(token: string, timestamp: string, nonce: string, encrypt: string): string {
-  return createHash('sha1').update([token, timestamp, nonce, encrypt].sort().join('')).digest('hex');
+  return createHash('sha1').update([token, timestamp, nonce, encrypt].toSorted().join('')).digest('hex');
 }
 
 /** 恒定时间字符串比较（长度不等直接判否），验签/鉴权用，防时序侧信道 */
