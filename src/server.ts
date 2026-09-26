@@ -6,14 +6,12 @@ import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未�
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { getConnInfo } from '@hono/node-server/conninfo';
 import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { getCookie } from 'hono/cookie';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
 import {
@@ -38,11 +36,12 @@ import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
+import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
 import type { ChannelAdapter } from './types.js';
 import { boot } from './boot.js';
 import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
-import { allowSessionLookup, noteInvalidSession, resolveSession, SESSION_COOKIE, type AuthedUser } from './auth/session.js';
+import { consoleApi, consoleSession } from './console-api/app.js';
 
 const app = new Hono();
 
@@ -143,20 +142,6 @@ async function sessionReadAuth(c: Context, next: Next): Promise<Response | void>
   return adminAuth(c, next);
 }
 
-/**
- * 跨站写保护。管理面走 HTTP Basic，浏览器会给任何跨站请求自动带上缓存的凭据——
- * 一个自动提交的表单就能让已登录的顾问向真实客户发出任意消息，或把会话永久转人工。
- * 同源 fetch 一定带 Sec-Fetch-Site: same-origin；缺这个头的（curl、老浏览器）放行，
- * 因为真正的跨站攻击载体一定是现代浏览器，它一定会带。
- */
-const sameOriginOnly: MiddlewareHandler = async (c, next) => {
-  const site = c.req.header('sec-fetch-site');
-  if (site && site !== 'same-origin' && site !== 'none') {
-    return c.json({ error: '跨站请求已拒绝' }, 403);
-  }
-  return next();
-};
-
 // 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
 app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
@@ -212,82 +197,7 @@ const simulatorOnly: MiddlewareHandler = async (c, next) => (profile().flags.vis
 // /api/chat 是公网匿名端点且每次调真实 LLM——不加限流等于把 LLM 账单和
 // sessions.json 的增长交给任何写脚本的人。滑动窗口按 IP 计数，内存实现够用。
 const CHAT_RATE_PER_MIN = Math.max(1, numEnv('CHAT_RATE_PER_MIN', 20));
-// 靠 ID 访问的公开端点（订单、访客会话、SSE）也要限流，否则 ID 可以被慢慢穷举
-const LOOKUP_RATE_PER_MIN = Math.max(1, numEnv('LOOKUP_RATE_PER_MIN', 60));
-// 键的总量上限，防止「每请求换一个 IP」把内存打爆；
-// 超过上限就退化成全局限流（宁可误伤也不能被打挂）。
-const RATE_MAX_KEYS = 10_000;
-
-/**
- * 限流键 = 客户端真实来源地址。
- *
- * 两条都要卡住，少一条限流就形同虚设：
- * 1. 不能取 XFF 的**第一段**——那一段完全由客户端写，换一个假 IP 就是换一个新桶
- *    （实测放行量约 20 万/分钟）。反代（Caddy）是把真实对端**追加**到 XFF 末尾的，
- *    所以真实地址在从右往左数第 TRUST_PROXY_HOPS 跳。
- * 2. XFF 本身也只在「直连对端确实是我们的反代」时才可信。否则把服务直接暴露出去
- *    （或本地 pnpm dev）时，攻击者自己捏一个 XFF 就又绕过去了——线上 Caddy 反代到
- *    127.0.0.1，容器看到的对端是内网地址，据此判定。公网直连的请求一律按 socket 地址算。
- */
-const TRUST_PROXY_HOPS = Math.max(0, numEnv('TRUST_PROXY_HOPS', 1));
-// peer 已剥掉 ::ffff: 前缀，这里只需匹配裸 IPv4 与真 IPv6 私网
-const PRIVATE_PEER = /^(?:127\.|::1$|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|f[cd])/i;
-
-function clientKey(c: Context): string {
-  let peer = '';
-  try {
-    // 双栈监听（serve() 不传 hostname → Node 绑 ::）下，IPv4 对端会以
-    // ::ffff:172.17.0.1 这种形式出现。不剥掉前缀，下面的私网判定就只认裸 IPv4——
-    // 线上正是 Docker 网关 172.17.0.1，结果 XFF 永不被采信、全站退化成一个限流桶。
-    peer = (getConnInfo(c).remote.address ?? '').replace(/^::ffff:/i, '');
-  } catch {
-    /* 拿不到对端地址就退回 XFF 末段 */
-  }
-  const chain = (c.req.header('x-forwarded-for') ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const viaProxy = peer === '' || PRIVATE_PEER.test(peer);
-  if (viaProxy && TRUST_PROXY_HOPS > 0 && chain.length) {
-    return chain[Math.max(0, chain.length - TRUST_PROXY_HOPS)];
-  }
-  return peer || chain[chain.length - 1] || 'direct';
-}
-
-/** 独立命名的滑动窗口计数桶（聊天与查询各自一套，互不挤占） */
-function makeLimiter(perMin: number): (key: string) => boolean {
-  const hits = new Map<string, number[]>();
-  setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of hits) {
-      const recent = v.filter((t) => now - t < 60_000);
-      if (recent.length) hits.set(k, recent);
-      else hits.delete(k);
-    }
-  }, 5 * 60_000).unref();
-  return (key: string): boolean => {
-    const now = Date.now();
-    const k = hits.has(key) || hits.size < RATE_MAX_KEYS ? key : '__overflow__';
-    const recent = (hits.get(k) ?? []).filter((t) => now - t < 60_000);
-    if (recent.length >= perMin) {
-      hits.set(k, recent);
-      return true;
-    }
-    recent.push(now);
-    hits.set(k, recent);
-    return false;
-  };
-}
-
 const chatRateLimited = makeLimiter(CHAT_RATE_PER_MIN);
-const lookupRateLimited = makeLimiter(LOOKUP_RATE_PER_MIN);
-
-/** 挂在靠 ID 访问的公开端点前，让穷举 ID 的成本不可承受 */
-const lookupLimit: MiddlewareHandler = async (c, next) => {
-  if (lookupRateLimited(clientKey(c))) return c.json({ error: '请求过于频繁，请稍后再试' }, 429);
-  return next();
-};
-
 // 全站请求体上限。验签/限流都发生在读 body 之后，没有上限时几条慢速大 body 请求
 // 就能把容器内存吃满（docker run 未设 -m）。企微回调和聊天请求都只有几 KB 量级。
 const MAX_BODY_BYTES = Math.max(1024, numEnv('MAX_BODY_BYTES', 64 * 1024));
@@ -376,22 +286,6 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 // 只推「变了」这个信号、不带任何数据（没有会话 id、没有原文），故免密——真正的数据仍由下面的读端点
 // 按登录态与本人凭据过滤。它因此也不需要访客凭据，凭据不必进 URL。
 // 也必须免密：EventSource 无法自定义请求头，带不了 Authorization。
-/**
- * 后台会话（cookie __Host-sid）。只有 DB 模式才有：文件模式没有账号，一律 null。
- * 带 cookie 但会话无效的请求先按 IP 限流，过了才查库
- */
-async function consoleSession(c: Context): Promise<AuthedUser | null> {
-  if (configMode() !== 'db') return null;
-  const token = getCookie(c, SESSION_COOKIE);
-  if (!token) return null;
-  const ip = clientKey(c);
-  const now = Date.now();
-  if (!allowSessionLookup(ip, now)) return null;
-  const user = await resolveSession(token, now);
-  if (!user) noteInvalidSession(ip, now);
-  return user;
-}
-
 // anon_readonly_admin 关着时（prod）要求有效的后台会话，同源 EventSource 会带上 cookie；没有就 401，
 // admin.html 已有的 30 秒轮询兜底照常（01 spec「鉴权」）
 app.get('/api/admin/stream', async (c) => {
@@ -771,6 +665,10 @@ app.get('/kf-qr.png', async (c) => {
     return c.notFound();
   }
 });
+
+// 后台接口（01 spec「后台 API 与页面」）：注册在 serveStatic 兜底之前。子应用自己兜住没匹配上的 /api/console/*，
+// 不落到静态文件（以后 /console 的 SPA 回退也不能吞掉它）
+app.route('/', consoleApi);
 
 // 静态资源兜底（admin.html / chat.html / pay.html / guide.html）。
 // admin.html 页面本身不再鉴权：它进来只会看到演示数据，页面内的登录框负责换取
