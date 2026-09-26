@@ -63,6 +63,18 @@ function assertNoIrreparable(text: string): void {
   if (sep) throw new SopEncodingError(`第 ${lineOf(text, sep.index)} 行有行分隔符 U+2028 或段分隔符 U+2029`);
 }
 
+/**
+ * 读文件用它，不用 fs.readFileSync(…, 'utf8')：后者把非法的 UTF-8 字节（例如编码过的孤立代理项）悄悄换成 U+FFFD，
+ * 坏文件就被当成合法的收下了。这里遇到非法字节直接拒绝
+ */
+export function decodeSopFile(bytes: Uint8Array): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new SopEncodingError('不是合法的 UTF-8（含非法字节，或编码过的孤立代理项）');
+  }
+}
+
 /** 编码检查，不合格抛 SopEncodingError，带行号 */
 export function assertSopEncoding(text: string): void {
   const bom = text.indexOf(BOM);
