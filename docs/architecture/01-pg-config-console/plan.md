@@ -86,7 +86,7 @@
   - 对应验收 17 的产物与类型部分、22。
 - [x] 13. 会话只读列表：接口和页面（0.5，可砍）。
 - [x] 14. SOP 的逐节 diff 视图：`@codemirror/merge`（1，可砍）。
-- [ ] 15. 产品库 CSV 导入：接口和页面（1，可砍）。
+- [x] 15. 产品库 CSV 导入：接口和页面（1，可砍）。
 - [ ] 16. 部署收尾（1.5）：
   - `deploy/compose.yml` 补上 `app` 与 `platform` 服务，按服务分 env，镜像名用 `APP_IMAGE`。
   - `/console` 的托管与 SPA 回退、安全头。
@@ -272,6 +272,14 @@
 - 没有砍。有草稿时，SOP 页多一张「与已发布 vN 的逐节对比」：只列正文与已发布版本不同的可编辑节，折叠面板展开才建编辑器；每节是 `@codemirror/merge`（6.12.2）的左右对比，两侧只读、自动换行，没改的长段落折叠成「N unchanged lines」。锁定节不参与（发布时取镜像）。
 - 在 CSP 下的 preview 里走查：一份改了「话术原则」「异议处理」两节的草稿，对比面板列出这两节，增改行高亮，违规 0 条；截图 [walkthrough/09-draft-diff.jpg](walkthrough/09-draft-diff.jpg)。第 13 步的「会话」页顺带看了：viewer 有入口，页面在 CSP 下渲染正常。
 
+### 第 15 步（2026-09-26）
+
+- 没有砍。`POST /api/console/catalog/:kind/import-csv`（`canEdit`，请求体 `{ csv }`）：只建 draft，只收平铺字段——字符串、整数、布尔（是 / 否）、字符串数组（「、」分隔）；表头是字段名、列序随意，建出来的 payload 按 schema 的字段顺序排键（与 `data/` 里的文件一致）；空格子就是键不存在，必填的数组给 `[]`。整份先解析、逐行过共用的 zod schema、查文件内重复的 id，再在一个事务里（取配置写锁）查库里已有的 code，全部合格才按行序建出来（ord 接在最大值之后），任何一处不合格就一条也不建，422 `invalid_csv` 按行列出问题（row 0 是表头或整份文件）。每条写一行 `catalog.create` 审计，与后台新建相同。一次最多 200 行。
+- 纯逻辑放在 `src/shared/`：`csv.ts` 是 RFC 4180 解析（引号里的逗号与换行、`""`、CRLF、BOM、末尾空行，引号没闭合就抛），`catalog-csv.ts` 由 schema 推出哪些字段是平铺的、把一行转成 payload、逐行校验；console 用同一份决定给不给入口、给出模板表头。
+- **与 spec 的出入**：线路的必填字段 `itinerary` 是对象数组，按「只收平铺字段」线路没法用 CSV 建（draft 也要整条过 schema）。实现上对这种 kind 直接 422 并说明原因，界面上的按钮置灰、提示用「新建」；酒店全是平铺字段，照常导入。记进 Open。
+- `console.selftest.ts` 增至 192 条：解析的边界、键序按 schema、数组切分与空的必填数组、引号里的逗号、ord 接续、不进快照、每条一行审计；七种不合格（没有的列、`__proto__` 列、数值写成文字、文件内 id 重复、库里已有、过不了 schema、只有表头）都 422 并点名行、且同一份里合格的行也没建；线路 422 并点名 `itinerary`；非编辑角色 403、匿名 401。9 个变异（不认 `""`、不去 BOM、按 CSV 列序排键、必填数组不给 `[]`、不查文件内重复、不查库里已有、跳过坏行照建好行、只要可读权限、不拦嵌套必填）全部变红。
+- 在 CSP 下的 preview 里走查：线路页的「CSV 导入」置灰；酒店页弹窗给出模板表头，一份含坏行的 CSV 按行点名「第 2 行 nightlyFrom：要写整数」且没建，改好之后建成一条草稿出现在表里，违规 0 条；截图 [walkthrough/10-csv-import.jpg](walkthrough/10-csv-import.jpg)。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -281,6 +289,7 @@
 - 已定（owner，2026-09-26，00 开放问题 3）：oxlint 在 correctness 之外开 suspicious，但关掉 `no-shadow`（139 处，几乎都在自测里）、`consistent-function-scoping`（52）、`no-underscore-dangle`（与 spec 定的 `__configTest` 这类命名冲突）、`no-async-endpoint-handlers`（针对 Express，Hono 的 async handler 是正常写法）。pedantic、perf、style、restriction、nursery 不开：全仓命中 1332 / 136 / 11097 / 1891 / 584，基本是风格噪音或误报（nursery 的 583 条是 `no-undef` 不认 TS 类型）。
 - 待 owner 在目标服务器上实测（开放问题 4，第 10 步）：两个并发登录的单次耗时与峰值 RSS 增量。本机数据见第 10 步实施记录（约 170 ms、256 MiB）。单次超过 500 ms，或峰值增量超过机器内存的 25%（1 GiB 的机器就是这条线），按开放问题 4 改用 N = 2^16、r = 8、p = 2，参数随哈希存，不用迁移。
 - 待 owner 复核（第 12 步）：`/console` 页面的 CSP 在 spec 那条之外多一条 `style-src 'self' 'nonce-…'`（每个响应现生成），否则 Ant Design 与 CodeMirror 没有样式；`/api/console/*` 的 CSP 不变。验收 16 查安全头时按这条对页面核对。另一种做法是 `style-src 'self' 'unsafe-inline'`，简单但放开了所有内联样式；也可以换掉运行时插样式的组件库，代价是推翻 ADR-002 的 Ant Design。理由与实现见第 12 步实施记录。
+- 供 owner 知悉（第 15 步）：spec 的 CSV 导入「只收平铺字段」，而线路的 `itinerary` 必填且是对象数组，所以线路没法用 CSV 建；现在对线路直接拒并提示用表单，酒店照常。要支持线路，得约定逐日行程的平铺写法（例如 `itinerary.1.title` 这样的列），可以放到 02。
 - 仍挂在 owner 名下（00 开放问题 1 的余下部分）：文件模式下没设 `DEPLOY_PROFILE` 却配了企微凭据时，是否也拒绝启动。第一个 prod 实例上线前定。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
