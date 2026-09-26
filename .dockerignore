@@ -3,6 +3,7 @@ node_modules
 .github
 var
 .env
+.env.*
 *.log
 scratchpad
 .playwright-mcp
