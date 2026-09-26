@@ -1944,7 +1944,7 @@ const searchYunnan: Step[] = [
       '转人工原因要记进会话，后台顾问看得到',
     );
     // 整条都是许诺时补一句顾问会联系，不能发空
-    const h2 = await fakeSay(newSid('u2b'), '要真人', [
+    const h2 = await fakeSay(newSid('u2b'), '能让顾问直接跟我聊吗', [
       { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户要真人' } }] },
       { content: '有问题随时找我～' },
     ]);

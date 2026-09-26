@@ -1670,7 +1670,11 @@ function statedPastDate(text: string): string | null {
 
 // 明确的转人工意图（用于转人工安全网）。只匹配显式诉求，不含单纯「太贵」这类异议。
 // 注意用词要足够特异：曾用 /我要退/ 误伤「我要退休了想出去玩」，收紧为「退款/退订/退钱」
-const HANDOFF_REQUEST = /转人工|要人工|人工客服|真人客服|找真人|人工顾问|要退款|要退订|要退钱|退我钱/;
+const HANDOFF_REQUEST = /转人工|要人工|找人工|接人工|人工客服|人工服务|真人客服|找真人|人工顾问|要退款|要退订|要退钱|退我钱/;
+// 单独一句「人工」「真人」「要真人」只可能是在要人（欢迎语就教客户回「人工」），但这两个词放进句子里多半是别的意思：
+// 「你是真人吗」「你是人工智能吗」是身份问题（走身份兜底），「有真人导游吗」问的是服务角色，「人工湖」「人工费」是旅行话题。
+// 所以光秃秃的这两个词只认整句
+const HANDOFF_BARE = /^\s*我?(?:要|找)?(?:人工|真人)\s*[!！。.~～]*\s*$/;
 // 投诉/指控类词只在陈述句里才算。小红书引流来的新客户开口常是「靠谱吗，不会是骗人的吧」
 // 「看到有差评是真的吗」——那是在打消疑虑，该好好答，不是投诉。此前一律命中：系统为一次
 // 不存在的「不好的体验」道歉、AI 永久闭嘴，线索只能等人工发现。
@@ -1701,7 +1705,7 @@ function isComplaint(text: string): boolean {
     );
 }
 function isHandoffIntent(text: string): boolean {
-  return HANDOFF_REQUEST.test(text) || isComplaint(text);
+  return HANDOFF_REQUEST.test(text) || HANDOFF_BARE.test(text) || isComplaint(text);
 }
 
 // ---------- 转人工要和客户的话、回复里的话对得上 ----------
