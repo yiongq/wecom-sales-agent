@@ -1306,6 +1306,119 @@ check(
   check('会话列表：匿名 → 401', (await call('GET', '/conversations')).status === 401);
 }
 
+// 产品库 CSV 导入（第 15 步）：只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才建
+{
+  const { parseCsv } = await import('../shared/csv.js');
+  const CRLF = String.fromCharCode(13, 10);
+  const BOM = String.fromCharCode(0xfeff);
+  check(
+    'CSV 解析：引号里的逗号、换行和 "" 转义，CRLF 行尾，开头的 BOM，末尾空行',
+    JSON.stringify(parseCsv(`${BOM}a,b${CRLF}"x, y","第一行${NL}第二行"${CRLF}"说""好""",${CRLF}${CRLF}`)) ===
+      JSON.stringify([
+        ['a', 'b'],
+        ['x, y', `第一行${NL}第二行`],
+        ['说"好"', ''],
+      ]),
+  );
+  check('CSV 解析：引号没闭合就抛', (await errName(Promise.resolve().then(() => parseCsv('a,"b')))) === 'CsvSyntaxError');
+
+  const hotels = async (): Promise<Body[]> => (await call('GET', '/catalog/hotel', O)).body.items as Body[];
+  const before = await hotels();
+  const snapBefore = JSON.stringify(cfg.currentCatalog().hotels);
+  const csv = [
+    'tags,id,name,destination,stars,nightlyFrom,roomType,highlights',
+    `,h-csv-one,CSV 酒店一,三亚,五星,1880,海景房,"私人沙滩、无边泳池"`,
+    `亲子、海岛,h-csv-two,"CSV 酒店二，带逗号",三亚,五星,2280,套房,早餐含两位`,
+  ].join(NL);
+  const created = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv } });
+  const items = (created.body.items ?? []) as Body[];
+  check(
+    'CSV 导入：两行 → 200，建成两条 draft',
+    created.status === 200 && items.length === 2 && items.every((x) => x.status === 'draft'),
+    created.text.slice(0, 200),
+  );
+  check(
+    'CSV 导入：payload 的键按 schema 的顺序（不按 CSV 的列序），数组按「、」切开，空的必填数组给 []，引号里的逗号保留',
+    JSON.stringify(items[0]?.payload) ===
+      JSON.stringify({
+        id: 'h-csv-one',
+        name: 'CSV 酒店一',
+        destination: '三亚',
+        stars: '五星',
+        nightlyFrom: 1880,
+        roomType: '海景房',
+        highlights: ['私人沙滩', '无边泳池'],
+        tags: [],
+      }) &&
+      JSON.stringify(items[1]?.payload.tags) === '["亲子","海岛"]' &&
+      items[1]?.payload.name === 'CSV 酒店二，带逗号',
+    JSON.stringify(items.map((x) => x.payload)),
+  );
+  const maxBefore = Math.max(...before.map((x) => x.ord));
+  check('CSV 导入：ord 按 CSV 的行序接在最大值之后', items[0]?.ord === maxBefore + 1 && items[1]?.ord === maxBefore + 2);
+  check('CSV 导入：draft 不进快照', JSON.stringify(cfg.currentCatalog().hotels) === snapBefore);
+  const creates = (await call('GET', '/audit?limit=5&action=catalog.create', O)).body.items as Body[];
+  check(
+    'CSV 导入：每条一行 catalog.create 审计',
+    creates
+      .slice(0, 2)
+      .map((x) => x.targetId)
+      .toSorted()
+      .join() === 'h-csv-one,h-csv-two',
+  );
+
+  const reject = async (text: string, kind = 'hotel'): Promise<Res> =>
+    keep(await call('POST', `/catalog/${kind}/import-csv`, { ...O, json: { csv: text } }));
+  const count = async (): Promise<number> => (await hotels()).length;
+  const n0 = await count();
+  const head = 'id,name,destination,stars,nightlyFrom,roomType,highlights,tags';
+  const cases: [string, string, (r: Res) => boolean][] = [
+    [
+      '表头里有没有的字段',
+      `${head},nope${NL}h-x,名,三亚,五星,100,房,亮点,,1`,
+      (r) => r.body.rows?.[0]?.row === 0 && JSON.stringify(r.body.rows).includes('nope'),
+    ],
+    ['表头里有 __proto__', `${head},__proto__${NL}h-x,名,三亚,五星,100,房,亮点,,x`, (r) => r.body.rows?.[0]?.row === 0],
+    [
+      '数值写成文字',
+      `${head}${NL}h-ok,名,三亚,五星,100,房,亮点,${NL}h-bad,名,三亚,五星,一百,房,亮点,`,
+      (r) => r.body.rows?.length === 1 && r.body.rows[0].row === 2,
+    ],
+    [
+      '文件内 id 重复',
+      `${head}${NL}h-dup,名,三亚,五星,100,房,亮点,${NL}h-dup,名,三亚,五星,100,房,亮点,`,
+      (r) => r.body.rows?.[0]?.row === 2,
+    ],
+    [
+      '库里已有这个 code',
+      `${head}${NL}h-new-1,名,三亚,五星,100,房,亮点,${NL}h-csv-one,名,三亚,五星,100,房,亮点,`,
+      (r) => r.body.rows?.[0]?.row === 2 && JSON.stringify(r.body.rows).includes('已经有了'),
+    ],
+    ['过不了 schema（缺必填、id 不合规）', `${head}${NL}H_BAD,名,三亚,五星,100,房,,`, (r) => r.body.rows?.[0]?.row === 1],
+    ['只有表头', head, (r) => r.body.rows?.[0]?.row === 0],
+  ];
+  const failed = [];
+  for (const [name, text, ok] of cases) {
+    const r = await reject(text);
+    if (!(r.status === 422 && r.body.error === 'invalid_csv' && ok(r))) failed.push(`${name}: ${r.status} ${r.text.slice(0, 120)}`);
+  }
+  check('CSV 导入：七种不合格都是 422 invalid_csv 并按行点名', failed.length === 0, failed.join(' | '));
+  check('CSV 导入：不合格时一条也没建（包括同一份里合格的那几行）', (await count()) === n0);
+  const route = await reject(`id,title${NL}r-csv,标题`, 'route');
+  check(
+    'CSV 导入：线路的必填 itinerary 不是平铺字段 → 422，说明原因',
+    route.status === 422 && route.body.rows?.[0]?.row === 0 && JSON.stringify(route.body.rows).includes('itinerary'),
+    route.text,
+  );
+  const AGENT = { email: 'agent@example.com', password: 'agent-password-1' };
+  const agent = await httpLogin(AGENT.email, AGENT.password, '203.0.113.96');
+  check(
+    'CSV 导入：非编辑角色 403，匿名 401',
+    (await call('POST', '/catalog/hotel/import-csv', { as: agent, json: { csv } })).status === 403 &&
+      (await call('POST', '/catalog/hotel/import-csv', { json: { csv } })).status === 401,
+  );
+}
+
 // 命名错误映射：23505（写函数都先转成命名错误，接口上走不到，这里直接看映射）
 check(
   '错误映射：23505（经 drizzle 包在 cause 里）→ 409',
@@ -1376,6 +1489,6 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、CSV 导入）`,
 );
 process.exit(0);
