@@ -24,12 +24,14 @@ import { listAudit } from '../config/audit.js';
 import {
   activateCatalogItem,
   CatalogCodeTakenError,
+  CatalogCsvError,
   CatalogLockedFieldError,
   CatalogNotFoundError,
   CatalogRevConflictError,
   CatalogValidationError,
   createCatalogItem,
   getCatalogItem,
+  importCatalogCsv,
   listCatalog,
   updateCatalogItem,
 } from '../config/catalog.js';
@@ -69,6 +71,7 @@ import {
   CatalogKindParam,
   ConvQuery,
   CreateItemBody,
+  ImportCsvBody,
   LoginBody,
   PatchItemBody,
   PublishBody,
@@ -231,6 +234,7 @@ function mapError(e: unknown): { status: 400 | 404 | 409 | 422 | 429 | 503; body
     return { status: 422, body: { error: 'invalid_sop', detail: e.message } };
   }
   if (e instanceof CatalogLockedFieldError) return { status: 422, body: { error: 'locked_field', detail: e.message, fields: e.fields } };
+  if (e instanceof CatalogCsvError) return { status: 422, body: { error: 'invalid_csv', detail: e.message, rows: e.rows } };
   if (e instanceof CatalogValidationError) return { status: 422, body: { error: 'invalid_item', detail: e.message, issues: e.issues } };
   if (e instanceof SopNotFoundError || e instanceof CatalogNotFoundError)
     return { status: 404, body: { error: 'not_found', detail: e.message } };
@@ -378,6 +382,17 @@ export const consoleApi = new Hono<ConsoleEnv>()
       const { kind, code } = c.req.valid('param');
       const item: CatalogItem = await updateCatalogItem(ctxOf(c), kind, code, c.req.valid('json'));
       return c.json(item, 200);
+    },
+  )
+  // 只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才一次建出来（见 src/shared/catalog-csv.ts）
+  .post(
+    '/catalog/:kind/import-csv',
+    canEdit,
+    zValidator('param', CatalogKindParam, badRequest),
+    zValidator('json', ImportCsvBody, badRequest),
+    async (c) => {
+      const items: CatalogItem[] = await importCatalogCsv(ctxOf(c), c.req.valid('param').kind, c.req.valid('json').csv);
+      return c.json({ items }, 200);
     },
   )
   .post(

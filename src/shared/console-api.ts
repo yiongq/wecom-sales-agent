@@ -53,6 +53,9 @@ export const CatalogItemParam = z.object({ kind: z.enum(['route', 'hotel']), cod
 
 export const CreateItemBody = z.strictObject({ payload: jsonObject });
 
+/** CSV 导入：整份文本放在 csv 里（请求体上限 64 KB，够几百行） */
+export const ImportCsvBody = z.strictObject({ csv: z.string().min(1).max(60_000) });
+
 /** 字段级补丁：set 里点名的顶层字段整体替换，unset 里的字段删除，没点名的不动 */
 export const PatchItemBody = z.strictObject({
   rev: z.number().int().nonnegative(),
@@ -160,6 +163,8 @@ export interface ApiError {
   keys?: string[];
   current?: SopSectionText[];
   issues?: { path: string; message: string }[];
+  /** CSV 导入按行的问题；row 是数据行号，0 表示表头或整份文件 */
+  rows?: { row: number; issues: { path: string; message: string }[] }[];
 }
 
 export interface Me {

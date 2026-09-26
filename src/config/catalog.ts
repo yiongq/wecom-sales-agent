@@ -18,6 +18,7 @@ import { findTenantBySlug } from '../db/repo/tenants.js';
 import { ALWAYS_LOCKED, applyCatalogPatch, CATALOG_SCHEMAS, lockedFieldChanges, type CatalogKind } from '../shared/catalog.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { CatalogItem } from '../shared/console-api.js';
+import { CatalogCsvError, prepareCatalogCsv } from '../shared/catalog-csv.js';
 import { applyCatalogRow, assertConfigWritable, configRuntime, reloadFromDb } from './source.js';
 
 export type { CatalogKind } from '../shared/catalog.js';
@@ -49,6 +50,7 @@ export class CatalogRevConflictError extends Error {}
 export class CatalogCodeTakenError extends Error {}
 /** → 404 */
 export class CatalogNotFoundError extends Error {}
+export { CatalogCsvError, catalogCsvColumns } from '../shared/catalog-csv.js';
 
 const toItem = (r: CatalogRow): CatalogItem => ({
   kind: r.kind,
@@ -178,6 +180,42 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
     await writeAudit(tx, { action: 'catalog.activate', targetType: kind, targetId: code, diff: { status: ['draft', 'active'] } });
     return row;
   });
+}
+
+// ---------------- CSV 导入 ----------------
+
+/**
+ * CSV 导入（spec「后台 API 与页面 · 产品库」）：解析、转换与逐行校验在 src/shared/catalog-csv.ts；这里在一个事务里查库里已有的 code，
+ * 都没有才按顺序全部建成 draft（ord 接在最大值之后），任何一处不合格就一条也不建。每条和后台新建一样写一行 catalog.create 审计。
+ * draft 不进快照
+ */
+export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: string): Promise<CatalogItem[]> {
+  const payloads = prepareCatalogCsv(kind, csv);
+  assertConfigWritable();
+  const rt = runtimeFor(ctx);
+  try {
+    const rows = await withTenant(rt.db, ctx, async (tx) => {
+      await lockTenantConfig(tx);
+      const existing = new Set((await readCatalogOfKind(tx, kind)).map((r) => r.code));
+      const taken = payloads.flatMap((p, i) =>
+        existing.has(String(p.id)) ? [{ row: i + 1, issues: [{ path: 'id', message: '这个 code 已经有了' }] }] : [],
+      );
+      if (taken.length) throw new CatalogCsvError(taken);
+      let ord = await maxOrd(tx, kind);
+      const out: CatalogRow[] = [];
+      for (const payload of payloads) {
+        const row = await insertDraftItem(tx, { tenantId: ctx.tenantId, kind, ord: ++ord, payload, by: by(ctx) });
+        await writeAudit(tx, { action: 'catalog.create', targetType: kind, targetId: row.code, diff: topLevelDiff({}, payload) });
+        out.push(row);
+      }
+      return out;
+    });
+    return rows.map(toItem);
+  } catch (e) {
+    if (isUniqueViolation(e, 'catalog_items_tenant_kind_code_uq')) throw new CatalogCodeTakenError('这个 code 已经有了');
+    if (isUniqueViolation(e)) throw new CatalogRevConflictError('并发写入冲突，刷新后重来');
+    throw e;
+  }
 }
 
 // ---------------- 锁定字段的紧急修正（catalog-fix 命令行） ----------------
