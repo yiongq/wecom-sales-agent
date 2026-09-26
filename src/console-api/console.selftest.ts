@@ -1173,12 +1173,19 @@ check(
     await call('GET', '/sop/versions'),
     await call('GET', `/sop/versions/${cur.versionId}`),
     await call('GET', '/me'),
-    await call('GET', '/nope'),
   ];
   check(
-    '匿名 demo：/audit、/conversations、版本历史、/me、未知路径 → 401',
+    '匿名 demo：/audit、/conversations、版本历史、/me → 401',
     denied.every((r) => r.status === 401),
     denied.map((r) => r.status).join(','),
+  );
+  const unknown = keep(await call('GET', '/nope'));
+  check(
+    '匿名 demo：未知的 /api/console 路径 → 404 JSON，不是 index.html',
+    unknown.status === 404 &&
+      unknown.body.error === 'not_found' &&
+      (unknown.headers.get('content-type') ?? '').includes('application/json'),
+    `${unknown.status} ${unknown.text.slice(0, 80)}`,
   );
   const writes = [
     await call('PUT', '/sop/draft', { json: { basedOn: cur.versionId, rev: null, edits: [{ key: 'tone', body: 'x' }] } }),
@@ -1419,6 +1426,90 @@ check(
   );
 }
 
+// /console 的托管与 SPA 回退（第 16 步，验收 17 的路由部分）：用临时的构建产物，测试不依赖真的去构建
+{
+  const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-console-dist-'));
+  fs.mkdirSync(path.join(dist, 'assets'));
+  const placeholder = '__CONSOLE_CSP_NONCE__';
+  fs.writeFileSync(
+    path.join(dist, 'index.html'),
+    `<!doctype html><html><head><meta property="csp-nonce" nonce="${placeholder}" /><script type="module" src="/console/assets/app-1a2b.js" nonce="${placeholder}"></script></head><body><div id="root"></div></body></html>`,
+  );
+  fs.writeFileSync(path.join(dist, 'assets', 'app-1a2b.js'), 'console.log("console");');
+  process.env.CONSOLE_DIST = dist;
+  const page = async (url: string): Promise<Res> => {
+    const res = await app.request(url, { headers: { 'x-forwarded-for': '203.0.113.97' } });
+    return { status: res.status, body: {}, text: await res.text(), headers: res.headers };
+  };
+  const bare = await page('/console');
+  check('托管：/console → 301 到 /console/', bare.status === 301 && bare.headers.get('location') === '/console/');
+  const index = await page('/console/');
+  const nonce = /nonce="([^"]+)"/.exec(index.text)?.[1] ?? '';
+  check(
+    '托管：/console/ 返回 index.html，占位符全部换成这次的 nonce，CSP 带 style-src 这个 nonce',
+    index.status === 200 &&
+      nonce.length >= 16 &&
+      !index.text.includes(placeholder) &&
+      index.text.split(`nonce="${nonce}"`).length === 3 &&
+      (index.headers.get('content-security-policy') ?? '').endsWith(`style-src 'self' 'nonce-${nonce}'`) &&
+      (index.headers.get('content-security-policy') ?? '').startsWith(
+        "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'",
+      ) &&
+      index.headers.get('cache-control') === 'no-store' &&
+      index.headers.get('x-content-type-options') === 'nosniff',
+    `${index.status} ${index.headers.get('content-security-policy')}`,
+  );
+  const again = await page('/console/');
+  check('托管：每次响应的 nonce 都不同', /nonce="([^"]+)"/.exec(again.text)?.[1] !== nonce);
+  const direct = await page('/console/index.html');
+  check(
+    '托管：直接请求 /console/index.html 也是换过 nonce 的页面，不是带占位符的原文件',
+    direct.status === 200 && !direct.text.includes(placeholder),
+  );
+  const deep = await page('/console/sop/versions/3');
+  check('托管：深链 /console/sop/versions/3 也返回 index.html', deep.status === 200 && deep.text.includes('<div id="root">'));
+  const js = await page('/console/assets/app-1a2b.js');
+  check(
+    '托管：/console/assets/<hash>.js 返回 JS，带安全头',
+    js.status === 200 &&
+      js.text === 'console.log("console");' &&
+      (js.headers.get('content-type') ?? '').startsWith('text/javascript') &&
+      secured(js.headers),
+  );
+  const missing = await page('/console/assets/nope-0000.js');
+  check(
+    '托管：不存在的资源文件 → 404，不回退成 index.html',
+    missing.status === 404 && !missing.text.includes('<html') && secured(missing.headers),
+  );
+  const traversal = [
+    await page('/console/%2e%2e/package.json'),
+    await page('/console/..%2fpackage.json'),
+    await page('/console/assets/..%2f..%2fpackage.json'),
+  ];
+  check(
+    '托管：../ 跑不出构建目录',
+    traversal.every((r) => !r.text.includes('"packageManager"')),
+    traversal.map((r) => r.status).join(','),
+  );
+  const { __hostTest } = await import('./host.js');
+  fs.writeFileSync(path.join(path.dirname(dist), `${path.basename(dist)}-outside.txt`), 'outside');
+  check(
+    '托管：读文件那一层也拦住跑出构建目录的路径（路由层之外的兜底）',
+    (await __hostTest.readDistFile(`../${path.basename(dist)}-outside.txt`)) === null &&
+      (await __hostTest.readDistFile('assets/app-1a2b.js')) !== null,
+  );
+  fs.rmSync(path.join(path.dirname(dist), `${path.basename(dist)}-outside.txt`));
+  const chat = await app.request('/chat.html');
+  check('托管：/chat.html 照旧', chat.status === 200 && (await chat.text()).includes('<html'));
+  const member404 = await call('GET', '/nope', O);
+  check('托管：成员访问未知的 /api/console 路径 → 404 JSON', member404.status === 404 && member404.body.error === 'not_found');
+  process.env.CONSOLE_DIST = path.join(dist, 'nope');
+  const unbuilt = await page('/console/');
+  check('托管：没有构建产物时 /console/ → 404 并说明原因', unbuilt.status === 404 && unbuilt.text.includes('pnpm --filter console build'));
+  delete process.env.CONSOLE_DIST;
+  fs.rmSync(dist, { recursive: true, force: true });
+}
+
 // 命名错误映射：23505（写函数都先转成命名错误，接口上走不到，这里直接看映射）
 check(
   '错误映射：23505（经 drizzle 包在 cause 里）→ 409',
@@ -1489,6 +1580,6 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、CSV 导入）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、CSV 导入、/console 托管）`,
 );
 process.exit(0);

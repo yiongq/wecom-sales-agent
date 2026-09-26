@@ -42,6 +42,7 @@ import type { ChannelAdapter } from './types.js';
 import { boot } from './boot.js';
 import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
+import { consolePages } from './console-api/host.js';
 
 const app = new Hono();
 
@@ -666,9 +667,10 @@ app.get('/kf-qr.png', async (c) => {
   }
 });
 
-// 后台接口（01 spec「后台 API 与页面」）：注册在 serveStatic 兜底之前。子应用自己兜住没匹配上的 /api/console/*，
-// 不落到静态文件（以后 /console 的 SPA 回退也不能吞掉它）
+// 后台接口与后台前端（01 spec「后台 API 与页面」「构建与部署」）：都注册在 serveStatic 兜底之前。
+// 子应用自己兜住没匹配上的 /api/console/*（JSON，不是 index.html）；/console/* 的 SPA 回退只管 /console 下面
 app.route('/', consoleApi);
+app.route('/', consolePages);
 
 // 静态资源兜底（admin.html / chat.html / pay.html / guide.html）。
 // admin.html 页面本身不再鉴权：它进来只会看到演示数据，页面内的登录框负责换取

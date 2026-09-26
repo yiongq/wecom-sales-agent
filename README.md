@@ -281,13 +281,14 @@ pnpm test              # 六组自测，再跑 mock 模式的回归评测；都�
 
 登录用页面内自建的输入框（点「接管」或「登录」时弹出），凭据存 `sessionStorage`，关标签页即失效。用户名 `ADMIN_USER`（默认 `admin`），密码 `ADMIN_PASS`；demo 下**不配 `ADMIN_PASS` 时写操作返回 503**，读仍是演示模式，所以克隆下来零配置也能把工作台看完整（prod 下不配则拒绝启动）。
 
-## 部署（按 git tag，rsync + Docker + Caddy）
+## 部署（按 git tag，rsync + Docker Compose + Caddy）
 
 **首次部署前置条件**（换新服务器时逐项确认）：
 
-1. 服务器已装 Docker，且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或以 `SERVER=root@your-host bash deploy.sh <tag>` 传入；**未设置时脚本直接中止**，没有内置默认值。
+1. 服务器已装 Docker（带 Compose v2 插件），且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或以 `SERVER=root@your-host bash deploy.sh <tag>` 传入；**未设置时脚本直接中止**，没有内置默认值。
 2. 服务器上创建 `/opt/wecom-sales-agent/.env`（参考 `.env.example`）：至少填 `LLM_API_KEY`、`ADMIN_PASS`、`PUBLIC_BASE_URL`（发给微信客户的支付链接靠它拼完整 URL），并**显式写明 `DEPLOY_PROFILE=demo` 或 `DEPLOY_PROFILE=prod`**（不带引号）。deploy.sh 在同步之前检查它，缺 `.env` 或没写明 profile 会直接中止，不会打掉在跑的旧容器。
-3. HTTPS 用 Caddy 反代（把域名换成自己的）：`your-domain.com { reverse_proxy 127.0.0.1:3210 }`，SSE 默认透传；云防火墙放行 80/443。
+3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。
+4. HTTPS 用 Caddy 反代（把域名换成自己的）：`your-domain.com { reverse_proxy 127.0.0.1:3210 }`，SSE 默认透传；云防火墙放行 80/443。
 
 之后每次发布：给要上线的提交打 tag，再按 tag 部署。
 
@@ -301,19 +302,22 @@ bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
 1. `git archive <tag>` 解到临时目录，在那里 `pnpm install` 并跑四个门禁，任何一个不过就中止，服务器上什么都不动（本机要有 pnpm）。
 2. 检查服务器 `.env`（只读），不过就中止。
 3. rsync 到服务器：按内容比对，`.env*`、`var/`、日志既不发送也不删除。
-4. 给正在跑的容器所用镜像打 `:prev`，再 `docker build`（把 tag 写进镜像），并用新镜像试读一遍 `.env`。这两步失败就中止，旧容器照常跑。
-5. 换容器（宿主 `3210` → 容器 `3200`，挂 `var/` 卷并自动校正属主、`--env-file .env`），然后做健康检查：`/healthz` 的 `revision` 必须等于这个 tag。
-6. 换容器或健康检查失败时，打印容器日志，自动用 `:prev` 按同一套参数回滚，并以非零退出。回滚后 `/healthz` 报的是上一版的 tag。
+4. 给正在跑的容器所用镜像打 `:prev`，再 `docker build`（把 tag 写进镜像，后台前端 `console/` 也在这一步构建），并用新镜像试读一遍 `.env`。这两步失败就中止，旧容器照常跑。
+5. 跑迁移（`docker compose run --rm migrate`，顺带拉起数据库）。失败就中止，旧容器照常跑，库没有变化。
+6. `docker compose up -d app` 换容器（宿主 `3210` → 容器 `3200`，挂 `var/` 卷并自动校正属主，参数都在 compose 的 `app` 服务里），然后做健康检查：`/healthz` 的 `revision` 必须等于这个 tag。第一次换成 compose 时，原来 `docker run` 起的同名容器会先按同样的方式停掉。
+7. 换容器或健康检查失败时，打印容器日志，自动用 `:prev` 回滚（`up -d --no-deps app`，不跑迁移：迁移只增不删），并以非零退出。回滚后 `/healthz` 报的是上一版的 tag。
 
-换容器用 `docker stop -t 10`（SIGTERM）而不是强杀：进程先等进行中的企微回复发完再落盘退出（最多 8 秒，`store.ts` 的停机钩子）。万一等不完，已认领但没处理完的客户消息连原文记在 `var/wecom-cursor.json` 的在途表里，新容器启动后先重放它们再拉新消息，所以发布和重启不丢消息。
+换容器按 SIGTERM、宽限 10 秒而不是强杀：进程先等进行中的企微回复发完再落盘退出（最多 8 秒，`store.ts` 的停机钩子）。万一等不完，已认领但没处理完的客户消息连原文记在 `var/wecom-cursor.json` 的在途表里，新容器启动后先重放它们再拉新消息，所以发布和重启不丢消息。
 
 演练回滚可以在同一台服务器上起一个旁路实例：`NAME`、`REMOTE_DIR`、`HOST_PORT` 三个环境变量同时换成和线上不同的值（只换一两个会被拒绝，免得打到线上），它的 `.env` 不能配企微凭据，否则会和线上实例抢同一个客服账号的消息。
 
 - **密钥**：`LLM_API_KEY`、`WECOM_*` 全在服务器 `.env`，不在仓库、脚本不碰。
 - **数据**：`var/`（会话/订单/企微 cursor/客服二维码）挂卷持久化，重建容器不丢；rsync 既不同步也不删除它。
-- **鉴权**：demo 实例的后台是演示模式（免密只读、仅演示数据），写操作要 `ADMIN_PASS`（见上节）。改了服务器 `.env` 要重新部署重建容器才生效：`--env-file` 只在创建容器时读一次，`docker restart` 读不到新值。
+- **鉴权**：demo 实例的后台是演示模式（免密只读、仅演示数据），写操作要 `ADMIN_PASS`（见上节）。改了服务器 `.env` 要 `docker compose -f deploy/compose.yml up -d app`（或重新部署）重建容器才生效：env 只在创建容器时读一次，`docker restart` 读不到新值。
+- **后台**：`/console/`（数据库模式下可用）。账号用平台命令行建：`docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant <slug> --email … --name … --role owner --password-stdin`。
+- **备份**：宿主机 cron 每晚跑 [deploy/backup.sh](deploy/backup.sh)：导出数据库并校验、打包 `var/`，用 age 公钥加密后按日期存 7 天，配了异地目标再复制一份存 30 天。配置写在 `.env.backup`，恢复步骤写在脚本开头。
 
-多副本部署会脑裂（内存为权威），本项目按单实例设计；建议定期备份 `var/` 下两个 JSON。
+多副本部署会脑裂（内存为权威），本项目按单实例设计。
 
 ## demo 话术示例
 
