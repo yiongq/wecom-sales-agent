@@ -7,7 +7,6 @@ import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js
 import { SALES_SEGMENTS } from './types.js';
 import { peakMonths } from './shared/season.js';
 import { deepFreeze } from './shared/freeze.js';
-import { mentionsPlace, OFF_CATALOG_GROUPS, type PlaceKind } from './shared/places.js';
 import { configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
@@ -105,7 +104,7 @@ const BUDGET_RELAX = 1.5;
  * 模型 4/4 自己兜住了，但价格护栏会把巴厘岛的价当作「印度线」放行。
  * 空白先去掉再认（模型会传「丽江 大理」，此前判成库外，工具让模型对客户说「没有丽江 大理线路」）；
  * 去掉还对不上、又是几处拼在一起的（「大理 丽江」「四川、云南」），任一处对得上就算。
- * 目的地、别名、关键词是另一个更长地名的一截时按地名表的边界认（mentionsPlace）：后台建一条「北海」线之后，
+ * 目的地、别名、关键词是另一个更长地名的一截时按库外地名表的边界认（mentionsPlace）：后台建一条「北海」线之后，
  * 此前 k.includes(destination) 让 search_routes(北海道) 把它当成北海道线返回、不标 destinationMiss
  */
 function matchesDestination(r: Route, q: string): boolean {
@@ -219,13 +218,15 @@ const REGION_ABROAD: Record<string, string> = {
  * 大区叫法（「西北」「西南」「东南亚」）同理：说的是一片地方，按关键词对不上任何一条线，却不等于我们没有。
  * 此前「西北」落空后语义召回出新疆、西安，再被标成「我们暂时没有西北的现成线路」——自己的主力线被说成没有。
  * 按片区反查；不是大区叫法返回 null，照常按目的地关键词匹配。
- * 片区表只列了种子数据的目的地：后台新建的线路按关键词对得上这个大区叫法的（目的地就叫「西北」「欧洲」，
- * 或标题写着「西北 甘青大环线」）也算，此前它们在大区搜索里整条消失，连语义召回也被这里滤掉
+ * 片区表只列了种子数据的目的地：后台新建的线路目的地或别名就是这个大区叫法的（「西北 甘青大环线」目的地填「西北」）
+ * 也算，此前它们在大区搜索里整条消失，连语义召回也被这里滤掉。只认整个相等，不按关键词：标题、标签里带着这几个字的
+ * 是别处的线（「滇西北」「川西北」在西南，「东南亚」不是南亚），按关键词认会把它们拉进来、挤掉片区里真正的线
  */
 function regionMatcher(q: string): ((r: Route) => boolean) | null {
   const w = q.trim().replace(/(?:地区|片区|一带|那边|方向)$/, '');
-  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w || matchesDestination(r, w);
-  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w || matchesDestination(r, w);
+  const named = (r: Route): boolean => r.destination === w || (r.aliases ?? []).includes(w);
+  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w || named(r);
+  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w || named(r);
   return null;
 }
 
@@ -239,10 +240,162 @@ export function catalogCovers(q: string, routes: Route[] = loadRoutes()): boolea
   return routes.some((r) => matchesDestination(r, q));
 }
 
-// 客户常点名、我们却没有现成线路的目的地表（OFF_CATALOG_GROUPS）在 src/shared/places.ts：后台新建、上架线路时配置层也要查它
+/**
+ * 客户常点名、我们却没有现成线路的旅行目的地。引擎据此预取 search_routes（见 engine.ts planPrefetch）：
+ * 此前只认得库里有的目的地，「想去南极」不预取，模型偶尔一个工具都不调，直接编一条「南极深度体验线」
+ * 配上别的线路的真实价格发给客户。
+ * 来源：实测客户问过的（南极、冰岛、埃及…）、llm.ts 离线脚本里的库外目的地（新西兰、迪拜、意大利、肯尼亚、摩洛哥、法国），
+ * 加上出境游常见的国家、海岛和国内热门目的地。口径：
+ *   · 只收说出来就是「想去那儿」的叫法。上海、广州、深圳、杭州这类常被说成出发地的大城市不收——
+ *     「上海这边两个人想出去玩」被当成目的地，模型会对客户说「我们暂时没有上海的线路」；
+ *   · 表里的地名后来有了线路（catalogCovers 对得上）自动按库内处理，不必回来删；
+ *   · 一个地名是另一个的一部分时加边界：「北海」不吃「北海道」，「北极」不吃「北极光」（说的是极光，北欧线就有），
+ *     「蒙古」不吃「内蒙古」，「罗马」不吃「罗马尼亚」。线路的目的地、别名碰上这几个地名时按同样的边界认（见 mentionsPlace）。
+ *
+ * 每组标了类型（kind）：目的地我们没有时，「最接近的现成线路」先挑同类型的（见 KIND_ROUTES），再由语义召回补足。
+ * 此前只靠语义召回：「马代去过了 想去普吉岛或者斐济 度蜜月」召回的是云南、四川高原线（B08 2/2、回归 retrieval-02 3/3），
+ * 巴厘岛一次都没出现——客户要的是海岛，推一条要上 4500 米的线只会让人觉得没在听。
+ * 没标类型的（中东非洲、美洲大洋洲、港澳台、印度）我们没有可比的线，照旧交给语义召回。
+ */
+type PlaceKind = '海岛' | '极地冰雪' | '欧洲' | '东南亚' | '日韩' | '藏地' | '高原' | '草原戈壁' | '山水' | '古城' | '云南';
+const OFF_CATALOG_GROUPS: { kind?: PlaceKind; abroad: boolean; places: string[] }[] = [
+  // 海岛、海滨（境外）
+  {
+    kind: '海岛',
+    abroad: true,
+    places: [
+      '普吉岛',
+      '苏梅岛',
+      '长滩岛',
+      '薄荷岛',
+      '济州岛',
+      '冲绳',
+      '沙巴',
+      '兰卡威',
+      '岘港',
+      '斯里兰卡',
+      '毛里求斯',
+      '塞舌尔',
+      '马达加斯加',
+      '夏威夷',
+      '斐济',
+      '大溪地',
+      '关岛',
+      '塞班',
+      '圣托里尼',
+      '西西里',
+    ],
+  },
+  { kind: '极地冰雪', abroad: true, places: ['南极', '北极(?!光)', '冰岛', '挪威', '瑞典', '阿拉斯加', '贝加尔湖'] },
+  {
+    kind: '欧洲',
+    abroad: true,
+    places: [
+      '丹麦',
+      '英国',
+      '伦敦',
+      '苏格兰',
+      '爱尔兰',
+      '法国',
+      '巴黎',
+      '普罗旺斯',
+      '意大利',
+      '罗马(?!尼亚)',
+      '威尼斯',
+      '佛罗伦萨',
+      '西班牙',
+      '巴塞罗那',
+      '葡萄牙',
+      '德国',
+      '奥地利',
+      '捷克',
+      '布拉格',
+      '匈牙利',
+      '荷兰',
+      '希腊',
+      '克罗地亚',
+      '土耳其',
+      '伊斯坦布尔',
+      '卡帕多奇亚',
+      '俄罗斯',
+      '格鲁吉亚',
+    ],
+  },
+  { kind: '东南亚', abroad: true, places: ['泰国', '清迈', '越南', '柬埔寨', '吴哥窟', '老挝', '缅甸', '新加坡', '马来西亚', '菲律宾'] },
+  // 日本我们有线；北海道不在那几条里
+  { kind: '日韩', abroad: true, places: ['韩国', '首尔', '北海道'] },
+  // 喜马拉雅那一片，最接近的是西藏
+  { kind: '藏地', abroad: true, places: ['尼泊尔', '不丹'] },
+  { kind: '草原戈壁', abroad: true, places: ['(?<!内)蒙古'] },
+  {
+    abroad: true,
+    places: [
+      '埃及',
+      '迪拜',
+      '阿联酋',
+      '阿布扎比',
+      '约旦',
+      '以色列',
+      '摩洛哥',
+      '肯尼亚',
+      '坦桑尼亚',
+      '南非',
+      '非洲',
+      '美国',
+      '纽约',
+      '洛杉矶',
+      '黄石',
+      '加拿大',
+      '墨西哥',
+      '古巴',
+      '秘鲁',
+      '巴西',
+      '阿根廷',
+      '智利',
+      '南美',
+      '澳大利亚',
+      '澳洲',
+      '新西兰',
+      // 「印度」不吃「印度尼西亚」（巴厘岛那条的别名）和「印度洋」（马代就在印度洋上）
+      '印度(?!尼西亚|洋)',
+      '香港',
+      '澳门',
+      '台湾',
+    ],
+  },
+  // 国内（海南、川西、九寨沟这些我们有线）
+  { kind: '海岛', abroad: false, places: ['厦门', '鼓浪屿', '北海(?!道)', '涠洲岛'] },
+  { kind: '藏地', abroad: false, places: ['冈仁波齐'] },
+  { kind: '高原', abroad: false, places: ['青海湖', '青海', '可可西里'] },
+  { kind: '草原戈壁', abroad: false, places: ['甘肃', '敦煌', '张掖', '宁夏', '内蒙古', '呼伦贝尔', '额济纳'] },
+  { kind: '极地冰雪', abroad: false, places: ['哈尔滨', '雪乡', '长白山', '漠河'] },
+  {
+    kind: '山水',
+    abroad: false,
+    places: ['桂林', '阳朔', '张家界', '黄山', '婺源', '武夷山', '泰山', '华山', '峨眉山', '乐山', '千岛湖', '五台山', '恩施', '神农架'],
+  },
+  { kind: '古城', abroad: false, places: ['凤凰古城', '乌镇', '平遥'] },
+  { kind: '云南', abroad: false, places: ['西双版纳', '泸沽湖', '腾冲'] },
+];
 const OFF_CATALOG_PLACES = OFF_CATALOG_GROUPS.flatMap((g) => g.places);
 // 长的排前面：「青海湖」要整个认出来，不能先被「青海」截走
 const OFF_CATALOG_RE = new RegExp(OFF_CATALOG_PLACES.toSorted((a, b) => b.length - a.length).join('|'), 'g');
+/** 带边界写法的地名（「北海(?!道)」「(?<!内)蒙古」…）：去掉边界的本名 → 按边界认的正则 */
+const BOUNDED_PLACES = new Map(
+  OFF_CATALOG_PLACES.filter((p) => p.includes('(?')).map((p) => [p.replace(/\(\?<?[=!][^)]*\)/g, ''), new RegExp(p)] as const),
+);
+
+/**
+ * text 里有没有 word 这个地名。word 是上表里带边界写法的地名时按同样的边界认：「北海道」里的「北海」、「内蒙古」里的「蒙古」、
+ * 「罗马尼亚」里的「罗马」都不算；其余照旧按子串。线路的目的地、别名拿去对关键词（matchesDestination）、对客户原话
+ * （engine.ts destinationMentions）、对回复（price-guard 的点名）都经这里：后台建一条「北海」线，客户说「想去北海道滑雪」
+ * 不会被当成点了这条线，写成「广西北海」再配别名「北海」也照样认得出「想去北海玩」
+ */
+export function mentionsPlace(text: string, word: string): boolean {
+  const re = BOUNDED_PLACES.get(word);
+  return re ? re.test(text) : text.includes(word);
+}
+
 /** 每个地名整词认回它那一组（地名里带着边界写法，按整词重新匹配一遍） */
 const PLACE_GROUP: { re: RegExp; kind?: PlaceKind; abroad: boolean }[] = OFF_CATALOG_GROUPS.flatMap((g) =>
   g.places.map((p) => ({ re: new RegExp(`^(?:${p})$`), kind: g.kind, abroad: g.abroad })),

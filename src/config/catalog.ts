@@ -19,7 +19,6 @@ import { ALWAYS_LOCKED, applyCatalogPatch, CATALOG_SCHEMAS, lockedFieldChanges, 
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { CatalogItem } from '../shared/console-api.js';
 import { CatalogCsvError, prepareCatalogCsv } from '../shared/catalog-csv.js';
-import { placeNameIssues } from '../shared/places.js';
 import { applyCatalogRow, assertConfigWritable, configRuntime, reloadFromDb } from './source.js';
 
 export type { CatalogKind } from '../shared/catalog.js';
@@ -70,13 +69,6 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeo
 function validate(kind: CatalogKind, payload: unknown): void {
   const r = CATALOG_SCHEMAS[kind].safeParse(payload);
   if (!r.success) throw new CatalogValidationError(r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })));
-}
-
-/** 新建与上架多查一条：线路的目的地、别名不能是另一个更长地名的一截（「北海」之于「北海道」，见 src/shared/places.ts） */
-function validateNew(kind: CatalogKind, payload: Record<string, unknown>): void {
-  validate(kind, payload);
-  const issues = placeNameIssues(kind, payload);
-  if (issues.length) throw new CatalogValidationError(issues);
 }
 
 /** 审计的 diff：只放变了的顶层字段 { 字段: [旧, 新] }；原样提交回去时为空对象 */
@@ -139,7 +131,7 @@ export async function getCatalogItem(ctx: TenantCtx, kind: CatalogKind, code: st
 /** 新条目为 draft，ord 取该 kind 的最大 ord 加 1 */
 export async function createCatalogItem(ctx: TenantCtx, kind: CatalogKind, payload: unknown): Promise<CatalogItem> {
   if (!isPlainObject(payload)) throw new CatalogValidationError([{ path: '', message: '条目必须是对象' }]);
-  validateNew(kind, payload);
+  validate(kind, payload);
   return write(ctx, async (tx) => {
     if (await readCatalogItem(tx, kind, String(payload.id))) throw new CatalogCodeTakenError('这个 code 已经有了');
     const row = await insertDraftItem(tx, { tenantId: ctx.tenantId, kind, ord: (await maxOrd(tx, kind)) + 1, payload, by: by(ctx) });
@@ -182,7 +174,7 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
     const cur = await readCatalogItemForUpdate(tx, kind, code);
     if (!cur) throw new CatalogNotFoundError(`没有 ${kind} ${code}`);
     if (cur.rev !== input.rev || cur.status !== 'draft') throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
-    validateNew(kind, cur.payload);
+    validate(kind, cur.payload);
     const row = await activateItem(tx, kind, code, cur.rev, by(ctx));
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
     await writeAudit(tx, { action: 'catalog.activate', targetType: kind, targetId: code, diff: { status: ['draft', 'active'] } });

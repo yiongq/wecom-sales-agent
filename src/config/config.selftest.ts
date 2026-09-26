@@ -1820,53 +1820,80 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 {
   const cat = await import('./catalog.js');
   const { searchRoutes, offCatalogPlaces, visitedDestinations } = await import('../tools.js');
+  const { routeNames, namedRoutes } = (await import('../price-guard.js')).__priceGuardTest;
+  const { dropUnbackedClaims } = await import('../price-rules.js');
   const base = (JSON.parse(routesRaw) as Record<string, unknown>[])[0]!;
+  const noAliases = Object.fromEntries(Object.entries(base).filter(([k]) => k !== 'aliases'));
   const ids = async (destination: string): Promise<string> => (await searchRoutes({ destination })).map((r) => r.id).join(',');
   const offKws = (text: string): string =>
     offCatalogPlaces(text)
       .map((p) => p.kw)
       .join(',');
-  const rejected = async (p: Promise<unknown>): Promise<string> => {
-    try {
-      await p;
-      return 'ok';
-    } catch (e) {
-      return e instanceof cat.CatalogValidationError ? e.issues.map((i) => i.path).join(',') : String(e);
-    }
-  };
+  // 引擎替模型预取 search_routes 时查的目的地
+  const prefetch = (text: string): string[] => __engineTest.planPrefetch(freshSession(), text).map((a) => String(a.destination));
 
-  // 新建与上架时拒掉「另一个更长地名的一截」的目的地和别名：客户说「北海道」「内蒙古」时，引擎会把它认成这条线
+  // 「北海」「蒙古」这类是更长地名一截的短名照样能新建、上架：引擎、工具、护栏认线路都按整词（mentionsPlace）。
+  // 此前上架时直接拒，逼运营写全称「广西北海」——引擎按原话认目的地，客户说「北海」反而认不出，预取落空
   cfg.__configTest.reset();
   await cfg.initConfig(testConfigDeps(t));
   const ctx: import('../db/client.js').TenantCtx = {
     tenantId: cfg.currentCatalog().tenantId,
     actor: { kind: 'user', userId: null, name: '运营丁', ip: null },
   };
-  check(
-    '地名：新建目的地「北海」→ CatalogValidationError 点名 destination',
-    (await rejected(cat.createCatalogItem(ctx, 'route', { ...base, id: 'r-beihai', destination: '北海' }))) === 'destination',
-  );
-  check(
-    '地名：别名里有「蒙古」→ 点名 aliases.1',
-    (await rejected(cat.createCatalogItem(ctx, 'route', { ...base, id: 'r-mongol', aliases: ['草原', '蒙古'] }))) === 'aliases.1',
-  );
-  const rome = await cat.createCatalogItem(ctx, 'route', { ...base, id: 'r-rome', destination: '意大利' });
-  const toRome = await cat.updateCatalogItem(ctx, 'route', 'r-rome', { rev: rome.rev, set: { destination: '罗马' } });
-  check(
-    '地名：draft 改成「罗马」照存，上架时拒、不进快照',
-    (await rejected(cat.activateCatalogItem(ctx, 'route', 'r-rome', { rev: toRome.rev }))) === 'destination' &&
-      !cfg.currentCatalog().routes.some((r) => r.id === 'r-rome'),
-  );
-  const gx = await cat.createCatalogItem(ctx, 'route', {
-    ...base,
+  const activated = async (payload: Record<string, unknown>): Promise<string> => {
+    try {
+      const item = await cat.createCatalogItem(ctx, 'route', payload);
+      await cat.activateCatalogItem(ctx, 'route', String(payload.id), { rev: item.rev });
+      return cfg.currentCatalog().routes.some((r) => r.id === payload.id) ? 'ok' : 'missing';
+    } catch (e) {
+      return e instanceof cat.CatalogValidationError ? e.issues.map((i) => i.path).join(',') : String(e);
+    }
+  };
+  const gx = await activated({
+    ...noAliases,
     id: 'r-gx-beihai',
     destination: '广西北海',
+    aliases: ['北海'],
     title: '广西北海 涠洲岛 8 日',
+    maxAltitude: 20,
   });
-  await cat.activateCatalogItem(ctx, 'route', 'r-gx-beihai', { rev: gx.rev });
+  const mongol = await activated({ ...noAliases, id: 'r-mongol', destination: '蒙古', title: '蒙古 草原 8 日', overseas: true });
+  check('地名：别名「北海」、目的地「蒙古」都能新建上架', gx === 'ok' && mongol === 'ok', `${gx} ${mongol}`);
+  const hokkaido = prefetch('想去北海道滑雪');
   check(
-    '地名：写全称「广西北海」能上架，北海认成这条线，北海道仍按库外认',
-    (await ids('北海')) === 'r-gx-beihai' && offKws('想去北海玩') === '' && offKws('想去北海道滑雪') === '北海道',
+    '地名：「广西北海」配别名「北海」，客户说北海时引擎预取它，说北海道不算点了它',
+    prefetch('想去北海玩').join(',') === '北海' && !hokkaido.includes('北海') && (await ids('北海')) === 'r-gx-beihai',
+    `${prefetch('想去北海玩').join(',')} / ${hokkaido.join(',')}`,
+  );
+  const inner = prefetch('想去内蒙古草原骑马');
+  check('地名：客户说内蒙古，引擎不当成点了蒙古线', inner.join(',') === '内蒙古', inner.join(','));
+  const saidIds = (said: string): string[] => __engineTest.routesIn(said, loadRoutes()).map((r) => r.id);
+  check(
+    '地名：引擎认原话点了哪条线也按整词——「北海道那条」不算点了北海线，「北海那条」算',
+    !saidIds('北海道那条线怎么样').includes('r-gx-beihai') && saidIds('北海那条线怎么样').includes('r-gx-beihai'),
+    saidIds('北海道那条线怎么样').join(','),
+  );
+  const names = routeNames(loadRoutes());
+  check(
+    '地名：护栏认回复点了哪条线也按整词——「北海道」不算点了北海线，「北海」算',
+    !namedRoutes('北海道这边的滑雪线可以看看', names).includes('r-gx-beihai') &&
+      namedRoutes('北海这边的海岛线可以看看', names).includes('r-gx-beihai'),
+  );
+  // 高反担保得有线路数据撑着：说的是北海道，不能拿北海线的低海拔来撑
+  const assured = (text: string): number => dropUnbackedClaims(text, freshSession()).dropped.length;
+  check(
+    '地名：「北海道那边不会有高反」撑不住照删，「北海那边不会有高反」有北海线撑着照留',
+    assured('北海道那边不会有高反。') === 1 && assured('北海那边不会有高反。') === 0,
+    `${assured('北海道那边不会有高反。')} ${assured('北海那边不会有高反。')}`,
+  );
+  // 同一目的地几条线按别名挑：说的是「北海道」，不算挑中了别名「北海」的那条，两条都算（调用方据此判「说不清」）
+  const sea = await activated({ ...noAliases, id: 'r-gx-sea', destination: '广西', aliases: ['北海'], title: '广西 涠洲岛海岛 8 日' });
+  const hill = await activated({ ...noAliases, id: 'r-gx-hill', destination: '广西', aliases: ['桂林'], title: '广西 桂林山水 8 日' });
+  const gxSaid = saidIds('广西的线都看看，北海道也在考虑');
+  check(
+    '地名：同一目的地按别名挑线也按整词——说了广西和北海道，两条广西线都算',
+    sea === 'ok' && hill === 'ok' && gxSaid.includes('r-gx-sea') && gxSaid.includes('r-gx-hill'),
+    `${sea} ${hill} ${gxSaid.join(',')}`,
   );
   // 大区叫法：片区表只列了种子数据的目的地，后台新建的「西北」线也要在 search_routes(西北) 里
   const nw = await cat.createCatalogItem(ctx, 'route', {
@@ -1885,9 +1912,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
   cfg.__configTest.reset();
 
-  // 绕过了上架检查的数据（文件模式、catalog-fix）：目的地是更长地名的一截时，认线路也按地名表的边界
+  // 文件模式（以及任何来路的数据）同样按整词认：目的地就是「北海」「蒙古」「罗马」时，更长的地名不算点了它
   const fixture = path.join(process.env.VAR_DIR!, 'routes-places.json');
-  const noAliases = Object.fromEntries(Object.entries(base).filter(([k]) => k !== 'aliases'));
   const mk = (id: string, destination: string): Route =>
     ({ ...noAliases, id, destination, title: `${destination} 深度游 8 日` }) as unknown as Route;
   const fx = [
@@ -1896,6 +1922,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     mk('r-hokkaido', '北海道'),
     mk('r-mongolia', '蒙古'),
     mk('r-rome', '罗马'),
+    // 标题、标签里带着大区叫法的别处线路：滇西北在西南，「东南亚」不是南亚
+    { ...mk('r-dxb', '云南'), title: '滇西北 梅里雪山 8 日' },
+    { ...mk('r-thai', '泰国'), title: '东南亚 泰国普吉 6 日', tags: ['东南亚', '海岛'], overseas: true } as Route,
   ];
   fs.writeFileSync(fixture, JSON.stringify(fx));
   const savedRoutesPath = process.env.ROUTES_PATH;
@@ -1913,6 +1942,13 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     check('整词：罗马尼亚不算罗马线', !(await ids('罗马尼亚')).includes('r-rome') && (await ids('罗马')) === 'r-rome');
     const been = visitedDestinations(['北海道去过了', '内蒙古玩过'], fx).join(',');
     check('整词：说去过北海道、内蒙古，不算去过北海、蒙古', been === '北海道', been);
+    const nwIds = await ids('西北');
+    const saIds = await ids('南亚');
+    check(
+      '大区：标题写着「滇西北」的云南线不进 search_routes(西北)，标签带「东南亚」的泰国线不进 search_routes(南亚)',
+      nwIds === 'r-xian,r-xinjiang,r-xinjiang-lux' && !saIds.includes('r-thai') && saIds.includes('r-maldives'),
+      `${nwIds} / ${saIds}`,
+    );
   } finally {
     if (savedRoutesPath === undefined) delete process.env.ROUTES_PATH;
     else process.env.ROUTES_PATH = savedRoutesPath;

@@ -12,7 +12,7 @@
 import { dropSentences, namedRoutes, priceMentions, routeNames, sentenceUnits, spokenMoney } from './price-guard.js';
 import type { TurnToolCall } from './price-guard.js';
 // tools.ts 也 import 本文件（create_quote 的预算比较），是循环引用：两边都只在函数里用对方的导出，模块加载时不碰，所以安全
-import { LOWLAND_MAX_ALTITUDE, loadRoutes, peakMonths } from './tools.js';
+import { LOWLAND_MAX_ALTITUDE, loadRoutes, mentionsPlace, peakMonths } from './tools.js';
 import { getOrder } from './store.js';
 import type { Route, Session } from './types.js';
 import { ConfigNotReadyError } from './config/source.js';
@@ -543,12 +543,15 @@ interface ClaimCtx {
   travelers?: number;
 }
 
-/** 这句话点了名的线路：目的地、别名，或标题里目的地以外的那段名字（「丽江大理」「九寨黄龙」「中央格兰德」） */
+/**
+ * 这句话点了名的线路：目的地、别名，或标题里目的地以外的那段名字（「丽江大理」「九寨黄龙」「中央格兰德」）。
+ * 目的地、别名按整词认（tools.ts mentionsPlace）：「北海道」不算点了北海线
+ */
 function routesNamedIn(s: string, routes: Route[]): Route[] {
   const t = s.replace(/\s+/g, '');
   return routes.filter(
     (r) =>
-      [r.destination, ...(r.aliases ?? [])].some((p) => !!p && t.includes(p)) ||
+      [r.destination, ...(r.aliases ?? [])].some((p) => !!p && mentionsPlace(t, p)) ||
       r.title
         .split(/[\s·・]+|\d+\s*[日天]/)
         .map((x) => x.replace(r.destination, ''))
