@@ -7,6 +7,7 @@
 - 实质性改动先写 spec，流程见 `docs/spec-driven-dev.md`。
 - 常规 PR 合进 `dev`。提交信息用 Conventional Commits，标题不超过 50 字符，不加 AI co-author 署名。
 - 开 PR 前跑完四个门禁：`pnpm format:check`、`pnpm lint`、`pnpm typecheck`、`pnpm test`。
+- `pnpm test` 里数据库自测的 RLS、授权与租户锁部分要一个真实 Postgres，给了 `PG_TEST_URL` 才跑（CI 里总是跑）。本机起一个一次性容器再跑：`docker run -d --rm --name pgtest -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 pgvector/pgvector:pg17`，然后 `PG_TEST_URL=postgres://postgres:pw@127.0.0.1:55432/postgres pnpm test`。它会建临时库、改三个 `agent_*` 角色的口令，所以不要指向开发或线上用的集群。
 - 首次全仓格式化的提交列在 `.git-blame-ignore-revs` 里。clone 之后跑一次 `git config blame.ignoreRevsFile .git-blame-ignore-revs`，`git blame` 就会越过它，指到格式化之前的提交。
 - 没有实际需要就不加依赖、不加抽象；不从许可证不兼容或私有来源复制代码。
 - 不提交客户数据、凭据、真实企微标识、二维码、生产域名或服务器 IP。
