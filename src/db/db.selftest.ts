@@ -1,7 +1,9 @@
 // 数据库自测（docs/architecture/01-pg-config-console/spec.md「测试与 CI」）。
-// 现在只有 PGlite 部分：迁移连跑两遍、约束（含哈希 CHECK）、三个触发器、两个部分唯一索引、复合外键（验收 7 的约束与触发器部分），
-// 外加 withTenant 与五个认证函数的冒烟——plpgsql 的运行期错误只有真跑一次才暴露。
-// RLS 与授权的逐格断言、租户锁、node-postgres 下的字节等价在真实 Postgres 部分（01 第 3 步），PGlite 上的结论不作数（spec R13）。
+// 两部分：
+// - PGlite：迁移连跑两遍、约束（含哈希 CHECK）、三个触发器、两个部分唯一索引、复合外键（验收 7 的约束与触发器部分），
+//   外加 withTenant 与五个认证函数的冒烟——plpgsql 的运行期错误只有真跑一次才暴露。
+// - 真实 Postgres，有 PG_TEST_URL 才跑（CI=true 而没有它时失败）：roles.sql、各角色对各表的权限逐格、RLS 行为、会话级泄漏、
+//   临时表遮蔽、租户锁（验收 12 与验收 7 的权限部分）。PGlite 以超级用户连接，RLS 与授权的结论只从这部分得出（spec R13）。
 // 用法：npx tsx src/db/db.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import { createHash, randomBytes } from 'node:crypto';
@@ -87,6 +89,98 @@ async function asApp<T>(tenantId: string, fn: (tx: Tx) => Promise<T>): Promise<T
   }
 }
 
+type Query = <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<R[]>;
+const TENANT_POLICY = /^\(tenant_id = \(NULLIF\(current_setting\('app\.tenant_id'::text, true\), ''::text\)\)::uuid\)$/;
+/**
+ * 按系统目录核对迁移的结果，PGlite 与真实 PG 各跑一遍。带 tenant_id 的表是从目录里找出来的，不是写死的清单：
+ * 以后新加一张带 tenant_id 却没开 RLS 的表，这里就变红（验收 12 最后一条）
+ */
+async function schemaChecks(run: Query, label: string): Promise<void> {
+  const tables = await run<{ relname: string; owner: string; rls: boolean; force: boolean }>(
+    `select c.relname, pg_get_userbyid(c.relowner) as owner, c.relrowsecurity as rls, c.relforcerowsecurity as force
+       from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind in ('r', 'p') order by 1`,
+  );
+  const names = tables.map((r) => r.relname).join(',');
+  check(`${label}迁移：七张表`, names === 'audit_log,auth_sessions,catalog_items,memberships,sop_versions,tenants,users', names);
+  check(
+    `${label}迁移：表的属主都是 agent_owner`,
+    tables.every((r) => r.owner === 'agent_owner'),
+    tables.map((r) => `${r.relname}=${r.owner}`).join(' '),
+  );
+  const withTenantCol = await run<{ relname: string }>(
+    `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+       join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped
+      where n.nspname = 'public' and c.relkind in ('r', 'p') order by 1`,
+  );
+  const policies = await run<{
+    relname: string;
+    polname: string;
+    cmd: string;
+    permissive: boolean;
+    roles: string;
+    qual: string;
+    wcheck: string;
+  }>(
+    `select c.relname, p.polname, p.polcmd::text as cmd, p.polpermissive as permissive, p.polroles::text as roles,
+            pg_get_expr(p.polqual, p.polrelid) as qual, pg_get_expr(p.polwithcheck, p.polrelid) as wcheck
+       from pg_policy p join pg_class c on c.oid = p.polrelid order by 1, 2`,
+  );
+  const found = withTenantCol.map((r) => r.relname);
+  check(
+    `${label}RLS：目录里找到了已知的五张带 tenant_id 的表`,
+    ['audit_log', 'auth_sessions', 'catalog_items', 'memberships', 'sop_versions'].every((x) => found.includes(x)),
+    found.join(','),
+  );
+  for (const rel of found) {
+    const flags = tables.find((x) => x.relname === rel);
+    const mine = policies.filter((x) => x.relname === rel);
+    if (rel === 'auth_sessions') {
+      check(`${label}RLS：auth_sessions 在豁免清单里，不开 RLS`, flags?.rls === false && mine.length === 0);
+      continue;
+    }
+    check(`${label}RLS：${rel} 开了 ENABLE 与 FORCE`, flags?.rls === true && flags.force === true, JSON.stringify(flags));
+    // 只有一条策略，对所有命令、所有角色生效，USING 与 WITH CHECK 都是租户模板：同名而内容是 USING (true) 的策略也会被抓出来
+    const pol = mine[0];
+    check(
+      `${label}RLS：${rel} 只有 tenant_isolation 一条策略，套的是租户模板`,
+      mine.length === 1 &&
+        pol?.polname === 'tenant_isolation' &&
+        pol.cmd === '*' &&
+        pol.permissive &&
+        pol.roles === '{0}' &&
+        TENANT_POLICY.test(pol.qual) &&
+        pol.wcheck === pol.qual,
+      JSON.stringify(mine),
+    );
+  }
+  const fns = await run<{ proname: string; secdef: boolean; acl: string; config: string }>(
+    `select proname, prosecdef as secdef, coalesce(proacl::text, '') as acl, coalesce(proconfig::text, '') as config from pg_proc
+      where pronamespace = 'public'::regnamespace order by 1`,
+  );
+  const auth = fns.filter((f) => f.proname.startsWith('auth_'));
+  check(`${label}认证函数：五个`, auth.length === 5, auth.map((f) => f.proname).join(','));
+  for (const f of fns) {
+    // aclitem 里「=X/」开头（被授权者为空）就是 PUBLIC
+    const publicExec = /[{,]=X\//.test(f.acl);
+    if (f.proname.startsWith('auth_')) {
+      check(`${label}认证函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
+      check(`${label}认证函数：${f.proname} 只授权给 agent_app，PUBLIC 不能执行`, f.acl.includes('agent_app=X/') && !publicExec, f.acl);
+    } else {
+      check(
+        `${label}函数：${f.proname} 不是 SECURITY DEFINER，谁都没被授权执行`,
+        !f.secdef && !publicExec && !/agent_(app|platform)=/.test(f.acl),
+        f.acl,
+      );
+    }
+    check(
+      `${label}函数：${f.proname} 钉死了 search_path，pg_temp 在最后`,
+      f.config.includes('search_path=pg_catalog, public, pg_temp'),
+      f.config,
+    );
+  }
+}
+
 // ---------------- 迁移 ----------------
 {
   const journal = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'drizzle', 'meta', '_journal.json'), 'utf8')) as {
@@ -98,49 +192,7 @@ async function asApp<T>(tenantId: string, fn: (tx: Tx) => Promise<T>): Promise<T
   check('迁移：再跑一遍不报错', (await outcome(t.migrate())) === 'ok');
   check('迁移：再跑一遍什么都不做', (await applied()) === journal.entries.length, String(await applied()));
 
-  const tables = await q<{ relname: string; owner: string; rls: boolean; force: boolean }>(
-    `select c.relname, pg_get_userbyid(c.relowner) as owner, c.relrowsecurity as rls, c.relforcerowsecurity as force
-       from pg_class c join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public' and c.relkind = 'r' order by 1`,
-  );
-  const names = tables.map((r) => r.relname).join(',');
-  check('迁移：七张表', names === 'audit_log,auth_sessions,catalog_items,memberships,sop_versions,tenants,users', names);
-  check(
-    '迁移：表的属主都是 agent_owner',
-    tables.every((r) => r.owner === 'agent_owner'),
-    tables.map((r) => `${r.relname}=${r.owner}`).join(' '),
-  );
-  // 带 tenant_id 的表除豁免清单外都开 ENABLE 与 FORCE 并有 tenant_isolation 策略（真实 PG 上第 3 步再逐格断言）
-  const withTenantCol = await q<{ relname: string; policies: string }>(
-    `select c.relname, coalesce(string_agg(p.polname, ',' order by p.polname), '') as policies
-       from pg_class c join pg_namespace n on n.oid = c.relnamespace
-       join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped
-       left join pg_policy p on p.polrelid = c.oid
-      where n.nspname = 'public' and c.relkind = 'r' group by c.relname order by 1`,
-  );
-  for (const r of withTenantCol) {
-    const flags = tables.find((x) => x.relname === r.relname);
-    if (r.relname === 'auth_sessions') {
-      check('RLS：auth_sessions 在豁免清单里，不开 RLS', flags?.rls === false && r.policies === '');
-      continue;
-    }
-    check(`RLS：${r.relname} 开了 ENABLE 与 FORCE`, flags?.rls === true && flags.force === true);
-    check(`RLS：${r.relname} 有 tenant_isolation 策略`, r.policies === 'tenant_isolation', r.policies);
-  }
-  check(
-    'RLS：带 tenant_id 的表正好是 4 + auth_sessions',
-    withTenantCol.map((r) => r.relname).join(',') === 'audit_log,auth_sessions,catalog_items,memberships,sop_versions',
-  );
-  const fns = await q<{ proname: string; secdef: boolean; acl: string }>(
-    `select proname, prosecdef as secdef, coalesce(proacl::text, '') as acl from pg_proc
-      where pronamespace = 'public'::regnamespace and proname like 'auth\\_%' order by 1`,
-  );
-  check('认证函数：五个', fns.length === 5, fns.map((f) => f.proname).join(','));
-  for (const f of fns) {
-    check(`认证函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
-    // aclitem 里「=X/」开头（被授权者为空）就是 PUBLIC
-    check(`认证函数：${f.proname} 只授权给 agent_app，PUBLIC 不能执行`, f.acl.includes('agent_app=X/') && !/[{,]=X\//.test(f.acl), f.acl);
-  }
+  await schemaChecks(q, '');
 }
 
 // ---------------- 造数据 ----------------
@@ -649,10 +701,453 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
 }
 
 await t.close();
+
+// ---------------- 真实 Postgres（spec R13：RLS、授权、租户锁的结论只从这里得出） ----------------
+// PG_TEST_URL 是一个专用测试集群的超级用户连接串（CI 的服务容器，或本机的一次性容器）：本组建一个临时库，
+// 按 roles.sql 建角色——角色是集群级的，已存在就改口令——跑完删库。不要指向开发或线上用的集群
+const PG_TEST_URL = process.env.PG_TEST_URL;
+let realPgRan = false;
+if (PG_TEST_URL) {
+  await realPostgres(PG_TEST_URL);
+  realPgRan = true;
+} else if (process.env.CI === 'true') {
+  fails.push('CI 下必须设 PG_TEST_URL：RLS、授权与租户锁只在真实 Postgres 上测（spec R13），不能静默跳过');
+} else {
+  console.log('DB SELFTEST：没有 PG_TEST_URL，跳过真实 Postgres 部分（RLS、授权、租户锁）');
+}
+
+async function realPostgres(superUrl: string): Promise<void> {
+  const { default: pg } = await import('pg');
+  const { openDb, holdTenantLock } = await import('./client.js');
+  const { runMigrations } = await import('./migrate.js');
+  const lit = (v: string): string => `'${v.replaceAll("'", "''")}'`;
+  const ident = (v: string): string => `"${v.replaceAll('"', '""')}"`;
+  const cleanup: (() => Promise<unknown>)[] = [];
+  const login = async (url: string): Promise<InstanceType<typeof pg.Client>> => {
+    const c = new pg.Client({ connectionString: url });
+    c.on('error', () => {});
+    await c.connect();
+    cleanup.push(() => c.end());
+    return c;
+  };
+  const rowsIn =
+    (c: InstanceType<typeof pg.Client>): Query =>
+    async <R = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<R[]> =>
+      (await c.query(text, params)).rows as R[];
+
+  const su = new pg.Client({ connectionString: superUrl });
+  su.on('error', () => {});
+  await su.connect();
+  const [me] = (await su.query<{ su: boolean }>('select rolsuper as su from pg_roles where rolname = current_user')).rows;
+  if (!me?.su) {
+    fails.push('PG_TEST_URL 必须是超级用户：要建库、建角色');
+    await su.end();
+    return;
+  }
+  const dbName = `agent_selftest_${randomBytes(4).toString('hex')}`;
+  const pw = { owner: randomBytes(12).toString('hex'), app: randomBytes(12).toString('hex'), platform: randomBytes(12).toString('hex') };
+  const urlAs = (user: string, password: string): string => {
+    const u = new URL(superUrl);
+    u.username = user;
+    u.password = password;
+    u.pathname = `/${dbName}`;
+    return u.toString();
+  };
+  const superInDb = (() => {
+    const u = new URL(superUrl);
+    u.pathname = `/${dbName}`;
+    return u.toString();
+  })();
+  const OWNER = urlAs('agent_owner', pw.owner);
+  const APP = urlAs('agent_app', pw.app);
+  const PLATFORM = urlAs('agent_platform', pw.platform);
+
+  try {
+    // roles.sql：做 roles.sh 同样的替换（已存在的角色 CREATE → ALTER），逐行执行（CREATE DATABASE 不能进多语句的隐式事务）
+    const ROLES = ['agent_owner', 'agent_app', 'agent_platform'];
+    const existing = new Set(
+      (await su.query<{ r: string }>('select rolname as r from pg_roles where rolname = any($1)', [ROLES])).rows.map((x) => x.r),
+    );
+    const statements = fs
+      .readFileSync(path.join(import.meta.dirname, '..', '..', 'deploy', 'db-init', 'roles.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() && !l.startsWith('--'))
+      .map((l) => {
+        const m = /^CREATE ROLE (\w+) /.exec(l);
+        const line = m && existing.has(m[1]!) ? l.replace('CREATE ROLE', 'ALTER ROLE') : l;
+        return line
+          .replaceAll(":'owner_password'", lit(pw.owner))
+          .replaceAll(":'app_password'", lit(pw.app))
+          .replaceAll(":'platform_password'", lit(pw.platform))
+          .replaceAll(':"db_name"', ident(dbName));
+      });
+    check('真实 PG：roles.sql 的变量都替换掉了', statements.length > 0 && statements.every((l) => !/:['"]/.test(l)));
+    for (const stmt of statements) await su.query(stmt);
+    const suDb = await login(superInDb);
+    const sq = rowsIn(suDb);
+
+    // ---- 迁移 ----
+    const guard = await outcome(runMigrations(superInDb));
+    check('真实 PG：迁移拒绝以 agent_owner 以外的身份执行', guard.includes('agent_owner'), guard);
+    check('真实 PG：以 agent_owner 跑迁移', (await outcome(runMigrations(OWNER))) === 'ok');
+    check('真实 PG：迁移再跑一遍不报错', (await outcome(runMigrations(OWNER))) === 'ok');
+    const journal = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'drizzle', 'meta', '_journal.json'), 'utf8')) as {
+      entries: unknown[];
+    };
+    const [applied] = await sq<{ n: string }>('select count(*) as n from drizzle.__drizzle_migrations');
+    check('真实 PG：journal 里每一条都只应用了一次', Number(applied?.n) === journal.entries.length, applied?.n);
+    await schemaChecks(sq, '真实 PG ');
+
+    // ---- 库级权限与角色设置（roles.sql） ----
+    const [dbp] = await sq<Record<string, boolean>>(
+      `select has_database_privilege('public', $1, 'CONNECT') as pub_connect, has_database_privilege('public', $1, 'TEMPORARY') as pub_temp,
+              has_database_privilege('agent_app', $1, 'TEMPORARY') as app_temp, has_database_privilege('agent_app', $1, 'CONNECT') as app_connect,
+              (select pg_get_userbyid(datdba) from pg_database where datname = $1) = 'agent_owner' as owner_ok,
+              (select pg_encoding_to_char(encoding) from pg_database where datname = $1) = 'UTF8' as utf8`,
+      [dbName],
+    );
+    check('真实 PG：库的属主是 agent_owner、编码 UTF8', dbp?.owner_ok === true && dbp.utf8 === true, JSON.stringify(dbp));
+    check(
+      '真实 PG：PUBLIC 没有 CONNECT 与 TEMPORARY，agent_app 能连、不能建临时表',
+      dbp?.pub_connect === false && dbp.pub_temp === false && dbp.app_connect === true && dbp.app_temp === false,
+      JSON.stringify(dbp),
+    );
+    const attrs = await sq<{ rolname: string; ok: boolean }>(
+      `select rolname, (not rolsuper and not rolbypassrls and not rolcreaterole and rolcanlogin and not rolcreatedb) as ok
+         from pg_roles where rolname = any($1) order by 1`,
+      [ROLES],
+    );
+    check(
+      '真实 PG：三个角色都能登录，不是超级用户，没有 BYPASSRLS、CREATEROLE、CREATEDB',
+      attrs.length === 3 && attrs.every((r) => r.ok),
+      JSON.stringify(attrs),
+    );
+    const app = await login(APP);
+    const platform = await login(PLATFORM);
+    const owner = await login(OWNER);
+    const [timeouts] = (
+      await app.query<{ st: string; it: string }>(
+        `select current_setting('statement_timeout') as st, current_setting('idle_in_transaction_session_timeout') as it`,
+      )
+    ).rows;
+    check(
+      '真实 PG：agent_app 登录后带着 5 秒语句超时与 10 秒事务空闲超时',
+      timeouts?.st === '5s' && timeouts.it === '10s',
+      JSON.stringify(timeouts),
+    );
+
+    // ---- 各角色对各表的期望（spec 表格），逐格 ----
+    const EXPECT: Record<string, { agent_app: string; agent_platform: string }> = {
+      tenants: { agent_app: 'SELECT', agent_platform: 'SELECT,INSERT' },
+      users: { agent_app: '', agent_platform: 'SELECT,INSERT,UPDATE' },
+      auth_sessions: { agent_app: '', agent_platform: 'SELECT,DELETE' },
+      memberships: { agent_app: '', agent_platform: 'SELECT,INSERT,UPDATE,DELETE' },
+      sop_versions: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      catalog_items: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      audit_log: { agent_app: 'SELECT,INSERT', agent_platform: 'SELECT,INSERT' },
+    };
+    const PRIVS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
+    for (const [table, byRole] of Object.entries(EXPECT)) {
+      for (const role of ['agent_app', 'agent_platform'] as const) {
+        const got = (
+          await sq<{ p: string }>('select p from unnest($3::text[]) as p where has_table_privilege($1, $2, p)', [
+            role,
+            `public.${table}`,
+            PRIVS,
+          ])
+        )
+          .map((r) => r.p)
+          .join(',');
+        check(`真实 PG：${role} 对 ${table} 的表权限正好是「${byRole[role] || '无'}」`, got === byRole[role], got || '无');
+      }
+    }
+    const fnPriv = await sq<{ fn: string; app: boolean; platform: boolean }>(
+      `select p.oid::regprocedure::text as fn, has_function_privilege('agent_app', p.oid, 'EXECUTE') as app,
+              has_function_privilege('agent_platform', p.oid, 'EXECUTE') as platform
+         from pg_proc p where p.pronamespace = 'public'::regnamespace order by 1`,
+    );
+    for (const f of fnPriv) {
+      const isAuth = f.fn.startsWith('auth_');
+      check(
+        `真实 PG：${f.fn} 的 EXECUTE：agent_app ${isAuth ? '有' : '没有'}，agent_platform 没有`,
+        f.app === isAuth && f.platform === false,
+        JSON.stringify(f),
+      );
+    }
+    const [mig] = await sq<Record<string, boolean>>(
+      `select has_table_privilege('agent_app', 'drizzle.__drizzle_migrations', 'SELECT') as app_select,
+              has_table_privilege('agent_app', 'drizzle.__drizzle_migrations', 'INSERT') as app_insert,
+              has_table_privilege('agent_platform', 'drizzle.__drizzle_migrations', 'SELECT') as platform_select`,
+    );
+    check(
+      '真实 PG：agent_app 只能读迁移记录，agent_platform 读不到',
+      mig?.app_select === true && mig.app_insert === false && mig.platform_select === false,
+      JSON.stringify(mig),
+    );
+
+    // ---- 造数据（超级用户，绕过 RLS） ----
+    const [{ id: A }] = await sq<{ id: string }>(
+      `insert into tenants (slug, name, pack_id) values ('tenant-a', 'A', 'travel') returning id`,
+    );
+    const [{ id: B }] = await sq<{ id: string }>(
+      `insert into tenants (slug, name, pack_id) values ('tenant-b', 'B', 'travel') returning id`,
+    );
+    const [{ id: C }] = await sq<{ id: string }>(
+      `insert into tenants (slug, name, pack_id) values ('tenant-c', 'C', 'travel') returning id`,
+    );
+    const [{ id: U }] = await sq<{ id: string }>(
+      `insert into users (email, display_name, password_hash) values ('Ops@Example.com', '运营', 'scrypt$real') returning id`,
+    );
+    const [{ id: U2 }] = await sq<{ id: string }>(
+      `insert into users (email, display_name, password_hash) values ('two@example.com', '二号', 'scrypt$two') returning id`,
+    );
+    await sq(`insert into memberships (tenant_id, user_id, role) values ($1, $2, 'admin'), ($3, $4, 'viewer')`, [A, U, B, U2]);
+    for (const [tenant, code] of [
+      [A, 'r-a'],
+      [B, 'r-b'],
+    ]) {
+      const r = released(`${code}`);
+      await sq(
+        `insert into sop_versions (tenant_id, version_no, status, source, pack_id, sections, rendered_prompt, prompt_hash, tools_hash, prefix_hash, sop_hash, render_inputs, published_at)
+         values ($1, 1, 'published', 'import', 'travel', $2, $3, $4, $5, $6, $7, $8, now())`,
+        [tenant, SECTIONS, r.rendered, r.promptHash, r.toolsHash, r.prefixHash, r.sopHash, r.renderInputs],
+      );
+      await sq(`insert into catalog_items (tenant_id, kind, code, ord, payload, status) values ($1, 'route', $2, 0, $3, 'active')`, [
+        tenant,
+        code,
+        JSON.stringify({ id: code }),
+      ]);
+      await sq(`insert into audit_log (tenant_id, actor_kind, action) values ($1, 'system', 'seed')`, [tenant]);
+    }
+
+    // ---- 行为：有权限的格子没设租户时读到 0 行、写入被 RLS 拒；无权限的格子报 permission denied ----
+    const denial = async (p: Promise<unknown>): Promise<string> => {
+      try {
+        await p;
+        return 'ok';
+      } catch (e) {
+        const err = pgErr(e);
+        if (err?.code !== DENIED) return err ? `${err.code} ${err.message}` : notDb(e);
+        return /row-level security/.test(err.message) ? 'rls' : /permission denied/.test(err.message) ? 'denied' : err.message;
+      }
+    };
+    const INSERTS: Record<string, [string, unknown[]]> = {
+      memberships: [`insert into memberships (tenant_id, user_id, role) values ($1, $2, 'viewer')`, [A, U2]],
+      sop_versions: [
+        `insert into sop_versions (tenant_id, status, source, pack_id, sections) values ($1, 'draft', 'console', 'travel', '[]')`,
+        [C],
+      ],
+      catalog_items: [
+        `insert into catalog_items (tenant_id, kind, code, ord, payload) values ($1, 'route', 'r-new', 9, '{"id":"r-new"}')`,
+        [A],
+      ],
+      audit_log: [`insert into audit_log (tenant_id, actor_kind, action) values ($1, 'system', 'x')`, [A]],
+    };
+    const clients = { agent_app: app, agent_platform: platform, agent_owner: owner };
+    for (const table of Object.keys(INSERTS)) {
+      for (const role of ['agent_app', 'agent_platform', 'agent_owner'] as const) {
+        const c = clients[role];
+        const allowed = role === 'agent_owner' ? 'SELECT,INSERT' : EXPECT[table]![role];
+        const has = (p: string): boolean => allowed.split(',').includes(p);
+        const sel = await denial(
+          c.query(`select count(*)::int as n from ${table}`).then((r) => {
+            if (r.rows[0].n !== 0) throw new Error(`读到 ${r.rows[0].n} 行`);
+          }),
+        );
+        check(
+          `真实 PG：${role} 没设租户时 SELECT ${table}：${has('SELECT') ? '0 行' : 'permission denied'}`,
+          sel === (has('SELECT') ? 'ok' : 'denied'),
+          sel,
+        );
+        const [text, params] = INSERTS[table]!;
+        const ins = await denial(c.query(text, params));
+        check(
+          `真实 PG：${role} 没设租户时 INSERT ${table}：${has('INSERT') ? '被 RLS 拒' : 'permission denied'}`,
+          ins === (has('INSERT') ? 'rls' : 'denied'),
+          ins,
+        );
+      }
+    }
+    check('真实 PG：agent_app 直接 SELECT users 报 permission denied', (await denial(app.query('select 1 from users'))) === 'denied');
+    check('真实 PG：agent_app 删除版本报 permission denied（验收 7）', (await denial(app.query('delete from sop_versions'))) === 'denied');
+    check('真实 PG：agent_platform 能读 users、tenants', (await denial(platform.query('select 1 from users, tenants'))) === 'ok');
+
+    // ---- 租户隔离（经 openDb + withTenant，node-postgres） ----
+    const appDb = await openDb(APP);
+    cleanup.push(() => appDb.close());
+    const ctx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } });
+    const inA = await withTenant(appDb.db, ctx(A), async (tx) => {
+      const seen = rowsOf<{ tenant_id: string }>(
+        await tx.execute(
+          sql`select tenant_id from catalog_items union all select tenant_id from sop_versions union all select tenant_id from audit_log`,
+        ),
+      );
+      const upd = (await tx.execute(sql`update catalog_items set payload = payload where tenant_id = ${B}`)) as unknown as {
+        rowCount: number;
+      };
+      return { seen, updated: upd.rowCount };
+    });
+    check(
+      '真实 PG：租户 A 的事务里看不到 B 的行',
+      inA.seen.length > 0 && inA.seen.every((r) => r.tenant_id === A),
+      JSON.stringify(inA.seen),
+    );
+    check('真实 PG：租户 A 的事务里 UPDATE B 的行影响 0 行', inA.updated === 0, String(inA.updated));
+    const crossInsert = await denial(
+      withTenant(appDb.db, ctx(A), (tx) =>
+        tx.execute(sql`insert into audit_log (tenant_id, actor_kind, action) values (${B}, 'system', 'x')`),
+      ),
+    );
+    check('真实 PG：租户 A 的事务里写 B 的行被 RLS 拒', crossInsert === 'rls', crossInsert);
+
+    // 一个事务设过租户并提交，同一连接上的下一个事务不设租户，读到 0 行
+    await app.query('begin');
+    await app.query(`select set_config('app.tenant_id', $1, true)`, [A]);
+    const [withT] = (await app.query<{ n: number }>('select count(*)::int as n from catalog_items')).rows;
+    await app.query('commit');
+    const [afterT] = (
+      await app.query<{ n: number; v: string | null }>(
+        `select count(*)::int as n, current_setting('app.tenant_id', true) as v from catalog_items`,
+      )
+    ).rows;
+    check(
+      '真实 PG：事务级租户在提交后失效，下一个事务读到 0 行',
+      withT?.n === 1 && afterT?.n === 0 && !afterT.v,
+      JSON.stringify({ withT, afterT }),
+    );
+
+    // 会话级 SET 泄漏：连接池只有一条连接，归还后下一次 withTenant 借到它，抛错并销毁；之后换一条干净连接
+    const one = await openDb(APP, { max: 1 });
+    cleanup.push(() => one.close());
+    const pidOf = (): Promise<number> =>
+      withTenant(one.db, ctx(A), async (tx) => rowsOf<{ p: number }>(await tx.execute(sql`select pg_backend_pid() as p`))[0]!.p);
+    const pid1 = await pidOf();
+    await one.db.execute(sql`select set_config('app.tenant_id', ${A}, false)`);
+    const leaked = await outcome(withTenant(one.db, ctx(A), async () => 1));
+    check('真实 PG：会话级 SET 过租户的连接，下一次 withTenant 抛错', leaked.includes('会话级'), leaked);
+    const pid2 = await pidOf();
+    check('真实 PG：那条连接被销毁，之后借到的是新连接', pid2 !== pid1, `${pid1} → ${pid2}`);
+    let gone = false;
+    for (let i = 0; i < 50 && !gone; i++) {
+      gone = (await sq('select 1 from pg_stat_activity where pid = $1', [pid1])).length === 0;
+      if (!gone) await new Promise((r) => setTimeout(r, 20));
+    }
+    check('真实 PG：被销毁的那条连接在服务端也断开了', gone);
+
+    // json 列经 node-postgres 读回，键序与嵌套键序都不变（验收 2 的逐条比较在第 6 步）
+    const payload = { id: 'r-order', title: '键序', zeta: 1, alpha: { yy: 2, bb: [3, { z: 1, a: 2 }] }, overseas: false };
+    await withTenant(appDb.db, ctx(A), (tx) =>
+      tx.insert(catalogItems).values({ tenantId: A, kind: 'route', code: 'r-order', ord: 5, payload }),
+    );
+    const [back] = await withTenant(appDb.db, ctx(A), (tx) => tx.select().from(catalogItems).where(eq(catalogItems.code, 'r-order')));
+    check(
+      '真实 PG：json 经 node-postgres 读回键序不变',
+      JSON.stringify(back?.payload) === JSON.stringify(payload),
+      JSON.stringify(back?.payload),
+    );
+    const guarded = await why(
+      withTenant(appDb.db, ctx(A), (tx) => tx.execute(sql`update sop_versions set sections = '[]'::jsonb where tenant_id = ${A}`)),
+    );
+    check('真实 PG：agent_app 改已发布版本被触发器拒（验收 7）', guarded === 'trigger', guarded);
+
+    // ---- 认证函数 ----
+    const lookup = async (c: InstanceType<typeof pg.Client>, tenant: string): Promise<{ o_user_id: string; o_password_hash: string }[]> =>
+      (await c.query('select * from auth_login_lookup($1, $2)', [tenant, 'ops@example.com'])).rows;
+    const found = await lookup(app, A);
+    check('真实 PG：经认证函数能登录', found.length === 1 && found[0]?.o_user_id === U && found[0].o_password_hash === 'scrypt$real');
+    await app.query('begin');
+    await app.query(`select set_config('app.tenant_id', $1, true)`, [B]);
+    const cross = await denial(lookup(app, A));
+    await app.query('rollback');
+    check('真实 PG：事务已设为 B 时用 A 调认证函数报错', cross.startsWith('auth: '), cross);
+    await app.query('begin');
+    await app.query(`select set_config('app.tenant_id', $1, true)`, [A]);
+    await lookup(app, A);
+    const [kept] = (await app.query<{ v: string }>(`select current_setting('app.tenant_id', true) as v`)).rows;
+    await app.query('commit');
+    await app.query('begin');
+    await lookup(app, A);
+    const [unset] = (await app.query<{ v: string | null }>(`select current_setting('app.tenant_id', true) as v`)).rows;
+    await app.query('commit');
+    check('真实 PG：调用认证函数之后租户设置恢复为调用前的值', kept?.v === A && !unset?.v, JSON.stringify({ kept, unset }));
+
+    // 同名临时表遮蔽：agent_app 本来就建不了临时表；临时放开 TEMP 权限，建出同名的 users 等表，认证函数照样读 public 的
+    const noTemp = await denial(app.query('create temp table users (id uuid)'));
+    check('真实 PG：agent_app 没有 TEMP 权限，建不了临时表', noTemp === 'denied', noTemp);
+    await sq(`grant temporary on database ${ident(dbName)} to agent_app`);
+    try {
+      const app2 = await login(APP);
+      const [fake] = (await app2.query<{ id: string }>('select gen_random_uuid() as id')).rows;
+      await app2.query(`create temp table users (id uuid, email text, display_name text, password_hash text, disabled_at timestamptz)`);
+      await app2.query(`create temp table memberships (tenant_id uuid, user_id uuid, role text)`);
+      await app2.query(`create temp table tenants (id uuid, status text)`);
+      await app2.query(`insert into users values ($1, 'ops@example.com', '冒名', 'scrypt$fake', null)`, [fake!.id]);
+      await app2.query(`insert into memberships values ($1, $2, 'owner')`, [A, fake!.id]);
+      await app2.query(`insert into tenants values ($1, 'active')`, [A]);
+      const shadowed = (await app2.query<{ n: number }>(`select count(*)::int as n from users where password_hash = 'scrypt$fake'`)).rows[0]
+        ?.n;
+      const viaFn = await lookup(app2, A);
+      check(
+        '真实 PG：同名临时表遮蔽不了认证函数',
+        shadowed === 1 && viaFn.length === 1 && viaFn[0]?.o_user_id === U && viaFn[0].o_password_hash === 'scrypt$real',
+        JSON.stringify({ shadowed, viaFn }),
+      );
+    } finally {
+      await sq(`revoke temporary on database ${ident(dbName)} from agent_app`);
+    }
+
+    // ---- 租户锁 ----
+    const lockBackend = async (): Promise<void> => {
+      await su.query(
+        `select pg_terminate_backend(pid) from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = $1)`,
+        [dbName],
+      );
+    };
+    const waitFor = async (cond: () => boolean): Promise<boolean> => {
+      for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 30));
+      return cond();
+    };
+    const L1 = await holdTenantLock(APP, A, { keepAliveMs: 1000 });
+    check('真实 PG：拿到租户锁', L1 !== null);
+    if (L1) {
+      cleanup.push(() => L1.release());
+      check('真实 PG：第二个进程拿不到同一租户的锁（lock_held）', (await holdTenantLock(APP, A)) === null);
+      const other = await holdTenantLock(APP, B);
+      check('真实 PG：别的租户的锁互不影响', other !== null);
+      await other?.release();
+      check('真实 PG：锁连接健康时 reacquire 直接是 ok', (await L1.reacquire()) === 'ok');
+      let lost = 0;
+      L1.onLost(() => lost++);
+      await lockBackend();
+      check('真实 PG：锁连接被 pg_terminate_backend 后回调 onLost 一次', (await waitFor(() => lost === 1)) && lost === 1, String(lost));
+      const [r1, r2] = await Promise.all([L1.reacquire(), L1.reacquire()]);
+      check('真实 PG：断连后重取成功，并发的两次拿到同一个结果', r1 === 'ok' && r2 === 'ok', `${r1} ${r2}`);
+      check('真实 PG：重取之后别人仍拿不到', (await holdTenantLock(APP, A)) === null);
+      await lockBackend();
+      await waitFor(() => lost === 2);
+      const thief = await holdTenantLock(APP, A);
+      check('真实 PG：断连期间别的进程拿走了锁', thief !== null);
+      check('真实 PG：此时重取得到 held_by_other', (await L1.reacquire()) === 'held_by_other');
+      await thief?.release();
+      check('真实 PG：那个进程放锁之后可以重取回来', (await L1.reacquire()) === 'ok');
+      await L1.release();
+      const after = await holdTenantLock(APP, A);
+      check('真实 PG：release 之后别人能拿到', after !== null);
+      await after?.release();
+    }
+  } finally {
+    for (const f of cleanup.reverse()) await f().catch(() => {});
+    await su
+      .query(`drop database if exists ${ident(dbName)} with (force)`)
+      .catch((e: Error) => fails.push(`真实 PG：删不掉临时库 ${dbName}：${e.message}`));
+    await su.end();
+  }
+}
+
 if (fails.length) {
   console.error(`DB SELFTEST FAIL: ${fails.length} 项\n  ${fails.join('\n  ')}`);
   process.exit(1);
 }
 console.log(
-  `DB SELFTEST PASS: ${pass} 项断言全通（PGlite：迁移两遍 / 表属主与 RLS 开关 / 认证函数授权 / 约束与哈希 CHECK / json 键序 / 版本与条目触发器 / 部分唯一索引 / 复合外键 / withTenant / 认证函数冒烟）`,
+  `DB SELFTEST PASS: ${pass} 项断言全通（PGlite：迁移两遍 / 表属主与 RLS 开关 / 认证函数授权 / 约束与哈希 CHECK / json 键序 / 版本与条目触发器 / 部分唯一索引 / 复合外键 / withTenant / 认证函数冒烟${realPgRan ? '；真实 PG：roles.sql / 迁移身份 / 权限逐格 / RLS 行为 / 租户隔离 / 会话级泄漏 / 临时表遮蔽 / 租户锁' : '；真实 PG 部分未跑'}）`,
 );

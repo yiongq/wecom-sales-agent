@@ -1,0 +1,47 @@
+# 01 spec「构建与部署 · compose」。现在只有 db 与 migrate，app 与 platform 第 16 步补上。
+#   APP_IMAGE=<镜像> docker compose -f deploy/compose.yml run --rm migrate   # 顺带拉起 db，等它健康后跑迁移
+#
+# 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
+# deploy.sh 的 rsync 保护规则（P /.env*）都已覆盖这个命名，.dockerignore 也排除了它们。
+#   .env.db       POSTGRES_PASSWORD、AGENT_OWNER_PASSWORD、AGENT_APP_PASSWORD、AGENT_PLATFORM_PASSWORD；可选 AGENT_DB（缺省 agent）。
+#                 不要设 POSTGRES_DB：entrypoint 会以超级用户为属主先建出那个库，roles.sh 见库已存在就跳过，属主就错了。
+#   .env.migrate  DATABASE_OWNER_URL=postgres://agent_owner:<口令>@db:5432/agent
+# 口令进连接串时，URL 保留字符（@ : / ? # %）要百分号编码；生成时只用字母数字最省事。
+# 轮换口令见 db-init/roles.sh 开头。
+#
+# 项目名固定，数据卷就不随目录名变（wecom-sales-agent_db-data）。同一台机器再起一套（旁路实例）要用 -p 换名。
+name: wecom-sales-agent
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    env_file: ../.env.db
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db-init:/db-init:ro
+      - ./db-init/roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    # 不写 ports：只在 compose 网络内可达
+    healthcheck:
+      # 走 TCP：首次初始化时 entrypoint 的临时服务只开 socket，按 socket 探测会在建角色之前就报健康，
+      # migrate 随即连 db:5432 被拒
+      test: ['CMD', 'pg_isready', '-q', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 60s
+
+  migrate:
+    image: ${APP_IMAGE:?设置 APP_IMAGE 为要部署的应用镜像}
+    env_file: ../.env.migrate
+    command: ['node', '--import', 'tsx', 'src/db/migrate.ts']
+    restart: 'no'
+    # 镜像的 HEALTHCHECK 探的是 /healthz，一次性任务没有
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:
