@@ -1268,6 +1268,54 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       history.every((v, i) => i === 0 || history[i - 1]!.versionNo! > v.versionNo!),
   );
 
+  // 草稿的 rev：甲的页面停在自己那份草稿上，乙把它丢了、另建一份。每份草稿都从 1 开始的话，甲拿着旧 rev
+  // 就能发布、改写、丢弃乙的草稿；新草稿的 rev 接在旧草稿之后，这三样都是 409，乙的草稿原样还在
+  {
+    const cur = cfg.currentSop();
+    const mine = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: null,
+      edits: [{ key: 'tone', body: `${bodyOf(cur.sections, 'tone')}\n甲写的一句。` }],
+    });
+    await sopApi.discardSopDraft(ctx, { rev: mine.rev });
+    const theirs = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: null,
+      edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n乙写了一半的草稿。` }],
+    });
+    check('草稿 rev：丢弃之后新建的草稿，rev 大于旧草稿的', theirs.id !== mine.id && theirs.rev > mine.rev, `${mine.rev} → ${theirs.rev}`);
+    const stale = [
+      await errName(sopApi.saveSopDraft(ctx, { basedOn: cur.versionId, rev: mine.rev, edits: [{ key: 'tone', body: '甲接着改。' }] })),
+      await errName(sopApi.discardSopDraft(ctx, { rev: mine.rev })),
+      await errName(sopApi.publishSopDraft(ctx, { rev: mine.rev, changeNote: '甲发布自己的修改' })),
+    ];
+    const still = (await sopApi.getSopOverview(ctx)).draft;
+    check(
+      '草稿 rev：拿着已丢弃草稿的 rev 保存、丢弃、发布 → 都是 SopRevConflictError，乙的草稿原样还在、没有发布',
+      stale.every((x) => x === 'SopRevConflictError') &&
+        still?.id === theirs.id &&
+        still.rev === theirs.rev &&
+        JSON.stringify(still.sections) === JSON.stringify(theirs.sections) &&
+        cfg.currentSop().versionNo === cur.versionNo,
+      stale.join(','),
+    );
+    // 乙又存了一次；拿存之前的 rev 丢弃 → 409，草稿还在。从当前草稿接着存：上面那条失败、草稿被丢掉时新建一份，这条照样能跑
+    const open = still ?? (await sopApi.saveSopDraft(ctx, { basedOn: cfg.currentSop().versionId, rev: null, edits: [] }));
+    const theirs2 = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: open.rev,
+      edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n乙写完了。` }],
+    });
+    const staleDiscard = await errName(sopApi.discardSopDraft(ctx, { rev: open.rev }));
+    const kept = (await sopApi.getSopOverview(ctx)).draft;
+    check(
+      '丢弃：带旧 rev → SopRevConflictError，草稿还在、rev 是新的',
+      staleDiscard === 'SopRevConflictError' && kept?.id === theirs2.id && kept.rev === theirs2.rev,
+      staleDiscard,
+    );
+    if (kept) await sopApi.discardSopDraft(ctx, { rev: kept.rev });
+  }
+
   // 验收 6：五种过不了闸的草稿——检查返回 violations，发布抛 SopContractError，已发布版本与缓存都不变
   const bad: [string, string, string][] = [
     ['tone', '明显超出我们现有线路的范围，就转人工。', 'phrase_forbidden'],

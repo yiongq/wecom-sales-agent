@@ -12,6 +12,7 @@ import {
   insertPublishedSop,
   listReleased,
   maxVersionNo,
+  nextDraftRev,
   publishDraft,
   readDraft,
   readDraftForUpdate,
@@ -252,11 +253,13 @@ export async function saveSopDraft(
         if (input.rev !== null) throw new SopRevConflictError('草稿已经不在了（被发布或丢弃），刷新后重来');
         const pub = await readPublishedSop(tx);
         if (!pub || pub.id !== input.basedOn) throw new SopRevConflictError('发布版本在你打开之后变了，刷新后重来');
+        // rev 接在以前所有草稿之后：每份草稿都从 1 开始的话，拿着已丢弃（或已发布）草稿的旧 rev 能发布、改写、丢弃这份新草稿
         const row = await insertDraft(tx, {
           tenantId: rt.tenantId,
           packId: pub.packId,
           sections: apply(mergeWithImage(pub.sections, rt.imageSections)),
           basedOn: pub.id,
+          rev: await nextDraftRev(tx),
           createdBy: ctx.actor.userId,
           createdByName: ctx.actor.name,
         });

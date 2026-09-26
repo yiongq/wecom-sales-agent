@@ -124,6 +124,19 @@ export async function maxVersionNo(tx: Tx): Promise<number> {
   return row?.n ?? 0;
 }
 
+/**
+ * 新草稿的 rev：接在该租户所有后台草稿（含已发布、已丢弃的，行从不删除）的最大 rev 之后，一个都没有时是 1。
+ * 草稿的 rev 只增不减，所以丢弃或发布之后新建的草稿不会与旧草稿撞上同一个 rev，拿着旧 rev 的请求落不到新草稿上。
+ * 调用方持着配置写锁
+ */
+export async function nextDraftRev(tx: Tx): Promise<number> {
+  const [row] = await tx
+    .select({ n: sql<number>`coalesce(max(${sopVersions.rev}), 0)::int` })
+    .from(sopVersions)
+    .where(eq(sopVersions.source, 'console'));
+  return (row?.n ?? 0) + 1;
+}
+
 export async function insertDraft(
   tx: Tx,
   d: {
@@ -131,6 +144,7 @@ export async function insertDraft(
     packId: string;
     sections: SopSectionRow[];
     basedOn: string;
+    rev: number;
     createdBy: string | null;
     createdByName: string | null;
   },
