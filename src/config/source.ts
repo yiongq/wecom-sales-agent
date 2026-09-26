@@ -23,6 +23,7 @@ import { findTenantBySlug } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
 import { renderSystemPrompt } from '../prompt/system.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
+import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
@@ -36,6 +37,8 @@ export interface PublishedSop {
   tenantId: string;
   versionId: string;
   versionNo: number;
+  /** ISO 8601；匿名只读页要显示，放进缓存免得查库 */
+  publishedAt: string;
   /** 与镜像合并之后的全部节，deep-frozen；匿名只读页也从这里取，不查库 */
   sections: readonly SopSection[];
   /** 整段 system prompt。每轮原样交给 chat()，从不重新渲染 */
@@ -173,6 +176,17 @@ export function configHealth(): ConfigHealth {
   return { lock: lockState, sopStale, catalogStale };
 }
 
+/** 当前缓存与镜像 data/ 的差异，给后台 /status：每次现算，发布和上架之后跟着变 */
+export function configDrift(): ConfigDrift {
+  if (!loaded) throw new ConfigNotReadyError();
+  const { catalog } = loaded;
+  const active = [
+    ...catalog.routes.map((p) => ({ kind: 'route' as const, code: p.id, payload: p })),
+    ...catalog.hotels.map((p) => ({ kind: 'hotel' as const, code: p.id, payload: p })),
+  ];
+  return driftOf(imageDirOf(loaded.deps), loaded.sop.sections, loaded.imageSections, active);
+}
+
 /** 配置写入前调：锁连接断开期间一律拒绝（第 7、8 步的写函数用） */
 export function assertConfigWritable(): void {
   if (!loaded) throw new ConfigNotReadyError();
@@ -266,6 +280,7 @@ export function toPublishedSop(tenantId: string, row: SopVersionRow, sections: r
     tenantId,
     versionId: row.id,
     versionNo: row.versionNo!,
+    publishedAt: row.publishedAt!.toISOString(),
     sections: sections.map((s) => ({ key: s.key, text: s.text })),
     renderedPrompt: row.renderedPrompt!,
     promptHash: row.promptHash!,
@@ -318,14 +333,23 @@ function resolvePublished(
   return { merged, rendered, causes };
 }
 
-/** 启动日志按节、按条目点名库与镜像 data/ 的差异：DB 模式下改 data/ 的可编辑节或产品库不会生效，要让人看得见 */
-function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: readonly SopSection[], rows: readonly CatalogRow[]): void {
-  const edited = TRAVEL_SOP_SECTIONS.filter(
+/**
+ * 库与镜像 data/ 的差异（以库为准）：可编辑节按节，产品库按条目。active 是库里的 active 条目；
+ * 镜像文件读不到或解析不了时，那一类不报差异
+ */
+function driftOf(
+  dir: string,
+  merged: readonly SopSection[],
+  imageSections: readonly SopSection[],
+  active: readonly { kind: CatalogRow['kind']; code: string; payload: unknown }[],
+): ConfigDrift {
+  const editedSections = TRAVEL_SOP_SECTIONS.filter(
     (s) => !s.locked && merged.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text,
-  );
-  if (edited.length)
-    console.log(`[config] 可编辑节与镜像 data/sop.md 不同（以库为准）：${edited.map((s) => s.heading ?? s.key).join('、')}`);
-  const dir = d.imageDataDir ?? path.join(process.cwd(), 'data');
+  ).map((s) => s.key);
+  const catalog: ConfigDrift['catalog'] = {
+    route: { changed: [], onlyDb: [], onlyImage: [] },
+    hotel: { changed: [], onlyDb: [], onlyImage: [] },
+  };
   for (const [kind, file] of [
     ['route', 'routes.json'],
     ['hotel', 'hotels.json'],
@@ -336,11 +360,29 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
     } catch {
       continue;
     }
-    const inDb = new Map(rows.filter((r) => r.kind === kind).map((r) => [r.code, JSON.stringify(r.payload)]));
+    const inDb = new Map(active.filter((r) => r.kind === kind).map((r) => [r.code, JSON.stringify(r.payload)]));
     const inImage = new Map(image.map((x) => [String(x.id), JSON.stringify(x)]));
-    const changed = [...inDb.keys()].filter((c) => inImage.has(c) && inImage.get(c) !== inDb.get(c));
-    const onlyDb = [...inDb.keys()].filter((c) => !inImage.has(c));
-    const onlyImage = [...inImage.keys()].filter((c) => !inDb.has(c));
+    catalog[kind] = {
+      changed: [...inDb.keys()].filter((c) => inImage.has(c) && inImage.get(c) !== inDb.get(c)),
+      onlyDb: [...inDb.keys()].filter((c) => !inImage.has(c)),
+      onlyImage: [...inImage.keys()].filter((c) => !inDb.has(c)),
+    };
+  }
+  return { editedSections, catalog };
+}
+
+const imageDirOf = (d: ConfigDeps): string => d.imageDataDir ?? path.join(process.cwd(), 'data');
+
+/** 启动日志按节、按条目点名库与镜像 data/ 的差异：DB 模式下改 data/ 的可编辑节或产品库不会生效，要让人看得见 */
+function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: readonly SopSection[], rows: readonly CatalogRow[]): void {
+  const drift = driftOf(imageDirOf(d), merged, imageSections, rows);
+  const headings = drift.editedSections.map((k) => TRAVEL_SOP_SECTIONS.find((s) => s.key === k)?.heading ?? k);
+  if (headings.length) console.log(`[config] 可编辑节与镜像 data/sop.md 不同（以库为准）：${headings.join('、')}`);
+  for (const [kind, file] of [
+    ['route', 'routes.json'],
+    ['hotel', 'hotels.json'],
+  ] as const) {
+    const { changed, onlyDb, onlyImage } = drift.catalog[kind];
     const parts = [
       changed.length ? `内容不同 ${changed.join('、')}` : '',
       onlyDb.length ? `只在库里 ${onlyDb.join('、')}` : '',

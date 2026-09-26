@@ -72,7 +72,7 @@
   - prod 下 `/api/admin/stream` 要求有效后台会话。
   - 在目标服务器上实测两个并发登录的耗时和内存（开放问题 4），记进实施记录。
   - 对应验收 15 的函数部分。
-- [ ] 11. 后台接口子应用（2.5）：
+- [x] 11. 后台接口子应用（2.5）：
   - `src/shared/console-api.ts` 写请求与响应的 schema。
   - `src/console-api/app.ts` 链式注册：`securityHeaders`、`requireDbMode`、`loadSession`、`guardWrites`、权限矩阵、匿名投影（只读缓存与快照）、命名错误映射（含 23505 与 `lock_lost`）。
   - `server.ts` 用 `app.route('/', consoleApi)` 挂载，放在 serveStatic 兜底之前。
@@ -230,6 +230,22 @@
 - prod 下 `/api/admin/stream` 要求有效的后台会话，否则 401。`server.selftest.ts` 相应改了验收 1 允许的那一处：prod「有意匿名可达」的列表去掉这条，改为断言匿名连返回 401（断言总数不变，仍是 269）。文件模式没有账号，prod 下后台 SSE 一律 401，`admin.html` 退回 30 秒轮询。
 - 新建 `src/console-api/console.selftest.ts`（55 条，已接进 `test`）：口令格式与并发上限、账号命令行、登录与 cookie 明文不入库、空闲 12 小时与绝对 7 天过期（假时钟，失效行被删）、三路限流与防探测、口令升级、改口令 / 停用 / 移除成员吊销会话、prod 下后台 SSE 要求会话。真实 PG 上以子进程跑了 `user-create --password-stdin`、`user-disable`，没有终端时拒绝执行（在终端里跑测试时跳过这一条：子进程会继承控制终端）。7 个变异（不按 IP 限流、不锁邮箱加 IP、不升级旧哈希、无效 cookie 不限流、停用不吊销会话、并发上限放宽、prod 下 SSE 不要会话）全部变红；「停用不吊销会话」起初存活（认证函数本来就不认停用账号的会话），补了「会话行也被删掉」一条。
 - 开放问题 4：本机（24 GiB 内存）实测单次校验约 165 ms，两个并发约 176 ms，峰值 RSS 增量 256 MiB。目标服务器上的实测需要登录服务器，我这边做不了，挂在 Open 里。
+
+### 第 11 步（2026-09-26）
+
+- `src/shared/console-api.ts`：请求体、查询串、路径参数用 zod（查询串里的数字按字符串收、再转数；`set` 与新建的 `payload` 用 `z.custom` 原样放行，写库取请求原文）；响应是纯类型。配置层的领域类型（`SopVersion`、`CatalogItem`、`ContractViolation`、`ViolationCode`、`Role`）挪到这里，`src/config`、`src/sop`、`src/db/repo/auth.ts` 改成再导出，只此一份。
+- `src/console-api/app.ts` 链式注册，公共中间件是 `securityHeaders`、`requireDbMode`、`loadSession`、`guardWrites`，每个路由再挂 `canRead` / `signedIn` / `canEdit` / `canAudit`。与 spec 的几处取舍：
+  - 版本历史和单个版本只给成员（`signedIn`），匿名投影只含当前已发布版本；spec 的投影条款没有列历史，历史里有变更说明和姓名。
+  - 没匹配上的 `/api/console/*`：匿名 401，成员 404 JSON，不落到静态文件。prod 下「匿名除登录处处 401」靠的是每个路由都挂了权限、兜底也是 401；起初另写了一个 `anonGate` 中间件，变异测试发现它删掉也没有断言变红，是冗余，删了。验收 16 点名的 `/conversations` 在第 13 步之前走兜底，同样是 401。
+  - 请求体、查询串、路径参数不合规回 400 `bad_request`（带 `issues`），与命名错误里的 422（条目不合格、契约不过）区分开。登录要求 `application/json`，否则 415。
+  - 命名错误映射：`sop_conflict`（带 `keys`、`current`）、`rev_conflict`、`catalog_code_taken`、其余唯一约束 `conflict` → 409；`locked_section`、`contract`（带 `violations`）、`invalid_sop`（含编码与结构错误）、`locked_field`（带 `fields`）、`invalid_item`（带 `issues`）→ 422；`not_found` → 404；`rate_limited`、`busy` → 429；`lock_lost`、`not_ready` → 503；其余 500，不带内部信息。
+  - 会话 cookie 与 CSRF 按 spec；`Sec-Fetch-Site` 的判定抽成 `isCrossSite`，与 `sameOriginOnly` 共用。审计与会话里的 ip 取 `clientKey`，不是合法地址就记 null（库里是 inet）。
+  - 自测要用假时钟，子应用有一个可替换的 `clock`（`__consoleTest.setClock`）。
+- `server.ts`：`clientKey`、`makeLimiter`、`lookupLimit`、`sameOriginOnly` 原样搬到 `src/http-guards.ts`，两边共用同一个查询限流桶；`consoleSession` 搬进子应用，`/api/admin/stream` 照旧用它。`app.route('/', consoleApi)` 挂在 kf 二维码之后、serveStatic 兜底之前。
+- 配置层补了子应用要的几样：`getSopVersion`（id 不是 uuid 格式直接当不存在，回滚同样处理，免得库报类型错误变成 500）、`src/config/audit.ts` 的 `listAudit`（按 id 倒序、before 翻页、按 action 过滤，多取一行判断有没有下一页）、`PublishedSop.publishedAt`（匿名投影要显示，放进缓存免得查库）、`configDrift()`（`/status` 的「差异」：启动日志里那份按节、按条目的差异改成可复用的函数，每次现算）。
+- `console.selftest.ts` 增至 173 条，后半走 `server.ts` 的 `app.request`：cookie 属性与 `token_hash`、假时钟下的空闲与绝对过期、三路限流与防探测（逐次比状态码和响应体）、CSRF 三种拒法、viewer 的 9 个写操作与审计都 403、登出、停用即 401；发布后 `/healthz` 与下一轮 `/api/chat` 的 system 立即跟着换、回滚到 v1 的哈希相同、回滚到草稿 / 丢弃版本 / 格式不对的 id 都是 404、每个操作一行审计且记下 ip；rebase 冲突 409 带当前正文、并发首次保存一个 409；六种过不了闸的草稿、锁定节、编码不合格；产品库 11 个锁定字段逐个点名加 tags「国内」、改 highlights 与 itinerary 只动那一处且键序保持、原样提交审计 diff 为空、四类不合格补丁、draft 的新建改 id 上架、并发同 code、方案书报价不变；匿名 demo 的投影形状、不查库、没有 uuid / 姓名 / 草稿、查询限流，匿名 prod 处处 401；锁丢失写入 503 `lock_lost`；文件模式 503 `db_disabled`；十种状态码的响应都带安全头；另有无效 cookie 先按 IP 限流再查库（第 61 次不查库）。
+- 30 个变异全部变红：少一个安全头、安全头排到 `requireDbMode` 之后、文件模式不拦、不查 x-csrf、不拦跨站、登录不查 content-type、写请求不要求会话、匿名读不挂查询限流、prod 匿名能读、viewer 能写、cookie 少 `HttpOnly`、登出不清 cookie、登录不用可替换的时钟、冲突不带当前正文、`lock_lost` 不是 503、锁定节回 409、锁定字段不点名、坏 JSON 不回 400、参数错回 422、兜底不分匿名与成员、版本历史对匿名开放、匿名 SOP 给全哈希、匿名 `/status` 多给字段、匿名产品库多给 `status`、审计不记 ip、版本 id 不校验格式、`/status` 的差异不报 `onlyDb`、无效 cookie 不先限流、审计翻页差一、缓存的 `publishedAt` 取建草稿时间。最后三个起初存活，各补了一条断言（无效 cookie 第 61 次不查库、恰好剩 limit 行的那一页、后台发布的版本两个时间不同）。另有两个起初靠断言里的属性访问崩溃才变红，改成可空访问，失败落在具体断言上。变异在工作区的隔离副本里跑：原地改源码会让停机钩子的 lint / typecheck 变红。
+- 用一个临时的 `hc` 探针确认 `ConsoleApp` 的类型推得出来：联合响应能按字段收窄，不存在的端点、非法的 `kind` 是类型错误。探针没提交，正式的类型夹具在第 12 步。
 
 ## 验收记录
 

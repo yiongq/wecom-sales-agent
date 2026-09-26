@@ -17,20 +17,12 @@ import {
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import { ALWAYS_LOCKED, applyCatalogPatch, CATALOG_SCHEMAS, lockedFieldChanges, type CatalogKind } from '../shared/catalog.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
+import type { CatalogItem } from '../shared/console-api.js';
 import { applyCatalogRow, assertConfigWritable, configRuntime, reloadFromDb } from './source.js';
 
 export type { CatalogKind } from '../shared/catalog.js';
 
-export interface CatalogItem {
-  kind: CatalogKind;
-  code: string;
-  ord: number;
-  status: 'draft' | 'active';
-  rev: number;
-  payload: Route | Hotel;
-  updatedByName: string | null;
-  updatedAt: string;
-}
+export type { CatalogItem } from '../shared/console-api.js';
 
 /** 字段级补丁：set 里点名的顶层字段整体替换，unset 里的字段删除，没点名的一律不动 */
 export interface CatalogPatch {
