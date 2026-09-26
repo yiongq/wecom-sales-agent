@@ -90,8 +90,8 @@ export const LOCKED_WHEN_ACTIVE = {
   hotel: ['id', 'name', 'destination', 'nightlyFrom'],
 } as const;
 
-/** 值相等：对象不看键序，数组看顺序 */
-function sameValue(a: unknown, b: unknown): boolean {
+/** 值相等：对象不看键序，数组看顺序。console 的表单据它判断哪些顶层字段改过 */
+export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (Array.isArray(a) || Array.isArray(b)) {
     return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameValue(v, b[i]));
