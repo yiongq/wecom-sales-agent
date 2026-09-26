@@ -305,8 +305,30 @@
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
 
+第 18 步（2026-09-26）在 dev（`f6e051e`）的干净 clone 上逐条核对；「故意改坏」的几条都在 clone 里改、跑、还原，没碰工作区。
+
+- 1 · 通过 · 干净 clone 上 `pnpm test` 全绿；clone 里写一份含 `CONFIG_SOURCE=db`、`DATABASE_URL`（指向不存在的库）的 `.env` 再跑，结果不变。与 `f6f525c` 相比，`src/*.selftest.ts`、`src/adapters/*.selftest.ts`、`eval/cases.json` 只有新增的三组，唯一的改动是 `server.selftest.ts` 里 prod 下匿名连 `/api/admin/stream` 改为 401；`eval/run.ts` 只多了 DB 开关和 `--cases`。
+- 2 · 通过 · `config.selftest.ts`「两种模式逐字节等价」（`promptPrefix`、`loadRoutes` / `loadHotels`、5 个只读工具、`create_order` 与 `handoff_to_human` 遮掉单号与时间后的返回和会话状态）；DB 模式 mock eval 的用例集合与文件模式相同（19/19）；`db.selftest.ts` 在真实 PG 上经 node-postgres 重复前两项。
+- 3 · 通过 · `config.selftest.ts`（往返逐字节、编码不合格的六种文件失败且库里没有新行、同一份再导入 0、rerender 之后再导入 0、内容不同 2）与 `db.selftest.ts`（真实 PG 上以子进程跑 import / export、持锁时 3）；镜像里 `import-config --dry-run` 跑通：打印将写入的内容与三个哈希，库里没有新行。
+- 4 · 通过 · `config.selftest.ts` 两种模式下的快照冻结与 `search_hotels({})` 连调。
+- 5 · 通过 · `config.selftest.ts`（下一轮 `chat()` 的 system 等于新版本 rendered_prompt、回滚两例的 `sameHashAsTarget`、回滚到 draft / discarded 404、每次操作一行审计）与 `console.selftest.ts` 的 HTTP 部分（`/healthz` 与 `/api/chat` 立即跟着换）。
+- 6 · 通过 · 五种草稿（另加 `create_refund`）检查报 violation、发布 422、已发布版本不变，保存锁定节 422（`config.selftest.ts`、`console.selftest.ts`）；另两条在 clone 里实测：`engine.selftest.ts` 加一条 `sys.includes('…')` 不进清单，`config.selftest.ts` 失败并点出短语；`data/sop.md` 的「报价纪律」节里写一个未知的 camelCase 字段，失败并点出它。
+- 7 · 通过 · `db.selftest.ts`（已发布行改不动、非法插入被拒、部分唯一索引、agent_app 不能 DELETE）与 `config.selftest.ts`（草稿期间插入 rollback 与 rerender 后发布，版本号更大）。
+- 8 · 通过 · `config.selftest.ts`「启动重渲染」：三种输入各自的 causes、system 审计、可编辑节保留、只改工具时 prompt_hash 不变；契约不过、去掉 toolNames / knownFields 里的项、渲染不确定、没有 active 线路时都非零退出且库不变。
+- 9 · 通过 · `config.selftest.ts` 与 `console.selftest.ts`（逐个锁定字段 422、highlights 与 itinerary[0].detail 只动那一处且键序保持、原样提交审计 diff 为空、四类不合格补丁、draft 改 id 422、没有下架删除、方案书报价不变）；catalog-fix 在真实 PG 上以子进程验过（第 8 步）。
+- 10 · 通过 · `config.selftest.ts` 与 `console.selftest.ts`：同 rev 第二次 409、并发同 code 一个 409 且 ord 不同、并发首次保存一个 409、草稿期间 locked_sections rerender 后发布成功、上游改另一节自动 rebase、改同一节 409 并点名。
+- 11 · 通过 · `config.selftest.ts`「检索」：上架后恰好一次全量构建、构建中又上架、首次构建失败标过期并退避重试、文件模式请求次数与缓存不变。
+- 12 · 通过 · `db.selftest.ts` 的真实 PG 部分（CI 里总是跑）：角色与表的权限逐格、跨租户读写、事务后 0 行、会话级 SET 泄漏销毁连接、agent_app 直读认证表被拒、认证函数恢复 `app.tenant_id`、临时表遮蔽、系统目录扫出没开 RLS 的表就变红。
+- 13 · 通过 · `config.selftest.ts`「启动顺序与各个失败分支」（各 reason、`serve()` 与 `startWecom()` 未调用、cursor 文件不变）；另一进程持锁在真实 PG 上测（`db.selftest.ts`）。
+- 14 · 通过 · `config.selftest.ts`「每轮不查库」：5 轮 mock 对话（含报价、下单）后 `queryCount()` 不变。
+- 15 · 通过 · `console.selftest.ts`：cookie 属性与 `token_hash`、假时钟下空闲 12 小时与绝对 7 天、三路限流与防探测、CSRF 三种拒法、viewer 发布 403、旧参数口令升级、停用即 401、prod 下后台 SSE 要求会话；`server.selftest.ts` 的 Basic 流程不变。
+- 16 · 通过 · `console.selftest.ts`：prod 匿名处处 401（登录除外），demo 匿名的投影、不查库、没有 uuid 与姓名与草稿、`/status` 只有 mode、审计与会话列表与写请求 401、文件模式 503、安全头覆盖十种状态码（页面的 CSP 按第 12 步那条，见 Open）。
+- 17 · 通过 · 镜像里的路由在第 16 步实测（`/console/` 与深链返回 index.html、资源文件是 JS、`/api/console/nope` 404 JSON、`/chat.html` 照旧）；产物扫描进 `test`；改名 `Me.displayName` 时 console 与服务端同时报错、`@ts-expect-error` 夹具在 typecheck 范围内（第 12 步）。
 - 18 · 本机通过（同一镜像、上一个 tag 两例，外加启动日志点名差异）· 证据见第 17 步实施记录。线上部署旧 tag 的那一例待 owner。
-- 19 · 本机通过 · `/healthz` 的 sopVersion 2、promptHash `551e69c20efc`、prefixHash `a32bdae5229e`、sopHash `46b9a7fde0d3` 恢复前后相同；四张 RLS 表行数 1 / 2 / 43 / 7 相同；原账号能登录；agent_app 不设租户读到 0 行；会话数 2 相同。线上的恢复演练待 owner。
+- 19 · 本机通过 · `/healthz` 的 sopVersion 2、promptHash `551e69c20efc`、prefixHash `a32bdae5229e`、sopHash `46b9a7fde0d3` 恢复前后相同；四张 RLS 表行数 1 / 2 / 43 / 7 相同；原账号能登录；agent_app 不设租户读到 0 行；会话数 2 相同；backup.sh 的日期目录、7 天清理、密文、未配异地告警见第 16 步。线上的恢复演练待 owner。
+- 20 · 通过 · 干净 clone 上四个门禁全过；clone 里实测：CI=true 而没有 `PG_TEST_URL` 时 `db.selftest.ts` 失败；迁移里加未标注的 `DROP COLUMN`、`SET NOT NULL`，或改已提交的迁移，`lint` 失败并点名文件；`src/shared/` 下 import `drizzle-orm`、`src/config/` 下 import `store`、`src/engine.ts` 里出现 `app.tenant_id`，`lint` 都失败。
+- 21 · 自动部分通过（DB 模式 mock eval：22 个请求的前缀哈希与 `/healthz` 全部一致）· 手动部分（真实模型、P90 与缓存命中率）待 owner，命令见「交接」。
+- 22 · 通过 · 第 12 步用 Playwright 走查，截图 [walkthrough/01–08](walkthrough/)（登录 → 编辑 → 检查按节列 violation → 发布 → 历史 → 回滚；产品库锁定字段只读、改 highlights、新建 draft 并二次确认上架；审计；demo 匿名横幅、无审计入口）。
 - 23 · 本机通过 · 切换前后 promptHash `6c202d633b60`、toolsHash `64c16fc8f464`、prefixHash `cd3cc7dab87a` 相同，`mode = db`、`sopVersion = 1`，app 的 env 里没有特权凭据。线上 demo 的切换待 owner。
 
 ## Open
@@ -319,7 +341,7 @@
 
 ## 交接（2026-09-26）
 
-- 已完成：第 1–16 步（全部合进 dev），第 17 步的本机演练（见实施记录）。
+- 已完成：第 1–16 步（全部合进 dev）；第 17 步的本机演练（见实施记录）；第 18 步在干净 clone 上逐条核对了全部验收标准，除依赖线上的几处外都通过（见「验收记录」）。
 - 半成品：无。
 - 阻塞：第 17 步的线上部分要 owner 在服务器上执行；第 18 步里依赖线上的几条（19、23 的线上部分，21 的手动部分）随之等待。
 - 下一步（owner）：
@@ -330,7 +352,7 @@
   5. **切换**：`.env` 加 `CONFIG_SOURCE=db`，`docker compose -f deploy/compose.yml up -d app`。核对 `/healthz`：`config.mode = db`、`sopVersion = 1`，三个哈希与第 1 步相同；`docker compose -f deploy/compose.yml exec app env` 里没有 owner、platform 或超级用户的凭据（验收 23）。失败就去掉 `CONFIG_SOURCE=db` 再 `up -d app` 回到文件模式，什么也不会丢。
   6. **备份**：服务器装 age（配异地的话再装 rclone），`.env.backup` 写 `BACKUP_AGE_RECIPIENTS`（私钥不放服务器）和 `BACKUP_OFFSITE`，cron 每晚 `bash deploy/backup.sh`；手动跑一次，按脚本开头的步骤在另一台机器或旁路项目上恢复演练，把不敏感的证据记进「验收记录」（验收 19）。
   7. **真实模型对比**（验收 21 的手动部分，要花真实的 LLM 调用）：从 `eval/cases.json` 过滤出 realOnly 用例写到仓库外的文件，按「文件 → DB → 文件」交替各至少跑 3 遍：文件模式 `CONFIG_SOURCE=file tsx eval/run.ts --cases <文件>`，DB 模式再加 `CONFIG_TEST_DB=pglite`。每遍记下输出里的 P90 和前缀缓存命中率，两种模式的 P90 都不超过 8 秒算通过，数字记进「验收记录」。
-  8. 复核 Open 里第 12、15 步的两条，然后我接着做第 18–19 步。
+  8. 复核 Open 里第 12、15 步的两条。线上部分（验收 18、19、23 的线上一例与 21 的手动部分）做完把结果补进「验收记录」，我再勾第 17、18 步、做第 19 步。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
 ## 交接（YYYY-MM-DD）
