@@ -96,8 +96,11 @@ jobs:
       #   SSE/usage 不带 id 与原文。泄露别人的对话不会报错、页面照常，没有断言只能靠人去 devtools 里看。
       # - src/db/db.selftest.ts：数据库。PGlite 上验迁移、约束与触发器；上面的 postgres 服务上验各角色的权限逐格、
       #   RLS、会话级泄漏与租户锁。RLS 漏了一张表同样不报错，只是别的租户的数据悄悄可见。
+      # - src/config/config.selftest.ts：配置源。两种模式逐字节等价、SOP 与产品库的编辑流程、启动重渲染、检索。
+      # - src/console-api/console.selftest.ts：鉴权与后台接口（走 app.request）。权限、CSRF、匿名投影漏一处都不报错。
       # - LLM_MOCK=1 eval/run.ts：回归评测（mock 模式，秒级），改 SOP/提示词/护栏后自动回归，防止话术悄悄退化。
-      #   真实模型评测要花钱，不进 CI。
+      #   文件模式、DB 模式（PGlite）各跑一遍。真实模型评测要花钱，不进 CI。
+      # - console 生产构建，再扫描产物：浏览器包里混进数据库驱动或 Node 内置模块不会报错，只会把服务端代码发给浏览器。
       - run: pnpm test
         env:
           PG_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres

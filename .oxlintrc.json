@@ -8,7 +8,14 @@
     "eslint/no-shadow": "off",
     "unicorn/consistent-function-scoping": "off",
     "eslint/no-underscore-dangle": "off",
-    "oxc/no-async-endpoint-handlers": "off"
+    "oxc/no-async-endpoint-handlers": "off",
+    "react/react-in-jsx-scope": "off",
+    "react/no-unstable-nested-components": [
+      "warn",
+      {
+        "allowAsProps": true
+      }
+    ]
   },
   "overrides": [
     {
@@ -18,5 +25,6 @@
         "unicorn/no-array-reverse": "off"
       }
     }
-  ]
+  ],
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "react"]
 }

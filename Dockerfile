@@ -1,7 +1,7 @@
 # tsx 直跑（demo 规模无需编译产物）。tini 作 PID 1 转发信号，
 # 保证 SIGTERM 能到达 node（store 的停机钩子：企微等进行中的回复发完再落盘退出）。
-# 多阶段（01 spec「构建与部署」）：deps 装整个 workspace，运行阶段只取它的 node_modules。
-# console 阶段（pnpm --filter console build → console/dist）第 12 步补上。
+# 多阶段（01 spec「构建与部署」）：deps 装整个 workspace 给 console 构建用；console 阶段构建出 console/dist；
+# rtdeps 只装根目录这一个包（--filter），console 的依赖（React、antd……）不进运行阶段。
 
 FROM node:22-alpine AS deps
 WORKDIR /app
@@ -11,8 +11,22 @@ WORKDIR /app
 # 缺了会因 esbuild 构建脚本被忽略而直接失败
 # pnpm 版本取 package.json 的 packageManager（精确版本，与 CI、本地开发同一份）
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY console/package.json ./console/
 RUN corepack enable && corepack install \
   && pnpm install --frozen-lockfile --prod=false
+
+# 后台前端（ADR-002）：vite 构建只需要 console/ 和它 import 的 src/shared（服务端路由类型是 import type，构建时擦掉）
+FROM deps AS console
+COPY src/shared ./src/shared
+COPY console ./console
+RUN pnpm --filter console build
+
+FROM node:22-alpine AS rtdeps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY console/package.json ./console/
+RUN corepack enable && corepack install \
+  && pnpm install --frozen-lockfile --prod=false --filter wecom-sales-agent
 
 FROM node:22-alpine
 # upgrade：拉取 Alpine 安全补丁（基础镜像 tag 常滞后于 CVE 修复）
@@ -22,7 +36,7 @@ RUN apk upgrade --no-cache && apk add --no-cache tini tzdata
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 # 同一路径整体拷贝：pnpm 的 node_modules 是相对符号链接（指向 .pnpm/），换了相对位置就断
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=rtdeps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY src ./src
 COPY data ./data
@@ -33,6 +47,8 @@ COPY public ./public
 COPY assets ./assets
 # 迁移文件也是运行期读的：compose 的 migrate 服务用同一个镜像跑 src/db/migrate.ts
 COPY drizzle ./drizzle
+# 后台的静态文件，由 server.ts 在 /console 下托管（第 16 步）
+COPY --from=console /app/console/dist ./console/dist
 # var/ 是唯一数据源（会话/订单/企微 cursor），必须挂卷，否则容器重建即丢单：
 #   docker run -v wecom-data:/app/var --env-file .env -p 3200:3200 <image>
 RUN mkdir -p /app/var && chown -R node:node /app
