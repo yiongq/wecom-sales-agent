@@ -32,7 +32,7 @@
   - `mock_pay`：支付路由，不带凭据返回 404；带凭据并经过 `sameOriginOnly` 仍可付。
   - 每个开关在 prod 下的行为各配一条自测，放进 `server.selftest.ts` / `engine.selftest.ts`；demo 下现有断言零修改。
   - 对应验收 3b–3d、4。
-- [ ] 5. AI 显式标识（spec「AI 显式标识」；约 0.25 人日）：
+- [x] 5. AI 显式标识（spec「AI 显式标识」；约 0.25 人日）：
   - 改 `WELCOME_TEXT` / `WELCOME_BACK_TEXT` 的文案，顺带删掉「都记得」（「缺陷修复」4）；改 `chat.html` 的开场。system prompt、`mockChat`、eval `guard-05` 都不动。
   - `__test.WELCOME_BACK_TEXT` 保留原名；`alignSessionForReplay` 同时认新文案和改版前的两段旧文案。
   - `adapters/wecom.selftest.ts` 用假企微服务端断言两段欢迎语的第一句和人工入口。
@@ -139,6 +139,17 @@
   - `admin.html` 的 `load()` 遇到 401、503 按空列表显示，用量显示「—」。原来会把 `{error}` 当成列表存起来：后面任何一次重新渲染都会抛错，退出登录后还会继续显示登录时看到的全部会话，包括真实客户。不用 `!r.ok`，免得偶发的 500 把列表清空。
 - 对抗审查：reset 的 15 项行为、server 的 18 项行为都做过变异测试。审查提的 4 条建议都已补上：demo 加 `FLAG_RESET_COMMAND=off`、已转人工的会话带订单和画像、prod 下启动时的访客清理（起子进程验证）、`admin.html` 遇到 503。
 
+### 第 5 步（2026-09-26，分支 `feat/00-ai-disclosure`）
+
+- 提交：`f85c206`。
+- 新文案：
+  - 新客户欢迎语：「您好呀～欢迎来到云途定制旅行，我是您的 AI 旅行顾问 🌿」开头，结尾是「需要真人服务时，回复「人工」即可转真人顾问。」
+  - 老客户欢迎语：「欢迎回来～我是云途定制旅行的 AI 旅行顾问。」开头，不再承诺记得之前的对话，同样写明人工入口。
+  - 网页开场：同一口径。
+- 改版前的两段欢迎语收在 `LEGACY_WELCOME_TEXTS`，重放对齐按「新文案 + 旧文案」的集合识别欢迎语。
+- 自测：wecom 434 → 439，server 251 → 252。PREFIX 哈希不变。4 个变异（去掉「AI」、老客户欢迎语加回「都记得」、不认旧文案、网页开场去掉人工入口）都被新断言抓住。
+- 注意：欢迎语让客户回复「人工」，但单独一句「人工」要到第 6 步（缺陷修复 2）才会触发确定性转人工。两步都在第 7 步按 tag 部署之前合进 `dev`，线上不会出现不一致。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
@@ -169,6 +180,9 @@
 - 4d · 通过 · prod 下 `POST /api/chat`、`GET /api/stream/:id`、`GET /api/sessions/sim-…`、`/chat.html`、`/guide.html` 返回 404（含大小写、百分号编码、HEAD 等变体）；`/` 跳到 `/admin.html`。始终公开的路由照常能匿名访问。
 - 4e · 通过 · 见第 3 步：prod 下调保鲜例程不平移。
 - 4f · 通过 · prod 下闲置的 `sim-` 访客会话照样被清理，包括进程启动时的那一次（起子进程验证）。
+- 6a · 通过 · 假企微服务端上，新客户（`send_msg_on_event`）和老客户（`send_msg`）收到的欢迎语，第一句都含「AI 旅行顾问」，正文都写明回复「人工」即可转真人顾问；老客户欢迎语以「欢迎回来」开头，不含「记得」（`adapters/wecom.selftest.ts`）。
+- 6b · 通过 · `chat.html` 开场的第一句含「AI 旅行顾问」，并写明人工入口（`server.selftest.ts` 页面契约）。
+- 6d · 待 owner · 手动：在企微后台把客服账号名改成含「AI 旅行顾问」。
 - 11e · 部分通过 · 2026-09-25 经 owner 同意，用 `gh api` 打开了 secret scanning 和 push protection（`security_and_analysis` 两项均为 enabled），当时没有告警。在私有测试仓库里验证推送被拒这一半没有做（owner 没有要求）。
 
 ## 起草记录（2026-09-25）
@@ -179,10 +193,10 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1–4 步。第 3 步 PR #4 已合进 `dev`（`a316d69`）；第 4 步在分支 `feat/00-profile-flags` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 已完成：第 1–5 步。第 4 步 PR #5 已合进 `dev`（`c23d970`）；第 5 步在分支 `feat/00-ai-disclosure` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
 - 半成品：无。
 - 阻塞：无。
-- 下一步：第 5 步，AI 显式标识。
+- 下一步：第 6 步，缺陷修复 1、2、3、5、6。owner 手动：企微客服账号名改成含「AI 旅行顾问」（验收 6d）。
 
 ## Open
 

@@ -246,6 +246,13 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('admin.html 用 x-sim-session 头带凭据', admin.includes("'x-sim-session'"));
   // id 现在是访客会话唯一的凭据：Math.random 取 8 位 36 进制只有约 41 bit，且不是密码学随机
   check('chat.html 会话 id 不用 Math.random', !/Math\.random\(\)\.toString\(36\)/.test(chat));
+  // AI 显式标识（00 spec）：网页模拟器的开场与企微欢迎语同一口径——第一句写明「AI 旅行顾问」，并写明人工入口
+  const opening = /addMsg\('agent', '(您好[^']*)'\)/.exec(chat)?.[1] ?? '';
+  check(
+    'chat.html 的开场：第一句写明「AI 旅行顾问」，并写明回复「人工」即可转真人顾问',
+    opening.split(/[。！？]|\\n/)[0].includes('AI 旅行顾问') && opening.includes('回复「人工」即可转真人顾问'),
+    opening,
+  );
   // 真跑一遍页面里的生成函数：它产出的 id 必须被后台列表认作本人，否则访客边聊边看的演示效果就断了
   const fnSrc = /function newSessionId\(\) \{[\s\S]*?\n {2}\}/.exec(chat)?.[0];
   check('chat.html 有 newSessionId()', !!fnSrc);
