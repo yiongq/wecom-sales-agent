@@ -9,7 +9,7 @@
   - 本 spec 开放问题 1（`test` 新增三组）已由 owner 于 2026-09-25 确认，无需再问。
   - 00 开放问题 3（oxlint 的 suspicious 等类别什么时候开，约定「01 开工前定」）：按 00 验收后各类别在全仓的命中数，请 owner 定，结论记进 Open。
   - 00 开放问题 1（没设 `DEPLOY_PROFILE` 却配了企微凭据时是否拒绝启动）已被本 spec 部分回答：DB 模式要求显式写 `DEPLOY_PROFILE`，缺了以 `env_invalid` 拒绝启动（验收 13）。文件模式下要不要也拦，仍由 owner 在第一个 prod 实例上线前定。
-- [ ] 2. 数据库骨架，还不接任何运行时代码（3）：
+- [x] 2. 数据库骨架，还不接任何运行时代码（3）：
   - 装 drizzle-orm、drizzle-kit、pg、@types/pg、zod、@electric-sql/pglite、@hono/zod-validator，全部钉精确版本（先按开放问题 9 的规则核实版本线）；根目录的 `hono` 也改成精确版本；提交 lockfile。
   - `src/db/schema.ts`（七张表）、`client.ts`（`openDb`、`withTenant` 与 AsyncLocalStorage、会话级泄漏断言、`lockTenantConfig`、`queryCount`、`holdTenantLock`）、`migrate.ts`、`testing.ts`（`openTestDb`）。先用 typecheck 验证 `Db` / `Tx` 取 `PgDatabase` / `PgTransaction` 基类的写法对两个驱动都成立。
   - drizzle-kit 生成初始迁移，外加 custom 迁移：RLS 模板、三个触发器、五个认证函数、GRANT / REVOKE / 默认权限。
@@ -133,6 +133,27 @@
 - 00 断言过「prod 下 `/api/admin/stream` 匿名可连」：`server.selftest.ts` 的 `PUBLIC` 表含这一项，按「prod 下有意匿名可达：/api/admin/stream 返回 200」检查。验收 1 的唯一例外成立，第 10 步把这一项改成 401。
 - 00 开放问题 3 已由 owner 定（见 Open），同一步落地：`.oxlintrc.json` 开 suspicious，关掉 4 条规则；`**/*.selftest.ts` 与 `eval/run.ts` 另外豁免 `no-array-sort`、`no-array-reverse`，因为验收 1 锁住了它们的 diff。业务代码 39 处命中：`sort` / `reverse` 改成 `toSorted` / `toReversed`（都是对临时数组取返回值，语义不变；`searchHotels` 由此已不再原地排序，第 5 步那一条只剩 deep-freeze），`[...arr].sort` 去掉多余的拷贝；两处读 JSON 失败的 `throw` 带上 `cause`；5 处字面量拼接合成一个字面量（字节不变）；两处 `no-unmodified-loop-condition` 是误报（标志在回调或并发调用里改），加行内豁免并写明原因。`toSorted` 要 ES2023 的类型，`tsconfig.json` 的 `target` 从 ES2022 升到 ES2023（只影响类型检查，tsx 不读它）。
 - 改完 `PREFIX sha256` 仍是 `system=6c202d63…a423 tools=64c16fc8…92d1`，与 00 记录相同；各组断言数不变（wecom 461、dejargon 333、price-guard 403、server 269，eval mock 19/19）。
+
+### 第 2 步（2026-09-26）
+
+- 版本（开放问题 9，按 npm `latest`）：drizzle-orm 0.45.3、drizzle-kit 0.31.11（1.0 仍是 rc，不取）、pg 8.23.0、@types/pg 8.23.1、zod 4.6.5（v4，自带 `z.toJSONSchema`）、@electric-sql/pglite 0.5.8、@hono/zod-validator 0.9.1；根目录 `hono` 钉成 4.13.9。
+- 开放问题 2 的结论：PGlite 0.5.8（内核 PG 18.3）支持 `CREATE ROLE`、`GRANT`、`ALTER DEFAULT PRIVILEGES`、`SECURITY DEFINER`、`sha256()` 与触发器，`SET ROLE` 到非超级用户后 RLS 也生效。`openTestDb()` 因此不跳过任何语句：建三个角色，把库的属主改成 `agent_owner`，`SET ROLE agent_owner` 跑迁移，表和函数的属主、默认权限、授权都与生产相同；默认连接仍是超级用户。PGlite 是 PG 18，CI 与 compose 是 17，RLS 与授权的结论仍以第 3 步的真实 PG 套件为准。
+- `Db` / `Tx` 的写法经 typecheck 验证：两个驱动都能赋给 `PgDatabase<PgQueryResultHKT, Schema>`；`PgTransaction` 的第三个类型参数默认是空 schema，`Tx` 要显式写 `ExtractTablesWithRelations<Schema>`。
+- spec 没写、此处取定的地方：
+  - `catalog_items_guard` 也禁止改 `id`（spec 只列了 `tenant_id`、`kind`、`code`、`ord`）。
+  - `auth_session_touch`：会话属于别的租户时一律只返回空、不删行，哪怕它已经过期，不碰别的租户的数据。
+  - 会话绝对期限写成 `interval '168 hours'` 而不是 `'7 days'`：timestamptz 加「天」按调用方时区的日历天算，跨夏令时差一小时（审查发现，自测在 `America/New_York` 下断言 168 小时）。
+  - `audit_log_by_tenant` 显式写 `id DESC NULLS FIRST`：drizzle 的 `desc()` 默认生成 `NULLS LAST`，与 spec 的 `id DESC` 不一致，`order by id desc` 会多一次排序（审查发现）。
+  - `withTenant` 发现会话级泄漏时，node-postgres 下 `release(true)` 销毁连接；PGlite 只有一条连接，退化为 `RESET` 租户设置。
+  - 连接池给每条连接挂常驻 `error` 监听。借出的连接 Pool 不替它监听，`withTenant` 进行中库重启、连接被踢或事务空闲超时，都会以未处理的 `error` 事件让整个进程崩掉（审查发现，已在本机 PG 17 容器上复现，并验证修复后 `withTenant` 正常 reject、连接池照常可用）。
+  - `holdTenantLock`：`reacquire` 单飞；锁连接还健康时直接返回 `ok`；重连期间被 `release` 会放掉新拿到的锁；锁连接 4 秒连接超时；首次取锁时查询本身出错照原样抛，不当成「锁在别人手里」。同样在 PG 17 容器上验证过：连接被踢后 `onLost` 触发一次，并发两次 `reacquire` 都是 `ok`，别的进程仍拿不到锁，`release` 之后别人能拿到。
+  - `migrate.ts` 发现当前用户不是 `agent_owner` 就拒绝执行：换成超级用户跑，建出来的对象归超级用户，FORCE RLS 与权限表都不成立。
+  - lint 的两处放宽：`app.tenant_id` 允许出现在 `src/db/**/*.selftest.ts`（RLS 套件要做会话级 SET 来测泄漏）；「配置层不 import 运行时模块」对 `*.selftest.ts` 豁免（spec 要求这些自测动态加载会连带 `store.ts` 的模块）。另外 `app.tenant_id` 也查所有 `.sql`（第 3 步的 `roles.sql` 在内）。
+  - 迁移的标注写法：语句正上方的 `--` 行写 `-- migration-allow: <规则>[, <规则>…] <理由>`，规则名 drop、rename、alter-type、add-not-null、set-not-null、add-check、create-or-replace、alter-policy、revoke、execute；缺理由本身算违规。`DO` 块里字符串的内容也按规则查，其中的 `EXECUTE` 一律要标注（审查发现动态 SQL 能绕过）。`0001_rls_auth.sql` 里 `ALTER DEFAULT PRIVILEGES … REVOKE` 已标注。
+  - 公开边界检查的误报：新装依赖的 sha512 integrity 哈希偶然撞上私有词表里的一条正则。扫描前把锁文件里的 integrity 值抹掉，包名与 registry 地址照查，行号不变（`19f00a2`）。
+  - `drizzle/meta/**` 排除在格式化之外（drizzle-kit 每次生成都整份重写 `_journal.json`）；新增 `pnpm db:generate`；`tsconfig` 纳入 `drizzle.config.ts`。Dockerfile 还没有 `COPY drizzle`，第 3 步补。
+- 验证：`db.selftest.ts` 的 PGlite 部分 139 条断言，约 1.3 秒。断言尽量点名是哪条约束或触发器拒的，只比错误码时，一条约束拆掉、别的约束碰巧也拦得住，断言照样绿。变异测试拆掉约束、触发器分支、认证函数里的租户判断与恢复等 20 余处，每一处都让套件变红。验收 20 的 lint 部分在真实仓库上手工验过：迁移里加未标注的 `DROP COLUMN` 或 `SET NOT NULL`、`src/shared/` 引 `drizzle-orm`、`src/config/` 引 `store`、`src/db/` 以外出现 `app.tenant_id`，都失败并点名文件。「修改已提交的迁移」要等迁移进了 dev 才有基准，第 3 步开工时在真实仓库上复验（脚本已在临时仓库里验过）。
+- 提交前做了一轮五个角度的对抗审查（SQL 与 spec 对照、安全、连接层、lint 脚本、测试充分性），确认 9 条，都已修掉（上面标了「审查发现」的几条，加上 4 处测试漏洞）；驳回 6 条，例如「`execute(string)` 能绕过 `sql.raw` 禁令」：spec 只禁 `sql.raw`。
 
 ## 验收记录
 

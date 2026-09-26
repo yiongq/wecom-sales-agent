@@ -4,5 +4,5 @@
   "singleQuote": true,
   "semi": true,
   "sortPackageJson": false,
-  "ignorePatterns": ["data/sop.md", "pnpm-lock.yaml", "public/*.html"]
+  "ignorePatterns": ["data/sop.md", "pnpm-lock.yaml", "public/*.html", "drizzle/meta/**"]
 }
