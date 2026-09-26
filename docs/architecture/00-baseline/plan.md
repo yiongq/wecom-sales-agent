@@ -62,7 +62,7 @@
   - 对应验收 13。
 - [x] 9. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节
 - [x] 10. 清理临时探针与测试（包括第 7 步的旁路实例、一次性 clone 和它们的 tag）
-- [ ] 11. owner 确认验收通过后，spec 顶部改 `Status: implemented`
+- [x] 11. owner 确认验收通过后，spec 顶部改 `Status: implemented`
 
 进度吃紧时只能砍一项：第 8 步里横评表和缓存表的表头注明。
 
@@ -323,16 +323,16 @@
 
 ## 交接（2026-09-26）
 
-- 已完成：第 1–10 步。第 1–8 步都已合进 `dev`；第 9、10 步的记录与补测在分支 `docs/00-acceptance` 上。线上 demo 跑的是 `demo-v1.1`。线上 demo 跑的是 `demo-v1.1`（`dev` 的 `210ba2a`）。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
-- 半成品：无。
-- 阻塞：无。
-- 下一步：第 11 步，owner 确认验收后，spec 顶部改 `Status: implemented`。确认前请看 Open 里需要 owner 决定的几条。owner 手动项：企微客服账号名改成含「AI 旅行顾问」（6d）；私有测试仓库验证推送被拒（11e 的后半，可选）。
+- 已完成：00 全部 11 步。2026-09-26 owner 确认验收通过，spec 翻为 `Status: implemented`。线上 demo 跑的是 `demo-v1.1`。
+- owner 确认时一并接受了 Open 里的三条：3a 的两处等价改写、12b–f 依据第 7 步的演练、2b 的 85 行。
+- 仍挂在 owner 名下的手动项（不影响 implemented）：企微客服账号名改成含「AI 旅行顾问」（6d）；私有测试仓库验证推送被拒（11e 的后半，可选）。
+- 下一步：01（`docs/architecture/01-pg-config-console/`），从它的 plan 第 1 步「开工核对」开始。
 
 ## Open
 
-- 需要 owner 决定（验收 3a）：第 1 步的 lint 修复把 `engine.selftest.ts` 里两条原有断言的写法从 `/^r-tibet/.test(x.id)` 改成 `x.id.startsWith('r-tibet')`。结果相同、断言文字不变，但 spec 3a 说「唯一改动的是 u2b」。建议接受：这是 lint 规则要求的等价改写。
-- 需要 owner 知道：验收 12b、12c、12d、12f 在第 9 步没有重跑，依据是第 7 步在真实服务器上的演练；部署相关文件自那以后没有变。
-- 2b 的 85 行：用忽略表跑 blame，仍有 85 行指回格式化提交（格式化把一行拆成多行或合成一行，git 对不上），这是 git 的限制，建议接受。
+- 已由 owner 接受（2026-09-26，验收 3a）：第 1 步的 lint 修复把 `engine.selftest.ts` 里两条原有断言的写法从 `/^r-tibet/.test(x.id)` 改成 `x.id.startsWith('r-tibet')`。结果相同、断言文字不变，但 spec 3a 说「唯一改动的是 u2b」。建议接受：这是 lint 规则要求的等价改写。
+- 已由 owner 接受（2026-09-26）：验收 12b、12c、12d、12f 在第 9 步没有重跑，依据是第 7 步在真实服务器上的演练；部署相关文件自那以后没有变。
+- 已由 owner 接受（2026-09-26）2b 的 85 行：用忽略表跑 blame，仍有 85 行指回格式化提交（格式化把一行拆成多行或合成一行，git 对不上），这是 git 的限制，建议接受。
 - `public/*.html` 没有纳入格式化。原因是 `server.selftest.ts` 和 `adapters/wecom.selftest.ts` 从页面里抽取脚本源码时，匹配依赖引号风格、缩进和函数签名；格式化后「chat.html 有 stripLink()」失败。要纳入，得先让这两组自测不依赖源码的排版。
 - ~~不变量 1 的「× 0.95 那一步取整」用现有线路数据测不到~~：第 9 步已用测试专用线路补测（`f28276a`）。
 

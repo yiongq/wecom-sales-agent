@@ -1,9 +1,9 @@
 # 00 · 基线与生产开关
 
-Status: ready
+Status: implemented
 Phase: 0 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」
 Owner: architecture decided by the owner (decision records tracked privately, 另记); implementation in Claude Code / Codex
-Revisions: 2026-09-25 首版草稿经多角度对抗审查后就地修订（尚无代码依赖）。主要改动：system prompt 身份那一行不改（原方案改成「自我介绍时说 AI 旅行顾问」），00 不改变前缀；`ai_disclosure` 只有 `always`（原另有 `on_ask`）；prod 在 02 之前不接真实客户，成交链路措辞整体留给 02；公开边界检查挪到第一次推送之前，路径黑名单补上 ADR-003 决策 4 的三类（`src/packs/` 白名单以外的子目录、根目录 `tenants/`、`eval/real/`）；补了渠道与存储、demo profile、承诺与画像几组不变量；缺陷修复从四处增加到六处；README 一节补上「1v1 只做会话存档 + AI 辅助」的改法，开放问题 2（demo 域名）改为已定；非目标里品牌名参数化与租户设置改属 03、`admin.html` 自动弹登录框改属 02（原都写属于 01），与 01 spec 的交接表一致。2026-09-25 owner 确认后翻为 ready。2026-09-26 第 9 步验收：「不变量」一节把「本阶段补 / 本阶段新增」改成指向 00 期间加上的具体测试（验收 14），35–39 补上箭头；条文本身不变。
+Revisions: 2026-09-25 首版草稿经多角度对抗审查后就地修订（尚无代码依赖）。主要改动：system prompt 身份那一行不改（原方案改成「自我介绍时说 AI 旅行顾问」），00 不改变前缀；`ai_disclosure` 只有 `always`（原另有 `on_ask`）；prod 在 02 之前不接真实客户，成交链路措辞整体留给 02；公开边界检查挪到第一次推送之前，路径黑名单补上 ADR-003 决策 4 的三类（`src/packs/` 白名单以外的子目录、根目录 `tenants/`、`eval/real/`）；补了渠道与存储、demo profile、承诺与画像几组不变量；缺陷修复从四处增加到六处；README 一节补上「1v1 只做会话存档 + AI 辅助」的改法，开放问题 2（demo 域名）改为已定；非目标里品牌名参数化与租户设置改属 03、`admin.html` 自动弹登录框改属 02（原都写属于 01），与 01 spec 的交接表一致。2026-09-25 owner 确认后翻为 ready。2026-09-26 第 9 步验收：「不变量」一节把「本阶段补 / 本阶段新增」改成指向 00 期间加上的具体测试（验收 14），35–39 补上箭头；条文本身不变。2026-09-26 owner 确认验收通过，翻为 implemented。
 
 ## 背景与问题
 
