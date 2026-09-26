@@ -31,32 +31,11 @@ import {
   type SectionSpec,
   type SopSection,
 } from '../sop/sections.js';
+import type { SopVersion } from '../shared/console-api.js';
 import { promptHashes, renderInputsFor, type PromptHashes } from './hashes.js';
 import { assertConfigWritable, configRuntime, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
 
-export type SopStatus = 'draft' | 'published' | 'archived' | 'discarded';
-export type SopSource = 'import' | 'console' | 'rollback' | 'rerender';
-
-export interface SopVersion {
-  id: string;
-  /** draft 与 discarded 为 null */
-  versionNo: number | null;
-  status: SopStatus;
-  source: SopSource;
-  /** 与当时镜像合并之后的全部节 */
-  sections: SopSection[];
-  basedOn: string | null;
-  rev: number;
-  promptHash: string | null;
-  toolsHash: string | null;
-  prefixHash: string | null;
-  sopHash: string | null;
-  changeNote: string | null;
-  createdByName: string | null;
-  createdAt: string;
-  publishedByName: string | null;
-  publishedAt: string | null;
-}
+export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
 
 /** 草稿发布时 rebase 撞上了同一节：→ 409，带当前发布版本的可编辑节，界面据此提示 */
 export class SopConflictError extends Error {
@@ -86,6 +65,8 @@ export class SopNotFoundError extends Error {}
 /** 请求本身不合规（点名了不存在的节、变更说明为空）：→ 422 */
 export class SopInputError extends Error {}
 
+// 版本 id 是 uuid 列：格式不对的直接当不存在，不让库报类型错误变成 500
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EDITABLE: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS.filter((s) => !s.locked);
 const textOf = (sections: readonly SopSection[], key: string): string | undefined => sections.find((s) => s.key === key)?.text;
 const editableOf = (sections: readonly SopSection[]): SopSection[] => sections.filter((s) => EDITABLE.some((e) => e.key === s.key));
@@ -232,6 +213,15 @@ export async function listSopVersions(ctx: TenantCtx, q: { limit: number; before
   const rt = runtimeFor(ctx);
   const limit = Math.max(1, Math.min(100, Math.floor(q.limit)));
   return withTenant(rt.db, ctx, async (tx) => (await listReleased(tx, limit, q.beforeVersionNo)).map(toVersion), { readOnly: true });
+}
+
+/** 任意状态的一个版本（草稿、丢弃的也给：成员本来就看得到草稿） */
+export async function getSopVersion(ctx: TenantCtx, id: string): Promise<SopVersion> {
+  const rt = runtimeFor(ctx);
+  if (!UUID_RE.test(id)) throw new SopNotFoundError('没有这个版本');
+  const row = await withTenant(rt.db, ctx, (tx) => readVersionById(tx, id), { readOnly: true });
+  if (!row) throw new SopNotFoundError('没有这个版本');
+  return toVersion(row);
 }
 
 // ---------------- 草稿 ----------------
@@ -395,6 +385,7 @@ export async function rollbackSop(
   input: { versionId: string; changeNote: string },
 ): Promise<SopVersion & { sameHashAsTarget: boolean }> {
   const note = requireNote(input.changeNote);
+  if (!UUID_RE.test(input.versionId)) throw new SopNotFoundError('只能回滚到已发布或已归档的版本');
   const { row, same } = await write(ctx, async (tx, rt) => {
     const target = await readVersionById(tx, input.versionId);
     if (!target || (target.status !== 'published' && target.status !== 'archived'))

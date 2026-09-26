@@ -3,9 +3,10 @@
 // 平台命令行（agent_platform）直接读写这几张表，写 memberships 时同样经 withTenant。
 import { and, eq, sql } from 'drizzle-orm';
 import { rowsOf, type Db, type Tx } from '../client.js';
+import type { Role } from '../../shared/console-api.js';
 import { authSessions, memberships, users } from '../schema.js';
 
-export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
+export type { Role };
 
 // ---------------- 运行时：认证函数 ----------------
 

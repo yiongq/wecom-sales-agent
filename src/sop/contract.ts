@@ -1,6 +1,7 @@
 // SOP 契约检查，也就是发布闸 v0（docs/architecture/01-pg-config-console/spec.md「契约检查」）。
 // 纯数据加纯函数，不 import 引擎：发布、回滚、启动重渲染、导出都拿它核对一份 SOP 能不能交给模型。
 // mock 回归从不读 system prompt，SOP 改成什么样 mock 都照样全过，所以闸只能是这里的静态检查。
+import type { ContractViolation, ViolationCode } from '../shared/console-api.js';
 import {
   editableChars,
   normalizeBody,
@@ -94,20 +95,7 @@ export const KNOWN_FIELD_SOURCES = ['src/tools.ts', 'src/price-rules.ts'] as con
 /** 可编辑节正文总长的上限：导入版本的 BUDGET_RATIO 倍（开放问题 7） */
 export const BUDGET_RATIO = 1.2;
 
-export type ViolationCode =
-  | 'structure' // 节表不符、标题被改、正文为空、正文里出现行首「## 」、不是规范形
-  | 'locked_changed' // 锁定节与镜像不一致
-  | 'phrase_missing'
-  | 'phrase_forbidden'
-  | 'unknown_tool' // snake_case 标识符不是现有工具名
-  | 'unknown_field' // camelCase 标识符不在 knownFields 里
-  | 'over_budget'; // 可编辑节正文总长 > 基线 × BUDGET_RATIO
-
-export interface ContractViolation {
-  code: ViolationCode;
-  sectionKey: string | null;
-  detail: string;
-}
+export type { ContractViolation, ViolationCode };
 
 const SNAKE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
 // 大写开头的词（酒店品牌名）和纯小写单词（greeting、emoji）都不查
