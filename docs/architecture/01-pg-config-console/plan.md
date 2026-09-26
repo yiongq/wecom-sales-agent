@@ -54,7 +54,7 @@
   - `src/db/repo/sop.ts`、`repo/audit.ts`；`src/config/sop.ts` 实现草稿（`rev`）、锁定节 422、检查（200 带 violations）、发布事务（配置写锁、三方 rebase、合并后写回 `sections`、发布时分配版本号、四个哈希与 `render_inputs`）、回滚（目标状态校验、`sameHashAsTarget`）、丢弃、审计。提交之后才替换缓存。
   - 启动重渲染从占位改成真实实现：完整性、渲染两遍、每次启动都跑契约、按 `render_inputs` 定 `causes`、最后一步才写入。
   - 对应验收 5、6、7 的其余部分、8，以及 10 的 SOP 部分，都先在 PGlite 上用函数调用测。
-- [ ] 8. 产品库编辑流程（2）：
+- [x] 8. 产品库编辑流程（2）：
   - `src/db/repo/catalog.ts`；`src/config/catalog.ts` 实现新建（draft）、字段级补丁（`rev`、锁定字段、递归键序、请求原值）、上架、23505 映射、审计 diff。
   - 提交之后用 `RETURNING` 的行调 `applyCatalogRow()`；COMMIT 结果不明时 `reloadFromDb()`。
   - 命令行 `src/cli/catalog-fix.ts`。
@@ -208,6 +208,13 @@
 - 启动重渲染从占位改成真实写入：全部只读检查和产品库装载都通过之后，一个事务里归档旧版本、发布 `source='rerender'` 的新版本（运营编辑的可编辑节原样保留）、写一行 system 审计（`causes`、新旧版本号与 `prompt_hash`）。
 - 每个租户只能有一份草稿，「草稿打开期间别人发布了改动」在测试里用回滚制造：回滚直接插入已发布版本，草稿的 `based_on` 随之过期，发布时走三方 rebase。
 - `config.selftest.ts` 增至 295 条，覆盖验收 5、6（五种草稿，另加 `create_refund`）、7 的其余部分、8（锁定节、硬性要求、工具定义三种输入各自的 `causes`；契约不过、`toolNames`/`knownFields` 去项、渲染不确定、没有 active 线路时库都不变）、10 的 SOP 部分，以及验收 3 最后那条（有 rerender 版本之后再导入仍是 0）。自己做了 10 个变异（发布后不换缓存、rebase 不取上游、不报冲突、发布不过闸、能保存锁定节、`sameHashAsTarget` 恒真、预算基线取自己、不写 rerender、重渲染丢了可编辑节、能回滚到草稿），全部变红。
+
+### 第 8 步（2026-09-26）
+
+- `src/config/catalog.ts` 按 spec 的接口实现：新建（draft，ord 取最大加 1，同 code 报 `catalog_code_taken`）、字段级补丁（rev 乐观锁；锁定字段按状态查，`unset` 锁定字段同样算改；写库的是旧 payload 应用补丁后按旧键序递归合并的对象，合并后整条再过 schema）、上架（重新过 schema；已上架的原样返回，不写库、不动快照）。唯一约束一律映射成 409。审计 `diff` 只放变了的顶层字段，原样提交回去时为 `{}`，但仍记一行。
+- `source.ts` 加 `applyCatalogRow`：快照数组不带 ord，另存「code → ord」，替换同 code 的条目或按 ord 插入新上架的条目。快照代际改为「当前快照的代际加 1」：原先用模块级计数器，测试里重新装载后新快照从 0 起、计数器却接着涨，自测抓到。
+- `catalog-fix` 的逻辑是 `fixLockedFields`（放宽到可以改 `LOCKED_WHEN_ACTIVE`，`id` 除外），命令行负责取租户锁、打印警告、退出码 0 / 1 / 3。
+- `config.selftest.ts` 增至 337 条，覆盖验收 9（12 个锁定字段逐个点名、`unset` 锁定字段、改 highlights 只动这一处且 `get_route_detail` 立即返回新内容、表单重排键序后只改 `itinerary[0].detail`、原样提交审计 diff 为空、四类不合格补丁、draft 除 `id` 外都能改、上架后按 ord 进快照、允许的编辑前后方案书报价不变、`catalog-fix` 重启后快照是新值）与验收 10 的产品库部分（同 rev 第二次 PATCH 409、并发同 code 一个 409、并发不同 code 拿到不同 ord）。真实 PG 上以子进程验了 `catalog-fix`：应用持锁时退出码 3，停掉后 0，重新装载后是新值，审计带 reason。9 个变异（不查锁定字段、不按旧键序合并、补丁后不过 schema、提交后不更新快照、不查 rev、新建 ord 固定、审计记全部字段、快照不更新、catalog-fix 能改 id）全部变红。
 
 ## 验收记录
 
