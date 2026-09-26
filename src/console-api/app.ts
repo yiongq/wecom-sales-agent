@@ -11,11 +11,10 @@ import { HTTPException } from 'hono/http-exception';
 import { PasswordBusyError } from '../auth/password.js';
 import {
   ABSOLUTE_MS,
-  allowSessionLookup,
+  claimSessionLookup,
   LoginRateLimitedError,
   login,
   logout,
-  noteInvalidSession,
   resolveSession,
   SESSION_COOKIE,
   type AuthedUser,
@@ -110,21 +109,20 @@ export const securityHeaders: MiddlewareHandler = async (c, next) => {
 let clock = (): number => Date.now();
 
 /**
- * cookie 里的后台会话。文件模式没有账号，一律 null。带 cookie 但会话无效的请求先按 IP 限流，过了才查库。
+ * cookie 里的后台会话。文件模式没有账号，一律 null。带 cookie 的请求先按 IP 占一个查库名额（查库之前同步占好，
+ * 并发的一批不会都看到旧计数），占不到就当匿名；会话有效就把名额退回去，只有无效的才算数。
  * server.ts 的 /api/admin/stream 也用它
  */
 export async function consoleSession(c: Context): Promise<{ user: AuthedUser; token: string } | null> {
   if (configMode() !== 'db') return null;
   const token = getCookie(c, SESSION_COOKIE);
   if (!token) return null;
-  const ip = clientKey(c);
   const now = clock();
-  if (!allowSessionLookup(ip, now)) return null;
+  const giveBack = claimSessionLookup(clientKey(c), now);
+  if (!giveBack) return null;
   const user = await resolveSession(token, now);
-  if (!user) {
-    noteInvalidSession(ip, now);
-    return null;
-  }
+  if (!user) return null;
+  giveBack();
   return { user, token };
 }
 

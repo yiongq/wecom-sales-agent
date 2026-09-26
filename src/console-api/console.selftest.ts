@@ -78,6 +78,18 @@ const hour = 3_600_000;
     JSON.stringify(await verifyPassword('old params', old)) === '{"ok":true,"needsRehash":true}',
   );
   check('口令：假哈希与真哈希同一套参数', (await fakeHash()).startsWith('scrypt$17$8$1$') && (await fakeHash()) === (await fakeHash()));
+  // 假哈希不在请求路径上现算：口令队列排满时照样立刻拿得到，也不会把一次排队超时缓存下来（那样之后未知邮箱一律 429、
+  // 已有邮箱 401，成了探测邮箱的办法）。用一份全新的模块实例：它的假哈希还没取过，队列也是它自己的，占满两个槽
+  const fresh = (await import(new URL('../auth/password.js?fresh', import.meta.url).href)) as typeof import('../auth/password.js');
+  const held = [await fresh.__passwordTest.occupy(), await fresh.__passwordTest.occupy()];
+  const during = await errName(Promise.resolve().then(() => fresh.fakeHash()));
+  for (const giveBack of held) giveBack();
+  const after = await errName(Promise.resolve().then(() => fresh.fakeHash()));
+  check(
+    '口令：队列排满时照样拿得到假哈希，之后也拿得到（排队超时不会被缓存下来）',
+    during === 'ok' && after === 'ok',
+    `${during} / ${after}`,
+  );
   check('口令：格式不对的哈希一律不通过', !(await verifyPassword('x', 'md5$abc')).ok);
   // 同一时刻最多跑 2 个 scrypt：并发 5 个，采样到的在跑数不超过 2
   let peak = 0;
@@ -115,6 +127,22 @@ const hour = 3_600_000;
     async () => (await t.pg.query<{ diff: unknown }>(`select diff from audit_log where action = 'platform.user_create'`)).rows,
   );
   check('账号：审计两行、diff 里没有口令', audits.length === 2 && !JSON.stringify(audits).includes('password'), JSON.stringify(audits));
+  // 口令至少 10 个字符（plan 第 10 步取定）：user-create 与 user-password 都卡在 9 与 10 之间
+  const MIN = 'min@example.com';
+  const nine = await asPlatform(() =>
+    accounts.createUser(t.db, { tenantSlug: 'demo', email: MIN, name: '最短', role: 'agent', password: pw('123456789') }),
+  );
+  const ten = await asPlatform(() =>
+    accounts.createUser(t.db, { tenantSlug: 'demo', email: MIN, name: '最短', role: 'agent', password: pw('1234567890') }),
+  );
+  check('账号：user-create 口令 9 个字符拒绝、10 个字符接受', nine.code === 1 && ten.code === 0, `${nine.message} / ${ten.message}`);
+  const setNine = await asPlatform(() => accounts.setPassword(t.db, { tenantSlug: 'demo', email: MIN, password: pw('abcdefghi') }));
+  const setTen = await asPlatform(() => accounts.setPassword(t.db, { tenantSlug: 'demo', email: MIN, password: pw('abcdefghij') }));
+  check(
+    '账号：user-password 口令 9 个字符拒绝、10 个字符接受',
+    setNine.code === 1 && setTen.code === 0,
+    `${setNine.message} / ${setTen.message}`,
+  );
 }
 
 // ---------------- 登录与会话 ----------------
@@ -242,13 +270,57 @@ const loggedIn = await session.login({ ...base, ...OWNER });
   );
   check('限流：IPv4 映射地址还原成 IPv4', session.ipBucket('::ffff:203.0.113.7') === '203.0.113.7');
   let invalidAllowed = 0;
-  for (let i = 0; i < 70; i++) {
-    if (session.allowSessionLookup('198.51.100.77', base.now)) {
-      invalidAllowed++;
-      session.noteInvalidSession('198.51.100.77', base.now);
-    }
-  }
+  for (let i = 0; i < 70; i++) if (session.claimSessionLookup('198.51.100.77', base.now)) invalidAllowed++;
   check('限流：同一 IP 带无效 cookie 每分钟最多查 60 次库', invalidAllowed === 60, String(invalidAllowed));
+  for (let i = 0; i < 70; i++) session.claimSessionLookup('198.51.100.78', base.now)?.();
+  check('限流：会话有效的查库把名额退回去，不算进无效 cookie', session.claimSessionLookup('198.51.100.78', base.now) !== null);
+
+  // 并发：失败计数在校验之前同步占好，同一时刻在途的一批不会都看到旧计数
+  session.__authTest.reset();
+  const burst = await Promise.all(
+    Array.from({ length: 10 }, () =>
+      errName(session.login({ ...base, ip: '198.51.100.3', email: OWNER.email, password: 'wrong-password' })),
+    ),
+  );
+  check(
+    '限流：同一「邮箱 + IP」并发 10 次错误口令，只有 5 次去校验，其余 429',
+    burst.filter((x) => x === 'ok').length === 5 && burst.filter((x) => x === 'LoginRateLimitedError').length === 5,
+    burst.join(','),
+  );
+  session.__authTest.reset();
+  session.__authTest.setSlowDelay(1_000);
+  for (let i = 0; i < 9; i++) await session.login({ ...base, ip: `198.51.100.${60 + i}`, email: OWNER.email, password: 'wrong-password' });
+  const took = await Promise.all(
+    [70, 71, 72].map(async (n) => {
+      const t0 = Date.now();
+      await session.login({ ...base, ip: `198.51.100.${n}`, email: OWNER.email, password: 'wrong-password' });
+      return Date.now() - t0;
+    }),
+  );
+  check('限流：同一邮箱已失败 9 次时并发 3 次，第 11、12 次照样先延迟', took.filter((ms) => ms >= 1_000).length === 2, took.join(','));
+
+  // 登录失败只打日志、不进审计：每次一行，带原因、来源与邮箱的哈希，不带口令，也不带邮箱原文
+  session.__authTest.reset();
+  const logged: string[] = [];
+  const warn = console.warn;
+  console.warn = (...a: unknown[]): void => void logged.push(a.map(String).join(' '));
+  try {
+    for (let i = 0; i < 6; i++)
+      await errName(session.login({ ...base, ip: '198.51.100.4', email: OWNER.email, password: 'wrong-password-9' }));
+  } finally {
+    console.warn = warn;
+  }
+  const tag = createHash('sha256').update(OWNER.email.toLowerCase()).digest('hex').slice(0, 12);
+  check(
+    '登录失败：5 次口令不对、1 次被锁各打一行日志，带来源与邮箱的哈希，不带口令和邮箱原文',
+    logged.length === 6 &&
+      logged.every((l) => l.startsWith('[auth] 登录失败') && l.includes('198.51.100.4') && l.includes(tag)) &&
+      logged.slice(0, 5).every((l) => l.includes('口令不对')) &&
+      logged[5]!.includes('锁') &&
+      !logged.join('').includes('wrong-password-9') &&
+      !logged.join('').toLowerCase().includes(OWNER.email.toLowerCase()),
+    logged.join(' | '),
+  );
 }
 
 // 旧参数的口令哈希：登录成功后换成当前参数
@@ -288,6 +360,71 @@ const loggedIn = await session.login({ ...base, ...OWNER });
     (await session.login({ ...base, email: VIEWER.email, password: 'viewer-password-2' })) !== null &&
       (await session.login({ ...base, ...VIEWER })) === null,
   );
+  // 改口令与登录并发：登录读完旧哈希、还在跑 scrypt 时 user-password 改了口令并吊销会话，这次登录不能在吊销之后再建出会话
+  {
+    const repo = await import('../db/repo/auth.js');
+    const RACE = { email: 'race@example.com', password: 'race-password-1' };
+    await asPlatform(() =>
+      accounts.createUser(t.db, { tenantSlug: 'demo', email: RACE.email, name: '赛跑', role: 'viewer', password: pw(RACE.password) }),
+    );
+    const newHash = await hashPassword('race-password-2');
+    const pending = session.login({ ...base, ip: '198.51.100.150', ...RACE });
+    for (let i = 0; i < 2_000 && __passwordTest.running() === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    // 这时登录已读完哈希、正在跑 scrypt。按 user-password 的顺序：先改哈希，再删会话
+    const revoked = await asPlatform(async () => {
+      const u = (await repo.findUserByEmail(t.db, RACE.email))!;
+      await repo.setUserPassword(t.db, u.id, newHash);
+      return repo.deleteSessionsOfUser(t.db, u.id);
+    });
+    const raced = await pending;
+    const left = await asSuper(
+      async () =>
+        (await t.pg.query(`select 1 from auth_sessions s join users u on u.id = s.user_id where lower(u.email) = $1`, [RACE.email])).rows
+          .length,
+    );
+    check('改口令与登录并发：scrypt 期间口令被改、会话被吊销，这次登录失败，不留会话', raced === null && left === 0, `${revoked} ${left}`);
+  }
+  // 口令升级与登录并发：登录还在跑 scrypt 时，另一次成功的登录把同一个口令升级成当前参数，这次登录不能因为哈希变了就回 401
+  {
+    const repo = await import('../db/repo/auth.js');
+    const { configRuntime } = await import('../config/source.js');
+    const REH = { email: 'rehash-race@example.com', password: 'rehash-password-1' };
+    await asPlatform(() =>
+      accounts.createUser(t.db, { tenantSlug: 'demo', email: REH.email, name: '升级', role: 'viewer', password: pw(REH.password) }),
+    );
+    const oldHash = await hashPassword(REH.password, { logN: 14 });
+    const newHash = await hashPassword(REH.password);
+    await asSuper(() => t.pg.query('update users set password_hash = $1 where lower(email) = $2', [oldHash, REH.email]));
+    const { tenantId } = configRuntime();
+    const userId = (await repo.authLoginLookup(t.db, tenantId, REH.email))!.userId;
+    session.__authTest.reset();
+    const logged: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]): void => void logged.push(a.map(String).join(' '));
+    let rehashed = false;
+    let won: Awaited<ReturnType<typeof session.login>> = null;
+    try {
+      const pending = session.login({ ...base, ip: '198.51.100.151', ...REH });
+      for (let i = 0; i < 2_000 && __passwordTest.running() === 0; i++) await new Promise((r) => setTimeout(r, 1));
+      // 这时登录已读完旧哈希、正在跑 scrypt：照并发那次成功登录的做法，按比较交换把旧哈希换成同一口令的新参数哈希
+      rehashed = await repo.authPasswordRehash(t.db, tenantId, userId, oldHash, newHash);
+      won = await pending;
+    } finally {
+      console.warn = warn;
+    }
+    const after = await asSuper(
+      async () => (await t.pg.query<{ h: string }>('select password_hash as h from users where lower(email) = $1', [REH.email])).rows[0]!.h,
+    );
+    check(
+      '口令升级与登录并发：scrypt 期间哈希被升级成同一口令，这次登录照样成功，会话有效，不打失败日志',
+      rehashed &&
+        won !== null &&
+        (await session.resolveSession(won.token, base.now + 60_000)) !== null &&
+        after === newHash &&
+        logged.length === 0,
+      `${rehashed} ${won !== null} ${after === newHash} ${logged.join(' | ')}`,
+    );
+  }
   const s2 = (await session.login({ ...base, email: VIEWER.email, password: 'viewer-password-2' }))!;
   const disabled = await asPlatform(() => accounts.disable(t.db, { tenantSlug: 'demo', email: VIEWER.email }));
   check(
@@ -302,11 +439,30 @@ const loggedIn = await session.login({ ...base, ...OWNER });
   check('账号：user-disable 把会话行也删了（不只是认证函数不认）', leftRows === 0, String(leftRows));
   check('账号：停用之后登录不了', (await session.login({ ...base, email: VIEWER.email, password: 'viewer-password-2' })) === null);
   const o = (await session.login({ ...base, ip: '198.51.100.200', ...OWNER }))!;
+  // 同一个人在另一个租户里的会话（04 同库多租户时才会有）：member-remove 只吊销本租户的
+  const otherTenant = await asSuper(async () => {
+    const id = (
+      await t.pg.query<{ id: string }>(`insert into tenants (slug, name, pack_id) values ('other-tenant', '别家', 'travel') returning id`)
+    ).rows[0]!.id;
+    await t.pg.query(
+      `insert into auth_sessions (token_hash, tenant_id, user_id, created_at, last_seen_at, expires_at)
+       select decode($1, 'hex'), $2, id, now(), now(), now() + interval '7 days' from users where lower(email) = $3`,
+      ['07'.repeat(32), id, OWNER.email.toLowerCase()],
+    );
+    return id;
+  });
   const removed = await asPlatform(() => accounts.removeMember(t.db, { tenantSlug: 'demo', email: OWNER.email }));
   check(
     '成员：member-remove 删成员关系并吊销本租户的会话',
     removed.code === 0 && (await session.resolveSession(o.token, base.now + 60_000)) === null,
   );
+  const otherLeft = await asSuper(async () => {
+    const n = (await t.pg.query(`select 1 from auth_sessions where tenant_id = $1`, [otherTenant])).rows.length;
+    await t.pg.query(`delete from auth_sessions where tenant_id = $1`, [otherTenant]);
+    await t.pg.query(`delete from tenants where id = $1`, [otherTenant]);
+    return n;
+  });
+  check('成员：member-remove 不动这个人在别的租户里的会话', otherLeft === 1, String(otherLeft));
   check('成员：不是成员了就登录不了', (await session.login({ ...base, ip: '198.51.100.201', ...OWNER })) === null);
   check(
     '成员：对不是成员的人操作 → 退出码 1',
@@ -494,6 +650,18 @@ for (const [u, role] of [
     body: '{',
   });
   check('HTTP 登录：JSON 写坏了 → 400', broken.status === 400 && ((await broken.json()) as Body).error === 'bad_request');
+  // 库存不下的字符（NUL、孤立代理项）在请求校验这一层拦下，不带进库里报错成 500
+  const nulEmail = keep(
+    await call('POST', '/auth/login', { json: { email: `a${String.fromCharCode(0)}@example.com`, password: 'whatever-1' } }),
+  );
+  const loneEmail = await call('POST', '/auth/login', {
+    json: { email: `a${String.fromCharCode(0xd800)}@example.com`, password: 'whatever-1' },
+  });
+  check(
+    'HTTP 登录：邮箱里有 NUL 或孤立代理项 → 400 bad_request',
+    [nulEmail, loneEmail].every((r) => r.status === 400 && r.body.error === 'bad_request'),
+    `${nulEmail.text} / ${loneEmail.text}`,
+  );
 }
 
 // 验收 15：假时钟下的空闲与绝对过期
@@ -584,6 +752,28 @@ for (const [u, role] of [
     unknown.status === 401 && wrong.status === 401 && unknown.text === wrong.text,
     `${unknown.text} / ${wrong.text}`,
   );
+  // 口令队列排满（两个槽都占住）：未知邮箱与已有邮箱都在排满 2 秒后 429 busy，状态码与响应体相同，各打一行日志
+  session.__authTest.reset();
+  const held = [await __passwordTest.occupy(), await __passwordTest.occupy()];
+  const logged: string[] = [];
+  const warn = console.warn;
+  console.warn = (...a: unknown[]): void => void logged.push(a.map(String).join(' '));
+  let busy: Res[] = [];
+  try {
+    busy = await Promise.all([
+      call('POST', '/auth/login', { json: { email: 'ghost@example.com', password: 'wrong-password' }, ip: '198.51.100.34' }),
+      call('POST', '/auth/login', { json: { email: OWNER.email, password: 'wrong-password' }, ip: '198.51.100.35' }),
+    ]);
+  } finally {
+    console.warn = warn;
+    for (const giveBack of held) giveBack();
+  }
+  check(
+    'HTTP 登录：口令队列排满时未知邮箱与已有邮箱都是 429 busy，响应体相同',
+    busy.length === 2 && busy.every((r) => keep(r).status === 429 && r.body.error === 'busy') && busy[0]!.text === busy[1]!.text,
+    busy.map((r) => `${r.status} ${r.text}`).join(' | '),
+  );
+  check('登录失败：排队超时也打日志', logged.filter((l) => l.includes('排队超时')).length === 2, logged.join(' | '));
 }
 
 // 带无效 cookie 的请求先按 IP 限流再查库：同一 IP 前 60 次查库，第 61 次不查库直接当匿名
@@ -600,6 +790,20 @@ for (const [u, role] of [
     'HTTP 无效 cookie：同一 IP 前 60 次各查一次库，第 61 次不查库，都是 401',
     perCall.slice(0, 60).every((n) => n > 0) && perCall[60] === 0,
     perCall.join(','),
+  );
+  // 并发一批：名额在查库之前同步占好，在途的一批不会都看到旧计数
+  session.__authTest.reset();
+  const q0 = queryCount();
+  const burst = await Promise.all(
+    Array.from({ length: 70 }, (_, i) =>
+      call('GET', '/me', { as: { token: `${'D'.repeat(40)}${String(i).padStart(3, '0')}`, csrf: '' }, ip: '198.51.100.141' }),
+    ),
+  );
+  const lookups = (queryCount() - q0) / perCall[0]!;
+  check(
+    'HTTP 无效 cookie：同一 IP 并发 70 个，只查 60 次库，都是 401',
+    lookups === 60 && burst.every((r) => r.status === 401),
+    `${lookups} ${burst.map((r) => r.status).join(',')}`,
   );
 }
 
@@ -711,6 +915,16 @@ check(
   );
   const noNote = keep(await call('POST', '/sop/draft/publish', { ...O, json: { rev: saved.body.rev, changeNote: '  ' } }));
   check('SOP HTTP：变更说明为空 → 422', noNote.status === 422 && noNote.body.error === 'invalid_sop');
+  const nulNote = await call('POST', '/sop/draft/publish', {
+    ...O,
+    json: { rev: saved.body.rev, changeNote: `发布${String.fromCharCode(0)}` },
+  });
+  const nulBack = await call('POST', `/sop/versions/${v1.id}/rollback`, { ...O, json: { changeNote: `回滚${String.fromCharCode(0)}` } });
+  check(
+    'SOP HTTP：变更说明里有 NUL → 发布、回滚都是 400 bad_request，已发布版本不变',
+    nulNote.status === 400 && nulBack.status === 400 && nulNote.body.error === 'bad_request' && cfg.currentSop().versionNo === v1.versionNo,
+    `${nulNote.text} / ${nulBack.text}`,
+  );
   const staleRev = keep(await call('POST', '/sop/draft/publish', { ...O, json: { rev: saved.body.rev + 5, changeNote: '发布' } }));
   check('SOP HTTP：rev 对不上 → 409', staleRev.status === 409 && staleRev.body.error === 'rev_conflict');
   const pub = await call('POST', '/sop/draft/publish', { as: admin, json: { rev: saved.body.rev, changeNote: '后台加一句' } });
@@ -769,6 +983,12 @@ check(
       items.every((v, i) => (v.status === 'published' || v.status === 'archived') && (i === 0 || items[i - 1]!.versionNo > v.versionNo)),
   );
   check('SOP HTTP：limit 不是数字 → 400', keep(await call('GET', '/sop/versions?limit=abc', O)).status === 400);
+  const overInt4 = await call('GET', '/sop/versions?before=2147483648', O);
+  check(
+    'SOP HTTP：before 超出 int4（版本号的列类型）→ 400，不带进库里报错；int4 上限本身照常 200',
+    overInt4.status === 400 && (await call('GET', '/sop/versions?before=2147483647', O)).status === 200,
+    overInt4.text,
+  );
   check(
     'SOP HTTP：单个版本 → 200；id 格式不对 → 404',
     (await call('GET', `/sop/versions/${v1.id}`, O)).body.versionNo === v1.versionNo &&
@@ -844,6 +1064,7 @@ check(
     allActions.size > 1 && onlyRollbacks.length > 0 && onlyRollbacks.every((x) => x.action === 'sop.rollback'),
     [...allActions].join(','),
   );
+  check('审计 HTTP：action 里有 NUL → 400', (await call('GET', '/audit?action=sop%00discard', O)).status === 400);
   const lastPage = await call('GET', '/audit?limit=100&action=sop.discard', O);
   check('审计 HTTP：最后一页 nextBefore 为 null', lastPage.body.items?.length > 0 && lastPage.body.nextBefore === null);
   // 恰好剩 limit 行时也没有下一页（多取的那一行不存在）
@@ -1124,6 +1345,24 @@ check(
   );
   const strPrice = await call('PATCH', '/catalog/route/r-http-new', { ...O, json: { rev: draftEdit.body.rev, set: { priceFrom: '100' } } });
   check('产品库 HTTP：数值字段传字符串 → 422', strPrice.status === 422 && strPrice.body.error === 'invalid_item');
+  // 库里的 json 存不下 NUL 与孤立代理项：schema 先拦下，422 点名字段，不带进库里报错成 500
+  const NUL = String.fromCharCode(0);
+  const badText = [
+    await call('POST', '/catalog/route', { ...O, json: { payload: { ...fresh, id: 'r-http-nul', title: `标题${NUL}` } } }),
+    await call('POST', '/catalog/route', {
+      ...O,
+      json: { payload: { ...fresh, id: 'r-http-lone', highlights: [`亮点${String.fromCharCode(0xd800)}`] } },
+    }),
+    await call('PATCH', '/catalog/route/r-http-new', { ...O, json: { rev: draftEdit.body.rev, set: { title: `标题${NUL}` } } }),
+  ];
+  check(
+    '产品库 HTTP：文本字段里有 NUL 或孤立代理项 → 新建与补丁都是 422 invalid_item 并点名字段',
+    badText.every((r) => r.status === 422 && r.body.error === 'invalid_item') &&
+      JSON.stringify(badText.map((r) => (r.body.issues as Body[] | undefined)?.map((i) => i.path))) ===
+        '[["title"],["highlights.0"],["title"]]',
+    badText.map((r) => r.text.slice(0, 160)).join(' | '),
+  );
+  check('产品库 HTTP：路径里的 code 有 NUL → 400', (await call('GET', '/catalog/route/r-http%00new', O)).status === 400);
   const staleAct = await call('POST', '/catalog/route/r-http-new/activate', { ...O, json: { rev: created.body.rev } });
   check('上架 HTTP：rev 过期 → 409', staleAct.status === 409);
   const act = await call('POST', '/catalog/route/r-http-new/activate', { ...O, json: { rev: draftEdit.body.rev } });
@@ -1464,6 +1703,12 @@ check(
   }
   check('CSV 导入：七种不合格都是 422 invalid_csv 并按行点名', failed.length === 0, failed.join(' | '));
   check('CSV 导入：不合格时一条也没建（包括同一份里合格的那几行）', (await count()) === n0);
+  const nulCell = await reject(`${head}${NL}h-nul,名${String.fromCharCode(0)},三亚,五星,100,房,亮点,`);
+  check(
+    'CSV 导入：单元格里有 NUL → 422 invalid_csv 点名那一行（不带进库里报错成 500）',
+    nulCell.status === 422 && nulCell.body.error === 'invalid_csv' && nulCell.body.rows?.[0]?.row === 1 && (await count()) === n0,
+    nulCell.text,
+  );
   const route = await reject(`id,title${NL}r-csv,标题`, 'route');
   check(
     'CSV 导入：线路的必填 itinerary 不是平铺字段 → 422，说明原因',
@@ -1518,6 +1763,15 @@ check(
   check(
     '托管：直接请求 /console/index.html 也是换过 nonce 的页面，不是带占位符的原文件',
     direct.status === 200 && !direct.text.includes(placeholder),
+  );
+  // 路径解析会落到同一个文件的别的写法：末尾带斜杠，以及（大小写不敏感的文件系统上）大写
+  const aliases = [await page('/console/index.html/'), await page('/console/INDEX.HTML')];
+  check(
+    '托管：/console/index.html/ 与 /console/INDEX.HTML 也是换过 nonce 的页面，不是按文件吐出的原文',
+    aliases.every(
+      (r) => r.status === 200 && !r.text.includes(placeholder) && (r.headers.get('content-type') ?? '').startsWith('text/html'),
+    ),
+    aliases.map((r) => `${r.status} ${r.headers.get('content-type')}`).join(' | '),
   );
   const deep = await page('/console/sop/versions/3');
   check('托管：深链 /console/sop/versions/3 也返回 index.html', deep.status === 200 && deep.text.includes('<div id="root">'));
@@ -1625,6 +1879,35 @@ check('错误映射：不认识的错误 → null（按 500 处理）', __consol
     '文件模式：/api/console/* 一律 503 db_disabled',
     f.every((r) => r.status === 503 && r.body.error === 'db_disabled'),
     f.map((r) => r.text).join(' | '),
+  );
+}
+
+// 请求体上限的 413 / 411 在后台子应用之前就回了：/api/console/* 与 /console/* 上照样带安全头，后台接口回 { error }
+{
+  const big = JSON.stringify({ email: 'x'.repeat(70 * 1024), password: 'x' });
+  const post = (url: string, headers: Record<string, string>) => app.request(url, { method: 'POST', headers, body: big });
+  const tooLarge = await post('/api/console/auth/login', { 'content-type': 'application/json', 'content-length': String(big.length) });
+  // app.request 不会自己带 content-length，不写就是 411
+  const noLength = await post('/api/console/auth/login', { 'content-type': 'application/json' });
+  const page413 = await post('/console/', { 'content-length': String(big.length) });
+  const bodies: Body[] = [];
+  for (const r of [tooLarge, noLength]) {
+    const text = await r.text();
+    try {
+      bodies.push(JSON.parse(text) as Body);
+    } catch {
+      bodies.push({ text });
+    }
+  }
+  check(
+    '请求体上限：/api/console 的 413、411 与 /console 的 413 都带安全头，接口回 JSON 错误',
+    tooLarge.status === 413 &&
+      noLength.status === 411 &&
+      page413.status === 413 &&
+      [tooLarge, noLength, page413].every((r) => secured(r.headers)) &&
+      bodies[0]!.error === 'payload_too_large' &&
+      bodies[1]!.error === 'length_required',
+    `${tooLarge.status} ${noLength.status} ${page413.status} ${JSON.stringify(bodies)}`,
   );
 }
 

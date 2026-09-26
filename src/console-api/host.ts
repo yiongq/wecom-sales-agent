@@ -27,13 +27,23 @@ const MIME: Readonly<Record<string, string>> = {
 /** 构建产物目录：默认 cwd/console/dist（镜像里就在这里）；自测用 CONSOLE_DIST 指到临时目录。每次现取，不缓存 */
 const distDir = (): string => path.resolve(process.env.CONSOLE_DIST || path.join(process.cwd(), 'console', 'dist'));
 
-/** 读 dist 里的一个文件；不是文件、读不到、或者路径跑出了 dist（../ 之类）都返回 null */
-async function readDistFile(rel: string): Promise<Buffer | null> {
+/**
+ * 读 dist 里的一个文件；不是文件、读不到、或者路径跑出了 dist（../ 之类）都返回 null。
+ * notIndex：落到 index.html 上也返回 null。'index.html/' 经 path.resolve 去掉末尾的斜杠也会落到它，大小写不敏感的文件系统上
+ * 'INDEX.HTML' 也是它，所以按文件本身（dev + inode）比，不按路径字符串比
+ */
+async function readDistFile(rel: string, notIndex = false): Promise<Buffer | null> {
   const root = distDir();
   const file = path.resolve(root, rel);
   if (!file.startsWith(root + path.sep)) return null;
   try {
-    return (await fs.stat(file)).isFile() ? await fs.readFile(file) : null;
+    const st = await fs.stat(file);
+    if (!st.isFile()) return null;
+    if (notIndex) {
+      const index = await fs.stat(path.join(root, 'index.html')).catch(() => null);
+      if (index && index.dev === st.dev && index.ino === st.ino) return null;
+    }
+    return await fs.readFile(file);
   } catch {
     return null;
   }
@@ -43,8 +53,9 @@ export const consolePages = new Hono()
   .get('/console', (c) => c.redirect('/console/', 301))
   .get('/console/*', async (c) => {
     const rel = c.req.path.slice('/console/'.length);
-    if (rel && rel !== 'index.html') {
-      const file = await readDistFile(rel);
+    if (rel) {
+      // 带占位符的原 index.html 不按文件返回，落到它上面的路径都走下面现生成 nonce 的那一支
+      const file = await readDistFile(rel, true);
       if (file) {
         const type = MIME[path.extname(rel).toLowerCase()] ?? 'application/octet-stream';
         return c.body(new Uint8Array(file), 200, { ...CONSOLE_SECURITY_HEADERS, 'Content-Type': type });
