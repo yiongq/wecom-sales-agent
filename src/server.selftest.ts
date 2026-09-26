@@ -1130,7 +1130,6 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
     ['GET /api/proposal/:线路', `/api/proposal/${route?.id}`],
     ['/kf-qr.png', '/kf-qr.png'],
     ['/healthz', '/healthz'],
-    ['/api/admin/stream', '/api/admin/stream'],
   ];
   const SIM_PAGES = ['/chat.html', '/guide.html', '/CHAT.HTML', '/Guide.Html', '/%63hat.html', '/%67uide.html', '/chat.html?from=qr'];
   await withProfile(PROD, async () => {
@@ -1182,6 +1181,9 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
     const pay = await hit(`/pay/${vOrder.id}`);
     check('prod 下 /pay/:订单号 仍是带订单标题的支付页', pay.text.includes('<title>测试线路 · 订单支付</title>'));
     // 企微回调自带签名校验：本机没配就 501，配了而参数不全就 400，总之不是 404 / 401
+    // 01 起 prod 下后台 SSE 要求有效的后台会话（01 spec「鉴权」）；文件模式没有账号，匿名一律 401
+    const stream = await hit('/api/admin/stream');
+    check('prod 下匿名连 /api/admin/stream 返回 401', stream.status === 401, String(stream.status));
     const cb = await hit('/wecom/callback');
     check('prod 下有意匿名可达：/wecom/callback 由回调自己处理', [400, 501].includes(cb.status), `${cb.status} ${cb.text}`);
   });
