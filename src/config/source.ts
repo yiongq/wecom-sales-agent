@@ -129,7 +129,14 @@ interface Loaded {
   imageSections: readonly SopSection[];
   sop: PublishedSop;
   catalog: CatalogSnapshot;
+  /** 快照数组本身不带 ord：另存一份 code → ord，applyCatalogRow 按它插到正确位置 */
+  ords: Record<CatalogRow['kind'], Map<string, number>>;
 }
+
+const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
+  route: new Map(rows.filter((r) => r.kind === 'route').map((r) => [r.code, r.ord])),
+  hotel: new Map(rows.filter((r) => r.kind === 'hotel').map((r) => [r.code, r.ord])),
+});
 
 /** initConfig 收到非空 deps 之后就是 DB 模式，装载失败时撤回 */
 let dbInstalled = false;
@@ -138,7 +145,6 @@ let lockState: 'held' | 'lost' = 'held';
 let sopStale = false;
 let catalogStale = false;
 let shuttingDown = false;
-let generation = 0;
 let reacquireMs = 5_000;
 let reacquireTimer: NodeJS.Timeout | null = null;
 const catalogListeners: ((snap: CatalogSnapshot) => void)[] = [];
@@ -414,6 +420,7 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
       imageSections: deepFreeze(imageSections),
       sop: toPublishedSop(tenant.id, current, merged),
       catalog: snapshotOf(tenant.id, items, 0),
+      ords: ordsOf(items),
     };
     lockState = 'held';
     sopStale = false;
@@ -492,6 +499,31 @@ export function replacePublishedSop(next: PublishedSop): void {
   sopStale = false;
 }
 
+/**
+ * 只给 src/config/catalog.ts 在事务提交之后调用：用 RETURNING 拿回的行在内存里更新快照——替换同 code 的条目，
+ * 或按 ord 插入新上架的条目；generation 加 1。单副本、单写者，结果是确定的，不从库里重读。draft 行不进快照
+ */
+export function applyCatalogRow(row: {
+  kind: CatalogRow['kind'];
+  code: string;
+  ord: number;
+  status: 'draft' | 'active';
+  payload: unknown;
+}): void {
+  const cur = loaded;
+  if (!cur || row.status !== 'active') return;
+  const key = row.kind === 'route' ? 'routes' : 'hotels';
+  const ords = cur.ords[row.kind];
+  const idOf = (x: unknown): string => String((x as { id: unknown }).id);
+  const items: { ord: number; payload: unknown }[] = (cur.catalog[key] as readonly unknown[])
+    .filter((x) => idOf(x) !== row.code)
+    .map((x) => ({ ord: ords.get(idOf(x)) ?? Number.MAX_SAFE_INTEGER, payload: x }));
+  items.push({ ord: row.ord, payload: structuredClone(row.payload) });
+  ords.set(row.code, row.ord);
+  const list = items.toSorted((a, b) => a.ord - b.ord).map((x) => x.payload);
+  setCatalog(cur, { ...cur.catalog, [key]: list, generation: cur.catalog.generation + 1 });
+}
+
 // ---------------- 锁丢失 ----------------
 
 function onLockLost(): void {
@@ -547,11 +579,12 @@ async function reloadOnce(cur: Loaded): Promise<void> {
   if (row.versionNo !== cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
   sopStale = false;
   const next = snapshotOf(cur.tenantId, items, cur.catalog.generation);
+  cur.ords = ordsOf(items);
   if (
     JSON.stringify(next.routes) !== JSON.stringify(cur.catalog.routes) ||
     JSON.stringify(next.hotels) !== JSON.stringify(cur.catalog.hotels)
   ) {
-    setCatalog(cur, { ...next, generation: ++generation });
+    setCatalog(cur, { ...next, generation: cur.catalog.generation + 1 });
   }
   catalogStale = false;
 }
