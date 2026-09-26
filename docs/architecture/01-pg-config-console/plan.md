@@ -84,7 +84,7 @@
   - `format:check` / `lint` / `typecheck` 覆盖 `console/`；`test` 末尾做生产构建并扫描产物；typecheck 范围内放 `@ts-expect-error` 夹具。
   - 实测开放问题 3（类型引用的耗时与冲突）和 8（`__Host-` 在本地 http 下的表现）。
   - 对应验收 17 的产物与类型部分、22。
-- [ ] 13. 会话只读列表：接口和页面（0.5，可砍）。
+- [x] 13. 会话只读列表：接口和页面（0.5，可砍）。
 - [ ] 14. SOP 的逐节 diff 视图：`@codemirror/merge`（1，可砍）。
 - [ ] 15. 产品库 CSV 导入：接口和页面（1，可砍）。
 - [ ] 16. 部署收尾（1.5）：
@@ -260,6 +260,12 @@
 - **走查（验收 22）。** 本地真实 Postgres 上建库、迁移、`tenant-create`、`import-config`、建 owner / admin / viewer 三个账号，服务端以 DB 模式起、开发服务器代理过去，用 Playwright 走了一遍，截图在 [walkthrough/](walkthrough/)：匿名 demo 有横幅、没有审计入口（01）→ owner 登录看到锁定节与预算（02）→ 在「话术原则」里写进「明显超出我们现有线路的范围」，保存后「检查」按节列出 `phrase_forbidden`（03）→ 改掉、填变更说明发布，历史出现 v2 与新的 `prompt_hash`（04）→ 以 v1 回滚，生成 v3、提示哈希与 v1 相同（05）→ 产品库 active 条目的锁定字段只读、改 highlights 能保存（06）→ 新建 draft、上架前二次确认列出将锁定的字段（07）→ 审计页各有一行，`catalog.update` 的 diff 只有 `highlights`（08）。viewer 登录：没有审计入口、没有编辑按钮、编辑器与表单只读。
 - 走查抓到并修掉的问题：外部替换编辑器正文时触发了 onChange，保存后本地改动被旧正文覆盖（改为给这类事务打标记、不回调）；rjsf 默认给可选的数组和对象预填空项、浏览器按 HTML `required` 拦下整张表单、`tags` 这种可以为空的必填数组不给初值（改为只预填必填项、关掉 HTML5 校验、新条目的必填数组给 `[]`、初值 memo 住）；Ant Design 6 的几处弃用（Alert `message`、Space `direction`、Drawer `width`、`List`）。
 - 测试之外的临时产物（走查用的库、Playwright 探针脚本、下载的 WebKit / Firefox）都在仓库外，库已删掉。
+
+### 第 13 步（2026-09-26）
+
+- 没有砍。`GET /api/console/conversations` 挂 `canSeeCustomers`（所有成员，匿名在 demo 下也是 401），读现有的文件 store：按 `(updatedAt desc, id)` 排序、offset 分页（`limit` 1–100，默认 20），每条只投影 `id`、`channel`、`stage`、`handedOver`、消息条数、`updatedAt`，另给不含 `sim-` 的总数 `total` 供翻页；不列 `sim-` 会话，不带正文和画像。console 加「会话」页（成员可见，服务端分页），详情仍在 `admin.html` 里看。
+- `console.selftest.ts` 增至 181 条：排序（同一时刻按 id 升序）、投影的键恰好是那六个、不带正文与画像、`total` 不含 `sim-`、逐页翻完与全量排序一致、越界空页、参数越界 400、agent 角色能看（审计仍 403）、匿名 401。7 个变异（不滤 `sim-`、不按 id 打破平局、多投影 `profile`、只给编辑角色、对匿名开放、`limit` 上限放宽、分页多给一条）全部变红。
+- 页面没有在浏览器里单独走查（只经 typecheck 对上接口类型）；第 16 步托管 `/console` 之后的走查一并看。
 
 ## 验收记录
 
