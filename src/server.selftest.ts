@@ -673,7 +673,8 @@ async function captureErrors<T>(fn: () => Promise<T>): Promise<{ out: T; errors:
 }
 const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) => m.role === 'system' && m.content.includes('未能发送'));
 {
-  const s = mkSession('mystery:u01', 'mystery', '未知渠道的会话');
+  // 会话 id 里不含渠道名：否则日志只写了会话、漏了渠道，「含 mystery」也照样成立
+  const s = mkSession('odd:u01', 'mystery', '未知渠道的会话');
   const o = mkOrder(s);
   const paid = await captureErrors(async () => payReq(o.id));
   check(
@@ -718,6 +719,14 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
     '真实企微会话：付款确认推送失败时记备注',
     res.out[1] === 200 && getOrder(oR.id)?.status === 'paid' && failNotes(real.id).length === 1,
     JSON.stringify(getSession(real.id)?.messages.at(-1)),
+  );
+  // 两边都失败，结果分不出走的是哪个适配器，只能看日志：企微适配器未配置时打 [wecom] 开头的 error。
+  // 企微渠道要是落进未知渠道兜底，线上每条人工回复、付款确认和跟进都会发不出去
+  const viaWecom = (id: string) => res.errors.some((l) => l.startsWith('[wecom]') && l.includes(id));
+  check(
+    '企微渠道的会话（种子与真实客户）都走企微适配器，不落进未知渠道兜底',
+    viaWecom(seed.id) && viaWecom(real.id) && !res.errors.some((l) => l.includes('未知')),
+    JSON.stringify(res.errors),
   );
 }
 
