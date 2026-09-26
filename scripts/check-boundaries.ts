@@ -17,7 +17,7 @@ import ts from 'typescript';
 
 if (process.argv[2]) process.chdir(process.argv[2]);
 
-const CODE_EXT = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
+const CODE_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 const SKIP_DIRS = new Set(['node_modules', '.git', 'var', 'dist']);
 
 /** 一处 import。pkg 是 npm 包名（含 node: 内置），target 是解析出的仓库内路径，两者至多一个非空 */
@@ -171,6 +171,7 @@ function resolve(from: string, spec: string): { pkg: string | null; target: stri
 
 function scriptKind(file: string): ts.ScriptKind {
   if (file.endsWith('.tsx')) return ts.ScriptKind.TSX;
+  if (file.endsWith('.jsx')) return ts.ScriptKind.JSX;
   if (/\.[mc]?js$/.test(file)) return ts.ScriptKind.JS;
   return ts.ScriptKind.TS;
 }

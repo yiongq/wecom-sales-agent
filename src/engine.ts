@@ -12,6 +12,7 @@ import {
   isOriginMention,
   loadRoutes,
   LOWLAND_MAX_ALTITUDE,
+  mentionsPlace,
   offCatalogPlaces,
   rememberShownRoutes,
   searchRoutes,
@@ -479,12 +480,13 @@ const HAS_PRODUCT = /线路|行程|人均|每人|报价|出行|几位|预算|酒
  * 原话里点到的目的地 → 拿哪个词去查库。别名与 search_routes 共用（routes.json 的 aliases）：
  * 客户说「海南」指的就是三亚那条线。只说了别名就用别名查（「九寨沟」只该查到九寨那条，
  * 用「四川」查会把川西线也带出来）；本名也出现了、或同一目的地命中了两个不同别名，就用本名。
+ * 本名、别名是另一个更长地名的一截时按整词认（mentionsPlace）：后台建了「北海」线，「想去北海道滑雪」不算点了它
  */
 function destinationMentions(text: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const r of loadRoutes()) {
     if (!r.destination) continue;
-    const kw = text.includes(r.destination) ? r.destination : (r.aliases ?? []).find((a) => text.includes(a));
+    const kw = mentionsPlace(text, r.destination) ? r.destination : (r.aliases ?? []).find((a) => mentionsPlace(text, a));
     if (!kw) continue;
     const prev = out.get(r.destination);
     out.set(r.destination, prev && prev !== kw ? r.destination : kw);
@@ -1301,7 +1303,7 @@ function titleWordHit(said: string, r: Route, pool: Route[]): boolean {
 
 /** 在两三条候选里认「这条6日亲子线」「稻城亚丁那条」：别名、天数、标题里独有的两字词 */
 function routeMentioned(said: string, r: Route, pool: Route[]): boolean {
-  if ((r.aliases ?? []).some((a) => said.includes(a))) return true;
+  if ((r.aliases ?? []).some((a) => mentionsPlace(said, a))) return true;
   if ([...said.matchAll(ANY_DAYS_OR_RI)].some((m) => parseDayCount(m[1]) === r.days)) return true;
   return titleWordHit(said, r, pool);
 }
@@ -1320,7 +1322,7 @@ function routeNamed(said: string, r: Route, routes: Route[]): 'referent' | 'titl
     .map((o) => o.title)
     .join('|');
   const runs = r.title.replace(r.destination, ' ').match(/[一-鿿]{2,}/g) ?? [];
-  let title = (r.aliases ?? []).some((a) => said.includes(a));
+  let title = (r.aliases ?? []).some((a) => mentionsPlace(said, a));
   for (const w of runs) {
     for (let i = 0; i + 2 <= w.length; i++) {
       const bi = w.slice(i, i + 2);
@@ -2594,7 +2596,7 @@ function routesIn(said: string, routes: Route[]): Route[] {
     // 同一目的地几条线共用的别名（三条马代线都叫「马代」）分不出是哪条，只看天数和标题里独有的词
     const named = same.filter(
       (r) =>
-        (r.aliases ?? []).some((a) => said.includes(a) && !same.some((o) => o !== r && o.aliases?.includes(a))) ||
+        (r.aliases ?? []).some((a) => mentionsPlace(said, a) && !same.some((o) => o !== r && o.aliases?.includes(a))) ||
         [...said.matchAll(ANY_DAYS_OR_RI)].some((m) => parseDayCount(m[1]) === r.days) ||
         titleWordHit(said, r, same),
     );

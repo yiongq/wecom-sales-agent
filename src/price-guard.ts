@@ -3,7 +3,7 @@
 // 此前 URL/订单号有确定性护栏，价格却只有提示词约束（「严禁自己编造任何价格」）——
 // 模型真写错一个数字就直接发给客户了。对高客单价产品这是最贵的一类错误：客户按错价
 // 下单、成交后才发现，要么公司认亏要么当场翻脸。
-import { isOriginMention, loadHotels, loadRoutes, offCatalogPlaces } from './tools.js';
+import { isOriginMention, loadHotels, loadRoutes, mentionsPlace, offCatalogPlaces } from './tools.js';
 import { getOrder } from './store.js';
 import type { Route, Session } from './types.js';
 import { ConfigNotReadyError } from './config/source.js';
@@ -641,10 +641,10 @@ export function routeNames(routes: Route[]): Map<string, string[]> {
   return out;
 }
 
-/** 这段文字点了名的线路。skip：这个叫法在原文里不算点名（客户说的出发地） */
+/** 这段文字点了名的线路。skip：这个叫法在原文里不算点名（客户说的出发地）。地名按整词认（tools.ts mentionsPlace） */
 export function namedRoutes(text: string, names: Map<string, string[]>, skip?: (name: string) => boolean): string[] {
   const t = text.replace(/\s+/g, '');
-  return [...names].filter(([, ns]) => ns.some((n) => t.includes(n) && !skip?.(n))).map(([id]) => id);
+  return [...names].filter(([, ns]) => ns.some((n) => mentionsPlace(t, n) && !skip?.(n))).map(([id]) => id);
 }
 
 /**
@@ -1218,7 +1218,7 @@ export function strandedAfterDrop(before: string, after: string): boolean {
     // 删掉的是「中央格兰德…人均 28,800」、剩下「马尔代夫度蜜月很合适～这条的亮点」：目的地还在，「这条」指的那条没了（A04）
     const dests = (x: string): string[] => {
       const t = x.replace(/\s+/g, '');
-      return routes.filter((r) => [r.destination, ...(r.aliases ?? [])].some((p) => !!p && t.includes(p))).map((r) => r.destination);
+      return routes.filter((r) => [r.destination, ...(r.aliases ?? [])].some((p) => !!p && mentionsPlace(t, p))).map((r) => r.destination);
     };
     const lost = (a: string[], b: string[]): boolean => a.some((x) => !b.includes(x));
     if (lost(namedRoutes(before, names), namedRoutes(after, names)) || lost(dests(before), dests(after))) return true;

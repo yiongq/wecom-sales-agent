@@ -490,6 +490,63 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   check('表单往返：每条线路和酒店原样提交回去逐字节不变', rt.length === 0, rt.join(','));
 }
 
+// ---------------- 产品库：CSV 解析与逐行校验的边界（第 15 步） ----------------
+{
+  const { parseCsv } = await import('../shared/csv.js');
+  const { prepareCatalogCsv, CatalogCsvError } = await import('../shared/catalog-csv.js');
+  const head = 'id,name,destination,stars,nightlyFrom,roomType,highlights,tags';
+  // 合格返回 ok: 加上 payload，不合格返回按行列出的问题
+  const outcome = (text: string): string => {
+    try {
+      return `ok:${JSON.stringify(prepareCatalogCsv('hotel', text))}`;
+    } catch (e) {
+      return e instanceof CatalogCsvError ? JSON.stringify(e.rows) : `threw:${String(e)}`;
+    }
+  };
+  const midQuote = ((): string => {
+    try {
+      return JSON.stringify(parseCsv('a,5"b,c'));
+    } catch (e) {
+      return String(e);
+    }
+  })();
+  check('CSV 解析：双引号只在字段开头才起引用，字段中间的照原样收', midQuote === JSON.stringify([['a', '5"b', 'c']]), midQuote);
+  const extra = outcome(`${head}\nh-a,名,三亚,五星,100,房,亮点,,多出来的一格`);
+  const fewer = outcome(`${head}\nh-a,名,三亚,五星,100,房,亮点`);
+  check(
+    'CSV 导入：数据行比表头多一格、少一格都拒，点名那一行和列数',
+    extra.startsWith('[{"row":1,') && extra.includes('有 9 列，表头有 8 列') && fewer.startsWith('[{"row":1,') && fewer.includes('有 7 列'),
+    `${extra} ${fewer}`,
+  );
+  const dupHead = outcome('id,name,name,destination,stars,nightlyFrom,roomType,highlights,tags\nh-a,名一,名二,三亚,五星,100,房,亮点,');
+  check(
+    'CSV 导入：表头重复 → 第 0 行点名「表头重复」',
+    dupHead === JSON.stringify([{ row: 0, issues: [{ path: 'name', message: '表头重复' }] }]),
+    dupHead,
+  );
+  const rowsOf = (n: number): string => [head, ...Array.from({ length: n }, (_, i) => `h-cap-${i},名,三亚,五星,100,房,亮点,`)].join('\n');
+  const over = outcome(rowsOf(201));
+  check(
+    'CSV 导入：200 行照收，201 行 → 第 0 行点名上限',
+    outcome(rowsOf(200)).startsWith('ok:') && over.startsWith('[{"row":0,') && over.includes('一次最多导入 200 行'),
+    over.slice(0, 160),
+  );
+  const padded = outcome(`${head}\n h-pad , 名 ,三亚 , 五星 , 100 ,房, 亮点一 、 亮点二 ,`);
+  const trimmed = [
+    {
+      id: 'h-pad',
+      name: '名',
+      destination: '三亚',
+      stars: '五星',
+      nightlyFrom: 100,
+      roomType: '房',
+      highlights: ['亮点一', '亮点二'],
+      tags: [],
+    },
+  ];
+  check('CSV 导入：格子前后的空格去掉，id 与整数照样认', padded === `ok:${JSON.stringify(trimmed)}`, padded);
+}
+
 // ---------------- 产品库：文件模式的快照冻结（验收 4） ----------------
 {
   const assignThrows = (fn: () => void): boolean => {
@@ -521,6 +578,16 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     '冻结：往 loadRoutes() 里 push 抛 TypeError',
     assignThrows(() => void loadRoutes().push(loadRoutes()[0]!)),
   );
+  // 酒店文件缺失时返回的空数组也冻结（不变量 16 两种模式、任何情况都成立）
+  const savedHotelsPath = process.env.HOTELS_PATH;
+  process.env.HOTELS_PATH = path.join(process.env.VAR_DIR!, 'no-such-hotels.json');
+  const noHotels = loadHotels();
+  check(
+    '冻结：酒店文件缺失时 loadHotels() 返回的空数组同样冻结，push 抛 TypeError',
+    noHotels.length === 0 && Object.isFrozen(noHotels) && assignThrows(() => void (noHotels as unknown[]).push({})),
+  );
+  if (savedHotelsPath === undefined) delete process.env.HOTELS_PATH;
+  else process.env.HOTELS_PATH = savedHotelsPath;
   const before = loadHotels()
     .map((h) => h.id)
     .join(',');
@@ -616,6 +683,30 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   const absent = SOP_KNOWN_FIELDS.filter((f) => !tokens.has(f));
   check('漂移：SOP_KNOWN_FIELDS 都以标识符出现在 KNOWN_FIELD_SOURCES 里', absent.length === 0, absent.join(','));
   check('漂移：SOP 点名的工具都是现有的工具', contract(image).filter((v) => v.code === 'unknown_tool').length === 0);
+}
+
+// ---------------- 依赖边界的 lint 也查 .jsx（spec「模块与依赖方向」，验收 20） ----------------
+{
+  const { spawnSync } = await import('node:child_process');
+  // 不在 git 工作区里的临时目录：脚本改查目录树。租户 GUC 名拆开拼，免得本文件自己命中那条规则
+  const dir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'boundaries-'));
+  const put = (rel: string, text: string): void => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  };
+  put('src/shared/a.jsx', "import pg from 'pg';\nexport const A = () => <div>{String(pg)}</div>;\n");
+  put('src/config/b.jsx', `export const guc = '${['app', 'tenant_id'].join('.')}';\n`);
+  put('console/src/c.jsx', "import { openDb } from '../../src/db/client.js';\nexport const C = () => <p>{String(openDb)}</p>;\n");
+  const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'scripts', 'check-boundaries.ts'), dir], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  check(
+    '边界 lint：.jsx 文件里的 import 越界与租户 GUC 名同样被拦，逐个点名文件',
+    run.status === 1 && ['src/shared/a.jsx:1', 'src/config/b.jsx:1', 'console/src/c.jsx:1'].every((f) => run.stderr.includes(f)),
+    `${run.status} ${run.stderr.slice(0, 300)}`,
+  );
 }
 
 // ================ DB 模式：配置源、启动顺序、导入导出（第 6 步） ================
@@ -2170,6 +2261,214 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   cfg.__configTest.reset();
 }
 
+// ---------------- 后台新建的目的地：地名按整词认，大区叫法也认得新线路 ----------------
+{
+  const cat = await import('./catalog.js');
+  const { searchRoutes, offCatalogPlaces, visitedDestinations } = await import('../tools.js');
+  const { routeNames, namedRoutes } = (await import('../price-guard.js')).__priceGuardTest;
+  const { dropUnbackedClaims } = await import('../price-rules.js');
+  const base = (JSON.parse(routesRaw) as Record<string, unknown>[])[0]!;
+  const noAliases = Object.fromEntries(Object.entries(base).filter(([k]) => k !== 'aliases'));
+  const ids = async (destination: string): Promise<string> => (await searchRoutes({ destination })).map((r) => r.id).join(',');
+  const offKws = (text: string): string =>
+    offCatalogPlaces(text)
+      .map((p) => p.kw)
+      .join(',');
+  // 引擎替模型预取 search_routes 时查的目的地
+  const prefetch = (text: string): string[] => __engineTest.planPrefetch(freshSession(), text).map((a) => String(a.destination));
+
+  // 「北海」「蒙古」这类是更长地名一截的短名照样能新建、上架：引擎、工具、护栏认线路都按整词（mentionsPlace）。
+  // 此前上架时直接拒，逼运营写全称「广西北海」——引擎按原话认目的地，客户说「北海」反而认不出，预取落空
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t));
+  const ctx: import('../db/client.js').TenantCtx = {
+    tenantId: cfg.currentCatalog().tenantId,
+    actor: { kind: 'user', userId: null, name: '运营丁', ip: null },
+  };
+  const activated = async (payload: Record<string, unknown>): Promise<string> => {
+    try {
+      const item = await cat.createCatalogItem(ctx, 'route', payload);
+      await cat.activateCatalogItem(ctx, 'route', String(payload.id), { rev: item.rev });
+      return cfg.currentCatalog().routes.some((r) => r.id === payload.id) ? 'ok' : 'missing';
+    } catch (e) {
+      return e instanceof cat.CatalogValidationError ? e.issues.map((i) => i.path).join(',') : String(e);
+    }
+  };
+  const gx = await activated({
+    ...noAliases,
+    id: 'r-gx-beihai',
+    destination: '广西北海',
+    aliases: ['北海'],
+    title: '广西北海 涠洲岛 8 日',
+    maxAltitude: 20,
+  });
+  const mongol = await activated({ ...noAliases, id: 'r-mongol', destination: '蒙古', title: '蒙古 草原 8 日', overseas: true });
+  check('地名：别名「北海」、目的地「蒙古」都能新建上架', gx === 'ok' && mongol === 'ok', `${gx} ${mongol}`);
+  const hokkaido = prefetch('想去北海道滑雪');
+  check(
+    '地名：「广西北海」配别名「北海」，客户说北海时引擎预取它，说北海道不算点了它',
+    prefetch('想去北海玩').join(',') === '北海' && !hokkaido.includes('北海') && (await ids('北海')) === 'r-gx-beihai',
+    `${prefetch('想去北海玩').join(',')} / ${hokkaido.join(',')}`,
+  );
+  const inner = prefetch('想去内蒙古草原骑马');
+  check('地名：客户说内蒙古，引擎不当成点了蒙古线', inner.join(',') === '内蒙古', inner.join(','));
+  const saidIds = (said: string): string[] => __engineTest.routesIn(said, loadRoutes()).map((r) => r.id);
+  check(
+    '地名：引擎认原话点了哪条线也按整词——「北海道那条」不算点了北海线，「北海那条」算',
+    !saidIds('北海道那条线怎么样').includes('r-gx-beihai') && saidIds('北海那条线怎么样').includes('r-gx-beihai'),
+    saidIds('北海道那条线怎么样').join(','),
+  );
+  const names = routeNames(loadRoutes());
+  check(
+    '地名：护栏认回复点了哪条线也按整词——「北海道」不算点了北海线，「北海」算',
+    !namedRoutes('北海道这边的滑雪线可以看看', names).includes('r-gx-beihai') &&
+      namedRoutes('北海这边的海岛线可以看看', names).includes('r-gx-beihai'),
+  );
+  // 高反担保得有线路数据撑着：说的是北海道，不能拿北海线的低海拔来撑
+  const assured = (text: string): number => dropUnbackedClaims(text, freshSession()).dropped.length;
+  check(
+    '地名：「北海道那边不会有高反」撑不住照删，「北海那边不会有高反」有北海线撑着照留',
+    assured('北海道那边不会有高反。') === 1 && assured('北海那边不会有高反。') === 0,
+    `${assured('北海道那边不会有高反。')} ${assured('北海那边不会有高反。')}`,
+  );
+  // 同一目的地几条线按别名挑：说的是「北海道」，不算挑中了别名「北海」的那条，两条都算（调用方据此判「说不清」）
+  const sea = await activated({ ...noAliases, id: 'r-gx-sea', destination: '广西', aliases: ['北海'], title: '广西 涠洲岛海岛 8 日' });
+  const hill = await activated({ ...noAliases, id: 'r-gx-hill', destination: '广西', aliases: ['桂林'], title: '广西 桂林山水 8 日' });
+  const gxSaid = saidIds('广西的线都看看，北海道也在考虑');
+  check(
+    '地名：同一目的地按别名挑线也按整词——说了广西和北海道，两条广西线都算',
+    sea === 'ok' && hill === 'ok' && gxSaid.includes('r-gx-sea') && gxSaid.includes('r-gx-hill'),
+    `${sea} ${hill} ${gxSaid.join(',')}`,
+  );
+  // 大区叫法：片区表只列了种子数据的目的地，后台新建的「西北」线也要在 search_routes(西北) 里
+  const nw = await cat.createCatalogItem(ctx, 'route', {
+    ...base,
+    id: 'r-northwest',
+    destination: '西北',
+    title: '西北 甘青大环线 8 日',
+    priceFrom: 1000,
+  });
+  await cat.activateCatalogItem(ctx, 'route', 'r-northwest', { rev: nw.rev });
+  const northwest = (await ids('西北')).split(',');
+  check(
+    '大区：后台新建的「西北」线在 search_routes(西北) 里，片区表里的西安照旧在',
+    northwest.includes('r-northwest') && northwest.includes('r-xian'),
+    northwest.join(','),
+  );
+  cfg.__configTest.reset();
+
+  // 文件模式（以及任何来路的数据）同样按整词认：目的地就是「北海」「蒙古」「罗马」时，更长的地名不算点了它
+  const fixture = path.join(process.env.VAR_DIR!, 'routes-places.json');
+  const mk = (id: string, destination: string): Route =>
+    ({ ...noAliases, id, destination, title: `${destination} 深度游 8 日` }) as unknown as Route;
+  const fx = [
+    ...(JSON.parse(routesRaw) as Route[]),
+    mk('r-beihai', '北海'),
+    mk('r-hokkaido', '北海道'),
+    mk('r-mongolia', '蒙古'),
+    mk('r-rome', '罗马'),
+    // 标题、标签里带着大区叫法的别处线路：滇西北在西南，「东南亚」不是南亚
+    { ...mk('r-dxb', '云南'), title: '滇西北 梅里雪山 8 日' },
+    { ...mk('r-thai', '泰国'), title: '东南亚 泰国普吉 6 日', tags: ['东南亚', '海岛'], overseas: true } as Route,
+  ];
+  fs.writeFileSync(fixture, JSON.stringify(fx));
+  const savedRoutesPath = process.env.ROUTES_PATH;
+  process.env.ROUTES_PATH = fixture;
+  try {
+    const hokkaido = await ids('北海道');
+    const beihai = await ids('北海');
+    check(
+      '整词：search_routes(北海道) 只给北海道线，search_routes(北海) 只给北海线',
+      hokkaido === 'r-hokkaido' && beihai === 'r-beihai',
+      `${hokkaido} / ${beihai}`,
+    );
+    const inner = await ids('内蒙古');
+    check('整词：内蒙古不算蒙古线，仍按库外认', !inner.includes('r-mongolia') && offKws('想去内蒙古草原骑马') === '内蒙古', inner);
+    check('整词：罗马尼亚不算罗马线', !(await ids('罗马尼亚')).includes('r-rome') && (await ids('罗马')) === 'r-rome');
+    const been = visitedDestinations(['北海道去过了', '内蒙古玩过'], fx).join(',');
+    check('整词：说去过北海道、内蒙古，不算去过北海、蒙古', been === '北海道', been);
+    const nwIds = await ids('西北');
+    const saIds = await ids('南亚');
+    check(
+      '大区：标题写着「滇西北」的云南线不进 search_routes(西北)，标签带「东南亚」的泰国线不进 search_routes(南亚)',
+      nwIds === 'r-xian,r-xinjiang,r-xinjiang-lux' && !saIds.includes('r-thai') && saIds.includes('r-maldives'),
+      `${nwIds} / ${saIds}`,
+    );
+  } finally {
+    if (savedRoutesPath === undefined) delete process.env.ROUTES_PATH;
+    else process.env.ROUTES_PATH = savedRoutesPath;
+  }
+}
+
+// ---------------- 公开页：产品库文本是不可信输入（spec「编辑规则」最后一条） ----------------
+{
+  const vm = await import('node:vm');
+  const { app } = await import('../server.js');
+  const { createOrder, supersedeOrder } = await import('../store.js');
+  const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  const titleOf = (html: string): string | undefined => /<title>([\s\S]*?)<\/title>/.exec(html)?.[1];
+  const scripts = (html: string): number => html.split('<script').length - 1;
+  // String.replace 的替换串里 $` $' $& 有特殊含义：写进 head 时不能被展开成页面源码的前后两截
+  const title = '测试线$`路$&';
+  const highlight = "川西$'亮点$`";
+  const r0 = (JSON.parse(routesRaw) as Route[])[0]!;
+  const fixture = path.join(process.env.VAR_DIR!, 'routes-dollar.json');
+  fs.writeFileSync(fixture, JSON.stringify([{ ...r0, title, hotelLevel: '奢$$华', highlights: [highlight, ...r0.highlights.slice(1)] }]));
+  const savedRoutesPath = process.env.ROUTES_PATH;
+  process.env.ROUTES_PATH = fixture;
+  try {
+    const page = await (await app.request(`/proposal/${r0.id}/2`)).text();
+    check(
+      '方案页：标题、亮点里的 $ 替换符原样写进 title 与分享摘要，页面只有一段脚本',
+      scripts(page) === 1 &&
+        titleOf(page) === `${esc(title)} · 行程方案书` &&
+        page.includes(`<meta name="description" content="${r0.days} 天 · 2 位出行 · 奢$$华｜${esc(highlight)}">`),
+      `${scripts(page)} ${titleOf(page)?.slice(0, 120)}`,
+    );
+    const order = { sessionId: 's-dollar', routeId: r0.id, routeTitle: title, travelers: 2, departDate: '', totalPrice: 100 };
+    const pending = createOrder(order);
+    const pay = await (await app.request(`/pay/${pending.id}`)).text();
+    const old = createOrder(order);
+    supersedeOrder(old.id, pending.id);
+    const oldPay = await (await app.request(`/pay/${old.id}`)).text();
+    check(
+      '支付页：线路标题里的 $ 替换符原样写进 title（待付款与被替代的旧单都是），页面只有一段脚本',
+      scripts(pay) === 1 &&
+        titleOf(pay) === `${esc(title)} · 订单支付` &&
+        scripts(oldPay) === 1 &&
+        titleOf(oldPay) === `${esc(title)} · 订单已被替代`,
+      `${titleOf(pay)?.slice(0, 80)} / ${titleOf(oldPay)?.slice(0, 80)}`,
+    );
+  } finally {
+    if (savedRoutesPath === undefined) delete process.env.ROUTES_PATH;
+    else process.env.ROUTES_PATH = savedRoutesPath;
+  }
+
+  // proposal.html 在浏览器里渲染：数值字段先过 Number()，接口回来的不是数也只显示成 NaN，不会当标记插进页面
+  const html = fs.readFileSync(path.join(root, 'public', 'proposal.html'), 'utf8');
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+  const mark = '<img src=x onerror=alert(1)>';
+  const shown = { innerHTML: '' };
+  const data = {
+    route: { ...r0, days: mark, itinerary: [{ day: mark, title: '第一天', detail: '行程', hotel: '酒店', meals: '早' }] },
+    travelers: mark,
+    quote: { total: 1, perPerson: 1, note: '说明' },
+  };
+  vm.runInNewContext(script, {
+    document: { getElementById: () => shown, title: '行程方案书 · 云途定制旅行' },
+    location: { pathname: `/proposal/${r0.id}/2` },
+    URLSearchParams,
+    encodeURIComponent,
+    fetch: async () => ({ ok: true, json: async () => data }),
+  });
+  for (let i = 0; i < 100 && !shown.innerHTML.includes('<header>'); i++) await new Promise((r) => setTimeout(r, 1));
+  check(
+    '方案页脚本：天数、天号、人数不是数时显示成 NaN，不当标记插进页面',
+    shown.innerHTML.includes('<header>') && !shown.innerHTML.includes('<img src=x') && shown.innerHTML.includes('>DNaN<'),
+    shown.innerHTML.slice(0, 200),
+  );
+}
+
 // ---------------- 检索（第 9 步：验收 11） ----------------
 {
   const http = await import('node:http');
@@ -2179,6 +2478,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   // 向量按字符码位落到 1024 维上，用罕见字就能让某条线路在召回里排第一
   let buildRequests = 0;
   let failBuilds = 0;
+  // 回 400：网关不重试 4xx，一次构建恰好一个请求、立刻失败，数请求就能看出退避按哪一档
+  let rejectBuilds = false;
   let delayNextBuildMs = 0;
   const vec = (text: string): number[] => {
     const v = Array.from({ length: 1024 }, () => 0);
@@ -2193,6 +2494,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
         const { input } = JSON.parse(body) as { input: string[] };
         const isBuild = input.length > 1;
         if (isBuild) buildRequests++;
+        if (isBuild && rejectBuilds) {
+          res.statusCode = 400;
+          res.end('{}');
+          return;
+        }
         if (isBuild && failBuilds > 0) {
           failBuilds--;
           res.statusCode = 500;
@@ -2305,6 +2611,23 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       '检索：首次构建失败后退避重试成功',
       (await waitFor(idle, 10_000)) && retrieval.indexHealth().indexGeneration === cfg.currentCatalog().generation,
     );
+    // 退避按失败次数升一档；新的一次上架（invalidateIndex）从第一档重新算，不接着前面的次数等 10 分钟。第二档设得很长
+    retrieval.__retrievalTest.setBackoff([30, 60_000]);
+    rejectBuilds = true;
+    buildRequests = 0;
+    await addRoute('r-eel', '鳗');
+    const twoFailures = await waitFor(() => buildRequests >= 2);
+    await new Promise((r) => setTimeout(r, 200));
+    check('检索：连续失败时退避升档，第二次失败后不再按第一档重试', twoFailures && buildRequests === 2, String(buildRequests));
+    await addRoute('r-ray', '鳐');
+    check(
+      '检索：之后又上架一条、构建仍失败，重试从第一档算起',
+      (await waitFor(() => buildRequests >= 4, 2000)) && buildRequests === 4,
+      String(buildRequests),
+    );
+    // 等第 4 次那轮构建收尾（还在途就等它失败，已收尾就按新快照建成）：在途的构建碰上下面切回文件模式，会换成文件的线路再建一次
+    rejectBuilds = false;
+    await retrieval.buildIndex();
 
     // 文件模式：行为与原来相同——建一次就不再建，失效什么都不做，缓存格式与键不变（重置内存后命中缓存）
     cfg.__configTest.reset();
@@ -2328,6 +2651,20 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     await retrieval.buildIndex();
     check('检索：重启（清掉内存）后命中同一份缓存，不再请求', buildRequests === 1 && retrieval.indexReady());
     check('检索：没有留下临时文件', !fs.readdirSync(process.env.VAR_DIR!).some((f) => f.startsWith('route-vectors.json.tmp')));
+    // 文件模式构建失败：不重试、不标过期（退避调短也不会再发请求）
+    retrieval.__retrievalTest.reset();
+    retrieval.__retrievalTest.setBackoff([20]);
+    fs.rmSync(cacheFile, { force: true });
+    rejectBuilds = true;
+    buildRequests = 0;
+    await retrieval.buildIndex();
+    await new Promise((r) => setTimeout(r, 300));
+    check(
+      '检索：文件模式构建失败后不重试、不标过期',
+      buildRequests === 1 && !retrieval.indexHealth().stale && !retrieval.indexReady(),
+      String(buildRequests),
+    );
+    rejectBuilds = false;
   } finally {
     process.env.LLM_MOCK = saved.mock;
     process.env.EMBED_BASE_URL = saved.url ?? '';
