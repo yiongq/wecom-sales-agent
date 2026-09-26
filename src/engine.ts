@@ -2338,14 +2338,18 @@ export function sopFileText(): string {
   return loadSop();
 }
 
-/** 每轮可追溯（spec「渲染与哈希」）：SOP 版本与前缀哈希前 12 位。文件模式的版本记 file，哈希按当前文件现算 */
-function configTag(): string {
+/**
+ * 这一轮的 system 与它的追溯标签（spec「渲染与哈希」每轮可追溯：SOP 版本与前缀哈希前 12 位）。两样在轮开始时同一刻取：
+ * 模型往返期间发布了新版本，日志仍记这一轮实际用的那个。文件模式的版本记 file，哈希按这一轮的 system 算，要打日志时才算
+ */
+function turnPrefix(): { system: string; tag: () => string } {
+  const system = buildSystemPrompt();
   if (configMode() === 'db') {
     const s = currentSop();
-    return `SOP v${s.versionNo} · 前缀 ${s.prefixHash.slice(0, 12)}`;
+    const tag = `SOP v${s.versionNo} · 前缀 ${s.prefixHash.slice(0, 12)}`;
+    return { system, tag: () => tag };
   }
-  const { system, tools } = promptPrefix();
-  return `SOP file · 前缀 ${promptHashes(system, tools, '').prefixHash.slice(0, 12)}`;
+  return { system, tag: () => `SOP file · 前缀 ${promptHashes(system, JSON.stringify(toolDefs), '').prefixHash.slice(0, 12)}` };
 }
 
 /** 发给模型的固定前缀：system 是请求里第一条 system 消息的全文，tools 是 JSON.stringify(toolDefs)。
@@ -3399,8 +3403,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     console.error('[engine] 预取线路失败（交给模型自己查）:', e);
   }
   const modelStart = Date.now();
+  const turn = turnPrefix();
   const raw = await chat({
-    system: buildSystemPrompt(),
+    system: turn.system,
     contextNote,
     prefetch,
     messages: history,
@@ -3788,8 +3793,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     });
   }
   saveSession(session);
-  logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs });
-  if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${session.id}）· ${configTag()}`);
+  logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs, tag: turn.tag });
+  if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${session.id}）· ${turn.tag()}`);
 
   const reply: AgentReply = { text: visible, stage: session.stage };
   if (session.handedOver) reply.handoff = true;
@@ -3818,11 +3823,15 @@ function promisesContact(text: string, session: Session): boolean {
  * 整轮（预取 + 模型往返 + 出口护栏）超过 LLM_SLOW_TURN_MS（默认 8000）时打一行分段耗时。llm.ts 的同名日志有逐次调用的明细，
  * 但只从 chat() 里面算起；两行对照着看，才分得清慢在预取、模型还是出口修补（补发方案书要再调一次工具）
  */
-function logSlowTurn(sessionId: string, totalMs: number, t: { prefetchMs: number; prefetchTimes: string[]; modelMs: number }): void {
+function logSlowTurn(
+  sessionId: string,
+  totalMs: number,
+  t: { prefetchMs: number; prefetchTimes: string[]; modelMs: number; tag: () => string },
+): void {
   if (totalMs <= Math.max(0, numEnv('LLM_SLOW_TURN_MS', 8000))) return;
   const pf = t.prefetchTimes.length ? `预取 ${t.prefetchMs}ms（${t.prefetchTimes.join(' + ')}）` : `预取 ${t.prefetchMs}ms`;
   console.warn(
-    `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms · ${configTag()}`,
+    `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms · ${t.tag()}`,
   );
 }
 
