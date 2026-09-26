@@ -490,6 +490,63 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   check('表单往返：每条线路和酒店原样提交回去逐字节不变', rt.length === 0, rt.join(','));
 }
 
+// ---------------- 产品库：CSV 解析与逐行校验的边界（第 15 步） ----------------
+{
+  const { parseCsv } = await import('../shared/csv.js');
+  const { prepareCatalogCsv, CatalogCsvError } = await import('../shared/catalog-csv.js');
+  const head = 'id,name,destination,stars,nightlyFrom,roomType,highlights,tags';
+  // 合格返回 ok: 加上 payload，不合格返回按行列出的问题
+  const outcome = (text: string): string => {
+    try {
+      return `ok:${JSON.stringify(prepareCatalogCsv('hotel', text))}`;
+    } catch (e) {
+      return e instanceof CatalogCsvError ? JSON.stringify(e.rows) : `threw:${String(e)}`;
+    }
+  };
+  const midQuote = ((): string => {
+    try {
+      return JSON.stringify(parseCsv('a,5"b,c'));
+    } catch (e) {
+      return String(e);
+    }
+  })();
+  check('CSV 解析：双引号只在字段开头才起引用，字段中间的照原样收', midQuote === JSON.stringify([['a', '5"b', 'c']]), midQuote);
+  const extra = outcome(`${head}\nh-a,名,三亚,五星,100,房,亮点,,多出来的一格`);
+  const fewer = outcome(`${head}\nh-a,名,三亚,五星,100,房,亮点`);
+  check(
+    'CSV 导入：数据行比表头多一格、少一格都拒，点名那一行和列数',
+    extra.startsWith('[{"row":1,') && extra.includes('有 9 列，表头有 8 列') && fewer.startsWith('[{"row":1,') && fewer.includes('有 7 列'),
+    `${extra} ${fewer}`,
+  );
+  const dupHead = outcome('id,name,name,destination,stars,nightlyFrom,roomType,highlights,tags\nh-a,名一,名二,三亚,五星,100,房,亮点,');
+  check(
+    'CSV 导入：表头重复 → 第 0 行点名「表头重复」',
+    dupHead === JSON.stringify([{ row: 0, issues: [{ path: 'name', message: '表头重复' }] }]),
+    dupHead,
+  );
+  const rowsOf = (n: number): string => [head, ...Array.from({ length: n }, (_, i) => `h-cap-${i},名,三亚,五星,100,房,亮点,`)].join('\n');
+  const over = outcome(rowsOf(201));
+  check(
+    'CSV 导入：200 行照收，201 行 → 第 0 行点名上限',
+    outcome(rowsOf(200)).startsWith('ok:') && over.startsWith('[{"row":0,') && over.includes('一次最多导入 200 行'),
+    over.slice(0, 160),
+  );
+  const padded = outcome(`${head}\n h-pad , 名 ,三亚 , 五星 , 100 ,房, 亮点一 、 亮点二 ,`);
+  const trimmed = [
+    {
+      id: 'h-pad',
+      name: '名',
+      destination: '三亚',
+      stars: '五星',
+      nightlyFrom: 100,
+      roomType: '房',
+      highlights: ['亮点一', '亮点二'],
+      tags: [],
+    },
+  ];
+  check('CSV 导入：格子前后的空格去掉，id 与整数照样认', padded === `ok:${JSON.stringify(trimmed)}`, padded);
+}
+
 // ---------------- 产品库：文件模式的快照冻结（验收 4） ----------------
 {
   const assignThrows = (fn: () => void): boolean => {
@@ -1916,6 +1973,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   // 向量按字符码位落到 1024 维上，用罕见字就能让某条线路在召回里排第一
   let buildRequests = 0;
   let failBuilds = 0;
+  // 回 400：网关不重试 4xx，一次构建恰好一个请求、立刻失败，数请求就能看出退避按哪一档
+  let rejectBuilds = false;
   let delayNextBuildMs = 0;
   const vec = (text: string): number[] => {
     const v = Array.from({ length: 1024 }, () => 0);
@@ -1930,6 +1989,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
         const { input } = JSON.parse(body) as { input: string[] };
         const isBuild = input.length > 1;
         if (isBuild) buildRequests++;
+        if (isBuild && rejectBuilds) {
+          res.statusCode = 400;
+          res.end('{}');
+          return;
+        }
         if (isBuild && failBuilds > 0) {
           failBuilds--;
           res.statusCode = 500;
@@ -2042,6 +2106,23 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       '检索：首次构建失败后退避重试成功',
       (await waitFor(idle, 10_000)) && retrieval.indexHealth().indexGeneration === cfg.currentCatalog().generation,
     );
+    // 退避按失败次数升一档；新的一次上架（invalidateIndex）从第一档重新算，不接着前面的次数等 10 分钟。第二档设得很长
+    retrieval.__retrievalTest.setBackoff([30, 60_000]);
+    rejectBuilds = true;
+    buildRequests = 0;
+    await addRoute('r-eel', '鳗');
+    const twoFailures = await waitFor(() => buildRequests >= 2);
+    await new Promise((r) => setTimeout(r, 200));
+    check('检索：连续失败时退避升档，第二次失败后不再按第一档重试', twoFailures && buildRequests === 2, String(buildRequests));
+    await addRoute('r-ray', '鳐');
+    check(
+      '检索：之后又上架一条、构建仍失败，重试从第一档算起',
+      (await waitFor(() => buildRequests >= 4, 2000)) && buildRequests === 4,
+      String(buildRequests),
+    );
+    // 等第 4 次那轮构建收尾（还在途就等它失败，已收尾就按新快照建成）：在途的构建碰上下面切回文件模式，会换成文件的线路再建一次
+    rejectBuilds = false;
+    await retrieval.buildIndex();
 
     // 文件模式：行为与原来相同——建一次就不再建，失效什么都不做，缓存格式与键不变（重置内存后命中缓存）
     cfg.__configTest.reset();
@@ -2065,6 +2146,20 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     await retrieval.buildIndex();
     check('检索：重启（清掉内存）后命中同一份缓存，不再请求', buildRequests === 1 && retrieval.indexReady());
     check('检索：没有留下临时文件', !fs.readdirSync(process.env.VAR_DIR!).some((f) => f.startsWith('route-vectors.json.tmp')));
+    // 文件模式构建失败：不重试、不标过期（退避调短也不会再发请求）
+    retrieval.__retrievalTest.reset();
+    retrieval.__retrievalTest.setBackoff([20]);
+    fs.rmSync(cacheFile, { force: true });
+    rejectBuilds = true;
+    buildRequests = 0;
+    await retrieval.buildIndex();
+    await new Promise((r) => setTimeout(r, 300));
+    check(
+      '检索：文件模式构建失败后不重试、不标过期',
+      buildRequests === 1 && !retrieval.indexHealth().stale && !retrieval.indexReady(),
+      String(buildRequests),
+    );
+    rejectBuilds = false;
   } finally {
     process.env.LLM_MOCK = saved.mock;
     process.env.EMBED_BASE_URL = saved.url ?? '';
