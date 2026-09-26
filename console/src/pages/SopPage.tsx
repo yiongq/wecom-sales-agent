@@ -2,7 +2,7 @@
 // 检查 / 发布 / 丢弃；检查结果按节列出 violation，需要 rebase 与冲突时标出；历史列表可以「以此版本回滚」。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
 import { LockOutlined } from '@ant-design/icons';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   App,
@@ -112,6 +112,12 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
     return bodyOf(current.sections.find((x) => x.key === k)?.text ?? '', s.heading);
   };
   const dirty = Object.keys(edits).filter((k) => edits[k] !== originalBody(k));
+  // 检查结果、发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废
+  const clearResults = (): void => {
+    setCheck(null);
+    setRejected(null);
+    setConflict(null);
+  };
   // 先等新数据回来再清掉本地改动，免得编辑器先闪回旧正文
   const refresh = async (): Promise<void> => {
     await qc.invalidateQueries({ queryKey: ['sop'] });
@@ -140,7 +146,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
           },
         }),
       );
-      setCheck(null);
+      clearResults();
       message.success('草稿已保存');
       await refresh();
     });
@@ -159,7 +165,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         message.success(`已发布 v${v.versionNo}`);
         setPublishing(false);
         setNote('');
-        setCheck(null);
+        clearResults();
         await refresh();
       } catch (e) {
         setPublishing(false);
@@ -172,7 +178,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
   const discard = () =>
     run(async () => {
       await unwrap(api.sop.draft.discard.$post({ json: { rev: draft!.rev } }));
-      setCheck(null);
+      clearResults();
       message.success('草稿已丢弃');
       await refresh();
     });
@@ -232,7 +238,8 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
               type={check.rebase.conflicts.length ? 'error' : 'info'}
               title={
                 check.rebase.conflicts.length
-                  ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}`
+                  ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
+                    '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
                   : '草稿基于的版本已过期，发布时会自动合并别人的改动'
               }
             />
@@ -270,7 +277,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
                     <TextEditor value={s.text} readOnly />
                   </div>
                 ))}
-              <span>把需要的内容合进草稿后再发布，或者丢弃草稿重来。</span>
+              <span>这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在上面这份当前版本上重做。</span>
             </Space>
           }
         />
@@ -310,7 +317,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
 
       {draft && <DraftDiff spec={spec} published={published} draft={draft} />}
 
-      <History editable={editable} currentId={published.id} />
+      <History editable={editable} currentId={published.id} onRolledBack={clearResults} />
 
       <Modal
         destroyOnHidden
@@ -355,10 +362,21 @@ function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[
   );
 }
 
-function History({ editable, currentId }: { editable: boolean; currentId: string }) {
+const VERSIONS_PAGE = 50;
+
+function History({ editable, currentId, onRolledBack }: { editable: boolean; currentId: string; onRolledBack: () => void }) {
   const qc = useQueryClient();
   const { message, modal } = App.useApp();
-  const q = useQuery({ queryKey: ['sop-versions'], queryFn: () => unwrap(api.sop.versions.$get({ query: { limit: '50' } })) });
+  // 每一个已发布或归档的版本都要能回滚，所以按版本号倒序往前翻（before 游标）；
+  // 接口不给下一页的游标：满一页就以这一页最小的版本号接着翻，不满一页就是到头了
+  const q = useInfiniteQuery({
+    queryKey: ['sop-versions'],
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) =>
+      unwrap(api.sop.versions.$get({ query: { limit: String(VERSIONS_PAGE), ...(pageParam ? { before: String(pageParam) } : {}) } })),
+    getNextPageParam: (last) => (last.items.length < VERSIONS_PAGE ? undefined : (last.items.at(-1)?.versionNo ?? undefined)),
+  });
+  const rows = q.data?.pages.flatMap((p) => p.items) ?? [];
   const [target, setTarget] = useState<SopVersion | null>(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -370,6 +388,7 @@ function History({ editable, currentId }: { editable: boolean; currentId: string
       const v = await unwrap(api.sop.versions[':id'].rollback.$post({ param: { id: target.id }, json: { changeNote: note } }));
       setTarget(null);
       setNote('');
+      onRolledBack();
       await qc.invalidateQueries({ queryKey: ['sop'] });
       await qc.invalidateQueries({ queryKey: ['sop-versions'] });
       if (v.sameHashAsTarget) message.success(`已回滚：新版本 v${v.versionNo}，prompt 与 v${target.versionNo} 相同`);
@@ -395,7 +414,7 @@ function History({ editable, currentId }: { editable: boolean; currentId: string
           size="small"
           rowKey="id"
           loading={q.isPending}
-          dataSource={q.data?.items ?? []}
+          dataSource={rows}
           pagination={false}
           locale={{ emptyText: <Empty description="没有版本" /> }}
           columns={[
@@ -422,6 +441,11 @@ function History({ editable, currentId }: { editable: boolean; currentId: string
             },
           ]}
         />
+      )}
+      {q.hasNextPage && (
+        <Button style={{ marginTop: 12 }} loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
+          更早的
+        </Button>
       )}
       <Modal
         destroyOnHidden

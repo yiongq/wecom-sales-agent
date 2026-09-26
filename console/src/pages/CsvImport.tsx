@@ -6,6 +6,7 @@ import { catalogCsvColumns } from '../../../src/shared/catalog-csv.js';
 import type { CatalogKind } from '../../../src/shared/catalog.js';
 import type { ApiError } from '../../../src/shared/console-api.js';
 import { api, describe, HttpError, unwrap } from '../api.js';
+import { decodeCsvFile } from '../csvFile.js';
 
 export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () => Promise<void> }) {
   const { message } = App.useApp();
@@ -24,8 +25,17 @@ export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () 
     );
   }
 
+  // 不用 file.text()：它把非 UTF-8 的字节静默换成替换符（见 csvFile.ts）
   const readFile = async (file: File | undefined): Promise<void> => {
-    if (file) setCsv(await file.text());
+    if (!file) return;
+    setRows(null);
+    setError(null);
+    try {
+      setCsv(decodeCsvFile(new Uint8Array(await file.arrayBuffer())));
+    } catch (e) {
+      setCsv('');
+      setError(describe(e));
+    }
   };
   const submit = async (): Promise<void> => {
     setBusy(true);
@@ -47,7 +57,16 @@ export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () 
 
   return (
     <>
-      <Button onClick={() => setOpen(true)}>CSV 导入</Button>
+      <Button
+        onClick={() => {
+          // 上回的报错和不合格清单不带进这回（文件框随弹窗重建，已经是空的）；粘贴的 CSV 留着
+          setError(null);
+          setRows(null);
+          setOpen(true);
+        }}
+      >
+        CSV 导入
+      </Button>
       <Modal
         destroyOnHidden
         open={open}
@@ -66,7 +85,16 @@ export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () 
           <Typography.Text code copyable>
             {shape.columns.join(',')}
           </Typography.Text>
-          <input type="file" accept=".csv,text/csv" onChange={(e) => void readFile(e.target.files?.[0])} />
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => {
+              // 读之前清掉选中值：另存成 UTF-8 后多半还是同一个文件名，不清的话再选它浏览器不发 change，报错就一直挂着
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              void readFile(file);
+            }}
+          />
           <Input.TextArea rows={8} placeholder="也可以把 CSV 粘贴在这里" value={csv} onChange={(e) => setCsv(e.target.value)} />
           {error && <Alert type="error" title={error} />}
           {rows && (

@@ -35,8 +35,10 @@ export function Shell() {
       message.error(describe(e));
     }
     setCsrf('');
-    qc.clear();
-    await qc.invalidateQueries({ queryKey: VIEWER_KEY });
+    // 不能 clear() 再 invalidate：clear 只把查询拿出缓存、不通知还挂着的 observer，invalidate 又找不到它，页面就停在成员视图。
+    // 先拿掉其余查询（草稿、审计这些成员才看得到的），再重置 viewer：Shell 转圈、卸掉页面，重新判断来者（demo 匿名或登录页）
+    qc.removeQueries({ predicate: (q) => q.queryKey[0] !== VIEWER_KEY[0] });
+    await qc.resetQueries({ queryKey: VIEWER_KEY });
   };
 
   const items = [
@@ -60,7 +62,9 @@ export function Shell() {
     ...(v.kind === 'member' ? [{ key: '/conversations', label: <Link to="/conversations">会话</Link> }] : []),
     ...(canEdit(v) ? [{ key: '/audit', label: <Link to="/audit">审计日志</Link> }] : []),
   ];
-  const selected = items.map((i) => i.key).filter((k) => path.startsWith(`/console${k}`));
+  // 路由的 location.pathname 不带 basepath（/console）；带不带都认，按整段比，免得 /catalog/route 认成别的前缀
+  const here = path.replace(/^\/console(?=\/|$)/, '');
+  const selected = items.map((i) => i.key).filter((k) => here === k || here.startsWith(`${k}/`));
 
   return (
     <Layout style={{ minHeight: '100vh' }}>

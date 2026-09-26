@@ -4,12 +4,13 @@
 import { ErrorSchemaBuilder, type RJSFSchema, type RJSFValidationError, type ValidatorType } from '@rjsf/utils';
 import type { z } from 'zod';
 
-export function zodValidator(schema: z.ZodType): ValidatorType<unknown, RJSFSchema> {
+/** prepare：校验之前先整理表单值，与提交时用同一个（产品库表单把删空的可选字段当成没填，见 catalogForm.ts） */
+export function zodValidator(schema: z.ZodType, prepare: (formData: unknown) => unknown = (d) => d): ValidatorType<unknown, RJSFSchema> {
   return {
     validateFormData(formData, _jsonSchema, _customValidate, transformErrors, uiSchema) {
       const builder = new ErrorSchemaBuilder();
       let errors: RJSFValidationError[] = [];
-      const r = schema.safeParse(formData);
+      const r = schema.safeParse(prepare(formData));
       if (!r.success) {
         for (const issue of r.error.issues) {
           const path = issue.path.map((p) => (typeof p === 'number' ? p : String(p)));
