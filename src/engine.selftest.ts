@@ -573,9 +573,30 @@ console.log('\nSELFTEST PASS: greeting→discovery→recommend→quote→closing
   // 每人价取整：r-tibet-mid priceFrom 26800，最佳季「4月-6月、9月-10月」。26800 × 1.1 在浮点里是 29480.000000000004，
   // 不取整的话每人价和总价都带小数尾巴
   assert.deepEqual(q('r-tibet-mid', 3, '2027-09-20'), [29480, 88440], '每人价取整：26800 × 1.1 = 29480，总价 88440');
-  // 现有 20 条线路 × 0.95 都是整数（不论先上浮与否），× 0.95 这一步的取整、以及上浮取整对 4 人价的影响，用真实数据测不到
+  // × 0.95 这一步的取整：现有 20 条线路 × 0.95 都乘得尽，测不到，换一条测试专用线路。
+  // priceFrom 10001：上浮后 11001.1 取整成 11001，再 × 0.95 = 10450.95 取整成 10451；不上浮时 × 0.95 = 9500.95 取整成 9501
+  const roundingFixture = path.join(varDir, 'routes.rounding.fixture.json');
+  fs.writeFileSync(
+    roundingFixture,
+    JSON.stringify([
+      { id: 'r-rounding-fixture', title: '取整测试线', destination: '测试', days: 3, priceFrom: 10001, bestSeason: '3月-5月', tags: [] },
+    ]),
+  );
+  const savedRoutesPath = process.env.ROUTES_PATH;
+  process.env.ROUTES_PATH = roundingFixture; // loadRoutes 按调用现读，用完恢复
+  try {
+    assert.deepEqual(
+      q('r-rounding-fixture', 4, '2027-04-10'),
+      [10451, 41804],
+      '最佳季 4 人：先 round(10001 × 1.1) = 11001，再 round(× 0.95) = 10451',
+    );
+    assert.deepEqual(q('r-rounding-fixture', 4, '2027-07-10'), [9501, 38004], '非最佳季 4 人：round(10001 × 0.95) = 9501，总价 × 4');
+  } finally {
+    if (savedRoutesPath === undefined) delete process.env.ROUTES_PATH;
+    else process.env.ROUTES_PATH = savedRoutesPath;
+  }
   console.log(
-    'SELFTEST PASS: createQuote 算价向量（最佳季上浮 / 4 人 95 折 / 非最佳季与全年同价不上浮 / 上浮后每人价取整 / 总价 = 每人价 × 人数）',
+    'SELFTEST PASS: createQuote 算价向量（最佳季上浮 / 4 人 95 折 / 非最佳季与全年同价不上浮 / 上浮后与 95 折后每人价取整 / 总价 = 每人价 × 人数）',
   );
 }
 
