@@ -291,9 +291,23 @@
 - `console.selftest.ts` 增至 205 条（托管 13 条）。7 个变异（去掉路径兜底、`/console/index.html` 吐原文件、缺资源回退成页面、nonce 固定、资源不带安全头、demo 匿名兜底回 401、不 301）全部变红；「去掉路径兜底」起初存活（路由层已把 `../` 规范掉），补了一条直接查读文件那一层的断言。
 - README 的部署一节改成 compose 的流程，加上后台与备份两条。
 
+### 第 17 步（2026-09-26，本机部分；线上切换与真实模型对比待 owner）
+
+本机 compose 上按 spec「导入、导出与回滚」走了一遍，演练目录与镜像用完都删了。
+
+- **首次切换。** 按 spec 的顺序：先以文件模式部署能读库的镜像（`up -d app` 顺带起 db、跑迁移）→ `platform` 建租户和 owner 账号 → app 的 env 加 `DATABASE_URL`、`DEFAULT_TENANT_SLUG` → 以 app 身份 import（文件模式的应用在跑，不持锁）→ 加 `CONFIG_SOURCE=db` 重启。切换前后 `/healthz` 的 `promptHash`、`toolsHash`、`prefixHash`、`sopHash` 相同，切换后 `mode = db`、`sopVersion = 1`，app 容器的 env 里没有 owner、platform 与超级用户的凭据。去掉 `CONFIG_SOURCE=db` 重启回到文件模式、哈希不变，再加回去又是 DB 模式。
+- **同一镜像回到文件模式（验收 18 第一例）。** 经后台接口改「话术原则」并发布（v2）、改一条线路的 highlights；重启时日志按节、按条目点名与镜像的差异（「话术原则」「内容不同 r-sichuan-lux」）。应用照常在跑时 `export-config`，同一镜像以文件模式、`SOP_PATH` / `ROUTES_PATH` / `HOTELS_PATH` 指向导出目录起来：`promptHash`、`toolsHash`、`prefixHash`、`sopHash` 与 DB 模式最后的值相同，方案书接口返回改过的 highlights。
+- **回到上一个 tag（验收 18 第二例）。** `demo-v1.1` 的分离 worktree（不建分支）：以它的 `data/sop.md` 作 `--image-sop` 导出，拷进它的 `data/`、按 spec 用 oxfmt 格式化两个 JSON，做了一次真实的提交（过了那一版的 pre-commit：format、lint、typecheck、commitlint），在那一版上跑 `pnpm test` 全过（代替 CI，没有推送），用它构建镜像、以文件模式起来：镜像里 `data/sop.md` 的 sha256 等于导出时打印的 `sopHash`，方案书接口返回改过的 highlights。`demo-v1.1` 的 `/healthz` 还没有 `config` 一栏，所以按文件的 sha256 核对，而不是按 `/healthz`。
+- **备份与恢复（验收 19）。** 有两个访客会话、改过 SOP 与 highlights 的实例上跑 `backup.sh`：三份 age 密文，没配异地时 stderr 告警。在全新的 compose 项目（新口令）上按脚本开头的固定步骤恢复：解密 → db 首次初始化由 roles.sh 建角色和库 → 以超级用户 `pg_restore --exit-on-error`（不加 `--no-owner`）→ 以 agent_owner 跑迁移（空操作，成功）→ 解开 `var/` → DB 模式启动。`/healthz` 的 `sopVersion`、`promptHash`、`prefixHash`、`sopHash` 与原库一致；四张 RLS 表的行数相同（memberships 1、sop_versions 2、catalog_items 43、audit_log 7）；改过的 highlights 还在；原 owner 账号能登录；以 agent_app 不设租户读 `catalog_items` 得 0 行；`var/` 恢复后会话数相同（2）。按日期建目录、清理 7 天前的目录、异地复制与 30 天清理已在第 16 步实跑。
+- **待 owner**：线上 demo 的切换（下面「交接」一节给了按步骤的命令），切换后在线上跑一次备份与恢复演练并把不敏感的证据记进「验收记录」；真实模型对比（验收 21 的手动部分）要花真实的 LLM 调用，按「文件 → DB → 文件」交替各至少 3 遍。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
+
+- 18 · 本机通过（同一镜像、上一个 tag 两例，外加启动日志点名差异）· 证据见第 17 步实施记录。线上部署旧 tag 的那一例待 owner。
+- 19 · 本机通过 · `/healthz` 的 sopVersion 2、promptHash `551e69c20efc`、prefixHash `a32bdae5229e`、sopHash `46b9a7fde0d3` 恢复前后相同；四张 RLS 表行数 1 / 2 / 43 / 7 相同；原账号能登录；agent_app 不设租户读到 0 行；会话数 2 相同。线上的恢复演练待 owner。
+- 23 · 本机通过 · 切换前后 promptHash `6c202d633b60`、toolsHash `64c16fc8f464`、prefixHash `cd3cc7dab87a` 相同，`mode = db`、`sopVersion = 1`，app 的 env 里没有特权凭据。线上 demo 的切换待 owner。
 
 ## Open
 
@@ -302,6 +316,21 @@
 - 待 owner 复核（第 12 步）：`/console` 页面的 CSP 在 spec 那条之外多一条 `style-src 'self' 'nonce-…'`（每个响应现生成），否则 Ant Design 与 CodeMirror 没有样式；`/api/console/*` 的 CSP 不变。验收 16 查安全头时按这条对页面核对。另一种做法是 `style-src 'self' 'unsafe-inline'`，简单但放开了所有内联样式；也可以换掉运行时插样式的组件库，代价是推翻 ADR-002 的 Ant Design。理由与实现见第 12 步实施记录。
 - 供 owner 知悉（第 15 步）：spec 的 CSV 导入「只收平铺字段」，而线路的 `itinerary` 必填且是对象数组，所以线路没法用 CSV 建；现在对线路直接拒并提示用表单，酒店照常。要支持线路，得约定逐日行程的平铺写法（例如 `itinerary.1.title` 这样的列），可以放到 02。
 - 仍挂在 owner 名下（00 开放问题 1 的余下部分）：文件模式下没设 `DEPLOY_PROFILE` 却配了企微凭据时，是否也拒绝启动。第一个 prod 实例上线前定。
+
+## 交接（2026-09-26）
+
+- 已完成：第 1–16 步（全部合进 dev），第 17 步的本机演练（见实施记录）。
+- 半成品：无。
+- 阻塞：第 17 步的线上部分要 owner 在服务器上执行；第 18 步里依赖线上的几条（19、23 的线上部分，21 的手动部分）随之等待。
+- 下一步（owner）：
+  1. **先以文件模式部署能读库的镜像。** 服务器部署目录里先写好 `.env.db`、`.env.migrate`、`.env.platform`（写法见 `deploy/compose.yml` 开头；口令只用字母数字），`.env` 暂不加数据库变量。本机打 tag 后 `bash deploy.sh <tag>`：第一次会起 db（roles.sh 建角色和库）、跑迁移，并接管原来 `docker run` 起的容器。核对 `/healthz`：`revision` 是新 tag、`config.mode = file`，记下 `promptHash`、`toolsHash`、`prefixHash`。
+  2. **建租户和账号**（在部署目录里，下同；compose 命令都要带 `APP_IMAGE=wecom-sales-agent:latest`）：`docker compose -f deploy/compose.yml --profile cli run --rm -T platform node --import tsx src/cli/tenant-create.ts --slug <slug> --name <名称> --pack travel`；账号用 `user-create.ts --tenant <slug> --email … --name … --role owner`，口令经 `--password-stdin` 或在终端里生成。
+  3. **写 app 的 env**：`.env` 加 `DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent`、`DEFAULT_TENANT_SLUG=<slug>`，确认 `DEPLOY_PROFILE` 已显式设置。
+  4. **以 app 身份导入**：`docker compose -f deploy/compose.yml run --rm -T app node --import tsx src/cli/import-config.ts --tenant <slug>`，打印的三个哈希应与第 1 步相同。
+  5. **切换**：`.env` 加 `CONFIG_SOURCE=db`，`docker compose -f deploy/compose.yml up -d app`。核对 `/healthz`：`config.mode = db`、`sopVersion = 1`，三个哈希与第 1 步相同；`docker compose -f deploy/compose.yml exec app env` 里没有 owner、platform 或超级用户的凭据（验收 23）。失败就去掉 `CONFIG_SOURCE=db` 再 `up -d app` 回到文件模式，什么也不会丢。
+  6. **备份**：服务器装 age（配异地的话再装 rclone），`.env.backup` 写 `BACKUP_AGE_RECIPIENTS`（私钥不放服务器）和 `BACKUP_OFFSITE`，cron 每晚 `bash deploy/backup.sh`；手动跑一次，按脚本开头的步骤在另一台机器或旁路项目上恢复演练，把不敏感的证据记进「验收记录」（验收 19）。
+  7. **真实模型对比**（验收 21 的手动部分，要花真实的 LLM 调用）：从 `eval/cases.json` 过滤出 realOnly 用例写到仓库外的文件，按「文件 → DB → 文件」交替各至少跑 3 遍：文件模式 `CONFIG_SOURCE=file tsx eval/run.ts --cases <文件>`，DB 模式再加 `CONFIG_TEST_DB=pglite`。每遍记下输出里的 P90 和前缀缓存命中率，两种模式的 P90 都不超过 8 秒算通过，数字记进「验收记录」。
+  8. 复核 Open 里第 12、15 步的两条，然后我接着做第 18–19 步。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
 ## 交接（YYYY-MM-DD）
