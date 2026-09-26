@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Descriptions,
   Empty,
   Input,
@@ -35,6 +36,7 @@ import type {
   SopVersion,
 } from '../../../src/shared/console-api.js';
 import { api, describe, HttpError, unwrap } from '../api.js';
+import { SectionDiff } from '../SectionDiff.js';
 import { TextEditor } from '../TextEditor.js';
 import { canEdit, useViewer } from '../viewer.js';
 
@@ -306,6 +308,8 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         </Col>
       </Row>
 
+      {draft && <DraftDiff spec={spec} published={published} draft={draft} />}
+
       <History editable={editable} currentId={published.id} />
 
       <Modal
@@ -320,6 +324,34 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         <Input.TextArea rows={3} placeholder="变更说明（必填）" value={note} onChange={(e) => setNote(e.target.value)} />
       </Modal>
     </Space>
+  );
+}
+
+/** 草稿与已发布版本的逐节对比：只列改过的可编辑节，展开才建编辑器 */
+function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[]; published: SopVersion; draft: SopVersion }) {
+  const textOf = (v: SopVersion, key: string): string => v.sections.find((s) => s.key === key)?.text ?? '';
+  const changed = spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key));
+  return (
+    <Card size="small" title={`与已发布 v${published.versionNo} 的逐节对比`}>
+      {changed.length === 0 ? (
+        <Typography.Text type="secondary">草稿里的可编辑节与已发布版本相同</Typography.Text>
+      ) : (
+        <Collapse
+          items={changed.map((s) => ({
+            key: s.key,
+            label: s.heading ?? '前言',
+            children: (
+              <SectionDiff
+                before={bodyOf(textOf(published, s.key), s.heading)}
+                after={bodyOf(textOf(draft, s.key), s.heading)}
+                beforeLabel={`已发布 v${published.versionNo}`}
+                afterLabel={`草稿 rev ${draft.rev}`}
+              />
+            ),
+          }))}
+        />
+      )}
+    </Card>
   );
 }
 
