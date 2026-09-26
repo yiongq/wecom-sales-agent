@@ -15,6 +15,8 @@ const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
 process.env.VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-config-selftest-'));
 process.env.LLM_MOCK = '1';
+// 开发机 .env 里写着 CONFIG_SOURCE=db 也不能影响这组：DB 模式只经 initConfig(deps) 显式装上
+process.env.CONFIG_SOURCE = 'file';
 
 const root = path.join(import.meta.dirname, '..', '..');
 const { TRAVEL_SOP_SECTIONS, splitSop, joinSop, sectionBody, withBody, normalizeBody, mergeWithImage, editableChars, assertSopEncoding } =
@@ -28,6 +30,7 @@ const { loadRoutes, loadHotels, searchHotels } = await import('../tools.js');
 const { RouteSchema, HotelSchema, lockedFieldChanges, mergeKeyOrder, applyCatalogPatch, LOCKED_WHEN_ACTIVE, ALWAYS_LOCKED } =
   await import('../shared/catalog.js');
 const { deepFreeze } = await import('../shared/freeze.js');
+const { sha256 } = await import('./hashes.js');
 type SopSection = import('../sop/sections.js').SopSection;
 type ViolationCode = import('../sop/contract.js').ViolationCode;
 
@@ -568,11 +571,545 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   check('漂移：SOP 点名的工具都是现有的工具', contract(image).filter((v) => v.code === 'unknown_tool').length === 0);
 }
 
+// ================ DB 模式：配置源、启动顺序、导入导出（第 6 步） ================
+const { openTestDb, installSeededConfig, testConfigDeps, fakeLock } = await import('../db/testing.js');
+const cfg = await import('./source.js');
+const { importConfig, exportConfig, EXIT, imageCode } = await import('./transfer.js');
+const { boot } = await import('../boot.js');
+const { queryCount } = await import('../db/client.js');
+const { executeTool } = await import('../tools.js');
+const { getOrCreateSession, getSession } = await import('../store.js');
+const { handleMessage } = await import('../engine.js');
+type ToolHints = import('../tools.js').ToolHints;
+type ConfigDeps = import('./source.js').ConfigDeps;
+
+const DATA = path.join(root, 'data');
+const nextYear = new Date().getFullYear() + 1;
+const peakDate = `${nextYear}-07-15`;
+const offDate = `${nextYear}-01-15`;
+let simSeq = 0;
+const freshSession = (): import('../types.js').Session =>
+  getOrCreateSession(`sim-cfgtest${String(simSeq++).padStart(4, '0')}`, 'simulator');
+/** 订单号、支付链接、时间戳、会话 id 两种模式必然不同，遮掉再比 */
+const mask = (s: string, sid: string): string =>
+  s
+    .replaceAll(sid, 'SID')
+    .replace(/ord_[0-9a-f]{24}/g, 'ord_X')
+    .replace(/"payUrl":"[^"]*"/g, '"payUrl":"X"')
+    .replace(/\b1\d{12}\b/g, 'T');
+
+const READ_ONLY_TOOLS: [string, Record<string, unknown>, ToolHints?][] = [
+  ['search_routes', { destination: '云南', maxBudgetPerPerson: 20000 }],
+  ['search_routes', { query: '带爸妈去不累的地方', maxBudgetPerPerson: 30000 }],
+  ['get_route_detail', { routeId: 'r-sichuan-lux' }, { elder: true }],
+  ['search_hotels', {}],
+  ['search_hotels', { destination: '三亚' }],
+  ['create_quote', { routeId: 'r-sichuan-lux', travelers: 2, departDate: peakDate }],
+  ['create_quote', { routeId: 'r-sichuan-lux', travelers: 4, departDate: offDate }],
+  ['generate_proposal', { routeId: 'r-sichuan-lux', travelers: 2 }],
+];
+/** 同一组输入在当前模式下的全部观测：前缀、产品库、只读工具的输出、下单与转人工（遮掉之后）的输出与会话状态 */
+async function observeMode(): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const p = promptPrefix();
+  out.system = p.system;
+  out.tools = p.tools;
+  out.routes = loadRoutes()
+    .map((r) => JSON.stringify(r))
+    .join('\n');
+  out.hotels = loadHotels()
+    .map((h) => JSON.stringify(h))
+    .join('\n');
+  for (const [i, [name, args, hints]] of READ_ONLY_TOOLS.entries())
+    out[`${i}:${name}`] = await executeTool(name, args, freshSession(), hints);
+  for (const [name, args] of [
+    ['create_order', { routeId: 'r-sichuan-lux', travelers: 2, departDate: peakDate }],
+    ['handoff_to_human', { reason: '客户要求找真人顾问' }],
+  ] as const) {
+    const s = freshSession();
+    const result = await executeTool(name, args, s);
+    out[name] = mask(result, s.id);
+    out[`${name}:session`] = mask(JSON.stringify(getSession(s.id)), s.id);
+  }
+  return out;
+}
+
+const fileView = await observeMode();
+check('DB 前：当前是文件模式', cfg.configMode() === 'file');
+const t = await openTestDb();
+await installSeededConfig(t);
+check('DB：装载之后是 DB 模式', cfg.configMode() === 'db' && cfg.currentSop().versionNo === 1);
+
+// ---------------- 两种模式逐字节等价（验收 2） ----------------
+{
+  const dbView = await observeMode();
+  for (const k of Object.keys(fileView)) check(`等价：${k} 两种模式逐字节相同`, dbView[k] === fileView[k], (dbView[k] ?? '').slice(0, 80));
+  check('等价：比了全部观测项', Object.keys(dbView).length === Object.keys(fileView).length && Object.keys(fileView).length === 16);
+  const sop = cfg.currentSop();
+  check(
+    '等价：缓存里的哈希与现算的相同',
+    sop.promptHash === sha256(promptPrefix().system) && sop.toolsHash === sha256(promptPrefix().tools),
+  );
+  check('等价：缓存里的节就是镜像的节', joinSop(sop.sections) === md);
+}
+
+// ---------------- DB 模式的快照不可变（验收 4） ----------------
+{
+  const throwsType = (fn: () => void): boolean => {
+    try {
+      fn();
+      return false;
+    } catch (e) {
+      return e instanceof TypeError;
+    }
+  };
+  check(
+    'DB 冻结：给 loadRoutes()[0].priceFrom 赋值抛 TypeError',
+    throwsType(() => ((loadRoutes()[0] as { priceFrom: number }).priceFrom = 1)),
+  );
+  check(
+    'DB 冻结：对 loadHotels() 原地 sort 抛 TypeError',
+    throwsType(() => void loadHotels().sort((a, b) => a.nightlyFrom - b.nightlyFrom)),
+  );
+  const before = loadHotels()
+    .map((h) => h.id)
+    .join(',');
+  check('DB 冻结：search_hotels({}) 连调两次结果相同', JSON.stringify(searchHotels({})) === JSON.stringify(searchHotels({})));
+  check(
+    'DB 冻结：快照顺序不变',
+    loadHotels()
+      .map((h) => h.id)
+      .join(',') === before,
+  );
+  check(
+    'DB 冻结：loadRoutes() 返回快照里的数组本身，不拷贝',
+    loadRoutes() === loadRoutes() && loadRoutes() === cfg.currentCatalog().routes,
+  );
+  // 两种模式的数据相同，等价比较分不出「DB 模式下其实还在读文件」：只能看拿到的是不是快照本身
+  check('DB 冻结：loadHotels() 也返回快照里的数组本身', loadHotels() === cfg.currentCatalog().hotels);
+}
+
+// ---------------- 每轮不查库（验收 14） ----------------
+{
+  const sid = 'sim-cfgtest-turns-0001';
+  const before = queryCount();
+  for (const say of ['想去西安，两个人', '多少钱', '10月5号出发，就订这个', '付款链接打不开 再发我一次', '好的谢谢'])
+    await handleMessage(sid, say, 'simulator');
+  const s = getSession(sid);
+  check('每轮不查库：5 轮对话（含报价与下单）之后 queryCount 没变', queryCount() === before, `${before} → ${queryCount()}`);
+  check('每轮不查库：这几轮确实下了单', (s?.orderIds.length ?? 0) > 0);
+}
+
+// ---------------- /healthz 的 config ----------------
+{
+  process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
+  const { app } = await import('../server.js');
+  const body = (await (await app.request('/healthz')).json()) as { config: Record<string, unknown> };
+  const sop = cfg.currentSop();
+  check(
+    '/healthz：DB 模式报版本号、哈希前 12 位与锁状态',
+    body.config.mode === 'db' &&
+      body.config.sopVersion === 1 &&
+      body.config.promptHash === sop.promptHash.slice(0, 12) &&
+      body.config.toolsHash === sop.toolsHash.slice(0, 12) &&
+      body.config.prefixHash === sop.prefixHash.slice(0, 12) &&
+      body.config.sopHash === sop.sopHash.slice(0, 12) &&
+      body.config.lock === 'held' &&
+      body.config.sopStale === false &&
+      body.config.catalogStale === false,
+    JSON.stringify(body.config),
+  );
+}
+
+// ---------------- 导入与导出（验收 3） ----------------
+/** 以超级用户查库（绕过 RLS），查完回到 agent_app */
+async function asSuper<T>(fn: () => Promise<T>): Promise<T> {
+  await t.pg.exec('RESET ROLE');
+  try {
+    return await fn();
+  } finally {
+    await t.pg.exec('SET ROLE agent_app');
+  }
+}
+const rowsOfTenant = async (slug: string): Promise<string> =>
+  asSuper(async () => {
+    const r = await t.pg.query<{ v: number; c: number; a: number }>(
+      `select (select count(*)::int from sop_versions s join tenants x on x.id = s.tenant_id where x.slug = $1) as v,
+              (select count(*)::int from catalog_items s join tenants x on x.id = s.tenant_id where x.slug = $1) as c,
+              (select count(*)::int from audit_log s join tenants x on x.id = s.tenant_id where x.slug = $1) as a`,
+      [slug],
+    );
+    return JSON.stringify(r.rows[0]);
+  });
+const newTenant = (slug: string, status = 'active'): Promise<unknown> =>
+  asSuper(() => t.pg.query(`insert into tenants (slug, name, pack_id, status) values ($1, $1, 'travel', $2)`, [slug, status]));
+/** 把 data/ 拷一份到临时目录，按需改一个文件 */
+const dataCopy = (edit?: { file: string; to: (text: string) => string }): string => {
+  const dir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'data-'));
+  for (const f of ['sop.md', 'routes.json', 'hotels.json']) fs.copyFileSync(path.join(DATA, f), path.join(dir, f));
+  if (edit) fs.writeFileSync(path.join(dir, edit.file), edit.to(fs.readFileSync(path.join(dir, edit.file), 'utf8')));
+  return dir;
+};
+const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {}) =>
+  importConfig({ db: t.db, tenantSlug: slug, dataDir: DATA, imageSop: md, lock: async () => fakeLock(), ...over });
+{
+  const out = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'export-'));
+  const ex = await exportConfig({ db: t.db, tenantSlug: 'demo', outDir: out, imageSop: md });
+  check(
+    '导出：退出码 0，打印版本号与 sopHash',
+    ex.code === EXIT.ok && ex.versionNo === 1 && ex.hashes?.sopHash === cfg.currentSop().sopHash,
+    ex.message,
+  );
+  check('往返：导出的 sop.md 与 data/sop.md 逐字节相同', fs.readFileSync(path.join(out, 'sop.md'), 'utf8') === md);
+  for (const f of ['routes.json', 'hotels.json']) {
+    const a = (JSON.parse(fs.readFileSync(path.join(out, f), 'utf8')) as unknown[]).map((x) => JSON.stringify(x));
+    const b = (JSON.parse(fs.readFileSync(path.join(DATA, f), 'utf8')) as unknown[]).map((x) => JSON.stringify(x));
+    check(`往返：${f} 条目顺序相同、每条 JSON.stringify 相同`, a.length === b.length && a.every((x, i) => x === b[i]));
+  }
+  check(
+    '往返：导出的 JSON 是 JSON.stringify(items, null, 2) 加换行',
+    fs.readFileSync(path.join(out, 'routes.json'), 'utf8').endsWith(']\n'),
+  );
+
+  const before = await rowsOfTenant('demo');
+  const again = await imp('demo');
+  check(
+    '导入：同一份 data/ 再跑一次，退出码 0、库不变',
+    again.code === EXIT.ok && (await rowsOfTenant('demo')) === before,
+    `${again.code} ${again.message}`,
+  );
+  const differentSop = await imp('demo', {
+    dataDir: dataCopy({ file: 'sop.md', to: (s) => s.replace('## 话术原则\n\n', '## 话术原则\n\n改了一句话术。\n') }),
+  });
+  check(
+    '导入：可编辑节不同 → 退出码 2、库不变',
+    differentSop.code === EXIT.inconsistent && (await rowsOfTenant('demo')) === before,
+    differentSop.message,
+  );
+  const differentItems = await imp('demo', {
+    dataDir: dataCopy({ file: 'hotels.json', to: (s) => JSON.stringify((JSON.parse(s) as unknown[]).toReversed(), null, 2) }),
+  });
+  check('导入：条目顺序不同 → 退出码 2、库不变', differentItems.code === EXIT.inconsistent && (await rowsOfTenant('demo')) === before);
+  const locked = await imp('demo', { lock: async () => null });
+  check('导入：应用持着租户锁 → 退出码 3', locked.code === EXIT.locked && (await rowsOfTenant('demo')) === before);
+
+  // 坏文件：一律退出码 1，库里没有新行
+  await newTenant('fresh');
+  const BOM = ch(0xfeff);
+  const bad: [string, (s: string) => string][] = [
+    ['\\r\\n', (s) => s.replace('\n', '\r\n')],
+    ['NFD 字符', (s) => s.replace('云途', `云途 e${ch(0x301)}`)],
+    ['BOM', (s) => BOM + s],
+    ['NUL', (s) => s.replace('云途', `云途${ch(0)}`)],
+    ['U+2028', (s) => s.replace('云途', `云途${ch(0x2028)}`)],
+    ['行尾空格（不是规范形）', (s) => s.replace(/(## 话术原则\n\n[^\n]*)\n/, '$1 \n')],
+  ];
+  // 文件里不可能有孤立代理项的「字符」，只有编码过的字节（ED A0 80）：Node 按 utf8 读会悄悄换成 U+FFFD，导入必须按字节严格解码
+  {
+    const dir = dataCopy();
+    const [head, tail] = [md.slice(0, 10), md.slice(10)];
+    fs.writeFileSync(path.join(dir, 'sop.md'), Buffer.concat([Buffer.from(head), Buffer.from([0xed, 0xa0, 0x80]), Buffer.from(tail)]));
+    const r = await imp('fresh', { dataDir: dir });
+    check(
+      '导入：sop.md 含编码过的孤立代理项（非法 UTF-8）→ 退出码 1、库里没有新行',
+      r.code === EXIT.error && (await rowsOfTenant('fresh')) === '{"v":0,"c":0,"a":0}',
+      r.message,
+    );
+  }
+  for (const [what, to] of bad) {
+    const r = await imp('fresh', { dataDir: dataCopy({ file: 'sop.md', to }) });
+    check(
+      `导入：sop.md 含${what} → 退出码 1、库里没有新行`,
+      r.code === EXIT.error && (await rowsOfTenant('fresh')) === '{"v":0,"c":0,"a":0}',
+      r.message,
+    );
+  }
+  const lockedChanged = await imp('fresh', {
+    dataDir: dataCopy({ file: 'sop.md', to: (s) => s.replace('定价只有两条规则', '定价只有这两条规则') }),
+  });
+  check(
+    '导入：锁定节与镜像不同 → locked_changed、退出码 1',
+    lockedChanged.code === EXIT.error && lockedChanged.message.startsWith('locked_changed'),
+    lockedChanged.message,
+  );
+  const badRoute = await imp('fresh', {
+    dataDir: dataCopy({
+      file: 'routes.json',
+      to: (s) => JSON.stringify((JSON.parse(s) as Record<string, unknown>[]).map((r, i) => (i === 0 ? { ...r, priceFrom: '1' } : r))),
+    }),
+  });
+  check(
+    '导入：线路过不了 schema → 退出码 1、库里没有新行',
+    badRoute.code === EXIT.error && (await rowsOfTenant('fresh')) === '{"v":0,"c":0,"a":0}',
+    badRoute.message,
+  );
+  const dry = await imp('fresh', { dryRun: true });
+  check(
+    '导入：--dry-run 跑通、打印哈希、不写库',
+    dry.code === EXIT.ok &&
+      dry.hashes?.promptHash === cfg.currentSop().promptHash &&
+      (await rowsOfTenant('fresh')) === '{"v":0,"c":0,"a":0}',
+    dry.message,
+  );
+  const real = await imp('fresh');
+  check(
+    '导入：空租户导入写 v1、全部条目与一行审计',
+    real.code === EXIT.ok && (await rowsOfTenant('fresh')) === '{"v":1,"c":43,"a":1}',
+    `${real.message} ${await rowsOfTenant('fresh')}`,
+  );
+  check(
+    '导入：打印的三个哈希与另一个租户的相同（同一份内容）',
+    real.hashes?.prefixHash === cfg.currentSop().prefixHash && real.hashes?.sopHash === cfg.currentSop().sopHash,
+  );
+
+  const target = await exportConfig({ db: t.db, tenantSlug: 'demo', outDir: out, imageSop: md, targetImageSop: md });
+  check('导出：--image-sop 指向同一份时照常导出', target.code === EXIT.ok, target.message);
+  const oldImage = md.replace('定价只有两条规则', '定价就两条规则');
+  const badTarget = await exportConfig({ db: t.db, tenantSlug: 'demo', outDir: out, imageSop: md, targetImageSop: oldImage });
+  check(
+    '导出：与目标镜像合并后过不了契约检查 → 退出码 1',
+    badTarget.code === EXIT.error && badTarget.message.startsWith('contract_failed'),
+    badTarget.message,
+  );
+  const changedCode = await exportConfig({
+    db: t.db,
+    tenantSlug: 'demo',
+    outDir: out,
+    imageSop: md,
+    code: { ...imageCode(), render: (s) => `${renderSystemPrompt(s)}\n新规则` },
+  });
+  check('导出：本地渲染的 promptHash 与库里的不同 → 退出码 1', changedCode.code === EXIT.error, changedCode.message);
+}
+
+// ---------------- 锁丢失的状态机与重读 ----------------
+{
+  cfg.__configTest.reset();
+  const lock = fakeLock();
+  const exits: number[] = [];
+  cfg.__configTest.setTimings({ reacquireMs: 5, reloadBackoffMs: [5] });
+  await cfg.initConfig(testConfigDeps(t, { lock: async () => lock, gracefulExit: (c) => void exits.push(c) }));
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  check('锁：装载后持锁、可写', cfg.configHealth().lock === 'held' && thrown(() => cfg.assertConfigWritable()) === 'ok');
+  lock.next = 'unreachable';
+  lock.lose();
+  check(
+    '锁：连接断开进入 lost，配置写入抛 ConfigLockLostError',
+    cfg.configHealth().lock === 'lost' && thrown(() => cfg.assertConfigWritable()) === 'ConfigLockLostError',
+  );
+  check('锁：lost 期间对话照常（读缓存）', loadRoutes().length > 0 && cfg.currentSop().versionNo === 1);
+  await wait(40);
+  check('锁：连不上就一直重取，仍是 lost', lock.reacquired >= 2 && cfg.configHealth().lock === 'lost', String(lock.reacquired));
+  lock.next = 'ok';
+  await wait(40);
+  check('锁：重取成功回到 held', cfg.configHealth().lock === 'held');
+  lock.next = 'held_by_other';
+  lock.lose();
+  await wait(40);
+  check('锁：别的进程拿走了锁 → 走优雅退出，退出码 1', exits.join(',') === '1', exits.join(','));
+
+  cfg.__configTest.reset();
+  const lock2 = fakeLock();
+  await cfg.initConfig(testConfigDeps(t, { lock: async () => lock2 }));
+  cfg.markConfigShuttingDown();
+  lock2.lose();
+  check('锁：进入停机之后忽略锁连接的事件', cfg.configHealth().lock === 'held');
+  await cfg.closeConfig();
+  check('锁：closeConfig 释放租户锁', lock2.released);
+
+  cfg.__configTest.reset();
+  cfg.__configTest.setTimings({ reloadBackoffMs: [5] });
+  await cfg.initConfig(testConfigDeps(t));
+  const seen: number[] = [];
+  cfg.onCatalogChanged((snap) => void seen.push(snap.generation));
+  const gen0 = cfg.currentCatalog().generation;
+  const extra = { ...(JSON.parse(routesRaw) as Record<string, unknown>[])[0]!, id: 'r-reload-test' };
+  await asSuper(() =>
+    t.pg.query(
+      `insert into catalog_items (tenant_id, kind, code, ord, status, payload) select id, 'route', 'r-reload-test', 99, 'active', $1::json from tenants where slug = 'demo'`,
+      [JSON.stringify(extra)],
+    ),
+  );
+  const p1 = cfg.reloadFromDb();
+  const p2 = cfg.reloadFromDb();
+  const staleDuring = cfg.configHealth();
+  await p1;
+  check('重读：进行中再调用拿到同一个 promise（单飞）', p1 === p2);
+  check(
+    '重读：进行中标脏，完成后清掉',
+    staleDuring.sopStale && staleDuring.catalogStale && !cfg.configHealth().sopStale && !cfg.configHealth().catalogStale,
+  );
+  check(
+    '重读：新条目进了快照，代际加 1，回调一次',
+    cfg.currentCatalog().routes.some((r) => r.id === 'r-reload-test') &&
+      cfg.currentCatalog().generation === gen0 + 1 &&
+      seen.join(',') === String(gen0 + 1),
+    seen.join(','),
+  );
+  check('重读：新快照同样冻结', Object.isFrozen(cfg.currentCatalog().routes.at(-1)));
+  await asSuper(() => t.pg.query(`delete from catalog_items where code = 'r-reload-test'`));
+}
+
+// ---------------- 启动顺序与各个启动失败分支（验收 13） ----------------
+{
+  const cursor = path.join(process.env.VAR_DIR!, 'wecom-cursor.json');
+  fs.writeFileSync(cursor, '{"cursor":"keep-me"}');
+  const cursorStat = fs.statSync(cursor).mtimeMs;
+  const bootWith = async (init: () => Promise<void>): Promise<{ calls: string; exits: string; log: string }> => {
+    cfg.__configTest.reset();
+    const calls: string[] = [];
+    const exits: number[] = [];
+    const logs: string[] = [];
+    const origErr = console.error;
+    const origWarn = console.warn;
+    console.error = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    console.warn = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    try {
+      await boot({
+        initConfig: init,
+        serve: (onListening) => {
+          calls.push('serve');
+          onListening();
+        },
+        preflight: () => void calls.push('preflight'),
+        buildIndex: async () => void calls.push('buildIndex'),
+        startFollowUpScheduler: () => void calls.push('followup'),
+        startWecom: () => void calls.push('startWecom'),
+        exit: (c) => void exits.push(c),
+      });
+    } finally {
+      console.error = origErr;
+      console.warn = origWarn;
+    }
+    return { calls: calls.join(','), exits: exits.join(','), log: logs.join('\n') };
+  };
+  const ok = await bootWith(() => cfg.initConfig(testConfigDeps(t)));
+  check(
+    'boot：装载成功后才监听，监听后依次预检、索引、跟进、企微',
+    ok.calls === 'serve,preflight,buildIndex,followup,startWecom' && ok.exits === '',
+    ok.calls,
+  );
+
+  const expectFail = async (name: string, reason: string, init: () => Promise<void>, alsoIn?: string): Promise<void> => {
+    const r = await bootWith(init);
+    check(
+      `boot：${name} → 以 ${reason} 拒绝启动，serve 与 startWecom 都没调`,
+      r.exits === '1' && r.calls === '' && r.log.includes(`（${reason}）`) && (!alsoIn || r.log.includes(alsoIn)),
+      `${r.exits} ${r.calls} ${r.log.slice(0, 160)}`,
+    );
+  };
+  const env = (over: Record<string, string>): NodeJS.ProcessEnv => ({
+    CONFIG_SOURCE: 'db',
+    DATABASE_URL: 'postgres://agent_app:hush-hush@127.0.0.1:1/agent',
+    DEFAULT_TENANT_SLUG: 'demo',
+    DEPLOY_PROFILE: 'demo',
+    ...over,
+  });
+  const fromEnv = (e: NodeJS.ProcessEnv) => () => cfg.initConfigFromEnv(e, () => {});
+  await expectFail('CONFIG_SOURCE 取值非法', 'env_invalid', fromEnv({ CONFIG_SOURCE: 'dbb' }));
+  for (const missing of ['DATABASE_URL', 'DEFAULT_TENANT_SLUG', 'DEPLOY_PROFILE']) {
+    await expectFail(`DB 模式缺 ${missing}`, 'env_invalid', fromEnv(env({ [missing]: '' })));
+  }
+  await expectFail('DATABASE_URL 不是 postgres://', 'env_invalid', fromEnv(env({ DATABASE_URL: 'mysql://x@y/z' })));
+  for (const k of ['DATABASE_OWNER_URL', 'DATABASE_PLATFORM_URL', 'POSTGRES_PASSWORD', 'AGENT_OWNER_PASSWORD']) {
+    await expectFail(`app 环境里有 ${k}`, 'env_privileged', fromEnv(env({ [k]: 'x' })), k);
+  }
+  const unreachable = await bootWith(fromEnv(env({})));
+  check(
+    'boot：连不上库 → db_unreachable，日志里的连接串去掉了口令',
+    unreachable.exits === '1' && unreachable.log.includes('（db_unreachable）') && !unreachable.log.includes('hush-hush'),
+    unreachable.log.slice(0, 200),
+  );
+
+  const d = (over: Partial<ConfigDeps>) => () => cfg.initConfig(testConfigDeps(t, over));
+  // 迁移：镜像里的某条不在库里 → schema_behind；库里多出一条 → 照常启动并 warn
+  const [last] = (
+    await asSuper(() =>
+      t.pg.query<{ id: number; hash: string; created_at: string }>(
+        'select id, hash, created_at from drizzle.__drizzle_migrations order by id desc limit 1',
+      ),
+    )
+  ).rows;
+  await asSuper(() => t.pg.query('delete from drizzle.__drizzle_migrations where id = $1', [last!.id]));
+  await expectFail('镜像里的某条迁移没在库里', 'schema_behind', d({}));
+  await asSuper(() =>
+    t.pg.query('insert into drizzle.__drizzle_migrations (id, hash, created_at) values ($1, $2, $3)', [
+      last!.id,
+      last!.hash,
+      last!.created_at,
+    ]),
+  );
+  await asSuper(() => t.pg.query(`insert into drizzle.__drizzle_migrations (hash, created_at) values ('from-a-newer-image', 1)`));
+  const newer = await bootWith(d({}));
+  check(
+    'boot：库里多出一条镜像没有的迁移 → 照常启动并 warn',
+    newer.exits === '' && newer.calls.startsWith('serve') && newer.log.includes('多出 1 条'),
+    newer.log.slice(0, 160),
+  );
+  await asSuper(() => t.pg.query(`delete from drizzle.__drizzle_migrations where hash = 'from-a-newer-image'`));
+
+  await expectFail('DEFAULT_TENANT_SLUG 不存在', 'tenant_not_found', d({ tenantSlug: 'nobody' }));
+  await newTenant('paused', 'suspended');
+  await expectFail('租户已停用', 'tenant_suspended', d({ tenantSlug: 'paused' }));
+  await newTenant('blank');
+  await expectFail('租户没有已发布的 SOP', 'no_published_sop', d({ tenantSlug: 'blank' }));
+  await expectFail('另一个进程已持有该租户的锁', 'lock_held', d({ lock: async () => null }));
+
+  // 手工绕过触发器改了已发布行的 sections：sop_hash 对不上
+  await newTenant('tampered');
+  await imp('tampered');
+  await asSuper(async () => {
+    await t.pg.exec('ALTER TABLE sop_versions DISABLE TRIGGER sop_versions_guard_update');
+    await t.pg.query(
+      `update sop_versions set sections = jsonb_set(sections, '{3,text}', to_jsonb('## 话术原则\n\n被人改过。\n\n'::text)) where tenant_id = (select id from tenants where slug = 'tampered')`,
+    );
+    await t.pg.exec('ALTER TABLE sop_versions ENABLE TRIGGER sop_versions_guard_update');
+  });
+  await expectFail('手工改过已发布行的 sections', 'integrity', d({ tenantSlug: 'tampered' }));
+
+  await newTenant('no-routes');
+  await imp('no-routes');
+  await asSuper(() =>
+    t.pg.query(`delete from catalog_items where kind = 'route' and tenant_id = (select id from tenants where slug = 'no-routes')`),
+  );
+  await expectFail('没有 active 线路', 'no_active_routes', d({ tenantSlug: 'no-routes' }));
+
+  await expectFail('镜像里的 data/sop.md 缺失（空文件）', 'image_sop_invalid', d({ imageSop: '' }));
+  await expectFail('镜像里的 data/sop.md 切不开', 'image_sop_invalid', d({ imageSop: md.replace('## 话术原则\n', '## 话术原则们\n') }));
+  await expectFail('镜像里的 data/sop.md 编码不合格', 'image_sop_invalid', d({ imageSop: ch(0xfeff) + md }));
+  let n = 0;
+  await expectFail('渲染不确定', 'renderer_nondeterministic', d({ render: (s) => `${renderSystemPrompt(s)}${n++}` }));
+  await expectFail(
+    'SOP 点名的工具已经不存在',
+    'contract_failed',
+    d({ toolNames: toolNames.filter((x) => x !== 'create_quote') }),
+    'create_quote',
+  );
+  await expectFail(
+    'SOP 点名的字段已经不存在',
+    'contract_failed',
+    d({ knownFields: SOP_KNOWN_FIELDS.filter((x) => x !== 'payUrl') }),
+    'payUrl',
+  );
+  await expectFail(
+    '硬性要求变了、要重渲染（第 7 步之前拒绝启动）',
+    'contract_failed',
+    d({ render: (s) => `${renderSystemPrompt(s)}\n- 新加的一条` }),
+    'hard_rules',
+  );
+
+  check(
+    'boot：企微 cursor 文件的内容与 mtime 都没动',
+    fs.readFileSync(cursor, 'utf8') === '{"cursor":"keep-me"}' && fs.statSync(cursor).mtimeMs === cursorStat,
+  );
+  cfg.__configTest.reset();
+}
+await t.close();
+
 if (fails.length) {
   console.error(`CONFIG SELFTEST FAIL: ${fails.length} 项\n  ${fails.join('\n  ')}`);
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支）`,
 );
 process.exit(0);

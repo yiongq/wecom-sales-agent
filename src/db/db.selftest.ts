@@ -6,6 +6,7 @@
 //   临时表遮蔽、租户锁（验收 12 与验收 7 的权限部分）。PGlite 以超级用户连接，RLS 与授权的结论只从这部分得出（spec R13）。
 // 用法：npx tsx src/db/db.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
+import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +15,8 @@ import path from 'node:path';
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
 process.env.VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-db-selftest-'));
+// 真实 PG 部分会加载引擎，引擎连带读开发机的 .env：CONFIG_SOURCE=db 写在那里也不能影响这组
+process.env.CONFIG_SOURCE = 'file';
 
 const { sql, asc, eq } = await import('drizzle-orm');
 const { openTestDb } = await import('./testing.js');
@@ -1135,6 +1138,81 @@ async function realPostgres(superUrl: string): Promise<void> {
       check('真实 PG：release 之后别人能拿到', after !== null);
       await after?.release();
     }
+
+    // ---- 命令行子进程（验收 3）与 node-postgres 下的逐字节等价（验收 2 的前两项） ----
+    const repo = path.join(import.meta.dirname, '..', '..');
+    const cli = (script: string, argv: string[], env: Record<string, string>): { code: number | null; out: string } => {
+      // 只给这个命令行该拿的那一个连接串，别的 app / owner / platform 串都不带过去
+      const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^DATABASE_|^PG_TEST_URL$/.test(k)));
+      const r = spawnSync(process.execPath, ['--import', 'tsx', path.join(repo, 'src', 'cli', script), ...argv], {
+        cwd: repo,
+        env: { ...base, ...env },
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      return { code: r.status, out: `${r.stdout}${r.stderr}` };
+    };
+    const create = cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM });
+    check('真实 PG：tenant-create 以 platform 身份建租户，退出码 0', create.code === 0, create.out.slice(0, 200));
+    check(
+      '真实 PG：同样的参数再跑一次仍是 0',
+      cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 0,
+    );
+    check(
+      '真实 PG：同名租户字段不同 → 退出码 2',
+      cli('tenant-create.ts', ['--slug', 'demo', '--name', '别的名字', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 2,
+    );
+    const dry = cli('import-config.ts', ['--tenant', 'demo', '--dry-run'], { DATABASE_URL: APP });
+    check(
+      '真实 PG：import-config --dry-run 跑通、打印哈希、不写库',
+      dry.code === 0 && /promptHash=[0-9a-f]{64}/.test(dry.out),
+      dry.out.slice(0, 200),
+    );
+    const [demoRows] = await sq<{ n: number }>(
+      `select count(*)::int as n from sop_versions s join tenants t on t.id = s.tenant_id where t.slug = 'demo'`,
+    );
+    check('真实 PG：dry-run 之后库里没有版本行', demoRows?.n === 0);
+    const imported = cli('import-config.ts', ['--tenant', 'demo'], { DATABASE_URL: APP });
+    check('真实 PG：import-config 以 app 身份导入，退出码 0', imported.code === 0, imported.out.slice(0, 200));
+    check('真实 PG：同一份 data/ 再导入一次，退出码 0', cli('import-config.ts', ['--tenant', 'demo'], { DATABASE_URL: APP }).code === 0);
+    const out = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'export-'));
+    const exported = cli('export-config.ts', ['--tenant', 'demo', '--out', out], { DATABASE_URL: APP });
+    check('真实 PG：export-config 退出码 0', exported.code === 0, exported.out.slice(0, 200));
+    const data = path.join(repo, 'data');
+    check(
+      '真实 PG：导出的 sop.md 与 data/sop.md 逐字节相同',
+      fs.readFileSync(path.join(out, 'sop.md'), 'utf8') === fs.readFileSync(path.join(data, 'sop.md'), 'utf8'),
+    );
+    for (const f of ['routes.json', 'hotels.json']) {
+      const a = (JSON.parse(fs.readFileSync(path.join(out, f), 'utf8')) as unknown[]).map((x) => JSON.stringify(x));
+      const b = (JSON.parse(fs.readFileSync(path.join(data, f), 'utf8')) as unknown[]).map((x) => JSON.stringify(x));
+      check(
+        `真实 PG：导出的 ${f} 顺序相同、每条字节相同（经 node-postgres 的 json 列）`,
+        a.length > 0 && a.length === b.length && a.every((x, i) => x === b[i]),
+      );
+    }
+
+    // 文件模式取一遍，再以 node-postgres 装成配置源取一遍：前缀与产品库逐字节相同
+    const { promptPrefix } = await import('../engine.js');
+    const { loadRoutes, loadHotels } = await import('../tools.js');
+    const cfg = await import('../config/source.js');
+    const { testConfigDeps } = await import('./testing.js');
+    const fileView = JSON.stringify([promptPrefix(), loadRoutes(), loadHotels()]);
+    const pgDb = await openDb(APP);
+    cleanup.push(() => pgDb.close());
+    await cfg.initConfig({
+      ...testConfigDeps({ db: pgDb.db }),
+      tenantSlug: 'demo',
+      lock: (tenantId) => holdTenantLock(APP, tenantId),
+    });
+    cleanup.push(async () => {
+      await cfg.closeConfig();
+      cfg.__configTest.reset();
+    });
+    check('真实 PG：经 node-postgres 装成配置源', cfg.configMode() === 'db' && cfg.currentSop().versionNo === 1);
+    check('真实 PG：两种模式的前缀、线路、酒店逐字节相同', JSON.stringify([promptPrefix(), loadRoutes(), loadHotels()]) === fileView);
+    const held = cli('import-config.ts', ['--tenant', 'demo'], { DATABASE_URL: APP });
+    check('真实 PG：应用持着租户锁时 import-config 退出码 3', held.code === 3, held.out.slice(0, 200));
   } finally {
     for (const f of cleanup.reverse()) await f().catch(() => {});
     await su
@@ -1149,5 +1227,5 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `DB SELFTEST PASS: ${pass} 项断言全通（PGlite：迁移两遍 / 表属主与 RLS 开关 / 认证函数授权 / 约束与哈希 CHECK / json 键序 / 版本与条目触发器 / 部分唯一索引 / 复合外键 / withTenant / 认证函数冒烟${realPgRan ? '；真实 PG：roles.sql / 迁移身份 / 权限逐格 / RLS 行为 / 租户隔离 / 会话级泄漏 / 临时表遮蔽 / 租户锁' : '；真实 PG 部分未跑'}）`,
+  `DB SELFTEST PASS: ${pass} 项断言全通（PGlite：迁移两遍 / 表属主与 RLS 开关 / 认证函数授权 / 约束与哈希 CHECK / json 键序 / 版本与条目触发器 / 部分唯一索引 / 复合外键 / withTenant / 认证函数冒烟${realPgRan ? '；真实 PG：roles.sql / 迁移身份 / 权限逐格 / RLS 行为 / 租户隔离 / 会话级泄漏 / 临时表遮蔽 / 租户锁 / 命令行子进程 / node-postgres 下两种模式逐字节等价' : '；真实 PG 部分未跑'}）`,
 );
