@@ -46,7 +46,7 @@
   - `adapterFor` 的空适配器，以及支付路由在推送失败时记备注（种子会话除外）；测试放 `server.selftest.ts`，在会话上写一个未知的 channel。
   - `handleEnterSession` 的两条路径对已转人工的会话都不发欢迎语；测试放 `adapters/wecom.selftest.ts`。
   - 对应验收 6c、7、8、9。
-- [ ] 7. `deploy.sh` 改为按 tag 部署（spec「CI 与部署 · deploy.sh」；约 0.5–1 人日）：
+- [x] 7. `deploy.sh` 改为按 tag 部署（spec「CI 与部署 · deploy.sh」；约 0.5–1 人日）：
   - 先做手动的一步：在服务器 `.env` 里追加 `DEPLOY_PROFILE=demo`，记进实施记录。
   - 流程按 spec 改：归档目录里跑四个门禁、先查服务器 `.env` 再同步、`NAME` 可覆盖；Dockerfile 加 `ARG APP_REVISION`；`/healthz` 返回 `revision`。
   - 打一个 tag，真实部署一次，把 `/healthz` 的 `revision` 记进实施记录。
@@ -161,6 +161,25 @@
   - 缺陷 3：空适配器 `unknown` 推送时记一行点名渠道和会话的 error，返回 false，从不抛。付款路由推送失败时记系统备注，种子会话除外。`/reply` 原本就会记「未能发送」，没改。沉默跟进遇到推送失败时会退账，原来走模拟器适配器、返回 true，会把没发出去的跟进记成已发。
 - 对抗审查：企微 13 项、引擎 9 项、server 8 项行为做过变异测试。审查提的 6 条问题都已修掉：两处测试缺口（重放时提示去重、日志点名渠道）、非文本路径的会话上限、句子里的「找人工」等子串被误转人工、`wecom` 渠道到企微适配器的映射没有测试守着、日志断言被会话 id 碰巧满足。
 
+### 第 7 步（2026-09-26，PR #8）
+
+- 提交：`83dc4fc`（按 tag 部署、`APP_REVISION`、`/healthz.revision`），`8dc89c2`、`82a11ed`（按两轮审查加固）。
+- 手动的一步：服务器 `.env` 先备份到部署目录之外（`/opt/wecom-sales-agent.env.bak-20260926`），再在末尾追加一行 `DEPLOY_PROFILE=demo`（带一行注释），其余内容不动。
+- 真实部署：在 `dev` 的 `210ba2a` 上打 annotated tag `demo-v1.1`，执行 `bash deploy.sh demo-v1.1`，退出码 0；`/healthz` 的 `revision` 是 `demo-v1.1`。外网检查：首页跳导览页，聊天页、后台、二维码可用，网页开场是新文案；`var/` 完好。服务器上旧的 `.playwright-mcp/` 目录（早年从工作区同步上去的截图和日志）已删除。
+- 两轮对抗审查（在假的 ssh、rsync、docker 上跑全流程，不碰服务器）发现的问题都在 `8dc89c2`、`82a11ed` 里修掉：
+  - rsync `--delete` 会删掉服务器上的 `.env` 备份和日志。
+  - 演练时只覆盖一两个变量会打到线上实例；`.deploy.env` 会冲掉命令行传进来的值。
+  - `DEPLOY_PROFILE` 检查太宽。
+  - `docker run` 失败时不回滚，或者要白等一整轮健康检查。
+  - tag 表达式和 root shell 注入。
+- 这里取定的：
+  - 旁路实例的判定：`NAME`、`REMOTE_DIR`、`HOST_PORT` 要么全用线上值，要么全换，写法限字符集。旁路实例的 `.env` 配了企微凭据（`CORP_ID` / `APP_SECRET` / `KF_OPEN_KFID`）时拒绝。
+  - `DEPLOY_PROFILE` 按 docker `--env-file` 的读法取值：最后一行、只去 CR、值必须正好是 `demo` 或 `prod`。
+  - 构建后先用新镜像试读 `.env`，读不了就不换容器。
+  - 健康检查要求 `revision` 等于这次的 tag。
+  - rsync 用 `--checksum`，用 P 规则保护 `/.env*`、`/var/`、`*.log`、`/.git/`。
+- 服务器上的 rsync 是 3.4.1，本机是 openrsync（协议 29）。P 规则在服务器的 `/tmp` 下实测有效。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
@@ -203,6 +222,12 @@
 - 9a · 通过 · 会话渠道是未知值时，付款返回 200，订单变成已付，error 日志点名这个渠道，会话里记了推送失败的备注，没有未捕获异常。
 - 9b · 通过 · 同一个会话上，`/reply` 返回 `ok: false`，会话里记了「未能发送」。
 - 9c · 通过 · demo 下给种子会话的待付款单付款，会话里没有推送失败的备注。
+- 12a · 通过 · 不带参数、分支名、完整和缩短的提交号、不存在的 tag、`tag~1`、`tag^`、带 `$()` 的名字都被拒，在连服务器之前就退出（本地验证，SERVER 指向不存在的地址）。
+- 12b · 通过 · 旁路实例的 `.env` 没有 `DEPLOY_PROFILE` 时，部署在检查这一步被拒；服务器上的旁路目录只有 `.env`，没有容器，也没有镜像。
+- 12c · 通过 · 一次性 clone 里提交一个带类型错误的改动，打 tag `drill-typeerror`，工作区里再改好：部署在归档目录的门禁那一步被拒；旁路容器的启动时间、镜像、服务器上的文件前后完全一致。
+- 12d · 通过 · 部署 `drill-b` 时，工作区里有一处未提交的改动（`guide.html` 加标记）：旁路实例的页面和服务器目录里都没有这个标记。
+- 12e · 通过 · 线上 `bash deploy.sh demo-v1.1` 之后，`/healthz` 的 `revision` 是 `demo-v1.1`。
+- 12f · 通过 · 旁路实例（`wecom-drill`、`/opt/wecom-drill`、3299）上依次部署 `demo-v1.1`、`drill-b`，再部署一个能过门禁、但入口文件不存在的 `drill-broken`：健康检查失败，打出日志，自动回滚到 `:prev`，`revision` 回到 `drill-b`，退出码为 1。演练期间，线上容器的启动时间、重启次数（0）和 `revision` 都没变。演练结束后，旁路容器、镜像、目录、一次性 clone 和演练 tag 都已删除。
 - 11e · 部分通过 · 2026-09-25 经 owner 同意，用 `gh api` 打开了 secret scanning 和 push protection（`security_and_analysis` 两项均为 enabled），当时没有告警。在私有测试仓库里验证推送被拒这一半没有做（owner 没有要求）。
 
 ## 起草记录（2026-09-25）
@@ -213,10 +238,10 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1–6 步。第 5 步 PR #6 已合进 `dev`（`b33218a`）；第 6 步在分支 `fix/00-defects` 上，待合进 `dev`。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 已完成：第 1–7 步，都已合进 `dev`（第 6 步 PR #7、第 7 步 PR #8）。线上 demo 跑的是 `demo-v1.1`（`dev` 的 `210ba2a`）。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
 - 半成品：无。
 - 阻塞：无。
-- 下一步：第 7 步，`deploy.sh` 改为按 tag 部署（要登录服务器，owner 先在服务器 `.env` 里补一行 `DEPLOY_PROFILE=demo`）。owner 手动：企微客服账号名改成含「AI 旅行顾问」（验收 6d）。
+- 下一步：第 8 步，README。owner 手动：企微客服账号名改成含「AI 旅行顾问」（验收 6d）。
 
 ## Open
 
