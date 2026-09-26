@@ -1462,6 +1462,25 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     v1.versionNo! > v0.versionNo && cfg.currentSop().versionNo === v1.versionNo && cfg.currentSop().promptHash === v1.promptHash,
   );
   check('SOP：发布写一行审计', (await audits('sop.publish')) === beforePublishAudits + 1);
+  // spec「审计」：sop.publish 的 diff 是 { versionNo, changedKeys, rebasedFrom? }，sop.rollback 的是四个版本字段
+  const lastAuditDiff = async (action: string): Promise<Record<string, unknown>> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ diff: Record<string, unknown> }>(
+            'select diff from audit_log where tenant_id = $1 and action = $2 order by id desc limit 1',
+            [tenantId, action],
+          )
+        ).rows[0]!.diff,
+    );
+  const publishDiff = await lastAuditDiff('sop.publish');
+  check(
+    'SOP：发布的审计 diff 记下版本号与改了的节，没有 rebase 就没有 rebasedFrom',
+    publishDiff.versionNo === v1.versionNo &&
+      JSON.stringify(publishDiff.changedKeys) === '["tone"]' &&
+      Object.keys(publishDiff).toSorted().join(',') === 'changedKeys,versionNo',
+    JSON.stringify(publishDiff),
+  );
   const seenSystems: string[] = [];
   observeRequests((r) => void seenSystems.push(r.system));
   await handleMessage('sim-cfgtest-publish-0001', '想去三亚玩几天', 'simulator');
@@ -1474,6 +1493,14 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   check('SOP：/healthz 报的版本号跟着变', cfg.prefixSummary(() => ({ system: '', tools: '', sop: '' })).sopVersion === v1.versionNo);
   check('SOP：发布变更说明不能为空', (await errName(sopApi.publishSopDraft(ctx, { rev: 1, changeNote: '  ' }))) === 'SopInputError');
 
+  const beforeBlankNote = await versions();
+  check(
+    'SOP：回滚的变更说明为空 → SopInputError，不写新版本',
+    (await errName(sopApi.rollbackSop(ctx, { versionId: v0.versionId, changeNote: '   ' }))) === 'SopInputError' &&
+      (await versions()) === beforeBlankNote &&
+      cfg.currentSop().versionNo === v1.versionNo,
+  );
+
   // 回滚到发布前的版本：它之后没有 rerender，prompt_hash 与它相同
   const beforeRollbackAudits = await audits('sop.rollback');
   const back = await sopApi.rollbackSop(ctx, { versionId: v0.versionId, changeNote: '回到导入版本' });
@@ -1485,6 +1512,26 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     'SOP：回滚写一行审计、缓存跟着换',
     (await audits('sop.rollback')) === beforeRollbackAudits + 1 && cfg.currentSop().versionNo === back.versionNo,
   );
+  const rollbackDiff = await lastAuditDiff('sop.rollback');
+  check(
+    'SOP：回滚的审计 diff 记下原版本号、新版本号、目标版本号与 sameHashAsTarget',
+    rollbackDiff.fromVersionNo === v1.versionNo &&
+      rollbackDiff.toVersionNo === back.versionNo &&
+      rollbackDiff.targetVersionNo === v0.versionNo &&
+      rollbackDiff.sameHashAsTarget === true,
+    JSON.stringify(rollbackDiff),
+  );
+  // 页面还停在回滚之前的版本上：以旧的 basedOn 新建草稿 → 409。否则草稿建在新版本上、发布时不 rebase，覆盖掉期间的改动
+  const staleBase = await errName(
+    sopApi.saveSopDraft(ctx, { basedOn: v1.id, rev: null, edits: [{ key: 'tone', body: '停在旧版本上的编辑。' }] }),
+  );
+  const strayDraft = (await sopApi.getSopOverview(ctx)).draft;
+  check(
+    'SOP：新建草稿时 basedOn 已不是当前发布版本 → SopRevConflictError，不建草稿',
+    staleBase === 'SopRevConflictError' && strayDraft === null,
+    staleBase,
+  );
+  if (strayDraft) await sopApi.discardSopDraft(ctx, { rev: strayDraft.rev });
   // 回滚到草稿或丢弃的版本 → 404
   const d3 = await sopApi.saveSopDraft(ctx, { basedOn: back.id, rev: null, edits: [{ key: 'objections', body: '临时草稿。' }] });
   check(
@@ -1507,6 +1554,73 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     history.every((v) => v.status === 'published' || v.status === 'archived') &&
       history.every((v, i) => i === 0 || history[i - 1]!.versionNo! > v.versionNo!),
   );
+
+  // 草稿的 rev：甲的页面停在自己那份草稿上，乙把它丢了、另建一份。每份草稿都从 1 开始的话，甲拿着旧 rev
+  // 就能发布、改写、丢弃乙的草稿；新草稿的 rev 接在旧草稿之后，这三样都是 409，乙的草稿原样还在。
+  // 三样各打在一份新建的乙的草稿上：接连打在同一份上的话，前一样得手就把 rev 推走了，后面的 409 什么也测不出
+  {
+    const cur = cfg.currentSop();
+    const mine = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: null,
+      edits: [{ key: 'tone', body: `${bodyOf(cur.sections, 'tone')}\n甲写的一句。` }],
+    });
+    await sopApi.discardSopDraft(ctx, { rev: mine.rev });
+    // 乙新建一份：还在的草稿先丢掉，从当前发布版本起建（前一样误发布了，这里照样建得出来）
+    const theirsFresh = async (): Promise<Awaited<ReturnType<typeof sopApi.saveSopDraft>>> => {
+      const left = (await sopApi.getSopOverview(ctx)).draft;
+      if (left) await sopApi.discardSopDraft(ctx, { rev: left.rev });
+      const pub = cfg.currentSop();
+      return sopApi.saveSopDraft(ctx, {
+        basedOn: pub.versionId,
+        rev: null,
+        edits: [{ key: 'objections', body: `${bodyOf(pub.sections, 'objections')}\n乙写了一半的草稿。` }],
+      });
+    };
+    const theirs = await theirsFresh();
+    check('草稿 rev：丢弃之后新建的草稿，rev 大于旧草稿的', theirs.id !== mine.id && theirs.rev > mine.rev, `${mine.rev} → ${theirs.rev}`);
+    const staleOps: [string, () => Promise<unknown>][] = [
+      ['发布', () => sopApi.publishSopDraft(ctx, { rev: mine.rev, changeNote: '甲发布自己的修改' })],
+      ['保存', () => sopApi.saveSopDraft(ctx, { basedOn: cur.versionId, rev: mine.rev, edits: [{ key: 'tone', body: '甲接着改。' }] })],
+      ['丢弃', () => sopApi.discardSopDraft(ctx, { rev: mine.rev })],
+    ];
+    for (const [label, op] of staleOps) {
+      const target = label === '发布' ? theirs : await theirsFresh();
+      const versionNo = cfg.currentSop().versionNo;
+      const got = await errName(op());
+      const still = (await sopApi.getSopOverview(ctx)).draft;
+      check(
+        `草稿 rev：拿着已丢弃草稿的 rev ${label} → SopRevConflictError，乙的草稿原样还在、没有发布`,
+        got === 'SopRevConflictError' &&
+          still?.id === target.id &&
+          still.rev === target.rev &&
+          JSON.stringify(still.sections) === JSON.stringify(target.sections) &&
+          cfg.currentSop().versionNo === versionNo,
+        `${got} rev ${mine.rev}/${target.rev}`,
+      );
+    }
+    // 上面那条失败、乙的草稿真被发布了：回滚到原来的版本，后面 rebase 那段才不会因为异议处理多了一句而冲突
+    if (cfg.currentSop().versionNo !== cur.versionNo) {
+      await sopApi.rollbackSop(ctx, { versionId: cur.versionId, changeNote: '撤掉误发布的草稿' });
+    }
+    // 乙又存了一次；拿存之前的 rev 丢弃 → 409，草稿还在。从当前草稿接着存：上面哪条失败、草稿没了时新建一份，这条照样能跑
+    const open =
+      (await sopApi.getSopOverview(ctx)).draft ??
+      (await sopApi.saveSopDraft(ctx, { basedOn: cfg.currentSop().versionId, rev: null, edits: [] }));
+    const theirs2 = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: open.rev,
+      edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n乙写完了。` }],
+    });
+    const staleDiscard = await errName(sopApi.discardSopDraft(ctx, { rev: open.rev }));
+    const kept = (await sopApi.getSopOverview(ctx)).draft;
+    check(
+      '丢弃：带旧 rev → SopRevConflictError，草稿还在、rev 是新的',
+      staleDiscard === 'SopRevConflictError' && kept?.id === theirs2.id && kept.rev === theirs2.rev,
+      staleDiscard,
+    );
+    if (kept) await sopApi.discardSopDraft(ctx, { rev: kept.rev });
+  }
 
   // 验收 6：五种过不了闸的草稿——检查返回 violations，发布抛 SopContractError，已发布版本与缓存都不变
   const bad: [string, string, string][] = [
@@ -1538,6 +1652,42 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     await sopApi.discardSopDraft(ctx, { rev: d.rev });
   }
 
+  // 回滚同样过契约闸（spec「版本与发布」第 3 步、不变式 12）：发布一个点名新工具的版本、回到原版本，
+  // 代码这边再去掉这个工具；回滚到点名它的版本 → SopContractError，不写新版本和审计，已发布版本与缓存都不变
+  {
+    await reinit({ toolNames: [...toolNames, 'lookup_visa'] });
+    const cur = cfg.currentSop();
+    const d = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: null,
+      edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n签证问题先调 lookup_visa 查一下。` }],
+    });
+    const visa = await sopApi.publishSopDraft(ctx, { rev: d.rev, changeNote: '点名一个新工具' });
+    await sopApi.rollbackSop(ctx, { versionId: cur.versionId, changeNote: '先回到原来的版本' });
+    await reinit();
+    const before = cfg.currentSop();
+    const count = await versions();
+    const rollbacks = await audits('sop.rollback');
+    let gate: unknown = null;
+    try {
+      await sopApi.rollbackSop(ctx, { versionId: visa.id, changeNote: '想回到点名新工具的版本' });
+    } catch (e) {
+      gate = e;
+    }
+    check(
+      '闸：回滚到点名了已不存在工具的版本 → SopContractError（unknown_tool），不写新版本与审计，已发布版本与缓存不变',
+      gate instanceof sopApi.SopContractError &&
+        gate.violations.some((v) => v.code === 'unknown_tool') &&
+        (await versions()) === count &&
+        (await audits('sop.rollback')) === rollbacks &&
+        cfg.currentSop().versionNo === before.versionNo &&
+        (await sopApi.getSopOverview(ctx)).published.id === before.versionId,
+      gate instanceof Error ? gate.message : String(gate),
+    );
+    // 闸失灵时回滚会成功：复原成原来的内容，后面几块不受牵连，失败只落在上面这条
+    if (cfg.currentSop().versionNo !== before.versionNo) await sopApi.rollbackSop(ctx, { versionId: before.versionId, changeNote: '复原' });
+  }
+
   // 验收 10：两个并发的首次保存草稿，一个成功、一个 409，没有 500
   {
     const cur = cfg.currentSop();
@@ -1557,15 +1707,34 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       rev: null,
       edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n草稿加的异议处理。` }],
     });
+    check('概览：刚存的草稿 stale 为 false', (await sopApi.getSopOverview(ctx)).draft?.stale === false);
     const up = await sopApi.rollbackSop(ctx, { versionId: v1.id, changeNote: '上游：tone 回到加过话术的版本' });
     const checked = await sopApi.checkSopDraft(ctx);
     check('rebase：检查报需要 rebase、没有冲突', checked.rebase.needed && checked.rebase.conflicts.length === 0);
+    const ov = await sopApi.getSopOverview(ctx);
+    check('概览：草稿打开期间发布了别的版本 → stale 为 true', ov.draft?.id === d.id && ov.draft.stale === true);
+    // 已发布版本（加过话术）比导入版本长：概览的预算上限仍取导入版本，与检查、发布用的同一个
+    check(
+      '概览：预算上限等于检查给的上限（导入版本的可编辑节总长 × 1.2），不随已发布版本变',
+      editableChars(ov.published.sections) !== editableChars(image) &&
+        ov.budget.limit === checked.limit &&
+        checked.limit === Math.floor(editableChars(image) * BUDGET_RATIO),
+      `${ov.budget.limit} / ${checked.limit}`,
+    );
     const merged = await sopApi.publishSopDraft(ctx, { rev: d.rev, changeNote: '发布草稿' });
     check(
       'rebase：发布成功，上游的 tone 与草稿的 objections 都在',
       merged.versionNo! > up.versionNo! &&
         bodyOf(merged.sections, 'tone').includes('再补一句') &&
         bodyOf(merged.sections, 'objections').includes('草稿加的异议处理'),
+    );
+    const rebasedDiff = await lastAuditDiff('sop.publish');
+    check(
+      'rebase：发布的审计 diff 记下 rebasedFrom（草稿原先基于的版本号），changedKeys 只有草稿改的节',
+      rebasedDiff.versionNo === merged.versionNo &&
+        rebasedDiff.rebasedFrom === cur.versionNo &&
+        JSON.stringify(rebasedDiff.changedKeys) === '["objections"]',
+      JSON.stringify(rebasedDiff),
     );
     // 同一节被上游改了 → 409，点名这一节并带当前正文
     const d2 = await sopApi.saveSopDraft(ctx, { basedOn: merged.id, rev: null, edits: [{ key: 'tone', body: '草稿改的话术。' }] });
@@ -1877,6 +2046,19 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   check(
     '新建：draft、ord 取最大加 1、不进快照',
     created.status === 'draft' && created.ord === maxOrdActive + 1 && !cfg.currentCatalog().routes.some((r) => r.id === 'r-new-draft'),
+  );
+  // spec「审计」：catalog.create 记变了的顶层字段，新建时就是每个字段 [null, 新值]。diff 是 jsonb，键序按排好的比
+  const canon = (v: unknown): string =>
+    JSON.stringify(v, (_k, x: unknown) =>
+      x && typeof x === 'object' && !Array.isArray(x)
+        ? Object.fromEntries(Object.entries(x).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        : x,
+    );
+  const createDiff = (await audit('catalog.create')).at(-1)?.diff;
+  check(
+    '新建：审计 diff 是每个顶层字段 [null, 新值]',
+    canon(createDiff) === canon(Object.fromEntries(Object.entries(draftPayload).map(([k, v]) => [k, [null, v]]))),
+    JSON.stringify(createDiff)?.slice(0, 200),
   );
   check(
     '新建：同一个 code 再建 → CatalogCodeTakenError',

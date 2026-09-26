@@ -788,6 +788,23 @@ check(
     rb.text.slice(0, 200),
   );
   check('回滚 HTTP：写一行审计', (await auditCount('sop.rollback')) === rollbacksBefore + 1);
+  const blankNote = keep(await call('POST', `/sop/versions/${pub.body.id}/rollback`, { ...O, json: { changeNote: '   ' } }));
+  check(
+    '回滚 HTTP：变更说明为空 → 422，不写新版本',
+    blankNote.status === 422 && blankNote.body.error === 'invalid_sop' && cfg.currentSop().versionNo === rb.body.versionNo,
+    blankNote.text.slice(0, 200),
+  );
+  // 页面还停在回滚之前：以已归档的版本为 basedOn 新建草稿 → 409，不建草稿
+  const staleBase = keep(
+    await call('PUT', '/sop/draft', { ...O, json: { basedOn: pub.body.id, rev: null, edits: [{ key: 'tone', body: '停在旧版本上。' }] } }),
+  );
+  const strayDraft = (await call('GET', '/sop', O)).body.draft as Body | null;
+  check(
+    'SOP HTTP：新建草稿时 basedOn 已不是当前发布版本 → 409 rev_conflict，不建草稿',
+    staleBase.status === 409 && staleBase.body.error === 'rev_conflict' && strayDraft === null,
+    staleBase.text.slice(0, 200),
+  );
+  if (strayDraft) await call('POST', '/sop/draft/discard', { ...O, json: { rev: strayDraft.rev } });
   const draft = await call('PUT', '/sop/draft', {
     ...O,
     json: { basedOn: rb.body.id, rev: null, edits: [{ key: 'tone', body: '临时草稿。' }] },
@@ -818,6 +835,14 @@ check(
       page1.body.nextBefore === page1.body.items[1].id &&
       page2.body.items?.length === 2 &&
       page2.body.items?.every((x: Body) => x.id < page1.body.nextBefore),
+  );
+  // 按 action 过滤：日志里有别的动作，过滤后只剩这一种
+  const allActions = new Set(((await call('GET', '/audit?limit=100', O)).body.items as Body[]).map((x) => x.action));
+  const onlyRollbacks = (await call('GET', '/audit?limit=100&action=sop.rollback', O)).body.items as Body[];
+  check(
+    '审计 HTTP：按 action 过滤，只返回这一种动作',
+    allActions.size > 1 && onlyRollbacks.length > 0 && onlyRollbacks.every((x) => x.action === 'sop.rollback'),
+    [...allActions].join(','),
   );
   const lastPage = await call('GET', '/audit?limit=100&action=sop.discard', O);
   check('审计 HTTP：最后一页 nextBefore 为 null', lastPage.body.items?.length > 0 && lastPage.body.nextBefore === null);
@@ -878,6 +903,25 @@ check(
   });
   check('SOP HTTP：已有草稿时 rev 对不上 → 409', wrongRev.status === 409 && wrongRev.body.error === 'rev_conflict');
   await call('POST', '/sop/draft/discard', { ...O, json: { rev: left.rev } });
+  // 丢弃带旧 rev：存过一次之后拿存之前的 rev 丢弃 → 409，草稿还在
+  const s1 = await call('PUT', '/sop/draft', {
+    ...O,
+    json: { basedOn: cur.versionId, rev: null, edits: [{ key: 'tone', body: '第一次存。' }] },
+  });
+  const s2 = await call('PUT', '/sop/draft', {
+    ...O,
+    json: { basedOn: cur.versionId, rev: s1.body.rev, edits: [{ key: 'tone', body: '第二次存。' }] },
+  });
+  const staleDiscard = keep(await call('POST', '/sop/draft/discard', { ...O, json: { rev: s1.body.rev } }));
+  check(
+    '丢弃 HTTP：带旧 rev → 409 rev_conflict，草稿还在',
+    s2.status === 200 &&
+      staleDiscard.status === 409 &&
+      staleDiscard.body.error === 'rev_conflict' &&
+      (await call('GET', '/sop', O)).body.draft?.rev === s2.body.rev,
+    staleDiscard.text.slice(0, 200),
+  );
+  await call('POST', '/sop/draft/discard', { ...O, json: { rev: s2.body.rev } });
 }
 
 // 验收 6：契约闸
@@ -1373,6 +1417,15 @@ check(
       .toSorted()
       .join() === 'h-csv-one,h-csv-two',
   );
+  const oneDiff = creates.find((x) => x.targetId === 'h-csv-one')?.diff as Body | undefined;
+  const onePayload = (items[0]?.payload ?? {}) as Body;
+  check(
+    'CSV 导入：审计 diff 是每个顶层字段 [null, 新值]',
+    !!oneDiff &&
+      Object.keys(oneDiff).length === Object.keys(onePayload).length &&
+      Object.entries(onePayload).every(([k, v]) => JSON.stringify(oneDiff[k]) === JSON.stringify([null, v])),
+    JSON.stringify(oneDiff),
+  );
 
   const reject = async (text: string, kind = 'hotel'): Promise<Res> =>
     keep(await call('POST', `/catalog/${kind}/import-csv`, { ...O, json: { csv: text } }));
@@ -1538,6 +1591,20 @@ check('错误映射：不认识的错误 → null（按 500 处理）', __consol
     '锁丢失：改产品库、存草稿 → 503 lock_lost',
     w1.status === 503 && w1.body.error === 'lock_lost' && w2.status === 503 && w2.body.error === 'lock_lost',
     `${w1.text} | ${w2.text}`,
+  );
+  // CSV 导入不经 write() 外壳，自己查锁
+  const w3 = keep(
+    await call('POST', '/catalog/hotel/import-csv', {
+      ...O,
+      json: { csv: `id,name,destination,stars,nightlyFrom,roomType,highlights,tags${NL}h-lock-lost,锁丢了,三亚,五星,100,房,亮点,` },
+    }),
+  );
+  check(
+    '锁丢失：CSV 导入 → 503 lock_lost，一条也没建',
+    w3.status === 503 &&
+      w3.body.error === 'lock_lost' &&
+      !((await call('GET', '/catalog/hotel', O)).body.items as Body[]).some((x) => x.code === 'h-lock-lost'),
+    w3.text.slice(0, 200),
   );
   check(
     '锁丢失：读照常，/status 报 lock=lost',
