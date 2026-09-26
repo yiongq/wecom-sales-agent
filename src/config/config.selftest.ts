@@ -582,6 +582,7 @@ const { getOrCreateSession, getSession } = await import('../store.js');
 const { handleMessage } = await import('../engine.js');
 type ToolHints = import('../tools.js').ToolHints;
 type ConfigDeps = import('./source.js').ConfigDeps;
+type Route = import('../shared/catalog-types.js').Route;
 
 const DATA = path.join(root, 'data');
 const nextYear = new Date().getFullYear() + 1;
@@ -1446,6 +1447,237 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   cfg.__configTest.reset();
 }
 
+// ---------------- 产品库编辑流程（第 8 步：验收 9，以及 10 的产品库部分） ----------------
+{
+  const cat = await import('./catalog.js');
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t));
+  const tenantId = cfg.currentCatalog().tenantId;
+  const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营乙', ip: null } };
+  const CODE = 'r-tibet-lux';
+  const errOf = async (p: Promise<unknown>): Promise<{ name: string; fields?: string[]; issues?: unknown[] }> => {
+    try {
+      await p;
+      return { name: 'ok' };
+    } catch (e) {
+      return {
+        name: e instanceof Error ? e.constructor.name : String(e),
+        fields: (e as { fields?: string[] }).fields,
+        issues: (e as { issues?: unknown[] }).issues,
+      };
+    }
+  };
+  const dbPayload = async (code: string): Promise<string> => JSON.stringify((await cat.getCatalogItem(ctx, 'route', code))!.payload);
+  const snapPayload = (code: string): string => JSON.stringify(cfg.currentCatalog().routes.find((r) => r.id === code));
+  const others = (): string =>
+    cfg
+      .currentCatalog()
+      .routes.filter((r) => r.id !== CODE)
+      .map((r) => JSON.stringify(r))
+      .join('\n');
+  const audit = async (action: string): Promise<{ diff: unknown }[]> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ diff: unknown }>('select diff from audit_log where tenant_id = $1 and action = $2 order by id', [
+            tenantId,
+            action,
+          ])
+        ).rows,
+    );
+
+  const item0 = (await cat.getCatalogItem(ctx, 'route', CODE))!;
+  const r0 = item0.payload as Route;
+  check(
+    '产品库：条目是 active、payload 与文件相同',
+    item0.status === 'active' && JSON.stringify(r0) === JSON.stringify((JSON.parse(routesRaw) as Route[]).find((r) => r.id === CODE)),
+  );
+
+  // 锁定字段：逐个改，422 并逐个点名，库和快照都不变
+  const lockedEdits: [string, Record<string, unknown>][] = [
+    ['priceFrom', { priceFrom: r0.priceFrom + 1 }],
+    ['bestSeason', { bestSeason: '6-9月' }],
+    ['segments', { segments: [...r0.segments].toReversed() }],
+    ['aliases', { aliases: [...r0.aliases!, '新别名'] }],
+    ['maxAltitude', { maxAltitude: r0.maxAltitude! + 1 }],
+    ['overseas', { overseas: !r0.overseas }],
+    ['destination', { destination: '别处' }],
+    ['days', { days: r0.days + 1 }],
+    ['title', { title: '新标题' }],
+    ['inclusions', { inclusions: [...r0.inclusions!, '新含'] }],
+    ['exclusions', { exclusions: [...r0.exclusions!, '新不含'] }],
+    ['tags:国内', { tags: r0.tags.filter((x) => x !== '国内') }],
+  ];
+  const beforeDb = await dbPayload(CODE);
+  const beforeSnap = snapPayload(CODE);
+  for (const [field, set] of lockedEdits) {
+    const e = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set }));
+    check(
+      `锁定：active 线路改 ${field} → CatalogLockedFieldError 点名 ${field}`,
+      e.name === 'CatalogLockedFieldError' && e.fields?.join(',') === field,
+      `${e.name} ${e.fields}`,
+    );
+  }
+  check('锁定：被拒之后库和快照都没变', (await dbPayload(CODE)) === beforeDb && snapPayload(CODE) === beforeSnap);
+  const unsetLocked = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set: {}, unset: ['inclusions'] }));
+  check('锁定：unset 锁定字段也拒', unsetLocked.name === 'CatalogLockedFieldError' && unsetLocked.fields?.join(',') === 'inclusions');
+
+  // 改 highlights：200，下一次 get_route_detail 返回新内容；其他条目不变，这一条除 highlights 外的字节也不变
+  const proposalQuote = async (): Promise<string> => {
+    const { app } = await import('../server.js');
+    const body = (await (await app.request(`/api/proposal/${CODE}?travelers=2&departDate=${peakDate}`)).json()) as { quote?: unknown };
+    return JSON.stringify(body.quote);
+  };
+  const quoteBefore = await proposalQuote();
+  const othersBefore = others();
+  const gen0 = cfg.currentCatalog().generation;
+  const hl = ['雪山脚下的私享营地', ...r0.highlights.slice(1)];
+  const u1 = await cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set: { highlights: hl } });
+  const expectHl = JSON.stringify({ ...r0, highlights: hl });
+  check('补丁：改 highlights 成功，rev 加 1', u1.rev === item0.rev + 1 && JSON.stringify(u1.payload) === expectHl);
+  check('补丁：库与快照里这一条只有 highlights 变了', (await dbPayload(CODE)) === expectHl && snapPayload(CODE) === expectHl);
+  check('补丁：其他条目的字节不变，快照代际加 1', others() === othersBefore && cfg.currentCatalog().generation === gen0 + 1);
+  check('补丁：新快照照样冻结', Object.isFrozen(cfg.currentCatalog().routes.find((r) => r.id === CODE)!.highlights));
+  check(
+    '补丁：下一次 get_route_detail 返回新内容',
+    (await executeTool('get_route_detail', { routeId: CODE }, freshSession())).includes('雪山脚下的私享营地'),
+  );
+  check('补丁：允许的编辑前后方案书的报价不变', (await proposalQuote()) === quoteBefore && quoteBefore !== undefined);
+
+  // 只改 itinerary[0].detail：表单把整个 itinerary 序列化回来，键序被表单重排过，写库仍按原键序，别的字节不变
+  const itin = r0.itinerary!.map((d, i) => {
+    const reordered = Object.fromEntries(Object.entries(d).toReversed());
+    return i === 0 ? { ...reordered, detail: `${d.detail}（加一句）` } : reordered;
+  });
+  const u2 = await cat.updateCatalogItem(ctx, 'route', CODE, { rev: u1.rev, set: { itinerary: itin } });
+  const expectItin = JSON.stringify({
+    ...r0,
+    highlights: hl,
+    itinerary: r0.itinerary!.map((d, i) => (i === 0 ? { ...d, detail: `${d.detail}（加一句）` } : d)),
+  });
+  check(
+    '补丁：只改 itinerary[0].detail，各层键序保持、别的字节不变',
+    JSON.stringify(u2.payload) === expectItin && (await dbPayload(CODE)) === expectItin,
+  );
+
+  // 把 GET 回来的 payload 原样经表单序列化再提交：审计 diff 为空，字节不变
+  const got = (await cat.getCatalogItem(ctx, 'route', CODE))!;
+  const form = Object.fromEntries(Object.entries(JSON.parse(JSON.stringify(got.payload)) as Record<string, unknown>).toReversed());
+  const u3 = await cat.updateCatalogItem(ctx, 'route', CODE, { rev: got.rev, set: form });
+  const lastDiff = (await audit('catalog.update')).at(-1)?.diff;
+  check(
+    '补丁：原样提交回去，字节不变、审计 diff 为空',
+    JSON.stringify(u3.payload) === JSON.stringify(got.payload) && JSON.stringify(lastDiff) === '{}',
+    JSON.stringify(lastDiff),
+  );
+
+  // 不合格的补丁：422
+  const invalid: [string, Record<string, unknown>][] = [
+    ['itinerary 改空', { itinerary: [] }],
+    ['itinerary 条数不等于 days', { itinerary: r0.itinerary!.slice(0, -1) }],
+    ['带未知键', { discount: 0.9 }],
+    ['数值字段传字符串', { itinerary: r0.itinerary!.map((d, i) => (i === 0 ? { ...d, day: '1' } : d)) }],
+  ];
+  for (const [what, set] of invalid) {
+    const e = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: u3.rev, set }));
+    check(`补丁：${what} → CatalogValidationError`, e.name === 'CatalogValidationError' && (e.issues?.length ?? 0) > 0, e.name);
+  }
+
+  // draft 条目：除 id 以外都能改；上架后进快照
+  const draftPayload = { ...(JSON.parse(routesRaw) as Record<string, unknown>[])[0]!, id: 'r-new-draft', title: '新线路草稿' };
+  const created = await cat.createCatalogItem(ctx, 'route', draftPayload);
+  const maxOrdActive = Math.max(...(await cat.listCatalog(ctx, 'route')).filter((x) => x.code !== 'r-new-draft').map((x) => x.ord));
+  check(
+    '新建：draft、ord 取最大加 1、不进快照',
+    created.status === 'draft' && created.ord === maxOrdActive + 1 && !cfg.currentCatalog().routes.some((r) => r.id === 'r-new-draft'),
+  );
+  check(
+    '新建：同一个 code 再建 → CatalogCodeTakenError',
+    (await errOf(cat.createCatalogItem(ctx, 'route', draftPayload))).name === 'CatalogCodeTakenError',
+  );
+  check(
+    '新建：不合格的条目 → CatalogValidationError',
+    (await errOf(cat.createCatalogItem(ctx, 'route', { ...draftPayload, id: 'r-bad', days: 0 }))).name === 'CatalogValidationError',
+  );
+  const d1 = await cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: created.rev, set: { priceFrom: 1, title: '改过的草稿' } });
+  check('draft：计价与识别字段都能改', (d1.payload as Route).priceFrom === 1 && (d1.payload as Route).title === '改过的草稿');
+  const idChange = await errOf(cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: d1.rev, set: { id: 'r-other' } }));
+  check(
+    'draft：改 id → CatalogLockedFieldError 点名 id',
+    idChange.name === 'CatalogLockedFieldError' && idChange.fields?.join(',') === 'id',
+  );
+  const genBefore = cfg.currentCatalog().generation;
+  const act = await cat.activateCatalogItem(ctx, 'route', 'r-new-draft', { rev: d1.rev });
+  const pos = cfg.currentCatalog().routes.findIndex((r) => r.id === 'r-new-draft');
+  check(
+    '上架：draft → active，按 ord 插到快照末尾，代际加 1',
+    act.status === 'active' && pos === cfg.currentCatalog().routes.length - 1 && cfg.currentCatalog().generation === genBefore + 1,
+  );
+  check(
+    '上架：已上架的再上架原样返回、快照不动',
+    (await cat.activateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev })).status === 'active' &&
+      cfg.currentCatalog().generation === genBefore + 1,
+  );
+  check(
+    '上架：上架后锁定字段不能再改',
+    (await errOf(cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev, set: { priceFrom: 2 } }))).name ===
+      'CatalogLockedFieldError',
+  );
+  check(
+    '审计：新建、更新、上架各有记录',
+    (await audit('catalog.create')).length === 1 &&
+      (await audit('catalog.activate')).length === 1 &&
+      (await audit('catalog.update')).length >= 4,
+  );
+
+  // 验收 10：两次 PATCH 带同一个 rev，第二次 409；并发新建同一个 code 一个成功一个 409；并发新建不同 code 拿到不同 ord
+  const cur = (await cat.getCatalogItem(ctx, 'route', CODE))!;
+  await cat.updateCatalogItem(ctx, 'route', CODE, { rev: cur.rev, set: { hotelLevel: '奢华' } });
+  check(
+    '并发：同一个 rev 第二次 PATCH → CatalogRevConflictError',
+    (await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: cur.rev, set: { hotelLevel: '五星' } }))).name ===
+      'CatalogRevConflictError',
+  );
+  const same = { ...draftPayload, id: 'r-race' };
+  const race = await Promise.allSettled([cat.createCatalogItem(ctx, 'route', same), cat.createCatalogItem(ctx, 'route', same)]);
+  const raceNames = race
+    .map((r) => (r.status === 'fulfilled' ? 'ok' : (r.reason as Error).constructor.name))
+    .toSorted()
+    .join(',');
+  check('并发：两个同 code 的新建一个成功、一个 CatalogCodeTakenError', raceNames === 'CatalogCodeTakenError,ok', raceNames);
+  const two = await Promise.all([
+    cat.createCatalogItem(ctx, 'route', { ...draftPayload, id: 'r-race-a' }),
+    cat.createCatalogItem(ctx, 'route', { ...draftPayload, id: 'r-race-b' }),
+  ]);
+  check('并发：两个不同 code 的新建拿到不同的 ord', two[0].ord !== two[1].ord);
+
+  // catalog-fix：停应用之后改 priceFrom，写一行带 reason 的审计，重启后快照是新值
+  cfg.__configTest.reset();
+  const fixed = await cat.fixLockedFields({
+    db: t.db,
+    tenantSlug: 'demo',
+    kind: 'route',
+    code: CODE,
+    set: { priceFrom: r0.priceFrom + 100 },
+    reason: '供应商调价',
+  });
+  const fixAudit = (await audit('catalog.locked_fix')).at(-1)?.diff as Record<string, unknown> | undefined;
+  check(
+    'catalog-fix：改 priceFrom 成功，审计带 reason 与字段 diff',
+    (fixed.payload as Route).priceFrom === r0.priceFrom + 100 &&
+      fixAudit?.reason === '供应商调价' &&
+      JSON.stringify(fixAudit?.priceFrom) === JSON.stringify([r0.priceFrom, r0.priceFrom + 100]),
+  );
+  check(
+    'catalog-fix：id 还是不能改',
+    (await errOf(cat.fixLockedFields({ db: t.db, tenantSlug: 'demo', kind: 'route', code: CODE, set: { id: 'r-x' }, reason: 'x' })))
+      .name === 'CatalogLockedFieldError',
+  );
+  await cfg.initConfig(testConfigDeps(t));
+  check('catalog-fix：重启后快照是新值', cfg.currentCatalog().routes.find((r) => r.id === CODE)?.priceFrom === r0.priceFrom + 100);
+  cfg.__configTest.reset();
+}
+
 await t.close();
 
 if (fails.length) {
@@ -1453,6 +1685,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix）`,
 );
 process.exit(0);

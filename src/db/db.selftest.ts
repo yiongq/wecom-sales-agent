@@ -1213,6 +1213,28 @@ async function realPostgres(superUrl: string): Promise<void> {
     check('真实 PG：两种模式的前缀、线路、酒店逐字节相同', JSON.stringify([promptPrefix(), loadRoutes(), loadHotels()]) === fileView);
     const held = cli('import-config.ts', ['--tenant', 'demo'], { DATABASE_URL: APP });
     check('真实 PG：应用持着租户锁时 import-config 退出码 3', held.code === 3, held.out.slice(0, 200));
+    const fixArgs = [
+      '--tenant',
+      'demo',
+      '--kind',
+      'route',
+      '--code',
+      'r-tibet-lux',
+      '--set',
+      '{"priceFrom": 99999}',
+      '--reason',
+      '测试调价',
+    ];
+    const fixHeld = cli('catalog-fix.ts', fixArgs, { DATABASE_URL: APP });
+    check('真实 PG：应用运行时 catalog-fix 拿不到锁，退出码 3', fixHeld.code === 3, fixHeld.out.slice(0, 200));
+    await cfg.closeConfig();
+    cfg.__configTest.reset();
+    const fixOk = cli('catalog-fix.ts', fixArgs, { DATABASE_URL: APP });
+    check('真实 PG：停应用之后 catalog-fix 改 priceFrom，退出码 0', fixOk.code === 0, fixOk.out.slice(0, 200));
+    await cfg.initConfig({ ...testConfigDeps({ db: pgDb.db }), tenantSlug: 'demo', lock: (tenantId) => holdTenantLock(APP, tenantId) });
+    check('真实 PG：重启后快照是修正后的值', cfg.currentCatalog().routes.find((r) => r.id === 'r-tibet-lux')?.priceFrom === 99999);
+    const [fixAudit] = await sq<{ reason: string }>(`select diff->>'reason' as reason from audit_log where action = 'catalog.locked_fix'`);
+    check('真实 PG：写了一行带 reason 的 catalog.locked_fix 审计', fixAudit?.reason === '测试调价');
   } finally {
     for (const f of cleanup.reverse()) await f().catch(() => {});
     await su
