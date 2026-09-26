@@ -285,9 +285,9 @@ pnpm test              # 六组自测，再跑 mock 模式的回归评测；都�
 
 **首次部署前置条件**（换新服务器时逐项确认）：
 
-1. 服务器已装 Docker（带 Compose v2 插件），且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或以 `SERVER=root@your-host bash deploy.sh <tag>` 传入；**未设置时脚本直接中止**，没有内置默认值。
+1. 服务器已装 Docker（带 Compose 插件，2.30 及以上：compose 文件用 `env_file` 的 `format: raw`），且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或以 `SERVER=root@your-host bash deploy.sh <tag>` 传入；**未设置时脚本直接中止**，没有内置默认值。
 2. 服务器上创建 `/opt/wecom-sales-agent/.env`（参考 `.env.example`）：至少填 `LLM_API_KEY`、`ADMIN_PASS`、`PUBLIC_BASE_URL`（发给微信客户的支付链接靠它拼完整 URL），并**显式写明 `DEPLOY_PROFILE=demo` 或 `DEPLOY_PROFILE=prod`**（不带引号）。deploy.sh 在同步之前检查它，缺 `.env` 或没写明 profile 会直接中止，不会打掉在跑的旧容器。
-3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。
+3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。这几个文件都按 `docker run --env-file` 的规则读：值是 `=` 后面的整行，引号、`$`、`#` 都原样进容器，所以不要加引号和行尾注释。deploy.sh 也会查 `.env.db` 里四个口令都有、没有 `POSTGRES_DB`。
 4. HTTPS 用 Caddy 反代（把域名换成自己的）：`your-domain.com { reverse_proxy 127.0.0.1:3210 }`，SSE 默认透传；云防火墙放行 80/443。
 
 之后每次发布：给要上线的提交打 tag，再按 tag 部署。
@@ -297,15 +297,17 @@ git tag demo-v1.2          # 打在要上线的那个提交上
 bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
 ```
 
-它只收本地已有的 tag，分支名和提交号都不收，所以线上跑的每一版都提交过、也过了四个门禁，工作区里没提交的改动上不了线。流程（见 [deploy.sh](deploy.sh)）：
+它只收本地已有的 tag，分支名和提交号都不收，所以线上跑的每一版都提交过、也过了四个门禁，工作区里没提交的改动上不了线。换成 compose 之前的 tag（里面没有 `deploy/compose.yml`）也不收，见下面「回到文件模式或更早的版本」。流程（见 [deploy.sh](deploy.sh)）：
 
 1. `git archive <tag>` 解到临时目录，在那里 `pnpm install` 并跑四个门禁，任何一个不过就中止，服务器上什么都不动（本机要有 pnpm）。
 2. 检查服务器 `.env`（只读），不过就中止。
 3. rsync 到服务器：按内容比对，`.env*`、`var/`、日志既不发送也不删除。
-4. 给正在跑的容器所用镜像打 `:prev`，再 `docker build`（把 tag 写进镜像，后台前端 `console/` 也在这一步构建），并用新镜像试读一遍 `.env`。这两步失败就中止，旧容器照常跑。
+4. 把备份脚本装到部署目录之外（`/usr/local/lib/wecom-sales-agent/backup.sh`），给正在跑的容器所用镜像打 `:prev`，再 `docker build`（把 tag 写进镜像，后台前端 `console/` 也在这一步构建），并用新镜像试读一遍 `.env`。这几步失败就中止，旧容器照常跑。
 5. 跑迁移（`docker compose run --rm migrate`，顺带拉起数据库）。失败就中止，旧容器照常跑，库没有变化。
-6. `docker compose up -d app` 换容器（宿主 `3210` → 容器 `3200`，挂 `var/` 卷并自动校正属主，参数都在 compose 的 `app` 服务里），然后做健康检查：`/healthz` 的 `revision` 必须等于这个 tag。第一次换成 compose 时，原来 `docker run` 起的同名容器会先按同样的方式停掉。
-7. 换容器或健康检查失败时，打印容器日志，自动用 `:prev` 回滚（`up -d --no-deps app`，不跑迁移：迁移只增不删），并以非零退出。回滚后 `/healthz` 报的是上一版的 tag。
+6. `docker compose up -d app` 换容器（宿主 `3210` → 容器 `3200`，挂 `var/` 卷并自动校正属主，参数都在 compose 的 `app` 服务里），给新镜像打 `:current`，然后做健康检查：`/healthz` 的 `revision` 必须等于这个 tag。第一次换成 compose 时，原来 `docker run` 起的同名容器会先按同样的方式停掉。
+7. 换容器或健康检查失败时，打印容器日志，自动用 `:prev` 回滚（`up -d --no-deps app`，不跑迁移：迁移只增不删），`:current` 改指 `:prev`，并以非零退出。回滚后 `/healthz` 报的是上一版的 tag。
+
+`:current` 总是 app 容器在用的镜像，compose 文件不给 `APP_IMAGE` 时就用它，所以下面这些手工的 `docker compose` 命令不用带 `APP_IMAGE`。别手写 `:latest`：自动回滚之后它指向的是那个没起来的坏镜像。
 
 换容器按 SIGTERM、宽限 10 秒而不是强杀：进程先等进行中的企微回复发完再落盘退出（最多 8 秒，`store.ts` 的停机钩子）。万一等不完，已认领但没处理完的客户消息连原文记在 `var/wecom-cursor.json` 的在途表里，新容器启动后先重放它们再拉新消息，所以发布和重启不丢消息。
 
@@ -315,7 +317,13 @@ bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
 - **数据**：`var/`（会话/订单/企微 cursor/客服二维码）挂卷持久化，重建容器不丢；rsync 既不同步也不删除它。
 - **鉴权**：demo 实例的后台是演示模式（免密只读、仅演示数据），写操作要 `ADMIN_PASS`（见上节）。改了服务器 `.env` 要 `docker compose -f deploy/compose.yml up -d app`（或重新部署）重建容器才生效：env 只在创建容器时读一次，`docker restart` 读不到新值。
 - **后台**：`/console/`（数据库模式下可用）。账号用平台命令行建：`docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant <slug> --email … --name … --role owner --password-stdin`。
-- **备份**：宿主机 cron 每晚跑 [deploy/backup.sh](deploy/backup.sh)：导出数据库并校验、打包 `var/`，用 age 公钥加密后按日期存 7 天，配了异地目标再复制一份存 30 天。配置写在 `.env.backup`，恢复步骤写在脚本开头。
+- **备份**：宿主机 cron 每晚跑部署时装好的那一份 [deploy/backup.sh](deploy/backup.sh)：`15 3 * * * bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1`。导出数据库并校验、打包 `var/`，用 age 公钥加密后按日期存 7 天，配了异地目标再复制一份存 30 天。配置写在 `.env.backup`，恢复步骤写在脚本开头。装在部署目录之外，是为了回到旧版本时 cron 照样能跑。
+
+**回到文件模式或更早的版本**（01 spec「导入、导出与回滚」的第 3 种回滚）：
+
+- 先导出后台改过的内容。导出要写进挂进容器的宿主目录，写在容器里的文件会随 `--rm` 删掉：`install -d -o 1000 -g 1000 /root/export-<日期>`，再 `docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app node --import tsx src/cli/export-config.ts --tenant <slug> --out /export`。回到旧 tag 时把那一版的 `data/sop.md` 先放进这个目录（例如 `target-sop.md`），加 `--image-sop /export/target-sop.md`。
+- 把三个文件拷进要部署的那条线的 `data/`，两个 JSON 用 `oxfmt` 格式化，提交、打 tag；`.env` 去掉 `CONFIG_SOURCE=db`，再部署这个 tag。
+- 那条线是换成 compose 之前的版本时，deploy.sh 不收它的 tag（否则会先把服务器上的 `deploy/` 同步删掉，到迁移那一步才失败）：在那个 tag 的 worktree 里跑它自己的 `deploy.sh`。它用 `docker run` 换掉 compose 起的同名容器，数据库容器和备份的 cron 不受影响；之后再部署新的 tag，换容器那一步会接管这个容器。
 
 多副本部署会脑裂（内存为权威），本项目按单实例设计。
 
