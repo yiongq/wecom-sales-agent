@@ -1,5 +1,7 @@
 // 命令行的共用部分（spec「导入、导出与回滚」）。命令行不 import 运行时模块、不读写 var/，一律 --rm 运行；
 // 连接串只从环境读，不 import env.ts：免得开发机 .env 里别的连接串混进来。
+import { randomBytes } from 'node:crypto';
+import fs from 'node:fs';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { openDb, redactUrl, type Db } from '../db/client.js';
 
@@ -45,4 +47,31 @@ export function main(fn: () => Promise<number>): void {
       process.exit(1);
     },
   );
+}
+
+/**
+ * 口令从 stdin 读（--password-stdin），或者生成后只写到 /dev/tty；两者都没有就拒绝执行。
+ * 口令因此不会进 docker logs、shell 历史或进程参数。用到时才读：账号已存在时 user-create 根本不要口令
+ */
+export function passwordSource(fromStdin: boolean): () => Promise<string> {
+  return async () => {
+    if (fromStdin) {
+      const chunks: Buffer[] = [];
+      for await (const c of process.stdin) chunks.push(c as Buffer);
+      return Buffer.concat(chunks)
+        .toString('utf8')
+        .replace(/\r?\n$/, '');
+    }
+    const generated = randomBytes(18).toString('base64url');
+    let fd: number;
+    try {
+      fd = fs.openSync('/dev/tty', 'w');
+    } catch {
+      console.error('没有终端可以显示生成的口令：用 --password-stdin 从标准输入传入');
+      process.exit(1);
+    }
+    fs.writeSync(fd, `生成的口令（只显示这一次）：${generated}\n`);
+    fs.closeSync(fd);
+    return generated;
+  };
 }
