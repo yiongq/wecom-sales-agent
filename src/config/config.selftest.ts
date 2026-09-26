@@ -1153,32 +1153,42 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     `${up} ${catalogStaleAfter}`,
   );
 
-  // 重读与写入交错：重读读到的快照早于一次写入，那次写入提交并换了缓存之后重读才回来 → 丢掉这份快照再读，
-  // SOP 版本号不倒退、产品库的修改不丢（不变式 13；spec 否决「提交后重读」的理由）
-  let open = (): void => {};
-  const gate = new Promise<void>((r) => (open = r));
-  let paused = false;
-  onNextRelease = async () => {
-    paused = true;
-    await gate;
+  // 重读与写入交错：重读读到的快照早于一次写入，那次写入提交并换了缓存之后重读才回来（不变式 13；spec 否决「提交后重读」
+  // 的理由）。SOP 与产品库各交错一次：SOP 靠版本号只增不减不倒退，产品库靠写入计数认出快照过时、丢掉再读
+  const reloadPausedDuring = async (write: () => Promise<unknown>): Promise<boolean> => {
+    let open = (): void => {};
+    const gate = new Promise<void>((r) => (open = r));
+    let paused = false;
+    onNextRelease = async () => {
+      paused = true;
+      await gate;
+    };
+    const reload = cfg.reloadFromDb();
+    await waitFor(() => paused);
+    await write();
+    open();
+    await reload;
+    return paused;
   };
-  const reload = cfg.reloadFromDb();
-  await waitFor(() => paused);
   const v1 = cfg.currentSop();
-  await sopApi.rollbackSop(ctx, { versionId: v1.versionId, changeNote: '重读途中发布' });
-  const cur = (await cat.getCatalogItem(ctx, 'route', code))!;
-  const hl2 = [...route0.highlights, '重读途中改的一条'];
-  await cat.updateCatalogItem(ctx, 'route', code, { rev: cur.rev, set: { highlights: hl2 } });
-  open();
-  await reload;
+  const pausedSop = await reloadPausedDuring(() => sopApi.rollbackSop(ctx, { versionId: v1.versionId, changeNote: '重读途中发布' }));
   check(
-    '重读与写入交错：缓存的 SOP 版本号不倒退，等于库里的已发布版本',
-    paused && cfg.currentSop().versionNo === v1.versionNo + 1 && (await publishedNo()) === v1.versionNo + 1,
+    '重读与 SOP 发布交错：缓存的 SOP 版本号不倒退，等于库里的已发布版本，完成后不再标脏',
+    pausedSop &&
+      cfg.currentSop().versionNo === v1.versionNo + 1 &&
+      (await publishedNo()) === v1.versionNo + 1 &&
+      !cfg.configHealth().sopStale &&
+      !cfg.configHealth().catalogStale,
     `v${cfg.currentSop().versionNo}`,
   );
+  const cur = (await cat.getCatalogItem(ctx, 'route', code))!;
+  const hl2 = [...route0.highlights, '重读途中改的一条'];
+  const pausedCatalog = await reloadPausedDuring(() =>
+    cat.updateCatalogItem(ctx, 'route', code, { rev: cur.rev, set: { highlights: hl2 } }),
+  );
   check(
-    '重读与写入交错：重读途中改的条目在快照里仍是新内容，完成后不再标脏',
-    highlightsOf() === JSON.stringify(hl2) && !cfg.configHealth().sopStale && !cfg.configHealth().catalogStale,
+    '重读与产品库修改交错：重读途中改的条目在快照里仍是新内容，完成后不再标脏',
+    pausedCatalog && highlightsOf() === JSON.stringify(hl2) && !cfg.configHealth().sopStale && !cfg.configHealth().catalogStale,
     highlightsOf(),
   );
 

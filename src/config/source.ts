@@ -552,15 +552,17 @@ export function configRuntime(): { db: Db; tenantId: string; deps: ConfigDeps; i
   return { db: loaded.deps.db, tenantId: loaded.tenantId, deps: loaded.deps, imageSections: loaded.imageSections };
 }
 
-/** 提交之后换缓存的次数（replacePublishedSop、applyCatalogRow 真的换了才加 1）。重读据此认出自己读到的快照可能已经过时 */
-let cacheWrites = 0;
+/**
+ * 提交之后换产品库快照的次数（applyCatalogRow 真的换了才加 1）。重读据此认出自己读到的产品库可能已经过时。
+ * SOP 不用计数：版本号只增不减，重读读到的旧版本号不会换上去
+ */
+let catalogWrites = 0;
 
 /** 只给 src/config/{sop,catalog}.ts 在事务提交之后调用；next.versionNo 不大于当前值时忽略 */
 export function replacePublishedSop(next: PublishedSop): void {
   if (!loaded || next.versionNo <= loaded.sop.versionNo) return;
   loaded.sop = next;
   sopStale = false;
-  cacheWrites++;
 }
 
 /**
@@ -576,7 +578,7 @@ export function applyCatalogRow(row: {
 }): void {
   const cur = loaded;
   if (!cur || row.status !== 'active') return;
-  cacheWrites++;
+  catalogWrites++;
   const key = row.kind === 'route' ? 'routes' : 'hotels';
   const ords = cur.ords[row.kind];
   const idOf = (x: unknown): string => String((x as { id: unknown }).id);
@@ -632,11 +634,11 @@ const RELOAD_BACKOFF_MS = [5_000, 30_000, 120_000];
 let reloadBackoff = RELOAD_BACKOFF_MS;
 
 /**
- * 读一次库、换上缓存。返回 false 表示没换：读的途中有写入提交并换了缓存，这份快照可能早于那次写入，
- * 整体换上去会让 SOP 版本号倒退、把产品库的修改冲掉（spec 否决的「提交后重读」就是这个竞态），要重读
+ * 读一次库、换上缓存。返回 false 表示没换：读的途中有产品库写入提交并换了快照，这份快照可能早于那次写入，
+ * 整体换上去会把那次修改冲掉（spec 否决的「提交后重读」就是这个竞态），要重读。SOP 由版本号只增不减兜住
  */
 async function reloadOnce(cur: Loaded): Promise<boolean> {
-  const writesBefore = cacheWrites;
+  const writesBefore = catalogWrites;
   const { row, items } = await withTenant(
     cur.deps.db,
     systemCtx(cur.tenantId),
@@ -646,7 +648,7 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   if (!row) throw new Error('库里没有已发布的 SOP');
   assertIntegrity(row);
   if (loaded !== cur) return true;
-  if (cacheWrites !== writesBefore) return false;
+  if (catalogWrites !== writesBefore) return false;
   // 版本号只增不减（不变式 13）
   if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
   sopStale = false;
@@ -692,7 +694,7 @@ export function reloadFromDb(): Promise<void> {
       for (let attempt = 0; ; attempt++) {
         if (shuttingDown || loaded !== cur) return;
         try {
-          // 读的途中缓存被写入换过：这份快照作废，立即再读一遍（不算失败，不退避）
+          // 读的途中产品库快照被写入换过：这份快照作废，立即再读一遍（不算失败，不退避）
           if (!(await reloadOnce(cur))) reloadAgain = true;
           break;
         } catch (e) {
