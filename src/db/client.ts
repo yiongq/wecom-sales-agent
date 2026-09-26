@@ -55,11 +55,19 @@ export function assertPgUrl(url: string): void {
 }
 
 /**
- * 连接串脱敏：去掉口令，只留用户、主机和库名，供日志与报错用。口令一直抹到最后一个 @：node-postgres 按 URL 规则
- * 在最后一个 @ 处切开，口令里没转义的 @ 照样连得上。查询参数里的 password= 它同样认，一并抹掉
+ * 连接串脱敏：去掉口令，只留用户、主机和库名，供日志与报错用。按 node-postgres 的解析方式抹：它用 URL 规则，
+ * 主机前的部分在最后一个 @ 处切开（口令里没转义的 @ 照样连得上），查询参数里的 password 同样认。
+ * URL 解析不了（口令里有裸的 / ? # 之类），或解析出来没有用户信息、后面却还有 @（口令像「2024#x」时会被当成端口），
+ * 宁可多抹：从第一个冒号一直抹到整串最后一个 @
  */
 export function redactUrl(url: string): string {
-  return url.replace(/^(postgres(?:ql)?:\/\/[^:/?#]*):.*@/s, '$1:***@').replace(/([?&]password=)[^&#]*/gi, '$1***');
+  const u = URL.canParse(url) ? new URL(url) : null;
+  if (!u || (!u.username && !u.password && url.includes('@'))) {
+    return url.replace(/^(postgres(?:ql)?:\/\/[^:/?#]*):.*@/s, '$1:***@').replace(/([?&]password=)[^&#]*/gi, '$1***');
+  }
+  if (u.password) u.password = '***';
+  for (const k of new Set(u.searchParams.keys())) if (k.toLowerCase() === 'password') u.searchParams.set(k, '***');
+  return u.href;
 }
 
 /** 只接受 postgres:// 与 postgresql://；PGlite 只经 testing.ts 进来。打开时先连一次，连不上当场抛 */

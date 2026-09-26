@@ -585,6 +585,11 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
       'postgres://agent_app@db:5432/agent?password=hush-hush&application_name=app',
       'postgres://agent_app@db:5432/agent?password=***&application_name=app',
     ],
+    [
+      '主机后面的查询参数里也有 @（只抹口令，主机、库名、参数照旧）',
+      'postgres://agent_app:hush-hush@db:5432/agent?application_name=ops@team',
+      'postgres://agent_app:***@db:5432/agent?application_name=ops@team',
+    ],
   ];
   for (const [what, url, want] of cases) {
     const got = redactUrl(url);
@@ -592,6 +597,15 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
     check(`脱敏：${what}，口令一个字都不剩`, got === want && pw.length > 0 && !got.includes(pw), `${got} / ${pw}`);
   }
   check('脱敏：没有口令的连接串原样返回', redactUrl('postgres://agent_app@db:5432/agent') === 'postgres://agent_app@db:5432/agent');
+  const noPw = 'postgres://agent_app@db:5432/agent?application_name=ops@team';
+  check('脱敏：没有口令、查询参数里有 @ 的连接串原样返回，不凭空拼出口令', redactUrl(noPw) === noPw, redactUrl(noPw));
+  // node-postgres 不认的口令（URL 规则下成了端口，或整串解析不了）也是运维写进去的口令：宁可多抹
+  const odd = ['postgres://agent_app:2024#x@db:5432/agent', 'postgres://agent_app:a/b@db:5432/agent'].map(redactUrl);
+  check(
+    '脱敏：口令里有裸的 # 或 /（URL 规则切不对）时一直抹到最后一个 @',
+    odd.every((x) => x === 'postgres://agent_app:***@db:5432/agent'),
+    odd.join(' '),
+  );
 }
 
 // ---------------- withTenant ----------------
