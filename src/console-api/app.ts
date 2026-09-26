@@ -89,21 +89,16 @@ import {
   type SopVersion,
   type Status,
 } from '../shared/console-api.js';
+import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
 import { safeEqual } from '../wecom-crypto.js';
 
 type ConsoleEnv = { Variables: { user: AuthedUser | null; token: string | null } };
 
-/** /console/* 与 /api/console/* 共用：响应里有 csrf 和草稿，不许缓存；同源的 XSS 能拿到 csrf，CSP 只许本站脚本 */
-export const SECURITY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'",
-  'Cache-Control': 'no-store',
-  'X-Content-Type-Options': 'nosniff',
-});
-
+/** /console/* 与 /api/console/* 共用（第 16 步托管 /console 时挂上） */
 export const securityHeaders: MiddlewareHandler = async (c, next) => {
   await next();
-  for (const [k, v] of Object.entries(SECURITY_HEADERS)) c.res.headers.set(k, v);
+  for (const [k, v] of Object.entries(CONSOLE_SECURITY_HEADERS)) c.res.headers.set(k, v);
 };
 
 let clock = (): number => Date.now();

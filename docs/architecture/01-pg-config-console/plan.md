@@ -78,7 +78,7 @@
   - `server.ts` 用 `app.route('/', consoleApi)` 挂载，放在 serveStatic 兜底之前。
   - 新建 `src/console-api/console.selftest.ts`（先设临时 `VAR_DIR`），走 `app.request`，库用 PGlite。
   - 对应验收 5、6、9、15、16 的 HTTP 部分。
-- [ ] 12. console 工作区和三个核心页（4）：
+- [x] 12. console 工作区和三个核心页（4）：
   - `console/` 按 ADR-002 的栈搭起来，版本先核实再钉死（开放问题 9）；Dockerfile 补上 console 构建阶段。
   - `hc<ConsoleApp>` 客户端；页面：登录、SOP（不含 diff；过期草稿、rebase 与冲突提示；回滚哈希提示）、产品库（schema 生成的表单，锁定字段只读，只提交改过的字段，不含 CSV 导入）、审计日志；demo 匿名只读横幅。
   - `format:check` / `lint` / `typecheck` 覆盖 `console/`；`test` 末尾做生产构建并扫描产物；typecheck 范围内放 `@ts-expect-error` 夹具。
@@ -247,6 +247,20 @@
 - 30 个变异全部变红：少一个安全头、安全头排到 `requireDbMode` 之后、文件模式不拦、不查 x-csrf、不拦跨站、登录不查 content-type、写请求不要求会话、匿名读不挂查询限流、prod 匿名能读、viewer 能写、cookie 少 `HttpOnly`、登出不清 cookie、登录不用可替换的时钟、冲突不带当前正文、`lock_lost` 不是 503、锁定节回 409、锁定字段不点名、坏 JSON 不回 400、参数错回 422、兜底不分匿名与成员、版本历史对匿名开放、匿名 SOP 给全哈希、匿名 `/status` 多给字段、匿名产品库多给 `status`、审计不记 ip、版本 id 不校验格式、`/status` 的差异不报 `onlyDb`、无效 cookie 不先限流、审计翻页差一、缓存的 `publishedAt` 取建草稿时间。最后三个起初存活，各补了一条断言（无效 cookie 第 61 次不查库、恰好剩 limit 行的那一页、后台发布的版本两个时间不同）。另有两个起初靠断言里的属性访问崩溃才变红，改成可空访问，失败落在具体断言上。变异在工作区的隔离副本里跑：原地改源码会让停机钩子的 lint / typecheck 变红。
 - 用一个临时的 `hc` 探针确认 `ConsoleApp` 的类型推得出来：联合响应能按字段收窄，不存在的端点、非法的 `kind` 是类型错误。探针没提交，正式的类型夹具在第 12 步。
 
+### 第 12 步（2026-09-26）
+
+- **工作区与版本（开放问题 9）。** `pnpm-workspace.yaml` 加 `packages: [console]`。按 npm `latest` 核实后钉精确版本：React 19.3.0、Vite 8.3.1（`@vitejs/plugin-react` 6.1.1）、TanStack Router 1.170.39 / Query 5.104.0、Ant Design 6.6.5（icons 6.3.4）、`@rjsf/*` 6.10.1、CodeMirror（state 6.7.6、view 6.43.13、commands 6.11.1）、dayjs 1.11.23，`hono` 与 `zod` 与根目录同一版本（4.13.9、4.6.5）。TypeScript 仍用根目录的 5.9（`latest` 已是 7.0，不在本阶段升级）。
+- **页面。** 登录；SOP（左侧节列表，锁定节带锁、只读；右侧 CodeMirror 编辑正文；顶栏是基于哪一版、草稿 rev 与过期标记、字符预算条和「保存草稿 / 检查 / 发布 / 丢弃」；检查结果按节列 violation，rebase 与冲突单独标出，冲突时列出当前发布版本的正文；历史表可以「以此版本回滚」，哈希与目标不同时弹窗说明原因）；产品库（线路 / 酒店两个表，抽屉里是由 `RouteSchema` / `HotelSchema` 经 `z.toJSONSchema` 生成的 rjsf 表单，active 条目的锁定字段只读并注明「有报价快照后开放」，保存时只把改过的顶层字段放进 `set`、去掉的可选字段放进 `unset`，draft 可「上架」并二次确认列出将锁定的字段）；审计日志（before 游标分页、按 action 过滤、diff 展开看）。demo 匿名挂「演示只读」横幅、没有审计入口；非 owner / admin 看不到任何编辑按钮，表单整张只读。
+- **客户端。** `hc<ConsoleApp>` 只经 `import type` 引服务端路由类型；写请求带 `x-csrf`（登录与 `/me` 给的值只放内存）。`unwrap()` 取 200 的响应体、其余状态抛带 `{ error, detail, … }` 的 `HttpError`。
+- **门禁。** `typecheck` 改为 `tsc --noEmit && tsc --noEmit -p console`；`console/src/rpc-types.check.ts` 是 typecheck 范围内的夹具，四处 `@ts-expect-error`（不存在的端点、非法的 kind、缺 rev、没收窄的联合）。`test` 末尾 `pnpm --filter console build` 再跑 `scripts/check-console-dist.ts`：产物里搜不到 `drizzle-orm`、`pg-protocol`、`@electric-sql/pglite`，也搜不到带引号的 `node:` 模块名（压缩后的对象键 `{node:x}` 不算），index.html 的资源路径在 `/console/assets/` 下。oxlint 开 `react` 插件（关掉新 JSX 转换下无意义的 `react-in-jsx-scope`；`no-unstable-nested-components` 允许作为 props 传的 render 函数）。两处手工变异：夹具里一条不再报错时 typecheck 失败；把 `Me.displayName` 改名，`console/src/Shell.tsx` 与服务端 handler 同时报错。
+- **Dockerfile。** `deps` 装整个 workspace；`console` 阶段只拷 `src/shared` 与 `console/`，`pnpm --filter console build`；运行阶段的依赖改由单独的 `rtdeps` 阶段 `pnpm install --filter wecom-sales-agent` 装，console 的依赖不进镜像（运行阶段 `node_modules` 里搜不到 react、antd、rjsf、vite、codemirror）；`COPY --from=console /app/console/dist ./console/dist`。`.dockerignore` 补上 `**/node_modules` 与 `console/dist`。本地构建镜像、以文件模式起来：`/healthz` 正常，`/api/console/*` 回 503 `db_disabled`。
+- **开放问题 3（类型引用）。** console 的 tsc 连带检查服务端源码，冷跑 3.3 秒，DOM 与 `@types/node` 同时在也没有全局类型冲突，维持 `import type`，不改成 d.ts。
+- **开放问题 8（`__Host-` 在本地 http 下）。** 用 Playwright 在三种内核里登录后刷新：Chromium、Firefox 在 `http://localhost` 上存下并带上 `__Host-sid`；WebKit（Safari）不存，刷新后 `/me` 401。按开放问题 8 的处理，开发服务器和 preview 改走 https（`@vitejs/plugin-basic-ssl` 自签证书），cookie 名不动；改后三种内核都能保持登录，`document.cookie` 里都看不到它（HttpOnly）。
+- **CSP（与 spec 的分歧，已按下面实施，待 owner 复核）。** spec 规定的 `default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'` 用在 `/console` 页面上，Ant Design 与 CodeMirror 运行时插的 `<style>` 全被拦下，整页没有样式（preview 实测 63 条违规）。处理：页面响应多一条 `style-src 'self' 'nonce-<每个响应现生成>'`，脚本仍只许本站文件；`/api/console/*` 的 CSP 不变。实现：`src/shared/security-headers.ts` 放 `consolePageHeaders(nonce)` 与 `renderConsoleIndex(html, nonce)`，vite 的 `html.cspNonce` 在构建产物里留占位符，托管页面的一方每次响应替换（preview 已按此实现，第 16 步 `server.ts` 托管 `/console` 时用同一组函数）；前端从 `<meta property="csp-nonce">` 读出交给 antd（`ConfigProvider csp`）与 CodeMirror（`EditorView.cspNonce`）。另外两处：`@rc-component/portal` 锁滚动时插的 `<style>` 不带 nonce，`console/src/setup.ts` 让 `document.createElement('style')` 出来的元素都带上页面的 nonce（只有本站脚本能调到，注入的标记仍被拦）；zod 默认会试一次 `Function('')` 探测能否 JIT，设 `jitless`。rjsf 默认的 ajv 校验器靠 `new Function` 编译 schema，CSP 下一校验就抛错，换成 `console/src/zodValidator.ts`：直接用共用的 zod schema 校验（与服务端同一份，连逐日行程条数、天号连续这类 ajv 表达不了的规则也一样），ajv 被 tree-shaking 掉（`@rjsf/core` 的测试工具 import 它，包还得装着）。改完之后 preview 在 Chromium、Firefox、WebKit 下打开 SOP 页与产品库抽屉，违规都是 0。
+- **走查（验收 22）。** 本地真实 Postgres 上建库、迁移、`tenant-create`、`import-config`、建 owner / admin / viewer 三个账号，服务端以 DB 模式起、开发服务器代理过去，用 Playwright 走了一遍，截图在 [walkthrough/](walkthrough/)：匿名 demo 有横幅、没有审计入口（01）→ owner 登录看到锁定节与预算（02）→ 在「话术原则」里写进「明显超出我们现有线路的范围」，保存后「检查」按节列出 `phrase_forbidden`（03）→ 改掉、填变更说明发布，历史出现 v2 与新的 `prompt_hash`（04）→ 以 v1 回滚，生成 v3、提示哈希与 v1 相同（05）→ 产品库 active 条目的锁定字段只读、改 highlights 能保存（06）→ 新建 draft、上架前二次确认列出将锁定的字段（07）→ 审计页各有一行，`catalog.update` 的 diff 只有 `highlights`（08）。viewer 登录：没有审计入口、没有编辑按钮、编辑器与表单只读。
+- 走查抓到并修掉的问题：外部替换编辑器正文时触发了 onChange，保存后本地改动被旧正文覆盖（改为给这类事务打标记、不回调）；rjsf 默认给可选的数组和对象预填空项、浏览器按 HTML `required` 拦下整张表单、`tags` 这种可以为空的必填数组不给初值（改为只预填必填项、关掉 HTML5 校验、新条目的必填数组给 `[]`、初值 memo 住）；Ant Design 6 的几处弃用（Alert `message`、Space `direction`、Drawer `width`、`List`）。
+- 测试之外的临时产物（走查用的库、Playwright 探针脚本、下载的 WebKit / Firefox）都在仓库外，库已删掉。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -255,6 +269,7 @@
 
 - 已定（owner，2026-09-26，00 开放问题 3）：oxlint 在 correctness 之外开 suspicious，但关掉 `no-shadow`（139 处，几乎都在自测里）、`consistent-function-scoping`（52）、`no-underscore-dangle`（与 spec 定的 `__configTest` 这类命名冲突）、`no-async-endpoint-handlers`（针对 Express，Hono 的 async handler 是正常写法）。pedantic、perf、style、restriction、nursery 不开：全仓命中 1332 / 136 / 11097 / 1891 / 584，基本是风格噪音或误报（nursery 的 583 条是 `no-undef` 不认 TS 类型）。
 - 待 owner 在目标服务器上实测（开放问题 4，第 10 步）：两个并发登录的单次耗时与峰值 RSS 增量。本机数据见第 10 步实施记录（约 170 ms、256 MiB）。单次超过 500 ms，或峰值增量超过机器内存的 25%（1 GiB 的机器就是这条线），按开放问题 4 改用 N = 2^16、r = 8、p = 2，参数随哈希存，不用迁移。
+- 待 owner 复核（第 12 步）：`/console` 页面的 CSP 在 spec 那条之外多一条 `style-src 'self' 'nonce-…'`（每个响应现生成），否则 Ant Design 与 CodeMirror 没有样式；`/api/console/*` 的 CSP 不变。验收 16 查安全头时按这条对页面核对。另一种做法是 `style-src 'self' 'unsafe-inline'`，简单但放开了所有内联样式；也可以换掉运行时插样式的组件库，代价是推翻 ADR-002 的 Ant Design。理由与实现见第 12 步实施记录。
 - 仍挂在 owner 名下（00 开放问题 1 的余下部分）：文件模式下没设 `DEPLOY_PROFILE` 却配了企微凭据时，是否也拒绝启动。第一个 prod 实例上线前定。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
