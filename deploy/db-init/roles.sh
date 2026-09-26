@@ -4,8 +4,10 @@
 # 只在 db 容器里跑，两种时机：
 # - 首次初始化：compose 把本脚本单独挂成 /docker-entrypoint-initdb.d/10-roles.sh，空数据卷上由 entrypoint 执行一次。
 #   文件必须带可执行位：entrypoint 执行可执行的 *.sh，不可执行的会被 source 进它自己的 shell（下面拒绝这种情况）。
-# - 轮换口令：改服务器上 .env.db 里的口令 → docker compose up -d db（env 变了会重建容器）→
-#   docker compose exec db /db-init/roles.sh。已存在的角色走 ALTER ROLE，只更新口令与属性；库已存在就跳过。
+# - 轮换口令：改服务器上 .env.db 里的口令 → docker compose -f deploy/compose.yml up -d db（env 变了会重建容器）→
+#   docker compose -f deploy/compose.yml exec db /db-init/roles.sh。已存在的角色走 ALTER ROLE，只更新口令与属性；库已存在就跳过。
+# - 首次初始化时本脚本失败：initdb 已经做完，entrypoint 之后见库已存在就不再执行它，库里没有这三个角色。
+#   改好 .env.db 后同样是上面两条命令补跑一次。
 #
 # compose 另把整个 db-init/ 挂到 /db-init，roles.sh 与 roles.sql 在那里并排。roles.sql 不能进 initdb.d：
 # entrypoint 会把那里的 *.sql 直接交给 psql，没有口令变量必然失败。所以从钩子位置执行时旁边没有它，改取 /db-init/roles.sql。
@@ -21,7 +23,7 @@ set -euo pipefail
 
 for v in AGENT_OWNER_PASSWORD AGENT_APP_PASSWORD AGENT_PLATFORM_PASSWORD; do
   if [[ -z "${!v:-}" ]]; then
-    echo "roles.sh: 环境变量 $v 为空。写进服务器上的 .env.db，再 docker compose up -d db 让容器拿到它" >&2
+    echo "roles.sh: 环境变量 $v 为空。写进服务器上的 .env.db，再 docker compose -f deploy/compose.yml up -d db 让容器拿到它，然后 docker compose -f deploy/compose.yml exec db /db-init/roles.sh 重跑本脚本（首次初始化时失败的，entrypoint 不会再跑它）" >&2
     exit 1
   fi
 done

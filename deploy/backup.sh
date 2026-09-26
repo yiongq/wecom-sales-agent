@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# 每晚的备份（01 spec「构建与部署 · 备份与恢复」）。宿主机 cron 在部署目录跑，例如：
-#   15 3 * * *  cd /opt/wecom-sales-agent && bash deploy/backup.sh >>/var/log/wecom-backup.log 2>&1
+# 每晚的备份（01 spec「构建与部署 · 备份与恢复」）。deploy.sh 每次部署都把本脚本装到部署目录之外的
+# /usr/local/lib/<NAME>/backup.sh，宿主机 cron 跑那一份、把部署目录作为参数传进来，例如：
+#   15 3 * * *  bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1
+# 不让 cron 直接跑部署目录里的 deploy/backup.sh：用旧版本自己的 deploy.sh 回到 01 之前时，它的 rsync --delete 会删掉
+# deploy/，而库和 var/ 仍要每晚备份。同样的原因，脚本不读 deploy/compose.yml，按 compose 项目名找 db 容器。
+# 不给参数时取脚本所在仓库的根目录（在仓库里直接 bash deploy/backup.sh）。
 #
 # 1. 以超级用户在 db 容器里经本地 socket 导出：pg_dump -Fc，外加 pg_dumpall --globals-only --no-role-passwords。
 #    主机上不存超级用户口令。不用任何受 RLS 约束的角色导出，也不加 --enable-row-security：没设租户时它会静默导出 0 行。
@@ -12,10 +16,12 @@
 #
 # 配置写在部署目录的 .env.backup（不进仓库，deploy.sh 的 rsync 不碰 .env*）：
 #   BACKUP_AGE_RECIPIENTS  必填，age 公钥（age1…），多个用空格分开
-#   BACKUP_DIR             本地备份目录，缺省 /var/backups/wecom-sales-agent
-#   BACKUP_OFFSITE         rclone 目标（如 remote:bucket/wecom-sales-agent）；地域约束另记
-#   COMPOSE_PROJECT        compose 项目名，缺省 wecom-sales-agent（旁路实例用它自己的 NAME）
+#   BACKUP_DIR             本地备份的根目录，缺省 /var/backups；备份写在 <BACKUP_DIR>/<项目名>/<日期>
+#   BACKUP_OFFSITE         rclone 目标（如 remote:bucket/backups），写在 <BACKUP_OFFSITE>/<项目名>/<日期>；地域约束另记
+#   COMPOSE_PROJECT        compose 项目名。部署目录是 /opt/wecom-sales-agent 时缺省 wecom-sales-agent；别的目录（旁路实例、
+#                          本机演练）必须写明（旁路实例用它自己的 NAME），否则会导出线上的库、配上这个目录的 var/
 #   AGENT_DB               库名，缺省 agent
+# 本地和异地的路径都带项目名：旁路实例抄一份 .env.backup 跑，也不会盖掉线上同一天的备份。
 #
 # 恢复固定这几步（新集群上，每月演练一次）：
 #   1) 在有私钥的机器上解密：age -d -i <私钥> -o agent.dump agent.dump.age（globals.sql、var.tar.gz 同样）
@@ -28,9 +34,10 @@
 set -euo pipefail
 umask 077
 
-cd "$(cd "$(dirname "$0")/.." && pwd)"
-if [[ ! -f deploy/compose.yml ]]; then
-  echo "backup: 不在部署目录里（缺 deploy/compose.yml）" >&2
+cd "${1:-$(dirname "$0")/..}"
+# 每个部署目录都有应用的 .env（deploy.sh 部署前就查它），01 前后的版本都是
+if [[ ! -f .env ]]; then
+  echo "backup: $(pwd) 不是部署目录（缺 .env）。用法：backup.sh <部署目录>" >&2
   exit 1
 fi
 if [[ -f .env.backup ]]; then
@@ -41,24 +48,29 @@ if [[ -f .env.backup ]]; then
 fi
 
 RECIPIENTS="${BACKUP_AGE_RECIPIENTS:?backup: 缺 BACKUP_AGE_RECIPIENTS（写在 .env.backup）}"
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/wecom-sales-agent}"
+if [[ -z "${COMPOSE_PROJECT:-}" && "$(pwd)" != /opt/wecom-sales-agent ]]; then
+  echo "backup: $(pwd) 不是线上部署目录，要在 .env.backup 里写明 COMPOSE_PROJECT" >&2
+  exit 1
+fi
 PROJECT="${COMPOSE_PROJECT:-wecom-sales-agent}"
+ROOT="${BACKUP_DIR:-/var/backups}/${PROJECT}"
 DB="${AGENT_DB:-agent}"
 command -v age >/dev/null || {
   echo "backup: 主机上没有 age" >&2
   exit 1
 }
 
-# compose 文件要求 APP_IMAGE（app、migrate 用），exec 进 db 用不到它，给个占位
-dc() { APP_IMAGE="${APP_IMAGE:-backup-unused}" docker compose -p "$PROJECT" -f deploy/compose.yml "$@"; }
+# 按项目名找 db 服务，不用 compose 文件（见开头）。在 / 下执行：否则 compose 会把当前目录里应用的 .env
+# 当成它自己的变量文件去解析
+dc() { (cd / && docker compose -p "$PROJECT" "$@"); }
 alarm() { echo "backup: ⚠️ $*" >&2; }
 
 DAY="$(date +%F)"
-DEST="${BACKUP_DIR}/${DAY}"
+DEST="${ROOT}/${DAY}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$DEST"
-chmod 700 "$BACKUP_DIR" "$DEST"
+chmod 700 "$ROOT" "$DEST"
 
 # 1) 导出
 dc exec -T db pg_dump -U postgres -Fc "$DB" >"$TMP/agent.dump"
@@ -95,7 +107,7 @@ done
 echo "backup: ${DEST}（sop_versions ${sop_rows} 行，catalog_items ${catalog_rows} 行）"
 
 # 本地保留 7 天：只清理按日期命名的目录
-find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -mtime +7 -exec rm -rf {} +
+find "$ROOT" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -mtime +7 -exec rm -rf {} +
 
 # 5) 异地，保留 30 天
 if [[ -z "${BACKUP_OFFSITE:-}" ]]; then
@@ -106,7 +118,8 @@ command -v rclone >/dev/null || {
   alarm "配了 BACKUP_OFFSITE 但主机上没有 rclone"
   exit 1
 }
-rclone copy "$DEST" "${BACKUP_OFFSITE}/${DAY}"
-rclone delete --min-age 30d "$BACKUP_OFFSITE"
-rclone rmdirs --leave-root "$BACKUP_OFFSITE"
-echo "backup: 已复制到异地 ${BACKUP_OFFSITE}/${DAY}"
+OFFSITE="${BACKUP_OFFSITE}/${PROJECT}"
+rclone copy "$DEST" "${OFFSITE}/${DAY}"
+rclone delete --min-age 30d "$OFFSITE"
+rclone rmdirs --leave-root "$OFFSITE"
+echo "backup: 已复制到异地 ${OFFSITE}/${DAY}"
