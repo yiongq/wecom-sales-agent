@@ -655,6 +655,72 @@ const payReq = (orderId: string) =>
   );
 }
 
+// ---------------- 未知渠道：推送一律失败、不抛异常；付款失败推送记备注，种子除外（验收 9） ----------------
+// 渠道兜底此前是模拟器：没人连着 SSE 时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。
+// 付款路由在 markOrderPaid 之后才推送，推送一抛异常，一个已经付款成功的请求就成了 500
+/** 收集 console.error 而不打印，断言日志内容用；跑完原样恢复 */
+async function captureErrors<T>(fn: () => Promise<T>): Promise<{ out: T; errors: string[] }> {
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => {
+    errors.push(a.map(String).join(' '));
+  };
+  try {
+    return { out: await fn(), errors };
+  } finally {
+    console.error = orig;
+  }
+}
+const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) => m.role === 'system' && m.content.includes('未能发送'));
+{
+  const s = mkSession('mystery:u01', 'mystery', '未知渠道的会话');
+  const o = mkOrder(s);
+  const paid = await captureErrors(async () => payReq(o.id));
+  check(
+    '未知渠道（9a）：付款接口返回 200，订单变成已付',
+    paid.out.status === 200 && getOrder(o.id)?.status === 'paid',
+    String(paid.out.status),
+  );
+  const named = paid.errors.filter((l) => l.includes('mystery') && l.includes(s.id));
+  check('未知渠道（9a）：付款时打一条点名渠道和会话的 error', named.length === 1, JSON.stringify(paid.errors));
+  check('未知渠道（9a）：会话里记了付款确认没送达的备注', failNotes(s.id).length === 1, JSON.stringify(getSession(s.id)?.messages.at(-1)));
+
+  const b = jsonBody({ text: '顾问回复' });
+  const replied = await captureErrors(async () => {
+    const res = await app.request(`/api/sessions/${encodeURIComponent(s.id)}/reply`, {
+      method: 'POST',
+      body: b.body,
+      headers: { 'x-forwarded-for': freshIp(), ...b.headers, ...ADMIN },
+    });
+    return { status: res.status, body: (await res.json()) as { ok?: boolean } };
+  });
+  check(
+    '未知渠道（9b）：人工回复返回 ok: false，不显示成已回复',
+    replied.out.status === 200 && replied.out.body.ok === false,
+    JSON.stringify(replied.out),
+  );
+  check('未知渠道（9b）：会话里又记了一条「未能发送」', failNotes(s.id).length === 2, String(failNotes(s.id).length));
+  check('未知渠道（9b）：回复时同样打一条点名渠道的 error', replied.errors.filter((l) => l.includes('mystery')).length === 1);
+}
+{
+  // 种子与真实客户都是企微渠道，本自测没配企微，推送都失败：备注只看是不是种子，不看渠道
+  const seed = mkSession('wecom:cust_T11', 'wecom', '种子：待付款');
+  const real = mkSession('wecom:wmPAYFAIL04', 'wecom', '真实客户：待付款');
+  const oS = mkOrder(seed);
+  const oR = mkOrder(real);
+  const res = await captureErrors(async () => [(await payReq(oS.id)).status, (await payReq(oR.id)).status]);
+  check(
+    '种子会话（9c）：付款照常成功，推送失败也不在会话里记备注',
+    res.out[0] === 200 && getOrder(oS.id)?.status === 'paid' && failNotes(seed.id).length === 0,
+    JSON.stringify(getSession(seed.id)?.messages.at(-1)),
+  );
+  check(
+    '真实企微会话：付款确认推送失败时记备注',
+    res.out[1] === 200 && getOrder(oR.id)?.status === 'paid' && failNotes(real.id).length === 1,
+    JSON.stringify(getSession(real.id)?.messages.at(-1)),
+  );
+}
+
 // ---------------- 访客闲置清理：只清 sim- 网页访客 ----------------
 // 真实企微会话 id 是 wecom:<external_userid>，和种子 wecom:cust_* 只差前缀；清理要是写成「非种子即可删」，
 // 真实客户会连人带订单消失。已付订单是成交凭证，访客的也不删

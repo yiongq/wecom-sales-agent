@@ -32,8 +32,20 @@ import type { ChannelAdapter } from './types.js';
 
 const app = new Hono();
 
+// channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
+// 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
+// 调用方按「没送达」各自处理（人工回复与付款记备注、跟进退账）。不能 throw：付款路由在 markOrderPaid
+// 之后才调它，抛出会让一个已经付款成功的请求返回 500
 function adapterFor(channel: string): ChannelAdapter {
-  return channel === 'wecom' ? wecomAdapter : simulatorAdapter;
+  if (channel === 'wecom') return wecomAdapter;
+  if (channel === 'simulator') return simulatorAdapter;
+  return {
+    name: 'unknown',
+    push(sessionId) {
+      console.error(`[server] ⚠️ 会话 ${sessionId} 的渠道「${channel}」未知，消息未送达`);
+      return Promise.resolve(false);
+    },
+  };
 }
 
 // ---------------- 管理面鉴权 ----------------
@@ -484,7 +496,17 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
     const followUp = await notifyPaid(id);
     if (followUp) {
       const s = getSession(followUp.sessionId);
-      await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text);
+      const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text);
+      // 同 /reply：会话里记着「已收到您的支付」，客户却没收到，得让顾问在后台看见、去另行告知。
+      // 种子会话除外：对应的企微客户是编造的，推送必然失败，公开演示每付一次就会多一条失败备注
+      if (!sent && s && !SEED_SESSION_RE.test(s.id)) {
+        s.messages.push({
+          role: 'system',
+          content: '⚠️ 上一条付款确认未能发送到客户（推送失败：可能是 48h 会话窗口已关闭或渠道配置问题），请另行告知客户已收到付款',
+          at: Date.now(),
+        });
+        saveSession(s);
+      }
     }
   }
   return c.json({ ok: true, order: getOrder(id) });
