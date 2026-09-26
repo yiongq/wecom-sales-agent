@@ -59,7 +59,7 @@
   - 提交之后用 `RETURNING` 的行调 `applyCatalogRow()`；COMMIT 结果不明时 `reloadFromDb()`。
   - 命令行 `src/cli/catalog-fix.ts`。
   - 对应验收 9，以及 10 的产品库部分。
-- [ ] 9. 检索（0.5）：
+- [x] 9. 检索（0.5）：
   - `invalidateIndex()`、按代际丢弃、失败退避重试、`indexHealth()`；缓存改成 tmp 加 rename 写入，格式不变。
   - `retrieval.ts` 注册 `onCatalogChanged`。
   - 计数的假 embedding 服务写进 `config.selftest.ts`。
@@ -215,6 +215,12 @@
 - `source.ts` 加 `applyCatalogRow`：快照数组不带 ord，另存「code → ord」，替换同 code 的条目或按 ord 插入新上架的条目。快照代际改为「当前快照的代际加 1」：原先用模块级计数器，测试里重新装载后新快照从 0 起、计数器却接着涨，自测抓到。
 - `catalog-fix` 的逻辑是 `fixLockedFields`（放宽到可以改 `LOCKED_WHEN_ACTIVE`，`id` 除外），命令行负责取租户锁、打印警告、退出码 0 / 1 / 3。
 - `config.selftest.ts` 增至 337 条，覆盖验收 9（12 个锁定字段逐个点名、`unset` 锁定字段、改 highlights 只动这一处且 `get_route_detail` 立即返回新内容、表单重排键序后只改 `itinerary[0].detail`、原样提交审计 diff 为空、四类不合格补丁、draft 除 `id` 外都能改、上架后按 ord 进快照、允许的编辑前后方案书报价不变、`catalog-fix` 重启后快照是新值）与验收 10 的产品库部分（同 rev 第二次 PATCH 409、并发同 code 一个 409、并发不同 code 拿到不同 ord）。真实 PG 上以子进程验了 `catalog-fix`：应用持锁时退出码 3，停掉后 0，重新装载后是新值，审计带 reason。9 个变异（不查锁定字段、不按旧键序合并、补丁后不过 schema、提交后不更新快照、不查 rev、新建 ord 固定、审计记全部字段、快照不更新、catalog-fix 能改 id）全部变红。
+
+### 第 9 步（2026-09-26）
+
+- `retrieval.ts`：`buildIndex()` 改成单飞的构建循环，开始时记下快照代际、结束时代际变了就丢掉结果按新快照再建；DB 模式下失败保留过期标记，按 30 秒、2 分钟、10 分钟退避重试（首次构建失败同样如此）；`invalidateIndex()` 只在 DB 模式下起作用，标记过期并安排重建，旧索引继续服务；`indexHealth()` 多报一个 `stale`；缓存改成先写临时文件再 rename，格式和指纹不变。模块加载时登记 `onCatalogChanged(() => invalidateIndex())`。文件模式的行为与原来相同：建过就不再建，失败不重试。
+- `__configTest.reset()` 不再清空 `onCatalogChanged` 的监听者：它们是模块加载时登记的，模块不会再加载一次，清掉之后检索就收不到快照变化了。
+- 验收 11 的测试用一个计数的假 embedding 服务（只数建索引的请求，按字符码位生成向量，用罕见字让某条线路排第一）。embedding 走的网关自己会重试 5xx，所以「构建失败」要让假服务持续失败，看到过期之后再放行。`config.selftest.ts` 增至 352 条，连跑三遍稳定。6 个变异（不丢过期结果、不登记回调、文件模式也失效、失败不重试、失败不标过期）全部变红，其中「失败不标过期」要靠补上的「首次构建就失败」一条才抓得到。
 
 ## 验收记录
 

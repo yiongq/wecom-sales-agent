@@ -1678,6 +1678,174 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   cfg.__configTest.reset();
 }
 
+// ---------------- 检索（第 9 步：验收 11） ----------------
+{
+  const http = await import('node:http');
+  const retrieval = await import('../retrieval.js');
+  const cat = await import('./catalog.js');
+  // 计数的假 embedding 服务：只数建索引的请求（一次送整库，input 不止一条），不数 semanticRecall 的单条查询。
+  // 向量按字符码位落到 1024 维上，用罕见字就能让某条线路在召回里排第一
+  let buildRequests = 0;
+  let failBuilds = 0;
+  let delayNextBuildMs = 0;
+  const vec = (text: string): number[] => {
+    const v = Array.from({ length: 1024 }, () => 0);
+    for (const c of text) v[c.codePointAt(0)! % 1024]! += 1;
+    return v;
+  };
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d: Buffer) => (body += d.toString()));
+    req.on('end', () => {
+      void (async () => {
+        const { input } = JSON.parse(body) as { input: string[] };
+        const isBuild = input.length > 1;
+        if (isBuild) buildRequests++;
+        if (isBuild && failBuilds > 0) {
+          failBuilds--;
+          res.statusCode = 500;
+          res.end('{}');
+          return;
+        }
+        if (isBuild && delayNextBuildMs) {
+          const wait = delayNextBuildMs;
+          delayNextBuildMs = 0;
+          await new Promise((r) => setTimeout(r, wait));
+        }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ data: input.map((x) => ({ embedding: vec(x) })), usage: { prompt_tokens: input.length } }));
+      })();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as import('node:net').AddressInfo).port;
+  const saved = { mock: process.env.LLM_MOCK, url: process.env.EMBED_BASE_URL, key: process.env.EMBED_API_KEY };
+  process.env.LLM_MOCK = '';
+  process.env.EMBED_BASE_URL = `http://127.0.0.1:${port}`;
+  process.env.EMBED_API_KEY = 'fake';
+  const waitFor = async (cond: () => boolean, ms = 3000): Promise<boolean> => {
+    for (let i = 0; i < ms / 10 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+    return cond();
+  };
+  const idle = (): boolean => !retrieval.indexHealth().stale;
+  try {
+    cfg.__configTest.reset();
+    retrieval.__retrievalTest.reset();
+    retrieval.__retrievalTest.setBackoff([20]);
+    await cfg.initConfig(testConfigDeps(t));
+    const tenantId = cfg.currentCatalog().tenantId;
+    const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营丙', ip: null } };
+    const base = (JSON.parse(routesRaw) as Record<string, unknown>[])[0]!;
+    const addRoute = async (id: string, marker: string): Promise<void> => {
+      const created = await cat.createCatalogItem(ctx, 'route', {
+        ...base,
+        id,
+        title: `${marker}${marker}${marker}专线`,
+        highlights: [marker.repeat(12)],
+      });
+      await cat.activateCatalogItem(ctx, 'route', id, { rev: created.rev });
+    };
+    const topHit = async (q: string): Promise<string | undefined> => (await retrieval.semanticRecall(q, 1))?.[0]?.id;
+    const snapshotIds = (): string =>
+      cfg
+        .currentCatalog()
+        .routes.map((r) => r.id)
+        .join(',');
+
+    await retrieval.buildIndex();
+    check(
+      '检索：DB 模式启动后建一次索引',
+      buildRequests === 1 && retrieval.indexHealth().indexGeneration === cfg.currentCatalog().generation,
+      String(buildRequests),
+    );
+
+    // 新建并上架一条：之后恰好一次全量构建，能召回它
+    buildRequests = 0;
+    await addRoute('r-whale', '鲸');
+    check('检索：上架后等到新索引就绪', await waitFor(idle));
+    check('检索：新建（draft）不触发构建，上架之后恰好一次全量构建', buildRequests === 1, String(buildRequests));
+    check('检索：semanticRecall 能召回新上架的线路', (await topHit('鲸鲸鲸')) === 'r-whale');
+
+    // 一次构建还没结束时又上架了一条：丢掉过期的结果、按新快照再建，最终索引与快照一致
+    delayNextBuildMs = 150;
+    await addRoute('r-shark', '鲨');
+    await new Promise((r) => setTimeout(r, 30));
+    await addRoute('r-croc', '鳄');
+    check(
+      '检索：构建期间又上架一条，最终索引的 id 集合等于快照的线路 id',
+      (await waitFor(idle)) && retrieval.__retrievalTest.indexIds().join(',') === snapshotIds(),
+      `${retrieval.__retrievalTest.indexIds().length} vs ${cfg.currentCatalog().routes.length}`,
+    );
+    check('检索：两条都召回得到', (await topHit('鲨鲨鲨')) === 'r-shark' && (await topHit('鳄鳄鳄')) === 'r-croc');
+
+    // 上架后构建失败：报出过期，放行之后退避重试成功、能召回。embedding 走的网关自己会重试 5xx，
+    // 所以让假服务一直失败，直到看到「过期」再放行
+    retrieval.__retrievalTest.setBackoff([200]);
+    failBuilds = Number.MAX_SAFE_INTEGER;
+    await addRoute('r-turtle', '鳌');
+    await waitFor(() => retrieval.indexHealth().lastError !== null, 10_000);
+    const failed = retrieval.indexHealth();
+    check(
+      '检索：构建失败时报过期与错误，旧索引照常服务',
+      failed.stale &&
+        failed.lastError !== null &&
+        failed.indexGeneration! < failed.snapshotGeneration &&
+        (await topHit('鲸鲸鲸')) === 'r-whale',
+      JSON.stringify(failed),
+    );
+    failBuilds = 0;
+    check('检索：退避重试成功后不再过期', await waitFor(idle, 10_000));
+    check('检索：重试之后能召回新线路', (await topHit('鳌鳌鳌')) === 'r-turtle');
+    // DB 模式下的首次构建就失败（启动时 embedding 挂了）：同样报过期并按退避重试
+    retrieval.__retrievalTest.reset();
+    retrieval.__retrievalTest.setBackoff([200]);
+    fs.rmSync(path.join(process.env.VAR_DIR!, 'route-vectors.json'), { force: true }); // 否则直接命中刚写的缓存，不发请求
+    failBuilds = Number.MAX_SAFE_INTEGER;
+    await retrieval.buildIndex();
+    const first = retrieval.indexHealth();
+    check(
+      '检索：DB 模式首次构建失败也报过期',
+      first.stale && first.lastError !== null && first.indexGeneration === null,
+      JSON.stringify(first),
+    );
+    failBuilds = 0;
+    check(
+      '检索：首次构建失败后退避重试成功',
+      (await waitFor(idle, 10_000)) && retrieval.indexHealth().indexGeneration === cfg.currentCatalog().generation,
+    );
+
+    // 文件模式：行为与原来相同——建一次就不再建，失效什么都不做，缓存格式与键不变（重置内存后命中缓存）
+    cfg.__configTest.reset();
+    retrieval.__retrievalTest.reset();
+    const cacheFile = path.join(process.env.VAR_DIR!, 'route-vectors.json');
+    fs.rmSync(cacheFile, { force: true });
+    buildRequests = 0;
+    await retrieval.buildIndex();
+    await retrieval.buildIndex();
+    retrieval.invalidateIndex();
+    const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as { fp: string; model: string; items: { id: string; vec: number[] }[] };
+    const fileIds = (JSON.parse(routesRaw) as { id: string }[]).map((r) => r.id);
+    check('检索：文件模式建一次，再调与失效都不发请求', buildRequests === 1 && !retrieval.indexHealth().stale, String(buildRequests));
+    check(
+      '检索：缓存文件仍是 { fp, model, items }，fp 以条数开头，条目按文件顺序',
+      Object.keys(cache).join(',') === 'fp,model,items' &&
+        cache.fp.startsWith(`${fileIds.length}:`) &&
+        cache.items.map((i) => i.id).join(',') === fileIds.join(','),
+    );
+    retrieval.__retrievalTest.reset();
+    await retrieval.buildIndex();
+    check('检索：重启（清掉内存）后命中同一份缓存，不再请求', buildRequests === 1 && retrieval.indexReady());
+    check('检索：没有留下临时文件', !fs.readdirSync(process.env.VAR_DIR!).some((f) => f.startsWith('route-vectors.json.tmp')));
+  } finally {
+    process.env.LLM_MOCK = saved.mock;
+    process.env.EMBED_BASE_URL = saved.url ?? '';
+    process.env.EMBED_API_KEY = saved.key ?? '';
+    retrieval.__retrievalTest.reset();
+    cfg.__configTest.reset();
+    server.close();
+  }
+}
+
 await t.close();
 
 if (fails.length) {
@@ -1685,6 +1853,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变）`,
 );
 process.exit(0);

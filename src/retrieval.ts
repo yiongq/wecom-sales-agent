@@ -13,6 +13,7 @@ import { llmCfg } from './llm.js';
 import { recordUsage } from './usage.js';
 import { gatedFetch } from './llm-gate.js';
 import type { Route } from './types.js';
+import { configMode, currentCatalog, onCatalogChanged } from './config/source.js';
 
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
 const CACHE_FILE = path.join(VAR_DIR, 'route-vectors.json');
@@ -23,7 +24,16 @@ interface Indexed {
   vec: number[];
 }
 let index: Indexed[] | null = null;
-let building = false;
+let building: Promise<void> | null = null;
+// DB 模式（01 spec「检索」）：产品库快照一变就标记过期，旧索引继续服务，直到按新快照建好的索引就绪。
+// 文件模式从不置位，行为与原来相同：建过就不再建，失败不重试
+let stale = false;
+let indexGeneration: number | null = null;
+let lastError: string | null = null;
+let retryAttempt = 0;
+let retryTimer: NodeJS.Timeout | null = null;
+const RETRY_BACKOFF_MS = [30_000, 120_000, 600_000];
+let retryBackoff = RETRY_BACKOFF_MS;
 
 /** 检索用的线路文本：把结构化字段拼成一段自然语言，匹配客户的口语化描述 */
 function routeText(r: Route): string {
@@ -101,58 +111,149 @@ function fingerprint(routes: Route[]): string {
   return routes.length + ':' + createHash('sha1').update(body).digest('hex');
 }
 
-/** 构建/加载索引。幂等，可重复调用；失败不抛错，只是让语义召回不可用 */
-export async function buildIndex(): Promise<void> {
-  if (index || building) return;
+const snapshotGeneration = (): number => (configMode() === 'db' ? currentCatalog().generation : 0);
+
+/** 缓存先写临时文件再 rename：写到一半进程被杀，留下的是旧缓存而不是半个 JSON */
+function writeCache(fp: string, items: Indexed[]): void {
+  try {
+    fs.mkdirSync(VAR_DIR, { recursive: true });
+    const tmp = `${CACHE_FILE}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify({ fp, model: EMBED_MODEL, items }));
+    fs.renameSync(tmp, CACHE_FILE);
+  } catch {
+    /* 缓存写不进去只是下次要重算，不影响可用 */
+  }
+}
+
+/** 按给定的线路建一次索引：先看磁盘缓存（键是整库内容指纹），再调 embedding。失败返回 null */
+async function buildOnce(routes: Route[]): Promise<Indexed[] | null> {
+  const fp = fingerprint(routes);
+  try {
+    const cached = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')) as { fp: string; model: string; items: Indexed[] };
+    if (cached.fp === fp && cached.model === EMBED_MODEL && cached.items?.length === routes.length) {
+      console.log(`[retrieval] 语义索引命中缓存：${cached.items.length} 条线路`);
+      return cached.items;
+    }
+  } catch {
+    /* 无缓存或已失效，往下重建 */
+  }
+  const vecs = await embed(routes.map(routeText));
+  if (!vecs || vecs.length !== routes.length) return null;
+  const items = routes.map((r, i) => ({ id: r.id, vec: vecs[i] }));
+  writeCache(fp, items);
+  console.log(`[retrieval] 语义索引已构建：${items.length} 条线路 · ${EMBED_MODEL}`);
+  return items;
+}
+
+/** DB 模式下构建失败：保留过期标记，按 30 秒、2 分钟、10 分钟退避重试，之后每 10 分钟一次 */
+function scheduleRetry(): void {
+  if (retryTimer || configMode() !== 'db') return;
+  const wait = retryBackoff[Math.min(retryAttempt, retryBackoff.length - 1)]!;
+  retryAttempt++;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void buildIndex();
+  }, wait);
+  retryTimer.unref();
+}
+
+async function buildLoop(): Promise<void> {
+  try {
+    // 构建开始时记下快照的代际；结束时代际已经变了（期间又上架了条目），丢弃这次结果，按新快照再建
+    for (;;) {
+      const gen = snapshotGeneration();
+      const items = await buildOnce(loadRoutes());
+      if (gen !== snapshotGeneration()) continue;
+      if (!items) {
+        lastError = 'embedding 请求失败';
+        if (configMode() === 'db') stale = true;
+        console.warn('[retrieval] 语义索引构建失败，search_routes 退回关键词匹配');
+        scheduleRetry();
+        return;
+      }
+      index = items;
+      indexGeneration = gen;
+      stale = false;
+      lastError = null;
+      retryAttempt = 0;
+      return;
+    }
+  } catch (e) {
+    // 绝不能往外抛：调用方是启动流程里的 `void buildIndex()`，抛出去就是一个未捕获 rejection，Node 直接退出。
+    // routes.json 手改坏一个逗号（高概率事故）会让容器进入无限重启，而本意是「退回关键词匹配继续服务」。
+    lastError = e instanceof Error ? e.message : String(e);
+    console.error('[retrieval] ⚠️ 语义索引构建失败，search_routes 退回关键词匹配:', lastError);
+    scheduleRetry();
+  }
+}
+
+/** 构建/加载索引。幂等，可重复调用；失败不抛错，只是让语义召回不可用。过期后再调用会全量重建 */
+export function buildIndex(): Promise<void> {
+  if (building) return building;
+  if (index && !stale) return Promise.resolve();
   // mock 不调任何外部接口，语义召回本来就不可用。以前照常走构建流程，然后打一行
   // 「语义索引构建失败」，看日志的人会以为 embedding 坏了
   if (process.env.LLM_MOCK === '1') {
     console.log('[retrieval] mock 模式跳过语义索引，search_routes 走关键词匹配');
-    return;
+    return Promise.resolve();
   }
   if (!embedCfg().apiKey) {
     console.warn(
       '[retrieval] ⚠️ 未配置 embedding 的 key（EMBED_API_KEY，或智谱的 ZHIPU_API_KEY），语义召回不可用，search_routes 走关键词匹配',
     );
-    return;
+    return Promise.resolve();
   }
-  building = true;
-  try {
-    const routes = loadRoutes();
-    const fp = fingerprint(routes);
-    try {
-      const cached = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')) as { fp: string; model: string; items: Indexed[] };
-      if (cached.fp === fp && cached.model === EMBED_MODEL && cached.items?.length === routes.length) {
-        index = cached.items;
-        console.log(`[retrieval] 语义索引命中缓存：${index.length} 条线路`);
-        return;
-      }
-    } catch {
-      /* 无缓存或已失效，往下重建 */
-    }
-
-    const vecs = await embed(routes.map(routeText));
-    if (!vecs || vecs.length !== routes.length) {
-      console.warn('[retrieval] 语义索引构建失败，search_routes 退回关键词匹配');
-      return;
-    }
-    index = routes.map((r, i) => ({ id: r.id, vec: vecs[i] }));
-    try {
-      fs.mkdirSync(VAR_DIR, { recursive: true });
-      fs.writeFileSync(CACHE_FILE, JSON.stringify({ fp, model: EMBED_MODEL, items: index }));
-    } catch {
-      /* 缓存写不进去只是下次要重算，不影响可用 */
-    }
-    console.log(`[retrieval] 语义索引已构建：${index.length} 条线路 · ${EMBED_MODEL}`);
-  } catch (e) {
-    // 绝不能往外抛：调用方是 server.ts 启动流程里的 `void buildIndex()`，
-    // 抛出去就是一个未捕获 rejection，Node 直接退出。routes.json 手改坏一个逗号
-    // （高概率事故）会让容器进入无限重启，而本意是「退回关键词匹配继续服务」。
-    console.error('[retrieval] ⚠️ 语义索引构建失败，search_routes 退回关键词匹配:', e instanceof Error ? e.message : e);
-  } finally {
-    building = false;
-  }
+  building = buildLoop().finally(() => {
+    building = null;
+  });
+  return building;
 }
+
+/** 标记当前索引对应的产品库已过期，并安排一次重建。旧索引继续服务，直到新索引就绪。文件模式下什么都不做 */
+export function invalidateIndex(): void {
+  if (configMode() !== 'db') return;
+  stale = true;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  retryAttempt = 0;
+  void buildIndex();
+}
+
+export interface IndexHealth {
+  /** 当前索引对应的快照代际；还没建成时为 null */
+  indexGeneration: number | null;
+  snapshotGeneration: number;
+  /** 索引对应的不是当前快照（等待重建或重建失败） */
+  stale: boolean;
+  lastError: string | null;
+}
+
+/** 供 /status */
+export function indexHealth(): IndexHealth {
+  return { indexGeneration, snapshotGeneration: snapshotGeneration(), stale, lastError };
+}
+
+// 产品库快照变了（后台上架、改了条目）：失效并重建。依赖方向只能是运行时模块 import 配置层，反过来由回调注册
+onCatalogChanged(() => invalidateIndex());
+
+/** 仅供自测：清空索引与状态，退避调短 */
+export const __retrievalTest = {
+  reset(): void {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    index = null;
+    building = null;
+    stale = false;
+    indexGeneration = null;
+    lastError = null;
+    retryAttempt = 0;
+    retryBackoff = RETRY_BACKOFF_MS;
+  },
+  setBackoff(ms: number[]): void {
+    retryBackoff = ms;
+  },
+  indexIds: (): string[] => (index ?? []).map((i) => i.id),
+};
 
 export function indexReady(): boolean {
   return !!index?.length;
