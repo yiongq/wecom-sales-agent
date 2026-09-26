@@ -193,6 +193,16 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('/api/usage 不含会话 id / 原文', leaks(usage).length === 0, leaks(usage).join(','));
   const health = JSON.stringify((await getJson('/healthz')).body);
   check('/healthz 不含会话 id / 原文', leaks(health).length === 0, leaks(health).join(','));
+  // 部署的版本号：deploy.sh 把 tag 经 APP_REVISION 写进镜像；本地没有这个变量时报 dev。每次请求现读
+  const savedRevision = process.env.APP_REVISION;
+  try {
+    delete process.env.APP_REVISION;
+    check('/healthz 的 revision：没有 APP_REVISION 时是 dev', (await getJson<{ revision?: string }>('/healthz')).body.revision === 'dev');
+    process.env.APP_REVISION = 'demo-v9.9';
+    check('/healthz 的 revision：等于部署时的 tag', (await getJson<{ revision?: string }>('/healthz')).body.revision === 'demo-v9.9');
+  } finally {
+    restoreEnv('APP_REVISION', savedRevision);
+  }
 
   // 后台 SSE 免密（EventSource 带不了头）：只能推「变了」这个信号，不能带内容或会话 id
   const res = await app.request('/api/admin/stream', { headers: { 'x-forwarded-for': freshIp() } });
