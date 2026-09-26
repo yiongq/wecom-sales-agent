@@ -1,6 +1,8 @@
-// 配置层自测（docs/architecture/01-pg-config-console/spec.md「测试与 CI」）。现在是第 4 步的 SOP 纯内核部分：
-// 节表与 data/sop.md 的逐字节往返、规范形、编码检查、契约检查的每种 violation（验收 6 的纯函数部分、验收 3 的编码部分），
-// 以及守着契约清单不漂移的三个测试。配置源、导入导出、快照、编辑流程等在后面几步往这里加。
+// 配置层自测（docs/architecture/01-pg-config-console/spec.md「测试与 CI」）。现在有两块纯内核：
+// - SOP：节表与 data/sop.md 的逐字节往返、规范形、编码检查、契约检查的每种 violation（验收 6 的纯函数部分、验收 3 的编码部分），
+//   以及守着契约清单不漂移的测试；
+// - 产品库：schema、锁定字段、键序合并、补丁与表单往返，文件模式的快照冻结（验收 4 的文件模式部分）。
+// 配置源、导入导出、编辑流程等在后面几步往这里加。
 // 用法：npx tsx src/config/config.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import fs from 'node:fs';
@@ -22,6 +24,10 @@ const { renderSystemPrompt } = await import('../prompt/system.js');
 const toolDefsModule = await import('../tool-defs.js');
 const { toolDefs: toolDefsViaTools } = await import('../tools.js');
 const { promptPrefix, __engineTest } = await import('../engine.js');
+const { loadRoutes, loadHotels, searchHotels } = await import('../tools.js');
+const { RouteSchema, HotelSchema, lockedFieldChanges, mergeKeyOrder, applyCatalogPatch, LOCKED_WHEN_ACTIVE, ALWAYS_LOCKED } =
+  await import('../shared/catalog.js');
+const { deepFreeze } = await import('../shared/freeze.js');
 type SopSection = import('../sop/sections.js').SopSection;
 type ViolationCode = import('../sop/contract.js').ViolationCode;
 
@@ -292,6 +298,203 @@ const editBody = (key: string, body: (old: string) => string): SopSection[] =>
   check('契约：已有的工具名与字段名照收', contract(editBody('tone', (b) => `${b}\n报价调 create_quote，看 withinBudget。`)).length === 0);
 }
 
+// ---------------- 产品库：schema ----------------
+const routesRaw = fs.readFileSync(path.join(root, 'data', 'routes.json'), 'utf8');
+const hotelsRaw = fs.readFileSync(path.join(root, 'data', 'hotels.json'), 'utf8');
+/** 与请求原文等价：每次重新 parse，拿到一份可以随便改的普通对象 */
+const freshRoutes = (): Record<string, unknown>[] => JSON.parse(routesRaw) as Record<string, unknown>[];
+const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Record<string, unknown>[];
+{
+  const bad = freshRoutes().flatMap((r) => (RouteSchema.safeParse(r).success ? [] : [String(r.id)]));
+  const badH = freshHotels().flatMap((h) => (HotelSchema.safeParse(h).success ? [] : [String(h.id)]));
+  check('schema：data/routes.json 每条都能过 RouteSchema', bad.length === 0, bad.join(','));
+  check('schema：data/hotels.json 每条都能过 HotelSchema', badH.length === 0, badH.join(','));
+  const base = freshRoutes()[0]!;
+  const itin = base.itinerary as Record<string, unknown>[];
+  const rejects: [string, Record<string, unknown>][] = [
+    ['顶层有未知键', { ...base, discount: 0.9 }],
+    ['行程里有未知键', { ...base, itinerary: [{ ...itin[0], note: 'x' }, ...itin.slice(1)] }],
+    ['强度里有未知键', { ...base, intensity: { level: '轻松', hardest: '行程没写', extra: 1 } }],
+    // 删最后一天：天号仍从 1 连续，只剩条数与 days 对不上
+    ['逐日行程条数不等于 days', { ...base, itinerary: itin.slice(0, -1) }],
+    ['行程天号不连续', { ...base, itinerary: itin.map((d, i) => (i === 0 ? { ...d, day: 2 } : d)) }],
+    ['bestSeason 解析不出月份', { ...base, bestSeason: '随时都行' }],
+    ['priceFrom 是字符串（不做 coerce）', { ...base, priceFrom: '12800' }],
+    ['priceFrom 不是整数', { ...base, priceFrom: 12800.5 }],
+    ['可选数组为空', { ...base, aliases: [] }],
+    ['字符串数组里有空串', { ...base, highlights: ['', '雪山'] }],
+    ['缺必填字段', Object.fromEntries(Object.entries(base).filter(([k]) => k !== 'hotelLevel'))],
+    ['id 不合 code 规则', { ...base, id: 'R_Upper' }],
+    ['客群不在五类里', { ...base, segments: ['学生'] }],
+    ['overseas 不是布尔', { ...base, overseas: 'no' }],
+  ];
+  for (const [what, r] of rejects) check(`schema：${what}被拒`, !RouteSchema.safeParse(r).success);
+  check('schema：全年适游不需要月份', RouteSchema.safeParse({ ...base, bestSeason: '全年适游' }).success);
+  const h0 = freshHotels()[0]!;
+  check('schema：酒店有未知键被拒', !HotelSchema.safeParse({ ...h0, breakfast: true }).success);
+  check('schema：nightlyFrom 是字符串被拒', !HotelSchema.safeParse({ ...h0, nightlyFrom: '2000' }).success);
+}
+
+// ---------------- 产品库：锁定字段 ----------------
+{
+  const r = freshRoutes()[0]!;
+  const tags = r.tags as string[];
+  const changed = (over: Record<string, unknown>, status: 'draft' | 'active' = 'active', drop: string[] = []): string => {
+    const next = { ...r, ...over };
+    for (const k of drop) delete next[k];
+    return lockedFieldChanges('route', status, r, next).join(',');
+  };
+  check('锁定：active 改 priceFrom 被点名', changed({ priceFrom: 1 }) === 'priceFrom');
+  check('锁定：active 同时改 title 与 days，按锁定表顺序点名', changed({ days: 99, title: '新标题' }) === 'title,days');
+  check(
+    '锁定：「国内」这一项的有无算锁定字段',
+    changed({ tags: tags.includes('国内') ? tags.filter((t) => t !== '国内') : [...tags, '国内'] }) === 'tags:国内',
+  );
+  check('锁定：「国内」以外的 tag 可以改', changed({ tags: [...tags, '小众'] }) === '');
+  const multi = freshRoutes().find((x) => ((x.aliases as string[] | undefined)?.length ?? 0) >= 2)!;
+  check(
+    '锁定：aliases 换顺序也算改',
+    lockedFieldChanges('route', 'active', multi, { ...multi, aliases: (multi.aliases as string[]).toReversed() }).join(',') === 'aliases',
+  );
+  check('锁定：active 删掉 inclusions 算改', changed({}, 'active', ['inclusions']) === 'inclusions');
+  check(
+    '锁定：highlights、itinerary、intensity、hotelLevel 可以改',
+    changed({ highlights: ['新亮点'], itinerary: [], intensity: undefined, hotelLevel: '五星' }) === '',
+  );
+  check('锁定：只换键序不算改', lockedFieldChanges('route', 'active', r, Object.fromEntries(Object.entries(r).toReversed())).length === 0);
+  check('锁定：draft 只锁 id', changed({ priceFrom: 1, title: 'x' }, 'draft') === '' && changed({ id: 'r-other' }, 'draft') === 'id');
+  const h = freshHotels()[0]!;
+  check(
+    '锁定：酒店 active 改 nightlyFrom 被点名、改 stars 不算',
+    lockedFieldChanges('hotel', 'active', h, { ...h, nightlyFrom: 1, stars: '奢华' }).join(',') === 'nightlyFrom',
+  );
+  check(
+    '锁定：锁定表与 spec 一致',
+    LOCKED_WHEN_ACTIVE.route.length === 13 &&
+      LOCKED_WHEN_ACTIVE.hotel.join(',') === 'id,name,destination,nightlyFrom' &&
+      ALWAYS_LOCKED.join(',') === 'id',
+  );
+}
+
+// ---------------- 产品库：键序合并与补丁 ----------------
+{
+  const prev = { a: 1, b: { x: 1, y: 2 }, c: [{ p: 1, q: 2 }] };
+  const next = { d: 1, c: [{ q: 3, p: 4 }, { z: 1 }], b: { w: 7, y: 5, x: 6 } } as unknown as typeof prev;
+  check(
+    'mergeKeyOrder：原有的键按旧序、新增的追加在后、删掉的去掉，嵌套对象与数组元素逐层递归',
+    JSON.stringify(mergeKeyOrder(prev, next)) === '{"b":{"x":6,"y":5,"w":7},"c":[{"p":4,"q":3},{"z":1}],"d":1}',
+    JSON.stringify(mergeKeyOrder(prev, next)),
+  );
+  const r = freshRoutes()[1]!;
+  const expectOnly = (patched: Record<string, unknown>, field: string, value: unknown): boolean =>
+    JSON.stringify(patched) === JSON.stringify(Object.fromEntries(Object.entries(r).map(([k, v]) => [k, k === field ? value : v])));
+  check(
+    '补丁：只改 highlights，其余字节与键序不变',
+    expectOnly(applyCatalogPatch(r, { set: { highlights: ['只改这一项'] } }), 'highlights', ['只改这一项']),
+  );
+  // 请求里的嵌套对象键序与库里不同（比如表单或 zod 按 schema 顺序重排过）：写库的仍按库里原来的键序
+  const intensity = r.intensity as { level: string; hardest: string };
+  const reordered = applyCatalogPatch(r, { set: { intensity: { hardest: intensity.hardest, level: intensity.level } } });
+  check('补丁：嵌套对象按旧键序写回，值相同就逐字节不变', JSON.stringify(reordered) === JSON.stringify(r));
+  const unset = applyCatalogPatch(r, { set: {}, unset: ['intensity'] });
+  check(
+    '补丁：unset 删掉字段、其余不动',
+    !('intensity' in unset) &&
+      Object.keys(unset).join(',') ===
+        Object.keys(r)
+          .filter((k) => k !== 'intensity')
+          .join(','),
+  );
+  // 挑一个不在末尾的可选字段：去掉它再加回来，它应当落到最后
+  const keys = Object.keys(r);
+  const opt = keys.find(
+    (k, i) => i < keys.length - 1 && ['aliases', 'maxAltitude', 'intensity', 'inclusions', 'exclusions', 'overseas'].includes(k),
+  )!;
+  const without = Object.fromEntries(Object.entries(r).filter(([k]) => k !== opt));
+  const added = applyCatalogPatch(without, { set: { [opt]: r[opt] } });
+  check('补丁：新加的字段追加在末尾', Object.keys(added).at(-1) === opt, `${opt} → ${Object.keys(added).join(',')}`);
+  let threw = false;
+  try {
+    applyCatalogPatch(r, { set: { intensity }, unset: ['intensity'] });
+  } catch {
+    threw = true;
+  }
+  check('补丁：同一字段既 set 又 unset 直接拒', threw);
+  // 请求原文里的 __proto__ 只能是个普通键：不改结果对象的原型，更不能污染 Object.prototype，并且被 strict schema 拒掉
+  const hostile = applyCatalogPatch(r, { set: JSON.parse('{"__proto__": {"polluted": true}}') as Record<string, unknown> });
+  check(
+    '补丁：__proto__ 键不改原型、不污染 Object.prototype、过不了 schema',
+    Object.getPrototypeOf(hostile) === Object.prototype &&
+      !('polluted' in {}) &&
+      Object.hasOwn(hostile, '__proto__') &&
+      !RouteSchema.safeParse(hostile).success,
+  );
+  // 表单往返：把每条的全部字段按现值提交回去，写库对象逐字节不变、没有锁定字段变化、仍能过 schema
+  const roundTrip = (kind: 'route' | 'hotel', items: Record<string, unknown>[]): string[] =>
+    items.flatMap((item) => {
+      const form = JSON.parse(JSON.stringify(item)) as Record<string, unknown>;
+      const out = applyCatalogPatch(item, { set: form });
+      const schema = kind === 'route' ? RouteSchema : HotelSchema;
+      const ok =
+        JSON.stringify(out) === JSON.stringify(item) &&
+        lockedFieldChanges(kind, 'active', item, out).length === 0 &&
+        schema.safeParse(out).success;
+      return ok ? [] : [String(item.id)];
+    });
+  const rt = [...roundTrip('route', freshRoutes()), ...roundTrip('hotel', freshHotels())];
+  check('表单往返：每条线路和酒店原样提交回去逐字节不变', rt.length === 0, rt.join(','));
+}
+
+// ---------------- 产品库：文件模式的快照冻结（验收 4） ----------------
+{
+  const assignThrows = (fn: () => void): boolean => {
+    try {
+      fn();
+      return false;
+    } catch (e) {
+      return e instanceof TypeError;
+    }
+  };
+  check(
+    '冻结：给 loadRoutes()[0].priceFrom 赋值抛 TypeError',
+    assignThrows(() => ((loadRoutes()[0] as { priceFrom: number }).priceFrom = 1)),
+  );
+  check(
+    '冻结：改嵌套的行程也抛 TypeError',
+    assignThrows(() => ((loadRoutes()[0]!.itinerary![0] as { title: string }).title = 'x')),
+  );
+  check(
+    '冻结：对 loadHotels() 原地 sort 抛 TypeError',
+    assignThrows(() => void loadHotels().sort((a, b) => a.nightlyFrom - b.nightlyFrom)),
+  );
+  check(
+    '冻结：往 loadRoutes() 里 push 抛 TypeError',
+    assignThrows(() => void loadRoutes().push(loadRoutes()[0]!)),
+  );
+  const before = loadHotels()
+    .map((h) => h.id)
+    .join(',');
+  const first = JSON.stringify(searchHotels({}));
+  const second = JSON.stringify(searchHotels({}));
+  check('冻结：search_hotels({}) 连调两次结果相同', first === second && first !== '[]');
+  check(
+    '冻结：search_hotels 之后快照顺序不变',
+    loadHotels()
+      .map((h) => h.id)
+      .join(',') === before,
+  );
+  check('冻结：冻结后的数据与文件逐字节相同', JSON.stringify(loadRoutes()) === JSON.stringify(JSON.parse(routesRaw)));
+  const o = { a: { b: [1] } };
+  check('deepFreeze：返回同一个引用、递归冻结', deepFreeze(o) === o && Object.isFrozen(o.a.b));
+  const inner = [1];
+  const outer = Object.freeze({ inner });
+  deepFreeze(outer);
+  check('deepFreeze：父对象已冻结时照样冻结它的子对象', Object.isFrozen(inner));
+  const cyclic: { self?: unknown; list: number[] } = { list: [1] };
+  cyclic.self = cyclic;
+  check('deepFreeze：有环不死循环', deepFreeze(cyclic) === cyclic && Object.isFrozen(cyclic.list));
+}
+
 // ---------------- 清单不漂移 ----------------
 {
   // 源码扫描按 AST 走，不按正则：格式化器会把长短语折成多行，正则就漏了。
@@ -370,6 +573,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结）`,
 );
 process.exit(0);
