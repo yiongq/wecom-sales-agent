@@ -116,10 +116,14 @@ process.on('exit', () => {
 // 现在先跑各模块注册的收尾钩子（企微：停止拉新消息、等进行中的回复发完），再退出。
 type ShutdownHook = () => unknown;
 const shutdownHooks: ShutdownHook[] = [];
+const lateHooks: ShutdownHook[] = [];
 
-/** 注册停机收尾钩子。收到 SIGINT/SIGTERM 时所有钩子并发执行，总等待有上限（见下） */
-export function onShutdown(fn: ShutdownHook): void {
-  shutdownHooks.push(fn);
+/**
+ * 注册停机收尾钩子。收到 SIGINT/SIGTERM 时普通钩子并发执行；{ phase: 'late' } 的钩子等普通钩子全部结束后才跑
+ * （配置源的连接池与租户锁：在途的回复还要读配置，最后才能关）。总等待有上限（见下）
+ */
+export function onShutdown(fn: ShutdownHook, opts: { phase?: 'late' } = {}): void {
+  (opts.phase === 'late' ? lateHooks : shutdownHooks).push(fn);
 }
 
 // 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
@@ -129,10 +133,13 @@ const SHUTDOWN_TIMEOUT_MS = 8000;
 /** 跑完全部停机钩子，最多等 timeoutMs。返回 false 表示超时（仍有钩子没结束） */
 export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
-  const all = Promise.allSettled(shutdownHooks.map((fn) => Promise.resolve().then(fn))).then((rs) => {
+  const settle = async (hooks: ShutdownHook[]): Promise<void> => {
+    const rs = await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));
     for (const r of rs) if (r.status === 'rejected') console.error('[store] 停机钩子异常:', r.reason);
-    return true;
-  });
+  };
+  const all = settle(shutdownHooks)
+    .then(() => settle(lateHooks))
+    .then(() => true);
   const timeout = new Promise<boolean>((resolve) => {
     timer = setTimeout(() => resolve(false), timeoutMs);
   });
@@ -144,18 +151,23 @@ export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise
 }
 
 let shuttingDown = false;
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => {
-    const code = sig === 'SIGINT' ? 130 : 143;
-    // 第二次信号不再等（终端里连按 Ctrl+C 就是想马上退）
-    if (shuttingDown) process.exit(code);
-    shuttingDown = true;
-    console.log(`[store] 收到 ${sig}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
-    void runShutdownHooks().then((ok) => {
-      if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
-      process.exit(code);
-    });
+
+/**
+ * 优雅退出：跑完全部停机钩子（有上限）再以 code 退出。SIGTERM 走的就是这条路；配置源发现租户锁被别的进程拿走时也调它。
+ * 已在退出中时再调直接退出（终端里连按 Ctrl+C 就是想马上退）
+ */
+export function gracefulExit(code: number, why = `退出码 ${code}`): void {
+  if (shuttingDown) process.exit(code);
+  shuttingDown = true;
+  console.log(`[store] ${why}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
+  void runShutdownHooks().then((ok) => {
+    if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
+    process.exit(code);
   });
+}
+
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`));
 }
 
 // ---------------- demo 数据保鲜 ----------------

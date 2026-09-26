@@ -15,6 +15,7 @@ import type { TurnToolCall } from './price-guard.js';
 import { LOWLAND_MAX_ALTITUDE, loadRoutes, peakMonths } from './tools.js';
 import { getOrder } from './store.js';
 import type { Route, Session } from './types.js';
+import { ConfigNotReadyError } from './config/source.js';
 
 // ---------------- 客户说过的预算 ----------------
 
@@ -526,8 +527,9 @@ export function dropUnbackedClaims(
   let routes: Route[] = [];
   try {
     routes = loadRoutes();
-  } catch {
-    /* 数据文件坏了另有告警，这里不阻断对话 */
+  } catch (e) {
+    // 数据文件坏了另有告警，这里不阻断对话；配置源没装载好是启动顺序出了错，照常抛
+    if (e instanceof ConfigNotReadyError) throw e;
   }
   return dropClaimsIn(text, { session, calls, routes, route: routeInFocus(session, calls, routes), travelers: hints.travelers });
 }
