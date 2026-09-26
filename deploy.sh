@@ -43,6 +43,14 @@ REMOTE_DIR="${REMOTE_DIR:-$LIVE_DIR}"
 HOST_PORT="${HOST_PORT:-$LIVE_PORT}"
 NAME="${NAME:-$LIVE_NAME}"
 
+# 这三个会拼进服务器上 root shell 的命令，字符集限死；写法也要唯一，否则「/opt/wecom-sales-agent/」「03210」这种等价写法
+# 能绕过下面「和线上不同」的比较
+if [[ ! "$NAME" =~ ^[a-z0-9][a-z0-9_.-]*$ || ! "$HOST_PORT" =~ ^[1-9][0-9]{0,4}$ ]] ||
+  [[ ! "$REMOTE_DIR" =~ ^(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$ || "$REMOTE_DIR" == *"/."* ]]; then
+  echo "错误：NAME / REMOTE_DIR / HOST_PORT 写法不对（现在：${NAME} ${REMOTE_DIR} ${HOST_PORT}）。目录写绝对路径、不带结尾斜杠和 . 段，端口不带前导 0。" >&2
+  exit 1
+fi
+
 # 三个里只改了一两个，旁路演练就会打到线上：忘了 NAME 会用演练的镜像换掉线上容器，
 # 忘了 REMOTE_DIR 会把演练的代码同步进线上目录、和线上容器共用 var/ 与企微凭据
 SIDE=0
@@ -92,7 +100,7 @@ case "$val" in
   demo | prod) ;;
   *) echo "$env_file 里的 DEPLOY_PROFILE 必须正好是 demo 或 prod（不带引号和空格），现在是「$val」" >&2; exit 1 ;;
 esac
-if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_[A-Z_]*=[^[:space:]]' "$env_file"; then
+if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_(CORP_ID|APP_SECRET|KF_OPEN_KFID)=[^[:space:]]' "$env_file"; then
   echo "旁路实例的 $env_file 配了企微凭据，会和线上实例抢同一个客服账号的消息" >&2
   exit 1
 fi
@@ -146,7 +154,8 @@ health_ok() {
 # 企微回复发完（store.ts 停机钩子，最多 8s）再落盘退出，直接杀会让处理到一半的消息
 # 靠重启后重放兜底、丢掉去抖窗口里的会话变更。-t 10 必须大于那 8s，两处要一起改
 echo "[6/6] 换容器并做健康检查（http://127.0.0.1:${HOST_PORT}/healthz via ssh，revision 应为 ${TAG}）"
-if ssh "${SERVER}" "docker stop -t 10 ${NAME} 2>/dev/null || true
+# set -e：新容器的 docker run 失败时 ssh 就报失败，直接去回滚，不再白等一整轮健康检查（那段时间线上是断的）
+if ssh "${SERVER}" "set -e; docker stop -t 10 ${NAME} 2>/dev/null || true
   docker rm ${NAME} 2>/dev/null || true
   docker run ${RUN_OPTS} ${NAME} >/dev/null
   docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG"; then
