@@ -85,7 +85,7 @@ const [, routeId, travelers, departDate] = seg;
 
     const days = (r.itinerary || []).map(x => `
       <div class="day">
-        <div class="dnum">D${x.day}</div>
+        <div class="dnum">D${Number(x.day)}</div>
         <div>
           <div class="dt">${esc(x.title)}</div>
           <div class="dd">${esc(x.detail)}</div>
@@ -104,7 +104,7 @@ const [, routeId, travelers, departDate] = seg;
         <div class="brand"><i></i>云途定制旅行 · 行程方案书<i></i></div>
         <h1>${esc(r.title)}</h1>
         <div class="meta">
-          <b>${r.days}</b> 天 · <b>${d.travelers}</b> 位出行${d.departDate ? ' · <b>' + esc(d.departDate) + '</b> 出发' : ''} · ${esc(r.hotelLevel)}
+          <b>${Number(r.days)}</b> 天 · <b>${Number(d.travelers)}</b> 位出行${d.departDate ? ' · <b>' + esc(d.departDate) + '</b> 出发' : ''} · ${esc(r.hotelLevel)}
         </div>
       </header>
       <div class="wrap">
@@ -112,7 +112,7 @@ const [, routeId, travelers, departDate] = seg;
           <div class="cap">方 案 报 价</div>
           <div class="quote">
             <span class="big">${yuan(q.total)}</span>
-            <span class="per">${d.travelers} 位合计 · 每人 ${yuan(q.perPerson)}</span>
+            <span class="per">${Number(d.travelers)} 位合计 · 每人 ${yuan(q.perPerson)}</span>
           </div>
           <div class="note">${esc(q.note)}</div>
         </div>

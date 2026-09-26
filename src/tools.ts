@@ -5,167 +5,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { SALES_SEGMENTS } from './types.js';
+import { peakMonths } from './shared/season.js';
+import { deepFreeze } from './shared/freeze.js';
+import { configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
 import { createOrder, getOrder, saveSession, supersedeOrder } from './store.js';
 import { todayIso } from './env.js';
 
-export interface ToolDef {
-  type: 'function';
-  function: { name: string; description: string; parameters: Record<string, unknown> };
-}
-
-export const toolDefs: ToolDef[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'search_routes',
-      description:
-        '搜索旅游线路，返回最多 3 条摘要。客户没说具体目的地、只描述了感受或场景时' +
-        '（如「不用倒时差、带娃能玩水」「想找个安静的地方过纪念日」），把客户原话放进 query 做语义检索。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '客户对需求的自然语言描述，用于语义检索；没有明确目的地时优先用这个' },
-          destination: { type: 'string', description: '目的地关键词，如 马尔代夫、瑞士' },
-          tags: { type: 'array', items: { type: 'string' }, description: '标签，如 蜜月、亲子、海岛' },
-          segment: {
-            type: 'string',
-            enum: ['家庭', '亲子', '蜜月', '商务', '银发'],
-            description:
-              '客群。客户透露了同行人构成就一定要带上——带孩子=亲子、带爸妈/长辈=银发、' +
-              '蜜月/新婚=蜜月、公司团建或接待客户=商务、多代同行=家庭。客户没提就不传，别按目的地或人数去猜。' +
-              '银发会自动排除高海拔和长途颠簸的线路，亲子会优先有孩子玩点的线路。',
-          },
-          maxBudgetPerPerson: { type: 'number', description: '每人预算上限（元），只填客户自己说过的数；客户没说预算就不传' },
-          days: { type: 'number', description: '期望行程天数（±2 天内算匹配）' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_route_detail',
-      description:
-        '按线路 id 获取完整线路信息：逐日行程、住宿、费用含与不含、最高海拔。' +
-        '客户问细节（几点、住哪、含不含、保险、走路爬山累不累、海拔、第几天）先调它，只按返回的原文回答。',
-      parameters: {
-        type: 'object',
-        properties: { routeId: { type: 'string' } },
-        required: ['routeId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'search_hotels',
-      description: '按目的地/标签/预算搜索精品酒店，返回最多 3 家。客户单独问酒店、或想在某目的地挑酒店时用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          destination: { type: 'string', description: '目的地关键词，如 马尔代夫、日本' },
-          tags: { type: 'array', items: { type: 'string' }, description: '标签，如 蜜月、亲子、一价全包' },
-          maxNightlyPrice: { type: 'number', description: '每晚预算上限（元）' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'create_quote',
-      description: '生成正式报价。报价必须来自本工具，不得自行编造价格。',
-      parameters: {
-        type: 'object',
-        properties: {
-          routeId: { type: 'string' },
-          travelers: { type: 'number', description: '出行人数' },
-          departDate: { type: 'string', description: '出发日期 YYYY-MM-DD。客户说过出发时间（含国庆、五一这类节假日）就带上，旺季价按它算' },
-        },
-        required: ['routeId', 'travelers'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'generate_proposal',
-      description:
-        '生成正式行程方案书（逐日行程 + 住宿 + 含餐 + 费用含/不含 + 报价），返回可发给客户的方案链接。' +
-        '客户想看详细安排时调用——**包括他第一句话就要「详细方案/详细行程」的情况**：' +
-        '先用 search_routes 拿到 routeId，同一轮接着调本工具，不必等到下一轮；' +
-        '会话状态里「最近查到的线路」已列出这条线的 id 时直接用，不必重查。' +
-        'travelers 用客户说过的人数（「两个人」=2）；departDate 客户说过出发时间（含国庆、五一这类节假日）就带上，' +
-        '没说就不传，别为了凑参数专门去问。',
-      parameters: {
-        type: 'object',
-        properties: {
-          routeId: { type: 'string' },
-          travelers: { type: 'number', description: '出行人数' },
-          departDate: { type: 'string', description: '出发日期 YYYY-MM-DD，可选' },
-        },
-        required: ['routeId', 'travelers'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'create_order',
-      description: '客户确认购买后创建订单，返回支付链接',
-      parameters: {
-        type: 'object',
-        properties: {
-          routeId: { type: 'string' },
-          travelers: { type: 'number' },
-          departDate: { type: 'string', description: '出发日期 YYYY-MM-DD' },
-        },
-        required: ['routeId', 'travelers', 'departDate'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'handoff_to_human',
-      description:
-        '转接人工顾问。客户明确要求人工、投诉、退款或连续两轮无法理解时调用。' +
-        '客户想去的地方我们没有现成线路时先别调：先推荐最接近的现成线路，客户坚持只要原目的地才调' +
-        '（只是回答了出行时间、人数不算坚持），reason 里写清目的地、出行时间、人数。' +
-        '付款链接打不开、要重发不用转人工。回复里说了「为您转接」就必须调本工具。转人工后你不会再回复这位客户。',
-      parameters: {
-        type: 'object',
-        properties: {
-          reason: {
-            type: 'string',
-            // 实测模型把客户说的「明年2月」写成「2026年2月」（今天已是 2026 年 9 月，应为 2027），顾问照着就约错了年份
-            description:
-              '转人工原因，给接手的顾问看：目的地、出行时间、人数（没说的写「未知」）。' +
-              '出行时间照客户原话写（客户说「明年2月」就写「明年2月」），不要自行换算成带年份的日期。',
-          },
-        },
-        required: ['reason'],
-      },
-    },
-  },
-];
+// 工具定义是纯数据，搬到 tool-defs.ts：配置层要用它算 tools_hash、核对 SOP 点名的工具，又不能 import 本模块（本模块加载时就读 var/）
+export { toolDefs, type ToolDef } from './tool-defs.js';
 
 function routesPath(): string {
   return process.env.ROUTES_PATH ?? path.join(process.cwd(), 'data', 'routes.json');
 }
 
+// 返回的对象递归冻结（01 spec「快照」）：类型仍是 Route[]，写入在运行时抛 TypeError，调用方要排序、改字段先拷贝。
+// DB 模式直接返回配置源快照里的数组本身，不拷贝、不查库；文件模式每次重新读文件
 export function loadRoutes(): Route[] {
+  if (configMode() === 'db') return currentCatalog().routes as Route[];
   const p = routesPath();
   if (!fs.existsSync(p)) {
     throw new Error(`线路数据缺失: ${p} 不存在（应由 data/routes.json 提供，见 SPEC 模块 1）`);
   }
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as Route[];
+    return deepFreeze(JSON.parse(fs.readFileSync(p, 'utf8')) as Route[]);
   } catch (e) {
     // 手工编辑线路数据改坏 JSON 是高概率事故，报错必须能直接定位到文件
-    throw new Error(`线路数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`);
+    throw new Error(`线路数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
   }
 }
 
@@ -174,12 +41,13 @@ function hotelsPath(): string {
 }
 
 export function loadHotels(): Hotel[] {
+  if (configMode() === 'db') return currentCatalog().hotels as Hotel[];
   const p = hotelsPath();
-  if (!fs.existsSync(p)) return []; // 酒店库可选：缺失时 search_hotels 返回空，不影响主流程
+  if (!fs.existsSync(p)) return deepFreeze([] as Hotel[]); // 酒店库可选：缺失时 search_hotels 返回空，不影响主流程；空数组同样冻结
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as Hotel[];
+    return deepFreeze(JSON.parse(fs.readFileSync(p, 'utf8')) as Hotel[]);
   } catch (e) {
-    throw new Error(`酒店数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`);
+    throw new Error(`酒店数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
   }
 }
 
@@ -195,7 +63,7 @@ export function searchHotels(args: { destination?: string; tags?: string[]; maxN
   if (args.maxNightlyPrice) {
     list = list.filter((h) => h.nightlyFrom <= args.maxNightlyPrice!);
   }
-  return list.sort((a, b) => a.nightlyFrom - b.nightlyFrom).slice(0, 3);
+  return list.toSorted((a, b) => a.nightlyFrom - b.nightlyFrom).slice(0, 3);
 }
 
 /** 线路摘要（给 LLM 的搜索结果，避免整条塞爆上下文） */
@@ -235,15 +103,18 @@ const BUDGET_RELAX = 1.5;
  * 「印度」是「印度尼西亚」的一截，search_routes(印度) 返回巴厘岛且不标 destinationMiss——
  * 模型 4/4 自己兜住了，但价格护栏会把巴厘岛的价当作「印度线」放行。
  * 空白先去掉再认（模型会传「丽江 大理」，此前判成库外，工具让模型对客户说「没有丽江 大理线路」）；
- * 去掉还对不上、又是几处拼在一起的（「大理 丽江」「四川、云南」），任一处对得上就算
+ * 去掉还对不上、又是几处拼在一起的（「大理 丽江」「四川、云南」），任一处对得上就算。
+ * 目的地、别名、关键词是另一个更长地名的一截时按库外地名表的边界认（mentionsPlace）：后台建一条「北海」线之后，
+ * 此前 k.includes(destination) 让 search_routes(北海道) 把它当成北海道线返回、不标 destinationMiss
  */
 function matchesDestination(r: Route, q: string): boolean {
   const hit = (k: string): boolean =>
-    !!k && (
-      r.destination.includes(k) || k.includes(r.destination) || r.title.replace(/\s+/g, '').includes(k) ||
-      r.tags.some((t) => t.includes(k)) ||
-      (r.aliases ?? []).some((a) => a === k || k.includes(a))
-    );
+    !!k &&
+    (mentionsPlace(r.destination, k) ||
+      mentionsPlace(k, r.destination) ||
+      mentionsPlace(r.title.replace(/\s+/g, ''), k) ||
+      r.tags.some((t) => mentionsPlace(t, k)) ||
+      (r.aliases ?? []).some((a) => a === k || mentionsPlace(k, a)));
   if (hit(q.replace(/\s+/g, ''))) return true;
   const parts = q.split(/[\s、，,/／;；]+/).filter(Boolean);
   return parts.length > 1 && parts.some(hit);
@@ -267,8 +138,14 @@ export const LOWLAND_MAX_ALTITUDE = 2500;
 
 /** 国内几大片区。替代线路先挑同一片区的：想去西藏的客户，贵州的山地和少数民族人文比北京更接近他本来想看的 */
 const REGION: Record<string, string> = {
-  四川: '西南', 西藏: '西南', 云南: '西南', 贵州: '西南',
-  新疆: '西北', 西安: '西北', 北京: '华北', 三亚: '华南',
+  四川: '西南',
+  西藏: '西南',
+  云南: '西南',
+  贵州: '西南',
+  新疆: '西北',
+  西安: '西北',
+  北京: '华北',
+  三亚: '华南',
 };
 
 /**
@@ -291,13 +168,18 @@ function lowlandAlternatives(all: Route[], mismatched: Route[], max = 2): Route[
     [...peakMonths(r.bestSeason)].filter((m) => months.has(m)).length,
   ];
   return all
-    .filter((r) =>
-      !shown.has(r.id) && r.segments?.includes('银发') && !foreign(r) &&
-      typeof r.maxAltitude === 'number' && r.maxAltitude < LOWLAND_MAX_ALTITUDE)
+    .filter(
+      (r) =>
+        !shown.has(r.id) &&
+        r.segments?.includes('银发') &&
+        !foreign(r) &&
+        typeof r.maxAltitude === 'number' &&
+        r.maxAltitude < LOWLAND_MAX_ALTITUDE,
+    )
     .map((r) => ({ r, s: score(r) }))
-    .sort((a, b) =>
-      a.s.reduce((d, v, i) => d || b.s[i] - v, 0) ||
-      Math.abs(a.r.priceFrom - refPrice) - Math.abs(b.r.priceFrom - refPrice))
+    .toSorted(
+      (a, b) => a.s.reduce((d, v, i) => d || b.s[i] - v, 0) || Math.abs(a.r.priceFrom - refPrice) - Math.abs(b.r.priceFrom - refPrice),
+    )
     .slice(0, max)
     .map(({ r }) => r);
 }
@@ -309,7 +191,8 @@ const ABROAD = /^(?:国外|境外|海外|出境|出国|国际)(?:游|线|线路|
 // 回复成「境外目前只有巴厘岛这一条」（实际 8 条）。所以 query / destination 里带着这些词也按非国内取。
 // 否定和对举的不算：「也不想出国办签证」「国外太远」「国内国外都行」
 // 说的是人不是去处的也不算：「接待国外客户」「带国外朋友看长城」「海外华人寻根」——此前按子串认，结果里只剩境外线，北京长城线没了
-const ABROAD_WORD = /(?:国外|境外|海外|出境|出国)(?![^，。,！？!?\s]{0,2}(?:客户|朋友|友人|华人|华侨|同事|同学|亲戚|游客|嘉宾|来华|来的))(?!的?人)/;
+const ABROAD_WORD =
+  /(?:国外|境外|海外|出境|出国)(?![^，。,！？!?\s]{0,2}(?:客户|朋友|友人|华人|华侨|同事|同学|亲戚|游客|嘉宾|来华|来的))(?!的?人)/;
 const NOT_ABROAD =
   /(?:不|别|没|甭)[^，。,！？!?\s]{0,3}(?:国外|境外|海外|出境|出国)|(?:国外|境外|海外|出境|出国)[^，。,！？!?]{0,6}(?:麻烦|太远|不考虑|不去|算了|不想|不要|不方便|就不)|国内/;
 function abroadOnly(s: string | undefined): boolean {
@@ -324,18 +207,26 @@ const foreign = (r: Route): boolean => (r as Route & { overseas?: boolean }).ove
 
 /** 境外线路所在的大区，只给「东南亚」「欧洲」这类叫法反查用（国内的见 REGION） */
 const REGION_ABROAD: Record<string, string> = {
-  巴厘岛: '东南亚', 马尔代夫: '南亚', 日本: '东亚', 北欧极光: '欧洲', 瑞士: '欧洲',
+  巴厘岛: '东南亚',
+  马尔代夫: '南亚',
+  日本: '东亚',
+  北欧极光: '欧洲',
+  瑞士: '欧洲',
 };
 
 /**
  * 大区叫法（「西北」「西南」「东南亚」）同理：说的是一片地方，按关键词对不上任何一条线，却不等于我们没有。
  * 此前「西北」落空后语义召回出新疆、西安，再被标成「我们暂时没有西北的现成线路」——自己的主力线被说成没有。
- * 按片区反查；不是大区叫法返回 null，照常按目的地关键词匹配
+ * 按片区反查；不是大区叫法返回 null，照常按目的地关键词匹配。
+ * 片区表只列了种子数据的目的地：后台新建的线路目的地或别名就是这个大区叫法的（「西北 甘青大环线」目的地填「西北」）
+ * 也算，此前它们在大区搜索里整条消失，连语义召回也被这里滤掉。只认整个相等，不按关键词：标题、标签里带着这几个字的
+ * 是别处的线（「滇西北」「川西北」在西南，「东南亚」不是南亚），按关键词认会把它们拉进来、挤掉片区里真正的线
  */
 function regionMatcher(q: string): ((r: Route) => boolean) | null {
   const w = q.trim().replace(/(?:地区|片区|一带|那边|方向)$/, '');
-  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w;
-  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w;
+  const named = (r: Route): boolean => r.destination === w || (r.aliases ?? []).includes(w);
+  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w || named(r);
+  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w || named(r);
   return null;
 }
 
@@ -359,7 +250,7 @@ export function catalogCovers(q: string, routes: Route[] = loadRoutes()): boolea
  *     「上海这边两个人想出去玩」被当成目的地，模型会对客户说「我们暂时没有上海的线路」；
  *   · 表里的地名后来有了线路（catalogCovers 对得上）自动按库内处理，不必回来删；
  *   · 一个地名是另一个的一部分时加边界：「北海」不吃「北海道」，「北极」不吃「北极光」（说的是极光，北欧线就有），
- *     「蒙古」不吃「内蒙古」，「罗马」不吃「罗马尼亚」。
+ *     「蒙古」不吃「内蒙古」，「罗马」不吃「罗马尼亚」。线路的目的地、别名碰上这几个地名时按同样的边界认（见 mentionsPlace）。
  *
  * 每组标了类型（kind）：目的地我们没有时，「最接近的现成线路」先挑同类型的（见 KIND_ROUTES），再由语义召回补足。
  * 此前只靠语义召回：「马代去过了 想去普吉岛或者斐济 度蜜月」召回的是云南、四川高原线（B08 2/2、回归 retrieval-02 3/3），
@@ -369,44 +260,146 @@ export function catalogCovers(q: string, routes: Route[] = loadRoutes()): boolea
 type PlaceKind = '海岛' | '极地冰雪' | '欧洲' | '东南亚' | '日韩' | '藏地' | '高原' | '草原戈壁' | '山水' | '古城' | '云南';
 const OFF_CATALOG_GROUPS: { kind?: PlaceKind; abroad: boolean; places: string[] }[] = [
   // 海岛、海滨（境外）
-  { kind: '海岛', abroad: true, places: [
-    '普吉岛', '苏梅岛', '长滩岛', '薄荷岛', '济州岛', '冲绳', '沙巴', '兰卡威', '岘港', '斯里兰卡', '毛里求斯', '塞舌尔', '马达加斯加',
-    '夏威夷', '斐济', '大溪地', '关岛', '塞班', '圣托里尼', '西西里'] },
+  {
+    kind: '海岛',
+    abroad: true,
+    places: [
+      '普吉岛',
+      '苏梅岛',
+      '长滩岛',
+      '薄荷岛',
+      '济州岛',
+      '冲绳',
+      '沙巴',
+      '兰卡威',
+      '岘港',
+      '斯里兰卡',
+      '毛里求斯',
+      '塞舌尔',
+      '马达加斯加',
+      '夏威夷',
+      '斐济',
+      '大溪地',
+      '关岛',
+      '塞班',
+      '圣托里尼',
+      '西西里',
+    ],
+  },
   { kind: '极地冰雪', abroad: true, places: ['南极', '北极(?!光)', '冰岛', '挪威', '瑞典', '阿拉斯加', '贝加尔湖'] },
-  { kind: '欧洲', abroad: true, places: [
-    '丹麦', '英国', '伦敦', '苏格兰', '爱尔兰', '法国', '巴黎', '普罗旺斯', '意大利', '罗马(?!尼亚)', '威尼斯', '佛罗伦萨', '西班牙',
-    '巴塞罗那', '葡萄牙', '德国', '奥地利', '捷克', '布拉格', '匈牙利', '荷兰', '希腊', '克罗地亚', '土耳其', '伊斯坦布尔', '卡帕多奇亚',
-    '俄罗斯', '格鲁吉亚'] },
+  {
+    kind: '欧洲',
+    abroad: true,
+    places: [
+      '丹麦',
+      '英国',
+      '伦敦',
+      '苏格兰',
+      '爱尔兰',
+      '法国',
+      '巴黎',
+      '普罗旺斯',
+      '意大利',
+      '罗马(?!尼亚)',
+      '威尼斯',
+      '佛罗伦萨',
+      '西班牙',
+      '巴塞罗那',
+      '葡萄牙',
+      '德国',
+      '奥地利',
+      '捷克',
+      '布拉格',
+      '匈牙利',
+      '荷兰',
+      '希腊',
+      '克罗地亚',
+      '土耳其',
+      '伊斯坦布尔',
+      '卡帕多奇亚',
+      '俄罗斯',
+      '格鲁吉亚',
+    ],
+  },
   { kind: '东南亚', abroad: true, places: ['泰国', '清迈', '越南', '柬埔寨', '吴哥窟', '老挝', '缅甸', '新加坡', '马来西亚', '菲律宾'] },
   // 日本我们有线；北海道不在那几条里
   { kind: '日韩', abroad: true, places: ['韩国', '首尔', '北海道'] },
   // 喜马拉雅那一片，最接近的是西藏
   { kind: '藏地', abroad: true, places: ['尼泊尔', '不丹'] },
   { kind: '草原戈壁', abroad: true, places: ['(?<!内)蒙古'] },
-  { abroad: true, places: [
-    '埃及', '迪拜', '阿联酋', '阿布扎比', '约旦', '以色列', '摩洛哥', '肯尼亚', '坦桑尼亚', '南非', '非洲',
-    '美国', '纽约', '洛杉矶', '黄石', '加拿大', '墨西哥', '古巴', '秘鲁', '巴西', '阿根廷', '智利', '南美', '澳大利亚', '澳洲', '新西兰',
-    // 「印度」不吃「印度尼西亚」（巴厘岛那条的别名）和「印度洋」（马代就在印度洋上）
-    '印度(?!尼西亚|洋)', '香港', '澳门', '台湾'] },
+  {
+    abroad: true,
+    places: [
+      '埃及',
+      '迪拜',
+      '阿联酋',
+      '阿布扎比',
+      '约旦',
+      '以色列',
+      '摩洛哥',
+      '肯尼亚',
+      '坦桑尼亚',
+      '南非',
+      '非洲',
+      '美国',
+      '纽约',
+      '洛杉矶',
+      '黄石',
+      '加拿大',
+      '墨西哥',
+      '古巴',
+      '秘鲁',
+      '巴西',
+      '阿根廷',
+      '智利',
+      '南美',
+      '澳大利亚',
+      '澳洲',
+      '新西兰',
+      // 「印度」不吃「印度尼西亚」（巴厘岛那条的别名）和「印度洋」（马代就在印度洋上）
+      '印度(?!尼西亚|洋)',
+      '香港',
+      '澳门',
+      '台湾',
+    ],
+  },
   // 国内（海南、川西、九寨沟这些我们有线）
   { kind: '海岛', abroad: false, places: ['厦门', '鼓浪屿', '北海(?!道)', '涠洲岛'] },
   { kind: '藏地', abroad: false, places: ['冈仁波齐'] },
   { kind: '高原', abroad: false, places: ['青海湖', '青海', '可可西里'] },
   { kind: '草原戈壁', abroad: false, places: ['甘肃', '敦煌', '张掖', '宁夏', '内蒙古', '呼伦贝尔', '额济纳'] },
   { kind: '极地冰雪', abroad: false, places: ['哈尔滨', '雪乡', '长白山', '漠河'] },
-  { kind: '山水', abroad: false, places: [
-    '桂林', '阳朔', '张家界', '黄山', '婺源', '武夷山', '泰山', '华山', '峨眉山', '乐山', '千岛湖', '五台山', '恩施', '神农架'] },
+  {
+    kind: '山水',
+    abroad: false,
+    places: ['桂林', '阳朔', '张家界', '黄山', '婺源', '武夷山', '泰山', '华山', '峨眉山', '乐山', '千岛湖', '五台山', '恩施', '神农架'],
+  },
   { kind: '古城', abroad: false, places: ['凤凰古城', '乌镇', '平遥'] },
   { kind: '云南', abroad: false, places: ['西双版纳', '泸沽湖', '腾冲'] },
 ];
 const OFF_CATALOG_PLACES = OFF_CATALOG_GROUPS.flatMap((g) => g.places);
 // 长的排前面：「青海湖」要整个认出来，不能先被「青海」截走
-const OFF_CATALOG_RE = new RegExp(
-  [...OFF_CATALOG_PLACES].sort((a, b) => b.length - a.length).join('|'), 'g',
+const OFF_CATALOG_RE = new RegExp(OFF_CATALOG_PLACES.toSorted((a, b) => b.length - a.length).join('|'), 'g');
+/** 带边界写法的地名（「北海(?!道)」「(?<!内)蒙古」…）：去掉边界的本名 → 按边界认的正则 */
+const BOUNDED_PLACES = new Map(
+  OFF_CATALOG_PLACES.filter((p) => p.includes('(?')).map((p) => [p.replace(/\(\?<?[=!][^)]*\)/g, ''), new RegExp(p)] as const),
 );
+
+/**
+ * text 里有没有 word 这个地名。word 是上表里带边界写法的地名时按同样的边界认：「北海道」里的「北海」、「内蒙古」里的「蒙古」、
+ * 「罗马尼亚」里的「罗马」都不算；其余照旧按子串。线路的目的地、别名拿去对关键词（matchesDestination）、对客户原话
+ * （engine.ts destinationMentions）、对回复（price-guard 的点名）都经这里：后台建一条「北海」线，客户说「想去北海道滑雪」
+ * 不会被当成点了这条线，写成「广西北海」再配别名「北海」也照样认得出「想去北海玩」
+ */
+export function mentionsPlace(text: string, word: string): boolean {
+  const re = BOUNDED_PLACES.get(word);
+  return re ? re.test(text) : text.includes(word);
+}
+
 /** 每个地名整词认回它那一组（地名里带着边界写法，按整词重新匹配一遍） */
 const PLACE_GROUP: { re: RegExp; kind?: PlaceKind; abroad: boolean }[] = OFF_CATALOG_GROUPS.flatMap((g) =>
-  g.places.map((p) => ({ re: new RegExp(`^(?:${p})$`), kind: g.kind, abroad: g.abroad })));
+  g.places.map((p) => ({ re: new RegExp(`^(?:${p})$`), kind: g.kind, abroad: g.abroad })),
+);
 
 /**
  * 每种类型对应的现成线路。只按逐条核过的字段认（海岛、极光标签，境外大区，最高海拔，目的地），不按描述猜：
@@ -444,7 +437,7 @@ function sameKindRoutes(q: string, all: Route[], recallOrder: Map<string, number
   const pos = (r: Route): number => recallOrder?.get(r.id) ?? 99;
   return hits
     .map((r, i) => ({ r, i }))
-    .sort((a, b) => Number(foreign(b.r) === abroad) - Number(foreign(a.r) === abroad) || pos(a.r) - pos(b.r) || a.i - b.i)
+    .toSorted((a, b) => Number(foreign(b.r) === abroad) - Number(foreign(a.r) === abroad) || pos(a.r) - pos(b.r) || a.i - b.i)
     .map(({ r }) => r);
 }
 
@@ -494,7 +487,7 @@ const ASKS_BEEN = /吗|么|没有?$|呢/;
  */
 export function visitedDestinations(texts: string[], routes: Route[] = loadRoutes()): string[] {
   const placesIn = (s: string): string[] =>
-    routes.filter((r) => s.includes(r.destination) || (r.aliases ?? []).some((a) => s.includes(a))).map((r) => r.destination);
+    routes.filter((r) => mentionsPlace(s, r.destination) || (r.aliases ?? []).some((a) => mentionsPlace(s, a))).map((r) => r.destination);
   const out = new Set<string>();
   for (const t of texts) {
     const bits = t.split(/[，,。！!？?；;\n\s]+/).filter(Boolean);
@@ -519,8 +512,10 @@ export function visitedDestinations(texts: string[], routes: Route[] = loadRoute
 function intensityNote(r: Route): string | undefined {
   const it = r.intensity;
   if (!it || it.level === '轻松') return undefined;
-  return `这条带长辈要照实讲体力强度（${it.level}）：${it.hardest}。推荐或回答时把这一段讲清楚，问长辈腿脚怎么样；` +
-    '不要说「全程平地」「不用爬山」「老人走得动」「完全没问题」，行程里没写的步行量、有没有扶梯电梯，说「我让顾问确认」。';
+  return (
+    `这条带长辈要照实讲体力强度（${it.level}）：${it.hardest}。推荐或回答时把这一段讲清楚，问长辈腿脚怎么样；` +
+    '不要说「全程平地」「不用爬山」「老人走得动」「完全没问题」，行程里没写的步行量、有没有扶梯电梯，说「我让顾问确认」。'
+  );
 }
 
 /**
@@ -534,15 +529,24 @@ function altitudeNoteFor(r: Route, elder: boolean): string {
   const oxygen = JSON.stringify(r).includes('氧');
   const noOxygen = '行程里没写供氧安排，不要说有；客户问起就说「这个我让顾问确认」。';
   if (elder && r.segments?.includes('银发')) {
-    return `这条能带长辈，但行程里有一段要上到约 ${r.maxAltitude} 米（见 highlights）。推荐时照实提一句这一段的海拔${oxygen ? '和行程里写的供氧安排' : ''}，` +
-      '顺带问长辈多大年纪、身体怎么样；不要说成全程海拔温和、没有高原段。' + (oxygen ? '' : noOxygen);
+    return (
+      `这条能带长辈，但行程里有一段要上到约 ${r.maxAltitude} 米（见 highlights）。推荐时照实提一句这一段的海拔${oxygen ? '和行程里写的供氧安排' : ''}，` +
+      '顺带问长辈多大年纪、身体怎么样；不要说成全程海拔温和、没有高原段。' +
+      (oxygen ? '' : noOxygen)
+    );
   }
   if (elder) {
-    return `这条最高要到约 ${r.maxAltitude} 米，不在带长辈的适配范围内，高原反应对长辈是真实风险。` +
-      '推荐前照实讲这一段的海拔，问长辈多大年纪、身体怎么样；不要说成海拔温和、没有高原段。' + (oxygen ? '' : noOxygen);
+    return (
+      `这条最高要到约 ${r.maxAltitude} 米，不在带长辈的适配范围内，高原反应对长辈是真实风险。` +
+      '推荐前照实讲这一段的海拔，问长辈多大年纪、身体怎么样；不要说成海拔温和、没有高原段。' +
+      (oxygen ? '' : noOxygen)
+    );
   }
-  return `客户担心高反：这条行程里有一段要上到约 ${r.maxAltitude} 米（见 highlights）。照实讲这一段的海拔${oxygen ? '和行程里写的供氧安排' : ''}，` +
-    '不要说成全程海拔温和、没有高原段、不会高反。' + (oxygen ? '' : noOxygen);
+  return (
+    `客户担心高反：这条行程里有一段要上到约 ${r.maxAltitude} 米（见 highlights）。照实讲这一段的海拔${oxygen ? '和行程里写的供氧安排' : ''}，` +
+    '不要说成全程海拔温和、没有高原段、不会高反。' +
+    (oxygen ? '' : noOxygen)
+  );
 }
 
 /** 行程细节的答法，附在 get_route_detail 的结果上（模型被问细节时照抄进回复的风险低，措辞仍只用对客户说得出口的） */
@@ -581,10 +585,7 @@ export interface SearchCtx {
  * 否则退回关键词匹配 + 按价格升序（原行为，保证 embedding 不可用时功能不降级）。
  * ctx.customerText 是客户这轮的原话：目的地我们没有、模型又没传 query 时，拿它补做语义召回（见下）。
  */
-export async function searchRoutes(
-  args: SearchRoutesArgs,
-  ctx: SearchCtx = {},
-): Promise<ReturnType<typeof summarize>[]> {
+export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}): Promise<ReturnType<typeof summarize>[]> {
   const all = loadRoutes();
   let list = all;
   let order: Map<string, number> | null = null;
@@ -613,7 +614,7 @@ export async function searchRoutes(
   let destinationMiss = false;
   if (args.destination) {
     const q = args.destination;
-    const match = abroadOnly(q) ? foreign : regionMatcher(q) ?? ((r: Route) => matchesDestination(r, q));
+    const match = abroadOnly(q) ? foreign : (regionMatcher(q) ?? ((r: Route) => matchesDestination(r, q)));
     // 语义召回已按需求排过序，目的地在这里只当过滤条件；召回结果里没有该目的地时
     // 退回全量再按关键词过滤，避免语义召回把明确点名的目的地漏掉
     const hit = list.filter(match);
@@ -735,9 +736,12 @@ export async function searchRoutes(
     if (within.length) {
       // 预算内一条对口的客群线都没有时，补一条放宽预算内最便宜的对口线（带超预算差额）：客群只参与排序以后，
       // 「蜜月 + 每人 1.6 万」预算内只剩西安、贵州、三亚，蜜月线整批被挤掉，稍超一点的丽江大理蜜月首选没了
-      const fit = segAsked && !within.some(wantsSeg)
-        ? list.filter((r) => wantsSeg(r) && r.priceFrom > cap && r.priceFrom <= cap * BUDGET_RELAX).sort((a, b) => a.priceFrom - b.priceFrom)[0]
-        : undefined;
+      const fit =
+        segAsked && !within.some(wantsSeg)
+          ? list
+              .filter((r) => wantsSeg(r) && r.priceFrom > cap && r.priceFrom <= cap * BUDGET_RELAX)
+              .toSorted((a, b) => a.priceFrom - b.priceFrom)[0]
+          : undefined;
       list = fit ? [...within, fit] : within;
     } else {
       overBudget = true;
@@ -755,7 +759,7 @@ export async function searchRoutes(
   // 超预算时一律按价格升序：语义召回的顺序是「最贴需求」，但客户已经明说了预算，
   // 此刻最该先看到的是「最接近他出得起的价」那几条，而不是最贴描述的那几条。
   const rank = (r: Route): number => (order && !overBudget ? (order.get(r.id) ?? 99) : r.priceFrom);
-  const sorted = [...list].sort((a, b) => {
+  const sorted = list.toSorted((a, b) => {
     // 客户说去过的排最后（见上面 beenThere）
     const been = Number(beenThere(a)) - Number(beenThere(b));
     if (been) return been;
@@ -780,15 +784,17 @@ export async function searchRoutes(
     const top = sorted.slice(0, 3);
     const themes = [...new Set(all.flatMap((r) => r.tags))].filter((t) => t !== '国内' && t.length >= 2 && !!args.query?.includes(t));
     const hardOk = (r: Route): boolean =>
-      (args.segment !== '银发' || silver(r)) && (!tagFiltered || hasHardTag(r)) &&
+      (args.segment !== '银发' || silver(r)) &&
+      (!tagFiltered || hasHardTag(r)) &&
       (!(args.days && Number.isFinite(want)) || Math.abs(r.days - want) <= 2) &&
-      (!wantsAbroad || foreign(r)) && !beenThere(r) &&
+      (!wantsAbroad || foreign(r)) &&
+      !beenThere(r) &&
       (!themes.length || r.tags.some((t) => themes.includes(t)));
     if (top.every((r) => r.priceFrom > cap)) {
       const floor = Math.min(...top.map((r) => r.priceFrom));
       const near = all
         .filter((r) => !top.includes(r) && r.priceFrom < floor && r.priceFrom <= cap * BUDGET_RELAX && hardOk(r))
-        .sort((a, b) => Math.abs(a.priceFrom - cap) - Math.abs(b.priceFrom - cap))[0];
+        .toSorted((a, b) => Math.abs(a.priceFrom - cap) - Math.abs(b.priceFrom - cap))[0];
       if (near) sorted.splice(Math.min(2, sorted.length), 0, near);
     }
   }
@@ -868,7 +874,10 @@ export async function searchRoutes(
     const mismatched = out.map((s) => byId.get(s.id)).filter((r): r is Route => !!r);
     // 只有海拔不合适时才给低海拔替代。节奏不合适的多是境外线（北欧极光、马尔代夫），
     // 替代候选却只有国内低海拔线：此前「带爸妈看极光」被推了三亚海滩，理由是「没有高原段」，风马牛不相及
-    const alts = lowlandAlternatives(all, mismatched.filter((r) => (r.maxAltitude ?? 0) >= LOWLAND_MAX_ALTITUDE));
+    const alts = lowlandAlternatives(
+      all,
+      mismatched.filter((r) => (r.maxAltitude ?? 0) >= LOWLAND_MAX_ALTITUDE),
+    );
     const ask = '问长辈多大年纪、身体怎么样，不要问「要不要看看」这类是非问句。';
     const offer = alts.length
       ? '② 直接摆出结果里带 alternative 的第一条线路，讲 1 个亮点和人均起价；③ 问长辈多大年纪、身体怎么样。' +
@@ -898,9 +907,7 @@ export async function searchRoutes(
       out.push({
         ...summarize(r),
         highlights: r.highlights.slice(0, 1),
-        alternative:
-          `给长辈的替代线路：全程最高约 ${r.maxAltitude} 米，没有高原段。推荐时报人均 ${r.priceFrom} 起，` +
-          '正式报价等人数定了再出。',
+        alternative: `给长辈的替代线路：全程最高约 ${r.maxAltitude} 米，没有高原段。推荐时报人均 ${r.priceFrom} 起，正式报价等人数定了再出。`,
       } as ReturnType<typeof summarize>);
     }
   }
@@ -916,26 +923,7 @@ export async function searchRoutes(
   return out;
 }
 
-// bestSeason 是自由文本（如「6-9月」「11月-次年4月」「全年」），
-// 展开其中的月份区间做旺季判定，保证规则确定可复现
-export function peakMonths(bestSeason: string): Set<number> {
-  const months = new Set<number>();
-  // 「全年适游」不等于「全年旺季」。原先展开成 12 个月，结果是这条线任何日期都
-  // 上浮 10%，还附一句「X 月为最佳出行季，价格上浮 10%」——等于全年溢价还讲不出理由。
-  if (bestSeason.includes('全年')) return months;
-  for (const m of bestSeason.matchAll(/(\d{1,2})\s*(?:月)?\s*[-–~至到]\s*(?:次年)?\s*(\d{1,2})\s*月/g)) {
-    let from = Number(m[1]);
-    const to = Number(m[2]);
-    // 跨年区间如 11月-次年4月
-    for (let i = 0; i < 12; i++) {
-      months.add(from);
-      if (from === to) break;
-      from = (from % 12) + 1;
-    }
-  }
-  for (const m of bestSeason.matchAll(/(\d{1,2})\s*月/g)) months.add(Number(m[1]));
-  return months;
-}
+export { peakMonths } from './shared/season.js';
 
 export interface Quote {
   routeTitle: string;
@@ -1063,7 +1051,10 @@ export function rememberShownRoutes(session: Session, routes: { id: string; titl
   const fresh = routes.map(({ id, title, priceFrom }) => ({ id, title, priceFrom }));
   const older = (session.lastShownRoutes ?? []).filter((r) => !fresh.some((f) => f.id === r.id));
   session.lastShownRoutes = [...fresh, ...older].slice(0, 5);
-  rememberSeenRoutes(session, fresh.map((r) => r.id));
+  rememberSeenRoutes(
+    session,
+    fresh.map((r) => r.id),
+  );
 }
 
 /** 记下工具交给过模型的线路，不封顶（见 Session.seenRouteIds；价格护栏据此认「本会话出现过的线路」） */
@@ -1088,12 +1079,7 @@ export interface ToolHints {
  * 统一工具执行入口：engine/llm 只走这里。
  * 返回 JSON 字符串（作为 tool 消息回填给 LLM）；副作用直接写在传入的 session 上。
  */
-export async function executeTool(
-  name: string,
-  args: Record<string, unknown>,
-  session: Session,
-  hints: ToolHints = {},
-): Promise<string> {
+export async function executeTool(name: string, args: Record<string, unknown>, session: Session, hints: ToolHints = {}): Promise<string> {
   const elder = !!hints.elder || session.profile.segment === '银发';
   switch (name) {
     case 'search_routes': {
@@ -1105,13 +1091,14 @@ export async function executeTool(
       // 引擎在调工具前已把客户这句话记进会话，最后一条客户消息就是这轮的原话
       const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
       const found = await searchRoutes(a, {
-        customerText: said.at(-1), visited: visitedDestinations(said), elder, altitudeWorry: hints.altitudeWorry,
+        customerText: said.at(-1),
+        visited: visitedDestinations(said),
+        elder,
+        altitudeWorry: hints.altitudeWorry,
       });
       // 工具替模型算好的超预算差额记进会话：价格护栏据此认出「比您预算多 6,800 元」
       // 是工具给的数。只留最近几次搜索的，旧的差额早已不在对话焦点里
-      const gaps = found
-        .map((r) => (r as Record<string, unknown>).gapPerPerson)
-        .filter((g): g is number => typeof g === 'number' && g > 0);
+      const gaps = found.map((r) => (r as Record<string, unknown>).gapPerPerson).filter((g): g is number => typeof g === 'number' && g > 0);
       // 预算上限本身也记下：客户说的是总预算时，引擎按人数折成了每人数（见 engine.ts groundToolArgs），
       // 超预算提示里写的就是这个折算数——模型照着说「折合每人 15,000」，价格护栏不能当它是编的
       if (typeof a.maxBudgetPerPerson === 'number' && a.maxBudgetPerPerson > 0) gaps.push(a.maxBudgetPerPerson);
@@ -1195,17 +1182,24 @@ export async function executeTool(
         .map((id) => getOrder(id))
         .find(
           (o) =>
-            o && o.status === 'pending_payment' && o.routeId === args.routeId &&
-            o.travelers === travelers && o.departDate === args.departDate,
+            o &&
+            o.status === 'pending_payment' &&
+            o.routeId === args.routeId &&
+            o.travelers === travelers &&
+            o.departDate === args.departDate,
         );
       // 结果带上订单的出发日期：引擎可能按客户明说的那天改过模型传的日期，模型要照这个写给客户。
       // 复用要说清是复用：此前字段和新建时一模一样，客户说「闺蜜那份也订上」，模型拿到的是客户自己那张单，
       // 却回「闺蜜那份也订好啦」——把本人的订单当成别人的发了出去（C06），或是「这次已经下好了」（C03）
       if (dup) {
         return JSON.stringify({
-          orderId: dup.id, payUrl: '/pay/' + dup.id, total: dup.totalPrice, departDate: dup.departDate,
+          orderId: dup.id,
+          payUrl: '/pay/' + dup.id,
+          total: dup.totalPrice,
+          departDate: dup.departDate,
           reused: true,
-          note: `这是本会话已有的那张订单（${dup.travelers} 位 / ${dup.departDate} 出发），不是新建的。` +
+          note:
+            `这是本会话已有的那张订单（${dup.travelers} 位 / ${dup.departDate} 出发），不是新建的。` +
             '不要说成刚下了一单，更不要说成是给别人的订单；客户要给别人另订一份，这张单替代不了，先问清是合并成一单还是请顾问单独下。',
         });
       }
@@ -1231,16 +1225,25 @@ export async function executeTool(
       saveSession(session);
       // payUrl 为相对路径，渠道层负责拼 PUBLIC_BASE_URL。note 是这张单的定价说明（旺季 / 95 折），差价要讲原因时用它
       return JSON.stringify({
-        orderId: order.id, payUrl: '/pay/' + order.id, total: order.totalPrice, departDate: order.departDate, note: quote.note,
-        ...(superseded.length ? {
-          supersededOrderId: superseded[superseded.length - 1],
-          supersededNote: '客户之前那张同线路的待付款订单已作废，旧支付链接已失效。照实告诉客户「之前那张单已作废、旧链接失效，按这张新的付款」，只发这次的新链接。',
-        } : {}),
+        orderId: order.id,
+        payUrl: '/pay/' + order.id,
+        total: order.totalPrice,
+        departDate: order.departDate,
+        note: quote.note,
+        ...(superseded.length
+          ? {
+              supersededOrderId: superseded[superseded.length - 1],
+              supersededNote:
+                '客户之前那张同线路的待付款订单已作废，旧支付链接已失效。照实告诉客户「之前那张单已作废、旧链接失效，按这张新的付款」，只发这次的新链接。',
+            }
+          : {}),
       });
     }
     case 'handoff_to_human': {
       enterHandoff(session);
-      const reason = String(args.reason ?? '').trim().slice(0, 200);
+      const reason = String(args.reason ?? '')
+        .trim()
+        .slice(0, 200);
       // 原因此前只回给了模型，接手的顾问在后台看不到客户要什么（「想去南极，10 月两位」），得从头翻聊天记录。
       // system 消息只在后台显示，不发给客户、也不进模型历史
       if (reason) session.messages.push({ role: 'system', content: `AI 已转人工：${reason}`, at: Date.now() });

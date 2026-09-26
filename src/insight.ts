@@ -6,7 +6,13 @@ import { listSessions, listOrders } from './store.js';
 import { completeText } from './llm.js';
 
 const REACH: Record<string, number> = {
-  greeting: 0, discovery: 1, recommend: 2, quote: 3, objection: 3, closing: 4, paid: 5,
+  greeting: 0,
+  discovery: 1,
+  recommend: 2,
+  quote: 3,
+  objection: 3,
+  closing: 4,
+  paid: 5,
 };
 
 function aggregate(sessions: Session[], orders: Order[]) {
@@ -22,10 +28,12 @@ function aggregate(sessions: Session[], orders: Order[]) {
   return {
     total: sessions.length,
     funnel: names.map((n, i) => ({ name: n, count: cnt[i] })),
-    conv: sessions.length ? Math.round(paidSids.size / sessions.length * 100) : 0,
+    conv: sessions.length ? Math.round((paidSids.size / sessions.length) * 100) : 0,
     handoffCount: handoff.length,
-    handoffGmvPct: gmv ? Math.round(hoGmv / gmv * 100) : 0,
-    gmv, deals: paid.length, stuckQuotes: stuck,
+    handoffGmvPct: gmv ? Math.round((hoGmv / gmv) * 100) : 0,
+    gmv,
+    deals: paid.length,
+    stuckQuotes: stuck,
   };
 }
 
@@ -36,17 +44,43 @@ const INSIGHT_TTL = 10 * 60 * 1000;
 export async function getInsights(): Promise<string[]> {
   if (insightCache && Date.now() - insightCache.at < INSIGHT_TTL) return insightCache.data;
   const agg = aggregate(listSessions(), listOrders());
-  const sys = '你是高端定制旅行社的销售运营分析师。根据给定的实时销售数据，输出恰好 3 条中文洞察，每条是一句完整通顺的话（20–50 字），先点结论再给一句可执行建议，数字要写完整、不要省略或截断。聚焦：漏斗最大流失点、转人工/高价值线索、报价促成催单机会。只输出 3 行，每行一条，不要编号、不要引号、不要 markdown。';
-  const user = '实时数据：\n'
-    + '总会话 ' + agg.total + '，整体成交率 ' + agg.conv + '%，成交额 ¥' + agg.gmv.toLocaleString() + '（' + agg.deals + ' 单）。\n'
-    + '销售漏斗（人数）：' + agg.funnel.map((f) => f.name + ' ' + f.count).join(' → ') + '。\n'
-    + '转人工 ' + agg.handoffCount + ' 条，贡献 GMV ' + agg.handoffGmvPct + '%。\n'
-    + '报价/促成档中已沉默超 10 分钟的会话 ' + agg.stuckQuotes + ' 条。';
+  const sys =
+    '你是高端定制旅行社的销售运营分析师。根据给定的实时销售数据，输出恰好 3 条中文洞察，每条是一句完整通顺的话（20–50 字），先点结论再给一句可执行建议，数字要写完整、不要省略或截断。聚焦：漏斗最大流失点、转人工/高价值线索、报价促成催单机会。只输出 3 行，每行一条，不要编号、不要引号、不要 markdown。';
+  const user =
+    '实时数据：\n' +
+    '总会话 ' +
+    agg.total +
+    '，整体成交率 ' +
+    agg.conv +
+    '%，成交额 ¥' +
+    agg.gmv.toLocaleString() +
+    '（' +
+    agg.deals +
+    ' 单）。\n' +
+    '销售漏斗（人数）：' +
+    agg.funnel.map((f) => f.name + ' ' + f.count).join(' → ') +
+    '。\n' +
+    '转人工 ' +
+    agg.handoffCount +
+    ' 条，贡献 GMV ' +
+    agg.handoffGmvPct +
+    '%。\n' +
+    '报价/促成档中已沉默超 10 分钟的会话 ' +
+    agg.stuckQuotes +
+    ' 条。';
   const out = await completeText(sys, user);
   if (!out) return insightCache?.data ?? []; // LLM 不可用：返回旧缓存或空（前端回退规则版）
-  let lines = out.split('\n').map((l) => l.replace(/^[-*\d.、\s]+/, '').trim()).filter(Boolean);
+  let lines = out
+    .split('\n')
+    .map((l) => l.replace(/^[-*\d.、\s]+/, '').trim())
+    .filter(Boolean);
   // 模型有时把三条挤在一行（句号分隔），按句切开
-  if (lines.length < 2) lines = out.replace(/\n/g, '').split(/(?<=[。！])/).map((s) => s.trim()).filter(Boolean);
+  if (lines.length < 2)
+    lines = out
+      .replace(/\n/g, '')
+      .split(/(?<=[。！])/)
+      .map((s) => s.trim())
+      .filter(Boolean);
   lines = lines.slice(0, 3);
   if (lines.length) insightCache = { at: Date.now(), data: lines };
   return lines;
@@ -76,12 +110,19 @@ export async function getSuggestion(s: Session): Promise<string> {
 }
 
 async function suggest(s: Session, key: string): Promise<string> {
-  const recent = (s.messages || []).slice(-8).map((m) => (m.role === 'customer' ? '客户' : (m.role === 'agent' ? '顾问' : '系统')) + '：' + m.content).join('\n');
-  const sys = '你是资深旅行销售的实战教练。根据这段客户对话与销售阶段，给接手的人工顾问一条【下一步该做什么】的具体建议（≤60 字，中文，可直接执行，聚焦推进成交）。只输出这一句，不要解释、不要 markdown。';
+  const recent = (s.messages || [])
+    .slice(-8)
+    .map((m) => (m.role === 'customer' ? '客户' : m.role === 'agent' ? '顾问' : '系统') + '：' + m.content)
+    .join('\n');
+  const sys =
+    '你是资深旅行销售的实战教练。根据这段客户对话与销售阶段，给接手的人工顾问一条【下一步该做什么】的具体建议（≤60 字，中文，可直接执行，聚焦推进成交）。只输出这一句，不要解释、不要 markdown。';
   const user = '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForPrompt(s.profile)) + '\n近期对话：\n' + recent;
   const out = await completeText(sys, user);
   const val = (out || '').split('\n')[0].trim();
-  if (val) { sugCache.set(key, val); if (sugCache.size > 500) sugCache.clear(); }
+  if (val) {
+    sugCache.set(key, val);
+    if (sugCache.size > 500) sugCache.clear();
+  }
   return val;
 }
 
@@ -111,7 +152,10 @@ export async function getDraftReply(s: Session): Promise<string> {
 }
 
 async function draft(s: Session, key: string): Promise<string> {
-  const recent = (s.messages || []).slice(-8).map((m) => (m.role === 'customer' ? '客户' : (m.role === 'agent' ? '顾问' : '系统')) + '：' + m.content).join('\n');
+  const recent = (s.messages || [])
+    .slice(-8)
+    .map((m) => (m.role === 'customer' ? '客户' : m.role === 'agent' ? '顾问' : '系统') + '：' + m.content)
+    .join('\n');
   const sys =
     '你是高端定制旅行的金牌人工销售顾问，刚接管这段会话。基于对话与销售阶段，起草下一条直接发给客户的微信消息' +
     '（≤80 字，中文，口吻自然亲切，聚焦推进成交；只输出消息正文本身——不要解释、不要内部术语、不要引号包裹、不要 markdown）。' +

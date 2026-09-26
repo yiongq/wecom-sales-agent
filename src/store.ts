@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { numEnv } from './env.js';
+import { profile } from './profile.js';
 import type { Session, Order } from './types.js';
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
@@ -115,10 +116,14 @@ process.on('exit', () => {
 // 现在先跑各模块注册的收尾钩子（企微：停止拉新消息、等进行中的回复发完），再退出。
 type ShutdownHook = () => unknown;
 const shutdownHooks: ShutdownHook[] = [];
+const lateHooks: ShutdownHook[] = [];
 
-/** 注册停机收尾钩子。收到 SIGINT/SIGTERM 时所有钩子并发执行，总等待有上限（见下） */
-export function onShutdown(fn: ShutdownHook): void {
-  shutdownHooks.push(fn);
+/**
+ * 注册停机收尾钩子。收到 SIGINT/SIGTERM 时普通钩子并发执行；{ phase: 'late' } 的钩子等普通钩子全部结束后才跑
+ * （配置源的连接池与租户锁：在途的回复还要读配置，最后才能关）。总等待有上限（见下）
+ */
+export function onShutdown(fn: ShutdownHook, opts: { phase?: 'late' } = {}): void {
+  (opts.phase === 'late' ? lateHooks : shutdownHooks).push(fn);
 }
 
 // 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
@@ -128,10 +133,13 @@ const SHUTDOWN_TIMEOUT_MS = 8000;
 /** 跑完全部停机钩子，最多等 timeoutMs。返回 false 表示超时（仍有钩子没结束） */
 export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
-  const all = Promise.allSettled(shutdownHooks.map((fn) => Promise.resolve().then(fn))).then((rs) => {
+  const settle = async (hooks: ShutdownHook[]): Promise<void> => {
+    const rs = await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));
     for (const r of rs) if (r.status === 'rejected') console.error('[store] 停机钩子异常:', r.reason);
-    return true;
-  });
+  };
+  const all = settle(shutdownHooks)
+    .then(() => settle(lateHooks))
+    .then(() => true);
   const timeout = new Promise<boolean>((resolve) => {
     timer = setTimeout(() => resolve(false), timeoutMs);
   });
@@ -143,29 +151,34 @@ export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise
 }
 
 let shuttingDown = false;
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => {
-    const code = sig === 'SIGINT' ? 130 : 143;
-    // 第二次信号不再等（终端里连按 Ctrl+C 就是想马上退）
-    if (shuttingDown) process.exit(code);
-    shuttingDown = true;
-    console.log(`[store] 收到 ${sig}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
-    void runShutdownHooks().then((ok) => {
-      if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
-      process.exit(code);
-    });
+
+/**
+ * 优雅退出：跑完全部停机钩子（有上限）再以 code 退出。SIGTERM 走的就是这条路；配置源发现租户锁被别的进程拿走时也调它。
+ * 已在退出中时再调直接退出（终端里连按 Ctrl+C 就是想马上退）
+ */
+export function gracefulExit(code: number, why = `退出码 ${code}`): void {
+  if (shuttingDown) process.exit(code);
+  shuttingDown = true;
+  console.log(`[store] ${why}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
+  void runShutdownHooks().then((ok) => {
+    if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
+    process.exit(code);
   });
+}
+
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`));
 }
 
 // ---------------- demo 数据保鲜 ----------------
 // 种子演示会话（id 形如 wecom:cust_B01，真实企微 external_userid 不会长这样）的时间戳
 // 是灌入时定死的：放几天后后台全是「N 天未回应」，工作台像个废弃系统——对外演示时
 // 观感极差。这里定期把演示数据整体平移到「最新一条像 5 分钟前」，相对间隔不变；
-// 真实客户会话（wecom: 非 cust_ / sim-）绝不触碰。DEMO_FRESHEN=0 可关闭。
+// 真实客户会话（wecom: 非 cust_ / sim-）绝不触碰。开关 seed_freshen 关闭时不动（prod 封顶为关；旧变量 DEMO_FRESHEN=0 等价于关）。
 const DEMO_SESSION_RE = /^wecom:cust_/;
 
 export function freshenDemoData(): void {
-  if (process.env.DEMO_FRESHEN === '0') return;
+  if (!profile().flags.seed_freshen) return;
   const demo = [...sessions.values()].filter((s) => DEMO_SESSION_RE.test(s.id));
   if (!demo.length) return;
   const newest = Math.max(...demo.map((s) => s.updatedAt));
@@ -216,7 +229,7 @@ function evictExcessVisitorSessions(): void {
   if (excess <= 0) return;
   const victims = visitors
     .filter((s) => !hasPaidOrder(s))
-    .sort((a, b) => a.updatedAt - b.updatedAt)
+    .toSorted((a, b) => a.updatedAt - b.updatedAt)
     .slice(0, excess);
   for (const s of victims) {
     sessions.delete(s.id);
@@ -231,7 +244,7 @@ export function pruneStaleVisitorData(): void {
   if (!PRUNE_MS) return;
   const cutoff = Date.now() - PRUNE_MS;
   let n = 0;
-  for (const s of [...sessions.values()]) {
+  for (const s of sessions.values()) {
     if (!VISITOR_SESSION_RE.test(s.id) || s.channel !== 'simulator') continue;
     if (s.updatedAt >= cutoff) continue;
     if (hasPaidOrder(s)) continue; // 有成交记录，保留
@@ -248,7 +261,10 @@ export function pruneStaleVisitorData(): void {
 // 启动即保鲜/清理一次，此后每小时一次（unref 不阻退出）
 freshenDemoData();
 pruneStaleVisitorData();
-setInterval(() => { freshenDemoData(); pruneStaleVisitorData(); }, 60 * 60_000).unref();
+setInterval(() => {
+  freshenDemoData();
+  pruneStaleVisitorData();
+}, 60 * 60_000).unref();
 
 export function getOrCreateSession(id: string, channel: string): Session {
   let s = sessions.get(id);
@@ -278,7 +294,7 @@ export function getSession(id: string): Session | undefined {
 }
 
 export function listSessions(): Session[] {
-  return [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...sessions.values()].toSorted((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**
@@ -343,12 +359,15 @@ export function supersedeOrder(id: string, byId: string): boolean {
 export function deleteOrdersOfSession(sessionId: string): number {
   let n = 0;
   for (const [id, o] of orders) {
-    if (o.sessionId === sessionId) { orders.delete(id); n += 1; }
+    if (o.sessionId === sessionId) {
+      orders.delete(id);
+      n += 1;
+    }
   }
   if (n) schedulePersist();
   return n;
 }
 
 export function listOrders(): Order[] {
-  return [...orders.values()].sort((a, b) => b.createdAt - a.createdAt);
+  return [...orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
 }

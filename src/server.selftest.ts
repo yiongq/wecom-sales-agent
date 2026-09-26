@@ -4,6 +4,8 @@
 // 没有断言就只能靠人去 devtools 里看。
 // 直接 import app 走 app.request，不占端口；数据写进临时 VAR_DIR。
 // 用法：npx tsx src/server.selftest.ts
+import './selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,9 +25,17 @@ process.env.ADMIN_PASS = 'selftest-pass';
 process.env.LOOKUP_RATE_PER_MIN = '5';
 // env.js 只填「尚未存在」的变量：显式置空，挡住本机 .env 里可能配着的真实企微与自动跟进
 for (const k of ['WECOM_CORP_ID', 'WECOM_APP_SECRET', 'WECOM_KF_OPEN_KFID', 'FOLLOWUP_ENABLED']) process.env[k] = '';
+// store 只在加载时读这两个：闲置清理阈值显式定成默认的 24 小时（本机 .env 改不动它）；
+// 访客总量上限压到允许的最低值 100，文末才造得出「超上限」。前面各组只建十几个访客会话，碰不到它
+process.env.DEMO_PRUNE_HOURS = '24';
+process.env.VISITOR_SESSION_MAX = '100';
 
 const { app } = await import('./server.js');
 const { getOrCreateSession, getSession, saveSession, createOrder } = await import('./store.js');
+const { getOrder, listOrders, listSessions, markOrderPaid, pruneStaleVisitorData, freshenDemoData } = await import('./store.js');
+const { resolveProfile, capFlags, profile, __profileTest, ProfileConfigError, DEMO_DEFAULTS, PROD_CEILING, PROFILE_ENV_NAMES } =
+  await import('./profile.js');
+const { subscribe } = await import('./adapters/simulator.js');
 const { recordUsage } = await import('./usage.js');
 
 let pass = 0;
@@ -46,7 +56,12 @@ function mkSession(id: string, channel: string, text: string): Session {
 }
 function mkOrder(s: Session): Order {
   const o = createOrder({
-    sessionId: s.id, routeId: 'r-test', routeTitle: '测试线路', travelers: 2, departDate: '2099-01-01', totalPrice: 10000,
+    sessionId: s.id,
+    routeId: 'r-test',
+    routeTitle: '测试线路',
+    travelers: 2,
+    departDate: '2099-01-01',
+    totalPrice: 10000,
   });
   s.orderIds.push(o.id);
   saveSession(s);
@@ -172,12 +187,22 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 // ---------------- 其余未登录可达的出口：只许有计数，不许有 id / 原文 ----------------
 {
   recordUsage('glm-4.5-air', 100, 50, A.id);
-  const leaks = (raw: string) => [A.id, B.id, LEGACY.id, REAL.id, oA.id, oB.id, '13911112222', '13933334444', '13800001111']
-    .filter((x) => raw.includes(x));
+  const leaks = (raw: string) =>
+    [A.id, B.id, LEGACY.id, REAL.id, oA.id, oB.id, '13911112222', '13933334444', '13800001111'].filter((x) => raw.includes(x));
   const usage = JSON.stringify((await getJson('/api/usage')).body);
   check('/api/usage 不含会话 id / 原文', leaks(usage).length === 0, leaks(usage).join(','));
   const health = JSON.stringify((await getJson('/healthz')).body);
   check('/healthz 不含会话 id / 原文', leaks(health).length === 0, leaks(health).join(','));
+  // 部署的版本号：deploy.sh 把 tag 经 APP_REVISION 写进镜像；本地没有这个变量时报 dev。每次请求现读
+  const savedRevision = process.env.APP_REVISION;
+  try {
+    delete process.env.APP_REVISION;
+    check('/healthz 的 revision：没有 APP_REVISION 时是 dev', (await getJson<{ revision?: string }>('/healthz')).body.revision === 'dev');
+    process.env.APP_REVISION = 'demo-v9.9';
+    check('/healthz 的 revision：等于部署时的 tag', (await getJson<{ revision?: string }>('/healthz')).body.revision === 'demo-v9.9');
+  } finally {
+    restoreEnv('APP_REVISION', savedRevision);
+  }
 
   // 后台 SSE 免密（EventSource 带不了头）：只能推「变了」这个信号，不能带内容或会话 id
   const res = await app.request('/api/admin/stream', { headers: { 'x-forwarded-for': freshIp() } });
@@ -189,10 +214,7 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
     while (!pred(raw)) {
       const left = deadline - Date.now();
       if (left <= 0) return false;
-      const chunk = await Promise.race([
-        reader.read(),
-        new Promise<null>((r) => setTimeout(() => r(null), left)),
-      ]);
+      const chunk = await Promise.race([reader.read(), new Promise<null>((r) => setTimeout(() => r(null), left))]);
       if (!chunk || chunk.done) return pred(raw);
       raw += dec.decode(chunk.value, { stream: true });
     }
@@ -210,8 +232,16 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('SSE 不含会话 id / 订单号 / 原文', sseLeaks.length === 0, sseLeaks.join(','));
   const events = [...raw.matchAll(/^event: (.*)$/gm)].map((m) => m[1]);
   const datas = [...raw.matchAll(/^data: (.*)$/gm)].map((m) => m[1]);
-  check('SSE 只有 change / ping 两种事件', events.every((e) => e === 'change' || e === 'ping'), events.join(','));
-  check('SSE 的 data 只是 init 或时间戳', datas.every((d) => d === 'init' || /^\d+$/.test(d)), datas.join(','));
+  check(
+    'SSE 只有 change / ping 两种事件',
+    events.every((e) => e === 'change' || e === 'ping'),
+    events.join(','),
+  );
+  check(
+    'SSE 的 data 只是 init 或时间戳',
+    datas.every((d) => d === 'init' || /^\d+$/.test(d)),
+    datas.join(','),
+  );
 }
 
 // ---------------- 页面侧契约 ----------------
@@ -226,6 +256,13 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('admin.html 用 x-sim-session 头带凭据', admin.includes("'x-sim-session'"));
   // id 现在是访客会话唯一的凭据：Math.random 取 8 位 36 进制只有约 41 bit，且不是密码学随机
   check('chat.html 会话 id 不用 Math.random', !/Math\.random\(\)\.toString\(36\)/.test(chat));
+  // AI 显式标识（00 spec）：网页模拟器的开场与企微欢迎语同一口径——第一句写明「AI 旅行顾问」，并写明人工入口
+  const opening = /addMsg\('agent', '(您好[^']*)'\)/.exec(chat)?.[1] ?? '';
+  check(
+    'chat.html 的开场：第一句写明「AI 旅行顾问」，并写明回复「人工」即可转真人顾问',
+    opening.split(/[。！？]|\\n/)[0].includes('AI 旅行顾问') && opening.includes('回复「人工」即可转真人顾问'),
+    opening,
+  );
   // 真跑一遍页面里的生成函数：它产出的 id 必须被后台列表认作本人，否则访客边聊边看的演示效果就断了
   const fnSrc = /function newSessionId\(\) \{[\s\S]*?\n {2}\}/.exec(chat)?.[0];
   check('chat.html 有 newSessionId()', !!fnSrc);
@@ -247,7 +284,12 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   const fnSrc = /async function fillPayCard\(card, pay\) \{[\s\S]*?\n {2}\}/.exec(chat)?.[0];
   check('chat.html 有 fillPayCard()', !!fnSrc);
   if (fnSrc) {
-    for (const [status, want] of [['superseded', '已被新订单替代'], ['cancelled', '订单已取消'], ['paid', '已支付 · 查看订单'], ['pending_payment', '立即支付']]) {
+    for (const [status, want] of [
+      ['superseded', '已被新订单替代'],
+      ['cancelled', '订单已取消'],
+      ['paid', '已支付 · 查看订单'],
+      ['pending_payment', '立即支付'],
+    ]) {
       const els = new Map<string, { textContent: string; hidden: boolean; classList: { add: (c: string) => void } }>();
       const card = {
         querySelector: (sel: string) => {
@@ -255,9 +297,14 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
           return els.get(sel)!;
         },
       };
-      const fetchStub = async () => ({ ok: true, json: async () => ({ status, totalPrice: 33600, routeTitle: 'x', travelers: 2, departDate: '2026-12-10' }) });
-      const fill = new Function('fetch', 'cnDate', `${fnSrc}; return fillPayCard;`)(fetchStub, (d: string) => d) as
-        (card: unknown, pay: { orderId: string }) => Promise<void>;
+      const fetchStub = async () => ({
+        ok: true,
+        json: async () => ({ status, totalPrice: 33600, routeTitle: 'x', travelers: 2, departDate: '2026-12-10' }),
+      });
+      const fill = new Function('fetch', 'cnDate', `${fnSrc}; return fillPayCard;`)(fetchStub, (d: string) => d) as (
+        card: unknown,
+        pay: { orderId: string },
+      ) => Promise<void>;
       await fill(card, { orderId: 'ord_x' });
       const got = card.querySelector('.pc-btn').textContent;
       check(`chat.html 支付卡片：${status} 显示「${want}」`, got === want, got);
@@ -286,13 +333,19 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
         if (k === Symbol.toPrimitive) return () => '';
         if (typeof k === 'symbol') return undefined;
         if (k in own) return own[k];
-        if (k === 'addEventListener') return (t: string, fn: (...a: unknown[]) => unknown) => { (listeners[t] ??= []).push(fn); };
+        if (k === 'addEventListener')
+          return (t: string, fn: (...a: unknown[]) => unknown) => {
+            (listeners[t] ??= []).push(fn);
+          };
         if (k === 'listeners') return listeners;
         if (k === 'querySelector') return () => null;
         if (k === 'querySelectorAll') return () => [];
         return (own[k] = stubEl());
       },
-      set(_t, k, v) { own[k as string] = v; return true; },
+      set(_t, k, v) {
+        own[k as string] = v;
+        return true;
+      },
       apply: () => stubEl(),
     }) as unknown as Stub;
   }
@@ -327,8 +380,15 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
         pending.push(p);
         return p;
       },
-      EventSource: class { constructor(url: string) { sse.push(url); } addEventListener() {} },
-      Event: class { constructor(public type: string) {} },
+      EventSource: class {
+        constructor(url: string) {
+          sse.push(url);
+        }
+        addEventListener() {}
+      },
+      Event: class {
+        constructor(public type: string) {}
+      },
       location: { reload() {} },
       setInterval: () => 0,
       clearInterval: () => {},
@@ -409,8 +469,18 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 {
   const y = new Date().getFullYear();
   const s = mkSession(simId(), 'simulator', '支付页日期');
-  for (const [departDate, want] of [[`${y}-10-12`, '10月12日出发'], [`${y + 1}-01-05`, `${y + 1}年1月5日出发`]] as const) {
-    const o = createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+  for (const [departDate, want] of [
+    [`${y}-10-12`, '10月12日出发'],
+    [`${y + 1}-01-05`, `${y + 1}年1月5日出发`],
+  ] as const) {
+    const o = createOrder({
+      sessionId: s.id,
+      routeId: 'r-sanya',
+      routeTitle: '三亚亲子奢华度假 5 日',
+      travelers: 2,
+      departDate,
+      totalPrice: 34760,
+    });
     const html = await (await app.request(`/pay/${o.id}`)).text();
     const desc = /<meta name="description" content="([^"]*)">/.exec(html)?.[1] ?? '';
     check(`支付页摘要日期写成「${want}」`, desc === `2 位出行 · ${want} · 合计 ¥34,760`, desc);
@@ -422,7 +492,8 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
 {
   const store = await import('./store.js');
   const s = mkSession(simId(), 'simulator', '改单');
-  const mk = (departDate: string) => createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+  const mk = (departDate: string) =>
+    createOrder({ sessionId: s.id, routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
   const oldO = mk('2099-01-01');
   const newO = mk('2099-01-02');
   s.orderIds.push(oldO.id, newO.id);
@@ -445,10 +516,835 @@ const same = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(
   check('后台把被替代的单标成「已被替代」、金额取仍有效的那张', adminPage.includes("'已被替代'") && adminPage.includes('liveOrder(s)'));
 }
 
+/** 环境变量原样恢复：原来没有就删掉（直接赋 undefined 会变成字符串 'undefined'） */
+function restoreEnv(k: string, v: string | undefined): void {
+  if (v === undefined) delete process.env[k];
+  else process.env[k] = v;
+}
+/** 服务端没配 ADMIN_PASS 的情形：鉴权每次请求时现读 process.env，临时删掉跑完再恢复 */
+async function withoutAdminPass<T>(fn: () => Promise<T>): Promise<T> {
+  const saved = process.env.ADMIN_PASS;
+  delete process.env.ADMIN_PASS;
+  try {
+    return await fn();
+  } finally {
+    restoreEnv('ADMIN_PASS', saved);
+  }
+}
+const jsonBody = (v: unknown) => {
+  const body = JSON.stringify(v);
+  return { body, headers: { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } };
+};
+
+// ---------------- 管理写接口：凭据、ADMIN_PASS 与跨站 ----------------
+// 接管 / 交还 / 人工回复是以顾问身份动真实客户的会话：没有任何环境变量能免密放行，没配 ADMIN_PASS 就整体锁死；
+// Basic 凭据浏览器会自动附带，跨站页面上一个自动提交的表单就能替已登录的顾问发消息，所以带跨站标记的一律拦下
+{
+  const target = mkSession(simId(), 'simulator', '管理写接口');
+  const post = (op: string, headers: Record<string, string> = {}) => {
+    const b = op === 'reply' ? jsonBody({ text: '顾问回复' }) : { body: undefined, headers: {} };
+    return app.request(`/api/sessions/${encodeURIComponent(target.id)}/${op}`, {
+      method: 'POST',
+      body: b.body,
+      headers: { 'x-forwarded-for': freshIp(), ...b.headers, ...headers },
+    });
+  };
+  const snapshot = () => JSON.stringify(getSession(target.id));
+  for (const op of ['handoff', 'resume', 'reply']) {
+    const before = snapshot();
+    const none = await post(op);
+    check(`管理写接口 ${op}：缺凭据 401`, none.status === 401, String(none.status));
+    const wrong = await post(op, WRONG);
+    check(`管理写接口 ${op}：凭据错 401`, wrong.status === 401, String(wrong.status));
+    const locked = await withoutAdminPass(async () => [(await post(op)).status, (await post(op, ADMIN)).status]);
+    check(
+      `管理写接口 ${op}：服务端没配 ADMIN_PASS 返回 503`,
+      locked.every((x) => x === 503),
+      locked.join(','),
+    );
+    const cross = await post(op, { ...ADMIN, 'sec-fetch-site': 'cross-site' });
+    check(`管理写接口 ${op}：带 sec-fetch-site: cross-site 返回 403（凭据对也拦）`, cross.status === 403, String(cross.status));
+    check(`管理写接口 ${op}：被拒的请求不改会话`, snapshot() === before);
+    const ok = await post(op, ADMIN);
+    check(`管理写接口 ${op}：凭据对、不带 sec-fetch-site 头的放行`, ok.status === 200, String(ok.status));
+  }
+  check('管理写接口放行后人工回复落进会话', getSession(target.id)?.messages.at(-1)?.content === '顾问回复');
+  // 后台自己发的 fetch 带 same-origin，地址栏直接打开的是 none，都要放行
+  for (const site of ['same-origin', 'none']) {
+    const r = await post('handoff', { ...ADMIN, 'sec-fetch-site': site });
+    check(`管理写接口：sec-fetch-site: ${site} 放行`, r.status === 200, String(r.status));
+  }
+}
+
+// ---------------- 走 LLM 计费的读端点：要凭据，不做同源校验 ----------------
+// 每调一次都花钱：未登录（或密码错）一律 401，没配 ADMIN_PASS 503；它们只读不写，所以不查 sec-fetch-site
+{
+  const target = mkSession(simId(), 'simulator', 'LLM 读端点');
+  const id = encodeURIComponent(target.id);
+  const get = (url: string, headers: Record<string, string> = {}) =>
+    app.request(url, { headers: { 'x-forwarded-for': freshIp(), ...headers } });
+  for (const [name, url] of [
+    ['/api/insights', '/api/insights'],
+    ['/api/sessions/:id/suggestion', `/api/sessions/${id}/suggestion`],
+    ['/api/sessions/:id/draft', `/api/sessions/${id}/draft`],
+  ]) {
+    const none = await get(url);
+    check(`LLM 计费读端点 ${name}：缺凭据 401`, none.status === 401, String(none.status));
+    const wrong = await get(url, WRONG);
+    check(`LLM 计费读端点 ${name}：凭据错 401`, wrong.status === 401, String(wrong.status));
+    const locked = await withoutAdminPass(async () => [(await get(url)).status, (await get(url, ADMIN)).status]);
+    check(
+      `LLM 计费读端点 ${name}：服务端没配 ADMIN_PASS 返回 503`,
+      locked.every((x) => x === 503),
+      locked.join(','),
+    );
+    const cross = await get(url, { ...ADMIN, 'sec-fetch-site': 'cross-site' });
+    check(`LLM 计费读端点 ${name}：不做同源校验（凭据对、带 cross-site 照常 200）`, cross.status === 200, String(cross.status));
+  }
+}
+
+// ---------------- POST /api/chat 只认 sim- 会话 ----------------
+// 网页聊天是匿名入口：让它指定 wecom: 前缀，就能往真实客户（或种子）的会话里写话、以客户身份跑一轮 AI
+{
+  for (const [name, sid] of [
+    ['真实客户', REAL.id],
+    ['种子', SEED.id],
+    ['不存在的企微', 'wecom:wmNOSUCHCUSTOMER9'],
+  ]) {
+    const before = JSON.stringify(getSession(sid));
+    const b = jsonBody({ sessionId: sid, text: '你好，帮我看看三亚' });
+    const res = await app.request('/api/chat', { method: 'POST', body: b.body, headers: { 'x-forwarded-for': freshIp(), ...b.headers } });
+    check(`POST /api/chat 带 wecom: 前缀的会话 id 返回 400（${name}）`, res.status === 400, String(res.status));
+    check(`POST /api/chat 带 wecom: 前缀：${name}会话不被新建或改动`, JSON.stringify(getSession(sid)) === before);
+  }
+  // 不只是 wecom:：凡是不以 sim- 开头（或 sim- 后面不合格式）的 id 都不收
+  for (const sid of ['abc-123', 'SIM-upper', 'simulator-1', `sim-${'x'.repeat(65)}`, 'sim-a/../b', 'sim-']) {
+    const b = jsonBody({ sessionId: sid, text: '你好' });
+    const res = await app.request('/api/chat', { method: 'POST', body: b.body, headers: { 'x-forwarded-for': freshIp(), ...b.headers } });
+    check(
+      `POST /api/chat 带其他前缀或格式不对的会话 id 返回 400（${sid.slice(0, 16)}）`,
+      res.status === 400 && !getSession(sid),
+      String(res.status),
+    );
+  }
+}
+
+// ---------------- 付款接口：已取消的单不能付，已付款的单不重复推送 ----------------
+const payReq = (orderId: string) =>
+  app.request(`/api/orders/${orderId}/pay`, { method: 'POST', headers: { 'x-forwarded-for': freshIp() } });
+{
+  // 目前没有把订单改成 cancelled 的代码路径，这里直接设状态，守的是付款接口的判断本身
+  const s = mkSession(simId(), 'simulator', '已取消的单');
+  const o = mkOrder(s);
+  getOrder(o.id)!.status = 'cancelled';
+  const res = await payReq(o.id);
+  check('已取消的订单：付款接口返回 409', res.status === 409, String(res.status));
+  const after = getOrder(o.id);
+  check(
+    '已取消的订单：状态仍是 cancelled、没有付款时间',
+    after?.status === 'cancelled' && after.paidAt === undefined,
+    JSON.stringify(after),
+  );
+  check('已取消的订单：会话不进入已支付', getSession(s.id)?.stage !== 'paid', String(getSession(s.id)?.stage));
+}
+{
+  // 客户在支付页连点两下、或刷新后又点一次：第二次不能再推一条「已收到您的支付」
+  const s = mkSession(simId(), 'simulator', '重复付款');
+  const o = mkOrder(s);
+  const pushed: string[] = [];
+  const unsubscribe = subscribe(s.id, (t) => pushed.push(t));
+  const first = await payReq(o.id);
+  check(
+    '首次付款：订单变成已付并推送一次跟进',
+    first.status === 200 && getOrder(o.id)?.status === 'paid' && pushed.length === 1,
+    `${first.status} / ${pushed.length}`,
+  );
+  const paidAt = getOrder(o.id)?.paidAt;
+  const msgs = getSession(s.id)?.messages.length;
+  await payReq(o.id);
+  unsubscribe();
+  check(
+    '已付款的订单再调付款接口：订单不变（仍已付、付款时间不变）',
+    getOrder(o.id)?.status === 'paid' && getOrder(o.id)?.paidAt === paidAt,
+  );
+  check('已付款的订单再调付款接口：不再推送跟进', pushed.length === 1, String(pushed.length));
+  check(
+    '已付款的订单再调付款接口：会话里不再多记一条跟进',
+    getSession(s.id)?.messages.length === msgs,
+    `${msgs} → ${getSession(s.id)?.messages.length}`,
+  );
+}
+
+// ---------------- 未知渠道：推送一律失败、不抛异常；付款失败推送记备注，种子除外（验收 9） ----------------
+// 渠道兜底此前是模拟器：没人连着 SSE 时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。
+// 付款路由在 markOrderPaid 之后才推送，推送一抛异常，一个已经付款成功的请求就成了 500
+/** 收集 console.error 而不打印，断言日志内容用；跑完原样恢复 */
+async function captureErrors<T>(fn: () => Promise<T>): Promise<{ out: T; errors: string[] }> {
+  const errors: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => {
+    errors.push(a.map(String).join(' '));
+  };
+  try {
+    return { out: await fn(), errors };
+  } finally {
+    console.error = orig;
+  }
+}
+const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) => m.role === 'system' && m.content.includes('未能发送'));
+{
+  // 会话 id 里不含渠道名：否则日志只写了会话、漏了渠道，「含 mystery」也照样成立
+  const s = mkSession('odd:u01', 'mystery', '未知渠道的会话');
+  const o = mkOrder(s);
+  const paid = await captureErrors(async () => payReq(o.id));
+  check(
+    '未知渠道（9a）：付款接口返回 200，订单变成已付',
+    paid.out.status === 200 && getOrder(o.id)?.status === 'paid',
+    String(paid.out.status),
+  );
+  const named = paid.errors.filter((l) => l.includes('mystery') && l.includes(s.id));
+  check('未知渠道（9a）：付款时打一条点名渠道和会话的 error', named.length === 1, JSON.stringify(paid.errors));
+  check('未知渠道（9a）：会话里记了付款确认没送达的备注', failNotes(s.id).length === 1, JSON.stringify(getSession(s.id)?.messages.at(-1)));
+
+  const b = jsonBody({ text: '顾问回复' });
+  const replied = await captureErrors(async () => {
+    const res = await app.request(`/api/sessions/${encodeURIComponent(s.id)}/reply`, {
+      method: 'POST',
+      body: b.body,
+      headers: { 'x-forwarded-for': freshIp(), ...b.headers, ...ADMIN },
+    });
+    return { status: res.status, body: (await res.json()) as { ok?: boolean } };
+  });
+  check(
+    '未知渠道（9b）：人工回复返回 ok: false，不显示成已回复',
+    replied.out.status === 200 && replied.out.body.ok === false,
+    JSON.stringify(replied.out),
+  );
+  check('未知渠道（9b）：会话里又记了一条「未能发送」', failNotes(s.id).length === 2, String(failNotes(s.id).length));
+  check('未知渠道（9b）：回复时同样打一条点名渠道的 error', replied.errors.filter((l) => l.includes('mystery')).length === 1);
+}
+{
+  // 种子与真实客户都是企微渠道，本自测没配企微，推送都失败：备注只看是不是种子，不看渠道
+  const seed = mkSession('wecom:cust_T11', 'wecom', '种子：待付款');
+  const real = mkSession('wecom:wmPAYFAIL04', 'wecom', '真实客户：待付款');
+  const oS = mkOrder(seed);
+  const oR = mkOrder(real);
+  const res = await captureErrors(async () => [(await payReq(oS.id)).status, (await payReq(oR.id)).status]);
+  check(
+    '种子会话（9c）：付款照常成功，推送失败也不在会话里记备注',
+    res.out[0] === 200 && getOrder(oS.id)?.status === 'paid' && failNotes(seed.id).length === 0,
+    JSON.stringify(getSession(seed.id)?.messages.at(-1)),
+  );
+  check(
+    '真实企微会话：付款确认推送失败时记备注',
+    res.out[1] === 200 && getOrder(oR.id)?.status === 'paid' && failNotes(real.id).length === 1,
+    JSON.stringify(getSession(real.id)?.messages.at(-1)),
+  );
+  // 两边都失败，结果分不出走的是哪个适配器，只能看日志：企微适配器未配置时打 [wecom] 开头的 error。
+  // 企微渠道要是落进未知渠道兜底，线上每条人工回复、付款确认和跟进都会发不出去
+  const viaWecom = (id: string) => res.errors.some((l) => l.startsWith('[wecom]') && l.includes(id));
+  check(
+    '企微渠道的会话（种子与真实客户）都走企微适配器，不落进未知渠道兜底',
+    viaWecom(seed.id) && viaWecom(real.id) && !res.errors.some((l) => l.includes('未知')),
+    JSON.stringify(res.errors),
+  );
+}
+
+// ---------------- 访客闲置清理：只清 sim- 网页访客 ----------------
+// 真实企微会话 id 是 wecom:<external_userid>，和种子 wecom:cust_* 只差前缀；清理要是写成「非种子即可删」，
+// 真实客户会连人带订单消失。已付订单是成交凭证，访客的也不删
+{
+  const IDLE = Date.now() - 25 * 3_600_000; // 超过 DEMO_PRUNE_HOURS=24
+  const visitor = mkSession(simId(), 'simulator', '闲置访客');
+  const vOrder = mkOrder(visitor);
+  const paidVisitor = mkSession(simId(), 'simulator', '闲置但付过款的访客');
+  const pOrder = mkOrder(paidVisitor);
+  markOrderPaid(pOrder.id);
+  const active = mkSession(simId(), 'simulator', '刚聊过的访客');
+  const realIdle = mkSession('wecom:wmIDLECUSTOMER02', 'wecom', '闲置的真实客户');
+  const rOrder = mkOrder(realIdle);
+  const seedIdle = mkSession('wecom:cust_T09', 'wecom', '闲置的种子');
+  const simOnWecom = mkSession(simId(), 'wecom', 'sim- 开头但渠道是企微');
+  const otherOnSim = mkSession('web-idle01', 'simulator', '模拟器渠道但不是 sim- 开头');
+  for (const s of [visitor, paidVisitor, realIdle, seedIdle, simOnWecom, otherOnSim]) s.updatedAt = IDLE;
+  pruneStaleVisitorData();
+  check('访客清理：闲置的 sim- 网页访客会话被删', !getSession(visitor.id));
+  check('访客清理：连同它的订单一起删', !getOrder(vOrder.id));
+  check('访客清理：有已付订单的访客会话不删', !!getSession(paidVisitor.id) && getOrder(pOrder.id)?.status === 'paid');
+  check('访客清理：没闲置够的访客会话不删', !!getSession(active.id));
+  check('访客清理：闲置的真实企微会话连同订单都在', !!getSession(realIdle.id) && !!getOrder(rOrder.id));
+  check('访客清理：闲置的种子会话不删', !!getSession(seedIdle.id));
+  check('访客清理：sim- 开头但渠道不是 simulator 的不删', !!getSession(simOnWecom.id));
+  check('访客清理：simulator 渠道但不是 sim- 开头的不删', !!getSession(otherOnSim.id));
+}
+
+// ---------------- 访客总量上限：超了淘汰最旧的，有已付订单的不动 ----------------
+// /api/chat 匿名可达，脚本几分钟能刷出几十万会话；新建访客会话时就按 updatedAt 淘汰最旧的。上限在文件开头设成 100
+{
+  const CAP = 100;
+  const visitors = () => listSessions().filter((s) => s.id.startsWith('sim-') && s.channel === 'simulator');
+  const paidOldest = mkSession(simId(), 'simulator', '最旧但付过款的访客');
+  markOrderPaid(mkOrder(paidOldest).id);
+  const old1 = mkSession(simId(), 'simulator', '最旧的访客');
+  const o1 = mkOrder(old1);
+  const old2 = mkSession(simId(), 'simulator', '次旧的访客');
+  const old3 = mkSession(simId(), 'simulator', '第三旧的访客');
+  [paidOldest.updatedAt, old1.updatedAt, old2.updatedAt, old3.updatedAt] = [1_000, 2_000, 3_000, 4_000];
+  const startCount = visitors().length;
+  // 带上界：淘汰若多算一个，访客数永远到不了 CAP，这里不能死循环
+  for (let i = 0; i < CAP && visitors().length < CAP; i++) getOrCreateSession(simId(), 'simulator');
+  const kept = (...xs: Session[]) => xs.every((s) => !!getSession(s.id));
+  check('访客总量上限：没超上限时一个不淘汰', startCount < CAP && kept(paidOldest, old1, old2, old3), `起始 ${startCount}`);
+  // 先只超一个、立刻看：多淘汰一个会掉到 CAP-1，再建一个又补回 CAP，只看终态发现不了
+  const extra1 = getOrCreateSession(simId(), 'simulator');
+  check(
+    '访客总量上限：超出一个只淘汰一个（最旧的）',
+    visitors().length === CAP && !getSession(old1.id) && kept(old2),
+    String(visitors().length),
+  );
+  const extra = [extra1, getOrCreateSession(simId(), 'simulator')];
+  check('访客总量上限：超出后总数压回上限', visitors().length === CAP, String(visitors().length));
+  check('访客总量上限：淘汰的是最旧的访客会话，连同订单', !getSession(old1.id) && !getSession(old2.id) && !getOrder(o1.id));
+  check('访客总量上限：只淘汰超出的个数', kept(old3, ...extra));
+  check('访客总量上限：有已付订单的访客会话不淘汰（哪怕最旧）', kept(paidOldest));
+  check('访客总量上限：真实企微会话与种子会话不受影响', kept(REAL, SEED));
+}
+
+// ---------------- 种子保鲜：只平移 wecom:cust_* 与它们的订单 ----------------
+// 种子的时间戳是灌入时定死的，放几天后台就全是「N 天未回应」；保鲜把它们整体挪到最新一条约 5 分钟前。
+// 真实客户和网页访客的时间是事实，一毫秒都不能动
+{
+  const HOUR = 3_600_000;
+  const T = Date.now() - 3 * 24 * HOUR; // 放了三天的演示数据
+  const seedPaid = mkSession('wecom:cust_T10', 'wecom', '种子：已付款');
+  markOrderPaid(mkOrder(seedPaid).id);
+
+  const isSeed = (id: string) => id.startsWith('wecom:cust_');
+  const seeds = listSessions().filter((s) => isSeed(s.id));
+  // 非种子：前面各组留下的真实客户（REAL、闲置的那位）和网页访客，多数带订单
+  const others = listSessions().filter((s) => !isSeed(s.id));
+  // 种子之间错开几小时，订单时间落在会话里；非种子也放到同样旧，误平移就看得出来
+  seeds.forEach((s, i) => {
+    s.updatedAt = T - i * HOUR;
+    s.createdAt = s.updatedAt - HOUR;
+    for (const m of s.messages) m.at = s.updatedAt - 60_000;
+  });
+  for (const s of others) {
+    s.updatedAt = T;
+    s.createdAt = T - HOUR;
+    for (const m of s.messages) m.at = T;
+  }
+  for (const o of listOrders()) {
+    o.createdAt = (getSession(o.sessionId)?.updatedAt ?? T) - 30 * 60_000;
+    if (o.paidAt !== undefined) o.paidAt = o.createdAt + 10 * 60_000;
+  }
+  const sStamps = (s: Session) => [s.createdAt, s.updatedAt, ...s.messages.map((m) => m.at)];
+  const oStamps = (o: Order) => [o.createdAt, o.paidAt ?? 0];
+  const seedOrders = listOrders().filter((o) => isSeed(o.sessionId));
+  const otherOrders = listOrders().filter((o) => !isSeed(o.sessionId));
+  const snap = (ss: Session[], os: Order[]) => [...ss.map(sStamps), ...os.map(oStamps)];
+  const seedBefore = snap(seeds, seedOrders);
+  const otherBefore = JSON.stringify(snap(others, otherOrders));
+  const newestBefore = Math.max(...seeds.map((s) => s.updatedAt));
+
+  // 开关在 profile 里解析一次后缓存，改 process.env 不生效：用 __profileTest 切换，用完 reset 回 demo
+  const unshifted = () => JSON.stringify(snap(seeds, seedOrders)) === JSON.stringify(seedBefore);
+  try {
+    __profileTest.use({ DEPLOY_PROFILE: 'demo', DEMO_FRESHEN: '0' });
+    freshenDemoData();
+    check('种子保鲜：DEMO_FRESHEN=0 时不平移', unshifted());
+    __profileTest.use({ DEPLOY_PROFILE: 'demo', FLAG_SEED_FRESHEN: 'off' });
+    freshenDemoData();
+    check('种子保鲜：seed_freshen 关闭时不平移', unshifted());
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    freshenDemoData();
+    check('种子保鲜：prod 下手动调保鲜例程也不平移', unshifted());
+  } finally {
+    __profileTest.reset();
+  }
+  freshenDemoData();
+  const newest = Math.max(...seeds.map((s) => s.updatedAt));
+  const delta = newest - newestBefore;
+  check(
+    '种子保鲜：最新一条种子会话落在约 5 分钟前',
+    Math.abs(Date.now() - 5 * 60_000 - newest) < 5_000,
+    `${Math.round((Date.now() - newest) / 1000)}s 前`,
+  );
+  const shifted = (before: number[][], after: number[][]) =>
+    before.length === after.length &&
+    before.every((xs, i) => xs.every((x, j) => (x === 0 ? after[i][j] === 0 : after[i][j] === x + delta)));
+  check('种子保鲜：种子会话与消息整体平移，相对间隔不变', shifted(seedBefore.slice(0, seeds.length), seeds.map(sStamps)));
+  check(
+    '种子保鲜：种子的订单（含付款时间）同样平移',
+    seedOrders.some((o) => o.paidAt !== undefined) && shifted(seedBefore.slice(seeds.length), seedOrders.map(oStamps)),
+  );
+  check(
+    '种子保鲜：真实客户、网页访客的会话与订单不动',
+    others.some((s) => s.channel === 'wecom') && otherOrders.length > 0 && JSON.stringify(snap(others, otherOrders)) === otherBefore,
+  );
+}
+
+// ---------------- 部署 profile：解析、封顶与启动 ----------------
+// 00 spec「部署 profile 与开关」。运行时未设 DEPLOY_PROFILE 按 demo；prod 对每个开关硬封顶，试图放宽就拒绝启动
+{
+  const rejects = (env: Record<string, string>): boolean => {
+    try {
+      resolveProfile(env);
+      return false;
+    } catch (e) {
+      return e instanceof ProfileConfigError;
+    }
+  };
+  const flagsOf = (env: Record<string, string>) => JSON.stringify(resolveProfile(env).flags);
+  const json = (x: unknown) => JSON.stringify(x);
+  check('profile：什么都不设按 demo，开关取 demo 默认值', resolveProfile({}).name === 'demo' && flagsOf({}) === json(DEMO_DEFAULTS));
+  check(
+    'profile：空串当未设置',
+    resolveProfile({ DEPLOY_PROFILE: '', FLAG_MOCK_PAY: '', DEMO_FRESHEN: '' }).name === 'demo' &&
+      flagsOf({ FLAG_MOCK_PAY: '' }) === json(DEMO_DEFAULTS),
+  );
+  check(
+    'profile：prod 的默认值就是封顶值（全关）',
+    resolveProfile({ DEPLOY_PROFILE: 'prod' }).name === 'prod' && flagsOf({ DEPLOY_PROFILE: 'prod' }) === json(PROD_CEILING),
+  );
+  check(
+    'profile：demo 下 FLAG_* 可以单独关掉某个开关',
+    json(resolveProfile({ FLAG_RESET_COMMAND: 'off' }).flags) === json({ ...DEMO_DEFAULTS, reset_command: false }),
+  );
+  check('profile：prod 下 FLAG_*=off 照常', flagsOf({ DEPLOY_PROFILE: 'prod', FLAG_MOCK_PAY: 'off' }) === json(PROD_CEILING));
+  check('profile：DEMO_FRESHEN=0 等价于 FLAG_SEED_FRESHEN=off', resolveProfile({ DEMO_FRESHEN: '0' }).flags.seed_freshen === false);
+  check('profile：DEMO_FRESHEN 的其他值照旧忽略', resolveProfile({ DEMO_FRESHEN: '1' }).flags.seed_freshen === true);
+  check(
+    'profile：DEMO_FRESHEN=0 与 FLAG_SEED_FRESHEN=off 不冲突',
+    resolveProfile({ DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'off' }).flags.seed_freshen === false,
+  );
+  for (const [why, env] of [
+    ['DEPLOY_PROFILE 取了非法值', { DEPLOY_PROFILE: 'staging' }],
+    ['FLAG_* 取了非法值', { FLAG_RESET_COMMAND: 'yes' }],
+    ['prod 下试图打开开关', { DEPLOY_PROFILE: 'prod', FLAG_RESET_COMMAND: 'on' }],
+    ['prod 下试图打开模拟支付', { DEPLOY_PROFILE: 'prod', FLAG_MOCK_PAY: 'on' }],
+    ['FLAG_AI_DISCLOSURE=on_ask（00 只有 always）', { FLAG_AI_DISCLOSURE: 'on_ask' }],
+    ['DEMO_FRESHEN=0 与 FLAG_SEED_FRESHEN=on 冲突', { DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'on' }],
+  ] as [string, Record<string, string>][]) {
+    check(`profile：${why}，解析失败（ProfileConfigError）`, rejects(env));
+  }
+  check('profile：FLAG_AI_DISCLOSURE=always 合法', !rejects({ FLAG_AI_DISCLOSURE: 'always' }));
+  const p = resolveProfile({});
+  check('profile：解析结果不可改', Object.isFrozen(p) && Object.isFrozen(p.flags));
+
+  const allOn = { reset_command: true, anon_readonly_admin: true, seed_freshen: true, visitor_simulator: true, mock_pay: true };
+  check('capFlags：prod 下任何输入都放宽不了', json(capFlags('prod', allOn)) === json(PROD_CEILING));
+  check('capFlags：prod 下没给的取封顶值', json(capFlags('prod', {})) === json(PROD_CEILING));
+  check('capFlags：demo 下就是在默认值上覆盖', json(capFlags('demo', { mock_pay: false })) === json({ ...DEMO_DEFAULTS, mock_pay: false }));
+
+  check('profile()：自测进程钉在 demo（本机 .env 进不来）', profile().name === 'demo' && json(profile().flags) === json(DEMO_DEFAULTS));
+  try {
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    check('__profileTest.use：同一进程里切到 prod', profile().name === 'prod');
+  } finally {
+    __profileTest.reset();
+  }
+  check('__profileTest.reset：回到按 process.env 解析的 demo', profile().name === 'demo');
+
+  // 缓存：首次解析之后改 process.env 不生效，开关在启动时就定死了
+  const savedMockPay = process.env.FLAG_MOCK_PAY;
+  process.env.FLAG_MOCK_PAY = 'off';
+  check('profile()：首次解析后缓存，之后改 process.env 不生效', profile().flags.mock_pay === true);
+  restoreEnv('FLAG_MOCK_PAY', savedMockPay);
+
+  // 启动（验收 5）：单个 node 进程跑。子进程的环境只给 PATH、临时 VAR_DIR 和 profile 相关变量（全部先设空串，本机 .env 进不来）；
+  // 不 listen、不连企微、不调模型，万一入口接错了也不会真的起服务
+  const bootEnv = (env: Record<string, string>): Record<string, string> => ({
+    PATH: process.env.PATH ?? '',
+    VAR_DIR: process.env.VAR_DIR ?? '',
+    SERVER_SELFTEST: '1',
+    LLM_MOCK: '1',
+    ADMIN_PASS: '',
+    WECOM_CORP_ID: '',
+    WECOM_APP_SECRET: '',
+    WECOM_KF_OPEN_KFID: '',
+    ...Object.fromEntries(PROFILE_ENV_NAMES.map((k) => [k, ''])),
+    ...env,
+  });
+  const run = (entry: string, env: Record<string, string>) => {
+    const r = spawnSync(process.execPath, ['--import', 'tsx', entry], { env: bootEnv(env), encoding: 'utf8', timeout: 30_000 });
+    return { code: r.status, out: (r.stdout + r.stderr).trim() };
+  };
+  // 配置错误走真正的入口 src/server.ts：profile-boot 必须排在任何会 import store 的模块之前。
+  // 挪到后面，store 加载时就先解析了 profile，抛出来的是一整段异常栈；删掉它，prod 没配 ADMIN_PASS 也能起来。这几种都在 listen 之前退出
+  for (const [why, env, cause] of [
+    ['DEPLOY_PROFILE=staging', { DEPLOY_PROFILE: 'staging' }, 'DEPLOY_PROFILE=staging'],
+    ['prod 加 FLAG_RESET_COMMAND=on', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x', FLAG_RESET_COMMAND: 'on' }, 'FLAG_RESET_COMMAND'],
+    ['prod 但没配 ADMIN_PASS', { DEPLOY_PROFILE: 'prod' }, 'ADMIN_PASS'],
+    ['FLAG_AI_DISCLOSURE=on_ask', { FLAG_AI_DISCLOSURE: 'on_ask' }, 'FLAG_AI_DISCLOSURE=on_ask'],
+    ['DEMO_FRESHEN=0 加 FLAG_SEED_FRESHEN=on', { DEMO_FRESHEN: '0', FLAG_SEED_FRESHEN: 'on' }, 'DEMO_FRESHEN=0'],
+  ] as [string, Record<string, string>, string][]) {
+    const r = run('src/server.ts', env);
+    check(
+      `启动：${why} 时 server.ts 非零退出，一行写明原因（${cause}），没有异常栈`,
+      r.code !== 0 &&
+        r.code !== null &&
+        r.out.split('\n').length === 1 &&
+        r.out.startsWith('[profile] 配置错误，拒绝启动：') &&
+        r.out.includes(cause),
+      JSON.stringify(r),
+    );
+  }
+  // 正常启动的那一行看 profile-boot 本身（server.ts 起来之后不会自己退出）；打出来的必须是生效值，不是默认值
+  const ok = run('src/profile-boot.ts', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+  check(
+    '启动：正常时一行列出 profile 名和六个开关的生效值',
+    ok.code === 0 &&
+      ok.out ===
+        '[profile] prod · reset_command=off anon_readonly_admin=off seed_freshen=off visitor_simulator=off mock_pay=off ai_disclosure=always',
+    JSON.stringify(ok),
+  );
+  const demoOff = run('src/profile-boot.ts', { FLAG_MOCK_PAY: 'off' });
+  check(
+    '启动：日志里是生效值（demo 下 FLAG_MOCK_PAY=off 就显示 mock_pay=off）',
+    demoOff.code === 0 &&
+      demoOff.out ===
+        '[profile] demo · reset_command=on anon_readonly_admin=on seed_freshen=on visitor_simulator=on mock_pay=off ai_disclosure=always',
+    JSON.stringify(demoOff),
+  );
+  check('启动：demo 下没配 ADMIN_PASS 照常启动', run('src/profile-boot.ts', {}).code === 0);
+
+  // 访客清理不归任何开关管（验收 4f）：prod 进程一起来，store 加载时就清一次闲置的 sim- 会话。
+  // 文末那组在本进程里直接调 pruneStaleVisitorData，给加载时 / 每小时那两处调用挂上开关它也照过；这里起一个 prod 进程只加载 store，看落盘结果
+  const pruneDir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'prune-boot-'));
+  const stale = Date.now() - 25 * 3_600_000;
+  const idle = (id: string, channel: string) => ({
+    id,
+    channel,
+    stage: 'greeting',
+    profile: {},
+    messages: [],
+    orderIds: [],
+    handedOver: false,
+    createdAt: stale,
+    updatedAt: stale,
+  });
+  const idleVisitor = simId();
+  fs.writeFileSync(
+    path.join(pruneDir, 'sessions.json'),
+    JSON.stringify([idle(idleVisitor, 'simulator'), idle('wecom:wmIDLEBOOT04', 'wecom')]),
+  );
+  const pruned = run('src/store.ts', { DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x', VAR_DIR: pruneDir, DEMO_PRUNE_HOURS: '24' });
+  const left = (JSON.parse(fs.readFileSync(path.join(pruneDir, 'sessions.json'), 'utf8')) as Session[]).map((s) => s.id);
+  check(
+    '启动（prod）：store 加载时照常清掉闲置 25 小时的 sim- 访客会话，闲置的真实企微会话不动（验收 4f）',
+    pruned.code === 0 && same(left, ['wecom:wmIDLEBOOT04']),
+    JSON.stringify({ pruned, left }),
+  );
+}
+
+// ---------------- 开关接到调用点：anon_readonly_admin / visitor_simulator / mock_pay ----------------
+// 00 spec「部署 profile 与开关」的表。prod 下三个都关；demo 下用 FLAG_*=off 单独关一个，其余照旧。
+// 关掉的入口像不存在一样回 404，要凭据的照 adminAuth 回 401 / 503。demo 默认的行为由前面各组守着
+{
+  const { loadRoutes } = await import('./tools.js');
+  type Init = { method?: string; headers?: Record<string, string>; body?: string };
+  const hit = async (url: string, init: Init = {}) => {
+    const res = await app.request(url, { ...init, headers: { 'x-forwarded-for': freshIp(), ...init.headers } });
+    const type = res.headers.get('content-type') ?? '';
+    // SSE 的 body 不会自己结束：只看状态和类型，看完就断开
+    const text = type.startsWith('text/event-stream') ? (await res.body?.cancel(), '') : await res.text();
+    return { status: res.status, text, type, location: res.headers.get('location') ?? '' };
+  };
+  const withProfile = async (env: Record<string, string>, fn: () => Promise<void>) => {
+    __profileTest.use(env);
+    try {
+      await fn();
+    } finally {
+      __profileTest.reset();
+    }
+  };
+  const PROD = { DEPLOY_PROFILE: 'prod' };
+  const V = mkSession(simId(), 'simulator', '开关测试访客 13966667777');
+  const vOrder = mkOrder(V);
+  const LISTS: [string, string][] = [
+    ['GET /api/sessions', '/api/sessions'],
+    ['GET /api/orders', '/api/orders'],
+    ['GET /api/usage', '/api/usage'],
+    ['GET /api/sessions/<种子 id>', `/api/sessions/${encodeURIComponent(SEED.id)}`],
+  ];
+
+  // ---- anon_readonly_admin：关掉后列表、/api/usage、种子直读都要凭据（验收 4b 的接口一半） ----
+  await withProfile(PROD, async () => {
+    for (const [name, url] of LISTS) {
+      const anon = await hit(url);
+      check(
+        `anon_readonly_admin 关（prod）：匿名 ${name} 返回 401，响应体里没有会话`,
+        anon.status === 401 && !/wecom:|sim-|ord_/.test(anon.text),
+        `${anon.status} ${anon.text.slice(0, 80)}`,
+      );
+      const self = await hit(url, { headers: own(V.id) });
+      check(`anon_readonly_admin 关（prod）：带访客本人的 x-sim-session 也是 401（${name}）`, self.status === 401, String(self.status));
+      const wrong = await hit(url, { headers: WRONG });
+      check(`anon_readonly_admin 关（prod）：凭据错 401（${name}）`, wrong.status === 401, String(wrong.status));
+      const locked = await withoutAdminPass(async () => (await hit(url)).status);
+      check(`anon_readonly_admin 关（prod）：服务端没配 ADMIN_PASS 返回 503（${name}）`, locked === 503, String(locked));
+      const ok = await hit(url, { headers: ADMIN });
+      check(`anon_readonly_admin 关（prod）：带凭据照常 200（${name}）`, ok.status === 200, String(ok.status));
+    }
+    const all = await sessionIds(ADMIN);
+    check(
+      'anon_readonly_admin 关（prod）：带凭据的会话列表是全量',
+      [SEED.id, REAL.id, V.id].every((id) => all.includes(id)),
+      JSON.stringify(all),
+    );
+    const allO = await orderIds(ADMIN);
+    check(
+      'anon_readonly_admin 关（prod）：带凭据的订单列表是全量',
+      [oSeed.id, oReal.id, vOrder.id].every((id) => allO.includes(id)),
+    );
+    const real = await hit(`/api/sessions/${encodeURIComponent(REAL.id)}`);
+    check('anon_readonly_admin 关（prod）：真实客户会话匿名直读仍是 401', real.status === 401, String(real.status));
+    const who = await hit('/api/admin/whoami', { headers: ADMIN });
+    check('anon_readonly_admin 关（prod）：登录框校验凭据照常 200', who.status === 200, String(who.status));
+  });
+  await withProfile({ DEPLOY_PROFILE: 'demo', FLAG_ANON_READONLY_ADMIN: 'off' }, async () => {
+    const lists = await Promise.all(LISTS.map(async ([, url]) => (await hit(url)).status));
+    check(
+      'demo 下 FLAG_ANON_READONLY_ADMIN=off：匿名的列表、/api/usage、种子直读都是 401',
+      lists.every((x) => x === 401),
+      lists.join(','),
+    );
+    // sim- 直读只归 visitor_simulator 管：它在 demo 下开着，访客照常凭 id 读回自己的会话
+    const direct = await hit(`/api/sessions/${V.id}`);
+    check('demo 下 FLAG_ANON_READONLY_ADMIN=off：访客照常凭 id 直读自己的 sim- 会话', direct.status === 200, String(direct.status));
+  });
+
+  // ---- visitor_simulator：关掉后网页模拟器的入口和两个页面都是 404，首页进后台（验收 4d） ----
+  // 模拟器以外、spec 列为「有意保持匿名可达」的页面与接口，prod 下照常打得开
+  const route = loadRoutes().find((r) => r.itinerary?.length);
+  fs.writeFileSync(path.join(process.env.VAR_DIR!, 'kf-qr.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  const PUBLIC: [string, string][] = [
+    ['/admin.html', '/admin.html'],
+    ['/pay.html', '/pay.html'],
+    ['/proposal.html', '/proposal.html'],
+    ['/share-cover.png', '/share-cover.png'],
+    ['/pay/:订单号', `/pay/${vOrder.id}`],
+    ['GET /api/orders/:id', `/api/orders/${vOrder.id}`],
+    ['/proposal/:线路/:人数', `/proposal/${route?.id}/2`],
+    ['GET /api/proposal/:线路', `/api/proposal/${route?.id}`],
+    ['/kf-qr.png', '/kf-qr.png'],
+    ['/healthz', '/healthz'],
+  ];
+  const SIM_PAGES = ['/chat.html', '/guide.html', '/CHAT.HTML', '/Guide.Html', '/%63hat.html', '/%67uide.html', '/chat.html?from=qr'];
+  await withProfile(PROD, async () => {
+    const fresh = simId();
+    const before = listSessions().length;
+    for (const sid of [fresh, undefined]) {
+      const b = jsonBody({ sessionId: sid, text: '想去三亚' });
+      const r = await hit('/api/chat', { method: 'POST', ...b });
+      check(
+        `visitor_simulator 关（prod）：POST /api/chat 返回 404（${sid ? '带' : '不带'} sessionId）`,
+        r.status === 404,
+        String(r.status),
+      );
+    }
+    check('visitor_simulator 关（prod）：/api/chat 没有建出会话', !getSession(fresh) && listSessions().length === before);
+    const sse = await hit(`/api/stream/${V.id}`);
+    check('visitor_simulator 关（prod）：GET /api/stream/:id 返回 404', sse.status === 404, `${sse.status} ${sse.type}`);
+    const direct = await hit(`/api/sessions/${V.id}`);
+    check('visitor_simulator 关（prod）：GET /api/sessions/sim-… 返回 404', direct.status === 404, String(direct.status));
+    const asAdmin = await hit(`/api/sessions/${V.id}`, { headers: ADMIN });
+    check('visitor_simulator 关（prod）：sim- 直读只看这个开关，带凭据也是 404', asAdmin.status === 404, String(asAdmin.status));
+    for (const url of SIM_PAGES) {
+      const r = await hit(url);
+      check(`visitor_simulator 关（prod）：${url} 返回 404`, r.status === 404 && !r.text.includes('<html'), String(r.status));
+    }
+    for (const [method, url] of [
+      ['HEAD', '/chat.html'],
+      ['POST', '/guide.html'],
+    ]) {
+      const r = await hit(url, { method });
+      check(`visitor_simulator 关（prod）：${method} ${url} 返回 404`, r.status === 404, String(r.status));
+    }
+    const home = await hit('/');
+    check(
+      'visitor_simulator 关（prod）：/ 跳到 /admin.html',
+      home.status === 302 && home.location === '/admin.html',
+      `${home.status} ${home.location}`,
+    );
+    const health = await hit('/healthz');
+    check(
+      'visitor_simulator 关（prod）：/healthz 照常输出 visitorLLM',
+      health.status === 200 && 'visitorLLM' in JSON.parse(health.text),
+      health.text.slice(0, 80),
+    );
+    for (const [name, url] of PUBLIC) {
+      const r = await hit(url);
+      check(`prod 下有意匿名可达：${name} 返回 200`, r.status === 200, `${r.status} ${r.text.slice(0, 60)}`);
+    }
+    const pay = await hit(`/pay/${vOrder.id}`);
+    check('prod 下 /pay/:订单号 仍是带订单标题的支付页', pay.text.includes('<title>测试线路 · 订单支付</title>'));
+    // 企微回调自带签名校验：本机没配就 501，配了而参数不全就 400，总之不是 404 / 401
+    // 01 起 prod 下后台 SSE 要求有效的后台会话（01 spec「鉴权」）；文件模式没有账号，匿名一律 401
+    const stream = await hit('/api/admin/stream');
+    check('prod 下匿名连 /api/admin/stream 返回 401', stream.status === 401, String(stream.status));
+    const cb = await hit('/wecom/callback');
+    check('prod 下有意匿名可达：/wecom/callback 由回调自己处理', [400, 501].includes(cb.status), `${cb.status} ${cb.text}`);
+  });
+  await withProfile({ DEPLOY_PROFILE: 'demo', FLAG_VISITOR_SIMULATOR: 'off' }, async () => {
+    const chat = await hit('/chat.html');
+    const home = await hit('/');
+    const b = jsonBody({ text: '想去三亚' });
+    const post = await hit('/api/chat', { method: 'POST', ...b });
+    check(
+      'demo 下 FLAG_VISITOR_SIMULATOR=off：/chat.html 与 /api/chat 404，/ 跳 /admin.html',
+      chat.status === 404 && post.status === 404 && home.location === '/admin.html',
+      `${chat.status} ${post.status} ${home.location}`,
+    );
+    // 前面几组又加了几个种子会话，这里只看「有种子、全是种子」
+    const got = await sessionIds();
+    check(
+      'demo 下 FLAG_VISITOR_SIMULATOR=off：后台匿名只读照旧（只看得到种子）',
+      got.includes(SEED.id) && got.every((id) => id.startsWith('wecom:cust_')),
+      JSON.stringify(got),
+    );
+  });
+  {
+    const home = await hit('/');
+    check('demo：/ 仍跳 /guide.html', home.status === 302 && home.location === '/guide.html', `${home.status} ${home.location}`);
+    const pages = await Promise.all(['/chat.html', '/guide.html'].map(async (u) => (await hit(u)).status));
+    check(
+      'demo：/chat.html 与 /guide.html 照常 200',
+      pages.every((x) => x === 200),
+      pages.join(','),
+    );
+    const sse = await hit(`/api/stream/${V.id}`);
+    check(
+      'demo：GET /api/stream/:id 照常是 SSE',
+      sse.status === 200 && sse.type.startsWith('text/event-stream'),
+      `${sse.status} ${sse.type}`,
+    );
+  }
+
+  // ---- mock_pay：关掉后匿名付不了款；带凭据、同源的仍能标成已付并推送跟进（验收 4c） ----
+  const payOnce = async (label: string, env: Record<string, string>) => {
+    const s = mkSession(simId(), 'simulator', `${label}的待付款单`);
+    const o = mkOrder(s);
+    const pushed: string[] = [];
+    const unsubscribe = subscribe(s.id, (t) => pushed.push(t));
+    const pay = (headers: Record<string, string> = {}) => hit(`/api/orders/${o.id}/pay`, { method: 'POST', headers });
+    const pending = () => getOrder(o.id)?.status === 'pending_payment';
+    try {
+      await withProfile(env, async () => {
+        for (const [name, headers] of [
+          ['匿名', {}],
+          ['凭据错', WRONG],
+          ['匿名且跨站', { 'sec-fetch-site': 'cross-site' }],
+        ] as [string, Record<string, string>][]) {
+          const r = await pay(headers);
+          check(
+            `mock_pay 关（${label}）：${name}付款返回 404，订单仍是待支付`,
+            r.status === 404 && pending(),
+            `${r.status} ${getOrder(o.id)?.status}`,
+          );
+        }
+        const cross = await pay({ ...ADMIN, 'sec-fetch-site': 'cross-site' });
+        check(`mock_pay 关（${label}）：带凭据但跨站返回 403，订单仍是待支付`, cross.status === 403 && pending(), String(cross.status));
+        check(`mock_pay 关（${label}）：被拒的付款不推送、不改会话`, pushed.length === 0 && getSession(s.id)?.stage === 'closing');
+        const ok = await pay(ADMIN);
+        check(
+          `mock_pay 关（${label}）：带凭据的付款标成已付，并推送一次跟进`,
+          ok.status === 200 && getOrder(o.id)?.status === 'paid' && pushed.length === 1 && getSession(s.id)?.stage === 'paid',
+          `${ok.status} ${getOrder(o.id)?.status} ${pushed.length}`,
+        );
+      });
+    } finally {
+      unsubscribe();
+    }
+  };
+  await payOnce('prod', PROD);
+  await payOnce('demo 下 FLAG_MOCK_PAY=off', { DEPLOY_PROFILE: 'demo', FLAG_MOCK_PAY: 'off' });
+
+  // ---- admin.html 的 load()：prod 下未登录时列表接口回 401（验收 4b 的页面一半） ----
+  // 以前把 {error} 原样当列表存进去，sigOf 一 map 就抛、被 catch 吞掉，页面停在骨架上；
+  // 退出登录时则一直挂着登录时的全量。要按空列表照常渲染，登录后同一个 load() 拿到全量。自动弹登录框属于 02
+  {
+    const admin = fs.readFileSync(path.resolve('public/admin.html'), 'utf8');
+    const loadSrc = /async function load\(\) \{[\s\S]*?\n\}/.exec(admin)?.[0];
+    const sigSrc = /function sigOf\(\) \{[\s\S]*?\n\}/.exec(admin)?.[0];
+    check('admin.html 有 load() 与 sigOf()', !!loadSrc && !!sigSrc);
+    if (loadSrc && sigSrc) {
+      const page = (headers: Record<string, string>) => {
+        // 模拟刚退出登录：手上还挂着登录时的数据
+        const S = {
+          sessions: [SEED] as unknown,
+          orders: [oSeed] as unknown,
+          usage: { totalCalls: 1 } as unknown,
+          selected: null,
+          range: '今日',
+        };
+        let rendered = 0;
+        const api = (url: string) => app.request(url, { headers: { 'x-forwarded-for': freshIp(), ...headers } });
+        const doc = { documentElement: { getAttribute: () => null } };
+        const load = new Function(
+          'S',
+          'api',
+          'render',
+          'document',
+          `let rangeAutoPicked = false, lastSig = ''; const rangeStart = () => 0; ${sigSrc}; ${loadSrc}; return load;`,
+        )(S, api, () => rendered++, doc) as () => Promise<void>;
+        return { S, load, rendered: () => rendered };
+      };
+      await withProfile(PROD, async () => {
+        const anon = page({});
+        await anon.load();
+        check(
+          'admin.html 在 prod 未登录：列表按空的渲染，成本清空（401 不把页面弄坏）',
+          same(anon.S.sessions as string[], []) && same(anon.S.orders as string[], []) && anon.S.usage === null && anon.rendered() === 1,
+          JSON.stringify(anon.S).slice(0, 120),
+        );
+        const logged = page(ADMIN);
+        await logged.load();
+        const ids = (logged.S.sessions as Session[]).map((s) => s.id);
+        check(
+          'admin.html 在 prod 登录后：同一个 load() 拿到全部会话',
+          [SEED.id, REAL.id, V.id].every((id) => ids.includes(id)) && logged.rendered() === 1,
+          `${ids.length} 个会话`,
+        );
+      });
+      // demo 手动关掉免密只读又没配 ADMIN_PASS：三个接口回 503，登录不了，但页面同样按空的显示、不停在骨架上
+      await withProfile({ DEPLOY_PROFILE: 'demo', FLAG_ANON_READONLY_ADMIN: 'off' }, () =>
+        withoutAdminPass(async () => {
+          const locked = page({});
+          await locked.load();
+          check(
+            'admin.html 在 demo 下 FLAG_ANON_READONLY_ADMIN=off 且没配 ADMIN_PASS：503 也按空列表渲染，成本清空',
+            same(locked.S.sessions as string[], []) &&
+              same(locked.S.orders as string[], []) &&
+              locked.S.usage === null &&
+              locked.rendered() === 1,
+            JSON.stringify(locked.S).slice(0, 120),
+          );
+        }),
+      );
+    }
+  }
+
+  // ---- 访客清理不归任何开关管：prod 下闲置的 sim- 会话照样清掉（验收 4f）。放在最后：会清掉前面各组闲置的访客 ----
+  await withProfile(PROD, async () => {
+    const idle = mkSession(simId(), 'simulator', 'prod 下闲置的访客');
+    const paidIdle = mkSession(simId(), 'simulator', 'prod 下闲置但付过款的访客');
+    markOrderPaid(mkOrder(paidIdle).id);
+    const realIdle = mkSession('wecom:wmIDLECUSTOMER03', 'wecom', 'prod 下闲置的真实客户');
+    for (const s of [idle, paidIdle, realIdle]) s.updatedAt = Date.now() - 25 * 3_600_000;
+    pruneStaleVisitorData();
+    check('访客清理（prod）：闲置的 sim- 访客会话照样被清理', !getSession(idle.id));
+    check('访客清理（prod）：有已付订单的访客、真实企微会话照旧不删', !!getSession(paidIdle.id) && !!getSession(realIdle.id));
+  });
+}
+
 if (fails.length) {
   console.error(`SERVER SELFTEST FAIL: ${fails.length} 项未通过`);
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id）`);
+console.log(
+  `SERVER SELFTEST PASS: ${pass} 项断言全通（未登录只见种子 + 自己 / 伪造凭据 / 短 id 不认且本人不被限流 / 登录看全量 / 单点接口不变 / usage·healthz·SSE 不泄露 / 页面契约 / chat.html 升级旧版短 id / 管理写接口与 LLM 读端点的鉴权 / /api/chat 只认 sim- / 付款边界 / 访客清理与上限 / 种子保鲜 / 部署 profile 的解析、封顶与启动 / 开关关掉时的后台只读、网页模拟器、模拟支付与常开页面）`,
+);
 process.exit(0); // SSE 的 ping 循环还挂着 20s 的 sleep，不等它

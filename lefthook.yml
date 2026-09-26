@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=./node_modules/lefthook/schema.json
+#
+# Applies to every agent and every human. LEFTHOOK=0 bypasses; do not.
+# The hooks call only the four gate names in package.json, never the tools behind them.
+# Installed by `lefthook install` (pnpm 10 does not run dependency postinstalls).
+
+pre-commit:
+  piped: true
+  skip:
+    - merge
+    - rebase
+  jobs:
+    - name: format
+      run: pnpm format:check
+      fail_text: 'Unformatted files. Format them, then stage the result.'
+    - name: lint
+      run: pnpm lint
+      fail_text: 'Lint reported problems.'
+    - name: typecheck
+      run: pnpm typecheck
+      fail_text: 'tsc reported type errors.'
+
+commit-msg:
+  jobs:
+    # commitlint skips merge / revert / fixup! messages entirely, so the trailer rule also
+    # runs here, on every message shape.
+    - name: no-ai-coauthor
+      run: |
+        if grep -qiE '^[[:space:]]*co-authored-by:.*(claude|codex|anthropic|openai|copilot|cursor|gemini)' {1}; then
+          grep -iE '^[[:space:]]*co-authored-by:' {1}
+          exit 1
+        fi
+      fail_text: 'Remove the AI co-author trailer (this also applies to merge, revert and fixup commits).'
+    - name: commitlint
+      run: pnpm exec commitlint --edit {1}
+      fail_text: 'Conventional Commits, header <= 50 chars, no AI co-author trailers.'

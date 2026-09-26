@@ -1,0 +1,16 @@
+{
+  "includeCoAuthoredBy": false,
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-gate.sh",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

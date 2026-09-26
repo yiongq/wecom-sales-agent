@@ -3,9 +3,11 @@
 //   · 分段把 URL 从中间劈开 → 客户收到两条点不开的残缺网址
 //   · 按整行剥离链接 → 报价/支付链接被连带吞掉
 //   · 一条消息里两个链接硬做卡片 → 第二条（往往是支付链接）永久丢失
+//   · markdown 原样发出 → 微信不渲染，客户看到一堆 ** 和 #；去得太狠 → 价格、链接、句中的 # 被误伤
 //   · 状态文件丢失/损坏 → 把近 3 天的旧消息全回一遍
 //   · 同步锁包住 LLM 处理 → 一个客户的慢回复拖住所有人，新客户欢迎语过期
 //   · SIGTERM 立即退出 → 处理到一半的消息重启后被当成「已处理」，客户永远等不到回复
+import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,7 +32,7 @@ process.env.PUBLIC_BASE_URL = ''; // 不走链接卡片（缩略图上传），�
 const { __test, syncFromCallback, wecomAdapter } = await import('./wecom.js');
 const { runShutdownHooks, getSession, getOrCreateSession, saveSession, createOrder } = await import('../store.js');
 
-const { splitForWecom, extractCard, stripLink } = __test;
+const { splitForWecom, extractCard, stripLink, wechatify } = __test;
 const BASE = 'https://travel.example.com'; // 占位域名：自测只关心 URL 形态，与真实部署无关
 
 let pass = 0;
@@ -75,7 +77,10 @@ function check(name: string, cond: boolean, detail = ''): void {
 {
   const text = '云途定制旅行的行程说明'.repeat(900);
   const chunks = splitForWecom(text);
-  check('每段不超 2000 字节', chunks.every((c) => Buffer.byteLength(c, 'utf8') <= 2000));
+  check(
+    '每段不超 2000 字节',
+    chunks.every((c) => Buffer.byteLength(c, 'utf8') <= 2000),
+  );
   check('分段不丢字符', chunks.join('').replace(/\s/g, '') === text.replace(/\s/g, ''));
 }
 
@@ -120,9 +125,21 @@ function check(name: string, cond: boolean, detail = ''): void {
   // 引擎出口修补后的样子（engine.ts repairLinks / putLink）：链接插在承诺句或占位符处、独占到行尾。
   // 三条是盲评里真实回复修补后的原文，渠道层要能认出唯一那条链接做卡片，剥离时不吞正文
   const cases: [string, string, string][] = [
-    ['s01', '我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n/proposal/r-sichuan-mid/3\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。', '/proposal/r-sichuan-mid/3'],
-    ['s06', '报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2', '/proposal/r-yunnan-mid/2'],
-    ['s11', '好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 /proposal/r-beijing/2\n逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。', '/proposal/r-beijing/2'],
+    [
+      's01',
+      '我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n/proposal/r-sichuan-mid/3\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。',
+      '/proposal/r-sichuan-mid/3',
+    ],
+    [
+      's06',
+      '报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2',
+      '/proposal/r-yunnan-mid/2',
+    ],
+    [
+      's11',
+      '好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 /proposal/r-beijing/2\n逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。',
+      '/proposal/r-beijing/2',
+    ],
   ];
   const prose: Record<string, string> = {};
   for (const [name, body, url] of cases) {
@@ -131,7 +148,11 @@ function check(name: string, cond: boolean, detail = ''): void {
     prose[name] = card ? stripLink(body, card.raw) : '';
     check(`${name} 剥离后正文不留链接`, !prose[name].includes('/proposal/') && !!prose[name], `得到「${prose[name]}」`);
   }
-  check('s06 剥离链接后报价还在', prose.s06.includes('16800') && prose.s06.includes('33600') && prose.s06.includes('您先看看'), `得到「${prose.s06}」`);
+  check(
+    's06 剥离链接后报价还在',
+    prose.s06.includes('16800') && prose.s06.includes('33600') && prose.s06.includes('您先看看'),
+    `得到「${prose.s06}」`,
+  );
   check('s11 只剩「👉」的那行一起拿掉', !prose.s11.includes('👉') && prose.s11.includes('报价也附了'), `得到「${prose.s11}」`);
   // 冒号原本指着那条链接；链接改走卡片后留着冒号，读起来就是「明细：」后面接了一句不相干的话
   check('s01 指向链接的冒号换成句号', prose.s01.includes('费用明细。') && prose.s01.includes('国庆的准确报价'), `得到「${prose.s01}」`);
@@ -145,27 +166,50 @@ function check(name: string, cond: boolean, detail = ''): void {
 // 客户读到单独一行「· 支付链接」「详细方案书在这儿」，以为链接漏发了。
 // 每条写成「原文里哪一段 → 应变成什么」，其余正文必须一字不动。
 const LEFTOVER_CASES: [name: string, body: string, from: string, to: string][] = [
-  ['c1 第2遍 · 支付链接',
-    "订单已为您创建好啦 🎉\n\n· 线路：三亚亲子奢华度假 5 日\n· 出发：10月12日，两位\n· 总价：34760 元\n· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n\n名额以付款为准，付好后会有专属顾问联系您发行程确认书，拉服务群对接细节～",
-    '· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n', ''],
-  ['c1 第3遍 独占一段的支付链接',
-    "帮您订好了！🎉\n\n三亚亲子奢华度假 5 日，两位\n10月12日出发，总价 34760 元\n\n支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n名额以付款为准，付完款后顾问会把行程确认书发您，再拉个服务群，出行前有任何问题随时找我～",
-    '支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n', ''],
-  ['c4 第1遍 上一行「在这儿」',
-    "贵州这条 6 天线正合适：荔波小七孔 + 西江千户苗寨，两个人出行。\n\n· 小七孔开园首波入园，卧龙潭拍慢门流水不用抢机位\n· 瑶山古寨看白裤瑶猴鼓舞，亲手做一方靛蓝染布\n· 宿丹寨温泉酒店，五星精选标准\n\n详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起，两人合计 31600 起（标准价）。您大概几号出发？旺季价格会有浮动，我按日期给您出准确报价。",
-    '详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n', '详细方案书见下方卡片，逐日行程、住宿、含餐、费用含不含都在里面。\n'],
-  ['c4 第2遍 同行「发您」',
-    "找到一条正好 6 天的贵州线路：荔波小七孔·西江千户苗寨 6 日\n\n详细方案书发您：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐、费用含与不含，和报价（人均 15800 起，两位共 31600）。\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨体验白裤瑶蜡染，收一方自染方巾\n· 全程五星精选酒店，含丹寨温泉酒店\n\n您计划几号出发？旺季和淡季价格会有差别，我按日期给您出准确报价。",
-    '详细方案书发您：/proposal/r-guizhou/2', '详细方案书发您，见下方卡片'],
-  ['c4 第3遍 同行「在这里」',
-    "正好有条 6 天的，和您的天数完全对上。\n\n贵州 荔波小七孔·西江千户苗寨 6 日（两人）\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作，傍晚看猴鼓舞\n· 石桥村古法造纸，宿丹寨温泉酒店\n\n详细行程计划书在这里：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐和费用说明，您先过一遍。\n\n计划书里按标准价显示人均 15800 起，两人共 31600 起。您计划几号出发？国庆前后是旺季，我可以按具体日期给您出准确报价。",
-    '详细行程计划书在这里：/proposal/r-guizhou/2', '详细行程计划书见下方卡片'],
-  ['线上 上一行「做好了」',
-    "正好，我们有一条 6 天的贵州线路，跟您需求完全对上，详细方案给您做好了：\n\n/proposal/r-guizhou/2\n贵州 荔波小七孔·西江千户苗寨 6 日，两人出行\n\n里面包含逐日行程、住宿、含餐和费用明细。亮点几个：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作体验\n· 入住丹寨温泉酒店\n\n人均 15800 起，总价 31600（标准价，按最终行程微调）。\n\n您大概几号出发？旺季日期价格会有浮动，我按日期给您出准确报价。",
-    '详细方案给您做好了：\n\n/proposal/r-guizhou/2\n', '详细方案给您做好了，见下方卡片。\n\n'],
+  [
+    'c1 第2遍 · 支付链接',
+    '订单已为您创建好啦 🎉\n\n· 线路：三亚亲子奢华度假 5 日\n· 出发：10月12日，两位\n· 总价：34760 元\n· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n\n名额以付款为准，付好后会有专属顾问联系您发行程确认书，拉服务群对接细节～',
+    '· 支付链接：/pay/ord_e8a7aafbdd9632e75725f076\n',
+    '',
+  ],
+  [
+    'c1 第3遍 独占一段的支付链接',
+    '帮您订好了！🎉\n\n三亚亲子奢华度假 5 日，两位\n10月12日出发，总价 34760 元\n\n支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n名额以付款为准，付完款后顾问会把行程确认书发您，再拉个服务群，出行前有任何问题随时找我～',
+    '支付链接：/pay/ord_363898bc8dbe8dde2291b840\n\n',
+    '',
+  ],
+  [
+    'c4 第1遍 上一行「在这儿」',
+    '贵州这条 6 天线正合适：荔波小七孔 + 西江千户苗寨，两个人出行。\n\n· 小七孔开园首波入园，卧龙潭拍慢门流水不用抢机位\n· 瑶山古寨看白裤瑶猴鼓舞，亲手做一方靛蓝染布\n· 宿丹寨温泉酒店，五星精选标准\n\n详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起，两人合计 31600 起（标准价）。您大概几号出发？旺季价格会有浮动，我按日期给您出准确报价。',
+    '详细方案书在这儿，逐日行程、住宿、含餐、费用含不含都在里面：\n/proposal/r-guizhou/2\n',
+    '详细方案书见下方卡片，逐日行程、住宿、含餐、费用含不含都在里面。\n',
+  ],
+  [
+    'c4 第2遍 同行「发您」',
+    '找到一条正好 6 天的贵州线路：荔波小七孔·西江千户苗寨 6 日\n\n详细方案书发您：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐、费用含与不含，和报价（人均 15800 起，两位共 31600）。\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨体验白裤瑶蜡染，收一方自染方巾\n· 全程五星精选酒店，含丹寨温泉酒店\n\n您计划几号出发？旺季和淡季价格会有差别，我按日期给您出准确报价。',
+    '详细方案书发您：/proposal/r-guizhou/2',
+    '详细方案书发您，见下方卡片',
+  ],
+  [
+    'c4 第3遍 同行「在这里」',
+    '正好有条 6 天的，和您的天数完全对上。\n\n贵州 荔波小七孔·西江千户苗寨 6 日（两人）\n\n亮点：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作，傍晚看猴鼓舞\n· 石桥村古法造纸，宿丹寨温泉酒店\n\n详细行程计划书在这里：/proposal/r-guizhou/2\n里面有逐日行程、住宿、含餐和费用说明，您先过一遍。\n\n计划书里按标准价显示人均 15800 起，两人共 31600 起。您计划几号出发？国庆前后是旺季，我可以按具体日期给您出准确报价。',
+    '详细行程计划书在这里：/proposal/r-guizhou/2',
+    '详细行程计划书见下方卡片',
+  ],
+  [
+    '线上 上一行「做好了」',
+    '正好，我们有一条 6 天的贵州线路，跟您需求完全对上，详细方案给您做好了：\n\n/proposal/r-guizhou/2\n贵州 荔波小七孔·西江千户苗寨 6 日，两人出行\n\n里面包含逐日行程、住宿、含餐和费用明细。亮点几个：\n· 小七孔开园首波入园，卧龙潭拍慢门流水\n· 瑶山古寨白裤瑶蜡染手作体验\n· 入住丹寨温泉酒店\n\n人均 15800 起，总价 31600（标准价，按最终行程微调）。\n\n您大概几号出发？旺季日期价格会有浮动，我按日期给您出准确报价。',
+    '详细方案给您做好了：\n\n/proposal/r-guizhou/2\n',
+    '详细方案给您做好了，见下方卡片。\n\n',
+  ],
   // 下面几条不是实测原文：点这里 → 点下方卡片；标签后面还跟着实际内容的不能整行删，标签改成指着卡片
   ['点这里付款', '确认无误的话点这里付款：/pay/ord_x1\n名额以付款为准', '点这里付款：/pay/ord_x1', '点下方卡片付款'],
-  ['标签后还有内容', '· 支付链接：/pay/ord_x2（24 小时内有效）', '· 支付链接：/pay/ord_x2（24 小时内有效）', '· 支付链接见下方卡片（24 小时内有效）'],
+  [
+    '标签后还有内容',
+    '· 支付链接：/pay/ord_x2（24 小时内有效）',
+    '· 支付链接：/pay/ord_x2（24 小时内有效）',
+    '· 支付链接见下方卡片（24 小时内有效）',
+  ],
   ['标签后接逗号', '支付链接：/pay/ord_x3，30 分钟内有效', '支付链接：/pay/ord_x3', '支付链接见下方卡片'],
   ['标签后隔空格接括号', '· 支付链接：/pay/ord_x4 （30 分钟内有效）', '：/pay/ord_x4 ', '见下方卡片'],
   // 标签单独一行、链接换到下一行（模型发方案书时常这么排）：标签那行一起拿掉，不能剩「· 支付链接。」
@@ -189,15 +233,30 @@ const LEFTOVER_CASES: [name: string, body: string, from: string, to: string][] =
   ['点击此处', '请点击此处付款：/pay/ord_b2\n名额以付款为准', '点击此处付款：/pay/ord_b2', '点下方卡片付款'],
   ['付款请点', '付款请点：/pay/ord_b3\n名额以付款为准', '付款请点：/pay/ord_b3', '付款请点下方卡片'],
   // 标签带括注（A09/C03 实测 4 次）：此前认不出是标签，链接挖走后留下一行「支付链接（名额以付款为准）。」
-  ['A09 上一行是带括注的标签',
+  [
+    'A09 上一行是带括注的标签',
     '订单已生成，10 月 24 日出发，4 位，总价 70224 元。\n\n支付链接（名额以付款为准）：\n/pay/ord_ad46bb1229d8568b9839774e\n\n付款后顾问会在微信上联系您，发行程确认书并拉服务群。',
-    '支付链接（名额以付款为准）：\n/pay/ord_ad46bb1229d8568b9839774e\n', '支付链接见下方卡片（名额以付款为准）\n'],
-  ['上一行是带括注和句号的标签', '订单已生成～\n支付链接（名额以付款为准）。\n/pay/ord_c2\n付款后顾问会发确认书',
-    '支付链接（名额以付款为准）。\n/pay/ord_c2', '支付链接见下方卡片（名额以付款为准）'],
-  ['同行是带括注的标签', '订单已生成～\n支付链接（名额以付款为准）：/pay/ord_c3\n付款后顾问会发确认书',
-    '支付链接（名额以付款为准）：/pay/ord_c3', '支付链接见下方卡片（名额以付款为准）'],
-  ['带序号、带括注的标签', '1. 线路：三亚 5 日\n2. 支付链接（24 小时内有效）：/pay/ord_c4\n3. 名额以付款为准',
-    '支付链接（24 小时内有效）：/pay/ord_c4', '支付链接见下方卡片（24 小时内有效）'],
+    '支付链接（名额以付款为准）：\n/pay/ord_ad46bb1229d8568b9839774e\n',
+    '支付链接见下方卡片（名额以付款为准）\n',
+  ],
+  [
+    '上一行是带括注和句号的标签',
+    '订单已生成～\n支付链接（名额以付款为准）。\n/pay/ord_c2\n付款后顾问会发确认书',
+    '支付链接（名额以付款为准）。\n/pay/ord_c2',
+    '支付链接见下方卡片（名额以付款为准）',
+  ],
+  [
+    '同行是带括注的标签',
+    '订单已生成～\n支付链接（名额以付款为准）：/pay/ord_c3\n付款后顾问会发确认书',
+    '支付链接（名额以付款为准）：/pay/ord_c3',
+    '支付链接见下方卡片（名额以付款为准）',
+  ],
+  [
+    '带序号、带括注的标签',
+    '1. 线路：三亚 5 日\n2. 支付链接（24 小时内有效）：/pay/ord_c4\n3. 名额以付款为准',
+    '支付链接（24 小时内有效）：/pay/ord_c4',
+    '支付链接见下方卡片（24 小时内有效）',
+  ],
 ];
 const SITE_LINK = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/;
 for (const [name, body, from, to] of LEFTOVER_CASES) {
@@ -229,11 +288,73 @@ for (const [name, body, from, to] of LEFTOVER_CASES) {
 {
   const y = new Date().getFullYear();
   const mk = (departDate: string) =>
-    createOrder({ sessionId: 'wecom:selftest-card', routeId: 'r-sanya', routeTitle: '三亚亲子奢华度假 5 日', travelers: 2, departDate, totalPrice: 34760 });
+    createOrder({
+      sessionId: 'wecom:selftest-card',
+      routeId: 'r-sanya',
+      routeTitle: '三亚亲子奢华度假 5 日',
+      travelers: 2,
+      departDate,
+      totalPrice: 34760,
+    });
   const same = extractCard(`· 支付链接：/pay/${mk(`${y}-10-12`).id}`, BASE);
   check('支付卡片日期写成「10月12日出发」', same?.desc === '2 位出行 · 10月12日出发 · 合计 ¥34,760', `得到「${same?.desc}」`);
   const next = extractCard(`· 支付链接：/pay/${mk(`${y + 1}-01-05`).id}`, BASE);
   check('跨年的出发日期带年份', next?.desc === `2 位出行 · ${y + 1}年1月5日出发 · 合计 ¥34,760`, `得到「${next?.desc}」`);
+}
+
+// ---------------- 去 markdown：微信客服是纯文本，符号会原样露给客户 ----------------
+// wechatify 是企微出口的最后一道（spec 不变量 21 的企微部分）。引擎出口只去 `**`、「# 」和 -/* 列表符，
+// 不带空格的「#标题」、斜体、代码围栏、行内代码、当列表符用的 emoji 都靠这里。
+// 每条写成「模型原文 → 客户收到的正文」，整条比对；列表符统一换成「·」。
+const MARKDOWN_CASES: [name: string, input: string, want: string][] = [
+  ['加粗', '人均 **15,800** 起，**两人合计 31,600**', '人均 15,800 起，两人合计 31,600'],
+  ['「# 标题」井号后带空格', '# 贵州 6 日行程\n第一天抵达贵阳', '贵州 6 日行程\n第一天抵达贵阳'],
+  ['「#标题」井号后不带空格', '#贵州 6 日行程\n第一天抵达贵阳', '贵州 6 日行程\n第一天抵达贵阳'],
+  ['多级标题', '## 行程亮点\n### 第一天', '行程亮点\n第一天'],
+  ['斜体', '国庆是*旺季*，价格会上浮', '国庆是旺季，价格会上浮'],
+  [
+    '代码围栏只去围栏行、保留内容',
+    '订单信息如下：\n```\n线路：三亚 5 日\n```\n名额以付款为准',
+    '订单信息如下：\n\n线路：三亚 5 日\n\n名额以付款为准',
+  ],
+  ['带语言标记的代码围栏', '```text\n出发：10月12日\n```', '出发：10月12日'],
+  ['行内代码', '订单号是 `ord_x1`，付款后顾问联系您', '订单号是 ord_x1，付款后顾问联系您'],
+  ['行首 emoji 当列表符', '🌟 小七孔开园首波入园\n🏨 宿丹寨温泉酒店', '· 小七孔开园首波入园\n· 宿丹寨温泉酒店'],
+  ['行首带变体选择符的 emoji 当列表符', '✈️ 贵阳直飞往返\n☀️ 十月天气晴好', '· 贵阳直飞往返\n· 十月天气晴好'],
+  ['行首 - / * 列表符', '- 含早餐\n* 含门票', '· 含早餐\n· 含门票'],
+  ['多余空行折叠成一个', '第一段\n\n\n\n第二段', '第一段\n\n第二段'],
+  [
+    '整段混排',
+    '## 贵州 6 日方案\n\n**亮点**\n- 小七孔开园首波入园\n- 宿丹寨温泉酒店\n\n#费用\n人均 15,800 起',
+    '贵州 6 日方案\n\n亮点\n· 小七孔开园首波入园\n· 宿丹寨温泉酒店\n\n费用\n人均 15,800 起',
+  ],
+];
+for (const [name, input, want] of MARKDOWN_CASES) {
+  const got = wechatify(input);
+  check(`去 markdown：${name}`, got === want, `得到「${got}」`);
+}
+// 去得太狠同样是事故：价格、链接、时间、句中的 # 和 emoji 被吃掉，客户读到的就是错的
+const PLAIN_CASES: [name: string, text: string][] = [
+  ['句中的 #', '房间号 #1203，下午 3:00 入住'],
+  ['价格与千分位', '人均 ¥15,800 起，两人合计 ¥31,600（含税）'],
+  ['站内链接与完整 URL', '支付链接：/pay/ord_x1，方案书：https://travel.example.com/proposal/r-guizhou/2/2026-10-12'],
+  ['日期与时间', '10月12日 08:30 集合，18:00 前返回酒店'],
+  ['中文标点', '好的！国庆人多——建议早订；「标准间」含早餐……名额以付款为准。'],
+  ['句中 emoji', '订好啦 🎉 祝旅途愉快～'],
+  ['行首 emoji 后不跟空格', '🎉订单已创建'],
+  ['行首的负号', '-5℃ 的早晚要带羽绒服'],
+  ['段落间的空行', '第一段\n\n第二段'],
+  // 订单号里的下划线：一行有两个时，按 _斜体_ 去符号就会把两个 id 之间的内容当斜体、把链接吃坏
+  ['同一行两个带下划线的订单号', '支付链接：/pay/ord_a1 和 /pay/ord_b2'],
+  // 去 markdown 的规则都锚在行首，价格、时间、中文标点放在行首才真正经过它们；
+  // 行首的 ……/—— 落在「emoji 当列表符」的码位范围里，后面不跟空格就不能被换成「·」
+  ['行首的价格', '¥15,800 起，两人合计 ¥31,600'],
+  ['行首的时间', '08:30 集合，18:00 前返回酒店'],
+  ['行首的中文标点', '……名额以付款为准\n——国庆人多，建议早订\n「标准间」含早餐'],
+];
+for (const [name, text] of PLAIN_CASES) {
+  const got = wechatify(text);
+  check(`去 markdown 不误伤正文：${name}`, got === text, `得到「${got}」`);
 }
 
 // ======================================================================
@@ -276,7 +397,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   if (ep === 'gettoken') return json({ errcode: 0, access_token: 'selftest-token', expires_in: 7200 });
   // 缩略图上传一律失败：卡片发不出去时的退路见下方「缩略图传不上去」
   if (ep === 'media/upload') return json({ errcode: 40004, errmsg: 'selftest: 缩略图上传失败' });
-  const body =(init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
+  const body = (init?.body ? JSON.parse(String(init.body)) : {}) as Record<string, any>;
   if (ep === 'kf/sync_msg') {
     syncCalls += 1;
     const [g, i] = String(body.cursor ?? '').split(':');
@@ -309,10 +430,17 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   const body = '详细方案书在这儿，逐日行程都在里面：\n/proposal/r-guizhou/2\n\n人均 15800 起';
   const ok = await wecomAdapter.push('wecom:u-thumbfail', body);
   process.env.PUBLIC_BASE_URL = '';
-  const msgs = sent.slice(from).filter((m) => m.to === 'u-thumbfail').map((m) => m.content);
+  const msgs = sent
+    .slice(from)
+    .filter((m) => m.to === 'u-thumbfail')
+    .map((m) => m.content);
   check('缩略图失败：照样送达', ok);
   check('缩略图失败：正文不提卡片', msgs.length > 0 && msgs.every((m) => !m.includes('卡片')), JSON.stringify(msgs));
-  check('缩略图失败：一条消息、链接留在原处', msgs.length === 1 && msgs[0] === body.replace('/proposal/', `${BASE}/proposal/`), JSON.stringify(msgs));
+  check(
+    '缩略图失败：一条消息、链接留在原处',
+    msgs.length === 1 && msgs[0] === body.replace('/proposal/', `${BASE}/proposal/`),
+    JSON.stringify(msgs),
+  );
 }
 
 let seq = 0;
@@ -625,8 +753,246 @@ for (const k of ['log', 'warn', 'error'] as const) {
   await waitFor(() => sentTo('u-wb').length > 0);
   await idle();
   const msgs = getSession('wecom:u-wb')?.messages ?? [];
-  check('重放时不把欢迎语当成这句的回复', sentTo('u-wb').length === 1 && !sentTo('u-wb')[0].content.includes('欢迎回来'), sentTo('u-wb')[0]?.content);
+  check(
+    '重放时不把欢迎语当成这句的回复',
+    sentTo('u-wb').length === 1 && !sentTo('u-wb')[0].content.includes('欢迎回来'),
+    sentTo('u-wb')[0]?.content,
+  );
   check('重放（中间夹欢迎语）：客户这句只记一次', msgs.filter((m) => m.role === 'customer').length === 1);
+}
+
+// ---------------- 重放对齐：改版前的旧欢迎语同样不是回复 ----------------
+// 上线当次重启正好是在途重放发生的时候，会话里存着的还是改版前的欢迎语
+for (const [i, legacy] of __test.LEGACY_WELCOME_TEXTS.entries()) {
+  await restart();
+  const uid = `u-wb-legacy-${i}`;
+  const wMsg = customerMsg(uid, '新疆几月去合适');
+  const sess = getOrCreateSession(`wecom:${uid}`, 'wecom');
+  sess.messages.push({ role: 'customer', content: '新疆几月去合适', at: Date.now() });
+  sess.messages.push({ role: 'agent', content: legacy, at: Date.now() });
+  saveSession(sess);
+  const st = readState();
+  fs.writeFileSync(
+    __test.STATE_FILE,
+    JSON.stringify({ cursor: st?.cursor, handled: [...(st?.handled ?? []), [wMsg.msgid, Date.now()]], pending: [{ msg: wMsg, tries: 0 }] }),
+  );
+  void syncFromCallback(`tok-wb-legacy-${i}`);
+  await waitFor(() => sentTo(uid).length > 0);
+  await idle();
+  check(
+    `重放时不把改版前的旧欢迎语（第 ${i + 1} 段）当成这句的回复`,
+    sentTo(uid).length === 1 && sentTo(uid)[0].content !== legacy,
+    sentTo(uid)[0]?.content,
+  );
+}
+
+// ---------------- AI 显式标识：两段欢迎语的第一句写明「AI 旅行顾问」，正文写明人工入口 ----------------
+// 00 spec「AI 显式标识」：账号名加欢迎语首句写明 AI，对话中不反复自称；老客户欢迎语不承诺记得之前的对话
+{
+  const firstSentence = (t: string) => t.split(/[。！？\n]/)[0];
+  const disclosed = (t: string) => firstSentence(t).includes('AI 旅行顾问') && t.includes('回复「人工」即可转真人顾问');
+  serverLog.push(enterEvent('u-ai-new', 'welcome-code-ai'));
+  void syncFromCallback('tok-ai-new');
+  await waitFor(() => sentTo('code:welcome-code-ai').length > 0);
+  const first = sentTo('code:welcome-code-ai')[0]?.content ?? '';
+  check('新客户欢迎语：第一句写明「AI 旅行顾问」，正文写明回复「人工」即可转真人顾问', disclosed(first), first);
+
+  const back = getOrCreateSession('wecom:u-ai-back', 'wecom');
+  back.messages.push(
+    { role: 'customer', content: '想去云南', at: Date.now() },
+    { role: 'agent', content: '好的～几位出行？', at: Date.now() },
+  );
+  saveSession(back);
+  serverLog.push(enterEvent('u-ai-back'));
+  void syncFromCallback('tok-ai-back');
+  await waitFor(() => sentTo('u-ai-back').length > 0);
+  await idle();
+  const again = sentTo('u-ai-back')[0]?.content ?? '';
+  check(
+    '老客户欢迎语：以「欢迎回来」开头，第一句写明「AI 旅行顾问」，正文写明人工入口',
+    again.startsWith('欢迎回来') && disclosed(again),
+    again,
+  );
+  check('老客户欢迎语：不承诺记得之前的对话', !again.includes('记得'), again);
+}
+
+// ---------------- 非文本消息：一律记带 msgid 的占位，转人工后只记不回 ----------------
+// 此前非文本分支在进引擎之前就发了提示并返回：不看是否已转人工，也不入库——
+// 顾问接管后客户发张图，AI 照样插一句；后台也看不到客户发过图片
+const handedOverSession = (uid: string): void => {
+  const s = getOrCreateSession(`wecom:${uid}`, 'wecom');
+  s.messages.push(
+    { role: 'customer', content: '我要投诉', at: Date.now() },
+    { role: 'agent', content: '已为您转接资深顾问，请稍候～', at: Date.now() },
+  );
+  s.handedOver = true;
+  s.stage = 'handoff';
+  saveSession(s);
+};
+const trail = (uid: string, from = 0): [string, string, string | undefined][] =>
+  (getSession(`wecom:${uid}`)?.messages ?? []).slice(from).map((m) => [m.role, m.content, m.msgid]);
+{
+  handedOverSession('u-nt-ho');
+  const ms = ['image', 'voice', 'file', 'miniprogram'].map((t) => customerMsg('u-nt-ho', '', 0, t));
+  serverLog.push(...ms);
+  await syncFromCallback('tok-nt-ho');
+  await idle();
+  check('已转人工：客户发图片、语音、文件，收不到任何回复', startedTo('u-nt-ho').length === 0, JSON.stringify(startedTo('u-nt-ho')));
+  check(
+    '已转人工：会话里多出对应的占位，各带原消息的 msgid，其他类型记「[其他消息：类型]」',
+    JSON.stringify(trail('u-nt-ho', 2)) ===
+      JSON.stringify([
+        ['customer', '[图片]', ms[0].msgid],
+        ['customer', '[语音]', ms[1].msgid],
+        ['customer', '[文件]', ms[2].msgid],
+        ['customer', '[其他消息：miniprogram]', ms[3].msgid],
+      ]),
+    JSON.stringify(trail('u-nt-ho', 2)),
+  );
+}
+{
+  check('（前提）发图片之前没有会话', !getSession('wecom:u-nt-new'));
+  const img = customerMsg('u-nt-new', '', 0, 'image');
+  serverLog.push(img);
+  await syncFromCallback('tok-nt-new');
+  await idle();
+  const hint = sentTo('u-nt-new');
+  check('未转人工：客户照常收到提示', hint.length === 1 && hint[0].content.includes('图我收到了'), JSON.stringify(hint));
+  check('此前没有会话的客户发来图片，由此建出一个企微会话', getSession('wecom:u-nt-new')?.channel === 'wecom');
+  check(
+    '未转人工：占位和提示都记在会话里，提示记成 AI 消息',
+    JSON.stringify(trail('u-nt-new')) ===
+      JSON.stringify([
+        ['customer', '[图片]', img.msgid],
+        ['agent', hint[0]?.content, undefined],
+      ]),
+    JSON.stringify(trail('u-nt-new')),
+  );
+}
+{
+  const [a, b] = [customerMsg('u-nt-two', '', 0, 'image'), customerMsg('u-nt-two', '', 0, 'image')];
+  serverLog.push(a, b);
+  await syncFromCallback('tok-nt-two');
+  await idle();
+  const ph = trail('u-nt-two').filter(([role]) => role === 'customer');
+  check(
+    '连着发两张不同的图片：各记一条占位',
+    JSON.stringify(ph) ===
+      JSON.stringify([
+        ['customer', '[图片]', a.msgid],
+        ['customer', '[图片]', b.msgid],
+      ]),
+    JSON.stringify(ph),
+  );
+  check('连着发两张不同的图片：各收到一条提示', sentTo('u-nt-two').length === 2);
+}
+
+// ---------------- 非文本消息的启动重放：按 msgid 判断占位记没记过，不比文本 ----------------
+{
+  // 把一条消息放进盘上的在途表：模拟进程死在处理它的半路上，cursor 已越过它，只能靠重放
+  const pend = (m: FakeMsg): void => {
+    const st = readState();
+    fs.writeFileSync(
+      __test.STATE_FILE,
+      JSON.stringify({ cursor: st?.cursor, handled: [...(st?.handled ?? []), [m.msgid, Date.now()]], pending: [{ msg: m, tries: 0 }] }),
+    );
+  };
+  const replayOnce = async (m: FakeMsg, tok: string): Promise<void> => {
+    pend(m);
+    await syncFromCallback(tok);
+    await idle();
+  };
+
+  // 占位已记、提示还没发出就停了：重放补发提示，占位不再记一遍
+  await restart();
+  const x = customerMsg('u-nt-rp', '', 0, 'image');
+  const sx = getOrCreateSession('wecom:u-nt-rp', 'wecom');
+  sx.messages.push({ role: 'customer', content: '[图片]', at: Date.now(), msgid: x.msgid });
+  saveSession(sx);
+  await replayOnce(x, 'tok-nt-rp');
+  const hint = sentTo('u-nt-rp')[0]?.content;
+  check('重放（占位已记、提示未发）：客户收到提示', sentTo('u-nt-rp').length === 1 && !!hint?.includes('图我收到了'));
+  check(
+    '同一条图片消息被启动重放，占位只有一条',
+    JSON.stringify(trail('u-nt-rp')) ===
+      JSON.stringify([
+        ['customer', '[图片]', x.msgid],
+        ['agent', hint, undefined],
+      ]),
+    JSON.stringify(trail('u-nt-rp')),
+  );
+
+  // 提示发出并记下之后、在途表还没清就停了：提示记过就是送到了，重放什么都不再发、不再记
+  await restart();
+  await replayOnce(x, 'tok-nt-rp-2');
+  check('重放（提示已发并记下）：不再发第二遍提示', sentTo('u-nt-rp').length === 1);
+  check('重放（提示已发并记下）：会话里不多出占位或提示', trail('u-nt-rp').length === 2, JSON.stringify(trail('u-nt-rp')));
+
+  // 前一张图片已处理完（占位 + 提示），后一张还没来得及处理就停了：比文本的话，后一张会被当成已经记过
+  await restart();
+  const y = customerMsg('u-nt-rp', '', 0, 'image');
+  await replayOnce(y, 'tok-nt-rp-3');
+  const ph = trail('u-nt-rp').filter(([role]) => role === 'customer');
+  check(
+    '重放按 msgid 判断：占位文本相同的前一张图片不算这张记过',
+    JSON.stringify(ph) ===
+      JSON.stringify([
+        ['customer', '[图片]', x.msgid],
+        ['customer', '[图片]', y.msgid],
+      ]),
+    JSON.stringify(ph),
+  );
+  check('重放按 msgid 判断：这张图片照常收到提示', sentTo('u-nt-rp').length === 2);
+
+  // 这张图片的占位已记、提示还没发就停了，而前面几张图片的提示一字不差：只能看这条占位之后有没有提示，
+  // 看整个会话的话会被前一张的提示冒充，客户就收不到这张的提示
+  await restart();
+  const z = customerMsg('u-nt-rp', '', 0, 'image');
+  const sz = getSession('wecom:u-nt-rp');
+  sz?.messages.push({ role: 'customer', content: '[图片]', at: Date.now(), msgid: z.msgid });
+  if (sz) saveSession(sz);
+  await replayOnce(z, 'tok-nt-rp-4');
+  check('重放（占位已记、提示未发，前面有同样的提示）：照常补发这张的提示', sentTo('u-nt-rp').length === 3);
+  check(
+    '重放（占位已记、提示未发，前面有同样的提示）：提示记在这条占位之后，占位不重复',
+    JSON.stringify(trail('u-nt-rp', 4)) ===
+      JSON.stringify([
+        ['customer', '[图片]', z.msgid],
+        ['agent', hint, undefined],
+      ]),
+    JSON.stringify(trail('u-nt-rp', 4)),
+  );
+}
+
+// ---------------- 非文本消息同样受会话封顶：这条路不经引擎，封顶要自己做 ----------------
+{
+  handedOverSession('u-nt-cap');
+  const s = getSession('wecom:u-nt-cap');
+  for (let i = s?.messages.length ?? 0; i < 400; i++) s?.messages.push({ role: 'customer', content: `第 ${i} 句`, at: Date.now() });
+  if (s) saveSession(s);
+  const img = customerMsg('u-nt-cap', '', 0, 'image');
+  serverLog.push(img);
+  await syncFromCallback('tok-nt-cap');
+  await idle();
+  const after = trail('u-nt-cap');
+  check('会话超过 400 条时，非文本占位入库后裁到最近 300 条', after.length === 300, String(after.length));
+  check('裁剪后最新一条仍是这张图片的占位', JSON.stringify(after.at(-1)) === JSON.stringify(['customer', '[图片]', img.msgid]));
+}
+
+// ---------------- 已转人工的客户再次进入会话：两条路径都不发欢迎语 ----------------
+// 欢迎语邀请客户跟 AI 聊，而 AI 此时不会再回复；此前两条路径都不看 handedOver
+{
+  handedOverSession('u-ho-code');
+  handedOverSession('u-ho-back');
+  const withCode = enterEvent('u-ho-code', 'welcome-code-ho');
+  const back = enterEvent('u-ho-back');
+  serverLog.push(withCode, back);
+  await syncFromCallback('tok-ho-enter');
+  await idle();
+  check('（前提）两条进入事件都已认领处理', inspect().handled.includes(withCode.msgid) && inspect().handled.includes(back.msgid));
+  check('已转人工的客户再次进入（带 welcome_code）：收不到欢迎语', sentTo('code:welcome-code-ho').length === 0);
+  check('已转人工的客户再次进入（老客户补发）：收不到欢迎语', startedTo('u-ho-back').length === 0);
+  check('已转人工的客户再次进入：会话里不多出欢迎语', trail('u-ho-back').length === 2, JSON.stringify(trail('u-ho-back')));
 }
 
 // ---------------- W1 启动重放途中收到停机信号：钩子要等重放的回复发完 ----------------
@@ -655,7 +1021,10 @@ for (const k of ['log', 'warn', 'error'] as const) {
     JSON.stringify({
       cursor: st?.cursor,
       handled: [...(st?.handled ?? []), [gMsg.msgid, Date.now()], [rMsg.msgid, Date.now()]],
-      pending: [{ msg: gMsg, tries: 2 }, { msg: rMsg, tries: 0 }],
+      pending: [
+        { msg: gMsg, tries: 2 },
+        { msg: rMsg, tries: 0 },
+      ],
     }),
   );
   void syncFromCallback('tok-startup-stop');
@@ -705,6 +1074,6 @@ if (fails.length) {
   for (const f of fails.slice(0, 20)) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`WECOM SELFTEST PASS: ${pass} 项断言全通（分段 / 卡片 / 冷启动 / 跨客户不排队 / 优雅停机 / 在途重放）`);
+console.log(`WECOM SELFTEST PASS: ${pass} 项断言全通（分段 / 卡片 / 去 markdown / 冷启动 / 跨客户不排队 / 优雅停机 / 在途重放）`);
 // 显式退出：「死在半路」的场景故意留下永不返回的假请求，不让它们成为悬念
 process.exit(0);

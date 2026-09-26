@@ -5,21 +5,43 @@
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@10.30.2",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "prepare": "if [ -e .git ]; then lefthook install; fi",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint --deny-warnings && tsx scripts/check-public-boundary.ts && tsx scripts/check-boundaries.ts && tsx scripts/check-migrations.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p console",
+    "test": "CONFIG_SOURCE=file tsx src/engine.selftest.ts && CONFIG_SOURCE=file tsx src/adapters/wecom.selftest.ts && CONFIG_SOURCE=file tsx src/dejargon.selftest.ts && CONFIG_SOURCE=file tsx src/price-guard.selftest.ts && CONFIG_SOURCE=file tsx src/llm.selftest.ts && CONFIG_SOURCE=file tsx src/server.selftest.ts && tsx src/db/db.selftest.ts && tsx src/config/config.selftest.ts && tsx src/console-api/console.selftest.ts && CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts && CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts && pnpm --filter console build && tsx scripts/check-console-dist.ts",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "hono": "^4.13.9"
+    "@hono/zod-validator": "0.9.1",
+    "drizzle-orm": "0.45.3",
+    "hono": "4.13.9",
+    "pg": "8.23.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
+    "@electric-sql/pglite": "0.5.8",
     "@types/node": "^22.0.0",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11",
+    "lefthook": "2.1.14",
+    "oxfmt": "0.68.0",
+    "oxlint": "1.83.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

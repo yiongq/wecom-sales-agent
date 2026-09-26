@@ -9,7 +9,11 @@ const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
 const FILE = path.join(VAR_DIR, 'usage.json');
 
 /** 一组单价，元 / 百万 token。cachedIn 是命中前缀缓存那部分输入的单价（官方单列，不是统一折扣） */
-interface PriceRow { in: number; out: number; cachedIn: number }
+interface PriceRow {
+  in: number;
+  out: number;
+  cachedIn: number;
+}
 interface Price extends PriceRow {
   /** 输出阶梯：单次调用输出 ≥ minOut 个 token 时整组换成这档价（智谱 4.7 / 4.5-air 按「输出是否满 0.2K」分档，输入价也跟着变） */
   outTier?: PriceRow & { minOut: number };
@@ -101,7 +105,9 @@ function persist(): void {
       const tmp = FILE + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(state));
       fs.renameSync(tmp, FILE);
-    } catch { /* 用量统计落盘失败不该影响对话 */ }
+    } catch {
+      /* 用量统计落盘失败不该影响对话 */
+    }
   }, 3000);
 }
 
@@ -124,8 +130,12 @@ export function costOf(model: string, promptTokens: number, completionTokens: nu
 
 /** 每次真实模型调用后记一笔。sessionId 可空（后台洞察/建议这类非会话调用） */
 export function recordUsage(
-  model: string, promptTokens: number, completionTokens: number,
-  sessionId?: string, cachedTokens = 0, reasoningTokens = 0,
+  model: string,
+  promptTokens: number,
+  completionTokens: number,
+  sessionId?: string,
+  cachedTokens = 0,
+  reasoningTokens = 0,
 ): void {
   if (state.day !== today()) state = blank();
   const m = (state.byModel[model] ??= { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, cny: 0 });
@@ -171,7 +181,7 @@ export function usageToday(): {
   // 差 10 倍，混在一起算出来的数没有意义。有输出阶梯的模型按基础档近似（只差几分之一分钱）
   const saved = Object.entries(state.byModel).reduce((a, [model, m]) => {
     const price = PRICE[model];
-    return price ? a + (m.cachedTokens ?? 0) * (price.in - price.cachedIn) / 1_000_000 : a;
+    return price ? a + ((m.cachedTokens ?? 0) * (price.in - price.cachedIn)) / 1_000_000 : a;
   }, 0);
   const reasoning = models.reduce((a, m) => a + (m.reasoningTokens ?? 0), 0);
   const sessions = Object.values(state.bySession);
@@ -184,9 +194,15 @@ export function usageToday(): {
     cacheSavedCny: Number(saved.toFixed(4)),
     reasoningTokens: reasoning,
     byModel: Object.fromEntries(
-      Object.entries(state.byModel).map(([k, v]) => [k, {
-        ...v, cachedTokens: v.cachedTokens ?? 0, reasoningTokens: v.reasoningTokens ?? 0, cny: Number(v.cny.toFixed(4)),
-      }]),
+      Object.entries(state.byModel).map(([k, v]) => [
+        k,
+        {
+          ...v,
+          cachedTokens: v.cachedTokens ?? 0,
+          reasoningTokens: v.reasoningTokens ?? 0,
+          cny: Number(v.cny.toFixed(4)),
+        },
+      ]),
     ),
   };
 }

@@ -25,10 +25,10 @@ const MAX_PUSH_FAILURES = 3;
 
 /** 各阶段沉默多久算「该追了」（分钟）。不在表里的阶段不追。 */
 const IDLE_MINUTES: Partial<Record<SalesStage, number>> = {
-  quote: 120,      // 报价后沉默 2 小时：最该追的时刻
-  closing: 180,    // 订单已建但没付
-  objection: 240,  // 提了异议没下文
-  recommend: 360,  // 看过线路没反应，隔久一点再问
+  quote: 120, // 报价后沉默 2 小时：最该追的时刻
+  closing: 180, // 订单已建但没付
+  objection: 240, // 提了异议没下文
+  recommend: 360, // 看过线路没反应，隔久一点再问
 };
 
 /** 兜底话术：LLM 不可用时按阶段发，每条都得是能直接发给客户的正经话。
@@ -66,16 +66,16 @@ interface FollowupMeta {
 type SessionWithFollowup = Session & { followup?: FollowupMeta };
 
 function shouldFollowUp(s: SessionWithFollowup): boolean {
-  if (s.handedOver) return false;                       // 人工在跟，别插嘴
-  if (s.channel !== 'wecom') return false;              // 只追真实客户，不骚扰网页访客
-  if (DEMO_SESSION_RE.test(s.id)) return false;         // 种子演示数据，发不出去也不该发
+  if (s.handedOver) return false; // 人工在跟，别插嘴
+  if (s.channel !== 'wecom') return false; // 只追真实客户，不骚扰网页访客
+  if (DEMO_SESSION_RE.test(s.id)) return false; // 种子演示数据，发不出去也不该发
   if (s.stage === 'paid' || s.stage === 'handoff') return false;
   if ((s.followup?.failures ?? 0) >= MAX_PUSH_FAILURES) return false;
   const threshold = IDLE_MINUTES[s.stage];
   if (!threshold) return false;
   const meta = s.followup ?? {};
   if ((meta.count ?? 0) >= MAX_PER_SESSION) return false;
-  if (meta.stages?.includes(s.stage)) return false;     // 这个阶段追过了
+  if (meta.stages?.includes(s.stage)) return false; // 这个阶段追过了
   const idleMin = (Date.now() - s.updatedAt) / 60_000;
   if (idleMin < threshold) return false;
   // 最后一条必须是我们发的——客户刚说完话还没回他，那是回复不是跟进
@@ -96,7 +96,11 @@ async function composeFollowUp(s: Session): Promise<string> {
   const user = `销售阶段：${s.stage}\n客户画像：${JSON.stringify(profileForPrompt(s.profile))}\n最近对话：\n${recent}`;
   const out = (await completeText(sys, user)).trim().split('\n')[0];
   // 生成内容同样不许带链接/订单号（跟进消息是主动外发，风险更高）
-  const cleaned = out.replace(/https?:\/\/\S+/g, '').replace(/\/pay\/\S+/g, '').replace(/ord_[A-Za-z0-9]+/g, '').trim();
+  const cleaned = out
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\/pay\/\S+/g, '')
+    .replace(/ord_[A-Za-z0-9]+/g, '')
+    .trim();
   return cleaned || TEMPLATE[s.stage] || '想起您之前的行程，还有什么我能帮上忙的随时说～';
 }
 
@@ -119,7 +123,9 @@ async function composeUnlessStopping(s: Session): Promise<string | null> {
   const composing = composeFollowUp(s);
   composing.catch(() => undefined); // 停机时被弃用的那次生成，失败也别变成未捕获 rejection
   let wake!: () => void;
-  const stopped = new Promise<null>((r) => { wake = () => r(null); });
+  const stopped = new Promise<null>((r) => {
+    wake = () => r(null);
+  });
   composeWaiters.add(wake);
   try {
     return await Promise.race([composing, stopped]);
@@ -140,10 +146,7 @@ async function drainForShutdown(): Promise<void> {
 onShutdown(drainForShutdown);
 
 /** 扫描一轮。push 由调用方注入（server 传 adapterFor），便于测试 */
-export function runFollowUpScan(
-  push: (sessionId: string, text: string) => Promise<boolean>,
-  now = new Date(),
-): Promise<number> {
+export function runFollowUpScan(push: (sessionId: string, text: string) => Promise<boolean>, now = new Date()): Promise<number> {
   if (process.env.FOLLOWUP_ENABLED !== '1' || stopping) return Promise.resolve(0);
   if (inQuietHours(now)) return Promise.resolve(0);
   // 上一轮还没扫完就不叠一轮：生成话术慢（每条要调一次 LLM），会话一多就会跨过扫描间隔。
@@ -228,7 +231,9 @@ export function startFollowUpScheduler(push: (sessionId: string, text: string) =
   }
   console.log(`[followup] 自动跟进已启用：每 ${SCAN_MS / 60000} 分钟扫描一次，${QUIET_START}:00-${QUIET_END}:00 不打扰`);
   if (stopping) return;
-  scanTimer = setInterval(() => { void runFollowUpScan(push); }, SCAN_MS);
+  scanTimer = setInterval(() => {
+    void runFollowUpScan(push);
+  }, SCAN_MS);
   scanTimer.unref();
 }
 

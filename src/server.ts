@@ -1,19 +1,30 @@
 // HTTP 服务：静态页面 + 模拟器 API + 管理后台 API + 企微回调。
 // 注意路由注册顺序：API 在前，serveStatic 兜底在后。
-// 管理 API 走 Basic 鉴权，读写分层见 adminAuth；admin.html 页面本身免密（未登录只看得到演示数据）。
+// 管理 API 走 Basic 鉴权，读写分层见 adminAuth；admin.html 页面本身免密（未登录只看得到演示数据，prod 下什么都看不到）。
+// demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
+import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { getConnInfo } from '@hono/node-server/conninfo';
 import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { handleMessage, notifyPaid } from './engine.js';
+import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
-import { getOrder, getSession, listOrders, listSessions, markOrderPaid, saveSession, storeEvents } from './store.js';
+import {
+  getOrder,
+  getSession,
+  gracefulExit,
+  listOrders,
+  listSessions,
+  markOrderPaid,
+  onShutdown,
+  saveSession,
+  storeEvents,
+} from './store.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
 import { activeModels, CHEAP_TIER_MODELS, llmCfg, llmStats } from './llm.js';
 import { budgetStatus } from './budget.js';
@@ -25,12 +36,31 @@ import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
+import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
+import { profile } from './profile.js';
 import type { ChannelAdapter } from './types.js';
+import { boot } from './boot.js';
+import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
+import { consoleApi, consoleSession } from './console-api/app.js';
+import { consolePages } from './console-api/host.js';
+import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
 
+// channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
+// 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
+// 调用方按「没送达」各自处理（人工回复与付款记备注、跟进退账）。不能 throw：付款路由在 markOrderPaid
+// 之后才调它，抛出会让一个已经付款成功的请求返回 500
 function adapterFor(channel: string): ChannelAdapter {
-  return channel === 'wecom' ? wecomAdapter : simulatorAdapter;
+  if (channel === 'wecom') return wecomAdapter;
+  if (channel === 'simulator') return simulatorAdapter;
+  return {
+    name: 'unknown',
+    push(sessionId) {
+      console.error(`[server] ⚠️ 会话 ${sessionId} 的渠道「${channel}」未知，消息未送达`);
+      return Promise.resolve(false);
+    },
+  };
 }
 
 // ---------------- 管理面鉴权 ----------------
@@ -44,9 +74,10 @@ function adapterFor(channel: string): ChannelAdapter {
 // 身份给真实微信客户发消息——永远没有免密的正当理由。于是开关被彻底移除：
 // 现在没有任何环境变量能放行写操作，配错的最坏结果是「后台不可用」，而不是「全网可写」。
 // 未配 ADMIN_PASS 时：读仍是演示模式（可用），写返回 503。
+// 免密的那一层读由开关 anon_readonly_admin 决定：prod 下关掉，读也要凭据（prod 没配 ADMIN_PASS 起不来）。
 
 /**
- * 演示数据：种子会话与网页访客，绝不含真实企微客户。凭 ID 直读放行、启动自检不计入真实客户，都按它判断。
+ * 演示数据：种子会话与网页访客，绝不含真实企微客户。启动自检不计入真实客户，按它判断；凭 ID 直读见 sessionReadAuth。
  * 它**不是**列表的可见范围：此前列表按它过滤，sim-* 人人可见——演示链接一公开，任何人打开后台就能
  * 翻陌生访客在网页里留的手机号，拿他们的订单号去点「已支付」。列表口径见 anonVisible。
  */
@@ -90,135 +121,99 @@ function isAdminReq(c: Context): boolean {
 // 且原生弹窗一旦取消就无法再唤起，用户退不回演示模式。
 async function adminAuth(c: Context, next: Next): Promise<Response | void> {
   if (!process.env.ADMIN_PASS) {
-    return c.json(
-      { error: '管理操作已锁定：服务端未配置 ADMIN_PASS。在 .env 设置 ADMIN_USER/ADMIN_PASS 后重建容器即可。' },
-      503,
-    );
+    return c.json({ error: '管理操作已锁定：服务端未配置 ADMIN_PASS。在 .env 设置 ADMIN_USER/ADMIN_PASS 后重建容器即可。' }, 503);
   }
   if (isAdminReq(c)) return next();
   return c.json({ error: 'unauthorized' }, 401);
 }
 
+/**
+ * 会话列表、订单列表与 /api/usage 的免密读。anon_readonly_admin 关掉（prod）时没有这一层：
+ * 不带有效凭据一律按 adminAuth 拒绝，连种子会话也不给。开着时照旧放行，响应体再按 isAdminReq 过滤。
+ */
+const anonReadable: MiddlewareHandler = async (c, next) => (profile().flags.anon_readonly_admin ? next() : adminAuth(c, next));
+
 /** 单会话读取：演示会话（种子/访客）凭自身不可猜的 ID 直读，真实客户会话必须登录。
- *  demo 分支额外走一道限流：ID 是凭据，不限流就等于允许慢速穷举。 */
+ *  demo 分支额外走一道限流：ID 是凭据，不限流就等于允许慢速穷举。
+ *  两类演示会话各归一个开关：sim- 直读是网页模拟器的一部分（chat.html 靠它恢复历史），只看 visitor_simulator，
+ *  关掉时接口当作不存在，带不带凭据都是 404；种子直读属于后台免密读，anon_readonly_admin 关掉就和真实客户一样要登录。 */
 async function sessionReadAuth(c: Context, next: Next): Promise<Response | void> {
-  if (DEMO_DATA_RE.test(c.req.param('id') ?? '')) return lookupLimit(c, next);
+  const id = c.req.param('id') ?? '';
+  if (id.startsWith('sim-')) return profile().flags.visitor_simulator ? lookupLimit(c, next) : c.notFound();
+  if (SEED_SESSION_RE.test(id) && profile().flags.anon_readonly_admin) return lookupLimit(c, next);
   return adminAuth(c, next);
 }
 
-/**
- * 跨站写保护。管理面走 HTTP Basic，浏览器会给任何跨站请求自动带上缓存的凭据——
- * 一个自动提交的表单就能让已登录的顾问向真实客户发出任意消息，或把会话永久转人工。
- * 同源 fetch 一定带 Sec-Fetch-Site: same-origin；缺这个头的（curl、老浏览器）放行，
- * 因为真正的跨站攻击载体一定是现代浏览器，它一定会带。
- */
-const sameOriginOnly: MiddlewareHandler = async (c, next) => {
-  const site = c.req.header('sec-fetch-site');
-  if (site && site !== 'same-origin' && site !== 'none') {
-    return c.json({ error: '跨站请求已拒绝' }, 403);
-  }
-  return next();
-};
-
-app.get('/', (c) => c.redirect('/guide.html'));
+// 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
+app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
-// llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵
+// llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。
+// revision 是部署时的 git tag（deploy.sh 经 Dockerfile 的 APP_REVISION 写进镜像）：回滚到 :prev 后报的是上一版的 tag，
+// 线上跑的是哪一版一眼可查；本地 pnpm start 没有这个变量，报 dev
+/**
+ * 配置源的摘要（01 spec「两种模式与启动装载」）：哈希都取前 12 位。DB 模式取缓存；文件模式按当前文件现算，
+ * sopVersion 与 lock 为 null。文件读不到时哈希为 null，不让 /healthz 因此 500
+ */
+function configSummary(): Record<string, unknown> {
+  const mode = configMode();
+  const health = mode === 'db' ? configHealth() : null;
+  let hashes: Record<string, unknown> = { sopVersion: null, promptHash: null, toolsHash: null, prefixHash: null, sopHash: null };
+  try {
+    const p = prefixSummary(() => ({ ...promptPrefix(), sop: sopFileText() }));
+    hashes = {
+      sopVersion: p.sopVersion,
+      promptHash: p.promptHash.slice(0, 12),
+      toolsHash: p.toolsHash.slice(0, 12),
+      prefixHash: p.prefixHash.slice(0, 12),
+      sopHash: p.sopHash.slice(0, 12),
+    };
+  } catch {
+    /* 文件模式下 SOP 读不到：启动预检另有告警 */
+  }
+  return { mode, ...hashes, lock: health?.lock ?? null, sopStale: health?.sopStale ?? false, catalogStale: health?.catalogStale ?? false };
+}
+
 app.get('/healthz', (c) =>
-  c.json({ ok: true, models: activeModels(), visitorLLM: budgetStatus(), llmGate: gateStatus(), llm: llmStats() }),
+  c.json({
+    ok: true,
+    revision: process.env.APP_REVISION || 'dev',
+    models: activeModels(),
+    visitorLLM: budgetStatus(),
+    llmGate: gateStatus(),
+    llm: llmStats(),
+    config: configSummary(),
+  }),
 );
 
 // 模型用量与成本（JD 明确要求的「模型调用成本」指标）
 // 用量与成本：聚合数字，不含任何客户信息，演示模式下也放行（这正是要展示的指标之一）
-app.get('/api/usage', (c) => c.json(usageToday()));
+app.get('/api/usage', anonReadable, (c) => c.json(usageToday()));
 
 // ---------------- 模拟器聊天 ----------------
 
 const SIM_SESSION_RE = /^sim-[A-Za-z0-9_-]{1,64}$/;
 
+/** 网页模拟器的入口：visitor_simulator 关掉（prod）时当作不存在，一律 404。访客清理不归它管，照常运行（store.ts） */
+const simulatorOnly: MiddlewareHandler = async (c, next) => (profile().flags.visitor_simulator ? next() : c.notFound());
+
 // /api/chat 是公网匿名端点且每次调真实 LLM——不加限流等于把 LLM 账单和
 // sessions.json 的增长交给任何写脚本的人。滑动窗口按 IP 计数，内存实现够用。
 const CHAT_RATE_PER_MIN = Math.max(1, numEnv('CHAT_RATE_PER_MIN', 20));
-// 靠 ID 访问的公开端点（订单、访客会话、SSE）也要限流，否则 ID 可以被慢慢穷举
-const LOOKUP_RATE_PER_MIN = Math.max(1, numEnv('LOOKUP_RATE_PER_MIN', 60));
-// 键的总量上限，防止「每请求换一个 IP」把内存打爆；
-// 超过上限就退化成全局限流（宁可误伤也不能被打挂）。
-const RATE_MAX_KEYS = 10_000;
-
-/**
- * 限流键 = 客户端真实来源地址。
- *
- * 两条都要卡住，少一条限流就形同虚设：
- * 1. 不能取 XFF 的**第一段**——那一段完全由客户端写，换一个假 IP 就是换一个新桶
- *    （实测放行量约 20 万/分钟）。反代（Caddy）是把真实对端**追加**到 XFF 末尾的，
- *    所以真实地址在从右往左数第 TRUST_PROXY_HOPS 跳。
- * 2. XFF 本身也只在「直连对端确实是我们的反代」时才可信。否则把服务直接暴露出去
- *    （或本地 pnpm dev）时，攻击者自己捏一个 XFF 就又绕过去了——线上 Caddy 反代到
- *    127.0.0.1，容器看到的对端是内网地址，据此判定。公网直连的请求一律按 socket 地址算。
- */
-const TRUST_PROXY_HOPS = Math.max(0, numEnv('TRUST_PROXY_HOPS', 1));
-// peer 已剥掉 ::ffff: 前缀，这里只需匹配裸 IPv4 与真 IPv6 私网
-const PRIVATE_PEER = /^(?:127\.|::1$|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|f[cd])/i;
-
-function clientKey(c: Context): string {
-  let peer = '';
-  try {
-    // 双栈监听（serve() 不传 hostname → Node 绑 ::）下，IPv4 对端会以
-    // ::ffff:172.17.0.1 这种形式出现。不剥掉前缀，下面的私网判定就只认裸 IPv4——
-    // 线上正是 Docker 网关 172.17.0.1，结果 XFF 永不被采信、全站退化成一个限流桶。
-    peer = (getConnInfo(c).remote.address ?? '').replace(/^::ffff:/i, '');
-  } catch { /* 拿不到对端地址就退回 XFF 末段 */ }
-  const chain = (c.req.header('x-forwarded-for') ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const viaProxy = peer === '' || PRIVATE_PEER.test(peer);
-  if (viaProxy && TRUST_PROXY_HOPS > 0 && chain.length) {
-    return chain[Math.max(0, chain.length - TRUST_PROXY_HOPS)];
-  }
-  return peer || chain[chain.length - 1] || 'direct';
-}
-
-/** 独立命名的滑动窗口计数桶（聊天与查询各自一套，互不挤占） */
-function makeLimiter(perMin: number): (key: string) => boolean {
-  const hits = new Map<string, number[]>();
-  setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of hits) {
-      const recent = v.filter((t) => now - t < 60_000);
-      if (recent.length) hits.set(k, recent);
-      else hits.delete(k);
-    }
-  }, 5 * 60_000).unref();
-  return (key: string): boolean => {
-    const now = Date.now();
-    const k = hits.has(key) || hits.size < RATE_MAX_KEYS ? key : '__overflow__';
-    const recent = (hits.get(k) ?? []).filter((t) => now - t < 60_000);
-    if (recent.length >= perMin) {
-      hits.set(k, recent);
-      return true;
-    }
-    recent.push(now);
-    hits.set(k, recent);
-    return false;
-  };
-}
-
 const chatRateLimited = makeLimiter(CHAT_RATE_PER_MIN);
-const lookupRateLimited = makeLimiter(LOOKUP_RATE_PER_MIN);
-
-/** 挂在靠 ID 访问的公开端点前，让穷举 ID 的成本不可承受 */
-const lookupLimit: MiddlewareHandler = async (c, next) => {
-  if (lookupRateLimited(clientKey(c))) return c.json({ error: '请求过于频繁，请稍后再试' }, 429);
-  return next();
-};
-
 // 全站请求体上限。验签/限流都发生在读 body 之后，没有上限时几条慢速大 body 请求
 // 就能把容器内存吃满（docker run 未设 -m）。企微回调和聊天请求都只有几 KB 量级。
 const MAX_BODY_BYTES = Math.max(1024, numEnv('MAX_BODY_BYTES', 64 * 1024));
 app.use('/*', async (c, next) => {
   const declared = c.req.header('content-length');
+  // 后台（/console/*、/api/console/*）的响应都要带安全头（01 spec「安全头」），这两种拒绝发生在后台子应用之前，得在这里带上；
+  // 后台接口回 { error, detail }，前端按它显示
+  const reject = (status: 411 | 413, error: string, detail: string): Response => {
+    if (/^\/api\/console(?:\/|$)/.test(c.req.path)) return c.json({ error, detail }, status, { ...CONSOLE_SECURITY_HEADERS });
+    const text = status === 413 ? 'payload too large' : 'length required';
+    return c.text(text, status, /^\/console(?:\/|$)/.test(c.req.path) ? { ...CONSOLE_SECURITY_HEADERS } : undefined);
+  };
   if (declared !== undefined && Number(declared) > MAX_BODY_BYTES) {
-    return c.text('payload too large', 413);
+    return reject(413, 'payload_too_large', `请求体超过 ${Math.floor(MAX_BODY_BYTES / 1024)} KB 的上限`);
   }
   // 缺 Content-Length 就是 chunked 编码，上面那行按「声明值」判断对它完全无效：
   // 实测 8MB / 32MB 的 chunked body 能直达应用并被整个读进内存。此前把这层
@@ -226,7 +221,7 @@ app.use('/*', async (c, next) => {
   // 这里的客户端只有企微服务器和浏览器 fetch，两者必然带 Content-Length，
   // 所以直接拒掉「有 body 却不声明长度」的请求——比事后截断简单，也更难写错。
   if (declared === undefined && c.req.raw.body !== null) {
-    return c.text('length required', 411);
+    return reject(411, 'length_required', '请求要带 Content-Length');
   }
   return next();
 });
@@ -256,7 +251,7 @@ function extractTag(xml: string, tag: string): string | undefined {
   return inner;
 }
 
-app.post('/api/chat', async (c) => {
+app.post('/api/chat', simulatorOnly, async (c) => {
   if (chatRateLimited(clientKey(c))) return c.json({ error: '发送太频繁了，请稍后再试' }, 429);
   const body = await c.req.json<{ sessionId?: string; text?: unknown }>().catch(() => null);
   // typeof 判断不能省：可选链只挡 null/undefined，text 传数字/数组/对象时 .trim 不存在会抛
@@ -275,7 +270,7 @@ app.post('/api/chat', async (c) => {
 });
 
 // SSE 推送通道：服务端主动消息（支付跟进、人工回复）经此下发
-app.get('/api/stream/:sessionId', lookupLimit, (c) => {
+app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
   const sessionId = c.req.param('sessionId');
   return streamSSE(c, async (stream) => {
     const unsubscribe = subscribe(sessionId, (text) => {
@@ -300,34 +295,53 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 // 只推「变了」这个信号、不带任何数据（没有会话 id、没有原文），故免密——真正的数据仍由下面的读端点
 // 按登录态与本人凭据过滤。它因此也不需要访客凭据，凭据不必进 URL。
 // 也必须免密：EventSource 无法自定义请求头，带不了 Authorization。
-app.get('/api/admin/stream', (c) => {
+// anon_readonly_admin 关着时（prod）要求有效的后台会话，同源 EventSource 会带上 cookie；没有就 401，
+// admin.html 已有的 30 秒轮询兜底照常（01 spec「鉴权」）
+app.get('/api/admin/stream', async (c) => {
+  if (!profile().flags.anon_readonly_admin && !(await consoleSession(c))) return c.json({ error: '需要登录后台' }, 401);
   return streamSSE(c, async (stream) => {
     let alive = true;
-    const onChange = () => { void stream.writeSSE({ event: 'change', data: String(Date.now()) }); };
+    const onChange = () => {
+      void stream.writeSSE({ event: 'change', data: String(Date.now()) });
+    };
     storeEvents.on('change', onChange);
-    stream.onAbort(() => { alive = false; storeEvents.off('change', onChange); });
+    stream.onAbort(() => {
+      alive = false;
+      storeEvents.off('change', onChange);
+    });
     await stream.writeSSE({ event: 'change', data: 'init' }); // 连上先触发一次首屏加载
-    while (alive) { await stream.writeSSE({ event: 'ping', data: String(Date.now()) }); await stream.sleep(20000); }
+    // alive 由上面的 onAbort 回调置 false，不是死循环
+    // oxlint-disable-next-line no-unmodified-loop-condition
+    while (alive) {
+      await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
+      await stream.sleep(20000);
+    }
   });
 });
 
 // AI 洞察（LLM 生成，服务端缓存；失败返回空数组，前端回退规则版）
 app.get('/api/insights', adminAuth, async (c) => {
-  try { return c.json({ insights: await getInsights() }); }
-  catch { return c.json({ insights: [] }); }
+  try {
+    return c.json({ insights: await getInsights() });
+  } catch {
+    return c.json({ insights: [] });
+  }
 });
 
 // 下一步建议（按会话 LLM 生成，缓存；失败返回空，前端回退规则版）
 app.get('/api/sessions/:id/suggestion', adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ suggestion: '' }, 404);
-  try { return c.json({ suggestion: await getSuggestion(s) }); }
-  catch { return c.json({ suggestion: '' }); }
+  try {
+    return c.json({ suggestion: await getSuggestion(s) });
+  } catch {
+    return c.json({ suggestion: '' });
+  }
 });
 
 // 会话列表：未登录只返回种子会话与本人的访客会话。过滤发生在服务端——真实客户和其他访客的会话
 // 不进响应体，而不是前端拿到全量再隐藏（后者用 devtools 一看就穿）。
-app.get('/api/sessions', (c) => {
+app.get('/api/sessions', anonReadable, (c) => {
   const all = listSessions();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
@@ -379,8 +393,11 @@ app.post('/api/sessions/:id/resume', sameOriginOnly, adminAuth, (c) => {
 app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ draft: '' }, 404);
-  try { return c.json({ draft: await getDraftReply(s) }); }
-  catch { return c.json({ draft: '' }); }
+  try {
+    return c.json({ draft: await getDraftReply(s) });
+  } catch {
+    return c.json({ draft: '' });
+  }
 });
 
 app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
@@ -410,7 +427,7 @@ app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
 
 // 订单列表：同会话列表口径。订单号是 /pay 的凭据、sessionId 是读对话全文的凭据，
 // 漏一条别人的订单就等于把这两样都交了出去
-app.get('/api/orders', (c) => {
+app.get('/api/orders', anonReadable, (c) => {
   const all = listOrders();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
@@ -424,8 +441,19 @@ app.get('/api/orders/:id', lookupLimit, (c) => {
   return c.json(o);
 });
 
+/**
+ * 谁能调模拟支付，由 mock_pay 决定。关掉（prod）时匿名请求永远标不了已付（00 spec「mock_pay 与 prod 的真实客户」）：
+ * 不带有效凭据一律 404，像这个接口不存在；带凭据的是顾问手工确认收款（验收、预演用，去留由 02 定），
+ * 它是写操作，和管理写接口一样过 sameOriginOnly。开着时照旧人人可付。
+ */
+const payAuth: MiddlewareHandler = async (c, next) => {
+  if (profile().flags.mock_pay) return next();
+  if (!isAdminReq(c)) return c.notFound();
+  return sameOriginOnly(c, next);
+};
+
 // 演示用模拟支付：真实生产必须替换为微信支付服务端回调验签，此端点仅 demo 闭环用
-app.post('/api/orders/:id/pay', lookupLimit, async (c) => {
+app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   const id = c.req.param('id');
   const order = getOrder(id);
   if (!order) return c.json({ error: 'order not found' }, 404);
@@ -439,11 +467,29 @@ app.post('/api/orders/:id/pay', lookupLimit, async (c) => {
     const followUp = await notifyPaid(id);
     if (followUp) {
       const s = getSession(followUp.sessionId);
-      await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text);
+      const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text);
+      // 同 /reply：会话里记着「已收到您的支付」，客户却没收到，得让顾问在后台看见、去另行告知。
+      // 种子会话除外：对应的企微客户是编造的，推送必然失败，公开演示每付一次就会多一条失败备注
+      if (!sent && s && !SEED_SESSION_RE.test(s.id)) {
+        s.messages.push({
+          role: 'system',
+          content: '⚠️ 上一条付款确认未能发送到客户（推送失败：可能是 48h 会话窗口已关闭或渠道配置问题），请另行告知客户已收到付款',
+          at: Date.now(),
+        });
+        saveSession(s);
+      }
     }
   }
   return c.json({ ok: true, order: getOrder(id) });
 });
+
+/**
+ * 把页面的 <title> 换成服务端拼好的 head（支付页、方案页）。替换值必须用函数给：给字符串时 String.replace 会展开里面的
+ * $' $` $&，线路标题、亮点里带着这几个字符就把页面源码的前后两截拼进标题和分享摘要（spec「编辑规则」：产品库文本对公开页是不可信输入）
+ */
+function withHead(html: string, head: string): string {
+  return html.replace(/<title>[\s\S]*?<\/title>/, () => head);
+}
 
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {
@@ -451,27 +497,37 @@ app.get('/pay/:orderId', async (c) => {
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题
   const o = getOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
-  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
+  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
   // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
   if (o.status === 'superseded') {
     const t = `${o.routeTitle} · 订单已被替代`;
     const d = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
-    return c.html(html.replace(/<title>[\s\S]*?<\/title>/,
-      `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
-      `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`));
+    return c.html(
+      withHead(
+        html,
+        `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
+          `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`,
+      ),
+    );
   }
   const title = `${o.routeTitle} · 订单支付`;
   // 出发日期与企微卡片、网页支付卡片同一写法（「10月12日出发」，跨年才带年份），别是「2026-10-12 出发」
   const d = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(o.departDate ?? '');
-  const when = !o.departDate ? '日期待定'
-    : !d ? `${o.departDate}出发`
-    : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
+  const when = !o.departDate
+    ? '日期待定'
+    : !d
+      ? `${o.departDate}出发`
+      : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
   const desc = `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
-  return c.html(html.replace(/<title>[\s\S]*?<\/title>/,
-    `<title>${esc(title)}</title>\n` +
-    `<meta name="description" content="${esc(desc)}">\n` +
-    `<meta property="og:title" content="${esc(title)}">\n` +
-    `<meta property="og:description" content="${esc(desc)}">`));
+  return c.html(
+    withHead(
+      html,
+      `<title>${esc(title)}</title>\n` +
+        `<meta name="description" content="${esc(desc)}">\n` +
+        `<meta property="og:title" content="${esc(title)}">\n` +
+        `<meta property="og:description" content="${esc(desc)}">`,
+    ),
+  );
 });
 
 /** 出发日期是否合理：真实存在的日历日 + 今天到三年内（2099 年那种也别放行） */
@@ -515,15 +571,15 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
   if (!route) return html;
   const title = `${route.title} · 行程方案书`;
   const desc = `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜${(route.highlights?.[0] ?? '').slice(0, 40)}`;
-  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch] as string));
+  const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
   // 缩略图必须是绝对 URL：微信/各类抓取方不解析相对路径。
   // 微信自带的「发送给朋友」不读 og:image，它是在页面里自己挑一张图当缩略图——
   // 这里只改 head（meta）；那张给微信挑的真实封面图由 proposal.html 在客户端渲染进 body
   // （1px 不行，太小会被跳过）。
   const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
   const cover = base ? `${base}/share-cover.png` : '/share-cover.png';
-  const withHead = html.replace(
-    /<title>[\s\S]*?<\/title>/,
+  return withHead(
+    html,
     `<title>${esc(title)}</title>\n` +
       `<meta name="description" content="${esc(desc)}">\n` +
       `<meta property="og:title" content="${esc(title)}">\n` +
@@ -532,7 +588,6 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
       `<meta property="og:type" content="website">\n` +
       `<link rel="image_src" href="${esc(cover)}">`,
   );
-  return withHead;
 }
 
 async function serveProposal(c: Context): Promise<Response> {
@@ -627,9 +682,19 @@ app.get('/kf-qr.png', async (c) => {
   }
 });
 
+// 后台接口与后台前端（01 spec「后台 API 与页面」「构建与部署」）：都注册在 serveStatic 兜底之前。
+// 子应用自己兜住没匹配上的 /api/console/*（JSON，不是 index.html）；/console/* 的 SPA 回退只管 /console 下面
+app.route('/', consoleApi);
+app.route('/', consolePages);
+
 // 静态资源兜底（admin.html / chat.html / pay.html / guide.html）。
 // admin.html 页面本身不再鉴权：它进来只会看到演示数据，页面内的登录框负责换取
 // 真实客户会话与写权限。页面是空壳，凭据永远由下面的 API 层判定。
+// 网页模拟器的两个页面在 visitor_simulator 关掉（prod）时当作不存在，其余页面照常。按文件名比、不分大小写：
+// macOS 的文件系统不分大小写，/CHAT.html 也读得到 chat.html。c.req.path 已经解过码（/%63hat.html 在这里就是
+// /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这两个文件名。
+const SIMULATOR_PAGE_RE = /\/(?:chat|guide)\.html$/i;
+app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATOR_PAGE_RE.test(c.req.path) ? next() : c.notFound()));
 app.use('/*', serveStatic({ root: './public' }));
 
 // 全局兜底：此前 /api/chat 没有任何 catch，上游 LLM 抖动（超时/5xx/返回缺 choices）
@@ -650,8 +715,10 @@ export { app };
 const SELFTEST = process.env.SERVER_SELFTEST === '1';
 
 const port = Number(process.env.PORT) || 3200;
-if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
-  console.log(`[server] 已启动 http://localhost:${info.port}`);
+
+/** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
+function logStartup(listeningPort: number): void {
+  console.log(`[server] 已启动 http://localhost:${listeningPort}`);
   // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
   // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
   // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
@@ -669,7 +736,7 @@ if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
   if (process.env.LLM_MOCK === '1') {
     console.log('[server] LLM_MOCK=1：走离线脚本回复，不调用真实模型');
   } else {
-    const { apiKey, model, baseUrl } = llmCfg();
+    const { apiKey, baseUrl } = llmCfg();
     if (apiKey) {
       const { main, cheap } = activeModels();
       const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();
@@ -693,21 +760,37 @@ if (!SELFTEST) serve({ fetch: app.fetch, port }, (info) => {
       );
     }
   }
-  // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-  try {
-    loadRoutes();
-    loadHotels();
-  } catch (e) {
-    console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-  }
-  // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配。
-  // buildIndex 内部已兜住异常，这里再补一道 catch——`void` 掉的 promise 一旦 reject
-  // 就是未捕获 rejection，Node 会直接退出，容器随之进入无限重启。
-  buildIndex().catch((e) => console.error('[server] 语义索引构建异常（已降级为关键词匹配）:', e));
-  // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
-  startFollowUpScheduler((sessionId, text) => {
-    const s = getSession(sessionId);
-    return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+}
+
+if (!SELFTEST) {
+  // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
+  onShutdown(markConfigShuttingDown);
+  onShutdown(closeConfig, { phase: 'late' });
+  await boot({
+    initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
+    serve: (onListening) =>
+      void serve({ fetch: app.fetch, port }, (info) => {
+        logStartup(info.port);
+        onListening();
+      }),
+    // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
+    preflight: () => {
+      try {
+        loadRoutes();
+        loadHotels();
+      } catch (e) {
+        console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+      }
+    },
+    // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
+    buildIndex,
+    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
+    startFollowUpScheduler: () =>
+      startFollowUpScheduler((sessionId, text) => {
+        const s = getSession(sessionId);
+        return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+      }),
+    startWecom,
+    exit: (code) => process.exit(code),
   });
-});
-if (!SELFTEST) startWecom();
+}
