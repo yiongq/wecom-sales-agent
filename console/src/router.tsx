@@ -2,6 +2,7 @@
 import { createRootRoute, createRoute, createRouter, redirect } from '@tanstack/react-router';
 import { AuditPage } from './pages/AuditPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
+import { ConversationsPage } from './pages/ConversationsPage.js';
 import { SopPage } from './pages/SopPage.js';
 import { NotFound, Shell } from './Shell.js';
 
@@ -24,9 +25,10 @@ const catalog = createRoute({
   },
   component: CatalogPage,
 });
+const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', component: ConversationsPage });
 const audit = createRoute({ getParentRoute: () => root, path: '/audit', component: AuditPage });
 
-export const router = createRouter({ routeTree: root.addChildren([index, sop, catalog, audit]), basepath: '/console' });
+export const router = createRouter({ routeTree: root.addChildren([index, sop, catalog, conversations, audit]), basepath: '/console' });
 
 declare module '@tanstack/react-router' {
   interface Register {

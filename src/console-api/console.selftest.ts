@@ -1242,6 +1242,70 @@ check(
   }
 }
 
+// 会话只读列表（第 13 步）：成员都能看；按 (updatedAt desc, id) 排序、offset 分页；只投影几个字段；不列 sim- 会话
+{
+  const store = await import('../store.js');
+  const T = Date.parse('2030-01-01T00:00:00Z');
+  const seed = (id: string, channel: string, at: number, extra: (s: ReturnType<typeof store.getOrCreateSession>) => void = () => {}) => {
+    const sess = store.getOrCreateSession(id, channel);
+    extra(sess);
+    sess.updatedAt = at;
+    store.saveSession(sess, false);
+  };
+  seed('wecom:conv-b', 'wecom', T + 3000);
+  seed('wecom:conv-a', 'wecom', T + 3000);
+  seed('wecom:conv-c', 'wecom', T + 5000, (sess) => {
+    sess.handedOver = true;
+    sess.stage = 'handoff';
+    sess.profile = { destinationInterest: '会话列表不该出现的画像' };
+    for (const content of ['会话列表不该出现的正文', '第二条', '第三条']) sess.messages.push({ role: 'customer', content, at: T });
+  });
+  seed('sim-convvisitor000000000000000001', 'simulator', T + 9000);
+
+  const top = await call('GET', '/conversations?limit=3', O);
+  check(
+    '会话列表：按 updatedAt 倒序，同一时刻按 id 升序，不列 sim- 会话',
+    top.status === 200 && (top.body.items as Body[]).map((x) => x.id).join() === 'wecom:conv-c,wecom:conv-a,wecom:conv-b',
+    top.text.slice(0, 200),
+  );
+  const c = (top.body.items as Body[])[0]!;
+  check(
+    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt',
+    JSON.stringify(Object.keys(c)) === '["id","channel","stage","handedOver","messageCount","updatedAt"]' &&
+      c.handedOver === true &&
+      c.stage === 'handoff' &&
+      c.messageCount === 3 &&
+      c.updatedAt === new Date(T + 5000).toISOString(),
+    JSON.stringify(c),
+  );
+  check('会话列表：不带消息正文和客户画像', !top.text.includes('不该出现的正文') && !top.text.includes('不该出现的画像'));
+  const nonSim = store.listSessions().filter((x) => !x.id.startsWith('sim-'));
+  check('会话列表：total 是不含 sim- 的会话数', top.body.total === nonSim.length && nonSim.length < store.listSessions().length);
+  const pages: string[] = [];
+  for (let offset = 0; offset < nonSim.length; offset += 2) {
+    pages.push(...((await call('GET', `/conversations?limit=2&offset=${offset}`, O)).body.items as Body[]).map((x) => String(x.id)));
+  }
+  const expected = nonSim.toSorted((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((x) => x.id);
+  check('会话列表：逐页翻完与全量排序一致，没有重复与遗漏', pages.join() === expected.join(), `${pages.length}/${expected.length}`);
+  check(
+    '会话列表：offset 越界给空页，limit 超过 100、为 0、offset 为负都是 400',
+    ((await call('GET', `/conversations?offset=${nonSim.length + 5}`, O)).body.items as unknown[]).length === 0 &&
+      (await call('GET', '/conversations?limit=101', O)).status === 400 &&
+      (await call('GET', '/conversations?limit=0', O)).status === 400 &&
+      (await call('GET', '/conversations?offset=-1', O)).status === 400,
+  );
+  const AGENT = { email: 'agent@example.com', password: 'agent-password-1' };
+  await asPlatform(() =>
+    accounts.createUser(t.db, { tenantSlug: 'demo', email: AGENT.email, name: '坐席丙', role: 'agent', password: pw(AGENT.password) }),
+  );
+  const agent = await httpLogin(AGENT.email, AGENT.password, '203.0.113.95');
+  check(
+    '会话列表：非编辑角色（agent）也能看，审计仍是 403',
+    (await call('GET', '/conversations', { as: agent })).status === 200 && (await call('GET', '/audit', { as: agent })).status === 403,
+  );
+  check('会话列表：匿名 → 401', (await call('GET', '/conversations')).status === 401);
+}
+
 // 命名错误映射：23505（写函数都先转成命名错误，接口上走不到，这里直接看映射）
 check(
   '错误映射：23505（经 drizzle 包在 cause 里）→ 409',
@@ -1312,6 +1376,6 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表）`,
 );
 process.exit(0);
