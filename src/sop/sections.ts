@@ -125,11 +125,20 @@ function assertBody(spec: SectionSpec, body: string): void {
   if (m) throw new SopStructureError(`「${spec.key}」节的正文第 ${lineOf(body, m.index)} 行以「## 」开头，会被当成新的一节`);
 }
 
-/** `## ${heading}\n\n` + normalizeBody(body, isLast)；前言没有标题行 */
-export function withBody(spec: SectionSpec, body: string, isLast: boolean): SopSection {
+/**
+ * 只规范化、不查结构：草稿可以暂时不合规（空正文、行首「## 」），由契约检查报成 structure、发布时拒绝。
+ * 编码不合格照样抛：这类字符连存都存不进 jsonb
+ */
+export function rebuildSection(spec: SectionSpec, body: string, isLast: boolean): SopSection {
   const normalized = normalizeBody(body, isLast);
-  assertBody(spec, normalized);
   return { key: spec.key, text: spec.heading === null ? normalized : headingLine(spec) + normalized };
+}
+
+/** `## ${heading}\n\n` + normalizeBody(body, isLast)；前言没有标题行。正文为空或有行首「## 」就抛 */
+export function withBody(spec: SectionSpec, body: string, isLast: boolean): SopSection {
+  const section = rebuildSection(spec, body, isLast);
+  assertBody(spec, sectionBody(section, spec));
+  return section;
 }
 
 /**
@@ -189,7 +198,8 @@ export function mergeWithImage(
     // 存下来的节可能是旧节表的标题：去掉它自己的标题行，只留正文
     const cut = s.heading === null ? 0 : mine.text.indexOf('\n\n') + 2;
     if (cut === 1) throw new SopStructureError(`存下来的「${s.key}」节缺少标题行后的空行`);
-    return withBody(s, mine.text.slice(cut), i === spec.length - 1);
+    // 只重建、不查结构：草稿里不合规的节原样带到契约检查，由它报 structure
+    return rebuildSection(s, mine.text.slice(cut), i === spec.length - 1);
   });
 }
 

@@ -101,6 +101,15 @@ export async function serverEncoding(db: Db): Promise<string> {
   return row?.server_encoding ?? '';
 }
 
+/** 唯一约束冲突（23505）：两个驱动的错误都带 code，经 drizzle 的包在 cause 里。可选地只认某个约束 */
+export function isUniqueViolation(e: unknown, constraint?: string): boolean {
+  for (let x: unknown = e; x && typeof x === 'object'; x = (x as { cause?: unknown }).cause) {
+    const err = x as { code?: unknown; constraint?: unknown };
+    if (err.code === '23505') return constraint === undefined || err.constraint === constraint;
+  }
+  return false;
+}
+
 /** 两个驱动的 execute 结果都带 rows */
 export function rowsOf<T>(result: unknown): T[] {
   const rows = (result as { rows?: unknown }).rows;

@@ -4,10 +4,21 @@
 // 本模块不 import store / tools / engine：它们反过来 import 这里，快照变化经 onCatalogChanged 回调通知。
 import fs from 'node:fs';
 import path from 'node:path';
-import { holdTenantLock, openDb, redactUrl, serverEncoding, withTenant, type Db, type TenantCtx, type TenantLock } from '../db/client.js';
+import {
+  holdTenantLock,
+  lockTenantConfig,
+  openDb,
+  redactUrl,
+  serverEncoding,
+  withTenant,
+  type Db,
+  type TenantCtx,
+  type TenantLock,
+} from '../db/client.js';
+import { writeAudit } from '../db/repo/audit.js';
 import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
 import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
-import { readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
+import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
 import { renderSystemPrompt } from '../prompt/system.js';
@@ -243,7 +254,8 @@ function snapshotOf(tenantId: string, rows: readonly CatalogRow[], gen: number):
   return deepFreeze({ tenantId, generation: gen, routes: of<Route>('route'), hotels: of<Hotel>('hotel') });
 }
 
-function publishedFrom(tenantId: string, row: SopVersionRow, sections: readonly SopSection[]): PublishedSop {
+/** 从库里的一行构造缓存用的 PublishedSop：sections 用与镜像合并之后的全部节 */
+export function toPublishedSop(tenantId: string, row: SopVersionRow, sections: readonly SopSection[]): PublishedSop {
   return deepFreeze({
     tenantId,
     versionId: row.id,
@@ -272,7 +284,7 @@ function resolvePublished(
   d: ConfigDeps,
   row: SopVersionRow,
   imageSections: readonly SopSection[],
-): { merged: SopSection[]; causes: string[] } | null {
+): { merged: SopSection[]; rendered: string; causes: string[] } | null {
   assertIntegrity(row);
   const merged = mergeWithImage(row.sections, imageSections);
   const rendered = d.render(joinSop(merged));
@@ -297,7 +309,7 @@ function resolvePublished(
   const before = row.renderInputs;
   const causes = (Object.keys(CAUSE) as (keyof RenderInputs)[]).filter((k) => !before || before[k] !== now[k]).map((k) => CAUSE[k]);
   if (!causes.length) throw startup('renderer_nondeterministic', `渲染的输入与 v${row.versionNo} 发布时完全相同，结果却不同`);
-  return { merged, causes };
+  return { merged, rendered, causes };
 }
 
 /** 启动日志按节、按条目点名库与镜像 data/ 的差异：DB 模式下改 data/ 的可编辑节或产品库不会生效，要让人看得见 */
@@ -392,20 +404,15 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     // 8
     const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections);
     logDrift(d, merged, imageSections, items);
-    // 9 启动重渲染的写入在 01 第 7 步实现；在那之前，渲染结果与存下来的不一致就拒绝启动
-    if (rerender) {
-      throw startup(
-        'contract_failed',
-        `已发布版本 v${row.versionNo} 需要启动重渲染（${rerender.causes.join('、')} 变了），这一步还没实现：先用与发布时相同的代码版本启动`,
-      );
-    }
+    // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
+    const current = rerender ? await writeRerender(d, tenant.id, row, rerender) : row;
     // 10
     loaded = {
       deps: d,
       tenantId: tenant.id,
       lock,
       imageSections: deepFreeze(imageSections),
-      sop: publishedFrom(tenant.id, row, merged),
+      sop: toPublishedSop(tenant.id, current, merged),
       catalog: snapshotOf(tenant.id, items, 0),
     };
     lockState = 'held';
@@ -422,6 +429,67 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     await d.closeDb?.().catch(() => {});
     throw e;
   }
+}
+
+/**
+ * 启动重渲染的写入（spec「启动重渲染」第 8 步）：硬性要求、锁定节、节表或工具定义变了，system 的字节跟着变，
+ * 存下来的版本就对不上当前代码了。一次失败的部署最多留下两个 rerender 版本（新镜像一个、回滚到 :prev 再一个反向的）
+ */
+async function writeRerender(
+  d: ConfigDeps,
+  tenantId: string,
+  row: SopVersionRow,
+  r: { merged: SopSection[]; rendered: string; causes: string[] },
+): Promise<SopVersionRow> {
+  const hashes = promptHashes(r.rendered, d.toolsJson, joinSop(r.merged));
+  const next = await withTenant(d.db, systemCtx(tenantId), async (tx) => {
+    await lockTenantConfig(tx);
+    await archivePublished(tx, row.id);
+    const v = await insertPublishedSop(tx, {
+      tenantId,
+      versionNo: (await maxVersionNo(tx)) + 1,
+      source: 'rerender',
+      packId: row.packId,
+      sections: r.merged,
+      basedOn: row.id,
+      renderedPrompt: r.rendered,
+      ...hashes,
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson),
+      changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
+      createdBy: null,
+      createdByName: 'system',
+    });
+    await writeAudit(tx, {
+      action: 'sop.rerender',
+      targetType: 'sop_version',
+      targetId: v.id,
+      diff: {
+        causes: r.causes,
+        fromVersionNo: row.versionNo,
+        toVersionNo: v.versionNo,
+        oldPromptHash: row.promptHash,
+        newPromptHash: v.promptHash,
+      },
+    });
+    return v;
+  });
+  console.log(`[config] 启动重渲染：v${row.versionNo} → v${next.versionNo}（${r.causes.join('、')} 变了）`);
+  return next;
+}
+
+// ---------------- 给编辑流程用 ----------------
+
+/** 只给 src/config/sop.ts、catalog.ts 用：装载时的库、租户、依赖与镜像节 */
+export function configRuntime(): { db: Db; tenantId: string; deps: ConfigDeps; imageSections: readonly SopSection[] } {
+  if (!loaded) throw new ConfigNotReadyError();
+  return { db: loaded.deps.db, tenantId: loaded.tenantId, deps: loaded.deps, imageSections: loaded.imageSections };
+}
+
+/** 只给 src/config/{sop,catalog}.ts 在事务提交之后调用；next.versionNo 不大于当前值时忽略 */
+export function replacePublishedSop(next: PublishedSop): void {
+  if (!loaded || next.versionNo <= loaded.sop.versionNo) return;
+  loaded.sop = next;
+  sopStale = false;
 }
 
 // ---------------- 锁丢失 ----------------
@@ -476,7 +544,7 @@ async function reloadOnce(cur: Loaded): Promise<void> {
   if (!row) throw new Error('库里没有已发布的 SOP');
   assertIntegrity(row);
   if (loaded !== cur) return;
-  if (row.versionNo !== cur.sop.versionNo) cur.sop = publishedFrom(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
+  if (row.versionNo !== cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
   sopStale = false;
   const next = snapshotOf(cur.tenantId, items, cur.catalog.generation);
   if (
