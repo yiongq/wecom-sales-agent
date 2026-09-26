@@ -1061,6 +1061,30 @@ check(
       .join(',') === '200,409' && race.some((r) => r.body.error === 'catalog_code_taken'),
     race.map((r) => r.text.slice(0, 60)).join(' | '),
   );
+  // console 表单删掉可选数组的最后一项、清空 intensity 的各项：rjsf 留下 [] 和全是 undefined 的对象。
+  // 要当成没填才过得了共用 schema，差异里进 unset，服务端照收；必填的数组（tags）为空时照旧留着
+  {
+    const { z } = await import('zod');
+    const { RouteSchema } = await import('../shared/catalog.js');
+    const { formPayload, diffPayload } = await import('../../console/src/catalogForm.js');
+    const required = z.toJSONSchema(RouteSchema, { io: 'input' }).required ?? [];
+    const cur = await get('r-http-race');
+    const raw = { ...structuredClone(cur.payload), aliases: [], inclusions: [], intensity: { level: undefined, hardest: undefined } };
+    const next = formPayload(raw, required);
+    const { set, unset } = diffPayload(cur.payload, next);
+    check(
+      '产品库表单：删空的可选数组、清空的可选对象当成没填，过得了 schema，差异里只有 unset',
+      RouteSchema.safeParse(next).success && JSON.stringify(set) === '{}' && unset.toSorted().join() === 'aliases,inclusions,intensity',
+      JSON.stringify({ set, unset }),
+    );
+    check('产品库表单：必填的空数组（tags）照旧留着', JSON.stringify(formPayload({ tags: [], aliases: [] }, required)) === '{"tags":[]}');
+    const r = await call('PATCH', '/catalog/route/r-http-race', { ...O, json: { rev: cur.rev, set, unset } });
+    check(
+      '产品库表单：这样的补丁 → 200，三个键都没了',
+      r.status === 200 && ['aliases', 'inclusions', 'intensity'].every((k) => !(k in r.body.payload)),
+      r.text.slice(0, 200),
+    );
+  }
   const idChange = keep(
     await call('PATCH', '/catalog/route/r-http-new', { ...O, json: { rev: created.body.rev, set: { id: 'r-http-other' } } }),
   );
