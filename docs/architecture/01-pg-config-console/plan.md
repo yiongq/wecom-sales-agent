@@ -93,14 +93,14 @@
   - `deploy.sh` 的换容器改成 `docker compose up -d app`，回滚用 `--no-deps` 起 `:prev`。
   - `deploy/backup.sh`：超级用户经 socket 导出、TOC 与行数校验、age 加密、7 天本地轮转、异地 30 天与未配置告警。
   - 对应验收 17 的镜像部分，以及 23 的环境变量部分。
-- [ ] 17. 演练与 demo 切换（2）：
+- [x] 17. 演练与 demo 切换（2）：
   - 在本机 compose 上按 spec「导入、导出与回滚」完整走一遍：首次切换、两种手动回到文件模式（同一镜像、上一个 tag）、备份恢复。
   - 然后由 owner 在线上 demo 执行切换。
   - 恢复演练（验收 19）通过或不通过，以及不敏感的证据（例如 `/healthz` 哈希是否一致、四张 RLS 表的行数比对），记进本文件「验收记录」；主机、路径、异地目标等细节另记。
   - 真实模型对比（验收 21 的手动部分）按「文件 → DB → 文件」交替跑。
   - 对应验收 18、19、21、23。
-- [ ] 18. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节
-- [ ] 19. 清理临时探针与测试
+- [x] 18. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节
+- [x] 19. 清理临时探针与测试
 - [ ] 20. owner 确认验收通过后，spec 顶部改 `Status: implemented`
 
 ## 工作量与砍法
@@ -295,7 +295,7 @@
 - `console.selftest.ts` 增至 205 条（托管 13 条）。7 个变异（去掉路径兜底、`/console/index.html` 吐原文件、缺资源回退成页面、nonce 固定、资源不带安全头、demo 匿名兜底回 401、不 301）全部变红；「去掉路径兜底」起初存活（路由层已把 `../` 规范掉），补了一条直接查读文件那一层的断言。
 - README 的部署一节改成 compose 的流程，加上后台与备份两条。
 
-### 第 17 步（2026-09-26，本机部分；线上切换与真实模型对比待 owner）
+### 第 17 步（2026-09-26）
 
 本机 compose 上按 spec「导入、导出与回滚」走了一遍，演练目录与镜像用完都删了。
 
@@ -303,7 +303,11 @@
 - **同一镜像回到文件模式（验收 18 第一例）。** 经后台接口改「话术原则」并发布（v2）、改一条线路的 highlights；重启时日志按节、按条目点名与镜像的差异（「话术原则」「内容不同 r-sichuan-lux」）。应用照常在跑时 `export-config`，同一镜像以文件模式、`SOP_PATH` / `ROUTES_PATH` / `HOTELS_PATH` 指向导出目录起来：`promptHash`、`toolsHash`、`prefixHash`、`sopHash` 与 DB 模式最后的值相同，方案书接口返回改过的 highlights。
 - **回到上一个 tag（验收 18 第二例）。** `demo-v1.1` 的分离 worktree（不建分支）：以它的 `data/sop.md` 作 `--image-sop` 导出，拷进它的 `data/`、按 spec 用 oxfmt 格式化两个 JSON，做了一次真实的提交（过了那一版的 pre-commit：format、lint、typecheck、commitlint），在那一版上跑 `pnpm test` 全过（代替 CI，没有推送），用它构建镜像、以文件模式起来：镜像里 `data/sop.md` 的 sha256 等于导出时打印的 `sopHash`，方案书接口返回改过的 highlights。`demo-v1.1` 的 `/healthz` 还没有 `config` 一栏，所以按文件的 sha256 核对，而不是按 `/healthz`。
 - **备份与恢复（验收 19）。** 有两个访客会话、改过 SOP 与 highlights 的实例上跑 `backup.sh`：三份 age 密文，没配异地时 stderr 告警。在全新的 compose 项目（新口令）上按脚本开头的固定步骤恢复：解密 → db 首次初始化由 roles.sh 建角色和库 → 以超级用户 `pg_restore --exit-on-error`（不加 `--no-owner`）→ 以 agent_owner 跑迁移（空操作，成功）→ 解开 `var/` → DB 模式启动。`/healthz` 的 `sopVersion`、`promptHash`、`prefixHash`、`sopHash` 与原库一致；四张 RLS 表的行数相同（memberships 1、sop_versions 2、catalog_items 43、audit_log 7）；改过的 highlights 还在；原 owner 账号能登录；以 agent_app 不设租户读 `catalog_items` 得 0 行；`var/` 恢复后会话数相同（2）。按日期建目录、清理 7 天前的目录、异地复制与 30 天清理已在第 16 步实跑。
-- **待 owner**：线上 demo 的切换（下面「交接」一节给了按步骤的命令），切换后在线上跑一次备份与恢复演练并把不敏感的证据记进「验收记录」；真实模型对比（验收 21 的手动部分）要花真实的 LLM 调用，按「文件 → DB → 文件」交替各至少 3 遍。
+- **线上切换（验收 23）。** 发版到 main、打 `demo-v2`，先以文件模式部署：deploy.sh 第一次起 db（roles.sh 建角色和库）、跑迁移，接管原来 `docker run` 起的容器，`/healthz` 的 revision 是 `demo-v2`、`mode = file`。建租户 `demo` 与 owner 账号，app 的 env 加 `DATABASE_URL`、`DEFAULT_TENANT_SLUG`，以 app 身份导入（SOP v1、20 条线路、23 家酒店），打印的哈希与文件模式相同。加 `CONFIG_SOURCE=db` 后 `up -d app`：`mode = db`、`sopVersion = 1`、`lock = held`，promptHash `6c202d633b60`、toolsHash `64c16fc8f464`、prefixHash `cd3cc7dab87a`、sopHash `396b2514bfbf` 都与切换前相同；app 容器的 env 里没有 owner、platform 与超级用户的凭据。后台页面、匿名接口、`chat.html`、企微客服都正常，owner 能登录，审计按顺序记着建租户、建账号、导入、登录。
+- **线上备份与恢复（验收 19）。** age 私钥只在 owner 本机，服务器上只有公钥。cron 每晚跑装在部署目录之外的备份脚本；手动跑一次：三份密文，本地按日期建目录，异地复制成功。把当天的密文取到本机解密，在全新的 compose 项目上（新口令、不配企微、LLM 走 mock）按固定步骤恢复：`/healthz` 的 `sopVersion` 与四个哈希和线上相同；memberships 1、sop_versions 1、catalog_items 43、audit_log 5 与线上相同，users、tenants 也相同；表与库的属主是 agent_owner；以 agent_owner 跑迁移是空操作；agent_app 不设租户读 `catalog_items` 得 0 行；原 owner 账号能登录；`var/` 9 个文件，匿名可见的会话数 15 与线上相同。演练用的容器、数据卷、镜像与解密出来的文件都已删掉。线上库还没有改过的 highlights，这一项由上面的本机演练覆盖。
+- **scrypt 实测（开放问题 4）。** 在服务器上用同一镜像起一次性容器（不碰线上进程）：N = 2^17、r = 8、p = 1 单次 413–499 ms，两个并发时各 640–774 ms，峰值 RSS 增量约 257 MiB（机器 2 核、内存 7.5 GiB，约 3%）。单次没超过 500 ms，内存远低于 25%，维持 N = 2^17。备选的 N = 2^16、p = 2 也测了：单次 347–491 ms、两个并发 577–1002 ms、峰值增量约 130 MiB。总计算量相同，只省内存，不省时间。
+- **真实模型对比（验收 21 手动部分）。** 结果见「验收记录」第 21 条。
+- 主机、路径、异地目标、账号与口令文件的位置记在仓库外的私有笔记里。
 
 ### 第 3、6–16 步补审（2026-09-26）
 
@@ -318,11 +322,16 @@
 - 其余约 25 条是测试漏洞，都已补上断言。每条修复和补上的断言都在隔离副本里做过变异，全部变红。
 - 分开写进 Open 的：冲突后只能丢弃重做；大区表不认后台新建的目的地；备份失败没有告警。
 
+### 第 19 步（2026-09-26）
+
+- 代码里没有留下临时探针；`__configTest`、`__passwordTest`、`__hostTest` 这类是 spec 定的测试入口，保留。
+- 补审修复用的六个 worktree（分支都已合进 dev）、变异测试的隔离副本、本机恢复演练的容器、数据卷、镜像与解密文件都已删掉；服务器上测 scrypt 的临时脚本也删了。分支本身留着。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
 
-第 18 步（2026-09-26）在 dev（`f6e051e`）的干净 clone 上逐条核对；「故意改坏」的几条都在 clone 里改、跑、还原，没碰工作区。
+第 18 步（2026-09-26）在 dev（`f6e051e`）的干净 clone 上逐条核对，依赖线上的 18、19、21、23 在第 17 步线上部分做完后补记；「故意改坏」的几条都在 clone 里改、跑、还原，没碰工作区。
 
 - 1 · 通过 · 干净 clone 上 `pnpm test` 全绿；clone 里写一份含 `CONFIG_SOURCE=db`、`DATABASE_URL`（指向不存在的库）的 `.env` 再跑，结果不变。与 `f6f525c` 相比，`src/*.selftest.ts`、`src/adapters/*.selftest.ts`、`eval/cases.json` 只有新增的三组，唯一的改动是 `server.selftest.ts` 里 prod 下匿名连 `/api/admin/stream` 改为 401；`eval/run.ts` 只多了 DB 开关和 `--cases`。
 - 2 · 通过 · `config.selftest.ts`「两种模式逐字节等价」（`promptPrefix`、`loadRoutes` / `loadHotels`、5 个只读工具、`create_order` 与 `handoff_to_human` 遮掉单号与时间后的返回和会话状态）；DB 模式 mock eval 的用例集合与文件模式相同（19/19）；`db.selftest.ts` 在真实 PG 上经 node-postgres 重复前两项。
@@ -341,17 +350,17 @@
 - 15 · 通过 · `console.selftest.ts`：cookie 属性与 `token_hash`、假时钟下空闲 12 小时与绝对 7 天、三路限流与防探测、CSRF 三种拒法、viewer 发布 403、旧参数口令升级、停用即 401、prod 下后台 SSE 要求会话；`server.selftest.ts` 的 Basic 流程不变。
 - 16 · 通过 · `console.selftest.ts`：prod 匿名处处 401（登录除外），demo 匿名的投影、不查库、没有 uuid 与姓名与草稿、`/status` 只有 mode、审计与会话列表与写请求 401、文件模式 503、安全头覆盖十种状态码（页面的 CSP 按第 12 步那条，见 Open）。
 - 17 · 通过 · 镜像里的路由在第 16 步实测（`/console/` 与深链返回 index.html、资源文件是 JS、`/api/console/nope` 404 JSON、`/chat.html` 照旧）；产物扫描进 `test`；改名 `Me.displayName` 时 console 与服务端同时报错、`@ts-expect-error` 夹具在 typecheck 范围内（第 12 步）。
-- 18 · 本机通过（同一镜像、上一个 tag 两例，外加启动日志点名差异）· 证据见第 17 步实施记录。线上部署旧 tag 的那一例待 owner。
-- 19 · 本机通过 · `/healthz` 的 sopVersion 2、promptHash `551e69c20efc`、prefixHash `a32bdae5229e`、sopHash `46b9a7fde0d3` 恢复前后相同；四张 RLS 表行数 1 / 2 / 43 / 7 相同；原账号能登录；agent_app 不设租户读到 0 行；会话数 2 相同；backup.sh 的日期目录、7 天清理、密文、未配异地告警见第 16 步。线上的恢复演练待 owner。
+- 18 · 通过 · 第 17 步本机演练：同一镜像、上一个 tag 两例都按 spec 做完，外加启动日志点名差异。上一个 tag 那一例部署在本机而不是线上：新的 deploy.sh 拒绝部署换成 compose 之前的 tag，线上回到旧版本要按 README 的步骤手工做，演练一次线上 demo 就会停在旧版本上。
+- 19 · 通过 · 本机：`/healthz` 的 sopVersion 2、promptHash `551e69c20efc`、prefixHash `a32bdae5229e`、sopHash `46b9a7fde0d3` 恢复前后相同；四张 RLS 表行数 1 / 2 / 43 / 7 相同；原账号能登录；agent_app 不设租户读到 0 行；会话数 2 相同；backup.sh 的日期目录、7 天清理、密文、未配异地告警见第 16 步。 线上（2026-09-26）：当天的加密备份恢复到新集群，哈希、四张 RLS 表行数（1 / 1 / 43 / 5）、属主、agent_app 0 行、原账号登录、会话数（15）都与线上一致，异地复制成功（第 17 步实施记录）。
 - 20 · 通过 · 干净 clone 上四个门禁全过；clone 里实测：CI=true 而没有 `PG_TEST_URL` 时 `db.selftest.ts` 失败；迁移里加未标注的 `DROP COLUMN`、`SET NOT NULL`，或改已提交的迁移，`lint` 失败并点名文件；`src/shared/` 下 import `drizzle-orm`、`src/config/` 下 import `store`、`src/engine.ts` 里出现 `app.tenant_id`，`lint` 都失败。
 - 21 · 通过 · 自动部分：DB 模式 mock eval 22 个请求的前缀哈希与 `/healthz` 全部一致。手动部分（2026-09-26，按线上参数：主模型 glm-5.3-flashx，4 秒后对冲 glm-5.2）：realOnly 的 32 条按文件、DB 交替各跑 3 遍，P90 文件模式 7.39 / 4.49 / 4.92 秒，DB 模式 4.85 / 4.86 / 3.84 秒，都不超过 8 秒；前缀缓存命中率文件 91–96%、DB 约 96%。每遍 29–31 条通过，`flow-07-kid-headcount` 两种模式都稳定不过，是模型行为，与 01 无关（见 Open）。花费约 3.7 元。
 - 22 · 通过 · 第 12 步用 Playwright 走查，截图 [walkthrough/01–08](walkthrough/)（登录 → 编辑 → 检查按节列 violation → 发布 → 历史 → 回滚；产品库锁定字段只读、改 highlights、新建 draft 并二次确认上架；审计；demo 匿名横幅、无审计入口）。
-- 23 · 本机通过 · 切换前后 promptHash `6c202d633b60`、toolsHash `64c16fc8f464`、prefixHash `cd3cc7dab87a` 相同，`mode = db`、`sopVersion = 1`，app 的 env 里没有特权凭据。线上 demo 的切换待 owner。
+- 23 · 通过 · 线上（2026-09-26）：切换前后 promptHash `6c202d633b60`、toolsHash `64c16fc8f464`、prefixHash `cd3cc7dab87a` 相同，`mode = db`、`sopVersion = 1`，app 容器的 env 里没有特权凭据。本机演练同样通过。
 
 ## Open
 
 - 已定（owner，2026-09-26，00 开放问题 3）：oxlint 在 correctness 之外开 suspicious，但关掉 `no-shadow`（139 处，几乎都在自测里）、`consistent-function-scoping`（52）、`no-underscore-dangle`（与 spec 定的 `__configTest` 这类命名冲突）、`no-async-endpoint-handlers`（针对 Express，Hono 的 async handler 是正常写法）。pedantic、perf、style、restriction、nursery 不开：全仓命中 1332 / 136 / 11097 / 1891 / 584，基本是风格噪音或误报（nursery 的 583 条是 `no-undef` 不认 TS 类型）。
-- 待 owner 在目标服务器上实测（开放问题 4，第 10 步）：两个并发登录的单次耗时与峰值 RSS 增量。本机数据见第 10 步实施记录（约 170 ms、256 MiB）。单次超过 500 ms，或峰值增量超过机器内存的 25%（1 GiB 的机器就是这条线），按开放问题 4 改用 N = 2^16、r = 8、p = 2，参数随哈希存，不用迁移。
+- 已定（开放问题 4，2026-09-26 在目标服务器上实测）：N = 2^17 单次 413–499 ms，两个并发时各 640–774 ms，峰值 RSS 增量约 257 MiB（内存的 3%）。没超过 500 ms 与 25% 两条线，维持 N = 2^17；备选的 N = 2^16、p = 2 只省内存、不省时间。数据见第 17 步实施记录。
 - 已定（owner，2026-09-26）：`/console` 页面的 CSP 在 spec 那条之外加 `style-src 'self' 'nonce-…'`（每个响应现生成），`/api/console/*` 的 CSP 不变。spec「安全头」一条已按此修订，顶部加了 Revisions。理由与实现见第 12 步实施记录。
 - 供 owner 知悉（第 15 步）：spec 的 CSV 导入「只收平铺字段」，而线路的 `itinerary` 必填且是对象数组，所以线路没法用 CSV 建；现在对线路直接拒并提示用表单，酒店照常。要支持线路，得约定逐日行程的平铺写法（例如 `itinerary.1.title` 这样的列），可以放到 02。
 - 已定（owner，2026-09-26，00 开放问题 1 的余下部分）：配了企微凭据（`WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_KF_OPEN_KFID` 任一）却没设 `DEPLOY_PROFILE` 就拒绝启动，不分配置模式；没配企微凭据时仍按 demo。已实现（`src/profile.ts`），测试在 `config.selftest.ts`（验收 1 不许动 `server.selftest.ts`），00 spec 的开放问题 1 已改成已定。
@@ -363,10 +372,15 @@
 
 ## 交接（2026-09-26）
 
-- 已完成：第 1–16 步（全部合进 dev）；第 17 步的本机演练（见实施记录）；第 18 步在干净 clone 上逐条核对了全部验收标准，除依赖线上的几处外都通过（见「验收记录」）。
+- 已完成：第 1–19 步。线上 demo 已切到 DB 模式（`demo-v2`），备份每晚跑，线上恢复演练通过；验收 1–23 全部通过（见「验收记录」）。
 - 半成品：无。
-- 阻塞：第 17 步的线上部分要 owner 在服务器上执行；第 18 步里依赖线上的几条（19、23 的线上部分，21 的手动部分）随之等待。
+- 阻塞：第 20 步要 owner 确认验收通过。
 - 下一步（owner）：
+  1. 确认验收通过，我把 spec 顶部改成 `Status: implemented`。
+  2. 看 Open 里新增的几条：SOP 冲突后只能丢弃重做（待 owner，`rebaseOnto` 已写进 UX spec 第 10 步），其余供知悉。
+  3. 备份的 age 私钥只在 owner 本机，另存一份到密码管理器：丢了它，备份就解不开。
+  4. 审阅后台 UX 重做的 spec（`docs/features/console-ux/`，Status: draft），翻 ready 后开工。
+- 上线步骤（2026-09-26 已在线上执行，留作以后新装一台机器时参考）：
   1. **先以文件模式部署能读库的镜像。** 服务器部署目录里先写好 `.env.db`（四个口令都要有，不设 `POSTGRES_DB`）、`.env.migrate`、`.env.platform`（写法见 `deploy/compose.yml` 开头；按 `format: raw` 读，值原样进容器，口令只用字母数字），`.env` 暂不加数据库变量。本机打 tag 后 `bash deploy.sh <tag>`：第一次会起 db（roles.sh 建角色和库）、跑迁移，并接管原来 `docker run` 起的容器。核对 `/healthz`：`revision` 是新 tag、`config.mode = file`，记下 `promptHash`、`toolsHash`、`prefixHash`。
   2. **建租户和账号**（在部署目录里，下同；compose 缺省用 `wecom-sales-agent:current`，就是正在跑的镜像，不用带 `APP_IMAGE`，也别手写 `:latest`）：`docker compose -f deploy/compose.yml --profile cli run --rm -T platform node --import tsx src/cli/tenant-create.ts --slug <slug> --name <名称> --pack travel`；账号用 `user-create.ts --tenant <slug> --email … --name … --role owner`，口令经 `--password-stdin` 或在终端里生成。
   3. **写 app 的 env**：`.env` 加 `DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent`、`DEFAULT_TENANT_SLUG=<slug>`，确认 `DEPLOY_PROFILE` 已显式设置。
@@ -374,7 +388,6 @@
   5. **切换**：`.env` 加 `CONFIG_SOURCE=db`，`docker compose -f deploy/compose.yml up -d app`。核对 `/healthz`：`config.mode = db`、`sopVersion = 1`，三个哈希与第 1 步相同；`docker compose -f deploy/compose.yml exec app env` 里没有 owner、platform 或超级用户的凭据（验收 23）。失败就去掉 `CONFIG_SOURCE=db` 再 `up -d app` 回到文件模式，什么也不会丢。
   6. **备份**：服务器装 age（配异地的话再装 rclone），`.env.backup` 写 `BACKUP_AGE_RECIPIENTS`（私钥不放服务器）和 `BACKUP_OFFSITE`，cron 每晚跑装在部署目录之外的那份：`15 3 * * * root bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1`（deploy.sh 每次部署时安装）；手动跑一次，按脚本开头的步骤在另一台机器或旁路项目上恢复演练，把不敏感的证据记进「验收记录」（验收 19）。
   7. **真实模型对比**（验收 21 的手动部分，要花真实的 LLM 调用）：从 `eval/cases.json` 过滤出 realOnly 用例写到仓库外的文件，按「文件 → DB → 文件」交替各至少跑 3 遍：文件模式 `CONFIG_SOURCE=file tsx eval/run.ts --cases <文件>`，DB 模式再加 `CONFIG_TEST_DB=pglite`。每遍记下输出里的 P90 和前缀缓存命中率，两种模式的 P90 都不超过 8 秒算通过，数字记进「验收记录」。
-  8. 复核 Open 里第 12、15 步的两条。线上部分（验收 18、19、23 的线上一例与 21 的手动部分）做完把结果补进「验收记录」，我再勾第 17、18 步、做第 19 步。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：
 ## 交接（YYYY-MM-DD）

@@ -1316,7 +1316,7 @@ SOP：
 1. **`test` 新增三组自测（已定，2026-09-25）。** owner 确认：门禁名不变，`test` 脚本里多串数据库、配置源、鉴权三组自测；验收 1 与「测试与 CI」按现文执行。
 2. **PGlite 对 `CREATE ROLE`、`SECURITY DEFINER`、`GRANT`、`sha256()` 与触发器的支持程度。** 第 2 步实测。不支持授权语句时，`openTestDb()` 跳过这类语句（PGlite 反正以超级用户运行），这些行为只由真实 Postgres 上的套件覆盖；迁移文件本身不分叉。
 3. **console 用 `import type { ConsoleApp }` 引服务端类型时，console 的 tsc 会把服务端源码和 `@types/node` 一起拉进类型检查。** 第 12 步实测。console 的类型检查超过 60 秒，或出现全局类型冲突，就改成服务端用 `tsc --emitDeclarationOnly` 产出 d.ts，console 只引 d.ts。
-4. **scrypt N = 2^17 在目标服务器上的耗时和内存。** 第 10 步在服务器上实测两个并发登录。单次超过 500 ms，或峰值 RSS 增量超过机器内存的 25%，就改用 OWASP 列出的等价组合 N = 2^16、r = 8、p = 2；参数随哈希存，旧哈希照样能校验，登录成功时经 `auth_password_rehash` 升级，不需要迁移。
+4. **scrypt N = 2^17 在目标服务器上的耗时和内存（已定，2026-09-26）。** 实测单次 413–499 ms、峰值 RSS 增量约为内存的 3%，没超过下面两条线，维持 2^17，数据见 plan 第 17 步。原文： 第 10 步在服务器上实测两个并发登录。单次超过 500 ms，或峰值 RSS 增量超过机器内存的 25%，就改用 OWASP 列出的等价组合 N = 2^16、r = 8、p = 2；参数随哈希存，旧哈希照样能校验，登录成功时经 `auth_password_rehash` 升级，不需要迁移。
 5. **锁定字段按什么顺序开放。** 02 有了报价快照之后，`priceFrom`、`bestSeason`、`nightlyFrom`、`inclusions`、`exclusions` 可以先开。`title`、`destination`、`days`、`aliases`、`segments`、`maxAltitude`、`overseas` 还牵动护栏的线路识别和推荐，要等护栏有了「改名、改目的地」的回归用例才开。由 02 的 spec 逐字段定。
 6. **`rerender` 自动发布，对生产租户和多租户是否合适。** demo 和 01 期间自动发布。在 02 spec 开工前定：生产实例是否改成「生成草稿，确认之前拒绝启动」。04 同一部署承载多个租户时，「一个租户契约不过就整个进程拒绝启动」会挡住所有租户：04 要改成按租户隔离，出问题的租户标记为 degraded 并告警，其他租户照常服务，rerender 按 `(tenant, render_inputs)` 做到幂等。
 7. **可编辑节预算 120%。** 沿用迁移计划里的数。01 验收时，或 `over_budget` 累计拦下 5 次时复查；调整只改常量，不动表。
