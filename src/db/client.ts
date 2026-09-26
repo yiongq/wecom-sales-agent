@@ -54,9 +54,12 @@ export function assertPgUrl(url: string): void {
   if (!/^postgres(ql)?:\/\//.test(url)) throw new Error('数据库连接串只接受 postgres:// 或 postgresql://');
 }
 
-/** 连接串脱敏：去掉口令，只留用户、主机和库名，供日志与报错用 */
+/**
+ * 连接串脱敏：去掉口令，只留用户、主机和库名，供日志与报错用。口令一直抹到最后一个 @：node-postgres 按 URL 规则
+ * 在最后一个 @ 处切开，口令里没转义的 @ 照样连得上。查询参数里的 password= 它同样认，一并抹掉
+ */
 export function redactUrl(url: string): string {
-  return url.replace(/^(postgres(?:ql)?:\/\/[^:/@]*):[^@]*@/, '$1:***@');
+  return url.replace(/^(postgres(?:ql)?:\/\/[^:/?#]*):.*@/s, '$1:***@').replace(/([?&]password=)[^&#]*/gi, '$1***');
 }
 
 /** 只接受 postgres:// 与 postgresql://；PGlite 只经 testing.ts 进来。打开时先连一次，连不上当场抛 */
@@ -178,7 +181,7 @@ export async function lockTenantConfig(tx: Tx): Promise<void> {
 // ---------------- 租户锁 ----------------
 
 export interface TenantLock {
-  /** 锁连接断开时回调；release 之后不再回调 */
+  /** 锁连接断开时回调；订阅时已经断开就当场回调一次；release 之后不再回调 */
   onLost(cb: () => void): void;
   /** 重连并重取：'ok' 恢复持锁；'held_by_other' 连上了但锁在别人手里；'unreachable' 还连不上 */
   reacquire(): Promise<'ok' | 'held_by_other' | 'unreachable'>;
@@ -269,6 +272,8 @@ export async function holdTenantLock(url: string, tenantId: string, opts: { keep
   return {
     onLost(cb) {
       lostCallbacks.push(cb);
+      // 断开事件只发一次：订阅时已经断了（还没重取回来）就当场补一次，晚订阅的不会永远以为持着锁
+      if (lost && !released) cb();
     },
     reacquire() {
       if (released) return Promise.reject(new Error('租户锁已释放'));
