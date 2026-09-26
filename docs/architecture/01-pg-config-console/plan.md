@@ -33,7 +33,7 @@
   - 仓库加 `.gitattributes`（`data/sop.md`、`data/*.json` 设 `text eol=lf`）。
   - 新建 `src/config/config.selftest.ts`（先设临时 `VAR_DIR` 再动态 import），写这些断言：`data/sop.md` 切成 11 节并逐字节往返；每节已是规范形，GET→PUT 往返不变；各类编码问题被拒；每种 violation code 各一例；源码扫描的漂移测试；`SOP_KNOWN_FIELDS` 出现在 `KNOWN_FIELD_SOURCES` 里；当前 `data/sop.md` 零 violation。
   - 对应验收 6 的纯函数部分，以及 3 的编码部分。
-- [ ] 5. 产品库纯内核（1.5）：
+- [x] 5. 产品库纯内核（1.5）：
   - `src/shared/catalog-types.ts`：`Route`、`Hotel` 及嵌套类型搬出，`types.ts` 再导出；`Route` 补上 `overseas?: boolean`。
   - `src/shared/season.ts`：`peakMonths` 搬出，`tools.ts` 再导出。
   - `src/shared/catalog.ts`：strict 的 `RouteSchema` / `HotelSchema`（`itinerary` 条数等于 `days`、`bestSeason` 可解析、不用 coerce）、`ALWAYS_LOCKED`、`LOCKED_WHEN_ACTIVE`、`lockedFieldChanges`、递归的 `mergeKeyOrder`、补丁的应用函数。
@@ -179,6 +179,15 @@
 - 源码里的特殊字符一律写成 `\u` 转义：写文件的工具会把输入里的 `\uXXXX` 先解码成真实字符，第一版 `sections.ts` 就这样混进了它自己要拒绝的 U+2028。顺带发现 `src/retrieval.ts` 的索引指纹用真实的 NUL / SOH 字符做分隔符（git 因此把它当二进制），换成了 `\u0000` / `\u0001` 转义，字符串的值与指纹都不变。
 - `src/config/config.selftest.ts` 106 条断言，已接进 `test`。两条漂移守卫按 AST 扫描而不是正则：`engine.selftest.ts` 里 `sys` / `sop` 的每一处用法都必须认得出，`buildSystemPrompt()` 必须赋给 `sys` 或 `sop`，格式化器把长短语折成多行也照样认；`SOP_KNOWN_FIELDS` 只认源文件里的标识符与字符串字面量，注释里提到不算。手工验证（验收 6 的两条）：在 `engine.selftest.ts` 里加一条没进清单的 `sys.includes('…')`，测试失败并点出这个短语；在锁定节里点名 `routeMissReason`，测试失败并点出它。另验过：被 oxfmt 折行的长短语、换了变量名的断言、只在注释里还留着的旧字段名，都会失败。
 - 提交前的对抗审查（spec 对照、构造边界输入、变异测试）确认 9 条，都在测试与漂移守卫上，已修；切分、规范化、契约逻辑本身没有确认成立的缺陷。驳回的包括 `iPhone` 这类词被当成字段（spec 规定如此）、零宽字符不在编码检查的拒绝清单里（spec 的清单里没有）。
+
+### 第 5 步（2026-09-26）
+
+- `Route`、`Hotel` 连同 `SalesSegment`、`SALES_SEGMENTS` 搬到 `src/shared/catalog-types.ts`（`Route` 补上 `overseas?`），`peakMonths` 搬到 `src/shared/season.ts`，`types.ts` 与 `tools.ts` 再导出，原有 import 不用改。
+- `src/shared/catalog.ts` 的 schema 比 spec 多几处收紧，现有 20 条线路、23 家酒店全部满足：`id` 与库里 `code` 的 CHECK 同一条正则；`highlights`、`segments` 至少一项；所有字符串非空；`itinerary` 必填，天号从 1 起连续（方案书和行程书按它排）。`tags` 允许为空。
+- `mergeKeyOrder` 按「定义」而不是「赋值」写键：请求原文里的 `__proto__` 只是个普通键，随后被 strict schema 拒掉，不会改掉结果对象的原型。`applyCatalogPatch` 遇到同一字段既 `set` 又 `unset` 直接拒。
+- `deepFreeze` 放在 `src/shared/freeze.ts`；已冻结的对象也往下走（子对象未必冻结），用 `WeakSet` 防环。文件模式下 `loadRoutes` / `loadHotels` 返回冻结对象后，全部自测照常通过，没有发现别的原地修改；`searchHotels` 在第 1 步已改成 `toSorted`。grep 过对条目对象的赋值、`push` / `splice` 与 `Object.assign`，也没有。
+- `config.selftest.ts` 增至 154 条：现有条目都过 schema、14 种不合规被拒、锁定字段比对（含「国内」这一项、只换键序不算改、draft 只锁 `id`）、嵌套键序合并、补丁、每条线路和酒店的表单往返逐字节不变、验收 4 的文件模式部分。
+- 提交前的审查 agent 没跑起来（子 agent 撞上了每周用量上限），改为自己做变异测试：拆掉冻结的递归、跳过已冻结的父对象、按赋值写键、忽略「国内」、数组不递归合并、丢掉新增键、不查天数、酒店 schema 不 strict、酒店不冻结，全部变红。「锁定字段按 JSON 比较」一条存活，是等价变异：锁定表里没有对象类型的字段。「不查天数」起初存活（测试删的是第一天，被天号检查先拦下），已改测试。
 
 ## 验收记录
 
