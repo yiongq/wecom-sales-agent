@@ -1090,12 +1090,6 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     d({ knownFields: SOP_KNOWN_FIELDS.filter((x) => x !== 'payUrl') }),
     'payUrl',
   );
-  await expectFail(
-    '硬性要求变了、要重渲染（第 7 步之前拒绝启动）',
-    'contract_failed',
-    d({ render: (s) => `${renderSystemPrompt(s)}\n- 新加的一条` }),
-    'hard_rules',
-  );
 
   check(
     'boot：企微 cursor 文件的内容与 mtime 都没动',
@@ -1103,6 +1097,355 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
   cfg.__configTest.reset();
 }
+// ---------------- SOP 编辑流程（第 7 步：验收 5、6、7、8，以及 10 的 SOP 部分） ----------------
+{
+  const sopApi = await import('./sop.js');
+  const { observeRequests } = await import('../llm.js');
+  const reinit = async (over: Partial<ConfigDeps> = {}): Promise<void> => {
+    cfg.__configTest.reset();
+    await cfg.initConfig(testConfigDeps(t, over));
+  };
+  await reinit();
+  const tenantId = cfg.currentCatalog().tenantId;
+  const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营甲', ip: null } };
+  const specOfKey = (key: string) => TRAVEL_SOP_SECTIONS.find((s) => s.key === key)!;
+  const bodyOf = (sections: readonly SopSection[], key: string): string =>
+    sectionBody(
+      sections.find((s) => s.key === key)!,
+      specOfKey(key),
+    );
+  const audits = async (action: string): Promise<number> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ n: number }>('select count(*)::int as n from audit_log where tenant_id = $1 and action = $2', [
+            tenantId,
+            action,
+          ])
+        ).rows[0]!.n,
+    );
+  const versions = async (): Promise<number> =>
+    asSuper(
+      async () =>
+        (await t.pg.query<{ n: number }>('select count(*)::int as n from sop_versions where tenant_id = $1', [tenantId])).rows[0]!.n,
+    );
+  const errName = async (p: Promise<unknown>): Promise<string> => {
+    try {
+      await p;
+      return 'ok';
+    } catch (e) {
+      return e instanceof Error ? e.constructor.name : String(e);
+    }
+  };
+  // 干净起点：前面的测试可能留下了草稿
+  const leftover = (await sopApi.getSopOverview(ctx)).draft;
+  if (leftover) await sopApi.discardSopDraft(ctx, { rev: leftover.rev });
+
+  // 验收 5：编辑「话术原则」并发布，下一轮 chat() 收到的 system 就是新版本的 rendered_prompt
+  const v0 = cfg.currentSop();
+  const overview = await sopApi.getSopOverview(ctx);
+  check(
+    'SOP：概览里有已发布版本、没有草稿',
+    overview.published.id === v0.versionId && overview.draft === null && overview.budget.chars <= overview.budget.limit,
+  );
+  const toneBody = `${bodyOf(overview.published.sections, 'tone')}\n\n新加一句话术：先把客户的原话复述一遍再推荐。`;
+  const draft1 = await sopApi.saveSopDraft(ctx, { basedOn: v0.versionId, rev: null, edits: [{ key: 'tone', body: toneBody }] });
+  check('SOP：新建草稿，rev 为 1', draft1.status === 'draft' && draft1.rev === 1 && draft1.basedOn === v0.versionId);
+  const draft2 = await sopApi.saveSopDraft(ctx, {
+    basedOn: v0.versionId,
+    rev: 1,
+    edits: [{ key: 'tone', body: `${toneBody}\n再补一句。` }],
+  });
+  check('SOP：再次保存草稿，rev 加 1', draft2.rev === 2);
+  check(
+    'SOP：保存时带旧 rev → SopRevConflictError',
+    (await errName(sopApi.saveSopDraft(ctx, { basedOn: v0.versionId, rev: 1, edits: [] }))) === 'SopRevConflictError',
+  );
+  check(
+    'SOP：保存时点名锁定节 → SopLockedSectionError',
+    (await errName(sopApi.saveSopDraft(ctx, { basedOn: v0.versionId, rev: 2, edits: [{ key: 'price-rules', body: 'x' }] }))) ===
+      'SopLockedSectionError',
+  );
+  check('SOP：草稿不算进缓存', cfg.currentSop().versionNo === v0.versionNo);
+  const beforePublishAudits = await audits('sop.publish');
+  const v1 = await sopApi.publishSopDraft(ctx, { rev: 2, changeNote: '话术加一句' });
+  check(
+    'SOP：发布拿到比原来大的版本号，缓存跟着换',
+    v1.versionNo! > v0.versionNo && cfg.currentSop().versionNo === v1.versionNo && cfg.currentSop().promptHash === v1.promptHash,
+  );
+  check('SOP：发布写一行审计', (await audits('sop.publish')) === beforePublishAudits + 1);
+  const seenSystems: string[] = [];
+  observeRequests((r) => void seenSystems.push(r.system));
+  await handleMessage('sim-cfgtest-publish-0001', '想去三亚玩几天', 'simulator');
+  observeRequests(null);
+  const published = cfg.currentSop();
+  check(
+    'SOP：下一轮 chat() 收到的 system 等于新版本的 rendered_prompt',
+    seenSystems.length > 0 && seenSystems.every((sys) => sys === published.renderedPrompt) && published.renderedPrompt.includes('再补一句'),
+  );
+  check('SOP：/healthz 报的版本号跟着变', cfg.prefixSummary(() => ({ system: '', tools: '', sop: '' })).sopVersion === v1.versionNo);
+  check('SOP：发布变更说明不能为空', (await errName(sopApi.publishSopDraft(ctx, { rev: 1, changeNote: '  ' }))) === 'SopInputError');
+
+  // 回滚到发布前的版本：它之后没有 rerender，prompt_hash 与它相同
+  const beforeRollbackAudits = await audits('sop.rollback');
+  const back = await sopApi.rollbackSop(ctx, { versionId: v0.versionId, changeNote: '回到导入版本' });
+  check(
+    'SOP：回滚生成新的版本号，prompt_hash 等于目标版本的',
+    back.versionNo! > v1.versionNo! && back.promptHash === v0.promptHash && back.sameHashAsTarget && back.source === 'rollback',
+  );
+  check(
+    'SOP：回滚写一行审计、缓存跟着换',
+    (await audits('sop.rollback')) === beforeRollbackAudits + 1 && cfg.currentSop().versionNo === back.versionNo,
+  );
+  // 回滚到草稿或丢弃的版本 → 404
+  const d3 = await sopApi.saveSopDraft(ctx, { basedOn: back.id, rev: null, edits: [{ key: 'objections', body: '临时草稿。' }] });
+  check(
+    'SOP：回滚到草稿 → SopNotFoundError',
+    (await errName(sopApi.rollbackSop(ctx, { versionId: d3.id, changeNote: 'x' }))) === 'SopNotFoundError',
+  );
+  const beforeDiscard = await audits('sop.discard');
+  await sopApi.discardSopDraft(ctx, { rev: d3.rev });
+  check(
+    'SOP：丢弃草稿写一行审计',
+    (await audits('sop.discard')) === beforeDiscard + 1 && (await sopApi.getSopOverview(ctx)).draft === null,
+  );
+  check(
+    'SOP：回滚到已丢弃的版本 → SopNotFoundError',
+    (await errName(sopApi.rollbackSop(ctx, { versionId: d3.id, changeNote: 'x' }))) === 'SopNotFoundError',
+  );
+  const history = await sopApi.listSopVersions(ctx, { limit: 100 });
+  check(
+    'SOP：历史只列已发布与已归档，按版本号倒序',
+    history.every((v) => v.status === 'published' || v.status === 'archived') &&
+      history.every((v, i) => i === 0 || history[i - 1]!.versionNo! > v.versionNo!),
+  );
+
+  // 验收 6：五种过不了闸的草稿——检查返回 violations，发布抛 SopContractError，已发布版本与缓存都不变
+  const bad: [string, string, string][] = [
+    ['tone', '明显超出我们现有线路的范围，就转人工。', 'phrase_forbidden'],
+    ['objections', '嫌贵就调 search_route 再看看。', 'unknown_tool'],
+    ['objections', '先调 create_refund 退一部分。', 'unknown_tool'],
+    ['objections', '看结果里的 destinationMissing。', 'unknown_field'],
+    ['wechat-style', '正文\n## 新节\n多出来的一节', 'structure'],
+    ['tone', '多'.repeat(5000), 'over_budget'],
+  ];
+  for (const [key, extra, code] of bad) {
+    const cur = cfg.currentSop();
+    const d = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: null,
+      edits: [{ key, body: `${bodyOf(cur.sections, key)}\n${extra}` }],
+    });
+    const checked = await sopApi.checkSopDraft(ctx);
+    check(
+      `闸：草稿里写进「${extra.slice(0, 16)}」→ 检查报 ${code}`,
+      checked.violations.some((v) => v.code === code),
+      checked.violations.map((v) => v.code).join(','),
+    );
+    check(
+      `闸：这份草稿发布 → SopContractError，已发布版本与缓存不变（${code}）`,
+      (await errName(sopApi.publishSopDraft(ctx, { rev: d.rev, changeNote: '想发布' }))) === 'SopContractError' &&
+        cfg.currentSop().versionNo === cur.versionNo,
+    );
+    await sopApi.discardSopDraft(ctx, { rev: d.rev });
+  }
+
+  // 验收 10：两个并发的首次保存草稿，一个成功、一个 409，没有 500
+  {
+    const cur = cfg.currentSop();
+    const save = (text: string) => sopApi.saveSopDraft(ctx, { basedOn: cur.versionId, rev: null, edits: [{ key: 'tone', body: text }] });
+    const results = await Promise.allSettled([save('甲的版本。'), save('乙的版本。')]);
+    const names = results.map((r) => (r.status === 'fulfilled' ? 'ok' : (r.reason as Error).constructor.name)).toSorted();
+    check('并发：两个首次保存一个成功、一个 SopRevConflictError', names.join(',') === 'SopRevConflictError,ok', names.join(','));
+    const open = (await sopApi.getSopOverview(ctx)).draft!;
+    await sopApi.discardSopDraft(ctx, { rev: open.rev });
+  }
+
+  // 验收 10：草稿打开期间别人改了另一节（这里用回滚制造「上游改了 tone」）→ 自动 rebase，两处改动都在
+  {
+    const cur = cfg.currentSop();
+    const d = await sopApi.saveSopDraft(ctx, {
+      basedOn: cur.versionId,
+      rev: null,
+      edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n草稿加的异议处理。` }],
+    });
+    const up = await sopApi.rollbackSop(ctx, { versionId: v1.id, changeNote: '上游：tone 回到加过话术的版本' });
+    const checked = await sopApi.checkSopDraft(ctx);
+    check('rebase：检查报需要 rebase、没有冲突', checked.rebase.needed && checked.rebase.conflicts.length === 0);
+    const merged = await sopApi.publishSopDraft(ctx, { rev: d.rev, changeNote: '发布草稿' });
+    check(
+      'rebase：发布成功，上游的 tone 与草稿的 objections 都在',
+      merged.versionNo! > up.versionNo! &&
+        bodyOf(merged.sections, 'tone').includes('再补一句') &&
+        bodyOf(merged.sections, 'objections').includes('草稿加的异议处理'),
+    );
+    // 同一节被上游改了 → 409，点名这一节并带当前正文
+    const d2 = await sopApi.saveSopDraft(ctx, { basedOn: merged.id, rev: null, edits: [{ key: 'tone', body: '草稿改的话术。' }] });
+    await sopApi.rollbackSop(ctx, { versionId: v0.versionId, changeNote: '上游：tone 回到原样' });
+    check('rebase：检查报冲突的节', (await sopApi.checkSopDraft(ctx)).rebase.conflicts.join(',') === 'tone');
+    let conflict: unknown = null;
+    try {
+      await sopApi.publishSopDraft(ctx, { rev: d2.rev, changeNote: '发布' });
+    } catch (e) {
+      conflict = e;
+    }
+    check(
+      'rebase：改了同一节 → SopConflictError，点名 tone 并带当前正文',
+      conflict instanceof sopApi.SopConflictError &&
+        conflict.keys.join(',') === 'tone' &&
+        conflict.current.some((s) => s.key === 'tone' && s.text === cfg.currentSop().sections.find((x) => x.key === 'tone')!.text),
+    );
+    await sopApi.discardSopDraft(ctx, { rev: d2.rev });
+  }
+
+  // 验收 8 与验收 7：启动重渲染。草稿打开期间先插一个回滚版本，再以改过锁定节的镜像启动（产生 rerender），最后发布草稿
+  {
+    const cur = cfg.currentSop();
+    const edited = `${bodyOf(cur.sections, 'objections')}\n重渲染期间草稿里的编辑。`;
+    const d = await sopApi.saveSopDraft(ctx, { basedOn: cur.versionId, rev: null, edits: [{ key: 'objections', body: edited }] });
+    const rb = await sopApi.rollbackSop(ctx, { versionId: v1.id, changeNote: '草稿打开期间的回滚' });
+    const lockedImage = md.replace(
+      '## 订单：改单、给别人再订、重发链接\n\n',
+      '## 订单：改单、给别人再订、重发链接\n\n改单时先核对原订单号。\n',
+    );
+    const beforeRerender = await audits('sop.rerender');
+    await reinit({ imageSop: lockedImage });
+    const rr = cfg.currentSop();
+    const rrRow = (await sopApi.listSopVersions(ctx, { limit: 1 }))[0]!;
+    check(
+      '重渲染：锁定节改了 → 启动时发布一个 rerender 版本',
+      rrRow.source === 'rerender' && rrRow.versionNo! > rb.versionNo! && rr.versionNo === rrRow.versionNo,
+    );
+    check('重渲染：多一行 system 审计，causes 是 locked_sections', (await audits('sop.rerender')) === beforeRerender + 1);
+    const cause = await asSuper(
+      async () =>
+        (
+          await t.pg.query<{ diff: { causes: string[] }; actor_kind: string }>(
+            `select diff, actor_kind from audit_log where tenant_id = $1 and action = 'sop.rerender' order by id desc limit 1`,
+            [tenantId],
+          )
+        ).rows[0]!,
+    );
+    check(
+      '重渲染：审计的 causes 与 actor_kind',
+      cause.diff.causes.join(',') === 'locked_sections' && cause.actor_kind === 'system',
+      JSON.stringify(cause),
+    );
+    check('重渲染：运营编辑过的可编辑节原样保留', bodyOf(rr.sections, 'tone') === bodyOf(rb.sections, 'tone'));
+    const after = await sopApi.publishSopDraft(ctx, { rev: d.rev, changeNote: '重渲染之后发布草稿' });
+    check(
+      '验收 7：草稿拿到的版本号大于期间插入的回滚与 rerender 版本',
+      after.versionNo! > rrRow.versionNo! && rrRow.versionNo! > rb.versionNo!,
+    );
+    check(
+      '验收 10：发布结果含新锁定节和草稿里的编辑',
+      joinSop(after.sections).includes('改单时先核对原订单号') &&
+        bodyOf(after.sections, 'objections') === `${edited}\n\n`.replace(/\n+$/, '\n\n'),
+    );
+
+    // 回滚到重渲染之前的版本：中间隔了一次 rerender，哈希与目标不同
+    const cross = await sopApi.rollbackSop(ctx, { versionId: v0.versionId, changeNote: '跨过 rerender 回滚' });
+    check('回滚：中间插入过 rerender → sameHashAsTarget 为 false', !cross.sameHashAsTarget && cross.promptHash !== v0.promptHash);
+
+    // 硬性要求变了 → causes 是 hard_rules
+    await reinit({ imageSop: lockedImage, render: (s) => `${renderSystemPrompt(s)}\n- 新加的一条硬性要求` });
+    const hard = await asSuper(
+      async () =>
+        (
+          await t.pg.query<{ diff: { causes: string[] } }>(
+            `select diff from audit_log where tenant_id = $1 and action = 'sop.rerender' order by id desc limit 1`,
+            [tenantId],
+          )
+        ).rows[0]!,
+    );
+    check(
+      '重渲染：硬性要求变了 → causes 是 hard_rules',
+      hard.diff.causes.join(',') === 'hard_rules' && cfg.currentSop().renderedPrompt.endsWith('- 新加的一条硬性要求'),
+    );
+
+    // 只改工具定义 → prompt_hash 不变，tools_hash 与 prefix_hash 变了
+    const beforeTools = cfg.currentSop();
+    const tools = JSON.parse(imageCode().toolsJson) as { function: { description: string } }[];
+    tools[0]!.function.description += '（改了一个字）';
+    await reinit({
+      imageSop: lockedImage,
+      render: (s) => `${renderSystemPrompt(s)}\n- 新加的一条硬性要求`,
+      toolsJson: JSON.stringify(tools),
+    });
+    const onlyTools = cfg.currentSop();
+    check(
+      '重渲染：只改工具定义 → prompt_hash 不变，tools_hash 与 prefix_hash 变了',
+      onlyTools.versionNo > beforeTools.versionNo &&
+        onlyTools.promptHash === beforeTools.promptHash &&
+        onlyTools.toolsHash !== beforeTools.toolsHash &&
+        onlyTools.prefixHash !== beforeTools.prefixHash,
+    );
+
+    // 失败分支：库都不变
+    const count = await versions();
+    const failing: [string, Partial<ConfigDeps>, string][] = [
+      ['改动让契约不过（删掉「没有节假日价」）', { imageSop: lockedImage.replace('没有节假日价', '节假日另议') }, 'contract_failed'],
+      [
+        'toolNames 去掉了 SOP 点名的一项',
+        { imageSop: lockedImage, toolNames: toolNames.filter((x) => x !== 'create_quote') },
+        'contract_failed',
+      ],
+      [
+        'knownFields 去掉了 SOP 点名的一项',
+        { imageSop: lockedImage, knownFields: SOP_KNOWN_FIELDS.filter((x) => x !== 'payUrl') },
+        'contract_failed',
+      ],
+    ];
+    let k = 0;
+    failing.push([
+      '每次输出不同的 render',
+      { imageSop: lockedImage, render: (s) => `${renderSystemPrompt(s)}${k++}` },
+      'renderer_nondeterministic',
+    ]);
+    for (const [what, over, reason] of failing) {
+      cfg.__configTest.reset();
+      let got = 'ok';
+      try {
+        await cfg.initConfig(testConfigDeps(t, over));
+      } catch (e) {
+        got = e instanceof cfg.ConfigStartupError ? e.reason : String(e);
+      }
+      check(`重渲染：${what} → ${reason}，库不变`, got === reason && (await versions()) === count, got);
+    }
+    // 产品库装载失败（没有 active 线路）时，即使 SOP 需要 rerender，库里也没有新版本
+    const noRoutesCount = await asSuper(
+      async () =>
+        (
+          await t.pg.query<{ n: number }>(
+            `select count(*)::int as n from sop_versions v join tenants x on x.id = v.tenant_id where x.slug = 'no-routes'`,
+          )
+        ).rows[0]!.n,
+    );
+    cfg.__configTest.reset();
+    let nr = 'ok';
+    try {
+      await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'no-routes', render: (s) => `${renderSystemPrompt(s)}\n- 新加的一条硬性要求` }));
+    } catch (e) {
+      nr = e instanceof cfg.ConfigStartupError ? e.reason : String(e);
+    }
+    const noRoutesAfter = await asSuper(
+      async () =>
+        (
+          await t.pg.query<{ n: number }>(
+            `select count(*)::int as n from sop_versions v join tenants x on x.id = v.tenant_id where x.slug = 'no-routes'`,
+          )
+        ).rows[0]!.n,
+    );
+    check('重渲染：没有 active 线路时即使要重渲染也不写新版本', nr === 'no_active_routes' && noRoutesAfter === noRoutesCount, nr);
+
+    // 验收 3 的最后一条：先导入、再以 DB 模式启动产生 rerender 版本、再 import：仍是退出码 0
+    await reinit({ imageSop: md });
+    const reimport = await imp('fresh');
+    check('导入：租户已有 rerender 版本时再 import，仍是退出码 0', reimport.code === EXIT.ok, reimport.message);
+  }
+  cfg.__configTest.reset();
+}
+
 await t.close();
 
 if (fails.length) {
@@ -1110,6 +1453,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染）`,
 );
 process.exit(0);

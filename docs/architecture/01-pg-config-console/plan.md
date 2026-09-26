@@ -50,7 +50,7 @@
   - 真实 PG 部分补上：node-postgres 下的逐条字节比较；以子进程执行 import / export 并断言退出码。
   - `.env.example` 补上 spec 列的变量，注明 owner / platform 连接串不写进 `.env`。
   - 对应验收 1、2、3、4、13、14，以及 21 的自动部分。
-- [ ] 7. SOP 编辑流程（3）：
+- [x] 7. SOP 编辑流程（3）：
   - `src/db/repo/sop.ts`、`repo/audit.ts`；`src/config/sop.ts` 实现草稿（`rev`）、锁定节 422、检查（200 带 violations）、发布事务（配置写锁、三方 rebase、合并后写回 `sections`、发布时分配版本号、四个哈希与 `render_inputs`）、回滚（目标状态校验、`sameHashAsTarget`）、丢弃、审计。提交之后才替换缓存。
   - 启动重渲染从占位改成真实实现：完整性、渲染两遍、每次启动都跑契约、按 `render_inputs` 定 `causes`、最后一步才写入。
   - 对应验收 5、6、7 的其余部分、8，以及 10 的 SOP 部分，都先在 PGlite 上用函数调用测。
@@ -200,6 +200,14 @@
 - 验收覆盖：验收 1（与 `f6f525c` 相比原有自测、适配器自测、`eval/cases.json` 零 diff，`eval/run.ts` 正好两处改动）；验收 2（PGlite 上全部四项，16 个观测项逐字节相同；node-postgres 上重做前两项）；验收 3（往返、七类坏文件、重复导入、内容不一致 → 2、持锁 → 3、`--dry-run`，真实 PG 上以子进程跑三个命令行；「先以 DB 模式启动产生 rerender 版本再导入仍是 0」要等第 7 步的重渲染写入）；验收 4、13（全部分支，含库里多一条迁移时照常启动并 warn、连接串口令不进日志、企微 cursor 不动）、14，以及 21 的自动部分。
 - `config.selftest.ts` 247 条、`db.selftest.ts` 真实 PG 上 282 条。另在本机 pgvector:pg17 容器上按生产路径端到端走了一遍：roles.sql → 以 agent_owner 迁移 → `tenant-create` → `import-config` → `CONFIG_SOURCE=db` 起服务器，`/healthz` 报 `mode: db` 且哈希与文件模式相同，网页对话正常；第二个实例以 `lock_held` 拒绝启动；SIGTERM 优雅退出后锁释放，第三个实例正常装载。
 - 子 agent 仍撞在每周用量上限上，审查改为自己做变异测试：不查完整性、拿不到锁照常启动、不查迁移、不查特权凭据、快照不冻结、锁丢了不标 lost、重读不单飞、不查 active 线路、导入不严格解码、导入不查锁定节、DB 模式下酒店仍读文件、装载失败后仍监听，全部变红。其中「酒店仍读文件」起初存活（两种模式数据相同，等价比较分不出来），已补「`loadHotels()` 返回快照本身」一条。
+
+### 第 7 步（2026-09-26）
+
+- `src/config/sop.ts` 按 spec 的接口实现，另加两个错误类：`SopRevConflictError`（草稿 rev 对不上、草稿或发布版本在打开之后变了 → 409）和 `SopInputError`（点名不存在的节、变更说明为空 → 422）。写函数共用一个外壳：先确认持着租户锁（`assertConfigWritable`），再开事务、取配置写锁；回调跑完而 COMMIT 抛错时结果不明，调 `reloadFromDb()`。提交之后才 `replacePublishedSop()`。
+- 与验收 6 对齐的一处取舍：草稿保存只做规范化与编码检查（编码不合格直接拒，jsonb 也存不下），空正文、行首「## 」照存，由检查报 `structure`、发布时拒绝。为此 `sections.ts` 拆出不查结构的 `rebuildSection`，`mergeWithImage` 也改用它：结构合规与否统一交给契约检查，合法数据的合并结果逐字节不变。
+- 启动重渲染从占位改成真实写入：全部只读检查和产品库装载都通过之后，一个事务里归档旧版本、发布 `source='rerender'` 的新版本（运营编辑的可编辑节原样保留）、写一行 system 审计（`causes`、新旧版本号与 `prompt_hash`）。
+- 每个租户只能有一份草稿，「草稿打开期间别人发布了改动」在测试里用回滚制造：回滚直接插入已发布版本，草稿的 `based_on` 随之过期，发布时走三方 rebase。
+- `config.selftest.ts` 增至 295 条，覆盖验收 5、6（五种草稿，另加 `create_refund`）、7 的其余部分、8（锁定节、硬性要求、工具定义三种输入各自的 `causes`；契约不过、`toolNames`/`knownFields` 去项、渲染不确定、没有 active 线路时库都不变）、10 的 SOP 部分，以及验收 3 最后那条（有 rerender 版本之后再导入仍是 0）。自己做了 10 个变异（发布后不换缓存、rebase 不取上游、不报冲突、发布不过闸、能保存锁定节、`sameHashAsTarget` 恒真、预算基线取自己、不写 rerender、重渲染丢了可编辑节、能回滚到草稿），全部变红。
 
 ## 验收记录
 
