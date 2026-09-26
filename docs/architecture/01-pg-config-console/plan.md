@@ -87,7 +87,7 @@
 - [x] 13. 会话只读列表：接口和页面（0.5，可砍）。
 - [x] 14. SOP 的逐节 diff 视图：`@codemirror/merge`（1，可砍）。
 - [x] 15. 产品库 CSV 导入：接口和页面（1，可砍）。
-- [ ] 16. 部署收尾（1.5）：
+- [x] 16. 部署收尾（1.5）：
   - `deploy/compose.yml` 补上 `app` 与 `platform` 服务，按服务分 env，镜像名用 `APP_IMAGE`。
   - `/console` 的托管与 SPA 回退、安全头。
   - `deploy.sh` 的换容器改成 `docker compose up -d app`，回滚用 `--no-deps` 起 `:prev`。
@@ -279,6 +279,17 @@
 - **与 spec 的出入**：线路的必填字段 `itinerary` 是对象数组，按「只收平铺字段」线路没法用 CSV 建（draft 也要整条过 schema）。实现上对这种 kind 直接 422 并说明原因，界面上的按钮置灰、提示用「新建」；酒店全是平铺字段，照常导入。记进 Open。
 - `console.selftest.ts` 增至 192 条：解析的边界、键序按 schema、数组切分与空的必填数组、引号里的逗号、ord 接续、不进快照、每条一行审计；七种不合格（没有的列、`__proto__` 列、数值写成文字、文件内 id 重复、库里已有、过不了 schema、只有表头）都 422 并点名行、且同一份里合格的行也没建；线路 422 并点名 `itinerary`；非编辑角色 403、匿名 401。9 个变异（不认 `""`、不去 BOM、按 CSV 列序排键、必填数组不给 `[]`、不查文件内重复、不查库里已有、跳过坏行照建好行、只要可读权限、不拦嵌套必填）全部变红。
 - 在 CSP 下的 preview 里走查：线路页的「CSV 导入」置灰；酒店页弹窗给出模板表头，一份含坏行的 CSV 按行点名「第 2 行 nightlyFrom：要写整数」且没建，改好之后建成一条草稿出现在表里，违规 0 条；截图 [walkthrough/10-csv-import.jpg](walkthrough/10-csv-import.jpg)。
+
+### 第 16 步（2026-09-26）
+
+- **compose。** 补上 `app`：镜像 `APP_IMAGE`，容器名 `APP_CONTAINER`（缺省 `wecom-sales-agent`，与原来 `docker run` 的容器同名，`:prev` 两种起法都按这个名字取），`env_file: ../.env`，`PORT` 写死 3200，端口只绑 `127.0.0.1:${HOST_PORT}`，挂 `../var`，`stop_grace_period: 10s`，依赖 db 健康、migrate 成功。补上 `platform`：`profiles: [cli]`，只注入 `.env.platform`。文件开头写清楚各服务的 env 文件与命令行的跑法。
+- **`/console` 的托管。** `src/console-api/host.ts`：`/console` 301 到 `/console/`；dist 里有的文件照常返回（index.html 除外）；`/console/assets/*` 不存在就 404，不回退；其余一律返回 index.html，每次响应现生成 nonce、换掉占位符并带页面的 CSP（第 12 步定的那条）。不用 serveStatic：它在目录路径上会把带占位符的原文件吐出去。读文件那一层也拦跑出 dist 的路径。构建产物目录可由 `CONSOLE_DIST` 指定，自测用临时目录，不依赖先构建。挂在 `consoleApi` 之后、public 的 serveStatic 之前。
+- **与验收的对齐。** 验收 17 要 `/api/console/nope` 回 404 JSON，验收 16 要 prod 下匿名处处 401：兜底改为成员与 demo 匿名 404、prod 匿名 401。
+- **deploy.sh。** 门禁、同步、构建与 `:prev` 取法不变；服务器检查多查 `.env.db`、`.env.migrate`；迁移单列一步（`compose run --rm migrate`，顺带拉起 db），失败就中止、旧容器照常，不走回滚；换容器是 `compose -p <NAME> up -d app`，第一次换成 compose 时先按 SIGTERM 停掉原来 `docker run` 起的同名容器（按 compose 的项目标签判断）；回滚是 `APP_IMAGE=<NAME>:prev … up -d --no-deps app`。旁路实例用自己的项目名，数据库卷与线上分开。
+- **backup.sh。** 按 spec：db 容器里以超级用户经 socket `pg_dump -Fc` 与 `pg_dumpall --globals-only --no-role-passwords`；`pg_restore --list` 查四张 RLS 表都有 TABLE DATA，`sop_versions`、`catalog_items` 为 0 行就告警并非零退出；`var/` 打 tar；age 公钥加密（明文只在 0700 的临时目录里短暂存在）；本地按日期目录、0700、保留 7 天（只清理按日期命名的目录）；rclone 复制到 `BACKUP_OFFSITE` 并删掉 30 天前的，没配就每次在 stderr 告警。配置在 `.env.backup`，恢复步骤写在脚本开头。
+- **本机 compose 实跑**（本机 Docker 只能挂 /Users 下的目录，演练目录放在 `~/Library/Caches`，用完删掉）：构建镜像，起 db（roles.sh 建角色和库）→ migrate → `platform` 建租户 → `app` 跑 import-config → 加 `CONFIG_SOURCE=db` 起 app，`/healthz` 为 DB 模式、哈希与文件模式相同；`app` 容器的 env 里没有 owner、platform 与超级用户的凭据（验收 23 的环境变量部分）。验收 17 的路由部分在真镜像上逐条过：`/console` 301、`/console/` 与深链返回换过 nonce 的 index.html、资源文件是 JS、不存在的资源 404、`/api/console/nope` 404 JSON、`/chat.html` 照旧；运行阶段的 `node_modules` 里没有 console 的依赖（第 12 步已验）。backup.sh：三份都是 age 密文、目录与文件权限 0700 / 0600、旧的日期目录被清掉而非日期目录保留、没配异地时 stderr 告警、配了本地 rclone 目标后复制成功且 30 天前的文件被删、解密后 `pg_restore --list` 有四张表的数据段；另建一个迁移过但没有内容的库，备份以「有一张是空的」非零退出。deploy.sh 的换容器与回滚命令在本机照搬执行：先用 `docker run` 起一个不归 compose 管的同名容器，迁移、按标签判断后停掉、`compose up` 接管（容器带上项目标签），再以 `:prev` `--no-deps` 回滚，两次 `/healthz` 都正常。deploy.sh 本身没有对真服务器跑（`bash -n`、shellcheck 通过），第 17 步由 owner 在线上首次执行。
+- `console.selftest.ts` 增至 205 条（托管 13 条）。7 个变异（去掉路径兜底、`/console/index.html` 吐原文件、缺资源回退成页面、nonce 固定、资源不带安全头、demo 匿名兜底回 401、不 301）全部变红；「去掉路径兜底」起初存活（路由层已把 `../` 规范掉），补了一条直接查读文件那一层的断言。
+- README 的部署一节改成 compose 的流程，加上后台与备份两条。
 
 ## 验收记录
 
