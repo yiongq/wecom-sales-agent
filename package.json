@@ -15,7 +15,7 @@
     "format:check": "oxfmt --check",
     "lint": "oxlint --deny-warnings && tsx scripts/check-public-boundary.ts && tsx scripts/check-boundaries.ts && tsx scripts/check-migrations.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/engine.selftest.ts && tsx src/adapters/wecom.selftest.ts && tsx src/dejargon.selftest.ts && tsx src/price-guard.selftest.ts && tsx src/llm.selftest.ts && tsx src/server.selftest.ts && tsx src/db/db.selftest.ts && LLM_MOCK=1 tsx eval/run.ts",
+    "test": "tsx src/engine.selftest.ts && tsx src/adapters/wecom.selftest.ts && tsx src/dejargon.selftest.ts && tsx src/price-guard.selftest.ts && tsx src/llm.selftest.ts && tsx src/server.selftest.ts && tsx src/db/db.selftest.ts && tsx src/config/config.selftest.ts && LLM_MOCK=1 tsx eval/run.ts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

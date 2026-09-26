@@ -25,7 +25,7 @@
   - `ci.yml` 的 `check` job 加 `services.postgres`（`pgvector/pgvector:pg17`）并设 `PG_TEST_URL`，步骤仍只调四个门禁名。
   - 手工验证一次：去掉某张表的 `ENABLE ROW LEVEL SECURITY`，套件变红；验证完还原。
   - 对应验收 12，以及 7 的权限部分。
-- [ ] 4. SOP 纯内核（2）：
+- [x] 4. SOP 纯内核（2）：
   - `src/tool-defs.ts`：`toolDefs` 从 `tools.ts` 搬出，`tools.ts` 再导出；`promptPrefix().tools` 字节不变。
   - `src/prompt/system.ts`：从 `buildSystemPrompt` 拆出 `renderSystemPrompt(sop)`。`buildSystemPrompt` 仍走文件，`promptPrefix()` 和 `__engineTest` 不变；用 00 的前缀测试确认哈希没变。
   - `src/sop/sections.ts`：节表、`splitSop` / `joinSop` / `sectionBody` / `normalizeBody` / `withBody` / `mergeWithImage` / `editableChars`、编码检查。
@@ -165,6 +165,20 @@
 - 本机 docker 端到端验过：镜像能建，`/app/drizzle` 在，pnpm 的符号链接完好；空数据卷上 `run --rm migrate` 先拉起 db、等健康、以 `agent_owner` 迁移，退出 0，重跑也是 0；三个角色的属性、库的属主与编码、PUBLIC 没有 CONNECT 与 TEMP 都对；db 不发布端口。口令轮换从 compose 网络里另一个容器验证（容器内 127.0.0.1 是 trust，在里面试口令什么都证明不了）：改 `.env.db` 并重建 db 之后、跑 `roles.sh` 之前，旧口令仍有效；跑完之后旧口令失效、新口令可用；原样再跑一遍仍是 0。
 - `db.selftest.ts` 的真实 PG 部分：有 `PG_TEST_URL` 才跑，`CI=true` 而没有它时失败。临时库建在 `PG_TEST_URL` 指向的集群里，跑完删掉；三个角色是集群级的，已存在就改口令，所以它只能指向专用的测试集群（CI 的服务容器，或本机的一次性容器），CONTRIBUTING 写了本机怎么跑。覆盖验收 12 全部条目与验收 7 的权限部分；另外核对了库级权限、角色属性、`agent_app` 登录后带着两个超时、函数的 EXECUTE 授权、迁移身份检查，以及 json 经 node-postgres 读回键序不变。系统目录那组检查加强为「每张 RLS 表只有一条策略、对所有命令和角色生效、USING 与 WITH CHECK 都是租户模板」：光看策略名，一条 `USING (true)` 的同名策略也能通过。
 - 本机 PG 17 上整组 268 条断言（PGlite 150、真实 PG 118）全过，连跑两遍（第二遍角色已存在，走 `ALTER ROLE`）也全过，临时库都删干净了。手工验证：去掉 `catalog_items` 的 `ENABLE ROW LEVEL SECURITY`，10 条失败；新增一张带 `tenant_id` 却没开 RLS 的表，6 条失败；`CI=true` 而没有 `PG_TEST_URL`，失败。验证完已还原。
+
+### 第 4 步（2026-09-26）
+
+- `toolDefs` 原样搬到 `src/tool-defs.ts`，`tools.ts` 再导出同一个数组；`renderSystemPrompt(sop)` 从 `buildSystemPrompt` 拆到 `src/prompt/system.ts`（前缀缓存那段说明随之搬过去），`buildSystemPrompt` 仍读文件。`PREFIX sha256` 仍是 `system=6c202d63…a423 tools=64c16fc8…92d1`，与 00 记录相同。
+- spec 没写、此处取定的地方：
+  - `splitSop` 自己先做编码检查，再查结构与规范形：每个入口（导入、镜像的 `data/sop.md`、库里拼回来的 SOP）都经它，不靠调用方记得先查编码。
+  - 行尾空白按 JS 的空白类去（含 NBSP、U+3000），换行除外。`normalizeBody` 在去空白之前先查孤立代理项、控制字符和行分隔符：否则行尾的 U+2028 会被 `trimEnd` 当空白悄悄删掉，而 spec 要求这几类直接拒绝。
+  - `mergeWithImage` 对从库里取的可编辑节，按当前节表重建标题行与结尾：节表改了标题、在末尾加了节时拼出来仍能切回去；节表不变时与原文逐字节相同。
+  - `checkSopContract` 多一个可选的 `spec` 参数（默认旅行节表）；结构违规按节报；`phrase_forbidden` 的 `sectionKey` 取第一个含该短语的节，只出现在硬性要求里时为 null；预算按「> 基线 × 1.2」精确比较，结构不对时不算预算。
+  - `SOP_KNOWN_FIELDS` 取 SOP 现在点名的 10 个字段，加上工具参数里的 `maxBudgetPerPerson`、`maxNightlyPrice`、`routeId`，共 13 个。按 spec 的正则，`iPhone`、`eSIM` 这类小写开头的驼峰词在可编辑节里也会报 `unknown_field`；现在的 `data/sop.md` 没有这类词，先照 spec 执行，运营真碰到再议。
+  - 仓库加了 `.gitattributes`。
+- 源码里的特殊字符一律写成 `\u` 转义：写文件的工具会把输入里的 `\uXXXX` 先解码成真实字符，第一版 `sections.ts` 就这样混进了它自己要拒绝的 U+2028。顺带发现 `src/retrieval.ts` 的索引指纹用真实的 NUL / SOH 字符做分隔符（git 因此把它当二进制），换成了 `\u0000` / `\u0001` 转义，字符串的值与指纹都不变。
+- `src/config/config.selftest.ts` 106 条断言，已接进 `test`。两条漂移守卫按 AST 扫描而不是正则：`engine.selftest.ts` 里 `sys` / `sop` 的每一处用法都必须认得出，`buildSystemPrompt()` 必须赋给 `sys` 或 `sop`，格式化器把长短语折成多行也照样认；`SOP_KNOWN_FIELDS` 只认源文件里的标识符与字符串字面量，注释里提到不算。手工验证（验收 6 的两条）：在 `engine.selftest.ts` 里加一条没进清单的 `sys.includes('…')`，测试失败并点出这个短语；在锁定节里点名 `routeMissReason`，测试失败并点出它。另验过：被 oxfmt 折行的长短语、换了变量名的断言、只在注释里还留着的旧字段名，都会失败。
+- 提交前的对抗审查（spec 对照、构造边界输入、变异测试）确认 9 条，都在测试与漂移守卫上，已修；切分、规范化、契约逻辑本身没有确认成立的缺陷。驳回的包括 `iPhone` 这类词被当成字段（spec 规定如此）、零宽字符不在编码检查的拒绝清单里（spec 的清单里没有）。
 
 ## 验收记录
 
