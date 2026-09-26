@@ -64,7 +64,7 @@
   - `retrieval.ts` 注册 `onCatalogChanged`。
   - 计数的假 embedding 服务写进 `config.selftest.ts`。
   - 对应验收 11。
-- [ ] 10. 鉴权与账号命令行（2.5）：
+- [x] 10. 鉴权与账号命令行（2.5）：
   - `src/auth/password.ts`：scrypt、`maxmem`、并发上限 2 加 2 秒排队、假哈希、`needsRehash`。
   - `src/auth/session.ts`：`login` / `resolveSession` / `logout` / `csrfFor`，外加三路登录限流（LRU、IPv6 /64）和无效 cookie 的按 IP 限流。
   - `src/db/repo/auth.ts` 包装五个认证函数。
@@ -222,6 +222,15 @@
 - `__configTest.reset()` 不再清空 `onCatalogChanged` 的监听者：它们是模块加载时登记的，模块不会再加载一次，清掉之后检索就收不到快照变化了。
 - 验收 11 的测试用一个计数的假 embedding 服务（只数建索引的请求，按字符码位生成向量，用罕见字让某条线路排第一）。embedding 走的网关自己会重试 5xx，所以「构建失败」要让假服务持续失败，看到过期之后再放行。`config.selftest.ts` 增至 352 条，连跑三遍稳定。6 个变异（不丢过期结果、不登记回调、文件模式也失效、失败不重试、失败不标过期）全部变红，其中「失败不标过期」要靠补上的「首次构建就失败」一条才抓得到。
 
+### 第 10 步（2026-09-26）
+
+- `src/auth/password.ts`：参数、`maxmem`、并发上限 2 加 2 秒排队（超时抛 `PasswordBusyError` → 429）、假哈希（进程内算一次）、`needsRehash` 都按 spec。口令不做 Unicode 规范化。
+- `src/auth/session.ts`：`login` / `resolveSession` / `logout` / `csrfFor` 按 spec；限流器是进程内的固定窗口计数，键数到上限按 LRU 淘汰；另导出 `allowSessionLookup` / `noteInvalidSession` 给「带无效 cookie 的请求按 IP 限流」用，`ipBucket` 把 IPv6 归到 /64、IPv4 映射地址还原成 IPv4。登录与登出各写一行审计。`logout` 多一个可选的 `now` 参数，自测用假时钟。
+- 平台账号命令行的逻辑在 `src/auth/accounts.ts`，五个命令行是薄包装：口令只从 stdin（`--password-stdin`）读，或者生成后只写到 `/dev/tty`，两者都没有就退出码 1；口令至少 10 个字符（spec 没写，这里取定）。`user-create` 遇到已有账号只加成员关系、不碰口令，已是同一角色算已一致（0），已是别的角色退出码 2（换角色走 `member-role`）。改口令、停用吊销这个人的全部会话，移除成员只吊销他在本租户的会话；审计 diff 里没有口令。
+- prod 下 `/api/admin/stream` 要求有效的后台会话，否则 401。`server.selftest.ts` 相应改了验收 1 允许的那一处：prod「有意匿名可达」的列表去掉这条，改为断言匿名连返回 401（断言总数不变，仍是 269）。文件模式没有账号，prod 下后台 SSE 一律 401，`admin.html` 退回 30 秒轮询。
+- 新建 `src/console-api/console.selftest.ts`（55 条，已接进 `test`）：口令格式与并发上限、账号命令行、登录与 cookie 明文不入库、空闲 12 小时与绝对 7 天过期（假时钟，失效行被删）、三路限流与防探测、口令升级、改口令 / 停用 / 移除成员吊销会话、prod 下后台 SSE 要求会话。真实 PG 上以子进程跑了 `user-create --password-stdin`、`user-disable`，没有终端时拒绝执行（在终端里跑测试时跳过这一条：子进程会继承控制终端）。7 个变异（不按 IP 限流、不锁邮箱加 IP、不升级旧哈希、无效 cookie 不限流、停用不吊销会话、并发上限放宽、prod 下 SSE 不要会话）全部变红；「停用不吊销会话」起初存活（认证函数本来就不认停用账号的会话），补了「会话行也被删掉」一条。
+- 开放问题 4：本机（24 GiB 内存）实测单次校验约 165 ms，两个并发约 176 ms，峰值 RSS 增量 256 MiB。目标服务器上的实测需要登录服务器，我这边做不了，挂在 Open 里。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -229,6 +238,7 @@
 ## Open
 
 - 已定（owner，2026-09-26，00 开放问题 3）：oxlint 在 correctness 之外开 suspicious，但关掉 `no-shadow`（139 处，几乎都在自测里）、`consistent-function-scoping`（52）、`no-underscore-dangle`（与 spec 定的 `__configTest` 这类命名冲突）、`no-async-endpoint-handlers`（针对 Express，Hono 的 async handler 是正常写法）。pedantic、perf、style、restriction、nursery 不开：全仓命中 1332 / 136 / 11097 / 1891 / 584，基本是风格噪音或误报（nursery 的 583 条是 `no-undef` 不认 TS 类型）。
+- 待 owner 在目标服务器上实测（开放问题 4，第 10 步）：两个并发登录的单次耗时与峰值 RSS 增量。本机数据见第 10 步实施记录（约 170 ms、256 MiB）。单次超过 500 ms，或峰值增量超过机器内存的 25%（1 GiB 的机器就是这条线），按开放问题 4 改用 N = 2^16、r = 8、p = 2，参数随哈希存，不用迁移。
 - 仍挂在 owner 名下（00 开放问题 1 的余下部分）：文件模式下没设 `DEPLOY_PROFILE` 却配了企微凭据时，是否也拒绝启动。第一个 prod 实例上线前定。
 
 <!-- 「交接」与「Open」两节在第一次停下时再追加，格式（本注释保留给后来的 agent）：

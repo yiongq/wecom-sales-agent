@@ -1141,7 +1141,7 @@ async function realPostgres(superUrl: string): Promise<void> {
 
     // ---- 命令行子进程（验收 3）与 node-postgres 下的逐字节等价（验收 2 的前两项） ----
     const repo = path.join(import.meta.dirname, '..', '..');
-    const cli = (script: string, argv: string[], env: Record<string, string>): { code: number | null; out: string } => {
+    const cli = (script: string, argv: string[], env: Record<string, string>, input?: string): { code: number | null; out: string } => {
       // 只给这个命令行该拿的那一个连接串，别的 app / owner / platform 串都不带过去
       const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^DATABASE_|^PG_TEST_URL$/.test(k)));
       const r = spawnSync(process.execPath, ['--import', 'tsx', path.join(repo, 'src', 'cli', script), ...argv], {
@@ -1149,6 +1149,7 @@ async function realPostgres(superUrl: string): Promise<void> {
         env: { ...base, ...env },
         encoding: 'utf8',
         timeout: 60_000,
+        input,
       });
       return { code: r.status, out: `${r.stdout}${r.stderr}` };
     };
@@ -1161,6 +1162,37 @@ async function realPostgres(superUrl: string): Promise<void> {
     check(
       '真实 PG：同名租户字段不同 → 退出码 2',
       cli('tenant-create.ts', ['--slug', 'demo', '--name', '别的名字', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 2,
+    );
+    const secret = 'cli-password-from-stdin';
+    const made = cli(
+      'user-create.ts',
+      ['--tenant', 'demo', '--email', 'ops@demo.test', '--name', '运营', '--role', 'admin', '--password-stdin'],
+      { DATABASE_PLATFORM_URL: PLATFORM },
+      `${secret}\n`,
+    );
+    check(
+      '真实 PG：user-create 从 stdin 读口令建账号，退出码 0，输出里没有口令',
+      made.code === 0 && !made.out.includes(secret),
+      made.out.slice(0, 200),
+    );
+    // 子进程会继承控制终端：在终端里跑测试时 /dev/tty 打得开，口令会写到终端上。只在没有终端时（CI）验「拒绝执行」
+    let hasTty = true;
+    try {
+      fs.closeSync(fs.openSync('/dev/tty', 'w'));
+    } catch {
+      hasTty = false;
+    }
+    if (!hasTty) {
+      const noTty = cli('user-password.ts', ['--tenant', 'demo', '--email', 'ops@demo.test'], { DATABASE_PLATFORM_URL: PLATFORM });
+      check(
+        '真实 PG：既没有 --password-stdin 也没有终端时拒绝执行',
+        noTty.code === 1 && noTty.out.includes('--password-stdin'),
+        noTty.out.slice(0, 200),
+      );
+    }
+    check(
+      '真实 PG：user-disable 以 platform 身份执行，退出码 0',
+      cli('user-disable.ts', ['--tenant', 'demo', '--email', 'ops@demo.test'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 0,
     );
     const dry = cli('import-config.ts', ['--tenant', 'demo', '--dry-run'], { DATABASE_URL: APP });
     check(

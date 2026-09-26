@@ -15,7 +15,7 @@
     "format:check": "oxfmt --check",
     "lint": "oxlint --deny-warnings && tsx scripts/check-public-boundary.ts && tsx scripts/check-boundaries.ts && tsx scripts/check-migrations.ts",
     "typecheck": "tsc --noEmit",
-    "test": "CONFIG_SOURCE=file tsx src/engine.selftest.ts && CONFIG_SOURCE=file tsx src/adapters/wecom.selftest.ts && CONFIG_SOURCE=file tsx src/dejargon.selftest.ts && CONFIG_SOURCE=file tsx src/price-guard.selftest.ts && CONFIG_SOURCE=file tsx src/llm.selftest.ts && CONFIG_SOURCE=file tsx src/server.selftest.ts && tsx src/db/db.selftest.ts && tsx src/config/config.selftest.ts && CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts && CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts",
+    "test": "CONFIG_SOURCE=file tsx src/engine.selftest.ts && CONFIG_SOURCE=file tsx src/adapters/wecom.selftest.ts && CONFIG_SOURCE=file tsx src/dejargon.selftest.ts && CONFIG_SOURCE=file tsx src/price-guard.selftest.ts && CONFIG_SOURCE=file tsx src/llm.selftest.ts && CONFIG_SOURCE=file tsx src/server.selftest.ts && tsx src/db/db.selftest.ts && tsx src/config/config.selftest.ts && tsx src/console-api/console.selftest.ts && CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts && CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

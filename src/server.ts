@@ -13,6 +13,7 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { getCookie } from 'hono/cookie';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
 import {
@@ -41,6 +42,7 @@ import { profile } from './profile.js';
 import type { ChannelAdapter } from './types.js';
 import { boot } from './boot.js';
 import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
+import { allowSessionLookup, noteInvalidSession, resolveSession, SESSION_COOKIE, type AuthedUser } from './auth/session.js';
 
 const app = new Hono();
 
@@ -374,7 +376,26 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 // 只推「变了」这个信号、不带任何数据（没有会话 id、没有原文），故免密——真正的数据仍由下面的读端点
 // 按登录态与本人凭据过滤。它因此也不需要访客凭据，凭据不必进 URL。
 // 也必须免密：EventSource 无法自定义请求头，带不了 Authorization。
-app.get('/api/admin/stream', (c) => {
+/**
+ * 后台会话（cookie __Host-sid）。只有 DB 模式才有：文件模式没有账号，一律 null。
+ * 带 cookie 但会话无效的请求先按 IP 限流，过了才查库
+ */
+async function consoleSession(c: Context): Promise<AuthedUser | null> {
+  if (configMode() !== 'db') return null;
+  const token = getCookie(c, SESSION_COOKIE);
+  if (!token) return null;
+  const ip = clientKey(c);
+  const now = Date.now();
+  if (!allowSessionLookup(ip, now)) return null;
+  const user = await resolveSession(token, now);
+  if (!user) noteInvalidSession(ip, now);
+  return user;
+}
+
+// anon_readonly_admin 关着时（prod）要求有效的后台会话，同源 EventSource 会带上 cookie；没有就 401，
+// admin.html 已有的 30 秒轮询兜底照常（01 spec「鉴权」）
+app.get('/api/admin/stream', async (c) => {
+  if (!profile().flags.anon_readonly_admin && !(await consoleSession(c))) return c.json({ error: '需要登录后台' }, 401);
   return streamSSE(c, async (stream) => {
     let alive = true;
     const onChange = () => {
