@@ -1,0 +1,3 @@
+# SOP 与产品库按字节比较（01 spec「切分、拼接与规范化」）：Windows 检出时混进 CRLF，导入会以编码不合格拒绝
+data/sop.md text eol=lf
+data/*.json text eol=lf
