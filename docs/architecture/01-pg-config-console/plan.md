@@ -17,7 +17,7 @@
   - 新建 `src/db/db.selftest.ts`，先写 PGlite 部分：迁移连跑两遍、CHECK（含哈希）、三个触发器、两个部分唯一索引、复合外键。
   - 实测 PGlite 对 `CREATE ROLE`、`SECURITY DEFINER`、`GRANT`、`sha256()` 的支持，结论记进实施记录（开放问题 2）。
   - 对应验收 7 的约束与触发器部分、20 的迁移与 import 边界部分。
-- [ ] 3. 真实 Postgres、本地 db 与镜像骨架（3）：
+- [x] 3. 真实 Postgres、本地 db 与镜像骨架（3）：
   - `deploy/db-init/roles.sql` 与 `roles.sh`（口令从环境读，可重复执行）；`deploy/compose.yml` 先写 `db` 与 `migrate` 两个服务，db 不发布端口。
   - 多阶段 Dockerfile 的骨架（`deps` / 运行阶段，`COPY drizzle`），console 阶段留到第 12 步补。
   - `db.selftest.ts` 的真实 PG 部分：建临时库、执行 roles.sql、以 owner 跑迁移；按「各角色对各表的期望」逐格断言；按系统目录检查带 `tenant_id` 的表与豁免清单；认证函数、`search_path` 与临时表遮蔽、会话级 SET 泄漏；租户锁的 `lock_held`、断连后重取与 `held_by_other`。结束时删库。
@@ -154,6 +154,17 @@
   - `drizzle/meta/**` 排除在格式化之外（drizzle-kit 每次生成都整份重写 `_journal.json`）；新增 `pnpm db:generate`；`tsconfig` 纳入 `drizzle.config.ts`。Dockerfile 还没有 `COPY drizzle`，第 3 步补。
 - 验证：`db.selftest.ts` 的 PGlite 部分 139 条断言，约 1.3 秒。断言尽量点名是哪条约束或触发器拒的，只比错误码时，一条约束拆掉、别的约束碰巧也拦得住，断言照样绿。变异测试拆掉约束、触发器分支、认证函数里的租户判断与恢复等 20 余处，每一处都让套件变红。验收 20 的 lint 部分在真实仓库上手工验过：迁移里加未标注的 `DROP COLUMN` 或 `SET NOT NULL`、`src/shared/` 引 `drizzle-orm`、`src/config/` 引 `store`、`src/db/` 以外出现 `app.tenant_id`，都失败并点名文件。「修改已提交的迁移」要等迁移进了 dev 才有基准，第 3 步开工时在真实仓库上复验（脚本已在临时仓库里验过）。
 - 提交前做了一轮五个角度的对抗审查（SQL 与 spec 对照、安全、连接层、lint 脚本、测试充分性），确认 9 条，都已修掉（上面标了「审查发现」的几条，加上 4 处测试漏洞）；驳回 6 条，例如「`execute(string)` 能绕过 `sql.raw` 禁令」：spec 只禁 `sql.raw`。
+
+### 第 3 步（2026-09-26）
+
+- 开工时补验了第 2 步留下的一条：迁移进了 dev 之后，往 `drizzle/0000_init.sql` 追加一行，`lint` 失败并点名这个文件（验收 20）。
+- `deploy/db-init/roles.sql` 是 `roles.sh` 与自测共用的契约：每条语句一行，变量只有三个口令和 `:"db_name"`。已存在的角色把行首 `CREATE ROLE` 换成 `ALTER ROLE`，已存在的库跳过 `CREATE DATABASE`；`roles.sh` 用 sed 做这个替换，自测用同样的规则逐行执行。比 spec 的 DDL 多两处：`agent_owner` 也写 `NOCREATEDB`，重跑时能纠正被改过的属性；加一行 `ALTER DATABASE … OWNER TO agent_owner`，库已存在但属主不对时（例如误设了 `POSTGRES_DB`）改回来。
+- `roles.sh`：必须带可执行位（entrypoint 会 source 不可执行的脚本，脚本发现被 source 就拒绝执行）；口令用 psql 的 `\getenv` 读入，不上命令行；会话里设 `VERBOSITY terse` 与 `log_min_error_statement = panic`，语句出错时口令不进 psql 输出和 `docker logs`（实测过：不设时出错的 `ALTER ROLE … PASSWORD` 会写进服务端日志）。`roles.sql` 不能放进 `initdb.d`（entrypoint 会直接执行那里的 `*.sql`），compose 把 `db-init/` 挂到 `/db-init`，脚本另挂成 `initdb.d/10-roles.sh`。
+- compose 的 env 文件放在服务器的仓库根目录：`.env.db`（超级用户与三个角色的口令）、`.env.migrate`（`DATABASE_OWNER_URL`）。这个命名已被 `.gitignore`、lint 的路径黑名单和 `deploy.sh` 的 rsync 保护规则覆盖，`.dockerignore` 补了 `.env.*`；放进 `deploy/env/` 会被下一次部署的 `rsync --delete` 删掉。db 的健康检查走 TCP：首次初始化时 entrypoint 的临时服务只开 socket，按 socket 探测会在建角色之前就报健康。项目名固定为 `wecom-sales-agent`。已知的小问题留给第 16 步：`image: ${APP_IMAGE:?}` 让不带 `APP_IMAGE` 的 `docker compose ps` 也报错。
+- Dockerfile 拆成 `deps` 与运行两个阶段，运行阶段加 `COPY drizzle`，其余照旧；console 阶段留到第 12 步。
+- 本机 docker 端到端验过：镜像能建，`/app/drizzle` 在，pnpm 的符号链接完好；空数据卷上 `run --rm migrate` 先拉起 db、等健康、以 `agent_owner` 迁移，退出 0，重跑也是 0；三个角色的属性、库的属主与编码、PUBLIC 没有 CONNECT 与 TEMP 都对；db 不发布端口。口令轮换从 compose 网络里另一个容器验证（容器内 127.0.0.1 是 trust，在里面试口令什么都证明不了）：改 `.env.db` 并重建 db 之后、跑 `roles.sh` 之前，旧口令仍有效；跑完之后旧口令失效、新口令可用；原样再跑一遍仍是 0。
+- `db.selftest.ts` 的真实 PG 部分：有 `PG_TEST_URL` 才跑，`CI=true` 而没有它时失败。临时库建在 `PG_TEST_URL` 指向的集群里，跑完删掉；三个角色是集群级的，已存在就改口令，所以它只能指向专用的测试集群（CI 的服务容器，或本机的一次性容器），CONTRIBUTING 写了本机怎么跑。覆盖验收 12 全部条目与验收 7 的权限部分；另外核对了库级权限、角色属性、`agent_app` 登录后带着两个超时、函数的 EXECUTE 授权、迁移身份检查，以及 json 经 node-postgres 读回键序不变。系统目录那组检查加强为「每张 RLS 表只有一条策略、对所有命令和角色生效、USING 与 WITH CHECK 都是租户模板」：光看策略名，一条 `USING (true)` 的同名策略也能通过。
+- 本机 PG 17 上整组 268 条断言（PGlite 150、真实 PG 118）全过，连跑两遍（第二遍角色已存在，走 `ALTER ROLE`）也全过，临时库都删干净了。手工验证：去掉 `catalog_items` 的 `ENABLE ROW LEVEL SECURITY`，10 条失败；新增一张带 `tenant_id` 却没开 RLS 的表，6 条失败；`CI=true` 而没有 `PG_TEST_URL`，失败。验证完已还原。
 
 ## 验收记录
 
