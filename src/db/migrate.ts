@@ -5,10 +5,22 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { readMigrationFiles } from 'drizzle-orm/migrator';
+import { sql } from 'drizzle-orm';
 import pg from 'pg';
-import { assertPgUrl, redactUrl } from './client.js';
+import { assertPgUrl, redactUrl, rowsOf, type Db } from './client.js';
 
 export const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'drizzle');
+
+/** 镜像里每条迁移的 hash（drizzle 记的是整份 SQL 文件的 sha256），按 journal 顺序 */
+export function imageMigrationHashes(): string[] {
+  return readMigrationFiles({ migrationsFolder: MIGRATIONS_DIR }).map((m) => m.hash);
+}
+
+/** 库里已应用的迁移 hash。drizzle 的记录表不存在（从没迁移过）时抛错，由调用方当成 schema_behind */
+export async function appliedMigrationHashes(db: Db): Promise<string[]> {
+  return rowsOf<{ hash: string }>(await db.execute(sql`select hash from drizzle.__drizzle_migrations`)).map((r) => r.hash);
+}
 
 /** 表和函数的属主必须是 agent_owner：换成超级用户跑，建出来的对象归超级用户，FORCE RLS 与权限表就都不成立了 */
 export async function runMigrations(url: string): Promise<void> {
