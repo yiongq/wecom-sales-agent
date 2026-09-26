@@ -35,4 +35,7 @@ ENTRYPOINT ["/sbin/tini", "--"]
 # 用 node --import tsx 而不是 npx tsx：后者实际进程链是 npm exec → tsx cli → 应用 node，
 # 多挂两个常驻 node（实测内存 105MiB → 50MiB），每次启动 npm 还会去请求 registry，
 # SIGTERM 也要多转发两跳。tsx 在上面的 pnpm install（--prod=false）里已装好。
+# 部署的版本号（deploy.sh 传 git tag），/healthz 的 revision 字段报它。放在最后，改 tag 不会让前面的层失效
+ARG APP_REVISION=dev
+ENV APP_REVISION=${APP_REVISION}
 CMD ["node", "--import", "tsx", "src/server.ts"]

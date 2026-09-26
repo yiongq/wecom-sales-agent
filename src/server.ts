@@ -146,9 +146,18 @@ const sameOriginOnly: MiddlewareHandler = async (c, next) => {
 // 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
 app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
-// llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵
+// llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。
+// revision 是部署时的 git tag（deploy.sh 经 Dockerfile 的 APP_REVISION 写进镜像）：回滚到 :prev 后报的是上一版的 tag，
+// 线上跑的是哪一版一眼可查；本地 pnpm start 没有这个变量，报 dev
 app.get('/healthz', (c) =>
-  c.json({ ok: true, models: activeModels(), visitorLLM: budgetStatus(), llmGate: gateStatus(), llm: llmStats() }),
+  c.json({
+    ok: true,
+    revision: process.env.APP_REVISION || 'dev',
+    models: activeModels(),
+    visitorLLM: budgetStatus(),
+    llmGate: gateStatus(),
+    llm: llmStats(),
+  }),
 );
 
 // 模型用量与成本（JD 明确要求的「模型调用成本」指标）
