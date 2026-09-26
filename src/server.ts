@@ -43,6 +43,7 @@ import { boot } from './boot.js';
 import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
 import { consolePages } from './console-api/host.js';
+import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
 
@@ -204,8 +205,15 @@ const chatRateLimited = makeLimiter(CHAT_RATE_PER_MIN);
 const MAX_BODY_BYTES = Math.max(1024, numEnv('MAX_BODY_BYTES', 64 * 1024));
 app.use('/*', async (c, next) => {
   const declared = c.req.header('content-length');
+  // 后台（/console/*、/api/console/*）的响应都要带安全头（01 spec「安全头」），这两种拒绝发生在后台子应用之前，得在这里带上；
+  // 后台接口回 { error, detail }，前端按它显示
+  const reject = (status: 411 | 413, error: string, detail: string): Response => {
+    if (/^\/api\/console(?:\/|$)/.test(c.req.path)) return c.json({ error, detail }, status, { ...CONSOLE_SECURITY_HEADERS });
+    const text = status === 413 ? 'payload too large' : 'length required';
+    return c.text(text, status, /^\/console(?:\/|$)/.test(c.req.path) ? { ...CONSOLE_SECURITY_HEADERS } : undefined);
+  };
   if (declared !== undefined && Number(declared) > MAX_BODY_BYTES) {
-    return c.text('payload too large', 413);
+    return reject(413, 'payload_too_large', `请求体超过 ${Math.floor(MAX_BODY_BYTES / 1024)} KB 的上限`);
   }
   // 缺 Content-Length 就是 chunked 编码，上面那行按「声明值」判断对它完全无效：
   // 实测 8MB / 32MB 的 chunked body 能直达应用并被整个读进内存。此前把这层
@@ -213,7 +221,7 @@ app.use('/*', async (c, next) => {
   // 这里的客户端只有企微服务器和浏览器 fetch，两者必然带 Content-Length，
   // 所以直接拒掉「有 body 却不声明长度」的请求——比事后截断简单，也更难写错。
   if (declared === undefined && c.req.raw.body !== null) {
-    return c.text('length required', 411);
+    return reject(411, 'length_required', '请求要带 Content-Length');
   }
   return next();
 });

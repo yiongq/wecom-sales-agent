@@ -79,18 +79,26 @@ export async function verifyPassword(plain: string, stored: string): Promise<{ o
   return { ok, needsRehash: logN !== CURRENT.logN || r !== CURRENT.r || p !== CURRENT.p };
 }
 
-let fake: Promise<string> | null = null;
 /**
- * 邮箱不存在时拿来校验的假哈希，参数与真账号相同：未知邮箱与错误口令耗时一样，响应时间探测不出邮箱是否存在。
- * 进程内只算一次
+ * 邮箱不存在时拿来校验的假哈希，参数与真账号相同：未知邮箱与错误口令都跑一次同样代价的 scrypt，响应时间探测不出邮箱是否存在。
+ * 盐和哈希都是进程启动时取的随机字节，不真去算：在请求路径上现算的话，第一个未知邮箱要跑两次 scrypt；
+ * 算的时候碰上排队超时，失败还会被缓存下来，之后未知邮箱一律 429、已有邮箱照常 401，反倒成了探测邮箱的办法
  */
-export function fakeHash(): Promise<string> {
-  fake ??= hashPassword(randomBytes(24).toString('base64url'));
-  return fake;
+const FAKE_HASH = `scrypt$${CURRENT.logN}$${CURRENT.r}$${CURRENT.p}$${randomBytes(SALT_BYTES).toString('base64url')}$${randomBytes(KEY_BYTES).toString('base64url')}`;
+export function fakeHash(): string {
+  return FAKE_HASH;
 }
 
-/** 仅供自测：当前参数与并发状态 */
+/** 仅供自测：当前参数与并发状态；occupy 占住一个 scrypt 槽（不跑 scrypt），返回的函数把槽还回去，用来确定地排满队列 */
 export const __passwordTest = {
   current: (): Readonly<typeof CURRENT> => CURRENT,
   running: (): number => running,
+  async occupy(): Promise<() => void> {
+    await acquire();
+    let held = true;
+    return () => {
+      if (held) release();
+      held = false;
+    };
+  },
 };

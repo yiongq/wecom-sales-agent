@@ -6,7 +6,7 @@ import { configRuntime } from '../config/source.js';
 import { withTenant } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { authLoginLookup, authPasswordRehash, authSessionCreate, authSessionDelete, authSessionTouch, type Role } from '../db/repo/auth.js';
-import { fakeHash, hashPassword, verifyPassword } from './password.js';
+import { fakeHash, hashPassword, PasswordBusyError, verifyPassword } from './password.js';
 
 export type { Role } from '../db/repo/auth.js';
 
@@ -73,9 +73,19 @@ class Window {
   hit(key: string, now: number): number {
     return ++this.entry(key, now).count;
   }
-  peek(key: string, now: number): number {
-    const e = this.map.get(key);
-    return e && now - e.start < this.windowMs ? e.count : 0;
+  /**
+   * 先占一格再做事：计数同步加 1，返回加完的计数，并发的请求各占各的，不会都看到旧计数。
+   * undo 把这一格退回去（只退一次）；窗口已经换了、或键被淘汰了就不动，免得减掉新窗口的计数
+   */
+  claim(key: string, now: number): { count: number; undo: () => void } {
+    const e = this.entry(key, now);
+    const count = ++e.count;
+    let held = true;
+    const undo = (): void => {
+      if (held && this.map.get(key) === e) e.count--;
+      held = false;
+    };
+    return { count, undo };
   }
   clear(key: string): void {
     this.map.delete(key);
@@ -91,12 +101,23 @@ const failByEmail = new Window(15 * 60_000);
 const invalidCookieByIp = new Window(60_000);
 let slowDelayMs = 2_000;
 
-/** 带 cookie 但会话无效的请求：先按 IP 限流（每分钟 60 次），过了才查库。返回 false 表示该拒绝 */
-export function allowSessionLookup(ip: string | null, now: number): boolean {
-  return invalidCookieByIp.peek(ipBucket(ip), now) < 60;
+/**
+ * 带 cookie 的请求先按 IP 占一格（每分钟 60 次）才查库，占不到返回 null（当匿名处理）。
+ * 会话有效时调用返回的函数把这一格退回去：只有会话无效的才算数
+ */
+export function claimSessionLookup(ip: string | null, now: number): (() => void) | null {
+  const c = invalidCookieByIp.claim(ipBucket(ip), now);
+  if (c.count <= 60) return c.undo;
+  c.undo();
+  return null;
 }
-export function noteInvalidSession(ip: string | null, now: number): void {
-  invalidCookieByIp.hit(ipBucket(ip), now);
+
+/**
+ * 登录失败只打日志，不进审计（spec「审计」）。不写口令，也不写邮箱原文——口令偶尔会被填进邮箱框，未知邮箱多半是别人的地址；
+ * 写小写邮箱的 sha256 前 12 位，运维拿已知邮箱算一下就对得上
+ */
+function logLoginFailure(email: string, ip: string, why: string): void {
+  console.warn(`[auth] 登录失败：${why}（邮箱 #${sha256(email).toString('hex').slice(0, 12)}，来源 ${ip}）`);
 }
 
 // ---------------- 登录、会话、登出 ----------------
@@ -117,32 +138,59 @@ export async function login(input: {
   const email = input.email.trim().toLowerCase();
   const ip = ipBucket(input.ip);
   const pairKey = `${email}|${ip}`;
-  if (perIp.hit(ip, input.now) > 10) throw new LoginRateLimitedError();
-  if (failByEmailIp.peek(pairKey, input.now) >= 5) throw new LoginRateLimitedError();
-  if (failByEmail.peek(email, input.now) >= 10) await new Promise((r) => setTimeout(r, slowDelayMs));
-
-  const found = await authLoginLookup(db, tenantId, email);
-  const { ok, needsRehash } = await verifyPassword(input.password, found?.passwordHash ?? (await fakeHash()));
-  if (!found || !ok) {
-    failByEmailIp.hit(pairKey, input.now);
-    failByEmail.hit(email, input.now);
-    return null;
+  if (perIp.hit(ip, input.now) > 10) {
+    logLoginFailure(email, ip, '同一 IP 登录太频繁');
+    throw new LoginRateLimitedError();
   }
-  failByEmailIp.clear(pairKey);
-  const token = randomBytes(32).toString('base64url');
-  await authSessionCreate(db, {
-    tenantId,
-    tokenHash: sha256(token),
-    userId: found.userId,
-    now: new Date(input.now),
-    ip: input.ip,
-    userAgent: input.userAgent,
-  });
-  if (needsRehash) await authPasswordRehash(db, tenantId, found.userId, found.passwordHash, await hashPassword(input.password));
-  await withTenant(db, { tenantId, actor: { kind: 'user', userId: found.userId, name: found.displayName, ip: input.ip } }, (tx) =>
-    writeAudit(tx, { action: 'auth.login', targetType: 'user', targetId: found.userId }),
-  );
-  return { token, user: { userId: found.userId, tenantId, role: found.role, displayName: found.displayName, csrf: csrfFor(token) } };
+  // 失败计数先占位、后校验，占位同步完成：校验完才计数的话，同一时刻在途的请求都看到旧计数，并发一批就越过了上限。
+  // 登录成功，或者没校验成（排队超时、库出错），占的位退回去
+  const pair = failByEmailIp.claim(pairKey, input.now);
+  if (pair.count > 5) {
+    pair.undo();
+    logLoginFailure(email, ip, '这个邮箱在这个 IP 上失败太多次，锁到窗口结束');
+    throw new LoginRateLimitedError();
+  }
+  const byEmail = failByEmail.claim(email, input.now);
+  try {
+    if (byEmail.count > 10) await new Promise((r) => setTimeout(r, slowDelayMs));
+    const found = await authLoginLookup(db, tenantId, email);
+    const { ok, needsRehash } = await verifyPassword(input.password, found?.passwordHash ?? fakeHash());
+    if (!found || !ok) {
+      logLoginFailure(email, ip, '邮箱或口令不对，或账号不可用');
+      return null;
+    }
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = sha256(token);
+    await authSessionCreate(db, {
+      tenantId,
+      tokenHash,
+      userId: found.userId,
+      now: new Date(input.now),
+      ip: input.ip,
+      userAgent: input.userAgent,
+    });
+    // 校验的是读出来那一刻的哈希，scrypt 这一两百毫秒里 user-password 可能已经改了口令、吊销了会话，刚建的会话就漏了过去。
+    // 建完再读一遍：哈希变了或者这人已经登录不了，删掉刚建的会话，按失败算。
+    // 命令行先改哈希后删会话，这里先建会话后读哈希，两头总有一头拦得住
+    const current = await authLoginLookup(db, tenantId, email);
+    if (current?.passwordHash !== found.passwordHash) {
+      await authSessionDelete(db, tokenHash);
+      logLoginFailure(email, ip, '校验期间口令被改了，或账号已不可用');
+      return null;
+    }
+    failByEmailIp.clear(pairKey);
+    byEmail.undo();
+    if (needsRehash) await authPasswordRehash(db, tenantId, found.userId, found.passwordHash, await hashPassword(input.password));
+    await withTenant(db, { tenantId, actor: { kind: 'user', userId: found.userId, name: found.displayName, ip: input.ip } }, (tx) =>
+      writeAudit(tx, { action: 'auth.login', targetType: 'user', targetId: found.userId }),
+    );
+    return { token, user: { userId: found.userId, tenantId, role: found.role, displayName: found.displayName, csrf: csrfFor(token) } };
+  } catch (e) {
+    pair.undo();
+    byEmail.undo();
+    if (e instanceof PasswordBusyError) logLoginFailure(email, ip, '口令校验排队超时');
+    throw e;
+  }
 }
 
 /** 空闲 12 小时或过了 7 天绝对期限、账号停用、已不是成员、租户停用：返回 null（前两种顺带删行） */
