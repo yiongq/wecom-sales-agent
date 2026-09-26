@@ -29,6 +29,14 @@ if [[ ! "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! git show-ref --verify -q 
   echo "错误：${TAG} 不是本地已有的 tag（只收字母、数字和 ._-）。只按 tag 部署，分支名和提交号都不收（先 git tag <名字> <提交> 再部署）。" >&2
   exit 1
 fi
+# 这个脚本按 compose 部署。tag 里没有 compose 与迁移（01 之前的版本）时，要到第 6 步才失败，
+# 而第 4 步的 rsync --delete 已经把服务器上的 deploy/、drizzle/ 删掉了。在碰服务器之前拦下
+for f in deploy/compose.yml src/db/migrate.ts; do
+  if ! git cat-file -e "refs/tags/${TAG}:${f}" 2>/dev/null; then
+    echo "错误：${TAG} 里没有 ${f}，是换成 compose 之前的版本，这个 deploy.sh 部署不了它（服务器上什么都没动）。回到文件模式或更早的版本见 README「部署」一节。" >&2
+    exit 1
+  fi
+done
 
 # 服务器地址不进 git：写在 .deploy.env（已 gitignore），或用环境变量覆盖。环境变量优先：先记下，读完文件再盖回去
 ENV_SERVER="${SERVER:-}" ENV_REMOTE_DIR="${REMOTE_DIR:-}" ENV_HOST_PORT="${HOST_PORT:-}" ENV_NAME="${NAME:-}"
@@ -83,8 +91,8 @@ if ! (cd "$BUILD_DIR" && pnpm install --frozen-lockfile >/dev/null && pnpm forma
 fi
 
 # 3) 先查服务器 .env 再同步（只读）。运行时不设 profile 会按 demo 跑，生产实例忘了配就成了 demo
-# （匿名可付款、「重置」连已付订单一起删），所以防线放在这里。按 docker --env-file 的读法取值：
-# 行首空白去掉、按第一个 = 分开、值原样（只去行尾 CR）、同名以最后一行为准——值带引号或空格，容器会拒绝启动
+# （匿名可付款、「重置」连已付订单一起删），所以防线放在这里。按 docker --env-file 的读法取值（compose 以 format: raw
+# 读 env 文件，同一个解析器）：行首空白去掉、按第一个 = 分开、值原样（只去行尾 CR）、同名以最后一行为准——值带引号或空格，容器会拒绝启动
 echo "[3/7] 检查 ${SERVER}:${REMOTE_DIR}/.env"
 if ! ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$SIDE" <<'CHECK'; then
 set -u
@@ -92,15 +100,28 @@ env_file="$1/.env"
 # compose 的 db、migrate 各有自己的 env 文件（app 的 .env 里不能有 owner 与超级用户的口令）；platform 的只有跑命令行时才用
 for f in "$env_file" "$1/.env.db" "$1/.env.migrate"; do
   if [ ! -f "$f" ]; then
-    echo "服务器缺 $f（写法见 deploy/compose.yml 开头）" >&2
+    echo "服务器缺 ${f}（写法见 deploy/compose.yml 开头）" >&2
     exit 1
   fi
 done
-val=$(awk '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } /^DEPLOY_PROFILE=/ { v = substr($0, 16) } END { print v }' "$env_file")
+env_val() { awk -v k="$1=" '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } index($0, k) == 1 { v = substr($0, length(k) + 1) } END { print v }' "$2"; }
+val=$(env_val DEPLOY_PROFILE "$env_file")
 case "$val" in
   demo | prod) ;;
-  *) echo "$env_file 里的 DEPLOY_PROFILE 必须正好是 demo 或 prod（不带引号和空格），现在是「$val」" >&2; exit 1 ;;
+  *) echo "$env_file 里的 DEPLOY_PROFILE 必须正好是 demo 或 prod（不带引号和空格），现在是「${val}」" >&2; exit 1 ;;
 esac
+# .env.db 缺口令或设了 POSTGRES_DB，db 首次初始化就会留下一个没有角色（或属主不对）的库：roles.sh 失败时 initdb 已经做完，
+# entrypoint 之后见库已存在就不再跑它，改好 .env.db 重新部署也照样失败
+for k in POSTGRES_PASSWORD AGENT_OWNER_PASSWORD AGENT_APP_PASSWORD AGENT_PLATFORM_PASSWORD; do
+  if [ -z "$(env_val "$k" "$1/.env.db")" ]; then
+    echo "$1/.env.db 里的 $k 没写或为空（写法见 deploy/compose.yml 开头）" >&2
+    exit 1
+  fi
+done
+if [ -n "$(env_val POSTGRES_DB "$1/.env.db")" ]; then
+  echo "$1/.env.db 不能设 POSTGRES_DB（原因见 deploy/compose.yml 开头）" >&2
+  exit 1
+fi
 if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_(CORP_ID|APP_SECRET|KF_OPEN_KFID)=[^[:space:]]' "$env_file"; then
   echo "旁路实例的 $env_file 配了企微凭据，会和线上实例抢同一个客服账号的消息" >&2
   exit 1
@@ -124,15 +145,19 @@ if ! ssh "${SERVER}" "set -e; cd ${REMOTE_DIR}
   # var/ 必须归容器内 node(1000) 所有：root 属主时应用写不进去，
   # 会话/订单只活在内存、重启即丢（且表面看不出任何异常）
   mkdir -p ${REMOTE_DIR}/var && chown -R 1000:1000 ${REMOTE_DIR}/var
+  # cron 跑的备份脚本装在部署目录之外（见 deploy/backup.sh 开头）：用旧版本自己的 deploy.sh 回到 01 之前时，
+  # 它的 rsync --delete 会删掉 deploy/，而 var/ 与库仍要每晚备份
+  mkdir -p /usr/local/lib/${NAME} && install -m 755 ${REMOTE_DIR}/deploy/backup.sh /usr/local/lib/${NAME}/backup.sh
   # build 会把 ${NAME} 这个 tag 挪到新镜像上，旧镜像变成无名的 <none>，出事时无从回滚。
   # 先给「正在跑的容器」所用的镜像打 :prev——取容器的镜像而不是 :latest：上次部署若已回滚，
   # :latest 指向的是那个坏镜像，拿它当 :prev 等于把好镜像丢了。
   PREV_IMAGE=\$(docker container inspect --format '{{.Image}}' ${NAME} 2>/dev/null || true)
   if [ -n \"\$PREV_IMAGE\" ]; then docker tag \"\$PREV_IMAGE\" ${NAME}:prev; fi
   docker build --build-arg APP_REVISION=${TAG} -t ${NAME} .
-  # docker 自己解析 env 文件（格式不对就报错）。在停掉旧容器之前试一次，别等旧容器没了 docker run 才失败
+  # docker 自己解析 env 文件（格式不对就报错），compose 以 format: raw 读时用的是同一个解析器。
+  # 在停掉旧容器之前试一次，别等旧容器没了才失败
   docker run --rm --env-file ${REMOTE_DIR}/.env --entrypoint /bin/true ${NAME}"; then
-  echo "错误：构建或 .env 试读失败，中止部署（旧容器照常运行）。" >&2
+  echo "错误：构建、.env 试读或安装备份脚本失败，中止部署（旧容器照常运行）。" >&2
   exit 1
 fi
 
@@ -156,6 +181,10 @@ health_ok() {
 echo "[6/7] 迁移（顺带拉起 db）"
 if ! ssh "${SERVER}" "set -e; $(compose "${NAME}:latest") run --rm migrate"; then
   echo "错误：迁移失败，中止部署（旧容器照常运行，库没有变化）。" >&2
+  # 第 3 步挡住了缺口令的 .env.db，roles.sh 仍可能因别的原因在首次初始化时失败；那之后 entrypoint 不会再跑它
+  echo "如果是第一次起库、日志里 roles.sh 报错或 agent_owner 口令不对：roles.sh 在首次初始化时失败的话，数据卷已经建好，" >&2
+  echo "entrypoint 不会再跑它。改好 .env.db / .env.migrate（两边 owner 口令要一致）后在服务器上补跑一次（可重复执行），再重新部署：" >&2
+  echo "  cd ${REMOTE_DIR} && docker compose -p ${NAME} -f deploy/compose.yml up -d db && docker compose -p ${NAME} -f deploy/compose.yml exec db /db-init/roles.sh" >&2
   exit 1
 fi
 
@@ -171,6 +200,8 @@ if ssh "${SERVER}" "set -e
     docker stop -t 10 ${NAME} && docker rm ${NAME}
   fi
   $(compose "${NAME}:latest") up -d app
+  # :current 总是 app 容器正在用的镜像：compose 文件缺省取它，手工的 compose 命令不带 APP_IMAGE 也不会换错镜像
+  docker tag ${NAME}:latest ${NAME}:current
   docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG"; then
   echo "OK. ${TAG} 部署成功。"
   exit 0
@@ -187,7 +218,8 @@ if ! ssh "${SERVER}" "docker image inspect ${NAME}:prev >/dev/null 2>&1"; then
   exit 1
 fi
 if ssh "${SERVER}" "set -e
-  $(compose "${NAME}:prev") up -d --no-deps app" >&2 && health_ok; then
+  $(compose "${NAME}:prev") up -d --no-deps app
+  docker tag ${NAME}:prev ${NAME}:current" >&2 && health_ok; then
   echo "已回滚到 ${NAME}:prev（/healthz 的 revision 是上一版的 tag），服务恢复；${TAG} 未上线，请排查上面的日志后重新部署。" >&2
 else
   echo "错误：回滚后健康检查仍失败，服务当前不可用，需立即人工处理！" >&2

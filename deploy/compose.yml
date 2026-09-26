@@ -1,12 +1,21 @@
 # 01 spec「构建与部署 · compose」。平时由 deploy.sh 调用：
 #   APP_IMAGE=<镜像> docker compose -f deploy/compose.yml up -d app        # 依次拉起 db、跑完 migrate、再换 app
 #   APP_IMAGE=<:prev> docker compose -f deploy/compose.yml up -d --no-deps app   # 回滚：不跑 migrate（旧镜像的迁移是新镜像的子集）
+# 不给 APP_IMAGE 时取 <容器名>:current：deploy.sh 最后一次换上的镜像（部署成功是新镜像，自动回滚后是 :prev），
+# 所以下面的手工命令不用带它。别手写 :latest：自动回滚之后它指向的是那个没起来的坏镜像。
 # 命令行（一律 --rm）：
-#   docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/import-config.ts --tenant <slug>      # import / export / catalog-fix
+#   docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/import-config.ts --tenant <slug>      # import / catalog-fix
 #   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant <slug> …  # 租户、账号、成员
+# export 要写进挂进来的宿主目录：写在容器里的文件会随 --rm 一起删掉。目录放在部署目录之外（下次部署的 rsync --delete
+# 会删掉部署目录里多出来的东西），属主给容器内的 node(1000)；--image-sop 的文件也放进去：
+#   install -d -o 1000 -g 1000 /root/export-<日期>
+#   docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app \
+#     node --import tsx src/cli/export-config.ts --tenant <slug> --out /export [--image-sop /export/target-sop.md]
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
 # deploy.sh 的 rsync 保护规则（P /.env*）都已覆盖这个命名，.dockerignore 也排除了它们。
+# 一律按 format: raw 读，与 docker run --env-file 同一个解析器：值是 = 后面的整行，引号、$、# 都原样进容器。
+# compose 缺省的读法会展开 $NAME（没设的变量悄悄变成空串）、去掉引号和行尾注释，与 deploy.sh 的检查和试读对不上。
 #   .env.db       POSTGRES_PASSWORD、AGENT_OWNER_PASSWORD、AGENT_APP_PASSWORD、AGENT_PLATFORM_PASSWORD；可选 AGENT_DB（缺省 agent）。
 #                 不要设 POSTGRES_DB：entrypoint 会以超级用户为属主先建出那个库，roles.sh 见库已存在就跳过，属主就错了。
 #   .env.migrate  DATABASE_OWNER_URL=postgres://agent_owner:<口令>@db:5432/agent
@@ -18,14 +27,17 @@
 # 轮换口令见 db-init/roles.sh 开头。
 #
 # 项目名固定，数据卷就不随目录名变（wecom-sales-agent_db-data）。同一台机器再起一套（旁路实例）要用 -p 换名，
-# 并用 APP_CONTAINER、HOST_PORT 换掉容器名与宿主端口（deploy.sh 按 NAME、HOST_PORT 传进来）。
+# 并用 APP_CONTAINER、HOST_PORT 换掉容器名与宿主端口（deploy.sh 按 NAME、HOST_PORT 传进来）；
+# 旁路实例的手工命令也要带上这三个，缺省镜像随之是 <NAME>:current。
 name: wecom-sales-agent
 
 services:
   db:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
-    env_file: ../.env.db
+    env_file:
+      - path: ../.env.db
+        format: raw
     volumes:
       - db-data:/var/lib/postgresql/data
       - ./db-init:/db-init:ro
@@ -41,8 +53,11 @@ services:
       start_period: 60s
 
   migrate:
-    image: ${APP_IMAGE:?设置 APP_IMAGE 为要部署的应用镜像}
-    env_file: ../.env.migrate
+    # 应用镜像三个服务同一份，缺省 <容器名>:current（见文件开头）
+    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
+    env_file:
+      - path: ../.env.migrate
+        format: raw
     command: ['node', '--import', 'tsx', 'src/db/migrate.ts']
     restart: 'no'
     # 镜像的 HEALTHCHECK 探的是 /healthz，一次性任务没有
@@ -53,11 +68,13 @@ services:
         condition: service_healthy
 
   app:
-    image: ${APP_IMAGE:?设置 APP_IMAGE 为要部署的应用镜像}
+    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
     # 与 compose 之前 deploy.sh 用 docker run 起的容器同名：:prev 取「正在跑的容器」的镜像，两种起法都按这个名字找
     container_name: ${APP_CONTAINER:-wecom-sales-agent}
     restart: unless-stopped
-    env_file: ../.env
+    env_file:
+      - path: ../.env
+        format: raw
     environment:
       # 端口映射与 HEALTHCHECK 都写死 3200：.env 里误改 PORT 会让容器活着但外部不可达
       PORT: '3200'
@@ -77,9 +94,11 @@ services:
 
   # 平台命令行（建租户、账号、成员），平时不启动：docker compose run --rm platform node --import tsx src/cli/<name>.ts …
   platform:
-    image: ${APP_IMAGE:?设置 APP_IMAGE 为要部署的应用镜像}
+    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
     profiles: [cli]
-    env_file: ../.env.platform
+    env_file:
+      - path: ../.env.platform
+        format: raw
     healthcheck:
       disable: true
     depends_on:

@@ -1,6 +1,7 @@
 // 把租户当前的已发布 SOP 与 active 条目导出成文件（spec「导入、导出与回滚 · export-config」）。以 app 身份运行，只读库：
-//   docker compose run --rm app node --import tsx src/cli/export-config.ts --tenant <slug> --out <dir> [--image-sop <path>]
-// 回到旧版本前用 --image-sop 指向目标版本的 data/sop.md，锁定节按它合并。导出的两个 JSON 提交前用 oxfmt 格式化
+//   docker compose run --rm -v <宿主目录>:/export app node --import tsx src/cli/export-config.ts --tenant <slug> --out /export [--image-sop /export/<文件>]
+// --out 必须落在挂进来的宿主目录里：写在容器里的文件会随 --rm 一起删掉，而这里照样打印成功。宿主目录的准备见 deploy/compose.yml 开头。
+// 回到旧版本前用 --image-sop 指向目标版本的 data/sop.md（先放进同一个宿主目录），锁定节按它合并。导出的两个 JSON 提交前用 oxfmt 格式化
 import fs from 'node:fs';
 import path from 'node:path';
 import { exportConfig } from '../config/transfer.js';
