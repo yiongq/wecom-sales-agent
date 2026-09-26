@@ -40,7 +40,7 @@
   - `searchHotels` 改成先拷贝再排序；文件模式下 `loadRoutes` / `loadHotels` 也 deep-freeze。跑全部自测，发现别的原地修改就改成先拷贝，改动记进实施记录。
   - 断言写进 `config.selftest.ts`：现有全部条目都能过 schema；锁定字段比对；嵌套键序合并；表单往返不变。
   - 对应验收 4 的文件模式部分。
-- [ ] 6. 配置源、启动顺序、导入导出与运行时接线（4）：
+- [x] 6. 配置源、启动顺序、导入导出与运行时接线（4）：
   - `src/config/source.ts`：`configMode`、`productionConfigDeps`、`initConfig`（十步，前八步只读）、`currentSop` / `currentCatalog`、`onCatalogChanged`、锁状态机、`reloadFromDb` 单飞、`configHealth`、`__configTest.reset`。启动重渲染这时先用「不一致就以 `contract_failed` 拒绝启动」占位。
   - `src/boot.ts`；`server.ts` 改成顶层 `await boot({...})`，`startWecom()` 从模块顶层挪进 boot；那五处 catch 收窄；`/healthz` 加 `config`；`store.ts` 的 `onShutdown` 加 late 阶段并导出 `gracefulExit`，登记 `markConfigShuttingDown` 与 `closeConfig`。
   - `engine.ts` 的 `buildSystemPrompt`、`tools.ts` 的 `loadRoutes` / `loadHotels` 改走配置源，签名不变；每轮日志带 `sopVersion` 与 `prefixHash`。
@@ -188,6 +188,18 @@
 - `deepFreeze` 放在 `src/shared/freeze.ts`；已冻结的对象也往下走（子对象未必冻结），用 `WeakSet` 防环。文件模式下 `loadRoutes` / `loadHotels` 返回冻结对象后，全部自测照常通过，没有发现别的原地修改；`searchHotels` 在第 1 步已改成 `toSorted`。grep 过对条目对象的赋值、`push` / `splice` 与 `Object.assign`，也没有。
 - `config.selftest.ts` 增至 154 条：现有条目都过 schema、14 种不合规被拒、锁定字段比对（含「国内」这一项、只换键序不算改、draft 只锁 `id`）、嵌套键序合并、补丁、每条线路和酒店的表单往返逐字节不变、验收 4 的文件模式部分。
 - 提交前的审查 agent 没跑起来（子 agent 撞上了每周用量上限），改为自己做变异测试：拆掉冻结的递归、跳过已冻结的父对象、按赋值写键、忽略「国内」、数组不递归合并、丢掉新增键、不查天数、酒店 schema 不 strict、酒店不冻结，全部变红。「锁定字段按 JSON 比较」一条存活，是等价变异：锁定表里没有对象类型的字段。「不查天数」起初存活（测试删的是第一天，被天号检查先拦下），已改测试。
+
+### 第 6 步（2026-09-26）
+
+- `src/config/source.ts` 按 spec 的接口实现，多出来的几处：`ConfigDeps` 多两个可选项 `closeDb`（失败与停机时关连接池，spec 的接口里没有）和 `imageDataDir`（启动日志点名差异用）；`initConfigFromEnv` 包住「先校验 `CONFIG_SOURCE`、是 db 才构造依赖」；`assertConfigWritable()` 给第 7、8 步的写函数在锁丢失时抛 `ConfigLockLostError`；`prefixSummary()` 给 `/healthz`；`__configTest.setTimings()` 把重取锁间隔和重读退避调短，测试不用真等几秒。`applyCatalogRow`、`replacePublishedSop` 留到第 7、8 步和写函数一起加。
+- 启动重渲染的写入（第 9 步）按 plan 先占位：渲染结果与存下来的不同就以 `contract_failed` 拒绝启动；`render_inputs` 的比较与 `causes` 已经算好，日志点名是哪类输入变了（`hard_rules` 等），第 7 步接上写入。
+- `productionConfigDeps` 只把值非空的 `DATABASE_OWNER_URL` / `DATABASE_PLATFORM_URL` / `POSTGRES_PASSWORD` / `AGENT_*_PASSWORD` 算作特权凭据（`.env` 里留着空模板不算）。`env_invalid` 不回显非法的 `CONFIG_SOURCE` 值，除非它是个短词：冒烟时把整行环境变量配到了它上面，消息里就带出了连接串口令。
+- 导入导出的逻辑在 `src/config/transfer.ts`，三个命令行（`tenant-create`、`import-config`、`export-config`）只做参数、环境与退出码。读 `sop.md` 一律按字节严格解码（新增 `decodeSopFile`）：`fs.readFileSync(…, 'utf8')` 会把非法 UTF-8 字节（编码过的孤立代理项）悄悄换成 U+FFFD，坏文件就被当成合法的导入了，自测当场抓到。导入的一致性判定两边按同一顺序比较（库里读出来 hotel 排在 route 前面）。
+- 运行时接线：`server.ts` 顶层 `await boot({...})`，`startWecom()` 挪进 boot、在监听之后；`store.ts` 的 `onShutdown` 加 `{ phase: 'late' }`，导出 `gracefulExit`，SIGTERM 与「锁被别的进程拿走」走同一条路；五处 `try { loadRoutes() } catch {}` 收窄为 `ConfigNotReadyError` 照常抛；`/healthz` 加 `config`；引擎 DB 模式每轮一行日志带 `SOP v<n> · 前缀 <12 位>`，慢轮日志两种模式都带（文件模式记 `SOP file`）；`llm.ts` 加只读的 `observeRequests`。
+- `testing.ts` 的 `installSeededConfig` 以 agent_app 身份导入并装载（之后这条 PGlite 连接一直是 agent_app，运行时读写受 RLS 约束），配 `fakeLock()` 可控的假锁。`eval/run.ts` 只多两处：`CONFIG_TEST_DB=pglite` 开关（装上配置源，并核对每个请求的 system 与 tools 哈希等于 `/healthz` 报的，22 个请求 0 个不符）和 `--cases`。`test` 对原有 6 组和文件模式 eval 加 `CONFIG_SOURCE=file`，eval 再以 DB 模式跑一遍，也是 19/19。
+- 验收覆盖：验收 1（与 `f6f525c` 相比原有自测、适配器自测、`eval/cases.json` 零 diff，`eval/run.ts` 正好两处改动）；验收 2（PGlite 上全部四项，16 个观测项逐字节相同；node-postgres 上重做前两项）；验收 3（往返、七类坏文件、重复导入、内容不一致 → 2、持锁 → 3、`--dry-run`，真实 PG 上以子进程跑三个命令行；「先以 DB 模式启动产生 rerender 版本再导入仍是 0」要等第 7 步的重渲染写入）；验收 4、13（全部分支，含库里多一条迁移时照常启动并 warn、连接串口令不进日志、企微 cursor 不动）、14，以及 21 的自动部分。
+- `config.selftest.ts` 247 条、`db.selftest.ts` 真实 PG 上 282 条。另在本机 pgvector:pg17 容器上按生产路径端到端走了一遍：roles.sql → 以 agent_owner 迁移 → `tenant-create` → `import-config` → `CONFIG_SOURCE=db` 起服务器，`/healthz` 报 `mode: db` 且哈希与文件模式相同，网页对话正常；第二个实例以 `lock_held` 拒绝启动；SIGTERM 优雅退出后锁释放，第三个实例正常装载。
+- 子 agent 仍撞在每周用量上限上，审查改为自己做变异测试：不查完整性、拿不到锁照常启动、不查迁移、不查特权凭据、快照不冻结、锁丢了不标 lost、重读不单飞、不查 active 线路、导入不严格解码、导入不查锁定节、DB 模式下酒店仍读文件、装载失败后仍监听，全部变红。其中「酒店仍读文件」起初存活（两种模式数据相同，等价比较分不出来），已补「`loadHotels()` 返回快照本身」一条。
 
 ## 验收记录
 

@@ -7,6 +7,7 @@ import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js
 import { SALES_SEGMENTS } from './types.js';
 import { peakMonths } from './shared/season.js';
 import { deepFreeze } from './shared/freeze.js';
+import { configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
 import { createOrder, getOrder, saveSession, supersedeOrder } from './store.js';
@@ -19,8 +20,10 @@ function routesPath(): string {
   return process.env.ROUTES_PATH ?? path.join(process.cwd(), 'data', 'routes.json');
 }
 
-// 返回的对象递归冻结（01 spec「快照」）：类型仍是 Route[]，写入在运行时抛 TypeError，调用方要排序、改字段先拷贝
+// 返回的对象递归冻结（01 spec「快照」）：类型仍是 Route[]，写入在运行时抛 TypeError，调用方要排序、改字段先拷贝。
+// DB 模式直接返回配置源快照里的数组本身，不拷贝、不查库；文件模式每次重新读文件
 export function loadRoutes(): Route[] {
+  if (configMode() === 'db') return currentCatalog().routes as Route[];
   const p = routesPath();
   if (!fs.existsSync(p)) {
     throw new Error(`线路数据缺失: ${p} 不存在（应由 data/routes.json 提供，见 SPEC 模块 1）`);
@@ -38,6 +41,7 @@ function hotelsPath(): string {
 }
 
 export function loadHotels(): Hotel[] {
+  if (configMode() === 'db') return currentCatalog().hotels as Hotel[];
   const p = hotelsPath();
   if (!fs.existsSync(p)) return []; // 酒店库可选：缺失时 search_hotels 返回空，不影响主流程
   try {

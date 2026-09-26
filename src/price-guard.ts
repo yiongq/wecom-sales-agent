@@ -6,6 +6,7 @@
 import { isOriginMention, loadHotels, loadRoutes, offCatalogPlaces } from './tools.js';
 import { getOrder } from './store.js';
 import type { Route, Session } from './types.js';
+import { ConfigNotReadyError } from './config/source.js';
 
 /**
  * 精确金额：¥12,345 / 12,345元 / 12345 块，且 ≥1000。「3万8000元」里的 8000 是 38,000 的尾巴，不单独算。
@@ -861,8 +862,8 @@ function allowedAmounts(session: Session, customerText: string, includeCustomerS
   let hotels: { nightlyFrom: number }[] = [];
   try {
     hotels = loadHotels();
-  } catch {
-    /* 同上 */
+  } catch (e) {
+    if (e instanceof ConfigNotReadyError) throw e; // 只吞文件解析错误；配置源没装载好是启动顺序出了错，不能当成空表
   }
   for (const h of hotels) add(hotelNightly, h.nightlyFrom);
   const q = session.lastQuote;
@@ -947,8 +948,9 @@ export function findUnbackedPriceHits(visible: string, session: Session, custome
   let routes: Route[] = [];
   try {
     routes = loadRoutes();
-  } catch {
-    /* 数据文件坏了另有告警，这里不阻断对话 */
+  } catch (e) {
+    // 数据文件坏了另有告警，这里不阻断对话；配置源没装载好是启动顺序出了错，照常抛
+    if (e instanceof ConfigNotReadyError) throw e;
   }
   const misses = missTargets(turnCalls);
   const names = routeNames(routes);
@@ -1208,8 +1210,8 @@ export function strandedAfterDrop(before: string, after: string): boolean {
     let routes: Route[] = [];
     try {
       routes = loadRoutes();
-    } catch {
-      /* 数据文件坏了另有告警 */
+    } catch (e) {
+      if (e instanceof ConfigNotReadyError) throw e; // 数据文件坏了另有告警；配置源没装载好照常抛
     }
     const names = routeNames(routes);
     // 点名分两层：具体哪条（「中央格兰德」「北欧极光」）和哪个目的地（「马代」三条线共用）。

@@ -34,6 +34,8 @@ import { BUDGET_LIFTED, dropUnbackedClaims, liftsBudget } from './price-rules.js
 import { numEnv, todayIso } from './env.js';
 import { profile } from './profile.js';
 import { renderSystemPrompt } from './prompt/system.js';
+import { ConfigNotReadyError, configMode, currentSop } from './config/source.js';
+import { promptHashes } from './config/hashes.js';
 
 // 阶段排序，用于「只前进不倒退」地推导销售阶段（handoff/paid 另行处理）
 const STAGE_RANK: Record<SalesStage, number> = {
@@ -1613,8 +1615,8 @@ function dropProposalOffers(text: string): string {
   let routes: Route[] = [];
   try {
     routes = loadRoutes();
-  } catch {
-    /* 数据文件坏了另有告警 */
+  } catch (e) {
+    if (e instanceof ConfigNotReadyError) throw e; // 数据文件坏了另有告警；配置源没装载好照常抛
   }
   const sentIds = new Set([...text.matchAll(/\/proposal\/([A-Za-z0-9_-]+)/g)].map((m) => m[1]));
   const sentDests = new Set(routes.filter((r) => sentIds.has(r.id)).map((r) => r.destination));
@@ -2325,9 +2327,25 @@ function loadSop(): string {
   return fs.readFileSync(p, 'utf8');
 }
 
-// system prompt 的拼装与前缀缓存的讲究见 prompt/system.ts。这里只决定 SOP 从哪来
+// system prompt 的拼装与前缀缓存的讲究见 prompt/system.ts。这里只决定 SOP 从哪来：
+// DB 模式取发布时渲染好的那一串（每轮逐字节复用，从不重新渲染），文件模式每轮按 data/sop.md 现渲染
 function buildSystemPrompt(): string {
-  return renderSystemPrompt(loadSop());
+  return configMode() === 'db' ? currentSop().renderedPrompt : renderSystemPrompt(loadSop());
+}
+
+/** 文件模式下的 SOP 原文（SOP_PATH 或 data/sop.md），给 /healthz 算 sopHash */
+export function sopFileText(): string {
+  return loadSop();
+}
+
+/** 每轮可追溯（spec「渲染与哈希」）：SOP 版本与前缀哈希前 12 位。文件模式的版本记 file，哈希按当前文件现算 */
+function configTag(): string {
+  if (configMode() === 'db') {
+    const s = currentSop();
+    return `SOP v${s.versionNo} · 前缀 ${s.prefixHash.slice(0, 12)}`;
+  }
+  const { system, tools } = promptPrefix();
+  return `SOP file · 前缀 ${promptHashes(system, tools, '').prefixHash.slice(0, 12)}`;
 }
 
 /** 发给模型的固定前缀：system 是请求里第一条 system 消息的全文，tools 是 JSON.stringify(toolDefs)。
@@ -3771,6 +3789,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
   saveSession(session);
   logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs });
+  if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${session.id}）· ${configTag()}`);
 
   const reply: AgentReply = { text: visible, stage: session.stage };
   if (session.handedOver) reply.handoff = true;
@@ -3803,7 +3822,7 @@ function logSlowTurn(sessionId: string, totalMs: number, t: { prefetchMs: number
   if (totalMs <= Math.max(0, numEnv('LLM_SLOW_TURN_MS', 8000))) return;
   const pf = t.prefetchTimes.length ? `预取 ${t.prefetchMs}ms（${t.prefetchTimes.join(' + ')}）` : `预取 ${t.prefetchMs}ms`;
   console.warn(
-    `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms`,
+    `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms · ${configTag()}`,
   );
 }
 

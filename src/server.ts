@@ -13,9 +13,19 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { handleMessage, notifyPaid } from './engine.js';
+import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
-import { getOrder, getSession, listOrders, listSessions, markOrderPaid, saveSession, storeEvents } from './store.js';
+import {
+  getOrder,
+  getSession,
+  gracefulExit,
+  listOrders,
+  listSessions,
+  markOrderPaid,
+  onShutdown,
+  saveSession,
+  storeEvents,
+} from './store.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
 import { activeModels, CHEAP_TIER_MODELS, llmCfg, llmStats } from './llm.js';
 import { budgetStatus } from './budget.js';
@@ -29,6 +39,8 @@ import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { profile } from './profile.js';
 import type { ChannelAdapter } from './types.js';
+import { boot } from './boot.js';
+import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
 
 const app = new Hono();
 
@@ -149,6 +161,29 @@ app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html'
 // llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。
 // revision 是部署时的 git tag（deploy.sh 经 Dockerfile 的 APP_REVISION 写进镜像）：回滚到 :prev 后报的是上一版的 tag，
 // 线上跑的是哪一版一眼可查；本地 pnpm start 没有这个变量，报 dev
+/**
+ * 配置源的摘要（01 spec「两种模式与启动装载」）：哈希都取前 12 位。DB 模式取缓存；文件模式按当前文件现算，
+ * sopVersion 与 lock 为 null。文件读不到时哈希为 null，不让 /healthz 因此 500
+ */
+function configSummary(): Record<string, unknown> {
+  const mode = configMode();
+  const health = mode === 'db' ? configHealth() : null;
+  let hashes: Record<string, unknown> = { sopVersion: null, promptHash: null, toolsHash: null, prefixHash: null, sopHash: null };
+  try {
+    const p = prefixSummary(() => ({ ...promptPrefix(), sop: sopFileText() }));
+    hashes = {
+      sopVersion: p.sopVersion,
+      promptHash: p.promptHash.slice(0, 12),
+      toolsHash: p.toolsHash.slice(0, 12),
+      prefixHash: p.prefixHash.slice(0, 12),
+      sopHash: p.sopHash.slice(0, 12),
+    };
+  } catch {
+    /* 文件模式下 SOP 读不到：启动预检另有告警 */
+  }
+  return { mode, ...hashes, lock: health?.lock ?? null, sopStale: health?.sopStale ?? false, catalogStale: health?.catalogStale ?? false };
+}
+
 app.get('/healthz', (c) =>
   c.json({
     ok: true,
@@ -157,6 +192,7 @@ app.get('/healthz', (c) =>
     visitorLLM: budgetStatus(),
     llmGate: gateStatus(),
     llm: llmStats(),
+    config: configSummary(),
   }),
 );
 
@@ -743,65 +779,82 @@ export { app };
 const SELFTEST = process.env.SERVER_SELFTEST === '1';
 
 const port = Number(process.env.PORT) || 3200;
-if (!SELFTEST)
-  serve({ fetch: app.fetch, port }, (info) => {
-    console.log(`[server] 已启动 http://localhost:${info.port}`);
-    // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
-    // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
-    // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
-    const realSessions = listSessions().filter((s) => !DEMO_DATA_RE.test(s.id)).length;
-    if (!process.env.ADMIN_PASS) {
-      console.warn('[server] ADMIN_PASS 未配置：后台为演示模式（免密只读、仅演示数据），接管与发消息一律 503。');
-      if (realSessions > 0) {
-        console.warn(`[server] ⚠️ 已有 ${realSessions} 个真实客户会话，但没配密码——你无法在后台查看或接管它们。`);
-      }
-    } else if (realSessions > 0) {
-      console.log(`[server] 管理面已启用鉴权；${realSessions} 个真实客户会话仅登录后可见。`);
+
+/** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
+function logStartup(listeningPort: number): void {
+  console.log(`[server] 已启动 http://localhost:${listeningPort}`);
+  // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
+  // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
+  // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
+  const realSessions = listSessions().filter((s) => !DEMO_DATA_RE.test(s.id)).length;
+  if (!process.env.ADMIN_PASS) {
+    console.warn('[server] ADMIN_PASS 未配置：后台为演示模式（免密只读、仅演示数据），接管与发消息一律 503。');
+    if (realSessions > 0) {
+      console.warn(`[server] ⚠️ 已有 ${realSessions} 个真实客户会话，但没配密码——你无法在后台查看或接管它们。`);
     }
-    // 交付场景最常见的"看着正常、其实全坏"：key 没配。启动就喊，别等客户发消息才发现。
-    // 必须复用 llmCfg()——直接查 LLM_API_KEY 会与多供应商解析对不上，既误报又漏报。
-    if (process.env.LLM_MOCK === '1') {
-      console.log('[server] LLM_MOCK=1：走离线脚本回复，不调用真实模型');
+  } else if (realSessions > 0) {
+    console.log(`[server] 管理面已启用鉴权；${realSessions} 个真实客户会话仅登录后可见。`);
+  }
+  // 交付场景最常见的"看着正常、其实全坏"：key 没配。启动就喊，别等客户发消息才发现。
+  // 必须复用 llmCfg()——直接查 LLM_API_KEY 会与多供应商解析对不上，既误报又漏报。
+  if (process.env.LLM_MOCK === '1') {
+    console.log('[server] LLM_MOCK=1：走离线脚本回复，不调用真实模型');
+  } else {
+    const { apiKey, baseUrl } = llmCfg();
+    if (apiKey) {
+      const { main, cheap } = activeModels();
+      const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();
+      console.log(`[server] LLM: ${process.env.LLM_PROVIDER || 'default'} / 对话=${main} · 后台=${cheap} @ ${baseUrl}`);
+      console.log(
+        `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用 · 工具往返后 ${hedgeMsFollowup}ms）` : '关'}` +
+          (forcedThinkingModels.length ? ` · 强制思考 ${forcedThinkingModels.join('/')} 档位=${reasoningEffort}` : ''),
+      );
+      // 静默降级是最难查的故障：主对话跑到便宜档上，表现只是「话术变差了」，
+      // 不报错也不告警。后台跟主模型一致是正常默认，只有主对话本身掉到便宜档才该喊。
+      if (CHEAP_TIER_MODELS.has(main)) {
+        console.warn(
+          `[server] ⚠️ 主对话正在使用便宜档模型（${main}）。实测 glm-4.5-air 在「客户说了目的地就摆线路」` +
+            '上只有 4/48 命中（现用 glm-5.3-flashx 带预取是 48/48）。若非有意，请检查 .env 的 ZHIPU_MODEL / LLM_MODEL。',
+        );
+      }
     } else {
-      const { apiKey, baseUrl } = llmCfg();
-      if (apiKey) {
-        const { main, cheap } = activeModels();
-        const { hedgeModel, hedgeMs, hedgeMsFollowup, reasoningEffort, forcedThinkingModels } = llmStats();
-        console.log(`[server] LLM: ${process.env.LLM_PROVIDER || 'default'} / 对话=${main} · 后台=${cheap} @ ${baseUrl}`);
-        console.log(
-          `[server] LLM 对冲=${hedgeModel ? `${hedgeModel}（主模型 ${hedgeMs}ms 未返回时启用 · 工具往返后 ${hedgeMsFollowup}ms）` : '关'}` +
-            (forcedThinkingModels.length ? ` · 强制思考 ${forcedThinkingModels.join('/')} 档位=${reasoningEffort}` : ''),
-        );
-        // 静默降级是最难查的故障：主对话跑到便宜档上，表现只是「话术变差了」，
-        // 不报错也不告警。后台跟主模型一致是正常默认，只有主对话本身掉到便宜档才该喊。
-        if (CHEAP_TIER_MODELS.has(main)) {
-          console.warn(
-            `[server] ⚠️ 主对话正在使用便宜档模型（${main}）。实测 glm-4.5-air 在「客户说了目的地就摆线路」` +
-              '上只有 4/48 命中（现用 glm-5.3-flashx 带预取是 48/48）。若非有意，请检查 .env 的 ZHIPU_MODEL / LLM_MODEL。',
-          );
-        }
-      } else {
-        console.error(
-          `[server] ⚠️⚠️ LLM API Key 未配置（provider=${process.env.LLM_PROVIDER || 'default'}）：` +
-            '客户每条消息都会失败（收到「系统开小差了」）。请在 .env 配置对应的 API Key，或设 LLM_MOCK=1。',
-        );
-      }
+      console.error(
+        `[server] ⚠️⚠️ LLM API Key 未配置（provider=${process.env.LLM_PROVIDER || 'default'}）：` +
+          '客户每条消息都会失败（收到「系统开小差了」）。请在 .env 配置对应的 API Key，或设 LLM_MOCK=1。',
+      );
     }
+  }
+}
+
+if (!SELFTEST) {
+  // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
+  onShutdown(markConfigShuttingDown);
+  onShutdown(closeConfig, { phase: 'late' });
+  await boot({
+    initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
+    serve: (onListening) =>
+      void serve({ fetch: app.fetch, port }, (info) => {
+        logStartup(info.port);
+        onListening();
+      }),
     // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-    try {
-      loadRoutes();
-      loadHotels();
-    } catch (e) {
-      console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-    }
-    // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配。
-    // buildIndex 内部已兜住异常，这里再补一道 catch——`void` 掉的 promise 一旦 reject
-    // 就是未捕获 rejection，Node 会直接退出，容器随之进入无限重启。
-    buildIndex().catch((e) => console.error('[server] 语义索引构建异常（已降级为关键词匹配）:', e));
+    preflight: () => {
+      try {
+        loadRoutes();
+        loadHotels();
+      } catch (e) {
+        console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+      }
+    },
+    // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
+    buildIndex,
     // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
-    startFollowUpScheduler((sessionId, text) => {
-      const s = getSession(sessionId);
-      return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
-    });
+    startFollowUpScheduler: () =>
+      startFollowUpScheduler((sessionId, text) => {
+        const s = getSession(sessionId);
+        return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+      }),
+    startWecom,
+    exit: (code) => process.exit(code),
   });
-if (!SELFTEST) startWecom();
+}

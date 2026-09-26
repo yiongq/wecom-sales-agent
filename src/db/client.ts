@@ -95,6 +95,12 @@ export async function openDb(url: string, opts: { max?: number } = {}): Promise<
   return { db, close: () => pool.end() };
 }
 
+/** 库的 server_encoding（initConfig 第 1 步要求 UTF8）。连不上时抛连接错误 */
+export async function serverEncoding(db: Db): Promise<string> {
+  const [row] = rowsOf<{ server_encoding: string }>(await db.execute(sql`show server_encoding`));
+  return row?.server_encoding ?? '';
+}
+
 /** 两个驱动的 execute 结果都带 rows */
 export function rowsOf<T>(result: unknown): T[] {
   const rows = (result as { rows?: unknown }).rows;

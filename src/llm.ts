@@ -82,8 +82,24 @@ function recordCompletion(model: string, u: WireUsage | undefined, sessionId?: s
   );
 }
 
+/** chat() 入口处看到的固定前缀：system 原文与 JSON.stringify(tools)。只读，改不了请求 */
+export interface ObservedRequest {
+  system: string;
+  tools: string;
+}
+let requestObserver: ((req: ObservedRequest) => void) | null = null;
+/**
+ * 只读的请求观察钩子，默认什么都不做。自测和 DB 模式的 eval 用它记录每个请求实际发出的 system 与 tools，
+ * 核对它们与 /healthz 报的哈希一致（01 spec 验收 21）。传 null 卸下
+ */
+export function observeRequests(cb: ((req: ObservedRequest) => void) | null): void {
+  requestObserver = cb;
+}
+
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
 export async function chat(opts: ChatOptions): Promise<string> {
+  // 在 mock 与真实分支之前看：两条路发出去的前缀是同一份
+  requestObserver?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
   return process.env.LLM_MOCK === '1' || opts.forceMock ? mockChat(opts) : realChat(opts);
 }
 

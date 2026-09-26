@@ -22,6 +22,27 @@ import { fileURLToPath } from 'node:url';
 // 后台会话列表混进 sim-eval-*，GMV / 成交率也把假单算进去。
 process.env.VAR_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-eval-'));
 
+// DB 模式的 mock eval（01 spec「测试与 CI」）：把 data/ 导入 PGlite 并装成配置源，同一批用例再跑一遍。
+// 必须放在 VAR_DIR 之后：store.ts 在加载时就读它。每个请求发出的 system 与 tools 的哈希都要等于 /healthz 报的（验收 21）
+if (process.env.CONFIG_TEST_DB === 'pglite') {
+  const { openTestDb, installSeededConfig } = await import('../src/db/testing.js');
+  const { observeRequests } = await import('../src/llm.js');
+  const { currentSop } = await import('../src/config/source.js');
+  const { sha256 } = await import('../src/config/hashes.js');
+  await installSeededConfig(await openTestDb());
+  let observed = 0;
+  let mismatched = 0;
+  observeRequests((r) => {
+    observed++;
+    const s = currentSop();
+    if (sha256(r.system) !== s.promptHash || sha256(r.tools) !== s.toolsHash) mismatched++;
+  });
+  process.on('exit', () => {
+    process.stdout.write(`DB 模式：${observed} 个请求的前缀哈希核对，${mismatched} 个与 /healthz 不符\n`);
+    if (mismatched || !observed) process.exitCode = 1;
+  });
+}
+
 const { handleMessage, onToolCall } = await import('../src/engine.js');
 const { getSession } = await import('../src/store.js');
 const { buildIndex } = await import('../src/retrieval.js');
@@ -47,7 +68,11 @@ interface Case {
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const cases = JSON.parse(fs.readFileSync(path.join(HERE, 'cases.json'), 'utf8')) as Case[];
+// --cases <path>：换一份用例文件（ADR-003：私有用例放在仓库之外；验收 21 的手动部分只跑 realOnly 的那份）
+const casesArg = process.argv.indexOf('--cases');
+const cases = JSON.parse(
+  fs.readFileSync(casesArg > 0 ? path.resolve(process.argv[casesArg + 1]!) : path.join(HERE, 'cases.json'), 'utf8'),
+) as Case[];
 
 const argv = process.argv.slice(2);
 const tagFilter = argv.includes('--tags') ? argv[argv.indexOf('--tags') + 1] : null;
