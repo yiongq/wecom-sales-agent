@@ -5,6 +5,8 @@ Phase: 1 of the roadmap in [master-reference](../master-reference.md)「分阶�
 Depends on: [00-baseline](../00-baseline/spec.md)（`DEPLOY_PROFILE`、`promptPrefix()`、四个门禁、按 tag 部署）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)、[ADR-002](../../adr/adr-002-console-vite-react.md)、[ADR-003](../../adr/adr-003-open-core-boundary.md)
 Revisions: 2026-09-25 首版草稿经多角度对抗审查后就地修订（尚无代码依赖）。主要改动：DB 模式改为 `CONFIG_SOURCE=db` 显式开启（原为看有没有 `DATABASE_URL`），并要求显式写 `DEPLOY_PROFILE`；启动顺序写死在 `src/boot.ts`（R18）；锁连接断开先进入 lost 状态、后台重取（原为立即退出）；`renderSystemPrompt` 不读 profile（原随 `ai_disclosure` 变化）；哈希由一个扩为四个；版本号在发布时分配（原在建草稿时）；检索改为失效后全量重建（原为按条向量缓存，推到 03）；产品库编辑改为字段级 PATCH 加递归键序合并，计价、识别与条款字段锁定；凭据按 compose 服务隔离（R19）；备份改由超级用户在 db 容器里导出并加密；验收 21 改为前缀哈希自动断言加真实模型 p90 绝对阈值；恢复演练的结论记进 plan，细节另记（原为整条另记）。2026-09-25 owner 确认后翻为 ready，同时定下开放问题 1（`test` 多串三组自测）。
 
+Revisions: 2026-09-26 实现期修订（owner 确认）：后台页面的 CSP 在原来那条之外加 `style-src 'self' 'nonce-…'`，每个响应现生成（第 12 步实测 Ant Design 与 CodeMirror 在原 CSP 下没有样式）；`/api/console/*` 的 CSP 不变。见「后台 API 与页面 · 安全头」。
+
 ## 背景与问题
 
 现在 SOP 和产品库是 git 里的三个文件，随镜像发布：
@@ -1025,7 +1027,7 @@ export type ConsoleApp = typeof consoleApi;
 
 - **匿名投影**：SOP 只给已发布版本的 `sections`、`versionNo`、`publishedAt` 和 `promptHash` 前 12 位；产品库只给 active 条目的 `kind`、`code`、`payload`；`/status` 只给 `mode`。不含草稿、任何 user id、姓名和变更说明。匿名读取一律出自进程内缓存与快照，不查库，并挂上现有的 `lookupLimit`。
 - **会话只读列表**读的是现有的文件 store：handler 自己按 `(updatedAt desc, id)` 排序，offset 分页（`limit ≤ 100`），每条只投影 `id`、`channel`、`stage`、`handedOver`、消息条数、`updatedAt`，不带消息正文，也不把 store 里的活对象原样返回。不列 `sim-` 会话：演示访客会话凭 id 就能读全文，id 本身就是凭据。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移。详情仍在 `admin.html` 里看。
-- **安全头**：`/console/*` 与 `/api/console/*` 的响应都带 `Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'`、`Cache-Control: no-store`（响应里有 csrf 和草稿）、`X-Content-Type-Options: nosniff`。`/console` 与公开页同源，同源的 XSS 能拿到 csrf，所以公开页对产品库文本的转义是后台安全的一部分。
+- **安全头**：`/console/*` 与 `/api/console/*` 的响应都带 `Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'`、`Cache-Control: no-store`（响应里有 csrf 和草稿）、`X-Content-Type-Options: nosniff`。`/console` 的页面（index.html）在这条 CSP 之外再加 `style-src 'self' 'nonce-<每个响应现生成>'`：Ant Design 与 CodeMirror 在运行时插 `<style>`，只有 `default-src 'self'` 时整页没有样式。构建时在 index.html 里留 nonce 的占位符，托管页面时每个响应换成新值并写进这一条；前端从 `<meta property="csp-nonce">` 读出交给组件库。脚本仍只许本站文件，注入的标记带不上 nonce，照样被拦。`/console` 与公开页同源，同源的 XSS 能拿到 csrf，所以公开页对产品库文本的转义是后台安全的一部分。
 
 页面（ADR-002 的栈；本阶段不用 ECharts）：
 
