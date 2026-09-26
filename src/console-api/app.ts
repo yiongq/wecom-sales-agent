@@ -1,7 +1,7 @@
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
 // 必须链式注册，Hono RPC 才推得出类型（ADR-002）；console/src 只用 import type 引 ConsoleApp。
-// 公共中间件依次是：安全头 → 只在 DB 模式 → 读会话 → 写保护；每个路由再挂自己的权限，没匹配上的路径匿名一律 401。
-// prod（anon_readonly_admin 关）下匿名除了登录处处 401，靠的就是每个路由都挂了权限、兜底也是 401。
+// 公共中间件依次是：安全头 → 只在 DB 模式 → 读会话 → 写保护；每个路由再挂自己的权限，没匹配上的路径回 JSON。
+// prod（anon_readonly_admin 关）下匿名除了登录处处 401，靠的就是每个路由都挂了权限、兜底在 prod 下也是 401。
 // 匿名（demo）只拿投影，出自进程内缓存与快照、不查库，并挂查询限流。命名错误在 onError 里统一映射成 { error, … }。
 import { isIP } from 'node:net';
 import { zValidator } from '@hono/zod-validator';
@@ -436,8 +436,8 @@ export const consoleApi = new Hono<ConsoleEnv>()
     return c.json(page, 200);
   })
 
-  // 没匹配上的路径：匿名一律 401（demo 下匿名也只能碰上面那几个投影端点），成员 404 JSON，不落到静态文件
-  .all('*', (c) => (c.var.user ? fail(c, 404, { error: 'not_found' }) : unauthorized(c)))
+  // 没匹配上的路径回 JSON，不落到静态文件：成员与 demo 下的匿名 404；prod 下匿名 401（除了登录处处 401）
+  .all('*', (c) => (c.var.user || profile().flags.anon_readonly_admin ? fail(c, 404, { error: 'not_found' }) : unauthorized(c)))
 
   .onError((e, c) => {
     const mapped = mapError(e);
