@@ -13,6 +13,7 @@ import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, sameValue, type Cat
 import type { AnonCatalogItem, CatalogItem } from '../../../src/shared/console-api.js';
 import { api, describe, HttpError, unwrap } from '../api.js';
 import { canEdit, useViewer } from '../viewer.js';
+import { CsvImport } from './CsvImport.js';
 import { zodValidator } from '../zodValidator.js';
 
 type Row = AnonCatalogItem & Partial<Pick<CatalogItem, 'status' | 'rev' | 'updatedByName' | 'updatedAt'>>;
@@ -79,9 +80,12 @@ export function CatalogPage() {
   return (
     <Space orientation="vertical" style={{ width: '100%' }}>
       {editable && (
-        <Button type="primary" onClick={() => setOpen({ row: null })}>
-          新建{KIND_LABEL[kind]}
-        </Button>
+        <Space>
+          <Button type="primary" onClick={() => setOpen({ row: null })}>
+            新建{KIND_LABEL[kind]}
+          </Button>
+          <CsvImport kind={kind} label={KIND_LABEL[kind]} onDone={() => qc.invalidateQueries({ queryKey: ['catalog', kind] })} />
+        </Space>
       )}
       <Table<Row>
         rowKey="code"
