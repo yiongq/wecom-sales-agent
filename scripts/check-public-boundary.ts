@@ -145,6 +145,16 @@ if (badPaths.length) {
   for (const p of badPaths) console.error(`  ${p}`);
 }
 
+/**
+ * 锁文件里的 integrity 是 sha512 的 base64，88 个随机字符，迟早会偶然撞上词表里的某条正则（新装一个包就撞过一次）。
+ * 它由包内容算出、不带任何信息，扫之前抹掉；锁文件的其余部分（包名、私有 registry 地址）照查。不含换行，行号不变
+ */
+function maskHashes(p: string, text: string): string {
+  return p === 'pnpm-lock.yaml' || p.endsWith('/pnpm-lock.yaml')
+    ? text.replace(/integrity: sha512-[A-Za-z0-9+/]+=*/g, 'integrity: sha512-')
+    : text;
+}
+
 const patterns = loadPatterns();
 if (patterns === null) {
   console.log('public-boundary: 没有 SENSITIVE_PATTERNS 或 .sensitive-patterns，跳过内容黑名单');
@@ -158,7 +168,7 @@ if (patterns === null) {
     if (masked !== p) hits.push(`  ${masked}（路径）`);
     const blob = blobs[i];
     if (!blob) return;
-    const text = decode(blob);
+    const text = maskHashes(p, decode(blob));
     const lines = new Set<number>();
     for (const re of patterns) {
       for (const m of text.matchAll(re)) {
