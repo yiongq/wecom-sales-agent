@@ -666,7 +666,7 @@ export const __configTest = {
     reloadAgain = false;
     reacquireMs = 5_000;
     reloadBackoff = RELOAD_BACKOFF_MS;
-    catalogListeners.length = 0;
+    // 不清 catalogListeners：它们是各模块加载时登记的（retrieval.ts），模块不会再加载一次
   },
   /** 锁重取间隔与重读退避调短，测试不用真等几秒 */
   setTimings(t: { reacquireMs?: number; reloadBackoffMs?: number[] }): void {
