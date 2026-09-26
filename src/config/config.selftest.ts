@@ -1846,6 +1846,54 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   }
 }
 
+// ---------------- 部署 profile：配了企微凭据就必须显式设置（00 开放问题 1，2026-09-26 owner 定） ----------------
+{
+  const { resolveProfile } = await import('../profile.js');
+  const { spawnSync } = await import('node:child_process');
+  const reason = (env: Record<string, string>): string => {
+    try {
+      resolveProfile(env);
+      return 'ok';
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+  for (const k of ['WECOM_CORP_ID', 'WECOM_APP_SECRET', 'WECOM_KF_OPEN_KFID']) {
+    check(`profile：配了 ${k} 却没设 DEPLOY_PROFILE → 拒绝并点名 ${k}`, reason({ [k]: 'x' }).includes(k), reason({ [k]: 'x' }));
+  }
+  check('profile：DEPLOY_PROFILE 是空串也算没设，照样拒绝', reason({ DEPLOY_PROFILE: '', WECOM_CORP_ID: 'x' }) !== 'ok');
+  check(
+    'profile：显式设成 demo 或 prod 就照常',
+    reason({ DEPLOY_PROFILE: 'demo', WECOM_CORP_ID: 'x' }) === 'ok' &&
+      reason({ DEPLOY_PROFILE: 'prod', WECOM_CORP_ID: 'x', WECOM_APP_SECRET: 'y', WECOM_KF_OPEN_KFID: 'z' }) === 'ok',
+  );
+  check(
+    'profile：没配企微凭据时没设 profile 仍按 demo（空串的凭据不算配了）',
+    reason({}) === 'ok' && resolveProfile({}).name === 'demo' && reason({ WECOM_CORP_ID: '' }) === 'ok',
+  );
+  check('profile：只配了回调的 token / key 不算接了企微', reason({ WECOM_CALLBACK_TOKEN: 'x', WECOM_CALLBACK_AES_KEY: 'y' }) === 'ok');
+  // 真的拒绝启动：子进程只加载 profile-boot（它不读 .env），不带 DEPLOY_PROFILE、带一个企微凭据
+  const boot = (env: Record<string, string>) =>
+    spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'src', 'profile-boot.ts')], {
+      cwd: root,
+      env: { PATH: process.env.PATH ?? '', ...env },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+  const refused = boot({ WECOM_KF_OPEN_KFID: 'x' });
+  check(
+    'profile-boot：配了企微凭据却没设 DEPLOY_PROFILE → 以 1 退出并打出原因',
+    refused.status === 1 && refused.stderr.includes('拒绝启动') && refused.stderr.includes('DEPLOY_PROFILE'),
+    `${refused.status} ${refused.stderr.slice(0, 200)}`,
+  );
+  const started = boot({ WECOM_KF_OPEN_KFID: 'x', DEPLOY_PROFILE: 'demo' });
+  check(
+    'profile-boot：显式 demo 时照常（退出码 0，打出 profile）',
+    started.status === 0 && started.stdout.includes('[profile] demo'),
+    `${started.status} ${started.stderr.slice(0, 200)}`,
+  );
+}
+
 await t.close();
 
 if (fails.length) {
@@ -1853,6 +1901,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变 / 配了企微凭据必须显式设置 profile）`,
 );
 process.exit(0);

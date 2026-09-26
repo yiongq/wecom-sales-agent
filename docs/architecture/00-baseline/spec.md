@@ -441,7 +441,7 @@ demo profile：
 
 ## 开放问题
 
-1. **运行时未设 `DEPLOY_PROFILE` 按 demo 处理，生产实例忘了配会有风险。** 部署脚本已经强制显式配置；要不要再加一条「没设 profile 却配了企微凭据就拒绝启动」？在 01 第一个 prod 实例上线前由 owner 定，依据是会不会有人绕过 `deploy.sh`，在服务器上手工起容器。01 spec 已部分回答：DB 模式缺 `DEPLOY_PROFILE` 时以 `env_invalid` 拒绝启动（01 验收 13）；文件模式下要不要也拦，仍按上面的时点定。
+1. **运行时未设 `DEPLOY_PROFILE` 按 demo 处理，生产实例忘了配会有风险（已定，2026-09-26）。** 加上：配了企微凭据（`WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_KF_OPEN_KFID` 任一）却没设 `DEPLOY_PROFILE`，不论哪种配置模式都拒绝启动（`src/profile.ts` 的 `resolveProfile`，由 `profile-boot` 打出原因后退出）。没配企微凭据时仍按 demo，零配置克隆、自测、eval 不受影响。DB 模式缺 `DEPLOY_PROFILE` 原本就以 `env_invalid` 拒绝启动（01 验收 13）。
 2. **README「在线体验」里的线上演示域名（已定，2026-09-25）。** 保留。README「在线体验」一节里的公开 demo 地址是 AGENTS.md 硬规则 5 允许的唯一例外，README 其他位置和仓库里的其他文件都不得出现生产域名。依据：硬规则 5 已把这个地址列为唯一例外；它本来就是对外公开的演示入口，换成占位，README 就没有在线体验入口了。据此，内容黑名单的词表不收 demo 域名，只收其余的生产域名和服务器 IP；demo 域名不出现在别处，由验收 13f 核对。
 3. **lint 规则类别。** 00 只开 correctness。suspicious 等类别什么时候开，看 00 验收后各类别在全仓的命中数，01 开工前定。
 4. **非文本占位在未转人工时也会进入模型历史**（一条 `[图片]`，加一条提示回复）。mock 回归测不出它对真实模型话术的影响；要不要跑一次真实模型回归，由 owner 在 00 验收时定。
