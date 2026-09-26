@@ -18,18 +18,31 @@ const intParam = (max: number) =>
     .transform(Number)
     .pipe(z.number().int().max(max));
 
+/** int4 列的上限：拿去和 int4 列比较的数超过它，库报 22003，不是命名错误，会变成 500 */
+const INT4_MAX = 2_147_483_647;
+
+/**
+ * 库存得下的文本：text 与 jsonb 都不收 NUL，json / jsonb 不收孤立代理项，库报的错不是命名错误、会变成 500。
+ * 请求里会进库或拿去查库的字符串都先过它（不合规 400）；产品库条目的文本字段在 schema 里过它（422，点名字段，见 catalog.ts）。
+ * SOP 正文另有更严的编码检查（sections.ts，422 invalid_sop），口令不进库，这两处不过它
+ */
+export const storableText = (s: string): boolean => !/[\0\p{Cs}]/u.test(s);
+export const UNSTORABLE_TEXT = '不能含 NUL 字符或孤立的代理项';
+const str = z.string().refine(storableText, UNSTORABLE_TEXT);
+
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 /** 原样放行的 JSON 对象：值取请求原文，不经 zod 重建（产品库写库的是原文，见 src/config/catalog.ts） */
 const jsonObject = z.custom<Record<string, unknown>>(isPlainObject, { message: '应为 JSON 对象' });
 
 export const LoginBody = z.strictObject({
-  email: z.string().trim().min(1).max(254),
+  email: str.trim().min(1).max(254),
   password: z.string().min(1).max(1024),
 });
 
 export const VersionsQuery = z.object({
   limit: intParam(100).optional(),
-  before: intParam(Number.MAX_SAFE_INTEGER).optional(),
+  /** 版本号，库里是 int4 */
+  before: intParam(INT4_MAX).optional(),
 });
 
 /** 没有草稿时 rev 传 null、basedOn 是当前已发布版本的 id；已有草稿时 rev 必须等于草稿的 rev */
@@ -44,12 +57,12 @@ export const SaveDraftBody = z.strictObject({
 
 export const RevBody = z.strictObject({ rev: z.number().int().nonnegative() });
 
-export const PublishBody = z.strictObject({ rev: z.number().int().nonnegative(), changeNote: z.string().max(500) });
+export const PublishBody = z.strictObject({ rev: z.number().int().nonnegative(), changeNote: str.max(500) });
 
-export const RollbackBody = z.strictObject({ changeNote: z.string().max(500) });
+export const RollbackBody = z.strictObject({ changeNote: str.max(500) });
 
 export const CatalogKindParam = z.object({ kind: z.enum(['route', 'hotel']) });
-export const CatalogItemParam = z.object({ kind: z.enum(['route', 'hotel']), code: z.string().min(1).max(128) });
+export const CatalogItemParam = z.object({ kind: z.enum(['route', 'hotel']), code: str.min(1).max(128) });
 
 export const CreateItemBody = z.strictObject({ payload: jsonObject });
 
@@ -77,7 +90,7 @@ export const AuditQuery = z.object({
   limit: intParam(100).optional(),
   /** 上一页最后一行的 id */
   before: intParam(Number.MAX_SAFE_INTEGER).optional(),
-  action: z.string().min(1).max(64).optional(),
+  action: str.min(1).max(64).optional(),
 });
 
 // ---------------- 领域类型 ----------------

@@ -43,6 +43,7 @@ import { boot } from './boot.js';
 import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
 import { consolePages } from './console-api/host.js';
+import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
 
@@ -204,8 +205,15 @@ const chatRateLimited = makeLimiter(CHAT_RATE_PER_MIN);
 const MAX_BODY_BYTES = Math.max(1024, numEnv('MAX_BODY_BYTES', 64 * 1024));
 app.use('/*', async (c, next) => {
   const declared = c.req.header('content-length');
+  // 后台（/console/*、/api/console/*）的响应都要带安全头（01 spec「安全头」），这两种拒绝发生在后台子应用之前，得在这里带上；
+  // 后台接口回 { error, detail }，前端按它显示
+  const reject = (status: 411 | 413, error: string, detail: string): Response => {
+    if (/^\/api\/console(?:\/|$)/.test(c.req.path)) return c.json({ error, detail }, status, { ...CONSOLE_SECURITY_HEADERS });
+    const text = status === 413 ? 'payload too large' : 'length required';
+    return c.text(text, status, /^\/console(?:\/|$)/.test(c.req.path) ? { ...CONSOLE_SECURITY_HEADERS } : undefined);
+  };
   if (declared !== undefined && Number(declared) > MAX_BODY_BYTES) {
-    return c.text('payload too large', 413);
+    return reject(413, 'payload_too_large', `请求体超过 ${Math.floor(MAX_BODY_BYTES / 1024)} KB 的上限`);
   }
   // 缺 Content-Length 就是 chunked 编码，上面那行按「声明值」判断对它完全无效：
   // 实测 8MB / 32MB 的 chunked body 能直达应用并被整个读进内存。此前把这层
@@ -213,7 +221,7 @@ app.use('/*', async (c, next) => {
   // 这里的客户端只有企微服务器和浏览器 fetch，两者必然带 Content-Length，
   // 所以直接拒掉「有 body 却不声明长度」的请求——比事后截断简单，也更难写错。
   if (declared === undefined && c.req.raw.body !== null) {
-    return c.text('length required', 411);
+    return reject(411, 'length_required', '请求要带 Content-Length');
   }
   return next();
 });
@@ -475,6 +483,14 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   return c.json({ ok: true, order: getOrder(id) });
 });
 
+/**
+ * 把页面的 <title> 换成服务端拼好的 head（支付页、方案页）。替换值必须用函数给：给字符串时 String.replace 会展开里面的
+ * $' $` $&，线路标题、亮点里带着这几个字符就把页面源码的前后两截拼进标题和分享摘要（spec「编辑规则」：产品库文本对公开页是不可信输入）
+ */
+function withHead(html: string, head: string): string {
+  return html.replace(/<title>[\s\S]*?<\/title>/, () => head);
+}
+
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {
   const html = await readFile(path.resolve('public/pay.html'), 'utf8');
@@ -487,8 +503,8 @@ app.get('/pay/:orderId', async (c) => {
     const t = `${o.routeTitle} · 订单已被替代`;
     const d = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
     return c.html(
-      html.replace(
-        /<title>[\s\S]*?<\/title>/,
+      withHead(
+        html,
         `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
           `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`,
       ),
@@ -504,8 +520,8 @@ app.get('/pay/:orderId', async (c) => {
       : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
   const desc = `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
   return c.html(
-    html.replace(
-      /<title>[\s\S]*?<\/title>/,
+    withHead(
+      html,
       `<title>${esc(title)}</title>\n` +
         `<meta name="description" content="${esc(desc)}">\n` +
         `<meta property="og:title" content="${esc(title)}">\n` +
@@ -562,8 +578,8 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
   // （1px 不行，太小会被跳过）。
   const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
   const cover = base ? `${base}/share-cover.png` : '/share-cover.png';
-  const withHead = html.replace(
-    /<title>[\s\S]*?<\/title>/,
+  return withHead(
+    html,
     `<title>${esc(title)}</title>\n` +
       `<meta name="description" content="${esc(desc)}">\n` +
       `<meta property="og:title" content="${esc(title)}">\n` +
@@ -572,7 +588,6 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
       `<meta property="og:type" content="website">\n` +
       `<link rel="image_src" href="${esc(cover)}">`,
   );
-  return withHead;
 }
 
 async function serveProposal(c: Context): Promise<Response> {

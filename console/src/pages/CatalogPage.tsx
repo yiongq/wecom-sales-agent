@@ -5,19 +5,19 @@ import Form from '@rjsf/antd';
 import type { RJSFSchema, UiSchema } from '@rjsf/utils';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from '@tanstack/react-router';
-import { Alert, App, Button, Drawer, Popconfirm, Space, Table, Tag } from 'antd';
+import { Alert, App, Button, Drawer, Popconfirm, Space, Table, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMemo, useState } from 'react';
 import { z } from 'zod';
-import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, sameValue, type CatalogKind } from '../../../src/shared/catalog.js';
+import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, type CatalogKind } from '../../../src/shared/catalog.js';
 import type { AnonCatalogItem, CatalogItem } from '../../../src/shared/console-api.js';
 import { api, describe, HttpError, unwrap } from '../api.js';
+import { diffPayload, formPayload, type Payload } from '../catalogForm.js';
 import { canEdit, useViewer } from '../viewer.js';
 import { CsvImport } from './CsvImport.js';
 import { zodValidator } from '../zodValidator.js';
 
 type Row = AnonCatalogItem & Partial<Pick<CatalogItem, 'status' | 'rev' | 'updatedByName' | 'updatedAt'>>;
-type Payload = Record<string, unknown>;
 const fieldsOf = (r: Row): Payload => r.payload as unknown as Payload;
 
 const KIND_LABEL: Record<CatalogKind, string> = { route: '线路', hotel: '酒店' };
@@ -59,14 +59,6 @@ function uiSchemaFor(kind: CatalogKind, status: 'draft' | 'active' | null, readO
       : { ...prev, 'ui:readonly': true, 'ui:help': status === 'active' ? '已上架，锁定：有报价快照后开放' : 'code 建好之后不能改' };
   }
   return ui;
-}
-
-/** 与原条目比：改过的顶层字段整体放进 set，原来有、现在没了的放进 unset */
-function diffPayload(prev: Payload, next: Payload): { set: Payload; unset: string[] } {
-  const set: Payload = {};
-  for (const [k, v] of Object.entries(next)) if (v !== undefined && !sameValue(prev[k], v)) set[k] = v;
-  const unset = Object.keys(prev).filter((k) => next[k] === undefined);
-  return { set, unset };
 }
 
 function problems(e: unknown): string[] {
@@ -149,10 +141,18 @@ function ItemDrawer(props: {
   const [busy, setBusy] = useState(false);
   const status = row ? (row.status ?? 'active') : null;
   const schema = useMemo(() => schemaFor(kind), [kind]);
-  const validator = useMemo(() => zodValidator(CATALOG_SCHEMAS[kind]), [kind]);
+  const required = useMemo(() => schema.required ?? [], [schema]);
+  const validator = useMemo(() => zodValidator(CATALOG_SCHEMAS[kind], (d) => formPayload(d as Payload, required)), [kind, required]);
   const ui = useMemo(() => uiSchemaFor(kind, status, !editable), [kind, status, editable]);
   // 每次渲染都给新对象会让表单重置成初值，所以要记住
-  const initial = useMemo(() => row?.payload ?? blankFor(schema), [row, schema]);
+  const initial = useMemo(() => (row ? fieldsOf(row) : blankFor(schema)), [row, schema]);
+  // 表单是受控的：rjsf 在任何 prop 变了时（比如保存中的 disabled）都按 formData 这个 prop 重建状态，
+  // 不受控时没保存的改动会被冲回初值；「上架」也要据此知道有没有没保存的改动。换了条目或 rev（即表单的 key）就回到初值
+  const formKey = `${row?.code ?? 'new'}-${row?.rev ?? 0}`;
+  const [edited, setEdited] = useState<{ key: string; data: Payload } | null>(null);
+  const formData = edited?.key === formKey ? edited.data : initial;
+  const pending = row ? diffPayload(fieldsOf(row), formPayload(formData, required)) : null;
+  const dirty = !!pending && (Object.keys(pending.set).length > 0 || pending.unset.length > 0);
 
   const run = async (fn: () => Promise<CatalogItem | null>): Promise<void> => {
     setBusy(true);
@@ -206,16 +206,21 @@ function ItemDrawer(props: {
       destroyOnHidden
     >
       <Space orientation="vertical" style={{ width: '100%' }}>
+        {/* 上架只认库里存着的内容：表单里没保存的改动带不上去，上架后锁定字段又只能停机用命令行改，所以有改动时先保存 */}
         {row && status === 'draft' && editable && (
-          <Popconfirm
-            title="上架这一条？"
-            description={`上架后这些字段就锁定了：${LOCKED_WHEN_ACTIVE[kind].map(fieldLabel).join('、')}`}
-            onConfirm={() => void activate()}
-          >
-            <Button type="primary" ghost loading={busy}>
-              上架
-            </Button>
-          </Popconfirm>
+          <Space>
+            <Popconfirm
+              title="上架这一条？"
+              description={`上架后这些字段就锁定了：${LOCKED_WHEN_ACTIVE[kind].map(fieldLabel).join('、')}`}
+              disabled={dirty}
+              onConfirm={() => void activate()}
+            >
+              <Button type="primary" ghost loading={busy} disabled={dirty}>
+                上架
+              </Button>
+            </Popconfirm>
+            {dirty && <Typography.Text type="secondary">表单里有没保存的改动，先保存再上架</Typography.Text>}
+          </Space>
         )}
         {errors.length > 0 && (
           <Alert
@@ -231,18 +236,19 @@ function ItemDrawer(props: {
           />
         )}
         <Form
-          key={`${row?.code ?? 'new'}-${row?.rev ?? 0}`}
+          key={formKey}
           schema={schema}
           uiSchema={ui}
           validator={validator}
-          formData={initial}
+          formData={formData}
+          onChange={(e) => setEdited({ key: formKey, data: e.formData as Payload })}
           disabled={busy}
           showErrorList="top"
           // 可选对象（intensity）里的必填字段会带上 HTML 的 required，浏览器会拦下整张表单；校验只交给 schema
           noHtml5Validate
           // 只给必填的数组预填 minItems 个空项；可选的数组和对象（aliases、intensity 之类）不动，没填就是键不存在
           experimental_defaultFormStateBehavior={{ arrayMinItems: { populate: 'requiredOnly' }, emptyObjectFields: 'skipDefaults' }}
-          onSubmit={({ formData }) => void save(formData as Payload)}
+          onSubmit={(e) => void save(formPayload(e.formData as Payload, required))}
         />
       </Space>
     </Drawer>

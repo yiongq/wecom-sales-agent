@@ -305,6 +305,19 @@
 - **备份与恢复（验收 19）。** 有两个访客会话、改过 SOP 与 highlights 的实例上跑 `backup.sh`：三份 age 密文，没配异地时 stderr 告警。在全新的 compose 项目（新口令）上按脚本开头的固定步骤恢复：解密 → db 首次初始化由 roles.sh 建角色和库 → 以超级用户 `pg_restore --exit-on-error`（不加 `--no-owner`）→ 以 agent_owner 跑迁移（空操作，成功）→ 解开 `var/` → DB 模式启动。`/healthz` 的 `sopVersion`、`promptHash`、`prefixHash`、`sopHash` 与原库一致；四张 RLS 表的行数相同（memberships 1、sop_versions 2、catalog_items 43、audit_log 7）；改过的 highlights 还在；原 owner 账号能登录；以 agent_app 不设租户读 `catalog_items` 得 0 行；`var/` 恢复后会话数相同（2）。按日期建目录、清理 7 天前的目录、异地复制与 30 天清理已在第 16 步实跑。
 - **待 owner**：线上 demo 的切换（下面「交接」一节给了按步骤的命令），切换后在线上跑一次备份与恢复演练并把不敏感的证据记进「验收记录」；真实模型对比（验收 21 的手动部分）要花真实的 LLM 调用，按「文件 → DB → 文件」交替各至少 3 遍。
 
+### 第 3、6–16 步补审（2026-09-26）
+
+- 这几步提交前的审查 agent 撞上用量上限没跑成，用量恢复后补跑：多角度审查确认 62 条。按文件分六组在各自的 worktree 里修，每组修完再过一轮独立审查、按意见返修一轮，最后合成一个分支，门禁全过（含真实 PG）：config 自测 446 条、console 238 条、db 329 条，原有 6 组自测与 mock eval 不变。
+- 缺陷：
+  - 配置缓存：提交结果不明后的重读，可能把更晚提交的写入盖回旧快照（SOP 版本号倒退、产品库改动丢失，`/healthz` 还报一切正常）。现在重读前后比对产品库写入计数，SOP 版本号只增不减。拿到锁到订阅断线之间锁连接断开会漏掉，改为装载期间也订阅。启动各步失败统一成 `ConfigStartupError`。每轮日志记开始时的 SOP 版本。连接串脱敏在口令里有 `@` 时漏一截。
+  - SOP：每份新草稿的 rev 都从 1 起，旧页面上的 rev 能改、发布、丢弃别人新建的草稿。现在新草稿的 rev 接着本租户的最大值往上数，不加迁移。
+  - 鉴权与接口：`fakeHash` 缓存了失败的 promise，之后不存在的邮箱一律 429、存在的 401，能枚举账号，改为不缓存失败。改口令吊销会话时，已过口令校验的登录还能建出会话，改为建完会话再核一次口令哈希，变了就删掉。限流改成原子的「查并记」。登录失败按 spec 打日志。请求里的 NUL、孤立代理项、超出 int4 的数字一律 400 / 422，不再 500。411、413 也带安全头。`/console/index.html/` 不再原样返回带占位符的文件。
+  - 后台页面：草稿有没保存的改动时点「上架」会丢掉改动，现在先拦下。退出后界面仍是登录态。可选的数组、对象字段在表单里删不掉。SOP 页的旧提示在保存、丢弃、回滚后不清。版本记录只能翻到最近 50 版。CSV 导入不认非 UTF-8（Excel 的 GBK），后台严格解码，服务端也拒带替换字符的文件。侧栏当前页高亮从未生效（`pathname` 里没有 basepath）。冲突后的提示改为如实说明（见 Open）。
+  - 部署：compose 读 env 文件改为 `format: raw`，与 `docker run --env-file` 同一读法（线上 `.env` 23 个键里没有 `$`、引号和行尾注释，切换前后读出来一样）。没有 compose 的 tag 在碰服务器之前就拒绝。备份脚本装到部署目录之外（`/usr/local/lib/wecom-sales-agent/backup.sh`），用旧版本的 deploy.sh 回滚也删不掉它。compose 缺省镜像是 `<容器名>:current`，deploy.sh 每次换容器、自动回滚之后都重打，手工命令不再带 `APP_IMAGE`，也不会误用 `:latest` 指着的坏镜像。`.env.db` 缺口令或设了 `POSTGRES_DB` 在第 3 步就拦下。备份目录与异地路径按项目分开。export-config 改为写进挂进来的宿主目录。
+  - 引擎与公开页：后台新建的目的地是库外地名的一截时（「北海」之于「北海道」），按库外地名表的边界整词认；其余地名照旧按子串，20 条线路的行为不变。大区搜索也认目的地或别名正好是大区叫法的线路。方案书、支付页的替换不再展开 `$'` 这类模式。`proposal.html` 的数字字段按 `Number` 插入。`loadHotels` 缺文件时也返回冻结的空数组。`check-boundaries` 也查 `.jsx`。
+- 其余约 25 条是测试漏洞，都已补上断言。每条修复和补上的断言都在隔离副本里做过变异，全部变红。
+- 分开写进 Open 的：冲突后只能丢弃重做；大区表不认后台新建的目的地；备份失败没有告警。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -331,7 +344,7 @@
 - 18 · 本机通过（同一镜像、上一个 tag 两例，外加启动日志点名差异）· 证据见第 17 步实施记录。线上部署旧 tag 的那一例待 owner。
 - 19 · 本机通过 · `/healthz` 的 sopVersion 2、promptHash `551e69c20efc`、prefixHash `a32bdae5229e`、sopHash `46b9a7fde0d3` 恢复前后相同；四张 RLS 表行数 1 / 2 / 43 / 7 相同；原账号能登录；agent_app 不设租户读到 0 行；会话数 2 相同；backup.sh 的日期目录、7 天清理、密文、未配异地告警见第 16 步。线上的恢复演练待 owner。
 - 20 · 通过 · 干净 clone 上四个门禁全过；clone 里实测：CI=true 而没有 `PG_TEST_URL` 时 `db.selftest.ts` 失败；迁移里加未标注的 `DROP COLUMN`、`SET NOT NULL`，或改已提交的迁移，`lint` 失败并点名文件；`src/shared/` 下 import `drizzle-orm`、`src/config/` 下 import `store`、`src/engine.ts` 里出现 `app.tenant_id`，`lint` 都失败。
-- 21 · 自动部分通过（DB 模式 mock eval：22 个请求的前缀哈希与 `/healthz` 全部一致）· 手动部分（真实模型、P90 与缓存命中率）待 owner，命令见「交接」。
+- 21 · 通过 · 自动部分：DB 模式 mock eval 22 个请求的前缀哈希与 `/healthz` 全部一致。手动部分（2026-09-26，按线上参数：主模型 glm-5.3-flashx，4 秒后对冲 glm-5.2）：realOnly 的 32 条按文件、DB 交替各跑 3 遍，P90 文件模式 7.39 / 4.49 / 4.92 秒，DB 模式 4.85 / 4.86 / 3.84 秒，都不超过 8 秒；前缀缓存命中率文件 91–96%、DB 约 96%。每遍 29–31 条通过，`flow-07-kid-headcount` 两种模式都稳定不过，是模型行为，与 01 无关（见 Open）。花费约 3.7 元。
 - 22 · 通过 · 第 12 步用 Playwright 走查，截图 [walkthrough/01–08](walkthrough/)（登录 → 编辑 → 检查按节列 violation → 发布 → 历史 → 回滚；产品库锁定字段只读、改 highlights、新建 draft 并二次确认上架；审计；demo 匿名横幅、无审计入口）。
 - 23 · 本机通过 · 切换前后 promptHash `6c202d633b60`、toolsHash `64c16fc8f464`、prefixHash `cd3cc7dab87a` 相同，`mode = db`、`sopVersion = 1`，app 的 env 里没有特权凭据。线上 demo 的切换待 owner。
 
@@ -343,18 +356,23 @@
 - 供 owner 知悉（第 15 步）：spec 的 CSV 导入「只收平铺字段」，而线路的 `itinerary` 必填且是对象数组，所以线路没法用 CSV 建；现在对线路直接拒并提示用表单，酒店照常。要支持线路，得约定逐日行程的平铺写法（例如 `itinerary.1.title` 这样的列），可以放到 02。
 - 已定（owner，2026-09-26，00 开放问题 1 的余下部分）：配了企微凭据（`WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_KF_OPEN_KFID` 任一）却没设 `DEPLOY_PROFILE` 就拒绝启动，不分配置模式；没配企微凭据时仍按 demo。已实现（`src/profile.ts`），测试在 `config.selftest.ts`（验收 1 不许动 `server.selftest.ts`），00 spec 的开放问题 1 已改成已定。
 
+- 待 owner（补审第 6 条）：SOP 草稿与别人同时改了同一节、发布被拒之后，这份草稿再也发布不了，只能丢弃后在新版本上重做（界面已改成如实提示）。要支持在草稿里合并之后发布，保存草稿的接口得加 `rebaseOnto`，属于契约变更；UX spec（`docs/features/console-ux/`）第 10 步已写进去。
+- 供 owner 知悉（补审第 60、61 条）：大区搜索（西北、东南亚…）按写死的片区表认目的地，后台新建的目的地不在表里时（比如甘肃之于西北）大区搜索找不到它，只有目的地或别名正好是大区叫法的才认。根治要给线路加 region 字段，放到 02。另外，目的地写成全名（「广西北海」）又没配别名「北海」的线路，客户说「想去北海」时不预取，配上别名即可。
+- 供 owner 知悉：备份失败只写进 `/var/log/wecom-backup.log`，没有告警。可以加一条日志检查或失败发邮件。
+- 供 owner 知悉（验收 21）：真实模型下 `flow-07-kid-headcount`（带娃人数口径）在文件、DB 两种模式都稳定不过，是模型行为，留给后续阶段的提示词或护栏。
+
 ## 交接（2026-09-26）
 
 - 已完成：第 1–16 步（全部合进 dev）；第 17 步的本机演练（见实施记录）；第 18 步在干净 clone 上逐条核对了全部验收标准，除依赖线上的几处外都通过（见「验收记录」）。
 - 半成品：无。
 - 阻塞：第 17 步的线上部分要 owner 在服务器上执行；第 18 步里依赖线上的几条（19、23 的线上部分，21 的手动部分）随之等待。
 - 下一步（owner）：
-  1. **先以文件模式部署能读库的镜像。** 服务器部署目录里先写好 `.env.db`、`.env.migrate`、`.env.platform`（写法见 `deploy/compose.yml` 开头；口令只用字母数字），`.env` 暂不加数据库变量。本机打 tag 后 `bash deploy.sh <tag>`：第一次会起 db（roles.sh 建角色和库）、跑迁移，并接管原来 `docker run` 起的容器。核对 `/healthz`：`revision` 是新 tag、`config.mode = file`，记下 `promptHash`、`toolsHash`、`prefixHash`。
-  2. **建租户和账号**（在部署目录里，下同；compose 命令都要带 `APP_IMAGE=wecom-sales-agent:latest`）：`docker compose -f deploy/compose.yml --profile cli run --rm -T platform node --import tsx src/cli/tenant-create.ts --slug <slug> --name <名称> --pack travel`；账号用 `user-create.ts --tenant <slug> --email … --name … --role owner`，口令经 `--password-stdin` 或在终端里生成。
+  1. **先以文件模式部署能读库的镜像。** 服务器部署目录里先写好 `.env.db`（四个口令都要有，不设 `POSTGRES_DB`）、`.env.migrate`、`.env.platform`（写法见 `deploy/compose.yml` 开头；按 `format: raw` 读，值原样进容器，口令只用字母数字），`.env` 暂不加数据库变量。本机打 tag 后 `bash deploy.sh <tag>`：第一次会起 db（roles.sh 建角色和库）、跑迁移，并接管原来 `docker run` 起的容器。核对 `/healthz`：`revision` 是新 tag、`config.mode = file`，记下 `promptHash`、`toolsHash`、`prefixHash`。
+  2. **建租户和账号**（在部署目录里，下同；compose 缺省用 `wecom-sales-agent:current`，就是正在跑的镜像，不用带 `APP_IMAGE`，也别手写 `:latest`）：`docker compose -f deploy/compose.yml --profile cli run --rm -T platform node --import tsx src/cli/tenant-create.ts --slug <slug> --name <名称> --pack travel`；账号用 `user-create.ts --tenant <slug> --email … --name … --role owner`，口令经 `--password-stdin` 或在终端里生成。
   3. **写 app 的 env**：`.env` 加 `DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent`、`DEFAULT_TENANT_SLUG=<slug>`，确认 `DEPLOY_PROFILE` 已显式设置。
   4. **以 app 身份导入**：`docker compose -f deploy/compose.yml run --rm -T app node --import tsx src/cli/import-config.ts --tenant <slug>`，打印的三个哈希应与第 1 步相同。
   5. **切换**：`.env` 加 `CONFIG_SOURCE=db`，`docker compose -f deploy/compose.yml up -d app`。核对 `/healthz`：`config.mode = db`、`sopVersion = 1`，三个哈希与第 1 步相同；`docker compose -f deploy/compose.yml exec app env` 里没有 owner、platform 或超级用户的凭据（验收 23）。失败就去掉 `CONFIG_SOURCE=db` 再 `up -d app` 回到文件模式，什么也不会丢。
-  6. **备份**：服务器装 age（配异地的话再装 rclone），`.env.backup` 写 `BACKUP_AGE_RECIPIENTS`（私钥不放服务器）和 `BACKUP_OFFSITE`，cron 每晚 `bash deploy/backup.sh`；手动跑一次，按脚本开头的步骤在另一台机器或旁路项目上恢复演练，把不敏感的证据记进「验收记录」（验收 19）。
+  6. **备份**：服务器装 age（配异地的话再装 rclone），`.env.backup` 写 `BACKUP_AGE_RECIPIENTS`（私钥不放服务器）和 `BACKUP_OFFSITE`，cron 每晚跑装在部署目录之外的那份：`15 3 * * * root bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1`（deploy.sh 每次部署时安装）；手动跑一次，按脚本开头的步骤在另一台机器或旁路项目上恢复演练，把不敏感的证据记进「验收记录」（验收 19）。
   7. **真实模型对比**（验收 21 的手动部分，要花真实的 LLM 调用）：从 `eval/cases.json` 过滤出 realOnly 用例写到仓库外的文件，按「文件 → DB → 文件」交替各至少跑 3 遍：文件模式 `CONFIG_SOURCE=file tsx eval/run.ts --cases <文件>`，DB 模式再加 `CONFIG_TEST_DB=pglite`。每遍记下输出里的 P90 和前缀缓存命中率，两种模式的 P90 都不超过 8 秒算通过，数字记进「验收记录」。
   8. 复核 Open 里第 12、15 步的两条。线上部分（验收 18、19、23 的线上一例与 21 的手动部分）做完把结果补进「验收记录」，我再勾第 17、18 步、做第 19 步。
 

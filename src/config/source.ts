@@ -123,6 +123,16 @@ export class ConfigStartupError extends Error {
 const startup = (reason: ConfigStartupReason, detail: string): ConfigStartupError => new ConfigStartupError(reason, detail);
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** 第 1 步之后再访问库（解析租户、取锁、读快照、写 rerender）：库断开、锁连接连不上也以 ConfigStartupError 报出，boot 才点得出原因 */
+async function dbStep<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof ConfigStartupError) throw e;
+    throw startup('db_unreachable', `${what}：${message(e)}`);
+  }
+}
+
 // ---------------- 状态 ----------------
 
 interface Loaded {
@@ -426,12 +436,19 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     const extra = applied.filter((h) => !image.includes(h));
     if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
     // 3
-    const tenant = await findTenantBySlug(d.db, d.tenantSlug);
+    const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));
     if (!tenant) throw startup('tenant_not_found', `没有 slug 为「${d.tenantSlug}」的租户`);
     if (tenant.status === 'suspended') throw startup('tenant_suspended', `租户「${d.tenantSlug}」已停用`);
     // 4
-    lock = await d.lock(tenant.id);
-    if (!lock) throw startup('lock_held', `租户「${d.tenantSlug}」的锁在另一个进程手里：同一个库只能跑一个应用副本`);
+    const held = await dbStep('取租户锁', () => d.lock(tenant.id));
+    lock = held;
+    if (!held) throw startup('lock_held', `租户「${d.tenantSlug}」的锁在另一个进程手里：同一个库只能跑一个应用副本`);
+    // 取到锁就订阅断开：锁连接在装载途中断了，装上缓存时直接进入 lost 并开始重取，而不是一直以为持着锁
+    let lostWhileLoading = false;
+    held.onLost(() => {
+      if (!loaded) lostWhileLoading = true;
+      else if (loaded.lock === held) onLockLost();
+    });
     // 5
     let imageSections: SopSection[];
     try {
@@ -440,11 +457,11 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
       throw startup('image_sop_invalid', `镜像里的 data/sop.md 不合格：${message(e)}`);
     }
     // 6、7 在同一个只读快照里读，SOP 与产品库是同一时刻的
-    const { row, items } = await withTenant(
-      d.db,
-      systemCtx(tenant.id),
-      async (tx) => ({ row: await readPublishedSop(tx), items: await readActiveCatalog(tx) }),
-      { isolation: 'repeatable read', readOnly: true },
+    const { row, items } = await dbStep('读已发布 SOP 与产品库', () =>
+      withTenant(d.db, systemCtx(tenant.id), async (tx) => ({ row: await readPublishedSop(tx), items: await readActiveCatalog(tx) }), {
+        isolation: 'repeatable read',
+        readOnly: true,
+      }),
     );
     if (!row) throw startup('no_published_sop', `租户「${d.tenantSlug}」没有已发布的 SOP，先跑 import-config`);
     const rerender = resolvePublished(d, row, imageSections);
@@ -453,12 +470,12 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections);
     logDrift(d, merged, imageSections, items);
     // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
-    const current = rerender ? await writeRerender(d, tenant.id, row, rerender) : row;
+    const current = rerender ? await dbStep('写入 rerender 版本', () => writeRerender(d, tenant.id, row, rerender)) : row;
     // 10
     loaded = {
       deps: d,
       tenantId: tenant.id,
-      lock,
+      lock: held,
       imageSections: deepFreeze(imageSections),
       sop: toPublishedSop(tenant.id, current, merged),
       catalog: snapshotOf(tenant.id, items, 0),
@@ -467,7 +484,8 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     lockState = 'held';
     sopStale = false;
     catalogStale = false;
-    lock.onLost(onLockLost);
+    // 缓存照常装上（对话要用），配置写入暂停、开始重取
+    if (lostWhileLoading) onLockLost();
     const { sop } = loaded;
     console.log(
       `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${loaded.catalog.routes.length} 条、酒店 ${loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
@@ -534,6 +552,12 @@ export function configRuntime(): { db: Db; tenantId: string; deps: ConfigDeps; i
   return { db: loaded.deps.db, tenantId: loaded.tenantId, deps: loaded.deps, imageSections: loaded.imageSections };
 }
 
+/**
+ * 提交之后换产品库快照的次数（applyCatalogRow 真的换了才加 1）。重读据此认出自己读到的产品库可能已经过时。
+ * SOP 不用计数：版本号只增不减，重读读到的旧版本号不会换上去
+ */
+let catalogWrites = 0;
+
 /** 只给 src/config/{sop,catalog}.ts 在事务提交之后调用；next.versionNo 不大于当前值时忽略 */
 export function replacePublishedSop(next: PublishedSop): void {
   if (!loaded || next.versionNo <= loaded.sop.versionNo) return;
@@ -554,6 +578,7 @@ export function applyCatalogRow(row: {
 }): void {
   const cur = loaded;
   if (!cur || row.status !== 'active') return;
+  catalogWrites++;
   const key = row.kind === 'route' ? 'routes' : 'hotels';
   const ords = cur.ords[row.kind];
   const idOf = (x: unknown): string => String((x as { id: unknown }).id);
@@ -608,7 +633,12 @@ let reloadAgain = false;
 const RELOAD_BACKOFF_MS = [5_000, 30_000, 120_000];
 let reloadBackoff = RELOAD_BACKOFF_MS;
 
-async function reloadOnce(cur: Loaded): Promise<void> {
+/**
+ * 读一次库、换上缓存。返回 false 表示没换：读的途中有产品库写入提交并换了快照，这份快照可能早于那次写入，
+ * 整体换上去会把那次修改冲掉（spec 否决的「提交后重读」就是这个竞态），要重读。SOP 由版本号只增不减兜住
+ */
+async function reloadOnce(cur: Loaded): Promise<boolean> {
+  const writesBefore = catalogWrites;
   const { row, items } = await withTenant(
     cur.deps.db,
     systemCtx(cur.tenantId),
@@ -617,8 +647,10 @@ async function reloadOnce(cur: Loaded): Promise<void> {
   );
   if (!row) throw new Error('库里没有已发布的 SOP');
   assertIntegrity(row);
-  if (loaded !== cur) return;
-  if (row.versionNo !== cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
+  if (loaded !== cur) return true;
+  if (catalogWrites !== writesBefore) return false;
+  // 版本号只增不减（不变式 13）
+  if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
   sopStale = false;
   const next = snapshotOf(cur.tenantId, items, cur.catalog.generation);
   cur.ords = ordsOf(items);
@@ -629,6 +661,7 @@ async function reloadOnce(cur: Loaded): Promise<void> {
     setCatalog(cur, { ...next, generation: cur.catalog.generation + 1 });
   }
   catalogStale = false;
+  return true;
 }
 
 function setCatalog(cur: Loaded, snap: CatalogSnapshot): void {
@@ -661,7 +694,8 @@ export function reloadFromDb(): Promise<void> {
       for (let attempt = 0; ; attempt++) {
         if (shuttingDown || loaded !== cur) return;
         try {
-          await reloadOnce(cur);
+          // 读的途中产品库快照被写入换过：这份快照作废，立即再读一遍（不算失败，不退避）
+          if (!(await reloadOnce(cur))) reloadAgain = true;
           break;
         } catch (e) {
           const wait = reloadBackoff[Math.min(attempt, reloadBackoff.length - 1)]!;

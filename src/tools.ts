@@ -43,7 +43,7 @@ function hotelsPath(): string {
 export function loadHotels(): Hotel[] {
   if (configMode() === 'db') return currentCatalog().hotels as Hotel[];
   const p = hotelsPath();
-  if (!fs.existsSync(p)) return []; // 酒店库可选：缺失时 search_hotels 返回空，不影响主流程
+  if (!fs.existsSync(p)) return deepFreeze([] as Hotel[]); // 酒店库可选：缺失时 search_hotels 返回空，不影响主流程；空数组同样冻结
   try {
     return deepFreeze(JSON.parse(fs.readFileSync(p, 'utf8')) as Hotel[]);
   } catch (e) {
@@ -103,16 +103,18 @@ const BUDGET_RELAX = 1.5;
  * 「印度」是「印度尼西亚」的一截，search_routes(印度) 返回巴厘岛且不标 destinationMiss——
  * 模型 4/4 自己兜住了，但价格护栏会把巴厘岛的价当作「印度线」放行。
  * 空白先去掉再认（模型会传「丽江 大理」，此前判成库外，工具让模型对客户说「没有丽江 大理线路」）；
- * 去掉还对不上、又是几处拼在一起的（「大理 丽江」「四川、云南」），任一处对得上就算
+ * 去掉还对不上、又是几处拼在一起的（「大理 丽江」「四川、云南」），任一处对得上就算。
+ * 目的地、别名、关键词是另一个更长地名的一截时按库外地名表的边界认（mentionsPlace）：后台建一条「北海」线之后，
+ * 此前 k.includes(destination) 让 search_routes(北海道) 把它当成北海道线返回、不标 destinationMiss
  */
 function matchesDestination(r: Route, q: string): boolean {
   const hit = (k: string): boolean =>
     !!k &&
-    (r.destination.includes(k) ||
-      k.includes(r.destination) ||
-      r.title.replace(/\s+/g, '').includes(k) ||
-      r.tags.some((t) => t.includes(k)) ||
-      (r.aliases ?? []).some((a) => a === k || k.includes(a)));
+    (mentionsPlace(r.destination, k) ||
+      mentionsPlace(k, r.destination) ||
+      mentionsPlace(r.title.replace(/\s+/g, ''), k) ||
+      r.tags.some((t) => mentionsPlace(t, k)) ||
+      (r.aliases ?? []).some((a) => a === k || mentionsPlace(k, a)));
   if (hit(q.replace(/\s+/g, ''))) return true;
   const parts = q.split(/[\s、，,/／;；]+/).filter(Boolean);
   return parts.length > 1 && parts.some(hit);
@@ -215,12 +217,16 @@ const REGION_ABROAD: Record<string, string> = {
 /**
  * 大区叫法（「西北」「西南」「东南亚」）同理：说的是一片地方，按关键词对不上任何一条线，却不等于我们没有。
  * 此前「西北」落空后语义召回出新疆、西安，再被标成「我们暂时没有西北的现成线路」——自己的主力线被说成没有。
- * 按片区反查；不是大区叫法返回 null，照常按目的地关键词匹配
+ * 按片区反查；不是大区叫法返回 null，照常按目的地关键词匹配。
+ * 片区表只列了种子数据的目的地：后台新建的线路目的地或别名就是这个大区叫法的（「西北 甘青大环线」目的地填「西北」）
+ * 也算，此前它们在大区搜索里整条消失，连语义召回也被这里滤掉。只认整个相等，不按关键词：标题、标签里带着这几个字的
+ * 是别处的线（「滇西北」「川西北」在西南，「东南亚」不是南亚），按关键词认会把它们拉进来、挤掉片区里真正的线
  */
 function regionMatcher(q: string): ((r: Route) => boolean) | null {
   const w = q.trim().replace(/(?:地区|片区|一带|那边|方向)$/, '');
-  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w;
-  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w;
+  const named = (r: Route): boolean => r.destination === w || (r.aliases ?? []).includes(w);
+  if (Object.values(REGION).includes(w)) return (r) => REGION[r.destination] === w || named(r);
+  if (Object.values(REGION_ABROAD).includes(w)) return (r) => REGION_ABROAD[r.destination] === w || named(r);
   return null;
 }
 
@@ -244,7 +250,7 @@ export function catalogCovers(q: string, routes: Route[] = loadRoutes()): boolea
  *     「上海这边两个人想出去玩」被当成目的地，模型会对客户说「我们暂时没有上海的线路」；
  *   · 表里的地名后来有了线路（catalogCovers 对得上）自动按库内处理，不必回来删；
  *   · 一个地名是另一个的一部分时加边界：「北海」不吃「北海道」，「北极」不吃「北极光」（说的是极光，北欧线就有），
- *     「蒙古」不吃「内蒙古」，「罗马」不吃「罗马尼亚」。
+ *     「蒙古」不吃「内蒙古」，「罗马」不吃「罗马尼亚」。线路的目的地、别名碰上这几个地名时按同样的边界认（见 mentionsPlace）。
  *
  * 每组标了类型（kind）：目的地我们没有时，「最接近的现成线路」先挑同类型的（见 KIND_ROUTES），再由语义召回补足。
  * 此前只靠语义召回：「马代去过了 想去普吉岛或者斐济 度蜜月」召回的是云南、四川高原线（B08 2/2、回归 retrieval-02 3/3），
@@ -374,6 +380,22 @@ const OFF_CATALOG_GROUPS: { kind?: PlaceKind; abroad: boolean; places: string[] 
 const OFF_CATALOG_PLACES = OFF_CATALOG_GROUPS.flatMap((g) => g.places);
 // 长的排前面：「青海湖」要整个认出来，不能先被「青海」截走
 const OFF_CATALOG_RE = new RegExp(OFF_CATALOG_PLACES.toSorted((a, b) => b.length - a.length).join('|'), 'g');
+/** 带边界写法的地名（「北海(?!道)」「(?<!内)蒙古」…）：去掉边界的本名 → 按边界认的正则 */
+const BOUNDED_PLACES = new Map(
+  OFF_CATALOG_PLACES.filter((p) => p.includes('(?')).map((p) => [p.replace(/\(\?<?[=!][^)]*\)/g, ''), new RegExp(p)] as const),
+);
+
+/**
+ * text 里有没有 word 这个地名。word 是上表里带边界写法的地名时按同样的边界认：「北海道」里的「北海」、「内蒙古」里的「蒙古」、
+ * 「罗马尼亚」里的「罗马」都不算；其余照旧按子串。线路的目的地、别名拿去对关键词（matchesDestination）、对客户原话
+ * （engine.ts destinationMentions）、对回复（price-guard 的点名）都经这里：后台建一条「北海」线，客户说「想去北海道滑雪」
+ * 不会被当成点了这条线，写成「广西北海」再配别名「北海」也照样认得出「想去北海玩」
+ */
+export function mentionsPlace(text: string, word: string): boolean {
+  const re = BOUNDED_PLACES.get(word);
+  return re ? re.test(text) : text.includes(word);
+}
+
 /** 每个地名整词认回它那一组（地名里带着边界写法，按整词重新匹配一遍） */
 const PLACE_GROUP: { re: RegExp; kind?: PlaceKind; abroad: boolean }[] = OFF_CATALOG_GROUPS.flatMap((g) =>
   g.places.map((p) => ({ re: new RegExp(`^(?:${p})$`), kind: g.kind, abroad: g.abroad })),
@@ -465,7 +487,7 @@ const ASKS_BEEN = /吗|么|没有?$|呢/;
  */
 export function visitedDestinations(texts: string[], routes: Route[] = loadRoutes()): string[] {
   const placesIn = (s: string): string[] =>
-    routes.filter((r) => s.includes(r.destination) || (r.aliases ?? []).some((a) => s.includes(a))).map((r) => r.destination);
+    routes.filter((r) => mentionsPlace(s, r.destination) || (r.aliases ?? []).some((a) => mentionsPlace(s, a))).map((r) => r.destination);
   const out = new Set<string>();
   for (const t of texts) {
     const bits = t.split(/[，,。！!？?；;\n\s]+/).filter(Boolean);

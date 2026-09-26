@@ -567,6 +567,47 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
   check('权限：agent_app 删除条目报 permission denied', del === DENIED, del);
 }
 
+// ---------------- 连接串脱敏 ----------------
+{
+  const { redactUrl } = await import('./client.js');
+  const pg = (await import('pg')).default;
+  /** node-postgres 自己从连接串里解析出的口令：脱敏之后的串里不能再有它 */
+  const passwordOf = (url: string): string => (new pg.Client({ connectionString: url }) as unknown as { password: string }).password;
+  const cases: [string, string, string][] = [
+    ['普通口令', 'postgres://agent_app:hush-hush@db:5432/agent', 'postgres://agent_app:***@db:5432/agent'],
+    [
+      '口令里有没转义的 @（node-postgres 按最后一个 @ 切开，照样连得上）',
+      'postgresql://agent_app:s3cr@tPart@db:5432/agent',
+      'postgresql://agent_app:***@db:5432/agent',
+    ],
+    [
+      '口令放在查询参数里',
+      'postgres://agent_app@db:5432/agent?password=hush-hush&application_name=app',
+      'postgres://agent_app@db:5432/agent?password=***&application_name=app',
+    ],
+    [
+      '主机后面的查询参数里也有 @（只抹口令，主机、库名、参数照旧）',
+      'postgres://agent_app:hush-hush@db:5432/agent?application_name=ops@team',
+      'postgres://agent_app:***@db:5432/agent?application_name=ops@team',
+    ],
+  ];
+  for (const [what, url, want] of cases) {
+    const got = redactUrl(url);
+    const pw = passwordOf(url);
+    check(`脱敏：${what}，口令一个字都不剩`, got === want && pw.length > 0 && !got.includes(pw), `${got} / ${pw}`);
+  }
+  check('脱敏：没有口令的连接串原样返回', redactUrl('postgres://agent_app@db:5432/agent') === 'postgres://agent_app@db:5432/agent');
+  const noPw = 'postgres://agent_app@db:5432/agent?application_name=ops@team';
+  check('脱敏：没有口令、查询参数里有 @ 的连接串原样返回，不凭空拼出口令', redactUrl(noPw) === noPw, redactUrl(noPw));
+  // node-postgres 不认的口令（URL 规则下成了端口，或整串解析不了）也是运维写进去的口令：宁可多抹
+  const odd = ['postgres://agent_app:2024#x@db:5432/agent', 'postgres://agent_app:a/b@db:5432/agent'].map(redactUrl);
+  check(
+    '脱敏：口令里有裸的 # 或 /（URL 规则切不对）时一直抹到最后一个 @',
+    odd.every((x) => x === 'postgres://agent_app:***@db:5432/agent'),
+    odd.join(' '),
+  );
+}
+
 // ---------------- withTenant ----------------
 {
   const tenantInTx = async (tx: Tx): Promise<string | null> =>
@@ -704,6 +745,231 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
 }
 
 await t.close();
+
+// ---------------- 部署脚本（deploy.sh、deploy/compose.yml、deploy/backup.sh） ----------------
+// 不连服务器：deploy.sh 只跑到碰服务器之前（ssh、rsync、pnpm 换成一调用就记下并失败的假命令）；第 3 步在服务器上跑的
+// 检查脚本在本机对临时目录跑；backup.sh 用假的 docker、age、rclone
+{
+  const repoRoot = path.join(import.meta.dirname, '..', '..');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-deploy-selftest-'));
+  const bin = path.join(tmp, 'bin');
+  const log = path.join(tmp, 'calls.log');
+  fs.mkdirSync(bin);
+  const fake = (name: string, lines: string[]): void =>
+    fs.writeFileSync(path.join(bin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
+  for (const name of ['ssh', 'rsync', 'pnpm']) fake(name, [`echo "${name} $*" >> "$FAKE_LOG"`, 'exit 97']);
+  fake('docker', [
+    'echo "docker $PWD|$*" >> "$FAKE_LOG"',
+    'case "$*" in',
+    '  *pg_dumpall*) echo "-- globals" ;;',
+    '  *pg_dump*) echo "dump" ;;',
+    '  *"pg_restore --list"*) cat >/dev/null; for t in memberships sop_versions catalog_items audit_log; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
+    '  *psql*) echo "2|43" ;;',
+    '  *) exit 97 ;;',
+    'esac',
+  ]);
+  // 假的 age：-o 的下一个是输出，最后一个参数是输入，原样拷过去
+  fake('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
+  fake('rclone', ['echo "rclone $*" >> "$FAKE_LOG"']);
+  // 开发机上可能导出了 SERVER 之类的部署变量：一律去掉，再把假命令放在 PATH 最前面
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      (e): e is [string, string] =>
+        e[1] !== undefined && !/^(SERVER|REMOTE_DIR|HOST_PORT|NAME|APP_IMAGE|COMPOSE_PROJECT|AGENT_DB|BACKUP_.*)$/.test(e[0]),
+    ),
+  );
+  env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? ''}`;
+  env.FAKE_LOG = log;
+  const run = (cmd: string, args: string[], cwd: string, input?: string): { code: number | null; out: string } => {
+    const r = spawnSync(cmd, args, { cwd, env, input, encoding: 'utf8', timeout: 30_000 });
+    return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  const calls = (): string => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '');
+  const deploySrc = fs.readFileSync(path.join(repoRoot, 'deploy.sh'), 'utf8');
+
+  // deploy.sh 不收没有 compose 与迁移的 tag（01 之前的版本）：否则第 4 步的 rsync --delete 先删掉服务器上的 deploy/，第 6 步才失败
+  const repo = path.join(tmp, 'repo');
+  fs.mkdirSync(repo);
+  fs.copyFileSync(path.join(repoRoot, 'deploy.sh'), path.join(repo, 'deploy.sh'));
+  fs.writeFileSync(path.join(repo, 'package.json'), '{}\n');
+  fs.writeFileSync(path.join(repo, 'Dockerfile'), '');
+  const git = (...args: string[]): void => {
+    const gitArgs = ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false'];
+    run('git', [...gitArgs, '-c', `core.hooksPath=${path.join(tmp, 'no-hooks')}`, ...args], repo);
+  };
+  const commitAndTag = (tag: string, files: string[]): void => {
+    for (const f of files) {
+      fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true });
+      fs.writeFileSync(path.join(repo, f), '');
+    }
+    git('add', '-A');
+    git('commit', '-qm', tag);
+    git('tag', tag);
+  };
+  git('init', '-q');
+  commitAndTag('old-v1', []);
+  commitAndTag('half-v1', ['deploy/compose.yml']);
+  commitAndTag('new-v1', ['src/db/migrate.ts']);
+  for (const [tag, missing] of [
+    ['old-v1', 'deploy/compose.yml'],
+    ['half-v1', 'src/db/migrate.ts'],
+  ]) {
+    const r = run('bash', ['deploy.sh', tag], repo);
+    check(
+      `deploy.sh：${tag} 里没有 ${missing}，碰服务器之前就拒绝`,
+      r.code === 1 && r.out.includes(`里没有 ${missing}`) && !r.out.includes('未设置 SERVER') && calls() === '',
+      r.out.slice(-300),
+    );
+  }
+  const newTag = run('bash', ['deploy.sh', 'new-v1'], repo);
+  check(
+    'deploy.sh：带 compose 与迁移的 tag 过了这道检查（接着因为没设 SERVER 停下）',
+    newTag.code !== 0 && newTag.out.includes('未设置 SERVER') && calls() === '',
+    newTag.out.slice(-300),
+  );
+
+  // 第 3 步的服务器检查（ssh 把这段脚本交给服务器上的 bash -s）：.env.db 缺口令或设了 POSTGRES_DB，
+  // db 首次初始化就会留下一个没有角色的库，之后 entrypoint 不再跑 roles.sh
+  const checkScript = /<<'CHECK'; then\n([\s\S]*?)\nCHECK\n/.exec(deploySrc)?.[1] ?? '';
+  check('deploy.sh：找得到第 3 步的服务器检查脚本', checkScript.includes('.env.db'));
+  const srv = path.join(tmp, 'srv');
+  fs.mkdirSync(srv);
+  fs.writeFileSync(path.join(srv, '.env.migrate'), 'DATABASE_OWNER_URL=postgres://agent_owner:o@db:5432/agent\n');
+  const goodDb = ['POSTGRES_PASSWORD=su', 'AGENT_OWNER_PASSWORD=o', 'AGENT_APP_PASSWORD=a', 'AGENT_PLATFORM_PASSWORD=p'];
+  const serverCheck = (dbLines: string[], profile = 'DEPLOY_PROFILE=demo'): { code: number | null; out: string } => {
+    fs.writeFileSync(path.join(srv, '.env'), `${profile}\n`);
+    fs.writeFileSync(path.join(srv, '.env.db'), `${dbLines.join('\n')}\n`);
+    return run('bash', ['-s', '--', srv, '0'], srv, checkScript);
+  };
+  const good = serverCheck(goodDb);
+  check('第 3 步：.env.db 四个口令都有、没有 POSTGRES_DB 时通过', good.code === 0, good.out);
+  for (const [i, line] of goodDb.entries()) {
+    const key = line.slice(0, line.indexOf('='));
+    const missing = serverCheck(goodDb.filter((_, j) => j !== i));
+    check(`第 3 步：.env.db 没写 ${key} 时拒绝并点名`, missing.code === 1 && missing.out.includes(key), missing.out);
+    const empty = serverCheck(goodDb.map((l, j) => (j === i ? `${key}=` : l)));
+    check(`第 3 步：.env.db 的 ${key} 为空时拒绝`, empty.code === 1 && empty.out.includes(key), empty.out);
+  }
+  const envDbCases: [string, string[], number][] = [
+    ['同名以最后一行为准：最后一行是空的也拒绝', [...goodDb, 'AGENT_APP_PASSWORD='], 1],
+    ['只是前缀相同的键不算', [...goodDb.filter((l) => !l.startsWith('AGENT_APP_PASSWORD=')), 'AGENT_APP_PASSWORD_OLD=a'], 1],
+    ['行首空白按 docker 的读法去掉', goodDb.map((l) => `  ${l}`), 0],
+    ['设了 POSTGRES_DB 拒绝', [...goodDb, 'POSTGRES_DB=agent'], 1],
+    ['POSTGRES_DB 写成空的不算设了（entrypoint 同样当它没设）', [...goodDb, 'POSTGRES_DB='], 0],
+  ];
+  for (const [name, lines, code] of envDbCases) {
+    const r = serverCheck(lines);
+    check(`第 3 步：${name}`, r.code === code, r.out);
+  }
+  const quoted = serverCheck(goodDb, 'DEPLOY_PROFILE="demo"');
+  check('第 3 步：DEPLOY_PROFILE 带引号照旧拒绝', quoted.code === 1 && quoted.out.includes('DEPLOY_PROFILE'), quoted.out);
+
+  // compose：env 文件都按 format: raw 读（与 docker --env-file 同一个解析器：$ 不展开、引号和 # 原样），
+  // 与第 3 步的检查、第 5 步的试读是同一种读法；应用镜像缺省取 <容器名>:current，手工命令不用带 APP_IMAGE
+  const composeSrc = fs.readFileSync(path.join(repoRoot, 'deploy', 'compose.yml'), 'utf8');
+  const envBlocks = [...composeSrc.matchAll(/^( +)env_file:(.*)\n((?:\1 +\S.*\n)*)/gm)];
+  check(
+    'compose：四个服务的 env 文件都是长写法且每一项都 format: raw',
+    envBlocks.length === 4 &&
+      envBlocks.every(
+        (m) =>
+          m[2].trim() === '' &&
+          m[3].includes('- path: ') &&
+          (m[3].match(/- path: /g) ?? []).length === (m[3].match(/^ +format: raw$/gm) ?? []).length,
+      ),
+    envBlocks.map((m) => m[0]).join(' / '),
+  );
+  const appImages = composeSrc.match(/^ +image: .*APP_IMAGE.*$/gm) ?? [];
+  const defaultImage = ['image: $', '{APP_IMAGE:-$', '{APP_CONTAINER:-wecom-sales-agent}:current}'].join('');
+  check(
+    'compose：三个用应用镜像的服务缺省都取 <容器名>:current，不再要求 APP_IMAGE',
+    appImages.length === 3 && appImages.every((l) => l.trim() === defaultImage),
+    appImages.join(' / '),
+  );
+  // :current 要一直是 app 容器在用的镜像：部署成功是新镜像，自动回滚后是 :prev（:latest 那时是没起来的坏镜像）
+  check(
+    'deploy.sh：换上新镜像之后把它打成 :current',
+    /\) up -d app\n(?: *#.*\n)* *docker tag \$\{NAME\}:latest \$\{NAME\}:current\n/.test(deploySrc),
+  );
+  check(
+    'deploy.sh：回滚到 :prev 之后 :current 也改指 :prev',
+    /\) up -d --no-deps app\n *docker tag \$\{NAME\}:prev \$\{NAME\}:current"/.test(deploySrc),
+  );
+
+  // backup.sh：cron 跑装在部署目录之外的那一份、部署目录作为参数，不读 compose 文件（回到 01 之前的版本后 deploy/ 没了）；
+  // 本地与异地路径都带项目名，旁路实例同一天跑也盖不掉线上的备份
+  const installed = /install -m 755 \$\{REMOTE_DIR\}\/deploy\/backup\.sh (\/\S+)\/\$\{NAME\}\/backup\.sh/.exec(deploySrc)?.[1];
+  const cronLine = /^# +15 3 \* \* \* +bash (\S+) \/opt\/wecom-sales-agent /m.exec(
+    fs.readFileSync(path.join(repoRoot, 'deploy', 'backup.sh'), 'utf8'),
+  )?.[1];
+  check(
+    'deploy.sh 每次部署把 backup.sh 装到部署目录之外，正是 cron 那一行跑的路径',
+    installed !== undefined && cronLine === `${installed}/wecom-sales-agent/backup.sh`,
+    `${installed} / ${cronLine}`,
+  );
+  const lib = path.join(tmp, 'lib');
+  fs.mkdirSync(lib);
+  fs.copyFileSync(path.join(repoRoot, 'deploy', 'backup.sh'), path.join(lib, 'backup.sh'));
+  const bk = path.join(tmp, 'bk');
+  const day = run('date', ['+%F'], tmp).out.trim();
+  const deployDir = (name: string, backupEnv: string[], sessions: string): string => {
+    const d = path.join(tmp, name);
+    fs.mkdirSync(path.join(d, 'var'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.env'), 'DEPLOY_PROFILE=demo\n');
+    fs.writeFileSync(path.join(d, '.env.backup'), ['BACKUP_AGE_RECIPIENTS=age1test', `BACKUP_DIR=${bk}`, ...backupEnv, ''].join('\n'));
+    fs.writeFileSync(path.join(d, 'var', 'sessions.json'), sessions);
+    return d;
+  };
+  const backup = (dir: string): { code: number | null; out: string } => run('bash', [path.join(lib, 'backup.sh'), dir], tmp);
+  const notDeploy = backup(tmp);
+  check('backup.sh：参数不是部署目录（没有 .env）时拒绝', notDeploy.code === 1 && notDeploy.out.includes('不是部署目录'), notDeploy.out);
+  const noProject = backup(deployDir('noproject', [], 'x'));
+  check(
+    'backup.sh：不是线上部署目录又没写 COMPOSE_PROJECT 时拒绝，什么都不导出',
+    noProject.code === 1 && noProject.out.includes('COMPOSE_PROJECT') && !fs.existsSync(bk) && calls() === '',
+    noProject.out,
+  );
+  const live = backup(deployDir('live', ['COMPOSE_PROJECT=live1'], 'live-sessions'));
+  const liveDay = path.join(bk, 'live1', day);
+  check('backup.sh：部署目录里没有 deploy/ 也照常备份', live.code === 0, live.out);
+  check(
+    'backup.sh：三份密文写在 <BACKUP_DIR>/<项目名>/<日期>，项目目录 0700',
+    ['agent.dump.age', 'globals.sql.age', 'var.tar.gz.age'].every((f) => fs.existsSync(path.join(liveDay, f))) &&
+      (fs.statSync(path.join(bk, 'live1')).mode & 0o777) === 0o700,
+    fs.existsSync(bk) ? fs.readdirSync(bk).join(',') : '没有备份目录',
+  );
+  const dockerCalls = calls()
+    .split('\n')
+    .filter((l) => l.startsWith('docker '));
+  check(
+    'backup.sh：按项目名找 db，不带 compose 文件，在 / 下执行（不让 compose 解析部署目录里应用的 .env）',
+    dockerCalls.length === 4 && dockerCalls.every((l) => l.startsWith('docker /|compose -p live1 exec -T db ') && !l.includes(' -f ')),
+    dockerCalls.join(' / '),
+  );
+  const liveVar = fs.existsSync(path.join(liveDay, 'var.tar.gz.age')) ? fs.readFileSync(path.join(liveDay, 'var.tar.gz.age')) : undefined;
+  fs.rmSync(log, { force: true });
+  const side = backup(deployDir('side', ['COMPOSE_PROJECT=side1', 'BACKUP_OFFSITE=remote:bk'], 'side-sessions'));
+  check(
+    'backup.sh：旁路实例写进它自己的项目目录',
+    side.code === 0 && fs.existsSync(path.join(bk, 'side1', day, 'var.tar.gz.age')),
+    side.out,
+  );
+  check(
+    'backup.sh：旁路实例同一天的备份不盖掉线上的',
+    liveVar !== undefined && fs.readFileSync(path.join(liveDay, 'var.tar.gz.age')).equals(liveVar),
+  );
+  const rclone = calls()
+    .split('\n')
+    .filter((l) => l.startsWith('rclone '));
+  check(
+    'backup.sh：异地路径也带项目名，只清理本项目的旧备份',
+    rclone.includes(`rclone copy ${path.join(bk, 'side1', day)} remote:bk/side1/${day}`) &&
+      rclone.includes('rclone delete --min-age 30d remote:bk/side1') &&
+      rclone.includes('rclone rmdirs --leave-root remote:bk/side1'),
+    rclone.join(' / '),
+  );
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
 
 // ---------------- 真实 Postgres（spec R13：RLS、授权、租户锁的结论只从这里得出） ----------------
 // PG_TEST_URL 是一个专用测试集群的超级用户连接串（CI 的服务容器，或本机的一次性容器）：本组建一个临时库，
@@ -1123,6 +1389,10 @@ async function realPostgres(superUrl: string): Promise<void> {
       L1.onLost(() => lost++);
       await lockBackend();
       check('真实 PG：锁连接被 pg_terminate_backend 后回调 onLost 一次', (await waitFor(() => lost === 1)) && lost === 1, String(lost));
+      // 断开之后才订阅的（initConfig 在装载途中）：订阅时当场补一次，不会一直以为持着锁
+      let late = 0;
+      L1.onLost(() => late++);
+      check('真实 PG：锁已断开之后才订阅 onLost，订阅时立即回调一次', late === 1, String(late));
       const [r1, r2] = await Promise.all([L1.reacquire(), L1.reacquire()]);
       check('真实 PG：断连后重取成功，并发的两次拿到同一个结果', r1 === 'ok' && r2 === 'ok', `${r1} ${r2}`);
       check('真实 PG：重取之后别人仍拿不到', (await holdTenantLock(APP, A)) === null);

@@ -98,6 +98,9 @@ export function prepareCatalogCsv(kind: CatalogKind, csv: string): Record<string
   if (shape.nestedRequired.length) {
     throw whole(`必填字段 ${shape.nestedRequired.join('、')} 不是平铺字段，CSV 只收平铺字段，这一类请在表单里新建`);
   }
+  // 按 UTF-8 解码失败的字节会变成替换字符 U+FFFD（Excel 默认存的 GBK 就是这样）：照收会建出一批改不掉 code 的乱码草稿
+  if (csv.includes(String.fromCharCode(0xfffd)))
+    throw whole('文件里有无法识别的字符，多半不是 UTF-8 编码：在 Excel 里另存为「CSV UTF-8」再导入');
   let table: string[][];
   try {
     table = parseCsv(csv);
