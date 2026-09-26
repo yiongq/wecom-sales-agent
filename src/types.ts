@@ -15,6 +15,8 @@ export interface ChatMessage {
   role: 'customer' | 'agent' | 'system';
   content: string;
   at: number;
+  /** 企微非文本消息的占位带上原消息的 msgid，重放时据此判断是否已经记过。01 迁入时保留 */
+  msgid?: string;
 }
 
 /** 从对话中沉淀的客户画像，引擎每轮增量更新 */

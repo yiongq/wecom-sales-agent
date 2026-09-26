@@ -816,6 +816,151 @@ for (const [i, legacy] of __test.LEGACY_WELCOME_TEXTS.entries()) {
   check('老客户欢迎语：不承诺记得之前的对话', !again.includes('记得'), again);
 }
 
+// ---------------- 非文本消息：一律记带 msgid 的占位，转人工后只记不回 ----------------
+// 此前非文本分支在进引擎之前就发了提示并返回：不看是否已转人工，也不入库——
+// 顾问接管后客户发张图，AI 照样插一句；后台也看不到客户发过图片
+const handedOverSession = (uid: string): void => {
+  const s = getOrCreateSession(`wecom:${uid}`, 'wecom');
+  s.messages.push(
+    { role: 'customer', content: '我要投诉', at: Date.now() },
+    { role: 'agent', content: '已为您转接资深顾问，请稍候～', at: Date.now() },
+  );
+  s.handedOver = true;
+  s.stage = 'handoff';
+  saveSession(s);
+};
+const trail = (uid: string, from = 0): [string, string, string | undefined][] =>
+  (getSession(`wecom:${uid}`)?.messages ?? []).slice(from).map((m) => [m.role, m.content, m.msgid]);
+{
+  handedOverSession('u-nt-ho');
+  const ms = ['image', 'voice', 'file', 'miniprogram'].map((t) => customerMsg('u-nt-ho', '', 0, t));
+  serverLog.push(...ms);
+  await syncFromCallback('tok-nt-ho');
+  await idle();
+  check('已转人工：客户发图片、语音、文件，收不到任何回复', startedTo('u-nt-ho').length === 0, JSON.stringify(startedTo('u-nt-ho')));
+  check(
+    '已转人工：会话里多出对应的占位，各带原消息的 msgid，其他类型记「[其他消息：类型]」',
+    JSON.stringify(trail('u-nt-ho', 2)) ===
+      JSON.stringify([
+        ['customer', '[图片]', ms[0].msgid],
+        ['customer', '[语音]', ms[1].msgid],
+        ['customer', '[文件]', ms[2].msgid],
+        ['customer', '[其他消息：miniprogram]', ms[3].msgid],
+      ]),
+    JSON.stringify(trail('u-nt-ho', 2)),
+  );
+}
+{
+  check('（前提）发图片之前没有会话', !getSession('wecom:u-nt-new'));
+  const img = customerMsg('u-nt-new', '', 0, 'image');
+  serverLog.push(img);
+  await syncFromCallback('tok-nt-new');
+  await idle();
+  const hint = sentTo('u-nt-new');
+  check('未转人工：客户照常收到提示', hint.length === 1 && hint[0].content.includes('图我收到了'), JSON.stringify(hint));
+  check('此前没有会话的客户发来图片，由此建出一个企微会话', getSession('wecom:u-nt-new')?.channel === 'wecom');
+  check(
+    '未转人工：占位和提示都记在会话里，提示记成 AI 消息',
+    JSON.stringify(trail('u-nt-new')) ===
+      JSON.stringify([
+        ['customer', '[图片]', img.msgid],
+        ['agent', hint[0]?.content, undefined],
+      ]),
+    JSON.stringify(trail('u-nt-new')),
+  );
+}
+{
+  const [a, b] = [customerMsg('u-nt-two', '', 0, 'image'), customerMsg('u-nt-two', '', 0, 'image')];
+  serverLog.push(a, b);
+  await syncFromCallback('tok-nt-two');
+  await idle();
+  const ph = trail('u-nt-two').filter(([role]) => role === 'customer');
+  check(
+    '连着发两张不同的图片：各记一条占位',
+    JSON.stringify(ph) ===
+      JSON.stringify([
+        ['customer', '[图片]', a.msgid],
+        ['customer', '[图片]', b.msgid],
+      ]),
+    JSON.stringify(ph),
+  );
+  check('连着发两张不同的图片：各收到一条提示', sentTo('u-nt-two').length === 2);
+}
+
+// ---------------- 非文本消息的启动重放：按 msgid 判断占位记没记过，不比文本 ----------------
+{
+  // 把一条消息放进盘上的在途表：模拟进程死在处理它的半路上，cursor 已越过它，只能靠重放
+  const pend = (m: FakeMsg): void => {
+    const st = readState();
+    fs.writeFileSync(
+      __test.STATE_FILE,
+      JSON.stringify({ cursor: st?.cursor, handled: [...(st?.handled ?? []), [m.msgid, Date.now()]], pending: [{ msg: m, tries: 0 }] }),
+    );
+  };
+  const replayOnce = async (m: FakeMsg, tok: string): Promise<void> => {
+    pend(m);
+    await syncFromCallback(tok);
+    await idle();
+  };
+
+  // 占位已记、提示还没发出就停了：重放补发提示，占位不再记一遍
+  await restart();
+  const x = customerMsg('u-nt-rp', '', 0, 'image');
+  const sx = getOrCreateSession('wecom:u-nt-rp', 'wecom');
+  sx.messages.push({ role: 'customer', content: '[图片]', at: Date.now(), msgid: x.msgid });
+  saveSession(sx);
+  await replayOnce(x, 'tok-nt-rp');
+  const hint = sentTo('u-nt-rp')[0]?.content;
+  check('重放（占位已记、提示未发）：客户收到提示', sentTo('u-nt-rp').length === 1 && !!hint?.includes('图我收到了'));
+  check(
+    '同一条图片消息被启动重放，占位只有一条',
+    JSON.stringify(trail('u-nt-rp')) ===
+      JSON.stringify([
+        ['customer', '[图片]', x.msgid],
+        ['agent', hint, undefined],
+      ]),
+    JSON.stringify(trail('u-nt-rp')),
+  );
+
+  // 提示发出并记下之后、在途表还没清就停了：提示记过就是送到了，重放什么都不再发、不再记
+  await restart();
+  await replayOnce(x, 'tok-nt-rp-2');
+  check('重放（提示已发并记下）：不再发第二遍提示', sentTo('u-nt-rp').length === 1);
+  check('重放（提示已发并记下）：会话里不多出占位或提示', trail('u-nt-rp').length === 2, JSON.stringify(trail('u-nt-rp')));
+
+  // 前一张图片已处理完（占位 + 提示），后一张还没来得及处理就停了：比文本的话，后一张会被当成已经记过
+  await restart();
+  const y = customerMsg('u-nt-rp', '', 0, 'image');
+  await replayOnce(y, 'tok-nt-rp-3');
+  const ph = trail('u-nt-rp').filter(([role]) => role === 'customer');
+  check(
+    '重放按 msgid 判断：占位文本相同的前一张图片不算这张记过',
+    JSON.stringify(ph) ===
+      JSON.stringify([
+        ['customer', '[图片]', x.msgid],
+        ['customer', '[图片]', y.msgid],
+      ]),
+    JSON.stringify(ph),
+  );
+  check('重放按 msgid 判断：这张图片照常收到提示', sentTo('u-nt-rp').length === 2);
+}
+
+// ---------------- 已转人工的客户再次进入会话：两条路径都不发欢迎语 ----------------
+// 欢迎语邀请客户跟 AI 聊，而 AI 此时不会再回复；此前两条路径都不看 handedOver
+{
+  handedOverSession('u-ho-code');
+  handedOverSession('u-ho-back');
+  const withCode = enterEvent('u-ho-code', 'welcome-code-ho');
+  const back = enterEvent('u-ho-back');
+  serverLog.push(withCode, back);
+  await syncFromCallback('tok-ho-enter');
+  await idle();
+  check('（前提）两条进入事件都已认领处理', inspect().handled.includes(withCode.msgid) && inspect().handled.includes(back.msgid));
+  check('已转人工的客户再次进入（带 welcome_code）：收不到欢迎语', sentTo('code:welcome-code-ho').length === 0);
+  check('已转人工的客户再次进入（老客户补发）：收不到欢迎语', startedTo('u-ho-back').length === 0);
+  check('已转人工的客户再次进入：会话里不多出欢迎语', trail('u-ho-back').length === 2, JSON.stringify(trail('u-ho-back')));
+}
+
 // ---------------- W1 启动重放途中收到停机信号：钩子要等重放的回复发完 ----------------
 // 连续两次 docker restart 时可能落在这个窗口：重放已派发，钩子却没等它就返回，进程随即退出
 {
