@@ -266,7 +266,7 @@ pnpm test              # 六组自测，再跑 mock 模式的回归评测；都�
 
 打开 http://localhost:3200/chat.html 当客户聊天，http://localhost:3200/admin.html 看销售工作台（阶段进度、客户画像、订单、人工接管）。回复里的 `/pay/xxx` 链接点开即 mock 收银台。
 
-**部署 profile**：`DEPLOY_PROFILE=demo|prod`（不设按 demo）。几样演示行为（「重置」口令、后台免密只读、种子数据保鲜、网页模拟器、不带凭据也能点的模拟支付）只在 demo 下开着；prod 下全部关掉，想用 `FLAG_*=on` 打开会拒绝启动，而且必须配 `ADMIN_PASS`。启动日志的 `[profile]` 一行列出实际生效的值，单个开关见 `.env.example`。
+**部署 profile**：`DEPLOY_PROFILE=demo|prod`（不设按 demo；配了企微凭据却没设就拒绝启动，要接真实客户的实例不能靠缺省值）。几样演示行为（「重置」口令、后台免密只读、种子数据保鲜、网页模拟器、不带凭据也能点的模拟支付）只在 demo 下开着；prod 下全部关掉，想用 `FLAG_*=on` 打开会拒绝启动，而且必须配 `ADMIN_PASS`。启动日志的 `[profile]` 一行列出实际生效的值，单个开关见 `.env.example`。
 
 **管理面鉴权**：分两层，而不是一个「读写一起开关」的总闸。
 
