@@ -475,6 +475,14 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   return c.json({ ok: true, order: getOrder(id) });
 });
 
+/**
+ * 把页面的 <title> 换成服务端拼好的 head（支付页、方案页）。替换值必须用函数给：给字符串时 String.replace 会展开里面的
+ * $' $` $&，线路标题、亮点里带着这几个字符就把页面源码的前后两截拼进标题和分享摘要（spec「编辑规则」：产品库文本对公开页是不可信输入）
+ */
+function withHead(html: string, head: string): string {
+  return html.replace(/<title>[\s\S]*?<\/title>/, () => head);
+}
+
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {
   const html = await readFile(path.resolve('public/pay.html'), 'utf8');
@@ -487,8 +495,8 @@ app.get('/pay/:orderId', async (c) => {
     const t = `${o.routeTitle} · 订单已被替代`;
     const d = '这笔订单已被新订单替代，请以最新发给您的支付链接为准';
     return c.html(
-      html.replace(
-        /<title>[\s\S]*?<\/title>/,
+      withHead(
+        html,
         `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
           `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`,
       ),
@@ -504,8 +512,8 @@ app.get('/pay/:orderId', async (c) => {
       : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
   const desc = `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
   return c.html(
-    html.replace(
-      /<title>[\s\S]*?<\/title>/,
+    withHead(
+      html,
       `<title>${esc(title)}</title>\n` +
         `<meta name="description" content="${esc(desc)}">\n` +
         `<meta property="og:title" content="${esc(title)}">\n` +
@@ -562,8 +570,8 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
   // （1px 不行，太小会被跳过）。
   const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
   const cover = base ? `${base}/share-cover.png` : '/share-cover.png';
-  const withHead = html.replace(
-    /<title>[\s\S]*?<\/title>/,
+  return withHead(
+    html,
     `<title>${esc(title)}</title>\n` +
       `<meta name="description" content="${esc(desc)}">\n` +
       `<meta property="og:title" content="${esc(title)}">\n` +
@@ -572,7 +580,6 @@ function renderProposalHtml(html: string, routeId: string, travelers: number): s
       `<meta property="og:type" content="website">\n` +
       `<link rel="image_src" href="${esc(cover)}">`,
   );
-  return withHead;
 }
 
 async function serveProposal(c: Context): Promise<Response> {

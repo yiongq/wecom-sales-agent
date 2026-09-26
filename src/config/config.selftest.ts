@@ -1725,6 +1725,75 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   cfg.__configTest.reset();
 }
 
+// ---------------- 公开页：产品库文本是不可信输入（spec「编辑规则」最后一条） ----------------
+{
+  const vm = await import('node:vm');
+  const { app } = await import('../server.js');
+  const { createOrder, supersedeOrder } = await import('../store.js');
+  const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  const titleOf = (html: string): string | undefined => /<title>([\s\S]*?)<\/title>/.exec(html)?.[1];
+  const scripts = (html: string): number => html.split('<script').length - 1;
+  // String.replace 的替换串里 $` $' $& 有特殊含义：写进 head 时不能被展开成页面源码的前后两截
+  const title = '测试线$`路$&';
+  const highlight = "川西$'亮点$`";
+  const r0 = (JSON.parse(routesRaw) as Route[])[0]!;
+  const fixture = path.join(process.env.VAR_DIR!, 'routes-dollar.json');
+  fs.writeFileSync(fixture, JSON.stringify([{ ...r0, title, hotelLevel: '奢$$华', highlights: [highlight, ...r0.highlights.slice(1)] }]));
+  const savedRoutesPath = process.env.ROUTES_PATH;
+  process.env.ROUTES_PATH = fixture;
+  try {
+    const page = await (await app.request(`/proposal/${r0.id}/2`)).text();
+    check(
+      '方案页：标题、亮点里的 $ 替换符原样写进 title 与分享摘要，页面只有一段脚本',
+      scripts(page) === 1 &&
+        titleOf(page) === `${esc(title)} · 行程方案书` &&
+        page.includes(`<meta name="description" content="${r0.days} 天 · 2 位出行 · 奢$$华｜${esc(highlight)}">`),
+      `${scripts(page)} ${titleOf(page)?.slice(0, 120)}`,
+    );
+    const order = { sessionId: 's-dollar', routeId: r0.id, routeTitle: title, travelers: 2, departDate: '', totalPrice: 100 };
+    const pending = createOrder(order);
+    const pay = await (await app.request(`/pay/${pending.id}`)).text();
+    const old = createOrder(order);
+    supersedeOrder(old.id, pending.id);
+    const oldPay = await (await app.request(`/pay/${old.id}`)).text();
+    check(
+      '支付页：线路标题里的 $ 替换符原样写进 title（待付款与被替代的旧单都是），页面只有一段脚本',
+      scripts(pay) === 1 &&
+        titleOf(pay) === `${esc(title)} · 订单支付` &&
+        scripts(oldPay) === 1 &&
+        titleOf(oldPay) === `${esc(title)} · 订单已被替代`,
+      `${titleOf(pay)?.slice(0, 80)} / ${titleOf(oldPay)?.slice(0, 80)}`,
+    );
+  } finally {
+    if (savedRoutesPath === undefined) delete process.env.ROUTES_PATH;
+    else process.env.ROUTES_PATH = savedRoutesPath;
+  }
+
+  // proposal.html 在浏览器里渲染：数值字段先过 Number()，接口回来的不是数也只显示成 NaN，不会当标记插进页面
+  const html = fs.readFileSync(path.join(root, 'public', 'proposal.html'), 'utf8');
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]!;
+  const mark = '<img src=x onerror=alert(1)>';
+  const shown = { innerHTML: '' };
+  const data = {
+    route: { ...r0, days: mark, itinerary: [{ day: mark, title: '第一天', detail: '行程', hotel: '酒店', meals: '早' }] },
+    travelers: mark,
+    quote: { total: 1, perPerson: 1, note: '说明' },
+  };
+  vm.runInNewContext(script, {
+    document: { getElementById: () => shown, title: '行程方案书 · 云途定制旅行' },
+    location: { pathname: `/proposal/${r0.id}/2` },
+    URLSearchParams,
+    encodeURIComponent,
+    fetch: async () => ({ ok: true, json: async () => data }),
+  });
+  for (let i = 0; i < 100 && !shown.innerHTML.includes('<header>'); i++) await new Promise((r) => setTimeout(r, 1));
+  check(
+    '方案页脚本：天数、天号、人数不是数时显示成 NaN，不当标记插进页面',
+    shown.innerHTML.includes('<header>') && !shown.innerHTML.includes('<img src=x') && shown.innerHTML.includes('>DNaN<'),
+    shown.innerHTML.slice(0, 200),
+  );
+}
+
 // ---------------- 检索（第 9 步：验收 11） ----------------
 {
   const http = await import('node:http');
