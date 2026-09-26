@@ -1316,7 +1316,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
 
   // 草稿的 rev：甲的页面停在自己那份草稿上，乙把它丢了、另建一份。每份草稿都从 1 开始的话，甲拿着旧 rev
-  // 就能发布、改写、丢弃乙的草稿；新草稿的 rev 接在旧草稿之后，这三样都是 409，乙的草稿原样还在
+  // 就能发布、改写、丢弃乙的草稿；新草稿的 rev 接在旧草稿之后，这三样都是 409，乙的草稿原样还在。
+  // 三样各打在一份新建的乙的草稿上：接连打在同一份上的话，前一样得手就把 rev 推走了，后面的 409 什么也测不出
   {
     const cur = cfg.currentSop();
     const mine = await sopApi.saveSopDraft(ctx, {
@@ -1325,29 +1326,47 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       edits: [{ key: 'tone', body: `${bodyOf(cur.sections, 'tone')}\n甲写的一句。` }],
     });
     await sopApi.discardSopDraft(ctx, { rev: mine.rev });
-    const theirs = await sopApi.saveSopDraft(ctx, {
-      basedOn: cur.versionId,
-      rev: null,
-      edits: [{ key: 'objections', body: `${bodyOf(cur.sections, 'objections')}\n乙写了一半的草稿。` }],
-    });
+    // 乙新建一份：还在的草稿先丢掉，从当前发布版本起建（前一样误发布了，这里照样建得出来）
+    const theirsFresh = async (): Promise<Awaited<ReturnType<typeof sopApi.saveSopDraft>>> => {
+      const left = (await sopApi.getSopOverview(ctx)).draft;
+      if (left) await sopApi.discardSopDraft(ctx, { rev: left.rev });
+      const pub = cfg.currentSop();
+      return sopApi.saveSopDraft(ctx, {
+        basedOn: pub.versionId,
+        rev: null,
+        edits: [{ key: 'objections', body: `${bodyOf(pub.sections, 'objections')}\n乙写了一半的草稿。` }],
+      });
+    };
+    const theirs = await theirsFresh();
     check('草稿 rev：丢弃之后新建的草稿，rev 大于旧草稿的', theirs.id !== mine.id && theirs.rev > mine.rev, `${mine.rev} → ${theirs.rev}`);
-    const stale = [
-      await errName(sopApi.saveSopDraft(ctx, { basedOn: cur.versionId, rev: mine.rev, edits: [{ key: 'tone', body: '甲接着改。' }] })),
-      await errName(sopApi.discardSopDraft(ctx, { rev: mine.rev })),
-      await errName(sopApi.publishSopDraft(ctx, { rev: mine.rev, changeNote: '甲发布自己的修改' })),
+    const staleOps: [string, () => Promise<unknown>][] = [
+      ['发布', () => sopApi.publishSopDraft(ctx, { rev: mine.rev, changeNote: '甲发布自己的修改' })],
+      ['保存', () => sopApi.saveSopDraft(ctx, { basedOn: cur.versionId, rev: mine.rev, edits: [{ key: 'tone', body: '甲接着改。' }] })],
+      ['丢弃', () => sopApi.discardSopDraft(ctx, { rev: mine.rev })],
     ];
-    const still = (await sopApi.getSopOverview(ctx)).draft;
-    check(
-      '草稿 rev：拿着已丢弃草稿的 rev 保存、丢弃、发布 → 都是 SopRevConflictError，乙的草稿原样还在、没有发布',
-      stale.every((x) => x === 'SopRevConflictError') &&
-        still?.id === theirs.id &&
-        still.rev === theirs.rev &&
-        JSON.stringify(still.sections) === JSON.stringify(theirs.sections) &&
-        cfg.currentSop().versionNo === cur.versionNo,
-      stale.join(','),
-    );
-    // 乙又存了一次；拿存之前的 rev 丢弃 → 409，草稿还在。从当前草稿接着存：上面那条失败、草稿被丢掉时新建一份，这条照样能跑
-    const open = still ?? (await sopApi.saveSopDraft(ctx, { basedOn: cfg.currentSop().versionId, rev: null, edits: [] }));
+    for (const [label, op] of staleOps) {
+      const target = label === '发布' ? theirs : await theirsFresh();
+      const versionNo = cfg.currentSop().versionNo;
+      const got = await errName(op());
+      const still = (await sopApi.getSopOverview(ctx)).draft;
+      check(
+        `草稿 rev：拿着已丢弃草稿的 rev ${label} → SopRevConflictError，乙的草稿原样还在、没有发布`,
+        got === 'SopRevConflictError' &&
+          still?.id === target.id &&
+          still.rev === target.rev &&
+          JSON.stringify(still.sections) === JSON.stringify(target.sections) &&
+          cfg.currentSop().versionNo === versionNo,
+        `${got} rev ${mine.rev}/${target.rev}`,
+      );
+    }
+    // 上面那条失败、乙的草稿真被发布了：回滚到原来的版本，后面 rebase 那段才不会因为异议处理多了一句而冲突
+    if (cfg.currentSop().versionNo !== cur.versionNo) {
+      await sopApi.rollbackSop(ctx, { versionId: cur.versionId, changeNote: '撤掉误发布的草稿' });
+    }
+    // 乙又存了一次；拿存之前的 rev 丢弃 → 409，草稿还在。从当前草稿接着存：上面哪条失败、草稿没了时新建一份，这条照样能跑
+    const open =
+      (await sopApi.getSopOverview(ctx)).draft ??
+      (await sopApi.saveSopDraft(ctx, { basedOn: cfg.currentSop().versionId, rev: null, edits: [] }));
     const theirs2 = await sopApi.saveSopDraft(ctx, {
       basedOn: cur.versionId,
       rev: open.rev,
