@@ -806,6 +806,8 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
     if (seen < 0) {
       const content = PLACEHOLDER[msg.msgtype] ?? `[其他消息：${msg.msgtype}]`;
       session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid });
+      // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
+      if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
       saveSession(session);
     }
     if (session.handedOver) {

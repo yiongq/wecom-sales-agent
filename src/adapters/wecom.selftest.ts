@@ -943,6 +943,40 @@ const trail = (uid: string, from = 0): [string, string, string | undefined][] =>
     JSON.stringify(ph),
   );
   check('重放按 msgid 判断：这张图片照常收到提示', sentTo('u-nt-rp').length === 2);
+
+  // 这张图片的占位已记、提示还没发就停了，而前面几张图片的提示一字不差：只能看这条占位之后有没有提示，
+  // 看整个会话的话会被前一张的提示冒充，客户就收不到这张的提示
+  await restart();
+  const z = customerMsg('u-nt-rp', '', 0, 'image');
+  const sz = getSession('wecom:u-nt-rp');
+  sz?.messages.push({ role: 'customer', content: '[图片]', at: Date.now(), msgid: z.msgid });
+  if (sz) saveSession(sz);
+  await replayOnce(z, 'tok-nt-rp-4');
+  check('重放（占位已记、提示未发，前面有同样的提示）：照常补发这张的提示', sentTo('u-nt-rp').length === 3);
+  check(
+    '重放（占位已记、提示未发，前面有同样的提示）：提示记在这条占位之后，占位不重复',
+    JSON.stringify(trail('u-nt-rp', 4)) ===
+      JSON.stringify([
+        ['customer', '[图片]', z.msgid],
+        ['agent', hint, undefined],
+      ]),
+    JSON.stringify(trail('u-nt-rp', 4)),
+  );
+}
+
+// ---------------- 非文本消息同样受会话封顶：这条路不经引擎，封顶要自己做 ----------------
+{
+  handedOverSession('u-nt-cap');
+  const s = getSession('wecom:u-nt-cap');
+  for (let i = s?.messages.length ?? 0; i < 400; i++) s?.messages.push({ role: 'customer', content: `第 ${i} 句`, at: Date.now() });
+  if (s) saveSession(s);
+  const img = customerMsg('u-nt-cap', '', 0, 'image');
+  serverLog.push(img);
+  await syncFromCallback('tok-nt-cap');
+  await idle();
+  const after = trail('u-nt-cap');
+  check('会话超过 400 条时，非文本占位入库后裁到最近 300 条', after.length === 300, String(after.length));
+  check('裁剪后最新一条仍是这张图片的占位', JSON.stringify(after.at(-1)) === JSON.stringify(['customer', '[图片]', img.msgid]));
 }
 
 // ---------------- 已转人工的客户再次进入会话：两条路径都不发欢迎语 ----------------
