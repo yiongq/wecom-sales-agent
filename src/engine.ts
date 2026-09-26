@@ -510,7 +510,8 @@ async function deterministicRecommend(dest: string, session: Session): Promise<s
 
 // 客户直接追问身份。诚实回答是硬要求，但模型在「不要主动提 AI」的约束下常把这题绕过去
 // （实测 3 问只承认 1 次），所以不赌模型：命中就由引擎确定性地补上承认句。
-// 注意「转人工/找真人」在此之前已被转人工安全网（isHandoffIntent）拦截，不会误入这里。
+// 不经过模型的确定性回复（转人工安全网、重发支付链接）也要补：此前兜底只在模型路径末尾，
+// 「你是机器人吧？我要投诉」「你是真人吗？转人工」都转了人工，回复里却没有一个 AI 字样。
 // 「真人」后面跟服务角色（真人导游/真人管家…）问的是配不配真人服务，不是在质疑 AI 身份。
 // 不排除的话，「你们有真人导游吗」会被强行加一句「我是 AI 旅行顾问」当开头，答非所问。
 const REAL_PERSON = '真人(?!导游|管家|司机|领队|向导|陪同|跟团|带团|服务)';
@@ -519,6 +520,11 @@ const IDENTITY_QUESTION = new RegExp(
     `|(?:${REAL_PERSON}|机器人|AI|ai)\\s*(?:吗|还是|吧|嘛)`,
 );
 const IDENTITY_ANSWER = '我是云途定制旅行的 AI 旅行顾问，7×24 在线为您服务～';
+/** 客户这句在问身份、回复里又没承认：把承认句放在最前面 */
+function answerIdentity(text: string, reply: string): string {
+  if (!IDENTITY_QUESTION.test(text) || /AI|ai\b|人工智能/.test(reply)) return reply;
+  return reply ? IDENTITY_ANSWER + '\n' + reply : IDENTITY_ANSWER;
+}
 
 // 行程定制的空头承诺护栏。
 // 系统只能按产品库的**标准线路**出方案书，没有任何重排行程的能力：
@@ -3278,7 +3284,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
   if (isHandoffIntent(text)) {
     enterHandoff(session);
-    const reply = handoffReply(session, text);
+    const reply = answerIdentity(text, handoffReply(session, text));
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
     return { text: reply, stage: 'handoff', handoff: true };
@@ -3287,9 +3293,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 客户要重发支付链接：确定性地重发那张待付款单，不经过模型、不转人工（见 RESEND_ASK）
   const resend = resendPayReply(session, text);
   if (resend) {
-    session.messages.push({ role: 'agent', content: resend, at: Date.now() });
+    const reply = answerIdentity(text, resend);
+    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
-    return { text: resend, stage: session.stage };
+    return { text: reply, stage: session.stage };
   }
 
   const ordersBefore = session.orderIds.length;
@@ -3770,9 +3777,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 「装成真人」是这类产品最不能碰的红线，不能交给提示词碰运气。
   // 必须排在注入/百科/价格这些整条替换的护栏之后：排在前面时，补上的承认句会跟着模型原文一起被换掉
   //（「你是机器人吗？西藏每人多少钱」+ 编价 → 客户只收到价格兜底，身份问题没人答）。
-  if (IDENTITY_QUESTION.test(text) && !/AI|ai\b|人工智能/.test(visible)) {
-    visible = visible ? IDENTITY_ANSWER + '\n' + visible : IDENTITY_ANSWER;
-  }
+  visible = answerIdentity(text, visible);
 
   if (customHandoff) visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
   if (session.handedOver) visible = dropPostHandoffPromises(visible);
