@@ -53,7 +53,7 @@
   - 部署失败的两种演练都在一次性 clone 里造提交（这个 clone 不装 hook，也不推送）：一个带类型错误的提交打 tag，部署被拒（验收 12c）；一个能过门禁、但容器起不来的提交（例如改坏启动命令）打 tag，用来演练回滚。
   - 回滚演练用旁路实例：换 `NAME`、`REMOTE_DIR`、`HOST_PORT`，旁路 `.env` 只配 `DEPLOY_PROFILE=demo` 和 `ADMIN_PASS`，不配企微凭据。依次部署 tag A、tag B 和起不来的那个 tag，确认回滚后 `revision` 等于 B。演练完删掉旁路容器、镜像和目录。
   - 对应验收 12。
-- [ ] 8. README（spec「README」；约 0.25 人日）：
+- [x] 8. README（spec「README」；约 0.25 人日）：
   - 描述当前状态的数字改成现值；横评表和缓存表的表头注明「当时的回归集」。
   - 本地跑法改成四个门禁名；部署一节改成按 tag；加 `DEPLOY_PROFILE` 说明，鉴权表加一列 prod。
   - 「生产化路径」一节指向总参考。
@@ -180,6 +180,16 @@
   - rsync 用 `--checksum`，用 P 规则保护 `/.env*`、`/var/`、`*.log`、`/.git/`。
 - 服务器上的 rsync 是 3.4.1，本机是 openrsync（协议 29）。P 规则在服务器的 `/tmp` 下实测有效。
 
+### 第 8 步（2026-09-26，分支 `docs/00-readme`）
+
+- 提交：`d663e34`。
+- 除了 spec 列出的几处，顺带改了两处过时的现状：
+  - 架构图里的「Node 20+」改成 Node 22，和 `engines` 一致。
+  - 横评一段说的「那 54 项断言」改成现值。
+- 鉴权表里「用量」单独一行：demo 下 `/api/usage` 返回的是聚合数字，不是「只有种子会话」。
+- 「生产化路径」原有的判断依据都保留，只在开头加一段，指向总参考，并注明「现在不上数据库」已被阶段 01 取代。
+- 进度吃紧时唯一可砍的一项（两张表的表头注明）没有砍。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写，按子编号：编号 · 通过 / 未通过 · 证据）
@@ -228,6 +238,12 @@
 - 12d · 通过 · 部署 `drill-b` 时，工作区里有一处未提交的改动（`guide.html` 加标记）：旁路实例的页面和服务器目录里都没有这个标记。
 - 12e · 通过 · 线上 `bash deploy.sh demo-v1.1` 之后，`/healthz` 的 `revision` 是 `demo-v1.1`。
 - 12f · 通过 · 旁路实例（`wecom-drill`、`/opt/wecom-drill`、3299）上依次部署 `demo-v1.1`、`drill-b`，再部署一个能过门禁、但入口文件不存在的 `drill-broken`：健康检查失败，打出日志，自动回滚到 `:prev`，`revision` 回到 `drill-b`，退出码为 1。演练期间，线上容器的启动时间、重启次数（0）和 `revision` 都没变。演练结束后，旁路容器、镜像、目录、一次性 clone 和演练 tag 都已删除。
+- 13a · 通过 · README 写的是 51 条用例、147 项断言、mock 下跑 19 条，与 `eval/cases.json` 按 `eval/run.ts` 的计数方式核对一致（mock 部分 43 项断言）。
+- 13b · 通过 · 本地跑法是四个门禁名；部署一节写的是 `bash deploy.sh <tag>`。
+- 13c · 通过 · 「生产化路径」开头指向 `docs/architecture/master-reference.md`。
+- 13d · 通过 · 配好词表时 `pnpm lint` 对 README 没有命中。
+- 13e · 通过 · 「接入真实企业微信」写明 1v1 只做会话存档 + AI 辅助、由人点发送，全自动接待只走微信客服。
+- 13f · 通过 · 整个仓库里 demo 域名只出现在 README「在线体验」一节的 4 行（`git grep` 核对）。
 - 11e · 部分通过 · 2026-09-25 经 owner 同意，用 `gh api` 打开了 secret scanning 和 push protection（`security_and_analysis` 两项均为 enabled），当时没有告警。在私有测试仓库里验证推送被拒这一半没有做（owner 没有要求）。
 
 ## 起草记录（2026-09-25）
@@ -238,10 +254,10 @@
 
 ## 交接（2026-09-25）
 
-- 已完成：第 1–7 步，都已合进 `dev`（第 6 步 PR #7、第 7 步 PR #8）。线上 demo 跑的是 `demo-v1.1`（`dev` 的 `210ba2a`）。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
+- 已完成：第 1–8 步。第 1–7 步都已合进 `dev`（第 6 步 PR #7、第 7 步 PR #8）；第 8 步在分支 `docs/00-readme` 上。线上 demo 跑的是 `demo-v1.1`（`dev` 的 `210ba2a`）。第 1 步：PR #2 以 merge commit 合进 `dev`（`c9eb37b`），合并后在 `dev` 上核对了 2a、2b；push 触发的 CI 是绿的，gitleaks 扫了 11 个提交，没有发现泄露。
 - 半成品：无。
 - 阻塞：无。
-- 下一步：第 8 步，README。owner 手动：企微客服账号名改成含「AI 旅行顾问」（验收 6d）。
+- 下一步：第 9 步，对照 spec 全部验收标准逐条复验，把 00 结束时的前缀哈希记进实施记录。owner 手动：企微客服账号名改成含「AI 旅行顾问」（验收 6d）；验收 11e 在私有测试仓库验证推送被拒（可选）。
 
 ## Open
 
