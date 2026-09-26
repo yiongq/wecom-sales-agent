@@ -545,6 +545,12 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     },
   ];
   check('CSV 导入：格子前后的空格去掉，id 与整数照样认', padded === `ok:${JSON.stringify(trimmed)}`, padded);
+  const garbled = outcome(`${head}\nh-gbk,${String.fromCharCode(0xfffd, 0xfffd)}酒店,三亚,五星,100,房,亮点,`);
+  check(
+    'CSV 导入：有替换字符 U+FFFD（非 UTF-8 文件解码失败）→ 第 0 行拒，一条也不建',
+    garbled.startsWith('[{"row":0,') && garbled.includes('UTF-8'),
+    garbled.slice(0, 160),
+  );
 }
 
 // ---------------- 产品库：文件模式的快照冻结（验收 4） ----------------
