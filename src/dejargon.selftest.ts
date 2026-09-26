@@ -622,3 +622,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(`DEJARGON SELFTEST PASS: ${pass} 项断言全通（英文替换 / 品牌名零误伤 / 空头承诺拦截 / 无误伤 / 转人工与日期识别）`);
+
+// CI 红灯演练（验收 1c）：这条断言故意失败，所在 PR 不合并
+if (process.env.CI) throw new Error('CI 红灯演练：pnpm test 故意失败');
