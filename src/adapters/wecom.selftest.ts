@@ -761,6 +761,61 @@ for (const k of ['log', 'warn', 'error'] as const) {
   check('重放（中间夹欢迎语）：客户这句只记一次', msgs.filter((m) => m.role === 'customer').length === 1);
 }
 
+// ---------------- 重放对齐：改版前的旧欢迎语同样不是回复 ----------------
+// 上线当次重启正好是在途重放发生的时候，会话里存着的还是改版前的欢迎语
+for (const [i, legacy] of __test.LEGACY_WELCOME_TEXTS.entries()) {
+  await restart();
+  const uid = `u-wb-legacy-${i}`;
+  const wMsg = customerMsg(uid, '新疆几月去合适');
+  const sess = getOrCreateSession(`wecom:${uid}`, 'wecom');
+  sess.messages.push({ role: 'customer', content: '新疆几月去合适', at: Date.now() });
+  sess.messages.push({ role: 'agent', content: legacy, at: Date.now() });
+  saveSession(sess);
+  const st = readState();
+  fs.writeFileSync(
+    __test.STATE_FILE,
+    JSON.stringify({ cursor: st?.cursor, handled: [...(st?.handled ?? []), [wMsg.msgid, Date.now()]], pending: [{ msg: wMsg, tries: 0 }] }),
+  );
+  void syncFromCallback(`tok-wb-legacy-${i}`);
+  await waitFor(() => sentTo(uid).length > 0);
+  await idle();
+  check(
+    `重放时不把改版前的旧欢迎语（第 ${i + 1} 段）当成这句的回复`,
+    sentTo(uid).length === 1 && sentTo(uid)[0].content !== legacy,
+    sentTo(uid)[0]?.content,
+  );
+}
+
+// ---------------- AI 显式标识：两段欢迎语的第一句写明「AI 旅行顾问」，正文写明人工入口 ----------------
+// 00 spec「AI 显式标识」：账号名加欢迎语首句写明 AI，对话中不反复自称；老客户欢迎语不承诺记得之前的对话
+{
+  const firstSentence = (t: string) => t.split(/[。！？\n]/)[0];
+  const disclosed = (t: string) => firstSentence(t).includes('AI 旅行顾问') && t.includes('回复「人工」即可转真人顾问');
+  serverLog.push(enterEvent('u-ai-new', 'welcome-code-ai'));
+  void syncFromCallback('tok-ai-new');
+  await waitFor(() => sentTo('code:welcome-code-ai').length > 0);
+  const first = sentTo('code:welcome-code-ai')[0]?.content ?? '';
+  check('新客户欢迎语：第一句写明「AI 旅行顾问」，正文写明回复「人工」即可转真人顾问', disclosed(first), first);
+
+  const back = getOrCreateSession('wecom:u-ai-back', 'wecom');
+  back.messages.push(
+    { role: 'customer', content: '想去云南', at: Date.now() },
+    { role: 'agent', content: '好的～几位出行？', at: Date.now() },
+  );
+  saveSession(back);
+  serverLog.push(enterEvent('u-ai-back'));
+  void syncFromCallback('tok-ai-back');
+  await waitFor(() => sentTo('u-ai-back').length > 0);
+  await idle();
+  const again = sentTo('u-ai-back')[0]?.content ?? '';
+  check(
+    '老客户欢迎语：以「欢迎回来」开头，第一句写明「AI 旅行顾问」，正文写明人工入口',
+    again.startsWith('欢迎回来') && disclosed(again),
+    again,
+  );
+  check('老客户欢迎语：不承诺记得之前的对话', !again.includes('记得'), again);
+}
+
 // ---------------- W1 启动重放途中收到停机信号：钩子要等重放的回复发完 ----------------
 // 连续两次 docker restart 时可能落在这个窗口：重放已派发，钩子却没等它就返回，进程随即退出
 {

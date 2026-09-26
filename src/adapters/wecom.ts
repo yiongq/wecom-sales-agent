@@ -269,15 +269,28 @@ interface KfMessage {
   };
 }
 
-// 客户进入会话时的欢迎语（本账号 API 托管，微信自带欢迎语不生效，须由此发）
+// 客户进入会话时的欢迎语（本账号 API 托管，微信自带欢迎语不生效，须由此发）。
+// AI 显式标识（00 spec「AI 显式标识」）：第一句写明「AI 旅行顾问」，正文写明人工入口；账号名在企微后台另改。
+// 身份只在这里说一次：system prompt 仍是「主动自我介绍不提 AI、被问就承认」，对话中不反复自称
 const WELCOME_TEXT =
-  '您好呀～欢迎来到云途定制旅行，我是您的专属旅行顾问 🌿\n' +
+  '您好呀～欢迎来到云途定制旅行，我是您的 AI 旅行顾问 🌿\n' +
   '想去哪玩直接跟我说，比如「想去西藏，两个人，预算每人3万」，我马上帮您推荐线路、报价，还能在线下单～\n' +
-  '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！';
+  '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！需要真人服务时，回复「人工」即可转真人顾问。';
 
-// 老客户（48h 会话窗口内）再次扫码进入时，企微不下发 welcome_code——用普通消息补一条
+// 老客户（48h 会话窗口内）再次扫码进入时，企微不下发 welcome_code——用普通消息补一条。
+// 不承诺「之前聊的都记得」：每轮只带最近 30–39 条历史，长会话会被裁剪，「重置」还会清空
 const WELCOME_BACK_TEXT =
-  '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n' + '想继续看线路、调整行程，或者换个方向看看，直接说就行～';
+  '欢迎回来～我是云途定制旅行的 AI 旅行顾问。\n' +
+  '想继续看线路、调整行程，或者换个方向看看，直接说就行～需要真人服务时，回复「人工」即可转真人顾问。';
+
+// 改版前的两段欢迎语。已存的会话里还留着它们：上线当次重启正好是在途重放发生的时候，重放对齐要认得出来
+const LEGACY_WELCOME_TEXTS = [
+  '您好呀～欢迎来到云途定制旅行，我是您的专属旅行顾问 🌿\n' +
+    '想去哪玩直接跟我说，比如「想去西藏，两个人，预算每人3万」，我马上帮您推荐线路、报价，还能在线下单～\n' +
+    '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！',
+  '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n' + '想继续看线路、调整行程，或者换个方向看看，直接说就行～',
+];
+const WELCOME_TEXTS = new Set([WELCOME_TEXT, WELCOME_BACK_TEXT, ...LEGACY_WELCOME_TEXTS]);
 
 // 补发欢迎的去重窗口。只用来吸收「同一次进入触发多个 enter_session」这类抖动，
 // 不该拦住客户主动的再次扫码——原本设成 30 分钟，结果是第一次扫有招呼语、
@@ -747,9 +760,7 @@ function alignSessionForReplay(sessionId: string, text: string): string | null {
   const said = text.slice(0, 2000); // 与引擎入库前的截断一致，否则长消息永远对不上
   // 欢迎语不排队（handleEnterSession 直接写进会话），可能正好插在这一轮中间。它不是任何一句话的回复：
   // 算进来的话，「客户这句 + 欢迎回来」会被当成情况 3，把欢迎语当回复重发，客户问的事就没人答了
-  const talk = s.messages.filter(
-    (m) => m.role !== 'system' && !(m.role === 'agent' && (m.content === WELCOME_TEXT || m.content === WELCOME_BACK_TEXT)),
-  );
+  const talk = s.messages.filter((m) => m.role !== 'system' && !(m.role === 'agent' && WELCOME_TEXTS.has(m.content)));
   const last = talk.at(-1);
   if (last?.role === 'customer' && last.content === said) {
     s.messages.splice(s.messages.lastIndexOf(last), 1);
@@ -1111,4 +1122,15 @@ function inspectForTest(): { cursor: string; coldStart: boolean; handled: string
 }
 
 /** 仅供自测使用的内部函数出口（src/adapters/wecom.selftest.ts） */
-export const __test = { splitForWecom, extractCard, stripLink, wechatify, resetForTest, inspectForTest, STATE_FILE, WELCOME_BACK_TEXT };
+export const __test = {
+  splitForWecom,
+  extractCard,
+  stripLink,
+  wechatify,
+  resetForTest,
+  inspectForTest,
+  STATE_FILE,
+  WELCOME_TEXT,
+  WELCOME_BACK_TEXT,
+  LEGACY_WELCOME_TEXTS,
+};
