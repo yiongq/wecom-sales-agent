@@ -323,7 +323,9 @@ bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
 
 - 先导出后台改过的内容。导出要写进挂进容器的宿主目录，写在容器里的文件会随 `--rm` 删掉：`install -d -o 1000 -g 1000 /root/export-<日期>`，再 `docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app node --import tsx src/cli/export-config.ts --tenant <slug> --out /export`。回到旧 tag 时把那一版的 `data/sop.md` 先放进这个目录（例如 `target-sop.md`），加 `--image-sop /export/target-sop.md`。
 - 把三个文件拷进要部署的那条线的 `data/`，两个 JSON 用 `oxfmt` 格式化，提交、打 tag；`.env` 去掉 `CONFIG_SOURCE=db`，再部署这个 tag。
-- 那条线是换成 compose 之前的版本时，deploy.sh 不收它的 tag（否则会先把服务器上的 `deploy/` 同步删掉，到迁移那一步才失败）：在那个 tag 的 worktree 里跑它自己的 `deploy.sh`。它用 `docker run` 换掉 compose 起的同名容器，数据库容器和备份的 cron 不受影响；之后再部署新的 tag，换容器那一步会接管这个容器。
+- 那条线是换成 compose 之前的版本时，deploy.sh 不收它的 tag（否则会先把服务器上的 `deploy/` 同步删掉，到迁移那一步才失败）：在那个 tag 的 worktree 里跑它自己的 `deploy.sh`，它用 `docker run` 换掉 compose 起的同名容器。之后再部署新的 tag，换容器那一步会接管这个容器。
+- 旧 deploy.sh 的 rsync 也带 `--delete`，跑之前先看它保护哪些文件。demo-v1.1 及以后的线保护全部 `.env*`（`git show <tag>:deploy.sh | grep -F 'P /.env*'` 有输出）。demo-v1 和从它切出的线只保护名为 `.env` 的那一个，会删掉 `.env.db`、`.env.migrate`、`.env.platform`、`.env.backup`：之后每晚的备份停在「缺 BACKUP_AGE_RECIPIENTS」（只记在日志里），再部署新 tag 也会在检查服务器 `.env` 那一步中止。用这种线，先把这几个文件（有几个拷几个）拷到部署目录之外，跑完立刻拷回。
+- 两种线都会删掉服务器上的 `deploy/`。db 容器照常在跑，cron 跑的是部署目录之外那份备份脚本，暂时都不受影响；但 db 容器一旦重启（宿主机重启、升级 Docker）就起不来，因为它挂载的 `deploy/db-init/roles.sh` 没了，之后每晚的备份在导出那一步失败，`var/` 也不再打包。所以跑完旧 deploy.sh 立刻只把这个目录放回去：`git archive <刚才在跑的 compose 版 tag> deploy/db-init | ssh <服务器> tar -x -C /opt/wecom-sales-agent`。别把整个 `deploy/` 放回去：`deploy/compose.yml` 不在，手工的 compose 命令就会直接报错，而不会把 `:current` 的新镜像换回来。
 
 多副本部署会脑裂（内存为权威），本项目按单实例设计。
 
