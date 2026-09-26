@@ -685,6 +685,30 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   check('漂移：SOP 点名的工具都是现有的工具', contract(image).filter((v) => v.code === 'unknown_tool').length === 0);
 }
 
+// ---------------- 依赖边界的 lint 也查 .jsx（spec「模块与依赖方向」，验收 20） ----------------
+{
+  const { spawnSync } = await import('node:child_process');
+  // 不在 git 工作区里的临时目录：脚本改查目录树。租户 GUC 名拆开拼，免得本文件自己命中那条规则
+  const dir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'boundaries-'));
+  const put = (rel: string, text: string): void => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  };
+  put('src/shared/a.jsx', "import pg from 'pg';\nexport const A = () => <div>{String(pg)}</div>;\n");
+  put('src/config/b.jsx', `export const guc = '${['app', 'tenant_id'].join('.')}';\n`);
+  put('console/src/c.jsx', "import { openDb } from '../../src/db/client.js';\nexport const C = () => <p>{String(openDb)}</p>;\n");
+  const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'scripts', 'check-boundaries.ts'), dir], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  check(
+    '边界 lint：.jsx 文件里的 import 越界与租户 GUC 名同样被拦，逐个点名文件',
+    run.status === 1 && ['src/shared/a.jsx:1', 'src/config/b.jsx:1', 'console/src/c.jsx:1'].every((f) => run.stderr.includes(f)),
+    `${run.status} ${run.stderr.slice(0, 300)}`,
+  );
+}
+
 // ================ DB 模式：配置源、启动顺序、导入导出（第 6 步） ================
 const { openTestDb, installSeededConfig, testConfigDeps, fakeLock } = await import('../db/testing.js');
 const cfg = await import('./source.js');
