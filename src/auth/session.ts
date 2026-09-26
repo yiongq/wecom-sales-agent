@@ -171,16 +171,23 @@ export async function login(input: {
     });
     // 校验的是读出来那一刻的哈希，scrypt 这一两百毫秒里 user-password 可能已经改了口令、吊销了会话，刚建的会话就漏了过去。
     // 建完再读一遍：哈希变了或者这人已经登录不了，删掉刚建的会话，按失败算。
-    // 命令行先改哈希后删会话，这里先建会话后读哈希，两头总有一头拦得住
+    // 命令行先改哈希后删会话，这里先建会话后读哈希，两头总有一头拦得住。
+    // 哈希变了不一定是改了口令：并发的另一次登录可能刚用 auth_password_rehash 把同一个口令升级成新参数。
+    // 所以拿输入的口令对现在的哈希再校验一遍，对不上或账号已不可用才算失败；多跑的这次 scrypt 只在这条少见的路上
     const current = await authLoginLookup(db, tenantId, email);
+    let rehashFrom = needsRehash ? found.passwordHash : null;
     if (current?.passwordHash !== found.passwordHash) {
-      await authSessionDelete(db, tokenHash);
-      logLoginFailure(email, ip, '校验期间口令被改了，或账号已不可用');
-      return null;
+      const again = current ? await verifyPassword(input.password, current.passwordHash) : null;
+      if (!current || !again?.ok) {
+        await authSessionDelete(db, tokenHash);
+        logLoginFailure(email, ip, '校验期间口令被改了，或账号已不可用');
+        return null;
+      }
+      rehashFrom = again.needsRehash ? current.passwordHash : null;
     }
     failByEmailIp.clear(pairKey);
     byEmail.undo();
-    if (needsRehash) await authPasswordRehash(db, tenantId, found.userId, found.passwordHash, await hashPassword(input.password));
+    if (rehashFrom) await authPasswordRehash(db, tenantId, found.userId, rehashFrom, await hashPassword(input.password));
     await withTenant(db, { tenantId, actor: { kind: 'user', userId: found.userId, name: found.displayName, ip: input.ip } }, (tx) =>
       writeAudit(tx, { action: 'auth.login', targetType: 'user', targetId: found.userId }),
     );

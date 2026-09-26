@@ -384,6 +384,47 @@ const loggedIn = await session.login({ ...base, ...OWNER });
     );
     check('改口令与登录并发：scrypt 期间口令被改、会话被吊销，这次登录失败，不留会话', raced === null && left === 0, `${revoked} ${left}`);
   }
+  // 口令升级与登录并发：登录还在跑 scrypt 时，另一次成功的登录把同一个口令升级成当前参数，这次登录不能因为哈希变了就回 401
+  {
+    const repo = await import('../db/repo/auth.js');
+    const { configRuntime } = await import('../config/source.js');
+    const REH = { email: 'rehash-race@example.com', password: 'rehash-password-1' };
+    await asPlatform(() =>
+      accounts.createUser(t.db, { tenantSlug: 'demo', email: REH.email, name: '升级', role: 'viewer', password: pw(REH.password) }),
+    );
+    const oldHash = await hashPassword(REH.password, { logN: 14 });
+    const newHash = await hashPassword(REH.password);
+    await asSuper(() => t.pg.query('update users set password_hash = $1 where lower(email) = $2', [oldHash, REH.email]));
+    const { tenantId } = configRuntime();
+    const userId = (await repo.authLoginLookup(t.db, tenantId, REH.email))!.userId;
+    session.__authTest.reset();
+    const logged: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]): void => void logged.push(a.map(String).join(' '));
+    let rehashed = false;
+    let won: Awaited<ReturnType<typeof session.login>> = null;
+    try {
+      const pending = session.login({ ...base, ip: '198.51.100.151', ...REH });
+      for (let i = 0; i < 2_000 && __passwordTest.running() === 0; i++) await new Promise((r) => setTimeout(r, 1));
+      // 这时登录已读完旧哈希、正在跑 scrypt：照并发那次成功登录的做法，按比较交换把旧哈希换成同一口令的新参数哈希
+      rehashed = await repo.authPasswordRehash(t.db, tenantId, userId, oldHash, newHash);
+      won = await pending;
+    } finally {
+      console.warn = warn;
+    }
+    const after = await asSuper(
+      async () => (await t.pg.query<{ h: string }>('select password_hash as h from users where lower(email) = $1', [REH.email])).rows[0]!.h,
+    );
+    check(
+      '口令升级与登录并发：scrypt 期间哈希被升级成同一口令，这次登录照样成功，会话有效，不打失败日志',
+      rehashed &&
+        won !== null &&
+        (await session.resolveSession(won.token, base.now + 60_000)) !== null &&
+        after === newHash &&
+        logged.length === 0,
+      `${rehashed} ${won !== null} ${after === newHash} ${logged.join(' | ')}`,
+    );
+  }
   const s2 = (await session.login({ ...base, email: VIEWER.email, password: 'viewer-password-2' }))!;
   const disabled = await asPlatform(() => accounts.disable(t.db, { tenantSlug: 'demo', email: VIEWER.email }));
   check(
