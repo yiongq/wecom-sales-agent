@@ -330,12 +330,34 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     ['id 不合 code 规则', { ...base, id: 'R_Upper' }],
     ['客群不在五类里', { ...base, segments: ['学生'] }],
     ['overseas 不是布尔', { ...base, overseas: 'no' }],
+    ['缺 overseas（表单上没勾的框不能存成缺）', Object.fromEntries(Object.entries(base).filter(([k]) => k !== 'overseas'))],
+    ['priceFrom 是 0', { ...base, priceFrom: 0 }],
+    ['maxAltitude 是负数', { ...base, maxAltitude: -1 }],
+    ['maxAltitude 不是整数', { ...base, maxAltitude: 3500.5 }],
+    ['segments 为空', { ...base, segments: [] }],
+    ['highlights 为空', { ...base, highlights: [] }],
+    ['标题是空串', { ...base, title: '' }],
+    ['inclusions 为空', { ...base, inclusions: [] }],
+    ['exclusions 为空', { ...base, exclusions: [] }],
+    ['别名里有空串', { ...base, aliases: [''] }],
+    ['强度档位不在三档里', { ...base, intensity: { level: '很累', hardest: '行程没写' } }],
+    ['id 里有 code 规则以外的字符（末尾也要锚住）', { ...base, id: 'r-ok_X' }],
+    ['id 超过 64 位', { ...base, id: `r${'a'.repeat(64)}` }],
   ];
   for (const [what, r] of rejects) check(`schema：${what}被拒`, !RouteSchema.safeParse(r).success);
   check('schema：全年适游不需要月份', RouteSchema.safeParse({ ...base, bestSeason: '全年适游' }).success);
+  check('schema：id 正好 64 位可以', RouteSchema.safeParse({ ...base, id: `r${'a'.repeat(63)}` }).success);
   const h0 = freshHotels()[0]!;
-  check('schema：酒店有未知键被拒', !HotelSchema.safeParse({ ...h0, breakfast: true }).success);
-  check('schema：nightlyFrom 是字符串被拒', !HotelSchema.safeParse({ ...h0, nightlyFrom: '2000' }).success);
+  const hotelRejects: [string, Record<string, unknown>][] = [
+    ['有未知键', { ...h0, breakfast: true }],
+    ['nightlyFrom 是字符串', { ...h0, nightlyFrom: '2000' }],
+    ['nightlyFrom 不是整数', { ...h0, nightlyFrom: 2000.5 }],
+    ['nightlyFrom 是 0', { ...h0, nightlyFrom: 0 }],
+    ['highlights 为空', { ...h0, highlights: [] }],
+    ['名称是空串', { ...h0, name: '' }],
+    ['id 不合 code 规则', { ...h0, id: 'H_Upper' }],
+  ];
+  for (const [what, h] of hotelRejects) check(`schema：酒店${what}被拒`, !HotelSchema.safeParse(h).success);
 }
 
 // ---------------- 产品库：锁定字段 ----------------
@@ -366,6 +388,18 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   );
   check('锁定：只换键序不算改', lockedFieldChanges('route', 'active', r, Object.fromEntries(Object.entries(r).toReversed())).length === 0);
   check('锁定：draft 只锁 id', changed({ priceFrom: 1, title: 'x' }, 'draft') === '' && changed({ id: 'r-other' }, 'draft') === 'id');
+  check('锁定：active 改 id 也被点名', changed({ id: 'r-other' }) === 'id');
+  const noDomestic = tags.filter((t) => t !== '国内');
+  check(
+    '锁定：「国内」按整项比，不按子串（删掉「国内」只留「国内游」算改，只加「国内游」不算）',
+    lockedFieldChanges(
+      'route',
+      'active',
+      { ...r, tags: [...noDomestic, '国内', '国内游'] },
+      { ...r, tags: [...noDomestic, '国内游'] },
+    ).join(',') === 'tags:国内' &&
+      lockedFieldChanges('route', 'active', { ...r, tags: noDomestic }, { ...r, tags: [...noDomestic, '国内游'] }).length === 0,
+  );
   const h = freshHotels()[0]!;
   check(
     '锁定：酒店 active 改 nightlyFrom 被点名、改 stars 不算',
@@ -373,9 +407,13 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   );
   check(
     '锁定：锁定表与 spec 一致',
-    LOCKED_WHEN_ACTIVE.route.length === 13 &&
+    LOCKED_WHEN_ACTIVE.route.join(',') ===
+      'id,title,destination,days,priceFrom,bestSeason,segments,aliases,maxAltitude,overseas,tags:国内,inclusions,exclusions' &&
       LOCKED_WHEN_ACTIVE.hotel.join(',') === 'id,name,destination,nightlyFrom' &&
-      ALWAYS_LOCKED.join(',') === 'id',
+      ALWAYS_LOCKED.join(',') === 'id' &&
+      ALWAYS_LOCKED.every(
+        (f) => (LOCKED_WHEN_ACTIVE.route as readonly string[]).includes(f) && (LOCKED_WHEN_ACTIVE.hotel as readonly string[]).includes(f),
+      ),
   );
 }
 
@@ -387,6 +425,10 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     'mergeKeyOrder：原有的键按旧序、新增的追加在后、删掉的去掉，嵌套对象与数组元素逐层递归',
     JSON.stringify(mergeKeyOrder(prev, next)) === '{"b":{"x":6,"y":5,"w":7},"c":[{"p":4,"q":3},{"z":1}],"d":1}',
     JSON.stringify(mergeKeyOrder(prev, next)),
+  );
+  check(
+    'mergeKeyOrder：新增的几个键按它们在新对象里的顺序追加',
+    Object.keys(mergeKeyOrder({ a: 1 } as Record<string, number>, { a: 1, x: 1, y: 2 })).join(',') === 'a,x,y',
   );
   const r = freshRoutes()[1]!;
   const expectOnly = (patched: Record<string, unknown>, field: string, value: unknown): boolean =>
@@ -469,6 +511,11 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   check(
     '冻结：对 loadHotels() 原地 sort 抛 TypeError',
     assignThrows(() => void loadHotels().sort((a, b) => a.nightlyFrom - b.nightlyFrom)),
+  );
+  check(
+    '冻结：给 loadHotels()[0].nightlyFrom 赋值、往它的 tags 里 push 都抛 TypeError',
+    assignThrows(() => ((loadHotels()[0] as { nightlyFrom: number }).nightlyFrom = 1)) &&
+      assignThrows(() => void (loadHotels()[0]!.tags as string[]).push('x')),
   );
   check(
     '冻结：往 loadRoutes() 里 push 抛 TypeError',

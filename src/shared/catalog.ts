@@ -18,7 +18,9 @@ const ItineraryDay = z.strictObject({ day: int.positive(), title: text, detail: 
 /**
  * 所有已知键都声明（含 overseas），顶层和嵌套对象一律 strict，未知键报错。不用 coerce：'1000' 不是 1000。
  * 可选的字符串与数组不接受空值，空的可选字段就是键不存在。bestSeason 必须能解析出至少一个月份，或者含「全年」。
- * itinerary 至少一项、条数等于 days，天号从 1 起连续（方案书与行程书按它排）
+ * itinerary 至少一项、条数等于 days，天号从 1 起连续（方案书与行程书按它排）。
+ * overseas 必填：缺它时引擎退回看 tags 里有没有「国内」（src/tools.ts 的 foreign），表单上没勾的框看着像「否」、存下来却是缺，
+ * 国内线路漏了「国内」标签就被当成境外推荐；它上架后锁定，错了只能停机用 catalog-fix 改。文件模式不过 schema，Route 类型里仍是可选
  */
 export const RouteSchema: z.ZodType<Route> = z
   .strictObject({
@@ -41,7 +43,7 @@ export const RouteSchema: z.ZodType<Route> = z
     itinerary: z.array(ItineraryDay).min(1),
     inclusions: texts.min(1).optional(),
     exclusions: texts.min(1).optional(),
-    overseas: z.boolean().optional(),
+    overseas: z.boolean(),
   })
   .superRefine((r, ctx) => {
     if (r.itinerary.length !== r.days) {

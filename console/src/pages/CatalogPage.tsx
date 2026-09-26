@@ -30,10 +30,19 @@ function schemaFor(kind: CatalogKind): RJSFSchema {
   return z.toJSONSchema(CATALOG_SCHEMAS[kind], { target: 'draft-7', io: 'input' }) as RJSFSchema;
 }
 
-/** 新条目的初值：必填的数组先给空数组（tags 可以为空，但键得在）；其余字段留空，没填就是键不存在 */
+/**
+ * 新条目的初值：必填的数组先给空数组（tags 可以为空，但键得在）；必填的布尔给 false，
+ * 让存下来的值就是复选框显示的样子（没勾的框在 antd 里显示成「否」，键却不存在）。其余字段留空，没填就是键不存在
+ */
 function blankFor(schema: RJSFSchema): Payload {
   const props = (schema.properties ?? {}) as Record<string, RJSFSchema>;
-  return Object.fromEntries((schema.required ?? []).filter((k) => props[k]?.type === 'array').map((k) => [k, []]));
+  const initial = (k: string): [string, unknown][] => {
+    const type = props[k]?.type;
+    if (type === 'array') return [[k, []]];
+    if (type === 'boolean') return [[k, false]];
+    return [];
+  };
+  return Object.fromEntries((schema.required ?? []).flatMap(initial));
 }
 
 /** 锁定字段只读并注明原因；readOnly（非编辑角色、匿名）整张表单只读 */
