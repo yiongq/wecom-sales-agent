@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 按 git tag 部署：git archive <tag> → 归档目录里跑四个门禁 → 查服务器 .env → rsync → 服务器上 build →
-# 换容器 → 健康检查（revision 必须等于这个 tag），失败回滚到 :prev。
+# 换容器（docker compose：先拉起 db、跑迁移，再换 app）→ 健康检查（revision 必须等于这个 tag），失败回滚到 :prev（不跑迁移）。
 # 线上跑的每一版都是一个提交过、过了四个门禁的 tag；工作区里未提交的改动永远上不了线。
-# 服务器上的 .env（智谱 key / 企微凭据）与 var/（会话、订单、客服二维码）不受影响：
-# rsync 既不发送也不删除它们，容器把 var/ 挂卷进去。
+# 服务器上的 .env*（应用、db、migrate、platform 各一份，见 deploy/compose.yml 开头）与 var/（会话、订单、客服二维码）不受影响：
+# rsync 既不发送也不删除它们，app 容器把 var/ 挂卷进去。数据库在 compose 的数据卷里，部署不碰它。
 #
 # 用法：bash deploy.sh <tag>        （tag 必须是本地已有的 refs/tags/<tag>；分支名、提交号、~1 这类写法都不收）
 # 可用环境变量覆盖：SERVER / REMOTE_DIR / HOST_PORT / NAME（优先于 .deploy.env）。
@@ -63,22 +63,20 @@ if [[ "$NAME" != "$LIVE_NAME" || "$REMOTE_DIR" != "$LIVE_DIR" || "$HOST_PORT" !=
 fi
 echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}$([[ $SIDE == 1 ]] && echo '（旁路实例）')"
 
-# 新容器与回滚容器共用同一套参数，只差镜像 tag。
-# -p 绑 127.0.0.1：只让本机的 Caddy 反代进来。绑 0.0.0.0 时 docker-proxy 会绕过
-# ufw 把 3210 直接暴露在公网明文 HTTP 上（后台免密时等于全网可读客户对话）。
-# -e PORT=3200 放在 --env-file 之后强制生效：端口映射/HEALTHCHECK 都写死 3200，
-# .env 里误改 PORT 会让容器"活着但外部完全不可达"，极难排查。
-RUN_OPTS="-d --name ${NAME} -p 127.0.0.1:${HOST_PORT}:3200 -v ${REMOTE_DIR}/var:/app/var --env-file ${REMOTE_DIR}/.env -e PORT=3200 --restart unless-stopped"
+# 容器的参数（只绑 127.0.0.1、PORT 写死 3200、var/ 挂卷、停机宽限 10 秒）都在 deploy/compose.yml 的 app 服务里。
+# 项目名、容器名用 NAME，宿主端口用 HOST_PORT：旁路实例因此有自己的 compose 项目、数据库卷和容器名，碰不到线上。
+# 新版本与回滚只差 APP_IMAGE
+compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
 
 # 1) 归档：只取 tag 里提交过的文件。目录权限改成 755：rsync -a 会把源目录的权限带到 REMOTE_DIR 上，mktemp 给的是 700
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 chmod 755 "$BUILD_DIR"
-echo "[1/6] git archive ${TAG} -> ${BUILD_DIR}"
+echo "[1/7] git archive ${TAG} -> ${BUILD_DIR}"
 git archive "refs/tags/${TAG}" | tar -x -C "$BUILD_DIR"
 
 # 2) 四个门禁在归档目录里跑：查的是要部署的这一版，不是本地工作区。任何一个失败就中止，服务器上什么都不动
-echo "[2/6] 归档目录里安装依赖并跑四个门禁"
+echo "[2/7] 归档目录里安装依赖并跑四个门禁"
 if ! (cd "$BUILD_DIR" && pnpm install --frozen-lockfile >/dev/null && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test); then
   echo "错误：${TAG} 没过四个门禁，中止部署（服务器上什么都没动）。" >&2
   exit 1
@@ -87,14 +85,17 @@ fi
 # 3) 先查服务器 .env 再同步（只读）。运行时不设 profile 会按 demo 跑，生产实例忘了配就成了 demo
 # （匿名可付款、「重置」连已付订单一起删），所以防线放在这里。按 docker --env-file 的读法取值：
 # 行首空白去掉、按第一个 = 分开、值原样（只去行尾 CR）、同名以最后一行为准——值带引号或空格，容器会拒绝启动
-echo "[3/6] 检查 ${SERVER}:${REMOTE_DIR}/.env"
+echo "[3/7] 检查 ${SERVER}:${REMOTE_DIR}/.env"
 if ! ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$SIDE" <<'CHECK'; then
 set -u
 env_file="$1/.env"
-if [ ! -f "$env_file" ]; then
-  echo "服务器缺 $env_file" >&2
-  exit 1
-fi
+# compose 的 db、migrate 各有自己的 env 文件（app 的 .env 里不能有 owner 与超级用户的口令）；platform 的只有跑命令行时才用
+for f in "$env_file" "$1/.env.db" "$1/.env.migrate"; do
+  if [ ! -f "$f" ]; then
+    echo "服务器缺 $f（写法见 deploy/compose.yml 开头）" >&2
+    exit 1
+  fi
+done
 val=$(awk '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } /^DEPLOY_PROFILE=/ { v = substr($0, 16) } END { print v }' "$env_file")
 case "$val" in
   demo | prod) ;;
@@ -105,20 +106,20 @@ if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_(CORP_ID|APP_SECRET|KF_OPEN_KFID
   exit 1
 fi
 CHECK
-  echo "错误：服务器 .env 没过检查，中止部署（服务器上什么都没动）。新实例先创建 .env（参考 .env.example，至少配 LLM_API_KEY、ADMIN_PASS 与 DEPLOY_PROFILE）。" >&2
+  echo "错误：服务器 .env 没过检查，中止部署（服务器上什么都没动）。新实例先创建 .env（参考 .env.example，至少配 LLM_API_KEY、ADMIN_PASS 与 DEPLOY_PROFILE），以及 .env.db、.env.migrate（见 deploy/compose.yml 开头）。" >&2
   exit 1
 fi
 
 # 4) 同步。--checksum：git archive 把所有文件的修改时间都设成提交时间，按「大小 + 修改时间」可能漏掉改过的文件。
 # P 规则保护服务器上本来就有的东西不被 --delete 删掉：.env 与它的备份、var/、日志、万一有的 .git/
-echo "[4/6] rsync ${TAG} -> ${SERVER}:${REMOTE_DIR}（不动 .env* / var / *.log / .git）"
+echo "[4/7] rsync ${TAG} -> ${SERVER}:${REMOTE_DIR}（不动 .env* / var / *.log / .git）"
 rsync -az --checksum --delete \
   --filter='P /.env*' --filter='P /var/' --filter='P *.log' --filter='P /.git/' \
   --exclude='node_modules' --exclude='/.env' --exclude='/var/' \
   "$BUILD_DIR/" "${SERVER}:${REMOTE_DIR}/"
 
 # 5) 构建，旧容器此时还在跑。失败就中止：线上照旧，只多了一个 :prev 标签
-echo "[5/6] 服务器上构建镜像（revision ${TAG}），并用新镜像试读 .env"
+echo "[5/7] 服务器上构建镜像（revision ${TAG}），并用新镜像试读 .env"
 if ! ssh "${SERVER}" "set -e; cd ${REMOTE_DIR}
   # var/ 必须归容器内 node(1000) 所有：root 属主时应用写不进去，
   # 会话/订单只活在内存、重启即丢（且表面看不出任何异常）
@@ -150,14 +151,26 @@ health_ok() {
   return 1
 }
 
-# 6) 换容器。必须走 SIGTERM 而不是 docker rm -f（SIGKILL）：进程收到 SIGTERM 会先等进行中的
-# 企微回复发完（store.ts 停机钩子，最多 8s）再落盘退出，直接杀会让处理到一半的消息
-# 靠重启后重放兜底、丢掉去抖窗口里的会话变更。-t 10 必须大于那 8s，两处要一起改
-echo "[6/6] 换容器并做健康检查（http://127.0.0.1:${HOST_PORT}/healthz via ssh，revision 应为 ${TAG}）"
-# set -e：新容器的 docker run 失败时 ssh 就报失败，直接去回滚，不再白等一整轮健康检查（那段时间线上是断的）
-if ssh "${SERVER}" "set -e; docker stop -t 10 ${NAME} 2>/dev/null || true
-  docker rm ${NAME} 2>/dev/null || true
-  docker run ${RUN_OPTS} ${NAME} >/dev/null
+# 6) 迁移，旧容器此时还在跑。compose run 顺带拉起 db（首次起库时 roles.sh 建角色和库）。迁移一次跑完、失败整批回退，
+# 所以失败就中止：线上旧容器照常，不走下面的回滚
+echo "[6/7] 迁移（顺带拉起 db）"
+if ! ssh "${SERVER}" "set -e; $(compose "${NAME}:latest") run --rm migrate"; then
+  echo "错误：迁移失败，中止部署（旧容器照常运行，库没有变化）。" >&2
+  exit 1
+fi
+
+# 7) 换容器：compose 按 stop_grace_period 10s 发 SIGTERM 换掉 app（依赖的 migrate 会再跑一遍，已是最新，空操作）。
+# 必须走 SIGTERM 而不是 SIGKILL：进程收到 SIGTERM 会先等进行中的企微回复发完（store.ts 停机钩子，最多 8s）再落盘退出，
+# 直接杀会让处理到一半的消息靠重启后重放兜底、丢掉去抖窗口里的会话变更。10s 必须大于那 8s，两处要一起改。
+# 第一次换成 compose 时，原来 docker run 起的同名容器不归 compose 管（没有 compose 的项目标签），先按同样的方式停掉删掉
+echo "[7/7] 换容器并做健康检查（http://127.0.0.1:${HOST_PORT}/healthz via ssh，revision 应为 ${TAG}）"
+# set -e：compose up 失败时 ssh 就报失败，直接去回滚，不再白等一整轮健康检查
+if ssh "${SERVER}" "set -e
+  if docker container inspect ${NAME} >/dev/null 2>&1 &&
+    [ -z \"\$(docker container inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}}' ${NAME})\" ]; then
+    docker stop -t 10 ${NAME} && docker rm ${NAME}
+  fi
+  $(compose "${NAME}:latest") up -d app
   docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG"; then
   echo "OK. ${TAG} 部署成功。"
   exit 0
@@ -165,7 +178,7 @@ fi
 echo "错误：换容器或健康检查失败——容器可能起来即崩。最近日志：" >&2
 ssh "${SERVER}" "docker logs --tail 40 ${NAME}" >&2 || true
 
-# 自动回滚到 :prev。新容器在 --restart unless-stopped 下只会反复崩溃重启，
+# 自动回滚到 :prev（--no-deps，不跑迁移：迁移只增不删，旧镜像的迁移是新镜像的子集）。新容器在 restart: unless-stopped 下只会反复崩溃重启，
 # 不回滚的话企微回调全部 502，要一直停摆到有人手工修好重新部署。
 # 无论回滚成败都以非零退出：这次部署本身是失败的，不能让调用方当成功。
 echo "[rollback] 回滚到上一个镜像 ${NAME}:prev" >&2
@@ -174,9 +187,7 @@ if ! ssh "${SERVER}" "docker image inspect ${NAME}:prev >/dev/null 2>&1"; then
   exit 1
 fi
 if ssh "${SERVER}" "set -e
-  docker stop -t 10 ${NAME} 2>/dev/null || true
-  docker rm ${NAME} 2>/dev/null || true
-  docker run ${RUN_OPTS} ${NAME}:prev" >&2 && health_ok; then
+  $(compose "${NAME}:prev") up -d --no-deps app" >&2 && health_ok; then
   echo "已回滚到 ${NAME}:prev（/healthz 的 revision 是上一版的 tag），服务恢复；${TAG} 未上线，请排查上面的日志后重新部署。" >&2
 else
   echo "错误：回滚后健康检查仍失败，服务当前不可用，需立即人工处理！" >&2

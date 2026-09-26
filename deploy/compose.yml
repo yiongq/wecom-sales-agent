@@ -1,15 +1,24 @@
-# 01 spec「构建与部署 · compose」。现在只有 db 与 migrate，app 与 platform 第 16 步补上。
-#   APP_IMAGE=<镜像> docker compose -f deploy/compose.yml run --rm migrate   # 顺带拉起 db，等它健康后跑迁移
+# 01 spec「构建与部署 · compose」。平时由 deploy.sh 调用：
+#   APP_IMAGE=<镜像> docker compose -f deploy/compose.yml up -d app        # 依次拉起 db、跑完 migrate、再换 app
+#   APP_IMAGE=<:prev> docker compose -f deploy/compose.yml up -d --no-deps app   # 回滚：不跑 migrate（旧镜像的迁移是新镜像的子集）
+# 命令行（一律 --rm）：
+#   docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/import-config.ts --tenant <slug>      # import / export / catalog-fix
+#   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant <slug> …  # 租户、账号、成员
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
 # deploy.sh 的 rsync 保护规则（P /.env*）都已覆盖这个命名，.dockerignore 也排除了它们。
 #   .env.db       POSTGRES_PASSWORD、AGENT_OWNER_PASSWORD、AGENT_APP_PASSWORD、AGENT_PLATFORM_PASSWORD；可选 AGENT_DB（缺省 agent）。
 #                 不要设 POSTGRES_DB：entrypoint 会以超级用户为属主先建出那个库，roles.sh 见库已存在就跳过，属主就错了。
 #   .env.migrate  DATABASE_OWNER_URL=postgres://agent_owner:<口令>@db:5432/agent
+#   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent
+#   .env          应用自己的 env（LLM key、企微、ADMIN_PASS、DEPLOY_PROFILE……）；DB 模式再加 CONFIG_SOURCE=db、
+#                 DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent、DEFAULT_TENANT_SLUG。不能有 owner、platform
+#                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）
 # 口令进连接串时，URL 保留字符（@ : / ? # %）要百分号编码；生成时只用字母数字最省事。
 # 轮换口令见 db-init/roles.sh 开头。
 #
-# 项目名固定，数据卷就不随目录名变（wecom-sales-agent_db-data）。同一台机器再起一套（旁路实例）要用 -p 换名。
+# 项目名固定，数据卷就不随目录名变（wecom-sales-agent_db-data）。同一台机器再起一套（旁路实例）要用 -p 换名，
+# 并用 APP_CONTAINER、HOST_PORT 换掉容器名与宿主端口（deploy.sh 按 NAME、HOST_PORT 传进来）。
 name: wecom-sales-agent
 
 services:
@@ -37,6 +46,40 @@ services:
     command: ['node', '--import', 'tsx', 'src/db/migrate.ts']
     restart: 'no'
     # 镜像的 HEALTHCHECK 探的是 /healthz，一次性任务没有
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    image: ${APP_IMAGE:?设置 APP_IMAGE 为要部署的应用镜像}
+    # 与 compose 之前 deploy.sh 用 docker run 起的容器同名：:prev 取「正在跑的容器」的镜像，两种起法都按这个名字找
+    container_name: ${APP_CONTAINER:-wecom-sales-agent}
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      # 端口映射与 HEALTHCHECK 都写死 3200：.env 里误改 PORT 会让容器活着但外部不可达
+      PORT: '3200'
+    # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
+    ports:
+      - '127.0.0.1:${HOST_PORT:-3210}:3200'
+    # var/ 是会话、订单、企微 cursor 的唯一数据源，必须挂卷；必须归容器内 node(1000) 所有（deploy.sh 会 chown）
+    volumes:
+      - ../var:/app/var
+    # 大于停机钩子等在途企微回复的 8 秒：SIGTERM 之后先发完、落盘再退
+    stop_grace_period: 10s
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # 平台命令行（建租户、账号、成员），平时不启动：docker compose run --rm platform node --import tsx src/cli/<name>.ts …
+  platform:
+    image: ${APP_IMAGE:?设置 APP_IMAGE 为要部署的应用镜像}
+    profiles: [cli]
+    env_file: ../.env.platform
     healthcheck:
       disable: true
     depends_on:
