@@ -6,6 +6,7 @@ import { catalogCsvColumns } from '../../../src/shared/catalog-csv.js';
 import type { CatalogKind } from '../../../src/shared/catalog.js';
 import type { ApiError } from '../../../src/shared/console-api.js';
 import { api, describe, HttpError, unwrap } from '../api.js';
+import { decodeCsvFile } from '../csvFile.js';
 
 export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () => Promise<void> }) {
   const { message } = App.useApp();
@@ -24,8 +25,17 @@ export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () 
     );
   }
 
+  // 不用 file.text()：它把非 UTF-8 的字节静默换成替换符（见 csvFile.ts）
   const readFile = async (file: File | undefined): Promise<void> => {
-    if (file) setCsv(await file.text());
+    if (!file) return;
+    setRows(null);
+    setError(null);
+    try {
+      setCsv(decodeCsvFile(new Uint8Array(await file.arrayBuffer())));
+    } catch (e) {
+      setCsv('');
+      setError(describe(e));
+    }
   };
   const submit = async (): Promise<void> => {
     setBusy(true);

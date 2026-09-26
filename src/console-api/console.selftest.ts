@@ -1352,6 +1352,15 @@ check(
       ]),
   );
   check('CSV 解析：引号没闭合就抛', (await errName(Promise.resolve().then(() => parseCsv('a,"b')))) === 'CsvSyntaxError');
+  // console 读选中的文件：按 UTF-8 严格解码。GBK 的文件（中文 Windows 上 Excel 默认另存的 CSV）不能被静默换成替换符再建成乱码草稿
+  const { decodeCsvFile } = await import('../../console/src/csvFile.js');
+  const sanya = `id,name${NL}h-1,三亚海景酒店${NL}`;
+  check('CSV 文件：UTF-8（带 BOM）照常解出，BOM 去掉', decodeCsvFile(Buffer.from(`${BOM}${sanya}`, 'utf8')) === sanya);
+  const gbk = Uint8Array.from([...Buffer.from(`id,name${NL}h-1,`), 0xc8, 0xfd, 0xd1, 0xc7, 0x0a]); // 「三亚」的 GBK 编码
+  check(
+    'CSV 文件：不是 UTF-8（GBK）→ CsvEncodingError，不换成替换符照收',
+    (await errName(Promise.resolve().then(() => decodeCsvFile(gbk)))) === 'CsvEncodingError',
+  );
 
   const hotels = async (): Promise<Body[]> => (await call('GET', '/catalog/hotel', O)).body.items as Body[];
   const before = await hotels();
