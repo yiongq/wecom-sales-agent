@@ -60,6 +60,16 @@ export const PatchItemBody = z.strictObject({
   unset: z.array(z.string().min(1).max(64)).max(64).optional(),
 });
 
+/** 会话只读列表：offset 分页，limit ≤ 100 */
+export const ConvQuery = z.object({
+  limit: intParam(100).optional(),
+  offset: z
+    .string()
+    .regex(/^\d{1,9}$/)
+    .transform(Number)
+    .optional(),
+});
+
 export const AuditQuery = z.object({
   limit: intParam(100).optional(),
   /** 上一页最后一行的 id */
@@ -214,6 +224,22 @@ export interface AnonCatalogItem {
   kind: CatalogKind;
   code: string;
   payload: Route | Hotel;
+}
+
+/** 会话只读列表的一行：只投影这几个字段，不带消息正文和客户画像 */
+export interface ConversationRow {
+  id: string;
+  channel: string;
+  stage: string;
+  handedOver: boolean;
+  messageCount: number;
+  updatedAt: string;
+}
+
+export interface ConversationPage {
+  items: ConversationRow[];
+  /** 可列的会话总数（不含 sim- 访客会话） */
+  total: number;
 }
 
 export interface AuditEntryView {

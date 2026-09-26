@@ -67,6 +67,7 @@ import {
   AuditQuery,
   CatalogItemParam,
   CatalogKindParam,
+  ConvQuery,
   CreateItemBody,
   LoginBody,
   PatchItemBody,
@@ -81,6 +82,7 @@ import {
   type ApiError,
   type AuditPage,
   type CatalogItem,
+  type ConversationPage,
   type DraftCheck,
   type Me,
   type Role,
@@ -91,6 +93,7 @@ import {
 } from '../shared/console-api.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
+import { listSessions } from '../store.js';
 import { safeEqual } from '../wecom-crypto.js';
 
 type ConsoleEnv = { Variables: { user: AuthedUser | null; token: string | null } };
@@ -166,8 +169,10 @@ const canRead: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
   if (c.var.user) return next();
   return profile().flags.anon_readonly_admin ? lookupLimit(c, next) : unauthorized(c);
 };
-/** 只给成员：版本历史、单个版本（会话只读列表在第 13 步） */
+/** 只给成员：版本历史、单个版本 */
 const signedIn: MiddlewareHandler<ConsoleEnv> = async (c, next) => (c.var.user ? next() : unauthorized(c));
+/** 会话只读列表：所有成员都能看，匿名（demo 也一样）401 */
+const canSeeCustomers = signedIn;
 /** 改 SOP、发布、回滚、上新、编辑、上架，以及看审计：只有 owner / admin */
 const ownerOrAdmin: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
   const { user } = c.var;
@@ -386,6 +391,28 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return c.json(item, 200);
     },
   )
+
+  // ---------------- 会话只读列表 ----------------
+  // 读现有的文件 store：按 (updatedAt desc, id) 排序、offset 分页，每条只投影几个字段，不把 store 里的活对象原样返回。
+  // 不列 sim- 会话：演示访客会话凭 id 就能读全文，id 本身就是凭据。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移
+  .get('/conversations', canSeeCustomers, zValidator('query', ConvQuery, badRequest), (c) => {
+    const { limit = 20, offset = 0 } = c.req.valid('query');
+    const all = listSessions()
+      .filter((s) => !s.id.startsWith('sim-'))
+      .toSorted((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const page: ConversationPage = {
+      total: all.length,
+      items: all.slice(offset, offset + limit).map((s) => ({
+        id: s.id,
+        channel: s.channel,
+        stage: s.stage,
+        handedOver: s.handedOver,
+        messageCount: s.messages.length,
+        updatedAt: new Date(s.updatedAt).toISOString(),
+      })),
+    };
+    return c.json(page, 200);
+  })
 
   // ---------------- 审计 ----------------
   .get('/audit', canAudit, zValidator('query', AuditQuery, badRequest), async (c) => {

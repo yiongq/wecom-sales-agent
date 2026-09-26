@@ -57,6 +57,7 @@ export function Shell() {
         </Link>
       ),
     },
+    ...(v.kind === 'member' ? [{ key: '/conversations', label: <Link to="/conversations">会话</Link> }] : []),
     ...(canEdit(v) ? [{ key: '/audit', label: <Link to="/audit">审计日志</Link> }] : []),
   ];
   const selected = items.map((i) => i.key).filter((k) => path.startsWith(`/console${k}`));
