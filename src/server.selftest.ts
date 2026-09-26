@@ -617,6 +617,16 @@ const jsonBody = (v: unknown) => {
     check(`POST /api/chat 带 wecom: 前缀的会话 id 返回 400（${name}）`, res.status === 400, String(res.status));
     check(`POST /api/chat 带 wecom: 前缀：${name}会话不被新建或改动`, JSON.stringify(getSession(sid)) === before);
   }
+  // 不只是 wecom:：凡是不以 sim- 开头（或 sim- 后面不合格式）的 id 都不收
+  for (const sid of ['abc-123', 'SIM-upper', 'simulator-1', `sim-${'x'.repeat(65)}`, 'sim-a/../b', 'sim-']) {
+    const b = jsonBody({ sessionId: sid, text: '你好' });
+    const res = await app.request('/api/chat', { method: 'POST', body: b.body, headers: { 'x-forwarded-for': freshIp(), ...b.headers } });
+    check(
+      `POST /api/chat 带其他前缀或格式不对的会话 id 返回 400（${sid.slice(0, 16)}）`,
+      res.status === 400 && !getSession(sid),
+      String(res.status),
+    );
+  }
 }
 
 // ---------------- 付款接口：已取消的单不能付，已付款的单不重复推送 ----------------
