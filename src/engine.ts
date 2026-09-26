@@ -510,7 +510,8 @@ async function deterministicRecommend(dest: string, session: Session): Promise<s
 
 // 客户直接追问身份。诚实回答是硬要求，但模型在「不要主动提 AI」的约束下常把这题绕过去
 // （实测 3 问只承认 1 次），所以不赌模型：命中就由引擎确定性地补上承认句。
-// 注意「转人工/找真人」在此之前已被转人工安全网（isHandoffIntent）拦截，不会误入这里。
+// 不经过模型的确定性回复（转人工安全网、重发支付链接）也要补：此前兜底只在模型路径末尾，
+// 「你是机器人吧？我要投诉」「你是真人吗？转人工」都转了人工，回复里却没有一个 AI 字样。
 // 「真人」后面跟服务角色（真人导游/真人管家…）问的是配不配真人服务，不是在质疑 AI 身份。
 // 不排除的话，「你们有真人导游吗」会被强行加一句「我是 AI 旅行顾问」当开头，答非所问。
 const REAL_PERSON = '真人(?!导游|管家|司机|领队|向导|陪同|跟团|带团|服务)';
@@ -519,6 +520,11 @@ const IDENTITY_QUESTION = new RegExp(
     `|(?:${REAL_PERSON}|机器人|AI|ai)\\s*(?:吗|还是|吧|嘛)`,
 );
 const IDENTITY_ANSWER = '我是云途定制旅行的 AI 旅行顾问，7×24 在线为您服务～';
+/** 客户这句在问身份、回复里又没承认：把承认句放在最前面 */
+function answerIdentity(text: string, reply: string): string {
+  if (!IDENTITY_QUESTION.test(text) || /AI|ai\b|人工智能/.test(reply)) return reply;
+  return reply ? IDENTITY_ANSWER + '\n' + reply : IDENTITY_ANSWER;
+}
 
 // 行程定制的空头承诺护栏。
 // 系统只能按产品库的**标准线路**出方案书，没有任何重排行程的能力：
@@ -1671,6 +1677,11 @@ function statedPastDate(text: string): string | null {
 // 明确的转人工意图（用于转人工安全网）。只匹配显式诉求，不含单纯「太贵」这类异议。
 // 注意用词要足够特异：曾用 /我要退/ 误伤「我要退休了想出去玩」，收紧为「退款/退订/退钱」
 const HANDOFF_REQUEST = /转人工|要人工|人工客服|真人客服|找真人|人工顾问|要退款|要退订|要退钱|退我钱/;
+// 单独一句「人工」「真人」「要真人」只可能是在要人（欢迎语就教客户回「人工」），但这两个词放进句子里多半是别的意思：
+// 「你是真人吗」「你是人工智能吗」是身份问题（走身份兜底），「有真人导游吗」问的是服务角色，「人工湖」「人工费」是旅行话题。
+// 所以光秃秃的这两个词只认整句。「找人工」「接人工」「人工服务」也一样：放进句子里是「找人工沙滩」
+// 「接人工岛的船」「人工服务费」，当子串认的话，客户问一句旅行话题 AI 就永久闭嘴
+const HANDOFF_BARE = /^\s*我?(?:要|找|接)?(?:人工|真人)(?:服务)?\s*[!！。.~～]*\s*$/;
 // 投诉/指控类词只在陈述句里才算。小红书引流来的新客户开口常是「靠谱吗，不会是骗人的吧」
 // 「看到有差评是真的吗」——那是在打消疑虑，该好好答，不是投诉。此前一律命中：系统为一次
 // 不存在的「不好的体验」道歉、AI 永久闭嘴，线索只能等人工发现。
@@ -1701,7 +1712,7 @@ function isComplaint(text: string): boolean {
     );
 }
 function isHandoffIntent(text: string): boolean {
-  return HANDOFF_REQUEST.test(text) || isComplaint(text);
+  return HANDOFF_REQUEST.test(text) || HANDOFF_BARE.test(text) || isComplaint(text);
 }
 
 // ---------- 转人工要和客户的话、回复里的话对得上 ----------
@@ -3274,7 +3285,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
   if (isHandoffIntent(text)) {
     enterHandoff(session);
-    const reply = handoffReply(session, text);
+    const reply = answerIdentity(text, handoffReply(session, text));
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
     return { text: reply, stage: 'handoff', handoff: true };
@@ -3283,9 +3294,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 客户要重发支付链接：确定性地重发那张待付款单，不经过模型、不转人工（见 RESEND_ASK）
   const resend = resendPayReply(session, text);
   if (resend) {
-    session.messages.push({ role: 'agent', content: resend, at: Date.now() });
+    const reply = answerIdentity(text, resend);
+    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
-    return { text: resend, stage: session.stage };
+    return { text: reply, stage: session.stage };
   }
 
   const ordersBefore = session.orderIds.length;
@@ -3766,9 +3778,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 「装成真人」是这类产品最不能碰的红线，不能交给提示词碰运气。
   // 必须排在注入/百科/价格这些整条替换的护栏之后：排在前面时，补上的承认句会跟着模型原文一起被换掉
   //（「你是机器人吗？西藏每人多少钱」+ 编价 → 客户只收到价格兜底，身份问题没人答）。
-  if (IDENTITY_QUESTION.test(text) && !/AI|ai\b|人工智能/.test(visible)) {
-    visible = visible ? IDENTITY_ANSWER + '\n' + visible : IDENTITY_ANSWER;
-  }
+  visible = answerIdentity(text, visible);
 
   if (customHandoff) visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
   if (session.handedOver) visible = dropPostHandoffPromises(visible);

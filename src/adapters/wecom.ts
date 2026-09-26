@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentReply, ChannelAdapter } from '../types.js';
 import { handleMessage } from '../engine.js';
-import { getOrder, getSession, onShutdown, saveSession } from '../store.js';
+import { getOrCreateSession, getOrder, getSession, onShutdown, saveSession } from '../store.js';
 import { loadRoutes } from '../tools.js';
 
 const API_BASE = 'https://qyapi.weixin.qq.com/cgi-bin';
@@ -715,6 +715,12 @@ function isEnterSession(msg: KfMessage): boolean {
 /** 客户进入会话事件：发欢迎语（本账号 API 托管，微信自带欢迎语不生效）。调用方已去重 */
 async function handleEnterSession(cfg: WecomConfig, msg: KfMessage): Promise<void> {
   if (!msg.event) return;
+  const uid = msg.event.external_userid || msg.external_userid;
+  // 已转人工：两条路径都不发。欢迎语邀请客户跟 AI 聊，而 AI 此时不会再回复，客户照做了只会没人应
+  if (uid && getSession(SESSION_PREFIX + uid)?.handedOver) {
+    console.log('[wecom] enter_session：会话已转人工，不发欢迎语（由顾问接待）');
+    return;
+  }
   const code = msg.event.welcome_code;
   if (code) {
     await sendWelcomeOnEvent(cfg, code);
@@ -722,7 +728,6 @@ async function handleEnterSession(cfg: WecomConfig, msg: KfMessage): Promise<voi
   } else {
     // 企微只给「新客户 / 超 48h 未聊」下发 welcome_code；老客户再次扫码进入没有 code，
     // 会话窗口是开着的，直接 send_msg 补发一条轻量欢迎，让"扫码即有回应"始终成立
-    const uid = msg.event.external_userid || msg.external_userid;
     if (uid) {
       const last = welcomeBackAt.get(uid) ?? 0;
       if (Date.now() - last > WELCOME_DEDUPE_MS) {
@@ -786,11 +791,39 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
       link: '链接收到～您想找类似的行程吗？跟我说下目的地和人数，我帮您对一条。',
       location: '位置收到～您是想从这边出发，还是想去这附近玩？跟我说下大概日期和人数。',
     };
-    await sendText(
-      cfg,
-      msg.external_userid,
-      HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～',
-    );
+    const PLACEHOLDER: Record<string, string> = {
+      image: '[图片]',
+      voice: '[语音]',
+      video: '[视频]',
+      file: '[文件]',
+      link: '[链接]',
+      location: '[位置]',
+    };
+    // 客户发了内容就算开口了：一律记一条占位（没有会话就建一个），后台和接管的顾问才看得到客户发过图片。
+    // 重放时按 msgid 判断记没记过，不比文本：连着发的两张图片，占位一模一样
+    const session = getOrCreateSession(sessionId, 'wecom');
+    const seen = replay ? session.messages.findIndex((m) => m.msgid === msg.msgid) : -1;
+    if (seen < 0) {
+      const content = PLACEHOLDER[msg.msgtype] ?? `[其他消息：${msg.msgtype}]`;
+      session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid });
+      // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
+      if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+      saveSession(session);
+    }
+    if (session.handedOver) {
+      console.log(`[wecom] 静默（${msg.msgtype} 消息，转人工后不自动回复）`);
+      return; // 与文本消息一致：只入库，交给真人
+    }
+    const hint = HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
+    // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
+    if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
+    if (await sendText(cfg, msg.external_userid, hint)) {
+      const s = getSession(sessionId);
+      if (s) {
+        s.messages.push({ role: 'agent', content: hint, at: Date.now() });
+        saveSession(s);
+      }
+    }
     return;
   }
   const t0 = Date.now();
