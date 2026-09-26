@@ -748,6 +748,34 @@ check('DB：装载之后是 DB 模式', cfg.configMode() === 'db' && cfg.current
   check('每轮不查库：这几轮确实下了单', (s?.orderIds.length ?? 0) > 0);
 }
 
+// ---------------- 每轮可追溯：日志记这一轮开始时用的版本 ----------------
+{
+  const { onToolCall } = await import('../engine.js');
+  const used = cfg.currentSop();
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+  // 模型往返途中（模型自己第一次调工具时）发布了新版本
+  const off = onToolCall((_name, _args, _sid, meta) => {
+    if (!meta?.prefetch && cfg.currentSop().versionNo === used.versionNo)
+      cfg.replacePublishedSop({ ...used, versionNo: used.versionNo + 1, prefixHash: 'f'.repeat(64) });
+  });
+  try {
+    await handleMessage('sim-cfgtest-trace-0001', '想去西安，两个人多少钱', 'simulator');
+  } finally {
+    off();
+    console.log = origLog;
+  }
+  const line = logs.find((l) => l.includes('本轮完成')) ?? '';
+  check(
+    '每轮可追溯：模型往返途中发布了新版本，这一轮的日志仍记开始时的版本与前缀',
+    cfg.currentSop().versionNo === used.versionNo + 1 && line.includes(`SOP v${used.versionNo} · 前缀 ${used.prefixHash.slice(0, 12)}`),
+    line,
+  );
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t));
+}
+
 // ---------------- /healthz 的 config ----------------
 {
   process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
@@ -767,6 +795,42 @@ check('DB：装载之后是 DB 模式', cfg.configMode() === 'db' && cfg.current
       body.config.catalogStale === false,
     JSON.stringify(body.config),
   );
+}
+
+// ---------------- 库与镜像 data/ 的差异（R12：启动日志与 /status 按节、按条目点名） ----------------
+{
+  // 镜像比库多一条线路、话术原则多一句：库里的版本没变，差异要点名这一节和这一条
+  const dir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'image-data-'));
+  fs.writeFileSync(path.join(dir, 'routes.json'), JSON.stringify([...freshRoutes(), { ...freshRoutes()[0], id: 'r-only-image' }]));
+  fs.writeFileSync(path.join(dir, 'hotels.json'), hotelsRaw);
+  const imageSop = joinSop(
+    image.map((s, i) =>
+      s.key === 'tone' ? withBody(specOf('tone'), `${sectionBody(s, specOf('tone'))}\n\n镜像里新加的一句。`, i === image.length - 1) : s,
+    ),
+  );
+  const logs: string[] = [];
+  const origLog = console.log;
+  console.log = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+  try {
+    cfg.__configTest.reset();
+    await cfg.initConfig(testConfigDeps(t, { imageSop, imageDataDir: dir }));
+  } finally {
+    console.log = origLog;
+  }
+  const drift = cfg.configDrift();
+  check('差异：镜像改过的可编辑节点名为 editedSections', drift.editedSections.join(',') === 'tone', JSON.stringify(drift.editedSections));
+  check(
+    '差异：只在镜像里的线路点名为 onlyImage，其余两类为空',
+    drift.catalog.route.onlyImage.join(',') === 'r-only-image' &&
+      drift.catalog.route.changed.length === 0 &&
+      drift.catalog.route.onlyDb.length === 0 &&
+      drift.catalog.hotel.onlyImage.length === 0,
+    JSON.stringify(drift.catalog),
+  );
+  const log = logs.join('\n');
+  check('差异：启动日志点名这一节的标题和这一条线路', log.includes('话术原则') && log.includes('r-only-image'), log.slice(0, 200));
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t));
 }
 
 // ---------------- 导入与导出（验收 3） ----------------
@@ -964,6 +1028,25 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   await cfg.closeConfig();
   check('锁：closeConfig 释放租户锁', lock2.released);
 
+  // 取到锁之后、装上缓存之前（这里是第 6 步渲染时）锁连接就断了：装载照常完成，但一装上就是 lost，并按间隔重取
+  cfg.__configTest.reset();
+  cfg.__configTest.setTimings({ reacquireMs: 5 });
+  const lock3 = fakeLock();
+  lock3.next = 'unreachable';
+  const render = (s: string): string => {
+    lock3.lose();
+    return renderSystemPrompt(s);
+  };
+  await cfg.initConfig(testConfigDeps(t, { lock: async () => lock3, render }));
+  check(
+    '锁：装载途中锁连接断开 → 装上之后就是 lost，配置写入被拒',
+    cfg.configHealth().lock === 'lost' && thrown(() => cfg.assertConfigWritable()) === 'ConfigLockLostError',
+    cfg.configHealth().lock,
+  );
+  lock3.next = 'ok';
+  await wait(40);
+  check('锁：装载途中断开的锁照样按间隔重取回来', cfg.configHealth().lock === 'held' && lock3.reacquired >= 1, String(lock3.reacquired));
+
   cfg.__configTest.reset();
   cfg.__configTest.setTimings({ reloadBackoffMs: [5] });
   await cfg.initConfig(testConfigDeps(t));
@@ -995,6 +1078,129 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
   check('重读：新快照同样冻结', Object.isFrozen(cfg.currentCatalog().routes.at(-1)));
   await asSuper(() => t.pg.query(`delete from catalog_items where code = 'r-reload-test'`));
+
+  // 下面几条要在事务提交之后、归还连接时插一脚：配置源换用一个与 t.db 同一个 PGlite、另登记借连接方式的 Db
+  const { registerDriver, resetSessionTenant } = await import('../db/client.js');
+  let onNextRelease: (() => Promise<void>) | null = null;
+  const hooked = new Proxy(t.db, {});
+  registerDriver(hooked, {
+    acquire: async () => {
+      const hook = onNextRelease;
+      onNextRelease = null;
+      return {
+        db: t.db,
+        release: async (destroy) => {
+          if (destroy) await resetSessionTenant(t.db);
+          await hook?.();
+        },
+      };
+    },
+  });
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps({ db: hooked }));
+  const sopApi = await import('./sop.js');
+  const cat = await import('./catalog.js');
+  const tenantId = cfg.currentCatalog().tenantId;
+  const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营丁', ip: null } };
+  const outcome = (p: Promise<unknown>): Promise<string> =>
+    p.then(
+      () => 'ok',
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+  const waitFor = async (cond: () => boolean): Promise<boolean> => {
+    for (let i = 0; i < 200 && !cond(); i++) await wait(10);
+    return cond();
+  };
+  const publishedNo = async (): Promise<number> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ n: number }>(`select version_no as n from sop_versions where tenant_id = $1 and status = 'published'`, [
+            tenantId,
+          ])
+        ).rows[0]!.n,
+    );
+  const code = cfg.currentCatalog().routes.find((r) => r.id !== 'r-tibet-lux')!.id;
+  const highlightsOf = (): string => JSON.stringify(cfg.currentCatalog().routes.find((r) => r.id === code)?.highlights);
+  const route0 = (await cat.getCatalogItem(ctx, 'route', code))!.payload as Route;
+
+  // 写入外壳：COMMIT 抛错、结果不明（其实已经提交）→ 标脏、从库里整体重读，缓存最终与库一致
+  const commitLost = async (): Promise<void> => {
+    throw new Error('COMMIT 之后连接断了（测试注入）');
+  };
+  const v0 = cfg.currentSop();
+  onNextRelease = commitLost;
+  const rb = await outcome(sopApi.rollbackSop(ctx, { versionId: v0.versionId, changeNote: '测 COMMIT 结果不明' }));
+  const sopStaleAfter = cfg.configHealth().sopStale;
+  await waitFor(() => !cfg.configHealth().sopStale);
+  check(
+    '写入外壳：SOP 的 COMMIT 结果不明 → 标脏、重读，缓存换成库里已提交的版本',
+    rb.includes('测试注入') &&
+      sopStaleAfter &&
+      cfg.currentSop().versionNo === v0.versionNo + 1 &&
+      (await publishedNo()) === v0.versionNo + 1,
+    `${rb} ${sopStaleAfter} v${cfg.currentSop().versionNo}`,
+  );
+  const item = (await cat.getCatalogItem(ctx, 'route', code))!;
+  const hl1 = [...route0.highlights, '提交结果不明时写进去的一条'];
+  onNextRelease = commitLost;
+  const up = await outcome(cat.updateCatalogItem(ctx, 'route', code, { rev: item.rev, set: { highlights: hl1 } }));
+  const catalogStaleAfter = cfg.configHealth().catalogStale;
+  await waitFor(() => !cfg.configHealth().catalogStale);
+  check(
+    '写入外壳：产品库的 COMMIT 结果不明 → 标脏、重读，快照里是库里已提交的内容',
+    up.includes('测试注入') && catalogStaleAfter && highlightsOf() === JSON.stringify(hl1),
+    `${up} ${catalogStaleAfter}`,
+  );
+
+  // 重读与写入交错：重读读到的快照早于一次写入，那次写入提交并换了缓存之后重读才回来（不变式 13；spec 否决「提交后重读」
+  // 的理由）。SOP 与产品库各交错一次：SOP 靠版本号只增不减不倒退，产品库靠写入计数认出快照过时、丢掉再读
+  const reloadPausedDuring = async (write: () => Promise<unknown>): Promise<boolean> => {
+    let open = (): void => {};
+    const gate = new Promise<void>((r) => (open = r));
+    let paused = false;
+    onNextRelease = async () => {
+      paused = true;
+      await gate;
+    };
+    const reload = cfg.reloadFromDb();
+    await waitFor(() => paused);
+    await write();
+    open();
+    await reload;
+    return paused;
+  };
+  const v1 = cfg.currentSop();
+  const pausedSop = await reloadPausedDuring(() => sopApi.rollbackSop(ctx, { versionId: v1.versionId, changeNote: '重读途中发布' }));
+  check(
+    '重读与 SOP 发布交错：缓存的 SOP 版本号不倒退，等于库里的已发布版本，完成后不再标脏',
+    pausedSop &&
+      cfg.currentSop().versionNo === v1.versionNo + 1 &&
+      (await publishedNo()) === v1.versionNo + 1 &&
+      !cfg.configHealth().sopStale &&
+      !cfg.configHealth().catalogStale,
+    `v${cfg.currentSop().versionNo}`,
+  );
+  const cur = (await cat.getCatalogItem(ctx, 'route', code))!;
+  const hl2 = [...route0.highlights, '重读途中改的一条'];
+  const pausedCatalog = await reloadPausedDuring(() =>
+    cat.updateCatalogItem(ctx, 'route', code, { rev: cur.rev, set: { highlights: hl2 } }),
+  );
+  check(
+    '重读与产品库修改交错：重读途中改的条目在快照里仍是新内容，完成后不再标脏',
+    pausedCatalog && highlightsOf() === JSON.stringify(hl2) && !cfg.configHealth().sopStale && !cfg.configHealth().catalogStale,
+    highlightsOf(),
+  );
+
+  // 版本号只增不减：库里的已发布版本号低于缓存（不该发生，兜底）时，重读也不把缓存换回去
+  const high = { ...cfg.currentSop(), versionNo: cfg.currentSop().versionNo + 100 };
+  cfg.replacePublishedSop(high);
+  await cfg.reloadFromDb();
+  check('重读：库里的版本号低于缓存时不回退', cfg.currentSop().versionNo === high.versionNo, `v${cfg.currentSop().versionNo}`);
+
+  const last = (await cat.getCatalogItem(ctx, 'route', code))!;
+  await cat.updateCatalogItem(ctx, 'route', code, { rev: last.rev, set: { highlights: route0.highlights } });
+  cfg.__configTest.reset();
 }
 
 // ---------------- 启动顺序与各个启动失败分支（验收 13） ----------------
@@ -1069,6 +1275,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
 
   const d = (over: Partial<ConfigDeps>) => () => cfg.initConfig(testConfigDeps(t, over));
+  const sqlAscii = new Proxy(t.db, {
+    get: (target, prop, receiver) =>
+      prop === 'execute' ? async () => ({ rows: [{ server_encoding: 'SQL_ASCII' }] }) : Reflect.get(target, prop, receiver),
+  });
+  await expectFail('库的 server_encoding 不是 UTF8', 'db_encoding', d({ db: sqlAscii }), 'SQL_ASCII');
   // 迁移：镜像里的某条不在库里 → schema_behind；库里多出一条 → 照常启动并 warn
   const [last] = (
     await asSuper(() =>
@@ -1101,6 +1312,35 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   await newTenant('blank');
   await expectFail('租户没有已发布的 SOP', 'no_published_sop', d({ tenantSlug: 'blank' }));
   await expectFail('另一个进程已持有该租户的锁', 'lock_held', d({ lock: async () => null }));
+
+  // 第 1 步之后库才断：解析租户、取锁、读快照、写 rerender 版本各自失败，同样以 db_unreachable 拒绝启动
+  const { registerDriver } = await import('../db/client.js');
+  const dropped = (): never => {
+    throw new Error('Connection terminated unexpectedly');
+  };
+  /** 与 t.db 同一个 PGlite 的 Db：第 n 次起借不到连接（前 n 次照常） */
+  const dropsAfter = (n: number): typeof t.db => {
+    const db = new Proxy(t.db, {});
+    let acquired = 0;
+    registerDriver(db, {
+      acquire: async () => (acquired++ < n ? { db: t.db, release: async () => {} } : dropped()),
+    });
+    return db;
+  };
+  const tenantLookupFails = new Proxy(t.db, {
+    get: (target, prop, receiver) => (prop === 'select' ? dropped : Reflect.get(target, prop, receiver)),
+  });
+  await expectFail('解析租户时库断开', 'db_unreachable', d({ db: tenantLookupFails }), '解析租户');
+  await expectFail('锁连接连不上库', 'db_unreachable', d({ lock: async () => dropped() }), '取租户锁');
+  await expectFail('读已发布 SOP 与产品库时库断开', 'db_unreachable', d({ db: dropsAfter(0) }), '读已发布 SOP');
+  const changedTools = JSON.parse(imageCode().toolsJson) as { function: { description: string } }[];
+  changedTools[0]!.function.description += '（改了一个字）';
+  await expectFail(
+    '写 rerender 版本时库断开',
+    'db_unreachable',
+    d({ db: dropsAfter(1), toolsJson: JSON.stringify(changedTools) }),
+    '写入 rerender 版本',
+  );
 
   // 手工绕过触发器改了已发布行的 sections：sop_hash 对不上
   await newTenant('tampered');
@@ -1676,6 +1916,29 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       (await audit('catalog.activate')).length === 1 &&
       (await audit('catalog.update')).length >= 4,
   );
+
+  // 不按新建顺序上架：快照始终按 ord 升序，与库里（也就是重启之后）的顺序相同（不变式 15）
+  const ordDrafts: Awaited<ReturnType<typeof cat.createCatalogItem>>[] = [];
+  for (const id of ['r-ord-a', 'r-ord-b', 'r-ord-c']) ordDrafts.push(await cat.createCatalogItem(ctx, 'route', { ...draftPayload, id }));
+  const dbOrder = async (): Promise<string> =>
+    (await cat.listCatalog(ctx, 'route'))
+      .filter((x) => x.status === 'active')
+      .toSorted((a, b) => a.ord - b.ord)
+      .map((x) => x.code)
+      .join(',');
+  const snapOrder = (): string =>
+    cfg
+      .currentCatalog()
+      .routes.map((r) => r.id)
+      .join(',');
+  for (const i of [1, 0, 2]) {
+    const x = ordDrafts[i]!;
+    await cat.activateCatalogItem(ctx, 'route', x.code, { rev: x.rev });
+    check(`上架顺序：上架 ${x.code} 之后，快照的顺序与库里按 ord 的顺序相同`, snapOrder() === (await dbOrder()), snapOrder().slice(-60));
+  }
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t));
+  check('上架顺序：重启之后快照的顺序不变', snapOrder() === (await dbOrder()) && snapOrder().endsWith('r-ord-a,r-ord-b,r-ord-c'));
 
   // 验收 10：两次 PATCH 带同一个 rev，第二次 409；并发新建同一个 code 一个成功一个 409；并发新建不同 code 拿到不同 ord
   const cur = (await cat.getCatalogItem(ctx, 'route', CODE))!;

@@ -567,6 +567,47 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
   check('权限：agent_app 删除条目报 permission denied', del === DENIED, del);
 }
 
+// ---------------- 连接串脱敏 ----------------
+{
+  const { redactUrl } = await import('./client.js');
+  const pg = (await import('pg')).default;
+  /** node-postgres 自己从连接串里解析出的口令：脱敏之后的串里不能再有它 */
+  const passwordOf = (url: string): string => (new pg.Client({ connectionString: url }) as unknown as { password: string }).password;
+  const cases: [string, string, string][] = [
+    ['普通口令', 'postgres://agent_app:hush-hush@db:5432/agent', 'postgres://agent_app:***@db:5432/agent'],
+    [
+      '口令里有没转义的 @（node-postgres 按最后一个 @ 切开，照样连得上）',
+      'postgresql://agent_app:s3cr@tPart@db:5432/agent',
+      'postgresql://agent_app:***@db:5432/agent',
+    ],
+    [
+      '口令放在查询参数里',
+      'postgres://agent_app@db:5432/agent?password=hush-hush&application_name=app',
+      'postgres://agent_app@db:5432/agent?password=***&application_name=app',
+    ],
+    [
+      '主机后面的查询参数里也有 @（只抹口令，主机、库名、参数照旧）',
+      'postgres://agent_app:hush-hush@db:5432/agent?application_name=ops@team',
+      'postgres://agent_app:***@db:5432/agent?application_name=ops@team',
+    ],
+  ];
+  for (const [what, url, want] of cases) {
+    const got = redactUrl(url);
+    const pw = passwordOf(url);
+    check(`脱敏：${what}，口令一个字都不剩`, got === want && pw.length > 0 && !got.includes(pw), `${got} / ${pw}`);
+  }
+  check('脱敏：没有口令的连接串原样返回', redactUrl('postgres://agent_app@db:5432/agent') === 'postgres://agent_app@db:5432/agent');
+  const noPw = 'postgres://agent_app@db:5432/agent?application_name=ops@team';
+  check('脱敏：没有口令、查询参数里有 @ 的连接串原样返回，不凭空拼出口令', redactUrl(noPw) === noPw, redactUrl(noPw));
+  // node-postgres 不认的口令（URL 规则下成了端口，或整串解析不了）也是运维写进去的口令：宁可多抹
+  const odd = ['postgres://agent_app:2024#x@db:5432/agent', 'postgres://agent_app:a/b@db:5432/agent'].map(redactUrl);
+  check(
+    '脱敏：口令里有裸的 # 或 /（URL 规则切不对）时一直抹到最后一个 @',
+    odd.every((x) => x === 'postgres://agent_app:***@db:5432/agent'),
+    odd.join(' '),
+  );
+}
+
 // ---------------- withTenant ----------------
 {
   const tenantInTx = async (tx: Tx): Promise<string | null> =>
@@ -1348,6 +1389,10 @@ async function realPostgres(superUrl: string): Promise<void> {
       L1.onLost(() => lost++);
       await lockBackend();
       check('真实 PG：锁连接被 pg_terminate_backend 后回调 onLost 一次', (await waitFor(() => lost === 1)) && lost === 1, String(lost));
+      // 断开之后才订阅的（initConfig 在装载途中）：订阅时当场补一次，不会一直以为持着锁
+      let late = 0;
+      L1.onLost(() => late++);
+      check('真实 PG：锁已断开之后才订阅 onLost，订阅时立即回调一次', late === 1, String(late));
       const [r1, r2] = await Promise.all([L1.reacquire(), L1.reacquire()]);
       check('真实 PG：断连后重取成功，并发的两次拿到同一个结果', r1 === 'ok' && r2 === 'ok', `${r1} ${r2}`);
       check('真实 PG：重取之后别人仍拿不到', (await holdTenantLock(APP, A)) === null);
