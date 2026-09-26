@@ -85,7 +85,7 @@
   - 实测开放问题 3（类型引用的耗时与冲突）和 8（`__Host-` 在本地 http 下的表现）。
   - 对应验收 17 的产物与类型部分、22。
 - [x] 13. 会话只读列表：接口和页面（0.5，可砍）。
-- [ ] 14. SOP 的逐节 diff 视图：`@codemirror/merge`（1，可砍）。
+- [x] 14. SOP 的逐节 diff 视图：`@codemirror/merge`（1，可砍）。
 - [ ] 15. 产品库 CSV 导入：接口和页面（1，可砍）。
 - [ ] 16. 部署收尾（1.5）：
   - `deploy/compose.yml` 补上 `app` 与 `platform` 服务，按服务分 env，镜像名用 `APP_IMAGE`。
@@ -266,6 +266,11 @@
 - 没有砍。`GET /api/console/conversations` 挂 `canSeeCustomers`（所有成员，匿名在 demo 下也是 401），读现有的文件 store：按 `(updatedAt desc, id)` 排序、offset 分页（`limit` 1–100，默认 20），每条只投影 `id`、`channel`、`stage`、`handedOver`、消息条数、`updatedAt`，另给不含 `sim-` 的总数 `total` 供翻页；不列 `sim-` 会话，不带正文和画像。console 加「会话」页（成员可见，服务端分页），详情仍在 `admin.html` 里看。
 - `console.selftest.ts` 增至 181 条：排序（同一时刻按 id 升序）、投影的键恰好是那六个、不带正文与画像、`total` 不含 `sim-`、逐页翻完与全量排序一致、越界空页、参数越界 400、agent 角色能看（审计仍 403）、匿名 401。7 个变异（不滤 `sim-`、不按 id 打破平局、多投影 `profile`、只给编辑角色、对匿名开放、`limit` 上限放宽、分页多给一条）全部变红。
 - 页面没有在浏览器里单独走查（只经 typecheck 对上接口类型）；第 16 步托管 `/console` 之后的走查一并看。
+
+### 第 14 步（2026-09-26）
+
+- 没有砍。有草稿时，SOP 页多一张「与已发布 vN 的逐节对比」：只列正文与已发布版本不同的可编辑节，折叠面板展开才建编辑器；每节是 `@codemirror/merge`（6.12.2）的左右对比，两侧只读、自动换行，没改的长段落折叠成「N unchanged lines」。锁定节不参与（发布时取镜像）。
+- 在 CSP 下的 preview 里走查：一份改了「话术原则」「异议处理」两节的草稿，对比面板列出这两节，增改行高亮，违规 0 条；截图 [walkthrough/09-draft-diff.jpg](walkthrough/09-draft-diff.jpg)。第 13 步的「会话」页顺带看了：viewer 有入口，页面在 CSP 下渲染正常。
 
 ## 验收记录
 
