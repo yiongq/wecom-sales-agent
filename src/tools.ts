@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { SALES_SEGMENTS } from './types.js';
+import { peakMonths } from './shared/season.js';
+import { deepFreeze } from './shared/freeze.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
 import { createOrder, getOrder, saveSession, supersedeOrder } from './store.js';
@@ -17,13 +19,14 @@ function routesPath(): string {
   return process.env.ROUTES_PATH ?? path.join(process.cwd(), 'data', 'routes.json');
 }
 
+// 返回的对象递归冻结（01 spec「快照」）：类型仍是 Route[]，写入在运行时抛 TypeError，调用方要排序、改字段先拷贝
 export function loadRoutes(): Route[] {
   const p = routesPath();
   if (!fs.existsSync(p)) {
     throw new Error(`线路数据缺失: ${p} 不存在（应由 data/routes.json 提供，见 SPEC 模块 1）`);
   }
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as Route[];
+    return deepFreeze(JSON.parse(fs.readFileSync(p, 'utf8')) as Route[]);
   } catch (e) {
     // 手工编辑线路数据改坏 JSON 是高概率事故，报错必须能直接定位到文件
     throw new Error(`线路数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
@@ -38,7 +41,7 @@ export function loadHotels(): Hotel[] {
   const p = hotelsPath();
   if (!fs.existsSync(p)) return []; // 酒店库可选：缺失时 search_hotels 返回空，不影响主流程
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf8')) as Hotel[];
+    return deepFreeze(JSON.parse(fs.readFileSync(p, 'utf8')) as Hotel[]);
   } catch (e) {
     throw new Error(`酒店数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
   }
@@ -894,26 +897,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
   return out;
 }
 
-// bestSeason 是自由文本（如「6-9月」「11月-次年4月」「全年」），
-// 展开其中的月份区间做旺季判定，保证规则确定可复现
-export function peakMonths(bestSeason: string): Set<number> {
-  const months = new Set<number>();
-  // 「全年适游」不等于「全年旺季」。原先展开成 12 个月，结果是这条线任何日期都
-  // 上浮 10%，还附一句「X 月为最佳出行季，价格上浮 10%」——等于全年溢价还讲不出理由。
-  if (bestSeason.includes('全年')) return months;
-  for (const m of bestSeason.matchAll(/(\d{1,2})\s*(?:月)?\s*[-–~至到]\s*(?:次年)?\s*(\d{1,2})\s*月/g)) {
-    let from = Number(m[1]);
-    const to = Number(m[2]);
-    // 跨年区间如 11月-次年4月
-    for (let i = 0; i < 12; i++) {
-      months.add(from);
-      if (from === to) break;
-      from = (from % 12) + 1;
-    }
-  }
-  for (const m of bestSeason.matchAll(/(\d{1,2})\s*月/g)) months.add(Number(m[1]));
-  return months;
-}
+export { peakMonths } from './shared/season.js';
 
 export interface Quote {
   routeTitle: string;
