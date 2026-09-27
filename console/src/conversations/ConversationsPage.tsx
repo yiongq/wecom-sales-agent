@@ -1,0 +1,412 @@
+// 会话列表（spec「逐页设计 · 会话列表（I 页）」，设计系统 §4.4、§5.5、§5.6、§6.7、§10.2 I 页）。
+// 从上到下：页头（「打开工作台」新标签打开 admin.html）→ 页签（全部 / 等人接手 / AI接待中 / 已成交）→「客户停在哪一步」
+// 的阶段条 → 表格。页签与阶段条的数取同一次 GET /conversations/counts（与侧栏软徽标、铃铛共用缓存，页面可见时每 30 秒刷新），
+// 表格取 GET /conversations?order=waiting_first（服务端排好、先过滤再分页，每页 20 条）。
+// 选中的页签（state）、阶段筛选（stage）、页码（page）都写在地址里（conversations-search.ts），刷新、后退、分享都能还原。
+// 点一行或「打开工作台」：新标签打开 /admin.html#s=<id>，工作台读 hash 选中这个会话（public/admin.html）。
+// 界面不认行业：阶段名和顺序、客户的叫法都取自行业包；会话状态只经 conversationState 判定（model.ts）。
+// 匿名没有入口（01）：直接打开这个地址时不发请求，只写一句说明
+import { type UseQueryResult, useQuery } from '@tanstack/react-query';
+import { Link, useNavigate, useSearch } from '@tanstack/react-router';
+import { Button, Table, Tabs } from 'antd';
+import { ArrowUpRight, ChevronDown, ChevronRight, MessagesSquare, X } from 'lucide-react';
+import { type MouseEvent, type ReactNode, useEffect, useState } from 'react';
+import type { ConversationCounts } from '../../../src/shared/console-api.js';
+import { digits } from '../../../src/shared/format.js';
+import type { IndustryPack } from '../../../src/shared/pack.js';
+import { api, unwrap } from '../api.js';
+import type { ConversationsSearch } from '../conversations-search.js';
+import { PrimaryButton } from '../parts/PrimaryButton.js';
+import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
+import { Status } from '../parts/Status.js';
+import { conversationCountsQuery } from '../queries.js';
+import { Icon } from '../shell/icons.js';
+import { badgeText, POLL } from '../shell/model.js';
+import { PageHeader } from '../shell/PageHeader.js';
+import { cjk } from '../typography.js';
+import { usePack, useViewer } from '../viewer.js';
+import {
+  activeTab,
+  clearStage,
+  listQuery,
+  PAGE_SIZE,
+  pageCount,
+  pageOf,
+  pageSearch,
+  rowAria,
+  rowView,
+  type RowView,
+  stageLabel,
+  stageSearch,
+  type Tab,
+  tabs,
+  tabSearch,
+} from './model.js';
+import { stageRows } from './stages.js';
+
+/** 工作台（旧的 admin.html，用 ADMIN_PASS 的独立登录；02 之后由 J 页取代） */
+const WORKBENCH = '/admin.html';
+
+/**
+ * 与外壳共用的计数：外壳启动时刚取过，30 秒内的直接用（匿名不会到这里，但成员也不必白取一次），之后照常与外壳一起轮询
+ */
+const SHARED = { ...POLL, staleTime: POLL.refetchInterval } as const;
+
+/** 相对时间（「8分钟前」）按它算：打开时取一次，之后与计数轮询同一个节奏每 30 秒更新 */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), POLL.refetchInterval);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
+
+function Header({ pack, member }: { pack: IndustryPack; member: boolean }) {
+  return (
+    <PageHeader
+      title="会话"
+      // 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔
+      status={<span>{cjk([`企业微信里的${pack.vocabulary.customer}会话`, '接手和回复目前在工作台里完成'])}</span>}
+      actions={
+        member && (
+          <PrimaryButton
+            href={WORKBENCH}
+            target="_blank"
+            rel="noopener noreferrer"
+            icon={<Icon of={ArrowUpRight} />}
+            iconPlacement="end"
+            aria-label="打开工作台（新标签页）"
+          >
+            打开工作台
+          </PrimaryButton>
+        )
+      }
+    />
+  );
+}
+
+// ---------------- 页签 ----------------
+
+/** 页签的字：名字后面跟 13 text-3 的数；「等人接手」有数时用软徽标（设计系统 §4.4） */
+function TabLabel({ tab }: { tab: Tab }) {
+  const soft = tab.soft ? badgeText(tab.count ?? 0) : null;
+  return (
+    <span className="cv-tab">
+      {tab.label}
+      {soft ? (
+        <span className="badge-soft" aria-label={`${tab.count}个`}>
+          {soft}
+        </span>
+      ) : (
+        tab.count !== null && <span className="cv-tab-count">{digits(tab.count)}</span>
+      )}
+    </span>
+  );
+}
+
+// ---------------- 客户停在哪一步 ----------------
+
+function StageBlock({
+  pack,
+  counts,
+  search,
+}: {
+  pack: IndustryPack;
+  counts: UseQueryResult<ConversationCounts>;
+  search: ConversationsSearch;
+}) {
+  const [asTable, setAsTable] = useState(false);
+  const rows = counts.data ? stageRows(pack, counts.data.aiByStage) : [];
+  const liveStages = Math.max(1, pack.stages.filter((s) => !s.terminal).length);
+  const filterLink = (key: string, className: string, children: ReactNode, label: string): ReactNode => {
+    const selected = search.stage === key;
+    return (
+      <Link
+        to="/conversations"
+        search={stageSearch(key, search)}
+        className={selected ? `${className} is-selected` : className}
+        aria-current={selected ? 'true' : undefined}
+        aria-label={`${label}，${selected ? '取消阶段筛选' : '只看这个阶段的会话'}`}
+      >
+        {children}
+      </Link>
+    );
+  };
+  return (
+    <section className="cv-stages" aria-labelledby="cv-stages-title">
+      <div className="cv-head">
+        <h2 id="cv-stages-title" className="cv-title">
+          {`${pack.vocabulary.customer}停在哪一步`}
+        </h2>
+        {counts.data && <span className="cv-count">{`AI接待中的${counts.data.byState.ai}个会话`}</span>}
+        {counts.data && (
+          <button type="button" className="cv-head-btn" onClick={() => setAsTable((t) => !t)}>
+            {asTable ? '以条形图查看' : '以表格查看'}
+            <Icon of={ChevronRight} size={14} />
+          </button>
+        )}
+      </div>
+      {counts.isError ? (
+        <StateView error={counts.error} onRetry={() => void counts.refetch()} />
+      ) : !counts.data ? (
+        <div className="state-skeleton" role="status" aria-label="正在载入">
+          {Array.from({ length: liveStages }, (_, i) => (
+            <div key={i} className="cv-stage">
+              <span className="skeleton-bar" />
+            </div>
+          ))}
+        </div>
+      ) : asTable ? (
+        <table className="cv-stage-table">
+          <thead>
+            <tr>
+              <th scope="col">阶段</th>
+              <th scope="col">会话</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.key ?? '$other'}>
+                <th scope="row" className={r.branch ? 'is-branch' : undefined}>
+                  {r.key === null ? r.label : filterLink(r.key, 'cv-stage-cell', r.label, `${r.label}${r.count}个会话`)}
+                </th>
+                <td>{digits(r.count)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <ul className="cv-stage-list">
+          {rows.map((r) => {
+            const cls = ['cv-stage', r.branch && 'is-branch', r.count === 0 && 'is-zero'].filter(Boolean).join(' ');
+            const body = (
+              <>
+                <span className="cv-stage-label">{r.label}</span>
+                <span className="cv-stage-track">
+                  {r.count > 0 && <span className="cv-stage-bar" style={{ width: `${r.ratio * 100}%` }} />}
+                </span>
+                <span className="cv-stage-count">{digits(r.count)}</span>
+              </>
+            );
+            return (
+              <li key={r.key ?? '$other'}>
+                {r.key === null ? <span className={cls}>{body}</span> : filterLink(r.key, cls, body, `${r.label}${r.count}个会话`)}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {counts.data && <p className="cv-note">按每个会话现在所处的阶段统计</p>}
+    </section>
+  );
+}
+
+// ---------------- 表格 ----------------
+
+/** 点一行（不是点在链接上、也不是在选字）：新标签打开工作台 */
+function openRow(e: MouseEvent, href: string): void {
+  if (e.target instanceof Element && e.target.closest('a, button')) return;
+  if ((window.getSelection?.()?.toString() ?? '') !== '') return;
+  window.open(href, '_blank', 'noopener,noreferrer');
+}
+
+function ConversationTable({ rows, total, search }: { rows: RowView[]; total: number; search: ConversationsSearch }) {
+  const navigate = useNavigate();
+  return (
+    <Table<RowView>
+      className="cv-table"
+      rowKey="id"
+      dataSource={rows}
+      tableLayout="fixed"
+      // 窄屏在自己的容器里横滚，首列固定（spec「可访问性与响应式」375 宽）
+      scroll={{ x: 960 }}
+      onRow={(r) => ({ onClick: (e) => openRow(e, r.href), className: 'cv-row' })}
+      pagination={
+        total > PAGE_SIZE && {
+          current: pageOf(search),
+          pageSize: PAGE_SIZE,
+          total,
+          showSizeChanger: false,
+          showTotal: (t) => `共${t}条`,
+          onChange: (p) => void navigate({ to: '/conversations', search: pageSearch(search, p) }),
+        }
+      }
+      columns={[
+        {
+          key: 'conversation',
+          title: '会话',
+          width: 300,
+          fixed: 'left',
+          render: (_, r) => (
+            <span className="cv-conv">
+              <Icon of={MessagesSquare} className="cv-conv-icon" />
+              <a className="cv-conv-link" href={r.href} target="_blank" rel="noopener noreferrer" aria-label={rowAria(r)}>
+                {cjk(r.label)}
+              </a>
+            </span>
+          ),
+        },
+        { key: 'state', title: '状态', width: 140, render: (_, r) => <Status kind={r.state} /> },
+        {
+          key: 'stage',
+          title: '阶段',
+          width: 120,
+          render: (_, r) => <span className={r.stage === '—' ? 'cv-dim' : 'cv-text-2'}>{r.stage}</span>,
+        },
+        { key: 'messages', title: '消息', width: 88, align: 'right', render: (_, r) => digits(r.messages) },
+        {
+          key: 'when',
+          // 排序是固定的：等人接手的在前，其余按最后动静倒序（服务端排好）；表头只标明，不能点
+          title: (
+            <span className="cv-sorted">
+              最后动静
+              <Icon of={ChevronDown} size={12} />
+            </span>
+          ),
+          width: 160,
+          onHeaderCell: () => ({ 'aria-sort': 'descending' }),
+          render: (_, r) => (
+            <time className="cv-when" dateTime={r.at} title={r.whenFull}>
+              {r.when}
+            </time>
+          ),
+        },
+        {
+          key: 'open',
+          title: '',
+          align: 'right',
+          onHeaderCell: () => ({ 'aria-label': '操作' }),
+          render: (_, r) => (
+            <Button
+              type="text"
+              size="small"
+              className="cv-open"
+              href={r.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              icon={<Icon of={ArrowUpRight} size={14} />}
+              iconPlacement="end"
+              aria-label={`在工作台打开${r.label[1]}（新标签页）`}
+            >
+              打开工作台
+            </Button>
+          ),
+        },
+      ]}
+    />
+  );
+}
+
+function MemberConversations({ pack }: { pack: IndustryPack }) {
+  const search = useSearch({ from: '/conversations' });
+  const navigate = useNavigate();
+  const now = useNow();
+  const counts = useQuery({ ...conversationCountsQuery, ...SHARED });
+  const params = listQuery(search);
+  const list = useQuery({
+    queryKey: ['conversations', 'list', params] as const,
+    queryFn: () => unwrap(api.conversations.$get({ query: params })),
+    ...POLL,
+    // 翻页时先留着上一页，不换成骨架；换了页签或阶段就不留（上一类的行不能冒充这一类）
+    placeholderData: (prev, prevQuery) => {
+      const was = prevQuery?.queryKey[2];
+      return was && was.state === params.state && was.stage === params.stage ? prev : undefined;
+    },
+  });
+  const data = list.data;
+  const page = pageOf(search);
+  // 地址里的页码超过了最后一页（会话变少了、链接是旧的）：换成最后一页，不显示空表
+  useEffect(() => {
+    if (data && data.items.length === 0 && data.total > 0 && page > 1) {
+      void navigate({ to: '/conversations', search: pageSearch(search, pageCount(data.total)), replace: true });
+    }
+  }, [data, page, search, navigate]);
+
+  const filtered = search.state !== undefined || search.stage !== undefined;
+  const customer = pack.vocabulary.customer;
+  // 一个会话都没有：空状态替换页签、阶段条和表格（不留空表头）
+  if (data && data.total === 0 && !filtered) {
+    return (
+      <>
+        <Header pack={pack} member />
+        <EmptyBlock
+          icon={<Icon of={MessagesSquare} size={20} />}
+          title={`${customer}的会话会出现在这里`}
+          description={`${customer}在企业微信里发来第一句话后就会出现`}
+        />
+      </>
+    );
+  }
+  const active = activeTab(search);
+  const rows = data ? data.items.map((r) => rowView(r, pack, now)) : [];
+  const body = (
+    <>
+      <StageBlock pack={pack} counts={counts} search={search} />
+      {search.stage !== undefined && (
+        <div className="cv-filters">
+          <Link
+            to="/conversations"
+            search={clearStage(search)}
+            className="cv-chip"
+            aria-label={`清除阶段筛选：${stageLabel(pack, search.stage)}`}
+          >
+            {`阶段：${stageLabel(pack, search.stage)}`}
+            <Icon of={X} size={14} />
+          </Link>
+        </div>
+      )}
+      <div className="cv-list">
+        <StateView
+          pending={list.isPending}
+          error={list.error}
+          onRetry={() => void list.refetch()}
+          skeleton={<Skeleton rows={8} />}
+          empty={
+            data &&
+            data.total === 0 && {
+              title: '这个分类下没有会话',
+              link:
+                search.stage !== undefined ? (
+                  <Link to="/conversations" search={clearStage(search)}>
+                    清除筛选
+                  </Link>
+                ) : undefined,
+            }
+          }
+        >
+          <ConversationTable rows={rows} total={data?.total ?? 0} search={search} />
+        </StateView>
+      </div>
+    </>
+  );
+  return (
+    <>
+      <Header pack={pack} member />
+      <Tabs
+        className="cv-tabs"
+        activeKey={active}
+        onChange={(key) => void navigate({ to: '/conversations', search: tabSearch(key as Tab['key']) })}
+        items={tabs(counts.data).map((t) => ({ key: t.key, label: <TabLabel tab={t} />, children: t.key === active ? body : null }))}
+      />
+    </>
+  );
+}
+
+export function ConversationsPage() {
+  const viewer = useViewer().data;
+  const pack = usePack();
+  // 外壳只在成员或 demo 匿名时渲染路由，两种都带着行业包
+  if (!pack) return null;
+  if (viewer?.kind === 'member') return <MemberConversations pack={pack} />;
+  return (
+    <>
+      <Header pack={pack} member={false} />
+      <EmptyBlock
+        icon={<Icon of={MessagesSquare} size={20} />}
+        title="登录后才能看会话"
+        description={`会话里有${pack.vocabulary.customer}的信息，只给成员看`}
+      />
+    </>
+  );
+}
