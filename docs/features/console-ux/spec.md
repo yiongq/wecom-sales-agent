@@ -1,1084 +1,708 @@
-# 后台 UX 重做：「青绿长卷」
+# 后台 UX 重做：「利落」与行业包通用界面
 
 Status: draft
-Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../../architecture/01-pg-config-console/spec.md)（「后台 API 与页面」、安全头、匿名投影、权限矩阵）；技术栈见 [ADR-002](../../adr/adr-002-console-vite-react.md)。**前置条件：01 翻为 `implemented` 之后才开工。** 原因有两条：AGENTS.md 规定 Amends 只能加在已 implemented 的 spec 上；验收 19 要重跑 01 的验收，也要等 01 先验收完。
-Amends: 01「后台 API 与页面」，01 implemented 后生效。改动限于三类：给 `src/shared/console-api.ts` 增加成员和可选参数；给页面换呈现方式；改几处给用户看的文案。不改 01 已有的行为、权限、匿名投影、会话列表的投影范围和验收。
+Revisions: 2026-09-27 整份就地重写（本 spec 仍是 draft，没有代码依赖它）。视觉方向由「青绿长卷」（纸色、石青石绿、思源宋体子集、钢印、目的地长卷）改为 owner 当天选定的方案 A「利落」；字体改为 Geist、Geist Mono 与思源黑体 Noto Sans SC；产品库、导航、话术词汇改为按行业包配置渲染（上一稿按线路、酒店写死字段表）；会话与总览分成「今天」和「02 之后」两期；视觉与内容细则挪到同目录的 [design-system.md](design-system.md)。上一稿里仍然成立的部分保留：五处接口增补、话术自动保存与冲突合并、CSV 的 GBK 兜底与防公式注入、按路由拆包与压缩。重写的原因见「背景与问题」，放弃的做法见「被否决的方案」。同日按规格、代码核对、决定三路评审再改：开放问题 1 扩成「01 里所有非新增改动」；验收 15、25 写明安全头断言的例外；不变量 11 改成能断言的写法；外壳补启动的加载与出错；会话过期的判定限定成员身份；走查种子改由已提交的脚本生成并钉住时钟；⌘K 不再用 J / K；plan 把总览用到的审计与字数函数提前。
+Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../../architecture/01-pg-config-console/spec.md)（「后台 API 与页面」、安全头、匿名投影、权限矩阵）。技术栈见 [ADR-002](../../adr/adr-002-console-vite-react.md)；其中「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」一条，改由待写的 ADR-004 取代（plan 第 0.3 步）。**01 翻为 `implemented`、并且 owner 把本 spec 翻为 `ready` 之后才开工。** 原因有两条：AGENTS.md 规定 `Amends` 只能加在已 implemented 的 spec 上；验收 25 要重跑 01 的验收。
+Amends: 01 的「后台 API 与页面」（`Me.tenantName`、`ConvQuery` 与 `AuditQuery` 的可选参数、两个只读接口）、「SOP：节表、渲染、版本、发布闸」（`ContractViolation.match`；草稿保存的 `rebaseOnto` 改变草稿的基线）、「导入、导出与回滚」（`tenant-create --pack` 改读注册表）。01 implemented 后生效，只做新增，见「接口改动」。01 里不是新增的改动（安全头两处、页面条款五处，以及随之要改写的 01 验收 16 第 4 条和验收 22）不走 Amends，见开放问题 1。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
-来源：文中 [n] 指同目录 [references.md](references.md) 的编号。
+配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
 ## 背景与问题
 
-01 把后台的功能做齐了：草稿、检查、发布、回滚、锁定字段、按行报错的 CSV 导入、审计。截图（01 的 `walkthrough/01–10`）和 `console/src/**` 显示，缺的是表达层：
+01 把后台的功能做齐了：草稿、检查、发布、回滚、锁定字段、按行报错的 CSV 导入、审计、会话只读列表。`console/src/**` 和 01 的走查截图显示，缺的是表达层，另有两条死路：
 
-- **没有身份。** `main.tsx` 的 `ConfigProvider` 只传了 `locale` 和 `csp`，全站是 antd 出厂蓝。页头和 `<title>` 都只有「后台」两个字。
-- **不达 AA。** antd 默认值实测：主色 `#1677FF` 配白字只有 4.10:1；说明文字 `rgba(0,0,0,.45)`（约 `#8C8C8C`）对白 3.36:1；禁用色约 `#BFBFBF`，对白 1.84:1，而上架后的锁定字段用的正是禁用样式。`TextEditor.tsx`、`SectionDiff.tsx` 把 `#d9d9d9` 写死了。没有深色主题。截图 06 里，每个必填字段前都有一颗红星。
-- **工程词外露。**
-  - 表单标签是 `id`、`priceFrom`；检查结果是 `phrase_forbidden`。
-  - 审计写成 `catalog.activate` 加 UUID，操作者是 `user-create`；历史表里有 prompt hash。
-  - 服务端报错直接显示给运营：「与镜像里的 data/sop.md 不一致」「要和 days（8）相同」「口令校验排队超时」。
-  - diff 的折叠条是英文「18 unchanged lines」。CSV 要手抄英文表头，文件框是浏览器原生的「Choose File」。
-- **层级不清。** SOP 顶栏是四个同权按钮：「丢弃」是常驻的红框按钮，「发布」反而不是主按钮。页面没有标题。错误走 3 秒就消失的 `message.error`。上架确认用 `Popconfirm`，列的是英文键，按钮只写「确定」。
-- **两个缺陷。**
-  - 侧栏当前页高亮从来没有生效。`Shell.tsx` 用 ``path.startsWith(`/console${k}`)`` 做比较，而 TanStack Router 把 `basepath` 实现成 rewrite，拿到的 `pathname` 是 `/sop`。所以截图 02–10 的侧栏都没有选中项。这一条在 01 收尾时已经修掉。
-  - SOP 冲突是死路。`src/config/sop.ts` 的 `rebase()` 只要发现同一节在基线之后两边都改过，就判为冲突，不看内容；而已有草稿的 `basedOn` 又没有接口能改。结果是一旦冲突，这份草稿怎么改都发布不了，只能丢弃。01 界面上写的「把需要的内容合进草稿后再发布」实际上做不到。01 收尾时只把这句提示改成如实说明（只能丢弃后在新版本上重做），真正的解法是本 spec 的 `rebaseOnto`。
-- **性能。** 首屏是一个 2,051,003 B 的单包（gzip 后 650,950 B），`vite.config.ts` 把告警阈值调到 4096，把告警压掉了。`/console/assets/*` 带 `no-store`，也没有压缩。
-- **没有首页。** `/console/` 直接跳到 `/sop`。`/status` 里的锁、缓存、索引、漂移信息，除了用来判断是不是匿名之外，都没用上。
+- **没有身份，不达 AA。** `main.tsx` 的 `ConfigProvider` 只传了 `locale` 和 `csp`，全站是 antd 出厂蓝；页头和 `<title>` 只有「后台」两个字；没有深色主题。antd 默认的主色配白字只有 4.10:1，说明文字 3.36:1，禁用色 1.84:1，而上架后的锁定字段用的正是禁用样式。
+- **工程词外露。** 侧栏写「SOP」；表单标签是 `priceFrom`；检查结果是 `phrase_forbidden`；历史列表里有 prompt hash；服务端报错原样给运营看，例如「要和 days（8）相同」「口令校验排队超时」。
+- **层级不清。** 话术页顶栏是四个同权按钮，「丢弃」常驻；错误走 3 秒就消失的 `message.error`；上架用 `Popconfirm`，列的是英文键。
+- **产品库表单绑死旅游。** 表单由 `RouteSchema` / `HotelSchema` 转 JSON Schema 生成，放在 720px 的抽屉里，每个必填字段前一颗红星。界面里没有「行业包」这一层，换一个行业就要换一套页面。
+- **两条死路。** 话术草稿和别人改了同一节以后，再也发布不了，只能丢弃重做（01 plan「Open」里待 owner 的一条）。Excel 在中文 Windows 上默认另存的 GBK 编码 CSV 被整份拒收。
+- **性能。** 首屏是一个 2,051,003 B 的单包（gzip 后 650,950 B），`vite.config.ts` 把告警阈值调到 4096 压掉了告警；`/console/assets/*` 带 `no-store`，也不压缩。
+- **没有首页。** `/console/` 直接跳到 `/sop`。
 
-用户是旅行社老板和运营，不是工程师；这个后台同时是面试作品。要求两条：一眼看出这是一家高端定制游公司的 AI 销售后台，并且好用。
+这份 spec 之前写过一稿，之后又评审了三个方向和两套字体，都没有采用：
+
+- **「青绿长卷」**（本 spec 上一稿）。辨识度来自旅游专属的装饰：目的地字标长卷、山水设色、钢印、宋体标语。owner 2026-09-27 定下一个后台服务所有行业包，这些部件换到家装、电商就没有意义；「米色底 + 衬线字」也已被点名是 AI 产品的通病 [96]。
+- **「塔台」「光迹」「澄光层」**。2026-09-26 从任务、工程、对标、亮点四个视角评审，生产可用分平均 4.5、5.63、4.25（10 分制）。共同的问题：首屏给了展示品（回放的「AI 正在说」、阶段光轨、宣讲卡）；运营首页上摆着模型名、延迟、每千轮成本和哈希；塔台深色优先，澄光层大面积用玻璃；会话页画的是接口里没有的数据；日常六件事里有四件（产品库增改上架、酒店 CSV 导入、版本记录与回滚、审计）根本没画。
+- **方案 A 配 MiSans、方案 B 配 HarmonyOS Sans。** owner 选定 A 的视觉，但字体不能用：MiSans 的授权可撤销、要求在产品里署名、禁止改编，切片属于灰区；HarmonyOS Sans 只许分发未修改的副本。两款都没有 `halt` / `chws` 特性，连用的全角标点挤不了；MiSans 的「…」落在基线上；A 稿的中文只有一档字重，标题比拉丁字母轻一截。中文字体因此换成零授权风险、带 `halt` 和真 400 / 500 / 600 的思源黑体。
+
+用户是旅行社的老板和运营，不是工程师，每天长时间在后台编辑中文、盯会话。owner 2026-09-27 定下：以生产级的日常好用为准，演示和面试效果不再加分。
 
 ## 目标与非目标
 
 目标：
 
-1. 运营不接触任何工程词，就能完成这些事：改话术并发布、看改了什么、回滚；新建线路、逐日排行程、上架；导入酒店表；查谁改了什么。
-2. 一套有辨识度的视觉语言（下文「青绿长卷」）。浅色和深色两套主题里，所有文字对比度 ≥ 4.5:1，控件边界和焦点环 ≥ 3:1。antd 组件层也要达标，包括页签、分页、按钮悬停和焦点框。
-3. 红色只表示「出错了或要立刻处理」，第三方组件带进来的默认红也算在内。
-4. 打开总览需要的 JS 降到现在的 2/3 以下；页面加载和状态切换时不跳动。
-5. 匿名演示落在一张讲清产品的总览页上。
+1. 运营不接触任何工程词，就能做完每天的事：打开总览知道现在该处理什么；改话术、看改了什么、发布、回滚；新建和编辑产品库条目、排有序子项、上架；导入酒店表；查谁改了什么；找到等人接手的会话并打开工作台。
+2. **一个后台服务所有行业包。** 行业包只提供配置，界面按字段类型渲染；新增一个行业包，`console/src/` 下零改动（验收 5）。
+3. 方案 A「利落」：默认浅色，深色是同等质量的个人偏好。两套主题都在渲染后的页面上实测：文字 ≥4.5:1，控件边界和焦点 ≥3:1。
+4. Windows 和 Mac 看到同一套字：Geist、Geist Mono、思源黑体全部自托管，OFL 的义务全部履行；连用的全角标点在 Chrome / Edge 里原生挤压，在 Firefox / Safari 里由回退做到同样的宽度。
+5. 红色只表示出错或要立刻处理。会话状态固定四种，全站一套词，所有计数同源、相互对得上。
+6. 打开总览需要的 JS 降到现在的 2/3 以下；首屏字体 ≤300,000 B；页面加载和状态切换时不跳动。
+7. 模型、延迟、成本、评测、哈希这类工程信息，只出现在平台管理员的「系统」页和默认折叠的「技术详情」里。
 
 非目标：
 
-- 坐席工作台、人工接管与回复。这些归 02，仍在 `admin.html`；两套登录也要到 02 才合并。
-- 「用草稿试聊」：要新接口，另立 spec。
-- 线路和酒店的图片：等 02 加字段并自托管之后再做。
-- 发布环境、发布标签、A/B 分流：见「被否决的方案」。
-- 审计导出；审计按时间范围、操作者、对象筛选（开放问题 5）。
-- 会话列表显示客户昵称：昵称属于客户画像，01 明确不投影（开放问题 8）。
-- 拖动排序：统一用「上移 / 下移」按钮（见「被否决的方案」）。
-- 换组件库；改 CSP；改 01 的权限矩阵和匿名投影。
-
-## 现状与方案
-
-| 现状                                       | 方案                                                                             | 见                            |
-| ------------------------------------------ | -------------------------------------------------------------------------------- | ----------------------------- |
-| 没有主题、默认蓝、不达 AA，深色派生色失控  | `theme.ts` 两套钉死的 token 加组件层覆盖，对比度自测                             | 视觉方案                      |
-| 5 个平铺菜单，高亮失效                     | 分组侧栏 + 18px 图标 + 修高亮 + 按宽度收起                                       | 信息架构与导航                |
-| 登录后直接进 SOP                           | 新增总览：目的地长卷 + 指标条 + 系统状态                                         | 总览                          |
-| SOP 四个同权按钮、手动保存、错误走 toast   | 页头状态句 + 自动保存 + 发布抽屉（预检、差异、说明）+ 页内问题面板               | 销售话术                      |
-| 冲突只能丢弃                               | 按节合并 + `rebaseOnto`                                                          | 销售话术 · 冲突合并；接口改动 |
-| 表单英文键、红星、锁定用禁用态、720px 抽屉 | 独立详情页、分组卡片、钢印写明锁定类别、中文标签与常驻帮助、锁定内容改成只读文本 | 产品库详情与编辑器            |
-| 逐日行程是嵌套输入框                       | 竖向站点时间轴、餐食选择片                                                       | 逐日行程编辑器                |
-| CSV 要手抄英文表头，只认 UTF-8             | 中文模板、GBK 兜底、前端预检、防公式注入                                         | CSV 导入                      |
-| 会话列表显示 id，审计列机器码              | 会话：可读标签 + 旅程刻度 + 接待状态；审计：写成人话句子                         | 会话列表、审计日志            |
-| 2 MB 单包                                  | 按路由拆包 + 预算检查 + 静态资源压缩                                             | 性能                          |
+- 需要 02 后端的画面：会话工作台（J 页）、总览的 A2 部分、转人工的实时通知。本文给出设计和接口需求，实现排在 02 之后（plan 第 18 步；由谁实现见开放问题 2）。
+- 用草稿试聊、租户品牌色、「系统」页：都要新的后端，见「依赖 02 的后端」。
+- 换组件库；拖动排序；审计导出，以及按时间范围、操作者、对象筛选审计；产品图片；发布环境、发布标签、A/B 分流。
+- 在手机上编辑。编辑流程只保证宽 ≥1024；只读页面在 375 宽下可用。
+- 合并 `admin.html` 和后台的两套登录（02）。
 
 ## 设计原则
 
-1. **说运营的话。** 用用户熟悉的词；出错时说「无法……」，并给出下一步 [44][49]。机器码、UUID、哈希，以及服务端返回的原文 `detail`，只放在默认收起的「技术详情」里。
-2. **一个操作区一个主操作。** 每页一个页头，右上角是唯一的主按钮；风险操作排在最后，或者收进「更多」[4][5][6]。
-3. **红色只给出错。** 功能色表达明确的状态 [39]；danger 只表示危险或严重错误 [38]；critical 只给需要行动的问题 [97]。状态不能只靠颜色表达，要同时有图标和文字 [12][133]。
-4. **状态常驻，后果先说。** 「线上是哪一版、草稿改了什么、哪些内容锁了」要一直看得见 [52][69]。上架、回滚、丢弃之前，先把后果写清楚，再请用户确认 [36][71]。
-5. **错误就地。** 会自动消失的 toast 只用来报成功。错误属于 alert 而不是 toast：toast 会自动消失，也带不了「重试」这个操作 [29][33]；Polaris 也不鼓励用 toast 报错 [32]。错误显示在出错的位置或页头下方，并附上操作 [31][34][90]。
-6. **特色来自业务数据（设计立场）。** 签名细节由真实数据驱动：线路站点、钢印、季节条、目的地长卷。不用紫蓝渐变、玻璃拟态这类同质化装饰，参考的是 [122][123][160] 的观点，不是业界规范。不用 emoji 是本项目自定的规则。
-7. **克制。** 中性色打底，只有一个品牌色。这条是受 Aman「以克制表达奢华」[126] 和 Linear「少量变量推导主题」[114] 的启发，不是规范。静止的卡片用无阴影的基础材质，阴影主要留给浮层 [119]。动效要短，并且可以关掉 [120][140]。
+1. **首页是待办中心。** 先回答「现在要处理什么」，再给业务数和最近变更；分析、评测放到别处 [1][2][3]。
+2. **说运营的话。** 用用户熟悉的词；出错时写「无法……」并给出下一步 [42][45]。机器码、哈希、服务端原文只在默认折叠的「技术详情」里；模型、延迟、成本、评测只在「系统」页。
+3. **只画接口给得出的数据。** 今天拿不到的（转人工原因、等待时长、订单金额）不画，也不画成灰的。需要 02 的设计单独成页，编号前写「02 后端到位后」。界面上不出现「示意」「演示数据」这类角标。
+4. **界面不认行业。** 行业包提供实体、字段、销售阶段、话术节表、词汇、导航和图标名；界面只按字段类型渲染，不做只属于某个行业的部件。
+5. **约九成中性色。** 主按钮用墨色；租户主色只做链接、焦点、选中指示和「已改」标记；状态一律不用主色表达 [40][39]。
+6. **红色只给出错。** toast 只报成功；错误就地显示，并带着能做的操作 [35][36]。
+7. **状态常驻，后果先说。** 线上是哪一版、草稿改了什么、哪些内容锁了，一直看得见 [58]；上架、回滚、丢弃之前先写清后果 [38]。
+8. **默认浅色。** Zendesk、Intercom、Salesforce 的客服后台都默认浅色、深色由个人开启，Shopify 后台至今没有原生深色；NN/g 的结论是视力正常的用户多数情况下在浅色下表现更好 [10][11][12][13][14]。
+9. **没有常驻或循环的动效。** 导航、页签、排序、筛选、⌘K、行悬停、主题切换都是 0ms；尊重「减少动态效果」[113]。
+10. **一个操作区一个主按钮**，风险操作收进「更多」[17][19]。
 
-## 视觉方案
+## 现状与方案
 
-### 选定方向：A「青绿长卷」
+| 现状                                               | 方案                                                             | 见                      |
+| -------------------------------------------------- | ---------------------------------------------------------------- | ----------------------- |
+| 出厂蓝、不达 AA、没有深色                          | 锌灰中性色、墨色主按钮、单一租户主色；两套令牌钉死并自测         | 视觉与字体；设计系统 §1 |
+| 系统字体，Windows 退回微软雅黑；全角标点不挤       | 自托管 Geist、Geist Mono、思源黑体；`text-spacing-trim` 加回退   | 视觉与字体；设计系统 §2 |
+| 平铺菜单，线路、酒店写死                           | 侧栏、搜索、字段、阶段、话术词汇都由行业包配置生成               | 行业包通用架构          |
+| 登录后直接进话术页                                 | 总览：需要你处理 → 系统状态 → 业务数 → 最近变更 / 客户停在哪一步 | 总览                    |
+| 话术页四个同权按钮、手动保存、错误走 toast         | 状态句、自动保存、发布前检查、常驻发布条、发布抽屉               | 销售话术                |
+| 草稿冲突只能丢弃                                   | 按节合并加 `rebaseOnto`                                          | 销售话术；接口改动      |
+| JSON Schema 生成的表单、红星、锁定像禁用、720 抽屉 | 独立详情页；按字段类型渲染；锁定内容写成文本，每组只说一次原因   | 产品库                  |
+| CSV 只认 UTF-8、英文表头                           | 中文模板、GBK 兜底、前端预检、防公式注入                         | CSV 导入                |
+| 会话列表显示 id；审计列机器码                      | 会话：四种状态、阶段分布、同源计数；审计：人话句子               | 会话列表；审计日志      |
+| 2 MB 单包、`no-store`                              | 按路由拆包、体积预算、压缩、带哈希的资源长缓存                   | 性能                    |
 
-研究提出了三个成型方向：
+## 行业包通用架构
 
-- A「青绿长卷」：取《千里江山图》的石青、石绿、赭石设色，纸色底；线路站点、钢印、题跋式版本记录。
-- B「等高线图册」：国家公园 Unigrid 的黑色标题带 [129]、等高线纹理、海拔刻度。
-- C「票根行程单」：车票和登机牌的票面层级 [130]，发布做成检票剪口。
+### 配置结构
 
-其余视角独立提出的「行旅·墨青」「行程书·黛青印」「旅程账本」，色系和隐喻都在 A 的范围内，并入 A。
-
-选 A 的理由：
-
-- **和业务同源。** 高端定制游卖的是中国山水和线路。《千里江山图》以青绿为主：石青覆在石绿和淡石青之上，赭石和墨是次要色，只用来皴染山脚和阴面 [125]。这组颜色自带这层联想。「线路站点」一个隐喻，就能同时说清 SOP 分节、版本历史、逐日行程、销售阶段四件事。
-- **颜色语义天然对齐，而且分量对。** 石青作主色和「改过的」，石绿表示线上或正常，赭石只给少数需要留意的状态，和原画里「次要色」的分量一致；朱砂只给出错。「红色专用」这条硬约束因此成了设计故事的一部分。传统印章用朱红，这里改用无色的「钢印」；也不用蓝印泥，清代国丧期间公文改用蓝印 [124]。
-- **最适合主要工作量。** 运营大部分时间在读写中文长段落。A 的纸色底、1.75 倍行高 [143]、宋体标题受益最大。B 的近黑主按钮和户外气质偏硬；C 的票面在 SOP 页用不上。
-- **落地风险低。** 几乎全部落在这几样东西上：antd token、一个静态 CSS、几个自绘组件、一个几十 KB 的字体子集。不改 CSP，也不需要额外的接口。
-- **有意避开同质化。** 一是不用 antd 默认蓝，也不走紫蓝渐变的「AI 产品」套路 [122]。二是「米色底 + 橙色点缀 + 衬线字」已经被点名是 AI 产品的通病 [160]，所以赭石退为少见的状态色，宋体只用于固定标题和印文。辨识度靠结构性的签名细节（方形站点、印文钢印、目的地长卷）来立，不指望底色。三是核心色避开别人的默认值：朱砂 `#AE3A1E` 离 Material 3 的 error 原值 `#B3261E`[161] 的 ΔE 约 9，石青 `#1F4F7F` 离最近的 Tailwind 色 [162] 的 ΔE 约 7。
-
-从 B 借一样东西：线路的「最佳季节条」，由 `bestSeason` 解析，数据驱动。
-
-### 颜色
-
-全站只有这一套语义：
-
-| 语义         | 颜色 | 用在                                                                                                                                                                                        |
-| ------------ | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 交互与改动   | 石青 | 主按钮、链接、选中、焦点环；草稿里改过的节、季节条的旺季月份、目的地字标的框                                                                                                                |
-| 正常 / 线上  | 石绿 | 线上版本、已上架、检查通过、已成交                                                                                                                                                          |
-| 留意（少用） | 赭石 | 产品库有未保存的改动；字数到额度的 95%–100%；上架前的建议项没做；逐日行程条数和天数对不上；已转人工、客户在等但不到 10 分钟；系统在自动重试（缓存或索引延迟）；回滚前的「固定规则变过」提示 |
-| 中性         | 墨灰 | 草稿（从未上线）、历史版本、未改动的节、AI 接待中、锁定                                                                                                                                     |
-| 出错         | 朱砂 | 校验失败、接口失败、违规、超出额度、冲突、锁连接断开、转人工超时（≥ 10 分钟）、`ConfirmDanger` 的确认按钮                                                                                   |
-
-「草稿改了几节」不用赭石：运营编辑时一直处在这个状态，用赭石会让警示色长期挂在页面上。Contentful 把「已发布但有改动」标成 primary [164]，Shopify 的 warning 只给需要留意的问题 [97]。旺季月份也不用赭石，理由和 `DestinationMark` 不按目的地上色一样：颜色会被读成语义。
-
-色阶按用途分档：底、面、分隔、边框、次要字、正文各有固定位置，悬停和选中不各写一套 [118]。
-
-浅色。「纸」是页面底，「面」是卡片、输入框、表格的底；输入框的底恒为「面」。
-
-| token                                             | 用途                               | hex                     | 对比度                                                                                               |
-| ------------------------------------------------- | ---------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------- |
-| 纸 `colorBgLayout`                                | 页面底、页头、侧栏                 | #F5F3EE                 | —                                                                                                    |
-| 面 `colorBgContainer`                             | 卡片、输入框、表格                 | #FFFFFF                 | —                                                                                                    |
-| 表头底 `colorFillAlter`                           | 表头、分组标题                     | #F0EEE7                 | 正文 13.95                                                                                           |
-| 墨 `colorText`                                    | 正文                               | #1B2220                 | 纸 14.61、面 16.20                                                                                   |
-| 次要 `colorTextSecondary`                         | 次要文字、表头字、钢印             | #4B5450                 | 纸 7.06、面 7.83、表头底 6.74、选中底 6.64                                                           |
-| 说明 `colorTextTertiary` / `colorTextDescription` | 帮助文字、时间、描述               | #5C6561                 | 纸 5.43、面 6.02、表头底 5.18、选中底 5.11                                                           |
-| 占位 `colorTextPlaceholder`                       | 占位示例                           | #6B7470                 | 面 4.82（占位只出现在面上）                                                                          |
-| 石青 `colorPrimary`                               | 主按钮底、链接、选中字、焦点环     | #1F4F7F                 | 面 8.46、纸 7.63、表头底 7.28、选中底 7.18；白字在其上 8.46                                          |
-| 石青悬停 / 按下                                   | 主按钮与链接状态                   | #2B5F91 / #183F66       | 白字 6.67 / 10.82                                                                                    |
-| 选中底 `colorPrimaryBg` / `controlItemBgActive`   | 菜单、行、选项的选中               | #E7EDF4（悬停 #D5E0EC） | 石青字 7.18 / 6.32                                                                                   |
-| 焦点环 `colorPrimaryBorder`                       | antd 焦点框、`--yt-focus`          | #1F4F7F                 | 面 8.46、纸 7.63                                                                                     |
-| 信息底 `colorInfoBg` / `colorInfoBorder`          | 演示横幅等 info 提示               | #EDF1F6 / #B9C9DA       | 正文 14.28、石青 7.46                                                                                |
-| 石绿 `colorSuccess`                               | 线上、通过                         | #276E53                 | 面 6.10、纸 5.50；浅底 #E5F1EB 5.26（描边 #A9CDBB）                                                  |
-| 赭石文字 `colorWarningText`                       | 留意文字                           | #8A5B0C                 | 面 5.86、纸 5.29；浅底 #F6EEDC 5.08（描边 #DCC48F）                                                  |
-| 赭石图形 `colorWarning`                           | 留意图标、边框                     | #A06E12                 | 面 4.44、浅底 3.84（非文字，≥ 3）                                                                    |
-| 朱砂 `colorError`                                 | 出错                               | #AE3A1E                 | 面 6.13、纸 5.53；浅底 #FBEAE5 5.26（描边 #E3A99A）；白字 6.13；悬停 #8F2F18 8.12、按下 #7A2814 9.81 |
-| 控件边框 `colorBorder`                            | 输入框、默认按钮描边、季节条淡季格 | #7D8681                 | 面 3.75、纸 3.38、表头底 3.23                                                                        |
-| 分隔线 `colorBorderSecondary`                     | 卡片描边、分隔                     | #DDDFD8                 | 装饰，不计                                                                                           |
-| 中性标签（底 / 字）                               | 客群等标签                         | #EEF0EC / #4B5450       | 6.82                                                                                                 |
-| 提示框底 `colorBgSpotlight`                       | Tooltip                            | #1B2220                 | 白字 16.20                                                                                           |
-| 差异新增底 / 删除底                               | + 行 / − 行（删除线）              | #E3F1EA / #F1ECE2       | 正文 13.91 / 次要字 6.65                                                                             |
-
-深色。不用纯黑，降低饱和度，层级靠表面明度区分 [116][117][40]。
-
-| token                                                           | hex                     | 对比度                                                                                                                                            |
-| --------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 夜 `colorBgLayout`                                              | #111614                 | —                                                                                                                                                 |
-| 面 `colorBgContainer`                                           | #182020                 | —                                                                                                                                                 |
-| 浮层 `colorBgElevated`                                          | #1F2927                 | —                                                                                                                                                 |
-| 表头底 `colorFillAlter`                                         | #1D2624                 | 正文 12.61                                                                                                                                        |
-| 正文                                                            | #E4E9E5                 | 夜 14.87、面 13.49、浮层 12.16                                                                                                                    |
-| 次要                                                            | #B0B9B4                 | 面 8.25、浮层 7.44、表头底 7.71、选中底 7.06                                                                                                      |
-| 说明                                                            | #A0AAA5                 | 夜 7.65、面 6.94、浮层 6.26、选中底 5.94                                                                                                          |
-| 占位                                                            | #8E9893                 | 面 5.58、浮层 5.03                                                                                                                                |
-| 主按钮底 `colorPrimary`                                         | #3E73AA                 | 白字 4.96；作图形时对面 3.35、夜 3.69、浮层 3.02                                                                                                  |
-| 主按钮悬停 / 按下                                               | #4277AE / #33649A       | 白字 4.69 / 6.12                                                                                                                                  |
-| 石青前景 `colorPrimaryText`、`colorLink`、`colorInfo`、组件前景 | #93B8E2（悬停 #A9C7EA） | 面 8.05、夜 8.88、浮层 7.26、表头底 7.52、选中底 6.89；悬停对面 9.51                                                                              |
-| 焦点环 `colorPrimaryBorder`                                     | #93B8E2                 | 面 8.05、浮层 7.26                                                                                                                                |
-| 选中底                                                          | #1B2C3F（悬停 #22364C） | 石青前景 6.89 / 6.00                                                                                                                              |
-| 信息底 / 描边                                                   | #172432 / #2D4A66       | 正文 12.80、石青前景 7.64                                                                                                                         |
-| 石绿                                                            | #6FC39F                 | 面 7.88、浮层 7.11；浅底 #173127 6.63（描边 #2C5A46）                                                                                             |
-| 赭石（文字与图形同色）                                          | #DDB15A                 | 面 8.30、浮层 7.48；浅底 #33280F 7.24（描边 #5E4A1E）                                                                                             |
-| 朱砂                                                            | #F28B70                 | 面 6.87、浮层 6.20、夜 7.58、表头底 6.42；浅底 #3A1D15 6.37（描边 #6A3326）；悬停 #F5A08A 对浮层 7.32；朱砂上的数字用 #1B0B09（7.92），白字不达标 |
-| 控件边框                                                        | #67736E                 | 面 3.36、夜 3.70、浮层 3.03                                                                                                                       |
-| 分隔线                                                          | #2A3431                 | 装饰                                                                                                                                              |
-| 中性标签（底 / 字）                                             | #232B29 / #B0B9B4       | 7.21                                                                                                                                              |
-| 提示框底                                                        | #2E3A37                 | 白字 11.82                                                                                                                                        |
-| 差异新增底 / 删除底                                             | #173229 / #2A2A25       | 正文 11.21 / 次要 7.17                                                                                                                            |
-
-规则：
-
-- 文字 ≥ 4.5:1 [131]；控件边界、焦点环、承载状态的图形 ≥ 3:1 [132]；只读内容不享受禁用豁免 [26][131]。表中数值按 WCAG 公式算出。
-- **antd 的种子色要钉住。** 实测 antd 6.6.5：写在 `token` 里的 `colorPrimary`、`colorError`、`colorInfo`、`colorLink`、`colorSuccess`、`colorWarning` 会被当成种子交给算法重新派生。深色算法会改掉它们，例如 `#2C7393` 变成 `#286580`，`#F2837A` 变成 `#d1726b`。各种浅底、描边也由算法派生：浅色的 `colorPrimaryBg` 成了 `#A8B1B3`，`colorSuccessBg` 成了 `#A3ADA8`，石绿字放在上面只有 2.64:1 [146]。所以两套主题都用包一层的算法把种子钉回表中的值，其余 map token（Hover、Bg、Border、Text 等）一律显式写出。实测钉住之后，`getDesignToken()` 的输出和两张表逐项相等，没有一处不符。
-- **组件层单独覆盖。** 深色的 `colorPrimary` 是给白字垫底的填充色，放在面上只有 3.35:1。凡是拿 `colorPrimary` 当文字或细边框的组件 token，都改用石青前景色（见「落到 antd v6」）[174]。
-- `theme.selftest.ts` 同时复算两处：`getDesignToken()` 的实际输出，以及 `antdTheme(mode).components` 里显式写出的组件值（`getDesignToken` 不返回组件 token）。见验收 1。
-
-### 字体与字阶
-
-- **界面字体**用系统字体，零成本，不需要加载：`-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", sans-serif`。西文和数字排在前面，由 SF 或 Segoe UI 渲染，这两款带等宽数字特性，`tabular-nums` 才能生效。不用 Inter。
-- **宋体子集**：思源宋体 SemiBold（Noto Serif SC 600，OFL [128]）的子集，`font-family: "YT Serif"`。只收下面四类固定字符：
-  - `SERIF_STRINGS`：导航级页标题、登录与匿名首屏标语、页头字标、长卷的「境内」「境外」；
-  - `SEAL_LABELS`：钢印印文，即识别、计价、条款、推荐、固定；
-  - `DESTINATION_MARKS` 的全部字标；
-  - `SERIF_DIGITS`：0–9、v、逗号。
-
-  动态文字（线路名、租户名、详情页标题）一律用无衬线。
-  - 产物是一个 woff2，≤ 40 KB，提交在 `console/src/assets/fonts/`，同时提交它的字符清单。
-  - 由 `console/scripts/subset-serif.ts` 生成，用 devDependency `subset-font`。源字体按固定 URL 下载并校验 sha256，源文件不进仓库，字重固定为 600。
-  - `@font-face` 写 `font-display: swap` [171]。回退栈直接接无衬线栈，不经过系统宋体：简体 Windows 上的 SimSun 合成 600 会发糊。凡是用宋体的元素都加 `font-synthesis: none` [169]。
-  - `index.html` 由 Vite 小插件在构建时注入 `<link rel="preload" as="font" type="font/woff2" crossorigin href="/console/assets/…woff2">`，文件名带哈希 [170]。
-
-- **代码类**只用于技术详情里的哈希和编号：`ui-monospace, "SF Mono", Menlo, Consolas, monospace`，不自托管。
-- **字重**：无衬线只用 400 和 500，这是 antd 对中文的建议 [14]。宋体子集只有 600，只用于大字号的固定标题和数字；这是有意偏离 [14]，依据是飞书「Semibold 偶用于大标题」[127]，而且宋体 400 在 24px 下太细。
-- `html { text-autospace: normal }`，让中西文之间自动留出约 1/4 字宽 [141][142]，旧浏览器会自然忽略。CodeMirror 里关掉（`.cm-editor { text-autospace: no-autospace }`），否则光标定位会错位。
-
-字阶，字号共 12 / 14 / 16 / 24 / 32 五级（[14] 建议 3–5 级，并给出了 24、30、38 这几档）：
-
-| 级     | 字号/行高     | 字重                 | 字体                                             | 用于                                                  |
-| ------ | ------------- | -------------------- | ------------------------------------------------ | ----------------------------------------------------- |
-| 注释   | 12/20         | 400、500             | 无衬线（印文用宋体）                             | 帮助文字、表头、徽标、时间、落款、钢印印文            |
-| 正文   | 14/22         | 400                  | 无衬线                                           | 表格、表单、正文                                      |
-| 小标题 | 16/24         | 500                  | 无衬线                                           | 卡片标题                                              |
-| 阅读   | 16/28（1.75） | 400                  | 无衬线                                           | SOP 编辑器、预览正文、版本记录的变更说明；行宽 ≤ 40em |
-| 页标题 | 24/32         | 宋体 600；详情页 500 | 导航级页标题用宋体子集；详情页的动态名称用无衬线 | 页头标题                                              |
-| 展示   | 32/40         | 600                  | 宋体子集                                         | 总览指标数字、版本号「v3」、登录与匿名首屏标语        |
-
-- 页头的字标「AI 销售助手」按标志处理，固定 20px 宋体，不属于字阶。
-- 40em 行宽是本项目的取值：16px 下约 40 个汉字，落在中文屏幕排版经验值 32–45 字/行的范围内 [173]。[143] 只用来支撑 1.75 的行高。
-- 表格里的金额、天数、海拔、时间一律用 `font-variant-numeric: tabular-nums` 并右对齐 [14][46]。宋体的单个数字不需要等宽。
-
-### 间距、圆角、阴影、密度
-
-- 间距基数 8，细处用 4；越相关的元素离得越近，档位是 8 / 16 / 24 [41][42][43]。
-- 页边距 24（宽 ≥ 1440 时 32）；卡片之间 16；卡片内边距 24；表单项之间 24（antd 默认）；页头与内容之间 16。
-- 圆角：控件 4、卡片 6、浮层 8、状态胶囊 999、站点与钢印 1–2。偏方的圆角取「册页」的感觉，也和 antd 默认的 6/8 拉开差别。
-- 阴影只给 Drawer、Modal、Dropdown、Popover；卡片用 1px 分隔线描边，不加阴影 [119]。
-- 密度：
-  - 产品库表格是两行内容，行高约 56；会话行是两行，行高 64 [11]；审计时间线每条约 44。
-  - SOP 目录每项 ≥ 36，标题允许折成两行、不截断。「不截断」是本项目自定的规则。
-
-### 图标
-
-- 功能图标只用已安装的 `@ant-design/icons` 的 Outlined 一套：侧栏导航 18px，按钮 16px，行内 14px。不混用面性图标，不用 emoji [121]。
-- 导航：总览 `AppstoreOutlined`、销售话术 `MessageOutlined`、线路 `CompassOutlined`、酒店 `ShopOutlined`、会话 `CommentOutlined`、审计日志 `AuditOutlined`。
-- 状态与动作：
-  - 状态：检查通过、已上架、已成交用 `CheckCircleOutlined`；草稿 `EditOutlined`；出错 `ExclamationCircleOutlined`；留意 `ClockCircleOutlined`；AI 接待 `RobotOutlined`；已转人工 `CustomerServiceOutlined`。
-  - 动作与来源：回滚 `RollbackOutlined`、发布 `CloudUploadOutlined`、导入 `ImportOutlined`、系统 `SettingOutlined`、命令行 `CodeOutlined`、上移 `ArrowUpOutlined`、下移 `ArrowDownOutlined`、删除一条 `DeleteOutlined`（默认样式，不用红）。
-- 自绘图形写成 React 组件（DOM 或内联 SVG 元素，不发请求，在 CSP 下安全）：`RouteLine`、`Seal`、`SeasonStrip`、`DestinationMark`、`RidgeScroll`、`StatusPill`。
-
-### 签名细节
-
-一条主线、三个配件，全站共用。
-
-1. **线路站点 `RouteLine`。** 一根竖线串起若干方形「驿站」。站点是 8×8、圆角 1 的方块，和人物、会话的圆形头像区分开，也和 antd Timeline 的圆点加灰线拉开距离 [163]。
-   - 线段：已走过的用 1.5px 石青实线，未发生的（草稿、没填完的天）用 1px 控件边框色虚线。线段只是装饰，信息由站点形状和文字承担。
-   - 站点只有 4 种状态，靠形状加文字区分，不只靠颜色 [133]：
-     - **未改 / 未填**：空心方，1px 控件边框色描边；
-     - **改过 / 填齐**：石青实心方；
-     - **有问题**：朱砂实心方，扩成 16×16，里面写问题数。数字浅色主题用白色（6.13），深色主题用 #1B0B09（7.92）；
-     - **固定**：14px 钢印（见 2）。
-   - 石绿只在版本记录里用一处：线上版本那一站是石绿实心，旁边带「线上」`StatusPill`。
-   - 保存状态不画在站点上，只在页头状态句里表达，保存失败一律用朱砂。
-   - 用在三处：SOP 目录（每节一站）；版本记录（每版一站，草稿是最上面的一段虚线）；逐日行程（D1…Dn）。审计时间线借用同一根线，站点换成动作图标。
-2. **钢印 `Seal`。** 无色，像公文上的压印，有两种形态：
-   - **组级印文钢印**：横式方章，约 30×18，1px 次要色框，圆角 2，框里是 12px 宋体两字印文：识别、计价、条款、推荐、固定。次要色对面 7.83，对表头底 6.74。用在产品库卡片头和 SOP 固定规则节。一眼就能读出锁的类别，它是全站最有记忆点的部件。
-   - **行内锁形钢印**：14×14、圆角 2 的方框，里面是 10px 锁形。用在 SOP 目录和只读字段旁。
-
-   两种都带视觉隐藏的文字「锁定：{类别}」。锁定原因在卡片头下方用 12px 说明色常驻显示，不藏在悬停里。
-
-3. **季节条 `SeasonStrip`。** 12 格，每格 6×10，间隔 1。
-   - `peakMonths(bestSeason)` 里的月份用石青实心（浅色对面 8.46，深色用 #93B8E2，对面 8.05），表示这些月份出发报价上浮 10%。
-   - 其余月份用 1px 控件边框色描边（对面 3.75）：月份位置是读懂这张图必需的信息，要满足 3:1 [132]。
-   - 当前月份下方加一条 2px 墨色短线。
-   - 「全年」显示为 12 格全描边，旁注「全年 · 不加价」。
-   - 带 `aria-label`，如「旺季 5–10 月，出发报价上浮 10%」。
-   - 用在线路表、线路详情、预览。
-4. **目的地字标 `DestinationMark` 与目的地长卷。**
-   - 字标是方形，1px 石青细框，无底色，墨色宋体字。境内写省级简称一字（川、藏、滇、黔、陕、京、疆、琼……），境外写两字简称（巴厘、日本、北欧、马代、瑞士）。对照表 `DESTINATION_MARKS` 是闭集，放在 `src/shared/destination-marks.ts`，字都进宋体子集；查不到时取首字，并改用无衬线。
-   - 字标不按目的地上色，否则颜色会被读成语义。
-   - 尺寸：列表里 28×28；总览长卷里 40×40，两字简称用 16px。
-   - 人物头像保持圆形、无衬线、中性底，和字标一眼就能分开。
-   - 总览首屏第一排是「覆盖目的地」长卷：一条横带，上下各一条 1px 分隔线，像手卷的天头地脚。带里按「境内 / 境外」两段排开，段首是宋体小标，每个字标下面写在售线路数；本月在旺季的，再加一个石青小方块和「本月旺季」。它就是作品集的门面截图。
-
-点缀一处：
-
-- **山水题图 `RidgeScroll`。** 全站只有这一处插画，只用在登录页和匿名总览首屏的底部，通栏，高约 120px。它是三层平涂的山：赭石打山脚，石绿画山体，石青点峰顶，照《千里江山图》的设色层次来 [125]。不用渐变，彩度降低，`aria-hidden`。
-  - 颜色是装饰专用变量 `--yt-ridge-1/2/3`：浅色 #D8C9AA、#A7C2B1、#8DA6BE，深色 #3B342A、#2C4438、#2D4054。它们不属于状态色，不稀释语义。
-  - 工作页面（总览页头、空状态）不放插画。
-
-版本记录做成题跋式，见「销售话术 · 版本记录」。
-
-### 动效
-
-生产力型动效：短、快、可关 [120]。
-
-- 时长：快 0.1s（悬停、按压）、中 0.16s（状态切换、淡入）、慢 0.24s（抽屉、面板）。曲线 `cubic-bezier(0.2, 0, 0.38, 0.9)`。
-- 只动 `opacity` 和 `transform`，不动尺寸和位置，不引起布局偏移。
-- 只有一处仪式感：发布或回滚成功时，版本记录里的新站点「压印」一次（scale 1.06 → 1，160ms）。
-- 自动保存的状态文字淡入切换；保存条从底部滑入，0.16s。
-- `prefers-reduced-motion: reduce` 时：antd 传 `token.motion = false`；静态 CSS 里 `.yt-anim` 的 `animation`、`transition` 全部置为 `none` [140]。
-
-### 落到 antd v6 与 CSS 变量（CSP 下）
-
-页面 CSP：`default-src 'self'; script-src 'self'; style-src 'self' 'nonce-…'`。
-
-**antd 主题。** 新文件 `console/src/theme.ts` 是颜色的唯一来源。它导出：
-
-- `PALETTE`：上面两张表，每套含 `token`、`components`、`primaryFg`、`primaryFgHover`、`brand`（`--yt-*` 的值）；
-- `antdTheme(mode, reducedMotion): ThemeConfig`；
-- `PRIMARY_FG_KEYS`；
-- 对比度测试用的 `CONTRAST_PAIRS`。
-
-antd v6 默认走 CSS 变量模式，运行时注入的 `<style>` 继续由 `ConfigProvider` 的 `csp.nonce` 带上 nonce [146][147]。
-
-`main.tsx`：
-
-```tsx
-<ConfigProvider
-  locale={zhCN}
-  csp={cspNonce ? { nonce: cspNonce } : undefined}
-  theme={antdTheme(mode, reducedMotion)}
-  button={{ autoInsertSpace: false }} // 去掉两字按钮里的空格：「检 查」→「检查」
-  form={{ requiredMark: (label, { required }) => (required ? label : <>{label}<span className="yt-optional">（选填）</span></>) }} // 必填不打星，只标选填 [23][166]
->
-```
+完整的 TypeScript 定义和两个包的取值在设计系统 §9。契约层面的要点：
 
 ```ts
-// console/src/theme.ts（节选；色值即「颜色」两表）
-type Algo = typeof theme.defaultAlgorithm;
-const SEEDS = ['colorPrimary', 'colorInfo', 'colorLink', 'colorSuccess', 'colorWarning', 'colorError'] as const;
+// src/shared/pack.ts —— 前后端共用，只依赖 zod 和 src/shared
+export type FieldType =
+  'text' | 'longText' | 'money' | 'intUnit' | 'monthRange' | 'enum' | 'tags' | 'boolean' | 'subItems' | 'reference' | 'status';
+export interface FieldDef {
+  /* key 路径、类型、标签、分组、帮助、必填、锁定、按类型的配置项；见设计系统 §9 */
+}
+export interface EntityType {
+  /* kind、名称、图标、表单分组、锁定组、字段、列表列与筛选、能否导入 CSV、上架确认的第一句 */
+}
+export interface IndustryPack {
+  /* 词汇、实体、销售阶段、话术节表、导航 */
+}
 
-/** antd 把 token 里的种子色交给算法重新派生，深色算法会改掉它们（实测 6.6.5：#2C7393 → #286580）。
- *  包一层把种子钉回 PALETTE；其余 map token 写在 token 里本来就生效 */
-const pinned =
-  (base: Algo, p: Palette): Algo =>
-  (seed, map) => ({
-    ...base(seed, map),
-    ...Object.fromEntries(SEEDS.map((k) => [k, p.token[k]])),
-  });
-
-/** 拿 colorPrimary 当文字或细边框的组件 token [174]。深色 colorPrimary 是垫白字的填充色，对面只有 3.35:1，
- *  这些位置改用 primaryFg（浅色 #1F4F7F，深色 #93B8E2），带 Hover 的键用 primaryFgHover。
- *  theme.selftest 断言两套主题都覆盖了这张表里的每个键 */
-export const PRIMARY_FG_KEYS = {
-  Tabs: ['itemSelectedColor', 'itemHoverColor', 'itemActiveColor', 'inkBarColor'],
-  Pagination: ['itemActiveColor', 'itemActiveColorHover'],
-  Button: ['defaultHoverColor', 'defaultHoverBorderColor', 'defaultActiveColor', 'defaultActiveBorderColor'],
-  Input: ['activeBorderColor', 'hoverBorderColor'],
-  InputNumber: ['activeBorderColor', 'hoverBorderColor'],
-  Select: ['activeBorderColor', 'hoverBorderColor'],
-  Menu: ['itemSelectedColor'],
-} as const;
-
-export function antdTheme(mode: 'light' | 'dark', reducedMotion: boolean): ThemeConfig {
-  const p = PALETTE[mode];
-  return {
-    algorithm: pinned(mode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm, p),
-    token: { ...BASE, ...p.token, ...(reducedMotion ? { motion: false } : {}) },
-    components: withPrimaryFg(p.components, p.primaryFg, p.primaryFgHover),
-  };
+/** 实体图标可用的 lucide 名称（设计系统 §7 的实体图标集合） */
+export const ENTITY_ICONS: readonly string[];
+/** 结构自检：返回问题列表，空数组表示通过 */
+export function checkPack(pack: IndustryPack): string[];
+/** 上架前检查：必须项与建议项 */
+export function checkItem(entity: EntityType, payload: Record<string, unknown>): ItemCheck;
+export interface ItemCheck {
+  required: CheckIssue[];
+  recommended: CheckIssue[];
+}
+/** label 是中文路径，例如「逐日行程 · 第4天 · 当天餐食」 */
+export interface CheckIssue {
+  path: string;
+  label: string;
+  message: string;
 }
 ```
 
-- `BASE`：`fontFamily`、`fontFamilyCode`、`fontSize: 14`、`borderRadius: 4`、`borderRadiusLG: 6`、`borderRadiusSM: 2`，三档 `motionDuration*`，以及 `motionEaseInOut` / `motionEaseOut`。
-- `PALETTE[mode].token` 显式写出这些键：
-  - 主色：`colorPrimary` / `Hover` / `Active`、`colorPrimaryText` / `TextHover` / `TextActive`、`colorPrimaryBg` / `BgHover`、`colorPrimaryBorder` / `BorderHover`、`controlItemBgActive` / `ActiveHover`；
-  - 信息与链接：`colorInfo` / `InfoText` / `InfoBg` / `InfoBorder`、`colorLink` / `LinkHover` / `LinkActive`；
-  - 功能色：`color{Success,Warning,Error}` 各自的本色、`Text`、`Bg`、`Border`，以及 `colorErrorHover` / `Active`；
-  - 文字：`colorTextBase`、`colorText`、`colorTextSecondary`、`colorTextTertiary`、`colorTextDescription`、`colorTextPlaceholder`；
-  - 底与边：`colorBgBase`（深色）、`colorBgLayout`、`colorBgContainer`、`colorBgElevated`、`colorBgSpotlight`、`colorFillAlter`、`colorBorder`、`colorBorderSecondary`。
-- `PALETTE[mode].components`：
-  - `Layout`：`headerBg`、`siderBg`、`bodyBg` 取纸（夜），`headerHeight: 56`；
-  - `Menu`：`itemBg: 'transparent'`、`itemSelectedBg` 取选中底、`iconSize: 18`、`itemBorderRadius: 4`、`activeBarBorderWidth: 0`、`groupTitleColor` 取说明色；
-  - `Table`：`headerBg` 取表头底、`headerColor` 取次要色、`headerSplitColor: 'transparent'`、`rowHoverBg`；
-  - `Button`：`primaryShadow` / `defaultShadow` / `dangerShadow` 都是 `'none'`，`fontWeight: 500`。不设 `dangerColor`，因为全站没有实心红按钮；
-  - `Card`：`headerFontSize: 16`；
-  - `Tag`：`defaultBg` / `defaultColor` 取中性标签；
-  - `Form`：`labelRequiredMarkColor` 取说明色，作为必填星号的兜底，正常情况下星号不会出现。
+- **系统字段。** `$code` 是条目编号，也就是 payload 的 `id`（01 的约定：条目的 id 就是编号，由 CHECK 约束钉住）。`$status`、`$updated` 取自 `CatalogItem` 的 `status`、`updatedAt`、`updatedByName`。
+- **建议项**：`FieldDef.recommend` 表达不拦上架的建议项，例如「行程亮点建议 3–5 条」「全程最高海拔没填」。
 
-**组件用法的禁令**，由源码扫描（`scripts/check-console-src.ts`）保证，理由都是「antd 在这些地方用的颜色没有 token 可改」[174]：
+### 放在哪里
 
-- 不用 `Radio.Button`：描边型选中态把字色写死为 `colorPrimary`。三档单选用 `Segmented`；需要「未选」态的二选一，用普通 `Radio`。
-- 不用 `<Badge count>`：计数固定是白字配 `colorError`，深色下只有 2.53:1。问题数用 `RouteLine` 的问题站点或 `StatusPill`。
-- 不用 `Tag` 的状态预设（`color="success|warning|error|processing"` 及其他预设色）：状态预设的字色取 `colorWarning` 这类图形色，不是 `*Text`，浅色赭石只有 3.14:1。状态徽标一律用 `StatusPill`。
-- `StatusPill`：图标 + 文字 + 浅底，胶囊圆角 999。文字色取 `colorSuccessText`、`colorWarningText`、`colorErrorText` 或 `colorTextSecondary`，底色取对应的浅底。Carbon 要求状态同时用上色、形、字 [12]，这里三样都有。
+- **旅游包**：`src/packs/travel/console-pack.ts`。ADR-003 规定行业包放在 `src/packs/<name>/`，`travel` 在公开白名单里。取值来自真实代码，由 `src/packs/packs.selftest.ts` 逐项核对（不变量 14）。
+- **注册表**：`src/packs/registry.ts`，从 `packId` 查到 `IndustryPack`。`src/cli/tenant-create.ts` 的 `--pack` 可选值改为读注册表，加包不用改命令行。
+- **家装整装包是假的**，只用来证明界面通用：`src/shared/pack-fixtures/renovation.ts`。它不进注册表，也不进构建产物（不变量 25）。不放 `src/packs/`：那里白名单以外的目录会被公开边界门禁拦下。
+- **渲染器自测是唯一的例外。** `console/src/fields/fields.selftest.tsx` 要拿两个包的真实配置逐字段渲染，所以它是 `console/src` 里唯一可以 import `src/packs/registry.ts` 和 `src/shared/pack-fixtures/` 的文件。`scripts/check-boundaries.ts` 给这一个文件单开一条例外，其余 `console/src` 文件 import `src/packs/` 或 `src/shared/pack-fixtures/` 都让 `pnpm lint` 失败。自测文件不在构建入口的依赖图里，产物检查（不变量 25）兜底。
+- 01 plan「Open」里「给线路加 region 字段」一条放到 02。到时只在旅游包配置里加一个 enum 字段，界面不改。
 
-**品牌变量（antd 之外的）。**
+### 下发
 
-- 变量全部静态写在 `console/src/styles/brand.css` 里，分两套：`:root` 是浅色；`:root[data-theme="dark"]` 和 `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { … } }` 是深色。
-- 变量表：
-  - 签名组件：`--yt-line`、`--yt-seal`、`--yt-season-peak`、`--yt-mark-border`；
-  - 差异与斜纹：`--yt-diff-ins-bg`、`--yt-diff-del-bg`、`--yt-hatch-a`、`--yt-hatch-b`；
-  - 插画：`--yt-ridge-1/2/3`；
-  - antd 值的副本，给静态 CSS 和 CodeMirror 用：`--yt-primary`、`--yt-primary-fg`、`--yt-focus`、`--yt-text`、`--yt-text-2`、`--yt-text-3`、`--yt-border`、`--yt-divider`、`--yt-bg`、`--yt-surface`、`--yt-elevated`、`--yt-error`、`--yt-on-error`、`--yt-success`、`--yt-warning-text`。
-- `theme.selftest.ts` 解析 brand.css，断言两套值与 `PALETTE[mode].brand` 逐项相等。
-- 切换主题时只改 `<html data-theme>`（`setAttribute('data-theme', …)`，这不是 style 属性），不在运行时写任何样式。静态 CSS 在 JS 加载前就生效，所以第一帧签名组件就有颜色。
-- 源码里禁止 `style.cssText` 和 `setAttribute('style', …)`：两者都会被 `style-src` 拦下 [145]。
+- `GET /api/console/pack` 返回当前租户（`tenants.pack_id`）的包配置。包配置是代码里的公开内容，不含租户数据，所以 demo 下匿名也能读；prod 下匿名与其他接口一样返回 401。
+- console 启动时并发取 `/me` 和 `/pack`。`/me` 返回 401 就是匿名：demo 下 `/pack` 照样返回配置，渲染匿名外壳；prod 下两者都是 401，进登录页。加载和出错时的样子见「外壳 · 启动」。侧栏、搜索占位、实体名、图标、阶段名、工具的中文名、话术节的锁定原因都从 `/pack` 来。console 里没有包的注册表，也不 import 任何包模块（渲染器自测除外，见上）。
+- 前端把条目的 payload 一律当 `Record<string, unknown>` 读，按 `FieldDef.key` 的路径取值。API 客户端要求的 `kind` 类型，只在 `console/src/api.ts` 一处从包配置里的字符串转换过去。
 
-**静态 CSS。** `brand.css` 还放这些东西：签名组件样式、固定规则节的斜纹、宋体 `@font-face`、`text-autospace`、焦点环、reduced-motion 规则、`.yt-boot` 首屏骨架。它由 `main.tsx` import，Vite 打成 `/console/assets/*.css`，在 `index.html` 里以 `<link>` 加载，走 `style-src 'self'`。斜纹用 `repeating-linear-gradient`，不用 `url("data:…")`。
+### 字段类型渲染器
 
-**不内联 data: URL。** `vite.config.ts` 设 `build.assetsInlineLimit: 0`。原因：默认 4 KB 以下的资源会被转成 base64 的 data: URL [148]，而 `img-src`、`font-src` 会回退到 `default-src 'self'`，里面不含 data: [144]，线上会被静默拦掉，本地 dev 却看不出来。宋体 woff2 作为 `/console/assets/` 下的文件加载。
+- 每种 `FieldType` 一个渲染器，各有三种形态：列表单元格、表单、只读（设计系统 §6）。只读形态同时用于三种情况：上架后锁定、没有编辑权限、匿名演示。
+- 渲染器表的类型是 `Record<FieldType, …>`，少写一种类型，typecheck 就报错。
+- **表单布局只看字段类型和锁定状态**：默认两列网格，长类型占满一行，多字段的有序子项自成区块；整张卡都锁定、只有 3 个及以上短值（只读的 text、intUnit、money、单选 enum）时排成 4 列，列宽按内容自适应（设计系统 §6.0、§6.4，owner 2026-09-27）。
+  - 草稿和新建页不适用 4 列：那里是输入框，主栏 736 宽分成 4 列后每列约 150，放不下线路名称这类值。所以在草稿和新建页上，逐日行程仍在第一屏以下。这个范围待 owner 确认（开放问题 9）。
+- 新增字段类型要改 console。这是有意的：字段类型是界面和行业包之间的契约。
 
-**CodeMirror。** `TextEditor`、`SectionDiff` 和合并视图的 `EditorView.theme` 只用 `var(--yt-*)`，去掉写死的 `#d9d9d9`、`#f0f0f0`。深色时加 `EditorView.darkTheme.of(true)`；继续传 `EditorView.cspNonce`。两个第三方包自带的样式要覆盖：
+### 表单状态与提交
 
-- `@codemirror/lint` 的 baseTheme 给 `.cm-lintRange-*` 和 `.cm-lint-marker-*` 用了 `background-image: url('data:image/svg+xml,…')` [175]。在我们的 CSP 下会被拦，每显示一次触发一次违规，下划线本身也不显示。所以要覆盖 `.cm-lintRange-error`、`.cm-lintRange-warning`、`.cm-lintRange-info`、`.cm-lintRange-hint`：设 `background-image: none`，改用 `text-decoration: underline wavy var(--yt-error)`（非 error 级用 `--yt-text-3`），`text-underline-offset: 3px`。同时不开 `lintGutter`。
-- `@codemirror/merge` 的 baseTheme 自带一套红：`#ee4433` 渐变下划线、`#ff000033` 删除字底、`#e43` 删除行标记；`unifiedMergeView` 默认还会渲染英文的 Accept / Reject 按钮，底色是 `#2a2` 和 `#d43`。要覆盖的类有 `.cm-changedText`、`.cm-deletedChunk .cm-deletedText`、`.cm-merge-b .cm-deletedText`、`.cm-deletedLineGutter`、`.cm-changedLineGutter`、`.cm-insertedLine`、`.cm-deletedChunk`：新增用 `--yt-diff-ins-bg` 加行首「+」竖条，删除用 `--yt-diff-del-bg` 加删除线，不用红。`unifiedMergeView` 传 `mergeControls: false`。`EditorState.phrases` 汉化：「$ unchanged lines」→「已折叠 $ 行未改动」，「Revert this chunk」→「采用线上的写法」，「Accept」/「Reject」→「采用」/「不采用」[155][157]。
+- 表单状态是条目 payload 的深拷贝，编辑按 `FieldDef.key` 的路径写回。
+- 保存时，`set` 里放值变了的顶层键（用 01 已有的 `sameValue` 判定），`unset` 里放被清空的选填顶层键。选填字段清空就是删键，不留 `""` 或 `[]`，因为 01 的 schema 要求这些字段出现时不为空。嵌套字段（如 `intensity.level`）随它所在的顶层对象整体提交；体力强度选「不填」时，整个 `intensity` 进 `unset`。
+- 多选按 `storeAs` 连成字符串的字段（旅游包的「当天餐食」），读写走纯函数 `parse` / `format`：现有数据的全部取值往返逐字节不变；规则之外的旧值显示原文输入框，提示「这里的写法不标准」，不自动改写。
+- 打开一条现有条目、不做任何改动：不出现保存条，也不发请求（验收 16）。
 
-**首屏不闪。**
+### 校验
 
-- `console/index.html` 加 `<meta name="color-scheme" content="light dark">`。
-- head 里加一个同源的经典脚本 `<script src="/console/theme-boot.js"></script>`（放在 `console/public/`，不到 300 B，`script-src 'self'` 允许）。它在 try/catch 里读 `localStorage['yt.theme']`，把 `<html data-theme>` 设成用户手动选的主题，这样手动选的主题从第一帧就生效。
-- `#root` 里放 `<div id="boot" class="yt-boot">`，只画页头骨架，不画侧栏：服务端不看会话，没法预知是登录页、匿名页还是成员页。骨架只用 class，样式在 brand.css 里，不用 style 属性。React 挂载后替换它。
-- 托管方已经对 `index.html` 全量替换 nonce 占位符（`renderConsoleIndex`），不需要改服务端。
+- 界面用 `checkItem` 实时算「上架前检查」。必须项来自 `required`（默认 true）、`min`、`showWhen`、`countFrom`，以及各类型的格式要求：金额是正整数、月份区间能解析、枚举值在 `options` 里。建议项来自 `recommend`。
+- **数组类型的「必填」**（tags、多选 enum、subItems）只要求键存在，可以是空数组，与 schema 一致（`tags: texts` 允许 `[]`）。要至少几项时用 `min`，拦上架（如行程亮点 `min: 1`）；建议几项用 `recommend`，不拦。
+- **计数口径**：必须项按检查项计。每个必填的顶层字段算一项（有序子项算一项，子项里的缺漏都列在这一项下，写「第3天：当晚住宿没填」）；`countFrom` 的条数一致算一项；`showWhen` 显示出来的字段各算一项。草稿线路 r-guizhou-5d 是 12 个必填字段加条数一致，共 13 项，写「必须项13/13」。
+- 服务端的 zod schema 仍是唯一的权威：保存返回 422 时，`issues[].path` 按字段路径映射到对应字段下方显示，标签用中文路径。
+- 两者可能走偏，所以 `packs.selftest.ts` 用 `data/` 下的全部条目加一组变异来核对：`checkItem` 的必须项全部通过，当且仅当 schema 的 `safeParse` 成功（不变量 15）。
 
-**主题切换。** 页头用户菜单里有「外观：跟随系统 / 浅色 / 深色」，默认跟随系统 [158]。选择存在 `localStorage['yt.theme']`，读写都包 try/catch，读不到就跟随系统。`<html data-theme>` 同步为实际生效的主题。匿名访客也能切换。
+### 加一个行业包要做什么
 
-## 信息架构与导航
+1. 在 `src/packs/<name>/console-pack.ts` 写配置，登记进注册表，通过 `checkPack`。
+2. 服务端那一侧（产品库 schema、工具、话术节表、护栏）属于引擎的行业包化，见总参考「阶段 4」，不在本 spec 里。
+3. `console/src/` 零改动。实体图标只能从设计系统 §7 的图标集合里选；要一个集合外的图标，改的是设计系统和那张集合表，不是某个页面。
 
-侧栏只有两层；一级项各配一个专属图标，标签 1–2 个词 [2]；分组见 [3]：
+## 信息架构、导航与路由
 
-| 分组   | 项         | 路由                               | 谁能看到         |
-| ------ | ---------- | ---------------------------------- | ---------------- |
-| —      | 总览       | `/`                                | 所有人（含匿名） |
-| —      | 销售话术   | `/sop`                             | 所有人           |
-| 产品库 | 线路、酒店 | `/catalog/route`、`/catalog/hotel` | 所有人           |
-| 运营   | 会话       | `/conversations`                   | 成员             |
-| 运营   | 审计日志   | `/audit`                           | owner、admin     |
+侧栏只有两层，一级项各配一个图标，标签 1–2 个词 [16]。顺序固定，由行业包生成（设计系统 §4.2）：
 
-- **选中项**用 `useMatchRoute`（或 `<Link activeProps>`）判断，修掉带 `/console` 前缀比较的缺陷。导航要一直标出「你在哪」[1][48]。选中项的样式：选中底、石青前景字，加一条 2px 石青左竖条（深色用 #93B8E2）。竖条写在 brand.css 里，用 `inset box-shadow` 实现。侧栏图标 18px，标签 14px、字重 500。
-- **收起。** antd 的断点只有 lg 992、xl 1200，`Sider` 也只接一个 `breakpoint` 和一个 `collapsedWidth` [165]，做不出三档，所以改成受控的 `collapsed`。共用的 `useViewport()` 按 `matchMedia('(min-width: 1280px)')` 和 `('(min-width: 992px)')` 分三档：
-  - ≥ 1280：展开，208px；
-  - 992–1279：收成 64px 图标栏，悬停出标签；
-  - < 992：`collapsedWidth: 0` 并隐藏，由页头左侧的菜单按钮以 Drawer 打开 [2]。
-
-  SOP 目录变下拉、详情副栏下移，也读同一个 hook。
-
-- **页头**：56px，和侧栏一样是纸色，与白色内容卡片构成「倒 L」外框 [114]。
-  - 左侧品牌区：一枚 20×20 的无色方章（1px 次要色框，宋体「销」字），接宋体字标「AI 销售助手」，再接一条 1px 竖分隔。成员接着显示 `Me.tenantName`（14px、500）；匿名显示中性的「演示」`StatusPill`。产品的正式名称见开放问题 3，现在的字标是描述性占位。
-  - 右侧（匿名）：「去体验对话」链接（`/chat.html`）+ 默认样式的「登录」按钮。
-  - 右侧（成员）：姓名、角色中文名、下拉菜单（外观、退出）。
-- **面包屑**只在第三层出现，如「产品库 / 线路 / 四川 稻城亚丁·色达秘境 8 日」[1][2]。
-- **页头组件 `PageHeader`**：标题、一句说明或状态句、右侧操作区；一个操作区至多一个主按钮 [4][6][7]。
-- **`document.title`** 每页更新为「页名 · 运营后台」，详情页为「条目名 · 线路 · 运营后台」[136]。
-- **URL 状态**：筛选、页签、选中的节都写进 search params（TanStack Router `validateSearch`），刷新、后退、分享链接都能还原 [15]。
+```
+总览
+销售话术
+{pack.nav.catalogGroup}         旅游包是「产品库」
+  {各实体 label}                 线路、酒店；家装包是装修套餐、主材
+运营
+  会话            [等人接手数]
+  审计日志                       只给所有者、管理员
+平台                             只给平台管理员（要后端，见「依赖 02 的后端」第 12 项）
+  系统
+```
 
 路由（`basepath: '/console'` 不变）：
 
-| 路由                   | search                                                                                                     | 页面                                                                  |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `/`                    | —                                                                                                          | 总览（取代现在的重定向）                                              |
-| `/sop`                 | `section?: string`、`view?: 'history'`、`v?: number`                                                       | 销售话术                                                              |
-| `/catalog/$kind`       | `status?: 'active' \| 'draft'`、`q?: string`、`dest?: string`、`region?: 'cn' \| 'abroad'`、`seg?: string` | 产品库列表                                                            |
-| `/catalog/$kind/$code` | `tab?: 'edit' \| 'preview'`                                                                                | 条目详情                                                              |
-| `/catalog/new/$kind`   | —                                                                                                          | 新建条目。不用 `/catalog/$kind/new`：`new` 是合法的条目编号，会撞路由 |
-| `/conversations`       | `state?: 'ai' \| 'human' \| 'paid'`、`page?: number`                                                       | 会话                                                                  |
-| `/audit`               | `cat?: 'sop' \| 'catalog' \| 'account' \| 'platform'`、`login?: 1`                                         | 审计日志                                                              |
-| `/_specimen`           | `theme?: 'light' \| 'dark'`                                                                                | 控件样张，只在 `VITE_SPECIMEN=1` 的构建里存在（走查用，生产构建不含） |
+| 路由                            | search                                                                                  | 页面                                                                  |
+| ------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `/`                             | —                                                                                       | 总览（取代现在跳到 `/sop` 的重定向）                                  |
+| `/sop`                          | `section?: string`、`view?: 'history'`、`v?: number`                                    | 销售话术；`v` 表示正在查看某一版的改动                                |
+| `/catalog/$kind`                | `status?: 'active' \| 'draft'`、`q?: string`、`f?: string[]`（每项写成「字段 key:值」） | 产品库列表                                                            |
+| `/catalog/$kind/$code`          | `tab?: 'edit' \| 'preview'`                                                             | 条目详情                                                              |
+| `/catalog/new/$kind`            | —                                                                                       | 新建条目。不用 `/catalog/$kind/new`：`new` 是合法的条目编号，会撞路由 |
+| `/conversations`                | `state?: 'ai' \| 'human' \| 'paid'`、`stage?: string`、`page?: number`                  | 会话列表                                                              |
+| `/conversations/$id`            | —                                                                                       | 会话工作台（02 之后，J 页）                                           |
+| `/audit`                        | `cat?: 'sop' \| 'catalog' \| 'account' \| 'platform'`、`login?: 1`                      | 审计日志                                                              |
+| `/system`                       | —                                                                                       | 系统（要后端）                                                        |
+| `/_specimen`、`/_specimen/type` | `theme?: 'light' \| 'dark'`                                                             | 控件样张与字体标点样张（P 页），只在 `VITE_SPECIMEN=1` 的构建里注册   |
+
+- 筛选、页签、选中的节都写进 search params（TanStack Router 的 `validateSearch`），刷新、后退、分享链接都能还原 [22]。
+- 侧栏的选中项按路由匹配（`useMatchRoute`），每个路由恰有一个选中项。
+- `document.title` 写成「页名 · 租户名」，详情页写成「条目名 · 实体名 · 租户名」[108]；匿名时租户名写「演示」。
+
+权限（在 01 的矩阵上只增加页面，不改接口权限）：
+
+| 页面     | 所有者、管理员       | 主管、坐席、只读                         | 匿名（demo）                     | 匿名（prod） |
+| -------- | -------------------- | ---------------------------------------- | -------------------------------- | ------------ |
+| 总览     | 全部                 | 没有「最近变更」和草稿类待办             | 横幅加在售数                     | 登录页       |
+| 销售话术 | 编辑                 | 只读，能看版本记录，不能回滚、载入、丢弃 | 只读已发布版本                   | 登录页       |
+| 产品库   | 编辑                 | 只读                                     | 只读已上架条目，默认显示「预览」 | 登录页       |
+| 会话     | 列表                 | 列表                                     | 没有入口                         | 登录页       |
+| 审计日志 | ✓                    | 没有入口                                 | 没有入口                         | 登录页       |
+| 系统     | 平台管理员（要后端） | —                                        | —                                | —            |
 
 ## 逐页设计
 
+每页的版式、尺寸和样张数据见设计系统 §10 的对应页面；这里写行为和状态。
+
+### 外壳
+
+- **结构**：侧栏 240 宽（收起时 56）加一块内嵌的内容面板，没有全宽页头（设计系统 §4）。
+- **启动**：并发取 `/me` 与 `/pack`，两个都回来才渲染侧栏和路由（「下发」）。
+
+  | 状态                                            | 表现                                                                                         |
+  | ----------------------------------------------- | -------------------------------------------------------------------------------------------- |
+  | 两个请求都没回来                                | 侧栏骨架（租户行、搜索、6 行导航）加面板骨架，延迟 300ms 出现                                |
+  | `/me` 200、`/pack` 200                          | 成员外壳                                                                                     |
+  | `/me` 401、`/pack` 200                          | demo 匿名外壳                                                                                |
+  | `/me` 401、`/pack` 401                          | prod：登录页                                                                                 |
+  | 任一个 503 `db_disabled`                        | 整页中性说明「后台只在数据库模式下可用」，没有按钮                                           |
+  | 任一个 503 `not_ready`                          | 整页 StateView「系统正在启动 · 重试」                                                        |
+  | `/pack` 网络失败或 5xx；或 `/me` 网络失败或 5xx | 整页 StateView 出错「服务暂时连不上 · 重试」。`/me` 失败时不按匿名显示：分不清身份，宁可重试 |
+
+- **租户行**：租户 logo（没有 logo 时在主色底上写名称首字）、`Me.tenantName`，右边是铃铛。只有平台管理员能切租户时才画切换箭头，04 之前不会出现。
+- **铃铛**：实心徽标是等人接手数；点开是一个弹层，列出这些会话，每行写「企微客户 · F01」和「8分钟前有新动静」，行尾「打开工作台」新标签打开 `admin.html#s=<id>`；底部「查看全部会话」。
+  - 没有等人接手的会话时，弹层里只有一行 13 text-2「没有等人接手的会话」，底部链接照旧，徽标不画。
+  - 轮询失败时，徽标保留上一次的数；弹层顶部加一行 13 danger「没取到最新的」和文字按钮「重试」。不弹 toast。
+- **搜索触发器**打开 ⌘K。结果分组为「页面 / 各实体 / 会话 / 操作」；支持拼音和首字母，拼音库懒加载、不进入口集合。
+  - 键盘：只用 ↑↓ 移动，Enter 打开；输入法组字时 Enter 不打开结果。不响应不带修饰键的 J / K：拼音是直接敲拉丁字母的，「jd」「kh」这类以 j、k 开头的查询要能输入。
+  - 数据：「页面」「操作」是静态的；「各实体」用各实体的 `GET /catalog/:kind`，和列表页共用 React Query 缓存，⌘K 第一次打开时把还没载入的实体取一遍，按 `list.search` 的字段在前端匹配；「会话」只搜 `GET /conversations?limit=100&order=waiting_first` 这一页，按短码匹配，组底写 13 text-3「只搜最近100个会话」。匿名没有「会话」组。
+  - 某一组还在取时显示一行骨架；取失败时这一组显示一行「没取到 · 重试」，其他组照常。
+  - 没有结果时写：没有找到「{输入}」；下一行 13 text-2：换个说法，或者用拼音首字母。
+- **用户行**：头像、名字、角色。名字加角色放不下时先藏角色：角色整个折到第二行被裁掉，名字完整显示；名字本身也放不下时才省略名字。纯 CSS 实现，不用 JS 测宽；角色仍在 Tooltip（「名字·角色」）、用户菜单的身份块和读屏里（owner 2026-09-27）。
+- **用户菜单**：外观（浅色〔默认〕/ 深色 / 跟随系统）、减少动态效果、关于、退出登录。没有单键切主题的快捷键。
+  - 选择存在 `localStorage` 里，读写都包在 try/catch 里，读不到就按默认。
+  - 首帧由 `/console/theme-boot.js`（外链脚本，CSP 只许本站脚本）在 React 挂载之前设好 `<html data-theme>`，不闪。
+- **收起**：进入销售话术页时默认收起为 56；≥1280 展开；992–1279 收成 56 的图标栏，悬停出标签；<992 隐藏，由 52 高的顶栏里的菜单按钮打开抽屉。antd `Sider` 只接一档断点 [20]，所以改成受控收起，由共用的 `useViewport()` 判断。
+- **计数刷新**：页面可见时每 30 秒取一次 `GET /conversations/counts` 和 `GET /conversations?state=human`；页面隐藏时停。数字变了，背景闪一次 accent-bg，150ms 淡出，只一次。今天不订阅 `/api/admin/stream`，原因见「依赖 02 的后端」第 5 项。
+- **匿名 demo**：
+  - 租户行写「演示」；没有铃铛，也没有会话、审计入口；用户行换成「登录」按钮和「关于」图标按钮。
+  - 每页页头下一条 info 横幅：「演示模式 · 只读：这里配置的销售话术和产品库，直接驱动企业微信里的 AI 销售。」右侧是「去体验对话」「登录后编辑」。这是说明不是警告，不用黄色 [40]。
+- **非编辑角色**（主管、坐席、只读）：不挂横幅；页头状态句末尾放一个「只读」胶囊，悬停说明「你的角色是坐席，只能查看」；编辑类按钮不渲染，而不是灰着放在那里。
+- 每页首个可聚焦元素是「跳到主要内容」；使用 `nav`、`main` 地标。
+
 ### 通用部件
 
-**加载、空、错误。** 统一组件 `StateView`：
+**加载、空、出错（`StateView`）。**
 
-- 加载用和成品同尺寸的骨架：表格用 `Table loading` 骨架行，卡片用 `Skeleton`。不用整页转圈 [20][21]。只有首屏判断身份时，才显示 `index.html` 里的静态页头骨架。
-- 空状态替换整块内容，不留空表头 [18]。分三类：
-  - 首次没有数据：标题用正向说法 [18]，如「从第一条线路开始」；说明将来这里会有什么，再给一个主操作；
-  - 筛选没有结果：写清怎么调整，给「清除筛选」链接，不放主按钮 [19]；
-  - 没权限或系统原因：写原因和能做的事。
+- 加载用和成品同尺寸的骨架，静态不闪，延迟 300ms 才出现 [27][28]。不用整页转圈；转圈只出现在提交中的按钮里。
+- 空状态替换整块内容，不留空表头 [25]：标题不超过 5 个词，一句说明，最多一个主按钮 [26]。
+- 筛选没有结果时，只给「清除筛选」链接，不放主按钮。
+- 出错时就地放 danger Alert，写「没取到 · 重试」，重试是次要按钮。
 
-  标题 ≤ 5 个词 [19]。工作页面的空状态不放插画。
+**错误文案（`ERROR_COPY`）**：按 `ApiError.error` 映射，固定的中文，不拼接服务端的 `detail`；`detail` 只出现在「技术详情」里。
 
-**错误文案。** 全部按 `ApiError.error` 映射，放在 `src/shared/ui-labels.ts` 的 `ERROR_COPY` 里，文案是固定的中文，不拼接服务端的 `detail`。`detail` 只出现在「技术详情」里：
+| error / 情况                                    | 标题 · 下一步                                               | 形式                                                         | 颜色 |
+| ----------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------ | ---- |
+| 会话过期（判定见下）                            | 登录已过期 · 重新登录后接着刚才的操作                       | 就地弹登录框，不卸载页面，编辑内容保留；登录后重放失败的请求 | 中性 |
+| 403 `forbidden`                                 | 你的角色无法执行这项操作 · 需要所有者或管理员               | 页内 Alert                                                   | 留意 |
+| 403 `csrf` / `cross_site`                       | 页面已过期 · 刷新后重试                                     | 页内 Alert 加刷新按钮                                        | 出错 |
+| 409 `rev_conflict`                              | 别人刚改过这里 · 载入最新内容（你的改动以对比形式保留）     | 页头下横幅加按钮                                             | 出错 |
+| 409 `sop_conflict`                              | 有N节在你改的同时被改了 · 去合并                            | 发布抽屉或页头下横幅                                         | 出错 |
+| 409 `catalog_code_taken`                        | 这个编号已经有了 · 换一个                                   | 字段下方                                                     | 出错 |
+| 422 `contract`                                  | 有N处需要改 · 点一处跳过去                                  | 检查清单与行内提醒                                           | 出错 |
+| 422 `locked_field`                              | 这些内容上架后锁定了：{中文字段名}                          | 页内 Alert                                                   | 出错 |
+| 422 `invalid_item` / `invalid_csv`              | 有N处要改                                                   | 落到字段或行                                                 | 出错 |
+| 422 `invalid_sop`                               | 无法保存这份话术：格式不对 · 撤回刚才的改动再试             | 页头下横幅                                                   | 出错 |
+| 422 `locked_section`                            | 固定规则节不能改 · 撤回这一节的改动                         | 页头下横幅，点名节                                           | 出错 |
+| 404 `not_found`                                 | 没有这项内容：可能已被删除或地址写错了 · 回到列表           | 整块                                                         | 中性 |
+| 409 `conflict`                                  | 刚才有人同时在改 · 刷新后重来                               | 页头下横幅加刷新按钮                                         | 出错 |
+| 400 `bad_request`、415 `unsupported_media_type` | 无法完成这项操作 · 刷新页面后重试                           | 页内 Alert 加刷新按钮                                        | 出错 |
+| 429 `rate_limited` / `busy`                     | 尝试太频繁 · 稍后再试                                       | 表单内                                                       | 出错 |
+| 503 `lock_lost`                                 | 暂时无法保存：系统在重连数据库，线上内容不受影响 · 稍后重试 | 页头下横幅                                                   | 出错 |
+| 503 `not_ready`                                 | 系统正在启动 · 重试                                         | 就地加重试按钮                                               | 中性 |
+| 503 `db_disabled`                               | 后台只在数据库模式下可用                                    | 整页                                                         | 中性 |
+| 网络失败、5xx（含 `internal`）                  | 服务暂时连不上 · 重试                                       | 就地加重试按钮                                               | 出错 |
+| 表里没有的 `error`                              | 无法完成这项操作 · 重试；原码进技术详情                     | 就地加重试按钮                                               | 出错 |
 
-| error / 状态                       | 标题 · 下一步                                                         | 形式                                                         | 颜色 |
-| ---------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------ | ---- |
-| 会话过期（判定见下）               | 登录已过期 · 重新登录后接着刚才的操作                                 | 就地弹登录框，不卸载页面，编辑内容保留；登录后重放失败的请求 | 中性 |
-| 403 `forbidden`                    | 你的角色无法执行这项操作 · 需要所有者或管理员                         | 页内 Alert                                                   | 留意 |
-| 403 `csrf` / `cross_site`          | 页面已过期 · 刷新后重试                                               | 页内 Alert + 刷新按钮                                        | 出错 |
-| 409 `rev_conflict`                 | 别人刚改过这里 · 载入最新内容（你的改动以对比形式保留）               | 页头下横幅 + 按钮                                            | 出错 |
-| 409 `sop_conflict`                 | 有 N 节在你改的同时被改了 · 去合并                                    | 发布抽屉 / 页头下横幅                                        | 出错 |
-| 409 `catalog_code_taken`           | 这个编号已经有了 · 换一个                                             | 字段下方                                                     | 出错 |
-| 422 `contract`                     | 有 N 处需要改 · 点一处跳过去                                          | 问题面板                                                     | 出错 |
-| 422 `locked_field`                 | 这些内容上架后锁定了：{中文字段名}                                    | 页内 Alert                                                   | 出错 |
-| 422 `invalid_item` / `invalid_csv` | 有 N 处要改                                                           | 落到字段 / 行                                                | 出错 |
-| 429 `rate_limited` / `busy`        | 尝试太频繁 · 稍后再试（响应带 `Retry-After` 时写「约 N 分钟后再试」） | 表单内                                                       | 出错 |
-| 503 `lock_lost`                    | 暂时无法保存：系统在重连数据库，线上内容不受影响 · 稍后重试           | 页头下横幅                                                   | 出错 |
-| 503 `db_disabled`                  | 后台只在数据库模式下可用                                              | 整页 Result                                                  | 中性 |
-| 网络失败、5xx                      | 服务暂时连不上 · 重试                                                 | 就地 + 重试按钮                                              | 出错 |
+- 成功只用反相 toast：一句话，3 秒消失，不带操作；发布成功也不用 toast，写在发布条里 [35][36]。
+- **会话过期的判定**只在前端当前是成员身份时进行（本次启动时 `/me` 成功过，或在本页登录成功过）；匿名身份下收到的 401 都不算过期，启动时 `/me` 的 401 就是进入匿名的信号（「外壳 · 启动」）。不单看 401 状态码：登录接口的 `invalid_credentials` 也是 401；demo 下会话失效后，GET 返回 200 的匿名投影，只有写请求才返回 401。成员身份下满足任一条即判为过期：任一响应体的 `error === 'unauthorized'`；某个 GET 返回了匿名形状（每个接口一个 `isAnonShape` 判断）；`/me` 返回 401。判为过期后，React Query 的缓存不清，当前页不卸载，匿名形状的数据不写进缓存。
 
-- 成功只用 `message.success`：一句话，3 秒消失，不带操作 [29][32]。错误一律不用 toast [29][30][33]。
-- **会话过期的判定。** 不看 401 状态码：登录接口的 `invalid_credentials` 也返回 401；demo 下会话失效后，GET 会返回 200 的匿名投影，只有写请求才返回 401。判定条件有三种，满足任一即可：
-  - 任一响应体的 `error === 'unauthorized'`；
-  - 前端当前是成员身份，而某个 GET 返回了匿名形状（每个接口一个 `isAnonShape` 判断，例如 SOP 概览里没有 `draft` 键）；
-  - `/me` 返回 401。
+**未保存保护**：有未保存的内容时，站内跳转用 `useBlocker({ shouldBlockFn, enableBeforeUnload, withResolver: true })` 拦下，接一个确认框：标题「有改动还没保存」，按钮「留下」「放弃改动并离开」；关页和刷新走 beforeunload [119][35]。
 
-  满足时，`QueryCache` / `MutationCache` 的 `onError` 置一个「会话过期」标记，弹出登录框；不清 React Query 缓存，也不卸载当前页。匿名形状的数据不写进缓存。
+**其余部件**（外观见设计系统 §5）：
 
-**未保存保护。** 有未保存的内容时：
-
-- 站内跳转用 `useBlocker({ shouldBlockFn, enableBeforeUnload, withResolver: true })`，接一个自定义 Modal：标题「有改动还没保存」，按钮「留下」和「放弃改动并离开」；
-- 关页和刷新走 beforeunload [29][150]。
-
-**破坏性确认。** 统一组件 `ConfirmDanger`：
-
-- 标题写对象，正文写后果 [35][36][37]。
-- 确认按钮写具体的动作，用 `danger` 加默认类型，也就是描边红字：浅色 #AE3A1E 对面 6.13，深色 #F28B70 对浮层 6.20。GitLab 只要求确认按钮用 danger 变体，没要求实心 [35]。
-- 取消按钮默认聚焦。弹窗里不放 primary 按钮。
-- 全站只有这个组件能出现 `danger` 属性；菜单项（包括「更多」里的「丢弃草稿」）不加 danger。
-
-**只读形态。**
-
-- 匿名演示：页头下方一条 info 色调横幅（信息底加石青图标）：「演示模式 · 只读：这里配置的销售话术和产品库，直接驱动企业微信里的 AI 销售。」右侧是「去体验对话」「登录后编辑」。这是说明不是警告，不用黄色 [39]。
-- 非编辑角色（supervisor、agent、viewer）：不挂横幅，页头状态句末尾加一个中性的「只读」`StatusPill`，悬停时说明「你的角色是坐席，只能查看」。编辑类按钮不渲染，而不是灰着放在那里。
+- `Status`：全站唯一表达状态的组件，圆点加文字，只有「等人接手」加底色。
+- `ConfirmDanger`：全站唯一能出现危险按钮的组件，取消按钮默认聚焦，弹窗里不放主按钮 [37]。上架和回滚不算危险操作。
+- `TechDetails`：默认折叠的「技术详情」，是唯一读取服务端 `detail`、显示哈希、动作编码和 JSON 原文的地方。
+- `ActionBar`：保存条和发布条，吸在内容面板底部，不透明 [34]。
+- `CheckList`：发布前检查和上架前检查共用。
+- `Sep` 与文本助手 `cjk()`：间隔号和标点挤压的回退，见「视觉与字体」。
 
 ### 登录
 
-- 页面直接铺在纸上，不做「左半品牌色块 + 右半表单卡」这种常见的 SaaS 模板。
-  - 一栏居中：宋体标语「AI 销售助手 · 运营后台」（展示级 32/40）；一句无衬线说明「在这里维护销售话术和产品库，企业微信里的 AI 销售按它们接待客户。」；然后是表单，输入框本身是「面」色。
-  - 视口底部是通栏的 `RidgeScroll`。
-- 字段是「邮箱」「密码」（不用「口令」）。标签在上方，不加冒号 [22]；占位符只放示例。
+- 一栏居中：标题「运营后台」（display 36/44），一句说明「在这里维护销售话术和产品库，企业微信里的 AI 销售按它们接待客户」，然后是表单。不做「半屏品牌色块加表单卡」。
+- 字段是「邮箱」「密码」，不用「口令」。标签在上方，不加冒号；占位符只放示例 [29][46]。
 - 错误显示在按钮上方的页内 Alert 里，文案取 `ERROR_COPY`，不用 toast。服务端登录失败的 `detail` 同步由「邮箱或口令不对」改为「邮箱或密码不对」。
-- 从匿名演示点「登录」进来时，表单下方给一个「返回演示」链接（viewer 状态里带 `from: 'anon'`）。
-- 状态：提交中按钮显示 loading；429 按 `ERROR_COPY` 显示。
+- 从匿名演示点「登录」进来时，表单下方给一个「返回演示」链接。
+- 提交中按钮显示 loading；429 按 `ERROR_COPY` 显示。
 
-### 总览（新）
+### 总览（A 页；02 之后加 A2）
 
-总览回答两个问题：现在在跑什么，接下来该做什么 [8][9]。只调现有接口，前端并发请求；各块独立加载、独立出错，一块失败不影响其他。
+总览回答两个问题：现在要处理什么，业务怎么样 [1]。只调现有接口和本文新增的两个只读接口；各块独立加载、独立出错，一块失败不影响其他块。
 
-布局从上到下：
+| 块                    | 数据                                                                    | 谁看得到               |
+| --------------------- | ----------------------------------------------------------------------- | ---------------------- |
+| 需要你处理 · 等人接手 | `GET /conversations?state=human`                                        | 成员                   |
+| 需要你处理 · 话术草稿 | `GET /sop` 的 `draft`；问题数来自 `POST /sop/draft/check`               | 所有者、管理员         |
+| 需要你处理 · 待上架   | 各实体的 `GET /catalog/:kind` 里的草稿；必须项、建议项用 `checkItem` 算 | 所有者、管理员         |
+| 系统状态              | `GET /status`                                                           | 成员                   |
+| 业务数                | `GET /conversations/counts` 与各实体列表                                | 成员；匿名只有「在售」 |
+| 客户停在哪一步        | counts 的 `aiByStage`                                                   | 成员                   |
+| 最近变更              | `GET /audit?limit=5&actions=…`（不含登录）                              | 所有者、管理员         |
 
-1. **目的地长卷**（所有人可见）。数据取已上架线路，按 `destination` 分组，按 `overseas` 分成境内、境外两段；每个字标下面写「N 条线路」，本月在旺季的加「本月旺季」。点一个字标，跳到 `/catalog/route?dest=…`。窄屏时横带在自己的容器里横向滚动，页面本身不横滚。
-2. **指标条**。不是一排独立的圆角卡片 [123]，而是一条 1px 描边的横条，用竖分隔线分成几格，像题签。每格上面是 12px 标签，中间是展示级的宋体数字，下面一行是链接：
-
-| 格       | 数据                                                              | 成员                                                                              | 匿名             |
-| -------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------- |
-| 线上话术 | `GET /sop`                                                        | 「v3」+「9月26日 14:02 · 老板发布」；有草稿时用石青字「草稿改了 2 节 → 继续编辑」 | 版本号与发布日期 |
-| 在售线路 | `GET /catalog/route`                                              | 上架数；有草稿时「2 条草稿待上架 →」，跳到草稿页签                                | 上架数           |
-| 在售酒店 | `GET /catalog/hotel`                                              | 同上                                                                              | 上架数           |
-| 会话     | `GET /conversations?limit=1` 与 `?state=human&limit=1` 的 `total` | 总数；「已转人工 N →」                                                            | 不显示           |
-
-3. **系统状态**（约 1/3 宽）+ **最近变更**（约 2/3 宽）。最近变更取 `GET /audit?limit=5`，默认不含登录，显示 5 句人话和「查看全部」，只给 owner、admin 看。其他成员只有系统状态；匿名两块都没有。
-
-系统状态由 `Status` 译成人话。一切正常时只显示一行石绿的「一切正常」：
-
-- `lock === 'lost'` → 朱砂：「暂时无法保存修改：和数据库的锁连接断开了，系统在自动重连。线上话术和产品不受影响。」
-- `sopStale` / `catalogStale` → 赭石：「话术 / 产品库的最新修改还没载入运行中的系统，正在自动重试。」
-- `index.stale` 或 `index.lastError` 不为空 → 赭石：「线路搜索索引在更新，新上架的线路可能暂时搜不到。」`lastError` 的原文收进技术详情。
-- `drift` 不为空 → 中性：「后台里改过 N 处内容，和代码仓库里的初始数据不同，以后台为准。」点开后按节、按条目列出。
-
-匿名首屏在长卷上方加一段说明，兼作作品集的门面：宋体标题「这是 AI 销售助手的运营后台」（展示级）、一句话、主按钮「去体验对话」、次按钮「登录后编辑」，底部是通栏的 `RidgeScroll`。
-
-状态：
-
-- 每块都有自己的骨架；
-- 接口失败时，块内显示「没取到 · 重试」；
-- 在售数为 0 时，长卷位置显示「从第一条线路开始」，编辑者多一个「新建线路」。
-
-### 销售话术（SOP）
-
-布局（宽 ≥ 1280）：
-
-```
-┌ 销售话术                          [版本记录] [检查] [发布…] [···] ┐
-│ 线上 v3 · 9月26日 14:02 老板发布 ｜ 草稿改了 2 节 · 已保存 刚刚         │
-│ 字数额度 ▇▇▇▇▇▇▇▇▇▇▇▇▇▇░░░░ 2,238 / 2,658 · 还能写 420 字             │
-├──────────────┬────────────────────────────────────────┤
-│ 目录（240）   │ 话术原则                                          │
-│ □ 前言        │ ┌ 编辑器（16/28，行宽 ≤ 40em）──────────┐    │
-│ [固定] 各阶段目标 │ │ …                                        │    │
-│ ■ 话术原则 ②  │ └─────────────────────────────────┘    │
-│ [计价] 报价纪律 │ 本节 612 字（比线上 +34）                         │
-│ …             │                                                   │
-└──────────────┴────────────────────────────────────────┘
-□ 未改  ■ 改过（石青）  ② 有 2 个问题（朱砂）  [固定] 钢印
-```
-
-**页头与状态句。**
-
-- 状态句一句话说清三件事：线上是哪一版（谁、什么时候发布的）、草稿相对线上改了几节（石青字）、保存状态 [52][58][69]。保存状态的文字预留固定宽度，切换时不挤动布局。
-- 操作区依次是：「版本记录」「检查」（默认按钮）、「发布…」（唯一的主按钮）、「更多」（里面是「丢弃草稿」）[4][35]。
-- 草稿和线上相同时，「发布…」禁用，Tooltip 说明「草稿和线上一样，没有可发布的改动」。n8n 在没有可发布的改动时同样禁用发布按钮 [52]。
-
-**字数额度。**
-
-- 前端按服务端的同一口径实时计算：可编辑节的正文（去掉标题行和其后的空行），UTF-16 长度求和。上限取 `SopOverview.budget.limit` 向下取整。
-- 把 `src/sop/sections.ts` 里的 `TRAVEL_SOP_SECTIONS`、`sectionBody`、`editableChars` 挪到 `src/shared/sop-sections.ts`，`src/sop/sections.ts` 原样再导出，前后端共用。这几项没有任何 import，挪过去不越界。节表以后由行业包定义（03），到时再挪走。
-- 额度条按节分段，每节一段，当前节加深，悬停显示节名和字数。
-- 三档颜色：< 95% 中性；95%–100% 赭石；> 100% 朱砂，并写「超出 38 字，发布会被拦下」。阈值不取常见的 80%：上限是导入版本的 1.2 倍（`BUDGET_RATIO`），没改过的话术就已经在 83%，按 80% 算会一直是赭石。超限不拦输入 [64]。字数上限的做法可参照 Fin：它的每条指引上限 2,500 字符 [60]。
-- 编辑器下方写「本节 612 字（比线上 +34）」。
-
-**目录。** 保持 prompt 的原顺序（这个顺序就是模型读到的顺序），用 `RouteLine` 画成站点：
-
-- 可编辑节：正常字重，站点状态按「签名细节」的 4 种来画。编辑区标题只写节名，不写「第 N 站」。
-- 固定规则节（01 的锁定节）：印文钢印「固定」，不用 Tag。锁的标记在列表里就能看到，不用点开才知道；WordPress 在工具栏和列表视图里都显示锁图标 [61]。
-- 匿名与成员的目录一样都有钢印：节表来自 `src/shared/sop-sections.ts`，不依赖 `AnonSopOverview`。
-- 标题允许两行，不截断，悬停显示全称。
-- 键盘：上下方向键切换，Enter 进入编辑器（roving tabindex）。
-- 选中的节写进 URL 的 `section`。
-
-**编辑器。**
-
-- 去掉行号；用比例字体，16/28，行宽 ≤ 40em。
-- 加 `@codemirror/lang-markdown` 的轻量高亮：粗体标记、列表标记用次要色，不渲染成富文本。
-- `EditorView.contentAttributes({ 'aria-label': '「话术原则」正文' })`。
-- 编辑器和差异视图都用 `EditorState.phrases` 汉化（见「落到 antd v6」）。
-
-**固定规则节。** 正文只读，但保持正文色。外框左侧是 4px 斜纹（`--yt-hatch-*`），上方写一句：「这一节是报价、转人工等硬规则，由开发在代码里维护，这里改不了。要改请联系开发。」不出现「镜像」「data/sop.md」[26][27]。这样分工的依据：Decagon 让运营用自然语言写流程，工程保留护栏和代码 [62]；OpenAI 也建议把 prompt 放进代码走评审 [63]。本项目只对护栏这样做。
-
-**自动保存。**
-
-- 停止输入 1.5 秒后调 `PUT /sop/draft`，带 `rev`；首次保存带 `rev: null`、`basedOn: published.id`。
-- 状态文字：「保存中…」→「已保存 · 刚刚」。失败时按 2s、5s、15s 退避重试，状态变成朱砂的「没保存上 · 重试」，并带手动重试按钮。
-- `⌘S` / `Ctrl+S` 立即保存。去掉「保存草稿」按钮：同一页不混用手动保存和自动保存 [29]。
-- 409 `rev_conflict`：不重试，停住自动保存。页头下显示「草稿刚被别人改过」横幅和「载入最新草稿」按钮；本地没保存上的节以只读对比的形式保留，供复制。
-- 有未保存或保存中的内容时，离开受保护（见通用部件）。
-
-**检查与问题。**
-
-- 「检查」先冲掉待保存的内容，再调 `/draft/check`。
-- 有问题时，页头下方出现问题面板（朱砂 Alert，标题「有 3 处需要改，发布前要处理」）。每条一行：中文类型 + 节名 + 说明。说明由前端按 `code`、`sectionKey`、`match` 生成，服务端的 `detail`（含「V9 SOP…」这类出处）只放进每条的技术详情。点一条，就切到该节、滚到命中的文字并选中 [65]。
-- 编辑器里用 `@codemirror/lint` 在 `match` 所在的范围画波浪下划线，悬停显示同一句说明 [156]；下划线的样式见「落到 antd v6」。目录上，该节的站点变成问题站点，并显示问题数。
-- 没有问题时，面板显示石绿的「检查通过，可以发布」，不再显示哈希。
-
-| code               | 中文             | 前端生成的说明                           | 定位                           |
-| ------------------ | ---------------- | ---------------------------------------- | ------------------------------ |
-| `structure`        | 结构有问题       | 这一节的标题或位置被改了，改回原来的标题 | 到节                           |
-| `locked_changed`   | 改动了固定规则节 | 固定规则节不能改，撤回这一节的改动       | 到节                           |
-| `phrase_missing`   | 少了必需的说法   | 要保留这句：「{match}」                  | 找线上版本里含这句的节，跳过去 |
-| `phrase_forbidden` | 用了禁用说法     | 「{match}」不能出现在话术里              | 到 `match`                     |
-| `unknown_tool`     | 工具名不存在     | 「{match}」不是现有的工具                | 到 `match`                     |
-| `unknown_field`    | 字段名不存在     | 「{match}」不是现有的字段                | 到 `match`                     |
-| `over_budget`      | 超出字数额度     | 超出 N 字（前端算）                      | 到额度条                       |
-
-**发布抽屉。** 点「发布…」：先冲掉待保存的内容，右侧打开 640px 的抽屉「发布到线上」，自动调 `/draft/check`。抽屉里依次是 [54][55][56]：
-
-1. **预检清单**，逐项打勾或打叉：结构、固定规则节没动、必需的说法、禁用的说法、工具与字段名、字数额度、与线上合并。失败项可以点，点了关抽屉并定位。
-2. **替换说明**：「将替换线上 v3（老板 · 9月26日 14:02 发布）」。
-3. **逐节改动**：只列改过的节，用 `unifiedMergeView`，开 `allowInlineDiffs`、`mergeControls: false`，未改动的部分折叠 [157]。节标题行写「+3 行 −1 行」；右上角有「行内 / 并排」切换，选择存进 localStorage [66][57]。新增行是石绿浅底加行首「+」竖条；删除行是米色浅底、次要色、删除线，行首「−」，不用红 [133]。
-4. **变更说明**：可见的标签「这次改了什么、为什么」，预填「修改：话术原则、异议处理。」。必须在预填之外再写至少一个字才能发布；占位示例「客户嫌贵时先问预算上限」[50]。
-5. **底部**：「发布」（主按钮）+「取消」。预检没有全过时，「发布」禁用，旁边写原因。这里禁用主按钮是可以的：抽屉很短，原因就写在旁边 [86]。
-
-成功后：抽屉关闭，版本记录里的新站点压印一次，toast「已发布 v4」，状态句更新。原来页面底部的「逐节对比」卡片去掉，挪进了抽屉。
-
-**冲突合并。** 预检里 `rebase.conflicts` 不为空，或者发布返回 409 `sop_conflict` 时，抽屉里显示「有 2 节在你改的同时被改了」和按钮「去合并」。主区进入合并模式 [67]：
-
-- 目录上冲突的节标「需合并」；页头显示「还有 2 节要合并」和「完成合并」按钮。
-- 每个冲突节一个 `MergeView`：左边「线上 v4 的写法」只读，右边「你的草稿」可编辑。`revertControls: 'a-to-b'` 让运营逐块「采用线上的写法」[157]。每节底部有「这一节处理好了」。
-- 全部处理好后点「完成合并」：调 `PUT /sop/draft`，带 `rebaseOnto: <当前发布版本 id>`，`edits` 为全部冲突节的合并结果（见「接口改动」）。成功后回到发布抽屉。
-- 合并模式期间暂停自动保存，退出时恢复。
-
-**版本记录（题跋式）。** 「版本记录」打开右侧 420px 的抽屉（URL 上是 `view=history`），用 `RouteLine` 竖排，最新的在上面 [55][57][70]。每一站像长卷后面的一段跋文：先写为什么改，再落款。
-
-```
-┆ 草稿 · 未发布 · 改了 2 节                 （虚线段，石青实心站）
-■ v4  客户嫌贵时先问预算上限，再给两档方案。       ← 变更说明，阅读级 16/28
-            老板 · 9月26日 14:02  [线上]          ← 落款 12px 次要色，右对齐
-□ v3  ⟲ 回到 v1 · 撤回上周的报价话术
-            老板 · 9月25日 18:30
-```
-
-- 站名「v4」用宋体数字；来源为回滚时，站内画 `RollbackOutlined`，说明前写「回到 v1」。来源的中文名：导入、后台发布、回滚、系统更新（副注「代码里的固定规则变了」）。
-- 线上版本是石绿实心站，带「线上」`StatusPill`。每个版本带说明的做法，可参照扣子的版本列表 [56]。
-- 每站的操作：
-  - 「查看改动」：主区切到只读对比「v2 相对 v1 改了什么」，只列变化的节；页头横幅「正在查看 v2 · 回到编辑」；URL 上是 `v=2`。
-  - 「回滚到这版…」：线上版本没有这一项。
-  - 「载入到草稿再改」。
-- 哈希（prompt、tools、prefix、sop 各取前 12 位）收进每站的「技术详情」折叠区。01 验收 22 要求历史列表出现 prompt_hash，展开技术详情即可看到。
-- 底部「更早的版本」按 `before` 翻页。
-
-**回滚。** Modal（640px），标题「回滚到 v1」[36][68][71]：
-
-- 三句人话：「会生成一个新版本并立即上线。」「v3、v4 都还在，随时能再切回来。」「固定规则节保持现在的写法，不会退回旧版。」
-- 差异：「回滚后，线上的可编辑节会从 v4 变成这样」。前端已经有两个版本的 `sections`，不需要新接口。
-- 目标版本的固定规则节和线上不同时，在提交之前就显示赭石提示：「v1 之后代码里的固定规则改过，回滚后这些节用现在的写法，所以新版本不会和 v1 完全一样。」不再在事后弹 `modal.info`。
-- 变更说明必填，标签可见。
-- 按钮「回滚到 v1」（主色，不用红：回滚会生成新版本，还能再回滚，不是破坏性操作）+「再看看」。
-
-「载入到草稿再改」：把目标版本的可编辑节 PUT 进草稿。已有草稿时，先确认「会覆盖草稿里的：话术原则、异议处理」。
-
-**丢弃草稿。** 在「更多」菜单里，不常驻；菜单项本身不加 danger。点了之后弹 `ConfirmDanger`：
-
-- 标题「丢弃草稿？」；
-- 正文「草稿里 2 节改动（话术原则、异议处理）会丢掉，线上 v3 不受影响。这一步撤销不了。」；
-- 按钮「丢弃草稿」（描边红字）+「保留」（默认焦点）。
+- **需要你处理**的排序：等人接手的在前，最后动静早的在前；接着是话术草稿；然后是待上架，按更新时间倒序。
+  - 等人接手的会话，上下文只写接口里有的：渠道、消息条数、「最后动静26分钟前」。今天没有转人工时间，所以不写「等了多久」。
+  - 同一实体的草稿，1 条时写条目名；多条时合成一行「6条酒店草稿」，上下文列出前 3 个名称。
+  - 首页面向老板，不写工具原名、字段原名；原名只在话术编辑器里出现。
+- **系统状态**一行人话。一切正常时是「一切正常 · 线上话术v2 · 产品库改动已生效」；出问题时换成 Alert：
+  - `lock === 'lost'` → danger：「暂时无法保存修改：和数据库的锁连接断开了，系统在自动重连。线上话术和产品不受影响。」
+  - `sopStale` / `catalogStale` → warning：「话术 / 产品库的最新修改还没载入运行中的系统，正在自动重试。」
+  - `index.stale` 或 `index.lastError` 不为空 → warning：「线路搜索索引在更新，新上架的线路可能暂时搜不到。」`lastError` 原文收进技术详情。实体名取自行业包。
+  - 与代码仓库初始数据的差异（drift）只放在「系统」页。
+- **业务数**是 4 个 KPI 格（设计系统 §5.10），每格一句口径、一行明细，整格链到对应的筛选列表：会话（明细「今天有新动静的6个」）、等人接手（明细「最后动静：26分钟前、8分钟前」）、已成交（明细是最近一个的会话标签和日期）、在售{`vocabulary.productNoun`}（明细「另有草稿7条：线路1 · 酒店6」）。不画趋势、迷你图、涨跌百分比。
+- **客户停在哪一步**：AI 接待中的会话按当前阶段计数，阶段名和顺序来自行业包，不含终态；每行可点，跳到 `/conversations?state=ai&stage=…`。下方写口径「按每个会话现在所处的阶段统计」。它不是转化漏斗，不画流向。
+- **最近变更**：5 句人话，加「查看全部」；没有这项权限的角色看不到这一栏，右栏挪到左栏的位置。
+- **02 之后（A2 页）**：等人接手的行加上原因和等待时长（≥10 分钟用 danger 字，不到用 warning 字，都带钟表图标），操作换成「接手」；加一类「待付款」待办；KPI 加「本月成交额」。排序改成没人接手的在前、金额高的在前、沉默久的在前。
 
 状态：
 
-| 状态       | 表现                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------- |
-| 加载       | 页头骨架 + 目录 12 行骨架 + 编辑器骨架，尺寸与成品一致                                |
-| 出错       | 整块 `StateView` 错误 + 重试                                                          |
-| 空         | 不会出现（总有已发布版本）。「没有草稿」是正常状态，状态句写「没有未发布的改动」      |
-| 匿名       | 目录（含钢印）+ 只读正文；页头只有状态句「线上 v3 · 9月26日」；没有额度条、按钮、哈希 |
-| 非编辑成员 | 和编辑者同一布局，全部只读；能看版本记录，没有回滚与载入；状态句末尾有「只读」        |
-| 宽 < 1280  | 目录变成编辑器上方的下拉选择；抽屉宽 `min(640px, 100vw)`                              |
+| 状态           | 表现                                                       |
+| -------------- | ---------------------------------------------------------- |
+| 加载           | 每块自己的骨架，尺寸与成品一致                             |
+| 某块出错       | 只有这一块显示「没取到 · 重试」                            |
+| 没有要处理的事 | 「需要你处理」显示「没有要处理的事」和一句说明，不放按钮   |
+| 在售数为 0     | 在售格写 0，明细给「新建{实体名}」链接（只给编辑者）       |
+| 匿名           | 横幅；只有在售数这一格；没有待办、阶段、最近变更、系统状态 |
 
-### 产品库列表
+### 销售话术（B、C 页）
 
-页头「线路」，说明「共 20 条 · 销售助手只推荐已上架的」；右上角是「新建线路」（主按钮），酒店页另有「导入 CSV」（次按钮）。新建资源的主操作固定放在右上角 [5]。线路不能用 CSV 导入，所以不渲染入口，也不再放一个灰按钮。
+布局见 B 页：侧栏收起，额度条通栏，下面三栏是目录、编辑器、右栏，底部是常驻的发布条。
 
-表格上方一行：搜索在左，筛选随后，计数在右 [15][16][73][74]。
+**状态句**：「线上v2 · 老板发布于9月25日 18:30 · 草稿改了2节 · 已自动保存14:05」[58]。接口里没有草稿的最后保存时间，所以最后一段只在本次打开页面后保存过时出现；刚打开时写到「草稿改了2节」为止（开放问题 6）。会变的部分预留固定宽度，切换时不挤动布局。
 
-- 页签：全部 20 / 已上架 18 / 草稿 2（前端计数；匿名只有「全部」）。
-- 搜索：名称、目的地、客户的其他叫法、编号，输入即筛 [13]。
-- 常驻筛选不超过 3 个 [16]：目的地、境内/境外、适合客群。生效的条件显示成可以单独删除的标签，另有「清除筛选」[111][112]。
-- 以上全部写进 URL。
+**额度条**：
 
-线路的列 [10][46][76]：
+- 前端按服务端的同一口径实时计算：可编辑节的正文（去掉标题行和其后的空行），UTF-16 长度求和；上限取 `SopOverview.budget.limit`。
+- 把 `sectionBody`、`editableChars` 这两个纯函数挪到 `src/shared/sop-sections.ts`，连同它们用到的 `SopStructureError`、`SopSection`、`SectionSpec`：`checkSopContract` 靠 `instanceof SopStructureError` 捕获，所以 `src/sop/sections.ts` 再导出的必须是同一个类。shared 版的 `editableChars` 不带默认参数（节表属于包，`src/shared/` 不 import `src/sop/`）；`src/sop/sections.ts` 包一层，补上默认值 `TRAVEL_SOP_SECTIONS`，现有调用处不变。节表本身不挪。
+- 每个可编辑节一段，改过的节用主色。95% 与上限各一根刻度。<95% 中性；95%–100% warning；>100% danger 并写「超出38字，发布会被拦下」。超限不拦输入 [48]。
+- 阈值不取常见的 80%：上限是导入版本的 1.2 倍，没改过的话术就已经在 83%，按 80% 算会一直是警告色。
 
-| 列             | 内容                                                                                                        |
-| -------------- | ----------------------------------------------------------------------------------------------------------- |
-| 线路           | `DestinationMark` + 两行：线路名称（链接，键盘可达，点进详情 [13]）；次行是次要色的「四川 · r-sichuan-lux」 |
-| 天数           | 「8 天」，右对齐                                                                                            |
-| 每人起价（元） | 「42,800」，右对齐、等宽数字；单位写在表头                                                                  |
-| 适合客群       | 最多 3 个中性标签，多出来的显示「+2」                                                                       |
-| 海拔 · 强度    | 「4,700 米 · 较累」；≥ 3000 米时加高原小图标（带文字说明）                                                  |
-| 最佳季节       | `SeasonStrip`                                                                                               |
-| 状态           | `StatusPill`：已上架（石绿 + `CheckCircleOutlined`）/ 草稿（墨灰 + `EditOutlined`）[12][97]                 |
-| 更新           | 「09-26 14:30 · 老板」；系统导入的写「系统导入」                                                            |
+**目录**：
 
-酒店的列：酒店（字标 + 名称 + 次行「目的地 · 编号」）、星级档次、每晚起价（元）、主推房型、标签、状态、更新。
+- 保持 prompt 的原顺序，这个顺序就是模型读到的顺序。顶部分段控件「全部 / 可编辑 / 已改」。
+- 固定规则节带锁图标、节名用次要色；改过的节带主色圆点，字数写「954（+44）」；当前节用选中底色，下一行写问题数。锁的标记在列表里就看得见，不用点开才知道 [60]。
+- 目录底部写「带锁的7节是固定规则，由代码逐条核对，这里只能看」。节表和锁定原因来自 `/sop` 的 `spec` 加上行业包的 `sopSections`；匿名时只用行业包的 `sopSections`。
+- 键盘：上下方向键切换，Enter 进入编辑器。选中的节写进 URL 的 `section`。宽 <1280 时目录变成编辑器上方的下拉选择。
 
-- 整行悬停可以点进详情；名称单元格是真正的链接 [137]。
-- 数据不足一页时不显示分页器 [13]；超过 50 条再分页。
-- 窄屏时首列固定，其余列横向滚动 [135]。
+**编辑器**（CodeMirror）：
 
-状态：
+- 没有行号，比例字体 16/28，行宽 ≤640。
+- markdown 用装饰渲染：光标不在那一行时隐藏 `**`，列表圆点悬挂缩进，粗体 600；不折叠正文。
+- 工具名和字段名显示成芯片「查线路 search_routes」，名称表来自行业包的 `vocabulary.tools` 和 `sopFields`；话术原文不变。不认识的名字不做成芯片。
+- 相对线上改过的段落，在沟槽里画主色竖条；新加的文字用 accent-bg 标出。
+- `EditorView.contentAttributes({ 'aria-label': '「话术原则」正文' })`；编辑器与差异视图的内置文案用 `EditorState.phrases` 汉化 [124]。
+- 固定规则节：正文照样用正文色只读，上方一行「固定规则 · {lockReason}。这里改不了，要改请联系技术。」不出现「镜像」「data/sop.md」[33]。依据：运营用自然语言写流程，工程保留护栏 [61]；本项目只对护栏这样做，把它留在代码里走评审 [62]。
 
-| 状态             | 表现                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------- |
-| 加载             | 8 行表格骨架                                                                                      |
-| 空（从来没有过） | 「从第一条线路开始」+ 说明「上架后，销售助手会向客户推荐它」+「新建线路」（酒店另有「导入 CSV」） |
-| 筛选无结果       | 「没有符合条件的线路」+「清除筛选」链接，没有主按钮                                               |
-| 出错             | 表格位置显示错误 + 重试                                                                           |
-| 匿名             | 只有已上架的条目；没有状态、更新两列，没有新建入口                                                |
-| 非编辑成员       | 没有新建、导入入口                                                                                |
+**自动保存**：
 
-### 产品库详情与编辑器
+- 停止输入 1.5 秒后调 `PUT /sop/draft`，带 `rev`；首次保存带 `rev: null` 和 `basedOn`（当前发布版本）。
+- 状态文字「保存中…」→「已自动保存14:05」。失败时按 2、5、15 秒退避重试，状态变成 danger 的「没保存上 · 重试」，带手动重试按钮。
+- `⌘S` / `Ctrl+S` 立即保存。话术页没有「保存草稿」按钮：同一页不混用手动保存和自动保存 [35]。
+- 409 `rev_conflict`：不再重试，停住自动保存；页头下显示「草稿刚被别人改过」横幅和「载入最新草稿」按钮；本地没保存上的节以只读对比的形式保留，供复制。
+- 不带版本号的自动保存会覆盖别人的修改 [52]，所以每次都带 `rev`；n8n 也是编辑后几秒内自动保存为草稿 [51]。
 
-改成独立页面 `/catalog/$kind/$code`（新建是 `/catalog/new/$kind`），取代 720px 的抽屉：有自己的 URL，字段多也不挤 [25]。两栏布局：主栏约 2/3，放分组卡片；副栏约 1/3，吸顶，放状态和元数据 [25][89]。宽 < 1280 时副栏落到主栏下方。
+**检查**：
 
-```
-┌ 产品库 / 线路 / 四川 稻城亚丁·色达秘境 8 日                                 ┐
-│ 四川 稻城亚丁·色达秘境 8 日  [✓ 已上架]        [编辑 | 预览]  [··· 复制为新草稿] │
-├──────────────────────────────┬───────────────────────┤
-│ 基本信息                 [识别]│ 状态                     │
-│  销售助手靠这些认出客户说的是哪条线…│ [✓ 已上架] · 9 项锁定    │
-│ 价格与季节               [计价]│ 上架前检查 ✓ 9/9         │
-│ 适合谁去                 [推荐]│ 更新：老板 · 2 小时前    │
-│ 逐日行程                        │                          │
-│ 费用包含与不含           [条款]│                          │
-│ 卖点                            │                          │
-│ 客户怎么叫               [识别]│                          │
-├──────────────────────────────┴───────────────────────┤
-│ ◷ 有 3 处改动   [放弃]  [保存并立即生效]  销售助手下一条回复就用新内容        │
-└──────────────────────────────────────────────────────┘
-```
+- 每次自动保存成功以后调一次 `POST /sop/draft/check`。右栏的检查清单写「6/7通过」和「每次自动保存都会跑 · 上次14:05」。
+- 7 项的名字固定，与 `ViolationCode` 一一对应（设计系统 §5.17）。说明由前端按 `code`、`sectionKey`、`match` 生成；服务端的 `detail` 只进技术详情。
 
-**字段元数据。** 新文件 `src/shared/catalog-fields.ts` 导出 `CATALOG_FIELDS: Record<CatalogKind, readonly FieldMeta[]>`。它是字段标签、帮助、占位、单位、控件、分组、锁定组的唯一来源：
+| code               | 检查项         | 前端生成的说明                           | 点了去哪             |
+| ------------------ | -------------- | ---------------------------------------- | -------------------- |
+| `structure`        | 结构完整       | 这一节的标题或位置被改了，改回原来的标题 | 这一节               |
+| `locked_changed`   | 固定规则节没改 | 固定规则节不能改，撤回这一节的改动       | 这一节               |
+| `phrase_missing`   | 必备短语都在   | 要保留这句：「{match}」                  | 线上版本里含这句的节 |
+| `phrase_forbidden` | 没有禁用短语   | 「{match}」不能出现在话术里              | 选中 `match`         |
+| `unknown_tool`     | 工具名都存在   | 提到了不存在的工具「{match}」            | 选中 `match`         |
+| `unknown_field`    | 字段名都存在   | 提到了不存在的字段「{match}」            | 选中 `match`         |
+| `over_budget`      | 字数在额度内   | 超出N字（前端算）                        | 额度条               |
 
-- rjsf 的 `ui:title`、`ui:description`、`ui:placeholder`、`ui:order` 由它生成 [159]；CSV 表头、错误路径、审计改动表也用它。
-- 帮助文字常驻在字段下方，占位符只放示例 [22][50]。标签简单易懂 [47]，不加冒号。多数字段必填，只给选填字段标「（选填）」[23]。
-- 分组从弱到强：同一卡片内加小标题 → 分成不同卡片 [24]；卡片顺序按旅游行业后台的习惯排 [76][84]。
+- 定位：在该节正文里查找 `match`，每一处都画 danger 波浪下划线；点清单里的一项，切到该节、滚到第一处并选中 [49]。
+- **行内提醒**：`unknown_tool` / `unknown_field` 在出问题的那一段之后插一条（设计系统 §5.12），写清后果：「模型只认7个工具名，写错的名字会被当成不存在，这条规则就不起作用了。」行业包词汇表里有编辑距离 ≤2 的名字时，给一个按钮「改成search_routes」，点了替换那一处并触发保存。
 
-线路：
+**发布条**（常驻）：
 
-| 字段                | 标签                   | 帮助（字段下方常驻）                                                                                         | 控件                                         | 分组       | 上架后                   |
-| ------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ---------- | ------------------------ |
-| `id`                | 线路编号               | 小写字母、数字和连字符，建好后不能改。例：r-sichuan-lux                                                      | 输入（新建时可填，之后是只读文本）           | 基本信息   | 锁定 · 识别              |
-| `title`             | 线路名称               | 写上目的地和天数 [77]。例：四川 稻城亚丁·色达秘境 8 日                                                       | 输入                                         | 基本信息   | 锁定 · 识别              |
-| `destination`       | 目的地                 | 客户问「去哪」时按它匹配                                                                                     | 输入 + 已有目的地联想                        | 基本信息   | 锁定 · 识别              |
-| `days`              | 天数                   | 要和逐日行程的天数一样                                                                                       | 数字，后缀「天」                             | 基本信息   | 锁定 · 识别              |
-| `overseas`          | 境内还是境外           | 推荐和报价按它区分境内外，没选不能保存                                                                       | 普通 `Radio`「境内」「境外」，**没有默认值** | 基本信息   | 锁定 · 推荐              |
-| `priceFrom`         | 每人起价               | 填淡季、4 人以下的价；旺季上浮 10%、4 人及以上 95 折由系统算                                                 | 数字，千分位，后缀「元/人」，整数            | 价格与季节 | 锁定 · 计价              |
-| `bestSeason`        | 最佳季节               | 写月份区间，如「5月-10月」「11月-次年4月」，或写「全年」。这些月份出发报价上浮 10%，「全年」不加价           | 输入 + 季节条实时预览（「识别出：5–10 月」） | 价格与季节 | 锁定 · 计价              |
-| `segments`          | 适合客群               | 可多选，推荐线路时按它筛                                                                                     | 复选组：家庭 亲子 蜜月 商务 银发             | 适合谁去   | 锁定 · 推荐              |
-| `maxAltitude`       | 全程最高海拔（选填）   | 按行程核实的最高点。给长辈挑低海拔线路时只看这个数                                                           | 数字，后缀「米」                             | 适合谁去   | 锁定 · 推荐              |
-| `intensity.level`   | 体力强度（选填）       | 看最累的那天：轻松＝以车览、城市漫步为主；适中＝有成段步道、索道、骑行；较累＝数小时徒步，或连着几天长途越野 | `Segmented`「不填 \| 轻松 \| 适中 \| 较累」  | 适合谁去   | 可改                     |
-| `intensity.hardest` | 最累的一段             | 照行程原文概括；行程没写步行量就写「行程没写」。选了体力强度才出现，出现就必填                               | 输入                                         | 适合谁去   | 可改                     |
-| `itinerary`         | 逐日行程               | 见下一节                                                                                                     | 站点时间轴                                   | 逐日行程   | 条数随天数锁定，文字可改 |
-| `inclusions`        | 费用包含（选填）       | 写具体：酒店写城市和档次，门票写景点 [77][78]                                                                | 逐条列表                                     | 费用       | 锁定 · 条款              |
-| `exclusions`        | 费用不含（选填）       | 写明单房差、自费项目 [77]                                                                                    | 逐条列表                                     | 费用       | 锁定 · 条款              |
-| `hotelLevel`        | 住宿档次               | 例：五星/奢华度假村                                                                                          | 输入                                         | 卖点       | 可改                     |
-| `highlights`        | 行程亮点               | 建议 3–5 条，每条以动词开头 [78]                                                                             | 逐条列表，可上移下移                         | 卖点       | 可改                     |
-| `tags`              | 标签                   | 自由标签，如海岛、摄影；其中「国内」上架后锁定                                                               | 标签输入                                     | 卖点       | 只有「国内」锁定 · 推荐  |
-| `aliases`           | 客户的其他叫法（选填） | 标题和目的地里没有、客户常说的叫法，如「川西」「海南」；只写这条线真正覆盖的地方                             | 标签输入                                     | 客户怎么叫 | 锁定 · 识别              |
+- 左边写摘要：改了几节、几个问题、字数；右边是说明、次要按钮「查看改动」、主按钮「发布…」。
+- 有问题时，主按钮用 `aria-disabled`，旁边写「改完1个问题即可发布」，点它跳到第一个问题。草稿和线上一样时写「草稿和线上一样，没有可发布的改动」[51]。
+- 发布成功后，条里写「已发布v3（改了话术原则、异议处理）· 客户下一句就用新话术」，后跟文字按钮「回滚到v2」，这句话保留到下一次改动。不弹 toast，不显示任何回归结果：拿线上版本的评测结果放在草稿按钮旁，会让人误以为草稿测过。
 
-`overseas` 为什么没有默认值：`RouteSchema` 里它是必填的 `z.boolean()`。开关没有「未选」态，新建时要么默认成 false，把境外线路静默存成境内；要么缺键。字段上架后锁定，错了只能停机用 `catalog-fix` 修。所以要逼运营明确选一次。
+**发布抽屉**（640 宽）：点「发布…」时先冲掉待保存的内容，再打开抽屉并调一次检查 [54]。从上到下：
 
-`itinerary` 的子字段：
+1. 检查清单，失败项可以点，点了关抽屉并定位。
+2. 替换说明：「将替换线上v2（老板 · 9月25日 18:30发布）」。
+3. 逐节改动：只列改过的节，用 `unifiedMergeView`，开 `allowInlineDiffs`、`mergeControls: false`，未改动的部分折叠；节标题行写「+3行 −1行」；右上角「行内 / 并排」切换，选择存进 `localStorage` [125][56]。删除不用红色：`@codemirror/merge` 自带的红色样式要覆盖掉。
+4. 变更说明：标签「这次改了什么、为什么」，预填「修改：话术原则、异议处理。」，要在预填之外再写至少一个字；占位「例：客户嫌贵时先问预算上限」[55]。
+5. 底部「发布」（主按钮）和「取消」。检查没有全过时「发布」禁用，旁边写原因；抽屉很短，原因就在旁边 [32]。
 
-- `day` 第几天：自动编号，只读；
-- `title` 当天标题，例：成都 → 丹巴；
-- `detail` 当天安排：客户在手机上看，写清距离和用时，120 字以内为宜 [76]；
-- `hotel` 当晚住宿：最后一天可以写「—（返程）」；
-- `meals` 当天餐食。
+**冲突合并**：检查的 `rebase.conflicts` 不为空，或者发布返回 409 `sop_conflict` 时，抽屉里写「有2节在你改的同时被改了」和按钮「去合并」。主区进入合并模式 [57]：
 
-酒店的字段：
+- 目录上冲突的节标「需合并」；页头写「还有2节要合并」，右侧是「完成合并」。
+- 每个冲突节一个 `MergeView`：左边「线上v4的写法」只读，右边「你的草稿」可编辑；`revertControls: 'a-to-b'` 让运营逐块「采用线上的写法」（按钮文案汉化）。每节底部有「这一节处理好了」。
+- 全部处理好后点「完成合并」：调 `PUT /sop/draft`，带 `rebaseOnto: <当前发布版本 id>`，`edits` 是全部冲突节的合并结果。成功后回到发布抽屉。合并期间暂停自动保存，退出时恢复。
 
-- `id` 酒店编号，锁定 · 识别；
-- `name` 酒店名称，锁定 · 识别；
-- `destination` 目的地，锁定 · 识别；
-- `stars` 星级档次，例：五星、奢华，可改；
-- `nightlyFrom` 每晚起价（元/晚），锁定 · 计价；
-- `roomType` 主推房型，例：水上别墅，可改；
-- `highlights` 酒店亮点，可改；
-- `tags` 标签，可改。
+**版本记录**（C 页，右侧 420 宽抽屉，URL 上是 `view=history`）[9]：
 
-分组：基本信息、价格、卖点。
+- 最新的在上。草稿一行写「未发布 · 改了2节」和「继续编辑」。
+- 每个版本先写变更说明，再写「作者 · 时间 · 改了N节（节名）」；当前线上版本带「线上」状态。来源写成中文：导入、后台发布、回滚（写「回到v1」）、系统更新（副注「代码里的固定规则变了」）。
+- 操作：「查看改动」、「回滚到这版…」（线上版本没有这一项）、「载入到草稿再改」。
+- 每行最后一个默认折叠的「技术详情」，里面是 prompt、tools、prefix、sop 四个哈希的前 12 位（01 验收 22 在这里看得到 `prompt_hash`）。
+- 底部「更早的版本」按 `before` 翻页；没有更早的版本时，按钮换成 13 text-3「没有更早的版本了」。
+- 状态：打开时抽屉体是 3 行骨架；取失败时抽屉体里放 danger Alert「没取到 · 重试」；翻页失败时只在底部按钮位置显示「没取到 · 重试」，已列出的版本保留。
 
-**锁定组与原因。** 沿用 01 的「各字段为什么锁」，一组只说一次，不再在每个字段下重复 [27][86]。卡片头右侧是该组的印文钢印，钢印下方用 12px 说明色常驻写原因：
+**查看改动**：主区切到只读对比「v2 相对 v1 改了什么」，只列变化的节；页头下横幅「正在查看v2 · 回到编辑」；URL 上是 `v=2`。
 
-- 识别：「销售助手靠这些认出客户说的是哪条线，改名会让对话里的旧说法认不出来。」
-- 计价：「已发给客户的方案书按这些数算价，改了会变价。」
-- 条款：「已发出的方案书按这些条款承诺。」
-- 推荐：「推荐和安全护栏按这些筛线路，包括给长辈换低海拔线路、境内外过滤。」
+**回滚**（640 宽弹窗）[38]：
 
-所有组共用一句结尾：「有报价快照（02）后开放；急需修正请联系技术。」
+- 标题「回滚到v1」。后果列表：会生成v3并立即上线；v2还在，随时能再切回来；固定规则节保持现在的写法。
+- 有草稿时，前端用草稿的基线、目标版本、草稿三方的 `sections` 比一次，和发布时的 `rebase()` 同一口径：回滚要改的节和草稿改过的节有交集时，加一条 warning「你的草稿（改了话术原则、异议处理）是在v2上改的。回滚后要先合并，才能发布」；没有交集时，加一条 info「你的草稿会在发布时自动并入」。C 页画的是有交集的情况。
+- 目标版本的固定规则节和线上不同时，在提交之前就加一条 warning：「v1之后代码里的固定规则改过，回滚后这些节用现在的写法，所以新版本不会和v1完全一样。」
+- 差异块：「回滚后，线上的可编辑节会变成这样」。前端已经有两个版本的 `sections`，不需要新接口。
+- 必填输入框「为什么回滚」。按钮「再看看」（默认焦点）和「回滚到v1」（主按钮，不用红：回滚会生成新版本，还能再回滚，不是破坏性操作）。
 
-锁定计价字段是本项目为保持已发方案书一致而做的取舍，不是行业通行的做法。Stripe 的 Price 金额创建后不可改，改价要新建 [87]；Shopify 则允许直接改价，保存即生效 [89]。报价快照上线之前，本项目取前者。
+**载入到草稿再改**：把目标版本的可编辑节 PUT 进草稿。已有草稿时先确认「会覆盖草稿里的：话术原则、异议处理」[53]。
 
-草稿状态下，这些字段旁标一个小的「上架后锁定」，提醒上架前重点核对。
+**丢弃草稿**：在「更多」里，菜单项本身不加 danger。点了之后弹 `ConfirmDanger`：标题「丢弃草稿？」；正文「草稿里2节改动（话术原则、异议处理）会丢掉，线上v2不受影响。这一步撤销不了。」；按钮「丢弃草稿」和「保留」（默认焦点）。
 
-**控件。** 用自定义的 rjsf widgets 和 templates 包 antd 组件；表单进出只经过 `toFormData` / `fromFormData` 两个纯函数（放在 `src/shared/catalog-fields.ts`），序列化结果和现在完全相同。
-
-- `ObjectFieldTemplate`：按 `CATALOG_FIELDS` 的分组渲染成 antd Card，卡片头放该组的钢印和原因。
-- `FieldTemplate`：标签在上，帮助文字常驻。必填不打星（`ConfigProvider` 的 `form.requiredMark`，见上文），选填标「（选填）」。截图 06 里的红星因此消失，`Form.labelRequiredMarkColor` 取说明色，作为兜底。
-- **`ButtonTemplates` 全部覆盖** [168]。@rjsf/antd 默认的 `RemoveButton` 是 `danger` 的实心红按钮，文案是英文。覆盖成：
-  - `AddButton`「添加一条」；
-  - `RemoveButton`：`DeleteOutlined` 图标按钮，`aria-label`「删除这一条」，默认样式，不用 danger；
-  - `MoveUpButton` / `MoveDownButton`「上移」「下移」；
-  - 不提供复制按钮。
-- `translateString` 传入完整的中文对照表，覆盖 rjsf 的全部 `TranslatableString` [167]。
-- 金额与数字：`InputNumber`，千分位、整数、单位后缀；提交值仍是整数。
-- `segments`：复选组。JSON Schema 里没有 `uniqueItems`，rjsf 默认会渲染成「一项一个下拉加添加按钮」，所以用自定义 widget [159]。
-- `tags`、`aliases`：`Select mode="tags"`。`highlights`、`inclusions`、`exclusions`：逐条列表，每条一个输入框，可以增删、上移下移。
-- **空值规则**：`aliases`、`inclusions`、`exclusions`、`maxAltitude` 清空就等于删键（进 `unset`），不留 `[]` 或空串，因为 schema 要求这些字段出现时 `.min(1)`。`intensity` 选「不填」时整组 unset；选了档位，才出现「最累的一段」并且必填。
-- **只读字段**（上架后锁定的、非编辑角色看到的、匿名看到的）渲染成纯文本值：正文色，不画输入框，不用禁用色，可以选中复制 [26][86]。
-
-**费用包含与不含。** 左右两列对照：左列「包含」行首是勾号；右列「不含」行首是中性的减号，不用红叉，「不含」不是错误 [77]。常用条目的联想取自现有全部线路的包含、不含，去重。
-
-**副栏。**
-
-1. **状态卡**：`StatusPill`（已上架 / 草稿）。草稿时有「上架…」主按钮，有未保存的改动时先保存。已上架时写「已上架 · 9 项锁定」。
-2. **上架前检查**：`src/shared/catalog-readiness.ts` 里的纯函数 `catalogReadiness(kind, payload)` 实时计算，每项可以点，点了跳到对应字段 [79][75]。
-   - **必须项**直接用 `RouteSchema.safeParse(payload)`（酒店用 `HotelSchema`）的 issues，按 `path` 经 `labelOfPath` 映射到字段，不另写一份规则，免得和 schema 走偏。例如「境内还是境外：没选」「逐日行程：有 3 天，要和天数（4）相同」。
-   - **建议项**只提示，不拦上架：亮点 3–5 条；填了最高海拔；填了体力强度；至少有一个客户的其他叫法；费用包含和不含各至少一条；每天都写了住宿；「包含」里写了全程用餐但某天的餐食不全。
-   - 顶部是一条细进度条「7/9 项」。
-   - 「上架…」按钮不禁用。长表单不禁用主按钮 [22]。必须项没过时点它，不打开确认框，而是展开检查清单，焦点跳到第一个没过的字段，做法同 GOV.UK 的错误汇总 [65]。
-3. **元数据卡**：更新人、更新时间。用相对时间，悬停看绝对时间 [45]。
-
-**保存条。** 有改动时，底部吸底出现「有 3 处改动 · 放弃 · 保存…」，前面是赭石的 `ClockCircleOutlined` [28][88]：
-
-- 草稿：按钮「保存草稿」。
-- 已上架：按钮「保存并立即生效」，旁边小字「销售助手下一条回复就用新内容」（01 规定写接口返回 200 时快照已更新）[89]。可以展开改动摘要，如「行程亮点：第 2 条改了」。
-- 提交中按钮显示 loading，其余时候不禁用 [22]。保存后页面已经反映结果，不再弹 toast [29]。
-- 没有改动时保存条不出现。
-- 离开保护见通用部件。409 `rev_conflict` 用朱砂横幅「这条刚被别人改过」+「载入最新版本」，本地的改动以对比形式保留。
-
-**报错落到字段。**
-
-- 服务端的 `issues[].path`（如 `itinerary.3.meals`）映射到 rjsf 的 `extraErrors`，显示在对应字段下方。标签用 `labelOfPath` 翻成「逐日行程 · 第 4 天 · 当天餐食」。
-- 顶部只放一行汇总「有 2 处要改，点击跳转」，汇总不是唯一的报错位置 [90][65]。`showErrorList` 设为 `false` [167]。
-- **失焦校验只显示碰过的字段。** rjsf 的 `liveValidate: 'onBlur'` 会在失焦时校验整张表单 [167]，新建时离开第一个字段，所有空着的必填字段会一起报错。所以不开 `liveValidate`。维护一个「已失焦或已提交过」的字段集合；失焦时对整张表单跑一次 `zodValidator`，只把集合里字段的错误经 `extraErrors` 显示出来。点保存时，把全部字段加入集合 [90]。
-- `locked_field` 的 `fields` 用中文名列出。
-
-**上架确认。** 用 Modal 替换 Popconfirm [36]：
-
-- 标题：「上架「四川 稻城亚丁·色达秘境 8 日」」。
-- 正文三段：
-  1. 「上架后，销售助手会立即推荐这条线路，并按每人 42,800 元起报价。」
-  2. 「下面这些内容会锁定」：按锁定组列出中文字段名和当前值，方便最后核对，如「天数 8 · 每人起价 42,800 元 · 最佳季节 5–10 月 · 境外：否 · 费用包含 3 项」。
-  3. 「上架后无法下架，锁定的内容只能由技术修正。」
-- 按钮：「上架，开始推荐」（主色，不用红：上架不是破坏性操作）+「再检查一下」（默认焦点）。
-
-**复制为新草稿。** 在「更多」菜单里。弹窗要求填新编号，并提醒「两条都上架会同时被推荐，请区分名称和客群」，然后用原 payload（换掉 `id`）调现有的 `POST /catalog/:kind`。Shopify 复制商品时也可以把副本设为草稿 [83]。
-
-**预览。** 页头的「编辑 | 预览」页签（URL 上是 `tab`）。预览按 375px 手机宽度渲染一张方案书风格的卡片：标题、天数、起价、季节条、逐日时间轴、包含与不含对照 [76]。做法类比 Airbnb 按房客所见预览入住指南 [96]。数据取当前表单，包括未保存的改动。全部以文本节点渲染，不用 `dangerouslySetInnerHTML`：产品库的文本是不可信输入（01）。匿名演示默认显示预览，不显示只读表单。
+**右栏**：检查清单，加一张「话术里可以点名的工具」卡片（工具来自行业包，卡底写「写别的名字模型会当成不存在」）。1280–1439 宽时右栏收掉，检查清单挪到目录下面。试聊窗格不渲染（「依赖 02 的后端」第 9 项）。
 
 状态：
 
-| 状态       | 表现                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------- |
-| 加载       | 两栏骨架，卡片高度与成品一致                                                          |
-| 不存在     | 「没有这条线路」+「回到线路列表」                                                     |
-| 出错       | 页内错误 + 重试                                                                       |
-| 匿名       | 默认显示预览页签；编辑页签是全只读文本                                                |
-| 非编辑成员 | 全只读文本；没有保存条、上架、复制                                                    |
-| 窄屏       | 副栏落到主栏下方；编辑流程只保证宽 ≥ 1024，更窄时顶部提示「建议在电脑上编辑」，但不拦 |
+| 状态       | 表现                                                                             |
+| ---------- | -------------------------------------------------------------------------------- |
+| 加载       | 额度条、目录 11 行、编辑器的骨架，尺寸与成品一致                                 |
+| 出错       | 整块错误加重试                                                                   |
+| 没有草稿   | 正常状态：状态句写「没有未发布的改动」，发布条写「草稿和线上一样」               |
+| 匿名       | 目录（带锁）加只读正文；页头只有「线上v2 · 9月25日」；没有额度条、按钮、技术详情 |
+| 非编辑成员 | 同一布局，全部只读；能看版本记录，没有回滚与载入；状态句末尾「只读」             |
+| 宽 <1280   | 目录变成下拉；抽屉宽 `min(640px, 100vw)`                                         |
 
-### 逐日行程编辑器
+### 产品库列表（D 页；L 页上半）
 
-用自定义的 rjsf `ArrayFieldTemplate`，做成竖向的站点时间轴 [76][79][80][81]：
-
-- 左侧是 `RouteLine`，站点写「D1」…「Dn」。这一天的各项都填了，是石青实心站；有缺项是空心站，旁边写「缺：当晚住宿」；有校验错误是问题站。
-- 右侧每天一张卡：
-  - 当天标题；
-  - 当天安排：多行文本，右下角显示字数；超过 120 字时，赭石提示「手机上会很长」[76]；
-  - 当晚住宿；
-  - 当天餐食。
-- 每张卡的右上角是「上移」「下移」「删除这一天」。不做拖动：按钮本身就满足 WCAG 2.5.7 对单指针替代的要求 [172]。
-- **当晚住宿**：输入框 + 联想。联想来源是同目的地酒店库的 `name`，以及本线路已经写过的住宿；存的仍是文本。另有「复制上一天的住宿」按钮 [82]。
-- **当天餐食**：「早」「午」「晚」三个切换片。
-  - 序列化：按「早、午、晚」的顺序，用「/」连接选中的项；一个都不选，存「—」。
-  - 现有数据的全部取值（「早/午/晚」「早/午」「早/晚」「早」「晚」「—」）都符合这条规则，读进来再写出去逐字节相同。
-  - 规则之外的旧值（自由文本）显示原文输入框，并提示「这天的餐食写法不标准」，不自动改写。
-  - 纯函数 `parseMeals` / `formatMeals` 放在 `src/shared/catalog-fields.ts`。
-- `day` 自动编号，不可编辑；增删、上移下移后自动重排。
-- 与天数联动：条数不等于天数时，时间轴头部用赭石显示「还差 2 天」或「多了 1 天」；这同时是上架前检查的必须项（来自 schema）。
-- 已上架的条目，天数锁定：隐藏增删和移动，只能改文字。
-
-### CSV 导入（酒店）
-
-Modal（宽 `min(880px, 100vw)`），分步进行 [91][92][85][93]：
-
-1. **模板。** 「下载模板」生成带 UTF-8 BOM 的 CSV，表头用中文标签（酒店编号、酒店名称、目的地……），只有表头一行 [94]。弹窗里用一张小表展示一行示例和填写说明：数组用「、」分隔，布尔值写「是 / 否」。
-2. **选文件。** `Upload.Dragger`（`beforeUpload` 返回 `false`，只在本地读），保留「粘贴」页签。
-   - 解码：先用 `new TextDecoder('utf-8', { fatal: true })`，失败再用 `gb18030`，并提示「按 GBK 读取」。
-   - 为什么兜底 GBK：中文 Windows 上，Excel 的「CSV（逗号分隔）」按系统 ANSI 代码页保存，简体中文就是 GBK。这是本项目的判断。微软社区问答里有同样的说法 [95]，但没有找到微软的官方文档，所以以验收 15 的实测为准。
-3. **预检。**
-   - 前端直接调共享的 `prepareCatalogCsv` 与 `parseCsv`，逐行显示合格或不合格。出错的单元格描红并写原因：沿用现有的中文报错，路径翻成中文标签。
-   - 对照已载入的列表，检查编号是否已经存在 [93]。
-   - 按服务端的三条上限预检：≤ 200 行（`MAX_CSV_ROWS`）、`csv` ≤ 60,000 字符（`ImportCsvBody`）、请求体 ≤ 64 KB（`MAX_BODY_BYTES`，按 UTF-8 字节算，中文每字 3 字节）。超限时写「这份文件太大，请分成 N 份导入」，不让运营去碰 413 或 400。
-4. **导入。**
-   - 全部合格：「导入 N 条草稿」（主按钮）。
-   - 有不合格：主按钮禁用并写原因。次按钮有两个：「只导入合格的 N 行」（前端过滤后重新序列化再提交，同样过上面三条上限）和「下载不合格的 M 行」（CSV，多一列「原因」）[92][85]。
-   - **防公式注入** [113]。下载的文件里，以 `=`、`+`、`-`、`@`、制表符、回车、换行（包括全角的 ＝＋－＠）开头的单元格，在引号内的开头加一个制表符。这是 OWASP 给 Excel 的建议；所有单元格都加双引号，文件带 BOM。
-   - 已知的局限：OWASP 提醒，Excel 另存再打开后，这些转义可能被去掉；前缀的制表符也会留在数据里。所以 `prepareCatalogCsv` 导入时，只去掉「制表符 + 上述危险字符」这一种开头的制表符，其余不动，并配自测。
-5. **结果。** 「已建 N 条草稿」+「去草稿页签逐条检查后上架」。
-
-服务端契约不变，仍然只收 `{ csv }`。共享的 `prepareCatalogCsv` 额外接受 `CATALOG_FIELDS` 的中文标签作为表头别名，英文键照旧可用。
-
-状态：解析中显示进度；服务端返回 422 `invalid_csv` 时仍按行显示；非编辑成员与匿名没有入口。
-
-### 会话列表
-
-页头「会话」，说明「企业微信里的客户会话（只读）。接管和回复在工作台里，工作台目前单独登录。」；右侧是「打开工作台」（`/admin.html`，新标签页打开）。
-
-页签：全部 / AI 接待中 / 已转人工 / 已成交，各带数量 [100][101]。数量来自 `ConvQuery.state`，每个页签发一次 `limit=1` 请求取 `total`。映射规则：
-
-- `paid`：`stage === 'paid'`；
-- `human`：`handedOver && stage !== 'paid'`；
-- `ai`：其余。
-
-每行两行高，64px [98][99]：
-
-- **左侧**：中性底的圆形，里面是渠道图标（企业微信 / 网页），带 `aria-label`。不加载企微头像 URL：CSP 没有放行第三方图片，头像也是客户数据。
-- **第一行**：会话标签，如「企微客户 · 7F3A」「网页访客 · 2C9B」，字重 500。短码规则与 `admin.html` 的 `shortIdOf` 相同（抽成 `src/shared/format.ts` 的 `shortIdOf`），所以在工作台里能对上号。不显示昵称和目的地：这两项是客户画像，01 明确不投影（开放问题 8）。
-- **第二行**：旅程刻度。开场、问需、推荐、报价、异议、促成、已支付，共 7 格细刻度（每格 6×3，间隔 2）：走过的格用次要色，没走到的格用分隔线色，当前格用石青，后面写阶段名。已转人工时，停在 `stageBeforeHandoff` 那一格，该格改用赭石并写「已转人工」；已成交时 7 格全是石绿。刻度只是辅助图形，信息由阶段名文字承担。
-- **右侧**：
-  - 接待状态 `StatusPill`：AI 接待中（中性 + `RobotOutlined`）、已转人工（赭石 + `CustomerServiceOutlined`）、已成交（石绿 + `CheckCircleOutlined`）；
-  - 相对时间「12 分钟前」，悬停看绝对时间，超过 30 天改显示日期 [103][104]；
-  - 最后一条消息是客户发的时，下面小字写「客户等了 25 分钟」[102]。
-- **红色只在一种情况下出现**：已转人工、最后一条是客户发的、而且已经等了 ≥ 10 分钟。这时显示朱砂的「已转人工，客户等了 18 分钟」加图标。其余要跟进的情况用赭石。不画未读圆点：没有逐人的已读状态。
-- **点击**：新标签页打开 `/admin.html#s=<id>`。
-  - 工作台启动时读 hash，选中该会话（`admin.html` 的小改动）。
-  - 工作台用的是 `ADMIN_PASS` 的独立登录，和后台账号是两套（02 才合并）。没登录时，工作台只看得到演示会话。
-  - 所以 hash 在工作台的登录流程中要保留：登录框走完后，仍按 hash 选中。
-- `sim-` 会话仍然不列出（01）。每页 20 条，分页器在底部。
+- **页头**：标题是实体名；状态句「共21条 · 销售助手只推荐已上架的」；主按钮「新建{实体名}」放右上角 [18]；`csvImport` 为 true 的实体另有次要按钮「导入CSV」。不能导入的实体不渲染这个入口，也不放一个灰按钮。
+- **页签**：全部 / 已上架 / 草稿，带数量，前端按列表计数；匿名只有「全部」。
+- **工具条**：搜索在左、筛选随后、计数在右 [22]。
+  - 搜索覆盖 `list.search` 里的字段，输入即筛 [21]。
+  - 筛选按钮来自 `list.filters`，不超过 3 个 [23]；选项按字段类型生成：带 `suggest` 的文本取已有值去重，布尔取 `trueLabel` / `falseLabel`，枚举取 `options`（多选枚举按「包含」匹配）。
+  - 生效的条件显示成可以单独清除的按钮「目的地：四川 ×」，另有「清除筛选」。以上全部写进 URL。
+- **表格**：列来自 `list.columns`，单元格按字段类型渲染（设计系统 §6）。
+  - 首列是 `titleKey` 加 `subtitleKeys` 两行，名称是真正的链接，键盘可达 [109]。
+  - 数字右对齐、等宽数字，单位写在表头 [44]；状态用 `Status`；「更新」写「小林 · 今天13:40」，`updatedByName` 为空时写「系统导入」。
+  - 默认按更新时间倒序；不足一页不显示分页器，超过 50 条再分页。窄屏时首列固定，其余列横向滚动 [107]。
 
 状态：
 
-- 加载：8 行骨架；
-- 空：「客户的会话会出现在这里」+「客户在企业微信里发来第一句话后就会出现」；
-- 页签无结果：「这个分类下没有会话」；
-- 出错：就地重试；
-- 匿名：没有入口（01）。
+| 状态             | 表现                                                                                                            |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| 加载             | 8 行表格骨架                                                                                                    |
+| 空（从来没有过） | 「从第一条{实体名}开始」，说明「上架后，销售助手会向客户推荐它」，加「新建{实体名}」（能导入的另有「导入CSV」） |
+| 筛选无结果       | 「没有符合条件的{实体名}」加「清除筛选」链接，没有主按钮                                                        |
+| 出错             | 表格位置显示错误加重试                                                                                          |
+| 匿名             | 只有已上架的条目；没有状态、更新两列，没有新建入口                                                              |
+| 非编辑成员       | 没有新建和导入入口                                                                                              |
 
-### 审计日志
+### 产品库详情与编辑（E、F 页；L 页下半）
 
-页头「审计日志」，说明「谁在什么时候改了什么」。只有 owner、admin 看得到（01）。
+独立页面 `/catalog/$kind/$code`，新建是 `/catalog/new/$kind`，取代 720px 的抽屉：有自己的 URL，字段多也不挤 [30]。
 
-筛选（写进 URL）：类别（全部、销售话术、产品库、账号与登录、平台与配置）+ 开关「显示登录记录」，默认关闭 [108][109]。类别和开关换算成 `AuditQuery.actions`，由服务端过滤，翻页不会出现空页。
+- **页头**：面包屑「产品库 / 线路 / 条目名」（分组名是纯文本）；标题后跟状态；状态句「13项上架后锁定 · 小林更新于今天10:12」；「更多」里是「复制为新草稿」；草稿的主按钮是「上架…」。页头下是页签「编辑 / 预览」（URL 上是 `tab`）。
+- **两栏**：主栏放分组卡片，副栏吸顶放状态和元数据 [30][67]；宽 <1280 时副栏落到主栏下方。
+- **主栏**按 `groups` 的顺序排卡片，字段按类型渲染，网格规则见设计系统 §6.0 和 §6.4。整卡锁定、只有短值的卡片（如已上架线路的「基本信息」）排成一行 4 列，列宽按内容自适应，线路名称完整显示；所以在 1440×1100 的窗口里，即使出现了保存条，「逐日行程」的区块头和第一天的第一行（当天标题、当晚住宿）也不用滚动就看得见（owner 2026-09-27）。
+- **锁定**（设计系统 §6.4）：
+  - 锁定的值写成正文色的文本，不画输入框，可以选中复制；不用禁用样式 [31][32]。
+  - 原因每组只说一次，写在卡片头：Tag「上架后锁定 · 计价」，下一行写原因 [33]。原因来自 `lockGroups`，结尾统一加「急需修正请联系技术。」
+  - 锁定计价字段是本项目为保持已发方案书一致而做的取舍，不是行业通行做法：Stripe 的价格创建后不可改 [66]，Shopify 允许直接改价、保存即生效 [67]。报价快照（02）之前取前者。
+  - 草稿里那些「上架后会锁」的字段，标签后加「上架后锁定」和锁图标，提醒上架前重点核对。
+- **改过的字段**：标签后加主色圆点和「已改」；获得焦点或悬停时出现「撤销这处」。
+- **副栏**：
+  1. 状态卡：状态；已上架时写「13项上架后锁定」，下面每个锁定组一行（「识别 5」「计价 2」…），点了滚到对应卡片并把焦点放到卡片头。
+  2. 上架前检查：`CheckList`，必须项与建议项分开计数（「必须项13/13 · 建议1条没做」，口径见「校验」）；每项可以点，点了跳到对应字段 [63]。
+  3. 最近更新：更新人、更新时间，相对时间悬停看绝对时间 [43]。
+- **保存条**（有改动才出现）[34]：
+  - 左边「有2处改动」、改动字段的中文名、「展开改动」。右边：草稿写「草稿保存后仍不会推荐给客户」加「保存草稿」；已上架写「销售助手下一条回复就用新内容」加「保存并立即生效」（01 规定写接口返回 200 时快照已经更新）[67]。另有幽灵按钮「放弃」。
+  - `⌘S` 保存。提交中按钮显示 loading，其余时候不禁用 [29]。保存后页面已经反映结果，不弹 toast。
+  - 409 `rev_conflict`：danger 横幅「这条刚被别人改过」加「载入最新版本」，本地改动以对比形式保留。
+- **报错落到字段** [47]：
+  - 服务端 `issues[].path` 映射到字段下方；顶部只放一行汇总「有2处要改」，点了跳到第一处，汇总不是唯一的报错位置 [49]。
+  - 失焦时只显示碰过的字段的错误：维护一个「失焦过或提交过」的字段集合，新建时离开第一个字段，其余空着的必填字段不会一起报错。点保存时把全部字段加入集合。
+  - `locked_field` 的 `fields` 用中文字段名列出。
+- **上架**（F 页）：
+  - 必须项没过时点「上架…」，不打开确认框，展开检查清单，焦点跳到第一个没过的字段 [49]。长表单不禁用主按钮 [29]。
+  - 全过时打开 640 宽的确认框：标题「上架「{条目名}」」；第一段是 `activateLine`，其中 `{字段 key}` 按字段类型格式化后替换；然后是「下面这些内容会锁定」，按锁定组分行，每行是 Tag 加用 `Sep` 串起来的「字段 值」；有建议没做时加一行 warning「有1条建议没做：体力强度没填（不拦上架）」；最后一行 danger「上架后无法下架，锁定的内容只能由技术修正。」（01 不允许下架）。
+  - 按钮「再检查一下」（默认焦点）和「上架，开始推荐」（主按钮）。
+- **复制为新草稿**：弹窗要求填新编号，提醒「两条都上架会同时被推荐，请区分名称和适用对象」，然后用原 payload（换掉 `id`）调现有的 `POST /catalog/:kind` [65]。
+- **预览**页签：按 375 宽、单栏、只读形态渲染全部分组，包含未保存的改动，让运营看到文字在手机宽度上的样子。全部以文本节点渲染：产品库文本是不可信输入（01）。匿名默认显示预览。
+- **新建**：空表单；`$code` 可以填，帮助里写格式；必填的布尔字段是没有默认值的两段分段控件，逼运营明确选一次（上架后锁定的字段，选错了只能停机用 `catalog-fix` 修）。保存即建草稿。
 
-用时间线，不用表格 [104][107]：
+状态：
 
-- 按天分组，组标题是「今天」「昨天」「9月24日 周三」。
-- 每条：左侧是动作图标，落在 `RouteLine` 上；中间是一句人话，操作者和对象加粗；右侧是「14:02」，审计一律用绝对时间 [45]；下一行小字内联 1–3 个改动摘要，如「改了：行程亮点、住宿档次」。
-- 系统和命令行的操作要和真人一眼区分开 [107]：真人用圆形的首字头像；系统用 `SettingOutlined`；命令行用 `CodeOutlined`，写「命令行 · 建账号」。
-- 底部是「加载更早的记录」按钮，按 `before` 翻页；不做滚到底自动加载 [17]。
+| 状态       | 表现                                                                             |
+| ---------- | -------------------------------------------------------------------------------- |
+| 加载       | 两栏骨架，卡片高度与成品一致                                                     |
+| 不存在     | 「没有这条{实体名}」加「回到{实体名}列表」                                       |
+| 出错       | 页内错误加重试                                                                   |
+| 匿名       | 默认「预览」；「编辑」页签是全只读文本                                           |
+| 非编辑成员 | 全只读，不挂锁（这些字段并没有被锁），状态句末尾「只读」；没有保存条、上架、复制 |
+| 窄屏       | 副栏落到主栏下方；宽 <1024 时顶部提示「建议在电脑上编辑」，不拦                  |
+
+### 有序子项与引用（G 页）
+
+- 有序子项编辑器是通用组件：旅游包里是逐日行程，家装包里是施工节点（设计系统 §6.3）[63]。
+  - 左侧竖轴的节点表示这一项填全了、有缺项、还是有错；缺项写「缺：当晚住宿」。
+  - 每项右上角「上移」「下移」「删除这{itemNoun}」，不做拖动：按钮本身满足单指针替代的要求 [112]。
+  - `autoIndexKey` 指定的字段自动编号，增删和移动以后自动重排。
+  - 条数与 `countFrom` 对不上时，头部写「还差1天」或「多了1天」，这也是上架前检查的必须项。`countFrom` 指向的字段被锁定时，隐藏增删和移动，头部写「条数随天数锁定，文字可改」。
+- 引用字段：
+  - 联想来自目标实体的列表，按 `filterBy` 只列同一取值的条目（旅游包按目的地），分两组「{实体名}库 · 贵州」和「本条写过的」；引用的条目是草稿时，名称后跟「草稿」状态。
+  - `allowFree` 时可以写库外的文本，控件下方注「{实体名}库里没有这个，按原文保存」（提示，不是错误）。
+  - 子项里的引用字段旁边有文字按钮「复制上一{itemNoun}的{字段名}」[64]。
+- 长文本超过 `softMax` 时字数变成 warning 色，提示「手机上会很长（建议120字以内）」，不拦。
+
+### CSV 导入（H 页）
+
+只对 `csvImport` 为 true 的实体开放（旅游包里是酒店：线路的逐日行程没法用平铺的列表达，01 已经如此）。弹窗宽 `min(880px, 100vw)`，分五步 [69][68]：
+
+1. **下载模板**：带 UTF-8 BOM 的 CSV，只有一行表头，表头用字段的中文标签，只含能平铺的字段 [71]。弹窗里用一张小表展示一行示例和填写规则：数组用「、」分隔，布尔写「是 / 否」。
+2. **选文件**：拖放或点选，只在本地读；保留「粘贴」页签。解码先用 `new TextDecoder('utf-8', { fatal: true })`，失败再用 `gb18030`，并在文件行写「按GBK读取」，否则写「按UTF-8读取」。
+   - 空文件，或只有表头、没有数据行：停在这一步，文件行下写 13 danger「这份文件没有要导入的行」，不进第 3 步，也不出现导入按钮。
+   - 为什么兜底 GBK：中文 Windows 上，Excel 的「CSV（逗号分隔）」按系统 ANSI 代码页保存，简体中文就是 GBK。这是本项目的判断；社区问答里有同样的说法 [72]，没有找到微软的官方文档，所以以验收 19 的实测为准。
+   - 解码不出的字节（替换符）仍然拒收，文案说明怎么另存（01 收尾时已如此）。
+3. **校验结果**：前端直接调共享的 `prepareCatalogCsv` 与 `parseCsv`，逐行显示「合格 / 要改」；出错的单元格用 danger 底色，最后一列写原因，路径翻成中文标签 [70]。
+   - 对照已载入的列表，检查编号是否已经存在。
+   - 按服务端的三条上限预检：≤200 行、`csv` ≤60,000 字符、请求体 ≤64 KB（按 UTF-8 字节算，中文每字 3 字节）。超限时写「这份文件太大，请分成N份导入」，不发请求。
+4. **导入**：
+   - 全部合格：主按钮「导入N条草稿」。
+   - 有不合格：主按钮直接是「只导入合格的N行」（前端过滤后重新序列化再提交，同样过三条上限），次要按钮「下载不合格的M行（带原因）」，左边幽灵按钮「上一步」。不放禁用的「全部导入」：下载的文件已经带着原因，改好可以再导 [68]。
+   - **防公式注入** [73]：下载的文件里，以 `=`、`+`、`-`、`@`、制表符、回车、换行（含全角的 ＝＋－＠）开头的单元格，在引号内的开头加一个制表符；所有单元格都加双引号，文件带 BOM。
+   - OWASP 提醒 Excel 另存后这些转义可能被去掉、前缀制表符也会留在数据里，所以 `prepareCatalogCsv` 导入时只去掉「制表符 + 上述危险字符」这一种开头的制表符，其余不动，并配自测。
+5. **完成**：「已建N条草稿」加「去草稿页签逐条检查后上架」。
+
+服务端契约不变，仍然只收 `{ csv }`。共享的 `prepareCatalogCsv` 额外接受字段的中文标签作为表头别名，英文键照旧可用；标签表由调用方从行业包传入（`src/shared/` 不 import `src/packs/`）。服务端返回 422 `invalid_csv` 时仍按行显示。非编辑成员和匿名没有入口。
+
+### 会话列表（I 页）
+
+- **页头**：标题「会话」；状态句「企业微信里的客户会话 · 接手和回复目前在工作台里完成」；主按钮「打开工作台」，新标签打开 `/admin.html`。
+- **页签**：全部 / 等人接手（软徽标）/ AI接待中 / 已成交，数量都来自 `GET /conversations/counts` 的同一次响应 [5]。今天没有「顾问处理中」，也不做成灰的页签。
+- **客户停在哪一步**：页签下方的阶段条，数据是 counts 的 `aiByStage`，阶段名和顺序来自行业包；每行可点，按阶段筛选；「以表格查看」把条形换成同样数字的小表格。
+- **表格**：
+  - 列：会话（图标加「企微客户 · F01」：渠道中文名加 `shortIdOf(id)`，与 `admin.html` 的短码规则相同，在工作台里能对上号）、状态、阶段（等人接手的行写「—」）、消息条数、最后动静、操作「打开工作台」。
+  - 排序：等人接手的在前，其余按最后动静倒序（`order=waiting_first`，服务端排好再分页）[6]。每页 20 条。
+  - 「最后动静」就是 `updatedAt`：相对时间，悬停看绝对时间，超过 30 天改显示日期 [50]；不说成「等了多久」。
+  - 点一行或「打开工作台」：新标签打开 `/admin.html#s=<id>`。工作台启动时读 hash 选中该会话；它用的是 `ADMIN_PASS` 的独立登录，hash 在它的登录流程中要保留，登录框走完后仍然选中。
+- **今天不画**：客户昵称、需求、最后一句话、转人工原因、等待时长、红色。这些要 02 的会话投影（「依赖 02 的后端」第 1、2 项）。不画未读圆点：没有逐人的已读状态。
+- `sim-` 会话仍然不列出（01）。
+
+状态：加载是 8 行骨架；空是「客户的会话会出现在这里」加「客户在企业微信里发来第一句话后就会出现」；页签无结果是「这个分类下没有会话」；出错就地重试；匿名没有入口（01）。
+
+### 会话工作台（J 页，02 之后）
+
+设计已定（设计系统 J 页），实现排在 02 之后；数据和动作依赖「依赖 02 的后端」第 1–7 项，右栏的快捷回复依赖第 13 项。路由 `/conversations/$id`。要点：
+
+- 三栏：列表 320、对话、「客户与交接」360；侧栏默认收起。
+- 列表按状态分组，不用页签（320 宽放不下四个页签）。每行两行字：第一行只放会话标题，占满整行；第二行依次是状态、上下文（原因、接手人或「停在：报价」，截成一行，悬停看全文）、右对齐的等待时长或最后动静（owner 2026-09-27：状态挪到第二行，标题不再被挤成省略号）。被截断的原因全文在对话头和交接卡里都有。
+- 对话头：唯一的主按钮「接手会话」；「更多」里是「交还AI」「复制会话链接」。
+- 「显示AI步骤」开关默认关；气泡之间不插轨迹。护栏改写只在气泡下留一行「AI原稿里删了1句 · 展开」，展开后是「删去 / 发出」的对照，标注用文字，不只靠颜色 [7]。毫秒级的轨迹和原始参数只给所有者、管理员，放在「AI为什么这么回」页签里。
+- 已转人工的会话，交接卡固定在输入框上方：原因、时间、客户原话里识别出的日期、停在哪个阶段。接手之前输入框禁用，占位「接管后在此回复，客户在企业微信中看到」。
+- 右栏默认是「客户与交接」：需求、最近报价、订单与付款、转人工（原因、时间、由谁处理）、快捷回复。
+- 两位顾问不能同时接手：有接手人时，别人看到「小林处理中」，「接手会话」不可用并写明原因。
+
+### 审计日志（K 页）
+
+- **页头**「审计日志」，状态句「谁在什么时候改了什么」。只有所有者、管理员看得到（01）。
+- **筛选**写进 URL：分段控件「全部 / 销售话术 / 产品库 / 账号与登录 / 平台与配置」，加开关「显示登录记录」（默认关）[79][78]。类别和开关换算成 `AuditQuery.actions`，由服务端过滤，翻页不会出空页。
+- **时间线**，不用表格 [77][74]：
+  - 按天分组，组标题「今天 · 9月26日 周六」。
+  - 每条：头像（命令行这类非人操作者用方块图标，和真人一眼区分开）、一句人话（操作者和对象用 500）、下一行改动摘要「改了：住宿档次、行程亮点」、右边绝对时间「13:40」[43]。
+  - 同一操作者、同一动作、同一实体、间隔不超过 5 分钟的连续记录合成一句「新建了6条酒店草稿」，末尾「展开6条」。
+  - 底部「加载更早的记录」按钮，按 `before` 翻页；不做滚到底自动加载 [24]。
+- **句子**由 `describeAudit(entry, pack, lookups)` 生成 [76][75]：动作的中文、分组、图标名放在 `src/shared/ui-labels.ts` 的 `AUDIT_ACTIONS` 里；实体名、字段名来自行业包；对象名从 diff 和产品库缓存拼，查不到用编号。以后新增的动作兜底为「{操作者} 执行了一项操作」，动作编码只放进技术详情。
+- **详情抽屉**（480 宽）[80]：句子、完整时间（`YYYY-MM-DD HH:mm:ss`）、操作者和角色；改动表「字段 · 原来 · 现在」，字段名用中文，金额写「42,800元」，数组用「、」连接，长文本用行内差异；跳转「打开这条{实体名}」或话术的对应版本；`sop.rollback` 且 `sameHashAsTarget === false` 时加一句 warning 说明原因；默认折叠的技术详情里是动作编码、对象类型与编号、JSON 原文和复制按钮。
 - 这一页没有失败类事件，不出现红色。
 
-句子由 `console/src/audit-sentence.ts` 的 `describeAudit(entry, lookups)` 生成。动作的中文名、分组、图标名（字符串）放在 `src/shared/ui-labels.ts` 的 `AUDIT_ACTIONS` 里，console 再把图标名映射成组件 [105][106]：
+状态：加载骨架；空「改动会记在这里」；筛选无结果「这个类别下没有记录」加「看全部」；出错就地重试。
 
-| action                                                                      | 句子                                                                                                       | 数据来源                                             |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `sop.publish`                                                               | 老板 发布了话术 v3，改了 2 节（话术原则、异议处理）；有 `rebasedFrom` 时加「（自动合并了期间别人的修改）」 | diff 的 `versionNo`、`changedKeys` → 节标题          |
-| `sop.rollback`                                                              | 老板 把话术回滚到 v1 的内容，生成 v4                                                                       | diff 的 `targetVersionNo`、`toVersionNo`             |
-| `sop.discard`                                                               | 老板 丢弃了话术草稿                                                                                        | —                                                    |
-| `sop.rerender`                                                              | 系统 因代码里的规则变了，重新生成了话术 v5                                                                 | diff 里有原因就写上                                  |
-| `catalog.create`                                                            | 老板 新建了线路草稿「成都一日游」                                                                          | diff 里 `title` / `name` 的新值                      |
-| `catalog.update`                                                            | 老板 修改了线路「四川 稻城亚丁·色达秘境 8 日」的 行程亮点、住宿档次                                        | diff 的键 → 中文标签；名称查产品库缓存，查不到用编号 |
-| `catalog.activate`                                                          | 老板 上架了线路「…」                                                                                       | 同上                                                 |
-| `catalog.locked_fix`                                                        | 命令行 修正了线路「…」的锁定内容：{原因}                                                                   | diff                                                 |
-| `auth.login` / `auth.logout`                                                | 老板 登录了后台 / 退出了后台                                                                               | —                                                    |
-| `config.import`                                                             | 命令行 导入了初始配置                                                                                      | —                                                    |
-| `platform.tenant_create`                                                    | 命令行 建了租户                                                                                            | —                                                    |
-| `platform.user_create`                                                      | 命令行 为 a@x.com 建了账号（角色：管理员）                                                                 | diff 的 `email`、`role` → 中文                       |
-| `platform.user_password` / `user_disable` / `member_role` / `member_remove` | 命令行 重置了 a@x.com 的密码 / 停用了 a@x.com / 把 a@x.com 的角色改为 管理员 / 把 a@x.com 移出了租户       | diff 里有的字段就写，没有就省略对象                  |
+### 系统（N 页，要后端）
 
-以后新增的 action 兜底为「{操作者} 执行了一项操作」，动作编码只放进技术详情。当前所有写审计的 action 都必须有模板，由自测保证（不变量 7）。
+只给平台管理员：运行状态（来自 `/status`，含与代码仓库初始数据的差异）、模型、延迟与成本、评测、技术详情；每张卡片右上角标数据来源，评测数字标明「评测批次，不是线上实测」。需要平台管理员的登录身份和一个只读的诊断接口（「依赖 02 的后端」第 12 项）。在它做好之前，租户页面上的工程信息只有技术详情里的哈希。
 
-详情抽屉（480px）[110][108]：
+### 关于
 
-- 句子、完整时间（`YYYY-MM-DD HH:mm:ss`）、操作者。
-- 改动表「字段 · 原来 · 现在」：字段名用中文标签；金额写「42,800 元」；数组用「、」连接；长文本用 `SectionDiff` 的行内差异。
-- 跳转：`sop.*` → 话术版本记录里的对应版本；`catalog.*` → 条目详情。
-- `sop.rollback` 且 `sameHashAsTarget === false` 时，赭石说明「新版本和 v1 不完全相同：v1 之后代码里的固定规则变过，回滚只恢复可编辑节」。
-- `catalog.locked_fix` 把原因放在第一行。
-- 底部是折叠的「技术详情」：动作编码、对象类型与编号、JSON 原文和复制按钮。
+用户菜单里的「关于」打开 480 宽的弹窗（匿名时在侧栏底部的「关于」图标按钮里）：
 
-状态：
+- 「字体：Geist、Geist Mono（Vercel），思源黑体Noto Sans SC（Adobe、Google）。都按SIL Open Font License 1.1使用。」（为什么是「），」不是「）；」，见设计系统 §2.6。）
+- 「图标：Lucide（ISC许可）。」
+- 中文和拉丁字母、数字之间照不变量 9 不打空格，由 `text-autospace` 补。
+- 两个链接「查看字体许可」「查看图标许可」，打开随构建发布的许可文本。
+- 不写版本号和构建哈希。默认焦点在「关闭」上。
 
-- 加载：骨架；
-- 空：「改动会记在这里」；
-- 筛选无结果：「这个类别下没有记录」+「看全部」；
-- 出错：就地重试。
+### 字体与标点样张（P 页）
 
-## 文案与中文标签
+`/_specimen/type` 按设计系统 P 页渲染：字重、字阶、等宽数字、标点挤压前后对比、省略号与破折号、间隔号与中西间距、「关于」弹窗样张。它用生产的字体文件和全局样式，所以就是上线效果的验收样张。另有 `/_specimen` 控件样张：页签、分页器、分段控件、复选框、开关、各种 `Status`、四种 Alert、按钮的悬停与焦点、`ConfirmDanger`，给对比度审计用。两者都只在 `VITE_SPECIMEN=1` 的构建里注册，生产构建里没有（不变量 25）。
 
-标签只有一个来源：
+## 视觉与字体
 
-- `src/shared/catalog-fields.ts`：产品库字段的标签、帮助、占位、单位、控件、分组、锁定组；`labelOfPath(kind, path)`，如「逐日行程 · 第 4 天 · 当天餐食」；`parseMeals` / `formatMeals`；`toFormData` / `fromFormData`。console 表单、字段报错、上架前检查、审计改动表、CSV 表头别名都用它。
-- `src/shared/ui-labels.ts`：`VIOLATION_LABEL: Record<ViolationCode, string>`、`SOP_SOURCE_LABEL: Record<SopSource, string>`、`ROLE_LABEL: Record<Role, string>`、`STAGE_LABEL`、`CHANNEL_LABEL`、`AUDIT_ACTIONS`（图标只存名字字符串）、`ERROR_COPY`。一律用 `Record<联合类型, …>`，漏项在 typecheck 阶段就报错。`src/shared/` 只许 import zod 和本目录（`scripts/check-boundaries.ts`），所以这里不放 React 组件。
-- `src/shared/format.ts`：
-  - `formatYuan(n)` →「42,800 元」；`formatAmount(n)` →「42,800」，单位写在表头时用；
-  - `formatRelative(iso, now)`、`formatDateTime(iso)`、`formatMonthRange(months)`；
-  - `shortIdOf(id)`；
-  - 全站不再出现「¥」。
-- `src/shared/destination-marks.ts`：`DESTINATION_MARKS`。
-- `src/shared/sop-sections.ts`：节表与正文、字数的纯计算。
-- `console/src/brand.ts`：产品说明句、`SERIF_STRINGS`、`SEAL_LABELS`、`SERIF_DIGITS`。
+### 主题
 
-界面只用下表左列的术语 [44]：
+- 令牌、对比度表、antd 映射都在设计系统 §1 和 §8。实现为 `console/src/theme/` 下的两套令牌加一份 `brand.css`（CSS 变量），`<html data-theme="light|dark">` 切换；「跟随系统」按 `prefers-color-scheme` 取值 [15]。
+- antd 的种子色会被算法重新派生 [115]，而页签、分页、默认按钮悬停和焦点框默认都取 `colorPrimary` 系 [116]，所以组件层按设计系统 §8 显式覆盖，不靠算法。
+- 主按钮一律是墨色（`color="default" variant="solid"`），`colorPrimary` 不做按钮底。
+- 租户主色生成器（设计系统 §1.3）随「租户品牌色」一起做（「依赖 02 的后端」第 10 项）；今天全部租户用默认主色 `#2B63E6`。
 
-| 用                                                | 不用                                         |
-| ------------------------------------------------- | -------------------------------------------- |
-| 销售话术（正文首次出现时可写「销售话术（SOP）」） | 导航和标题里的 SOP                           |
-| 线上 / 线上 v3                                    | 已发布版本、published                        |
-| 草稿                                              | draft、rev                                   |
-| 固定规则节                                        | 锁定节、镜像里的 data/sop.md                 |
-| 字数额度                                          | 预算、budget                                 |
-| 上架 / 上架后锁定                                 | active、activate                             |
-| 线路编号 / 酒店编号                               | code、id                                     |
-| 境内 / 境外                                       | overseas                                     |
-| 密码                                              | 口令                                         |
-| 系统导入 / 命令行                                 | import-config、user-create                   |
-| 技术详情（折叠区）                                | 在其他地方出现的 prompt、hash、uuid、payload |
+### 字体与授权义务
 
-格式：
+| 用途                                           | 字体                                  | 授权                                                                                           |
+| ---------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 拉丁字母、数字、ASCII 标点、间隔号 `·`         | Geist（Vercel）[81]                   | SIL OFL 1.1，没有保留字体名                                                                    |
+| 编号、工具原名、字段原名、哈希                 | Geist Mono                            | SIL OFL 1.1，没有保留字体名                                                                    |
+| 中文、全角标点、引号、省略号、破折号和其他符号 | 思源黑体 Noto Sans SC v2.004 [83][84] | SIL OFL 1.1；保留字体名只有「Source」，用「Noto Sans SC」这个名字切片、自托管、商用都可以 [85] |
 
-- 金额：「42,800 元起」；表头「每人起价（元）」配单元格「42,800」；输入框后缀「元/人」「元/晚」[46]。
-- 时间：审计与版本记录用绝对时间「9月26日 14:02」（跨年时加年份）；列表和总览用相对时间，悬停给绝对时间 [45][103]。
-- 数字用阿拉伯数字。中西文之间的间距交给 `text-autospace`，文案里不手打空格 [44][141]。
-- 按钮写具体的动作：「上架，开始推荐」「丢弃草稿」「回滚到 v1」，不写「确定」「是」[36]。
-- 标签和提示不加句号。少用「不能」「请勿」这种命令口吻，出错时写「无法……」[44]。
+- **只从本站加载。** 生产不连 Google Fonts。字体文件经 Vite 打进 `/console/assets/`，文件名带内容哈希。`src/shared/security-headers.ts` 的 `BASE_CSP` 显式加 `font-src 'self'`，不加 `data:`，也不加第三方域名；现在的 `default-src 'self'` 本来就覆盖字体 [114]，显式写出来是防止以后放宽 `default-src` 时字体被一起放开（怎么落进 01 见开放问题 1）。
+- **不内联成 `data:`。** `@fontsource-variable/noto-sans-sc` 5.3.0 有 3 片小于 Vite 默认的内联阈值 4,096 B（第 4、97、98 片），默认会被写成 `data:` 进 CSS，既过不了预算检查，也会被 `font-src 'self'` 拦下。所以 `console/vite.config.ts` 设 `build.assetsInlineLimit: 0` [117]。
+- **文件与码位**（细节见设计系统 §2.6）：
+  - `geist-ui.woff2`：U+0020–007E、U+00A0、U+00B7，字重轴 400–600，实测 11.9 KB，preload。
+  - `geist-mono-ui.woff2`：同样的码位，字重轴 400–500，实测 8.0 KB，用到时加载。
+  - `noto-sans-sc-ui.woff2`，UI 优先的一片：`console/src/**` 与各注册行业包配置里出现的全部汉字，加全部 CJK 标点和由 Noto 画的符号；字重轴 400–600；保留 GPOS `halt vhal palt vpal kern`、GSUB `locl vert vrt2`。按当前仓库和设计系统的用字、照设计系统 §2.6 的配方切（1,124 个码位），实测 243,600 B，preload。
+  - 长尾：`@fontsource-variable/noto-sans-sc` 的 101 片 [86]，单片约 48 KB，客户数据里出现界面没用过的字时按需加载。
+- **怎么生成**：
+  - Geist、Geist Mono 和 UI 优先片由 `scripts/fonts/build.ts` 生成并提交。脚本从固定 URL 取 OFL 原文件并校验 sha256，调 fonttools 的 `pyftsubset` 切片（只在开发机上跑，需要本机装 fonttools；CI 不跑它）。同时写出码位清单和产物的 sha256。界面文案改了就重跑。
+  - 长尾分片不提交，由钉死版本的 npm 依赖提供；它们的 `@font-face` 由同一个脚本从依赖的清单生成（家族名写成「Noto Sans SC」），不用依赖自带的 CSS（它的家族名是「Noto Sans SC Variable」）。
+  - 声明顺序：先长尾，后 UI 优先片。同一家族的 `unicode-range` 重叠时，后声明的先被查到，所以界面文字和全部标点都取自 UI 优先片，不下载长尾；标点都在同一个文件里，跨切片不挤压的问题也就没有了（设计系统 §2.2）。三个引擎是否都这样表现，在 plan 第 1.2 步实测（开放问题 4）。
+  - `pnpm test` 里的检查：`console/src/**` 和各注册行业包配置里的每个汉字、全部 CJK 标点都在 UI 优先片的码位清单里；UI 优先片文件的 sha256 等于清单里记的值。缺一个字就失败，并点名这个字和它出现的文件。
+- **Geist 自己切，不用 `@fontsource-variable/geist` 的 CSS。** 它的 latin 片 `unicode-range` 含 U+2000–206F，会把中文里的「—」「“”」「…」画成西文字形，「…」落到基线上。
+- **`font-weight` 写成范围**（`400 600`），`font-display: swap` [101]，`font-synthesis-weight: none`，不许浏览器合成粗体 [99]。preload 只放 `geist-ui.woff2` 和 `noto-sans-sc-ui.woff2`，带 `crossorigin`，由构建注入 `index.html` [100]。
+- **授权义务**：
+  - 许可文本随构建发布：`/console/licenses/OFL-Geist.txt`（Geist 与 Geist Mono 共用同一份版权声明）、`/console/licenses/OFL-NotoSansSC.txt`、`/console/licenses/lucide-ISC.txt`，内容照原文。
+  - 子集沿用原家族名「Geist」「Noto Sans SC」：OFL 允许功能等价的子集沿用原名，保留字体名只有「Source」，我们不用 [85]。
+  - 仓库根目录新建 `NOTICE`（AGENTS.md：第一次复制第三方内容时创建），记下三款字体、来源 URL、版本和 OFL-1.1 全文；lucide 通过依赖引入，另记一行。
+  - 「关于」弹窗写明字体和图标及其许可（见「关于」）。
+- **字体栈**：`"Geist","Noto Sans SC",system-ui,sans-serif`；等宽 `"Geist Mono","Noto Sans SC",ui-monospace,Menlo,Consolas,monospace`。字体没到时用系统字体，固定行高，换字体不改变行框高度。
 
-**服务端给用户看的文案**，同步改成中文字段名和「密码」，都是文案改动，不动行为：
+### 标点与间距
 
-- `src/shared/catalog.ts` 里 `RouteSchema` / `HotelSchema` 的报错：「id 只能是…」→「编号只能是…」；「要和 days（8）相同」→「要和天数（8）相同」；「第 1 项的 day 应为 1」→「第 1 天的天号应为 1」。前端校验和服务端 422 用的是同一套 schema，两边一起变。
-- `PasswordBusyError`：「口令校验排队超时」→「密码校验排队超时」；登录失败：「邮箱或口令不对」→「邮箱或密码不对」。
-- 现有的自测不断言这些字符串，改文案不需要改断言。
+- 全局样式在 `body` 上写 `text-spacing-trim: normal`、`text-autospace: normal`、`font-variant-numeric: tabular-nums`；根元素 `<html lang="zh-CN">`；含「…」的元素不设 `lang="en"`（设计系统 §2.5）[97][98]。
+- Chromium 靠 Noto 的 `halt` 原生挤压；Firefox、Safari 和老版本企业微信内置浏览器不支持 `text-spacing-trim`。启动时检测一次 `CSS.supports('text-spacing-trim', 'normal')`，不支持时由文本助手 `cjk(text)` 按 `haltIndices()` 把要挤的字包进 `<span class="halt">`；话术编辑器用同一个函数生成 CodeMirror 装饰。`haltIndices` 放在 `src/shared/typography.ts`，在完整字体上与 Chromium 逐对核对过 576 对，结果一致。
+- 界面文案里中文和数字、拉丁字母之间不手打空格，由 `text-autospace` 补；产品数据原样显示。并列信息用 `Sep` 隔开。
 
-## 可访问性与响应式
+### 图标
 
-- **对比度**：两套主题的文字 ≥ 4.5:1，控件边界与焦点环 ≥ 3:1，组件层的覆盖值也算在内（见「颜色」两表）[131][132]。只读值用正文色 [26]。
-- **不只靠颜色**：状态都有文字和图标；差异用 +/− 和删除线；季节条有 `aria-label` [133][12]。
-- **焦点**：`:focus-visible` 统一用 2px 外框，偏移 2px。颜色取 `--yt-focus`：浅色 #1F4F7F（对面 8.46），深色 #93B8E2（对面 8.05、对浮层 7.26）。antd 自带的焦点框取 `colorPrimaryBorder`，两套主题都显式设成同一个值 [134][174]。
-- **键盘**：自绘组件（目录站点、表格名称链接、餐食片、上移下移）都能用键盘到达 [137]。Tab 顺序：页头操作 → 目录 → 编辑器 → 保存条。
-- **拖动**：不用拖动操作；排序靠「上移 / 下移」按钮 [172]。
-- **名称与角色**：CodeMirror 带 `aria-label`；钢印带视觉隐藏的「锁定：{类别}」；图标按钮带 `aria-label` [138]；每页都有 `document.title` [136]；页首有「跳到主要内容」链接；使用 `header`、`nav`、`main` 地标。
-- **点击目标** ≥ 24×24 CSS px [139]。
-- **动效**遵守 `prefers-reduced-motion` [140]。
-
-断点（设计画布 1440，覆盖 1920 / 1440 / 1366 / 1280 [41]；由 `useViewport()` 统一判断，不依赖 antd 的 lg/xl）：
-
-| 宽度      | 布局                                                                                                               |
-| --------- | ------------------------------------------------------------------------------------------------------------------ |
-| ≥ 1440    | 页边距 32，侧栏展开                                                                                                |
-| 1280–1439 | 页边距 24，侧栏展开                                                                                                |
-| 992–1279  | 侧栏收成 64px 图标栏；SOP 目录变成下拉；详情副栏落到下方                                                           |
-| < 992     | 侧栏隐藏，菜单按钮打开 Drawer；抽屉宽 `min(640px, 100vw)`                                                          |
-| 375       | 总览和所有只读视图可用：页面不横向滚动（表格和目的地长卷内部可以横滚，表格首列固定）[135]；编辑流程只保证宽 ≥ 1024 |
+`lucide-react`（ISC），钉死版本，`strokeWidth={1.5}` 加 `absoluteStrokeWidth` [102]；取代 `@ant-design/icons` 的内容图标。antd 组件内部的小图标能经 `suffixIcon` / `closeIcon` 等属性换的就换，换不了的保留。实体图标只从设计系统 §7 的集合里选。
 
 ## 性能
 
-- **按路由拆包。** 代码式路由用 `createRoute(...).lazy(() => import('./pages/xxx.lazy'))` 拆出每一页 [149]。`@codemirror/*`、`@rjsf/*`、CSV 解析只进用到它们的页面 chunk。`/_specimen` 只在 `VITE_SPECIMEN=1` 时注册，生产构建里没有这个 chunk。
-- **预算。** 扩展现有的 `scripts/check-console-dist.ts`（已经挂在 `pnpm test` 末尾，紧跟构建）。它读 Vite 的 `build.manifest` 来计算：
-  - 打开总览需要的 JS（入口 + 其静态依赖 + 总览路由 chunk），gzip 后合计 ≤ 420,000 B（现在是 650,950 B）；
-  - 任意一次站内导航额外下载的 JS，gzip ≤ 250,000 B；
-  - 入口集合里没有 `@codemirror`、`@rjsf` 的模块；
-  - manifest 里没有 specimen 的 chunk；
-  - 宋体子集 ≤ 40,960 B；CSS 文件里没有 `url(data:`；
-  - 跳过二进制文件（woff2）的文本扫描；
-  - 删掉 `chunkSizeWarningLimit: 4096` 这个覆盖，由上面的预算把关。manifest 只列文件名，公开无害。
-- **压缩。** `/console/assets/*` 的 JS、CSS 按 `Accept-Encoding` 返回 gzip（Hono `compress`）。`/api/console/*` 和 `index.html` 不压缩：响应里有 csrf，压缩再加上攻击者可控的输入，会让 BREACH 类攻击变得可行 [154]。woff2 本身已经压缩过，不再压。
-- **字体。** 宋体 woff2 由 `index.html` 预加载 [170]，用 `font-display: swap` [171]；宋体只用于单行固定标题、印文和数字，行高固定，换字体不改变行框的高度。
-- **不跳动。** 骨架与成品同尺寸；状态文字预留宽度；动效只用 opacity 和 transform。每页加载与主要状态切换的 CLS ≤ 0.1 [151]。
-- **首屏。** 在本地 preview（CSP 与线上相同）上，用 Lighthouse 桌面预设测总览页，LCP ≤ 2.5 s [152]。
-- 静态资源长缓存见开放问题 1。
+- **按路由拆包**：各页用 `createRoute(...).lazy(() => import('./pages/xxx.lazy'))` 拆出 [118]。`@codemirror/*` 只进话术页的 chunk；CSV 解析只进导入弹窗的 chunk；拼音库只在 ⌘K 第一次打开时加载。去掉 `@rjsf/*`（表单改由字段渲染器负责，见 ADR-004）。
+- **预算**：扩展现有的 `scripts/check-console-dist.ts`（挂在 `pnpm test` 末尾，紧跟构建），读 Vite 的 `build.manifest` 计算：
+  - 打开总览需要的 JS（入口、其静态依赖、总览路由 chunk），gzip 后合计 ≤420,000 B（现在 650,950 B）；
+  - 任意一次站内导航额外下载的 JS，gzip ≤250,000 B；
+  - 入口集合里没有 `@codemirror` 的模块；
+  - 首屏字体：`geist-ui.woff2` ≤16,384 B，`geist-mono-ui.woff2` ≤12,288 B，`noto-sans-sc-ui.woff2` ≤280,000 B，preload 的两个合计 ≤300,000 B；
+  - 产物里没有 specimen 的 chunk、假包的内容、`fonts.googleapis.com` / `fonts.gstatic.com`；CSS 里没有 `url(data:`（靠 `assetsInlineLimit: 0`，见「字体与授权义务」）；
+  - 文本扫描跳过 woff2；删掉 `chunkSizeWarningLimit: 4096` 这个覆盖，由上面的预算把关 [117]。
+- 预算放宽（开放问题 8）或字体改走全量自切（开放问题 4）时，在本文顶部加一行 `Revisions:`，同步改这一节、「字体与授权义务」和验收 8、23。
+- **压缩**：`/console/assets/*` 的 JS、CSS 按 `Accept-Encoding` 返回 gzip（Hono `compress`）。woff2 已经压缩过，不再压。`/api/console/*` 和 `index.html` 不压缩：响应里有 csrf，压缩再加上攻击者可控的输入，会让 BREACH 类攻击变得可行 [123]。
+- **缓存**：带内容哈希的 `/console/assets/*` 返回 `Cache-Control: public, max-age=31536000, immutable`；`index.html`、`theme-boot.js`、许可文本和 API 仍是 `no-store` [122]。现在 `src/console-api/host.ts` 给所有 `/console/*` 静态文件都带 `no-store`，每次整页加载都会重下字体和脚本。这一条改的是 01 的决定，见开放问题 1。
+- `console/vite.config.ts` 的 `previewWithCsp` 给 `/console/assets/` 用的头，与 host 取自 `src/shared/security-headers.ts` 的同一个函数，所以 preview 上缓存头一致；preview 不压缩，压缩只在真实 host 上验（验收 23）。
+- **不跳动**：骨架与成品同尺寸；状态文字预留宽度；动效只用 opacity 和 transform；每页加载与主要状态切换的 CLS ≤0.1 [120]。
+- **首屏**：在本地 preview（CSP 与线上相同）上，用 Lighthouse 桌面预设测总览，LCP ≤2.5 秒 [121]。
+- **轮询**：只在页面可见时轮询，间隔 30 秒；只取计数和等人接手的首页，不拉全部会话。
+
+## 可访问性与响应式
+
+- **对比度**：两套主题的文字 ≥4.5:1，控件边界与焦点环 ≥3:1，组件层的覆盖值也算在内（设计系统 §1.2）[103][104]。只读值用正文色 [31]。
+- **不只靠颜色**：状态永远是圆点加文字，草稿是空心圆点；差异用 +/−、删除线和「删去 / 发出」；月份条带 `aria-label` [105][41]。
+- **焦点**：`:focus-visible` 统一用 2px 外框，偏移 2px；容器会裁切的地方偏移 −2；输入框用主色描边加 3px 光晕 [106]。antd 自带的焦点框取 `colorPrimaryBorder`，两套主题都显式设值。
+- **键盘**：自绘组件（目录、表格名称链接、多选片、上移下移、阶段条、⌘K）都能用键盘到达 [109]；Tab 顺序：页头操作 → 目录 → 编辑器 → 保存条。
+- **名称与角色**：CodeMirror 带 `aria-label`；图标按钮带 `aria-label` 和 Tooltip；锁图标带「上架后锁定」；`Sep` 另带一个视觉隐藏的「，」给读屏断句 [110]。
+- **点击目标** ≥24×24 CSS px [111]。
+- **动效**：没有循环动画；「等人接手」的状态点第一次出现时闪 3 次后静止；系统设置 `prefers-reduced-motion` 或菜单里开了「减少动态效果」时，全部时长为 0 [113]。菜单开关由 `theme-boot.js` 和用户菜单在 `<html>` 上设 `data-reduce-motion="true"`，`brand.css` 按它归零时长，antd 同时传 `motion: false`（设计系统 §1.5、§8）。
+
+断点（设计宽度 1440；由 `useViewport()` 统一判断）：
+
+| 宽度      | 布局                                                                                          |
+| --------- | --------------------------------------------------------------------------------------------- |
+| ≥1440     | 面板内边距 32，侧栏展开                                                                       |
+| 1280–1439 | 内边距 24，侧栏展开；话术页右栏收掉，检查清单挪到目录下                                       |
+| 992–1279  | 侧栏收成 56 的图标栏；话术目录变下拉；详情副栏落到下方                                        |
+| <992      | 侧栏隐藏，52 高的顶栏里的菜单按钮打开抽屉；抽屉宽 `min(640px, 100vw)`                         |
+| 375       | 总览和所有只读页面不横向滚动（表格在自己的容器里横滚，首列固定）[107]；编辑流程只保证宽 ≥1024 |
 
 ## 接口改动
 
-只改体验确实需要、前端又推不出来的地方。全部是新增成员或新增可选参数，01 的既有请求照旧有效。
+### 今天就能做（只改 console 与已有接口）
+
+全部加在 01 已有的 `/api/console` 子应用和 `src/shared/` 上，只做新增：新成员、可选参数、两个只读接口，01 的既有请求照旧有效。数据都是进程里已经有的（会话 store、启动时装载的租户行、代码里的包配置），不需要 02。
 
 ```ts
 // src/shared/console-api.ts
@@ -1089,7 +713,7 @@ export interface Me {
   role: Role;
   csrf: string;
   tenantSlug: string;
-  /** 新增：tenants.name。页头显示正在管理哪个租户，多租户以后防止改错租户 */
+  /** 新增：tenants.name。侧栏租户行和 document.title 用；多租户以后防止改错租户 */
   tenantName: string;
 }
 
@@ -1099,7 +723,7 @@ export interface ContractViolation {
   /** 服务端原文，只在「技术详情」里显示；界面上的说明由前端按 code、sectionKey、match 生成 */
   detail: string;
   /** 新增：phrase_forbidden 是命中的短语或正则匹配文本；phrase_missing 是必需的那句原文（rule.text）；
-   *  unknown_tool / unknown_field 是标识符；其余 code 没有。前端据此在编辑器里画下划线、选中、写说明 */
+   *  unknown_tool / unknown_field 是标识符；其余 code 没有 */
   match?: string;
 }
 
@@ -1121,29 +745,32 @@ export const ConvQuery = z.object({
     .regex(/^\d{1,9}$/)
     .transform(Number)
     .optional(),
-  /** 新增：接待状态。paid：stage === 'paid'；human：handedOver 且未成交；ai：其余 */
+  /** 新增：会话状态，判定见 conversationState */
   state: z.enum(['ai', 'human', 'paid']).optional(),
+  /** 新增：当前阶段（SalesStage 的 key） */
+  stage: z
+    .string()
+    .regex(/^[a-z_]{1,32}$/)
+    .optional(),
+  /** 新增：waiting_first = 等人接手的在前，其余按 (updatedAt desc, id)；不给时是 01 的顺序 */
+  order: z.enum(['waiting_first']).optional(),
 });
 
-export interface ConversationRow {
-  id: string;
-  channel: string;
-  stage: string;
-  handedOver: boolean;
-  messageCount: number;
-  updatedAt: string;
-  /** 新增：转人工前的阶段；没转人工为 null */
-  stageBeforeHandoff: string | null;
-  /** 新增：最后一条 customer 或 agent 消息的时间与说话方（不算 system 消息），不含正文；没有消息为 null */
-  lastMessageAt: string | null;
-  lastSpeaker: 'customer' | 'agent' | null;
+/** 新增：一次在内存里算完的会话计数 */
+export interface ConversationCounts {
+  total: number;
+  byState: Record<'ai' | 'human' | 'paid', number>;
+  /** AI 接待中的会话按当前阶段计数，键是 SalesStage */
+  aiByStage: Record<string, number>;
+  /** 按服务器时区（TZ）今天 0 点以后有新动静的会话数 */
+  updatedToday: number;
 }
 
 export const AuditQuery = z
   .object({
     limit: intParam(100).optional(),
     before: intParam(Number.MAX_SAFE_INTEGER).optional(),
-    action: z.string().min(1).max(64).optional(),
+    action: str.min(1).max(64).optional(),
     /** 新增：逗号分隔的 action 列表，至多 32 个，只返回其中的动作 */
     actions: z
       .string()
@@ -1151,6 +778,20 @@ export const AuditQuery = z
       .optional(),
   })
   .refine((q) => !(q.action && q.actions), { message: 'action 与 actions 只能给一个' });
+
+// src/shared/conversation.ts（新）
+/** 全站唯一的会话状态判定；服务端的过滤、计数和 console 的列表、首页、徽标、铃铛都调它 */
+export function conversationState(row: Pick<ConversationRow, 'stage' | 'handedOver'>): 'ai' | 'human' | 'paid';
+// paid：stage === 'paid'；human：handedOver && stage !== 'paid'；ai：其余
+
+// src/shared/pack.ts（新）：IndustryPack 等类型，见「行业包通用架构」与设计系统 §9
+```
+
+新增的两个只读接口（链式注册，Hono RPC 照样推得出类型）：
+
+```ts
+.get('/pack', canRead, packHandler)                                   // 当前租户的行业包配置
+.get('/conversations/counts', canSeeCustomers, conversationCountsHandler)
 ```
 
 语义：
@@ -1161,29 +802,61 @@ export const AuditQuery = z
   - 服务端调用现有的 `rebase(base = 草稿的基线版本, cur = 当前发布版本, mine = 草稿)`。`conflicts` 里的每一节都必须出现在 `edits` 里，否则返回 409 `sop_conflict`：`keys` 是缺的节，`current` 是这些节的线上正文，形状和发布冲突相同。
   - 成功时：草稿的 `sections` = rebase 结果再应用 `edits`，`based_on` = `rebaseOnto`，`rev` 加 1；之后 `/draft/check` 的 `rebase.needed` 为 false。草稿保存本来就不记审计，这里也不记。
   - `sop_versions_guard_update` 允许改草稿的 `based_on`，不需要迁移。
-- **`ConvQuery.state`**：服务端先过滤再分页，`total` 是过滤后的条数。
-- **`ConversationRow` 的新字段**是会话状态和消息元数据（时间、说话方），不含正文，也不含客户画像；01 的「不带客户画像、不带消息正文」照旧成立。会话标签由前端用 `channel` 和 `shortIdOf(id)` 拼出来，不需要新字段。
+  - 这一条解决 01 plan「Open」里「冲突后只能丢弃重做」的待定项。
+- **`ConvQuery.state` / `stage` / `order`**：服务端先过滤、排序，再分页；`total` 是过滤后的条数。`stage` 独立按 `row.stage` 过滤，阶段条跳转时和 `state=ai` 一起用。
+- **`/conversations/counts`**：对 store 做一次同步遍历，用 `conversationState` 分类，所以同一次响应里各项之和总等于 `total`；`sim-` 会话不计（01）。权限与会话列表相同（`canSeeCustomers`）。
+- **`/pack`**：返回 `tenants.pack_id` 对应的注册包，取自启动时装载的租户行，不查库。它是代码里的公开配置，不含租户名、成员、草稿，所以 demo 匿名也能读；prod 匿名 401。包不在注册表里时启动失败（`tenant-create` 已按注册表校验，自测覆盖）。
 - **`AuditQuery.actions`**：SQL 里用 `action = ANY($1)`，`nextBefore` 的语义不变；同时给了 `action` 和 `actions` 时返回 400 `bad_request`。
-
-不改的东西（前端推得出来，或者现在不需要）：审计的对象名（从 diff 和产品库缓存拼）、总览的聚合接口（并发调现有接口）、草稿的最后保存人、工具名词表（见开放问题）、会话的昵称（开放问题 8）。
+- **`ConversationRow`** 今天不加字段：会话标签由前端用 `channel` 和 `shortIdOf(id)` 拼，不需要新字段；01 的「不带客户画像、不带消息正文」照旧成立。
 
 接口之外的服务端小改动：
 
 - 契约检查 `checkSopContract` 在四类违规里填 `match`：`m[0]`、`rule.text`（`phrase_forbidden` 的纯文本规则和 `phrase_missing`）、标识符名。
 - `/me` 带上 `tenantName`，取启动时已经装载的租户行。
-- `src/shared/catalog.ts` 的 schema 报错改用中文字段名；`src/shared/catalog-csv.ts` 的表头接受中文标签作别名，导入时去掉本系统加的制表符前缀（见 CSV 导入）。
-- `/console/assets/*` 的 gzip（见「性能」）。
+- `src/shared/catalog.ts` 的 schema 报错去掉英文键：「id 只能是…」→「编号只能是…」；「要和 days（8）相同」→「要和天数（8）相同」；「第 1 项的 day 应为 1」→「第1天的天号应为1」。前端的 422 显示和服务端用的是同一套 schema，两边一起变；现有自测不断言这些字符串。
+- `src/shared/catalog-csv.ts`：表头接受中文标签作别名（标签表由调用方传入）；导入时去掉本系统加的「制表符 + 危险字符」前缀；配自测。
 - 登录失败和 `PasswordBusyError` 的文案：「口令」→「密码」。
-- `public/admin.html`：启动时读 `location.hash` 的 `#s=<id>` 选中会话；登录流程中保留 hash。
+- `public/admin.html`：启动时读 `location.hash` 的 `#s=<id>` 选中会话，登录流程中保留 hash。
+- `src/cli/tenant-create.ts` 的 `--pack` 可选值改为读注册表。
+- `src/console-api/host.ts`：`/console/assets/*` 的 gzip 与缓存头；`src/shared/security-headers.ts`：`BASE_CSP` 显式加 `font-src 'self'`，并导出给 host 与 `console/vite.config.ts` 共用的资源头函数（缓存头和 CSP 改的是 01 的决定，见开放问题 1）。
 
-与 01 的关系：本 spec 是对 01「后台 API 与页面」的增补，01 implemented 之后生效。01 的页面条款都保留能力，只换呈现：
+不改的东西：审计的对象名（从 diff 和产品库缓存拼）、总览的会话数字（用 counts，不做通用聚合接口）、草稿的最后保存人和时间（开放问题 6）、工具名词表（来自行业包）。
 
-- 「检查」「发布」「丢弃」三个动作都还在，「丢弃」进了「更多」菜单；
-- 历史里的 `prompt_hash` 收进了技术详情；
-- 产品库的编号降为名称下面的次行；
-- 锁定字段仍然只读，并注明「有报价快照后开放」。
+### 依赖 02 的后端
 
-01 的验收 16（匿名 `/status` 只有 `mode`）、17、22 继续成立。01 implemented 之后，在 01 顶部加一行 `Amended by:` 指向本 spec，其余不动。
+下面这些画面今天做不出来，因为数据或动作还不存在。它们的设计在设计系统里已经定了，实现等后端。第 8、10、11、12、14 项不是 02 的会话工作，同样要后端，一并列在这里；第 8 项今天已由 `match` 满足，第 14 项今天就做。
+
+| #   | 缺什么                                                                                                                                                                                                                                                                                                                         | 用到它的界面                                                                      | 今天怎么办                                                                                                                                                                                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **会话详情投影**：脱敏后的消息正文、客户需求与画像、最近报价（Session 里已有 `lastQuote` / `quoteHistory`）、订单与付款状态、`stageBeforeHandoff`（已在 Session 里，投影出来即可）                                                                                                                                             | J 页对话与右栏；会话行的「贵州带爸妈4人」；A2 的客户摘要                          | 列表只画 6 个投影字段；等人接手的行阶段写「—」；点开去工作台                                                                                                                                                                                 |
+| 2   | **转人工原因、转人工时间、接手人**。Session 现在没有这三个字段                                                                                                                                                                                                                                                                 | 「等了12分钟」；交接卡；「顾问处理中」状态和页签；防止两位顾问同时接手；A2 的排序 | 不出现「顾问处理中」；不写等待时长，只写「最后动静」。02 之后 `conversationState` 的返回值、`ConvQuery.state`、`ConversationCounts.byState` 都加第四种状态 `assigned`（顾问处理中，条件见设计系统 §5.6），`human` 改为「转人工且没有接手人」 |
+| 3   | **会话和订单落到 PG，按租户隔离**，主键 `(tenant_id, id)`（总参考「阶段 2」）。现在在内存 Map 里，落盘是 `var/sessions.json` 和 `var/orders.json`                                                                                                                                                                              | 以上全部的前提                                                                    | 读进程内 store（01 的做法）                                                                                                                                                                                                                  |
+| 4   | **console 鉴权下的接手、交还 AI、回复**，并与企业微信同步转人工状态。现在只有旧 admin 的 `/api/sessions/:id/handoff`、`resume`、`reply`，走 `ADMIN_PASS`                                                                                                                                                                       | J 页的「接手会话」「交还AI」和输入框；A2 的「接手」                               | 「打开工作台」新标签打开 `admin.html#s=<id>`                                                                                                                                                                                                 |
+| 5   | **转人工通知**：带事件类型的 SSE（哪个会话、发生了什么）、浏览器通知、标签页标题上的未读数「(2) 会话 · 云途定制旅行」、企业微信推给顾问。现有的 `/api/admin/stream` 已经放行后台会话（`src/server.ts` 按 `consoleSession` 判断，demo 下匿名也放行），但只推不带数据的 `change`，会话每来一条消息就推一次，也分不出是不是转人工 | 铃铛与徽标实时更新；标题未读数；浏览器通知                                        | 页面可见时每 30 秒轮询 counts。不订阅现有的 stream：挂在旧 admin 路由下，02 合并登录时会改；`change` 不带类型，收到后仍要重取 counts，只是把 30 秒的延迟换成更频繁的请求                                                                     |
+| 6   | **总览聚合**：本月订单数、已付款数、成交额、待付款。数据在 `var/*.json` 里，console 没有接口                                                                                                                                                                                                                                   | A2 的「本月成交额」KPI 和「待付款」待办                                           | 总览不画金额                                                                                                                                                                                                                                 |
+| 7   | **护栏改写前的原文和逐轮轨迹落库**。现在 CallTrace 只在超过 8 秒时写日志                                                                                                                                                                                                                                                       | J 页的「AI原稿里删了1句 · 展开」、金额出处、「显示AI步骤」、「AI为什么这么回」    | 不画                                                                                                                                                                                                                                         |
+| 8   | **话术检查的位置**                                                                                                                                                                                                                                                                                                             | 行内波浪线、一键替换                                                              | 已由 `match` 加前端查找满足（上一组）。精确的字符区间只在「同一段文字出现多处、只有一处违规」的规则里才需要，现有 7 类都不是，不排期                                                                                                         |
+| 9   | **用草稿试聊**的接口                                                                                                                                                                                                                                                                                                           | 话术页右栏的试聊窗格（客户视角 / 运行日志两个页签）[8]                            | 不渲染                                                                                                                                                                                                                                       |
+| 10  | **租户品牌色**：`tenants` 加品牌色字段、品牌设置页、主色生成器（设计系统 §1.3，含撞色提醒）、服务端按租户注入主题 CSS，首帧就是租户色                                                                                                                                                                                          | 租户 logo 兜底底色、主色；L 页演示的松间整装主色                                  | 全部租户用默认主色 `#2B63E6`                                                                                                                                                                                                                 |
+| 11  | **阶段迁移事件落库**（可选）                                                                                                                                                                                                                                                                                                   | 只有要画流向图时才需要                                                            | 本 spec 不画流向，不排期                                                                                                                                                                                                                     |
+| 12  | **平台管理员身份和只读诊断接口**                                                                                                                                                                                                                                                                                               | N 页「系统」                                                                      | 不做系统页；工程信息只在技术详情里                                                                                                                                                                                                           |
+| 13  | **快捷回复模板**：按租户存的模板和对应的 console 接口（或由行业包提供默认模板）                                                                                                                                                                                                                                                | J 页右栏的「快捷回复」                                                            | 不画                                                                                                                                                                                                                                         |
+| 14  | **静态资源托管**：带内容哈希的资源 `immutable`，JS、CSS 按 `Accept-Encoding` 返回 gzip（`src/console-api/host.ts`）                                                                                                                                                                                                            | 首屏缓存；验收 23                                                                 | 今天做（plan 第 1.4 步，等开放问题 1）                                                                                                                                                                                                       |
+
+这些项落进哪个阶段的 spec，见开放问题 2、3。
+
+### 与 01 的关系
+
+- **新增的部分**走 Amends（顶部 `Amends:` 一行列出 01 的三个章节），01 implemented 之后生效；01 顶部加一行 `Amended by:` 指向本 spec，其余不动。
+- **不是新增的部分**全部列在开放问题 1，由它定怎么落进 01：
+  - 安全头两处：带内容哈希的 `/console/assets/*` 改为长缓存；CSP 显式加 `font-src 'self'`。
+  - 页面条款五处（01「后台 API 与页面」的页面清单）：登录「邮箱和口令」改成「密码」；话术页「检查」「发布」「丢弃」三个按钮，改成自动检查、常驻发布条和「更多」里的丢弃；产品库「线路和酒店两个标签页」和固定的列名，改成侧栏里每个实体一项、列来自行业包；表单「由 JSON Schema 自动生成」改成字段渲染器（ADR-004）；锁定字段「注明『有报价快照后开放』」改成按锁定组写原因。
+  - 这些条款的能力都保留，只换呈现：能检查、能发布并填变更说明、能丢弃草稿；历史里的 `prompt_hash` 收进技术详情；锁定字段仍然只读。
+- **01 的验收怎么重跑**（验收 25）：
+  - 验收 16 的前三条原样通过（匿名 `/status` 只有 `mode`；`/pack` 是新接口，不改 `/status`）；第 4 条（CSP、`no-store`、`nosniff`）按开放问题 1 修订后的文本验证。
+  - 验收 17 原样通过。
+  - 验收 22 在新界面上走：「检查」这一步对应自动检查（自动保存后跑，检查清单按节列出问题），`prompt_hash` 在版本记录的技术详情里可见。
+- ADR-002 决策 1 里「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」一条，由 ADR-004 取代：表单改由行业包的字段配置渲染，「新行业不用写新表单」这个目的不变。
 
 ## 不变量
 
@@ -1191,145 +864,205 @@ export const AuditQuery = z
 
 视觉与文案：
 
-1. `theme.ts` 两套主题里，`CONTRAST_PAIRS` 列出的每一对文字组合 ≥ 4.5:1，控件边框、焦点环、状态图形对其底色 ≥ 3:1。计算用 `theme.getDesignToken()` 的实际输出，加上 `antdTheme(mode).components` 里的组件值。`PRIMARY_FG_KEYS` 里的每个键在两套主题里都有值。brand.css 里两套 `--yt-*` 与 `PALETTE[mode].brand` 逐项相等。
-2. 朱砂色只出现在这些地方：字段与表单报错、接口失败提示、契约违规、超出字数额度、409 冲突、`lock_lost`、转人工超时、`ConfirmDanger` 的确认按钮。`console/src` 里，`danger` 属性只出现在 `ConfirmDanger` 组件里，菜单项配置里没有 `danger: true`。
-3. 每个操作区至多一个 `type="primary"` 按钮；主按钮从不带 `danger`；`ConfirmDanger` 里没有 primary 按钮。
-4. `console/src` 里没有 `message.error(` 和 `notification.error(`。
-5. 上架后锁定的字段和只读字段以正文色渲染成文本，不使用 `colorTextDisabled`。
-6. `RouteSchema`、`HotelSchema` 转出的 JSON Schema 里，每个属性路径（含 `itinerary` 与 `intensity` 的子字段）在 `CATALOG_FIELDS` 里都有标签，并且标签含中文字符。
-7. 源码里每个 `writeAudit({ action: '…' })` 的 action 都在 `AUDIT_ACTIONS` 里；`ViolationCode`、`SopSource`、`Role` 的每个值都有中文名。
-8. 表单往返无损：对 `data/routes.json` 里的每一天，`formatMeals(parseMeals(meals)) === meals`；对每条线路 `p`，`fromFormData(getDefaultFormState(schema, toFormData(p)))` 与 `p` 深度相等，`diffPayload` 的 `set` 与 `unset` 都为空。
-9. `console/src` 里没有「¥」；金额都经过 `formatYuan` / `formatAmount`。
-10. `console/src` 里没有 `style.cssText`、`setAttribute('style'`；构建产物的 CSS 里没有 `url(data:`；运行时注入的 `<style>`（CodeMirror、antd）里也没有生效的 `url(data:`（第三方的 data: 背景都被覆盖成 `none`）。
-11. `SERIF_STRINGS`、`SEAL_LABELS`、`DESTINATION_MARKS`、`SERIF_DIGITS` 的每个字符都在宋体子集的字符清单里。`yt-serif` 这个 class 只出现在 `console/src/brand/serif.tsx` 里；它导出的组件只接受 `SerifString` 类型（上述常量的字面量联合）和数字。
-12. 默认状态下（技术详情未展开），页面可见的文字里没有这些东西：UUID；12 位及以上的十六进制串；以 `phrase_` 或 `unknown_` 开头的码；以 `sop.`、`catalog.`、`auth.`、`platform.` 开头的动作编码；「口令」「镜像」「days」「id 只能」。
-13. `console/src` 里没有 `Radio.Button`、`<Badge count`，也没有带状态或预设色的 `Tag`（`color=` 只允许不写）；状态徽标都经过 `StatusPill`。
-14. `console/src` 里读取服务端 `detail` 的地方只有 `TechDetails` 组件。
+1. 两套主题里，设计系统 §1.2 列出的每一对文字组合 ≥4.5:1，控件边界、焦点环与状态图形 ≥3:1，计算用 `theme.getDesignToken()` 与组件令牌的实际输出。
+2. `console/src` 里没有 `type="primary"`，主按钮只经一个墨色主按钮组件渲染，每个操作区至多一个。
+3. `console/src` 里 `danger` 属性只出现在 `ConfirmDanger` 组件里，菜单项配置里没有 `danger: true`。
+4. `console/src` 里没有 `message.error(`、`notification.error(`，成功提示只经一个 toast 函数。
+5. 上架后锁定的字段和只读字段渲染成文本，计算后的颜色等于 `--text`，不用禁用色。
+6. 状态只经 `Status` 组件表达：`console/src` 里没有带 `color=` 的 `Tag`、`<Badge count`、`Radio.Button`。
+7. 默认状态（技术详情未展开）下，租户页面的可见文字里没有下列任何一项：
+   - UUID；12 位及以上的十六进制串；
+   - 模型 id：运行配置和 `.env.example` 里出现的全部模型 id，以及以 `glm-`、`gpt-`、`claude-`、`qwen`、`deepseek` 开头的词；
+   - 延迟：数字紧跟 `ms` 或「毫秒」，或出现 `P50`、`P90`、`P95`；
+   - 成本：「元/千轮」「每千轮」「token」；
+   - 评测：「评测」「用例」「断言」这三个词；
+   - 以 `phrase_` 或 `unknown_` 开头的码；`AUDIT_ACTIONS` 里的任何动作编码（`sop.`、`catalog.`、`auth.`、`platform.`、`config.` 等开头）；
+   - 「口令」「镜像」「SOP」「¥」。
+8. `console/src` 里读取服务端 `detail` 的地方只有 `TechDetails` 组件。
+9. `console/src` 的字符串字面量和各注册行业包配置的标签、帮助、说明里，中文与数字、拉丁字母之间没有手打的空格。例外：日期与时刻之间的空格（如「9月25日 18:30」）；照抄产品数据的占位例子（`placeholder` 里的「例：四川 稻城亚丁·色达秘境 8 日」）；`console/src/_specimen/` 下的样张页，它故意放了手打空格的反例（设计系统 P 页）。
+10. 渲染后的页面只用 12 / 12.5 / 13 / 14 / 15 / 16 / 24 / 28 / 36 这几种字号和 400 / 500 / 600 三种字重，含中文的元素 `letter-spacing` 为 0。
+
+行业包：
+
+11. console 只经 `/pack` 的数据认识行业包，分两层断言：
+    - 除渲染器自测外，`console/src` 不 import `src/packs/**` 和 `src/shared/pack-fixtures/**`（`scripts/check-boundaries.ts`）。
+    - `console/src` 的字符串字面量和 JSX 文本里，不出现各注册包与假包的实体 kind、实体名、工具原名、字段 key、字段标签、阶段 key（`scripts/check-console-src.ts`）。只比整串，不比子串；不扫注释、标识符、`*.selftest.*` 和 `_specimen/`。排除三类：`$` 开头的系统字段；会话状态值 `ai`、`human`、`paid`（`paid` 同时是旅游包的阶段 key）；检查脚本里一张通用词白名单，每项写明理由，例如 `title`、`name`、`tags`、`id` 这类通用属性名，「状态」「标签」「名称」这类界面自己的词。
+    - 两层都挂在 `pnpm lint`。
+12. 每个 `FieldType` 在 console 都有三种形态的渲染器（渲染器表的类型是 `Record<FieldType, …>`）。
+13. 每个注册的行业包和假包都通过 `checkPack`：分组、锁定组、`countFrom`、`reference.to`、`showWhen`、`unitFrom`、`nav.entities` 都指向存在的项，实体图标在设计系统 §7 的集合里。
+14. 旅游包与代码一致：`vocabulary.tools` 的键等于 `toolDefs` 的工具名；`sopFields` 的键等于 `SOP_KNOWN_FIELDS`；`sopSections` 的 key、顺序、`locked` 等于 `TRAVEL_SOP_SECTIONS`；带 `lockedWhenActive` 的字段等于 `LOCKED_WHEN_ACTIVE`；`stages` 的 key 都是 `SalesStage` 且不含 `handoff`；schema 的每个属性路径都有对应的 `FieldDef`。
+15. 对 `data/` 下每条线路和酒店，以及一组变异（逐个删掉必填字段、条数与天数不符、最佳季节写不出月份、金额写成字符串、必填数组写成空数组：`tags: []` 应通过，`highlights: []` 应不过），`checkItem` 的必须项全过，当且仅当对应 schema 的 `safeParse` 成功。
+16. 表单往返无损：打开任一现有条目、不做改动，提交内容的 `set` 与 `unset` 都为空；按 `storeAs` 存的字段对现有数据满足 `format(parse(x)) === x`。
+
+状态与计数：
+
+17. 会话状态只由 `src/shared/conversation.ts` 的 `conversationState` 判定，服务端的过滤、计数和 console 的列表、首页、徽标、铃铛都调它。
+18. 同一次 counts 响应里，`byState` 三项之和等于 `total`，`aiByStage` 各项之和等于 `byState.ai`。
+19. 数字徽标只数等人接手的会话。
 
 交互：
 
-15. 编辑者有未保存的内容时（SOP 自动保存未完成或失败、产品库表单有改动），站内导航被拦下并弹出确认框，关页时有 beforeunload 提示。
-16. SOP 自动保存的每个请求都带当前的 `rev`；收到 409 后不再自动重试。
-17. 筛选、页签、选中的节都在 URL 里：用同一个 URL 刷新，页面状态相同。
-18. 在每个路由下（含详情页深链），侧栏恰有一个选中项。
-19. 每个路由的 `document.title` 以「 · 运营后台」结尾，并且各不相同（详情页含条目名）。
-20. 成员身份下，任何一个响应被判为会话过期后，当前页不卸载，编辑中的内容不丢，匿名形状的数据不进缓存。
+20. 有未保存的内容时（话术自动保存未完成或失败、产品库表单有改动），站内导航被拦下并弹出确认框，关页时有 beforeunload 提示。
+21. 话术自动保存的每个请求都带当前的 `rev`；收到 409 后不再自动重试。
+22. 筛选、页签、选中的节都在 URL 里：用同一个 URL 刷新，页面状态相同。
+23. 每个路由下侧栏恰有一个选中项；各路由的 `document.title` 互不相同，并以「 · {租户名}」结尾（匿名以「 · 演示」结尾）。
+24. 成员身份下，任何一个响应被判为会话过期以后，当前页不卸载，编辑中的内容不丢，匿名形状的数据不进缓存。
 
 性能与安全：
 
-21. 入口集合的 JS 不含 `@codemirror`、`@rjsf` 的模块；生产构建里没有 specimen chunk；预算数字见「性能」。
-22. `/api/console/*` 和 `index.html` 的响应没有 `Content-Encoding`。
-23. 匿名可见的响应和页面里没有任何成员姓名、草稿、变更说明（01 不变量 31 不变）；会话接口的响应里没有客户画像字段。
-24. 产品库文本（包括预览）只以文本节点渲染；`console/src` 里没有 `dangerouslySetInnerHTML`。
+25. 生产构建（不带 `VITE_SPECIMEN`）的入口集合里没有 `@codemirror` 的模块，产物里没有 specimen 页、假包的内容和第三方字体域名。
+26. `/api/console/*` 和 `index.html` 的响应没有 `Content-Encoding`，也不带 `immutable`；只有带内容哈希的 `/console/assets/*` 带 `immutable`。
+27. 匿名可见的响应和页面里没有任何成员姓名、草稿、变更说明（01 不变量 31 不变）；`/pack` 的响应里没有租户名和任何租户数据；会话接口的响应里没有客户画像字段和消息正文。
+28. 产品库文本（包括预览）只以文本节点渲染；`console/src` 里没有 `dangerouslySetInnerHTML`、`style.cssText`、`setAttribute('style'`。
+
+字体：
+
+29. 生产页面只从本站加载字体，加载的字体家族只有 Geist、Geist Mono、Noto Sans SC。
+30. `console/src/**` 和各注册行业包配置里的每个汉字、全部 CJK 标点都在 UI 优先片的码位清单里，UI 优先片文件的 sha256 等于清单记录的值。
+31. `/console/licenses/OFL-Geist.txt`、`OFL-NotoSansSC.txt`、`lucide-ISC.txt` 随每次构建发布，内容与上游许可原文相同。
 
 ## 验收标准
 
-1. **对比度与主题自测。** `pnpm test` 包含 `console/src/theme.selftest.ts`，浅、深两套主题逐对计算，全部通过。以下三种改动都会让它失败并点名：
-   - 把浅色的 `colorTextTertiary` 临时改成 `#8C8C8C`，失败并点名这一对；
-   - 把深色的 `Tabs.itemSelectedColor` 改成 `#3E73AA`，失败并点名这个组件键；
-   - 去掉包在算法外面的钉住层，失败并点名被改掉的种子色；
-   - 把 brand.css 里任意一个 `--yt-*` 改掉，失败并点名这个变量。
-2. **静态自测。** `pnpm test` 包含以下四个脚本：
-   - `src/ui-meta.selftest.ts`：不变量 6、7；
-   - `console/src/catalog-form.selftest.ts`：不变量 8，20 条线路逐一验证；
-   - `console/src/theme.selftest.ts`：不变量 1，以及不变量 11 的字符覆盖；
-   - `scripts/check-console-src.ts`：源码扫描，覆盖不变量 2、4、9、10（源码部分）、11（class 部分）、13、14、24。
-
-   它们都不放在 `src/shared/` 里，所以不越过 `check-boundaries` 的边界。
-
-3. **接口。** `console.selftest.ts` 新增以下用例，原有断言一条不改，01 验收 1 继续成立：
-   - `/me` 带 `tenantName`。
-   - 在「话术原则」里写进禁用短语，`/draft/check` 的对应违规带 `match`，且等于命中的文本；删掉一句必需说法，对应的 `phrase_missing` 带 `match`，且等于那句原文。
-   - 冲突合并的完整路径：草稿改「话术原则」→ 回滚到一个「话术原则」不同的旧版本 → 发布返回 409 `sop_conflict`；带 `rebaseOnto` 和合并后的「话术原则」保存，返回 200，之后 check 的 `rebase.needed` 为 false，发布成功，线上正文等于合并结果。
-   - 合并的三种失败：`rebaseOnto` 不是当前发布版本 → 409 `rev_conflict`；`edits` 缺冲突节 → 409 `sop_conflict`，且 `keys` 点名缺的节；没有草稿时带 `rebaseOnto` → 422。
-   - `ConvQuery.state` 三个取值的 `total` 之和等于不带 `state` 时的 `total`，每页的行都满足对应条件；`ConversationRow` 的键里没有 `profile`、`nickname`、`destinationInterest`。
-   - `AuditQuery.actions` 只返回列表里的动作，翻页不出空页；同时给 `action` 与 `actions` 返回 400。
-   - 酒店 CSV 用中文表头导入，结果与用英文表头相同；带「制表符 + `=`」前缀的单元格导入后前缀被去掉。
-   - 提交一条天数与逐日行程不符的线路，422 的报错里是「天数」，不是「days」。
-4. **两套主题的走查。** 在本地真实 Postgres + preview（CSP 与线上相同，构建时带 `VITE_SPECIMEN=1`）上用 Playwright 走一遍，浅色、深色各一轮。截图存到 `docs/features/console-ux/walkthrough/{light,dark}/NN-名称.png`。
-   - 至少包括这些状态：
-     - 匿名：总览、话术（目录带钢印）、线路预览；
-     - 登录页（含错误态）；成员总览（含一次模拟的 `lock_lost`）；
-     - 话术：编辑与自动保存；检查出违规并点选定位；发布抽屉；冲突合并；版本记录与回滚确认；「更多」菜单展开；丢弃确认；
-     - 产品库：线路列表（含筛选、筛选无结果）；新建线路（空表单）；已上架线路详情（锁定组）；已上架线路编辑态（出现保存条）；逐日行程时间轴；上架确认；酒店 CSV 预检（含 GBK 文件和坏行）；
-     - 会话列表（含一行超时的红色）；审计时间线与详情抽屉；
-     - 控件样张 `/_specimen`：Tabs、Pagination、Segmented、Radio、Checkbox、四种 `StatusPill`、四种 Alert、默认按钮悬停与焦点、ConfirmDanger；
-     - 375px 下的总览与线路列表。
-   - 走查全程的 `securitypolicyviolation` 事件 0 次、控制台错误 0 条；所有 `<style>` 的文本里没有生效的 `url(data:`。
-   - 每个路由都断言三件事：`.ant-menu-item-selected` 恰好 1 个；`document.title` 以「 · 运营后台」结尾且各路由互不相同；页头操作区的 `.ant-btn-primary` 不超过 1 个。
-   - demo 下另走一步：在话术页编辑时删掉会话 cookie，再继续编辑 → 弹出登录框、页面不跳成匿名、编辑内容还在；登录后刚才的保存被重放成功。
+1. **主题自测。** `pnpm test` 对浅、深两套主题逐对计算设计系统 §1.2 的全部配对，全部通过（不变量 1）。以下改动都让 `pnpm test` 失败并点名：把浅色 `--text-3` 临时改成 `#8C8C8C`，点名这一对；把深色 `--control-border` 改成 `#52525B`，点名这一对；把深色 Tabs 的 `itemSelectedColor` 改成主色，点名这个组件键；把 `brand.css` 里任意一个变量改掉，点名这个变量。
+2. **渲染后的对比度，两套主题。** 走查（验收 4）的每个截图状态，浅色、深色各一轮，用渲染后的真实颜色计算：半透明层逐层叠合、乘上元素透明度，每段文字取左、中、右三个点记最差值。文字低于 4.5:1 的 0 处；控件边界、焦点环低于 3:1 的 0 处（隐藏或禁用状态的图形除外）。同一批状态用 axe-core 的 `color-contrast` 规则检查，0 条违规。
+3. **静态检查拦得住。** 对下面每条不变量各造一个违反它的改动，对应的门禁失败，并点名文件和位置（字体一条点名缺的字和它出现的文件）：
+   - `pnpm lint`：不变量 2、3、4、6、8、9、11、28；另外，`console/src` 里读 `handedOver`、或把 `stage` 与 `'paid'` 相比（不变量 17 的 console 一侧）。
+   - `pnpm typecheck`：从渲染器表里删掉一种字段类型（不变量 12）。
+   - `pnpm test`：不变量 13、14、15、16、30；以及旅游包或假包里任一字段在三种形态下渲染不出、或表单与只读形态里没有它的标签。
+   - 撤掉改动后四个门禁全过。
+4. **两套主题的走查。** 在本地真实 Postgres 加 preview（CSP 与线上相同，构建时带 `VITE_SPECIMEN=1`）上用 Playwright 走一遍，浅色、深色各一轮，截图存到 `docs/features/console-ux/walkthrough/{light,dark}/NN-名称.png`。
+   - 至少包括：匿名的总览、话术、线路预览；登录页（含错误态）；成员总览（含一次模拟的 `lock_lost`）；话术编辑与自动保存、检查出问题并点选定位、行内提醒与「改成…」、发布抽屉、发布成功后的发布条、冲突合并、版本记录、回滚确认、「更多」展开、丢弃确认；线路列表（含筛选、筛选无结果）、新建线路（空表单）、已上架线路详情、已上架线路编辑态（出现保存条）、有序子项编辑、上架确认；酒店 CSV 导入（含 GBK 文件和坏行）；会话列表；审计时间线与详情抽屉；「关于」；两个样张页；375 宽下的总览与线路列表。
+   - 全程 `securitypolicyviolation` 事件 0 次，控制台错误 0 条。
+   - 每个路由都断言：侧栏选中项恰好 1 个；`document.title` 符合不变量 23；页头操作区的主按钮不超过 1 个。
+   - 每个截图状态都扫一遍计算样式（不变量 10）：有文字的元素，`font-size` 在不变量 10 的集合里，`font-weight` 是 400、500、600 之一；含中文的元素 `letter-spacing` 为 0。
+   - 每个带 search params 的状态（筛选、页签、选中的节、版本记录、查看改动）都用同一个 URL 刷新一次（不变量 22）：选中的页签、生效的筛选、选中的节、打开的抽屉，以及列表前 5 行的名称，与刷新前相同。
+   - demo 下另走一步：在话术页编辑时删掉会话 cookie，再继续编辑 → 弹出登录框、页面不跳成匿名、编辑内容还在；登录后刚才的保存重放成功。
    - 走查脚本放在仓库外（与 01 验收 22 相同），结果记进 plan。
-5. **对比度审计。** 上一条的每个截图状态，都用 axe-core 的 `color-contrast` 规则检查，两套主题都是 0 条违规。做审计的浏览器上下文可以开 `bypassCSP`；CSP 检查在不开的那一轮做。
-6. **红色只给出错。**
-   - 「算红」的判定，满足任一即可：计算后的 `color`、`background-color`、`border-*-color`、`outline-color`、`text-decoration-color`，或 `background-image` 里出现的颜色，属于该主题 `getDesignToken()` 实测的 `colorError*` 集合；或者色相落在 350°–20°、HSL 饱和度 > 40%。
-   - 正常状态的截图里，没有任何元素「算红」。正常状态包括：总览一切正常、话术无问题、话术「更多」菜单展开、线路列表、新建线路（空表单）、已上架线路详情、已上架线路编辑态、审计、控件样张（不含 ConfirmDanger 那一块）。
-   - 出错状态里有红：违规、冲突、CSV 坏行、超时会话、ConfirmDanger。
-7. **不露机器码。** 走查的每个默认状态，页面可见文字都满足不变量 12。
-8. **中文字段。** 新建线路页的所有字段标签都含中文，没有纯英文标签，没有红色星号，rjsf 的按钮文案都是中文。已上架线路的锁定字段是文本，计算后的颜色等于 `colorText`。
-9. **话术编辑。**
-   - 在「话术原则」里打字，3 秒内状态变成「已保存」，刷新后内容还在。
-   - 断网后再打字，状态变红并提示重试；这时点侧栏的「线路」，弹出离开确认。恢复网络后，自动保存成功。
-   - 只用 Tab、方向键、Enter、`⌘S`，能完成一次「改一节 → 发布」。
-10. **违规定位。** 检查出 `phrase_forbidden` 后，点问题面板里的那一条，编辑器切到对应的节，并选中命中的文字；该文字有波浪下划线，且不触发 CSP 违规。目录上该节显示问题数。发布抽屉的「发布」按钮禁用，并写明原因。
-11. **冲突合并（界面）。** 用验收 3 的场景在界面上走一遍：发布抽屉提示要合并 → 在合并模式里逐块「采用线上的写法」→ 完成合并 → 发布成功，版本记录出现新站点。整个过程中没有英文按钮。
-12. **回滚。** 回滚确认框里有三句说明和差异。用 01 验收 8 的注入方式造出一个 rerender 版本，再回滚到它之前的版本，确认框在提交之前就显示「固定规则变过」的提示。
-13. **产品库。**
-    - 列表的筛选写进 URL，刷新后不变。
-    - 线路详情是两栏布局，每个锁定组的印文钢印和原因只出现一次。
-    - 上架确认框列出中文字段名和当前值，按钮是「上架，开始推荐」；已上架条目的保存按钮是「保存并立即生效」。
-    - 把 20 条线路逐一打开、不做任何改动：保存条不出现，网络面板里没有 PATCH。加上不变量 8 的纯函数自测，01 验收 9「原样提交审计 diff 为空」在新界面上仍然成立。
-    - 新建线路时不选「境内 / 境外」，点保存：字段下方报「境内还是境外：没选」，没有发出请求。
-14. **逐日行程。** 餐食片的选择写回 `meals` 后，字符串符合规则。把草稿线路的天数从 3 改成 4：时间轴头部显示「还差 1 天」；点「上架…」不打开确认框，焦点跳到逐日行程。「上移 / 下移」能调整顺序，`day` 自动重排。
-15. **CSV。**
+   - **走查种子与时钟**（验收 4、6、10 共用）：
+     - 会话由已提交的 `scripts/seed-demo.py --scenario console-ux --now <时刻>` 生成：13 个会话，A01 是转人工（`stage: 'handoff'`、`handedOver: true`），各会话的 `updatedAt` 按设计系统 §10.0 的会话表相对 `--now` 定位，「昨天21:40」这类按日历日算。不带 `--scenario` 时脚本的输出不变。
+     - `--now` 取走查当天的 14:30（`Asia/Shanghai`）。服务端以 `TZ=Asia/Shanghai`、`FLAG_SEED_FRESHEN=off` 启动（不做演示数据保鲜，时间戳不被平移）；页面用 Playwright 的 `page.clock.setFixedTime` 钉在同一时刻。
+     - `updatedToday` 用服务端的真实日期：走查不跨午夜。页面上的日期随走查当天平移，与设计系统里的「9月26日」不同属正常。
+5. **第二个行业包，console 零改动。**
+   - 字段渲染器和各页面都做完以后（plan 第 17 步之前），往假包里加几个用已有字段类型的新字段：给「主材」加「产地」（text）和「规格」（单字段的有序子项），给「装修套餐」加一个选填的「含软装」（boolean）。这次提交的 `git diff --stat` 里没有 `console/src/` 下的文件；下面的假包走查在这次提交之后跑，新字段在列表、详情、新建表单里都渲染出来。
+   - 用 preview 构建，Playwright 拦截 `/api/console/me`、`/pack`、`/catalog/*`、`/conversations*`，返回假包和 L 页的样张数据：侧栏是「产品库 · 装修套餐 / 主材」，图标是 `package` / `layers`，搜索占位写「搜索装修套餐、主材、会话…」；装修套餐列表的列、筛选、月份条按 L 页渲染；「暖木 · 两居全包经典版」的详情里，各分组、单位取自计价单位字段的金额、多选引用芯片、施工节点（节点里只写序号，卡片第一行写「节点 3」）都渲染出来；新建套餐的空表单和上架确认框各截一张；控制台错误 0 条。截图记进 plan。
+6. **四种会话状态一致。** 用设计系统 §10.0 的 13 个种子会话，按验收 4「走查种子与时钟」准备：侧栏软徽标、铃铛实心徽标、总览「等人接手」KPI、会话页「等人接手」页签，四处都是 2；页签合计 13，等于「全部」；阶段条合计 10，等于「AI接待中」。在 `admin.html` 里把 B01 转人工，下一次轮询（≤30 秒）之后四处都变成 3，合计仍是 13。页面上任何地方都不出现「顾问处理中」「待人工」「已转人工」「待接管」「需要介入」。
+7. **标点挤压。** 在 P 页上，Chromium 里：「）、」宽 1.5em；「（「」宽 1.5em；单独的「，」宽 1em；「…」的墨迹垂直中心与相邻汉字的中心相差不超过 0.1em；「——」两个字形之间没有缝。Firefox 与 WebKit 里这些宽度与 Chromium 相差不超过 1px（回退生效）。话术页状态句「改了2节（话术原则、异议处理）· 有1个问题要改」在三个引擎里的渲染宽度相差不超过 1px。
+8. **字体加载与许可。**
+   - 首次打开总览，网络记录里的字体请求只有 `geist-ui` 与 `noto-sans-sc-ui` 两个，都来自 `/console/assets/`，合计 ≤300,000 B；长尾分片 0 个；没有发往其他主机的请求。
+   - 全部走查状态里，`document.fonts` 中已加载的字体家族只有 Geist、Geist Mono、Noto Sans SC。
+   - 在一个线路名里写进一个界面没用过的生僻字，打开列表时只多下载一个长尾分片。
+   - 「关于」弹窗写明三款字体、OFL 1.1 和 Lucide 的 ISC 许可；两个链接返回 200、`text/plain`，内容与上游许可原文一致。仓库根目录的 `NOTICE` 列出三款字体。
+9. **工程信息只在系统页。** 走查的每个默认状态，页面可见文字满足不变量 7。版本记录里的哈希只有展开「技术详情」后才出现，01 验收 22 仍然成立。系统页做好之后，它是唯一一个可见文字里有模型名、延迟、成本、评测数字的路由。
+10. **总览。** 用验收 4「走查种子与时钟」准备的数据：「需要你处理」的顺序是 A01、F01、话术草稿、线路草稿、6 条酒店草稿；业务数和明细与设计系统 A 页一致（日期按走查当天平移）；点「报价」那一行阶段条，跳到只列报价阶段 AI 接待中会话的列表。模拟 `/audit` 返回 500 时只有「最近变更」一栏显示「没取到 · 重试」，其余块正常。以坐席身份登录，看不到「最近变更」和草稿类待办。
+11. **话术编辑。**
+    - 在「话术原则」里打字，3 秒内状态变成「已自动保存」，刷新后内容还在；检查清单的「上次」时间同时更新。
+    - 整个验收 11 到 14 期间拦截网络（不变量 21）：每个 `PUT /sop/draft` 的请求体都带 `rev`，首次是 `null`，之后等于上一次成功响应的 `rev`；造一次 409 `rev_conflict` 之后，10 秒内没有新的 `PUT`。
+    - 断网后再打字，状态变成「没保存上 · 重试」；这时点侧栏的「线路」，弹出离开确认；恢复网络后自动保存成功。
+    - 只用 Tab、方向键、Enter、`⌘S`，能完成一次「改一节 → 发布」。
+12. **违规定位。** 写进一个禁用短语：清单「没有禁用短语」没过；点它，编辑器切到对应的节并选中命中的文字，文字下有波浪线，不触发 CSP 违规。把 `search_routes` 写成 `search_route`：出现行内提醒和「改成search_routes」，点了之后原文被替换、清单恢复 7/7。发布条的「发布…」是 `aria-disabled`，旁边写明原因。
+13. **发布与回滚。** 发布抽屉里有检查清单、替换说明、逐节差异和预填的变更说明，只写预填内容时不能发布；发布成功后发布条写出结果和「回滚到vN」，没有 toast。版本记录每行先写变更说明。回滚确认框有后果列表、差异和必填原因；用 01 验收 8 的注入方式造出一个 rerender 版本，再回滚到它之前的版本，确认框在提交之前就显示「固定规则改过」的提示。
+14. **冲突合并。** `console.selftest.ts` 走通验收 15 第 3 条的接口路径之后，在界面上用同样的场景走一遍：发布抽屉提示要合并 → 在合并模式里逐块「采用线上的写法」→ 完成合并 → 发布成功，版本记录出现新版本。整个过程中没有英文按钮。
+15. **接口。** `console.selftest.ts` 新增以下用例，01 验收 1 继续成立。原有断言里，只有钉死安全头的那几处（`CSP` 常量，以及 `secured()` 对 `/console/assets/*` 和全部 `/api/console` 响应的检查）按开放问题 1 定下的文本同步修改（plan 第 1.4 步），其余一条不改：
+    1. `/me` 带 `tenantName`。
+    2. 在「话术原则」里写进禁用短语，`/draft/check` 的对应违规带 `match`，等于命中的文本；删掉一句必需说法，`phrase_missing` 带 `match`，等于那句原文。
+    3. 冲突合并的完整路径：草稿改「话术原则」→ 回滚到一个「话术原则」不同的旧版本 → 发布返回 409 `sop_conflict`；带 `rebaseOnto` 和合并后的「话术原则」保存，返回 200，之后 check 的 `rebase.needed` 为 false，发布成功，线上正文等于合并结果。
+    4. 合并的三种失败：`rebaseOnto` 不是当前发布版本 → 409 `rev_conflict`；`edits` 缺冲突节 → 409 `sop_conflict`，`keys` 点名缺的节；没有草稿时带 `rebaseOnto` → 422。
+    5. `ConvQuery.state` 三个取值的 `total` 之和等于不带 `state` 时的 `total`，每页的行都满足对应条件；`order=waiting_first` 的第一页先列完全部等人接手的会话；`ConversationRow` 的键里没有 `profile`、`nickname`、`messages`。
+    6. `/conversations/counts` 满足不变量 18，并且与 `ConvQuery.state` 各取值的 `total` 相等；匿名 401。
+    7. `/pack`：成员与 demo 匿名都返回旅游包，响应里没有租户名；prod 匿名 401。
+    8. `AuditQuery.actions` 只返回列表里的动作，翻页不出空页；同时给 `action` 与 `actions` 返回 400。
+    9. 酒店 CSV 用中文表头导入，结果与英文表头相同；带「制表符 + `=`」前缀的单元格，导入后前缀被去掉。
+    10. 提交一条天数与逐日行程不符的线路，422 的报错里是「天数」，不是「days」。
+16. **产品库详情与编辑。**
+    - 线路详情是两栏布局，每个锁定组的 Tag 和原因只出现一次；锁定字段是文本，计算后的颜色等于 `--text`。
+    - 1440×1100 的窗口里打开已上架的 r-sichuan-lux，改一处可改字段让保存条出现：「基本信息」的 4 个字段在同一行，线路名称没有截断；「逐日行程」的区块头和第一天的第一行（当天标题、当晚住宿）在保存条上方完整可见，不用滚动。草稿线路的「基本信息」有输入框，仍是两列。
+    - 把 20 条线路、23 家酒店逐一打开、不做改动：保存条不出现，网络面板里没有 PATCH。加上不变量 16 的自测，01 验收 9「原样提交，审计 diff 为空」在新界面上仍然成立。
+    - 新建线路时不选「境内 / 境外」就点保存：字段下方报「境内还是境外：没选」，没有发出请求；只碰过第一个字段就离开时，其余字段不报错。
+    - 所有字段标签都是中文，没有红色星号，选填字段标「（选填）」。
+17. **上架。** 上架确认框按锁定组列出中文字段名和当前值，按钮是「上架，开始推荐」，默认焦点在「再检查一下」。把一条草稿的必填字段清空后点「上架…」：不打开确认框，焦点跳到那个字段。
+18. **有序子项。** 把草稿线路的天数从 5 改成 6：头部显示「还差1天」，上架前检查的必须项没过。「上移」「下移」能调整顺序，天号自动重排；第一天的「上移」和最后一天的「下移」不可用，并带 `aria-disabled`。已上架线路的逐日行程没有增删和移动按钮。餐食多选片的选择写回后，字符串符合「早/午/晚」的规则。
+19. **CSV。**
     - 下载的模板用 Excel 双击打开，中文不乱码。
-    - 用 Excel「CSV（逗号分隔）」在简体中文 Windows 上保存的文件，能正确预检（显示「按 GBK 读取」）。
-    - 含坏行时，能「只导入合格的行」；下载的不合格行文件里，以「=」开头的单元格在引号内带制表符前缀，把它改好后重新导入，前缀不会进入数据。
+    - 用 Excel「CSV（逗号分隔）」在简体中文 Windows 上保存的文件，能正确预检，文件行显示「按GBK读取」。
+    - 含坏行时，主按钮是「只导入合格的N行」；下载的不合格行文件里，以「=」开头的单元格在引号内带制表符前缀；把它改好后重新导入，前缀不会进入数据。
     - 一份 250 行的文件，在前端就提示分份，不发请求。
-16. **会话与审计。**
-    - 会话行显示会话标签和旅程刻度，只有转人工超时的那一行是红色。
-    - 用种子会话点一行，新标签页打开工作台并选中该会话；带 `ADMIN_PASS` 时，对真实会话再走一次：登录框走完后仍然选中。
-    - 审计默认不显示登录记录，打开开关后显示；每条都是中文句子；详情抽屉的改动表字段名是中文。
-17. **性能。** `pnpm test` 里的预算检查通过；Lighthouse 桌面预设下，总览的 LCP ≤ 2.5 s；走查中用 `PerformanceObserver` 记录每页加载和主要状态切换的 CLS，全部 ≤ 0.1；`/console/assets/*.js` 带 `Content-Encoding: gzip`，`/api/console/me` 不带。
-18. **响应式与动效。**
-    - 375px 下，总览和各只读页满足 `document.documentElement.scrollWidth <= innerWidth`。
-    - 宽 1024–1279 时，侧栏是 64px 图标栏，SOP 目录变成下拉；宽 < 992 时侧栏隐藏。
-    - 模拟 `prefers-reduced-motion: reduce` 时，签名组件计算后的 `transition-duration` 和 `animation-duration` 都是 0s。
-19. **01 不回归。** 01 的验收 16、17、22 重新执行通过（22 在新界面上完成，`prompt_hash` 在技术详情里可见）；四个门禁全过。
+20. **会话列表。** 会话行显示会话标签、状态和阶段，没有红色；点一行，新标签页打开工作台并选中该会话；带 `ADMIN_PASS` 时，对一个真实会话再走一次：登录框走完后仍然选中。
+21. **审计。** 默认不显示登录记录，打开开关后显示；每条都是中文句子，命令行操作用方块图标；6 条 CSV 导入的酒店草稿合成一句，「展开6条」后逐条列出；详情抽屉的改动表字段名是中文；整页没有红色。
+22. **外壳。**
+    - 以显示名 7 个汉字的所有者登录：侧栏用户行显示完整的名字，看不到角色；Tooltip 写「名字·角色」，用户菜单的身份块有角色，读屏读得到角色。显示名是 2 个汉字时，名字和角色都在。
+    - 进入话术页时侧栏收起为 56，当前项在收起态下有 ≥3:1 的描边。
+    - 外观选「深色」后刷新，首帧就是深色、没有闪白；选「跟随系统」后随系统切换；关掉 `localStorage`（无痕模式）时页面照常按浅色显示。
+    - 选「减少动态效果」后，计算后的 `transition-duration` 和 `animation-duration` 都是 0s。
+23. **性能。** `pnpm test` 里的预算检查通过；Lighthouse 桌面预设下总览的 LCP ≤2.5 秒；走查中用 `PerformanceObserver` 记录每页加载和主要状态切换的 CLS，全部 ≤0.1。在真实 host（`pnpm start` 的 `/console`，不是 preview）上：`/console/assets/*.js` 带 `Content-Encoding: gzip`，`/api/console/me` 和 `index.html` 不带；第二次打开总览时，带哈希的资源都从浏览器缓存取（开放问题 1 定下之后）。
+24. **响应式。** 375 宽下，总览和各只读页满足 `document.documentElement.scrollWidth <= innerWidth`；宽 1024–1279 时侧栏是 56 的图标栏、话术目录变成下拉；宽 <992 时侧栏隐藏。
+25. **01 不回归。** 按「与 01 的关系 · 01 的验收怎么重跑」执行：01 验收 16 的前三条和验收 17 原样通过；验收 16 第 4 条按开放问题 1 修订后的文本验证；验收 22 在新界面上完成，「检查」一步由自动检查的清单按节列出问题，`prompt_hash` 在技术详情里可见。四个门禁全过。
+26. **02 之后的页面**（开放问题 2 定下由本 spec 实现时才适用）：
+    - 在工作台接手一个等人接手的会话：它在列表、总览、徽标、铃铛里都变成「顾问处理中」，徽标减 1；会话页多出「顾问处理中」页签，counts 的 `byState.assigned` 加 1、各项之和仍等于 `total`；另一位顾问打开同一会话，看到「小林处理中」，「接手会话」不可用并写明原因。
+    - 工作台列表每行的标题占满第一行，状态在第二行；320 宽下「企微客户 · 7F3A · 贵州带爸妈4人」不被截断。
+    - 企业微信里发生转人工后 5 秒内，打开着的后台铃铛徽标加 1，标签页标题出现未读数；授权了浏览器通知时弹出一条通知。
+    - 总览 A2 的「本月成交额」等于当月已付款订单的金额之和。
+27. **要后端的其他页面**（后端到位后才适用）：系统页只对平台管理员可见，每张卡片标明数据来源；品牌色设置里输入设计系统 §1.3 表中的四个例子，生成的主色、链接色、选中底、焦点色与表中一致，浅橙那一例出现撞色提醒；换品牌色后刷新，首帧就是新主色。
 
 ## 开放问题
 
-1. **静态资源长缓存。** `/console/assets/*` 的文件名带哈希，业界做法是 `max-age=31536000, immutable`，只有 HTML 用 no-store [153]。但 01 规定 `/console/*` 一律 `no-store`，改它就是修改 01，不是增补。拆包完成后测一次「第二次打开总览」的传输量；超过 200 KB 时，由 owner 决定是否另写一份小 spec 取代 01 的这一条。本 spec 的性能验收不依赖缓存。
-2. **匿名演示显示租户名。** 这要让匿名 `/status` 多一个字段，与 01 验收 16「只有 mode」冲突。由 owner 决定；不做时，匿名页头显示字标和「演示」。
-3. **产品名。** 页头现在用描述性的占位字标「AI 销售助手」，方章印文取「销」。要不要一个正式的产品名、叫什么，是品牌决定，由 owner 定（另记）。定了之后，改 `SERIF_STRINGS` 并重新生成字体子集，版面不用动。
-4. **工具名胶囊与补全。** 要在正文里把 `search_routes` 等工具名显示成胶囊、输入时补全，需要 `SopOverview` 下发工具词表。等 `unknown_tool` / `unknown_field` 在后台累计拦下 5 次，或者 03 开始做 SOP 编辑器增强时，再定。
-5. **审计的时间范围、操作者、对象筛选和导出。** 01 的数据量小，时间线加翻页够用。审计超过 2,000 行，或者 owner 需要对账留存时，另写 spec 加 `from`、`to`、`actor`、`targetId` 和导出 [110]；导出按 [113] 防公式注入，并记一条审计。
-6. **「谁在改草稿」。** 显示「老板 10 分钟前在改」需要草稿记下最后保存人和时间，要加列和迁移。等第二个编辑者开始日常使用时再定。
-7. **首屏预算能否达到。** 评审时用 rolldown 模拟外框加总览入口，约 305 KB gzip，所以 420,000 B 的预算预计够用。如果拆包后入口集合仍超出，并且超出部分来自 antd 本体，由 owner 在「放宽预算」和「试 antd 的 `zeroRuntime` 模式 [146]」之间选，决定记进 plan。
-8. **会话列表显示客户昵称。** 运营认人靠昵称，但昵称和目的地是客户画像，01 明确不投影，而且会话列表对 viewer、agent 也可见。本 spec 是增补，不放宽这条边界，所以用「渠道 + 短码」。要显示昵称，是改变 01 的决定：由 owner 在「另立 spec 放宽投影（可按角色）」和「等 02 工作台合并进后台时一起做」之间选。
+1. **01 里所有不是新增的改动怎么落。** AGENTS.md 规定 amendment 不能改动被增补 spec 的原有内容，下面这些都改了 01 的原文，不能走 Amends：
+   - 安全头两处（01「后台 API 与页面 · 安全头」）：带内容哈希的 `/console/assets/*` 改成 `public, max-age=31536000, immutable`（01 写的是 `/console/*` 一律 `no-store`）；CSP 显式加 `font-src 'self'`（01 逐字列出了 CSP）。连带 01 验收 16 第 4 条，以及 `console.selftest.ts` 里钉死 CSP 与 `no-store` 的断言。
+   - 页面条款五处（01「后台 API 与页面」的页面清单）：「邮箱和口令」；「检查」「发布」「丢弃」三个按钮；「线路和酒店两个标签页」和列名；表单「转成 JSON Schema 自动生成」；锁定字段「注明『有报价快照后开放』」。连带 01 验收 22 里「『检查』按节列出 violation」一步。新写法见「与 01 的关系」。
+
+   两条路：
+   - A（优先）：owner 在确认 01 验收（01 plan 第 20 步）之前，在 01 顶部加一行 `Revisions:` 就地修订，把这些条款改写成现有实现和本 spec 都满足的写法：安全头写成「除带内容哈希的 `/console/assets/*` 外都带 `no-store`；CSP 至少包含 01 现在列出的各段，可以另加 `font-src 'self'`」；页面条款只写能力（能检查、能发布并填变更说明、能丢弃草稿；锁定字段只读并写明原因；产品库表单按行业包生成），呈现交给后续的 UX spec；验收 16 第 4 条、验收 22 同步改。01 照旧按现有代码验收，本 spec 落地时不必再动 01 的正文。有先例：2026-09-26 的 `style-src` 修订也是实现期由 owner 确认的。
+   - B：01 implemented 之后，另写一份小 spec 取代 01 的这几条，本 spec 依赖它。
+   - **什么时候定**：owner 确认 01 验收时，也就是本 spec 翻 ready 之前。定下之前，plan 第 1.4 步阻塞；字体在 `no-store` 下照样能用，只是每次整页加载都重下，验收 23 的缓存那一句暂不验。页面条款不定，本 spec 不能翻 ready。
+
+2. **02 之后的页面由谁实现。** J 页、A2、实时通知可以留在本 spec 的 plan 里（第 18 步，阻塞到 02），也可以交给 02 的 spec，按本文和设计系统实现。**写 02 spec 时定**：交给 02 的话，本 spec 就地修订（写 `Revisions:`），去掉验收 26 和 plan 第 18 步，这样本 spec 不用等 02 就能 implemented。
+3. **系统页和品牌色的后端归属。** 「依赖 02 的后端」第 10、12 项不是会话工作。**写 02 spec 时定**是否并入 02；不并入的话，在接第一个真实租户之前另写 spec（品牌色牵动租户开通，平台管理员身份牵动 04 的同部署多租户）。定下之前，验收 27 和 plan 第 19、20 步不适用。
+4. **长尾分片与 UI 优先片重叠时，三个引擎是否只下载 UI 优先片。** plan 第 1.2 步在 Chromium、Firefox、WebKit 上实测：只渲染界面文案时网络里有没有长尾分片请求，连用标点的宽度是否与 P 页的期望一致。任一引擎不满足，就改成全量自切（设计系统 §2.6「声明顺序」）：其余字按常用度切约 100 片、`unicode-range` 与 UI 优先片不重叠，由 `cn-font-split` [87] 生成；那时再定这些分片是提交进仓库，还是在 Docker 的 console 构建阶段生成（后者要在构建时取源字体并校验 sha256）。走退路时在本文顶部加一行 `Revisions:`，同步改「字体与授权义务」「性能」两节和验收 8、23。
+5. **匿名演示显示租户名。** 要让匿名能拿到租户名，得在匿名 `/status` 里加字段，与 01 验收 16「只有 mode」冲突。由 owner 定；不做时匿名侧栏写「演示」。在本 spec 翻 ready 时一并答复。
+6. **草稿的最后保存人和时间。** 总览和话术页想写「已自动保存14:05」「老板10分钟前在改」，需要 `sop_versions` 记最后保存人和时间，要加列和迁移。现在只显示本次打开页面后自己保存的时间。等第二个编辑者开始日常使用话术页时再定。
+7. **审计的时间范围、操作者、对象筛选和导出。** 现在的数据量用时间线加翻页够用。审计超过 2,000 行，或者 owner 需要对账留存时，另写 spec 加 `from`、`to`、`actor`、`targetId` 和导出 [80]；导出按 [73] 防公式注入，并记一条审计。
+8. **首屏预算能否达到。** 按 420,000 B 估计是够的：上一轮评审用 rolldown 模拟外框加总览入口，约 305 KB gzip；这次又去掉了 rjsf。拆包后入口集合仍超出、并且超出部分来自 antd 本体时，由 owner 在「放宽预算」和「试 antd 的 `zeroRuntime` 模式 [115]」之间选。决定记进 plan；选放宽时，在本文顶部加一行 `Revisions:`，同步改「性能」一节、目标 6 和验收 23。
+9. **决定 (1) 的范围。** owner 2026-09-27 定下「编辑产品库条目时基本信息用 4 列，让有序子项一屏露出来」；本文只把它用在整卡锁定、只有短值的卡片上（「表单布局只看字段类型和锁定状态」），草稿和新建页仍是两列，理由是输入框在 4 列下太窄。**owner 翻 ready 时确认**：确认就维持现文；不限范围的话，要给可编辑的短字段另定一条 4 列规则，并改验收 16 的最后一句。
 
 ## 被否决的方案
 
-- **方向 B「等高线图册」。** 黑色标题带和等高线辨识度高，也适合表现海拔。但近黑的主色在 antd 里派生出来的悬停、焦点色偏弱，要大量手工覆盖；户外探险的气质和「高端定制」的温润不合；SOP 长文阅读也得不到好处。只借了它的季节条。
-- **方向 C「票根行程单」。** 票面层级适合订单和报价快照，但 SOP 页用不上，铺满全站会显得花哨；靛蓝主色离 antd 默认蓝和通用 SaaS 蓝太近，辨识度只能靠票面组件撑。留给 02 的报价快照再考虑。
-- **「晨雾·靛青」通用精致 SaaS。** 风险最低，但和旅行业务没有关联，面试时讲不出设计理由。
-- **保留上一稿的朱砂 `#B3261E`、石青 `#1B5A74`。** 前者就是 Material 3 基线的 error 原值 [161]，后者和 Tailwind cyan-800 的 ΔE 只有 3–4 [162]。懂行的人会读成「默认配色」，「和业务同源」的理由也就站不住了。
-- **把纸色换成冷灰。** 冷灰（如 #F0F3F1）离 antd 默认的 #F5F5F5 只有 ΔE 1.8，等于退回出厂灰。纸色本来就不是差异的来源，保留暖纸；拆掉的是「米色 + 橙色点缀」这个组合 [160]。
-- **深色主题用浅石青作 `colorPrimary`、主按钮配深色字（Material 式）。** Checkbox 勾号、Switch 滑块、Steps 序号、日期选中格等处，antd 直接在 `colorPrimary` 上画白色，而且没有 token 可改，要覆盖的清单比「前景色改用浅石青」更长、更难穷举。
-- **运行时用 `setProperty` 写 `--yt-*`（上一稿的 `BrandVars`）。** MDN 只说明了直接给属性赋值不受 `style-src` 约束 [145]，没提 `setProperty`；而且这些值本来就是静态的。写进 brand.css 更简单，第一帧就有颜色，也不依赖 CSP 的推论。
-- **换组件库（Arco、TDesign、MUI，或 shadcn/ui + Tailwind）。** ADR-002 已经选了 antd；rjsf 有 antd 主题，「表单由 schema 生成」的链路已经跑通。换库等于重写五页，换来的只是默认外观，而外观问题在 token 层和组件层就能解决。
-- **引入 ProComponents（ProLayout、PageContainer）。** 能省下页头和布局代码 [3][7]，但多一个大依赖，版本还要跟着 antd 的大版本对齐。这里需要的只是一个页头组件和一个 Sider，自己写几十行就够。
-- **全量自托管中文字体，或者用 Google Fonts。** 后者会被 CSP 拦下。前者一个字重就有 5–20 MB，按 unicode-range 切片后每页仍要下载几百 KB，而在 `no-store` 下每次都要重新下载。所以只做固定字符的子集。
-- **朱红印章表示锁定或已发布。** 红色只给出错；蓝色印泥有丧事的含义 [124]。改用无色钢印。
-- **SOP 手动保存加保存条。** 草稿本来就是沙盒，发布才是唯一的上线动作。n8n 在编辑后几秒内自动保存为草稿，并发靠单人编辑锁 [52]；Dify 的用户反映过，不带版本号的自动保存会覆盖别人的修改 [53]。本方案选「自动保存 + `rev` 乐观锁」，还能避免「忘了保存就离开」。产品库不同：已上架条目保存即生效，所以保留手动保存和明确的「保存并立即生效」。
-- **n8n 式的单人编辑锁。** 需要在线状态、心跳和锁释放机制，还会把第二个编辑者挡在门外。01 已经有 `rev` 乐观锁，而两人同时改话术的情况很少；冲突时本 spec 给出了合并路径，比锁更省事。
-- **发布环境、发布标签、A/B 分流** [55][72]。一个租户只有一条线上话术，运营不是工程师，多一层抽象只会让「发布」更难懂。保留「一个草稿 + 一个线上」，与 Dify、Zendesk、n8n 的做法一致 [51][52][57]。
-- **继续在 720px 抽屉里编辑线路。** 20 多个字段加上嵌套的行程挤在抽屉里，没有 URL，也没有地方放状态和检查。酒店的字段少，也统一成详情页，少维护一套交互。
-- **拖动排序。** antd 没有现成的可排序列表，要么引入拖放依赖（ADR-002 要求钉版本），要么手写；而且 WCAG 2.5.7 要求有单指针的替代方案 [172]。「上移 / 下移」按钮本身就满足要求，也够用。
-- **上架按钮在必须项未过时禁用。** Carbon 主张长表单不禁用主按钮 [22]。改成点了之后跳到第一个没过的字段，效果更直接。
-- **审计写入时存 `target_label` 快照列。** 符合「审计写入后不改」，但要迁移；现有的 diff 加产品库缓存，已经能拼出全部现有动作的对象名。将来新动作拼不出来时再加。
-- **总览的聚合接口 `GET /overview`。** 现有的几个接口并发调用就够了；聚合接口还得单独处理匿名投影。
-- **会话行显示企微头像。** CSP 没有放行第三方图片；为了一个展示细节放开 `img-src`，会扩大攻击面，不值得。
-- **审计滚到底自动加载。** 找某一条记录是目标明确的任务，无限滚动会让人找不回位置 [17]。
-- **会话未读圆点。** 没有逐人的已读状态，画出来就是假的。
-- **前端用「丢弃 + 重建」代替 `rebaseOnto` 合并冲突。** 两个请求不是原子的，第二步失败的话草稿就没了；还会多一行 `sop.discard` 审计，歪曲实际发生的事。
-- **把本 spec 放进 `docs/architecture/02-…`。** 02 的序号已经给了「会话入库 + 坐席工作台」；这是一份用户可见的功能 spec，按 `docs/spec-driven-dev.md` 的规定放在 `docs/features/`，开工时明确指定即可。
+视觉方向与字体：
+
+- **「青绿长卷」（本 spec 上一稿）。** 辨识度来自旅游专属部件（目的地字标长卷、山水设色、钢印、宋体标语），与「一个后台服务所有行业包」直接冲突；纸色底加衬线字已被点名是 AI 产品的通病 [96]；宋体子集随标语和品牌名重新生成。
+- **「塔台」。** 深色优先，理由是截图和面试效果，这一条已经不算数；首页主角是回放的「AI 正在说」流式横带，可模型本来不是流式输出，横带是把生成好的消息再演一遍，运营看了无事可做；顶栏和 KPI 里堆着模型名、对冲、并发、哈希、每千轮成本。
+- **「光迹」的签名效果。** 阶段光轨是 15 秒轮询之后补播的半秒光，不改变任何操作；发布时分段点亮的是 4 个哈希和「前缀缓存重建」这类黑话。它的外壳规则（浅色、单一主色、高频操作 0ms、页头不透明）和「需要你处理」队列被吸收进本方案。
+- **「澄光层」。** 功能层全用玻璃：滚动表格和编辑器时每帧重算背景，玻璃上的次要字和链接不达 4.5:1；极光背景、弹簧形变、pill 按下形变、20/28 的大圆角、居中悬浮的发布坞盖住编辑器正文；登录页的 WebGL 背景没有开源许可证。
+- **方案 B「温润」。** 暖色中性、卡片堆叠、主按钮用租户主色。owner 选了 A：A 的墨色主按钮让主色只做指示，不必为白字压暗品牌色；B 的总览把待办、KPI、最近变更全装进卡片，接近 2020 年的后台模板。
+- **深色优先。** 业界客服后台都默认浅色、深色由个人开启 [10][11][12]；运营要长时间编辑中文 [14]。深色保留为同等质量的个人偏好。「跟随系统」不做默认：很多 Mac 晚上自动切深色，长时间编辑的人不该因此被动换主题。
+- **玻璃、渐变、极光、光迹、颗粒纹理、数字滚动、常驻动效。** 不传达信息，还带来对比度和性能风险；每天用的工作系统不需要强视觉冲击 [4]。无限循环的脉动还与 WCAG 2.2.2「暂停、停止、隐藏」冲突。
+- **现状的 Inter + 苹方。** 苹方是 macOS 系统字体，不能自托管，Windows 上退回微软雅黑，两边看到的不是同一款字；Inter 的等宽数字每位 0.648em，Geist 是 0.600em，日期、金额在 Inter 下显得松；带 opsz 轴的 Inter 拉丁子集约 86 KB [82]。
+- **MiSans。** 授权可撤销，要求在产品里特别注明，禁止改编和单独再分发 [88]；FAQ 把「改编」限定为外观上的更改，切片在合理解读下允许，但仍需小米书面确认 [89]。可变字体的 Regular 在字重轴 330，不是 400。没有 `halt` / `chws`，全角标点挤不了；「…」落在基线上。
+- **HarmonyOS Sans SC。** 许可只允许分发「未修改的副本」，没有 FAQ 缩小「修改」的范围，严格按字面读，切片、限定字重轴都算修改，上线前要华为书面确认 [90][91]。有网站把它切片自托管，但那只是商业先例，不等于许可。
+- **OPPO Sans 4.0。** 许可与 HarmonyOS 几乎逐字相同，另要求「不向他方提供其他下载渠道」[92]。
+- **vivo Sans。** 许可与 MiSans 同一模板，但没有 FAQ 解释「改编」；相对 MiSans 没有优势，可变字体 42 MB [93]。
+- **阿里巴巴普惠体 3.0。** 官方声明禁止未经授权上传、发布、转载字体文件，禁止转换和拆分，网页自托管直接冲突 [94]；实测全角空格宽度为 0，fsType=4。
+- **Satoshi 等 Fontshare 字体。** ITF FFL 禁止子集化和格式转换 [95]，也没有胜过 Geist 的地方。
+- **生产环境用 Google Fonts。** 要放开第三方的 `font-src` 和样式来源；`text=` 限字的写法只适合固定文字的样张。自托管加长缓存更快，也不把每次访问告诉第三方。
+- **全量自切并提交全部分片。** 其余分片是 UI 优先片的补集，界面文案每改一次，约 100 个分片全部重新生成，公开仓库里每次多出几 MB 的二进制改动。留作开放问题 4 的退路。
+- **只用 fontsource 的切片，另补一个标点字面。** 同一批界面用字要下 25 片、约 1.43 MB，UI 优先片只要约 244 KB；而且有 30 对跨切片的连用标点在 Chrome 里不挤，要另补一个标点字面。
+
+架构与交互：
+
+- **继续用 rjsf 由 JSON Schema 生成表单（ADR-002 原来的做法）。** JSON Schema 里没有中文标签、帮助、锁定组、月份区间、引用、有序子项这些语义，上一稿为此覆盖了 rjsf 的对象模板、字段模板、全部按钮模板、内部文案和大部分 widget，还要专门防它往表单里塞默认值。列表单元格和只读形态本来就要自己写，表单再单独走一套，就是两条按类型渲染的路径。改成一个渲染器三种形态，并去掉 `@rjsf/*` 的体积。
+- **行业包自带页面组件，或者给旅游做专属部件**（目的地字标、海拔剖面、客群 × 强度矩阵）。换一个包就要写代码，违背「加包零改动」。
+- **把包注册表打进 console，按 `Me.packId` 选包。** 匿名用户拿不到 `packId`（匿名 `/status` 只有 `mode`，改它就冲突 01 验收 16）；每加一个包都会改变 console 的构建产物；假包的走查也没法只靠拦截接口来做。
+- **用多个 `limit=1` 请求拼出各页签的数量。** 请求之间会话状态可能变化，各项之和对不上 `total`；一个同步算完的 counts 接口总是自洽。
+- **前端把全部会话拉回来自己计数。** `limit` 上限 100，会话一多就要翻页，每 30 秒轮询一遍全量不划算。
+- **今天就做完整的总览聚合接口 `GET /overview`。** 订单和成交额要 02；今天真正需要的只是会话计数，窄接口更容易守住权限和匿名投影。
+- **SOP 手动保存加保存条。** 草稿本来就是沙盒，发布才是唯一的上线动作。n8n 在编辑后几秒内自动保存为草稿 [51]；Dify 的用户反映过不带版本号的自动保存会覆盖别人的修改 [52]。本方案选「自动保存 + `rev` 乐观锁」。产品库不同：已上架条目保存即生效，所以保留手动保存和明确的「保存并立即生效」。
+- **n8n 式的单人编辑锁。** 需要在线状态、心跳和锁释放，还会把第二个编辑者挡在门外 [51]；01 已有 `rev` 乐观锁，冲突时本文给出了合并路径。
+- **前端用「丢弃 + 重建」代替 `rebaseOnto`。** 两个请求不是原子的，第二步失败草稿就没了；还会多一行 `sop.discard` 审计，歪曲实际发生的事。
+- **发布环境、发布标签、A/B 分流** [59]。一个租户只有一条线上话术，运营不是工程师，多一层抽象只会让「发布」更难懂；保留「一个草稿 + 一个线上」[53]。
+- **继续在 720px 抽屉里编辑条目。** 20 多个字段加嵌套的子项挤在抽屉里，没有 URL，也没有地方放状态和检查。
+- **拖动排序。** antd 没有现成的可排序列表，要引入拖放依赖；WCAG 2.5.7 要求有单指针的替代方式 [112]，「上移 / 下移」按钮本身就满足。
+- **必须项没过时禁用「上架…」。** 长表单不禁用主按钮 [29]；点了之后跳到第一个没过的字段，效果更直接 [49]。
+- **有不合格行时放一个禁用的「全部导入」。** 不留禁用的主按钮；下载的文件已经带着原因，改好可以再导 [68]。
+- **审计写入时存 `target_label` 快照列。** 要迁移；现有的 diff 加产品库缓存已经能拼出全部现有动作的对象名。将来新动作拼不出来时再加。
+- **审计滚到底自动加载。** 找某一条记录是目标明确的任务，无限滚动会让人找不回位置 [24]。
+- **会话未读圆点、企微头像。** 没有逐人的已读状态，画出来就是假的；头像要为一个展示细节放开第三方 `img-src`，而且头像本身是客户数据。
+- **页头常驻快捷键提示、单键切换主题。** 对非技术用户是噪音，单键切主题容易被误触；快捷键只在 Tooltip 和 ⌘K 里说明。
+- **把本 spec 放进 `docs/architecture/02-…`。** 02 的序号已经给了「会话入库 + 坐席工作台」；这是用户可见的功能 spec，按 `docs/spec-driven-dev.md` 放在 `docs/features/`，开工时明确指定。

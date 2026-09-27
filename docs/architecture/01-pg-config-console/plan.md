@@ -365,7 +365,7 @@
 - 供 owner 知悉（第 15 步）：spec 的 CSV 导入「只收平铺字段」，而线路的 `itinerary` 必填且是对象数组，所以线路没法用 CSV 建；现在对线路直接拒并提示用表单，酒店照常。要支持线路，得约定逐日行程的平铺写法（例如 `itinerary.1.title` 这样的列），可以放到 02。
 - 已定（owner，2026-09-26，00 开放问题 1 的余下部分）：配了企微凭据（`WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_KF_OPEN_KFID` 任一）却没设 `DEPLOY_PROFILE` 就拒绝启动，不分配置模式；没配企微凭据时仍按 demo。已实现（`src/profile.ts`），测试在 `config.selftest.ts`（验收 1 不许动 `server.selftest.ts`），00 spec 的开放问题 1 已改成已定。
 
-- 待 owner（补审第 6 条）：SOP 草稿与别人同时改了同一节、发布被拒之后，这份草稿再也发布不了，只能丢弃后在新版本上重做（界面已改成如实提示）。要支持在草稿里合并之后发布，保存草稿的接口得加 `rebaseOnto`，属于契约变更；UX spec（`docs/features/console-ux/`）第 10 步已写进去。
+- 待 owner（补审第 6 条）：SOP 草稿与别人同时改了同一节、发布被拒之后，这份草稿再也发布不了，只能丢弃后在新版本上重做（界面已改成如实提示）。要支持在草稿里合并之后发布，保存草稿的接口得加 `rebaseOnto`，属于契约变更；UX spec（`docs/features/console-ux/`）第 8 步已写进去。
 - 供 owner 知悉（补审第 60、61 条）：大区搜索（西北、东南亚…）按写死的片区表认目的地，后台新建的目的地不在表里时（比如甘肃之于西北）大区搜索找不到它，只有目的地或别名正好是大区叫法的才认。根治要给线路加 region 字段，放到 02。另外，目的地写成全名（「广西北海」）又没配别名「北海」的线路，客户说「想去北海」时不预取，配上别名即可。
 - 供 owner 知悉：备份失败只写进 `/var/log/wecom-backup.log`，没有告警。可以加一条日志检查或失败发邮件。
 - 供 owner 知悉（验收 21）：真实模型下 `flow-07-kid-headcount`（带娃人数口径）在文件、DB 两种模式都稳定不过，是模型行为，留给后续阶段的提示词或护栏。
@@ -377,7 +377,7 @@
 - 阻塞：第 20 步要 owner 确认验收通过。
 - 下一步（owner）：
   1. 确认验收通过，我把 spec 顶部改成 `Status: implemented`。
-  2. 看 Open 里新增的几条：SOP 冲突后只能丢弃重做（待 owner，`rebaseOnto` 已写进 UX spec 第 10 步），其余供知悉。
+  2. 看 Open 里新增的几条：SOP 冲突后只能丢弃重做（待 owner，`rebaseOnto` 已写进 UX spec 第 8 步），其余供知悉。
   3. 备份的 age 私钥只在 owner 本机，另存一份到密码管理器：丢了它，备份就解不开。
   4. 审阅后台 UX 重做的 spec（`docs/features/console-ux/`，Status: draft），翻 ready 后开工。
 - 上线步骤（2026-09-26 已在线上执行，留作以后新装一台机器时参考）：
