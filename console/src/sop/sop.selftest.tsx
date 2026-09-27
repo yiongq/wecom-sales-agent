@@ -348,12 +348,20 @@ const rows = memberOutline({ spec: SPEC, packSections: TRAVEL, published: PUBLIS
     online + 3,
   );
   const ch = String.fromCharCode;
-  // 粘贴进来的：BOM、开头两个空行、Windows 换行、分解形式的 é（e 加组合重音，NFC 以后是一个码元）、行尾两个空格
-  const pasted = `${ch(0xfeff)}\n\n${'话'.repeat(10)}\r\ne${ch(0x301)}  `;
+  // 粘贴进来的：开头两个空行、紧贴正文的 BOM、第一行行尾的空格和制表符、Windows 换行、
+  // 分解形式的 é（e 加组合重音，NFC 以后是一个码元）、末尾两个空格
+  const pasted = `\n\n${ch(0xfeff)}${'话'.repeat(10)} \t\r\ne${ch(0x301)}  `;
   eq(
     '粘贴的正文：去 BOM、开头空行、\\r，转 NFC，去行尾空白，补上空行',
     memberOutline({ spec: SPEC, published: PUBLISHED, current: PUBLISHED, edits: { preamble: pasted } })[0]!.chars,
     10 + 1 + 1 + 2,
+  );
+  // 单独的 \r（老式 Mac 换行）换成 \n：与线上逐字相同，不算改过
+  const twoLines = PUBLISHED.map((x) => (x.key === 'preamble' ? { ...x, text: '上一行\n下一行\n\n' } : x));
+  eq(
+    '单独的 \\r 当换行：不算改过',
+    memberOutline({ spec: SPEC, published: twoLines, current: twoLines, edits: { preamble: '上一行\r下一行' } })[0]!.changed,
+    false,
   );
   // 快到上限时，打字的那一下按存下来的算：差 2 字到上限时在节末空行上打两个字，存下来超 2 字，条上就得是 danger
   const near = quotaModel(
