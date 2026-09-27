@@ -17,11 +17,21 @@ function previewWithCsp(): Plugin {
   return {
     name: 'console-preview-csp',
     configurePreviewServer(server) {
-      const index = path.resolve(server.config.root, server.config.build.outDir, 'index.html');
+      const dist = path.resolve(server.config.root, server.config.build.outDir);
+      const index = path.join(dist, 'index.html');
+      // public/ 下的文件（theme-boot.js 等）落在 dist 根目录，和 host 一样按文件返回，不回退成 index.html
+      const isDistFile = (url: string): boolean => {
+        try {
+          const file = path.resolve(dist, decodeURIComponent(url.split('?')[0].slice('/console/'.length)));
+          return file.startsWith(dist + path.sep) && file !== index && (fs.statSync(file, { throwIfNoEntry: false })?.isFile() ?? false);
+        } catch {
+          return false; // 解不开的 %xx 之类，交给下面按页面处理
+        }
+      };
       server.middlewares.use((req, res, next) => {
         const url = req.url ?? '';
         if (!url.startsWith('/console')) return next();
-        if (url.startsWith('/console/assets/')) {
+        if (url.startsWith('/console/assets/') || isDistFile(url)) {
           for (const [k, v] of Object.entries(CONSOLE_SECURITY_HEADERS)) res.setHeader(k, v);
           return next();
         }

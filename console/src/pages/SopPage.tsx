@@ -80,7 +80,7 @@ function AnonSop({ data }: { data: AnonSopOverview }) {
         <Col span={6}>
           <Menu
             mode="inline"
-            style={{ border: '1px solid #f0f0f0', borderRadius: 6 }}
+            style={{ border: '1px solid var(--border)', borderRadius: 6 }}
             selectedKeys={[key]}
             onClick={(e) => setKey(e.key)}
             items={published.sections.map((s) => ({ key: s.key, label: title(s) }))}
@@ -287,7 +287,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         <Col span={6}>
           <Menu
             mode="inline"
-            style={{ border: '1px solid #f0f0f0', borderRadius: 6 }}
+            style={{ border: '1px solid var(--border)', borderRadius: 6 }}
             selectedKeys={[key]}
             onClick={(e) => setKey(e.key)}
             items={spec.map((s) => ({

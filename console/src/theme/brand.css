@@ -1,0 +1,238 @@
+/*
+ * 两套主题的 CSS 变量与全局样式（design-system §1.5）。<html data-theme="dark"> 换深色，data-reduce-motion="true" 关掉动效，
+ * 两个属性都由 /console/theme-boot.js 在首帧之前设好。变量的值与 tokens.ts 逐个比对（theme.selftest.ts），改一处要两边一起改
+ */
+:root {
+  color-scheme: light;
+  /* surfaces */
+  --frame: #f6f6f7;
+  --panel: #ffffff;
+  --raised: #ffffff;
+  --thumb: #ffffff;
+  /* alpha fills */
+  --hover: rgba(9, 9, 11, 0.04);
+  --selected: rgba(9, 9, 11, 0.06);
+  --subtle: rgba(9, 9, 11, 0.05);
+  --pressed: rgba(9, 9, 11, 0.08);
+  /* lines */
+  --border: rgba(9, 9, 11, 0.08);
+  --divider: rgba(9, 9, 11, 0.06);
+  --btn-border: rgba(9, 9, 11, 0.12);
+  --control-border: #88888f;
+  /* text */
+  --text: #18181b;
+  --text-2: #4d4d55;
+  --text-3: #63636b;
+  /* primary button */
+  --primary: #18181b;
+  --primary-hover: #2e2e33;
+  --primary-active: #3f3f46;
+  --on-primary: #ffffff;
+  /* accent (tenant) */
+  --accent: #2b63e6;
+  --on-accent: #ffffff;
+  --accent-text: #255cdf;
+  --accent-bg: #edf3fe;
+  --focus: #2b63e6;
+  --accent-ring: rgba(43, 99, 230, 0.2);
+  /* semantic */
+  --success: #1d7a3d;
+  --success-bg: #e8f5ec;
+  --success-dot: #1e9e57;
+  --warning: #8a5700;
+  --warning-bg: #fff3dc;
+  --warning-icon: #b86e00;
+  --danger: #b42318;
+  --danger-bg: #fdedeb;
+  --danger-dot: #dc3a2f;
+  --danger-ring: rgba(180, 35, 24, 0.18);
+  --info: #35598f;
+  --info-bg: #edf2f9;
+  --info-dot: #3f72c8;
+  --neutral: #4d4d55;
+  --neutral-bg: #f1f1f2;
+  --neutral-dot: #8a8a93;
+  /* badge / viz / misc */
+  --badge: #f2a516;
+  --on-badge: #18181b;
+  --month-on: #7c7c85;
+  --month-off: rgba(9, 9, 11, 0.08);
+  --bar: #a1a1aa;
+  --quota-off: #8a8a93;
+  --toast-icon: #4cc274;
+  --mask: rgba(9, 9, 11, 0.4);
+  /* shadows */
+  --ring: 0 0 0 1px rgba(9, 9, 11, 0.08);
+  --shadow-panel: 0 0 0 1px rgba(9, 9, 11, 0.06), 0 1px 2px rgba(9, 9, 11, 0.04);
+  --shadow-card: 0 0 0 1px rgba(9, 9, 11, 0.08), 0 1px 2px rgba(9, 9, 11, 0.04);
+  --shadow-btn: 0 0 0 1px rgba(9, 9, 11, 0.12), 0 1px 2px rgba(9, 9, 11, 0.05);
+  --shadow-pill: none;
+  --shadow-thumb: 0 0 0 1px rgba(9, 9, 11, 0.08), 0 1px 2px rgba(9, 9, 11, 0.08);
+  --shadow-menu:
+    0 0 0 1px rgba(9, 9, 11, 0.08), 0 1px 1px rgba(0, 0, 0, 0.02), 0 4px 8px -4px rgba(0, 0, 0, 0.05), 0 16px 24px -8px rgba(0, 0, 0, 0.08);
+  --shadow-modal:
+    0 0 0 1px rgba(9, 9, 11, 0.08), 0 1px 1px rgba(0, 0, 0, 0.02), 0 8px 16px -4px rgba(0, 0, 0, 0.05), 0 24px 40px -8px rgba(0, 0, 0, 0.12);
+  /* avatars */
+  --av1-bg: #ffe4e1;
+  --av1-fg: #803f3b;
+  --av2-bg: #f6ead1;
+  --av2-fg: #6c5005;
+  --av3-bg: #ddf2dd;
+  --av3-fg: #326234;
+  --av4-bg: #d1f3f4;
+  --av4-fg: #026266;
+  --av5-bg: #dfedff;
+  --av5-fg: #305686;
+  --av6-bg: #f2e5fd;
+  --av6-fg: #65467a;
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 12px;
+  --r-full: 999px;
+  --font: 'Geist', 'Noto Sans SC', system-ui, sans-serif;
+  --mono: 'Geist Mono', 'Noto Sans SC', ui-monospace, Menlo, Consolas, monospace;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  /* surfaces */
+  --frame: #09090b;
+  --panel: #121214;
+  --raised: #1b1b1e;
+  --thumb: #2a2a2e;
+  /* alpha fills */
+  --hover: rgba(255, 255, 255, 0.05);
+  --selected: rgba(255, 255, 255, 0.08);
+  --subtle: rgba(255, 255, 255, 0.06);
+  --pressed: rgba(255, 255, 255, 0.1);
+  /* lines */
+  --border: rgba(255, 255, 255, 0.08);
+  --divider: rgba(255, 255, 255, 0.06);
+  --btn-border: rgba(255, 255, 255, 0.12);
+  --control-border: #71717a;
+  /* text */
+  --text: #ededef;
+  --text-2: #a8a8b1;
+  --text-3: #91919a;
+  /* primary button */
+  --primary: #ededef;
+  --primary-hover: #d4d4d8;
+  --primary-active: #bdbdc4;
+  --on-primary: #121214;
+  /* accent (tenant) */
+  --accent: #2f68eb;
+  --on-accent: #ffffff;
+  --accent-text: #75a2ff;
+  --accent-bg: #15274d;
+  --focus: #2f68eb;
+  --accent-ring: rgba(47, 104, 235, 0.35);
+  /* semantic */
+  --success: #6fcf8c;
+  --success-bg: #10281a;
+  --success-dot: #4cc274;
+  --warning: #f0b355;
+  --warning-bg: #2e2008;
+  --warning-icon: #f0b355;
+  --danger: #ff9b8f;
+  --danger-bg: #3a1714;
+  --danger-dot: #ff6b5e;
+  --danger-ring: rgba(255, 155, 143, 0.25);
+  --info: #9db8e6;
+  --info-bg: #18233a;
+  --info-dot: #7fa3e8;
+  --neutral: #a8a8b1;
+  --neutral-bg: #27272a;
+  --neutral-dot: #71717a;
+  /* badge / viz / misc */
+  --badge: #f2a516;
+  --on-badge: #18181b;
+  --month-on: #8e8e97;
+  --month-off: rgba(255, 255, 255, 0.1);
+  --bar: #52525b;
+  --quota-off: #71717a;
+  --toast-icon: #1d7a3d;
+  --mask: rgba(0, 0, 0, 0.6);
+  /* shadows */
+  --ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-panel: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --shadow-card: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-btn: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  --shadow-pill: none;
+  --shadow-thumb: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-menu: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 24px 48px -12px rgba(0, 0, 0, 0.65);
+  /* avatars */
+  --av1-bg: #492826;
+  --av1-fg: #f9bdb7;
+  --av2-bg: #3f3112;
+  --av2-fg: #e3cb99;
+  --av3-bg: #223a23;
+  --av3-fg: #b2dab2;
+  --av4-bg: #083a3d;
+  --av4-fg: #96dce0;
+  --av5-bg: #21344c;
+  --av5-fg: #afd1fc;
+  --av6-bg: #3b2b46;
+  --av6-fg: #dcc2f1;
+}
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+  background: var(--frame);
+  font-variant-numeric: tabular-nums;
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased;
+  text-autospace: normal;
+  text-spacing-trim: normal;
+}
+a {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+.sep {
+  margin: 0 6px;
+}
+.mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.halt {
+  font-feature-settings: 'halt';
+}
+/* 表单标签后的「（选填）」（design-system §5.2；ConfigProvider 的 requiredMark 渲染它） */
+.optional-mark {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+/* 主题切换 0ms（§3）：prefs.ts 换 data-theme 时挂上 data-theme-switching，两帧后拿掉；这期间没有任何过渡 */
+:root[data-theme-switching] *,
+:root[data-theme-switching] *::before,
+:root[data-theme-switching] *::after {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }
+}
+:root[data-reduce-motion='true'] * {
+  animation-duration: 0s !important;
+  transition-duration: 0s !important;
+}
