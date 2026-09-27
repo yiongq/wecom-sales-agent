@@ -22,7 +22,7 @@
   - [x] 2.3 通用部件：`StateView`、`ERROR_COPY`（含兜底）、`TechDetails`、`ConfirmDanger`、`Status`、`ActionBar`、`CheckList`、墨色主按钮组件、成功 toast 函数；未保存保护（`useBlocker`）；会话过期的判定与就地重登（spec「会话过期的判定」）；全站去掉 `message.error`。`scripts/check-console-src.ts` 挂进 `pnpm lint`，先覆盖不变量 2–4、6、8、9、28。`Status`、`ConfirmDanger` 做好后加进 `/_specimen` 控件样张（第 1.3 步）。
   - [x] 2.4 拆包与预算：各页 `.lazy()`；删掉 `chunkSizeWarningLimit` 覆盖，开 `build.manifest`；确认 `assetsInlineLimit: 0` 已生效；扩展 `scripts/check-console-dist.ts` 的 JS 与字体预算、禁入内容（spec「性能」）。拆包前后的数字记进交接记录；超预算按开放问题 8 请 owner 定，选放宽时在 spec 顶部加 `Revisions:` 并改「性能」和验收 23。
 - [ ] 3. 字段渲染器与行业包配置（4）
-  - [ ] 3.1 `checkPack`、`checkItem`（含数组的 `min` 与必须项的计数口径，spec「校验」）、`ENTITY_ICONS`；旅游包补全（design-system §9，含 `recommend`、`min`）；假包 `src/shared/pack-fixtures/renovation.ts`；`src/packs/packs.selftest.ts`（不变量 13–15），串进 `pnpm test`。
+  - [x] 3.1 `checkPack`、`checkItem`（含数组的 `min` 与必须项的计数口径，spec「校验」）、`ENTITY_ICONS`；旅游包补全（design-system §9，含 `recommend`、`min`）；假包 `src/shared/pack-fixtures/renovation.ts`；`src/packs/packs.selftest.ts`（不变量 13–15），串进 `pnpm test`。
   - [ ] 3.2 渲染器：11 种字段类型各三种形态（`Record<FieldType, …>`，不变量 12）；实体图标映射；表单状态与 `set` / `unset`；`storeAs` 的 `parse` / `format`；表单网格（design-system §6.0、§6.4）；`console/src/fields/fields.selftest.tsx`（两个包的每个字段；不变量 16 的往返），串进 `pnpm test`；`scripts/check-boundaries.ts` 只给这一个文件开 import `src/packs/registry.ts` 与 `src/shared/pack-fixtures/` 的例外。
   - [ ] 3.3 `check-boundaries.ts` 禁止其余 `console/src` 文件 import `src/packs/**` 与 `src/shared/pack-fixtures/**`；`check-console-src.ts` 加上行业包词汇扫描（不变量 11 的范围与白名单）和不变量 17 的 console 一侧；`check-console-dist.ts` 断言产物里没有假包内容（不变量 25）。
   - [ ] 3.4 `src/shared/ui-labels.ts`（检查项名、角色、`AUDIT_ACTIONS`、`ERROR_COPY` 的文案）与 `src/shared/format.ts`（金额、相对与绝对时间、月份区间）；`AuditQuery.actions`（服务端与验收 15 第 8 条）；`describeAudit(entry, pack, lookups)`（实体名、字段名取自行业包）。总览的「最近变更」和第 14 步都用它们。
@@ -396,6 +396,51 @@
   - 第 9、10 步：产品库的换页只剩 2,923 B 余量，rjsf 到第 10.3 步才删。在那之前往产品库页加代码（渲染器、列表重做），先看 `pnpm test` 末尾的换页数字；超了按开放问题 8 请 owner 定。
   - 第 12 步：CSV 解析要进导入弹窗自己的块（spec「性能」）。现在 `CsvImport` 静态打在产品库块里：它只在客户端解码文件，解析在服务端。
   - 第 3.3 步：假包按文字查（这一步只按模块路径查）。
+
+### 第 3.1 步（2026-09-27）
+
+- 做了什么：
+  - `src/shared/pack.ts`：`ENTITY_ICONS`（设计系统 §7 的 24 个名字，冻结，另导出类型 `EntityIcon`）、`checkPack`（不变量 13）、`checkItem`（spec「校验」）。`console/src/shell/icons.tsx` 的图标表键类型换成 `EntityIcon`（第 2.2 步留的），集合加减一个名字、这张表不跟着改，`pnpm typecheck` 就失败；运行时没变。
+  - `checkPack` 查：实体 kind、字段 key、分组、阶段、话术节不重复；`nav.entities`、字段的 `group`、`lockGroup`、`showWhen`、`countFrom`（要指向 intUnit）、`unitFrom`（要指向单选 enum）、`reference.to`、`filterBy`（本实体和对方都要有）、`titleKey`、副标题、列表的列、筛选、搜索、`activateLine` 的占位都指向存在的项；实体图标在集合里；上架后锁定的字段要有锁定组；按类型的配置项（enum 要有不重复的 options，`storeAs` 只用在多选 enum，`recommend` 的条数只用在数组字段）；有序子项里的字段不分组，不支持 `showWhen`、`countFrom`、`recommend`、锁定、`unitFrom` 和再嵌一层；`$` 开头的只能是三个系统字段；锁定的话术节要写原因，只有第一节可以没有标题。
+  - `checkItem` 的规则：必填的缺了报「没填」（enum、boolean 报「没选」）；数组类型的必填只要求键在，`min` 拦上架；`showWhen` 没显示的字段不查也不计；`countFrom` 的条数一致单独算一项，报「还差1天」「多了1天」；有序子项的每处缺漏一条问题，标签是中文路径「逐日行程 · 第3天 · 当晚住宿」，都挂在逐日行程这一项下；`autoIndexKey` 要等于序号；各类型的格式照 schema（文字非空且存得下，`$code` 照 `CATALOG_CODE`，金额是正整数，intUnit 是不小于 `min`（默认 0）的整数，月份区间与 schema 共用 `monthsReadable`，enum 在 options 里，按字符串存的多选只要求非空，规则之外的旧值照原文放过）。建议项：`recommend: true` 没填报「没填」，给了条数报「建议3–5条」「建议至少5条」「建议不超过2个」；同一个字段必须项已经没过时不再提建议。
+  - 共用而不复制：`src/shared/catalog.ts` 导出 `CATALOG_CODE`，`src/shared/season.ts` 加 `monthsReadable`，`RouteSchema` 的 bestSeason 改用它，行为不变。
+  - 旅游包：第 2.1 步已按 §9.1 整份写好。本步逐个字面量比对，除去第 2.1 步记的三处空格，与 §9.1 相同，没改。
+  - 假包 `src/shared/pack-fixtures/renovation.ts` 照 §9.2，纯数据，只 import 类型。不进注册表（自测断言），产物检查早已按模块路径拦（第 2.4 步）。
+  - `src/packs/packs.selftest.ts` 串进 `pnpm test`，排在 `console.selftest.ts` 之后，CI 注释同步。
+- 自测：216 条断言，约 0.3 秒（评审之后的数，初版 195 条）。
+  - 实体图标集合从设计系统 §7 那一行读出来比，不照抄实现。
+  - 不变量 13：两个包过 `checkPack`；另有 59 种改坏的副本，每种都要点出对应的问题；3 种合规的改法（`recommend` 的条数写在多选引用、多选 enum、标签上）要照常通过。
+  - 不变量 14：工具名、`SOP_KNOWN_FIELDS`、节表（key、heading、locked、顺序）、锁定表（`lockedWhenActive` 的字段加上永远只读的编号，等于 `LOCKED_WHEN_ACTIVE`；`tags:国内` 按 `members` 展开）、阶段（写成 `Record<SalesStage, true>`，SalesStage 加减取值时 typecheck 失败；包里正好是除去 handoff 的全部）。schema 按 zod 的 `shape`、`element`、`unwrap` 走出属性路径，与字段配置一一对应（两个方向都比），枚举的 options 与 schema 相同，顶层键与子字段的选填与 schema 的 optional 相同。
+  - 不变量 15：data/ 下 20 条线路、23 家酒店，按字段配置生成变异，共 3,405 例，其中 schema 通过 669 例。每例比两边结论，写明预期的也比预期。变异包括 spec 列的五类，外加各类型的格式、NUL、编号格式与长度、序号、条数加减、「全年」和跨年区间、餐食的旧写法、金额与 intUnit 的安全整数边界。
+  - 计数口径钉在 r-guizhou-5d 上（按设计系统 §10.0 从 r-guizhou 造）：13/13，建议 1 条「体力强度没填」；第3天缺住宿 12/13；两处缺漏仍是 12/13；天数 6 报「还差1天」；填了体力强度 13/14，写了最累的一段 14/14。另有逐类型的说法、只认自有属性，以及假包上旅游包没有的配置：多选引用、boolean、多字段子项不带 countFrom、选填子字段。
+- 变异（仓库外的隔离副本，66 例全部失败，每例都由具名断言点出，没有一例是崩掉的）：
+  - `checkItem` 28 例：选填没填也查、去掉条数一致、还差与多了写反、空数组算没填、不查 min、金额允许 0、金额收数字字符串、不查月份、单选不查 options、storeAs 严查、忽略 showWhen、没显示的也计数、选填写错不拦、选填写错拦但不计数、不查序号、子字段选填当必填、没过也提建议、建议用连字符、第几项从 0 数、走原型链、编号不查格式、不查存得下、intUnit 允许负数、requiredPassed 不减、tags 不查空串、多选不查 options、boolean 收字符串、「没选」写成「没填」，以及 `monthsReadable` 去掉「全年」。
+  - `checkPack` 18 例：逐条关掉规则，由对应的改坏副本点名。这 18 例没覆盖全部规则，评审又找出 6 条关掉后自测照过，补法见「评审之后」。
+  - `ENTITY_ICONS` 少一个、多一个：自测点名，console 的 typecheck 也报 `icons.tsx`。
+  - 旅游包与假包 16 例：少一个工具、少一个话术字段、话术节换顺序、少一节、锁定改掉、最高海拔不锁、只锁的标签写错、阶段加 handoff、少 closing、字段 key 写错、客群少一个选项、其他叫法改必填、餐食改选填、行程亮点去掉 min、线路图标不在集合里、酒店少一个字段；假包 unitFrom 写错、引用指向不存在的实体。
+  - 第一轮「话术节换顺序」写成了删一节，自测在改坏副本那段按 key 找「tone」时抛了 TypeError，没有点名。改坏副本的几例改成不依赖具体 key（往末尾加节、加阶段）后，换顺序与删一节都由节表那条断言点名。
+- 字体：`checkItem` 的「还差N天」用到「差」，按第 1.2 步的做法重跑 `scripts/fonts/build.ts`（fonttools 4.66.0、brotli 1.2.0）。UI 优先片 754 → 755 个码位，154,088 → 154,192 B（+104）；两个 preload 合计 166,076 B。两个 Geist 文件、许可原文逐字节不变。`checkPack` 的话给开发者看，但 `src/shared` 的字符串都算界面用字，所以只用界面已有的字。初稿的「（设计系统 §7）」带进「设」和「§」，删掉了，没为它们涨字体。
+- 构建：入口集合 gzip 315,830 B（+1，字体文件名变了，引用跟着变）；换页最多仍是产品库，247,083 B（+6，`catalog.ts` 改用共用的判定），余 2,917 B。
+- 界面：console 只改了图标表的键类型，运行时不变；新字形还没有页面用。所以本步没做 preview 走查。
+- 偏离与取舍：
+  - `ItemCheck` 加 `requiredTotal`、`requiredPassed`（spec 顶部 `Revisions:`，「配置结构」的接口与「校验」同步改）。有序子项的每处缺漏各是一条 `CheckIssue`，一项里可以有几条问题，两个数组算不出「必须项12/13」。`CheckIssue.message` 是跟在字段名后面的半句，建议项的「（不拦上架）」由界面加。
+  - 选填字段填了却写得不对，一样拦上架，并且单独算一项（同一行 `Revisions:`）。不这样，`checkItem` 与 schema 在这类 payload 上判得不同。选填字段写成空值（`""`、`[]`）不查：表单把清空的选填字段删键，这种 payload 只由服务端拦，变异里也不造。
+  - 数值的 `max` 不算检查项，只是输入框的上限（spec 列的必须项来源里没有它）。天数 31 两边都放过，自测里有一例。
+  - `checkItem` 不查的两种由服务端兜底，已在代码注释里写明：payload 里没有对应字段配置的键；`showWhen` 没显示出来的字段却带着值（如只有 `intensity.hardest`）。表单都造不出这两种。
+  - 假包照 §9.2，去掉中文与数字、字母之间手打的空格（「提前4周」「节点{n}」「ENF级」「E0级」「E1级」），§9.2 同步改，与第 2.1 步对 §9.1 的处理相同。验收 5 写的「节点 3」是画出来的样子，中间的空隙由 `text-autospace` 补。「节点3」只有 3 个字符，按 §6.3 原来的判定会写进节点，评审之后改了判定，见下。
+- 评审之后（同日，五处，都改了）：
+  - 金额与 intUnit 要是安全整数：zod 4 的 `int()` 不收绝对值超过 2^53-1 的数，原来的 `Number.isInteger` 放过 2^53，界面显示必须项全过、保存却 422（不变量 15 走偏，生成器也没造这种值）。改用 `Number.isSafeInteger`，超出报「数字太大」；生成器给金额与 intUnit 各加「超出安全整数」「等于最大安全整数」两例，另有起价、最高海拔、天数三条具名断言。
+  - `$code` 的说法补上长度：「只能是小写字母、数字和连字符，以字母或数字开头，最长64位」，与 schema 的说法一致；原来 65 位的合规字符被说成字符不对。生成器加「长65位」「长64位」。
+  - 条数一致这一项在 `countFrom` 指向的字段自己有问题时不报：原来只排除负数和小数，天数为 0（低于 `min` 1）时天数报「至少1天」、逐日行程又报「多了5天」，一个错算两项。现在用 `fieldIssues` 查那个字段，有问题就不比条数；「天数为0」的断言改成只有天数一条、12/13。
+  - `checkPack` 补齐改坏的副本（47 → 59 种）：子字段 key 重复、单值子项写 `autoIndexKey`、子字段逐个写 `ITEM_UNSUPPORTED` 的六种配置（原来只有 `showWhen`）、子字段是 status 类型、`filterBy` 本实体没有、锁定组没写标签、阶段的 `branchOf` 指向自己、`recommend` 的条数写在按字符串存的多选 enum 上；另加 3 种照常通过的改法钉住「数组字段」的判定。`checkItem` 加金额 `min` 的两例（两个包都没用到，在副本上配）。
+  - 设计系统 §6.3「节点里写什么」：原判定「`indexLabel` 展开后不超过 3 个字符」改为「只有字母和数字、不超过 3 个字符」。假包去掉空格后的「节点3」正好 3 个字符，按原判定要写进节点，与验收 5 和 L 页的「节点里只写序号」相悖；13 号的汉字一个就宽 13，直径 22 的节点也放不下。spec 顶部第 3.1 步那行 `Revisions:` 补记，验收 5 不改。没有改回带空格的「节点 {n}」：§2.5 与不变量 9 不许手打空格，第 3.3 步的检查也要扫假包。
+  - 变异（隔离副本）：评审点名的 6 例加这次新写的规则共 23 例，全部失败并由具名断言点出（子字段 key 重复、单值子项 autoIndexKey、`ITEM_UNSUPPORTED` 整体只剩 showWhen 与逐个去掉六种、子字段 status、filterBy 本实体、锁定组 tag、金额 min、金额和 intUnit 去掉安全整数、安全整数写成 `isFinite`、编号说法去掉长度、条数一致回到只看负数、不看天数自己的问题、`branchOf` 指向自己、数组字段判定的三个分支）。另把 `checkPack` 里 39 处 `out.push` 逐处关掉，39 处全部由自测点名。
+  - 新文案「数字太大」「最长64位」的字都已在 UI 优先片里，字体没重切；入口集合、换页、preload 字体的字节数不变（315,830 / 247,083 / 166,076 B）。
+- 留给后面的步骤：
+  - 第 11 步：节点里写什么按 §6.3 的新判定（只有字母和数字、不超过 3 个字符才写进节点），家装包的「节点3」节点里只写「3」。
+  - 第 3.2 步：表单按 `FieldDef.key` 取值、写回，可以把 `pack.ts` 里的 `valueAt` 导出来共用（它只认自有属性，`$code` 取 id）；`storeAs` 的 `parse` / `format` 在那一步。`checkItem` 只要求按字符串存的餐食非空，规则之外的旧值照原文放过，与 spec「表单状态与提交」一致。
+  - 第 3.3 步：产物里按文字查假包（第 2.4 步只按模块路径查）；`check-console-src.ts` 的行业包词汇扫描要把假包的实体、字段、阶段也算进去。
+  - 第 10 步：副栏写「必须项{requiredPassed}/{requiredTotal}」。「第3天：当晚住宿没填」由 label 的后两段拼成；字段下方写「{字段标签}：{message}」。
 
 ## 交接记录
 

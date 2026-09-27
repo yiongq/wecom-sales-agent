@@ -98,6 +98,9 @@ jobs:
       #   RLS、会话级泄漏与租户锁。RLS 漏了一张表同样不报错，只是别的租户的数据悄悄可见。
       # - src/config/config.selftest.ts：配置源。两种模式逐字节等价、SOP 与产品库的编辑流程、启动重渲染、检索。
       # - src/console-api/console.selftest.ts：鉴权与后台接口（走 app.request）。权限、CSRF、匿名投影漏一处都不报错。
+      # - src/packs/packs.selftest.ts：行业包。每个注册的包和假包都过 checkPack；旅游包的工具名、节表、锁定表、阶段与代码一致；
+      #   上架前检查 checkItem 在 data/ 的全部条目和几千例变异上与产品库 schema 同判。走偏了不报错，只会让后台说能上架、
+      #   保存却 422，或者锁定、阶段、工具名和引擎对不上。
       # - src/shared/typography.selftest.ts、console/src/typography.selftest.ts：连用全角标点的挤压回退（与 Chromium 逐对量出的
       #   结果对拍）、cjk() 与 Sep 的标记、全局 text-spacing-trim 的约定。回退错了只在 Firefox、Safari 里标点宽度不对，不报错。
       # - console/src/session.selftest.ts、console/src/parts/errors.selftest.ts：会话过期后就地重登（请求停住、登录后重放，

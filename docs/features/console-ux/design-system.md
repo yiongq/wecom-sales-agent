@@ -1103,7 +1103,7 @@ body {
 
 - **头部**：16/24/600，写成「逐日行程 · 5 天」。条数与 `countFrom` 对不上时，右侧用 13 warning 字写「还差 1 天」或「多了 1 天」。
 - **左侧竖轴**：宽 40，1px `--border` 连线，节点直径 22。
-  - **节点里写什么**：`indexLabel` 展开后不超过 3 个字符（「D1」「D12」）时写在节点里，13/500；更长的（「节点 3」）节点里只写序号「3」，完整标签写在卡片第一行，13/500 text-2。
+  - **节点里写什么**：`indexLabel` 展开后只有字母和数字、不超过 3 个字符（「D1」「D12」）时写在节点里，13/500；带汉字的或更长的（「节点3」，画出来是「节点 3」）节点里只写序号「3」，完整标签写在卡片第一行，13/500 text-2。只数字符的话「节点3」也是 3 个，可是 13 号的汉字一个就宽 13，它比「D12」宽得多，直径 22 的节点放不下。
   - 这一项全部填好：`--text-2` 实心底，`--panel` 色字。
   - 有缺项：`--panel` 底，加 `inset 0 0 0 1.5px var(--control-border)`，text-2 字；旁边用 13 warning 字写「缺：当晚住宿」，前面放 14 `triangle-alert`。
   - 有校验错误：同样空心，描边和字换成 `--danger`。
@@ -1793,7 +1793,7 @@ const pkg: EntityType = {
       lockGroup: 'rec',
     },
     { key: 'styles', type: 'tags', label: '风格', group: 'fit', suggest: ['现代简约', '奶油', '原木', '新中式', '轻法式'] },
-    { key: 'startMonths', type: 'monthRange', label: '适合开工月份', group: 'fit', monthMeaning: '施工旺季，排期要提前 4 周' },
+    { key: 'startMonths', type: 'monthRange', label: '适合开工月份', group: 'fit', monthMeaning: '施工旺季，排期要提前4周' },
     { key: 'duration', type: 'intUnit', unit: '天', label: '工期', group: 'terms', lockedWhenActive: true, lockGroup: 'terms' },
     {
       key: 'demolition',
@@ -1821,7 +1821,7 @@ const pkg: EntityType = {
       type: 'subItems',
       label: '施工节点',
       group: 'nodes',
-      indexLabel: '节点 {n}',
+      indexLabel: '节点{n}',
       itemNoun: '个节点',
       item: [
         { key: 'name', type: 'text', label: '节点名称', group: '', placeholder: '例：水电' },
@@ -1889,7 +1889,7 @@ const material: EntityType = {
     },
     { key: 'unitPrice', type: 'money', unitFrom: 'priceUnit', label: '单价', group: 'price', lockedWhenActive: true, lockGroup: 'price' },
     { key: 'warrantyYears', type: 'intUnit', unit: '年', label: '质保', group: 'terms' },
-    { key: 'ecoGrade', type: 'enum', options: ['ENF 级', 'E0 级', 'E1 级'], label: '环保等级', required: false, group: 'terms' },
+    { key: 'ecoGrade', type: 'enum', options: ['ENF级', 'E0级', 'E1级'], label: '环保等级', required: false, group: 'terms' },
     { key: '$status', type: 'status', label: '状态', group: 'basic' },
   ],
   list: {
