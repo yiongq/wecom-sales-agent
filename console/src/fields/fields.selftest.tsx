@@ -2080,6 +2080,8 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
       (document.activeElement as HTMLElement | null)?.getAttribute('role') === 'menuitemradio' ? document.activeElement?.textContent : null,
       want,
     );
+    // 浏览器里不可聚焦的元素 focus() 不起作用（happy-dom 里都能聚焦，只好看属性）：外壳要可聚焦，antd 才聚焦得上它
+    eq('弹层外壳可聚焦（antd 打开时聚焦它，再转给菜单项）', document.querySelector('.filter-menu')?.getAttribute('tabindex'), '-1');
     check('在菜单项上按 Esc', await press(document.activeElement, 'Escape'));
     await act(async () => win.happyDOM.waitUntilComplete());
     check('Esc 关菜单，焦点回到按钮上', document.activeElement === fb3.box.querySelector('.filter-trigger'));
