@@ -37,6 +37,11 @@ const OUTSIDE_OK: ReadonlyArray<{ cp: number; file: string; why: string }> = [
     why: '「¥」：打开产品库会多下载 latin 片；不变量 7 要求去掉它（plan 第 9、10 步）',
   },
   { cp: 0xfeff, file: 'src/shared/csv.ts', why: 'BOM：解析 CSV 时用来去掉开头的 BOM，不上页面' },
+  {
+    cp: 0x30fb,
+    file: 'src/shared/typography.ts',
+    why: '「・」：haltIndices 的字表里用来判断挤压（设计系统 §2.5），界面文案不用它',
+  },
 ];
 
 const REBUILD = '界面文案或字体改了就重跑 pnpm exec tsx scripts/fonts/build.ts';

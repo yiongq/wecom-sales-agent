@@ -531,7 +531,7 @@ body {
   ```js
   const needsTrimFallback = !CSS.supports('text-spacing-trim', 'normal');
   ```
-  为真时，用下面这个函数找出要加 `halt` 的字，把它们包进 `<span class="halt">`。函数在完整字体上与 Chromium 153 逐对核对过，576 对全部一致：
+  为真时，用下面这个函数找出要加 `halt` 的字，把它们包进 `<span class="halt">`。函数在完整字体上与 Chromium 153 逐对核对过，576 对的挤压全部一致（第 1.3 步逐字重测，扩到函数里全部 33 个字、1,089 对：整串宽度 0 处不同；只有「收标点 + 开标点」这一类，Chromium 把半字算在开标点上、这里挤收标点，两字的墨迹位置相同，换行断在两字之间时行首的开标点仍是全宽）：
   ```js
   const OPEN = '（［｛〔〈《「『【〖“‘'; // 左边空半字
   const CLOSE = '）］｝〕〉》」』】〗，。、：；”’'; // 右边空半字（简体的 ，。、：； 靠左）
@@ -560,7 +560,8 @@ body {
   - 例外：日期和时刻之间保留一个空格，如「9月25日 18:30」。
   - `text-autospace` 不在中文和一个独立的等宽元素之间补间距（例如「编号」后面紧跟 `r-guizhou-5d` 的等宽元素），所以行内的等宽元素左右各留 4px 外边距。
 
-- **间隔号**：并列的几段信息之间用组件 `Sep` 隔开。它是 `<span class="sep" aria-hidden="true">·</span>`，左右外边距各 6，颜色跟随所在的文字，文字两侧不打空格。组件里再跟一个视觉隐藏的「，」（`position:absolute` 的 sr-only，不参与排版和挤压），读屏时能断句。
+- **间隔号**：并列的几段信息之间用组件 `Sep` 隔开。它是 `<span class="sep" aria-hidden="true">·</span>`，左右外边距各 6，颜色跟随所在的文字，文字两侧不打空格。组件里再跟一个空的 `<span class="sep-sr">`，它的 `::before` 写 `content: '' / '，'`：生成内容的替代文字，看不见、不占宽度、不参与挤压，读屏时念成「，」来断句。不用 `position:absolute` 的 sr-only：WebKit 的一行里有 absolute 的盒子时，整行的 `text-autospace` 都失效（plan 第 1.3 步实测）。
+  - `cjk()` 收一个字符串数组时，各段之间放 `Sep`，挤压在拼好的串上算。
   - Chrome 会把紧挨在它前面的全角收尾标点挤掉半字：「处理）· 有」，这是对的。
   - 回退函数在拼好的字符串上算，结果一致。
 - **省略号和破折号**：
@@ -1040,7 +1041,7 @@ body {
 
 ### 5.19 分隔号 `Sep`
 
-- `<span class="sep" aria-hidden="true">·</span>`：U+00B7 由 Geist 画，左右外边距各 6，颜色跟随所在的文字（text-3 在 14 号正文里太淡），两侧文字不打空格。生产组件另带一个 sr-only 的「，」给读屏断句（§2.5）。
+- `<span class="sep" aria-hidden="true">·</span>`：U+00B7 由 Geist 画，左右外边距各 6，颜色跟随所在的文字（text-3 在 14 号正文里太淡），两侧文字不打空格。生产组件另带一个给读屏断句的「，」（生成内容的替代文字，§2.5）。
 - 用在状态句、次行、明细行、待办行的上下文里。
 - 挤压和回退见 §2.5。
 
@@ -1254,8 +1255,9 @@ components: {
 - 用户开了「减少动态效果」或系统设了 `prefers-reduced-motion` 时，`theme.token.motion` 传 `false`（§1.5）
 - Tabs 统一 `animated={false}`
 - 表单 `requiredMark` 设成只给选填字段加「（选填）」
+- `button={{ autoInsertSpace: false }}`：antd 默认在两个汉字的按钮文字中间插一个空格（「关闭」成了「关 闭」），与 §2.5「中文不手打空格」相悖
 
-全局样式里另写 §2.5 的 `text-spacing-trim` / `text-autospace` / `.halt`，以及 §5.19 的 `.sep`。
+全局样式里另写 §2.5 的 `text-spacing-trim` / `text-autospace` / `.halt`，以及 §5.19 的 `.sep` 与 `.sep-sr`。
 
 ## 9. 行业包配置
 

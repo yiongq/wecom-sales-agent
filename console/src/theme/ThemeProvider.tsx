@@ -1,5 +1,6 @@
 // 全站的 antd ConfigProvider：按 <html> 上的 data-theme / data-reduce-motion 取亮暗主题（antd.ts），
-// 关掉水波纹（wave），表单只给选填字段加「（选填）」、不画星号（design-system §8、§5.2）。
+// 关掉水波纹（wave），表单只给选填字段加「（选填）」、不画星号（design-system §8、§5.2），
+// 按钮不在两个汉字之间插空格（「关闭」不写成「关 闭」；中文不手打空格，design-system §2.5）。
 // <html> 的两个属性首帧由 /console/theme-boot.js 设好，之后由 prefs.ts 改；这里只是跟着它们走
 import { ConfigProvider, type ConfigProviderProps } from 'antd';
 import { type ReactNode, useEffect, useMemo, useSyncExternalStore } from 'react';
@@ -7,6 +8,7 @@ import { antdTheme } from './antd.js';
 import { applyPrefs, currentThemeState, REDUCED_MOTION_QUERY, watchPrefs } from './prefs.js';
 
 const WAVE = { disabled: true } as const;
+const BUTTON: ConfigProviderProps['button'] = { autoInsertSpace: false };
 
 const FORM: ConfigProviderProps['form'] = {
   requiredMark: (label: ReactNode, { required }: { required: boolean }) =>
@@ -42,7 +44,7 @@ function snapshot(): string {
   return `${s.mode}|${s.reduceMotion ? 1 : 0}`;
 }
 
-export function ThemeProvider({ children, ...rest }: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form'>) {
+export function ThemeProvider({ children, ...rest }: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button'>) {
   // 第三个参数只给 theme.selftest.ts 用：它在 Node 里用 react-dom/server 渲染这个组件，核对传给 ConfigProvider 的东西
   const key = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [mode, reduce] = key.split('|');
@@ -53,7 +55,7 @@ export function ThemeProvider({ children, ...rest }: Omit<ConfigProviderProps, '
     return watchPrefs();
   }, []);
   return (
-    <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM}>
+    <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON}>
       {children}
     </ConfigProvider>
   );

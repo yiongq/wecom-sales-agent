@@ -214,6 +214,15 @@ select {
 .halt {
   font-feature-settings: 'halt';
 }
+/*
+ * Sep 给读屏断句的「，」（design-system §5.19）：生成内容的替代文字，看不见、不占宽度，隔着它照样挤压。
+ * 不支持替代文字的浏览器用第一条，什么也不念。不用 position: absolute 的 sr-only：WebKit 的一行里有 absolute 的盒子时，
+ * 整行的 text-autospace 都失效
+ */
+.sep-sr::before {
+  content: '';
+  content: '' / '，';
+}
 /* 表单标签后的「（选填）」（design-system §5.2；ConfigProvider 的 requiredMark 渲染它） */
 .optional-mark {
   font-size: 13px;

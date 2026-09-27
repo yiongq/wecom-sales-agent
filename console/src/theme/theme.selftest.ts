@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { ConfigProvider, Form, Input, theme } from 'antd';
+import { Button, ConfigProvider, Form, Input, theme } from 'antd';
 import { createElement, useContext } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ANTD_THEMES, antdTheme } from './antd.js';
@@ -611,6 +611,7 @@ function buttonTags(src: string): string[] {
 // ---------------- 6. ThemeProvider 的接线 ----------------
 // <html> 上的两个属性 → antd 实际拿到的令牌（全局令牌逐个对 antdTheme() 的结果，含 motion 与三档时长）、wave 关掉、
 // 表单必填项不画星号（antd 给 label 加 required-mark-optional，星号的 ::before 不显示）且不加「（选填）」，选填项加
+// 按钮不在两个汉字之间插空格（第 1.3 步：antd 默认把「关闭」渲染成「关 闭」）
 
 interface Seen {
   wave: unknown;
@@ -626,6 +627,7 @@ function Probe({ report }: { report: (seen: Seen) => void }) {
     null,
     createElement(Form.Item, { label: '名称', name: 'a', required: true }, createElement(Input)),
     createElement(Form.Item, { label: '备注', name: 'b' }, createElement(Input)),
+    createElement(Button, null, '关闭'),
   );
 }
 for (const mode of MODES) {
@@ -659,6 +661,11 @@ for (const mode of MODES) {
     check(
       req !== undefined && /\bant-form-item-required-mark-optional\b/.test(req[2]) && !req[3].includes('选填'),
       `${label}：必填项的 label 是 ${req?.[0] ?? '无'}，应不画星号、不加「（选填）」`,
+    );
+    const button = /<button\b[^>]*>([\s\S]*?)<\/button>/.exec(html)?.[1] ?? '';
+    check(
+      button === '<span>关闭</span>',
+      `${label}：按钮「关闭」渲染成 ${button || '无'}，两个汉字之间不该插空格（button.autoInsertSpace）`,
     );
     check(
       opt !== undefined && opt[3].endsWith('<span class="optional-mark">（选填）</span>'),
