@@ -32,6 +32,8 @@ import type {
 } from '../../../src/shared/console-api.js';
 import { auditRuns } from '../../../src/shared/audit-text.js';
 import type { EntityType, FieldDef, FieldType, IndustryPack } from '../../../src/shared/pack.js';
+import { conversationsSearch } from '../conversations-search.js';
+import { ConversationsPage } from '../pages/ConversationsPage.js';
 import type { Viewer } from '../shell/boot.js';
 import { workbenchHref } from '../shell/model.js';
 import { VIEWER_KEY } from '../viewer.js';
@@ -147,6 +149,11 @@ const WAITING = [
   conv('A01', 'handoff', true, 7, new Date(NOW - 26 * MIN).toISOString()),
 ];
 const A02 = conv('A02', 'paid', false, 5, at('2026-09-24T17:20:00'));
+/** AI 接待中、报价阶段的两个（会话列表按 state、stage 筛选时回它们） */
+const QUOTED = [
+  conv('C01', 'quote', false, 4, new Date(NOW - 120 * MIN).toISOString()),
+  conv('C02', 'quote', false, 4, new Date(NOW - 180 * MIN).toISOString()),
+];
 const COUNTS: ConversationCounts = {
   total: 13,
   byState: { ai: 10, human: 2, paid: 1 },
@@ -657,6 +664,10 @@ function respond(method: string, url: URL): Response {
   if (method === 'GET' && p === '/conversations/counts') return json(200, COUNTS);
   if (method === 'GET' && p === '/conversations' && q.get('state') === 'human') return json(200, { items: WAITING, total: 2 });
   if (method === 'GET' && p === '/conversations' && q.get('state') === 'paid') return json(200, { items: [A02], total: 1 });
+  if (method === 'GET' && p === '/conversations') {
+    const quoted = q.get('state') === 'ai' && q.get('stage') === 'quote';
+    return json(200, { items: quoted ? QUOTED : [], total: quoted ? QUOTED.length : 0 });
+  }
   if (method === 'GET' && p === '/sop') return json(200, SOP);
   if (method === 'POST' && p === '/sop/draft/check') return json(200, CHECK);
   if (method === 'GET' && p === '/status') return json(200, STATUS);
@@ -973,6 +984,72 @@ async function failing(fail: RegExp) {
   ]);
   check('别的行业包：页面上没有旅游包的实体名', !/线路|酒店/.test(m.box.textContent ?? ''), m.box.textContent ?? '');
   await m.unmount();
+}
+
+// 2.7 从阶段条、业务数跳到会话列表：地址里的 state、stage 经 validateSearch 进到接口的查询里（验收 10 的「报价」那一行）。
+// 用 router.tsx 同一个 conversationsSearch；列表页整页随第 13 步重做，这里只钉「地址 → 请求 → 页头」这一段
+async function mountConversations(search: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(VIEWER_KEY, member('owner'));
+  const root = createRootRoute({ component: Outlet });
+  const router = createRouter({
+    routeTree: root.addChildren([
+      createRoute({
+        getParentRoute: () => root,
+        path: '/conversations',
+        validateSearch: conversationsSearch,
+        component: ConversationsPage,
+      }),
+    ]),
+    basepath: '/console',
+    history: createMemoryHistory({ initialEntries: [`/console/conversations${search}`] }),
+  });
+  await router.load();
+  const box = document.createElement('div');
+  document.body.append(box);
+  const r = createRoot(box);
+  await act(async () =>
+    r.render(createElement(QueryClientProvider, { client: qc }, createElement(RouterProvider, { router: router as never }))),
+  );
+  for (let i = 0; i < 40; i += 1) {
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+      await win.happyDOM.waitUntilComplete();
+    });
+    if (i > 3 && qc.isFetching() === 0) break;
+  }
+  const out = {
+    status: [...box.querySelectorAll('.page-status')].map((e) => (e.textContent ?? '').trim()),
+    rows: [...box.querySelectorAll('.ant-table-tbody tr[data-row-key]')].length,
+    all: [...box.querySelectorAll('.page-status a')].map((a) => a.getAttribute('href')),
+  };
+  await act(async () => r.unmount());
+  box.remove();
+  qc.clear();
+  return out;
+}
+{
+  server = { pack: TRAVEL, lists: SCENE };
+  requests = [];
+  const quote = await mountConversations('?state=ai&stage=quote');
+  eq(
+    '会话列表：state、stage 进到请求里',
+    requests.filter((r) => r.startsWith('GET /api/console/conversations')),
+    ['GET /api/console/conversations?limit=20&offset=0&state=ai&stage=quote'],
+  );
+  eq(
+    '会话列表：只列报价阶段 AI 接待中的会话，页头写明、能看全部',
+    [quote.status, quote.rows, quote.all],
+    [['只看报价阶段、AI接待中的会话看全部'], 2, ['/console/conversations']],
+  );
+  requests = [];
+  const bad = await mountConversations('?state=bogus&stage=Quote');
+  eq(
+    '会话列表：不合规的 state、stage 丢掉，不发给接口',
+    requests.filter((r) => r.startsWith('GET /api/console/conversations')),
+    ['GET /api/console/conversations?limit=20&offset=0'],
+  );
+  eq('会话列表：没有筛选时页头不写「只看」', bad.status.join(''), '');
 }
 
 if (fails.length) {

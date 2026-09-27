@@ -3,7 +3,7 @@
 // 入口集合里不能有页面代码，scripts/check-console-dist.ts 按 vite 的 manifest 查预算与 @codemirror
 import { createRootRoute, createRoute, createRouter, type ErrorComponentProps, Outlet, useRouterState } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
-import type { ConversationState } from '../../src/shared/console-api.js';
+import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
 
@@ -47,16 +47,7 @@ const catalog = createRoute({
     stringify: (p: { kind: 'route' | 'hotel' }) => ({ kind: p.kind }),
   },
 }).lazy(() => import('./pages/catalog.lazy.js').then((m) => m.Route));
-/** 会话状态的取值；ConversationState 加减一种时这里不跟着改，typecheck 就失败 */
-const CONVERSATION_STATE: Readonly<Record<ConversationState, true>> = { ai: true, human: true, paid: true };
-/**
- * 会话列表的筛选（spec 路由表）：总览的业务数与阶段条带着 state、stage 跳过来（验收 10：点「报价」那一行，只列报价阶段
- * AI 接待中的会话）。取值不合规的参数丢掉，stage 的写法与接口 ConvQuery.stage 相同。页签、阶段条与 page 随第 13 步
- */
-const conversationsSearch = (s: Record<string, unknown>): { state?: ConversationState; stage?: string } => ({
-  ...(typeof s.state === 'string' && Object.hasOwn(CONVERSATION_STATE, s.state) ? { state: s.state as ConversationState } : {}),
-  ...(typeof s.stage === 'string' && /^[a-z_]{1,32}$/.test(s.stage) ? { stage: s.stage } : {}),
-});
+// 会话列表的 state、stage 筛选：总览的业务数与阶段条带过来（conversations-search.ts）
 const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
 );
