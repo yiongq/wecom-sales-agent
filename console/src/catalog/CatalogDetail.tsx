@@ -66,7 +66,7 @@ export interface CatalogDetailProps {
 /** 面包屑「产品库 / 线路 / 条目名」（§4.3）：分组名没有自己的页面，是纯文本；实体名链回列表 */
 export function Breadcrumb({ group, entity, current }: { group: string; entity: EntityType; current: string }) {
   return (
-    <nav className="breadcrumb" aria-label="面包屑">
+    <nav className="breadcrumb" aria-label="当前位置">
       <span>{cjk(group)}</span>
       <span className="breadcrumb-sep" aria-hidden="true">
         /
