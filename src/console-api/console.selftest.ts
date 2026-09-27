@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { gunzipSync } from 'node:zlib';
 
 // 先设临时 VAR_DIR 再动态 import：server 会连带加载 store.ts，它在加载时就读 VAR_DIR
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
@@ -544,7 +545,8 @@ async function call(
   url: string,
   o: { as?: Who; noCsrf?: boolean; json?: unknown; headers?: Record<string, string>; ip?: string } = {},
 ): Promise<Res> {
-  const headers: Record<string, string> = { 'x-forwarded-for': o.ip ?? '203.0.113.80' };
+  // 像浏览器一样带 Accept-Encoding：不变量 26 要看接口在这时也不压缩
+  const headers: Record<string, string> = { 'x-forwarded-for': o.ip ?? '203.0.113.80', 'accept-encoding': 'gzip, deflate, br' };
   if (o.as) {
     headers.cookie = `${session.SESSION_COOKIE}=${o.as.token}`;
     if (!o.noCsrf) headers['x-csrf'] = o.as.csrf;
@@ -571,9 +573,15 @@ async function httpLogin(email: string, password: string, ip = '203.0.113.81'): 
   const token = /^__Host-sid=([A-Za-z0-9_-]{43});/.exec(r.headers.get('set-cookie') ?? '')?.[1] ?? '';
   return { ...r, token, csrf: typeof r.body.csrf === 'string' ? r.body.csrf : '' };
 }
-const CSP = "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'";
+// 01「安全头」2026-09-27 修订：CSP 在原列各段之外另加 font-src 'self'；除带内容哈希的 /console/assets/* 外都带 no-store
+const CSP = "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; font-src 'self'";
 const secured = (h: Headers): boolean =>
   h.get('content-security-policy') === CSP && h.get('cache-control') === 'no-store' && h.get('x-content-type-options') === 'nosniff';
+/** 带内容哈希的 /console/assets/*：CSP 与 nosniff 同上，缓存一年、immutable（后台 UX spec「性能 · 缓存」） */
+const securedAsset = (h: Headers): boolean =>
+  h.get('content-security-policy') === CSP &&
+  h.get('cache-control') === 'public, max-age=31536000, immutable' &&
+  h.get('x-content-type-options') === 'nosniff';
 /** 各种状态码的响应，最后统一查安全头 */
 const seen: Res[] = [];
 const keep = <T extends Res>(r: T): T => {
@@ -1790,6 +1798,11 @@ check(
       index.headers.get('x-content-type-options') === 'nosniff',
     `${index.status} ${index.headers.get('content-security-policy')}`,
   );
+  check(
+    "安全头：页面的 CSP 就是接口那条（含 font-src 'self'）加上这个 nonce 的 style-src，字体只能从本站加载",
+    index.headers.get('content-security-policy') === `${CSP}; style-src 'self' 'nonce-${nonce}'`,
+    index.headers.get('content-security-policy') ?? '',
+  );
   const again = await page('/console/');
   check('托管：每次响应的 nonce 都不同', /nonce="([^"]+)"/.exec(again.text)?.[1] !== nonce);
   const direct = await page('/console/index.html');
@@ -1810,11 +1823,11 @@ check(
   check('托管：深链 /console/sop/versions/3 也返回 index.html', deep.status === 200 && deep.text.includes('<div id="root">'));
   const js = await page('/console/assets/app-1a2b.js');
   check(
-    '托管：/console/assets/<hash>.js 返回 JS，带安全头',
+    '托管：/console/assets/<hash>.js 返回 JS，带安全头与 immutable 长缓存',
     js.status === 200 &&
       js.text === 'console.log("console");' &&
       (js.headers.get('content-type') ?? '').startsWith('text/javascript') &&
-      secured(js.headers),
+      securedAsset(js.headers),
   );
   const missing = await page('/console/assets/nope-0000.js');
   check(
@@ -1830,6 +1843,72 @@ check(
     '托管：../ 跑不出构建目录',
     traversal.every((r) => !r.text.includes('"packageManager"')),
     traversal.map((r) => r.status).join(','),
+  );
+  // 不变量 26 与压缩（后台 UX spec「性能」、验收 23）：超过 1 KB 的 JS、CSS，一个 woff2，一个不在 assets/ 下的文件
+  const assetFiles = {
+    'assets/index-D71W9cL0.js': Buffer.from(`console.log(${JSON.stringify('后台'.repeat(600))});`),
+    'assets/index-B2c3D4e5.css': Buffer.from('.brand{color:#111}\n'.repeat(120)),
+    'assets/geist-ui-Ab12Cd34.woff2': Buffer.from(Array.from({ length: 4096 }, (_, i) => (i * 131 + 7) % 256)),
+  };
+  for (const [rel, bytes] of Object.entries(assetFiles)) fs.writeFileSync(path.join(dist, rel), bytes);
+  fs.writeFileSync(path.join(dist, 'theme-boot.js'), '/* 首帧主题 */\n'.repeat(120));
+  const raw = async (url: string, acceptEncoding?: string) => {
+    const headers: Record<string, string> = { 'x-forwarded-for': '203.0.113.97' };
+    if (acceptEncoding) headers['accept-encoding'] = acceptEncoding;
+    const res = await app.request(url, { headers });
+    return { status: res.status, headers: res.headers, bytes: Buffer.from(await res.arrayBuffer()) };
+  };
+  const GZ = 'gzip, deflate, br';
+  const gz = [
+    { r: await raw('/console/assets/index-D71W9cL0.js', GZ), orig: assetFiles['assets/index-D71W9cL0.js'], type: 'text/javascript' },
+    { r: await raw('/console/assets/index-B2c3D4e5.css', GZ), orig: assetFiles['assets/index-B2c3D4e5.css'], type: 'text/css' },
+  ];
+  check(
+    '压缩：Accept-Encoding 带 gzip 时，assets 的 JS、CSS 返回 gzip，解压后与原文件相同，带 Vary: Accept-Encoding，缓存头不变',
+    gz.every(
+      ({ r, orig, type }) =>
+        r.status === 200 &&
+        r.headers.get('content-encoding') === 'gzip' &&
+        gunzipSync(r.bytes).equals(orig) &&
+        /(?:^|,)\s*accept-encoding\s*(?:,|$)/i.test(r.headers.get('vary') ?? '') &&
+        (r.headers.get('content-type') ?? '').startsWith(type) &&
+        securedAsset(r.headers),
+    ),
+    gz.map(({ r }) => `${r.status} ${r.headers.get('content-encoding')} ${r.headers.get('cache-control')}`).join(' | '),
+  );
+  const plain = [await raw('/console/assets/index-D71W9cL0.js'), await raw('/console/assets/index-D71W9cL0.js', 'br')];
+  check(
+    '压缩：不收 gzip（没有 Accept-Encoding，或只收 br）时原样返回',
+    plain.every((r) => r.status === 200 && !r.headers.has('content-encoding') && r.bytes.equals(assetFiles['assets/index-D71W9cL0.js'])),
+    plain.map((r) => r.headers.get('content-encoding')).join(','),
+  );
+  const font = await raw('/console/assets/geist-ui-Ab12Cd34.woff2', GZ);
+  check(
+    '压缩：woff2 已经压缩过，不再压；font/woff2，带 immutable 长缓存',
+    font.status === 200 &&
+      !font.headers.has('content-encoding') &&
+      font.bytes.equals(assetFiles['assets/geist-ui-Ab12Cd34.woff2']) &&
+      font.headers.get('content-type') === 'font/woff2' &&
+      securedAsset(font.headers),
+    `${font.headers.get('content-encoding')} ${font.headers.get('content-type')} ${font.headers.get('cache-control')}`,
+  );
+  const pages = [await raw('/console/', GZ), await raw('/console/index.html', GZ), await raw('/console/sop/versions/3', GZ)];
+  check(
+    '不变量 26：index.html（/console/、/console/index.html、深链）在 Accept-Encoding 带 gzip 时也不压缩、不带 immutable，仍是 no-store',
+    pages.every(
+      (r) =>
+        r.status === 200 &&
+        !r.headers.has('content-encoding') &&
+        r.headers.get('cache-control') === 'no-store' &&
+        r.bytes.toString('utf8').includes('<div id="root">'),
+    ),
+    pages.map((r) => `${r.status} ${r.headers.get('content-encoding')} ${r.headers.get('cache-control')}`).join(' | '),
+  );
+  const boot = await raw('/console/theme-boot.js', GZ);
+  check(
+    '不变量 26：/console 下 assets/ 以外的文件（theme-boot.js）不带 immutable，仍是 no-store',
+    boot.status === 200 && (boot.headers.get('content-type') ?? '').startsWith('text/javascript') && secured(boot.headers),
+    `${boot.status} ${boot.headers.get('cache-control')}`,
   );
   const { __hostTest } = await import('./host.js');
   fs.writeFileSync(path.join(path.dirname(dist), `${path.basename(dist)}-outside.txt`), 'outside');
@@ -1954,6 +2033,13 @@ check('错误映射：不认识的错误 → null（按 500 处理）', __consol
   );
   const bare = seen.filter((r) => !secured(r.headers));
   check('安全头：这些 /api/console 响应都带 CSP、no-store、nosniff', bare.length === 0, bare.map((r) => r.status).join(','));
+  // 请求都带着 Accept-Encoding: gzip（见 call()）；其中有超过 4 KB 的响应，没压缩不是因为太小
+  const encoded = seen.filter((r) => r.headers.has('content-encoding') || (r.headers.get('cache-control') ?? '').includes('immutable'));
+  check(
+    '不变量 26：这些 /api/console 响应（请求带 Accept-Encoding: gzip）都没有 Content-Encoding，也不带 immutable',
+    encoded.length === 0 && seen.some((r) => r.text.length >= 4096),
+    encoded.map((r) => `${r.status} ${r.headers.get('content-encoding')} ${r.headers.get('cache-control')}`).join(','),
+  );
 }
 
 await t.close();
@@ -1963,6 +2049,6 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、CSV 导入、/console 托管）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、CSV 导入、/console 托管、静态资源的缓存与压缩）`,
 );
 process.exit(0);
