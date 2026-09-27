@@ -1844,7 +1844,8 @@ check(
     traversal.every((r) => !r.text.includes('"packageManager"')),
     traversal.map((r) => r.status).join(','),
   );
-  // 不变量 26 与压缩（后台 UX spec「性能」、验收 23）：超过 1 KB 的 JS、CSS，一个 woff2，一个不在 assets/ 下的文件
+  // 不变量 26 与压缩（后台 UX spec「性能」、验收 23）：超过 1 KB 的 JS、CSS，一个 woff2，一个不在 assets/ 下、
+  // 超过 1 KB 的 JS（压缩只挂在 assets/ 上）；不到 1 KB 的 JS 用上面那个 app-1a2b.js
   const assetFiles = {
     'assets/index-D71W9cL0.js': Buffer.from(`console.log(${JSON.stringify('后台'.repeat(600))});`),
     'assets/index-B2c3D4e5.css': Buffer.from('.brand{color:#111}\n'.repeat(120)),
@@ -1862,9 +1863,10 @@ check(
   const gz = [
     { r: await raw('/console/assets/index-D71W9cL0.js', GZ), orig: assetFiles['assets/index-D71W9cL0.js'], type: 'text/javascript' },
     { r: await raw('/console/assets/index-B2c3D4e5.css', GZ), orig: assetFiles['assets/index-B2c3D4e5.css'], type: 'text/css' },
+    { r: await raw('/console/assets/app-1a2b.js', GZ), orig: Buffer.from('console.log("console");'), type: 'text/javascript' },
   ];
   check(
-    '压缩：Accept-Encoding 带 gzip 时，assets 的 JS、CSS 返回 gzip，解压后与原文件相同，带 Vary: Accept-Encoding，缓存头不变',
+    '压缩：Accept-Encoding 带 gzip 时，assets 的 JS、CSS（不到 1 KB 的也算）返回 gzip，解压后与原文件相同，带 Vary: Accept-Encoding，缓存头不变',
     gz.every(
       ({ r, orig, type }) =>
         r.status === 200 &&
@@ -1906,9 +1908,12 @@ check(
   );
   const boot = await raw('/console/theme-boot.js', GZ);
   check(
-    '不变量 26：/console 下 assets/ 以外的文件（theme-boot.js）不带 immutable，仍是 no-store',
-    boot.status === 200 && (boot.headers.get('content-type') ?? '').startsWith('text/javascript') && secured(boot.headers),
-    `${boot.status} ${boot.headers.get('cache-control')}`,
+    '不变量 26：/console 下 assets/ 以外的文件（theme-boot.js）不带 immutable，仍是 no-store；压缩只挂在 assets/ 上，它也不压',
+    boot.status === 200 &&
+      (boot.headers.get('content-type') ?? '').startsWith('text/javascript') &&
+      secured(boot.headers) &&
+      !boot.headers.has('content-encoding'),
+    `${boot.status} ${boot.headers.get('cache-control')} ${boot.headers.get('content-encoding')}`,
   );
   const { __hostTest } = await import('./host.js');
   fs.writeFileSync(path.join(path.dirname(dist), `${path.basename(dist)}-outside.txt`), 'outside');

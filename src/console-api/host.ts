@@ -37,15 +37,15 @@ async function readDistFile(rel: string, notIndex = false): Promise<Buffer | nul
 }
 
 export const consolePages = new Hono()
-  // 小于 1 KB 的不压（按下面带上的 Content-Length 判断）
-  .use('/console/assets/*', compress({ encoding: 'gzip', contentTypeFilter: /^text\/(?:javascript|css)(?:[;\s]|$)/ }))
+  // threshold 0：不到 1 KB 的 JS、CSS 也压，验收 23 要求 assets 的 JS 都带 gzip，不设大小例外
+  .use('/console/assets/*', compress({ encoding: 'gzip', threshold: 0, contentTypeFilter: /^text\/(?:javascript|css)(?:[;\s]|$)/ }))
   .get('/console', (c) => c.redirect('/console/', 301))
   .get('/console/*', async (c) => {
     const rel = c.req.path.slice('/console/'.length);
     if (rel) {
       // 带占位符的原 index.html 不按文件返回，落到它上面的路径都走下面现生成 nonce 的那一支
       const file = await readDistFile(rel, true);
-      if (file) return c.body(new Uint8Array(file), 200, { ...consoleAssetHeaders(rel), 'Content-Length': String(file.length) });
+      if (file) return c.body(new Uint8Array(file), 200, consoleAssetHeaders(rel));
       // 资源文件不存在就是 404：回退成 index.html 会让浏览器把一页 HTML 当脚本执行，报错也看不懂
       if (rel.startsWith('assets/')) return c.text('not found', 404, { ...CONSOLE_SECURITY_HEADERS });
     }
