@@ -446,6 +446,10 @@ eq('系统状态：一切正常', systemView(STATUS, TRAVEL), { ok: true, lead: 
       { tone: 'warning', text: '线路搜索索引在更新，新上架的线路可能暂时搜不到。', tech: [['index.lastError', 'ECONNRESET']] },
     ],
   });
+  eq('系统状态：索引在更新、没有报错时照样提醒，不带技术详情', systemView({ ...STATUS, index: { ...STATUS.index, stale: true } }, TRAVEL), {
+    ok: false,
+    alerts: [{ tone: 'warning', text: '线路搜索索引在更新，新上架的线路可能暂时搜不到。' }],
+  });
   eq('系统状态：只有产品库没载入', systemView({ ...STATUS, catalogStale: true }, TRAVEL), {
     ok: false,
     alerts: [{ tone: 'warning', text: '产品库的最新修改还没载入运行中的系统，正在自动重试。' }],
@@ -518,9 +522,9 @@ eq(
     now: NOW,
   });
   eq(
-    '业务数：最后动静最多写 3 个，多的写「等N个」；没有成交；没有草稿',
-    [k[1]?.breakdown, k[2]?.breakdown],
-    [['最后动静：1小时前、26分钟前、8分钟前等6个'], ['还没有成交的会话']],
+    '业务数：等人接手的数取 counts（不是那一页的条数）；最后动静最多写 3 个，多的写「等N个」；没有成交',
+    [k[1]?.value, k[1]?.breakdown, k[2]?.breakdown],
+    [6, ['最后动静：1小时前、26分钟前、8分钟前等6个'], ['还没有成交的会话']],
   );
   eq(
     '在售数为 0：编辑者的明细是「新建线路」',
