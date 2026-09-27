@@ -173,13 +173,13 @@ check(
 const shape0 = (pack: IndustryPack, v: ShellViewer): string[] =>
   buildNav(pack, v).map((g) => `${g.title ?? '-'}:${g.items.map((i) => `${i.label}${i.entity ? `(${i.entity})` : ''}`).join(',')}`);
 const shape = (v: ShellViewer): string[] => shape0(PACK, v);
-const EDITOR_NAV = ['-:销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,审计日志'];
+const EDITOR_NAV = ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,审计日志'];
 eq('侧栏：所有者', shape(member('owner')), EDITOR_NAV);
 eq('侧栏：管理员', shape(member('admin')), EDITOR_NAV);
 for (const r of ['supervisor', 'agent', 'viewer'] as const) {
-  eq(`侧栏：${r} 没有审计日志`, shape(member(r)), ['-:销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话']);
+  eq(`侧栏：${r} 没有审计日志`, shape(member(r)), ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话']);
 }
-eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', shape(ANON), ['-:销售话术', '产品库:线路(route),酒店(hotel)']);
+eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', shape(ANON), ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)']);
 {
   const nav = buildNav(PACK, member('owner'));
   const items = nav.flatMap((g) => g.items);
@@ -197,7 +197,7 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
   eq(
     '侧栏：分组名与实体顺序跟着行业包，nav 里不存在的实体跳过',
     buildNav(other, ANON).map((g) => `${g.title ?? '-'}:${g.items.map((i) => i.label).join(',')}`),
-    ['-:销售话术', '套餐与主材:酒店'],
+    ['-:总览,销售话术', '套餐与主材:酒店'],
   );
 
   // 审计动作的图标名（src/shared/ui-labels.ts 的 AUDIT_ACTIONS，加上兜底的 circle-dashed）都是 lucide-react 里有的图标
@@ -224,9 +224,12 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
     ['/console/catalog/hotel/h-1', '/catalog/hotel'],
     ['/console/conversations', '/conversations'],
     ['/console/audit', '/audit'],
+    ['/console', '/'],
+    ['/console/', '/'],
+    ['/', '/'],
     ['/console/sopx', null],
     ['/console/catalog/routes', null],
-    ['/console', null],
+    ['/console/overview', null],
   ];
   for (const [path, want] of routes) eq(`选中项：${path}`, selectedNavKey(path, nav), want);
   const counted = items.map((i) => items.filter((j) => selectedNavKey(`/console${i.key}`, nav) === j.key).length);
@@ -238,7 +241,7 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
 
   // 标签页标题：「页名 · 租户名」，各页互不相同；匿名以「 · 演示」结尾
   const titles = items.map((i) => documentTitle([i.label], member('owner')));
-  eq('标题：成员', titles[0], '销售话术 · 云途定制旅行');
+  eq('标题：成员', titles.slice(0, 2), ['总览 · 云途定制旅行', '销售话术 · 云途定制旅行']);
   check('标题：各页互不相同', new Set(titles).size === titles.length, JSON.stringify(titles));
   check(
     '标题：以「 · 租户名」结尾',
@@ -261,7 +264,11 @@ eq('搜索占位：匿名没有会话', searchPlaceholder(PACK, ANON), '搜索�
     entities: [entity('package', '装修套餐', 'package', ['title', '$code']), entity('material', '主材', 'layers', ['title'])],
     nav: { catalogGroup: '产品库', entities: ['package', 'material'] },
   };
-  eq('别的行业包：侧栏', shape0(home, member('owner')), ['-:销售话术', '产品库:装修套餐(package),主材(material)', '运营:会话,审计日志']);
+  eq('别的行业包：侧栏', shape0(home, member('owner')), [
+    '-:总览,销售话术',
+    '产品库:装修套餐(package),主材(material)',
+    '运营:会话,审计日志',
+  ]);
   eq('别的行业包：搜索占位', searchPlaceholder(home, member('owner')), '搜索装修套餐、主材、会话…');
   eq(
     '别的行业包：⌘K 的实体表与侧栏同源',

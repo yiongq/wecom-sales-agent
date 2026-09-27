@@ -51,7 +51,7 @@ const BUDGET = {
 };
 /** 首屏 preload 的字体只有这两个（spec「字体与授权义务」） */
 const PRELOAD_FONTS = ['geist-ui.woff2', 'noto-sans-sc-ui.woff2'];
-/** 总览路由的懒加载文件（第 4 步加）：有了就算进首屏；在那之前 / 重定向到销售话术，首屏只算入口集合 */
+/** 总览路由的懒加载文件：首屏算入口集合加它（第 4 步起 / 就是总览，没有这一块就是没按路由拆出去） */
 const OVERVIEW = 'src/pages/overview.lazy.tsx';
 /** 话术页的懒加载文件：@codemirror 只能经它下载 */
 const SOP = 'src/pages/sop.lazy.tsx';
@@ -180,14 +180,13 @@ if (manifest && modules) {
   }
 
   // 首屏：入口集合加总览路由的块
+  if (!manifest[OVERVIEW]) bad.push(`manifest 里没有 ${OVERVIEW}：总览要在 router.tsx 里用 .lazy() 拆出去，首屏预算按它算`);
   const firstScreen = [...new Set([...entryJs, ...(manifest[OVERVIEW] ? jsOf(OVERVIEW) : [])])];
   const firstGzip = gzipSum(firstScreen);
   if (firstGzip > BUDGET.firstScreenJs) {
     bad.push(`打开总览要下载的 JS gzip 后 ${fmt(firstGzip)} B，超过预算 ${fmt(BUDGET.firstScreenJs)} B（${firstScreen.join('、')}）`);
   }
-  report.push(
-    `首屏 JS ${fmt(firstGzip)} / ${fmt(BUDGET.firstScreenJs)} B（${manifest[OVERVIEW] ? '入口集合加总览' : '总览还没有，只算入口集合'}）`,
-  );
+  report.push(`首屏 JS ${fmt(firstGzip)} / ${fmt(BUDGET.firstScreenJs)} B（入口集合加总览）`);
 
   // 换页：每个路由块连同它的静态依赖，去掉入口集合里已有的。从哪一页出发，额外下载的都不会比这个多
   const routes = Object.keys(manifest).filter((k) => manifest[k]!.isDynamicEntry && ROUTE_CHUNK.test(k));

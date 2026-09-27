@@ -170,6 +170,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         if (kind) void navigate({ to: '/catalog/$kind', params: { kind } });
         else if (item.key === '/conversations') void navigate({ to: '/conversations' });
         else if (item.key === '/audit') void navigate({ to: '/audit' });
+        else if (item.key === '/') void navigate({ to: '/' });
         else void navigate({ to: '/sop' });
       };
       return [{ key: `page:${item.key}`, label: item.label, hint: g.title ?? undefined, icon: navIcon(item.icon), action: go }];
@@ -260,5 +261,5 @@ function Frame({ viewer: v }: { viewer: Framed }) {
 export function NotFound() {
   const viewer = shellViewerOf(useViewer().data);
   useDocumentTitle(viewer ? documentTitle(['没有这个页面'], viewer) : '没有这个页面');
-  return <EmptyBlock title="没有这个页面" description="地址可能写错了" link={<Link to="/sop">回到销售话术</Link>} />;
+  return <EmptyBlock title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
 }

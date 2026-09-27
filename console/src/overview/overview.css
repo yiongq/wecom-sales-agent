@@ -1,0 +1,470 @@
+/*
+ * 总览（design-system §5.10 KPI 格、§5.11 列表区块、§6.7 阶段条、§10.2 A 页）。颜色只取 brand.css 的变量。
+ * 由 pages/overview.lazy.tsx 引入，随总览的块下载；组件本身不 import CSS，自测才能在 Node 里直接 import 它们。
+ * 宽 1440 时内容宽 1128：页头到「需要你处理」20，列表到系统状态 28，系统状态到业务数 28，业务数到底部两栏 32；
+ * 底部左栏 720、间隔 40、右栏 368
+ */
+
+/* ---------------- 区块头（§5.11）：一行 24 高，16/24/600 标题，间隔 8，13 text-3 计数；右侧链接，到列表 8 ---------------- */
+.ov-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 8px;
+}
+.ov-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ov-count {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.ov-head-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  border-radius: var(--r-xs);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.ov-head-link:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+.ov-head-link:focus-visible,
+.ov-all:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ov-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 行内的一段（不做 inline-flex）：上下文一行放不下时照样在末尾省略 */
+.ov-danger {
+  color: var(--danger);
+}
+.ov-danger svg {
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+/* ---------------- ① 需要你处理：待办行（§5.11） ---------------- */
+.ov-todos {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* 行与行之间 1px --divider，左右各缩进 12：画在行的底边，整行悬停时圆角块盖住它 */
+.ov-todos > li + li {
+  position: relative;
+}
+.ov-todos > li + li::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--divider);
+}
+.ov-todo {
+  display: grid;
+  grid-template-columns: 28px 104px minmax(0, 1fr) auto;
+  column-gap: 16px;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 64px;
+  margin: 0 -12px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  color: var(--text);
+}
+a.ov-todo:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+.ov-todo:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.ov-todo-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+  color: var(--text-2);
+}
+.ov-todo-type {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.ov-todo-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ov-todo-title,
+.ov-todo-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-todo-title {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+}
+.ov-todo-context {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+/* 操作是幽灵小按钮的样子（§5.1：28 高，左右 10，后接 14 的箭头）；整行才是链接，悬停时它也变 text 色 */
+.ov-todo-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+a.ov-todo:hover .ov-todo-action {
+  background: var(--hover);
+  color: var(--text);
+}
+.ov-todo-skeleton .skeleton-bar {
+  height: 12px;
+}
+.ov-todo-skeleton .ov-todo-main {
+  gap: 10px;
+}
+
+/* ---------------- ② 系统状态（§5.11）：一行 22 高，16 circle-check（--success）加 14 text「一切正常」，其余 text-2 ---------------- */
+.ov-system {
+  margin-top: 28px;
+}
+.ov-system-line {
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.ov-system-ok {
+  flex: none;
+  margin-right: 8px;
+  color: var(--success);
+}
+.ov-system-rest {
+  color: var(--text-2);
+}
+.ov-system-skeleton {
+  width: 280px;
+  max-width: 100%;
+}
+.ov-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------------- ③ 业务数：KPI 格（§5.10），4 格一排，间隔 12，格高 160 ---------------- */
+.ov-kpi-block {
+  margin-top: 28px;
+}
+.ov-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.ov-kpi {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 160px;
+  padding: 16px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--ring);
+  color: var(--text);
+}
+a.ov-kpi:hover {
+  background-image: linear-gradient(var(--hover), var(--hover));
+  text-decoration: none;
+}
+.ov-kpi:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ov-kpi-label {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.ov-kpi-value {
+  align-self: flex-start;
+  margin-top: 6px;
+  border-radius: var(--r-xs);
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+.ov-kpi-caption,
+.ov-kpi-detail {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-kpi-caption {
+  margin-top: 2px;
+  color: var(--text-3);
+}
+/* 明细行：上面 12 处一条 1px --divider（左右贴格内边距），线下 11 */
+.ov-kpi-detail {
+  margin-top: 12px;
+  padding-top: 11px;
+  box-shadow: inset 0 1px 0 var(--divider);
+  color: var(--text-2);
+}
+.ov-kpi-create {
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.ov-kpi-arrow {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  color: var(--text-3);
+  opacity: 0;
+}
+a.ov-kpi:hover .ov-kpi-arrow,
+a.ov-kpi:focus-visible .ov-kpi-arrow {
+  opacity: 1;
+}
+.ov-kpi-skeleton {
+  gap: 16px;
+}
+.ov-kpi-skeleton .skeleton-bar:first-child {
+  width: 40%;
+}
+.ov-kpi-skeleton .skeleton-bar:last-child {
+  width: 30%;
+  height: 28px;
+}
+
+/* ---------------- ④ 底部两栏：左栏 720「最近变更」、间隔 40、右栏 368「客户停在哪一步」 ---------------- */
+.ov-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 368px;
+  column-gap: 40px;
+  row-gap: 32px;
+  align-items: start;
+  margin-top: 32px;
+}
+/* 没有「最近变更」权限：右栏挪到左栏的位置，宽度不变 */
+.ov-bottom.is-single {
+  grid-template-columns: minmax(0, 368px);
+}
+
+/* 最近变更（§5.11 时间线）：行高 40，grid 96 24 1fr，列间距 12；头像的圆心用一条 1px --divider 连起来 */
+.ov-timeline {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ov-timeline::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 119.5px;
+  width: 1px;
+  background: var(--divider);
+}
+.ov-tl-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 96px 24px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+  height: 40px;
+}
+.ov-tl-time {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+  text-align: right;
+  white-space: nowrap;
+}
+/* 命令行这类非人操作者：24 的方块（时间线里），--subtle 底叠在 --panel 上，盖住后面的连线 */
+.ov-tl-bot {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  background: linear-gradient(var(--subtle), var(--subtle)), var(--panel);
+  color: var(--text-2);
+}
+.ov-tl-text {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-tl-text strong {
+  font-weight: 500;
+}
+.ov-tl-skeleton-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-full);
+}
+.ov-all {
+  display: inline-block;
+  margin: 8px 0 0 144px;
+  border-radius: var(--r-xs);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/*
+ * 客户停在哪一步（§6.7 阶段条）：每行 32，阶段名 48、条（高 8，--bar，按比例，没有轨道底）、数字 32 右对齐。
+ * 悬停块左右各伸出 8，阶段名与区块标题对齐；间隔 20，宽 368 时条区正好 248（A 页）
+ */
+.ov-stages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ov-stage {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 32px;
+  column-gap: 20px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 32px;
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+}
+a.ov-stage:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+.ov-stage:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.ov-stage-label {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-stage.is-branch .ov-stage-label {
+  padding-left: 8px;
+}
+.ov-stage-track {
+  display: flex;
+  align-items: center;
+  height: 8px;
+}
+.ov-stage-bar {
+  height: 8px;
+  border-radius: var(--r-xs);
+  background: var(--bar);
+}
+.ov-stage-count {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  text-align: right;
+}
+.ov-stage.is-zero .ov-stage-count {
+  color: var(--text-3);
+}
+
+/* ---------------- 窄屏（spec「可访问性与响应式」：375 宽不横向滚动） ---------------- */
+@media (max-width: 1279px) {
+  .ov-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 991px) {
+  .ov-bottom,
+  .ov-bottom.is-single {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 599px) {
+  .ov-kpis {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* 待办行：类型挪到对象上面，操作收起（整行本身就是链接） */
+  .ov-todo {
+    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-areas: 'icon type' 'icon main';
+    row-gap: 2px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .ov-todo-icon {
+    grid-area: icon;
+    align-self: start;
+  }
+  .ov-todo-type {
+    grid-area: type;
+  }
+  .ov-todo-main {
+    grid-area: main;
+  }
+  .ov-todo-action {
+    display: none;
+  }
+  .ov-tl-row {
+    grid-template-columns: 72px 24px minmax(0, 1fr);
+  }
+  .ov-timeline::before {
+    left: 95.5px;
+  }
+  .ov-all {
+    margin-left: 120px;
+  }
+}

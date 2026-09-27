@@ -15,7 +15,7 @@ export const isEditor = (v: ShellViewer): boolean => v.kind === 'member' && (v.m
 // ---------------- 侧栏 ----------------
 
 /** 导航项的图标：固定页面用自己的图标，实体用行业包给的 lucide 名称 */
-export type NavIcon = { page: 'sop' | 'conversations' | 'audit' } | { entity: string };
+export type NavIcon = { page: 'overview' | 'sop' | 'conversations' | 'audit' } | { entity: string };
 
 export interface NavItem {
   /** 按它匹配当前路由：不带 /console 的路径 */
@@ -44,7 +44,7 @@ export const packEntities = (pack: IndustryPack): EntityType[] =>
 
 /**
  * 侧栏的导航（spec「信息架构」，设计系统 §4.2）：顺序固定，产品库分组名和各实体取自行业包。
- * 会话只给成员（匿名没有入口）；审计日志只给所有者、管理员。「总览」随第 4 步的路由加上，「平台 / 系统」要后端
+ * 会话只给成员（匿名没有入口）；审计日志只给所有者、管理员。「平台 / 系统」要后端
  */
 export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
   const entities = packEntities(pack).map((e): NavItem => ({
@@ -54,7 +54,14 @@ export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
     entity: e.kind,
   }));
   const groups: NavGroup[] = [
-    { key: 'main', title: null, items: [{ key: '/sop', label: '销售话术', icon: { page: 'sop' } }] },
+    {
+      key: 'main',
+      title: null,
+      items: [
+        { key: '/', label: '总览', icon: { page: 'overview' } },
+        { key: '/sop', label: '销售话术', icon: { page: 'sop' } },
+      ],
+    },
     { key: 'catalog', title: pack.nav.catalogGroup, items: entities },
   ];
   const ops: NavItem[] = [];
