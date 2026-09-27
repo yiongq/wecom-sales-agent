@@ -8,7 +8,7 @@ export async function rpcTypeFixture(): Promise<void> {
   // @ts-expect-error kind 只能是 route / hotel
   await api.catalog[':kind'].$get({ param: { kind: 'ship' } });
   // @ts-expect-error 发布要带 rev 与 changeNote
-  await api.sop.draft.publish.$post({ json: { changeNote: '缺 rev' } });
+  await api.sop.draft.publish.$post({ json: { changeNote: '缺rev' } });
   const r = await api.sop.$get();
   if (r.status === 200) {
     const body = await r.json();

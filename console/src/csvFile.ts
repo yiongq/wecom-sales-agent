@@ -8,6 +8,6 @@ export function decodeCsvFile(bytes: Uint8Array): string {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
-    throw new CsvEncodingError('这个文件不是 UTF-8 编码（Excel 默认另存的 CSV 是 GBK）：请在 Excel 里另存为「CSV UTF-8（逗号分隔）」再选');
+    throw new CsvEncodingError('这个文件不是UTF-8编码（Excel默认另存的CSV是GBK）：请在Excel里另存为「CSV UTF-8（逗号分隔）」再选');
   }
 }
