@@ -1,6 +1,6 @@
 # ADR-002：后台前端：Vite + React 单页挂在 `/console`，由 Hono 托管
 
-- **状态**：采纳
+- **状态**：采纳。决策 1 里「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」一条已由 [ADR-004](adr-004-pack-field-rendering.md) 取代（2026-09-27）
 - **日期**：2026-09-25
 - **背景**：现在的后台是 `public/admin.html`，约 1100 行原生 JS，单一 `ADMIN_PASS` 登录，靠 SSE 加 30 秒轮询刷新。产品化路线要在后台里加 SOP 分节编辑与版本 diff、产品库表单、坐席工作台、trace 查看、护栏统计、多角色和租户切换（见[总参考](../architecture/master-reference.md)「分阶段路线」）。
 
