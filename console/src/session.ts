@@ -7,7 +7,8 @@
 //   3. /me 返回 401。
 // 判为过期的响应不交给调用方：请求停在这里，等 SessionExpiredDialog 就地登录，成功后带新的 csrf 重放。所以 React Query 的缓存
 // 不清，当前页不卸载，编辑中的内容还在，匿名形状的数据也进不了缓存。登录框被关掉时，等着的请求拿到 401 unauthorized
-// （匿名形状的 200 也换成 401，数据不交出去），页面按 ERROR_COPY 显示「登录已过期」。
+// （匿名形状的 200 也换成 401，数据不交出去），页面按 ERROR_COPY 显示「登录已过期」。就地登录的换了一个人时同样不重放：
+// 等着的写是上一个人发起的，不能记到新登录的人名下。
 import type {
   AnonCatalogItem,
   AnonSopOverview,
@@ -48,9 +49,12 @@ export const ANON_SHAPES: ReadonlyArray<{ path: RegExp; isAnonShape: (body: unkn
 // ---------------- 身份 ----------------
 
 let member = false;
+let userId = '';
 let csrf = '';
 let expired = false;
 let waiting: Array<(resumed: boolean) => void> = [];
+/** 请求开始等重登时是谁的会话：就地登录的是不是同一个人，拿它比（登录表单先 beginMemberSession 也不影响） */
+let heldFor = '';
 const listeners = new Set<() => void>();
 
 function setExpired(v: boolean): void {
@@ -62,6 +66,7 @@ function setExpired(v: boolean): void {
 function settle(resumed: boolean): void {
   const w = waiting;
   waiting = [];
+  heldFor = '';
   setExpired(false);
   for (const resolve of w) resolve(resumed);
 }
@@ -69,17 +74,37 @@ function settle(resumed: boolean): void {
 /** 写请求带的头 */
 export const csrfHeader = (): Record<string, string> => (csrf ? { 'x-csrf': csrf } : {});
 
+type SessionMe = Pick<Me, 'csrf' | 'userId'>;
+
 /** /me 成功、或登录成功：进入成员身份 */
-export function beginMemberSession(me: Pick<Me, 'csrf'>): void {
+export function beginMemberSession(me: SessionMe): void {
   member = true;
+  userId = me.userId;
   csrf = me.csrf;
 }
 
-/** 退出登录：先离开成员身份，之后的 401 都不算过期；等着重登的请求拿到 401 */
+/** 本地离开成员身份、清掉 csrf，之后的 401 都不算过期；等着重登的请求拿到 401。不发请求 */
 export function endMemberSession(): void {
   member = false;
+  userId = '';
   csrf = '';
   settle(false);
+}
+
+/**
+ * 退出登录：先离开成员身份（之后 /me 的 401 是「已退出」，不是过期；等着重登的请求拿到 401），再由 send 发退出请求。
+ * 退出也是写请求，服务端要 x-csrf，所以 csrf 留到 send 结束才清。send 抛错（服务端的会话还在）就回到成员身份，错误交给调用方
+ */
+export async function logoutMemberSession(send: () => Promise<unknown>): Promise<void> {
+  member = false;
+  settle(false);
+  try {
+    await send();
+  } catch (e) {
+    member = true;
+    throw e;
+  }
+  endMemberSession();
 }
 
 export const isMemberSession = (): boolean => member;
@@ -89,10 +114,15 @@ export function subscribeSession(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** 就地登录成功：换上新的 csrf，重放等着的请求 */
-export function resumeSession(me: Pick<Me, 'csrf'>): void {
+/**
+ * 就地登录成功，进入新的成员身份。还是原来那个人：带新的 csrf 重放等着的请求，返回 true。
+ * 换了一个人：等着的请求按 401 结束、不重放，返回 false，由调用方按新身份重取
+ */
+export function resumeSession(me: SessionMe): boolean {
+  const same = me.userId === heldFor;
   beginMemberSession(me);
-  settle(true);
+  settle(same);
+  return same;
 }
 
 /** 登录框被关掉：等着的请求拿到 401，仍是成员身份（下一个请求过期了还会再弹） */
@@ -102,6 +132,7 @@ export function abandonRelogin(): void {
 
 function waitForRelogin(): Promise<boolean> {
   return new Promise((resolve) => {
+    if (waiting.length === 0) heldFor = userId;
     waiting.push(resolve);
     setExpired(true);
   });

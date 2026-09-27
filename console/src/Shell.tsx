@@ -1,15 +1,16 @@
 // 外框：判断来者（成员 / demo 匿名 / 要登录 / 文件模式），成员与匿名进同一个布局；匿名挂「演示只读」横幅、看不到审计入口。
-// 成员身份下挂就地登录框（会话过期时弹出，不卸载页面）；viewer 已经有值时，刷新失败也照旧按原来的身份渲染
+// 成员身份下挂就地登录框（会话过期时弹出，不卸载页面）；viewer 已经有值时，刷新失败也照旧按原来的身份渲染。
+// 退出没成功（服务端的会话还在）时仍是成员，错误就地显示在内容区顶上
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { Alert, Button, Layout, Menu, Result, Space, Spin, Tag, Typography } from 'antd';
-import { api, unwrap } from './api.js';
+import { useState } from 'react';
 import { LoginPage } from './pages/LoginPage.js';
+import { ErrorAlert } from './parts/ErrorAlert.js';
 import { PrimaryButton } from './parts/PrimaryButton.js';
 import { StateView } from './parts/StateView.js';
 import { SessionExpiredDialog } from './SessionExpiredDialog.js';
-import { endMemberSession } from './session.js';
-import { canEdit, useViewer, VIEWER_KEY } from './viewer.js';
+import { canEdit, logout, useViewer, VIEWER_KEY } from './viewer.js';
 
 const ROLE_LABEL: Record<string, string> = { owner: '所有者', admin: '管理员', supervisor: '主管', agent: '坐席', viewer: '只读' };
 
@@ -17,6 +18,8 @@ export function Shell() {
   const viewer = useViewer();
   const qc = useQueryClient();
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const [leaving, setLeaving] = useState(false);
+  const [logoutError, setLogoutError] = useState<unknown>(null);
 
   const v = viewer.data;
   if (v === undefined) {
@@ -32,11 +35,17 @@ export function Shell() {
   }
   if (v.kind === 'login') return <LoginPage />;
 
-  const logout = async (): Promise<void> => {
-    // 先离开成员身份：之后 /me 的 401 是「已退出」，不是会话过期。退出接口失败时不另报错：下面重新判断来者，
-    // 服务端的会话还在就照旧是成员
-    endMemberSession();
-    await unwrap(api.auth.logout.$post()).catch(() => undefined);
+  const signOut = async (): Promise<void> => {
+    setLogoutError(null);
+    setLeaving(true);
+    try {
+      await logout();
+    } catch (e) {
+      setLogoutError(e);
+      return;
+    } finally {
+      setLeaving(false);
+    }
     // 不能 clear() 再 invalidate：clear 只把查询拿出缓存、不通知还挂着的 observer，invalidate 又找不到它，页面就停在成员视图。
     // 先拿掉其余查询（草稿、审计这些成员才看得到的），再重置 viewer：Shell 转圈、卸掉页面，重新判断来者（demo 匿名或登录页）
     qc.removeQueries({ predicate: (q) => q.queryKey[0] !== VIEWER_KEY[0] });
@@ -78,7 +87,9 @@ export function Shell() {
           <Space>
             <span>{v.me.displayName}</span>
             <Tag>{ROLE_LABEL[v.me.role] ?? v.me.role}</Tag>
-            <Button onClick={() => void logout()}>退出</Button>
+            <Button loading={leaving} onClick={() => void signOut()}>
+              退出
+            </Button>
           </Space>
         ) : (
           <PrimaryButton onClick={() => qc.setQueryData(VIEWER_KEY, { kind: 'login' })}>登录</PrimaryButton>
@@ -89,6 +100,11 @@ export function Shell() {
           <Menu mode="inline" selectedKeys={selected} items={items} />
         </Layout.Sider>
         <Layout.Content style={{ padding: 24 }}>
+          {v.kind === 'member' && logoutError !== null && (
+            <div style={{ marginBottom: 16 }}>
+              <ErrorAlert error={logoutError} title="没退出登录" onRetry={() => void signOut()} />
+            </div>
+          )}
           {v.kind === 'anon' && (
             <Alert
               type="warning"
