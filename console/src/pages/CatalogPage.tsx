@@ -215,7 +215,7 @@ function ItemDrawer(props: {
               disabled={dirty}
               onConfirm={() => void activate()}
             >
-              <Button type="primary" ghost loading={busy} disabled={dirty}>
+              <Button loading={busy} disabled={dirty}>
                 上架
               </Button>
             </Popconfirm>

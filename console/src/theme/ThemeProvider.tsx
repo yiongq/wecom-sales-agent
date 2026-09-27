@@ -43,7 +43,8 @@ function snapshot(): string {
 }
 
 export function ThemeProvider({ children, ...rest }: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form'>) {
-  const key = useSyncExternalStore(subscribe, snapshot);
+  // 第三个参数只给 theme.selftest.ts 用：它在 Node 里用 react-dom/server 渲染这个组件，核对传给 ConfigProvider 的东西
+  const key = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [mode, reduce] = key.split('|');
   const theme = useMemo(() => antdTheme(mode === 'dark' ? 'dark' : 'light', reduce === '1'), [mode, reduce]);
   useEffect(() => {

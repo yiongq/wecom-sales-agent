@@ -220,6 +220,12 @@ select {
   font-weight: 400;
   color: var(--text-3);
 }
+/* 主题切换 0ms（§3）：prefs.ts 换 data-theme 时挂上 data-theme-switching，两帧后拿掉；这期间没有任何过渡 */
+:root[data-theme-switching] *,
+:root[data-theme-switching] *::before,
+:root[data-theme-switching] *::after {
+  transition: none !important;
+}
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0s !important;

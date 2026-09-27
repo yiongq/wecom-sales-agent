@@ -62,10 +62,33 @@ export function getPrefs(): Prefs {
   return current;
 }
 
+/** 换主题那几帧挂在 <html> 上，brand.css 按它关掉全部过渡 */
+export const SWITCHING_ATTR = 'data-theme-switching';
+
+/** 连着切几次时，只有最后一次的两帧之后才拿掉 SWITCHING_ATTR */
+let switchSeq = 0;
+
+/**
+ * 主题切换 0ms（spec 设计原则 9、design-system §3）：antd 控件的颜色带 160–200ms 过渡，直接换 data-theme 会渐变过去。
+ * 换色之前先挂 SWITCHING_ATTR，第一帧用新颜色画完（没有过渡），第二帧再拿掉；ThemeProvider 换 antd 主题的那次提交
+ * 在同一个任务的微任务里完成，赶得上第一帧。页面在后台时 rAF 暂停，回到前台再拿掉
+ */
+function switchTheme(root: HTMLElement, mode: ThemeMode): void {
+  const seq = ++switchSeq;
+  root.setAttribute(SWITCHING_ATTR, 'true');
+  root.setAttribute('data-theme', mode);
+  window.requestAnimationFrame(() =>
+    window.requestAnimationFrame(() => {
+      if (seq === switchSeq) root.removeAttribute(SWITCHING_ATTR);
+    }),
+  );
+}
+
 /** 把偏好设到 <html> 上。首帧那一次由 theme-boot.js 做，判定与这里相同 */
 export function applyPrefs(p: Prefs = getPrefs()): void {
   const root = document.documentElement;
-  root.setAttribute('data-theme', resolveMode(p.appearance, matches(DARK_QUERY)));
+  const mode = resolveMode(p.appearance, matches(DARK_QUERY));
+  if (root.getAttribute('data-theme') !== mode) switchTheme(root, mode);
   if (p.reduceMotion) root.setAttribute('data-reduce-motion', 'true');
   else root.removeAttribute('data-reduce-motion');
 }

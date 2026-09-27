@@ -16,6 +16,16 @@ const px = (v: string): number => Number.parseFloat(v);
 /** CSS 变量里的字体栈用单引号，antd 的 fontFamily 照 §8 用双引号，内容相同 */
 const dq = (v: string): string => v.replaceAll("'", '"').replaceAll(', ', ',');
 
+/**
+ * 反相 toast 上成功以外的图标（message.error / info / warning / loading，第 2.3 步只留成功 toast 之前页面里还有）。
+ * 底是 --text，本主题的语义色叠上去不到 3:1（浅色 danger 2.69），所以和 --toast-icon 一样取另一套主题的同类色：
+ * 浅色取深色的圆点色，深色取浅色的字色（浅色圆点叠 #EDEDEF 不够 3:1）
+ */
+const TOAST_ICON: Readonly<Record<ThemeMode, Readonly<Record<'error' | 'info' | 'warning', string>>>> = {
+  light: { error: TOKENS.dark['danger-dot'], info: TOKENS.dark['info-dot'], warning: TOKENS.dark['warning-icon'] },
+  dark: { error: TOKENS.light.danger, info: TOKENS.light.info, warning: TOKENS.light.warning },
+};
+
 /** 三档动效时长全部归零 */
 const ZERO_MOTION = { motionDurationFast: '0s', motionDurationMid: '0s', motionDurationSlow: '0s' } as const;
 
@@ -232,13 +242,17 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
       Tooltip: { maxWidth: 240, colorTextLightSolid: t.panel },
       // 反相 toast（§5.15）：--text 底、--panel 色字，成功图标用 --toast-icon。§8 原写「字色在 className 里设」，
       // 改在组件令牌里设，现有页面里的 message 调用不用逐个加 className
-      // 6.6.5 的 message 与 notification 共用样式，提示文字走 colorTextHeading（标题），两个都设
+      // 6.6.5 的 message 与 notification 共用样式，提示文字走 colorTextHeading（标题），两个都设。
+      // contentBg 按 §8 对所有 message 生效，其余类型的图标色也在这里换掉（TOAST_ICON；loading 图标取 colorInfo）
       Message: {
         contentBg: t.text,
         contentPadding: '9px 14px 9px 12px',
         colorText: t.panel,
         colorTextHeading: t.panel,
         colorSuccess: t['toast-icon'],
+        colorError: TOAST_ICON[mode].error,
+        colorInfo: TOAST_ICON[mode].info,
+        colorWarning: TOAST_ICON[mode].warning,
       },
       // 分页的当前页（§5.5）：--selected 底、text 字。antd 默认取 colorPrimary 做字色，深色下只有 3.83:1。其余样式随第 9 步
       Pagination: { itemActiveBg: t.selected, itemActiveColor: t.text, itemActiveColorHover: t.text },

@@ -3,15 +3,30 @@
 // 2. 写进 antd token 的每个值都原样出现在 theme.getDesignToken() 的结果里（种子色会被算法改掉，见 antd.ts 的 pinSeeds）；
 // 3. 两套主题下 §1.2 的每一对：先用 brand.css 的值算，再把同一对换成 antd 令牌（getDesignToken() 的实际输出）算，
 //    另加组件令牌的配对（antd.ts 里显式写的值，没写就算失败：不写 antd 会从 colorPrimary 派生）。文字 ≥4.5，控件边界、焦点与状态图形 ≥3；
-// 4. theme-boot.js（首帧）与 prefs.ts（页面起来以后）读同一组键、得出同样的属性；localStorage 抛错时照常按浅色。
+// 4. theme-boot.js（首帧）与 prefs.ts（页面起来以后）读同一组键、得出同样的属性；localStorage 抛错时照常按浅色；
+//    换主题那两帧挂 data-theme-switching，brand.css 按它关掉过渡（主题切换 0ms）；
+// 5. 页面里没有拿 colorPrimary 当字色的按钮变体（ghost、color="primary" 的非实心变体），它们不在 3 的配对里；
+// 6. ThemeProvider 的接线：用 react-dom/server 渲染它，核对 antd 实际拿到的令牌（含 motion）、wave 与表单的 requiredMark。
 // 失败时点名主题、令牌（或组件键）、底和算出来的对比度。
-// 用法：npx tsx console/src/theme/theme.selftest.ts
+// 用法：npx tsx --tsconfig console/tsconfig.json console/src/theme/theme.selftest.ts（ThemeProvider.tsx 要按 react-jsx 编译）
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { theme } from 'antd';
+import { ConfigProvider, Form, Input, theme } from 'antd';
+import { createElement, useContext } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { ANTD_THEMES, antdTheme } from './antd.js';
-import { applyPrefs, currentThemeState, DARK_QUERY, readPrefs, REDUCED_MOTION_QUERY, setAppearance, setReduceMotion } from './prefs.js';
+import {
+  applyPrefs,
+  currentThemeState,
+  DARK_QUERY,
+  readPrefs,
+  REDUCED_MOTION_QUERY,
+  setAppearance,
+  setReduceMotion,
+  SWITCHING_ATTR,
+} from './prefs.js';
+import { ThemeProvider } from './ThemeProvider.js';
 import { SHARED, THEMED_KEYS, type ThemeMode, TOKENS } from './tokens.js';
 
 const HERE = import.meta.dirname;
@@ -297,6 +312,9 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   P('Button.solidTextColor', ['colorBgSolidActive'], TEXT),
   P('Button.textTextColor', ['colorBgContainer'], TEXT),
   P('Button.textTextColor', ['colorBgContainer', 'Button.textHoverBg'], TEXT),
+  // 带 danger 的默认按钮（话术页「丢弃草稿」）：悬停、按下的字色由算法从 colorError 派生
+  P('colorErrorHover', ['colorBgContainer'], TEXT),
+  P('colorErrorActive', ['colorBgContainer'], TEXT),
   // type="primary" 的按钮（第 2.3 步换成墨色主按钮之前页面里还有）：白字在 colorPrimary 系上
   P('colorTextLightSolid', ['colorPrimary'], TEXT),
   P('colorTextLightSolid', ['colorPrimaryHover'], TEXT),
@@ -328,6 +346,10 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   P('Message.colorText', ['Message.contentBg'], TEXT),
   P('Message.colorTextHeading', ['Message.contentBg'], TEXT), // 6.6.5 的提示文字实际取这个（走查实测）
   P('Message.colorSuccess', ['Message.contentBg'], GRAPHIC),
+  // 现有的 message.error / info（第 2.3 步只留成功 toast 之前）也是反相底；loading 图标取 colorInfo
+  P('Message.colorError', ['Message.contentBg'], GRAPHIC),
+  P('Message.colorInfo', ['Message.contentBg'], GRAPHIC),
+  P('Message.colorWarning', ['Message.contentBg'], GRAPHIC),
   P('Pagination.itemActiveColor', ['colorBgContainer', 'Pagination.itemActiveBg'], TEXT),
   P('Pagination.itemActiveColorHover', ['colorBgContainer', 'Pagination.itemActiveBg'], TEXT),
 ];
@@ -385,10 +407,13 @@ interface Env {
   attrs: Map<string, string>;
   window: object;
   document: object;
+  /** 跑一帧：执行此刻排着的 requestAnimationFrame 回调（回调里再排的留到下一帧） */
+  frame: () => void;
 }
 
 function makeEnv(store: Store, systemDark: boolean, systemReduced = false): Env {
   const attrs = new Map<string, string>();
+  let queued: Array<() => void> = [];
   const storage = {
     getItem: (k: string): string | null => (store === 'blocked' ? null : (store.get(k) ?? null)),
     setItem: (k: string, v: string): void => {
@@ -408,13 +433,19 @@ function makeEnv(store: Store, systemDark: boolean, systemReduced = false): Env 
     }),
     addEventListener: noop,
     removeEventListener: noop,
+    requestAnimationFrame: (cb: () => void): number => queued.push(cb),
   };
   const documentElement = {
     setAttribute: (k: string, v: string): void => void attrs.set(k, String(v)),
     removeAttribute: (k: string): void => void attrs.delete(k),
     getAttribute: (k: string): string | null => attrs.get(k) ?? null,
   };
-  return { attrs, window: win, document: { documentElement } };
+  const frame = (): void => {
+    const run = queued;
+    queued = [];
+    for (const cb of run) cb();
+  };
+  return { attrs, window: win, document: { documentElement }, frame };
 }
 
 const show = (e: Env): string =>
@@ -508,6 +539,133 @@ expect(boot('blocked', true), 'data-theme=light data-reduce-motion=无', '读 lo
   applyPrefs(readPrefs());
   check(currentThemeState().reduceMotion, '系统设了 prefers-reduced-motion，currentThemeState().reduceMotion 却是 false');
 }
+// 主题切换 0ms：data-theme 真变了才挂 data-theme-switching，新颜色那一帧还挂着，第二帧后拿掉；连着切以最后一次为准
+{
+  const env = install(makeEnv(storeOf('light'), false));
+  const switching = (): boolean => env.attrs.get(SWITCHING_ATTR) === 'true';
+  setAppearance('light');
+  env.frame();
+  env.frame();
+  check(!switching(), `两帧之后 ${SWITCHING_ATTR} 还挂着`);
+  setAppearance('light');
+  check(!switching(), `主题没变也挂了 ${SWITCHING_ATTR}`);
+  setAppearance('dark');
+  check(switching() && env.attrs.get('data-theme') === 'dark', `换成深色时没挂 ${SWITCHING_ATTR}（antd 控件的颜色会渐变过去）`);
+  env.frame();
+  check(switching(), `换主题后第一帧就拿掉了 ${SWITCHING_ATTR}（新颜色那一帧还会有过渡）`);
+  setAppearance('light');
+  env.frame();
+  check(switching(), `连着切两次，前一次的计时拿掉了后一次的 ${SWITCHING_ATTR}`);
+  env.frame();
+  check(!switching(), `连着切两次，最后一次的两帧之后 ${SWITCHING_ATTR} 还挂着`);
+}
+{
+  const sel = `:root\\[${SWITCHING_ATTR}\\]`;
+  const rule = new RegExp(`${sel} \\*,\\s*${sel} \\*::before,\\s*${sel} \\*::after\\s*\\{\\s*transition:\\s*none\\s*!important;?\\s*\\}`);
+  check(rule.test(css), `brand.css 缺 ${SWITCHING_ATTR} 那条规则（换主题那几帧 *、::before、::after 都 transition: none !important）`);
+}
+
+// ---------------- 5. 没有拿 colorPrimary 当字色的按钮 ----------------
+// ghost 与 color="primary" 的非实心变体，字和描边取 colorPrimary / Hover / Active：深色下叠在 raised 上只有 3.52、2.84、2.26，
+// 只够图形不够文字。实心的 type="primary" 由 3 里 colorTextLightSolid 那几对管。ghost 放在默认按钮上是白字透明底，同样不行
+
+/** 源码里每个 <Button …> 开始标签的全文：跳过 {…} 与引号里的内容，箭头函数的 > 不算标签结束 */
+function buttonTags(src: string): string[] {
+  const tags: string[] = [];
+  for (const m of src.matchAll(/<Button(?![\w.])/g)) {
+    let depth = 0;
+    let i = m.index + m[0].length;
+    for (; i < src.length; i += 1) {
+      const c = src[i];
+      if (c === '"' || c === "'" || c === '`') {
+        const end = src.indexOf(c, i + 1);
+        if (end < 0) break;
+        i = end;
+      } else if (c === '{') depth += 1;
+      else if (c === '}') depth -= 1;
+      else if (c === '>' && depth === 0) break;
+    }
+    tags.push(src.slice(m.index, i + 1));
+  }
+  return tags;
+}
+{
+  const srcDir = path.join(HERE, '..');
+  let scanned = 0;
+  for (const rel of fs.readdirSync(srcDir, { recursive: true, encoding: 'utf8' })) {
+    if (!rel.endsWith('.tsx')) continue;
+    for (const tag of buttonTags(fs.readFileSync(path.join(srcDir, rel), 'utf8'))) {
+      scanned += 1;
+      const primary = /\s(?:type|color)=(?:"primary"|'primary'|\{\s*['"]primary['"]\s*\})/.test(tag);
+      const hollow = /\svariant=(?:"|'|\{\s*['"])(?!solid['"])/.test(tag);
+      const ghost = /\sghost(?=[\s/>=])/.test(tag);
+      check(
+        !ghost && !(primary && hollow),
+        `${rel} 的 ${tag.replace(/\s+/g, ' ')}：字色取 colorPrimary，深色下对比不到 4.5（改成默认按钮或实心主按钮）`,
+      );
+    }
+  }
+  check(scanned > 0, '5：console/src 里一个 <Button> 都没扫到，扫描写错了');
+}
+
+// ---------------- 6. ThemeProvider 的接线 ----------------
+// <html> 上的两个属性 → antd 实际拿到的令牌（全局令牌逐个对 antdTheme() 的结果，含 motion 与三档时长）、wave 关掉、
+// 表单必填项不画星号（antd 给 label 加 required-mark-optional，星号的 ::before 不显示）且不加「（选填）」，选填项加
+
+interface Seen {
+  wave: unknown;
+  token: Dict;
+}
+/** 渲染时把 antd 实际拿到的 wave 与令牌交给 report */
+function Probe({ report }: { report: (seen: Seen) => void }) {
+  const { wave } = useContext(ConfigProvider.ConfigContext);
+  const { token } = theme.useToken();
+  report({ wave, token: token as unknown as Dict });
+  return createElement(
+    Form,
+    null,
+    createElement(Form.Item, { label: '名称', name: 'a', required: true }, createElement(Input)),
+    createElement(Form.Item, { label: '备注', name: 'b' }, createElement(Input)),
+  );
+}
+for (const mode of MODES) {
+  for (const reduce of [false, true]) {
+    const env = install(makeEnv(storeOf(), false));
+    env.attrs.set('data-theme', mode);
+    if (reduce) env.attrs.set('data-reduce-motion', 'true');
+    const label = `ThemeProvider（${NAME[mode]}${reduce ? '、减少动态效果' : ''}）`;
+    let seen: Seen | undefined;
+    let html = '';
+    try {
+      const report = (s: Seen): void => {
+        seen = s;
+      };
+      html = renderToStaticMarkup(createElement(ThemeProvider, null, createElement(Probe, { report })));
+    } catch (e) {
+      fails.push(`${label}：渲染抛错 ${(e as Error).message}`);
+      continue;
+    }
+    const want = theme.getDesignToken(antdTheme(mode, reduce)) as unknown as Dict;
+    for (const k of new Set(['motion', ...Object.keys(antdTheme(mode, reduce).token ?? {})])) {
+      const got = seen?.token[k];
+      check(norm(String(got)) === norm(String(want[k])), `${label}：antd 拿到的 ${k} 是 ${String(got)}，应为 ${String(want[k])}`);
+    }
+    check((seen?.wave as { disabled?: unknown } | undefined)?.disabled === true, `${label}：wave 没关（§8 wave.disabled）`);
+    const labels = new Map(
+      [...html.matchAll(/<label\b[^>]*\bfor="(\w+)"[^>]*\bclass="([^"]*)"[^>]*>([\s\S]*?)<\/label>/g)].map((m) => [m[1], m]),
+    );
+    const req = labels.get('a');
+    const opt = labels.get('b');
+    check(
+      req !== undefined && /\bant-form-item-required-mark-optional\b/.test(req[2]) && !req[3].includes('选填'),
+      `${label}：必填项的 label 是 ${req?.[0] ?? '无'}，应不画星号、不加「（选填）」`,
+    );
+    check(
+      opt !== undefined && opt[3].endsWith('<span class="optional-mark">（选填）</span>'),
+      `${label}：选填项的 label 是 ${opt?.[0] ?? '无'}，应在后面加 <span class="optional-mark">（选填）</span>`,
+    );
+  }
+}
 
 if (fails.length) {
   console.error(`THEME SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);
@@ -516,5 +674,5 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `THEME SELFTEST PASS: ${pass} 项断言全通（brand.css 与令牌一致 / antd 令牌原样生效 / 两套主题 ${BRAND.length}+${ANTD.length}+${COMPONENT_PAIRS.length} 对对比度 / 首帧脚本与偏好对拍）`,
+  `THEME SELFTEST PASS: ${pass} 项断言全通（brand.css 与令牌一致 / antd 令牌原样生效 / 两套主题 ${BRAND.length}+${ANTD.length}+${COMPONENT_PAIRS.length} 对对比度 / 首帧脚本与偏好对拍 / 换主题不过渡 / 按钮变体 / ThemeProvider 接线）`,
 );
