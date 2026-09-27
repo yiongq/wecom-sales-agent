@@ -1,7 +1,8 @@
 // 总览（spec「逐页设计 · 总览（A 页）」，设计系统 §5.10、§5.11、§6.7、§10.2 A 页）：回答两个问题，现在要处理什么，业务怎么样。
 // 从上到下：需要你处理 → 系统状态 → 业务数 → 最近变更 / 客户停在哪一步。
 // - 只调现有接口和 spec 新增的两个只读接口；各块自己加载、自己出错，一块失败只有这一块写「没取到 · 重试」，其余照常。
-//   会话计数、等人接手的首页、各实体列表与外壳（侧栏徽标、铃铛、条目数）共用同一份缓存，页面可见时一起每 30 秒刷新。
+//   会话计数、各实体列表与外壳（侧栏徽标、铃铛、条目数）共用同一份缓存，页面可见时一起每 30 秒刷新；等人接手取的是
+//   最后动静最早的一页（与铃铛的首页不同），「需要你处理」与「等人接手」格共用它。
 // - 谁看得到什么：等人接手、系统状态、业务数、客户停在哪一步给成员；话术草稿、待上架与最近变更只给所有者、管理员
 //   （没有「最近变更」时右栏挪到左栏的位置，宽度不变）；demo 匿名只有页头下的横幅和「在售」一格。
 // - 界面不认行业：实体、阶段、话术节、叫法都取自行业包（model.ts）。A2（02 之后的等待时长、接手、待付款）不在这一步
@@ -17,7 +18,7 @@ import { catalogKind } from '../api.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
 import { TechDetails } from '../parts/TechDetails.js';
-import { catalogListQuery, conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
+import { catalogListQuery, conversationCountsQuery } from '../queries.js';
 import { useChangeFlash } from '../shell/hooks.js';
 import { Icon, navIcon } from '../shell/icons.js';
 import { avatarIndex, firstChar, packEntities, POLL, workbenchHref } from '../shell/model.js';
@@ -38,16 +39,17 @@ import {
   systemView,
   timeline,
   type TimelineRow,
+  todoCount,
   todoOrder,
   type TodoRow,
   waitingTodos,
 } from './model.js';
-import { draftCheckQuery, latestPaidQuery, recentAuditQuery, sopQuery, statusQuery } from './queries.js';
+import { draftCheckQuery, latestPaidQuery, oldestWaitingQuery, recentAuditQuery, sopQuery, statusQuery } from './queries.js';
 
 type AnyQuery = Pick<UseQueryResult<unknown>, 'isPending' | 'isError' | 'error' | 'refetch'>;
 
 /**
- * 与外壳共用的查询（会话计数、等人接手、各实体列表）：外壳启动时刚取过，总览的块晚一步挂上，默认的 staleTime 0 会让它们
+ * 与外壳共用的查询（会话计数、各实体列表）：外壳启动时刚取过，总览的块晚一步挂上，默认的 staleTime 0 会让它们
  * 各重取一遍。匿名访客的查询按 IP 限流（每分钟 60 次），不该白用。30 秒内的数据直接用，之后照常与外壳一起轮询
  */
 const SHARED = { ...POLL, staleTime: POLL.refetchInterval } as const;
@@ -158,6 +160,13 @@ function TodoLine({ row }: { row: TodoRow }) {
       </Link>
     );
   }
+  if (t.kind === 'conversations') {
+    return (
+      <Link to="/conversations" search={{ state: t.state }} className="ov-todo">
+        {body}
+      </Link>
+    );
+  }
   // 条目详情（/catalog/$kind/$code）在第 10 步；在那之前「去上架」「逐条检查」都打开这个实体的列表
   return (
     <Link to="/catalog/$kind" params={{ kind: catalogKind(t.entity) }} className="ov-todo">
@@ -184,7 +193,7 @@ function TodoSkeleton() {
 }
 
 function TodoBlock({ pack, editor, now }: { pack: IndustryPack; editor: boolean; now: number }) {
-  const waiting = useQuery({ ...waitingConversationsQuery, ...SHARED });
+  const waiting = useQuery({ ...oldestWaitingQuery, ...POLL });
   const sop = useQuery({ ...sopQuery, enabled: editor });
   const overview = sop.data && 'spec' in sop.data ? sop.data : null;
   const draft = overview?.draft ?? null;
@@ -193,7 +202,7 @@ function TodoBlock({ pack, editor, now }: { pack: IndustryPack; editor: boolean;
   const { loading, error, retry } = sourcesState([waiting, ...(editor ? [sop, ...(draft ? [check] : []), ...lists] : [])]);
 
   const rows = todoOrder(
-    waitingTodos(waiting.data?.items ?? [], pack, now, workbenchHref),
+    waitingTodos(waiting.data?.items ?? [], pack, now, workbenchHref, waiting.data?.total),
     editor && overview ? sopTodo(overview, check.data, pack) : null,
     editor ? catalogTodos(loaded, now) : [],
   );
@@ -202,7 +211,7 @@ function TodoBlock({ pack, editor, now }: { pack: IndustryPack; editor: boolean;
       <BlockHead
         id="ov-todos"
         title="需要你处理"
-        count={loading ? null : `${rows.length}项`}
+        count={loading ? null : `${todoCount(rows)}项`}
         link={<ConversationsLink>全部会话</ConversationsLink>}
       />
       {loading ? (
@@ -336,7 +345,7 @@ function KpiGrid({ kpis }: { kpis: readonly Kpi[] }) {
 
 function MemberKpis({ pack, editor, now }: { pack: IndustryPack; editor: boolean; now: number }) {
   const counts = useQuery({ ...conversationCountsQuery, ...SHARED });
-  const waiting = useQuery({ ...waitingConversationsQuery, ...SHARED });
+  const waiting = useQuery({ ...oldestWaitingQuery, ...POLL });
   const paid = useQuery({ ...latestPaidQuery, ...POLL });
   const { lists, loaded } = useEntityLists(pack, true);
   const { loading, error, retry } = sourcesState([counts, waiting, paid, ...lists]);

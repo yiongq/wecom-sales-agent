@@ -1,7 +1,8 @@
-// 总览自己的几个查询（spec「总览」的数据表）。会话计数、等人接手的首页、各实体列表与外壳共用 queries.ts 里的同一份缓存，
-// 这里不重复定义；话术概况的 queryKey 与话术页相同（['sop']），两边共用缓存，话术页保存、发布后作废它，总览跟着变
+// 总览自己的几个查询（spec「总览」的数据表）。会话计数、各实体列表与外壳共用 queries.ts 里的同一份缓存，这里不重复定义；
+// 等人接手要的是等得最久的那些，与铃铛的首页（最新的 20 个）不是同一页，另取。
+// 话术概况的 queryKey 与话术页相同（['sop']），两边共用缓存，话术页保存、发布后作废它，总览跟着变
 import { queryOptions } from '@tanstack/react-query';
-import type { AuditEntryView, AuditPage } from '../../../src/shared/console-api.js';
+import type { AuditEntryView, AuditPage, ConversationPage } from '../../../src/shared/console-api.js';
 import { auditActionsParam } from '../../../src/shared/ui-labels.js';
 import { api, unwrap } from '../api.js';
 import { enoughAudit } from './model.js';
@@ -23,6 +24,34 @@ export const draftCheckQuery = (draftId: string, rev: number) =>
 export const statusQuery = queryOptions({
   queryKey: ['status'] as const,
   queryFn: () => unwrap(api.status.$get()),
+});
+
+/** 「需要你处理」最多列几个等人接手的会话：接口一页的上限（ConvQuery 的 limit ≤ 100） */
+export const WAITING_PAGE = 100;
+
+/**
+ * 等人接手的会话里最后动静最早的一页（至多 100 个）；total 是等人接手的总数。
+ * 接口按最后动静从新到旧排，不给 limit 时只回最新的 20 个，所以要带上 limit；多于一页时等得最久的在最后一页，
+ * 按第一次拿到的总数改取最后一页。两次之间总数变了（有人转人工或成交），就按新的总数再取，至多再取 3 次
+ */
+export const oldestWaitingQuery = queryOptions({
+  queryKey: ['conversations', 'human', 'oldest'] as const,
+  queryFn: async (): Promise<ConversationPage> => {
+    const get = (offset: number): Promise<ConversationPage> =>
+      unwrap(
+        api.conversations.$get({
+          query: { state: 'human', limit: String(WAITING_PAGE), ...(offset ? { offset: String(offset) } : {}) },
+        }),
+      );
+    let offset = 0;
+    for (let i = 0; i < 3; i += 1) {
+      const page = await get(offset);
+      const last = Math.max(0, page.total - WAITING_PAGE);
+      if (last === offset) return page;
+      offset = last;
+    }
+    return get(offset);
+  },
 });
 
 /** 最近一个已成交的会话：「已成交」格的明细（会话标签和日期） */

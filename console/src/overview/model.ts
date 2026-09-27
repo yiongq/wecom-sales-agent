@@ -17,6 +17,7 @@ import type {
 } from '../../../src/shared/console-api.js';
 import { auditRuns, describeAudit, type AuditLookups, type AuditPart } from '../../../src/shared/audit-text.js';
 import { absoluteTime, clockTime, dateText, dayKey, dayTime, relativeTime } from '../../../src/shared/format.js';
+import { conversationState } from '../../../src/shared/conversation.js';
 import { checkItem, type CheckIssue, type EntityType, type IndustryPack, valueAt } from '../../../src/shared/pack.js';
 import { sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
 import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
@@ -68,6 +69,8 @@ export type TodoTarget =
   /** 新标签打开工作台（admin.html） */
   | { kind: 'workbench'; href: string }
   | { kind: 'sop' }
+  /** 会话列表的等人接手页签（「还有N个等人接手的会话」） */
+  | { kind: 'conversations'; state: 'human' }
   /** 这个实体的列表；详情路由在第 10 步，在那之前「去上架」也打开列表 */
   | { kind: 'catalog'; entity: string; code?: string };
 
@@ -82,19 +85,43 @@ export interface TodoRow {
   context: Segment[];
   action: string;
   target: TodoTarget;
+  /** 这一行算几项：「还有N个等人接手的会话」算 N 项，不写时算 1 项（「6条酒店草稿」也是 1 项） */
+  count?: number;
 }
+
+/** 区块头的「N项」 */
+export const todoCount = (rows: readonly TodoRow[]): number => rows.reduce((n, r) => n + (r.count ?? 1), 0);
 
 /**
  * 等人接手的会话：最后动静早的在前（设计系统 §10.0 修正 1：A01 26分钟前排在 F01 8分钟前前面）。
- * 上下文只写接口里有的：渠道、消息条数、「最后动静26分钟前」；今天没有转人工时间，不写「等了多久」
+ * 上下文只写接口里有的：渠道、消息条数、「最后动静26分钟前」；今天没有转人工时间，不写「等了多久」。
+ * rows 是最后动静最早的一页（oldestWaitingQuery），total 是等人接手的总数：没列出的写成一行「还有N个等人接手的会话」，
+ * 链到会话列表，不悄悄漏掉
  */
 export function waitingTodos(
   rows: readonly ConversationRow[],
   pack: IndustryPack,
   now: number,
   workbench: (id: string) => string,
+  total = rows.length,
 ): TodoRow[] {
-  return [...rows]
+  const hidden = total - rows.length;
+  const more: TodoRow[] =
+    hidden > 0
+      ? [
+          {
+            key: 'conv:more',
+            icon: { page: 'conversations' },
+            type: { status: 'human' },
+            title: `还有${hidden}个等人接手的会话`,
+            context: [{ text: `这里只列最后动静最早的${rows.length}个` }],
+            action: '查看全部',
+            target: { kind: 'conversations', state: 'human' },
+            count: hidden,
+          },
+        ]
+      : [];
+  const listed: TodoRow[] = [...rows]
     .sort((a, b) => byTime(a, b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .map((row) => {
       const channel = channelLabel(row.channel);
@@ -112,6 +139,7 @@ export function waitingTodos(
         target: { kind: 'workbench', href: workbench(row.id) },
       };
     });
+  return [...listed, ...more];
 }
 
 /** 话术节的中文名：行业包 sopSections 的 heading，前言写「前言」；包里没有这一节时用接口节表的标题 */
@@ -373,7 +401,9 @@ export function memberKpis(input: {
   const oldestFirst = [...input.waiting].sort(byTime);
   const times = oldestFirst.slice(0, TIMES_SHOWN).map((r) => relativeTime(r.updatedAt, now));
   const more = counts.byState.human > times.length && times.length ? `等${counts.byState.human}个` : '';
-  const terminal = pack.stages.filter((s) => s.terminal).map((s) => s.label);
+  // 口径跟着数字的定义走：数字是 conversationState 判成已成交的会话，只写它认作已成交的阶段名；
+  // 终态不是它认的那个 key 时（家装假包的「已付定金」）不写阶段名，写「已成交的会话」
+  const paidStages = pack.stages.filter((s) => conversationState({ stage: s.key, handedOver: false }) === 'paid').map((s) => s.label);
   const paid = input.latestPaid;
   return [
     {
@@ -396,7 +426,7 @@ export function memberKpis(input: {
       key: 'paid',
       label: '已成交',
       value: counts.byState.paid,
-      caption: [terminal.length ? `阶段到了「${terminal.join('、')}」的会话` : '已成交的会话'],
+      caption: [paidStages.length ? `阶段到了「${paidStages.join('、')}」的会话` : '已成交的会话'],
       breakdown: paid ? [...conversationLabel(paid, pack), dateText(paid.updatedAt, now)] : ['还没有成交的会话'],
       target: { kind: 'conversations', state: 'paid' },
     },

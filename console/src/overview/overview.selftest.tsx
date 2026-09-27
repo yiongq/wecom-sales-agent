@@ -7,7 +7,8 @@
 //    审计记录取够了没有；
 // 2. 在 DOM 里挂载（happy-dom，与渲染器自测共用 selftest-dom.ts）：真的 OverviewPage 加假的后台接口。所有者看到全部五块；
 //    某个接口 500 时只有用它的那一块写「没取到」（验收 10：/audit 500 只有「最近变更」出错）；坐席没有「最近变更」和草稿类待办，
-//    也不发这些请求；demo 匿名只有「在售」一格、只取产品库列表；审计按页往前取，一次导入不被截断；换一个行业包，
+//    也不发这些请求；demo 匿名只有「在售」一格、只取产品库列表；审计按页往前取，一次导入不被截断；等人接手多于接口的
+//    默认一页（20）乃至一整页（100）时，等得最久的照样列在最前、计数按总数；换一个行业包，
 //    实体、阶段、叫法都跟着换，请求的是那个包的 kind；阶段条和业务数链到带 state、stage 的会话列表（验收 10）。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/overview/overview.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
@@ -31,6 +32,7 @@ import type {
   Status,
 } from '../../../src/shared/console-api.js';
 import { auditRuns } from '../../../src/shared/audit-text.js';
+import { relativeTime } from '../../../src/shared/format.js';
 import type { EntityType, FieldDef, FieldType, IndustryPack } from '../../../src/shared/pack.js';
 import { conversationsSearch } from '../conversations-search.js';
 import { ConversationsPage } from '../pages/ConversationsPage.js';
@@ -50,6 +52,7 @@ import {
   stageRows,
   systemView,
   timeline,
+  todoCount,
   todoOrder,
   updatedWhen,
   waitingTodos,
@@ -315,6 +318,16 @@ eq(
 );
 eq('等人接手：新标签打开工作台', waiting[0]?.target, { kind: 'workbench', href: '/admin.html#s=wecom%3Acust_A01' });
 eq('认不出的渠道不写原码', waitingTodos([{ ...WAITING[0]!, channel: 'fax' }], TRAVEL, NOW, workbenchHref)[0]?.context.length, 2);
+{
+  // 那一页只列了等得最久的 2 个，另有 5 个：写成一行链到会话列表，算 5 项
+  const more = waitingTodos(WAITING, TRAVEL, NOW, workbenchHref, 7);
+  eq(
+    '等人接手没列全：末尾一行「还有N个」，链到等人接手页签',
+    more.slice(2).map((r) => [r.title, r.context, r.action, r.target, r.count]),
+    [['还有5个等人接手的会话', [{ text: '这里只列最后动静最早的2个' }], '查看全部', { kind: 'conversations', state: 'human' }, 5]],
+  );
+  eq('等人接手没列全：计数算上没列的', [todoCount(more), todoCount(waiting)], [7, 2]);
+}
 
 const sop = sopTodo(SOP, CHECK, TRAVEL);
 eq('话术草稿：改了哪几节、各差多少字', sop?.title, '改了2节：话术原则（+44字）、异议处理（+9字）');
@@ -430,6 +443,11 @@ eq(
   '需要你处理的顺序（验收 10）：A01、F01、话术草稿、线路草稿、6条酒店草稿',
   todoOrder(waiting, sop, catalog).map((r) => r.key),
   ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'sop', 'catalog:route:r-guizhou-5d', 'catalog:hotel'],
+);
+eq(
+  '「还有N个等人接手」排在等人接手的后面、话术草稿前面',
+  todoOrder(waitingTodos(WAITING, TRAVEL, NOW, workbenchHref, 3), sop, []).map((r) => r.key),
+  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'conv:more', 'sop'],
 );
 
 // 系统状态
@@ -554,6 +572,14 @@ eq(
     [anon.value, anon.breakdown, anon.caption],
     [20, null, ['线路20，销售助手只推荐这些']],
   );
+  // 已成交的数字是 conversationState 判成已成交的会话：口径只写它认作已成交的阶段，不照搬包里的终态
+  const paidCaption = (pack: IndustryPack) =>
+    memberKpis({ counts: COUNTS, waiting: [], latestPaid: null, catalog: [], pack, editor: false, now: NOW })[2]?.caption;
+  const deposit: IndustryPack = {
+    ...TRAVEL,
+    stages: [...TRAVEL.stages.filter((s) => !s.terminal), { key: 'deposit', label: '已付定金', terminal: true }],
+  };
+  eq('已成交的口径：终态不是已成交的那个阶段时，不写阶段名', paidCaption(deposit), ['已成交的会话']);
 }
 
 // 客户停在哪一步
@@ -656,6 +682,11 @@ interface Server {
   fail?: RegExp;
   /** 审计每页最多给几条（不看请求的 limit），用来测按页往前取 */
   auditPage?: number;
+  /** 等人接手的会话（默认 WAITING）与计数（默认 COUNTS） */
+  waiting?: ConversationRow[];
+  counts?: ConversationCounts;
+  /** 每次请求等人接手的会话之前调用：用来模拟两次请求之间有人转人工 */
+  onWaiting?: () => void;
 }
 let server: Server = { pack: TRAVEL, lists: {} };
 let requests: string[] = [];
@@ -666,8 +697,17 @@ function respond(method: string, url: URL): Response {
   const p = url.pathname.replace(/^\/api\/console/, '');
   const q = url.searchParams;
   if (server.fail?.test(`${method} ${p}`)) return json(500, { error: 'internal', detail: '故意的' });
-  if (method === 'GET' && p === '/conversations/counts') return json(200, COUNTS);
-  if (method === 'GET' && p === '/conversations' && q.get('state') === 'human') return json(200, { items: WAITING, total: 2 });
+  if (method === 'GET' && p === '/conversations/counts') return json(200, server.counts ?? COUNTS);
+  if (method === 'GET' && p === '/conversations' && q.get('state') === 'human') {
+    // 照接口：按 (updatedAt 倒序, id) 排，再 offset 分页；不给 limit 时一页 20 个
+    server.onWaiting?.();
+    const all = [...(server.waiting ?? WAITING)].sort(
+      (a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+    const limit = q.has('limit') ? Number(q.get('limit')) : 20;
+    const offset = q.has('offset') ? Number(q.get('offset')) : 0;
+    return json(200, { items: all.slice(offset, offset + limit), total: all.length });
+  }
   if (method === 'GET' && p === '/conversations' && q.get('state') === 'paid') return json(200, { items: [A02], total: 1 });
   if (method === 'GET' && p === '/conversations') {
     const quoted = q.get('state') === 'ai' && q.get('stage') === 'quote';
@@ -946,7 +986,8 @@ async function failing(fail: RegExp) {
   await m.unmount();
 }
 
-// 2.4b 外壳刚取过的数据（侧栏条目数、铃铛）总览不重取：匿名访客的查询按 IP 限流
+// 2.4b 外壳刚取过的数据（侧栏条目数、计数）总览不重取：匿名访客的查询按 IP 限流。
+// 铃铛那一页是最新的 20 个，总览要等得最久的那些，另取一次
 {
   server = { pack: TRAVEL, lists: SCENE };
   requests = [];
@@ -958,11 +999,78 @@ async function failing(fail: RegExp) {
   };
   const m = await mountOverview(member('owner'), fresh);
   eq(
-    '外壳刚取过的计数、等人接手与列表不重取',
+    '外壳刚取过的计数与列表不重取；等人接手只取一次最早的一页',
     requests.filter((r) => /\/catalog\/|\/conversations\/counts|state=human/.test(r)),
-    [],
+    ['GET /api/console/conversations?state=human&limit=100'],
   );
   eq('用的是缓存里的数', [m.texts('.ov-kpi-value'), m.texts('.ov-todo-title').length], [['13', '2', '1', '43'], 5]);
+  await m.unmount();
+}
+
+// 2.4c 等人接手多于接口的默认一页：接口不给 limit 时只回最新的 20 个，等得最久的会被漏掉
+/** n 个更早转人工的会话：W01 在 1.5 小时前，之后每个再早 1 小时，Wn 最早 */
+const olderWaiting = (n: number): ConversationRow[] =>
+  Array.from({ length: n }, (_, i) =>
+    conv(`W${String(i + 1).padStart(3, '0')}`, 'handoff', true, 3, new Date(NOW - 30 * MIN - (i + 1) * 60 * MIN).toISOString()),
+  );
+const waitingTitles = (titles: string[]): string[] => titles.filter((t) => t.startsWith('企微客户'));
+const humanRequests = (): string[] => requests.filter((r) => r.includes('state=human'));
+{
+  const many = [...WAITING, ...olderWaiting(25)];
+  const byState = { ai: 10, human: 27, paid: 1 };
+  server = { pack: TRAVEL, lists: SCENE, waiting: many, counts: { ...COUNTS, total: 38, byState } };
+  requests = [];
+  const m = await mountOverview(member('owner'));
+  const titles = waitingTitles(m.texts('.ov-todo-title'));
+  eq('等人接手 27 个：计数按总数（27 个会话、话术草稿、2 行待上架）', m.texts('.ov-count')[0], '30项');
+  eq(
+    '等人接手 27 个：等得最久的在最前，一个不漏',
+    [titles[0], titles.at(-1), titles.length, m.$('.ov-todo').length],
+    ['企微客户·W025', '企微客户·F01', 27, 30],
+  );
+  const oldest = [25, 24, 23].map((i) => relativeTime(many[i + 1]!.updatedAt, NOW));
+  eq('等人接手 27 个：「等人接手」格写最早的三个', m.texts('.ov-kpi-detail')[1], `最后动静：${oldest.join('、')}等27个`);
+  eq('等人接手 27 个：一页取完，带上 limit', humanRequests(), ['GET /api/console/conversations?state=human&limit=100']);
+  await m.unmount();
+}
+{
+  // 多于一整页（100）：取最后一页（等得最久的 100 个），其余写成一行「还有5个」链到会话列表
+  const lots = [...WAITING, ...olderWaiting(103)];
+  server = { pack: TRAVEL, lists: SCENE, waiting: lots, counts: { ...COUNTS, total: 116, byState: { ai: 10, human: 105, paid: 1 } } };
+  requests = [];
+  const m = await mountOverview(member('owner'));
+  const titles = waitingTitles(m.texts('.ov-todo-title'));
+  eq('等人接手 105 个：计数按总数', m.texts('.ov-count')[0], '108项');
+  eq('等人接手 105 个：列出等得最久的 100 个', [titles[0], titles.at(-1), titles.length], ['企微客户·W103', '企微客户·W004', 100]);
+  const more = m.$('a.ov-todo').find((a) => a.textContent?.includes('还有'));
+  eq(
+    '等人接手 105 个：没列的写成一行，链到等人接手页签',
+    [more?.querySelector('.ov-todo-title')?.textContent, more?.getAttribute('href'), more?.getAttribute('target')],
+    ['还有5个等人接手的会话', '/console/conversations?state=human', null],
+  );
+  eq('等人接手 105 个：先取一页拿到总数，再取最后一页', humanRequests(), [
+    'GET /api/console/conversations?state=human&limit=100',
+    'GET /api/console/conversations?state=human&limit=100&offset=5',
+  ]);
+  await m.unmount();
+}
+{
+  // 两次请求之间又有人转人工：按新的总数再取一次最后一页，等得最久的不被挤掉
+  const lots = [...WAITING, ...olderWaiting(103)];
+  let calls = 0;
+  const onWaiting = (): void => {
+    calls += 1;
+    if (calls === 2) lots.push(conv('N01', 'handoff', true, 1, new Date(NOW - MIN).toISOString()));
+  };
+  server = { pack: TRAVEL, lists: SCENE, waiting: lots, onWaiting };
+  requests = [];
+  const m = await mountOverview(member('owner'));
+  const titles = waitingTitles(m.texts('.ov-todo-title'));
+  eq(
+    '总数在两次请求之间变了：按新的总数重取',
+    [titles[0], titles.length, m.texts('.ov-count')[0], humanRequests().length],
+    ['企微客户·W103', 100, '109项', 3],
+  );
   await m.unmount();
 }
 
@@ -1001,7 +1109,8 @@ async function failing(fail: RegExp) {
     [m.texts('.ov-kpi-label')[3], m.texts('.ov-kpi-caption')[3], m.texts('.ov-kpi-detail')[3]],
     ['在售方案', '装修套餐1·主材1，销售助手只推荐这些', '另有草稿1条：装修套餐1'],
   );
-  eq('别的行业包：已成交的口径取终态阶段名', m.texts('.ov-kpi-caption')[2], '阶段到了「已付定金」的会话');
+  // 家装包的终态「已付定金」不是 conversationState 认的已成交（它只认 key 为 paid 的阶段），口径不写这个名字（plan「Open」）
+  eq('别的行业包：终态不算已成交时，已成交的口径不写阶段名', m.texts('.ov-kpi-caption')[2], '已成交的会话');
   eq('别的行业包：阶段条', m.texts('.ov-stage-label'), ['咨询', '量房', '方案', '其他']);
   eq('别的行业包：系统状态的产品库叫法', m.texts('.ov-system-line'), ['一切正常·线上话术v2·套餐与主材改动已生效']);
   eq('别的行业包：请求这个包的实体', [...new Set(requests.filter((r) => r.includes('/catalog/')))].sort(), [
