@@ -7,7 +7,7 @@
 // - 相对线上改过的段落，左侧沟槽里一根主色竖条；新加的文字 accent-bg 底。只动空白（行尾空格、空行）的改动不标：
 //   服务端保存时本来就会规范化掉它们（canonicalBody），目录与额度条也不算它们改过。
 // - 不支持 text-spacing-trim 的浏览器（第 1.3 步的回退），按 haltIndices 给要挤的标点加 .halt，在「看得见的字」上算：
-//   藏起来的「- 」「**」不算，芯片的中文名算一个字。
+//   藏起来的「- 」「**」不算。
 // 装饰只在这一节的正文上算（一节几千字），每次改动或移动光标整节重算；输入法组字时只平移、不重算。
 import { diff } from '@codemirror/merge';
 import { Compartment, type EditorState, type Extension, Facet, type Range, StateEffect, StateField } from '@codemirror/state';
@@ -214,9 +214,8 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
     if (classes.length) deco.push(Decoration.line({ class: classes.join(' ') }).range(line.from));
     prevBlank = text.trim() === '';
 
-    // 看得见的字里藏掉的下标（行内），和芯片开头的下标（前面画着中文名，挤压时算一个字）
+    // 看得见的字里藏掉的下标（行内）
     const hidden = new Set<number>();
-    const chipStart = new Set<number>();
     const hide = (from: number, to: number): void => {
       const r = HIDE.range(at(from), at(to));
       deco.push(r);
@@ -237,7 +236,6 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
 
     for (const [from, to, label] of chipRanges(text, vocab)) {
       outer.push(chipMark(label).range(at(from), at(to)));
-      chipStart.add(from);
     }
 
     for (let i = shape.hide; i < text.length; i++) {
@@ -249,14 +247,11 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
     }
 
     if (halt) {
-      // 看得见的字串：藏掉的不算，芯片的中文名当一个普通字（W），图标本来就不是标点
+      // 在看得见的字上算：藏掉的「- 」「**」不算。芯片的中文名画在原名前面，原名以字母开头，挤压只看相邻的两个标点，
+      // 它夹在中间与否结果都一样；图标本来就不是标点
       let visible = '';
       const origin: number[] = [];
       for (let i = 0; i < text.length; i++) {
-        if (chipStart.has(i)) {
-          visible += 'W';
-          origin.push(-1);
-        }
         if (hidden.has(i)) continue;
         visible += text[i];
         origin.push(i);

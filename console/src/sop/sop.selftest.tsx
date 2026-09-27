@@ -34,6 +34,7 @@ import type { AnonSopOverview, SectionSpecView, SopOverview, SopSectionText, Sop
 import type { IndustryPack, SopSectionDef } from '../../../src/shared/pack.js';
 import { editableChars } from '../../../src/shared/sop-sections.js';
 import { SopPage } from '../pages/SopPage.js';
+import { SectionDiff } from '../SectionDiff.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { LEAVING_PAGE } from '../parts/UnsavedGuard.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
@@ -1212,20 +1213,28 @@ const historyLength = (m: PageBox): number => m.router.history.length;
 {
   const member = await mount(<SopSkeleton sections={11} quota filter />);
   eq(
-    '成员的骨架：额度条、分段控件、11 行',
+    '成员的骨架：额度条、分段控件、11 行；中栏有节标题和说明行',
     [
       !!member.box.querySelector('.sop-skel-quota'),
       !!member.box.querySelector('.sop-skel-filter'),
       all(member.box, '.sop-skel-row').length,
+      !!member.box.querySelector('.sop-skel-title'),
+      !!member.box.querySelector('.sop-skel-meta'),
     ],
-    [true, true, 11],
+    [true, true, 11, true, true],
   );
   await member.unmount();
   const anon = await mount(<SopSkeleton sections={9} quota={false} filter={false} />);
   eq(
-    '匿名的骨架：没有额度条和分段控件，9 行',
-    [!!anon.box.querySelector('.sop-skel-quota'), !!anon.box.querySelector('.sop-skel-filter'), all(anon.box, '.sop-skel-row').length],
-    [false, false, 9],
+    '匿名的骨架：没有额度条和分段控件，9 行；中栏有节标题、没有说明行',
+    [
+      !!anon.box.querySelector('.sop-skel-quota'),
+      !!anon.box.querySelector('.sop-skel-filter'),
+      all(anon.box, '.sop-skel-row').length,
+      !!anon.box.querySelector('.sop-skel-title'),
+      !!anon.box.querySelector('.sop-skel-meta'),
+    ],
+    [false, false, 9, true, false],
   );
   await anon.unmount();
   // 整页在 /sop 还没回来时按身份画骨架
@@ -1442,6 +1451,15 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
     [...used].filter((k) => !Object.hasOwn(CM_PHRASES, k)),
     [],
   );
+  // 差异视图（01 的逐节对比，第 6.3 步换掉以前）也带着这份文案：没改的长段落折叠成「N行没有改动」
+  const same = Array.from({ length: 20 }, (_, i) => `第${i + 1}行`).join('\n');
+  const d = await mount(<SectionDiff before={`${same}\n旧的一行\n`} after={`${same}\n新的一行\n`} beforeLabel="线上" afterLabel="草稿" />);
+  eq(
+    '差异视图：折叠起来的行写中文',
+    all(d.box, '.cm-collapsedLines').map((e) => text(e)),
+    ['18行没有改动', '18行没有改动'],
+  );
+  await d.unmount();
   const st = EditorState.create({ extensions: [cmPhrases] });
   eq('折叠起来的行数：「3行没有改动」', st.phrase('$ unchanged lines', 3), '3行没有改动');
   eq('逐块合并的按钮', st.phrase('Revert this chunk'), '采用线上的写法');
@@ -1507,6 +1525,12 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
   // 用户输入回调 onChange；外面换正文不回调
   await act(async () => view.dispatch({ changes: { from: view.state.doc.length, insert: '补一句' }, userEvent: 'input.type' }));
   eq('用户输入：回调一次，是新的正文', edits, [`${DOC}补一句`]);
+  eq(
+    '打字以后：改动标记跟着重算',
+    all(m.box, '.sop-ins').map((e) => e.textContent),
+    ['，结果里带 ', 'payUrl', ' 的原样发', '补一句'],
+  );
+  eq('编辑器带着中文的内置文案', view.state.phrase('$ unchanged lines', 2), '2行没有改动');
   await m.render(el({ vocabulary: VOCAB, value: `${DOC}补一句` }));
   await m.render(el({ vocabulary: VOCAB, value: '换了一节的正文\n' }));
   eq('外面换正文：编辑器跟着换，不回调', [view.state.doc.toString(), edits.length], ['换了一节的正文\n', 1]);
