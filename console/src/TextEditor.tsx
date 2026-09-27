@@ -33,6 +33,8 @@ export function TextEditor(props: { value: string; onChange?: (value: string) =>
           EditorView.lineWrapping,
           EditorState.readOnly.of(!!props.readOnly),
           EditorView.editable.of(!props.readOnly),
+          // 只读时 CodeMirror 的正文不可聚焦；加进 Tab 顺序，键盘也能进来读、选中复制（话术目录按 Enter 进的就是它）
+          ...(props.readOnly ? [EditorView.contentAttributes.of({ tabindex: '0' })] : []),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((t) => t.annotation(external))) onChange.current?.(u.state.doc.toString());
           }),

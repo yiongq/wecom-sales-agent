@@ -1,0 +1,340 @@
+/*
+ * 销售话术页（spec「销售话术（B、C 页）」，设计系统 §6.2 与 B 页）。颜色一律取 brand.css 的变量，这里不新增变量。
+ * 由 pages/sop.lazy.tsx 引入，随话术页的块下载。
+ */
+
+/* ---------------- 额度条（§6.2）：页头下 20 通栏；左侧标签宽 560，右侧条宽 720，中间 32；窄了先压条，<1280 上下排 ---------------- */
+.sop-quota {
+  display: grid;
+  grid-template-columns: minmax(0, 560px) minmax(0, 720px);
+  justify-content: space-between;
+  column-gap: 32px;
+  margin-bottom: 24px;
+}
+@media (max-width: 1279px) {
+  .sop-quota {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 8px;
+  }
+}
+.sop-quota-text {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-quota-num {
+  font-weight: 500;
+  color: var(--text);
+}
+/* ≥95% 文字和图标换成 warning，>100% 换成 danger（数字一起换） */
+.sop-quota.is-warning .sop-quota-line,
+.sop-quota.is-warning .sop-quota-num {
+  color: var(--warning);
+}
+.sop-quota.is-warning .sop-quota-icon {
+  color: var(--warning-icon);
+}
+.sop-quota.is-danger .sop-quota-line,
+.sop-quota.is-danger .sop-quota-num,
+.sop-quota.is-danger .sop-quota-icon {
+  color: var(--danger);
+}
+.sop-quota-icon {
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+/* 图例：色块 12×6、圆角 3，与文字间隔 6，项间隔 16 */
+.sop-quota-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+  margin-top: 4px;
+}
+.sop-quota-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sop-quota-swatch {
+  width: 12px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--quota-off);
+}
+.sop-quota-swatch.is-changed {
+  background: var(--accent);
+}
+/* 条：高 6 全圆角，--month-off 底；每个可编辑节一段，段后 2px --panel 缝；刻度 1×12 text-2，下方 13 text-3 的字 */
+.sop-quota-bar {
+  position: relative;
+  height: 44px;
+  min-width: 0;
+}
+.sop-quota-track {
+  position: absolute;
+  top: 7px;
+  right: 0;
+  left: 0;
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--month-off);
+}
+.sop-quota-track > span {
+  flex: none;
+  box-sizing: border-box;
+  border-right: 2px solid var(--panel);
+  background: var(--quota-off);
+}
+.sop-quota-track > span.is-changed {
+  background: var(--accent);
+}
+.sop-quota-tick {
+  position: absolute;
+  top: 4px;
+  width: 1px;
+  height: 12px;
+  background: var(--text-2);
+}
+.sop-quota-tick-label {
+  position: absolute;
+  top: 20px;
+  width: 32px;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* 额度条与三栏之间的提醒（出错、检查结果、冲突）：第 6、8 步挪走以前放在这里 */
+.sop-notices {
+  display: flex;
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+/* ---------------- 三栏（B 页）：目录 264，间隔 32，其余给编辑器；<1280 目录换成编辑器上方的下拉 ---------------- */
+.sop-body {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  column-gap: 32px;
+  align-items: start;
+}
+.sop-body.is-narrow {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 16px;
+}
+.sop-editor {
+  min-width: 0;
+}
+.sop-after {
+  display: flex;
+  width: 100%;
+  margin-top: 32px;
+}
+
+/* ---------------- 目录（B 页左栏） ---------------- */
+.sop-toc {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* 分段控件：三段等宽，每段写名字和 text-3 的计数；选中段 --thumb 底加 1px --control-border 的环（§5.4，≥3:1） */
+.sop-toc-filter .ant-segmented-item-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sop-toc-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.sop-toc-filter-n {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.sop-toc-filter .ant-segmented-item-selected,
+.sop-toc-filter .ant-segmented-thumb {
+  box-shadow: 0 0 0 1px var(--control-border);
+}
+.sop-toc-filter .ant-segmented-item-selected .sop-toc-filter-label {
+  font-weight: 500;
+}
+.sop-toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+/* 一行：最小高 40，内边距 9 8，节名允许两行；当前节 --selected 底，无竖条 */
+.sop-toc-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 9px 8px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-toc-row:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+.sop-toc-row[aria-current='page'] {
+  background: var(--selected);
+}
+/* 列表里的行挨得近，焦点框往里收 2（§3、§5.20） */
+.sop-toc-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sop-toc-lock {
+  display: flex;
+  flex: none;
+  align-items: center;
+  width: 14px;
+  height: 22px;
+  color: var(--text-3);
+}
+.sop-toc-main {
+  flex: 1;
+  min-width: 0;
+}
+.sop-toc-name {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.is-locked .sop-toc-name {
+  color: var(--text-2);
+}
+.sop-toc-row[aria-current='page'] .sop-toc-name {
+  font-weight: 500;
+}
+.sop-toc-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 0 2px 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.sop-toc-issue {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.sop-toc-count {
+  flex: none;
+  margin-top: 1px;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+.is-changed .sop-toc-count {
+  font-weight: 500;
+  color: var(--accent-text);
+}
+.sop-toc-empty {
+  margin: 12px 0 0;
+  padding: 9px 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 底部说明：一条分隔线，下面 13 text-2，前置 lock */
+.sop-toc-note {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 12px 8px 0;
+  box-shadow: inset 0 1px 0 var(--divider);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-toc-note > svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+/* ---------------- 窄屏的下拉 ---------------- */
+.sop-toc-select {
+  width: 100%;
+}
+.sop-toc-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sop-toc-option .sop-toc-name {
+  flex: 1;
+  min-width: 0;
+  -webkit-line-clamp: 1;
+}
+.sop-toc-option .sop-toc-count {
+  margin-top: 0;
+}
+/* 下拉底部的锁的说明：上面一条分隔线，与选项同样左右留 8 */
+.ant-select-dropdown .sop-toc-note {
+  margin: 4px 0 0;
+  padding: 8px 8px 4px;
+}
+
+/* ---------------- 加载时的骨架：与成品同尺寸 ---------------- */
+/* 页头的状态句那一行先占着（看不见），骨架从成品的位置开始 */
+.sop-status-pending {
+  display: inline-block;
+  height: 20px;
+}
+.sop-skel-quota {
+  height: 44px;
+}
+.sop-skel-quota > div:first-child {
+  padding-top: 3px;
+}
+.sop-skel-track {
+  height: 6px;
+  margin-top: 7px;
+  border-radius: var(--r-full);
+}
+.sop-skel-filter {
+  height: 32px;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+}
+.sop-skel-row {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 8px 0 30px;
+}
+.sop-skel-select {
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+}
+.sop-skel-editor {
+  height: 480px;
+  border-radius: var(--r-lg);
+  background: var(--subtle);
+}

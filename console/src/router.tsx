@@ -50,7 +50,11 @@ const index = createRoute({
     throw redirect({ to: '/sop' });
   },
 });
-const sop = createRoute({ getParentRoute: () => root, path: '/sop' }).lazy(() => import('./pages/sop.lazy.js').then((m) => m.Route));
+// 话术页选中的节（spec 的路由表）：不认识的 key 由页面退回默认节
+const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
+const sop = createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch }).lazy(() =>
+  import('./pages/sop.lazy.js').then((m) => m.Route),
+);
 const catalog = createRoute({
   getParentRoute: () => root,
   path: '/catalog/$kind',
