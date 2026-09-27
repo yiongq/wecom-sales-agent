@@ -9,19 +9,28 @@
 //    点击与带修饰键的点击、分段筛选、锁定原因的 Tooltip；额度条的文字、段宽、刻度与颜色；窄屏的下拉。
 // 6. 逐字重渲不碰弹层：打字时目录只重渲字数变了的那一行，窄屏下拉不重渲，关着的危险确认不挂 Portal
 //    （这几处重渲会让 @rc-component/portal 在 effect 里 setState，快速连按时 React 报 #185，见 sop/Directory.tsx 文件头）。
+// 7. 整页的接线：/sop 挂在真的路由上（内存里的地址栏），接口的数据预置在 QueryClient 里、不发请求。URL 的 section 选节，
+//    方向键不进浏览历史、点击进；换节不弹未保存保护、去别的页弹；打字以后额度条跟着变；匿名的锁取自行业包；
+//    Enter 以后焦点在编辑器正文上（只读节也一样）；加载骨架按身份画不画分段控件。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/sop/sop.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
+import './selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
+import { EditorView } from '@codemirror/view';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { act, type ReactElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { SectionSpecView, SopSectionText } from '../../../src/shared/console-api.js';
-import type { SopSectionDef } from '../../../src/shared/pack.js';
+import type { AnonSopOverview, SectionSpecView, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
+import type { IndustryPack, SopSectionDef } from '../../../src/shared/pack.js';
 import { editableChars } from '../../../src/shared/sop-sections.js';
+import { SopPage } from '../pages/SopPage.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { LEAVING_PAGE } from '../parts/UnsavedGuard.js';
+import { VIEWER_KEY, type Viewer } from '../viewer.js';
 import { Directory, DirectorySelect, type SelectVia } from './Directory.js';
 import {
   anonOutline,
@@ -45,6 +54,7 @@ import {
   stepSection,
 } from './outline.js';
 import { QuotaBar } from './QuotaBar.js';
+import { SopSkeleton } from './SopSkeleton.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -898,10 +908,21 @@ const hrefFor = (k: string): string => `/console/sop?section=${k}`;
   eq('打字前后「话术原则」都算改过、字数变了', [rows[3]!.changed, more[3]!.changed, more[3]!.chars], [true, true, 960]);
   await m.render(sel(more));
   check('打字：下拉不重渲', props() === p0);
-  await m.render(sel(rows.map((r) => (r.key === 'preamble' ? { ...r, changed: true, delta: 1, chars: r.chars + 1 } : r))));
+  const preChanged = rows.map((r) => (r.key === 'preamble' ? { ...r, changed: true, delta: 1, chars: r.chars + 1 } : r));
+  await m.render(sel(preChanged));
   check('有一节变成「改过」：下拉重渲', props() !== p0);
   const pre = all<HTMLElement>(document.body, '.ant-select-item-option').find((o) => text(o).startsWith('前言'));
   check('选项里这一节带上圆点', !!pre?.querySelector('.sop-toc-dot'));
+  // 检查以后「话术原则」有 1 个问题：下拉跟着重渲，选项与目录一样写问题数
+  const p1 = props();
+  await m.render(sel(preChanged.map((r) => (r.key === 'tone' ? { ...r, issues: 1 } : r))));
+  check('问题数变了：下拉重渲', props() !== p1);
+  const option = (name: string) => all<HTMLElement>(document.body, '.ant-select-item-option').find((o) => text(o).startsWith(name));
+  eq(
+    '选项里写问题数，没有问题的不写',
+    [text(option('话术原则')?.querySelector('.sop-toc-issue')), option('异议处理')?.querySelector('.sop-toc-issue') ?? null],
+    ['1个问题', null],
+  );
   await m.unmount();
 }
 
@@ -920,6 +941,278 @@ const hrefFor = (k: string): string => `/console/sop?section=${k}`;
   eq('打开：有 Portal', hasDescendantNamed(host(), 'Portal'), true);
   await m.unmount();
 }
+
+// ---------------- 7. 整页的接线 ----------------
+// 路由照 router.tsx 的 /sop（basepath /console，search 只有 section），另有一页 /audit 当「别的页」。
+// 接口的数据预置在 QueryClient 里（staleTime 无限，不会再取）；真发了请求就记下来、永远不回（加载中的骨架靠它停在加载中）。
+
+/** 同 router.tsx 的 sopSearch：只收字符串的 section */
+const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
+
+const requests: string[] = [];
+globalThis.fetch = ((input: unknown) => {
+  requests.push(String(input));
+  return new Promise<never>(() => undefined);
+}) as typeof fetch;
+
+/** 页面只用到行业包的话术节；其余照类型填空 */
+const packOf = (sopSections: readonly SopSectionDef[]): IndustryPack => ({
+  id: 'fixture',
+  name: '夹具',
+  vocabulary: { customer: '客户', advisor: '顾问', productNoun: '产品', tools: {}, sopFields: {} },
+  entities: [],
+  stages: [],
+  sopSections: [...sopSections],
+  nav: { catalogGroup: '产品库', entities: [] },
+});
+
+const version = (versionNo: number | null, secs: SopSectionText[], extra: Partial<SopVersion> = {}): SopVersion => ({
+  id: versionNo === null ? 'draft' : `v${versionNo}`,
+  versionNo,
+  status: versionNo === null ? 'draft' : 'published',
+  source: 'console',
+  sections: secs,
+  basedOn: null,
+  rev: 0,
+  promptHash: 'a'.repeat(64),
+  toolsHash: null,
+  prefixHash: null,
+  sopHash: null,
+  changeNote: null,
+  createdByName: '老板',
+  createdAt: '2026-09-25T10:30:00Z',
+  publishedByName: '老板',
+  publishedAt: '2026-09-25T10:30:00Z',
+  ...extra,
+});
+const V2 = version(2, PUBLISHED);
+const MEMBER_SOP: SopOverview = {
+  published: V2,
+  draft: { ...version(null, DRAFT, { basedOn: 'v2', rev: 4, publishedAt: null, publishedByName: null }), stale: false },
+  spec: SPEC,
+  budget: { chars: 2303, limit: LIMIT },
+};
+const OWNER: Viewer = {
+  kind: 'member',
+  me: { userId: 'u1', displayName: '老板', role: 'owner', csrf: 'c1', tenantSlug: 't', tenantName: '云途' },
+  pack: packOf(TRAVEL),
+};
+
+interface PageBox {
+  box: HTMLElement;
+  router: ReturnType<typeof createRouter>;
+  section(): string | undefined;
+  pathname(): string;
+  unmount(): Promise<void>;
+}
+
+/** 挂整页：url 是地址栏里的原样（带 /console） */
+async function mountPage(url: string, viewer: Viewer, sop: SopOverview | AnonSopOverview | null): Promise<PageBox> {
+  const root = createRootRoute({ component: Outlet });
+  const sopRoute = createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch, component: SopPage });
+  const other = createRoute({ getParentRoute: () => root, path: '/audit', component: () => <p className="other-page">别的页</p> });
+  const router = createRouter({
+    routeTree: root.addChildren([sopRoute, other]),
+    history: createMemoryHistory({ initialEntries: [url] }),
+    basepath: '/console',
+  });
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  qc.setQueryData(VIEWER_KEY, viewer);
+  if (sop) qc.setQueryData(['sop'], sop);
+  qc.setQueryData(['sop-versions'], { pages: [{ items: [V2] }], pageParams: [undefined] });
+  const box = document.createElement('div');
+  document.body.append(box);
+  const r = createRoot(box);
+  await act(async () =>
+    r.render(
+      <QueryClientProvider client={qc}>
+        <RouterProvider router={router as never} />
+      </QueryClientProvider>,
+    ),
+  );
+  await until(() => box.querySelector('.sop-editor .cm-content, .sop-skel-editor') !== null);
+  return {
+    box,
+    router: router as never,
+    section: () => (router.state.location.search as { section?: string }).section,
+    pathname: () => router.state.location.pathname,
+    async unmount() {
+      await act(async () => r.unmount());
+      box.remove();
+      qc.clear();
+    },
+  };
+}
+
+/** 等一会儿，其间的定时器（Tooltip 的显示、隐藏）都在 act 里跑 */
+const rest = (ms: number): Promise<void> => act(async () => void (await new Promise((r) => setTimeout(r, ms))));
+
+/** 等到条件成立（路由换地址、编辑器重建都要几个回合）；等不到就算了，由后面的断言报 */
+async function until(cond: () => boolean, rounds = 40): Promise<void> {
+  for (let i = 0; i < rounds && !cond(); i++) await settle();
+}
+
+const rowIn = (m: PageBox, k: string): HTMLAnchorElement | undefined =>
+  all<HTMLAnchorElement>(m.box, 'a.sop-toc-row').find((a) => a.dataset.key === k);
+const currentRow = (m: PageBox): string | undefined => m.box.querySelector<HTMLElement>('a.sop-toc-row[aria-current="page"]')?.dataset.key;
+const editorText = (m: PageBox): string | undefined => {
+  const el = m.box.querySelector<HTMLElement>('.sop-editor .cm-content');
+  return el ? EditorView.findFromDOM(el)?.state.doc.toString() : undefined;
+};
+const bodyIn = (secs: readonly SopSectionText[], k: string): string => {
+  const def = TRAVEL.find((d) => d.key === k)!;
+  const text = secs.find((x) => x.key === k)!.text;
+  return def.heading === null ? text : text.slice(`## ${def.heading}\n\n`.length);
+};
+const quotaNum = (m: PageBox): string => text(m.box.querySelector('.sop-quota-num'));
+const guardOpen = (): boolean => all(document.body, '.ant-modal-title').some((t) => text(t) === '有改动还没保存');
+const historyLength = (m: PageBox): number => m.router.history.length;
+
+// 7.1 URL 的 section 选节；不认得的退回默认节
+{
+  const m = await mountPage('/console/sop?section=objections', OWNER, MEMBER_SOP);
+  eq('?section=objections：目录选中异议处理', currentRow(m), 'objections');
+  eq('?section=objections：编辑器里是异议处理的正文', editorText(m), bodyIn(DRAFT, 'objections'));
+  await m.unmount();
+  const n = await mountPage('/console/sop?section=nope', OWNER, MEMBER_SOP);
+  eq('?section=nope：退回默认节（第一个可编辑节）', [currentRow(n), editorText(n)], ['preamble', bodyIn(DRAFT, 'preamble')]);
+  await n.unmount();
+}
+
+// 7.2 方向键换节不进浏览历史，点击进；后退回到点之前的节
+{
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP);
+  const len = historyLength(m);
+  await act(async () => rowIn(m, 'tone')!.focus());
+  await key(rowIn(m, 'tone'), 'ArrowDown');
+  await until(() => m.section() === 'quote-discipline');
+  eq('↓：地址换成下一节，浏览历史不加一条', [m.section(), historyLength(m)], ['quote-discipline', len]);
+  eq('↓：目录与编辑器跟着换', [currentRow(m), editorText(m)], ['quote-discipline', bodyIn(DRAFT, 'quote-discipline')]);
+  await clickEv(rowIn(m, 'objections'));
+  await until(() => m.section() === 'objections');
+  eq('点一节：地址换成这一节，浏览历史加一条', [m.section(), historyLength(m)], ['objections', len + 1]);
+  await act(async () => m.router.history.back());
+  await until(() => m.section() === 'quote-discipline');
+  eq('后退：回到点之前的节', currentRow(m), 'quote-discipline');
+  await m.unmount();
+}
+
+// 7.3 打字：额度条与目录跟着变；换节不弹未保存保护、改动还在；去别的页弹，「留下」后留在原页
+{
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP);
+  eq('打字前：额度条是草稿的字数', quotaNum(m), '2,303 / 2,658');
+  const view = EditorView.findFromDOM(m.box.querySelector<HTMLElement>('.sop-editor .cm-content')!)!;
+  // 在节末的空行上打两个字：存下来是 +4（规范化以后结尾补一个空行）
+  await act(async () => view.dispatch({ changes: { from: view.state.doc.length, insert: '测试' }, userEvent: 'input.type' }));
+  await settle();
+  eq('打字以后：额度条按存下来的字数算', quotaNum(m), '2,307 / 2,658');
+  eq('打字以后：目录这一行的字数', text(rowIn(m, 'tone')?.querySelector('.sop-toc-count')), '958（+48）');
+  await clickEv(rowIn(m, 'objections'));
+  await until(() => m.section() === 'objections');
+  eq('有改动时换节：不弹未保存保护，换过去了', [guardOpen(), m.section()], [false, 'objections']);
+  eq('换节以后改动还在，额度照算', quotaNum(m), '2,307 / 2,658');
+  // 被拦下、又选了「留下」的跳转不会完成，不等它
+  await act(async () => void m.router.navigate({ to: '/audit' } as never));
+  await until(() => guardOpen());
+  eq('去别的页：弹未保存保护，地址不动', [guardOpen(), m.pathname()], [true, '/sop']);
+  const stay = all<HTMLButtonElement>(document.body, '.ant-modal button').find((b) => text(b) === '留下');
+  await clickEv(stay);
+  await until(() => !guardOpen());
+  eq('「留下」：还在话术页，改动还在', [m.pathname(), quotaNum(m)], ['/sop', '2,307 / 2,658']);
+  await m.unmount();
+}
+
+// 7.4 Enter 进编辑器：当前节、还不是当前节的、只读的固定规则节
+{
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP);
+  const cm = (): HTMLElement | null => m.box.querySelector<HTMLElement>('.sop-editor .cm-content');
+  await act(async () => rowIn(m, 'tone')!.focus());
+  await key(rowIn(m, 'tone'), 'Enter');
+  await settle();
+  check('当前节上按 Enter：焦点在编辑器正文上', document.activeElement === cm() && cm() !== null);
+  // 还不是当前节的：先换节，编辑器按新的节重建以后再聚焦
+  await key(rowIn(m, 'stages'), 'Enter');
+  await until(() => m.section() === 'stages' && document.activeElement === cm());
+  eq('别的节上按 Enter：换到那一节', m.section(), 'stages');
+  check('别的节（固定规则，只读）：焦点在它的正文上', document.activeElement === cm() && cm()?.getAttribute('contenteditable') === 'false');
+  check('只读的正文在 Tab 顺序里', cm()?.tabIndex === 0, String(cm()?.getAttribute('tabindex')));
+  // 只读节是当前节时再按 Enter
+  // 带锁的行聚焦时出 Tooltip，离开时收起：两段定时器都等完
+  await act(async () => rowIn(m, 'stages')!.focus());
+  await rest(200);
+  await key(rowIn(m, 'stages'), 'Enter');
+  await rest(300);
+  check('固定规则节是当前节时按 Enter：焦点在正文上', document.activeElement === cm());
+  await m.unmount();
+}
+
+// 7.5 匿名：锁、标题取行业包（家装整装假包的节表），只读正文照样能 Enter 进去
+{
+  const renoSecs = sections(RENO, {
+    preamble: 120,
+    stages: 800,
+    tone: 300,
+    pricing: 200,
+    measure: 150,
+    objections: 260,
+    capabilities: 400,
+    handoff: 180,
+    'wechat-style': 210,
+  });
+  const anonSop: AnonSopOverview = {
+    published: { versionNo: 2, publishedAt: '2026-09-25T10:30:00Z', promptHash: 'a'.repeat(12), sections: renoSecs },
+  };
+  const m = await mountPage('/console/sop', { kind: 'anon', pack: packOf(RENO) }, anonSop);
+  eq(
+    '匿名：带锁的节取自行业包',
+    all<HTMLAnchorElement>(m.box, 'a.sop-toc-row').map((a) => a.querySelector('[aria-label="固定规则节"]') !== null),
+    RENO.map((d) => d.locked),
+  );
+  eq('匿名：节名取自行业包', text(rowIn(m, 'measure')?.querySelector('.sop-toc-name')), '量房预约规则');
+  eq('匿名：状态句只有版本与日期', text(m.box.querySelector('.page-status')), '线上v2·9月25日');
+  eq('匿名：没有额度条和分段控件', [m.box.querySelector('.sop-quota'), m.box.querySelector('[role="radiogroup"]')], [null, null]);
+  await act(async () => rowIn(m, 'preamble')!.focus());
+  await key(rowIn(m, 'preamble'), 'Enter');
+  await settle();
+  const cm = m.box.querySelector<HTMLElement>('.sop-editor .cm-content');
+  check('匿名：Enter 以后焦点在只读正文上', cm !== null && document.activeElement === cm);
+  await m.unmount();
+}
+
+// 7.6 加载骨架：成员画额度条和分段控件，匿名都不画（成品里也没有）
+{
+  const member = await mount(<SopSkeleton sections={11} quota filter />);
+  eq(
+    '成员的骨架：额度条、分段控件、11 行',
+    [
+      !!member.box.querySelector('.sop-skel-quota'),
+      !!member.box.querySelector('.sop-skel-filter'),
+      all(member.box, '.sop-skel-row').length,
+    ],
+    [true, true, 11],
+  );
+  await member.unmount();
+  const anon = await mount(<SopSkeleton sections={9} quota={false} filter={false} />);
+  eq(
+    '匿名的骨架：没有额度条和分段控件，9 行',
+    [!!anon.box.querySelector('.sop-skel-quota'), !!anon.box.querySelector('.sop-skel-filter'), all(anon.box, '.sop-skel-row').length],
+    [false, false, 9],
+  );
+  await anon.unmount();
+  // 整页在 /sop 还没回来时按身份画骨架
+  const pending = await mountPage('/console/sop', { kind: 'anon', pack: packOf(RENO) }, null);
+  eq(
+    '整页加载中（匿名）：骨架不画分段控件，行数取行业包',
+    [!!pending.box.querySelector('.sop-skel-filter'), all(pending.box, '.sop-skel-row').length],
+    [false, 9],
+  );
+  await pending.unmount();
+}
+eq(
+  '整页的自测没有发出请求（除了加载中那一次取 /sop）',
+  requests.filter((u) => !u.endsWith('/api/console/sop')),
+  [],
+);
 
 if (fails.length) {
   console.error(`sop: ${fails.length} 条失败（${pass} 条通过）：`);

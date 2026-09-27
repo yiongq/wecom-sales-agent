@@ -142,6 +142,8 @@ export function SopPage() {
   const pack = usePack();
   const q = useQuery({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
   if (q.isPending || q.error || !q.data) {
+    // 匿名没有额度条和分段控件
+    const member = viewer.data?.kind !== 'anon';
     return (
       <>
         {/* 加载时状态句那一行先占着（看不见），骨架与成品的位置一致 */}
@@ -150,7 +152,7 @@ export function SopPage() {
           pending={q.isPending}
           error={q.error}
           onRetry={() => void q.refetch()}
-          skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={viewer.data?.kind !== 'anon'} />}
+          skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={member} filter={member} />}
         />
       </>
     );

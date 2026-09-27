@@ -93,6 +93,16 @@ interface TocRowProps {
   href: string;
 }
 
+/** 检查报的问题数：「1个问题」，danger，前置 circle-x */
+function IssueCount({ n }: { n: number }) {
+  return (
+    <span className="sop-toc-issue">
+      <Icon of={CircleX} size={14} />
+      {`${n}个问题`}
+    </span>
+  );
+}
+
 /** 目录的一行。属性全是原始值，别的节在打字时不重渲 */
 const TocRow = memo(function TocRow(p: TocRowProps) {
   const cls = ['sop-toc-row', p.locked && 'is-locked', p.changed && 'is-changed'].filter(Boolean).join(' ');
@@ -101,12 +111,7 @@ const TocRow = memo(function TocRow(p: TocRowProps) {
       <span className="sop-toc-lock">{p.locked && <LockMark />}</span>
       <span className="sop-toc-main">
         <SectionName name={p.name} changed={p.changed} />
-        {p.issues > 0 && (
-          <span className="sop-toc-issue">
-            <Icon of={CircleX} size={14} />
-            {`${p.issues}个问题`}
-          </span>
-        )}
+        {p.issues > 0 && <IssueCount n={p.issues} />}
       </span>
       {p.count !== null && <span className="sop-toc-count">{p.count}</span>}
     </a>
@@ -212,27 +217,31 @@ export function Directory({ rows, current, filter, onFilter, showCounts, hrefOf,
 let pinyinLoad: Promise<PinyinLib> | null = null;
 const loadPinyin = (): Promise<PinyinLib> => (pinyinLoad ??= import('pinyin-match').then((m) => m.default as PinyinLib));
 
-/** 下拉里的一项：锁、节名（改过带圆点）。不写字数：字数逐字在变，写了下拉就得逐字重渲（见文件头） */
+/**
+ * 下拉里的一项：锁、节名（改过带圆点）、问题数。不写字数：字数逐字在变，写了下拉就得逐字重渲（见文件头）；
+ * 问题数只在检查或发布之后变
+ */
 function OptionLabel({ row }: { row: OutlineRow }) {
   return (
     <span className={['sop-toc-option', row.locked && 'is-locked', row.changed && 'is-changed'].filter(Boolean).join(' ')}>
       <span className="sop-toc-lock">{row.locked && <LockMark />}</span>
       <SectionName name={row.name} changed={row.changed} />
+      {row.issues > 0 && <IssueCount n={row.issues} />}
     </span>
   );
 }
 
 export type DirectorySelectProps = Pick<DirectoryProps, 'rows' | 'current'> & {
-  /** 要不变的函数：下拉只在节表、锁、改没改、当前节变了时重渲 */
+  /** 要不变的函数：下拉只在节表、锁、改没改、问题数、当前节变了时重渲 */
   onSelect: (key: string) => void;
 };
 
-/** 下拉画出来的部分相同：节的顺序、名字、锁、改没改 */
+/** 下拉画出来的部分相同：节的顺序、名字、锁、改没改、问题数 */
 const sameOptions = (a: readonly OutlineRow[], b: readonly OutlineRow[]): boolean =>
   a.length === b.length &&
   a.every((r, i) => {
     const o = b[i]!;
-    return r.key === o.key && r.name === o.name && r.locked === o.locked && r.changed === o.changed;
+    return r.key === o.key && r.name === o.name && r.locked === o.locked && r.changed === o.changed && r.issues === o.issues;
   });
 
 export const DirectorySelect = memo(

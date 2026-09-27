@@ -173,6 +173,10 @@
   padding: 0;
   list-style: none;
 }
+/* 上面没有分段控件（匿名）：第一行与编辑器顶端对齐，和成员的分段控件一样 */
+.sop-toc-list:first-child {
+  margin-top: 0;
+}
 /* 一行：最小高 40，内边距 9 8，节名允许两行；当前节 --selected 底，无竖条 */
 .sop-toc-row {
   display: flex;
@@ -292,6 +296,11 @@
   -webkit-line-clamp: 1;
 }
 .sop-toc-option .sop-toc-count {
+  margin-top: 0;
+}
+/* 下拉里的问题数写在同一行的右端 */
+.sop-toc-option .sop-toc-issue {
+  flex: none;
   margin-top: 0;
 }
 /* 下拉底部的锁的说明：上面一条分隔线，与选项同样左右留 8 */

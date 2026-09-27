@@ -1,8 +1,8 @@
 // 话术页加载时的骨架（spec「销售话术 · 状态」）：额度条、目录（分段控件加每节一行）、编辑器，尺寸与成品一致。
-// 目录的行数取行业包的话术节数：包在启动时已经到了，/sop 还没回来
+// 目录的行数取行业包的话术节数：包在启动时已经到了，/sop 还没回来。匿名的成品没有额度条和分段控件，骨架也不画
 import { useViewport } from '../shell/hooks.js';
 
-export function SopSkeleton({ sections, quota }: { sections: number; quota: boolean }) {
+export function SopSkeleton({ sections, quota, filter }: { sections: number; quota: boolean; filter: boolean }) {
   const wide = useViewport() === 'wide';
   return (
     <div aria-hidden="true">
@@ -18,7 +18,7 @@ export function SopSkeleton({ sections, quota }: { sections: number; quota: bool
       <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
         {wide ? (
           <div className="sop-toc">
-            <div className="sop-skel-filter" />
+            {filter && <div className="sop-skel-filter" />}
             <div className="sop-toc-list">
               {Array.from({ length: sections }, (_, i) => (
                 <div key={i} className="sop-skel-row">
