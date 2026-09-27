@@ -3,7 +3,8 @@
 // 取 /pack 和各实体的列表（走查时由 Playwright 拦截，换成旅游包或假包），不 import 任何包模块。
 // ?kind=route&code=r-sichuan-lux&as=active|draft|new|readonly&theme=light|dark
 //   as：active 按已上架的锁定规则、draft 草稿（有输入框）、new 新建（空表单，编号可填）、readonly 没有编辑权限；默认按条目自己的状态。
-// 表单下面实时写出补丁（set / unset）与上架前检查的计数：打开不做改动时补丁为空（不变量 16）
+// 表单下面实时写出补丁（set / unset）与上架前检查的计数：打开不做改动时补丁为空（不变量 16）。
+// 匿名的列表没有状态、更新两列（spec「产品库列表」的匿名一行）：接口给的条目都没有状态时就是匿名投影
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useSearch } from '@tanstack/react-router';
 import { useState } from 'react';
@@ -64,6 +65,8 @@ function Specimen({ pack }: { pack: IndustryPack }) {
   };
   if (!rows) return <p className="spec-label">正在取{entity.label}列表…</p>;
   const row = rows.find((r) => r.code === search.code) ?? rows[0];
+  const anon = rows.every((r) => r.status === undefined);
+  const columns = entity.list.columns.filter((k) => !(anon && (k === '$status' || k === '$updated')));
   return (
     <FieldEnvContext.Provider value={env}>
       <Section title={`列表单元格 · ${entity.label}`}>
@@ -71,7 +74,7 @@ function Specimen({ pack }: { pack: IndustryPack }) {
           <table className="spec-table">
             <thead>
               <tr>
-                {entity.list.columns.map((k) => (
+                {columns.map((k) => (
                   <th key={k}>{columnField(entity, k)?.label ?? (k === '$updated' ? '更新' : k)}</th>
                 ))}
               </tr>
@@ -79,7 +82,7 @@ function Specimen({ pack }: { pack: IndustryPack }) {
             <tbody>
               {rows.slice(0, 8).map((r) => (
                 <tr key={r.code}>
-                  {entity.list.columns.map((k) => {
+                  {columns.map((k) => {
                     const f = columnField(entity, k);
                     return (
                       <td key={k} className={f && (f.type === 'money' || f.type === 'intUnit') ? 'is-num' : undefined}>
@@ -110,7 +113,7 @@ function ItemForm({ entity, row, as }: { entity: EntityType; row: Row; as?: stri
   const [original] = useState<Payload>(() => (mode === 'new' ? {} : row.payload));
   const [state, setState] = useState<Payload>(() => formState(original));
   const ctx: ItemContext = mode === 'readonly' ? { status: row.status ?? 'active', canEdit: false } : { status: mode, canEdit: true };
-  const patch = submission(original, state);
+  const patch = submission(original, state, entity.fields);
   const check = checkItem(entity, state);
   const changed = [...Object.keys(patch.set), ...patch.unset.map((k) => `-${k}`)];
   return (

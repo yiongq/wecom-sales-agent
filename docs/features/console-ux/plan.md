@@ -65,7 +65,6 @@
 
 - 第 2.2 步：铃铛的「打开工作台」和 ⌘K 的会话行打开 `/admin.html#s=<id>`，但 admin.html 读 `#s=` 选中会话是第 13 步的事。在那之前这个链接只打开工作台、不选中那个会话，走查不能把它当成已经能用。
 - 第 2.2 步：路由 `/catalog/$kind` 的 `params.parse` 把 hotel 以外的 kind 一律当成 route（01 以来如此）。外壳这一侧已经不认行业（假包的侧栏、⌘K、计数都按包里的 kind 发请求），但假包的 `/catalog/package` 页面现在仍按线路渲染、请求 `/catalog/route`。第 9 步重做列表、第 10.1 步加详情路由时，路由参数改成按行业包的 kind 取，包里没有的 kind 出 404；第 17 步的假包走查依赖这一条。
-- 待 owner（第 3.2 步）：4 列的范围。spec「字段类型渲染器」与开放问题 9 写「整卡锁定」，设计系统 §6.4 写「全是只读的 text、intUnit、money、单选 enum」。现在按后者实现：没有编辑权限（非编辑角色、匿名）看到的卡片也全是只读文本，同样排 4 列（主材的「基本信息」、已上架线路的「基本信息」）；草稿和新建有输入框，仍是两列，验收 16 不受影响。要严格按「锁定」算，改 `console/src/fields/model.ts` 的 `groupGrid` 一处（`c.mode !== 'edit'` 换成 `c.mode === 'locked'`），自测的两条对应断言跟着改。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 
 ## 砍法
@@ -490,7 +489,7 @@
 
 - 合并：分支从 `dev` 起，先后合入第 3.1、3.4 步。三个字体文件冲突，在合并结果上重跑 `build.ts`（769 个码位、157,444 B）；`package.json` 的 `test` 取两边的并集；本文件两边的记录都留。两步给同一个月份判定各起了名字（第 3.1 步的 `monthsReadable`、第 3.4 步的 `bestSeasonParses`），`season.ts` 留一份实现、另一个名字是它的别名，调用处都没改。合并后 `shell/icons.tsx` 的 `ENTITY_ICON_NAMES` 仍指着第 3.4 步那边的旧表名，typecheck 报错，改成 `ENTITY_ICON_COMPONENTS`，并进合并提交。合并结果四道门禁都过。
 - 做了什么（都在 `console/src/fields/`）：
-  - `model.ts`，纯逻辑、不依赖 React：表单状态 `formState`（`structuredClone`，保留键序）；`readValue` 与上架前检查同一个 `valueAt`（`src/shared/pack.ts` 导出了它和 `filled`）；`writeValue` 按 spec「表单状态与提交」写回：选填清空删键，必填清空留空串或空数组，删空的嵌套对象连对象删，以它为 `showWhen` 的字段跟着删，所以体力强度选「不填」时整个 `intensity` 进 `unset`；`submission` 用 01 的 `sameValue` 比顶层键，算 `set` / `unset`。`parseStored` / `formatStored`：只认 `formatStored` 写得出的写法，所以 `format(parse(x)) === x`；写回按选项排，规则之外的旧值原样保留。控件读写表 `CODECS` 与网格规则表 `LAYOUT` 也是 `Record<FieldType, …>`。另有 `fieldMode`（edit / locked / readonly）、`lockedMembers`、`locksOnActivate`、`groupGrid`（4 列规则）、`enumControl`（5 / 6 项的界线）、`keepLockedMembers`、`moveItem`、`togglePick`，以及引用候选 `refItemsOf` / `resolveRef`。
+  - `model.ts`，纯逻辑、不依赖 React：表单状态 `formState`（`structuredClone`，保留键序）；`readValue` 与上架前检查同一个 `valueAt`（`src/shared/pack.ts` 导出了它和 `filled`）；`writeValue` 按 spec「表单状态与提交」写回：选填清空删键，必填清空留空串或空数组，删空的嵌套对象连对象删，以它为 `showWhen` 的字段跟着删（评审之后改成留在表单状态里、提交时剔除，见下），所以体力强度选「不填」时整个 `intensity` 进 `unset`；`submission` 用 01 的 `sameValue` 比顶层键，算 `set` / `unset`。`parseStored` / `formatStored`：只认 `formatStored` 写得出的写法，所以 `format(parse(x)) === x`；写回按选项排，规则之外的旧值原样保留。控件读写表 `CODECS` 与网格规则表 `LAYOUT` 也是 `Record<FieldType, …>`。另有 `fieldMode`（edit / locked / readonly）、`lockedMembers`、`locksOnActivate`、`groupGrid`（4 列规则）、`enumControl`（5 / 6 项的界线）、`keepLockedMembers`、`moveItem`、`togglePick`，以及引用候选 `refItemsOf` / `resolveRef`。
   - `renderers.tsx`：`RENDERERS: Record<FieldType, FieldRenderer>`，每种字段类型有 `Cell`、`View`、`Form` 三种形态（不变量 12）。另有 `MonthStrip.tsx`（S、L 两号，只用 class）、`FormField.tsx`（标签、「（选填）」、锁、帮助与报错）、`FieldGrid.tsx`（一张分组卡片的卡片体）、`env.ts`（页面给渲染器的当前时刻、引用候选、联想和链接）和 `fields.css`。
   - 实体图标映射：第 2.2 步已经放在 `shell/icons.tsx`，第 3.1 步换成了 `EntityIcon` 键。本步只在自测里核对两个包的实体图标都画得出来，集合里只有 `box` 落到兜底。
   - 样张 `/_specimen/fields?kind&code&as&theme`（只在 `VITE_SPECIMEN=1` 时注册）：经 `/pack` 与列表接口认识行业包，画列表单元格和各分组的表单网格，页面上实时写出补丁（「改动：无」）与上架前检查的计数。spec 的路由表加一行，顶部加 `Revisions:`。
@@ -499,12 +498,12 @@
 - 自测覆盖：
   - 三张表的键正好是 11 种字段类型；两个包合起来用到全部 11 种。
   - 不变量 16：data/ 下 20 条线路（加 r-guizhou-5d）、23 家酒店和假包的 9 条样例，打开不改时补丁为空。每个字段（含有序子项的子字段）经控件读出、原样写回，值不变，补丁仍为空，序列化逐字节相同。餐食的 6 种写法都满足 `format(parse(x)) === x`；7 种规则之外的写法认不出，原样往返。
-  - 写回规则逐条核对。锁定与只读的四种上下文。4 列只给整卡只读、3 个及以上的 text / intUnit / money / 单选 enum，多一个是否、多选 enum、长文本或单选引用就是两列。
+  - 写回规则逐条核对。锁定与只读的四种上下文。4 列只给整卡只读（评审之后改为整卡锁定）、3 个及以上的 text / intUnit / money / 单选 enum，多一个是否、多选 enum、长文本或单选引用就是两列。
   - 两个包每个字段、子字段的三种形态都画一遍，共 189 项（63 个字段与子字段乘三种形态），画了 812 次，约 0.15 秒；空值的表单也画一遍，都不许在画的时候写值。另逐类型核对写法，例如月份条逐格的 class、分段控件选中哪一段、多选片的 `aria-pressed`、标签的锁与删除按钮、时间轴节点、引用的「草稿」，以及 label 与控件怎么连（下拉用 `for`，分段控件用 `aria-labelledby`）。
 - 字体：新文案「这里的写法不标准」「添加一条」带进「准添」，重跑 `build.ts`（fonttools 4.66.0、brotli 1.2.0，仓库外的 venv）。UI 优先片 769 → 771 个码位，157,444 → 157,920 B（+476），两个 preload 合计 169,804 B。两个 Geist 文件、许可原文逐字节不变。
 - 构建：渲染器还没接进产品页，生产产物里没有它们。入口集合 gzip 316,719 B，与合并后相同；换页最多仍是产品库，247,051 B（+1，字体文件名变了）。`fields.css` 现在只由样张引用。
 - preview 实测（`VITE_SPECIMEN=1` 构建，CSP 同线上，接口由 `page.route` 拦截，时钟钉在 9月26日 14:30、`Asia/Shanghai`；7 个场景，浅色、深色各一轮，探针在仓库外）：
-  - 已上架 r-sichuan-lux 的「基本信息」4 列，宽 169 / 247 / 110 / 97（设计系统 E 页记的是 178 / 244 / 108 / 95），线路名称没有截断。没有编辑权限时同样 4 列；主材只读 4 列，宽 182 / 187 / 128 / 128；草稿、新建、酒店已上架都是两列。
+  - 已上架 r-sichuan-lux 的「基本信息」4 列，宽 169 / 247 / 110 / 97（设计系统 E 页记的是 178 / 244 / 108 / 95），线路名称没有截断。没有编辑权限时同样 4 列；主材只读 4 列，宽 182 / 187 / 128 / 128（这两处评审之后改为两列）；草稿、新建、酒店已上架都是两列。
   - 只读值的计算颜色等于 `--text`，标签等于 `--text-2`（不变量 5）。混合卡「适合谁去」挂 3 把锁；草稿标 3 处「上架后锁定」。
   - 字号只有 12.5、13、14、15、16，字重只有 400、500、600（不变量 10）；1440 宽没有横向滚动。
   - 交互后补丁都回到「改动：无」：草稿里点一片餐食（「改动：itinerary」）再点回来；住宿档次敲一个字再删掉；体力强度选「较累」（「改动：intensity」，最累的一段显示出来，必须项 13/14）再选「不填」；行程亮点下移再上移。第一条的「上移」是 `aria-disabled`。新建时必填的境内 / 境外一段都不选，点了「境外」后是「改动：overseas」。
@@ -518,18 +517,41 @@
   - 第一轮有 3 例存活，都补了断言：「全年」的文字在 aria-label 里也有，改成查文字那一格；多选片的点选只在组件里，抽成 `togglePick` 再测；逐字段画的时候值都有，空值的表单没画过，所以补画了一遍。另有 1 例是崩掉的：渲染器表少一种时，自测在后面逐字段画的时候抛错，没点名。改成先报「键正好是 11 种」再退出。
 - 偏离与取舍：
   - 文本域不用 antd 的 `autoSize`（见上），高度由渲染器算。
-  - 4 列按设计系统 §6.4「全是只读的」算，没有编辑权限的只读卡也排 4 列；spec 原文是「整卡锁定」，记在「Open」请 owner 定。
+  - 4 列原先按设计系统 §6.4「全是只读的」算，没有编辑权限的只读卡也排 4 列。评审指出 spec 与开放问题 9（owner 已定）都是「整卡锁定」，§6.4 那句也写在「整卡锁定」的条件下面，改回 spec，Open 里那条删掉。
   - 必填的是否是两段分段控件，先 `falseLabel` 后 `trueLabel`（「境内 / 境外」，与验收 16 的写法一致）；设计系统没定顺序。
   - 只读形态不写帮助，也不标「（选填）」：它们是填写的指引。
   - 月份区间的表单自己报「没认出月份：写成…」（设计系统 §6 表）。第 10.2 步把 `checkItem` 的同一个问题落到字段下方时，这个字段不要再写一遍。
   - 金额单元格：单位是固定的（`unit`）时只写数，单位写在表头；单位取另一个字段（`unitFrom`）时每行的单位不同，表头写不了，数后面带单位。
   - 引用名称的链接由页面经 `env.itemLink` 给（详情路由在第 10.1 步），没给时是纯文本。
   - 第 2.2 步记的「Alert 等部件里的 `@ant-design/icons` 留给第 3.2 步一起换」没做：它不在本步的条目里，还会动入口集合和产品库换页（余 2,949 B）的预算。改留给第 10 步（`CheckList` 随详情页重做）与第 16 步（`ThemeProvider` 的 Alert 图标、`TechDetails`）。
-- 没有新增依赖。
+- 没有新增运行时依赖（评审之后加了开发依赖 happy-dom，见下）。
 - 留给后面的步骤：
   - 第 9、10 步：由 `main.tsx` 全局引 `fields.css`（与 `parts.css` 一样；渲染器本身不 import CSS，自测才能在 Node 里 import）。列表用 `RENDERERS[type].Cell`，首列两行、`$updated` 列、表头单位（`FieldDef.unit`）归列表页。详情用 `FieldGrid`：卡片头的锁定 Tag 与原因由页面画，说明的 id 传给 `lockNoteId`；`errors` 按 `FieldDef.key` 给；`env.itemLink` 给路由的 `Link`；`env.distinct` 从列表缓存取。提交用 `submission(original, state)`。
   - 第 11 步：多字段的有序子项现在只能改每一项的文字。竖轴与节点状态、条数提醒、增删与上移下移（`moveItem` 已有）、`autoIndexKey` 重排、条数锁定、「复制上一天的…」、引用的分组联想与 `filterBy`、`allowFree` 的提示、长文本 `softMax` 的提示都在第 11 步。新建时多字段的有序子项还没有「添加一天」。G 页要求卡片第一行是「当天标题、当晚住宿」，现在子字段按包里的顺序排（标题、安排、住宿、餐食），第 11 步排卡片时处理。
   - 第 3.3 步：「别的 console 文件不能 import 假包」已随例外一起加了；两边都改这条规则时，按本步的写法合并（`PACK_SELFTEST` 与 `PACK_FIXTURES` 两个常量）。
+- 评审之后（10 条意见，全部接受）：
+  - 4 列只给整卡锁定的卡片：`groupGrid` 从「没有输入框」改为 `c.mode === 'locked'`。没有编辑权限、匿名看到的只读卡回到两列，自测里两条对应断言改成两列。spec 不改，plan「Open」的那条删掉。
+  - showWhen：体力强度误点「不填」再选回来，「最累的一段」原文不再丢失。`writeValue` 不再连带删依赖字段，值留在表单状态里、不显示；新加的 `pruneHidden` 在 `submission(original, state, fields)` 里剔除不显示的字段，所以「不填」时整个 `intensity` 仍进 `unset`，选回原值后补丁为空。`checkItem` 本来就不查不显示的字段。
+  - 选填的是否：由开关改为三段的分段控件「不填 / 否 / 是」，与选填的单选 enum 一致。开关表示不了没填：旁边的文字只能写 `falseLabel`，打开再关上写成 `false`，回不到删键。spec 顶部加 `Revisions:`，设计系统 §6 表同步修改；两个包里现在没有选填的是否。
+  - 状态渲染器只认 `draft`、`active`，别的值（匿名投影里没有状态，是 undefined）写「—」，原来画成「草稿」。样张页在匿名数据下不画状态、更新两列（spec「产品库列表」的匿名一行）。
+  - 无障碍：月份认不出时输入框设 `aria-invalid`，报错的 id 拼进 `aria-describedby`，和字段下方的帮助写在一起；「这里的写法不标准」同样连到输入框。
+  - 文本域增高：原来只在文字变化时量高度，现在宽度变化（容器变窄、挂载时看不见）和 `document.fonts.ready` 之后也会重量。`ResizeObserver` 只看宽度，改高度放到下一帧做；在回调里直接改的话，WebKit 报「ResizeObserver loop completed with undelivered notifications」（第一轮走查发现）。
+  - 控件的值到存储值：抽出 `enumFromSegment`、`boolSegment`、`boolFromSegment`、`replaceAt`、`removeAt` 放进 `model.ts`，组件只调用它们，自测逐个断言。
+  - 自测在 DOM 里挂载（第 7 节）：新增开发依赖 `happy-dom` 20.14.5（MIT，只是 DOM 实现，不是测试框架；console 的 devDependencies，锁文件另外带进 whatwg-mimetype、ws、entities、buffer-image-size 和两个类型包；生产产物不含）。`console/src/fields/selftest-dom.ts` 是 `fields.selftest.tsx` 的第一个 import：antd 与 rc 组件在模块加载时判断有没有 DOM，DOM 装晚了，挂载后的输入框收不到 input 事件（原型实测）。有了 DOM 之后，前 6 节的 SSR 断言照常通过。
+    - 7.1：两个包 63 个字段、子字段的表单形态各挂载两次（有值一次、空值一次）。effect、挂载时排下的定时器和 requestAnimationFrame 都跑完后，写回次数为 0；8 种条目和上下文组合的每张分组卡片也一样。这一节约 0.9 秒。
+    - 7.2：经组件点击、输入、删除，逐项核对写回的表单状态和补丁：体力强度的「不填」与选回来、境内境外、选填是否的「不填」；标签按退格删不掉锁住的「国内」、点「删除贵州」、敲「国内，」加不上；行程亮点按下标修改、上移、删除、添加；第 2 天的餐食片和住宿自由输入只动第 2 天；节点3 删掉唯一的主材（选填清空，删键，不留 `[]`）、改节点2 的名称；套餐主材删掉一个芯片。
+  - 边界：`config.selftest.ts` 的 check-boundaries 夹具补了三种情况：渲染器自测 import 注册表和假包不报；它直接 import `src/packs/travel/console-pack.ts` 要报；别的 console 文件 import 注册表、旅游包、假包都要报。
+  - 自测不再写死 data/ 的条数和餐食写法的种数，只打印出来；每种现有写法仍逐个核对 `format(parse(x)) === x`。
+  - 数字：`fields.selftest.tsx` 从 963 条增加到 1018 条，用时约 4 秒（原来约 2 秒，多出的时间主要花在挂载后等定时器）。`config.selftest.ts` 多 2 条，共 448 条。UI 字体子集没有变化（771 个码位、157,920 B），没有新文案要收字。产物：入口集合 316,719 B，换页最多 247,051 B，都与评审前相同。
+  - 变异：在仓库外的隔离副本里做了 30 例，全部由具名断言点出；还原后与 worktree 逐字节相同。评审点名的 7 例组件接线全在其中：分段控件「不填」写成 `$none`、是否的段值反着解析、标签绕过 `keepLockedMembers`、子项用展开代替 `writeValue`、删除总删第 1 条、修改总写第 1 条、引用下拉不写回。另有挂载时在 layout effect 里写值、挂载后在定时器里写值；把 4 列放宽回「没有输入框」；状态把别的值画成草稿或已上架；提交时不剔除不显示的字段、`pruneHidden` 不删、写回时连带删依赖字段；月份报错不标 `aria-invalid`、不接进 `aria-describedby`、写法提示不连控件；五个纯函数各改坏一处；选填是否少了「不填」段；多选片按点选顺序追加；引用自由输入写空串。边界 3 例（由 `config.selftest.ts` 点名）：例外放宽到所有 console 文件；自测可以直接 import 各个包；假包那条规则谁也不管。
+  - preview 走查（`VITE_SPECIMEN=1` 构建，CSP 与线上相同，7 个场景，浅色、深色，Chromium、Firefox、WebKit，探针在仓库外）：
+    - E 页「基本信息」仍是 4 列，宽 169 / 247 / 110 / 97。没有编辑权限的线路和主材「基本信息」是两列。
+    - 体力强度点「不填」后显示「改动：-intensity」，选回「较累」后回到「改动：无」，最累的一段原文还在。
+    - 文本域在 662 宽时高 82，把主栏收到 420 宽后是 126，放回原宽又是 82；每次 `scrollHeight` 都等于 `clientHeight`，内容没有被裁掉。
+    - 月份写「旺季」时 `aria-invalid="true"`，读屏读到的说明就是那句报错。
+    - 把旅游包的「境内还是境外」临时改成选填：显示三段，没填时选中「不填」；点「境外」后显示「改动：overseas」，点回「不填」后显示「改动：无」。
+    - 匿名数据的列表没有「状态」「更新」两列，也没有状态胶囊。
+    - Chromium、Firefox 的 CSP 违规和控制台错误都是 0。WebKit 截图之前也都是 0；截图时每截一张记一条 style-src 违规，与第 3.2 步记的相同，是探针的问题。
 
 ## 交接记录
 

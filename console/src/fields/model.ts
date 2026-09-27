@@ -1,6 +1,7 @@
 // 字段渲染器的纯逻辑（docs/features/console-ux/spec.md「行业包通用架构 · 字段类型渲染器」「表单状态与提交」，
 // 设计系统 §6.0、§6.4）。不依赖 React 与 antd：fields.selftest.tsx 直接 import，表单与样张页都走这里。
 // - 表单状态是条目 payload 的深拷贝，编辑按 FieldDef.key 的路径写回（writeValue），保存时 submission 算 set / unset；
+//   showWhen 没显示出来的字段在表单状态里留着值（选回来原文还在），submission 时才剔除；
 // - 按 storeAs 连成字符串的多选（旅游包的「当天餐食」）读写走 parseStored / formatStored：现有写法往返逐字节不变，
 //   规则之外的旧值照原文保留，不自动改写；
 // - 控件取值与写回走 CODECS（Record<FieldType, …>），不变量 16 的往返测的就是这一对；
@@ -45,27 +46,33 @@ const cleared = (v: unknown): boolean => v === '' || (Array.isArray(v) && v.leng
  * 把一个字段的新值写回表单状态，返回新的状态，不改原来的（spec「表单状态与提交」）：
  * - 没有值（undefined、null）删键；选填字段清空（空串、空数组）也删键，01 的 schema 要求这些字段出现时不为空。
  *   必填字段清空留下空串或空数组，由上架前检查报「没填」（tags 这类必填数组本来就可以是 []）；
- * - 嵌套字段删空了所在的对象，就连对象一起删：体力强度选「不填」，整个 intensity 进 unset；
- * - 以它为 showWhen 的字段在它没填时不显示，值一起删掉（intensity 只剩 hardest 时 schema 不收）。
- * siblings 是同一层的字段：顶层传实体的 fields，有序子项的一项传 FieldDef.item
+ * - 嵌套字段删空了所在的对象，就连对象一起删。
+ * 以它为 showWhen 的字段这时不显示，但值留在表单状态里：体力强度误点「不填」再选回来，「最累的一段」原文还在。
+ * 不显示的值由 submission 剔除（intensity 只剩 hardest 时 schema 不收）
  */
-export function writeValue(state: Payload, field: FieldDef, value: unknown, siblings: readonly FieldDef[] = []): Payload {
+export function writeValue(state: Payload, field: FieldDef, value: unknown): Payload {
   const drop = value === undefined || value === null || (field.required === false && cleared(value));
-  let next = setPath(state, pathOf(field.key), drop ? undefined : value);
-  if (!filled(valueAt(next, field.key))) {
-    for (const g of siblings) if (g.showWhen?.key === field.key) next = setPath(next, pathOf(g.key), undefined);
-  }
+  return setPath(state, pathOf(field.key), drop ? undefined : value);
+}
+
+/** showWhen 没显示出来的字段：值从表单状态里删掉，删空的嵌套对象一起删（有序子项的子字段不支持 showWhen） */
+export function pruneHidden(state: Payload, fields: readonly FieldDef[]): Payload {
+  let next = state;
+  for (const f of fields) if (!visible(f, next) && valueAt(next, f.key) !== undefined) next = setPath(next, pathOf(f.key), undefined);
   return next;
 }
 
 /**
- * 保存时的补丁（01 的 PATCH：set 里点名的顶层字段整体替换，unset 里的删掉）：值变了的顶层键进 set（01 已有的 sameValue 判定，
- * 与键序无关），原来有、现在没了的进 unset。嵌套字段随它所在的顶层对象整体提交。打开条目不做改动时两者都为空（不变量 16）
+ * 保存时的补丁（01 的 PATCH：set 里点名的顶层字段整体替换，unset 里的删掉）。先剔除 showWhen 没显示出来的字段，
+ * 再比：值变了的顶层键进 set（01 已有的 sameValue 判定，与键序无关），原来有、现在没了的进 unset。
+ * 嵌套字段随它所在的顶层对象整体提交：体力强度选「不填」，整个 intensity 进 unset。打开条目不做改动时两者都为空（不变量 16）。
+ * fields 是实体的字段
  */
-export function submission(original: Payload, state: Payload): { set: Payload; unset: string[] } {
+export function submission(original: Payload, state: Payload, fields: readonly FieldDef[]): { set: Payload; unset: string[] } {
+  const sent = pruneHidden(state, fields);
   const set: Payload = {};
-  for (const [k, v] of Object.entries(state)) if (!Object.hasOwn(original, k) || !sameValue(original[k], v)) set[k] = v;
-  const unset = Object.keys(original).filter((k) => !Object.hasOwn(state, k));
+  for (const [k, v] of Object.entries(sent)) if (!Object.hasOwn(original, k) || !sameValue(original[k], v)) set[k] = v;
+  const unset = Object.keys(original).filter((k) => !Object.hasOwn(sent, k));
   return { set, unset };
 }
 
@@ -192,6 +199,29 @@ export function keepLockedMembers(cur: readonly string[], next: readonly string[
   return next.filter((t) => !locked.includes(t) || cur.includes(t));
 }
 
+// ---------------- 控件的值 → 要写回的值 ----------------
+// 组件只调这几个函数，自测逐个断言；组件接线另由自测在 DOM 里挂载、点击核对
+
+/** 分段控件里「不填」一段的值，和「必填还没选」时给的值（不在选项里，所以一段都不选中）。选项是中文，撞不上 */
+export const SEG_NONE = '$none';
+export const SEG_UNSET = '$unset';
+
+/** 单选 enum 的分段控件：选中「不填」写 undefined（删键），别的段写那一项 */
+export const enumFromSegment = (seg: string | number): string | undefined => (seg === SEG_NONE ? undefined : String(seg));
+
+/** 是否的分段控件当前选中哪一段：没有值时，选填选「不填」，必填一段都不选 */
+export const boolSegment = (v: boolean | undefined, optional: boolean): string =>
+  v === undefined ? (optional ? SEG_NONE : SEG_UNSET) : String(v);
+
+/** 是否的分段控件：「不填」写 undefined，其余按段值写 true / false */
+export const boolFromSegment = (seg: string | number): boolean | undefined => (seg === SEG_NONE ? undefined : seg === 'true');
+
+/** 逐条列表改第 i 条：返回新数组，别的条原样 */
+export const replaceAt = <T>(items: readonly T[], i: number, v: T): T[] => items.map((x, k) => (k === i ? v : x));
+
+/** 逐条列表删第 i 条 */
+export const removeAt = <T>(items: readonly T[], i: number): T[] => items.filter((_, k) => k !== i);
+
 /** 多选片点一片：选中的取消，没选的接在后面；原有几项的顺序不变（按 storeAs 存的写回时再由 formatStored 按选项排） */
 export const togglePick = (picks: readonly string[], o: string): string[] =>
   picks.includes(o) ? picks.filter((x) => x !== o) : [...picks, o];
@@ -217,7 +247,7 @@ export type Span = 'half' | 'wide' | 'block';
 interface Layout {
   /** 在表单网格里占多宽（设计系统 §6.0） */
   span(f: FieldDef): Span;
-  /** 只读时能不能挤进 4 列（§6.4：只读的 text、intUnit、money、单选 enum） */
+  /** 锁定时能不能挤进 4 列（§6.4：text、intUnit、money、单选 enum） */
   short(f: FieldDef): boolean;
 }
 
@@ -246,7 +276,7 @@ export interface GridCell {
 }
 
 export interface GroupGrid {
-  /** 2 列；整卡只读、3 个及以上短值时 4 列（§6.4，owner 2026-09-27） */
+  /** 2 列；整卡锁定、3 个及以上短值时 4 列（§6.4，owner 2026-09-27；没有编辑权限的只读卡不算，spec 开放问题 9） */
   columns: 2 | 4;
   /** 整卡都是上架后锁定：锁只在卡片头挂一次，字段标签不挂锁 */
   allLocked: boolean;
@@ -259,13 +289,14 @@ export const visible = (f: FieldDef, state: Payload): boolean => !f.showWhen || 
 
 /**
  * 一张分组卡片里的字段怎么排（设计系统 §6.0、§6.4）。$status 不进表单（它在页头和副栏里）。
- * 4 列只给卡片里全是只读短值、至少 3 个的情况：有输入框的卡片（草稿、新建）仍是两列，输入框在 4 列下太窄（spec 开放问题 9）
+ * 4 列只给整卡锁定、全是短值、至少 3 个的卡片（spec「字段类型渲染器」、开放问题 9，owner 2026-09-27 已定）：
+ * 有输入框的卡片（草稿、新建）和没有编辑权限看到的只读卡片都是两列
  */
 export function groupGrid(entity: EntityType, group: string, state: Payload, ctx: ItemContext): GroupGrid {
   const cells = entity.fields
     .filter((f) => f.group === group && f.type !== 'status' && visible(f, state))
     .map((f): GridCell => ({ field: f, mode: fieldMode(f, ctx), span: LAYOUT[f.type].span(f) }));
-  const four = cells.length >= 3 && cells.every((c) => c.mode !== 'edit' && LAYOUT[c.field.type].short(c.field));
+  const four = cells.length >= 3 && cells.every((c) => c.mode === 'locked' && LAYOUT[c.field.type].short(c.field));
   return { columns: four ? 4 : 2, allLocked: cells.length > 0 && cells.every((c) => c.mode === 'locked'), cells };
 }
 

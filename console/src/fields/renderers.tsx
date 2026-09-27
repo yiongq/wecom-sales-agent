@@ -4,7 +4,7 @@
 // 字段类型是界面和行业包之间的契约。
 // 表单控件只经 model.ts 的 CODECS 读写（不变量 16 的往返），不在挂载时写值：打开一条不做改动，表单状态一个字节也不变。
 // 产品库文本只以文本节点渲染（不变量 28）；值为空写「—」。
-import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Switch, Tooltip } from 'antd';
+import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
 import { ArrowDown, ArrowUp, Check, Lock, Plus, Trash2, X } from 'lucide-react';
 import { type ComponentType, type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react';
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
@@ -16,8 +16,11 @@ import { cjk } from '../typography.js';
 import { useFieldEnv } from './env.js';
 import { FormField } from './FormField.js';
 import {
+  boolFromSegment,
+  boolSegment,
   CODECS,
   enumControl,
+  enumFromSegment,
   indexLabel,
   isSingleItem,
   keepLockedMembers,
@@ -28,7 +31,11 @@ import {
   nounOf,
   type Payload,
   type RefItem,
+  removeAt,
+  replaceAt,
   resolveRef,
+  SEG_NONE,
+  SEG_UNSET,
   togglePick,
   writeValue,
 } from './model.js';
@@ -70,19 +77,20 @@ export interface FieldRenderer {
 
 /** 空值 */
 const NONE = '—';
-/** 分段控件里「不填」一段的值，和「必填还没选」时给的值（不在选项里，所以一段都不选中）。选项是中文，撞不上 */
-const SEG_NONE = '$none';
-const SEG_UNSET = '$unset';
 
 const shown = (v: unknown): string => (typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : NONE);
 const texts = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 const isRecord = (v: unknown): v is Payload => !!v && typeof v === 'object' && !Array.isArray(v);
 
-/** 控件共用的无障碍属性 */
-function a11y(p: FormProps) {
+/**
+ * 控件共用的无障碍属性。own 是控件自己在下方写的提示或报错（月份认不出、写法不标准）：它的 id 拼进 aria-describedby，
+ * 报错时另设 aria-invalid。读屏读得到它，和字段下方的帮助、报错一样
+ */
+function a11y(p: FormProps, own?: { noteId: string; invalid?: boolean }) {
+  const describedBy = [p.describedBy, own?.noteId].filter(Boolean).join(' ');
   return {
-    'aria-describedby': p.describedBy,
-    'aria-invalid': p.invalid || undefined,
+    'aria-describedby': describedBy || undefined,
+    'aria-invalid': p.invalid || own?.invalid || undefined,
     ...(p.ariaLabel ? { 'aria-label': p.ariaLabel } : { 'aria-labelledby': p.labelId }),
   };
 }
@@ -141,23 +149,55 @@ function LongTextView({ value }: ViewProps) {
  */
 type TextAreaRef = GetRef<typeof Input.TextArea>;
 
+function fitHeight(el: HTMLTextAreaElement): void {
+  const s = getComputedStyle(el);
+  const line = parseFloat(s.lineHeight) || 22;
+  const border = parseFloat(s.borderTopWidth) + parseFloat(s.borderBottomWidth);
+  const chrome = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom) + border;
+  el.style.height = 'auto';
+  const want = el.scrollHeight + border;
+  const h = Math.min(Math.max(want, line * 3 + chrome), line * 12 + chrome);
+  el.style.height = `${h}px`;
+  el.style.overflowY = want > h ? 'auto' : 'hidden';
+}
+
 function useAutoGrow(value: string): RefObject<TextAreaRef | null> {
   const ref = useRef<TextAreaRef>(null);
-  // 只在文字变了时量：别的字段改动也会让整张表单重画，不必每次都强制重排
+  // 文字变了时量：别的字段改动也会让整张表单重画，不必每次都强制重排
   const measured = useRef<string | null>(null);
   useLayoutEffect(() => {
     const el = ref.current?.resizableTextArea?.textArea;
     if (!el || measured.current === value) return;
     measured.current = value;
-    const s = getComputedStyle(el);
-    const line = parseFloat(s.lineHeight) || 22;
-    const chrome = parseFloat(s.paddingTop) + parseFloat(s.paddingBottom) + parseFloat(s.borderTopWidth) + parseFloat(s.borderBottomWidth);
-    el.style.height = 'auto';
-    const want = el.scrollHeight + parseFloat(s.borderTopWidth) + parseFloat(s.borderBottomWidth);
-    const h = Math.min(Math.max(want, line * 3 + chrome), line * 12 + chrome);
-    el.style.height = `${h}px`;
-    el.style.overflowY = want > h ? 'auto' : 'hidden';
+    fitHeight(el);
   }, [value]);
+  // 文字没变、折行变了也要重量：容器变宽变窄、挂载时还看不见（宽 0）、字体换完。只看宽度，自己改高度不会再触发
+  useLayoutEffect(() => {
+    const el = ref.current?.resizableTextArea?.textArea;
+    if (!el) return;
+    let width = el.clientWidth;
+    let live = true;
+    let frame = 0;
+    const ro =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            if (el.clientWidth === width) return;
+            width = el.clientWidth;
+            // 下一帧再改高度：在回调里直接改，同一帧里又多出一次观察，WebKit 报「ResizeObserver loop」错误
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => fitHeight(el));
+          });
+    ro?.observe(el);
+    void document.fonts?.ready.then(() => {
+      if (live && el.isConnected) fitHeight(el);
+    });
+    return () => {
+      live = false;
+      cancelAnimationFrame(frame);
+      ro?.disconnect();
+    };
+  }, []);
   return ref;
 }
 
@@ -281,6 +321,7 @@ function MonthRangeForm(p: FormProps) {
   const { field, value, onChange, id, invalid } = p;
   const v = CODECS.monthRange.read(value, field);
   const unreadable = v !== '' && !parseMonthRange(v);
+  const errorId = `${id}-unread`;
   return (
     <div className="field-stack">
       <Input
@@ -289,10 +330,10 @@ function MonthRangeForm(p: FormProps) {
         placeholder={field.placeholder}
         status={invalid || unreadable ? 'error' : undefined}
         onChange={(e) => onChange(CODECS.monthRange.write(e.target.value, field))}
-        {...a11y(p)}
+        {...a11y(p, unreadable ? { noteId: errorId, invalid: true } : undefined)}
       />
       {unreadable ? (
-        <div className="field-error">
+        <div id={errorId} className="field-error">
           <Icon of={X} size={14} />
           {cjk('没认出月份：写成「5月-10月」「11月-次年4月」或「全年」')}
         </div>
@@ -376,7 +417,7 @@ function EnumForm(p: FormProps) {
           id={id}
           options={segs}
           value={cur}
-          onChange={(v) => write(v === SEG_NONE ? undefined : String(v))}
+          onChange={(v) => write(enumFromSegment(v))}
           aria-labelledby={labelId}
           aria-describedby={p.describedBy}
         />
@@ -397,10 +438,19 @@ function EnumForm(p: FormProps) {
 
   // 按 storeAs 存的旧值认不出：照原文给一个输入框，提示写法不标准，不自动改写（spec「表单状态与提交」）
   if (typeof c === 'string') {
+    const hintId = `${id}-odd`;
     return (
       <div className="field-stack">
-        <Input id={id} value={c} status={invalid ? 'error' : undefined} onChange={(e) => write(e.target.value)} {...a11y(p)} />
-        <div className="field-meta">这里的写法不标准</div>
+        <Input
+          id={id}
+          value={c}
+          status={invalid ? 'error' : undefined}
+          onChange={(e) => write(e.target.value)}
+          {...a11y(p, { noteId: hintId })}
+        />
+        <div id={hintId} className="field-meta">
+          这里的写法不标准
+        </div>
       </div>
     );
   }
@@ -515,21 +565,17 @@ function BooleanView({ field, value }: ViewProps) {
   return <span className="field-text">{cjk(boolText(field, value))}</span>;
 }
 
+/**
+ * 分段控件（设计系统 §6 表）：必填两段，没有默认值，逼人明确选一次（上架后锁定的字段选错了只能停机修）；
+ * 选填最前面加一段「不填」，和选填的单选 enum 一样。选填原先是开关，可开关只有开、关两种，
+ * 表示不了「没填」：打开再关上就写成 false，回不到没填（spec 顶部 Revisions，第 3.2 步评审之后）
+ */
 function BooleanForm(p: FormProps) {
   const { field, value, onChange, id, labelId } = p;
   const v = CODECS.boolean.read(value, field);
-  const set = (next: boolean): void => onChange(CODECS.boolean.write(next, field));
-  if (field.required === false) {
-    // 选填：开关，旁边写当前值的文字
-    return (
-      <span className="field-switch">
-        <Switch id={id} checked={v === true} onChange={set} aria-labelledby={labelId} aria-describedby={p.describedBy} />
-        <span className="field-meta-14">{boolText(field, v ?? false)}</span>
-      </span>
-    );
-  }
-  // 必填：两段的分段控件，没有默认值，逼人明确选一次（上架后锁定的字段选错了只能停机修）
+  const optional = field.required === false;
   const segs = [
+    ...(optional ? [{ value: SEG_NONE, label: '不填' }] : []),
     { value: 'false', label: field.falseLabel ?? '否' },
     { value: 'true', label: field.trueLabel ?? '是' },
   ];
@@ -537,8 +583,8 @@ function BooleanForm(p: FormProps) {
     <Segmented
       id={id}
       options={segs}
-      value={v === undefined ? SEG_UNSET : String(v)}
-      onChange={(s) => set(s === 'true')}
+      value={boolSegment(v, optional)}
+      onChange={(s) => onChange(CODECS.boolean.write(boolFromSegment(s), field))}
       aria-labelledby={labelId}
       aria-describedby={p.describedBy}
     />
@@ -627,11 +673,11 @@ function SingleListForm(p: FormProps) {
             id={`${id}-${i}`}
             labelId={labelId}
             ariaLabel={`${field.label}第${i + 1}${noun}`}
-            onChange={(v) => set(items.map((x, k) => (k === i ? v : x)))}
+            onChange={(v) => set(replaceAt(items, i, v))}
           />
           <IconButton label="上移" icon={ArrowUp} aria-disabled={i === 0 || undefined} onClick={() => move(i, -1)} />
           <IconButton label="下移" icon={ArrowDown} aria-disabled={i === items.length - 1 || undefined} onClick={() => move(i, 1)} />
-          <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(items.filter((_, k) => k !== i))} />
+          <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(removeAt(items, i))} />
         </div>
       ))}
       <Button className="field-add" icon={<Icon of={Plus} />} onClick={() => set([...items, ''])}>
@@ -666,14 +712,7 @@ function ItemCardsForm(p: FormProps) {
                   span={LAYOUT[sub.type].span(sub)}
                   value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
                   row={item}
-                  onChange={(v) =>
-                    onChange(
-                      CODECS.subItems.write(
-                        items.map((x, k) => (k === i ? writeValue(item, sub, v, subs) : x)),
-                        field,
-                      ),
-                    )
-                  }
+                  onChange={(v) => onChange(CODECS.subItems.write(replaceAt(items, i, writeValue(item, sub, v)), field))}
                 />
               ))}
             </div>
@@ -792,8 +831,9 @@ function ReferenceForm(p: FormProps) {
 
 // ---------------- status ----------------
 
+/** 只认 draft、active；别的值（匿名投影里没有状态，是 undefined）写「—」，不猜 */
 function StatusShow({ value }: CellProps) {
-  return <Status kind={value === 'active' ? 'active' : 'draft'} />;
+  return value === 'active' || value === 'draft' ? <Status kind={value} /> : <>{NONE}</>;
 }
 
 // ---------------- 表 ----------------

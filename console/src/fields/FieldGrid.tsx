@@ -1,5 +1,5 @@
 // 一张分组卡片里的表单网格（设计系统 §6.0、§6.4）：两列，列间距 24、字段之间 20；长类型占满一行；多字段的有序子项自成区块，
-// 排在网格后面；整卡只读、3 个及以上短值时排成 4 列，列宽按内容自适应（owner 2026-09-27）。怎么排只看字段类型和锁定状态
+// 排在网格后面；整卡锁定、3 个及以上短值时排成 4 列，列宽按内容自适应（owner 2026-09-27）。怎么排只看字段类型和锁定状态
 // （model.ts 的 groupGrid）。卡片本身（标题、锁定 Tag 与原因）在第 10.1 步，这里只排卡片体。
 import type { EntityType } from '../../../src/shared/pack.js';
 import { FormField, type LockMark } from './FormField.js';
@@ -42,7 +42,7 @@ export function FieldGrid({ entity, group, state, ctx, onChange, lockNoteId, err
         span={c.span}
         value={readValue(state, f.key)}
         row={state}
-        onChange={(v) => onChange(writeValue(state, f, v, entity.fields))}
+        onChange={(v) => onChange(writeValue(state, f, v))}
         lockMark={mark}
         lockNoteId={grid.allLocked ? lockNoteId : undefined}
         error={errors?.[f.key]}

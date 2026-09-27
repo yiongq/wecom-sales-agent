@@ -161,14 +161,6 @@
   color: var(--text-2);
 }
 
-/* ---------- 开关旁边写当前值的文字（§5.4） ---------- */
-.field-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-}
-
 /* ---------- 多选片（§5.4）：高 30，左右 10，片间 6；选中 accent-bg 加 check 与 aria-pressed ---------- */
 .field-chips {
   display: flex;

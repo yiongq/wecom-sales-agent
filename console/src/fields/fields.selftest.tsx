@@ -1,21 +1,27 @@
 // 字段渲染器的自测（console UX spec「行业包通用架构 · 字段类型渲染器」「表单状态与提交」、不变量 12、16，plan 第 3.2 步）。
 // console/src 里唯一可以 import 行业包注册表和假包的文件（scripts/check-boundaries.ts 单开的例外）：拿两个包的真实配置逐字段核对。
 // 1. 不变量 12：渲染器表、控件读写表、网格规则表的键正好是全部字段类型；每种三种形态都是组件；
-// 2. 不变量 16：data/ 下 20 条线路、23 家酒店和假包的样例，打开不改时补丁为空；每个字段（含有序子项的子字段）经控件读出、
-//    原样写回，值不变、补丁为空；按 storeAs 存的餐食对现有数据 format(parse(x)) === x；
-// 3. 写回的规则：选填清空删键、嵌套对象删空连对象一起删、showWhen 的字段跟着删、必填清空留空值、编号写进 id、键序不变、
-//    不改原对象；多选片写回按选项排（验收 18）；规则之外的旧值原样保留；
-// 4. 锁定与网格：已上架 / 草稿 / 新建 / 没有编辑权限各自的形态；4 列只给整卡只读、3 个及以上短值的卡片（设计系统 §6.4），
-//    E 页的「基本信息」是 4 列，草稿是两列；
+// 2. 不变量 16：data/ 下的全部线路、酒店和假包的样例，打开不改时补丁为空；每个字段（含有序子项的子字段）经控件读出、
+//    原样写回，值不变、补丁为空；按 storeAs 存的餐食对现有数据的每种写法 format(parse(x)) === x；
+// 3. 写回的规则：选填清空删键、嵌套对象删空连对象一起删、必填清空留空值、编号写进 id、键序不变、不改原对象；
+//    showWhen 没显示的字段值留在表单状态里、提交时剔除；多选片写回按选项排（验收 18）；规则之外的旧值原样保留；
+//    控件的值到存储值的几个纯函数（分段控件的「不填」、是否的段值、逐条列表的改和删）；
+// 4. 锁定与网格：已上架 / 草稿 / 新建 / 没有编辑权限各自的形态；4 列只给整卡锁定、3 个及以上短值的卡片（spec 开放问题 9、
+//    设计系统 §6.4），E 页的「基本信息」是 4 列，草稿和没有编辑权限看到的只读卡是两列；
 // 5. 两个包的每个字段三种形态都画一遍（renderToStaticMarkup），逐类型核对控件和只读的写法；画的时候不写值；
-// 6. 实体图标：两个包的实体图标都画得出来，集合里只有 box 自己落到兜底的 box。
+// 6. 实体图标：两个包的实体图标都画得出来，集合里只有 box 自己落到兜底的 box；
+// 7. 在 DOM 里挂载（happy-dom，selftest-dom.ts）：两个包每个字段的表单形态和各分组卡片，挂载、effect 跑完都不写值；
+//    再经组件点、敲、删，核对写回表单状态的值和补丁：分段控件的「不填」、是否、标签的锁住成员、多选片、
+//    逐条列表的改删移、有序子项按下标经 writeValue 写回、引用的删和自由输入。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/fields/fields.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
+import { win } from './selftest-dom.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Box } from 'lucide-react';
-import { createElement, type ReactElement } from 'react';
+import { act, createElement, type ReactElement, useState } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { packById } from '../../../src/packs/registry.js';
 import { sameValue } from '../../../src/shared/catalog.js';
@@ -25,7 +31,10 @@ import { entityIcon } from '../shell/icons.js';
 import { type FieldEnv, FieldEnvContext } from './env.js';
 import { FieldGrid } from './FieldGrid.js';
 import {
+  boolFromSegment,
+  boolSegment,
   CODECS,
+  enumFromSegment,
   fieldMode,
   formatStored,
   formState,
@@ -39,9 +48,14 @@ import {
   moveItem,
   parseStored,
   type Payload,
+  pruneHidden,
   readValue,
   refItemsOf,
   type RefItem,
+  removeAt,
+  replaceAt,
+  SEG_NONE,
+  SEG_UNSET,
   submission,
   togglePick,
   writeValue,
@@ -308,7 +322,7 @@ function roundTrip(f: FieldDef, stored: unknown): unknown {
     let obj = it as Payload;
     for (const s of subs) {
       if (!Object.hasOwn(obj, s.key)) continue;
-      obj = writeValue(obj, s, roundTrip(s, obj[s.key]), subs);
+      obj = writeValue(obj, s, roundTrip(s, obj[s.key]));
     }
     return obj;
   });
@@ -324,7 +338,7 @@ function touchAll(e: EntityType, payload: Payload, bad: string[]): Payload {
     if (stored === undefined) continue;
     const back = roundTrip(f, stored);
     if (!sameValue(back, stored)) bad.push(`${String(payload.id)} 的 ${f.key}：${JSON.stringify(stored)} → ${JSON.stringify(back)}`);
-    state = writeValue(state, f, back, e.fields);
+    state = writeValue(state, f, back);
   }
   return state;
 }
@@ -343,7 +357,9 @@ const SAMPLES: [string, EntityType, Payload[]][] = [
   ['装修套餐（假包样例）', PKG, PACKAGES],
   ['主材（假包样例）', MATERIAL, MATERIALS],
 ];
-check('data/ 下 20 条线路、23 家酒店', ROUTES.length === 20 && HOTELS.length === 23, `${ROUTES.length}、${HOTELS.length}`);
+// 条数只打出来不断言：data/ 里正常加一条线路或酒店，这里照样逐条核对
+check('data/ 下有线路和酒店', ROUTES.length > 0 && HOTELS.length > 0);
+console.log(`fields: data/ 下 ${ROUTES.length} 条线路、${HOTELS.length} 家酒店`);
 for (const [name, e, items] of SAMPLES) {
   const notEmpty: string[] = [];
   const changed: string[] = [];
@@ -351,10 +367,10 @@ for (const [name, e, items] of SAMPLES) {
   for (const p of items) {
     const original = deepFreeze(structuredClone(p));
     const opened = formState(original);
-    const s0 = submission(original, opened);
+    const s0 = submission(original, opened, e.fields);
     if (Object.keys(s0.set).length || s0.unset.length) notEmpty.push(String(p.id));
     const state = touchAll(e, original, changed);
-    const s1 = submission(original, state);
+    const s1 = submission(original, state, e.fields);
     if (Object.keys(s1.set).length || s1.unset.length) {
       notEmpty.push(`${String(p.id)}（碰过每个字段后 set ${Object.keys(s1.set).join(',')} unset ${s1.unset.join(',')}）`);
     }
@@ -370,7 +386,8 @@ for (const [name, e, items] of SAMPLES) {
   const meals = fieldOf(ROUTE, 'itinerary').item!.find((s) => s.key === 'meals')!;
   const values = new Set<string>();
   for (const r of ROUTES) for (const d of r.itinerary as Payload[]) values.add(d.meals as string);
-  eq('data/ 里的餐食有 6 种写法', [...values].sort(), ['—', '早', '早/午', '早/午/晚', '早/晚', '晚'].sort());
+  check('data/ 里有餐食', values.size > 0);
+  console.log(`fields: data/ 里的餐食有 ${values.size} 种写法：${[...values].join(' ')}`);
   for (const x of values) {
     const picks = parseStored(meals, x);
     check(`餐食「${x}」认得出`, picks !== null);
@@ -390,53 +407,88 @@ for (const [name, e, items] of SAMPLES) {
   const original = deepFreeze(structuredClone(SICHUAN));
   const s = formState(original);
   const f = (k: string) => fieldOf(ROUTE, k);
-  const patch = (next: Payload) => submission(original, next);
+  const patch = (next: Payload) => submission(original, next, ROUTE.fields);
 
-  eq('选填的「客户的其他叫法」清空：删键，进 unset', patch(writeValue(s, f('aliases'), [], ROUTE.fields)), { set: {}, unset: ['aliases'] });
+  eq('选填的「客户的其他叫法」清空：删键，进 unset', patch(writeValue(s, f('aliases'), [])), { set: {}, unset: ['aliases'] });
   eq(
     '选填的「全程最高海拔」清空（控件给 null）：删键',
-    patch(writeValue(s, f('maxAltitude'), CODECS.intUnit.write(null, f('maxAltitude')), ROUTE.fields)),
+    patch(writeValue(s, f('maxAltitude'), CODECS.intUnit.write(null, f('maxAltitude')))),
     {
       set: {},
       unset: ['maxAltitude'],
     },
   );
-  const noLevel = writeValue(s, f('intensity.level'), CODECS.enum.write(undefined, f('intensity.level')), ROUTE.fields);
-  eq('体力强度选「不填」：最累的一段跟着删，整个 intensity 进 unset', patch(noLevel), { set: {}, unset: ['intensity'] });
+  const hardest = (SICHUAN.intensity as Payload).hardest;
+  const noLevel = writeValue(s, f('intensity.level'), CODECS.enum.write(undefined, f('intensity.level')));
+  eq('体力强度选「不填」：最累的一段不显示也不提交，整个 intensity 进 unset', patch(noLevel), { set: {}, unset: ['intensity'] });
   check(
     '体力强度选「不填」后，最累的一段不显示',
     !groupGrid(ROUTE, 'fit', noLevel, ACTIVE).cells.some((c) => c.field.key === 'intensity.hardest'),
   );
-  const lighter = writeValue(s, f('intensity.level'), '适中', ROUTE.fields);
+  eq('体力强度选「不填」后，最累的一段的原文还留在表单状态里', noLevel.intensity, { hardest });
+  eq('剔除不显示的字段：删空的 intensity 一起删', 'intensity' in pruneHidden(noLevel, ROUTE.fields), false);
+  const back = writeValue(noLevel, f('intensity.level'), '较累');
+  eq(
+    '误点「不填」再选回「较累」：最累的一段原文还在，补丁为空',
+    [back.intensity, patch(back)],
+    [
+      { hardest, level: '较累' },
+      { set: {}, unset: [] },
+    ],
+  );
+  const lighter = writeValue(s, f('intensity.level'), '适中');
   eq('改体力强度：intensity 整体进 set，最累的一段原样带上', patch(lighter), {
     set: { intensity: { level: '适中', hardest: (SICHUAN.intensity as Payload).hardest } },
     unset: [],
   });
-  const fresh = writeValue(formState(GUIZHOU_5D), f('intensity.level'), '轻松', ROUTE.fields);
+  const fresh = writeValue(formState(GUIZHOU_5D), f('intensity.level'), '轻松');
   eq('没有 intensity 的条目选了体力强度：建出 { level }', fresh.intensity, { level: '轻松' });
   eq(
     '这时最累的一段显示出来、算必须项，报「没填」',
     checkItem(ROUTE, fresh).required.map((i) => `${i.label}：${i.message}`),
     ['最累的一段：没填'],
   );
-  eq('必填的「线路名称」清空：留空串，进 set，上架前检查报「没填」', patch(writeValue(s, f('title'), '', ROUTE.fields)), {
+  eq('必填的「线路名称」清空：留空串，进 set，上架前检查报「没填」', patch(writeValue(s, f('title'), '')), {
     set: { title: '' },
     unset: [],
   });
-  eq('必填的「标签」清空：留 []（tags 可以是空数组）', patch(writeValue(s, f('tags'), [], ROUTE.fields)), { set: { tags: [] }, unset: [] });
-  eq('编号写进 id', writeValue(formState(GUIZHOU_5D), f('$code'), 'r-guizhou-6d', ROUTE.fields).id, 'r-guizhou-6d');
-  eq('改一个字段，键序不变', Object.keys(writeValue(s, f('hotelLevel'), '奢华', ROUTE.fields)), Object.keys(SICHUAN));
+  eq('必填的「标签」清空：留 []（tags 可以是空数组）', patch(writeValue(s, f('tags'), [])), { set: { tags: [] }, unset: [] });
+  eq('编号写进 id', writeValue(formState(GUIZHOU_5D), f('$code'), 'r-guizhou-6d').id, 'r-guizhou-6d');
+  eq('改一个字段，键序不变', Object.keys(writeValue(s, f('hotelLevel'), '奢华')), Object.keys(SICHUAN));
   check('原对象没被改动（深冻结着，写的是拷贝）', JSON.stringify(original) === JSON.stringify(SICHUAN));
   const e = fieldOf(ROUTE, 'itinerary');
   const days = CODECS.subItems.read(s.itinerary, e) as Payload[];
   const meals = e.item!.find((x) => x.key === 'meals')!;
-  const edited = days.map((d, i) => (i === 1 ? writeValue(d, meals, CODECS.enum.write(['晚', '早'], meals), e.item) : d));
-  const next = writeValue(s, e, CODECS.subItems.write(edited, e), ROUTE.fields);
+  const edited = days.map((d, i) => (i === 1 ? writeValue(d, meals, CODECS.enum.write(['晚', '早'], meals)) : d));
+  const next = writeValue(s, e, CODECS.subItems.write(edited, e));
   eq('改第2天的餐食：逐日行程整体进 set，只有那一天变了', patch(next).unset, []);
   eq('第2天的餐食写成「早/晚」', ((patch(next).set.itinerary as Payload[])[1] as Payload).meals, '早/晚');
   check(
     '其余几天原样',
     (patch(next).set.itinerary as Payload[]).every((d, i) => i === 1 || sameValue(d, days[i])),
+  );
+
+  // 控件的值 → 要写回的值（组件只调这几个函数）
+  eq('单选分段控件：「不填」写 undefined，别的段写那一项', [enumFromSegment(SEG_NONE), enumFromSegment('较累')], [undefined, '较累']);
+  eq(
+    '是否分段控件选中哪段：没有值时选填是「不填」、必填一段都不选；有值时是 true / false',
+    [boolSegment(undefined, true), boolSegment(undefined, false), boolSegment(true, false), boolSegment(false, true)],
+    [SEG_NONE, SEG_UNSET, 'true', 'false'],
+  );
+  eq(
+    '是否分段控件写回：「不填」写 undefined，段值 true / false 写布尔',
+    [boolFromSegment(SEG_NONE), boolFromSegment('true'), boolFromSegment('false')],
+    [undefined, true, false],
+  );
+  const list = ['a', 'b', 'c'];
+  eq(
+    '逐条列表改第 2 条、删第 2 条，别的原样，不改原数组',
+    [replaceAt(list, 1, 'x'), removeAt(list, 1), list],
+    [
+      ['a', 'x', 'c'],
+      ['a', 'c'],
+      ['a', 'b', 'c'],
+    ],
   );
 }
 
@@ -482,7 +534,7 @@ for (const [name, e, items] of SAMPLES) {
     [2, false],
   );
   eq('新建的「基本信息」：两列', g(ROUTE, 'basic', {}, NEW).columns, 2);
-  eq('没有编辑权限看已上架的「基本信息」：全是只读短值，4 列', g(ROUTE, 'basic', SICHUAN, READER).columns, 4);
+  eq('没有编辑权限看已上架的「基本信息」：只读但没有锁定，两列（spec 开放问题 9）', g(ROUTE, 'basic', SICHUAN, READER).columns, 2);
   eq(
     '「价格与季节」整卡锁定，但有月份区间：两列',
     [g(ROUTE, 'price', SICHUAN, ACTIVE).columns, g(ROUTE, 'price', SICHUAN, ACTIVE).allLocked],
@@ -502,7 +554,11 @@ for (const [name, e, items] of SAMPLES) {
     [g(PKG, 'terms', NUANMU, ACTIVE).columns, g(PKG, 'terms', NUANMU, ACTIVE).allLocked],
     [2, true],
   );
-  eq('没有编辑权限看主材「基本信息」：编号、名称、单选品类、品牌，4 列', g(MATERIAL, 'basic', MATERIALS[0]!, READER).columns, 4);
+  eq(
+    '没有编辑权限看主材「基本信息」：编号、名称、单选品类、品牌都是只读短值，仍是两列',
+    g(MATERIAL, 'basic', MATERIALS[0]!, READER).columns,
+    2,
+  );
   eq('主材已上架的「基本信息」：名称不锁，两列', g(MATERIAL, 'basic', MATERIALS[0]!, ACTIVE).columns, 2);
   eq(
     '逐日行程自成区块',
@@ -639,6 +695,8 @@ for (const [name, e, items] of SAMPLES) {
 
 const covered = new Set<string>();
 let renders = 0;
+/** 每个字段、子字段第一次画的那组参数：第 7 节在 DOM 里再挂一遍 */
+const firstProps = new Map<string, { field: FieldDef; value: unknown; row: Payload; extra: Partial<FormProps> }>();
 /** 画一个字段的三种形态；表单形态传的 onChange 记下调用：画的时候不许写值 */
 function three(tag: string, f: FieldDef, value: unknown, row: Payload, extra: Partial<FormProps> = {}): [string, string, string] {
   const R = RENDERERS[f.type] as (typeof RENDERERS)[FieldType] | undefined;
@@ -662,6 +720,7 @@ function three(tag: string, f: FieldDef, value: unknown, row: Payload, extra: Pa
     out.every((h) => h.length > 0),
   );
   for (const form of ['cell', 'view', 'form']) covered.add(`${tag}|${form}`);
+  if (!firstProps.has(tag)) firstProps.set(tag, { field: f, value, row, extra });
   return out;
 }
 
@@ -851,6 +910,27 @@ for (const [, e, items] of SAMPLES) {
     sf.includes('<input') && sf.includes('识别出：5–10月') && sf.includes('month-strip-L'),
   );
   check('月份区间表单：认不出时报「没认出月份」', form(season, '旺季').includes('没认出月份：写成「5月-10月」「11月-次年4月」或「全年」'));
+  {
+    // 读屏也要知道认不出：输入框 aria-invalid，报错经 aria-describedby 连上，和字段下方的帮助拼在一起
+    const bad = html(
+      createElement(R.monthRange.Form, {
+        field: season,
+        value: '旺季',
+        row: {},
+        id: 'fx',
+        labelId: 'fx-label',
+        describedBy: 'fx-help',
+        onChange: () => undefined,
+      }),
+    );
+    const errId = /<div id="([^"]+)" class="field-error">/.exec(bad)?.[1];
+    check(
+      '月份认不出：输入框 aria-invalid，aria-describedby 同时指向帮助和报错',
+      !!errId && /<input[^>]*aria-invalid="true"/.test(bad) && bad.includes(`aria-describedby="fx-help ${errId}"`),
+      bad.slice(0, 300),
+    );
+    check('月份认得出时不标 aria-invalid', !form(season, '5月-10月').includes('aria-invalid'));
+  }
   check('月份区间表单：空着不报错也不预览', !/没认出|识别出/.test(form(season, '')));
   check('规则之外的旧值在单元格、只读里照原文', cell(season, '旺季').includes('>旺季<') && view(season, '旺季').includes('>旺季<'));
   check(
@@ -908,6 +988,10 @@ for (const [, e, items] of SAMPLES) {
     odd.includes('value="午/早"') && odd.includes('这里的写法不标准') && !odd.includes('field-chip'),
   );
   check('餐食写法不标准：只读照原文', view(meals, '午/早').includes('>午/早<'));
+  {
+    const hintId = /<div id="([^"]+)" class="field-meta">这里的写法不标准/.exec(odd)?.[1];
+    check('「这里的写法不标准」经 aria-describedby 连到输入框', !!hintId && odd.includes(`aria-describedby="${hintId}"`));
+  }
   // tags
   const tags = fieldOf(ROUTE, 'tags');
   const tc = cell(tags, ['国内', '贵州', '非遗手作', '亲子', '美食']);
@@ -929,8 +1013,14 @@ for (const [, e, items] of SAMPLES) {
     '是否只读写文字：「境内」「含拆旧」',
     view(overseas, false).includes('>境内<') && view(fieldOf(PKG, 'demolition'), true).includes('>含拆旧<'),
   );
+  // 选填的是否：三段「不填 / 否 / 是」，和选填的单选 enum 一样（开关表示不了没填，spec 顶部 Revisions）
   const optBool: FieldDef = { ...overseas, required: false };
-  check('选填的是否：开关，旁边写当前值', form(optBool, true).includes('ant-switch') && form(optBool, true).includes('>境外<'));
+  eq(
+    '选填的是否：没填选中「不填」，true 选中「境外」，没有开关',
+    [selectedSegments(form(optBool, undefined)), selectedSegments(form(optBool, true)), form(optBool, true).includes('ant-switch')],
+    [['不填'], ['境外'], false],
+  );
+  check('选填的是否：「不填」在最前面', form(optBool, false).indexOf('title="不填"') < form(optBool, false).indexOf('title="境内"'));
   // subItems
   eq(
     '有序子项单元格：「8天」「4条」「7个节点」',
@@ -1003,6 +1093,13 @@ for (const [, e, items] of SAMPLES) {
     cell(fieldOf(ROUTE, '$status'), 'active').includes('已上架') && view(fieldOf(ROUTE, '$status'), 'draft').includes('草稿'),
   );
   check('状态的表单形态也不能改（只有 Status）', !form(fieldOf(ROUTE, '$status'), 'draft').includes('<input'));
+  check(
+    '状态只认 draft、active：匿名投影里没有状态（undefined）和别的值写「—」，不画成草稿',
+    [undefined, 'archived'].every((v) => {
+      const h = cell(fieldOf(ROUTE, '$status'), v);
+      return h === '—' && !h.includes('status');
+    }),
+  );
 }
 
 // ---------------- 6. 实体图标 ----------------
@@ -1012,6 +1109,246 @@ for (const [, e, items] of SAMPLES) {
   }
   const fallback = ENTITY_ICONS.filter((n) => entityIcon(n) === Box);
   eq('实体图标集合里只有 box 落到 Box', fallback, ['box']);
+}
+
+// ---------------- 7. 在 DOM 里挂载 ----------------
+// renderToStaticMarkup 不跑 effect，也触发不了 onChange：挂载后在 effect 里写值（打开条目就改了表单、发出 PATCH）、
+// 组件把控件的值接错（「不填」写成 '$none'、改第 3 条写进第 1 条），上面几节都看不到。这里用 react-dom/client 真挂一遍
+
+/** 挂一个元素，effect 跑完，再等挂载时排下的定时器和 requestAnimationFrame 也跑完；返回容器和卸载 */
+async function mount(el: ReactElement, env: FieldEnv = ENV): Promise<{ box: HTMLElement; unmount(): Promise<void> }> {
+  const box = document.createElement('div');
+  document.body.append(box);
+  const root = createRoot(box);
+  await act(async () => root.render(createElement(FieldEnvContext.Provider, { value: env }, el)));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+    await win.happyDOM.waitUntilComplete();
+  });
+  return {
+    box,
+    async unmount() {
+      await act(async () => root.unmount());
+      box.remove();
+    },
+  };
+}
+
+/** 挂一张分组卡片，写回的表单状态再传回去重画（和页面一样），记下每次写回 */
+async function mountGrid(e: EntityType, group: string, payload: Payload, ctx: ItemContext) {
+  const writes: Payload[] = [];
+  let state = formState(payload);
+  function Harness() {
+    const [s, setS] = useState(state);
+    const onChange = (n: Payload): void => {
+      writes.push(n);
+      state = n;
+      setS(n);
+    };
+    return <FieldGrid entity={e} group={group} state={s} ctx={ctx} onChange={onChange} />;
+  }
+  const m = await mount(<Harness />);
+  return { ...m, writes, state: () => state, patch: () => submission(payload, state, e.fields) };
+}
+
+const all = <T extends Element>(root: ParentNode, sel: string): T[] => [...root.querySelectorAll<T>(sel)];
+/** 分段控件里文字是 title 的那一段的 radio */
+const segment = (root: ParentNode, title: string): HTMLInputElement | undefined =>
+  all<HTMLLabelElement>(root, '.ant-segmented-item')
+    .find((l) => l.querySelector(`.ant-segmented-item-label[title="${title}"]`))
+    ?.querySelector('input') ?? undefined;
+async function click(el: Element | null | undefined): Promise<boolean> {
+  if (!el) return false;
+  await act(async () => (el as HTMLElement).click());
+  return true;
+}
+/** 像敲字一样改输入框：走原型上的 value setter（React 盯着实例上的那个），再发 input 事件 */
+async function typeInto(el: Element | null | undefined, text: string): Promise<boolean> {
+  if (!el) return false;
+  let proto: object | null = Object.getPrototypeOf(el);
+  let desc: PropertyDescriptor | undefined;
+  while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, 'value'))) proto = Object.getPrototypeOf(proto);
+  await act(async () => {
+    desc?.set?.call(el, text);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+  });
+  return true;
+}
+async function press(el: Element | null | undefined, key: string): Promise<boolean> {
+  if (!el) return false;
+  await act(async () => {
+    el.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }) as unknown as Event);
+  });
+  return true;
+}
+
+// 7.1 挂载和 effect 都不写值：两个包每个字段、子字段的表单形态（有值、空值各一次），和各分组卡片
+{
+  const t1 = Date.now();
+  const wrote: string[] = [];
+  for (const [tag, { field, value, row, extra }] of firstProps) {
+    for (const v of [value, undefined]) {
+      let writes = 0;
+      const R = RENDERERS[field.type];
+      const m = await mount(
+        <R.Form {...extra} field={field} value={v} row={row} id="fx" labelId="fx-label" onChange={() => void (writes += 1)} />,
+      );
+      await m.unmount();
+      if (writes) wrote.push(`${tag}${v === undefined ? '（空）' : ''}：${writes} 次`);
+    }
+  }
+  check(
+    `挂载后 effect 跑完，${firstProps.size} 个字段、子字段的表单形态都不写值（${Date.now() - t1}ms）`,
+    wrote.length === 0,
+    wrote.join('、'),
+  );
+
+  const cards: [EntityType, Payload, ItemContext][] = [
+    [ROUTE, SICHUAN, ACTIVE],
+    [ROUTE, SICHUAN, READER],
+    [ROUTE, GUIZHOU_5D, DRAFT],
+    [ROUTE, {}, NEW],
+    [HOTEL, HOTELS[0]!, ACTIVE],
+    [PKG, NUANMU, ACTIVE],
+    [PKG, NUANMU, DRAFT],
+    [MATERIAL, MATERIALS[0]!, NEW],
+  ];
+  const cardWrote: string[] = [];
+  for (const [e, p, ctx] of cards) {
+    for (const g of e.groups) {
+      const m = await mountGrid(e, g.key, p, ctx);
+      await m.unmount();
+      if (m.writes.length) cardWrote.push(`${e.kind}.${g.key}（${String(p.id ?? '新建')}，${ctx.status}）`);
+    }
+  }
+  check('各分组卡片挂载后都不写值，打开不改补丁为空', cardWrote.length === 0, cardWrote.join('、'));
+}
+
+// 7.2 经组件写回
+{
+  // 体力强度（选填单选，分段控件）：点「不填」写 undefined、最累的一段不显示也不提交；再选回来原文还在
+  const hardest = (SICHUAN.intensity as Payload).hardest;
+  const fit = await mountGrid(ROUTE, 'fit', SICHUAN, ACTIVE);
+  check('体力强度：点「不填」', await click(segment(fit.box, '不填')));
+  eq('点「不填」：level 删掉，最累的一段留在表单状态里', fit.state().intensity, { hardest });
+  eq('点「不填」：补丁里整个 intensity 进 unset', fit.patch(), { set: {}, unset: ['intensity'] });
+  check('点「不填」：最累的一段不显示', !fit.box.textContent?.includes(String(hardest)));
+  check('再点「较累」', await click(segment(fit.box, '较累')));
+  eq(
+    '再点回「较累」：补丁为空，最累的一段原文还在',
+    [fit.patch(), (fit.state().intensity as Payload).hardest],
+    [{ set: {}, unset: [] }, hardest],
+  );
+  check('点「适中」', await click(segment(fit.box, '适中')));
+  eq('点「适中」：intensity 整体进 set', fit.patch(), { set: { intensity: { hardest, level: '适中' } }, unset: [] });
+  await fit.unmount();
+
+  // 境内还是境外（必填是否）：新建时一段都不选，点哪段写哪个布尔
+  const ov = await mountGrid(ROUTE, 'fit', {}, NEW);
+  check('新建：点「境内」', await click(segment(ov.box, '境内')));
+  eq('点「境内」写 false', ov.state().overseas, false);
+  check('再点「境外」', await click(segment(ov.box, '境外')));
+  eq('点「境外」写 true', ov.state().overseas, true);
+  await ov.unmount();
+
+  // 选填的是否：点「不填」删键；从没填点成「是」再点回「不填」，补丁回到空
+  const optional: EntityType = {
+    ...ROUTE,
+    groups: [{ key: 'g', label: '组' }],
+    fields: [{ key: 'b', type: 'boolean', label: '是否', group: 'g', required: false }],
+  };
+  const ob = await mountGrid(optional, 'g', { b: true }, DRAFT);
+  check('选填是否：点「不填」', await click(segment(ob.box, '不填')));
+  eq('选填是否点「不填」：删键，进 unset', ob.patch(), { set: {}, unset: ['b'] });
+  await ob.unmount();
+  const ob2 = await mountGrid(optional, 'g', {}, DRAFT);
+  await click(segment(ob2.box, '是'));
+  eq('选填是否从没填点成「是」', ob2.state().b, true);
+  await click(segment(ob2.box, '不填'));
+  eq('再点回「不填」：补丁为空', ob2.patch(), { set: {}, unset: [] });
+  await ob2.unmount();
+
+  // 标签：已上架时「国内」有无都不能变。先确认退格确实删得掉最后一个不锁的，再看删「国内」不写
+  const tagsInput = (box: HTMLElement) => box.querySelector('.ant-select-multiple input');
+  const t1 = await mountGrid(ROUTE, 'sell', { ...GUIZHOU_5D, tags: ['国内', '贵州'] }, ACTIVE);
+  check('标签：在输入框里按退格', await press(tagsInput(t1.box), 'Backspace'));
+  eq('按退格删掉最后一个「贵州」', t1.state().tags, ['国内']);
+  await t1.unmount();
+  const t2 = await mountGrid(ROUTE, 'sell', { ...GUIZHOU_5D, tags: ['贵州', '国内'] }, ACTIVE);
+  await press(tagsInput(t2.box), 'Backspace');
+  eq('最后一个是锁住的「国内」：按退格不写回，标签不变', [t2.writes.length, t2.state().tags], [0, ['贵州', '国内']]);
+  check('点「删除贵州」', await click(t2.box.querySelector('button[aria-label="删除贵州"]')));
+  eq('点「删除贵州」：只剩「国内」', t2.state().tags, ['国内']);
+  await t2.unmount();
+  const t3 = await mountGrid(ROUTE, 'sell', { ...GUIZHOU_5D, tags: ['贵州'] }, ACTIVE);
+  // 敲到分隔符「，」就成一个标签（tokenSeparators），不用等下拉
+  await typeInto(tagsInput(t3.box), '国内，');
+  await typeInto(tagsInput(t3.box), '亲子，');
+  eq('没有「国内」时加不上，别的照加', t3.state().tags, ['贵州', '亲子']);
+  await t3.unmount();
+
+  // 行程亮点（单字段的有序子项）：改第 2 条、上移、删第 2 条、添加一条，都按下标写回
+  const hl = await mountGrid(ROUTE, 'sell', GUIZHOU_5D, DRAFT);
+  const lines = GUIZHOU_5D.highlights as string[];
+  const rows = () => all<HTMLElement>(hl.box, '.field-list-row');
+  check('行程亮点：改第 2 条', await typeInto(rows()[1]?.querySelector('input'), '改过的第二条'));
+  eq('改第 2 条：只有第 2 条变了', hl.state().highlights, replaceAt(lines, 1, '改过的第二条'));
+  await click(rows()[1]?.querySelector('button[aria-label="上移"]'));
+  eq('第 2 条上移', (hl.state().highlights as string[]).slice(0, 2), ['改过的第二条', lines[0]]);
+  await click(rows()[0]?.querySelector('button[aria-label="上移"]'));
+  eq('第 1 条的上移不动', (hl.state().highlights as string[])[0], '改过的第二条');
+  await click(rows()[1]?.querySelector('button[aria-label="删除这条"]'));
+  eq('删第 2 条', hl.state().highlights, ['改过的第二条', ...lines.slice(2)]);
+  await click(all<HTMLElement>(hl.box, 'button').find((b) => b.textContent?.includes('添加一条')));
+  eq('添加一条：末尾多一个空条', (hl.state().highlights as string[]).at(-1), '');
+  await hl.unmount();
+
+  // 逐日行程（多字段的有序子项）：第 2 天的餐食点一片、住宿自由输入，只有第 2 天变了
+  const days = await mountGrid(ROUTE, 'days', GUIZHOU_5D, DRAFT);
+  const day = (n: number) => days.box.querySelector(`section[aria-label="D${n}"]`);
+  const before = GUIZHOU_5D.itinerary as Payload[];
+  const mealsField = fieldOf(ROUTE, 'itinerary').item!.find((x) => x.key === 'meals')!;
+  const wantMeals = formatStored(mealsField, togglePick(parseStored(mealsField, String(before[1]!.meals)) ?? [], '晚'));
+  check('第 2 天：点「晚」这一片', await click(all<HTMLElement>(day(2) ?? document, '.field-chip').find((b) => b.textContent === '晚')));
+  eq('点「晚」：第 2 天的餐食按选项排好写回', (days.state().itinerary as Payload[])[1]!.meals, wantMeals);
+  check('第 2 天的住宿：自由输入', await typeInto(day(2)?.querySelector('.ant-select-auto-complete input'), '库外的客栈'));
+  eq('住宿写进第 2 天', (days.state().itinerary as Payload[])[1]!.hotel, '库外的客栈');
+  check(
+    '别的几天原样',
+    (days.state().itinerary as Payload[]).every((d, i) => i === 1 || sameValue(d, before[i])),
+  );
+  eq('补丁只有逐日行程', Object.keys(days.patch().set), ['itinerary']);
+  await days.unmount();
+
+  // 施工节点：第 3 个节点删掉唯一的主材 → 选填清空，经 writeValue 删键（不留 []）；改第 2 个节点的名称
+  const nodes = await mountGrid(PKG, 'nodes', NUANMU, DRAFT);
+  const node = (n: number) => nodes.box.querySelector(`section[aria-label="节点${n}"]`);
+  check('节点3：点主材芯片的删除', await click(node(3)?.querySelector('.ant-select-selection-item-remove')));
+  const after = nodes.state().nodes as Payload[];
+  eq('节点3 删掉唯一的主材：materials 键删掉', 'materials' in after[2]!, false);
+  check(
+    '别的节点原样',
+    after.every((d, i) => i === 2 || sameValue(d, (NUANMU.nodes as Payload[])[i])),
+  );
+  check('节点2：改名称', await typeInto(node(2)?.querySelector('input'), '水电改造'));
+  eq(
+    '名称写进节点2，节点1 不变',
+    [(nodes.state().nodes as Payload[])[1]!.name, (nodes.state().nodes as Payload[])[0]!.name],
+    ['水电改造', '拆改'],
+  );
+  await nodes.unmount();
+
+  // 多选引用（套餐的主材，草稿里可改）：删一个芯片
+  const terms = await mountGrid(PKG, 'terms', NUANMU, DRAFT);
+  const mats = NUANMU.materials as string[];
+  const chip = all<HTMLElement>(terms.box, '.ant-select-selection-item').find((c) => c.textContent?.includes('欧派 整体橱柜'));
+  check('主材：点「欧派 整体橱柜」的删除', await click(chip?.querySelector('.ant-select-selection-item-remove')));
+  eq(
+    '主材删掉欧派，按编号写回',
+    terms.state().materials,
+    mats.filter((m) => m !== 'm-oupai-cab'),
+  );
+  await terms.unmount();
 }
 
 report();
