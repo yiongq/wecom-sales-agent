@@ -9,11 +9,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Tooltip } from 'antd';
 import { type CSSProperties, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
 import type { Role } from '../../../src/shared/console-api.js';
+import { ROLE_LABEL } from '../../../src/shared/ui-labels.js';
 import { Status } from '../parts/Status.js';
 import { cjk } from '../typography.js';
 import { useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { useDocumentTitle } from './hooks.js';
-import { documentTitle, isEditor, ROLE_LABEL, type ShellViewer } from './model.js';
+import { documentTitle, isEditor, type ShellViewer } from './model.js';
 
 /** 外壳关心的身份；还没判定出来、要登录、文件模式时是 null */
 export function shellViewerOf(v: Viewer | undefined): ShellViewer | null {

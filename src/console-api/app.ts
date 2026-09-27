@@ -468,7 +468,12 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // ---------------- 审计 ----------------
   .get('/audit', canAudit, zValidator('query', AuditQuery, badRequest), async (c) => {
     const q = c.req.valid('query');
-    const page: AuditPage = await listAudit(ctxOf(c), { limit: q.limit ?? 50, before: q.before, action: q.action });
+    const page: AuditPage = await listAudit(ctxOf(c), {
+      limit: q.limit ?? 50,
+      before: q.before,
+      action: q.action,
+      actions: q.actions?.split(','),
+    });
     return c.json(page, 200);
   })
 

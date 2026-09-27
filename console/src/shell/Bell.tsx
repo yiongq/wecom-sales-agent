@@ -9,13 +9,14 @@ import { Link } from '@tanstack/react-router';
 import { Button, Popover, type PopoverProps } from 'antd';
 import { ArrowUpRight, Bell as BellIcon } from 'lucide-react';
 import { useState } from 'react';
+import { relativeTime } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
 import { cjk } from '../typography.js';
 import { useChangeFlash } from './hooks.js';
 import { IconButton } from './IconButton.js';
 import { Icon } from './icons.js';
-import { badgeText, conversationLabel, POLL, sinceText, workbenchHref } from './model.js';
+import { badgeText, conversationLabel, POLL, workbenchHref } from './model.js';
 
 /** 等人接手数：侧栏软徽标与铃铛共用这一个查询（同一次 counts 响应） */
 export function useWaitingCount() {
@@ -63,7 +64,7 @@ export function Bell({ pack, placement }: { pack: IndustryPack; placement: Popov
             <li key={row.id} className="bell-row">
               <div className="bell-row-main">
                 <div className="bell-row-title">{cjk(conversationLabel(row, pack))}</div>
-                <div className="bell-row-sub">{`${sinceText(row.updatedAt, now)}有新动静`}</div>
+                <div className="bell-row-sub">{`${relativeTime(row.updatedAt, now)}有新动静`}</div>
               </div>
               <Button
                 type="text"

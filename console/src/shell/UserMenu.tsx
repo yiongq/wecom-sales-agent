@@ -10,9 +10,10 @@ import { Dropdown, type MenuProps, Switch, Tooltip } from 'antd';
 import { Check, ChevronRight, ChevronsUpDown, LogOut } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
 import type { Me } from '../../../src/shared/console-api.js';
+import { ROLE_LABEL } from '../../../src/shared/ui-labels.js';
 import { type Appearance, getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { Icon } from './icons.js';
-import { avatarIndex, firstChar, ROLE_LABEL } from './model.js';
+import { avatarIndex, firstChar } from './model.js';
 
 export const APPEARANCE_LABEL: Readonly<Record<Appearance, string>> = { light: '浅色', dark: '深色', system: '跟随系统' };
 const APPEARANCES: readonly Appearance[] = ['light', 'dark', 'system'];

@@ -103,6 +103,8 @@ jobs:
       #   保存却 422，或者锁定、阶段、工具名和引擎对不上。
       # - src/shared/typography.selftest.ts、console/src/typography.selftest.ts：连用全角标点的挤压回退（与 Chromium 逐对量出的
       #   结果对拍）、cjk() 与 Sep 的标记、全局 text-spacing-trim 的约定。回退错了只在 Firefox、Safari 里标点宽度不对，不报错。
+      # - src/shared/format.selftest.ts、src/shared/audit-text.selftest.ts：金额、时间、月份区间的写法（时区钉成上海）；审计记录
+      #   写成的人话句子（实体名、字段名取自行业包，表外的动作兜底）与连续同类记录的合并。写错了不报错，只是页面上的字不对。
       # - console/src/session.selftest.ts、console/src/parts/errors.selftest.ts：会话过期后就地重登（请求停住、登录后重放，
       #   匿名形状的数据不进缓存）；错误文案与 spec 的表逐条相同，服务端的 detail 只在折叠的技术详情里。判错了不报错，
       #   只会让页面跳成匿名、编辑的内容丢掉，或者把服务端原文摆给运营看。
