@@ -3,7 +3,9 @@
 //
 // 收的是界面会显示的文字，不收注释：
 // - console/index.html（去掉 <!-- --> 注释）；
-// - console/src/** 的代码文件：字符串字面量、模板字符串的文字段、JSX 文本；CSS 去掉注释后的全文；
+// - console/src/** 的代码文件：字符串字面量、模板字符串的文字段、JSX 文本；CSS 去掉注释后的全文。
+//   跳过样张目录 _specimen/：样张页只在 VITE_SPECIMEN=1 的走查构建里注册，生产不显示；它独有的字要是进了 UI 优先片，
+//   每个访客都得白白多预载这些字形。走查时样张里的这些字按需加载长尾分片；
 // - src/shared/** 的代码文件，取法同上：console 会 import 它们（报错文案、格式化、界面标签），跳过假包 pack-fixtures/；
 // - 各注册行业包的界面配置 src/packs/<包>/console-pack.ts；
 // - antd 的 zh_CN 语言包（空状态、分页、确认按钮这些 antd 自己画的字）；
@@ -110,7 +112,7 @@ export function uiTexts(root = '.'): UiText[] {
   const rel = (p: string) => path.posix.relative(root, p) || p;
   const files = [
     path.posix.join(root, 'console/index.html'),
-    ...walk(path.posix.join(root, 'console/src')),
+    ...walk(path.posix.join(root, 'console/src')).filter((f) => !rel(f).startsWith('console/src/_specimen/')),
     ...walk(path.posix.join(root, 'src/shared')).filter((f) => !rel(f).startsWith('src/shared/pack-fixtures/')),
     ...walk(path.posix.join(root, 'src/packs')).filter((f) => /^src\/packs\/[^/]+\/console-pack\.ts$/.test(rel(f))),
   ];

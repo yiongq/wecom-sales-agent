@@ -5,6 +5,7 @@ Revisions: 2026-09-27 整份就地重写（本 spec 仍是 draft，没有代码�
 Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../../architecture/01-pg-config-console/spec.md)（「后台 API 与页面」、安全头、匿名投影、权限矩阵）。技术栈见 [ADR-002](../../adr/adr-002-console-vite-react.md)；其中「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」一条，改由 [ADR-004](../../adr/adr-004-pack-field-rendering.md) 取代。**01 翻为 `implemented`、并且 owner 把本 spec 翻为 `ready` 之后才开工。** 原因有两条：AGENTS.md 规定 `Amends` 只能加在已 implemented 的 spec 上；验收 25 要重跑 01 的验收。
 Amends: 01 的「后台 API 与页面」（`Me.tenantName`、`ConvQuery` 与 `AuditQuery` 的可选参数、两个只读接口）、「SOP：节表、渲染、版本、发布闸」（`ContractViolation.match`；草稿保存的 `rebaseOnto` 改变草稿的基线）、「导入、导出与回滚」（`tenant-create --pack` 改读注册表）。01 implemented 后生效，只做新增，见「接口改动」。01 里不是新增的改动（安全头两处、页面条款五处，以及随之要改写的 01 验收 16 第 4 条和验收 22）不走 Amends，见开放问题 1。
 Revisions: 2026-09-27 实现期修订（plan 第 1.2 步，开放问题 4 实测之后，与实现同一个分支）：「字体与授权义务」四处和不变量 30。一、UI 优先片的用字来源原为「`console/src/**` 与各注册行业包配置」，改为界面实际显示的文字：另加 `src/shared/**`、antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包，只取字符串与 JSX 文本，注释与自测不算；这些字也上页面，不收就过不了验收 8 的「长尾分片 0 个」。不变量 30 的「每个汉字」同样改用这个取法，原文按字面会连注释一起算。二、GSUB 原为 `locl vert vrt2`，加上 `ccmp`：Noto 的「——」靠 `ccmp` 连字，照原表切出来，三个引擎里都断开，过不了验收 7。三、长尾分片的 `unicode-range` 原为照抄依赖的清单，改为去掉控制字符，因为 WebKit 会为换行符下载 latin 片。四、`pnpm test` 的检查另加几条不经过生成脚本的断言：woff2 的 cmap 等于码位清单；`fonts.css` 里最后一条 Noto Sans SC 是 UI 优先片；长尾范围不含控制字符；界面文字里汉字以外的字符都由 Geist 或 UI 优先片画，例外要写明理由。另外注明：「1,124 个码位、243,600 B」是按界面做完时的全部文案切出来的，不是当前产物的大小。开放问题 4 在三个引擎上成立（渲染的界面文字去掉了待删的「¥」和不上页面的 BOM），所以维持声明顺序，不走全量自切，「性能」一节和验收 8、23 不改。
+Revisions: 2026-09-27 实现期修订（plan 第 1.3 步，评审之后，与实现同一个分支）：一、「字体与授权义务」的界面文字不含 `console/src/_specimen/`：两个样张页只在 `VITE_SPECIMEN=1` 的走查构建里注册，生产里没有；它独有的 67 个字收进 UI 优先片的话，生产每次整页加载都多预载 16,092 B（+14%），一个字也不画。样张里的这些字按需加载长尾分片，验收 7 在 P 页上量的宽度不变（plan 实施记录）。不变量 30 引用同一取法，随之生效；「1,124 个码位」是按设计系统的全部文案（含 P 页）算的规划量，不重算。二、「标点与间距」里「与 Chromium 逐对核对过 576 对，结果一致」写细：整串宽度与墨迹位置一致，「收标点 + 开标点」一类 Chromium 挤开标点、回退挤收标点（设计系统 §2.2、§2.5）。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
 配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
@@ -635,7 +636,7 @@ export interface CheckIssue {
 - **文件与码位**（细节见设计系统 §2.6）：
   - `geist-ui.woff2`：U+0020–007E、U+00A0、U+00B7，字重轴 400–600，实测 11.9 KB，preload。
   - `geist-mono-ui.woff2`：同样的码位，字重轴 400–500，实测 8.0 KB，用到时加载。
-  - `noto-sans-sc-ui.woff2`，UI 优先的一片：界面文字里的全部汉字，加全部 CJK 标点和由 Noto 画的符号。界面文字指 `console/index.html`、`console/src/**`、`src/shared/**`（假包 `pack-fixtures/` 除外）和各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包（表单显示校验消息）；注释和 `*.selftest.*` 不算，取法见 `scripts/fonts/ui-text.ts`。服务端的 `detail` 不收，它只出现在「技术详情」里（不变量 8），显示时按需加载长尾分片。字重轴 400–600；保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（「——」靠 `ccmp` 把两个 U+2015 连成一个两字宽的字形）。按当前仓库加设计系统里的全部文案切（即界面做完时的用字，照设计系统 §2.6 的配方），是 1,124 个码位、243,600 B；这是规划时的量，产物只收已经写进代码的文字，当前数字见 plan 第 1.2 步的实施记录。preload。
+  - `noto-sans-sc-ui.woff2`，UI 优先的一片：界面文字里的全部汉字，加全部 CJK 标点和由 Noto 画的符号。界面文字指 `console/index.html`、`console/src/**`（样张目录 `_specimen/` 除外，生产构建里没有样张页）、`src/shared/**`（假包 `pack-fixtures/` 除外）和各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包（表单显示校验消息）；注释和 `*.selftest.*` 不算，取法见 `scripts/fonts/ui-text.ts`。服务端的 `detail` 不收，它只出现在「技术详情」里（不变量 8），显示时按需加载长尾分片。字重轴 400–600；保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（「——」靠 `ccmp` 把两个 U+2015 连成一个两字宽的字形）。按当前仓库加设计系统里的全部文案切（即界面做完时的用字，照设计系统 §2.6 的配方），是 1,124 个码位、243,600 B；这是规划时的量，产物只收已经写进代码的文字，当前数字见 plan 第 1.2 步的实施记录。preload。
   - 长尾：`@fontsource-variable/noto-sans-sc` 的 101 片 [86]，单片约 48 KB，客户数据里出现界面没用过的字时按需加载。
 - **怎么生成**：
   - Geist、Geist Mono 和 UI 优先片由 `scripts/fonts/build.ts` 生成并提交。脚本从固定 URL 取 OFL 原文件并校验 sha256，调 fonttools 的 `pyftsubset` 切片（只在开发机上跑，需要本机装 fonttools；CI 不跑它）。同时写出码位清单和产物的 sha256。界面文案改了就重跑。
@@ -654,7 +655,7 @@ export interface CheckIssue {
 ### 标点与间距
 
 - 全局样式在 `body` 上写 `text-spacing-trim: normal`、`text-autospace: normal`、`font-variant-numeric: tabular-nums`；根元素 `<html lang="zh-CN">`；含「…」的元素不设 `lang="en"`（设计系统 §2.5）[97][98]。
-- Chromium 靠 Noto 的 `halt` 原生挤压；Firefox、Safari 和老版本企业微信内置浏览器不支持 `text-spacing-trim`。启动时检测一次 `CSS.supports('text-spacing-trim', 'normal')`，不支持时由文本助手 `cjk(text)` 按 `haltIndices()` 把要挤的字包进 `<span class="halt">`；话术编辑器用同一个函数生成 CodeMirror 装饰。`haltIndices` 放在 `src/shared/typography.ts`，在完整字体上与 Chromium 逐对核对过 576 对，结果一致。
+- Chromium 靠 Noto 的 `halt` 原生挤压；Firefox、Safari 和老版本企业微信内置浏览器不支持 `text-spacing-trim`。启动时检测一次 `CSS.supports('text-spacing-trim', 'normal')`，不支持时由文本助手 `cjk(text)` 按 `haltIndices()` 把要挤的字包进 `<span class="halt">`；话术编辑器用同一个函数生成 CodeMirror 装饰。`haltIndices` 放在 `src/shared/typography.ts`，在完整字体上与 Chromium 逐对核对过 576 对（第 1.3 步扩到 1,089 对）：整串宽度与墨迹位置一致，只有「收标点 + 开标点」一类挤的字不同，Chromium 挤开标点、回退挤收标点（设计系统 §2.5）。
 - 界面文案里中文和数字、拉丁字母之间不手打空格，由 `text-autospace` 补；产品数据原样显示。并列信息用 `Sep` 隔开。
 
 ### 图标

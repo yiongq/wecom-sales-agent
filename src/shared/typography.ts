@@ -1,7 +1,9 @@
 // 连用全角标点的挤压回退（docs/features/console-ux/spec.md「标点与间距」，设计系统 §2.5）。
 // Chromium 靠 `text-spacing-trim: normal` 加 Noto Sans SC 的 `halt` 原生挤压；Firefox、Safari 和老版本企业微信内置浏览器
 // 不支持这个属性，由 console 的 cjk() 与话术编辑器按这里算出的下标，把要挤的字包进 `.halt`（font-feature-settings: 'halt'）。
-// 规则与 Chromium 153 逐对核对过：typography.selftest.ts 里的 24×24 = 576 对和几句真实文案，是在 Chromium 上逐字量出来的。
+// 规则与 Chromium 153 逐对核对过：typography.selftest.ts 里的 33×33 = 1,089 对（含设计系统 §2.2 的 576 对）和几句真实文案，
+// 是在 Chromium 上逐字量出来的。整串宽度与墨迹位置都一致；只有「收标点 + 开标点」一类挤的字不同（Chromium 挤开标点、这里挤收标点），
+// 见自测开头的说明。
 
 /** 字身在右、左边空半字的开标点 */
 const OPEN = '（［｛〔〈《「『【〖“‘';
