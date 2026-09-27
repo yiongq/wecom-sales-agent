@@ -348,7 +348,9 @@ const EMPTY = '没填';
 const UNPICKED = '没选';
 const BAD_SHAPE = '格式不对';
 const NOT_OPTION = '不在可选项里';
-const CODE_RULE = '只能是小写字母、数字和连字符，以字母或数字开头';
+const CODE_RULE = '只能是小写字母、数字和连字符，以字母或数字开头，最长64位';
+/** zod 的 int() 只收安全整数（绝对值不超过 2^53-1），17 位的数字在输入框里敲得出来 */
+const TOO_BIG = '数字太大';
 const MONTHS_RULE = '要写出月份（如「6-9月」「11月-次年4月」）或「全年」';
 
 /** 条数的量词：有序子项取 itemNoun，其余按「项」「个」 */
@@ -390,10 +392,12 @@ function problems(f: FieldDef, v: unknown, path: string, label: string): CheckIs
       return one(textProblem(v) ?? (monthsReadable(v as string) ? null : MONTHS_RULE));
     case 'money':
       if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) return one('要是大于0的整数');
+      if (!Number.isSafeInteger(v)) return one(TOO_BIG);
       return one(f.min !== undefined && v < f.min ? `至少${f.min}${f.unit ?? ''}` : null);
     case 'intUnit':
       if (typeof v !== 'number' || !Number.isInteger(v)) return one('要是整数');
-      return one(v < (f.min ?? 0) ? `至少${f.min ?? 0}${f.unit ?? ''}` : null);
+      if (v < (f.min ?? 0)) return one(`至少${f.min ?? 0}${f.unit ?? ''}`);
+      return one(Number.isSafeInteger(v) ? null : TOO_BIG);
     case 'boolean':
       return one(typeof v === 'boolean' ? null : BAD_SHAPE);
     case 'enum':
@@ -476,9 +480,11 @@ export function checkItem(entity: EntityType, payload: Record<string, unknown>):
     if (f.required !== false || issues.length > 0) count(issues);
 
     if (f.type === 'subItems' && f.countFrom !== undefined) {
-      // 条数由另一个字段定（逐日行程随天数）：那个字段没填对时由它自己报，这一项不重复报
+      // 条数由另一个字段定（逐日行程随天数）：那个字段没填或没填对（天数为0、带小数）时由它自己报，这一项不重复报
+      const by = entity.fields.find((x) => x.key === f.countFrom);
       const want = valueAt(payload, f.countFrom);
-      const diff = Array.isArray(v) && typeof want === 'number' && Number.isInteger(want) && want >= 0 ? want - v.length : 0;
+      const wantOk = by !== undefined && typeof want === 'number' && fieldIssues(by, want, by.key, by.label).length === 0;
+      const diff = Array.isArray(v) && wantOk ? want - v.length : 0;
       const noun = nounOf(f);
       count(diff === 0 ? [] : [{ path: f.key, label: f.label, message: diff > 0 ? `还差${diff}${noun}` : `多了${-diff}${noun}` }]);
     }

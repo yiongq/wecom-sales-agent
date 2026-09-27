@@ -119,6 +119,12 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
     'filterBy「days」',
   ],
   [
+    'filterBy 本实体没有这个字段',
+    travel,
+    (p) => void (subOf(entityOf(p, 'route'), 'itinerary', 'hotel').filterBy = 'stars'),
+    'filterBy「stars」',
+  ],
+  [
     'showWhen 指向不存在的字段',
     travel,
     (p) => void (fieldOf(entityOf(p, 'route'), 'intensity.hardest').showWhen = { key: 'intensity.levl', filled: true }),
@@ -161,6 +167,7 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
   ['实体 kind 重复', travel, (p) => void p.entities.push({ ...entityOf(p, 'hotel') }), 'kind「hotel」重复'],
   ['分组 key 重复', travel, (p) => void entityOf(p, 'hotel').groups.push({ key: 'basic', label: '又一个' }), 'groups：key「basic」重复'],
   ['锁定组没写原因', travel, (p) => void (entityOf(p, 'hotel').lockGroups.price.reason = ''), 'lockGroups[price]：tag 和 reason 都要写'],
+  ['锁定组没写标签', travel, (p) => void (entityOf(p, 'hotel').lockGroups.price.tag = ''), 'lockGroups[price]：tag 和 reason 都要写'],
   ['列表列不是本实体的字段', travel, (p) => void entityOf(p, 'route').list.columns.push('rating'), 'list.columns「rating」'],
   ['筛选不是本实体的字段', travel, (p) => void entityOf(p, 'hotel').list.filters.push('stars2'), 'list.filters「stars2」'],
   ['搜索不是本实体的字段', travel, (p) => void entityOf(p, 'hotel').list.search.push('city'), 'list.search「city」'],
@@ -189,16 +196,28 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
     'fields[highlights].item：key 为空时只能有这一个字段',
   ],
   [
+    '子字段 key 重复',
+    travel,
+    (p) => void fieldOf(entityOf(p, 'route'), 'itinerary').item?.push({ ...subOf(entityOf(p, 'route'), 'itinerary', 'title') }),
+    'fields[itinerary].item：key「title」重复',
+  ],
+  [
+    'autoIndexKey 写在单值的有序子项上',
+    travel,
+    (p) => void (fieldOf(entityOf(p, 'route'), 'highlights').autoIndexKey = 'n'),
+    'fields[highlights].autoIndexKey 只能用在子字段是对象的有序子项上',
+  ],
+  [
     'autoIndexKey 与子字段重复',
     travel,
     (p) => void (fieldOf(entityOf(p, 'route'), 'itinerary').autoIndexKey = 'title'),
     'autoIndexKey「title」与子字段重复',
   ],
   [
-    '子字段用了 showWhen',
-    travel,
-    (p) => void (subOf(entityOf(p, 'route'), 'itinerary', 'meals').showWhen = { key: 'title', filled: true }),
-    'item[meals]：有序子项里的字段不支持 showWhen',
+    '子字段是 status 类型',
+    renovation,
+    (p) => void (subOf(entityOf(p, 'package'), 'nodes', 'checkpoints').type = 'status'),
+    'item[checkpoints]：有序子项里的字段不支持 status 类型',
   ],
   [
     '子字段又是有序子项',
@@ -214,6 +233,12 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
     'fields[title].recommend 的 min、max',
   ],
   [
+    'recommend 的条数写在按字符串存的多选 enum 上',
+    travel,
+    (p) => void Object.assign(fieldOf(entityOf(p, 'route'), 'segments'), { storeAs: { join: '/', empty: '—' }, recommend: { min: 1 } }),
+    'fields[segments].recommend 的 min、max',
+  ],
+  [
     '未知的系统字段',
     travel,
     (p) => void entityOf(p, 'hotel').fields.push({ key: '$price', type: 'money', label: '价', group: 'price' }),
@@ -227,6 +252,12 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
     'fields[$status]：$status 只能是',
   ],
   ['阶段的 branchOf 不是本包的阶段', travel, (p) => void (p.stages.at(-1)!.branchOf = 'price'), 'branchOf「price」'],
+  [
+    '阶段的 branchOf 指向自己',
+    travel,
+    (p) => void p.stages.push({ key: 'self', label: '自己', branchOf: 'self' }),
+    'stages[self].branchOf「self」',
+  ],
   [
     '阶段 key 重复',
     renovation,
@@ -252,6 +283,23 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
     'sopSections[nohead]：只有第一节（前言）可以没有 heading',
   ],
 ];
+// 有序子项里的字段不支持的配置，逐个写到「逐日行程 · 标题」上（上架前检查与锁定都按顶层字段算）
+const IN_ITEM: Partial<FieldDef> = {
+  showWhen: { key: 'title', filled: true },
+  countFrom: 'days',
+  recommend: true,
+  lockedWhenActive: true,
+  lockGroup: 'id',
+  unitFrom: 'overseas',
+};
+for (const [prop, value] of Object.entries(IN_ITEM)) {
+  BREAKS.push([
+    `子字段用了 ${prop}`,
+    travel,
+    (p) => void Object.assign(subOf(entityOf(p, 'route'), 'itinerary', 'title'), { [prop]: value }),
+    `item[title]：有序子项里的字段不支持 ${prop}`,
+  ]);
+}
 for (const [name, base, breakIt, want] of BREAKS) {
   const p = structuredClone(base);
   breakIt(p);
@@ -261,6 +309,18 @@ for (const [name, base, breakIt, want] of BREAKS) {
     got.some((m) => m.includes(want)),
     `期望有一条含「${want}」，得到 ${json(got)}`,
   );
+}
+
+/** 反过来：这些改法仍是合规的包，checkPack 不该报 */
+const FINE: [string, IndustryPack, (p: IndustryPack) => void][] = [
+  ['recommend 的条数写在多选引用上', renovation, (p) => void (fieldOf(entityOf(p, 'package'), 'materials').recommend = { max: 8 })],
+  ['recommend 的条数写在多选 enum 上', travel, (p) => void (fieldOf(entityOf(p, 'route'), 'segments').recommend = { min: 2 })],
+  ['recommend 的条数写在标签上', travel, (p) => void (fieldOf(entityOf(p, 'route'), 'tags').recommend = { max: 6 })],
+];
+for (const [name, base, change] of FINE) {
+  const p = structuredClone(base);
+  change(p);
+  checkSame(`checkPack 放过：${name}`, checkPack(p), []);
 }
 
 // ── 3. 不变量 14：旅游包与代码一致 ──
@@ -410,7 +470,11 @@ function cases(e: EntityType, item: Payload): Case[] {
         set('写成数字', false, 123);
         if (req) set('写成空串', false, '');
         set('带 NUL 字符', false, `a${String.fromCharCode(0)}b`);
-        if (key === 'id') set('写成大写和下划线', false, 'R_Bad');
+        if (key === 'id') {
+          set('写成大写和下划线', false, 'R_Bad');
+          set('长65位', false, 'a'.repeat(65));
+          set('长64位', true, 'a'.repeat(64));
+        }
         break;
       case 'money':
         set('写成字符串', false, String(v));
@@ -418,6 +482,8 @@ function cases(e: EntityType, item: Payload): Case[] {
         set('为负数', false, -1);
         set('带小数', false, 1.5);
         set('为1', true, 1);
+        set('超出安全整数', false, 2 ** 53);
+        set('等于最大安全整数', true, Number.MAX_SAFE_INTEGER);
         break;
       case 'intUnit':
         set('写成字符串', false, String(v));
@@ -425,6 +491,8 @@ function cases(e: EntityType, item: Payload): Case[] {
         set('为负数', false, -1);
         if (f.min !== undefined) set('小于下限', false, f.min - 1);
         if (!countedBy) set('等于下限', true, f.min ?? 0);
+        set('超出安全整数', false, 2 ** 53);
+        if (!countedBy) set('等于最大安全整数', true, Number.MAX_SAFE_INTEGER);
         break;
       case 'monthRange':
         set('写不出月份', false, '四季皆宜');
@@ -704,7 +772,12 @@ const issue = (path: string, label: string, message: string): CheckIssue => ({ p
   checkSame(
     '编号不合规',
     req((p) => void (p.id = 'R_5d')),
-    [issue('$code', '线路编号', '只能是小写字母、数字和连字符，以字母或数字开头')],
+    [issue('$code', '线路编号', '只能是小写字母、数字和连字符，以字母或数字开头，最长64位')],
+  );
+  checkSame(
+    '编号长65位：说法里有长度的限制',
+    req((p) => void (p.id = 'a'.repeat(65))),
+    [issue('$code', '线路编号', '只能是小写字母、数字和连字符，以字母或数字开头，最长64位')],
   );
   checkSame(
     '没有编号',
@@ -717,9 +790,25 @@ const issue = (path: string, label: string, message: string): CheckIssue => ({ p
     [issue('priceFrom', '每人起价', '要是大于0的整数')],
   );
   checkSame(
-    '天数为0：至少1天',
-    req((p) => void (p.days = 0)),
-    [issue('days', '天数', '至少1天'), issue('itinerary', '逐日行程', '多了5天')],
+    '起价超出安全整数：数字太大',
+    req((p) => void (p.priceFrom = 2 ** 53)),
+    [issue('priceFrom', '每人起价', '数字太大')],
+  );
+  checkSame(
+    '最高海拔超出安全整数：数字太大',
+    req((p) => void (p.maxAltitude = 2 ** 53)),
+    [issue('maxAltitude', '全程最高海拔', '数字太大')],
+  );
+  const zeroDays = variant((p) => void (p.days = 0));
+  checkSame(
+    '天数为0：只报天数「至少1天」，条数一致这一项不重复报，12/13',
+    [checkItem(ROUTE, zeroDays).required, ...counts(zeroDays)],
+    [[issue('days', '天数', '至少1天')], 12, 13],
+  );
+  checkSame(
+    '天数超出安全整数：只报天数',
+    req((p) => void (p.days = 2 ** 53)),
+    [issue('days', '天数', '数字太大')],
   );
   checkSame(
     '天数带小数',
@@ -824,6 +913,14 @@ const issue = (path: string, label: string, message: string): CheckIssue => ({ p
     issue('highlights', '行程亮点', '建议至少5条'),
     issue('tags', '标签', '建议不超过2个'),
   ]);
+
+  // 金额的 min：两个包都没用到，在副本上配一个
+  const priced = structuredClone(ROUTE) as EntityType;
+  fieldOf(priced, 'priceFrom').min = 1000;
+  checkSame('金额低于 min：至少1000元/人', checkItem(priced, { ...draft, priceFrom: 999 }).required, [
+    issue('priceFrom', '每人起价', '至少1000元/人'),
+  ]);
+  checkSame('金额等于 min：不拦', checkItem(priced, { ...draft, priceFrom: 1000 }).required, []);
 }
 
 // 酒店：8 个必填字段，没有建议项
