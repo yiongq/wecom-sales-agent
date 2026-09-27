@@ -44,11 +44,43 @@ function previewWithCsp(): Plugin {
   };
 }
 
+// 首屏字体的 preload（console-ux spec「字体与授权义务」）：只放 Geist 和 UI 优先片两个，都带 crossorigin，
+// 否则预载的请求和 @font-face 的请求对不上、字体下两遍。文件名带内容哈希，所以在产物里按原文件名找。
+// 只在构建时注入：开发服务器上字体按需加载就够了
+const PRELOAD_FONTS = ['geist-ui.woff2', 'noto-sans-sc-ui.woff2'];
+
+function preloadFonts(): Plugin {
+  let base = '/';
+  return {
+    name: 'console-preload-fonts',
+    apply: 'build',
+    configResolved(config) {
+      base = config.base;
+    },
+    transformIndexHtml: {
+      order: 'post',
+      handler(_html, ctx) {
+        const assets = Object.values(ctx.bundle ?? {}).filter((o) => o.type === 'asset');
+        return PRELOAD_FONTS.map((name) => {
+          const asset = assets.find((a) => a.originalFileNames.some((f) => path.basename(f) === name));
+          if (!asset) throw new Error(`构建产物里没有 ${name}，preload 注入不了（main.tsx 有没有引 fonts/fonts.css？）`);
+          return {
+            tag: 'link',
+            attrs: { rel: 'preload', href: base + asset.fileName, as: 'font', type: 'font/woff2', crossorigin: true },
+            injectTo: 'head',
+          };
+        });
+      },
+    },
+  };
+}
+
 export default defineConfig({
   base: '/console/',
-  plugins: [react(), basicSsl(), previewWithCsp()],
+  plugins: [react(), basicSsl(), previewWithCsp(), preloadFonts()],
   html: { cspNonce: CSP_NONCE_PLACEHOLDER },
   server: { port: 5173, proxy: api },
   preview: { port: 4173, proxy: api },
-  build: { outDir: 'dist', emptyOutDir: true, chunkSizeWarningLimit: 4096 },
+  // assetsInlineLimit: 0：长尾分片里有 3 片小于默认的 4 KB 阈值，默认会被写成 data: 进 CSS，font-src 'self' 会拦下它们
+  build: { outDir: 'dist', emptyOutDir: true, chunkSizeWarningLimit: 4096, assetsInlineLimit: 0 },
 });
