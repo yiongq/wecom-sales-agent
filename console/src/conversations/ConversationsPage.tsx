@@ -231,8 +231,9 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
       rowKey="id"
       dataSource={rows}
       tableLayout="fixed"
-      // 窄屏在自己的容器里横滚，首列固定（spec「可访问性与响应式」375 宽）
-      scroll={{ x: 960 }}
+      // 窄屏在自己的容器里横滚，首列固定（spec「可访问性与响应式」375 宽）。翻页时 antd 默认把表格的滚动容器动画滚回顶上，
+      // 这个容器只横滚、没有什么可滚的，动画白跑（它按 Date.now 算时长，时钟钉住时停不下来），关掉
+      scroll={{ x: 960, scrollToFirstRowOnChange: false }}
       onRow={(r) => ({ onClick: (e) => openRow(e, r.href), className: 'cv-row' })}
       pagination={
         total > PAGE_SIZE && {
@@ -329,12 +330,13 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
   });
   const data = list.data;
   const page = pageOf(search);
-  // 地址里的页码超过了最后一页（会话变少了、链接是旧的）：换成最后一页，不显示空表
+  // 地址里的页码超过了最后一页（会话变少了、链接是旧的）：换成最后一页，不显示空表。
+  // 只看这一页自己的数据：翻页时先留着的上一页（placeholder）不算，不然换页之后还拿旧数据再跳一次，来回跳个不停
+  const beyond =
+    data !== undefined && !list.isPlaceholderData && data.total > 0 && page > pageCount(data.total) ? pageCount(data.total) : null;
   useEffect(() => {
-    if (data && data.items.length === 0 && data.total > 0 && page > 1) {
-      void navigate({ to: '/conversations', search: pageSearch(search, pageCount(data.total)), replace: true });
-    }
-  }, [data, page, search, navigate]);
+    if (beyond !== null) void navigate({ to: '/conversations', search: pageSearch(search, beyond), replace: true });
+  }, [beyond, search, navigate]);
 
   const filtered = search.state !== undefined || search.stage !== undefined;
   const customer = pack.vocabulary.customer;
