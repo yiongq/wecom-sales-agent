@@ -21,10 +21,12 @@ import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
 import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
+import { packById } from '../packs/registry.js';
 import { renderSystemPrompt } from '../prompt/system.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
+import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { toolDefs } from '../tool-defs.js';
@@ -105,6 +107,7 @@ export type ConfigStartupReason =
   | 'schema_behind'
   | 'tenant_not_found'
   | 'tenant_suspended'
+  | 'pack_unknown'
   | 'lock_held'
   | 'image_sop_invalid'
   | 'no_published_sop'
@@ -138,6 +141,9 @@ async function dbStep<T>(what: string, fn: () => Promise<T>): Promise<T> {
 interface Loaded {
   deps: ConfigDeps;
   tenantId: string;
+  /** 启动时装载的租户行里的名称与行业包：/me 的 tenantName、/pack 用，不查库 */
+  tenantName: string;
+  pack: IndustryPack;
   lock: TenantLock;
   imageSections: readonly SopSection[];
   sop: PublishedSop;
@@ -404,7 +410,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 
 /**
  * deps 为 null：文件模式，立即返回。否则依次执行，前 8 步只读：
- *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended → 4 取租户锁
+ *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
  *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
@@ -439,6 +445,9 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));
     if (!tenant) throw startup('tenant_not_found', `没有 slug 为「${d.tenantSlug}」的租户`);
     if (tenant.status === 'suspended') throw startup('tenant_suspended', `租户「${d.tenantSlug}」已停用`);
+    // 后台 UX spec「接口改动 · /pack」：包不在注册表里时拒绝启动（tenant-create 已按注册表校验，这里防手改库）
+    const pack = packById(tenant.packId);
+    if (!pack) throw startup('pack_unknown', `租户「${d.tenantSlug}」的行业包「${tenant.packId}」不在注册表里`);
     // 4
     const held = await dbStep('取租户锁', () => d.lock(tenant.id));
     lock = held;
@@ -475,6 +484,8 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     loaded = {
       deps: d,
       tenantId: tenant.id,
+      tenantName: tenant.name,
+      pack,
       lock: held,
       imageSections: deepFreeze(imageSections),
       sop: toPublishedSop(tenant.id, current, merged),
@@ -542,6 +553,12 @@ async function writeRerender(
   });
   console.log(`[config] 启动重渲染：v${row.versionNo} → v${next.versionNo}（${r.causes.join('、')} 变了）`);
   return next;
+}
+
+/** 启动时装载的租户名称与行业包（后台 UX spec「接口改动」）：/me 的 tenantName 与 GET /pack 用，不查库 */
+export function currentTenant(): { name: string; pack: IndustryPack } {
+  if (!loaded) throw new ConfigNotReadyError();
+  return { name: loaded.tenantName, pack: loaded.pack };
 }
 
 // ---------------- 给编辑流程用 ----------------

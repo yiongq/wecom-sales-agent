@@ -17,7 +17,8 @@ const px = (v: string): number => Number.parseFloat(v);
 const dq = (v: string): string => v.replaceAll("'", '"').replaceAll(', ', ',');
 
 /**
- * 反相 toast 上成功以外的图标（message.error / info / warning / loading，第 2.3 步只留成功 toast 之前页面里还有）。
+ * 反相 toast 上成功以外的图标（error / info / warning / loading）。第 2.3 步起页面只经 toast() 报成功，这几种不再出现，
+ * 图标色仍钉住：contentBg 对所有 message 生效，哪天有人绕过 toast() 也不会画出看不清的图标。
  * 底是 --text，本主题的语义色叠上去不到 3:1（浅色 danger 2.69），所以和 --toast-icon 一样取另一套主题的同类色：
  * 浅色取深色的圆点色，深色取浅色的字色（浅色圆点叠 #EDEDEF 不够 3:1）
  */
@@ -220,6 +221,14 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
         itemSelectedColor: t.text,
       },
       Tag: { defaultBg: t.subtle, defaultColor: t['text-2'] },
+      // Alert（§5.12）：--r-md，内边距 10 12，图标 16；warning 的图标用 --warning-icon（组件层的 colorWarning 只给图标用）
+      Alert: {
+        borderRadius: 8,
+        defaultPadding: '10px 12px',
+        withDescriptionPadding: '10px 12px',
+        withDescriptionIconSize: 16,
+        colorWarning: t['warning-icon'],
+      },
       // 后面七个内边距与底栏令牌 antd 6.6.5 在运行时认（modal/style 的 prepareComponentToken 给默认值，配置可以覆盖），
       // 但公开的 ComponentToken 类型里没写，所以整块断言成 Modal 的配置类型
       Modal: {
@@ -267,9 +276,10 @@ export const ANTD_THEMES: Readonly<Record<ThemeMode, ThemeConfig>> = {
 
 /**
  * 交给 ConfigProvider 的主题：「减少动态效果」（菜单开关或系统设置）开着时 token.motion 传 false（§1.5、§8），
- * antd 由 JS 驱动的入场退场一起关掉；CSS 过渡另由 brand.css 按 data-reduce-motion 与 prefers-reduced-motion 归零，这里的时长也归零
+ * antd 由 JS 驱动的入场退场一起关掉；CSS 过渡另由 brand.css 按 data-reduce-motion 与 prefers-reduced-motion 归零，这里的时长也归零。
+ * 没开时显式写 motion: true：ThemeProvider 外面垫的那层 ConfigProvider 的 motion 与首帧相反，这里不写就会继承它
  */
 export function antdTheme(mode: ThemeMode, reduceMotion: boolean): ThemeConfig {
   const base = ANTD_THEMES[mode];
-  return reduceMotion ? { ...base, token: { ...base.token, ...ZERO_MOTION, motion: false } } : base;
+  return { ...base, token: { ...base.token, ...(reduceMotion ? { ...ZERO_MOTION, motion: false } : { motion: true }) } };
 }

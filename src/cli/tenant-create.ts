@@ -1,13 +1,14 @@
 // 新建租户（spec「导入、导出与回滚」的平台命令行）。以 platform 身份运行：
 //   docker compose run --rm platform node --import tsx src/cli/tenant-create.ts --slug <slug> --name <name> --pack travel [--locale zh-CN] [--region CN]
 // 退出码：0 已建好，或同名租户已存在且字段相同；2 同名租户已存在但字段不同；1 其他错误
+// --pack 的可选值读行业包注册表（后台 UX spec「行业包通用架构 · 放在哪里」）：加包不用改命令行
 import { withTenant } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { findTenantBySlug, insertTenant } from '../db/repo/tenants.js';
+import { PACK_IDS } from '../packs/registry.js';
 import { args, dbFromEnv, main, need } from './common.js';
 
-const USAGE = 'tenant-create --slug <slug> --name <name> --pack travel [--locale zh-CN] [--region CN]';
-const PACKS = ['travel'];
+const USAGE = `tenant-create --slug <slug> --name <name> --pack <${PACK_IDS.join('|')}> [--locale zh-CN] [--region CN]`;
 main(async () => {
   const a = args(
     {
@@ -26,8 +27,8 @@ main(async () => {
     locale: a.locale ?? 'zh-CN',
     region: a.region ?? 'CN',
   };
-  if (!PACKS.includes(want.packId)) {
-    console.error(`--pack 只能是 ${PACKS.join('、')}`);
+  if (!PACK_IDS.includes(want.packId)) {
+    console.error(`--pack 只能是 ${PACK_IDS.join('、')}`);
     return 1;
   }
   const { db, close } = await dbFromEnv('DATABASE_PLATFORM_URL');

@@ -8,6 +8,8 @@ var/
 .sensitive-patterns
 dist/
 build/
+# console 构建的元数据（vite manifest、每块的模块清单），只给 scripts/check-console-dist.ts 用
+console/build-meta/
 coverage/
 *.tsbuildinfo
 .pnpm-store/

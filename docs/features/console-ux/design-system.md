@@ -643,7 +643,7 @@ body {
 - **「关于」**：用户菜单加一项「关于」，打开 480 宽的弹窗（§4.2 第 5 项；样张在 P 页）。写：
   - 字体：Geist、Geist Mono（Vercel），思源黑体Noto Sans SC（Adobe、Google）。都按SIL Open Font License 1.1使用
   - 图标：Lucide（ISC许可）
-  - 两个链接：「查看字体许可」「查看图标许可」
+  - 三个链接：「查看Geist许可」「查看思源黑体许可」「查看图标许可」（两款字体的版权声明各是一份文件，spec 第 2.2 步的 Revisions）
 
   中文和拉丁字母、数字之间不打空格（§2.5），由 `text-autospace` 补。不写版本号和构建哈希（硬规则 7）。第一句用「），」不用「）；」（owner 2026-09-27）：设计样张按 Google Fonts 的切片加载，「）」「；」落在不同切片，实测含它的那段文字在 `space-all` 和 `normal` 下都是 110px，没挤；换成「），」后从 110px 挤到 102px。生产里标点都在 UI 优先片，两种写法都挤，改成「），」是为了样张和生产一致。
 
@@ -1509,7 +1509,7 @@ const route: EntityType = {
       group: 'price',
       lockedWhenActive: true,
       lockGroup: 'price',
-      help: '填淡季、4 人以下的价；旺季上浮 10%、4 人及以上 95 折由系统算',
+      help: '填淡季、4人以下的价；旺季上浮10%、4人及以上95折由系统算',
     },
     {
       key: 'bestSeason',
@@ -1518,7 +1518,7 @@ const route: EntityType = {
       group: 'price',
       lockedWhenActive: true,
       lockGroup: 'price',
-      monthMeaning: '这些月份出发报价上浮 10%，「全年」不加价',
+      monthMeaning: '这些月份出发报价上浮10%，「全年」不加价',
       yearRoundLabel: '全年（不加价）',
     },
     {
@@ -1631,7 +1631,7 @@ const route: EntityType = {
       group: 'sell',
       min: 1,
       recommend: { min: 3, max: 5 },
-      help: '建议 3–5 条，每条以动词开头',
+      help: '建议3–5条，每条以动词开头',
     },
     {
       key: 'tags',
@@ -2425,7 +2425,7 @@ const material: EntityType = {
      - 正文两段：
        - 「字体：Geist、Geist Mono（Vercel），思源黑体Noto Sans SC（Adobe、Google）。都按SIL Open Font License 1.1使用。」为什么用「），」见 §2.6。
        - 「图标：Lucide（ISC许可）。」
-     - 下面两个链接「查看字体许可」「查看图标许可」。
+     - 下面三个链接「查看Geist许可」「查看思源黑体许可」「查看图标许可」。
      - 底栏次要按钮「关闭」（默认焦点）。
 
 ## 11. 文案

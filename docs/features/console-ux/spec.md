@@ -3,9 +3,13 @@
 Status: ready
 Revisions: 2026-09-27 整份就地重写（本 spec 仍是 draft，没有代码依赖它）。视觉方向由「青绿长卷」（纸色、石青石绿、思源宋体子集、钢印、目的地长卷）改为 owner 当天选定的方案 A「利落」；字体改为 Geist、Geist Mono 与思源黑体 Noto Sans SC；产品库、导航、话术词汇改为按行业包配置渲染（上一稿按线路、酒店写死字段表）；会话与总览分成「今天」和「02 之后」两期；视觉与内容细则挪到同目录的 [design-system.md](design-system.md)。上一稿里仍然成立的部分保留：五处接口增补、话术自动保存与冲突合并、CSV 的 GBK 兜底与防公式注入、按路由拆包与压缩。重写的原因见「背景与问题」，放弃的做法见「被否决的方案」。同日按规格、代码核对、决定三路评审再改：开放问题 1 扩成「01 里所有非新增改动」；验收 15、25 写明安全头断言的例外；不变量 11 改成能断言的写法；外壳补启动的加载与出错；会话过期的判定限定成员身份；走查种子改由已提交的脚本生成并钉住时钟；⌘K 不再用 J / K；plan 把总览用到的审计与字数函数提前。
 Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../../architecture/01-pg-config-console/spec.md)（「后台 API 与页面」、安全头、匿名投影、权限矩阵）。技术栈见 [ADR-002](../../adr/adr-002-console-vite-react.md)；其中「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」一条，改由 [ADR-004](../../adr/adr-004-pack-field-rendering.md) 取代。**01 翻为 `implemented`、并且 owner 把本 spec 翻为 `ready` 之后才开工。** 原因有两条：AGENTS.md 规定 `Amends` 只能加在已 implemented 的 spec 上；验收 25 要重跑 01 的验收。
-Amends: 01 的「后台 API 与页面」（`Me.tenantName`、`ConvQuery` 与 `AuditQuery` 的可选参数、两个只读接口）、「SOP：节表、渲染、版本、发布闸」（`ContractViolation.match`；草稿保存的 `rebaseOnto` 改变草稿的基线）、「导入、导出与回滚」（`tenant-create --pack` 改读注册表）。01 implemented 后生效，只做新增，见「接口改动」。01 里不是新增的改动（安全头两处、页面条款五处，以及随之要改写的 01 验收 16 第 4 条和验收 22）不走 Amends，见开放问题 1。
+Amends: 01 的「后台 API 与页面」（`Me.tenantName`、`ConvQuery` 与 `AuditQuery` 的可选参数、两个只读接口）、「SOP：节表、渲染、版本、发布闸」（`ContractViolation.match`；草稿保存的 `rebaseOnto` 改变草稿的基线）、「导入、导出与回滚」（`tenant-create --pack` 改读注册表）、「两种模式与启动装载」（`ConfigStartupError` 的新原因 `pack_unknown`）。01 implemented 后生效，只做新增，见「接口改动」。01 里不是新增的改动（安全头两处、页面条款五处，以及随之要改写的 01 验收 16 第 4 条和验收 22）不走 Amends，见开放问题 1。
 Revisions: 2026-09-27 实现期修订（plan 第 1.2 步，开放问题 4 实测之后，与实现同一个分支）：「字体与授权义务」四处和不变量 30。一、UI 优先片的用字来源原为「`console/src/**` 与各注册行业包配置」，改为界面实际显示的文字：另加 `src/shared/**`、antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包，只取字符串与 JSX 文本，注释与自测不算；这些字也上页面，不收就过不了验收 8 的「长尾分片 0 个」。不变量 30 的「每个汉字」同样改用这个取法，原文按字面会连注释一起算。二、GSUB 原为 `locl vert vrt2`，加上 `ccmp`：Noto 的「——」靠 `ccmp` 连字，照原表切出来，三个引擎里都断开，过不了验收 7。三、长尾分片的 `unicode-range` 原为照抄依赖的清单，改为去掉控制字符，因为 WebKit 会为换行符下载 latin 片。四、`pnpm test` 的检查另加几条不经过生成脚本的断言：woff2 的 cmap 等于码位清单；`fonts.css` 里最后一条 Noto Sans SC 是 UI 优先片；长尾范围不含控制字符；界面文字里汉字以外的字符都由 Geist 或 UI 优先片画，例外要写明理由。另外注明：「1,124 个码位、243,600 B」是按界面做完时的全部文案切出来的，不是当前产物的大小。开放问题 4 在三个引擎上成立（渲染的界面文字去掉了待删的「¥」和不上页面的 BOM），所以维持声明顺序，不走全量自切，「性能」一节和验收 8、23 不改。
 Revisions: 2026-09-27 实现期修订（plan 第 1.3 步，评审之后，与实现同一个分支）：一、「字体与授权义务」的界面文字不含 `console/src/_specimen/`：两个样张页只在 `VITE_SPECIMEN=1` 的走查构建里注册，生产里没有；它独有的 67 个字收进 UI 优先片的话，生产每次整页加载都多预载 16,092 B（+14%），一个字也不画。样张里的这些字按需加载长尾分片，验收 7 在 P 页上量的宽度不变（plan 实施记录）。不变量 30 引用同一取法，随之生效；「1,124 个码位」是按设计系统的全部文案（含 P 页）算的规划量，不重算。二、「标点与间距」里「与 Chromium 逐对核对过 576 对，结果一致」写细：整串宽度与墨迹位置一致，「收标点 + 开标点」一类 Chromium 挤开标点、回退挤收标点（设计系统 §2.2、§2.5）。
+Revisions: 2026-09-27 实现期修订（plan 第 2.1 步，与实现同一个分支）：「接口改动 · /pack」的「包不在注册表里时启动失败」原文没说以什么原因失败，落成 01 `ConfigStartupError` 的新原因 `pack_unknown`：启动装载第 3 步解析租户之后、取租户锁之前查注册表。这是对 01「两种模式与启动装载」的新增（一个新枚举值），顶部 `Amends:` 一行随之补上这一章节（「与 01 的关系」里的「三个章节」改成四个），01 顶部的 `Amended by:` 同样列出；「接口改动 · /pack」那一条随之改写，正文带上原因、检查位置和失败时的收尾。
+Revisions: 2026-09-27 实现期修订（plan 第 2.3 步，与实现同一个分支）：一、「错误文案」表加一行 `invalid_credentials`（登录接口的 401）：「邮箱或密码不对 · 检查后重试」，表单内，出错色。「登录」一节要求错误文案取 `ERROR_COPY`，原表没有这一行，登录失败只能落到兜底的「无法完成这项操作」。二、「未保存保护」的确认框写明用 `ConfirmDanger`：「放弃改动并离开」是危险按钮，「留下」默认聚焦。放弃没保存的改动撤销不了，与「丢弃草稿」同类，不变量 3 也只许 `ConfirmDanger` 出危险按钮。
+Revisions: 2026-09-27 实现期修订（plan 第 2.2 步，与实现同一个分支，含评审之后的两处）：外壳三处照设计系统做不到或做了调整。一、用户菜单的身份块只写名字和角色：设计系统 §4.2 写「邮箱和角色」，`Me` 没有邮箱字段，「接口改动」也没加，不为它扩接口。二、打开 ⌘K 的快捷键按平台只认一种：Mac 上是 ⌘K，其余平台是 Ctrl+K；搜索触发器的 Tooltip 与 `aria-keyshortcuts` 同样按平台写。Windows 上没有 ⌘ 键；Mac 的 Ctrl+K 是文本框和 CodeMirror 里的「删到行尾」，两种都认的话在话术编辑器里一按两用（评审之后由「两种按法都认」改成这样）。三、「关于」的许可链接由两个改成三个：「查看Geist许可」「查看思源黑体许可」「查看图标许可」。两款字体的版权声明是两份文件（Geist 与 Geist Mono 共用一份），一个「查看字体许可」只能指到其中一份，思源黑体那份从界面上打不开（评审发现）；「关于」一节和验收 8 第 4 条随之改写，设计系统 §2.6 与 P 页同步。
+Revisions: 2026-09-27 实现期修订（plan 第 2.4 步，评审之后，与实现同一个分支）：「通用部件 · StateView」的「加载用和成品同尺寸的骨架」，在下载页面块的那一段放宽为通用的整页骨架：页头一行加表格 8 行（设计系统 §4.5 的表格行数）。页面块到之前，页面自己的骨架还没下载下来。要按页定制，就得在入口（router.tsx）里给每页另写一份骨架，并随各页的版式同步修改。块到了以后，各页照旧放自己的骨架。「延迟 300ms 才出现」不变：路由的等待时间设 0，延迟由 StateView 负责。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
 配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
@@ -275,6 +279,7 @@ export interface CheckIssue {
 | 409 `conflict`                                  | 刚才有人同时在改 · 刷新后重来                               | 页头下横幅加刷新按钮                                         | 出错 |
 | 400 `bad_request`、415 `unsupported_media_type` | 无法完成这项操作 · 刷新页面后重试                           | 页内 Alert 加刷新按钮                                        | 出错 |
 | 429 `rate_limited` / `busy`                     | 尝试太频繁 · 稍后再试                                       | 表单内                                                       | 出错 |
+| 401 `invalid_credentials`（登录接口）           | 邮箱或密码不对 · 检查后重试                                 | 表单内                                                       | 出错 |
 | 503 `lock_lost`                                 | 暂时无法保存：系统在重连数据库，线上内容不受影响 · 稍后重试 | 页头下横幅                                                   | 出错 |
 | 503 `not_ready`                                 | 系统正在启动 · 重试                                         | 就地加重试按钮                                               | 中性 |
 | 503 `db_disabled`                               | 后台只在数据库模式下可用                                    | 整页                                                         | 中性 |
@@ -284,7 +289,7 @@ export interface CheckIssue {
 - 成功只用反相 toast：一句话，3 秒消失，不带操作；发布成功也不用 toast，写在发布条里 [35][36]。
 - **会话过期的判定**只在前端当前是成员身份时进行（本次启动时 `/me` 成功过，或在本页登录成功过）；匿名身份下收到的 401 都不算过期，启动时 `/me` 的 401 就是进入匿名的信号（「外壳 · 启动」）。不单看 401 状态码：登录接口的 `invalid_credentials` 也是 401；demo 下会话失效后，GET 返回 200 的匿名投影，只有写请求才返回 401。成员身份下满足任一条即判为过期：任一响应体的 `error === 'unauthorized'`；某个 GET 返回了匿名形状（每个接口一个 `isAnonShape` 判断）；`/me` 返回 401。判为过期后，React Query 的缓存不清，当前页不卸载，匿名形状的数据不写进缓存。
 
-**未保存保护**：有未保存的内容时，站内跳转用 `useBlocker({ shouldBlockFn, enableBeforeUnload, withResolver: true })` 拦下，接一个确认框：标题「有改动还没保存」，按钮「留下」「放弃改动并离开」；关页和刷新走 beforeunload [119][35]。
+**未保存保护**：有未保存的内容时，站内跳转用 `useBlocker({ shouldBlockFn, enableBeforeUnload, withResolver: true })` 拦下，接一个确认框（`ConfirmDanger`，「留下」默认聚焦）：标题「有改动还没保存」，按钮「留下」「放弃改动并离开」；关页和刷新走 beforeunload [119][35]。
 
 **其余部件**（外观见设计系统 §5）：
 
@@ -607,7 +612,7 @@ export interface CheckIssue {
 - 「字体：Geist、Geist Mono（Vercel），思源黑体Noto Sans SC（Adobe、Google）。都按SIL Open Font License 1.1使用。」（为什么是「），」不是「）；」，见设计系统 §2.6。）
 - 「图标：Lucide（ISC许可）。」
 - 中文和拉丁字母、数字之间照不变量 9 不打空格，由 `text-autospace` 补。
-- 两个链接「查看字体许可」「查看图标许可」，打开随构建发布的许可文本。
+- 三个链接「查看Geist许可」「查看思源黑体许可」「查看图标许可」，打开随构建发布的许可文本（两款字体的版权声明各是一份文件）。
 - 不写版本号和构建哈希。默认焦点在「关闭」上。
 
 ### 字体与标点样张（P 页）
@@ -807,7 +812,7 @@ export function conversationState(row: Pick<ConversationRow, 'stage' | 'handedOv
   - 这一条解决 01 plan「Open」里「冲突后只能丢弃重做」的待定项。
 - **`ConvQuery.state` / `stage` / `order`**：服务端先过滤、排序，再分页；`total` 是过滤后的条数。`stage` 独立按 `row.stage` 过滤，阶段条跳转时和 `state=ai` 一起用。
 - **`/conversations/counts`**：对 store 做一次同步遍历，用 `conversationState` 分类，所以同一次响应里各项之和总等于 `total`；`sim-` 会话不计（01）。权限与会话列表相同（`canSeeCustomers`）。
-- **`/pack`**：返回 `tenants.pack_id` 对应的注册包，取自启动时装载的租户行，不查库。它是代码里的公开配置，不含租户名、成员、草稿，所以 demo 匿名也能读；prod 匿名 401。包不在注册表里时启动失败（`tenant-create` 已按注册表校验，自测覆盖）。
+- **`/pack`**：返回 `tenants.pack_id` 对应的注册包，取自启动时装载的租户行，不查库。它是代码里的公开配置，不含租户名、成员、草稿，所以 demo 匿名也能读；prod 匿名 401。包不在注册表里时启动失败：01 的 `ConfigStartupError` 加一个原因 `pack_unknown`（01「两种模式与启动装载」的新增），`initConfig` 在第 3 步解析租户、拒绝 `suspended` 之后，第 4 步取租户锁之前查注册表，查不到就以 `ConfigStartupError('pack_unknown')` reject（detail 写租户 slug 和 `pack_id`），与其他启动失败一样关闭连接池、不留半装载状态。`tenant-create` 已按注册表校验，这一步防的是手改库；自测覆盖。
 - **`AuditQuery.actions`**：SQL 里用 `action = ANY($1)`，`nextBefore` 的语义不变；同时给了 `action` 和 `actions` 时返回 400 `bad_request`。
 - **`ConversationRow`** 今天不加字段：会话标签由前端用 `channel` 和 `shortIdOf(id)` 拼，不需要新字段；01 的「不带客户画像、不带消息正文」照旧成立。
 
@@ -849,7 +854,7 @@ export function conversationState(row: Pick<ConversationRow, 'stage' | 'handedOv
 
 ### 与 01 的关系
 
-- **新增的部分**走 Amends（顶部 `Amends:` 一行列出 01 的三个章节），01 implemented 之后生效；01 顶部加一行 `Amended by:` 指向本 spec，其余不动。
+- **新增的部分**走 Amends（顶部 `Amends:` 一行列出 01 的四个章节），01 implemented 之后生效；01 顶部加一行 `Amended by:` 指向本 spec，其余不动。
 - **不是新增的部分**全部列在开放问题 1，由它定怎么落进 01：
   - 安全头两处：带内容哈希的 `/console/assets/*` 改为长缓存；CSP 显式加 `font-src 'self'`。
   - 页面条款五处（01「后台 API 与页面」的页面清单）：登录「邮箱和口令」改成「密码」；话术页「检查」「发布」「丢弃」三个按钮，改成自动检查、常驻发布条和「更多」里的丢弃；产品库「线路和酒店两个标签页」和固定的列名，改成侧栏里每个实体一项、列来自行业包；表单「由 JSON Schema 自动生成」改成字段渲染器（ADR-004）；锁定字段「注明『有报价快照后开放』」改成按锁定组写原因。
@@ -953,7 +958,7 @@ export function conversationState(row: Pick<ConversationRow, 'stage' | 'handedOv
    - 首次打开总览，网络记录里的字体请求只有 `geist-ui` 与 `noto-sans-sc-ui` 两个，都来自 `/console/assets/`，合计 ≤300,000 B；长尾分片 0 个；没有发往其他主机的请求。
    - 全部走查状态里，`document.fonts` 中已加载的字体家族只有 Geist、Geist Mono、Noto Sans SC。
    - 在一个线路名里写进一个界面没用过的生僻字，打开列表时只多下载一个长尾分片。
-   - 「关于」弹窗写明三款字体、OFL 1.1 和 Lucide 的 ISC 许可；两个链接返回 200、`text/plain`，内容与上游许可原文一致。仓库根目录的 `NOTICE` 列出三款字体。
+   - 「关于」弹窗写明三款字体、OFL 1.1 和 Lucide 的 ISC 许可；三个链接返回 200、`text/plain`，内容与上游许可原文一致。仓库根目录的 `NOTICE` 列出三款字体。
 9. **工程信息只在系统页。** 走查的每个默认状态，页面可见文字满足不变量 7。版本记录里的哈希只有展开「技术详情」后才出现，01 验收 22 仍然成立。系统页做好之后，它是唯一一个可见文字里有模型名、延迟、成本、评测数字的路由。
 10. **总览。** 用验收 4「走查种子与时钟」准备的数据：「需要你处理」的顺序是 A01、F01、话术草稿、线路草稿、6 条酒店草稿；业务数和明细与设计系统 A 页一致（日期按走查当天平移）；点「报价」那一行阶段条，跳到只列报价阶段 AI 接待中会话的列表。模拟 `/audit` 返回 500 时只有「最近变更」一栏显示「没取到 · 重试」，其余块正常。以坐席身份登录，看不到「最近变更」和草稿类待办。
 11. **话术编辑。**

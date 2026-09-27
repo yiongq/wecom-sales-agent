@@ -20,9 +20,9 @@ wecom-sales-agent
    仓库里是由 scripts/fonts/build.ts 切出的子集 console/src/fonts/noto-sans-sc-ui.woff2，沿用原家族名。
    其余的字来自 npm 依赖 @fontsource-variable/noto-sans-sc 5.3.0（OFL-1.1）的分片，构建时打进产物，不在仓库里。
 
-3. Lucide 图标：将经 npm 依赖 lucide-react 引入（console-ux plan 里接图标的步骤，现在还不是依赖），
-   ISC 许可（其中取自 Feather 的图标为 MIT）。许可原文已按 lucide 的 tag 1.48.0 先放进
-   console/public/licenses/lucide-ISC.txt；加依赖时钉同一版本，并核对包里的 LICENSE 与这份相同。
+3. Lucide 图标：经 npm 依赖 lucide-react 1.48.0 引入（console-ux plan 第 2.2 步起，后台外壳的图标），
+   ISC 许可（其中取自 Feather 的图标为 MIT）。许可原文按 lucide 的 tag 1.48.0 放在
+   console/public/licenses/lucide-ISC.txt，与包里的 LICENSE 逐字节相同；换版本时同步换这份原文和它的 sha256。
 
 以下是 SIL Open Font License 1.1 全文（上面两款字体共用）：
 

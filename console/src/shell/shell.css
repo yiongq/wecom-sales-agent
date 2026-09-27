@@ -1,0 +1,881 @@
+/*
+ * 外壳的样式（spec「逐页设计 · 外壳」，design-system §3、§4、§5.1、§5.7、§5.18、§6.8）。颜色一律取 brand.css 的变量，
+ * 这里不新增变量（theme.selftest.ts 逐个比对 brand.css 与 tokens.ts）。动效只动 opacity 和 transform；导航、⌘K、侧栏收起都是 0ms
+ */
+
+/* ---------------- 框架：侧栏 + 内嵌的内容面板（§4.1） ---------------- */
+.shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  background: var(--frame);
+}
+.shell-hidden {
+  flex-direction: column;
+}
+.shell-panel {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin: 8px 8px 8px 0;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+}
+.shell-hidden .shell-panel {
+  margin: 0 8px 8px;
+}
+/* 面板内部自己滚动；吸顶条与保存条不挡住焦点（§3） */
+.shell-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scroll-padding-top: 72px;
+  scroll-padding-bottom: 76px;
+}
+/* 面板内边距：≥1440 上 24、左右 32、下 32；1280–1439 左右 24；<992 16。ActionBar 按这几个变量贴满面板宽（parts.css） */
+.shell-content {
+  --panel-pt: 24px;
+  --panel-px: 32px;
+  --panel-pb: 32px;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: var(--panel-pt) var(--panel-px) var(--panel-pb);
+  outline: none;
+}
+@media (max-width: 1439px) {
+  .shell-content {
+    --panel-px: 24px;
+  }
+}
+@media (max-width: 991px) {
+  .shell-content {
+    --panel-pt: 16px;
+    --panel-px: 16px;
+    --panel-pb: 16px;
+  }
+}
+.shell-alert {
+  margin-bottom: 16px;
+}
+
+/* 跳到主要内容：平时移出视口，聚焦时出现在左上角 */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1100;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-menu);
+  color: var(--text);
+  font-weight: 500;
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: none;
+  text-decoration: none;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* <992：52 高的顶栏，菜单按钮、租户 logo 和名称、铃铛；--frame 底，无分隔线 */
+.topbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 8px;
+}
+.topbar .tenant {
+  flex: 1;
+}
+
+/* ---------------- 侧栏（§4.2） ---------------- */
+.sidebar {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 240px;
+  height: 100%;
+  padding: 8px;
+  overflow-y: auto;
+  background: var(--frame);
+}
+.sidebar.is-collapsed {
+  width: 56px;
+  align-items: center;
+}
+.nav-drawer .ant-drawer-body {
+  padding: 0;
+  background: var(--frame);
+}
+
+/* 租户行：高 40；logo 20、圆角 5，没有 logo 时在主色底上写名称首字 */
+.sb-tenant {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+}
+.is-collapsed .sb-tenant {
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+}
+.tenant {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+}
+.is-collapsed .tenant {
+  flex: none;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.tenant:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tenant-logo {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  text-align: center;
+}
+.tenant-name {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 图标按钮（§5.1）：幽灵样式，16 图标 text-2 */
+.icon-btn {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition:
+    background-color 100ms linear,
+    color 100ms linear;
+}
+.icon-btn-28 {
+  width: 28px;
+  height: 28px;
+}
+.icon-btn-32 {
+  width: 32px;
+  height: 32px;
+}
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.icon-btn:active {
+  background: var(--pressed);
+}
+.icon-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* 数字徽标（§5.7）：软徽标在导航里，实心徽标叠在铃铛上、收起后的「会话」图标上；只数等人接手 */
+.badge-soft,
+.badge-solid {
+  box-sizing: border-box;
+  border-radius: var(--r-full);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.badge-soft {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  line-height: 18px;
+}
+.badge-solid {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background: var(--badge);
+  color: var(--on-badge);
+  line-height: 16px;
+  box-shadow: 0 0 0 2px var(--frame);
+}
+/* 轮询后数字变了：背景闪一次 accent-bg，150ms 淡出，只一次（§3）；减少动态效果时 brand.css 把时长归零 */
+.count-flash {
+  animation: count-flash 150ms linear 1;
+}
+@keyframes count-flash {
+  from {
+    background-color: var(--accent-bg);
+  }
+}
+
+/* 搜索触发器：高 32，--panel 底加 --shadow-btn；是打开 ⌘K 的按钮，不是输入框 */
+.sb-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  margin: 6px 0 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-btn);
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+.sb-search:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.sb-search-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-search-icon {
+  margin: 2px 0 6px;
+}
+
+/* 导航：项高 32、间隔 2；选中是 --selected 底、字 text 500，没有左侧竖条 */
+.sb-nav {
+  display: flex;
+  flex-direction: column;
+}
+.is-collapsed .sb-nav {
+  align-items: center;
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.is-collapsed .nav-group + .nav-group {
+  margin-top: 12px;
+}
+.nav-group-title {
+  margin: 16px 0 4px;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 22px;
+}
+a.nav-item:hover {
+  background: var(--hover);
+  color: var(--text);
+  text-decoration: none;
+}
+.nav-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.nav-item.is-selected {
+  background: var(--selected);
+  color: var(--text);
+  font-weight: 500;
+}
+.nav-icon {
+  flex: none;
+  color: var(--text-3);
+}
+.nav-item:hover .nav-icon,
+.nav-item.is-selected .nav-icon {
+  color: var(--text);
+}
+.nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-count {
+  flex: none;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+/* 收起为 56：每项是 32 见方的图标按钮；当前项另加一圈 control-border（≥3:1 的图形标记） */
+.is-collapsed .nav-item {
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+}
+/* 标签看不见但留给读屏：链接的名字照旧是「会话」，叠着的实心徽标读作「等人接手2个」 */
+.is-collapsed .nav-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.is-collapsed .nav-item.is-selected {
+  box-shadow: 0 0 0 1px var(--control-border);
+}
+
+/* 用户行：贴底，高 40 */
+.sb-user {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.is-collapsed .sb-user {
+  flex-direction: column;
+}
+.sb-login {
+  flex: 1;
+}
+.user-btn {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.user-btn:hover {
+  background: var(--hover);
+}
+.user-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.is-collapsed .user-btn {
+  flex: none;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.is-collapsed .user-names,
+.is-collapsed .user-chevron {
+  display: none;
+}
+/*
+ * 放不下时先藏角色（owner 2026-09-27，§4.2 第 5 项）：名字和角色在同一个 22 高的容器里，可换行、裁掉溢出。
+ * 放不下时角色整个折到第二行被裁掉，名字不截断；名字本身也放不下才省略成「…」。裁掉不是隐藏，读屏照样读到角色
+ */
+.user-names {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
+}
+.user-name {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-role {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.user-chevron {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* 头像（§6.8）：24 圆，13/500 首字，颜色按名字取 av1–av6 */
+.avatar {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-full);
+  font-size: 13px;
+  line-height: 24px;
+  font-weight: 500;
+  text-align: center;
+}
+.avatar-1 {
+  background: var(--av1-bg);
+  color: var(--av1-fg);
+}
+.avatar-2 {
+  background: var(--av2-bg);
+  color: var(--av2-fg);
+}
+.avatar-3 {
+  background: var(--av3-bg);
+  color: var(--av3-fg);
+}
+.avatar-4 {
+  background: var(--av4-bg);
+  color: var(--av4-fg);
+}
+.avatar-5 {
+  background: var(--av5-bg);
+  color: var(--av5-fg);
+}
+.avatar-6 {
+  background: var(--av6-bg);
+  color: var(--av6-fg);
+}
+
+/* 用户菜单（§4.2 第 5 项、§5.3）：向上弹出，宽 240，--raised，--r-md，内边距 4，--shadow-menu */
+.user-menu {
+  box-sizing: border-box;
+  width: 240px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: var(--shadow-menu);
+}
+.user-menu .ant-dropdown-menu {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.user-menu-id {
+  padding: 6px 8px;
+}
+.user-menu-name {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.user-menu-role {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.user-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--divider);
+}
+.menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.menu-value {
+  font-size: 13px;
+  color: var(--text-3);
+}
+.menu-check {
+  color: var(--text);
+}
+.user-submenu .ant-dropdown-menu {
+  min-width: 160px;
+}
+
+/* ---------------- 铃铛弹层（§4.2） ---------------- */
+.bell-popover .ant-popover-container,
+.bell-popover .ant-popover-inner {
+  padding: 4px;
+  border-radius: var(--r-md);
+}
+.bell-pop {
+  box-sizing: border-box;
+  width: 352px;
+}
+.bell-list {
+  max-height: 336px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.bell-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 8px 0 12px;
+  border-radius: var(--r-sm);
+}
+.bell-row:hover {
+  background: var(--hover);
+}
+.bell-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.bell-row-title {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.bell-row-sub {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.bell-skeleton {
+  width: 60%;
+}
+.bell-empty {
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.bell-stale {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.bell-foot {
+  margin-top: 4px;
+  padding: 8px 12px 6px;
+  box-shadow: inset 0 1px 0 var(--divider);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+/* ---------------- 页头（§4.3）与匿名横幅（§5.12） ---------------- */
+.page-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.page-header.with-banner {
+  margin-bottom: 16px;
+}
+/* 判断页头滚没滚出去的哨兵：1px 高，不占位置（PageHeader 的 useStuckHeight） */
+.page-header-sentinel {
+  height: 1px;
+  margin-bottom: -1px;
+}
+/*
+ * 滚动后的吸顶条（§4.3、§3 吸附元素）：高 52，贴满面板宽（抵掉 --panel-px），不透明，底部一条 --divider，不加阴影。
+ * 下外边距 = 原高 − 52 + 原来的下外边距，占位和缩起前一样，下面的内容不跳
+ */
+.page-header.is-stuck {
+  box-sizing: border-box;
+  height: 52px;
+  margin: 0 calc(-1 * var(--panel-px, 0px)) calc(var(--page-header-h) - 52px + 20px);
+  padding: 0 var(--panel-px, 0px);
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+.page-header.with-banner.is-stuck {
+  margin-bottom: calc(var(--page-header-h) - 52px + 16px);
+}
+.page-header.is-stuck .page-title {
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-header.is-stuck .page-status {
+  display: none;
+}
+.page-header-main {
+  flex: 1;
+  min-width: 0;
+}
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+  color: var(--text);
+}
+.page-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.page-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+.readonly-pill {
+  display: inline-flex;
+  border-radius: var(--r-full);
+}
+.readonly-pill:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.anon-banner {
+  margin-bottom: 20px;
+}
+/* 横幅是一句话：「演示模式 · 只读」用 500，冒号后面的说明用 400（Alert 的标题样式是 ConfigProvider 写的行内样式，只能这样盖） */
+.anon-banner .ant-alert-title {
+  font-weight: 400 !important;
+}
+.anon-banner-lead {
+  font-weight: 500;
+}
+.anon-banner-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ---------------- ⌘K（§5.18）：宽 640、距顶 120、--r-xl、无动画 ---------------- */
+.cmdk-root .ant-modal-container {
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+}
+.cmdk-root .ant-modal-body {
+  padding: 0;
+}
+/* 弹窗的名字「搜索」只给读屏（aria-labelledby 指向它），看不见 */
+.cmdk-root .ant-modal-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.cmdk-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 16px;
+  box-shadow: inset 0 -1px 0 var(--divider);
+  color: var(--text-3);
+}
+.cmdk-input input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 24px;
+}
+.cmdk-input input::placeholder {
+  color: var(--text-3);
+}
+.cmdk-results {
+  max-height: 400px;
+  padding: 6px;
+  overflow-y: auto;
+}
+.cmdk-group-title {
+  padding: 8px 10px 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.cmdk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+}
+.cmdk-row.is-active {
+  background: var(--selected);
+}
+.cmdk-icon {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  color: var(--text-3);
+}
+.cmdk-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmdk-hint {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmdk-skeleton,
+.cmdk-error {
+  cursor: default;
+}
+.cmdk-skeleton .skeleton-bar {
+  width: 40%;
+}
+.cmdk-error {
+  gap: 4px;
+  font-size: 13px;
+  color: var(--danger);
+}
+.cmdk-footer {
+  padding: 4px 10px 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.cmdk-empty {
+  padding: 16px;
+}
+.cmdk-empty-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.cmdk-empty-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* ---------------- 关于（§2.6、§5.14） ---------------- */
+.about-line {
+  margin: 0 0 8px;
+}
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 12px;
+}
+
+/* ---------------- 启动：骨架与整页说明 ---------------- */
+.boot-whole {
+  max-width: 640px;
+  margin: 120px auto;
+  padding: 0 16px;
+}
+.boot-sidebar .skeleton-bar {
+  display: block;
+  height: 14px;
+}
+.boot-block {
+  cursor: default;
+}
+.boot-title,
+.boot-line {
+  display: block;
+}
+.boot-title {
+  width: 160px;
+  height: 24px;
+  margin-bottom: 12px;
+}
+.boot-line {
+  width: 40%;
+}
+@media (max-width: 991px) {
+  .boot-sidebar {
+    display: none;
+  }
+  .shell-expanded.state-skeleton .shell-panel {
+    margin: 8px;
+  }
+}

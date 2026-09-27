@@ -100,12 +100,18 @@ jobs:
       # - src/console-api/console.selftest.ts：鉴权与后台接口（走 app.request）。权限、CSRF、匿名投影漏一处都不报错。
       # - src/shared/typography.selftest.ts、console/src/typography.selftest.ts：连用全角标点的挤压回退（与 Chromium 逐对量出的
       #   结果对拍）、cjk() 与 Sep 的标记、全局 text-spacing-trim 的约定。回退错了只在 Firefox、Safari 里标点宽度不对，不报错。
+      # - console/src/session.selftest.ts、console/src/parts/errors.selftest.ts：会话过期后就地重登（请求停住、登录后重放，
+      #   匿名形状的数据不进缓存）；错误文案与 spec 的表逐条相同，服务端的 detail 只在折叠的技术详情里。判错了不报错，
+      #   只会让页面跳成匿名、编辑的内容丢掉，或者把服务端原文摆给运营看。
+      # - console/src/shell/shell.selftest.ts：外壳。启动时 /me、/pack 各种组合定下的身份（成员身份下 /me 失败不降成匿名）、
+      #   由行业包生成的侧栏与权限、每个路由恰一个选中项、标签页标题、⌘K 的拼音匹配与键盘。错了页面照常，只是入口多了或少了。
+      # - scripts/check-console-src.selftest.ts：lint 里 check-console-src.ts 的夹具，每条不变量造几处违规，确认都点得出位置。
       # - LLM_MOCK=1 eval/run.ts：回归评测（mock 模式，秒级），改 SOP/提示词/护栏后自动回归，防止话术悄悄退化。
       #   文件模式、DB 模式（PGlite）各跑一遍。真实模型评测要花钱，不进 CI。
       # - scripts/check-fonts.ts：界面用到的每个汉字和全部 CJK 标点都在已提交的 UI 优先片字体里，字体与许可原文的 sha256 对得上。
       #   缺字不报错，只会让页面去下长尾分片、标点跨文件不挤压。
       # - console 生产构建，再扫描产物：浏览器包里混进数据库驱动或 Node 内置模块不会报错，只会把服务端代码发给浏览器；
-      #   样张页（VITE_SPECIMEN=1 才有）也不能混进生产产物。
+      #   样张页（VITE_SPECIMEN=1 才有）也不能混进生产产物；⌘K 的拼音库只能在懒加载的分块里，不进入口。
       - run: pnpm test
         env:
           PG_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres
