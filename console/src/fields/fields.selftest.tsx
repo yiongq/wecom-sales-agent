@@ -88,12 +88,14 @@ import {
   updatedOf,
 } from '../catalog/detail.js';
 import { type CatalogSearch, catalogSearch, cleared, itemSearch, parseFilter, pickOf, withPick } from '../catalog/params.js';
+import { issueTarget } from '../catalog/CatalogDetail.js';
 import { CatalogItemPage, CatalogNewPage } from '../pages/CatalogItemPage.js';
 import { CatalogPage } from '../pages/CatalogPage.js';
 import { entityIcon } from '../shell/icons.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
 import { type FieldEnv, FieldEnvContext } from './env.js';
 import { FieldGrid, type MemoProps, sameCell } from './FieldGrid.js';
+import { FormField } from './FormField.js';
 import {
   boolFromSegment,
   boolSegment,
@@ -2287,6 +2289,12 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [0, 0, 0],
   );
   eq('只锁几个成员的标签不让它所在的卡片声明锁定（§6.4）', cardLocks(ROUTE, 'sell', ACTIVE), []);
+  const sellFirst: EntityType = { ...ROUTE, groups: [...ROUTE.groups].sort((a, b) => (a.key === 'sell' ? -1 : b.key === 'sell' ? 1 : 0)) };
+  eq(
+    '卖点排在适合谁去前面时，推荐组照样在适合谁去声明：只锁「国内」的标签那张卡不算',
+    [declaringCard(sellFirst, 'rec'), cardLocks(sellFirst, 'sell', ACTIVE)],
+    ['fit', []],
+  );
   eq(
     '原因加统一的结尾',
     [lockReason('已发给客户的方案书按这些数算价，改了会变价'), lockReason('写好了。')],
@@ -2332,6 +2340,14 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     ],
     ['itinerary', 'intensity.hardest', undefined, '$code', undefined],
   );
+  const nested: EntityType = {
+    ...ROUTE,
+    fields: [
+      { key: 'x', type: 'subItems', label: 'X', group: 'basic', item: [{ key: 'y', type: 'text', label: 'Y', group: '' }] },
+      { key: 'x.y', type: 'text', label: 'XY', group: 'basic' },
+    ],
+  };
+  eq('两个 key 都对得上时取长的那个', [fieldOfPath(nested, 'x.y')?.key, fieldOfPath(nested, 'x.1.y')?.key], ['x.y', 'x']);
   eq(
     '有序子项里的下标与子字段',
     [
@@ -2363,6 +2379,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     '引用指向的实体（含有序子项里的引用），去重',
     [referencedKinds(ROUTE), referencedKinds(PKG), referencedKinds(HOTEL)],
     [['hotel'], ['material'], []],
+  );
+  eq(
+    '详情地址的页签只认 edit、preview（路由表 /catalog/$kind/$code 一行）',
+    [itemSearch({ tab: 'preview' }), itemSearch({ tab: 'edit' }), itemSearch({ tab: 'x' }), itemSearch({})],
+    [{ tab: 'preview' }, { tab: 'edit' }, {}, {}],
   );
   eq(
     '联想：已有的值，数组展开、去重、按出现的先后',
@@ -2401,7 +2422,37 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   const e1 = writeValue(withEmpty, fieldOf(ROUTE, 'aliases'), ['川西']);
   eq('撤销时照原样放回，选填的空数组也放回', restoreField(e1, withEmpty, fieldOf(ROUTE, 'aliases')).aliases, []);
   const r = restoreField(st, orig, hardest);
-  check('撤销放回的是拷贝，改它不动打开时的内容', r.intensity !== orig.intensity && sameValue(r.intensity, orig.intensity));
+  check('撤销不改打开时的内容', sameValue(orig, formState(SICHUAN)) && sameValue(r.intensity, orig.intensity));
+
+  // 卡片头声明了一个锁定组、卡里另一组的锁在别处声明过：那一组的字段照样挂锁，只有声明了的指向卡片头
+  const two: EntityType = {
+    ...ROUTE,
+    groups: [{ key: 'g', label: '组' }],
+    fields: [
+      { key: 'a', type: 'text', label: 'A', group: 'g', lockedWhenActive: true, lockGroup: 'id' },
+      { key: 'b', type: 'text', label: 'B', group: 'g', lockedWhenActive: true, lockGroup: 'price' },
+    ],
+  };
+  const twoHtml = html(
+    <FieldGrid
+      entity={two}
+      group="g"
+      state={{ a: '1', b: '2' }}
+      ctx={ACTIVE}
+      onChange={() => undefined}
+      lockNoteId="n"
+      declaredLocks={['id']}
+    />,
+  );
+  eq(
+    '整卡锁定、卡片头只声明识别：识别的字段不挂锁、指向卡片头，计价的字段挂锁',
+    [count(twoHtml, 'class="field-lock"'), count(twoHtml, 'aria-describedby="n"')],
+    [1, 1],
+  );
+  const lockedChanged = html(
+    <FormField field={fieldOf(ROUTE, 'title')} mode="locked" span="half" value="x" row={{}} changed onUndo={() => undefined} />,
+  );
+  check('锁定、只读的字段不标「已改」，也没有撤销', !lockedChanged.includes('field-changed') && !lockedChanged.includes('field-undo'));
 
   // 按函数改状态时字段只在画出来的东西变了才重画（逐字重渲时弹层不跟着重画，React #185）
   const base: MemoProps = {
@@ -2480,6 +2531,36 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   const SICHUAN_ITEM = itemOf(ROUTE_ROWS, 'r-sichuan-lux');
   const GUIZHOU_ITEM = itemOf(ROUTE_ROWS, 'r-guizhou-5d');
   const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
+
+  // 检查项找字段：外层字段优先于同名的子字段，哪怕子字段排在前面
+  {
+    /** 一个元素：属性、子元素 */
+    const el = (tag: string, attrs: Record<string, string>, ...kids: HTMLElement[]): HTMLElement => {
+      const x = document.createElement(tag);
+      for (const [k, v] of Object.entries(attrs)) x.setAttribute(k, v);
+      x.append(...kids);
+      return x;
+    };
+    const sub = el(
+      'div',
+      { 'data-field-key': 'x' },
+      el('div', { 'data-item-index': '0' }, el('div', { 'data-field-key': 'y' }, el('input', { class: 'in-sub' }))),
+    );
+    const top = el('div', { 'data-field-key': 'y' }, el('input', { class: 'in-top' }));
+    const box = el('div', {}, sub, top);
+    const ent: EntityType = {
+      ...ROUTE,
+      fields: [
+        { key: 'x', type: 'subItems', label: 'X', group: 'basic', item: [{ key: 'y', type: 'text', label: 'Y', group: '' }] },
+        { key: 'y', type: 'text', label: 'Y', group: 'basic' },
+      ],
+    };
+    eq(
+      '检查项指向外层的字段 y，不是排在前面的子项里的 y；子项里的一处找得到那一项的 y',
+      [issueTarget(box, ent, 'y') === top, issueTarget(box, ent, 'x.0.y')?.querySelector('input')?.className],
+      [true, 'in-sub'],
+    );
+  }
 
   // E 页：已上架、可以编辑
   const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });

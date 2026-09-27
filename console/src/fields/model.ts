@@ -64,12 +64,11 @@ export const fieldChanged = (original: Payload, state: Payload, f: FieldDef): bo
 
 /**
  * 「撤销这处」：把这个字段放回打开时的值，别的字段不动。原来没有这个键就删掉（删空的嵌套对象一起删），
- * 所以撤销了每一处改动以后补丁回到空（不变量 16）。不经 writeValue：原值照原样放回，选填的空值也不删
+ * 所以撤销了每一处改动以后补丁回到空（不变量 16）。不经 writeValue：原值照原样放回，选填的空值也不删。
+ * 放回的值和打开时的内容共用同一个对象，不拷贝：表单状态只经 setPath 这类沿路复制的写法改，从不就地改
  */
-export function restoreField(state: Payload, original: Payload, f: FieldDef): Payload {
-  const v = valueAt(original, f.key);
-  return setPath(state, pathOf(f.key), v === undefined ? undefined : structuredClone(v));
-}
+export const restoreField = (state: Payload, original: Payload, f: FieldDef): Payload =>
+  setPath(state, pathOf(f.key), valueAt(original, f.key));
 
 /** showWhen 没显示出来的字段：值从表单状态里删掉，删空的嵌套对象一起删（有序子项的子字段不支持 showWhen） */
 export function pruneHidden(state: Payload, fields: readonly FieldDef[]): Payload {
