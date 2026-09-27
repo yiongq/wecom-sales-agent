@@ -149,6 +149,10 @@
   background: var(--raised);
   box-shadow: var(--shadow-menu);
 }
+/* 外壳只是把焦点转给菜单项，自己不画焦点框 */
+.filter-menu:focus {
+  outline: none;
+}
 .filter-menu .ant-dropdown-menu {
   max-height: 320px;
   overflow-y: auto;

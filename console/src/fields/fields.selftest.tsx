@@ -2035,6 +2035,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   check('选四川', await click(items()[0]));
   eq('选中写回', picks, ['四川']);
+  await act(async () => win.happyDOM.waitUntilComplete());
   check('选了以后焦点回到按钮上（菜单项没了，不掉到 body）', document.activeElement === fb.box.querySelector('.filter-trigger'));
   await fb.unmount();
   const fb2 = await mount(
@@ -2051,6 +2052,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('当前项标 aria-checked', on?.textContent, '四川');
   check('再点同一项', await click(on));
   eq('再点同一项就是清除', picks, ['四川', undefined]);
+  await act(async () => win.happyDOM.waitUntilComplete());
   check('清除以后焦点同样回到按钮上', document.activeElement === fb2.box.querySelector('.filter-trigger'));
   const x2 = fb2.box.querySelector<HTMLElement>('.filter-clear');
   x2?.focus();
@@ -2058,6 +2060,32 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('x 清除这一项', picks, ['四川', undefined, undefined]);
   check('点了 x 焦点回到按钮上', document.activeElement === fb2.box.querySelector('.filter-trigger'));
   await fb2.unmount();
+  for (const el of all(document, '.ant-dropdown')) el.remove();
+
+  // 没有搜索框的菜单（7 项以内）：打开后焦点进到菜单里，键盘才能选（antd 的 autoFocus 在包了一层的弹层上聚焦不上）
+  const overseas = fieldOf(ROUTE, 'overseas');
+  const osOptions = filterOptions(overseas, ROUTE_ROWS);
+  for (const [pick, want] of [
+    [undefined, '境内'],
+    [{ field: overseas, value: 'true' }, '境外'],
+  ] as const) {
+    const fb3 = await mount(<FilterButton field={overseas} options={osOptions} pick={pick} onPick={(v) => void picks.push(v)} />);
+    check(`点开境内/境外（${want}）`, await click(fb3.box.querySelector('.filter-trigger')));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      await win.happyDOM.waitUntilComplete();
+    });
+    eq(
+      pick ? '打开后焦点在选中的那一项上' : '打开后焦点在第一项上',
+      (document.activeElement as HTMLElement | null)?.getAttribute('role') === 'menuitemradio' ? document.activeElement?.textContent : null,
+      want,
+    );
+    check('在菜单项上按 Esc', await press(document.activeElement, 'Escape'));
+    await act(async () => win.happyDOM.waitUntilComplete());
+    check('Esc 关菜单，焦点回到按钮上', document.activeElement === fb3.box.querySelector('.filter-trigger'));
+    await fb3.unmount();
+    for (const el of all(document, '.ant-dropdown')) el.remove();
+  }
   for (const el of all(document, '.ant-dropdown')) el.remove();
 }
 

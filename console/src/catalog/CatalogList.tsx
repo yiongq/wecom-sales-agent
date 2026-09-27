@@ -238,7 +238,7 @@ const radio = (checked: boolean): object => ({ role: 'menuitemradio', 'aria-chec
 /**
  * 一个筛选按钮（设计系统 §5.5 工具条、§5.3 下拉菜单）。没生效时是「目的地」加 chevron-down；
  * 生效后改成 accent 底的「目的地：四川」，后面的 x 单独是一个按钮，点了清除这一项。选中的项再点一次也是清除。
- * 选了一项、点了 x 之后焦点回到按钮上（spec「可访问性 · 键盘」）：菜单项和 x 随之消失，不接住的话焦点掉到 body，
+ * 选了一项、点了 x、按了 Esc 之后焦点回到按钮上（spec「可访问性 · 键盘」）：菜单项和 x 随之消失，不接住的话焦点掉到 body，
  * 键盘用户得从跳转链接重新 Tab 过来
  */
 export function FilterButton(props: {
@@ -253,7 +253,15 @@ export function FilterButton(props: {
   const [query, setQuery] = useState('');
   const [pinyin, setPinyin] = useState<PinyinLib | null>(null);
   const popup = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
+  // 按钮经外层的 span 找：Dropdown 的子元素上不另挂 ref，免得和 antd 自己挂的 ref 抢
+  const box = useRef<HTMLSpanElement>(null);
+  const focusTrigger = (): void => box.current?.querySelector<HTMLButtonElement>('.filter-trigger')?.focus();
+  const close = (): void => {
+    setOpen(false);
+    setQuery('');
+    // 等这一下按键结束再挪焦点：Enter 选中时按下就挪的话，随后的按键落到按钮上，又把菜单打开
+    requestAnimationFrame(focusTrigger);
+  };
   const searchable = options.length > MENU_SEARCH_OVER;
   useEffect(() => {
     if (!open || !searchable || pinyin) return;
@@ -283,7 +291,7 @@ export function FilterButton(props: {
   const text = pick ? `${name}：${pickLabel(pick, options, props.refItems)}` : name;
 
   return (
-    <span className={pick ? 'filter-btn is-active' : 'filter-btn'}>
+    <span ref={box} className={pick ? 'filter-btn is-active' : 'filter-btn'}>
       <Dropdown
         open={open}
         onOpenChange={(next) => {
@@ -297,14 +305,30 @@ export function FilterButton(props: {
           items,
           selectable: false,
           onClick: ({ key }) => {
-            trigger.current?.focus();
             onPick(key === pick?.value ? undefined : key);
-            setOpen(false);
-            setQuery('');
+            close();
           },
         }}
         popupRender={(menu) => (
-          <div ref={popup} className="filter-menu">
+          // 打开后 antd（autoFocus）聚焦的是这层外壳：它本来不可聚焦，焦点留在按钮上，键盘选不了。
+          // 让它可聚焦，再把焦点转给选中的那一项（没有就第一项），方向键和 Enter 才用得上（spec「可访问性 · 键盘」）
+          <div
+            ref={popup}
+            className="filter-menu"
+            tabIndex={-1}
+            onFocus={(e) => {
+              if (e.target !== e.currentTarget) return;
+              const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+              (items.find((i) => i.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
+            }}
+            // Esc 关菜单、焦点回到按钮（焦点在菜单项上时 antd 自己的处理接不回来）
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape') return;
+              e.preventDefault();
+              e.stopPropagation();
+              close();
+            }}
+          >
             {searchable && (
               <Input
                 autoFocus
@@ -325,7 +349,7 @@ export function FilterButton(props: {
           </div>
         )}
       >
-        <button ref={trigger} type="button" className="filter-trigger" aria-haspopup="menu" aria-expanded={open} disabled={!options.length}>
+        <button type="button" className="filter-trigger" aria-haspopup="menu" aria-expanded={open} disabled={!options.length}>
           {cjk(text)}
           {!pick && <Icon of={ChevronDown} size={14} className="filter-chevron" />}
         </button>
@@ -336,7 +360,7 @@ export function FilterButton(props: {
           className="filter-clear"
           aria-label={`清除「${name}」筛选`}
           onClick={() => {
-            trigger.current?.focus();
+            focusTrigger();
             onPick(undefined);
           }}
         >
