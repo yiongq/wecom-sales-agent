@@ -2,10 +2,12 @@
 // 节表与锁定：成员取 /sop 的 spec（顺序、标题、锁定），锁定原因按 key 取行业包的 sopSections；匿名只有已发布版本的节，
 // 标题、锁定、原因都取行业包，包里没有的节从正文的「## 」行取标题、按没锁算。console 不认识任何一个包的节。
 // 字数与服务端同一口径（src/shared/sop-sections.ts）：可编辑节的正文（去掉标题行和其后的空行），UTF-16 长度求和。
+// 编辑器里还没保存的正文先按服务端保存时的规则规范化（canonicalBody：去行尾空白、开头空行，结尾补成一个空行或一个换行），
+// 再计数、再和线上比：保存前后数字不跳，只多了行尾空格的节也不算改过。
 import type { ContractViolation, SectionSpecView, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
 import { absoluteTime, dateText, digits } from '../../../src/shared/format.js';
 import type { SopSectionDef } from '../../../src/shared/pack.js';
-import { editableChars, headingLine, sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
+import { canonicalBody, editableChars, headingLine, sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
 
 /** 前言没有标题行，目录里叫「前言」 */
 export const PREAMBLE_NAME = '前言';
@@ -48,17 +50,20 @@ export interface MemberOutlineInput {
   published: readonly SopSectionText[];
   /** 草稿的节，没有草稿就是线上版本的 */
   current: readonly SopSectionText[];
-  /** 本地改过、还没保存的正文，按节 key */
+  /** 本地改过、还没保存的正文（编辑器里的原文），按节 key */
   edits: Readonly<Record<string, string>>;
   /** 最近一次检查（或发布被拒）的问题，按 sectionKey 计数 */
   violations?: readonly Pick<ContractViolation, 'sectionKey'>[] | null;
 }
 
+/** 编辑器里的原文存进草稿以后的正文：与服务端保存时同一个规范化，末节的结尾是一个换行 */
+const savedBody = (spec: readonly SectionSpecView[], i: number, raw: string): string => canonicalBody(raw, i === spec.length - 1);
+
 /** 成员的目录：节表来自 /sop，锁定原因来自行业包 */
 export function memberOutline(input: MemberOutlineInput): OutlineRow[] {
   const { spec, packSections, published, current, edits, violations } = input;
-  return spec.map((s) => {
-    const body = Object.hasOwn(edits, s.key) ? edits[s.key]! : bodyOf(textOf(current, s.key), s);
+  return spec.map((s, i) => {
+    const body = Object.hasOwn(edits, s.key) ? savedBody(spec, i, edits[s.key]!) : bodyOf(textOf(current, s.key), s);
     const online = bodyOf(textOf(published, s.key), s);
     const changed = !s.locked && body !== online;
     const def = packSections?.find((d) => d.key === s.key);
@@ -101,16 +106,16 @@ export function anonOutline(sections: readonly SopSectionText[], packSections?: 
   });
 }
 
-/** 本地改动合进草稿以后的全部节（额度按它算，与服务端的 editableChars 同一个函数） */
+/** 本地改动（规范化以后）合进草稿以后的全部节（额度按它算，与服务端的 editableChars 同一个函数） */
 export function mergedSections(
   spec: readonly SectionSpecView[],
   current: readonly SopSectionText[],
   edits: Readonly<Record<string, string>>,
 ): SopSectionText[] {
   const out: SopSectionText[] = [];
-  for (const s of spec) {
+  for (const [i, s] of spec.entries()) {
     if (Object.hasOwn(edits, s.key)) {
-      const body = edits[s.key]!;
+      const body = savedBody(spec, i, edits[s.key]!);
       out.push({ key: s.key, text: s.heading === null ? body : headingLine({ ...s, locked: false }) + body });
       continue;
     }

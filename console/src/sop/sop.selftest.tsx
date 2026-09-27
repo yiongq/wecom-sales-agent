@@ -1,7 +1,7 @@
 // 销售话术页第 5.1 步的自测（spec「销售话术（B、C 页）」的状态句、额度条、目录，设计系统 §6.2 与 B 页）：
 // 1. 目录的数据：节表与锁定取 /sop 的 spec，锁定原因按 key 取行业包；匿名只用行业包；包里没有的节照样画得出来；
 //    字数与相对线上的差、改过的节、问题数、分段筛选的计数、底部说明；
-// 2. 额度条：与服务端同一个 editableChars 算（含还没保存的改动），B 页的数（2,303 / 2,658 字 · 87% · 还能写355字，
+// 2. 额度条：与服务端同一个 editableChars 算（含还没保存的改动，先按保存时的规则规范化），B 页的数（2,303 / 2,658 字 · 87% · 还能写355字，
 //    比例尺 0–2,800，刻度在 649、683 px 处），95% 与上限两道线上的颜色与百分比，超限的写法；
 // 3. 状态句：成员与匿名，发布人没有名字时按来源写；
 // 4. URL 的 section 与方向键：不认识的节退回默认节，到头不绕回，被筛掉的当前节；未保存保护只拦离开这一页；
@@ -86,11 +86,17 @@ const RENO: readonly SopSectionDef[] = [
   { key: 'wechat-style', heading: '微信语气规范', locked: false },
 ];
 
-/** 正文恰好 n 个 UTF-16 码元（设计系统 §10.0 的场景字数） */
-const body = (n: number, ch = '话'): string => ch.repeat(n);
+/**
+ * 正文恰好 n 个 UTF-16 码元（设计系统 §10.0 的场景字数），并且和服务端存下的一样是规范形：
+ * 非末节以一个空行结尾（\n\n），末节以一个换行结尾
+ */
+const body = (n: number, ch = '话', last = false): string => {
+  const end = last ? '\n' : '\n\n';
+  return ch.repeat(n - end.length) + end;
+};
 const textFor = (def: Pick<SopSectionDef, 'heading'>, b: string): string => (def.heading === null ? b : `## ${def.heading}\n\n${b}`);
 function sections(defs: readonly SopSectionDef[], lens: Record<string, number>, ch = '话'): SopSectionText[] {
-  return defs.map((d) => ({ key: d.key, text: textFor(d, body(lens[d.key]!, ch)) }));
+  return defs.map((d, i) => ({ key: d.key, text: textFor(d, body(lens[d.key]!, ch, i === defs.length - 1)) }));
 }
 
 // B 页场景：线上 v2，草稿改了话术原则 910 → 954、异议处理 531 → 540，上限 2,658
@@ -111,7 +117,7 @@ const DRAFT_LENS = { ...ONLINE_LENS, tone: 954, objections: 540 };
 const PUBLISHED = sections(TRAVEL, ONLINE_LENS);
 // 草稿里改过的节换一个字，长度不变的改动也认得出
 const DRAFT = sections(TRAVEL, DRAFT_LENS).map((s) =>
-  s.key === 'tone' || s.key === 'objections' ? { ...s, text: s.text.replace(/话$/, '改') } : s,
+  s.key === 'tone' || s.key === 'objections' ? { ...s, text: s.text.replace(/话(\n+)$/, '改$1') } : s,
 );
 const LIMIT = 2658;
 const NOW = Date.parse('2026-09-26T14:30:00+08:00');
@@ -297,12 +303,55 @@ const rows = memberOutline({ spec: SPEC, packSections: TRAVEL, published: PUBLIS
     '可编辑正文用了87%：前言232字，话术原则954字（已改），异议处理540字（已改），微信语气规范577字；到95%提醒，2,658字是上限',
   );
 
-  // 本地还没保存的改动实时算进去，与把它存进草稿以后服务端算的相同
-  const edits = { 'wechat-style': body(600) };
-  const merged = DRAFT.map((s) => (s.key === 'wechat-style' ? { ...s, text: `## 微信语气规范\n\n${body(600)}` } : s));
-  eq('本地改动实时算：+23 字', [draftChars(SPEC, DRAFT, edits), editableChars(merged, SPEC)], [2326, 2326]);
+  // 本地还没保存的改动实时算进去（末节以一个换行结尾）
+  eq('本地改动实时算：+23 字', draftChars(SPEC, DRAFT, { 'wechat-style': body(600, '话', true) }), 2326);
   eq('前言的本地改动不带标题行', draftChars(SPEC, DRAFT, { preamble: body(200) }), 2303 - 32);
   eq('锁定节的改动不计', draftChars(SPEC, DRAFT, { stages: body(10) }), 2303);
+
+  // 编辑器里的原文按服务端保存时的规则规范化以后再算（src/sop/sections.ts 的 normalizeBody，规则见 canonicalBody）：
+  // 去掉行尾空白与开头的空行，结尾补成一个空行（末节一个换行）。下面的数按那几条规则手算，保存前后不跳
+  const online = 2250; // 线上：前言232、话术原则910、异议处理531、微信语气规范577
+  const tone = body(910); // 线上的话术原则正文：908 个字加一个空行
+  const toneRow = (raw: string): OutlineRow =>
+    memberOutline({ spec: SPEC, published: PUBLISHED, current: PUBLISHED, edits: { tone: raw } })[3]!;
+  const typedAtEnd = `${tone}测试`;
+  eq(
+    '在节末的空行上打「测试」：存下来是空行、测试、空行，+4 字而不是 +2',
+    [draftChars(SPEC, PUBLISHED, { tone: typedAtEnd }), toneRow(typedAtEnd).chars, countText(toneRow(typedAtEnd))],
+    [online + 4, 914, '914（+4）'],
+  );
+  const trailingSpace = tone.replace('\n', ' \n');
+  eq(
+    '行尾多敲一个空格：存下来与线上相同，不算改过',
+    [draftChars(SPEC, PUBLISHED, { tone: trailingSpace }), toneRow(trailingSpace).changed, filterCounts([toneRow(trailingSpace)]).changed],
+    [online, false, 0],
+  );
+  const noBlank = tone.slice(0, -1);
+  eq(
+    '删掉节末的空行：存下来照样补回，不算改过',
+    [draftChars(SPEC, PUBLISHED, { tone: noBlank }), toneRow(noBlank).changed],
+    [online, false],
+  );
+  eq(
+    '末节以一个换行结尾：在末尾打「测试」+3 字',
+    draftChars(SPEC, PUBLISHED, { 'wechat-style': `${body(577, '话', true)}测试` }),
+    online + 3,
+  );
+  const ch = String.fromCharCode;
+  // 粘贴进来的：BOM、开头两个空行、Windows 换行、分解形式的 é（e 加组合重音，NFC 以后是一个码元）、行尾两个空格
+  const pasted = `${ch(0xfeff)}\n\n${'话'.repeat(10)}\r\ne${ch(0x301)}  `;
+  eq(
+    '粘贴的正文：去 BOM、开头空行、\\r，转 NFC，去行尾空白，补上空行',
+    memberOutline({ spec: SPEC, published: PUBLISHED, current: PUBLISHED, edits: { preamble: pasted } })[0]!.chars,
+    10 + 1 + 1 + 2,
+  );
+  // 快到上限时，打字的那一下按存下来的算：差 2 字到上限时在节末空行上打两个字，存下来超 2 字，条上就得是 danger
+  const near = quotaModel(
+    memberOutline({ spec: SPEC, published: PUBLISHED, current: PUBLISHED, edits: { tone: typedAtEnd } }),
+    draftChars(SPEC, PUBLISHED, { tone: typedAtEnd }),
+    online + 2,
+  );
+  eq('快到上限：按存下来的字数上色', [near.tone, near.tail], ['danger', '超出2字，发布会被拦下']);
 
   // 两道线：95% 起 warning，超过上限 danger；百分比与颜色一致（2,525 是 94.99%，写 94）
   const at = (n: number) => quotaModel(rows, n, LIMIT);
@@ -817,7 +866,7 @@ const hrefFor = (k: string): string => `/console/sop?section=${k}`;
     packSections: TRAVEL,
     published: PUBLISHED,
     current: DRAFT,
-    edits: { 'wechat-style': body(600) },
+    edits: { 'wechat-style': body(600, '话', true) },
   });
   await m.render(dir(typed));
   const after = propsOf();
