@@ -364,8 +364,14 @@ a.nav-item:hover {
   width: 32px;
   padding: 0;
 }
+/* 标签看不见但留给读屏：链接的名字照旧是「会话」，叠着的实心徽标读作「等人接手2个」 */
 .is-collapsed .nav-label {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .is-collapsed .nav-item.is-selected {
   box-shadow: 0 0 0 1px var(--control-border);
@@ -610,6 +616,9 @@ a.nav-item:hover {
 
 /* ---------------- 页头（§4.3）与匿名横幅（§5.12） ---------------- */
 .page-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -617,6 +626,36 @@ a.nav-item:hover {
 }
 .page-header.with-banner {
   margin-bottom: 16px;
+}
+/* 判断页头滚没滚出去的哨兵：1px 高，不占位置（PageHeader 的 useStuckHeight） */
+.page-header-sentinel {
+  height: 1px;
+  margin-bottom: -1px;
+}
+/*
+ * 滚动后的吸顶条（§4.3、§3 吸附元素）：高 52，贴满面板宽（抵掉 --panel-px），不透明，底部一条 --divider，不加阴影。
+ * 下外边距 = 原高 − 52 + 原来的下外边距，占位和缩起前一样，下面的内容不跳
+ */
+.page-header.is-stuck {
+  box-sizing: border-box;
+  height: 52px;
+  margin: 0 calc(-1 * var(--panel-px, 0px)) calc(var(--page-header-h) - 52px + 20px);
+  padding: 0 var(--panel-px, 0px);
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+.page-header.with-banner.is-stuck {
+  margin-bottom: calc(var(--page-header-h) - 52px + 16px);
+}
+.page-header.is-stuck .page-title {
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-header.is-stuck .page-status {
+  display: none;
 }
 .page-header-main {
   flex: 1;
@@ -676,6 +715,17 @@ a.nav-item:hover {
 }
 .cmdk-root .ant-modal-body {
   padding: 0;
+}
+/* 弹窗的名字「搜索」只给读屏（aria-labelledby 指向它），看不见 */
+.cmdk-root .ant-modal-header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .cmdk-input {
   display: flex;
@@ -791,7 +841,8 @@ a.nav-item:hover {
 }
 .about-links {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 4px 16px;
   margin-top: 12px;
 }
 

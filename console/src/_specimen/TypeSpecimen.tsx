@@ -187,7 +187,10 @@ export function TypeSpecimen() {
                 <p>{cjk('图标：Lucide（ISC许可）。')}</p>
                 <div className="spec-modal-links">
                   <a href={`${LICENSES}OFL-Geist.txt`} target="_blank" rel="noreferrer">
-                    查看字体许可
+                    查看Geist许可
+                  </a>
+                  <a href={`${LICENSES}OFL-NotoSansSC.txt`} target="_blank" rel="noreferrer">
+                    查看思源黑体许可
                   </a>
                   <a href={`${LICENSES}lucide-ISC.txt`} target="_blank" rel="noreferrer">
                     查看图标许可

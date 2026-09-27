@@ -3,7 +3,7 @@
 // 界面代码不认行业：实体名、图标名、产品库分组名、客户的叫法都取自 /pack 下发的行业包（spec「行业包通用架构 · 下发」）
 import type { ConversationRow, Me, Role } from '../../../src/shared/console-api.js';
 import { shortIdOf } from '../../../src/shared/conversation.js';
-import type { IndustryPack } from '../../../src/shared/pack.js';
+import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 
 /** 外壳关心的来者：成员带角色，匿名只在 demo 下有 */
 export type ShellViewer = { kind: 'member'; me: Me } | { kind: 'anon' };
@@ -44,19 +44,23 @@ export interface NavGroup {
 }
 
 /**
+ * 侧栏、搜索占位、⌘K 的「各实体」组共用的实体表：按 `nav.entities` 的顺序，nav 里写了、`entities` 里没有的 kind 跳过。
+ * 三处取同一张表，侧栏有哪些实体，占位就写哪些、⌘K 就搜哪些
+ */
+export const packEntities = (pack: IndustryPack): EntityType[] =>
+  pack.nav.entities.map((kind) => pack.entities.find((e) => e.kind === kind)).filter((e) => e !== undefined);
+
+/**
  * 侧栏的导航（spec「信息架构」，设计系统 §4.2）：顺序固定，产品库分组名和各实体取自行业包。
  * 会话只给成员（匿名没有入口）；审计日志只给所有者、管理员。「总览」随第 4 步的路由加上，「平台 / 系统」要后端
  */
 export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
-  const entities = pack.nav.entities
-    .map((kind) => pack.entities.find((e) => e.kind === kind))
-    .filter((e) => e !== undefined)
-    .map((e): NavItem => ({
-      key: `/catalog/${e.kind}`,
-      label: e.label,
-      icon: { entity: e.icon },
-      entity: e.kind,
-    }));
+  const entities = packEntities(pack).map((e): NavItem => ({
+    key: `/catalog/${e.kind}`,
+    label: e.label,
+    icon: { entity: e.icon },
+    entity: e.kind,
+  }));
   const groups: NavGroup[] = [
     { key: 'main', title: null, items: [{ key: '/sop', label: '销售话术', icon: { page: 'sop' } }] },
     { key: 'catalog', title: pack.nav.catalogGroup, items: entities },
@@ -91,7 +95,7 @@ export const collapsedByDefault = (pathname: string): boolean => {
 
 /** 搜索触发器里的占位：「搜索线路、酒店、会话…」；匿名没有会话 */
 export function searchPlaceholder(pack: IndustryPack, viewer: ShellViewer): string {
-  const names = pack.nav.entities.map((k) => pack.entities.find((e) => e.kind === k)?.label).filter((l) => l !== undefined);
+  const names = packEntities(pack).map((e) => e.label);
   if (viewer.kind === 'member') names.push('会话');
   return `搜索${names.join('、')}…`;
 }
@@ -133,7 +137,9 @@ export function conversationLabel(row: Pick<ConversationRow, 'id' | 'channel'>, 
   return [`${channel}${pack.vocabulary.customer}`, shortIdOf(row.id) || '····'];
 }
 
-/** 工作台里打开这个会话（admin.html 读 #s=<id> 选中它，第 13 步） */
+/**
+ * 工作台里打开这个会话。admin.html 读 #s=<id> 选中它是第 13 步的事：在那之前这个链接只打开工作台、不选中会话（plan「Open」）
+ */
 export const workbenchHref = (id: string): string => `/admin.html#s=${encodeURIComponent(id)}`;
 
 const pad2 = (n: number): string => String(n).padStart(2, '0');

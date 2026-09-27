@@ -63,6 +63,8 @@
 
 ## Open
 
+- 第 2.2 步：铃铛的「打开工作台」和 ⌘K 的会话行打开 `/admin.html#s=<id>`，但 admin.html 读 `#s=` 选中会话是第 13 步的事。在那之前这个链接只打开工作台、不选中那个会话，走查不能把它当成已经能用。
+- 第 2.2 步：路由 `/catalog/$kind` 的 `params.parse` 把 hotel 以外的 kind 一律当成 route（01 以来如此）。外壳这一侧已经不认行业（假包的侧栏、⌘K、计数都按包里的 kind 发请求），但假包的 `/catalog/package` 页面现在仍按线路渲染、请求 `/catalog/route`。第 9 步重做列表、第 10.1 步加详情路由时，路由参数改成按行业包的 kind 取，包里没有的 kind 出 404；第 17 步的假包走查依赖这一条。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 
 ## 砍法
@@ -311,12 +313,25 @@
   - 两套主题下 `securitypolicyviolation` 都是 0 次，页面代码的控制台错误 0 条；另有浏览器自己记的「Failed to load resource」，对应故意造的 401、500 和匿名的 `/me` 401。
 - 偏离与取舍（spec 顶部 `Revisions:` 记了前两条）：
   - 用户菜单的身份块只写名字和角色：设计系统 §4.2 要写邮箱，`Me` 没有邮箱字段，spec 的接口增补也没加。
-  - 搜索触发器的 Tooltip 在 Mac 上写「⌘K」，其余写「Ctrl+K」，两种按法都认。
+  - 搜索触发器的 Tooltip 在 Mac 上写「⌘K」，其余写「Ctrl+K」；快捷键按平台只认一种（评审之后改，见下）。
   - ⌘K 的实体结果在条目详情路由（第 10 步）之前打开这个实体的列表页，改的是 `Shell.tsx` 的 `openEntity` 一处。
   - 侧栏还没有「总览」：`/` 仍重定向到销售话术，第 4 步加路由时在 `buildNav` 最前面加一项。
   - 「操作」组放外观三项、减少动态效果、关于、退出登录（匿名是登录）；spec 只说是静态的。
   - 相对时间先放在 `shell/model.ts` 的 `sinceText`，第 3.4 步的 `src/shared/format.ts` 接手后换掉；角色的中文名 `ROLE_LABEL` 同样等第 3.4 步挪进 `ui-labels.ts`。
   - 产品库页的页名取行业包的实体名，包没到时退回旧的 `KIND_LABEL`，第 9 步重做列表时去掉。
+- 评审之后（同日，12 条意见接受 11 条，1 条只接受一半）：
+  - 行业包通用：`api.ts` 的 `catalogKind` 原来拿接口的 `route | hotel` 枚举筛，别的包的实体在侧栏、⌘K、计数里整个消失，侧栏只剩一个空的分组标题。改成只转类型、不筛（spec「下发」只要求转换）。实体表由 `model.ts` 的 `packEntities` 一处给出，侧栏、搜索占位、⌘K 同源。走查：kind 为 `package` / `material` 的假包，侧栏「产品库 · 装修套餐 20 / 主材 23」，占位「搜索装修套餐、主材、会话…」，发出 `/catalog/package`、`/catalog/material`，⌘K 搜「贵州」出这两组。路由 `params.parse` 仍把非 hotel 的 kind 当成 route（见「Open」）。
+  - 读屏：收起时用户按钮的名字是「老板，所有者」（原来没有名字）；收起的租户 logo 是 `role="img"`、名字是租户名；收起的导航标签改成视觉隐藏（原来是 `display: none` 加 `aria-label`），「会话」读作「会话 等人接手2个」。用户菜单的外观三项是 `menuitemradio`、减少动态效果是 `menuitemcheckbox`，都带 `aria-checked`，切换后读屏状态跟着变；子菜单箭头换成 lucide 的 `chevron-right`（aria-hidden），外观项的名字不再带 antd 图标的「right」。⌘K 弹窗的名字是「搜索」（标题只给读屏，1×1 裁掉）。
+  - ⌘K 的数据：各实体列表 `staleTime: Infinity`，只取还没载入的，刷新归侧栏与列表页；最近 100 个会话 30 秒内再开不重取（`queries.ts` 的 `paletteListQuery`、`paletteConversationsQuery`）。实测：打开前 2 个请求，第一次打开后 3 个（只多了最近会话，线路、酒店已经在侧栏的缓存里），再开关三次还是 3 个（评审测的是 5、8、11）。
+  - ⌘K 与铃铛的组内骨架套上 `state-skeleton`：60ms 时 `visibility: hidden`，400ms 时 visible，两套主题相同。
+  - 快捷键按平台只认一种：Mac 只认 ⌘K，其余只认 Ctrl+K，已被别处 `preventDefault` 的按键不接；`aria-keyshortcuts` 同样按平台写。实测：话术编辑器里按 Ctrl+K 删到行尾、⌘K 不打开，⌘K 照常打开。spec 顶部第 2.2 步的 `Revisions:` 改写了第二条。
+  - 页头吸顶（设计系统 §4.3，原来没做）：还是同一个 `header`，滚出面板顶部后加 `is-stuck`，`position: sticky`，高 52、贴满面板宽、页名 15/22/600、藏起状态句、`--panel` 底、`inset 0 -1px 0 var(--divider)`；缩起时用下外边距补回原高，下面的内容不跳。是否滚出由页头前 1px 的哨兵加 `IntersectionObserver`（root 是面板的滚动区）判断。h1 与操作按钮都只有一份，没有复制。产品库与审计页的页头挪出 antd `Space`（Space 给每个子元素包一层 div，吸顶吸不住），页头到下一块因此由 28 变成设计系统写的 20。实测（酒店列表 29 行，滚到 300）：1440 宽 1128×32 → 1192×52，在 (240, 8)，表格顶在滚动内容里的位置 100 → 100；主管（有只读胶囊，原高 58）126 → 126；800 宽 784×52 在 (8, 52)；匿名的横幅位置 80 → 80；滚回顶部后复原。两套主题的底色分别是 `#fff`、`#121214`。
+  - 「关于」的许可链接拆成三个：「查看Geist许可」「查看思源黑体许可」「查看图标许可」，思源黑体的版权声明原来从界面上打不开（第 1.3 步留下的问题）；三个都 200、`text/plain`，首行分别是 Geist Project Authors、Adobe、ISC License。spec「关于」、验收 8 第 4 条、设计系统 §2.6 与 P 页同步改，记进 `Revisions:`；样张页的关于弹窗跟着改。
+  - 自测补上接线：画一次 `Bell`，查询缓存里计数与等人接手两个查询的选项是 30 秒、后台不轮询；`TenantRow`（侧栏与窄屏顶栏共用）匿名没有铃铛；用户按钮的名字；菜单项的 role 与 `aria-checked`；快捷键按平台；⌘K 的数据用真的 `QueryObserver` 加假 fetch 数请求；另一个行业包的侧栏、占位、实体表与 kind 原样。删掉原第 186 行空转的断言。122 → 143 条。
+  - 变异（仓库外的隔离副本，19 例全部失败并点名）：kind 又按枚举筛、实体表不按 nav 排、⌘K 列表不设 staleTime、⌘K 列表关着也取、⌘K 会话每次都取、铃铛列表 `refetchInterval: false`、计数不轮询、后台也轮询、匿名也画铃铛（后两例是评审复现的那两个）、收起的 logo 没有 role、用户按钮没有名字或不带角色、减少动态效果不是 checkbox 或 `aria-checked` 写反、外观项不标当前、Mac 也认 Ctrl+K、Windows 认 Win+K、不看 `defaultPrevented`、`aria-keyshortcuts` 两种都写。
+  - 走查中另外发现、一并修掉的：指针停在搜索触发器上时，⌘K 打开后很快按的第一下 Esc 被触发器的 Tooltip 吃掉（它排到 antd 的 Esc 栈顶），⌘K 关不上；评审时的构建 c0bc50e 上同样能复现。⌘K 开着时把这个 Tooltip 关掉（铃铛已经这么做），之后开关三轮都能关。
+  - preview 实测（同上的 CSP 与拦截方式，浅色、深色各一轮）：以上各项；两套主题的 `securitypolicyviolation` 都是 0 次，页面代码的控制台错误 0 条。入口 JS 2,092.65 → 2,094.01 kB（gzip 673.52 → 673.93 kB）。
+  - 没照做的一条：评审指出合并提交 77b0214 里含了 `check-console-src.ts` 的 heading 例外，它不在两个父提交里。这一改动本记录的「合并」一条已经写明，PR 描述里点名；分支没推送，但改写已有的合并提交要动历史，不做。
 
 ## 交接记录
 

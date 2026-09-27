@@ -178,6 +178,20 @@ export function moveActive(active: number, count: number, key: 'up' | 'down'): n
   return (active + (key === 'down' ? 1 : -1) + count) % count;
 }
 
-/** 打开 ⌘K 的快捷键：⌘K（Mac）或 Ctrl+K，不带 Shift、Alt */
-export const isPaletteShortcut = (e: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): boolean =>
-  (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k';
+/**
+ * 打开 ⌘K 的快捷键按平台只认一种：Mac 是 ⌘K，其余是 Ctrl+K；不带 Shift、Alt，也不带另一个修饰键。
+ * Mac 上不认 Ctrl+K：它是文本框和 CodeMirror 里的「删到行尾」，认了就一按两用。别处已经处理过的按键（defaultPrevented）不接
+ */
+export const isPaletteShortcut = (
+  e: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; defaultPrevented?: boolean },
+  mac: boolean,
+): boolean =>
+  !e.defaultPrevented &&
+  (mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) &&
+  !e.shiftKey &&
+  !e.altKey &&
+  e.key.toLowerCase() === 'k';
+
+/** 快捷键的提示：Tooltip 里的写法与 aria-keyshortcuts（设计系统 §4.2 第 2 项） */
+export const paletteShortcut = (mac: boolean): { label: string; aria: string } =>
+  mac ? { label: '⌘K', aria: 'Meta+K' } : { label: 'Ctrl+K', aria: 'Control+K' };

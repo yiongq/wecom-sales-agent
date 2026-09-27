@@ -44,6 +44,6 @@ export function useChangeFlash(value: number | undefined): number {
   return seq;
 }
 
-/** ⌘K 的提示：Mac 写「⌘K」，其余写「Ctrl K」（两种按法都认） */
+/** 本机是不是 Mac：⌘K 的按法与提示按它分（search.ts 的 isPaletteShortcut、paletteShortcut） */
 export const isMac = (): boolean =>
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');

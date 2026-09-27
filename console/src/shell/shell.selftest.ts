@@ -2,21 +2,25 @@
 // 1. 启动：/me 与 /pack 的每种组合按 spec「外壳 · 启动」那张表定下来是谁、或按哪条文案整页出错；成员身份下 /me 失败不降成匿名；
 // 2. 侧栏由行业包生成：分组、顺序、图标名；会话只给成员，审计日志只给所有者、管理员；每个路由恰有一个选中项；
 // 3. 标签页标题「页名 · 租户名」，匿名是「· 演示」，各页互不相同；搜索占位、徽标文字、头像取色、会话标签、相对时间；
-// 4. 视口三档与侧栏形态、进入销售话术页默认收起、轮询的间隔与后台暂停；
+// 4. 视口三档与侧栏形态、进入销售话术页默认收起；铃铛与软徽标的两个查询真的按轮询参数挂上（画出 Bell 后看查询缓存）；
 // 5. ⌘K：原文、拼音与首字母匹配（真实的 pinyin-match），分组顺序，各组的加载与出错，会话按短码，匿名没有会话组，
-//    ↑↓ / Enter / 输入法组字 / 不响应 J、K；
-// 6. 画出来的页头：非编辑角色有「只读」胶囊（说明写角色），编辑角色没有；匿名有演示横幅；用户行的角色在 DOM 里（读屏读得到）。
+//    ↑↓ / Enter / 输入法组字 / 不响应 J、K；快捷键按平台只认一种；打开时只取还没载入的列表（真的 QueryObserver 加假 fetch）；
+//    任何行业包的实体都进侧栏、占位和 ⌘K（kind 只转类型、不筛）；
+// 6. 画出来的页头：非编辑角色有「只读」胶囊（说明写角色），编辑角色没有；匿名有演示横幅；用户行的角色在 DOM 里（读屏读得到）；
+//    租户行：匿名没有铃铛；用户按钮的名字是「名字，角色」；用户菜单的外观与减少动态效果带 aria-checked。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/shell/shell.selftest.ts
 process.env.TZ = 'Asia/Shanghai';
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ConversationRow, Me, Role } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
-import { HttpError } from '../api.js';
+import { catalogKind, HttpError } from '../api.js';
 import { errorCopy } from '../parts/errors.js';
+import { paletteConversationsQuery, paletteListQuery } from '../queries.js';
 import { VIEWER_KEY } from '../viewer.js';
+import { Bell } from './Bell.js';
 import { resolveBoot, type Outcome, type Viewer } from './boot.js';
 import {
   avatarIndex,
@@ -25,6 +29,7 @@ import {
   collapsedByDefault,
   conversationLabel,
   documentTitle,
+  packEntities,
   POLL,
   searchPlaceholder,
   selectedNavKey,
@@ -40,6 +45,7 @@ import {
   isPaletteShortcut,
   moveActive,
   paletteKey,
+  paletteShortcut,
   type PinyinLib,
   pinyinMatcher,
   plainMatch,
@@ -47,7 +53,8 @@ import {
   selectableRows,
   type SearchInput,
 } from './search.js';
-import { UserNames } from './UserMenu.js';
+import { TenantRow } from './Sidebar.js';
+import { UserMenu, userMenuItems, UserNames } from './UserMenu.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -160,8 +167,9 @@ check(
 
 // ---------------- 2. 侧栏 ----------------
 
-const shape = (v: ShellViewer): string[] =>
-  buildNav(PACK, v).map((g) => `${g.title ?? '-'}:${g.items.map((i) => `${i.label}${i.entity ? `(${i.entity})` : ''}`).join(',')}`);
+const shape0 = (pack: IndustryPack, v: ShellViewer): string[] =>
+  buildNav(pack, v).map((g) => `${g.title ?? '-'}:${g.items.map((i) => `${i.label}${i.entity ? `(${i.entity})` : ''}`).join(',')}`);
+const shape = (v: ShellViewer): string[] => shape0(PACK, v);
 const EDITOR_NAV = ['-:销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,审计日志'];
 eq('侧栏：所有者', shape(member('owner')), EDITOR_NAV);
 eq('侧栏：管理员', shape(member('admin')), EDITOR_NAV);
@@ -183,9 +191,8 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
     ['/conversations'],
   );
   const other: IndustryPack = { ...PACK, nav: { catalogGroup: '套餐与主材', entities: ['hotel', 'nope'] } };
-  eq('侧栏：分组名与实体顺序跟着行业包，nav 里不存在的实体跳过', shape({ kind: 'anon' }).length, 2);
   eq(
-    '侧栏：换一个包',
+    '侧栏：分组名与实体顺序跟着行业包，nav 里不存在的实体跳过',
     buildNav(other, ANON).map((g) => `${g.title ?? '-'}:${g.items.map((i) => i.label).join(',')}`),
     ['-:销售话术', '套餐与主材:酒店'],
   );
@@ -228,6 +235,24 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
 }
 eq('搜索占位：成员', searchPlaceholder(PACK, member('agent')), '搜索线路、酒店、会话…');
 eq('搜索占位：匿名没有会话', searchPlaceholder(PACK, ANON), '搜索线路、酒店…');
+{
+  // 界面不认行业（spec「加一个行业包」：console/src 零改动）：接口枚举里没有的 kind 照样进侧栏、占位和 ⌘K，
+  // 发出去的请求就是这个 kind（验收 5 的假包走查拦的是 /catalog/package、/catalog/material）
+  const home: IndustryPack = {
+    ...PACK,
+    entities: [entity('package', '装修套餐', 'package', ['title', '$code']), entity('material', '主材', 'layers', ['title'])],
+    nav: { catalogGroup: '产品库', entities: ['package', 'material'] },
+  };
+  eq('别的行业包：侧栏', shape0(home, member('owner')), ['-:销售话术', '产品库:装修套餐(package),主材(material)', '运营:会话,审计日志']);
+  eq('别的行业包：搜索占位', searchPlaceholder(home, member('owner')), '搜索装修套餐、主材、会话…');
+  eq(
+    '别的行业包：⌘K 的实体表与侧栏同源',
+    packEntities(home).map((e) => e.kind),
+    ['package', 'material'],
+  );
+  eq('别的行业包：kind 只转类型、不筛', ['package', 'material', 'route'].map(catalogKind), ['package', 'material', 'route']);
+  eq('别的行业包：列表请求的 queryKey 带原来的 kind', paletteListQuery(catalogKind('package'), true).queryKey, ['catalog', 'package']);
+}
 
 // ---------------- 3. 徽标、头像、会话、时间 ----------------
 
@@ -295,6 +320,17 @@ eq(
   [true, true, false, false, false],
 );
 eq('轮询：可见时每 30 秒，隐藏时停', POLL, { refetchInterval: 30_000, refetchIntervalInBackground: false });
+{
+  // 参数写对了还不够，要真的挂在铃铛与软徽标的两个查询上：画一次 Bell，看查询缓存里这两个查询建起来时带的选项
+  const qc = new QueryClient();
+  renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Bell, { pack: PACK, placement: 'rightTop' })));
+  const opts = (key: readonly string[]) => {
+    const o = qc.getQueryCache().find({ queryKey: [...key], exact: true })?.options as Record<string, unknown> | undefined;
+    return o ? { refetchInterval: o.refetchInterval, refetchIntervalInBackground: o.refetchIntervalInBackground } : null;
+  };
+  eq('轮询：铃铛与软徽标的计数查询按 30 秒轮询、隐藏时停', opts(['conversations', 'counts']), POLL);
+  eq('轮询：铃铛的等人接手列表按 30 秒轮询、隐藏时停', opts(['conversations', 'human']), POLL);
+}
 
 // ---------------- 5. ⌘K ----------------
 
@@ -454,17 +490,89 @@ const key = (k: string, m: Partial<{ metaKey: boolean; ctrlKey: boolean; shiftKe
   ...m,
 });
 eq(
-  '快捷键：⌘K 与 Ctrl+K 打开，单独的 K、带 Shift 或 Alt 的不算',
+  '快捷键：Mac 只认 ⌘K（Ctrl+K 留给文本框删到行尾），单独的 K、带 Shift 或 Alt 的不算',
   [
-    isPaletteShortcut(key('k', { metaKey: true })),
-    isPaletteShortcut(key('K', { ctrlKey: true })),
-    isPaletteShortcut(key('k', {})),
-    isPaletteShortcut(key('k', { metaKey: true, shiftKey: true })),
-    isPaletteShortcut(key('k', { ctrlKey: true, altKey: true })),
-    isPaletteShortcut(key('j', { metaKey: true })),
+    isPaletteShortcut(key('k', { metaKey: true }), true),
+    isPaletteShortcut(key('K', { metaKey: true }), true),
+    isPaletteShortcut(key('k', { ctrlKey: true }), true),
+    isPaletteShortcut(key('k', { metaKey: true, ctrlKey: true }), true),
+    isPaletteShortcut(key('k', {}), true),
+    isPaletteShortcut(key('k', { metaKey: true, shiftKey: true }), true),
+    isPaletteShortcut(key('k', { metaKey: true, altKey: true }), true),
+    isPaletteShortcut(key('j', { metaKey: true }), true),
   ],
-  [true, true, false, false, false, false],
+  [true, true, false, false, false, false, false, false],
 );
+eq(
+  '快捷键：其余平台只认 Ctrl+K',
+  [
+    isPaletteShortcut(key('k', { ctrlKey: true }), false),
+    isPaletteShortcut(key('K', { ctrlKey: true }), false),
+    isPaletteShortcut(key('k', { metaKey: true }), false),
+    isPaletteShortcut(key('k', { ctrlKey: true, shiftKey: true }), false),
+    isPaletteShortcut(key('k', { ctrlKey: true, altKey: true }), false),
+  ],
+  [true, true, false, false, false],
+);
+check(
+  '快捷键：别处已经处理过的按键（defaultPrevented）不打开',
+  !isPaletteShortcut({ ...key('k', { metaKey: true }), defaultPrevented: true }, true) &&
+    !isPaletteShortcut({ ...key('k', { ctrlKey: true }), defaultPrevented: true }, false),
+);
+eq(
+  '快捷键：提示与 aria-keyshortcuts 按平台',
+  [paletteShortcut(true), paletteShortcut(false)],
+  [
+    { label: '⌘K', aria: 'Meta+K' },
+    { label: 'Ctrl+K', aria: 'Control+K' },
+  ],
+);
+
+// ⌘K 打开时只取还没载入的：用真的 QueryObserver 与假 fetch 数请求。侧栏或列表页已经取过的列表，开多少次 ⌘K 都不再取
+{
+  const realFetch = globalThis.fetch;
+  const hits: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+    const url = String(input instanceof Request ? input.url : input);
+    hits.push(url.replace(/^.*\/api\/console/, ''));
+    const body = url.includes('/catalog/') ? { items: [] } : { items: [], total: 0 };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+  try {
+    const qc = new QueryClient();
+    qc.setQueryData(['catalog', 'route'], { items: [] });
+    const route = new QueryObserver(qc, paletteListQuery(catalogKind('route'), false));
+    const hotel = new QueryObserver(qc, paletteListQuery(catalogKind('hotel'), false));
+    const conv = new QueryObserver(qc, paletteConversationsQuery(false));
+    const offs = [route, hotel, conv].map((o) => o.subscribe(() => undefined));
+    await settle();
+    eq('⌘K 数据：关着时一个请求都不发', hits, []);
+    const openAll = (open: boolean): void => {
+      route.setOptions(paletteListQuery(catalogKind('route'), open));
+      hotel.setOptions(paletteListQuery(catalogKind('hotel'), open));
+      conv.setOptions(paletteConversationsQuery(open));
+    };
+    openAll(true);
+    await settle();
+    eq('⌘K 数据：第一次打开只取没载入的（酒店、最近会话），线路已在缓存里', hits.slice().sort(), [
+      '/catalog/hotel',
+      '/conversations?limit=100&order=waiting_first',
+    ]);
+    for (let i = 0; i < 3; i += 1) {
+      openAll(false);
+      openAll(true);
+    }
+    await settle();
+    eq('⌘K 数据：马上再开三次，一个请求都不多发', hits.length, 2);
+    await qc.invalidateQueries({ queryKey: ['catalog', 'route'] });
+    await settle();
+    check('⌘K 数据：列表页保存后作废的列表，⌘K 开着时照样重取', hits.includes('/catalog/route'), JSON.stringify(hits));
+    for (const off of offs) off();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
 eq(
   '条目取值：编号、嵌套路径、数组；原型上的名字取不到',
   [
@@ -512,6 +620,53 @@ for (const r of ROLES) {
     '用户行：名字与角色都在 DOM 里（放不下时由 CSS 裁掉角色，读屏照样读到）',
     text(html) === '一二三四五六七所有者' && html.includes('user-role'),
     html,
+  );
+}
+
+{
+  // 租户行：成员有铃铛，匿名没有（spec「外壳 · 匿名 demo」）；收起时 logo 是 role="img"，名字是租户名
+  const row = (viewer: ShellViewer, collapsed: boolean): string => {
+    const qc = new QueryClient();
+    return renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: qc },
+        createElement(TenantRow, { viewer, pack: PACK, collapsed, bellPlacement: 'rightTop' }),
+      ),
+    );
+  };
+  check('租户行：成员有铃铛', row(member('agent'), false).includes('aria-label="等人接手的会话"'));
+  for (const collapsed of [false, true]) {
+    const html = row(ANON, collapsed);
+    check(`租户行：匿名没有铃铛（${collapsed ? '收起' : '展开'}）`, !html.includes('等人接手') && !html.includes('bell'), html);
+  }
+  check('租户行：匿名写「演示」', text(row(ANON, false)).includes('演示'));
+  check('租户行：收起时 logo 是有名字的图', row(member('owner'), true).includes('role="img" tabindex="0" aria-label="云途定制旅行"'));
+}
+{
+  // 用户按钮收起时名字、角色都不画（display:none），读屏靠 aria-label 读出「名字，角色」
+  const html = renderToStaticMarkup(
+    createElement(UserMenu, { me: me('supervisor', '小林'), collapsed: true, onAbout: () => undefined, onSignOut: () => undefined }),
+  );
+  check('用户行：用户按钮的名字是「名字，角色」', html.includes('aria-label="小林，主管"') && html.includes('aria-haspopup="menu"'), html);
+  const items = (a: 'light' | 'dark' | 'system', reduce: boolean) => userMenuItems({ appearance: a, reduce });
+  const attrs = (it: unknown): unknown => {
+    const o = it as Record<string, unknown>;
+    return [o.key, o.role ?? null, o['aria-checked'] ?? null];
+  };
+  const appearanceOf = (list: ReturnType<typeof items>): unknown[] => ((list[0] as { children?: unknown[] }).children ?? []).map(attrs);
+  eq('用户菜单：外观三项是 menuitemradio，当前项 aria-checked', appearanceOf(items('dark', false)), [
+    ['appearance:light', 'menuitemradio', false],
+    ['appearance:dark', 'menuitemradio', true],
+    ['appearance:system', 'menuitemradio', false],
+  ]);
+  eq(
+    '用户菜单：减少动态效果是 menuitemcheckbox，开关状态在 aria-checked 里',
+    [attrs(items('light', false)[1]), attrs(items('light', true)[1])],
+    [
+      ['reduce-motion', 'menuitemcheckbox', false],
+      ['reduce-motion', 'menuitemcheckbox', true],
+    ],
   );
 }
 

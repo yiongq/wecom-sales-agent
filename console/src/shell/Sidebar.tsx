@@ -4,7 +4,7 @@
 // 匿名：租户行写「演示」，没有铃铛、会话和审计入口；用户行换成「登录」按钮和「关于」图标按钮
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Button, Tooltip } from 'antd';
+import { Button, type PopoverProps, Tooltip } from 'antd';
 import { Info, LogIn, PanelLeft, Search } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { CatalogKind } from '../../../src/shared/catalog.js';
@@ -25,9 +25,14 @@ export interface SidebarProps {
   selected: string | null;
   collapsed: boolean;
   placeholder: string;
-  /** 打开 ⌘K 的提示：「⌘K」或「Ctrl+K」 */
-  shortcut: string;
+  /** 打开 ⌘K 的快捷键：提示写「⌘K」或「Ctrl+K」，aria-keyshortcuts 同平台 */
+  shortcut: { label: string; aria: string };
   onSearch: () => void;
+  /**
+   * ⌘K 开着时关掉搜索触发器的 Tooltip：指针停在触发器上时，Tooltip 会排到 antd 的 Esc 栈顶，
+   * 刚打开 ⌘K 就按的 Esc 被它吃掉、⌘K 关不上（铃铛同理用 tipOpen）
+   */
+  searchOpen: boolean;
   onAbout: () => void;
   onLogin: () => void;
   onSignOut: () => void;
@@ -64,10 +69,9 @@ function WaitingBadge({ solid }: { solid: boolean }) {
 }
 
 function NavLink({ item, selected, collapsed }: { item: NavItem; selected: boolean; collapsed: boolean }) {
-  // 接口还不认识的实体 kind 不画（没有列表可去）
   const kind = item.entity === undefined ? null : catalogKind(item.entity);
-  if (item.entity !== undefined && !kind) return null;
-  const common = { className: selected ? 'nav-item is-selected' : 'nav-item', 'aria-label': collapsed ? item.label : undefined };
+  // 收起时标签只是看不见（shell.css），名字仍从内容来，「会话」的实心徽标也读得到
+  const common = { className: selected ? 'nav-item is-selected' : 'nav-item' };
   const body: ReactNode = (
     <>
       <Icon of={navIcon(item.icon)} className="nav-icon" />
@@ -102,9 +106,43 @@ function NavLink({ item, selected, collapsed }: { item: NavItem; selected: boole
   );
 }
 
+/**
+ * 租户行的内容（侧栏与 <992 的顶栏共用）：租户 logo 与名称，成员另有铃铛；匿名没有铃铛（spec「外壳 · 匿名 demo」）。
+ * 收起时只剩 logo：它是 role="img"、名字是租户名，可以聚焦，聚焦和悬停都出 Tooltip
+ */
+export function TenantRow({
+  viewer,
+  pack,
+  collapsed,
+  bellPlacement,
+}: {
+  viewer: ShellViewer;
+  pack: IndustryPack;
+  collapsed: boolean;
+  bellPlacement: PopoverProps['placement'];
+}) {
+  const tenant = tenantLabel(viewer);
+  return (
+    <>
+      {collapsed ? (
+        <Tooltip title={tenant} placement="right">
+          <span className="tenant" role="img" tabIndex={0} aria-label={tenant}>
+            <TenantMark name={tenant} />
+          </span>
+        </Tooltip>
+      ) : (
+        <span className="tenant">
+          <TenantMark name={tenant} />
+          <span className="tenant-name">{tenant}</span>
+        </span>
+      )}
+      {viewer.kind === 'member' && <Bell pack={pack} placement={bellPlacement} />}
+    </>
+  );
+}
+
 export function Sidebar(props: SidebarProps) {
   const { viewer, pack, groups, selected, collapsed } = props;
-  const tenant = tenantLabel(viewer);
   const toggle = props.onToggle && (
     <IconButton
       icon={PanelLeft}
@@ -117,34 +155,23 @@ export function Sidebar(props: SidebarProps) {
   return (
     <div className={collapsed ? 'sidebar is-collapsed' : 'sidebar'}>
       <div className="sb-tenant">
-        {collapsed ? (
-          <Tooltip title={tenant} placement="right">
-            <span className="tenant" tabIndex={0} aria-label={tenant}>
-              <TenantMark name={tenant} />
-            </span>
-          </Tooltip>
-        ) : (
-          <span className="tenant">
-            <TenantMark name={tenant} />
-            <span className="tenant-name">{tenant}</span>
-          </span>
-        )}
-        {viewer.kind === 'member' && <Bell pack={pack} placement="rightTop" />}
+        <TenantRow viewer={viewer} pack={pack} collapsed={collapsed} bellPlacement="rightTop" />
       </div>
       {collapsed ? (
         <IconButton
           icon={Search}
           size={32}
           label="搜索"
-          tip={`搜索（${props.shortcut}）`}
+          tip={`搜索（${props.shortcut.label}）`}
           placement="right"
+          tipOpen={props.searchOpen ? false : undefined}
           className="sb-search-icon"
-          aria-keyshortcuts="Meta+K Control+K"
+          aria-keyshortcuts={props.shortcut.aria}
           onClick={props.onSearch}
         />
       ) : (
-        <Tooltip title={props.shortcut} placement="right">
-          <button type="button" className="sb-search" onClick={props.onSearch} aria-keyshortcuts="Meta+K Control+K">
+        <Tooltip title={props.shortcut.label} placement="right" open={props.searchOpen ? false : undefined}>
+          <button type="button" className="sb-search" onClick={props.onSearch} aria-keyshortcuts={props.shortcut.aria}>
             <Icon of={Search} />
             <span className="sb-search-text">{props.placeholder}</span>
           </button>

@@ -3,9 +3,11 @@
 // 名字完整显示；名字本身也放不下才省略名字。纯 CSS，不用 JS 测宽（shell.css 的 .user-names）。
 // 角色仍在 Tooltip（「名字·角色」）、菜单的身份块和读屏里：裁掉不是隐藏。
 // 用户菜单向上弹出：身份块、外观（浅色〔默认〕/ 深色 / 跟随系统）、减少动态效果、关于、退出登录。没有单键切主题的快捷键。
-// 外观与「减少动态效果」存在 localStorage（theme/prefs.ts，读写都包 try/catch）；切外观时下一帧就是终值颜色（data-theme-switching）
+// 外观与「减少动态效果」存在 localStorage（theme/prefs.ts，读写都包 try/catch）；切外观时下一帧就是终值颜色（data-theme-switching）。
+// 读屏：用户按钮的名字是「名字，角色」（收起时名字和角色都不画，按钮上只剩头像）；外观三项是 menuitemradio、
+// 减少动态效果是 menuitemcheckbox，都带 aria-checked；子菜单的箭头换成 lucide 的 chevron-right，不带 antd 图标的英文名
 import { Dropdown, type MenuProps, Switch, Tooltip } from 'antd';
-import { Check, ChevronsUpDown, LogOut } from 'lucide-react';
+import { Check, ChevronRight, ChevronsUpDown, LogOut } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
 import type { Me } from '../../../src/shared/console-api.js';
 import { type Appearance, getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
@@ -40,16 +42,12 @@ export interface UserMenuProps {
   onSignOut: () => void;
 }
 
-export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
-  const role = ROLE_LABEL[me.role];
-  const [open, setOpen] = useState(false);
-  // 偏好只存在 prefs.ts 一处（⌘K、别的标签页也会改），每次渲染现读；这里改了以后重渲一次
-  const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const { appearance, reduceMotion: reduce } = getPrefs();
-  // 点「减少动态效果」只拨开关，菜单不收起
-  const keepOpen = useRef(false);
+/** 菜单项上的读屏属性：rc-menu 把条目上多余的键原样放到 li 上（role 盖掉默认的 menuitem） */
+const checkable = (role: 'menuitemradio' | 'menuitemcheckbox', checked: boolean): object => ({ role, 'aria-checked': checked });
 
-  const items: MenuProps['items'] = [
+/** 用户菜单的条目（外观子菜单、减少动态效果、关于、退出登录）；身份块在 popupRender 里 */
+export function userMenuItems({ appearance, reduce }: { appearance: Appearance; reduce: boolean }): NonNullable<MenuProps['items']> {
+  return [
     {
       key: 'appearance',
       label: (
@@ -61,6 +59,7 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       popupClassName: 'user-submenu',
       children: APPEARANCES.map((a) => ({
         key: `appearance:${a}`,
+        ...checkable('menuitemradio', a === appearance),
         label: (
           <span className="menu-row">
             <span>{a === 'light' ? '浅色（默认）' : APPEARANCE_LABEL[a]}</span>
@@ -71,6 +70,7 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
     },
     {
       key: 'reduce-motion',
+      ...checkable('menuitemcheckbox', reduce),
       label: (
         <span className="menu-row">
           <span>减少动态效果</span>
@@ -82,6 +82,24 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
     { type: 'divider' },
     { key: 'logout', label: '退出登录', icon: <Icon of={LogOut} /> },
   ];
+}
+
+/** 子菜单的箭头（设计系统 §4.2 第 5 项：`chevron-right`），放在 antd 下拉菜单给箭头留的位置上 */
+const SUBMENU_ARROW = (
+  <span className="ant-dropdown-menu-submenu-arrow">
+    <Icon of={ChevronRight} size={14} className="ant-dropdown-menu-submenu-arrow-icon" />
+  </span>
+);
+
+export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
+  const role = ROLE_LABEL[me.role];
+  const [open, setOpen] = useState(false);
+  // 偏好只存在 prefs.ts 一处（⌘K、别的标签页也会改），每次渲染现读；这里改了以后重渲一次
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const { appearance, reduceMotion: reduce } = getPrefs();
+  // 点「减少动态效果」只拨开关，菜单不收起
+  const keepOpen = useRef(false);
+  const items = userMenuItems({ appearance, reduce });
 
   const onClick: MenuProps['onClick'] = ({ key }) => {
     if (key.startsWith('appearance:')) {
@@ -107,7 +125,7 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       }}
       trigger={['click']}
       placement="topLeft"
-      menu={{ items, onClick, selectable: false }}
+      menu={{ items, onClick, selectable: false, expandIcon: SUBMENU_ARROW }}
       rootClassName="user-menu-root"
       popupRender={(menu) => (
         <div className="user-menu">
@@ -121,7 +139,7 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       )}
     >
       <Tooltip title={`${me.displayName}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>
-        <button type="button" className="user-btn" aria-haspopup="menu" aria-expanded={open}>
+        <button type="button" className="user-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`${me.displayName}，${role}`}>
           <Avatar name={me.displayName} />
           <UserNames name={me.displayName} role={role} />
           <Icon of={ChevronsUpDown} size={14} className="user-chevron" />

@@ -49,9 +49,9 @@ export function Bell({ pack, placement }: { pack: IndustryPack; placement: Popov
         </div>
       )}
       {waiting.data === undefined ? (
-        // 第一次还没取到：一行骨架；第一次就失败了：只有上面那行「没取到最新的」
+        // 第一次还没取到：一行骨架，300ms 后才出现（设计系统 §3）；第一次就失败了：只有上面那行「没取到最新的」
         !waiting.isError && (
-          <div className="bell-row" aria-hidden="true">
+          <div className="bell-row state-skeleton" aria-hidden="true">
             <span className="skeleton-bar bell-skeleton" />
           </div>
         )

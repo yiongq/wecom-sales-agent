@@ -1,7 +1,8 @@
 // ⌘K（spec「外壳 · 搜索触发器」，设计系统 §5.18）：antd Modal，宽 640、距顶 120、无动画。
 // 结果分组为「页面 / 各实体 / 会话 / 操作」，匹配与分组在 search.ts。只用 ↑↓ 移动、Enter 打开；输入法组字时 Enter 不打开；
 // 不响应不带修饰键的 J / K。拼音库在第一次打开时才加载（动态 import，不进入口集合），加载好之前按原文匹配。
-// 某一组还在取时显示一行骨架；取失败时这一组显示一行「没取到 · 重试」，其他组照常。匿名没有「会话」组
+// 某一组还在取时显示一行骨架（和别处的骨架一样 300ms 后才出现）；取失败时这一组显示一行「没取到 · 重试」，其他组照常。
+// 匿名没有「会话」组。弹窗的名字是「搜索」：标题只给读屏，看不见（设计系统 §5.18 没有标题栏）
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { Button, Modal } from 'antd';
 import { type LucideIcon, MessagesSquare, Search } from 'lucide-react';
@@ -9,10 +10,10 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ConversationRow } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
-import { catalogListQuery, recentConversationsQuery } from '../queries.js';
+import { paletteConversationsQuery, paletteListQuery } from '../queries.js';
 import { cjk } from '../typography.js';
 import { entityIcon, Icon } from './icons.js';
-import { conversationLabel, sinceText, type ShellViewer } from './model.js';
+import { conversationLabel, packEntities, sinceText, type ShellViewer } from './model.js';
 import {
   type EntitySource,
   type GroupState,
@@ -68,16 +69,10 @@ export function CommandPalette(props: CommandPaletteProps) {
     };
   }, [open, pinyin]);
 
-  // 各实体的列表与列表页、侧栏共用缓存；第一次打开时把还没载入的取一遍。接口还不认识的 kind 不取、不搜
-  const entities = pack.nav.entities
-    .map((k) => pack.entities.find((e) => e.kind === k))
-    .filter((e) => e !== undefined)
-    .flatMap((entity) => {
-      const kind = catalogKind(entity.kind);
-      return kind ? [{ entity, kind }] : [];
-    });
-  const lists = useQueries({ queries: entities.map(({ kind }) => ({ ...catalogListQuery(kind), enabled: open })) });
-  const conversations = useQuery({ ...recentConversationsQuery, enabled: open && member });
+  // 各实体的列表与列表页、侧栏共用缓存；打开时只取还没载入的（刷新归侧栏和列表页）。实体表与侧栏、搜索占位同源
+  const entities = packEntities(pack).map((entity) => ({ entity, kind: catalogKind(entity.kind) }));
+  const lists = useQueries({ queries: entities.map(({ kind }) => paletteListQuery(kind, open)) });
+  const conversations = useQuery(paletteConversationsQuery(open && member));
 
   const match = useMemo(() => (pinyin ? pinyinMatcher(pinyin) : plainMatch), [pinyin]);
   const now = conversations.dataUpdatedAt;
@@ -138,6 +133,7 @@ export function CommandPalette(props: CommandPaletteProps) {
     <Modal
       open={open}
       onCancel={onClose}
+      title="搜索"
       footer={null}
       closable={false}
       width={640}
@@ -187,7 +183,7 @@ export function CommandPalette(props: CommandPaletteProps) {
               {g.title}
             </div>
             {g.state === 'loading' && (
-              <div className="cmdk-row cmdk-skeleton" aria-hidden="true">
+              <div className="cmdk-row cmdk-skeleton state-skeleton" aria-hidden="true">
                 <span className="skeleton-bar" />
               </div>
             )}

@@ -5,7 +5,7 @@
 import { hc } from 'hono/client';
 import type { ConsoleApp } from '../../src/console-api/app.js';
 import type { CatalogKind } from '../../src/shared/catalog.js';
-import { type ApiError, CatalogKindParam } from '../../src/shared/console-api.js';
+import type { ApiError } from '../../src/shared/console-api.js';
 import { csrfHeader, sessionFetch } from './session.js';
 
 export const api = hc<ConsoleApp>('/', { fetch: sessionFetch as typeof fetch, headers: csrfHeader }).api.console;
@@ -21,13 +21,11 @@ export class HttpError extends Error {
 }
 
 /**
- * 行业包里实体的 kind（字符串）→ 接口要求的 kind。console 只在这一处转换（spec「行业包通用架构 · 下发」）；
- * 接口还不认识的 kind 是 null，调用方不发请求
+ * 行业包里实体的 kind（字符串）→ 接口客户端要求的 kind 类型。console 只在这一处转换（spec「行业包通用架构 · 下发」），
+ * 只转类型、不筛：界面不认行业，侧栏、⌘K、计数对任何包的实体都照发 `GET /catalog/:kind`。服务端不认识的 kind 由接口答 400，
+ * 按各处的出错显示；加一个行业包时 console/src 零改动（验收 5 的假包走查就靠这一点）
  */
-export function catalogKind(kind: string): CatalogKind | null {
-  const r = CatalogKindParam.shape.kind.safeParse(kind);
-  return r.success ? r.data : null;
-}
+export const catalogKind = (kind: string): CatalogKind => kind as CatalogKind;
 
 type Success<R> = R extends { status: 200; json(): Promise<infer T> } ? T : never;
 

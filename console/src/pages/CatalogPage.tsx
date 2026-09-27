@@ -97,8 +97,9 @@ export function CatalogPage() {
   // 页名取行业包里的实体名（侧栏、⌘K 同源）；包还没到时用旧表兜底，第 9 步重做列表时去掉
   const title = usePack()?.entities.find((e) => e.kind === kind)?.label ?? KIND_LABEL[kind];
 
+  // 页头不放进 Space：它滚动后吸顶，要以整页为容器（Space 会给它包一层只有页头高的 div）
   return (
-    <Space orientation="vertical" style={{ width: '100%' }}>
+    <>
       <PageHeader
         title={title}
         actions={
@@ -110,47 +111,49 @@ export function CatalogPage() {
           )
         }
       />
-      <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={8} />}>
-        <Table<Row>
-          rowKey="code"
-          size="small"
-          dataSource={rows}
-          pagination={{ pageSize: 50, hideOnSinglePage: true }}
-          onRow={(row) => ({ onClick: () => setOpen({ row }), style: { cursor: 'pointer' } })}
-          columns={[
-            { title: 'code', dataIndex: 'code' },
-            { title: '标题', render: (_: unknown, r) => String(fieldsOf(r).title ?? fieldsOf(r).name ?? '') },
-            { title: '目的地', render: (_: unknown, r) => String(fieldsOf(r).destination ?? '') },
-            { title: '起价', render: (_: unknown, r) => `¥${String(fieldsOf(r).priceFrom ?? fieldsOf(r).nightlyFrom ?? '')}` },
-            ...(viewer.data?.kind === 'member'
-              ? [
-                  {
-                    title: '状态',
-                    render: (_: unknown, r: Row) => <Status kind={r.status === 'active' ? 'active' : 'draft'} />,
-                  },
-                  { title: '更新人', render: (_: unknown, r: Row) => r.updatedByName ?? '—' },
-                  {
-                    title: '更新时间',
-                    render: (_: unknown, r: Row) => (r.updatedAt ? dayjs(r.updatedAt).format('YYYY-MM-DD HH:mm') : '—'),
-                  },
-                ]
-              : []),
-          ]}
-        />
-      </StateView>
-      {open && (
-        <ItemDrawer
-          kind={kind}
-          row={open.row}
-          editable={editable}
-          onClose={() => setOpen(null)}
-          onSaved={async (item) => {
-            setOpen({ row: item });
-            await qc.invalidateQueries({ queryKey: ['catalog', kind] });
-          }}
-        />
-      )}
-    </Space>
+      <Space orientation="vertical" style={{ width: '100%' }}>
+        <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={8} />}>
+          <Table<Row>
+            rowKey="code"
+            size="small"
+            dataSource={rows}
+            pagination={{ pageSize: 50, hideOnSinglePage: true }}
+            onRow={(row) => ({ onClick: () => setOpen({ row }), style: { cursor: 'pointer' } })}
+            columns={[
+              { title: 'code', dataIndex: 'code' },
+              { title: '标题', render: (_: unknown, r) => String(fieldsOf(r).title ?? fieldsOf(r).name ?? '') },
+              { title: '目的地', render: (_: unknown, r) => String(fieldsOf(r).destination ?? '') },
+              { title: '起价', render: (_: unknown, r) => `¥${String(fieldsOf(r).priceFrom ?? fieldsOf(r).nightlyFrom ?? '')}` },
+              ...(viewer.data?.kind === 'member'
+                ? [
+                    {
+                      title: '状态',
+                      render: (_: unknown, r: Row) => <Status kind={r.status === 'active' ? 'active' : 'draft'} />,
+                    },
+                    { title: '更新人', render: (_: unknown, r: Row) => r.updatedByName ?? '—' },
+                    {
+                      title: '更新时间',
+                      render: (_: unknown, r: Row) => (r.updatedAt ? dayjs(r.updatedAt).format('YYYY-MM-DD HH:mm') : '—'),
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        </StateView>
+        {open && (
+          <ItemDrawer
+            kind={kind}
+            row={open.row}
+            editable={editable}
+            onClose={() => setOpen(null)}
+            onSaved={async (item) => {
+              setOpen({ row: item });
+              await qc.invalidateQueries({ queryKey: ['catalog', kind] });
+            }}
+          />
+        )}
+      </Space>
+    </>
   );
 }
 

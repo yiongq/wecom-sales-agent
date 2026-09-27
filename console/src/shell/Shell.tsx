@@ -21,7 +21,6 @@ import { SessionExpiredDialog } from '../SessionExpiredDialog.js';
 import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { logout, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { AboutDialog } from './AboutDialog.js';
-import { Bell } from './Bell.js';
 import { CommandPalette, type PaletteAction } from './CommandPalette.js';
 import { isMac, useDocumentTitle, useViewport } from './hooks.js';
 import { IconButton } from './IconButton.js';
@@ -34,12 +33,11 @@ import {
   selectedNavKey,
   type ShellViewer,
   sidebarMode,
-  tenantLabel,
   workbenchHref,
 } from './model.js';
 import { shellViewerOf } from './PageHeader.js';
-import { isPaletteShortcut, type StaticRow } from './search.js';
-import { Sidebar, TenantMark } from './Sidebar.js';
+import { isPaletteShortcut, paletteShortcut, type StaticRow } from './search.js';
+import { Sidebar, TenantRow } from './Sidebar.js';
 
 /** 整页的说明或出错（启动失败、文件模式）：没有外壳，居中一块 */
 function Whole({ children }: { children: ReactElement }) {
@@ -108,7 +106,8 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const groups = useMemo(() => buildNav(pack, shellViewerOf(v) as ShellViewer), [pack, v]);
   const selected = selectedNavKey(path, groups);
   const placeholder = searchPlaceholder(pack, sv);
-  const shortcut = isMac() ? '⌘K' : 'Ctrl+K';
+  const mac = isMac();
+  const shortcut = paletteShortcut(mac);
 
   // 收起：每页有默认（销售话术默认收起）；用户在这一页切过就按切的，换到别的页回到那一页的默认
   const pageKey = selected ?? path;
@@ -131,17 +130,17 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [logoutError, setLogoutError] = useState<unknown>(null);
 
-  // ⌘K / Ctrl+K 打开或关上搜索，在哪里都认（输入框里也认：带修饰键，不会和输入冲突）
+  // ⌘K（Mac）/ Ctrl+K（其余平台）打开或关上搜索，在哪里都认（输入框里也认：带修饰键；Mac 的 Ctrl+K 留给文本框删到行尾）
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (isPaletteShortcut(e)) {
+      if (isPaletteShortcut(e, mac)) {
         e.preventDefault();
         setSearchOpen((o) => !o);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [mac]);
 
   const login = useCallback(() => qc.setQueryData<Viewer>(VIEWER_KEY, { kind: 'login' }), [qc]);
   const signOut = useCallback(async (): Promise<void> => {
@@ -167,7 +166,6 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const pages: StaticRow<PaletteAction>[] = groups.flatMap((g) =>
     g.items.flatMap((item): StaticRow<PaletteAction>[] => {
       const kind = item.entity === undefined ? null : catalogKind(item.entity);
-      if (item.entity !== undefined && !kind) return [];
       const go = (): void => {
         if (kind) void navigate({ to: '/catalog/$kind', params: { kind } });
         else if (item.key === '/conversations') void navigate({ to: '/conversations' });
@@ -203,6 +201,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       placeholder={placeholder}
       shortcut={shortcut}
       onSearch={() => setSearchOpen(true)}
+      searchOpen={searchOpen}
       onAbout={() => setAboutOpen(true)}
       onLogin={login}
       onSignOut={() => void signOut()}
@@ -218,11 +217,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       {mode === 'hidden' ? (
         <header className="topbar">
           <IconButton icon={Menu} size={32} label="打开导航" placement="bottom" onClick={() => setDrawerAt(path)} />
-          <span className="tenant">
-            <TenantMark name={tenantLabel(sv)} />
-            <span className="tenant-name">{tenantLabel(sv)}</span>
-          </span>
-          {sv.kind === 'member' && <Bell pack={pack} placement="bottomRight" />}
+          <TenantRow viewer={sv} pack={pack} collapsed={false} bellPlacement="bottomRight" />
         </header>
       ) : (
         sidebar(false)
@@ -253,10 +248,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         pages={pages}
         actions={actions}
         // 条目详情页在第 10 步（/catalog/$kind/$code）；在那之前打开这个实体的列表
-        openEntity={(kind) => {
-          const k = catalogKind(kind);
-          if (k) void navigate({ to: '/catalog/$kind', params: { kind: k } });
-        }}
+        openEntity={(kind) => void navigate({ to: '/catalog/$kind', params: { kind: catalogKind(kind) } })}
         openConversation={(row) => window.open(workbenchHref(row.id), '_blank', 'noopener,noreferrer')}
       />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
