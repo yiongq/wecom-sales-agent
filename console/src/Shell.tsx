@@ -68,7 +68,7 @@ export function Shell() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Layout.Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff' }}>
+      <Layout.Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--panel)' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           后台
         </Typography.Title>

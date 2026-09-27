@@ -1,0 +1,167 @@
+/*
+ * 样张页（/_specimen、/_specimen/type）的版式。只被 _specimen/ 下的文件引用，这些文件只在 VITE_SPECIMEN=1 的构建里有，
+ * 生产构建里没有（spec 不变量 25，scripts/check-console-dist.ts 查）。字体、字阶、颜色都取全局样式与令牌，样张就是上线效果
+ */
+.spec-page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 8px;
+  background: var(--frame);
+}
+.spec-panel {
+  box-sizing: border-box;
+  min-height: calc(100vh - 16px);
+  padding: 32px;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+}
+.spec-cols {
+  display: grid;
+  grid-template-columns: 660px 660px;
+  column-gap: 40px;
+  align-items: start;
+}
+.spec-section + .spec-section {
+  margin-top: 32px;
+}
+.spec-h {
+  margin: 0 0 16px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.spec-note {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.spec-label {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.spec-danger {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.spec-stack > * + * {
+  margin-top: 12px;
+}
+
+/* 左栏「字阶」：左侧 120 宽写名称和字号，右侧用该字阶写一句真实文案 */
+.spec-scale {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: baseline;
+}
+.spec-numbers {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+}
+.spec-numbers > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* 右栏前三节：64 宽的标签，间隔 12，右边 16/28 的样例，最右是实测宽度 */
+.spec-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: baseline;
+}
+.spec-sample {
+  justify-self: start; /* 网格里按内容宽，量出来的才是文字的宽度 */
+  display: inline-block;
+  font-size: 16px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+.spec-space-all {
+  text-spacing-trim: space-all; /* 「不挤压」那一行的对照，只在样张里写 */
+}
+.spec-width {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/* 数字徽标（设计系统 §5.7） */
+.spec-badge {
+  display: inline-flex;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-full);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+}
+.spec-badge-soft {
+  height: 18px;
+  min-width: 18px;
+  padding: 0 6px;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.spec-badge-solid {
+  height: 16px;
+  min-width: 16px;
+  padding: 0 4px;
+  background: var(--badge);
+  color: var(--on-badge);
+  box-shadow: 0 0 0 2px var(--frame);
+}
+
+/* 「关于」弹窗样张（设计系统 §5.14）：480 宽，画在页面里，不开遮罩 */
+.spec-modal {
+  position: relative;
+  width: 480px;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  background: var(--raised);
+  box-shadow: var(--shadow-modal);
+}
+.spec-modal-head {
+  padding: 20px 24px 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.spec-modal-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+}
+.spec-modal-body {
+  padding: 12px 24px 20px;
+}
+.spec-modal-body p {
+  margin: 0 0 8px;
+}
+.spec-modal-links {
+  display: flex;
+  gap: 16px;
+}
+.spec-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px;
+  background: var(--frame);
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+
+/* 控件样张：每节一行控件 */
+.spec-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
