@@ -1340,6 +1340,10 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
     '插进来的字：落在「先回应一句，」之后、「再谈线路」之前',
     !!m1.inserted[0] && m1.inserted[0][0] >= base.indexOf('句，') && m1.inserted[0][1] <= ins.indexOf('再谈'),
   );
+  // 夹在一串汉字中间插进来的字：按字比只标这几个字；按「词」对齐（presentableDiff）会把前后没改的汉字一起标上
+  eq('汉字中间插进来的字：只标新加的', draftMarks('先回应一句再谈线路。\n', '先回应一句一句就够再谈线路。\n').inserted, [[5, 9]]);
+  // 插进来的一段以换行开头（在一行末尾另起一行）：原来那一行没动，只标新的一行
+  eq('在末尾另起一行：只标新的一行', draftMarks('甲乙', '甲乙\n丙丁'), { lines: [2], inserted: [[2, 5]] });
   eq('只加了行尾空白：不标', draftMarks(base, base.replace('第一段。\n', '第一段。  \n')), { lines: [], inserted: [] });
   eq('末尾多了空行：不标', draftMarks(base, `${base}\n\n`), { lines: [], inserted: [] });
   eq('开头多了空行：不标', draftMarks(base, `\n\n${base}`), { lines: [], inserted: [] });
