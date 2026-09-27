@@ -1,12 +1,13 @@
-// 会话只读列表（spec「后台 API 与页面 · 会话只读列表」）：只列 id、渠道、阶段、是否转人工、消息条数、更新时间，
+// 会话只读列表（spec「后台 API 与页面 · 会话只读列表」）：只列 id、渠道、阶段、状态、消息条数、更新时间，
 // 不带消息正文；详情仍在 admin.html 里看。成员都能看，匿名看不到入口。整页随后台 UX spec 第 13 步重做。
-// 转人工一列：等人接手是 handedOver 且没成交（设计系统 §5.6）；转人工以后成交的，引擎不清 handedOver，写已成交。
-// 第 13 步换成 src/shared/conversation.ts 的 conversationState
+// 状态一列只经 src/shared/conversation.ts 的 conversationState 判定（不变量 17，设计系统 §5.6）：转人工以后成交的，
+// 引擎不清 handedOver，也写已成交。console 里不直接读 handedOver（scripts/check-console-src.ts 查）
 import { useQuery } from '@tanstack/react-query';
 import { Table } from 'antd';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import type { ConversationRow } from '../../../src/shared/console-api.js';
+import { conversationState } from '../../../src/shared/conversation.js';
 import { api, unwrap } from '../api.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
@@ -47,11 +48,7 @@ export function ConversationsPage() {
             { title: '会话', dataIndex: 'id' },
             { title: '渠道', dataIndex: 'channel', render: (ch: string) => CHANNEL_LABEL[ch] ?? ch },
             { title: '阶段', dataIndex: 'stage', render: (s: string) => STAGE_LABEL[s] ?? s },
-            {
-              title: '转人工',
-              dataIndex: 'handedOver',
-              render: (h: boolean, r) => (h ? <Status kind={r.stage === 'paid' ? 'paid' : 'human'} /> : null),
-            },
+            { title: '状态', render: (_: unknown, r) => <Status kind={conversationState(r)} /> },
             { title: '消息数', dataIndex: 'messageCount' },
             { title: '更新时间', dataIndex: 'updatedAt', render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm') },
           ]}

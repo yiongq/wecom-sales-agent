@@ -120,6 +120,7 @@ jobs:
       #   缺字不报错，只会让页面去下长尾分片、标点跨文件不挤压。
       # - console 生产构建，再扫描产物：浏览器包里混进数据库驱动或 Node 内置模块不会报错，只会把服务端代码发给浏览器；
       #   样张页（VITE_SPECIMEN=1 才有）也不能混进生产产物；⌘K 的拼音库只能在懒加载的分块里，不进入口。
+      #   假包（家装整装，只给自测与走查）的模块和文字都不能进生产产物，文字按 JS 里的字符串逐个整串比对。
       - run: pnpm test
         env:
           PG_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres

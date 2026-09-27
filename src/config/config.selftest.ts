@@ -712,6 +712,15 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   ];
   put('console/src/fields/fields.selftest.tsx', `${packImports.join('\n')}\nexport const P = [packById, renovation, travel];\n`);
   put('console/src/pages/Other.tsx', `${packImports.join('\n')}\nexport const P = [packById, renovation, travel];\n`);
+  // import type 也算（不变量 11 的第一层）
+  put(
+    'console/src/pages/TypeOnly.ts',
+    "import type { travel } from '../../../src/packs/travel/console-pack.js';\nexport type T = typeof travel;\n",
+  );
+  // 假包经 src/shared 转一手也进得了 console：src/ 里的非自测代码不能 import 它；假包目录自己和自测可以
+  put('src/shared/leak.ts', "import { renovation } from './pack-fixtures/renovation.js';\nexport const L = renovation;\n");
+  put('src/shared/pack-fixtures/extra.ts', "import { renovation } from './renovation.js';\nexport const E = renovation;\n");
+  put('src/shared/leak.selftest.ts', "import { renovation } from './pack-fixtures/renovation.js';\nexport const L = renovation;\n");
   const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'scripts', 'check-boundaries.ts'), dir], {
     cwd: root,
     encoding: 'utf8',
@@ -734,6 +743,20 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     '边界 lint：别的 console 文件 import 注册表、旅游包、假包都被拦',
     ['console/src/pages/Other.tsx:1', 'console/src/pages/Other.tsx:2', 'console/src/pages/Other.tsx:3'].every(hit),
     run.stderr.slice(0, 600),
+  );
+  const linesOf = (fileLine: string): string[] => run.stderr.split('\n').filter((l) => l.includes(`  ${fileLine}  `));
+  check(
+    '边界 lint：console 里 import 行业包与假包，各报一次、写明不变量 11',
+    ['console/src/pages/Other.tsx:1', 'console/src/pages/Other.tsx:2', 'console/src/pages/Other.tsx:3'].every(
+      (fl) => linesOf(fl).length === 1 && linesOf(fl)[0]!.includes('不变量 11'),
+    ),
+    run.stderr.slice(0, 900),
+  );
+  check('边界 lint：console 里 import type 行业包也被拦', hit('console/src/pages/TypeOnly.ts:1'), run.stderr.slice(0, 600));
+  check(
+    '边界 lint：src/ 里的非自测代码 import 假包被拦，假包目录自己和自测不拦',
+    hit('src/shared/leak.ts:1') && !hit('src/shared/pack-fixtures/extra.ts:1') && !hit('src/shared/leak.selftest.ts:1'),
+    run.stderr.slice(0, 900),
   );
 }
 

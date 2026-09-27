@@ -6,13 +6,21 @@
 // manifest.json（块与块的引用）和 modules.json（每块的模块），两份都由 console/vite.config.ts 的 buildMeta 写、不留在 dist 里；
 // 算首屏与每次换页的 JS、首屏字体，查入口集合里没有页面代码，@codemirror 只能经话术页的块下载，产物里没有样张页、
 // 假包的模块和第三方字体域名，CSS 里没有 data: 的 url()。
+// 另按文字查假包（不变量 25，第 3.3 步）：模块清单只认得出从 src/shared/pack-fixtures/ 进来的模块，内容被抄进别的文件就看不见。
+// 所以把每个 JS 块用 TypeScript 的解析器读一遍，取出全部字符串字面量与模板字符串的文字段（转义已经解开），
+// 与假包里「认得出是它」的字符串逐个整串比对：假包配置里的全部字符串值，去掉注册包里也有的（「基本信息」「subItems」这类），
+// 去掉不到 3 个字符的（「业主」「方案」这类常用词，界面以后可能自己要用）和纯小写的英文单词（kind、分组 key、图标名，依赖库里到处都有）。
+// 另要求同一个解析在产物里找得到界面自己的字「等人接手」，否则这条检查是空的。
 // 挂在 `pnpm test` 末尾、紧跟 `pnpm --filter console build`。
 // 包名按子串查；Node 内置模块只查带引号的模块名（"node:crypto"），压缩后的对象键 {node:x} 不算。
 // assets/ 下每个文件名都要带 vite 的内容哈希（<name>-<8 位>.<扩展名>）：服务端给 /console/assets/* 一律一年的 immutable
 // 缓存（src/shared/security-headers.ts），不带哈希的文件混进来，改了内容浏览器也不会重新下载（后台 UX spec 不变量 26）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
+import ts from 'typescript';
+import { PACK_IDS, packById } from '../src/packs/registry.js';
 
 const DIST = path.join('console', 'dist');
 /** 构建的元数据：vite 的 manifest 与每块的模块清单（console/vite.config.ts 的 buildMeta 写），不随产物发布 */
@@ -219,7 +227,7 @@ if (manifest && modules) {
     report.push(`@codemirror 在 ${cmFiles.map((f) => path.basename(f)).join('、')} 里，只经话术页下载`);
   }
 
-  // 样张页与假包的模块都不能进生产产物（不变量 25；假包的文字由第 3.3 步另查）
+  // 样张页与假包的模块都不能进生产产物（不变量 25；假包的文字见文件末尾）
   for (const [file, ids] of Object.entries(modules)) {
     for (const id of ids) {
       if (id.startsWith('src/_specimen/')) bad.push(`${file}: 样张页的模块 ${id} 进了生产产物`);
@@ -246,10 +254,60 @@ if (manifest && modules) {
   report.push(`preload 字体 ${fmt(preloadBytes)} / ${fmt(BUDGET.preloadFonts)} B`);
 }
 
+// ---- 假包的文字（不变量 25，第 3.3 步）----
+/** 界面自己的字：同一个解析在产物里找不到它，就说明字符串没取出来，这条检查是空的 */
+const UI_CONTROL = '等人接手';
+const FIXTURES_DIR = path.join('src', 'shared', 'pack-fixtures');
+/** 一个值里的全部字符串（对象只取值，不取键） */
+const stringsOf = (v: unknown, out = new Set<string>()): Set<string> => {
+  if (typeof v === 'string') out.add(v);
+  else if (Array.isArray(v)) for (const x of v) stringsOf(x, out);
+  else if (typeof v === 'object' && v !== null) for (const x of Object.values(v)) stringsOf(x, out);
+  return out;
+};
+const isPackLike = (v: unknown): boolean =>
+  typeof v === 'object' && v !== null && Array.isArray((v as { entities?: unknown }).entities) && 'vocabulary' in v && 'stages' in v;
+const registered = new Set<string>();
+for (const id of PACK_IDS) stringsOf(packById(id), registered);
+const fakeMarkers = new Map<string, string>(); // 字符串 → 哪个假包
+const fixtureFiles = fs.existsSync(FIXTURES_DIR)
+  ? fs.readdirSync(FIXTURES_DIR).filter((f) => /\.tsx?$/.test(f) && !f.includes('.selftest.'))
+  : [];
+for (const f of fixtureFiles.toSorted()) {
+  const mod = (await import(pathToFileURL(path.resolve(FIXTURES_DIR, f)).href)) as Record<string, unknown>;
+  for (const v of Object.values(mod)) {
+    if (!isPackLike(v)) continue;
+    const name = String((v as { name?: unknown }).name);
+    for (const s of stringsOf(v)) if ([...s].length >= 3 && !/^[a-z]+$/.test(s) && !registered.has(s)) fakeMarkers.set(s, name);
+  }
+}
+if (!fakeMarkers.size) bad.push(`${FIXTURES_DIR}/ 下没找到导出的假包，按文字查假包的这条检查是空的`);
+/** 一个 JS 文件里全部字符串字面量与模板字符串文字段的值（转义已解开） */
+function jsStrings(file: string): Set<string> {
+  const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+  const out = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isStringLiteralLike(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) out.add(n.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+let controlSeen = false;
+let stringCount = 0;
+for (const f of assets.filter((a) => a.endsWith('.js'))) {
+  const found = jsStrings(f);
+  stringCount += found.size;
+  if (found.has(UI_CONTROL)) controlSeen = true;
+  for (const [s, pack] of fakeMarkers) if (found.has(s)) bad.push(`${f}: 假包「${pack}」的内容「${s}」进了生产产物（不变量 25）`);
+}
+if (!controlSeen) bad.push(`产物的 JS 里找不到界面文字「${UI_CONTROL}」：字符串没取出来，按文字查假包的检查是空的`);
+report.push(`假包的 ${fakeMarkers.size} 个字符串都不在产物 JS 的 ${stringCount.toLocaleString('en-US')} 个字符串里`);
+
 if (bad.length) {
   console.error(`console-dist: 构建产物里有不该有的东西：\n  ${bad.join('\n  ')}`);
   process.exit(1);
 }
 console.log(
-  `console-dist: ${all.length} 个文件，没有服务端依赖、Node 内置模块、样张页、假包与第三方字体，首帧主题脚本在应用脚本之前同步加载；assets/ 下 ${assets.length} 个文件都带内容哈希；拼音库在懒加载的 ${path.basename(pinyinChunks[0]!)} 里；${report.join('；')}`,
+  `console-dist: ${all.length} 个文件，没有服务端依赖、Node 内置模块、样张页、假包（模块与文字）与第三方字体，首帧主题脚本在应用脚本之前同步加载；assets/ 下 ${assets.length} 个文件都带内容哈希；拼音库在懒加载的 ${path.basename(pinyinChunks[0]!)} 里；${report.join('；')}`,
 );

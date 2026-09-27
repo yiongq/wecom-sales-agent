@@ -21,10 +21,10 @@
   - [x] 2.2 外壳：启动的加载与出错（spec「外壳 · 启动」）；侧栏由行业包生成（分组、计数、会话软徽标）；租户行与铃铛弹层，含空状态与轮询失败，刷新方式按 spec「外壳 · 计数刷新」；搜索触发器与 ⌘K（键盘、数据来源、各种状态按 spec「外壳 · 搜索触发器」，拼音库懒加载）；用户行（纯 CSS 先藏角色）与用户菜单（外观、减少动态效果、关于、退出）；受控收起与 `useViewport()` 三档；匿名外壳与横幅；非编辑角色的「只读」；跳转链接与地标；`document.title`。走查时核对：用户菜单里切外观，下一帧就是终值颜色，没有渐变（主题切换 0ms，靠第 1.1 步的 `data-theme-switching`）。
   - [x] 2.3 通用部件：`StateView`、`ERROR_COPY`（含兜底）、`TechDetails`、`ConfirmDanger`、`Status`、`ActionBar`、`CheckList`、墨色主按钮组件、成功 toast 函数；未保存保护（`useBlocker`）；会话过期的判定与就地重登（spec「会话过期的判定」）；全站去掉 `message.error`。`scripts/check-console-src.ts` 挂进 `pnpm lint`，先覆盖不变量 2–4、6、8、9、28。`Status`、`ConfirmDanger` 做好后加进 `/_specimen` 控件样张（第 1.3 步）。
   - [x] 2.4 拆包与预算：各页 `.lazy()`；删掉 `chunkSizeWarningLimit` 覆盖，开 `build.manifest`；确认 `assetsInlineLimit: 0` 已生效；扩展 `scripts/check-console-dist.ts` 的 JS 与字体预算、禁入内容（spec「性能」）。拆包前后的数字记进交接记录；超预算按开放问题 8 请 owner 定，选放宽时在 spec 顶部加 `Revisions:` 并改「性能」和验收 23。
-- [ ] 3. 字段渲染器与行业包配置（4）
+- [x] 3. 字段渲染器与行业包配置（4）
   - [x] 3.1 `checkPack`、`checkItem`（含数组的 `min` 与必须项的计数口径，spec「校验」）、`ENTITY_ICONS`；旅游包补全（design-system §9，含 `recommend`、`min`）；假包 `src/shared/pack-fixtures/renovation.ts`；`src/packs/packs.selftest.ts`（不变量 13–15），串进 `pnpm test`。
   - [x] 3.2 渲染器：11 种字段类型各三种形态（`Record<FieldType, …>`，不变量 12）；实体图标映射；表单状态与 `set` / `unset`；`storeAs` 的 `parse` / `format`；表单网格（design-system §6.0、§6.4）；`console/src/fields/fields.selftest.tsx`（两个包的每个字段；不变量 16 的往返），串进 `pnpm test`；`scripts/check-boundaries.ts` 只给这一个文件开 import `src/packs/registry.ts` 与 `src/shared/pack-fixtures/` 的例外。
-  - [ ] 3.3 `check-boundaries.ts` 禁止其余 `console/src` 文件 import `src/packs/**` 与 `src/shared/pack-fixtures/**`；`check-console-src.ts` 加上行业包词汇扫描（不变量 11 的范围与白名单）和不变量 17 的 console 一侧；`check-console-dist.ts` 断言产物里没有假包内容（不变量 25）。
+  - [x] 3.3 `check-boundaries.ts` 禁止其余 `console/src` 文件 import `src/packs/**` 与 `src/shared/pack-fixtures/**`；`check-console-src.ts` 加上行业包词汇扫描（不变量 11 的范围与白名单）和不变量 17 的 console 一侧；`check-console-dist.ts` 断言产物里没有假包内容（不变量 25）。
   - [x] 3.4 `src/shared/ui-labels.ts`（检查项名、角色、`AUDIT_ACTIONS`、`ERROR_COPY` 的文案）与 `src/shared/format.ts`（金额、相对与绝对时间、月份区间）；`AuditQuery.actions`（服务端与验收 15 第 8 条）；`describeAudit(entry, pack, lookups)`（实体名、字段名取自行业包）。总览的「最近变更」和第 14 步都用它们。
 - [ ] 4. 总览（1.5）：路由 `/` 取代重定向；需要你处理、系统状态、业务数、客户停在哪一步、最近变更，各块独立加载与出错；匿名总览（验收 10）。`scripts/seed-demo.py` 加 `--scenario console-ux` 与 `--now`（验收 4「走查种子与时钟」），不带这两个参数时输出不变。
 - [ ] 5. 销售话术一：编辑（3）
@@ -64,7 +64,7 @@
 ## Open
 
 - 第 2.2 步：铃铛的「打开工作台」和 ⌘K 的会话行打开 `/admin.html#s=<id>`，但 admin.html 读 `#s=` 选中会话是第 13 步的事。在那之前这个链接只打开工作台、不选中那个会话，走查不能把它当成已经能用。
-- 第 2.2 步：路由 `/catalog/$kind` 的 `params.parse` 把 hotel 以外的 kind 一律当成 route（01 以来如此）。外壳这一侧已经不认行业（假包的侧栏、⌘K、计数都按包里的 kind 发请求），但假包的 `/catalog/package` 页面现在仍按线路渲染、请求 `/catalog/route`。第 9 步重做列表、第 10.1 步加详情路由时，路由参数改成按行业包的 kind 取，包里没有的 kind 出 404；第 17 步的假包走查依赖这一条。
+- 第 2.2 步：路由 `/catalog/$kind` 的 `params.parse` 把 hotel 以外的 kind 一律当成 route（01 以来如此）。外壳这一侧已经不认行业（假包的侧栏、⌘K、计数都按包里的 kind 发请求），但假包的 `/catalog/package` 页面现在仍按线路渲染、请求 `/catalog/route`。第 9 步重做列表、第 10.1 步加详情路由时，路由参数改成按行业包的 kind 取，包里没有的 kind 出 404；第 17 步的假包走查依赖这一条。改完同时删掉 `scripts/check-console-src.ts` 里 `LEGACY` 的对应项（第 3.3 步），词没了不删，`pnpm lint` 会失败。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 
 ## 砍法
@@ -552,6 +552,37 @@
     - 把旅游包的「境内还是境外」临时改成选填：显示三段，没填时选中「不填」；点「境外」后显示「改动：overseas」，点回「不填」后显示「改动：无」。
     - 匿名数据的列表没有「状态」「更新」两列，也没有状态胶囊。
     - Chromium、Firefox 的 CSP 违规和控制台错误都是 0。WebKit 截图之前也都是 0；截图时每截一张记一条 style-src 违规，与第 3.2 步记的相同，是探针的问题。
+
+### 第 3.3 步（2026-09-28）
+
+- 做了什么：
+  - `scripts/check-boundaries.ts`（不变量 11 第一层）：第 3.2 步已经加了渲染器自测的例外和「别的 console 文件不能 import 假包」。这一步把 `src/packs/**` 单拆成一条写明不变量 11 的规则（只有渲染器自测能 import `src/packs/registry.ts`，`import type` 也算），console 的通用规则不再对行业包重复报，一处 import 只报一行。另加一条：`src/` 里的非自测代码不能 import 假包。console 可以 import `src/shared/`，假包经 `src/shared` 转一手就能进 console 和构建产物；假包目录自己和各处自测不管。`config.selftest.ts` 的边界夹具 448 → 451 条：`import type` 旅游包、三种 import 各报一次并写明不变量 11、`src/shared/leak.ts` 被拦而假包目录与自测不拦。
+  - `scripts/check-console-src.ts` 的词汇扫描（不变量 11 第二层）：词表取自本仓库的注册表和 `src/shared/pack-fixtures/` 下导出的每个包（自测夹具也用这份真词表）。收实体 kind、实体名、工具原名、字段 key（含有序子项的子字段，带点的 key 另算每一段）、字段标签、阶段 key，现在 126 个词。扫 `console/src` 的字符串字面量（含类型位置和带引号的属性名）、模板字符串的各个文字段、JSX 文本，去掉首尾空白后整串比对；不扫注释、标识符、模块名（import、export、`import()`、`require`、类型位置的 `import()`、`declare module`）、自测和样张。排除 `$` 开头的系统字段 key、会话状态值 `ai` / `human` / `paid`、`GENERIC` 里的 5 个通用词（`title`、`name`、`tags`、「状态」「标签」，每项写明理由），以及 `LEGACY` 里旧页面的几处（见「偏离」）。报错写明是哪个包的什么，如「写死了行业包的词「quote」（旅游包的阶段 key、家装整装包（假包）的阶段 key）」。`GENERIC` 里的词不再是任何包的词、`LEGACY` 里的词在那个文件里没了，都让 `pnpm lint` 失败并要求删掉这一项；词表里没有注册包或没有假包也失败。
+  - 不变量 17 的 console 一侧，同一个脚本：读 `handedOver`（`.handedOver`、`?.handedOver`、解构，以及按名字引用的字符串 `'handedOver'`，覆盖 `r['handedOver']`、表格的 `dataIndex`、`Pick<…>`）；`stage` 与 `'paid'` 相比（`===` `!==` `==` `!=`，左右都认，去掉括号、`!`、`as`、`satisfies`；`switch (….stage)` 里的 `case 'paid'`）。自测和样张同样查。
+  - 挂上以后现有代码的命中：会话页 `dataIndex: 'handedOver'` 与 `r.stage === 'paid'` 两处（不变量 17）；产品库页「线路」「酒店」`route`「目的地」，`router.tsx` 的 `route`、`hotel`（进 `LEGACY`）；渲染器的 `'tags'`（字段类型名）与产品库页的「状态」列（进 `GENERIC`）；`Status.tsx` 的 `'paid'`（会话状态值）。
+  - 会话页：「转人工」一列改为「状态」，每行 `<Status kind={conversationState(r)} />`，与 spec I 页的列一致，整页仍在第 13 步重做。原来没转人工的行这一列是空的，现在写「AI接待中」；转人工后成交与没转人工成交都写「已成交」。
+  - 假包的界面配置也查不变量 9（第 3.1 步记的「第 3.3 步的检查也要扫假包」）；话术节 heading 的例外同样适用。
+  - `scripts/check-console-dist.ts` 按文字查假包（不变量 25）：每个 JS 块用 TypeScript 的解析器读一遍，取出全部字符串字面量与模板字符串文字段（转义已解开），与假包的标记串整串比对。标记串是假包配置里的全部字符串值，去掉注册包里也有的、不到 3 个字符的、纯小写英文单词，现在 67 个，产物 JS 里共 10,516 个字符串。另要求在产物里找得到「等人接手」，证明字符串确实取出来了。压缩器把中文字符串写成反引号模板（如 `` n:`等人接手` ``），按引号找的正则会整个漏掉。这条检查连同原有的全部检查约 0.7 秒。CI 注释同步。
+  - `scripts/check-console-src.selftest.ts` 48 → 91 条：不变量 11 的 20 处违规（注册包与假包各类词、带点 key 的一段、子字段、类型位置、带引号的属性名、模板文字段、首尾带空白、旧页面名单以外的文件），不变量 17 的 10 处（含自测文件），假包的不变量 9 一处；放过的写法（注释、标识符、子串、四种模块名、系统字段、会话状态值、通用词、样张、自测、行业包配置，只经 `conversationState` 判定、造数据时写 `handedOver`、别的值和 `'paid'` 比）；旧页面名单另跑两轮：同一个文件里名单外的「主材」照报，词没了、文件删了都点名为过时。
+- 构建：入口集合 gzip 316,719 → 316,787 B（+68：`src/shared/conversation.ts` 本来就在入口里，`conversationState` 原先没人用、被摇掉了）；换页最多仍是产品库，247,051 → 247,076 B（+25，引用的块文件名变了），余 2,924 B。字体没变（771 个码位、157,920 B），「状态」两个字早在 UI 优先片里。
+- preview 实测（Chromium，Playwright 1.63，CSP 同线上，接口由 `page.route` 拦截，时钟钉在 9月26日 14:30，浅色、深色各一轮，探针在仓库外）：会话表头是「会话 渠道 阶段 状态 消息数 更新时间」；五行覆盖四种组合：转人工没成交的两行是「等人接手」胶囊（浅色 `#FFF3DC`、深色 `#2E2008` 底，与设计系统 §1.1 的 `--warning-bg` 相同），转人工后成交与没转人工成交都是「已成交」，其余是「AI接待中」，标签 13/500；页面上没有「转人工」三个字。两套主题 `securitypolicyviolation` 0 次，控制台错误 0 条。
+- 变异（仓库外的隔离副本，60 例全部失败并点名，还原后与 worktree 逐字节相同）：
+  - 真代码 15 例：会话页改回读 `handedOver` 与比 `'paid'`（两处都点名）、外壳搜索占位写死「线路」、产品库页多写一个名单外的「每晚起价」、渲染器按 `'itinerary'` 分支、外壳写假包的「施工节点」、会话页按 `'quote'` 分支、铃铛解构 `handedOver`、`switch (row.stage)` 的 `case 'paid'`；`import type` 旅游包、外壳 import 注册表、另一个 console 自测 import 假包、`ui-labels.ts` 转手导出假包、服务端启动装载 import 假包（后五例 `check-boundaries.ts` 点名）；`GENERIC` 多一个不撞词的「名称」、`LEGACY` 多放一个文件里没有的 `hotel`（点名要删）。
+  - 词汇扫描与不变量 17 的实现 34 例，由 `check-console-src.selftest.ts` 点名：词表逐类去掉（假包、工具、阶段、带点 key 的段、子字段、标签、实体名）；不扫 JSX 文本、不扫模板文字段；比子串、不去空白；不排除会话状态值、通用词；系统字段 key 进词表；旧页面名单不分文件、放过整个文件、不查过时；词汇扫描也查自测、样张、行业包配置；模块名（整体、动态 import、类型位置）也按词表查；17 的属性访问、解构、按名字的字符串、左右颠倒、去括号与 as、`==`、`case`、自测豁免、任何东西和 `'paid'` 比都算；假包不查不变量 9、假包的 heading 不放过。第一轮「也查行业包配置」存活：变异脚本对同一个文件的两处改动都从原件改起，后一处覆盖了前一处；修好脚本后按名字失败。
+  - 边界规则 6 例，由 `config.selftest.ts` 点名：去掉 `src/` 的假包规则、它不放过假包目录、不放过自测、console 通用规则对行业包重复报、`import type` 放过、渲染器自测能 import 任何包模块。
+  - 产物检查 5 例：假包整份抄进 `console/src/reno.ts` 由入口引用（模块清单看不见，按文字点名「装修套餐」）；只漏一个「家装整装」；标记串一个都不收（点名「检查是空的」）；取字符串时用源码原文、不解开引号；只取引号字符串。第一轮的「只认模板字符串」无效：副本里的产物还是上一例的构建，而且压缩后的中文本来就在反引号里，所以换成了后两例。
+  - 标记串的三个过滤在干净的产物上各试了一遍：不去纯小写单词，`styles` 误报；不去注册包里也有的，`$code` 误报；放宽到 2 个字符，现在不误报，留着 3 是防「业主」「方案」这类常用词以后成了界面文字。
+- 偏离与取舍：
+  - 旧页面名单 `LEGACY`（spec 顶部第 3.3 步的 `Revisions:`）：产品库页和它的路由参数按线路、酒店写死，第 9、10 步整页重做；现在改等于提前做一半，还会改变打不开的 kind 的行为。按「文件 + 词」放行，词没了就要删，第 9、10 步做完时名单必然清空。
+  - 比原文严的两处（同一行 `Revisions:`）：假包也查不变量 9；`src/` 里的非自测代码不能 import 假包。
+  - 词表的口径：带点的 key 另算每一段（`intensity`、`level`、`hardest`），console 写 `'intensity'` 同样是认得行业包；`$` 开头的只排除 key，它们的标签照算（「线路编号」算，「状态」进 `GENERIC`）；阶段的中文名、工具的中文名、分组名、`sopFields` 的键不在不变量 11 的清单里，不收。spec 举例的 `id` 没进 `GENERIC`：它不是任何包的词，按过时规则会被要求删掉。
+  - 不变量 17 连自测和样张一起查（验收 3 写的是「`console/src` 里」）；造测试数据时写 `handedOver: true` 不算读。
+  - 会话页的「转人工」列换成「状态」列（见上），不是等第 13 步：不这样改，不变量 17 的检查挂不上。
+- 没有新增依赖。worktree 里的依赖用 `pnpm install --frozen-lockfile` 装（主工作区的 `node_modules` 没有第 3.2 步加的 `happy-dom`），锁文件没变。
+- 留给后面的步骤：
+  - 第 9、10 步：路由参数按行业包的 kind 取、产品库页重做以后，删掉 `LEGACY` 的两项（不删 `pnpm lint` 失败）。页面要显示字段名、实体名时从 `/pack` 取，不能写死；真要一个撞上包词的通用词，加进 `GENERIC` 并写明理由。
+  - 第 13 步：会话页的「状态」列已经用 `conversationState`；页签、阶段条、徽标照样不读 `handedOver`。
+  - 第 17.1 步：往假包里加字段，词表和产物的标记串自动跟着变；新字符串要是撞上界面自己的字，`check-console-dist.ts` 会点名，按那条的过滤规则处理。
 
 ## 交接记录
 
