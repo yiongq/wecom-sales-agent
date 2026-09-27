@@ -236,6 +236,13 @@ export const filterFields = (entity: EntityType): FieldDef[] =>
     .map((k) => listField(entity, k))
     .filter((f): f is FieldDef => f !== undefined && f.type !== 'subItems');
 
+/**
+ * 筛选按钮上的名字：一般是字段标签；两种取值都有写法的是否写成「境内/境外」（设计系统 D 页），
+ * 按钮比「境内还是境外」短，生效后也写「境内/境外：境外」
+ */
+export const filterName = (f: FieldDef): string =>
+  f.type === 'boolean' && f.falseLabel && f.trueLabel ? `${f.falseLabel}/${f.trueLabel}` : f.label;
+
 /** URL 里生效的筛选：只认本实体的筛选字段，同一个字段只认第一项 */
 export function activePicks(entity: EntityType, search: CatalogSearch): ActivePick[] {
   const fields = filterFields(entity);

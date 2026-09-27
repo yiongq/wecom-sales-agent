@@ -37,6 +37,7 @@ import {
   atomsOf,
   columnWidth,
   filterFields,
+  filterName,
   filterOptions,
   fullText,
   headerLabel,
@@ -1511,11 +1512,8 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
 
 // 8.3 筛选：按钮来自 list.filters，选项按字段类型生成，多值的字段按「包含」匹配
 {
-  eq(
-    'D 页的筛选按钮',
-    filterFields(ROUTE).map((f) => f.label),
-    ['目的地', '境内还是境外', '适合客群'],
-  );
+  eq('D 页的筛选按钮', filterFields(ROUTE).map(filterName), ['目的地', '境内/境外', '适合客群']);
+  eq('筛选按钮的名字：是否少了一种写法时用字段标签', filterName({ ...fieldOf(ROUTE, 'overseas'), trueLabel: undefined }), '境内还是境外');
   eq(
     'L 页的筛选按钮',
     filterFields(PKG).map((f) => f.label),
@@ -1594,11 +1592,16 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
     [...new Set(ROUTES.map((r) => r.days as number))].sort((a, b) => a - b).map((d) => `${d}天`),
   );
   const ref: FieldDef = { key: 'mat', type: 'reference', to: 'material', store: 'code', label: '主材', group: 'basic' };
-  const refRows = [asRow({ id: 'p-1', mat: 'm-oupai-cab' }), asRow({ id: 'p-2', mat: '别家的柜子' })];
+  // 编号的顺序（中式柜子、m-daziran-3c、m-oupai-cab）与名称的拼音顺序不同，按错了排得出来
+  const refRows = [
+    asRow({ id: 'p-1', mat: 'm-oupai-cab' }),
+    asRow({ id: 'p-2', mat: '中式柜子' }),
+    asRow({ id: 'p-3', mat: 'm-daziran-3c' }),
+  ];
   eq(
-    '引用：写被引用条目的名称，库里找不到写原文',
+    '引用：写被引用条目的名称，库里找不到写原文，按名称的拼音排',
     filterOptions(ref, refRows, MATERIAL_REFS).map((o) => o.label),
-    ['别家的柜子', '欧派 整体橱柜'],
+    ['大自然 三层实木复合地板', '欧派 整体橱柜', '中式柜子'],
   );
   eq('有序子项：没有选项', filterOptions(fieldOf(ROUTE, 'itinerary'), ROUTE_ROWS), []);
   eq(
@@ -1748,7 +1751,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq(
     '工具条：筛选按钮与右侧的条数',
     [texts(d.box, '.filter-trigger'), d.box.querySelector('.list-count')?.textContent],
-    [['目的地', '境内还是境外', '适合客群'], '21条'],
+    [['目的地', '境内/境外', '适合客群'], '21条'],
   );
   eq('没有生效的筛选时不画「清除筛选」', d.box.querySelectorAll('.list-toolbar .list-link').length, 0);
   await d.unmount();
@@ -1758,8 +1761,8 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     '生效的筛选写成「目的地：四川」，各带一个清除',
     [texts(f.box, '.filter-btn.is-active .filter-trigger'), all(f.box, '.filter-clear').map((b) => b.getAttribute('aria-label'))],
     [
-      ['目的地：四川', '境内还是境外：境内'],
-      ['清除「目的地」筛选', '清除「境内还是境外」筛选'],
+      ['目的地：四川', '境内/境外：境内'],
+      ['清除「目的地」筛选', '清除「境内/境外」筛选'],
     ],
   );
   eq(

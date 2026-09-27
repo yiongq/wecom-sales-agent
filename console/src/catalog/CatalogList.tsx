@@ -20,6 +20,7 @@ import {
   cellValue,
   columnWidth,
   filterFields,
+  filterName,
   type FilterOption,
   filterOptions,
   fullText,
@@ -246,7 +247,8 @@ export function FilterButton(props: {
       </span>
     ),
   }));
-  const text = pick ? `${field.label}：${pickLabel(pick, options, props.refItems)}` : field.label;
+  const name = filterName(field);
+  const text = pick ? `${name}：${pickLabel(pick, options, props.refItems)}` : name;
 
   return (
     <span className={pick ? 'filter-btn is-active' : 'filter-btn'}>
@@ -276,7 +278,7 @@ export function FilterButton(props: {
                 className="filter-menu-search"
                 prefix={<Icon of={Search} className="list-search-icon" />}
                 value={query}
-                aria-label={`搜索${field.label}`}
+                aria-label={`搜索${name}`}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
                   // ↓ 进到菜单里，之后照 antd 菜单的方向键走
@@ -296,7 +298,7 @@ export function FilterButton(props: {
         </button>
       </Dropdown>
       {pick && (
-        <button type="button" className="filter-clear" aria-label={`清除「${field.label}」筛选`} onClick={() => onPick(undefined)}>
+        <button type="button" className="filter-clear" aria-label={`清除「${name}」筛选`} onClick={() => onPick(undefined)}>
           <Icon of={X} size={14} />
         </button>
       )}
