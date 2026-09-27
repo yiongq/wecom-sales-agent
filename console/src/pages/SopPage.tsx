@@ -1,7 +1,8 @@
 // 销售话术页（spec「销售话术（B、C 页）」）。第 5.1 步做了页头的状态句、额度条和目录（sop/ 下）：
 // 状态句「线上v2 · 老板发布于9月25日 18:30 · 草稿改了2节」；额度条按服务端同一口径实时算（含还没保存的改动）；
 // 目录保持 prompt 的原顺序，分段筛选、锁与锁定原因、键盘，选中的节写进 URL 的 section；宽 <1280 时目录换成下拉。
-// 编辑器（第 5.2 步）、自动保存（第 5.3 步）、检查与发布（第 6 步）、版本记录（第 7 步）还是 01 的做法：
+// 第 5.2 步做了中栏（sop/SopEditor.tsx）：节标题与说明行、固定规则节的只读说明、按 markdown 显示的编辑器（芯片、图标、改动标记）。
+// 自动保存（第 5.3 步）、检查与发布（第 6 步）、版本记录（第 7 步）还是 01 的做法：
 // 页头右侧是保存、检查、发布、丢弃，检查结果在额度条下面，逐节对比和版本历史在页面底部。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
@@ -34,9 +35,11 @@ import { SectionDiff } from '../SectionDiff.js';
 import { useViewport } from '../shell/hooks.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { Directory, DirectorySelect, type SelectVia } from '../sop/Directory.js';
+import { SectionPane, SopEditor } from '../sop/SopEditor.js';
 import {
   anonOutline,
   anonStatus,
+  bodyWithoutHeading,
   draftChars,
   memberOutline,
   memberStatus,
@@ -48,7 +51,6 @@ import {
 } from '../sop/outline.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
-import { TextEditor } from '../TextEditor.js';
 import { cjk } from '../typography.js';
 import { canEdit, usePack, useViewer } from '../viewer.js';
 
@@ -174,6 +176,7 @@ function AnonSop({ data, pack, now }: { data: AnonSopOverview; pack: IndustryPac
   const editor = useRef<HTMLDivElement>(null);
   const nav = useSectionNav(rows, editor);
   const shown = published.sections.find((s) => s.key === nav.section);
+  const row = rows.find((r) => r.key === nav.section);
   const wide = useViewport() === 'wide';
   return (
     <>
@@ -181,7 +184,9 @@ function AnonSop({ data, pack, now }: { data: AnonSopOverview; pack: IndustryPac
       <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
         <Toc rows={rows} nav={nav} showCounts={false} />
         <div ref={editor} className="sop-editor">
-          {shown && <TextEditor key={shown.key} value={shown.text} readOnly />}
+          {shown && row && (
+            <SectionPane key={shown.key} row={row} who="anon" value={bodyWithoutHeading(shown.text)} vocabulary={pack?.vocabulary} />
+          )}
         </div>
       </div>
     </>
@@ -315,6 +320,7 @@ function MemberSop({ data, pack, editable, now }: { data: SopOverview; pack: Ind
   const editor = useRef<HTMLDivElement>(null);
   const nav = useSectionNav(rows, editor);
   const section = spec.find((s) => s.key === nav.section);
+  const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
   const changed = rows.filter((r) => r.changed);
   const textOf = (v: SopVersion, k: string): string => v.sections.find((s) => s.key === k)?.text ?? '';
@@ -398,7 +404,7 @@ function MemberSop({ data, pack, editable, now }: { data: SopOverview; pack: Ind
                     .map((s) => (
                       <div key={s.key}>
                         <Typography.Text type="secondary">当前发布版本的「{headingOf(spec, s.key)}」：</Typography.Text>
-                        <TextEditor value={s.text} readOnly />
+                        <SopEditor value={s.text} name={headingOf(spec, s.key)} readOnly vocabulary={pack?.vocabulary} />
                       </div>
                     ))}
                   <span>这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在上面这份当前版本上重做。</span>
@@ -412,14 +418,14 @@ function MemberSop({ data, pack, editable, now }: { data: SopOverview; pack: Ind
       <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
         <Toc rows={rows} nav={nav} filter={filter} onFilter={setFilter} showCounts />
         <div ref={editor} className="sop-editor">
-          {section?.locked && (
-            <Alert type="info" style={{ marginBottom: 8 }} title="固定规则节：由代码逐条核对，这里改不了，要改请联系技术。" />
-          )}
-          {section && (
-            <TextEditor
+          {section && row && (
+            <SectionPane
               key={section.key}
+              row={row}
+              who={editable ? 'editor' : 'reader'}
               value={edits[section.key] ?? originalBody(section.key)}
-              readOnly={section.locked || !editable}
+              baseline={bodyOf(textOf(published, section.key), section.heading)}
+              vocabulary={pack?.vocabulary}
               onChange={(v) => setEdits((e) => ({ ...e, [section.key]: v }))}
             />
           )}

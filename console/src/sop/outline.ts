@@ -87,6 +87,14 @@ function headingFromText(text: string): string | null {
   return end < 0 ? text.slice(3) : text.slice(3, end);
 }
 
+/** 节的正文：去掉开头的「## 标题」行和其后的一个空行（匿名只有整节原文，中栏的标题已经单独写了）；前言原样 */
+export function bodyWithoutHeading(text: string): string {
+  if (headingFromText(text) === null) return text;
+  const end = text.indexOf('\n');
+  if (end < 0) return '';
+  return text.startsWith('\n', end + 1) ? text.slice(end + 2) : text.slice(end + 1);
+}
+
 /** 匿名的目录：只有已发布版本的节，标题、锁定与原因取行业包 */
 export function anonOutline(sections: readonly SopSectionText[], packSections?: readonly SopSectionDef[]): OutlineRow[] {
   return sections.map((s) => {
@@ -166,6 +174,28 @@ export function lockNote(rows: readonly OutlineRow[]): string | null {
 
 /** 锁定节的悬停说明，各段之间用 Sep 隔开：「固定规则 · 报价时机…由代码逐条核对」 */
 export const lockTip = (row: Pick<OutlineRow, 'lockReason'>): string[] => (row.lockReason ? ['固定规则', row.lockReason] : ['固定规则节']);
+
+// ---------------- 中栏的说明行（B 页） ----------------
+
+/**
+ * 可编辑节标题下那一行，各段之间用 Sep 隔开：能改的成员「可编辑 · 910 → 954字（+44）」，只读的成员只写字数，匿名不写。
+ * 没改过（或改过但字数没变）只写「954字」
+ */
+export function sectionMeta(row: Pick<OutlineRow, 'chars' | 'delta' | 'changed'>, who: 'editor' | 'reader' | 'anon'): string[] | null {
+  if (who === 'anon') return null;
+  const count =
+    row.changed && row.delta !== 0
+      ? `${digits(row.chars - row.delta)} → ${digits(row.chars)}字（${row.delta > 0 ? '+' : ''}${digits(row.delta)}）`
+      : `${digits(row.chars)}字`;
+  return who === 'editor' ? ['可编辑', count] : [count];
+}
+
+/** 固定规则节正文上方那一行：「固定规则 · {lockReason}。这里改不了，要改请联系技术。」；包里没写原因时不写那半句 */
+export function lockLine(row: Pick<OutlineRow, 'lockReason'>): string[] {
+  const tail = '这里改不了，要改请联系技术。';
+  const reason = row.lockReason?.replace(/[。.\s]+$/, '');
+  return ['固定规则', reason ? `${reason}。${tail}` : tail];
+}
 
 /** 默认打开的节：第一个可编辑节，没有就第一节 */
 export const defaultSection = (rows: readonly OutlineRow[]): string | undefined => (rows.find((r) => !r.locked) ?? rows[0])?.key;
