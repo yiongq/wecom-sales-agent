@@ -98,9 +98,14 @@ jobs:
       #   RLS、会话级泄漏与租户锁。RLS 漏了一张表同样不报错，只是别的租户的数据悄悄可见。
       # - src/config/config.selftest.ts：配置源。两种模式逐字节等价、SOP 与产品库的编辑流程、启动重渲染、检索。
       # - src/console-api/console.selftest.ts：鉴权与后台接口（走 app.request）。权限、CSRF、匿名投影漏一处都不报错。
+      # - src/shared/typography.selftest.ts、console/src/typography.selftest.ts：连用全角标点的挤压回退（与 Chromium 逐对量出的
+      #   结果对拍）、cjk() 与 Sep 的标记、全局 text-spacing-trim 的约定。回退错了只在 Firefox、Safari 里标点宽度不对，不报错。
       # - LLM_MOCK=1 eval/run.ts：回归评测（mock 模式，秒级），改 SOP/提示词/护栏后自动回归，防止话术悄悄退化。
       #   文件模式、DB 模式（PGlite）各跑一遍。真实模型评测要花钱，不进 CI。
-      # - console 生产构建，再扫描产物：浏览器包里混进数据库驱动或 Node 内置模块不会报错，只会把服务端代码发给浏览器。
+      # - scripts/check-fonts.ts：界面用到的每个汉字和全部 CJK 标点都在已提交的 UI 优先片字体里，字体与许可原文的 sha256 对得上。
+      #   缺字不报错，只会让页面去下长尾分片、标点跨文件不挤压。
+      # - console 生产构建，再扫描产物：浏览器包里混进数据库驱动或 Node 内置模块不会报错，只会把服务端代码发给浏览器；
+      #   样张页（VITE_SPECIMEN=1 才有）也不能混进生产产物。
       - run: pnpm test
         env:
           PG_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres

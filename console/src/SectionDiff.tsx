@@ -35,7 +35,7 @@ export function SectionDiff(props: { before: string; after: string; beforeLabel:
           <Typography.Text type="secondary">{props.afterLabel}</Typography.Text>
         </Col>
       </Row>
-      <div ref={host} style={{ border: '1px solid #d9d9d9', borderRadius: 6 }} />
+      <div ref={host} style={{ border: '1px solid var(--border)', borderRadius: 6 }} />
     </div>
   );
 }
