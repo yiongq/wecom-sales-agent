@@ -1509,7 +1509,7 @@ const route: EntityType = {
       group: 'price',
       lockedWhenActive: true,
       lockGroup: 'price',
-      help: '填淡季、4 人以下的价；旺季上浮 10%、4 人及以上 95 折由系统算',
+      help: '填淡季、4人以下的价；旺季上浮10%、4人及以上95折由系统算',
     },
     {
       key: 'bestSeason',
@@ -1518,7 +1518,7 @@ const route: EntityType = {
       group: 'price',
       lockedWhenActive: true,
       lockGroup: 'price',
-      monthMeaning: '这些月份出发报价上浮 10%，「全年」不加价',
+      monthMeaning: '这些月份出发报价上浮10%，「全年」不加价',
       yearRoundLabel: '全年（不加价）',
     },
     {
@@ -1631,7 +1631,7 @@ const route: EntityType = {
       group: 'sell',
       min: 1,
       recommend: { min: 3, max: 5 },
-      help: '建议 3–5 条，每条以动词开头',
+      help: '建议3–5条，每条以动词开头',
     },
     {
       key: 'tags',

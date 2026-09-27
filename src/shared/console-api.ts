@@ -76,7 +76,11 @@ export const PatchItemBody = z.strictObject({
   unset: z.array(z.string().min(1).max(64)).max(64).optional(),
 });
 
-/** 会话只读列表：offset 分页，limit ≤ 100 */
+/** 会话状态（docs/features/console-ux/spec.md「接口改动」）。判定只在 src/shared/conversation.ts 的 conversationState 里 */
+export const CONVERSATION_STATES = ['ai', 'human', 'paid'] as const;
+export type ConversationState = (typeof CONVERSATION_STATES)[number];
+
+/** 会话只读列表：offset 分页，limit ≤ 100。state、stage、order 由后台 UX spec 增补：服务端先过滤、排序，再分页 */
 export const ConvQuery = z.object({
   limit: intParam(100).optional(),
   offset: z
@@ -84,6 +88,15 @@ export const ConvQuery = z.object({
     .regex(/^\d{1,9}$/)
     .transform(Number)
     .optional(),
+  /** 会话状态，判定见 conversationState */
+  state: z.enum(CONVERSATION_STATES).optional(),
+  /** 当前阶段（SalesStage 的 key），独立按 row.stage 过滤 */
+  stage: z
+    .string()
+    .regex(/^[a-z_]{1,32}$/)
+    .optional(),
+  /** waiting_first = 等人接手的在前，其余按 (updatedAt desc, id)；不给时是 01 的顺序 (updatedAt desc, id) */
+  order: z.enum(['waiting_first']).optional(),
 });
 
 export const AuditQuery = z.object({
@@ -187,6 +200,8 @@ export interface Me {
   /** 写请求放进 x-csrf 头 */
   csrf: string;
   tenantSlug: string;
+  /** tenants.name（后台 UX spec 增补）：侧栏租户行和 document.title 用；多租户以后防止改错租户 */
+  tenantName: string;
 }
 
 /** 匿名（demo）只有 mode */
@@ -256,8 +271,18 @@ export interface ConversationRow {
 
 export interface ConversationPage {
   items: ConversationRow[];
-  /** 可列的会话总数（不含 sim- 访客会话） */
+  /** 可列的会话总数（不含 sim- 访客会话）；带 state、stage 时是过滤后的条数 */
   total: number;
+}
+
+/** 一次在内存里算完的会话计数（后台 UX spec 增补）：同一次响应里各项相互对得上 */
+export interface ConversationCounts {
+  total: number;
+  byState: Record<ConversationState, number>;
+  /** AI 接待中的会话按当前阶段计数，键是 SalesStage；没有会话的阶段不出现 */
+  aiByStage: Record<string, number>;
+  /** 按服务器时区（TZ）今天 0 点以后有新动静的会话数 */
+  updatedToday: number;
 }
 
 export interface AuditEntryView {

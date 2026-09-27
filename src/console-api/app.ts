@@ -59,6 +59,7 @@ import {
   configRuntime,
   currentCatalog,
   currentSop,
+  currentTenant,
 } from '../config/source.js';
 import { isUniqueViolation, type TenantCtx } from '../db/client.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
@@ -84,6 +85,7 @@ import {
   type ApiError,
   type AuditPage,
   type CatalogItem,
+  type ConversationCounts,
   type ConversationPage,
   type DraftCheck,
   type Me,
@@ -93,6 +95,8 @@ import {
   type SopVersion,
   type Status,
 } from '../shared/console-api.js';
+import { conversationState } from '../shared/conversation.js';
+import type { IndustryPack } from '../shared/pack.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
 import { listSessions } from '../store.js';
@@ -211,7 +215,20 @@ const meOf = (u: AuthedUser): Me => ({
   role: u.role,
   csrf: u.csrf,
   tenantSlug: configRuntime().deps.tenantSlug,
+  tenantName: currentTenant().name,
 });
+
+/**
+ * 列得出来的会话：不含 sim- 访客会话（演示访客会话凭 id 就能读全文，id 本身就是凭据）。
+ * 会话列表与计数都从这里取，两边对同一批会话分类，计数才对得上列表的 total
+ */
+const listedSessions = () => listSessions().filter((s) => !s.id.startsWith('sim-'));
+type Listed = ReturnType<typeof listedSessions>[number];
+/** 01 的顺序：(updatedAt desc, id) */
+const byRecent = (a: Listed, b: Listed): number => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/** 等人接手的在前，同组内仍按 (updatedAt desc, id)（设计系统 §10.0 修正 1：I 页里 F01 在 A01 前） */
+const waitingFirst = (a: Listed, b: Listed): number =>
+  Number(conversationState(b) === 'human') - Number(conversationState(a) === 'human') || byRecent(a, b);
 
 const cookie = (value: string, maxAgeSec: number): string =>
   `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSec}`;
@@ -264,6 +281,14 @@ export const consoleApi = new Hono<ConsoleEnv>()
     return c.json({ ok: true as const }, 200);
   })
   .get('/me', signedIn, (c) => c.json(meOf(c.var.user!), 200))
+
+  // ---------------- 行业包 ----------------
+  // 当前租户（tenants.pack_id）的界面配置，取自启动时装载的租户行、不查库。它是代码里的公开配置，不含租户名、成员、草稿，
+  // 所以 demo 下匿名也能读（挂查询限流）；prod 下匿名 401（后台 UX spec「行业包通用架构 · 下发」）
+  .get('/pack', canRead, (c) => {
+    const body: IndustryPack = currentTenant().pack;
+    return c.json(body, 200);
+  })
 
   // ---------------- 状态 ----------------
   .get('/status', canRead, (c) => {
@@ -406,13 +431,13 @@ export const consoleApi = new Hono<ConsoleEnv>()
   )
 
   // ---------------- 会话只读列表 ----------------
-  // 读现有的文件 store：按 (updatedAt desc, id) 排序、offset 分页，每条只投影几个字段，不把 store 里的活对象原样返回。
-  // 不列 sim- 会话：演示访客会话凭 id 就能读全文，id 本身就是凭据。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移
+  // 读现有的文件 store：先按 state、stage 过滤，按 (updatedAt desc, id) 或 waiting_first 排序，再 offset 分页；
+  // 每条只投影几个字段，不把 store 里的活对象原样返回。不列 sim- 会话。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移
   .get('/conversations', canSeeCustomers, zValidator('query', ConvQuery, badRequest), (c) => {
-    const { limit = 20, offset = 0 } = c.req.valid('query');
-    const all = listSessions()
-      .filter((s) => !s.id.startsWith('sim-'))
-      .toSorted((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const { limit = 20, offset = 0, state, stage, order } = c.req.valid('query');
+    const all = listedSessions()
+      .filter((s) => (!state || conversationState(s) === state) && (!stage || s.stage === stage))
+      .toSorted(order === 'waiting_first' ? waitingFirst : byRecent);
     const page: ConversationPage = {
       total: all.length,
       items: all.slice(offset, offset + limit).map((s) => ({
@@ -425,6 +450,19 @@ export const consoleApi = new Hono<ConsoleEnv>()
       })),
     };
     return c.json(page, 200);
+  })
+  // 一次同步遍历算完（后台 UX spec「接口改动」）：同一次响应里 byState 之和等于 total，aiByStage 之和等于 byState.ai（不变量 18）
+  .get('/conversations/counts', canSeeCustomers, (c) => {
+    const midnight = new Date(clock()).setHours(0, 0, 0, 0); // 服务器时区（TZ）的今天 0 点
+    const body: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
+    for (const s of listedSessions()) {
+      const state = conversationState(s);
+      body.total += 1;
+      body.byState[state] += 1;
+      if (state === 'ai') body.aiByStage[s.stage] = (body.aiByStage[s.stage] ?? 0) + 1;
+      if (s.updatedAt >= midnight) body.updatedToday += 1;
+    }
+    return c.json(body, 200);
   })
 
   // ---------------- 审计 ----------------
