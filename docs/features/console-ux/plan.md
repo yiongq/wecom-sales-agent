@@ -337,15 +337,15 @@
 
 - 做了什么：
   - 各页 `.lazy()`：`console/src/pages/{sop,catalog,conversations,audit}.lazy.tsx` 各导出 `createLazyRoute(id)({ component })`，`router.tsx` 只留路径与参数。样张页同样改成 `_specimen/{controls,type}.lazy.tsx`（原来是 `lazyRouteComponent`），仍只在 `VITE_SPECIMEN=1` 时注册。登录页不是路由（外壳直接渲染），留在入口。
-  - 路由加 `defaultPendingComponent`（`StateView` 的骨架）与 `defaultErrorComponent`（`StateView` 的出错，重试是整页重新载入）。拆包以后多了一种失败：页面块取不到（断网，或发版后旧块已经不在了）。不配的话，TanStack 显示自带的英文「Something went wrong!」。等待时间用路由的默认值：换页时先留着上一页，1 秒后才换成骨架，骨架至少停 0.5 秒。
-  - `console/vite.config.ts`：删掉 `chunkSizeWarningLimit: 4096`，开 `build.manifest`，`assetsInlineLimit: 0` 保留。新加构建插件 `chunkModules`，把每个 JS 块的模块清单写到 `dist/.vite/modules.json`：manifest 只记块与块的引用，不记模块，「入口集合里没有 `@codemirror`」要按模块查。
+  - 路由加 `defaultPendingComponent`（`StateView` 的骨架）与 `defaultErrorComponent`（重试是整页重新载入）。拆包以后多了一种失败：页面块取不到（断网，或发版后旧块已经不在了）。不配的话，TanStack 显示自带的英文「Something went wrong!」。等待时间与出错文案在评审之后改过，见下方「评审之后」。
+  - `console/vite.config.ts`：删掉 `chunkSizeWarningLimit: 4096`，开 `build.manifest`，`assetsInlineLimit: 0` 保留。新加构建插件（评审之后叫 `buildMeta`），写出每个 JS 块的模块清单 `modules.json`：manifest 只记块与块的引用，不记模块，`@codemirror` 的去向要按模块查。清单与 manifest 评审之后都挪出了 dist，见下。
   - `scripts/check-console-dist.ts`（仍挂在 `pnpm test` 末尾、紧跟构建）加的检查：
     - 首屏 JS：入口集合加总览路由块，gzip ≤420,000 B。index.html 直接加载的脚本都要在入口集合里，防止少算。
     - 换页：每个路由块连同静态依赖、去掉入口集合已有的，gzip ≤250,000 B。
-    - 入口集合里没有 `src/pages/` 的模块（`LoginPage.tsx` 除外），也没有 `@codemirror`。产物里要能找到 `@codemirror`，检查不会空过。
+    - 入口集合里没有 `src/pages/` 的模块（`LoginPage.tsx` 除外），也没有 `@codemirror`。产物里要能找到 `@codemirror`，检查不会空过。评审之后另查带 `@codemirror` 的块只经话术页下载。
     - 任何块里没有 `src/_specimen/` 与 `src/shared/pack-fixtures/` 的模块。
     - 三个字体各自的上限；preload 的正好是 `geist-ui` 与 `noto-sans-sc-ui`，合计 ≤300,000 B。
-    - 文本扫描跳过 woff2，查 `fonts.googleapis.com` / `fonts.gstatic.com`；CSS 里查 `url(data:`。
+    - 文本扫描跳过 woff2，查 `fonts.googleapis.com` / `fonts.gstatic.com`；CSS 里查 `url(data:`（评审之后带引号的也查）。
 - 拆包前后（同一种算法：gzip 取 zlib 默认级别，与 host 的 Hono `compress` 实际发出的一样；vite 构建日志里的 gzip 数字算法不同，不作准）：
   - 前（6933c29）：入口一个块 2,094,010 B，gzip 667,875 B；拼音块 28,136 B（gzip 20,079）。
   - 后：入口集合 4 个块（入口；rolldown 运行时；antd、React、路由等的共用块；Typography 块），共 966,223 B，gzip 315,554 B。这是拆包前的 47%，目标 6 要求 2/3 以下，预算 420,000。换页额外下载：产品库 246,983 B（预算 250,000，余 3,017 B，块里有 rjsf）、话术 201,625 B、审计 87,885 B、会话 86,184 B。三页共用的 antd Table 块（85,256 B）算在每一页的换页里。拼音块不变。
@@ -355,7 +355,7 @@
 - preview 实测（Chromium，Playwright 1.63.0，CSP 同线上，接口由 `page.route` 拦截，浅色、深色各一轮，探针在仓库外）：
   - 直接打开 `/console/sop`：JS 只有 `theme-boot.js`、入口集合 4 块、话术页块和它的依赖（Table、UnsavedGuard、useInfiniteQuery），CodeMirror 正常。按 preview 自带的 gzip 计，入口集合 315,775 B，话术页 201,625 B。
   - 依次点侧栏：酒店只多下产品库块，会话只多下会话块，审计日志只多下审计块；再回线路、销售话术，不再下载。标签页标题照旧（「酒店 · 云途定制旅行」等）。直接打开 `/console/catalog/hotel` 不下话术页的块。
-  - 审计块慢 2.5 秒：点侧栏后选中项和地址马上变，上一页留着；1.5 秒时面板是看得见的骨架（约 1 秒时换上，`state-skeleton` 再等 300ms），块到了出页面。首次打开时会话块慢：外壳先出来，面板里是骨架。
+  - 审计块慢 2.5 秒：点侧栏后选中项和地址马上变，上一页留着；1.5 秒时面板是看得见的骨架（约 1 秒时换上，`state-skeleton` 再等 300ms），块到了出页面。首次打开时会话块慢：外壳先出来，面板里是骨架。（评审之后等待时间改了，复测见下。）
   - 审计块被断开：外壳还在，面板里是「没取到 · 服务暂时连不上」、折叠的技术详情和「重试」，没有英文错误页。点重试，整页重新载入后进审计日志。控制台有一条 React 报的 `TypeError: Failed to fetch dynamically imported module`，对应故意造的失败。
   - 匿名：话术页和横幅照常；⌘K 第一次打开时才下拼音块。
   - 两套主题下 `securitypolicyviolation` 都是 0 次，除上面故意造的那一条外，控制台错误 0 条。
@@ -367,15 +367,33 @@
   - 字体 4 例：`geist-ui` 超 16 KB（preload 合计同时超）、`geist-mono-ui` 超 12 KB、preload 多一个 `geist-mono-ui`、preload 少了 UI 优先片。
   - 检查自身 1 例：闭包不递归，入口集合漏算 modulepreload 的块，由「index.html 加载了它，manifest 的入口集合里却没有」点名。
   - 第一轮有两例是变异本身写错了，改正后都点名：`geist-mono-ui` 那例用 11,884 B 的 `geist-ui` 覆盖它，本来就没超；总览那例其实已被拦下，只是期望的文字只在检查通过时才打印。
-- 偏离与取舍（spec 没写到的细节，spec 不改）：
-  - `.vite/manifest.json` 与 `.vite/modules.json` 随产物发布，host 在 `/console/.vite/*` 下返回（no-store）。内容只有块名和模块路径，仓库与锁文件本来就公开，所以没有单独排除。
+- 偏离与取舍（除第一条外是 spec 没写到的细节，spec 不改）：
+  - 下载页面块时的骨架是通用的整页骨架（页头一行加表格 8 行），不是「和成品同尺寸」：块到之前，页面自己的骨架还没下载下来；按页定制就得在入口里给每页另写一份骨架，并随各页的版式同步修改。块到了以后各页照旧放自己的骨架。这一条改了 spec「通用部件 · StateView」，spec 顶部有 `Revisions:`（评审之后）。
+  - 路由的 `defaultPendingMs` 设 0 以后，在已经下过的页之间换页，TanStack 也会先提交一次等待态再换成页面：MutationObserver 每次换页都看到一次整页骨架（6 次换页 6 次）。按 `requestAnimationFrame` 逐帧看，134 帧里没有一帧画出骨架或空面板，所以不改。它的一个后果：线路与酒店之间换页（同一路由换参数），产品库页会重新挂载，页内状态（打开的抽屉等）不留；以前 1 秒的等待下它不重新挂载。只换查询参数时不会出现等待态。
   - 换页预算只管路由块（`src/pages/*.lazy.tsx`）。拼音块这类按需加载的块不算站内导航，仍由原有的检查管着不进入口集合。
   - vite 构建会报默认 500 kB 的块大小告警：共用块 609.83 kB、产品库块 503.81 kB（rjsf）。spec 要求删掉覆盖，由预算把关，所以不再压这条告警。
   - 共用块被 rolldown 按其中一个模块命名为 `PageHeader-*.js`，只影响文件名。
+- 评审之后（同日，5 条意见全部接受）：
+  - 路由接住的错误分两种（`parts/StateView.tsx` 的 `RouteError`）。初稿对页面渲染时抛的错也写「没取到 · 服务暂时连不上」：`errorCopy` 把所有 TypeError 当成 fetch 连不上，页面代码里常见的「Cannot read properties of undefined」就是 TypeError。改成：页面块没取到仍是「没取到 · 服务暂时连不上」，接口错误照 `ERROR_COPY`；别的都包成 `PageCrash`，不是 TypeError，走兜底「无法完成这项操作」，不写「没取到」，技术详情里是原来的类型与消息。`errors.ts` 的 `isChunkLoadError` 认四种消息：三个引擎 import() 失败的消息，与 TanStack 的 `isModuleNotFoundError` 同一组；另加 vite 预载 CSS 失败，它是普通的 Error，`errorCopy` 随之把它也算成连不上。`errors.selftest.ts` 加 22 条（77 → 99）。
+  - 等待态：路由的 `defaultPendingMs`、`defaultPendingMinMs` 都设 0。默认值是 1 秒和 0.5 秒：换页后先留着上一页 1 秒，侧栏和地址已经换了，面板还是上一页，还能点；再加上 `state-skeleton` 的 300ms，骨架约 1.3 秒才看得见。现在一换页就换下上一页，骨架照 StateView 的规矩 300ms 后才看得见；块一到就出页面，不为防闪硬留 0.5 秒。骨架由 3 行换成 `PageSkeleton`：页头一行，与页名同高 32、下距 20；下面是表格 8 行。
+  - 构建元数据不随产物发布：初稿的 `dist/.vite/manifest.json` 与 `modules.json` 随 dist 进镜像，host 按文件返回 `/console/.vite/*`，每个部署都公开依赖的确切版本（如 `zod@4.6.5`）。现在 `buildMeta` 插件在构建开始时清掉 `console/build-meta/`，写完产物后把 manifest 从 `dist/.vite/` 挪过去、删掉 `dist/.vite`，模块清单直接写在那里。检查从那里读，并查 `dist/.vite` 不存在；`console/build-meta/` 进 `.gitignore` 和 `.dockerignore`。没改 host 和 Dockerfile。
+  - `@codemirror` 只经话术页：初稿只查入口集合。评审的变异是审计页引 `TextEditor`，CodeMirror 单独成块、进了审计页的换页，预算照样过。现在检查找出带 `@codemirror` 模块的每一块，要求两条：从话术页的块出发，按 manifest 的静态与动态引用能到它；从入口出发、不进话术页的块就到不了它。别的页、共用块和 ⌘K 这类按需加载的块都在这条里。输出里写明它在哪一块（现在是 `sop.lazy-*.js`）。
+  - CSS 的 data: 地址用 `/url\(\s*['"]?\s*data:/i` 查。data: 里有空格时压缩后保留引号，初稿按字面找 `url(data:` 会漏。CSP 没写 `img-src`，这种图片同样被 `default-src 'self'` 拦下。
+  - 数字：入口集合 gzip 315,829 B（+275 B，`RouteError`、`PageCrash`、`PageSkeleton`）；换页最多仍是产品库，247,077 B，余 2,923 B；preload 字体不变。产物 122 个文件，少了 `.vite` 下的两个。
+  - preview 复测（Chromium，Playwright 1.63.0，CSP 同线上，浅色、深色各一轮）：
+    - 审计块慢 2.5 秒：100ms 与 220ms 时上一页已经不可见，面板里的骨架还没显示出来；450ms、1.5 秒时整页骨架可见。骨架的页头在 y=32、高 32、下距 20，8 行。块到后真实页名也在 y=32，页面不跳。骨架条的底色，浅色是 `rgba(9,9,11,.05)`，深色是 `rgba(255,255,255,.06)`，圆角 4px，与设计系统 §4.5 的 `--subtle`、`--r-xs` 相同。
+    - 首次打开时会话块慢：1.2 秒时整页骨架可见；页面出来后，页名的位置与骨架的页头相同。
+    - 块被断开：「没取到 · 服务暂时连不上」、折叠的技术详情、「重试」，点重试后进审计日志。
+    - 审计块换成渲染时抛 TypeError 的模块：「无法完成这项操作」、技术详情「TypeError: Cannot read properties of undefined (reading 'rows')」、「重试」，外壳还在，没有「没取到」和英文错误页。
+    - 两套主题的 `securitypolicyviolation` 都是 0 次。控制台错误只有这两处故意造的：`Failed to fetch dynamically imported module` 和那条 TypeError。
+  - 变异（仓库外的隔离副本，14 例全部失败并点名）：
+    - 产物检查 8 例：审计页引 `TextEditor`（评审的那一例）；外壳按需 `import('./TextEditor.js')`；CSS 里带引号的 data: SVG（评审的那一例）；不带引号的 data: 图片；`assetsInlineLimit` 回到默认；`buildMeta` 不挪 manifest、不删 `dist/.vite`；去掉 `buildMeta`；关掉 `build.manifest`。
+    - `errors.selftest` 6 例：`RouteError` 不分类；接口错误也包成 `PageCrash`；认不出 WebKit 的消息；vite 预载 CSS 失败不算连不上；`PageCrash` 不保留原来的类型名；`PageSkeleton` 只有 3 行。
+    - 另有 1 例按预期存活：`buildMeta` 构建开始时不清上一次的清单，同时关掉 manifest，检查读到的是上一次的 manifest。这说明构建开始时的清理是必要的，关掉 manifest 那一例靠它才被拦下。
 - 没有新增依赖。worktree 里的依赖用 `pnpm install --frozen-lockfile` 装（主工作区的 `node_modules` 没有第 2.2 步加的 `lucide-react`），锁文件没变。
 - 留给后面的步骤：
   - 第 4 步：总览的懒加载文件叫 `src/pages/overview.lazy.tsx`（检查按这个名字找），加上以后把检查里「总览还没有，只算入口集合」的分支改成失败。
-  - 第 9、10 步：产品库的换页只剩 3,017 B 余量，rjsf 到第 10.3 步才删。在那之前往产品库页加代码（渲染器、列表重做），先看 `pnpm test` 末尾的换页数字；超了按开放问题 8 请 owner 定。
+  - 第 9、10 步：产品库的换页只剩 2,923 B 余量，rjsf 到第 10.3 步才删。在那之前往产品库页加代码（渲染器、列表重做），先看 `pnpm test` 末尾的换页数字；超了按开放问题 8 请 owner 定。
   - 第 12 步：CSV 解析要进导入弹窗自己的块（spec「性能」）。现在 `CsvImport` 静态打在产品库块里：它只在客户端解码文件，解析在服务端。
   - 第 3.3 步：假包按文字查（这一步只按模块路径查）。
 

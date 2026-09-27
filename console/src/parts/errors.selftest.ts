@@ -2,7 +2,8 @@
 // 1. ERROR_COPY 与 spec 的表逐条相同（标题、下一步、颜色、形式），多一条少一条都算失败；N 换成真实的数；
 //    表里没有的 error 用兜底，网络失败与表里没有的 5xx 是「服务暂时连不上」；
 // 2. 画出来的 ErrorAlert、StateView 里，服务端的 detail 只在折叠的「技术详情」（<details>）里；
-//    出错是「没取到」加文案，中性的错误不画红色；有回调才画按钮；
+//    出错是「没取到」加文案，中性的错误不画红色；有回调才画按钮；路由接住的错误里，页面块没取到算连不上，
+//    页面渲染时抛的错走兜底（RouteError）；
 // 3. Status 每种状态是圆点加一个固定的词，不出现四种会话状态之外的叫法。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/parts/errors.selftest.ts（要按 react-jsx 编译 .tsx）
 import { ConfigProvider } from 'antd';
@@ -11,8 +12,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ApiError } from '../../../src/shared/console-api.js';
 import { HttpError } from '../api.js';
 import { ErrorAlert } from './ErrorAlert.js';
-import { ERROR_COPY, errorCopy } from './errors.js';
-import { StateView } from './StateView.js';
+import { ERROR_COPY, errorCopy, isChunkLoadError, PageCrash } from './errors.js';
+import { PageSkeleton, RouteError, StateView } from './StateView.js';
 import { Status, STATUS_LABEL, type StatusKind } from './Status.js';
 import { TechDetails } from './TechDetails.js';
 
@@ -162,6 +163,60 @@ const loading = html(createElement(StateView, { pending: true }));
 check('StateView 加载：骨架，不转圈', loading.includes('state-skeleton') && !loading.includes('ant-spin'));
 check('StateView 空：替换整块内容', html(createElement(StateView, { empty: { title: '还没有线路' } }, 'X')).includes('还没有线路'));
 check('TechDetails：没东西可列时不画', html(createElement(TechDetails, {})) === '');
+
+// 路由接住的错误（router.tsx 的 defaultErrorComponent，第 2.4 步）：页面块没取到是「没取到 · 服务暂时连不上」；
+// 页面渲染时抛的错（哪怕是 TypeError）是兜底「无法完成这项操作」，不写「没取到」、不说连不上，原来的类型与消息在技术详情里
+const CHUNK_ERRORS: ReadonlyArray<readonly [string, Error]> = [
+  ['Chromium', new TypeError('Failed to fetch dynamically imported module: https://x.test/console/assets/audit.lazy-AbCd1234.js')],
+  ['Firefox', new TypeError('error loading dynamically imported module: https://x.test/console/assets/audit.lazy-AbCd1234.js')],
+  ['WebKit', new TypeError('Importing a module script failed.')],
+  ['vite 预载 CSS', new Error('Unable to preload CSS for /console/assets/audit.lazy-AbCd1234.css')],
+];
+for (const [name, e] of CHUNK_ERRORS) {
+  check(`页面块没取到（${name}）：认得出来`, isChunkLoadError(e));
+  check(`页面块没取到（${name}）：「服务暂时连不上」`, errorCopy(e).title === '服务暂时连不上');
+  const v = outsideDetails(html(createElement(RouteError, { error: e, onRetry: () => undefined })));
+  check(
+    `路由出错，页面块没取到（${name}）：「没取到 · 服务暂时连不上」加重试`,
+    v.includes('没取到') && v.includes('服务暂时连不上') && v.includes('重试'),
+    v,
+  );
+}
+const CRASH = "Cannot read properties of undefined (reading 'rows')";
+for (const [name, e] of [
+  ['TypeError', new TypeError(CRASH)],
+  ['Error', new Error('boom')],
+  ['抛出的不是 Error', 'boom'],
+] as const) {
+  check(`渲染时抛错（${name}）：不当成页面块没取到`, !isChunkLoadError(e));
+  const r = html(createElement(RouteError, { error: e, onRetry: () => undefined }));
+  const v = outsideDetails(r);
+  check(
+    `路由出错，渲染时抛错（${name}）：兜底「无法完成这项操作」加重试，不写「没取到」和「服务暂时连不上」`,
+    v.includes('无法完成这项操作') &&
+      v.includes('重试') &&
+      v.includes('ant-alert-error') &&
+      !v.includes('没取到') &&
+      !v.includes('服务暂时连不上'),
+    v,
+  );
+}
+const crash = html(createElement(RouteError, { error: new TypeError(CRASH), onRetry: () => undefined }));
+check('路由出错，渲染时抛错：技术详情里是原来的类型与消息', crash.includes(`TypeError: ${CRASH.replace(/'/g, '&#x27;')}`), crash);
+check('PageCrash：文案走兜底', errorCopy(new PageCrash(new TypeError(CRASH))).title === '无法完成这项操作');
+const httpInRoute = outsideDetails(html(createElement(RouteError, { error: err(503, { error: 'not_ready' }), onRetry: () => undefined })));
+check(
+  '路由出错，接口的错误：照 ERROR_COPY',
+  httpInRoute.includes('系统正在启动') && !httpInRoute.includes('无法完成这项操作'),
+  httpInRoute,
+);
+const pageSkeleton = html(createElement(PageSkeleton));
+check(
+  'PageSkeleton：页头一行加表格 8 行',
+  (pageSkeleton.match(/class="skeleton-page-title"/g) ?? []).length === 1 &&
+    (pageSkeleton.match(/class="skeleton-row"/g) ?? []).length === 8,
+  pageSkeleton,
+);
 
 // ---------------- 3. Status ----------------
 for (const kind of Object.keys(STATUS_LABEL) as StatusKind[]) {

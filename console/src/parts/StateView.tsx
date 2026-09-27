@@ -7,7 +7,7 @@ import { Button } from 'antd';
 import type { ReactNode } from 'react';
 import { cjk } from '../typography.js';
 import { ErrorAlert, type ErrorHandlers, errorLine } from './ErrorAlert.js';
-import type { CopyContext } from './errors.js';
+import { type CopyContext, PageCrash, routeError } from './errors.js';
 
 export interface EmptyState {
   icon?: ReactNode;
@@ -65,6 +65,21 @@ export function Skeleton({ rows = 3, rowHeight = 44 }: { rows?: number; rowHeigh
   );
 }
 
+/**
+ * 整页的骨架：页头一行（与页名同高 32、下距 20）加表格 8 行（设计系统 §4.5）。路由下载页面块时用（router.tsx），
+ * 块到了以后由页面自己的 StateView 接着放它那一页的骨架
+ */
+export function PageSkeleton() {
+  return (
+    <>
+      <div className="skeleton-page-title">
+        <div className="skeleton-bar" style={{ width: 160 }} />
+      </div>
+      <Skeleton rows={8} />
+    </>
+  );
+}
+
 function ErrorState({ error, ctx, ...handlers }: { error: unknown; ctx?: CopyContext } & ErrorHandlers) {
   const { copy, label, onAction } = errorLine(error, handlers, ctx);
   if (copy.tone !== 'neutral') return <ErrorAlert error={error} title="没取到" ctx={ctx} {...handlers} />;
@@ -75,6 +90,15 @@ function ErrorState({ error, ctx, ...handlers }: { error: unknown; ctx?: CopyCon
       action={label && onAction ? <Button onClick={onAction}>{label}</Button> : undefined}
     />
   );
+}
+
+/**
+ * 路由接住的错误（router.tsx 的 defaultErrorComponent）。页面块没取到和取数据失败一样写「没取到 · 服务暂时连不上」；
+ * 页面渲染时抛错是代码的毛病，不写「没取到」，也不说连不上，文案走兜底「无法完成这项操作」，原来的类型与消息在技术详情里
+ */
+export function RouteError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const e = routeError(error);
+  return e instanceof PageCrash ? <ErrorAlert error={e} onRetry={onRetry} /> : <StateView error={e} onRetry={onRetry} />;
 }
 
 export function StateView({ pending, error, ctx, skeleton, empty, children, ...handlers }: StateViewProps) {

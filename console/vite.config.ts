@@ -90,38 +90,58 @@ function preloadFonts(): Plugin {
   };
 }
 
-// 每个 JS 块由哪些模块组成，写到 manifest 旁边的 .vite/modules.json（路径相对 console/，虚拟模块去掉开头的 \0）。
-// vite 的 manifest 只记块与块之间的引用，不记模块；scripts/check-console-dist.ts 靠这份清单查入口集合里没有 @codemirror、
-// 产物里没有样张页与假包的模块（spec「性能」、不变量 25）
-function chunkModules(): Plugin {
+// 构建的元数据只给 scripts/check-console-dist.ts 用，放在 console/build-meta/，不留在 dist 里：dist 整个进镜像，host 按文件
+// 返回 /console/* 下的任何文件，留着就等于每个部署都公开依赖的确切版本。两份：
+// - manifest.json：vite 的 build.manifest（块与块之间的引用），写完产物后从 dist/.vite/ 挪过来，dist/.vite 删掉；
+// - modules.json：每个 JS 块由哪些模块组成（路径相对 console/，虚拟模块去掉开头的 \0）。manifest 不记模块，
+//   检查靠它查 @codemirror 只进话术页、产物里没有样张页与假包的模块（spec「性能」、不变量 25）。
+// 构建开始时先清掉上一次的，关掉 manifest 或去掉这个插件，检查都读不到新的清单
+const BUILD_META = 'build-meta';
+
+function buildMeta(): Plugin {
+  let meta = '';
+  let outDir = '';
   let root = '';
+  let modules: Record<string, string[]> = {};
   return {
-    name: 'console-chunk-modules',
+    name: 'console-build-meta',
     apply: 'build',
     configResolved(config) {
       root = config.root;
+      outDir = path.resolve(root, config.build.outDir);
+      meta = path.join(root, BUILD_META);
+    },
+    buildStart() {
+      fs.rmSync(meta, { recursive: true, force: true });
     },
     generateBundle(_options, bundle) {
-      const modules: Record<string, string[]> = {};
+      modules = {};
       for (const out of Object.values(bundle)) {
         if (out.type !== 'chunk') continue;
         modules[out.fileName] = out.moduleIds.map((id) =>
           id.startsWith('\0') ? id.slice(1) : path.relative(root, id).split(path.sep).join('/'),
         );
       }
-      this.emitFile({ type: 'asset', fileName: '.vite/modules.json', source: `${JSON.stringify(modules, null, 2)}\n` });
+    },
+    writeBundle() {
+      fs.mkdirSync(meta, { recursive: true });
+      fs.writeFileSync(path.join(meta, 'modules.json'), `${JSON.stringify(modules, null, 2)}\n`);
+      const vite = path.join(outDir, '.vite');
+      const manifest = path.join(vite, 'manifest.json');
+      if (fs.existsSync(manifest)) fs.renameSync(manifest, path.join(meta, 'manifest.json'));
+      fs.rmSync(vite, { recursive: true, force: true });
     },
   };
 }
 
 export default defineConfig({
   base: '/console/',
-  plugins: [react(), basicSsl(), previewWithCsp(), preloadFonts(), chunkModules()],
+  plugins: [react(), basicSsl(), previewWithCsp(), preloadFonts(), buildMeta()],
   html: { cspNonce: CSP_NONCE_PLACEHOLDER },
   server: { port: 5173, proxy: api },
   preview: { port: 4173, proxy: api },
   // assetsInlineLimit: 0：长尾分片里有 3 片小于默认的 4 KB 阈值，默认会被写成 data: 进 CSS，font-src 'self' 会拦下它们。
-  // manifest：scripts/check-console-dist.ts 按它算首屏与每次换页的 JS 预算（spec「性能」）。块大小的告警阈值用 vite 的默认值，
-  // 不再调高压掉告警，由那份预算把关
+  // manifest：scripts/check-console-dist.ts 按它算首屏与每次换页的 JS 预算（spec「性能」），buildMeta 把它挪出 dist。
+  // 块大小的告警阈值用 vite 的默认值，不再调高压掉告警，由那份预算把关
   build: { outDir: 'dist', emptyOutDir: true, assetsInlineLimit: 0, manifest: true },
 });

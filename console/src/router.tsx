@@ -11,20 +11,24 @@ import {
   useRouterState,
 } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
-import { StateView } from './parts/StateView.js';
+import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
 
-/** 页面的块还在下载：内容面板里放通用骨架（换页时路由先留着上一页，超过 1 秒才换成它） */
+/**
+ * 页面的块还在下载：内容面板里马上换成整页骨架，照 StateView 的规矩 300ms 后才看得见（spec「通用部件 · StateView」）。
+ * 所以 defaultPendingMs、defaultPendingMinMs 都设 0：路由默认先留着上一页 1 秒（侧栏和地址已经换了，面板还是上一页、
+ * 还能点），骨架出来后至少停 0.5 秒。骨架不按页定制，见 spec 顶部 Revisions（第 2.4 步）
+ */
 function PagePending(): ReactElement {
-  return <StateView pending />;
+  return <StateView pending skeleton={<PageSkeleton />} />;
 }
 
 /**
- * 页面的块没取到（断网，或者发版后旧的块已经不在了），或页面渲染时抛错：就地说明，不用路由自带的英文错误页。
+ * 页面的块没取到，或页面渲染时抛错：就地说明，不用路由自带的英文错误页（两种的文案见 parts/StateView.tsx 的 RouteError）。
  * 重试是整页重新载入：index.html 不缓存，重新载入就拿到新的块名；失败过的 import() 浏览器可能记着，原地重试不一定重新下载
  */
 function PageError({ error }: ErrorComponentProps): ReactElement {
-  return <StateView error={error} onRetry={() => window.location.reload()} />;
+  return <RouteError error={error} onRetry={() => window.location.reload()} />;
 }
 
 // 样张页（spec「字体与标点样张」）只在 VITE_SPECIMEN=1 的构建里注册。条件在构建时就定了：生产构建里这些分支连同
@@ -77,6 +81,8 @@ export const router = createRouter({
   routeTree: root.addChildren([index, sop, catalog, conversations, audit, ...specimen]),
   basepath: '/console',
   defaultPendingComponent: PagePending,
+  defaultPendingMs: 0,
+  defaultPendingMinMs: 0,
   defaultErrorComponent: PageError,
 });
 

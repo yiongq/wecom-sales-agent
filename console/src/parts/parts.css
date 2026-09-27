@@ -146,6 +146,16 @@
   border-radius: var(--r-xs);
   background: var(--subtle);
 }
+/* 整页骨架的页头（PageSkeleton）：与 .page-title 同高、同下距 */
+.skeleton-page-title {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin-bottom: 20px;
+}
+.skeleton-page-title .skeleton-bar {
+  height: 20px;
+}
 .state-empty {
   display: flex;
   flex-direction: column;

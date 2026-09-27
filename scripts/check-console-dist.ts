@@ -2,9 +2,10 @@
 // 另查首帧主题脚本的加载方式（console UX spec 第 1.1 步）。
 // 另查样张页没有混进生产产物（console UX spec 不变量 25：/_specimen 只在 VITE_SPECIMEN=1 的构建里注册，第 1.3 步）。
 // 另查 ⌘K 的拼音库不在入口集合里（第 2.2 步）。
-// 另查拆包后的预算与禁入内容（console UX spec「性能」、不变量 25，第 2.4 步）：读 vite 的 .vite/manifest.json（块与块的引用）
-// 和 .vite/modules.json（每块的模块，console/vite.config.ts 的 chunkModules 写）算首屏与每次换页的 JS、首屏字体，
-// 查入口集合里没有 @codemirror 与页面代码，产物里没有样张页、假包的模块和第三方字体域名，CSS 里没有 url(data:。
+// 另查拆包后的预算与禁入内容（console UX spec「性能」、不变量 25，第 2.4 步）：读 console/build-meta/ 下 vite 的
+// manifest.json（块与块的引用）和 modules.json（每块的模块），两份都由 console/vite.config.ts 的 buildMeta 写、不留在 dist 里；
+// 算首屏与每次换页的 JS、首屏字体，查入口集合里没有页面代码，@codemirror 只能经话术页的块下载，产物里没有样张页、
+// 假包的模块和第三方字体域名，CSS 里没有 data: 的 url()。
 // 挂在 `pnpm test` 末尾、紧跟 `pnpm --filter console build`。
 // 包名按子串查；Node 内置模块只查带引号的模块名（"node:crypto"），压缩后的对象键 {node:x} 不算。
 // assets/ 下每个文件名都要带 vite 的内容哈希（<name>-<8 位>.<扩展名>）：服务端给 /console/assets/* 一律一年的 immutable
@@ -14,11 +15,15 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const DIST = path.join('console', 'dist');
+/** 构建的元数据：vite 的 manifest 与每块的模块清单（console/vite.config.ts 的 buildMeta 写），不随产物发布 */
+const META = path.join('console', 'build-meta');
 const BANNED = ['drizzle-orm', 'pg-protocol', '@electric-sql/pglite'];
 const NODE_BUILTIN = /["'`]node:[a-z_/]+/;
 /** 样张页的路由、样式类名和「不挤压」对照行：生产构建里这些分支连同页面代码一起被摇掉，出现就是条件没在构建时定下来 */
 const SPECIMEN_MARKERS = ['_specimen', 'spec-panel', 'space-all'];
 const HASHED_NAME = /-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+/** CSS 里的 data: 地址，带不带引号、括号里有没有空白都算 */
+const CSS_DATA_URL = /url\(\s*['"]?\s*data:/i;
 /** 生产页面只从本站加载字体（不变量 29） */
 const THIRD_PARTY_FONTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -39,6 +44,8 @@ const BUDGET = {
 const PRELOAD_FONTS = ['geist-ui.woff2', 'noto-sans-sc-ui.woff2'];
 /** 总览路由的懒加载文件（第 4 步加）：有了就算进首屏；在那之前 / 重定向到销售话术，首屏只算入口集合 */
 const OVERVIEW = 'src/pages/overview.lazy.tsx';
+/** 话术页的懒加载文件：@codemirror 只能经它下载 */
+const SOP = 'src/pages/sop.lazy.tsx';
 /** 路由的懒加载文件（router.tsx 的 .lazy()）：manifest 里这些动态入口按「换页」算预算 */
 const ROUTE_CHUNK = /^src\/(pages|_specimen)\/[^/]+\.lazy\.tsx$/;
 /** 入口集合里准许出现的页面模块：登录页由外壳直接渲染，不是路由 */
@@ -64,9 +71,10 @@ for (const f of all) {
   if (m) bad.push(`${f}: ${m[0]}`);
   for (const mk of SPECIMEN_MARKERS) if (text.includes(mk)) bad.push(`${f}: 样张页的内容（${mk}）混进了生产产物`);
   for (const d of THIRD_PARTY_FONTS) if (text.includes(d)) bad.push(`${f}: 引用了第三方字体域名 ${d}，字体只从本站加载`);
-  // assetsInlineLimit: 0 生效的证据：小于 4 KB 的长尾分片也是单独的文件，没被写成 data: 进 CSS（font-src 'self' 会拦下）
-  if (f.endsWith('.css') && text.includes('url(data:')) {
-    bad.push(`${f}: CSS 里有 url(data:（console/vite.config.ts 的 assetsInlineLimit 要是 0）`);
+  // assetsInlineLimit: 0 生效的证据：小于 4 KB 的长尾分片也是单独的文件，没被写成 data: 进 CSS（font-src 'self' 会拦下）。
+  // 带引号的也算：data: 里有空格时压缩后留着引号，url("data:…")；CSP 没写 img-src，data: 图片同样被 default-src 'self' 拦下
+  if (f.endsWith('.css') && CSS_DATA_URL.test(text)) {
+    bad.push(`${f}: CSS 里有 data: 的 url()（console/vite.config.ts 的 assetsInlineLimit 要是 0；页面 CSP 会拦下它）`);
   }
 }
 const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8');
@@ -109,17 +117,23 @@ interface ManifestChunk {
   isEntry?: boolean;
   isDynamicEntry?: boolean;
   imports?: string[];
+  dynamicImports?: string[];
 }
 function readJson<T>(rel: string, hint: string): T | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(DIST, rel), 'utf8')) as T;
+    return JSON.parse(fs.readFileSync(path.join(META, rel), 'utf8')) as T;
   } catch {
-    bad.push(`${DIST}/${rel} 读不出来（${hint}）`);
+    bad.push(`${META}/${rel} 读不出来（${hint}）`);
     return null;
   }
 }
-const manifest = readJson<Record<string, ManifestChunk>>('.vite/manifest.json', 'console/vite.config.ts 要开 build.manifest');
-const modules = readJson<Record<string, string[]>>('.vite/modules.json', 'console/vite.config.ts 的 chunkModules 插件写这份清单');
+const manifest = readJson<Record<string, ManifestChunk>>(
+  'manifest.json',
+  'console/vite.config.ts 要开 build.manifest，buildMeta 插件把它挪到这里',
+);
+const modules = readJson<Record<string, string[]>>('modules.json', 'console/vite.config.ts 的 buildMeta 插件写这份清单');
+// 元数据不随产物发布：dist 整个进镜像，host 按文件返回 /console/* 下的任何文件，依赖的确切版本不能公开出去
+if (fs.existsSync(path.join(DIST, '.vite'))) bad.push(`${DIST}/.vite 还在：构建的元数据要由 buildMeta 挪到 ${META}，不随产物发布`);
 const report: string[] = [];
 if (manifest && modules) {
   const fmt = (n: number): string => n.toLocaleString('en-US');
@@ -134,13 +148,21 @@ if (manifest && modules) {
   };
   /** 同上，换成其中的 JS 文件（路径相对 dist） */
   const jsOf = (key: string): string[] => [...closure(key)].map((k) => manifest[k]!.file).filter((f) => f.endsWith('.js'));
+  /** 从一个块出发、静态与动态引用都算，最终可能下载的块的文件；不进 skip 这一块 */
+  const reach = (key: string, skip: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(key) || key === skip || !manifest[key]) return seen;
+    seen.add(key);
+    for (const i of [...(manifest[key].imports ?? []), ...(manifest[key].dynamicImports ?? [])]) reach(i, skip, seen);
+    return seen;
+  };
+  const filesOf = (keys: Set<string>): Set<string> => new Set([...keys].map((k) => manifest[k]!.file));
 
   const entries = Object.keys(manifest).filter((k) => manifest[k]!.isEntry);
   if (entries.length !== 1) bad.push(`manifest 里的入口应该正好一个，现在是 ${entries.length} 个：${entries.join('、')}`);
   const entryJs = entries.length === 1 ? jsOf(entries[0]!) : [];
   for (const k of Object.keys(manifest)) {
     const f = manifest[k]!.file;
-    if (f.endsWith('.js') && !modules[f]) bad.push(`${f}: .vite/modules.json 里没有这一块`);
+    if (f.endsWith('.js') && !modules[f]) bad.push(`${f}: ${META}/modules.json 里没有这一块`);
   }
   // index.html 直接加载的脚本都要在入口集合里，不然首屏预算少算了
   for (const f of entry) {
@@ -170,7 +192,7 @@ if (manifest && modules) {
   }
   report.push(`换页最多 ${fmt(worst.gzip)} / ${fmt(BUDGET.navJs)} B（${worst.key}）`);
 
-  // 入口集合里没有页面代码（各页 .lazy()）和 @codemirror（只进话术页的块）
+  // 入口集合里没有页面代码（各页 .lazy()）；@codemirror 只进话术页的块
   const entryModules = entryJs.flatMap((f) => modules[f] ?? []);
   for (const id of entryModules) {
     if (id.startsWith('src/pages/') && !ENTRY_PAGES_OK.has(id))
@@ -179,8 +201,22 @@ if (manifest && modules) {
   const isCodemirror = (id: string): boolean => id.includes('node_modules/@codemirror/');
   const cmInEntry = entryModules.filter(isCodemirror);
   if (cmInEntry.length) bad.push(`入口集合里有 @codemirror 的模块（${cmInEntry.length} 个，如 ${cmInEntry[0]}），它只该进话术页的块`);
-  if (!Object.values(modules).some((ids) => ids.some(isCodemirror))) {
+  const cmFiles = Object.keys(modules).filter((f) => modules[f]!.some(isCodemirror));
+  if (!cmFiles.length) {
     bad.push('产物里找不到 @codemirror 的模块：模块清单的路径写法变了就更新 isCodemirror，不再用 CodeMirror 就删掉这条检查');
+  }
+  // 带着 @codemirror 的每一块都只能经话术页下载：从话术页的块到得了它；从入口出发、不进话术页的块就到不了它
+  // （别的页、它们的共用块、⌘K 这类按需加载的块都算）
+  if (!manifest[SOP]) bad.push(`manifest 里没有 ${SOP}：话术页要在 router.tsx 里用 .lazy() 拆出去`);
+  else if (entries.length === 1) {
+    const viaSop = filesOf(reach(SOP, ''));
+    const withoutSop = filesOf(reach(entries[0]!, SOP));
+    for (const f of cmFiles) {
+      if (withoutSop.has(f))
+        bad.push(`${f}: 带着 @codemirror，不经话术页也会下载（入口集合、别的页或别的懒加载块引用了它），它只该进话术页的块`);
+      else if (!viaSop.has(f)) bad.push(`${f}: 带着 @codemirror，话术页的块却引用不到它`);
+    }
+    report.push(`@codemirror 在 ${cmFiles.map((f) => path.basename(f)).join('、')} 里，只经话术页下载`);
   }
 
   // 样张页与假包的模块都不能进生产产物（不变量 25；假包的文字由第 3.3 步另查）
