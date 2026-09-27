@@ -164,26 +164,6 @@ class IconWidget extends WidgetType {
   }
 }
 
-/** 芯片前半的中文名。读屏不念它：正文的内容仍是原文 */
-class ChipLabelWidget extends WidgetType {
-  constructor(readonly label: string) {
-    super();
-  }
-  eq(other: ChipLabelWidget): boolean {
-    return other.label === this.label;
-  }
-  toDOM(): HTMLElement {
-    const span = document.createElement('span');
-    span.className = 'sop-chip-cn';
-    span.setAttribute('aria-hidden', 'true');
-    span.textContent = this.label;
-    return span;
-  }
-  ignoreEvent(): boolean {
-    return false;
-  }
-}
-
 // ---------------- markdown、芯片、图标与挤压的装饰 ----------------
 
 /** 不支持 text-spacing-trim 时为真（自测可以强行打开） */
@@ -192,12 +172,18 @@ export const haltFallback = Facet.define<boolean, boolean>({ combine: (v) => v[0
 const HIDE = Decoration.replace({});
 const STRONG_MARK = Decoration.mark({ class: 'sop-md-strong' });
 const SHOWN_MARKER = Decoration.mark({ class: 'sop-md-marker' });
-const CHIP_NAME = Decoration.mark({ class: 'sop-chip-en' });
+/**
+ * 芯片是包住原名的一个标记，中文名是它的 ::before（data-label），读屏不念（生成内容的替代文字为空）。
+ * 一个盒子：中文名与原名不会被折到两行；它放在 outerDecorations 里，别的标记（粗体、新加的字）只会在它里面，不会把它拆开
+ */
+const chipMark = (label: string): Decoration => Decoration.mark({ class: 'sop-chip', attributes: { 'data-label': label } });
 const HALT = Decoration.mark({ class: 'halt' });
 
 export interface Decorations {
-  /** 全部装饰 */
+  /** 行、粗体、藏起来的标记、图标、挤压 */
   deco: DecorationSet;
+  /** 芯片（EditorView.outerDecorations，不被别的标记拆开） */
+  outer: DecorationSet;
   /** 光标整个跳过的范围：藏起来的行首与「**」、图标 */
   atomic: DecorationSet;
 }
@@ -209,6 +195,7 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
   const vocab = state.facet(vocabularyFacet);
   const halt = state.facet(haltFallback);
   const deco: Range<Decoration>[] = [];
+  const outer: Range<Decoration>[] = [];
   const atomic: Range<Decoration>[] = [];
   const { doc } = state;
   let prevBlank = true;
@@ -227,9 +214,9 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
     if (classes.length) deco.push(Decoration.line({ class: classes.join(' ') }).range(line.from));
     prevBlank = text.trim() === '';
 
-    // 看得见的字里藏掉的下标（行内），和在它前面插了部件的下标（芯片的中文名，挤压时算一个字）
+    // 看得见的字里藏掉的下标（行内），和芯片开头的下标（前面画着中文名，挤压时算一个字）
     const hidden = new Set<number>();
-    const widgetBefore = new Set<number>();
+    const chipStart = new Set<number>();
     const hide = (from: number, to: number): void => {
       const r = HIDE.range(at(from), at(to));
       deco.push(r);
@@ -249,10 +236,8 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
     }
 
     for (const [from, to, label] of chipRanges(text, vocab)) {
-      // side 1：光标在名字开头时画在芯片前面；标记不含起点，中文名在原名的标记外面
-      deco.push(Decoration.widget({ widget: new ChipLabelWidget(label), side: 1 }).range(at(from)));
-      deco.push(CHIP_NAME.range(at(from), at(to)));
-      widgetBefore.add(from);
+      outer.push(chipMark(label).range(at(from), at(to)));
+      chipStart.add(from);
     }
 
     for (let i = shape.hide; i < text.length; i++) {
@@ -268,7 +253,7 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
       let visible = '';
       const origin: number[] = [];
       for (let i = 0; i < text.length; i++) {
-        if (widgetBefore.has(i)) {
+        if (chipStart.has(i)) {
           visible += 'W';
           origin.push(-1);
         }
@@ -279,7 +264,7 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
       for (const k of haltIndices(visible)) deco.push(HALT.range(at(origin[k]!), at(origin[k]! + 1)));
     }
   }
-  return { deco: Decoration.set(deco, true), atomic: Decoration.set(atomic, true) };
+  return { deco: Decoration.set(deco, true), outer: Decoration.set(outer, true), atomic: Decoration.set(atomic, true) };
 }
 
 /** 显示「**」的行：能编辑、有焦点时，每个选区碰到的行 */
@@ -297,24 +282,29 @@ function revealLines(view: EditorView): Set<number> {
 const markdownPlugin = ViewPlugin.fromClass(
   class {
     deco: DecorationSet;
+    outer: DecorationSet;
     atomic: DecorationSet;
     constructor(view: EditorView) {
-      ({ deco: this.deco, atomic: this.atomic } = buildDecorations(view.state, revealLines(view)));
+      ({ deco: this.deco, outer: this.outer, atomic: this.atomic } = buildDecorations(view.state, revealLines(view)));
     }
     update(u: ViewUpdate): void {
       // 输入法组字时只平移，换掉组字附近的节点会打断组字
       if (u.view.composing) {
         this.deco = this.deco.map(u.changes);
+        this.outer = this.outer.map(u.changes);
         this.atomic = this.atomic.map(u.changes);
         return;
       }
       if (u.docChanged || u.selectionSet || u.focusChanged || u.transactions.some((t) => t.reconfigured))
-        ({ deco: this.deco, atomic: this.atomic } = buildDecorations(u.state, revealLines(u.view)));
+        ({ deco: this.deco, outer: this.outer, atomic: this.atomic } = buildDecorations(u.state, revealLines(u.view)));
     }
   },
   {
     decorations: (p) => p.deco,
-    provide: (plugin) => EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomic ?? Decoration.none),
+    provide: (plugin) => [
+      EditorView.outerDecorations.of((view) => view.plugin(plugin)?.outer ?? Decoration.none),
+      EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomic ?? Decoration.none),
+    ],
   },
 );
 
@@ -446,33 +436,35 @@ const theme = EditorView.theme({
   '.sop-md-gap.sop-md-bullet::after': { top: '24px' },
   '.sop-md-strong': { fontWeight: '600' },
   '.sop-md-marker': { color: 'var(--text-3)' },
-  // 芯片：高 22，--subtle 底，无描边，--r-sm；中文名 14/500 text，间隔 4，原名 --mono 12.5 text-3。两半各是一个盒子，拼成一个芯片
-  '.sop-chip-cn, .sop-chip-en': {
+  // 芯片：高 22，内边距 0 6，--r-sm，--subtle 底，无描边；中文名 14/500 text，间隔 4，原名 --mono 12.5 text-3（§6.6）。
+  // 中文名的替代文字为空，读屏只念原名；不认 "/" 写法的浏览器退回前一条（style-mod 去掉 _ 之后的后缀）
+  '.sop-chip': {
     display: 'inline-block',
     boxSizing: 'border-box',
     height: '22px',
-    lineHeight: '22px',
-    verticalAlign: 'middle',
+    margin: '0 2px',
+    padding: '0 6px',
+    borderRadius: 'var(--r-sm)',
     background: 'var(--subtle)',
+    fontFamily: 'var(--mono)',
+    fontSize: '12.5px',
+    fontWeight: '400',
+    lineHeight: '22px',
+    color: 'var(--text-3)',
     whiteSpace: 'nowrap',
+    verticalAlign: '1px',
   },
-  '.sop-chip-cn': {
-    margin: '0 0 0 2px',
-    padding: '0 4px 0 6px',
-    borderRadius: 'var(--r-sm) 0 0 var(--r-sm)',
+  '.sop-chip::before': {
+    content: 'attr(data-label)',
+    content_alt: 'attr(data-label) / ""',
+    marginRight: '4px',
+    fontFamily: 'var(--font)',
     fontSize: '14px',
     fontWeight: '500',
     color: 'var(--text)',
   },
-  '.sop-chip-en': {
-    margin: '0 2px 0 0',
-    padding: '0 6px 0 0',
-    borderRadius: '0 var(--r-sm) var(--r-sm) 0',
-    fontFamily: 'var(--mono)',
-    fontSize: '12.5px',
-    fontWeight: '400',
-    color: 'var(--text-3)',
-  },
+  // 粗体里的芯片：原名照样 400
+  '.sop-chip .sop-md-strong': { fontWeight: '400' },
   '.sop-icon': { display: 'inline-block', width: '16px', height: '16px', marginRight: '2px', verticalAlign: '-2px' },
   '.sop-icon svg': { display: 'block' },
   // 改过的段落：沟槽里 2px 的主色竖条，与段落等高；新加的文字 accent-bg 底，--r-xs，左右各 2
