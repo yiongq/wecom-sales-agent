@@ -36,6 +36,7 @@ import { conversationsSearch } from '../conversations-search.js';
 import { ConversationsPage } from '../pages/ConversationsPage.js';
 import type { Viewer } from '../shell/boot.js';
 import { workbenchHref } from '../shell/model.js';
+import { catalogListQuery, conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
 import { VIEWER_KEY } from '../viewer.js';
 import {
   catalogCounts,
@@ -700,9 +701,10 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
 const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
 
 /** 挂上真的 OverviewPage：路由只有它和几个空页（链接要能算出地址），查询缓存里放好来者；等请求都回来 */
-async function mountOverview(viewer: Viewer) {
+async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
+  prefill(qc);
   const root = createRootRoute({ component: Outlet });
   const page = (path: string) => createRoute({ getParentRoute: () => root, path, component: () => null });
   const router = createRouter({
@@ -941,6 +943,26 @@ async function failing(fail: RegExp) {
   eq('匿名：只取产品库列表', [...new Set(requests)].sort(), ['GET /api/console/catalog/hotel', 'GET /api/console/catalog/route']);
   check('匿名：演示横幅；页头不写租户名', m.$('.anon-banner').length === 1 && m.texts('.page-status')[0] === '9月26日 周六');
   eq('匿名：标签页标题', document.title, '总览 · 演示');
+  await m.unmount();
+}
+
+// 2.4b 外壳刚取过的数据（侧栏条目数、铃铛）总览不重取：匿名访客的查询按 IP 限流
+{
+  server = { pack: TRAVEL, lists: SCENE };
+  requests = [];
+  const fresh = (qc: QueryClient): void => {
+    qc.setQueryData(catalogListQuery('route').queryKey, { items: ROUTES } as never);
+    qc.setQueryData(catalogListQuery('hotel').queryKey, { items: HOTELS } as never);
+    qc.setQueryData(conversationCountsQuery.queryKey, COUNTS as never);
+    qc.setQueryData(waitingConversationsQuery.queryKey, { items: WAITING, total: WAITING.length } as never);
+  };
+  const m = await mountOverview(member('owner'), fresh);
+  eq(
+    '外壳刚取过的计数、等人接手与列表不重取',
+    requests.filter((r) => /\/catalog\/|\/conversations\/counts|state=human/.test(r)),
+    [],
+  );
+  eq('用的是缓存里的数', [m.texts('.ov-kpi-value'), m.texts('.ov-todo-title').length], [['13', '2', '1', '43'], 5]);
   await m.unmount();
 }
 

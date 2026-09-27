@@ -46,6 +46,12 @@ import { draftCheckQuery, latestPaidQuery, recentAuditQuery, sopQuery, statusQue
 
 type AnyQuery = Pick<UseQueryResult<unknown>, 'isPending' | 'isError' | 'error' | 'refetch'>;
 
+/**
+ * 与外壳共用的查询（会话计数、等人接手、各实体列表）：外壳启动时刚取过，总览的块晚一步挂上，默认的 staleTime 0 会让它们
+ * 各重取一遍。匿名访客的查询按 IP 限流（每分钟 60 次），不该白用。30 秒内的数据直接用，之后照常与外壳一起轮询
+ */
+const SHARED = { ...POLL, staleTime: POLL.refetchInterval } as const;
+
 /** 一块的几个数据来源：都回来了才画（不跳动）；取失败的只重取失败的那几个 */
 function sourcesState(sources: readonly AnyQuery[]) {
   const failed = sources.filter((q) => q.isError);
@@ -62,7 +68,9 @@ const memberItems = (items: readonly object[]): CatalogItem[] => items.filter((i
 /** 各实体的列表：与侧栏的条目数、⌘K 共用缓存 */
 function useEntityLists(pack: IndustryPack, enabled: boolean) {
   const entities = packEntities(pack);
-  const lists = useQueries({ queries: entities.map((e) => ({ ...catalogListQuery(catalogKind(e.kind)), enabled })) });
+  const lists = useQueries({
+    queries: entities.map((e) => ({ ...catalogListQuery(catalogKind(e.kind)), staleTime: SHARED.staleTime, enabled })),
+  });
   const loaded: EntityList[] = entities.flatMap((entity, i) => {
     const data = lists[i]?.data;
     return data ? [{ entity, items: memberItems(data.items) }] : [];
@@ -176,7 +184,7 @@ function TodoSkeleton() {
 }
 
 function TodoBlock({ pack, editor, now }: { pack: IndustryPack; editor: boolean; now: number }) {
-  const waiting = useQuery({ ...waitingConversationsQuery, ...POLL });
+  const waiting = useQuery({ ...waitingConversationsQuery, ...SHARED });
   const sop = useQuery({ ...sopQuery, enabled: editor });
   const overview = sop.data && 'spec' in sop.data ? sop.data : null;
   const draft = overview?.draft ?? null;
@@ -327,8 +335,8 @@ function KpiGrid({ kpis }: { kpis: readonly Kpi[] }) {
 }
 
 function MemberKpis({ pack, editor, now }: { pack: IndustryPack; editor: boolean; now: number }) {
-  const counts = useQuery({ ...conversationCountsQuery, ...POLL });
-  const waiting = useQuery({ ...waitingConversationsQuery, ...POLL });
+  const counts = useQuery({ ...conversationCountsQuery, ...SHARED });
+  const waiting = useQuery({ ...waitingConversationsQuery, ...SHARED });
   const paid = useQuery({ ...latestPaidQuery, ...POLL });
   const { lists, loaded } = useEntityLists(pack, true);
   const { loading, error, retry } = sourcesState([counts, waiting, paid, ...lists]);
@@ -376,7 +384,7 @@ function AnonKpis({ pack }: { pack: IndustryPack }) {
 // ---------------- ④ 客户停在哪一步 ----------------
 
 function StagesBlock({ pack }: { pack: IndustryPack }) {
-  const counts = useQuery({ ...conversationCountsQuery, ...POLL });
+  const counts = useQuery({ ...conversationCountsQuery, ...SHARED });
   const rows = counts.data ? stageRows(pack, counts.data.aiByStage) : [];
   return (
     <section className="ov-block ov-stages-block" aria-labelledby="ov-stages">
