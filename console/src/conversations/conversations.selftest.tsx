@@ -654,6 +654,13 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [['客户的会话会出现在这里'], ['客户在企业微信里发来第一句话后就会出现'], 0, 0],
   );
   await none.unmount();
+  const homeNone = await mount(member('owner', HOME));
+  eq(
+    '空：客户的叫法取自行业包',
+    [homeNone.texts('.state-empty-title'), homeNone.texts('.state-empty-desc')],
+    [['业主的会话会出现在这里'], ['业主在企业微信里发来第一句话后就会出现']],
+  );
+  await homeNone.unmount();
   server = { conversations: SCENE.filter((c) => conversationState(c) !== 'paid') };
   const tab = await mount(member('owner'), '?state=paid');
   eq(
@@ -801,7 +808,12 @@ async function openAdmin(hash: string, opts: { anonSeed?: boolean; token?: strin
   w.document.write(ADMIN_HTML.replace(/<script>[\s\S]*<\/script>/, ''));
   const errors: string[] = [];
   w.addEventListener('error', (e) => errors.push(String((e as unknown as { message?: string }).message)));
-  (w as unknown as { eval: (code: string) => unknown }).eval(SCRIPT);
+  try {
+    (w as unknown as { eval: (code: string) => unknown }).eval(SCRIPT);
+  } catch (e) {
+    // 启动时就抛错（比如写坏的 hash 解码失败）：记下来，由 close() 里那条点名，不让整个自测崩掉
+    errors.push(String(e));
+  }
   const world: AdminWorld = {
     win: w,
     log,
@@ -838,6 +850,14 @@ async function login(a: AdminWorld, password: string): Promise<void> {
     [a.loginShown(), a.$('#loginTip')?.textContent, a.selected(), a.hash()],
     [true, '这个会话要登录顾问账号才能看。登录后直接打开它。', null, '#s=wecom%3Areal_7F3A'],
   );
+  // 点「返回演示」关掉登录框：之后列表轮询（每 30 秒 load 一次）不再弹，只在启动时核对一次
+  (a.$('#lgCancel') as unknown as HTMLElement).click();
+  (a.win as unknown as { eval: (code: string) => unknown }).eval('load()');
+  await a.settle();
+  eq('深链：关掉登录框后，下一次取列表不再弹', [a.loginShown(), a.hash()], [false, '#s=wecom%3Areal_7F3A']);
+  (a.$('#modeBtn') as unknown as HTMLElement).click();
+  await a.settle();
+  check('深链：从顶栏「登录」再打开登录框', a.loginShown());
   await login(a, 'wrong');
   eq(
     '深链：密码不对时登录框还在，hash 还在',
@@ -851,10 +871,11 @@ async function login(a: AdminWorld, password: string): Promise<void> {
     [false, 'wecom:real_7F3A', '#s=wecom%3Areal_7F3A'],
   );
   check('深链：右侧是这个会话的详情', !!a.$('#main .msgs'), a.$('#main')?.textContent?.slice(0, 120) ?? '');
-  eq('深链：登录后按新身份重取了列表', a.log.filter((l) => l.startsWith('/api/sessions')).slice(0, 2), [
-    '/api/sessions anon',
-    '/api/sessions auth',
-  ]);
+  eq(
+    '深链：登录前按匿名取列表，登录后按新身份重取',
+    [a.log.find((l) => l.startsWith('/api/sessions ')), a.log.filter((l) => l.startsWith('/api/sessions ')).at(-1)],
+    ['/api/sessions anon', '/api/sessions auth'],
+  );
   // 选另一个会话：hash 跟着走；回到首页：hash 清掉
   (a.$('.row[data-id="wecom:cust_B01"]') as unknown as HTMLElement).click();
   await a.settle();
