@@ -4,13 +4,14 @@
 // 这里只画，不取数、不认路由：页面（pages/CatalogPage.tsx）给条目、身份和首列名称的链接
 import { Dropdown, Input, type InputRef, type MenuProps, Table, type TableColumnsType, Tabs } from 'antd';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
-import { type HTMLAttributes, type ReactNode, useEffect, useRef, useState } from 'react';
+import { type HTMLAttributes, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { absoluteTime, digits, quantity } from '../../../src/shared/format.js';
 import type { EntityType, FieldDef } from '../../../src/shared/pack.js';
 import { type FieldEnv, FieldEnvContext } from '../fields/env.js';
 import type { RefItem } from '../fields/model.js';
 import { FieldCell } from '../fields/renderers.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
+import { useViewport } from '../shell/hooks.js';
 import { Icon, entityIcon } from '../shell/icons.js';
 import { type Matcher, type PinyinLib, pinyinMatcher, plainMatch } from '../shell/search.js';
 import { cjk, Sep } from '../typography.js';
@@ -35,6 +36,8 @@ import {
   searchPlaceholder,
   tabCounts,
   tableMinWidth,
+  TITLE_MIN_NARROW,
+  TITLE_MIN_WIDTH,
   twoLine,
   updatedParts,
   visibleRows,
@@ -64,6 +67,9 @@ export interface CatalogListProps {
 
 type Tab = 'all' | 'active' | 'draft';
 const TAB_LABEL: Readonly<Record<Tab, string>> = { all: '全部', active: '已上架', draft: '草稿' };
+const tabOf = (search: CatalogSearch, anon: boolean): Tab => (anon ? 'all' : (search.status ?? 'all'));
+/** 页签、搜索、筛选合起来的签名：变了就回到第 1 页 */
+const sigOf = (search: CatalogSearch, anon: boolean): string => JSON.stringify([tabOf(search, anon), search.q ?? '', search.f ?? []]);
 
 let pinyinLoad: Promise<PinyinLib> | null = null;
 /** 筛选菜单的搜索支持拼音首字母（设计系统 §5.3）：与 ⌘K 同一个懒加载的拼音块，只在选项多于 7 个的菜单第一次打开时下载 */
@@ -169,23 +175,43 @@ function tableColumns(
 
 /**
  * 搜索框：边敲边筛（spec「输入即筛」），地址用 replace 跟着改。框里的字存在自己这里：地址比输入晚一拍，
- * 正在敲的时候不拿地址回写（会吞字）；不在框里时（后退、清除筛选）跟着地址走
+ * 敲出去还没回来的值记在 echoes 里，地址回来的是其中之一就是自己的回声，不回写（回写会吞掉这之后敲的字）；
+ * 不是（后退、「看全部」）就跟着地址走。不按焦点判断：Safari 点按钮不挪焦点，焦点留在框里时「看全部」也要清掉框里的字
  */
 function SearchBox({
   value,
   placeholder,
   label,
+  focusNow,
+  onFocused,
   onChange,
 }: {
   value: string;
   placeholder: string;
   label: string;
+  /** 该接过焦点了：「清除筛选」「看全部」点了以后自己就不在了，地址改完由搜索框接过焦点 */
+  focusNow: boolean;
+  onFocused(): void;
   onChange(v: string): void;
 }) {
   const [text, setText] = useState(value);
   const ref = useRef<InputRef>(null);
+  // 同一个页签里是地址改完的这次；换了页签时工具条挪到新页签里重新挂上，是挂上的这次
+  // （antd 的页签在下一次提交才画出新页签的内容，列表自己的 effect 那时还拿不到新的搜索框）
   useEffect(() => {
-    if (typeof document === 'undefined' || document.activeElement !== ref.current?.input) setText(value);
+    if (!focusNow) return;
+    ref.current?.focus();
+    onFocused();
+  }, [focusNow, onFocused]);
+  const echoes = useRef<string[]>([]);
+  useEffect(() => {
+    const i = echoes.current.indexOf(value);
+    if (i >= 0) {
+      echoes.current.splice(0, i + 1);
+      return;
+    }
+    echoes.current = [];
+    setText(value);
   }, [value]);
   return (
     <Input
@@ -196,8 +222,11 @@ function SearchBox({
       placeholder={placeholder}
       aria-label={label}
       onChange={(e) => {
-        setText(e.target.value);
-        onChange(e.target.value);
+        const v = e.target.value;
+        setText(v);
+        // 只有空白的不进地址（回来的是空串）
+        echoes.current.push(v.trim() === '' ? '' : v);
+        onChange(v);
       }}
     />
   );
@@ -208,7 +237,9 @@ const radio = (checked: boolean): object => ({ role: 'menuitemradio', 'aria-chec
 
 /**
  * 一个筛选按钮（设计系统 §5.5 工具条、§5.3 下拉菜单）。没生效时是「目的地」加 chevron-down；
- * 生效后改成 accent 底的「目的地：四川」，后面的 x 单独是一个按钮，点了清除这一项。选中的项再点一次也是清除
+ * 生效后改成 accent 底的「目的地：四川」，后面的 x 单独是一个按钮，点了清除这一项。选中的项再点一次也是清除。
+ * 选了一项、点了 x 之后焦点回到按钮上（spec「可访问性 · 键盘」）：菜单项和 x 随之消失，不接住的话焦点掉到 body，
+ * 键盘用户得从跳转链接重新 Tab 过来
  */
 export function FilterButton(props: {
   field: FieldDef;
@@ -222,6 +253,7 @@ export function FilterButton(props: {
   const [query, setQuery] = useState('');
   const [pinyin, setPinyin] = useState<PinyinLib | null>(null);
   const popup = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const searchable = options.length > MENU_SEARCH_OVER;
   useEffect(() => {
     if (!open || !searchable || pinyin) return;
@@ -265,6 +297,7 @@ export function FilterButton(props: {
           items,
           selectable: false,
           onClick: ({ key }) => {
+            trigger.current?.focus();
             onPick(key === pick?.value ? undefined : key);
             setOpen(false);
             setQuery('');
@@ -292,13 +325,21 @@ export function FilterButton(props: {
           </div>
         )}
       >
-        <button type="button" className="filter-trigger" aria-haspopup="menu" aria-expanded={open} disabled={!options.length}>
+        <button ref={trigger} type="button" className="filter-trigger" aria-haspopup="menu" aria-expanded={open} disabled={!options.length}>
           {cjk(text)}
           {!pick && <Icon of={ChevronDown} size={14} className="filter-chevron" />}
         </button>
       </Dropdown>
       {pick && (
-        <button type="button" className="filter-clear" aria-label={`清除「${name}」筛选`} onClick={() => onPick(undefined)}>
+        <button
+          type="button"
+          className="filter-clear"
+          aria-label={`清除「${name}」筛选`}
+          onClick={() => {
+            trigger.current?.focus();
+            onPick(undefined);
+          }}
+        >
           <Icon of={X} size={14} />
         </button>
       )}
@@ -316,11 +357,23 @@ export function CatalogList(p: CatalogListProps) {
   const base = rows ? narrowed(entity, rows, search) : undefined;
   const counts = base ? tabCounts(base) : undefined;
   const shown = rows ? visibleRows(entity, rows, search, anon) : undefined;
-  const tab: Tab = anon ? 'all' : (search.status ?? 'all');
+  const tab = tabOf(search, anon);
   // 换了页签、搜索或筛选就回到第 1 页（页码不进地址：spec 的路由表里列表只有这三个参数）
-  const sig = JSON.stringify([tab, search.q ?? '', search.f ?? []]);
+  const sig = sigOf(search, anon);
   const [page, setPage] = useState({ sig, n: 1 });
   const current = page.sig === sig ? page.n : 1;
+  // 首列的最小宽度：侧栏展开、收成图标栏时让首列先收窄，窄屏（首列固定、其余列横滚）时留宽一点
+  const titleMin = useViewport() === 'narrow' ? TITLE_MIN_NARROW : TITLE_MIN_WIDTH;
+
+  // 「清除筛选」「看全部」点了以后自己就不在了：记下清除之后的签名，地址改到这里时由搜索框接过焦点，
+  // 不然焦点掉到 body（spec「可访问性 · 键盘」）
+  const [refocusAt, setRefocusAt] = useState<string | null>(null);
+  const focused = useCallback(() => setRefocusAt(null), []);
+  const clearTo = (next: CatalogSearch): void => {
+    const to = sigOf(next, anon);
+    if (to !== sig) setRefocusAt(to);
+    p.onSearch(next);
+  };
 
   const env: FieldEnv = { now: p.now, refItems: (k) => p.refItems?.(k), distinct: () => [] };
   const refsOf = (f: FieldDef): readonly RefItem[] | undefined => (f.type === 'reference' && f.to ? p.refItems?.(f.to) : undefined);
@@ -343,6 +396,8 @@ export function CatalogList(p: CatalogListProps) {
         value={search.q ?? ''}
         placeholder={searchPlaceholder(entity)}
         label={`搜索${entity.label}`}
+        focusNow={refocusAt === sig}
+        onFocused={focused}
         onChange={(q) => p.onSearch({ ...search, q: q.trim() === '' ? undefined : q }, true)}
       />
       {filterFields(entity).map((f) => {
@@ -359,7 +414,7 @@ export function CatalogList(p: CatalogListProps) {
         );
       })}
       {picks.length > 0 && (
-        <button type="button" className="list-link" onClick={() => p.onSearch(cleared(search))}>
+        <button type="button" className="list-link" onClick={() => clearTo(cleared(search))}>
           清除筛选
         </button>
       )}
@@ -377,9 +432,11 @@ export function CatalogList(p: CatalogListProps) {
       <EmptyBlock
         icon={<Icon of={Search} size={20} />}
         title={`没有符合条件的${entity.label}`}
+        // 这里连搜索和页签一起回到默认（只有搜索、只有页签时也要能出去），与工具条上只清筛选按钮的「清除筛选」
+        // 做的事不同，所以不叫同一个名字（spec 顶部第 9 步评审之后的 Revisions）
         link={
-          <button type="button" className="list-link" onClick={() => p.onSearch(cleared(search, true))}>
-            清除筛选
+          <button type="button" className="list-link" onClick={() => clearTo(cleared(search, true))}>
+            看全部
           </button>
         }
       />
@@ -393,7 +450,7 @@ export function CatalogList(p: CatalogListProps) {
           dataSource={shown}
           columns={tableColumns(entity, cols, rows ?? [], p)}
           tableLayout="fixed"
-          scroll={{ x: tableMinWidth(cols, rows ?? []) }}
+          scroll={{ x: tableMinWidth(cols, rows ?? [], titleMin) }}
           rowClassName={two ? 'is-two-line' : undefined}
           pagination={{
             current,

@@ -3,6 +3,11 @@
 // 构建入口不 import 它，生产产物里没有；这里不写中文字符串，免得进 UI 字体子集。
 import { Window } from 'happy-dom';
 
+// TanStack Router 在 Node 里没有 browser 条件，加载的是服务端的构建，除非 NODE_ENV 是 test，否则把自己当成服务端
+// （router-core/isServer）。整页的自测在客户端挂一个真的路由，所以在路由的模块求值之前设好（这个文件最先 import）。
+// React 与 antd 只认 production，test 与不设一样
+process.env.NODE_ENV ??= 'test';
+
 export const win = new Window({ url: 'http://localhost/console/', width: 1440, height: 1100 });
 
 const g = globalThis as Record<string, unknown>;

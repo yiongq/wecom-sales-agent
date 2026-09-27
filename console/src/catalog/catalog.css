@@ -223,18 +223,24 @@
   flex-direction: column;
   min-width: 0;
 }
-.cell-name,
+/* 名称那一行不裁：名称自己省略，它的焦点框要伸出文字外 4px */
+.cell-name {
+  min-width: 0;
+  white-space: nowrap;
+}
 .cell-sub {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 上下 2、左右 4 的内边距再用等量的负外边距抵掉：占位还是文字那么大，焦点框画在内边距里，不压字 */
 .cell-link {
   display: block;
-  max-width: 100%;
+  max-width: calc(100% + 8px);
   overflow: hidden;
-  padding: 0;
+  margin: -2px -4px;
+  padding: 2px 4px;
   border: 0;
   border-radius: var(--r-xs);
   background: none;
@@ -270,11 +276,25 @@ button.cell-link:focus-visible {
   line-height: 20px;
   color: var(--text-3);
 }
-/* 分页器（§5.5）：只在超过一页时出现，右下；左侧 13 text-3「共 21 条」，页码是 28 的幽灵按钮 */
+/* 表格比容器宽、右边还有列时，容器右缘的阴影（antd 自带，颜色取 colorSplit 即 --divider，几乎看不见）加深到
+   --btn-border，看得出还能往右滚；首列固定、下面有列滚过去时左缘的阴影同样加深 */
+.list-table .ant-table-fix-end-shadow-show .ant-table-container::after {
+  box-shadow: inset -10px 0 8px -8px var(--btn-border);
+}
+.list-table .ant-table-cell-fix-start-shadow-show::after {
+  box-shadow: inset 10px 0 8px -8px var(--btn-border);
+}
+/* 分页器（§5.5）：只在超过一页时出现，右下；左侧 13 text-3「共 21 条」，页码是 28 的幽灵按钮（大小与当前页见 theme/antd.ts、
+   parts/parts.css） */
 .list-table .ant-pagination {
   margin: 16px 12px 0;
 }
 .list-table .ant-pagination-total-text {
   font-size: 13px;
   color: var(--text-3);
+}
+/* 页头的状态句还没取到时先占一行（13/20），取到以后下面不跳 */
+.page-status-pending {
+  display: block;
+  height: 20px;
 }

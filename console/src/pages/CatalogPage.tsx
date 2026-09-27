@@ -94,7 +94,10 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
     <>
       <PageHeader
         title={entity.label}
-        status={status ? <span>{cjk(status)}</span> : undefined}
+        // 还没取到（加载、出错）时状态句先占一行：取到以后页签、工具条、表格不往下跳（spec「不跳动」）
+        status={
+          status ? <span>{cjk(status)}</span> : rows === undefined ? <span className="page-status-pending" aria-hidden="true" /> : undefined
+        }
         // 从来没有过条目时，新建与导入放在空状态里，页头不再放一份
         actions={empty ? undefined : actions}
       />

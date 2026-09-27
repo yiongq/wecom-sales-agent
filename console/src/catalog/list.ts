@@ -108,8 +108,13 @@ const WIDTH: { readonly [T in FieldType]: (f: FieldDef) => WidthRule } = {
   status: () => ({ base: 100 }),
 };
 export const UPDATED_WIDTH = 152;
-/** 首列至少这么宽：窄屏上首列固定，其余列在表格自己的容器里横向滚动 */
-export const TITLE_MIN_WIDTH = 240;
+/**
+ * 首列至少这么宽，表格比容器宽时在自己的容器里横向滚动（首列固定）。侧栏展开、收成图标栏时先让首列收窄：
+ * 1280 宽（侧栏展开、内边距 24）表格只有约 1008，D 页其余列要 840，首列按 240 算的话「更新」列被裁掉一截
+ */
+export const TITLE_MIN_WIDTH = 160;
+/** 窄屏（<992，侧栏隐藏）：首列固定、其余列横滚，首列留宽一点，名称少截一些 */
+export const TITLE_MIN_NARROW = 240;
 /** 单元格左右内边距各 12，再留 4 给中西文之间的自动间距（text-autospace）和取整 */
 const CELL_PADDING = 28;
 
@@ -156,9 +161,9 @@ export function columnWidth(c: ListColumn, rows: readonly ListRow[]): number | u
   return Math.max(rule.base, head, Math.min(content, rule.max));
 }
 
-/** 表格的最小宽度：比容器窄时铺满容器（首列变宽），比容器宽时横向滚动 */
-export const tableMinWidth = (cols: readonly ListColumn[], rows: readonly ListRow[]): number =>
-  cols.reduce((sum, c) => sum + (columnWidth(c, rows) ?? TITLE_MIN_WIDTH), 0);
+/** 表格的最小宽度：比容器窄时铺满容器（首列变宽），比容器宽时横向滚动。titleMin 是首列的最小宽度 */
+export const tableMinWidth = (cols: readonly ListColumn[], rows: readonly ListRow[], titleMin = TITLE_MIN_WIDTH): number =>
+  cols.reduce((sum, c) => sum + (columnWidth(c, rows) ?? titleMin), 0);
 
 /** 悬停看全文的列（多选枚举「一行放不下就省略」、标签「+2 悬停列出全部」）：单元格的 title 写全部取值 */
 export function fullText(f: FieldDef, v: unknown): string | undefined {

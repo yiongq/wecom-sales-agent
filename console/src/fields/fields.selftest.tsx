@@ -15,7 +15,8 @@
 //    逐条列表的改删移、有序子项按下标经 writeValue 写回、引用的删和自由输入。
 // 8. 产品库列表（plan 第 9 步，spec「产品库列表」）：两个包的列、表头与列宽，筛选按字段类型生成的选项与「包含」匹配，
 //    搜索、页签计数、排序、更新列，URL 状态的解析与改写；挂进 DOM 画 D 页、L 页、主材、匿名、分页、各种状态，
-//    再经组件敲字、点页签、点清除、开筛选菜单，核对写回地址的内容。
+//    再经组件敲字、点页签、点清除、开筛选菜单，核对写回地址的内容和焦点落在哪；再挂整页（路由、查询缓存），
+//    核对行业包里没有的 kind、匿名、非编辑成员、从来没有过、加载与出错时页头的样子。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/fields/fields.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -23,7 +24,9 @@ import { win } from './selftest-dom.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Box } from 'lucide-react';
-import { act, createElement, type ReactElement, useState } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
+import { act, createElement, type ReactElement, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { packById } from '../../../src/packs/registry.js';
@@ -57,13 +60,16 @@ import {
   tabCounts,
   tableMinWidth,
   textWidth,
+  TITLE_MIN_NARROW,
   TITLE_MIN_WIDTH,
   twoLine,
   updatedParts,
   visibleRows,
 } from '../catalog/list.js';
 import { type CatalogSearch, catalogSearch, cleared, parseFilter, pickOf, withPick } from '../catalog/params.js';
+import { CatalogPage } from '../pages/CatalogPage.js';
 import { entityIcon } from '../shell/icons.js';
+import { VIEWER_KEY, type Viewer } from '../viewer.js';
 import { type FieldEnv, FieldEnvContext } from './env.js';
 import { FieldGrid } from './FieldGrid.js';
 import {
@@ -1502,6 +1508,22 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
     tableMinWidth(listColumns(PKG, false), PKG_ROWS) <= 1152,
     String(tableMinWidth(listColumns(PKG, false), PKG_ROWS)),
   );
+  // 1280 宽（侧栏展开、内边距 24）表格只有 1008，1366 宽 1094（preview 实测）：首列先收窄，D 页在 1280、L 页在 1366 都不横滚
+  check(
+    'D 页：1280 宽里不横向滚动（首列先收窄）',
+    tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS) <= 1008,
+    String(tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS)),
+  );
+  check(
+    'L 页：1366 宽里不横向滚动',
+    tableMinWidth(listColumns(PKG, false), PKG_ROWS) <= 1094,
+    String(tableMinWidth(listColumns(PKG, false), PKG_ROWS)),
+  );
+  eq(
+    '窄屏的首列留宽：最小宽度按 240 算',
+    tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS, TITLE_MIN_NARROW) - tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS),
+    TITLE_MIN_NARROW - TITLE_MIN_WIDTH,
+  );
   const long = asRow({ ...ROUTES[0]!, segments: ['家庭', '亲子', '银发', '蜜月', '商务', '朋友', '独自'] });
   eq('多选枚举至多 180，再长截断、悬停看全文', columnWidth({ kind: 'field', field: fieldOf(ROUTE, 'segments') }, [long]), 180);
   eq('多选的单元格悬停写全部取值', fullText(fieldOf(ROUTE, 'segments'), long.payload.segments), '家庭、亲子、银发、蜜月、商务、朋友、独自');
@@ -1754,7 +1776,22 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [['目的地', '境内/境外', '适合客群'], '21条'],
   );
   eq('没有生效的筛选时不画「清除筛选」', d.box.querySelectorAll('.list-toolbar .list-link').length, 0);
+  const tableWidth = (root: ParentNode): string | undefined => root.querySelector<HTMLElement>('.list-table table')?.style.width;
+  eq(
+    '侧栏展开时表格的最小宽度按首列 160 算（更窄的容器里首列先收窄）',
+    tableWidth(d.box),
+    `${tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS)}px`,
+  );
   await d.unmount();
+  win.happyDOM.setViewport({ width: 375, height: 800 });
+  const narrow = await mount(<CatalogList {...listProps()} />);
+  eq(
+    '窄屏（<992）时首列按 240 算，其余列横滚',
+    tableWidth(narrow.box),
+    `${tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS, TITLE_MIN_NARROW)}px`,
+  );
+  await narrow.unmount();
+  win.happyDOM.setViewport({ width: 1440, height: 1100 });
 
   const f = await mount(<CatalogList {...listProps({ search: { f: ['destination:四川', 'overseas:false'], status: 'active' } })} />);
   eq(
@@ -1848,9 +1885,9 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
 
   const none = await mount(<CatalogList {...listProps({ search: { q: 'zzzz' } })} />);
   eq(
-    '筛选无结果：页签、工具条还在，表格换成说明加「清除筛选」',
+    '筛选无结果：页签、工具条还在，表格换成说明加「看全部」（连搜索和页签一起回到默认，与只清筛选的「清除筛选」不同名）',
     [none.box.querySelectorAll('.list-toolbar').length, texts(none.box, '.state-empty-title'), texts(none.box, '.state-empty .list-link')],
-    [1, ['没有符合条件的线路'], ['清除筛选']],
+    [1, ['没有符合条件的线路'], ['看全部']],
   );
   eq(
     '筛选无结果：没有主按钮，也没有表格',
@@ -1915,18 +1952,65 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('搜索删光就不写 q', calls.at(-1)?.next, { f: ['destination:四川'] });
   check('点「草稿」页签', await click(all(x.box, '.list-tabs .ant-tabs-tab-btn').find((b) => b.textContent?.startsWith('草稿'))));
   eq('页签写进地址，记一步历史', calls.at(-1), { next: { f: ['destination:四川'], status: 'draft' }, replace: undefined });
-  check('点目的地的清除', await click(x.box.querySelector('.filter-clear')));
+  const clear = x.box.querySelector<HTMLElement>('.filter-clear');
+  clear?.focus();
+  check('点目的地的清除', await click(clear));
   eq('清掉这一项筛选', calls.at(-1)?.next, { status: 'draft' });
+  check('清除按钮没了，焦点回到目的地按钮上（不掉到 body）', document.activeElement === x.box.querySelector('.filter-trigger'));
   await x.unmount();
 
   calls.length = 0;
   const y = await mount(<Harness initial={{ q: 'zzzz', f: ['destination:四川'] }} />);
-  check('工具条的「清除筛选」', await click(y.box.querySelector('.list-toolbar .list-link')));
+  const yInput = (): HTMLInputElement => y.box.querySelector('.list-search input')!;
+  const toolbarClear = y.box.querySelector<HTMLElement>('.list-toolbar .list-link');
+  toolbarClear?.focus();
+  check('工具条的「清除筛选」', await click(toolbarClear));
   eq('工具条的「清除筛选」只去掉筛选', calls.at(-1)?.next, { q: 'zzzz' });
-  check('空状态的「清除筛选」', await click(y.box.querySelector('.state-empty .list-link')));
-  eq('空状态的「清除筛选」全回默认', calls.at(-1)?.next, {});
-  eq('地址变了（不在搜索框里时），搜索框跟着变', (y.box.querySelector('.list-search input') as HTMLInputElement).value, '');
+  check('「清除筛选」没了，焦点落到搜索框（不掉到 body）', document.activeElement === yInput());
+  check('空状态的「看全部」', await click(y.box.querySelector('.state-empty .list-link')));
+  eq('「看全部」连搜索和页签一起回到默认', calls.at(-1)?.next, {});
+  // 焦点还在搜索框里（Safari 点按钮不挪焦点）时地址变了，搜索框也跟着变
+  eq('地址变了，焦点在框里时搜索框也跟着变', yInput().value, '');
   await y.unmount();
+
+  calls.length = 0;
+  const z = await mount(<Harness initial={{ status: 'draft', q: 'zzzz' }} />);
+  const seeAll = z.box.querySelector<HTMLElement>('.state-empty .list-link');
+  seeAll?.focus();
+  check('只有搜索和页签时也能「看全部」', await click(seeAll));
+  eq('「看全部」回到默认', calls.at(-1)?.next, {});
+  check(
+    '「看全部」没了，焦点落到清空了的搜索框',
+    document.activeElement === z.box.querySelector('.list-search input') &&
+      (z.box.querySelector('.list-search input') as HTMLInputElement).value === '',
+    `焦点在 ${document.activeElement?.tagName}.${document.activeElement?.className}，框里「${(z.box.querySelector('.list-search input') as HTMLInputElement | null)?.value}」`,
+  );
+  await z.unmount();
+
+  // 地址比输入晚一拍：敲出去的值回来之前又敲了字，回来的旧值不能把框里的字改回去（吞字）
+  const queued: CatalogSearch[] = [];
+  let applySearch: (s: CatalogSearch) => void = () => undefined;
+  const expose = (set: (s: CatalogSearch) => void): void => void (applySearch = set);
+  function LagHarness() {
+    const [search, setSearch] = useState<CatalogSearch>({});
+    useEffect(() => expose(setSearch), []);
+    return <CatalogList {...listProps({ search, onSearch: (next) => void queued.push(next) })} />;
+  }
+  const lag = await mount(<LagHarness />);
+  const lagInput = lag.box.querySelector<HTMLInputElement>('.list-search input')!;
+  await typeInto(lagInput, '稻');
+  await typeInto(lagInput, '稻城');
+  await act(async () => applySearch(queued.shift()!));
+  eq('地址回来的是自己敲出去的旧值：框里的字不变', lagInput.value, '稻城');
+  await typeInto(lagInput, '稻城亚');
+  while (queued.length) {
+    const next = queued.shift()!;
+    await act(async () => applySearch(next));
+  }
+  eq('地址追上以后框里是最后敲的字', lagInput.value, '稻城亚');
+  await act(async () => applySearch({}));
+  eq('不是自己敲出去的（后退、「看全部」）：跟着地址走', lagInput.value, '');
+  await lag.unmount();
 
   // 筛选菜单：选一项、再点同一项清除；多于 7 项时顶部有搜索框
   const picks: (string | undefined)[] = [];
@@ -1951,6 +2035,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   check('选四川', await click(items()[0]));
   eq('选中写回', picks, ['四川']);
+  check('选了以后焦点回到按钮上（菜单项没了，不掉到 body）', document.activeElement === fb.box.querySelector('.filter-trigger'));
   await fb.unmount();
   const fb2 = await mount(
     <FilterButton field={destField} options={destOptions} pick={{ field: destField, value: '四川' }} onPick={(v) => void picks.push(v)} />,
@@ -1966,8 +2051,134 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('当前项标 aria-checked', on?.textContent, '四川');
   check('再点同一项', await click(on));
   eq('再点同一项就是清除', picks, ['四川', undefined]);
+  check('清除以后焦点同样回到按钮上', document.activeElement === fb2.box.querySelector('.filter-trigger'));
+  const x2 = fb2.box.querySelector<HTMLElement>('.filter-clear');
+  x2?.focus();
+  check('点 x', await click(x2));
+  eq('x 清除这一项', picks, ['四川', undefined, undefined]);
+  check('点了 x 焦点回到按钮上', document.activeElement === fb2.box.querySelector('.filter-trigger'));
   await fb2.unmount();
   for (const el of all(document, '.ant-dropdown')) el.remove();
+}
+
+// 8.9 整页（pages/CatalogPage.tsx）：路由的 kind 按行业包取，身份决定页头的入口、列和页签。查询缓存里先放好身份和列表
+{
+  const me = (role: 'owner' | 'agent') =>
+    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+  const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
+  const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
+  const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
+  async function mountPage(path: string, viewer: Viewer, lists: Readonly<Record<string, readonly ListRow[]>>) {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    qc.setQueryData(VIEWER_KEY, viewer);
+    for (const [kind, items] of Object.entries(lists)) qc.setQueryData(['catalog', kind], { items });
+    const root = createRootRoute({ component: Outlet });
+    const tree = root.addChildren([
+      createRoute({ getParentRoute: () => root, path: '/catalog/$kind', validateSearch: catalogSearch, component: CatalogPage }),
+      createRoute({ getParentRoute: () => root, path: '/sop', component: () => null }),
+    ]);
+    const router = createRouter({ routeTree: tree, history: createMemoryHistory({ initialEntries: [path] }) });
+    await router.load();
+    return mount(
+      <QueryClientProvider client={qc}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+  }
+  const header = (root: ParentNode) => ({
+    title: root.querySelector('.page-title')?.textContent,
+    status: root.querySelector('.page-status > span:not(.page-status-pending)')?.textContent ?? null,
+    actions: texts(root, '.page-actions button'),
+  });
+  const notFound = (root: ParentNode): boolean => texts(root, '.state-empty-title').includes('没有这个页面');
+
+  const r = await mountPage('/catalog/route', owner(travel), { route: ROUTE_ROWS });
+  eq('编辑角色：页头有状态句和「新建线路」（线路不能导入，没有导入CSV）', header(r.box), {
+    title: '线路',
+    status: '共21条·销售助手只推荐已上架的',
+    actions: ['新建线路'],
+  });
+  eq('编辑角色：三个页签', texts(r.box, '.list-tabs .ant-tabs-tab'), ['全部21', '已上架20', '草稿1']);
+  eq('旅游包的名称打开旧抽屉（按钮）', r.box.querySelector('.cell-link')?.tagName, 'BUTTON');
+  await r.unmount();
+
+  const h = await mountPage('/catalog/hotel', owner(travel), { hotel: HOTEL_ROWS });
+  eq('编辑角色：能导入的酒店另有「导入CSV」', header(h.box).actions, ['导入CSV', '新建酒店']);
+  await h.unmount();
+
+  const ag = await mountPage('/catalog/hotel', agent(travel), { hotel: HOTEL_ROWS });
+  eq(
+    '非编辑成员：没有新建和导入，状态句后面是「只读」',
+    [header(ag.box).actions, ag.box.querySelectorAll('.page-actions').length, ag.box.querySelectorAll('.readonly-pill').length],
+    [[], 0, 1],
+  );
+  eq('非编辑成员：照样有三个页签和状态、更新两列', texts(ag.box, '.list-tabs .ant-tabs-tab').length, 3);
+  await ag.unmount();
+
+  const an = await mountPage('/catalog/route', anonOf(travel), { route: ANON_ROUTES });
+  eq(
+    '匿名：没有新建入口，只有「全部」页签，没有状态、更新两列',
+    [header(an.box).actions, texts(an.box, '.list-tabs .ant-tabs-tab'), texts(an.box, '.list-table thead th')],
+    [[], ['全部20'], ['线路', '天数', '每人起价（元）', '最佳季节', '适合客群']],
+  );
+  await an.unmount();
+
+  const e = await mountPage('/catalog/hotel', owner(travel), { hotel: [] });
+  eq(
+    '从来没有过：页头不放按钮、不写状态句，新建和导入只在空状态里',
+    [header(e.box), texts(e.box, '.state-empty-actions button')],
+    [{ title: '酒店', status: null, actions: [] }, ['导入CSV', '新建酒店']],
+  );
+  await e.unmount();
+  const ea = await mountPage('/catalog/hotel', agent(travel), { hotel: [] });
+  eq('从来没有过、非编辑成员：空状态里也没有入口', ea.box.querySelectorAll('.state-empty-actions button').length, 0);
+  await ea.unmount();
+
+  const nf = await mountPage('/catalog/package', owner(travel), {});
+  check('旅游包里没有 package：「没有这个页面」', notFound(nf.box) && !nf.box.querySelector('.list-tabs'));
+  await nf.unmount();
+  const nf2 = await mountPage('/catalog/route', owner(renovation), { route: ROUTE_ROWS });
+  check('假包里没有 route：「没有这个页面」（不拿包里的第一个实体顶上）', notFound(nf2.box) && !nf2.box.querySelector('.list-tabs'));
+  await nf2.unmount();
+
+  const pk = await mountPage('/catalog/package', owner(renovation), { package: PKG_ROWS });
+  eq('假包：页头按装修套餐的配置', header(pk.box), {
+    title: '装修套餐',
+    status: '共5条·销售助手只推荐已上架的',
+    actions: listActions(true, PKG).csv ? ['导入CSV', '新建装修套餐'] : ['新建装修套餐'],
+  });
+  eq('假包：列按 L 页', texts(pk.box, '.list-table thead th'), [
+    '装修套餐',
+    '适用户型',
+    '每平米单价（元）',
+    '起装面积',
+    '工期',
+    '适合开工月份',
+    '状态',
+    '更新',
+  ]);
+  eq('假包的名称是纯文字（旧抽屉不认这个 kind，第 10.1 步换成详情链接）', pk.box.querySelector('.cell-link')?.tagName, 'SPAN');
+  await pk.unmount();
+
+  // 加载、出错：状态句还没有，先占一行（取到以后下面不跳）；fetch 换成不回来的、连不上的
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => new Promise<Response>(() => undefined);
+  const ld = await mountPage('/catalog/route', owner(travel), {});
+  eq(
+    '加载：状态句的位置先占一行，表格是骨架',
+    [ld.box.querySelectorAll('.page-status .page-status-pending').length, ld.box.querySelectorAll('.state-skeleton').length],
+    [1, 1],
+  );
+  await ld.unmount();
+  globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+  const er = await mountPage('/catalog/route', owner(travel), {});
+  eq(
+    '出错：状态句的位置照样占着，表格的位置写「没取到」',
+    [er.box.querySelectorAll('.page-status .page-status-pending').length, texts(er.box, '.list-tabs .ant-alert-title')],
+    [1, ['没取到']],
+  );
+  await er.unmount();
+  globalThis.fetch = realFetch;
 }
 
 report();
