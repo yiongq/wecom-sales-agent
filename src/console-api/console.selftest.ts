@@ -1793,15 +1793,27 @@ check(
       stageTotals.every(([st, n]) => cb.aiByStage[st as string] === n),
     `${counts.text} ${JSON.stringify(stageTotals)}`,
   );
-  // updatedToday：按服务器时区的今天 0 点算，0 点前 1 毫秒的不算、0 点整的算
-  const midnight = new Date().setHours(0, 0, 0, 0);
-  const today = async () => ((await call('GET', '/conversations/counts', O)).body as typeof cb).updatedToday;
-  const t0 = await today();
-  seed('wecom:cust_Y01', 'greeting', false, midnight - 1);
-  const t1 = await today();
-  seed('wecom:cust_Z01', 'greeting', false, midnight);
-  const t2 = await today();
-  check('counts：updatedToday 从服务器时区的今天 0 点算起', t1 === t0 && t2 === t0 + 1, `${t0} ${t1} ${t2}`);
+  // updatedToday：按服务器时区的今天 0 点算，0 点前 1 毫秒的不算、0 点整的算。
+  // 钉一个不是 UTC 的时区再测：CI 跑在 UTC 下，本地 0 点和 UTC 0 点是同一刻，写成 UTC 0 点也测不出来；测完还原
+  const savedTz = process.env.TZ;
+  process.env.TZ = 'Asia/Shanghai';
+  try {
+    const midnight = new Date().setHours(0, 0, 0, 0);
+    const today = async () => ((await call('GET', '/conversations/counts', O)).body as typeof cb).updatedToday;
+    const t0 = await today();
+    seed('wecom:cust_Y01', 'greeting', false, midnight - 1);
+    const t1 = await today();
+    seed('wecom:cust_Z01', 'greeting', false, midnight);
+    const t2 = await today();
+    check(
+      'counts：updatedToday 从服务器时区（钉成 Asia/Shanghai）的今天 0 点算起，不是 UTC 0 点',
+      midnight !== new Date(midnight).setUTCHours(0, 0, 0, 0) && t1 === t0 && t2 === t0 + 1,
+      `${t0} ${t1} ${t2}`,
+    );
+  } finally {
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+  }
   const AGENT2 = { email: 'agent2@example.com', password: 'agent2-password-1' };
   await asPlatform(() =>
     accounts.createUser(t.db, { tenantSlug: 'demo', email: AGENT2.email, name: '坐席丁', role: 'agent', password: pw(AGENT2.password) }),
