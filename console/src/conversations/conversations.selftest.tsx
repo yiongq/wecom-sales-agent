@@ -774,7 +774,10 @@ interface AdminWorld {
 }
 
 /** 打开 admin.html#…：anonSeed 为真是演示形态（没登录也给 wecom:cust_ 种子会话），否则是 prod 形态（没登录 401） */
-async function openAdmin(hash: string, opts: { anonSeed?: boolean; token?: string; sessions?: string[] } = {}): Promise<AdminWorld> {
+async function openAdmin(
+  hash: string,
+  opts: { anonSeed?: boolean; token?: string; sessions?: string[]; offline?: boolean } = {},
+): Promise<AdminWorld> {
   const w = new Window({ url: `http://localhost/admin.html${hash}`, width: 1440, height: 900 });
   const log: string[] = [];
   const ids = opts.sessions ?? ['wecom:cust_A01', 'wecom:cust_B01', 'wecom:real_7F3A'];
@@ -793,6 +796,7 @@ async function openAdmin(hash: string, opts: { anonSeed?: boolean; token?: strin
     const url = new URL(String(input), 'http://localhost');
     const auth = (init?.headers as Record<string, string> | undefined)?.authorization === TOKEN;
     log.push(`${url.pathname} ${auth ? 'auth' : 'anon'}`);
+    if (opts.offline) throw new TypeError('Failed to fetch');
     if (url.pathname === '/api/admin/whoami') return auth ? json(200, { user: 'admin' }) : json(401, { error: 'unauthorized' });
     if (url.pathname === '/api/sessions') {
       if (auth) return json(200, ids.map(session));
@@ -901,6 +905,13 @@ async function login(a: AdminWorld, password: string): Promise<void> {
 {
   const a = await openAdmin('#s=wecom%3Agone', { token: TOKEN });
   eq('深链：已登录而会话不在了，不弹登录框', [a.loginShown(), a.selected()], [false, null]);
+  await a.close();
+}
+
+// 3.35 启动时列表没取到（断网）：分不清是不是要登录，不弹登录框，hash 留着
+{
+  const a = await openAdmin('#s=wecom%3Areal_7F3A', { offline: true });
+  eq('深链：列表没取到时不弹登录框', [a.loginShown(), a.hash()], [false, '#s=wecom%3Areal_7F3A']);
   await a.close();
 }
 

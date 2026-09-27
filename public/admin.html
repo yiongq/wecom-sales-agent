@@ -490,7 +490,12 @@ function syncHash() {
   try { history.replaceState(null, '', location.pathname + location.search + want); } catch (_) {}
 }
 S.selected = hashSession();
-let deepLink = S.selected; // 还没核对过的深链：第一次取回列表后核对一次
+let deepLink = S.selected; // 还没核对过的深链：启动时第一次取回列表后核对一次（见文件末尾）
+function checkDeepLink() {
+  if (deepLink === null) return;
+  const id = deepLink; deepLink = null;
+  if (!AUTH.on && !S.sessions.some(x => x.id === id)) openLogin('这个会话要登录顾问账号才能看。登录后直接打开它。');
+}
 window.addEventListener('hashchange', () => {
   const id = hashSession();
   if (id !== S.selected) { S.selected = id; render(); }
@@ -515,10 +520,6 @@ async function load() {
     const locked = r => r.status === 401 || r.status === 503;
     const list = r => locked(r) ? [] : r.json();
     S.sessions = await list(a); S.orders = await list(b);
-    if (deepLink !== null) {
-      const id = deepLink; deepLink = null;
-      if (!AUTH.on && !S.sessions.some(x => x.id === id)) openLogin('这个会话要登录顾问账号才能看。登录后直接打开它。');
-    }
     if (u && u.ok) S.usage = await u.json().catch(()=>null);
     else if (u && locked(u)) S.usage = null;
     // 首次加载自动选一个"有数据"的范围：demo 数据往往不是今天灌的，
@@ -532,6 +533,7 @@ async function load() {
     }
     const sig = sigOf();
     if (sig !== lastSig) render();
+    return true; // 取到了：启动时据此核对深链
   } catch (e) {}
 }
 
@@ -1111,7 +1113,7 @@ setTheme(localStorage.getItem('adm-theme') || 'dark');
 
 // 实时：SSE 数据变更即推（服务端 storeEvents），EventSource 自动重连；30s 兜底轮询
 syncMode();
-load();
+load().then(ok => { if (ok) checkDeepLink(); });
 const liveDot = document.querySelector('.live');
 try {
   const es = new EventSource('/api/admin/stream');
