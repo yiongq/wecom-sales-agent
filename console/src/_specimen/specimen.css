@@ -165,3 +165,60 @@
   align-items: center;
   gap: 12px;
 }
+
+/* 字段渲染器样张（/_specimen/fields）：表格按 §5.5 的行高与内边距粗排；表单主栏 736、副栏 368、间隔 24（E 页的两栏），
+   分组卡片照 §5.9（头 16 20 0，标题 15/22/600，体 12 20 20）。卡片头的锁定 Tag 与原因是第 10.1 步的，这里不画 */
+.spec-table-wrap {
+  overflow-x: auto;
+}
+.spec-table {
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 22px;
+}
+.spec-table th {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  text-align: left;
+  white-space: nowrap;
+}
+.spec-table td {
+  height: 44px;
+  max-width: 320px;
+  padding: 0 12px;
+  border-top: 1px solid var(--divider);
+  white-space: nowrap;
+}
+.spec-table .is-num {
+  text-align: right;
+}
+.spec-form-cols {
+  display: grid;
+  grid-template-columns: 736px 368px;
+  column-gap: 24px;
+  align-items: start;
+}
+.spec-form-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.spec-card {
+  padding: 16px 20px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.spec-card-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+}
+.spec-issues {
+  margin: 8px 0 0;
+  padding-left: 16px;
+}

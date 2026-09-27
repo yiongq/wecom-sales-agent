@@ -33,7 +33,7 @@ interface ImportRule {
   desc: string;
   /** 这条规则管不管这个文件 */
   applies: (file: string) => boolean;
-  bad: (imp: Imp) => boolean;
+  bad: (imp: Imp, file: string) => boolean;
 }
 
 interface TextRule {
@@ -49,6 +49,12 @@ const CONFIG_LAYER = ['src/config/', 'src/db/', 'src/sop/', 'src/prompt/', 'src/
 
 const under = (p: string | null, dir: string) => p !== null && p.startsWith(dir);
 const isSelftest = (p: string) => p.endsWith('.selftest.ts');
+/**
+ * 字段渲染器的自测要拿两个行业包的真实配置逐字段渲染（console UX spec「行业包通用架构 · 放在哪里」），所以它是 console/src 里
+ * 唯一可以 import 行业包注册表 src/packs/registry.ts 和假包 src/shared/pack-fixtures/ 的文件。它不在构建入口的依赖图里
+ */
+const PACK_SELFTEST = 'console/src/fields/fields.selftest.tsx';
+const PACK_FIXTURES = 'src/shared/pack-fixtures/';
 
 const IMPORT_RULES: ImportRule[] = [
   {
@@ -62,13 +68,19 @@ const IMPORT_RULES: ImportRule[] = [
     bad: (i) => (i.pkg !== null ? i.pkg !== 'zod' : !under(i.target, 'src/shared/')),
   },
   {
-    desc: 'console/src/ 在仓库里只能 import src/shared/，外加用 import type 引 src/console-api/app.ts',
+    desc: 'console/src/ 在仓库里只能 import src/shared/，外加用 import type 引 src/console-api/app.ts（渲染器自测另可 import src/packs/registry.ts）',
     applies: (f) => under(f, 'console/src/'),
-    bad: (i) =>
+    bad: (i, f) =>
       i.pkg === null &&
       !under(i.target, 'console/') &&
       !under(i.target, 'src/shared/') &&
-      !(i.typeOnly && i.target === 'src/console-api/app.ts'),
+      !(i.typeOnly && i.target === 'src/console-api/app.ts') &&
+      !(f === PACK_SELFTEST && i.target === 'src/packs/registry.ts'),
+  },
+  {
+    desc: `console/src/ 里只有渲染器自测（${PACK_SELFTEST}）能 import 假包 ${PACK_FIXTURES}`,
+    applies: (f) => under(f, 'console/src/') && f !== PACK_SELFTEST,
+    bad: (i) => under(i.target, PACK_FIXTURES),
   },
   {
     desc: 'src/db/testing.ts 只能被 *.selftest.ts 和 eval/run.ts import',
@@ -220,7 +232,7 @@ for (const file of files) {
     const imps = importsOf(file, text);
     importCount += imps.length;
     for (const imp of imps) {
-      for (const r of rules) if (r.bad(imp)) found.push([imp.line, `${r.desc}（'${imp.spec}'）`]);
+      for (const r of rules) if (r.bad(imp, file)) found.push([imp.line, `${r.desc}（'${imp.spec}'）`]);
     }
   }
   for (const r of textRules) {

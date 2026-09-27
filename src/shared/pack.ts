@@ -202,8 +202,11 @@ const SYSTEM_KEYS: readonly string[] = ['$code', '$status', '$updated'];
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
-/** 按 FieldDef.key 的路径取值。只认自有属性，'toString' 这类原型上的名字取不到 */
-function valueAt(payload: Record<string, unknown>, key: string): unknown {
+/**
+ * 按 FieldDef.key 的路径取值（'$code' 取 id）。只认自有属性，'toString' 这类原型上的名字取不到。
+ * 后台的表单按同一个函数取值（console/src/fields/model.ts），上架前检查与表单看到的是同一个值
+ */
+export function valueAt(payload: Record<string, unknown>, key: string): unknown {
   let cur: unknown = payload;
   for (const k of (key === '$code' ? 'id' : key).split('.')) {
     if (!isRecord(cur) || !Object.hasOwn(cur, k)) return undefined;
@@ -213,7 +216,7 @@ function valueAt(payload: Record<string, unknown>, key: string): unknown {
 }
 
 /** 缺键、null、空串、空数组都算没填 */
-const filled = (v: unknown): boolean => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
+export const filled = (v: unknown): boolean => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
 
 function dupes(xs: readonly string[]): string[] {
   return [...new Set(xs.filter((x, i) => xs.indexOf(x) !== i))];

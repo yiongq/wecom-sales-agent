@@ -66,6 +66,12 @@ const audit = createRoute({ getParentRoute: () => root, path: '/audit' }).lazy((
 
 const specimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark' } =>
   s.theme === 'light' || s.theme === 'dark' ? { theme: s.theme } : {};
+const fieldsSpecimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark'; kind?: string; code?: string; as?: string } => ({
+  ...specimenSearch(s),
+  ...(typeof s.kind === 'string' ? { kind: s.kind } : {}),
+  ...(typeof s.code === 'string' ? { code: s.code } : {}),
+  ...(typeof s.as === 'string' ? { as: s.as } : {}),
+});
 const specimen = SPECIMEN
   ? [
       createRoute({ getParentRoute: () => root, path: '/_specimen', validateSearch: specimenSearch }).lazy(() =>
@@ -73,6 +79,10 @@ const specimen = SPECIMEN
       ),
       createRoute({ getParentRoute: () => root, path: '/_specimen/type', validateSearch: specimenSearch }).lazy(() =>
         import('./_specimen/type.lazy.js').then((m) => m.Route),
+      ),
+      // 字段渲染器样张（plan 第 3.2 步）：kind、code 选实体和条目，as 选形态（已上架、草稿、新建、没有编辑权限）
+      createRoute({ getParentRoute: () => root, path: '/_specimen/fields', validateSearch: fieldsSpecimenSearch }).lazy(() =>
+        import('./_specimen/fields.lazy.js').then((m) => m.Route),
       ),
     ]
   : [];

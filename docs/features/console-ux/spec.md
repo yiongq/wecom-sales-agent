@@ -11,6 +11,7 @@ Revisions: 2026-09-27 实现期修订（plan 第 2.3 步，与实现同一个分
 Revisions: 2026-09-27 实现期修订（plan 第 2.2 步，与实现同一个分支，含评审之后的两处）：外壳三处照设计系统做不到或做了调整。一、用户菜单的身份块只写名字和角色：设计系统 §4.2 写「邮箱和角色」，`Me` 没有邮箱字段，「接口改动」也没加，不为它扩接口。二、打开 ⌘K 的快捷键按平台只认一种：Mac 上是 ⌘K，其余平台是 Ctrl+K；搜索触发器的 Tooltip 与 `aria-keyshortcuts` 同样按平台写。Windows 上没有 ⌘ 键；Mac 的 Ctrl+K 是文本框和 CodeMirror 里的「删到行尾」，两种都认的话在话术编辑器里一按两用（评审之后由「两种按法都认」改成这样）。三、「关于」的许可链接由两个改成三个：「查看Geist许可」「查看思源黑体许可」「查看图标许可」。两款字体的版权声明是两份文件（Geist 与 Geist Mono 共用一份），一个「查看字体许可」只能指到其中一份，思源黑体那份从界面上打不开（评审发现）；「关于」一节和验收 8 第 4 条随之改写，设计系统 §2.6 与 P 页同步。
 Revisions: 2026-09-27 实现期修订（plan 第 2.4 步，评审之后，与实现同一个分支）：「通用部件 · StateView」的「加载用和成品同尺寸的骨架」，在下载页面块的那一段放宽为通用的整页骨架：页头一行加表格 8 行（设计系统 §4.5 的表格行数）。页面块到之前，页面自己的骨架还没下载下来。要按页定制，就得在入口（router.tsx）里给每页另写一份骨架，并随各页的版式同步修改。块到了以后，各页照旧放自己的骨架。「延迟 300ms 才出现」不变：路由的等待时间设 0，延迟由 StateView 负责。
 Revisions: 2026-09-27 实现期修订（plan 第 3.1 步，与实现同一个分支）：「行业包通用架构 · 配置结构」的 `ItemCheck` 加两个计数 `requiredTotal`、`requiredPassed`，`CheckIssue.message` 写明是跟在字段名后面的半句（「没填」「还差1天」，界面拼成「当晚住宿：没填」）。「校验」要显示「必须项13/13」，而有序子项的每处缺漏各是一条 `CheckIssue`（设计系统 G 页的「第3天：当晚住宿没填」单独成行），一项里可以有几条问题，原接口的两个数组算不出分母和过了几项。「校验」另补一条：选填字段填了却写得不对时一样拦上架、单独算一项（不然 `checkItem` 与 schema 在这种 payload 上判得不同，不变量 15）；数值的 `max` 只是输入框上限，不算检查项（spec 列的必须项来源里本来就没有它）。评审之后另改设计系统 §6.3 的「节点里写什么」：原判定是 `indexLabel` 展开后不超过 3 个字符就写进节点，改为只有字母和数字、不超过 3 个字符。假包的 `indexLabel` 照设计系统 §2.5 不手打空格，写成「节点{n}」，展开的「节点3」正好 3 个字符，按原判定要写进节点，与验收 5 和 L 页的「节点里只写序号」相悖；验收 5 不改。
+Revisions: 2026-09-27 实现期修订（plan 第 3.2 步，与实现同一个分支）：「信息架构、导航与路由」的路由表与「字体与标点样张」加一个走查构建专用的样张路由 `/_specimen/fields`（参数 `kind`、`code`、`as`）。渲染器第 9、10 步才接进产品库页，在那之前要在真实浏览器、页面 CSP 下对照设计系统 §6 与 E、G、L 页看三种形态和 4 列网格，需要一个页面。它和另外两个样张页一样只在 `VITE_SPECIMEN=1` 的构建里注册，经 `/pack` 与列表接口认识行业包，不 import 任何包模块；生产构建没有它（不变量 25 的产物检查照旧）。行为与验收不变。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
 配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
@@ -187,18 +188,19 @@ export interface CheckIssue {
 
 路由（`basepath: '/console'` 不变）：
 
-| 路由                            | search                                                                                  | 页面                                                                  |
-| ------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `/`                             | —                                                                                       | 总览（取代现在跳到 `/sop` 的重定向）                                  |
-| `/sop`                          | `section?: string`、`view?: 'history'`、`v?: number`                                    | 销售话术；`v` 表示正在查看某一版的改动                                |
-| `/catalog/$kind`                | `status?: 'active' \| 'draft'`、`q?: string`、`f?: string[]`（每项写成「字段 key:值」） | 产品库列表                                                            |
-| `/catalog/$kind/$code`          | `tab?: 'edit' \| 'preview'`                                                             | 条目详情                                                              |
-| `/catalog/new/$kind`            | —                                                                                       | 新建条目。不用 `/catalog/$kind/new`：`new` 是合法的条目编号，会撞路由 |
-| `/conversations`                | `state?: 'ai' \| 'human' \| 'paid'`、`stage?: string`、`page?: number`                  | 会话列表                                                              |
-| `/conversations/$id`            | —                                                                                       | 会话工作台（02 之后，J 页）                                           |
-| `/audit`                        | `cat?: 'sop' \| 'catalog' \| 'account' \| 'platform'`、`login?: 1`                      | 审计日志                                                              |
-| `/system`                       | —                                                                                       | 系统（要后端）                                                        |
-| `/_specimen`、`/_specimen/type` | `theme?: 'light' \| 'dark'`                                                             | 控件样张与字体标点样张（P 页），只在 `VITE_SPECIMEN=1` 的构建里注册   |
+| 路由                            | search                                                                                  | 页面                                                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `/`                             | —                                                                                       | 总览（取代现在跳到 `/sop` 的重定向）                                                                         |
+| `/sop`                          | `section?: string`、`view?: 'history'`、`v?: number`                                    | 销售话术；`v` 表示正在查看某一版的改动                                                                       |
+| `/catalog/$kind`                | `status?: 'active' \| 'draft'`、`q?: string`、`f?: string[]`（每项写成「字段 key:值」） | 产品库列表                                                                                                   |
+| `/catalog/$kind/$code`          | `tab?: 'edit' \| 'preview'`                                                             | 条目详情                                                                                                     |
+| `/catalog/new/$kind`            | —                                                                                       | 新建条目。不用 `/catalog/$kind/new`：`new` 是合法的条目编号，会撞路由                                        |
+| `/conversations`                | `state?: 'ai' \| 'human' \| 'paid'`、`stage?: string`、`page?: number`                  | 会话列表                                                                                                     |
+| `/conversations/$id`            | —                                                                                       | 会话工作台（02 之后，J 页）                                                                                  |
+| `/audit`                        | `cat?: 'sop' \| 'catalog' \| 'account' \| 'platform'`、`login?: 1`                      | 审计日志                                                                                                     |
+| `/system`                       | —                                                                                       | 系统（要后端）                                                                                               |
+| `/_specimen`、`/_specimen/type` | `theme?: 'light' \| 'dark'`                                                             | 控件样张与字体标点样张（P 页），只在 `VITE_SPECIMEN=1` 的构建里注册                                          |
+| `/_specimen/fields`             | `theme?`、`kind?`、`code?`、`as?: 'active' \| 'draft' \| 'new' \| 'readonly'`           | 字段渲染器样张（plan 第 3.2 步）：按 `/pack` 与列表画三种形态和表单网格，只在 `VITE_SPECIMEN=1` 的构建里注册 |
 
 - 筛选、页签、选中的节都写进 search params（TanStack Router 的 `validateSearch`），刷新、后退、分享链接都能还原 [22]。
 - 侧栏的选中项按路由匹配（`useMatchRoute`），每个路由恰有一个选中项。
@@ -621,7 +623,7 @@ export interface CheckIssue {
 
 ### 字体与标点样张（P 页）
 
-`/_specimen/type` 按设计系统 P 页渲染：字重、字阶、等宽数字、标点挤压前后对比、省略号与破折号、间隔号与中西间距、「关于」弹窗样张。它用生产的字体文件和全局样式，所以就是上线效果的验收样张。另有 `/_specimen` 控件样张：页签、分页器、分段控件、复选框、开关、各种 `Status`、四种 Alert、按钮的悬停与焦点、`ConfirmDanger`，给对比度审计用。两者都只在 `VITE_SPECIMEN=1` 的构建里注册，生产构建里没有（不变量 25）。
+`/_specimen/type` 按设计系统 P 页渲染：字重、字阶、等宽数字、标点挤压前后对比、省略号与破折号、间隔号与中西间距、「关于」弹窗样张。它用生产的字体文件和全局样式，所以就是上线效果的验收样张。另有 `/_specimen` 控件样张：页签、分页器、分段控件、复选框、开关、各种 `Status`、四种 Alert、按钮的悬停与焦点、`ConfirmDanger`，给对比度审计用；`/_specimen/fields` 字段渲染器样张：渲染器接进产品库页之前（plan 第 9、10 步），按接口给的行业包和列表画列表单元格、表单与只读三种形态和表单网格。三者都只在 `VITE_SPECIMEN=1` 的构建里注册，生产构建里没有（不变量 25）。
 
 ## 视觉与字体
 

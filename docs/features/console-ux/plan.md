@@ -23,7 +23,7 @@
   - [x] 2.4 拆包与预算：各页 `.lazy()`；删掉 `chunkSizeWarningLimit` 覆盖，开 `build.manifest`；确认 `assetsInlineLimit: 0` 已生效；扩展 `scripts/check-console-dist.ts` 的 JS 与字体预算、禁入内容（spec「性能」）。拆包前后的数字记进交接记录；超预算按开放问题 8 请 owner 定，选放宽时在 spec 顶部加 `Revisions:` 并改「性能」和验收 23。
 - [ ] 3. 字段渲染器与行业包配置（4）
   - [x] 3.1 `checkPack`、`checkItem`（含数组的 `min` 与必须项的计数口径，spec「校验」）、`ENTITY_ICONS`；旅游包补全（design-system §9，含 `recommend`、`min`）；假包 `src/shared/pack-fixtures/renovation.ts`；`src/packs/packs.selftest.ts`（不变量 13–15），串进 `pnpm test`。
-  - [ ] 3.2 渲染器：11 种字段类型各三种形态（`Record<FieldType, …>`，不变量 12）；实体图标映射；表单状态与 `set` / `unset`；`storeAs` 的 `parse` / `format`；表单网格（design-system §6.0、§6.4）；`console/src/fields/fields.selftest.tsx`（两个包的每个字段；不变量 16 的往返），串进 `pnpm test`；`scripts/check-boundaries.ts` 只给这一个文件开 import `src/packs/registry.ts` 与 `src/shared/pack-fixtures/` 的例外。
+  - [x] 3.2 渲染器：11 种字段类型各三种形态（`Record<FieldType, …>`，不变量 12）；实体图标映射；表单状态与 `set` / `unset`；`storeAs` 的 `parse` / `format`；表单网格（design-system §6.0、§6.4）；`console/src/fields/fields.selftest.tsx`（两个包的每个字段；不变量 16 的往返），串进 `pnpm test`；`scripts/check-boundaries.ts` 只给这一个文件开 import `src/packs/registry.ts` 与 `src/shared/pack-fixtures/` 的例外。
   - [ ] 3.3 `check-boundaries.ts` 禁止其余 `console/src` 文件 import `src/packs/**` 与 `src/shared/pack-fixtures/**`；`check-console-src.ts` 加上行业包词汇扫描（不变量 11 的范围与白名单）和不变量 17 的 console 一侧；`check-console-dist.ts` 断言产物里没有假包内容（不变量 25）。
   - [x] 3.4 `src/shared/ui-labels.ts`（检查项名、角色、`AUDIT_ACTIONS`、`ERROR_COPY` 的文案）与 `src/shared/format.ts`（金额、相对与绝对时间、月份区间）；`AuditQuery.actions`（服务端与验收 15 第 8 条）；`describeAudit(entry, pack, lookups)`（实体名、字段名取自行业包）。总览的「最近变更」和第 14 步都用它们。
 - [ ] 4. 总览（1.5）：路由 `/` 取代重定向；需要你处理、系统状态、业务数、客户停在哪一步、最近变更，各块独立加载与出错；匿名总览（验收 10）。`scripts/seed-demo.py` 加 `--scenario console-ux` 与 `--now`（验收 4「走查种子与时钟」），不带这两个参数时输出不变。
@@ -65,6 +65,7 @@
 
 - 第 2.2 步：铃铛的「打开工作台」和 ⌘K 的会话行打开 `/admin.html#s=<id>`，但 admin.html 读 `#s=` 选中会话是第 13 步的事。在那之前这个链接只打开工作台、不选中那个会话，走查不能把它当成已经能用。
 - 第 2.2 步：路由 `/catalog/$kind` 的 `params.parse` 把 hotel 以外的 kind 一律当成 route（01 以来如此）。外壳这一侧已经不认行业（假包的侧栏、⌘K、计数都按包里的 kind 发请求），但假包的 `/catalog/package` 页面现在仍按线路渲染、请求 `/catalog/route`。第 9 步重做列表、第 10.1 步加详情路由时，路由参数改成按行业包的 kind 取，包里没有的 kind 出 404；第 17 步的假包走查依赖这一条。
+- 待 owner（第 3.2 步）：4 列的范围。spec「字段类型渲染器」与开放问题 9 写「整卡锁定」，设计系统 §6.4 写「全是只读的 text、intUnit、money、单选 enum」。现在按后者实现：没有编辑权限（非编辑角色、匿名）看到的卡片也全是只读文本，同样排 4 列（主材的「基本信息」、已上架线路的「基本信息」）；草稿和新建有输入框，仍是两列，验收 16 不受影响。要严格按「锁定」算，改 `console/src/fields/model.ts` 的 `groupGrid` 一处（`c.mode !== 'edit'` 换成 `c.mode === 'locked'`），自测的两条对应断言跟着改。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 
 ## 砍法
@@ -484,6 +485,51 @@
   - 第 4 步：「最近变更」请求 `auditActionsParam('all', false)`，`auditRuns` 合并后 `describeAudit(run, pack, lookups).text`，时间列 `dayTime` 与 `clockTime`；状态句的日期 `dateWithWeekday`。
   - 第 13 步：「最后动静」用 `relativeTime`，悬停 `absoluteTime`。
   - 第 14 步：类别筛选用 `auditGroups(pack)`；图标名到 lucide 组件的映射（名字在 `AUDIT_ACTIONS`）；`lookups.itemName` 从 `queries.ts` 的产品库缓存取；组标题 `dayHeading`，详情抽屉 `fullTime`、`money`；`sop.rollback` 的 `sameHashAsTarget` 提示仍按 spec 写在抽屉里。
+
+### 第 3.2 步（2026-09-27）
+
+- 合并：分支从 `dev` 起，先后合入第 3.1、3.4 步。三个字体文件冲突，在合并结果上重跑 `build.ts`（769 个码位、157,444 B）；`package.json` 的 `test` 取两边的并集；本文件两边的记录都留。两步给同一个月份判定各起了名字（第 3.1 步的 `monthsReadable`、第 3.4 步的 `bestSeasonParses`），`season.ts` 留一份实现、另一个名字是它的别名，调用处都没改。合并后 `shell/icons.tsx` 的 `ENTITY_ICON_NAMES` 仍指着第 3.4 步那边的旧表名，typecheck 报错，改成 `ENTITY_ICON_COMPONENTS`，并进合并提交。合并结果四道门禁都过。
+- 做了什么（都在 `console/src/fields/`）：
+  - `model.ts`，纯逻辑、不依赖 React：表单状态 `formState`（`structuredClone`，保留键序）；`readValue` 与上架前检查同一个 `valueAt`（`src/shared/pack.ts` 导出了它和 `filled`）；`writeValue` 按 spec「表单状态与提交」写回：选填清空删键，必填清空留空串或空数组，删空的嵌套对象连对象删，以它为 `showWhen` 的字段跟着删，所以体力强度选「不填」时整个 `intensity` 进 `unset`；`submission` 用 01 的 `sameValue` 比顶层键，算 `set` / `unset`。`parseStored` / `formatStored`：只认 `formatStored` 写得出的写法，所以 `format(parse(x)) === x`；写回按选项排，规则之外的旧值原样保留。控件读写表 `CODECS` 与网格规则表 `LAYOUT` 也是 `Record<FieldType, …>`。另有 `fieldMode`（edit / locked / readonly）、`lockedMembers`、`locksOnActivate`、`groupGrid`（4 列规则）、`enumControl`（5 / 6 项的界线）、`keepLockedMembers`、`moveItem`、`togglePick`，以及引用候选 `refItemsOf` / `resolveRef`。
+  - `renderers.tsx`：`RENDERERS: Record<FieldType, FieldRenderer>`，每种字段类型有 `Cell`、`View`、`Form` 三种形态（不变量 12）。另有 `MonthStrip.tsx`（S、L 两号，只用 class）、`FormField.tsx`（标签、「（选填）」、锁、帮助与报错）、`FieldGrid.tsx`（一张分组卡片的卡片体）、`env.ts`（页面给渲染器的当前时刻、引用候选、联想和链接）和 `fields.css`。
+  - 实体图标映射：第 2.2 步已经放在 `shell/icons.tsx`，第 3.1 步换成了 `EntityIcon` 键。本步只在自测里核对两个包的实体图标都画得出来，集合里只有 `box` 落到兜底。
+  - 样张 `/_specimen/fields?kind&code&as&theme`（只在 `VITE_SPECIMEN=1` 时注册）：经 `/pack` 与列表接口认识行业包，画列表单元格和各分组的表单网格，页面上实时写出补丁（「改动：无」）与上架前检查的计数。spec 的路由表加一行，顶部加 `Revisions:`。
+  - `scripts/check-boundaries.ts`：`console/src` 里只有 `fields.selftest.tsx` 能 import `src/packs/registry.ts` 和 `src/shared/pack-fixtures/`。注册表本来就在 `src/shared` 之外、被拦着，这里是开例外；假包原来对 `console/src` 全放开，现在别的文件 import 它也报。
+  - `fields.selftest.tsx`（963 条，约 2 秒）串进 `pnpm test`，排在 `shell.selftest.ts` 之后，CI 注释同步。
+- 自测覆盖：
+  - 三张表的键正好是 11 种字段类型；两个包合起来用到全部 11 种。
+  - 不变量 16：data/ 下 20 条线路（加 r-guizhou-5d）、23 家酒店和假包的 9 条样例，打开不改时补丁为空。每个字段（含有序子项的子字段）经控件读出、原样写回，值不变，补丁仍为空，序列化逐字节相同。餐食的 6 种写法都满足 `format(parse(x)) === x`；7 种规则之外的写法认不出，原样往返。
+  - 写回规则逐条核对。锁定与只读的四种上下文。4 列只给整卡只读、3 个及以上的 text / intUnit / money / 单选 enum，多一个是否、多选 enum、长文本或单选引用就是两列。
+  - 两个包每个字段、子字段的三种形态都画一遍，共 189 项（63 个字段与子字段乘三种形态），画了 812 次，约 0.15 秒；空值的表单也画一遍，都不许在画的时候写值。另逐类型核对写法，例如月份条逐格的 class、分段控件选中哪一段、多选片的 `aria-pressed`、标签的锁与删除按钮、时间轴节点、引用的「草稿」，以及 label 与控件怎么连（下拉用 `for`，分段控件用 `aria-labelledby`）。
+- 字体：新文案「这里的写法不标准」「添加一条」带进「准添」，重跑 `build.ts`（fonttools 4.66.0、brotli 1.2.0，仓库外的 venv）。UI 优先片 769 → 771 个码位，157,444 → 157,920 B（+476），两个 preload 合计 169,804 B。两个 Geist 文件、许可原文逐字节不变。
+- 构建：渲染器还没接进产品页，生产产物里没有它们。入口集合 gzip 316,719 B，与合并后相同；换页最多仍是产品库，247,051 B（+1，字体文件名变了）。`fields.css` 现在只由样张引用。
+- preview 实测（`VITE_SPECIMEN=1` 构建，CSP 同线上，接口由 `page.route` 拦截，时钟钉在 9月26日 14:30、`Asia/Shanghai`；7 个场景，浅色、深色各一轮，探针在仓库外）：
+  - 已上架 r-sichuan-lux 的「基本信息」4 列，宽 169 / 247 / 110 / 97（设计系统 E 页记的是 178 / 244 / 108 / 95），线路名称没有截断。没有编辑权限时同样 4 列；主材只读 4 列，宽 182 / 187 / 128 / 128；草稿、新建、酒店已上架都是两列。
+  - 只读值的计算颜色等于 `--text`，标签等于 `--text-2`（不变量 5）。混合卡「适合谁去」挂 3 把锁；草稿标 3 处「上架后锁定」。
+  - 字号只有 12.5、13、14、15、16，字重只有 400、500、600（不变量 10）；1440 宽没有横向滚动。
+  - 交互后补丁都回到「改动：无」：草稿里点一片餐食（「改动：itinerary」）再点回来；住宿档次敲一个字再删掉；体力强度选「较累」（「改动：intensity」，最累的一段显示出来，必须项 13/14）再选「不填」；行程亮点下移再上移。第一条的「上移」是 `aria-disabled`。新建时必填的境内 / 境外一段都不选，点了「境外」后是「改动：overseas」。
+  - Chromium、Firefox 两套主题 `securitypolicyviolation` 都是 0 次，控制台错误 0 条。WebKit 在加载、交互、文本域增高各阶段都是 0 次；探针截图时每截一张记一条 style-src 违规（Playwright 截图注入的样式），与页面无关。
+  - 第一轮走查发现 antd TextArea 的 `autoSize` 在页面 CSP 下失效：它量高度时对隐藏的 textarea 调 `setAttribute('style', …)`，被 style-src 拦下，每页一条违规，隐藏的 textarea 留在页面底上。改成渲染器自己按 `scrollHeight` 经 CSSOM 写 `style.height`（3–12 行，不给手动拖）。实测 82 → 280（12 行，出现滚动条）→ 82 px。自测加了一条「渲染器不用 autoSize」。
+- 变异（仓库外的隔离副本，46 例，还原后与 worktree 逐字节相同）：45 例失败并由具名断言点出，1 例是等价变异。
+  - 表与读写 13 例：渲染器表少一种（typecheck 与自测都点名）、多选片按点选顺序写回、`parseStored` 不查写法、一项都不选写空串、选填清空不删键、必填清空也删键、删空的对象留着、`showWhen` 的字段不跟着删、补丁用 `!==` 比、打开时按键排序、金额清空写 0、storeAs 不格式化。
+  - 锁定与网格 12 例：编号在草稿里可改、没有编辑权限也按锁定算、2 个短值也排 4 列、有输入框也排 4 列、是否也算短值、没有编辑权限也锁成员、已上架也标「上架后锁定」、5 / 6 项界线各挪一格、锁住的成员删得掉或加得上、第一项还能上移。
+  - 渲染 17 例：月份条 12 月接 1 月、不标当前月、「全年」不用行业包的写法、月份说明丢掉、选填单选没有「不填」、必填是否默认选中、多选片取消不了、标签单元格不限 3 个、引用草稿不跟「草稿」、节点里总写完整标签、金额单元格总带单位、换回 `autoSize`、表单画的时候写值、只读也写帮助、只读也标「（选填）」、整卡锁定也挂锁、实体图标落到兜底。
+  - 边界 4 例：拿掉渲染器自测的例外、别的 console 文件 import 注册表、别的 console 文件 import 假包，这三例 lint 都点名文件与行。「假包那条规则谁也不管」在干净的树上是等价变异，要有违规的 import 才看得出；上一例就是这种 import，照常被拦。
+  - 第一轮有 3 例存活，都补了断言：「全年」的文字在 aria-label 里也有，改成查文字那一格；多选片的点选只在组件里，抽成 `togglePick` 再测；逐字段画的时候值都有，空值的表单没画过，所以补画了一遍。另有 1 例是崩掉的：渲染器表少一种时，自测在后面逐字段画的时候抛错，没点名。改成先报「键正好是 11 种」再退出。
+- 偏离与取舍：
+  - 文本域不用 antd 的 `autoSize`（见上），高度由渲染器算。
+  - 4 列按设计系统 §6.4「全是只读的」算，没有编辑权限的只读卡也排 4 列；spec 原文是「整卡锁定」，记在「Open」请 owner 定。
+  - 必填的是否是两段分段控件，先 `falseLabel` 后 `trueLabel`（「境内 / 境外」，与验收 16 的写法一致）；设计系统没定顺序。
+  - 只读形态不写帮助，也不标「（选填）」：它们是填写的指引。
+  - 月份区间的表单自己报「没认出月份：写成…」（设计系统 §6 表）。第 10.2 步把 `checkItem` 的同一个问题落到字段下方时，这个字段不要再写一遍。
+  - 金额单元格：单位是固定的（`unit`）时只写数，单位写在表头；单位取另一个字段（`unitFrom`）时每行的单位不同，表头写不了，数后面带单位。
+  - 引用名称的链接由页面经 `env.itemLink` 给（详情路由在第 10.1 步），没给时是纯文本。
+  - 第 2.2 步记的「Alert 等部件里的 `@ant-design/icons` 留给第 3.2 步一起换」没做：它不在本步的条目里，还会动入口集合和产品库换页（余 2,949 B）的预算。改留给第 10 步（`CheckList` 随详情页重做）与第 16 步（`ThemeProvider` 的 Alert 图标、`TechDetails`）。
+- 没有新增依赖。
+- 留给后面的步骤：
+  - 第 9、10 步：由 `main.tsx` 全局引 `fields.css`（与 `parts.css` 一样；渲染器本身不 import CSS，自测才能在 Node 里 import）。列表用 `RENDERERS[type].Cell`，首列两行、`$updated` 列、表头单位（`FieldDef.unit`）归列表页。详情用 `FieldGrid`：卡片头的锁定 Tag 与原因由页面画，说明的 id 传给 `lockNoteId`；`errors` 按 `FieldDef.key` 给；`env.itemLink` 给路由的 `Link`；`env.distinct` 从列表缓存取。提交用 `submission(original, state)`。
+  - 第 11 步：多字段的有序子项现在只能改每一项的文字。竖轴与节点状态、条数提醒、增删与上移下移（`moveItem` 已有）、`autoIndexKey` 重排、条数锁定、「复制上一天的…」、引用的分组联想与 `filterBy`、`allowFree` 的提示、长文本 `softMax` 的提示都在第 11 步。新建时多字段的有序子项还没有「添加一天」。G 页要求卡片第一行是「当天标题、当晚住宿」，现在子字段按包里的顺序排（标题、安排、住宿、餐食），第 11 步排卡片时处理。
+  - 第 3.3 步：「别的 console 文件不能 import 假包」已随例外一起加了；两边都改这条规则时，按本步的写法合并（`PACK_SELFTEST` 与 `PACK_FIXTURES` 两个常量）。
 
 ## 交接记录
 
