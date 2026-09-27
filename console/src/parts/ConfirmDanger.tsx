@@ -6,6 +6,9 @@ import { Button, Modal } from 'antd';
 import { type ReactNode, useRef, useState } from 'react';
 import { cjk } from '../typography.js';
 
+/** 点遮罩不关（antd 6 的写法，maskClosable 已废弃）；模块级常量，属性不随渲染变 */
+const MASK = { closable: false } as const;
+
 export interface ConfirmDangerProps {
   open: boolean;
   /** 写出对象，如「丢弃草稿？」 */
@@ -35,9 +38,12 @@ export function ConfirmDanger({ open, title, children, confirmText, cancelText, 
   return (
     <Modal
       open={open}
+      // 关着时不挂弹层：antd 的 Modal 关着也渲染一个 Portal，它（@rc-component/portal 2.2.1）每次重渲都在 effect 里 setState；
+      // 放在逐字重渲的页面里（话术页），快速连按时 React 会报 #185（Maximum update depth exceeded）
+      destroyOnHidden
       width={480}
       title={cjk(title)}
-      maskClosable={false}
+      mask={MASK}
       onCancel={onCancel}
       // 弹窗打开时先把焦点放进内容区，这里再挪到取消按钮上：autoFocus 在弹窗还是 display:none 时就跑了，不生效
       afterOpenChange={(visible) => {

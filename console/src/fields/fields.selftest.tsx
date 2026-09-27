@@ -17,6 +17,9 @@
 //    搜索、页签计数、排序、更新列，URL 状态的解析与改写；挂进 DOM 画 D 页、L 页、主材、匿名、分页、各种状态，
 //    再经组件敲字、点页签、点清除、开筛选菜单，核对写回地址的内容和焦点落在哪；再挂整页（路由、查询缓存），
 //    核对行业包里没有的 kind、匿名、非编辑成员、从来没有过、加载与出错时页头的样子。
+// 9. 产品库详情（plan 第 10.1 步，spec「产品库详情与编辑」）：锁定组的计数与在哪张卡片头声明（每组只说一次）、状态句、
+//    上架前检查每项的写法与指向的字段、「已改」与撤销；再挂整页（路由、查询缓存）：已上架、草稿、没有编辑权限、匿名、
+//    新建、假包、不存在、加载与出错，点锁定组、点检查项、撤销一处、有改动时离开被拦下。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/fields/fields.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -31,6 +34,7 @@ import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { packById } from '../../../src/packs/registry.js';
 import { sameValue } from '../../../src/shared/catalog.js';
+import { absoluteTime } from '../../../src/shared/format.js';
 import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';
 import { checkItem, ENTITY_ICONS, type EntityType, type FieldDef, type FieldType, type IndustryPack } from '../../../src/shared/pack.js';
 import { CatalogList, type CatalogListProps, FilterButton, MENU_SEARCH_OVER } from '../catalog/CatalogList.js';
@@ -66,7 +70,25 @@ import {
   updatedParts,
   visibleRows,
 } from '../catalog/list.js';
-import { type CatalogSearch, catalogSearch, cleared, parseFilter, pickOf, withPick } from '../catalog/params.js';
+import {
+  blockOnly,
+  cardLocks,
+  declaringCard,
+  distinctValues,
+  fieldOfPath,
+  issueText,
+  itemTitle,
+  lockPhrase,
+  lockReason,
+  lockRows,
+  lockTotal,
+  referencedKinds,
+  skeletonCardHeight,
+  subPathOf,
+  updatedOf,
+} from '../catalog/detail.js';
+import { type CatalogSearch, catalogSearch, cleared, itemSearch, parseFilter, pickOf, withPick } from '../catalog/params.js';
+import { CatalogItemPage, CatalogNewPage } from '../pages/CatalogItemPage.js';
 import { CatalogPage } from '../pages/CatalogPage.js';
 import { entityIcon } from '../shell/icons.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
@@ -77,6 +99,7 @@ import {
   boolSegment,
   CODECS,
   enumFromSegment,
+  fieldChanged,
   fieldMode,
   formatStored,
   formState,
@@ -96,6 +119,7 @@ import {
   type RefItem,
   removeAt,
   replaceAt,
+  restoreField,
   SEG_NONE,
   SEG_UNSET,
   submission,
@@ -587,7 +611,19 @@ for (const [name, e, items] of SAMPLES) {
   eq(
     '「适合谁去」各字段的形态',
     fit.cells.map((c) => `${c.field.key}:${c.mode}:${c.span}`),
-    ['overseas:locked:half', 'segments:locked:wide', 'maxAltitude:locked:half', 'intensity.level:edit:half', 'intensity.hardest:edit:half'],
+    ['overseas:locked:half', 'segments:locked:half', 'maxAltitude:locked:half', 'intensity.level:edit:half', 'intensity.hardest:edit:half'],
+  );
+  eq(
+    '只读的月份区间与多选 enum 占一格，可改时占满一行（E 页的首屏，第 10.1 步）',
+    [
+      g(ROUTE, 'price', SICHUAN, ACTIVE).cells.map((c) => c.span),
+      g(ROUTE, 'price', SICHUAN, READER).cells.map((c) => c.span),
+      g(ROUTE, 'price', GUIZHOU_5D, DRAFT).cells.map((c) => c.span),
+      g(ROUTE, 'fit', SICHUAN, READER).cells.find((c) => c.field.key === 'segments')?.span,
+      g(ROUTE, 'fit', GUIZHOU_5D, DRAFT).cells.find((c) => c.field.key === 'segments')?.span,
+      g(PKG, 'fit', NUANMU, ACTIVE).cells.map((c) => `${c.field.key}:${c.span}`),
+    ],
+    [['half', 'half'], ['half', 'half'], ['half', 'wide'], 'half', 'wide', ['houseTypes:half', 'styles:wide', 'startMonths:wide']],
   );
   eq('酒店已上架的「基本信息」：星级档次可改，两列', g(HOTEL, 'basic', HOTELS[0]!, ACTIVE).columns, 2);
   eq('只有 2 个短值的整锁卡片（装修套餐「价格」）：两列', g(PKG, 'price', NUANMU, ACTIVE).columns, 2);
@@ -2216,6 +2252,505 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     '出错：状态句的位置照样占着，表格的位置写「没取到」',
     [er.box.querySelectorAll('.page-status .page-status-pending').length, texts(er.box, '.list-tabs .ant-alert-title')],
     [1, ['没取到']],
+  );
+  await er.unmount();
+  globalThis.fetch = realFetch;
+}
+
+// ---------------- 9. 产品库详情（plan 第 10.1 步） ----------------
+// spec「产品库详情与编辑（E、F 页；L 页下半）」：纯逻辑在 catalog/detail.ts，整页在 pages/CatalogItemPage.tsx
+
+// 9.1 锁定组：计数、在哪张卡片头声明（每组只说一次）、什么时候声明；状态句的锁定那一段
+{
+  const rows = (e: EntityType) => lockRows(e).map((r) => `${r.tag}${r.count}@${r.card}`);
+  eq('线路的锁定组：识别5（含编号）、计价2、条款2、推荐4（含只锁「国内」的标签），按 lockGroups 的顺序', rows(ROUTE), [
+    '识别5@basic',
+    '计价2@price',
+    '条款2@terms',
+    '推荐4@fit',
+  ]);
+  eq('线路上架后锁定 13 项（设计系统 E 页），酒店 4 项', [lockTotal(ROUTE), lockTotal(HOTEL)], [13, 4]);
+  eq(
+    '假包装修套餐：识别2、计价2、条款3、推荐1，共 8 项（L 页）',
+    [rows(PKG), lockTotal(PKG)],
+    [['识别2@basic', '计价2@price', '条款3@terms', '推荐1@fit'], 8],
+  );
+  eq('主材的编号没有锁定组：算进总数，不单列一行', [rows(MATERIAL).length, lockTotal(MATERIAL)], [1, lockRows(MATERIAL)[0]!.count + 1]);
+  eq(
+    '识别组在基本信息里声明，同组的「客户的其他叫法」那张卡不再写一遍',
+    [declaringCard(ROUTE, 'id'), cardLocks(ROUTE, 'alias', ACTIVE), cardLocks(ROUTE, 'basic', ACTIVE).map((r) => r.key)],
+    ['basic', [], ['id']],
+  );
+  eq(
+    '只在已上架、可以编辑时声明：草稿、新建、没有编辑权限都不声明',
+    [DRAFT, NEW, READER].map((c) => ROUTE.groups.flatMap((g) => cardLocks(ROUTE, g.key, c)).length),
+    [0, 0, 0],
+  );
+  eq('只锁几个成员的标签不让它所在的卡片声明锁定（§6.4）', cardLocks(ROUTE, 'sell', ACTIVE), []);
+  eq(
+    '原因加统一的结尾',
+    [lockReason('已发给客户的方案书按这些数算价，改了会变价'), lockReason('写好了。')],
+    ['已发给客户的方案书按这些数算价，改了会变价。急需修正请联系技术。', '写好了。急需修正请联系技术。'],
+  );
+  eq(
+    '状态句的锁定那一段：已上架、草稿、新建；没有编辑权限不提',
+    [lockPhrase(ROUTE, ACTIVE), lockPhrase(ROUTE, DRAFT), lockPhrase(ROUTE, NEW), lockPhrase(ROUTE, READER)],
+    ['13项上架后锁定', '上架后13项会锁定', '上架后13项会锁定', null],
+  );
+  const noLocks: EntityType = {
+    ...MATERIAL,
+    lockGroups: {},
+    fields: MATERIAL.fields.filter((f) => f.key !== '$code' && !f.lockedWhenActive),
+  };
+  eq('实体里没有锁定的字段：状态句不提锁定', lockPhrase(noLocks, ACTIVE), null);
+}
+
+// 9.2 上架前检查每项的写法、指向的字段；卡片与区块；骨架高度；条目名与更新；引用与联想
+{
+  const noHotel = {
+    ...GUIZHOU_5D,
+    itinerary: (GUIZHOU_5D.itinerary as Payload[]).map((d, i) => (i === 2 ? { ...d, hotel: undefined } : d)),
+  };
+  delete ((noHotel.itinerary as Payload[])[2] as Payload).hotel;
+  const c = checkItem(ROUTE, noHotel);
+  eq('有序子项里的一处写成「第3天：当晚住宿没填」', c.required.map(issueText), ['第3天：当晚住宿没填']);
+  eq('建议项跟在字段名后面：「体力强度没填」', c.recommended.map(issueText), ['体力强度没填']);
+  eq('条数不一致：「逐日行程还差1天」', checkItem(ROUTE, { ...GUIZHOU_5D, days: 6 }).required.map(issueText), ['逐日行程还差1天']);
+  eq(
+    '单值的有序子项：「行程亮点第2条没填」',
+    issueText({ path: 'highlights.1', label: '行程亮点 · 第2条', message: '没填' }),
+    '行程亮点第2条没填',
+  );
+  eq(
+    '检查项指向的字段：取最长的 key，有序子项再接下标与子字段',
+    [
+      fieldOfPath(ROUTE, 'itinerary.2.hotel')?.key,
+      fieldOfPath(ROUTE, 'intensity.hardest')?.key,
+      fieldOfPath(ROUTE, 'intensity')?.key,
+      fieldOfPath(ROUTE, '$code')?.key,
+      fieldOfPath(ROUTE, 'itineraryx')?.key,
+    ],
+    ['itinerary', 'intensity.hardest', undefined, '$code', undefined],
+  );
+  eq(
+    '有序子项里的下标与子字段',
+    [
+      subPathOf(fieldOf(ROUTE, 'itinerary'), 'itinerary.2.hotel'),
+      subPathOf(fieldOf(ROUTE, 'highlights'), 'highlights.1'),
+      subPathOf(fieldOf(ROUTE, 'itinerary'), 'itinerary'),
+      subPathOf(fieldOf(ROUTE, 'title'), 'title.1'),
+      subPathOf(fieldOf(ROUTE, 'itinerary'), 'itinerary.x.hotel'),
+    ],
+    [{ index: 2, sub: 'hotel' }, { index: 1 }, null, null, null],
+  );
+  eq(
+    '只有多字段有序子项的分组不套卡片（逐日行程、施工节点）；单字段的逐条列表照常在卡片里',
+    [blockOnly(ROUTE, 'days'), blockOnly(ROUTE, 'sell'), blockOnly(ROUTE, 'terms'), blockOnly(PKG, 'nodes'), blockOnly(ROUTE, 'nope')],
+    [true, false, false, true, false],
+  );
+  eq(
+    '骨架卡片的高度按两列网格估：基本信息 2 行、卖点 3 行（一格、两个占满一行）、区块按一项估',
+    [skeletonCardHeight(ROUTE, 'basic'), skeletonCardHeight(ROUTE, 'sell'), skeletonCardHeight(ROUTE, 'days')],
+    [16 + 22 + 12 + 2 * 58 + 20 + 20, 16 + 22 + 12 + 3 * 58 + 2 * 20 + 20, 24 + 12 + 160],
+  );
+  eq('条目名取 titleKey，没有时写编号', [itemTitle(ROUTE, SICHUAN, 'r-sichuan-lux'), itemTitle(ROUTE, {}, 'r-x')], [SICHUAN.title, 'r-x']);
+  eq(
+    '更新：更新人为空写「系统导入」；匿名没有更新时间',
+    [updatedOf({ updatedAt: '2026-09-24T10:02:00+08:00', updatedByName: null }, NOW)?.by, updatedOf({}, NOW)],
+    ['系统导入', null],
+  );
+  eq(
+    '引用指向的实体（含有序子项里的引用），去重',
+    [referencedKinds(ROUTE), referencedKinds(PKG), referencedKinds(HOTEL)],
+    [['hotel'], ['material'], []],
+  );
+  eq(
+    '联想：已有的值，数组展开、去重、按出现的先后',
+    distinctValues([{ payload: { a: 'x' } }, { payload: { a: ['y', 'x'] } }, { payload: { a: '' } }, { payload: {} }], 'a'),
+    ['x', 'y'],
+  );
+}
+
+// 9.3 「已改」按字段比，撤销一处只放回这一处；撤销了每一处以后补丁为空（不变量 16）
+{
+  const hardest = fieldOf(ROUTE, 'intensity.hardest');
+  const level = fieldOf(ROUTE, 'intensity.level');
+  const orig = formState(SICHUAN);
+  let st = writeValue(orig, hardest, `${String(readValue(orig, 'intensity.hardest'))}；返程日早起`);
+  st = writeValue(st, fieldOf(ROUTE, 'hotelLevel'), '奢华');
+  eq('只改最累的一段：它改过，体力强度没改', [fieldChanged(orig, st, hardest), fieldChanged(orig, st, level)], [true, false]);
+  const back = restoreField(st, orig, hardest);
+  eq(
+    '撤销最累的一段：它回到原文，住宿档次的改动还在',
+    [fieldChanged(orig, back, hardest), readValue(back, 'hotelLevel'), Object.keys(submission(orig, back, ROUTE.fields).set)],
+    [false, '奢华', ['hotelLevel']],
+  );
+  const all2 = restoreField(back, orig, fieldOf(ROUTE, 'hotelLevel'));
+  eq('撤销了每一处：补丁为空', submission(orig, all2, ROUTE.fields), { set: {}, unset: [] });
+  // 原来没有的（草稿没填体力强度），填了再撤销：删掉，删空的对象一起删
+  const d0 = formState(GUIZHOU_5D);
+  const d1 = writeValue(d0, level, '较累');
+  const d2 = restoreField(d1, d0, level);
+  eq(
+    '原来没有的字段填了再撤销：键删掉、删空的对象一起删，补丁为空',
+    [Object.hasOwn(d2, 'intensity'), submission(d0, d2, ROUTE.fields)],
+    [false, { set: {}, unset: [] }],
+  );
+  // 选填的空值原样放回（不经 writeValue 的删键）
+  const withEmpty: Payload = { ...SICHUAN, aliases: [] };
+  const e1 = writeValue(withEmpty, fieldOf(ROUTE, 'aliases'), ['川西']);
+  eq('撤销时照原样放回，选填的空数组也放回', restoreField(e1, withEmpty, fieldOf(ROUTE, 'aliases')).aliases, []);
+  const r = restoreField(st, orig, hardest);
+  check('撤销放回的是拷贝，改它不动打开时的内容', r.intensity !== orig.intensity && sameValue(r.intensity, orig.intensity));
+}
+
+// 9.4 整页：挂真的路由和查询缓存，身份、条目、列表先放进缓存
+{
+  const me = (role: 'owner' | 'agent') =>
+    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+  const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
+  const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
+  const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
+  type Cache = { items?: Readonly<Record<string, unknown>>; lists?: Readonly<Record<string, readonly unknown[]>> };
+  async function mountDetail(path: string, viewer: Viewer, cache: Cache = {}) {
+    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    qc.setQueryData(VIEWER_KEY, viewer);
+    for (const [kind, items] of Object.entries(cache.lists ?? {})) qc.setQueryData(['catalog', kind], { items });
+    for (const [key, item] of Object.entries(cache.items ?? {})) qc.setQueryData(['catalog', ...key.split('/')], item);
+    const root = createRootRoute({ component: Outlet });
+    const tree = root.addChildren([
+      createRoute({
+        getParentRoute: () => root,
+        path: '/catalog/$kind',
+        validateSearch: catalogSearch,
+        component: () => <p className="list-stub" />,
+      }),
+      createRoute({ getParentRoute: () => root, path: '/catalog/$kind/$code', validateSearch: itemSearch, component: CatalogItemPage }),
+      createRoute({ getParentRoute: () => root, path: '/catalog/new/$kind', component: CatalogNewPage }),
+    ]);
+    const router = createRouter({ routeTree: tree, history: createMemoryHistory({ initialEntries: [path] }) });
+    await router.load();
+    const m = await mount(
+      <QueryClientProvider client={qc}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    return { ...m, router };
+  }
+  const header = (root: ParentNode) => ({
+    crumb: texts(root, '.breadcrumb > :not(.breadcrumb-sep)'),
+    title: root.querySelector('.page-title')?.textContent,
+    titleStatus: root.querySelector('.page-title-status')?.textContent ?? null,
+    status: root.querySelector('.page-status > span:not(.readonly-pill)')?.textContent ?? null,
+  });
+  const groupsOf = (root: ParentNode) => all<HTMLElement>(root, '.detail-main > [data-group]').map((e) => e.getAttribute('data-group'));
+  const card = (root: ParentNode, g: string) => root.querySelector<HTMLElement>(`.detail-main > [data-group="${g}"]`)!;
+  const headTags = (root: ParentNode) => texts(root, '.detail-card-head .lock-tag');
+  const checkRows = (root: ParentNode) => texts(root, '.check-list .check-item');
+  const settle = () =>
+    act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  const itemOf = (rows: readonly ListRow[], code: string) => ({ kind: 'route', ord: 0, rev: 1, ...rows.find((r) => r.code === code)! });
+  const SICHUAN_ITEM = itemOf(ROUTE_ROWS, 'r-sichuan-lux');
+  const GUIZHOU_ITEM = itemOf(ROUTE_ROWS, 'r-guizhou-5d');
+  const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
+
+  // E 页：已上架、可以编辑
+  const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+  const sichuanAt = listTime(SICHUAN_ITEM.updatedAt!, Date.now());
+  eq('E 页页头：面包屑、标题后的状态、状态句', header(e.box), {
+    crumb: ['产品库', '线路', SICHUAN.title],
+    title: SICHUAN.title,
+    titleStatus: '已上架',
+    status: `13项上架后锁定·小林更新于${sichuanAt}`,
+  });
+  eq(
+    '面包屑：分组名是纯文本，实体名链回列表，当前页 aria-current',
+    [
+      e.box.querySelector('.breadcrumb > span')?.tagName,
+      e.box.querySelector('.breadcrumb a')?.getAttribute('href'),
+      texts(e.box, '.breadcrumb [aria-current="page"]'),
+    ],
+    ['SPAN', '/catalog/route', [SICHUAN.title]],
+  );
+  eq('标签页标题「条目名 · 实体名 · 租户名」（不变量 23）', document.title, `${String(SICHUAN.title)} · 线路 · 云途定制旅行`);
+  eq(
+    '卡片按 groups 的顺序',
+    groupsOf(e.box),
+    ROUTE.groups.map((g) => g.key),
+  );
+  eq('逐日行程不套卡片，其余是卡片', [card(e.box, 'days').className, card(e.box, 'basic').className], ['detail-block', 'detail-card']);
+  const tags = headTags(e.box);
+  eq('每个锁定组的 Tag 只出现一次（验收 16）', tags, ['上架后锁定·识别', '上架后锁定·计价', '上架后锁定·推荐', '上架后锁定·条款']);
+  check(
+    '原因写在各自卡片头的下一行，结尾统一',
+    texts(e.box, '.detail-card-reason').length === 4 &&
+      texts(e.box, '.detail-card-reason').every((t) => t.endsWith('。急需修正请联系技术。')),
+  );
+  const basicEl = card(e.box, 'basic');
+  const reasonId = basicEl.querySelector('.detail-card-reason')?.id;
+  eq(
+    '基本信息整卡锁定：4 列，字段不挂锁，经 aria-describedby 指向卡片头的原因，没有输入框',
+    [
+      basicEl.querySelector('.field-grid')?.className,
+      basicEl.querySelectorAll('.field-lock').length,
+      all(basicEl, '.field').every((f) => f.getAttribute('aria-describedby') === reasonId),
+      basicEl.querySelectorAll('input').length,
+      basicEl.getAttribute('aria-describedby') === reasonId,
+    ],
+    ['field-grid field-grid-4', 0, true, 0, true],
+  );
+  eq(
+    '「适合谁去」混合卡：卡片头声明推荐组，锁定的三个字段仍挂锁，可改的是控件',
+    [
+      headTags(card(e.box, 'fit')),
+      card(e.box, 'fit').querySelectorAll('.field-lock').length,
+      card(e.box, 'fit').querySelectorAll('input').length > 0,
+    ],
+    [['上架后锁定·推荐'], 3, true],
+  );
+  eq(
+    '「客户怎么叫」：识别组已在基本信息里说过，这张卡不再声明，字段自己挂锁',
+    [headTags(card(e.box, 'alias')), card(e.box, 'alias').querySelectorAll('.field-lock').length],
+    [[], 1],
+  );
+  eq(
+    '副栏：状态卡写「13项上架后锁定」，每个锁定组一行；已上架没有上架前检查；最近更新',
+    [
+      e.box.querySelector('.detail-side .status-headline')?.textContent,
+      texts(e.box, '.lock-row'),
+      all(e.box, '.lock-row').map((b) => b.getAttribute('aria-label')),
+      e.box.querySelectorAll('.check-list').length,
+      texts(e.box, '.detail-meta dd'),
+      e.box.querySelector('.detail-meta dd span')?.getAttribute('title'),
+    ],
+    [
+      '13项上架后锁定',
+      ['识别5项', '计价2项', '条款2项', '推荐4项'],
+      [
+        '识别，5项上架后锁定，跳到基本信息',
+        '计价，2项上架后锁定，跳到价格与季节',
+        '条款，2项上架后锁定，跳到费用包含与不含',
+        '推荐，4项上架后锁定，跳到适合谁去',
+      ],
+      0,
+      ['小林', sichuanAt],
+      absoluteTime(SICHUAN_ITEM.updatedAt!, Date.now()),
+    ],
+  );
+  check('能编辑的人有「建议在电脑上编辑」（窄屏才显示，CSS 管）', e.box.querySelectorAll('.detail-narrow-hint').length === 1);
+  // 点锁定组那一行：焦点落在声明它的卡片头
+  await click(all(e.box, '.lock-row').find((b) => b.textContent?.includes('条款')));
+  eq('点「条款」那一行：焦点在「费用包含与不含」的卡片头', document.activeElement?.textContent, '费用包含与不含');
+  // 改一处：「已改」只标这一处，撤销后回到原文
+  const hardestInput = e.box.querySelector<HTMLInputElement>('[data-field-key="intensity.hardest"] input');
+  const hardestText = String(readValue(SICHUAN, 'intensity.hardest'));
+  await typeInto(hardestInput, `${hardestText}；返程日早起`);
+  eq(
+    '改了最累的一段：只有它标「已改」，有「撤销这处」',
+    [
+      all(e.box, '.field.is-changed').map((f) => f.getAttribute('data-field-key')),
+      texts(e.box, '.field.is-changed .field-changed'),
+      e.box.querySelector('.field.is-changed .field-undo')?.getAttribute('aria-label'),
+    ],
+    [['intensity.hardest'], ['已改'], '撤销这处：最累的一段'],
+  );
+  // 有改动时离开：拦下，弹「有改动还没保存」；「留下」回到原处（不变量 20）
+  /** 站内跳转到列表（有改动时被拦下，promise 等人选，不等它） */
+  const leave = () =>
+    act(async () => {
+      void e.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' } });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+  await leave();
+  eq(
+    '有改动时站内跳转被拦下，弹「有改动还没保存」',
+    [document.body.textContent?.includes('有改动还没保存'), e.router.state.location.pathname],
+    [true, '/catalog/route/r-sichuan-lux'],
+  );
+  await click(all<HTMLButtonElement>(document.body, 'button').find((b) => b.textContent === '留下'));
+  await settle();
+  eq(
+    '「留下」：还在这一页，改动还在',
+    [e.router.state.location.pathname, hardestInput?.value],
+    ['/catalog/route/r-sichuan-lux', `${hardestText}；返程日早起`],
+  );
+  await click(e.box.querySelector('.field.is-changed .field-undo'));
+  eq('撤销这处：回到原文，「已改」没了', [hardestInput?.value, e.box.querySelectorAll('.field.is-changed').length], [hardestText, 0]);
+  await leave();
+  eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
+  await e.unmount();
+
+  // F、G 页：草稿
+  const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+  eq(
+    '草稿页头：状态「草稿」，状态句「上架后13项会锁定」',
+    [header(d.box).titleStatus, header(d.box).status],
+    ['草稿', `上架后13项会锁定·小林更新于${listTime(GUIZHOU_ITEM.updatedAt!, Date.now())}`],
+  );
+  eq(
+    '草稿：卡片头不声明锁定；上架后会锁的字段标签后提醒；状态卡照样列锁定组',
+    [
+      headTags(d.box),
+      d.box.querySelectorAll('.field-will-lock').length,
+      texts(d.box, '.lock-row'),
+      d.box.querySelector('.status-note')?.textContent,
+    ],
+    [[], 11, ['识别5项', '计价2项', '条款2项', '推荐4项'], '还没上架，销售助手不会推荐它'],
+  );
+  eq(
+    '上架前检查：必须项13/13、建议1条没做；必须项全过时一行，建议项注「不拦上架」',
+    [d.box.querySelector('.check-list-summary')?.textContent, checkRows(d.box)],
+    ['必须项13/13·建议1条没做', ['必须项都填好了13/13', '体力强度没填不拦上架']],
+  );
+  const title = d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
+  await typeInto(title, '');
+  eq(
+    '清空线路名称：检查实时重算，没过的逐条列出',
+    [d.box.querySelector('.check-list-summary')?.textContent, checkRows(d.box)[0]],
+    ['必须项12/13·建议1条没做', '线路名称没填'],
+  );
+  await click(all(d.box, '.check-list button.check-item')[0]);
+  check('点「线路名称没填」：焦点落进线路名称的输入框', document.activeElement === title);
+  await typeInto(title, String(GUIZHOU_5D.title));
+  const hotel3 = d.box.querySelector<HTMLInputElement>('[data-field-key="itinerary"] [data-item-index="2"] [data-field-key="hotel"] input');
+  await typeInto(hotel3, '');
+  eq('第3天的住宿清空：「第3天：当晚住宿没填」', checkRows(d.box)[0], '第3天：当晚住宿没填');
+  await click(all(d.box, '.check-list button.check-item').find((b) => b.textContent?.includes('第3天')));
+  eq(
+    '点它：焦点落进第3天的当晚住宿',
+    [document.activeElement?.closest('[data-item-index]')?.getAttribute('data-item-index'), document.activeElement === hotel3],
+    ['2', true],
+  );
+  check('逐日行程改过：区块头标「已改」', card(d.box, 'days').querySelector('.field-block-row .field-changed') !== null);
+  await click(all(d.box, '.check-list button.check-item').find((b) => b.textContent?.includes('体力强度')));
+  check(
+    '点建议项「体力强度没填」：焦点落进体力强度的分段控件',
+    document.activeElement?.closest('[data-field-key]')?.getAttribute('data-field-key') === 'intensity.level',
+  );
+  await d.unmount();
+
+  // 没有编辑权限：全只读、不挂锁、不提锁定
+  const a = await mountDetail('/catalog/route/r-sichuan-lux', agent(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+  eq(
+    '非编辑成员：没有输入框、不挂锁、卡片头不声明，状态句只写更新、末尾「只读」，状态卡不列锁定组',
+    [
+      a.box.querySelectorAll('.detail-main input, .detail-main textarea, .detail-main .ant-segmented').length,
+      a.box.querySelectorAll('.field-lock, .field-will-lock').length,
+      headTags(a.box),
+      header(a.box).status,
+      a.box.querySelectorAll('.readonly-pill').length,
+      a.box.querySelectorAll('.lock-row').length,
+      a.box.querySelector('.status-note')?.textContent,
+      a.box.querySelectorAll('.detail-narrow-hint').length,
+    ],
+    [0, 0, [], `小林更新于${sichuanAt}`, 1, 0, '销售助手会向客户推荐它', 0],
+  );
+  eq(
+    '非编辑成员看基本信息：两列（4 列只给整卡锁定）',
+    card(a.box, 'basic').querySelector('.field-grid')?.className,
+    'field-grid field-grid-2',
+  );
+  await a.unmount();
+
+  // 匿名：线上快照里的那一条，没有状态、更新人；没有副栏
+  const an = await mountDetail('/catalog/route/r-sichuan-lux', anonOf(travel), {
+    items: { 'route/r-sichuan-lux': { kind: 'route', code: 'r-sichuan-lux', payload: SICHUAN } },
+    lists: { route: ANON_ROUTES },
+  });
+  eq(
+    '匿名：全只读，没有状态、状态句和副栏',
+    [header(an.box), an.box.querySelectorAll('.detail-side').length, an.box.querySelectorAll('.detail-main input').length],
+    [{ crumb: ['产品库', '线路', SICHUAN.title], title: SICHUAN.title, titleStatus: null, status: null }, 0, 0],
+  );
+  await an.unmount();
+
+  // 新建：空表单，编号可以填；不标「已改」
+  const n = await mountDetail('/catalog/new/route', owner(travel), { lists });
+  eq(
+    '新建：标题「新建线路」，面包屑末段同名；状态句只有锁定那一段；编号有输入框',
+    [header(n.box), document.title, n.box.querySelectorAll('[data-field-key="$code"] input').length],
+    [
+      { crumb: ['产品库', '线路', '新建线路'], title: '新建线路', titleStatus: null, status: '上架后13项会锁定' },
+      '新建线路 · 云途定制旅行',
+      1,
+    ],
+  );
+  eq(
+    '新建：上架前检查从空表单算起',
+    n.box.querySelector('.check-list-summary')?.textContent,
+    `必须项${checkItem(ROUTE, {}).requiredPassed}/13·建议${checkItem(ROUTE, {}).recommended.length}条没做`,
+  );
+  await typeInto(n.box.querySelector('[data-field-key="destination"] input'), '云南');
+  eq('新建里填了字不标「已改」（没有可以撤回的原文）', n.box.querySelectorAll('.field.is-changed').length, 0);
+  await n.unmount();
+  const na = await mountDetail('/catalog/new/route', agent(travel), { lists });
+  eq(
+    '非编辑成员打开新建：「你的角色无法执行这项操作」，没有表单',
+    [texts(na.box, '.state-empty-title'), na.box.querySelectorAll('.detail-main').length],
+    [['你的角色无法执行这项操作'], 0],
+  );
+  await na.unmount();
+
+  // 假包：L 页下半
+  const pkItem = { kind: 'package', ord: 0, rev: 1, ...PKG_ROWS.find((r) => r.code === 'p-nuanmu-2r')! };
+  const pk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(renovation), {
+    items: { 'package/p-nuanmu-2r': pkItem },
+    lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
+  });
+  eq(
+    '假包：面包屑、状态句、锁定组、卡片都按装修套餐的配置',
+    [header(pk.box).crumb, header(pk.box).status?.split('·')[0], texts(pk.box, '.lock-row'), groupsOf(pk.box), headTags(pk.box)],
+    [
+      ['产品库', '装修套餐', '暖木 · 两居全包经典版'],
+      '8项上架后锁定',
+      ['识别2项', '计价2项', '条款3项', '推荐1项'],
+      PKG.groups.map((g) => g.key),
+      ['上架后锁定·识别', '上架后锁定·计价', '上架后锁定·推荐', '上架后锁定·条款'],
+    ],
+  );
+  eq(
+    '包含主材：只读的多选引用写成芯片，名称链到那一件主材的详情',
+    all(card(pk.box, 'terms'), 'a.field-ref-link').map((l) => l.getAttribute('href')),
+    (NUANMU.materials as string[]).map((c) => `/catalog/material/${c}`),
+  );
+  await pk.unmount();
+  const nk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(travel), { lists });
+  check('旅游包里没有 package：「没有这个页面」', texts(nk.box, '.state-empty-title').includes('没有这个页面'));
+  await nk.unmount();
+
+  // 不存在、加载、出错：fetch 换成 404、不回来的、连不上的
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () =>
+    Promise.resolve(new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } }));
+  const nf = await mountDetail('/catalog/route/r-nope', owner(travel), { lists });
+  await settle();
+  eq(
+    '不存在：「没有这条线路」加「回到线路列表」',
+    [
+      texts(nf.box, '.state-empty-title'),
+      nf.box.querySelector('.state-empty a')?.textContent,
+      nf.box.querySelector('.state-empty a')?.getAttribute('href'),
+    ],
+    [['没有这条线路'], '回到线路列表', '/catalog/route'],
+  );
+  await nf.unmount();
+  globalThis.fetch = () => new Promise<Response>(() => undefined);
+  const ld = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { lists });
+  eq(
+    '加载：两栏骨架，每个分组一张卡、副栏两张',
+    [ld.box.querySelectorAll('.state-skeleton').length, ld.box.querySelectorAll('.detail-skeleton-card').length],
+    [1, ROUTE.groups.length + 2],
+  );
+  await ld.unmount();
+  globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+  const er = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { lists });
+  await settle();
+  eq(
+    '出错：面包屑还在，内容位置写「没取到」加重试',
+    [header(er.box).crumb, texts(er.box, '.ant-alert-title'), texts(er.box, '.ant-alert button').map((t) => t.replace(/\s/g, ''))],
+    [['产品库', '线路', 'r-sichuan-lux'], ['没取到'], ['重试']],
   );
   await er.unmount();
   globalThis.fetch = realFetch;

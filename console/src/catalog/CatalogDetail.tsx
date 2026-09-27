@@ -71,7 +71,8 @@ export function Breadcrumb({ group, entity, current }: { group: string; entity: 
       <span className="breadcrumb-sep" aria-hidden="true">
         /
       </span>
-      <Link to="/catalog/$kind" params={{ kind: catalogKind(entity.kind) }}>
+      {/* 只在正好是列表页时算「当前」：这里是它下面的一条，不给 aria-current */}
+      <Link to="/catalog/$kind" params={{ kind: catalogKind(entity.kind) }} activeOptions={{ exact: true }}>
         {cjk(entity.label)}
       </Link>
       <span className="breadcrumb-sep" aria-hidden="true">
