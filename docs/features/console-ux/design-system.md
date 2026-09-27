@@ -458,7 +458,7 @@ select {
 | 项                                | 结果                                                                                                                                                                             | 影响                                                                                                                                                                          |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Noto Sans SC 的 GPOS 特性         | `halt kern mark palt vert vhal vkrn vpal`，**没有 `chws` / `vchw`**。上游 `notofonts/noto-cjk` 的 `NotoSansSC-VF.otf`（2.004）也没有                                             | 不能靠 `font-feature-settings: "chws"` 做跨浏览器挤压                                                                                                                         |
-| Noto Sans SC 的 GSUB 特性         | `aalt ccmp dlig fwid hist hwid liga locl pwid ruby vert vrt2`。`locl`（hani 与 ZHS）把 `—` 换成整字宽的 U+2015                                                                   | 中文里的「——」连成一条（已截图核对）                                                                                                                                          |
+| Noto Sans SC 的 GSUB 特性         | `aalt ccmp dlig fwid hist hwid liga locl pwid ruby vert vrt2`。`locl`（hani 与 ZHS）把 `—` 换成整字宽的 U+2015                                                                   | 中文里的「——」连成一条（已截图核对）：两个 U+2015 再由 `ccmp` 连成一个两字宽的字形，子集要留 `ccmp`（§2.6）                                                                   |
 | 各全角标点的 `halt` 值            | 字身在左、右边空半字的一类，`halt` 为 `xa −500`：，。、：；！？）」』】》〉〕”’。字身在右的一类，`halt` 为 `xp −500, xa −500`：（「『【《〈〔“‘                                  | 挤压全靠 `halt`：浏览器按上下文决定对哪个字施加                                                                                                                               |
 | `…`（U+2026）                     | Noto 里整字宽 1000，墨迹 y 314–446，**垂直居中**；Geist 的 `…` 墨迹 y 0–113，落在基线上                                                                                          | Geist 不画 `…`（§2.6 的 `unicode-range`）。另外 `lang="en"` 的段落会触发 `locl latn` 换成西文省略号、落回基线，所以根元素必须是 `lang="zh-CN"`，含 `…` 的元素不设 `lang="en"` |
 | `·`（U+00B7）                     | Noto 里整字宽 1000，居中；Geist 里宽 201                                                                                                                                         | 间隔号交给 Geist 画，窄，这是想要的效果                                                                                                                                       |
@@ -581,8 +581,8 @@ body {
 
 **UI 优先片**：
 
-- 码位：`console/src/**` 和各注册行业包配置里出现的全部汉字；全部 CJK 标点 `U+3000-303F, U+FF01-FF60, U+FFE0-FFE6, U+2014-2015, U+2018-2019, U+201C-201D, U+2026, U+2E3A-2E3B`；以及由 Noto 画的符号 `×` `–` `→` `⌘` `㎡` `℃`。按当前仓库和本文的用字、照这份配方切，共 1,124 个码位，实测 243,600 B（早先量的 1,110 个码位、242 KB 那一版少了 U+FFE0–FFE6、U+2E3A–2E3B 和 `×` `–` `→` `⌘` `℃` 这 14 个）；同一批字按 Google 或 fontsource 的切片要下 25 片、1.43 MB。
-- 保留 GPOS `halt vhal palt vpal kern`、GSUB `locl vert vrt2`；wght 轴限到 400–600。
+- 码位：界面文字里的全部汉字（`console/index.html`、`console/src/**`、`src/shared/**` 除假包外、各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包；注释和自测不算，见 `scripts/fonts/ui-text.ts`）；全部 CJK 标点 `U+3000-303F, U+FF01-FF60, U+FFE0-FFE6, U+2014-2015, U+2018-2019, U+201C-201D, U+2026, U+2E3A-2E3B`；以及由 Noto 画的符号 `×` `–` `→` `⌘` `㎡` `℃`。按当前仓库和本文的用字、照这份配方切，共 1,124 个码位，实测 243,600 B（早先量的 1,110 个码位、242 KB 那一版少了 U+FFE0–FFE6、U+2E3A–2E3B 和 `×` `–` `→` `⌘` `℃` 这 14 个）；同一批字按 Google 或 fontsource 的切片要下 25 片、1.43 MB。
+- 保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（`ccmp` 把「——」连成一条，§2.2）；wght 轴限到 400–600。
 - 由 `scripts/fonts/build.ts` 生成并提交：从固定 URL 取原文件、校验 sha256，调 fonttools 的 `pyftsubset` 切片，同时写出码位清单和产物的 sha256。只在开发机上跑（要本机装 fonttools），CI 不跑。界面文案改了就重跑；新字即使没重跑也能显示，只是来自长尾分片。
 - `pnpm test` 检查两件事：界面和行业包里的每个汉字、全部 CJK 标点都在码位清单里；产物的 sha256 等于清单里记的值。标点都在这一个文件里，Chrome 才能对所有标点对都挤压，§2.2 那 30 对差异也就没有了。
 
@@ -591,9 +591,9 @@ body {
 - 从 OFL 原文件切，码位 `U+0020-007E, U+00A0, U+00B7`，保留 `kern liga tnum pnum ccmp locl`。
 - 这个 `unicode-range` 不含 U+2018–201D、U+2014、U+2026，含 U+00B7。ASCII 以外的符号（`×` `–` `→` 等）都交给 Noto；`×` 虽然在 Latin-1 里，也不进这个范围。
 
-**长尾分片**不提交，由钉死版本的 npm 依赖提供。它们的 `@font-face` 由同一个构建脚本从依赖里的清单生成，家族名写成「Noto Sans SC」，不用依赖自带的 CSS（它的家族名是「Noto Sans SC Variable」）。
+**长尾分片**不提交，由钉死版本的 npm 依赖提供。它们的 `@font-face` 由同一个构建脚本从依赖里的清单生成，家族名写成「Noto Sans SC」，不用依赖自带的 CSS（它的家族名是「Noto Sans SC Variable」）。范围里去掉控制字符（U+0000–001F、U+007F–009F）：latin 片从 U+0000 起，WebKit 遇到拉丁字母后面的换行符会去下载它。
 
-**声明顺序**：先声明长尾分片，最后声明 UI 优先片。同一家族的 `unicode-range` 重叠时，浏览器先查后声明的那一个，所以界面文字和全部标点都取自 UI 优先片，不下载长尾分片。三个引擎是否都这样，按 spec 开放问题 4 实测；不成立就改成全量自切：其余字按常用度切约 100 片，`unicode-range` 与 UI 优先片不重叠。
+**声明顺序**：先声明长尾分片，最后声明 UI 优先片。同一家族的 `unicode-range` 重叠时，浏览器先查后声明的那一个，所以界面文字和全部标点都取自 UI 优先片，不下载长尾分片。Chromium 153、Firefox 155、WebKit 26.6 实测都是这样（spec 开放问题 4，数字见 plan 第 1.2 步的实施记录）。
 
 ```css
 /* 长尾：每片一条，由构建脚本生成，先声明 */
