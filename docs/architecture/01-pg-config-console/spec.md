@@ -7,6 +7,8 @@ Revisions: 2026-09-25 首版草稿经多角度对抗审查后就地修订（尚�
 
 Revisions: 2026-09-26 实现期修订（owner 确认）：后台页面的 CSP 在原来那条之外加 `style-src 'self' 'nonce-…'`，每个响应现生成（第 12 步实测 Ant Design 与 CodeMirror 在原 CSP 下没有样式）；`/api/console/*` 的 CSP 不变。见「后台 API 与页面 · 安全头」。
 
+Revisions: 2026-09-27 实现期修订（owner 确认，翻 implemented 之前）：安全头改为「CSP 至少包含原列各段，可以另加 `font-src 'self'`；除带内容哈希的 `/console/assets/*` 外都带 `no-store`」（原为 CSP 逐字列出、`/console/*` 一律 `no-store`）；页面清单五处改成能力级写法，呈现交给后台 UX spec：登录「口令」改「密码」、SOP 的「检查」「发布」「丢弃」三个按钮、产品库的两个标签页和固定列名、表单「转成 JSON Schema 自动生成」、锁定字段「注明『有报价快照后开放』」；历史里的 `prompt_hash` 可以收进技术详情。验收 16 第 4 条、验收 22 同步改。现有实现同时满足新旧写法。依据是后台 UX spec（`docs/features/console-ux/spec.md`）开放问题 1 的 A 路。
+
 ## 背景与问题
 
 现在 SOP 和产品库是 git 里的三个文件，随镜像发布：
@@ -1027,21 +1029,21 @@ export type ConsoleApp = typeof consoleApi;
 
 - **匿名投影**：SOP 只给已发布版本的 `sections`、`versionNo`、`publishedAt` 和 `promptHash` 前 12 位；产品库只给 active 条目的 `kind`、`code`、`payload`；`/status` 只给 `mode`。不含草稿、任何 user id、姓名和变更说明。匿名读取一律出自进程内缓存与快照，不查库，并挂上现有的 `lookupLimit`。
 - **会话只读列表**读的是现有的文件 store：handler 自己按 `(updatedAt desc, id)` 排序，offset 分页（`limit ≤ 100`），每条只投影 `id`、`channel`、`stage`、`handedOver`、消息条数、`updatedAt`，不带消息正文，也不把 store 里的活对象原样返回。不列 `sim-` 会话：演示访客会话凭 id 就能读全文，id 本身就是凭据。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移。详情仍在 `admin.html` 里看。
-- **安全头**：`/console/*` 与 `/api/console/*` 的响应都带 `Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'`、`Cache-Control: no-store`（响应里有 csrf 和草稿）、`X-Content-Type-Options: nosniff`。`/console` 的页面（index.html）在这条 CSP 之外再加 `style-src 'self' 'nonce-<每个响应现生成>'`：Ant Design 与 CodeMirror 在运行时插 `<style>`，只有 `default-src 'self'` 时整页没有样式。构建时在 index.html 里留 nonce 的占位符，托管页面时每个响应换成新值并写进这一条；前端从 `<meta property="csp-nonce">` 读出交给组件库。脚本仍只许本站文件，注入的标记带不上 nonce，照样被拦。`/console` 与公开页同源，同源的 XSS 能拿到 csrf，所以公开页对产品库文本的转义是后台安全的一部分。
+- **安全头**：`/console/*` 与 `/api/console/*` 的响应都带 `Content-Security-Policy`，至少包含 `default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'`，可以另加 `font-src 'self'`；都带 `X-Content-Type-Options: nosniff`；除带内容哈希的 `/console/assets/*` 外都带 `Cache-Control: no-store`（响应里有 csrf 和草稿），带内容哈希的静态资源可以长缓存。`/console` 的页面（index.html）在这条 CSP 之外再加 `style-src 'self' 'nonce-<每个响应现生成>'`：Ant Design 与 CodeMirror 在运行时插 `<style>`，只有 `default-src 'self'` 时整页没有样式。构建时在 index.html 里留 nonce 的占位符，托管页面时每个响应换成新值并写进这一条；前端从 `<meta property="csp-nonce">` 读出交给组件库。脚本仍只许本站文件，注入的标记带不上 nonce，照样被拦。`/console` 与公开页同源，同源的 XSS 能拿到 csrf，所以公开页对产品库文本的转义是后台安全的一部分。
 
 页面（ADR-002 的栈；本阶段不用 ECharts）：
 
-- **登录**：邮箱和口令。
+- **登录**：邮箱和密码。
 - **SOP**：
   - 左侧是节列表，锁定节带锁标记、只读展示。
   - 右侧编辑可编辑节的正文。
-  - 顶栏：基于哪个版本（草稿已过期时标出）、草稿状态、字符预算条，以及「检查」「发布」（要填变更说明）「丢弃」三个按钮。
+  - 顶栏：基于哪个版本（草稿已过期时标出）、草稿状态、字符预算条。能检查草稿、能发布（要填变更说明）、能丢弃草稿；用按钮还是自动检查、常驻发布条，由后台 UX spec 定。
   - 检查结果按节列出 violation；需要 rebase 时标出，有冲突时列出冲突的节和当前发布版本的正文。
-  - 历史列表显示版本号、来源、发布人、时间、`prompt_hash` 前 12 位，每行可以「以此版本回滚」；回滚结果与目标版本哈希不同时提示原因。
+  - 历史列表显示版本号、来源、发布人、时间，`prompt_hash` 前 12 位查得到（可以收在默认折叠的技术详情里），每行可以「以此版本回滚」；回滚结果与目标版本哈希不同时提示原因。
   - 草稿和已发布版本的逐节 diff 用 `@codemirror/merge`（可砍）。
 - **产品库**：
-  - 线路和酒店两个标签页。表格列：code、标题、目的地、起价、状态、更新人、更新时间。
-  - 表单由 `RouteSchema` / `HotelSchema` 转成 JSON Schema 自动生成（ADR-002）。active 条目的锁定字段只读，并注明「有报价快照后开放」。保存时只把改过的顶层字段放进 `set`。
+  - 每种产品类型（本阶段是线路和酒店）各有一个列表，列至少有编号、名称、状态、更新人、更新时间，其余列由产品类型决定。
+  - 表单由产品类型的定义生成，不为每种类型手写（本阶段由 `RouteSchema` / `HotelSchema` 转成 JSON Schema 生成，ADR-002）。active 条目的锁定字段只读，并写明锁定原因。保存时只把改过的顶层字段放进 `set`。
   - 「新建」生成 draft；「上架」要二次确认，提示上架后这些字段就锁定了。
   - CSV 导入（可砍）：只建 draft，只收平铺字段，数组用「、」分隔。
 - **会话只读列表**（可砍）。
@@ -1285,7 +1287,7 @@ SOP：
     - prod profile：匿名访问 `/auth/login` 以外的任何 `/api/console/*`，都返回 401。
     - demo profile：匿名 `GET /sop`、`GET /catalog/route` 返回 200，响应体里没有任何 user uuid、display_name、`changeNote` 和草稿，产品库只有 active 条目，而且这些请求不增加 `queryCount()`；`GET /status` 只有 `mode`；`GET /audit`、`GET /conversations` 返回 401；任何写请求返回 401。
     - 文件模式：`/api/console/*` 一律返回 503 `db_disabled`。
-    - `/console/*` 与 `/api/console/*` 的响应带上文列出的 CSP、`no-store` 和 `nosniff`。
+    - `/console/*` 与 `/api/console/*` 的响应带上文要求的 CSP 各段和 `nosniff`；除带内容哈希的 `/console/assets/*` 外都带 `no-store`。
 17. **构建。**
     - 在多阶段镜像里：`/console/` 和深链 `/console/sop/versions/3` 都返回 `index.html`；`/console/assets/<hash>.js` 返回 JS；`/api/console/nope` 返回 404 JSON，不是 `index.html`；`/chat.html` 照旧。
     - console 的生产构建产物里，搜不到 `drizzle-orm`、`pg-protocol`、`@electric-sql/pglite`，也搜不到 `node:`。
@@ -1308,7 +1310,7 @@ SOP：
 21. **前缀。**
     - 自动（进 `test`）：DB 模式的 mock eval 里，每个请求实际发出的 system 与 tools 的哈希，都等于当时 `/healthz` 报的 `promptHash` 与 `toolsHash`。
     - 手动（不进 CI）：用 `--cases` 指向只含 realOnly 用例的文件（由 `eval/cases.json` 过滤生成，不提交），按「文件 → DB → 文件」交替各跑至少 3 遍，缓存命中率从每个会话的第 2 个请求起统计。通过条件是两种模式的 p90 都不超过 8 秒；命中率只记录，不设门槛。数字记进 plan 的验收记录。
-22. **后台走查。** 用 Playwright 脚本，或手工走一遍并把截图记进 plan：登录 → 编辑「话术原则」→「检查」按节列出 violation → 填变更说明后发布 → 历史列表出现新版本和 `prompt_hash` → 以旧版回滚；产品库里 active 条目的锁定字段只读，改 highlights 能保存，新建 draft 后经二次确认上架；审计页有对应记录；demo 匿名时有横幅，看不到审计入口。
+22. **后台走查。** 用 Playwright 脚本，或手工走一遍并把截图记进 plan：登录 → 编辑「话术原则」→ 检查草稿，问题按节列出 → 填变更说明后发布 → 历史里出现新版本，查得到 `prompt_hash` → 以旧版回滚；产品库里 active 条目的锁定字段只读，改 highlights 能保存，新建 draft 后经二次确认上架；审计页有对应记录；demo 匿名时有横幅，看不到审计入口。
 23. **demo 切换。** 线上 demo 切换前后，`/healthz` 的 `config.promptHash`、`toolsHash`、`prefixHash` 相同；切换后 `config.mode = db`、`sopVersion = 1`；`docker compose exec app env` 里没有 owner、platform 或超级用户的凭据。
 
 ## 开放问题
