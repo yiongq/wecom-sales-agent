@@ -486,7 +486,7 @@ function hashSession() {
 }
 function syncHash() {
   const want = S.selected ? '#s=' + encodeURIComponent(S.selected) : '';
-  if (location.hash === want) return;
+  if (location.hash === want || (!want && !/^#s=/.test(location.hash))) return; // 别的 hash 不归这里管
   try { history.replaceState(null, '', location.pathname + location.search + want); } catch (_) {}
 }
 S.selected = hashSession();
