@@ -21,3 +21,8 @@ export function peakMonths(bestSeason: string): Set<number> {
   for (const m of bestSeason.matchAll(/(\d{1,2})\s*月/g)) months.add(Number(m[1]));
   return months;
 }
+
+/** 写出了月份，或者写的是「全年」：产品库 schema 的 bestSeason 与行业包 monthRange 字段的上架前检查共用这一条 */
+export function monthsReadable(text: string): boolean {
+  return text.includes('全年') || peakMonths(text).size > 0;
+}

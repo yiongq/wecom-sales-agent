@@ -10,6 +10,7 @@ Revisions: 2026-09-27 实现期修订（plan 第 2.1 步，与实现同一个分
 Revisions: 2026-09-27 实现期修订（plan 第 2.3 步，与实现同一个分支）：一、「错误文案」表加一行 `invalid_credentials`（登录接口的 401）：「邮箱或密码不对 · 检查后重试」，表单内，出错色。「登录」一节要求错误文案取 `ERROR_COPY`，原表没有这一行，登录失败只能落到兜底的「无法完成这项操作」。二、「未保存保护」的确认框写明用 `ConfirmDanger`：「放弃改动并离开」是危险按钮，「留下」默认聚焦。放弃没保存的改动撤销不了，与「丢弃草稿」同类，不变量 3 也只许 `ConfirmDanger` 出危险按钮。
 Revisions: 2026-09-27 实现期修订（plan 第 2.2 步，与实现同一个分支，含评审之后的两处）：外壳三处照设计系统做不到或做了调整。一、用户菜单的身份块只写名字和角色：设计系统 §4.2 写「邮箱和角色」，`Me` 没有邮箱字段，「接口改动」也没加，不为它扩接口。二、打开 ⌘K 的快捷键按平台只认一种：Mac 上是 ⌘K，其余平台是 Ctrl+K；搜索触发器的 Tooltip 与 `aria-keyshortcuts` 同样按平台写。Windows 上没有 ⌘ 键；Mac 的 Ctrl+K 是文本框和 CodeMirror 里的「删到行尾」，两种都认的话在话术编辑器里一按两用（评审之后由「两种按法都认」改成这样）。三、「关于」的许可链接由两个改成三个：「查看Geist许可」「查看思源黑体许可」「查看图标许可」。两款字体的版权声明是两份文件（Geist 与 Geist Mono 共用一份），一个「查看字体许可」只能指到其中一份，思源黑体那份从界面上打不开（评审发现）；「关于」一节和验收 8 第 4 条随之改写，设计系统 §2.6 与 P 页同步。
 Revisions: 2026-09-27 实现期修订（plan 第 2.4 步，评审之后，与实现同一个分支）：「通用部件 · StateView」的「加载用和成品同尺寸的骨架」，在下载页面块的那一段放宽为通用的整页骨架：页头一行加表格 8 行（设计系统 §4.5 的表格行数）。页面块到之前，页面自己的骨架还没下载下来。要按页定制，就得在入口（router.tsx）里给每页另写一份骨架，并随各页的版式同步修改。块到了以后，各页照旧放自己的骨架。「延迟 300ms 才出现」不变：路由的等待时间设 0，延迟由 StateView 负责。
+Revisions: 2026-09-27 实现期修订（plan 第 3.1 步，与实现同一个分支）：「行业包通用架构 · 配置结构」的 `ItemCheck` 加两个计数 `requiredTotal`、`requiredPassed`，`CheckIssue.message` 写明是跟在字段名后面的半句（「没填」「还差1天」，界面拼成「当晚住宿：没填」）。「校验」要显示「必须项13/13」，而有序子项的每处缺漏各是一条 `CheckIssue`（设计系统 G 页的「第3天：当晚住宿没填」单独成行），一项里可以有几条问题，原接口的两个数组算不出分母和过了几项。「校验」另补一条：选填字段填了却写得不对时一样拦上架、单独算一项（不然 `checkItem` 与 schema 在这种 payload 上判得不同，不变量 15）；数值的 `max` 只是输入框上限，不算检查项（spec 列的必须项来源里本来就没有它）。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
 配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
@@ -108,10 +109,12 @@ export function checkPack(pack: IndustryPack): string[];
 /** 上架前检查：必须项与建议项 */
 export function checkItem(entity: EntityType, payload: Record<string, unknown>): ItemCheck;
 export interface ItemCheck {
-  required: CheckIssue[];
+  requiredTotal: number; // 必须项的检查项数，「必须项13/13」的分母
+  requiredPassed: number; // 过了的检查项数
+  required: CheckIssue[]; // 没过的，有序子项的每处缺漏各一条
   recommended: CheckIssue[];
 }
-/** label 是中文路径，例如「逐日行程 · 第4天 · 当天餐食」 */
+/** label 是中文路径，例如「逐日行程 · 第4天 · 当天餐食」；message 是跟在字段名后面的半句，如「没填」「还差1天」 */
 export interface CheckIssue {
   path: string;
   label: string;
@@ -156,6 +159,7 @@ export interface CheckIssue {
 - 界面用 `checkItem` 实时算「上架前检查」。必须项来自 `required`（默认 true）、`min`、`showWhen`、`countFrom`，以及各类型的格式要求：金额是正整数、月份区间能解析、枚举值在 `options` 里。建议项来自 `recommend`。
 - **数组类型的「必填」**（tags、多选 enum、subItems）只要求键存在，可以是空数组，与 schema 一致（`tags: texts` 允许 `[]`）。要至少几项时用 `min`，拦上架（如行程亮点 `min: 1`）；建议几项用 `recommend`，不拦。
 - **计数口径**：必须项按检查项计。每个必填的顶层字段算一项（有序子项算一项，子项里的缺漏都列在这一项下，写「第3天：当晚住宿没填」）；`countFrom` 的条数一致算一项；`showWhen` 显示出来的字段各算一项。草稿线路 r-guizhou-5d 是 12 个必填字段加条数一致，共 13 项，写「必须项13/13」。
+- 选填字段没填不查（表单把清空的选填字段删键）；填了却写得不对（类型、选项、格式）时一样拦上架，单独算一项，与 schema 同判。数值的 `max` 只是输入框的上限，不算检查项。
 - 服务端的 zod schema 仍是唯一的权威：保存返回 422 时，`issues[].path` 按字段路径映射到对应字段下方显示，标签用中文路径。
 - 两者可能走偏，所以 `packs.selftest.ts` 用 `data/` 下的全部条目加一组变异来核对：`checkItem` 的必须项全部通过，当且仅当 schema 的 `safeParse` 成功（不变量 15）。
 

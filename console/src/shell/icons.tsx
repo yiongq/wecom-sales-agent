@@ -1,6 +1,7 @@
 // 图标（spec「视觉与字体 · 图标」，设计系统 §7）：lucide-react，任何尺寸下线宽都是 1.5px（absoluteStrokeWidth），颜色随文字。
-// 实体图标由行业包给 lucide 名称，只能取 §7 的实体图标集合；console 只为这个集合打包图标组件，加一个行业包不用改 console。
-// 第 3.1 步的 checkPack 校验包里的图标名在集合里；集合以外的名字这里画成 box，不报错
+// 实体图标由行业包给 lucide 名称，只能取 §7 的实体图标集合（src/shared/pack.ts 的 ENTITY_ICONS）；console 只为这个集合打包图标组件，
+// 加一个行业包不用改 console。下面的表以 EntityIcon 为键：集合加减一个名字，这里不跟着改 typecheck 就失败。
+// checkPack 校验包里的图标名在集合里（不变量 13）；集合以外的名字这里画成 box，不报错
 import {
   BedDouble,
   Box,
@@ -31,10 +32,11 @@ import {
   Utensils,
   Wrench,
 } from 'lucide-react';
+import type { EntityIcon } from '../../../src/shared/pack.js';
 import type { NavIcon } from './model.js';
 
 /** 设计系统 §7 的实体图标集合 */
-const ENTITY_ICONS: Readonly<Record<string, LucideIcon>> = {
+const ENTITY_ICON_COMPONENTS: Readonly<Record<EntityIcon, LucideIcon>> = {
   route: Route,
   'bed-double': BedDouble,
   package: Package,
@@ -68,7 +70,8 @@ const PAGE_ICONS: Readonly<Record<'sop' | 'conversations' | 'audit', LucideIcon>
   audit: History,
 };
 
-export const entityIcon = (name: string): LucideIcon => (Object.hasOwn(ENTITY_ICONS, name) ? ENTITY_ICONS[name]! : Box);
+export const entityIcon = (name: string): LucideIcon =>
+  Object.hasOwn(ENTITY_ICON_COMPONENTS, name) ? ENTITY_ICON_COMPONENTS[name as EntityIcon] : Box;
 
 export const navIcon = (icon: NavIcon): LucideIcon => ('page' in icon ? PAGE_ICONS[icon.page] : entityIcon(icon.entity));
 
