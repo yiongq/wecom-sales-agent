@@ -36,7 +36,10 @@ export function TextEditor(props: { value: string; onChange?: (value: string) =>
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((t) => t.annotation(external))) onChange.current?.(u.state.doc.toString());
           }),
-          EditorView.theme({ '&': { border: '1px solid #d9d9d9', borderRadius: '6px' }, '.cm-content': { fontSize: '14px' } }),
+          EditorView.theme({
+            '&': { border: '1px solid var(--control-border)', borderRadius: '6px' },
+            '.cm-content': { fontSize: '14px' },
+          }),
         ],
       }),
     });
