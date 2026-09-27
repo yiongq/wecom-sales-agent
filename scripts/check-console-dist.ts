@@ -2,12 +2,16 @@
 // 另查首帧主题脚本的加载方式（console UX spec 第 1.1 步）。
 // 另查样张页没有混进生产产物（console UX spec 不变量 25：/_specimen 只在 VITE_SPECIMEN=1 的构建里注册，第 1.3 步）。
 // 另查 ⌘K 的拼音库不在入口集合里（第 2.2 步）。
+// 另查拆包后的预算与禁入内容（console UX spec「性能」、不变量 25，第 2.4 步）：读 vite 的 .vite/manifest.json（块与块的引用）
+// 和 .vite/modules.json（每块的模块，console/vite.config.ts 的 chunkModules 写）算首屏与每次换页的 JS、首屏字体，
+// 查入口集合里没有 @codemirror 与页面代码，产物里没有样张页、假包的模块和第三方字体域名，CSS 里没有 url(data:。
 // 挂在 `pnpm test` 末尾、紧跟 `pnpm --filter console build`。
 // 包名按子串查；Node 内置模块只查带引号的模块名（"node:crypto"），压缩后的对象键 {node:x} 不算。
 // assets/ 下每个文件名都要带 vite 的内容哈希（<name>-<8 位>.<扩展名>）：服务端给 /console/assets/* 一律一年的 immutable
 // 缓存（src/shared/security-headers.ts），不带哈希的文件混进来，改了内容浏览器也不会重新下载（后台 UX spec 不变量 26）。
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 
 const DIST = path.join('console', 'dist');
 const BANNED = ['drizzle-orm', 'pg-protocol', '@electric-sql/pglite'];
@@ -15,6 +19,30 @@ const NODE_BUILTIN = /["'`]node:[a-z_/]+/;
 /** 样张页的路由、样式类名和「不挤压」对照行：生产构建里这些分支连同页面代码一起被摇掉，出现就是条件没在构建时定下来 */
 const SPECIMEN_MARKERS = ['_specimen', 'spec-panel', 'space-all'];
 const HASHED_NAME = /-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+/** 生产页面只从本站加载字体（不变量 29） */
+const THIRD_PARTY_FONTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
+
+/**
+ * 预算（spec「性能」），单位字节。JS 按 gzip 算，用 zlib 的默认级别，与 host 的 Hono compress（CompressionStream）
+ * 实际发出去的一样；vite 构建日志里的 gzip 数字算法不同，不作准。字体按文件原样的大小（woff2 不再压缩）
+ */
+const BUDGET = {
+  /** 打开总览：入口、它的静态依赖、总览路由的块 */
+  firstScreenJs: 420_000,
+  /** 任意一次站内导航额外下载的 JS */
+  navJs: 250_000,
+  fonts: { 'geist-ui.woff2': 16_384, 'geist-mono-ui.woff2': 12_288, 'noto-sans-sc-ui.woff2': 280_000 } as Record<string, number>,
+  /** preload 的两个字体合计 */
+  preloadFonts: 300_000,
+};
+/** 首屏 preload 的字体只有这两个（spec「字体与授权义务」） */
+const PRELOAD_FONTS = ['geist-ui.woff2', 'noto-sans-sc-ui.woff2'];
+/** 总览路由的懒加载文件（第 4 步加）：有了就算进首屏；在那之前 / 重定向到销售话术，首屏只算入口集合 */
+const OVERVIEW = 'src/pages/overview.lazy.tsx';
+/** 路由的懒加载文件（router.tsx 的 .lazy()）：manifest 里这些动态入口按「换页」算预算 */
+const ROUTE_CHUNK = /^src\/(pages|_specimen)\/[^/]+\.lazy\.tsx$/;
+/** 入口集合里准许出现的页面模块：登录页由外壳直接渲染，不是路由 */
+const ENTRY_PAGES_OK = new Set(['src/pages/LoginPage.tsx']);
 
 function files(dir: string): string[] {
   return fs
@@ -29,11 +57,17 @@ if (!fs.existsSync(path.join(DIST, 'index.html'))) {
 const bad: string[] = [];
 const all = files(DIST);
 for (const f of all) {
+  if (f.endsWith('.woff2')) continue; // 文本扫描跳过字体（spec「性能」）
   const text = fs.readFileSync(f, 'utf8');
   for (const b of BANNED) if (text.includes(b)) bad.push(`${f}: ${b}`);
   const m = NODE_BUILTIN.exec(text);
   if (m) bad.push(`${f}: ${m[0]}`);
   for (const mk of SPECIMEN_MARKERS) if (text.includes(mk)) bad.push(`${f}: 样张页的内容（${mk}）混进了生产产物`);
+  for (const d of THIRD_PARTY_FONTS) if (text.includes(d)) bad.push(`${f}: 引用了第三方字体域名 ${d}，字体只从本站加载`);
+  // assetsInlineLimit: 0 生效的证据：小于 4 KB 的长尾分片也是单独的文件，没被写成 data: 进 CSS（font-src 'self' 会拦下）
+  if (f.endsWith('.css') && text.includes('url(data:')) {
+    bad.push(`${f}: CSS 里有 url(data:（console/vite.config.ts 的 assetsInlineLimit 要是 0）`);
+  }
 }
 const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8');
 if (!html.includes('/console/assets/')) bad.push(`${DIST}/index.html: 资源路径不在 /console/assets/ 下（vite 的 base 不对）`);
@@ -68,10 +102,118 @@ if (!entry.length) bad.push(`${DIST}/index.html: 找不到应用的入口脚本`
 for (const f of entry) if (PINYIN_DICT.test(fs.readFileSync(f, 'utf8'))) bad.push(`${f}: 拼音库进了入口集合，应在第一次打开 ⌘K 时才加载`);
 const pinyinChunks = assets.filter((f) => f.endsWith('.js') && !entry.includes(f) && PINYIN_DICT.test(fs.readFileSync(f, 'utf8')));
 if (!pinyinChunks.length) bad.push('产物里找不到拼音库的字典：pinyin-match 换了写法就更新 PINYIN_DICT，没用上拼音库就删掉这条检查');
+
+// ---- 拆包与预算（spec「性能」，第 2.4 步）----
+interface ManifestChunk {
+  file: string;
+  isEntry?: boolean;
+  isDynamicEntry?: boolean;
+  imports?: string[];
+}
+function readJson<T>(rel: string, hint: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(DIST, rel), 'utf8')) as T;
+  } catch {
+    bad.push(`${DIST}/${rel} 读不出来（${hint}）`);
+    return null;
+  }
+}
+const manifest = readJson<Record<string, ManifestChunk>>('.vite/manifest.json', 'console/vite.config.ts 要开 build.manifest');
+const modules = readJson<Record<string, string[]>>('.vite/modules.json', 'console/vite.config.ts 的 chunkModules 插件写这份清单');
+const report: string[] = [];
+if (manifest && modules) {
+  const fmt = (n: number): string => n.toLocaleString('en-US');
+  const sizeOf = (file: string): number => fs.statSync(path.join(DIST, file)).size;
+  const gzipSum = (list: string[]): number => list.reduce((s, f) => s + zlib.gzipSync(fs.readFileSync(path.join(DIST, f))).length, 0);
+  /** 一个块连同它全部的静态依赖（manifest 的 imports 递归），按 manifest 的键 */
+  const closure = (key: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(key) || !manifest[key]) return seen;
+    seen.add(key);
+    for (const i of manifest[key].imports ?? []) closure(i, seen);
+    return seen;
+  };
+  /** 同上，换成其中的 JS 文件（路径相对 dist） */
+  const jsOf = (key: string): string[] => [...closure(key)].map((k) => manifest[k]!.file).filter((f) => f.endsWith('.js'));
+
+  const entries = Object.keys(manifest).filter((k) => manifest[k]!.isEntry);
+  if (entries.length !== 1) bad.push(`manifest 里的入口应该正好一个，现在是 ${entries.length} 个：${entries.join('、')}`);
+  const entryJs = entries.length === 1 ? jsOf(entries[0]!) : [];
+  for (const k of Object.keys(manifest)) {
+    const f = manifest[k]!.file;
+    if (f.endsWith('.js') && !modules[f]) bad.push(`${f}: .vite/modules.json 里没有这一块`);
+  }
+  // index.html 直接加载的脚本都要在入口集合里，不然首屏预算少算了
+  for (const f of entry) {
+    const rel = path.relative(DIST, f).split(path.sep).join('/');
+    if (!entryJs.includes(rel)) bad.push(`${f}: index.html 加载了它，manifest 的入口集合里却没有`);
+  }
+
+  // 首屏：入口集合加总览路由的块
+  const firstScreen = [...new Set([...entryJs, ...(manifest[OVERVIEW] ? jsOf(OVERVIEW) : [])])];
+  const firstGzip = gzipSum(firstScreen);
+  if (firstGzip > BUDGET.firstScreenJs) {
+    bad.push(`打开总览要下载的 JS gzip 后 ${fmt(firstGzip)} B，超过预算 ${fmt(BUDGET.firstScreenJs)} B（${firstScreen.join('、')}）`);
+  }
+  report.push(
+    `首屏 JS ${fmt(firstGzip)} / ${fmt(BUDGET.firstScreenJs)} B（${manifest[OVERVIEW] ? '入口集合加总览' : '总览还没有，只算入口集合'}）`,
+  );
+
+  // 换页：每个路由块连同它的静态依赖，去掉入口集合里已有的。从哪一页出发，额外下载的都不会比这个多
+  const routes = Object.keys(manifest).filter((k) => manifest[k]!.isDynamicEntry && ROUTE_CHUNK.test(k));
+  if (!routes.length) bad.push('manifest 里没有路由的懒加载块：各页要在 router.tsx 里用 .lazy() 拆出去');
+  let worst = { key: '', gzip: 0 };
+  for (const k of routes) {
+    const extra = jsOf(k).filter((f) => !entryJs.includes(f));
+    const g = gzipSum(extra);
+    if (g > BUDGET.navJs) bad.push(`进 ${k} 要额外下载的 JS gzip 后 ${fmt(g)} B，超过预算 ${fmt(BUDGET.navJs)} B（${extra.join('、')}）`);
+    if (g > worst.gzip) worst = { key: k, gzip: g };
+  }
+  report.push(`换页最多 ${fmt(worst.gzip)} / ${fmt(BUDGET.navJs)} B（${worst.key}）`);
+
+  // 入口集合里没有页面代码（各页 .lazy()）和 @codemirror（只进话术页的块）
+  const entryModules = entryJs.flatMap((f) => modules[f] ?? []);
+  for (const id of entryModules) {
+    if (id.startsWith('src/pages/') && !ENTRY_PAGES_OK.has(id))
+      bad.push(`入口集合里有页面模块 ${id}：各页要在 router.tsx 里用 .lazy() 拆出去`);
+  }
+  const isCodemirror = (id: string): boolean => id.includes('node_modules/@codemirror/');
+  const cmInEntry = entryModules.filter(isCodemirror);
+  if (cmInEntry.length) bad.push(`入口集合里有 @codemirror 的模块（${cmInEntry.length} 个，如 ${cmInEntry[0]}），它只该进话术页的块`);
+  if (!Object.values(modules).some((ids) => ids.some(isCodemirror))) {
+    bad.push('产物里找不到 @codemirror 的模块：模块清单的路径写法变了就更新 isCodemirror，不再用 CodeMirror 就删掉这条检查');
+  }
+
+  // 样张页与假包的模块都不能进生产产物（不变量 25；假包的文字由第 3.3 步另查）
+  for (const [file, ids] of Object.entries(modules)) {
+    for (const id of ids) {
+      if (id.startsWith('src/_specimen/')) bad.push(`${file}: 样张页的模块 ${id} 进了生产产物`);
+      if (id.includes('src/shared/pack-fixtures/')) bad.push(`${file}: 假包的模块 ${id} 进了生产产物`);
+    }
+  }
+
+  // 首屏字体：各自的上限；preload 的正好是那两个，合计也有上限
+  const fontFile = (name: string): string | undefined => manifest[`src/fonts/${name}`]?.file;
+  for (const [name, limit] of Object.entries(BUDGET.fonts)) {
+    const f = fontFile(name);
+    if (!f) bad.push(`manifest 里没有 src/fonts/${name}`);
+    else if (sizeOf(f) > limit) bad.push(`${f}: ${fmt(sizeOf(f))} B，超过预算 ${fmt(limit)} B`);
+  }
+  const preloaded = [...html.matchAll(/<link\b[^>]*\brel="preload"[^>]*>/g)]
+    .filter((m) => /\bas="font"/.test(m[0]))
+    .map((m) => /\bhref="\/console\/([^"]+)"/.exec(m[0])?.[1] ?? m[0]);
+  const expected = PRELOAD_FONTS.map(fontFile);
+  if (preloaded.length !== expected.length || expected.some((f) => !f || !preloaded.includes(f))) {
+    bad.push(`${DIST}/index.html: preload 的字体应该正好是 ${PRELOAD_FONTS.join('、')}，现在是 ${preloaded.join('、') || '没有'}`);
+  }
+  const preloadBytes = preloaded.filter((f) => fs.existsSync(path.join(DIST, f))).reduce((s, f) => s + sizeOf(f), 0);
+  if (preloadBytes > BUDGET.preloadFonts) bad.push(`preload 的字体合计 ${fmt(preloadBytes)} B，超过预算 ${fmt(BUDGET.preloadFonts)} B`);
+  report.push(`preload 字体 ${fmt(preloadBytes)} / ${fmt(BUDGET.preloadFonts)} B`);
+}
+
 if (bad.length) {
   console.error(`console-dist: 构建产物里有不该有的东西：\n  ${bad.join('\n  ')}`);
   process.exit(1);
 }
 console.log(
-  `console-dist: ${all.length} 个文件，没有服务端依赖、Node 内置模块与样张页，首帧主题脚本在应用脚本之前同步加载；assets/ 下 ${assets.length} 个文件都带内容哈希；拼音库在懒加载的 ${path.basename(pinyinChunks[0]!)} 里`,
+  `console-dist: ${all.length} 个文件，没有服务端依赖、Node 内置模块、样张页、假包与第三方字体，首帧主题脚本在应用脚本之前同步加载；assets/ 下 ${assets.length} 个文件都带内容哈希；拼音库在懒加载的 ${path.basename(pinyinChunks[0]!)} 里；${report.join('；')}`,
 );

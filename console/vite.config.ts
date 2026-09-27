@@ -90,12 +90,38 @@ function preloadFonts(): Plugin {
   };
 }
 
+// 每个 JS 块由哪些模块组成，写到 manifest 旁边的 .vite/modules.json（路径相对 console/，虚拟模块去掉开头的 \0）。
+// vite 的 manifest 只记块与块之间的引用，不记模块；scripts/check-console-dist.ts 靠这份清单查入口集合里没有 @codemirror、
+// 产物里没有样张页与假包的模块（spec「性能」、不变量 25）
+function chunkModules(): Plugin {
+  let root = '';
+  return {
+    name: 'console-chunk-modules',
+    apply: 'build',
+    configResolved(config) {
+      root = config.root;
+    },
+    generateBundle(_options, bundle) {
+      const modules: Record<string, string[]> = {};
+      for (const out of Object.values(bundle)) {
+        if (out.type !== 'chunk') continue;
+        modules[out.fileName] = out.moduleIds.map((id) =>
+          id.startsWith('\0') ? id.slice(1) : path.relative(root, id).split(path.sep).join('/'),
+        );
+      }
+      this.emitFile({ type: 'asset', fileName: '.vite/modules.json', source: `${JSON.stringify(modules, null, 2)}\n` });
+    },
+  };
+}
+
 export default defineConfig({
   base: '/console/',
-  plugins: [react(), basicSsl(), previewWithCsp(), preloadFonts()],
+  plugins: [react(), basicSsl(), previewWithCsp(), preloadFonts(), chunkModules()],
   html: { cspNonce: CSP_NONCE_PLACEHOLDER },
   server: { port: 5173, proxy: api },
   preview: { port: 4173, proxy: api },
-  // assetsInlineLimit: 0：长尾分片里有 3 片小于默认的 4 KB 阈值，默认会被写成 data: 进 CSS，font-src 'self' 会拦下它们
-  build: { outDir: 'dist', emptyOutDir: true, chunkSizeWarningLimit: 4096, assetsInlineLimit: 0 },
+  // assetsInlineLimit: 0：长尾分片里有 3 片小于默认的 4 KB 阈值，默认会被写成 data: 进 CSS，font-src 'self' 会拦下它们。
+  // manifest：scripts/check-console-dist.ts 按它算首屏与每次换页的 JS 预算（spec「性能」）。块大小的告警阈值用 vite 的默认值，
+  // 不再调高压掉告警，由那份预算把关
+  build: { outDir: 'dist', emptyOutDir: true, assetsInlineLimit: 0, manifest: true },
 });
