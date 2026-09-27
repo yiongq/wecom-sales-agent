@@ -673,6 +673,20 @@ for (const r of ROLES) {
   );
 }
 
+// 产品库的一条与新建（plan 第 10.1 步）：选中的都是这一类实体，恰好一个（不变量 23）
+{
+  const nav = buildNav(PACK, member('owner'));
+  const cases: Array<[string, string | null]> = [
+    ['/console/catalog/route/r-sichuan-lux', '/catalog/route'],
+    ['/console/catalog/new/route', '/catalog/route'],
+    ['/console/catalog/new/hotel', '/catalog/hotel'],
+    ['/catalog/new/hotel', '/catalog/hotel'],
+    ['/console/catalog/new/package', null],
+    ['/console/catalog/new', null],
+  ];
+  for (const [path, want] of cases) eq(`选中项：${path}`, selectedNavKey(path, nav), want);
+}
+
 if (fails.length) {
   console.error(`shell: ${fails.length} 条失败（${pass} 条通过）：`);
   for (const f of fails) console.error(`  ✗ ${f}`);

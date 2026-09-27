@@ -1,0 +1,240 @@
+/*
+ * 产品库详情（design-system §5.9 卡片、§5.17 检查清单、§6.4 锁定、E、F、L 页）。颜色一律取 brand.css 的变量，这里不新增变量。
+ * 详情组件本身不 import CSS（自测在 Node 里 import 它们），由 pages/catalog-item.lazy.tsx 随详情页的块一起下载。
+ */
+
+/* ---------- 两栏（E 页）：主栏 736、间隔 24、副栏 368，副栏吸顶；1440 宽时正好是内容宽 1128 ---------- */
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 736px) 368px;
+  column-gap: 24px;
+  row-gap: 16px;
+  align-items: start;
+}
+/* 匿名没有副栏 */
+.detail-layout.no-side {
+  grid-template-columns: minmax(0, 736px);
+}
+.detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+/* 副栏卡片吸顶 top 24（§5.9）：页头这时已经缩成 52 高的吸顶条，从它下沿再往下 24 */
+.detail-side {
+  position: sticky;
+  top: 76px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+/* 宽 <1280（侧栏收成图标栏或隐藏）：副栏落到主栏下方，不吸顶 */
+@media (max-width: 1279px) {
+  .detail-layout {
+    grid-template-columns: minmax(0, 736px);
+  }
+  .detail-side {
+    position: static;
+  }
+}
+
+/* 宽 <1024 时顶部提示「建议在电脑上编辑」，不拦（spec 状态表「窄屏」）；只给能编辑的人 */
+.detail-narrow-hint {
+  margin-bottom: 16px;
+}
+@media (min-width: 1024px) {
+  .detail-narrow-hint {
+    display: none;
+  }
+}
+
+/* ---------- 分组卡片（§5.9）：卡片头内边距 16 20 0，标题 15/22/600；头和体之间没有分隔线；卡片体 12 20 20 ---------- */
+.detail-card,
+.detail-side-card {
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.detail-card-head {
+  padding: 16px 20px 0;
+}
+.detail-card-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.detail-card-title,
+.detail-side-title {
+  margin: 0;
+  border-radius: var(--r-xs);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* 副栏点锁定组时焦点落在卡片头 */
+.detail-card-title:focus-visible,
+.detail-block:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.detail-block:focus {
+  outline: none;
+}
+.detail-block:focus-visible {
+  border-radius: var(--r-md);
+}
+/* 锁定原因：标题下一行，13/20 text-2 */
+.detail-card-reason {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.detail-card-body {
+  padding: 12px 20px 20px;
+}
+
+/* 锁定 Tag（§5.8、§5.9）：高 22，内边距 0 6，--subtle 底，13/20 text-2，前置 12 的 lock（text-3），间隔 4 */
+.lock-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.lock-tag svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* ---------- 副栏 ---------- */
+.detail-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 20px 0;
+}
+.detail-side-body {
+  padding: 12px 20px 20px;
+}
+/* 状态卡：「13项上架后锁定」14/22/500，下一行 13/20 text-2 的说明 */
+.status-headline {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.status-note {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.status-note.is-first {
+  margin-top: 0;
+}
+/* 锁定组各一行：高 32，可点，末尾 chevron-right；行间 2，左右 −8 */
+.lock-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 12px -8px 0;
+  padding: 0;
+  list-style: none;
+}
+.lock-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.lock-row:hover {
+  background: var(--hover);
+}
+.lock-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.lock-row-count {
+  flex: 1;
+  font-size: 14px;
+  line-height: 22px;
+}
+.lock-row-chevron {
+  flex: none;
+  color: var(--text-3);
+}
+/* 上架前检查（§5.17）：卡片内边距 16 20 12，清单左右 −8 */
+.detail-check {
+  padding: 16px 20px 12px;
+}
+/* 最近更新：两列，名称 72 宽 13 text-2，值 14/22 text */
+.detail-meta {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  row-gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+}
+.detail-meta dt {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.detail-meta dd {
+  margin: 0;
+  color: var(--text);
+}
+
+/* ---------- 加载：两栏骨架（静态灰条，StateView 管 300ms 后才看得见） ---------- */
+/* 页头三行与成品同高：面包屑 20、间隔 8、标题 32、间隔 4、状态句 20，下距 20 */
+.detail-skeleton-head {
+  margin-bottom: 20px;
+}
+.detail-skeleton-crumb {
+  width: 200px;
+  margin: 3px 0 11px;
+}
+.detail-skeleton-title {
+  width: 320px;
+  height: 24px;
+  margin: 4px 0 8px;
+}
+.detail-skeleton-status {
+  width: 240px;
+  margin: 3px 0;
+}
+.detail-skeleton-card {
+  box-sizing: border-box;
+  padding: 20px;
+}
+.detail-skeleton-card .skeleton-bar {
+  width: 96px;
+}
+.detail-skeleton-status-card {
+  height: 262px;
+}
+.detail-skeleton-meta-card {
+  height: 118px;
+}

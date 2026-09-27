@@ -1,4 +1,5 @@
 // 页头（设计系统 §4.3）：标题 24/32/600、状态句、右侧操作区；同时写标签页标题「页名 · 租户名」（不变量 23）。
+// 第三层页面（产品库详情）在标题上方放面包屑，标题右边 8 处跟一个状态；吸顶时两者都收起，只留页名和操作区。
 // 滚动后缩成吸顶条：还是这一个 header（h1 与操作按钮不复制，读屏和按钮状态都只有一份），贴在面板顶上，高 52、
 // 页名 15/22/600、只留操作区，不透明，底部一条 --divider。缩起时用外边距补足原来的高度，下面的内容不跳。
 // 页头的父元素要是整页（不要包进 antd Space），吸顶才吸得住。
@@ -94,13 +95,17 @@ export interface PageHeaderProps {
   title: string;
   /** 标签页标题里租户名前面的几段；不给就是 [title]。详情页写「条目名 · 实体名」 */
   docTitle?: readonly string[];
+  /** 标题上方的面包屑（第三层页面，如产品库详情） */
+  breadcrumb?: ReactNode;
+  /** 标题右边 8 处的状态（Status） */
+  titleStatus?: ReactNode;
   /** 状态句：一句话，13/20 text-2 */
   status?: ReactNode;
   /** 右侧操作区：「更多」、次要按钮、主按钮（至多一个，放最右） */
   actions?: ReactNode;
 }
 
-export function PageHeader({ title, docTitle, status, actions }: PageHeaderProps) {
+export function PageHeader({ title, docTitle, breadcrumb, titleStatus, status, actions }: PageHeaderProps) {
   const viewer = shellViewerOf(useViewer().data);
   const qc = useQueryClient();
   useDocumentTitle(viewer ? documentTitle(docTitle ?? [title], viewer) : title);
@@ -115,7 +120,15 @@ export function PageHeader({ title, docTitle, status, actions }: PageHeaderProps
       <div ref={sentinel} className="page-header-sentinel" aria-hidden="true" />
       <header ref={headerRef} className={cls} style={style}>
         <div className="page-header-main">
-          <h1 className="page-title">{cjk(title)}</h1>
+          {breadcrumb}
+          {titleStatus ? (
+            <div className="page-title-row">
+              <h1 className="page-title">{cjk(title)}</h1>
+              <span className="page-title-status">{titleStatus}</span>
+            </div>
+          ) : (
+            <h1 className="page-title">{cjk(title)}</h1>
+          )}
           {(status || readOnlyRole) && (
             <div className="page-status">
               {status}

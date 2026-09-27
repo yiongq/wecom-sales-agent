@@ -13,6 +13,16 @@ export const catalogListQuery = (kind: CatalogKind) =>
     queryFn: () => unwrap(api.catalog[':kind'].$get({ param: { kind } })),
   });
 
+/**
+ * 产品库的一条（详情页）。键接在列表的键后面：改了这一类的任何一条，按 ['catalog', kind] 让列表失效时它也跟着失效。
+ * 匿名得到的是线上快照里的那一条（没有状态、更新人），库里没有的 404
+ */
+export const catalogItemQuery = (kind: CatalogKind, code: string) =>
+  queryOptions({
+    queryKey: ['catalog', kind, code] as const,
+    queryFn: () => unwrap(api.catalog[':kind'][':code'].$get({ param: { kind, code } })),
+  });
+
 export const conversationCountsQuery = queryOptions({
   queryKey: ['conversations', 'counts'] as const,
   queryFn: () => unwrap(api.conversations.counts.$get()),

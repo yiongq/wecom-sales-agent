@@ -654,7 +654,9 @@ a.nav-item:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.page-header.is-stuck .page-status {
+.page-header.is-stuck .page-status,
+.page-header.is-stuck .breadcrumb,
+.page-header.is-stuck .page-title-status {
   display: none;
 }
 .page-header-main {
@@ -667,6 +669,49 @@ a.nav-item:hover {
   line-height: 32px;
   font-weight: 600;
   color: var(--text);
+}
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.page-title-row .page-title {
+  min-width: 0;
+}
+.page-title-status {
+  display: inline-flex;
+  flex: none;
+}
+/* 面包屑（§4.3）：13/20；上级是 text-3 链接，悬停变 text；当前页 text-2；「/」text-3，两侧各 8；与标题间隔 8 */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.breadcrumb-sep {
+  margin: 0 8px;
+}
+.breadcrumb a {
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+}
+.breadcrumb a:hover {
+  color: var(--text);
+}
+.breadcrumb a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.breadcrumb-current {
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
 }
 .page-status {
   display: flex;

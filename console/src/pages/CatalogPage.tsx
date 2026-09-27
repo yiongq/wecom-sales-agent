@@ -2,10 +2,11 @@
 // 包里没有的 kind 是「没有这个页面」。页头：实体名；状态句「共21条 · 销售助手只推荐已上架的」；编辑角色有「新建{实体名}」，
 // csvImport 为 true 的实体另有「导入CSV」（不能导入的不渲染这个入口，也不放灰按钮）；非编辑成员和匿名都没有这两个入口。
 // 页签、工具条、表格与各种状态在 catalog/CatalogList.tsx，页签、搜索、筛选都写进地址（catalog/params.ts）。
-// 名称、「新建」「导入CSV」暂时打开 01 的旧抽屉与导入弹窗，两者都按需下载、不进本页的块：只认共用 schema 里的 kind，
-// 第 10 步的详情页和第 12 步的导入弹窗按行业包渲染以后换掉（plan「Open」）
+// 名称是链到详情页（/catalog/$kind/$code，第 10.1 步）的链接，任何行业包的实体都一样。
+// 「新建」「导入CSV」暂时打开 01 的旧抽屉与导入弹窗，两者都按需下载、不进本页的块：只认共用 schema 里的 kind，
+// 第 10.3 步的新建页和第 12 步的导入弹窗按行业包渲染以后换掉（plan「Open」）
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { Button } from 'antd';
 import { Plus } from 'lucide-react';
 import { lazy, type ReactNode, Suspense, useState } from 'react';
@@ -23,7 +24,6 @@ import { PageHeader } from '../shell/PageHeader.js';
 import { NotFound } from '../shell/Shell.js';
 import { cjk } from '../typography.js';
 import { canEdit, usePack, useViewer } from '../viewer.js';
-import type { Row as DrawerRow } from './CatalogDrawer.js';
 
 const CatalogDrawer = lazy(() => import('./CatalogDrawer.js').then((m) => ({ default: m.CatalogDrawer })));
 const CsvImport = lazy(() => import('./CsvImport.js').then((m) => ({ default: m.CsvImport })));
@@ -55,7 +55,8 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
   const rows = list.data?.items as unknown as ListRow[] | undefined;
   // 更新列的「今天」、月份条的当前月：打开页面时取一次（走查钉住时钟）
   const [now] = useState(() => Date.now());
-  const [drawer, setDrawer] = useState<{ row: DrawerRow | null } | null>(null);
+  // 旧抽屉只剩「新建」一个入口（第 10.3 步换成新建页）
+  const [drawer, setDrawer] = useState(false);
   const refItems = useRefItems(pack, entity, anon);
   // 旧抽屉与旧导入弹窗认得这个 kind 时是它，否则 null
   const legacy = legacyKind(entity.kind) ? entity.kind : null;
@@ -72,7 +73,7 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
         ) : (
           <Button>导入CSV</Button>
         ))}
-      <PrimaryButton icon={<Icon of={Plus} />} onClick={() => legacy !== null && setDrawer({ row: null })}>
+      <PrimaryButton icon={<Icon of={Plus} />} onClick={() => legacy !== null && setDrawer(true)}>
         新建{entity.label}
       </PrimaryButton>
     </>
@@ -80,15 +81,12 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
   const empty = rows !== undefined && rows.length === 0;
   const status = statusParts(rows);
 
-  // 名称是真正能点的：键盘可达，打开这一条（第 10.1 步换成详情路由的链接）
-  const titleLink = (row: ListRow, children: ReactNode): ReactNode =>
-    legacy !== null ? (
-      <button type="button" className="cell-link" onClick={() => setDrawer({ row: row as unknown as DrawerRow })}>
-        {children}
-      </button>
-    ) : (
-      <span className="cell-link">{children}</span>
-    );
+  // 名称是真正的链接（spec「产品库列表」）：键盘可达，打开这一条的详情页
+  const titleLink = (row: ListRow, children: ReactNode): ReactNode => (
+    <Link to="/catalog/$kind/$code" params={{ kind: entity.kind, code: row.code }} className="cell-link">
+      {children}
+    </Link>
+  );
 
   return (
     <>
@@ -112,6 +110,11 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
         now={now}
         titleLink={titleLink}
         refItems={refItems}
+        itemLink={(kind, code, children) => (
+          <Link to="/catalog/$kind/$code" params={{ kind, code }} className="field-ref-link">
+            {children}
+          </Link>
+        )}
         emptyActions={actions}
       />
       <Suspense fallback={null}>
@@ -119,12 +122,14 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
           <CatalogDrawer
             kind={legacy}
             label={entity.label}
-            row={drawer.row}
+            row={null}
             editable={editable}
-            onClose={() => setDrawer(null)}
+            onClose={() => setDrawer(false)}
+            // 建好以后打开它的详情页，接着看、接着改
             onSaved={async (item) => {
-              setDrawer({ row: item });
+              setDrawer(false);
               await refresh();
+              await navigate({ to: '/catalog/$kind/$code', params: { kind: entity.kind, code: item.code } });
             }}
           />
         )}

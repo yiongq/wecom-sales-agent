@@ -624,7 +624,9 @@ function SubItemsView({ field, value }: ViewProps) {
     return (
       <ol className="field-list">
         {items.map((it, i) => (
-          <li key={i}>{cjk(shown(it))}</li>
+          <li key={i} data-item-index={i}>
+            {cjk(shown(it))}
+          </li>
         ))}
       </ol>
     );
@@ -635,7 +637,7 @@ function SubItemsView({ field, value }: ViewProps) {
         const full = indexLabel(field, i + 1);
         const fits = labelFitsNode(full);
         return (
-          <li key={i} className="tl-item">
+          <li key={i} className="tl-item" data-item-index={i}>
             <span className="tl-node" aria-hidden={fits ? undefined : true}>
               {fits ? full : i + 1}
             </span>
@@ -665,7 +667,7 @@ function SingleListForm(p: FormProps) {
   return (
     <div className="field-list-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
       {items.map((it, i) => (
-        <div key={i} className="field-list-row">
+        <div key={i} className="field-list-row" data-item-index={i}>
           <R.Form
             field={sub}
             value={it}
@@ -689,6 +691,7 @@ function SingleListForm(p: FormProps) {
 
 /**
  * 多字段的有序子项（逐日行程、施工节点）：每项一张卡片，按子字段的类型渲染，可以改文字。
+ * 每一项带 data-item-index（单字段的逐条列表、只读的列表与时间轴也带）：详情页的上架前检查按它找到「第3天」那一项。
  * 竖轴与节点状态、条数提醒、增删与上移下移、自动编号、条数锁定是通用有序子项编辑器（第 11 步）
  */
 function ItemCardsForm(p: FormProps) {
@@ -701,7 +704,7 @@ function ItemCardsForm(p: FormProps) {
         const item = isRecord(it) ? it : {};
         const label = indexLabel(field, i + 1);
         return (
-          <section key={i} className="subitem-card" aria-label={label}>
+          <section key={i} className="subitem-card" aria-label={label} data-item-index={i}>
             <div className="subitem-label">{cjk(label)}</div>
             <div className="field-grid field-grid-2">
               {subs.map((sub) => (

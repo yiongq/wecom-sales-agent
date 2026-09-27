@@ -1,8 +1,9 @@
 // 检查清单（spec「通用部件 · CheckList」，design-system §5.17）：发布前检查与上架前检查共用。
 // 头是标题与「6/7通过」，下一行是补充；每项一个图标（通过、没过、只是建议、还没跑）、标签和右侧说明，没过时说明用 danger 字。
 // 没过的项给了 onClick 就整行是一个按钮，末尾加箭头，点了跳到出问题的位置
-import { CheckCircleOutlined, CloseCircleOutlined, RightOutlined, WarningOutlined } from '@ant-design/icons';
+import { ChevronRight, CircleCheck, CircleDashed, CircleX, TriangleAlert } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { Icon } from '../shell/icons.js';
 import { cjk } from '../typography.js';
 
 export type CheckState = 'pass' | 'fail' | 'warn' | 'pending';
@@ -19,11 +20,11 @@ export interface CheckItem {
 
 const STATE_NAME: Readonly<Record<CheckState, string>> = { pass: '通过', fail: '没过', warn: '建议', pending: '还没跑' };
 
+/** 16 的图标（§5.17）：通过 circle-check、没过 circle-x、建议 triangle-alert、还没跑 circle-dashed */
+const STATE_ICON = { pass: CircleCheck, fail: CircleX, warn: TriangleAlert, pending: CircleDashed } as const;
+
 function StateIcon({ state }: { state: CheckState }) {
-  if (state === 'pass') return <CheckCircleOutlined className="check-icon check-icon-pass" aria-hidden="true" />;
-  if (state === 'fail') return <CloseCircleOutlined className="check-icon check-icon-fail" aria-hidden="true" />;
-  if (state === 'warn') return <WarningOutlined className="check-icon check-icon-warn" aria-hidden="true" />;
-  return <span className="check-icon check-icon-pending" aria-hidden="true" />;
+  return <Icon of={STATE_ICON[state]} className={`check-icon check-icon-${state}`} />;
 }
 
 function Row({ item }: { item: CheckItem }) {
@@ -39,7 +40,7 @@ function Row({ item }: { item: CheckItem }) {
     return (
       <button type="button" className={cls} onClick={item.onClick} aria-label={`${item.label}：${STATE_NAME[item.state]}`}>
         {inner}
-        <RightOutlined className="check-item-chevron" aria-hidden="true" />
+        <Icon of={ChevronRight} size={14} className="check-item-chevron" />
       </button>
     );
   }

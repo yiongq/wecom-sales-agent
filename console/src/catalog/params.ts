@@ -61,3 +61,11 @@ export function withPick(search: CatalogSearch, key: string, value: string | und
 export function cleared(search: CatalogSearch, all = false): CatalogSearch {
   return all ? {} : catalogSearch({ ...search, f: [] });
 }
+
+/** 条目详情的 URL 状态（路由表 /catalog/$kind/$code 一行）：页签「编辑 / 预览」。页签本身在第 10.3 步，这里只认取值 */
+export interface ItemSearch {
+  tab?: 'edit' | 'preview';
+}
+
+export const itemSearch = (raw: Record<string, unknown>): ItemSearch =>
+  raw.tab === 'edit' || raw.tab === 'preview' ? { tab: raw.tab } : {};

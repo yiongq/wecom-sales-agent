@@ -69,6 +69,59 @@
   font-size: 13px;
   line-height: 20px;
 }
+/*
+ * 改过还没保存（§6.5）：标签后 6 处 6px 的 --accent 圆点，再 4 处 13/500 accent-text「已改」；不画左侧竖条。
+ * 「撤销这处」13 accent-text，平时透明，悬停或焦点在这个字段里时出现；一直可以用 Tab 走到（走到它时它自己就在字段里）。
+ * 点击区域 24 高：上下各 2 的内边距用负外边距抵掉，标签行不变高
+ */
+.field-changed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+.field-changed-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+.field-undo {
+  margin: -2px 0 -2px auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+}
+.field:hover > .field-label-row > .field-undo,
+.field:hover > .field-block-row > .field-undo,
+.field:focus-within > .field-label-row > .field-undo,
+.field:focus-within > .field-block-row > .field-undo {
+  opacity: 1;
+}
+.field-undo:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-undo:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.field-block-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .field-help {
   max-width: 40em;
   font-size: 13px;
@@ -270,6 +323,20 @@
   align-items: center;
   gap: 8px;
   max-width: 100%;
+}
+/* 引用的名称链到那一条的详情：正文色，悬停出下划线，键盘可达（§5.5 首列名称的写法） */
+.field-ref-link {
+  border-radius: var(--r-xs);
+  color: inherit;
+}
+.field-ref-link:hover {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-ref-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 .ref-option {
   display: flex;

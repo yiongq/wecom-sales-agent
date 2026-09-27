@@ -346,11 +346,7 @@ button.check-item:focus-visible {
   color: var(--warning-icon);
 }
 .check-icon-pending {
-  box-sizing: border-box;
-  width: 16px;
-  height: 16px;
-  border: 1.5px dashed var(--text-3);
-  border-radius: var(--r-full);
+  color: var(--text-3);
 }
 .check-item-chevron {
   flex: none;

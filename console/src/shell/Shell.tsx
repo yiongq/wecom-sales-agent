@@ -247,8 +247,8 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         placeholder={placeholder}
         pages={pages}
         actions={actions}
-        // 条目详情页在第 10 步（/catalog/$kind/$code）；在那之前打开这个实体的列表
-        openEntity={(kind) => void navigate({ to: '/catalog/$kind', params: { kind: catalogKind(kind) } })}
+        // 「各实体」组的一条打开它的详情页（第 10.1 步）
+        openEntity={(kind, code) => void navigate({ to: '/catalog/$kind/$code', params: { kind: catalogKind(kind), code } })}
         openConversation={(row) => window.open(workbenchHref(row.id), '_blank', 'noopener,noreferrer')}
       />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />

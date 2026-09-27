@@ -55,6 +55,22 @@ export function writeValue(state: Payload, field: FieldDef, value: unknown): Pay
   return setPath(state, pathOf(field.key), drop ? undefined : value);
 }
 
+/**
+ * 这个字段改过、还没保存（设计系统 §6.5 的「已改」）：表单状态里的值与打开时的不同，按 01 的 sameValue 比（与键序无关）。
+ * 按字段比，不按顶层键：只改了「最累的一段」时，体力强度不算改过
+ */
+export const fieldChanged = (original: Payload, state: Payload, f: FieldDef): boolean =>
+  !sameValue(valueAt(original, f.key), valueAt(state, f.key));
+
+/**
+ * 「撤销这处」：把这个字段放回打开时的值，别的字段不动。原来没有这个键就删掉（删空的嵌套对象一起删），
+ * 所以撤销了每一处改动以后补丁回到空（不变量 16）。不经 writeValue：原值照原样放回，选填的空值也不删
+ */
+export function restoreField(state: Payload, original: Payload, f: FieldDef): Payload {
+  const v = valueAt(original, f.key);
+  return setPath(state, pathOf(f.key), v === undefined ? undefined : structuredClone(v));
+}
+
 /** showWhen 没显示出来的字段：值从表单状态里删掉，删空的嵌套对象一起删（有序子项的子字段不支持 showWhen） */
 export function pruneHidden(state: Payload, fields: readonly FieldDef[]): Payload {
   let next = state;

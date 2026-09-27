@@ -1091,7 +1091,9 @@ for (const [, e, items] of SAMPLES) {
   check('底部「添加一条」，删除按钮写「删除这条」', hl.includes('添加一条') && hl.includes('aria-label="删除这条"'));
   check(
     '单字段只读写成列表',
-    view(fieldOf(ROUTE, 'highlights'), ['一', '二']).includes('<ol class="field-list"><li>一</li><li>二</li></ol>'),
+    view(fieldOf(ROUTE, 'highlights'), ['一', '二']).includes(
+      '<ol class="field-list"><li data-item-index="0">一</li><li data-item-index="1">二</li></ol>',
+    ),
   );
   const itf = form(fieldOf(ROUTE, 'itinerary'), GUIZHOU_5D.itinerary);
   eq('逐日行程表单：每天一张卡片，卡片名「D1」…', [count(itf, 'class="subitem-card"'), itf.includes('aria-label="D5"')], [5, true]);
@@ -2129,7 +2131,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     actions: ['新建线路'],
   });
   eq('编辑角色：三个页签', texts(r.box, '.list-tabs .ant-tabs-tab'), ['全部21', '已上架20', '草稿1']);
-  eq('旅游包的名称打开旧抽屉（按钮）', r.box.querySelector('.cell-link')?.tagName, 'BUTTON');
+  eq(
+    '名称是链到详情页的链接（第 10.1 步）',
+    [r.box.querySelector('.cell-link')?.tagName, r.box.querySelector('.cell-link')?.getAttribute('href')],
+    ['A', '/catalog/route/r-guizhou-5d'],
+  );
   await r.unmount();
 
   const h = await mountPage('/catalog/hotel', owner(travel), { hotel: HOTEL_ROWS });
@@ -2187,7 +2193,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     '状态',
     '更新',
   ]);
-  eq('假包的名称是纯文字（旧抽屉不认这个 kind，第 10.1 步换成详情链接）', pk.box.querySelector('.cell-link')?.tagName, 'SPAN');
+  eq(
+    '假包的名称同样链到详情页（第 10.1 步之前是纯文字）',
+    [pk.box.querySelector('.cell-link')?.tagName, pk.box.querySelector('.cell-link')?.getAttribute('href')],
+    ['A', '/catalog/package/p-jiufang-part'],
+  );
   await pk.unmount();
 
   // 加载、出错：状态句还没有，先占一行（取到以后下面不跳）；fetch 换成不回来的、连不上的

@@ -256,15 +256,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-button.cell-link {
-  cursor: pointer;
-}
-button.cell-link:hover {
+a.cell-link:hover {
+  color: var(--text);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 /* 焦点框画在里面：单元格会裁切（§5.20 容器裁切处偏移 −2） */
-button.cell-link:focus-visible {
+a.cell-link:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
