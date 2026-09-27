@@ -28,26 +28,34 @@
 .cv-stages {
   max-width: 560px;
 }
+/* 一行正好 24 高：右侧按钮 28 高，上下各溢出 2，不把区块撑高 */
 .cv-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 24px;
+  height: 24px;
   margin-bottom: 8px;
 }
 .cv-title {
+  flex: none;
   margin: 0;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
   color: var(--text);
 }
+/* 窄屏放不下时计数先省略，标题和按钮不折行 */
 .cv-count {
+  min-width: 0;
+  overflow: hidden;
   font-size: 13px;
   line-height: 20px;
   color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cv-head-btn {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -62,6 +70,7 @@
   line-height: 20px;
   font-weight: 500;
   color: var(--text-2);
+  white-space: nowrap;
   cursor: pointer;
 }
 .cv-head-btn svg {
@@ -249,11 +258,20 @@ a.cv-stage.is-selected:hover {
 .cv-table .ant-table-thead > tr > th::before {
   display: none;
 }
+/* 横滚时固定的首列：表头也要不透明，不然滚过去的表头字从底下透出来 */
+.cv-table .ant-table-thead > tr > th.ant-table-cell-fix-start {
+  background: var(--panel);
+}
 .cv-row {
   cursor: pointer;
 }
 .cv-table .ant-table-tbody > tr > td {
   white-space: nowrap;
+}
+/* 状态胶囊（22 高）与操作按钮（28 高）是 inline-flex，按基线对齐会把行盒撑高 1–2px：贴着行盒顶对齐，行高正好 44 */
+.cv-table .ant-table-tbody .status,
+.cv-table .ant-table-tbody .cv-open {
+  vertical-align: top;
 }
 .cv-table .ant-table-tbody > tr > td:nth-child(4) {
   font-variant-numeric: tabular-nums;
@@ -309,7 +327,11 @@ a.cv-stage.is-selected:hover {
   font-variant-numeric: tabular-nums;
 }
 
-/* 行内操作（§5.1）：幽灵小按钮，28 高，text-2，后接 14 的 arrow-up-right；悬停 --hover 底、text 字 */
+/* 行内操作（§5.1）：幽灵小按钮，28 高，text-2，后接 14 的 arrow-up-right；悬停 --hover 底、text 字。
+   按钮比一行字高 6，这一格上下内边距各少 3，行高仍是 44 */
+.cv-table .ant-table-tbody > tr > td.cv-op-cell {
+  padding-block: 7.5px;
+}
 .cv-table .cv-open.ant-btn {
   height: 28px;
   padding: 0 8px 0 10px;
@@ -336,8 +358,8 @@ a.cv-stage.is-selected:hover {
   color: var(--text-3);
 }
 
-/* 窄屏：阶段条占满宽度；页签放不下时间隔收到 16 */
-@media (max-width: 991px) {
+/* 很窄时（375 宽的内容区 327）四个页签加 24 的间隔放不下，antd 会收成「…」菜单：间隔收到 16 */
+@media (max-width: 599px) {
   .cv-tabs .ant-tabs-tab + .ant-tabs-tab {
     margin-inline-start: 16px;
   }

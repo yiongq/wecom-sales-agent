@@ -20,6 +20,7 @@ import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
 import { conversationCountsQuery } from '../queries.js';
+import { useViewport } from '../shell/hooks.js';
 import { Icon } from '../shell/icons.js';
 import { badgeText, POLL } from '../shell/model.js';
 import { PageHeader } from '../shell/PageHeader.js';
@@ -43,6 +44,12 @@ import {
   tabSearch,
 } from './model.js';
 import { stageRows } from './stages.js';
+
+/**
+ * 筛选链接只在地址完全相同时算「当前」：TanStack 默认按子集比 search，取消筛选的链接（?state=ai）在 ?state=ai&stage=quote
+ * 上会被标成 aria-current="page"
+ */
+const EXACT = { exact: true, includeSearch: true } as const;
 
 /** 工作台（旧的 admin.html，用 ADMIN_PASS 的独立登录；02 之后由 J 页取代） */
 const WORKBENCH = '/admin.html';
@@ -125,6 +132,7 @@ function StageBlock({
       <Link
         to="/conversations"
         search={stageSearch(key, search)}
+        activeOptions={EXACT}
         className={selected ? `${className} is-selected` : className}
         aria-current={selected ? 'true' : undefined}
         aria-label={`${label}，${selected ? '取消阶段筛选' : '只看这个阶段的会话'}`}
@@ -211,8 +219,12 @@ function openRow(e: MouseEvent, href: string): void {
   window.open(href, '_blank', 'noopener,noreferrer');
 }
 
+/** 首列宽：设计宽度下 300；<992 横滚时首列固定，300 会占满整个视口，收成放得下「企微客户 · F01」的宽度 */
+const FIRST_COL = { wide: 300, narrow: 176 } as const;
+
 function ConversationTable({ rows, total, search }: { rows: RowView[]; total: number; search: ConversationsSearch }) {
   const navigate = useNavigate();
+  const narrow = useViewport() === 'narrow';
   return (
     <Table<RowView>
       className="cv-table"
@@ -236,7 +248,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
         {
           key: 'conversation',
           title: '会话',
-          width: 300,
+          width: narrow ? FIRST_COL.narrow : FIRST_COL.wide,
           fixed: 'left',
           render: (_, r) => (
             <span className="cv-conv">
@@ -276,6 +288,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
           key: 'open',
           title: '',
           align: 'right',
+          className: 'cv-op-cell',
           onHeaderCell: () => ({ 'aria-label': '操作' }),
           render: (_, r) => (
             <Button
@@ -348,6 +361,7 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
           <Link
             to="/conversations"
             search={clearStage(search)}
+            activeOptions={EXACT}
             className="cv-chip"
             aria-label={`清除阶段筛选：${stageLabel(pack, search.stage)}`}
           >
@@ -368,7 +382,7 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
               title: '这个分类下没有会话',
               link:
                 search.stage !== undefined ? (
-                  <Link to="/conversations" search={clearStage(search)}>
+                  <Link to="/conversations" search={clearStage(search)} activeOptions={EXACT}>
                     清除筛选
                   </Link>
                 ) : undefined,
