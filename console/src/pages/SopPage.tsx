@@ -32,8 +32,8 @@ import type {
   SopOverview,
   SopSectionText,
   SopVersion,
-  ViolationCode,
 } from '../../../src/shared/console-api.js';
+import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
 import { api, HttpError, unwrap } from '../api.js';
 import { type CheckItem, CheckList } from '../parts/CheckList.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
@@ -57,17 +57,6 @@ const SOURCE_LABEL: Record<SopVersion['source'], string> = {
   rerender: '启动重渲染',
 };
 const when = (iso: string | null): string => (iso ? dayjs(iso).format('YYYY-MM-DD HH:mm') : '—');
-
-/** 7 个检查项，名字固定，与 ViolationCode 一一对应（design-system §5.17） */
-const SOP_CHECKS: ReadonlyArray<readonly [ViolationCode, string]> = [
-  ['structure', '结构完整'],
-  ['locked_changed', '固定规则节没改'],
-  ['phrase_missing', '必备短语都在'],
-  ['phrase_forbidden', '没有禁用短语'],
-  ['unknown_tool', '工具名都存在'],
-  ['unknown_field', '字段名都存在'],
-  ['over_budget', '字数在额度内'],
-];
 
 /** 节的正文：去掉「## 标题」和它后面的空行；前言没有标题 */
 function bodyOf(text: string, heading: string | null): string {
@@ -117,7 +106,7 @@ function AnonSop({ data }: { data: AnonSopOverview }) {
   );
 }
 
-/** 检查结果按 7 个检查项列出；服务端的原文（detail）、哈希只在技术详情里 */
+/** 检查结果按 7 个检查项列出（名字固定，见 ui-labels.ts 的 SOP_CHECKS）；服务端的原文（detail）、哈希只在技术详情里 */
 function checkItems(spec: readonly SectionSpecView[], violations: DraftCheck['violations']): CheckItem[] {
   return SOP_CHECKS.map(([code, label]) => {
     const hits = violations.filter((v) => v.code === code);

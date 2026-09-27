@@ -1,21 +1,13 @@
 // 外壳的纯逻辑（spec「信息架构、导航与路由」「逐页设计 · 外壳」，设计系统 §4）：侧栏由行业包生成、选中项、标签页标题、
-// 徽标、头像取色、会话标签、相对时间、视口三档。不依赖 React，shell.selftest.ts 直接 import。
+// 徽标、头像取色、会话标签、视口三档。不依赖 React，shell.selftest.ts 直接 import。
+// 角色的中文名在 src/shared/ui-labels.ts，相对时间在 src/shared/format.ts。
 // 界面代码不认行业：实体名、图标名、产品库分组名、客户的叫法都取自 /pack 下发的行业包（spec「行业包通用架构 · 下发」）
-import type { ConversationRow, Me, Role } from '../../../src/shared/console-api.js';
+import type { ConversationRow, Me } from '../../../src/shared/console-api.js';
 import { shortIdOf } from '../../../src/shared/conversation.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 
 /** 外壳关心的来者：成员带角色，匿名只在 demo 下有 */
 export type ShellViewer = { kind: 'member'; me: Me } | { kind: 'anon' };
-
-/** 角色的中文名（第 3.4 步挪进 src/shared/ui-labels.ts） */
-export const ROLE_LABEL: Readonly<Record<Role, string>> = {
-  owner: '所有者',
-  admin: '管理员',
-  supervisor: '主管',
-  agent: '坐席',
-  viewer: '只读',
-};
 
 /** 改话术、改产品库、看审计：只有所有者、管理员（01 的权限矩阵） */
 export const isEditor = (v: ShellViewer): boolean => v.kind === 'member' && (v.me.role === 'owner' || v.me.role === 'admin');
@@ -141,28 +133,6 @@ export function conversationLabel(row: Pick<ConversationRow, 'id' | 'channel'>, 
  * 工作台里打开这个会话。admin.html 读 #s=<id> 选中它是第 13 步的事：在那之前这个链接只打开工作台、不选中会话（plan「Open」）
  */
 export const workbenchHref = (id: string): string => `/admin.html#s=${encodeURIComponent(id)}`;
-
-const pad2 = (n: number): string => String(n).padStart(2, '0');
-
-/**
- * 最后动静的相对时间（设计系统 §10.0 的会话表）：「刚刚」「8分钟前」「5小时前」「昨天21:40」「9月24日」，跨年加年份。
- * 按本机时区的日历日算「今天」「昨天」。第 3.4 步的 src/shared/format.ts 接手后换成那里的函数
- */
-export function sinceText(iso: string, now: number): string {
-  const t = new Date(iso);
-  const diff = now - t.getTime();
-  if (!Number.isFinite(diff)) return '—';
-  if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟前`;
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  if (t.getTime() >= today.getTime()) return `${Math.floor(diff / 3_600_000)}小时前`;
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (t.getTime() >= yesterday.getTime()) return `昨天${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
-  const md = `${t.getMonth() + 1}月${t.getDate()}日`;
-  return t.getFullYear() === today.getFullYear() ? md : `${t.getFullYear()}年${md}`;
-}
 
 // ---------------- 视口 ----------------
 

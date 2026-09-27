@@ -1,5 +1,5 @@
 // 审计（spec「审计」）：只追加。租户与操作者从 withTenant 的上下文取，调用方只给动作和内容
-import { and, desc, eq, lt, type SQL } from 'drizzle-orm';
+import { and, desc, eq, lt, sql, type SQL } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { auditLog } from '../schema.js';
 
@@ -36,11 +36,18 @@ export interface AuditRow {
   diff: unknown;
 }
 
-/** 本租户的审计，按 id 倒序（走 audit_log_by_tenant）；beforeId 翻页，action 精确过滤 */
-export async function readAudit(tx: Tx, q: { limit: number; beforeId?: number; action?: string }): Promise<AuditRow[]> {
+/**
+ * 本租户的审计，按 id 倒序（走 audit_log_by_tenant）；beforeId 翻页，action 精确过滤，actions 只留列表里的动作
+ * （一个数组参数 `action = any($1)`，列表多长都是同一条语句）
+ */
+export async function readAudit(
+  tx: Tx,
+  q: { limit: number; beforeId?: number; action?: string; actions?: readonly string[] },
+): Promise<AuditRow[]> {
   const where: SQL[] = [];
   if (q.beforeId !== undefined) where.push(lt(auditLog.id, q.beforeId));
   if (q.action !== undefined) where.push(eq(auditLog.action, q.action));
+  if (q.actions !== undefined) where.push(sql`${auditLog.action} = any(${sql.param([...q.actions])}::text[])`);
   return tx
     .select({
       id: auditLog.id,

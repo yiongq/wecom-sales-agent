@@ -25,7 +25,7 @@
   - [ ] 3.1 `checkPack`、`checkItem`（含数组的 `min` 与必须项的计数口径，spec「校验」）、`ENTITY_ICONS`；旅游包补全（design-system §9，含 `recommend`、`min`）；假包 `src/shared/pack-fixtures/renovation.ts`；`src/packs/packs.selftest.ts`（不变量 13–15），串进 `pnpm test`。
   - [ ] 3.2 渲染器：11 种字段类型各三种形态（`Record<FieldType, …>`，不变量 12）；实体图标映射；表单状态与 `set` / `unset`；`storeAs` 的 `parse` / `format`；表单网格（design-system §6.0、§6.4）；`console/src/fields/fields.selftest.tsx`（两个包的每个字段；不变量 16 的往返），串进 `pnpm test`；`scripts/check-boundaries.ts` 只给这一个文件开 import `src/packs/registry.ts` 与 `src/shared/pack-fixtures/` 的例外。
   - [ ] 3.3 `check-boundaries.ts` 禁止其余 `console/src` 文件 import `src/packs/**` 与 `src/shared/pack-fixtures/**`；`check-console-src.ts` 加上行业包词汇扫描（不变量 11 的范围与白名单）和不变量 17 的 console 一侧；`check-console-dist.ts` 断言产物里没有假包内容（不变量 25）。
-  - [ ] 3.4 `src/shared/ui-labels.ts`（检查项名、角色、`AUDIT_ACTIONS`、`ERROR_COPY` 的文案）与 `src/shared/format.ts`（金额、相对与绝对时间、月份区间）；`AuditQuery.actions`（服务端与验收 15 第 8 条）；`describeAudit(entry, pack, lookups)`（实体名、字段名取自行业包）。总览的「最近变更」和第 14 步都用它们。
+  - [x] 3.4 `src/shared/ui-labels.ts`（检查项名、角色、`AUDIT_ACTIONS`、`ERROR_COPY` 的文案）与 `src/shared/format.ts`（金额、相对与绝对时间、月份区间）；`AuditQuery.actions`（服务端与验收 15 第 8 条）；`describeAudit(entry, pack, lookups)`（实体名、字段名取自行业包）。总览的「最近变更」和第 14 步都用它们。
 - [ ] 4. 总览（1.5）：路由 `/` 取代重定向；需要你处理、系统状态、业务数、客户停在哪一步、最近变更，各块独立加载与出错；匿名总览（验收 10）。`scripts/seed-demo.py` 加 `--scenario console-ux` 与 `--now`（验收 4「走查种子与时钟」），不带这两个参数时输出不变。
 - [ ] 5. 销售话术一：编辑（3）
   - [ ] 5.1 状态句、额度条（用第 2.1 步挪好的 `src/shared/sop-sections.ts`）、目录（分段筛选、锁定原因、键盘、URL 的 `section`、窄屏下拉）。
@@ -396,6 +396,40 @@
   - 第 9、10 步：产品库的换页只剩 2,923 B 余量，rjsf 到第 10.3 步才删。在那之前往产品库页加代码（渲染器、列表重做），先看 `pnpm test` 末尾的换页数字；超了按开放问题 8 请 owner 定。
   - 第 12 步：CSV 解析要进导入弹窗自己的块（spec「性能」）。现在 `CsvImport` 静态打在产品库块里：它只在客户端解码文件，解析在服务端。
   - 第 3.3 步：假包按文字查（这一步只按模块路径查）。
+
+### 第 3.4 步（2026-09-27）
+
+- 做了什么：
+  - `src/shared/ui-labels.ts`：`ROLE_LABEL` 与 `roleLabel()`（认不出的写「其他角色」）、话术检查项 `SOP_CHECK_LABEL` / `SOP_CHECKS`（`Record<ViolationCode, string>`，少一项 typecheck 报错）、`AUDIT_ACTIONS`（17 种动作的中文、类别、lucide 图标名）与 `auditAction()`、`AUDIT_GROUPS`、`auditActionsParam(类别, 显示登录记录)`、非人操作者的「命令行」「系统」、启动重渲染原因的中文，以及 `ERROR_COPY` 整张表（连同形式、颜色、按钮，一条记录不拆开）和 `NETWORK_COPY`、`FALLBACK_COPY`、按钮文字。`console/src/parts/errors.ts` 只留按错误挑文案的逻辑，原来的导出名照旧转出去，调用处没改。
+  - `src/shared/format.ts`：`digits`、`money`（「42,800元」「13,800元/人」）、`quantity`；`relativeTime`（第 2.2 步的 `sinceText` 原样挪来，外壳的铃铛与 ⌘K 改用它）、`absoluteTime`（「9月26日 14:02」，跨年加年份）、`fullTime`（「2026-09-26 10:12:44」）、`dayTime`（时间线的「今天 13:40」）、`dayHeading`（K 页组标题「今天 · 9月26日 周六」的各段）、`dateText`、`weekday`、`dateWithWeekday`、`dayKey`；月份区间 `parseMonthRange`（与 schema 同一个 `peakMonths` 规则）、`monthSegments`、`monthRangeText`（「5–10月」「4–6、9–11月」「11月–次年4月」「全年」取 `yearRoundLabel`）、`monthRangeSpoken`（读屏「5月到10月」）。时间都按本机时区，浏览器里就是看的人的时区。
+  - `src/shared/audit-text.ts`：`describeAudit(entry | 一组, pack, lookups)` 返回操作者（`human` 为 false 时画方块图标）、句子各段（对象标 500）、`tail`（总览一行写完时的补充「的住宿档次、行程亮点」）、`summary`（K 页第二行「改了：住宿档次、行程亮点」）、整句、类别、图标、条数。实体名、字段名（diff 的顶层键按包里字段的顺序，`id` 是编号，嵌套字段取第一个子字段的标签）、话术节名都取自传进来的包；对象名依次取 diff 里的新名字、`lookups.itemName`、编号。另有 `auditRuns` 合并连续同类记录。
+  - `AuditQuery.actions` 按 spec 原文（正则、至多 32 个、与 `action` 同给 400）；`readAudit` 加一个数组参数 `action = any($1::text[])`，`listAudit` 与接口透传。
+  - console 一侧：`shell/model.ts` 删掉 `ROLE_LABEL`、`sinceText`，`PageHeader`、`UserMenu`、`Bell`、`CommandPalette` 改取 `src/shared`；话术页的 7 个检查项取 `SOP_CHECKS`；审计页的动作下拉取 `AUDIT_ACTIONS` 的键（整页第 14 步重做）。页面上的字一个没变。
+- 自测：
+  - `src/shared/format.selftest.ts`（48 条）与 `src/shared/audit-text.selftest.ts`（42 条）串进 `pnpm test`，排在 `src/shared/typography.selftest.ts` 之后，CI 注释同步。时区钉成 `Asia/Shanghai`，并断言它真的生效（UTC 16:00 是次日 0 点），CI 跑在 UTC 下也测得出按本地日历算。月份区间把 1–12 月的 4,096 种组合都切一遍：段展开正好是原来的月份、段是最长的、按起始月排、跨年段至多一个。审计句子用设计系统 §10.0 的 8 条（合并后）逐字比对，再拿同样的记录换一个改了名字的包，句子跟着换；每种动作的句子里，对象与版本号以外没有英文；diff 是 null、字符串、数组、类型不对时不抛。审计句子的测试用文件里的包夹具：`src/shared` 只能 import `src/shared`（check-boundaries）。
+  - `shell.selftest.ts` 的 11 条相对时间挪进 `format.selftest.ts`，另加一条：审计动作的图标名都在 lucide-react 1.48.0 的图标表里（143 → 133 条）。
+  - `console.selftest.ts` 268 → 276 条（原有断言一条没改）。验收 15 第 8 条：挑日志里稀疏的 `sop.discard,catalog.activate`（12 条，相邻两条之间最多隔 41 条别的），`limit=2` 逐页翻完，与全部记录里挑出来的逐条相同，除最后一页外每页都是 2 条；只给一个动作与 `action=` 结果相同；同给、大写、空项、空串、33 个、单项超过 64 个字符都 400，32 个 200。另有三条：`AUDIT_ACTIONS` 与 `src/` 里 `writeAudit` 写的 action 字面量逐个相同（不多不少）；「全部、不显示登录记录」换算出的请求等于全部记录去掉登录与退出；这一整轮写进库的真实审计记录（14 种动作）用真实的旅游包写成句子，每条都有类别，对象与版本号以外没有英文，没有「另N项」「另N节」。
+- 字体：新文案让 check-fonts 报缺 14 个字（「账修初租设停移记」「三六」「命令求义」），重跑 `scripts/fonts/build.ts`（fonttools 4.66.0、brotli 1.2.0 装在仓库外的 venv 里；在仓库外的副本里跑，缓存不写进共用的 `node_modules/.cache`，用完删掉）。UI 优先片 754 → 768 个码位，154,088 → 157,280 B（+3,192），两个 preload 合计 169,164 B；两个 Geist 文件、许可原文逐字节不变；界面用字 586 个汉字。**与第 3.1–3.3 步合并时**，三个字体文件照旧会冲突，后合并的一方在合并结果上重跑 `build.ts`。
+- 构建：入口集合 gzip 315,829 → 316,692 B（+863：`ui-labels.ts` 整个进了入口，因为 `errors.ts` 在入口里）；换页最多仍是产品库 247,076 B。
+- 变异（仓库外的隔离副本，31 例全部失败并点名，还原后与 worktree 逐字节相同）：
+  - 接口 7 例：库里不按 `actions` 过滤；接口不往下传；库里不过滤、取回来在 JS 里按页过滤（「翻页不出空页」点名，每页条数 0,0,0,0,0,2,…）；去掉互斥；放宽到 33 个；`AUDIT_ACTIONS` 少一种、多一种（源码扫描点名）。第一轮「JS 里过滤」的写法让空页抛 500，自测的翻页函数跟着抛，只崩不点名；翻页函数改成记下出错、由断言点名，变异也改成照常算 `nextBefore`，之后按名字失败。
+  - 格式 8 例：千分位按四位分、金额与单位间加空格、「昨天」放宽到前天、日期不写年份、12 月不接 1 月、区间用连字符、时刻按 UTC、组标题没有「昨天」。
+  - 审计句子与标签 14 例：字段按 diff 的键序、实体名写 kind、命令行写命令名、产品库字段写原名（两个自测都点名）、相隔正好 5 分钟不合、登录也合并、不看操作者也合并、动作表与角色按原型链查、不显示登录记录时也带登录、对象名先取缓存（补了「改了名写新名字」一条才拦得住）、检查项换顺序、话术节写 key、兜底句子带动作编码。
+  - 另 2 例：图标名写错（shell 自测）；挪过去的错误文案改一个字（`errors.selftest.ts` 照旧对着 spec 的表逐条比）。
+- preview 实测（Chromium，Playwright 1.63，CSP 同线上，接口由 `page.route` 拦截，时钟钉在 9月26日 14:30、`Asia/Shanghai`，浅色、深色各一轮，探针在仓库外）：铃铛两行「8分钟前有新动静」「26分钟前有新动静」；用户菜单「老板 / 所有者」；⌘K 搜「d02」，会话行右侧「昨天21:40」；主管的「只读」胶囊悬停「你的角色是主管，只能查看」；话术页点「检查」列出 7 个检查项，「6/7通过」；审计页的动作下拉与原来相同；会话接口 500 时「没取到 · 服务暂时连不上」，服务端原文只在折叠的技术详情里。两套主题 `securitypolicyviolation` 都是 0 次，控制台错误 0 条。
+- 取舍（spec 没写到的细节，spec 不改）：
+  - 审计类别：销售话术是 `sop.*`；产品库是 `catalog.*`；账号与登录是 `auth.*` 和平台命令行的五种账号、成员操作；平台与配置是 `platform.tenant_create`、`config.import`。登录记录是 `auth.login`、`auth.logout`。
+  - 「全部」且显示登录记录时不带 `actions`，表里还没有的新动作也列得出来；其余组合只列表里的动作，所以新动作在补进 `AUDIT_ACTIONS` 之前只在这一种组合下出现。`console.selftest.ts` 的源码扫描保证现有的每种动作都在表里。
+  - 连续同类记录只合并产品库的四种动作（spec 说「同一实体」，实体是行业包的实体）；`describeAudit` 收一组时写「新建了6条酒店草稿」这类句子。合并本是第 14 步的事，总览（第 4 步）的「最近变更」同样要写这句（设计系统 A 页第 2 行），所以放在这一步。
+  - 句子里操作者后面留一个空格（设计系统 A、K 页的写法，操作者与对象用 500），中文与数字、邮箱之间不留。
+  - `AUDIT_ACTIONS` 里有 7 个图标不在设计系统 §7 的表里（`refresh-cw`、`log-in`、`user-plus`、`key-round`、`user-x`、`user-cog`、`user-minus`），§7 的表下补了一句。表外的动作用 `circle-dashed`（§7 的「没跑」）。
+  - 审计页现在的动作下拉仍把动作编码当选项显示（不变量 7 的「动作编码」），第 14 步换成类别筛选时去掉，这一步没动页面。
+- 没有新增依赖。
+- 留给后面的步骤：
+  - 第 3.2 步：MonthStrip 用 `parseMonthRange` / `monthSegments` / `monthRangeText` / `monthRangeSpoken`，金额与带单位的整数用 `money` / `quantity`。
+  - 第 4 步：「最近变更」请求 `auditActionsParam('all', false)`，`auditRuns` 合并后 `describeAudit(run, pack, lookups).text`，时间列 `dayTime` 与 `clockTime`；状态句的日期 `dateWithWeekday`。
+  - 第 13 步：「最后动静」用 `relativeTime`，悬停 `absoluteTime`。
+  - 第 14 步：图标名到 lucide 组件的映射（名字在 `AUDIT_ACTIONS`）；`lookups.itemName` 从 `queries.ts` 的产品库缓存取；组标题 `dayHeading`，详情抽屉 `fullTime`、`money`；`sop.rollback` 的 `sameHashAsTarget` 提示仍按 spec 写在抽屉里。
 
 ## 交接记录
 

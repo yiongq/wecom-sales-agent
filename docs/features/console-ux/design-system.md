@@ -1189,6 +1189,8 @@ body {
 | 信息 / 成功 / 留意 / 出错 / 没过 / 没跑                   | `info` / `circle-check` / `triangle-alert` / `circle-alert` / `circle-x` / `circle-dashed` |
 | 命令行操作者 / 主题 / 退出                                | `square-terminal` / `sun`、`moon` / `log-out`                                              |
 
+审计动作的图标在 `src/shared/ui-labels.ts` 的 `AUDIT_ACTIONS` 里，上表以外另用这几个：重新生成话术 `refresh-cw`、登录 `log-in`、建账号 `user-plus`、重设密码 `key-round`、停用账号 `user-x`、改角色 `user-cog`、移出租户 `user-minus`；表里没有的动作用 `circle-dashed`。
+
 **实体图标集合**：行业包的 `EntityType.icon` 只能从下面这些 lucide 名称里选。console 只为它们打包图标组件，`checkPack` 校验；这样加一个行业包不用改 console。要用集合外的图标，改这张表和 console 的图标映射，不改页面。
 
 `route` `bed-double` `package` `layers` `box` `boxes` `tag` `tags` `shopping-bag` `shopping-cart` `store` `gift` `ticket` `file-text` `briefcase` `building-2` `house` `car` `plane` `utensils` `shirt` `wrench` `graduation-cap` `stethoscope`
