@@ -93,7 +93,7 @@ import { CatalogPage } from '../pages/CatalogPage.js';
 import { entityIcon } from '../shell/icons.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
 import { type FieldEnv, FieldEnvContext } from './env.js';
-import { FieldGrid } from './FieldGrid.js';
+import { FieldGrid, type MemoProps, sameCell } from './FieldGrid.js';
 import {
   boolFromSegment,
   boolSegment,
@@ -2402,6 +2402,31 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('撤销时照原样放回，选填的空数组也放回', restoreField(e1, withEmpty, fieldOf(ROUTE, 'aliases')).aliases, []);
   const r = restoreField(st, orig, hardest);
   check('撤销放回的是拷贝，改它不动打开时的内容', r.intensity !== orig.intensity && sameValue(r.intensity, orig.intensity));
+
+  // 按函数改状态时字段只在画出来的东西变了才重画（逐字重渲时弹层不跟着重画，React #185）
+  const base: MemoProps = {
+    field: fieldOf(PKG, 'pricePerSqm'),
+    mode: 'edit',
+    span: 'half',
+    value: 1280,
+    row: NUANMU,
+    onChange: () => undefined,
+    lockedMembers: [],
+    deps: ['㎡'],
+  };
+  eq(
+    '字段重画的判定：回调和整条 row 换了不算，值、单位、锁住的成员、已改、报错变了才算',
+    [
+      sameCell(base, { ...base, onChange: () => 1, onUndo: () => 2, row: { ...NUANMU }, lockedMembers: [] }),
+      sameCell(base, { ...base, value: 1290 }),
+      sameCell(base, { ...base, deps: ['延米'] }),
+      sameCell(base, { ...base, lockedMembers: ['国内'] }),
+      sameCell(base, { ...base, changed: true }),
+      sameCell(base, { ...base, error: '没填' }),
+      sameCell(base, { ...base, mode: 'locked' }),
+    ],
+    [true, false, false, false, false, false, false],
+  );
 }
 
 // 9.4 整页：挂真的路由和查询缓存，身份、条目、列表先放进缓存
@@ -2578,6 +2603,18 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   await click(e.box.querySelector('.field.is-changed .field-undo'));
   eq('撤销这处：回到原文，「已改」没了', [hardestInput?.value, e.box.querySelectorAll('.field.is-changed').length], [hardestText, 0]);
+  // 两张卡先后各改一处：后一处按函数改，不盖掉前一处（没重画的卡片手里的表单状态是旧的）
+  await typeInto(hardestInput, `${hardestText}；返程日早起`);
+  await typeInto(e.box.querySelector('[data-field-key="hotelLevel"] input'), '奢华');
+  eq(
+    '两张卡各改一处：两处都标「已改」',
+    all(e.box, '.field.is-changed').map((f) => f.getAttribute('data-field-key')),
+    ['intensity.hardest', 'hotelLevel'],
+  );
+  await typeInto(hardestInput, `${hardestText}；返程`);
+  eq('再改第一处：第二处的改动还在', e.box.querySelector<HTMLInputElement>('[data-field-key="hotelLevel"] input')?.value, '奢华');
+  await click(e.box.querySelector('[data-field-key="hotelLevel"] .field-undo'));
+  await click(e.box.querySelector('[data-field-key="intensity.hardest"] .field-undo'));
   await leave();
   eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
   await e.unmount();

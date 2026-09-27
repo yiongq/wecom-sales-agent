@@ -125,14 +125,14 @@ interface CardProps {
   state: Payload;
   original: Payload;
   ctx: ItemContext;
-  onChange(next: Payload): void;
+  onUpdate(fn: (s: Payload) => Payload): void;
 }
 
 /**
  * 一张分组卡片（§5.9）：卡片头是标题，这张卡声明的锁定组各一个 Tag，下一行各写原因（每组只说一次）；卡片体是表单网格。
  * 标题可以被程序聚焦：副栏点锁定组那一行时滚到这里、焦点放在卡片头
  */
-function GroupCard({ entity, group, state, original, ctx, onChange }: CardProps) {
+function GroupCard({ entity, group, state, original, ctx, onUpdate }: CardProps) {
   const uid = useId();
   const locks = cardLocks(entity, group.key, ctx);
   const titleId = `${uid}t`;
@@ -161,7 +161,7 @@ function GroupCard({ entity, group, state, original, ctx, onChange }: CardProps)
           group={group.key}
           state={state}
           ctx={ctx}
-          onChange={onChange}
+          onUpdate={onUpdate}
           lockNoteId={noteIds}
           declaredLocks={locks.map((l) => l.key)}
           original={ctx.status === 'new' ? undefined : original}
@@ -172,7 +172,7 @@ function GroupCard({ entity, group, state, original, ctx, onChange }: CardProps)
 }
 
 /** 只有多字段有序子项的分组（逐日行程）：不套卡片，区块头「逐日行程 · 8天」就是标题（E、L 页） */
-function GroupBlock({ entity, group, state, original, ctx, onChange }: CardProps) {
+function GroupBlock({ entity, group, state, original, ctx, onUpdate }: CardProps) {
   return (
     <section className="detail-block" data-group={group.key} aria-label={group.label} tabIndex={-1}>
       <FieldGrid
@@ -180,7 +180,7 @@ function GroupBlock({ entity, group, state, original, ctx, onChange }: CardProps
         group={group.key}
         state={state}
         ctx={ctx}
-        onChange={onChange}
+        onUpdate={onUpdate}
         original={ctx.status === 'new' ? undefined : original}
       />
     </section>
@@ -377,7 +377,7 @@ function DetailBody({
   const guard = useUnsavedGuard(ctx.canEdit && dirty);
   const updated = item ? updatedOf(item, now) : null;
   const card = (g: { key: string; label: string }) => {
-    const props: CardProps = { entity, group: g, state, original, ctx, onChange: setState };
+    const props: CardProps = { entity, group: g, state, original, ctx, onUpdate: setState };
     return blockOnly(entity, g.key) ? <GroupBlock key={g.key} {...props} /> : <GroupCard key={g.key} {...props} />;
   };
   return (
