@@ -8,9 +8,9 @@
 // 匿名没有入口（01）：直接打开这个地址时不发请求，只写一句说明
 import { type UseQueryResult, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
-import { Button, Table, Tabs } from 'antd';
+import { Button, Table } from 'antd';
 import { ArrowUpRight, ChevronDown, ChevronRight, MessagesSquare, X } from 'lucide-react';
-import { type MouseEvent, type ReactNode, useEffect, useState } from 'react';
+import { type KeyboardEvent, type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import type { ConversationCounts } from '../../../src/shared/console-api.js';
 import { digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
@@ -30,6 +30,7 @@ import {
   activeTab,
   clearStage,
   listQuery,
+  openAria,
   PAGE_SIZE,
   pageCount,
   pageOf,
@@ -40,6 +41,7 @@ import {
   stageLabel,
   stageSearch,
   type Tab,
+  tableAria,
   tabs,
   tabSearch,
 } from './model.js';
@@ -95,6 +97,10 @@ function Header({ pack, member }: { pack: IndustryPack; member: boolean }) {
 
 // ---------------- 页签 ----------------
 
+/** 页签与它下面唯一的一块面板：面板的内容不随页签换，换页签只改地址、按新地址取数 */
+const TAB_ID = (key: Tab['key']): string => `cv-tab-${key}`;
+const PANEL_ID = 'cv-panel';
+
 /** 页签的字：名字后面跟 13 text-3 的数；「等人接手」有数时用软徽标（设计系统 §4.4） */
 function TabLabel({ tab }: { tab: Tab }) {
   const soft = tab.soft ? badgeText(tab.count ?? 0) : null;
@@ -109,6 +115,58 @@ function TabLabel({ tab }: { tab: Tab }) {
         tab.count !== null && <span className="cv-tab-count">{digits(tab.count)}</span>
       )}
     </span>
+  );
+}
+
+/**
+ * 下划线式页签（设计系统 §4.4），照 I 页画成 role=tab 的按钮，不用 antd Tabs：antd 的每个页签各有一块面板，
+ * 换页签就把阶段条和表格整块卸掉重挂，焦点掉到 body、「以表格查看」也被重置；它还在获得焦点的页签里塞一句
+ * 英文的「Tab 1 of 4」读屏提示，进了页签的名字。键盘：左右键在页签间移焦点（首尾相接），Home、End 到头尾，
+ * 回车或空格才换（换页签要取数，不跟着焦点自动换）；只有选中的页签在 Tab 顺序里
+ */
+function StateTabs({ items, active, onSelect }: { items: Tab[]; active: Tab['key']; onSelect: (key: Tab['key']) => void }) {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const i = buttons.findIndex((b) => b === document.activeElement);
+    if (i < 0) return;
+    const to =
+      e.key === 'ArrowRight'
+        ? (i + 1) % buttons.length
+        : e.key === 'ArrowLeft'
+          ? (i - 1 + buttons.length) % buttons.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? buttons.length - 1
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    buttons[to]?.focus();
+  };
+  return (
+    <div className="cv-tabs-scroll">
+      <div role="tablist" aria-label="按接待状态筛选" className="cv-tabs" onKeyDown={onKeyDown}>
+        {items.map((t) => {
+          const selected = t.key === active;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              id={TAB_ID(t.key)}
+              className={selected ? 'cv-tab-btn is-selected' : 'cv-tab-btn'}
+              aria-selected={selected}
+              aria-controls={PANEL_ID}
+              tabIndex={selected ? 0 : -1}
+              // 点已选中的页签不动：「AI接待中」下的阶段筛选留着（清阶段用筛选条）
+              onClick={() => !selected && onSelect(t.key)}
+            >
+              <TabLabel tab={t} />
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -134,6 +192,8 @@ function StageBlock({
         search={stageSearch(key, search)}
         activeOptions={EXACT}
         className={selected ? `${className} is-selected` : className}
+        // 清掉阶段筛选之后焦点回到这一行（MemberConversations），按它找
+        data-stage={key}
         aria-current={selected ? 'true' : undefined}
         aria-label={`${label}，${selected ? '取消阶段筛选' : '只看这个阶段的会话'}`}
       >
@@ -231,6 +291,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
       rowKey="id"
       dataSource={rows}
       tableLayout="fixed"
+      aria-label={tableAria(total)}
       // 窄屏在自己的容器里横滚，首列固定（spec「可访问性与响应式」375 宽）。翻页时 antd 默认把表格的滚动容器动画滚回顶上，
       // 这个容器只横滚、没有什么可滚的，动画白跑（它按 Date.now 算时长，时钟钉住时停不下来），关掉
       scroll={{ x: 960, scrollToFirstRowOnChange: false }}
@@ -270,7 +331,8 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
         { key: 'messages', title: '消息', width: 88, align: 'right', render: (_, r) => digits(r.messages) },
         {
           key: 'when',
-          // 排序是固定的：等人接手的在前，其余按最后动静倒序（服务端排好）；表头只标明，不能点
+          // 排序是固定的：等人接手的在前，其余按最后动静倒序（服务端排好）；表头只标明，不能点。
+          // 「等人接手的在前」这一层写在表格的名字里（tableAria），aria-sort 标的是其下的这一层（设计系统 I 页）
           title: (
             <span className="cv-sorted">
               最后动静
@@ -301,7 +363,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
               rel="noopener noreferrer"
               icon={<Icon of={ArrowUpRight} size={14} />}
               iconPlacement="end"
-              aria-label={`在工作台打开${r.label[1]}（新标签页）`}
+              aria-label={openAria(r)}
             >
               打开工作台
             </Button>
@@ -338,6 +400,21 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
     if (beyond !== null) void navigate({ to: '/conversations', search: pageSearch(search, beyond), replace: true });
   }, [beyond, search, navigate]);
 
+  // 阶段筛选没了，而焦点所在的元素也跟着没了（点了筛选条「阶段：报价 ×」或「清除筛选」，它们随筛选一起消失；
+  // 也可能是后退），焦点会掉到 body：放回刚才筛的那一行阶段（阶段条与小表格里都有），没有这一行（计数没取到）就放回
+  // 选中的页签。焦点还在页面上的（点已选中的阶段取消、点页签）不动
+  const panel = useRef<HTMLDivElement>(null);
+  const lastStage = useRef(search.stage);
+  useEffect(() => {
+    const was = lastStage.current;
+    lastStage.current = search.stage;
+    if (was === undefined || search.stage !== undefined) return;
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && focused.isConnected) return;
+    const links = [...(panel.current?.querySelectorAll<HTMLElement>('[data-stage]') ?? [])];
+    (links.find((e) => e.dataset.stage === was) ?? document.getElementById(TAB_ID(activeTab(search))))?.focus();
+  }, [search]);
+
   const filtered = search.state !== undefined || search.stage !== undefined;
   const customer = pack.vocabulary.customer;
   // 一个会话都没有：空状态替换页签、阶段条和表格（不留空表头）
@@ -346,6 +423,7 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
       <>
         <Header pack={pack} member />
         <EmptyBlock
+          level={2}
           icon={<Icon of={MessagesSquare} size={20} />}
           title={`${customer}的会话会出现在这里`}
           description={`${customer}在企业微信里发来第一句话后就会出现`}
@@ -355,56 +433,54 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
   }
   const active = activeTab(search);
   const rows = data ? data.items.map((r) => rowView(r, pack, now)) : [];
-  const body = (
-    <>
-      <StageBlock pack={pack} counts={counts} search={search} />
-      {search.stage !== undefined && (
-        <div className="cv-filters">
-          <Link
-            to="/conversations"
-            search={clearStage(search)}
-            activeOptions={EXACT}
-            className="cv-chip"
-            aria-label={`清除阶段筛选：${stageLabel(pack, search.stage)}`}
-          >
-            {`阶段：${stageLabel(pack, search.stage)}`}
-            <Icon of={X} size={14} />
-          </Link>
-        </div>
-      )}
-      <div className="cv-list">
-        <StateView
-          pending={list.isPending}
-          error={list.error}
-          onRetry={() => void list.refetch()}
-          skeleton={<Skeleton rows={8} />}
-          empty={
-            data &&
-            data.total === 0 && {
-              title: '这个分类下没有会话',
-              link:
-                search.stage !== undefined ? (
-                  <Link to="/conversations" search={clearStage(search)} activeOptions={EXACT}>
-                    清除筛选
-                  </Link>
-                ) : undefined,
-            }
-          }
-        >
-          <ConversationTable rows={rows} total={data?.total ?? 0} search={search} />
-        </StateView>
-      </div>
-    </>
-  );
   return (
     <>
       <Header pack={pack} member />
-      <Tabs
-        className="cv-tabs"
-        activeKey={active}
-        onChange={(key) => void navigate({ to: '/conversations', search: tabSearch(key as Tab['key']) })}
-        items={tabs(counts.data).map((t) => ({ key: t.key, label: <TabLabel tab={t} />, children: t.key === active ? body : null }))}
+      <StateTabs
+        items={tabs(counts.data)}
+        active={active}
+        onSelect={(key) => void navigate({ to: '/conversations', search: tabSearch(key) })}
       />
+      {/* 只有一块面板：换页签、点阶段条都不卸掉阶段条和表格，焦点和「以表格查看」都留着 */}
+      <div ref={panel} role="tabpanel" id={PANEL_ID} aria-labelledby={TAB_ID(active)}>
+        <StageBlock pack={pack} counts={counts} search={search} />
+        {search.stage !== undefined && (
+          <div className="cv-filters">
+            <Link
+              to="/conversations"
+              search={clearStage(search)}
+              activeOptions={EXACT}
+              className="cv-chip"
+              aria-label={`清除阶段筛选：${stageLabel(pack, search.stage)}`}
+            >
+              {`阶段：${stageLabel(pack, search.stage)}`}
+              <Icon of={X} size={14} />
+            </Link>
+          </div>
+        )}
+        <div className="cv-list">
+          <StateView
+            pending={list.isPending}
+            error={list.error}
+            onRetry={() => void list.refetch()}
+            skeleton={<Skeleton rows={8} />}
+            empty={
+              data &&
+              data.total === 0 && {
+                title: '这个分类下没有会话',
+                link:
+                  search.stage !== undefined ? (
+                    <Link to="/conversations" search={clearStage(search)} activeOptions={EXACT}>
+                      清除筛选
+                    </Link>
+                  ) : undefined,
+              }
+            }
+          >
+            <ConversationTable rows={rows} total={data?.total ?? 0} search={search} />
+          </StateView>
+        </div>
+      </div>
     </>
   );
 }
@@ -419,6 +495,7 @@ export function ConversationsPage() {
     <>
       <Header pack={pack} member={false} />
       <EmptyBlock
+        level={2}
         icon={<Icon of={MessagesSquare} size={20} />}
         title="登录后才能看会话"
         description={`会话里有${pack.vocabulary.customer}的信息，只给成员看`}

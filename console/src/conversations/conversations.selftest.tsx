@@ -5,6 +5,7 @@
 //    换页签、点阶段条、清除阶段、翻页之后的地址；列表接口的查询（order=waiting_first、每页 20 条、offset 按页码）；
 //    每一行写什么（渠道加叫法、短码、状态、等人接手的阶段写「—」、最后动静的相对时间与悬停的绝对时间、工作台链接）；
 // 2. 在 DOM 里挂载（happy-dom）：真的 ConversationsPage 加照服务端规则算的假接口。页签与阶段条的数取同一次 counts（只请求一次）；
+//    页签是按钮、键盘移焦点，阶段条和表格只在一块面板里（换页签、点阶段不重挂，焦点与表格视图留着，清掉筛选后焦点回到那一行）；
 //    表格的顺序、每格的字、两处「打开工作台」的链接与新标签；点一行（不在链接上）新标签打开工作台；点页签、阶段条、筛选条
 //    改地址并按新地址请求；翻页与越界页码；空、页签无结果、阶段无结果；列表或计数 500 只坏用它的那一块；坐席；匿名不发请求；
 //    换一个行业包，阶段名、客户叫法跟着换；两个查询按外壳的节奏轮询；
@@ -507,8 +508,11 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   eq(
     '表格：「打开工作台」同一个地址、新标签',
     [ops.length, ops[1]?.getAttribute('href'), ops[1]?.getAttribute('target'), ops[1]?.getAttribute('aria-label')],
-    [13, '/admin.html#s=wecom%3Acust_A01', '_blank', '在工作台打开A01（新标签页）'],
+    [13, '/admin.html#s=wecom%3Acust_A01', '_blank', '打开工作台，企微客户 A01（新标签页）'],
   );
+  eq('表格：名字写明排序规则（等人接手的在前，最后动静那一列的倒序在其下）', m.attrs('.cv-table table', 'aria-label'), [
+    '会话，共13个，等人接手的排在最前',
+  ]);
   check('表格：没有分页器（13 条只有一页）', m.$('.ant-pagination').length === 0);
   check(
     '今天不画：没有「顾问处理中」「等了」「转人工」',
@@ -589,6 +593,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     m.rows().map((r) => r[0]),
     ['企微客户·C01', '企微客户·C02'],
   );
+  eq('筛选：表格的名字按筛出来的总数', m.attrs('.cv-table table', 'aria-label'), ['会话，共2个，等人接手的排在最前']);
   eq(
     '筛选：筛选条写明阶段，点了清掉',
     [m.texts('.cv-chip'), m.attrs('.cv-chip', 'href')],
@@ -619,6 +624,125 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   await m.click(m.$('.cv-tabs [role="tab"]').find((t) => t.textContent?.startsWith('全部')));
   eq('点「全部」：地址不带参数', m.url(), '/conversations');
   await m.unmount();
+}
+
+// 2.25 页签与唯一的面板：换页签、点阶段条都不卸掉阶段条和表格，焦点与「以表格查看」都留着；清掉阶段筛选后焦点回到那一行阶段
+{
+  server = { conversations: SCENE };
+  const m = await mount(member('owner'));
+  const focused = (): Element | null => document.activeElement;
+  const press = async (key: string) => {
+    await act(async () => {
+      focused()?.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }) as unknown as Event);
+    });
+    await settle(m.qc);
+  };
+  const list = m.$('[role="tablist"]');
+  eq('页签：一个 tablist，名字写明按什么分', [list.length, list[0]?.getAttribute('aria-label')], [1, '按接待状态筛选']);
+  const tabEls = m.$('[role="tab"]');
+  eq(
+    '页签：是按钮，只有选中的在 Tab 顺序里，都指向同一块面板',
+    tabEls.map((t) => [t.tagName, t.getAttribute('tabindex'), t.getAttribute('aria-controls')]),
+    [
+      ['BUTTON', '0', 'cv-panel'],
+      ['BUTTON', '-1', 'cv-panel'],
+      ['BUTTON', '-1', 'cv-panel'],
+      ['BUTTON', '-1', 'cv-panel'],
+    ],
+  );
+  const panels = m.$('[role="tabpanel"]');
+  eq(
+    '面板：只有一块，由选中的页签命名，阶段条和表格都在里面',
+    [
+      panels.length,
+      panels[0]?.id,
+      document.getElementById(panels[0]?.getAttribute('aria-labelledby') ?? '')?.textContent,
+      panels[0]?.querySelectorAll('.cv-stages, .cv-table').length,
+    ],
+    [1, 'cv-panel', '全部13', 2],
+  );
+
+  // 键盘：左右键在页签间移焦点（首尾相接），Home、End 到头尾；只移焦点、不换页签
+  tabEls[0]!.focus();
+  check('页签：得到焦点后名字里没有别的读屏提示', list[0]?.textContent === '全部13等人接手2AI接待中10已成交1', list[0]?.textContent ?? '');
+  const walk: number[] = [];
+  for (const key of ['ArrowRight', 'ArrowRight', 'ArrowLeft', 'ArrowLeft', 'ArrowLeft', 'Home', 'End', 'ArrowRight']) {
+    await press(key);
+    walk.push(tabEls.indexOf(focused() as HTMLElement));
+  }
+  eq('页签：左右键、Home、End 移焦点，首尾相接', walk, [1, 2, 1, 0, 3, 0, 3, 0]);
+  eq('页签：移焦点不换页签', [m.url(), m.tabs().map((t) => t[1])], ['/conversations', ['true', 'false', 'false', 'false']]);
+
+  // 以表格查看，再从「全部」点表格里的「报价」：地址与页签换了，阶段区块还是原来那一个、仍是表格，焦点还在那一格
+  const section = m.$('.cv-stages')[0];
+  await m.click(m.$('.cv-head-btn')[0]);
+  const quote = m.$('.cv-stage-cell').find((e) => e.textContent === '报价')!;
+  quote.focus();
+  await m.click(quote);
+  eq(
+    '从「全部」点阶段：换到 AI接待中，阶段区块不重挂、仍是表格，焦点留在这一格',
+    [
+      m.url(),
+      m.tabs().map((t) => t[1]),
+      m.$('.cv-stages')[0] === section,
+      m.$('.cv-stage-table').length,
+      focused() === quote,
+      quote.getAttribute('aria-current'),
+    ],
+    ['/conversations?state=ai&stage=quote', ['false', 'false', 'true', 'false'], true, 1, true, 'true'],
+  );
+  eq(
+    '面板：换页签后由新选中的页签命名，它进 Tab 顺序',
+    [m.$('[role="tabpanel"]')[0]?.getAttribute('aria-labelledby'), m.$('[role="tab"]').map((t) => t.getAttribute('tabindex'))],
+    ['cv-tab-ai', ['-1', '-1', '0', '-1']],
+  );
+
+  // 点筛选条清掉阶段：筛选条自己没了，焦点回到刚才筛的那一格
+  const chip = m.$('.cv-chip')[0]!;
+  chip.focus();
+  await m.click(chip);
+  eq(
+    '清掉筛选条：地址只留页签，焦点回到「报价」那一格',
+    [m.url(), m.$('.cv-chip').length, focused()?.getAttribute('data-stage'), focused()?.textContent],
+    ['/conversations?state=ai', 0, 'quote', '报价'],
+  );
+
+  // 再筛一次，这回点页签清掉阶段：焦点在页签上，不被挪走；表格视图照样留着
+  await m.click(m.$('.cv-stage-cell').find((e) => e.textContent === '推荐'));
+  const human = m.$('[role="tab"]').find((t) => t.textContent?.startsWith('等人接手'))!;
+  human.focus();
+  await m.click(human);
+  eq(
+    '点页签清掉阶段：焦点留在页签上，阶段区块不重挂、仍是表格',
+    [m.url(), focused() === human, m.$('.cv-stages')[0] === section, m.$('.cv-stage-table').length],
+    ['/conversations?state=human', true, true, 1],
+  );
+  requests = [];
+  await m.click(human);
+  eq('点已选中的页签：不换地址、不重取', [m.url(), convRequests()], ['/conversations?state=human', []]);
+  await m.unmount();
+
+  // 「清除筛选」（阶段筛选没有结果）点了也随空状态一起没了：焦点回到那一行阶段
+  const empty = await mount(member('owner'), '?state=ai&stage=greeting');
+  const clear = empty.$('.state-empty a')[0]!;
+  clear.focus();
+  await empty.click(clear);
+  eq(
+    '点「清除筛选」：焦点回到「开场」那一行',
+    [empty.url(), focused()?.getAttribute('data-stage'), focused()?.classList.contains('cv-stage')],
+    ['/conversations?state=ai', 'greeting', true],
+  );
+  await empty.unmount();
+
+  // 计数没取到，阶段条里没有那一行：焦点放回选中的页签
+  server = { conversations: SCENE, fail: /^GET \/conversations\/counts$/ };
+  const noCounts = await mount(member('owner'), '?state=ai&stage=quote');
+  const chip2 = noCounts.$('.cv-chip')[0]!;
+  chip2.focus();
+  await noCounts.click(chip2);
+  eq('计数没取到时清掉筛选条：焦点回到选中的页签', [noCounts.url(), focused()?.id], ['/conversations?state=ai', 'cv-tab-ai']);
+  await noCounts.unmount();
+  server = { conversations: SCENE };
 }
 
 // 2.3 多于一页：38 个会话，每页 20 条；翻到第 2 页；地址里的页码超过最后一页时换成最后一页
@@ -653,6 +777,11 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [none.texts('.state-empty-title'), none.texts('.state-empty-desc'), none.$('.cv-tabs').length, none.$('.cv-table').length],
     [['客户的会话会出现在这里'], ['客户在企业微信里发来第一句话后就会出现'], 0, 0],
   );
+  eq(
+    '空：整页的空状态紧跟页名 h1，标题是 h2（不跳级）',
+    none.$('.state-empty-title').map((e) => e.tagName),
+    ['H2'],
+  );
   await none.unmount();
   const homeNone = await mount(member('owner', HOME));
   eq(
@@ -667,6 +796,11 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     '页签无结果：页签留着，表格换成一句话，不给清除筛选',
     [tab.tabs()[3], tab.texts('.state-empty-title'), tab.$('.state-empty a').length, tab.$('.cv-table').length],
     [['已成交0', 'true'], ['这个分类下没有会话'], 0, 0],
+  );
+  eq(
+    '页签无结果：这句在「客户停在哪一步」h2 之下，是 h3',
+    tab.$('.state-empty-title').map((e) => e.tagName),
+    ['H3'],
   );
   await tab.unmount();
   const stage = await mount(member('owner'), '?state=ai&stage=greeting');
@@ -715,6 +849,11 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     '匿名：一句说明，没有页签、表格和主按钮，不发请求',
     [m.texts('.state-empty-title'), m.$('.cv-tabs').length, m.$('.page-actions a').length, convRequests()],
     [['登录后才能看会话'], 0, 0, []],
+  );
+  eq(
+    '匿名：空状态的标题是 h2（紧跟页名 h1）',
+    m.$('.state-empty-title').map((e) => e.tagName),
+    ['H2'],
   );
   await m.unmount();
 }

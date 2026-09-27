@@ -136,3 +136,12 @@ export function rowView(row: ConversationRow, pack: IndustryPack, now: number): 
 
 /** 读屏念的一行：「企微客户 F01，等人接手，在工作台打开（新标签页）」 */
 export const rowAria = (r: RowView): string => `${r.label.join(' ')}，${STATUS_LABEL[r.state]}，在工作台打开（新标签页）`;
+
+/**
+ * 行内「打开工作台」按钮的读屏名：以看得见的字开头（WCAG 2.5.3），语音控制说「打开工作台」能对上。
+ * 「打开工作台，企微客户 F01（新标签页）」
+ */
+export const openAria = (r: RowView): string => `打开工作台，${r.label.join(' ')}（新标签页）`;
+
+/** 表格的名字写明排序规则：等人接手的排在最前，其余才按「最后动静」倒序，光看那一列的 aria-sort 会误以为整表按时间排 */
+export const tableAria = (total: number): string => `会话，共${total}个，等人接手的排在最前`;
