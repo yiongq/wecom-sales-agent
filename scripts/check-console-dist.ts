@@ -3,6 +3,8 @@
 // 另查样张页没有混进生产产物（console UX spec 不变量 25：/_specimen 只在 VITE_SPECIMEN=1 的构建里注册，第 1.3 步）。
 // 挂在 `pnpm test` 末尾、紧跟 `pnpm --filter console build`。
 // 包名按子串查；Node 内置模块只查带引号的模块名（"node:crypto"），压缩后的对象键 {node:x} 不算。
+// assets/ 下每个文件名都要带 vite 的内容哈希（<name>-<8 位>.<扩展名>）：服务端给 /console/assets/* 一律一年的 immutable
+// 缓存（src/shared/security-headers.ts），不带哈希的文件混进来，改了内容浏览器也不会重新下载（后台 UX spec 不变量 26）。
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -11,6 +13,7 @@ const BANNED = ['drizzle-orm', 'pg-protocol', '@electric-sql/pglite'];
 const NODE_BUILTIN = /["'`]node:[a-z_/]+/;
 /** 样张页的路由、样式类名和「不挤压」对照行：生产构建里这些分支连同页面代码一起被摇掉，出现就是条件没在构建时定下来 */
 const SPECIMEN_MARKERS = ['_specimen', 'spec-panel', 'space-all'];
+const HASHED_NAME = /-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 
 function files(dir: string): string[] {
   return fs
@@ -50,8 +53,12 @@ else if (/\btype="module"|\bdefer\b|\basync\b/.test(scripts[boot].attrs)) {
 } else if (scripts.slice(0, boot).some((s) => s.attrs.includes('type="module"'))) {
   bad.push(`${DIST}/index.html: ${BOOT} 要排在应用脚本前面`);
 }
+const assets = fs.existsSync(path.join(DIST, 'assets')) ? files(path.join(DIST, 'assets')) : [];
+for (const f of assets) if (!HASHED_NAME.test(path.basename(f))) bad.push(`${f}: 文件名不带内容哈希，却会按 immutable 长缓存`);
 if (bad.length) {
   console.error(`console-dist: 构建产物里有不该有的东西：\n  ${bad.join('\n  ')}`);
   process.exit(1);
 }
-console.log(`console-dist: ${all.length} 个文件，没有服务端依赖、Node 内置模块与样张页，首帧主题脚本在应用脚本之前同步加载`);
+console.log(
+  `console-dist: ${all.length} 个文件，没有服务端依赖、Node 内置模块与样张页，首帧主题脚本在应用脚本之前同步加载；assets/ 下 ${assets.length} 个文件都带内容哈希`,
+);
