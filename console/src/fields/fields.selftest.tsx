@@ -13,6 +13,9 @@
 // 7. 在 DOM 里挂载（happy-dom，selftest-dom.ts）：两个包每个字段的表单形态和各分组卡片，挂载、effect 跑完都不写值；
 //    再经组件点、敲、删，核对写回表单状态的值和补丁：分段控件的「不填」、是否、标签的锁住成员、多选片、
 //    逐条列表的改删移、有序子项按下标经 writeValue 写回、引用的删和自由输入。
+// 8. 产品库列表（plan 第 9 步，spec「产品库列表」）：两个包的列、表头与列宽，筛选按字段类型生成的选项与「包含」匹配，
+//    搜索、页签计数、排序、更新列，URL 状态的解析与改写；挂进 DOM 画 D 页、L 页、主材、匿名、分页、各种状态，
+//    再经组件敲字、点页签、点清除、开筛选菜单，核对写回地址的内容。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/fields/fields.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -27,6 +30,38 @@ import { packById } from '../../../src/packs/registry.js';
 import { sameValue } from '../../../src/shared/catalog.js';
 import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';
 import { checkItem, ENTITY_ICONS, type EntityType, type FieldDef, type FieldType, type IndustryPack } from '../../../src/shared/pack.js';
+import { CatalogList, type CatalogListProps, FilterButton, MENU_SEARCH_OVER } from '../catalog/CatalogList.js';
+import {
+  type ActivePick,
+  activePicks,
+  atomsOf,
+  columnWidth,
+  filterFields,
+  filterOptions,
+  fullText,
+  headerLabel,
+  headerWidth,
+  listActions,
+  listColumns,
+  listField,
+  type ListRow,
+  listTime,
+  matchesPick,
+  narrowed,
+  numeric,
+  pickLabel,
+  searchPlaceholder,
+  sortRows,
+  statusParts,
+  tabCounts,
+  tableMinWidth,
+  textWidth,
+  TITLE_MIN_WIDTH,
+  twoLine,
+  updatedParts,
+  visibleRows,
+} from '../catalog/list.js';
+import { type CatalogSearch, catalogSearch, cleared, parseFilter, pickOf, withPick } from '../catalog/params.js';
 import { entityIcon } from '../shell/icons.js';
 import { type FieldEnv, FieldEnvContext } from './env.js';
 import { FieldGrid } from './FieldGrid.js';
@@ -1349,6 +1384,587 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
     mats.filter((m) => m !== 'm-oupai-cab'),
   );
   await terms.unmount();
+}
+
+// ---------------- 8. 产品库列表（plan 第 9 步） ----------------
+// spec「产品库列表（D 页；L 页上半）」：两个包的真实配置和样例都在这个文件里，列表的纯逻辑、画出来的样子和交互一起测
+
+const IMPORTED_AT = '2026-09-24T10:02:00+08:00';
+const asRow = (p: Payload, extra: Partial<ListRow> = {}): ListRow => ({
+  code: p.id as string,
+  payload: p,
+  status: 'active',
+  updatedAt: IMPORTED_AT,
+  updatedByName: null,
+  ...extra,
+});
+/** 设计系统 §10.0：20 条已上架（系统导入 · 9月24日），r-sichuan-lux 小林今天 10:12 改过，另有小林 13:40 建的草稿 */
+const ROUTE_ROWS: ListRow[] = [
+  ...ROUTES.map((r) => asRow(r, r.id === 'r-sichuan-lux' ? { updatedByName: '小林', updatedAt: '2026-09-26T10:12:00+08:00' } : {})),
+  asRow(GUIZHOU_5D, { status: 'draft', updatedByName: '小林', updatedAt: '2026-09-26T13:40:00+08:00' }),
+];
+/** 匿名投影：只有已上架的，没有状态、更新时间和更新人 */
+const ANON_ROUTES: ListRow[] = ROUTES.map((r) => ({ code: r.id as string, payload: r }));
+const HOTEL_ROWS: ListRow[] = HOTELS.map((h) => asRow(h));
+/** L 页：旧房翻新是老周今天 11:05 的草稿，暖木老周 9月25日改过，其余系统导入 */
+const PKG_ROWS: ListRow[] = PACKAGES.map((p) =>
+  asRow(
+    p,
+    p.id === 'p-jiufang-part'
+      ? { status: 'draft', updatedByName: '老周', updatedAt: '2026-09-26T11:05:00+08:00' }
+      : p.id === 'p-nuanmu-2r'
+        ? { updatedByName: '老周', updatedAt: '2026-09-25T16:20:00+08:00' }
+        : { updatedAt: '2026-09-12T09:00:00+08:00' },
+  ),
+);
+const MATERIAL_ROWS: ListRow[] = MATERIALS.map((m) => asRow(m));
+const codes = (rows: readonly ListRow[]): string[] => rows.map((r) => r.code);
+const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string[] => rows.filter(ok).map((p) => p.id as string);
+
+// 8.1 URL 状态（不变量 22）：只留认得的取值，同一个字段只认第一项
+{
+  eq('URL：页签、搜索、筛选原样留下', catalogSearch({ status: 'draft', q: '四川', f: ['destination:四川'] }), {
+    status: 'draft',
+    q: '四川',
+    f: ['destination:四川'],
+  });
+  eq('URL：页签只认 active、draft', catalogSearch({ status: 'all' }), {});
+  eq('URL：空白的搜索不写进地址', catalogSearch({ q: '  ' }), {});
+  eq('URL：数字的搜索按字符串', catalogSearch({ q: 42 }), { q: '42' });
+  eq('URL：手写的 f 可以是一个字符串', catalogSearch({ f: 'overseas:true' }), { f: ['overseas:true'] });
+  eq(
+    'URL：没有冒号、key 或值为空的不认；同一个字段只认第一项',
+    catalogSearch({ f: ['bad', ':x', 'k:', 'destination:四川', 'destination:云南', 'segments:家庭', 7] }),
+    { f: ['destination:四川', 'segments:家庭'] },
+  );
+  eq('URL：值里可以有冒号', parseFilter('note:a:b'), { key: 'note', value: 'a:b' });
+  eq('设一项筛选', withPick({ q: 'x' }, 'destination', '四川'), { q: 'x', f: ['destination:四川'] });
+  eq('换一项筛选的值，别的字段不动', withPick({ f: ['destination:四川', 'segments:家庭'] }, 'destination', '云南'), {
+    f: ['segments:家庭', 'destination:云南'],
+  });
+  eq('清掉一项筛选，f 空了就不写', withPick({ status: 'draft', f: ['destination:四川'] }, 'destination', undefined), { status: 'draft' });
+  eq('清除筛选只去掉 f', cleared({ status: 'draft', q: 'x', f: ['a:b'] }), { status: 'draft', q: 'x' });
+  eq('空状态的清除筛选连搜索和页签一起回到默认', cleared({ status: 'draft', q: 'x', f: ['a:b'] }, true), {});
+  eq('取一个字段的筛选值', pickOf({ f: ['segments:家庭', 'destination:四川'] }, 'destination'), '四川');
+}
+
+// 8.2 列、表头、列宽：列来自 list.columns，首列是名称；单位固定的金额把单位写进表头；匿名没有状态、更新两列
+{
+  const headers = (e: EntityType, anon: boolean): string[] =>
+    listColumns(e, anon).map((c) => (c.kind === 'title' ? e.label : c.kind === 'updated' ? '更新' : headerLabel(c.field)));
+  eq('D 页的列', headers(ROUTE, false), ['线路', '天数', '每人起价（元）', '最佳季节', '适合客群', '状态', '更新']);
+  eq('匿名没有状态、更新两列', headers(ROUTE, true), ['线路', '天数', '每人起价（元）', '最佳季节', '适合客群']);
+  eq('酒店的列', headers(HOTEL, false), ['酒店', '星级档次', '每晚起价（元）', '主推房型', '标签', '状态', '更新']);
+  eq('L 页的列（假包）', headers(PKG, false), [
+    '装修套餐',
+    '适用户型',
+    '每平米单价（元）',
+    '起装面积',
+    '工期',
+    '适合开工月份',
+    '状态',
+    '更新',
+  ]);
+  eq('主材：单位取计价单位字段的金额，表头不写单位', headers(MATERIAL, false), ['主材', '品类', '品牌', '单价', '质保', '状态', '更新']);
+  eq(
+    '数字列右对齐（金额、带单位的整数、有序子项的条数）',
+    ROUTE.fields.filter(numeric).map((f) => f.key),
+    ['days', 'priceFrom', 'maxAltitude', 'itinerary', 'inclusions', 'exclusions', 'highlights'],
+  );
+  eq('首列两行（有次行）', [twoLine(ROUTE), twoLine(PKG), twoLine({ ...PKG, subtitleKeys: [] })], [true, true, false]);
+
+  const widths = (e: EntityType, rows: readonly ListRow[]): (number | undefined)[] =>
+    listColumns(e, false).map((c) => columnWidth(c, rows));
+  eq('D 页的列宽与设计系统一致：天数 64、每人起价 120、最佳季节 224、适合客群 180、状态 100、更新 152', widths(ROUTE, ROUTE_ROWS), [
+    undefined,
+    64,
+    120,
+    224,
+    180,
+    100,
+    152,
+  ]);
+  eq(
+    'D 页的首列在 1152 里占 312（最长的线路名约 281）',
+    1152 - tableMinWidth(listColumns(ROUTE, false), ROUTE_ROWS) + TITLE_MIN_WIDTH,
+    312,
+  );
+  const pw = widths(PKG, PKG_ROWS);
+  check(
+    'L 页：表头放得下（「每平米单价（元）」「起装面积」按表头加宽）',
+    pw[2]! >= headerWidth('每平米单价（元）') && pw[3]! >= headerWidth('起装面积') && pw[3]! > 64,
+    JSON.stringify(pw),
+  );
+  check('L 页：「120天」按内容加宽', pw[4]! >= textWidth('120天', 14) + 24 && pw[4]! > 64, JSON.stringify(pw));
+  check(
+    'L 页：1440 宽里不横向滚动',
+    tableMinWidth(listColumns(PKG, false), PKG_ROWS) <= 1152,
+    String(tableMinWidth(listColumns(PKG, false), PKG_ROWS)),
+  );
+  const long = asRow({ ...ROUTES[0]!, segments: ['家庭', '亲子', '银发', '蜜月', '商务', '朋友', '独自'] });
+  eq('多选枚举至多 180，再长截断、悬停看全文', columnWidth({ kind: 'field', field: fieldOf(ROUTE, 'segments') }, [long]), 180);
+  eq('多选的单元格悬停写全部取值', fullText(fieldOf(ROUTE, 'segments'), long.payload.segments), '家庭、亲子、银发、蜜月、商务、朋友、独自');
+  eq('标签的单元格悬停写全部取值', fullText(fieldOf(HOTEL, 'tags'), ['亲子', '海景', '度假', '网红']), '亲子、海景、度假、网红');
+  eq('单值字段不另写悬停', fullText(fieldOf(ROUTE, 'destination'), '四川'), undefined);
+  eq('宽度估计：汉字 1em、其余 0.6em', [textWidth('天数', 13), textWidth('10天', 14), textWidth('㎡', 14)], [26, 31, 14]);
+}
+
+// 8.3 筛选：按钮来自 list.filters，选项按字段类型生成，多值的字段按「包含」匹配
+{
+  eq(
+    'D 页的筛选按钮',
+    filterFields(ROUTE).map((f) => f.label),
+    ['目的地', '境内还是境外', '适合客群'],
+  );
+  eq(
+    'L 页的筛选按钮',
+    filterFields(PKG).map((f) => f.label),
+    ['适用户型', '风格'],
+  );
+  eq(
+    '至多 3 个；有序子项没有可筛的值，不画',
+    filterFields({ ...ROUTE, list: { ...ROUTE.list, filters: ['itinerary', 'destination', 'overseas', 'segments', 'days'] } }).map(
+      (f) => f.key,
+    ),
+    ['destination', 'overseas'],
+  );
+  const pick = (e: EntityType, key: string, value: string): ActivePick => ({ field: listField(e, key)!, value });
+  const matching = (e: EntityType, rows: readonly ListRow[], key: string, value: string): string[] =>
+    codes(rows.filter((r) => matchesPick(r, pick(e, key, value))));
+
+  const dest = filterOptions(fieldOf(ROUTE, 'destination'), ROUTE_ROWS).map((o) => o.value);
+  eq('目的地：取已有的值去重', [...dest].sort(), [...new Set(ROUTES.map((r) => r.destination as string))].sort());
+  check(
+    '目的地：按拼音排（北京在四川前、四川在云南前）',
+    dest.indexOf('北京') < dest.indexOf('四川') && dest.indexOf('四川') < dest.indexOf('云南'),
+    dest.join(' '),
+  );
+  eq(
+    '目的地：四川',
+    matching(ROUTE, ROUTE_ROWS, 'destination', '四川'),
+    idsWhere(ROUTES, (r) => r.destination === '四川'),
+  );
+  eq(
+    '境内还是境外：先 falseLabel 后 trueLabel',
+    filterOptions(fieldOf(ROUTE, 'overseas'), []).map((o) => `${o.value}=${o.label}`),
+    ['false=境内', 'true=境外'],
+  );
+  eq(
+    '境外',
+    matching(ROUTE, ROUTE_ROWS, 'overseas', 'true'),
+    idsWhere(ROUTES, (r) => r.overseas === true),
+  );
+  eq(
+    '适合客群：枚举取 options',
+    filterOptions(fieldOf(ROUTE, 'segments'), []).map((o) => o.value),
+    fieldOf(ROUTE, 'segments').options,
+  );
+  const silver = matching(ROUTE, ROUTE_ROWS, 'segments', '银发');
+  eq('适合客群按「包含」匹配', silver, [...idsWhere(ROUTES, (r) => (r.segments as string[]).includes('银发')), 'r-guizhou-5d']);
+  check('适合客群：包含银发的不止一条', silver.length > 1, silver.join(' '));
+  eq('适用户型（假包，多选枚举）：别墅', matching(PKG, PKG_ROWS, 'houseTypes', '别墅'), ['p-xinzhongshi-flat']);
+  eq(
+    '风格（假包，标签）：取已有的值，按拼音排',
+    filterOptions(fieldOf(PKG, 'styles'), PKG_ROWS).map((o) => o.value),
+    ['奶油', '原木'],
+  );
+  eq('风格：奶油，按「包含」匹配', matching(PKG, PKG_ROWS, 'styles', '奶油').length, PKG_ROWS.length);
+  const months = fieldOf(PKG, 'startMonths');
+  eq(
+    '月份区间：1–12 月',
+    filterOptions(months, []).map((o) => o.label),
+    ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'],
+  );
+  eq('月份区间：7 月（「全年」也算）', matching(PKG, PKG_ROWS, 'startMonths', '7'), [
+    'p-xinzhongshi-flat',
+    'p-jijian-1r',
+    'p-jiufang-part',
+  ]);
+  const meals = ROUTE.fields.find((f) => f.key === 'itinerary')!.item!.find((f) => f.storeAs)!;
+  eq('按字符串存的多选：认得出的拆成几项，认不出的照原文', [atomsOf(meals, '早/晚'), atomsOf(meals, '早餐')], [['早', '晚'], ['早餐']]);
+  eq(
+    '状态：已上架、草稿',
+    filterOptions(fieldOf(ROUTE, '$status'), []).map((o) => o.label),
+    ['已上架', '草稿'],
+  );
+  const days = filterOptions(fieldOf(ROUTE, 'days'), ROUTE_ROWS);
+  eq(
+    '带单位的整数：从小到大，写单位',
+    days.map((o) => o.label),
+    [...new Set(ROUTES.map((r) => r.days as number))].sort((a, b) => a - b).map((d) => `${d}天`),
+  );
+  const ref: FieldDef = { key: 'mat', type: 'reference', to: 'material', store: 'code', label: '主材', group: 'basic' };
+  const refRows = [asRow({ id: 'p-1', mat: 'm-oupai-cab' }), asRow({ id: 'p-2', mat: '别家的柜子' })];
+  eq(
+    '引用：写被引用条目的名称，库里找不到写原文',
+    filterOptions(ref, refRows, MATERIAL_REFS).map((o) => o.label),
+    ['别家的柜子', '欧派 整体橱柜'],
+  );
+  eq('有序子项：没有选项', filterOptions(fieldOf(ROUTE, 'itinerary'), ROUTE_ROWS), []);
+  eq(
+    '生效的筛选只认本实体的筛选字段，同一个字段只认第一项',
+    activePicks(ROUTE, { f: ['destination:四川', 'destination:云南', 'days:8', 'nope:x', 'overseas:false'] }).map(
+      (p) => `${p.field.key}=${p.value}`,
+    ),
+    ['destination=四川', 'overseas=false'],
+  );
+  const opts = filterOptions(fieldOf(ROUTE, 'overseas'), []);
+  eq('生效的按钮写选项的写法', pickLabel(pick(ROUTE, 'overseas', 'true'), opts), '境外');
+  eq('地址里带来的、选项里没有的值照原文写', pickLabel(pick(ROUTE, 'destination', '火星'), []), '火星');
+}
+
+// 8.4 搜索：覆盖 list.search 的字段，不分大小写、忽略空白
+{
+  eq('D 页搜索框的占位', searchPlaceholder(ROUTE), '搜索名称、目的地、客户的其他叫法、编号');
+  eq('L 页搜索框的占位', searchPlaceholder(PKG), '搜索名称、风格、编号');
+  eq('主材搜索框的占位', searchPlaceholder(MATERIAL), '搜索名称、品牌、编号');
+  const q = (e: EntityType, rows: readonly ListRow[], text: string): string[] => codes(narrowed(e, rows, { q: text }));
+  eq('搜名称里的字', q(ROUTE, ROUTE_ROWS, '稻城'), ['r-sichuan-lux']);
+  eq('搜编号，不分大小写', q(ROUTE, ROUTE_ROWS, 'R-GUIZHOU'), ['r-guizhou', 'r-guizhou-5d']);
+  eq('搜客户的其他叫法', q(ROUTE, ROUTE_ROWS, '川西'), ['r-sichuan-lux']);
+  eq('忽略空白', q(ROUTE, ROUTE_ROWS, ' 稻 城 '), ['r-sichuan-lux']);
+  eq('不在 list.search 里的字段不搜（每人起价）', q(ROUTE, ROUTE_ROWS, '42800'), []);
+  eq('假包按标签搜', q(PKG, PKG_ROWS, '原木').length, PKG_ROWS.length);
+  eq('假包按编号搜', q(PKG, PKG_ROWS, 'jiufang'), ['p-jiufang-part']);
+  eq('搜索与筛选一起', codes(narrowed(ROUTE, ROUTE_ROWS, { q: '贵州', f: ['segments:银发'] })), ['r-guizhou', 'r-guizhou-5d']);
+}
+
+// 8.5 页签与排序：页签的数字按搜索与筛选之后算；默认按更新时间倒序，同一时刻照接口的顺序；匿名不认页签
+{
+  eq('页签计数', tabCounts(ROUTE_ROWS), { all: 21, active: 20, draft: 1 });
+  eq('页签计数按筛选之后算', tabCounts(narrowed(ROUTE, ROUTE_ROWS, { f: ['destination:贵州'] })), { all: 2, active: 1, draft: 1 });
+  const rest = ROUTES.map((r) => r.id as string).filter((id) => id !== 'r-sichuan-lux');
+  eq('默认按更新时间倒序，同一时刻照接口的顺序', codes(visibleRows(ROUTE, ROUTE_ROWS, {}, false)), [
+    'r-guizhou-5d',
+    'r-sichuan-lux',
+    ...rest,
+  ]);
+  eq('草稿页签', codes(visibleRows(ROUTE, ROUTE_ROWS, { status: 'draft' }, false)), ['r-guizhou-5d']);
+  eq('已上架页签', visibleRows(ROUTE, ROUTE_ROWS, { status: 'active' }, false).length, 20);
+  eq(
+    '匿名不认页签，照接口的顺序',
+    codes(visibleRows(ROUTE, ANON_ROUTES, { status: 'draft' }, true)),
+    ROUTES.map((r) => r.id as string),
+  );
+  eq('L 页的顺序', codes(visibleRows(PKG, PKG_ROWS, {}, false)), [
+    'p-jiufang-part',
+    'p-nuanmu-2r',
+    'p-naiyou-3r',
+    'p-xinzhongshi-flat',
+    'p-jijian-1r',
+  ]);
+  eq('没有更新时间的排在后面', codes(sortRows([{ code: 'a', payload: {} }, ROUTE_ROWS[0]!])), [ROUTE_ROWS[0]!.code, 'a']);
+}
+
+// 8.6 更新列：「小林 · 今天13:40」；更新人为空写「系统导入」；更早的写日期
+{
+  eq('今天的写时刻', updatedParts(ROUTE_ROWS.at(-1)!, NOW), ['小林', '今天13:40']);
+  eq('更新人为空写系统导入，更早的写日期', updatedParts(ROUTE_ROWS[1]!, NOW), ['系统导入', '9月24日']);
+  eq('昨天也写日期（L 页的「9月25日」）', listTime('2026-09-25T16:20:00+08:00', NOW), '9月25日');
+  eq('今天 0 点', listTime('2026-09-26T00:00:00+08:00', NOW), '今天00:00');
+  eq('跨年加年份', listTime('2025-12-31T10:00:00+08:00', NOW), '2025年12月31日');
+  eq('匿名投影没有更新时间', updatedParts(ANON_ROUTES[0]!, NOW), null);
+}
+
+// 页头：编辑角色才有新建；能导入的实体另有导入CSV；非编辑成员和匿名都没有（canEdit 只给所有者、管理员）
+{
+  eq('编辑角色：线路只有新建（不能导入的不放灰按钮）', listActions(true, ROUTE), { create: true, csv: false });
+  eq('编辑角色：酒店另有导入CSV', listActions(true, HOTEL), { create: true, csv: true });
+  eq('编辑角色：假包的主材能导入', listActions(true, MATERIAL), { create: true, csv: true });
+  eq(
+    '非编辑成员与匿名：没有新建和导入',
+    [listActions(false, HOTEL), listActions(false, ROUTE)],
+    [
+      { create: false, csv: false },
+      { create: false, csv: false },
+    ],
+  );
+  eq('状态句', statusParts(ROUTE_ROWS), ['共21条', '销售助手只推荐已上架的']);
+  eq('状态句：还没取到、一条都没有时不写', [statusParts(undefined), statusParts([])], [null, null]);
+}
+
+// 8.7 画出来的列表（挂进 DOM）：页签、表头、首列两行、各列的写法、各种状态
+const listProps = (over: Partial<CatalogListProps> = {}): CatalogListProps => ({
+  entity: ROUTE,
+  rows: ROUTE_ROWS,
+  error: null,
+  onRetry: () => undefined,
+  anon: false,
+  search: {},
+  onSearch: () => undefined,
+  now: NOW,
+  titleLink: (_row, children) => (
+    <button type="button" className="cell-link">
+      {children}
+    </button>
+  ),
+  refItems: ENV.refItems,
+  ...over,
+});
+const texts = (root: ParentNode, sel: string): string[] => all<HTMLElement>(root, sel).map((e) => (e.textContent ?? '').trim());
+const bodyRows = (root: ParentNode): HTMLTableRowElement[] => all<HTMLTableRowElement>(root, '.list-table tbody tr.ant-table-row');
+const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) => (td.textContent ?? '').trim());
+{
+  const d = await mount(<CatalogList {...listProps()} />);
+  eq('D 页：页签带数量', texts(d.box, '.list-tabs .ant-tabs-tab'), ['全部21', '已上架20', '草稿1']);
+  eq('D 页：表头', texts(d.box, '.list-table thead th'), ['线路', '天数', '每人起价（元）', '最佳季节', '适合客群', '状态', '更新']);
+  eq('D 页：更新列是当前的排序列', d.box.querySelector('.list-table thead th[aria-sort="descending"]')?.textContent, '更新');
+  const rows = bodyRows(d.box);
+  eq('D 页：21 行，不足一页不画分页器', [rows.length, d.box.querySelectorAll('.ant-pagination').length], [21, 0]);
+  const first = rows[0]!;
+  eq('首列：名称是能点的', first.querySelector('.cell-link')?.textContent, '贵州 小七孔·西江千户苗寨 5 日');
+  eq(
+    '首列次行：目的地 · 编号，编号用等宽字',
+    [first.querySelector('.cell-sub')?.textContent, first.querySelector('.cell-sub .mono')?.textContent],
+    ['贵州·r-guizhou-5d', 'r-guizhou-5d'],
+  );
+  check('首列两行的行 56 高（is-two-line）', first.classList.contains('is-two-line'));
+  eq('D 页第一行（草稿 r-guizhou-5d）', cellsOf(first).slice(1), ['5天', '13,800', '4–10月', '家庭、亲子、银发', '草稿', '小林·今天13:40']);
+  eq('第二行：r-sichuan-lux 小林今天 10:12 改过', cellsOf(rows[1]!).at(-1), '小林·今天10:12');
+  eq('第三行起：系统导入 · 9月24日', cellsOf(rows[2]!).at(-1), '系统导入·9月24日');
+  check(
+    '状态用 Status：草稿是空心圆点',
+    !!first.querySelector('.status.status-draft') && !!rows[1]!.querySelector('.status.status-active'),
+  );
+  eq('更新列悬停看绝对时间', first.querySelector('.cell-updated')?.getAttribute('title'), '9月26日 13:40');
+  eq('多选的单元格悬停看全文', (first.querySelectorAll('td')[4] as HTMLElement).getAttribute('title'), '家庭、亲子、银发');
+  check('月份区间是月份条加文字', !!first.querySelector('td .month-strip-S'));
+  check(
+    '数字列右对齐',
+    [1, 2].every(
+      (i) =>
+        (first.querySelectorAll('td')[i] as HTMLElement).className.includes('align-right') ||
+        (first.querySelectorAll('td')[i] as HTMLElement).style.textAlign === 'right',
+    ),
+  );
+  eq(
+    '工具条：搜索框的占位与名字',
+    [
+      d.box.querySelector('.list-search input')?.getAttribute('placeholder'),
+      d.box.querySelector('.list-search input')?.getAttribute('aria-label'),
+    ],
+    ['搜索名称、目的地、客户的其他叫法、编号', '搜索线路'],
+  );
+  eq(
+    '工具条：筛选按钮与右侧的条数',
+    [texts(d.box, '.filter-trigger'), d.box.querySelector('.list-count')?.textContent],
+    [['目的地', '境内还是境外', '适合客群'], '21条'],
+  );
+  eq('没有生效的筛选时不画「清除筛选」', d.box.querySelectorAll('.list-toolbar .list-link').length, 0);
+  await d.unmount();
+
+  const f = await mount(<CatalogList {...listProps({ search: { f: ['destination:四川', 'overseas:false'], status: 'active' } })} />);
+  eq(
+    '生效的筛选写成「目的地：四川」，各带一个清除',
+    [texts(f.box, '.filter-btn.is-active .filter-trigger'), all(f.box, '.filter-clear').map((b) => b.getAttribute('aria-label'))],
+    [
+      ['目的地：四川', '境内还是境外：境内'],
+      ['清除「目的地」筛选', '清除「境内还是境外」筛选'],
+    ],
+  );
+  eq(
+    '筛选之后的页签数字与条数',
+    [texts(f.box, '.list-tabs .ant-tabs-tab'), f.box.querySelector('.list-count')?.textContent],
+    [['全部2', '已上架2', '草稿0'], '2条'],
+  );
+  eq('另有「清除筛选」', texts(f.box, '.list-toolbar .list-link'), ['清除筛选']);
+  await f.unmount();
+
+  const anon = await mount(<CatalogList {...listProps({ rows: ANON_ROUTES, anon: true, search: { status: 'draft' } })} />);
+  eq('匿名：只有「全部」页签', texts(anon.box, '.list-tabs .ant-tabs-tab'), ['全部20']);
+  eq('匿名：没有状态、更新两列', texts(anon.box, '.list-table thead th'), ['线路', '天数', '每人起价（元）', '最佳季节', '适合客群']);
+  eq('匿名：地址里的页签不生效', bodyRows(anon.box).length, 20);
+  eq('匿名：没有状态', anon.box.querySelectorAll('.status').length, 0);
+  await anon.unmount();
+
+  const l = await mount(<CatalogList {...listProps({ entity: PKG, rows: PKG_ROWS })} />);
+  eq('L 页：表头', texts(l.box, '.list-table thead th'), [
+    '装修套餐',
+    '适用户型',
+    '每平米单价（元）',
+    '起装面积',
+    '工期',
+    '适合开工月份',
+    '状态',
+    '更新',
+  ]);
+  eq('L 页：页签', texts(l.box, '.list-tabs .ant-tabs-tab'), ['全部5', '已上架4', '草稿1']);
+  eq('L 页：第一行', cellsOf(bodyRows(l.box)[0]!), [
+    '旧房翻新 · 局部改造包p-jiufang-part',
+    '两居、三居',
+    '860',
+    '20㎡',
+    '30天',
+    '3–11月',
+    '草稿',
+    '老周·今天11:05',
+  ]);
+  eq('L 页：「全年」只写「全年」', cellsOf(bodyRows(l.box)[3]!)[5], '全年');
+  const lsub = bodyRows(l.box)[0]!.querySelector('.cell-sub');
+  eq(
+    'L 页：次行只有编号（等宽字）',
+    [lsub?.children.length, lsub?.firstElementChild?.className, lsub?.textContent],
+    [1, 'mono', 'p-jiufang-part'],
+  );
+  eq('L 页：筛选按钮', texts(l.box, '.filter-trigger'), ['适用户型', '风格']);
+  await l.unmount();
+
+  const m = await mount(<CatalogList {...listProps({ entity: MATERIAL, rows: MATERIAL_ROWS })} />);
+  eq('主材：单价的单位跟着计价单位写在单元格里', cellsOf(bodyRows(m.box)[0]!).slice(1, 5), ['瓷砖', '马可波罗', '168元/㎡', '5年']);
+  eq('主材：次行是品类 · 编号', bodyRows(m.box)[0]!.querySelector('.cell-sub')?.textContent, '瓷砖·m-marcopolo-800');
+  await m.unmount();
+
+  const h = await mount(<CatalogList {...listProps({ entity: HOTEL, rows: HOTEL_ROWS })} />);
+  const withTags = bodyRows(h.box).find((tr) => (tr.querySelectorAll('td')[4] as HTMLElement).getAttribute('title'));
+  check('酒店：标签列悬停列出全部标签', !!withTags, '没有带 title 的标签格');
+  await h.unmount();
+
+  const many = Array.from({ length: 60 }, (_, i) => asRow({ ...ROUTES[i % 20]!, id: `r-many-${i}` }));
+  const p = await mount(<CatalogList {...listProps({ rows: many })} />);
+  eq(
+    '超过 50 条再分页：第一页 50 行，左侧写「共60条」',
+    [bodyRows(p.box).length, p.box.querySelector('.ant-pagination-total-text')?.textContent],
+    [50, '共60条'],
+  );
+  check('到第二页', await click(p.box.querySelector('.ant-pagination-item-2')));
+  eq('第二页 10 行', bodyRows(p.box).length, 10);
+  await p.unmount();
+
+  const empty = await mount(<CatalogList {...listProps({ rows: [], emptyActions: <button type="button">新建线路</button> })} />);
+  eq(
+    '从来没有过：替换整块内容，不留页签和表头',
+    [empty.box.querySelectorAll('.list-tabs').length, empty.box.querySelectorAll('.list-table').length],
+    [0, 0],
+  );
+  eq(
+    '从来没有过：标题、说明和操作',
+    [texts(empty.box, '.state-empty-title'), texts(empty.box, '.state-empty-desc'), texts(empty.box, '.state-empty-actions button')],
+    [['从第一条线路开始'], ['上架后，销售助手会向客户推荐它'], ['新建线路']],
+  );
+  await empty.unmount();
+
+  const none = await mount(<CatalogList {...listProps({ search: { q: 'zzzz' } })} />);
+  eq(
+    '筛选无结果：页签、工具条还在，表格换成说明加「清除筛选」',
+    [none.box.querySelectorAll('.list-toolbar').length, texts(none.box, '.state-empty-title'), texts(none.box, '.state-empty .list-link')],
+    [1, ['没有符合条件的线路'], ['清除筛选']],
+  );
+  eq(
+    '筛选无结果：没有主按钮，也没有表格',
+    [none.box.querySelectorAll('.state-empty .ant-btn').length, none.box.querySelectorAll('.list-table').length],
+    [0, 0],
+  );
+  await none.unmount();
+
+  const pending = await mount(<CatalogList {...listProps({ rows: undefined })} />);
+  eq(
+    '加载：8 行表格骨架，行高 56；页签没有数字',
+    [
+      pending.box.querySelectorAll('.state-skeleton .skeleton-row').length,
+      (pending.box.querySelector('.skeleton-row') as HTMLElement | null)?.style.height,
+      texts(pending.box, '.list-tabs .ant-tabs-tab'),
+    ],
+    [8, '56px', ['全部', '已上架', '草稿']],
+  );
+  eq(
+    '加载：筛选按钮都在；取已有值的（目的地）还没有选项，不能点；选项来自行业包的照常能点',
+    all<HTMLButtonElement>(pending.box, '.filter-trigger').map((b) => b.disabled),
+    [true, false, false],
+  );
+  await pending.unmount();
+
+  const failed = await mount(<CatalogList {...listProps({ rows: undefined, error: new TypeError('Failed to fetch') })} />);
+  eq(
+    '出错：表格的位置写「没取到」加重试',
+    [texts(failed.box, '.list-tabs .ant-alert-title'), failed.box.querySelectorAll('.list-table').length],
+    [['没取到'], 0],
+  );
+  await failed.unmount();
+}
+
+// 8.8 交互：搜索、页签、筛选、清除都经 onSearch 改地址（搜索边敲边改，用 replace）
+{
+  const calls: { next: CatalogSearch; replace?: boolean }[] = [];
+  function Harness({ initial }: { initial: CatalogSearch }) {
+    const [search, setSearch] = useState(initial);
+    return (
+      <CatalogList
+        {...listProps({
+          search,
+          onSearch: (next, replace) => {
+            calls.push({ next, replace });
+            setSearch(next);
+          },
+        })}
+      />
+    );
+  }
+  const x = await mount(<Harness initial={{ f: ['destination:四川'] }} />);
+  const input = x.box.querySelector('.list-search input');
+  check('敲字', await typeInto(input, '稻城'));
+  eq('搜索写进地址，用 replace', calls.at(-1), { next: { f: ['destination:四川'], q: '稻城' }, replace: true });
+  eq(
+    '边敲边筛',
+    bodyRows(x.box).map((tr) => tr.querySelector('.cell-link')?.textContent),
+    ['四川 稻城亚丁·色达秘境 8 日'],
+  );
+  check('删光', await typeInto(input, ''));
+  eq('搜索删光就不写 q', calls.at(-1)?.next, { f: ['destination:四川'] });
+  check('点「草稿」页签', await click(all(x.box, '.list-tabs .ant-tabs-tab-btn').find((b) => b.textContent?.startsWith('草稿'))));
+  eq('页签写进地址，记一步历史', calls.at(-1), { next: { f: ['destination:四川'], status: 'draft' }, replace: undefined });
+  check('点目的地的清除', await click(x.box.querySelector('.filter-clear')));
+  eq('清掉这一项筛选', calls.at(-1)?.next, { status: 'draft' });
+  await x.unmount();
+
+  calls.length = 0;
+  const y = await mount(<Harness initial={{ q: 'zzzz', f: ['destination:四川'] }} />);
+  check('工具条的「清除筛选」', await click(y.box.querySelector('.list-toolbar .list-link')));
+  eq('工具条的「清除筛选」只去掉筛选', calls.at(-1)?.next, { q: 'zzzz' });
+  check('空状态的「清除筛选」', await click(y.box.querySelector('.state-empty .list-link')));
+  eq('空状态的「清除筛选」全回默认', calls.at(-1)?.next, {});
+  eq('地址变了（不在搜索框里时），搜索框跟着变', (y.box.querySelector('.list-search input') as HTMLInputElement).value, '');
+  await y.unmount();
+
+  // 筛选菜单：选一项、再点同一项清除；多于 7 项时顶部有搜索框
+  const picks: (string | undefined)[] = [];
+  const destField = fieldOf(ROUTE, 'destination');
+  const destOptions = filterOptions(destField, ROUTE_ROWS);
+  check('目的地的选项多于 7 个', destOptions.length > MENU_SEARCH_OVER, String(destOptions.length));
+  const fb = await mount(<FilterButton field={destField} options={destOptions} pick={undefined} onPick={(v) => void picks.push(v)} />);
+  check('点开目的地', await click(fb.box.querySelector('.filter-trigger')));
+  await act(async () => win.happyDOM.waitUntilComplete());
+  const items = (): HTMLElement[] => all<HTMLElement>(document, '.filter-menu [role="menuitemradio"]');
+  eq(
+    '菜单列出全部选项',
+    items().map((i) => i.textContent),
+    destOptions.map((o) => o.label),
+  );
+  check('多于 7 项时有搜索框', !!document.querySelector('.filter-menu-search input'));
+  check('在菜单里搜', await typeInto(document.querySelector('.filter-menu-search input'), '四'));
+  eq(
+    '菜单只剩含「四」的',
+    items().map((i) => i.textContent),
+    ['四川'],
+  );
+  check('选四川', await click(items()[0]));
+  eq('选中写回', picks, ['四川']);
+  await fb.unmount();
+  const fb2 = await mount(
+    <FilterButton field={destField} options={destOptions} pick={{ field: destField, value: '四川' }} onPick={(v) => void picks.push(v)} />,
+  );
+  eq(
+    '生效后按钮写「目的地：四川」，没有下拉箭头',
+    [fb2.box.querySelector('.filter-trigger')?.textContent, fb2.box.querySelectorAll('.filter-chevron').length],
+    ['目的地：四川', 0],
+  );
+  check('再点开', await click(fb2.box.querySelector('.filter-trigger')));
+  await act(async () => win.happyDOM.waitUntilComplete());
+  const on = items().find((i) => i.getAttribute('aria-checked') === 'true');
+  eq('当前项标 aria-checked', on?.textContent, '四川');
+  check('再点同一项', await click(on));
+  eq('再点同一项就是清除', picks, ['四川', undefined]);
+  await fb2.unmount();
+  for (const el of all(document, '.ant-dropdown')) el.remove();
 }
 
 report();

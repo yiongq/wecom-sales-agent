@@ -11,6 +11,7 @@ import {
   useRouterState,
 } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
+import { catalogSearch } from './catalog/params.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
 
@@ -51,13 +52,12 @@ const index = createRoute({
   },
 });
 const sop = createRoute({ getParentRoute: () => root, path: '/sop' }).lazy(() => import('./pages/sop.lazy.js').then((m) => m.Route));
+// 产品库列表：kind 原样交给页面，页面按当前租户的行业包找实体，包里没有的是「没有这个页面」（第 9 步）。
+// 页签、搜索、筛选写进地址（spec 路由表的 status、q、f；不变量 22）
 const catalog = createRoute({
   getParentRoute: () => root,
   path: '/catalog/$kind',
-  params: {
-    parse: (p: { kind: string }): { kind: 'route' | 'hotel' } => ({ kind: p.kind === 'hotel' ? 'hotel' : 'route' }),
-    stringify: (p: { kind: 'route' | 'hotel' }) => ({ kind: p.kind }),
-  },
+  validateSearch: catalogSearch,
 }).lazy(() => import('./pages/catalog.lazy.js').then((m) => m.Route));
 const conversations = createRoute({ getParentRoute: () => root, path: '/conversations' }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
