@@ -91,8 +91,11 @@
   border-radius: var(--r-md);
   color: var(--text);
 }
+/* 悬停只换底色。antd 的 `:where(.css-…) a:hover` 给链接上 colorLinkHover，特异度与 a:hover 相同（0,1,1），
+   比 .ov-todo 的 color 高，不写这一句整行的字会变主色；业务数格和阶段条同理 */
 a.ov-todo:hover {
   background: var(--hover);
+  color: var(--text);
   text-decoration: none;
 }
 .ov-todo:focus-visible {
@@ -217,6 +220,7 @@ a.ov-todo:hover .ov-todo-action {
 }
 a.ov-kpi:hover {
   background-image: linear-gradient(var(--hover), var(--hover));
+  color: var(--text);
   text-decoration: none;
 }
 .ov-kpi:focus-visible {
@@ -384,6 +388,7 @@ a.ov-kpi:focus-visible .ov-kpi-arrow {
 }
 a.ov-stage:hover {
   background: var(--hover);
+  color: var(--text);
   text-decoration: none;
 }
 .ov-stage:focus-visible {
