@@ -2,6 +2,7 @@ import './setup.js'; // 必须第一个：CSP 相关的全局设置（见 setup.
 import './fonts/fonts.css'; // 自托管字体的 @font-face（由 scripts/fonts/build.ts 生成）
 import './theme/brand.css';
 import './parts/parts.css'; // 通用部件的样式（全局一份，部件本身不 import CSS，自测才能在 Node 里直接 import 它们）
+import './shell/shell.css'; // 外壳的样式，同上
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { App as AntApp } from 'antd';

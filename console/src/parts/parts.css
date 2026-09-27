@@ -186,7 +186,10 @@
   margin-top: 16px;
 }
 
-/* ActionBar（§5.16）：吸在内容面板底部，不透明，上边一条 --border，无阴影 */
+/*
+ * ActionBar（§5.16）：吸在内容面板底部，不透明，上边一条 --border，无阴影。宽度等于面板：外壳的内容区给出
+ * --panel-px / --panel-pb（shell.css），这里用负外边距抵掉面板内边距；不在外壳里（样张页）时这两个变量没有，照常排
+ */
 .action-bar {
   position: sticky;
   bottom: 0;
@@ -195,7 +198,8 @@
   align-items: center;
   gap: 16px;
   height: 60px;
-  padding: 0 32px;
+  margin: 0 calc(-1 * var(--panel-px, 0px)) calc(-1 * var(--panel-pb, 0px));
+  padding: 0 var(--panel-px, 32px);
   background: var(--panel);
   box-shadow: inset 0 1px 0 var(--border);
   animation: action-bar-in 160ms cubic-bezier(0.2, 0, 0, 1);

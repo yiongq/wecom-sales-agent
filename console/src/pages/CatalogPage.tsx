@@ -20,7 +20,9 @@ import { Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
 import { toast } from '../parts/toast.js';
 import { useUnsavedGuard } from '../parts/UnsavedGuard.js';
-import { canEdit, useViewer } from '../viewer.js';
+import { catalogListQuery } from '../queries.js';
+import { PageHeader } from '../shell/PageHeader.js';
+import { canEdit, usePack, useViewer } from '../viewer.js';
 import { CsvImport } from './CsvImport.js';
 import { zodValidator } from '../zodValidator.js';
 
@@ -89,18 +91,25 @@ export function CatalogPage() {
   const viewer = useViewer();
   const editable = canEdit(viewer.data);
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ['catalog', kind], queryFn: () => unwrap(api.catalog[':kind'].$get({ param: { kind } })) });
+  const q = useQuery(catalogListQuery(kind));
   const [open, setOpen] = useState<{ row: Row | null } | null>(null);
   const rows: Row[] = q.data?.items ?? [];
+  // 页名取行业包里的实体名（侧栏、⌘K 同源）；包还没到时用旧表兜底，第 9 步重做列表时去掉
+  const title = usePack()?.entities.find((e) => e.kind === kind)?.label ?? KIND_LABEL[kind];
 
   return (
     <Space orientation="vertical" style={{ width: '100%' }}>
-      {editable && (
-        <Space>
-          <PrimaryButton onClick={() => setOpen({ row: null })}>新建{KIND_LABEL[kind]}</PrimaryButton>
-          <CsvImport kind={kind} label={KIND_LABEL[kind]} onDone={() => qc.invalidateQueries({ queryKey: ['catalog', kind] })} />
-        </Space>
-      )}
+      <PageHeader
+        title={title}
+        actions={
+          editable && (
+            <>
+              <CsvImport kind={kind} label={KIND_LABEL[kind]} onDone={() => qc.invalidateQueries({ queryKey: ['catalog', kind] })} />
+              <PrimaryButton onClick={() => setOpen({ row: null })}>新建{KIND_LABEL[kind]}</PrimaryButton>
+            </>
+          )
+        }
+      />
       <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={8} />}>
         <Table<Row>
           rowKey="code"

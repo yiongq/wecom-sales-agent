@@ -8,7 +8,7 @@ import { useSyncExternalStore } from 'react';
 import { LoginForm } from './LoginForm.js';
 import { abandonRelogin, isSessionExpired, resumeSession, subscribeSession } from './session.js';
 import { cjk } from './typography.js';
-import { type Viewer, VIEWER_KEY } from './viewer.js';
+import { memberViewer, type Viewer, VIEWER_KEY } from './viewer.js';
 
 const never = (): boolean => false;
 
@@ -20,9 +20,8 @@ export function SessionExpiredDialog() {
       <p style={{ margin: '0 0 16px', color: 'var(--text-2)' }}>{cjk('重新登录后接着刚才的操作')}</p>
       <LoginForm
         onSuccess={(me) => {
-          const next: Viewer = { kind: 'member', me };
           const replayed = resumeSession(me);
-          qc.setQueryData(VIEWER_KEY, next);
+          qc.setQueryData<Viewer>(VIEWER_KEY, (prev) => memberViewer(prev, me));
           if (!replayed) void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== VIEWER_KEY[0] });
         }}
       />

@@ -5,12 +5,14 @@
 // <html> 的两个属性首帧由 /console/theme-boot.js 设好，之后由 prefs.ts 改；这里只是跟着它们走
 import { CheckCircleOutlined, ExclamationCircleOutlined, InfoCircleOutlined, WarningOutlined } from '@ant-design/icons';
 import { ConfigProvider, type ConfigProviderProps } from 'antd';
-import { type ReactNode, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { antdTheme } from './antd.js';
 import { applyPrefs, currentThemeState, REDUCED_MOTION_QUERY, watchPrefs } from './prefs.js';
 
 const WAVE = { disabled: true } as const;
 const BUTTON: ConfigProviderProps['button'] = { autoInsertSpace: false };
+/** Tooltip 无箭头（design-system §5.15） */
+const TOOLTIP: ConfigProviderProps['tooltip'] = { arrow: false };
 
 // 图标先用 @ant-design/icons 里描线的那一套，接 lucide 时换成 info / circle-check / triangle-alert / circle-alert
 const ALERT: ConfigProviderProps['alert'] = {
@@ -59,7 +61,10 @@ function snapshot(): string {
   return `${s.mode}|${s.reduceMotion ? 1 : 0}`;
 }
 
-export function ThemeProvider({ children, ...rest }: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button' | 'alert'>) {
+export function ThemeProvider({
+  children,
+  ...rest
+}: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button' | 'alert' | 'tooltip'>) {
   // 第三个参数只给 theme.selftest.ts 用：它在 Node 里用 react-dom/server 渲染这个组件，核对传给 ConfigProvider 的东西
   const key = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [mode, reduce] = key.split('|');
@@ -69,9 +74,15 @@ export function ThemeProvider({ children, ...rest }: Omit<ConfigProviderProps, '
     applyPrefs();
     return watchPrefs();
   }, []);
+  // antd 的 MotionWrapper 只在 motion 第一次与上层不同时才包一层 MotionProvider（用 ref 记住，之后一直包）。
+  // 所以运行中第一次打开「减少动态效果」时整棵树换了结构、全部重挂载：用户菜单收起，编辑中的内容也会丢（第 2.2 步走查发现）。
+  // 外面垫一层 motion 与首帧相反的 ConfigProvider，里面那层从第一帧起就包着，之后切换只改值、不改结构
+  const [outer] = useState(() => ({ token: { motion: reduce === '1' } }));
   return (
-    <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON} alert={ALERT}>
-      {children}
+    <ConfigProvider theme={outer}>
+      <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON} alert={ALERT} tooltip={TOOLTIP}>
+        {children}
+      </ConfigProvider>
     </ConfigProvider>
   );
 }

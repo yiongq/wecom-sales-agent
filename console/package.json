@@ -24,6 +24,8 @@
     "antd": "6.6.5",
     "dayjs": "1.11.23",
     "hono": "4.13.9",
+    "lucide-react": "1.48.0",
+    "pinyin-match": "1.2.10",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "4.6.5"

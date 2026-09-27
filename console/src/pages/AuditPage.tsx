@@ -8,6 +8,7 @@ import type { AuditEntryView } from '../../../src/shared/console-api.js';
 import { api, unwrap } from '../api.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
+import { PageHeader } from '../shell/PageHeader.js';
 
 const ACTIONS = [
   'sop.publish',
@@ -48,6 +49,7 @@ export function AuditPage() {
 
   return (
     <Space orientation="vertical" style={{ width: '100%' }}>
+      <PageHeader title="审计日志" />
       <Space>
         <AutoComplete
           style={{ width: 260 }}

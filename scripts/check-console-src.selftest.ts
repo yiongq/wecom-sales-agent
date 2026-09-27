@@ -54,6 +54,8 @@ const BAD: ReadonlyArray<readonly [string, number, number, string]> = [
   ['console/src/i9-attr.tsx', 2, 9, `export const A = () => <input placeholder="也可以把 CSV 粘贴在这里" />;`],
   ['console/src/i9-concat.ts', 2, 9, `export const s = (n: number) => '共 ' + n;`],
   ['src/packs/demo/console-pack.ts', 2, 9, `export const pack = { label: '每人起价', help: '最多 3 天' };`],
+  // 话术节 heading 的例外只给行业包配置（照抄 SOP 文件的标题）；console 里叫 heading 的字符串照样查
+  ['console/src/i9-heading.ts', 2, 9, `export const s = { heading: '共 3 节' };`],
   ['console/src/i28-dangerous.tsx', 2, 28, `export const A = ({ x }: { x: string }) => <div dangerouslySetInnerHTML={{ __html: x }} />;`],
   ['console/src/i28-csstext.ts', 2, 28, `export const f = (el: HTMLElement) => { el.style.cssText = 'color:red'; };`],
   ['console/src/i28-setattr.ts', 2, 28, `export const f = (el: HTMLElement) => el.setAttribute('style', 'color:red');`],

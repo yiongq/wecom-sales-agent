@@ -4,7 +4,8 @@
 // 出错时给人看的文案取 parts/errors.ts 的 ERROR_COPY；服务端的 detail 只在技术详情里（不变量 8）
 import { hc } from 'hono/client';
 import type { ConsoleApp } from '../../src/console-api/app.js';
-import type { ApiError } from '../../src/shared/console-api.js';
+import type { CatalogKind } from '../../src/shared/catalog.js';
+import { type ApiError, CatalogKindParam } from '../../src/shared/console-api.js';
 import { csrfHeader, sessionFetch } from './session.js';
 
 export const api = hc<ConsoleApp>('/', { fetch: sessionFetch as typeof fetch, headers: csrfHeader }).api.console;
@@ -17,6 +18,15 @@ export class HttpError extends Error {
   ) {
     super(`${status} ${body.error}`);
   }
+}
+
+/**
+ * 行业包里实体的 kind（字符串）→ 接口要求的 kind。console 只在这一处转换（spec「行业包通用架构 · 下发」）；
+ * 接口还不认识的 kind 是 null，调用方不发请求
+ */
+export function catalogKind(kind: string): CatalogKind | null {
+  const r = CatalogKindParam.shape.kind.safeParse(kind);
+  return r.success ? r.data : null;
 }
 
 type Success<R> = R extends { status: 200; json(): Promise<infer T> } ? T : never;

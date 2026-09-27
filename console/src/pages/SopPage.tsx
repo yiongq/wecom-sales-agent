@@ -46,6 +46,7 @@ import { toast } from '../parts/toast.js';
 import { useUnsavedGuard } from '../parts/UnsavedGuard.js';
 import { SectionDiff } from '../SectionDiff.js';
 import { TextEditor } from '../TextEditor.js';
+import { PageHeader } from '../shell/PageHeader.js';
 import { canEdit, useViewer } from '../viewer.js';
 
 const NL = '\n';
@@ -81,9 +82,12 @@ export function SopPage() {
   const viewer = useViewer();
   const q = useQuery({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
   return (
-    <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={11} />}>
-      {q.data && ('spec' in q.data ? <MemberSop data={q.data} editable={canEdit(viewer.data)} /> : <AnonSop data={q.data} />)}
-    </StateView>
+    <>
+      <PageHeader title="销售话术" />
+      <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={11} />}>
+        {q.data && ('spec' in q.data ? <MemberSop data={q.data} editable={canEdit(viewer.data)} /> : <AnonSop data={q.data} />)}
+      </StateView>
+    </>
   );
 }
 

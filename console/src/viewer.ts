@@ -1,26 +1,30 @@
-// 当前是谁在看：成员（带角色与 csrf）、demo 下的匿名只读、要登录、或服务端在文件模式（后台不可用）
+// 当前是谁在看：成员（带角色与 csrf）、demo 下的匿名只读、要登录、或服务端在文件模式（后台不可用）；
+// 成员与匿名都带着当前租户的行业包配置（/pack）。启动时并发取 /me 与 /pack，判定见 shell/boot.ts（spec「外壳 · 启动」）
 import { useQuery } from '@tanstack/react-query';
-import type { ApiError, Me } from '../../src/shared/console-api.js';
+import type { Me } from '../../src/shared/console-api.js';
+import type { IndustryPack } from '../../src/shared/pack.js';
 import { api, HttpError, unwrap } from './api.js';
+import { type Outcome, resolveBoot, type Viewer } from './shell/boot.js';
 import { beginMemberSession, isMemberSession, logoutMemberSession } from './session.js';
 
-export type Viewer = { kind: 'member'; me: Me } | { kind: 'anon' } | { kind: 'login' } | { kind: 'disabled' };
+export type { Viewer } from './shell/boot.js';
 
 export const VIEWER_KEY = ['viewer'] as const;
 
-async function loadViewer(): Promise<Viewer> {
-  const me = await api.me.$get();
-  if (me.status === 200) {
-    const body = await me.json();
-    beginMemberSession(body);
-    return { kind: 'member', me: body };
+async function outcome(req: Promise<{ status: number; json(): Promise<unknown> }>): Promise<Outcome> {
+  try {
+    const res = await req;
+    return { status: res.status, body: await res.json().catch(() => ({ error: 'bad_response' })) };
+  } catch (e) {
+    return { thrown: e };
   }
-  // 成员身份下 /me 没成功（就地登录框被关掉，或服务出错）：不降成匿名，页面留着原来的身份（spec「会话过期的判定」）
-  if (isMemberSession()) throw new HttpError(me.status, (await me.json().catch(() => ({ error: 'bad_response' }))) as ApiError);
-  if (me.status === 503) return { kind: 'disabled' };
-  // 没有会话：demo 下 /status 匿名可读（只有 mode），prod 下 401
-  const status = await api.status.$get();
-  return status.status === 200 ? { kind: 'anon' } : { kind: 'login' };
+}
+
+async function loadViewer(): Promise<Viewer> {
+  const [me, pack] = await Promise.all([outcome(api.me.$get()), outcome(api.pack.$get())]);
+  const v = resolveBoot(me, pack, isMemberSession());
+  if (v.kind === 'member') beginMemberSession(v.me);
+  return v;
 }
 
 /**
@@ -37,6 +41,17 @@ export function logout(): Promise<void> {
 
 export function useViewer() {
   return useQuery({ queryKey: VIEWER_KEY, queryFn: loadViewer, staleTime: 60_000 });
+}
+
+/** 就地登录成功后的成员视图：行业包沿用之前拿到的那份（同一个部署、同一个租户） */
+export function memberViewer(prev: Viewer | undefined, me: Me): Viewer | undefined {
+  return prev && 'pack' in prev ? { kind: 'member', me, pack: prev.pack } : prev;
+}
+
+/** 当前租户的行业包；还没判定出来（或要登录、文件模式）时是 undefined */
+export function usePack(): IndustryPack | undefined {
+  const v = useViewer().data;
+  return v && 'pack' in v ? v.pack : undefined;
 }
 
 /** 改 SOP、发布、回滚、上新、编辑、上架、看审计：只有 owner / admin */

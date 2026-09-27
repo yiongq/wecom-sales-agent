@@ -276,9 +276,10 @@ export const ANTD_THEMES: Readonly<Record<ThemeMode, ThemeConfig>> = {
 
 /**
  * 交给 ConfigProvider 的主题：「减少动态效果」（菜单开关或系统设置）开着时 token.motion 传 false（§1.5、§8），
- * antd 由 JS 驱动的入场退场一起关掉；CSS 过渡另由 brand.css 按 data-reduce-motion 与 prefers-reduced-motion 归零，这里的时长也归零
+ * antd 由 JS 驱动的入场退场一起关掉；CSS 过渡另由 brand.css 按 data-reduce-motion 与 prefers-reduced-motion 归零，这里的时长也归零。
+ * 没开时显式写 motion: true：ThemeProvider 外面垫的那层 ConfigProvider 的 motion 与首帧相反，这里不写就会继承它
  */
 export function antdTheme(mode: ThemeMode, reduceMotion: boolean): ThemeConfig {
   const base = ANTD_THEMES[mode];
-  return reduceMotion ? { ...base, token: { ...base.token, ...ZERO_MOTION, motion: false } } : base;
+  return { ...base, token: { ...base.token, ...(reduceMotion ? { ...ZERO_MOTION, motion: false } : { motion: true }) } };
 }

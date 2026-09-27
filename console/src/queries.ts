@@ -1,0 +1,30 @@
+// 几处共用同一份缓存的查询（React Query 的 queryKey 与取数函数写在一处）：
+// - 产品库列表：列表页、侧栏的条目数、⌘K 的「各实体」组（spec「外壳 · 搜索触发器」：和列表页共用缓存）；
+// - 会话计数与等人接手的首页：侧栏软徽标、铃铛（spec「外壳 · 计数刷新」），总览第 4 步接着用；
+// - 最近 100 个会话：⌘K 的「会话」组
+import { queryOptions } from '@tanstack/react-query';
+import type { CatalogKind } from '../../src/shared/catalog.js';
+import { api, unwrap } from './api.js';
+
+export const catalogListQuery = (kind: CatalogKind) =>
+  queryOptions({
+    queryKey: ['catalog', kind] as const,
+    queryFn: () => unwrap(api.catalog[':kind'].$get({ param: { kind } })),
+  });
+
+export const conversationCountsQuery = queryOptions({
+  queryKey: ['conversations', 'counts'] as const,
+  queryFn: () => unwrap(api.conversations.counts.$get()),
+});
+
+export const waitingConversationsQuery = queryOptions({
+  queryKey: ['conversations', 'human'] as const,
+  queryFn: () => unwrap(api.conversations.$get({ query: { state: 'human' } })),
+});
+
+/** ⌘K 只搜这一页（spec：`GET /conversations?limit=100&order=waiting_first`，按短码匹配） */
+export const RECENT_CONVERSATIONS = 100;
+export const recentConversationsQuery = queryOptions({
+  queryKey: ['conversations', 'recent'] as const,
+  queryFn: () => unwrap(api.conversations.$get({ query: { limit: String(RECENT_CONVERSATIONS), order: 'waiting_first' } })),
+});

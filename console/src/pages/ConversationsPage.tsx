@@ -10,6 +10,7 @@ import type { ConversationRow } from '../../../src/shared/console-api.js';
 import { api, unwrap } from '../api.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
+import { PageHeader } from '../shell/PageHeader.js';
 
 const PAGE_SIZE = 20;
 const STAGE_LABEL: Record<string, string> = {
@@ -34,25 +35,28 @@ export function ConversationsPage() {
     placeholderData: (prev) => prev,
   });
   return (
-    <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={8} />}>
-      <Table<ConversationRow>
-        rowKey="id"
-        size="small"
-        dataSource={q.data?.items ?? []}
-        pagination={{ current: page, pageSize: PAGE_SIZE, total: q.data?.total ?? 0, onChange: setPage, showSizeChanger: false }}
-        columns={[
-          { title: '会话', dataIndex: 'id' },
-          { title: '渠道', dataIndex: 'channel', render: (ch: string) => CHANNEL_LABEL[ch] ?? ch },
-          { title: '阶段', dataIndex: 'stage', render: (s: string) => STAGE_LABEL[s] ?? s },
-          {
-            title: '转人工',
-            dataIndex: 'handedOver',
-            render: (h: boolean, r) => (h ? <Status kind={r.stage === 'paid' ? 'paid' : 'human'} /> : null),
-          },
-          { title: '消息数', dataIndex: 'messageCount' },
-          { title: '更新时间', dataIndex: 'updatedAt', render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm') },
-        ]}
-      />
-    </StateView>
+    <>
+      <PageHeader title="会话" />
+      <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={8} />}>
+        <Table<ConversationRow>
+          rowKey="id"
+          size="small"
+          dataSource={q.data?.items ?? []}
+          pagination={{ current: page, pageSize: PAGE_SIZE, total: q.data?.total ?? 0, onChange: setPage, showSizeChanger: false }}
+          columns={[
+            { title: '会话', dataIndex: 'id' },
+            { title: '渠道', dataIndex: 'channel', render: (ch: string) => CHANNEL_LABEL[ch] ?? ch },
+            { title: '阶段', dataIndex: 'stage', render: (s: string) => STAGE_LABEL[s] ?? s },
+            {
+              title: '转人工',
+              dataIndex: 'handedOver',
+              render: (h: boolean, r) => (h ? <Status kind={r.stage === 'paid' ? 'paid' : 'human'} /> : null),
+            },
+            { title: '消息数', dataIndex: 'messageCount' },
+            { title: '更新时间', dataIndex: 'updatedAt', render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm') },
+          ]}
+        />
+      </StateView>
+    </>
   );
 }

@@ -5,7 +5,7 @@ import { AuditPage } from './pages/AuditPage.js';
 import { CatalogPage } from './pages/CatalogPage.js';
 import { ConversationsPage } from './pages/ConversationsPage.js';
 import { SopPage } from './pages/SopPage.js';
-import { NotFound, Shell } from './Shell.js';
+import { NotFound, Shell } from './shell/Shell.js';
 
 // 样张页（spec「字体与标点样张」）只在 VITE_SPECIMEN=1 的构建里注册。条件在构建时就定了：生产构建里这些分支连同
 // 样张页的代码一起被摇掉（scripts/check-console-dist.ts 查产物里没有 _specimen）

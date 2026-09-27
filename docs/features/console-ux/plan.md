@@ -18,7 +18,7 @@
   - [x] 1.4 （阻塞：开放问题 1）静态资源与安全头：`src/shared/security-headers.ts` 的 `BASE_CSP` 加 `font-src 'self'`，并导出资源头函数；`src/console-api/host.ts` 用它给 `/console/assets/*` 带 `immutable`，JS、CSS 按 `Accept-Encoding` 走 gzip（Hono `compress`）；`console/vite.config.ts` 的 `previewWithCsp` 改用同一个函数。按开放问题 1 定下的文本改 `console.selftest.ts` 里钉死安全头的断言（`CSP` 常量，`secured()` 对 `/console/assets/app-1a2b.js` 与全部 `/api/console` 响应的检查），其余断言不动；新增不变量 26 的断言。
 - [ ] 2. 外壳、通用部件与新增接口（5）
   - [x] 2.1 服务端与共享代码：`Me.tenantName`；`src/shared/pack.ts` 的类型；`src/packs/travel/console-pack.ts` 与 `src/packs/registry.ts`，`tenant-create` 改读注册表；`GET /pack`；`src/shared/conversation.ts`（`conversationState`、`shortIdOf`）；`ConvQuery.state` / `stage` / `order` 与 `GET /conversations/counts`；`sectionBody`、`editableChars` 连同 `SopStructureError` 等挪到 `src/shared/sop-sections.ts`（做法见 spec「额度条」）。`console.selftest.ts` 加验收 15 的第 1、5、6、7 条。01 implemented 之后在 01 顶部加 `Amended by:`。
-  - [ ] 2.2 外壳：启动的加载与出错（spec「外壳 · 启动」）；侧栏由行业包生成（分组、计数、会话软徽标）；租户行与铃铛弹层，含空状态与轮询失败，刷新方式按 spec「外壳 · 计数刷新」；搜索触发器与 ⌘K（键盘、数据来源、各种状态按 spec「外壳 · 搜索触发器」，拼音库懒加载）；用户行（纯 CSS 先藏角色）与用户菜单（外观、减少动态效果、关于、退出）；受控收起与 `useViewport()` 三档；匿名外壳与横幅；非编辑角色的「只读」；跳转链接与地标；`document.title`。走查时核对：用户菜单里切外观，下一帧就是终值颜色，没有渐变（主题切换 0ms，靠第 1.1 步的 `data-theme-switching`）。
+  - [x] 2.2 外壳：启动的加载与出错（spec「外壳 · 启动」）；侧栏由行业包生成（分组、计数、会话软徽标）；租户行与铃铛弹层，含空状态与轮询失败，刷新方式按 spec「外壳 · 计数刷新」；搜索触发器与 ⌘K（键盘、数据来源、各种状态按 spec「外壳 · 搜索触发器」，拼音库懒加载）；用户行（纯 CSS 先藏角色）与用户菜单（外观、减少动态效果、关于、退出）；受控收起与 `useViewport()` 三档；匿名外壳与横幅；非编辑角色的「只读」；跳转链接与地标；`document.title`。走查时核对：用户菜单里切外观，下一帧就是终值颜色，没有渐变（主题切换 0ms，靠第 1.1 步的 `data-theme-switching`）。
   - [x] 2.3 通用部件：`StateView`、`ERROR_COPY`（含兜底）、`TechDetails`、`ConfirmDanger`、`Status`、`ActionBar`、`CheckList`、墨色主按钮组件、成功 toast 函数；未保存保护（`useBlocker`）；会话过期的判定与就地重登（spec「会话过期的判定」）；全站去掉 `message.error`。`scripts/check-console-src.ts` 挂进 `pnpm lint`，先覆盖不变量 2–4、6、8、9、28。`Status`、`ConfirmDanger` 做好后加进 `/_specimen` 控件样张（第 1.3 步）。
   - [ ] 2.4 拆包与预算：各页 `.lazy()`；删掉 `chunkSizeWarningLimit` 覆盖，开 `build.manifest`；确认 `assetsInlineLimit: 0` 已生效；扩展 `scripts/check-console-dist.ts` 的 JS 与字体预算、禁入内容（spec「性能」）。拆包前后的数字记进交接记录；超预算按开放问题 8 请 owner 定，选放宽时在 spec 顶部加 `Revisions:` 并改「性能」和验收 23。
 - [ ] 3. 字段渲染器与行业包配置（4）
@@ -270,6 +270,53 @@
   - 自测：`session.selftest.ts` 38 → 52 条。新加的第 8 节走 `api.ts` 导出的真客户端，`globalThis.fetch` 换成照 `guardWrites` 验 csrf 的假服务端：过期、重登、重放一轮，退出带着当前的 `x-csrf` 并删掉会话，之后 `/me` 的 401 不弹登录框，退出失败仍是成员，退出接口 401 也算退出。第 7 节是换人不重放，以及等着时身份变了的情况。
   - 变异在仓库外的副本里做，9 例都失败并点名：退出前清 csrf、`hc` 不经 `sessionFetch`（评审复现的那一例）、换人也重放、拿当前 userId 比、退出失败不回到成员、退出失败被吞、退出的 401 不算退出、退出成功后不清 csrf、每次等待都覆盖「开始等的人」。第一轮有两例是因为假 fetch 没准备响应，整个自测崩掉才变红，点不出名字。补上备用响应以后改成按名字失败。
   - preview 实测（同上的 CSP 与拦截方式，浅色、深色各一轮）：退出请求带 `x-csrf: c1`，假服务端删了会话、记了 `auth.logout`，页面回到「演示只读」，没弹登录框；退出接口 500 时仍是成员，就地显示「没退出登录 · 服务暂时连不上」和「重试」，点重试后退出成功；保存时会话失效，就地登录换成「小林」，PUT 只发了原来那一次，编辑器里的改动还在，页头是「小林 管理员」；会话列表里转人工后成交的一行写「已成交」，`handoff` 的阶段写「—」，「已转人工」0 处。CSP 违规 0 次，控制台只有浏览器对故意造的 500、401 记的「Failed to load resource」。
+
+### 第 2.2 步（2026-09-27）
+
+- 合并：分支从 `dev` 起，先后合入第 2.1、2.3 步。三个字体文件冲突，按第 2.3 步记的做法在合并结果上重跑 `scripts/fonts/build.ts`（fonttools 4.66.0、brotli 1.2.0），UI 优先片 730 个码位、148,716 B。合并后第 2.3 步的 `check-console-src.ts` 开始扫第 2.1 步的旅游包，话术节的 heading「转人工条件（满足任一立即调用 handoff_to_human）」被报成手打空格。它照抄 SOP 文件的标题，节表按它对上，不属于不变量 9 说的标签、帮助、说明。检查脚本给行业包配置里键为 `heading` 的字符串开例外，夹具加两条：行业包里的这种写法通过，console 里叫 `heading` 的字符串照样报（46 → 48 条）。
+- 做了什么（都在 `console/src/shell/`，旧的 `console/src/Shell.tsx` 删掉）：
+  - 启动：`viewer.ts` 并发取 `/me` 与 `/pack`，判定是纯函数 `boot.ts` 的 `resolveBoot`，照 spec「外壳 · 启动」的表。`Viewer` 的成员与匿名都带着 `pack`，`usePack()` 从这里取，不再用 `/status` 分匿名和登录页。两个请求都没回来时是侧栏加面板的骨架，300ms 后才看得见；`not_ready` 与网络失败、5xx 整页 `StateView`；`db_disabled` 整页中性说明，没有按钮。登录页登录后重新判定（重置 viewer 查询）；就地登录沿用已有的 `pack`（`memberViewer`）。
+  - 侧栏由行业包生成（`model.ts` 的 `buildNav`）：销售话术、`{nav.catalogGroup}` 下按 `nav.entities` 排的实体、运营（会话只给成员，审计日志只给所有者、管理员）。实体右侧的条目数取自列表，查询写在新的 `console/src/queries.ts`，列表页、侧栏、⌘K 共用同一份缓存；会话右侧是等人接手的软徽标。选中项按整段路径取最长匹配，每个路由恰好一个。
+  - 租户行与铃铛：租户名取 `Me.tenantName`，匿名写「演示」；logo 兜底是主色底上的首字。`GET /conversations/counts` 与 `?state=human` 在页面可见时每 30 秒取一次（React Query 的 `refetchIntervalInBackground: false`），软徽标、铃铛徽标都取 counts 的 `byState.human`，数字变了闪一次。弹层里有空状态，轮询失败时徽标保留上一次的数、顶部一行「没取到最新的」加「重试」。
+  - 搜索触发器与 ⌘K：匹配、分组、键盘都是纯函数（`search.ts`）；拼音库 `pinyin-match` 在第一次打开时动态 import。会话组只搜最近 100 个，按短码匹配。匿名没有会话组。
+  - 用户行：名字和角色放在同一个 22 高、可换行、裁掉溢出的容器里，纯 CSS 先藏角色。用户菜单有身份块、外观子菜单、减少动态效果开关（点了菜单不收起）、关于、退出登录。「关于」弹窗照 P 页的样张。
+  - 收起受控：每页有默认（销售话术收起），用户在这一页切过就按切的，换页回到默认。`useViewport()` 用两条 `matchMedia` 判三档：≥1280 展开、992–1279 固定 56 的图标栏（悬停出标签，没有切换按钮）、<992 是 52 高的顶栏加左侧抽屉（换地址就关上）。
+  - `PageHeader`（§4.3）写标签页标题「页名 · 租户名」，非编辑角色在状态句末尾挂「只读」胶囊（悬停「你的角色是坐席，只能查看」），匿名在页头下挂 info 横幅（「去体验对话」到 `/chat.html`，「登录后编辑」进登录页）。现有四页都加了页头，产品库的新建、CSV 导入挪进页头右侧；404 页也写标题。页面的其余版式不动。
+  - 跳到主要内容是每页第一个可聚焦元素，聚焦 `main`；侧栏导航是 `nav` 地标。面板自己滚动，换地址回到顶上。
+  - `ActionBar` 用外壳给的 `--panel-px` / `--panel-pb` 抵掉面板内边距，吸底时贴满面板宽（第 2.3 步记的「要等第 2.2 步的面板」）。
+- 依赖：`lucide-react` 1.48.0（ISC，版本与第 1.2 步钉的许可原文同号，包里的 `LICENSE` 与 `console/public/licenses/lucide-ISC.txt` 逐字节相同，`NOTICE` 第 3 条同步改）；`pinyin-match` 1.2.10（MIT，没有依赖，ESM 版 28 KB，没有 `eval` / `Function`）。都是安装时 npm 的 latest。第 1.2 步原记 lucide 从第 3.2 步起加，外壳的图标就要用，提前到这一步；实体图标集合（§7 的 24 个）的映射在 `shell/icons.tsx`，第 3.1 步定 `ENTITY_ICONS` 后把键的类型换成它。Alert 等部件里的 `@ant-design/icons` 留给第 3.2 步一起换。
+- 修了第 1.1 步的一处：antd 的 `MotionWrapper` 只在 `motion` 第一次与上层不同时才包一层 `MotionProvider`，所以运行中第一次打开「减少动态效果」时整棵树换了结构、全部重挂载（走查里用户菜单一点就收起；在话术页会丢掉编辑中的内容）。`ThemeProvider` 外面垫一层 motion 与首帧相反的 `ConfigProvider`，里面那层从第一帧起就包着；`antdTheme` 不减少动效时显式写 `motion: true`，免得继承外层。`theme.selftest.ts` 随之多核对这个键（1,601 → 1,607 条）。另按 §5.15 在 `ThemeProvider` 设 Tooltip 不带箭头。重挂载只在浏览器里看得出来，Node 里的自测测不到，靠下面的 preview 实测。
+- 字体：外壳新加的文字让 check-fonts 报缺 24 个字，重跑 `build.ts`：UI 优先片 730 → 754 个码位，148,716 → 154,088 B（+5,372），两个 preload 合计 165,972 B；两个 Geist 文件、许可原文逐字节不变。界面用字 572 个汉字。缓存目录用完删掉。
+- 构建：入口 JS 2,079.49 → 2,092.65 kB（gzip 668.80 → 673.52 kB，+4.7 kB，lucide 图标与外壳）；拼音库单独一块 28.13 kB（gzip 20.09 kB），只在第一次打开 ⌘K 时下载。拆包与预算是第 2.4 步。
+- 自测与检查：
+  - `console/src/shell/shell.selftest.ts`（122 条）串进 `pnpm test`，排在 `parts/errors.selftest.ts` 之后，CI 注释同步。覆盖启动表的每一行（含成员身份下 `/me` 失败不降成匿名、表外组合、db_disabled 与 not_ready 先于网络失败）、五种角色与匿名的侧栏、每个路由恰一个选中项、标签页标题各不相同且以「 · 租户名」「 · 演示」结尾、搜索占位、徽标文字、头像取色（按 UTF-16 码元，😀 是 2 不是 5）、会话标签、相对时间（钉 `Asia/Shanghai`，今天 0 点、昨天最后一刻、跨年）、视口三档、默认收起、轮询参数、⌘K 的匹配（真实的 `pinyin-match`：jd、xianlu、kh、dyam）、分组顺序、各组的加载与出错、会话按短码、J / K 与输入法组字，以及画出来的页头（只读胶囊、演示横幅是 info）与用户行（角色在 DOM 里）。
+  - `scripts/check-console-dist.ts` 加一条：`index.html` 直接加载的模块脚本与 modulepreload 里没有拼音库的字典，产物里另有一块带着它（字典写法变了就报，不会空过）。
+- 变异（仓库外的隔离副本，39 例）：38 例失败并点名，1 例是等价变异。
+  - 启动 7 例：pack 的 db_disabled 不认、成员身份下降成匿名、prod 两个 401 进匿名、pack 网络失败或 5xx 不当出错、not_ready 当网络失败、`/me` 200 配 `/pack` 401 也进成员。第一轮「pack 5xx」「not_ready」两例没变红：后面的分支照样抛出同样的错。补了「/me 403 配 /pack 5xx」「成员身份下 /me 401 配 /pack 5xx」「not_ready 与网络失败同时来」三条，之后都点名。
+  - 侧栏、标题、徽标、时间、视口 14 例：审计给所有成员、匿名有会话、不按 `nav.entities` 排、选中项按子串前缀比、匿名标题、匿名占位写会话、徽标 100、头像按码点、客户叫法写死、今天 0 点算昨天、1280 算图标栏、图标栏能展开、话术页不收起、隐藏时照样轮询。
+  - ⌘K 10 例：组字时 Enter 打开、响应 J、没输入也列实体组、会话按标签匹配、操作排到实体前、每组不限条数、拼音库不参与、↑↓ 不循环、带 Shift 也打开；`Object.hasOwn` 换成 `in` 是等价变异（JSON 条目的原型上没有字符串或数字属性，两种写法取值相同）。
+  - 页头与用户行 4 例：编辑角色也有只读胶囊、横幅用黄色、说明不写角色的中文名、用户行不渲染角色。
+  - 检查脚本 4 例：heading 的例外拿掉、例外扩到 console；拼音库静态 import 进入口、字典标记写错（检查不能空过）。
+- preview 实测（Chromium，Playwright 1.63.0，CSP 同线上，接口由 `page.route` 拦截，时钟钉在 9月26日 14:30、`Asia/Shanghai`，浅色、深色各一轮，走查脚本在仓库外）：
+  - 1440×900 的几何与设计系统 §4 一致：侧栏 240（收起 56）；面板 x 240、y 8、宽 1192、高 884，圆角 12；租户行 40；搜索触发器 y 54、高 32，下方 8 处开始导航；导航项 32；标题 x 272、y 32，24/32/600；铃铛 28×28，实心徽标 16×16、top −3、right −4，镂空是 `--frame`；软徽标 18 高；分组标题 13/500 text-3、上 16。选中项 `--selected` 底、500；收起时选中项另有一圈 `--control-border`。
+  - 每个路由 `aria-current="page"` 恰好 1 个，标签页标题依次是「线路 · 云途定制旅行」「酒店 · …」「销售话术 · …」「会话 · …」「审计日志 · …」「没有这个页面 · …」，匿名是「线路 · 演示」，登录页「登录」。Tab 第一下落在「跳到主要内容」，回车后焦点在 `main`。
+  - 铃铛：两行「企微客户·A01 / 26分钟前有新动静」「企微客户·F01 / 8分钟前有新动静」，「打开工作台」是 `/admin.html#s=wecom%3Acust_A01`、`target=_blank`。轮询失败（快进 31 秒）后徽标仍是 2，弹层顶部「没取到最新的 · 重试」；点重试、多一个等人接手后两处徽标都是 3，闪了一次；全部接手后弹层只剩「没有等人接手的会话」和底部链接，两个徽标都不画。
+  - ⌘K：打开前没有下载拼音块，打开后下载 1 次；焦点在输入框；输入「jd」列出页面「酒店」和线路、酒店条目，输入框里就是 jd（J / K 没被拦）；「贵州」按目的地命中两条线路、一家酒店；「f01」只命中会话 F01，组底「只搜最近100个会话」；「zzzz」写「没有找到「zzzz」」和「换个说法，或者用拼音首字母」；↑↓ 加 Enter 打开「酒店」页并关掉 ⌘K。弹窗 640 宽、距顶 120，输入行 48，行 36。
+  - 用户菜单向上弹出，宽 240，左边与用户行对齐；身份块「老板 / 所有者」。在外观子菜单里选另一种主题，下一帧的 `body`、搜索触发器底色和图标按钮字色与 600ms 后完全相同（没有渐变），偏好写进 `localStorage`。点「减少动态效果」菜单不收起，`data-reduce-motion="true"`，图标按钮的 `transition-duration` 是 0s；再点一次拿掉。「关于」焦点在「关闭」，两个许可链接 200、`text/plain`。
+  - 用户行：「一二三四五六七」名字完整、角色被裁掉，Tooltip「一二三四五六七·所有者」；「老板」「技术支持 主管」名字和角色都在。主管登录：页头有「只读」胶囊，悬停「你的角色是主管，只能查看」；没有审计日志入口，也没有新建、导入。
+  - 收起：手动收起后 56 宽；进销售话术页默认收起，面板 x 56、宽 1376；在这一页展开后去会话页，仍是展开（会话页默认展开）。
+  - 视口：1100 宽是 56 的图标栏、没有切换按钮、内容内边距 24；800 与 375 宽是 52 高的顶栏，面板 x 8、y 52，内边距 16，抽屉 240 宽，点导航后抽屉关上；三档的 `scrollWidth` 都等于 `innerWidth`。
+  - 匿名：租户行「演示」，没有铃铛、会话和审计入口，用户行是「登录」「关于」「收起侧栏」；页头下 info 横幅，右侧「去体验对话」「登录后编辑」；没有发出任何会话请求；⌘K 搜「a0」没有会话组。点「登录后编辑」到登录页，登录后进成员外壳，退出后回到演示。
+  - 启动：`/me` 晚 1.2 秒时，100ms 时骨架不可见、500ms 时可见，之后进页面；`/me` 503 `not_ready` 是「系统正在启动」加「重试」；`/pack` 500、`/pack` 连不上（`/me` 401）都是「没取到 · 服务暂时连不上」加「重试」，不按匿名显示；`db_disabled` 只有一句说明；两个 401 进登录页。
+  - 两套主题下 `securitypolicyviolation` 都是 0 次，页面代码的控制台错误 0 条；另有浏览器自己记的「Failed to load resource」，对应故意造的 401、500 和匿名的 `/me` 401。
+- 偏离与取舍（spec 顶部 `Revisions:` 记了前两条）：
+  - 用户菜单的身份块只写名字和角色：设计系统 §4.2 要写邮箱，`Me` 没有邮箱字段，spec 的接口增补也没加。
+  - 搜索触发器的 Tooltip 在 Mac 上写「⌘K」，其余写「Ctrl+K」，两种按法都认。
+  - ⌘K 的实体结果在条目详情路由（第 10 步）之前打开这个实体的列表页，改的是 `Shell.tsx` 的 `openEntity` 一处。
+  - 侧栏还没有「总览」：`/` 仍重定向到销售话术，第 4 步加路由时在 `buildNav` 最前面加一项。
+  - 「操作」组放外观三项、减少动态效果、关于、退出登录（匿名是登录）；spec 只说是静态的。
+  - 相对时间先放在 `shell/model.ts` 的 `sinceText`，第 3.4 步的 `src/shared/format.ts` 接手后换掉；角色的中文名 `ROLE_LABEL` 同样等第 3.4 步挪进 `ui-labels.ts`。
+  - 产品库页的页名取行业包的实体名，包没到时退回旧的 `KIND_LABEL`，第 9 步重做列表时去掉。
 
 ## 交接记录
 
