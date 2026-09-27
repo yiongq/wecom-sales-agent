@@ -1,5 +1,6 @@
 // console/src/fonts/ 的清单格式与 fonts.css 的写法。build.ts 按它生成，scripts/check-fonts.ts 按它重算比对，
-// 所以 fonts.css 不能手改：声明顺序（先长尾、后 UI 优先片）由这里的函数保证（spec「字体与授权义务」）。
+// 所以 fonts.css 不能手改。声明顺序（先长尾、后 UI 优先片）与长尾去控制字符由这里的函数实现（spec「字体与授权义务」）；
+// check-fonts.ts 另外直接解析 fonts.css 核对这两条，不信这里的函数。
 import fs from 'node:fs';
 import path from 'node:path';
 

@@ -6,8 +6,10 @@
 // - console/src/** 的代码文件：字符串字面量、模板字符串的文字段、JSX 文本；CSS 去掉注释后的全文；
 // - src/shared/** 的代码文件，取法同上：console 会 import 它们（报错文案、格式化、界面标签），跳过假包 pack-fixtures/；
 // - 各注册行业包的界面配置 src/packs/<包>/console-pack.ts；
-// - antd 的 zh_CN 语言包（空状态、分页、确认按钮这些 antd 自己画的字）。
+// - antd 的 zh_CN 语言包（空状态、分页、确认按钮这些 antd 自己画的字）；
+// - zod 的 zh-CN 语言包：console/src/setup.ts 调了 z.config(z.locales.zhCN())，表单把校验消息显示在字段下面，取法同代码文件。
 // 都跳过 *.selftest.*：自测里的字不上页面。
+// 服务端 ApiError 的 detail 不收：按 spec 它只出现在默认折叠的「技术详情」里（不变量 8），显示时下载长尾分片是预期的回退。
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -118,8 +120,11 @@ export function uiTexts(root = '.'): UiText[] {
     const text = textOf(f, fs.readFileSync(f, 'utf8'));
     if (text) out.push({ file: rel(f), text });
   }
-  const antdLocale = createRequire(path.resolve(root, 'console/package.json'))('antd/lib/locale/zh_CN') as { default?: unknown };
+  const fromConsole = createRequire(path.resolve(root, 'console/package.json'));
+  const antdLocale = fromConsole('antd/lib/locale/zh_CN') as { default?: unknown };
   out.push({ file: 'antd/lib/locale/zh_CN', text: stringsIn(antdLocale.default ?? antdLocale).join('\n') });
+  const zodLocale = fromConsole.resolve('zod/v4/locales/zh-CN.js');
+  out.push({ file: 'zod/v4/locales/zh-CN.js', text: codeLiterals(zodLocale, fs.readFileSync(zodLocale, 'utf8')).join('\n') });
   return out;
 }
 

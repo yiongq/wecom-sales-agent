@@ -4,7 +4,7 @@ Status: ready
 Revisions: 2026-09-27 整份就地重写（本 spec 仍是 draft，没有代码依赖它）。视觉方向由「青绿长卷」（纸色、石青石绿、思源宋体子集、钢印、目的地长卷）改为 owner 当天选定的方案 A「利落」；字体改为 Geist、Geist Mono 与思源黑体 Noto Sans SC；产品库、导航、话术词汇改为按行业包配置渲染（上一稿按线路、酒店写死字段表）；会话与总览分成「今天」和「02 之后」两期；视觉与内容细则挪到同目录的 [design-system.md](design-system.md)。上一稿里仍然成立的部分保留：五处接口增补、话术自动保存与冲突合并、CSV 的 GBK 兜底与防公式注入、按路由拆包与压缩。重写的原因见「背景与问题」，放弃的做法见「被否决的方案」。同日按规格、代码核对、决定三路评审再改：开放问题 1 扩成「01 里所有非新增改动」；验收 15、25 写明安全头断言的例外；不变量 11 改成能断言的写法；外壳补启动的加载与出错；会话过期的判定限定成员身份；走查种子改由已提交的脚本生成并钉住时钟；⌘K 不再用 J / K；plan 把总览用到的审计与字数函数提前。
 Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../../architecture/01-pg-config-console/spec.md)（「后台 API 与页面」、安全头、匿名投影、权限矩阵）。技术栈见 [ADR-002](../../adr/adr-002-console-vite-react.md)；其中「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」一条，改由 [ADR-004](../../adr/adr-004-pack-field-rendering.md) 取代。**01 翻为 `implemented`、并且 owner 把本 spec 翻为 `ready` 之后才开工。** 原因有两条：AGENTS.md 规定 `Amends` 只能加在已 implemented 的 spec 上；验收 25 要重跑 01 的验收。
 Amends: 01 的「后台 API 与页面」（`Me.tenantName`、`ConvQuery` 与 `AuditQuery` 的可选参数、两个只读接口）、「SOP：节表、渲染、版本、发布闸」（`ContractViolation.match`；草稿保存的 `rebaseOnto` 改变草稿的基线）、「导入、导出与回滚」（`tenant-create --pack` 改读注册表）。01 implemented 后生效，只做新增，见「接口改动」。01 里不是新增的改动（安全头两处、页面条款五处，以及随之要改写的 01 验收 16 第 4 条和验收 22）不走 Amends，见开放问题 1。
-Revisions: 2026-09-27 实现期修订（plan 第 1.2 步，开放问题 4 实测之后，与实现同一个提交）：「字体与授权义务」三处。UI 优先片的用字来源原为「`console/src/**` 与各注册行业包配置」，扩成界面实际显示的文字，另加 `src/shared/**` 与 antd 的 zh_CN 语言包，只取字符串与 JSX 文本、注释与自测不算，因为这两处的字也上页面，不收就过不了验收 8 的「长尾分片 0 个」；GSUB 原为 `locl vert vrt2`，加上 `ccmp`，因为 Noto 的「——」靠 `ccmp` 连字，照原表切出来三个引擎里都断开，过不了验收 7；长尾分片的 `unicode-range` 原为照抄依赖的清单，改为去掉控制字符，因为 WebKit 会为换行符下载 latin 片。开放问题 4 在三个引擎上成立，维持声明顺序，不走全量自切，「性能」一节和验收 8、23 不改。
+Revisions: 2026-09-27 实现期修订（plan 第 1.2 步，开放问题 4 实测之后，与实现同一个分支）：「字体与授权义务」四处和不变量 30。一、UI 优先片的用字来源原为「`console/src/**` 与各注册行业包配置」，改为界面实际显示的文字：另加 `src/shared/**`、antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包，只取字符串与 JSX 文本，注释与自测不算；这些字也上页面，不收就过不了验收 8 的「长尾分片 0 个」。不变量 30 的「每个汉字」同样改用这个取法，原文按字面会连注释一起算。二、GSUB 原为 `locl vert vrt2`，加上 `ccmp`：Noto 的「——」靠 `ccmp` 连字，照原表切出来，三个引擎里都断开，过不了验收 7。三、长尾分片的 `unicode-range` 原为照抄依赖的清单，改为去掉控制字符，因为 WebKit 会为换行符下载 latin 片。四、`pnpm test` 的检查另加几条不经过生成脚本的断言：woff2 的 cmap 等于码位清单；`fonts.css` 里最后一条 Noto Sans SC 是 UI 优先片；长尾范围不含控制字符；界面文字里汉字以外的字符都由 Geist 或 UI 优先片画，例外要写明理由。另外注明：「1,124 个码位、243,600 B」是按界面做完时的全部文案切出来的，不是当前产物的大小。开放问题 4 在三个引擎上成立（渲染的界面文字去掉了待删的「¥」和不上页面的 BOM），所以维持声明顺序，不走全量自切，「性能」一节和验收 8、23 不改。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
 配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
@@ -635,13 +635,13 @@ export interface CheckIssue {
 - **文件与码位**（细节见设计系统 §2.6）：
   - `geist-ui.woff2`：U+0020–007E、U+00A0、U+00B7，字重轴 400–600，实测 11.9 KB，preload。
   - `geist-mono-ui.woff2`：同样的码位，字重轴 400–500，实测 8.0 KB，用到时加载。
-  - `noto-sans-sc-ui.woff2`，UI 优先的一片：界面文字里的全部汉字，加全部 CJK 标点和由 Noto 画的符号。界面文字指 `console/index.html`、`console/src/**`、`src/shared/**`（假包 `pack-fixtures/` 除外）和各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包；注释和 `*.selftest.*` 不算，取法见 `scripts/fonts/ui-text.ts`。字重轴 400–600；保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（「——」靠 `ccmp` 把两个 U+2015 连成一个两字宽的字形）。按当前仓库和设计系统的用字、照设计系统 §2.6 的配方切（1,124 个码位），实测 243,600 B，preload。
+  - `noto-sans-sc-ui.woff2`，UI 优先的一片：界面文字里的全部汉字，加全部 CJK 标点和由 Noto 画的符号。界面文字指 `console/index.html`、`console/src/**`、`src/shared/**`（假包 `pack-fixtures/` 除外）和各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包（表单显示校验消息）；注释和 `*.selftest.*` 不算，取法见 `scripts/fonts/ui-text.ts`。服务端的 `detail` 不收，它只出现在「技术详情」里（不变量 8），显示时按需加载长尾分片。字重轴 400–600；保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（「——」靠 `ccmp` 把两个 U+2015 连成一个两字宽的字形）。按当前仓库加设计系统里的全部文案切（即界面做完时的用字，照设计系统 §2.6 的配方），是 1,124 个码位、243,600 B；这是规划时的量，产物只收已经写进代码的文字，当前数字见 plan 第 1.2 步的实施记录。preload。
   - 长尾：`@fontsource-variable/noto-sans-sc` 的 101 片 [86]，单片约 48 KB，客户数据里出现界面没用过的字时按需加载。
 - **怎么生成**：
   - Geist、Geist Mono 和 UI 优先片由 `scripts/fonts/build.ts` 生成并提交。脚本从固定 URL 取 OFL 原文件并校验 sha256，调 fonttools 的 `pyftsubset` 切片（只在开发机上跑，需要本机装 fonttools；CI 不跑它）。同时写出码位清单和产物的 sha256。界面文案改了就重跑。
   - 长尾分片不提交，由钉死版本的 npm 依赖提供；它们的 `@font-face` 由同一个脚本从依赖的清单生成（家族名写成「Noto Sans SC」），不用依赖自带的 CSS（它的家族名是「Noto Sans SC Variable」）。`unicode-range` 去掉控制字符（U+0000–001F、U+007F–009F）：依赖里 latin 片的范围从 U+0000 起，WebKit 遇到拉丁字母后面的换行符就会去下载它。
   - 声明顺序：先长尾，后 UI 优先片。同一家族的 `unicode-range` 重叠时，后声明的先被查到，所以界面文字和全部标点都取自 UI 优先片，不下载长尾；标点都在同一个文件里，跨切片不挤压的问题也就没有了（设计系统 §2.2）。Chromium、Firefox、WebKit 实测都是这样（开放问题 4，已定）。
-  - `pnpm test` 里的检查（`scripts/check-fonts.ts`）：界面文字（取法同上）里的每个汉字、全部 CJK 标点都在 UI 优先片的码位清单里；三个字体文件和三份许可原文的 sha256 等于清单里记的值；`fonts.css` 与按清单重算的结果逐字相同，声明顺序因此也钉住。缺一个字就失败，并点名这个字和它出现的文件。
+  - `pnpm test` 里的检查（`scripts/check-fonts.ts`）：界面文字（取法同上）里的每个汉字、全部 CJK 标点都在 UI 优先片的码位清单里；界面文字里汉字以外的字符（控制字符除外）都在 Geist 或 UI 优先片里，例外写在检查里的白名单上、各带理由；三个字体文件的 cmap 等于清单记的码位，它们和三份许可原文的 sha256 等于清单里记的值；解析 `fonts.css`，最后一条 Noto Sans SC 是 UI 优先片、其余都是长尾分片，长尾范围里没有控制字符。这几条都直接读提交的文件，不经过生成脚本；另外 `fonts.css` 还要与按清单重算的结果逐字相同，拦下手改。缺一个字就失败，并点名这个字和它出现的文件。
 - **Geist 自己切，不用 `@fontsource-variable/geist` 的 CSS。** 它的 latin 片 `unicode-range` 含 U+2000–206F，会把中文里的「—」「“”」「…」画成西文字形，「…」落到基线上。
 - **`font-weight` 写成范围**（`400 600`），`font-display: swap` [101]，`font-synthesis-weight: none`，不许浏览器合成粗体 [99]。preload 只放 `geist-ui.woff2` 和 `noto-sans-sc-ui.woff2`，带 `crossorigin`，由构建注入 `index.html` [100]。
 - **授权义务**：
@@ -919,7 +919,7 @@ export function conversationState(row: Pick<ConversationRow, 'stage' | 'handedOv
 字体：
 
 29. 生产页面只从本站加载字体，加载的字体家族只有 Geist、Geist Mono、Noto Sans SC。
-30. `console/src/**` 和各注册行业包配置里的每个汉字、全部 CJK 标点都在 UI 优先片的码位清单里，UI 优先片文件的 sha256 等于清单记录的值。
+30. 界面文字（取法见「字体与授权义务」，即 `scripts/fonts/ui-text.ts`）里的每个汉字、全部 CJK 标点都在 UI 优先片的码位清单里，UI 优先片文件的 sha256 等于清单记录的值。
 31. `/console/licenses/OFL-Geist.txt`、`OFL-NotoSansSC.txt`、`lucide-ISC.txt` 随每次构建发布，内容与上游许可原文相同。
 
 ## 验收标准
@@ -1017,7 +1017,7 @@ export function conversationState(row: Pick<ConversationRow, 'stage' | 'handedOv
 
 2. **02 之后的页面由谁实现。** J 页、A2、实时通知可以留在本 spec 的 plan 里（第 18 步，阻塞到 02），也可以交给 02 的 spec，按本文和设计系统实现。**写 02 spec 时定**：交给 02 的话，本 spec 就地修订（写 `Revisions:`），去掉验收 26 和 plan 第 18 步，这样本 spec 不用等 02 就能 implemented。
 3. **系统页和品牌色的后端归属。** 「依赖 02 的后端」第 10、12 项不是会话工作。**写 02 spec 时定**是否并入 02；不并入的话，在接第一个真实租户之前另写 spec（品牌色牵动租户开通，平台管理员身份牵动 04 的同部署多租户）。定下之前，验收 27 和 plan 第 19、20 步不适用。
-4. **长尾分片与 UI 优先片重叠时，三个引擎是否只下载 UI 优先片（已定，2026-09-27 plan 第 1.2 步实测：Chromium 153、Firefox 155、WebKit 26.6 都只下载 UI 优先片，连用标点宽度符合 P 页，维持声明顺序，不走全量自切；数字见 plan「实施记录」）。** plan 第 1.2 步在 Chromium、Firefox、WebKit 上实测：只渲染界面文案时网络里有没有长尾分片请求，连用标点的宽度是否与 P 页的期望一致。任一引擎不满足，就改成全量自切（设计系统 §2.6「声明顺序」）：其余字按常用度切约 100 片、`unicode-range` 与 UI 优先片不重叠，由 `cn-font-split` [87] 生成；那时再定这些分片是提交进仓库，还是在 Docker 的 console 构建阶段生成（后者要在构建时取源字体并校验 sha256）。走退路时在本文顶部加一行 `Revisions:`，同步改「字体与授权义务」「性能」两节和验收 8、23。
+4. **长尾分片与 UI 优先片重叠时，三个引擎是否只下载 UI 优先片（已定，2026-09-27 plan 第 1.2 步实测：渲染界面文字（去掉待删的「¥」和不上页面的 BOM，这两个字符由检查的白名单管着）时，Chromium 153、Firefox 155、WebKit 26.6 都只下载 UI 优先片，连用标点宽度符合 P 页，维持声明顺序，不走全量自切；数字见 plan「实施记录」）。** plan 第 1.2 步在 Chromium、Firefox、WebKit 上实测：只渲染界面文案时网络里有没有长尾分片请求，连用标点的宽度是否与 P 页的期望一致。任一引擎不满足，就改成全量自切（设计系统 §2.6「声明顺序」）：其余字按常用度切约 100 片、`unicode-range` 与 UI 优先片不重叠，由 `cn-font-split` [87] 生成；那时再定这些分片是提交进仓库，还是在 Docker 的 console 构建阶段生成（后者要在构建时取源字体并校验 sha256）。走退路时在本文顶部加一行 `Revisions:`，同步改「字体与授权义务」「性能」两节和验收 8、23。
 5. **匿名演示显示租户名（已定，owner 2026-09-27：不显示，匿名侧栏写「演示」）。** 要让匿名能拿到租户名，得在匿名 `/status` 里加字段，与 01 验收 16「只有 mode」冲突。由 owner 定；不做时匿名侧栏写「演示」。在本 spec 翻 ready 时一并答复。
 6. **草稿的最后保存人和时间。** 总览和话术页想写「已自动保存14:05」「老板10分钟前在改」，需要 `sop_versions` 记最后保存人和时间，要加列和迁移。现在只显示本次打开页面后自己保存的时间。等第二个编辑者开始日常使用话术页时再定。
 7. **审计的时间范围、操作者、对象筛选和导出。** 现在的数据量用时间线加翻页够用。审计超过 2,000 行，或者 owner 需要对账留存时，另写 spec 加 `from`、`to`、`actor`、`targetId` 和导出 [80]；导出按 [73] 防公式注入，并记一条审计。

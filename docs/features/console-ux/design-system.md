@@ -576,15 +576,17 @@ body {
 | ------------------------------------ | ------------------------------------------------ | --------------------------- | ------- | ------------ | ------------------------------ |
 | `geist-ui.woff2`                     | `Geist[wght].ttf`（google/fonts，OFL）           | U+0020–007E、U+00A0、U+00B7 | 400–600 | 11.9 KB      | preload                        |
 | `geist-mono-ui.woff2`                | `GeistMono[wght].ttf`                            | 同上                        | 400–500 | 8.0 KB       | 用到时                         |
-| `noto-sans-sc-ui.woff2`（UI 优先片） | `NotoSansSC[wght].ttf`（google/fonts，v2.004）   | 见下                        | 400–600 | 243,600 B    | preload                        |
+| `noto-sans-sc-ui.woff2`（UI 优先片） | `NotoSansSC[wght].ttf`（google/fonts，v2.004）   | 见下                        | 400–600 | 243,600 B ¹  | preload                        |
 | 长尾分片（101 片）                   | `@fontsource-variable/noto-sans-sc` 5.3.0（OFL） | 各片自带的范围              | 100–900 | 单片约 48 KB | 页面上出现界面没用过的字时按需 |
+
+¹ 界面做完时的量（见下）；现在的产物只收已经写进代码的文字，数字见 plan 第 1.2 步的实施记录。
 
 **UI 优先片**：
 
-- 码位：界面文字里的全部汉字（`console/index.html`、`console/src/**`、`src/shared/**` 除假包外、各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包；注释和自测不算，见 `scripts/fonts/ui-text.ts`）；全部 CJK 标点 `U+3000-303F, U+FF01-FF60, U+FFE0-FFE6, U+2014-2015, U+2018-2019, U+201C-201D, U+2026, U+2E3A-2E3B`；以及由 Noto 画的符号 `×` `–` `→` `⌘` `㎡` `℃`。按当前仓库和本文的用字、照这份配方切，共 1,124 个码位，实测 243,600 B（早先量的 1,110 个码位、242 KB 那一版少了 U+FFE0–FFE6、U+2E3A–2E3B 和 `×` `–` `→` `⌘` `℃` 这 14 个）；同一批字按 Google 或 fontsource 的切片要下 25 片、1.43 MB。
+- 码位：界面文字里的全部汉字（`console/index.html`、`console/src/**`、`src/shared/**` 除假包外、各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包；注释和自测不算，见 `scripts/fonts/ui-text.ts`）；全部 CJK 标点 `U+3000-303F, U+FF01-FF60, U+FFE0-FFE6, U+2014-2015, U+2018-2019, U+201C-201D, U+2026, U+2E3A-2E3B`；以及由 Noto 画的符号 `×` `–` `→` `⌘` `㎡` `℃`。按当前仓库加本文的全部文案（界面做完时的用字）、照这份配方切，共 1,124 个码位，实测 243,600 B（早先量的 1,110 个码位、242 KB 那一版少了 U+FFE0–FFE6、U+2E3A–2E3B 和 `×` `–` `→` `⌘` `℃` 这 14 个）；同一批字按 Google 或 fontsource 的切片要下 25 片、1.43 MB。
 - 保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（`ccmp` 把「——」连成一条，§2.2）；wght 轴限到 400–600。
 - 由 `scripts/fonts/build.ts` 生成并提交：从固定 URL 取原文件、校验 sha256，调 fonttools 的 `pyftsubset` 切片，同时写出码位清单和产物的 sha256。只在开发机上跑（要本机装 fonttools），CI 不跑。界面文案改了就重跑；新字即使没重跑也能显示，只是来自长尾分片。
-- `pnpm test` 检查两件事：界面和行业包里的每个汉字、全部 CJK 标点都在码位清单里；产物的 sha256 等于清单里记的值。标点都在这一个文件里，Chrome 才能对所有标点对都挤压，§2.2 那 30 对差异也就没有了。
+- `pnpm test` 的检查（spec「字体与授权义务」）：界面文字里的每个汉字、全部 CJK 标点都在码位清单里，汉字以外的字符都由 Geist 或这一片画（例外各带理由）；产物的 cmap、sha256 等于清单；`fonts.css` 里 UI 优先片最后声明。标点都在这一个文件里，Chrome 才能对所有标点对都挤压，§2.2 那 30 对差异也就没有了。
 
 **Geist 和 Geist Mono 自己切，不用 `@fontsource-variable/geist` 的 CSS。** 它的 latin 片 `unicode-range` 含 `U+2000-206F`，会把 `— “ ” ‘ ’ …` 画成西文字形，早先样张里「…」落在基线上就是这个原因。
 
