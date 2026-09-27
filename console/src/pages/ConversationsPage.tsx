@@ -1,11 +1,15 @@
 // 会话只读列表（spec「后台 API 与页面 · 会话只读列表」）：只列 id、渠道、阶段、是否转人工、消息条数、更新时间，
-// 不带消息正文；详情仍在 admin.html 里看。成员都能看，匿名看不到入口
+// 不带消息正文；详情仍在 admin.html 里看。成员都能看，匿名看不到入口。整页随后台 UX spec 第 13 步重做。
+// 转人工一列：等人接手是 handedOver 且没成交（设计系统 §5.6）；转人工以后成交的，引擎不清 handedOver，写已成交。
+// 第 13 步换成 src/shared/conversation.ts 的 conversationState
 import { useQuery } from '@tanstack/react-query';
-import { Alert, Table, Tag } from 'antd';
+import { Table } from 'antd';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import type { ConversationRow } from '../../../src/shared/console-api.js';
-import { api, describe, unwrap } from '../api.js';
+import { api, unwrap } from '../api.js';
+import { Skeleton, StateView } from '../parts/StateView.js';
+import { Status } from '../parts/Status.js';
 
 const PAGE_SIZE = 20;
 const STAGE_LABEL: Record<string, string> = {
@@ -16,7 +20,8 @@ const STAGE_LABEL: Record<string, string> = {
   objection: '异议',
   closing: '促成',
   paid: '已支付',
-  handoff: '已转人工',
+  // 转人工不算阶段，它对应状态「等人接手」，阶段写「—」（设计系统 I 页）；页面上不出现「已转人工」（验收 6）
+  handoff: '—',
 };
 const CHANNEL_LABEL: Record<string, string> = { wecom: '企业微信', simulator: '网页' };
 
@@ -25,23 +30,29 @@ export function ConversationsPage() {
   const q = useQuery({
     queryKey: ['conversations', page],
     queryFn: () => unwrap(api.conversations.$get({ query: { limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE) } })),
+    // 翻页时先留着上一页，不换成骨架
+    placeholderData: (prev) => prev,
   });
-  if (q.isError) return <Alert type="error" title={describe(q.error)} />;
   return (
-    <Table<ConversationRow>
-      rowKey="id"
-      size="small"
-      loading={q.isPending}
-      dataSource={q.data?.items ?? []}
-      pagination={{ current: page, pageSize: PAGE_SIZE, total: q.data?.total ?? 0, onChange: setPage, showSizeChanger: false }}
-      columns={[
-        { title: '会话', dataIndex: 'id' },
-        { title: '渠道', dataIndex: 'channel', render: (ch: string) => CHANNEL_LABEL[ch] ?? ch },
-        { title: '阶段', dataIndex: 'stage', render: (s: string) => STAGE_LABEL[s] ?? s },
-        { title: '转人工', dataIndex: 'handedOver', render: (h: boolean) => (h ? <Tag color="orange">已转人工</Tag> : null) },
-        { title: '消息数', dataIndex: 'messageCount' },
-        { title: '更新时间', dataIndex: 'updatedAt', render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm') },
-      ]}
-    />
+    <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={8} />}>
+      <Table<ConversationRow>
+        rowKey="id"
+        size="small"
+        dataSource={q.data?.items ?? []}
+        pagination={{ current: page, pageSize: PAGE_SIZE, total: q.data?.total ?? 0, onChange: setPage, showSizeChanger: false }}
+        columns={[
+          { title: '会话', dataIndex: 'id' },
+          { title: '渠道', dataIndex: 'channel', render: (ch: string) => CHANNEL_LABEL[ch] ?? ch },
+          { title: '阶段', dataIndex: 'stage', render: (s: string) => STAGE_LABEL[s] ?? s },
+          {
+            title: '转人工',
+            dataIndex: 'handedOver',
+            render: (h: boolean, r) => (h ? <Status kind={r.stage === 'paid' ? 'paid' : 'human'} /> : null),
+          },
+          { title: '消息数', dataIndex: 'messageCount' },
+          { title: '更新时间', dataIndex: 'updatedAt', render: (t: string) => dayjs(t).format('YYYY-MM-DD HH:mm') },
+        ]}
+      />
+    </StateView>
   );
 }

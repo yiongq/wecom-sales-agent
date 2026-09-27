@@ -315,7 +315,8 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   // 带 danger 的默认按钮（话术页「丢弃草稿」）：悬停、按下的字色由算法从 colorError 派生
   P('colorErrorHover', ['colorBgContainer'], TEXT),
   P('colorErrorActive', ['colorBgContainer'], TEXT),
-  // type="primary" 的按钮（第 2.3 步换成墨色主按钮之前页面里还有）：白字在 colorPrimary 系上
+  // colorPrimary 实心底上的白字：页面自己的按钮已经没有 type="primary"（第 2.3 步，scripts/check-console-src.ts 查），
+  // rjsf 表单的数组按钮这类 antd 内部的 primary 按钮还在（第 10.3 步删 rjsf）
   P('colorTextLightSolid', ['colorPrimary'], TEXT),
   P('colorTextLightSolid', ['colorPrimaryHover'], TEXT),
   P('colorTextLightSolid', ['colorPrimaryActive'], TEXT),
@@ -346,10 +347,12 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   P('Message.colorText', ['Message.contentBg'], TEXT),
   P('Message.colorTextHeading', ['Message.contentBg'], TEXT), // 6.6.5 的提示文字实际取这个（走查实测）
   P('Message.colorSuccess', ['Message.contentBg'], GRAPHIC),
-  // 现有的 message.error / info（第 2.3 步只留成功 toast 之前）也是反相底；loading 图标取 colorInfo
+  // 页面只经 toast() 报成功（第 2.3 步）；其余类型的图标色照旧钉住，contentBg 对所有 message 生效，loading 图标取 colorInfo
   P('Message.colorError', ['Message.contentBg'], GRAPHIC),
   P('Message.colorInfo', ['Message.contentBg'], GRAPHIC),
   P('Message.colorWarning', ['Message.contentBg'], GRAPHIC),
+  // Alert 的 warning 图标用 --warning-icon（§5.12），叠在 warning-bg 上
+  P('Alert.colorWarning', ['colorWarningBg'], GRAPHIC),
   P('Pagination.itemActiveColor', ['colorBgContainer', 'Pagination.itemActiveBg'], TEXT),
   P('Pagination.itemActiveColorHover', ['colorBgContainer', 'Pagination.itemActiveBg'], TEXT),
 ];

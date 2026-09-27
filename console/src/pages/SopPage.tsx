@@ -1,11 +1,12 @@
-// SOP 页（spec「后台 API 与页面 · SOP」）：左侧节列表（锁定节只读），右侧编辑可编辑节的正文；顶栏是草稿状态、字符预算、
-// 检查 / 发布 / 丢弃；检查结果按节列出 violation，需要 rebase 与冲突时标出；历史列表可以「以此版本回滚」。
+// SOP 页（spec「后台 API 与页面 · SOP」）：左侧节列表（固定规则节只读），右侧编辑可编辑节的正文；顶栏是草稿状态、字符预算、
+// 检查 / 发布 / 丢弃；检查结果按 7 个检查项列出，需要 rebase 与冲突时标出；历史列表可以「以此版本回滚」。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
+// 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下站内跳转。
+// 整页的版式随后台 UX spec 第 5–7 步重做
 import { LockOutlined } from '@ant-design/icons';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
-  App,
   Button,
   Card,
   Col,
@@ -15,11 +16,9 @@ import {
   Input,
   Menu,
   Modal,
-  Popconfirm,
   Progress,
   Row,
   Space,
-  Spin,
   Table,
   Tag,
   Typography,
@@ -28,14 +27,23 @@ import dayjs from 'dayjs';
 import { useState } from 'react';
 import type {
   AnonSopOverview,
-  ContractViolation,
   DraftCheck,
   SectionSpecView,
   SopOverview,
   SopSectionText,
   SopVersion,
+  ViolationCode,
 } from '../../../src/shared/console-api.js';
-import { api, describe, HttpError, unwrap } from '../api.js';
+import { api, HttpError, unwrap } from '../api.js';
+import { type CheckItem, CheckList } from '../parts/CheckList.js';
+import { ConfirmDanger } from '../parts/ConfirmDanger.js';
+import { ErrorAlert } from '../parts/ErrorAlert.js';
+import { PrimaryButton } from '../parts/PrimaryButton.js';
+import { Skeleton, StateView } from '../parts/StateView.js';
+import { Status } from '../parts/Status.js';
+import { TechDetails } from '../parts/TechDetails.js';
+import { toast } from '../parts/toast.js';
+import { useUnsavedGuard } from '../parts/UnsavedGuard.js';
 import { SectionDiff } from '../SectionDiff.js';
 import { TextEditor } from '../TextEditor.js';
 import { canEdit, useViewer } from '../viewer.js';
@@ -49,6 +57,17 @@ const SOURCE_LABEL: Record<SopVersion['source'], string> = {
 };
 const when = (iso: string | null): string => (iso ? dayjs(iso).format('YYYY-MM-DD HH:mm') : '—');
 
+/** 7 个检查项，名字固定，与 ViolationCode 一一对应（design-system §5.17） */
+const SOP_CHECKS: ReadonlyArray<readonly [ViolationCode, string]> = [
+  ['structure', '结构完整'],
+  ['locked_changed', '固定规则节没改'],
+  ['phrase_missing', '必备短语都在'],
+  ['phrase_forbidden', '没有禁用短语'],
+  ['unknown_tool', '工具名都存在'],
+  ['unknown_field', '字段名都存在'],
+  ['over_budget', '字数在额度内'],
+];
+
 /** 节的正文：去掉「## 标题」和它后面的空行；前言没有标题 */
 function bodyOf(text: string, heading: string | null): string {
   if (heading === null) return text;
@@ -61,9 +80,11 @@ const headingOf = (spec: readonly SectionSpecView[], key: string | null): string
 export function SopPage() {
   const viewer = useViewer();
   const q = useQuery({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
-  if (q.isPending) return <Spin />;
-  if (q.isError) return <Alert type="error" title={describe(q.error)} />;
-  return 'spec' in q.data ? <MemberSop data={q.data} editable={canEdit(viewer.data)} /> : <AnonSop data={q.data} />;
+  return (
+    <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={11} />}>
+      {q.data && ('spec' in q.data ? <MemberSop data={q.data} editable={canEdit(viewer.data)} /> : <AnonSop data={q.data} />)}
+    </StateView>
+  );
 }
 
 function AnonSop({ data }: { data: AnonSopOverview }) {
@@ -74,7 +95,7 @@ function AnonSop({ data }: { data: AnonSopOverview }) {
   return (
     <Space orientation="vertical" style={{ width: '100%' }}>
       <Typography.Text type="secondary">
-        v{published.versionNo} · 发布于 {when(published.publishedAt)} · prompt {published.promptHash}
+        v{published.versionNo} · 发布于{when(published.publishedAt)} · prompt {published.promptHash}
       </Typography.Text>
       <Row gutter={16}>
         <Col span={6}>
@@ -92,17 +113,32 @@ function AnonSop({ data }: { data: AnonSopOverview }) {
   );
 }
 
+/** 检查结果按 7 个检查项列出；服务端的原文（detail）、哈希只在技术详情里 */
+function checkItems(spec: readonly SectionSpecView[], violations: DraftCheck['violations']): CheckItem[] {
+  return SOP_CHECKS.map(([code, label]) => {
+    const hits = violations.filter((v) => v.code === code);
+    const sections = [...new Set(hits.map((v) => headingOf(spec, v.sectionKey)))];
+    return {
+      key: code,
+      label,
+      state: hits.length ? 'fail' : 'pass',
+      note: hits.length ? [`${hits.length}处`, sections.join('、')] : undefined,
+    };
+  });
+}
+
 function MemberSop({ data, editable }: { data: SopOverview; editable: boolean }) {
   const qc = useQueryClient();
-  const { message } = App.useApp();
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
   const [key, setKey] = useState(spec.find((s) => !s.locked)?.key ?? spec[0]!.key);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [check, setCheck] = useState<DraftCheck | null>(null);
-  const [rejected, setRejected] = useState<ContractViolation[] | null>(null);
+  const [rejected, setRejected] = useState<HttpError | null>(null);
   const [conflict, setConflict] = useState<{ keys: string[]; current: SopSectionText[] } | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [publishing, setPublishing] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -112,6 +148,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
     return bodyOf(current.sections.find((x) => x.key === k)?.text ?? '', s.heading);
   };
   const dirty = Object.keys(edits).filter((k) => edits[k] !== originalBody(k));
+  const guard = useUnsavedGuard(dirty.length > 0);
   // 检查结果、发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废
   const clearResults = (): void => {
     setCheck(null);
@@ -126,10 +163,11 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
   };
   const run = async (fn: () => Promise<void>): Promise<void> => {
     setBusy(true);
+    setError(null);
     try {
       await fn();
     } catch (e) {
-      message.error(describe(e));
+      setError(e);
     } finally {
       setBusy(false);
     }
@@ -147,7 +185,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         }),
       );
       clearResults();
-      message.success('草稿已保存');
+      toast('草稿已保存');
       await refresh();
     });
   const runCheck = () =>
@@ -162,41 +200,51 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
       setConflict(null);
       try {
         const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft!.rev, changeNote: note } }));
-        message.success(`已发布 v${v.versionNo}`);
+        toast(`已发布v${v.versionNo}`);
         setPublishing(false);
         setNote('');
         clearResults();
         await refresh();
       } catch (e) {
         setPublishing(false);
-        if (e instanceof HttpError && e.body.error === 'contract') setRejected(e.body.violations ?? []);
+        if (e instanceof HttpError && e.body.error === 'contract') setRejected(e);
         else if (e instanceof HttpError && e.body.error === 'sop_conflict')
           setConflict({ keys: e.body.keys ?? [], current: e.body.current ?? [] });
         else throw e;
       }
     });
+  // 失败时也关掉确认框，错误在页面顶上就地显示
   const discard = () =>
     run(async () => {
-      await unwrap(api.sop.draft.discard.$post({ json: { rev: draft!.rev } }));
+      try {
+        await unwrap(api.sop.draft.discard.$post({ json: { rev: draft!.rev } }));
+      } finally {
+        setDiscarding(false);
+      }
       clearResults();
-      message.success('草稿已丢弃');
+      toast('草稿已丢弃');
       await refresh();
     });
 
-  const violations = rejected ?? check?.violations ?? null;
+  const violations = rejected ? (rejected.body.violations ?? []) : (check?.violations ?? null);
   const over = budget.chars > budget.limit;
+  const textOf = (v: SopVersion, k: string): string => v.sections.find((s) => s.key === k)?.text ?? '';
+  const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key)) : [];
+  const items = violations ? checkItems(spec, violations) : [];
 
   return (
     <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+      {guard}
+      {error !== null && <ErrorAlert error={error} />}
       <Card size="small">
         <Space wrap size="large">
           <span>
-            已发布 v{published.versionNo}（{when(published.publishedAt)}）
+            已发布v{published.versionNo}（{when(published.publishedAt)}）
           </span>
           {draft ? (
             <Space>
-              <Tag color="blue">草稿 rev {draft.rev}</Tag>
-              {draft.stale && <Tag color="orange">已过期：草稿打开之后发布过新版本，发布时自动合并</Tag>}
+              <Status kind="draft" />
+              {draft.stale && <Typography.Text type="secondary">草稿打开之后发布过新版本，发布时自动合并</Typography.Text>}
             </Space>
           ) : (
             <Tag>没有草稿</Tag>
@@ -206,60 +254,56 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
               percent={Math.round((budget.chars / budget.limit) * 100)}
               status={over ? 'exception' : 'normal'}
               size="small"
-              format={() => `${budget.chars} / ${budget.limit} 字`}
+              format={() => `${budget.chars} / ${budget.limit}字`}
             />
           </span>
           {editable && (
             <Space>
-              <Button type="primary" disabled={!dirty.length} loading={busy} onClick={() => void save()}>
-                保存草稿{dirty.length ? `（${dirty.length} 节）` : ''}
-              </Button>
+              <PrimaryButton disabled={!dirty.length} loading={busy} onClick={() => void save()}>
+                保存草稿{dirty.length ? `（${dirty.length}节）` : ''}
+              </PrimaryButton>
               <Button disabled={!draft || dirty.length > 0} loading={busy} onClick={() => void runCheck()}>
                 检查
               </Button>
               <Button disabled={!draft || dirty.length > 0} loading={busy} onClick={() => setPublishing(true)}>
                 发布
               </Button>
-              <Popconfirm title="丢弃草稿？" description="草稿里的改动都会丢掉" disabled={!draft} onConfirm={() => void discard()}>
-                <Button danger disabled={!draft} loading={busy}>
-                  丢弃
-                </Button>
-              </Popconfirm>
+              <Button disabled={!draft} loading={busy} onClick={() => setDiscarding(true)}>
+                丢弃
+              </Button>
             </Space>
           )}
         </Space>
       </Card>
 
       {violations && (
-        <Card size="small" title={rejected ? '发布被拒：过不了契约检查' : '检查结果'}>
-          {check?.rebase.needed && !rejected && (
-            <Alert
-              style={{ marginBottom: 12 }}
-              type={check.rebase.conflicts.length ? 'error' : 'info'}
-              title={
-                check.rebase.conflicts.length
-                  ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
-                    '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
-                  : '草稿基于的版本已过期，发布时会自动合并别人的改动'
+        <Card size="small">
+          <Space orientation="vertical" style={{ width: '100%' }}>
+            {rejected && <ErrorAlert error={rejected} />}
+            {check?.rebase.needed && !rejected && (
+              <Alert
+                type={check.rebase.conflicts.length ? 'error' : 'info'}
+                title={
+                  check.rebase.conflicts.length
+                    ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
+                      '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
+                    : '草稿基于的版本已过期，发布时会自动合并别人的改动'
+                }
+              />
+            )}
+            <CheckList title="发布前检查" summary={`${items.filter((i) => i.state === 'pass').length}/${items.length}通过`} items={items} />
+            <TechDetails
+              violations={violations}
+              rows={
+                check
+                  ? [
+                      ['prompt', check.promptHash.slice(0, 12)],
+                      ['chars', `${check.chars}/${check.limit}`],
+                    ]
+                  : undefined
               }
             />
-          )}
-          {violations.length === 0 ? (
-            <Alert
-              type="success"
-              title={`没有问题 · ${check?.chars ?? ''} / ${check?.limit ?? ''} 字 · prompt ${check?.promptHash.slice(0, 12) ?? ''}`}
-            />
-          ) : (
-            <Space orientation="vertical">
-              {violations.map((v, i) => (
-                <Space key={`${v.code}-${v.sectionKey ?? ''}-${i}`}>
-                  <Tag color="red">{v.code}</Tag>
-                  <b>{headingOf(spec, v.sectionKey)}</b>
-                  <span>{v.detail}</span>
-                </Space>
-              ))}
-            </Space>
-          )}
+          </Space>
         </Card>
       )}
       {conflict && (
@@ -292,11 +336,11 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
             onClick={(e) => setKey(e.key)}
             items={spec.map((s) => ({
               key: s.key,
-              icon: s.locked ? <LockOutlined title="锁定节：归代码所有，后台只读" /> : undefined,
+              icon: s.locked ? <LockOutlined title="固定规则节：由代码逐条核对，这里只能看" /> : undefined,
               label: (
                 <Space>
                   <span>{s.heading ?? '前言'}</span>
-                  {dirty.includes(s.key) && <Tag color="gold">未保存</Tag>}
+                  {dirty.includes(s.key) && <Tag>未保存</Tag>}
                 </Space>
               ),
             }))}
@@ -304,7 +348,7 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         </Col>
         <Col span={18}>
           {section.locked && (
-            <Alert type="info" style={{ marginBottom: 8 }} title="锁定节：代码依赖它，内容以镜像里的 data/sop.md 为准，后台只读" />
+            <Alert type="info" style={{ marginBottom: 8 }} title="固定规则节：由代码逐条核对，这里改不了，要改请联系技术。" />
           )}
           <TextEditor
             key={key}
@@ -323,13 +367,30 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         destroyOnHidden
         open={publishing}
         title="发布草稿"
-        okText="发布"
-        okButtonProps={{ disabled: !note.trim(), loading: busy }}
-        onOk={() => void publish()}
         onCancel={() => setPublishing(false)}
+        footer={
+          <>
+            <Button onClick={() => setPublishing(false)}>取消</Button>
+            <PrimaryButton disabled={!note.trim()} loading={busy} onClick={() => void publish()}>
+              发布
+            </PrimaryButton>
+          </>
+        }
       >
         <Input.TextArea rows={3} placeholder="变更说明（必填）" value={note} onChange={(e) => setNote(e.target.value)} />
       </Modal>
+      <ConfirmDanger
+        open={discarding}
+        title="丢弃草稿？"
+        confirmText="丢弃草稿"
+        cancelText="保留"
+        onConfirm={discard}
+        onCancel={() => setDiscarding(false)}
+      >
+        {draftChanged.length
+          ? `草稿里${draftChanged.length}节改动（${draftChanged.map((s) => s.heading ?? '前言').join('、')}）会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`
+          : `草稿会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`}
+      </ConfirmDanger>
     </Space>
   );
 }
@@ -339,7 +400,7 @@ function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[
   const textOf = (v: SopVersion, key: string): string => v.sections.find((s) => s.key === key)?.text ?? '';
   const changed = spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key));
   return (
-    <Card size="small" title={`与已发布 v${published.versionNo} 的逐节对比`}>
+    <Card size="small" title={`与已发布v${published.versionNo}的逐节对比`}>
       {changed.length === 0 ? (
         <Typography.Text type="secondary">草稿里的可编辑节与已发布版本相同</Typography.Text>
       ) : (
@@ -351,8 +412,8 @@ function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[
               <SectionDiff
                 before={bodyOf(textOf(published, s.key), s.heading)}
                 after={bodyOf(textOf(draft, s.key), s.heading)}
-                beforeLabel={`已发布 v${published.versionNo}`}
-                afterLabel={`草稿 rev ${draft.rev}`}
+                beforeLabel={`已发布v${published.versionNo}`}
+                afterLabel="草稿"
               />
             ),
           }))}
@@ -366,7 +427,6 @@ const VERSIONS_PAGE = 50;
 
 function History({ editable, currentId, onRolledBack }: { editable: boolean; currentId: string; onRolledBack: () => void }) {
   const qc = useQueryClient();
-  const { message, modal } = App.useApp();
   // 每一个已发布或归档的版本都要能回滚，所以按版本号倒序往前翻（before 游标）；
   // 接口不给下一页的游标：满一页就以这一页最小的版本号接着翻，不满一页就是到头了
   const q = useInfiniteQuery({
@@ -380,10 +440,14 @@ function History({ editable, currentId, onRolledBack }: { editable: boolean; cur
   const [target, setTarget] = useState<SopVersion | null>(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  /** 回滚后的新版本与目标版本的固定规则不同（sameHashAsTarget 为 false）时的说明 */
+  const [notice, setNotice] = useState<string | null>(null);
 
   const rollback = async (): Promise<void> => {
     if (!target) return;
     setBusy(true);
+    setError(null);
     try {
       const v = await unwrap(api.sop.versions[':id'].rollback.$post({ param: { id: target.id }, json: { changeNote: note } }));
       setTarget(null);
@@ -391,29 +455,33 @@ function History({ editable, currentId, onRolledBack }: { editable: boolean; cur
       onRolledBack();
       await qc.invalidateQueries({ queryKey: ['sop'] });
       await qc.invalidateQueries({ queryKey: ['sop-versions'] });
-      if (v.sameHashAsTarget) message.success(`已回滚：新版本 v${v.versionNo}，prompt 与 v${target.versionNo} 相同`);
-      else {
-        modal.info({
-          title: `已回滚：新版本 v${v.versionNo}`,
-          content: `新版本的 prompt_hash 与 v${target.versionNo} 不同：v${target.versionNo} 之后锁定节、硬性要求或工具定义变过，回滚只恢复可编辑节，锁定部分取当前镜像。`,
-        });
-      }
+      toast(`已回滚到v${target.versionNo}：新版本v${v.versionNo}`);
+      setNotice(
+        v.sameHashAsTarget
+          ? null
+          : `v${target.versionNo}之后代码里的固定规则改过，固定规则节用的是现在的写法，所以v${v.versionNo}不会和v${target.versionNo}完全一样。`,
+      );
     } catch (e) {
-      message.error(describe(e));
+      setError(e);
     } finally {
       setBusy(false);
     }
   };
 
+  const close = (): void => {
+    setTarget(null);
+    setError(null);
+  };
+
   return (
     <Card size="small" title="版本历史">
-      {q.isError ? (
-        <Alert type="error" title={describe(q.error)} />
-      ) : (
+      {notice && (
+        <Alert type="warning" showIcon closable={{ onClose: () => setNotice(null) }} style={{ marginBottom: 12 }} title={notice} />
+      )}
+      <StateView pending={q.isPending} error={q.data ? null : q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={3} />}>
         <Table<SopVersion>
           size="small"
           rowKey="id"
-          loading={q.isPending}
           dataSource={rows}
           pagination={false}
           locale={{ emptyText: <Empty description="没有版本" /> }}
@@ -436,12 +504,13 @@ function History({ editable, currentId, onRolledBack }: { editable: boolean; cur
                     以此版本回滚
                   </Button>
                 ) : v.id === currentId ? (
-                  <Tag color="green">当前</Tag>
+                  <Status kind="live" />
                 ) : null,
             },
           ]}
         />
-      )}
+      </StateView>
+      {q.data && q.isFetchNextPageError && <ErrorAlert error={q.error} onRetry={() => void q.fetchNextPage()} />}
       {q.hasNextPage && (
         <Button style={{ marginTop: 12 }} loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
           更早的
@@ -450,18 +519,26 @@ function History({ editable, currentId, onRolledBack }: { editable: boolean; cur
       <Modal
         destroyOnHidden
         open={!!target}
-        title={`回滚到 v${target?.versionNo ?? ''}`}
-        okText="回滚"
-        okButtonProps={{ disabled: !note.trim(), loading: busy }}
-        onOk={() => void rollback()}
-        onCancel={() => setTarget(null)}
+        title={`回滚到v${target?.versionNo ?? ''}`}
+        onCancel={close}
+        footer={
+          <>
+            <Button onClick={close}>再看看</Button>
+            <PrimaryButton disabled={!note.trim()} loading={busy} onClick={() => void rollback()}>
+              回滚到v{target?.versionNo ?? ''}
+            </PrimaryButton>
+          </>
+        }
       >
-        <Descriptions
-          size="small"
-          column={1}
-          items={[{ label: '说明', children: '取这个版本的可编辑节、当前镜像的锁定节，生成并发布一个新版本；已有的草稿不动。' }]}
-        />
-        <Input.TextArea rows={3} placeholder="变更说明（必填）" value={note} onChange={(e) => setNote(e.target.value)} />
+        <Space orientation="vertical" style={{ width: '100%' }}>
+          <Descriptions
+            size="small"
+            column={1}
+            items={[{ label: '说明', children: '取这个版本的可编辑节、现在的固定规则节，生成并发布一个新版本；已有的草稿不动。' }]}
+          />
+          <Input.TextArea rows={3} placeholder="变更说明（必填）" value={note} onChange={(e) => setNote(e.target.value)} />
+          {error !== null && <ErrorAlert error={error} />}
+        </Space>
       </Modal>
     </Card>
   );
