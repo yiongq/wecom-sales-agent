@@ -85,9 +85,13 @@ function useSectionNav(rows: readonly OutlineRow[], editor: RefObject<HTMLDivEle
   const section = resolveSection(param, rows);
   const hrefOf = (key: string): string =>
     router.history.createHref(router.buildLocation({ to: '/sop', search: { section: key } }).publicHref);
-  const select = (key: string, via: SelectVia = 'click'): void => {
-    void navigate({ search: (prev) => ({ ...prev, section: key }), replace: via === 'key' });
-  };
+  // 不随渲染变：窄屏下拉是 memo，逐字重渲时不跟着重渲（sop/Directory.tsx 文件头）
+  const select = useCallback(
+    (key: string, via: SelectVia = 'click'): void => {
+      void navigate({ search: (prev) => ({ ...prev, section: key }), replace: via === 'key' });
+    },
+    [navigate],
+  );
   // Enter 进编辑器。选的就是当前节时编辑器已经在了，直接聚焦；要先换节的，记下这一节，
   // 等地址换好、编辑器按新的节重建以后（子组件的 effect 先跑）再聚焦
   const pending = useRef<string | null>(null);
@@ -118,7 +122,7 @@ function Toc({
   showCounts: boolean;
 }) {
   const wide = useViewport() === 'wide';
-  if (!wide) return <DirectorySelect rows={rows} current={nav.section} showCounts={showCounts} onSelect={(k) => nav.select(k)} />;
+  if (!wide) return <DirectorySelect rows={rows} current={nav.section} onSelect={nav.select} />;
   return (
     <Directory
       rows={rows}

@@ -35,6 +35,9 @@ export function ConfirmDanger({ open, title, children, confirmText, cancelText, 
   return (
     <Modal
       open={open}
+      // 关着时不挂弹层：antd 的 Modal 关着也渲染一个 Portal，它（@rc-component/portal 2.2.1）每次重渲都在 effect 里 setState；
+      // 放在逐字重渲的页面里（话术页），快速连按时 React 会报 #185（Maximum update depth exceeded）
+      destroyOnHidden
       width={480}
       title={cjk(title)}
       maskClosable={false}

@@ -160,7 +160,7 @@ export function lockNote(rows: readonly OutlineRow[]): string | null {
 }
 
 /** 锁定节的悬停说明，各段之间用 Sep 隔开：「固定规则 · 报价时机…由代码逐条核对」 */
-export const lockTip = (row: OutlineRow): string[] => (row.lockReason ? ['固定规则', row.lockReason] : ['固定规则节']);
+export const lockTip = (row: Pick<OutlineRow, 'lockReason'>): string[] => (row.lockReason ? ['固定规则', row.lockReason] : ['固定规则节']);
 
 /** 默认打开的节：第一个可编辑节，没有就第一节 */
 export const defaultSection = (rows: readonly OutlineRow[]): string | undefined => (rows.find((r) => !r.locked) ?? rows[0])?.key;

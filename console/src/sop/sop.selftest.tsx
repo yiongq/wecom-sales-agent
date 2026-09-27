@@ -7,6 +7,8 @@
 // 4. URL 的 section 与方向键：不认识的节退回默认节，到头不绕回，被筛掉的当前节；未保存保护只拦离开这一页；
 // 5. 在 DOM 里挂载（happy-dom）：目录的链接、当前节、锁与圆点、只占一个 Tab 位、方向键 / Home / End / Enter、
 //    点击与带修饰键的点击、分段筛选、锁定原因的 Tooltip；额度条的文字、段宽、刻度与颜色；窄屏的下拉。
+// 6. 逐字重渲不碰弹层：打字时目录只重渲字数变了的那一行，窄屏下拉不重渲，关着的危险确认不挂 Portal
+//    （这几处重渲会让 @rc-component/portal 在 effect 里 setState，快速连按时 React 报 #185，见 sop/Directory.tsx 文件头）。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/sop/sop.selftest.tsx
@@ -18,6 +20,7 @@ import { createRoot } from 'react-dom/client';
 import type { SectionSpecView, SopSectionText } from '../../../src/shared/console-api.js';
 import type { SopSectionDef } from '../../../src/shared/pack.js';
 import { editableChars } from '../../../src/shared/sop-sections.js';
+import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { LEAVING_PAGE } from '../parts/UnsavedGuard.js';
 import { Directory, DirectorySelect, type SelectVia } from './Directory.js';
 import {
@@ -677,7 +680,6 @@ function harness(initial: { current?: string; filter?: OutlineFilter; anon?: boo
       <DirectorySelect
         rows={rows}
         current={cur}
-        showCounts
         onSelect={(k) => {
           picked.push(k);
           setCur(k);
@@ -688,10 +690,11 @@ function harness(initial: { current?: string; filter?: OutlineFilter; anon?: boo
   const m = await mount(<H />);
   const input = m.box.querySelector('input');
   eq('下拉的名字「选择节」', input?.getAttribute('aria-label'), '选择节');
+  const chosen = m.box.querySelector('.ant-select-content .sop-toc-option, .ant-select-selection-item .sop-toc-option');
   eq(
-    '选中项写当前节与字数',
-    text(m.box.querySelector('.ant-select-content .sop-toc-option, .ant-select-selection-item .sop-toc-option')),
-    '话术原则954（+44）',
+    '选中项写当前节，改过的带圆点，不写字数',
+    [text(chosen), !!chosen?.querySelector('.sop-toc-dot'), chosen?.querySelector('.sop-toc-count') ?? null],
+    ['话术原则', true, null],
   );
   // 展开
   await act(async () => {
@@ -719,6 +722,153 @@ function harness(initial: { current?: string; filter?: OutlineFilter; anon?: boo
   await clickEv(options.find((o) => text(o).startsWith('异议处理')));
   await settle();
   eq('选一项：换节', picked, ['objections']);
+  await m.unmount();
+}
+
+// ---------------- 6. 逐字重渲不碰弹层 ----------------
+// 看一个组件这次有没有重渲：从 DOM 节点取 React 挂的 fiber（__reactFiber$ 键），走到根上，再从根的 current 树往下
+// 找这个组件（DOM 上挂的可能是旧的那一棵）；memo 跳过时 React 把 memoizedProps 设回上一次的那个对象，重渲时是这次
+// 传进来的新对象。用的是 React 内部结构（版本钉在 19.3），找不到要看的组件时断言失败，不会悄悄通过。
+type Fiber = {
+  type: unknown;
+  memoizedProps: unknown;
+  stateNode: unknown;
+  return: Fiber | null;
+  child: Fiber | null;
+  sibling: Fiber | null;
+};
+function fiberOf(el: Element | null | undefined): Fiber | null {
+  if (!el) return null;
+  const k = Object.keys(el).find((x) => x.startsWith('__reactFiber$'));
+  return k ? ((el as unknown as Record<string, Fiber>)[k] ?? null) : null;
+}
+function nameOf(f: Fiber): string | undefined {
+  const t = f.type as { displayName?: string; name?: string; render?: { displayName?: string; name?: string } } | string | null;
+  if (typeof t === 'function') return (t as { displayName?: string }).displayName ?? (t as { name: string }).name;
+  if (t && typeof t === 'object') return t.displayName ?? t.render?.displayName ?? t.render?.name;
+  return undefined;
+}
+/** el 所在的那棵树现在的样子里，所有叫 name 的组件 */
+function currentNamed(el: Element | null | undefined, name: string): Fiber[] {
+  let top = fiberOf(el);
+  while (top?.return) top = top.return;
+  const root = (top?.stateNode as { current?: Fiber } | undefined)?.current ?? null;
+  const out: Fiber[] = [];
+  const walk = (f: Fiber | null): void => {
+    for (let c = f; c; c = c.sibling) {
+      if (nameOf(c) === name) out.push(c);
+      walk(c.child);
+    }
+  };
+  walk(root);
+  return out;
+}
+function hasDescendantNamed(f: Fiber | null, name: string): boolean {
+  for (let c = f?.child ?? null; c; c = c.sibling) if (nameOf(c) === name || hasDescendantNamed(c, name)) return true;
+  return false;
+}
+
+/** 挂一个根，之后用 render 换属性重渲（和页面按新的字数重渲一样） */
+async function rootFor(el: ReactElement): Promise<{ box: HTMLElement; render(el: ReactElement): Promise<void>; unmount(): Promise<void> }> {
+  const box = document.createElement('div');
+  document.body.append(box);
+  const root = createRoot(box);
+  const render = async (next: ReactElement): Promise<void> => {
+    await act(async () => root.render(next));
+    await settle();
+  };
+  await render(el);
+  return {
+    box,
+    render,
+    async unmount() {
+      await act(async () => root.unmount());
+      box.remove();
+    },
+  };
+}
+const noop = (): void => undefined;
+const hrefFor = (k: string): string => `/console/sop?section=${k}`;
+
+// 6.1 目录：在「微信语气规范」里打字，只有这一行重渲；打开过 Tooltip 的带锁行不重渲
+{
+  const dir = (list: readonly OutlineRow[]) => (
+    <Directory rows={list} current="wechat-style" filter="all" onFilter={noop} showCounts hrefOf={hrefFor} onSelect={noop} onEnter={noop} />
+  );
+  const m = await rootFor(dir(rows));
+  const link = (k: string) => all<HTMLAnchorElement>(m.box, 'a.sop-toc-row').find((a) => a.dataset.key === k);
+  // 先让一个带锁行的 Tooltip 打开一次：弹层（和它的 Portal）从此一直挂着
+  await act(async () => link('stages')!.focus());
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 200));
+  });
+  await act(async () => link('stages')!.blur());
+  await settle();
+  const propsOf = () =>
+    new Map(currentNamed(link('tone'), 'TocRow').map((f) => [(f.memoizedProps as { rowKey: string }).rowKey, f.memoizedProps]));
+  const before = propsOf();
+  eq(
+    '找得到每一行的 TocRow',
+    [...before.keys()],
+    SPEC.map((sp) => sp.key),
+  );
+  const typed = memberOutline({
+    spec: SPEC,
+    packSections: TRAVEL,
+    published: PUBLISHED,
+    current: DRAFT,
+    edits: { 'wechat-style': body(600) },
+  });
+  await m.render(dir(typed));
+  const after = propsOf();
+  eq(
+    '打字：只有字数变了的那一行重渲',
+    SPEC.map((sp) => sp.key).filter((k) => before.get(k) !== after.get(k)),
+    ['wechat-style'],
+  );
+  eq('这一行的字数跟着变', text(link('wechat-style')?.querySelector('.sop-toc-count')), '600（+23）');
+  await m.unmount();
+}
+
+// 6.2 窄屏下拉：打开过以后，打字（字数变）不重渲；某一节变成「改过」时重渲
+{
+  const sel = (list: readonly OutlineRow[]) => <DirectorySelect rows={list} current="wechat-style" onSelect={noop} />;
+  const m = await rootFor(sel(rows));
+  await act(async () => {
+    m.box
+      .querySelector('.ant-select')!
+      .dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true, cancelable: true }) as unknown as Event);
+  });
+  await settle();
+  const found = () => currentNamed(m.box.querySelector('.sop-toc-select'), 'DirectorySelect');
+  const props = () => found()[0]?.memoizedProps;
+  const p0 = props();
+  eq('找得到 DirectorySelect', found().length, 1);
+  // 「话术原则」草稿里已经改过：再打字只是字数变
+  const more = memberOutline({ spec: SPEC, packSections: TRAVEL, published: PUBLISHED, current: DRAFT, edits: { tone: body(960) } });
+  eq('打字前后「话术原则」都算改过、字数变了', [rows[3]!.changed, more[3]!.changed, more[3]!.chars], [true, true, 960]);
+  await m.render(sel(more));
+  check('打字：下拉不重渲', props() === p0);
+  await m.render(sel(rows.map((r) => (r.key === 'preamble' ? { ...r, changed: true, delta: 1, chars: r.chars + 1 } : r))));
+  check('有一节变成「改过」：下拉重渲', props() !== p0);
+  const pre = all<HTMLElement>(document.body, '.ant-select-item-option').find((o) => text(o).startsWith('前言'));
+  check('选项里这一节带上圆点', !!pre?.querySelector('.sop-toc-dot'));
+  await m.unmount();
+}
+
+// 6.3 危险确认：关着时不挂弹层的 Portal，打开时才有
+{
+  const H = ({ open }: { open: boolean }) => (
+    <div className="confirm-host">
+      <ConfirmDanger open={open} title="t" confirmText="a" cancelText="b" onConfirm={noop} onCancel={noop} />
+    </div>
+  );
+  const m = await rootFor(<H open={false} />);
+  const host = () => currentNamed(m.box.querySelector('.confirm-host'), 'H')[0] ?? null;
+  check('找得到外层的组件', host() !== null);
+  eq('关着：没有 Portal', hasDescendantNamed(host(), 'Portal'), false);
+  await m.render(<H open />);
+  eq('打开：有 Portal', hasDescendantNamed(host(), 'Portal'), true);
   await m.unmount();
 }
 
