@@ -8,7 +8,7 @@ import { type ReactNode, useState } from 'react';
 import { ERROR_COPY } from '../../../src/shared/ui-labels.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind, HttpError } from '../api.js';
-import { CatalogDetail, type DetailItem, DetailSkeleton } from '../catalog/CatalogDetail.js';
+import { Breadcrumb, CatalogDetail, type DetailItem, DetailSkeleton } from '../catalog/CatalogDetail.js';
 import { distinctValues, referencedKinds } from '../catalog/detail.js';
 import { type FieldEnv, FieldEnvContext } from '../fields/env.js';
 import { refItemsOf } from '../fields/model.js';
@@ -81,7 +81,11 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
   if (q.error) {
     return (
       <>
-        <PageHeader title={code} docTitle={[code, entity.label]} />
+        <PageHeader
+          title={code}
+          docTitle={[code, entity.label]}
+          breadcrumb={<Breadcrumb group={pack.nav.catalogGroup} entity={entity} current={code} />}
+        />
         <StateView error={q.error} onRetry={() => void q.refetch()} />
       </>
     );
@@ -121,7 +125,10 @@ function NewItem({ pack, entity }: { pack: IndustryPack; entity: EntityType }) {
     const copy = ERROR_COPY.forbidden!;
     return (
       <>
-        <PageHeader title={`新建${entity.label}`} />
+        <PageHeader
+          title={`新建${entity.label}`}
+          breadcrumb={<Breadcrumb group={pack.nav.catalogGroup} entity={entity} current={`新建${entity.label}`} />}
+        />
         <EmptyBlock
           title={copy.title as string}
           description={copy.next ?? undefined}

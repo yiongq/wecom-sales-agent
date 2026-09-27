@@ -261,8 +261,12 @@ export const locksOnActivate = (f: FieldDef, ctx: ItemContext): boolean =>
 export type Span = 'half' | 'wide' | 'block';
 
 interface Layout {
-  /** 在表单网格里占多宽（设计系统 §6.0） */
-  span(f: FieldDef): Span;
+  /**
+   * 在表单网格里占多宽（设计系统 §6.0）。mode 不给按可改算。只读（上架后锁定、没有编辑权限）的月份区间和多选 enum
+   * 只占半格：月份条 L 号宽 336，正好是 1440 宽时半格的宽度，多选 enum 只读时是一行文字；这样 E 页的「价格与季节」
+   * 「适合谁去」各少一行，逐日行程露在首屏（spec「产品库详情与编辑」，owner 2026-09-27）
+   */
+  span(f: FieldDef, mode?: FieldMode): Span;
   /** 锁定时能不能挤进 4 列（§6.4：text、intUnit、money、单选 enum） */
   short(f: FieldDef): boolean;
 }
@@ -276,9 +280,9 @@ export const LAYOUT: { readonly [T in FieldType]: Layout } = {
   intUnit: half,
   money: half,
   longText: wide,
-  monthRange: wide,
+  monthRange: { span: (_, mode = 'edit') => (mode === 'edit' ? 'wide' : 'half'), short: () => false },
   tags: wide,
-  enum: { span: (f) => (f.multiple ? 'wide' : 'half'), short: (f) => !f.multiple },
+  enum: { span: (f, mode = 'edit') => (f.multiple && mode === 'edit' ? 'wide' : 'half'), short: (f) => !f.multiple },
   boolean: { span: () => 'half', short: () => false },
   reference: { span: (f) => (f.multiple ? 'wide' : 'half'), short: () => false },
   subItems: { span: (f) => (isSingleItem(f) ? 'wide' : 'block'), short: () => false },
@@ -311,7 +315,10 @@ export const visible = (f: FieldDef, state: Payload): boolean => !f.showWhen || 
 export function groupGrid(entity: EntityType, group: string, state: Payload, ctx: ItemContext): GroupGrid {
   const cells = entity.fields
     .filter((f) => f.group === group && f.type !== 'status' && visible(f, state))
-    .map((f): GridCell => ({ field: f, mode: fieldMode(f, ctx), span: LAYOUT[f.type].span(f) }));
+    .map((f): GridCell => {
+      const mode = fieldMode(f, ctx);
+      return { field: f, mode, span: LAYOUT[f.type].span(f, mode) };
+    });
   const four = cells.length >= 3 && cells.every((c) => c.mode === 'locked' && LAYOUT[c.field.type].short(c.field));
   return { columns: four ? 4 : 2, allLocked: cells.length > 0 && cells.every((c) => c.mode === 'locked'), cells };
 }

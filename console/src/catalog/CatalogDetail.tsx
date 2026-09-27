@@ -63,7 +63,8 @@ export interface CatalogDetailProps {
 
 // ---------------- 页头 ----------------
 
-function Breadcrumb({ group, entity, current }: { group: string; entity: EntityType; current: string }) {
+/** 面包屑「产品库 / 线路 / 条目名」（§4.3）：分组名没有自己的页面，是纯文本；实体名链回列表 */
+export function Breadcrumb({ group, entity, current }: { group: string; entity: EntityType; current: string }) {
   return (
     <nav className="breadcrumb" aria-label="面包屑">
       <span>{cjk(group)}</span>
@@ -201,7 +202,9 @@ function land(el: HTMLElement, block: ScrollLogicalPosition): void {
 export function jumpToCard(root: HTMLElement | null, group: string): void {
   const sec = root ? byData(root, 'data-group', group) : undefined;
   if (!sec) return;
-  land(sec.querySelector<HTMLElement>('.detail-card-title') ?? sec, 'start');
+  // 滚的是整张卡（卡片上沿停在吸顶条下面），焦点给卡片头
+  sec.scrollIntoView?.({ block: 'start' });
+  land(sec.querySelector<HTMLElement>('.detail-card-title') ?? sec, 'nearest');
 }
 
 /** 字段里第一个能填的控件；「撤销这处」不算 */

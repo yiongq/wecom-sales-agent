@@ -34,6 +34,26 @@
   text-overflow: ellipsis;
 }
 
+/*
+ * 网格按自己的宽度收列：卡片变窄（375 宽的只读页、<1280 的单栏里窗口更窄时）一格放不下时，两列并成一列，4 列退成两列、
+ * 值可以折行。1440 与 1280 宽的详情页主栏都宽于这条线，照常两列、4 列
+ */
+.field-group {
+  container-type: inline-size;
+}
+@container (max-width: 479px) {
+  .field-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .field-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .field-grid-4 .field-label-row,
+  .field-grid-4 .field-value {
+    white-space: normal;
+  }
+}
+
 /* ---------- 一个字段：标签到控件 6，控件到帮助 6 ---------- */
 .field {
   display: flex;
@@ -407,8 +427,10 @@
   box-shadow: 0 0 0 1.5px var(--panel);
 }
 /* L 号：每格 28，总宽 336，高 28，--subtle 底，--r-md；格内 13/20 text-3 的月份数字 */
+/* 半格比 336 窄时（1280–1439 宽的只读卡）跟着收窄，每格平分 */
 .month-strip-L {
   width: 336px;
+  max-width: 100%;
   height: 28px;
   border-radius: var(--r-md);
   background: var(--subtle);
