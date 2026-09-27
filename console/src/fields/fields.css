@@ -1,0 +1,491 @@
+/*
+ * 字段渲染器与表单网格的样式（design-system §5.2、§5.4、§5.8、§6.0–§6.4）。颜色一律取 brand.css 的变量，这里不新增变量。
+ * 渲染器本身不 import CSS（自测在 Node 里直接 import 它们）。现在只有走查构建的样张页 import 本文件；
+ * 第 9、10 步把渲染器接进产品库时，改由 main.tsx 全局引一次，与 parts.css、shell.css 一样。
+ */
+
+/* ---------- 表单网格（§6.0）：两列，列间距 24，字段之间 20，标签在上 ---------- */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.field-grid {
+  display: grid;
+  column-gap: 24px;
+  row-gap: 20px;
+}
+.field-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.field-grid-2 > .field-wide {
+  grid-column: 1 / -1;
+}
+/* 整卡只读、只有短值（§6.4）：短值的列只占自己要的宽度，剩下的平分到 4 列；实在放不下才截断，悬停看全文 */
+.field-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, auto));
+}
+.field-grid-4 .field-label-row,
+.field-grid-4 .field-value {
+  white-space: nowrap;
+}
+.field-grid-4 .field-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- 一个字段：标签到控件 6，控件到帮助 6 ---------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+.field-label {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* 只读字段的标签 13/500 text-2（§6.4） */
+.field.is-static .field-label {
+  color: var(--text-2);
+}
+.field-label-row .optional-mark {
+  margin-left: -6px;
+}
+.field-lock,
+.field-will-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 20px;
+}
+.field-help {
+  max-width: 40em;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 40em;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.field-error svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+/* 只读值（§6.4）：14/22 text，不画输入框、不用禁用样式；顶部留 5，和旁边输入框里的文字对齐 */
+.field-value {
+  min-width: 0;
+  padding-top: 5px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.field-text {
+  color: var(--text);
+}
+/* 长文本只读：16/28 段落，最宽 40em */
+.field-reading {
+  max-width: 40em;
+  margin: 0;
+  font-size: 16px;
+  line-height: 28px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.field-meta {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.field-meta-14 {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 列表里截成一行的长文本 */
+.field-clip {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分段控件只占自己的宽度（字段是纵向 flex，默认会被拉满一格） */
+.field > .ant-segmented {
+  align-self: flex-start;
+}
+
+/* ---------- 文本域（§5.2）：内边距 8 10，14/22；高度由渲染器按内容在 3–12 行之间算，不给手动拖；右下角字数 13 text-3 ---------- */
+.field-textarea textarea.ant-input {
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 22px;
+  resize: none;
+}
+.field-textarea .ant-input-data-count {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/* ---------- 数值：InputNumber 占满一格，后缀单位 14 text-2（§5.2） ---------- */
+.field-number {
+  width: 100%;
+}
+.field-unit {
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+/* ---------- 多选片（§5.4）：高 30，左右 10，片间 6；选中 accent-bg 加 check 与 aria-pressed ---------- */
+.field-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.field-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-btn);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition:
+    background-color 100ms linear,
+    box-shadow 100ms linear,
+    color 100ms linear;
+}
+.field-chip:hover {
+  color: var(--text);
+}
+.field-chip.is-on {
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.field-chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------- Tag（§5.8）：高 22，内边距 0 6，--r-xs，--subtle 底，13/20 text-2，无描边 ---------- */
+.field-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  vertical-align: top;
+}
+.field-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ant-select .field-tag {
+  margin-inline-end: 4px;
+}
+.field-tag-lock {
+  display: inline-flex;
+  color: var(--text-3);
+}
+/* 删除按钮：12 的 x，点击区域 24 */
+.field-tag-close {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-right: -2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.field-tag-close::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.field-tag-close:hover {
+  color: var(--text);
+}
+.field-tag-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+}
+.field-more {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-3);
+}
+.field-tag-ref {
+  color: var(--text);
+}
+
+/* ---------- 引用：名称后跟「草稿」；下拉里一项是名称、编号、状态 ---------- */
+.field-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.ref-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ref-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-option-code {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* ---------- MonthStrip（§6.1）：12 格等宽；选中的格连成圆角段，段的首尾格才有圆角 ---------- */
+.field-months {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+}
+.field-months-l {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.month-strip {
+  display: inline-grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  flex: none;
+  vertical-align: middle;
+}
+.ms-cell {
+  position: relative;
+}
+/* S 号：宽 96（每月 8），高 6，全圆角，--month-off 底；当前月是一根 2×12 的 text 色竖线，外加 1.5px 的 --panel 镂空 */
+.month-strip-S {
+  width: 96px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--month-off);
+}
+.month-strip-S .ms-cell.on {
+  background: var(--month-on);
+}
+.month-strip-S .ms-cell.start {
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+}
+.month-strip-S .ms-cell.end {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+.month-strip-S .ms-cell.now::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  background: var(--text);
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+/* L 号：每格 28，总宽 336，高 28，--subtle 底，--r-md；格内 13/20 text-3 的月份数字 */
+.month-strip-L {
+  width: 336px;
+  height: 28px;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+}
+.month-strip-L .ms-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.month-strip-L.is-year-round .ms-cell {
+  color: var(--text-2);
+}
+.month-strip-L .ms-cell.on {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.month-strip-L .ms-cell.start {
+  border-top-left-radius: var(--r-sm);
+  border-bottom-left-radius: var(--r-sm);
+}
+.month-strip-L .ms-cell.end {
+  border-top-right-radius: var(--r-sm);
+  border-bottom-right-radius: var(--r-sm);
+}
+/* 当前月在数字下方 3 处放一个 4px 的 text 色圆点 */
+.month-strip-L .ms-cell.now::after {
+  content: '';
+  position: absolute;
+  top: 22px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: var(--r-full);
+  background: var(--text);
+}
+
+/* ---------- 有序子项 ---------- */
+/* 单字段：逐条一个输入框，右边上移、下移、删除；不能用的按钮降到 40% 并设 aria-disabled（§6.3） */
+.field-list-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.field-list-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.field-list-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.field-list-edit .icon-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.field-add {
+  align-self: flex-start;
+}
+.field-list {
+  margin: 0;
+  padding-left: 20px;
+}
+/* 多字段：自成区块，头部 16/24/600「逐日行程 · 5天」 */
+.field-block {
+  gap: 12px;
+}
+.field-block-head {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+.subitems-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* 每项一张卡片：§5.9 的卡片，内边距 14 16，卡片之间 12 */
+.subitem-card {
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.subitem-label {
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+/* 只读时间轴：左侧竖轴宽 40，1px --border 连线，节点直径 22、13/500；全部填好是 --text-2 实心底、--panel 色字 */
+.subitems-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tl-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+}
+.tl-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: -12px;
+  left: 20px;
+  width: 1px;
+  background: var(--border);
+}
+.tl-item:first-child::before {
+  top: 14px;
+}
+.tl-item:last-child::before {
+  bottom: auto;
+  height: 14px;
+}
+.tl-item:only-child::before {
+  display: none;
+}
+.tl-node {
+  position: relative;
+  justify-self: center;
+  box-sizing: border-box;
+  min-width: 22px;
+  height: 22px;
+  margin-top: 14px;
+  padding: 0 4px;
+  border-radius: var(--r-full);
+  background: var(--text-2);
+  color: var(--panel);
+  font-size: 13px;
+  line-height: 22px;
+  font-weight: 500;
+  text-align: center;
+}

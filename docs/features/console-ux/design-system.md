@@ -1062,7 +1062,7 @@ body {
 | monthRange 月份区间 | 字符串，如「5月-10月」「11月-次年4月」「全年」，由 `peakMonths()` 解析 | MonthStrip S，右边写文字（§6.1）                                                       | Input 加实时预览：MonthStrip L 和「识别出：5–10 月 · {monthMeaning}」。解析失败时报错「没认出月份：写成「5月-10月」「11月-次年4月」或「全年」」                                                                                            | MonthStrip L，加一行文字             | `monthMeaning`                                            |
 | enum 枚举           | 单选存 string；多选存 string[]，或按 `storeAs` 连成字符串              | 单选写文字；**多选写成用「、」连起来的 14 text-2 纯文字**                              | 单选且 ≤5 项用分段控件（选填时最前面加一段「不填」）；多选且 ≤6 项用多选片；超过的用 Select                                                                                                                                                | 用「、」连起来的文字                 | `options` `multiple` `storeAs`                            |
 | tags 开放标签       | string[]                                                               | Tag，最多 3 个，其余写「+N」                                                           | Select 的 tags 模式，带联想；锁定的成员不能删                                                                                                                                                                                              | 一排 Tag                             | `suggest` `lockedWhenActive.members`                      |
-| boolean 是否        | boolean                                                                | 写 `trueLabel` 或 `falseLabel` 的文字，不画勾                                          | 必填：两段的分段控件，没有默认值；选填：开关，旁边写当前文字                                                                                                                                                                               | 写文字                               | `trueLabel` `falseLabel`                                  |
+| boolean 是否        | boolean                                                                | 写 `trueLabel` 或 `falseLabel` 的文字，不画勾                                          | 必填：两段的分段控件，没有默认值；选填：三段的分段控件，最前面一段「不填」                                                                                                                                                                 | 写文字                               | `trueLabel` `falseLabel`                                  |
 | subItems 有序子项   | 数组。只有一个 text 子字段时存 string[]                                | 写「8 天」「7 个节点」「4 条」                                                         | 单字段：逐条列表，每条一个输入框，带上移、下移、删除，底部「添加一条」。多字段：见 §6.3                                                                                                                                                    | 单字段写成列表；多字段写成只读时间轴 | `item` `itemNoun` `indexLabel` `countFrom` `autoIndexKey` |
 | reference 引用      | 编号或名称文本                                                         | 被引用条目的名称，是链接；引用的条目是草稿时后面跟一个「草稿」状态；库里找不到的写原文 | Select 带搜索，每项显示名称、13 text-3 的编号和状态。`allowFree` 时改成 AutoComplete，可以写库外的文本，写了库外的值就在控件下方用 13 text-3 注「{实体名}库里没有这个，按原文保存」（这是提示，不是错误）。`multiple` 时显示成可删除的芯片 | 名称链接；多个时显示芯片             | `to` `store` `allowFree` `filterBy` `multiple`            |
 | status 状态         | 系统字段 draft / active                                                | `Status`                                                                               | 不能直接编辑，要通过「上架…」这类操作改                                                                                                                                                                                                    | `Status`                             | —                                                         |
@@ -1103,7 +1103,7 @@ body {
 
 - **头部**：16/24/600，写成「逐日行程 · 5 天」。条数与 `countFrom` 对不上时，右侧用 13 warning 字写「还差 1 天」或「多了 1 天」。
 - **左侧竖轴**：宽 40，1px `--border` 连线，节点直径 22。
-  - **节点里写什么**：`indexLabel` 展开后不超过 3 个字符（「D1」「D12」）时写在节点里，13/500；更长的（「节点 3」）节点里只写序号「3」，完整标签写在卡片第一行，13/500 text-2。
+  - **节点里写什么**：`indexLabel` 展开后只有字母和数字、不超过 3 个字符（「D1」「D12」）时写在节点里，13/500；带汉字的或更长的（「节点3」，画出来是「节点 3」）节点里只写序号「3」，完整标签写在卡片第一行，13/500 text-2。只数字符的话「节点3」也是 3 个，可是 13 号的汉字一个就宽 13，它比「D12」宽得多，直径 22 的节点放不下。
   - 这一项全部填好：`--text-2` 实心底，`--panel` 色字。
   - 有缺项：`--panel` 底，加 `inset 0 0 0 1.5px var(--control-border)`，text-2 字；旁边用 13 warning 字写「缺：当晚住宿」，前面放 14 `triangle-alert`。
   - 有校验错误：同样空心，描边和字换成 `--danger`。
@@ -1188,6 +1188,8 @@ body {
 | 上移 / 下移 / 删除                                        | `arrow-up` / `arrow-down` / `trash-2`                                                      |
 | 信息 / 成功 / 留意 / 出错 / 没过 / 没跑                   | `info` / `circle-check` / `triangle-alert` / `circle-alert` / `circle-x` / `circle-dashed` |
 | 命令行操作者 / 主题 / 退出                                | `square-terminal` / `sun`、`moon` / `log-out`                                              |
+
+审计动作的图标在 `src/shared/ui-labels.ts` 的 `AUDIT_ACTIONS` 里，上表以外另用这几个：重新生成话术 `refresh-cw`、登录 `log-in`、建账号 `user-plus`、重设密码 `key-round`、停用账号 `user-x`、改角色 `user-cog`、移出租户 `user-minus`、建租户 `building`；表里没有的动作用 `circle-dashed`。审计动作的图标不取下面实体图标集合里的名字（`building-2` 在集合里，建租户因此用 `building`），免得哪个行业包给实体配了同一个图标。
 
 **实体图标集合**：行业包的 `EntityType.icon` 只能从下面这些 lucide 名称里选。console 只为它们打包图标组件，`checkPack` 校验；这样加一个行业包不用改 console。要用集合外的图标，改这张表和 console 的图标映射，不改页面。
 
@@ -1793,7 +1795,7 @@ const pkg: EntityType = {
       lockGroup: 'rec',
     },
     { key: 'styles', type: 'tags', label: '风格', group: 'fit', suggest: ['现代简约', '奶油', '原木', '新中式', '轻法式'] },
-    { key: 'startMonths', type: 'monthRange', label: '适合开工月份', group: 'fit', monthMeaning: '施工旺季，排期要提前 4 周' },
+    { key: 'startMonths', type: 'monthRange', label: '适合开工月份', group: 'fit', monthMeaning: '施工旺季，排期要提前4周' },
     { key: 'duration', type: 'intUnit', unit: '天', label: '工期', group: 'terms', lockedWhenActive: true, lockGroup: 'terms' },
     {
       key: 'demolition',
@@ -1821,7 +1823,7 @@ const pkg: EntityType = {
       type: 'subItems',
       label: '施工节点',
       group: 'nodes',
-      indexLabel: '节点 {n}',
+      indexLabel: '节点{n}',
       itemNoun: '个节点',
       item: [
         { key: 'name', type: 'text', label: '节点名称', group: '', placeholder: '例：水电' },
@@ -1889,7 +1891,7 @@ const material: EntityType = {
     },
     { key: 'unitPrice', type: 'money', unitFrom: 'priceUnit', label: '单价', group: 'price', lockedWhenActive: true, lockGroup: 'price' },
     { key: 'warrantyYears', type: 'intUnit', unit: '年', label: '质保', group: 'terms' },
-    { key: 'ecoGrade', type: 'enum', options: ['ENF 级', 'E0 级', 'E1 级'], label: '环保等级', required: false, group: 'terms' },
+    { key: 'ecoGrade', type: 'enum', options: ['ENF级', 'E0级', 'E1级'], label: '环保等级', required: false, group: 'terms' },
     { key: '$status', type: 'status', label: '状态', group: 'basic' },
   ],
   list: {

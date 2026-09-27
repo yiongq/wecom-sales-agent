@@ -703,15 +703,60 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   put('src/shared/a.jsx', "import pg from 'pg';\nexport const A = () => <div>{String(pg)}</div>;\n");
   put('src/config/b.jsx', `export const guc = '${['app', 'tenant_id'].join('.')}';\n`);
   put('console/src/c.jsx', "import { openDb } from '../../src/db/client.js';\nexport const C = () => <p>{String(openDb)}</p>;\n");
+  // 行业包：console/src 里只有渲染器自测能 import 注册表和假包（console UX spec「行业包通用架构 · 放在哪里」），
+  // 它也不能越过注册表直接 import 某个包；别的 console 文件三样都不能 import
+  const packImports = [
+    "import { packById } from '../../../src/packs/registry.js';",
+    "import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';",
+    "import { travel } from '../../../src/packs/travel/console-pack.js';",
+  ];
+  put('console/src/fields/fields.selftest.tsx', `${packImports.join('\n')}\nexport const P = [packById, renovation, travel];\n`);
+  put('console/src/pages/Other.tsx', `${packImports.join('\n')}\nexport const P = [packById, renovation, travel];\n`);
+  // import type 也算（不变量 11 的第一层）
+  put(
+    'console/src/pages/TypeOnly.ts',
+    "import type { travel } from '../../../src/packs/travel/console-pack.js';\nexport type T = typeof travel;\n",
+  );
+  // 假包经 src/shared 转一手也进得了 console：src/ 里的非自测代码不能 import 它；假包目录自己和自测可以
+  put('src/shared/leak.ts', "import { renovation } from './pack-fixtures/renovation.js';\nexport const L = renovation;\n");
+  put('src/shared/pack-fixtures/extra.ts', "import { renovation } from './renovation.js';\nexport const E = renovation;\n");
+  put('src/shared/leak.selftest.ts', "import { renovation } from './pack-fixtures/renovation.js';\nexport const L = renovation;\n");
   const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'scripts', 'check-boundaries.ts'), dir], {
     cwd: root,
     encoding: 'utf8',
     timeout: 60_000,
   });
+  const hit = (fileLine: string): boolean => run.stderr.includes(`  ${fileLine}  `);
   check(
     '边界 lint：.jsx 文件里的 import 越界与租户 GUC 名同样被拦，逐个点名文件',
-    run.status === 1 && ['src/shared/a.jsx:1', 'src/config/b.jsx:1', 'console/src/c.jsx:1'].every((f) => run.stderr.includes(f)),
+    run.status === 1 && ['src/shared/a.jsx:1', 'src/config/b.jsx:1', 'console/src/c.jsx:1'].every(hit),
     `${run.status} ${run.stderr.slice(0, 300)}`,
+  );
+  check(
+    '边界 lint：渲染器自测可以 import 注册表和假包，直接 import 旅游包仍被拦',
+    !hit('console/src/fields/fields.selftest.tsx:1') &&
+      !hit('console/src/fields/fields.selftest.tsx:2') &&
+      hit('console/src/fields/fields.selftest.tsx:3'),
+    run.stderr.slice(0, 600),
+  );
+  check(
+    '边界 lint：别的 console 文件 import 注册表、旅游包、假包都被拦',
+    ['console/src/pages/Other.tsx:1', 'console/src/pages/Other.tsx:2', 'console/src/pages/Other.tsx:3'].every(hit),
+    run.stderr.slice(0, 600),
+  );
+  const linesOf = (fileLine: string): string[] => run.stderr.split('\n').filter((l) => l.includes(`  ${fileLine}  `));
+  check(
+    '边界 lint：console 里 import 行业包与假包，各报一次、写明不变量 11',
+    ['console/src/pages/Other.tsx:1', 'console/src/pages/Other.tsx:2', 'console/src/pages/Other.tsx:3'].every(
+      (fl) => linesOf(fl).length === 1 && linesOf(fl)[0]!.includes('不变量 11'),
+    ),
+    run.stderr.slice(0, 900),
+  );
+  check('边界 lint：console 里 import type 行业包也被拦', hit('console/src/pages/TypeOnly.ts:1'), run.stderr.slice(0, 600));
+  check(
+    '边界 lint：src/ 里的非自测代码 import 假包被拦，假包目录自己和自测不拦',
+    hit('src/shared/leak.ts:1') && !hit('src/shared/pack-fixtures/extra.ts:1') && !hit('src/shared/leak.selftest.ts:1'),
+    run.stderr.slice(0, 900),
   );
 }
 

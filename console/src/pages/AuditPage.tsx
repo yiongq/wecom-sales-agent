@@ -5,31 +5,16 @@ import { AutoComplete, Button, Space, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import type { AuditEntryView } from '../../../src/shared/console-api.js';
+import { ACTOR_KIND_LABEL, AUDIT_ACTIONS } from '../../../src/shared/ui-labels.js';
 import { api, unwrap } from '../api.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
 import { PageHeader } from '../shell/PageHeader.js';
 
-const ACTIONS = [
-  'sop.publish',
-  'sop.rollback',
-  'sop.discard',
-  'sop.rerender',
-  'catalog.create',
-  'catalog.update',
-  'catalog.activate',
-  'catalog.locked_fix',
-  'auth.login',
-  'auth.logout',
-  'config.import',
-  'platform.tenant_create',
-  'platform.user_create',
-  'platform.user_password',
-  'platform.user_disable',
-  'platform.member_role',
-  'platform.member_remove',
-];
-const ACTOR_LABEL: Record<AuditEntryView['actorKind'], string> = { user: '成员', system: '系统', platform: '平台' };
+/** 系统里写审计的全部动作（ui-labels.ts 的 AUDIT_ACTIONS）；整页随第 14 步换成类别筛选与人话句子 */
+const ACTIONS = Object.keys(AUDIT_ACTIONS);
+/** 非人操作者的名字取共用表（设计系统 §11：命令行写「命令行」） */
+const ACTOR_LABEL: Record<AuditEntryView['actorKind'], string> = { user: '成员', ...ACTOR_KIND_LABEL };
 
 export function AuditPage() {
   const [action, setAction] = useState('');

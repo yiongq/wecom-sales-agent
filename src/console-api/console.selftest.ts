@@ -2083,6 +2083,146 @@ check(
   );
 }
 
+// 后台 UX spec 验收 15 第 8 条：AuditQuery.actions 只返回列表里的动作，在库里过滤，所以翻页不出空页；
+// 同时给 action 与 actions 返回 400
+{
+  interface Row {
+    id: number;
+    action: string;
+  }
+  /** 按 limit 一页页翻完，记下每页的条数；翻页出错时停下，记在 failed 里（由下面的断言点名，不抛） */
+  const walk = async (
+    query: string,
+    limit: number,
+  ): Promise<{ rows: Row[]; sizes: number[]; lastNull: boolean; failed: string | null }> => {
+    const rows: Row[] = [];
+    const sizes: number[] = [];
+    let before: number | null = null;
+    for (let i = 0; i < 500; i += 1) {
+      const r = keep(await call('GET', `/audit?limit=${limit}${query}${before === null ? '' : `&before=${before}`}`, O));
+      if (r.status !== 200) return { rows, sizes, lastNull: false, failed: `第 ${i + 1} 页 ${r.status} ${r.text.slice(0, 80)}` };
+      const items = r.body.items as Row[];
+      rows.push(...items);
+      sizes.push(items.length);
+      before = r.body.nextBefore as number | null;
+      if (before === null) return { rows, sizes, lastNull: true, failed: null };
+    }
+    return { rows, sizes, lastNull: false, failed: '翻了 500 页还没翻完' };
+  };
+  const everything = (await walk('', 100)).rows;
+  // 挑两种在日志里稀疏、彼此隔得开的动作：在客户端按页过滤的话，limit=2 的某些页会是空的，测得出「在库里过滤」
+  const WANTED = ['sop.discard', 'catalog.activate'];
+  const expected = everything.filter((r) => WANTED.includes(r.action));
+  let gap = 0;
+  let widest = 0;
+  for (const r of everything) {
+    gap = WANTED.includes(r.action) ? 0 : gap + 1;
+    widest = Math.max(widest, gap);
+  }
+  const filtered = await walk(`&actions=${WANTED.join(',')}`, 2);
+  const ids = filtered.rows.map((r) => r.id);
+  check(
+    'AuditQuery.actions：逐页翻完，只有列表里的动作，与全部记录里挑出来的逐条相同（id 倒序、不重复）',
+    expected.length >= 4 &&
+      filtered.failed === null &&
+      new Set(expected.map((r) => r.action)).size === WANTED.length &&
+      widest >= 2 &&
+      filtered.lastNull &&
+      JSON.stringify(ids) === JSON.stringify(expected.map((r) => r.id)) &&
+      ids.every((id, i) => i === 0 || id < ids[i - 1]!),
+    `期望 ${expected.length} 条，最宽间隔 ${widest}；${filtered.failed ?? ''} 拿到 ${JSON.stringify(filtered.rows.map((r) => [r.id, r.action]))}`,
+  );
+  check(
+    'AuditQuery.actions：翻页不出空页，除最后一页外每页都是满的',
+    filtered.sizes.length === Math.ceil(expected.length / 2) &&
+      filtered.sizes.every((n, i) => (i < filtered.sizes.length - 1 ? n === 2 : n >= 1 && n <= 2)),
+    filtered.sizes.join(','),
+  );
+  const single = await call('GET', '/audit?limit=100&actions=sop.rollback', O);
+  const byAction = await call('GET', '/audit?limit=100&action=sop.rollback', O);
+  check(
+    'AuditQuery.actions：只给一个动作时与 action 的结果相同；列表里有日志里没有的动作不影响其余的',
+    single.status === 200 &&
+      single.body.items.length > 0 &&
+      single.text === byAction.text &&
+      (await call('GET', '/audit?limit=100&actions=sop.rollback,nope.never', O)).text === byAction.text,
+  );
+  const bad = [
+    ['同时给 action 与 actions', '/audit?action=sop.publish&actions=sop.publish'],
+    ['大写', '/audit?actions=SOP.publish'],
+    ['空的一项', '/audit?actions=sop.publish,'],
+    ['空串', '/audit?actions='],
+    ['33 个', `/audit?actions=${Array.from({ length: 33 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`],
+    ['一项超过 64 个字符', `/audit?actions=${'a'.repeat(65)}`],
+  ] as const;
+  const wrong: string[] = [];
+  for (const [name, url] of bad) {
+    const r = keep(await call('GET', url, O));
+    if (!(r.status === 400 && r.body.error === 'bad_request')) wrong.push(`${name}: ${r.status} ${r.text.slice(0, 80)}`);
+  }
+  check('AuditQuery.actions：同时给 action 与 actions、格式不对、超过 32 个 → 400 bad_request', wrong.length === 0, wrong.join(' | '));
+  const most = await call('GET', `/audit?limit=1&actions=${Array.from({ length: 32 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`, O);
+  check('AuditQuery.actions：32 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
+
+  // AUDIT_ACTIONS 就是系统写审计的全部动作：src/ 下 writeAudit 写的 action 字面量与它逐个相同，新加一种动作要同时给它中文
+  const { AUDIT_ACTIONS, auditActionsParam } = await import('../shared/ui-labels.js');
+  const srcRoot = fileURLToPath(new URL('..', import.meta.url));
+  const written = new Set<string>();
+  const scan = (dir: string): void => {
+    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, d.name);
+      if (d.isDirectory()) scan(p);
+      else if (d.name.endsWith('.ts') && !d.name.endsWith('.selftest.ts')) {
+        const text = fs.readFileSync(p, 'utf8');
+        if (!text.includes('writeAudit(')) continue;
+        for (const m of text.matchAll(/\baction:\s*'([a-z_]+\.[a-z_]+)'/g)) written.add(m[1]!);
+      }
+    }
+  };
+  scan(srcRoot);
+  const known = Object.keys(AUDIT_ACTIONS);
+  check(
+    'AUDIT_ACTIONS 与 src/ 里 writeAudit 写的动作逐个相同（不多不少）',
+    written.size >= 17 && [...written].toSorted().join() === known.toSorted().join(),
+    `写的有、表里没有：${[...written].filter((a) => !known.includes(a)).join(',')}；表里有、没人写：${known.filter((a) => !written.has(a)).join(',')}`,
+  );
+  // 审计页「全部」不显示登录记录时的请求，与全部记录里去掉登录、退出的逐条相同
+  const noLogin = await walk(`&actions=${auditActionsParam('all', false)}`, 100);
+  check(
+    'AuditQuery.actions：「全部」不显示登录记录 = 去掉登录与退出的全部记录',
+    noLogin.failed === null &&
+      JSON.stringify(noLogin.rows.map((r) => r.id)) ===
+        JSON.stringify(everything.filter((r) => r.action !== 'auth.login' && r.action !== 'auth.logout').map((r) => r.id)) &&
+      everything.some((r) => r.action === 'auth.login'),
+  );
+
+  // 这一整轮自测写进库的真实审计记录，用真实的旅游包写成句子：每种动作都认识；对象和版本号「v3」以外没有英文（动作编码、
+  // 字段原名、命令名）；产品库改动的每个字段、发布改的每一节都叫得出中文名（不出现「另N项」「另N节」）
+  const { describeAudit } = await import('../shared/audit-text.js');
+  const { packById } = await import('../packs/registry.js');
+  const travel = packById('travel')!;
+  const real = everything as unknown as import('../shared/console-api.js').AuditEntryView[];
+  const odd: string[] = [];
+  for (const e of real) {
+    const t = describeAudit(e, travel);
+    const rest = [...t.parts.filter((p) => !p.strong).map((p) => p.text), t.tail ?? '', t.summary ?? ''].join('');
+    if (
+      t.group === null ||
+      /[A-Za-z_]/.test(rest.replace(/v\d+/g, '')) ||
+      /另\d+[项节]/.test(t.text) ||
+      known.some((a) => t.text.includes(a))
+    )
+      odd.push(`${e.action} → ${t.text} / ${t.summary}`);
+  }
+  const kinds = new Set(real.map((e) => e.action));
+  check(
+    'describeAudit：真实审计记录（旅游包）每条都写成中文句子，字段和节都叫得出名字',
+    odd.length === 0 &&
+      ['catalog.update', 'catalog.create', 'sop.publish', 'auth.login', 'platform.user_create'].every((a) => kinds.has(a)),
+    `${[...kinds].join(',')} | ${odd.slice(0, 4).join(' | ')}`,
+  );
+}
+
 // /console 的托管与 SPA 回退（第 16 步，验收 17 的路由部分）：用临时的构建产物，测试不依赖真的去构建
 {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-console-dist-'));
@@ -2372,6 +2512,6 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、/console 托管、静态资源的缓存与压缩）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩）`,
 );
 process.exit(0);

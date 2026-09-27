@@ -8,12 +8,13 @@ import { Button, Modal } from 'antd';
 import { type LucideIcon, MessagesSquare, Search } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ConversationRow } from '../../../src/shared/console-api.js';
+import { relativeTime } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
 import { paletteConversationsQuery, paletteListQuery } from '../queries.js';
 import { cjk } from '../typography.js';
 import { entityIcon, Icon } from './icons.js';
-import { conversationLabel, packEntities, sinceText, type ShellViewer } from './model.js';
+import { conversationLabel, packEntities, type ShellViewer } from './model.js';
 import {
   type EntitySource,
   type GroupState,
@@ -91,7 +92,7 @@ export function CommandPalette(props: CommandPaletteProps) {
           state: stateOf(conversations),
           rows: conversations.data?.items ?? [],
           label: (row) => conversationLabel(row, pack),
-          hint: (row) => sinceText(row.updatedAt, now),
+          hint: (row) => relativeTime(row.updatedAt, now),
         }
       : null,
     actions: props.actions,

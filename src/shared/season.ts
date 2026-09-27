@@ -21,3 +21,15 @@ export function peakMonths(bestSeason: string): Set<number> {
   for (const m of bestSeason.matchAll(/(\d{1,2})\s*月/g)) months.add(Number(m[1]));
   return months;
 }
+
+/**
+ * 写出了月份，或者写的是「全年」（01 spec「产品库」的 schema 规则：含「全年」，或 peakMonths 至少写出一个月份）。
+ * 产品库 schema 的 bestSeason、行业包 monthRange 字段的上架前检查（pack.ts）与后台的月份区间
+ * （src/shared/format.ts 的 parseMonthRange）共用这一条，上架前检查与 schema 同进退
+ */
+export function monthsReadable(text: string): boolean {
+  return text.includes('全年') || peakMonths(text).size > 0;
+}
+
+/** 同一条判定的另一个名字（第 3.1、3.4 步各起了一个，合并时留一份实现） */
+export const bestSeasonParses = monthsReadable;

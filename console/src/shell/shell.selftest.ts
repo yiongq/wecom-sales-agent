@@ -1,7 +1,8 @@
 // 外壳的自测（console UX spec「逐页设计 · 外壳」「信息架构、导航与路由」、不变量 19、23，plan 第 2.2 步）：
 // 1. 启动：/me 与 /pack 的每种组合按 spec「外壳 · 启动」那张表定下来是谁、或按哪条文案整页出错；成员身份下 /me 失败不降成匿名；
 // 2. 侧栏由行业包生成：分组、顺序、图标名；会话只给成员，审计日志只给所有者、管理员；每个路由恰有一个选中项；
-// 3. 标签页标题「页名 · 租户名」，匿名是「· 演示」，各页互不相同；搜索占位、徽标文字、头像取色、会话标签、相对时间；
+// 3. 标签页标题「页名 · 租户名」，匿名是「· 演示」，各页互不相同；搜索占位、徽标文字、头像取色、会话标签（相对时间挪到
+//    src/shared/format.selftest.ts）；
 // 4. 视口三档与侧栏形态、进入销售话术页默认收起；铃铛与软徽标的两个查询真的按轮询参数挂上（画出 Bell 后看查询缓存）；
 // 5. ⌘K：原文、拼音与首字母匹配（真实的 pinyin-match），分组顺序，各组的加载与出错，会话按短码，匿名没有会话组，
 //    ↑↓ / Enter / 输入法组字 / 不响应 J、K；快捷键按平台只认一种；打开时只取还没载入的列表（真的 QueryObserver 加假 fetch）；
@@ -12,16 +13,19 @@
 process.env.TZ = 'Asia/Shanghai';
 
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
+import dynamicIconImports from 'lucide-react/dynamicIconImports.mjs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ConversationRow, Me, Role } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
+import { AUDIT_ACTIONS } from '../../../src/shared/ui-labels.js';
 import { catalogKind, HttpError } from '../api.js';
 import { errorCopy } from '../parts/errors.js';
 import { paletteConversationsQuery, paletteListQuery } from '../queries.js';
 import { VIEWER_KEY } from '../viewer.js';
 import { Bell } from './Bell.js';
 import { resolveBoot, type Outcome, type Viewer } from './boot.js';
+import { ENTITY_ICON_NAMES } from './icons.js';
 import {
   avatarIndex,
   badgeText,
@@ -35,7 +39,6 @@ import {
   selectedNavKey,
   type ShellViewer,
   sidebarMode,
-  sinceText,
   viewportTier,
   workbenchHref,
 } from './model.js';
@@ -197,6 +200,21 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
     ['-:销售话术', '套餐与主材:酒店'],
   );
 
+  // 审计动作的图标名（src/shared/ui-labels.ts 的 AUDIT_ACTIONS，加上兜底的 circle-dashed）都是 lucide-react 里有的图标
+  const lucideNames = new Set(Object.keys(dynamicIconImports));
+  const auditIcons = [...Object.values(AUDIT_ACTIONS).map((d) => d.icon), 'circle-dashed'];
+  check(
+    '审计动作的图标都是 lucide 的图标名',
+    lucideNames.size > 1000 && auditIcons.every((n) => lucideNames.has(n)),
+    auditIcons.filter((n) => !lucideNames.has(n)).join(','),
+  );
+  // 审计动作的图标不取实体图标集合里的名字（设计系统 §7）：否则某个包给实体配了它，侧栏的实体和审计的动作画成同一个图标
+  check(
+    '审计动作的图标不与实体图标集合重名',
+    ENTITY_ICON_NAMES.length === 24 && auditIcons.every((n) => !ENTITY_ICON_NAMES.includes(n)),
+    auditIcons.filter((n) => ENTITY_ICON_NAMES.includes(n)).join(','),
+  );
+
   // 每个路由恰有一个选中项（不变量 23），带不带 /console 都认，按整段比
   const routes: Array<[string, string | null]> = [
     ['/console/sop', '/sop'],
@@ -284,21 +302,6 @@ eq(
 eq('会话标签：不认识的渠道只写客户', conversationLabel(row('cust_B01', 'mail'), PACK), ['客户', 'B01']);
 eq('会话标签：没有字母数字时写占位', conversationLabel(row('wecom:cust_'), PACK)[1], '····');
 eq('工作台深链：#s=<id>，id 按 URL 编码', workbenchHref('wecom:cust F01'), '/admin.html#s=wecom%3Acust%20F01');
-
-const NOW = new Date('2026-09-26T14:30:00+08:00').getTime();
-const ago = (ms: number): string => new Date(NOW - ms).toISOString();
-const MIN = 60_000;
-eq('相对时间：不到一分钟', sinceText(ago(30_000), NOW), '刚刚');
-eq('相对时间：8 分钟', sinceText(ago(8 * MIN), NOW), '8分钟前');
-eq('相对时间：59 分钟', sinceText(ago(59 * MIN + 59_000), NOW), '59分钟前');
-eq('相对时间：整 1 小时', sinceText(ago(60 * MIN), NOW), '1小时前');
-eq('相对时间：今天 0 点', sinceText('2026-09-26T00:00:00+08:00', NOW), '14小时前');
-eq('相对时间：昨天最后一刻', sinceText('2026-09-25T23:59:59.999+08:00', NOW), '昨天23:59');
-eq('相对时间：昨天 21:40', sinceText('2026-09-25T21:40:00+08:00', NOW), '昨天21:40');
-eq('相对时间：昨天 0 点', sinceText('2026-09-25T00:00:00+08:00', NOW), '昨天00:00');
-eq('相对时间：更早写日期', sinceText('2026-09-24T23:59:00+08:00', NOW), '9月24日');
-eq('相对时间：跨年加年份', sinceText('2025-12-31T10:00:00+08:00', NOW), '2025年12月31日');
-eq('相对时间：写不出来', sinceText('不是时间', NOW), '—');
 
 // ---------------- 4. 视口、收起、轮询 ----------------
 
