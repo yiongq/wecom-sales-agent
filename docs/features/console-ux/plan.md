@@ -581,8 +581,18 @@
 - 没有新增依赖。worktree 里的依赖用 `pnpm install --frozen-lockfile` 装（主工作区的 `node_modules` 没有第 3.2 步加的 `happy-dom`），锁文件没变。
 - 留给后面的步骤：
   - 第 9、10 步：路由参数按行业包的 kind 取、产品库页重做以后，删掉 `LEGACY` 的两项（不删 `pnpm lint` 失败）。页面要显示字段名、实体名时从 `/pack` 取，不能写死；真要一个撞上包词的通用词，加进 `GENERIC` 并写明理由。
-  - 第 13 步：会话页的「状态」列已经用 `conversationState`；页签、阶段条、徽标照样不读 `handedOver`。
+  - 第 13 步：会话页的「状态」列已经用 `conversationState`，阶段名已经取自 `/pack`；页签、阶段条、徽标照样不读 `handedOver`，也不写阶段名表。
   - 第 17.1 步：往假包里加字段，词表和产物的标记串自动跟着变；新字符串要是撞上界面自己的字，`check-console-dist.ts` 会点名，按那条的过滤规则处理。
+- 评审之后（同日）：
+  - 会话页写死的阶段名表 `STAGE_LABEL`（键是旅游包的阶段 key，不带引号，所以词汇扫描看不见）删掉，阶段名改从 `usePack()` 的 `stages` 取；`handoff` 仍写「—」，包里没有的阶段照写原值。旅游包的显示逐字不变，假包的租户看到的是「咨询」「量房」「已付定金」，不再是原始 key。
+  - 词汇扫描加上对象字面量里不带引号的属性名（含简写），与带引号的键一样算；类成员名、类型里的成员名、属性访问、解构、JSX 属性名仍不扫。在现有代码上多撞出：`parts/toast.tsx` 的 `duration`、`theme/ThemeProvider.tsx` 的 `styles`（antd 配置键，进 `GENERIC`）；`shell/icons.tsx` 图标表的键 `route`、`package`（设计系统 §7 的图标名）；产品库页的 `hotel`、`detail`（进 `LEGACY`）。`GENERIC` 的项可以写 `only` 限定文件，图标名只在 `icons.tsx` 里放过，别处的 `route` 照报；限定文件的项在那些文件里都没了，`pnpm lint` 同样要求删掉。
+  - 不变量 17 的 console 一侧认得存着 stage 的名字（`const s = r.stage`、`const { stage: s } = r`、表格列 `{ dataIndex: 'stage', render: (s) => … }` 的参数，可以接力）、值是 `'paid'` 的常量、`['paid'].includes(stage)` / `indexOf` / `new Set(['paid']).has(stage)`（数组与 Set 存进常量也算）。名字按声明所在的块、函数算，另一个函数里同名的 `s` 不算。查不到的写在脚本开头：别的文件 import 来的常量、对象查表 `{ paid: … }[stage]`、把 stage 传进别的函数再比。
+  - `check-console-dist.ts` 加正对照：把全部标记串轮流按 `"…"`、`` `…` ``、插值之间的文字段拼成一段假块，用同一套取法和比对（`jsStrings`、`fakeHitsIn`）要全部找出来，现在 67/67。评审给的变异（比对时给标记串加 `\0`）原先照样通过，现在点名「只找出 0 个」。
+  - 模块名不扫、对象键要扫，这两处与不变量 11 原文的出入写进 spec 顶部第 3.3 步评审之后的 `Revisions:`。
+  - `check-console-src.selftest.ts` 91 → 108 条：不变量 11 加不带引号的键、假包的键、简写、限定文件的通用词写在别的文件共 4 处违规，不变量 17 加别名、别名接力、解构别名、常量、includes、indexOf、Set、数组常量、表格列 render、别名加常量的 switch 共 10 处；放过的写法加变量名与 JSX 属性名、类方法名、`duration` / `styles`、另一个函数里的同名参数、和 stage 以外的东西比的 `'paid'` 常量与数组、别的列的 render、图标表；限定文件的通用词过时与不过时各一条。
+  - 构建：入口集合 gzip 316,787 → 316,791 B，换页最多仍是产品库 247,077 B（余 2,923 B）；产物 JS 里的字符串 10,516 → 10,510（阶段名表的键值没了）。
+  - preview 实测（Chromium，同上一轮的探针加阶段列与假包两轮，CSP 同线上，接口由 `page.route` 拦截）：旅游包浅色、深色的阶段列是「— 报价 已支付 已支付 促成」，状态列与上一轮相同；假包浅色、深色是「咨询 量房 — 已付定金 mystery」。四轮 `securitypolicyviolation` 0 次，控制台错误 0 条。假包终点阶段 `deposit` 的状态是「AI接待中」：`conversationState` 按 spec「接口改动」只认 `stage === 'paid'`，与本步无关，第 17 步假包走查时留意。
+  - 变异（仓库外的隔离副本，34 例全部失败并点名，还原后与 worktree 逐字节相同）：检查脚本 24 例由自测或 `pnpm lint` 点名（不扫对象键、类成员也扫、限定文件的通用词当全局、不记用过、不查过时、不收别名、作用范围当整个文件、不看作用范围、不认常量、不认数组、不认 Set、不认数组常量、成员判断不看参数、不做成员判断、不认 render 参数、任何列的 render 都认、不认解构别名、不能接力、`===` 与 `case` 只认字面量、`LEGACY` 少 `hotel` `detail`、`GENERIC` 少 `duration` `styles`、图标名限定到别的文件）；真代码 5 例（会话页加回阶段名表、stage 列 render 里比 `'paid'` 与 `['paid'].includes`、`new Set(['paid']).has(r.stage)`、外壳写一个简写键 `{ deposit }`）；产物检查 5 例由正对照点名（评审给的 `\0`、比对恒空、不取插值之间的文字段、只取模板字符串、取源码原文）。第一轮「stage 列 render 里 includes」存活，是变异本身引用了没声明的常量，改成字面量数组后失败。
 
 ## 交接记录
 

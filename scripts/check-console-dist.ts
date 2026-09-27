@@ -10,7 +10,8 @@
 // 所以把每个 JS 块用 TypeScript 的解析器读一遍，取出全部字符串字面量与模板字符串的文字段（转义已经解开），
 // 与假包里「认得出是它」的字符串逐个整串比对：假包配置里的全部字符串值，去掉注册包里也有的（「基本信息」「subItems」这类），
 // 去掉不到 3 个字符的（「业主」「方案」这类常用词，界面以后可能自己要用）和纯小写的英文单词（kind、分组 key、图标名，依赖库里到处都有）。
-// 另要求同一个解析在产物里找得到界面自己的字「等人接手」，否则这条检查是空的。
+// 另要求同一个解析在产物里找得到界面自己的字「等人接手」，否则这条检查是空的；再拿一段拼出来的假块做正对照：全部标记串按压缩器的
+// 三种写法（双引号、反引号、插值之间的文字段）写进去，同一套取法与比对要一个不漏地找出来，否则比对本身坏了。
 // 挂在 `pnpm test` 末尾、紧跟 `pnpm --filter console build`。
 // 包名按子串查；Node 内置模块只查带引号的模块名（"node:crypto"），压缩后的对象键 {node:x} 不算。
 // assets/ 下每个文件名都要带 vite 的内容哈希（<name>-<8 位>.<扩展名>）：服务端给 /console/assets/* 一律一年的 immutable
@@ -282,9 +283,9 @@ for (const f of fixtureFiles.toSorted()) {
   }
 }
 if (!fakeMarkers.size) bad.push(`${FIXTURES_DIR}/ 下没找到导出的假包，按文字查假包的这条检查是空的`);
-/** 一个 JS 文件里全部字符串字面量与模板字符串文字段的值（转义已解开） */
-function jsStrings(file: string): Set<string> {
-  const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
+/** 一段 JS 里全部字符串字面量与模板字符串文字段的值（转义已解开） */
+function jsStrings(file: string, source = fs.readFileSync(file, 'utf8')): Set<string> {
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
   const out = new Set<string>();
   const visit = (n: ts.Node): void => {
     if (ts.isStringLiteralLike(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) out.add(n.text);
@@ -293,16 +294,28 @@ function jsStrings(file: string): Set<string> {
   visit(sf);
   return out;
 }
+/** 一个文件的字符串里撞上的假包标记串：[标记串, 哪个假包] */
+const fakeHitsIn = (found: Set<string>): [string, string][] => [...fakeMarkers].filter(([s]) => found.has(s));
 let controlSeen = false;
 let stringCount = 0;
 for (const f of assets.filter((a) => a.endsWith('.js'))) {
   const found = jsStrings(f);
   stringCount += found.size;
   if (found.has(UI_CONTROL)) controlSeen = true;
-  for (const [s, pack] of fakeMarkers) if (found.has(s)) bad.push(`${f}: 假包「${pack}」的内容「${s}」进了生产产物（不变量 25）`);
+  for (const [s, pack] of fakeHitsIn(found)) bad.push(`${f}: 假包「${pack}」的内容「${s}」进了生产产物（不变量 25）`);
 }
 if (!controlSeen) bad.push(`产物的 JS 里找不到界面文字「${UI_CONTROL}」：字符串没取出来，按文字查假包的检查是空的`);
-report.push(`假包的 ${fakeMarkers.size} 个字符串都不在产物 JS 的 ${stringCount.toLocaleString('en-US')} 个字符串里`);
+// 正对照：假块里每个标记串轮流用 "…"、`…`、`${x}…${x}` 写，比对要全部找出来
+const inTemplate = (s: string): string => s.replace(/[\\`$]/g, '\\$&');
+const probeSource = `x=[${[...fakeMarkers.keys()]
+  .map((s, i) => [JSON.stringify(s), '`' + inTemplate(s) + '`', '`${x}' + inTemplate(s) + '${x}`'][i % 3])
+  .join(',')}]`;
+const probeHits = fakeHitsIn(jsStrings('fake-chunk.js', probeSource)).length;
+if (probeHits !== fakeMarkers.size)
+  bad.push(`正对照：拼进假块的 ${fakeMarkers.size} 个假包字符串只找出 ${probeHits} 个，按文字查假包的比对坏了`);
+report.push(
+  `假包的 ${fakeMarkers.size} 个字符串都不在产物 JS 的 ${stringCount.toLocaleString('en-US')} 个字符串里（正对照 ${probeHits}/${fakeMarkers.size}）`,
+);
 
 if (bad.length) {
   console.error(`console-dist: 构建产物里有不该有的东西：\n  ${bad.join('\n  ')}`);

@@ -1,7 +1,8 @@
 // scripts/check-console-src.ts 的夹具自测（console UX spec 验收 3）：对不变量 2、3、4、6、8、9、11、17、28 各造几处违规，
 // 检查脚本要失败，并逐处点名「文件:行」和不变量编号；允许的写法（部件文件本身、日期与时刻、placeholder 里的产品例子、
-// 映射表里的 danger 字符串、样张页与自测里的空格，行业包的词出现在注释、标识符、子串、模块名、样张与自测里，
-// 系统字段、会话状态值、通用词白名单，旧页面名单里的那几处）一处都不能报；只留允许的写法时脚本通过。
+// 映射表里的 danger 字符串、样张页与自测里的空格，行业包的词出现在注释、标识符（对象字面量的键除外）、子串、模块名、
+// 样张与自测里，系统字段、会话状态值、通用词白名单（含只在某个文件里通用的），旧页面名单里的那几处；不变量 17 里
+// 只在别的作用范围里、或和 stage 以外的东西比的 'paid'）一处都不能报；只留允许的写法时脚本通过。
 // 不变量 11 的词表是真的：取自本仓库的旅游包与假包，夹具里写的就是它们的词。
 // 用法：npx tsx scripts/check-console-src.selftest.ts
 import { spawnSync } from 'node:child_process';
@@ -80,6 +81,12 @@ const BAD: ReadonlyArray<readonly [string, number, number, string]> = [
   ['console/src/i11-template.ts', 2, 11, 'export const s = (n: number) => `${n}逐日行程`;'],
   ['console/src/i11-type.ts', 2, 11, `export type K = 'hotel';`],
   ['console/src/i11-quoted-key.ts', 2, 11, `export const m = { '酒店': 1 };`],
+  // 对象字面量里不带引号的键（含简写）和带引号的一样算：阶段名表 { greeting: '开场' } 是写死的行业包
+  ['console/src/i11-ident-key.ts', 2, 11, `export const STAGE = { greeting: '开场', quote: '报价' };`],
+  ['console/src/i11-ident-key-fake.ts', 2, 11, `export const m = { consult: 1 };`],
+  ['console/src/i11-shorthand.ts', 2, 11, `export const m = (closing: number) => ({ closing });`],
+  // 限定了文件的通用词只在那个文件里放过：图标名 route 写在别处仍是旅游包的 kind
+  ['console/src/i11-scoped-generic.ts', 2, 11, `export const icons = { route: 1 };`],
   // 旧页面名单只放过那两个文件：同一个词写在别的文件里照报
   ['console/src/pages/Other.tsx', 2, 11, `export const s = '目的地';`],
   // 不变量 17：console 里不读 handedOver，不拿 stage 和 'paid' 比；自测也一样
@@ -98,6 +105,32 @@ const BAD: ReadonlyArray<readonly [string, number, number, string]> = [
     `export const p = (r: { stage: string }) => {\n  switch (r.stage) {\n    case 'paid':\n      return 1;\n    default:\n      return 0;\n  }\n};`,
   ],
   ['console/src/i17.selftest.ts', 2, 17, `export const h = (r: { handedOver: boolean }) => r.handedOver;`],
+  // 存着 stage 的名字、值是 'paid' 的常量、includes / has 这类成员判断
+  ['console/src/i17-alias.ts', 4, 17, `export const p = (r: { stage: string }) => {\n  const s = r.stage;\n  return s === 'paid';\n};`],
+  [
+    'console/src/i17-alias-chain.ts',
+    5,
+    17,
+    `export const p = (r: { stage: string }) => {\n  const s = r.stage;\n  const t = s;\n  return t !== 'paid';\n};`,
+  ],
+  ['console/src/i17-alias-destructure.ts', 2, 17, `export const p = ({ stage: s }: { stage: string }) => s == 'paid';`],
+  ['console/src/i17-const.ts', 3, 17, `const PAID = 'paid';\nexport const p = (r: { stage: string }) => r.stage === PAID;`],
+  ['console/src/i17-includes.ts', 2, 17, `export const p = (r: { stage: string }) => ['paid'].includes(r.stage);`],
+  ['console/src/i17-indexof.ts', 2, 17, `export const p = (stage: string) => ['ai', 'paid'].indexOf(stage) >= 0;`],
+  [
+    'console/src/i17-set.ts',
+    3,
+    17,
+    `const DONE = new Set(['paid'] as const);\nexport const p = (r: { stage: string }) => DONE.has(r.stage);`,
+  ],
+  ['console/src/i17-list-const.ts', 3, 17, `const DONE = ['paid'];\nexport const p = (r: { stage: string }) => DONE.includes(r.stage);`],
+  ['console/src/i17-render.ts', 2, 17, `export const cols = [{ dataIndex: 'stage', render: (s: string) => (s === 'paid' ? '成交' : s) }];`],
+  [
+    'console/src/i17-switch-alias.ts',
+    6,
+    17,
+    `const PAID = 'paid';\nexport const p = (r: { stage: string }) => {\n  const s = r.stage;\n  switch (s) {\n    case PAID:\n      return 1;\n  }\n  return 0;\n};`,
+  ],
   ['console/src/i28-dangerous.tsx', 2, 28, `export const A = ({ x }: { x: string }) => <div dangerouslySetInnerHTML={{ __html: x }} />;`],
   ['console/src/i28-csstext.ts', 2, 28, `export const f = (el: HTMLElement) => { el.style.cssText = 'color:red'; };`],
   ['console/src/i28-setattr.ts', 2, 28, `export const f = (el: HTMLElement) => el.setAttribute('style', 'color:red');`],
@@ -143,13 +176,16 @@ const GOOD: ReadonlyArray<readonly [string, string]> = [
       `export { hotel } from 'route';`,
       `export type T = import('route').T;`,
       `export const lazy = () => import('hotel');`,
-      `export const kinds = { route: 1, hotel: 2 };`,
+      `export const kinds = (route: number, hotel: number) => route + hotel;`,
+      `export const B2 = ({ quote }: { quote: string }) => <Tag closing={quote}>{quote}</Tag>;`,
+      `export class K {\n  quote() {\n    return 1;\n  }\n}`,
       `export const price = (r: { priceFrom: number }) => r.priceFrom;`,
       `export const A = () => <p>新建线路草稿</p>;`,
       `export const B = ({ label }: { label: string }) => <p>{label}</p>;`,
       `export const sys = ['$code', '$status', '$updated'];`,
       `export type S = 'ai' | 'human' | 'paid';`,
-      `export const generic = ['title', 'name', 'tags', '状态', '标签'];`,
+      `export const generic = ['title', 'name', 'tags', '状态', '标签', 'duration', 'styles'];`,
+      `export const opts = { title: 'x', duration: 3, styles: {} };`,
       `export const C = () => <th>状态</th>;`,
     ].join('\n'),
   ],
@@ -166,10 +202,18 @@ const GOOD: ReadonlyArray<readonly [string, string]> = [
       `export const row = (stage: string) => ({ stage, handedOver: true });`,
       `export const tab = (state: string) => state === 'paid';`,
       `export const same = (stage: string, other: string) => stage === other;`,
+      // 别名只在声明它的范围里算：另一个函数里的 s 不是 stage
+      `export const one = (r: { stage: string }) => {\n  const s = r.stage;\n  return s;\n};`,
+      `export const two = (s: string) => s === 'paid';`,
+      `const PAID_STATE = 'paid';`,
+      `export const three = (state: string) => state === PAID_STATE || ['ai', 'paid'].includes(state);`,
+      `export const cols = [{ dataIndex: 'state', render: (s: string) => (s === 'paid' ? 1 : 0) }];`,
     ].join('\n'),
   ],
+  // 图标表：限定了文件的通用词只在这个文件里放过
+  ['console/src/shell/icons.tsx', `export const ICONS = { route: 1, package: 2, 'bed-double': 3 };`],
   // 旧页面待重做：只放过 LEGACY 里这两个文件的这几个词
-  ['console/src/pages/CatalogPage.tsx', `export const L = { a: '线路', b: '酒店', c: 'route', d: '目的地' };`],
+  ['console/src/pages/CatalogPage.tsx', `export const L = { a: '线路', b: '酒店', c: 'route', d: '目的地', hotel: 1, detail: 2 };`],
   ['console/src/router.tsx', `export type K = 'route' | 'hotel';`],
 ];
 
@@ -219,7 +263,9 @@ const withGood = (over: ReadonlyArray<readonly [string, string | null]>): (reado
 const CATALOG = 'console/src/pages/CatalogPage.tsx';
 const ROUTER = 'console/src/router.tsx';
 const extraDir = tree(
-  withGood([[CATALOG, `export const L = { a: '线路', b: '酒店', c: 'route', d: '目的地' };\nexport const M = '主材';`]]),
+  withGood([
+    [CATALOG, `export const L = { a: '线路', b: '酒店', c: 'route', d: '目的地', hotel: 1, detail: 2 };\nexport const M = '主材';`],
+  ]),
 );
 const extra = runOn(extraDir);
 check(
@@ -229,24 +275,34 @@ check(
 );
 check('不变量 11：名单里的词不报', !extra.out.includes(`${CATALOG}:2:`), extra.out.slice(0, 400));
 // 名单里的词在文件里没了（或文件删了），要求删掉这一项
+const ICONS = 'console/src/shell/icons.tsx';
 const staleDir = tree(
   withGood([
-    [CATALOG, `export const L = { a: '线路', b: '酒店', c: 'route' };`],
+    [CATALOG, `export const L = { a: '线路', b: '酒店', c: 'route', hotel: 1 };`],
     [ROUTER, null],
+    [ICONS, `export const ICONS = { route: 1 };`],
   ]),
 );
 const stale = runOn(staleDir);
 const staleNamed = (file: string, term: string): boolean => stale.out.includes(`LEGACY 放过 ${file} 里的「${term}」`);
 check(
   '不变量 11：旧页面名单里过时的项被点名（词没了、文件没了）',
-  stale.status === 1 && staleNamed(CATALOG, '目的地') && staleNamed(ROUTER, 'route') && staleNamed(ROUTER, 'hotel'),
+  stale.status === 1 &&
+    staleNamed(CATALOG, '目的地') &&
+    staleNamed(CATALOG, 'detail') &&
+    staleNamed(ROUTER, 'route') &&
+    staleNamed(ROUTER, 'hotel'),
   stale.out.slice(0, 600),
 );
 check(
   '不变量 11：还在的项不算过时',
-  !staleNamed(CATALOG, '线路') && !staleNamed(CATALOG, '酒店') && !staleNamed(CATALOG, 'route'),
+  !staleNamed(CATALOG, '线路') && !staleNamed(CATALOG, '酒店') && !staleNamed(CATALOG, 'route') && !staleNamed(CATALOG, 'hotel'),
   stale.out.slice(0, 600),
 );
+// 限定了文件的通用词：那个文件里没有它了也要删
+const genericStale = (term: string): boolean => stale.out.includes(`GENERIC 只在 ${ICONS} 里放过「${term}」`);
+check('不变量 11：限定了文件的通用词过时了被点名', genericStale('package'), stale.out.slice(0, 600));
+check('不变量 11：限定了文件的通用词还在用就不算过时', !genericStale('route'), stale.out.slice(0, 600));
 for (const d of [all, cleanDir, toastDir, extraDir, staleDir]) fs.rmSync(d, { recursive: true, force: true });
 
 if (fails.length) {

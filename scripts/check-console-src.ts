@@ -18,15 +18,24 @@
 //   产品数据例子；行业包里话术节的 heading（照抄 SOP 文件的标题）；样张目录 _specimen/，它故意放了反例；
 //   *.selftest.*，自测里的字不上页面。假包 src/shared/pack-fixtures/ 的界面配置同样查：走查（验收 5）照样显示它的字。
 // - 11（第二层，第一层是 scripts/check-boundaries.ts 的 import 规则）：console 只经 /pack 的数据认识行业包。
-//   console/src 的字符串字面量（含类型位置和带引号的属性名）、模板字符串的各个文字段、JSX 文本，去掉首尾空白后整串等于
+//   console/src 的字符串字面量（含类型位置和带引号的属性名）、对象字面量里不带引号的属性名（{ quote: '报价' } 与
+//   { 'quote': '报价' } 一样是运行时的键，也算）、模板字符串的各个文字段、JSX 文本，去掉首尾空白后整串等于
 //   某个注册包或假包的实体 kind、实体名、工具原名、字段 key（含有序子项的子字段，带点的 key 另算每一段）、字段标签、
-//   阶段 key，就报。只比整串，不比子串；不扫注释、标识符、模块名、*.selftest.* 和 _specimen/。
-//   排除：$ 开头的系统字段 key；会话状态值 ai、human、paid（paid 同时是旅游包的阶段 key）；下面 GENERIC 里的通用词，每项写明理由；
-//   LEGACY 里旧页面待重做的几处（spec 顶部第 3.3 步的 Revisions）。GENERIC 与 LEGACY 里不再撞上的项也报，免得名单只增不减。
+//   阶段 key，就报。只比整串，不比子串；不扫注释、其余标识符（变量名、属性访问、解构、类型里的成员名、JSX 属性名）、
+//   模块名（import、export 的来源，import()、require()、类型位置的 import()、declare module：是模块路径，不是界面字符串）、
+//   *.selftest.* 和 _specimen/。对象键和模块名这两处与 spec 原文的出入见 spec 顶部第 3.3 步评审之后的 Revisions。
+//   排除：$ 开头的系统字段 key；会话状态值 ai、human、paid（paid 同时是旅游包的阶段 key）；下面 GENERIC 里的通用词，每项写明理由，
+//   只在某几个文件里通用的写明文件（如图标表的键）；LEGACY 里旧页面待重做的几处（spec 顶部第 3.3 步的 Revisions）。
+//   GENERIC 与 LEGACY 里不再撞上的项也报（限定了文件的，那几个文件里都没有它了才算），免得名单只增不减。
 //   词表取自本仓库的 src/packs/registry.ts 与 src/shared/pack-fixtures/ 下导出的每个包，自测夹具也用这份真词表。
 // - 17（console 一侧）：会话状态只由 src/shared/conversation.ts 的 conversationState 判定。console/src 里不读 handedOver
 //   （.handedOver、['handedOver']、解构、按名字引用的字符串 'handedOver'，如表格的 dataIndex），
-//   也不把 stage 与 'paid' 相比（===、!==、==、!=，以及 switch (….stage) 里的 case 'paid'）。自测和样张同样查。
+//   也不把 stage 与 'paid' 相比。「stage」指 stage、x.stage、x?.stage、x['stage']，以及同一个文件里存着它的名字：
+//   const s = r.stage、const { stage: s } = r、表格列 { dataIndex: 'stage', render: (s) => … } 的第一个参数；「'paid'」指
+//   字面量和 const PAID = 'paid' 这样的常量。比法：===、!==、==、!=；switch (stage) 里的 case 'paid'；
+//   ['paid', …].includes(stage) 与 indexOf、new Set(['paid']).has(stage)，数组与 Set 存进常量也算。名字按声明所在的块、
+//   函数算，不跨文件。查不到的：从别的文件 import 的常量、对象查表 { paid: … }[stage]、把 stage 传进别的函数再比。
+//   自测和样张同样查。
 // - 28：产品库文本只以文本节点渲染。没有 dangerouslySetInnerHTML、.cssText、setAttribute('style'，
 //   也没有 innerHTML、outerHTML、insertAdjacentHTML。
 //
@@ -60,21 +69,36 @@ const isPackConfig = (f: string): boolean =>
 /** 会话状态值（ConversationState），不是行业包的词；paid 碰巧也是旅游包的阶段 key */
 const SESSION_STATES = new Set(['ai', 'human', 'paid']);
 
-/** 通用词白名单：撞上了行业包的词，但 console 自己也要用。每项写明理由 */
-const GENERIC: Readonly<Record<string, string>> = {
+/** 通用词白名单：撞上了行业包的词，但 console 自己也要用。每项写明理由；只在某几个文件里通用的，only 写明文件，别处照报 */
+const GENERIC: Readonly<Record<string, string | { why: string; only: readonly string[] }>> = {
   title: '通用属性名：DOM 的 title 属性、表格列与表单项的键都叫它，不只是行业包的字段',
   name: '通用属性名：表单项、input 的 name 都叫它，不只是行业包的字段',
   tags: '字段类型名：FieldType 里的 tags，渲染器按类型分派时要写',
   状态: '界面自己的词：列表的「状态」列、条目与会话的状态，系统字段 $status 的标签也是它',
   标签: '界面自己的词：tags 类型字段的通用叫法',
+  duration: '通用属性名：antd 的 message、notification 的显示时长配置键（parts/toast.tsx），碰巧是假包的字段 key',
+  styles: '通用属性名：antd 组件与 ConfigProvider 的语义化样式配置键（theme/ThemeProvider.tsx），碰巧是假包的字段 key',
+  route: {
+    why: '设计系统 §7 的实体图标名（lucide 的 route），图标表以它为键；别的文件里 route 仍是旅游包的实体 kind',
+    only: ['console/src/shell/icons.tsx'],
+  },
+  package: {
+    why: '设计系统 §7 的实体图标名（lucide 的 package），图标表以它为键；别的文件里 package 仍是假包的实体 kind',
+    only: ['console/src/shell/icons.tsx'],
+  },
 };
+/** GENERIC 里限定了文件的项实际放过的「文件\0词」，用来查过时的项 */
+const genericUsed = new Set<string>();
 
 /**
  * 旧页面待重做：01 留下的产品库页（rjsf 表单、按线路与酒店写死的列）和它的路由参数，第 9、10 步整页重做时删掉这几项
  * （plan「Open」第 2.2 步那条）。只放过这个文件里的这几个词，别的词、别的文件照查；词在文件里没了就要删掉这一项
  */
 const LEGACY: Readonly<Record<string, { terms: readonly string[]; until: string }>> = {
-  'console/src/pages/CatalogPage.tsx': { terms: ['线路', '酒店', 'route', '目的地'], until: '第 9、10 步重做产品库页' },
+  'console/src/pages/CatalogPage.tsx': {
+    terms: ['线路', '酒店', 'route', 'hotel', '目的地', 'detail'],
+    until: '第 9、10 步重做产品库页',
+  },
   'console/src/router.tsx': { terms: ['route', 'hotel'], until: '第 9 步路由参数改按行业包的 kind 取' },
 };
 
@@ -238,15 +262,33 @@ function unwrapExpr(e: ts.Expression): ts.Expression {
   return x;
 }
 
-/** stage、x.stage、x?.stage、x['stage'] */
-function isStageRef(e: ts.Expression): boolean {
-  const x = unwrapExpr(e);
-  if (ts.isIdentifier(x)) return x.text === 'stage';
-  if (ts.isPropertyAccessExpression(x)) return x.name.text === 'stage';
-  if (ts.isElementAccessExpression(x)) return literalOf(x.argumentExpression) === 'stage';
+/** 名字的作用范围：声明所在的块、函数、循环或文件（不变量 17 的别名，按名字认，不做完整的作用域分析） */
+function scopeOf(n: ts.Node): ts.Node {
+  let x = n.parent;
+  while (
+    !(
+      ts.isBlock(x) ||
+      ts.isSourceFile(x) ||
+      ts.isModuleBlock(x) ||
+      ts.isCaseClause(x) ||
+      ts.isDefaultClause(x) ||
+      ts.isFunctionLike(x) ||
+      ts.isIterationStatement(x, false)
+    )
+  )
+    x = x.parent;
+  return x;
+}
+/** 名字 → 声明它的范围；一个引用在某个范围里面才算 */
+type Scoped = Map<string, ts.Node[]>;
+const addScoped = (m: Scoped, name: string, scope: ts.Node): void => void m.set(name, [...(m.get(name) ?? []), scope]);
+function inScope(m: Scoped, id: ts.Identifier): boolean {
+  const scopes = m.get(id.text);
+  if (!scopes) return false;
+  for (let x: ts.Node | undefined = id.parent; x; x = x.parent) if (scopes.includes(x)) return true;
   return false;
 }
-const isPaidLiteral = (e: ts.Expression): boolean => literalOf(unwrapExpr(e)) === 'paid';
+const MEMBERSHIP = new Set(['includes', 'indexOf', 'lastIndexOf', 'has']);
 const EQUALITY = new Set([
   ts.SyntaxKind.EqualsEqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsEqualsToken,
@@ -271,12 +313,68 @@ function checkFile(file: string, source: string, hits: Hit[]): void {
     hits.push({ file, line: line + 1, col: character + 1, msg });
   };
 
+  // ---------- 不变量 17：stage 与 'paid'，连同同一个文件里存着它们的名字 ----------
+  const stageNames: Scoped = new Map(); // 存着 stage 的变量、参数
+  const paidNames: Scoped = new Map(); // 值是 'paid' 的常量
+  const paidLists: Scoped = new Map(); // 含 'paid' 的数组、Set
+  /** stage、x.stage、x?.stage、x['stage']，或存着它的名字 */
+  const isStageRef = (e: ts.Expression): boolean => {
+    const x = unwrapExpr(e);
+    if (ts.isIdentifier(x)) return x.text === 'stage' || inScope(stageNames, x);
+    if (ts.isPropertyAccessExpression(x)) return x.name.text === 'stage';
+    if (ts.isElementAccessExpression(x)) return literalOf(x.argumentExpression) === 'stage';
+    return false;
+  };
+  const isPaid = (e: ts.Expression): boolean => {
+    const x = unwrapExpr(e);
+    return literalOf(x) === 'paid' || (ts.isIdentifier(x) && inScope(paidNames, x));
+  };
+  const isPaidList = (e: ts.Expression): boolean => {
+    const x = unwrapExpr(e);
+    if (ts.isArrayLiteralExpression(x)) return x.elements.some(isPaid);
+    if (ts.isNewExpression(x) && ts.isIdentifier(x.expression) && x.expression.text === 'Set' && x.arguments?.[0])
+      return isPaidList(x.arguments[0]);
+    return ts.isIdentifier(x) && inScope(paidLists, x);
+  };
+  /** 按源码顺序收名字，后面的别名可以接前面的（const t = s） */
+  const collectNames = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const scope = scopeOf(node);
+      if (isStageRef(node.initializer)) addScoped(stageNames, node.name.text, scope);
+      else if (isPaid(node.initializer)) addScoped(paidNames, node.name.text, scope);
+      else if (isPaidList(node.initializer)) addScoped(paidLists, node.name.text, scope);
+    }
+    if (ts.isBindingElement(node) && nameText(node.propertyName) === 'stage' && ts.isIdentifier(node.name))
+      addScoped(stageNames, node.name.text, scopeOf(node));
+    // 表格列 { dataIndex: 'stage', render: (s) => … }：render 的第一个参数就是 stage
+    if (ts.isObjectLiteralExpression(node)) {
+      const prop = (k: string) => node.properties.find((p) => nameText(p.name) === k);
+      const index = prop('dataIndex');
+      const render = prop('render');
+      if (index && ts.isPropertyAssignment(index) && literalOf(index.initializer) === 'stage' && render) {
+        const fn = ts.isPropertyAssignment(render) ? unwrapExpr(render.initializer) : render;
+        if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isMethodDeclaration(fn)) {
+          const first = fn.parameters[0];
+          if (first && ts.isIdentifier(first.name)) addScoped(stageNames, first.name.text, fn);
+        }
+      }
+    }
+    ts.forEachChild(node, collectNames);
+  };
+  if (inConsole) collectNames(sf);
+
   // ---------- 不变量 11：写死的行业包词汇（整串比对） ----------
   const legacy = LEGACY[file];
   const vocabHits = (node: ts.Node, text: string): void => {
     const t = text.trim();
     const what = VOCAB.get(t);
-    if (!what || SESSION_STATES.has(t) || Object.hasOwn(GENERIC, t)) return;
+    if (!what || SESSION_STATES.has(t)) return;
+    const generic = Object.hasOwn(GENERIC, t) ? GENERIC[t] : undefined;
+    if (typeof generic === 'string') return;
+    if (generic?.only.includes(file)) {
+      genericUsed.add(`${file}\0${t}`);
+      return;
+    }
     if (legacy?.terms.includes(t)) {
       legacyUsed.add(`${file}\0${t}`);
       return;
@@ -434,16 +532,34 @@ function checkFile(file: string, source: string, hits: Hit[]): void {
       if (
         ts.isBinaryExpression(node) &&
         EQUALITY.has(node.operatorToken.kind) &&
-        ((isStageRef(node.left) && isPaidLiteral(node.right)) || (isPaidLiteral(node.left) && isStageRef(node.right)))
+        ((isStageRef(node.left) && isPaid(node.right)) || (isPaid(node.left) && isStageRef(node.right)))
       )
         hit(node, MSG_STAGE_PAID);
-      if (ts.isCaseClause(node) && isPaidLiteral(node.expression) && isStageRef(node.parent.parent.expression)) hit(node, MSG_STAGE_PAID);
+      if (ts.isCaseClause(node) && isPaid(node.expression) && isStageRef(node.parent.parent.expression)) hit(node, MSG_STAGE_PAID);
+      // ['paid'].includes(stage)、new Set(['paid']).has(stage)、PAID_LIST.indexOf(stage)
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        MEMBERSHIP.has(node.expression.name.text) &&
+        node.arguments[0] &&
+        isStageRef(node.arguments[0]) &&
+        isPaidList(node.expression.expression)
+      )
+        hit(node, MSG_STAGE_PAID);
     }
     // ----- 行业包词汇：11 -----
     if (scanVocab) {
       if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && !isModuleName(node)) vocabHits(node, node.text);
       else if (ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) vocabHits(node, node.text);
       else if (ts.isJsxText(node)) vocabHits(node, jsxTextValue(node.getFullText(sf)));
+      // 对象字面量里不带引号的属性名（含简写 { quote }）：和带引号的一样是运行时的键
+      else if (
+        ts.isIdentifier(node) &&
+        ts.isObjectLiteralElementLike(node.parent) &&
+        node.parent.name === node &&
+        ts.isObjectLiteralExpression(node.parent.parent)
+      )
+        vocabHits(node, node.text);
     }
     // ----- 字符串：9 -----
     if (scanText) {
@@ -494,7 +610,11 @@ const problems: string[] = [];
 if (!PACKS.some((p) => !p.who.endsWith('（假包）'))) problems.push(`${SELF}  src/packs/registry.ts 里一个包都没有，不变量 11 的词表是空的`);
 if (!PACKS.some((p) => p.who.endsWith('（假包）')))
   problems.push(`${SELF}  ${PACK_FIXTURES}/ 下没找到导出的行业包，不变量 11 的词表漏了假包`);
-for (const t of Object.keys(GENERIC)) if (!VOCAB.has(t)) problems.push(`${SELF}  GENERIC 里的「${t}」已经不是任何行业包的词，删掉这一项`);
+for (const [t, g] of Object.entries(GENERIC)) {
+  if (!VOCAB.has(t)) problems.push(`${SELF}  GENERIC 里的「${t}」已经不是任何行业包的词，删掉这一项`);
+  else if (typeof g !== 'string' && !g.only.some((f) => genericUsed.has(`${f}\0${t}`)))
+    problems.push(`${SELF}  GENERIC 只在 ${g.only.join('、')} 里放过「${t}」，这些文件里已经没有它了，删掉这一项`);
+}
 for (const [file, { terms, until }] of Object.entries(LEGACY))
   for (const t of terms)
     if (!legacyUsed.has(`${file}\0${t}`))
