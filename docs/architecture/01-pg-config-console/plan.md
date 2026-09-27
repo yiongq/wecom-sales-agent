@@ -101,7 +101,7 @@
   - 对应验收 18、19、21、23。
 - [x] 18. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节
 - [x] 19. 清理临时探针与测试
-- [ ] 20. owner 确认验收通过后，spec 顶部改 `Status: implemented`
+- [x] 20. owner 确认验收通过后，spec 顶部改 `Status: implemented`
 
 ## 工作量与砍法
 
@@ -327,6 +327,10 @@
 - 代码里没有留下临时探针；`__configTest`、`__passwordTest`、`__hostTest` 这类是 spec 定的测试入口，保留。
 - 补审修复用的六个 worktree（分支都已合进 dev）、变异测试的隔离副本、本机恢复演练的容器、数据卷、镜像与解密文件都已删掉；服务器上测 scrypt 的临时脚本也删了。分支本身留着。
 
+### 第 20 步（2026-09-27）
+
+- owner 确认验收通过。翻 implemented 之前，按后台 UX spec（`docs/features/console-ux/spec.md`）开放问题 1 的 A 路就地修订了 spec：安全头与页面清单改成能力级写法，验收 16 第 4 条、验收 22 同步改（spec 顶部 2026-09-27 的 Revisions）。现有实现同时满足新旧写法，验收结果不变。spec 顶部改为 `Status: implemented`。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -370,16 +374,13 @@
 - 供 owner 知悉：备份失败只写进 `/var/log/wecom-backup.log`，没有告警。可以加一条日志检查或失败发邮件。
 - 供 owner 知悉（验收 21）：真实模型下 `flow-07-kid-headcount`（带娃人数口径）在文件、DB 两种模式都稳定不过，是模型行为，留给后续阶段的提示词或护栏。
 
-## 交接（2026-09-26）
+## 交接（2026-09-27）
 
-- 已完成：第 1–19 步。线上 demo 已切到 DB 模式（`demo-v2`），备份每晚跑，线上恢复演练通过；验收 1–23 全部通过（见「验收记录」）。
+- 已完成：第 1–20 步，spec 已翻 `implemented`。线上 demo 以 DB 模式运行（`demo-v2`），备份每晚跑，线上恢复演练通过；验收 1–23 全部通过（见「验收记录」）。
 - 半成品：无。
-- 阻塞：第 20 步要 owner 确认验收通过。
-- 下一步（owner）：
-  1. 确认验收通过，我把 spec 顶部改成 `Status: implemented`。
-  2. 看 Open 里新增的几条：SOP 冲突后只能丢弃重做（待 owner，`rebaseOnto` 已写进 UX spec 第 8 步），其余供知悉。
-  3. 备份的 age 私钥只在 owner 本机，另存一份到密码管理器：丢了它，备份就解不开。
-  4. 审阅后台 UX 重做的 spec（`docs/features/console-ux/`，Status: draft），翻 ready 后开工。
+- 阻塞：无。
+- 下一步：后台 UX spec（`docs/features/console-ux/`）由 owner 翻 ready 后按它的 plan 改造后台；同时起草 02 spec（会话入库、转人工字段、接手接口、通知、总览统计，清单见 UX spec「依赖 02 的后端」）。Open 里待 owner 的 SOP 冲突一条由 UX spec 第 8 步（`rebaseOnto`）解决。
+- 提醒（owner）：备份的 age 私钥只在 owner 本机，另存一份到密码管理器；丢了它，备份就解不开。
 - 上线步骤（2026-09-26 已在线上执行，留作以后新装一台机器时参考）：
   1. **先以文件模式部署能读库的镜像。** 服务器部署目录里先写好 `.env.db`（四个口令都要有，不设 `POSTGRES_DB`）、`.env.migrate`、`.env.platform`（写法见 `deploy/compose.yml` 开头；按 `format: raw` 读，值原样进容器，口令只用字母数字），`.env` 暂不加数据库变量。本机打 tag 后 `bash deploy.sh <tag>`：第一次会起 db（roles.sh 建角色和库）、跑迁移，并接管原来 `docker run` 起的容器。核对 `/healthz`：`revision` 是新 tag、`config.mode = file`，记下 `promptHash`、`toolsHash`、`prefixHash`。
   2. **建租户和账号**（在部署目录里，下同；compose 缺省用 `wecom-sales-agent:current`，就是正在跑的镜像，不用带 `APP_IMAGE`，也别手写 `:latest`）：`docker compose -f deploy/compose.yml --profile cli run --rm -T platform node --import tsx src/cli/tenant-create.ts --slug <slug> --name <名称> --pack travel`；账号用 `user-create.ts --tenant <slug> --email … --name … --role owner`，口令经 `--password-stdin` 或在终端里生成。
