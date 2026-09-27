@@ -3,7 +3,7 @@
 // 取自行业包；对象名从 diff 和产品库缓存（lookups）拼，查不到用编号。表里没有的动作兜底为「{操作者} 执行了一项操作」，
 // 动作编码只放进技术详情。不依赖 React；diff 是库里的 JSON，形状按写审计的代码读，每一步都防着形状不对。
 import type { AuditEntryView } from './console-api.js';
-import type { EntityType, IndustryPack } from './pack.js';
+import type { EntityType, FieldDef, IndustryPack } from './pack.js';
 import { ACTOR_KIND_LABEL, auditAction, type AuditGroup, RERENDER_CAUSE_LABEL, roleLabel } from './ui-labels.js';
 
 /** 查产品库缓存：这个实体里这个编号的条目名称（行业包 titleKey 的值）；缓存里没有时 undefined */
@@ -52,20 +52,52 @@ export function auditActor(entry: Pick<AuditEntryView, 'actorKind' | 'actorName'
 const entityOf = (pack: IndustryPack, kind: string | null): EntityType | null =>
   (kind !== null && pack.entities.find((e) => e.kind === kind)) || null;
 
+/** 按「a.b」这样的路径取嵌套对象里的值；路径中途不是对象时是 undefined */
+const at = (v: unknown, path: string): unknown =>
+  path.split('.').reduce<unknown>((o, k) => (isRecord(o) && Object.hasOwn(o, k) ? o[k] : undefined), v);
+
 /**
- * 产品库 diff 的顶层键 → 行业包的字段名，按包里字段的顺序排。`id` 对应系统字段 `$code`；嵌套字段（intensity.level）
- * 随它的顶层对象整体记在 diff 里，取第一个子字段的标签。包里找不到的键不写原名，合成「另N项」
+ * 嵌套对象（intensity）在 diff 里整个记成 [原来, 现在]：逐个比包里的子字段（intensity.level、intensity.hardest），
+ * 返回真正变了的那些在 fields 里的下标。两边都不是对象（形状认不出）时 null；认得出、包里的子字段却都没变时是空数组
  */
-export function auditFieldLabels(entity: EntityType | null, keys: readonly string[]): string[] {
+function changedSubFields(fields: readonly FieldDef[], key: string, subs: readonly number[], pair: unknown): number[] | null {
+  if (!Array.isArray(pair) || pair.length !== 2) return null;
+  const [was, now] = pair as [unknown, unknown];
+  if (!(isRecord(was) || was === null) || !(isRecord(now) || now === null) || (was === null && now === null)) return null;
+  return subs.filter((i) => {
+    const sub = fields[i]!.key.slice(key.length + 1);
+    return JSON.stringify(at(was, sub)) !== JSON.stringify(at(now, sub));
+  });
+}
+
+/**
+ * 产品库 diff（顶层键 → [原来, 现在]）写成行业包的字段名，按包里字段的顺序排。`id` 对应系统字段 `$code`。
+ * 嵌套字段随它的顶层对象整体记在 diff 里：写真正变了的子字段（只改了 intensity.hardest 就写「最累的一段」），
+ * diff 形状认不出时才取第一个子字段的标签；包里的子字段都没变（包里没有的子键变了，或只是键序变了）时不点名，
+ * 算进「另N项」。包里找不到的键不写原名，同样合成「另N项」
+ */
+export function auditFieldLabels(entity: EntityType | null, diff: Readonly<Record<string, unknown>>): string[] {
   const fields = entity?.fields ?? [];
-  const found: { label: string; at: number }[] = [];
+  const hit = new Set<number>();
   let unknown = 0;
-  for (const k of keys) {
-    const at = fields.findIndex((f) => (k === 'id' ? f.key === '$code' : f.key === k || f.key.startsWith(`${k}.`)));
-    if (at < 0) unknown += 1;
-    else if (!found.some((x) => x.label === fields[at]!.label)) found.push({ label: fields[at]!.label, at });
+  for (const [k, pair] of Object.entries(diff)) {
+    const exact = fields.findIndex((f) => f.key === (k === 'id' ? '$code' : k));
+    if (exact >= 0) {
+      hit.add(exact);
+      continue;
+    }
+    const subs = fields.flatMap((f, i) => (f.key.startsWith(`${k}.`) ? [i] : []));
+    if (!subs.length) {
+      unknown += 1;
+      continue;
+    }
+    const changed = changedSubFields(fields, k, subs, pair);
+    if (changed === null) hit.add(subs[0]!);
+    else if (changed.length) for (const i of changed) hit.add(i);
+    else unknown += 1;
   }
-  const labels = found.toSorted((a, b) => a.at - b.at).map((x) => x.label);
+  const labels: string[] = [];
+  for (const i of [...hit].sort((a, b) => a - b)) if (!labels.includes(fields[i]!.label)) labels.push(fields[i]!.label);
   if (unknown) labels.push(`另${unknown}项`);
   return labels;
 }
@@ -118,11 +150,7 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
   const entity = entityOf(pack, entry.targetType);
   const noun = entity?.label ?? pack.vocabulary.productNoun;
   const name = (): AuditPart[] => [plain('「'), strong(itemName(entry, entity, lookups)), plain('」')];
-  const changed = (): string[] =>
-    auditFieldLabels(
-      entity,
-      Object.keys(diff).filter((k) => k !== 'reason'),
-    );
+  const changed = (): string[] => auditFieldLabels(entity, Object.fromEntries(Object.entries(diff).filter(([k]) => k !== 'reason')));
   const fieldsTail = (labels: string[]): Pick<Body, 'tail' | 'summary'> =>
     labels.length ? { tail: `的${labels.join('、')}`, summary: `改了：${labels.join('、')}` } : {};
 

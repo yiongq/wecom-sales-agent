@@ -25,6 +25,7 @@ import { paletteConversationsQuery, paletteListQuery } from '../queries.js';
 import { VIEWER_KEY } from '../viewer.js';
 import { Bell } from './Bell.js';
 import { resolveBoot, type Outcome, type Viewer } from './boot.js';
+import { ENTITY_ICON_NAMES } from './icons.js';
 import {
   avatarIndex,
   badgeText,
@@ -206,6 +207,12 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
     '审计动作的图标都是 lucide 的图标名',
     lucideNames.size > 1000 && auditIcons.every((n) => lucideNames.has(n)),
     auditIcons.filter((n) => !lucideNames.has(n)).join(','),
+  );
+  // 审计动作的图标不取实体图标集合里的名字（设计系统 §7）：否则某个包给实体配了它，侧栏的实体和审计的动作画成同一个图标
+  check(
+    '审计动作的图标不与实体图标集合重名',
+    ENTITY_ICON_NAMES.length === 24 && auditIcons.every((n) => !ENTITY_ICON_NAMES.includes(n)),
+    auditIcons.filter((n) => ENTITY_ICON_NAMES.includes(n)).join(','),
   );
 
   // 每个路由恰有一个选中项（不变量 23），带不带 /console 都认，按整段比

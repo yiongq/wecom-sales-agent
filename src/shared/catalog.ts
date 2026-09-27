@@ -4,7 +4,7 @@
 import { z } from 'zod';
 import { SALES_SEGMENTS, type Hotel, type Route } from './catalog-types.js';
 import { storableText, UNSTORABLE_TEXT } from './console-api.js';
-import { peakMonths } from './season.js';
+import { bestSeasonParses } from './season.js';
 
 export type CatalogKind = 'route' | 'hotel';
 
@@ -32,10 +32,7 @@ export const RouteSchema: z.ZodType<Route> = z
     days: int.positive(),
     priceFrom: int.positive(),
     hotelLevel: text,
-    bestSeason: text.refine(
-      (s) => s.includes('全年') || peakMonths(s).size > 0,
-      '最佳季要写出月份（如「6-9月」「11月-次年4月」）或「全年」',
-    ),
+    bestSeason: text.refine(bestSeasonParses, '最佳季要写出月份（如「6-9月」「11月-次年4月」）或「全年」'),
     highlights: texts.min(1),
     tags: texts,
     segments: z.array(z.enum(SALES_SEGMENTS as [Route['segments'][number], ...Route['segments']])).min(1),

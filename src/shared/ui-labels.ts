@@ -3,6 +3,7 @@
 // 行业相关的词（实体名、字段名、阶段名、客户的叫法）不在这里，都来自行业包（src/shared/pack.ts）。
 // 这里的字符串会显示在后台上，也是 UI 优先片的用字来源（scripts/fonts/ui-text.ts）：改了文案要重跑 scripts/fonts/build.ts。
 import type { ApiError, Role, ViolationCode } from './console-api.js';
+import type { IndustryPack } from './pack.js';
 
 // ---------------- 角色 ----------------
 
@@ -40,13 +41,19 @@ export const SOP_CHECKS = Object.entries(SOP_CHECK_LABEL) as ReadonlyArray<reado
 /** 审计页的类别（spec「审计日志 · 筛选」）；「全部」不是类别 */
 export type AuditGroup = 'sop' | 'catalog' | 'account' | 'platform';
 
-export const AUDIT_GROUPS: ReadonlyArray<{ key: AuditGroup | 'all'; label: string }> = [
-  { key: 'all', label: '全部' },
-  { key: 'sop', label: '销售话术' },
-  { key: 'catalog', label: '产品库' },
-  { key: 'account', label: '账号与登录' },
-  { key: 'platform', label: '平台与配置' },
-];
+/**
+ * 审计页的类别与名字，按显示顺序。产品库那一类的名字取行业包的 nav.catalogGroup，与侧栏的分组名相同
+ * （旅游包是「产品库」，spec K 页照旅游包写）；其余几类是界面自己的词
+ */
+export function auditGroups(pack: Pick<IndustryPack, 'nav'>): ReadonlyArray<{ key: AuditGroup | 'all'; label: string }> {
+  return [
+    { key: 'all', label: '全部' },
+    { key: 'sop', label: '销售话术' },
+    { key: 'catalog', label: pack.nav.catalogGroup },
+    { key: 'account', label: '账号与登录' },
+    { key: 'platform', label: '平台与配置' },
+  ];
+}
 
 export interface AuditActionDef {
   /** 动作的中文，如「发布话术」：详情抽屉、筛选这类要单独说出动作的地方。句子由 describeAudit 生成 */
@@ -60,7 +67,8 @@ export interface AuditActionDef {
 
 /**
  * 系统里写审计的全部动作（src/ 下 writeAudit 的 action）。动作编码只进技术详情，页面上写 label 或 describeAudit 的句子
- * （不变量 7）。新加一种动作而这里没有时，describeAudit 兜底为「{操作者} 执行了一项操作」
+ * （不变量 7）。新加一种动作而这里没有时，describeAudit 兜底为「{操作者} 执行了一项操作」。
+ * 顺序照原来审计页的动作下拉（第 14 步换成类别筛选之前，下拉按这里的顺序列）。图标不取设计系统 §7 的实体图标集合里的名字
  */
 export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'sop.publish': { label: '发布话术', group: 'sop', icon: 'message-square-text' },
@@ -73,13 +81,13 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'catalog.locked_fix': { label: '修正锁定内容', group: 'catalog', icon: 'lock' },
   'auth.login': { label: '登录', group: 'account', icon: 'log-in', login: true },
   'auth.logout': { label: '退出登录', group: 'account', icon: 'log-out', login: true },
+  'config.import': { label: '导入初始配置', group: 'platform', icon: 'download' },
+  'platform.tenant_create': { label: '建租户', group: 'platform', icon: 'building' },
   'platform.user_create': { label: '建账号', group: 'account', icon: 'user-plus' },
   'platform.user_password': { label: '重设密码', group: 'account', icon: 'key-round' },
   'platform.user_disable': { label: '停用账号', group: 'account', icon: 'user-x' },
   'platform.member_role': { label: '改角色', group: 'account', icon: 'user-cog' },
   'platform.member_remove': { label: '移出租户', group: 'account', icon: 'user-minus' },
-  'platform.tenant_create': { label: '建租户', group: 'platform', icon: 'building-2' },
-  'config.import': { label: '导入初始配置', group: 'platform', icon: 'download' },
 };
 
 /** 这个动作的定义；表里没有（以后新增的动作）时是 null。只认自有属性，toString 这类原型上的名字查不到 */

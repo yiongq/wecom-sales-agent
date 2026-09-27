@@ -21,3 +21,9 @@ export function peakMonths(bestSeason: string): Set<number> {
   for (const m of bestSeason.matchAll(/(\d{1,2})\s*月/g)) months.add(Number(m[1]));
   return months;
 }
+
+/**
+ * bestSeason 能不能解析：含「全年」，或 peakMonths 至少写出一个月份（01 spec「产品库」的 schema 规则）。
+ * 产品库 schema 与后台的月份区间（src/shared/format.ts 的 parseMonthRange）共用这一个判定，上架前检查与 schema 同进退
+ */
+export const bestSeasonParses = (bestSeason: string): boolean => bestSeason.includes('全年') || peakMonths(bestSeason).size > 0;

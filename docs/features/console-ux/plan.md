@@ -400,11 +400,11 @@
 ### 第 3.4 步（2026-09-27）
 
 - 做了什么：
-  - `src/shared/ui-labels.ts`：`ROLE_LABEL` 与 `roleLabel()`（认不出的写「其他角色」）、话术检查项 `SOP_CHECK_LABEL` / `SOP_CHECKS`（`Record<ViolationCode, string>`，少一项 typecheck 报错）、`AUDIT_ACTIONS`（17 种动作的中文、类别、lucide 图标名）与 `auditAction()`、`AUDIT_GROUPS`、`auditActionsParam(类别, 显示登录记录)`、非人操作者的「命令行」「系统」、启动重渲染原因的中文，以及 `ERROR_COPY` 整张表（连同形式、颜色、按钮，一条记录不拆开）和 `NETWORK_COPY`、`FALLBACK_COPY`、按钮文字。`console/src/parts/errors.ts` 只留按错误挑文案的逻辑，原来的导出名照旧转出去，调用处没改。
-  - `src/shared/format.ts`：`digits`、`money`（「42,800元」「13,800元/人」）、`quantity`；`relativeTime`（第 2.2 步的 `sinceText` 原样挪来，外壳的铃铛与 ⌘K 改用它）、`absoluteTime`（「9月26日 14:02」，跨年加年份）、`fullTime`（「2026-09-26 10:12:44」）、`dayTime`（时间线的「今天 13:40」）、`dayHeading`（K 页组标题「今天 · 9月26日 周六」的各段）、`dateText`、`weekday`、`dateWithWeekday`、`dayKey`；月份区间 `parseMonthRange`（与 schema 同一个 `peakMonths` 规则）、`monthSegments`、`monthRangeText`（「5–10月」「4–6、9–11月」「11月–次年4月」「全年」取 `yearRoundLabel`）、`monthRangeSpoken`（读屏「5月到10月」）。时间都按本机时区，浏览器里就是看的人的时区。
-  - `src/shared/audit-text.ts`：`describeAudit(entry | 一组, pack, lookups)` 返回操作者（`human` 为 false 时画方块图标）、句子各段（对象标 500）、`tail`（总览一行写完时的补充「的住宿档次、行程亮点」）、`summary`（K 页第二行「改了：住宿档次、行程亮点」）、整句、类别、图标、条数。实体名、字段名（diff 的顶层键按包里字段的顺序，`id` 是编号，嵌套字段取第一个子字段的标签）、话术节名都取自传进来的包；对象名依次取 diff 里的新名字、`lookups.itemName`、编号。另有 `auditRuns` 合并连续同类记录。
+  - `src/shared/ui-labels.ts`：`ROLE_LABEL` 与 `roleLabel()`（认不出的写「其他角色」）、话术检查项 `SOP_CHECK_LABEL` / `SOP_CHECKS`（`Record<ViolationCode, string>`，少一项 typecheck 报错）、`AUDIT_ACTIONS`（17 种动作的中文、类别、lucide 图标名）与 `auditAction()`、`auditGroups(pack)`（产品库那一类的名字取 `pack.nav.catalogGroup`，与侧栏分组名相同）、`auditActionsParam(类别, 显示登录记录)`、非人操作者的「命令行」「系统」、启动重渲染原因的中文，以及 `ERROR_COPY` 整张表（连同形式、颜色、按钮，一条记录不拆开）和 `NETWORK_COPY`、`FALLBACK_COPY`、按钮文字。`console/src/parts/errors.ts` 只留按错误挑文案的逻辑，原来的导出名照旧转出去，调用处没改。
+  - `src/shared/format.ts`：`digits`、`money`（「42,800元」「13,800元/人」）、`quantity`；`relativeTime`（第 2.2 步的 `sinceText` 原样挪来，外壳的铃铛与 ⌘K 改用它）、`absoluteTime`（「9月26日 14:02」，跨年加年份）、`fullTime`（「2026-09-26 10:12:44」）、`dayTime`（时间线的「今天 13:40」）、`dayHeading`（K 页组标题「今天 · 9月26日 周六」的各段）、`dateText`、`weekday`、`dateWithWeekday`、`dayKey`；月份区间 `parseMonthRange`（能不能解析与 schema 共用 `src/shared/season.ts` 的 `bestSeasonParses`，`catalog.ts` 的 refine 改调它，规则不变）、`monthSegments`、`monthRangeText`（「5–10月」「4–6、9–11月」「11月–次年4月」「全年」取 `yearRoundLabel`）、`monthRangeSpoken`（读屏「5月到10月」）。时间都按本机时区，浏览器里就是看的人的时区。
+  - `src/shared/audit-text.ts`：`describeAudit(entry | 一组, pack, lookups)` 返回操作者（`human` 为 false 时画方块图标）、句子各段（对象标 500）、`tail`（总览一行写完时的补充「的住宿档次、行程亮点」）、`summary`（K 页第二行「改了：住宿档次、行程亮点」）、整句、类别、图标、条数。实体名、字段名（diff 的顶层键按包里字段的顺序，`id` 是编号；嵌套对象比较 diff 里的 [原来, 现在]，只写真正变了的子字段，形状认不出才取第一个子字段的标签）、话术节名都取自传进来的包；对象名依次取 diff 里的新名字、`lookups.itemName`、编号。另有 `auditRuns` 合并连续同类记录。
   - `AuditQuery.actions` 按 spec 原文（正则、至多 32 个、与 `action` 同给 400）；`readAudit` 加一个数组参数 `action = any($1::text[])`，`listAudit` 与接口透传。
-  - console 一侧：`shell/model.ts` 删掉 `ROLE_LABEL`、`sinceText`，`PageHeader`、`UserMenu`、`Bell`、`CommandPalette` 改取 `src/shared`；话术页的 7 个检查项取 `SOP_CHECKS`；审计页的动作下拉取 `AUDIT_ACTIONS` 的键（整页第 14 步重做）。页面上的字一个没变。
+  - console 一侧：`shell/model.ts` 删掉 `ROLE_LABEL`、`sinceText`，`PageHeader`、`UserMenu`、`Bell`、`CommandPalette` 改取 `src/shared`；话术页的 7 个检查项取 `SOP_CHECKS`；审计页的动作下拉取 `AUDIT_ACTIONS` 的键（表按原来下拉的顺序排），操作者列的非人操作者取共用的 `ACTOR_KIND_LABEL`（整页第 14 步重做）。页面上的字只变了一处：没有名字的命令行操作者由「平台」改写「命令行」（设计系统 §11）。
 - 自测：
   - `src/shared/format.selftest.ts`（48 条）与 `src/shared/audit-text.selftest.ts`（42 条）串进 `pnpm test`，排在 `src/shared/typography.selftest.ts` 之后，CI 注释同步。时区钉成 `Asia/Shanghai`，并断言它真的生效（UTC 16:00 是次日 0 点），CI 跑在 UTC 下也测得出按本地日历算。月份区间把 1–12 月的 4,096 种组合都切一遍：段展开正好是原来的月份、段是最长的、按起始月排、跨年段至多一个。审计句子用设计系统 §10.0 的 8 条（合并后）逐字比对，再拿同样的记录换一个改了名字的包，句子跟着换；每种动作的句子里，对象与版本号以外没有英文；diff 是 null、字符串、数组、类型不对时不抛。审计句子的测试用文件里的包夹具：`src/shared` 只能 import `src/shared`（check-boundaries）。
   - `shell.selftest.ts` 的 11 条相对时间挪进 `format.selftest.ts`，另加一条：审计动作的图标名都在 lucide-react 1.48.0 的图标表里（143 → 133 条）。
@@ -422,14 +422,23 @@
   - 「全部」且显示登录记录时不带 `actions`，表里还没有的新动作也列得出来；其余组合只列表里的动作，所以新动作在补进 `AUDIT_ACTIONS` 之前只在这一种组合下出现。`console.selftest.ts` 的源码扫描保证现有的每种动作都在表里。
   - 连续同类记录只合并产品库的四种动作（spec 说「同一实体」，实体是行业包的实体）；`describeAudit` 收一组时写「新建了6条酒店草稿」这类句子。合并本是第 14 步的事，总览（第 4 步）的「最近变更」同样要写这句（设计系统 A 页第 2 行），所以放在这一步。
   - 句子里操作者后面留一个空格（设计系统 A、K 页的写法，操作者与对象用 500），中文与数字、邮箱之间不留。
-  - `AUDIT_ACTIONS` 里有 7 个图标不在设计系统 §7 的表里（`refresh-cw`、`log-in`、`user-plus`、`key-round`、`user-x`、`user-cog`、`user-minus`），§7 的表下补了一句。表外的动作用 `circle-dashed`（§7 的「没跑」）。
+  - `AUDIT_ACTIONS` 里有 8 个图标不在设计系统 §7 的表里（`refresh-cw`、`log-in`、`user-plus`、`key-round`、`user-x`、`user-cog`、`user-minus`、`building`），§7 的表下补了一句。审计动作的图标不取实体图标集合里的名字：建租户原用 `building-2`，它在集合里，改用 `building`。表外的动作用 `circle-dashed`（§7 的「没跑」）。
   - 审计页现在的动作下拉仍把动作编码当选项显示（不变量 7 的「动作编码」），第 14 步换成类别筛选时去掉，这一步没动页面。
+- 评审之后（同一分支，六条都改了）：
+  - 数据如实：`auditFieldLabels(entity, diff)` 改收整个 diff。只改了 `intensity.hardest` 时原来写「体力强度」（第一个子字段），现在写「最累的一段」；新加、删掉嵌套对象时写它里面有的子字段；认得出形状、包里的子字段却都没变（只换了键序，或包外的子键变了）时不点名，算进「另N项」。
+  - `toSorted` 不进 console 的包：Vite 8.3.1 默认构建目标含 Firefox 114，它没有 ES2023 的 `toSorted`。`format.ts`、`audit-text.ts` 改成在拷贝上 `sort`。`unicorn/no-array-sort` 原本会把 `sort` 报成警告（`--deny-warnings`），`.oxlintrc.json` 对 `console/src/**`、`src/shared/**`、`src/packs/*/console-pack.ts` 关掉它和 `no-array-reverse`，改用 `no-restricted-properties` 禁 `toSorted`、`toReversed`、`toSpliced`（自测照旧可用）。没有改 `build.target`。
+  - 月份区间与 schema 同进退：「13月」「0月」「99月」这类只写越界月份的，schema 按 01 的规则（`peakMonths` 至少一个）放行，原来的 `parseMonthRange` 却返回 null，第 3.1 步的 `checkItem` 用它就过不了验收 15。现在判定取同一个 `bestSeasonParses`，越界月份不画（`months` 为空，文字写「—」）。没有收紧 schema：那是 01 已实现的规则，也会改变服务端对现有数据的校验。
+  - `auditGroups(pack)` 取代写死「产品库」的 `AUDIT_GROUPS`；审计页下拉恢复原来的顺序；建租户的图标换成 `building`；审计页的操作者改用共用表。
+  - 自测：`format.selftest.ts` 48 → 51 条（schema 夹具、12 种写法与 schema 逐个对照、越界月份的文字）；`audit-text.selftest.ts` 42 → 46 条（只改一个子字段、新加删掉、键序与包外子键、「只改了最累的一段」的整句、换包后类别名跟着换）；`shell.selftest.ts` 133 → 134 条（审计动作的图标与 24 个实体图标不重名）。
+  - 变异（仓库外的隔离副本，10 例全部失败并点名，还原后与 worktree 逐字节相同）：嵌套字段总取第一个子字段、新加的对象认不出、包里子字段都没变时点名第一个、子路径多截一个字符、产品库类别写死、`parseMonthRange` 回到只认 1–12 月（第一轮在自测里的非空断言上崩了，改成空值安全的写法后按名字失败）、schema 收紧越界月份、只剩越界月份时写空串、建租户图标换回 `building-2`、`format.ts` 写回 `toSorted`（lint 点名）。
+  - preview 实测（Chromium，CSP 同线上，接口由 `page.route` 拦截，浅色、深色各一轮）：审计页下拉用方向键走完 17 项，与原来的顺序逐项相同；操作者列「小林 / 命令行 / 系统」；`securitypolicyviolation` 0 次，控制台错误 0 条。入口集合 gzip 316,692 → 316,716 B，换页最多仍是产品库 247,054 B。
 - 没有新增依赖。
 - 留给后面的步骤：
-  - 第 3.2 步：MonthStrip 用 `parseMonthRange` / `monthSegments` / `monthRangeText` / `monthRangeSpoken`，金额与带单位的整数用 `money` / `quantity`。
+  - 第 3.2 步：MonthStrip 用 `parseMonthRange` / `monthSegments` / `monthRangeText` / `monthRangeSpoken`，金额与带单位的整数用 `money` / `quantity`。`months` 可能为空（只写了越界月份），这时不画任何月份，文字写「—」。
+  - 第 3.1 步：`checkItem` 的「月份区间能解析」用 `parseMonthRange(text) !== null`，与 schema 同进退。
   - 第 4 步：「最近变更」请求 `auditActionsParam('all', false)`，`auditRuns` 合并后 `describeAudit(run, pack, lookups).text`，时间列 `dayTime` 与 `clockTime`；状态句的日期 `dateWithWeekday`。
   - 第 13 步：「最后动静」用 `relativeTime`，悬停 `absoluteTime`。
-  - 第 14 步：图标名到 lucide 组件的映射（名字在 `AUDIT_ACTIONS`）；`lookups.itemName` 从 `queries.ts` 的产品库缓存取；组标题 `dayHeading`，详情抽屉 `fullTime`、`money`；`sop.rollback` 的 `sameHashAsTarget` 提示仍按 spec 写在抽屉里。
+  - 第 14 步：类别筛选用 `auditGroups(pack)`；图标名到 lucide 组件的映射（名字在 `AUDIT_ACTIONS`）；`lookups.itemName` 从 `queries.ts` 的产品库缓存取；组标题 `dayHeading`，详情抽屉 `fullTime`、`money`；`sop.rollback` 的 `sameHashAsTarget` 提示仍按 spec 写在抽屉里。
 
 ## 交接记录
 

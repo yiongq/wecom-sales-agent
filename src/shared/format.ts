@@ -2,7 +2,7 @@
 // 前后端共用，不依赖 React，只用本机时区：浏览器里是看的人的时区，自测把 TZ 钉成 Asia/Shanghai。
 // 中文与数字之间不加空格（不变量 9，由 text-autospace 补）；日期与时刻之间、日期与星期之间留一个空格。
 // 全站不出现「¥」，金额写「42,800元」。
-import { peakMonths } from './season.js';
+import { bestSeasonParses, peakMonths } from './season.js';
 
 // ---------------- 数字与金额 ----------------
 
@@ -136,7 +136,7 @@ export interface MonthSegment {
   to: number;
 }
 
-/** 解析后的月份区间：「全年」，或具体月份（升序）连同连续段 */
+/** 解析后的月份区间：「全年」，或具体月份（升序，只含 1–12 月；写的全是越界月份时为空）连同连续段 */
 export type MonthRange = { kind: 'yearRound' } | { kind: 'months'; months: number[]; segments: MonthSegment[] };
 
 const next = (m: number): number => (m % 12) + 1;
@@ -147,7 +147,7 @@ export function monthSegments(months: Iterable<number>): MonthSegment[] {
   const set = new Set([...months].filter((m) => Number.isInteger(m) && m >= 1 && m <= 12));
   if (set.size === 12) return [{ from: 1, to: 12 }];
   const out: MonthSegment[] = [];
-  for (const from of [...set].toSorted((a, b) => a - b)) {
+  for (const from of [...set].sort((a, b) => a - b)) {
     if (set.has(prev(from))) continue;
     let to = from;
     while (set.has(next(to))) to = next(to);
@@ -157,13 +157,17 @@ export function monthSegments(months: Iterable<number>): MonthSegment[] {
 }
 
 /**
- * 按产品库 schema 同一个规则解析（src/shared/season.ts 的 peakMonths，含「全年」即全年）：
- * 「5月-10月」「11月-次年4月」「全年（不加价）」；写不出月份时是 null（上架前检查的「月份区间能解析」）
+ * 按产品库 schema 同一个判定解析（src/shared/season.ts 的 bestSeasonParses：含「全年」即全年，否则 peakMonths 至少写出一个月份）：
+ * 「5月-10月」「11月-次年4月」「全年（不加价）」。判定不过时是 null，这就是上架前检查的「月份区间能解析」，与 schema 的
+ * safeParse 同进退（验收 15）。months 只留 1–12 月：「13月」这类写法 schema 放行（01 的规则），但画不出来，months 为空，
+ * 文字写「—」
  */
 export function parseMonthRange(text: string): MonthRange | null {
+  if (!bestSeasonParses(text)) return null;
   if (text.includes('全年')) return { kind: 'yearRound' };
-  const months = [...peakMonths(text)].filter((m) => m >= 1 && m <= 12).toSorted((a, b) => a - b);
-  return months.length ? { kind: 'months', months, segments: monthSegments(months) } : null;
+  // 在拷贝上排序，不用 toSorted：console 打包的代码要能在 Vite 默认构建目标（含 Firefox 114）里跑
+  const months = [...peakMonths(text)].filter((m) => m >= 1 && m <= 12).sort((a, b) => a - b);
+  return { kind: 'months', months, segments: monthSegments(months) };
 }
 
 /**
@@ -172,6 +176,7 @@ export function parseMonthRange(text: string): MonthRange | null {
  */
 export function monthRangeText(range: MonthRange, yearRoundLabel = '全年'): string {
   if (range.kind === 'yearRound') return yearRoundLabel;
+  if (!range.segments.length) return '—';
   const plain = range.segments.filter((s) => s.to >= s.from).map((s) => (s.from === s.to ? `${s.from}` : `${s.from}–${s.to}`));
   const wraps = range.segments.filter((s) => s.to < s.from).map((s) => `${s.from}月–次年${s.to}月`);
   return [...(plain.length ? [`${plain.join('、')}月`] : []), ...wraps].join('、');
@@ -180,5 +185,6 @@ export function monthRangeText(range: MonthRange, yearRoundLabel = '全年'): st
 /** 读屏用（MonthStrip 的 aria-label）：「5月到10月」「4月到6月、9月到11月」「11月到次年4月」「7月」 */
 export function monthRangeSpoken(range: MonthRange, yearRoundLabel = '全年'): string {
   if (range.kind === 'yearRound') return yearRoundLabel;
+  if (!range.segments.length) return '—';
   return range.segments.map((s) => (s.from === s.to ? `${s.from}月` : `${s.from}月到${s.to < s.from ? '次年' : ''}${s.to}月`)).join('、');
 }

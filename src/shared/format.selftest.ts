@@ -2,7 +2,8 @@
 // 1. 金额与带单位的整数：千分位，单位紧跟数字，不出现「¥」和空格；
 // 2. 时间：相对时间（从 shell/model.ts 挪来的那组）、绝对时间、完整时间、时间线的「今天 13:40」、按天分组的组标题；
 //    时区钉成 Asia/Shanghai，场景时刻取设计系统 §10.0 的 2026-09-26（周六）14:30；
-// 3. 月份区间：设计系统 §6.1 的几种写法；1–12 月的全部 4,096 种组合切段后能还原成原来的月份，段是最长的、按起始月排。
+// 3. 月份区间：设计系统 §6.1 的几种写法；能不能解析与产品库 schema 一致（上架前检查与 safeParse 同进退，含越界月份）；
+//    1–12 月的全部 4,096 种组合切段后能还原成原来的月份，段是最长的、按起始月排。
 // 用法：npx tsx src/shared/format.selftest.ts
 process.env.TZ = 'Asia/Shanghai';
 
@@ -25,6 +26,8 @@ import {
   relativeTime,
   weekday,
 } from './format.js';
+import { RouteSchema } from './catalog.js';
+import { SALES_SEGMENTS } from './catalog-types.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -145,6 +148,10 @@ const text = (s: string, label?: string): string | null => {
   const r = parseMonthRange(s);
   return r ? monthRangeText(r, label) : null;
 };
+const spoken = (s: string): string | null => {
+  const r = parseMonthRange(s);
+  return r ? monthRangeSpoken(r) : null;
+};
 // 设计系统 §6.1：单段「5–10月」，多段「4–6、9–11月」，跨年「11月–次年4月」；「全年」写 yearRoundLabel
 eq('月份区间：单段', text('5月-10月'), '5–10月');
 eq(
@@ -158,6 +165,29 @@ eq('月份区间：一段加一段跨年', text('6-7月、12月-次年2月'), '6
 eq('月份区间：十二个月都在是一段 1–12', text('1月-12月'), '1–12月');
 eq('月份区间：「全年」写行业包配的文字，默认「全年」', [text('全年'), text('全年适游', '全年（不加价）')], ['全年', '全年（不加价）']);
 eq('月份区间：写不出月份是 null（上架前检查拦下）', [parseMonthRange('春秋两季'), parseMonthRange('')], [null, null]);
+// 上架前检查的「月份区间能解析」就是 parseMonthRange 不是 null：与产品库 schema 的 safeParse 同进退（验收 15），越界月份也一样
+const ROUTE_BASE = {
+  id: 'r-x',
+  title: '线路',
+  destination: '某地',
+  days: 1,
+  priceFrom: 1000,
+  hotelLevel: '四星',
+  highlights: ['亮点'],
+  tags: [],
+  segments: [SALES_SEGMENTS[0]],
+  itinerary: [{ day: 1, title: '第一天', detail: '行程', hotel: '酒店', meals: '早餐' }],
+  overseas: false,
+};
+check('月份区间：schema 夹具本身过得了', RouteSchema.safeParse({ ...ROUTE_BASE, bestSeason: '5月-10月' }).success);
+const seasons = ['5月-10月', '11月-次年4月', '全年', '全年适游', '春秋两季', '', '13月', '0月', '99月', '0月-3月', '12月-13月', '3-5'];
+const disagree = seasons.filter((s) => RouteSchema.safeParse({ ...ROUTE_BASE, bestSeason: s }).success !== (parseMonthRange(s) !== null));
+check('月份区间：能不能解析与 schema 一致（含越界月份）', disagree.length === 0, disagree.join(' | '));
+eq(
+  '月份区间：越界月份不画，只剩越界月份时写「—」',
+  [text('13月'), text('0月'), text('0月-3月'), spoken('13月'), parseMonthRange('13月')],
+  ['—', '—', '1–3月', '—', { kind: 'months', months: [], segments: [] }],
+);
 eq('月份区间：解析结果', parseMonthRange('11月-次年4月'), {
   kind: 'months',
   months: [1, 2, 3, 4, 11, 12],

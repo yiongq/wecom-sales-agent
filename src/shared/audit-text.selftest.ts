@@ -9,7 +9,7 @@
 import { auditActor, auditFieldLabels, auditRuns, describeAudit, type AuditText } from './audit-text.js';
 import { AuditQuery, type AuditEntryView } from './console-api.js';
 import type { EntityType, FieldDef, IndustryPack } from './pack.js';
-import { AUDIT_ACTIONS, AUDIT_GROUPS, auditAction, auditActionsParam, roleLabel, SOP_CHECKS } from './ui-labels.js';
+import { AUDIT_ACTIONS, auditAction, auditActionsParam, auditGroups, roleLabel, SOP_CHECKS } from './ui-labels.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -215,13 +215,51 @@ eq(
 );
 eq('换一个包：合并的那一句用包里没有的实体时，写包的「产品」叫法', line(describeAudit(runs[1]!, RENAMED)), '小林 新建了6条商品草稿');
 const route = TRAVEL.entities[0]!;
+/** diff 里的一项：[原来, 现在] */
+const pair = (was: unknown, now: unknown): [unknown, unknown] => [was, now];
+const hard = (level: string, hardest: string) => ({ level, hardest });
 eq(
-  '字段名：id 是编号，嵌套字段取第一个子字段的标签，包里没有的合成「另N项」，按包里的顺序',
-  auditFieldLabels(route, ['nope', 'highlights', 'intensity', 'id', 'zzz']),
+  '字段名：id 是编号，嵌套字段形状认不出时取第一个子字段的标签，包里没有的合成「另N项」，按包里的顺序',
+  auditFieldLabels(route, { nope: pair(1, 2), highlights: pair([], ['a']), intensity: '坏了', id: pair('a', 'b'), zzz: null }),
   ['线路编号', '体力强度', '行程亮点', '另2项'],
 );
-eq('字段名：同一个字段不重复', auditFieldLabels(route, ['intensity', 'intensity']), ['体力强度']);
-eq('字段名：没有实体时全算「另N项」', auditFieldLabels(null, ['a', 'b']), ['另2项']);
+eq(
+  '字段名：嵌套字段只写真正变了的子字段',
+  [
+    auditFieldLabels(route, { intensity: pair(hard('适中', '第3天徒步4小时'), hard('适中', '第3天徒步5小时')) }),
+    auditFieldLabels(route, { intensity: pair(hard('适中', '第3天徒步4小时'), hard('较累', '第3天徒步4小时')) }),
+    auditFieldLabels(route, { intensity: pair(hard('适中', '甲'), hard('较累', '乙')), hotelLevel: pair('四星', '五星') }),
+  ],
+  [['最累的一段'], ['体力强度'], ['体力强度', '最累的一段', '住宿档次']],
+);
+eq(
+  '字段名：嵌套对象新加或删掉，写它里面有的子字段',
+  [
+    auditFieldLabels(route, { intensity: pair(null, hard('轻松', '没有长距离步行')) }),
+    auditFieldLabels(route, { intensity: pair({ hardest: '第2天' }, null) }),
+  ],
+  [['体力强度', '最累的一段'], ['最累的一段']],
+);
+eq(
+  '字段名：包里的子字段都没变（只换了键序、包外的子键变了）时不点名，算「另N项」',
+  [
+    auditFieldLabels(route, { intensity: pair(hard('适中', '甲'), { hardest: '甲', level: '适中' }) }),
+    auditFieldLabels(route, { intensity: pair({ ...hard('适中', '甲'), x: 1 }, { ...hard('适中', '甲'), x: 2 }) }),
+  ],
+  [['另1项'], ['另1项']],
+);
+eq('字段名：没有实体时全算「另N项」', auditFieldLabels(null, { a: pair(1, 2), b: pair(1, 2) }), ['另2项']);
+eq(
+  '句子：只改了「最累的一段」，不写「体力强度」',
+  twoLines(
+    describeAudit(
+      { ...update, diff: { intensity: pair(hard('适中', '第3天徒步4小时'), hard('适中', '第3天徒步5小时')) } },
+      TRAVEL,
+      lookups,
+    ),
+  ),
+  [`小林 修改了线路「${SICHUAN}」`, '改了：最累的一段'],
+);
 eq(
   '话术节：前言写「前言」，认不出的节合成「另N节」',
   line(describeAudit({ ...publish, diff: { versionNo: 3, changedKeys: ['preamble', 'tone', 'ghost'] } }, TRAVEL)),
@@ -402,11 +440,16 @@ eq(
 // ---------------- 3. ui-labels ----------------
 
 const parsed = (actions: string | undefined) => AuditQuery.safeParse(actions === undefined ? {} : { actions });
-const groups = AUDIT_GROUPS.map((g) => g.key);
+const groups = auditGroups(TRAVEL).map((g) => g.key);
 eq(
   '审计类别：全部 / 销售话术 / 产品库 / 账号与登录 / 平台与配置',
-  AUDIT_GROUPS.map((g) => g.label),
+  auditGroups(TRAVEL).map((g) => g.label),
   ['全部', '销售话术', '产品库', '账号与登录', '平台与配置'],
+);
+eq(
+  '审计类别：产品库那一类的名字跟着行业包的侧栏分组名',
+  auditGroups({ nav: { catalogGroup: '套餐与主材', entities: [] } }).map((g) => g.label),
+  ['全部', '销售话术', '套餐与主材', '账号与登录', '平台与配置'],
 );
 check(
   '审计类别：每个动作都属于一个类别',
