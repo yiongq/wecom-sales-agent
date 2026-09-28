@@ -202,7 +202,8 @@ const arrayValued = (f: FieldDef): boolean =>
  */
 export function blankPayload(entity: EntityType): Payload {
   let out: Payload = {};
-  for (const f of entity.fields) if (f.required !== false && !f.showWhen && arrayValued(f)) out = writeValue(out, f, []);
+  // 选填的不用挑出来：writeValue 不给选填字段留空数组（01 的 schema 要求它们出现时不为空）
+  for (const f of entity.fields) if (!f.showWhen && arrayValued(f)) out = writeValue(out, f, []);
   return out;
 }
 

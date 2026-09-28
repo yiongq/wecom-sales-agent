@@ -4372,6 +4372,17 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
     );
     eq(
+      '新建的空表单：showWhen 管着的数组字段不放（它随条件出现）',
+      blankPayload({
+        ...MATERIAL,
+        fields: [
+          ...MATERIAL.fields,
+          { key: 'extras', type: 'tags', label: '附加', group: 'basic', showWhen: { key: 'ecoGrade', filled: true } },
+        ],
+      }),
+      {},
+    );
+    eq(
       '一个标签都没有的新酒店：空表单里标签不报「没填」',
       checkItem(HOTEL, blankPayload(HOTEL)).required.some((i) => i.path === 'tags'),
       false,
@@ -4952,6 +4963,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     await pv.unmount();
     await ag.unmount();
+    const agDraft = await mountDetail('/catalog/route/r-guizhou-5d', agent(travel), {
+      items: { 'route/r-guizhou-5d': GUIZHOU_ITEM },
+      lists,
+    });
+    eq('非编辑成员打开草稿：页头没有「上架…」「更多」', agDraft.box.querySelectorAll('.page-actions').length, 0);
+    await agDraft.unmount();
   }
 
   // 11.6 新建：空表单不出保存条；编号的帮助按实体补；保存即建草稿（编号撞了报在编号下），建好以后换成它的详情

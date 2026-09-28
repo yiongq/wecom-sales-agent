@@ -1125,10 +1125,10 @@ export function CatalogDetail(props: CatalogDetailProps) {
   const onTouch = (places: readonly string[]): void =>
     setTouched((prev) => (places.every((p) => prev.has(p)) ? prev : new Set([...prev, ...places])));
 
-  // 页头右侧（§4.3）：「更多」在左，主按钮「上架…」在最右；只给能编辑的人、已有的条目
-  const more = canEdit && base && onCopy ? <MoreMenu onCopy={() => setCopying(true)} /> : null;
+  // 页头右侧（§4.3）：「更多」在左，主按钮「上架…」在最右；只给已有的条目，能不能编辑由页面决定给不给 onCopy、onActivate
+  const more = base && onCopy ? <MoreMenu onCopy={() => setCopying(true)} /> : null;
   const activateButton =
-    canEdit && base && ctx.status === 'draft' && onActivate ? (
+    base && ctx.status === 'draft' && onActivate ? (
       <PrimaryButton className="detail-activate" onClick={startActivate}>
         上架…
       </PrimaryButton>
