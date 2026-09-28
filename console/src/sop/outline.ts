@@ -80,6 +80,33 @@ export function memberOutline(input: MemberOutlineInput): OutlineRow[] {
   });
 }
 
+/** 一节相对线上的改动：before 是线上的正文，after 是草稿（含本地还没保存的改动，按保存时的规则规范化）的 */
+export interface SectionChange {
+  key: string;
+  name: string;
+  before: string;
+  after: string;
+}
+
+/**
+ * 相对线上改过的可编辑节（发布抽屉与「查看改动」的逐节改动），按节表的顺序；与目录的「改过」同一口径（memberOutline）
+ */
+export function changedSections(
+  spec: readonly SectionSpecView[],
+  published: readonly SopSectionText[],
+  current: readonly SopSectionText[],
+  edits: Readonly<Record<string, string>>,
+): SectionChange[] {
+  const out: SectionChange[] = [];
+  for (const [i, s] of spec.entries()) {
+    if (s.locked) continue;
+    const after = Object.hasOwn(edits, s.key) ? savedBody(spec, i, edits[s.key]!) : bodyOf(textOf(current, s.key), s);
+    const before = bodyOf(textOf(published, s.key), s);
+    if (after !== before) out.push({ key: s.key, name: s.heading ?? PREAMBLE_NAME, before, after });
+  }
+  return out;
+}
+
 /**
  * 本地改过、还没存进草稿的节（自动保存要发的）：编辑器里的原文按保存时的规则规范化以后，与草稿（没有草稿就是线上）
  * 这一节的正文不同。body 照原文发，服务端存的时候自己规范化。改回草稿里的样子（含只多了行尾空格）就不算；固定规则节不发
@@ -338,14 +365,14 @@ export function quotaModel(rows: readonly OutlineRow[], chars: number, limit: nu
 // ---------------- 状态句（spec「状态句」） ----------------
 
 /** 发布人没有名字（命令行导入、系统重渲染）时按来源写 */
-const SOURCE_VERB: Readonly<Record<SopVersion['source'], string>> = {
+export const SOURCE_VERB: Readonly<Record<SopVersion['source'], string>> = {
   import: '导入',
   console: '发布',
   rollback: '回滚',
   rerender: '系统更新',
 };
 
-type PublishedHead = Pick<SopVersion, 'versionNo' | 'publishedAt' | 'publishedByName' | 'source'>;
+export type PublishedHead = Pick<SopVersion, 'versionNo' | 'publishedAt' | 'publishedByName' | 'source'>;
 
 /**
  * 成员：「线上v2 · 老板发布于9月25日 18:30 · 草稿改了2节」；没有改动时最后一段是「没有未发布的改动」。

@@ -4,6 +4,7 @@
 // 只读与否、节名变了才重建编辑器；线上的正文与行业包的词汇变了只换对应的那一块，不重建（光标和撤销历史都在）。
 // 检查出的问题（第 6.2 步）：这一节正文里的波浪线与行内提醒经 problems 给（换了才派一次 setProblems，不重建）；
 // 点「改成…」替换以后回调 onChange，再回调 onFix（页面马上保存）。没有行内提醒的几类问题写在编辑卡片上方（notes）。
+// 说明行末尾的「查看本节改动」（第 6.3 步）：这一节相对线上改过时才有，由页面打开这一节的逐节改动。
 // 话术页每敲一个字整页重渲，这里没有弹层（Tooltip、下拉、Portal），逐字重渲不碰它们（第 5.1 步 #185 的教训）
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { Annotation, EditorState } from '@codemirror/state';
@@ -12,7 +13,7 @@ import { CircleAlert, Lock } from 'lucide-react';
 import { type Ref, useEffect, useId, useRef } from 'react';
 import { cspNonce } from '../csp.js';
 import { Icon } from '../shell/icons.js';
-import { cjk } from '../typography.js';
+import { cjk, Sep } from '../typography.js';
 import {
   CM_PHRASES,
   problemFix,
@@ -142,6 +143,7 @@ export function SectionPane({
   frozen = false,
   notes,
   notesRef,
+  onViewDiff,
   ...editor
 }: Omit<SopEditorProps, 'name' | 'readOnly'> & {
   row: OutlineRow;
@@ -149,6 +151,8 @@ export function SectionPane({
   frozen?: boolean;
   notes?: readonly string[];
   notesRef?: Ref<HTMLUListElement>;
+  /** 说明行末尾的「查看本节改动」（这一节相对线上改过时才有）：打开这一节的逐节改动 */
+  onViewDiff?: (key: string, trigger: HTMLElement) => void;
 }) {
   const titleId = useId();
   const meta = row.locked ? null : sectionMeta(row, who);
@@ -163,7 +167,19 @@ export function SectionPane({
           <span>{cjk(lockLine(row))}</span>
         </p>
       ) : (
-        meta && <p className="sop-pane-meta">{cjk(meta)}</p>
+        meta && (
+          <p className="sop-pane-meta">
+            {cjk(meta)}
+            {onViewDiff && row.changed && (
+              <>
+                <Sep />
+                <button type="button" className="sop-text-btn" onClick={(e) => onViewDiff(row.key, e.currentTarget)}>
+                  查看本节改动
+                </button>
+              </>
+            )}
+          </p>
+        )
       )}
       {notes && notes.length > 0 && (
         <ul ref={notesRef} className="sop-notes" aria-label="这一节的问题">

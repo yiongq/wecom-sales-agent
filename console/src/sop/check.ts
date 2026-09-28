@@ -11,9 +11,11 @@ export interface DraftCheckState {
   at: number | null;
   /** 最近一次没跑成；跑成了就清掉 */
   error: unknown;
+  /** 最后发出的那一个还在路上（发布抽屉等它回来才让发布） */
+  running: boolean;
 }
 
-const EMPTY: DraftCheckState = { result: null, at: null, error: null };
+const EMPTY: DraftCheckState = { result: null, at: null, error: null, running: false };
 
 export interface DraftCheckInput {
   /** 能编辑的成员才检查（检查接口只给他们） */
@@ -25,39 +27,46 @@ export interface DraftCheckInput {
 }
 
 export function useDraftCheck(input: DraftCheckInput): DraftCheckState & { retry(): void } {
-  const [state, setState] = useState<DraftCheckState>(EMPTY);
+  const { enabled, key } = input;
+  /** 要检查的那份草稿；没有（没有草稿、不能编辑）是 null */
+  const active = enabled ? key : null;
+  const [state, setState] = useState<DraftCheckState>(() => (active === null ? EMPTY : { ...EMPTY, running: true }));
   const latest = useRef(input);
   useEffect(() => {
     latest.current = input;
   });
   /** 发出去的第几个；回来时不是最后一个就不认 */
   const seq = useRef(0);
-  const run = useCallback((): void => {
+  /** 发一个检查；running 由调用方先置上 */
+  const issue = useCallback((): void => {
     seq.current += 1;
     const n = seq.current;
     latest.current.post().then(
       (result) => {
-        if (n === seq.current) setState({ result, at: latest.current.now(), error: null });
+        if (n === seq.current) setState({ result, at: latest.current.now(), error: null, running: false });
       },
       (error: unknown) => {
-        if (n === seq.current) setState((s) => ({ ...s, error }));
+        if (n === seq.current) setState((s) => ({ ...s, error, running: false }));
       },
     );
   }, []);
+  const retry = useCallback((): void => {
+    setState((s) => (s.running ? s : { ...s, running: true }));
+    issue();
+  }, [issue]);
 
-  const { enabled, key } = input;
-  const active = enabled && key !== null;
-  // 没有草稿了（发布、丢弃以后）：上一份草稿的结果清掉，之后新建的草稿不会先显示它。在渲染时按上一次渲染的值调整
-  const [wasActive, setWasActive] = useState(active);
-  if (active !== wasActive) {
-    setWasActive(active);
-    if (!active) setState(EMPTY);
+  // 草稿变了：在渲染时按上一次渲染的值调整。没有草稿了（发布、丢弃以后）：上一份草稿的结果清掉，之后新建的草稿不会先显示它；
+  // 换了一份：结果先留着，记上正在检查（下面的 effect 发出去）
+  const [was, setWas] = useState(active);
+  if (active !== was) {
+    setWas(active);
+    setState((s) => (active === null ? EMPTY : s.running ? s : { ...s, running: true }));
   }
   useEffect(() => {
-    if (enabled && key !== null) run();
+    if (active !== null) issue();
     // 还在路上的不认
     else seq.current += 1;
-  }, [enabled, key, run]);
+  }, [active, issue]);
   // 卸下以后回来的都不认
   useEffect(
     () => () => {
@@ -65,7 +74,7 @@ export function useDraftCheck(input: DraftCheckInput): DraftCheckState & { retry
     },
     [],
   );
-  return { ...state, retry: run };
+  return { ...state, retry };
 }
 
 /** 存下来的草稿与线上版本（useDraftCheck 的 key） */
