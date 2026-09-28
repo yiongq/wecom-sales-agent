@@ -119,6 +119,9 @@ jobs:
       # - console/src/conversations/conversations.selftest.tsx：会话列表。页签与阶段条取同一次 counts、表格按 waiting_first 排、
       #   筛选与页码写进地址；admin.html 的 #s=<id> 深链在没登录时弹登录框、登录后仍然选中。错了不报错，只会让页签和徽标的数
       #   对不上，或者点了「打开工作台」却选不中那个会话。
+      # - console/src/audit/audit.selftest.tsx：审计日志。类别与「显示登录记录」换算成的 actions、写进地址；按页取时一次导入的几条
+      #   不被页边截断；按天分组与合并的句子、详情抽屉的改动表（字段名取行业包、金额、有序子项逐项、行内差异）。错了不报错，
+      #   只会让一句话把导入的条数写错、改动表对不上字段，或者动作编码露到页面上。
       # - scripts/check-console-src.selftest.ts：lint 里 check-console-src.ts 的夹具，每条不变量造几处违规，确认都点得出位置。
       # - LLM_MOCK=1 eval/run.ts：回归评测（mock 模式，秒级），改 SOP/提示词/护栏后自动回归，防止话术悄悄退化。
       #   文件模式、DB 模式（PGlite）各跑一遍。真实模型评测要花钱，不进 CI。
