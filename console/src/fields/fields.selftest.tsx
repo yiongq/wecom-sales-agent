@@ -3394,6 +3394,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [true, ['hotelLevel'], '有1处改动'],
     );
     eq('缓存里这一条换成返回的（rev 2）', (e.qc.getQueryData(['catalog', 'route', 'r-sichuan-lux']) as { rev: number }).rev, 2);
+    const firstPatch = api.sent.findIndex((x) => x.method === 'PATCH');
+    await until(() => api.sent.slice(firstPatch).some((x) => x.method === 'GET' && x.url.endsWith('/api/console/catalog/route')));
+    check(
+      '存好以后线路列表失效、重新取（名称、更新时间、联想跟着变）',
+      api.sent.slice(firstPatch).some((x) => x.method === 'GET' && x.url.endsWith('/api/console/catalog/route')),
+    );
     await click(primary(e.box));
     await until(() => api.patches().length > 1);
     eq('再存一次：带上一次返回的 rev 2', api.patches()[1]?.body, { rev: 2, set: { hotelLevel: '奢华' } });
@@ -3557,6 +3563,47 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         texts(e.box, '.detail-issues .ant-alert-title'),
       ],
       [null, '当晚住宿：不能为空', ['有2处要改']],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
+  // 422 落到有序子项里：单字段的逐条列表写在那一条下面并连到输入框；多字段的一项本身（天号）写在序号下面
+  {
+    const api = fakeApi((s) =>
+      s.method === 'PATCH'
+        ? json(
+            {
+              error: 'invalid_item',
+              detail: '条目不合格',
+              issues: [
+                { path: 'highlights.1', message: '不能为空' },
+                { path: 'itinerary.2.day', message: '第3天的天号应为3' },
+              ],
+            },
+            422,
+          )
+        : undefined,
+    );
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await typeInto(e.box.querySelector('[data-field-key="intensity.hardest"] input'), `${hardestText}；返程日早起`);
+    await click(primary(e.box));
+    await until(() => e.box.querySelector('.detail-issues') !== null);
+    await settle();
+    const line = e.box.querySelector('[data-field-key="highlights"] [data-item-index="1"]');
+    const lineError = line?.querySelector('.field-error');
+    const day3 = e.box.querySelector('[data-field-key="itinerary"] [data-item-index="2"]');
+    eq(
+      '422：「第2条：不能为空」写在行程亮点第2条下面、读屏连到那个输入框；「第3天的天号应为3」写在第3天的序号下面',
+      [
+        lineError?.textContent,
+        !!lineError?.id && line?.querySelector('input')?.getAttribute('aria-describedby') === lineError.id,
+        line?.querySelector('input')?.getAttribute('aria-invalid'),
+        e.box.querySelectorAll('[data-field-key="highlights"] .field-error').length,
+        day3?.querySelector(':scope > .field-error')?.textContent,
+        texts(e.box, '.detail-issues .ant-alert-title'),
+      ],
+      ['第2条：不能为空', true, 'true', 1, '第3天的天号应为3', ['有2处要改']],
     );
     await e.unmount();
     api.restore();
