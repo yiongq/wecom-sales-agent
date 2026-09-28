@@ -140,7 +140,11 @@ export type ViolationCode =
 export interface ContractViolation {
   code: ViolationCode;
   sectionKey: string | null;
+  /** 服务端原文，只在「技术详情」里显示；界面上的说明由前端按 code、sectionKey、match 生成 */
   detail: string;
+  /** 后台 UX spec 新增：phrase_forbidden 是命中的短语或正则匹配文本；phrase_missing 是必需的那句原文（rule.text）；
+   *  unknown_tool / unknown_field 是标识符；其余 code 没有 */
+  match?: string;
 }
 
 export type SopStatus = 'draft' | 'published' | 'archived' | 'discarded';

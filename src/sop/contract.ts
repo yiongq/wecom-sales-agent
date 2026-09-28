@@ -116,8 +116,9 @@ export function checkSopContract(input: {
 }): ContractViolation[] {
   const spec = input.spec ?? TRAVEL_SOP_SECTIONS;
   const out: ContractViolation[] = [];
-  const add = (code: ViolationCode, sectionKey: string | null, detail: string): void => {
-    out.push({ code, sectionKey, detail });
+  // match 是前端在正文里查找、生成说明用的原文（后台 UX spec「检查」）：只有短语与标识符四类有，其余不带这个键
+  const add = (code: ViolationCode, sectionKey: string | null, detail: string, match?: string): void => {
+    out.push(match === undefined ? { code, sectionKey, detail } : { code, sectionKey, detail, match });
   };
 
   // 结构：节的顺序与节表一致，每节的标题、空行、正文、规范形都对
@@ -153,13 +154,14 @@ export function checkSopContract(input: {
   const holder = (hit: (text: string) => boolean): string | null => input.sections.find((x) => hit(x.text))?.key ?? null;
   for (const rule of SOP_CONTRACT) {
     if (rule.kind === 'include') {
-      if (!input.rendered.includes(rule.text)) add('phrase_missing', null, `缺少「${rule.text}」（${rule.from}）`);
+      if (!input.rendered.includes(rule.text)) add('phrase_missing', null, `缺少「${rule.text}」（${rule.from}）`, rule.text);
     } else if (rule.kind === 'exclude') {
       if (input.rendered.includes(rule.text))
         add(
           'phrase_forbidden',
           holder((t) => t.includes(rule.text)),
           `不能出现「${rule.text}」（${rule.from}）`,
+          rule.text,
         );
     } else {
       const m = rule.pattern.exec(input.rendered);
@@ -168,6 +170,7 @@ export function checkSopContract(input: {
           'phrase_forbidden',
           holder((t) => rule.pattern.test(t)),
           `不能出现「${m[0]}」（${rule.from}）`,
+          m[0],
         );
     }
   }
@@ -180,12 +183,12 @@ export function checkSopContract(input: {
     for (const [name] of section.text.matchAll(SNAKE)) {
       if (tools.has(name) || seen.has(name)) continue;
       seen.add(name);
-      add('unknown_tool', section.key, `「${name}」不是现有的工具名`);
+      add('unknown_tool', section.key, `「${name}」不是现有的工具名`, name);
     }
     for (const [name] of section.text.matchAll(CAMEL)) {
       if (fields.has(name) || seen.has(name)) continue;
       seen.add(name);
-      add('unknown_field', section.key, `「${name}」不是工具参数或结果里的字段`);
+      add('unknown_field', section.key, `「${name}」不是工具参数或结果里的字段`, name);
     }
   }
 
