@@ -1,7 +1,10 @@
 // 产品库表单的纯逻辑（不依赖 React 与 rjsf，console.selftest 直接 import）：表单值 → 要提交的 payload，以及与原条目的差异
-import { sameValue } from '../../src/shared/catalog.js';
+import { CATALOG_SCHEMAS, type CatalogKind, sameValue } from '../../src/shared/catalog.js';
 
 export type Payload = Record<string, unknown>;
+
+/** 01 旧抽屉和旧导入弹窗认得的 kind（有共用 schema 的）。别的行业包的实体（走查用的假包）等第 10、12 步 */
+export const legacyKind = (kind: string): kind is CatalogKind => Object.hasOwn(CATALOG_SCHEMAS, kind);
 
 const isEmpty = (v: unknown): boolean =>
   Array.isArray(v) ? v.length === 0 : !!v && typeof v === 'object' && Object.values(v).every((x) => x === undefined);

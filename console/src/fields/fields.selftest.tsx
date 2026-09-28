@@ -19,7 +19,8 @@
 //    核对行业包里没有的 kind、匿名、非编辑成员、从来没有过、加载与出错时页头的样子。
 // 9. 产品库详情（plan 第 10.1 步，spec「产品库详情与编辑」）：锁定组的计数与在哪张卡片头声明（每组只说一次）、状态句、
 //    上架前检查每项的写法与指向的字段、「已改」与撤销；再挂整页（路由、查询缓存）：已上架、草稿、没有编辑权限、匿名、
-//    新建、假包、不存在、加载与出错，点锁定组、点检查项、撤销一处、有改动时离开被拦下。
+//    新建、假包、不存在、加载与出错，点锁定组、点检查项、撤销一处、有改动时离开被拦下、金额的单位跟着计价单位变；
+//    第 10.2 步之前的过渡：「在旧表单里改」带着改动打开旧抽屉，按打开时的 rev 保存，存好以后按新内容重新打开。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/fields/fields.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -2646,6 +2647,12 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     ],
   );
   check('能编辑的人有「建议在电脑上编辑」（窄屏才显示，CSS 管）', e.box.querySelectorAll('.detail-narrow-hint').length === 1);
+  eq('过渡：旧抽屉认得的线路，页头有「在旧表单里改」', texts(e.box, '.page-actions button'), ['在旧表单里改']);
+  eq(
+    '状态卡的说明：已上架、能编辑时写「其余内容可以直接改」（保存条到之前不写「保存后立即生效」）',
+    e.box.querySelector('.detail-side .status-note')?.textContent,
+    '其余内容可以直接改',
+  );
   // 点锁定组那一行：焦点落在声明它的卡片头
   await click(all(e.box, '.lock-row').find((b) => b.textContent?.includes('条款')));
   eq('点「条款」那一行：焦点在「费用包含与不含」的卡片头', document.activeElement?.textContent, '费用包含与不含');
@@ -2700,6 +2707,62 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
   await e.unmount();
 
+  // 过渡（第 10.2 步删）：「在旧表单里改」带着这一页没保存的改动打开 01 的旧抽屉，按打开这一页时的 rev 保存；
+  // 存好以后详情页按新内容重新打开，没有「已改」
+  {
+    const edited = `${hardestText}；返程日早起`;
+    const saved = { ...SICHUAN_ITEM, rev: 2, payload: { ...SICHUAN, intensity: { ...(SICHUAN.intensity as Payload), hardest: edited } } };
+    const sent: { method: string; url: string; body: unknown }[] = [];
+    const realFetch = globalThis.fetch;
+    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      sent.push({
+        method: (init?.method ?? 'GET').toUpperCase(),
+        url,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+      });
+      if (url.endsWith('/catalog/route/r-sichuan-lux')) return Promise.resolve(json(saved));
+      return Promise.resolve(json({ items: url.endsWith('/catalog/route') ? ROUTE_ROWS : HOTEL_ROWS }));
+    };
+    /** 等到 ok()：旧抽屉按需下载，保存后要等请求和重取 */
+    const until = async (ok: () => boolean) => {
+      for (let i = 0; i < 300 && !ok(); i++) {
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 20));
+        });
+      }
+    };
+    const lg = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    const hardestIn = () => lg.box.querySelector<HTMLInputElement>('[data-field-key="intensity.hardest"] input');
+    await typeInto(hardestIn(), edited);
+    await click(lg.box.querySelector('.detail-legacy-edit'));
+    await until(() => document.querySelector('.ant-drawer form') !== null);
+    const drawer = document.querySelector<HTMLElement>('.ant-drawer');
+    eq(
+      '「在旧表单里改」：旧抽屉打开这一条，表单里带着这一页没保存的改动',
+      [
+        drawer?.querySelector('.ant-drawer-title')?.textContent,
+        all<HTMLInputElement>(drawer ?? document, 'input').some((i) => i.value === edited),
+      ],
+      ['线路 r-sichuan-lux', true],
+    );
+    await click(drawer?.querySelector('button[type="submit"]'));
+    await until(() => sent.some((x) => x.method === 'PATCH') && document.querySelector('.ant-drawer-open') === null);
+    await until(() => lg.box.querySelectorAll('.field.is-changed').length === 0);
+    eq('在旧抽屉里保存：PATCH 带打开这一页时的 rev，只提交改了的顶层字段', sent.find((x) => x.method === 'PATCH')?.body, {
+      rev: 1,
+      set: { intensity: saved.payload.intensity },
+    });
+    eq(
+      '存好以后：抽屉关上，详情页按新内容重新打开，没有「已改」',
+      [document.querySelectorAll('.ant-drawer-open').length, hardestIn()?.value, lg.box.querySelectorAll('.field.is-changed').length],
+      [0, edited, 0],
+    );
+    await lg.unmount();
+    globalThis.fetch = realFetch;
+  }
+
   // F、G 页：草稿
   const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
   eq(
@@ -2721,6 +2784,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     '上架前检查：必须项13/13、建议1条没做；必须项全过时一行，建议项注「不拦上架」',
     [d.box.querySelector('.check-list-summary')?.textContent, checkRows(d.box)],
     ['必须项13/13·建议1条没做', ['必须项都填好了13/13', '体力强度没填不拦上架']],
+  );
+  eq(
+    '副栏三张卡的标题同级（h2），读屏不把「上架前检查」放到「状态」下面',
+    all(d.box, '.detail-side h2, .detail-side h3, .detail-side h4').map((h) => `${h.tagName}${h.textContent}`),
+    ['H2状态', 'H2上架前检查', 'H2最近更新'],
   );
   const title = d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
   await typeInto(title, '');
@@ -2765,6 +2833,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     ],
     [0, 0, [], `小林更新于${sichuanAt}`, 1, 0, '销售助手会向客户推荐它', 0],
   );
+  eq('非编辑成员没有「在旧表单里改」', a.box.querySelectorAll('.detail-legacy-edit').length, 0);
   eq(
     '非编辑成员看基本信息：两列（4 列只给整卡锁定）',
     card(a.box, 'basic').querySelector('.field-grid')?.className,
@@ -2802,6 +2871,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   await typeInto(n.box.querySelector('[data-field-key="destination"] input'), '云南');
   eq('新建里填了字不标「已改」（没有可以撤回的原文）', n.box.querySelectorAll('.field.is-changed').length, 0);
+  eq('新建页没有「在旧表单里改」（列表的「新建」直接开旧抽屉）', n.box.querySelectorAll('.detail-legacy-edit').length, 0);
   await n.unmount();
   const na = await mountDetail('/catalog/new/route', agent(travel), { lists });
   eq(
@@ -2833,7 +2903,18 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     all(card(pk.box, 'terms'), 'a.field-ref-link').map((l) => l.getAttribute('href')),
     (NUANMU.materials as string[]).map((c) => `/catalog/material/${c}`),
   );
+  eq('假包没有「在旧表单里改」：旧抽屉不认得装修套餐', pk.box.querySelectorAll('.detail-legacy-edit').length, 0);
   await pk.unmount();
+  // 金额的单位取自另一个字段（unitFrom）：只改计价单位，单价的单位跟着变（字段按值记忆，它读的单位字段也算在里面）
+  const nm = await mountDetail('/catalog/new/material', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+  const priceUnitEl = nm.box.querySelector<HTMLElement>('[data-field-key="priceUnit"]');
+  const unitText = () => nm.box.querySelector('[data-field-key="unitPrice"] .field-unit')?.textContent;
+  const unit0 = unitText();
+  await click(priceUnitEl ? segment(priceUnitEl, '延米') : null);
+  const unit1 = unitText();
+  await click(priceUnitEl ? segment(priceUnitEl, '套') : null);
+  eq('新建主材：计价单位没选时单价写「元」，选「延米」「套」以后跟着变', [unit0, unit1, unitText()], ['元', '元/延米', '元/套']);
+  await nm.unmount();
   const nk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(travel), { lists });
   check('旅游包里没有 package：「没有这个页面」', texts(nk.box, '.state-empty-title').includes('没有这个页面'));
   await nk.unmount();

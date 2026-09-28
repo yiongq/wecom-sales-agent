@@ -21,22 +21,35 @@
   gap: 16px;
   min-width: 0;
 }
-/* 副栏卡片吸顶 top 24（§5.9）：页头这时已经缩成 52 高的吸顶条，从它下沿再往下 24 */
+/*
+ * 副栏卡片吸顶 top 24（§5.9）：页头这时已经缩成 52 高的吸顶条，从它下沿再往下 24。
+ * 副栏比滚动区高时（草稿的检查清单很长）自己滚，下沿离面板底 24：不然清单的末尾要等整页滚到底才露出来。
+ * 滚动区是面板（上下各留 8）：高 100dvh − 16；卡片的描边与阴影画在盒子外 1–2px，四周各让出 2 不被裁掉，所以吸顶 top 74
+ */
 .detail-side {
   position: sticky;
-  top: 76px;
+  top: 74px;
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  max-height: calc(100vh - 112px);
+  max-height: calc(100dvh - 112px);
+  margin: -2px;
+  padding: 2px;
+  overflow-y: auto;
 }
-/* 宽 <1280（侧栏收成图标栏或隐藏）：副栏落到主栏下方，不吸顶 */
+/* 宽 <1280（侧栏收成图标栏或隐藏）：副栏落到主栏下方，不吸顶，也不自己滚 */
 @media (max-width: 1279px) {
   .detail-layout {
     grid-template-columns: minmax(0, 736px);
   }
   .detail-side {
     position: static;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
   }
 }
 

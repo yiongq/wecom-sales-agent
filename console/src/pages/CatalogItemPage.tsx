@@ -1,17 +1,19 @@
 // 产品库的一条（/catalog/$kind/$code）与新建（/catalog/new/$kind），plan 第 10.1 步。kind 按当前租户的行业包取，
 // 包里没有的是「没有这个页面」；条目取 GET /catalog/:kind/:code（匿名得到线上快照里的那一条），各种状态照 spec 状态表：
 // 加载是两栏骨架；不存在写「没有这条{实体名}」加「回到{实体名}列表」；出错就地写「没取到」加重试。
-// 页面本身在 catalog/CatalogDetail.tsx；这里给它字段渲染器要的外部数据：引用候选、文字联想、引用名称的链接
-import { useQueries, useQuery } from '@tanstack/react-query';
+// 页面本身在 catalog/CatalogDetail.tsx；这里给它字段渲染器要的外部数据：引用候选、文字联想、引用名称的链接。
+// 第 10.2 步的保存条到之前，01 旧抽屉认得的实体由这里打开旧抽屉（带着详情页上的改动）保存、上架，按需下载
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
-import { type ReactNode, useState } from 'react';
+import { lazy, type ReactNode, Suspense, useState } from 'react';
 import { ERROR_COPY } from '../../../src/shared/ui-labels.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind, HttpError } from '../api.js';
+import { legacyKind } from '../catalogForm.js';
 import { Breadcrumb, CatalogDetail, type DetailItem, DetailSkeleton } from '../catalog/CatalogDetail.js';
 import { distinctValues, referencedKinds } from '../catalog/detail.js';
 import { type FieldEnv, FieldEnvContext } from '../fields/env.js';
-import { refItemsOf } from '../fields/model.js';
+import { type Payload, refItemsOf } from '../fields/model.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
 import { catalogItemQuery, catalogListQuery } from '../queries.js';
 import { useDocumentTitle } from '../shell/hooks.js';
@@ -19,6 +21,9 @@ import { documentTitle } from '../shell/model.js';
 import { PageHeader, shellViewerOf } from '../shell/PageHeader.js';
 import { NotFound } from '../shell/Shell.js';
 import { canEdit, usePack, useViewer } from '../viewer.js';
+import type { Row } from './CatalogDrawer.js';
+
+const CatalogDrawer = lazy(() => import('./CatalogDrawer.js').then((m) => ({ default: m.CatalogDrawer })));
 
 /**
  * 字段渲染器的外部数据：引用字段指向的实体取列表当候选（和列表页、侧栏共用缓存），本实体的列表给文字联想，
@@ -73,10 +78,16 @@ function ItemNotFound({ entity }: { entity: EntityType }) {
 
 function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: EntityType; code: string }) {
   const viewer = useViewer().data;
+  const qc = useQueryClient();
   const q = useQuery(catalogItemQuery(catalogKind(entity.kind), code));
   // 「今天10:12」、月份条的当前月：打开页面时取一次（走查钉住时钟）
   const [now] = useState(() => Date.now());
   const env = useDetailEnv(pack, entity, now);
+  // 过渡（第 10.2 步删）：旧抽屉开着时是交给它的表单内容和打开详情页时的条目；在旧抽屉里存好以后 reloads 加一，
+  // 详情页按新内容重新打开
+  const [legacyOpen, setLegacyOpen] = useState<{ draft: Payload; row: Row } | null>(null);
+  const [reloads, setReloads] = useState(0);
+  const legacy = legacyKind(entity.kind) ? entity.kind : null;
   if (q.error instanceof HttpError && q.error.status === 404) return <ItemNotFound entity={entity} />;
   if (q.error) {
     return (
@@ -94,13 +105,33 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
   return (
     <FieldEnvContext.Provider value={env}>
       <CatalogDetail
+        key={reloads}
         groupName={pack.nav.catalogGroup}
         entity={entity}
         item={q.data as unknown as DetailItem}
         canEdit={canEdit(viewer)}
         anon={viewer?.kind === 'anon'}
         now={now}
+        // opened 就是接口给的那一条（DetailItem 只写了详情页用到的字段），带着 kind 与 rev
+        onLegacyEdit={legacy === null ? undefined : (draft, opened) => setLegacyOpen({ draft, row: opened as unknown as Row })}
       />
+      <Suspense fallback={null}>
+        {legacyOpen && legacy !== null && (
+          <CatalogDrawer
+            kind={legacy}
+            label={entity.label}
+            row={legacyOpen.row}
+            draft={legacyOpen.draft}
+            editable={canEdit(viewer)}
+            onClose={() => setLegacyOpen(null)}
+            onSaved={async () => {
+              setLegacyOpen(null);
+              await qc.invalidateQueries({ queryKey: ['catalog', entity.kind] });
+              setReloads((n) => n + 1);
+            }}
+          />
+        )}
+      </Suspense>
     </FieldEnvContext.Provider>
   );
 }

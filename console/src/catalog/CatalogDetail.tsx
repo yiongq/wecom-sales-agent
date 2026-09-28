@@ -5,17 +5,18 @@
 // 锁定（§6.4）：已上架、可以编辑时，每个锁定组在它第一张整字段锁定的卡片头声明一次：Tag「上架后锁定 · 计价」，下一行写原因；
 // 草稿里上架后会锁的字段在标签后提醒；没有编辑权限（非编辑成员、匿名）全是只读文本，不挂锁。
 // 改过还没保存的字段标「已改」，可以「撤销这处」；有改动时站内跳转与关页都先确认（不变量 20）。保存条与提交是第 10.2 步，
-// 上架确认、复制为新草稿、「预览」页签与新建的保存是第 10.3 步。
+// 上架确认、复制为新草稿、「预览」页签与新建的保存是第 10.3 步。在那之前，01 旧抽屉认得的实体（有共用 schema 的）
+// 页头有「在旧表单里改」：带着这一页的改动打开旧抽屉，在那里保存、上架（页面给 onLegacyEdit 才有）。
 // 行业包只经 props 进来（/pack 的数据），这里不认具体行业：旅游包与假包走同一套代码。
 import { Link } from '@tanstack/react-router';
-import { Alert } from 'antd';
+import { Alert, Button } from 'antd';
 import { ChevronRight, Lock } from 'lucide-react';
 import { type ReactNode, type RefObject, useId, useMemo, useRef, useState } from 'react';
 import { absoluteTime } from '../../../src/shared/format.js';
 import { checkItem, type EntityType } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
 import { FieldGrid } from '../fields/FieldGrid.js';
-import { formState, type ItemContext, type Payload, submission } from '../fields/model.js';
+import { formState, type ItemContext, type Payload, pruneHidden, submission } from '../fields/model.js';
 import { type CheckItem, CheckList } from '../parts/CheckList.js';
 import { Status } from '../parts/Status.js';
 import { useUnsavedGuard } from '../parts/UnsavedGuard.js';
@@ -59,6 +60,12 @@ export interface CatalogDetailProps {
   anon: boolean;
   /** 当前时刻：「今天10:12」、月份条的当前月（走查钉住时钟） */
   now: number;
+  /**
+   * 第 10.2 步的保存条到之前的过渡：给了就在页头放「在旧表单里改」，点了交出这一页的表单内容（带着没保存的改动，
+   * showWhen 没显示的字段已剔除）和打开这一页时的条目（它的 rev：别人在这之后改过，旧抽屉保存时得到 409，
+   * 不会拿这一页的旧内容盖掉），由页面打开 01 的旧抽屉去保存、上架。只给打开的已有条目
+   */
+  onLegacyEdit?(draft: Payload, opened: DetailItem): void;
 }
 
 // ---------------- 页头 ----------------
@@ -123,7 +130,8 @@ interface CardProps {
   entity: EntityType;
   group: { key: string; label: string };
   state: Payload;
-  original: Payload;
+  /** 打开时的内容，「已改」与撤销的比较基准；新建时不给（没有可以撤回的原文，不标「已改」） */
+  original: Payload | undefined;
   ctx: ItemContext;
   onUpdate(fn: (s: Payload) => Payload): void;
 }
@@ -164,7 +172,7 @@ function GroupCard({ entity, group, state, original, ctx, onUpdate }: CardProps)
           onUpdate={onUpdate}
           lockNoteId={noteIds}
           declaredLocks={locks.map((l) => l.key)}
-          original={ctx.status === 'new' ? undefined : original}
+          original={original}
         />
       </div>
     </section>
@@ -175,14 +183,7 @@ function GroupCard({ entity, group, state, original, ctx, onUpdate }: CardProps)
 function GroupBlock({ entity, group, state, original, ctx, onUpdate }: CardProps) {
   return (
     <section className="detail-block" data-group={group.key} aria-label={group.label} tabIndex={-1}>
-      <FieldGrid
-        entity={entity}
-        group={group.key}
-        state={state}
-        ctx={ctx}
-        onUpdate={onUpdate}
-        original={ctx.status === 'new' ? undefined : original}
-      />
+      <FieldGrid entity={entity} group={group.key} state={state} ctx={ctx} onUpdate={onUpdate} original={original} />
     </section>
   );
 }
@@ -274,13 +275,8 @@ function StatusCard({
   const headline = lockPhrase(entity, ctx);
   const rows = headline ? lockRows(entity) : [];
   const active = ctx.status === 'active';
-  const note = !active
-    ? '还没上架，销售助手不会推荐它'
-    : !ctx.canEdit
-      ? '销售助手会向客户推荐它'
-      : headline
-        ? '其余内容可以直接改，保存后立即生效'
-        : '保存后立即生效';
+  // 「保存后立即生效」等第 10.2 步的保存条：在那之前这一页自己存不了
+  const note = !active ? '还没上架，销售助手不会推荐它' : ctx.canEdit && headline ? '其余内容可以直接改' : '销售助手会向客户推荐它';
   return (
     <SideCard title="状态" aside={status ? <Status kind={status} /> : undefined}>
       {headline ? <div className="status-headline">{cjk(headline)}</div> : null}
@@ -329,7 +325,13 @@ function CheckCard({ entity, state, onJump }: { entity: EntityType; state: Paylo
   ];
   return (
     <div className="detail-side-card detail-check">
-      <CheckList title="上架前检查" summary={cjk(summary)} meta={cjk(['改动后立即重算', '建议项不拦上架'])} items={items} />
+      <CheckList
+        title="上架前检查"
+        headingLevel={2}
+        summary={cjk(summary)}
+        meta={cjk(['改动后立即重算', '建议项不拦上架'])}
+        items={items}
+      />
     </div>
   );
 }
@@ -351,7 +353,7 @@ function UpdatedCard({ u, now }: { u: Updated; now: number }) {
 
 // ---------------- 整页 ----------------
 
-/** 两栏的主体：主栏的卡片与副栏。表单状态在这里，打开时的内容留作「已改」与撤销的比较基准 */
+/** 两栏的主体：主栏的卡片与副栏。表单状态由 CatalogDetail 给（页头的过渡按钮也要读它） */
 function DetailBody({
   entity,
   item,
@@ -359,6 +361,9 @@ function DetailBody({
   anon,
   now,
   mainRef,
+  original,
+  state,
+  setState,
 }: {
   entity: EntityType;
   item: DetailItem | null;
@@ -366,18 +371,21 @@ function DetailBody({
   anon: boolean;
   now: number;
   mainRef: RefObject<HTMLDivElement | null>;
+  /** 打开时的内容：「已改」与撤销的比较基准 */
+  original: Payload;
+  state: Payload;
+  setState(fn: (s: Payload) => Payload): void;
 }) {
-  // 打开时的内容：之后接口再取到新的（别人改过）也不换掉，免得冲掉正在改的（冲突在第 10.2 步按 rev 处理）
-  const [original] = useState<Payload>(() => item?.payload ?? {});
-  const [state, setState] = useState<Payload>(() => formState(original));
   const dirty = useMemo(() => {
     const p = submission(original, state, entity.fields);
     return Object.keys(p.set).length > 0 || p.unset.length > 0;
   }, [original, state, entity.fields]);
   const guard = useUnsavedGuard(ctx.canEdit && dirty);
   const updated = item ? updatedOf(item, now) : null;
+  // 新建没有原文：卡片和有序子项的区块都不标「已改」
+  const base = ctx.status === 'new' ? undefined : original;
   const card = (g: { key: string; label: string }) => {
-    const props: CardProps = { entity, group: g, state, original, ctx, onUpdate: setState };
+    const props: CardProps = { entity, group: g, state, original: base, ctx, onUpdate: setState };
     return blockOnly(entity, g.key) ? <GroupBlock key={g.key} {...props} /> : <GroupCard key={g.key} {...props} />;
   };
   return (
@@ -399,11 +407,21 @@ function DetailBody({
   );
 }
 
-export function CatalogDetail({ groupName, entity, item, canEdit, anon, now }: CatalogDetailProps) {
+export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onLegacyEdit }: CatalogDetailProps) {
   const mainRef = useRef<HTMLDivElement>(null);
   const ctx: ItemContext = { status: item ? (item.status ?? 'active') : 'new', canEdit };
   const title = item ? itemTitle(entity, item.payload, item.code) : `新建${entity.label}`;
   const updated = item ? updatedOf(item, now) : null;
+  // 打开时的条目与内容：之后接口再取到新的（别人改过）也不换掉，免得冲掉正在改的（冲突在第 10.2 步按 rev 处理）
+  const [opened] = useState(item);
+  const [original] = useState<Payload>(() => opened?.payload ?? {});
+  const [state, setState] = useState<Payload>(() => formState(original));
+  const legacy =
+    onLegacyEdit && opened && canEdit ? (
+      <Button className="detail-legacy-edit" onClick={() => onLegacyEdit(pruneHidden(state, entity.fields), opened)}>
+        在旧表单里改
+      </Button>
+    ) : undefined;
   return (
     <>
       <PageHeader
@@ -412,9 +430,20 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now }: C
         breadcrumb={<Breadcrumb group={groupName} entity={entity} current={title} />}
         titleStatus={item?.status ? <Status kind={item.status} /> : undefined}
         status={statusLine(lockPhrase(entity, ctx), updated, now)}
+        actions={legacy}
       />
       {canEdit ? <Alert className="detail-narrow-hint" type="info" showIcon title="建议在电脑上编辑" /> : null}
-      <DetailBody entity={entity} item={item} ctx={ctx} anon={anon} now={now} mainRef={mainRef} />
+      <DetailBody
+        entity={entity}
+        item={item}
+        ctx={ctx}
+        anon={anon}
+        now={now}
+        mainRef={mainRef}
+        original={original}
+        state={state}
+        setState={setState}
+      />
     </>
   );
 }

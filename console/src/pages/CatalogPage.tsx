@@ -2,7 +2,8 @@
 // 包里没有的 kind 是「没有这个页面」。页头：实体名；状态句「共21条 · 销售助手只推荐已上架的」；编辑角色有「新建{实体名}」，
 // csvImport 为 true 的实体另有「导入CSV」（不能导入的不渲染这个入口，也不放灰按钮）；非编辑成员和匿名都没有这两个入口。
 // 页签、工具条、表格与各种状态在 catalog/CatalogList.tsx，页签、搜索、筛选都写进地址（catalog/params.ts）。
-// 名称是链到详情页（/catalog/$kind/$code，第 10.1 步）的链接，任何行业包的实体都一样。
+// 名称是链到详情页（/catalog/$kind/$code，第 10.1 步）的链接，任何行业包的实体都一样；改已有的条目在详情页
+// （第 10.2 步的保存条之前，经它页头的「在旧表单里改」）。
 // 「新建」「导入CSV」暂时打开 01 的旧抽屉与导入弹窗，两者都按需下载、不进本页的块：只认共用 schema 里的 kind，
 // 第 10.3 步的新建页和第 12 步的导入弹窗按行业包渲染以后换掉（plan「Open」）
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -10,9 +11,9 @@ import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { Button } from 'antd';
 import { Plus } from 'lucide-react';
 import { lazy, type ReactNode, Suspense, useState } from 'react';
-import { CATALOG_SCHEMAS, type CatalogKind } from '../../../src/shared/catalog.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
+import { legacyKind } from '../catalogForm.js';
 import { CatalogList } from '../catalog/CatalogList.js';
 import { filterFields, listActions, listColumns, type ListRow, statusParts } from '../catalog/list.js';
 import type { CatalogSearch } from '../catalog/params.js';
@@ -27,9 +28,6 @@ import { canEdit, usePack, useViewer } from '../viewer.js';
 
 const CatalogDrawer = lazy(() => import('./CatalogDrawer.js').then((m) => ({ default: m.CatalogDrawer })));
 const CsvImport = lazy(() => import('./CsvImport.js').then((m) => ({ default: m.CsvImport })));
-
-/** 旧抽屉和旧导入弹窗认得的 kind（有共用 schema 的）。别的行业包的实体（走查用的假包）等第 10、12 步 */
-const legacyKind = (kind: string): kind is CatalogKind => Object.hasOwn(CATALOG_SCHEMAS, kind);
 
 /** 列表里引用列、引用筛选要的目标实体（写被引用条目的名称）；没有引用列时不多取 */
 function useRefItems(pack: IndustryPack, entity: EntityType, anon: boolean): (kind: string) => readonly RefItem[] | undefined {

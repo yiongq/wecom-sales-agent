@@ -2,8 +2,8 @@
 // active 条目的锁定字段只读并注明「有报价快照后开放」；保存时只把改过的顶层字段放进 set（删掉的可选字段进 unset）。
 // 「新建」生成 draft，「上架」要二次确认。匿名（demo）只看得到 active 条目，全部只读。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；表单有改动时拦下站内跳转。
-// 列表页（第 9 步）点名称、「新建」时打开它，按需下载（rjsf 不进产品库页的块）。只认 CATALOG_SCHEMAS 里的 kind；
-// 第 10 步的详情页（/catalog/$kind/$code、/catalog/new/$kind）按行业包的字段配置渲染，那时删掉本文件和 @rjsf/*
+// 列表页的「新建」、详情页（第 10.1 步）页头的「在旧表单里改」打开它，按需下载（rjsf 不进产品库页和详情页的块）。
+// 只认 CATALOG_SCHEMAS 里的 kind；详情页的保存条（第 10.2 步）与新建、上架（第 10.3 步）到了以后删掉本文件和 @rjsf/*
 import Form from '@rjsf/antd';
 import type { RJSFSchema, UiSchema } from '@rjsf/utils';
 import { Button, Drawer, Modal, Space, Typography } from 'antd';
@@ -82,6 +82,8 @@ export function CatalogDrawer(props: {
   /** 实体名（行业包给的，如「线路」） */
   label: string;
   row: Row | null;
+  /** 打开时表单里的内容（详情页上没保存的改动），和 row 比出改动；不给就是 row 的原文 */
+  draft?: Payload;
   editable: boolean;
   onClose: () => void;
   onSaved: (item: CatalogItem) => Promise<void>;
@@ -100,7 +102,9 @@ export function CatalogDrawer(props: {
   // 表单是受控的：rjsf 在任何 prop 变了时（比如保存中的 disabled）都按 formData 这个 prop 重建状态，
   // 不受控时没保存的改动会被冲回初值；「上架」也要据此知道有没有没保存的改动。换了条目或 rev（即表单的 key）就回到初值
   const formKey = `${row?.code ?? 'new'}-${row?.rev ?? 0}`;
-  const [edited, setEdited] = useState<{ key: string; data: Payload } | null>(null);
+  const [edited, setEdited] = useState<{ key: string; data: Payload } | null>(() =>
+    props.draft ? { key: formKey, data: props.draft } : null,
+  );
   const formData = edited?.key === formKey ? edited.data : initial;
   // 与打开时比：现有条目比库里的内容，新建比空表单（rjsf 挂载时会先回调一次预填的默认值，不算改动）
   const pending = diffPayload(formPayload(initial, required), formPayload(formData, required));

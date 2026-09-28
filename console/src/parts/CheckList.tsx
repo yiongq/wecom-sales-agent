@@ -59,13 +59,16 @@ export interface CheckListProps {
   /** 下一行，如「每次自动保存都会跑 · 上次14:05」 */
   meta?: ReactNode;
   items: readonly CheckItem[];
+  /** 标题的级别：默认 h3（话术页的发布抽屉里）；和别的卡片并列时给 2（详情页副栏的「状态」「最近更新」是 h2） */
+  headingLevel?: 2 | 3;
 }
 
-export function CheckList({ title, summary, meta, items }: CheckListProps) {
+export function CheckList({ title, summary, meta, items, headingLevel = 3 }: CheckListProps) {
+  const Heading = headingLevel === 2 ? 'h2' : 'h3';
   return (
     <section className="check-list" aria-label={title}>
       <div className="check-list-head">
-        <h3 className="check-list-title">{cjk(title)}</h3>
+        <Heading className="check-list-title">{cjk(title)}</Heading>
         {summary && <span className="check-list-summary">{typeof summary === 'string' ? cjk(summary) : summary}</span>}
       </div>
       {meta && <div className="check-list-meta">{typeof meta === 'string' ? cjk(meta) : meta}</div>}
