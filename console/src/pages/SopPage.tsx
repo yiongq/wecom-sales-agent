@@ -536,8 +536,8 @@ function MemberSop({
 
   // 草稿跟不上线上版本只提示一条：/sop 的 draft.stale 与检查的 rebase.needed 是服务端同一个条件（basedOn 不是线上版本），
   // 检查打开页面就跑，两条会一起出来。检查报了冲突的节时是出错色、写发布不了，不然是 info（检查回来之前、回滚以后
-  // 重查回来之前按 draft.stale）。发布被拒（422）时不看检查结果；发布撞上冲突（409）时由那一条说，这一条不出
-  const rebase = rejected ? undefined : check.result?.rebase;
+  // 重查回来之前按 draft.stale）。发布撞上冲突（409）时由那一条说，这一条不出；发布被拒（422）是合并以后的事，没有冲突的节
+  const rebase = check.result?.rebase;
   const rebaseConflicts = rebase?.needed ? rebase.conflicts : [];
   const rebaseNote = conflict ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || rebase?.needed ? 'merge' : null;
   const hasNotices = error !== null || rebaseNote !== null || !!rejected || !!conflict;

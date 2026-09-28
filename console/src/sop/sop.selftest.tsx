@@ -2364,6 +2364,8 @@ function fakeServer(start: SopOverview) {
     checks: (): number => calls.filter((c) => c.method === 'POST' && c.path === '/api/console/sop/draft/check').length,
     /** GET /sop 答 500（载入最新草稿失败） */
     getFails: false,
+    /** 发布答 409 sop_conflict（撞上的节与它们的线上正文） */
+    publishConflict: null as { keys: string[]; current: SopSectionText[] } | null,
     held: [] as { resolve(): void }[],
     nextRev: 10,
     puts: (): { basedOn: string; rev: number | null; edits: { key: string; body: string }[] }[] =>
@@ -2391,6 +2393,7 @@ function fakeServer(start: SopOverview) {
       return json(200, { ok: true });
     }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/publish') {
+      if (srv.publishConflict) return json(409, { error: 'sop_conflict', detail: '冲突', ...srv.publishConflict });
       const no = (srv.state.published.versionNo ?? 0) + 1;
       const v = version(no, srv.state.draft!.sections, { publishedAt: '2026-09-26T06:31:00Z' });
       srv.state = { ...srv.state, published: v, draft: null };
@@ -3951,6 +3954,27 @@ function recordScroll(): { calls: string[]; restore(): void } {
           : [MERGE],
       ],
     );
+    if (conflicts.length) {
+      // 照样去发布，撞上冲突（409）：由发布被拒的那一条说，检查的这一条不再重复
+      srv.publishConflict = { keys: ['tone'], current: P_ONLINE };
+      const modal = (): Element | undefined =>
+        all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === '发布草稿');
+      await waitFor(() => !headerButton(m, '发布')?.disabled);
+      await clickEv(headerButton(m, '发布'));
+      await until(() => !!modal()?.querySelector('textarea'));
+      const note = modal()!.querySelector<HTMLTextAreaElement>('textarea')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '改了话术原则');
+        note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+      });
+      await clickEv(all(modal()!, '.ant-modal-footer button').find((b) => label(b) === '发布'));
+      await waitFor(() => notices(m).some((n) => n.includes('发布被拒')));
+      eq(
+        '发布撞上冲突（409）：只有发布被拒的那一条',
+        notices(m).map((n) => n.split('——')[0]),
+        ['error：发布被拒：这几节在你编辑期间被别人改过'],
+      );
+    }
     await m.unmount();
   }
 }
