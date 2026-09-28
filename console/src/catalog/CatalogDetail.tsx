@@ -679,13 +679,16 @@ function DetailBody({
     const props: CardProps = { entity, group: g, state, original: base, ctx, onUpdate: setState, errors };
     return blockOnly(entity, g.key) ? <GroupBlock key={g.key} {...props} /> : <GroupCard key={g.key} {...props} />;
   };
-  /** 离开一个字段（焦点去了这个字段以外）：记下碰过的位置 */
+  /**
+   * 焦点离开一处：记下离开了的位置。焦点还在里面的不算（在多选片之间 Tab、在行程亮点里从第1条换到第2条，行程亮点还没离开，
+   * 第1条已经离开了）
+   */
   const onBlur = (e: FocusEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
-    const own = t.closest('[data-field-key]');
-    const to = e.relatedTarget as Node | null;
-    if (!own || (to && own.contains(to))) return;
-    onTouch(placesOf(t, e.currentTarget));
+    if (!t.closest('[data-field-key]')) return;
+    const to = e.relatedTarget as HTMLElement | null;
+    const still = to && e.currentTarget.contains(to) ? placesOf(to, e.currentTarget) : [];
+    onTouch(placesOf(t, e.currentTarget).filter((p) => !still.includes(p)));
   };
   const cls = ['detail-layout', anon && 'no-side', saveBar && 'has-save-bar'].filter(Boolean).join(' ');
   return (

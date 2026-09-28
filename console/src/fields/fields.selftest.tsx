@@ -3408,24 +3408,31 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       '存好以后线路列表失效、重新取（名称、更新时间、联想跟着变）',
       api.sent.slice(firstPatch).some((x) => x.method === 'GET' && x.url.endsWith('/api/console/catalog/route')),
     );
+    // 这次用 Tab 到主按钮再点：存好以后按钮随保存条消失，焦点回到最后待过的字段（住宿档次）
+    const levelIn = e.box.querySelector<HTMLInputElement>('[data-field-key="hotelLevel"] input');
+    await act(async () => levelIn?.focus());
+    await act(async () => primary(e.box)?.focus());
     await click(primary(e.box));
     await until(() => api.patches().length > 1);
     eq('再存一次：带上一次返回的 rev 2', api.patches()[1]?.body, { rev: 2, set: { hotelLevel: '奢华' } });
     await act(async () => release?.());
     await until(() => bar(e.box) === null);
+    await settle();
     eq(
-      '都存好：保存条消失，没有「已改」，读屏念「已保存」，没有 toast；焦点没有掉到 body',
+      '都存好：保存条消失，没有「已改」，读屏念「已保存」，没有 toast；焦点回到住宿档次',
       [
         bar(e.box) === null,
         e.box.querySelectorAll('.field.is-changed').length,
         e.box.querySelector('.save-live')?.textContent,
         document.querySelectorAll('.ant-message-notice').length,
-        document.activeElement === document.body,
+        document.activeElement === levelIn,
       ],
-      [true, 0, '已保存', 0, false],
+      [true, 0, '已保存', 0, true],
     );
     await typeInto(hardestIn, '再改');
     eq('再改一处：「已保存」清掉', e.box.querySelector('.save-live')?.textContent, '');
+    await click(e.box.querySelector('[data-field-key="intensity.hardest"] .field-undo'));
+    eq('撤销回到存好的内容：不再念「已保存」', [bar(e.box) === null, e.box.querySelector('.save-live')?.textContent], [true, '']);
     await e.unmount();
     api.restore();
   }
@@ -3496,6 +3503,40 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         api.patches().length,
       ],
       [['没认出月份：写成「5月-10月」「11月-次年4月」或「全年」'], ['有1处要改'], true, 0],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 失焦记的是离开了的位置：行程亮点里离开第1条就报第1条；在一个字段的几个控件之间换焦点，这个字段不算离开
+  {
+    const api = fakeApi(() => undefined);
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    const line = (i: number) => d.box.querySelector<HTMLInputElement>(`[data-field-key="highlights"] [data-item-index="${i}"] input`);
+    await act(async () => line(0)?.focus());
+    await typeInto(line(0), '');
+    await act(async () => line(1)?.focus());
+    const moved = texts(d.box, '[data-field-key="highlights"] .field-error');
+    await typeInto(line(1), '');
+    await act(async () => line(2)?.focus());
+    await act(async () => line(1)?.focus());
+    const back = texts(d.box, '[data-field-key="highlights"] .field-error');
+    eq(
+      '行程亮点里换一条：离开的那一条算碰过、报在它下面；回到第2条时它的报错不收',
+      [moved, back],
+      [['第1条：没填'], ['第1条：没填', '第2条：没填']],
+    );
+    // 多选片之间 Tab：焦点还在「适合客群」里，这个字段不算离开（清空了也先不报）
+    const chips = all<HTMLButtonElement>(d.box, '[data-field-key="segments"] button');
+    for (const c of chips.filter((b) => b.getAttribute('aria-pressed') === 'true')) await click(c);
+    await act(async () => chips[0]?.focus());
+    await act(async () => chips[1]?.focus());
+    const within = texts(d.box, '[data-field-key="segments"] .field-error');
+    await act(async () => d.box.querySelector<HTMLInputElement>('[data-field-key="hotelLevel"] input')?.focus());
+    eq(
+      '多选片之间换焦点不算离开适合客群；离开以后才报',
+      [within, texts(d.box, '[data-field-key="segments"] .field-error').length],
+      [[], 1],
     );
     await d.unmount();
     api.restore();
