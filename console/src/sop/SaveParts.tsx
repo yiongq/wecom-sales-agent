@@ -5,7 +5,7 @@
 // - LostEdits：载入最新草稿以后，没存上的节以只读对比的形式留着（左边最新草稿、右边你写的），可以选中复制；
 //   又一次 409 时接在后面，关掉之前不丢。
 import { Alert, Button } from 'antd';
-import { memo, useId } from 'react';
+import { memo, type Ref, useId } from 'react';
 import { clockTime } from '../../../src/shared/format.js';
 import { TechDetails } from '../parts/TechDetails.js';
 import { SectionDiff } from '../SectionDiff.js';
@@ -114,13 +114,22 @@ export interface LostSection {
 export const lostName = (items: readonly LostSection[], it: LostSection): string =>
   items.some((x) => x.key === it.key && x.nth !== it.nth) ? `${it.name}（第${it.nth}次没存上）` : it.name;
 
-export const LostEdits = memo(function LostEdits({ items, onClose }: { items: readonly LostSection[]; onClose: () => void }) {
+/** titleRef：标题可以由页面聚焦（载入最新草稿以后，读屏从这里念起），它不在 Tab 顺序里 */
+export const LostEdits = memo(function LostEdits({
+  items,
+  onClose,
+  titleRef,
+}: {
+  items: readonly LostSection[];
+  onClose: () => void;
+  titleRef?: Ref<HTMLHeadingElement>;
+}) {
   const titleId = useId();
   return (
     <section className="sop-card sop-lost" aria-labelledby={titleId}>
       <div className="sop-lost-head">
         <div>
-          <h2 id={titleId} className="sop-card-title">
+          <h2 id={titleId} ref={titleRef} tabIndex={-1} className="sop-card-title">
             {cjk('你没保存上的改动')}
           </h2>
           <p className="sop-lost-note">{cjk('只读，选中以后可以复制；关掉以后就找不回来了')}</p>

@@ -92,6 +92,12 @@ export function SopEditor(props: SopEditorProps) {
   return <div ref={host} className="sop-editor-host" />;
 }
 
+/** 容器里的编辑器正在用输入法组字（文档里是还没上屏的拼音）：自动保存这时不存 */
+export function composingIn(el: HTMLElement | null): boolean {
+  const content = el?.querySelector<HTMLElement>('.cm-content');
+  return !!content && !!EditorView.findFromDOM(content)?.composing;
+}
+
 /**
  * 中栏：节标题、说明行、编辑卡片。who：editor 能改（说明行以「可编辑」开头），reader 是只读的成员，anon 是匿名（可编辑节没有说明行）。
  * frozen：能改的人也暂时改不了（自动保存收到 409、停住的时候），说明行照旧

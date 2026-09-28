@@ -2,8 +2,8 @@
 // 状态句「线上v2 · 老板发布于9月25日 18:30 · 草稿改了2节」；额度条按服务端同一口径实时算（含还没保存的改动）；
 // 目录保持 prompt 的原顺序，分段筛选、锁与锁定原因、键盘，选中的节写进 URL 的 section；宽 <1280 时目录换成下拉。
 // 第 5.2 步做了中栏（sop/SopEditor.tsx）：节标题与说明行、固定规则节的只读说明、按 markdown 显示的编辑器（芯片、图标、改动标记）。
-// 第 5.3 步：自动保存（sop/autosave.ts：停止输入 1.5 秒后存、带 rev、失败退避重试、⌘S，409 停住并冻结编辑器，载入最新草稿以后
-// 没存上的节以对比形式留着），状态句末尾的保存状态；离开保护管到自动保存还没存上的内容；三栏的布局（右栏是检查清单与
+// 第 5.3 步：自动保存（sop/autosave.ts：停止输入 1.5 秒后存、带 rev、失败退避重试、⌘S，输入法组字时不存，409 停住并冻结编辑器，
+// 载入最新草稿以后没存上的节以对比形式留着），状态句末尾的保存状态；离开保护管到自动保存还没存上的内容；三栏的布局（右栏是检查清单与
 // 「话术里可以点名的工具」，1280–1439 时检查清单挪到目录下面，<1280 时落到编辑器下面，sop.css）。
 // 检查与发布（第 6 步）、版本记录（第 7 步）还是 01 的做法：页头右侧是检查、发布、丢弃，检查结果在右栏的清单里，
 // 逐节对比和版本历史在页面底部。
@@ -37,7 +37,7 @@ import { useViewport } from '../shell/hooks.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { type DraftEdit, useAutosave } from '../sop/autosave.js';
 import { Directory, DirectorySelect, type SelectVia } from '../sop/Directory.js';
-import { SectionPane, SopEditor } from '../sop/SopEditor.js';
+import { composingIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
 import {
   anonOutline,
   anonStatus,
@@ -304,6 +304,10 @@ function MemberSop({
   const [lost, setLost] = useState<Lost | null>(null);
   const [reloading, setReloading] = useState(false);
   const [reloadError, setReloadError] = useState<unknown>(null);
+  const editor = useRef<HTMLDivElement>(null);
+  /** 载入最新草稿、关掉对比以后焦点去哪（见下面的 effect） */
+  const refocus = useRef<'lost' | 'next' | null>(null);
+  const lostTitle = useRef<HTMLHeadingElement>(null);
 
   const originalBody = (k: string): string => {
     const s = spec.find((x) => x.key === k)!;
@@ -321,6 +325,7 @@ function MemberSop({
   const saver = useAutosave({
     enabled: editable,
     unsaved,
+    composing: () => composingIn(editor.current),
     base: { rev: draft?.rev ?? null, basedOn: draft?.basedOn ?? published.id },
     send: (list, base) => unwrap(api.sop.draft.$put({ json: { basedOn: base.basedOn, rev: base.rev, edits: list } })),
     onSaved: (v) => {
@@ -365,6 +370,7 @@ function MemberSop({
         return loaded.length ? { edits: [], loaded } : null;
       });
       saver.resume();
+      refocus.current = 'lost';
     } catch (e) {
       setReloadError(e);
     } finally {
@@ -372,7 +378,10 @@ function MemberSop({
     }
   };
   // 只关掉对比；409 停住时这一次没存上的节还要留着，载入以后照样变成对比
-  const closeLost = useCallback(() => setLost((prev) => (prev?.edits.length ? { ...prev, loaded: [] } : null)), []);
+  const closeLost = useCallback(() => {
+    refocus.current = 'next';
+    setLost((prev) => (prev?.edits.length ? { ...prev, loaded: [] } : null));
+  }, []);
 
   const runCheck = () =>
     run(async () => {
@@ -390,6 +399,8 @@ function MemberSop({
         setPublishing(false);
         setNote('');
         clearResults();
+        // 存上的那份草稿已经发布出去了：「已自动保存14:30」不再对应什么
+        saver.resume();
         await refresh();
       } catch (e) {
         setPublishing(false);
@@ -408,6 +419,7 @@ function MemberSop({
         setDiscarding(false);
       }
       clearResults();
+      saver.resume();
       toast('草稿已丢弃');
       await refresh();
     });
@@ -421,7 +433,6 @@ function MemberSop({
     edits,
     violations,
   });
-  const editor = useRef<HTMLDivElement>(null);
   const nav = useSectionNav(rows, editor);
   const tools = pack?.vocabulary.tools;
   const section = spec.find((s) => s.key === nav.section);
@@ -450,6 +461,17 @@ function MemberSop({
     el.scrollIntoView({ block: 'end' });
     if (typing) el.focus({ preventScroll: true });
   }, [frozen]);
+  // 载入最新草稿、关掉对比以后，按过的按钮随横幅、对比一起卸下，焦点掉到 body 上，读屏什么也不念：
+  // 载入以后有对比的，移到对比的标题上；没有对比、关掉对比以后回到编辑器，还冻着时回到横幅。焦点已经在别处（目录）的不抢
+  useEffect(() => {
+    const want = refocus.current;
+    if (want === null) return;
+    refocus.current = null;
+    if (document.activeElement !== document.body) return;
+    if (want === 'lost' && lostTitle.current) lostTitle.current.focus();
+    else if (frozen) conflictRef.current?.focus();
+    else focusEditorIn(editor.current);
+  });
   const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check?.rebase.needed || !!conflict;
 
   return (
@@ -496,7 +518,7 @@ function MemberSop({
           )}
           {reloadError !== null && <ErrorAlert error={reloadError} onRetry={() => void reloadLatest()} />}
           {/* 又一次 409 时上一批对比照样留着（这时编辑器冻着，这一批要载入以后才接上来） */}
-          {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} />}
+          {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} titleRef={lostTitle} />}
         </div>
       )}
       <QuotaBar model={quota} />

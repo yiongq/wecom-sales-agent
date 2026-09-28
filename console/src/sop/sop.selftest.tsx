@@ -49,6 +49,7 @@ import {
   AUTOSAVE_TIMING,
   type AutosaveTiming,
   AutosaveTimingContext,
+  COMPOSE_POLL,
   createAutosaver,
   isSaveShortcut,
   retryDelay,
@@ -1860,7 +1861,8 @@ eq(
 // 9.2 状态机：假的计时器驱动（防抖、同一时刻只有一个请求、退避、409 停住、不自动试的失败、恢复联网、卸下、改回原样）；
 // 9.3 整页：假服务端回 PUT /sop/draft。请求体里的 rev（有草稿、没草稿、接着存）、状态句最后一段、⌘S、断网与离开保护、
 //     409 冻结与载入最新草稿、格式不对、页头按钮、编辑中降成只读；接连几次 409 时对比不丢、横幅滚进视口与焦点；
-//     放弃改动并离开以后不再发；422 回来时防抖还在数不马上再发；
+//     放弃改动并离开以后不再发；422 回来时防抖还在数不马上再发；输入法组字；丢弃、发布以后的状态句；载入、关掉对比以后的焦点；
+//     匿名重取失败；
 // 9.4 三栏的格子：成员、只读成员、匿名、骨架、窄屏各有哪几格，检查清单挪进来了，工具卡片取行业包。
 
 const flushMicro = async (): Promise<void> => {
@@ -1985,6 +1987,7 @@ function machine() {
     statuses: [] as SaveStatus[],
     conflicts: 0,
     pending: true,
+    composing: false,
     outcome: (): Promise<void> => Promise.resolve(),
     last: (): string => {
       const s = h.statuses.at(-1);
@@ -1994,6 +1997,7 @@ function machine() {
   const m = createAutosaver({
     timing: () => ({ ...AUTOSAVE_TIMING, now: clock.now }),
     hasPending: () => h.pending,
+    composing: () => h.composing,
     send: () => {
       h.sends.push(clock.now());
       return h.outcome();
@@ -2196,6 +2200,102 @@ const fail = (e: unknown) => (): Promise<void> => Promise.reject(e);
   eq('卸下时路上的请求回来以后：不再接着存', h.sends, [1500]);
 }
 
+{
+  // 输入法组字（编辑器里是还没上屏的拼音）：计时到了、⌘S 都不存，每 1.5 秒再看一次；字上屏以后，下一次看的时候存
+  const { m, h } = machine();
+  h.composing = true;
+  m.edited();
+  await h.clock.advance(1500);
+  m.flush();
+  await flushMicro();
+  eq('组字时计时到了、按了 ⌘S：不存', h.sends, []);
+  await h.clock.advance(6000);
+  eq('一直在组字：一直不存，还在等', [h.sends, h.last(), h.clock.timers()], [[], 'none', 1]);
+  h.composing = false;
+  await h.clock.advance(1500);
+  eq('字上屏了（这之后没再打字）：下一次看的时候存', [h.sends, h.last()], [[9000], 'saved@9000']);
+}
+{
+  // 组字时到了自动重试、路上的请求回来要接着存：同样等字上屏
+  const { m, h } = machine();
+  h.outcome = fail(new TypeError('Failed to fetch'));
+  m.edited();
+  await h.clock.advance(1500);
+  h.composing = true;
+  await h.clock.advance(2000);
+  eq('组字时到了自动重试：不发', h.sends, [1500]);
+  h.composing = false;
+  h.outcome = () => Promise.resolve();
+  await h.clock.advance(1500);
+  eq('字上屏以后：重试照常发出去', [h.sends, h.last()], [[1500, 5000], 'saved@5000']);
+  const held = deferred<void>();
+  h.outcome = () => held.promise;
+  m.edited();
+  await h.clock.advance(1500);
+  m.flush();
+  h.composing = true;
+  h.outcome = () => Promise.resolve();
+  held.resolve();
+  await flushMicro();
+  eq('路上的请求回来时在组字：不接着存', h.sends, [1500, 5000, 6500]);
+  h.composing = false;
+  await h.clock.advance(1500);
+  eq('字上屏以后：接着存', h.sends, [1500, 5000, 6500, 8000]);
+}
+{
+  // 409 在组字时回来：先不停住（停住时编辑器整个重建，组到一半的字被打断），字上屏以后马上停住；这期间不存
+  const { m, h } = machine();
+  const inFlight = deferred<void>();
+  h.outcome = () => inFlight.promise;
+  m.edited();
+  await h.clock.advance(1500);
+  h.composing = true;
+  inFlight.reject(new HttpError(409, { error: 'rev_conflict' }));
+  await flushMicro();
+  eq('组字时回来 409：还不通知页面，状态还是「保存中」', [h.last(), h.conflicts], ['saving', 0]);
+  await h.clock.advance(150);
+  m.edited();
+  m.flush();
+  m.online();
+  // 打字的防抖（如果计了）在 3,150 毫秒时到，字在 3,120 上屏：抢在下一次看（3,200）之前也不能发
+  await h.clock.advance(1470);
+  h.composing = false;
+  await h.clock.advance(COMPOSE_POLL - 20);
+  eq('等字上屏时：打字、⌘S、恢复联网都不发；上屏以后下一次看的时候停住', [h.sends, h.last(), h.conflicts], [[1500], 'conflict', 1]);
+  eq('停住以后没有计时器', h.clock.timers(), 0);
+}
+{
+  // 等字上屏时页面卸下：不再通知
+  const { m, h } = machine();
+  const inFlight = deferred<void>();
+  h.outcome = () => inFlight.promise;
+  m.edited();
+  await h.clock.advance(1500);
+  h.composing = true;
+  inFlight.reject(new HttpError(409, { error: 'rev_conflict' }));
+  await flushMicro();
+  m.stop();
+  eq('等字上屏时卸下：计时器清掉', h.clock.timers(), 0);
+  h.composing = false;
+  await h.clock.advance(1000);
+  eq('卸下以后字上屏：不再通知页面', [h.conflicts, h.last()], [0, 'saving']);
+}
+{
+  // 连不上重试了几次（退避到了 15 秒那一档）以后 409，载入最新草稿（resume）以后再连不上：退避从 2 秒重新算
+  const { m, h } = machine();
+  h.outcome = fail(new TypeError('Failed to fetch'));
+  m.edited();
+  await h.clock.advance(1500 + 2000 + 5000);
+  h.outcome = fail(new HttpError(409, { error: 'rev_conflict' }));
+  await h.clock.advance(15_000);
+  eq('重试到第四次答 409：停住', [h.sends, h.last()], [[1500, 3500, 8500, 23500], 'conflict']);
+  m.resume();
+  h.outcome = fail(new TypeError('Failed to fetch'));
+  m.edited();
+  await h.clock.advance(1500 + 2000);
+  eq('载入以后再连不上：2 秒以后重试（不接着 15 秒）', h.sends.slice(-2), [25000, 27000]);
+}
+
 // 9.3 整页：假服务端
 const FAST: AutosaveTiming = { debounce: 30, backoff: [80, 10_000], now: () => NOW };
 const json = (status: number, b: unknown): Response =>
@@ -2237,6 +2337,17 @@ function fakeServer(start: SopOverview) {
   respond = async (call) => {
     if (call.method === 'GET' && call.path === '/api/console/sop')
       return srv.getFails ? json(500, { error: 'internal' }) : json(200, srv.state);
+    if (call.method === 'GET' && call.path === '/api/console/sop/versions') return json(200, { items: [srv.state.published] });
+    if (call.method === 'POST' && call.path === '/api/console/sop/draft/discard') {
+      srv.state = { ...srv.state, draft: null };
+      return json(200, { ok: true });
+    }
+    if (call.method === 'POST' && call.path === '/api/console/sop/draft/publish') {
+      const no = (srv.state.published.versionNo ?? 0) + 1;
+      const v = version(no, srv.state.draft!.sections, { publishedAt: '2026-09-26T06:31:00Z' });
+      srv.state = { ...srv.state, published: v, draft: null };
+      return json(200, v);
+    }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/check')
       return json(200, {
         promptHash: 'b'.repeat(64),
@@ -2431,6 +2542,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   const srv = fakeServer(MEMBER_SOP);
   srv.mode = 'conflict';
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
+  // 先跑一次检查：结果是对这份草稿说的，载入最新草稿以后要作废
+  await clickEv(headerButton(m, '检查'));
+  await waitFor(() => !!m.box.querySelector('.sop-col-check .check-list-summary'));
   await typeAtEnd(m, '我写的');
   const mine = editorText(m)!;
   await waitFor(() => !!m.box.querySelector('.sop-banners .ant-alert'));
@@ -2469,19 +2583,25 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     [true, 'false', ['草稿刚被别人改过', '服务暂时连不上'], null],
   );
   srv.getFails = false;
-  const gets = calls.filter((c) => c.method === 'GET').length;
+  eq('409 停住时：检查结果还在（还是存上的那份草稿）', text(m.box.querySelector('.sop-col-check .check-list-summary')), '6/7通过');
+  const gets = calls.filter((c) => c.method === 'GET' && c.path === '/api/console/sop').length;
   await clickEv(banner?.querySelector('.ant-alert-actions button'));
   await waitFor(() => !!m.box.querySelector('.sop-lost'));
   eq(
     '载入最新草稿：重取 /sop，编辑器换成最新的、能改了，横幅没了，状态句回到还没保存过',
     [
-      calls.filter((c) => c.method === 'GET').length - gets,
+      calls.filter((c) => c.method === 'GET' && c.path === '/api/console/sop').length - gets,
       editorText(m) === bodyIn(theirs, 'tone'),
       editorEditable(m),
       text(m.box.querySelector('.sop-banners .ant-alert-title')),
       saveNow(m),
     ],
     [1, true, 'true', '', ''],
+  );
+  eq(
+    '载入最新草稿：检查结果作废，7 项回到「还没跑」',
+    [m.box.querySelector('.sop-col-check .check-list-summary'), all(m.box, '.sop-col-check .check-item-pending').length],
+    [null, 7],
   );
   const sides = all<HTMLElement>(m.box, '.sop-lost .cm-mergeView .cm-content').map((c) => EditorView.findFromDOM(c)?.state.doc.toString());
   eq(
@@ -2681,6 +2801,162 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     [2, true, '·已自动保存14:30'],
   );
   await m.unmount();
+}
+
+// 9.3l 输入法组字：没上屏的拼音不存，字上屏以后存汉字；409 在组字时回来，等字上屏再冻结编辑器，对比里是上屏的字。
+// CodeMirror 按输入法的 composition 事件与 DOM 的变化判断在不在组字，happy-dom 里没有输入法：这里直接接管 view.composing
+{
+  const srv = fakeServer(MEMBER_SOP);
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
+  const content = (): HTMLElement => m.box.querySelector<HTMLElement>('.sop-editor .cm-content')!;
+  const view = EditorView.findFromDOM(content())!;
+  let composing = true;
+  Object.defineProperty(view, 'composing', { configurable: true, get: () => composing });
+  /** 上屏：末尾的拼音换成汉字 */
+  const commit = async (pinyin: string, han: string): Promise<void> => {
+    const end = view.state.doc.length;
+    await act(async () => view.dispatch({ changes: { from: end - pinyin.length, to: end, insert: han }, userEvent: 'input.type.compose' }));
+    composing = false;
+  };
+  await typeAtEnd(m, 'ni hao');
+  await rest(250);
+  eq('组字时：计时到了也不存，状态句没有保存那一段', [srv.puts().length, saveNow(m)], [0, '']);
+  await commit('ni hao', '你好');
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  const first = srv.puts()[0]?.edits[0]?.body ?? '';
+  eq('字上屏以后：存的是汉字，没有拼音', [srv.puts().length, first.endsWith('你好'), first.includes('ni hao')], [1, true, false]);
+
+  srv.mode = 'hold';
+  await typeAtEnd(m, '甲');
+  await waitFor(() => srv.puts().length === 2);
+  composing = true;
+  await typeAtEnd(m, 'yi');
+  srv.mode = 'conflict';
+  await act(async () => srv.held.shift()?.resolve());
+  await rest(300);
+  eq(
+    '组字时回来 409：编辑器没有重建、还能改（组到一半的字不被打断），还没有横幅，状态句「保存中…」',
+    [EditorView.findFromDOM(content()) === view, editorEditable(m), m.box.querySelector('.sop-conflict'), saveNow(m)],
+    [true, 'true', null, '·保存中…'],
+  );
+  await commit('yi', '乙');
+  await waitFor(() => editorEditable(m) === 'false');
+  const mine = editorText(m)!;
+  eq(
+    '字上屏以后停住：编辑器冻住、横幅出来，编辑器里是上屏的字',
+    [mine.endsWith('你好甲乙'), text(m.box.querySelector('.sop-conflict .ant-alert-title')), srv.puts().length],
+    [true, '草稿刚被别人改过', 2],
+  );
+  await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
+  await waitFor(() => !!m.box.querySelector('.sop-lost'));
+  const right = EditorView.findFromDOM(all<HTMLElement>(m.box, '.sop-lost .cm-mergeView .cm-content')[1]!)?.state.doc.toString();
+  eq('载入以后：对比右边是上屏的字，没有拼音', [right === mine, right?.includes('yi')], [true, false]);
+  await m.unmount();
+}
+
+// 9.3m 丢弃、发布以后：那份草稿已经没了，状态句不再写「已自动保存14:30」；之后再改，从新建草稿存起
+{
+  const srv = fakeServer(MEMBER_SOP);
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
+  const status = (): string => text(m.box.querySelector('.page-status'));
+  const modal = (title: string): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
+  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '发布')?.disabled;
+  await typeAtEnd(m, '丢');
+  await waitFor(saved);
+  await clickEv(headerButton(m, '丢弃'));
+  await until(() => !!modal('丢弃草稿？'));
+  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await waitFor(() => status().includes('没有未发布的改动'));
+  eq('丢弃以后：没有未发布的改动，保存那一段清空', [status().includes('没有未发布的改动'), saveNow(m)], [true, '']);
+  await typeAtEnd(m, '发');
+  await waitFor(saved);
+  eq('丢弃以后再改：新建草稿（rev 为 null、basedOn 线上 v2）', [srv.puts().at(-1)?.rev, srv.puts().at(-1)?.basedOn], [null, 'v2']);
+  await clickEv(headerButton(m, '发布'));
+  await until(() => !!modal('发布草稿')?.querySelector('textarea'));
+  const note = modal('发布草稿')!.querySelector<HTMLTextAreaElement>('textarea')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '改了话术原则');
+    note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+  });
+  await clickEv(all(modal('发布草稿')!, '.ant-modal-footer button').find((b) => label(b) === '发布'));
+  await waitFor(() => status().startsWith('线上v3'));
+  eq('发布以后：线上v3、没有未发布的改动，保存那一段清空', [status().includes('没有未发布的改动'), saveNow(m)], [true, '']);
+  await m.unmount();
+}
+
+// 9.3n 载入最新草稿、关掉对比以后焦点去哪：按过的按钮跟着横幅、对比卸下，焦点不能掉到 body 上。
+// 载入以后有对比的到对比的标题上；关掉对比回到编辑器，还冻着时回到横幅；焦点已经在别处的不抢
+{
+  const srv = fakeServer(MEMBER_SOP);
+  srv.mode = 'conflict';
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
+  const cm = (): HTMLElement => m.box.querySelector<HTMLElement>('.sop-editor .cm-content')!;
+  const button = (sel: string, name: string): HTMLButtonElement | undefined =>
+    all<HTMLButtonElement>(m.box, `${sel} button`).find((b) => label(b) === name);
+  /** 用键盘按按钮：焦点先在它上面 */
+  const press = async (b: HTMLButtonElement | undefined): Promise<void> => {
+    await act(async () => b?.focus());
+    await clickEv(b);
+  };
+  const conflictOnce = async (s: string): Promise<void> => {
+    await act(async () => cm().focus());
+    await typeAtEnd(m, s);
+    await waitFor(() => editorEditable(m) === 'false' && !!m.box.querySelector('.sop-conflict'));
+  };
+  const loaded = (): boolean => !!m.box.querySelector('.sop-lost') && editorEditable(m) === 'true';
+  await conflictOnce('一');
+  await press(button('.sop-conflict', '载入最新草稿'));
+  await waitFor(loaded);
+  await settle();
+  const title = m.box.querySelector('.sop-lost .sop-card-title');
+  eq(
+    '载入最新草稿以后：焦点在对比的标题上（它不在 Tab 顺序里）',
+    [document.activeElement === title, title?.getAttribute('tabindex')],
+    [true, '-1'],
+  );
+  await press(button('.sop-lost', '关掉对比'));
+  await waitFor(() => !m.box.querySelector('.sop-lost'));
+  await settle();
+  eq('关掉对比以后：焦点回到编辑器', document.activeElement === cm(), true);
+
+  await conflictOnce('二');
+  await press(button('.sop-conflict', '载入最新草稿'));
+  await waitFor(loaded);
+  await conflictOnce('三');
+  await press(button('.sop-lost', '关掉对比'));
+  await waitFor(() => !m.box.querySelector('.sop-lost'));
+  await settle();
+  eq('冻着时关掉对比：焦点回到横幅上', document.activeElement === m.box.querySelector('.sop-conflict'), true);
+
+  const tocRow = rowIn(m, 'tone')!;
+  await act(async () => tocRow.focus());
+  await clickEv(button('.sop-conflict', '载入最新草稿'));
+  await waitFor(loaded);
+  await settle();
+  eq('焦点在目录上时点「载入最新草稿」（鼠标）：焦点不抢', document.activeElement === tocRow, true);
+  await m.unmount();
+}
+
+// 9.3o 匿名：已经有数据时重取失败，页头下就地报错，正文照样在
+{
+  respond = async (call) =>
+    call.method === 'GET' && call.path === '/api/console/sop' ? json(500, { error: 'internal' }) : new Promise<never>(() => undefined);
+  const a = await mountPage(
+    '/console/sop?section=tone',
+    { kind: 'anon', pack: packOf(TRAVEL) },
+    { published: { versionNo: 2, publishedAt: '2026-09-25T10:30:00Z', promptHash: 'a'.repeat(12), sections: PUBLISHED } },
+  );
+  eq('匿名：一开始没有横幅', a.box.querySelector('.sop-banners'), null);
+  await act(async () => void a.qc.refetchQueries({ queryKey: ['sop'] }));
+  await waitFor(() => !!a.box.querySelector('.sop-banners .ant-alert'));
+  eq(
+    '匿名重取失败：页头下的横幅（服务暂时连不上），正文还在',
+    [text(a.box.querySelector('.sop-banners .ant-alert-title')), !!a.box.querySelector('.sop-editor .cm-content')],
+    ['服务暂时连不上', true],
+  );
+  await a.unmount();
+  respond = null;
 }
 
 // 9.4 三栏的格子

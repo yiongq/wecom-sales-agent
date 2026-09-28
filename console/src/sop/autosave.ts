@@ -6,6 +6,7 @@
 // - 失败：连不上、5xx、429 按 2、5、15 秒退避重试，之后每 15 秒一次，恢复联网（online 事件）时马上试；
 //   别的 4xx（格式不对、固定规则节、没有权限、登录过期后没重登）重试也一样，不自动试，等下一次改动或手动「重试」。
 // - 409（rev_conflict，以及并发首次保存撞上的 conflict）：不再重试，自动保存停住，由页面冻结编辑器、提示载入最新草稿。
+// - 输入法组字时（编辑器里是还没上屏的拼音）不存，等字上屏；409 在组字时回来，也等字上屏再停住。
 // - ⌘S / Ctrl+S 立即保存；话术页没有「保存草稿」按钮。
 // 状态机（createAutosaver）不依赖 React，计时器可以换，自测直接驱动；useAutosave 把它接到页面上。
 import { createContext, useContext, useEffect, useState } from 'react';
@@ -34,6 +35,9 @@ export interface AutosaveTiming {
 }
 
 export const AUTOSAVE_TIMING: AutosaveTiming = { debounce: 1500, backoff: [2000, 5000, 15000], now: () => Date.now() };
+
+/** 409 在输入法组字时回来：隔多久看一次字上屏了没有 */
+export const COMPOSE_POLL = 100;
 
 /** 自测把时间调短、把时钟钉住；页面用默认值 */
 export const AutosaveTimingContext = createContext<AutosaveTiming>(AUTOSAVE_TIMING);
@@ -75,6 +79,8 @@ export interface AutosaverDeps {
   timing: () => AutosaveTiming;
   /** 有没有要存的改动 */
   hasPending(): boolean;
+  /** 输入法正在组字：编辑器里是还没上屏的拼音 */
+  composing(): boolean;
   /** 存一次；成功时由它更新 rev 与缓存，失败时抛 */
   send(): Promise<void>;
   onStatus(s: SaveStatus): void;
@@ -91,7 +97,7 @@ export interface Autosaver {
   flush(): void;
   /** 恢复联网：在等自动重试的，马上试 */
   online(): void;
-  /** 载入最新草稿以后：回到还没保存过的状态，接着自动保存 */
+  /** 载入最新草稿、发布、丢弃以后：回到还没保存过的状态，接着自动保存 */
   resume(): void;
   /** 页面挂上与卸下：卸下后清掉计时器，不再发新的请求（路上的那个照常回来） */
   start(): void;
@@ -108,6 +114,9 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
   let again = false;
   let attempt = 0;
   let active = true;
+  /** 收到了 409：不再存。组字时状态先不变（页面还没冻结编辑器），等字上屏 */
+  let stopped = false;
+  let held: Timer | null = null;
   let status: SaveStatus = { kind: 'idle' };
   /** 上一次存上的时刻：失败以后又改回了存上的样子，状态回到它 */
   let savedAt: number | null = null;
@@ -123,10 +132,35 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
     if (retry !== null) clearTimer(retry);
     retry = null;
   };
+  /** 从现在起数 1.5 秒，到了就存 */
+  const arm = (): void => {
+    clearDebounce();
+    debounce = setTimer(() => {
+      debounce = null;
+      flush();
+    }, deps.timing().debounce);
+  };
+
+  // 409 停住：通知页面冻结编辑器。正在组字时等字上屏：编辑器一变只读就整个重建，组到一半的字被打断，
+  // 没上屏的拼音还会当成你没保存上的改动留进对比里
+  function halt(e: unknown): void {
+    held = null;
+    if (deps.composing()) {
+      held = setTimer(() => halt(e), COMPOSE_POLL);
+      return;
+    }
+    set({ kind: 'conflict', error: e });
+    deps.onConflict(e);
+  }
 
   // 只经 flush（409 停住时它不往下走）和请求回来以后的「接着存」进来
   async function run(): Promise<void> {
     if (!active) return;
+    // 输入法还在组字：过 1.5 秒再看（字上屏本身也是一次改动，会从那时重新数）
+    if (deps.composing()) {
+      arm();
+      return;
+    }
     if (!deps.hasPending()) {
       // 没保存上的改动已经改回了草稿里的样子：没有要存的了，不再写「没保存上」
       if (status.kind === 'failed') {
@@ -147,8 +181,8 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
       // 请求在路上时没有等着的重试（flush 发之前清掉了），只有路上又打字留下的防抖
       if (kind === 'conflict') {
         clearDebounce();
-        set({ kind: 'conflict', error: e });
-        deps.onConflict(e);
+        stopped = true;
+        halt(e);
         return;
       }
       set({ kind: 'failed', error: e, retrying: kind === 'retry' });
@@ -176,7 +210,7 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
 
   function flush(): void {
     clearDebounce();
-    if (status.kind === 'conflict') return;
+    if (stopped) return;
     if (inFlight) {
       again = true;
       return;
@@ -187,18 +221,15 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
 
   return {
     edited() {
-      if (!active || status.kind === 'conflict') return;
-      clearDebounce();
-      debounce = setTimer(() => {
-        debounce = null;
-        flush();
-      }, deps.timing().debounce);
+      if (!active || stopped) return;
+      arm();
     },
     flush,
     online() {
       if (status.kind === 'failed' && status.retrying && !inFlight) flush();
     },
     resume() {
+      stopped = false;
       attempt = 0;
       again = false;
       savedAt = null;
@@ -211,6 +242,8 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
       active = false;
       clearDebounce();
       clearRetry();
+      if (held !== null) clearTimer(held);
+      held = null;
     },
     status: () => status,
   };
@@ -221,6 +254,8 @@ export interface AutosaveInput {
   enabled: boolean;
   /** 本地改过、还没存进草稿的节 */
   unsaved: readonly DraftEdit[];
+  /** 编辑器正在用输入法组字 */
+  composing(): boolean;
   /** 服务端给的草稿的版本号（没有草稿时 rev 为 null、basedOn 是线上版本） */
   base: DraftBase;
   /** 发一次 PUT /sop/draft，返回服务端的草稿 */
@@ -237,7 +272,7 @@ export interface Autosave {
   flush(): void;
   /** 编辑器里有了改动 */
   edited(): void;
-  /** 载入最新草稿以后接着自动保存 */
+  /** 载入最新草稿、发布、丢弃以后：保存那一段清空，接着自动保存 */
   resume(): void;
 }
 
@@ -255,6 +290,7 @@ class PageSaver {
     this.saver = createAutosaver({
       timing: () => this.latest.timing,
       hasPending: () => this.latest.input.enabled && this.latest.input.unsaved.length > 0,
+      composing: () => this.latest.input.composing(),
       send: async () => {
         const { unsaved, send, onSaved } = this.latest.input;
         const v = await send(

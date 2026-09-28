@@ -126,8 +126,9 @@
   gap: 8px;
   margin: -4px 0 20px;
 }
-/* 409 横幅的外层：停住时焦点从编辑器移到这里（SopPage），它自己不是控件，同 .shell-content 不画焦点框 */
-.sop-conflict {
+/* 409 横幅的外层、对比的标题：焦点由页面移过来（SopPage），它们自己不是控件，同 .shell-content 不画焦点框 */
+.sop-conflict,
+.sop-lost .sop-card-title {
   outline: none;
 }
 
