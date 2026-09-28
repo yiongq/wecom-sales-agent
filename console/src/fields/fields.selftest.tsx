@@ -94,6 +94,7 @@ import {
   changedFields,
   changeList,
   issueLine,
+  jumpPlace,
   lockedFieldLabel,
   placeIssues,
   placeOf,
@@ -3026,6 +3027,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     changeList(ROUTE, SICHUAN, off).map((c) => c.label),
     ['体力强度', '最累的一段'],
   );
+  eq(
+    '点改动清单的一处：不显示的最累的一段跳到管它显示的体力强度；显示着的跳到自己',
+    [jumpPlace(ROUTE, off, 'intensity.hardest'), jumpPlace(ROUTE, e2, 'intensity.hardest'), jumpPlace(ROUTE, g, 'itinerary.2.hotel')],
+    ['intensity.level', 'intensity.hardest', 'itinerary.2.hotel'],
+  );
   eq('打开不改：没有改动', changeList(ROUTE, SICHUAN, formState(SICHUAN)), []);
   const nodes = NUANMU.nodes as Payload[];
   eq(
@@ -3167,6 +3173,35 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       visibleErrors(ROUTE, edited, seen([]), server).byPlace['intensity.hardest'],
     ],
     ['最累的一段：太长', undefined],
+  );
+  // 有序子项里按那一处比：改了第2天的标题，第3天、第5天的报错还在；一项本身的（天号）在这一项里改了哪处都收
+  const trip = SICHUAN.itinerary as Payload[];
+  const inDays = {
+    ...placeIssues(ROUTE, [
+      { path: 'itinerary.1.title', message: '太长了' },
+      { path: 'itinerary.2.day', message: '第3天的天号应为3' },
+      { path: 'itinerary.4.detail', message: '含有存不下的字符' },
+    ]),
+    sent: SICHUAN,
+  };
+  const dayEdit = (i: number, key: string): Payload => ({
+    ...SICHUAN,
+    itinerary: trip.map((d, k) => (k === i ? { ...d, [key]: '改过' } : d)),
+  });
+  eq(
+    '服务端的报错按位置比：改第2天的标题只收它那一条，改第2天的住宿不收；改第3天的住宿收第3天本身的那一条；别的天的都还在',
+    [
+      Object.keys(visibleErrors(ROUTE, SICHUAN, seen([]), inDays).byPlace),
+      Object.keys(visibleErrors(ROUTE, dayEdit(1, 'title'), seen([]), inDays).byPlace),
+      Object.keys(visibleErrors(ROUTE, dayEdit(1, 'hotel'), seen([]), inDays).byPlace),
+      Object.keys(visibleErrors(ROUTE, dayEdit(2, 'hotel'), seen([]), inDays).byPlace),
+    ],
+    [
+      ['itinerary.1.title', 'itinerary.2', 'itinerary.4.detail'],
+      ['itinerary.2', 'itinerary.4.detail'],
+      ['itinerary.1.title', 'itinerary.2', 'itinerary.4.detail'],
+      ['itinerary.1.title', 'itinerary.4.detail'],
+    ],
   );
   const cleared = writeValue(SICHUAN, fieldOf(ROUTE, 'title'), '');
   eq(
@@ -3403,13 +3438,14 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await act(async () => release?.());
     await until(() => !primary(e.box)?.classList.contains('ant-btn-loading'));
     eq(
-      '存好以后：页头换成返回的条目，提交前的两处不再是改动，提交中改的一处还在',
+      '存好以后：页头换成返回的条目，提交前的两处不再是改动，提交中改的一处还在，读屏不念「已保存」',
       [
         header(e.box).status?.split('·')[1]?.startsWith('小周更新于今天'),
         all(e.box, '.field.is-changed').map((f) => f.getAttribute('data-field-key')),
         barText(e.box)?.summary,
+        e.box.querySelector('.save-live')?.textContent,
       ],
-      [true, ['hotelLevel'], '有1处改动'],
+      [true, ['hotelLevel'], '有1处改动', ''],
     );
     eq('缓存里这一条换成返回的（rev 2）', (e.qc.getQueryData(['catalog', 'route', 'r-sichuan-lux']) as { rev: number }).rev, 2);
     const firstPatch = api.sent.findIndex((x) => x.method === 'PATCH');
@@ -3444,6 +3480,56 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await click(e.box.querySelector('[data-field-key="intensity.hardest"] .field-undo'));
     eq('撤销回到存好的内容：不再念「已保存」', [bar(e.box) === null, e.box.querySelector('.save-live')?.textContent], [true, '']);
     await e.unmount();
+    api.restore();
+  }
+
+  // 体力强度选「不填」：清单里的「最累的一段」页面上没有了，点它跳到体力强度；页面上找不到可去的地方时焦点回到「展开改动」
+  {
+    const api = fakeApi(() => undefined);
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    const level = () => e.box.querySelector('[data-field-key="intensity.level"]');
+    await click(segment(level() ?? e.box, '不填'));
+    const toggle = () => e.box.querySelector<HTMLButtonElement>('.save-bar-toggle');
+    const rows = () => all(e.box, '.save-changes .save-change');
+    await click(toggle());
+    const names = texts(e.box, '.save-changes .save-change');
+    await click(rows()[1]);
+    const landed = document.activeElement?.closest('[data-field-key]')?.getAttribute('data-field-key');
+    // 模拟页面上找不到：摘掉体力强度的 data-field-key（字段不重画，摘了就一直没有）
+    level()?.removeAttribute('data-field-key');
+    await click(toggle());
+    await click(rows()[1]);
+    eq(
+      '清单「体力强度、最累的一段」：点不显示的最累的一段，焦点落进体力强度；找不到时清单收起、焦点回到「展开改动」',
+      [names, landed, e.box.querySelectorAll('.save-changes').length, document.activeElement === toggle()],
+      [['体力强度', '最累的一段'], 'intensity.level', 0, true],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
+  // 点过保存以后存上了：「点过保存」随之清掉，再清空一个必填字段，没离开它就不报、也没有汇总
+  {
+    const api = fakeApi((s) =>
+      s.method === 'PATCH' ? json({ ...GUIZHOU_ITEM, rev: 2, payload: { ...GUIZHOU_5D, ...(s.body as { set: Payload }).set } }) : undefined,
+    );
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    const titleIn = d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
+    await typeInto(titleIn, '');
+    await click(primary(d.box));
+    await settle();
+    const blocked = [api.patches().length, texts(d.box, '.detail-issues .ant-alert-title')];
+    await typeInto(titleIn, '新名字');
+    await click(primary(d.box));
+    await until(() => bar(d.box) === null);
+    await settle();
+    await typeInto(titleIn, '');
+    eq(
+      '存上以后清空线路名称（没离开）：不报错、没有汇总；之前那次没过的保存照常拦下',
+      [blocked, texts(d.box, '.detail-main .field-error'), d.box.querySelectorAll('.detail-issues').length],
+      [[0, ['有1处要改']], [], 0],
+    );
+    await d.unmount();
     api.restore();
   }
 
@@ -3627,6 +3713,50 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     api.restore();
   }
 
+  // 422 里的问题全都落不到字段（路径为空）：只有页头下的汇总，焦点给它；409 横幅还在时再来一次 422，焦点同样给汇总
+  {
+    let reply: '422' | '409' = '422';
+    const api = fakeApi((s) => {
+      if (s.method !== 'PATCH') return undefined;
+      if (reply === '409') return json({ error: 'rev_conflict', detail: '条目已被别人改过' }, 409);
+      return json({ error: 'invalid_item', detail: '条目不合格', issues: [{ path: '', message: 'Unrecognized key: "legacyNote"' }] }, 422);
+    });
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    const hardestIn = e.box.querySelector<HTMLInputElement>('[data-field-key="intensity.hardest"] input');
+    await typeInto(hardestIn, `${hardestText}；返程日早起`);
+    await act(async () => hardestIn?.focus());
+    await cmdS();
+    await until(() => e.box.querySelector('.detail-issues') !== null);
+    await settle();
+    const summary = () => e.box.querySelector('.detail-issues');
+    eq(
+      '422 只有路径为空的一条：汇总「有1处要改」「格式不对」，焦点从输入框挪到汇总上；主按钮不再 loading',
+      [
+        texts(e.box, '.detail-issues .ant-alert-title'),
+        texts(e.box, '.detail-issues-loose li'),
+        document.activeElement === summary(),
+        primary(e.box)?.classList.contains('ant-btn-loading'),
+      ],
+      [['有1处要改'], ['格式不对'], true, false],
+    );
+    reply = '409';
+    await cmdS();
+    await until(() => e.box.querySelector('.detail-conflict') !== null);
+    await settle();
+    const onBanner = document.activeElement === e.box.querySelector('.detail-conflict button');
+    reply = '422';
+    await cmdS();
+    await until(() => api.patches().length === 3);
+    await settle();
+    eq(
+      '409 之后又是这样的 422：横幅还在，焦点从「载入最新版本」挪到汇总上',
+      [onBanner, document.activeElement === summary()],
+      [true, true],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
   // 422 落到有序子项里：单字段的逐条列表写在那一条下面并连到输入框；多字段的一项本身（天号）写在序号下面
   {
     const api = fakeApi((s) =>
@@ -3652,6 +3782,15 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const line = e.box.querySelector('[data-field-key="highlights"] [data-item-index="1"]');
     const lineError = line?.querySelector('.field-error');
     const day3 = e.box.querySelector('[data-field-key="itinerary"] [data-item-index="2"]');
+    const dayErrId = day3?.querySelector(':scope > .field-error')?.id ?? '';
+    const linked = all(day3 ?? e.box, '[data-field-key]').map((f) =>
+      all(f, '[aria-describedby]').some((el) => el.getAttribute('aria-describedby')?.split(' ').includes(dayErrId)),
+    );
+    eq(
+      '第3天本身的报错：第3天的每个子字段（当天标题、当天安排、当晚住宿、当天餐食）读屏都连上它',
+      [dayErrId !== '', linked],
+      [true, [true, true, true, true]],
+    );
     eq(
       '422：「第2条：不能为空」写在行程亮点第2条下面、读屏连到那个输入框；「第3天的天号应为3」写在第3天的序号下面',
       [
@@ -3885,10 +4024,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
 
   // 422 locked_field：页内 Alert 用中文字段名；连不上：「服务暂时连不上」加重试，重试再发一次
   {
-    let reply: 'locked' | 'down' = 'locked';
+    let reply: 'locked' | 'down' | 'ok' = 'locked';
     const api = fakeApi((s) => {
       if (s.method !== 'PATCH') return undefined;
       if (reply === 'down') return Promise.reject(new TypeError('Failed to fetch')) as unknown as Response;
+      if (reply === 'ok') return json({ ...SICHUAN_ITEM, rev: 2, payload: { ...SICHUAN, ...(s.body as { set: Payload }).set } });
       return json({ error: 'locked_field', detail: '这些字段已锁定，不能改：title、tags:国内', fields: ['title', 'tags:国内'] }, 422);
     });
     const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
@@ -3911,6 +4051,16 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await click(retry);
     await until(() => api.patches().length > before);
     eq('连不上：「服务暂时连不上」加重试，重试再发一次 PATCH', [retry !== undefined, api.patches().length - before], [true, 1]);
+    await settle();
+    reply = 'ok';
+    await click(all<HTMLButtonElement>(e.box, '.detail-alerts button').find((b) => b.textContent?.replace(/\s/g, '') === '重试'));
+    await until(() => bar(e.box) === null);
+    await settle();
+    eq(
+      '再重试存上了：「服务暂时连不上」收起，页头下什么也没有，保存条消失',
+      [e.box.querySelectorAll('.detail-failure').length, e.box.querySelectorAll('.detail-alerts').length, bar(e.box) === null],
+      [0, 0, true],
+    );
     await e.unmount();
     api.restore();
   }
@@ -3951,6 +4101,34 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         api.patches().length,
       ],
       [hardestText, true, 0, true, 0],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
+  // 422 之后放弃：服务端报在没改过的住宿档次下的那一条随之收起，「点过保存」也清掉：再清空住宿档次，没离开就不报
+  {
+    const api = fakeApi((s) =>
+      s.method === 'PATCH'
+        ? json({ error: 'invalid_item', detail: '条目不合格', issues: [{ path: 'hotelLevel', message: '含有存不下的字符' }] }, 422)
+        : undefined,
+    );
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await typeInto(e.box.querySelector('[data-field-key="intensity.hardest"] input'), `${hardestText}；返程日早起`);
+    await click(primary(e.box));
+    await until(() => e.box.querySelector('.detail-issues') !== null);
+    await settle();
+    const shown = errorAt(e.box, '[data-field-key="hotelLevel"]');
+    await click(all(e.box, '.action-bar button').find((b) => b.textContent?.replace(/\s/g, '') === '放弃'));
+    await settle();
+    await click(all(document.body, '.ant-modal button').find((b) => b.textContent?.replace(/\s/g, '') === '放弃改动'));
+    await settle();
+    const afterDiscard = [errorAt(e.box, '[data-field-key="hotelLevel"]'), e.box.querySelectorAll('.detail-issues').length];
+    await typeInto(e.box.querySelector('[data-field-key="hotelLevel"] input'), '');
+    eq(
+      '422 报在住宿档次下；放弃以后它收起、没有汇总；再清空住宿档次（没离开）也不报',
+      [shown, afterDiscard, texts(e.box, '.detail-main .field-error'), e.box.querySelectorAll('.detail-issues').length],
+      ['住宿档次：含有存不下的字符', [null, 0], [], 0],
     );
     await e.unmount();
     api.restore();

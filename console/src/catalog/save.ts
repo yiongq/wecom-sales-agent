@@ -8,7 +8,7 @@
 import { sameValue } from '../../../src/shared/catalog.js';
 import { parseMonthRange } from '../../../src/shared/format.js';
 import { type CheckIssue, checkItem, type EntityType, type FieldDef, valueAt } from '../../../src/shared/pack.js';
-import { fieldChanged, fieldMode, isSingleItem, type ItemContext, nounOf, type Payload, pruneHidden } from '../fields/model.js';
+import { fieldChanged, fieldMode, isSingleItem, type ItemContext, nounOf, type Payload, pruneHidden, visible } from '../fields/model.js';
 import { fieldOfPath, subPathOf } from './detail.js';
 
 const isRecord = (v: unknown): v is Payload => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -53,6 +53,21 @@ export function changeList(entity: EntityType, original: Payload, state: Payload
     else out.push({ path: f.key, label: f.label });
   }
   return out;
+}
+
+/**
+ * 点改动清单的一处要跳去的位置：showWhen 没显示出来的字段（体力强度选了「不填」，最累的一段跟着删掉）页面上没有，
+ * 跳到管它显示的那个字段；那个也没显示就再往上找
+ */
+export function jumpPlace(entity: EntityType, state: Payload, path: string): string {
+  const shown = pruneHidden(state, entity.fields);
+  const passed = new Set<string>();
+  let at = path;
+  for (let f = fieldOfPath(entity, at); f?.showWhen && !visible(f, shown) && !passed.has(f.key); f = fieldOfPath(entity, at)) {
+    passed.add(f.key);
+    at = f.showWhen.key;
+  }
+  return at;
 }
 
 /** 409 之后的对比：你改过的字段（整字段，「用我的改动」按字段写回）。mine 已剔除 showWhen 没显示的 */
@@ -128,7 +143,7 @@ export interface Issue {
 export interface Placed {
   /** 位置（placeOf） */
   at: string;
-  /** 它所在的字段（FieldDef.key）：服务端的报错在这个字段改过以后不再显示 */
+  /** 它所在的字段（FieldDef.key）：汇总按字段的顺序排 */
   field: string;
   text: string;
 }
@@ -165,6 +180,21 @@ function slotAt(entity: EntityType, state: Payload, at: string): { def: FieldDef
 }
 
 /**
+ * 位置上的值：字段的值；有序子项的一项（'itinerary.2'、'highlights.1'）；一项里的子字段（'itinerary.2.hotel'）。
+ * 服务端的报错按它判断那一处改过没有
+ */
+function placeValue(entity: EntityType, state: Payload, at: string): unknown {
+  const f = fieldOfPath(entity, at);
+  if (!f) return undefined;
+  const value = valueAt(state, f.key);
+  const sub = at === f.key ? null : subPathOf(f, at);
+  if (!sub) return value;
+  const item: unknown = Array.isArray(value) ? value[sub.index] : undefined;
+  if (sub.sub === undefined) return item;
+  return isRecord(item) ? item[sub.sub] : undefined;
+}
+
+/**
  * 控件自己已经在下方报了的问题（plan 第 3.2 步的交接）：月份区间写了认不出的字，表单控件自己写「没认出月份：写成…」
  * （设计系统 §6 表，与 renderers.tsx 的 MonthRangeForm 同一个条件）。这个字段下方不再写一遍，汇总照样算它一处
  */
@@ -174,7 +204,7 @@ export const reportsItself = (def: FieldDef, value: unknown): boolean =>
 /**
  * 字段下方显示哪些报错（spec「失焦时只显示碰过的字段的错误」）：
  * - 表单自己查出来的，只显示碰过的位置（失焦过；点过保存以后 all 为真，全部显示）；
- * - 服务端 422 的，显示到那个字段改过为止（与提交时的内容比）。
+ * - 服务端 422 的，显示到那一处改过为止（与提交时的内容比；有序子项里的一项、一个子字段各自比，改了第2天不收第5天的）。
  * 同一个位置有几条时用「；」连起来；控件自己报了的（reportsItself）不写进 byPlace。返回按位置取的报错，
  * 和按顺序排好的全部（汇总的条数与「跳到第一处」用）
  */
@@ -186,7 +216,7 @@ export function visibleErrors(
 ): { byPlace: Record<string, string>; list: Placed[] } {
   const own = placeIssues(entity, formIssues(entity, state)).placed.filter((p) => seen.all || seen.touched.has(p.at));
   const theirs = (server?.placed ?? []).filter(
-    (p) => !own.some((o) => o.at === p.at) && sameValue(valueAt(server!.sent, p.field), valueAt(state, p.field)),
+    (p) => !own.some((o) => o.at === p.at) && sameValue(placeValue(entity, server!.sent, p.at), placeValue(entity, state, p.at)),
   );
   const list = [...own, ...theirs];
   const byPlace: Record<string, string> = {};

@@ -725,10 +725,12 @@ function ItemCardsForm(p: FormProps) {
         const item = isRecord(it) ? it : {};
         const label = indexLabel(field, i + 1);
         const error = p.itemErrors?.[String(i)];
+        // 一项本身的报错（天号）写在序号下面，这一项的每个子字段都连上它：跳过来、Tab 进来，读屏都念得到
+        const errorId = `${id}-${i}e`;
         return (
           <section key={i} className="subitem-card" aria-label={label} data-item-index={i}>
             <div className="subitem-label">{cjk(label)}</div>
-            {error === undefined ? null : <ItemError id={`${id}-${i}e`} text={error} />}
+            {error === undefined ? null : <ItemError id={errorId} text={error} />}
             <div className="field-grid field-grid-2">
               {subs.map((sub) => (
                 <FormField
@@ -739,6 +741,7 @@ function ItemCardsForm(p: FormProps) {
                   value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
                   row={item}
                   error={p.itemErrors?.[`${i}.${sub.key}`]}
+                  describedBy={error === undefined ? undefined : errorId}
                   onChange={(v) => onChange(CODECS.subItems.write(replaceAt(items, i, writeValue(item, sub, v)), field))}
                 />
               ))}

@@ -32,6 +32,8 @@ export interface FormFieldProps {
   lockNoteId?: string;
   /** 字段下方的报错（第 10.2 步按「碰过的字段」给） */
   error?: string;
+  /** 字段外面、也说的是它的报错的 id（有序子项一项本身的报错，写在序号下面）：拼进控件的 aria-describedby */
+  describedBy?: string;
   /** 有序子项里各处的报错：键是下标（'2'）或下标接子字段 key（'2.hotel'），写在那一项、那个子字段下方 */
   itemErrors?: Readonly<Record<string, string>>;
   lockedMembers?: readonly string[];
@@ -57,6 +59,7 @@ export function FormField(p: FormFieldProps) {
   const R = RENDERERS[field.type];
   const editing = mode === 'edit' && p.onChange !== undefined;
   const note = error ?? (editing ? field.help : undefined);
+  const describedBy = [p.describedBy, note ? noteId : undefined].filter(Boolean).join(' ') || undefined;
   const labelText = cjk(field.label);
   const changed = editing && p.changed === true;
   const undo =
@@ -125,7 +128,7 @@ export function FormField(p: FormFieldProps) {
           row={row}
           id={id}
           labelId={labelId}
-          describedBy={note ? noteId : undefined}
+          describedBy={describedBy}
           invalid={error !== undefined}
           lockedMembers={p.lockedMembers}
           lockGroup={p.lockGroup}

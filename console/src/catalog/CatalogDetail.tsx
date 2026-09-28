@@ -55,6 +55,7 @@ import {
   changedFields,
   changeList,
   formIssues,
+  jumpPlace,
   lockedFieldLabel,
   type Placed,
   placeIssues,
@@ -277,14 +278,18 @@ export function issueTarget(root: HTMLElement, entity: EntityType, path: string)
   return byData(item, 'data-field-key', sub.sub) ?? item;
 }
 
-/** 点检查清单的一项：跳到对应字段，焦点放进第一个能填的控件；只读的字段把焦点放在字段上（spec「副栏」第 2 条） */
-export function jumpToIssue(root: HTMLElement | null, entity: EntityType, path: string): void {
+/**
+ * 点检查清单的一项：跳到对应字段，焦点放进第一个能填的控件；只读的字段把焦点放在字段上（spec「副栏」第 2 条）。
+ * 页面上找不到这个字段时返回 false，焦点不动
+ */
+export function jumpToIssue(root: HTMLElement | null, entity: EntityType, path: string): boolean {
   const el = root ? issueTarget(root, entity, path) : undefined;
-  if (!el) return;
+  if (!el) return false;
   const control = el.querySelector<HTMLElement>(FOCUSABLE);
   el.scrollIntoView?.({ block: 'center' });
   if (control) control.focus({ preventScroll: true });
   else land(el, 'center');
+  return true;
 }
 
 // ---------------- 副栏 ----------------
@@ -403,7 +408,7 @@ function UpdatedCard({ u, now }: { u: Updated; now: number }) {
 
 // ---------------- 保存条（§5.16，E、G 页） ----------------
 
-/** 「展开改动」打开的清单：每处一行，点了跳到那个字段（收起与 Esc 由保存条管） */
+/** 「展开改动」打开的清单：每处一行，点了跳到那个字段（收起、Esc 与跳不过去时的焦点由保存条管） */
 function ChangesPanel({ id, changes, onJump }: { id: string; changes: readonly Change[]; onJump(path: string): void }) {
   return (
     <div id={id} className="save-changes">
@@ -438,7 +443,8 @@ function SaveBar({
   saving: boolean;
   onSave(): void;
   onDiscard(): void;
-  onJump(path: string): void;
+  /** 跳到这一处；页面上没有可去的地方时返回 false */
+  onJump(path: string): boolean;
 }) {
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -488,7 +494,8 @@ function SaveBar({
               changes={changes}
               onJump={(path) => {
                 setOpen(false);
-                onJump(path);
+                // 跳不过去：清单收起了，焦点别掉到 body，回到「展开改动」
+                if (!onJump(path)) toggle.current?.focus();
               }}
             />
           ) : null}
@@ -736,10 +743,13 @@ function DetailBody({
 /** 新建和匿名没有打开时的内容 */
 const NOTHING: Payload = Object.freeze({}) as Payload;
 
+/** 页头下拿焦点的是哪一个：刚出的失败（「重试」或 Alert 本身）、409 横幅（「载入最新版本」）、422 的汇总 */
+const ALERT_OF = { failure: '.detail-failure .ant-alert', conflict: '.detail-conflict', issues: '.detail-issues' } as const;
+
 /** 焦点在弹层里（确认框、抽屉、⌘K）：⌘S 不管，焦点回收也不把它当成还在页面上 */
 const inOverlay = (el: Element | null): boolean => !!el?.closest('[role="dialog"], .ant-modal-root, .ant-drawer');
 
-/** 服务端 422 invalid_item：落好位置的报错、提交时的表单（字段改过以后不再显示）和原来的错误（技术详情） */
+/** 服务端 422 invalid_item：落好位置的报错、提交时的表单（那一处改过以后不再显示）和原来的错误（技术详情） */
 interface ServerIssues {
   placed: Placed[];
   loose: string[];
@@ -772,10 +782,15 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   /** 对比里还有没用回的改动时点了「关闭对比」：先确认 */
   const [closingCompare, setClosingCompare] = useState(false);
   /**
-   * 保存（或载入最新版本）失败、不是 422：页头下的横幅或 Alert 滚进视野，焦点放到它的按钮上（「载入最新版本」「重试」），
-   * 没有按钮就放在 Alert 上。表单多半在首屏以下，不这样做看不见也听不到失败
+   * 保存（或载入最新版本）失败、落不到字段上：页头下的横幅、Alert 或 422 的汇总滚进视野，焦点放到它的按钮上
+   * （「载入最新版本」「重试」「跳到第一处」），没有按钮就放在它本身。表单多半在首屏以下，不这样做看不见也听不到失败
    */
   const [alertTick, setAlertTick] = useState(0);
+  const alertOf = useRef<keyof typeof ALERT_OF>('failure');
+  const showAlert = (which: keyof typeof ALERT_OF): void => {
+    alertOf.current = which;
+    setAlertTick((n) => n + 1);
+  };
   const alertsRef = useRef<HTMLDivElement>(null);
   /** 载入最新版本以后：焦点放到对比卡的标题上（「载入最新版本」随横幅没了），读屏从这里接着念 */
   const [compareTick, setCompareTick] = useState(0);
@@ -820,8 +835,8 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   useEffect(() => {
     if (!alertTick) return;
     const box = alertsRef.current;
-    // 刚出的失败优先：载入最新版本连不上时横幅还在，焦点给「服务暂时连不上」的「重试」
-    const alert = box?.querySelector<HTMLElement>('.detail-failure .ant-alert') ?? box?.querySelector<HTMLElement>('.detail-conflict');
+    // 给刚出的那一个：载入最新版本连不上时横幅还在，焦点给「服务暂时连不上」的「重试」
+    const alert = box?.querySelector<HTMLElement>(ALERT_OF[alertOf.current]);
     if (!box || !alert) return;
     box.scrollIntoView?.({ block: 'nearest' });
     const action = alert.querySelector<HTMLElement>('.ant-alert-actions button');
@@ -863,11 +878,15 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
         const got = placeIssues(entity, (e as HttpError).body.issues ?? []);
         setServer({ ...got, sent, error: e });
         setAttempted(true);
+        // 落到字段上的跳到第一处；全都落不到（路径为空、未知键）时只有页头下的汇总，焦点给它
         if (got.placed.length) jumpTo(got.placed[0]!.at);
+        else showAlert('issues');
+      } else if (code === 'rev_conflict') {
+        setConflict(true);
+        showAlert('conflict');
       } else {
-        if (code === 'rev_conflict') setConflict(true);
-        else setFailure({ error: e, retry: () => void saveRef.current() });
-        setAlertTick((n) => n + 1);
+        setFailure({ error: e, retry: () => void saveRef.current() });
+        showAlert('failure');
       }
     } finally {
       busy.current = false;
@@ -919,7 +938,7 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
       setSaved(false);
     } catch (e) {
       setFailure({ error: e, retry: () => void loadLatest() });
-      setAlertTick((n) => n + 1);
+      showAlert('failure');
     } finally {
       setLoadingLatest(false);
     }
@@ -1005,7 +1024,7 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
           saving={saving}
           onSave={() => void save()}
           onDiscard={() => setDiscarding(true)}
-          onJump={(path) => jumpToIssue(mainRef.current, entity, path)}
+          onJump={(path) => jumpToIssue(mainRef.current, entity, jumpPlace(entity, state, path))}
         />
       ) : null}
       <ConfirmDanger
