@@ -4501,14 +4501,68 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
     [1, false, true],
   );
   srv.mode = 'ok';
+  srv.checkHold = true;
   await act(async () => srv.held.shift()?.resolve());
-  await waitFor(() => !!drawerOf('发布草稿') && srv.checks() > checks0);
+  await waitFor(() => !!drawerOf('发布草稿') && srv.checkHeld.length === 1);
+  const reason = (): string => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason'));
+  eq('存上以后打开抽屉：自动保存那一次检查还在路上，「发布」旁边写正在检查', reason(), '正在检查…');
+  await act(async () => srv.checkHeld.shift()?.resolve());
+  await waitFor(() => reason() !== '正在检查…');
   await rest(60);
   eq(
-    '存上以后打开抽屉：只有存上以后自动跑的那一次检查，逐节改动里有刚写的字',
-    [srv.checks() - checks0, docsIn(drawerOf('发布草稿')!).some((x) => x.includes('乙'))],
-    [1, true],
+    '检查回来：只有存上以后自动跑的那一次（不另发），逐节改动里有刚写的字',
+    [srv.checks() - checks0, docsIn(drawerOf('发布草稿')!).some((x) => x.includes('乙')), reason()],
+    [1, true, '在说明里写上为什么改'],
   );
+  await m.unmount();
+}
+
+// 11.3l 变更说明：关上再打开，自己写过的留着；只剩上一次的预填时，换成这一次改了哪几节
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  const open = async (): Promise<HTMLTextAreaElement> => {
+    await clickEv(barButton(m, '发布…'));
+    await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+    return drawerOf('发布草稿')!.querySelector<HTMLTextAreaElement>('textarea')!;
+  };
+  const cancel = async (): Promise<void> => {
+    await clickEv(drawerButton(drawerOf('发布草稿')!, '取消'));
+    await waitFor(() => !drawerOf('发布草稿'));
+  };
+  await open();
+  await cancel();
+  await typeAtEnd(m, '己');
+  const second = await open();
+  eq('只剩上一次的预填：换成这一次改了哪几节（前言是刚存上的）', second.value, '修改：前言、话术原则、异议处理。');
+  await setText(second, '先问预算');
+  await cancel();
+  eq('关上以后「发布…」照样能点', barBlocked(m), false);
+  const third = await open();
+  eq('自己写过的：关上再打开还在', third.value, '先问预算');
+  await m.unmount();
+}
+
+// 11.3m 发布成功的那句只对应那一次：之后草稿又有了改动（重取时别人存的），条里照实写改了哪几节
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await publishVia(m, '先问预算');
+  await waitFor(() => barText(m).summary.startsWith('已发布'));
+  const now = m.qc.getQueryData(['sop']) as SopOverview;
+  const theirs = withBodies(now.published.sections, { preamble: '别人改的前言。\n\n' });
+  await act(async () =>
+    m.qc.setQueryData(['sop'], {
+      ...now,
+      draft: { ...version(null, theirs, { basedOn: now.published.id, rev: 30, publishedAt: null, publishedByName: null }), stale: false },
+    }),
+  );
+  await settle();
+  eq('草稿里又有改动：不再写发布成功，写改了哪几节', [barText(m).summary, barButton(m, '回滚到v2')], ['草稿改了1节（前言）', undefined]);
   await m.unmount();
 }
 

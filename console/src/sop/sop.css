@@ -700,7 +700,9 @@
   display: contents;
 }
 .sop-publish-bar .action-bar-hint {
-  margin-left: -8px;
+  margin: -6px -4px -6px -8px;
+  /* 放不下时省略号（overflow: hidden）；上下右多留的地方给「回滚到v2」的焦点框，不被裁掉 */
+  padding: 6px 4px 6px 0;
 }
 .sop-publish-bar .action-bar-summary {
   overflow: hidden;
@@ -965,6 +967,8 @@
 .sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-changedLine::before {
   position: absolute;
   left: 8px;
+  /* 先写不带替代文字的一条：不支持替代文字的浏览器丢掉后一条，照样画记号 */
+  content: '+';
   content: '+' / '发出：';
   color: var(--success);
 }
@@ -981,6 +985,7 @@
 .sop-diff .sop-diff-view .cm-editor.cm-merge-a .cm-changedLine::before {
   position: absolute;
   left: 8px;
+  content: '−';
   content: '−' / '删去：';
   color: var(--text-2);
 }
