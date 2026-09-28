@@ -67,6 +67,7 @@
 - 第 4 步：`conversationState` 只把 `stage === 'paid'` 算已成交。终态 key 不是 `paid` 的包（家装假包的 `deposit`「已付定金」）里，停在终态的会话算 AI 接待中：总览的已成交格是 0，阶段条把它们归进「其他」（阶段条不含终态，各行之和仍等于 AI 接待中），会话列表的页签也一样。两种改法：`conversationState` 按包的 `terminal` 判定（改不变量 17 与接口的口径，要改 spec、owner 定），或 `checkPack` 要求终态 key 是 `paid`（假包随之改）。第 17 步假包走查前定。总览的已成交格现在只写 `conversationState` 认作已成交的阶段名，没有时写「已成交的会话」，不把「已付定金」写成口径。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 - 第 14 步：审计详情抽屉的去处。「打开这条{实体名}」现在到列表 `/catalog/$kind`，「打开销售话术」到 `/sop`：条目详情路由 `/catalog/$kind/$code`（第 10.1 步）和话术的 `v`（第 5–8 步）都在别的分支上，本步没有可链的地址。两边合进来之后，改 `console/src/audit/model.ts` 的 `DrawerLink`（带上编号、`toVersionNo` 或 `versionNo`）、`AuditPage.tsx` 的 `Link`，以及 `audit.selftest.tsx` 里两条去处的 href；条目删掉了照样链过去，由详情页出 404。
+- 第 15 步：axe 开上 wcag22aa 与 best-practice 时，成员外壳报一条 `region`（moderate）：侧栏的租户名 `.tenant-name` 不在任何地标里。第 2.2 步以来如此，登录页一步没碰外壳的这部分。第 16 步的无障碍收尾一并处理（例如租户行放进侧栏的地标）。
 - 第 14 步：全站主题（`theme/antd.ts`）的 Segmented 选中段是 antd 默认的淡阴影、字重 400，焦点框也是 antd 默认的；Switch 关着是 `colorTextQuaternary`（text-3）。设计系统 §5.4、§5.20 要的是选中段 1px `--control-border` 的圈、500，焦点 2px `--focus`、外移 2，开关关着 `--control-border`。审计页在 `audit.css` 里就地按 §5.4 改了，话术页和样张也用这两个控件。建议第 16 步改全站主题（`theme.selftest.ts` 的对比度对子随之加），改完删掉 `audit.css` 里那几条。另外，rc-segmented 1.4.0 给整条轨道也加了 `tabIndex=0`：Tab 先停在轨道上，这一站方向键不起作用，要再按一次 Tab 才进选中的那一段。审计页给 Segmented 传了 `tabIndex={-1}`，其余用到 Segmented 的地方（话术页、样张、表单里的单选 enum 与选填 boolean）仍多这一站，第 16 步的键盘走查一并处理。
 
 ## 砍法
@@ -793,13 +794,21 @@
   - demo：侧栏「登录」进登录页，「返回演示」的 href 是 `/console/catalog/route?status=active`，标签页标题「登录 · 演示」；点它回到线路页，地址不变，没有多取 `/me`、`/pack`，焦点在 `main`。横幅的「登录后编辑」进来同样有「返回演示」。
   - 就地登录框（登录后让会话失效再换页）：同一个表单，控件 32，没有「返回演示」；登录后停在会话页。
   - 375：面板内边距 16，一栏 327，页面不横向滚动。
-  - 两套主题的各场景 CSP 违规 0 次，控制台错误 0 条；axe（wcag2a、wcag2aa、best-practice）在登录页和出错态都是 0。
+  - 两套主题的各场景 CSP 违规 0 次，控制台错误 0 条；axe（wcag2a、wcag2aa、best-practice）在登录页和出错态都是 0。这一轮没开 wcag22aa，密码框的眼睛只有 14 见方，过不了 `target-size`，见下面「评审之后」。
 - 变异（仓库外的隔离副本，每例 300 秒超时，37 例）：36 例由具名断言点出，涵盖外壳与横幅不带 `demo`、`toLogin` 带错、「返回演示」不拦跳转或带修饰键也拦、焦点不回面板、链接不带 basepath 或 search、标签页标题、prod 也给链接、不自动聚焦、成功后不重新判断来者、没填也发请求、不聚焦第一个没填的、没点过就写原因、提交中不拦、再提交不收起旧错误、Alert 在按钮下面、不给重试或重试不提交、aria 与出错样式、标签与占位符、请求体，以及服务端的两处文案。存活 1 例是等价变异：「邮箱只有空格」不 `trim` 也判为没填，因为 `type="email"` 的输入框按 HTML 的值净化规则本来就去掉首尾空白。第一轮有 4 例是自测找不到「返回演示」时抛错崩掉，改成链接不在就不点、由断言按名字报；「没点过就写原因」第一轮存活，补了一条提交前不写原因的断言。
 - 偏离与取舍：
   - 没填的原因写在控件下方（设计系统 §5.2 的出错形态），不进 Alert：spec 的 Alert 说的是服务端返回的错。两者都不用 toast。
   - 竖直方向不居中：居中时，出现「没填」的原因会让整栏往上挪，标题跟着跳。
   - 登录页没有「跳到主要内容」：它前面没有导航可跳；内容在 `main` 地标里，邮箱自动聚焦。就地登录框里不自动聚焦，照旧由 antd Modal 管焦点。第 16 步的键盘走查一并看。
+  - 以上三条评审之后写进了 spec 顶部第 15 步的 `Revisions:`，「登录」「外壳」两节和设计系统 §3 随之就地改写。
   - `SessionExpiredDialog` 的 `maskClosable` 在 antd 6 里已弃用，开发构建会打告警（自测输出里也有），01 以来如此，这一步没改。
+- 评审之后（2026-09-28）：
+  - 读屏：原来没填就提交时，焦点先挪、原因后画，焦点落到控件上时 `aria-describedby` 还没连上；焦点本来就在那个控件上（邮箱自动聚焦后直接回车）时，焦点不动，读屏什么也不念。改为 `flushSync` 先把原因画上再挪焦点；焦点不挪时，表单里一块看不见的 polite 区域（`.login-notice`）念「没填邮箱，没填密码」，改了输入就清空。
+  - 「返回演示」照 §3：高 24（56×24），键盘焦点 2px `--focus`、外移 2，不再是 antd 链接的 3px 框。密码框的眼睛（antd 给的 Tab 停靠点）点击区域补到 24 见方：内边距 5、外边距抵回去，左边只抵 4，不压到输入框上（压上 1px，axe 就算它被遮住）；焦点 2px `--focus`、外移 2；antd 给它的 `transition: all` 让焦点框从 3px 字色框渐变过来，改成只过渡颜色。控件高度不变，密码输入框窄 1px（320 → 319）。
+  - 自测 83 → 103 条（约 2.4 秒）：表单 `noValidate`，两个 `maxlength`（254、1024），格式不对的邮箱与只有空格的密码照样提交、错在 Alert 里，密码框的出错样式，原因前的图标，polite 区域念与清空，Shift、Alt、中键点「返回演示」不拦；另挂一次就地登录框（`/me` 401 判为过期）：不自动聚焦、没有「返回演示」，焦点落到邮箱时原因已连上，服务端的错在框里的 Alert，登录后框收起、页面没卸载、地址不变。
+  - 变异（隔离副本，每例 300 秒超时）16 例全部点出：评审列出的 10 例存活变异（去掉 `noValidate`、任一 `maxLength`、Shift/Alt 放行、中键放行、就地登录框默认自动聚焦、去掉图标、去掉密码框的出错样式、只有空格的密码算没填或拦下提交），加这次的 6 例（先挪焦点后画原因、不念、焦点挪了也念、改了输入不清空、区域不是 polite、只念第一项）。上面「变异」一条里「带修饰键也拦」「aria 与出错样式」原来只覆盖 Ctrl、⌘ 和邮箱框，说大了。
+  - preview 实测（Chromium，CSP 同线上，demo 用家装假包，浅色、深色，1440 与 375）：axe 加上 wcag22aa，登录页的初始、没填、密码不对、demo 登录页、375 各态都是 0；眼睛 24×24，两套主题焦点框 2px `--focus`（浅 `#2b63e6`，深 `#2f68eb`）、外移 2；「返回演示」同样。没填后标题仍在 188；polite 区域 1×1、裁掉，不占表单间距。就地登录框里控件 32，点「登录」没填时焦点到邮箱，区域不念。CSP 违规 0 次，控制台错误 0 条，375 宽不横向滚动。成员外壳（含就地登录框打开时）axe 报一条 `region`（`.tenant-name`，侧栏租户名不在地标里），外壳第 2.2 步以来如此，这一步没碰，记进「Open」。
+  - 门禁：四道都过；`pnpm test` 带 `PG_TEST_URL`（一次性的 `pgvector/pgvector:pg17` 容器，用完即删）跑全，88 秒，数据库自测 329 条含真实 PG 部分。首屏 JS 329,656 / 420,000 B，UI 优先片不变（新文案的字都在片里）。没有新增依赖。
 - 分支：从 `feat/ux-14-audit`（c10a6ca）开出，中途合入 `origin/dev`（含第 9、14 步），之后合回 `dev` 不会冲突。
 - 门禁：四道都过；`pnpm test` 带 `PG_TEST_URL`（一次性的 `pgvector/pgvector:pg17` 容器，用完即删）跑全，86 秒，数据库自测 329 条含真实 PG 部分。没有新增依赖。
 
