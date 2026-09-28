@@ -2600,8 +2600,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   );
   eq(
     '载入最新草稿：检查结果作废，7 项回到「还没跑」',
-    [m.box.querySelector('.sop-col-check .check-list-summary'), all(m.box, '.sop-col-check .check-item-pending').length],
-    [null, 7],
+    [!!m.box.querySelector('.sop-col-check .check-list-summary'), all(m.box, '.sop-col-check .check-item-pending').length],
+    [false, 7],
   );
   const sides = all<HTMLElement>(m.box, '.sop-lost .cm-mergeView .cm-content').map((c) => EditorView.findFromDOM(c)?.state.doc.toString());
   eq(
@@ -2836,8 +2836,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await rest(300);
   eq(
     '组字时回来 409：编辑器没有重建、还能改（组到一半的字不被打断），还没有横幅，状态句「保存中…」',
-    [EditorView.findFromDOM(content()) === view, editorEditable(m), m.box.querySelector('.sop-conflict'), saveNow(m)],
-    [true, 'true', null, '·保存中…'],
+    [EditorView.findFromDOM(content()) === view, editorEditable(m), !!m.box.querySelector('.sop-conflict'), saveNow(m)],
+    [true, 'true', false, '·保存中…'],
   );
   await commit('yi', '乙');
   await waitFor(() => editorEditable(m) === 'false');
@@ -2849,7 +2849,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   );
   await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
   await waitFor(() => !!m.box.querySelector('.sop-lost'));
-  const right = EditorView.findFromDOM(all<HTMLElement>(m.box, '.sop-lost .cm-mergeView .cm-content')[1]!)?.state.doc.toString();
+  const side = all<HTMLElement>(m.box, '.sop-lost .cm-mergeView .cm-content')[1];
+  const right = side ? EditorView.findFromDOM(side)?.state.doc.toString() : undefined;
   eq('载入以后：对比右边是上屏的字，没有拼音', [right === mine, right?.includes('yi')], [true, false]);
   await m.unmount();
 }
@@ -2947,7 +2948,7 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     { kind: 'anon', pack: packOf(TRAVEL) },
     { published: { versionNo: 2, publishedAt: '2026-09-25T10:30:00Z', promptHash: 'a'.repeat(12), sections: PUBLISHED } },
   );
-  eq('匿名：一开始没有横幅', a.box.querySelector('.sop-banners'), null);
+  eq('匿名：一开始没有横幅', !!a.box.querySelector('.sop-banners'), false);
   await act(async () => void a.qc.refetchQueries({ queryKey: ['sop'] }));
   await waitFor(() => !!a.box.querySelector('.sop-banners .ant-alert'));
   eq(
