@@ -13,7 +13,7 @@ import { queryOptions, useInfiniteQuery, useQuery, useQueryClient } from '@tanst
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router';
 import { Alert, Button, Card, Collapse, Descriptions, Empty, Input, Modal, Space, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
-import { memo, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnonSopOverview,
   DraftCheck,
@@ -249,11 +249,30 @@ function AnonSop({
   );
 }
 
-/** 409 以后没存上的节：载入最新草稿之前 loaded 为 false（编辑器还冻着、显示你写的）；载入以后有左右对比 */
+/**
+ * 409 以后没存上的节。edits 是这一次没存上的（编辑器还冻着、显示你写的），载入最新草稿以后变成对比接在 loaded 后面；
+ * loaded 是已经载入过的对比，一次 409 一批，关掉之前一直留着：别人接着在存，再来一次 409 也不能把上一批冲掉
+ */
 interface Lost {
   edits: DraftEdit[];
-  error: unknown;
-  loaded: LostSection[] | null;
+  loaded: LostSection[];
+}
+
+/** 这一批没存上的节接在已有的对比后面：左边是载入时草稿里的这一节；同一节第几次没存上（nth）按已有的数 */
+function withLoaded(prev: readonly LostSection[], edits: readonly DraftEdit[], fresh: SopOverview): LostSection[] {
+  const latest = fresh.draft ?? fresh.published;
+  const out = [...prev];
+  for (const e of edits) {
+    const s = fresh.spec.find((x) => x.key === e.key);
+    out.push({
+      key: e.key,
+      nth: out.filter((x) => x.key === e.key).length + 1,
+      name: s?.heading ?? PREAMBLE_NAME,
+      latest: bodyOf(latest.sections.find((x) => x.key === e.key)?.text ?? '', s?.heading ?? null),
+      mine: e.body,
+    });
+  }
+  return out;
 }
 
 function MemberSop({
@@ -308,7 +327,7 @@ function MemberSop({
       qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) => (old && 'spec' in old ? withSavedDraft(old, v) : old));
       clearResults();
     },
-    onConflict: (list, e) => setLost({ edits: list, error: e, loaded: null }),
+    onConflict: (list) => setLost((prev) => ({ edits: list, loaded: prev?.loaded ?? [] })),
   });
   const frozen = saver.status.kind === 'conflict';
   const saving = saver.status.kind === 'saving';
@@ -332,26 +351,19 @@ function MemberSop({
     }
   };
 
-  // 409 以后：重取 /sop，编辑器换成最新草稿，没存上的节连同载入时草稿里的写法留着对比，自动保存接着来
+  // 409 以后：重取 /sop，编辑器换成最新草稿，没存上的节连同载入时草稿里的写法接在已有的对比后面，自动保存接着来
   const reloadLatest = async (): Promise<void> => {
     setReloading(true);
     setReloadError(null);
     try {
       const fresh = await qc.fetchQuery({ ...sopQuery, staleTime: 0 });
       if (!('spec' in fresh)) return;
-      const latest = fresh.draft ?? fresh.published;
-      const loaded = (lost?.edits ?? []).map((e): LostSection => {
-        const s = fresh.spec.find((x) => x.key === e.key);
-        return {
-          key: e.key,
-          name: s?.heading ?? PREAMBLE_NAME,
-          latest: bodyOf(latest.sections.find((x) => x.key === e.key)?.text ?? '', s?.heading ?? null),
-          mine: e.body,
-        };
-      });
       setEdits({});
       clearResults();
-      setLost(loaded.length ? { edits: [], error: null, loaded } : null);
+      setLost((prev) => {
+        const loaded = withLoaded(prev?.loaded ?? [], prev?.edits ?? [], fresh);
+        return loaded.length ? { edits: [], loaded } : null;
+      });
       saver.resume();
     } catch (e) {
       setReloadError(e);
@@ -359,7 +371,8 @@ function MemberSop({
       setReloading(false);
     }
   };
-  const closeLost = useCallback(() => setLost(null), []);
+  // 只关掉对比；409 停住时这一次没存上的节还要留着，载入以后照样变成对比
+  const closeLost = useCallback(() => setLost((prev) => (prev?.edits.length ? { ...prev, loaded: [] } : null)), []);
 
   const runCheck = () =>
     run(async () => {
@@ -420,7 +433,22 @@ function MemberSop({
   // 检查、发布、丢弃都是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点
   const settled = !!draft && unsaved.length === 0 && !saving && !frozen;
   const saveError = saver.status.kind === 'failed' && errorCopy(saver.status.error).place !== 'inline' ? saver.status.error : null;
-  const hasBanners = refetchError !== null || saveError !== null || frozen || lost?.loaded != null || reloadError !== null;
+  const lostLoaded = lost?.loaded.length ? lost.loaded : null;
+  const hasBanners = refetchError !== null || saveError !== null || frozen || lostLoaded !== null || reloadError !== null;
+
+  // 409 停住的那一刻，在一节长正文的下半截打字时横幅在视口外、状态句跟着页头缩没了，编辑器只是不再接受输入：
+  // 把横幅滚进视口；焦点原来在编辑器里的，移到横幅上（读屏念出来，下一个 Tab 就到「载入最新草稿」；
+  // 不直接落在按钮上，免得接着敲的空格、回车把它按下去）。焦点在别处（目录、弹窗）的不抢。
+  // 用 layout effect：编辑器变只读时是整个重建的（SopEditor 的 effect），旧的正文一拿掉焦点就掉到 body 上，
+  // 得赶在那之前看焦点在不在编辑器里
+  const conflictRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = conflictRef.current;
+    if (!frozen || !el) return;
+    const typing = editor.current?.contains(document.activeElement) ?? false;
+    el.scrollIntoView({ block: 'nearest' });
+    if (typing) el.focus({ preventScroll: true });
+  }, [frozen]);
   const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check?.rebase.needed || !!conflict;
 
   return (
@@ -456,15 +484,18 @@ function MemberSop({
           {!frozen && refetchError}
           {saveError !== null && <ErrorAlert error={saveError} onRetry={saver.flush} />}
           {frozen && (
-            <ConflictBanner
-              error={saver.status.kind === 'conflict' ? saver.status.error : null}
-              names={(lost?.edits ?? []).map((e) => headingOf(spec, e.key))}
-              loading={reloading}
-              onReload={() => void reloadLatest()}
-            />
+            <div ref={conflictRef} tabIndex={-1} className="sop-conflict">
+              <ConflictBanner
+                error={saver.status.kind === 'conflict' ? saver.status.error : null}
+                names={(lost?.edits ?? []).map((e) => headingOf(spec, e.key))}
+                loading={reloading}
+                onReload={() => void reloadLatest()}
+              />
+            </div>
           )}
           {reloadError !== null && <ErrorAlert error={reloadError} onRetry={() => void reloadLatest()} />}
-          {lost?.loaded && <LostEdits items={lost.loaded} onClose={closeLost} />}
+          {/* 又一次 409 时上一批对比照样留着（这时编辑器冻着，这一批要载入以后才接上来） */}
+          {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} />}
         </div>
       )}
       <QuotaBar model={quota} />

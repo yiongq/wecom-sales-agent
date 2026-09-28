@@ -1859,7 +1859,8 @@ eq(
 // 9.1 纯函数：失败怎么分、退避的间隔、⌘S 的认法、哪些节算没存上、存上以后的缓存；
 // 9.2 状态机：假的计时器驱动（防抖、同一时刻只有一个请求、退避、409 停住、不自动试的失败、恢复联网、卸下、改回原样）；
 // 9.3 整页：假服务端回 PUT /sop/draft。请求体里的 rev（有草稿、没草稿、接着存）、状态句最后一段、⌘S、断网与离开保护、
-//     409 冻结与载入最新草稿、格式不对、页头按钮、编辑中降成只读；
+//     409 冻结与载入最新草稿、格式不对、页头按钮、编辑中降成只读；接连几次 409 时对比不丢、横幅滚进视口与焦点；
+//     放弃改动并离开以后不再发；422 回来时防抖还在数不马上再发；
 // 9.4 三栏的格子：成员、只读成员、匿名、骨架、窄屏各有哪几格，检查清单挪进来了，工具卡片取行业包。
 
 const flushMicro = async (): Promise<void> => {
@@ -2247,14 +2248,15 @@ function fakeServer(start: SopOverview) {
       });
     if (call.method !== 'PUT') return new Promise<never>(() => undefined);
     const body = call.body as { rev: number | null; edits: { key: string; body: string }[] };
-    if (srv.mode === 'network') throw new TypeError('Failed to fetch');
-    if (srv.mode === 'conflict') return json(409, { error: 'rev_conflict', detail: '草稿已被别人改过' });
-    if (srv.mode === 'invalid') return json(422, { error: 'invalid_sop', detail: '编码不对' });
+    // 按住的请求放开时按那时的 mode 回（先改 mode 再放开，就能让路上的那一个答 422、409）
     if (srv.mode === 'hold') {
       const d = deferred<void>();
       srv.held.push({ resolve: () => d.resolve() });
       await d.promise;
     }
+    if (srv.mode === 'network') throw new TypeError('Failed to fetch');
+    if (srv.mode === 'conflict') return json(409, { error: 'rev_conflict', detail: '草稿已被别人改过' });
+    if (srv.mode === 'invalid') return json(422, { error: 'invalid_sop', detail: '编码不对' });
     return save(body);
   };
   return srv;
@@ -2301,9 +2303,13 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     [['丢弃', '检查', '发布'], ''],
   );
   eq(
-    '状态句的保存那一段按最宽的两种写法占位',
-    all(m.box, '.sop-save-sizer').map((e) => text(e)),
-    ['·已自动保存00:00', '·没保存上·重试'],
+    '状态句的保存那一段按最宽的两种写法占位；会变的那一行是 role=status（读屏念出变化），占位不念',
+    [
+      all(m.box, '.sop-save-sizer').map((e) => text(e)),
+      all(m.box, '.sop-save [role="status"]').map((e) => e.className),
+      all(m.box, '.sop-save-sizer').map((e) => e.getAttribute('aria-hidden')),
+    ],
+    [['·已自动保存00:00', '·没保存上·重试'], ['sop-save-now'], ['true', 'true']],
   );
   eq('没有没存上的改动：丢弃、检查、发布都能点', headerDisabled(m), [false, false, false]);
   await typeAtEnd(m, '测');
@@ -2551,6 +2557,129 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await rest(400);
   eq('降成只读以后：计时到了也不发，编辑器只读', [srv.puts().length, editorEditable(m)], [0, 'false']);
   eq('降成只读以后离开：弹确认', await leaveAndStay(m), true);
+  await m.unmount();
+}
+
+// 9.3i 接连几次 409（别人接着在存，每 1.5 秒一次）：上一批对比不丢，这一批载入以后接在后面，同一节写「第几次没存上」；
+// 冻着时关掉对比，这一次没存上的照样接上来。409 的那一刻横幅滚进视口；焦点原来在编辑器里的移到横幅上，在别处的不抢
+{
+  const proto = win.Element.prototype as unknown as { scrollIntoView(this: Element, o?: unknown): void };
+  const original = proto.scrollIntoView;
+  const scrolled: string[] = [];
+  proto.scrollIntoView = function (this: Element) {
+    scrolled.push(this.className);
+  };
+  const srv = fakeServer(MEMBER_SOP);
+  srv.mode = 'conflict';
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
+  const cm = (): HTMLElement => m.box.querySelector<HTMLElement>('.sop-editor .cm-content')!;
+  const bannerText = (): string => text(m.box.querySelector('.sop-conflict .ant-alert-description'));
+  /** 每次 409 时编辑器里你写的；对比右边是第几次的，按它查 */
+  const mines: string[] = [];
+  const conflictOnce = async (s: string): Promise<void> => {
+    await typeAtEnd(m, s);
+    mines.push(editorText(m)!);
+    await waitFor(() => editorEditable(m) === 'false' && !!m.box.querySelector('.sop-conflict'));
+  };
+  const reload = async (): Promise<void> => {
+    await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
+    await waitFor(() => editorEditable(m) === 'true');
+  };
+  const mineIn = (it: HTMLElement): string | undefined =>
+    EditorView.findFromDOM(all<HTMLElement>(it, '.cm-mergeView .cm-content')[1]!)?.state.doc.toString();
+  const shown = (): [string, number][] =>
+    all<HTMLElement>(m.box, '.sop-lost-item').map((it) => [text(it.querySelector('.sop-lost-name')), mines.indexOf(mineIn(it) ?? '')]);
+
+  await act(async () => cm().focus());
+  await conflictOnce('【第一次】');
+  eq(
+    '409：横幅滚进视口；焦点原来在编辑器里，移到横幅外层上（不落在「载入最新草稿」上）',
+    [scrolled, document.activeElement?.className, m.box.querySelector('.sop-conflict')?.getAttribute('tabindex')],
+    [['sop-conflict'], 'sop-conflict', '-1'],
+  );
+  await reload();
+  eq('载入以后：第一批对比', shown(), [['话术原则', 0]]);
+
+  await act(async () => cm().focus());
+  await conflictOnce('【第二次】');
+  eq(
+    '又一次 409：上一批对比照样留着，横幅点名这一次没存上的节',
+    [shown(), bannerText().includes('你没保存上的1节（话术原则）'), scrolled.length],
+    [[['话术原则', 0]], true, 2],
+  );
+  await reload();
+  eq('再载入：这一批接在后面，同一节写第几次', shown(), [
+    ['话术原则（第1次没存上）', 0],
+    ['话术原则（第2次没存上）', 1],
+  ]);
+
+  await conflictOnce('【第三次】');
+  await clickEv(all<HTMLButtonElement>(m.box, '.sop-lost button').find((b) => label(b) === '关掉对比'));
+  eq(
+    '冻着时关掉对比：对比没了，横幅照样点名这一次没存上的节，离开照拦',
+    [m.box.querySelector('.sop-lost'), bannerText().includes('你没保存上的1节（话术原则）'), await leaveAndStay(m)],
+    [null, true, true],
+  );
+  await reload();
+  eq('载入以后：这一次没存上的照样变成对比', shown(), [['话术原则', 2]]);
+
+  const tocRow = rowIn(m, 'tone')!;
+  await act(async () => tocRow.focus());
+  await conflictOnce('【第四次】');
+  eq('焦点在目录上时 409：横幅照样滚进视口，焦点不抢', [scrolled.length, document.activeElement === tocRow], [4, true]);
+
+  proto.scrollIntoView = original;
+  await m.unmount();
+}
+
+// 9.3j 放弃改动并离开以后不再发：还在数的防抖、连不上时等着的自动重试都跟着页面清掉
+{
+  const leaveAndDrop = async (m: PageBox): Promise<void> => {
+    await act(async () => void m.router.navigate({ to: '/audit' } as never));
+    await until(() => guardOpen());
+    await clickEv(all<HTMLButtonElement>(document.body, '.ant-modal button').find((b) => label(b) === '放弃改动并离开'));
+    await until(() => m.pathname() === '/audit');
+  };
+  const srv = fakeServer(MEMBER_SOP);
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, { ...FAST, debounce: 300 });
+  await typeAtEnd(m, '不要了');
+  await leaveAndDrop(m);
+  await rest(500);
+  eq('防抖还在数时放弃改动并离开：到了别的页，计时到了也不发', [m.pathname(), srv.puts().length], ['/audit', 0]);
+  await m.unmount();
+
+  const off = fakeServer(MEMBER_SOP);
+  off.mode = 'network';
+  const n = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, { ...FAST, backoff: [300, 300] });
+  await typeAtEnd(n, '断了');
+  await waitFor(() => saveNow(n).includes('没保存上'));
+  await leaveAndDrop(n);
+  await rest(700);
+  eq('连不上、等着自动重试时放弃改动并离开：不再重试', [n.pathname(), off.puts().length], ['/audit', 1]);
+  await n.unmount();
+}
+
+// 9.3k 请求在路上时要求过接着存（⌘S），又打了字、防抖还在数，这时答 422：不马上再发，等防抖到了带上新打的字发
+{
+  const srv = fakeServer(MEMBER_SOP);
+  srv.mode = 'hold';
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, { ...FAST, debounce: 400 });
+  await typeAtEnd(m, '甲');
+  await waitFor(() => srv.puts().length === 1);
+  await pressSave({ metaKey: true });
+  await typeAtEnd(m, '乙');
+  srv.mode = 'invalid';
+  await act(async () => srv.held.shift()?.resolve());
+  await waitFor(() => saveNow(m).includes('没保存上'));
+  await rest(60);
+  eq('422 回来时防抖还在数：不马上再发', srv.puts().length, 1);
+  srv.mode = 'ok';
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  eq(
+    '防抖到了：发一次，带路上新打的字，存上了',
+    [srv.puts().length, srv.puts()[1]?.edits[0]?.body.endsWith('甲乙'), saveNow(m)],
+    [2, true, '·已自动保存14:30'],
+  );
   await m.unmount();
 }
 
