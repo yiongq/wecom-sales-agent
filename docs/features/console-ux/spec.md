@@ -16,6 +16,7 @@ Revisions: 2026-09-27 实现期修订（plan 第 3.2 步，评审之后，与实
 Revisions: 2026-09-28 实现期修订（plan 第 3.3 步，与实现同一个分支）：不变量 11 第二层（`scripts/check-console-src.ts` 的词汇扫描）的排除项，在三类之外临时加第四类「旧页面待重做」：01 留下的产品库页 `console/src/pages/CatalogPage.tsx` 里的「线路」「酒店」`route`「目的地」，和 `console/src/router.tsx` 里 `/catalog/$kind` 路由参数的 `route`、`hotel`。这两处按线路与酒店写死（rjsf 表单、写死的列、把 hotel 以外的 kind 都当成 route），第 9、10 步整页重做、路由参数改按行业包的 kind 取（plan「Open」第 2.2 步那条）；现在就改，等于提前做一半第 9、10 步，还改变打不开的 kind 的行为。名单按「文件 + 词」放行，同一个文件里的别的词、别的文件里的同一个词照报；名单里的词在文件里没了（或文件删了），`pnpm lint` 失败并要求删掉这一项，所以第 9、10 步做完时名单必然清空。另两处比原文严：假包 `src/shared/pack-fixtures/` 的界面配置同样查不变量 9（走查照样显示它的字）；`scripts/check-boundaries.ts` 另拦 `src/` 里的非自测代码 import 假包（经 `src/shared` 转一手就能进 console 和它的构建产物）。验收不变。
 Revisions: 2026-09-28 实现期修订（plan 第 3.3 步，评审之后，与实现同一个分支）：不变量 11 第二层的扫描范围与原文有两处出入。一、比原文严：对象字面量里不带引号的属性名（含简写）也扫。`{ quote: '报价' }` 与 `{ 'quote': '报价' }` 是同一个运行时的键，原文「不扫标识符」让前者漏掉，会话页写死的阶段名表就是这样漏的（它已改为从 `/pack` 的 `stages` 取阶段名，与「下发」一节一致）。其余标识符（变量名、属性访问、解构、类型里的成员名、JSX 属性名）仍不扫。随之撞上的几处：通用词白名单加 `duration`、`styles`（antd 的配置键）；白名单的项可以限定文件，图标表 `console/src/shell/icons.tsx` 以设计系统 §7 的图标名为键，`route`、`package` 只在这个文件里放过，限定了文件的项在那些文件里都没有了同样要删；旧页面名单里产品库页加 `hotel`、`detail` 两个对象键。二、比原文松：模块名不扫，即 import、export 的来源，`import()`、`require()`、类型位置的 `import()` 和 `declare module` 里的字符串。它们是模块路径，不上页面；console 能 import 什么由第一层（`scripts/check-boundaries.ts`）管。验收不变。
 Revisions: 2026-09-28 实现期修订（plan 第 5.1 步，评审之后，与实现同一个分支）：「额度条」挪进 `src/shared/sop-sections.ts` 的函数多一个：正文的规范化 `canonicalBody`（连同去 BOM 与换行的 `toLf`），即 `normalizeBody` 里不查编码的那部分；`src/sop/sections.ts` 的 `normalizeBody` 改为先查编码、调它、再查编码，规则与行为不变。服务端保存草稿时先规范化正文再计数（去掉行尾空白、开头空行，结尾补成一个空行或一个换行），前端拿编辑器里的原文直接算，保存前后字数会跳（在节末空行上打两个字，前端 +2、存下来 +4），只多了行尾空格的节也被算成改过；所以额度条与目录的「改过」先规范化再算，原文「按服务端的同一口径」只有这样才成立。验收不变。
+Revisions: 2026-09-28 实现期修订（plan 第 5.2 步，评审之后，与实现同一个分支）：「销售话术 · 编辑器」两处。一、「光标不在那一行时隐藏 `**`」后面补「只读的正文一直隐藏」：固定规则节、只读成员和匿名的正文也能聚焦、选中（键盘进来读、复制），但没有要改的字，照原文在选区那一行露出 `**` 只会让那一行的字宽跳动。二、设计系统 B 页说明行末尾的链接「查看本节改动」随第 6.3 步的发布抽屉一起做：它打开这一节相对线上的逐节差异，这个视图在发布抽屉里才有，spec 也没写链接打开什么；在那之前说明行写到字数为止（「可编辑 · 910 → 954字（+44）」）。plan 第 6.3 步的清单已列上这个链接。验收不变。
 开工方式：本 spec 放在 `docs/features/`，不在「继续」的自动选活范围内（自动选活只扫 `docs/architecture/NN-*`）。开工时要明确说「按 docs/features/console-ux/spec.md 实现」。
 配套文件：[design-system.md](design-system.md) 是视觉与内容细则：令牌、对比度、字体、组件、字段类型渲染器、行业包配置结构、逐页设计、文案。下文写成「设计系统 §n」，或用页面编号（如「E 页」）。行为、接口与验收以本文为准，视觉取值以设计系统为准。文中 [n] 指 [references.md](references.md) 的编号。`docs/spec-driven-dev.md` 规定每个文件夹两个文件；design-system.md 和 references.md 是配套细则，不记进度、不定行为，这一例外在落地本次重写的 PR 里写进 `docs/spec-driven-dev.md`（plan 第 0.0 步）。
 
@@ -379,7 +380,7 @@ export interface CheckIssue {
 **编辑器**（CodeMirror）：
 
 - 没有行号，比例字体 16/28，行宽 ≤640。
-- markdown 用装饰渲染：光标不在那一行时隐藏 `**`，列表圆点悬挂缩进，粗体 600；不折叠正文。
+- markdown 用装饰渲染：光标不在那一行时隐藏 `**`（只读的正文一直隐藏），列表圆点悬挂缩进，粗体 600；不折叠正文。
 - 工具名和字段名显示成芯片「查线路 search_routes」，名称表来自行业包的 `vocabulary.tools` 和 `sopFields`；话术原文不变。不认识的名字不做成芯片。
 - 相对线上改过的段落，在沟槽里画主色竖条；新加的文字用 accent-bg 标出。
 - `EditorView.contentAttributes({ 'aria-label': '「话术原则」正文' })`；编辑器与差异视图的内置文案用 `EditorState.phrases` 汉化 [124]。
