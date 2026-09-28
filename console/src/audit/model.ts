@@ -233,8 +233,13 @@ const intOf = (v: unknown): number | null => (typeof v === 'number' && Number.is
 const strOf = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
 const pairOf = (v: unknown): [unknown, unknown] | null => (Array.isArray(v) && v.length === 2 ? [v[0], v[1]] : null);
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-const at = (v: unknown, path: string): unknown =>
+/**
+ * 按「a.b」这样的路径取嵌套对象里的值；路径中途不是对象时是 undefined。不用 pack.ts 的 valueAt：它在运行时 import 产品库的
+ * schema（zod），审计页的块会因此多下载二十多 KB
+ */
+export const valueAtPath = (v: unknown, path: string): unknown =>
   path.split('.').reduce<unknown>((o, k) => (isRecord(o) && Object.hasOwn(o, k) ? o[k] : undefined), v);
+const at = valueAtPath;
 const empty = (v: unknown): boolean => v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
 /** 只有一个 key 为空串的子字段：每项就是一个值（行程亮点这类 string[]） */
 const singleItem = (f: FieldDef): boolean => f.item?.length === 1 && f.item[0]!.key === '';

@@ -11,7 +11,6 @@ import { Fragment, type MouseEvent, type ReactNode, useEffect, useState } from '
 import type { AuditLookups, AuditPart } from '../../../src/shared/audit-text.js';
 import type { AuditEntryView } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
-import { valueAt } from '../../../src/shared/pack.js';
 import { api, catalogKind, unwrap } from '../api.js';
 import type { AuditSearch } from '../audit-search.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
@@ -41,6 +40,7 @@ import {
   showLogin,
   type TimelineLine,
   timelineGroups,
+  valueAtPath,
 } from './model.js';
 
 /** 与外壳共用的产品库列表（对象名的缓存）：30 秒内的直接用 */
@@ -65,7 +65,7 @@ function useLookups(pack: IndustryPack): AuditLookups {
   const names = new Map<string, string>();
   entities.forEach((e, i) => {
     for (const item of lists[i]?.data?.items ?? []) {
-      const v = valueAt(item.payload as unknown as Record<string, unknown>, e.titleKey);
+      const v = valueAtPath(item.payload, e.titleKey);
       if (typeof v === 'string' && v.trim()) names.set(`${e.kind}\0${item.code}`, v);
     }
   });
