@@ -5034,16 +5034,23 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
     await openCopy(e.box);
     await typeInto(codeInput(), 'r-sichuan-copy');
+    // 按下、松开再按下：输入框自己只拦按住不放时的连发（松开才解锁），提交中的第二次回车要靠弹窗自己拦
+    const enterUp = () =>
+      act(async () => {
+        codeInput()?.dispatchEvent(new win.KeyboardEvent('keyup', { key: 'Enter', bubbles: true, cancelable: true }) as unknown as Event);
+      });
     await press(codeInput(), 'Enter');
+    await enterUp();
     await press(codeInput(), 'Enter');
+    await enterUp();
     await settle();
     eq('提交中再按回车：只发一次 POST', posts(api.sent, '/catalog/route').length, 1);
     await act(async () => release?.());
     await until(() => codeNote() !== CODE_HELP);
     eq(
       '服务端 422 的 path 是 id：写在输入框下（格式说明），不是弹窗里的整句',
-      [codeNote(), copyDialog()?.querySelector('.copy-failure') ?? null, codeInput()?.getAttribute('aria-invalid')],
-      [`线路编号：${CODE_RULE}`, null, 'true'],
+      [codeNote(), copyDialog()?.querySelector('.copy-failure') != null, codeInput()?.getAttribute('aria-invalid')],
+      [`线路编号：${CODE_RULE}`, false, 'true'],
     );
     await press(codeInput(), 'Enter');
     await until(() => copyDialog()?.querySelector('.copy-failure') != null);
@@ -5052,8 +5059,8 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await openCopy(e.box);
     eq(
       '关上再打开：编号清空，输入框下是帮助，没有上一次的报错',
-      [codeInput()?.value, codeNote(), copyDialog()?.querySelector('.copy-failure') ?? null, codeInput()?.getAttribute('aria-invalid')],
-      ['', CODE_HELP, null, null],
+      [codeInput()?.value, codeNote(), copyDialog()?.querySelector('.copy-failure') != null, codeInput()?.getAttribute('aria-invalid')],
+      ['', CODE_HELP, false, null],
     );
     await e.unmount();
     api.restore();

@@ -158,7 +158,10 @@ export interface CopyDialogProps {
   /** 建新草稿；失败时抛 HttpError（编号撞了是 409 catalog_code_taken），成功后页面去新草稿 */
   onCopy(code: string): Promise<void>;
   onCancel(): void;
-  /** 关完以后（没复制成）：页面把焦点还给「更多」 */
+  /**
+   * 关完以后（没复制成：取消、Esc、关闭）：页面把焦点还给「更多」。antd 记下的触发元素是「更多」菜单里的那一项，
+   * 那时菜单已经收起，焦点还不回去，会掉到 body（§5.14 要回到触发它的元素）
+   */
   onClosed(): void;
 }
 
@@ -214,8 +217,6 @@ export function CopyDialog({ open, entity, from, codes, pending, confirmLeave, o
       width={480}
       title={cjk(`复制「${from.title}」为新草稿`)}
       closeIcon={<Icon of={X} />}
-      // 打开它的是「更多」菜单里的一项，关上时已经收起、拿不到焦点：不让 antd 去还，由页面还给「更多」
-      focusable={{ focusTriggerAfterClose: false }}
       onCancel={onCancel}
       afterOpenChange={(visible) => {
         if (visible) input.current?.focus();

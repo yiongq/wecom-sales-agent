@@ -1316,11 +1316,8 @@ export function CatalogDetail(props: CatalogDetailProps) {
             setCopying(false);
           }}
           onCancel={() => setCopying(false)}
-          onClosed={() => {
-            // 没复制成（取消、Esc、关闭）：焦点回到「更多」（§5.14）；打开它的菜单项已经收起，antd 还不回去
-            const a = document.activeElement;
-            if (!a || a === document.body || !a.isConnected || inOverlay(a)) moreRef.current?.focus();
-          }}
+          // 没复制成（取消、Esc、关闭）：焦点回到「更多」（§5.14）。复制成了的话页面已经去了新草稿，这一页连同弹窗都卸掉了
+          onClosed={() => moreRef.current?.focus()}
         />
       ) : null}
       <ConfirmDanger
