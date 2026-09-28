@@ -783,6 +783,8 @@
       下一个 Tab 是「关掉对比」，Enter 以后回到编辑器正文；冻着时关掉对比，焦点回到横幅，下一个 Tab 是「技术详情」。
     - `securitypolicyviolation` 0 次，页面错误 0 条；控制台只有故意答 409 的 `Failed to load resource`。
   - 构建：话术页自己要下的 JS（gzip -9）206,489 → 206,695 B（+206），CSS 2,205 → 2,217 B（+12）。没有新的界面文字，字体不用重切。
+  - `pnpm test` 全过：`PG_TEST_URL` 指向本机一次性的 `postgres:17-alpine` 容器（跑完即删），db 自测 329 条连真实 Postgres 部分一起跑；
+    话术自测 426 条。没有新增依赖。
 
 ## 交接记录
 
