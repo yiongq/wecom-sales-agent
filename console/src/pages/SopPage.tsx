@@ -5,23 +5,29 @@
 // 第 5.3 步：自动保存（sop/autosave.ts：停止输入 1.5 秒后存、带 rev、失败退避重试、⌘S，输入法组字时不存，409 停住并冻结编辑器，
 // 载入最新草稿以后没存上的节以对比形式留着），状态句末尾的保存状态；离开保护管到自动保存还没存上的内容；三栏的布局（右栏是检查清单与
 // 「话术里可以点名的工具」，1280–1439 时检查清单挪到目录下面，<1280 时落到编辑器下面，sop.css）。
-// 检查与发布（第 6 步）、版本记录（第 7 步）还是 01 的做法：页头右侧是检查、发布、丢弃，检查结果在右栏的清单里，
-// 逐节对比和版本历史在页面底部。
+// 第 6.2 步：检查在每次自动保存以后自动跑（sop/check.ts，打开页面时已有草稿也跑一次），页头不再有「检查」；清单里没过的项
+// 点了定位（切到那一节、选中第一处，额度的去额度条）；这一节的问题在编辑器里画波浪线、写错的名字插行内提醒与「改成…」，
+// 其余几类的说明写在编辑卡片上方（sop/problems.ts）。
+// 发布（第 6.3 步）、版本记录（第 7 步）还是 01 的做法：页头右侧是发布、丢弃，逐节对比和版本历史在页面底部。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
 import { queryOptions, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router';
 import { Alert, Button, Card, Collapse, Descriptions, Empty, Input, Modal, Space, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
-import { memo, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type {
-  AnonSopOverview,
-  DraftCheck,
-  SectionSpecView,
-  SopOverview,
-  SopSectionText,
-  SopVersion,
-} from '../../../src/shared/console-api.js';
+import {
+  memo,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { AnonSopOverview, SectionSpecView, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, HttpError, unwrap } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
@@ -35,9 +41,11 @@ import { LEAVING_PAGE, useUnsavedGuard } from '../parts/UnsavedGuard.js';
 import { SectionDiff } from '../SectionDiff.js';
 import { useViewport } from '../shell/hooks.js';
 import { PageHeader } from '../shell/PageHeader.js';
-import { type DraftEdit, useAutosave } from '../sop/autosave.js';
+import { AutosaveTimingContext, type DraftEdit, useAutosave } from '../sop/autosave.js';
+import { checkKey, useDraftCheck } from '../sop/check.js';
 import { Directory, DirectorySelect, type SelectVia } from '../sop/Directory.js';
-import { composingIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
+import { selectFirst } from '../sop/editor.js';
+import { composingIn, editorIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
 import {
   anonOutline,
   anonStatus,
@@ -53,6 +61,7 @@ import {
   unsavedEdits,
   withSavedDraft,
 } from '../sop/outline.js';
+import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { ConflictBanner, LostEdits, type LostSection, SaveState } from '../sop/SaveParts.js';
 import { CheckCard, ToolsCard } from '../sop/SideCards.js';
@@ -292,7 +301,6 @@ function MemberSop({
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [check, setCheck] = useState<DraftCheck | null>(null);
   const [rejected, setRejected] = useState<HttpError | null>(null);
   const [conflict, setConflict] = useState<{ keys: string[]; current: SopSectionText[] } | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -315,13 +323,20 @@ function MemberSop({
   };
   // 本地改过、还没存进草稿的节（规范化以后比，改回原样不算）：自动保存要发的就是它们
   const unsaved = useMemo(() => unsavedEdits(spec, current.sections, edits), [spec, current.sections, edits]);
-  // 检查结果、发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废。
-  // 引用不变，版本历史（memo）才不会每敲一个字跟着重渲
+  // 发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废。检查结果不在这里清：
+  // 草稿一变就重跑（useDraftCheck 按 key），跑完之前先留着上一次的。引用不变，版本历史（memo）才不会每敲一个字跟着重渲
   const clearResults = useCallback((): void => {
-    setCheck(null);
     setRejected(null);
     setConflict(null);
   }, []);
+  const timing = useContext(AutosaveTimingContext);
+  // 每次自动保存成功（草稿的 rev 变了）以后检查一次；打开页面时已经有草稿、载入最新草稿、回滚以后线上换了也跑
+  const check = useDraftCheck({
+    enabled: editable,
+    key: checkKey(draft, published.id),
+    post: () => unwrap(api.sop.draft.check.$post()),
+    now: timing.now,
+  });
   const saver = useAutosave({
     enabled: editable,
     unsaved,
@@ -383,12 +398,6 @@ function MemberSop({
     setLost((prev) => (prev?.edits.length ? { ...prev, loaded: [] } : null));
   }, []);
 
-  const runCheck = () =>
-    run(async () => {
-      setRejected(null);
-      setConflict(null);
-      setCheck(await unwrap(api.sop.draft.check.$post()));
-    });
   const publish = () =>
     run(async () => {
       setRejected(null);
@@ -424,17 +433,27 @@ function MemberSop({
       await refresh();
     });
 
-  const violations = rejected ? (rejected.body.violations ?? []) : (check?.violations ?? null);
+  const checked = check.result;
+  const violations = useMemo(() => (rejected ? (rejected.body.violations ?? []) : (checked?.violations ?? null)), [rejected, checked]);
+  // 每条问题落在哪一节、点了去哪（phrase_missing 取线上版本里含这句的节）；只随检查结果变，右栏的清单（memo）不逐字重渲
+  const located = useMemo(() => (violations ? locateViolations(violations, published.sections) : null), [violations, published.sections]);
   const rows = memberOutline({
     spec,
     packSections: pack?.sopSections,
     published: published.sections,
     current: current.sections,
     edits,
-    violations,
+    violations: located?.map((v) => ({ sectionKey: v.section })),
   });
   const nav = useSectionNav(rows, editor);
   const tools = pack?.vocabulary.tools;
+  const vocabulary = pack?.vocabulary;
+  // 这一节正文里要标出来的问题：引用只随检查结果、换节、换包变，编辑器不逐字重派
+  const problems = useMemo(
+    () => (located ? editorProblems(located, nav.section ?? '', vocabulary) : undefined),
+    [located, nav.section, vocabulary],
+  );
+  const notes = located && nav.section !== undefined ? sectionNotes(located, nav.section) : undefined;
   const section = spec.find((s) => s.key === nav.section);
   const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
@@ -472,7 +491,50 @@ function MemberSop({
     else if (frozen) conflictRef.current?.focus();
     else focusEditorIn(editor.current);
   });
-  const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check?.rebase.needed || !!conflict;
+
+  // 点清单里没过的一项：切到那一节（点击进浏览历史，同目录），等编辑器按这一节建好以后选中第一处、滚过去、聚焦；
+  // 没有 match 可选的（结构、固定规则、必需说法，或者已经改掉了）聚焦正文、把卡片上方的说明滚进视口。额度的去额度条
+  const quotaRef = useRef<HTMLElement>(null);
+  const notesRef = useRef<HTMLUListElement>(null);
+  const pendingLocate = useRef<NonNullable<ProblemTarget> | null>(null);
+  const [, setLocateTick] = useState(0);
+  const navRef = useRef(nav);
+  useEffect(() => {
+    navRef.current = nav;
+  });
+  const locate = useCallback((t: NonNullable<ProblemTarget>): void => {
+    if (t.kind === 'quota') {
+      quotaRef.current?.scrollIntoView({ block: 'nearest' });
+      quotaRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    pendingLocate.current = t;
+    if (t.section !== navRef.current.section) navRef.current.select(t.section, 'click');
+    setLocateTick((n) => n + 1);
+  }, []);
+  useEffect(() => {
+    const t = pendingLocate.current;
+    if (t === null || t.kind === 'quota' || t.section !== nav.section) return;
+    const view = editorIn(editor.current);
+    if (!view) return;
+    pendingLocate.current = null;
+    view.focus();
+    if (t.kind === 'match' && selectFirst(view, t.match, t.name)) return;
+    (notesRef.current ?? editor.current)?.scrollIntoView({ block: 'nearest' });
+  });
+
+  // 点了行内提醒的「改成…」：替换已经进了 edits，等这次渲染把最新的改动交给自动保存以后（useAutosave 的 effect 在前面），马上存
+  const fixed = useRef(false);
+  const onFix = useCallback((): void => {
+    fixed.current = true;
+  }, []);
+  useEffect(() => {
+    if (!fixed.current) return;
+    fixed.current = false;
+    saver.flush();
+  });
+
+  const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check.result?.rebase.needed || !!conflict;
 
   return (
     <>
@@ -489,9 +551,6 @@ function MemberSop({
             <>
               <Button disabled={!settled} loading={busy} onClick={() => setDiscarding(true)}>
                 丢弃
-              </Button>
-              <Button disabled={!settled} loading={busy} onClick={() => void runCheck()}>
-                检查
               </Button>
               <Button disabled={!settled} loading={busy} onClick={() => setPublishing(true)}>
                 发布
@@ -521,18 +580,18 @@ function MemberSop({
           {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} titleRef={lostTitle} />}
         </div>
       )}
-      <QuotaBar model={quota} />
+      <QuotaBar model={quota} ref={editable ? quotaRef : undefined} />
       {hasNotices && (
         <Space orientation="vertical" size="middle" className="sop-notices">
           {error !== null && <ErrorAlert error={error} />}
           {draft?.stale && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
           {rejected && <ErrorAlert error={rejected} />}
-          {check?.rebase.needed && !rejected && (
+          {check.result?.rebase.needed && !rejected && (
             <Alert
-              type={check.rebase.conflicts.length ? 'error' : 'info'}
+              type={check.result.rebase.conflicts.length ? 'error' : 'info'}
               title={
-                check.rebase.conflicts.length
-                  ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
+                check.result.rebase.conflicts.length
+                  ? `这几节在你编辑期间被别人改过：${check.result.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
                     '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
                   : '草稿基于的版本已过期，发布时会自动合并别人的改动'
               }
@@ -574,7 +633,11 @@ function MemberSop({
               frozen={frozen}
               value={edits[section.key] ?? originalBody(section.key)}
               baseline={bodyOf(textOf(published, section.key), section.heading)}
-              vocabulary={pack?.vocabulary}
+              vocabulary={vocabulary}
+              problems={problems}
+              notes={notes}
+              notesRef={notesRef}
+              onFix={onFix}
               onChange={(v) => {
                 setEdits((e) => ({ ...e, [section.key]: v }));
                 saver.edited();
@@ -582,7 +645,21 @@ function MemberSop({
             />
           )
         }
-        check={editable && <CheckCard spec={spec} violations={violations} check={check} />}
+        check={
+          editable && (
+            <CheckCard
+              spec={spec}
+              located={located}
+              violations={violations}
+              check={check.result}
+              budget={check.result ?? budget}
+              at={check.at}
+              failed={check.error !== null}
+              onRetry={check.retry}
+              onLocate={locate}
+            />
+          )
+        }
         tools={tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
       />
 

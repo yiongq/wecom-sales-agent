@@ -230,6 +230,14 @@
 .sop-check-card {
   padding-bottom: 14px;
 }
+/* 检查没跑成：清单下一行的最后一段，danger 的「没检查上 · 重试」，「重试」是文字按钮（同状态句的「重试」） */
+.sop-check-failed {
+  color: var(--danger);
+}
+/* 点清单里的「字数在额度内」滚到额度条、焦点落在它上面（tabIndex=-1，不画焦点框） */
+.sop-quota:focus {
+  outline: none;
+}
 /* 工具：每行一个芯片（§6.6：高 22，内边距 0 6，--r-sm，--subtle 底；中文名 14/500，间隔 4，原名 mono 12.5 text-3） */
 .sop-tools-list {
   display: flex;
@@ -410,6 +418,32 @@
  * 编辑卡片（§5.9）：panel 底、--r-lg、--shadow-card。左内边距 12：编辑器正文区自己再留 12，改动的竖条画在那 12 里（editor.ts）。
  * 获得焦点时照文本域的规矩：描边换成 --accent，外加 3px 的 --accent-ring（§3 焦点）
  */
+/* 这一节的问题（没有行内提醒的几类）：样子同编辑器里的行内提醒（§5.12）——--danger-bg 底、--r-sm、内边距 8 12，14 的 circle-alert */
+.sop-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sop-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--danger-bg);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-note > svg {
+  flex: none;
+  margin-top: 4px;
+  color: var(--danger);
+}
 .sop-editor-card {
   margin-top: 12px;
   padding: 24px 24px 24px 12px;

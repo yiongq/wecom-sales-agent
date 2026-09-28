@@ -302,11 +302,18 @@ export function quotaTone(chars: number, limit: number): QuotaTone {
   return chars * 100 >= limit * 95 ? 'warning' : 'ok';
 }
 
+/** 写在标签里的百分比：<95% 最多写 94，95%–100% 写 95–100，超限至少写 101，与颜色一致（检查清单「字数在额度内」同一个写法） */
+export function quotaPercent(chars: number, limit: number): number {
+  if (!(limit > 0)) return 0;
+  const tone = quotaTone(chars, limit);
+  const raw = Math.round((chars * 100) / limit);
+  return tone === 'ok' ? Math.min(raw, 94) : tone === 'warning' ? Math.min(Math.max(raw, 95), 100) : Math.max(raw, 101);
+}
+
 /** chars 用 editableChars 算（与服务端同一口径），parts 是可编辑节 */
 export function quotaModel(rows: readonly OutlineRow[], chars: number, limit: number): QuotaModel {
   const tone = limit > 0 ? quotaTone(chars, limit) : 'ok';
-  const raw = limit > 0 ? Math.round((chars * 100) / limit) : 0;
-  const percent = tone === 'ok' ? Math.min(raw, 94) : tone === 'warning' ? Math.min(Math.max(raw, 95), 100) : Math.max(raw, 101);
+  const percent = quotaPercent(chars, limit);
   const tail = tone === 'danger' ? `超出${digits(chars - limit)}字，发布会被拦下` : `还能写${digits(limit - chars)}字`;
   const scaleMax = scaleMaxOf(limit, chars);
   const parts = rows
