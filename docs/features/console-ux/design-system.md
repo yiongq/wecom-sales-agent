@@ -450,7 +450,7 @@ select {
 | 等宽：编号、工具原名、字段原名、哈希、JSON     | **Geist Mono**（v1.701）                                               | SIL OFL 1.1，没有保留字体名                                                              | 同上                                |
 | 中文、全角标点、引号、省略号、破折号及其他符号 | **思源黑体 Noto Sans SC**（Google Fonts 版 v2.004，可变 wght 100–900） | SIL OFL 1.1，保留字体名只有 'Source'，用「Noto Sans SC」这个名字切片、自托管、商用都可以 | 自托管：UI 优先片加长尾分片（§2.6） |
 
-- `⌘`（U+2318）、`×`、`→`、`㎡`、`℃` 都由 Noto 画，不掉到系统字体。
+- `⌘`（U+2318）、`×`、`→`、`㎡`、`℃`、减号 `−`（U+2212，差异里删除行的行首与「−1行」）都由 Noto 画，不掉到系统字体。
 - 许可文本随字体发布，见 §2.6。
 
 ### 2.2 实测结论（fonttools 4.66 + Chromium 153 / Firefox / WebKit，Playwright 自带版本）
@@ -501,7 +501,7 @@ select {
   - 中文标点「，。（）「」」
   - 弯引号 “”‘’
   - `…` 和 `—`
-  - `–` `×` `→` `⌘` `㎡`
+  - `–` `×` `→` `⌘` `㎡` `−`
 - 字体没到时用系统字体。一律写固定行高，不用 `line-height: normal`，换字体时行框高度不变。
 
 ### 2.5 标点挤压、中西间距、间隔号
@@ -584,7 +584,7 @@ body {
 
 **UI 优先片**：
 
-- 码位：界面文字里的全部汉字（`console/index.html`、`console/src/**` 除样张目录 `_specimen/` 外、`src/shared/**` 除假包外、各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包；注释和自测不算，见 `scripts/fonts/ui-text.ts`）；全部 CJK 标点 `U+3000-303F, U+FF01-FF60, U+FFE0-FFE6, U+2014-2015, U+2018-2019, U+201C-201D, U+2026, U+2E3A-2E3B`；以及由 Noto 画的符号 `×` `–` `→` `⌘` `㎡` `℃`。按当前仓库加本文的全部文案（界面做完时的用字）、照这份配方切，共 1,124 个码位，实测 243,600 B（早先量的 1,110 个码位、242 KB 那一版少了 U+FFE0–FFE6、U+2E3A–2E3B 和 `×` `–` `→` `⌘` `℃` 这 14 个）；同一批字按 Google 或 fontsource 的切片要下 25 片、1.43 MB。
+- 码位：界面文字里的全部汉字（`console/index.html`、`console/src/**` 除样张目录 `_specimen/` 外、`src/shared/**` 除假包外、各注册行业包的 `console-pack.ts` 里的字符串与 JSX 文本，加 antd 的 zh_CN 语言包和 zod 的 zh-CN 语言包；注释和自测不算，见 `scripts/fonts/ui-text.ts`）；全部 CJK 标点 `U+3000-303F, U+FF01-FF60, U+FFE0-FFE6, U+2014-2015, U+2018-2019, U+201C-201D, U+2026, U+2E3A-2E3B`；以及由 Noto 画的符号 `×` `–` `→` `⌘` `㎡` `℃` `−`。按当前仓库加本文的全部文案（界面做完时的用字）、照这份配方切，共 1,124 个码位，实测 243,600 B（早先量的 1,110 个码位、242 KB 那一版少了 U+FFE0–FFE6、U+2E3A–2E3B 和 `×` `–` `→` `⌘` `℃` 这 14 个）；同一批字按 Google 或 fontsource 的切片要下 25 片、1.43 MB。
 - 保留 GPOS `halt vhal palt vpal kern`、GSUB `ccmp locl vert vrt2`（`ccmp` 把「——」连成一条，§2.2）；wght 轴限到 400–600。
 - 由 `scripts/fonts/build.ts` 生成并提交：从固定 URL 取原文件、校验 sha256，调 fonttools 的 `pyftsubset` 切片，同时写出码位清单和产物的 sha256。只在开发机上跑（要本机装 fonttools），CI 不跑。界面文案改了就重跑；新字即使没重跑也能显示，只是来自长尾分片。
 - `pnpm test` 的检查（spec「字体与授权义务」）：界面文字里的每个汉字、全部 CJK 标点都在码位清单里，汉字以外的字符都由 Geist 或这一片画（例外各带理由）；产物的 cmap、sha256 等于清单；`fonts.css` 里 UI 优先片最后声明。标点都在这一个文件里，Chrome 才能对所有标点对都挤压，§2.2 那 30 对差异也就没有了。
