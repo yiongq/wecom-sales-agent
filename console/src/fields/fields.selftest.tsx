@@ -2767,6 +2767,16 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
       ['线路 r-guizhou-5d', true],
     );
+    // 焦点在抽屉里按 ⌘S：不拿详情页底下那张表单去存（抽屉还开着，之后它按原 rev 保存会得到 409），也不拦浏览器
+    const inDrawer = all<HTMLInputElement>(drawer ?? document, 'input').find((i) => i.value === edited);
+    await act(async () => inDrawer?.focus());
+    const drawerKey = new win.KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true, cancelable: true });
+    await act(async () => void inDrawer?.dispatchEvent(drawerKey as unknown as Event));
+    eq(
+      '焦点在旧抽屉里按 ⌘S：详情页不发 PATCH、不拦浏览器',
+      [drawer?.contains(document.activeElement), sent.filter((x) => x.method === 'PATCH').length, drawerKey.defaultPrevented],
+      [true, 0, false],
+    );
     await click(drawer?.querySelector('button[type="submit"]'));
     await until(() => sent.some((x) => x.method === 'PATCH') && document.querySelector('.ant-drawer-open') === null);
     await until(() => lg.box.querySelectorAll('.field.is-changed').length === 0);
@@ -3681,7 +3691,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await settle();
     await cmdS();
     await until(() => e.box.querySelector('.detail-conflict') !== null);
+    await settle();
     eq('缓存里换成别人存的新版本以后保存：补丁仍带打开时的 rev 1', (api.patches()[0]?.body as { rev?: number } | undefined)?.rev, 1);
+    check(
+      '409：焦点从输入框挪到横幅的「载入最新版本」（表单多在首屏以下，横幅在页头下）',
+      document.activeElement === e.box.querySelector('.detail-conflict button'),
+    );
     eq(
       '409：danger 横幅「这条刚被别人改过」加「载入最新版本」；改动还在，保存条还在',
       [
@@ -3694,6 +3709,8 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     await click(e.box.querySelector('.detail-conflict button'));
     await until(() => e.box.querySelector('.detail-compare') !== null);
+    await settle();
+    check('载入最新版本：按钮随横幅没了，焦点落在对比卡的标题上', document.activeElement === e.box.querySelector('.detail-compare-title'));
     const hardestNow = () => e.box.querySelector<HTMLInputElement>('[data-field-key="intensity.hardest"] input')?.value;
     eq(
       '载入最新版本：横幅没了，表单是最新的（别人改的两处），没有保存条；页头是最新的更新人',
@@ -3729,14 +3746,15 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await settle();
     await click(e.box.querySelector('.detail-compare-use'));
     eq(
-      '用我的改动：写回表单，标「已改」，出现保存条，按钮收起',
+      '用我的改动：写回表单，标「已改」，出现保存条，按钮收起；这是最后一个，焦点回到对比卡的标题',
       [
         hardestNow(),
         all(e.box, '.field.is-changed').map((f) => f.getAttribute('data-field-key')),
         barText(e.box)?.summary,
         e.box.querySelectorAll('.detail-compare-use').length,
+        document.activeElement === e.box.querySelector('.detail-compare-title'),
       ],
-      [mine, ['intensity.hardest'], '有1处改动', 0],
+      [mine, ['intensity.hardest'], '有1处改动', 0, true],
     );
     conflict = false;
     await click(primary(e.box));
@@ -3746,7 +3764,79 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       set: { intensity: { ...(latest.payload.intensity as Payload), hardest: mine } },
     });
     await click(e.box.querySelector('.detail-compare-close'));
-    eq('关闭对比', e.box.querySelectorAll('.detail-compare').length, 0);
+    await settle();
+    eq(
+      '关闭对比（改动都用回了）：不用确认；焦点不掉到 body',
+      [
+        e.box.querySelectorAll('.detail-compare').length,
+        texts(document.body, '.ant-modal-title').filter((t) => t.startsWith('放弃')),
+        document.activeElement !== document.body,
+      ],
+      [0, [], true],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
+  // 409 之后的对比卡：两处改动时「用我的改动」把焦点交给下一个；还有没用回的改动时「关闭对比」先确认，
+  // 确认框开着按 ⌘S 不存；放弃以后对比卡没了、离开不再拦，焦点不掉到 body
+  {
+    const latest = {
+      ...SICHUAN_ITEM,
+      rev: 3,
+      updatedByName: '老周',
+      payload: { ...SICHUAN, hotelLevel: '别人改的档次', intensity: { ...(SICHUAN.intensity as Payload), hardest: '别人改的最累的一段' } },
+    };
+    const api = fakeApi((s) => {
+      if (s.method === 'PATCH') return json({ error: 'rev_conflict', detail: '条目已被别人改过' }, 409);
+      if (s.url.endsWith('/catalog/route/r-sichuan-lux')) return json(latest);
+      return undefined;
+    });
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await typeInto(e.box.querySelector('[data-field-key="intensity.hardest"] input'), `${hardestText}；返程日早起`);
+    await typeInto(e.box.querySelector('[data-field-key="hotelLevel"] input'), '我改的档次');
+    await click(primary(e.box));
+    await until(() => e.box.querySelector('.detail-conflict') !== null);
+    await click(e.box.querySelector('.detail-conflict button'));
+    await until(() => e.box.querySelector('.detail-compare') !== null);
+    await settle();
+    const uses = () => all<HTMLButtonElement>(e.box, '.detail-compare-use');
+    const second = uses()[1];
+    const labelOf = (b: Element | undefined) => document.getElementById(b?.getAttribute('aria-describedby') ?? '')?.textContent;
+    eq(
+      '对比两处：每个「用我的改动」读屏连上这一行的字段名',
+      [uses().length, labelOf(uses()[0]), labelOf(second)],
+      [2, ...texts(e.box, '.detail-compare-label')],
+    );
+    await click(uses()[0]);
+    eq('用了第一处：按钮收起，焦点挪到下一个「用我的改动」', [uses().length, document.activeElement === second], [1, true]);
+    await click(e.box.querySelector('.detail-compare-close'));
+    await settle();
+    const modalTitle = () => texts(document.body, '.ant-modal-title');
+    eq('还有1处没用回时关闭对比：先确认「放弃这1处改动？」', modalTitle(), ['放弃这1处改动？']);
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    await cmdS();
+    eq('关闭对比的确认开着时按 ⌘S：不拦、不发 PATCH', [cmdSPrevented, api.patches().length], [false, 1]);
+    await click(all(document.body, '.ant-modal button').find((b) => b.textContent?.replace(/\s/g, '') === '保留'));
+    await settle();
+    eq('「保留」：对比卡还在，那一处还能用回', [e.box.querySelectorAll('.detail-compare').length, uses().length], [1, 1]);
+    // 撤销用回的那一处：表单回到最新版本，没用回的改动只剩对比里的两处
+    await click(e.box.querySelector('.field.is-changed .field-undo'));
+    await click(e.box.querySelector('.detail-compare-close'));
+    await settle();
+    eq('撤销以后再关：确认「放弃这2处改动？」', modalTitle(), ['放弃这2处改动？']);
+    await click(all(document.body, '.ant-modal button').find((b) => b.textContent?.replace(/\s/g, '') === '放弃改动'));
+    await settle();
+    eq(
+      '「放弃改动」：对比卡没了，焦点不掉到 body',
+      [e.box.querySelectorAll('.detail-compare').length, document.activeElement !== document.body && document.activeElement?.isConnected],
+      [0, true],
+    );
+    await act(async () => {
+      void e.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' } });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    eq('放弃了对比里的改动、表单没改：离开不再拦', e.router.state.location.pathname, '/catalog/route');
     await e.unmount();
     api.restore();
   }
@@ -3763,13 +3853,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await typeInto(e.box.querySelector('[data-field-key="intensity.hardest"] input'), `${hardestText}；返程日早起`);
     await click(primary(e.box));
     await until(() => e.box.querySelector('.detail-alerts .ant-alert') !== null);
-    eq('locked_field：「这些内容上架后锁定了：线路名称、标签里的「国内」」', texts(e.box, '.detail-alerts .ant-alert-title'), [
-      '这些内容上架后锁定了：线路名称、标签里的「国内」',
-    ]);
+    await settle();
+    eq(
+      'locked_field：「这些内容上架后锁定了：线路名称、标签里的「国内」」；Alert 没有按钮，焦点落在它上面',
+      [texts(e.box, '.detail-alerts .ant-alert-title'), document.activeElement === e.box.querySelector('.detail-failure .ant-alert')],
+      [['这些内容上架后锁定了：线路名称、标签里的「国内」'], true],
+    );
     reply = 'down';
     await click(primary(e.box));
     await until(() => texts(e.box, '.detail-alerts .ant-alert-title').some((t) => t.startsWith('服务暂时连不上')));
+    await settle();
     const retry = all<HTMLButtonElement>(e.box, '.detail-alerts button').find((b) => b.textContent?.replace(/\s/g, '') === '重试');
+    check('连不上：焦点落在「重试」上', retry !== undefined && document.activeElement === retry);
     const before = api.patches().length;
     await click(retry);
     await until(() => api.patches().length > before);
@@ -3789,6 +3884,14 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await settle();
     const dialog = () => document.querySelector('.ant-modal');
     eq('放弃：先确认「放弃这1处改动？」', dialog()?.querySelector('.ant-modal-title')?.textContent, '放弃这1处改动？');
+    // 确认框开着时按 ⌘S（焦点哪怕不在框里）：不把正要放弃的改动存上，确认框还在
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    await cmdS();
+    eq(
+      '放弃确认开着时按 ⌘S：不拦、不发 PATCH，确认框还是「放弃这1处改动？」',
+      [cmdSPrevented, api.patches().length, dialog()?.querySelector('.ant-modal-title')?.textContent],
+      [false, 0, '放弃这1处改动？'],
+    );
     await click(all(document.body, '.ant-modal button').find((b) => b.textContent?.replace(/\s/g, '') === '保留'));
     await settle();
     eq('「保留」：改动还在', [hardestIn?.value, barText(e.box)?.summary], [`${hardestText}；返程日早起`, '有1处改动']);

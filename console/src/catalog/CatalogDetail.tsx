@@ -564,7 +564,9 @@ interface Compare {
 
 /**
  * 载入最新版本以后，你没保存上的改动以对比形式保留（spec「保存条」的 409）：你改过的每个字段一行，最新版本与你改的并排，
- * 按字段类型的只读形态画；还能改的字段有「用我的改动」，写回表单（随后照常标「已改」、出现保存条）；上架后锁定了的只能看
+ * 按字段类型的只读形态画；还能改的字段有「用我的改动」，写回表单（随后照常标「已改」、出现保存条）；上架后锁定了的只能看。
+ * 焦点：载入以后落在卡片标题上（「载入最新版本」随横幅消失，CatalogDetail 放）；点了「用我的改动」，这个按钮收起，
+ * 焦点挪到下一个「用我的改动」，没有了就回到标题
  */
 function ConflictCompare({
   entity,
@@ -582,16 +584,24 @@ function ConflictCompare({
   onClose(): void;
 }) {
   const id = useId();
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const fields = changedFields(entity, compare.before, compare.mine);
   const usable = new Set(usableChanges(entity, compare, state, ctx));
   const view = (f: (typeof fields)[number], row: Payload) => {
     const R = RENDERERS[f.type];
     return <R.View field={f} value={valueAt(row, f.key)} row={row} />;
   };
+  const use = (f: (typeof fields)[number], btn: HTMLElement): void => {
+    const list = [...(titleRef.current?.closest('.detail-compare')?.querySelectorAll<HTMLElement>('.detail-compare-use') ?? [])];
+    const i = list.indexOf(btn);
+    const next = list[i + 1] ?? list[i - 1] ?? titleRef.current;
+    next?.focus();
+    onUse((s) => restoreField(s, compare.mine, f));
+  };
   return (
     <section className="detail-compare" aria-labelledby={id}>
       <div className="detail-compare-head">
-        <h2 id={id} className="detail-compare-title">
+        <h2 ref={titleRef} id={id} className="detail-compare-title" tabIndex={-1}>
           {cjk('你没保存上的改动')}
         </h2>
         <span className="detail-compare-count">{`${fields.length}处`}</span>
@@ -599,11 +609,13 @@ function ConflictCompare({
       </div>
       <p className="detail-compare-note">{cjk('已载入最新版本。逐处核对，要保留的点「用我的改动」，再保存')}</p>
       <ul className="detail-compare-rows">
-        {fields.map((f) => {
+        {fields.map((f, i) => {
           const can = usable.has(f);
           return (
             <li key={f.key} className="detail-compare-row">
-              <div className="detail-compare-label">{cjk(f.label)}</div>
+              <div id={`${id}l${i}`} className="detail-compare-label">
+                {cjk(f.label)}
+              </div>
               <div className="detail-compare-cols">
                 <div>
                   <div className="detail-compare-side">最新版本</div>
@@ -615,7 +627,13 @@ function ConflictCompare({
                 </div>
               </div>
               {can ? (
-                <Button size="small" className="detail-compare-use" onClick={() => onUse((s) => restoreField(s, compare.mine, f))}>
+                // 几个按钮同名：读屏连上这一行的字段名
+                <Button
+                  size="small"
+                  className="detail-compare-use"
+                  aria-describedby={`${id}l${i}`}
+                  onClick={(e) => use(f, e.currentTarget)}
+                >
                   用我的改动
                 </Button>
               ) : null}
@@ -712,6 +730,9 @@ function DetailBody({
 /** 新建和匿名没有打开时的内容 */
 const NOTHING: Payload = Object.freeze({}) as Payload;
 
+/** 焦点在弹层里（确认框、抽屉、⌘K）：⌘S 不管，焦点回收也不把它当成还在页面上 */
+const inOverlay = (el: Element | null): boolean => !!el?.closest('[role="dialog"], .ant-modal-root, .ant-drawer');
+
 /** 服务端 422 invalid_item：落好位置的报错、提交时的表单（字段改过以后不再显示）和原来的错误（技术详情） */
 interface ServerIssues {
   placed: Placed[];
@@ -742,6 +763,16 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const [conflict, setConflict] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  /** 对比里还有没用回的改动时点了「关闭对比」：先确认 */
+  const [closingCompare, setClosingCompare] = useState(false);
+  /**
+   * 保存（或载入最新版本）失败、不是 422：页头下的横幅或 Alert 滚进视野，焦点放到它的按钮上（「载入最新版本」「重试」），
+   * 没有按钮就放在 Alert 上。表单多半在首屏以下，不这样做看不见也听不到失败
+   */
+  const [alertTick, setAlertTick] = useState(0);
+  const alertsRef = useRef<HTMLDivElement>(null);
+  /** 载入最新版本以后：焦点放到对比卡的标题上（「载入最新版本」随横幅没了），读屏从这里接着念 */
+  const [compareTick, setCompareTick] = useState(0);
   /** 刚存好：给读屏念一句「已保存」，再改一处就清掉 */
   const [saved, setSaved] = useState(false);
   /** 要跳去的位置（报错的第一处）：等这一轮画完、报错写上以后再跳，读屏在焦点落下时念得到它 */
@@ -756,7 +787,8 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const dirty = Object.keys(pending.set).length > 0 || pending.unset.length > 0;
   // 409 之后你的改动还留在对比里、没用回表单的，也是没保存的内容
   const [compare, setCompare] = useState<Compare | null>(null);
-  const unapplied = compare !== null && usableChanges(entity, compare, state, ctx).length > 0;
+  const unappliedCount = compare ? usableChanges(entity, compare, state, ctx).length : 0;
+  const unapplied = unappliedCount > 0;
   const guard = useUnsavedGuard(ctx.canEdit && (dirty || unapplied));
   const showBar = !!onSave && ctx.canEdit && ctx.status !== 'new' && dirty;
   const changes = showBar ? changeList(entity, original, state) : [];
@@ -774,10 +806,25 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   useEffect(() => {
     if (!refocus) return;
     const a = document.activeElement;
-    if (a && a !== document.body && a.isConnected) return;
+    // 焦点还在正要关上的确认框里也算丢了：弹窗关完会把焦点还给打开它的按钮，那个按钮已经随保存条、对比卡没了
+    if (a && a !== document.body && a.isConnected && !inOverlay(a)) return;
     const back = lastField.current?.isConnected ? lastField.current : document.querySelector<HTMLElement>('.page-title');
     if (back) land(back, 'nearest');
   }, [refocus]);
+  useEffect(() => {
+    if (!alertTick) return;
+    const box = alertsRef.current;
+    const alert = box?.querySelector<HTMLElement>('.detail-conflict') ?? box?.querySelector<HTMLElement>('.detail-failure .ant-alert');
+    if (!box || !alert) return;
+    box.scrollIntoView?.({ block: 'nearest' });
+    const action = alert.querySelector<HTMLElement>('.ant-alert-actions button');
+    if (action) action.focus({ preventScroll: true });
+    else land(alert, 'nearest');
+  }, [alertTick]);
+  useEffect(() => {
+    const title = compareTick ? document.querySelector<HTMLElement>('.detail-compare-title') : null;
+    if (title) land(title, 'nearest');
+  }, [compareTick]);
 
   const save = async (): Promise<void> => {
     if (!onSave || !base || busy.current) return;
@@ -809,26 +856,39 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
         setServer({ ...got, sent, error: e });
         setAttempted(true);
         if (got.placed.length) jumpTo(got.placed[0]!.at);
-      } else if (code === 'rev_conflict') setConflict(true);
-      else setFailure({ error: e, retry: () => void saveRef.current() });
+      } else {
+        if (code === 'rev_conflict') setConflict(true);
+        else setFailure({ error: e, retry: () => void saveRef.current() });
+        setAlertTick((n) => n + 1);
+      }
     } finally {
       busy.current = false;
       setSaving(false);
     }
   };
-  // 键盘与重试拿到的总是最新的 save（它读的是这一轮的表单状态）
+  // 重试拿到的总是最新的 save（它读的是这一轮的表单状态）；⌘S 同样经 ref 取这一轮的处理
   const saveRef = useRef(save);
   useEffect(() => {
     saveRef.current = save;
   });
 
-  // ⌘S / Ctrl+S 保存（spec「保存条」）：这一页能保存时总拦下浏览器的「存储网页」；没有改动时什么也不发
+  // ⌘S / Ctrl+S 保存（spec「保存条」）：这一页能保存时总拦下浏览器的「存储网页」；没有改动时什么也不发。
+  // 弹层开着（放弃确认、未保存保护、草稿的旧抽屉、⌘K）时不拦也不保存：存的会是弹层底下这张表单，弹层还开着，
+  // 放弃确认里按下去会把正要放弃的改动存上
+  const onCmdS = (e: globalThis.KeyboardEvent): void => {
+    if (discarding || closingCompare || inOverlay(document.activeElement)) return;
+    e.preventDefault();
+    void save();
+  };
+  const cmdSRef = useRef(onCmdS);
+  useEffect(() => {
+    cmdSRef.current = onCmdS;
+  });
   useEffect(() => {
     if (!onSave || !canEdit) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing || e.key.toLowerCase() !== 's') return;
-      e.preventDefault();
-      void saveRef.current();
+      cmdSRef.current(e);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -841,6 +901,7 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     try {
       const latest = await onLoadLatest();
       setCompare({ before: original, mine: pruneHidden(state, entity.fields), latest: latest.payload });
+      setCompareTick((n) => n + 1);
       setBase(latest);
       setState(formState(latest.payload));
       setConflict(false);
@@ -850,11 +911,17 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
       setSaved(false);
     } catch (e) {
       setFailure({ error: e, retry: () => void loadLatest() });
+      setAlertTick((n) => n + 1);
     } finally {
       setLoadingLatest(false);
     }
   };
 
+  /** 关掉对比卡：焦点回到最后待过的字段，没有就是标题 */
+  const closeCompare = (): void => {
+    setCompare(null);
+    setRefocus((n) => n + 1);
+  };
   const update = (fn: (s: Payload) => Payload): void => {
     setSaved(false);
     setState(fn);
@@ -881,10 +948,12 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
       />
       {canEdit ? <Alert className="detail-narrow-hint" type="info" showIcon title="建议在电脑上编辑" /> : null}
       {conflict || failure || (attempted && count) ? (
-        <div className="detail-alerts">
+        <div ref={alertsRef} className="detail-alerts">
           {conflict ? <ConflictBanner loading={loadingLatest} onLoad={() => void loadLatest()} /> : null}
           {failure ? (
-            <ErrorAlert error={failure.error} ctx={{ fieldLabel: (k) => lockedFieldLabel(entity, k) }} onRetry={failure.retry} />
+            <div className="detail-failure">
+              <ErrorAlert error={failure.error} ctx={{ fieldLabel: (k) => lockedFieldLabel(entity, k) }} onRetry={failure.retry} />
+            </div>
           ) : null}
           {attempted && count ? (
             <IssueSummary
@@ -897,7 +966,14 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
         </div>
       ) : null}
       {compare ? (
-        <ConflictCompare entity={entity} compare={compare} state={state} ctx={ctx} onUse={update} onClose={() => setCompare(null)} />
+        <ConflictCompare
+          entity={entity}
+          compare={compare}
+          state={state}
+          ctx={ctx}
+          onUse={update}
+          onClose={() => (unapplied ? setClosingCompare(true) : closeCompare())}
+        />
       ) : null}
       <DetailBody
         entity={entity}
@@ -940,6 +1016,19 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
         onCancel={() => setDiscarding(false)}
       >
         表单回到上次保存的内容，这些改动不会保存。
+      </ConfirmDanger>
+      <ConfirmDanger
+        open={closingCompare}
+        title={`放弃这${unappliedCount}处改动？`}
+        confirmText="放弃改动"
+        cancelText="保留"
+        onConfirm={() => {
+          setClosingCompare(false);
+          closeCompare();
+        }}
+        onCancel={() => setClosingCompare(false)}
+      >
+        对比里还没用回表单的改动会丢掉，撤销不了。
       </ConfirmDanger>
       <div className="save-live" role="status">
         {saved && !dirty ? '已保存' : ''}
