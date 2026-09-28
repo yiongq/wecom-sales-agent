@@ -88,11 +88,23 @@ export const usableChanges = (
     (f) => fieldMode(f, ctx) === 'edit' && !sameValue(valueAt(state, f.key), valueAt(compare.mine, f.key)),
   );
 
-/** 保存条右边的说明与主按钮（设计系统 E、G 页）：草稿存了也不推荐；已上架的写接口返回时快照已经更新（01） */
-export function saveCopy(status: 'draft' | 'active'): { note: string; button: string } {
-  return status === 'active'
-    ? { note: '销售助手下一条回复就用新内容', button: '保存并立即生效' }
-    : { note: '草稿保存后仍不会推荐给客户', button: '保存草稿' };
+/**
+ * 保存条右边的说明与主按钮（设计系统 E、G 页）：草稿存了也不推荐；已上架的写接口返回时快照已经更新（01）；
+ * 新建存下来就是一条草稿（spec「新建」：保存即建草稿，第 10.3 步）
+ */
+export function saveCopy(status: 'new' | 'draft' | 'active'): { note: string; button: string } {
+  if (status === 'active') return { note: '销售助手下一条回复就用新内容', button: '保存并立即生效' };
+  if (status === 'new') return { note: '保存后是一条草稿，不会推荐给客户', button: '保存草稿' };
+  return { note: '草稿保存后仍不会推荐给客户', button: '保存草稿' };
+}
+
+/**
+ * 保存条左边的摘要：「有2处改动」；新建时每个填过的字段都算改动，说「改动」不对，写「还没保存」（不列改动名）。
+ * 口径同提交的补丁，万一补丁里有、逐处列不出来的，也不写「有0处」
+ */
+export function saveSummary(status: 'new' | 'draft' | 'active', changes: readonly Change[]): string {
+  if (status === 'new') return '还没保存';
+  return changes.length ? `有${changes.length}处改动` : '有改动';
 }
 
 // ---------------- 报错落在哪 ----------------

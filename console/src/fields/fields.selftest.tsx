@@ -19,8 +19,7 @@
 //    核对行业包里没有的 kind、匿名、非编辑成员、从来没有过、加载与出错时页头的样子。
 // 9. 产品库详情（plan 第 10.1 步，spec「产品库详情与编辑」）：锁定组的计数与在哪张卡片头声明（每组只说一次）、状态句、
 //    上架前检查每项的写法与指向的字段、「已改」与撤销；再挂整页（路由、查询缓存）：已上架、草稿、没有编辑权限、匿名、
-//    新建、假包、不存在、加载与出错，点锁定组、点检查项、撤销一处、有改动时离开被拦下、金额的单位跟着计价单位变；
-//    第 10.2 步之前的过渡：「在旧表单里改」带着改动打开旧抽屉，按打开时的 rev 保存，存好以后按新内容重新打开。
+//    新建、假包、不存在、加载与出错，点锁定组、点检查项、撤销一处、有改动时离开被拦下、金额的单位跟着计价单位变。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/fields/fields.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -2661,7 +2660,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     ],
   );
   check('能编辑的人有「建议在电脑上编辑」（窄屏才显示，CSS 管）', e.box.querySelectorAll('.detail-narrow-hint').length === 1);
-  eq('已上架的条目用保存条改：页头没有「在旧表单里改」（第 10.2 步起只给草稿上架用）', texts(e.box, '.page-actions button'), []);
+  eq(
+    '已上架：页头只有「更多」（里面是复制为新草稿），没有「上架…」',
+    all(e.box, '.page-actions button').map((b) => b.getAttribute('aria-label') ?? b.textContent),
+    ['更多'],
+  );
   eq(
     '状态卡的说明：已上架、能编辑时写「其余内容可以直接改，保存后立即生效」',
     e.box.querySelector('.detail-side .status-note')?.textContent,
@@ -2720,79 +2723,6 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   await leave();
   eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
   await e.unmount();
-
-  // 过渡（第 10.3 步删）：草稿要上架时「在旧表单里改」带着这一页没保存的改动打开 01 的旧抽屉，按眼下的 rev 保存；
-  // 存好以后详情页按新内容重新打开，没有「已改」
-  {
-    const edited = '贵州 小七孔·西江千户苗寨 5 日（亲子版）';
-    const saved = { ...GUIZHOU_ITEM, rev: 2, payload: { ...GUIZHOU_5D, title: edited } };
-    const sent: { method: string; url: string; body: unknown }[] = [];
-    const realFetch = globalThis.fetch;
-    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
-    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : String(input);
-      sent.push({
-        method: (init?.method ?? 'GET').toUpperCase(),
-        url,
-        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-      });
-      if (url.endsWith('/catalog/route/r-guizhou-5d')) return Promise.resolve(json(saved));
-      return Promise.resolve(json({ items: url.endsWith('/catalog/route') ? ROUTE_ROWS : HOTEL_ROWS }));
-    };
-    /** 等到 ok()：旧抽屉按需下载，保存后要等请求和重取 */
-    const until = async (ok: () => boolean) => {
-      for (let i = 0; i < 300 && !ok(); i++) {
-        await act(async () => {
-          await new Promise((r) => setTimeout(r, 20));
-        });
-      }
-    };
-    const lg = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
-    const titleIn = () => lg.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
-    await typeInto(titleIn(), edited);
-    // 打开以后接口又取到一版（别人改过，rev 5）：详情页不换掉打开时的内容，旧抽屉也按打开时的 rev 1 保存，服务端会答 409
-    await act(async () => {
-      lg.qc.setQueryData(['catalog', 'route', 'r-guizhou-5d'], { ...GUIZHOU_ITEM, rev: 5 });
-    });
-    // 查询缓存下一轮才通知页面重画
-    await settle();
-    await settle();
-    await click(lg.box.querySelector('.detail-legacy-edit'));
-    await until(() => document.querySelector('.ant-drawer form') !== null);
-    const drawer = document.querySelector<HTMLElement>('.ant-drawer');
-    eq(
-      '「在旧表单里改」：旧抽屉打开这一条，表单里带着这一页没保存的改动',
-      [
-        drawer?.querySelector('.ant-drawer-title')?.textContent,
-        all<HTMLInputElement>(drawer ?? document, 'input').some((i) => i.value === edited),
-      ],
-      ['线路 r-guizhou-5d', true],
-    );
-    // 焦点在抽屉里按 ⌘S：不拿详情页底下那张表单去存（抽屉还开着，之后它按原 rev 保存会得到 409），也不拦浏览器
-    const inDrawer = all<HTMLInputElement>(drawer ?? document, 'input').find((i) => i.value === edited);
-    await act(async () => inDrawer?.focus());
-    const drawerKey = new win.KeyboardEvent('keydown', { key: 's', metaKey: true, bubbles: true, cancelable: true });
-    await act(async () => void inDrawer?.dispatchEvent(drawerKey as unknown as Event));
-    eq(
-      '焦点在旧抽屉里按 ⌘S：详情页不发 PATCH、不拦浏览器',
-      [drawer?.contains(document.activeElement), sent.filter((x) => x.method === 'PATCH').length, drawerKey.defaultPrevented],
-      [true, 0, false],
-    );
-    await click(drawer?.querySelector('button[type="submit"]'));
-    await until(() => sent.some((x) => x.method === 'PATCH') && document.querySelector('.ant-drawer-open') === null);
-    await until(() => lg.box.querySelectorAll('.field.is-changed').length === 0);
-    eq('在旧抽屉里保存：PATCH 带打开这一页时的 rev，只提交改了的顶层字段', sent.find((x) => x.method === 'PATCH')?.body, {
-      rev: 1,
-      set: { title: edited },
-    });
-    eq(
-      '存好以后：抽屉关上，详情页按新内容重新打开，没有「已改」',
-      [document.querySelectorAll('.ant-drawer-open').length, titleIn()?.value, lg.box.querySelectorAll('.field.is-changed').length],
-      [0, edited, 0],
-    );
-    await lg.unmount();
-    globalThis.fetch = realFetch;
-  }
 
   // F、G 页：草稿
   const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
@@ -2864,7 +2794,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     ],
     [0, 0, [], `小林更新于${sichuanAt}`, 1, 0, '销售助手会向客户推荐它', 0],
   );
-  eq('非编辑成员没有「在旧表单里改」', a.box.querySelectorAll('.detail-legacy-edit').length, 0);
+  eq('非编辑成员：页头没有「更多」「上架…」', a.box.querySelectorAll('.page-actions').length, 0);
   eq(
     '非编辑成员看基本信息：两列（4 列只给整卡锁定）',
     card(a.box, 'basic').querySelector('.field-grid')?.className,
@@ -2902,7 +2832,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   );
   await typeInto(n.box.querySelector('[data-field-key="destination"] input'), '云南');
   eq('新建里填了字不标「已改」（没有可以撤回的原文）', n.box.querySelectorAll('.field.is-changed').length, 0);
-  eq('新建页没有「在旧表单里改」（列表的「新建」直接开旧抽屉）', n.box.querySelectorAll('.detail-legacy-edit').length, 0);
+  eq(
+    '新建：页头没有「更多」「上架…」，也没有页签',
+    [n.box.querySelectorAll('.page-actions').length, n.box.querySelectorAll('.detail-tabs').length],
+    [0, 0],
+  );
   await n.unmount();
   const na = await mountDetail('/catalog/new/route', agent(travel), { lists });
   eq(
@@ -2934,7 +2868,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     all(card(pk.box, 'terms'), 'a.field-ref-link').map((l) => l.getAttribute('href')),
     (NUANMU.materials as string[]).map((c) => `/catalog/material/${c}`),
   );
-  eq('假包没有「在旧表单里改」：旧抽屉不认得装修套餐', pk.box.querySelectorAll('.detail-legacy-edit').length, 0);
+  eq(
+    '假包的已上架套餐：页头同样有「更多」',
+    all(pk.box, '.page-actions button').map((b) => b.getAttribute('aria-label')),
+    ['更多'],
+  );
   await pk.unmount();
   // 金额的单位取自另一个字段（unitFrom）：只改计价单位，单价的单位跟着变（字段按值记忆，它读的单位字段也算在里面）
   const nm = await mountDetail('/catalog/new/material', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
@@ -3638,7 +3576,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     api.restore();
   }
 
-  // 只显示碰过的字段（验收 16）：新建里离开第一个字段，只有它报错；新建的保存在第 10.3 步，这一步没有保存条
+  // 只显示碰过的字段（验收 16）：新建里离开第一个字段，只有它报错；填了字出现保存条（第 10.3 步），必须项没填全时不发请求
   {
     const api = fakeApi(() => undefined);
     const n = await mountDetail('/catalog/new/route', owner(travel), { lists });
@@ -3652,10 +3590,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [['线路编号：没填'], 'true'],
     );
     await typeInto(dest, '云南');
+    eq('新建里填了字：保存条写「还没保存」，不列改动', barText(n.box), {
+      summary: '还没保存',
+      names: undefined,
+      note: '保存后是一条草稿，不会推荐给客户',
+      buttons: ['放弃', '保存草稿'],
+    });
+    await cmdS();
+    await settle();
     eq(
-      '新建里填了字：这一步没有保存条（新建的保存在第 10.3 步），⌘S 不发请求',
-      [bar(n.box) === null, (await cmdS(), api.patches().length)],
-      [true, 0],
+      '新建按 ⌘S、没选境内还是境外：不发请求，字段下方报「境内还是境外：没选」（验收 16）',
+      [api.sent.filter((x) => x.method === 'POST').length, errorAt(n.box, '[data-field-key="overseas"]')],
+      [0, '境内还是境外：没选'],
     );
     await n.unmount();
     api.restore();

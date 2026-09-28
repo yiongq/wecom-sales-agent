@@ -485,3 +485,153 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* ---------- 第 10.3 步：页签、「更多」、上架确认、复制为新草稿、预览 ---------- */
+
+/* 页签「编辑 / 预览」（§4.4）：同列表页的页签，页头下 20（页头自己的下外边距），内容在页签下 16 */
+.detail-tabs > .ant-tabs-nav {
+  margin: 0 0 16px;
+}
+.detail-tabs > .ant-tabs-nav::before {
+  border-bottom-color: var(--divider);
+}
+/* antd 用 text-shadow 假装加粗，这里改成真的 500 */
+.detail-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  font-weight: 500;
+  text-shadow: none;
+}
+
+/* 页头的「更多」（§4.3）：ellipsis 图标，次要按钮样式 32×32：--panel 底，text 色，--shadow-btn；悬停、按下叠一层 */
+.icon-btn.header-more {
+  background: var(--panel);
+  box-shadow: var(--shadow-btn);
+  color: var(--text);
+}
+.icon-btn.header-more:hover {
+  background: linear-gradient(var(--hover), var(--hover)), var(--panel);
+}
+.icon-btn.header-more:active {
+  background: linear-gradient(var(--pressed), var(--pressed)), var(--panel);
+}
+
+/* 弹窗的后果列表（§5.14）：每条 16 图标加 14/22 文字，图标与文字间隔 8，条与条间隔 8；图标按意思取色 */
+.consequences {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.consequence {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.consequence-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--text-2);
+}
+.consequence-warn .consequence-icon {
+  color: var(--warning-icon);
+}
+.consequence-danger .consequence-icon {
+  color: var(--danger);
+}
+.consequence-body {
+  min-width: 0;
+}
+.consequence-strong {
+  font-weight: 500;
+}
+/* 锁定清单（F 页）：按锁定组分行，Tag 在前；「字段 值」字段 text-2、值 text，每段整体不断行，间隔号跟在段尾 */
+.activate-lock-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.activate-lock-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.activate-pairs {
+  min-width: 0;
+}
+.activate-pair {
+  display: inline-block;
+  max-width: 100%;
+}
+.activate-pair-label {
+  margin-right: 4px;
+  color: var(--text-2);
+}
+.activate-pair-value.is-empty {
+  color: var(--text-3);
+}
+
+/* 复制为新草稿：后果列表下面是新编号的输入框（标签、输入框、帮助或报错，同表单字段） */
+.copy-code {
+  margin-top: 16px;
+}
+.copy-code .field-label {
+  display: block;
+  margin-bottom: 6px;
+}
+.copy-code .ant-input.mono {
+  font-family: var(--mono);
+}
+.copy-failure {
+  margin-top: 12px;
+}
+
+/* 「预览」页签（spec「预览」）：375 宽的框，单栏只读；表单网格按自己的宽度收成一列（fields.css 的容器查询） */
+.detail-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.detail-preview-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.detail-preview-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  width: 375px;
+  max-width: 100%;
+  padding: 20px 16px;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.detail-preview-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+.preview-group {
+  padding-top: 16px;
+  border-top: 1px solid var(--divider);
+}
+.preview-group-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}

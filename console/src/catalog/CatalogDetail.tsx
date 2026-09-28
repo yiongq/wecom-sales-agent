@@ -10,13 +10,13 @@
 // 报错落到字段；合格就按打开时的 rev 发补丁（set / unset），存好以后页面换成服务端返回的条目，不弹 toast。服务端 422 的
 // issues 落到字段下方、顶部一行汇总；字段下方的报错只给碰过的字段（失焦过，或点过保存）。409 时页头下横幅「这条刚被别人改过」，
 // 「载入最新版本」以后你的改动以对比形式留在页头下，逐个「用我的改动」。
-// 上架确认、复制为新草稿、「预览」页签与新建的保存是第 10.3 步。在那之前，草稿要上架时页头有「在旧表单里改」：
-// 带着这一页的改动打开 01 的旧抽屉，在那里上架（页面给 onLegacyEdit 才有）。
+// 第 10.3 步：页头「更多」里是「复制为新草稿」，草稿的主按钮是「上架…」（必须项没过时不开确认框，焦点跳到第一处）；
+// 页头下是页签「编辑 / 预览」（地址上的 tab，匿名默认预览）；新建的保存就是建草稿，建好以后页面去它的详情。
 // 行业包只经 props 进来（/pack 的数据），这里不认具体行业：旅游包与假包走同一套代码。
 import { Link } from '@tanstack/react-router';
-import { Alert, Button } from 'antd';
-import { ChevronRight, Clock, Lock, X } from 'lucide-react';
-import { type FocusEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react';
+import { Alert, Button, Dropdown, Tabs } from 'antd';
+import { ChevronRight, Clock, Ellipsis, Lock, X } from 'lucide-react';
+import { type FocusEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { absoluteTime } from '../../../src/shared/format.js';
 import { checkItem, type EntityType, valueAt } from '../../../src/shared/pack.js';
 import { catalogKind, HttpError } from '../api.js';
@@ -30,11 +30,12 @@ import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { Status } from '../parts/Status.js';
 import { TechDetails } from '../parts/TechDetails.js';
-import { useUnsavedGuard } from '../parts/UnsavedGuard.js';
+import { LEAVING_PAGE, useUnsavedGuard } from '../parts/UnsavedGuard.js';
 import { IconButton } from '../shell/IconButton.js';
 import { Icon } from '../shell/icons.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { cjk, Sep } from '../typography.js';
+import { copyPayload, type ItemTab, withCodeHints } from './actions.js';
 import {
   blockOnly,
   cardHasFields,
@@ -50,6 +51,8 @@ import {
   type Updated,
   updatedOf,
 } from './detail.js';
+import { ActivateDialog, CopyDialog } from './ItemDialogs.js';
+import { ItemPreview } from './ItemPreview.js';
 import {
   type Change,
   changedFields,
@@ -60,6 +63,7 @@ import {
   type Placed,
   placeIssues,
   saveCopy,
+  saveSummary,
   touchedPlaces,
   usableChanges,
   visibleErrors,
@@ -88,16 +92,23 @@ export interface CatalogDetailProps {
   anon: boolean;
   /** 当前时刻：「今天10:12」、月份条的当前月（走查钉住时钟） */
   now: number;
-  /** 保存一条已有的：发 PATCH，返回存好的条目（第 10.2 步）。不给就没有保存条（新建的保存在第 10.3 步） */
+  /** 保存一条已有的：发 PATCH，返回存好的条目（第 10.2 步）。不给就没有保存条 */
   onSave?(body: PatchBody): Promise<DetailItem>;
   /** 409 之后「载入最新版本」：重取这一条 */
   onLoadLatest?(): Promise<DetailItem>;
-  /**
-   * 第 10.3 步的上架确认到之前的过渡：给了，草稿的页头就有「在旧表单里改」，点了交出这一页的表单内容（带着没保存的改动，
-   * showWhen 没显示的字段已剔除）和眼下的条目（它的 rev：别人在这之后改过，旧抽屉保存时得到 409），由页面打开 01 的
-   * 旧抽屉去上架。已上架的条目用保存条，不再有这个按钮
-   */
-  onLegacyEdit?(draft: Payload, opened: DetailItem): void;
+  /** 新建的保存：POST 建一条草稿（showWhen 没显示的字段已剔除），由页面接着去它的详情（第 10.3 步） */
+  onCreate?(payload: Payload): Promise<DetailItem>;
+  /** 上架：按眼下条目的 rev 发 activate，返回上架后的条目。给了草稿的页头才有「上架…」 */
+  onActivate?(rev: number): Promise<DetailItem>;
+  /** 复制为新草稿：用这一条存着的 payload 换掉编号去建，由页面接着去新草稿的详情。给了页头才有「更多」 */
+  onCopy?(code: string, payload: Payload): Promise<void>;
+  /** 页签「编辑 / 预览」（地址上的 tab）；新建没有页签 */
+  tab?: ItemTab;
+  onTab?(tab: ItemTab): void;
+  /** 本实体已有的编号（列表里取）：复制时撞了提前说 */
+  codes?: readonly string[];
+  /** 刚建好、刚复制出来的这一条：打开时焦点放在标题上，读屏念这一句（「已建草稿」） */
+  arrival?: string;
 }
 
 /** 01 的 PATCH /catalog/:kind/:code：set 里的顶层字段整体替换，unset 里的删掉 */
@@ -150,6 +161,31 @@ function statusLine(lock: string | null, u: Updated | null, now: number): ReactN
       {lock && u ? <Sep /> : null}
       {u ? <UpdatedPhrase u={u} now={now} /> : null}
     </span>
+  );
+}
+
+/**
+ * 页头的「更多」（§4.3：ellipsis 图标，次要按钮样式 32×32，放在操作区最左）：产品库一条里只有「复制为新草稿」。
+ * 菜单开着时按钮的 Tooltip 不压在菜单上
+ */
+function MoreMenu({ onCopy }: { onCopy(): void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dropdown
+      open={open}
+      onOpenChange={setOpen}
+      trigger={['click']}
+      placement="bottomRight"
+      menu={{
+        items: [{ key: 'copy', label: '复制为新草稿' }],
+        onClick: () => {
+          setOpen(false);
+          onCopy();
+        },
+      }}
+    >
+      <IconButton label="更多" icon={Ellipsis} size={32} className="header-more" tipOpen={open ? false : undefined} placement="bottom" />
+    </Dropdown>
   );
 }
 
@@ -428,7 +464,8 @@ function ChangesPanel({ id, changes, onJump }: { id: string; changes: readonly C
 
 /**
  * 保存条：左边 16 clock（warning-icon）、「有2处改动」、改动的中文名（放不下时省略，「展开改动」看全部）；
- * 右边说明、幽灵按钮「放弃」、主按钮「保存草稿」或「保存并立即生效」。提交中主按钮 loading，其余时候不禁用
+ * 右边说明、幽灵按钮「放弃」、主按钮「保存草稿」或「保存并立即生效」。提交中主按钮 loading，其余时候不禁用。
+ * 新建时左边只写「还没保存」，不列改动
  */
 function SaveBar({
   status,
@@ -438,7 +475,7 @@ function SaveBar({
   onDiscard,
   onJump,
 }: {
-  status: 'draft' | 'active';
+  status: 'new' | 'draft' | 'active';
   changes: readonly Change[];
   saving: boolean;
   onSave(): void;
@@ -471,35 +508,36 @@ function SaveBar({
     <ActionBar
       label="保存改动"
       icon={<Icon of={Clock} size={16} className="save-bar-icon" />}
-      // 口径同提交的补丁；万一补丁里有、逐处列不出来的，也不写「有0处」
-      summary={changes.length ? `有${changes.length}处改动` : '有改动'}
+      summary={saveSummary(status, changes)}
       hint={
-        <span ref={wrap} className="save-bar-hint" onKeyDown={onKeyDown}>
-          <span className="save-bar-names">{cjk(changes.map((c) => c.label).join('、'))}</span>
-          {changes.length ? (
-            <button
-              ref={toggle}
-              type="button"
-              className="save-bar-toggle"
-              aria-expanded={open}
-              aria-controls={open ? listId : undefined}
-              onClick={() => setOpen((o) => !o)}
-            >
-              {open ? '收起改动' : '展开改动'}
-            </button>
-          ) : null}
-          {open ? (
-            <ChangesPanel
-              id={listId}
-              changes={changes}
-              onJump={(path) => {
-                setOpen(false);
-                // 跳不过去：清单收起了，焦点别掉到 body，回到「展开改动」
-                if (!onJump(path)) toggle.current?.focus();
-              }}
-            />
-          ) : null}
-        </span>
+        status === 'new' ? undefined : (
+          <span ref={wrap} className="save-bar-hint" onKeyDown={onKeyDown}>
+            <span className="save-bar-names">{cjk(changes.map((c) => c.label).join('、'))}</span>
+            {changes.length ? (
+              <button
+                ref={toggle}
+                type="button"
+                className="save-bar-toggle"
+                aria-expanded={open}
+                aria-controls={open ? listId : undefined}
+                onClick={() => setOpen((o) => !o)}
+              >
+                {open ? '收起改动' : '展开改动'}
+              </button>
+            ) : null}
+            {open ? (
+              <ChangesPanel
+                id={listId}
+                changes={changes}
+                onJump={(path) => {
+                  setOpen(false);
+                  // 跳不过去：清单收起了，焦点别掉到 body，回到「展开改动」
+                  if (!onJump(path)) toggle.current?.focus();
+                }}
+              />
+            ) : null}
+          </span>
+        )
       }
       note={<span className="save-bar-note">{cjk(copy.note)}</span>}
     >
@@ -671,7 +709,7 @@ function placesOf(target: HTMLElement, root: Element): string[] {
   return touchedPlaces(chain);
 }
 
-/** 两栏的主体：主栏的卡片与副栏。表单状态、报错由 CatalogDetail 给 */
+/** 两栏的主体：主栏的卡片（「预览」页签是手机宽度的只读预览）与副栏。表单状态、报错由 CatalogDetail 给 */
 function DetailBody({
   entity,
   item,
@@ -686,6 +724,9 @@ function DetailBody({
   saveBar,
   onTouch,
   onFocusField,
+  preview,
+  onJumpCard,
+  onJumpIssue,
 }: {
   entity: EntityType;
   item: DetailItem | null;
@@ -702,6 +743,11 @@ function DetailBody({
   saveBar: boolean;
   onTouch(places: readonly string[]): void;
   onFocusField(el: HTMLElement): void;
+  /** 「预览」页签：主栏换成预览；给的是条目名与有没有没保存的改动 */
+  preview: { title: string; dirty: boolean } | null;
+  /** 副栏点锁定组、检查项：跳过去（在预览页签时先换回编辑） */
+  onJumpCard(group: string): void;
+  onJumpIssue(path: string): void;
 }) {
   const updated = item ? updatedOf(item, now) : null;
   // 新建没有原文：卡片和有序子项的区块都不标「已改」
@@ -725,14 +771,16 @@ function DetailBody({
   return (
     <div className={cls}>
       <div ref={mainRef} className="detail-main" onBlur={onBlur} onFocus={(e) => onFocusField(e.target as HTMLElement)}>
-        {entity.groups.filter((g) => cardHasFields(entity, g.key, state)).map(card)}
+        {preview ? (
+          <ItemPreview entity={entity} title={preview.title} state={state} status={ctx.status} dirty={preview.dirty} />
+        ) : (
+          entity.groups.filter((g) => cardHasFields(entity, g.key, state)).map(card)
+        )}
       </div>
       {anon ? null : (
         <aside className="detail-side" aria-label="状态与检查">
-          <StatusCard entity={entity} status={item?.status} ctx={ctx} onJump={(g) => jumpToCard(mainRef.current, g)} />
-          {ctx.status === 'active' ? null : (
-            <CheckCard entity={entity} state={state} onJump={(p) => jumpToIssue(mainRef.current, entity, p)} />
-          )}
+          <StatusCard entity={entity} status={item?.status} ctx={ctx} onJump={onJumpCard} />
+          {ctx.status === 'active' ? null : <CheckCard entity={entity} state={state} onJump={onJumpIssue} />}
           {updated ? <UpdatedCard u={updated} now={now} /> : null}
         </aside>
       )}
@@ -757,7 +805,16 @@ interface ServerIssues {
   error: unknown;
 }
 
-export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onSave, onLoadLatest, onLegacyEdit }: CatalogDetailProps) {
+/** 要跳去的地方：检查项、报错指向的字段（issue），或副栏锁定组指向的卡片（card） */
+interface Jump {
+  to: 'issue' | 'card';
+  at: string;
+}
+
+export function CatalogDetail(props: CatalogDetailProps) {
+  const { groupName, item, canEdit, anon, now, onSave, onLoadLatest, onCreate, onActivate, onCopy, tab, onTab } = props;
+  // 编号字段补上格式帮助和示例（新建时画得出来，行业包没写也有）；只加说明，检查与提交照旧
+  const entity = useMemo(() => withCodeHints(props.entity), [props.entity]);
   const mainRef = useRef<HTMLDivElement>(null);
   // 眼下的条目：打开时的，存好以后换成服务端返回的，载入最新版本以后换成最新的。接口在这之间又取到新的（别人改过）
   // 也不换掉，免得冲掉正在改的：别人改过，保存时按 rev 得到 409
@@ -767,6 +824,9 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const ctx: ItemContext = { status: base ? (base.status ?? 'active') : 'new', canEdit };
   const title = base ? itemTitle(entity, base.payload, base.code) : `新建${entity.label}`;
   const updated = base ? updatedOf(base, now) : null;
+  // 页签只给已有的条目（新建的地址上没有 tab）；「预览」时主栏换成预览，跳到字段之前先换回「编辑」
+  const tabbed = tab !== undefined && onTab !== undefined && base !== null;
+  const previewing = tabbed && tab === 'preview';
 
   const [saving, setSaving] = useState(false);
   const busy = useRef(false);
@@ -781,8 +841,13 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const [discarding, setDiscarding] = useState(false);
   /** 对比里还有没用回的改动时点了「关闭对比」：先确认 */
   const [closingCompare, setClosingCompare] = useState(false);
+  /** 上架确认开着；activatingBusy 是提交中（先保存、再上架）；closeBack 为假时关上以后不把焦点还给「上架…」（结果另有去处） */
+  const [activating, setActivating] = useState(false);
+  const [activatingBusy, setActivatingBusy] = useState(false);
+  const [closeBack, setCloseBack] = useState(true);
+  const [copying, setCopying] = useState(false);
   /**
-   * 保存（或载入最新版本）失败、落不到字段上：页头下的横幅、Alert 或 422 的汇总滚进视野，焦点放到它的按钮上
+   * 保存（或载入最新版本、上架）失败、落不到字段上：页头下的横幅、Alert 或 422 的汇总滚进视野，焦点放到它的按钮上
    * （「载入最新版本」「重试」「跳到第一处」），没有按钮就放在它本身。表单多半在首屏以下，不这样做看不见也听不到失败
    */
   const [alertTick, setAlertTick] = useState(0);
@@ -794,14 +859,20 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const alertsRef = useRef<HTMLDivElement>(null);
   /** 载入最新版本以后：焦点放到对比卡的标题上（「载入最新版本」随横幅没了），读屏从这里接着念 */
   const [compareTick, setCompareTick] = useState(0);
-  /** 刚存好：给读屏念一句「已保存」，再改一处就清掉 */
-  const [saved, setSaved] = useState(false);
-  /** 要跳去的位置（报错的第一处）：等这一轮画完、报错写上以后再跳，读屏在焦点落下时念得到它 */
-  const jumpAt = useRef<string | null>(null);
+  /** 刚存好、刚上架、刚建好：给读屏念一句（「已保存」），再改一处就清掉 */
+  const [said, setSaid] = useState<string | null>(null);
+  /** 要跳去的位置（报错的第一处、副栏点的一项）：等这一轮画完、报错写上、换回编辑页签以后再跳，读屏在焦点落下时念得到它 */
+  const jumpAt = useRef<Jump | null>(null);
   const [jumpTick, setJumpTick] = useState(0);
   /** 保存条消失（存好、放弃）以后焦点回到哪：最后一个待过的字段，没有就是标题 */
   const [refocus, setRefocus] = useState(0);
   const lastField = useRef<HTMLElement | null>(null);
+  /**
+   * 焦点放到页标题上：上架以后（「上架…」没了，状态从标题后面的「草稿」变成「已上架」）；刚建好、刚复制出来的一条打开时
+   * （页面带来 arrival）
+   */
+  const arrival = props.arrival;
+  const [titleTick, setTitleTick] = useState(arrival ? 1 : 0);
 
   // 每次改一个字都重算（和副栏的上架前检查一样），条目只有几十个字段
   const pending = submission(original, state, entity.fields);
@@ -810,20 +881,26 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const [compare, setCompare] = useState<Compare | null>(null);
   const unappliedCount = compare ? usableChanges(entity, compare, state, ctx).length : 0;
   const unapplied = unappliedCount > 0;
-  const guard = useUnsavedGuard(ctx.canEdit && (dirty || unapplied));
-  const showBar = !!onSave && ctx.canEdit && ctx.status !== 'new' && dirty;
-  const changes = showBar ? changeList(entity, original, state) : [];
+  // 切页签只换地址上的 tab，不算离开这一页
+  const guard = useUnsavedGuard(ctx.canEdit && (dirty || unapplied), LEAVING_PAGE);
+  const canSave = ctx.canEdit && (base ? !!onSave : !!onCreate);
+  const showBar = canSave && dirty;
+  const changes = showBar && base ? changeList(entity, original, state) : [];
   const errors = visibleErrors(entity, state, { touched, all: attempted }, server);
 
-  const jumpTo = (at: string): void => {
-    jumpAt.current = at;
+  const jump = (j: Jump): void => {
+    jumpAt.current = j;
+    if (previewing) onTab?.('edit');
     setJumpTick((n) => n + 1);
   };
+  const jumpTo = (at: string): void => jump({ to: 'issue', at });
   useEffect(() => {
-    if (!jumpTick || jumpAt.current === null) return;
-    jumpToIssue(mainRef.current, entity, jumpAt.current);
+    const j = jumpAt.current;
+    if (!jumpTick || !j || previewing) return;
+    if (j.to === 'card') jumpToCard(mainRef.current, j.at);
+    else jumpToIssue(mainRef.current, entity, j.at);
     jumpAt.current = null;
-  }, [jumpTick, entity]);
+  }, [jumpTick, previewing, entity]);
   useEffect(() => {
     if (!refocus) return;
     const a = document.activeElement;
@@ -832,6 +909,16 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     const back = lastField.current?.isConnected ? lastField.current : document.querySelector<HTMLElement>('.page-title');
     if (back) land(back, 'nearest');
   }, [refocus]);
+  useEffect(() => {
+    const t = titleTick ? document.querySelector<HTMLElement>('.page-title') : null;
+    if (t) land(t, 'nearest', true);
+  }, [titleTick]);
+  // 刚建好、刚复制出来（页面带来的一句）：挂上以后再写进读屏区，读屏才当它是新消息（挂上时就有的内容不念）
+  useEffect(() => {
+    if (!arrival) return;
+    const t = setTimeout(() => setSaid(arrival), 0);
+    return () => clearTimeout(t);
+  }, [arrival]);
   useEffect(() => {
     if (!alertTick) return;
     const box = alertsRef.current;
@@ -845,49 +932,67 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     else land(alert, 'nearest', true);
   }, [alertTick]);
   useEffect(() => {
-    const title = compareTick ? document.querySelector<HTMLElement>('.detail-compare-title') : null;
-    if (title) land(title, 'nearest');
+    const t = compareTick ? document.querySelector<HTMLElement>('.detail-compare-title') : null;
+    if (t) land(t, 'nearest');
   }, [compareTick]);
 
-  const save = async (): Promise<void> => {
-    if (!onSave || !base || busy.current) return;
+  /**
+   * 保存、新建、上架失败时落到哪（spec「报错落到字段」「保存条」）：422 的 issues 落到字段；新建时编号撞了（409 catalog_code_taken）
+   * 落到编号字段下；409 rev_conflict 是横幅；其余页头下就地显示，重试再来一次。sent 是提交时的表单（那一处改过以后不再显示）
+   */
+  const fail = (e: unknown, sent: Payload, retry: () => void): void => {
+    const code = e instanceof HttpError ? e.body.error : null;
+    if (code === 'invalid_item' || code === 'catalog_code_taken') {
+      const issues = code === 'invalid_item' ? ((e as HttpError).body.issues ?? []) : [{ path: 'id', message: '这个编号已经有了，换一个' }];
+      const got = placeIssues(entity, issues);
+      setServer({ ...got, sent, error: e });
+      setAttempted(true);
+      // 落到字段上的跳到第一处；全都落不到（路径为空、未知键）时只有页头下的汇总，焦点给它
+      if (got.placed.length) jumpTo(got.placed[0]!.at);
+      else showAlert('issues');
+    } else if (code === 'rev_conflict') {
+      setConflict(true);
+      showAlert('conflict');
+    } else {
+      setFailure({ error: e, retry });
+      showAlert('failure');
+    }
+  };
+
+  /** 保存：已有的发补丁，新建的建草稿。返回存好的条目；没发（不合格、没改动、正在提交）或失败时 null（失败已经报在页面上） */
+  const save = async (): Promise<DetailItem | null> => {
+    if (!canSave || busy.current) return null;
     const own = placeIssues(entity, formIssues(entity, state)).placed;
     if (own.length) {
       // 与 schema 同判的必须项没过：不发请求，全部报出来，焦点跳到第一处
       setAttempted(true);
       jumpTo(own[0]!.at);
-      return;
+      return null;
     }
     const p = submission(original, state, entity.fields);
-    if (!Object.keys(p.set).length && !p.unset.length) return;
+    if (!Object.keys(p.set).length && !p.unset.length) return base;
     const sent = state;
     busy.current = true;
     setSaving(true);
     setFailure(null);
     try {
-      const next = await onSave({ rev: base.rev ?? 0, set: p.set, ...(p.unset.length ? { unset: p.unset } : {}) });
+      if (!base) {
+        // 新建：存下来就是一条草稿（showWhen 没显示的已剔除），页面接着去它的详情
+        const created = await onCreate!(pruneHidden(state, entity.fields));
+        setSaid('已建草稿');
+        return created;
+      }
+      const next = await onSave!({ rev: base.rev ?? 0, set: p.set, ...(p.unset.length ? { unset: p.unset } : {}) });
       setBase(next);
       setAttempted(false);
       setServer(null);
       setConflict(false);
-      setSaved(true);
+      setSaid('已保存');
       setRefocus((n) => n + 1);
+      return next;
     } catch (e) {
-      const code = e instanceof HttpError ? e.body.error : null;
-      if (code === 'invalid_item') {
-        const got = placeIssues(entity, (e as HttpError).body.issues ?? []);
-        setServer({ ...got, sent, error: e });
-        setAttempted(true);
-        // 落到字段上的跳到第一处；全都落不到（路径为空、未知键）时只有页头下的汇总，焦点给它
-        if (got.placed.length) jumpTo(got.placed[0]!.at);
-        else showAlert('issues');
-      } else if (code === 'rev_conflict') {
-        setConflict(true);
-        showAlert('conflict');
-      } else {
-        setFailure({ error: e, retry: () => void saveRef.current() });
-        showAlert('failure');
-      }
+      fail(e, sent, () => void saveRef.current());
+      return null;
     } finally {
       busy.current = false;
       setSaving(false);
@@ -899,11 +1004,65 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     saveRef.current = save;
   });
 
+  /**
+   * 点「上架…」（spec「上架」）：必须项没过时不打开确认框，全部报出来，焦点跳到第一个没过的字段（副栏的检查清单照常列着没过的项）；
+   * 全过才打开确认框。主按钮不禁用（长表单）
+   */
+  const startActivate = (): void => {
+    const own = placeIssues(entity, formIssues(entity, state)).placed;
+    if (own.length) {
+      setAttempted(true);
+      jumpTo(own[0]!.at);
+      return;
+    }
+    setCloseBack(true);
+    setActivating(true);
+  };
+  /** 确认上架：有没保存的改动时先保存（锁定的就是确认框里列的这些），再按存好的 rev 上架 */
+  const activate = async (): Promise<void> => {
+    if (!onActivate || !base || busy.current) return;
+    setActivatingBusy(true);
+    try {
+      const cur = dirty ? await save() : base;
+      if (!cur) {
+        // 没保存上：报错已经在页面上（字段下、页头下），关上确认框去看
+        setCloseBack(false);
+        setActivating(false);
+        return;
+      }
+      busy.current = true;
+      setFailure(null);
+      try {
+        const next = await onActivate(cur.rev ?? 0);
+        setBase(next);
+        setAttempted(false);
+        setServer(null);
+        setConflict(false);
+        setCloseBack(false);
+        setActivating(false);
+        setSaid('已上架');
+        setTitleTick((n) => n + 1);
+      } catch (e) {
+        setCloseBack(false);
+        setActivating(false);
+        fail(e, state, () => void activateRef.current());
+      } finally {
+        busy.current = false;
+      }
+    } finally {
+      setActivatingBusy(false);
+    }
+  };
+  const activateRef = useRef(activate);
+  useEffect(() => {
+    activateRef.current = activate;
+  });
+
   // ⌘S / Ctrl+S 保存（spec「保存条」）：这一页能保存时总拦下浏览器的「存储网页」；没有改动时什么也不发。
-  // 弹层开着（放弃确认、未保存保护、草稿的旧抽屉、⌘K）时不拦也不保存：存的会是弹层底下这张表单，弹层还开着，
+  // 弹层开着（放弃确认、上架确认、复制、未保存保护、⌘K）时不拦也不保存：存的会是弹层底下这张表单，弹层还开着，
   // 放弃确认里按下去会把正要放弃的改动存上
   const onCmdS = (e: globalThis.KeyboardEvent): void => {
-    if (discarding || closingCompare || inOverlay(document.activeElement)) return;
+    if (discarding || closingCompare || activating || copying || inOverlay(document.activeElement)) return;
     e.preventDefault();
     void save();
   };
@@ -912,14 +1071,14 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     cmdSRef.current = onCmdS;
   });
   useEffect(() => {
-    if (!onSave || !canEdit) return;
+    if (!canSave) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.isComposing || e.key.toLowerCase() !== 's') return;
       cmdSRef.current(e);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onSave, canEdit]);
+  }, [canSave]);
 
   const loadLatest = async (): Promise<void> => {
     if (!onLoadLatest || loadingLatest) return;
@@ -935,7 +1094,7 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
       setAttempted(false);
       setServer(null);
       setTouched(new Set());
-      setSaved(false);
+      setSaid(null);
     } catch (e) {
       setFailure({ error: e, retry: () => void loadLatest() });
       showAlert('failure');
@@ -950,30 +1109,24 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     setRefocus((n) => n + 1);
   };
   const update = (fn: (s: Payload) => Payload): void => {
-    setSaved(false);
+    setSaid(null);
     setState(fn);
   };
   const onTouch = (places: readonly string[]): void =>
     setTouched((prev) => (places.every((p) => prev.has(p)) ? prev : new Set([...prev, ...places])));
 
-  const legacy =
-    onLegacyEdit && base && canEdit && ctx.status === 'draft' ? (
-      <Button className="detail-legacy-edit" onClick={() => onLegacyEdit(pruneHidden(state, entity.fields), base)}>
-        在旧表单里改
-      </Button>
-    ) : undefined;
+  // 页头右侧（§4.3）：「更多」在左，主按钮「上架…」在最右；只给能编辑的人、已有的条目
+  const more = canEdit && base && onCopy ? <MoreMenu onCopy={() => setCopying(true)} /> : null;
+  const activateButton =
+    canEdit && base && ctx.status === 'draft' && onActivate ? (
+      <PrimaryButton className="detail-activate" onClick={startActivate}>
+        上架…
+      </PrimaryButton>
+    ) : null;
   const count = errors.list.length + (server?.loose.length ?? 0);
-  return (
+  const check = ctx.status === 'draft' ? checkItem(entity, pruneHidden(state, entity.fields)) : null;
+  const content = (
     <>
-      <PageHeader
-        title={title}
-        docTitle={base ? [title, entity.label] : [title]}
-        breadcrumb={<Breadcrumb group={groupName} entity={entity} current={title} />}
-        titleStatus={base?.status ? <Status kind={base.status} /> : undefined}
-        status={statusLine(lockPhrase(entity, ctx), updated, now)}
-        actions={legacy}
-      />
-      {canEdit ? <Alert className="detail-narrow-hint" type="info" showIcon title="建议在电脑上编辑" /> : null}
       {conflict || failure || (attempted && count) ? (
         <div ref={alertsRef} className="detail-alerts">
           {conflict ? <ConflictBanner loading={loadingLatest} onLoad={() => void loadLatest()} /> : null}
@@ -1016,20 +1169,63 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
         saveBar={showBar}
         onTouch={onTouch}
         onFocusField={(el) => (lastField.current = el)}
+        preview={previewing ? { title, dirty } : null}
+        onJumpCard={(g) => (previewing ? jump({ to: 'card', at: g }) : jumpToCard(mainRef.current, g))}
+        onJumpIssue={(p) => (previewing ? jumpTo(p) : void jumpToIssue(mainRef.current, entity, p))}
       />
-      {showBar && base?.status ? (
+    </>
+  );
+  return (
+    <>
+      <PageHeader
+        title={title}
+        docTitle={base ? [title, entity.label] : [title]}
+        breadcrumb={<Breadcrumb group={groupName} entity={entity} current={title} />}
+        titleStatus={base?.status ? <Status kind={base.status} /> : undefined}
+        status={statusLine(lockPhrase(entity, ctx), updated, now)}
+        actions={
+          more || activateButton ? (
+            <>
+              {more}
+              {activateButton}
+            </>
+          ) : undefined
+        }
+      />
+      {canEdit ? <Alert className="detail-narrow-hint" type="info" showIcon title="建议在电脑上编辑" /> : null}
+      {tabbed ? (
+        // 页签（§4.4）：「编辑 / 预览」，地址上的 tab；内容放在选中的那一个页签里
+        <Tabs
+          className="detail-tabs"
+          activeKey={tab}
+          onChange={(k) => onTab?.(k === 'preview' ? 'preview' : 'edit')}
+          items={(['edit', 'preview'] as const).map((k) => ({
+            key: k,
+            label: k === 'edit' ? '编辑' : '预览',
+            children: k === tab ? content : null,
+          }))}
+        />
+      ) : (
+        content
+      )}
+      {showBar ? (
         <SaveBar
-          status={base.status}
+          status={ctx.status}
           changes={changes}
           saving={saving}
           onSave={() => void save()}
           onDiscard={() => setDiscarding(true)}
-          onJump={(path) => jumpToIssue(mainRef.current, entity, jumpPlace(entity, state, path))}
+          onJump={(path) => {
+            const at = jumpPlace(entity, state, path);
+            if (!previewing) return jumpToIssue(mainRef.current, entity, at);
+            jumpTo(at);
+            return true;
+          }}
         />
       ) : null}
       <ConfirmDanger
         open={discarding}
-        title={changes.length ? `放弃这${changes.length}处改动？` : '放弃改动？'}
+        title={!base ? '放弃填好的内容？' : changes.length ? `放弃这${changes.length}处改动？` : '放弃改动？'}
         confirmText="放弃改动"
         cancelText="保留"
         onConfirm={() => {
@@ -1042,7 +1238,7 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
         }}
         onCancel={() => setDiscarding(false)}
       >
-        表单回到上次保存的内容，这些改动不会保存。
+        {base ? '表单回到上次保存的内容，这些改动不会保存。' : '表单回到空白，填好的内容不会保存。'}
       </ConfirmDanger>
       <ConfirmDanger
         open={closingCompare}
@@ -1057,8 +1253,39 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
       >
         对比里还没用回表单的改动会丢掉，撤销不了。
       </ConfirmDanger>
+      {base && check ? (
+        <ActivateDialog
+          open={activating}
+          entity={entity}
+          title={title}
+          payload={state}
+          recommended={check.recommended}
+          pending={dirty ? Math.max(changeList(entity, original, state).length, 1) : 0}
+          busy={activatingBusy}
+          returnFocus={closeBack}
+          onConfirm={() => void activate()}
+          onCancel={() => {
+            setCloseBack(true);
+            setActivating(false);
+          }}
+        />
+      ) : null}
+      {base && onCopy ? (
+        <CopyDialog
+          open={copying}
+          entity={entity}
+          from={{ code: base.code, title }}
+          codes={props.codes ?? []}
+          pending={dirty ? Math.max(changeList(entity, original, state).length, 1) : 0}
+          onCopy={async (code) => {
+            await onCopy(code, copyPayload(base.payload, code));
+            setCopying(false);
+          }}
+          onCancel={() => setCopying(false)}
+        />
+      ) : null}
       <div className="save-live" role="status">
-        {saved && !dirty ? '已保存' : ''}
+        {said && !dirty ? said : ''}
       </div>
       {guard}
     </>
