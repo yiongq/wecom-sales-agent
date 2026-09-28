@@ -1821,13 +1821,13 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
   };
   const m = await mountPage('/console/sop?section=tone', owner, withNames);
   eq(
-    '成员：节标题、说明行、正文的 aria-label',
+    '成员：节标题、说明行（改过的节末尾是「查看本节改动」，第 6.3 步）、正文的 aria-label',
     [
       text(m.box.querySelector('.sop-pane-title')),
       text(m.box.querySelector('.sop-pane-meta')),
       m.box.querySelector('.sop-editor .cm-content')?.getAttribute('aria-label'),
     ],
-    ['话术原则', '可编辑·910 → 967字（+57）', '「话术原则」正文'],
+    ['话术原则', '可编辑·910 → 967字（+57）·查看本节改动', '「话术原则」正文'],
   );
   eq(
     '成员：芯片的中文名取行业包',
@@ -2366,6 +2366,8 @@ function fakeServer(start: SopOverview) {
     getFails: false,
     /** 发布答 409 sop_conflict（撞上的节与它们的线上正文） */
     publishConflict: null as { keys: string[]; current: SopSectionText[] } | null,
+    /** 发布答 422 契约没过（带这些问题），或 500（第 11 节） */
+    publishFails: null as { contract: ContractViolation[] } | 'error' | null,
     held: [] as { resolve(): void }[],
     nextRev: 10,
     puts: (): { basedOn: string; rev: number | null; edits: { key: string; body: string }[] }[] =>
@@ -2394,6 +2396,8 @@ function fakeServer(start: SopOverview) {
     }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/publish') {
       if (srv.publishConflict) return json(409, { error: 'sop_conflict', detail: '冲突', ...srv.publishConflict });
+      if (srv.publishFails === 'error') return json(500, { error: 'internal', detail: '出错了' });
+      if (srv.publishFails) return json(422, { error: 'contract', detail: '没过', violations: srv.publishFails.contract });
       const no = (srv.state.published.versionNo ?? 0) + 1;
       const v = version(no, srv.state.draft!.sections, { publishedAt: '2026-09-26T06:31:00Z' });
       srv.state = { ...srv.state, published: v, draft: null };
@@ -2447,7 +2451,33 @@ const saveNow = (m: PageBox): string => text(m.box.querySelector('.sop-save-now'
 const label = (b: Element): string => text(b).replace(/ /g, '');
 const headerButton = (m: PageBox, name: string): HTMLButtonElement | undefined =>
   all<HTMLButtonElement>(m.box, '.page-actions button').find((b) => label(b) === name);
-const headerDisabled = (m: PageBox): boolean[] => ['丢弃', '发布'].map((l) => !!headerButton(m, l)?.disabled);
+/** 发布条（第 6.3 步）：页头只剩丢弃；发布条的「发布…」不能点时是 aria-disabled（点了跳到原因），不是 disabled */
+const publishBar = (m: PageBox): HTMLElement | null => m.box.querySelector<HTMLElement>('.action-bar[aria-label="发布"]');
+const barButton = (m: PageBox, name: string): HTMLButtonElement | undefined =>
+  all<HTMLButtonElement>(publishBar(m) ?? m.box, 'button').find((b) => label(b) === name);
+const barBlocked = (m: PageBox): boolean => barButton(m, '发布…')?.getAttribute('aria-disabled') === 'true';
+/** [页头的丢弃 disabled，发布条的「发布…」不能点] */
+const headerDisabled = (m: PageBox): boolean[] => [!!headerButton(m, '丢弃')?.disabled, barBlocked(m)];
+/** 开着的抽屉（标题以 title 开头）；关上以后收起的那一下还在 DOM 里，不算 */
+const drawerOf = (title: string): HTMLElement | undefined =>
+  all<HTMLElement>(document.body, '.sop-drawer.ant-drawer-open').find((d) => text(d.querySelector('.ant-drawer-title')).startsWith(title));
+async function setText(el: HTMLTextAreaElement | HTMLInputElement, v: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')!.set!.call(el, v);
+    el.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+  });
+}
+/** 点发布条的「发布…」，在抽屉里的说明后面接着写 more，点「发布」 */
+async function publishVia(m: PageBox, more: string): Promise<void> {
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const ta = drawerOf('发布草稿')!.querySelector<HTMLTextAreaElement>('textarea')!;
+  await setText(ta, ta.value + more);
+  await waitFor(() =>
+    all(drawerOf('发布草稿')!, '.ant-drawer-footer button').some((b) => label(b) === '发布' && !b.getAttribute('aria-disabled')),
+  );
+  await clickEv(all(drawerOf('发布草稿')!, '.ant-drawer-footer button').find((b) => label(b) === '发布'));
+}
 async function pressSave(mods: { metaKey?: boolean; ctrlKey?: boolean }): Promise<Event> {
   const e = new win.KeyboardEvent('keydown', { key: 's', bubbles: true, cancelable: true, ...mods }) as unknown as Event;
   await act(async () => void window.dispatchEvent(e));
@@ -2467,12 +2497,14 @@ const editorEditable = (m: PageBox): string | null | undefined =>
 // 9.3a 有草稿：带草稿的 rev；「保存中…」→「已自动保存14:30」；接着存带上一次响应的 rev；页头按钮
 {
   const srv = fakeServer(MEMBER_SOP);
+  // 检查没有问题，发布条的「发布…」只看有没有改动
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
   srv.mode = 'hold';
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   eq(
-    '页头：没有「保存草稿」「检查」按钮（检查在自动保存以后自动跑），是丢弃、发布；状态句还没有保存那一段',
+    '页头：没有「保存草稿」「检查」「发布」按钮（检查在自动保存以后自动跑，发布在底部的发布条里），只有丢弃；状态句还没有保存那一段',
     [all(m.box, '.page-actions button').map(label), saveNow(m)],
-    [['丢弃', '发布'], ''],
+    [['丢弃'], ''],
   );
   eq(
     '状态句的保存那一段按最宽的两种写法占位；会变的那一行是 role=status（读屏念出变化），占位不念',
@@ -2485,7 +2517,7 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   );
   eq('没有没存上的改动：丢弃、发布都能点', headerDisabled(m), [false, false]);
   await typeAtEnd(m, '测');
-  eq('打了字还没存：丢弃、发布都不能点', headerDisabled(m), [true, true]);
+  eq('打了字还没存：丢弃不能点，发布条的「发布…」照样能点（点了先存）', headerDisabled(m), [true, false]);
   await waitFor(() => srv.puts().length === 1);
   eq('停止输入以后存：带草稿的 rev，只带改过的节，正文是编辑器里的原文', srv.puts(), [
     { basedOn: 'v2', rev: 4, edits: [{ key: 'tone', body: editorText(m)! }] },
@@ -2502,7 +2534,7 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await typeAtEnd(m, '试');
   await waitFor(() => srv.puts().length === 2);
   eq('接着存：带上一次成功响应的 rev', srv.puts()[1]?.rev, 10);
-  await waitFor(() => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '发布')?.disabled);
+  await waitFor(() => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '丢弃')?.disabled);
   await act(async () => void m.router.navigate({ to: '/audit' } as never));
   await until(() => m.pathname() === '/audit');
   eq('全存上了：离开这一页不拦', [guardOpen(), m.pathname()], [false, '/audit']);
@@ -2916,11 +2948,13 @@ const editorEditable = (m: PageBox): string | null | undefined =>
 // 9.3m 丢弃、发布以后：那份草稿已经没了，状态句不再写「已自动保存14:30」；之后再改，从新建草稿存起
 {
   const srv = fakeServer(MEMBER_SOP);
+  // 检查没有问题，发布条的「发布…」能点
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   const status = (): string => text(m.box.querySelector('.page-status'));
   const modal = (title: string): Element | undefined =>
     all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
-  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '发布')?.disabled;
+  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '丢弃')?.disabled;
   await typeAtEnd(m, '丢');
   await waitFor(saved);
   await clickEv(headerButton(m, '丢弃'));
@@ -2931,14 +2965,7 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await typeAtEnd(m, '发');
   await waitFor(saved);
   eq('丢弃以后再改：新建草稿（rev 为 null、basedOn 线上 v2）', [srv.puts().at(-1)?.rev, srv.puts().at(-1)?.basedOn], [null, 'v2']);
-  await clickEv(headerButton(m, '发布'));
-  await until(() => !!modal('发布草稿')?.querySelector('textarea'));
-  const note = modal('发布草稿')!.querySelector<HTMLTextAreaElement>('textarea')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '改了话术原则');
-    note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
-  });
-  await clickEv(all(modal('发布草稿')!, '.ant-modal-footer button').find((b) => label(b) === '发布'));
+  await publishVia(m, '改了话术原则');
   await waitFor(() => status().startsWith('线上v3'));
   eq('发布以后：线上v3、没有未发布的改动，保存那一段清空', [status().includes('没有未发布的改动'), saveNow(m)], [true, '']);
   await m.unmount();
@@ -3934,7 +3961,8 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const MERGE = 'info：草稿打开之后发布过新版本，发布时自动合并';
   for (const conflicts of [[], ['tone']]) {
     const srv = fakeServer(stale);
-    srv.check = (s) => ({ ...scan(s), rebase: { needed: true, conflicts } });
+    // 后面要去发布：问题清空，发布条的「发布…」能点（提示只看 rebase）
+    srv.check = (s) => ({ ...scan(s), violations: [], rebase: { needed: true, conflicts } });
     srv.checkHold = true;
     const m = await mountPage('/console/sop?section=tone', travelOwner, stale, FAST);
     await waitFor(() => srv.checks() === 1);
@@ -3955,24 +3983,37 @@ function recordScroll(): { calls: string[]; restore(): void } {
       ],
     );
     if (conflicts.length) {
-      // 照样去发布，撞上冲突（409）：由发布被拒的那一条说，检查的这一条不再重复
+      // 检查报了冲突的节：发布抽屉里写出来，「发布」不能点
+      srv.checkHold = false;
+      await clickEv(barButton(m, '发布…'));
+      await waitFor(
+        () =>
+          !!drawerOf('发布草稿') && srv.checks() === 2 && text(drawerOf('发布草稿')!.querySelector('.sop-drawer-reason')) !== '正在检查…',
+      );
+      const d = drawerOf('发布草稿')!;
+      eq(
+        '检查报了冲突的节：发布抽屉里说哪几节被改了，「发布」不能点、旁边写原因',
+        [
+          text(d.querySelector('.sop-publish .ant-alert-title')),
+          text(d.querySelector('.sop-drawer-reason')),
+          all(d, '.ant-drawer-footer button')
+            .find((b) => label(b) === '发布')
+            ?.getAttribute('aria-disabled'),
+        ],
+        ['有1节在你改的同时被改了：话术原则', '有1节被别人改过，发布不了', 'true'],
+      );
+      await clickEv(all(d, '.ant-drawer-footer button').find((b) => label(b) === '取消'));
+      await waitFor(() => !drawerOf('发布草稿'));
+    } else {
+      // 检查说能合并，发布时撞上冲突（409，这期间别人又发布了）：抽屉关上，由发布被拒的那一条说，合并提示不再重复
       srv.publishConflict = { keys: ['tone'], current: P_ONLINE };
-      const modal = (): Element | undefined =>
-        all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === '发布草稿');
-      await waitFor(() => !headerButton(m, '发布')?.disabled);
-      await clickEv(headerButton(m, '发布'));
-      await until(() => !!modal()?.querySelector('textarea'));
-      const note = modal()!.querySelector<HTMLTextAreaElement>('textarea')!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '改了话术原则');
-        note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
-      });
-      await clickEv(all(modal()!, '.ant-modal-footer button').find((b) => label(b) === '发布'));
+      srv.checkHold = false;
+      await publishVia(m, '改了话术原则');
       await waitFor(() => notices(m).some((n) => n.includes('发布被拒')));
       eq(
-        '发布撞上冲突（409）：只有发布被拒的那一条',
-        notices(m).map((n) => n.split('——')[0]),
-        ['error：发布被拒：这几节在你编辑期间被别人改过'],
+        '发布撞上冲突（409）：抽屉关上，只有发布被拒的那一条',
+        [notices(m).map((n) => n.split('——')[0]), !!drawerOf('发布草稿')],
+        [['error：发布被拒：这几节在你编辑期间被别人改过'], false],
       );
     }
     await m.unmount();
