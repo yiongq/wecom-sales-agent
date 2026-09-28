@@ -137,7 +137,7 @@ export function conversationLabel(row: Pick<ConversationRow, 'id' | 'channel'>, 
 }
 
 /**
- * 工作台里打开这个会话。admin.html 读 #s=<id> 选中它是第 13 步的事：在那之前这个链接只打开工作台、不选中会话（plan「Open」）
+ * 工作台里打开这个会话：admin.html 启动时读 #s=<id> 选中它，登录框走完后仍然选中（spec「会话列表」，plan 第 13 步）
  */
 export const workbenchHref = (id: string): string => `/admin.html#s=${encodeURIComponent(id)}`;
 
