@@ -21,7 +21,8 @@
   min-width: 0;
   min-height: 0;
   margin: 8px 8px 8px 0;
-  overflow: hidden;
+  /* clip 而不是 hidden：面板只裁圆角，不做滚动容器，里面溢出的东西不会让 scrollIntoView 把整块面板推上去 */
+  overflow: clip;
   border-radius: var(--r-xl);
   background: var(--panel);
   box-shadow: var(--shadow-panel);

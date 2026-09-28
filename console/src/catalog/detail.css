@@ -96,8 +96,10 @@
   font-weight: 600;
   color: var(--text);
 }
-/* 副栏点锁定组时焦点落在卡片头 */
+/* 副栏点锁定组时焦点落在卡片头；载入最新版本以后落在对比卡的标题；保存失败时没有按钮的 Alert 自己拿焦点 */
 .detail-card-title:focus-visible,
+.detail-compare-title:focus-visible,
+.detail-failure .ant-alert:focus-visible,
 .detail-block:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -264,7 +266,9 @@
 
 /*
  * 保存条（§5.16、E 页）：左边 16 clock 用 --warning-icon；改动的中文名 13 text-2，放不下时省略；「展开改动」14/22/500
- * accent-text，离名字 4，总在；右边说明离「放弃」16（条里按钮间隔 8，说明再让 8）；「放弃」是幽灵按钮，text-2
+ * accent-text，离名字 4，总在；右边说明离「放弃」16（条里按钮间隔 8，说明再让 8）；「放弃」是幽灵按钮，text-2。
+ * 「展开改动」在 .action-bar-hint 里（overflow: hidden，四边贴着它）：点击区 24 高、左右各留 4（离名字的 4 就是这段），
+ * 焦点环往里收（§3 容器会裁掉外框的地方）
  */
 .save-bar-icon {
   color: var(--warning-icon);
@@ -281,8 +285,8 @@
 }
 .save-bar-toggle {
   flex: none;
-  margin-left: 4px;
-  padding: 0;
+  min-height: 24px;
+  padding: 0 4px;
   border: 0;
   border-radius: var(--r-xs);
   background: none;
@@ -300,7 +304,7 @@
 .save-bar-toggle:focus-visible,
 .save-change:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 .save-bar-note {
   margin-right: 8px;
@@ -403,6 +407,7 @@
 }
 .detail-compare-title {
   margin: 0;
+  border-radius: var(--r-xs);
   font-size: 15px;
   line-height: 22px;
   font-weight: 600;
@@ -463,9 +468,15 @@
   }
 }
 
-/* 给读屏念「已保存」：看不见、不占位置（整块在页面末尾，不在一行字里，WebKit 的 text-autospace 问题碰不到它） */
+/*
+ * 给读屏念「已保存」：看不见、不占位置（整块在页面末尾，不在一行字里，WebKit 的 text-autospace 问题碰不到它）。
+ * 用 fixed 钉在视口左上：absolute 时它的包含块是 .shell-panel，停在几千像素处的静态位置，把面板撑出一段能被
+ * scrollIntoView 滚动的溢出，整块面板被推上去、滚轮滚不回来
+ */
 .save-live {
-  position: absolute;
+  position: fixed;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   overflow: hidden;
