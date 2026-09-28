@@ -296,30 +296,33 @@ function DrawerBody({ view }: { view: DrawerView }) {
           <h3 id="au-changes-title" className="au-changes-title">
             {changes.title}
           </h3>
-          <table className="au-table" aria-labelledby="au-changes-title">
-            <thead>
-              <tr>
-                <th scope="col">字段</th>
-                {!changes.created && <th scope="col">原来</th>}
-                <th scope="col">{changes.created ? '内容' : '现在'}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {changes.rows.map((r, i) => (
-                <tr key={i}>
-                  <th scope="row">{cjk(r.label)}</th>
-                  {!changes.created && (
-                    <td>
-                      <CellView cell={r.before} />
-                    </td>
-                  )}
-                  <td>
-                    <CellView cell={r.after} />
-                  </td>
+          {/* 改的全是包里没有的键时没有行：不画只有表头的表，只留下面「另N项见技术详情」 */}
+          {changes.rows.length > 0 && (
+            <table className="au-table" aria-labelledby="au-changes-title">
+              <thead>
+                <tr>
+                  <th scope="col">字段</th>
+                  {!changes.created && <th scope="col">原来</th>}
+                  <th scope="col">{changes.created ? '内容' : '现在'}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {changes.rows.map((r, i) => (
+                  <tr key={i}>
+                    <th scope="row">{cjk(r.label)}</th>
+                    {!changes.created && (
+                      <td>
+                        <CellView cell={r.before} />
+                      </td>
+                    )}
+                    <td>
+                      <CellView cell={r.after} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           {changes.notes.length > 0 && <p className="au-notes">{cjk(changes.notes)}</p>}
         </section>
       )}
@@ -376,7 +379,9 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
       return next;
     });
 
-  // 抽屉：关上之后内容留到收起动画结束，焦点回到点开它的那一句（设计系统 §5.13）
+  // 抽屉：关上之后内容留到收起动画结束，焦点回到点开它的那一句（设计系统 §5.13）。
+  // 焦点只由这里还，而且一关上就还（open 变成 false 之后的 effect：抽屉的焦点陷阱这时已经放开），不等收起动画。
+  // antd 自己还的话，还给的是打开时的 activeElement：点在行上（句子以外）打开时那是别处（比如刚点过的类别），所以关掉它
   const [shown, setShown] = useState<{ entry: AuditEntryView; trigger: HTMLElement | null } | null>(null);
   const [open, setOpen] = useState(false);
   const view = shown ? drawerView(shown.entry, pack, lookups) : null;
@@ -384,10 +389,12 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
     setShown({ entry, trigger });
     setOpen(true);
   };
+  const trigger = shown?.trigger ?? null;
+  useEffect(() => {
+    if (!open && trigger?.isConnected) trigger.focus();
+  }, [open, trigger]);
   const afterOpenChange = (isOpen: boolean): void => {
-    if (isOpen) return;
-    if (shown?.trigger?.isConnected) shown.trigger.focus();
-    setShown(null);
+    if (!isOpen) setShown(null);
   };
 
   const filtered = search.cat !== undefined;
@@ -459,6 +466,7 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
         open={open}
         onClose={() => setOpen(false)}
         afterOpenChange={afterOpenChange}
+        focusable={{ focusTriggerAfterClose: false }}
         size={480}
         closable={false}
         title="改动详情"

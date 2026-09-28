@@ -666,6 +666,20 @@ const cell = (c: Cell): string =>
     [{ label: '原因', text: '合同价写错' }, ['每晚起价'], '改了1处', []],
   );
   eq('抽屉：命令行的操作者写「命令行」', fix.facts[1], { label: '操作者', text: '命令行' });
+  const odd = (diff: Record<string, unknown>) =>
+    drawerView(entry({ action: 'catalog.update', targetType: 'route', targetId: 'r-a', diff }), TRAVEL, {}).changes;
+  eq(
+    '抽屉：包里没有的键也算进「改了N处」，原名不写；只有这种键时改动表没有行',
+    [odd({ hotelLevel: ['顶级精品', '顶级野奢'], legacyKey: [1, 2] }), odd({ legacyKey: [1, 2] })].map((c) => [
+      c?.title,
+      c?.rows.length,
+      c?.notes,
+    ]),
+    [
+      ['改了2处', 1, ['另1项见技术详情']],
+      ['改了1处', 0, ['另1项见技术详情']],
+    ],
+  );
   const pub = drawerView(publish, TRAVEL, {});
   eq(
     '抽屉：话术写版本、去处是销售话术、没有改动表；UUID 只在技术详情里',
@@ -1118,7 +1132,10 @@ async function mount(viewer: Viewer, search = '') {
     [[`小林 修改了线路「${SICHUAN}」`, 'true']],
   );
   check('抽屉里没有红色', document.querySelectorAll('.au-drawer .ant-alert-error').length === 0);
-  await m.click(document.querySelector('.au-drawer [aria-label="关闭"]'));
+  // 关之前把焦点放进抽屉：浏览器里 antd 打开时会这样做，happy-dom 里不一定，不放的话焦点一直在那一句上，下一条查不出东西
+  const closeButton = (): HTMLElement | null => document.querySelector<HTMLElement>('.au-drawer [aria-label="关闭"]');
+  await act(async () => closeButton()?.focus());
+  await m.click(closeButton());
   check('关上：抽屉收起，选中的底没了', !document.querySelector('.au-drawer .ant-drawer-open') && m.$('.au-row.is-selected').length === 0);
   check('关上：焦点回到点开它的那一句', document.activeElement === target);
 
@@ -1151,7 +1168,10 @@ async function mount(viewer: Viewer, search = '') {
     m.text(document.querySelector('.au-detail-sentence')),
     `小林 修改了线路「${SICHUAN}」的住宿档次、行程亮点`,
   );
-  await m.click(document.querySelector('.au-drawer [aria-label="关闭"]'));
+  // 这次打开前焦点在上一次关上时还回去的「拉萨瑞吉」那一条上：antd 自己还焦点的话会还到那里
+  await act(async () => closeButton()?.focus());
+  await m.click(closeButton());
+  check('点在行上打开、焦点原来在别处：关上后焦点回到这一句，不回到原来的地方', document.activeElement === target);
 
   // 话术：去处是销售话术
   await m.click(m.$('.au-row .au-sentence').find((e) => m.text(e).startsWith('老板 发布了话术')));
@@ -1166,6 +1186,25 @@ async function mount(viewer: Viewer, search = '') {
   );
   await m.click(document.querySelector('.au-link'));
   eq('点去处：到话术页', m.url(), '/sop');
+  await m.unmount();
+}
+
+// 改的全是包里没有的键（包改过、字段删了）：不画只有表头的表
+{
+  server = {
+    log: [entry({ action: 'catalog.update', targetType: 'route', targetId: 'r-sichuan-lux', diff: { legacyKey: [1, 2] } })],
+  };
+  const m = await mount(member('owner'));
+  await m.click(m.$('.au-row .au-sentence')[0]);
+  eq(
+    '抽屉：改的全是包里没有的键时写「改了1处」与「另1项见技术详情」，没有表',
+    [
+      m.text(document.querySelector('.au-changes-title')),
+      document.querySelectorAll('.au-table').length,
+      m.text(document.querySelector('.au-notes')),
+    ],
+    ['改了1处', 0, '另1项见技术详情'],
+  );
   await m.unmount();
 }
 
