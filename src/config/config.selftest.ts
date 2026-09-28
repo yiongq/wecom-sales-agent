@@ -259,6 +259,11 @@ const editBody = (key: string, body: (old: string) => string): SopSection[] =>
     codes(lockedVs) === 'locked_changed@price-rules phrase_missing@-',
     codes(lockedVs),
   );
+  // 经 HTTP 时锁定节总从镜像取，locked_changed 只在函数层出得来：它不带 match 这个键只能在这里查
+  check(
+    '契约：locked_changed 不带 match 这个键',
+    lockedVs.some((v) => v.code === 'locked_changed') && lockedVs.filter((v) => v.code === 'locked_changed').every((v) => !('match' in v)),
+  );
   // 代码部署改了锁定节、镜像也跟着变时，只剩 phrase_missing：这正是「要求出现」这一类防的情况
   const missing = contract(lockedEdit, { imageSections: lockedEdit });
   check(

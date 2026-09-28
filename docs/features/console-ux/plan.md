@@ -808,6 +808,9 @@
 - 没有界面改动（console 只多一个可选的类型字段），不用 preview 走查；没有新的界面文字，字体不用重切。没有新增依赖。
 - `pnpm test` 全过（82 秒）：`PG_TEST_URL` 指向本机一次性的 `postgres:17-alpine` 容器（跑完即删），db 自测 329 条连真实 Postgres
   部分一起跑；契约的函数层自测（`config.selftest.ts`，451 条）一条没改照样通过；console 自测 281 条。
+- 评审后补：`locked_changed` 不带 `match` 原先没有断言（经 HTTP 时锁定节总从镜像取，这类违规只在函数层出得来，console 自测
+  碰不到）。`config.selftest.ts` 在已有的 locked_changed 一例旁加一条（451 → 452 条）。变异（隔离副本 `mut-ux-sop/ux-6.1-r2`，
+  限时 300 秒）：`locked_changed` 带上 `match` → 只红这一条；还原后与 worktree 逐字节相同。
 - 留给后面的步骤：
   - 第 6.2 步：旅游包的必需说法全在固定规则节里，运营改不到，用旅游包时检查不会报 `phrase_missing`（自测靠换镜像造出来）；
     行业包把必需说法放进可编辑节时，spec 表里「点了去哪：线上版本里含这句的节」才用得上。
