@@ -397,25 +397,10 @@ function UpdatedCard({ u, now }: { u: Updated; now: number }) {
 
 // ---------------- 保存条（§5.16，E、G 页） ----------------
 
-/** 「展开改动」打开的清单：每处一行，点了跳到那个字段；Esc 收起，焦点回到「展开改动」 */
-function ChangesPanel({
-  id,
-  changes,
-  onJump,
-  onClose,
-}: {
-  id: string;
-  changes: readonly Change[];
-  onJump(path: string): void;
-  onClose(): void;
-}) {
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape') return;
-    e.stopPropagation();
-    onClose();
-  };
+/** 「展开改动」打开的清单：每处一行，点了跳到那个字段（收起与 Esc 由保存条管） */
+function ChangesPanel({ id, changes, onJump }: { id: string; changes: readonly Change[]; onJump(path: string): void }) {
   return (
-    <div id={id} className="save-changes" onKeyDown={onKeyDown}>
+    <div id={id} className="save-changes">
       <ul>
         {changes.map((c) => (
           <li key={c.path}>
@@ -451,8 +436,25 @@ function SaveBar({
 }) {
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
+  const wrap = useRef<HTMLSpanElement>(null);
   const listId = useId();
   const copy = saveCopy(status);
+  // 清单是浮层：在它和「展开改动」以外按下就收起（焦点不动）
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDown);
+    return () => document.removeEventListener('pointerdown', onDown);
+  }, [open]);
+  /** 焦点在「展开改动」或清单里时按 Esc：收起，焦点回到「展开改动」 */
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || !open) return;
+    e.stopPropagation();
+    setOpen(false);
+    toggle.current?.focus();
+  };
   return (
     <ActionBar
       label="保存改动"
@@ -460,7 +462,7 @@ function SaveBar({
       // 口径同提交的补丁；万一补丁里有、逐处列不出来的，也不写「有0处」
       summary={changes.length ? `有${changes.length}处改动` : '有改动'}
       hint={
-        <span className="save-bar-hint">
+        <span ref={wrap} className="save-bar-hint" onKeyDown={onKeyDown}>
           <span className="save-bar-names">{cjk(changes.map((c) => c.label).join('、'))}</span>
           {changes.length ? (
             <button
@@ -481,10 +483,6 @@ function SaveBar({
               onJump={(path) => {
                 setOpen(false);
                 onJump(path);
-              }}
-              onClose={() => {
-                setOpen(false);
-                toggle.current?.focus();
               }}
             />
           ) : null}

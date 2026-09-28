@@ -3328,6 +3328,26 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [0, true],
     );
     await click(toggle);
+    await press(toggle, 'Escape');
+    eq(
+      '焦点在「展开改动」上按 Esc：同样收起',
+      [e.box.querySelectorAll('.save-changes').length, toggle?.getAttribute('aria-expanded')],
+      [0, 'false'],
+    );
+    await click(toggle);
+    await act(async () => {
+      e.box
+        .querySelector('[data-field-key="hotelLevel"]')
+        ?.dispatchEvent(new win.Event('pointerdown', { bubbles: true }) as unknown as Event);
+    });
+    const afterOutside = e.box.querySelectorAll('.save-changes').length;
+    await click(toggle);
+    await act(async () => {
+      e.box.querySelector('.save-changes')?.dispatchEvent(new win.Event('pointerdown', { bubbles: true }) as unknown as Event);
+    });
+    eq('在清单以外按下：收起；在清单里按下不收', [afterOutside, e.box.querySelectorAll('.save-changes').length], [0, 1]);
+    await click(toggle);
+    await click(toggle);
     await click(all(e.box, '.save-changes .save-change')[1]);
     eq(
       '点「行程亮点第2条」：清单收起，焦点落进行程亮点的第2条',
