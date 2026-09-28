@@ -288,6 +288,7 @@ async function mount(path: string) {
   );
   check('prod：全页没有「口令」', !m.box.textContent!.includes('口令'), m.box.textContent ?? '');
   check('prod：焦点在邮箱上', document.activeElement === m.email());
+  eq('prod：没点「登录」之前不写原因', [m.fieldErrors(), m.email()?.getAttribute('aria-invalid') ?? null], [[], null]);
   check('prod：没有「返回演示」', m.$('.login-back') === null && !m.box.textContent!.includes('返回演示'));
   eq('prod：标签页标题', document.title, '登录');
   eq(
@@ -434,29 +435,31 @@ async function mount(path: string) {
   eq('demo：标签页标题', document.title, '登录 · 演示');
   check('demo：焦点在邮箱上', document.activeElement === m.email());
 
-  // 带修饰键点：不拦，交给浏览器（新开标签）；这里在 document 上记下之后替浏览器拦住
+  // 点「返回演示」：prevented 记下页面自己拦没拦（document 上的监听在 React 之后跑，记完替浏览器拦住，不真的跳转）。
+  // 链接不在就不点，prevented 留着 null，由后面的断言按名字报
   let prevented: boolean | null = null;
   const spy = (e: Event): void => {
     prevented = e.defaultPrevented;
     e.preventDefault();
   };
   document.addEventListener('click', spy);
-  await act(async () => {
-    back()!.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }) as unknown as Event);
-  });
-  await settle(m.qc);
+  const clickBack = async (init: { button?: number; ctrlKey?: boolean; metaKey?: boolean }): Promise<void> => {
+    prevented = null;
+    const a = back();
+    if (!a) return;
+    await act(async () => {
+      a.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, ...init }) as unknown as Event);
+    });
+    await settle(m.qc);
+  };
+  // 带修饰键点：不拦，交给浏览器（新开标签）
+  await clickBack({ ctrlKey: true });
   eq('demo：Ctrl 点「返回演示」不拦，还在登录页', [prevented, m.$('.login-page') !== null], [false, true]);
-  await act(async () => {
-    back()!.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true }) as unknown as Event);
-  });
-  await settle(m.qc);
+  await clickBack({ metaKey: true });
   eq('demo：⌘ 点「返回演示」同样不拦', [prevented, m.$('.login-page') !== null], [false, true]);
 
   // 左键点
-  await act(async () => {
-    back()!.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }) as unknown as Event);
-  });
-  await settle(m.qc);
+  await clickBack({ button: 0 });
   document.removeEventListener('click', spy);
   check('demo：左键点「返回演示」拦下了链接的跳转', prevented === true);
   check('demo 返回：回到匿名外壳与这一页', m.$('.login-page') === null && m.$('.sb-login') !== null && m.text(m.$('h1')) === '测试页');
@@ -469,13 +472,15 @@ async function mount(path: string) {
 
   // 横幅的「登录后编辑」
   const bannerLogin = m.$$('.anon-banner button').find((b) => m.text(b) === '登录后编辑');
-  await m.click(bannerLogin);
+  if (bannerLogin) await m.click(bannerLogin);
   check('demo 横幅「登录后编辑」：进登录页，也有「返回演示」', m.$('.login-page') !== null && back() !== null);
 
-  // 从演示登录：进成员外壳，没有「返回演示」可言
-  await m.type(m.email(), EMAIL);
-  await m.type(m.password(), PASSWORD);
-  await m.submit();
+  // 从演示登录：进成员外壳
+  if (m.email() && m.password()) {
+    await m.type(m.email(), EMAIL);
+    await m.type(m.password(), PASSWORD);
+    await m.submit();
+  }
   check(
     'demo 登录成功：进成员外壳，地址不变',
     document.querySelector('.sidebar') !== null && m.$('.login-page') === null && m.url() === '/catalog/route?status=draft',
