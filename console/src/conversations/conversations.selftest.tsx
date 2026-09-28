@@ -666,12 +666,18 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   tabEls[0]!.focus();
   check('页签：得到焦点后名字里没有别的读屏提示', list[0]?.textContent === '全部13等人接手2AI接待中10已成交1', list[0]?.textContent ?? '');
   const walk: number[] = [];
+  const urls = new Set<string>();
   for (const key of ['ArrowRight', 'ArrowRight', 'ArrowLeft', 'ArrowLeft', 'ArrowLeft', 'Home', 'End', 'ArrowRight']) {
     await press(key);
     walk.push(tabEls.indexOf(focused() as HTMLElement));
+    urls.add(m.url());
   }
   eq('页签：左右键、Home、End 移焦点，首尾相接', walk, [1, 2, 1, 0, 3, 0, 3, 0]);
-  eq('页签：移焦点不换页签', [m.url(), m.tabs().map((t) => t[1])], ['/conversations', ['true', 'false', 'false', 'false']]);
+  eq(
+    '页签：移焦点不换页签（每一步地址都没变）',
+    [[...urls], m.tabs().map((t) => t[1])],
+    [['/conversations'], ['true', 'false', 'false', 'false']],
+  );
 
   // 以表格查看，再从「全部」点表格里的「报价」：地址与页签换了，阶段区块还是原来那一个、仍是表格，焦点还在那一格
   const section = m.$('.cv-stages')[0];
@@ -708,7 +714,14 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   );
 
   // 再筛一次，这回点页签清掉阶段：焦点在页签上，不被挪走；表格视图照样留着
-  await m.click(m.$('.cv-stage-cell').find((e) => e.textContent === '推荐'));
+  await m.click(m.$('[data-stage="recommend"]')[0]);
+  requests = [];
+  await m.click(m.$('[role="tab"]').find((t) => t.getAttribute('aria-selected') === 'true'));
+  eq(
+    '点已选中的页签（AI接待中）：阶段筛选留着，不换地址、不重取',
+    [m.url(), convRequests()],
+    ['/conversations?state=ai&stage=recommend', []],
+  );
   const human = m.$('[role="tab"]').find((t) => t.textContent?.startsWith('等人接手'))!;
   human.focus();
   await m.click(human);
@@ -717,9 +730,6 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [m.url(), focused() === human, m.$('.cv-stages')[0] === section, m.$('.cv-stage-table').length],
     ['/conversations?state=human', true, true, 1],
   );
-  requests = [];
-  await m.click(human);
-  eq('点已选中的页签：不换地址、不重取', [m.url(), convRequests()], ['/conversations?state=human', []]);
   await m.unmount();
 
   // 「清除筛选」（阶段筛选没有结果）点了也随空状态一起没了：焦点回到那一行阶段
