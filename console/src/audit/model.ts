@@ -345,11 +345,14 @@ type PairOp =
 
 /**
  * 有序子项前后两版逐项对上：没变的项按最长公共子序列对齐（中间插了一条，后面的不算改了），两段没变的之间按位置配对算「改了」，
- * 多出来的算新加或删去
+ * 多出来的算新加或删去。ignore 是比较时不看的子字段：自动编号（逐日行程的 day）随增删重排，中间插一天后面每天的编号都变，
+ * 看它的话后面每一天都成了「改了」
  */
-export function pairItems(a: readonly unknown[], b: readonly unknown[]): PairOp[] {
-  const ka = a.map((v) => JSON.stringify(v));
-  const kb = b.map((v) => JSON.stringify(v));
+export function pairItems(a: readonly unknown[], b: readonly unknown[], ignore?: string): PairOp[] {
+  const keyOf = (v: unknown): string =>
+    JSON.stringify(ignore !== undefined && isRecord(v) ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== ignore)) : v);
+  const ka = a.map(keyOf);
+  const kb = b.map(keyOf);
   const w = kb.length + 1;
   const lcs = new Uint32Array((ka.length + 1) * w);
   for (let i = ka.length - 1; i >= 0; i -= 1) {
@@ -423,7 +426,7 @@ function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut): void {
   };
   let kept = 0;
   let touched = false;
-  for (const op of pairItems(a, b)) {
+  for (const op of pairItems(a, b, single ? undefined : f.autoIndexKey)) {
     if (op.k === 'same') {
       kept += 1;
       continue;

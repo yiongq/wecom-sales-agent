@@ -539,6 +539,46 @@ const cell = (c: Cell): string =>
       unknown: 0,
     },
   );
+  eq(
+    '改动表：中间插了一天，后面几天只是编号变了，不算改了',
+    rows({
+      itinerary: [
+        [
+          { day: 1, title: '成都', detail: '接机' },
+          { day: 2, title: '丹巴', detail: '车程' },
+          { day: 3, title: '色达', detail: '看日出' },
+        ],
+        [
+          { day: 1, title: '成都', detail: '接机' },
+          { day: 2, title: '四姑娘山', detail: '徒步' },
+          { day: 3, title: '丹巴', detail: '车程' },
+          { day: 4, title: '色达', detail: '看日出' },
+        ],
+      ],
+    }),
+    { rows: [['逐日行程第2天', '—', '四姑娘山']], untouched: [{ label: '逐日行程', n: 3, noun: '天' }], unknown: 0 },
+  );
+  eq(
+    '改动表：编号跟着变的那一天另有改动时，只写真改了的子字段，不写编号',
+    rows({
+      itinerary: [
+        [
+          { day: 1, title: '成都', detail: '接机' },
+          { day: 2, title: '丹巴', detail: '车程' },
+        ],
+        [{ day: 1, title: '丹巴', detail: '车程6小时' }],
+      ],
+    }),
+    {
+      rows: [
+        ['逐日行程第1天 · 当天标题', '成都', '丹巴'],
+        ['逐日行程第1天 · 当天安排', '[-接机]', '[+车程6小时]'],
+        ['逐日行程第2天', '丹巴', '—'],
+      ],
+      untouched: [],
+      unknown: 0,
+    },
+  );
   eq('改动表：diff 不是 [原来, 现在] 的键算认不出', rows({ title: 'x', days: [5, 6] }), {
     rows: [['天数', '5天', '6天']],
     untouched: [],
@@ -621,9 +661,9 @@ const cell = (c: Cell): string =>
     {},
   );
   eq(
-    '抽屉：修正多一行「原因」，原因不进改动表',
-    [fix.facts.at(-1), fix.changes?.rows.map((r) => r.label[0])],
-    [{ label: '原因', text: '合同价写错' }, ['每晚起价']],
+    '抽屉：修正多一行「原因」，原因不进改动表，也不算认不出的一项',
+    [fix.facts.at(-1), fix.changes?.rows.map((r) => r.label[0]), fix.changes?.title, fix.changes?.notes],
+    [{ label: '原因', text: '合同价写错' }, ['每晚起价'], '改了1处', []],
   );
   eq('抽屉：命令行的操作者写「命令行」', fix.facts[1], { label: '操作者', text: '命令行' });
   const pub = drawerView(publish, TRAVEL, {});
@@ -646,6 +686,11 @@ const cell = (c: Cell): string =>
     '抽屉：回滚结果与目标版本不同时加一句提醒，相同时不加',
     [rb(false).warning?.title, rb(true).warning],
     ['回滚结果与v1不完全一样', null],
+  );
+  eq(
+    '抽屉：diff 里没写 sameHashAsTarget（形状不对）时不提醒',
+    drawerView(entry({ action: 'sop.rollback', diff: { toVersionNo: 3, targetVersionNo: 1 } }), TRAVEL, {}).warning,
+    null,
   );
   eq(
     '抽屉：导入初始配置没有对象、没有去处',
@@ -1089,6 +1134,22 @@ async function mount(viewer: Viewer, search = '') {
       m.$('.au-expand')[0]?.getAttribute('aria-expanded'),
     ],
     ['小林 新建了酒店草稿「大研安缦」', ['字段', '内容'], 1, 'true'],
+  );
+  await m.click(document.querySelector('.au-drawer [aria-label="关闭"]'));
+  // 点展开的一条的空白处（时刻上）：同样打开这一条，外面合并的那一句不跟着收起
+  await m.click(m.$('.au-child .au-time')[4]);
+  eq(
+    '点展开的一条的空白处：打开这一条，列表还展开着',
+    [m.text(document.querySelector('.au-detail-sentence')), m.$('.au-child').length],
+    ['小林 新建了酒店草稿「拉萨瑞吉」', 6],
+  );
+  await m.click(document.querySelector('.au-drawer [aria-label="关闭"]'));
+  // 点一句的空白处（摘要上）：同点句子
+  await m.click(m.$('.au-row .au-summary').find((e) => m.text(e).startsWith('改了：住宿档次')));
+  eq(
+    '点一行的空白处：同点句子',
+    m.text(document.querySelector('.au-detail-sentence')),
+    `小林 修改了线路「${SICHUAN}」的住宿档次、行程亮点`,
   );
   await m.click(document.querySelector('.au-drawer [aria-label="关闭"]'));
 
