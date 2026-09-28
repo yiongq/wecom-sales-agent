@@ -1306,6 +1306,14 @@ check(
     inv.every((r) => r.status === 422 && r.body.error === 'invalid_item' && r.body.issues?.length > 0),
     inv.map((r) => `${r.status}:${r.text.slice(0, 60)}`).join(' | '),
   );
+  // 后台 UX spec 验收 15 第 10 条：天数与逐日行程不符时，报错写「天数」，不写 payload 的键名 days
+  check(
+    '产品库 HTTP：天数与逐日行程不符 → 422 的报错里是「天数」，不是「days」',
+    inv[1]!.status === 422 &&
+      (inv[1]!.body.issues as { message: string }[]).some((i) => i.message.includes('要和天数（')) &&
+      !inv[1]!.text.includes('days'),
+    inv[1]!.text.slice(0, 200),
+  );
   const both = await call('PATCH', `/catalog/route/${code}`, {
     ...O,
     json: { rev: cur4.rev, set: { highlights: hl }, unset: ['highlights'] },
