@@ -785,7 +785,7 @@ const theme = EditorView.theme({
     display: 'flex',
     alignItems: 'flex-start',
     gap: '10px',
-    padding: '8px 8px 8px 12px',
+    padding: '8px 12px',
     borderRadius: 'var(--r-sm)',
     background: 'var(--danger-bg)',
     fontSize: '14px',

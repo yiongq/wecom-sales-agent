@@ -414,10 +414,6 @@
   flex: none;
   margin-top: 3px;
 }
-/*
- * 编辑卡片（§5.9）：panel 底、--r-lg、--shadow-card。左内边距 12：编辑器正文区自己再留 12，改动的竖条画在那 12 里（editor.ts）。
- * 获得焦点时照文本域的规矩：描边换成 --accent，外加 3px 的 --accent-ring（§3 焦点）
- */
 /* 这一节的问题（没有行内提醒的几类）：样子同编辑器里的行内提醒（§5.12）——--danger-bg 底、--r-sm、内边距 8 12，14 的 circle-alert */
 .sop-notes {
   display: flex;
@@ -444,6 +440,10 @@
   margin-top: 4px;
   color: var(--danger);
 }
+/*
+ * 编辑卡片（§5.9）：panel 底、--r-lg、--shadow-card。左内边距 12：编辑器正文区自己再留 12，改动的竖条画在那 12 里（editor.ts）。
+ * 获得焦点时照文本域的规矩：描边换成 --accent，外加 3px 的 --accent-ring（§3 焦点）
+ */
 .sop-editor-card {
   margin-top: 12px;
   padding: 24px 24px 24px 12px;

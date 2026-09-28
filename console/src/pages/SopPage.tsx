@@ -534,7 +534,13 @@ function MemberSop({
     saver.flush();
   });
 
-  const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check.result?.rebase.needed || !!conflict;
+  // 草稿跟不上线上版本只提示一条：/sop 的 draft.stale 与检查的 rebase.needed 是服务端同一个条件（basedOn 不是线上版本），
+  // 检查打开页面就跑，两条会一起出来。检查报了冲突的节时是出错色、写发布不了，不然是 info（检查回来之前、回滚以后
+  // 重查回来之前按 draft.stale）。发布被拒（422）时不看检查结果；发布撞上冲突（409）时由那一条说，这一条不出
+  const rebase = rejected ? undefined : check.result?.rebase;
+  const rebaseConflicts = rebase?.needed ? rebase.conflicts : [];
+  const rebaseNote = conflict ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || rebase?.needed ? 'merge' : null;
+  const hasNotices = error !== null || rebaseNote !== null || !!rejected || !!conflict;
 
   return (
     <>
@@ -584,19 +590,18 @@ function MemberSop({
       {hasNotices && (
         <Space orientation="vertical" size="middle" className="sop-notices">
           {error !== null && <ErrorAlert error={error} />}
-          {draft?.stale && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
-          {rejected && <ErrorAlert error={rejected} />}
-          {check.result?.rebase.needed && !rejected && (
+          {rebaseNote === 'merge' && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
+          {rebaseNote === 'conflict' && (
             <Alert
-              type={check.result.rebase.conflicts.length ? 'error' : 'info'}
+              type="error"
+              showIcon
               title={
-                check.result.rebase.conflicts.length
-                  ? `这几节在你编辑期间被别人改过：${check.result.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
-                    '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
-                  : '草稿基于的版本已过期，发布时会自动合并别人的改动'
+                `这几节在你编辑期间被别人改过：${rebaseConflicts.map((k) => headingOf(spec, k)).join('、')}。` +
+                '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
               }
             />
           )}
+          {rejected && <ErrorAlert error={rejected} />}
           {conflict && (
             <Alert
               type="error"

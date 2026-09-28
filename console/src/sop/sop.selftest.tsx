@@ -21,7 +21,8 @@
 //    格式不对；三栏里各有哪几格（检查清单、工具卡片），骨架与窄屏。第 7、8 节不自动保存（计时设成永远不到）。
 // 10. 检查与定位（第 6.2 步，spec「销售话术 · 检查」，验收 12）：问题落在哪一节、点了去哪、说明的写法、「改成…」的候选；
 //    编辑器里的波浪线、行内提醒与「改成…」那一笔；整页接按正文算问题的假服务端：每次存上以后检查、打开时已有草稿也查、
-//    只认最后发出的那次、没跑成与重试、清单点了定位、「改成…」以后马上存、没有草稿与只读成员不查。
+//    只认最后发出的那次、没跑成与重试、清单点了定位、「改成…」以后马上存、没有草稿与只读成员不查；回滚以后再查、
+//    先发的晚回来没跑成与丢弃时在路上的都不认；过期的草稿只有一条合并提示。
 // 整个进程按不支持 text-spacing-trim 的浏览器跑（selftest-env.ts），界面上的 cjk() 与编辑器都走 .halt 回退。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
@@ -2395,6 +2396,14 @@ function fakeServer(start: SopOverview) {
       srv.state = { ...srv.state, published: v, draft: null };
       return json(200, v);
     }
+    // 回滚：线上换成新的版本号，草稿不动（它的 basedOn 从此过期），同 src/config/sop.ts 的 rollback
+    if (call.method === 'POST' && /^\/api\/console\/sop\/versions\/[^/]+\/rollback$/.test(call.path)) {
+      const no = (srv.state.published.versionNo ?? 0) + 1;
+      const v = version(no, srv.state.published.sections, { changeNote: (call.body as { changeNote: string }).changeNote });
+      const d = srv.state.draft;
+      srv.state = { ...srv.state, published: v, draft: d ? { ...d, stale: d.basedOn !== v.id } : null };
+      return json(200, { ...v, sameHashAsTarget: true });
+    }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/check') {
       // 按住时记下发出时的草稿，放开时照它答（晚回来的是旧草稿的结果）
       const at = srv.state;
@@ -3305,12 +3314,19 @@ respond = null;
 }
 
 // 10.2 编辑器：波浪线与行内提醒（EditorState 上算、挂在 DOM 里），「改成…」的那一笔
+// 第一段里另有一处写对的 search_routes（B 页的话术原则就是这样）：「改成…」按标识符找，不能把它当成 search_route 再补一个 s
 const DOC2 = [
-  '- 先调 search_route 查线路，别用 search_route 猜。',
+  '- 先调 search_route 查线路，search_routes 才是对的，别用 search_route 猜。',
   '     续行里也写了 search_route。',
   '- 第二条：缩短天数重新报价不行。',
   '',
   '顶格的一段提到 search_route，还有 payURL。',
+].join('\n');
+/** 第一段（第 1、2 行）点了「改成search_routes」以后：只换写错的三处，写对的那一处照旧 */
+const DOC2_FIXED = [
+  '- 先调 search_routes 查线路，search_routes 才是对的，别用 search_routes 猜。',
+  '     续行里也写了 search_routes。',
+  ...DOC2.split('\n').slice(2),
 ].join('\n');
 const TOOL_HINT = { what: 'tool', known: 2, fix: { name: 'search_routes', label: '查线路' } } as const;
 const PROBLEMS: EditorProblem[] = [
@@ -3320,10 +3336,7 @@ const PROBLEMS: EditorProblem[] = [
 ];
 {
   const endOf = (n: number): number => lineOf(DOC2, n).from + lineOf(DOC2, n).text.length;
-  const s1 = DOC2.indexOf('search_route');
-  const s2 = DOC2.indexOf('search_route', s1 + 1);
-  const s3 = DOC2.indexOf('search_route', s2 + 1);
-  const s4 = DOC2.indexOf('search_route', s3 + 1);
+  const [s1, s2, s3, s4] = [...DOC2.matchAll(/\bsearch_route\b/g)].map((x) => x.index);
   const f = DOC2.indexOf('缩短天数重新报价');
   const p = DOC2.indexOf('payURL');
   const places = problemPlaces(DOC2, PROBLEMS);
@@ -3383,13 +3396,17 @@ const PROBLEMS: EditorProblem[] = [
 
   const spec = fixNameAt(st, endOf(2), 'search_route', 'search_routes');
   const tr = spec ? st.update(spec) : null;
-  const want = DOC2.split('\n')
-    .map((l, i) => (i < 2 ? l.replaceAll('search_route', 'search_routes') : l))
-    .join('\n');
+  const want = DOC2_FIXED;
   eq(
-    '「改成…」：换掉这一段（第 1、2 行）里的三处，别的段不动；光标在最后一处后面；带 problemFix 标记',
+    '「改成…」：换掉这一段（第 1、2 行）里写错的三处，写对的那一处和别的段不动；光标在最后一处后面；带 problemFix 标记',
     [tr?.state.doc.toString() === want, tr?.state.selection.main.head, tr?.annotation(problemFix)],
     [true, want.indexOf('search_routes。') + 13, true],
+  );
+  const firstPara = (d: string | undefined): string => (d ?? '').split('\n').slice(0, 2).join('\n');
+  eq(
+    '「改成…」以后第一段：四处都是 search_routes，没有补成 search_routess 的',
+    [firstPara(tr?.state.doc.toString()).match(/\bsearch_routes\b/g)?.length, tr?.state.doc.toString().includes('search_routess')],
+    [4, false],
   );
   eq('「改成…」的那一段已经没有这个名字：不改', fixNameAt(st, endOf(3), 'search_route', 'search_routes'), null);
   const field = fixNameAt(st, endOf(5), 'payURL', 'payUrl');
@@ -3463,9 +3480,7 @@ const PROBLEMS: EditorProblem[] = [
   );
   await clickEv(h0?.querySelector('button.sop-hint-fix'));
   await settle();
-  const want = DOC2.split('\n')
-    .map((l, i) => (i < 2 ? l.replaceAll('search_route', 'search_routes') : l))
-    .join('\n');
+  const want = DOC2_FIXED;
   eq(
     '点「改成search_routes」：这一段换掉；onChange 一次（新正文）、onFix 一次；焦点回到正文；这一段的提醒没了',
     [changes.length, changes[0] === want, fixes, document.activeElement === cm(), hints().length],
@@ -3830,6 +3845,114 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [1, null],
   );
   await f.unmount();
+}
+// 10.3d 只认该认的结果：回滚以后（草稿的 rev 没变、线上换了）再查；两次都在路上时先发的晚回来没跑成，不把后发的成功说成
+// 「没检查上」；丢弃时还在路上的检查回来也不认
+{
+  const modal = (title: string): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
+  const status = (m: PageBox): string => text(m.box.querySelector('.page-status'));
+
+  const srv = fakeServer(BAD_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
+  await act(async () =>
+    m.qc.setQueryData(['sop-versions'], { pages: [{ items: [BAD_SOP.published, version(1, P_ONLINE)] }], pageParams: [undefined] }),
+  );
+  await waitFor(() => summaryOf(m) !== '');
+  const rollbackButton = (): HTMLButtonElement | undefined =>
+    all<HTMLButtonElement>(m.box, '.sop-after button').find((b) => label(b) === '以此版本回滚');
+  await waitFor(() => !!rollbackButton());
+  await clickEv(rollbackButton());
+  await until(() => !!modal('回滚到v1')?.querySelector('textarea'));
+  const note = modal('回滚到v1')!.querySelector<HTMLTextAreaElement>('textarea')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '退回去');
+    note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+  });
+  await clickEv(all(modal('回滚到v1')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1'));
+  await waitFor(() => srv.checks() === 2);
+  eq(
+    '回滚以后：草稿没存过（rev 还是 4），线上换成 v3，再检查一次',
+    [srv.checks(), srv.puts().length, srv.state.draft?.rev, status(m).startsWith('线上v3')],
+    [2, 0, 4, true],
+  );
+  await m.unmount();
+
+  let clock = NOW;
+  const late = fakeServer(BAD_SOP);
+  late.check = (s) => scan(s);
+  const l = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, { ...FAST, now: () => clock });
+  await waitFor(() => summaryOf(l) !== '');
+  late.checkHold = true;
+  await typeAtEnd(l, '甲');
+  await waitFor(() => late.checks() === 2);
+  await typeAtEnd(l, '乙');
+  await waitFor(() => late.checks() === 3);
+  clock = NOW + 60_000;
+  await act(async () => late.checkHeld[1]?.resolve());
+  await waitFor(() => metaOf(l) === '每次自动保存都会跑·上次14:31');
+  late.checkFails = true;
+  await act(async () => late.checkHeld[0]?.resolve());
+  await rest(60);
+  eq(
+    '后发的先跑成，先发的晚回来没跑成：不认，不写「没检查上」',
+    [metaOf(l), summaryOf(l), !!checkCard(l).querySelector('.sop-check-failed')],
+    ['每次自动保存都会跑·上次14:31', '4/7通过', false],
+  );
+  await l.unmount();
+
+  const gone = fakeServer(BAD_SOP);
+  gone.check = (s) => scan(s);
+  gone.checkHold = true;
+  const g = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
+  await waitFor(() => gone.checks() === 1);
+  await waitFor(() => !headerButton(g, '丢弃')?.disabled);
+  await clickEv(headerButton(g, '丢弃'));
+  await until(() => !!modal('丢弃草稿？'));
+  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await waitFor(() => status(g).includes('没有未发布的改动'));
+  await act(async () => gone.checkHeld[0]?.resolve());
+  await rest(60);
+  eq(
+    '丢弃时还在路上的检查：回来了也不认，清单仍是 7 个还没跑，没有波浪线',
+    [summaryOf(g), all(checkCard(g), '.check-item-pending').length, all(g.box, '.sop-bad').length, gone.checks()],
+    ['', 7, 0, 1],
+  );
+  await g.unmount();
+}
+
+// 10.3e 草稿跟不上线上版本（basedOn 不是线上版本）：只有一条提示。/sop 的 draft.stale 与检查的 rebase.needed 是同一个条件，
+// 检查回来之前按 draft.stale 写 info；回来以后没有冲突的节照旧是这一条，有冲突的节换成出错色的「发布不了」
+{
+  const stale: SopOverview = { ...BAD_SOP, published: version(3, P_ONLINE), draft: { ...BAD_SOP.draft!, stale: true } };
+  const notices = (m: PageBox): string[] =>
+    all(m.box, '.sop-notices .ant-alert').map((a) => `${/ant-alert-(\w+)/.exec(a.className)?.[1]}：${text(a)}`);
+  const MERGE = 'info：草稿打开之后发布过新版本，发布时自动合并';
+  for (const conflicts of [[], ['tone']]) {
+    const srv = fakeServer(stale);
+    srv.check = (s) => ({ ...scan(s), rebase: { needed: true, conflicts } });
+    srv.checkHold = true;
+    const m = await mountPage('/console/sop?section=tone', travelOwner, stale, FAST);
+    await waitFor(() => srv.checks() === 1);
+    const before = notices(m);
+    await act(async () => srv.checkHeld[0]?.resolve());
+    await waitFor(() => summaryOf(m) !== '');
+    eq(
+      `打开一份过期的草稿（${conflicts.length ? '有' : '没有'}冲突的节）：检查回来前后各只有一条提示`,
+      [before, notices(m)],
+      [
+        [MERGE],
+        conflicts.length
+          ? [
+              'error：这几节在你编辑期间被别人改过：话术原则。' +
+                '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。',
+            ]
+          : [MERGE],
+      ],
+    );
+    await m.unmount();
+  }
 }
 respond = null;
 
