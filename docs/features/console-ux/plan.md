@@ -63,7 +63,6 @@
 
 ## Open
 
-- 第 2.2 步：铃铛的「打开工作台」和 ⌘K 的会话行打开 `/admin.html#s=<id>`，但 admin.html 读 `#s=` 选中会话是第 13 步的事。在那之前这个链接只打开工作台、不选中那个会话，走查不能把它当成已经能用。
 - 第 2.2 步：路由 `/catalog/$kind` 的 `params.parse` 把 hotel 以外的 kind 一律当成 route（01 以来如此）。外壳这一侧已经不认行业（假包的侧栏、⌘K、计数都按包里的 kind 发请求），但假包的 `/catalog/package` 页面现在仍按线路渲染、请求 `/catalog/route`。第 9 步重做列表、第 10.1 步加详情路由时，路由参数改成按行业包的 kind 取，包里没有的 kind 出 404；第 17 步的假包走查依赖这一条。改完同时删掉 `scripts/check-console-src.ts` 里 `LEGACY` 的对应项（第 3.3 步），词没了不删，`pnpm lint` 会失败。
 - 第 4 步：`conversationState` 只把 `stage === 'paid'` 算已成交。终态 key 不是 `paid` 的包（家装假包的 `deposit`「已付定金」）里，停在终态的会话算 AI 接待中：总览的已成交格是 0，阶段条把它们归进「其他」（阶段条不含终态，各行之和仍等于 AI 接待中），会话列表的页签也一样。两种改法：`conversationState` 按包的 `terminal` 判定（改不变量 17 与接口的口径，要改 spec、owner 定），或 `checkPack` 要求终态 key 是 `paid`（假包随之改）。第 17 步假包走查前定。总览的已成交格现在只写 `conversationState` 认作已成交的阶段名，没有时写「已成交的会话」，不把「已付定金」写成口径。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
@@ -654,7 +653,7 @@
   - 与设计系统的两处出入，都只在窄屏：<600 页签间隔 24 → 16（375 宽的内容区 327，四个页签加 24 的间隔要 329，antd 会收成「…」菜单）；<992 首列宽 300 → 176（首列固定，300 会占满视口，横滚区只剩 27）。
   - 状态句、区块标题、空状态里的「客户」取行业包的 `vocabulary.customer`（设计系统 §11），家装包写「业主」。总览的「客户停在哪一步」和业务数口径里的「客户」仍是写死的，第 17 步假包走查时一并看。
   - 家装假包里停在终态 `deposit` 的会话在列表里是「AI接待中」、阶段写「已付定金」，阶段条里算进「其他」：这是「Open」第 4 步那条 `conversationState` 的口径问题，本步不改。
-  - 「Open」里第 2.2 步的第一条（admin.html 读 `#s=` 是第 13 步的事）随本步解决，合并时删掉那一条（这里没动那一行，免得与别的分支改「Open」冲突）；`shell/model.ts` 的 `workbenchHref` 注释已改。
+  - 「Open」里第 2.2 步的第一条（admin.html 读 `#s=` 是第 13 步的事）随本步解决，开 PR 时已从「Open」删掉；`shell/model.ts` 的 `workbenchHref` 注释已改。
 - 没有新增依赖。
 - 留给后面的步骤：第 18 步加「顾问处理中」页签时改 `model.ts` 的 `TAB_RANK`（typecheck 会点名）与列表的行；J 页取代 admin.html 之后，`workbenchHref` 与本页的「打开工作台」改指 `/conversations/$id`。
 - 评审之后（同日，6 条意见，5 条照改，1 条只接受一半）：
