@@ -40,7 +40,11 @@ const root = createRootRoute({ component: SPECIMEN ? RootWithSpecimen : Shell, n
 
 // 总览（spec「总览」）：取代原来跳到 /sop 的重定向。scripts/check-console-dist.ts 按这个懒加载文件名把它算进首屏预算
 const index = createRoute({ getParentRoute: () => root, path: '/' }).lazy(() => import('./pages/overview.lazy.js').then((m) => m.Route));
-const sop = createRoute({ getParentRoute: () => root, path: '/sop' }).lazy(() => import('./pages/sop.lazy.js').then((m) => m.Route));
+// 话术页选中的节（spec 的路由表）：不认识的 key 由页面退回默认节
+const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
+const sop = createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch }).lazy(() =>
+  import('./pages/sop.lazy.js').then((m) => m.Route),
+);
 // 产品库列表：kind 原样交给页面，页面按当前租户的行业包找实体，包里没有的是「没有这个页面」（第 9 步）。
 // 页签、搜索、筛选写进地址（spec 路由表的 status、q、f；不变量 22）
 const catalog = createRoute({

@@ -3,6 +3,8 @@
 // 连同它们用到的 SopStructureError、SopSection、SectionSpec。src/sop/sections.ts 原样再导出同一个类：
 // 契约检查靠 instanceof SopStructureError 捕获结构错误，两处要是各有一个类，就捕获不到这里抛的。
 // 节表属于行业包，这里的 editableChars 不带默认节表；src/sop/sections.ts 包一层补上 TRAVEL_SOP_SECTIONS。
+// 正文的规范形 canonicalBody 也在这里（spec 顶部 Revisions，第 5.1 步评审之后）：服务端保存草稿时先规范化再计数，
+// 额度条和目录的「改过」要按规范化以后的正文算才是同一口径。服务端的 normalizeBody 在它前后再查编码、不合格就抛。
 
 export interface SectionSpec {
   key: string;
@@ -23,6 +25,25 @@ export class SopStructureError extends Error {}
 /** 标题行连同其后的一个空行 */
 export function headingLine(spec: SectionSpec): string {
   return `## ${spec.heading}\n\n`;
+}
+
+/** 字节顺序标记 U+FEFF。不写成转义：编辑工具会把转义还原成这个看不见的字符 */
+const BOM = String.fromCharCode(0xfeff);
+
+/** 去掉 BOM，\r\n 与单独的 \r 换成 \n */
+export const toLf = (text: string): string => text.replaceAll(BOM, '').replace(/\r\n?/g, '\n');
+
+/**
+ * 正文的规范形：去 BOM；\r\n 与 \r 换成 \n；转 NFC；去掉每一行的行尾空白；去掉开头的空行；去掉末尾空白；
+ * 再补上结尾，非末节补 \n\n，末节补 \n。只规范化，不查编码、不抛错
+ */
+export function canonicalBody(body: string, isLast: boolean): string {
+  const text = toLf(body)
+    .normalize('NFC')
+    .replace(/[^\S\n]+$/gm, '')
+    .replace(/^\n+/, '')
+    .trimEnd();
+  return text + (isLast ? '\n' : '\n\n');
 }
 
 /** 正文：标题行及其后一个空行之后的部分；前言的正文就是整段 text */
