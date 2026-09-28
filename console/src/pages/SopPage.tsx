@@ -446,7 +446,8 @@ function MemberSop({
     const el = conflictRef.current;
     if (!frozen || !el) return;
     const typing = editor.current?.contains(document.activeElement) ?? false;
-    el.scrollIntoView({ block: 'nearest' });
+    // 按底边对齐：横幅紧挨着页头，视口放得下时就一直滚到顶，页头连同状态句「没保存上」也整个露出来
+    el.scrollIntoView({ block: 'end' });
     if (typing) el.focus({ preventScroll: true });
   }, [frozen]);
   const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check?.rebase.needed || !!conflict;

@@ -2566,8 +2566,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   const proto = win.Element.prototype as unknown as { scrollIntoView(this: Element, o?: unknown): void };
   const original = proto.scrollIntoView;
   const scrolled: string[] = [];
-  proto.scrollIntoView = function (this: Element) {
-    scrolled.push(this.className);
+  proto.scrollIntoView = function (this: Element, o?: unknown) {
+    scrolled.push(`${this.className} ${(o as { block?: string } | undefined)?.block}`);
   };
   const srv = fakeServer(MEMBER_SOP);
   srv.mode = 'conflict';
@@ -2593,9 +2593,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await act(async () => cm().focus());
   await conflictOnce('【第一次】');
   eq(
-    '409：横幅滚进视口；焦点原来在编辑器里，移到横幅外层上（不落在「载入最新草稿」上）',
+    '409：横幅按底边对齐滚进视口（紧挨着页头，一直滚到顶）；焦点原来在编辑器里，移到横幅外层上（不落在「载入最新草稿」上）',
     [scrolled, document.activeElement?.className, m.box.querySelector('.sop-conflict')?.getAttribute('tabindex')],
-    [['sop-conflict'], 'sop-conflict', '-1'],
+    [['sop-conflict end'], 'sop-conflict', '-1'],
   );
   await reload();
   eq('载入以后：第一批对比', shown(), [['话术原则', 0]]);
