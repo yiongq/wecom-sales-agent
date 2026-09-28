@@ -1859,7 +1859,7 @@ eq(
 // 9.1 纯函数：失败怎么分、退避的间隔、⌘S 的认法、哪些节算没存上、存上以后的缓存；
 // 9.2 状态机：假的计时器驱动（防抖、同一时刻只有一个请求、退避、409 停住、不自动试的失败、恢复联网、卸下、改回原样）；
 // 9.3 整页：假服务端回 PUT /sop/draft。请求体里的 rev（有草稿、没草稿、接着存）、状态句最后一段、⌘S、断网与离开保护、
-//     409 冻结与载入最新草稿、格式不对、页头按钮；
+//     409 冻结与载入最新草稿、格式不对、页头按钮、编辑中降成只读；
 // 9.4 三栏的格子：成员、只读成员、匿名、骨架、窄屏各有哪几格，检查清单挪进来了，工具卡片取行业包。
 
 const flushMicro = async (): Promise<void> => {
@@ -1933,12 +1933,14 @@ function deferred<T>(): { promise: Promise<T>; resolve(v: T): void; reject(e: un
   );
   eq('没有草稿时和线上比', unsavedEdits(SPEC, PUBLISHED, { tone: bodyIn(PUBLISHED, 'tone') }), []);
 
-  const saved = version(null, DRAFT, { basedOn: 'v1', rev: 7, publishedAt: null, publishedByName: null });
+  // 存上的草稿比缓存里的多 5 个字：字数要按返回的那份重算，不能沿用旧的
+  const grown = DRAFT.map((s) => (s.key === 'tone' ? { ...s, text: s.text.replace(/\n\n$/, '新新新新新\n\n') } : s));
+  const saved = version(null, grown, { basedOn: 'v1', rev: 7, publishedAt: null, publishedByName: null });
   const next = withSavedDraft(MEMBER_SOP, saved);
   eq(
     '存上以后的 /sop：草稿换成返回的那份，基于旧版本时是 stale，字数重算，线上与上限不变',
     [next.draft?.rev, next.draft?.stale, next.budget, next.published === MEMBER_SOP.published, next.spec === MEMBER_SOP.spec],
-    [7, true, { chars: editableChars(DRAFT, SPEC), limit: LIMIT }, true, true],
+    [7, true, { chars: MEMBER_SOP.budget.chars + 5, limit: LIMIT }, true, true],
   );
   eq('基于当前线上时不是 stale', withSavedDraft(MEMBER_SOP, { ...saved, basedOn: 'v2' }).draft?.stale, false);
 }
@@ -2072,8 +2074,9 @@ const fail = (e: unknown) => (): Promise<void> => Promise.reject(e);
   await flushMicro();
   eq('恢复联网：在等自动重试的马上试（不等 5 秒）', h.sends.slice(-2), [58500, 59500]);
   m.stop();
+  eq('卸下：等着的重试马上清掉', h.clock.timers(), 0);
   await h.clock.advance(60_000);
-  eq('卸下以后：计时器都清了，不再重试', [h.sends.length, h.clock.timers()], [9, 0]);
+  eq('卸下以后：不再重试', h.sends.length, 9);
 }
 {
   // 恢复联网在等的重试：马上试，不等退避
@@ -2092,11 +2095,17 @@ const fail = (e: unknown) => (): Promise<void> => Promise.reject(e);
 {
   // 409：停住，不再重试；打字、⌘S、等多久都不发；载入最新草稿以后（resume）接着存
   const { m, h } = machine();
-  h.outcome = fail(new HttpError(409, { error: 'rev_conflict' }));
+  const inFlight = deferred<void>();
+  h.outcome = () => inFlight.promise;
   m.edited();
   await h.clock.advance(1500);
+  // 路上又打了字：防抖在数，409 回来时一并清掉
+  m.edited();
+  inFlight.reject(new HttpError(409, { error: 'rev_conflict' }));
+  await flushMicro();
   eq('409：停住、通知页面一次、没有计时器', [h.last(), h.conflicts, h.clock.timers()], ['conflict', 1, 0]);
   m.edited();
+  eq('409 以后打字：不计时', h.clock.timers(), 0);
   m.flush();
   m.online();
   await h.clock.advance(120_000);
@@ -2131,6 +2140,20 @@ const fail = (e: unknown) => (): Promise<void> => Promise.reject(e);
   eq('没存上的改动改回了原样：不发，状态回到还没保存过', [h.sends.length, h.last()], [3, 'idle']);
 }
 {
+  // 422 这类回来时，路上又要求存过（计时到了或 ⌘S）：新打的字可能就改好了，不等下一次改动，马上拿新的内容再试
+  const { m, h } = machine();
+  const first = deferred<void>();
+  h.outcome = () => first.promise;
+  m.edited();
+  await h.clock.advance(1500);
+  m.edited();
+  await h.clock.advance(1500);
+  h.outcome = () => Promise.resolve();
+  first.reject(new HttpError(422, { error: 'invalid_sop' }));
+  await flushMicro();
+  eq('422 回来时路上又改过：马上再试，存上了', [h.sends, h.last()], [[1500, 3000], 'saved@3000']);
+}
+{
   // 改回原样时回到上一次存上的时刻；没有要存的时计时到了也不发
   const { m, h } = machine();
   m.edited();
@@ -2148,11 +2171,28 @@ const fail = (e: unknown) => (): Promise<void> => Promise.reject(e);
   m.edited();
   await h.clock.advance(1500);
   eq('没有要存的：计时到了也不发', h.sends.length, 2);
-  m.stop();
   h.pending = true;
   m.edited();
+  m.stop();
+  eq('卸下：还在数的防抖马上清掉', h.clock.timers(), 0);
+  m.edited();
+  eq('卸下以后：打字不再计时', h.clock.timers(), 0);
   await h.clock.advance(5000);
-  eq('卸下以后：打字不再计时', [h.sends.length, h.clock.timers()], [2, 0]);
+  eq('卸下以后：不再发', h.sends.length, 2);
+}
+{
+  // 卸下时请求在路上、又要求存过：它照常回来，但不再接着存
+  const { m, h } = machine();
+  const first = deferred<void>();
+  h.outcome = () => first.promise;
+  m.edited();
+  await h.clock.advance(1500);
+  m.flush();
+  m.stop();
+  h.outcome = () => Promise.resolve();
+  first.resolve();
+  await flushMicro();
+  eq('卸下时路上的请求回来以后：不再接着存', h.sends, [1500]);
 }
 
 // 9.3 整页：假服务端
@@ -2486,6 +2526,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     m.qc.setQueryData<SopOverview>(['sop'], (old) => (old ? { ...old, draft: { ...old.draft!, rev } } : old));
   };
   await act(async () => theirs(99));
+  // React Query 隔一个宏任务才通知订阅者：等页面按 rev 99 重渲过再存，不然测不到「不跟」
+  await rest(20);
   await pressSave({ metaKey: true });
   await waitFor(() => srv.puts().length === 1);
   eq('有没存上的改动时重取到别人的草稿：照旧带打开时的 rev（让服务端答 409），不跟着换', srv.puts()[0]?.rev, 4);
@@ -2496,6 +2538,19 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await pressSave({ metaKey: true });
   await waitFor(() => srv.puts().length === 2);
   eq('全存上了以后重取到新的草稿：下一次带它的 rev', srv.puts()[1]?.rev, 50);
+  await m.unmount();
+}
+
+// 9.3h 编辑中被降成只读成员（重取 /me 以后角色变了）：编辑器只读，没存上的改动不再发（发了也是 403），离开照拦
+{
+  const srv = fakeServer(MEMBER_SOP);
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, { ...FAST, debounce: 200 });
+  const agent: Viewer = { ...OWNER, me: { ...(OWNER as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
+  await typeAtEnd(m, '甲');
+  await act(async () => void m.qc.setQueryData(VIEWER_KEY, agent));
+  await rest(400);
+  eq('降成只读以后：计时到了也不发，编辑器只读', [srv.puts().length, editorEditable(m)], [0, 'false']);
+  eq('降成只读以后离开：弹确认', await leaveAndStay(m), true);
   await m.unmount();
 }
 

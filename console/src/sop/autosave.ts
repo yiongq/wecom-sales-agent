@@ -124,8 +124,9 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
     retry = null;
   };
 
+  // 只经 flush（409 停住时它不往下走）和请求回来以后的「接着存」进来
   async function run(): Promise<void> {
-    if (!active || status.kind === 'conflict') return;
+    if (!active) return;
     if (!deps.hasPending()) {
       // 没保存上的改动已经改回了草稿里的样子：没有要存的了，不再写「没保存上」
       if (status.kind === 'failed') {
@@ -143,9 +144,9 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
     } catch (e) {
       inFlight = false;
       const kind = saveFailure(e);
+      // 请求在路上时没有等着的重试（flush 发之前清掉了），只有路上又打字留下的防抖
       if (kind === 'conflict') {
         clearDebounce();
-        clearRetry();
         set({ kind: 'conflict', error: e });
         deps.onConflict(e);
         return;
