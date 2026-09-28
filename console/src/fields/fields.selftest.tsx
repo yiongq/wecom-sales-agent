@@ -99,6 +99,7 @@ import {
   placeOf,
   saveCopy,
   touchedPlaces,
+  usableChanges,
   visibleErrors,
 } from '../catalog/save.js';
 import { CatalogItemPage, CatalogNewPage } from '../pages/CatalogItemPage.js';
@@ -3038,6 +3039,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     changedFields(ROUTE, SICHUAN, e2).map((f) => f.key),
     ['intensity.hardest', 'highlights'],
   );
+  // 还能用回的：已上架时锁定的线路名称不算；表单里已经是你改的样子的不算；没有编辑权限的都不算
+  const mineWithTitle = writeValue(e2, fieldOf(ROUTE, 'title'), '别的名字');
+  const act1 = { status: 'active' as const, canEdit: true };
+  eq(
+    '对比里还能「用我的改动」的：锁定的不算，已经用回的不算，没有编辑权限的不算',
+    [
+      usableChanges(ROUTE, { before: SICHUAN, mine: mineWithTitle }, SICHUAN, act1).map((f) => f.key),
+      usableChanges(ROUTE, { before: SICHUAN, mine: mineWithTitle }, e1, act1).map((f) => f.key),
+      usableChanges(ROUTE, { before: SICHUAN, mine: mineWithTitle }, SICHUAN, { ...act1, canEdit: false }).length,
+    ],
+    [['intensity.hardest', 'highlights'], ['highlights'], 0],
+  );
   eq(
     '保存条的说明与主按钮：草稿、已上架（设计系统 E、G 页）',
     [saveCopy('draft'), saveCopy('active')],
@@ -3150,6 +3163,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     '同一个位置两边都有：只写表单的一条（服务端的这一条随字段改过也就不显示了）',
     visibleErrors(ROUTE, cleared, seen([], true), { ...server, sent: cleared }).byPlace.title,
     '线路名称：没填',
+  );
+  // 月份区间认不出：控件自己写「没认出月份」，字段下方不再写一遍，汇总照样算一处（plan 第 3.2 步的交接）
+  const summer = writeValue(SICHUAN, fieldOf(ROUTE, 'bestSeason'), '夏天');
+  const sv = visibleErrors(ROUTE, summer, seen([], true), null);
+  eq(
+    '月份区间认不出：byPlace 里没有它，list 里有它；清空时照常写「最佳季节：没填」',
+    [
+      Object.hasOwn(sv.byPlace, 'bestSeason'),
+      sv.list.map((p) => p.at),
+      visibleErrors(ROUTE, writeValue(SICHUAN, fieldOf(ROUTE, 'bestSeason'), undefined), seen([], true), null).byPlace.bestSeason,
+    ],
+    [false, ['bestSeason'], '最佳季节：没填'],
   );
   eq(
     '失焦的位置：由里到外的祖先链换成由外到里的几层',
@@ -3420,6 +3445,28 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     api.restore();
   }
 
+  // 月份区间写了认不出的字再保存：控件自己的「没认出月份」只出现一次，汇总「有1处要改」，焦点进这个输入框，不发请求
+  {
+    const api = fakeApi(() => undefined);
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    const seasonIn = d.box.querySelector<HTMLInputElement>('[data-field-key="bestSeason"] input');
+    await typeInto(seasonIn, '夏天');
+    await click(primary(d.box));
+    await settle();
+    eq(
+      '月份区间认不出：字段下方只有「没认出月份…」一条，汇总「有1处要改」，焦点在输入框，没发请求',
+      [
+        texts(d.box, '[data-field-key="bestSeason"] .field-error'),
+        texts(d.box, '.detail-issues .ant-alert-title'),
+        document.activeElement === seasonIn,
+        api.patches().length,
+      ],
+      [['没认出月份：写成「5月-10月」「11月-次年4月」或「全年」'], ['有1处要改'], true, 0],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
   // 只显示碰过的字段（验收 16）：新建里离开第一个字段，只有它报错；新建的保存在第 10.3 步，这一步没有保存条
   {
     const api = fakeApi(() => undefined);
@@ -3548,6 +3595,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
       [['最累的一段'], ['别人改的最累的一段', mine], ['用我的改动']],
     );
+    // 你的改动这时只在对比里、不在表单里：离开照样先确认（不变量 20）
+    await act(async () => {
+      void e.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' } });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    eq(
+      '载入最新版本以后，改动只留在对比里：站内跳转照样被拦下',
+      [document.body.textContent?.includes('有改动还没保存'), e.router.state.location.pathname],
+      [true, '/catalog/route/r-sichuan-lux'],
+    );
+    await click(all<HTMLButtonElement>(document.body, 'button').find((b) => b.textContent === '留下'));
+    await settle();
     await click(e.box.querySelector('.detail-compare-use'));
     eq(
       '用我的改动：写回表单，标「已改」，出现保存条，按钮收起',

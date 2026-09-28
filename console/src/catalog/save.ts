@@ -6,8 +6,9 @@
 // - 「只显示碰过的字段」：失焦过的位置、点过保存以后全部；
 // - 409 之后的对比：你改过的字段，逐个与最新版本并排。
 import { sameValue } from '../../../src/shared/catalog.js';
+import { parseMonthRange } from '../../../src/shared/format.js';
 import { type CheckIssue, checkItem, type EntityType, type FieldDef, valueAt } from '../../../src/shared/pack.js';
-import { fieldChanged, isSingleItem, nounOf, type Payload, pruneHidden } from '../fields/model.js';
+import { fieldChanged, fieldMode, isSingleItem, type ItemContext, nounOf, type Payload, pruneHidden } from '../fields/model.js';
 import { fieldOfPath, subPathOf } from './detail.js';
 
 const isRecord = (v: unknown): v is Payload => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -57,6 +58,20 @@ export function changeList(entity: EntityType, original: Payload, state: Payload
 /** 409 之后的对比：你改过的字段（整字段，「用我的改动」按字段写回）。mine 已剔除 showWhen 没显示的 */
 export const changedFields = (entity: EntityType, before: Payload, mine: Payload): FieldDef[] =>
   entity.fields.filter((f) => f.type !== 'status' && fieldChanged(before, mine, f));
+
+/**
+ * 对比里还能「用我的改动」的字段：最新版本里还能改（上架后锁定了的只能看），表单里又还不是你改的样子。
+ * 还有这样的字段时，你的改动只留在对比里、没进表单，离开页面同样先确认（不变量 20）
+ */
+export const usableChanges = (
+  entity: EntityType,
+  compare: { before: Payload; mine: Payload },
+  state: Payload,
+  ctx: ItemContext,
+): FieldDef[] =>
+  changedFields(entity, compare.before, compare.mine).filter(
+    (f) => fieldMode(f, ctx) === 'edit' && !sameValue(valueAt(state, f.key), valueAt(compare.mine, f.key)),
+  );
 
 /** 保存条右边的说明与主按钮（设计系统 E、G 页）：草稿存了也不推荐；已上架的写接口返回时快照已经更新（01） */
 export function saveCopy(status: 'draft' | 'active'): { note: string; button: string } {
@@ -136,11 +151,32 @@ export function placeIssues(entity: EntityType, issues: readonly Issue[]): { pla
 export const formIssues = (entity: EntityType, state: Payload): CheckIssue[] =>
   checkItem(entity, pruneHidden(state, entity.fields)).required;
 
+/** 位置上的字段定义与值：字段本身，或有序子项一项里的子字段；有序子项的一项本身（'itinerary.2'）没有 */
+function slotAt(entity: EntityType, state: Payload, at: string): { def: FieldDef; value: unknown } | null {
+  const f = fieldOfPath(entity, at);
+  if (!f) return null;
+  if (at === f.key) return { def: f, value: valueAt(state, f.key) };
+  const sub = subPathOf(f, at);
+  const def = sub?.sub === undefined ? undefined : f.item?.find((x) => x.key === sub.sub);
+  if (!sub || !def) return null;
+  const items = valueAt(state, f.key);
+  const item = Array.isArray(items) ? (items[sub.index] as unknown) : undefined;
+  return { def, value: isRecord(item) ? item[def.key] : undefined };
+}
+
+/**
+ * 控件自己已经在下方报了的问题（plan 第 3.2 步的交接）：月份区间写了认不出的字，表单控件自己写「没认出月份：写成…」
+ * （设计系统 §6 表，与 renderers.tsx 的 MonthRangeForm 同一个条件）。这个字段下方不再写一遍，汇总照样算它一处
+ */
+export const reportsItself = (def: FieldDef, value: unknown): boolean =>
+  def.type === 'monthRange' && typeof value === 'string' && value !== '' && !parseMonthRange(value);
+
 /**
  * 字段下方显示哪些报错（spec「失焦时只显示碰过的字段的错误」）：
  * - 表单自己查出来的，只显示碰过的位置（失焦过；点过保存以后 all 为真，全部显示）；
  * - 服务端 422 的，显示到那个字段改过为止（与提交时的内容比）。
- * 同一个位置有几条时用「；」连起来。返回按位置取的报错，和按顺序排好的全部（汇总的条数与「跳到第一处」用）
+ * 同一个位置有几条时用「；」连起来；控件自己报了的（reportsItself）不写进 byPlace。返回按位置取的报错，
+ * 和按顺序排好的全部（汇总的条数与「跳到第一处」用）
  */
 export function visibleErrors(
   entity: EntityType,
@@ -154,7 +190,11 @@ export function visibleErrors(
   );
   const list = [...own, ...theirs];
   const byPlace: Record<string, string> = {};
-  for (const p of list) byPlace[p.at] = byPlace[p.at] ? `${byPlace[p.at]}；${p.text}` : p.text;
+  for (const p of list) {
+    const slot = slotAt(entity, state, p.at);
+    if (slot && reportsItself(slot.def, slot.value)) continue;
+    byPlace[p.at] = byPlace[p.at] ? `${byPlace[p.at]}；${p.text}` : p.text;
+  }
   const order = (p: Placed): number => entity.fields.findIndex((f) => f.key === p.field);
   return { byPlace, list: [...list].sort((a, b) => order(a) - order(b)) };
 }

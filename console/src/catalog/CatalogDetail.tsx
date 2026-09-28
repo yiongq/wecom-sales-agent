@@ -17,12 +17,11 @@ import { Link } from '@tanstack/react-router';
 import { Alert, Button } from 'antd';
 import { ChevronRight, Clock, Lock, X } from 'lucide-react';
 import { type FocusEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react';
-import { sameValue } from '../../../src/shared/catalog.js';
 import { absoluteTime } from '../../../src/shared/format.js';
 import { checkItem, type EntityType, valueAt } from '../../../src/shared/pack.js';
 import { catalogKind, HttpError } from '../api.js';
 import { FieldGrid } from '../fields/FieldGrid.js';
-import { fieldMode, formState, type ItemContext, type Payload, pruneHidden, restoreField, submission } from '../fields/model.js';
+import { formState, type ItemContext, type Payload, pruneHidden, restoreField, submission } from '../fields/model.js';
 import { RENDERERS } from '../fields/renderers.js';
 import { ActionBar } from '../parts/ActionBar.js';
 import { type CheckItem, CheckList } from '../parts/CheckList.js';
@@ -61,6 +60,7 @@ import {
   placeIssues,
   saveCopy,
   touchedPlaces,
+  usableChanges,
   visibleErrors,
 } from './save.js';
 
@@ -585,6 +585,7 @@ function ConflictCompare({
 }) {
   const id = useId();
   const fields = changedFields(entity, compare.before, compare.mine);
+  const usable = new Set(usableChanges(entity, compare, state, ctx));
   const view = (f: (typeof fields)[number], row: Payload) => {
     const R = RENDERERS[f.type];
     return <R.View field={f} value={valueAt(row, f.key)} row={row} />;
@@ -601,7 +602,7 @@ function ConflictCompare({
       <p className="detail-compare-note">{cjk('已载入最新版本。逐处核对，要保留的点「用我的改动」，再保存')}</p>
       <ul className="detail-compare-rows">
         {fields.map((f) => {
-          const can = fieldMode(f, ctx) === 'edit' && !sameValue(valueAt(state, f.key), valueAt(compare.mine, f.key));
+          const can = usable.has(f);
           return (
             <li key={f.key} className="detail-compare-row">
               <div className="detail-compare-label">{cjk(f.label)}</div>
@@ -739,7 +740,6 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   const [failure, setFailure] = useState<{ error: unknown; retry(): void } | null>(null);
   const [conflict, setConflict] = useState(false);
   const [loadingLatest, setLoadingLatest] = useState(false);
-  const [compare, setCompare] = useState<Compare | null>(null);
   const [discarding, setDiscarding] = useState(false);
   /** 刚存好：给读屏念一句「已保存」，再改一处就清掉 */
   const [saved, setSaved] = useState(false);
@@ -753,7 +753,10 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   // 每次改一个字都重算（和副栏的上架前检查一样），条目只有几十个字段
   const pending = submission(original, state, entity.fields);
   const dirty = Object.keys(pending.set).length > 0 || pending.unset.length > 0;
-  const guard = useUnsavedGuard(ctx.canEdit && dirty);
+  // 409 之后你的改动还留在对比里、没用回表单的，也是没保存的内容
+  const [compare, setCompare] = useState<Compare | null>(null);
+  const unapplied = compare !== null && usableChanges(entity, compare, state, ctx).length > 0;
+  const guard = useUnsavedGuard(ctx.canEdit && (dirty || unapplied));
   const showBar = !!onSave && ctx.canEdit && ctx.status !== 'new' && dirty;
   const changes = showBar ? changeList(entity, original, state) : [];
   const errors = visibleErrors(entity, state, { touched, all: attempted }, server);
