@@ -302,7 +302,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
   });
   // 不能发布时点「发布」：去原因所在的地方（没过的第一项、没检查上的「重试」、说明框）
   const toReason = (): void => {
-    if (block?.focus === 'note') noteRef.current?.focus();
+    if (block?.focus === 'note') noteRef.current?.focus({ cursor: 'end' });
     else if (block?.focus === 'checks') checksRef.current?.querySelector<HTMLElement>('button')?.focus();
   };
   return (
@@ -372,7 +372,8 @@ export function PublishDrawer(props: PublishDrawerProps) {
             value={p.note}
             onChange={(e) => p.onNote(e.target.value)}
             placeholder="例：客户嫌贵时先问预算上限"
-            autoSize={{ minRows: 3, maxRows: 8 }}
+            // 不用 autoSize：它给量高度的影子文本框 setAttribute('style')，页面 CSP 不许内联样式
+            rows={4}
             maxLength={500}
             aria-describedby={helpId}
           />

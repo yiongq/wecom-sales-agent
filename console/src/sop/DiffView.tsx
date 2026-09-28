@@ -17,6 +17,13 @@ import { cmPhrases } from './SopEditor.js';
 /** 改动前后各留 2 行，连着 4 行以上没改才折叠 */
 const COLLAPSE = { margin: 2, minSize: 4 };
 
+/** 节末的空行不画（非末节的正文以一个空行结尾，差异块底下会多出一截空白）；行数也按去掉以后的算 */
+export const trimEnd = (c: SectionChange): SectionChange => ({
+  ...c,
+  before: c.before.replace(/\n+$/, ''),
+  after: c.after.replace(/\n+$/, ''),
+});
+
 function readOnly(label: string): Extension[] {
   return [
     ...(cspNonce ? [EditorView.cspNonce.of(cspNonce)] : []),
@@ -84,7 +91,7 @@ export function DiffList({ items, mode, labels }: { items: readonly SectionChang
   const id = useId();
   return (
     <div className="sop-diff">
-      {items.map((c, i) => (
+      {items.map(trimEnd).map((c, i) => (
         <section key={c.key} className="sop-diff-item" aria-labelledby={`${id}-${i}`}>
           <div className="sop-diff-head">
             <h4 id={`${id}-${i}`} className="sop-diff-name">

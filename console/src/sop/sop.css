@@ -720,7 +720,7 @@
 .sop-bar-problems {
   color: var(--danger);
 }
-/* 窄屏（<768）：一行放不下，摘要与按钮上下排 */
+/* 窄屏（<768）：一行放不下，摘要占一行，原因和按钮在下一行靠右 */
 @media (max-width: 767px) {
   .sop-publish-bar .action-bar {
     flex-wrap: wrap;
@@ -728,8 +728,10 @@
     row-gap: 8px;
     padding-block: 10px;
   }
+  .sop-publish-bar .action-bar-main {
+    flex-basis: 100%;
+  }
   .sop-publish-bar .action-bar-side {
-    flex-wrap: wrap;
     margin-left: auto;
   }
 }

@@ -86,7 +86,8 @@ export function barBlock(input: { frozen: boolean; changed: number; problems: nu
   jump: boolean;
 } | null {
   if (input.frozen) return { reason: '载入最新草稿以后才能发布', jump: false };
-  if (input.changed === 0) return { reason: '草稿和线上一样，没有可发布的改动', jump: false };
+  // 左边的摘要已经写了「草稿和线上一样」（或发布成功的那句），这里接着写后半句
+  if (input.changed === 0) return { reason: '没有可发布的改动', jump: false };
   if (input.problems > 0) return { reason: `改完${digits(input.problems)}个问题即可发布`, jump: true };
   return null;
 }
