@@ -15,6 +15,7 @@ import {
   History,
   House,
   Layers,
+  LayoutDashboard,
   type LucideIcon,
   MessageSquareText,
   MessagesSquare,
@@ -66,8 +67,9 @@ const ENTITY_ICON_COMPONENTS: Readonly<Record<EntityIcon, LucideIcon>> = {
 /** 实体图标集合里的名字（自测核对审计动作的图标不与它们重名） */
 export const ENTITY_ICON_NAMES: readonly string[] = Object.keys(ENTITY_ICON_COMPONENTS);
 
-/** 固定页面的图标：销售话术 / 会话 / 审计日志 */
-const PAGE_ICONS: Readonly<Record<'sop' | 'conversations' | 'audit', LucideIcon>> = {
+/** 固定页面的图标：总览 / 销售话术 / 会话 / 审计日志 */
+const PAGE_ICONS: Readonly<Record<'overview' | 'sop' | 'conversations' | 'audit', LucideIcon>> = {
+  overview: LayoutDashboard,
   sop: MessageSquareText,
   conversations: MessagesSquare,
   audit: History,

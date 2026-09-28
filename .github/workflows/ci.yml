@@ -113,6 +113,12 @@ jobs:
       # - console/src/fields/fields.selftest.tsx：字段渲染器。11 种字段类型各三种形态；旅游包与假包的每个字段都画一遍；
       #   打开 data/ 下每条线路、酒店不做改动，补丁为空，每个字段经控件读出再写回不变（餐食的「早/午/晚」逐字节往返）；
       #   锁定、只读与 4 列的规则。错了不报错，只会让没改过的条目也发出 PATCH、改写现有数据，或者把锁定的字段画成输入框。
+      # - console/src/overview/overview.selftest.tsx：总览。「需要你处理」的顺序与各行的说法、业务数与明细、阶段条、最近变更的合并；
+      #   真挂载页面加假接口：某个接口 500 时只有用它的那一块出错，坐席看不到草稿与审计、也不发这些请求，匿名只有在售一格，
+      #   换一个行业包实体与阶段跟着换。错了不报错，只会让首页漏掉要处理的事、数字对不上，或者一个接口挂了整页空白。
+      # - console/src/conversations/conversations.selftest.tsx：会话列表。页签与阶段条取同一次 counts、表格按 waiting_first 排、
+      #   筛选与页码写进地址；admin.html 的 #s=<id> 深链在没登录时弹登录框、登录后仍然选中。错了不报错，只会让页签和徽标的数
+      #   对不上，或者点了「打开工作台」却选不中那个会话。
       # - scripts/check-console-src.selftest.ts：lint 里 check-console-src.ts 的夹具，每条不变量造几处违规，确认都点得出位置。
       # - LLM_MOCK=1 eval/run.ts：回归评测（mock 模式，秒级），改 SOP/提示词/护栏后自动回归，防止话术悄悄退化。
       #   文件模式、DB 模式（PGlite）各跑一遍。真实模型评测要花钱，不进 CI。
