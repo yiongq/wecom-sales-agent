@@ -40,7 +40,12 @@ export function LoginPage({ demo }: { demo?: AnonViewer }) {
       <main id="main" className="login-panel">
         <div className="login-column">
           <h1 className="login-title">运营后台</h1>
-          <p className="login-lead">{cjk('在这里维护销售话术和产品库，企业微信里的AI销售按它们接待客户')}</p>
+          {/* 在逗号处断行：一栏 360 宽放不下一整句，任由它折行会把「它们」拆到两行 */}
+          <p className="login-lead">
+            {cjk('在这里维护销售话术和产品库，')}
+            <br />
+            {cjk('企业微信里的AI销售按它们接待客户')}
+          </p>
           <LoginForm autoFocus onSuccess={() => void qc.resetQueries({ queryKey: VIEWER_KEY })} />
           {demo && (
             <p className="login-back">

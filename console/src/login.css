@@ -3,7 +3,10 @@
  * 只有登录页的控件高 40（§3「登录页控件 40」、§5.1「登录页高 40」），就地登录框里照常 32。颜色一律取 brand.css 的变量
  */
 
-/* ---------------- 页面：--frame 底上一块内嵌的内容面板，一栏居中（与外壳 §4.1 同一副骨架） ---------------- */
+/*
+ * 页面：--frame 底上一块内嵌的内容面板，一栏水平居中（与外壳 §4.1 同一副骨架）。竖直方向不居中，从视口高度的 20% 处起：
+ * 居中的话，控件下方出现「没填」的原因时整栏往上挪，标题跟着跳
+ */
 .login-page {
   box-sizing: border-box;
   display: flex;
@@ -15,9 +18,9 @@
 .login-panel {
   display: flex;
   flex: 1;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 48px 32px;
+  padding: clamp(32px, 20vh, 200px) 32px 48px;
   border-radius: var(--r-xl);
   background: var(--panel);
   box-shadow: var(--shadow-panel);
@@ -25,7 +28,7 @@
 }
 @media (max-width: 991px) {
   .login-panel {
-    padding: 32px 16px;
+    padding: clamp(32px, 20vh, 200px) 16px 32px;
   }
 }
 .login-column {
