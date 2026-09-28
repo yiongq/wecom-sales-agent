@@ -794,8 +794,9 @@ const theme = EditorView.theme({
   '.sop-hint-icon': { flex: 'none', height: '22px', paddingTop: '4px', boxSizing: 'border-box', color: 'var(--danger)' },
   '.sop-hint-icon svg': { display: 'block' },
   '.sop-hint-main': { flex: '1', minWidth: '0' },
-  '.sop-hint-row': { display: 'flex', alignItems: 'flex-start', gap: '12px' },
-  '.sop-hint-title': { flex: '1', minWidth: '0', fontWeight: '500', color: 'var(--text)', textWrap: 'pretty' },
+  // 放不下时（窄屏）按钮折到第一行下面：标题至少占 240，再加按钮放不下就换行
+  '.sop-hint-row': { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', columnGap: '12px', rowGap: '4px' },
+  '.sop-hint-title': { flex: '1 1 240px', minWidth: '0', fontWeight: '500', color: 'var(--text)', textWrap: 'pretty' },
   '.sop-hint-name': { fontFamily: 'var(--mono)', fontSize: '12.5px', fontWeight: '400' },
   '.sop-hint-nowrap': { whiteSpace: 'nowrap' },
   // 候选是芯片（§6.6），在 danger-bg 上用 panel 底
