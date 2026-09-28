@@ -1,6 +1,6 @@
 // 几处共用同一份缓存的查询（React Query 的 queryKey 与取数函数写在一处）：
 // - 产品库列表：列表页、侧栏的条目数、⌘K 的「各实体」组（spec「外壳 · 搜索触发器」：和列表页共用缓存）；
-// - 会话计数与等人接手的首页：侧栏软徽标、铃铛（spec「外壳 · 计数刷新」），总览第 4 步接着用；
+// - 会话计数与等人接手的首页：侧栏软徽标、铃铛（spec「外壳 · 计数刷新」）；总览接着用计数，等人接手另取最早的一页；
 // - 最近 100 个会话：⌘K 的「会话」组。
 // ⌘K 自己不负责刷新：列表归侧栏和列表页刷新，⌘K 打开时只取还没载入的（paletteListQuery、paletteConversationsQuery）
 import { queryOptions } from '@tanstack/react-query';
