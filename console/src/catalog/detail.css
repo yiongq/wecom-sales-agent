@@ -96,10 +96,12 @@
   font-weight: 600;
   color: var(--text);
 }
-/* 副栏点锁定组时焦点落在卡片头；载入最新版本以后落在对比卡的标题；保存失败时没有按钮的 Alert 自己拿焦点 */
+/* 副栏点锁定组时焦点落在卡片头；载入最新版本以后落在对比卡的标题；保存失败时没有按钮的 Alert、
+   全都落不到字段的 422 汇总自己拿焦点 */
 .detail-card-title:focus-visible,
 .detail-compare-title:focus-visible,
 .detail-failure .ant-alert:focus-visible,
+.detail-issues:focus-visible,
 .detail-block:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
