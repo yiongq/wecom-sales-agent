@@ -452,7 +452,8 @@ function MemberSop({
       {guard}
       {hasBanners && (
         <div className="sop-banners">
-          {refetchError}
+          {/* 409 停住时重取失败由下面「载入最新草稿」自己的报错说（重试要接着走完载入），这里不重复 */}
+          {!frozen && refetchError}
           {saveError !== null && <ErrorAlert error={saveError} onRetry={saver.flush} />}
           {frozen && (
             <ConflictBanner

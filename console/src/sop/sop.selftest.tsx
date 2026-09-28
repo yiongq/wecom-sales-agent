@@ -2173,6 +2173,8 @@ function fakeServer(start: SopOverview) {
   const srv = {
     state: start,
     mode: 'ok' as PutMode,
+    /** GET /sop 答 500（载入最新草稿失败） */
+    getFails: false,
     held: [] as { resolve(): void }[],
     nextRev: 10,
     puts: (): { basedOn: string; rev: number | null; edits: { key: string; body: string }[] }[] =>
@@ -2192,7 +2194,8 @@ function fakeServer(start: SopOverview) {
   };
   calls.length = 0;
   respond = async (call) => {
-    if (call.method === 'GET' && call.path === '/api/console/sop') return json(200, srv.state);
+    if (call.method === 'GET' && call.path === '/api/console/sop')
+      return srv.getFails ? json(500, { error: 'internal' }) : json(200, srv.state);
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/check')
       return json(200, {
         promptHash: 'b'.repeat(64),
@@ -2363,9 +2366,17 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await rest(150);
   eq('第二次的退避还没到：不再发', srv.puts().length, 2);
   srv.mode = 'ok';
+  await act(async () => void window.dispatchEvent(new win.Event('online') as unknown as Event));
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  eq('恢复联网（online 事件）：马上试，存上了', [srv.puts().length, saveNow(m)], [3, '·已自动保存14:30']);
+  srv.mode = 'network';
+  await typeAtEnd(m, '又断');
+  await waitFor(() => srv.puts().length === 5);
+  await rest(100);
+  srv.mode = 'ok';
   await clickEv(m.box.querySelector('.sop-save-retry'));
   await waitFor(() => saveNow(m) === '·已自动保存14:30');
-  eq('点「重试」马上试，恢复以后存上', [srv.puts().length, saveNow(m)], [3, '·已自动保存14:30']);
+  eq('再断：退避到 10 秒那一档时点「重试」，马上试、存上', [srv.puts().length, saveNow(m)], [6, '·已自动保存14:30']);
   await m.unmount();
 }
 
@@ -2398,6 +2409,20 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   const theirs = srv.state.draft!.sections.map((x) => (x.key === 'tone' ? { ...x, text: x.text.replace(/改(\n+)$/, '别人$1') } : x));
   srv.state = { ...srv.state, draft: { ...srv.state.draft!, sections: theirs, rev: 9 } };
   srv.mode = 'ok';
+  srv.getFails = true;
+  await clickEv(banner?.querySelector('.ant-alert-actions button'));
+  await waitFor(() => all(m.box, '.sop-banners .ant-alert').length === 2);
+  eq(
+    '载入最新草稿没取到：页面还在，编辑器还冻着、是你写的，横幅下面就地报错',
+    [
+      editorText(m) === mine,
+      editorEditable(m),
+      all(m.box, '.sop-banners .ant-alert-title').map((t) => text(t)),
+      m.box.querySelector('.sop-lost'),
+    ],
+    [true, 'false', ['草稿刚被别人改过', '服务暂时连不上'], null],
+  );
+  srv.getFails = false;
   const gets = calls.filter((c) => c.method === 'GET').length;
   await clickEv(banner?.querySelector('.ant-alert-actions button'));
   await waitFor(() => !!m.box.querySelector('.sop-lost'));
@@ -2451,6 +2476,29 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await m.unmount();
 }
 
+// 9.3g rev 只跟自己存上的走：有没存上的改动时，重取带回来的草稿（别人的 rev）不跟；没有待存的改动时跟着服务端
+{
+  const srv = fakeServer(MEMBER_SOP);
+  const slow: AutosaveTiming = { ...FAST, debounce: 60_000 };
+  const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, slow);
+  await typeAtEnd(m, '甲');
+  const theirs = (rev: number): void => {
+    m.qc.setQueryData<SopOverview>(['sop'], (old) => (old ? { ...old, draft: { ...old.draft!, rev } } : old));
+  };
+  await act(async () => theirs(99));
+  await pressSave({ metaKey: true });
+  await waitFor(() => srv.puts().length === 1);
+  eq('有没存上的改动时重取到别人的草稿：照旧带打开时的 rev（让服务端答 409），不跟着换', srv.puts()[0]?.rev, 4);
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  await act(async () => theirs(50));
+  await rest(20);
+  await typeAtEnd(m, '乙');
+  await pressSave({ metaKey: true });
+  await waitFor(() => srv.puts().length === 2);
+  eq('全存上了以后重取到新的草稿：下一次带它的 rev', srv.puts()[1]?.rev, 50);
+  await m.unmount();
+}
+
 // 9.4 三栏的格子
 {
   const cols = (m: PageBox): string[] =>
@@ -2497,7 +2545,18 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     ['6/7通过', '工具名都存在1处·话术原则'],
   );
   await m.unmount();
-  eq('fakeServer 没收到 PUT（没打字）', srv.puts().length, 0);
+  eq('没打字就不存', srv.puts().length, 0);
+  const again = await mountPage('/console/sop?section=tone', owner, MEMBER_SOP, FAST);
+  await clickEv(headerButton(again, '检查'));
+  await waitFor(() => !!again.box.querySelector('.sop-col-check .check-list-summary'));
+  await typeAtEnd(again, '改');
+  await waitFor(() => saveNow(again) === '·已自动保存14:30');
+  eq(
+    '检查结果是对存之前那份草稿说的：自动保存以后作废，7 项回到「还没跑」',
+    [again.box.querySelector('.sop-col-check .check-list-summary'), all(again.box, '.sop-col-check .check-item-pending').length],
+    [null, 7],
+  );
+  await again.unmount();
   const agent: Viewer = { ...owner, me: { ...(owner as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
   const r = await mountPage('/console/sop?section=tone', agent, MEMBER_SOP);
   eq('只读成员：没有检查清单，工具卡片照画', cols(r), ['sop-col-toc', 'sop-col-main', 'sop-col-tools']);
@@ -2512,6 +2571,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   );
   eq('匿名：只有目录和中栏', cols(a), ['sop-col-toc', 'sop-col-main']);
   await a.unmount();
+  // /sop 永远不回，停在加载中
+  respond = null;
   const skel = await mountPage('/console/sop?section=tone', OWNER, null);
   eq('加载骨架：同一个网格，目录一格、中栏一格', cols(skel), ['sop-col-toc', 'sop-col-main']);
   await skel.unmount();
