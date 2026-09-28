@@ -52,6 +52,17 @@
   margin: 16px 0 0;
   text-align: center;
 }
+/* 「返回演示」照 §3 的链接：点击区域高 24，键盘焦点 2px --focus、外移 2（不用 antd 链接自带的 3px 框） */
+.login-back a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: var(--r-xs);
+}
+.login-back a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 
 /* ---------------- 表单：标签在上 13/20/500，标签到控件 6，字段之间 20（§3「表单」、§5.2） ---------------- */
 .login-form {
@@ -84,6 +95,30 @@
   flex: none;
   margin-top: 3px;
 }
+/*
+ * 密码框里「显示密码」的眼睛：antd 画成 14 见方，还是一个 Tab 停靠点。点击区域补到 24 见方（§3「点击目标 ≥ 24×24」），
+ * 内边距加多少、外边距就抵掉多少，控件高度与文字位置不变；键盘焦点照按钮画 2px --focus 外框
+ */
+.login-form .ant-input-password-icon {
+  box-sizing: content-box;
+  padding: 5px;
+  margin: -5px;
+  border-radius: var(--r-xs);
+}
+.login-form .ant-input-password-icon:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+}
+/* 没填时念给读屏的一句：看不见，也不占表单的间距（绝对定位不参与 flex 的 gap） */
+.login-notice {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* 登录页的控件与按钮高 40；字仍是 14（antd 的 large 会换成 16，所以不用 size，只改高度） */
 .login-page .login-control,
 .login-page .login-submit {

@@ -2,14 +2,17 @@
 // 加照服务端规则的假接口：/me、/pack 按 prod、demo 与是否登录回 200 或 401，登录接口可以指定回什么。
 // 1. prod（/me、/pack 都 401）：一栏的登录页，标题「运营后台」与一句说明；「邮箱」「密码」两个标签连着各自的输入框、不加冒号，
 //    全页没有「口令」；邮箱的占位符以「例：」开头；焦点在邮箱上；没有外壳，也没有「返回演示」；标签页标题「登录」。
-// 2. 没填就提交：不发请求，控件下方写「没填邮箱」「没填密码」，aria-invalid、aria-describedby 连上，焦点到第一个没填的；
-//    填上一个，它的原因就消失。
+// 2. 没填就提交：不发请求，控件下方写「没填邮箱」「没填密码」（前置图标），两个控件都画成出错的样子，aria-invalid、
+//    aria-describedby 连上，焦点到第一个没填的；焦点本来就在那里时，看不见的 polite 区域念一遍没填的几项。填上一个，它的原因就消失。
+//    表单不用浏览器自带的校验，输入框的长度上限与 LoginBody 相同；格式不对的邮箱、只有空格的密码照样提交，由服务端判。
 // 3. 服务端的错：401 invalid_credentials、429 busy 与 rate_limited、连不上，都在按钮上方的页内 Alert 里，文案取 ERROR_COPY，
 //    detail 不上页面（只在折叠的技术详情里），不弹 toast；只留一条 Alert。
 // 4. 提交中：按钮 loading，这时再提交不发第二个请求；上一条错误先收起。
 // 5. 登录成功：请求体是输入的邮箱与密码，之后重新判断来者、进成员外壳，地址不变。
 // 6. demo：从匿名外壳侧栏的「登录」和横幅的「登录后编辑」进来，表单下方有「返回演示」，它是指向当前地址（带 /console 与 search）的
-//    链接，标签页标题「登录 · 演示」；左键点它回到匿名外壳，地址不变，不重新取 /me、/pack，焦点到内容面板；带修饰键点不拦。
+//    链接，标签页标题「登录 · 演示」；左键点它回到匿名外壳，地址不变，不重新取 /me、/pack，焦点到内容面板；带修饰键或中键点不拦。
+// 7. 就地登录框（成员身份下会话失效）：同一个表单，不自动聚焦，没有「返回演示」；没填时先画上原因再挪焦点，服务端的错在框里的
+//    Alert 里；登录后框收起，页面没卸载，被拦下的请求重放。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/pages/login.selftest.tsx
 import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
@@ -23,10 +26,10 @@ import { createRoot } from 'react-dom/client';
 import type { Me } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { ToastHost } from '../parts/toast.js';
-import { endMemberSession } from '../session.js';
+import { endMemberSession, isSessionExpired } from '../session.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { ThemeProvider } from '../theme/ThemeProvider.js';
-import { toLogin, type Viewer } from '../viewer.js';
+import { toLogin, type Viewer, VIEWER_KEY } from '../viewer.js';
 
 // Shell 经「关于」弹窗在模块顶层读 import.meta.env.BASE_URL（vite 构建时替换），Node 里没有 import.meta.env。
 // 在 tsx 转好的源码上把它换成构建时的值；钩子只对之后才载入的模块生效，所以 Shell 用动态 import
@@ -286,6 +289,12 @@ async function mount(path: string) {
     [m.email()?.type, m.email()?.autocomplete, m.email()?.placeholder.startsWith('例：'), m.password()?.type, m.password()?.autocomplete],
     ['email', 'username', true, 'password', 'current-password'],
   );
+  eq('prod：表单不用浏览器自带的校验（格式不对也交给服务端，错写在 Alert 里）', m.$<HTMLFormElement>('.login-form')?.noValidate, true);
+  eq(
+    'prod：输入框的长度上限与 LoginBody 相同（邮箱 254、密码 1024）',
+    [m.email()?.getAttribute('maxlength'), m.password()?.getAttribute('maxlength')],
+    ['254', '1024'],
+  );
   check('prod：全页没有「口令」', !m.box.textContent!.includes('口令'), m.box.textContent ?? '');
   check('prod：焦点在邮箱上', document.activeElement === m.email());
   eq('prod：没点「登录」之前不写原因', [m.fieldErrors(), m.email()?.getAttribute('aria-invalid') ?? null], [[], null]);
@@ -315,15 +324,36 @@ async function mount(path: string) {
     ['true', '没填邮箱', 'true', '没填密码'],
   );
   check('没填：输入框画成出错的样子', m.email()?.classList.contains('ant-input-status-error') === true);
+  check(
+    '没填：密码框同样画成出错的样子',
+    m.password()?.closest('.ant-input-affix-wrapper')?.classList.contains('ant-input-status-error') === true,
+  );
+  check(
+    '没填：原因前面有图标',
+    m.$$('.login-field-error').length === 2 && m.$$('.login-field-error').every((e) => e.querySelector('svg') !== null),
+  );
+  eq(
+    '没填：焦点本来就在邮箱上，看不见的 polite 区域念没填的两项',
+    [m.$('.login-notice')?.getAttribute('aria-live'), m.text(m.$('.login-notice'))],
+    ['polite', '没填邮箱，没填密码'],
+  );
   check('没填：焦点到第一个没填的（邮箱）', document.activeElement === m.email());
   check('没填：页上没有 Alert（原因写在控件下方）', m.alerts().length === 0);
   await m.type(m.email(), `  ${EMAIL.toUpperCase()}`);
   eq('填上邮箱：它的原因就消失，密码的还在', m.fieldErrors(), ['没填密码']);
+  eq('填上邮箱：念过的那句清掉', m.text(m.$('.login-notice')), '');
   check('填上邮箱：不再标出错', m.email()?.getAttribute('aria-invalid') === null);
   await m.submit();
   eq('只差密码：仍不发请求，焦点到密码', [requests, document.activeElement === m.password()], [[], true]);
   await m.type(m.email(), '   ');
   eq('邮箱只有空格也算没填', m.fieldErrors(), ['没填邮箱', '没填密码']);
+  await m.type(m.email(), 'abc');
+  await m.type(m.password(), '   ');
+  eq('密码只有空格不算没填（密码可以带空格）', m.fieldErrors(), []);
+  loginBodies = [];
+  await m.submit();
+  eq('邮箱格式不对、密码只有空格：照样提交，由服务端判', loginBodies, [{ email: 'abc', password: '   ' }]);
+  check('邮箱格式不对：错写在 Alert 里', m.alerts()[0]?.includes('邮箱或密码不对') === true, JSON.stringify(m.alerts()));
   await m.type(m.email(), EMAIL);
 
   // 3. 服务端的错
@@ -421,6 +451,70 @@ async function mount(path: string) {
   check('登录成功：进成员外壳，登录页没了', document.querySelector('.sidebar') !== null && m.$('.login-page') === null);
   eq('登录成功：地址不变', m.url(), '/catalog/route?status=draft');
   eq('登录成功：页头是这一页的', m.text(m.$('h1')), '测试页');
+
+  // 7. 就地登录框：会话在服务端没了，重取 /me 得到 401，判为过期，同一个表单弹在框里
+  server.loggedIn = false;
+  requests = [];
+  await act(async () => void m.qc.invalidateQueries({ queryKey: VIEWER_KEY }));
+  await settle(m.qc);
+  const dlg = <E extends Element = HTMLElement>(sel: string): E | null => document.querySelector<E>(`.ant-modal ${sel}`);
+  const dlgInput = (i: number): HTMLInputElement | null => {
+    const id = document.querySelectorAll('.ant-modal .login-label')[i]?.getAttribute('for');
+    return id ? (document.getElementById(id) as HTMLInputElement | null) : null;
+  };
+  const dlgSubmit = async (): Promise<void> => {
+    const b = dlg<HTMLButtonElement>('.login-submit');
+    if (b) await act(async () => b.click());
+    await settle(m.qc);
+  };
+  const dlgFieldErrors = (): string[] => [...document.querySelectorAll('.ant-modal .login-field-error')].map(m.text);
+  eq(
+    '就地登录框：弹出「登录已过期」，里面是同一个表单',
+    [isSessionExpired(), m.text(dlg('.ant-modal-title')), [...document.querySelectorAll('.ant-modal .login-label')].map(m.text)],
+    [true, '登录已过期', ['邮箱', '密码']],
+  );
+  check('就地登录框：页面没卸载', document.querySelector('.sidebar') !== null && m.text(m.$('h1')) === '测试页');
+  check(
+    '就地登录框：不自动聚焦到输入框',
+    dlgInput(0) !== null && document.activeElement !== dlgInput(0) && document.activeElement !== dlgInput(1),
+  );
+  check('就地登录框：没有「返回演示」', document.querySelector('.login-back') === null && !document.body.textContent!.includes('返回演示'));
+
+  // 没填就提交：焦点落到邮箱时，原因已经画上、连好了（读屏读控件时连原因一起读），这时不另外念
+  let describedAtFocus: string | null = null;
+  const onFocus = (): void => {
+    describedAtFocus = m.text(document.getElementById(dlgInput(0)?.getAttribute('aria-describedby') ?? '') ?? null);
+  };
+  dlgInput(0)?.addEventListener('focus', onFocus);
+  requests = [];
+  await dlgSubmit();
+  dlgInput(0)?.removeEventListener('focus', onFocus);
+  eq('就地登录框没填：不发请求，框里就地写原因', [count('POST /api/console/auth/login'), dlgFieldErrors()], [0, ['没填邮箱', '没填密码']]);
+  eq(
+    '就地登录框没填：焦点到邮箱，落上去时已连着原因；焦点挪了，不另外念',
+    [document.activeElement === dlgInput(0), describedAtFocus, m.text(dlg('.login-notice'))],
+    [true, '没填邮箱', ''],
+  );
+
+  // 服务端的错：框里的 Alert
+  await m.type(dlgInput(0), EMAIL);
+  await m.type(dlgInput(1), 'wrong-password');
+  await dlgSubmit();
+  eq(
+    '就地登录框密码不对：错在框里的 Alert 里，框还开着',
+    [m.text(dlg('.login-form .ant-alert-title')).includes('邮箱或密码不对'), isSessionExpired()],
+    [true, true],
+  );
+
+  // 登录：框收起，被拦下的 /me 重放，页面还在原处
+  await m.type(dlgInput(1), PASSWORD);
+  requests = [];
+  await dlgSubmit();
+  eq(
+    '就地登录成功：框收起，被拦下的 /me 重放，页面没卸载、地址不变',
+    [isSessionExpired(), count('GET /api/console/me') >= 1, document.querySelector('.sidebar') !== null, m.text(m.$('h1')), m.url()],
+    [false, true, true, '测试页', '/catalog/route?status=draft'],
+  );
   await m.unmount();
 }
 
@@ -458,7 +552,13 @@ async function mount(path: string) {
     e.preventDefault();
   };
   document.addEventListener('click', spy);
-  const clickBack = async (init: { button?: number; ctrlKey?: boolean; metaKey?: boolean }): Promise<void> => {
+  const clickBack = async (init: {
+    button?: number;
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+    shiftKey?: boolean;
+    altKey?: boolean;
+  }): Promise<void> => {
     prevented = null;
     const a = back();
     if (!a) return;
@@ -472,6 +572,12 @@ async function mount(path: string) {
   eq('demo：Ctrl 点「返回演示」不拦，还在登录页', [prevented, m.$('.login-page') !== null], [false, true]);
   await clickBack({ metaKey: true });
   eq('demo：⌘ 点「返回演示」同样不拦', [prevented, m.$('.login-page') !== null], [false, true]);
+  await clickBack({ shiftKey: true });
+  eq('demo：Shift 点「返回演示」不拦（新窗口）', [prevented, m.$('.login-page') !== null], [false, true]);
+  await clickBack({ altKey: true });
+  eq('demo：Alt 点「返回演示」不拦（下载）', [prevented, m.$('.login-page') !== null], [false, true]);
+  await clickBack({ button: 1 });
+  eq('demo：中键点「返回演示」不拦', [prevented, m.$('.login-page') !== null], [false, true]);
 
   // 左键点
   await clickBack({ button: 0 });
