@@ -580,7 +580,17 @@ export function drawerView(entry: AuditEntryView, pack: IndustryPack, lookups: A
       : null;
 
   const target = [entry.targetType, entry.targetId].filter((x) => x !== null).join(' · ');
-  const json = { ...entry };
+  // JSON 原文按接口的字段顺序
+  const json = {
+    id: entry.id,
+    at: entry.at,
+    actorKind: entry.actorKind,
+    actorName: entry.actorName,
+    action: entry.action,
+    targetType: entry.targetType,
+    targetId: entry.targetId,
+    diff: entry.diff,
+  };
   return {
     actor: d.actor,
     parts: d.parts,

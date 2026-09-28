@@ -21,6 +21,23 @@
 .au-seg-scroll::-webkit-scrollbar {
   display: none;
 }
+/*
+ * 分段控件与开关按 §5.4：选中段 --thumb 底加 1px --control-border 的圈（≥3:1）、text 500；开关关着是 --control-border 底。
+ * 全站主题（theme/antd.ts）的 Segmented 选中段是 0.08 的淡圈、400，焦点框 3px，Switch 关着是 text-3，这里先按 §5.4、§5.20 收在这一页
+ * （plan「Open」第 14 步）
+ */
+.au-filters .ant-segmented-item-selected {
+  box-shadow: 0 0 0 1px var(--control-border);
+  font-weight: 500;
+}
+/* 键盘走进来时的焦点框按 §5.20：2px --focus，偏移 2（antd 自带的是 3px、偏移 1） */
+.au-filters .ant-segmented-item-focused {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.au-login .ant-switch:not(.ant-switch-checked) {
+  background: var(--control-border);
+}
 .au-login {
   display: inline-flex;
   align-items: center;
