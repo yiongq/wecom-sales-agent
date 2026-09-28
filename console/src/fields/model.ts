@@ -201,6 +201,16 @@ export function fieldMode(f: FieldDef, ctx: ItemContext): FieldMode {
   return f.lockedWhenActive === true && ctx.status === 'active' ? 'locked' : 'edit';
 }
 
+/**
+ * 有序子项的条数随另一个字段锁定：countFrom 指向的字段上架后锁定了（旅游包已上架线路的天数），不能增删，只能改文字
+ * （spec「有序子项与引用」，验收 18）
+ */
+export function countLocked(entity: EntityType, f: FieldDef, ctx: ItemContext): boolean {
+  if (f.countFrom === undefined) return false;
+  const by = entity.fields.find((x) => x.key === f.countFrom);
+  return by !== undefined && fieldMode(by, ctx) === 'locked';
+}
+
 /** 只锁其中几项的标签字段（旅游包的「国内」）：已上架时这几项的有无不能改，可改的人才看得到锁 */
 export const lockedMembers = (f: FieldDef, ctx: ItemContext): readonly string[] =>
   ctx.canEdit && ctx.status === 'active' && typeof f.lockedWhenActive === 'object' ? f.lockedWhenActive.members : [];
@@ -248,6 +258,43 @@ export function moveItem<T>(items: readonly T[], i: number, d: -1 | 1): T[] | nu
   const next = [...items];
   [next[i], next[j]] = [next[j]!, next[i]!];
   return next;
+}
+
+/** 值是数组的字段：标签、有序子项、多选引用、不按字符串存的多选 enum */
+export const arrayValued = (f: FieldDef): boolean =>
+  f.type === 'tags' || f.type === 'subItems' || (f.multiple === true && (f.type === 'reference' || (f.type === 'enum' && !f.storeAs)));
+
+/**
+ * 多字段有序子项的一项按行业包的顺序排键：自动编号在前，子字段按 item 的顺序，别的键原样排在最后。条目原样 JSON 给模型，
+ * 键序就是字节，不该随先填哪个子字段变（同新建提交的 inFieldOrder）；现有数据本来就是这个顺序，排了不变
+ */
+export function itemInOrder(f: FieldDef, item: Payload): Payload {
+  const keys = [...(f.autoIndexKey === undefined ? [] : [f.autoIndexKey]), ...(f.item ?? []).map((s) => s.key)];
+  const out: Payload = {};
+  for (const k of keys) if (Object.hasOwn(item, k)) out[k] = item[k];
+  for (const [k, v] of Object.entries(item)) if (!Object.hasOwn(out, k)) out[k] = v;
+  return out;
+}
+
+/**
+ * 「添加一{itemNoun}」加上的第 n 项：自动编号写上 n，必填的数组子字段先放空数组（同新建的空表单），别的子字段空着，
+ * 由上架前检查报「没填」。单字段的有序子项是空串
+ */
+export function blankItem(f: FieldDef, n: number): unknown {
+  if (isSingleItem(f)) return '';
+  let out: Payload = f.autoIndexKey === undefined ? {} : { [f.autoIndexKey]: n };
+  for (const s of f.item ?? []) if (arrayValued(s)) out = writeValue(out, s, []);
+  return out;
+}
+
+/**
+ * 增删以后按位置重排自动编号（spec「有序子项与引用」：autoIndexKey 增删和移动以后自动重排）。编号本来就对的项原样共用，
+ * 没有自动编号时一项都不动
+ */
+export function renumber(f: FieldDef, items: readonly unknown[]): unknown[] {
+  const k = f.autoIndexKey;
+  if (k === undefined) return [...items];
+  return items.map((it, i) => (isRecord(it) && it[k] !== i + 1 ? itemInOrder(f, { ...it, [k]: i + 1 }) : it));
 }
 
 /** 草稿（含新建）里上架后会锁的字段：标签后提醒「上架后锁定」 */

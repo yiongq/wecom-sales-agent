@@ -539,6 +539,25 @@
   font-weight: 500;
   color: var(--text-2);
 }
+/* 能增删时卡片第一行：序号标签在左，右上角「删除这{itemNoun}」（28 图标按钮，text-3，§6.3）；底部「添加一{itemNoun}」。
+   按钮比标签的行高多 8：上下各让 4，标签和下面的字段仍在原来的位置 */
+.subitem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -4px 0 4px;
+}
+.subitem-head > .subitem-label {
+  margin-bottom: 0;
+}
+.subitem-head > .icon-btn {
+  margin-right: -6px;
+  color: var(--text-3);
+}
+.subitem-head > .icon-btn:hover {
+  color: var(--text);
+}
 /* 只读时间轴：左侧竖轴宽 40，1px --border 连线，节点直径 22、13/500；全部填好是 --text-2 实心底、--panel 色字 */
 .subitems-timeline {
   display: flex;

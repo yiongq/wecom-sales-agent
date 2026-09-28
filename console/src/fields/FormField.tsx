@@ -36,6 +36,8 @@ export interface FormFieldProps {
   describedBy?: string;
   /** 有序子项里各处的报错：键是下标（'2'）或下标接子字段 key（'2.hotel'），写在那一项、那个子字段下方 */
   itemErrors?: Readonly<Record<string, string>>;
+  /** 有序子项的条数随另一个字段锁定（model.ts 的 countLocked）：不画增删 */
+  countLocked?: boolean;
   lockedMembers?: readonly string[];
   lockGroup?: { tag: string; reason: string };
   /** 改过、还没保存：标签后写「已改」（只在可改时画） */
@@ -133,6 +135,7 @@ export function FormField(p: FormFieldProps) {
           lockedMembers={p.lockedMembers}
           lockGroup={p.lockGroup}
           itemErrors={p.itemErrors}
+          countLocked={p.countLocked}
           onChange={p.onChange!}
         />
       ) : (

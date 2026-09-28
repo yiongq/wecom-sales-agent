@@ -6,7 +6,7 @@
 // 产品库文本只以文本节点渲染（不变量 28）；值为空写「—」。
 import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
 import { ArrowDown, ArrowUp, Check, CircleX, Lock, Plus, Trash2, X } from 'lucide-react';
-import { type ComponentType, type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react';
+import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef } from 'react';
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
 import { Status } from '../parts/Status.js';
@@ -16,6 +16,7 @@ import { cjk } from '../typography.js';
 import { useFieldEnv } from './env.js';
 import { FormField } from './FormField.js';
 import {
+  blankItem,
   boolFromSegment,
   boolSegment,
   CODECS,
@@ -23,6 +24,7 @@ import {
   enumFromSegment,
   indexLabel,
   isSingleItem,
+  itemInOrder,
   keepLockedMembers,
   LAYOUT,
   labelFitsNode,
@@ -32,6 +34,7 @@ import {
   type Payload,
   type RefItem,
   removeAt,
+  renumber,
   replaceAt,
   resolveRef,
   SEG_NONE,
@@ -68,6 +71,8 @@ export interface FormProps extends ViewProps {
   invalid?: boolean;
   /** 有序子项里各处的报错（键是下标，或下标接子字段 key），写在那一项、那个子字段下方（FormField 的 itemErrors） */
   itemErrors?: Readonly<Record<string, string>>;
+  /** 有序子项的条数随另一个字段锁定：不画增删（多字段的有序子项） */
+  countLocked?: boolean;
   onChange(next: unknown): void;
 }
 
@@ -710,17 +715,41 @@ function SingleListForm(p: FormProps) {
   );
 }
 
+/** 子项卡片里第一个能填的控件：加了一项以后焦点放进去 */
+const FIRST_CONTROL = 'input:not([type="hidden"]):not([disabled]), textarea:not([disabled])';
+
 /**
  * 多字段的有序子项（逐日行程、施工节点）：每项一张卡片，按子字段的类型渲染，可以改文字。
  * 每一项带 data-item-index（单字段的逐条列表、只读的列表与时间轴也带）：详情页的上架前检查按它找到「第3天」那一项。
- * 竖轴与节点状态、条数提醒、增删与上移下移、自动编号、条数锁定是通用有序子项编辑器（第 11 步）
+ * 增删（设计系统 §6.3，第 10.3 步删旧抽屉时从第 11 步提前）：卡片右上角「删除这{itemNoun}」，底部「添加一{itemNoun}」；
+ * 自动编号（autoIndexKey）随增删重排；条数随另一个字段锁定时（已上架线路的天数）两个都不画。加了一项焦点进它的第一个输入框，
+ * 删了一项焦点给接替它位置的那一项的「删除」，删光了给「添加」。
+ * 竖轴与节点状态、条数提醒、上移下移、「复制上一{itemNoun}的…」是通用有序子项编辑器的其余部分（第 11 步）
  */
 function ItemCardsForm(p: FormProps) {
   const { field, value, onChange, id } = p;
   const items = CODECS.subItems.read(value, field);
   const subs = field.item ?? [];
+  const noun = nounOf(field);
+  const box = useRef<HTMLDivElement>(null);
+  /** 增删以后焦点要去的地方：等写回后的这一轮画完再挪（每轮画完看一眼，没有就什么也不做） */
+  const focusNext = useRef<{ index: number; to: 'first' | 'remove' } | null>(null);
+  const set = (next: readonly unknown[], focus: { index: number; to: 'first' | 'remove' }): void => {
+    focusNext.current = focus;
+    onChange(CODECS.subItems.write(renumber(field, next), field));
+  };
+  useEffect(() => {
+    const f = focusNext.current;
+    const root = box.current;
+    if (!f || !root) return;
+    focusNext.current = null;
+    const card = root.querySelector<HTMLElement>(`:scope > [data-item-index="${f.index}"]`);
+    const target =
+      f.to === 'first' ? card?.querySelector<HTMLElement>(FIRST_CONTROL) : (card?.querySelector<HTMLElement>('.subitem-remove') ?? null);
+    (target ?? root.querySelector<HTMLElement>(':scope > .field-add'))?.focus();
+  });
   return (
-    <div className="subitems-edit">
+    <div ref={box} className="subitems-edit">
       {items.map((it, i) => {
         const item = isRecord(it) ? it : {};
         const label = indexLabel(field, i + 1);
@@ -729,7 +758,19 @@ function ItemCardsForm(p: FormProps) {
         const errorId = `${id}-${i}e`;
         return (
           <section key={i} className="subitem-card" aria-label={label} data-item-index={i}>
-            <div className="subitem-label">{cjk(label)}</div>
+            {p.countLocked ? (
+              <div className="subitem-label">{cjk(label)}</div>
+            ) : (
+              <div className="subitem-head">
+                <div className="subitem-label">{cjk(label)}</div>
+                <IconButton
+                  label={`删除这${noun}`}
+                  icon={Trash2}
+                  className="subitem-remove"
+                  onClick={() => set(removeAt(items, i), { index: Math.min(i, items.length - 2), to: 'remove' })}
+                />
+              </div>
+            )}
             {error === undefined ? null : <ItemError id={errorId} text={error} />}
             <div className="field-grid field-grid-2">
               {subs.map((sub) => (
@@ -742,13 +783,24 @@ function ItemCardsForm(p: FormProps) {
                   row={item}
                   error={p.itemErrors?.[`${i}.${sub.key}`]}
                   describedBy={error === undefined ? undefined : errorId}
-                  onChange={(v) => onChange(CODECS.subItems.write(replaceAt(items, i, writeValue(item, sub, v)), field))}
+                  onChange={(v) =>
+                    onChange(CODECS.subItems.write(replaceAt(items, i, itemInOrder(field, writeValue(item, sub, v))), field))
+                  }
                 />
               ))}
             </div>
           </section>
         );
       })}
+      {p.countLocked ? null : (
+        <Button
+          className="field-add"
+          icon={<Icon of={Plus} />}
+          onClick={() => set([...items, blankItem(field, items.length + 1)], { index: items.length, to: 'first' })}
+        >
+          {`添加一${noun}`}
+        </Button>
+      )}
     </div>
   );
 }

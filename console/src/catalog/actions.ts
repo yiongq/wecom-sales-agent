@@ -7,7 +7,7 @@
 import { CATALOG_CODE } from '../../../src/shared/catalog.js';
 import { money, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import { type CheckIssue, CODE_RULE, type EntityType, type FieldDef, filled, valueAt } from '../../../src/shared/pack.js';
-import { CODECS, moneyUnit, nounOf, type Payload, pruneHidden, visible, writeValue } from '../fields/model.js';
+import { arrayValued, CODECS, moneyUnit, nounOf, type Payload, pruneHidden, visible, writeValue } from '../fields/model.js';
 import type { ItemSearch } from './params.js';
 import { issueText, locksOnActive } from './detail.js';
 
@@ -189,10 +189,6 @@ export function withCodeHints(entity: EntityType): EntityType {
     ),
   };
 }
-
-/** 值是数组的字段：标签、有序子项、多选引用、不按字符串存的多选 enum */
-const arrayValued = (f: FieldDef): boolean =>
-  f.type === 'tags' || f.type === 'subItems' || (f.multiple === true && (f.type === 'reference' || (f.type === 'enum' && !f.storeAs)));
 
 /**
  * 新建时的空表单（spec「新建」）：什么都没填，只有必填的数组字段（标签、多选、有序子项）先放一个空数组。

@@ -11,6 +11,7 @@ import { memo } from 'react';
 import { type FieldDef, type EntityType, valueAt } from '../../../src/shared/pack.js';
 import { FormField, type FormFieldProps, type LockMark } from './FormField.js';
 import {
+  countLocked,
   fieldChanged,
   type GridCell,
   groupGrid,
@@ -112,6 +113,7 @@ export function FieldGrid(p: FieldGridProps) {
       lockNoteId: noted(c) ? lockNoteId : undefined,
       error: errors?.[f.key],
       itemErrors: f.type === 'subItems' ? itemErrorsOf(errors, f.key) : undefined,
+      countLocked: f.type === 'subItems' ? countLocked(entity, f, ctx) : undefined,
       changed: original !== undefined && fieldChanged(original, state, f),
       onUndo: original === undefined ? undefined : () => apply((s) => restoreField(s, original, f)),
       lockedMembers: lockedMembers(f, ctx),

@@ -77,7 +77,12 @@ export interface ActivateDialogProps {
   onCancel(): void;
 }
 
-/** 上架确认（F 页）：只在上架前检查的必须项全过时打开 */
+/** 正在保存、上架时：右上角「关闭」还在但点不动，点遮罩、按 Esc 都不关（模块级常量，属性不随渲染变） */
+const CLOSE_BUSY = { disabled: true } as const;
+const MASK_IDLE = { closable: true } as const;
+const MASK_BUSY = { closable: false } as const;
+
+/** 上架确认（F 页）：只在上架前检查的必须项全过时打开；提交中关不掉（关了上架照样会成） */
 export function ActivateDialog(p: ActivateDialogProps) {
   const { open, entity, title, payload, recommended, pending, busy, onConfirm, onCancel } = p;
   const refName = useRefName();
@@ -92,6 +97,9 @@ export function ActivateDialog(p: ActivateDialogProps) {
       rootClassName="activate-dialog"
       title={cjk(`上架「${title}」`)}
       closeIcon={<Icon of={X} />}
+      closable={busy ? CLOSE_BUSY : true}
+      mask={busy ? MASK_BUSY : MASK_IDLE}
+      keyboard={!busy}
       focusable={{ focusTriggerAfterClose: p.returnFocus }}
       onCancel={onCancel}
       // 默认焦点在安全的那个按钮上（§5.14）；autoFocus 在弹窗还是 display:none 时就跑了，打开以后再挪
@@ -100,7 +108,7 @@ export function ActivateDialog(p: ActivateDialogProps) {
       }}
       footer={
         <>
-          <Button ref={recheck} onClick={onCancel}>
+          <Button ref={recheck} disabled={busy} onClick={onCancel}>
             再检查一下
           </Button>
           <PrimaryButton loading={busy} onClick={onConfirm}>

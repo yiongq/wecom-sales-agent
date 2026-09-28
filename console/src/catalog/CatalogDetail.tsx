@@ -193,6 +193,8 @@ function MoreMenu({ onCopy, buttonRef }: { onCopy(): void; buttonRef: RefObject<
         icon={Ellipsis}
         size={32}
         className="header-more"
+        aria-haspopup="menu"
+        aria-expanded={open}
         tipOpen={open ? false : undefined}
         placement="bottom"
       />
@@ -983,8 +985,11 @@ export function CatalogDetail(props: CatalogDetailProps) {
     }
   };
 
-  /** 保存：已有的发补丁，新建的建草稿。返回存好的条目；没发（不合格、没改动、正在提交）或失败时 null（失败已经报在页面上） */
-  const save = async (): Promise<DetailItem | null> => {
+  /**
+   * 保存：已有的发补丁，新建的建草稿。返回存好的条目；没发（不合格、没改动、正在提交）或失败时 null（失败已经报在页面上）。
+   * forActivate：上架确认里先保存的那一次，存好以后焦点不回表单（确认框还开着、上架还在发，焦点留在「上架，开始推荐」上）
+   */
+  const save = async (forActivate = false): Promise<DetailItem | null> => {
     if (!canSave || busy.current) return null;
     const own = placeIssues(entity, formIssues(entity, state)).placed;
     if (own.length) {
@@ -1012,7 +1017,7 @@ export function CatalogDetail(props: CatalogDetailProps) {
       setServer(null);
       setConflict(false);
       setSaid('已保存');
-      setRefocus((n) => n + 1);
+      if (!forActivate) setRefocus((n) => n + 1);
       return next;
     } catch (e) {
       fail(e, sent, () => void saveRef.current());
@@ -1052,7 +1057,7 @@ export function CatalogDetail(props: CatalogDetailProps) {
     if (!onActivate || !base || busy.current) return;
     setActivatingBusy(true);
     try {
-      const cur = dirty ? await save() : base;
+      const cur = dirty ? await save(true) : base;
       if (!cur) {
         // 没保存上：报错已经在页面上（字段下、页头下），关上确认框去看
         setCloseBack(false);
@@ -1201,7 +1206,8 @@ export function CatalogDetail(props: CatalogDetailProps) {
         saveBar={showBar}
         onTouch={onTouch}
         onFocusField={(el) => (lastField.current = el)}
-        preview={previewing ? { title, dirty } : null}
+        // 预览的是表单里的内容（含没保存的改动）：条目名也按表单写（同上架确认）
+        preview={previewing && base ? { title: itemTitle(entity, state, base.code), dirty } : null}
         onJumpCard={(g) => (previewing ? jump({ to: 'card', at: g }) : jumpToCard(mainRef.current, g))}
         onJumpIssue={(p) => (previewing ? jumpTo(p) : void jumpToIssue(mainRef.current, entity, p))}
       />
@@ -1298,6 +1304,8 @@ export function CatalogDetail(props: CatalogDetailProps) {
           returnFocus={closeBack}
           onConfirm={() => void activate()}
           onCancel={() => {
+            // 正在保存、上架：关不掉（关了上架照样会成，页面却像是取消了）
+            if (activatingBusy) return;
             setCloseBack(true);
             setActivating(false);
           }}
