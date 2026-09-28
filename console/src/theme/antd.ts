@@ -263,8 +263,18 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
         colorInfo: TOAST_ICON[mode].info,
         colorWarning: TOAST_ICON[mode].warning,
       },
-      // 分页的当前页（§5.5）：--selected 底、text 字。antd 默认取 colorPrimary 做字色，深色下只有 3.83:1。其余样式随第 9 步
-      Pagination: { itemActiveBg: t.selected, itemActiveColor: t.text, itemActiveColorHover: t.text },
+      // 分页的当前页（§5.5）：--selected 底、text 字。antd 默认取 colorPrimary 做字色，深色下只有 3.83:1。
+      // 页码与前后翻页是 28 的幽灵按钮：悬停 --hover、按下 --pressed（antd 默认取 colorFillSecondary，即 --selected，
+      // 悬停的页码会和当前页一样）；当前页 500。当前页的 accent 描边 antd 没有令牌，在 parts/parts.css 去掉
+      Pagination: {
+        itemSize: 28,
+        itemActiveBg: t.selected,
+        itemActiveColor: t.text,
+        itemActiveColorHover: t.text,
+        colorBgTextHover: t.hover,
+        colorBgTextActive: t.pressed,
+        fontWeightStrong: 500,
+      },
     },
   };
 }
