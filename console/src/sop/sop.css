@@ -292,19 +292,62 @@
 }
 
 /*
- * ---------------- 状态句最后一段：保存状态（§4.3 会变的部分预留固定宽度） ----------------
- * 两行看不见的占位（最宽的两种写法）和当前的写法叠在同一格里：格子按最宽的那种定宽，切换时不挤动、不折行
+ * 对比用的是 01 的 SectionDiff（@codemirror/merge），它自带的样式只有浅色一套、改动用红绿（深色下折叠的那一条是白的）。
+ * 这一块里换成令牌色：左边（载入时的草稿）改到的行 --subtle、沟槽 text-3，右边（你写的）--accent-bg、沟槽与下划线 --accent。
+ * 发布抽屉的逐节差异由第 6.3 步另做
  */
+/* 沟槽底色原是浅色的 #f5f5f5，深色下是一条白边 */
+.sop-lost .cm-mergeView .cm-editor .cm-gutters {
+  border: 0;
+  background: transparent;
+}
+.sop-lost .cm-mergeView .cm-editor .cm-collapsedLines {
+  background: var(--subtle);
+  color: var(--text-2);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-a .cm-changedLine {
+  background-color: var(--subtle);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-b .cm-changedLine {
+  background-color: var(--accent-bg);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-a .cm-changedText {
+  background: none;
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-b .cm-changedText {
+  background: linear-gradient(var(--accent), var(--accent)) bottom / 100% 2px no-repeat;
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-a .cm-changedLineGutter {
+  background: var(--text-3);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-b .cm-changedLineGutter {
+  background: var(--accent);
+}
+
+/*
+ * ---------------- 状态句最后一段：保存状态（§4.3 会变的部分预留固定宽度） ----------------
+ * 行内块，宽度取最宽的两种写法：两行看不见的占位（高 0）撑宽，下面是当前的写法。切换时不挤动、不折行。
+ * 占位用高 0 的块，不用 inline-grid 叠在同一格：两种做法 WebKit 里都一样，行内块更好懂
+ */
+/* 能编辑的成员的状态句占满这一行（后面没有「只读」胶囊）：WebKit 给这个 flex 项算的宽度比内容窄十来 px，保存那一段会折下去 */
+.sop-status-line {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .sop-save {
-  display: inline-grid;
+  display: inline-block;
   vertical-align: top;
 }
-.sop-save > * {
-  grid-area: 1 / 1;
+.sop-save-sizer {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
   white-space: nowrap;
 }
-.sop-save-sizer {
-  visibility: hidden;
+.sop-save-now {
+  display: block;
+  white-space: nowrap;
 }
 .sop-save-failed {
   color: var(--danger);

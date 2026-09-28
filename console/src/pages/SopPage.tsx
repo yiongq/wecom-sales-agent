@@ -428,7 +428,7 @@ function MemberSop({
       <PageHeader
         title={TITLE}
         status={
-          <span>
+          <span className={editable ? 'sop-status-line' : undefined}>
             {cjk(memberStatus(published, changed.length, now))}
             {editable && <SaveState status={saver.status} onRetry={saver.flush} />}
           </span>
