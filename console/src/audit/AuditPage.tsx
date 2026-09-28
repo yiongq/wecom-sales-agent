@@ -400,24 +400,28 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
   };
 
   // 「加载更早的记录」：取到底时按钮换成「没有更早的记录了」，翻页出错后点重试，出错提示也会消失。焦点原在它们上面的话会掉回 body，
-  // 键盘和读屏用户找不到刚才的位置（WCAG 2.4.3）：这一次取完，焦点丢了就放到按钮上（还有更早的）或那一句上（到底了）。
-  // 取的时候焦点移到了别处（比如点开了抽屉）就不动它
+  // 键盘和读屏用户找不到刚才的位置（WCAG 2.4.3）：这一次取完（页数变了或者又出错了），焦点丢了就放到按钮上（还有更早的）
+  // 或那一句上（到底了）。取的时候焦点移到了别处（比如点开了抽屉）就不动它。
+  // 「取完」按点的时候记下的页数和出错时刻比，不看有没有渲染出「正在取」：结果来得快时两者会合在一次渲染里
   const moreRef = useRef<HTMLButtonElement>(null);
   const endRef = useRef<HTMLParagraphElement>(null);
-  const refocus = useRef(false);
+  const refocus = useRef<{ pages: number; errorAt: number } | null>(null);
+  const pageCount = q.data?.pages.length ?? 0;
+  const errorAt = q.errorUpdatedAt;
   const loadMore = (): void => {
-    refocus.current = true;
+    refocus.current = { pages: pageCount, errorAt };
     void q.fetchNextPage();
   };
   const fetchingMore = q.isFetchingNextPage;
   const hasMore = q.hasNextPage;
   useEffect(() => {
-    if (fetchingMore || !refocus.current) return;
-    refocus.current = false;
+    const r = refocus.current;
+    if (!r || fetchingMore || (r.pages === pageCount && r.errorAt === errorAt)) return;
+    refocus.current = null;
     const active = document.activeElement;
     if (active && active !== document.body && active.isConnected) return;
     (hasMore ? moreRef.current : endRef.current)?.focus();
-  }, [fetchingMore, hasMore]);
+  }, [fetchingMore, hasMore, pageCount, errorAt]);
 
   const filtered = search.cat !== undefined;
   let body: ReactNode;

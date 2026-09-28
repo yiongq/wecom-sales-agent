@@ -680,6 +680,15 @@ const cell = (c: Cell): string =>
     ],
   );
   eq('引用：没有对象名的缓存时写编号', rows({ materials: [['m-1'], ['m-2']] }, {}), [['包含主材', 'm-1', 'm-2']]);
+  eq(
+    '抽屉：改动表里的引用用页面的对象名缓存',
+    drawerView(
+      entry({ action: 'catalog.update', targetType: 'package', targetId: 'p-1', diff: { materials: [['m-1'], ['m-1', 'm-2']] } }),
+      RENO,
+      renoLookups,
+    ).changes?.rows.map((r) => [cell(r.before), cell(r.after)]),
+    [['实木地板', '实木地板、岩板台面']],
+  );
   const mat = (action: string, diff: Record<string, unknown>) =>
     drawerView(entry({ action, targetType: 'material', targetId: 'm-1', diff }), RENO, renoLookups).changes!;
   eq(
@@ -1209,6 +1218,19 @@ async function mount(viewer: Viewer, search = '') {
     `焦点在 ${document.activeElement?.tagName}.${document.activeElement?.className}`,
   );
   await e.unmount();
+
+  // 取的时候焦点在别处（这里是分段控件）：取到底也不把焦点挪走
+  server = { log: [...pubs(60, 1)] };
+  const f = await mount(member('owner'));
+  const input = f.$('.ant-segmented-item input')[0];
+  await act(async () => input?.focus());
+  await f.click(f.$('.au-more')[0]);
+  check(
+    '焦点在别处时取到底：焦点留在原处',
+    f.$('.au-end').length === 1 && document.activeElement === input,
+    `焦点在 ${document.activeElement?.tagName}.${document.activeElement?.className}`,
+  );
+  await f.unmount();
 }
 
 // 2.4 空、类别下没有记录、出错
