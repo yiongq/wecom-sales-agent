@@ -97,17 +97,19 @@
 }
 /*
  * 密码框里「显示密码」的眼睛：antd 画成 14 见方，还是一个 Tab 停靠点。点击区域补到 24 见方（§3「点击目标 ≥ 24×24」），
- * 内边距加多少、外边距就抵掉多少，控件高度与文字位置不变；键盘焦点照按钮画 2px --focus 外框
+ * 内边距加多少、外边距就抵掉多少，控件高度不变；左边只抵 4（后缀离输入框正好 4），不压到输入框上，
+ * 压上 1px 就被 axe 算成被遮住的目标。antd 给它的是 transition: all，焦点框会从 3px 的字色框渐变过来，只留颜色的过渡（§3）
  */
 .login-form .ant-input-password-icon {
   box-sizing: content-box;
   padding: 5px;
-  margin: -5px;
+  margin: -5px -5px -5px -4px;
   border-radius: var(--r-xs);
+  transition: color 100ms linear;
 }
 .login-form .ant-input-password-icon:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 0;
+  outline-offset: 2px;
 }
 /* 没填时念给读屏的一句：看不见，也不占表单的间距（绝对定位不参与 flex 的 gap） */
 .login-notice {
