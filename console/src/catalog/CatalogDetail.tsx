@@ -166,9 +166,9 @@ function statusLine(lock: string | null, u: Updated | null, now: number): ReactN
 
 /**
  * 页头的「更多」（§4.3：ellipsis 图标，次要按钮样式 32×32，放在操作区最左）：产品库一条里只有「复制为新草稿」。
- * 菜单开着时按钮的 Tooltip 不压在菜单上
+ * 菜单开着时按钮的 Tooltip 不压在菜单上。buttonRef 给弹窗关上以后把焦点还回来（打开它的菜单项已经收起了）
  */
-function MoreMenu({ onCopy }: { onCopy(): void }) {
+function MoreMenu({ onCopy, buttonRef }: { onCopy(): void; buttonRef: RefObject<HTMLButtonElement | null> }) {
   const [open, setOpen] = useState(false);
   return (
     <Dropdown
@@ -178,13 +178,24 @@ function MoreMenu({ onCopy }: { onCopy(): void }) {
       placement="bottomRight"
       menu={{
         items: [{ key: 'copy', label: '复制为新草稿' }],
-        onClick: () => {
+        onClick: ({ domEvent }) => {
+          // 键盘的 Enter 在 keydown 里就点了菜单项，弹窗随即打开、焦点进了弹窗；不拦下默认动作的话，同一次 Enter 的
+          // 激活会落到弹窗里有焦点的按钮上（右上角的「关闭」），弹窗刚开就关（真浏览器里才有，happy-dom 不产生这个激活）
+          domEvent.preventDefault();
           setOpen(false);
           onCopy();
         },
       }}
     >
-      <IconButton label="更多" icon={Ellipsis} size={32} className="header-more" tipOpen={open ? false : undefined} placement="bottom" />
+      <IconButton
+        ref={buttonRef}
+        label="更多"
+        icon={Ellipsis}
+        size={32}
+        className="header-more"
+        tipOpen={open ? false : undefined}
+        placement="bottom"
+      />
     </Dropdown>
   );
 }
@@ -845,6 +856,9 @@ export function CatalogDetail(props: CatalogDetailProps) {
   const [activatingBusy, setActivatingBusy] = useState(false);
   const [closeBack, setCloseBack] = useState(true);
   const [copying, setCopying] = useState(false);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  /** 复制时这一页有没保存的改动：先问要不要离开（同未保存保护），答了才建；leaving 是等着回答的那一次 */
+  const [leaving, setLeaving] = useState<((ok: boolean) => void) | null>(null);
   /**
    * 保存（或载入最新版本、上架）失败、落不到字段上：页头下的横幅、Alert 或 422 的汇总滚进视野，焦点放到它的按钮上
    * （「载入最新版本」「重试」「跳到第一处」），没有按钮就放在它本身。表单多半在首屏以下，不这样做看不见也听不到失败
@@ -1028,6 +1042,11 @@ export function CatalogDetail(props: CatalogDetailProps) {
     setCloseBack(true);
     setActivating(true);
   };
+  // 上架失败的「重试」经 ref 取这一轮的 startActivate：重新检查、重新打开确认框，锁定清单按那时的表单列
+  const startActivateRef = useRef(startActivate);
+  useEffect(() => {
+    startActivateRef.current = startActivate;
+  });
   /** 确认上架：有没保存的改动时先保存（锁定的就是确认框里列的这些），再按存好的 rev 上架 */
   const activate = async (): Promise<void> => {
     if (!onActivate || !base || busy.current) return;
@@ -1055,7 +1074,8 @@ export function CatalogDetail(props: CatalogDetailProps) {
       } catch (e) {
         setCloseBack(false);
         setActivating(false);
-        fail(e, state, () => void activateRef.current());
+        // 重试不直接上架：失败以后表单还能改，改过的内容没人确认过就锁死（上架后无法下架），所以重新走确认框
+        fail(e, state, () => startActivateRef.current());
       } finally {
         busy.current = false;
       }
@@ -1063,10 +1083,6 @@ export function CatalogDetail(props: CatalogDetailProps) {
       setActivatingBusy(false);
     }
   };
-  const activateRef = useRef(activate);
-  useEffect(() => {
-    activateRef.current = activate;
-  });
 
   // ⌘S / Ctrl+S 保存（spec「保存条」）：这一页能保存时总拦下浏览器的「存储网页」；没有改动时什么也不发。
   // 弹层开着（放弃确认、上架确认、复制、未保存保护、⌘K）时不拦也不保存：存的会是弹层底下这张表单，弹层还开着，
@@ -1126,7 +1142,13 @@ export function CatalogDetail(props: CatalogDetailProps) {
     setTouched((prev) => (places.every((p) => prev.has(p)) ? prev : new Set([...prev, ...places])));
 
   // 页头右侧（§4.3）：「更多」在左，主按钮「上架…」在最右；只给已有的条目，能不能编辑由页面决定给不给 onCopy、onActivate
-  const more = base && onCopy ? <MoreMenu onCopy={() => setCopying(true)} /> : null;
+  const more = base && onCopy ? <MoreMenu buttonRef={moreRef} onCopy={() => setCopying(true)} /> : null;
+  /** 复制前先过离开保护：有没保存的内容时问一句（和站内跳转弹的同一个），「留下」就什么也不建 */
+  const leaveFirst = (): Promise<boolean> => new Promise((resolve) => setLeaving(() => resolve));
+  const answerLeave = (ok: boolean): void => {
+    leaving?.(ok);
+    setLeaving(null);
+  };
   const activateButton =
     base && ctx.status === 'draft' && onActivate ? (
       <PrimaryButton className="detail-activate" onClick={startActivate}>
@@ -1288,13 +1310,29 @@ export function CatalogDetail(props: CatalogDetailProps) {
           from={{ code: base.code, title }}
           codes={props.codes ?? []}
           pending={dirty ? Math.max(changeList(entity, original, state).length, 1) : 0}
+          confirmLeave={ctx.canEdit && (dirty || unapplied) ? leaveFirst : undefined}
           onCopy={async (code) => {
             await onCopy(code, copyPayload(base.payload, code));
             setCopying(false);
           }}
           onCancel={() => setCopying(false)}
+          onClosed={() => {
+            // 没复制成（取消、Esc、关闭）：焦点回到「更多」（§5.14）；打开它的菜单项已经收起，antd 还不回去
+            const a = document.activeElement;
+            if (!a || a === document.body || !a.isConnected || inOverlay(a)) moreRef.current?.focus();
+          }}
         />
       ) : null}
+      <ConfirmDanger
+        open={leaving !== null}
+        title="有改动还没保存"
+        confirmText="放弃改动并离开"
+        cancelText="留下"
+        onConfirm={() => answerLeave(true)}
+        onCancel={() => answerLeave(false)}
+      >
+        离开这一页，没保存的改动会丢掉。
+      </ConfirmDanger>
       <div className="save-live" role="status">
         {said && !dirty ? said : ''}
       </div>

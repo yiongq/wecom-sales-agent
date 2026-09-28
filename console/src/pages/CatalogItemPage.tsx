@@ -113,13 +113,16 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
     (await qc.fetchQuery({ ...catalogItemQuery(kind, code), staleTime: 0 })) as unknown as DetailItem;
   const activate = async (rev: number): Promise<DetailItem> =>
     keep(await unwrap(api.catalog[':kind'][':code'].activate.$post({ param: { kind, code }, json: { rev } })));
-  /** 复制为新草稿：建好以后去它的详情（有没保存的改动时，离开这一页照样先确认） */
+  /**
+   * 复制为新草稿：建好以后去它的详情。有没保存的改动时，详情页在建之前已经问过要不要离开（答「留下」就不建），
+   * 所以这里跳过离开保护：建好了再拦，「留下」以后新草稿已经在库里，页面上却什么也没说
+   */
   const copy = async (_code: string, payload: Payload): Promise<void> => {
     const item = await unwrap(api.catalog[':kind'].$post({ param: { kind }, json: { payload } }));
     qc.setQueryData(catalogItemQuery(kind, item.code).queryKey, item);
     void qc.invalidateQueries({ queryKey: catalogListQuery(kind).queryKey, exact: true });
     arrivalFor = { kind: entity.kind, code: item.code, text: '已复制为新草稿' };
-    void navigate({ to: '/catalog/$kind/$code', params: { kind: entity.kind, code: item.code }, search: {} });
+    void navigate({ to: '/catalog/$kind/$code', params: { kind: entity.kind, code: item.code }, search: {}, ignoreBlocker: true });
   };
   // 整页的 404 与出错态只给还没取到这一条的时候。打开着、正在改时重取失败（「载入最新版本」连不上）查询也会带上错误，
   // 这时照旧画详情页：失败由它就地显示、可以重试，没保存的改动还在

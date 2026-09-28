@@ -150,9 +150,16 @@ export interface CopyDialogProps {
   codes: readonly string[];
   /** 这一页没保存的改动有几处：不会带过去，说一声 */
   pending: number;
+  /**
+   * 这一页有没保存的内容时给：建之前先问要不要离开（同未保存保护），答「留下」时什么也不建、弹窗还开着。
+   * 建好以后页面直接去新草稿，不再经离开保护
+   */
+  confirmLeave?(): Promise<boolean>;
   /** 建新草稿；失败时抛 HttpError（编号撞了是 409 catalog_code_taken），成功后页面去新草稿 */
   onCopy(code: string): Promise<void>;
   onCancel(): void;
+  /** 关完以后（没复制成）：页面把焦点还给「更多」 */
+  onClosed(): void;
 }
 
 /** 服务端说编号不行（409 撞了、422 格式不对）时写在输入框下的话；别的失败返回 null，整句报在弹窗里 */
@@ -164,15 +171,17 @@ function codeError(e: unknown): string | null {
 }
 
 /** 复制为新草稿（spec「复制为新草稿」）：填新编号；默认焦点在输入框里，回车就是复制 */
-export function CopyDialog({ open, entity, from, codes, pending, onCopy, onCancel }: CopyDialogProps) {
+export function CopyDialog({ open, entity, from, codes, pending, confirmLeave, onCopy, onCancel, onClosed }: CopyDialogProps) {
   const uid = useId();
   const input = useRef<InputRef>(null);
   const [code, setCode] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  /** 从点下去到结束（含问离开的那一段）只提交一次：回车连按、确认框开着时再按都不重复建 */
+  const submitting = useRef(false);
   const submit = async (): Promise<void> => {
-    if (busy) return;
+    if (submitting.current) return;
     const c = code.trim();
     const bad = codeProblem(c, from.code, codes);
     setFailure(null);
@@ -181,8 +190,10 @@ export function CopyDialog({ open, entity, from, codes, pending, onCopy, onCance
       input.current?.focus();
       return;
     }
-    setBusy(true);
+    submitting.current = true;
     try {
+      if (confirmLeave && !(await confirmLeave())) return;
+      setBusy(true);
       await onCopy(c);
     } catch (e) {
       const own = codeError(e);
@@ -191,6 +202,7 @@ export function CopyDialog({ open, entity, from, codes, pending, onCopy, onCance
         input.current?.focus();
       } else setFailure(e);
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
@@ -202,6 +214,8 @@ export function CopyDialog({ open, entity, from, codes, pending, onCopy, onCance
       width={480}
       title={cjk(`复制「${from.title}」为新草稿`)}
       closeIcon={<Icon of={X} />}
+      // 打开它的是「更多」菜单里的一项，关上时已经收起、拿不到焦点：不让 antd 去还，由页面还给「更多」
+      focusable={{ focusTriggerAfterClose: false }}
       onCancel={onCancel}
       afterOpenChange={(visible) => {
         if (visible) input.current?.focus();
@@ -209,6 +223,7 @@ export function CopyDialog({ open, entity, from, codes, pending, onCopy, onCance
           setCode('');
           setProblem(null);
           setFailure(null);
+          onClosed();
         }
       }}
       footer={

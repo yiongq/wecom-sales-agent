@@ -4671,12 +4671,17 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       { case: '409', writes: ['POST'], dialog: false, status: '草稿', conflict: ['这条刚被别人改过'], focus: '载入最新版本', error: null },
       { case: '422', writes: ['POST'], dialog: false, status: '草稿', conflict: [], focus: 'hotel', error: '当晚住宿：不能为空' },
     ]);
-    // 连不上：页头下「服务暂时连不上」，焦点在「重试」；重试不再弹确认框，直接再上架一次
+    // 连不上：页头下「服务暂时连不上」，焦点在「重试」；失败以后表单还能改，重试重新打开确认框，列的是那时的表单
+    const edited = '贵州 小七孔·西江千户苗寨 5 日（改）';
     let n = 0;
     const api = fakeApi((s) => {
+      if (s.method === 'PATCH') {
+        const b = s.body as { rev: number; set: Payload };
+        return json({ ...GUIZHOU_ITEM, rev: b.rev + 1, payload: { ...GUIZHOU_5D, ...b.set } });
+      }
       if (!s.url.endsWith('/activate')) return undefined;
       n += 1;
-      return n === 1 ? Promise.reject(new TypeError('Failed to fetch')) : json(activeGuizhou(2));
+      return n === 1 ? Promise.reject(new TypeError('Failed to fetch')) : json(activeGuizhou(3, { ...GUIZHOU_5D, title: edited }));
     });
     const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
     await click(activateButton(d.box));
@@ -4694,12 +4699,94 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
       [true, true, true],
     );
+    // 失败以后改了锁定的线路名称（横幅还在），再点「重试」
+    await typeInto(d.box.querySelector('[data-group="basic"] [data-field-key="title"] input'), edited);
     await click(retry);
+    await motion();
+    const again = dialogTitled('上架');
+    eq(
+      '「重试」：不直接上架，重新打开确认框，标题与锁定清单是改过的表单，另说先保存；这时没有再发请求',
+      [
+        again?.querySelector('.ant-modal-title')?.textContent,
+        again ? texts(again, '.consequence-info .consequence-body')[1] : null,
+        again ? texts(again, '.activate-lock-line .activate-pairs')[0]?.includes(edited) : null,
+        writes(api.sent).map((x) => x.method),
+      ],
+      [`上架「${edited}」`, '先保存这1处改动，再上架', true, ['POST']],
+    );
+    await click(buttonIn(again, '上架，开始推荐'));
     await until(() => header(d.box).titleStatus === '已上架');
     eq(
-      '「重试」：直接再上架一次（不再弹确认框），成功以后失败收起',
-      [n, dialogTitled('上架') === undefined, d.box.querySelectorAll('.detail-failure').length],
-      [2, true, 0],
+      '确认以后先 PATCH 改过的名称，再按存好的 rev 上架；成功以后失败收起',
+      [
+        writes(api.sent).map((x) => [x.method, x.body]),
+        header(d.box).title,
+        dialogTitled('上架') === undefined,
+        d.box.querySelectorAll('.detail-failure').length,
+      ],
+      [
+        [
+          ['POST', { rev: 1 }],
+          ['PATCH', { rev: 1, set: { title: edited } }],
+          ['POST', { rev: 2 }],
+        ],
+        edited,
+        true,
+        0,
+      ],
+    );
+    await d.unmount();
+    api.restore();
+  }
+  // 失败以后必须项没过时点「重试」：同「上架…」，不开确认框，焦点跳到那个字段
+  {
+    const api = fakeApi((s) => (s.url.endsWith('/activate') ? Promise.reject(new TypeError('Failed to fetch')) : undefined));
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    await click(activateButton(d.box));
+    await motion();
+    await click(buttonIn(dialogTitled('上架'), '上架，开始推荐'));
+    await until(() => d.box.querySelector('.detail-failure') !== null);
+    await motion();
+    const titleIn = () => d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
+    await typeInto(titleIn(), '');
+    await click(buttonIn(d.box.querySelector('.detail-failure') ?? undefined, '重试'));
+    await motion();
+    eq(
+      '失败以后清空线路名称再「重试」：不开确认框，焦点在线路名称，只发过第一次的 activate',
+      [dialogTitled('上架') === undefined, document.activeElement === titleIn(), writes(api.sent).length],
+      [true, true, 1],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 假包的上架确认：第一句按套餐的 activateLine；引用字段（包含主材）写名称，不写编号
+  {
+    const api = fakeApi(() => undefined);
+    const row = PKG_ROWS.find((r) => r.code === 'p-jiufang-part')!;
+    const d = await mountDetail('/catalog/package/p-jiufang-part', owner(renovation), {
+      items: { 'package/p-jiufang-part': { kind: 'package', ord: 0, rev: 1, ...row } },
+      lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
+    });
+    await click(activateButton(d.box));
+    await motion();
+    const dlg = dialogTitled('上架');
+    eq(
+      '假包「旧房翻新」的上架确认：第一句按每平米单价估价；条款一行的包含主材写名称',
+      dlg
+        ? [
+            dlg.querySelector('.ant-modal-title')?.textContent,
+            texts(dlg, '.consequence-info .consequence-body')[0],
+            texts(dlg, '.activate-lock-line .lock-tag'),
+            texts(dlg, '.activate-lock-line .activate-pairs')[2],
+          ]
+        : null,
+      [
+        '上架「旧房翻新 · 局部改造包」',
+        '上架后，销售助手会向业主推荐这个套餐，并按每平米860元估价。',
+        ['识别', '计价', '条款', '推荐'],
+        '工期30天·含拆旧·包含主材马可波罗 800×800 抛釉砖、大自然 三层实木复合地板、欧派 整体橱柜、箭牌 卫浴套装',
+      ],
     );
     await d.unmount();
     api.restore();
@@ -4762,26 +4849,42 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         ['取消', '复制为新草稿'],
       ],
     );
+    // 浏览器里点按钮会把焦点放到按钮上（happy-dom 的 click() 不会）：先放上去，焦点回到输入框才测得出来
+    const submitByClick = async () => {
+      const b = buttonIn(copyDialog(), '复制为新草稿');
+      await act(async () => b?.focus());
+      await click(b);
+    };
     const tries: (string | null)[] = [];
+    const focusBack: boolean[] = [];
     for (const c of ['', 'R_X', 'r-sichuan-lux', 'r-guizhou-5d']) {
       await typeInto(codeInput(), c);
-      await click(buttonIn(copyDialog(), '复制为新草稿'));
+      await submitByClick();
       await settle();
       tries.push(codeNote());
+      focusBack.push(document.activeElement === codeInput());
     }
+    const noteEl = () => copyDialog()?.querySelector('.copy-code .field-error, .copy-code .field-help') ?? null;
     eq(
-      '新编号有问题：不发请求，写在输入框下（没填、格式、和原来的一样、列表里已经有了），输入框标出错',
-      [tries, posts(api.sent, '/catalog/route').length, codeInput()?.getAttribute('aria-invalid'), document.activeElement === codeInput()],
+      '新编号有问题：不发请求，写在输入框下（没填、格式、和原来的一样、列表里已经有了），输入框标出错，报错经 aria-describedby 连上，焦点回到输入框',
+      [
+        tries,
+        posts(api.sent, '/catalog/route').length,
+        codeInput()?.getAttribute('aria-invalid'),
+        !!noteEl()?.id && codeInput()?.getAttribute('aria-describedby') === noteEl()?.id,
+        focusBack,
+      ],
       [
         ['线路编号：没填', `线路编号：${CODE_RULE}`, '线路编号：和原来的编号一样，换一个', '线路编号：这个编号已经有了，换一个'],
         0,
         'true',
         true,
+        [true, true, true, true],
       ],
     );
     await typeInto(codeInput(), 'r-race');
     eq('改了编号：报错收起，回到帮助', codeNote(), CODE_HELP);
-    await click(buttonIn(copyDialog(), '复制为新草稿'));
+    await submitByClick();
     await until(() => codeNote() !== CODE_HELP);
     eq(
       '服务端说编号撞了（409）：写在输入框下，焦点回到输入框，弹窗还开着',
@@ -4808,7 +4911,8 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     api.restore();
   }
 
-  // 有没保存的改动时复制：弹窗说不会带过去；POST 的是存着的内容；建好以后离开这一页照样先确认
+  // 有没保存的改动时复制：弹窗说不会带过去；建之前先问要不要离开（同未保存保护），「留下」什么也不建；
+  // 「放弃改动并离开」才 POST 存着的内容，建好以后直接去新草稿，不再拦一次
   {
     const api = fakeApi((s) => (s.method === 'POST' ? json(draftOf('route', (s.body as { payload: Payload }).payload)) : undefined));
     const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
@@ -4819,23 +4923,138 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       copyDialog() ? texts(copyDialog()!, '.consequence-body')[1] : null,
       '这一页还有1处改动没保存，不会带过去',
     );
+    // 复制弹窗开着、焦点不在弹窗里（打开的动画还没走完时就是这样）按 ⌘S：不拿底下的表单去存
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    await cmdS();
+    eq('复制弹窗开着时按 ⌘S（焦点不在弹窗里）：不拦、不发请求', [cmdSPrevented, writes(api.sent).length], [false, 0]);
+    const leave = () => dialogTitled('有改动还没保存');
     await typeInto(codeInput(), 'r-sichuan-copy');
+    await act(async () => buttonIn(copyDialog(), '复制为新草稿')?.focus());
     await click(buttonIn(copyDialog(), '复制为新草稿'));
-    await until(() => document.body.textContent?.includes('有改动还没保存') === true);
+    await until(() => leave() !== undefined);
     await motion();
+    eq(
+      '建之前先问：「有改动还没保存」，默认焦点「留下」；还没发 POST，复制弹窗还开着',
+      [posts(api.sent, '/catalog/route').length, copyDialog() !== undefined, document.activeElement === buttonIn(leave(), '留下')],
+      [0, true, true],
+    );
+    await click(buttonIn(leave(), '留下'));
+    await motion();
+    eq(
+      '「留下」：什么也不建，复制弹窗还开着、编号还在；还在原来的地址，改动还在',
+      [
+        posts(api.sent, '/catalog/route').length,
+        leave() === undefined,
+        copyDialog() !== undefined,
+        codeInput()?.value,
+        e.router.state.location.pathname,
+        barText(e.box)?.summary,
+      ],
+      [0, true, true, 'r-sichuan-copy', '/catalog/route/r-sichuan-lux', '有1处改动'],
+    );
+    await press(codeInput(), 'Enter');
+    await until(() => leave() !== undefined);
+    await motion();
+    await click(buttonIn(leave(), '放弃改动并离开'));
+    await until(() => e.router.state.location.pathname === '/catalog/route/r-sichuan-copy');
+    await motion();
+    await settle();
     const sentPayload = (posts(api.sent, '/catalog/route')[0]?.body as { payload: Payload } | undefined)?.payload;
     eq(
-      '建好以后离开被拦下（「有改动还没保存」），还在原来的地址；POST 的是存着的内容，不带没保存的改动；复制弹窗已关',
+      '「放弃改动并离开」：POST 一次存着的内容（不带没保存的改动），直接去新草稿，不再弹离开保护；读屏念「已复制为新草稿」',
       [
-        e.router.state.location.pathname,
+        posts(api.sent, '/catalog/route').length,
         JSON.stringify(sentPayload?.intensity) === JSON.stringify(SICHUAN.intensity),
-        copyDialog() === undefined,
+        e.router.state.location.pathname,
+        leave() === undefined,
+        header(e.box).titleStatus,
+        live(e.box),
       ],
-      ['/catalog/route/r-sichuan-lux', true, true],
+      [1, true, '/catalog/route/r-sichuan-copy', true, '草稿', '已复制为新草稿'],
     );
-    await click(all<HTMLButtonElement>(document.body, 'button').find((b) => b.textContent === '放弃改动并离开'));
-    await until(() => e.router.state.location.pathname === '/catalog/route/r-sichuan-copy');
-    eq('「放弃改动并离开」：去新草稿', e.router.state.location.pathname, '/catalog/route/r-sichuan-copy');
+    await e.unmount();
+    api.restore();
+  }
+
+  // 键盘打开：菜单项上按 Enter 打开弹窗，这次 Enter 的默认动作拦下（真浏览器里它会点到弹窗里有焦点的按钮，弹窗刚开就关）；
+  // 没复制成（取消、右上角关闭、Esc）时焦点回到「更多」（打开它的菜单项已经收起）
+  {
+    const api = fakeApi(() => undefined);
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    const more = e.box.querySelector<HTMLButtonElement>('.page-actions .header-more');
+    await click(more);
+    await settle();
+    const item = all<HTMLElement>(document.body, '.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item').find(
+      (x) => x.textContent === '复制为新草稿',
+    );
+    let prevented: boolean | null = null;
+    await act(async () => {
+      const ev = new win.KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true });
+      item?.dispatchEvent(ev as unknown as Event);
+      prevented = ev.defaultPrevented;
+    });
+    await motion();
+    eq(
+      '菜单项上按 Enter：弹窗打开，焦点在输入框里；这次 Enter 的默认动作拦下了',
+      [copyDialog() !== undefined, document.activeElement === codeInput(), prevented],
+      [true, true, true],
+    );
+    const back: string[] = [];
+    for (const how of ['取消', '关闭', 'Esc']) {
+      if (!copyDialog()) await openCopy(e.box);
+      if (how === '取消') await click(buttonIn(copyDialog(), '取消'));
+      else if (how === '关闭') await click(copyDialog()?.querySelector('.ant-modal-close'));
+      else await press(codeInput(), 'Escape');
+      await motion();
+      back.push(
+        `${how}：${copyDialog() === undefined ? '关上' : '还开着'}，焦点${document.activeElement === more ? '在「更多」' : '丢了'}`,
+      );
+    }
+    eq('没复制成：弹窗关上，焦点回到「更多」', back, [
+      '取消：关上，焦点在「更多」',
+      '关闭：关上，焦点在「更多」',
+      'Esc：关上，焦点在「更多」',
+    ]);
+    await e.unmount();
+    api.restore();
+  }
+
+  // 提交中再按回车只建一次；服务端 422 说编号不对（path 是 id）写在输入框下；关上再打开没有上一次的编号与报错
+  {
+    let release: (() => void) | null = null;
+    let posted = 0;
+    const api = fakeApi((s) => {
+      if (s.method !== 'POST') return undefined;
+      posted += 1;
+      if (posted > 1) return Promise.reject(new TypeError('Failed to fetch'));
+      return new Promise<Response>((r) => {
+        release = () => r(json({ error: 'invalid_item', detail: '条目不合格', issues: [{ path: 'id', message: 'Invalid string' }] }, 422));
+      });
+    });
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await openCopy(e.box);
+    await typeInto(codeInput(), 'r-sichuan-copy');
+    await press(codeInput(), 'Enter');
+    await press(codeInput(), 'Enter');
+    await settle();
+    eq('提交中再按回车：只发一次 POST', posts(api.sent, '/catalog/route').length, 1);
+    await act(async () => release?.());
+    await until(() => codeNote() !== CODE_HELP);
+    eq(
+      '服务端 422 的 path 是 id：写在输入框下（格式说明），不是弹窗里的整句',
+      [codeNote(), copyDialog()?.querySelector('.copy-failure') ?? null, codeInput()?.getAttribute('aria-invalid')],
+      [`线路编号：${CODE_RULE}`, null, 'true'],
+    );
+    await press(codeInput(), 'Enter');
+    await until(() => copyDialog()?.querySelector('.copy-failure') != null);
+    await click(buttonIn(copyDialog(), '取消'));
+    await motion();
+    await openCopy(e.box);
+    eq(
+      '关上再打开：编号清空，输入框下是帮助，没有上一次的报错',
+      [codeInput()?.value, codeNote(), copyDialog()?.querySelector('.copy-failure') ?? null, codeInput()?.getAttribute('aria-invalid')],
+      ['', CODE_HELP, null, null],
+    );
     await e.unmount();
     api.restore();
   }
