@@ -263,13 +263,13 @@ button.au-sentence {
   margin-top: 8px;
 }
 
-/* ---------------- 详情抽屉（§5.13 M 480）：头 56，内边距 0 16 0 24，标题 16/24/600，没有分隔线；体内边距 4 24 24 ---------------- */
+/*
+ * 详情抽屉（§5.13 M 480）：头 56，内边距 0 16 0 24，标题 16/24/600，没有分隔线；体内边距 4 24 24。
+ * --raised 底由主题的 colorBgElevated 给（theme/antd.ts），这里不另写
+ */
 .au-drawer .ant-drawer-content-wrapper {
   max-width: 100vw;
   box-shadow: var(--shadow-modal);
-}
-.au-drawer .ant-drawer-content {
-  background: var(--raised);
 }
 .au-drawer .ant-drawer-header {
   min-height: 56px;
