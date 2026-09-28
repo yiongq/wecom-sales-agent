@@ -389,3 +389,10 @@ button.check-item:focus-visible {
   line-height: 22px;
   color: var(--text);
 }
+
+/* 分页器（§5.5）：页码是 28 的幽灵按钮，当前页 --selected 底、text 500（这些在 theme/antd.ts 的 Pagination 令牌）。
+   antd 另给当前页一圈 colorPrimary 的描边，没有令牌能关，这里去掉 */
+.ant-pagination .ant-pagination-item-active,
+.ant-pagination .ant-pagination-item-active:hover {
+  border-color: transparent;
+}

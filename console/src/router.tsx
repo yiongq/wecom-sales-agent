@@ -4,6 +4,7 @@
 import { createRootRoute, createRoute, createRouter, type ErrorComponentProps, Outlet, useRouterState } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
 import { auditSearch } from './audit-search.js';
+import { catalogSearch } from './catalog/params.js';
 import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
@@ -40,13 +41,12 @@ const root = createRootRoute({ component: SPECIMEN ? RootWithSpecimen : Shell, n
 // 总览（spec「总览」）：取代原来跳到 /sop 的重定向。scripts/check-console-dist.ts 按这个懒加载文件名把它算进首屏预算
 const index = createRoute({ getParentRoute: () => root, path: '/' }).lazy(() => import('./pages/overview.lazy.js').then((m) => m.Route));
 const sop = createRoute({ getParentRoute: () => root, path: '/sop' }).lazy(() => import('./pages/sop.lazy.js').then((m) => m.Route));
+// 产品库列表：kind 原样交给页面，页面按当前租户的行业包找实体，包里没有的是「没有这个页面」（第 9 步）。
+// 页签、搜索、筛选写进地址（spec 路由表的 status、q、f；不变量 22）
 const catalog = createRoute({
   getParentRoute: () => root,
   path: '/catalog/$kind',
-  params: {
-    parse: (p: { kind: string }): { kind: 'route' | 'hotel' } => ({ kind: p.kind === 'hotel' ? 'hotel' : 'route' }),
-    stringify: (p: { kind: 'route' | 'hotel' }) => ({ kind: p.kind }),
-  },
+  validateSearch: catalogSearch,
 }).lazy(() => import('./pages/catalog.lazy.js').then((m) => m.Route));
 // 会话列表的 state、stage 筛选：总览的业务数与阶段条带过来（conversations-search.ts）
 const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>

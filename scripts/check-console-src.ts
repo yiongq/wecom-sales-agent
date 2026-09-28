@@ -91,15 +91,12 @@ const GENERIC: Readonly<Record<string, string | { why: string; only: readonly st
 const genericUsed = new Set<string>();
 
 /**
- * 旧页面待重做：01 留下的产品库页（rjsf 表单、按线路与酒店写死的列）和它的路由参数，第 9、10 步整页重做时删掉这几项
- * （plan「Open」第 2.2 步那条）。只放过这个文件里的这几个词，别的词、别的文件照查；词在文件里没了就要删掉这一项
+ * 旧页面待重做：01 留下的产品库抽屉（rjsf 表单，逐日行程的「当天安排」按线路写死成文本域）。第 9 步重做了列表、路由参数改按
+ * 行业包的 kind 取，抽屉挪进自己的文件按需下载；第 10.3 步删掉旧抽屉时删掉这一项。只放过这个文件里的这几个词，
+ * 别的词、别的文件照查；词在文件里没了就要删掉这一项
  */
 const LEGACY: Readonly<Record<string, { terms: readonly string[]; until: string }>> = {
-  'console/src/pages/CatalogPage.tsx': {
-    terms: ['线路', '酒店', 'route', 'hotel', '目的地', 'detail'],
-    until: '第 9、10 步重做产品库页',
-  },
-  'console/src/router.tsx': { terms: ['route', 'hotel'], until: '第 9 步路由参数改按行业包的 kind 取' },
+  'console/src/pages/CatalogDrawer.tsx': { terms: ['route', 'detail'], until: '第 10.3 步删掉旧抽屉' },
 };
 
 const isPackLike = (v: unknown): v is IndustryPack =>
