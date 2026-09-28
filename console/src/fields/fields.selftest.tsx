@@ -5518,24 +5518,44 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     await n.unmount();
   }
-  // 草稿线路：删掉一天、天数跟着改，保存的补丁里天号按位置重排；已上架线路天数锁定，没有增删（验收 18）
+  // 草稿线路：删掉第2天、再加一天（条数不变），新的一天先填当天安排、再填标题，保存的补丁里天号按位置重排、
+  // 新的一天按行业包的顺序排键；已上架线路天数锁定，没有增删（验收 18）
   {
     const api = fakeApi((s) =>
       s.method === 'PATCH' ? json({ ...GUIZHOU_ITEM, rev: 2, payload: { ...GUIZHOU_5D, ...(s.body as { set: Payload }).set } }) : undefined,
     );
     const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
-    await typeInto(d.box.querySelector('[data-group="basic"] [data-field-key="days"] input'), '4');
+    const day = (i: number, k: string) =>
+      d.box.querySelector(`[data-field-key="itinerary"] [data-item-index="${i}"] [data-field-key="${k}"]`);
     await click(subEdit(d.box, 'itinerary').remove(1));
+    // 条数变了：整个逐日行程算一处改动（第 10.2 步的口径）
     const marks = [texts(d.box, '[data-field-key="itinerary"] .field-changed'), barText(d.box)?.names];
+    const short = checkRows(d.box).filter((r) => r.startsWith('逐日行程'));
+    await click(subEdit(d.box, 'itinerary').add);
+    const newFocus = document.activeElement === day(4, 'title')?.querySelector('input');
+    await typeInto(day(4, 'detail')?.querySelector('textarea'), '上午游湖，下午返程');
+    await typeInto(day(4, 'title')?.querySelector('input'), '返程');
+    await typeInto(day(4, 'hotel')?.querySelector('input'), '—（返程）');
+    await click(all(day(4, 'meals') ?? document.body, '.field-chip').find((b) => b.textContent === '早'));
     await cmdS();
     await until(() => api.patches().length === 1);
     const orig = GUIZHOU_5D.itinerary as Payload[];
+    const sent = (api.patches()[0]?.body as { set: { itinerary: Payload[] } } | undefined)?.set.itinerary;
     eq(
-      '草稿线路天数改成4、删掉第2天：逐日行程标「已改」；补丁里天号按位置重排 1–4，别的原样',
-      [marks, api.patches()[0]?.body],
+      '草稿线路删掉第2天：逐日行程标「已改」，检查清单说还差1天；加一天，焦点进新的一天的当天标题；补丁里天号按位置重排 1–5，别的原样，新的一天的键按行业包的顺序',
+      [marks, short, newFocus, sent?.slice(0, 4), sent?.[4] ? Object.entries(sent[4]) : null],
       [
-        [['已改'], '天数、逐日行程'],
-        { rev: 1, set: { days: 4, itinerary: [orig[0], { ...orig[2], day: 2 }, { ...orig[3], day: 3 }, { ...orig[4], day: 4 }] } },
+        [['已改'], '逐日行程'],
+        ['逐日行程还差1天'],
+        true,
+        [orig[0], { ...orig[2], day: 2 }, { ...orig[3], day: 3 }, { ...orig[4], day: 4 }],
+        [
+          ['day', 5],
+          ['title', '返程'],
+          ['detail', '上午游湖，下午返程'],
+          ['hotel', '—（返程）'],
+          ['meals', '早'],
+        ],
       ],
     );
     await d.unmount();
