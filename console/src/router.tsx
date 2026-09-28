@@ -1,16 +1,9 @@
 // 路由（TanStack Router，代码式定义）：挂在 /console 下。登录与否由 Shell 判断，不单独占一个路由。
 // 各页按路由拆包（spec「性能 · 按路由拆包」）：这里只留路径与参数，页面组件在 pages/*.lazy.tsx，由 .lazy() 按需下载。
 // 入口集合里不能有页面代码，scripts/check-console-dist.ts 按 vite 的 manifest 查预算与 @codemirror
-import {
-  createRootRoute,
-  createRoute,
-  createRouter,
-  type ErrorComponentProps,
-  Outlet,
-  redirect,
-  useRouterState,
-} from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, type ErrorComponentProps, Outlet, useRouterState } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
+import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
 
@@ -43,13 +36,8 @@ function RootWithSpecimen(): ReactElement {
 
 const root = createRootRoute({ component: SPECIMEN ? RootWithSpecimen : Shell, notFoundComponent: NotFound });
 
-const index = createRoute({
-  getParentRoute: () => root,
-  path: '/',
-  beforeLoad: () => {
-    throw redirect({ to: '/sop' });
-  },
-});
+// 总览（spec「总览」）：取代原来跳到 /sop 的重定向。scripts/check-console-dist.ts 按这个懒加载文件名把它算进首屏预算
+const index = createRoute({ getParentRoute: () => root, path: '/' }).lazy(() => import('./pages/overview.lazy.js').then((m) => m.Route));
 const sop = createRoute({ getParentRoute: () => root, path: '/sop' }).lazy(() => import('./pages/sop.lazy.js').then((m) => m.Route));
 const catalog = createRoute({
   getParentRoute: () => root,
@@ -59,7 +47,8 @@ const catalog = createRoute({
     stringify: (p: { kind: 'route' | 'hotel' }) => ({ kind: p.kind }),
   },
 }).lazy(() => import('./pages/catalog.lazy.js').then((m) => m.Route));
-const conversations = createRoute({ getParentRoute: () => root, path: '/conversations' }).lazy(() =>
+// 会话列表的 state、stage 筛选：总览的业务数与阶段条带过来（conversations-search.ts）
+const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
 );
 const audit = createRoute({ getParentRoute: () => root, path: '/audit' }).lazy(() => import('./pages/audit.lazy.js').then((m) => m.Route));
