@@ -58,6 +58,8 @@ export function valueText(f: FieldDef, v: unknown, row: Payload, refName: RefNam
       return range && f.monthMeaning ? `${s}（${f.monthMeaning}）` : s;
     }
     case 'enum': {
+      // 按字符串存的多选（餐食）照原文写：存的就是这串字
+      if (f.storeAs) return typeof v === 'string' ? v : null;
       const c = CODECS.enum.read(v, f);
       return typeof c === 'string' ? c : (c ?? []).join('、') || null;
     }
@@ -186,4 +188,32 @@ export function withCodeHints(entity: EntityType): EntityType {
       f.key === '$code' ? { ...f, help: f.help ?? CODE_HELP, placeholder: f.placeholder ?? `例：${entity.codeExample}` } : f,
     ),
   };
+}
+
+/** 值是数组的字段：标签、有序子项、多选引用、不按字符串存的多选 enum */
+const arrayValued = (f: FieldDef): boolean =>
+  f.type === 'tags' || f.type === 'subItems' || (f.multiple === true && (f.type === 'reference' || (f.type === 'enum' && !f.storeAs)));
+
+/**
+ * 新建时的空表单（spec「新建」）：什么都没填，只有必填的数组字段（标签、多选、有序子项）先放一个空数组。
+ * 数组的必填只要求键存在，可以是空的（酒店的标签，spec「校验」），可控件画不出「键在、一项没有」：不先放上，
+ * 一个标签都不要的酒店就永远报「没填」（01 的旧抽屉同样先放空数组）。至少几项（min）、条数一致（countFrom）照旧由上架前检查报；
+ * showWhen 管着的字段不放，它们随条件出现
+ */
+export function blankPayload(entity: EntityType): Payload {
+  let out: Payload = {};
+  for (const f of entity.fields) if (f.required !== false && !f.showWhen && arrayValued(f)) out = writeValue(out, f, []);
+  return out;
+}
+
+/**
+ * 新建提交的 payload 按字段的顺序排键（编号在最前）：条目原样 JSON 给模型，键序就是字节，不该随表单里先放的空数组、
+ * 填字段的先后变。行业包里没有的键排在最后，原样保留
+ */
+export function inFieldOrder(entity: EntityType, payload: Payload): Payload {
+  const keys = [...new Set(entity.fields.map((f) => (f.key === '$code' ? 'id' : f.key.split('.')[0]!)))];
+  const out: Payload = {};
+  for (const k of keys) if (Object.hasOwn(payload, k)) out[k] = payload[k];
+  for (const [k, v] of Object.entries(payload)) if (!Object.hasOwn(out, k)) out[k] = v;
+  return out;
 }

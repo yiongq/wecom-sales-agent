@@ -36,7 +36,15 @@ import { packById } from '../../../src/packs/registry.js';
 import { sameValue } from '../../../src/shared/catalog.js';
 import { absoluteTime } from '../../../src/shared/format.js';
 import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';
-import { checkItem, ENTITY_ICONS, type EntityType, type FieldDef, type FieldType, type IndustryPack } from '../../../src/shared/pack.js';
+import {
+  checkItem,
+  CODE_RULE,
+  ENTITY_ICONS,
+  type EntityType,
+  type FieldDef,
+  type FieldType,
+  type IndustryPack,
+} from '../../../src/shared/pack.js';
 import { CatalogList, type CatalogListProps, FilterButton, MENU_SEARCH_OVER } from '../catalog/CatalogList.js';
 import {
   type ActivePick,
@@ -88,6 +96,23 @@ import {
   updatedOf,
 } from '../catalog/detail.js';
 import { type CatalogSearch, catalogSearch, cleared, itemSearch, parseFilter, pickOf, withPick } from '../catalog/params.js';
+import {
+  activateSentence,
+  blankPayload,
+  CODE_HELP,
+  codeProblem,
+  copyPayload,
+  defaultTab,
+  inFieldOrder,
+  type LockLine,
+  lockLines,
+  type RefName,
+  recommendLine,
+  tabOf,
+  tabSearch,
+  valueText,
+  withCodeHints,
+} from '../catalog/actions.js';
 import { issueTarget } from '../catalog/CatalogDetail.js';
 import {
   changedFields,
@@ -98,6 +123,7 @@ import {
   placeIssues,
   placeOf,
   saveCopy,
+  saveSummary,
   touchedPlaces,
   usableChanges,
   visibleErrors,
@@ -134,6 +160,7 @@ import {
   type RefItem,
   removeAt,
   replaceAt,
+  resolveRef,
   restoreField,
   SEG_NONE,
   SEG_UNSET,
@@ -2828,7 +2855,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   eq(
     '新建：上架前检查从空表单算起',
     n.box.querySelector('.check-list-summary')?.textContent,
-    `必须项${checkItem(ROUTE, {}).requiredPassed}/13·建议${checkItem(ROUTE, {}).recommended.length}条没做`,
+    `必须项${checkItem(ROUTE, blankPayload(ROUTE)).requiredPassed}/13·建议${checkItem(ROUTE, blankPayload(ROUTE)).recommended.length}条没做`,
   );
   await typeInto(n.box.querySelector('[data-field-key="destination"] input'), '云南');
   eq('新建里填了字不标「已改」（没有可以撤回的原文）', n.box.querySelectorAll('.field.is-changed').length, 0);
@@ -4135,6 +4162,916 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     }
     eq('逐一打开 20 条线路、23 家酒店不改：没有保存条，⌘S 也不发 PATCH', [opened, api.patches().length], [[], 0]);
     api.restore();
+  }
+  // ---------------- 11. 上架、复制为新草稿、预览、新建（plan 第 10.3 步） ----------------
+  // spec「产品库详情与编辑」的上架、复制为新草稿、「预览」页签、新建（验收 16 第四条、验收 17），设计系统 §5.14、F 页。
+  // 纯逻辑在 catalog/actions.ts；整页照上面挂真的路由、查询缓存和按方法与地址回应的假接口
+
+  // 11.1 纯逻辑
+  {
+    const byName: RefName = (f, v) =>
+      f.store === 'label' ? v : (resolveRef(f, v, f.to === 'material' ? MATERIAL_REFS : HOTEL_REFS)?.name ?? v);
+    eq(
+      '页签：匿名默认「预览」，别人默认「编辑」；地址上只写不是默认的那一个',
+      [
+        defaultTab(true),
+        defaultTab(false),
+        tabOf({}, true),
+        tabOf({}, false),
+        tabOf({ tab: 'edit' }, true),
+        tabOf({ tab: 'preview' }, false),
+        tabSearch('preview', true),
+        tabSearch('edit', true),
+        tabSearch('preview', false),
+        tabSearch('edit', false),
+      ],
+      ['preview', 'edit', 'preview', 'edit', 'edit', 'preview', {}, { tab: 'edit' }, { tab: 'preview' }, {}],
+    );
+    const vt = (e: EntityType, key: string, p: Payload) => valueText(fieldOf(e, key), readValue(p, key), p, byName);
+    const inc = (GUIZHOU_5D.inclusions as unknown[]).length;
+    const exc = (GUIZHOU_5D.exclusions as unknown[]).length;
+    eq(
+      '值写成一段字：金额带单位（单位取另一个字段的照写）、整数带单位、月份区间加含义、「全年」写 yearRoundLabel、多选与标签用「、」、是否写两种文字、有序子项写条数、引用写名称、没填是 null',
+      [
+        vt(ROUTE, 'priceFrom', GUIZHOU_5D),
+        vt(MATERIAL, 'unitPrice', MATERIALS[2]!),
+        vt(ROUTE, 'days', GUIZHOU_5D),
+        vt(ROUTE, 'maxAltitude', GUIZHOU_5D),
+        vt(ROUTE, 'bestSeason', GUIZHOU_5D),
+        vt(ROUTE, 'bestSeason', { bestSeason: '全年' }),
+        vt(ROUTE, 'bestSeason', { bestSeason: '夏天' }),
+        vt(PKG, 'startMonths', { startMonths: '全年' }),
+        vt(ROUTE, 'segments', GUIZHOU_5D),
+        vt(ROUTE, 'aliases', GUIZHOU_5D),
+        vt(ROUTE, 'overseas', GUIZHOU_5D),
+        vt(ROUTE, 'overseas', { overseas: true }),
+        vt(ROUTE, 'inclusions', GUIZHOU_5D),
+        vt(PKG, 'materials', NUANMU),
+        vt(ROUTE, 'intensity.level', { intensity: { level: '适中' } }),
+        vt(MATERIAL, 'category', MATERIALS[0]!),
+        vt(ROUTE, 'maxAltitude', {}),
+        vt(ROUTE, 'tags', { tags: [] }),
+        vt(ROUTE, '$code', GUIZHOU_5D),
+      ],
+      [
+        '13,800元/人',
+        '2,680元/延米',
+        '5天',
+        '1,200米',
+        '4月-10月（这些月份出发报价上浮10%，「全年」不加价）',
+        '全年（不加价）',
+        '夏天',
+        '全年',
+        '家庭、亲子、银发',
+        '黔东南',
+        '境内',
+        '境外',
+        `${inc}条`,
+        '马可波罗 800×800 抛釉砖、大自然 三层实木复合地板、欧派 整体橱柜、箭牌 卫浴套装',
+        '适中',
+        '瓷砖',
+        null,
+        null,
+        'r-guizhou-5d',
+      ],
+    );
+    const days = fieldOf(ROUTE, 'itinerary').item!;
+    const sub = (k: string) => days.find((s) => s.key === k)!;
+    eq(
+      '有序子项里的字段：按字符串存的餐食写原文，按名称存的住宿写原文',
+      [valueText(sub('meals'), '早/午/晚', {}, byName), valueText(sub('hotel'), '松赞梅里', {}, byName)],
+      ['早/午/晚', '松赞梅里'],
+    );
+    eq(
+      '上架确认的第一句：值按类型写，单位固定的金额只写斜线前面的，占位两侧的空格去掉，句末补句号（设计系统 F 页）',
+      [
+        activateSentence(ROUTE, GUIZHOU_5D, byName),
+        activateSentence(PKG, NUANMU, byName),
+        activateSentence(MATERIAL, MATERIALS[0]!, byName),
+        activateSentence({ ...ROUTE, activateLine: '上架后按 {priceFrom} 报价。' }, GUIZHOU_5D, byName),
+        activateSentence(ROUTE, {}, byName),
+      ],
+      [
+        '上架后，销售助手会立即向客户推荐这条线路，并按每人13,800元起报价。',
+        '上架后，销售助手会向业主推荐这个套餐，并按每平米1,280元估价。',
+        '上架后，套餐和销售助手可以引用这件主材，按168元/㎡计价。',
+        '上架后按13,800元报价。',
+        '上架后，销售助手会立即向客户推荐这条线路，并按每人—起报价。',
+      ],
+    );
+    /** 一行写成「Tag：字段 值 · 字段 值」 */
+    const lineText = (l: LockLine) =>
+      `${l.tag}：${l.pairs.map((p) => `${p.label === null ? '' : `${p.label} `}${p.value}${p.empty ? '（空）' : ''}${p.mono ? '（等宽）' : ''}`).join(' · ')}`;
+    eq(
+      '锁定清单：按锁定组分行，行里按字段顺序；编号等宽；是否只写值；只锁几个成员的标签写这几个有没有（设计系统 F 页）',
+      lockLines(ROUTE, GUIZHOU_5D, byName).map(lineText),
+      [
+        '识别：线路编号 r-guizhou-5d（等宽） · 线路名称 贵州 小七孔·西江千户苗寨 5 日 · 目的地 贵州 · 天数 5天 · 客户的其他叫法 黔东南',
+        '计价：每人起价 13,800元/人 · 最佳季节 4月-10月（这些月份出发报价上浮10%，「全年」不加价）',
+        `条款：费用包含 ${inc}条 · 费用不含 ${exc}条`,
+        '推荐：境内 · 适合客群 家庭、亲子、银发 · 全程最高海拔 1,200米 · 标签 「国内」',
+      ],
+    );
+    const bare = { ...GUIZHOU_5D, tags: ['贵州'] } as Payload;
+    delete bare.aliases;
+    delete bare.maxAltitude;
+    eq(
+      '锁定清单：没填的写「没填」（上架以后补不上了），标签里没有锁住的成员写「没有「国内」」',
+      lockLines(ROUTE, bare, byName)
+        .map(lineText)
+        .filter((t) => t.startsWith('识别') || t.startsWith('推荐')),
+      [
+        '识别：线路编号 r-guizhou-5d（等宽） · 线路名称 贵州 小七孔·西江千户苗寨 5 日 · 目的地 贵州 · 天数 5天 · 客户的其他叫法 没填（空）',
+        '推荐：境内 · 适合客群 家庭、亲子、银发 · 全程最高海拔 没填（空） · 标签 没有「国内」',
+      ],
+    );
+    eq(
+      '假包：套餐的锁定清单按它的锁定组；主材的编号没有锁定组，归到最后一行「其他」',
+      [lockLines(PKG, NUANMU, byName).map(lineText), lockLines(MATERIAL, MATERIALS[0]!, byName).map(lineText)],
+      [
+        [
+          '识别：套餐编号 p-nuanmu-2r（等宽） · 套餐名称 暖木 · 两居全包经典版',
+          '计价：每平米单价 1,280元/㎡ · 起装面积 60㎡',
+          '条款：工期 75天 · 含拆旧 · 包含主材 马可波罗 800×800 抛釉砖、大自然 三层实木复合地板、欧派 整体橱柜、箭牌 卫浴套装',
+          '推荐：适用户型 两居、三居',
+        ],
+        ['计价：计价单位 ㎡ · 单价 168元/㎡', '其他：主材编号 m-marcopolo-800（等宽）'],
+      ],
+    );
+    // showWhen 没显示出来的锁定字段不在清单里（上架时它会被删掉）
+    const toy: EntityType = {
+      ...MATERIAL,
+      lockGroups: { x: { tag: '甲组', reason: '原因' } },
+      fields: [
+        { key: '$code', type: 'text', label: '编号', group: 'basic', lockGroup: 'x' },
+        { key: 'a', type: 'enum', options: ['有'], required: false, label: '开关', group: 'basic' },
+        {
+          key: 'b',
+          type: 'text',
+          label: '跟着开关',
+          group: 'basic',
+          lockedWhenActive: true,
+          lockGroup: 'x',
+          showWhen: { key: 'a', filled: true },
+        },
+      ],
+    };
+    eq(
+      '锁定清单：showWhen 没显示出来的字段不列',
+      [lockLines(toy, { id: 'c1', b: '值' }, byName).map(lineText), lockLines(toy, { id: 'c1', a: '有', b: '值' }, byName).map(lineText)],
+      [['甲组：编号 c1（等宽）'], ['甲组：编号 c1（等宽） · 跟着开关 值']],
+    );
+    eq(
+      '没做的建议一句：「有1条建议没做：体力强度没填（不拦上架）」；都做了没有这一句',
+      [recommendLine(checkItem(ROUTE, GUIZHOU_5D).recommended), recommendLine([])],
+      ['有1条建议没做：体力强度没填（不拦上架）', null],
+    );
+    eq(
+      '复制的新编号：没填、格式不对、和原来的一样、列表里已经有了；都没有是 null',
+      [
+        codeProblem('', 'r-a', []),
+        codeProblem('R_A', 'r-a', []),
+        codeProblem(`r${'a'.repeat(64)}`, 'r-a', []),
+        codeProblem('r-a', 'r-a', []),
+        codeProblem('r-b', 'r-a', ['r-c', 'r-b']),
+        codeProblem('r-b', 'r-a', ['r-c']),
+      ],
+      ['没填', CODE_RULE, CODE_RULE, '和原来的编号一样，换一个', '这个编号已经有了，换一个', null],
+    );
+    const copied = copyPayload(SICHUAN, 'r-sichuan-lux-kids');
+    eq(
+      '复制出来的 payload：只换编号，键序与其余内容一个字节不动，原条目不改',
+      [
+        JSON.stringify(copied) === JSON.stringify({ ...SICHUAN, id: 'r-sichuan-lux-kids' }),
+        JSON.stringify(Object.keys(copied)) === JSON.stringify(Object.keys(SICHUAN)),
+        SICHUAN.id,
+      ],
+      [true, true, 'r-sichuan-lux'],
+    );
+    const pkgCode = fieldOf(withCodeHints(PKG), '$code');
+    eq(
+      '新建的编号：行业包没写帮助、示例时补上格式说明与 codeExample；写了的原样；什么都不缺时就是原来的实体',
+      [
+        [pkgCode.help, pkgCode.placeholder],
+        fieldOf(withCodeHints(HOTEL), '$code').placeholder,
+        withCodeHints(ROUTE) === ROUTE,
+        withCodeHints(PKG)
+          .fields.filter((f, i) => f !== PKG.fields[i])
+          .map((f) => f.key),
+      ],
+      [[CODE_HELP, '例：p-nuanmu-2r'], '例：h-songtsam-meili', true, ['$code']],
+    );
+    eq(
+      '新建的空表单：只有必填的数组字段先放空数组（数组的必填只要求键存在）；选填的、按字符串存的、showWhen 管着的不放',
+      [blankPayload(ROUTE), blankPayload(HOTEL), Object.keys(blankPayload(PKG)), blankPayload(MATERIAL)],
+      [
+        { segments: [], itinerary: [], highlights: [], tags: [] },
+        { highlights: [], tags: [] },
+        ['houseTypes', 'styles', 'materials', 'nodes', 'highlights'],
+        {},
+      ],
+    );
+    eq(
+      '一个标签都没有的新酒店：空表单里标签不报「没填」',
+      checkItem(HOTEL, blankPayload(HOTEL)).required.some((i) => i.path === 'tags'),
+      false,
+    );
+    eq(
+      '新建提交的键按字段顺序（编号在最前），行业包里没有的排最后',
+      Object.keys(inFieldOrder(HOTEL, { tags: [], extra: 1, name: '某酒店', highlights: ['好'], id: 'h-new' })),
+      ['id', 'name', 'highlights', 'tags', 'extra'],
+    );
+    eq(
+      '新建的保存条：「还没保存」「保存后是一条草稿，不会推荐给客户」「保存草稿」；别的照旧',
+      [saveSummary('new', []), saveCopy('new'), saveSummary('draft', []), saveSummary('active', [{ path: 'a', label: '甲' }])],
+      ['还没保存', { note: '保存后是一条草稿，不会推荐给客户', button: '保存草稿' }, '有改动', '有1处改动'],
+    );
+  }
+
+  // 11.2 整页要的几样
+  const actionsOf = (root: ParentNode) =>
+    all<HTMLElement>(root, '.page-actions button').map((b) => b.getAttribute('aria-label') ?? (b.textContent ?? '').replace(/\s/g, ''));
+  const activateButton = (root: ParentNode) =>
+    all<HTMLButtonElement>(root, '.page-actions button').find((b) => b.textContent?.replace(/\s/g, '') === '上架…');
+  const dialogTitled = (start: string) =>
+    all<HTMLElement>(document.body, '.ant-modal').find((m) => m.querySelector('.ant-modal-title')?.textContent?.startsWith(start));
+  const buttonIn = (root: ParentNode | undefined, text: string) =>
+    root ? all<HTMLButtonElement>(root, 'button').find((b) => b.textContent?.replace(/\s/g, '') === text) : undefined;
+  const live = (root: ParentNode) => root.querySelector('.save-live')?.textContent;
+  const posts = (sent: readonly { method: string; url: string; body: unknown }[], tail: string) =>
+    sent.filter((x) => x.method === 'POST' && x.url.endsWith(tail));
+  const writes = (sent: readonly { method: string; url: string; body: unknown }[]) => sent.filter((x) => x.method !== 'GET');
+  const activeGuizhou = (rev: number, payload: Payload = GUIZHOU_5D) => ({
+    ...GUIZHOU_ITEM,
+    status: 'active',
+    rev,
+    updatedByName: '小林',
+    updatedAt: new Date(Date.now()).toISOString(),
+    payload,
+  });
+  const onTitle = () => document.activeElement?.classList.contains('page-title') === true;
+  const tabClick = (root: ParentNode, name: string) =>
+    click(all<HTMLElement>(root, '.detail-tabs .ant-tabs-tab-btn').find((t) => t.textContent === name));
+  /**
+   * 弹窗的进出场动画走完：happy-dom 不跑动画，rc-motion 一直等着。先让 requestAnimationFrame 跑到动画开始，再发结束事件：
+   * 打开时 afterOpenChange 才会调（默认焦点），关上时弹窗才卸掉（destroyOnHidden）
+   */
+  const motion = async () => {
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        await win.happyDOM.waitUntilComplete();
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+    await act(async () => {
+      for (const el of document.querySelectorAll('.ant-modal, .ant-modal-mask')) {
+        for (const t of ['animationend', 'transitionend']) el.dispatchEvent(new win.Event(t) as unknown as Event);
+      }
+    });
+  };
+
+  // 11.3 上架（验收 17）：草稿的页头、确认框的内容、取消、确认以后的页面
+  {
+    const api = fakeApi((s) =>
+      s.method === 'POST' && s.url.endsWith('/activate') ? json(activeGuizhou((s.body as { rev: number }).rev + 1)) : undefined,
+    );
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    eq(
+      '草稿页头：「更多」在左、主按钮「上架…」在最右；页签「编辑 / 预览」，选中「编辑」',
+      [actionsOf(d.box), texts(d.box, '.detail-tabs .ant-tabs-tab'), d.box.querySelector('.detail-tabs .ant-tabs-tab-active')?.textContent],
+      [['更多', '上架…'], ['编辑', '预览'], '编辑'],
+    );
+    // 浏览器里点按钮会把焦点放上去（happy-dom 的 click() 不会）：关上以后焦点回到打开它的元素
+    await act(async () => activateButton(d.box)?.focus());
+    await click(activateButton(d.box));
+    await motion();
+    const dlg = dialogTitled('上架');
+    const inc = (GUIZHOU_5D.inclusions as unknown[]).length;
+    const exc = (GUIZHOU_5D.exclusions as unknown[]).length;
+    eq(
+      '上架确认（设计系统 F 页）：640 宽，标题写出对象；第一句、「下面这些内容会锁定」按锁定组分行、没做的建议、不能下架；两个按钮',
+      dlg
+        ? {
+            width: dlg.style.width,
+            title: dlg.querySelector('.ant-modal-title')?.textContent,
+            first: texts(dlg, '.consequence-info .consequence-body'),
+            lockHead: texts(dlg, '.consequence-lock .consequence-strong'),
+            tags: texts(dlg, '.activate-lock-line .lock-tag'),
+            lines: texts(dlg, '.activate-lock-line .activate-pairs'),
+            warn: texts(dlg, '.consequence-warn .consequence-body'),
+            noUndo: texts(dlg, '.consequence-danger .consequence-body'),
+            buttons: texts(dlg, '.ant-modal-footer button').map((t) => t.replace(/\s/g, '')),
+            mono: texts(dlg, '.activate-pair-value.mono'),
+          }
+        : null,
+      {
+        width: '640px',
+        title: `上架「${GUIZHOU_5D.title}」`,
+        first: ['上架后，销售助手会立即向客户推荐这条线路，并按每人13,800元起报价。'],
+        lockHead: ['下面这些内容会锁定'],
+        tags: ['识别', '计价', '条款', '推荐'],
+        lines: [
+          `线路编号r-guizhou-5d·线路名称${GUIZHOU_5D.title}·目的地贵州·天数5天·客户的其他叫法黔东南`,
+          '每人起价13,800元/人·最佳季节4月-10月（这些月份出发报价上浮10%，「全年」不加价）',
+          `费用包含${inc}条·费用不含${exc}条`,
+          '境内·适合客群家庭、亲子、银发·全程最高海拔1,200米·标签「国内」',
+        ],
+        warn: ['有1条建议没做：体力强度没填（不拦上架）'],
+        noUndo: ['上架后无法下架，锁定的内容只能由技术修正。'],
+        buttons: ['再检查一下', '上架，开始推荐'],
+        mono: ['r-guizhou-5d'],
+      },
+    );
+    check('上架确认：默认焦点在「再检查一下」', document.activeElement === buttonIn(dlg, '再检查一下'));
+    // 间隔号跟在一段的末尾、在这一段里面：换行只发生在它后面，不会落到行首
+    check(
+      '锁定清单：每段「字段 值」整体一个盒子，间隔号在段尾',
+      !!dlg &&
+        all(dlg, '.activate-pair').every(
+          (p, i, ps) => (p.querySelector('.sep') !== null) === (ps[i + 1]?.parentElement === p.parentElement),
+        ),
+    );
+    await click(buttonIn(dlg, '再检查一下'));
+    await motion();
+    eq(
+      '「再检查一下」：确认框关上，焦点回到「上架…」，没发请求',
+      [dialogTitled('上架') === undefined, document.activeElement === activateButton(d.box), writes(api.sent).length],
+      [true, true, 0],
+    );
+    await click(activateButton(d.box));
+    await motion();
+    await click(buttonIn(dialogTitled('上架'), '上架，开始推荐'));
+    await until(() => header(d.box).titleStatus === '已上架');
+    await motion();
+    eq(
+      '「上架，开始推荐」：按眼下的 rev 发 activate，不发 PATCH；页面换成已上架（状态、状态句、页头只剩「更多」、没有上架前检查），焦点在标题上，读屏念「已上架」',
+      [
+        writes(api.sent).map((x) => [x.method, x.url.replace(/^.*\/api\/console/, ''), x.body]),
+        header(d.box).titleStatus,
+        header(d.box).status?.split('·')[0],
+        actionsOf(d.box),
+        d.box.querySelectorAll('.detail-side .check-list').length,
+        onTitle(),
+        live(d.box),
+        dialogTitled('上架') === undefined,
+      ],
+      [[['POST', '/catalog/route/r-guizhou-5d/activate', { rev: 1 }]], '已上架', '13项上架后锁定', ['更多'], 0, true, '已上架', true],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 验收 17：清空一个必填字段再点「上架…」：不打开确认框，焦点跳到那个字段；在「预览」页签点也一样（先换回编辑）
+  {
+    const api = fakeApi(() => undefined);
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    const titleIn = () => d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
+    await typeInto(titleIn(), '');
+    await click(activateButton(d.box));
+    await motion();
+    eq(
+      '必须项没过点「上架…」：不打开确认框，焦点跳到线路名称，字段下方「线路名称：没填」，检查清单列着它，没发请求（验收 17）',
+      [
+        dialogTitled('上架') === undefined,
+        document.activeElement === titleIn(),
+        errorAt(d.box, '[data-group="basic"] [data-field-key="title"]'),
+        checkRows(d.box)[0],
+        writes(api.sent).length,
+      ],
+      [true, true, '线路名称：没填', '线路名称没填', 0],
+    );
+    await tabClick(d.box, '预览');
+    await until(() => d.box.querySelector('.detail-preview') !== null);
+    await click(activateButton(d.box));
+    await until(() => document.activeElement === titleIn());
+    eq(
+      '在「预览」页签点「上架…」：换回编辑（地址上没有 tab），焦点落进线路名称，不打开确认框',
+      [d.router.state.location.search, document.activeElement === titleIn(), dialogTitled('上架') === undefined],
+      [{}, true, true],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 有没保存的改动时上架：确认框说先保存、列的是表单里的内容；确认以后先 PATCH，再按存好的 rev 上架
+  {
+    const edited = '贵州 小七孔·西江千户苗寨 5 日（亲子版）';
+    const api = fakeApi((s) => {
+      if (s.method === 'PATCH') {
+        const b = s.body as { rev: number; set: Payload };
+        return json({ ...GUIZHOU_ITEM, rev: b.rev + 1, payload: { ...GUIZHOU_5D, ...b.set } });
+      }
+      if (s.method === 'POST' && s.url.endsWith('/activate'))
+        return json(activeGuizhou((s.body as { rev: number }).rev + 1, { ...GUIZHOU_5D, title: edited }));
+      return undefined;
+    });
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    await typeInto(d.box.querySelector('[data-group="basic"] [data-field-key="title"] input'), edited);
+    await click(activateButton(d.box));
+    await motion();
+    const dlg = dialogTitled('上架');
+    eq(
+      '有没保存的改动：确认框标题与锁定清单是表单里的内容，另说「先保存这1处改动，再上架」',
+      [
+        dlg?.querySelector('.ant-modal-title')?.textContent,
+        dlg ? texts(dlg, '.consequence-info .consequence-body')[1] : null,
+        dlg ? texts(dlg, '.activate-lock-line .activate-pairs')[0]?.includes(edited) : null,
+      ],
+      [`上架「${edited}」`, '先保存这1处改动，再上架', true],
+    );
+    // 确认框开着时按 ⌘S：不拿底下的表单去存
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    await cmdS();
+    eq('确认框开着时按 ⌘S：不拦、不发请求', [cmdSPrevented, writes(api.sent).length], [false, 0]);
+    await click(buttonIn(dialogTitled('上架'), '上架，开始推荐'));
+    await until(() => header(d.box).titleStatus === '已上架');
+    await motion();
+    eq(
+      '确认：先 PATCH（rev 1，只有线路名称），再按存好的 rev 2 上架；以后没有保存条，标题是改过的',
+      [writes(api.sent).map((x) => [x.method, x.body]), bar(d.box), header(d.box).title],
+      [
+        [
+          ['PATCH', { rev: 1, set: { title: edited } }],
+          ['POST', { rev: 2 }],
+        ],
+        null,
+        edited,
+      ],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 上架失败：先保存时 422 不再上架；上架时 409 是横幅；422 落到字段；连不上的就地重试
+  {
+    const cases: { name: string; reply(s: { method: string; url: string }): Response | Promise<Response> | undefined; edit?: boolean }[] = [
+      {
+        name: '先保存时 422',
+        edit: true,
+        reply: (s) =>
+          s.method === 'PATCH'
+            ? json({ error: 'invalid_item', detail: '条目不合格', issues: [{ path: 'hotelLevel', message: '含有存不下的字符' }] }, 422)
+            : undefined,
+      },
+      { name: '409', reply: (s) => (s.url.endsWith('/activate') ? json({ error: 'rev_conflict', detail: '改过' }, 409) : undefined) },
+      {
+        name: '422',
+        reply: (s) =>
+          s.url.endsWith('/activate')
+            ? json({ error: 'invalid_item', detail: '条目不合格', issues: [{ path: 'itinerary.2.hotel', message: '不能为空' }] }, 422)
+            : undefined,
+      },
+    ];
+    const seen: unknown[] = [];
+    for (const c of cases) {
+      const api = fakeApi(c.reply);
+      const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+      if (c.edit) await typeInto(d.box.querySelector('[data-field-key="hotelLevel"] input'), '精品');
+      await click(activateButton(d.box));
+      await motion();
+      await click(buttonIn(dialogTitled('上架'), '上架，开始推荐'));
+      await until(() => writes(api.sent).length > 0);
+      await motion();
+      await settle();
+      seen.push({
+        case: c.name,
+        writes: writes(api.sent).map((x) => x.method),
+        dialog: dialogTitled('上架') !== undefined,
+        status: header(d.box).titleStatus,
+        conflict: texts(d.box, '.detail-conflict .ant-alert-title'),
+        focus:
+          document.activeElement?.closest('[data-field-key]')?.getAttribute('data-field-key') ??
+          document.activeElement?.textContent?.replace(/\s/g, ''),
+        error: errorAt(d.box, '[data-field-key="hotelLevel"]') ?? errorAt(d.box, '[data-item-index="2"] [data-field-key="hotel"]'),
+      });
+      await d.unmount();
+      api.restore();
+    }
+    eq('上架失败：确认框关上、还是草稿；错误落到页头下或字段，焦点跟过去', seen, [
+      {
+        case: '先保存时 422',
+        writes: ['PATCH'],
+        dialog: false,
+        status: '草稿',
+        conflict: [],
+        focus: 'hotelLevel',
+        error: '住宿档次：含有存不下的字符',
+      },
+      { case: '409', writes: ['POST'], dialog: false, status: '草稿', conflict: ['这条刚被别人改过'], focus: '载入最新版本', error: null },
+      { case: '422', writes: ['POST'], dialog: false, status: '草稿', conflict: [], focus: 'hotel', error: '当晚住宿：不能为空' },
+    ]);
+    // 连不上：页头下「服务暂时连不上」，焦点在「重试」；重试不再弹确认框，直接再上架一次
+    let n = 0;
+    const api = fakeApi((s) => {
+      if (!s.url.endsWith('/activate')) return undefined;
+      n += 1;
+      return n === 1 ? Promise.reject(new TypeError('Failed to fetch')) : json(activeGuizhou(2));
+    });
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    await click(activateButton(d.box));
+    await motion();
+    await click(buttonIn(dialogTitled('上架'), '上架，开始推荐'));
+    await until(() => d.box.querySelector('.detail-failure') !== null);
+    await motion();
+    const retry = buttonIn(d.box.querySelector('.detail-failure') ?? undefined, '重试');
+    eq(
+      '上架时连不上：确认框关上，页头下「服务暂时连不上」，焦点在「重试」',
+      [
+        dialogTitled('上架') === undefined,
+        texts(d.box, '.detail-failure .ant-alert-title')[0]?.startsWith('服务暂时连不上'),
+        document.activeElement === retry,
+      ],
+      [true, true, true],
+    );
+    await click(retry);
+    await until(() => header(d.box).titleStatus === '已上架');
+    eq(
+      '「重试」：直接再上架一次（不再弹确认框），成功以后失败收起',
+      [n, dialogTitled('上架') === undefined, d.box.querySelectorAll('.detail-failure').length],
+      [2, true, 0],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 11.4 复制为新草稿：「更多」里点开；新编号的检查；用存着的 payload 换掉编号去建；建好以后去新草稿
+  const draftOf = (kind: string, payload: Payload) => ({
+    kind,
+    code: payload.id,
+    status: 'draft',
+    rev: 1,
+    ord: 99,
+    updatedByName: '小林',
+    updatedAt: new Date(Date.now()).toISOString(),
+    payload,
+  });
+  const openCopy = async (root: ParentNode) => {
+    await click(root.querySelector('.page-actions .header-more'));
+    await settle();
+    const items = all<HTMLElement>(document.body, '.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item');
+    const names = items.map((x) => x.textContent);
+    await click(items.find((x) => x.textContent === '复制为新草稿'));
+    await motion();
+    return names;
+  };
+  const copyDialog = () => dialogTitled('复制');
+  const codeInput = () => copyDialog()?.querySelector<HTMLInputElement>('.copy-code input') ?? null;
+  const codeNote = () => copyDialog()?.querySelector('.copy-code .field-error, .copy-code .field-help')?.textContent ?? null;
+  {
+    const api = fakeApi((s) => {
+      if (s.method !== 'POST' || !s.url.endsWith('/catalog/route')) return undefined;
+      const p = (s.body as { payload: Payload }).payload;
+      return p.id === 'r-race' ? json({ error: 'catalog_code_taken', detail: '这个 code 已经有了' }, 409) : json(draftOf('route', p));
+    });
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    const menu = await openCopy(e.box);
+    const dlg = copyDialog();
+    eq(
+      '「更多」里只有「复制为新草稿」；弹窗 480 宽，标题写出对象，先说后果与提醒，再是新编号（帮助写格式、示例取编号的例子），焦点在输入框里',
+      [
+        menu,
+        dlg?.style.width,
+        dlg?.querySelector('.ant-modal-title')?.textContent,
+        dlg ? texts(dlg, '.consequence-body') : null,
+        dlg?.querySelector('.copy-code label')?.textContent,
+        codeInput()?.getAttribute('placeholder'),
+        codeNote(),
+        document.activeElement === codeInput(),
+        dlg ? texts(dlg, '.ant-modal-footer button').map((t) => t.replace(/\s/g, '')) : null,
+      ],
+      [
+        ['复制为新草稿'],
+        '480px',
+        `复制「${SICHUAN.title}」为新草稿`,
+        ['新草稿的内容与这一条存着的相同，只换编号', '两条都上架会同时被推荐，请区分名称和适用对象'],
+        '新的线路编号',
+        '例：r-sichuan-lux',
+        CODE_HELP,
+        true,
+        ['取消', '复制为新草稿'],
+      ],
+    );
+    const tries: (string | null)[] = [];
+    for (const c of ['', 'R_X', 'r-sichuan-lux', 'r-guizhou-5d']) {
+      await typeInto(codeInput(), c);
+      await click(buttonIn(copyDialog(), '复制为新草稿'));
+      await settle();
+      tries.push(codeNote());
+    }
+    eq(
+      '新编号有问题：不发请求，写在输入框下（没填、格式、和原来的一样、列表里已经有了），输入框标出错',
+      [tries, posts(api.sent, '/catalog/route').length, codeInput()?.getAttribute('aria-invalid'), document.activeElement === codeInput()],
+      [
+        ['线路编号：没填', `线路编号：${CODE_RULE}`, '线路编号：和原来的编号一样，换一个', '线路编号：这个编号已经有了，换一个'],
+        0,
+        'true',
+        true,
+      ],
+    );
+    await typeInto(codeInput(), 'r-race');
+    eq('改了编号：报错收起，回到帮助', codeNote(), CODE_HELP);
+    await click(buttonIn(copyDialog(), '复制为新草稿'));
+    await until(() => codeNote() !== CODE_HELP);
+    eq(
+      '服务端说编号撞了（409）：写在输入框下，焦点回到输入框，弹窗还开着',
+      [codeNote(), document.activeElement === codeInput(), copyDialog() !== undefined],
+      ['线路编号：这个编号已经有了，换一个', true, true],
+    );
+    await typeInto(codeInput(), ' r-sichuan-lux-kids ');
+    await press(codeInput(), 'Enter');
+    await until(() => e.router.state.location.pathname === '/catalog/route/r-sichuan-lux-kids');
+    await motion();
+    await settle();
+    const body = posts(api.sent, '/catalog/route').at(-1)?.body as { payload: Payload } | undefined;
+    eq(
+      '回车就是复制：用这一条存着的 payload 只换编号（首尾空格去掉），键序不变',
+      JSON.stringify(body?.payload),
+      JSON.stringify(copyPayload(SICHUAN, 'r-sichuan-lux-kids')),
+    );
+    eq(
+      '建好以后去新草稿的详情：原名、状态草稿、页头有「上架…」；焦点在标题上，读屏念「已复制为新草稿」；弹窗关上',
+      [header(e.box).title, header(e.box).titleStatus, actionsOf(e.box), onTitle(), live(e.box), copyDialog() === undefined],
+      [SICHUAN.title, '草稿', ['更多', '上架…'], true, '已复制为新草稿', true],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
+  // 有没保存的改动时复制：弹窗说不会带过去；POST 的是存着的内容；建好以后离开这一页照样先确认
+  {
+    const api = fakeApi((s) => (s.method === 'POST' ? json(draftOf('route', (s.body as { payload: Payload }).payload)) : undefined));
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await typeInto(e.box.querySelector('[data-field-key="intensity.hardest"] input'), `${hardestText}；返程日早起`);
+    await openCopy(e.box);
+    eq(
+      '有没保存的改动：复制弹窗说「这一页还有1处改动没保存，不会带过去」',
+      copyDialog() ? texts(copyDialog()!, '.consequence-body')[1] : null,
+      '这一页还有1处改动没保存，不会带过去',
+    );
+    await typeInto(codeInput(), 'r-sichuan-copy');
+    await click(buttonIn(copyDialog(), '复制为新草稿'));
+    await until(() => document.body.textContent?.includes('有改动还没保存') === true);
+    await motion();
+    const sentPayload = (posts(api.sent, '/catalog/route')[0]?.body as { payload: Payload } | undefined)?.payload;
+    eq(
+      '建好以后离开被拦下（「有改动还没保存」），还在原来的地址；POST 的是存着的内容，不带没保存的改动；复制弹窗已关',
+      [
+        e.router.state.location.pathname,
+        JSON.stringify(sentPayload?.intensity) === JSON.stringify(SICHUAN.intensity),
+        copyDialog() === undefined,
+      ],
+      ['/catalog/route/r-sichuan-lux', true, true],
+    );
+    await click(all<HTMLButtonElement>(document.body, 'button').find((b) => b.textContent === '放弃改动并离开'));
+    await until(() => e.router.state.location.pathname === '/catalog/route/r-sichuan-copy');
+    eq('「放弃改动并离开」：去新草稿', e.router.state.location.pathname, '/catalog/route/r-sichuan-copy');
+    await e.unmount();
+    api.restore();
+  }
+
+  // 复制时连不上：错误写在弹窗里（可以重试），弹窗还开着
+  {
+    const api = fakeApi((s) => (s.method === 'POST' ? Promise.reject(new TypeError('Failed to fetch')) : undefined));
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await openCopy(e.box);
+    await typeInto(codeInput(), 'r-sichuan-copy');
+    await click(buttonIn(copyDialog(), '复制为新草稿'));
+    await until(() => copyDialog()?.querySelector('.copy-failure') != null);
+    eq(
+      '复制时连不上：弹窗里「服务暂时连不上」加「重试」，弹窗还开着，还在原来的地址',
+      [
+        texts(copyDialog()!, '.copy-failure .ant-alert-title')[0]?.startsWith('服务暂时连不上'),
+        buttonIn(copyDialog()!.querySelector('.copy-failure') ?? undefined, '重试') !== undefined,
+        e.router.state.location.pathname,
+      ],
+      [true, true, '/catalog/route/r-sichuan-lux'],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
+  // 11.5 「预览」页签：375 宽、单栏、只读、含没保存的改动、只以文本显示；切页签不算离开；从预览跳到字段先换回编辑
+  {
+    const api = fakeApi(() => undefined);
+    const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    await typeInto(d.box.querySelector('[data-field-key="hotelLevel"] input'), '精品<b>民宿</b>');
+    await tabClick(d.box, '预览');
+    await until(() => d.box.querySelector('.detail-preview') !== null);
+    const frame = d.box.querySelector<HTMLElement>('.detail-preview-frame');
+    eq(
+      '点「预览」：地址 tab=preview，主栏换成手机宽度的只读预览，没有输入框；含没保存的改动、按文本显示；保存条和副栏还在，没被拦下',
+      [
+        d.router.state.location.search,
+        d.box.querySelector('.detail-tabs .ant-tabs-tab-active')?.textContent,
+        d.box.querySelectorAll('.detail-main input, .detail-main textarea, .detail-main .ant-segmented').length,
+        texts(d.box, '.detail-preview-note'),
+        frame?.getAttribute('aria-label'),
+        frame?.textContent?.includes('精品<b>民宿</b>'),
+        frame?.querySelectorAll('b').length,
+        barText(d.box)?.summary,
+        d.box.querySelectorAll('.detail-side .check-list').length,
+        document.body.textContent?.includes('有改动还没保存'),
+      ],
+      [{ tab: 'preview' }, '预览', 0, ['手机宽度·含没保存的改动'], '手机宽度预览', true, 0, '有1处改动', 1, false],
+    );
+    eq(
+      '预览里：条目名、各分组（逐日行程以区块头为标题），字段是只读形态',
+      [
+        d.box.querySelector('.detail-preview-title')?.textContent,
+        all(d.box, '.preview-group').map((g) => g.getAttribute('data-group')),
+        texts(d.box, '.preview-group-title'),
+        d.box.querySelectorAll('.detail-preview .field.is-static').length > 10,
+      ],
+      [GUIZHOU_5D.title, ROUTE.groups.map((g) => g.key), ROUTE.groups.filter((g) => !blockOnly(ROUTE, g.key)).map((g) => g.label), true],
+    );
+    await click(all(d.box, '.check-list button.check-item').find((b) => b.textContent?.includes('体力强度')));
+    await until(() => document.activeElement?.closest('[data-field-key]')?.getAttribute('data-field-key') === 'intensity.level');
+    eq(
+      '预览时点副栏的检查项：换回「编辑」（地址上没有 tab），焦点落进体力强度；改动还在',
+      [
+        d.router.state.location.search,
+        document.activeElement?.closest('[data-field-key]')?.getAttribute('data-field-key'),
+        d.box.querySelector<HTMLInputElement>('[data-field-key="hotelLevel"] input')?.value,
+      ],
+      [{}, 'intensity.level', '精品<b>民宿</b>'],
+    );
+    await tabClick(d.box, '预览');
+    await until(() => d.box.querySelector('.detail-preview') !== null);
+    await click(all(d.box, '.lock-row').find((b) => b.textContent?.includes('条款')));
+    await until(() => document.activeElement?.textContent === '费用包含与不含');
+    eq(
+      '预览时点副栏的锁定组：换回编辑，焦点在那张卡片头',
+      [d.router.state.location.search, document.activeElement?.textContent],
+      [{}, '费用包含与不含'],
+    );
+    await act(async () => d.router.history.back());
+    await until(() => d.box.querySelector('.detail-preview') !== null);
+    eq('后退：回到「预览」页签（页签记一步浏览历史）', d.router.state.location.search, { tab: 'preview' });
+    await d.unmount();
+    api.restore();
+  }
+  // 身份与地址：匿名默认预览，点「编辑」写 tab=edit、全只读；地址带 tab=preview 时直接是预览；非编辑成员默认编辑
+  {
+    const an = await mountDetail('/catalog/route/r-sichuan-lux', anonOf(travel), {
+      items: { 'route/r-sichuan-lux': { kind: 'route', code: 'r-sichuan-lux', payload: SICHUAN } },
+      lists: { route: ANON_ROUTES },
+    });
+    const anonFirst = [
+      an.router.state.location.search,
+      an.box.querySelector('.detail-tabs .ant-tabs-tab-active')?.textContent,
+      an.box.querySelectorAll('.detail-preview-frame').length,
+      texts(an.box, '.detail-preview-note'),
+      actionsOf(an.box),
+    ];
+    await tabClick(an.box, '编辑');
+    await until(() => an.box.querySelector('.detail-preview') === null);
+    eq(
+      '匿名：默认「预览」（地址上没有 tab，没有改动不提），页头没有操作；点「编辑」写 tab=edit，全只读',
+      [
+        anonFirst,
+        an.router.state.location.search,
+        an.box.querySelectorAll('.detail-main input').length,
+        an.box.querySelectorAll('.detail-main .field.is-static').length > 10,
+      ],
+      [[{}, '预览', 1, ['手机宽度'], []], { tab: 'edit' }, 0, true],
+    );
+    await an.unmount();
+    const pv = await mountDetail('/catalog/route/r-sichuan-lux?tab=preview', owner(travel), {
+      items: { 'route/r-sichuan-lux': SICHUAN_ITEM },
+      lists,
+    });
+    const ag = await mountDetail('/catalog/route/r-sichuan-lux', agent(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    eq(
+      '地址带 tab=preview：打开就是预览；非编辑成员默认「编辑」（全只读），有页签',
+      [
+        pv.box.querySelectorAll('.detail-preview').length,
+        ag.box.querySelector('.detail-tabs .ant-tabs-tab-active')?.textContent,
+        ag.box.querySelectorAll('.detail-preview').length,
+      ],
+      [1, '编辑', 0],
+    );
+    await pv.unmount();
+    await ag.unmount();
+  }
+
+  // 11.6 新建：空表单不出保存条；编号的帮助按实体补；保存即建草稿（编号撞了报在编号下），建好以后换成它的详情
+  {
+    const api = fakeApi((s) => {
+      if (s.method !== 'POST' || !s.url.endsWith('/catalog/hotel')) return undefined;
+      const p = (s.body as { payload: Payload }).payload;
+      return p.id === 'h-taken' ? json({ error: 'catalog_code_taken', detail: '这个 code 已经有了' }, 409) : json(draftOf('hotel', p));
+    });
+    const n = await mountDetail('/catalog/new/hotel', owner(travel), { lists });
+    const input = (k: string) => n.box.querySelector<HTMLInputElement>(`[data-field-key="${k}"] input`);
+    eq(
+      '新建酒店：打开不填没有保存条；编号的帮助与示例（酒店没写，按实体补上）；页头没有操作',
+      [bar(n.box), n.box.querySelector('[data-field-key="$code"] .field-help')?.textContent, input('$code')?.placeholder, actionsOf(n.box)],
+      [null, CODE_HELP, '例：h-songtsam-meili', []],
+    );
+    await typeInto(input('$code'), 'h-taken');
+    await typeInto(input('name'), '洱海某某酒店');
+    await typeInto(input('destination'), '云南');
+    await typeInto(input('stars'), '五星');
+    await typeInto(input('nightlyFrom'), '1200');
+    await typeInto(input('roomType'), '湖景房');
+    await click(n.box.querySelector('[data-field-key="highlights"] .field-add'));
+    await typeInto(n.box.querySelector('[data-field-key="highlights"] [data-item-index="0"] input'), '湖景');
+    await click(primary(n.box));
+    await until(() => errorAt(n.box, '[data-field-key="$code"]') !== null);
+    await settle();
+    eq(
+      '编号撞了（409）：报在编号下，焦点回到编号，汇总「有1处要改」，还在新建页',
+      [
+        errorAt(n.box, '[data-field-key="$code"]'),
+        document.activeElement === input('$code'),
+        texts(n.box, '.detail-issues .ant-alert-title'),
+        n.router.state.location.pathname,
+      ],
+      ['酒店编号：这个编号已经有了，换一个', true, ['有1处要改'], '/catalog/new/hotel'],
+    );
+    await typeInto(input('$code'), 'h-erhai-lake');
+    eq('改了编号：它的报错收起', errorAt(n.box, '[data-field-key="$code"]'), null);
+    await cmdS();
+    await until(() => n.router.state.location.pathname === '/catalog/hotel/h-erhai-lake');
+    await settle();
+    await settle();
+    eq(
+      '⌘S 建草稿：payload 按字段顺序，标签是空数组（一个都不要也能建）',
+      (posts(api.sent, '/catalog/hotel').at(-1)?.body as { payload: Payload } | undefined)?.payload,
+      {
+        id: 'h-erhai-lake',
+        name: '洱海某某酒店',
+        destination: '云南',
+        stars: '五星',
+        nightlyFrom: 1200,
+        roomType: '湖景房',
+        highlights: ['湖景'],
+        tags: [],
+      },
+    );
+    eq(
+      '建好以后换成它的详情（replace，没被离开保护拦下）：草稿、页头有「更多」「上架…」、焦点在标题上、读屏念「已建草稿」',
+      [
+        n.router.history.length,
+        header(n.box).title,
+        header(n.box).titleStatus,
+        actionsOf(n.box),
+        onTitle(),
+        live(n.box),
+        document.body.textContent?.includes('有改动还没保存'),
+      ],
+      [1, '洱海某某酒店', '草稿', ['更多', '上架…'], true, '已建草稿', false],
+    );
+    await n.unmount();
+    api.restore();
+  }
+  // 新建的放弃：确认「放弃填好的内容？」，回到空白；假包的编号帮助同样按实体补
+  {
+    const n = await mountDetail('/catalog/new/package', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+    const code = n.box.querySelector<HTMLInputElement>('[data-field-key="$code"] input');
+    const hints = [n.box.querySelector('[data-field-key="$code"] .field-help')?.textContent, code?.placeholder];
+    await typeInto(code, 'p-new');
+    await click(all(n.box, '.action-bar button').find((b) => b.textContent?.replace(/\s/g, '') === '放弃'));
+    await settle();
+    const title = document.querySelector('.ant-modal .ant-modal-title')?.textContent;
+    await click(all(document.body, '.ant-modal button').find((b) => b.textContent?.replace(/\s/g, '') === '放弃改动'));
+    await settle();
+    eq(
+      '假包新建：编号帮助与示例按装修套餐补；放弃先确认「放弃填好的内容？」，放弃以后回到空白、没有保存条',
+      [hints, title, n.box.querySelector<HTMLInputElement>('[data-field-key="$code"] input')?.value, bar(n.box)],
+      [[CODE_HELP, '例：p-nuanmu-2r'], '放弃填好的内容？', '', null],
+    );
+    await n.unmount();
+  }
+
+  // 11.7 列表页的「新建」：两个包都去新建页（旧抽屉删了）
+  {
+    const went: string[] = [];
+    for (const [pack, kind, label, rows] of [
+      [travel, 'route', '新建线路', { route: ROUTE_ROWS }],
+      [renovation, 'package', '新建装修套餐', { package: PKG_ROWS, material: MATERIAL_ROWS }],
+    ] as const) {
+      const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+      qc.setQueryData(VIEWER_KEY, owner(pack));
+      for (const [k, items] of Object.entries(rows)) qc.setQueryData(['catalog', k], { items });
+      const root = createRootRoute({ component: Outlet });
+      const tree = root.addChildren([
+        createRoute({ getParentRoute: () => root, path: '/catalog/$kind', validateSearch: catalogSearch, component: CatalogPage }),
+        createRoute({ getParentRoute: () => root, path: '/catalog/new/$kind', component: () => <p className="new-stub" /> }),
+      ]);
+      const router = createRouter({ routeTree: tree, history: createMemoryHistory({ initialEntries: [`/catalog/${kind}`] }) });
+      await router.load();
+      const m = await mount(
+        <QueryClientProvider client={qc}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+      await click(all(m.box, '.page-actions button').find((b) => b.textContent?.replace(/\s/g, '') === label));
+      await until(() => m.box.querySelector('.new-stub') !== null);
+      went.push(router.state.location.pathname);
+      await m.unmount();
+    }
+    eq('列表页的「新建」：线路和假包的装修套餐都去 /catalog/new/{kind}', went, ['/catalog/new/route', '/catalog/new/package']);
   }
 }
 

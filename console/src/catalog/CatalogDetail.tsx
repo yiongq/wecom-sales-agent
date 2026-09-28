@@ -35,7 +35,7 @@ import { IconButton } from '../shell/IconButton.js';
 import { Icon } from '../shell/icons.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { cjk, Sep } from '../typography.js';
-import { copyPayload, type ItemTab, withCodeHints } from './actions.js';
+import { blankPayload, copyPayload, inFieldOrder, type ItemTab, withCodeHints } from './actions.js';
 import {
   blockOnly,
   cardHasFields,
@@ -788,9 +788,6 @@ function DetailBody({
   );
 }
 
-/** 新建和匿名没有打开时的内容 */
-const NOTHING: Payload = Object.freeze({}) as Payload;
-
 /** 页头下拿焦点的是哪一个：刚出的失败（「重试」或 Alert 本身）、409 横幅（「载入最新版本」）、422 的汇总 */
 const ALERT_OF = { failure: '.detail-failure .ant-alert', conflict: '.detail-conflict', issues: '.detail-issues' } as const;
 
@@ -819,7 +816,9 @@ export function CatalogDetail(props: CatalogDetailProps) {
   // 眼下的条目：打开时的，存好以后换成服务端返回的，载入最新版本以后换成最新的。接口在这之间又取到新的（别人改过）
   // 也不换掉，免得冲掉正在改的：别人改过，保存时按 rev 得到 409
   const [base, setBase] = useState(item);
-  const original = base?.payload ?? NOTHING;
+  // 新建时的原文是空表单（必填的数组先放空数组）：打开不改没有保存条，放弃回到它
+  const blank = useMemo(() => blankPayload(entity), [entity]);
+  const original = base?.payload ?? blank;
   const [state, setState] = useState<Payload>(() => formState(original));
   const ctx: ItemContext = { status: base ? (base.status ?? 'active') : 'new', canEdit };
   const title = base ? itemTitle(entity, base.payload, base.code) : `新建${entity.label}`;
@@ -978,7 +977,7 @@ export function CatalogDetail(props: CatalogDetailProps) {
     try {
       if (!base) {
         // 新建：存下来就是一条草稿（showWhen 没显示的已剔除），页面接着去它的详情
-        const created = await onCreate!(pruneHidden(state, entity.fields));
+        const created = await onCreate!(inFieldOrder(entity, pruneHidden(state, entity.fields)));
         setSaid('已建草稿');
         return created;
       }
@@ -1257,7 +1256,8 @@ export function CatalogDetail(props: CatalogDetailProps) {
         <ActivateDialog
           open={activating}
           entity={entity}
-          title={title}
+          // 上架的是表单里的内容（有改动时先保存）：标题写它的名称
+          title={itemTitle(entity, state, base.code)}
           payload={state}
           recommended={check.recommended}
           pending={dirty ? Math.max(changeList(entity, original, state).length, 1) : 0}
