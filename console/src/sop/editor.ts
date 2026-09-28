@@ -4,10 +4,10 @@
 // - 工具名与字段名：行业包 vocabulary.tools 与 sopFields 里有的名字显示成芯片「查线路 search_routes」（包住原名的一个标记，
 //   中文名是它的 ::before；原名仍是可编辑的原文，改错一个字芯片就消失）；不认识的名字照原文显示。console 不认识任何一个包的词。
 // - ✗ ✓：Noto Sans SC 里没有，换成 16 的 lucide x、check，aria-label 仍是原字符。
-// - 相对线上改过的段落，左侧沟槽里一根主色竖条；新加的文字 accent-bg 底。只动空白（行尾空格、空行）的改动不标：
-//   服务端保存时本来就会规范化掉它们（canonicalBody），目录与额度条也不算它们改过。
+// - 相对线上改过的段落，左侧沟槽里一根主色竖条，与段落等高（改到一行，整个列表项连同续行都画）；新加的文字 accent-bg 底。
+//   只动空白（行尾空格、空行）的改动不标：服务端保存时本来就会规范化掉它们（canonicalBody），目录与额度条也不算它们改过。
 // - 不支持 text-spacing-trim 的浏览器（第 1.3 步的回退），按 haltIndices 给要挤的标点加 .halt，在「看得见的字」上算：
-//   藏起来的「- 」「**」不算。
+//   藏起来的「- 」「**」不算。支持的浏览器自己挤，但隔着藏起来的「**」的两个标点它不挤，这几对照样加 .halt。
 // 装饰只在这一节的正文上算（一节几千字），每次改动或移动光标整节重算；输入法组字时只平移、不重算。
 import { diff } from '@codemirror/merge';
 import { Compartment, type EditorState, type Extension, Facet, type Range, StateEffect, StateField } from '@codemirror/state';
@@ -179,6 +179,32 @@ const SHOWN_MARKER = Decoration.mark({ class: 'sop-md-marker' });
 const chipMark = (label: string): Decoration => Decoration.mark({ class: 'sop-chip', attributes: { 'data-label': label } });
 const HALT = Decoration.mark({ class: 'halt' });
 
+/**
+ * 一行里要加 .halt 的字（行内下标），在看得见的字上算：hidden 是藏掉的下标（行首的「- 」、缩进、「**」）。
+ * 芯片的中文名画在原名前面，原名以字母开头，挤压只看相邻的两个标点，它夹在中间与否结果都一样；图标本来就不是标点。
+ * fallback（不支持 text-spacing-trim）：每一对都算。支持时浏览器自己挤，只补隔着藏掉的字的几对：藏起来的「**」在 DOM 里是
+ * CodeMirror 的部件（一个 widget buffer 加一个不可编辑的空 span），Chromium 不把它两边的标点当成挨着的（「）**：」这样的一对）
+ */
+export function haltChars(text: string, hidden: ReadonlySet<number>, fallback: boolean): number[] {
+  if (!fallback && hidden.size === 0) return [];
+  let visible = '';
+  const origin: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (hidden.has(i)) continue;
+    visible += text[i];
+    origin.push(i);
+  }
+  if (fallback) return haltIndices(visible).map((k) => origin[k]!);
+  // haltIndices 只看相邻的一对，所以逐对算的结果与整串算的相同
+  const out: number[] = [];
+  for (let k = 0; k + 1 < visible.length; k++) {
+    // 原文里也挨着的一对，浏览器自己挤
+    if (origin[k + 1] === origin[k]! + 1) continue;
+    for (const j of haltIndices(visible[k]! + visible[k + 1]!)) out.push(origin[k + j]!);
+  }
+  return out;
+}
+
 export interface Decorations {
   /** 行、粗体、藏起来的标记、图标、挤压 */
   deco: DecorationSet;
@@ -246,18 +272,7 @@ export function buildDecorations(state: EditorState, reveal: ReadonlySet<number>
       atomic.push(r);
     }
 
-    if (halt) {
-      // 在看得见的字上算：藏掉的「- 」「**」不算。芯片的中文名画在原名前面，原名以字母开头，挤压只看相邻的两个标点，
-      // 它夹在中间与否结果都一样；图标本来就不是标点
-      let visible = '';
-      const origin: number[] = [];
-      for (let i = 0; i < text.length; i++) {
-        if (hidden.has(i)) continue;
-        visible += text[i];
-        origin.push(i);
-      }
-      for (const k of haltIndices(visible)) deco.push(HALT.range(at(origin[k]!), at(origin[k]! + 1)));
-    }
+    for (const i of haltChars(text, hidden, halt)) deco.push(HALT.range(at(i), at(i + 1)));
   }
   return { deco: Decoration.set(deco, true), outer: Decoration.set(outer, true), atomic: Decoration.set(atomic, true) };
 }
@@ -368,6 +383,32 @@ export function draftMarks(baseline: string, doc: string): DraftMarks {
   return { lines: [...lines].sort((a, b) => a - b), inserted };
 }
 
+/** 顶格的列表项（「- 」「* 」「+ 」「1. 」「1) 」开头）：新的一段从这一行起 */
+const ITEM_START = /^(?:[-*+]|\d+[.)]) (?=\S)/;
+
+/**
+ * 改过的行（从 1 数）扩到它们所在的段落，沟槽里的竖条与段落等高。段落是空行隔开的一块；块里每个顶格的列表项
+ * 连同它下面的行（缩进的续行、下一级的列表项、没缩进但也不是列表项的行）各是一段，第一个列表项之前的行是一段。
+ * 空行自己算一段
+ */
+export function paragraphLines(doc: string, lines: readonly number[]): number[] {
+  const text = doc.split('\n');
+  const blank = (n: number): boolean => BLANK.test(text[n - 1]!);
+  const starts = (n: number): boolean => ITEM_START.test(text[n - 1]!);
+  const out = new Set<number>();
+  for (const n of lines) {
+    if (out.has(n)) continue;
+    let a = n;
+    let b = n;
+    if (!blank(n)) {
+      while (a > 1 && !starts(a) && !blank(a - 1)) a -= 1;
+      while (b < text.length && !blank(b + 1) && !starts(b + 1)) b += 1;
+    }
+    for (let k = a; k <= b; k++) out.add(k);
+  }
+  return [...out].sort((x, y) => x - y);
+}
+
 /** 换线上的正文（发布、回滚以后） */
 export const setBaseline = StateEffect.define<string | null>();
 
@@ -381,8 +422,9 @@ interface BaselineState {
 
 function draftDecorations(state: EditorState, baseline: string | null): DecorationSet {
   if (baseline === null) return Decoration.none;
-  const marks = draftMarks(baseline, state.doc.toString());
-  const out: Range<Decoration>[] = marks.lines.map((n) => CHANGED_LINE.range(state.doc.line(n).from));
+  const doc = state.doc.toString();
+  const marks = draftMarks(baseline, doc);
+  const out: Range<Decoration>[] = paragraphLines(doc, marks.lines).map((n) => CHANGED_LINE.range(state.doc.line(n).from));
   for (const [from, to] of marks.inserted) out.push(INSERTED.range(from, to));
   return Decoration.set(out, true);
 }

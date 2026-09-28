@@ -1,9 +1,10 @@
 // 话术页加载时的骨架（spec「销售话术 · 状态」）：额度条、目录（分段控件加每节一行）、中栏（节标题、说明行、编辑卡片），
 // 尺寸与成品一致。目录的行数取行业包的话术节数：包在启动时已经到了，/sop 还没回来。
-// 匿名的成品没有额度条和分段控件，默认打开的可编辑节也没有说明行，骨架也不画
+// 匿名的成品没有额度条和分段控件，骨架也不画。节标题下那一行（成员的说明行、固定规则节的锁定说明）按要打开的节画：
+// 匿名打开可编辑节时没有这一行
 import { useViewport } from '../shell/hooks.js';
 
-export function SopSkeleton({ sections, quota, filter }: { sections: number; quota: boolean; filter: boolean }) {
+export function SopSkeleton({ sections, quota, filter, meta }: { sections: number; quota: boolean; filter: boolean; meta: boolean }) {
   const wide = useViewport() === 'wide';
   return (
     <div aria-hidden="true">
@@ -31,12 +32,12 @@ export function SopSkeleton({ sections, quota, filter }: { sections: number; quo
         ) : (
           <div className="sop-skel-select" />
         )}
-        {/* 中栏：节标题、说明行（匿名打开的可编辑节没有）、编辑卡片 */}
+        {/* 中栏：节标题、说明行或锁定说明（匿名打开的可编辑节没有）、编辑卡片 */}
         <div className="sop-pane">
           <div className="sop-skel-title">
             <div className="skeleton-bar" style={{ width: 96 }} />
           </div>
-          {quota && (
+          {meta && (
             <div className="sop-skel-meta">
               <div className="skeleton-bar" style={{ width: 200 }} />
             </div>

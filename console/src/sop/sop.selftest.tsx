@@ -12,9 +12,11 @@
 // 7. 整页的接线：/sop 挂在真的路由上（内存里的地址栏），接口的数据预置在 QueryClient 里、不发请求。URL 的 section 选节，
 //    方向键不进浏览历史、点击进；换节不弹未保存保护、去别的页弹；打字以后额度条跟着变；匿名的锁取自行业包；
 //    Enter 以后焦点在编辑器正文上（只读节也一样）；加载骨架按身份画不画分段控件。
-// 8. 编辑器（第 5.2 步，spec「销售话术 · 编辑器」）：行的排法、粗体、芯片的名字、相对线上的改动（按字比、只动空白的不算）；
-//    EditorState 上算出的装饰（藏起来的标记、芯片在外层、图标、挤压回退按看得见的字算）；CodeMirror 的每句内置文案都有中文；
-//    挂在 DOM 里的芯片、图标、改动标记、aria-label、只读，换属性不重建编辑器；中栏的标题、说明行、固定规则说明；整页的接线。
+// 8. 编辑器（第 5.2 步，spec「销售话术 · 编辑器」）：行的排法、粗体、芯片的名字、相对线上的改动（按字比、只动空白的不算，
+//    竖条画满改到的段落）；EditorState 上算出的装饰（藏起来的标记、芯片在外层、图标、挤压按看得见的字算，支持 text-spacing-trim
+//    时只补隔着藏掉的「**」的几对）；CodeMirror 的每句内置文案都有中文；挂在 DOM 里的芯片、图标、改动标记、aria-label、只读、
+//    失焦以后藏回「**」、挤压回退，换属性不重建编辑器；中栏的标题、说明行、固定规则说明；整页的接线。
+// 整个进程按不支持 text-spacing-trim 的浏览器跑（selftest-env.ts），界面上的 cjk() 与编辑器都走 .halt 回退。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/sop/sop.selftest.tsx
@@ -37,6 +39,7 @@ import { SopPage } from '../pages/SopPage.js';
 import { SectionDiff } from '../SectionDiff.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { LEAVING_PAGE } from '../parts/UnsavedGuard.js';
+import { needsTrimFallback } from '../typography.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
 import { Directory, DirectorySelect, type SelectVia } from './Directory.js';
 import {
@@ -45,7 +48,9 @@ import {
   chipRanges,
   CM_PHRASES,
   draftMarks,
+  haltChars,
   lineShape,
+  paragraphLines,
   sopEditorSetup,
   strongRanges,
   type Vocabulary,
@@ -1211,7 +1216,7 @@ const historyLength = (m: PageBox): number => m.router.history.length;
 
 // 7.6 加载骨架：成员画额度条和分段控件，匿名都不画（成品里也没有）
 {
-  const member = await mount(<SopSkeleton sections={11} quota filter />);
+  const member = await mount(<SopSkeleton sections={11} quota filter meta />);
   eq(
     '成员的骨架：额度条、分段控件、11 行；中栏有节标题和说明行',
     [
@@ -1224,7 +1229,7 @@ const historyLength = (m: PageBox): number => m.router.history.length;
     [true, true, 11, true, true],
   );
   await member.unmount();
-  const anon = await mount(<SopSkeleton sections={9} quota={false} filter={false} />);
+  const anon = await mount(<SopSkeleton sections={9} quota={false} filter={false} meta={false} />);
   eq(
     '匿名的骨架：没有额度条和分段控件，9 行；中栏有节标题、没有说明行',
     [
@@ -1237,14 +1242,30 @@ const historyLength = (m: PageBox): number => m.router.history.length;
     [false, false, 9, true, false],
   );
   await anon.unmount();
-  // 整页在 /sop 还没回来时按身份画骨架
-  const pending = await mountPage('/console/sop', { kind: 'anon', pack: packOf(RENO) }, null);
+  const anonLocked = await mount(<SopSkeleton sections={9} quota={false} filter={false} meta />);
+  eq('匿名打开固定规则节的骨架：节标题下有一行（成品是锁定说明）', !!anonLocked.box.querySelector('.sop-skel-meta'), true);
+  await anonLocked.unmount();
+  // 整页在 /sop 还没回来时按身份与要打开的节画骨架：匿名打开可编辑节没有那一行，打开固定规则节（地址上的 section，
+  // 锁定取行业包）有；地址上的节不认识时退回默认节（第一个可编辑节）
+  const skelOf = async (url: string, viewer: Viewer): Promise<[boolean, number, boolean]> => {
+    const p = await mountPage(url, viewer, null);
+    const out: [boolean, number, boolean] = [
+      !!p.box.querySelector('.sop-skel-filter'),
+      all(p.box, '.sop-skel-row').length,
+      !!p.box.querySelector('.sop-skel-meta'),
+    ];
+    await p.unmount();
+    return out;
+  };
+  const anonReno: Viewer = { kind: 'anon', pack: packOf(RENO) };
+  eq('整页加载中（匿名）：骨架不画分段控件，行数取行业包，默认节没有说明行', await skelOf('/console/sop', anonReno), [false, 9, false]);
+  eq('整页加载中（匿名，打开固定规则节）：画锁定说明那一行', await skelOf('/console/sop?section=measure', anonReno), [false, 9, true]);
   eq(
-    '整页加载中（匿名）：骨架不画分段控件，行数取行业包',
-    [!!pending.box.querySelector('.sop-skel-filter'), all(pending.box, '.sop-skel-row').length],
-    [false, 9],
+    '整页加载中（匿名，不认识的节、可编辑节）：没有那一行',
+    [(await skelOf('/console/sop?section=nope', anonReno))[2], (await skelOf('/console/sop?section=tone', anonReno))[2]],
+    [false, false],
   );
-  await pending.unmount();
+  eq('整页加载中（成员，可编辑节）：画说明行', await skelOf('/console/sop?section=tone', OWNER), [true, 11, true]);
 }
 eq(
   '整页的自测没有发出请求（除了加载中那一次取 /sop）',
@@ -1368,6 +1389,38 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
   ]);
 }
 
+// 8.2b 竖条画满改到的段落：空行隔开的一块，块里每个顶格的列表项连同续行各是一段
+{
+  const doc = [
+    '前言第一行，', // 1
+    '前言第二行。', // 2
+    '', // 3
+    '- 第一条', // 4
+    '  它的续行', // 5
+    '     → 更深的续行', // 6
+    '  - 第二级的列表项', // 7
+    '没缩进的续行', // 8
+    '- 第二条', // 9
+    '1. 编号的一条', // 10
+    '2. 编号的又一条', // 11
+    '', // 12
+    '', // 13
+    '末段。', // 14
+  ].join('\n');
+  eq('改到列表项的续行：整个列表项（续行、下一级、没缩进的续行）', paragraphLines(doc, [6]), [4, 5, 6, 7, 8]);
+  eq('改到列表项的第一行：一样', paragraphLines(doc, [4]), [4, 5, 6, 7, 8]);
+  eq('下一个顶格的列表项（「- 」「1. 」）另起一段', [paragraphLines(doc, [9]), paragraphLines(doc, [11])], [[9], [11]]);
+  eq('没有列表的一块：空行之间的几行是一段', paragraphLines(doc, [2]), [1, 2]);
+  eq('最后一段、空行自己', [paragraphLines(doc, [14]), paragraphLines(doc, [12])], [[14], [12]]);
+  eq('几处改动：各自的段落合起来，升序', paragraphLines(doc, [14, 5, 1]), [1, 2, 4, 5, 6, 7, 8, 14]);
+  const base = '- 第一条\n  客户只会答「可以」。\n- 第二条\n';
+  eq(
+    '改动落在续行上：draftMarks 标这一行，竖条画满这一条',
+    [draftMarks(base, base.replace('可以', '好的')).lines, paragraphLines(base.replace('可以', '好的'), [2])],
+    [[2], [1, 2]],
+  );
+}
+
 // 8.3 装饰：直接在 EditorState 上算，不挂 DOM
 {
   const state = (halt: boolean, vocab = VOCAB): EditorState =>
@@ -1420,7 +1473,12 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
     icons.map((x) => DOC.slice(x.from, x.to)),
     [XMARK, VMARK],
   );
-  eq('不需要回退时没有 .halt', all8.filter((x) => x.spec.class === 'halt').length, 0);
+  // 支持 text-spacing-trim（Chromium）：浏览器自己挤，只有「（要紧）**：」里隔着藏掉的「**」的「）：」它不挤，给「）」加 .halt
+  eq(
+    '支持 text-spacing-trim 时：只给隔着藏掉的「**」的一对加 .halt',
+    all8.filter((x) => x.spec.class === 'halt').map((x) => `${DOC.slice(x.from, x.to)}@${DOC.slice(x.to, x.to + 2)}`),
+    ['）@**'],
+  );
   // 光标在第一行：这一行的「**」显示出来（text-3），别的行照藏
   const r = decoList(buildDecorations(state(false), new Set([1])).deco);
   eq(
@@ -1438,6 +1496,18 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
       .map((x) => `${DOC.slice(x.from, x.to)}@${DOC.slice(x.to, x.to + 2)}`);
   eq('挤压回退：藏掉的「**」不算，隔着它的两个标点也挤', halts(new Set()), ['）@**', '」@。\n']);
   eq('挤压回退：光标所在行显示了「**」，两个标点不再挨着', halts(new Set([1])), ['」@。\n']);
+  eq(
+    '支持 text-spacing-trim、光标所在行显示了「**」：一个 .halt 都没有',
+    decoList(buildDecorations(state(false), new Set([1])).deco).filter((x) => x.spec.class === 'halt').length,
+    0,
+  );
+  // haltChars 单独测：hidden 是行内藏掉的下标
+  const t = '甲（乙）**」丙」「丁';
+  const hid = new Set([4, 5]);
+  eq('haltChars 回退：每一对都挤，按看得见的字算', haltChars(t, hid, true), [3, 8]);
+  eq('haltChars 支持时：只挤隔着藏掉的字的一对', haltChars(t, hid, false), [3]);
+  eq('haltChars 支持时：没藏字就不用管', haltChars('（乙）」「', new Set(), false), []);
+  eq('haltChars 支持时：「开标点 + 开标点」隔着藏掉的字，挤后一个', haltChars('「**「甲', new Set([1, 2]), false), [3]);
   eq('没有行业包的词汇：一个芯片都没有', decoList(buildDecorations(state(false, { tools: {}, sopFields: {} }), new Set()).outer).length, 0);
 }
 
@@ -1514,9 +1584,16 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
     lines.map((l) => l.textContent).join(' / '),
   );
   eq(
-    '改过的段落：只有第一行',
+    '改过的段落：改在第一行，整个列表项（第一行到第 5 行的续行）都画竖条',
     all(m.box, '.cm-line.sop-changed').map((l) => lines.indexOf(l as HTMLElement) + 1),
-    [1],
+    [1, 2, 3, 4, 5],
+  );
+  // 启动时检测到不支持 text-spacing-trim（selftest-env.ts）：没传 halt 的编辑器照检测结果走回退，每一对都挤
+  check('自测按不支持 text-spacing-trim 的浏览器跑', needsTrimFallback);
+  eq(
+    '挤压回退：编辑器不传 halt 就取启动时的检测，「）**：」与「」。」都挤',
+    all(m.box, '.halt').map((e) => e.textContent),
+    ['）', '」'],
   );
   eq(
     '新加的文字：整句都标出来',
@@ -1555,6 +1632,15 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
     view.hasFocus ? all(m.box, '.cm-line')[0]?.querySelectorAll('.sop-md-marker').length : 'no-focus',
     2,
   );
+  // 失焦（选区没动）：「**」藏回去；再用 Tab 之类进来（也不动选区）：光标那一行又露出来。
+  // CodeMirror 在焦点事件之后隔 10 ms 才通知焦点变了，这里等 30 ms
+  const afterFocusChange = (): Promise<void> => act(() => new Promise<void>((r) => setTimeout(r, 30)));
+  await act(async () => cm().blur());
+  await afterFocusChange();
+  eq('失焦以后：「**」藏回去', [view.hasFocus, all(m.box, '.sop-md-marker').length], [false, 0]);
+  await act(async () => cm().focus());
+  await afterFocusChange();
+  eq('再获得焦点、选区没动：光标那一行的「**」又露出来', [view.hasFocus, all(m.box, '.sop-md-marker').length], [true, 2]);
   await m.render(el({ vocabulary: VOCAB, readOnly: true }));
   const ro = cm();
   eq('只读：不可编辑，在 Tab 顺序里', [ro.getAttribute('contenteditable'), ro.getAttribute('tabindex')], ['false', '0']);

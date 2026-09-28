@@ -143,9 +143,12 @@ export function SopPage() {
   const viewer = useViewer();
   const pack = usePack();
   const q = useQuery({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
+  const { section: param } = useSearch({ from: '/sop' });
   if (q.isPending || q.error || !q.data) {
-    // 匿名没有额度条和分段控件
+    // 匿名没有额度条和分段控件；节标题下那一行，成员总有，匿名只在打开固定规则节时有（节表先取行业包的）
     const member = viewer.data?.kind !== 'anon';
+    const packRows = pack?.sopSections ?? [];
+    const locked = packRows.find((s) => s.key === resolveSection(param, packRows))?.locked ?? false;
     return (
       <>
         {/* 加载时状态句那一行先占着（看不见），骨架与成品的位置一致 */}
@@ -154,7 +157,7 @@ export function SopPage() {
           pending={q.isPending}
           error={q.error}
           onRetry={() => void q.refetch()}
-          skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={member} filter={member} />}
+          skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={member} filter={member} meta={member || locked} />}
         />
       </>
     );

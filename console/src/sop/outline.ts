@@ -198,10 +198,11 @@ export function lockLine(row: Pick<OutlineRow, 'lockReason'>): string[] {
 }
 
 /** 默认打开的节：第一个可编辑节，没有就第一节 */
-export const defaultSection = (rows: readonly OutlineRow[]): string | undefined => (rows.find((r) => !r.locked) ?? rows[0])?.key;
+export const defaultSection = (rows: readonly Pick<OutlineRow, 'key' | 'locked'>[]): string | undefined =>
+  (rows.find((r) => !r.locked) ?? rows[0])?.key;
 
-/** URL 上的 section：认得就用它，不认得（或没给）用默认节 */
-export function resolveSection(param: string | undefined, rows: readonly OutlineRow[]): string | undefined {
+/** URL 上的 section：认得就用它，不认得（或没给）用默认节。加载骨架拿行业包的 sopSections 当 rows */
+export function resolveSection(param: string | undefined, rows: readonly Pick<OutlineRow, 'key' | 'locked'>[]): string | undefined {
   return param !== undefined && rows.some((r) => r.key === param) ? param : defaultSection(rows);
 }
 
