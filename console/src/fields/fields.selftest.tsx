@@ -4727,9 +4727,13 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await click(closeBtn);
     await click(buttonIn(dlg, '再检查一下'));
     await press(document.activeElement, 'Escape');
+    // 点遮罩（在弹窗外按下、松开）
+    const wrap = dlg?.closest<HTMLElement>('.ant-modal-wrap');
+    await act(async () => void wrap?.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true }) as unknown as Event));
+    await click(wrap);
     await motion();
     eq(
-      '先保存、再上架，上架还在发：焦点留在「上架，开始推荐」上；「关闭」「再检查一下」点不动，点了、按 Esc 确认框都还开着',
+      '先保存、再上架，上架还在发：焦点留在「上架，开始推荐」上；「关闭」「再检查一下」点不动，点了、按 Esc、点遮罩确认框都还开着',
       [busy, dialogTitled('上架') !== undefined],
       [[['PATCH', 'POST'], true, true, true], true],
     );

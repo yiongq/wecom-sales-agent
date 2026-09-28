@@ -1303,9 +1303,8 @@ export function CatalogDetail(props: CatalogDetailProps) {
           busy={activatingBusy}
           returnFocus={closeBack}
           onConfirm={() => void activate()}
+          // 正在保存、上架时关不掉（「关闭」「再检查一下」点不动，点遮罩、Esc 不关，见 ActivateDialog）：关了上架照样会成
           onCancel={() => {
-            // 正在保存、上架：关不掉（关了上架照样会成，页面却像是取消了）
-            if (activatingBusy) return;
             setCloseBack(true);
             setActivating(false);
           }}
