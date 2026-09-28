@@ -1314,6 +1314,20 @@ check(
       !inv[1]!.text.includes('days'),
     inv[1]!.text.slice(0, 200),
   );
+  // 同一条的另外两处：编号不合规、天号不对，报错写「编号」「天号」，不写 payload 的键名 id、day
+  const badCode = keep(await call('POST', '/catalog/route', { ...O, json: { payload: { ...structuredClone(p), id: 'R_Bad' } } }));
+  const badDays = (cur4.payload.itinerary as Body[]).map((d, i) => (i === 1 ? { ...d, day: 5 } : d));
+  const badDay = keep(await call('PATCH', `/catalog/route/${code}`, { ...O, json: { rev: cur4.rev, set: { itinerary: badDays } } }));
+  const messages = (r: Res) => ((r.body.issues ?? []) as { message: string }[]).map((i) => i.message);
+  check(
+    '产品库 HTTP：编号不合规、天号不对 → 422 的报错里是「编号」「天号」，不是 id、day',
+    badCode.status === 422 &&
+      messages(badCode).some((m) => m.startsWith('编号只能')) &&
+      messages(badCode).every((m) => !/\bid\b/.test(m)) &&
+      badDay.status === 422 &&
+      JSON.stringify(messages(badDay)) === JSON.stringify(['第2天的天号应为2']),
+    `${badCode.text.slice(0, 200)} | ${badDay.text.slice(0, 200)}`,
+  );
   const both = await call('PATCH', `/catalog/route/${code}`, {
     ...O,
     json: { rev: cur4.rev, set: { highlights: hl }, unset: ['highlights'] },
