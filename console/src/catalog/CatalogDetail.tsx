@@ -234,11 +234,17 @@ function GroupBlock({ entity, group, state, original, ctx, onUpdate, errors }: C
 const byData = (root: ParentNode, attr: string, value: string): HTMLElement | undefined =>
   [...root.querySelectorAll<HTMLElement>(`[${attr}]`)].find((el) => el.getAttribute(attr) === value);
 
-/** 滚到这个元素并把焦点放上去（不可聚焦的先设 tabindex=-1）；外壳的滚动区留了吸顶条的位置（scroll-padding） */
-function land(el: HTMLElement, block: ScrollLogicalPosition): void {
+/** 总画焦点环：focusVisible 是 lib.dom 还没有的键（Chromium、Firefox、Safari 都认） */
+const VISIBLE: FocusOptions & { focusVisible?: boolean } = { preventScroll: true, focusVisible: true };
+
+/**
+ * 滚到这个元素并把焦点放上去（不可聚焦的先设 tabindex=-1）；外壳的滚动区留了吸顶条的位置（scroll-padding）。
+ * visible：总画焦点环（浏览器按上一次操作猜，⌘S 这种带修饰键的按键之后常常不画）
+ */
+function land(el: HTMLElement, block: ScrollLogicalPosition, visible = false): void {
   el.scrollIntoView?.({ block });
   if (el.tabIndex < 0 && !el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
-  el.focus({ preventScroll: true });
+  el.focus(visible ? VISIBLE : { preventScroll: true });
 }
 
 /** 点锁定组那一行：滚到声明它的卡片，焦点放在卡片头（spec「副栏」第 1 条） */
@@ -818,8 +824,9 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
     if (!box || !alert) return;
     box.scrollIntoView?.({ block: 'nearest' });
     const action = alert.querySelector<HTMLElement>('.ant-alert-actions button');
-    if (action) action.focus({ preventScroll: true });
-    else land(alert, 'nearest');
+    // 焦点从表单跳到页头下，画出焦点环，看得出下一步在哪
+    if (action) action.focus(VISIBLE);
+    else land(alert, 'nearest', true);
   }, [alertTick]);
   useEffect(() => {
     const title = compareTick ? document.querySelector<HTMLElement>('.detail-compare-title') : null;
