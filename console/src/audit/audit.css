@@ -236,7 +236,9 @@ button.au-sentence {
 .au-more {
   align-self: flex-start;
 }
+/* 取到底后焦点会落在这一句上（AuditPage 的「加载更早的记录」）：焦点框只圈住字，不横贯整条时间线 */
 .au-end {
+  align-self: flex-start;
   margin: 0;
   font-size: 13px;
   line-height: 20px;
