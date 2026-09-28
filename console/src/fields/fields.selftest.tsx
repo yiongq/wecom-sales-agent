@@ -2467,9 +2467,9 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     deps: ['㎡'],
   };
   eq(
-    '字段重画的判定：回调和整条 row 换了不算，值、单位、锁住的成员、已改、报错变了才算',
+    '字段重画的判定：回调、整条 row 和内容相同的新数组换了不算，值、单位、锁住的成员、已改、报错变了才算',
     [
-      sameCell(base, { ...base, onChange: () => 1, onUndo: () => 2, row: { ...NUANMU }, lockedMembers: [] }),
+      sameCell(base, { ...base, onChange: () => 1, onUndo: () => 2, row: { ...NUANMU }, lockedMembers: [], deps: ['㎡'] }),
       sameCell(base, { ...base, value: 1290 }),
       sameCell(base, { ...base, deps: ['延米'] }),
       sameCell(base, { ...base, lockedMembers: ['国内'] }),
@@ -2512,7 +2512,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
         <RouterProvider router={router} />
       </QueryClientProvider>,
     );
-    return { ...m, router };
+    return { ...m, router, qc };
   }
   const header = (root: ParentNode) => ({
     crumb: texts(root, '.breadcrumb > :not(.breadcrumb-sep)'),
@@ -2736,6 +2736,13 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     const lg = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
     const hardestIn = () => lg.box.querySelector<HTMLInputElement>('[data-field-key="intensity.hardest"] input');
     await typeInto(hardestIn(), edited);
+    // 打开以后接口又取到一版（别人改过，rev 5）：详情页不换掉打开时的内容，旧抽屉也按打开时的 rev 1 保存，服务端会答 409
+    await act(async () => {
+      lg.qc.setQueryData(['catalog', 'route', 'r-sichuan-lux'], { ...SICHUAN_ITEM, rev: 5 });
+    });
+    // 查询缓存下一轮才通知页面重画
+    await settle();
+    await settle();
     await click(lg.box.querySelector('.detail-legacy-edit'));
     await until(() => document.querySelector('.ant-drawer form') !== null);
     const drawer = document.querySelector<HTMLElement>('.ant-drawer');
