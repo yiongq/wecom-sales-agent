@@ -44,7 +44,10 @@ function LockLineRow({ line }: { line: LockLine }) {
       <span className="activate-pairs">
         {line.pairs.map((p, i) => (
           <span key={p.key} className="activate-pair">
-            {p.label === null ? null : <span className="activate-pair-label">{cjk(p.label)}</span>}
+            {p.label === null ? null : (
+              // 值以「开头时不再空开：全角引号自己带着半个字的空白（「标签「国内」」）
+              <span className={p.value.startsWith('「') ? 'activate-pair-label is-tight' : 'activate-pair-label'}>{cjk(p.label)}</span>
+            )}
             <span className={['activate-pair-value', p.mono && 'mono', p.empty && 'is-empty'].filter(Boolean).join(' ')}>
               {p.mono ? p.value : cjk(p.value)}
             </span>

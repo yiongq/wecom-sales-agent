@@ -896,9 +896,20 @@ export function CatalogDetail(props: CatalogDetailProps) {
   useEffect(() => {
     const j = jumpAt.current;
     if (!jumpTick || !j || previewing) return;
-    if (j.to === 'card') jumpToCard(mainRef.current, j.at);
-    else jumpToIssue(mainRef.current, entity, j.at);
-    jumpAt.current = null;
+    let frame = 0;
+    const go = (tries: number): void => {
+      const main = mainRef.current;
+      // 刚从「预览」换回来：antd 的页签面板自己再渲染一轮才去掉隐藏（display: none），看不见的控件拿不到焦点，等它显示出来
+      if (main && !main.getClientRects().length && tries > 0) {
+        frame = requestAnimationFrame(() => go(tries - 1));
+        return;
+      }
+      jumpAt.current = null;
+      if (j.to === 'card') jumpToCard(main, j.at);
+      else jumpToIssue(main, entity, j.at);
+    };
+    go(10);
+    return () => cancelAnimationFrame(frame);
   }, [jumpTick, previewing, entity]);
   useEffect(() => {
     if (!refocus) return;

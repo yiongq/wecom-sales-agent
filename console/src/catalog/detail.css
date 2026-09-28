@@ -573,6 +573,9 @@
   margin-right: 4px;
   color: var(--text-2);
 }
+.activate-pair-label.is-tight {
+  margin-right: 0;
+}
 .activate-pair-value.is-empty {
   color: var(--text-3);
 }
