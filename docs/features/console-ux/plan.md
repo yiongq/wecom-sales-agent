@@ -38,10 +38,10 @@
 - [ ] 7. 销售话术三：版本记录与回滚（2）：版本记录抽屉（说明在前、技术详情折叠、翻页、加载 / 出错 / 到底）、「查看改动」、回滚确认（后果按有无交集分两种、固定规则提示、差异、必填原因）、「载入到草稿再改」、「更多」里的丢弃确认。
 - [ ] 8. 销售话术四：冲突合并（2）：`SaveDraftBody.rebaseOnto`（服务端与验收 15 第 3、4 条）；合并模式界面（`revertControls`、汉化、「完成合并」后回到发布抽屉）。落地后在 01 plan 的 Open 里把「冲突后只能丢弃重做」那条标成已解决，指向本步。
 - [x] 9. 产品库列表（1.5）：列、首列两行、筛选按字段类型生成、页签与计数、搜索、URL 状态、分页、各种状态、匿名与非编辑成员。
-- [ ] 10. 产品库详情与编辑（3.5）
+- [x] 10. 产品库详情与编辑（3.5）
   - [x] 10.1 路由 `/catalog/$kind/$code` 与 `/catalog/new/$kind`；两栏；分组卡片、锁定 Tag 与原因、只读形态、「已改」与撤销；副栏（状态与锁定组、上架前检查、最近更新）。
   - [x] 10.2 保存条与补丁提交；422 报错落到字段、只显示碰过的字段；409；`src/shared/catalog.ts` 的报错去掉英文键（验收 15 第 10 条）。
-  - [ ] 10.3 上架确认（必须项没过时跳到字段）；复制为新草稿；「预览」页签；新建。删除旧的抽屉和 `@rjsf/*` 依赖。
+  - [x] 10.3 上架确认（必须项没过时跳到字段）；复制为新草稿；「预览」页签；新建。删除旧的抽屉和 `@rjsf/*` 依赖。
 - [ ] 11. 有序子项与引用（2）：通用有序子项编辑器（节点、条数提醒、上移下移、自动编号、锁定条数）；引用字段的分组联想、`allowFree` 提示、「复制上一{itemNoun}的…」；长文本 `softMax` 提示。
 - [ ] 12. CSV 导入（2）：五步弹窗；中文表头模板与 BOM；UTF-8 严格解码加 `gb18030` 兜底；空文件与只有表头；前端预检与三条上限；「只导入合格的N行」；下载不合格行时防公式注入；`prepareCatalogCsv` 接受中文表头、去掉本系统加的前缀（验收 15 第 9 条）。
 - [ ] 13. 会话列表（1）：I 页（页签与阶段条来自同一次 counts、`order=waiting_first`、最后动静的时间写法）；`public/admin.html` 的 `#s=<id>` 深链，登录流程中保留 hash。
@@ -64,7 +64,7 @@
 ## Open
 
 - 第 2.2 步：铃铛的「打开工作台」和 ⌘K 的会话行打开 `/admin.html#s=<id>`，但 admin.html 读 `#s=` 选中会话是第 13 步的事。在那之前这个链接只打开工作台、不选中那个会话，走查不能把它当成已经能用。
-- 第 2.2 步（第 9 步已解决列表一侧）：`/catalog/$kind` 的 kind 原样交给页面，页面按当前租户的行业包找实体，包里没有的出「没有这个页面」，假包的 `/catalog/package` 按装修套餐渲染、请求 `/catalog/package`；`LEGACY` 里产品库页和路由两项已删。第 10.1 步的 `/catalog/$kind/$code`、`/catalog/new/$kind` 同样按包取 kind，两个包的列表名称都链到详情页。还剩的：旧抽屉（`console/src/pages/CatalogDrawer.tsx`，现在只剩旅游包的「新建」与草稿的「在旧表单里改」两个入口）第 10.3 步删掉时删 `LEGACY` 的最后一项；在那之前假包的「新建」、第 12 步之前假包的「导入CSV」点了没有反应。
+- 第 2.2 步（第 9、10.3 步已解决列表与详情）：`/catalog/$kind`、`/catalog/$kind/$code`、`/catalog/new/$kind` 的 kind 都按当前租户的行业包取，包里没有的出「没有这个页面」；旧抽屉第 10.3 步删了，`LEGACY` 随之清空并删掉，两个包的「新建」都去新建页。还剩的：第 12 步之前假包的「导入CSV」点了没有反应（旧导入弹窗只认共用 schema 里的 kind）。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 
 ## 砍法

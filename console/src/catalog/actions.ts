@@ -109,7 +109,7 @@ export interface LockLine {
   pairs: LockPair[];
 }
 
-/** 只锁几个成员的标签：写的是这几个成员有没有（「标签「国内」」「标签里没有「国内」」），其余的上架后照样能改 */
+/** 只锁几个成员的标签：写的是这几个成员有没有（「标签「国内」」「标签没有「国内」」），其余的上架后照样能改 */
 function memberPair(f: FieldDef & { lockedWhenActive: { members: string[] } }, v: unknown): LockPair {
   const have = Array.isArray(v) ? f.lockedWhenActive.members.filter((m) => v.includes(m)) : [];
   const lack = f.lockedWhenActive.members.filter((m) => !have.includes(m));

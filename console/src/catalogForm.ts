@@ -1,16 +1,17 @@
-// 产品库表单的纯逻辑（不依赖 React 与 rjsf，console.selftest 直接 import）：表单值 → 要提交的 payload，以及与原条目的差异
+// 产品库旧表单的纯逻辑（不依赖 React，console.selftest 直接 import）：表单值 → 要提交的 payload，以及与原条目的差异。
+// 01 的 rjsf 抽屉第 10.3 步删了；formPayload、diffPayload 只剩 console.selftest 里 01 的回归用例在用，legacyKind 给旧导入弹窗
 import { CATALOG_SCHEMAS, type CatalogKind, sameValue } from '../../src/shared/catalog.js';
 
 export type Payload = Record<string, unknown>;
 
-/** 01 旧抽屉和旧导入弹窗认得的 kind（有共用 schema 的）。别的行业包的实体（走查用的假包）等第 10、12 步 */
+/** 01 旧导入弹窗认得的 kind（有共用 schema 的）。别的行业包的实体（走查用的假包）等第 12 步 */
 export const legacyKind = (kind: string): kind is CatalogKind => Object.hasOwn(CATALOG_SCHEMAS, kind);
 
 const isEmpty = (v: unknown): boolean =>
   Array.isArray(v) ? v.length === 0 : !!v && typeof v === 'object' && Object.values(v).every((x) => x === undefined);
 
 /**
- * rjsf 删掉可选数组的最后一项时留下 []，清空可选对象（intensity）的各项时留下全是 undefined 的对象；
+ * 01 的 rjsf 表单删掉可选数组的最后一项时留下 []，清空可选对象（intensity）的各项时留下全是 undefined 的对象；
  * 共用 schema 里空的可选字段就是键不存在（可选数组 min(1)、对象的成员必填），原样交上去整张表单都过不了校验。
  * 所以非必填的顶层字段是这两种空值时当成没填：校验、比较差异、新建提交之前都先过一遍。必填的（tags 可以是 []）不动
  */
