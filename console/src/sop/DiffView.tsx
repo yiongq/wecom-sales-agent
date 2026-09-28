@@ -17,11 +17,14 @@ import { cmPhrases } from './SopEditor.js';
 /** 改动前后各留 2 行，连着 4 行以上没改才折叠 */
 const COLLAPSE = { margin: 2, minSize: 4 };
 
-/** 节末的空行不画（非末节的正文以一个空行结尾，差异块底下会多出一截空白）；行数也按去掉以后的算 */
+/**
+ * 节末的空行只留一个换行：非末节的正文以一个空行结尾，差异块底下会多出两行空白。不整个去掉：最后一行后面接着加一行时，
+ * 按行比会把原来的最后一行也算成改过（「结尾」变成「结尾\n再加一行」）；行数也按留一个换行的算
+ */
 export const trimEnd = (c: SectionChange): SectionChange => ({
   ...c,
-  before: c.before.replace(/\n+$/, ''),
-  after: c.after.replace(/\n+$/, ''),
+  before: c.before.replace(/\n+$/, '\n'),
+  after: c.after.replace(/\n+$/, '\n'),
 });
 
 function readOnly(label: string): Extension[] {
