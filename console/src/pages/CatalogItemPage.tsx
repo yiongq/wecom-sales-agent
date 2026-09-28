@@ -1,16 +1,17 @@
-// 产品库的一条（/catalog/$kind/$code）与新建（/catalog/new/$kind），plan 第 10.1 步。kind 按当前租户的行业包取，
+// 产品库的一条（/catalog/$kind/$code）与新建（/catalog/new/$kind），plan 第 10.1、10.2 步。kind 按当前租户的行业包取，
 // 包里没有的是「没有这个页面」；条目取 GET /catalog/:kind/:code（匿名得到线上快照里的那一条），各种状态照 spec 状态表：
 // 加载是两栏骨架；不存在写「没有这条{实体名}」加「回到{实体名}列表」；出错就地写「没取到」加重试。
-// 页面本身在 catalog/CatalogDetail.tsx；这里给它字段渲染器要的外部数据：引用候选、文字联想、引用名称的链接。
-// 第 10.2 步的保存条到之前，01 旧抽屉认得的实体由这里打开旧抽屉（带着详情页上的改动）保存、上架，按需下载
+// 页面本身在 catalog/CatalogDetail.tsx；这里给它字段渲染器要的外部数据（引用候选、文字联想、引用名称的链接），
+// 和保存要的两个请求：PATCH 补丁（存好以后放进缓存，列表失效）、409 之后重取这一条。
+// 第 10.3 步的上架确认到之前，草稿由这里打开 01 旧抽屉（带着详情页上的改动）去上架，按需下载
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from '@tanstack/react-router';
 import { lazy, type ReactNode, Suspense, useState } from 'react';
 import { ERROR_COPY } from '../../../src/shared/ui-labels.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
-import { catalogKind, HttpError } from '../api.js';
+import { api, catalogKind, HttpError, unwrap } from '../api.js';
 import { legacyKind } from '../catalogForm.js';
-import { Breadcrumb, CatalogDetail, type DetailItem, DetailSkeleton } from '../catalog/CatalogDetail.js';
+import { Breadcrumb, CatalogDetail, type DetailItem, DetailSkeleton, type PatchBody } from '../catalog/CatalogDetail.js';
 import { distinctValues, referencedKinds } from '../catalog/detail.js';
 import { type FieldEnv, FieldEnvContext } from '../fields/env.js';
 import { type Payload, refItemsOf } from '../fields/model.js';
@@ -83,7 +84,18 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
   // 「今天10:12」、月份条的当前月：打开页面时取一次（走查钉住时钟）
   const [now] = useState(() => Date.now());
   const env = useDetailEnv(pack, entity, now);
-  // 过渡（第 10.2 步删）：旧抽屉开着时是交给它的表单内容和打开详情页时的条目；在旧抽屉里存好以后 reloads 加一，
+  const kind = catalogKind(entity.kind);
+  /** 保存：存好的条目放进这一条的缓存，列表（名称、更新时间、联想）重新取 */
+  const save = async (body: PatchBody): Promise<DetailItem> => {
+    const item = await unwrap(api.catalog[':kind'][':code'].$patch({ param: { kind, code }, json: body }));
+    qc.setQueryData(catalogItemQuery(kind, code).queryKey, item);
+    void qc.invalidateQueries({ queryKey: catalogListQuery(kind).queryKey, exact: true });
+    return item as unknown as DetailItem;
+  };
+  /** 409 之后载入最新版本：不看缓存，重取 */
+  const loadLatest = async (): Promise<DetailItem> =>
+    (await qc.fetchQuery({ ...catalogItemQuery(kind, code), staleTime: 0 })) as unknown as DetailItem;
+  // 过渡（第 10.3 步删）：旧抽屉开着时是交给它的表单内容和眼下的条目；在旧抽屉里存好、上架以后 reloads 加一，
   // 详情页按新内容重新打开
   const [legacyOpen, setLegacyOpen] = useState<{ draft: Payload; row: Row } | null>(null);
   const [reloads, setReloads] = useState(0);
@@ -112,6 +124,8 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
         canEdit={canEdit(viewer)}
         anon={viewer?.kind === 'anon'}
         now={now}
+        onSave={canEdit(viewer) ? save : undefined}
+        onLoadLatest={loadLatest}
         // opened 就是接口给的那一条（DetailItem 只写了详情页用到的字段），带着 kind 与 rev
         onLegacyEdit={legacy === null ? undefined : (draft, opened) => setLegacyOpen({ draft, row: opened as unknown as Row })}
       />

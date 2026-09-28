@@ -34,7 +34,10 @@ interface GridBase {
   lockNoteId?: string;
   /** 卡片头声明了哪些锁定组（EntityType.lockGroups 的 key）；不给就是整张卡的锁都由卡片头说明 */
   declaredLocks?: readonly string[];
-  /** 字段下方的报错，按 FieldDef.key */
+  /**
+   * 字段下方的报错，按位置：字段的 FieldDef.key；有序子项里的一项或一项里的子字段接下标与子字段 key
+   * （'itinerary.2'、'itinerary.2.hotel'，catalog/save.ts 的 placeOf）
+   */
   errors?: Readonly<Record<string, string>>;
   /** 打开时的内容：给了就标出改过的字段，并能「撤销这处」 */
   original?: Payload;
@@ -55,9 +58,19 @@ export type MemoProps = FormFieldProps & { deps: readonly unknown[] };
 const sameList = (a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean =>
   a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => Object.is(x, b[i])));
 
+type Notes = Readonly<Record<string, string>> | undefined;
+const sameNotes = (a: Notes, b: Notes): boolean => a === b || sameList(Object.entries(a ?? {}).flat(), Object.entries(b ?? {}).flat());
+
+/** 有序子项里各处的报错，键去掉字段 key 那一段（'itinerary.2.hotel' → '2.hotel'）；没有时 undefined */
+export function itemErrorsOf(errors: Notes, key: string): Notes {
+  const pre = `${key}.`;
+  const out = Object.entries(errors ?? {}).filter(([k]) => k.startsWith(pre));
+  return out.length ? Object.fromEntries(out.map(([k, v]) => [k.slice(pre.length), v])) : undefined;
+}
+
 /**
  * 只在画出来的东西变了时重画：回调（onChange、onUndo）按函数改状态，不怕旧；row 只给金额取单位，单位在 deps 里比。
- * 值按引用比：writeValue 只复制改动路径上的对象，别的字段的值还是原来那个
+ * 值按引用比：writeValue 只复制改动路径上的对象，别的字段的值还是原来那个；有序子项里各处的报错每次是新对象，按内容比
  */
 export function sameCell(a: MemoProps, b: MemoProps): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof MemoProps)[]);
@@ -65,6 +78,8 @@ export function sameCell(a: MemoProps, b: MemoProps): boolean {
     if (k === 'onChange' || k === 'onUndo' || k === 'row') continue;
     if (k === 'deps' || k === 'lockedMembers') {
       if (!sameList(a[k], b[k])) return false;
+    } else if (k === 'itemErrors') {
+      if (!sameNotes(a[k], b[k])) return false;
     } else if (!Object.is(a[k], b[k])) return false;
   }
   return true;
@@ -96,6 +111,7 @@ export function FieldGrid(p: FieldGridProps) {
       lockMark: mark,
       lockNoteId: noted(c) ? lockNoteId : undefined,
       error: errors?.[f.key],
+      itemErrors: f.type === 'subItems' ? itemErrorsOf(errors, f.key) : undefined,
       changed: original !== undefined && fieldChanged(original, state, f),
       onUndo: original === undefined ? undefined : () => apply((s) => restoreField(s, original, f)),
       lockedMembers: lockedMembers(f, ctx),

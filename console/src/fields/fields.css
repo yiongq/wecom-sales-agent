@@ -479,6 +479,12 @@
   flex-direction: column;
   gap: 8px;
 }
+/* 逐条列表的一条：输入框与三个按钮一行，这一条的报错写在下面（第 10.2 步，和字段下方的报错一样隔 6） */
+.field-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .field-list-row {
   display: flex;
   align-items: center;
@@ -521,6 +527,10 @@
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-card);
+}
+/* 一项本身的报错（序号不对这类，落不到子字段上）：写在序号标签下面 */
+.subitem-card > .field-error {
+  margin-bottom: 8px;
 }
 .subitem-label {
   margin-bottom: 8px;

@@ -2481,58 +2481,59 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
 }
 
-// 9.4 整页：挂真的路由和查询缓存，身份、条目、列表先放进缓存
-{
-  const me = (role: 'owner' | 'agent') =>
-    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
-  const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
-  const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
-  const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
-  type Cache = { items?: Readonly<Record<string, unknown>>; lists?: Readonly<Record<string, readonly unknown[]>> };
-  async function mountDetail(path: string, viewer: Viewer, cache: Cache = {}) {
-    const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
-    qc.setQueryData(VIEWER_KEY, viewer);
-    for (const [kind, items] of Object.entries(cache.lists ?? {})) qc.setQueryData(['catalog', kind], { items });
-    for (const [key, item] of Object.entries(cache.items ?? {})) qc.setQueryData(['catalog', ...key.split('/')], item);
-    const root = createRootRoute({ component: Outlet });
-    const tree = root.addChildren([
-      createRoute({
-        getParentRoute: () => root,
-        path: '/catalog/$kind',
-        validateSearch: catalogSearch,
-        component: () => <p className="list-stub" />,
-      }),
-      createRoute({ getParentRoute: () => root, path: '/catalog/$kind/$code', validateSearch: itemSearch, component: CatalogItemPage }),
-      createRoute({ getParentRoute: () => root, path: '/catalog/new/$kind', component: CatalogNewPage }),
-    ]);
-    const router = createRouter({ routeTree: tree, history: createMemoryHistory({ initialEntries: [path] }) });
-    await router.load();
-    const m = await mount(
-      <QueryClientProvider client={qc}>
-        <RouterProvider router={router} />
-      </QueryClientProvider>,
-    );
-    return { ...m, router, qc };
-  }
-  const header = (root: ParentNode) => ({
-    crumb: texts(root, '.breadcrumb > :not(.breadcrumb-sep)'),
-    title: root.querySelector('.page-title')?.textContent,
-    titleStatus: root.querySelector('.page-title-status')?.textContent ?? null,
-    status: root.querySelector('.page-status > span:not(.readonly-pill)')?.textContent ?? null,
+// 9.4 与第 10 节共用：挂真的路由和查询缓存，身份、条目、列表先放进缓存
+const me = (role: 'owner' | 'agent') =>
+  ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
+const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
+const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
+type Cache = { items?: Readonly<Record<string, unknown>>; lists?: Readonly<Record<string, readonly unknown[]>> };
+async function mountDetail(path: string, viewer: Viewer, cache: Cache = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  qc.setQueryData(VIEWER_KEY, viewer);
+  for (const [kind, items] of Object.entries(cache.lists ?? {})) qc.setQueryData(['catalog', kind], { items });
+  for (const [key, item] of Object.entries(cache.items ?? {})) qc.setQueryData(['catalog', ...key.split('/')], item);
+  const root = createRootRoute({ component: Outlet });
+  const tree = root.addChildren([
+    createRoute({
+      getParentRoute: () => root,
+      path: '/catalog/$kind',
+      validateSearch: catalogSearch,
+      component: () => <p className="list-stub" />,
+    }),
+    createRoute({ getParentRoute: () => root, path: '/catalog/$kind/$code', validateSearch: itemSearch, component: CatalogItemPage }),
+    createRoute({ getParentRoute: () => root, path: '/catalog/new/$kind', component: CatalogNewPage }),
+  ]);
+  const router = createRouter({ routeTree: tree, history: createMemoryHistory({ initialEntries: [path] }) });
+  await router.load();
+  const m = await mount(
+    <QueryClientProvider client={qc}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  return { ...m, router, qc };
+}
+const header = (root: ParentNode) => ({
+  crumb: texts(root, '.breadcrumb > :not(.breadcrumb-sep)'),
+  title: root.querySelector('.page-title')?.textContent,
+  titleStatus: root.querySelector('.page-title-status')?.textContent ?? null,
+  status: root.querySelector('.page-status > span:not(.readonly-pill)')?.textContent ?? null,
+});
+const groupsOf = (root: ParentNode) => all<HTMLElement>(root, '.detail-main > [data-group]').map((e) => e.getAttribute('data-group'));
+const card = (root: ParentNode, g: string) => root.querySelector<HTMLElement>(`.detail-main > [data-group="${g}"]`)!;
+const headTags = (root: ParentNode) => texts(root, '.detail-card-head .lock-tag');
+const checkRows = (root: ParentNode) => texts(root, '.check-list .check-item');
+const settle = () =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
   });
-  const groupsOf = (root: ParentNode) => all<HTMLElement>(root, '.detail-main > [data-group]').map((e) => e.getAttribute('data-group'));
-  const card = (root: ParentNode, g: string) => root.querySelector<HTMLElement>(`.detail-main > [data-group="${g}"]`)!;
-  const headTags = (root: ParentNode) => texts(root, '.detail-card-head .lock-tag');
-  const checkRows = (root: ParentNode) => texts(root, '.check-list .check-item');
-  const settle = () =>
-    act(async () => {
-      await new Promise((r) => setTimeout(r, 0));
-    });
-  const itemOf = (rows: readonly ListRow[], code: string) => ({ kind: 'route', ord: 0, rev: 1, ...rows.find((r) => r.code === code)! });
-  const SICHUAN_ITEM = itemOf(ROUTE_ROWS, 'r-sichuan-lux');
-  const GUIZHOU_ITEM = itemOf(ROUTE_ROWS, 'r-guizhou-5d');
-  const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
+const itemOf = (rows: readonly ListRow[], code: string) => ({ kind: 'route', ord: 0, rev: 1, ...rows.find((r) => r.code === code)! });
+const SICHUAN_ITEM = itemOf(ROUTE_ROWS, 'r-sichuan-lux');
+const GUIZHOU_ITEM = itemOf(ROUTE_ROWS, 'r-guizhou-5d');
+const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
 
+// 9.4 整页
+{
   // 检查项找字段：外层字段优先于同名的子字段，哪怕子字段排在前面
   {
     /** 一个元素：属性、子元素 */
@@ -2647,11 +2648,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     ],
   );
   check('能编辑的人有「建议在电脑上编辑」（窄屏才显示，CSS 管）', e.box.querySelectorAll('.detail-narrow-hint').length === 1);
-  eq('过渡：旧抽屉认得的线路，页头有「在旧表单里改」', texts(e.box, '.page-actions button'), ['在旧表单里改']);
+  eq('已上架的条目用保存条改：页头没有「在旧表单里改」（第 10.2 步起只给草稿上架用）', texts(e.box, '.page-actions button'), []);
   eq(
-    '状态卡的说明：已上架、能编辑时写「其余内容可以直接改」（保存条到之前不写「保存后立即生效」）',
+    '状态卡的说明：已上架、能编辑时写「其余内容可以直接改，保存后立即生效」',
     e.box.querySelector('.detail-side .status-note')?.textContent,
-    '其余内容可以直接改',
+    '其余内容可以直接改，保存后立即生效',
   );
   // 点锁定组那一行：焦点落在声明它的卡片头
   await click(all(e.box, '.lock-row').find((b) => b.textContent?.includes('条款')));
@@ -2707,11 +2708,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
   await e.unmount();
 
-  // 过渡（第 10.2 步删）：「在旧表单里改」带着这一页没保存的改动打开 01 的旧抽屉，按打开这一页时的 rev 保存；
+  // 过渡（第 10.3 步删）：草稿要上架时「在旧表单里改」带着这一页没保存的改动打开 01 的旧抽屉，按眼下的 rev 保存；
   // 存好以后详情页按新内容重新打开，没有「已改」
   {
-    const edited = `${hardestText}；返程日早起`;
-    const saved = { ...SICHUAN_ITEM, rev: 2, payload: { ...SICHUAN, intensity: { ...(SICHUAN.intensity as Payload), hardest: edited } } };
+    const edited = '贵州 小七孔·西江千户苗寨 5 日（亲子版）';
+    const saved = { ...GUIZHOU_ITEM, rev: 2, payload: { ...GUIZHOU_5D, title: edited } };
     const sent: { method: string; url: string; body: unknown }[] = [];
     const realFetch = globalThis.fetch;
     const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -2722,7 +2723,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
         url,
         body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
       });
-      if (url.endsWith('/catalog/route/r-sichuan-lux')) return Promise.resolve(json(saved));
+      if (url.endsWith('/catalog/route/r-guizhou-5d')) return Promise.resolve(json(saved));
       return Promise.resolve(json({ items: url.endsWith('/catalog/route') ? ROUTE_ROWS : HOTEL_ROWS }));
     };
     /** 等到 ok()：旧抽屉按需下载，保存后要等请求和重取 */
@@ -2733,12 +2734,12 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
         });
       }
     };
-    const lg = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
-    const hardestIn = () => lg.box.querySelector<HTMLInputElement>('[data-field-key="intensity.hardest"] input');
-    await typeInto(hardestIn(), edited);
+    const lg = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });
+    const titleIn = () => lg.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="title"] input');
+    await typeInto(titleIn(), edited);
     // 打开以后接口又取到一版（别人改过，rev 5）：详情页不换掉打开时的内容，旧抽屉也按打开时的 rev 1 保存，服务端会答 409
     await act(async () => {
-      lg.qc.setQueryData(['catalog', 'route', 'r-sichuan-lux'], { ...SICHUAN_ITEM, rev: 5 });
+      lg.qc.setQueryData(['catalog', 'route', 'r-guizhou-5d'], { ...GUIZHOU_ITEM, rev: 5 });
     });
     // 查询缓存下一轮才通知页面重画
     await settle();
@@ -2752,18 +2753,18 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
         drawer?.querySelector('.ant-drawer-title')?.textContent,
         all<HTMLInputElement>(drawer ?? document, 'input').some((i) => i.value === edited),
       ],
-      ['线路 r-sichuan-lux', true],
+      ['线路 r-guizhou-5d', true],
     );
     await click(drawer?.querySelector('button[type="submit"]'));
     await until(() => sent.some((x) => x.method === 'PATCH') && document.querySelector('.ant-drawer-open') === null);
     await until(() => lg.box.querySelectorAll('.field.is-changed').length === 0);
     eq('在旧抽屉里保存：PATCH 带打开这一页时的 rev，只提交改了的顶层字段', sent.find((x) => x.method === 'PATCH')?.body, {
       rev: 1,
-      set: { intensity: saved.payload.intensity },
+      set: { title: edited },
     });
     eq(
       '存好以后：抽屉关上，详情页按新内容重新打开，没有「已改」',
-      [document.querySelectorAll('.ant-drawer-open').length, hardestIn()?.value, lg.box.querySelectorAll('.field.is-changed').length],
+      [document.querySelectorAll('.ant-drawer-open').length, titleIn()?.value, lg.box.querySelectorAll('.field.is-changed').length],
       [0, edited, 0],
     );
     await lg.unmount();

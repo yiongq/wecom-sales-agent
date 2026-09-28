@@ -41,12 +41,18 @@
   padding: 2px;
   overflow-y: auto;
 }
+/* 保存条（60 高）出现时，副栏的下沿停在它上面，同样离 24 */
+.detail-layout.has-save-bar .detail-side {
+  max-height: calc(100vh - 172px);
+  max-height: calc(100dvh - 172px);
+}
 /* 宽 <1280（侧栏收成图标栏或隐藏）：副栏落到主栏下方，不吸顶，也不自己滚 */
 @media (max-width: 1279px) {
   .detail-layout {
     grid-template-columns: minmax(0, 736px);
   }
-  .detail-side {
+  .detail-side,
+  .detail-layout.has-save-bar .detail-side {
     position: static;
     max-height: none;
     margin: 0;
@@ -252,4 +258,203 @@
 }
 .detail-skeleton-meta-card {
   height: 118px;
+}
+
+/* ---------- 保存（第 10.2 步） ---------- */
+
+/*
+ * 保存条（§5.16、E 页）：左边 16 clock 用 --warning-icon；改动的中文名 13 text-2，放不下时省略；「展开改动」14/22/500
+ * accent-text，离名字 4，总在；右边说明离「放弃」16（条里按钮间隔 8，说明再让 8）；「放弃」是幽灵按钮，text-2
+ */
+.save-bar-icon {
+  color: var(--warning-icon);
+}
+.save-bar-hint {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.save-bar-names {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-bar-toggle {
+  flex: none;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.save-bar-toggle:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.save-bar-toggle:focus-visible,
+.save-change:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.save-bar-note {
+  margin-right: 8px;
+}
+.action-bar .save-bar-discard {
+  color: var(--text-2);
+}
+/*
+ * 「展开改动」的清单：浮层（§3 阴影只给浮层），贴在保存条上方、与面板内容左对齐；宽 320，最高半屏，自己滚。
+ * 定位的参照是保存条本身（sticky 也算定位），名字那一段的 overflow 裁不到它
+ */
+.save-changes {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: var(--panel-px, 32px);
+  box-sizing: border-box;
+  width: 320px;
+  max-width: calc(100% - 2 * var(--panel-px, 32px));
+  max-height: 50vh;
+  max-height: 50dvh;
+  padding: 4px;
+  overflow-y: auto;
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  box-shadow: var(--shadow-menu);
+}
+.save-changes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.save-change {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.save-change:hover {
+  background: var(--hover);
+}
+.save-change svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* 页头下的横幅与汇总（§5.12：页级 Alert 与内容等宽，放在页头下 16） */
+.detail-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.detail-issues-loose {
+  margin: 0;
+  padding-left: 20px;
+}
+
+/*
+ * 409 之后的对比（spec「保存条」）：一张卡片（§5.9），宽同主栏；每个改过的字段一行，最新版本与你改的两列并排，
+ * 各自按字段类型的只读形态画；「用我的改动」是 28 高的次要按钮
+ */
+.detail-compare {
+  box-sizing: border-box;
+  max-width: 736px;
+  margin-bottom: 16px;
+  padding: 16px 20px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.detail-compare-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.detail-compare-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.detail-compare-count {
+  flex: 1;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.detail-compare-note {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.detail-compare-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.detail-compare-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.detail-compare-row + .detail-compare-row {
+  padding-top: 16px;
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+.detail-compare-label {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.detail-compare-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-self: stretch;
+}
+.detail-compare-side {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+@media (max-width: 767px) {
+  .detail-compare-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+/* 给读屏念「已保存」：看不见、不占位置（整块在页面末尾，不在一行字里，WebKit 的 text-autospace 问题碰不到它） */
+.save-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

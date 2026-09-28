@@ -32,6 +32,8 @@ export interface FormFieldProps {
   lockNoteId?: string;
   /** 字段下方的报错（第 10.2 步按「碰过的字段」给） */
   error?: string;
+  /** 有序子项里各处的报错：键是下标（'2'）或下标接子字段 key（'2.hotel'），写在那一项、那个子字段下方 */
+  itemErrors?: Readonly<Record<string, string>>;
   lockedMembers?: readonly string[];
   lockGroup?: { tag: string; reason: string };
   /** 改过、还没保存：标签后写「已改」（只在可改时画） */
@@ -127,6 +129,7 @@ export function FormField(p: FormFieldProps) {
           invalid={error !== undefined}
           lockedMembers={p.lockedMembers}
           lockGroup={p.lockGroup}
+          itemErrors={p.itemErrors}
           onChange={p.onChange!}
         />
       ) : (

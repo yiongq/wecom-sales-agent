@@ -5,7 +5,7 @@
 // 表单控件只经 model.ts 的 CODECS 读写（不变量 16 的往返），不在挂载时写值：打开一条不做改动，表单状态一个字节也不变。
 // 产品库文本只以文本节点渲染（不变量 28）；值为空写「—」。
 import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
-import { ArrowDown, ArrowUp, Check, Lock, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, CircleX, Lock, Plus, Trash2, X } from 'lucide-react';
 import { type ComponentType, type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react';
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
@@ -66,6 +66,8 @@ export interface FormProps extends ViewProps {
   describedBy?: string;
   /** 字段下方有报错：控件画出错色 */
   invalid?: boolean;
+  /** 有序子项里各处的报错（键是下标，或下标接子字段 key），写在那一项、那个子字段下方（FormField 的 itemErrors） */
+  itemErrors?: Readonly<Record<string, string>>;
   onChange(next: unknown): void;
 }
 
@@ -652,6 +654,16 @@ function SubItemsView({ field, value }: ViewProps) {
   );
 }
 
+/** 有序子项里一项的报错（字段下方报错的同一个样子：13 danger，前置 circle-x） */
+function ItemError({ id, text }: { id: string; text: string }) {
+  return (
+    <div id={id} className="field-error">
+      <Icon of={CircleX} size={14} />
+      {cjk(text)}
+    </div>
+  );
+}
+
 /** 单字段的有序子项（行程亮点、费用包含）：逐条一个输入框，上移、下移、删除，底部「添加一条」（设计系统 §6） */
 function SingleListForm(p: FormProps) {
   const { field, value, onChange, id, labelId } = p;
@@ -666,22 +678,31 @@ function SingleListForm(p: FormProps) {
   };
   return (
     <div className="field-list-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
-      {items.map((it, i) => (
-        <div key={i} className="field-list-row" data-item-index={i}>
-          <R.Form
-            field={sub}
-            value={it}
-            row={{}}
-            id={`${id}-${i}`}
-            labelId={labelId}
-            ariaLabel={`${field.label}第${i + 1}${noun}`}
-            onChange={(v) => set(replaceAt(items, i, v))}
-          />
-          <IconButton label="上移" icon={ArrowUp} aria-disabled={i === 0 || undefined} onClick={() => move(i, -1)} />
-          <IconButton label="下移" icon={ArrowDown} aria-disabled={i === items.length - 1 || undefined} onClick={() => move(i, 1)} />
-          <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(removeAt(items, i))} />
-        </div>
-      ))}
+      {items.map((it, i) => {
+        const error = p.itemErrors?.[String(i)];
+        const errorId = `${id}-${i}e`;
+        return (
+          <div key={i} className="field-list-item" data-item-index={i}>
+            <div className="field-list-row">
+              <R.Form
+                field={sub}
+                value={it}
+                row={{}}
+                id={`${id}-${i}`}
+                labelId={labelId}
+                ariaLabel={`${field.label}第${i + 1}${noun}`}
+                describedBy={error === undefined ? undefined : errorId}
+                invalid={error !== undefined}
+                onChange={(v) => set(replaceAt(items, i, v))}
+              />
+              <IconButton label="上移" icon={ArrowUp} aria-disabled={i === 0 || undefined} onClick={() => move(i, -1)} />
+              <IconButton label="下移" icon={ArrowDown} aria-disabled={i === items.length - 1 || undefined} onClick={() => move(i, 1)} />
+              <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(removeAt(items, i))} />
+            </div>
+            {error === undefined ? null : <ItemError id={errorId} text={error} />}
+          </div>
+        );
+      })}
       <Button className="field-add" icon={<Icon of={Plus} />} onClick={() => set([...items, ''])}>
         {`添加一${noun}`}
       </Button>
@@ -695,7 +716,7 @@ function SingleListForm(p: FormProps) {
  * 竖轴与节点状态、条数提醒、增删与上移下移、自动编号、条数锁定是通用有序子项编辑器（第 11 步）
  */
 function ItemCardsForm(p: FormProps) {
-  const { field, value, onChange } = p;
+  const { field, value, onChange, id } = p;
   const items = CODECS.subItems.read(value, field);
   const subs = field.item ?? [];
   return (
@@ -703,9 +724,11 @@ function ItemCardsForm(p: FormProps) {
       {items.map((it, i) => {
         const item = isRecord(it) ? it : {};
         const label = indexLabel(field, i + 1);
+        const error = p.itemErrors?.[String(i)];
         return (
           <section key={i} className="subitem-card" aria-label={label} data-item-index={i}>
             <div className="subitem-label">{cjk(label)}</div>
+            {error === undefined ? null : <ItemError id={`${id}-${i}e`} text={error} />}
             <div className="field-grid field-grid-2">
               {subs.map((sub) => (
                 <FormField
@@ -715,6 +738,7 @@ function ItemCardsForm(p: FormProps) {
                   span={LAYOUT[sub.type].span(sub)}
                   value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
                   row={item}
+                  error={p.itemErrors?.[`${i}.${sub.key}`]}
                   onChange={(v) => onChange(CODECS.subItems.write(replaceAt(items, i, writeValue(item, sub, v)), field))}
                 />
               ))}
