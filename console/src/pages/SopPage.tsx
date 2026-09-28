@@ -256,8 +256,6 @@ interface Lost {
   loaded: LostSection[] | null;
 }
 
-const NO_TOOLS: Readonly<Record<string, string>> = {};
-
 function MemberSop({
   data,
   pack,
@@ -412,6 +410,7 @@ function MemberSop({
   });
   const editor = useRef<HTMLDivElement>(null);
   const nav = useSectionNav(rows, editor);
+  const tools = pack?.vocabulary.tools;
   const section = spec.find((s) => s.key === nav.section);
   const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
@@ -529,7 +528,7 @@ function MemberSop({
           )
         }
         check={editable && <CheckCard spec={spec} violations={violations} check={check} />}
-        tools={<ToolsCard tools={pack?.vocabulary.tools ?? NO_TOOLS} />}
+        tools={tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
       />
 
       <Space orientation="vertical" size="middle" className="sop-after">
