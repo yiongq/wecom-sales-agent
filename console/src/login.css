@@ -1,0 +1,128 @@
+/*
+ * 登录页与登录表单（spec「登录」，design-system §2.3、§3、§5.1、§5.2）。表单在登录页和就地登录框里共用，这里的样式全局一份；
+ * 只有登录页的控件高 40（§3「登录页控件 40」、§5.1「登录页高 40」），就地登录框里照常 32。颜色一律取 brand.css 的变量
+ */
+
+/*
+ * 页面：--frame 底上一块内嵌的内容面板，一栏水平居中（与外壳 §4.1 同一副骨架）。竖直方向不居中，从视口高度的 20% 处起：
+ * 居中的话，控件下方出现「没填」的原因时整栏往上挪，标题跟着跳
+ */
+.login-page {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 8px;
+  background: var(--frame);
+}
+.login-panel {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  justify-content: center;
+  padding: clamp(32px, 20vh, 200px) 32px 48px;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+  outline: none;
+}
+@media (max-width: 991px) {
+  .login-panel {
+    padding: clamp(32px, 20vh, 200px) 16px 32px;
+  }
+}
+.login-column {
+  width: 100%;
+  max-width: 360px;
+}
+/* display 36/44/600，只用于这里（§2.3）；标题含中文，字距 0 */
+.login-title {
+  margin: 0;
+  font-size: 36px;
+  line-height: 44px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.login-lead {
+  margin: 8px 0 32px;
+  color: var(--text-2);
+}
+.login-back {
+  margin: 16px 0 0;
+  text-align: center;
+}
+/* 「返回演示」照 §3 的链接：点击区域高 24，键盘焦点 2px --focus、外移 2（不用 antd 链接自带的 3px 框） */
+.login-back a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: var(--r-xs);
+}
+.login-back a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------------- 表单：标签在上 13/20/500，标签到控件 6，字段之间 20（§3「表单」、§5.2） ---------------- */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.login-label {
+  align-self: flex-start;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* 没填：控件下方 13 danger，前置 14 的 circle-x（§5.2「出错」） */
+.login-field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.login-field-error svg {
+  flex: none;
+  margin-top: 3px;
+}
+/*
+ * 密码框里「显示密码」的眼睛：antd 画成 14 见方，还是一个 Tab 停靠点。点击区域补到 24 见方（§3「点击目标 ≥ 24×24」），
+ * 内边距加多少、外边距就抵掉多少，控件高度不变；左边只抵 4（后缀离输入框正好 4），不压到输入框上，
+ * 压上 1px 就被 axe 算成被遮住的目标。antd 给它的是 transition: all，焦点框会从 3px 的字色框渐变过来，只留颜色的过渡（§3）
+ */
+.login-form .ant-input-password-icon {
+  box-sizing: content-box;
+  padding: 5px;
+  margin: -5px -5px -5px -4px;
+  border-radius: var(--r-xs);
+  transition: color 100ms linear;
+}
+.login-form .ant-input-password-icon:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* 没填时念给读屏的一句：看不见，也不占表单的间距（绝对定位不参与 flex 的 gap） */
+.login-notice {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 登录页的控件与按钮高 40；字仍是 14（antd 的 large 会换成 16，所以不用 size，只改高度） */
+.login-page .login-control,
+.login-page .login-submit {
+  height: 40px;
+}
