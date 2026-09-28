@@ -353,6 +353,7 @@ async function mount(path: string) {
   };
   onlyAlert('密码不对', ['邮箱或密码不对', '检查后重试']);
   check('密码不对：没有控件下方的原因', m.fieldErrors().length === 0);
+  eq('密码不对：Alert 里没有按钮（下一步不是重试）', m.$$('.login-form .ant-alert button').map(m.text), []);
 
   server.login = { status: 429, body: { error: 'busy', detail: BUSY_DETAIL } };
   await m.submit();
@@ -373,9 +374,23 @@ async function mount(path: string) {
   onlyAlert('被限流（429 rate_limited）', ['尝试太频繁', '稍后再试']);
   check('被限流：detail 只在技术详情里', m.box.textContent!.includes('登录太频繁') && !m.visibleText().includes('登录太频繁'));
 
+  eq('被限流：Alert 里没有按钮（下一步不是重试）', m.$$('.login-form .ant-alert button').map(m.text), []);
+
   server.login = 'network';
   await m.submit();
   onlyAlert('连不上', ['服务暂时连不上']);
+  const retry = m.$$('.login-form .ant-alert button').find((b) => m.text(b) === '重试');
+  check('连不上：Alert 右侧有「重试」', retry !== undefined);
+  server.login = { status: 401, body: { error: 'invalid_credentials', detail: '邮箱或密码不对' } };
+  requests = [];
+  loginBodies = [];
+  if (retry) await m.click(retry);
+  eq(
+    '连不上：点「重试」原样再提交一次',
+    [count('POST /api/console/auth/login'), loginBodies],
+    [1, [{ email: EMAIL, password: 'wrong-password' }]],
+  );
+  onlyAlert('重试之后', ['邮箱或密码不对']);
 
   // 4. 提交中
   server.login = 'hang';
