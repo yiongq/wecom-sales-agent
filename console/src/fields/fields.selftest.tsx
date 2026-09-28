@@ -3164,6 +3164,14 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     visibleErrors(ROUTE, cleared, seen([], true), { ...server, sent: cleared }).byPlace.title,
     '线路名称：没填',
   );
+  eq(
+    '汇总按字段的顺序排，表单的与服务端的混在一起（「跳到第一处」跳到最前面的字段）',
+    visibleErrors(ROUTE, cleared, seen([], true), {
+      ...placeIssues(ROUTE, [{ path: 'intensity.hardest', message: '太长' }]),
+      sent: cleared,
+    }).list.map((p) => p.at),
+    ['title', 'intensity.hardest'],
+  );
   // 月份区间认不出：控件自己写「没认出月份」，字段下方不再写一遍，汇总照样算一处（plan 第 3.2 步的交接）
   const summer = writeValue(SICHUAN, fieldOf(ROUTE, 'bestSeason'), '夏天');
   const sv = visibleErrors(ROUTE, summer, seen([], true), null);
@@ -3627,8 +3635,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
     const mine = `${hardestText}；返程日早起`;
     await typeInto(e.box.querySelector('[data-field-key="intensity.hardest"] input'), mine);
+    // 后台重取把别人存的 rev 3 放进了缓存：表单不换，补丁仍带打开时的 rev 1，得到 409，不会拿旧内容盖掉别人的
+    await act(async () => void e.qc.setQueryData(['catalog', 'route', 'r-sichuan-lux'], latest));
+    await settle();
     await cmdS();
     await until(() => e.box.querySelector('.detail-conflict') !== null);
+    eq('缓存里换成别人存的新版本以后保存：补丁仍带打开时的 rev 1', (api.patches()[0]?.body as { rev?: number } | undefined)?.rev, 1);
     eq(
       '409：danger 横幅「这条刚被别人改过」加「载入最新版本」；改动还在，保存条还在',
       [
