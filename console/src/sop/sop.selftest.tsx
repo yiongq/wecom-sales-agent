@@ -19,6 +19,9 @@
 // 9. 自动保存与三栏（第 5.3 步，spec「自动保存」「右栏」，不变量 20、21）：失败的分类、退避、⌘S、哪些节算没存上；
 //    状态机（假的计时器）；整页接假服务端：请求带的 rev、状态句的保存那一段、断网与离开保护、409 冻结与载入最新草稿、
 //    格式不对；三栏里各有哪几格（检查清单、工具卡片），骨架与窄屏。第 7、8 节不自动保存（计时设成永远不到）。
+// 10. 检查与定位（第 6.2 步，spec「销售话术 · 检查」，验收 12）：问题落在哪一节、点了去哪、说明的写法、「改成…」的候选；
+//    编辑器里的波浪线、行内提醒与「改成…」那一笔；整页接按正文算问题的假服务端：每次存上以后检查、打开时已有草稿也查、
+//    只认最后发出的那次、没跑成与重试、清单点了定位、「改成…」以后马上存、没有草稿与只读成员不查。
 // 整个进程按不支持 text-spacing-trim 的浏览器跑（selftest-env.ts），界面上的 cjk() 与编辑器都走 .halt 回退。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
@@ -35,7 +38,15 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { act, type ReactElement, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AnonSopOverview, SectionSpecView, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
+import type {
+  AnonSopOverview,
+  ContractViolation,
+  DraftCheck,
+  SectionSpecView,
+  SopOverview,
+  SopSectionText,
+  SopVersion,
+} from '../../../src/shared/console-api.js';
 import type { IndustryPack, SopSectionDef } from '../../../src/shared/pack.js';
 import { canonicalBody, editableChars } from '../../../src/shared/sop-sections.js';
 import { HttpError } from '../api.js';
@@ -63,9 +74,14 @@ import {
   chipRanges,
   CM_PHRASES,
   draftMarks,
+  fixNameAt,
   haltChars,
   lineShape,
   paragraphLines,
+  problemFix,
+  problemPlaces,
+  problemsField,
+  setProblems,
   sopEditorSetup,
   strongRanges,
   type Vocabulary,
@@ -88,6 +104,7 @@ import {
   type OutlineFilter,
   type OutlineRow,
   quotaModel,
+  quotaPercent,
   quotaTone,
   resolveSection,
   scaleMaxOf,
@@ -96,7 +113,20 @@ import {
   unsavedEdits,
   withSavedDraft,
 } from './outline.js';
+import {
+  editDistance,
+  type EditorProblem,
+  editorProblems,
+  fixLabel,
+  hintNote,
+  locateViolations,
+  nearestName,
+  occurrences,
+  problemText,
+  sectionNotes,
+} from './problems.js';
 import { QuotaBar } from './QuotaBar.js';
+import { checkItems } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
 import { SopSkeleton } from './SopSkeleton.js';
 
@@ -1311,8 +1341,8 @@ const historyLength = (m: PageBox): number => m.router.history.length;
   eq('整页加载中（成员，可编辑节）：画说明行', await skelOf('/console/sop?section=tone', OWNER), [true, 11, true]);
 }
 eq(
-  '整页的自测没有发出请求（除了加载中那一次取 /sop）',
-  requests.filter((u) => !u.endsWith('/api/console/sop')),
+  '整页的自测没有发出请求（除了加载中那一次取 /sop，和打开时已有草稿跑的检查）',
+  requests.filter((u) => !u.endsWith('/api/console/sop') && !u.endsWith('/api/console/sop/draft/check')),
   [],
 );
 
@@ -1850,8 +1880,8 @@ const lineOf = (doc: string, n: number): { from: number; text: string } => {
   await a.unmount();
 }
 eq(
-  '编辑器的自测没有发出请求（除了加载中那一次取 /sop）',
-  requests.filter((u) => !u.endsWith('/api/console/sop')),
+  '编辑器的自测没有发出请求（除了加载中那一次取 /sop，和打开时已有草稿跑的检查）',
+  requests.filter((u) => !u.endsWith('/api/console/sop') && !u.endsWith('/api/console/sop/draft/check')),
   [],
 );
 
@@ -2310,10 +2340,26 @@ function applyEdits(secs: readonly SopSectionText[], edits: readonly { key: stri
   });
 }
 type PutMode = 'ok' | 'network' | 'conflict' | 'invalid' | 'hold';
+/** 第 9 节的检查结果：话术原则里一个工具名不对（01 的形状，不带 match） */
+const FIXED_CHECK = (): DraftCheck => ({
+  promptHash: 'b'.repeat(64),
+  prefixHash: 'c'.repeat(64),
+  chars: 2303,
+  limit: LIMIT,
+  violations: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x' }],
+  rebase: { needed: false, conflicts: [] },
+});
 function fakeServer(start: SopOverview) {
   const srv = {
     state: start,
     mode: 'ok' as PutMode,
+    /** POST /sop/draft/check 按那时的草稿答什么（第 10 节换成按正文算的） */
+    check: (_s: SopOverview): DraftCheck => FIXED_CHECK(),
+    /** 检查答 500，或者按住（放开时按那时的 checkFails 回） */
+    checkFails: false,
+    checkHold: false,
+    checkHeld: [] as { resolve(): void }[],
+    checks: (): number => calls.filter((c) => c.method === 'POST' && c.path === '/api/console/sop/draft/check').length,
     /** GET /sop 答 500（载入最新草稿失败） */
     getFails: false,
     held: [] as { resolve(): void }[],
@@ -2348,15 +2394,17 @@ function fakeServer(start: SopOverview) {
       srv.state = { ...srv.state, published: v, draft: null };
       return json(200, v);
     }
-    if (call.method === 'POST' && call.path === '/api/console/sop/draft/check')
-      return json(200, {
-        promptHash: 'b'.repeat(64),
-        prefixHash: 'c'.repeat(64),
-        chars: 2303,
-        limit: LIMIT,
-        violations: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x' }],
-        rebase: { needed: false, conflicts: [] },
-      });
+    if (call.method === 'POST' && call.path === '/api/console/sop/draft/check') {
+      // 按住时记下发出时的草稿，放开时照它答（晚回来的是旧草稿的结果）
+      const at = srv.state;
+      if (srv.checkHold) {
+        const d = deferred<void>();
+        srv.checkHeld.push({ resolve: () => d.resolve() });
+        await d.promise;
+      }
+      if (srv.checkFails) return json(500, { error: 'internal' });
+      return at.draft ? json(200, srv.check(at)) : json(404, { error: 'not_found', detail: '没有草稿' });
+    }
     if (call.method !== 'PUT') return new Promise<never>(() => undefined);
     const body = call.body as { rev: number | null; edits: { key: string; body: string }[] };
     // 按住的请求放开时按那时的 mode 回（先改 mode 再放开，就能让路上的那一个答 422、409）
@@ -2386,7 +2434,7 @@ const saveNow = (m: PageBox): string => text(m.box.querySelector('.sop-save-now'
 const label = (b: Element): string => text(b).replace(/ /g, '');
 const headerButton = (m: PageBox, name: string): HTMLButtonElement | undefined =>
   all<HTMLButtonElement>(m.box, '.page-actions button').find((b) => label(b) === name);
-const headerDisabled = (m: PageBox): boolean[] => ['丢弃', '检查', '发布'].map((l) => !!headerButton(m, l)?.disabled);
+const headerDisabled = (m: PageBox): boolean[] => ['丢弃', '发布'].map((l) => !!headerButton(m, l)?.disabled);
 async function pressSave(mods: { metaKey?: boolean; ctrlKey?: boolean }): Promise<Event> {
   const e = new win.KeyboardEvent('keydown', { key: 's', bubbles: true, cancelable: true, ...mods }) as unknown as Event;
   await act(async () => void window.dispatchEvent(e));
@@ -2409,9 +2457,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   srv.mode = 'hold';
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   eq(
-    '页头：没有「保存草稿」按钮，是丢弃、检查、发布；状态句还没有保存那一段',
+    '页头：没有「保存草稿」「检查」按钮（检查在自动保存以后自动跑），是丢弃、发布；状态句还没有保存那一段',
     [all(m.box, '.page-actions button').map(label), saveNow(m)],
-    [['丢弃', '检查', '发布'], ''],
+    [['丢弃', '发布'], ''],
   );
   eq(
     '状态句的保存那一段按最宽的两种写法占位；会变的那一行是 role=status（读屏念出变化），占位不念',
@@ -2422,9 +2470,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     ],
     [['·已自动保存00:00', '·没保存上·重试'], ['sop-save-now'], ['true', 'true']],
   );
-  eq('没有没存上的改动：丢弃、检查、发布都能点', headerDisabled(m), [false, false, false]);
+  eq('没有没存上的改动：丢弃、发布都能点', headerDisabled(m), [false, false]);
   await typeAtEnd(m, '测');
-  eq('打了字还没存：丢弃、检查、发布都不能点', headerDisabled(m), [true, true, true]);
+  eq('打了字还没存：丢弃、发布都不能点', headerDisabled(m), [true, true]);
   await waitFor(() => srv.puts().length === 1);
   eq('停止输入以后存：带草稿的 rev，只带改过的节，正文是编辑器里的原文', srv.puts(), [
     { basedOn: 'v2', rev: 4, edits: [{ key: 'tone', body: editorText(m)! }] },
@@ -2436,12 +2484,12 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   eq(
     '存上了：「已自动保存14:30」，按钮能点，缓存里的草稿换成返回的那份',
     [saveNow(m), headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
-    ['·已自动保存14:30', [false, false, false], 10],
+    ['·已自动保存14:30', [false, false], 10],
   );
   await typeAtEnd(m, '试');
   await waitFor(() => srv.puts().length === 2);
   eq('接着存：带上一次成功响应的 rev', srv.puts()[1]?.rev, 10);
-  await waitFor(() => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '检查')?.disabled);
+  await waitFor(() => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '发布')?.disabled);
   await act(async () => void m.router.navigate({ to: '/audit' } as never));
   await until(() => m.pathname() === '/audit');
   eq('全存上了：离开这一页不拦', [guardOpen(), m.pathname()], [false, '/audit']);
@@ -2542,9 +2590,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   const srv = fakeServer(MEMBER_SOP);
   srv.mode = 'conflict';
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
-  // 先跑一次检查：结果是对这份草稿说的，载入最新草稿以后要作废
-  await clickEv(headerButton(m, '检查'));
+  // 打开时已有草稿，检查自动跑了一次；载入最新草稿以后草稿换了，要再跑
   await waitFor(() => !!m.box.querySelector('.sop-col-check .check-list-summary'));
+  eq('打开时已有草稿：检查跑了一次', srv.checks(), 1);
   await typeAtEnd(m, '我写的');
   const mine = editorText(m)!;
   await waitFor(() => !!m.box.querySelector('.sop-banners .ant-alert'));
@@ -2598,11 +2646,8 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     ],
     [1, true, 'true', '', ''],
   );
-  eq(
-    '载入最新草稿：检查结果作废，7 项回到「还没跑」',
-    [!!m.box.querySelector('.sop-col-check .check-list-summary'), all(m.box, '.sop-col-check .check-item-pending').length],
-    [false, 7],
-  );
+  await waitFor(() => srv.checks() === 2);
+  eq('载入最新草稿：草稿换了（rev 9），检查再跑一次', srv.checks(), 2);
   const sides = all<HTMLElement>(m.box, '.sop-lost .cm-mergeView .cm-content').map((c) => EditorView.findFromDOM(c)?.state.doc.toString());
   eq(
     '没存上的节以只读对比留着：节名、左边载入时的草稿、右边你写的',
@@ -2966,8 +3011,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     all<HTMLElement>(m.box, '.sop-layout > .sop-body > *').map((e) => [...e.classList].find((c) => c.startsWith('sop-col-')) ?? '?');
   const travelPack = { ...packOf(TRAVEL), vocabulary: { ...packOf(TRAVEL).vocabulary, ...VOCAB } };
   const owner: Viewer = { ...OWNER, pack: travelPack };
-  const srv = fakeServer(MEMBER_SOP);
-  const m = await mountPage('/console/sop?section=tone', owner, MEMBER_SOP);
+  const noDraft: SopOverview = { ...MEMBER_SOP, draft: null };
+  const srv = fakeServer(noDraft);
+  const m = await mountPage('/console/sop?section=tone', owner, noDraft);
   eq('成员：目录、中栏、检查清单、工具，DOM 里依次排（Tab 顺序：目录 → 编辑器）', cols(m), [
     'sop-col-toc',
     'sop-col-main',
@@ -2975,9 +3021,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     'sop-col-tools',
   ]);
   eq(
-    '检查清单在右栏那一格：还没跑时 7 项都是「还没跑」，没有通过数',
-    [all(m.box, '.sop-col-check .check-item-pending').length, m.box.querySelector('.sop-col-check .check-list-summary')],
-    [7, null],
+    '检查清单在右栏那一格：没有草稿时不检查，7 项都是「还没跑」，没有通过数',
+    [all(m.box, '.sop-col-check .check-item-pending').length, m.box.querySelector('.sop-col-check .check-list-summary'), srv.checks()],
+    [7, null, 0],
   );
   eq(
     '工具卡片：标题、每行一个芯片（中文名、原名取行业包）、卡底说明',
@@ -2998,24 +3044,15 @@ const editorEditable = (m: PageBox): string | null | undefined =>
       '写别的名字模型会当成不存在',
     ],
   );
-  await clickEv(headerButton(m, '检查'));
-  await waitFor(() => !!m.box.querySelector('.sop-col-check .check-list-summary'));
-  eq(
-    '点「检查」：结果列在右栏的清单里（6/7通过，没过的写几处、哪一节）',
-    [text(m.box.querySelector('.sop-col-check .check-list-summary')), text(m.box.querySelector('.sop-col-check .check-item-fail'))],
-    ['6/7通过', '工具名都存在1处·话术原则'],
-  );
   await m.unmount();
   eq('没打字就不存', srv.puts().length, 0);
+  fakeServer(MEMBER_SOP);
   const again = await mountPage('/console/sop?section=tone', owner, MEMBER_SOP, FAST);
-  await clickEv(headerButton(again, '检查'));
   await waitFor(() => !!again.box.querySelector('.sop-col-check .check-list-summary'));
-  await typeAtEnd(again, '改');
-  await waitFor(() => saveNow(again) === '·已自动保存14:30');
   eq(
-    '检查结果是对存之前那份草稿说的：自动保存以后作废，7 项回到「还没跑」',
-    [again.box.querySelector('.sop-col-check .check-list-summary'), all(again.box, '.sop-col-check .check-item-pending').length],
-    [null, 7],
+    '打开时已有草稿：自动检查，结果列在右栏的清单里（6/7通过，没过的写几处、哪一节）',
+    [text(again.box.querySelector('.sop-col-check .check-list-summary')), text(again.box.querySelector('.sop-col-check .check-item-fail'))],
+    ['6/7通过', '工具名都存在1处·话术原则'],
   );
   await again.unmount();
   const agent: Viewer = { ...owner, me: { ...(owner as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
@@ -3050,6 +3087,724 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   );
   await narrow.unmount();
   win.happyDOM.setWindowSize({ width: 1440, height: 1100 });
+}
+respond = null;
+
+// ---------------- 10. 检查与定位（第 6.2 步） ----------------
+// spec「销售话术 · 检查」：说明由前端按 code、match 生成；点清单里的一项去哪；每一处 match 画波浪线；写错的工具名、字段名在那一段
+// 之后插行内提醒，行业包词汇里编辑距离 ≤2 的名字给「改成…」，点了替换那一段里的几处并马上存；每次存上以后检查。
+
+// 10.1 纯函数：问题落在哪一节、点了去哪、说明、候选、正文里的每一处；清单的各项
+{
+  const published: SopSectionText[] = [
+    { key: 'preamble', text: '前言。\n\n' },
+    { key: 'price-rules', text: '## 定价规则（只有这两条，硬性）\n\n定价只有两条规则。\n\n' },
+  ];
+  const vs: ContractViolation[] = [
+    { code: 'structure', sectionKey: 'tone', detail: 'x' },
+    { code: 'structure', sectionKey: null, detail: 'x' },
+    { code: 'locked_changed', sectionKey: 'stages', detail: 'x' },
+    { code: 'phrase_missing', sectionKey: null, detail: 'x', match: '定价只有两条规则' },
+    { code: 'phrase_missing', sectionKey: null, detail: 'x', match: '线上也没有这句' },
+    { code: 'phrase_forbidden', sectionKey: 'tone', detail: 'x', match: '缩短天数重新报价' },
+    { code: 'phrase_forbidden', sectionKey: null, detail: 'x', match: '只在固定要求里' },
+    { code: 'unknown_tool', sectionKey: 'tone', detail: 'x', match: 'search_route' },
+    { code: 'unknown_field', sectionKey: 'objections', detail: 'x', match: 'payURL' },
+    { code: 'unknown_tool', sectionKey: 'tone', detail: 'x' },
+    { code: 'over_budget', sectionKey: null, detail: 'x' },
+  ];
+  const located = locateViolations(vs, published);
+  eq(
+    '落在哪一节：必需说法取线上版本里含这句的节（线上也没有就不落），超额不落在节上，其余取 sectionKey',
+    located.map((v) => v.section),
+    ['tone', null, 'stages', 'price-rules', null, 'tone', null, 'tone', 'objections', 'tone', null],
+  );
+  eq(
+    '点了去哪：禁用短语、写错的名字选中 match（名字按标识符找），结构、固定规则、必需说法打开那一节，超额去额度条，没有节的哪也不去',
+    located.map((v) => v.target),
+    [
+      { kind: 'section', section: 'tone' },
+      null,
+      { kind: 'section', section: 'stages' },
+      { kind: 'section', section: 'price-rules' },
+      null,
+      { kind: 'match', section: 'tone', match: '缩短天数重新报价', name: false },
+      null,
+      { kind: 'match', section: 'tone', match: 'search_route', name: true },
+      { kind: 'match', section: 'objections', match: 'payURL', name: true },
+      { kind: 'section', section: 'tone' },
+      { kind: 'quota' },
+    ],
+  );
+  eq('说明：照 spec「检查」的表，服务端的 detail 不用；没有 match 的说不清就不写', located.map(problemText), [
+    '这一节的标题或位置被改了，改回原来的标题',
+    '这一节的标题或位置被改了，改回原来的标题',
+    '固定规则节不能改，撤回这一节的改动',
+    '要保留这句：「定价只有两条规则」',
+    '要保留这句：「线上也没有这句」',
+    '「缩短天数重新报价」不能出现在话术里',
+    '「只在固定要求里」不能出现在话术里',
+    '提到了不存在的工具「search_route」',
+    '提到了不存在的字段「payURL」',
+    null,
+    null,
+  ]);
+  eq(
+    '编辑卡片上方的说明：这一节里没有行内提醒的几类，去重；写错的名字不在这里（在行内提醒里）',
+    [sectionNotes([...located, located[0]!], 'tone'), sectionNotes(located, 'price-rules'), sectionNotes(located, 'objections')],
+    [['这一节的标题或位置被改了，改回原来的标题', '「缩短天数重新报价」不能出现在话术里'], ['要保留这句：「定价只有两条规则」'], []],
+  );
+
+  eq(
+    '编辑距离：多一个字 1、少两个字 2、对调 2、空串、相同 0；超过 2 的一律报 3',
+    [
+      editDistance('search_route', 'search_routes'),
+      editDistance('serch_route', 'search_routes'),
+      editDistance('abc', 'acb'),
+      editDistance('', 'ab'),
+      editDistance('abc', 'abc'),
+      editDistance('abcdef', 'uvwxyz'),
+      editDistance('a', 'abcd'),
+    ],
+    [1, 2, 2, 2, 0, 3, 3],
+  );
+  const tools = { search_routes: '查线路', search_hotels: '查酒店', create_quote: '算报价' };
+  eq(
+    '候选：编辑距离 ≤2 里最近的一个；远了、就是它自己都不给',
+    [
+      nearestName('search_route', tools),
+      nearestName('create_quota', tools),
+      nearestName('search_hotel', tools),
+      nearestName('zzz_tool', tools),
+      nearestName('search_routes', tools),
+    ],
+    [
+      { name: 'search_routes', label: '查线路' },
+      { name: 'create_quote', label: '算报价' },
+      { name: 'search_hotels', label: '查酒店' },
+      null,
+      null,
+    ],
+  );
+  eq('一样近的取表里靠前的', nearestName('ab_e', { ab_c: '甲', ab_d: '乙' }), { name: 'ab_c', label: '甲' });
+  eq('更近的在后面也取更近的', nearestName('ab_cd', { ab_xy: '甲', ab_ce: '乙' }), { name: 'ab_ce', label: '乙' });
+  const withProto = Object.assign(Object.create({ proto_x: '原型上的' }) as Record<string, string>, { far_away_name: '自己的' });
+  eq('只认自己的键：原型上的名字不当候选', nearestName('proto_z', withProto), null);
+
+  const vocab: Vocabulary = { tools: { search_routes: '查线路', generate_proposal: '生成方案书' }, sopFields: { payUrl: '付款链接' } };
+  eq(
+    '话术原则的问题：禁用短语只画波浪线；写错的工具名带行内提醒，候选从工具名里找，「模型只认2个」；没有 match 的不列',
+    editorProblems(located, 'tone', vocab),
+    [
+      { match: '缩短天数重新报价', name: false, hint: null },
+      { match: 'search_route', name: true, hint: { what: 'tool', known: 2, fix: { name: 'search_routes', label: '查线路' } } },
+    ],
+  );
+  eq('字段名从 sopFields 里找候选（大小写各算一处）', editorProblems(located, 'objections', vocab), [
+    { match: 'payURL', name: true, hint: { what: 'field', known: 1, fix: { name: 'payUrl', label: '付款链接' } } },
+  ]);
+  eq('行业包没到：照样画波浪线、插提醒，只是没有「改成…」、不写个数', editorProblems(located, 'tone', undefined)[1], {
+    match: 'search_route',
+    name: true,
+    hint: { what: 'tool', known: 0, fix: null },
+  });
+  eq('同一个名字报了两次（检查与发布被拒）：只列一次', editorProblems([...located, located[7]!], 'tone', vocab).length, 2);
+  const renoLocated = locateViolations([{ code: 'unknown_tool', sectionKey: 'tone', match: 'search_package' }], []);
+  eq(
+    '家装整装假包：候选取它自己的词汇',
+    editorProblems(renoLocated, 'tone', { tools: { search_packages: '查套餐' }, sopFields: {} })[0]?.hint,
+    {
+      what: 'tool',
+      known: 1,
+      fix: { name: 'search_packages', label: '查套餐' },
+    },
+  );
+
+  const t = 'search_route、search_routes、xsearch_route、search_route1、search_route_x、（search_route）';
+  const last = t.indexOf('（search_route）') + 1;
+  eq('按标识符找：前后连着字母、数字、下划线的不算（与服务端的 \\b 一致）', occurrences(t, 'search_route', true), [
+    [0, 12],
+    [last, last + 12],
+  ]);
+  eq('按原文找：不重叠', occurrences('aaaa', 'aa', false), [
+    [0, 2],
+    [2, 4],
+  ]);
+  eq('空的 match：一处也没有', occurrences('abc', '', false), []);
+  eq(
+    '行内提醒的第二行：写错的后果',
+    [
+      hintNote({ what: 'tool', known: 7, fix: null }),
+      hintNote({ what: 'field', known: 13, fix: null }),
+      hintNote({ what: 'tool', known: 0, fix: null }),
+    ],
+    [
+      '模型只认7个工具名，写错的名字会被当成不存在，这条规则就不起作用了。',
+      '模型只认13个字段名，写错的名字会被当成不存在，这条规则就不起作用了。',
+      '写错的名字会被当成不存在，这条规则就不起作用了。',
+    ],
+  );
+  eq('按钮：「改成search_routes」，不手打空格', fixLabel('search_routes'), '改成search_routes');
+
+  // 清单的各项
+  const clicked: unknown[] = [];
+  const items = checkItems(SPEC, located, { chars: 2303, limit: LIMIT }, (target) => clicked.push(target));
+  eq(
+    '没过的项：处数和问题落在的节（去重，不落在节上的不写）；有去处的整行能点',
+    items.map((i) => [i.key, i.state, i.note, typeof i.onClick]),
+    [
+      ['structure', 'fail', ['2处', '话术原则'], 'function'],
+      ['locked_changed', 'fail', ['1处', '各阶段目标'], 'function'],
+      ['phrase_missing', 'fail', ['2处', '定价规则（只有这两条，硬性）'], 'function'],
+      ['phrase_forbidden', 'fail', ['2处', '话术原则'], 'function'],
+      ['unknown_tool', 'fail', ['2处', '话术原则'], 'function'],
+      ['unknown_field', 'fail', ['1处', '异议处理'], 'function'],
+      ['over_budget', 'fail', ['1处'], 'function'],
+    ],
+  );
+  for (const i of items) i.onClick?.();
+  eq('点了去这一项第一个有去处的问题', clicked, [
+    { kind: 'section', section: 'tone' },
+    { kind: 'section', section: 'stages' },
+    { kind: 'section', section: 'price-rules' },
+    { kind: 'match', section: 'tone', match: '缩短天数重新报价', name: false },
+    { kind: 'match', section: 'tone', match: 'search_route', name: true },
+    { kind: 'match', section: 'objections', match: 'payURL', name: true },
+    { kind: 'quota' },
+  ]);
+  eq(
+    '超了额度：「字数在额度内」写「超出N字」',
+    checkItems(SPEC, locateViolations([vs[10]!], []), { chars: LIMIT + 42, limit: LIMIT }).at(-1)?.note,
+    '超出42字',
+  );
+  const passed = checkItems(SPEC, [], { chars: 2303, limit: LIMIT });
+  eq(
+    '全过：只有「字数在额度内」写百分比（B 页的 87%）',
+    passed.map((i) => [i.state, i.note ?? null]),
+    [...Array.from({ length: 6 }, () => ['pass', null]), ['pass', '87%']],
+  );
+  eq('没有字数：百分比不写', checkItems(SPEC, [], null).at(-1)?.note, undefined);
+  eq(
+    '还没跑：7 项都是「还没跑」，没有说明、不能点',
+    checkItems(SPEC, null, null, noop).map((i) => [i.state, i.note, i.onClick]),
+    Array.from({ length: 7 }, () => ['pending', undefined, undefined]),
+  );
+  eq('不给 onLocate：没过的项不能点', checkItems(SPEC, located, null).filter((i) => i.onClick).length, 0);
+  eq('没过的项里没有一条有去处（节表整体不对）：不能点，只写处数', checkItems(SPEC, locateViolations([vs[1]!], []), null, noop)[0], {
+    key: 'structure',
+    label: '结构完整',
+    state: 'fail',
+    note: ['1处'],
+    onClick: undefined,
+  });
+  eq(
+    '百分比与额度条同一个写法',
+    [quotaPercent(2303, LIMIT), quotaPercent(2525, LIMIT), quotaPercent(LIMIT, LIMIT), quotaPercent(LIMIT + 1, LIMIT), quotaPercent(10, 0)],
+    [87, 94, 100, 101, 0],
+  );
+}
+
+// 10.2 编辑器：波浪线与行内提醒（EditorState 上算、挂在 DOM 里），「改成…」的那一笔
+const DOC2 = [
+  '- 先调 search_route 查线路，别用 search_route 猜。',
+  '  续行里也写了 search_route。',
+  '- 第二条：缩短天数重新报价不行。',
+  '',
+  '顶格的一段提到 search_route，还有 payURL。',
+].join('\n');
+const TOOL_HINT = { what: 'tool', known: 2, fix: { name: 'search_routes', label: '查线路' } } as const;
+const PROBLEMS: EditorProblem[] = [
+  { match: 'search_route', name: true, hint: TOOL_HINT },
+  { match: '缩短天数重新报价', name: false, hint: null },
+  { match: 'payURL', name: true, hint: { what: 'field', known: 1, fix: { name: 'payUrl', label: '付款链接' } } },
+];
+{
+  const endOf = (n: number): number => lineOf(DOC2, n).from + lineOf(DOC2, n).text.length;
+  const s1 = DOC2.indexOf('search_route');
+  const s2 = DOC2.indexOf('search_route', s1 + 1);
+  const s3 = DOC2.indexOf('search_route', s2 + 1);
+  const s4 = DOC2.indexOf('search_route', s3 + 1);
+  const f = DOC2.indexOf('缩短天数重新报价');
+  const p = DOC2.indexOf('payURL');
+  const places = problemPlaces(DOC2, PROBLEMS);
+  eq('波浪线：每一处，按位置排', places.marks, [
+    [s1, s1 + 12],
+    [s2, s2 + 12],
+    [s3, s3 + 12],
+    [f, f + 8],
+    [s4, s4 + 12],
+    [p, p + 6],
+  ]);
+  eq(
+    '行内提醒：写错的名字每一段一条，插在那一段（列表项连同续行）的末行后面，缩进取那一段第一行；禁用短语没有',
+    places.hints.map((h) => [h.at, h.indent, h.match]),
+    [
+      [endOf(2), 1, 'search_route'],
+      [endOf(5), 0, 'search_route'],
+      [endOf(5), 0, 'payURL'],
+    ],
+  );
+  eq('没有问题：什么都不画', problemPlaces(DOC2, []), { marks: [], hints: [] });
+
+  const st = EditorState.create({ doc: DOC2, extensions: [sopEditorSetup({ problems: PROBLEMS, halt: false })] });
+  const kinds = (state: EditorState): [number, number] => {
+    const d = decoList(state.field(problemsField).deco);
+    return [d.filter((x) => x.spec.class === 'sop-bad').length, d.filter((x) => x.spec.block === true).length];
+  };
+  eq('EditorState 上：6 处波浪线、3 条块级的行内提醒', kinds(st), [6, 3]);
+  const typed = st.update({ changes: { from: s1, to: s1 + 12, insert: 'search_routes' } }).state;
+  eq('改掉一处：波浪线跟着少一处（位置每次改动都重新找），这一段还有别的，提醒还在', kinds(typed), [5, 3]);
+  eq('换成没有问题：都没了', kinds(st.update({ effects: setProblems.of([]) }).state), [0, 0]);
+  const fixable = (state: EditorState): unknown[] =>
+    decoList(state.field(problemsField).deco)
+      .filter((x) => x.spec.block === true)
+      .map((x) => (x.spec.widget as { fixable: boolean }).fixable);
+  eq(
+    '只读的编辑器：提醒照画，不给「改成…」',
+    [
+      fixable(st),
+      fixable(EditorState.create({ doc: DOC2, extensions: [sopEditorSetup({ problems: PROBLEMS }), EditorState.readOnly.of(true)] })),
+    ],
+    [
+      [true, true, true],
+      [false, false, false],
+    ],
+  );
+
+  const spec = fixNameAt(st, endOf(2), 'search_route', 'search_routes');
+  const tr = spec ? st.update(spec) : null;
+  const want = DOC2.split('\n')
+    .map((l, i) => (i < 2 ? l.replaceAll('search_route', 'search_routes') : l))
+    .join('\n');
+  eq(
+    '「改成…」：换掉这一段（第 1、2 行）里的三处，别的段不动；光标在最后一处后面；带 problemFix 标记',
+    [tr?.state.doc.toString() === want, tr?.state.selection.main.head, tr?.annotation(problemFix)],
+    [true, want.indexOf('search_routes。') + 13, true],
+  );
+  eq('「改成…」的那一段已经没有这个名字：不改', fixNameAt(st, endOf(3), 'search_route', 'search_routes'), null);
+  const field = fixNameAt(st, endOf(5), 'payURL', 'payUrl');
+  eq('字段名一样：只换那一段', field ? st.update(field).state.doc.toString() === DOC2.replace('payURL', 'payUrl') : false, true);
+}
+
+// 10.2b 挂在 DOM 里：波浪线、行内提醒的文字与按钮，点了以后回调；换问题不重建；只读没有按钮
+{
+  const changes: string[] = [];
+  let fixes = 0;
+  const el = (p: Partial<Parameters<typeof SopEditor>[0]> = {}) => (
+    <SopEditor
+      name="话术原则"
+      value={DOC2}
+      vocabulary={VOCAB}
+      problems={PROBLEMS}
+      onChange={(v) => changes.push(v)}
+      onFix={() => (fixes += 1)}
+      {...p}
+    />
+  );
+  const m = await rootFor(el());
+  const cm = (): HTMLElement => m.box.querySelector<HTMLElement>('.cm-content')!;
+  const view = EditorView.findFromDOM(cm())!;
+  eq(
+    '波浪线：每一处都包在 .sop-bad 里',
+    all(m.box, '.sop-bad').map((e) => e.textContent),
+    ['search_route', 'search_route', 'search_route', '缩短天数重新报价', 'search_route', 'payURL'],
+  );
+  const hints = (): HTMLElement[] => all<HTMLElement>(m.box, '.sop-hint-wrap');
+  const h0 = hints()[0];
+  eq(
+    '第一条提醒：紧跟在第一个列表项的续行后面，缩一级；在文字流里（不可编辑的块）',
+    [hints().length, text(h0?.previousElementSibling), h0?.classList.contains('sop-hint-in1'), h0?.getAttribute('contenteditable')],
+    [3, '续行里也写了 search_route。', true, 'false'],
+  );
+  eq(
+    '第一条提醒：第一行点名写错的名字与候选（芯片：中文名、原名），第二行写后果，右边是「改成…」',
+    [
+      text(h0?.querySelector('.sop-hint-title')),
+      [text(h0?.querySelector('.sop-hint-chip-label')), text(h0?.querySelector('.sop-hint-chip-name'))],
+      text(h0?.querySelector('.sop-hint-note')),
+      text(h0?.querySelector('button.sop-hint-fix')),
+      h0?.querySelector('.sop-hint-icon svg')?.getAttribute('width'),
+    ],
+    [
+      '提到了不存在的工具「search_route」，是不是「查线路search_routes」？',
+      ['查线路', 'search_routes'],
+      '模型只认2个工具名，写错的名字会被当成不存在，这条规则就不起作用了。',
+      '改成search_routes',
+      '14',
+    ],
+  );
+  eq(
+    '字段名的提醒',
+    [
+      text(hints()[2]?.querySelector('.sop-hint-title')),
+      text(hints()[2]?.querySelector('.sop-hint-note')),
+      text(hints()[2]?.querySelector('button')),
+    ],
+    [
+      '提到了不存在的字段「payURL」，是不是「付款链接payUrl」？',
+      '模型只认1个字段名，写错的名字会被当成不存在，这条规则就不起作用了。',
+      '改成payUrl',
+    ],
+  );
+  eq(
+    '挤压回退：提醒里连用的「」，」也挤（「」？」不挤：「？」不参与）',
+    all(h0!, '.halt').map((e) => e.textContent),
+    ['」'],
+  );
+  await clickEv(h0?.querySelector('button.sop-hint-fix'));
+  await settle();
+  const want = DOC2.split('\n')
+    .map((l, i) => (i < 2 ? l.replaceAll('search_route', 'search_routes') : l))
+    .join('\n');
+  eq(
+    '点「改成search_routes」：这一段换掉；onChange 一次（新正文）、onFix 一次；焦点回到正文；这一段的提醒没了',
+    [changes.length, changes[0] === want, fixes, document.activeElement === cm(), hints().length],
+    [1, true, 1, true, 2],
+  );
+  await m.render(el({ value: want, problems: [] }));
+  eq(
+    '换成没有问题：波浪线、提醒都没了，编辑器不重建',
+    [all(m.box, '.sop-bad').length, hints().length, EditorView.findFromDOM(cm()) === view],
+    [0, 0, true],
+  );
+  eq('外面换问题与正文：不回调', [changes.length, fixes], [1, 1]);
+  const odd: EditorProblem[] = [{ match: 'zzz_tool', name: true, hint: { what: 'tool', known: 0, fix: null } }];
+  await m.render(el({ value: '用 zzz_tool 查。\n', problems: odd }));
+  eq(
+    '没有候选：第一行只点名，没有按钮；不写个数',
+    [
+      text(hints()[0]?.querySelector('.sop-hint-title')),
+      text(hints()[0]?.querySelector('.sop-hint-note')),
+      hints()[0]?.querySelector('button') ?? null,
+    ],
+    ['提到了不存在的工具「zzz_tool」', '写错的名字会被当成不存在，这条规则就不起作用了。', null],
+  );
+  await m.render(el({ problems: PROBLEMS, readOnly: true }));
+  eq('只读（固定规则、只读成员、409 停住）：提醒照画，没有按钮', [hints().length, all(m.box, 'button.sop-hint-fix').length], [3, 0]);
+  await m.unmount();
+}
+
+// 10.3 整页：假服务端按正文算问题
+/** 草稿：话术原则写错一个工具名、写了禁用短语；异议处理删掉了线上版本里的一句必需说法 */
+const TONE_BAD = '- 先调 search_route 查线路。\n\n- 客户嫌贵时缩短天数重新报价。\n\n';
+function withBodies(base: readonly SopSectionText[], bodies: Record<string, string>): SopSectionText[] {
+  return base.map((s) => {
+    const def = TRAVEL.find((d) => d.key === s.key)!;
+    return bodies[s.key] === undefined ? s : { key: s.key, text: textFor(def, bodies[s.key]!) };
+  });
+}
+const P_ONLINE = withBodies(PUBLISHED, { objections: '定价只有两条规则。\n\n' });
+const D_BAD = withBodies(PUBLISHED, { tone: TONE_BAD, objections: '先共情。\n\n' });
+const BAD_SOP: SopOverview = {
+  published: version(2, P_ONLINE),
+  draft: { ...version(null, D_BAD, { basedOn: 'v2', rev: 4, publishedAt: null, publishedByName: null }), stale: false },
+  spec: SPEC,
+  budget: { chars: editableChars(D_BAD, SPEC), limit: LIMIT },
+};
+const KNOWN_TOOLS = ['search_routes', 'generate_proposal', 'handoff_to_human'];
+/** 按草稿的正文算问题（与服务端同样的认法：snake_case 的标识符不是工具名、禁用短语、必需说法）；over 给了就报超额 */
+function scan(s: SopOverview, over: number | null = null): DraftCheck {
+  const secs = s.draft!.sections;
+  const violations: ContractViolation[] = [];
+  for (const sec of secs) {
+    for (const [name] of sec.text.matchAll(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g))
+      if (!KNOWN_TOOLS.includes(name))
+        violations.push({ code: 'unknown_tool', sectionKey: sec.key, detail: `「${name}」不是现有的工具名`, match: name });
+    if (sec.text.includes('缩短天数重新报价'))
+      violations.push({ code: 'phrase_forbidden', sectionKey: sec.key, detail: '不能出现', match: '缩短天数重新报价' });
+  }
+  if (!secs.some((x) => x.text.includes('定价只有两条规则')))
+    violations.push({ code: 'phrase_missing', sectionKey: null, detail: '缺少', match: '定价只有两条规则' });
+  const chars = over ?? editableChars(secs, SPEC);
+  if (chars > LIMIT) violations.push({ code: 'over_budget', sectionKey: null, detail: '超了' });
+  return {
+    promptHash: 'b'.repeat(64),
+    prefixHash: 'c'.repeat(64),
+    chars,
+    limit: LIMIT,
+    violations,
+    rebase: { needed: false, conflicts: [] },
+  };
+}
+const travelOwner: Viewer = { ...OWNER, pack: { ...packOf(TRAVEL), vocabulary: { ...packOf(TRAVEL).vocabulary, ...VOCAB } } };
+const cmOf = (m: PageBox): HTMLElement | null => m.box.querySelector<HTMLElement>('.sop-editor .cm-content');
+const viewOf = (m: PageBox): EditorView => EditorView.findFromDOM(cmOf(m)!)!;
+const selected = (m: PageBox): string => {
+  const v = viewOf(m);
+  const r = v.state.selection.main;
+  return v.state.sliceDoc(r.from, r.to);
+};
+const checkCard = (m: PageBox): Element => m.box.querySelector('.sop-col-check')!;
+const summaryOf = (m: PageBox): string => text(checkCard(m).querySelector('.check-list-summary'));
+const metaOf = (m: PageBox): string => text(checkCard(m).querySelector('.check-list-meta'));
+const itemOf = (m: PageBox, name: string): HTMLElement | undefined =>
+  all<HTMLElement>(checkCard(m), '.check-item').find((i) => text(i.querySelector('.check-item-label')) === name);
+const noteOf = (m: PageBox, name: string): string => text(itemOf(m, name)?.querySelector('.check-item-note'));
+function recordScroll(): { calls: string[]; restore(): void } {
+  const proto = win.Element.prototype as unknown as { scrollIntoView(this: Element, o?: unknown): void };
+  const original = proto.scrollIntoView;
+  const calls: string[] = [];
+  proto.scrollIntoView = function (this: Element, o?: unknown) {
+    calls.push(`${this.className} ${(o as { block?: string } | undefined)?.block}`);
+  };
+  return { calls, restore: () => void (proto.scrollIntoView = original) };
+}
+
+// 10.3a 打开时检查；清单、目录、中栏；点了定位；「改成…」以后马上存、再检查；打字不重渲清单、不重派问题
+{
+  const scroll = recordScroll();
+  let clock = NOW;
+  const srv = fakeServer(BAD_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=preamble', travelOwner, BAD_SOP, { ...FAST, debounce: 60_000, now: () => clock });
+  await waitFor(() => summaryOf(m) !== '');
+  eq(
+    '打开时已有草稿：检查一次，4/7通过，下一行「每次自动保存都会跑 · 上次14:30」',
+    [srv.checks(), summaryOf(m), metaOf(m)],
+    [1, '4/7通过', '每次自动保存都会跑·上次14:30'],
+  );
+  eq(
+    '没过的项写处数和节（必需说法落在线上版本里含这句的节）；没过的整行是按钮，通过的不是',
+    [
+      ['必备短语都在', '没有禁用短语', '工具名都存在'].map((l) => noteOf(m, l)),
+      [itemOf(m, '工具名都存在')?.tagName, itemOf(m, '结构完整')?.tagName],
+    ],
+    [
+      ['1处·异议处理', '1处·话术原则', '1处·话术原则'],
+      ['BUTTON', 'DIV'],
+    ],
+  );
+  const pct = noteOf(m, '字数在额度内');
+  check(
+    '「字数在额度内」写百分比，与额度条上的同一个数',
+    /^\d+%$/.test(pct) && text(m.box.querySelector('.sop-quota-line')).includes(`·${pct}·`),
+    pct,
+  );
+  eq(
+    '目录：话术原则 2 个问题，异议处理 1 个（必需说法按线上版本落的节）',
+    [text(rowIn(m, 'tone')?.querySelector('.sop-toc-issue')), text(rowIn(m, 'objections')?.querySelector('.sop-toc-issue'))],
+    ['2个问题', '1个问题'],
+  );
+  eq(
+    '当前节（前言）没有问题：没有波浪线、提醒、说明',
+    [all(m.box, '.sop-bad').length, all(m.box, '.sop-hint-wrap').length, m.box.querySelector('.sop-notes')],
+    [0, 0, null],
+  );
+
+  const len = historyLength(m);
+  await clickEv(itemOf(m, '工具名都存在'));
+  await until(() => m.section() === 'tone' && selected(m) === 'search_route');
+  eq(
+    '点「工具名都存在」：切到话术原则（进浏览历史），选中写错的名字，焦点在正文上',
+    [m.section(), historyLength(m), selected(m), document.activeElement === cmOf(m)],
+    ['tone', len + 1, 'search_route', true],
+  );
+  eq(
+    '话术原则：写错的名字与禁用短语画波浪线',
+    all(m.box, '.sop-bad').map((e) => e.textContent),
+    ['search_route', '缩短天数重新报价'],
+  );
+  eq(
+    '写错的名字那一段之后插行内提醒，候选取行业包的词汇',
+    [text(m.box.querySelector('.sop-hint-title')), text(m.box.querySelector('.sop-hint-note')), text(m.box.querySelector('.sop-hint-fix'))],
+    [
+      '提到了不存在的工具「search_route」，是不是「查线路search_routes」？',
+      '模型只认2个工具名，写错的名字会被当成不存在，这条规则就不起作用了。',
+      '改成search_routes',
+    ],
+  );
+  eq(
+    '禁用短语的说明写在编辑卡片上方',
+    all(m.box, '.sop-notes .sop-note').map((e) => text(e)),
+    ['「缩短天数重新报价」不能出现在话术里'],
+  );
+  await clickEv(itemOf(m, '没有禁用短语'));
+  await until(() => selected(m) === '缩短天数重新报价');
+  eq('已经在这一节：点「没有禁用短语」不进浏览历史，选中禁用短语', [historyLength(m), selected(m)], [len + 1, '缩短天数重新报价']);
+
+  scroll.calls.length = 0;
+  await clickEv(itemOf(m, '必备短语都在'));
+  await until(() => m.section() === 'objections' && document.activeElement === cmOf(m));
+  eq(
+    '点「必备短语都在」：切到线上版本里含这句的节，卡片上方写要保留哪句、滚过去，焦点在正文上',
+    [m.section(), all(m.box, '.sop-notes .sop-note').map((e) => text(e)), scroll.calls, document.activeElement === cmOf(m)],
+    ['objections', ['要保留这句：「定价只有两条规则」'], ['sop-notes nearest'], true],
+  );
+
+  await clickEv(rowIn(m, 'tone'));
+  await until(() => m.section() === 'tone' && !!m.box.querySelector('.sop-hint-fix'));
+  // 打字（还没存）：右栏清单（memo）不重渲，编辑器里的问题不重派
+  const cardProps = (): unknown => currentNamed(checkCard(m), 'CheckCard')[0]?.memoizedProps;
+  const p0 = cardProps();
+  const probs0 = viewOf(m).state.field(problemsField).problems;
+  await act(async () => viewOf(m).dispatch({ changes: { from: 0, insert: '甲' }, userEvent: 'input.type' }));
+  await settle();
+  eq(
+    '打字（还没存）：检查清单不重渲，编辑器里的问题不重派',
+    [p0 !== undefined && cardProps() === p0, viewOf(m).state.field(problemsField).problems === probs0],
+    [true, true],
+  );
+
+  clock = NOW + 60_000;
+  const puts = srv.puts().length;
+  await clickEv(m.box.querySelector('.sop-hint-fix'));
+  await waitFor(() => srv.puts().length === puts + 1);
+  const body = srv.puts().at(-1)?.edits[0]?.body ?? '';
+  eq(
+    '「改成search_routes」：不等 60 秒的防抖，马上存，带换好的正文',
+    [
+      srv
+        .puts()
+        .at(-1)
+        ?.edits.map((e) => e.key),
+      body.includes('search_routes 查线路'),
+      body.includes('search_route '),
+    ],
+    [['tone'], true, false],
+  );
+  eq(
+    '换好以后：提醒没了，只剩禁用短语的波浪线，焦点在正文上',
+    [all(m.box, '.sop-hint-wrap').length, all(m.box, '.sop-bad').map((e) => e.textContent), document.activeElement === cmOf(m)],
+    [0, ['缩短天数重新报价'], true],
+  );
+  await waitFor(() => summaryOf(m) === '5/7通过');
+  eq(
+    '存上以后再检查一次：工具名都存在通过了，「上次」跟着更新',
+    [srv.checks(), summaryOf(m), itemOf(m, '工具名都存在')?.classList.contains('check-item-pass'), metaOf(m)],
+    [2, '5/7通过', true, '每次自动保存都会跑·上次14:31'],
+  );
+  scroll.restore();
+  await m.unmount();
+
+  // 超了额度：「字数在额度内」写「超出N字」，点了滚到额度条、焦点落在它上面
+  const over = fakeServer(BAD_SOP);
+  over.check = (s) => scan(s, LIMIT + 42);
+  const scroll2 = recordScroll();
+  const o = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
+  await waitFor(() => summaryOf(o) !== '');
+  eq('超了额度：写「超出42字」', [summaryOf(o), noteOf(o, '字数在额度内')], ['3/7通过', '超出42字']);
+  await clickEv(itemOf(o, '字数在额度内'));
+  await settle();
+  const quota = o.box.querySelector('.sop-quota');
+  eq(
+    '点「字数在额度内」：滚到额度条，焦点落在它上面（不在 Tab 顺序里），不换节',
+    [scroll2.calls.map((c) => c.split(' ').at(-1)), document.activeElement === quota, quota?.getAttribute('tabindex'), o.section()],
+    [['nearest'], true, '-1', 'tone'],
+  );
+  scroll2.restore();
+  await o.unmount();
+}
+
+// 10.3b 没跑成与重试；有结果以后又没跑成，上一次的留着；两次检查都在路上时只认后发的
+{
+  const srv = fakeServer(BAD_SOP);
+  srv.check = (s) => scan(s);
+  srv.checkFails = true;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
+  await waitFor(() => metaOf(m).includes('没检查上'));
+  eq(
+    '打开时没跑成：7 项还没跑，下一行写 danger 的「没检查上 · 重试」',
+    [all(checkCard(m), '.check-item-pending').length, metaOf(m), !!checkCard(m).querySelector('.sop-check-failed button')],
+    [7, '每次自动保存都会跑·没检查上·重试', true],
+  );
+  srv.checkFails = false;
+  await clickEv(checkCard(m).querySelector('.sop-check-failed button'));
+  await waitFor(() => summaryOf(m) !== '');
+  eq('点「重试」：再跑一次，跑成了', [srv.checks(), summaryOf(m), metaOf(m)], [2, '4/7通过', '每次自动保存都会跑·上次14:30']);
+  srv.checkFails = true;
+  await typeAtEnd(m, '甲');
+  await waitFor(() => metaOf(m).includes('没检查上'));
+  eq(
+    '存上以后没跑成：上一次的结果留着，写「没检查上」',
+    [srv.checks(), summaryOf(m), metaOf(m)],
+    [3, '4/7通过', '每次自动保存都会跑·没检查上·重试'],
+  );
+
+  srv.checkFails = false;
+  srv.checkHold = true;
+  await typeAtEnd(m, '乙');
+  await waitFor(() => srv.checks() === 4);
+  const v = viewOf(m);
+  const at = v.state.doc.toString().indexOf('search_route ');
+  await act(async () => v.dispatch({ changes: { from: at, to: at + 12, insert: 'search_routes' }, userEvent: 'input.type' }));
+  await waitFor(() => srv.checks() === 5);
+  srv.checkHold = false;
+  await act(async () => srv.checkHeld[1]?.resolve());
+  await waitFor(() => summaryOf(m) === '5/7通过');
+  await act(async () => srv.checkHeld[0]?.resolve());
+  await rest(60);
+  eq(
+    '两次检查都在路上：后发的（改好以后的草稿）先回来就用它，先发的晚回来也不认',
+    [summaryOf(m), itemOf(m, '工具名都存在')?.classList.contains('check-item-pass'), metaOf(m)],
+    ['5/7通过', true, '每次自动保存都会跑·上次14:30'],
+  );
+  await m.unmount();
+}
+
+// 10.3c 没有草稿不检查，第一次存上以后查；丢弃以后清掉；只读成员不查；409 停住时提醒没有「改成…」
+{
+  const noDraft: SopOverview = { ...BAD_SOP, published: version(2, D_BAD), draft: null };
+  const srv = fakeServer(noDraft);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, noDraft, FAST);
+  await rest(100);
+  eq(
+    '没有草稿：不检查，7 项还没跑',
+    [srv.checks(), all(checkCard(m), '.check-item-pending').length, metaOf(m)],
+    [0, 7, '每次自动保存都会跑'],
+  );
+  await typeAtEnd(m, '甲');
+  await waitFor(() => summaryOf(m) !== '');
+  eq(
+    '第一次存上（新建了草稿）以后检查；线上版本里也没有那句必需说法：不落在节上，只写处数',
+    [srv.checks(), summaryOf(m), noteOf(m, '必备短语都在'), all(m.box, '.sop-hint-wrap').length],
+    [1, '4/7通过', '1处', 1],
+  );
+  const modal = (title: string): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
+  await waitFor(() => !headerButton(m, '丢弃')?.disabled);
+  await clickEv(headerButton(m, '丢弃'));
+  await until(() => !!modal('丢弃草稿？'));
+  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await waitFor(() => text(m.box.querySelector('.page-status')).includes('没有未发布的改动'));
+  await settle();
+  eq(
+    '丢弃以后：草稿没了，清单回到还没跑，波浪线、提醒都没了，不再检查',
+    [
+      summaryOf(m),
+      all(checkCard(m), '.check-item-pending').length,
+      all(m.box, '.sop-bad').length,
+      all(m.box, '.sop-hint-wrap').length,
+      srv.checks(),
+    ],
+    ['', 7, 0, 0, 1],
+  );
+  await m.unmount();
+
+  const reader = fakeServer(BAD_SOP);
+  const agent: Viewer = { ...travelOwner, me: { ...(travelOwner as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
+  const r = await mountPage('/console/sop?section=tone', agent, BAD_SOP, FAST);
+  await rest(100);
+  eq(
+    '只读成员：不检查，没有清单、波浪线和提醒',
+    [reader.checks(), r.box.querySelector('.sop-col-check'), all(r.box, '.sop-bad').length],
+    [0, null, 0],
+  );
+  await r.unmount();
+
+  const frozen = fakeServer(BAD_SOP);
+  frozen.check = (s) => scan(s);
+  frozen.mode = 'conflict';
+  const f = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
+  await waitFor(() => !!f.box.querySelector('.sop-hint-fix'));
+  await typeAtEnd(f, '甲');
+  await waitFor(() => editorEditable(f) === 'false');
+  eq(
+    '409 停住（编辑器只读）：提醒照写，没有「改成…」',
+    [all(f.box, '.sop-hint-wrap').length, f.box.querySelector('.sop-hint-fix')],
+    [1, null],
+  );
+  await f.unmount();
 }
 respond = null;
 
