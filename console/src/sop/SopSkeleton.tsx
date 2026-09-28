@@ -17,32 +17,39 @@ export function SopSkeleton({ sections, quota, filter, meta }: { sections: numbe
           <div className="sop-skel-track skeleton-bar" />
         </div>
       )}
-      <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
-        {wide ? (
-          <div className="sop-toc">
-            {filter && <div className="sop-skel-filter" />}
-            <div className="sop-toc-list">
-              {Array.from({ length: sections }, (_, i) => (
-                <div key={i} className="sop-skel-row">
-                  <div className="skeleton-bar" style={{ width: `${[56, 72, 64, 48][i % 4]}%` }} />
+      {/* 与成品同一个网格（sop.css）：目录一格、中栏一格；右栏的卡片骨架不画，中栏的宽度照样与成品相同 */}
+      <div className="sop-layout">
+        <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
+          <div className="sop-col-toc">
+            {wide ? (
+              <div className="sop-toc">
+                {filter && <div className="sop-skel-filter" />}
+                <div className="sop-toc-list">
+                  {Array.from({ length: sections }, (_, i) => (
+                    <div key={i} className="sop-skel-row">
+                      <div className="skeleton-bar" style={{ width: `${[56, 72, 64, 48][i % 4]}%` }} />
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
+            ) : (
+              <div className="sop-skel-select" />
+            )}
+          </div>
+          {/* 中栏：节标题、说明行或锁定说明（匿名打开的可编辑节没有）、编辑卡片 */}
+          <div className="sop-col-main">
+            <div className="sop-pane">
+              <div className="sop-skel-title">
+                <div className="skeleton-bar" style={{ width: 96 }} />
+              </div>
+              {meta && (
+                <div className="sop-skel-meta">
+                  <div className="skeleton-bar" style={{ width: 200 }} />
+                </div>
+              )}
+              <div className="sop-skel-editor" />
             </div>
           </div>
-        ) : (
-          <div className="sop-skel-select" />
-        )}
-        {/* 中栏：节标题、说明行或锁定说明（匿名打开的可编辑节没有）、编辑卡片 */}
-        <div className="sop-pane">
-          <div className="sop-skel-title">
-            <div className="skeleton-bar" style={{ width: 96 }} />
-          </div>
-          {meta && (
-            <div className="sop-skel-meta">
-              <div className="skeleton-bar" style={{ width: 200 }} />
-            </div>
-          )}
-          <div className="sop-skel-editor" />
         </div>
       </div>
     </div>

@@ -93,13 +93,15 @@ export function SopEditor(props: SopEditorProps) {
 }
 
 /**
- * 中栏：节标题、说明行、编辑卡片。who：editor 能改（说明行以「可编辑」开头），reader 是只读的成员，anon 是匿名（可编辑节没有说明行）
+ * 中栏：节标题、说明行、编辑卡片。who：editor 能改（说明行以「可编辑」开头），reader 是只读的成员，anon 是匿名（可编辑节没有说明行）。
+ * frozen：能改的人也暂时改不了（自动保存收到 409、停住的时候），说明行照旧
  */
 export function SectionPane({
   row,
   who,
+  frozen = false,
   ...editor
-}: Omit<SopEditorProps, 'name' | 'readOnly'> & { row: OutlineRow; who: 'editor' | 'reader' | 'anon' }) {
+}: Omit<SopEditorProps, 'name' | 'readOnly'> & { row: OutlineRow; who: 'editor' | 'reader' | 'anon'; frozen?: boolean }) {
   const titleId = useId();
   const meta = row.locked ? null : sectionMeta(row, who);
   return (
@@ -116,7 +118,7 @@ export function SectionPane({
         meta && <p className="sop-pane-meta">{cjk(meta)}</p>
       )}
       <div className="sop-editor-card">
-        <SopEditor {...editor} name={row.name} readOnly={row.locked || who !== 'editor'} />
+        <SopEditor {...editor} name={row.name} readOnly={row.locked || who !== 'editor' || frozen} />
       </div>
     </section>
   );

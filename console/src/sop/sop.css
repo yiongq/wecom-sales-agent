@@ -109,26 +109,225 @@
   color: var(--text-3);
 }
 
-/* 额度条与三栏之间的提醒（出错、检查结果、冲突）：第 6、8 步挪走以前放在这里 */
+/* 额度条与三栏之间的提醒（出错、检查的合并提示、发布被拒）：第 6、8 步挪走以前放在这里 */
 .sop-notices {
   display: flex;
   width: 100%;
   margin-bottom: 24px;
 }
 
-/* ---------------- 三栏（B 页）：目录 264，间隔 32，其余给编辑器；<1280 目录换成编辑器上方的下拉 ---------------- */
+/*
+ * 页头下的横幅（§5.12：页级 Alert 与内容等宽，放在页头下 16；页头自己留了 20）：自动保存出错、409 停住、
+ * 载入以后没存上的对比、重取失败。横幅之间 8，最后一个到额度条 20
+ */
+.sop-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -4px 0 20px;
+}
+
+/*
+ * ---------------- 三栏（B 页）：目录 264，间隔 32，中栏，间隔 32，右栏 296 ----------------
+ * 目录、中栏、检查清单、工具卡片各占一格，DOM 的顺序固定（Tab 顺序：目录 → 编辑器 → 检查清单），放在哪儿按宽度定：
+ * - 内容宽 ≥1312（窗口 ≥1440、侧栏收起时正好 1312）：三栏，右栏上面是检查清单，下面 16 是工具卡片；
+ * - 窗口 1280–1439，或者侧栏展开以后放不下右栏：右栏收掉，检查清单挪到目录下面 24，工具卡片不画（spec「右栏」）；
+ * - 窗口 <1280（.is-narrow，目录是下拉）：一栏，下拉、中栏、检查清单依次往下，都与编辑卡片同宽（最宽 688）。
+ * 第二行是 1fr：跨两行的目录和中栏把多出的高度都放进第二行，第一行只有右栏的检查清单（或左栏的目录）那么高，
+ * 挪到目录下面的清单紧贴目录，右栏的工具卡片紧贴清单
+ */
+.sop-layout {
+  container-type: inline-size;
+}
 .sop-body {
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
   column-gap: 32px;
   align-items: start;
 }
+.sop-col-toc {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+.sop-col-main {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+}
+.sop-col-check {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  margin-top: 24px;
+}
+.sop-col-tools {
+  display: none;
+}
+@media (min-width: 1440px) {
+  @container (min-width: 1312px) {
+    .sop-body {
+      grid-template-columns: 264px minmax(0, 1fr) 296px;
+    }
+    .sop-col-toc {
+      grid-row: 1 / span 2;
+    }
+    .sop-col-check {
+      grid-column: 3;
+      grid-row: 1;
+      margin-top: 0;
+    }
+    .sop-col-tools {
+      display: block;
+      grid-column: 3;
+      grid-row: 2;
+      min-width: 0;
+    }
+    /* 卡片之间 16；只读成员没有检查清单，工具卡片顶到最上面 */
+    .sop-col-check + .sop-col-tools {
+      margin-top: 16px;
+    }
+  }
+}
 .sop-body.is-narrow {
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: none;
   row-gap: 16px;
 }
-.sop-editor {
-  min-width: 0;
+.sop-body.is-narrow > .sop-col-toc,
+.sop-body.is-narrow > .sop-col-main,
+.sop-body.is-narrow > .sop-col-check {
+  grid-column: 1;
+  grid-row: auto;
+}
+.sop-body.is-narrow > .sop-col-check {
+  max-width: 688px;
+  margin-top: 8px;
+}
+
+/* ---------------- 右栏的卡片（§5.9）：--panel 底、--r-lg、--shadow-card，内边距 16 20 20 ---------------- */
+.sop-card {
+  padding: 16px 20px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.sop-card-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--text);
+}
+/* 检查清单的卡片底边 14（B 页），折叠的技术详情跟在清单下面 */
+.sop-check-card {
+  padding-bottom: 14px;
+}
+/* 工具：每行一个芯片（§6.6：高 22，内边距 0 6，--r-sm，--subtle 底；中文名 14/500，间隔 4，原名 mono 12.5 text-3） */
+.sop-tools-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sop-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+  white-space: nowrap;
+}
+.sop-tool-label {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--text);
+}
+.sop-tool-name {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+}
+.sop-tools-note {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* ---------------- 载入最新草稿以后，没存上的节的对比 ---------------- */
+.sop-lost-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.sop-lost-note {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-lost-item {
+  margin-top: 16px;
+}
+.sop-lost-name {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--text);
+}
+
+/*
+ * ---------------- 状态句最后一段：保存状态（§4.3 会变的部分预留固定宽度） ----------------
+ * 两行看不见的占位（最宽的两种写法）和当前的写法叠在同一格里：格子按最宽的那种定宽，切换时不挤动、不折行
+ */
+.sop-save {
+  display: inline-grid;
+  vertical-align: top;
+}
+.sop-save > * {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+.sop-save-sizer {
+  visibility: hidden;
+}
+.sop-save-failed {
+  color: var(--danger);
+}
+/* 「重试」：文字按钮，跟着 danger 色，悬停下划线；上下各多 2 的点击区（24 高），用负外边距抵掉，行高不变 */
+.sop-save-retry {
+  display: inline-block;
+  margin: -2px 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.sop-save-retry:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.sop-save-retry:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 /* ---------------- 中栏（B 页）：节标题、说明行、编辑卡片；卡片宽 688 = 正文 640 加左右 24 ---------------- */
@@ -168,6 +367,12 @@
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-card);
+}
+/* 窗口 <992（手机上只读查看）：卡片内边距收成 16，左边仍给沟槽的竖条留 12 */
+@media (max-width: 991px) {
+  .sop-editor-card {
+    padding: 16px 16px 16px 4px;
+  }
 }
 .sop-editor-card:focus-within {
   box-shadow:

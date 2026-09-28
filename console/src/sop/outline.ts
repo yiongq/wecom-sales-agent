@@ -4,7 +4,7 @@
 // 字数与服务端同一口径（src/shared/sop-sections.ts）：可编辑节的正文（去掉标题行和其后的空行），UTF-16 长度求和。
 // 编辑器里还没保存的正文先按服务端保存时的规则规范化（canonicalBody：去行尾空白、开头空行，结尾补成一个空行或一个换行），
 // 再计数、再和线上比：保存前后数字不跳，只多了行尾空格的节也不算改过。
-import type { ContractViolation, SectionSpecView, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
+import type { ContractViolation, SectionSpecView, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
 import { absoluteTime, dateText, digits } from '../../../src/shared/format.js';
 import type { SopSectionDef } from '../../../src/shared/pack.js';
 import { canonicalBody, editableChars, headingLine, sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
@@ -78,6 +78,33 @@ export function memberOutline(input: MemberOutlineInput): OutlineRow[] {
       issues: violations?.filter((v) => v.sectionKey === s.key).length ?? 0,
     };
   });
+}
+
+/**
+ * 本地改过、还没存进草稿的节（自动保存要发的）：编辑器里的原文按保存时的规则规范化以后，与草稿（没有草稿就是线上）
+ * 这一节的正文不同。body 照原文发，服务端存的时候自己规范化。改回草稿里的样子（含只多了行尾空格）就不算；固定规则节不发
+ */
+export function unsavedEdits(
+  spec: readonly SectionSpecView[],
+  current: readonly SopSectionText[],
+  edits: Readonly<Record<string, string>>,
+): { key: string; body: string }[] {
+  const out: { key: string; body: string }[] = [];
+  for (const [i, s] of spec.entries()) {
+    if (s.locked || !Object.hasOwn(edits, s.key)) continue;
+    const raw = edits[s.key]!;
+    if (savedBody(spec, i, raw) !== bodyOf(textOf(current, s.key), s)) out.push({ key: s.key, body: raw });
+  }
+  return out;
+}
+
+/** 自动保存成功以后的 /sop：草稿换成服务端返回的那份，字数按它重算；线上版本、节表、上限不变 */
+export function withSavedDraft(old: SopOverview, draft: SopVersion): SopOverview {
+  return {
+    ...old,
+    draft: { ...draft, stale: draft.basedOn !== old.published.id },
+    budget: { ...old.budget, chars: editableChars(draft.sections, old.spec) },
+  };
 }
 
 /** 正文开头的「## 标题」行；没有就是前言 */
