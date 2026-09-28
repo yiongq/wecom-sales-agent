@@ -19,7 +19,7 @@ import { EmptyBlock, StateView } from '../parts/StateView.js';
 import { ERROR_COPY } from '../parts/errors.js';
 import { SessionExpiredDialog } from '../SessionExpiredDialog.js';
 import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
-import { logout, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
+import { logout, toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { AboutDialog } from './AboutDialog.js';
 import { CommandPalette, type PaletteAction } from './CommandPalette.js';
 import { isMac, useDocumentTitle, useViewport } from './hooks.js';
@@ -89,7 +89,7 @@ export function Shell() {
       </Whole>
     );
   }
-  if (v.kind === 'login') return <LoginPage />;
+  if (v.kind === 'login') return <LoginPage demo={v.demo} />;
   return <Frame viewer={v} />;
 }
 
@@ -142,7 +142,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [mac]);
 
-  const login = useCallback(() => qc.setQueryData<Viewer>(VIEWER_KEY, { kind: 'login' }), [qc]);
+  const login = useCallback(() => qc.setQueryData<Viewer>(VIEWER_KEY, toLogin), [qc]);
   const signOut = useCallback(async (): Promise<void> => {
     setLogoutError(null);
     try {

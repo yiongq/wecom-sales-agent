@@ -1,0 +1,88 @@
+/*
+ * 登录页与登录表单（spec「登录」，design-system §2.3、§3、§5.1、§5.2）。表单在登录页和就地登录框里共用，这里的样式全局一份；
+ * 只有登录页的控件高 40（§3「登录页控件 40」、§5.1「登录页高 40」），就地登录框里照常 32。颜色一律取 brand.css 的变量
+ */
+
+/* ---------------- 页面：--frame 底上一块内嵌的内容面板，一栏居中（与外壳 §4.1 同一副骨架） ---------------- */
+.login-page {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 8px;
+  background: var(--frame);
+}
+.login-panel {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+  outline: none;
+}
+@media (max-width: 991px) {
+  .login-panel {
+    padding: 32px 16px;
+  }
+}
+.login-column {
+  width: 100%;
+  max-width: 360px;
+}
+/* display 36/44/600，只用于这里（§2.3）；标题含中文，字距 0 */
+.login-title {
+  margin: 0;
+  font-size: 36px;
+  line-height: 44px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.login-lead {
+  margin: 8px 0 32px;
+  color: var(--text-2);
+}
+.login-back {
+  margin: 16px 0 0;
+  text-align: center;
+}
+
+/* ---------------- 表单：标签在上 13/20/500，标签到控件 6，字段之间 20（§3「表单」、§5.2） ---------------- */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.login-label {
+  align-self: flex-start;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* 没填：控件下方 13 danger，前置 14 的 circle-x（§5.2「出错」） */
+.login-field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.login-field-error svg {
+  flex: none;
+  margin-top: 3px;
+}
+/* 登录页的控件与按钮高 40；字仍是 14（antd 的 large 会换成 16，所以不用 size，只改高度） */
+.login-page .login-control,
+.login-page .login-submit {
+  height: 40px;
+}
