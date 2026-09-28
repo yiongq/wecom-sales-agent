@@ -13,7 +13,18 @@ import {
   type AuditPart,
 } from '../../../src/shared/audit-text.js';
 import type { AuditEntryView, AuditPage } from '../../../src/shared/console-api.js';
-import { absoluteTime, clockTime, dayHeading, dayKey, digits, fullTime, money, quantity } from '../../../src/shared/format.js';
+import {
+  absoluteTime,
+  clockTime,
+  dayHeading,
+  dayKey,
+  digits,
+  fullTime,
+  money,
+  monthRangeText,
+  parseMonthRange,
+  quantity,
+} from '../../../src/shared/format.js';
 import type { EntityType, FieldDef, IndustryPack } from '../../../src/shared/pack.js';
 import { auditActionsParam, auditGroups, type AuditGroup } from '../../../src/shared/ui-labels.js';
 import type { AuditSearch } from '../audit-search.js';
@@ -252,8 +263,12 @@ function unitOf(f: FieldDef, row: Record<string, unknown>): string {
   return typeof u === 'string' && u ? `元/${u}` : '元';
 }
 
-/** 一个值按字段类型写成字：金额「42,800元」、带单位的整数「8天」、数组用「、」连起来；空的写「—」 */
-export function valueText(f: FieldDef, v: unknown, row: Record<string, unknown> = {}): string {
+/**
+ * 一个值按字段类型写成字：金额「42,800元」、带单位的整数「8天」、数组用「、」连起来；空的写「—」。
+ * 月份区间与引用和字段渲染器写得一样（ADR-004：全站同一种字段长得一样）：月份区间「4–10月」，「全年」写包里的 yearRoundLabel；
+ * 按编号存的引用写目标条目的名字（lookups，与侧栏、⌘K 共用的产品库缓存），缓存里没有时写编号
+ */
+export function valueText(f: FieldDef, v: unknown, row: Record<string, unknown> = {}, lookups: AuditLookups = {}): string {
   if (empty(v)) return '—';
   const join = (a: unknown[]): string => a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join('、');
   switch (f.type) {
@@ -268,6 +283,17 @@ export function valueText(f: FieldDef, v: unknown, row: Record<string, unknown> 
       return singleItem(f) ? join(v) : quantity(v.length, noun(f));
     case 'status':
       return v === 'active' ? STATUS_LABEL.active : v === 'draft' ? STATUS_LABEL.draft : String(v);
+    case 'monthRange': {
+      // 规则之外的写法、画不出月份的（「13月」）照原文写，不写成「—」丢掉原来的字
+      const range = typeof v === 'string' ? parseMonthRange(v) : null;
+      const words = range && monthRangeText(range, f.yearRoundLabel);
+      return words && words !== '—' ? words : typeof v === 'string' ? v : JSON.stringify(v);
+    }
+    case 'reference': {
+      const name = (x: unknown): string =>
+        typeof x !== 'string' ? JSON.stringify(x) : (f.store !== 'label' && f.to && lookups.itemName?.(f.to, x)) || x;
+      return Array.isArray(v) ? v.map(name).join('、') : name(v);
+    }
     default:
       if (Array.isArray(v)) return join(v);
       if (typeof v === 'number') return digits(v);
@@ -410,13 +436,20 @@ interface RowsOut {
 }
 
 /** 一个值的格：长文本两边都有字时行内比 */
-function cellPair(f: FieldDef, was: unknown, now: unknown, rows: [Record<string, unknown>, Record<string, unknown>], inline: boolean) {
+function cellPair(
+  f: FieldDef,
+  was: unknown,
+  now: unknown,
+  rows: [Record<string, unknown>, Record<string, unknown>],
+  inline: boolean,
+  lookups: AuditLookups,
+) {
   if (inline && typeof was === 'string' && typeof now === 'string' && was && now) return diffCell(was, now);
-  return { before: { text: valueText(f, was, rows[0]) }, after: { text: valueText(f, now, rows[1]) } };
+  return { before: { text: valueText(f, was, rows[0], lookups) }, after: { text: valueText(f, now, rows[1], lookups) } };
 }
 
 /** 有序子项的逐项改动 */
-function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut): void {
+function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut, lookups: AuditLookups): void {
   const a = Array.isArray(was) ? was : [];
   const b = Array.isArray(now) ? now : [];
   const label = (n: number): string => `${f.label}第${n + 1}${noun(f)}`;
@@ -425,7 +458,7 @@ function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut): void {
   const item = f.item?.[0];
   /** 整项的一句话：单个子字段就是它的值；多个子字段取第一个有字的文本子字段（当天标题） */
   const whole = (el: unknown): string => {
-    if (single && item) return valueText(item, el);
+    if (single && item) return valueText(item, el, {}, lookups);
     const title = subs.find((s) => (s.type === 'text' || s.type === 'longText') && strOf(at(el, s.key)));
     return title ? valueText(title, at(el, title.key)) : '—';
   };
@@ -448,7 +481,7 @@ function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut): void {
     const x = a[op.i];
     const y = b[op.j];
     if (single && item) {
-      const c = cellPair(item, x, y, [{}, {}], item.type === 'text' || item.type === 'longText');
+      const c = cellPair(item, x, y, [{}, {}], item.type === 'text' || item.type === 'longText', lookups);
       out.rows.push({ label: [label(op.j)], ...c });
       continue;
     }
@@ -458,7 +491,10 @@ function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut): void {
     }
     for (const s of subs) {
       if (same(at(x, s.key), at(y, s.key))) continue;
-      out.rows.push({ label: [label(op.j), s.label], ...cellPair(s, at(x, s.key), at(y, s.key), [x, y], s.type === 'longText') });
+      out.rows.push({
+        label: [label(op.j), s.label],
+        ...cellPair(s, at(x, s.key), at(y, s.key), [x, y], s.type === 'longText', lookups),
+      });
     }
     const known = new Set([...subs.map((s) => s.key), ...(f.autoIndexKey ? [f.autoIndexKey] : [])]);
     for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) if (!known.has(k) && !same(x[k], y[k])) out.unknown += 1;
@@ -470,7 +506,7 @@ function itemRows(f: FieldDef, was: unknown, now: unknown, out: RowsOut): void {
  * 产品库 diff（顶层键 → [原来, 现在]）写成改动表，按行业包里字段的顺序：`id` 是编号；嵌套对象（intensity）逐个比包里的子字段；
  * 有序子项逐项比（pairItems）；长文本行内比。包里没有的键不写原名，算进「另N项」，原文在技术详情里
  */
-export function changeRows(entity: EntityType | null, diff: Readonly<Record<string, unknown>>): RowsOut {
+export function changeRows(entity: EntityType | null, diff: Readonly<Record<string, unknown>>, lookups: AuditLookups = {}): RowsOut {
   const out: RowsOut = { rows: [], untouched: [], unknown: 0 };
   const fields = entity?.fields ?? [];
   const pairs = Object.entries(diff).flatMap(([k, v]) => {
@@ -491,8 +527,8 @@ export function changeRows(entity: EntityType | null, diff: Readonly<Record<stri
     const [, [was, now]] = hit;
     if (f.key === top || f.key === '$code') {
       placed.add(top);
-      if (f.type === 'subItems' && (Array.isArray(was) || Array.isArray(now)) && !empty(was)) itemRows(f, was, now, out);
-      else out.rows.push({ label: [f.label], ...cellPair(f, was, now, sides, f.type === 'longText') });
+      if (f.type === 'subItems' && (Array.isArray(was) || Array.isArray(now)) && !empty(was)) itemRows(f, was, now, out, lookups);
+      else out.rows.push({ label: [f.label], ...cellPair(f, was, now, sides, f.type === 'longText', lookups) });
       continue;
     }
     // 嵌套字段：只写真正变了的子字段；两边都不是对象（形状认不出）时整个算认不出
@@ -500,7 +536,7 @@ export function changeRows(entity: EntityType | null, diff: Readonly<Record<stri
     placed.add(top);
     const sub = f.key.slice(top.length + 1);
     if (!same(at(was, sub), at(now, sub)))
-      out.rows.push({ label: [f.label], ...cellPair(f, at(was, sub), at(now, sub), sides, f.type === 'longText') });
+      out.rows.push({ label: [f.label], ...cellPair(f, at(was, sub), at(now, sub), sides, f.type === 'longText', lookups) });
   }
   for (const [k] of pairs) if (!placed.has(k)) out.unknown += 1;
   return out;
@@ -512,7 +548,7 @@ const STATUS_LABEL_FIELD = '状态';
 const STATUS_FIELD: FieldDef = { key: '$status', type: 'status', label: STATUS_LABEL_FIELD, group: '' };
 
 /** 改动表：产品库的新建、修改、修正；上架是一行「状态」 */
-function changeTable(entry: AuditEntryView, entity: EntityType | null): ChangeTable | null {
+function changeTable(entry: AuditEntryView, entity: EntityType | null, lookups: AuditLookups): ChangeTable | null {
   const diff = isRecord(entry.diff) ? entry.diff : {};
   if (entry.action === 'catalog.activate') {
     const p = pairOf(diff.status);
@@ -527,7 +563,7 @@ function changeTable(entry: AuditEntryView, entity: EntityType | null): ChangeTa
   if (!CATALOG_CHANGES.has(entry.action)) return null;
   // 修正（catalog-fix）的 diff 另带 reason：它是原因，不是字段，写在上面的「原因」里
   const fieldsDiff = Object.fromEntries(Object.entries(diff).filter(([k]) => k !== 'reason'));
-  const out = changeRows(entity, fieldsDiff);
+  const out = changeRows(entity, fieldsDiff, lookups);
   if (entry.action === 'catalog.create') {
     // 新建：只列填了的，「原来」都是空的，只画「字段 · 内容」两栏；有序子项整个写一格（「5天」「a、b、c」）
     const now = Object.fromEntries(Object.entries(fieldsDiff).map(([k, x]) => [k, pairOf(x)?.[1]]));
@@ -535,7 +571,7 @@ function changeTable(entry: AuditEntryView, entity: EntityType | null): ChangeTa
     for (const f of entity?.fields ?? []) {
       const top = f.key === '$code' ? 'id' : f.key.split('.')[0]!;
       const v = f.key === top || f.key === '$code' ? now[top] : at(now[top], f.key.slice(top.length + 1));
-      if (!empty(v)) rows.push({ label: [f.label], before: { text: '—' }, after: { text: valueText(f, v, now) } });
+      if (!empty(v)) rows.push({ label: [f.label], before: { text: '—' }, after: { text: valueText(f, v, now, lookups) } });
     }
     const notes = out.unknown ? [`另${out.unknown}项见技术详情`] : [];
     return rows.length ? { title: `填了${rows.length}项`, created: true, rows, notes } : null;
@@ -604,7 +640,7 @@ export function drawerView(entry: AuditEntryView, pack: IndustryPack, lookups: A
     parts: d.parts,
     tail: d.tail,
     facts,
-    changes: changeTable(entry, entity),
+    changes: changeTable(entry, entity, lookups),
     warning,
     link,
     tech: {

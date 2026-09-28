@@ -7,7 +7,7 @@ import { useInfiniteQuery, useQueries } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { Alert, Button, Drawer, Segmented, Switch } from 'antd';
 import { ChevronDown, ChevronRight, History, SquareTerminal, X } from 'lucide-react';
-import { Fragment, type MouseEvent, type ReactNode, useEffect, useState } from 'react';
+import { Fragment, type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import type { AuditLookups, AuditPart } from '../../../src/shared/audit-text.js';
 import type { AuditEntryView } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
@@ -83,8 +83,10 @@ function Filters({ pack, search }: { pack: IndustryPack; search: AuditSearch }) 
   return (
     <div className="au-filters">
       <div className="au-seg-scroll">
+        {/* tabIndex -1：rc-segmented 给整条轨道也放了 tabIndex 0，那一站方向键不起作用，只多一次 Tab；Tab 直接进选中的那一段 */}
         <Segmented
           aria-label="按类别筛选"
+          tabIndex={-1}
           options={groupOptions(pack).map((g) => ({ value: g.key, label: g.label }))}
           value={activeGroup(search)}
           onChange={(key) => void navigate({ to: '/audit', search: groupSearch(key, search) })}
@@ -397,6 +399,26 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
     if (!isOpen) setShown(null);
   };
 
+  // 「加载更早的记录」：取到底时按钮换成「没有更早的记录了」，翻页出错后点重试，出错提示也会消失。焦点原在它们上面的话会掉回 body，
+  // 键盘和读屏用户找不到刚才的位置（WCAG 2.4.3）：这一次取完，焦点丢了就放到按钮上（还有更早的）或那一句上（到底了）。
+  // 取的时候焦点移到了别处（比如点开了抽屉）就不动它
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const endRef = useRef<HTMLParagraphElement>(null);
+  const refocus = useRef(false);
+  const loadMore = (): void => {
+    refocus.current = true;
+    void q.fetchNextPage();
+  };
+  const fetchingMore = q.isFetchingNextPage;
+  const hasMore = q.hasNextPage;
+  useEffect(() => {
+    if (fetchingMore || !refocus.current) return;
+    refocus.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    (hasMore ? moreRef.current : endRef.current)?.focus();
+  }, [fetchingMore, hasMore]);
+
   const filtered = search.cat !== undefined;
   let body: ReactNode;
   // 取「更早的记录」失败时查询也是出错状态，但已经列出的记录还在：只有一页都没取到时才整块换成出错
@@ -405,6 +427,7 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
   } else if (entries.length === 0) {
     body = filtered ? (
       <EmptyBlock
+        level={2}
         title="这个类别下没有记录"
         link={
           <Link to="/audit" search={loginSearch(showLogin(search), {})}>
@@ -414,6 +437,7 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
       />
     ) : (
       <EmptyBlock
+        level={2}
         icon={<Icon of={History} size={20} />}
         title="改动会记在这里"
         description={`发布话术、修改${pack.vocabulary.productNoun}、建账号这些操作，每次都会记一笔`}
@@ -445,13 +469,15 @@ function MemberAudit({ pack }: { pack: IndustryPack }) {
           </section>
         ))}
         {/* 翻页失败只在底部就地显示，已列出的记录保留 */}
-        {q.isFetchNextPageError && <ErrorAlert error={q.error} onRetry={() => void q.fetchNextPage()} />}
+        {q.isFetchNextPageError && <ErrorAlert error={q.error} onRetry={loadMore} />}
         {q.hasNextPage ? (
-          <Button className="au-more" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
+          <Button ref={moreRef} className="au-more" loading={q.isFetchingNextPage} onClick={loadMore}>
             加载更早的记录
           </Button>
         ) : (
-          <p className="au-end">没有更早的记录了</p>
+          <p ref={endRef} className="au-end" tabIndex={-1}>
+            没有更早的记录了
+          </p>
         )}
       </div>
     );

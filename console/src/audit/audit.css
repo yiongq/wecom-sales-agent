@@ -154,7 +154,8 @@ button.au-sentence {
 }
 .au-sentence:focus-visible,
 .au-expand:focus-visible,
-.au-link:focus-visible {
+.au-link:focus-visible,
+.au-end:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }

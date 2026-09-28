@@ -129,6 +129,42 @@ const HOME: IndustryPack = {
   ],
   nav: { catalogGroup: '套餐库', entities: ['route'] },
 };
+/**
+ * 家装假包那样的字段（src/shared/pack-fixtures/renovation.ts）：金额的单位取同一条的计价单位（unitFrom）、月份区间、
+ * 按编号存的引用（名字取产品库缓存）；旅游包那样带 yearRoundLabel 的月份区间
+ */
+const RENO: IndustryPack = {
+  ...TRAVEL,
+  id: 'fixture-reno',
+  vocabulary: { ...TRAVEL.vocabulary, productNoun: '套餐' },
+  entities: [
+    entity('package', '装修套餐', 'title', [
+      field('$code', '套餐编号'),
+      field('title', '套餐名称'),
+      field('startMonths', '适合开工月份', { type: 'monthRange' }),
+      field('bestSeason', '最佳季节', { type: 'monthRange', yearRoundLabel: '全年（不加价）' }),
+      field('materials', '包含主材', { type: 'reference', to: 'material', store: 'code', multiple: true }),
+      field('featured', '主推主材', { type: 'reference', to: 'material', store: 'label' }),
+      field('nodes', '施工节点', {
+        type: 'subItems',
+        itemNoun: '个节点',
+        item: [
+          { key: 'name', type: 'text', label: '节点名称', group: '' },
+          { key: 'materials', type: 'reference', to: 'material', store: 'code', multiple: true, label: '用到的主材', group: '' },
+        ],
+      }),
+    ]),
+    entity('material', '主材', 'name', [
+      field('$code', '主材编号'),
+      field('name', '主材名称'),
+      field('priceUnit', '计价单位', { type: 'enum', options: ['㎡', '延米'] }),
+      field('unitPrice', '单价', { type: 'money', unitFrom: 'priceUnit' }),
+    ]),
+  ],
+  nav: { catalogGroup: '套餐库', entities: ['package', 'material'] },
+};
+const MATERIAL_NAMES: Record<string, string> = { 'm-1': '实木地板', 'm-2': '岩板台面' };
+const renoLookups = { itemName: (kind: string, code: string) => (kind === 'material' ? MATERIAL_NAMES[code] : undefined) };
 
 let nextId = 1000;
 const entry = (e: Partial<AuditEntryView> & Pick<AuditEntryView, 'action'>): AuditEntryView => ({
@@ -579,11 +615,91 @@ const cell = (c: Cell): string =>
       unknown: 0,
     },
   );
+  eq(
+    '改动表：嵌套对象从没有到有、从有到没有，逐个写子字段，不算认不出',
+    [rows({ intensity: [null, { level: '适中', hardest: '徒步3小时' }] }), rows({ intensity: [{ level: '轻松' }, null] })],
+    [
+      {
+        rows: [
+          ['体力强度', '—', '适中'],
+          ['最累的一段', '—', '徒步3小时'],
+        ],
+        untouched: [],
+        unknown: 0,
+      },
+      { rows: [['体力强度', '轻松', '—']], untouched: [], unknown: 0 },
+    ],
+  );
+  eq(
+    '改动表：子项里包里没有的键改了，算进「另N项」，不写原名',
+    rows({
+      itinerary: [
+        [{ day: 1, title: '成都', detail: '接机', legacyNote: 'a' }],
+        [{ day: 1, title: '成都', detail: '接机', legacyNote: 'b' }],
+      ],
+    }),
+    { rows: [], untouched: [], unknown: 1 },
+  );
   eq('改动表：diff 不是 [原来, 现在] 的键算认不出', rows({ title: 'x', days: [5, 6] }), {
     rows: [['天数', '5天', '6天']],
     untouched: [],
     unknown: 1,
   });
+}
+
+// 月份区间、引用、按另一个字段取单位的金额：与字段渲染器写得一样（ADR-004）
+{
+  const pkg = RENO.entities[0]!;
+  const rows = (diff: Record<string, unknown>, l: typeof renoLookups | object = renoLookups) =>
+    changeRows(pkg, diff, l).rows.map((r) => [r.label.join(' · '), cell(r.before), cell(r.after)]);
+  eq(
+    '月份区间写成「3–6月」，全年写包里的 yearRoundLabel；认不出的写原文',
+    rows({
+      startMonths: ['3-6月', '3-6月、9-11月'],
+      bestSeason: ['4月-10月', '全年'],
+    }),
+    [
+      ['适合开工月份', '3–6月', '3–6、9–11月'],
+      ['最佳季节', '4–10月', '全年（不加价）'],
+    ],
+  );
+  eq('月份区间：规则之外、画不出月份的写原文，不写成「—」', rows({ startMonths: ['看天气', '13月'] }), [
+    ['适合开工月份', '看天气', '13月'],
+  ]);
+  eq(
+    '引用：按编号存的写目标条目的名字，缓存里没有的写编号；按名称存的原样写；子项里的引用同样',
+    rows({
+      materials: [['m-1'], ['m-1', 'm-9']],
+      featured: ['m-1', 'm-2'],
+      nodes: [[{ name: '水电', materials: ['m-1'] }], [{ name: '水电', materials: ['m-2'] }]],
+    }),
+    [
+      ['包含主材', '实木地板', '实木地板、m-9'],
+      ['主推主材', 'm-1', 'm-2'],
+      ['施工节点第1个节点 · 用到的主材', '实木地板', '岩板台面'],
+    ],
+  );
+  eq('引用：没有对象名的缓存时写编号', rows({ materials: [['m-1'], ['m-2']] }, {}), [['包含主材', 'm-1', 'm-2']]);
+  const mat = (action: string, diff: Record<string, unknown>) =>
+    drawerView(entry({ action, targetType: 'material', targetId: 'm-1', diff }), RENO, renoLookups).changes!;
+  eq(
+    '金额：单位取同一条的计价单位（新建、两边都改了单位的修改）；diff 里没有单位时写「元」',
+    [
+      mat('catalog.create', { id: [null, 'm-1'], name: [null, '实木地板'], priceUnit: [null, '延米'], unitPrice: [null, 98] }).rows.map(
+        (r) => cell(r.after),
+      ),
+      mat('catalog.update', { priceUnit: ['㎡', '延米'], unitPrice: [120, 98] }).rows.map((r) => [cell(r.before), cell(r.after)]),
+      mat('catalog.update', { unitPrice: [120, 98] }).rows.map((r) => [cell(r.before), cell(r.after)]),
+    ],
+    [
+      ['m-1', '实木地板', '延米', '98元/延米'],
+      [
+        ['㎡', '延米'],
+        ['120元/㎡', '98元/延米'],
+      ],
+      [['120元', '98元']],
+    ],
+  );
 }
 
 // 详情抽屉
@@ -638,6 +754,25 @@ const cell = (c: Cell): string =>
       ],
     ],
   );
+  const nested = drawerView(
+    entry({
+      action: 'catalog.create',
+      targetType: 'route',
+      targetId: 'r-b',
+      diff: { id: [null, 'r-b'], intensity: [null, { level: '较累', hardest: '徒步5小时' }] },
+    }),
+    TRAVEL,
+    {},
+  ).changes!;
+  eq(
+    '抽屉：新建时嵌套对象逐个写子字段，不写 JSON',
+    nested.rows.map((r) => [r.label[0], cell(r.after)]),
+    [
+      ['线路编号', 'r-b'],
+      ['体力强度', '较累'],
+      ['最累的一段', '徒步5小时'],
+    ],
+  );
   const act = drawerView(
     entry({ action: 'catalog.activate', targetType: 'route', targetId: 'r-a', diff: { status: ['draft', 'active'] } }),
     TRAVEL,
@@ -679,6 +814,15 @@ const cell = (c: Cell): string =>
       ['改了2处', 1, ['另1项见技术详情']],
       ['改了1处', 0, ['另1项见技术详情']],
     ],
+  );
+  eq(
+    '抽屉：只改了子项里包里没有的键，写「改了1处」与「另1项见技术详情」',
+    [odd({ itinerary: [[{ day: 1, title: '成都', legacyNote: 'a' }], [{ day: 1, title: '成都', legacyNote: 'b' }]] })].map((c) => [
+      c?.title,
+      c?.rows.length,
+      c?.notes,
+    ]),
+    [['改了1处', 0, ['另1项见技术详情']]],
   );
   const pub = drawerView(publish, TRAVEL, {});
   eq(
@@ -893,6 +1037,11 @@ async function mount(viewer: Viewer, search = '') {
     ['小林 新建了6条酒店草稿', '青城山六善酒店、成都锦江宾馆、大研安缦等6条·展开6条', '11:20'],
     [`小林 修改了线路「${SICHUAN}」`, '改了：住宿档次、行程亮点', '10:12'],
   ]);
+  eq(
+    '时间线：时刻悬停写绝对时间',
+    m.$(':scope > .au-list > .au-row > .au-time', m.$('.au-day')[1]).map((e) => [e.getAttribute('title'), e.getAttribute('datetime')]),
+    [['9月25日 18:30', publish.at]],
+  );
   eq('时间线：命令行用方块图标，真人用头像（首字）', [m.$('.au-bot').length, m.texts('.au-avatar')], [4, ['小', '小', '小', '老']]);
   const expand = m.$('.au-expand')[0]!;
   eq('合并的一句：「展开6条」收着', [expand.getAttribute('aria-expanded'), m.$('.au-child').length], ['false', 0]);
@@ -934,6 +1083,11 @@ async function mount(viewer: Viewer, search = '') {
       .$('.ant-segmented-item')
       .find((e) => m.text(e) === label)
       ?.querySelector<HTMLElement>('input') ?? undefined;
+  eq(
+    '分段控件：整条轨道不进 Tab 顺序（Tab 直接进选中的那一段）',
+    [m.box.querySelector('.ant-segmented')?.getAttribute('tabindex'), segment('全部')?.getAttribute('tabindex')],
+    ['-1', null],
+  );
   await m.click(segment('销售话术'));
   eq(
     '点「销售话术」：地址 ?cat=sop，请求只带 sop 的动作',
@@ -1016,6 +1170,7 @@ async function mount(viewer: Viewer, search = '') {
   eq('第一页：48 句（47 条发布加合并的一句）', lines().length, 48);
   const more = m.$('.au-more')[0];
   check('还有更早的：底部是「加载更早的记录」', m.text(more) === '加载更早的记录');
+  await act(async () => more?.focus());
   await m.click(more);
   eq(
     '加载更早的：先用上次多取的，不再请求；接在后面，不重不漏',
@@ -1023,6 +1178,11 @@ async function mount(viewer: Viewer, search = '') {
     [2, 51, 51],
   );
   eq('到底了', [m.$('.au-more').length, m.$('.au-end').length], [0, 1]);
+  check(
+    '到底了：按钮换成那一句，焦点跟到那一句上，不掉回 body',
+    document.activeElement === m.box.querySelector('.au-end') && m.box.querySelector('.au-end')?.getAttribute('tabindex') === '-1',
+    `焦点在 ${document.activeElement?.tagName}.${document.activeElement?.className}`,
+  );
   await m.unmount();
 
   // 翻页出错：已经列出的留着，底部就地写没取到、可以重试
@@ -1030,15 +1190,24 @@ async function mount(viewer: Viewer, search = '') {
   requests = [];
   const e = await mount(member('owner'));
   server.fail = /before=/;
+  await act(async () => e.$('.au-more')[0]?.focus());
   await e.click(e.$('.au-more')[0]);
   eq(
     '翻页出错：已列出的 50 条留着，底部是出错提示和重试',
     [e.days().flatMap((d) => d[1]).length, e.$('.ant-alert').length, e.$('.au-more').length],
     [50, 1, 1],
   );
+  check('翻页出错：焦点还在「加载更早的记录」上', document.activeElement === e.$('.au-more')[0]);
   server.fail = undefined;
-  await e.click(e.$('.ant-alert button')[0]);
+  const retry = e.$('.ant-alert button')[0];
+  await act(async () => retry?.focus());
+  await e.click(retry);
   eq('重试：接着取到', e.days().flatMap((d) => d[1]).length, 60);
+  check(
+    '重试：出错提示与按钮都没了，焦点放到「没有更早的记录了」上',
+    document.activeElement === e.box.querySelector('.au-end'),
+    `焦点在 ${document.activeElement?.tagName}.${document.activeElement?.className}`,
+  );
   await e.unmount();
 }
 
@@ -1046,14 +1215,22 @@ async function mount(viewer: Viewer, search = '') {
 {
   server = { log: [] };
   const none = await mount(member('owner'));
-  eq('一条记录都没有：「改动会记在这里」', none.text(none.box.querySelector('.state-empty-title')), '改动会记在这里');
+  eq(
+    '一条记录都没有：「改动会记在这里」，标题是 h2（紧跟页名 h1，不跳级）',
+    [none.text(none.box.querySelector('.state-empty-title')), none.box.querySelector('.state-empty-title')?.tagName],
+    ['改动会记在这里', 'H2'],
+  );
   await none.unmount();
   server = { log: [login] };
   const filtered = await mount(member('owner'), '?cat=platform&login=1');
   eq(
-    '这个类别下没有：说明加「看全部」（清掉类别、开关留着）',
-    [filtered.text(filtered.box.querySelector('.state-empty-title')), filtered.box.querySelector('.state-empty a')?.getAttribute('href')],
-    ['这个类别下没有记录', '/console/audit?login=1'],
+    '这个类别下没有：说明加「看全部」（清掉类别、开关留着），标题是 h2',
+    [
+      filtered.text(filtered.box.querySelector('.state-empty-title')),
+      filtered.box.querySelector('.state-empty-title')?.tagName,
+      filtered.box.querySelector('.state-empty a')?.getAttribute('href'),
+    ],
+    ['这个类别下没有记录', 'H2', '/console/audit?login=1'],
   );
   await filtered.click(filtered.box.querySelector('.state-empty a'));
   eq(
@@ -1131,6 +1308,34 @@ async function mount(viewer: Viewer, search = '') {
     m.$('.au-row.is-selected').map((e) => [m.text(e.querySelector('.au-sentence')), e.getAttribute('aria-current')]),
     [[`小林 修改了线路「${SICHUAN}」`, 'true']],
   );
+  // 复制：剪贴板拒绝时选中原文、按钮改写；能写时写「已复制」
+  const copyButton = (): HTMLElement | null => document.querySelector<HTMLElement>('.au-tech .tech-details-copy');
+  const realClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  const copied: string[] = [];
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: async () => Promise.reject(new Error('NotAllowedError')) },
+  });
+  await m.click(copyButton());
+  const sel = window.getSelection();
+  eq(
+    '复制：剪贴板不可用时选中原文，按钮写「已选中，手动复制」',
+    [m.text(copyButton()), !!sel?.anchorNode && !!document.querySelector('.au-tech pre')?.contains(sel.anchorNode)],
+    ['已选中，手动复制', true],
+  );
+  sel?.removeAllRanges();
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: async (t: string) => void copied.push(t) },
+  });
+  await m.click(copyButton());
+  eq(
+    '复制：写进剪贴板的是这条记录的 JSON 原文，按钮写「已复制」',
+    [m.text(copyButton()), copied.length === 1 && JSON.parse(copied[0]!).id === update.id],
+    ['已复制', true],
+  );
+  if (realClipboard) Object.defineProperty(navigator, 'clipboard', realClipboard);
+  else Reflect.deleteProperty(navigator, 'clipboard');
   check('抽屉里没有红色', document.querySelectorAll('.au-drawer .ant-alert-error').length === 0);
   // 关之前把焦点放进抽屉：浏览器里 antd 打开时会这样做，happy-dom 里不一定，不放的话焦点一直在那一句上，下一条查不出东西
   const closeButton = (): HTMLElement | null => document.querySelector<HTMLElement>('.au-drawer [aria-label="关闭"]');
