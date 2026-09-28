@@ -81,6 +81,7 @@ import {
   problemFix,
   problemPlaces,
   problemsField,
+  selectFirst,
   setProblems,
   sopEditorSetup,
   strongRanges,
@@ -3290,13 +3291,12 @@ respond = null;
     Array.from({ length: 7 }, () => ['pending', undefined, undefined]),
   );
   eq('不给 onLocate：没过的项不能点', checkItems(SPEC, located, null).filter((i) => i.onClick).length, 0);
-  eq('没过的项里没有一条有去处（节表整体不对）：不能点，只写处数', checkItems(SPEC, locateViolations([vs[1]!], []), null, noop)[0], {
-    key: 'structure',
-    label: '结构完整',
-    state: 'fail',
-    note: ['1处'],
-    onClick: undefined,
-  });
+  const nowhere = checkItems(SPEC, locateViolations([vs[1]!], []), null, noop)[0]!;
+  eq(
+    '没过的项里没有一条有去处（节表整体不对）：不能点，只写处数',
+    [nowhere.key, nowhere.state, nowhere.note, typeof nowhere.onClick],
+    ['structure', 'fail', ['1处'], 'undefined'],
+  );
   eq(
     '百分比与额度条同一个写法',
     [quotaPercent(2303, LIMIT), quotaPercent(2525, LIMIT), quotaPercent(LIMIT, LIMIT), quotaPercent(LIMIT + 1, LIMIT), quotaPercent(10, 0)],
@@ -3307,7 +3307,7 @@ respond = null;
 // 10.2 编辑器：波浪线与行内提醒（EditorState 上算、挂在 DOM 里），「改成…」的那一笔
 const DOC2 = [
   '- 先调 search_route 查线路，别用 search_route 猜。',
-  '  续行里也写了 search_route。',
+  '     续行里也写了 search_route。',
   '- 第二条：缩短天数重新报价不行。',
   '',
   '顶格的一段提到 search_route，还有 payURL。',
@@ -3336,7 +3336,7 @@ const PROBLEMS: EditorProblem[] = [
     [p, p + 6],
   ]);
   eq(
-    '行内提醒：写错的名字每一段一条，插在那一段（列表项连同续行）的末行后面，缩进取那一段第一行；禁用短语没有',
+    '行内提醒：写错的名字每一段一条，插在那一段（列表项连同续行）的末行后面，缩进取那一段第一行（续行缩两级，提醒缩一级）；禁用短语没有',
     places.hints.map((h) => [h.at, h.indent, h.match]),
     [
       [endOf(2), 1, 'search_route'],
@@ -3355,6 +3355,16 @@ const PROBLEMS: EditorProblem[] = [
   const typed = st.update({ changes: { from: s1, to: s1 + 12, insert: 'search_routes' } }).state;
   eq('改掉一处：波浪线跟着少一处（位置每次改动都重新找），这一段还有别的，提醒还在', kinds(typed), [5, 3]);
   eq('换成没有问题：都没了', kinds(st.update({ effects: setProblems.of([]) }).state), [0, 0]);
+  // 点清单定位：选中第一处（四处里的第一处），找不到时不动
+  const sv = new EditorView({ state: st, parent: document.createElement('div') });
+  const picked = selectFirst(sv, 'search_route', true);
+  const missing = selectFirst(sv, 'zzz_tool', true);
+  eq(
+    '定位：选中第一处；找不到时报 false、选区不动',
+    [picked, sv.state.selection.main.from, sv.state.selection.main.to, missing],
+    [true, s1, s1 + 12, false],
+  );
+  sv.destroy();
   const fixable = (state: EditorState): unknown[] =>
     decoList(state.field(problemsField).deco)
       .filter((x) => x.spec.block === true)
@@ -3468,6 +3478,20 @@ const PROBLEMS: EditorProblem[] = [
     [0, 0, true],
   );
   eq('外面换问题与正文：不回调', [changes.length, fixes], [1, 1]);
+  // 行业包比检查结果晚到：同一处的提醒从没有候选换成有候选，按钮要出来（部件不能沿用旧的 DOM）
+  const early: EditorProblem[] = [{ match: 'search_route', name: true, hint: { what: 'tool', known: 2, fix: null } }];
+  await m.render(el({ value: DOC2, problems: early }));
+  const before = all(m.box, 'button.sop-hint-fix').length;
+  await m.render(el({ value: DOC2, problems: [{ match: 'search_route', name: true, hint: TOOL_HINT }] }));
+  eq(
+    '候选后到：同样的位置，提醒换成带「改成…」的',
+    [before, all(m.box, 'button.sop-hint-fix').length, text(hints()[0]?.querySelector('.sop-hint-note'))],
+    [0, 2, '模型只认2个工具名，写错的名字会被当成不存在，这条规则就不起作用了。'],
+  );
+  // 换了包：候选的中文名一样、原名不同，按钮跟着换
+  const renamed = { ...TOOL_HINT, fix: { name: 'search_routes_v2', label: '查线路' } };
+  await m.render(el({ value: DOC2, problems: [{ match: 'search_route', name: true, hint: renamed }] }));
+  eq('候选只换了原名：按钮跟着换', text(m.box.querySelector('button.sop-hint-fix')), '改成search_routes_v2');
   const odd: EditorProblem[] = [{ match: 'zzz_tool', name: true, hint: { what: 'tool', known: 0, fix: null } }];
   await m.render(el({ value: '用 zzz_tool 查。\n', problems: odd }));
   eq(
@@ -3760,6 +3784,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [srv.checks(), summaryOf(m), noteOf(m, '必备短语都在'), all(m.box, '.sop-hint-wrap').length],
     [1, '4/7通过', '1处', 1],
   );
+  eq('这一项没有去处：整行不是按钮', itemOf(m, '必备短语都在')?.tagName, 'DIV');
   const modal = (title: string): Element | undefined =>
     all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
   await waitFor(() => !headerButton(m, '丢弃')?.disabled);
