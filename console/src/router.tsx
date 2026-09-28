@@ -3,6 +3,7 @@
 // 入口集合里不能有页面代码，scripts/check-console-dist.ts 按 vite 的 manifest 查预算与 @codemirror
 import { createRootRoute, createRoute, createRouter, type ErrorComponentProps, Outlet, useRouterState } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
+import { auditSearch } from './audit-search.js';
 import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
@@ -51,7 +52,10 @@ const catalog = createRoute({
 const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
 );
-const audit = createRoute({ getParentRoute: () => root, path: '/audit' }).lazy(() => import('./pages/audit.lazy.js').then((m) => m.Route));
+// 审计日志的类别与「显示登录记录」写进地址（audit-search.ts）
+const audit = createRoute({ getParentRoute: () => root, path: '/audit', validateSearch: auditSearch }).lazy(() =>
+  import('./pages/audit.lazy.js').then((m) => m.Route),
+);
 
 const specimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark' } =>
   s.theme === 'light' || s.theme === 'dark' ? { theme: s.theme } : {};
