@@ -10,9 +10,9 @@ export type CatalogKind = 'route' | 'hotel';
 
 /** 与库里 catalog_items.code 的 CHECK 相同：条目的 id 就是 code。行业包的上架前检查（pack.ts 的 checkItem）按它查 `$code` */
 export const CATALOG_CODE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** 条目里其余的字符串都是它或枚举：NUL 与孤立代理项在这里拦下（库里的 json 存不下），后台新建、补丁、CSV 导入都是 422 点名字段 */
 /** 编号的报错：界面上它叫「编号」（行业包的 $code），不写 payload 的键名 id（后台 UX spec 验收 15 第 10 条） */
 const CODE_MESSAGE = '编号只能是小写字母、数字和连字符，以字母或数字开头，最长64位';
+/** 条目里其余的字符串都是它或枚举：NUL 与孤立代理项在这里拦下（库里的 json 存不下），后台新建、补丁、CSV 导入都是 422 点名字段 */
 const text = z.string().min(1, '不能为空').refine(storableText, UNSTORABLE_TEXT);
 const texts = z.array(text);
 const int = z.number().int();
