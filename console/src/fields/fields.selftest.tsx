@@ -3841,6 +3841,48 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     api.restore();
   }
 
+  // 载入最新版本也会失败：详情页不换成整页的出错态（查询带上了错误，可这一条已经有了），改动还在；
+  // Alert「服务暂时连不上」加重试，焦点落在「重试」上；重试载入以后照常是对比卡、焦点在它的标题
+  {
+    let down = true;
+    const latest = { ...SICHUAN_ITEM, rev: 3, payload: { ...SICHUAN, hotelLevel: '别人改的档次' } };
+    const api = fakeApi((s) => {
+      if (s.method === 'PATCH') return json({ error: 'rev_conflict', detail: '条目已被别人改过' }, 409);
+      if (s.url.endsWith('/catalog/route/r-sichuan-lux'))
+        return down ? (Promise.reject(new TypeError('Failed to fetch')) as unknown as Response) : json(latest);
+      return undefined;
+    });
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(travel), { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    await typeInto(e.box.querySelector('[data-field-key="hotelLevel"] input'), '我改的档次');
+    await cmdS();
+    await until(() => e.box.querySelector('.detail-conflict') !== null);
+    await click(e.box.querySelector('.detail-conflict button'));
+    await until(() => texts(e.box, '.detail-failure .ant-alert-title').some((t) => t.startsWith('服务暂时连不上')));
+    await settle();
+    const retry = all<HTMLButtonElement>(e.box, '.detail-failure button').find((b) => b.textContent?.replace(/\s/g, '') === '重试');
+    eq(
+      '载入最新版本连不上：详情页还在（不换成整页出错），改动与保存条都在，横幅还在；焦点落在「重试」上',
+      [
+        e.box.querySelector<HTMLInputElement>('[data-field-key="hotelLevel"] input')?.value,
+        barText(e.box)?.summary,
+        e.box.querySelectorAll('.detail-conflict').length,
+        retry !== undefined && document.activeElement === retry,
+      ],
+      ['我改的档次', '有1处改动', 1, true],
+    );
+    down = false;
+    await click(retry);
+    await until(() => e.box.querySelector('.detail-compare') !== null);
+    await settle();
+    eq(
+      '重试载入：Alert 没了，对比卡出现，焦点在它的标题上',
+      [e.box.querySelectorAll('.detail-failure').length, document.activeElement === e.box.querySelector('.detail-compare-title')],
+      [0, true],
+    );
+    await e.unmount();
+    api.restore();
+  }
+
   // 422 locked_field：页内 Alert 用中文字段名；连不上：「服务暂时连不上」加重试，重试再发一次
   {
     let reply: 'locked' | 'down' = 'locked';

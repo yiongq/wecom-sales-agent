@@ -100,8 +100,10 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
   const [legacyOpen, setLegacyOpen] = useState<{ draft: Payload; row: Row } | null>(null);
   const [reloads, setReloads] = useState(0);
   const legacy = legacyKind(entity.kind) ? entity.kind : null;
-  if (q.error instanceof HttpError && q.error.status === 404) return <ItemNotFound entity={entity} />;
-  if (q.error) {
+  // 整页的 404 与出错态只给还没取到这一条的时候。打开着、正在改时重取失败（「载入最新版本」连不上）查询也会带上错误，
+  // 这时照旧画详情页：失败由它就地显示、可以重试，没保存的改动还在
+  if (!q.data && q.error instanceof HttpError && q.error.status === 404) return <ItemNotFound entity={entity} />;
+  if (!q.data && q.error) {
     return (
       <>
         <PageHeader

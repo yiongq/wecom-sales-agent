@@ -820,7 +820,8 @@ export function CatalogDetail({ groupName, entity, item, canEdit, anon, now, onS
   useEffect(() => {
     if (!alertTick) return;
     const box = alertsRef.current;
-    const alert = box?.querySelector<HTMLElement>('.detail-conflict') ?? box?.querySelector<HTMLElement>('.detail-failure .ant-alert');
+    // 刚出的失败优先：载入最新版本连不上时横幅还在，焦点给「服务暂时连不上」的「重试」
+    const alert = box?.querySelector<HTMLElement>('.detail-failure .ant-alert') ?? box?.querySelector<HTMLElement>('.detail-conflict');
     if (!box || !alert) return;
     box.scrollIntoView?.({ block: 'nearest' });
     const action = alert.querySelector<HTMLElement>('.ant-alert-actions button');
