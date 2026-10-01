@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import type { SopSectionText } from '../shared/console-api.js';
 
 // 先设临时 VAR_DIR 再动态 import：server 会连带加载 store.ts，它在加载时就读 VAR_DIR
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
@@ -528,6 +529,7 @@ const cfg = await import('../config/source.js');
 const { observeRequests } = await import('../llm.js');
 const { numEnv } = await import('../env.js');
 const { sectionBody, TRAVEL_SOP_SECTIONS } = await import('../sop/sections.js');
+const { canonicalBody } = await import('../shared/sop-sections.js');
 
 const NL = String.fromCharCode(10);
 const ADMIN = { email: 'admin@example.com', password: 'admin-password-1', name: '后台管理员甲' };
@@ -2304,6 +2306,130 @@ check(
   );
 }
 
+// 后台 UX spec 验收 15 第 3、4 条：草稿保存的 rebaseOnto（冲突合并）。完整路径：草稿改话术原则 → 别人回滚到话术原则不同的
+// 旧版本 → 发布 409 sop_conflict；带 rebaseOnto 与合并后的话术原则保存 → 200（基线换成线上版本、rev 加 1，上游另改的节并进来，
+// 草稿自己改的别的节留着），之后 check 不再要合并，发布成功，线上正文等于合并结果。合并的三种失败：rebaseOnto 不是线上版本 →
+// 409 rev_conflict；edits 缺撞上的节 → 409 sop_conflict 点名缺的节；没有草稿时带 rebaseOnto → 422。失败的几次草稿都没动
+{
+  const v0 = cfg.currentSop();
+  const [tone0, obj0, style0] = ['tone', 'objections', 'wechat-style'].map((k) => bodyOf(v0.sections, k));
+  // v1：话术原则与微信语气都和 v0 不同；草稿在 v1 上改话术原则与异议处理
+  const d0 = await call('PUT', '/sop/draft', {
+    ...O,
+    json: {
+      basedOn: v0.versionId,
+      rev: null,
+      edits: [
+        { key: 'tone', body: `${tone0}${NL}旧版本里多的一句。` },
+        { key: 'wechat-style', body: `${style0}${NL}旧版本里的语气。` },
+      ],
+    },
+  });
+  const v1 = await call('POST', '/sop/draft/publish', { ...O, json: { rev: d0.body.rev, changeNote: '话术原则与语气各加一句' } });
+  const d = await call('PUT', '/sop/draft', {
+    ...O,
+    json: {
+      basedOn: v1.body.id,
+      rev: null,
+      edits: [
+        { key: 'tone', body: `${bodyOf(v1.body.sections, 'tone')}${NL}草稿里加的一句。` },
+        { key: 'objections', body: `${obj0}${NL}草稿里改的异议处理。` },
+      ],
+    },
+  });
+  // 别人回滚到 v0：上游改了话术原则（与草稿撞上）和微信语气（草稿没碰）
+  const rb = await call('POST', `/sop/versions/${v0.versionId}/rollback`, { as: admin, json: { changeNote: '别人回滚了' } });
+  const clash = keep(await call('POST', '/sop/draft/publish', { ...O, json: { rev: d.body.rev, changeNote: '想发布' } }));
+  check(
+    'rebaseOnto：草稿改了话术原则，别人回滚到话术原则不同的旧版本 → 发布 409 sop_conflict，点名话术原则',
+    v1.status === 200 &&
+      d.status === 200 &&
+      rb.status === 200 &&
+      clash.status === 409 &&
+      clash.body.error === 'sop_conflict' &&
+      JSON.stringify(clash.body.keys) === '["tone"]',
+    clash.text.slice(0, 200),
+  );
+  const draftNow = async (): Promise<Body | null> => (await call('GET', '/sop', O)).body.draft as Body | null;
+  const merged = `${tone0}${NL}草稿里加的一句。`;
+  const put = (json: Body): Promise<Res> => call('PUT', '/sop/draft', { ...O, json });
+
+  const notOnline = keep(
+    await put({ basedOn: rb.body.id, rev: d.body.rev, edits: [{ key: 'tone', body: merged }], rebaseOnto: v1.body.id }),
+  );
+  const after1 = await draftNow();
+  check(
+    'rebaseOnto 失败：不是当前发布版本（归档了的 v1）→ 409 rev_conflict，草稿没动',
+    notOnline.status === 409 && notOnline.body.error === 'rev_conflict' && after1?.rev === d.body.rev && after1?.basedOn === v1.body.id,
+    notOnline.text.slice(0, 200),
+  );
+  const missing = keep(
+    await put({
+      basedOn: rb.body.id,
+      rev: d.body.rev,
+      edits: [{ key: 'objections', body: `${obj0}${NL}只改异议处理。` }],
+      rebaseOnto: rb.body.id,
+    }),
+  );
+  const after2 = await draftNow();
+  check(
+    'rebaseOnto 失败：edits 缺撞上的节 → 409 sop_conflict，keys 点名缺的话术原则，current 只带这一节的线上正文；草稿没动',
+    missing.status === 409 &&
+      missing.body.error === 'sop_conflict' &&
+      JSON.stringify(missing.body.keys) === '["tone"]' &&
+      JSON.stringify((missing.body.current as SopSectionText[]).map((x) => x.key)) === '["tone"]' &&
+      bodyOf(missing.body.current as SopSectionText[], 'tone') === tone0 &&
+      after2 !== null &&
+      after2.rev === d.body.rev &&
+      bodyOf(after2.sections, 'objections') === bodyOf(d.body.sections, 'objections'),
+    missing.text.slice(0, 200),
+  );
+
+  const ok = await put({ basedOn: rb.body.id, rev: d.body.rev, edits: [{ key: 'tone', body: merged }], rebaseOnto: rb.body.id });
+  const ch = await call('POST', '/sop/draft/check', O);
+  const overview = await call('GET', '/sop', O);
+  check(
+    'rebaseOnto：带合并后的话术原则保存 → 200，基线换成线上版本、rev 加 1；上游改的微信语气并进来，草稿改的异议处理留着；' +
+      '之后草稿不再过期，check 的 rebase.needed 为 false',
+    ok.status === 200 &&
+      ok.body.basedOn === rb.body.id &&
+      ok.body.rev === d.body.rev + 1 &&
+      bodyOf(ok.body.sections, 'tone') === canonicalBody(merged, false) &&
+      bodyOf(ok.body.sections, 'wechat-style') === style0 &&
+      bodyOf(ok.body.sections, 'objections') === bodyOf(d.body.sections, 'objections') &&
+      overview.body.draft?.stale === false &&
+      ch.status === 200 &&
+      ch.body.rebase?.needed === false &&
+      ch.body.rebase?.conflicts?.length === 0,
+    `${ok.text.slice(0, 200)} | ${JSON.stringify(ch.body.rebase)}`,
+  );
+  const pub = await call('POST', '/sop/draft/publish', { ...O, json: { rev: ok.body.rev, changeNote: '合并以后发布' } });
+  const live = cfg.currentSop().sections;
+  check(
+    'rebaseOnto：合并以后发布成功，线上的话术原则等于合并结果，异议处理是草稿的，微信语气是回滚后的',
+    pub.status === 200 &&
+      pub.body.basedOn === rb.body.id &&
+      bodyOf(live, 'tone') === bodyOf(ok.body.sections, 'tone') &&
+      bodyOf(live, 'objections') === bodyOf(d.body.sections, 'objections') &&
+      bodyOf(live, 'wechat-style') === style0,
+    pub.text.slice(0, 200),
+  );
+  const noDraft = keep(await put({ basedOn: pub.body.id, rev: null, edits: [{ key: 'tone', body: merged }], rebaseOnto: pub.body.id }));
+  check(
+    'rebaseOnto 失败：没有草稿时带 rebaseOnto → 422 invalid_sop，也没有新建草稿',
+    noDraft.status === 422 && noDraft.body.error === 'invalid_sop' && (await draftNow()) === null,
+    noDraft.text.slice(0, 200),
+  );
+
+  // 复原：回滚到这一块开始时的版本
+  const back = await call('POST', `/sop/versions/${v0.versionId}/rollback`, { ...O, json: { changeNote: '复原' } });
+  check(
+    'rebaseOnto：复原后线上的话术原则与这一块开始前相同',
+    back.status === 200 && bodyOf(cfg.currentSop().sections, 'tone') === tone0,
+    back.text.slice(0, 200),
+  );
+}
+
 // /console 的托管与 SPA 回退（第 16 步，验收 17 的路由部分）：用临时的构建产物，测试不依赖真的去构建
 {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-console-dist-'));
@@ -2593,6 +2719,6 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、冲突合并的 rebaseOnto、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩）`,
 );
 process.exit(0);

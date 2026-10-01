@@ -53,6 +53,11 @@ export const SaveDraftBody = z.strictObject({
     .array(z.strictObject({ key: z.string().min(1).max(64), body: z.string().max(100_000) }))
     .min(1)
     .max(32),
+  /**
+   * 后台 UX spec 新增：把已有草稿的基线换成这个发布版本，用于合并冲突。必须是当前发布版本；
+   * 三方合并撞上的节都要出现在 edits 里（edits 就是合并的结果）
+   */
+  rebaseOnto: z.string().min(1).max(64).optional(),
 });
 
 export const RevBody = z.strictObject({ rev: z.number().int().nonnegative() });
