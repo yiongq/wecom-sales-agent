@@ -4,7 +4,8 @@
 //   （会话过期时弹出，不卸载页面）；viewer 已经有值时，刷新失败也照旧按原来的身份渲染。
 // - 收起是受控的：进入销售话术页时默认收起为 56，换页时回到那一页的默认；视口三档由 useViewport() 判断，
 //   992–1279 固定是图标栏，<992 侧栏隐藏，52 高的顶栏里的菜单按钮打开抽屉。
-// - 每页首个可聚焦元素是「跳到主要内容」；侧栏的导航是 nav 地标，内容面板是 main 地标。
+// - 每页首个可聚焦元素是「跳到主要内容」；侧栏是 banner 地标（header，导航是里面的 nav），内容面板是 main 地标；
+//   换页以后焦点放到 main（spec「可访问性与响应式」，下面 Frame 里订阅路由的 onRendered）。
 // - 退出没成功（服务端的会话还在）时仍是成员，错误就地显示在内容区顶上
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from '@tanstack/react-router';
