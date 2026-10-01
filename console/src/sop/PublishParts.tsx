@@ -262,7 +262,7 @@ export function ChangesDrawer({
   /** 只看这一节时是节名 */
   section: string | null;
   changes: readonly SectionChange[];
-  /** 页面上的线上版本：改动相对它 */
+  /** 改动相对的那一版：页面上的线上版本；草稿跟不上线上版本时是草稿所基于的那一版 */
   published: SopVersion;
   /** 现在的线上版本（同发布抽屉的 replacing） */
   online: PublishedHead;
@@ -314,7 +314,7 @@ export interface PublishDrawerProps {
   onClose: () => void;
   afterClose?: () => void;
   spec: readonly SectionSpecView[];
-  /** 页面上的线上版本：逐节改动相对它 */
+  /** 逐节改动相对的那一版：页面上的线上版本；草稿跟不上线上版本时是草稿所基于的那一版 */
   published: SopVersion;
   /** 将被替换的线上版本：多半就是 published；检查发现别人在这期间发布过时是那时的线上版本 */
   replacing: PublishedHead;

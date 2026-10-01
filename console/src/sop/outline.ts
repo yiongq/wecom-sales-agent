@@ -48,7 +48,7 @@ export interface MemberOutlineInput {
   spec: readonly SectionSpecView[];
   /** 行业包的话术节（取锁定原因）；包还没到时不给 */
   packSections?: readonly SopSectionDef[];
-  /** 线上版本的节 */
+  /** 比较的基准的节：线上版本；草稿跟不上线上版本时是草稿所基于的那一版（页面的 useDraftBase） */
   published: readonly SopSectionText[];
   /** 草稿的节，没有草稿就是线上版本的 */
   current: readonly SopSectionText[];
