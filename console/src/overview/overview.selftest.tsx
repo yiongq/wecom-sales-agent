@@ -15,6 +15,8 @@ process.env.TZ = 'Asia/Shanghai';
 
 import './selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { act, createElement } from 'react';
@@ -55,7 +57,7 @@ import {
   updatedWhen,
   waitingTodos,
 } from './model.js';
-import { OverviewPage } from './OverviewPage.js';
+import { OverviewPage, TODO_WAIT_MS } from './OverviewPage.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -698,6 +700,8 @@ interface Server {
   lists: Record<string, object[]>;
   /** 这些路径回 500 */
   fail?: RegExp;
+  /** 这些请求先扣住，releaseHeld() 才回（测首次加载的先后） */
+  hold?: RegExp;
   /** 审计每页最多给几条（不看请求的 limit），用来测按页往前取 */
   auditPage?: number;
   /** 等人接手的会话（默认 WAITING）与计数（默认 COUNTS） */
@@ -749,10 +753,18 @@ function respond(method: string, url: URL): Response {
   return json(404, { error: 'not_found' });
 }
 
+let held: Array<() => void> = [];
+function releaseHeld(): void {
+  const h = held;
+  held = [];
+  h.forEach((f) => f());
+}
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
   const method = (init?.method ?? 'GET').toUpperCase();
   requests.push(`${method} ${url.pathname}${url.search}`);
+  if (server.hold?.test(`${method} ${url.pathname.replace(/^\/api\/console/, '')}`))
+    return new Promise<Response>((res) => held.push(() => res(respond(method, url))));
   return respond(method, url);
 }) as typeof fetch;
 
@@ -952,6 +964,81 @@ async function failing(fail: RegExp) {
   );
   const h = await failing(/^GET \/catalog\/hotel$/);
   eq('一个实体的列表 500：待办里只少这一行，业务数出错', [h.blocks, h.todos, h.stages], [['需要你处理', '业务数'], 4, 6]);
+}
+
+// 2.2b 首次加载的先后（验收 23 的 CLS）：「需要你处理」的行数定下来之前（等人接手、话术、各实体列表），下面各块照常挂上、
+// 各自取数，但包在不显示的 .ov-below 里，免得待办一到把它们推下去。行数定了就显示；这时还在等的发布前检查由按真实行数画的
+// 骨架占位（检查只往话术那一行里补字）。行数一直定不下来（这里扣住酒店列表）时，过了 TODO_WAIT_MS 也显示
+{
+  const css = fs.readFileSync(path.join(import.meta.dirname, 'overview.css'), 'utf8');
+  check(
+    'overview.css：.ov-below 不占盒子，.ov-below.is-waiting 不显示',
+    /\.ov-below \{\s*display: contents;\s*\}/.test(css) && /\.ov-below\.is-waiting \{\s*display: none;\s*\}/.test(css),
+  );
+  const tick = () =>
+    act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+      await win.happyDOM.waitUntilComplete();
+    });
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await tick();
+  };
+  const blocks = (b: Element | undefined) =>
+    ['.ov-system', '.ov-kpi-block', '.ov-recent', '.ov-stages-block'].filter((sel) => b?.querySelector(sel)).length;
+  const below = (m: { $(sel: string): HTMLElement[] }): string | undefined => m.$('.ov-below')[0]?.className;
+
+  // 扣住一份实体列表：行数定不下来
+  server = { pack: TRAVEL, lists: SCENE, hold: /^GET \/catalog\/hotel$/ };
+  requests = [];
+  // Date.now 钉在场景时刻，量真实耗时用 performance.now()
+  const t0 = performance.now();
+  const m = await mountOverview(member('owner'));
+  const waited = Math.round(performance.now() - t0);
+  eq(
+    `行数没定：下面四块都挂上了、请求也发了，但还不显示；待办是 3 行的骨架（挂载用了 ${waited}ms，不到 ${TODO_WAIT_MS}ms）`,
+    [
+      waited < TODO_WAIT_MS,
+      m.$('.ov-todo-skeleton').length,
+      below(m),
+      blocks(m.$('.ov-below')[0]),
+      requests.filter((r) => /^GET \/api\/console\/(status|audit)\b/.test(r)).length >= 2,
+      m.$('.ov-below .ov-kpi-value').length,
+    ],
+    [true, 3, 'ov-below is-waiting', 4, true, 0],
+  );
+  releaseHeld();
+  await settle();
+  eq(
+    '行数定了、全都回来：下面的块显示，待办是真实的 5 行',
+    [below(m), m.$('.ov-todo-title').length, m.$('.ov-todo-skeleton').length],
+    ['ov-below', 5, 0],
+  );
+  await m.unmount();
+
+  // 扣住发布前检查：行数已经定了
+  server = { pack: TRAVEL, lists: SCENE, hold: /^POST \/sop\/draft\/check$/ };
+  const c = await mountOverview(member('owner'));
+  eq(
+    '只差发布前检查：下面的块已经显示，待办的骨架按真实行数画 5 行',
+    [below(c), c.$('.ov-todo-skeleton').length, c.$('.ov-todo-title').length, c.$('.ov-below .ov-kpi-value').length],
+    ['ov-below', 5, 0, 4],
+  );
+  releaseHeld();
+  await settle();
+  eq('检查回来：5 行骨架换成 5 行待办', [c.$('.ov-todo-title').length, c.$('.ov-todo-skeleton').length], [5, 0]);
+  await c.unmount();
+
+  // 行数一直定不下来：过了上限照样显示
+  server = { pack: TRAVEL, lists: SCENE, hold: /^GET \/catalog\/hotel$/ };
+  const slow = await mountOverview(member('owner'));
+  check('行数一直定不下来：先不显示', below(slow) === 'ov-below is-waiting');
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, TODO_WAIT_MS + 50));
+  });
+  eq(`过了 ${TODO_WAIT_MS}ms 还没定：下面的块照样显示，待办还是骨架`, [below(slow), slow.$('.ov-todo-skeleton').length], ['ov-below', 3]);
+  releaseHeld();
+  await settle();
+  await slow.unmount();
 }
 
 // 2.3 坐席：没有「最近变更」和草稿类待办，也不发这些请求；右栏挪到左栏的位置

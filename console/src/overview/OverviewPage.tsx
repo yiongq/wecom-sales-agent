@@ -10,7 +10,7 @@ import { type UseQueryResult, useQueries, useQuery } from '@tanstack/react-query
 import { Link } from '@tanstack/react-router';
 import { Alert } from 'antd';
 import { ArrowUpRight, ChevronRight, CircleAlert, CircleCheck, SquareTerminal } from 'lucide-react';
-import { Fragment, type ReactNode, useEffect, useState } from 'react';
+import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { CatalogItem, ConversationRow, Status as SystemStatus } from '../../../src/shared/console-api.js';
 import { dateWithWeekday, digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
@@ -182,10 +182,11 @@ function TodoLine({ row }: { row: TodoRow }) {
   );
 }
 
-function TodoSkeleton() {
+/** 待办的骨架：行数知道了就画这么多行（每行与真实的行一样高，窄屏也是），不知道时画 3 行 */
+function TodoSkeleton({ rows = 3 }: { rows?: number }) {
   return (
     <div className="state-skeleton" role="status" aria-label="正在载入">
-      {[64, 48, 56].map((w, i) => (
+      {Array.from({ length: rows }, (_, i) => [64, 48, 56][i % 3]!).map((w, i) => (
         <div key={i} className="ov-todo ov-todo-skeleton">
           <span className="ov-todo-icon" />
           <span className="skeleton-bar" />
@@ -199,14 +200,24 @@ function TodoSkeleton() {
   );
 }
 
-function TodoBlock({ pack, editor, now }: { pack: IndustryPack; editor: boolean; now: number }) {
+/** 待办迟迟不落定时，下面的块最多等这么久就显示（见 OverviewPage） */
+export const TODO_WAIT_MS = 1000;
+
+function TodoBlock({ pack, editor, now, onSettled }: { pack: IndustryPack; editor: boolean; now: number; onSettled(): void }) {
   const waiting = useQuery({ ...oldestWaitingQuery, ...POLL });
   const sop = useQuery({ ...sopQuery, enabled: editor });
   const overview = sop.data && 'spec' in sop.data ? sop.data : null;
   const draft = overview?.draft ?? null;
   const check = useQuery({ ...draftCheckQuery(draft?.id ?? '', draft?.rev ?? 0), enabled: editor && draft !== null });
   const { lists, loaded } = useEntityLists(pack, editor);
+  // 有几行在等人接手、话术、各实体列表回来以后就定了；发布前检查要等话术回来才发，它只往话术那一行里补字，不加行
+  const counted = sourcesState([waiting, ...(editor ? [sop, ...lists] : [])]);
   const { loading, error, retry } = sourcesState([waiting, ...(editor ? [sop, ...(draft ? [check] : []), ...lists] : [])]);
+  const known = !counted.loading && counted.error === null;
+  // 行数定了（或整块落定、出错）在画出来之前告诉页面，下面的块这一帧出现；还在等检查的话，骨架按真实的行数画，检查回来不挪位
+  useLayoutEffect(() => {
+    if (known || !loading) onSettled();
+  }, [known, loading, onSettled]);
 
   const rows = todoOrder(
     waitingTodos(waiting.data?.items ?? [], pack, now, workbenchHref, waiting.data?.total),
@@ -222,7 +233,7 @@ function TodoBlock({ pack, editor, now }: { pack: IndustryPack; editor: boolean;
         link={<ConversationsLink>全部会话</ConversationsLink>}
       />
       {loading ? (
-        <TodoSkeleton />
+        <TodoSkeleton rows={known ? Math.max(rows.length, 1) : undefined} />
       ) : (
         <>
           {error !== null && <StateView error={error} onRetry={retry} />}
@@ -547,6 +558,15 @@ export function OverviewPage() {
   const viewer = useViewer().data;
   const pack = usePack();
   const now = useNow();
+  // 首次加载：「需要你处理」的行数定下来之前，下面各块照常挂上、各自取数（骨架、出错与重试都不变），只是先不显示。待办有几行
+  // 要等数据回来才知道（窄屏一行折成两行），先显示下面的块的话，待办一到就把它们整块推下去，375 宽的 CLS 约 0.11（验收 23）。
+  // 行数定了就显示（之后不再收起），这时还在等的发布前检查由按行数画的骨架占位；过了 TODO_WAIT_MS 还没定也显示，一块慢不拖住别的块
+  const [below, setBelow] = useState(false);
+  const showBelow = useCallback(() => setBelow(true), []);
+  useEffect(() => {
+    const t = setTimeout(showBelow, TODO_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [showBelow]);
   // 外壳只在成员或 demo 匿名时渲染路由，两种都带着行业包
   if (!pack || (viewer?.kind !== 'member' && viewer?.kind !== 'anon')) return null;
   const date = dateWithWeekday(now, now);
@@ -563,12 +583,14 @@ export function OverviewPage() {
     <>
       {/* 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔 */}
       <PageHeader title="总览" status={<span>{cjk([viewer.me.tenantName, date])}</span>} />
-      <TodoBlock pack={pack} editor={editor} now={now} />
-      <SystemBlock pack={pack} />
-      <MemberKpis pack={pack} editor={editor} now={now} />
-      <div className={editor ? 'ov-bottom' : 'ov-bottom is-single'}>
-        {editor && <RecentBlock pack={pack} now={now} />}
-        <StagesBlock pack={pack} />
+      <TodoBlock pack={pack} editor={editor} now={now} onSettled={showBelow} />
+      <div className={below ? 'ov-below' : 'ov-below is-waiting'}>
+        <SystemBlock pack={pack} />
+        <MemberKpis pack={pack} editor={editor} now={now} />
+        <div className={editor ? 'ov-bottom' : 'ov-bottom is-single'}>
+          {editor && <RecentBlock pack={pack} now={now} />}
+          <StagesBlock pack={pack} />
+        </div>
       </div>
     </>
   );
