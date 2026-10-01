@@ -5614,7 +5614,11 @@ const bodyOfKey = (secs: readonly SopSectionText[], k: string): string => bodyIn
     items: Array.from({ length: n }, (_, i) => version(from - i, PUBLISHED, { status: 'archived' })),
   });
   eq('一页列 20 个、取 21 个', [HISTORY_PAGE, HISTORY_FETCH], [20, 21]);
-  eq('取满了（21 个）：下一页从第 20 个往前取；不满就到头了', [nextBefore(page(25, 21)), nextBefore(page(5, 5))], [6, undefined]);
+  eq(
+    '取满了（21 个）：下一页从第 20 个往前取；不满（恰好 20 个也算）就到头了',
+    [nextBefore(page(25, 21)), nextBefore(page(20, 20)), nextBefore(page(5, 5))],
+    [6, undefined, undefined],
+  );
   const { rows: listed, known } = historyRows([page(25, 21), page(5, 5)]);
   eq(
     '列出来的去掉多取的那一个，手上的都算',
@@ -5734,6 +5738,17 @@ const bodyOfKey = (secs: readonly SopSectionText[], k: string): string => bodyIn
       rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: { base: H_V2, mine: v1Base } }).draft?.kind,
     ],
     [{ kind: 'auto', names: ['异议处理'], baseNo: 1 }, 'merge'],
+  );
+  // 草稿只改了话术原则；异议处理是别人在 v2 改的（上游），不是草稿改的，不算进「你的草稿（改了…）」
+  eq(
+    '草稿改了哪几节按它的基线比，不按线上：别人在线上改的节不算草稿改的',
+    rollbackPlan({
+      spec: SPEC,
+      online: H_V2,
+      target: H_V1,
+      draft: { base: H_V1, mine: withBodies(H_V1.sections, { tone: '一句就够。\n\n' }) },
+    }).draft,
+    { kind: 'auto', names: ['话术原则'], baseNo: 1 },
   );
   const lockedOld = { ...H_V1, sections: withBodies(H_V1.sections, { handoff: '旧的转人工条件。\n\n' }) };
   const locked = rollbackPlan({ spec: SPEC, online: H_V2, target: lockedOld, draft: null });
@@ -5866,6 +5881,8 @@ async function openHistory(m: PageBox): Promise<void> {
     [{ section: 'tone' }, 1, true],
   );
   await openHistory(m);
+  // 焦点先挪到抽屉里（happy-dom 里抽屉不会自己抢焦点，焦点还停在上一次还回来的「版本记录」上，测不出还没还）
+  rowButton('v1', '回滚到这版…')?.focus();
   await act(async () => m.router.history.back());
   await waitFor(() => !historyDrawer());
   eq(
@@ -5890,10 +5907,12 @@ async function openHistory(m: PageBox): Promise<void> {
 
 // 12.2b 翻页（每页 20 个）、到头、取不到
 {
+  // v25 是回滚到 v2 的那一版：v2 在第二页，「回到v2」要另取
   const many = Array.from({ length: 25 }, (_, i) =>
     version(25 - i, withBodies(PUBLISHED, { objections: `第${25 - i}版的写法。\n\n` }), {
       status: i === 0 ? 'published' : 'archived',
       changeNote: `第${25 - i}次`,
+      ...(i === 0 ? { source: 'rollback' as const, basedOn: 'v2' } : {}),
     }),
   );
   const sop: SopOverview = { published: many[0]!, draft: null, spec: SPEC, budget: { chars: 2303, limit: LIMIT } };
@@ -5915,6 +5934,12 @@ async function openHistory(m: PageBox): Promise<void> {
   srv.versionsFail = false;
   await clickEv(all(d, '.ant-alert-error button').find((b) => label(b) === '重试'));
   await waitFor(() => all(d, '.sop-history-row').length > 0);
+  await waitFor(() => rowText('v25', 'p.sop-history-meta').includes('回到v2'));
+  eq(
+    '回滚的目标不在已经取到的几页里：按 id 另取，写「回到v2」',
+    [calls.filter((c) => c.path === '/api/console/sop/versions/v2').length, rowText('v25', 'p.sop-history-meta').includes('回到v2')],
+    [1, true],
+  );
   eq(
     '重试以后：没有草稿就没有草稿那一行，列 v25 到 v6；v6 的「改了1节」相对多取的 v5 算；底部「更早的版本」',
     [
@@ -5986,7 +6011,7 @@ async function openHistory(m: PageBox): Promise<void> {
   eq('后退：回到开着的版本记录', [searchOf(m), !!m.box.querySelector('.sop-editor')], [{ section: 'tone', view: 'history' }, true]);
   await clickEv(rowButton('v2', '查看改动'));
   await waitFor(() => !!m.box.querySelector('.sop-version-title'));
-  await clickEv(all(m.box.querySelector('.sop-banners')!, 'button').find((b) => label(b) === '回到编辑'));
+  await clickEv(all(m.box.querySelector('.sop-banners') ?? m.box, 'button').find((b) => label(b) === '回到编辑'));
   await waitFor(() => document.activeElement === cmOf(m));
   eq(
     '回到编辑：地址上去掉 v，编辑器回来、焦点在正文上，改动还在',
@@ -6227,7 +6252,7 @@ async function openHistory(m: PageBox): Promise<void> {
   await openHistory(b);
   await clickEv(rowButton('v1', '载入到草稿再改'));
   await waitFor(() => !!modalOf('把v1载入到草稿？'));
-  const confirm = modalOf('把v1载入到草稿？')!;
+  const confirm = modalOf('把v1载入到草稿？') ?? document.createElement('div');
   eq(
     '会盖掉草稿自己改的节：先确认，点名这几节；「再看看」在前，「覆盖并载入」是危险按钮',
     [
@@ -6247,7 +6272,7 @@ async function openHistory(m: PageBox): Promise<void> {
   );
   await clickEv(rowButton('v1', '载入到草稿再改'));
   await waitFor(() => !!modalOf('把v1载入到草稿？'));
-  await clickEv(all(modalOf('把v1载入到草稿？')!, 'button').find((x) => label(x) === '覆盖并载入'));
+  await clickEv(all(modalOf('把v1载入到草稿？') ?? document.createElement('div'), 'button').find((x) => label(x) === '覆盖并载入'));
   await waitFor(() => bsrv.puts().length === 1);
   eq(
     '覆盖并载入：两节都换成 v1 的写法，带草稿的 rev 马上存；编辑器里是 v1 的话术原则',
@@ -6361,7 +6386,11 @@ async function openHistory(m: PageBox): Promise<void> {
   await waitFor(() => barBlocked(p) && !!p.box.querySelector('.sop-version-title'));
   await clickEv(barButton(p, '发布…'));
   await waitFor(() => !!cmOf(p) && selected(p) === '先认同');
-  eq('点「发布…」跳到问题：地址上去掉 v、换到异议处理，选中那几个字', [searchOf(p), selected(p)], [{ section: 'objections' }, '先认同']);
+  eq(
+    '点「发布…」跳到问题：地址上去掉 v、换到异议处理，选中那几个字',
+    [searchOf(p), cmOf(p) ? selected(p) : ''],
+    [{ section: 'objections' }, '先认同'],
+  );
   await p.unmount();
 }
 
