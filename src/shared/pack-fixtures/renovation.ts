@@ -4,6 +4,8 @@
 // 纯数据，只 import 类型；由 src/packs/packs.selftest.ts 跑 checkPack（不变量 13）。
 // 样例（L 页的 4 件主材、5 个套餐）在同目录的 renovation-samples.json，渲染器自测从那里读；钉 L 页写法的断言用冻结的
 // renovation-l-page.ts。往这里加字段时样例跟着补，不用改 console/src（验收 5 第一条）。
+// 套餐的「含软装」、主材的「产地」「规格」是 plan 第 17.1 步后加的（验收 5 第一条：加字段不改 console/src），设计系统 §9.2 与 L 页没有。
+// 含软装暂时只当筛选、不成列，套餐列表的列仍是 L 页的 8 列：验收 5 两条在它身上相抵，成列还是只当筛选待 owner 定（plan「Open」）。
 import type { EntityType, IndustryPack } from '../pack.js';
 
 const pkg: EntityType = {
@@ -57,6 +59,15 @@ const pkg: EntityType = {
       lockGroup: 'terms',
     },
     {
+      key: 'softFurnishing',
+      type: 'boolean',
+      label: '含软装',
+      required: false,
+      group: 'terms',
+      lockedWhenActive: true,
+      lockGroup: 'terms',
+    },
+    {
       key: 'materials',
       type: 'reference',
       to: 'material',
@@ -102,7 +113,7 @@ const pkg: EntityType = {
   ],
   list: {
     columns: ['title', 'houseTypes', 'pricePerSqm', 'minArea', 'duration', 'startMonths', '$status', '$updated'],
-    filters: ['houseTypes', 'styles'],
+    filters: ['houseTypes', 'styles', 'softFurnishing'],
     search: ['title', 'styles', '$code'],
     defaultSort: '-$updated',
   },
@@ -129,6 +140,15 @@ const material: EntityType = {
     { key: 'name', type: 'text', label: '主材名称', group: 'basic' },
     { key: 'category', type: 'enum', options: ['瓷砖', '地板', '橱柜', '卫浴', '门窗', '涂料'], label: '品类', group: 'basic' },
     { key: 'brand', type: 'text', label: '品牌', group: 'basic', suggest: 'distinct' },
+    { key: 'origin', type: 'text', label: '产地', group: 'basic', suggest: 'distinct', placeholder: '例：广东佛山' },
+    {
+      key: 'specs',
+      type: 'subItems',
+      item: [{ key: '', type: 'text', label: '', group: '', placeholder: '例：800×800' }],
+      itemNoun: '种',
+      label: '规格',
+      group: 'basic',
+    },
     {
       key: 'priceUnit',
       type: 'enum',
@@ -144,8 +164,8 @@ const material: EntityType = {
     { key: '$status', type: 'status', label: '状态', group: 'basic' },
   ],
   list: {
-    columns: ['name', 'category', 'brand', 'unitPrice', 'warrantyYears', '$status', '$updated'],
-    filters: ['category'],
+    columns: ['name', 'category', 'brand', 'origin', 'specs', 'unitPrice', 'warrantyYears', '$status', '$updated'],
+    filters: ['category', 'origin'],
     search: ['name', 'brand', '$code'],
     defaultSort: '-$updated',
   },

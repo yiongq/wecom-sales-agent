@@ -14,7 +14,16 @@ import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, type CatalogKind } 
 import { UNSTORABLE_TEXT } from '../shared/console-api.js';
 import { renovationLPage } from '../shared/pack-fixtures/renovation-l-page.js';
 import { renovation } from '../shared/pack-fixtures/renovation.js';
-import { checkItem, checkPack, ENTITY_ICONS, type CheckIssue, type EntityType, type FieldDef, type IndustryPack } from '../shared/pack.js';
+import {
+  checkItem,
+  checkPack,
+  ENTITY_ICONS,
+  type CheckIssue,
+  type EntityType,
+  type FieldDef,
+  type IndustryPack,
+  type ItemCheck,
+} from '../shared/pack.js';
 import { SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { TRAVEL_SOP_SECTIONS } from '../sop/sections.js';
 import { toolDefs } from '../tool-defs.js';
@@ -1021,28 +1030,48 @@ const issue = (path: string, label: string, message: string): CheckIssue => ({ p
     req((p) => void (p.startMonths = '全年')),
     [],
   );
+  // 第 17.1 步后加的选填是否：没填不查也不计，填对了也不计，填错了单独算一项
+  const counted = (c: ItemCheck): unknown[] => [c.requiredPassed, c.requiredTotal, c.required];
+  checkSame('含软装填了「是」：仍是12/12', counted(checkItem(pkg, { ...item, softFurnishing: true })), [12, 12, []]);
+  checkSame('含软装写成字符串：算一项，12/13', counted(checkItem(pkg, { ...item, softFurnishing: 'true' })), [
+    12,
+    13,
+    [issue('softFurnishing', '含软装', '格式不对')],
+  ]);
 
   const m: Loose = {
     id: 'm-marcopolo-800',
     name: '马可波罗 800×800 抛釉砖',
     category: '瓷砖',
     brand: '马可波罗',
+    origin: '广东东莞',
+    specs: ['800×800'],
     priceUnit: '㎡',
     unitPrice: 189,
     warrantyYears: 10,
   };
-  checkSame('主材：必须项7/7，环保等级选填', checkItem(material, m), {
-    requiredTotal: 7,
-    requiredPassed: 7,
+  checkSame('主材：必须项9/9，环保等级选填', checkItem(material, m), {
+    requiredTotal: 9,
+    requiredPassed: 9,
     required: [],
     recommended: [],
   });
   checkSame('主材没选计价单位', checkItem(material, { ...m, priceUnit: undefined }).required, [issue('priceUnit', '计价单位', '没选')]);
   checkSame(
-    '主材的环保等级填了不在选项里：算一项，7/8',
+    '主材的环保等级填了不在选项里：算一项，9/10',
     [checkItem(material, { ...m, ecoGrade: 'E2级' }).requiredPassed, checkItem(material, { ...m, ecoGrade: 'E2级' }).requiredTotal],
-    [7, 8],
+    [9, 10],
   );
+  // 第 17.1 步后加的产地（文字）与规格（单字段的有序子项）：都是必填，后加之前建的主材没有这两个键，上架前检查报出来
+  checkSame('后加之前建的主材：产地没填、规格没填，7/9', counted(checkItem(material, { ...m, origin: undefined, specs: undefined })), [
+    7,
+    9,
+    [issue('origin', '产地', '没填'), issue('specs', '规格', '没填')],
+  ]);
+  checkSame('规格为空数组：必填数组只要求键在', checkItem(material, { ...m, specs: [] }).required, []);
+  checkSame('规格有一项是空的：写到第几种', checkItem(material, { ...m, specs: ['800×800', ''] }).required, [
+    issue('specs.1', '规格 · 第2种', '没填'),
+  ]);
 }
 
 if (fails.length) {
