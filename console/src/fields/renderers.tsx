@@ -705,20 +705,56 @@ function ItemError({ id, text }: { id: string; text: string }) {
   );
 }
 
-/** 单字段的有序子项（行程亮点、费用包含）：逐条一个输入框，上移、下移、删除，底部「添加一条」（设计系统 §6） */
+/** 子项里第一个能填的控件：加了一项以后焦点放进去 */
+const FIRST_CONTROL = 'input:not([type="hidden"]):not([disabled]), textarea:not([disabled])';
+
+/** 增删、移动以后焦点去哪：那一项的第一个控件，或它的上移、下移、删除 */
+type ItemFocus = { index: number; to: 'first' | 'up' | 'down' | 'remove' };
+const FOCUS_CLASS = { up: '.subitem-up', down: '.subitem-down', remove: '.subitem-remove' } as const;
+
+/**
+ * 有序子项增删、移动以后的焦点（单字段的逐条列表与多字段的卡片共用）：加了一项进它的第一个控件；删了一项给接替它位置的
+ * 那一项的「删除」，删光了给「添加」；移动以后跟着那一项走，停在它的同一个按钮上（到头了按钮是 aria-disabled，焦点照样在上面）。
+ * 列表按下标渲染（key 是位置），不挪的话焦点留在原位置的按钮上，那里已经是另一项了。
+ * items 是从 box 找到每一项（带 data-item-index）的选择器前缀；等写回后的这一轮画完再挪（每轮画完看一眼，没有就什么也不做）
+ */
+function useItemFocus(items: string): [RefObject<HTMLDivElement | null>, (to: ItemFocus) => void] {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const nextRef = useRef<ItemFocus | null>(null);
+  useEffect(() => {
+    const f = nextRef.current;
+    const root = boxRef.current;
+    if (!f || !root) return;
+    nextRef.current = null;
+    const item = root.querySelector<HTMLElement>(`${items}[data-item-index="${f.index}"]`);
+    const target = item?.querySelector<HTMLElement>(f.to === 'first' ? FIRST_CONTROL : FOCUS_CLASS[f.to]);
+    (target ?? root.querySelector<HTMLElement>(':scope > .field-add'))?.focus();
+  });
+  const focusAfter = (to: ItemFocus): void => {
+    nextRef.current = to;
+  };
+  return [boxRef, focusAfter];
+}
+
+/** 单字段的有序子项（行程亮点、费用包含）：逐条一个输入框，上移、下移、删除，底部「添加一条」（设计系统 §6）；焦点同 useItemFocus */
 function SingleListForm(p: FormProps) {
   const { field, value, onChange, id, labelId } = p;
   const items = CODECS.subItems.read(value, field);
   const sub = field.item![0]!;
   const R = RENDERERS[sub.type];
   const noun = nounOf(field);
-  const set = (next: readonly unknown[]): void => onChange(CODECS.subItems.write(next, field));
+  const [boxRef, focusAfter] = useItemFocus(':scope > ');
+  const write = (next: readonly unknown[]): void => onChange(CODECS.subItems.write(next, field));
+  const set = (next: readonly unknown[], to: ItemFocus): void => {
+    focusAfter(to);
+    write(next);
+  };
   const move = (i: number, d: -1 | 1): void => {
     const next = moveItem(items, i, d);
-    if (next) set(next);
+    if (next) set(next, { index: i + d, to: d < 0 ? 'up' : 'down' });
   };
   return (
-    <div className="field-list-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
+    <div ref={boxRef} className="field-list-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
       {items.map((it, i) => {
         const error = p.itemErrors?.[String(i)];
         const errorId = `${id}-${i}e`;
@@ -734,29 +770,39 @@ function SingleListForm(p: FormProps) {
                 ariaLabel={`${field.label}第${i + 1}${noun}`}
                 describedBy={error === undefined ? undefined : errorId}
                 invalid={error !== undefined}
-                onChange={(v) => set(replaceAt(items, i, v))}
+                onChange={(v) => write(replaceAt(items, i, v))}
               />
-              <IconButton label="上移" icon={ArrowUp} aria-disabled={i === 0 || undefined} onClick={() => move(i, -1)} />
-              <IconButton label="下移" icon={ArrowDown} aria-disabled={i === items.length - 1 || undefined} onClick={() => move(i, 1)} />
-              <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(removeAt(items, i))} />
+              <IconButton
+                label="上移"
+                icon={ArrowUp}
+                className="subitem-up"
+                aria-disabled={i === 0 || undefined}
+                onClick={() => move(i, -1)}
+              />
+              <IconButton
+                label="下移"
+                icon={ArrowDown}
+                className="subitem-down"
+                aria-disabled={i === items.length - 1 || undefined}
+                onClick={() => move(i, 1)}
+              />
+              <IconButton
+                label={`删除这${noun}`}
+                icon={Trash2}
+                className="subitem-remove"
+                onClick={() => set(removeAt(items, i), { index: Math.min(i, items.length - 2), to: 'remove' })}
+              />
             </div>
             {error === undefined ? null : <ItemError id={errorId} text={error} />}
           </div>
         );
       })}
-      <Button className="field-add" icon={<Icon of={Plus} />} onClick={() => set([...items, ''])}>
+      <Button className="field-add" icon={<Icon of={Plus} />} onClick={() => set([...items, ''], { index: items.length, to: 'first' })}>
         {`添加一${noun}`}
       </Button>
     </div>
   );
 }
-
-/** 子项卡片里第一个能填的控件：加了一项以后焦点放进去 */
-const FIRST_CONTROL = 'input:not([type="hidden"]):not([disabled]), textarea:not([disabled])';
-
-/** 增删、移动以后焦点去哪：那一项的第一个控件，或它的上移、下移、删除 */
-type ItemFocus = { index: number; to: 'first' | 'up' | 'down' | 'remove' };
-const FOCUS_CLASS = { up: '.subitem-up', down: '.subitem-down', remove: '.subitem-remove' } as const;
 
 /**
  * 多字段的有序子项（逐日行程、施工节点）：通用的有序子项编辑器（spec「有序子项与引用」，设计系统 §6.3）。
@@ -767,8 +813,7 @@ const FOCUS_CLASS = { up: '.subitem-up', down: '.subitem-down', remove: '.subite
  * - 卡片右上角「上移」「下移」「删除这{itemNoun}」（28 图标按钮），不做拖动；第一项的上移、最后一项的下移是 aria-disabled；
  *   底部「添加一{itemNoun}」。autoIndexKey 随增删和移动按位置重排。条数随另一个字段锁定时（已上架线路的天数）
  *   这四种按钮都不画，区块头写「条数随天数锁定，文字可改」（FormField）。
- * - 焦点：加了一项进它的第一个控件；删了一项给接替它位置的那一项的「删除」，删光了给「添加」；移动以后跟着那一项走，
- *   停在它的同一个按钮上（到头了按钮是 aria-disabled，焦点照样在上面）。
+ * - 焦点见 useItemFocus（与单字段的逐条列表相同）。
  * 每一项（li）带 data-item-index，子字段带 data-field-key：上架前检查、报错跳到「第3天的当晚住宿」，失焦记位置都靠它们
  */
 function ItemCardsForm(p: FormProps) {
@@ -782,30 +827,19 @@ function ItemCardsForm(p: FormProps) {
   const under = first.length === 2 ? first[1] : first[0]?.span === 'wide' ? first[0] : undefined;
   const tools = !p.countLocked;
   const top = p.scope ?? p.row;
-  const box = useRef<HTMLDivElement>(null);
-  /** 增删、移动以后焦点要去的地方：等写回后的这一轮画完再挪（每轮画完看一眼，没有就什么也不做） */
-  const focusNext = useRef<ItemFocus | null>(null);
-  const set = (next: readonly unknown[], focus: ItemFocus): void => {
-    focusNext.current = focus;
+  const [boxRef, focusAfter] = useItemFocus(':scope > ol > ');
+  const set = (next: readonly unknown[], to: ItemFocus): void => {
+    focusAfter(to);
     onChange(CODECS.subItems.write(renumber(field, next), field));
   };
   const move = (i: number, d: -1 | 1): void => {
     const next = moveItem(items, i, d);
     if (next) set(next, { index: i + d, to: d < 0 ? 'up' : 'down' });
   };
-  useEffect(() => {
-    const f = focusNext.current;
-    const root = box.current;
-    if (!f || !root) return;
-    focusNext.current = null;
-    const card = root.querySelector<HTMLElement>(`:scope > ol > [data-item-index="${f.index}"]`);
-    const target = card?.querySelector<HTMLElement>(f.to === 'first' ? FIRST_CONTROL : FOCUS_CLASS[f.to]);
-    (target ?? root.querySelector<HTMLElement>(':scope > .field-add'))?.focus();
-  });
   const writeItem = (i: number, item: Payload, sub: FieldDef, v: unknown): void =>
     onChange(CODECS.subItems.write(replaceAt(items, i, itemInOrder(field, writeValue(item, sub, v))), field));
   return (
-    <div ref={box} className="subitems-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
+    <div ref={boxRef} className="subitems-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
       {items.length ? (
         <ol className="subitems-timeline">
           {items.map((it, i) => {

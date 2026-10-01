@@ -1477,15 +1477,49 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
   const rows = () => all<HTMLElement>(hl.box, '.field-list-row');
   check('行程亮点：改第 2 条', await typeInto(rows()[1]?.querySelector('input'), '改过的第二条'));
   eq('改第 2 条：只有第 2 条变了', hl.state().highlights, replaceAt(lines, 1, '改过的第二条'));
-  await click(rows()[1]?.querySelector('button[aria-label="上移"]'));
+  const tool = (i: number, name: string): HTMLElement | null | undefined =>
+    rows()[i]?.querySelector<HTMLElement>(`button[aria-label="${name}"]`);
+  await click(tool(1, '上移'));
   eq('第 2 条上移', (hl.state().highlights as string[]).slice(0, 2), ['改过的第二条', lines[0]]);
-  await click(rows()[0]?.querySelector('button[aria-label="上移"]'));
+  // 焦点跟着那一条走（第 16 步）：逐条列表按位置渲染，不挪的话焦点留在原位置的按钮上，那里已经是另一条了
+  const upFocus = document.activeElement === tool(0, '上移');
+  await click(tool(0, '下移'));
+  const down = [(hl.state().highlights as string[]).slice(0, 2), document.activeElement === tool(1, '下移')];
+  await click(tool(1, '上移'));
+  eq(
+    '单字段的逐条列表：移动以后焦点跟着那一条，停在它的同一个按钮上（上移到第 1 条，上移是 aria-disabled 也留着焦点）',
+    [upFocus, tool(0, '上移')?.getAttribute('aria-disabled'), down],
+    [true, 'true', [[lines[0], '改过的第二条'], true]],
+  );
+  await click(tool(0, '上移'));
   eq('第 1 条的上移不动', (hl.state().highlights as string[])[0], '改过的第二条');
-  await click(rows()[1]?.querySelector('button[aria-label="删除这条"]'));
+  await click(tool(1, '删除这条'));
   eq('删第 2 条', hl.state().highlights, ['改过的第二条', ...lines.slice(2)]);
-  await click(all<HTMLElement>(hl.box, 'button').find((b) => b.textContent?.includes('添加一条')));
+  const removeFocus = document.activeElement === tool(1, '删除这条');
+  const addBtn = (): HTMLElement | undefined => all<HTMLElement>(hl.box, 'button').find((b) => b.textContent?.includes('添加一条'));
+  await click(addBtn());
   eq('添加一条：末尾多一个空条', (hl.state().highlights as string[]).at(-1), '');
+  const n = (hl.state().highlights as string[]).length;
+  const addFocus = document.activeElement === rows()[n - 1]?.querySelector('input');
+  await click(tool(n - 1, '删除这条'));
+  eq(
+    '焦点：删一条给接替它位置的那一条的「删除这条」，删的是最后一条给上一条的；添加一条进新的那一条的输入框',
+    [removeFocus, addFocus, document.activeElement === tool(n - 2, '删除这条')],
+    [true, true, true],
+  );
   await hl.unmount();
+  // 删光了：焦点在「添加一条」
+  const one = await mountGrid(ROUTE, 'sell', { ...GUIZHOU_5D, highlights: ['只有一条'] }, DRAFT);
+  await click(one.box.querySelector('.field-list-row button[aria-label="删除这条"]'));
+  eq(
+    '单字段的逐条列表删光了：焦点在「添加一条」',
+    [
+      one.state().highlights,
+      document.activeElement === all<HTMLElement>(one.box, 'button').find((b) => b.textContent?.includes('添加一条')),
+    ],
+    [[], true],
+  );
+  await one.unmount();
 
   // 逐日行程（多字段的有序子项）：第 2 天的餐食点一片、住宿自由输入，只有第 2 天变了
   const days = await mountGrid(ROUTE, 'days', GUIZHOU_5D, DRAFT);
