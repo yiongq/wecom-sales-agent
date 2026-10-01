@@ -22,6 +22,7 @@ import type { AuditEntryView, AuditPage as AuditPageBody, Me, Role } from '../..
 import type { EntityType, FieldDef, IndustryPack } from '../../../src/shared/pack.js';
 import { AUDIT_ACTIONS, auditActionsParam } from '../../../src/shared/ui-labels.js';
 import { auditSearch } from '../audit-search.js';
+import { sopSearch } from '../sop/search.js';
 import type { Viewer } from '../shell/boot.js';
 import { VIEWER_KEY } from '../viewer.js';
 import { AuditPage } from './AuditPage.js';
@@ -835,9 +836,33 @@ const cell = (c: Cell): string =>
   );
   const pub = drawerView(publish, TRAVEL, {});
   eq(
-    '抽屉：话术写版本、去处是销售话术、没有改动表；UUID 只在技术详情里',
+    '抽屉：话术写版本、去处是这一版的查看改动、没有改动表；UUID 只在技术详情里',
     [pub.facts[2], pub.link, pub.changes, pub.tech.rows[1]],
-    [{ label: '对象', text: '话术v2' }, { to: 'sop', label: '打开销售话术' }, null, ['对象', `sop_version · ${UUID}`]],
+    [{ label: '对象', text: '话术v2' }, { to: 'sop', v: 2, label: '打开销售话术' }, null, ['对象', `sop_version · ${UUID}`]],
+  );
+  // 话术的去处是这条记录生成、成为线上的那一版（spec「审计日志」的「话术的对应版本」；话术页的 v=N 看 vN 相对前一版改了什么）
+  const sopLink = (action: string, diff?: unknown) => {
+    const dv = drawerView(
+      entry({ action, targetType: 'sop_version', targetId: UUID, ...(diff === undefined ? {} : { diff }) }),
+      TRAVEL,
+      {},
+    );
+    return [dv.facts[2]?.text, dv.link];
+  };
+  eq(
+    '抽屉：回滚、重新生成的去处是生成的新版（toVersionNo），不是回滚的目标与换下的旧版；丢弃没有版本，到话术页',
+    [
+      sopLink('sop.rollback', { fromVersionNo: 4, toVersionNo: 5, targetVersionNo: 2, sameHashAsTarget: true }),
+      sopLink('sop.rerender', { causes: ['tools'], fromVersionNo: 5, toVersionNo: 6 }),
+      sopLink('sop.discard'),
+      sopLink('sop.publish', { changedKeys: [] }),
+    ],
+    [
+      ['话术v5', { to: 'sop', v: 5, label: '打开销售话术' }],
+      ['话术v6', { to: 'sop', v: 6, label: '打开销售话术' }],
+      ['话术', { to: 'sop', v: null, label: '打开销售话术' }],
+      ['话术', { to: 'sop', v: null, label: '打开销售话术' }],
+    ],
   );
   const rb = (same: boolean) =>
     drawerView(
@@ -959,7 +984,9 @@ async function settle(qc: QueryClient): Promise<void> {
   }
 }
 
-/** 挂上真的 AuditPage：/audit 的 validateSearch 与 router.tsx 同一个；/catalog/$kind/$code、/sop 是抽屉去处用的空页 */
+/**
+ * 挂上真的 AuditPage：/audit、/sop 的 validateSearch 与 router.tsx 同一个；/catalog/$kind/$code、/sop 是抽屉去处用的空页
+ */
 async function mount(viewer: Viewer, search = '') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
@@ -968,7 +995,7 @@ async function mount(viewer: Viewer, search = '') {
     routeTree: root.addChildren([
       createRoute({ getParentRoute: () => root, path: '/audit', validateSearch: auditSearch, component: AuditPage }),
       createRoute({ getParentRoute: () => root, path: '/catalog/$kind/$code', component: () => null }),
-      createRoute({ getParentRoute: () => root, path: '/sop', component: () => null }),
+      createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch, component: () => null }),
     ]),
     basepath: '/console',
     history: createMemoryHistory({ initialEntries: [`/console/audit${search}`] }),
@@ -1405,19 +1432,46 @@ async function mount(viewer: Viewer, search = '') {
   await m.click(closeButton());
   check('点在行上打开、焦点原来在别处：关上后焦点回到这一句，不回到原来的地方', document.activeElement === target);
 
-  // 话术：去处是销售话术
+  // 话术：去处是发布的那一版的查看改动
   await m.click(m.$('.au-row .au-sentence').find((e) => m.text(e).startsWith('老板 发布了话术')));
   eq(
-    '话术的一条：对象写版本、去处是销售话术、没有改动表',
+    '话术的一条：对象写版本、去处是这一版的查看改动、没有改动表',
     [
       m.$('.au-facts dd', document).map((e) => m.text(e))[2],
       document.querySelector('.au-link')?.getAttribute('href'),
       document.querySelectorAll('.au-table').length,
     ],
-    ['话术v2', '/console/sop', 0],
+    ['话术v2', '/console/sop?v=2', 0],
   );
   await m.click(document.querySelector('.au-link'));
-  eq('点去处：到话术页', m.url(), '/sop');
+  eq('点去处：到话术页看v2的改动', [m.url(), m.router.state.location.search], ['/sop?v=2', { v: 2 }]);
+  await m.unmount();
+}
+
+// 话术的回滚到生成的新版；丢弃没有版本，到话术页
+{
+  server = {
+    log: [
+      entry({
+        action: 'sop.rollback',
+        actorName: '老板',
+        targetType: 'sop_version',
+        targetId: UUID,
+        diff: { fromVersionNo: 2, toVersionNo: 3, targetVersionNo: 1, sameHashAsTarget: true },
+      }),
+      entry({ action: 'sop.discard', actorName: '小林', targetType: 'sop_version', targetId: UUID }),
+    ],
+  };
+  const m = await mount(member('owner'));
+  const open = async (prefix: string): Promise<string | null | undefined> => {
+    await m.click(m.$('.au-row .au-sentence').find((e) => m.text(e).startsWith(prefix)));
+    return document.querySelector('.au-link')?.getAttribute('href');
+  };
+  eq('回滚的一条：去处是生成的v3，不是回滚的目标v1', await open('老板 把话术回滚到'), '/console/sop?v=3');
+  await m.click(document.querySelector('.au-drawer [aria-label="关闭"]'));
+  eq('丢弃的一条：没有版本，去处是话术页', await open('小林 丢弃了话术草稿'), '/console/sop');
+  await m.click(document.querySelector('.au-link'));
+  eq('点丢弃的去处：到话术页，不带版本', [m.url(), m.router.state.location.search], ['/sop', {}]);
   await m.unmount();
 }
 

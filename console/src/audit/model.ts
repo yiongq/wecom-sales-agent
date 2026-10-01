@@ -227,9 +227,9 @@ export interface Fact {
 
 /**
  * 抽屉的去处：产品库的一条到它的详情（条目删了照样链过去，由详情页写「没有这条{实体名}」）；
- * 话术暂时到话术页，不到对应的版本（版本参数 v 在 plan 第 5–8 步，见 plan「Open」第 14 步）
+ * 话术到这条记录生成的那一版的「查看改动」（话术页地址上的 v，看它相对前一版改了什么），没有版本的（丢弃草稿）v 是 null，到话术页
  */
-export type DrawerLink = { to: 'catalog'; kind: string; code: string; label: string } | { to: 'sop'; label: string };
+export type DrawerLink = { to: 'catalog'; kind: string; code: string; label: string } | { to: 'sop'; v: number | null; label: string };
 
 export interface DrawerView {
   actor: { name: string; human: boolean };
@@ -592,7 +592,7 @@ function changeTable(entry: AuditEntryView, entity: EntityType | null, lookups: 
 
 /**
  * 详情抽屉写什么：句子（一行写完，带补充）、时间、操作者、对象；产品库的改动表；回滚结果与目标版本不同的提醒；
- * 去处（产品库那一条或话术）；技术详情。操作者的角色审计记录里没有（spec 顶部第 14 步的 Revisions），只写名字
+ * 去处（产品库那一条，或话术的那一版）；技术详情。操作者的角色审计记录里没有（spec 顶部第 14 步的 Revisions），只写名字
  */
 export function drawerView(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups): DrawerView {
   const d = describeAudit(entry, pack, lookups);
@@ -603,11 +603,10 @@ export function drawerView(entry: AuditEntryView, pack: IndustryPack, lookups: A
     { label: '时间', text: fullTime(entry.at) },
     { label: '操作者', text: actor.name },
   ];
+  // 话术记录生成、成为线上的那一版：发布是 versionNo，回滚与重新生成是 toVersionNo（回滚的目标 targetVersionNo 是旧版，不是它）
+  const sopV = entry.action.startsWith('sop.') ? intOf(entry.action === 'sop.publish' ? diff.versionNo : diff.toVersionNo) : null;
   if (entity && entry.targetId) facts.push({ label: '对象', text: entity.label, code: entry.targetId });
-  else if (entry.action.startsWith('sop.')) {
-    const v = intOf(entry.action === 'sop.publish' ? diff.versionNo : diff.toVersionNo);
-    facts.push({ label: '对象', text: v === null ? '话术' : `话术v${v}` });
-  }
+  else if (entry.action.startsWith('sop.')) facts.push({ label: '对象', text: sopV === null ? '话术' : `话术v${sopV}` });
   const reason = entry.action === 'catalog.locked_fix' ? strOf(diff.reason) : null;
   if (reason) facts.push({ label: '原因', text: reason });
 
@@ -625,7 +624,7 @@ export function drawerView(entry: AuditEntryView, pack: IndustryPack, lookups: A
     entity && entry.targetId
       ? { to: 'catalog', kind: entity.kind, code: entry.targetId, label: `打开这条${entity.label}` }
       : entry.action.startsWith('sop.')
-        ? { to: 'sop', label: '打开销售话术' }
+        ? { to: 'sop', v: sopV, label: '打开销售话术' }
         : null;
 
   const target = [entry.targetType, entry.targetId].filter((x) => x !== null).join(' · ');
