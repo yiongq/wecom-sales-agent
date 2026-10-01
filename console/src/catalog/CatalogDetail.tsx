@@ -306,9 +306,9 @@ export function jumpToCard(root: HTMLElement | null, group: string): void {
   land(sec.querySelector<HTMLElement>('.detail-card-title') ?? sec, 'nearest');
 }
 
-/** 字段里第一个能填的控件；「撤销这处」不算 */
+/** 字段里第一个能填的控件；标签行里的「撤销这处」「复制上一天的…」不算 */
 const FOCUSABLE =
-  'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), button:not([disabled]):not([aria-disabled="true"]):not(.field-undo), [tabindex]:not([tabindex="-1"])';
+  'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), button:not([disabled]):not([aria-disabled="true"]):not(.field-undo):not(.field-copy), [tabindex]:not([tabindex="-1"])';
 
 /**
  * 检查项指向的元素：按 path 找到字段（外层带 data-field-key 的那个，不在别的字段里面）；有序子项里的一处再找第几项

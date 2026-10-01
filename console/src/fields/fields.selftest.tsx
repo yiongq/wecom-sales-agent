@@ -1158,7 +1158,7 @@ for (const [, e, items] of SAMPLES) {
   const itv = view(fieldOf(ROUTE, 'itinerary'), SICHUAN.itinerary);
   check(
     '逐日行程只读：时间轴，节点里写 D1–D8',
-    count(itv, 'class="tl-node"') === 8 && itv.includes('>D1<') && itv.includes('>D8<') && !itv.includes('subitem-label'),
+    count(itv, 'class="tl-node is-done"') === 8 && itv.includes('>D1<') && itv.includes('>D8<') && !itv.includes('subitem-label'),
   );
   const nv = view(fieldOf(PKG, 'nodes'), NUANMU.nodes);
   check(
@@ -1178,7 +1178,15 @@ for (const [, e, items] of SAMPLES) {
     ),
   );
   const itf = form(fieldOf(ROUTE, 'itinerary'), GUIZHOU_5D.itinerary);
-  eq('逐日行程表单：每天一张卡片，卡片名「D1」…', [count(itf, 'class="subitem-card"'), itf.includes('aria-label="D5"')], [5, true]);
+  eq(
+    '逐日行程表单：每天一张卡片，组名「第5天」，节点里写「D1」…',
+    [
+      count(itf, 'class="subitem-card has-tools"'),
+      itf.includes('aria-label="第5天"'),
+      count(itf, '<span class="tl-node is-done" aria-hidden="true">D'),
+    ],
+    [5, true, 5],
+  );
   eq('逐日行程表单：每天的餐食是多选片', count(itf, 'class="field-chips"'), 5);
   check('逐日行程表单：当晚住宿可以写库外的（AutoComplete）', itf.includes('ant-select-auto-complete'));
   // reference
@@ -1431,7 +1439,7 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
 
   // 逐日行程（多字段的有序子项）：第 2 天的餐食点一片、住宿自由输入，只有第 2 天变了
   const days = await mountGrid(ROUTE, 'days', GUIZHOU_5D, DRAFT);
-  const day = (n: number) => days.box.querySelector(`section[aria-label="D${n}"]`);
+  const day = (n: number) => days.box.querySelector(`[data-item-index="${n - 1}"]`);
   const before = GUIZHOU_5D.itinerary as Payload[];
   const mealsField = fieldOf(ROUTE, 'itinerary').item!.find((x) => x.key === 'meals')!;
   const wantMeals = formatStored(mealsField, togglePick(parseStored(mealsField, String(before[1]!.meals)) ?? [], '晚'));
@@ -1448,7 +1456,7 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
 
   // 施工节点：第 3 个节点删掉唯一的主材 → 选填清空，经 writeValue 删键（不留 []）；改第 2 个节点的名称
   const nodes = await mountGrid(PKG, 'nodes', NUANMU, DRAFT);
-  const node = (n: number) => nodes.box.querySelector(`section[aria-label="节点${n}"]`);
+  const node = (n: number) => nodes.box.querySelector(`[data-item-index="${n - 1}"]`);
   check('节点3：点主材芯片的删除', await click(node(3)?.querySelector('.ant-select-selection-item-remove')));
   const after = nodes.state().nodes as Payload[];
   eq('节点3 删掉唯一的主材：materials 键删掉', 'materials' in after[2]!, false);
@@ -3759,7 +3767,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const line = e.box.querySelector('[data-field-key="highlights"] [data-item-index="1"]');
     const lineError = line?.querySelector('.field-error');
     const day3 = e.box.querySelector('[data-field-key="itinerary"] [data-item-index="2"]');
-    const dayErrId = day3?.querySelector(':scope > .field-error')?.id ?? '';
+    const dayErrId = day3?.querySelector('.subitem-card > .field-error')?.id ?? '';
     const linked = all(day3 ?? e.box, '[data-field-key]').map((f) =>
       all(f, '[aria-describedby]').some((el) => el.getAttribute('aria-describedby')?.split(' ').includes(dayErrId)),
     );
@@ -3769,13 +3777,13 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [true, [true, true, true, true]],
     );
     eq(
-      '422：「第2条：不能为空」写在行程亮点第2条下面、读屏连到那个输入框；「第3天的天号应为3」写在第3天的序号下面',
+      '422：「第2条：不能为空」写在行程亮点第2条下面、读屏连到那个输入框；「第3天的天号应为3」写在第3天的卡片顶上',
       [
         lineError?.textContent,
         !!lineError?.id && line?.querySelector('input')?.getAttribute('aria-describedby') === lineError.id,
         line?.querySelector('input')?.getAttribute('aria-invalid'),
         e.box.querySelectorAll('[data-field-key="highlights"] .field-error').length,
-        day3?.querySelector(':scope > .field-error')?.textContent,
+        day3?.querySelector('.subitem-card > .field-error')?.textContent,
         texts(e.box, '.detail-issues .ant-alert-title'),
       ],
       ['第2条：不能为空', true, 'true', 1, '第3天的天号应为3', ['有2处要改']],
@@ -5472,12 +5480,13 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   // 卡片右上角「删除这{itemNoun}」、底部「添加一{itemNoun}」；自动编号随增删重排；条数随天数锁定时两个都不画
   const subEdit = (root: ParentNode, key: string) => {
     const block = root.querySelector<HTMLElement>(`[data-field-key="${key}"]`) ?? undefined;
-    const cards = block ? all<HTMLElement>(block, ':scope .subitem-card') : [];
+    // 每一项是竖轴上的一个 li（节点加卡片）；序号标签写得下就在节点里（「D1」），写不下在卡片第一行（「节点1」）
+    const cards = block ? all<HTMLElement>(block, ':scope .tl-item') : [];
     return {
       block,
       cards,
       head: block?.querySelector('.field-block-head')?.textContent,
-      labels: cards.map((c) => c.querySelector('.subitem-label')?.textContent),
+      labels: cards.map((c) => c.querySelector('.subitem-label')?.textContent ?? c.querySelector('.tl-node')?.textContent),
       buttons: block
         ? all<HTMLElement>(block, '.subitem-remove, .field-add').map(
             (b) => b.getAttribute('aria-label') ?? (b.textContent ?? '').replace(/\s/g, ''),

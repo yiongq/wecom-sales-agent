@@ -161,6 +161,63 @@
   flex: none;
   margin-top: 3px;
 }
+/* 长文本超过 softMax（§5.2、§6 表）：顶替帮助，13 warning，前置 14 triangle-alert；只是提示，不拦 */
+.field-soft {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 40em;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--warning);
+}
+.field-soft svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--warning-icon);
+}
+/* 「复制上一天的当晚住宿」：标签行右侧的文字按钮（§5.1 链接 / 文字按钮），13/500 accent-text；点击区域 24 高 */
+.field-copy {
+  margin: -2px 0 -2px auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.field-copy:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-copy:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* 有序子项区块头右侧（§6.3）：条数对不上时 13 warning「还差1天」；条数随天数锁定时 13 text-2「条数随天数锁定，文字可改」，前置锁 */
+.count-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--warning);
+  white-space: nowrap;
+}
+.count-note.is-locked {
+  color: var(--text-2);
+}
+.count-note.is-locked svg {
+  color: var(--text-3);
+}
+.field-undo + .count-note {
+  margin-left: 12px;
+}
 
 /* 只读值（§6.4）：14/22 text，不画输入框、不用禁用样式；顶部留 5，和旁边输入框里的文字对齐 */
 .field-value {
@@ -223,6 +280,10 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--text-3);
+}
+/* 超过 softMax：字数变成 warning 色（§5.2） */
+.field-textarea.is-long .ant-input-data-count {
+  color: var(--warning);
 }
 
 /* ---------- 数值：InputNumber 占满一格，后缀单位 14 text-2（§5.2） ---------- */
@@ -374,6 +435,46 @@
   flex: none;
   color: var(--text-3);
 }
+/* 草稿状态靠右（G 页） */
+.ref-option > .status {
+  margin-left: auto;
+}
+/* 「本条写过的」一项右边写第一次出现在哪一项：13 text-3 */
+.ref-option-at {
+  flex: none;
+  margin-left: auto;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 联想的分组标题（§5.3）：13/500 text-3，内边距 8 8 4；前面有项时上方一条 1px --divider，上下各 4。
+   不用外边距：下拉是虚拟列表，按元素的高度排，外边距不算在高度里 */
+.ant-select-item.ant-select-item-group {
+  min-height: 0;
+  padding: 8px 8px 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.ant-select-item-option + .ant-select-item-group {
+  padding-top: 17px;
+}
+.ant-select-item-option + .ant-select-item-group::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--divider);
+}
+/* 引用写了库外的文本：控件下方 13 text-3「酒店库里没有这个，按原文保存」（提示，不是错误） */
+.field-free {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
 
 /* ---------- MonthStrip（§6.1）：12 格等宽；选中的格连成圆角段，段的首尾格才有圆角 ---------- */
 .field-months {
@@ -515,23 +616,29 @@
   font-weight: 600;
   color: var(--text);
 }
+/* 编辑：竖轴与卡片，下面是「添加一{itemNoun}」，和卡片左缘对齐（竖轴 40 加间隔 12），离最后一张卡片 16 */
 .subitems-edit {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+}
+.subitems-edit > .field-add {
+  margin-left: 52px;
 }
 /* 每项一张卡片：§5.9 的卡片，内边距 14 16，卡片之间 12 */
 .subitem-card {
+  position: relative;
   min-width: 0;
   padding: 14px 16px;
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-card);
 }
-/* 一项本身的报错（序号不对这类，落不到子字段上）：写在序号标签下面 */
+/* 一项本身的报错（序号不对这类，落不到子字段上）：写在卡片第一行（或卡片顶上）下面 */
 .subitem-card > .field-error {
   margin-bottom: 8px;
 }
+/* 只读时间轴里写不下节点的序号标签（「节点 3」）：卡片第一行，13/500 text-2 */
 .subitem-label {
   margin-bottom: 8px;
   font-size: 13px;
@@ -539,26 +646,63 @@
   font-weight: 500;
   color: var(--text-2);
 }
-/* 能增删时卡片第一行：序号标签在左，右上角「删除这{itemNoun}」（28 图标按钮，text-3，§6.3）；底部「添加一{itemNoun}」。
-   按钮比标签的行高多 8：上下各让 4，标签和下面的字段仍在原来的位置 */
+/* 编辑卡片的第一行：写不下节点的序号标签、「缺：当晚住宿」（13 warning，前置 14 triangle-alert），下面隔 8 是子字段 */
 .subitem-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: -4px 0 4px;
+  column-gap: 12px;
+  min-height: 22px;
+  margin-bottom: 8px;
 }
 .subitem-head > .subitem-label {
   margin-bottom: 0;
 }
-.subitem-head > .icon-btn {
-  margin-right: -6px;
+.subitem-gap {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--warning);
+}
+.subitem-gap svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--warning-icon);
+}
+/* 右上角「上移」「下移」「删除这{itemNoun}」：28 图标按钮，text-3，间隔 2（§6.3）；不能用的降到 40% 并设 aria-disabled */
+.subitem-tools {
+  position: absolute;
+  top: 11px;
+  right: 12px;
+  display: flex;
+  gap: 2px;
+}
+.subitem-tools > .icon-btn {
   color: var(--text-3);
 }
-.subitem-head > .icon-btn:hover {
+.subitem-tools > .icon-btn:hover {
   color: var(--text);
 }
-/* 只读时间轴：左侧竖轴宽 40，1px --border 连线，节点直径 22、13/500；全部填好是 --text-2 实心底、--panel 色字 */
+.subitem-tools > .icon-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.subitem-tools > .icon-btn[aria-disabled='true']:hover {
+  background: none;
+  color: var(--text-3);
+}
+/* 按钮压在卡片第一行上（88 宽，离右缘 12）：第一行、右上角的文字给它让出 92 */
+.subitem-card.has-tools > .subitem-head,
+.subitem-card.has-tools > .field-error:first-child,
+.subitem-card.has-tools .under-tools > .field-label-row {
+  padding-right: 92px;
+}
+.subitem-card.has-tools .under-tools > .field-label-row {
+  flex-wrap: wrap;
+}
+/* 时间轴（编辑与只读共用）：左侧竖轴宽 40，1px --border 连线，离卡片 12；节点直径 22、13/500，和卡片第一行齐 */
 .subitems-timeline {
   display: flex;
   flex-direction: column;
@@ -571,6 +715,7 @@
   position: relative;
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr);
+  column-gap: 12px;
 }
 .tl-item::before {
   content: '';
@@ -591,6 +736,8 @@
 .tl-item:only-child::before {
   display: none;
 }
+/* 节点：全部填好是 --text-2 实心底、--panel 色字；有缺项空心（--panel 底、1.5 的 --control-border 描边、text-2 字）；
+   有报错同样空心，描边和字换成 --danger */
 .tl-node {
   position: relative;
   justify-self: center;
@@ -606,4 +753,14 @@
   line-height: 22px;
   font-weight: 500;
   text-align: center;
+}
+.tl-node.is-gap,
+.tl-node.is-error {
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1.5px var(--control-border);
+  color: var(--text-2);
+}
+.tl-node.is-error {
+  box-shadow: inset 0 0 0 1.5px var(--danger);
+  color: var(--danger);
 }

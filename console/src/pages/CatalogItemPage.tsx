@@ -38,7 +38,7 @@ function takeArrival(kind: string, code: string): string | undefined {
 
 /**
  * 字段渲染器的外部数据：引用字段指向的实体取列表当候选（和列表页、侧栏共用缓存），本实体的列表给文字联想，
- * 引用的名称链到那一条的详情
+ * 引用的名称链到那一条的详情，实体名给联想的分组标题（「酒店库 · 贵州」）
  */
 function useDetailEnv(pack: IndustryPack, entity: EntityType, now: number): FieldEnv {
   const kinds = referencedKinds(entity);
@@ -52,6 +52,7 @@ function useDetailEnv(pack: IndustryPack, entity: EntityType, now: number): Fiel
       return target && items ? refItemsOf(target, items) : undefined;
     },
     distinct: (key) => distinctValues(own.data?.items, key),
+    entityLabel: (kind) => pack.entities.find((e) => e.kind === kind)?.label,
     itemLink: (kind, code, children) => (
       <Link to="/catalog/$kind/$code" params={{ kind, code }} className="field-ref-link">
         {children}
