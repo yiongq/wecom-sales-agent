@@ -4174,8 +4174,16 @@ function recordScroll(): { calls: string[]; restore(): void } {
   );
   eq(
     '这次改了的节相对被替换下来的版本算，固定规则节不算；没取到被替换的版本时不写',
-    [publishedNames(SPEC, v2, v3), publishedNames(SPEC, v3, v3), publishedNames(SPEC, null, v3)],
-    [['话术原则', '异议处理'], [], []],
+    [
+      publishedNames(SPEC, v2, v3),
+      // 固定规则节的写法随代码变（发布时取镜像），两版之间可以不同，也不算这次改的
+      publishedNames(SPEC, v2, {
+        sections: v3.sections.map((x) => (x.key === 'stages' ? { ...x, text: `${x.text}代码里改了一句\n\n` } : x)),
+      }),
+      publishedNames(SPEC, v3, v3),
+      publishedNames(SPEC, null, v3),
+    ],
+    [['话术原则', '异议处理'], ['话术原则', '异议处理'], [], []],
   );
   eq(
     '将被替换的线上版本：检查时另取到的比页面上的新才用它',
