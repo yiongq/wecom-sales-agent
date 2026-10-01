@@ -729,7 +729,16 @@ function MemberSop({
   // 载入到草稿再改：目标版本的可编辑节放进编辑器（history.ts 的 loadPlan），由自动保存马上存（同「改成…」）；
   // 会盖掉草稿自己改过的节时先确认
   const [loadingTarget, setLoadingTarget] = useState<{ target: SopVersion; plan: LoadPlan } | null>(null);
+  // 确认框不还焦点（载入以后焦点去编辑器）；「再看看」以后由这里还给抽屉里点的那个按钮
+  const loadBack = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = loadBack.current;
+    if (loadingTarget !== null || !el) return;
+    loadBack.current = null;
+    if (el.isConnected) el.focus();
+  }, [loadingTarget]);
   const applyLoad = (target: SopVersion, plan: LoadPlan): void => {
+    loadBack.current = null;
     setLoadingTarget(null);
     if (plan.changed > 0) {
       setEdits(plan.edits);
@@ -741,12 +750,21 @@ function MemberSop({
     closeHistory('editor');
     toast(`已把v${target.versionNo}载入草稿`);
   };
-  const startLoad = (target: SopVersion): void => {
+  const startLoad = (target: SopVersion, trigger: HTMLElement): void => {
     const plan = loadPlan({ spec, published: published.sections, current: current.sections, edits, target });
-    if (plan.overwritten.length) setLoadingTarget({ target, plan });
-    else applyLoad(target, plan);
+    if (plan.overwritten.length) {
+      loadBack.current = trigger;
+      setLoadingTarget({ target, plan });
+    } else applyLoad(target, plan);
   };
   const openDiscard = useCallback((): void => setDiscarding(true), []);
+  // 丢弃的确认框关上（保留、丢弃以后）：焦点回到「更多」。打开它的菜单项已经随菜单卸下，antd 还焦点会掉到 body 上
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const wasDiscarding = useRef(false);
+  useEffect(() => {
+    if (wasDiscarding.current && !discarding) moreRef.current?.focus();
+    wasDiscarding.current = discarding;
+  }, [discarding]);
   // 草稿那一行（存下来的草稿，或者还没存上的改动）；技术详情里是最近一次检查的两个哈希
   const draftRow =
     draft || changed.length > 0
@@ -782,7 +800,15 @@ function MemberSop({
             {editable && <SaveState status={saver.status} onRetry={saver.flush} />}
           </span>
         }
-        actions={<SopActions editable={editable} discardBlocked={discardBlocked} onDiscard={openDiscard} onHistory={openHistory} />}
+        actions={
+          <SopActions
+            editable={editable}
+            discardBlocked={discardBlocked}
+            moreRef={moreRef}
+            onDiscard={openDiscard}
+            onHistory={openHistory}
+          />
+        }
       />
       {guard}
       {hasBanners && (
@@ -849,7 +875,7 @@ function MemberSop({
       )}
 
       {viewing !== undefined ? (
-        <div ref={versionRef}>
+        <div ref={versionRef} className="sop-version-wrap">
           <VersionView no={viewing} spec={spec} now={now} />
         </div>
       ) : (
@@ -987,6 +1013,7 @@ function MemberSop({
         title={`把v${loadingTarget?.target.versionNo ?? ''}载入到草稿？`}
         confirmText="覆盖并载入"
         cancelText="再看看"
+        focusTriggerAfterClose={false}
         onConfirm={() => {
           if (loadingTarget) applyLoad(loadingTarget.target, loadingTarget.plan);
         }}
@@ -999,6 +1026,7 @@ function MemberSop({
         title="丢弃草稿？"
         confirmText="丢弃草稿"
         cancelText="保留"
+        focusTriggerAfterClose={false}
         onConfirm={discard}
         onCancel={() => setDiscarding(false)}
       >

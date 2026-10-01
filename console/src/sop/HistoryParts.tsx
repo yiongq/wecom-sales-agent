@@ -11,7 +11,7 @@
 import { type QueryClient, type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Dropdown, type MenuProps, Tooltip } from 'antd';
 import { Ellipsis, History } from 'lucide-react';
-import { memo, type ReactNode, useId, useState } from 'react';
+import { memo, type ReactNode, type Ref, useId, useState } from 'react';
 import type { SectionSpecView, SopVersion } from '../../../src/shared/console-api.js';
 import { api, unwrap } from '../api.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
@@ -86,15 +86,21 @@ export function useVersionPair(no: number | undefined) {
 
 // ---------------- 页头的操作 ----------------
 
+/**
+ * 「更多」打开时焦点进菜单（autoFocus），方向键、Enter 直接能用，Esc 关上、焦点回到「更多」。
+ * 丢弃的确认框关上以后，页面经 moreRef 把焦点放回「更多」（打开确认框的菜单项那时已经卸下了）
+ */
 export const SopActions = memo(function SopActions({
   editable,
   discardBlocked,
+  moreRef,
   onDiscard,
   onHistory,
 }: {
   editable: boolean;
   /** 「丢弃草稿」不能点的原因（history.ts 的 discardBlock） */
   discardBlocked: string | null;
+  moreRef?: Ref<HTMLButtonElement>;
   onDiscard: () => void;
   onHistory: (trigger: HTMLElement) => void;
 }) {
@@ -119,12 +125,16 @@ export const SopActions = memo(function SopActions({
           onOpenChange={setOpen}
           trigger={['click']}
           placement="bottomRight"
+          autoFocus
           destroyOnHidden
           rootClassName="sop-more-menu"
           menu={{
             items,
             selectable: false,
-            onClick: ({ key }) => {
+            // 键盘的 Enter 也走这里（keydown）：确认框同步打开、焦点被锁进弹窗，这一下 Enter 的默认动作会去按弹窗里
+            // 拿到焦点的关闭按钮，确认框一闪就关了。拦下默认动作
+            onClick: ({ key, domEvent }) => {
+              if (domEvent.type === 'keydown') domEvent.preventDefault();
               setOpen(false);
               if (key === 'discard') onDiscard();
             },
@@ -132,6 +142,7 @@ export const SopActions = memo(function SopActions({
         >
           <Tooltip title="更多操作" destroyOnHidden open={open ? false : undefined}>
             <Button
+              ref={moreRef}
               className="sop-more-btn"
               aria-label="更多操作"
               aria-haspopup="menu"
@@ -322,7 +333,7 @@ export function VersionView({ no, spec, now }: { no: number; spec: readonly Sect
   return (
     <section className="sop-version" aria-labelledby={titleId}>
       <div className="sop-changes-head">
-        <h2 id={titleId} className="sop-version-title">
+        <h2 id={titleId} className="sop-version-title" tabIndex={-1}>
           {cjk(versionTitle(no))}
         </h2>
         <DiffModeToggle mode={mode} onChange={setMode} />

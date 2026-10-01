@@ -2583,6 +2583,8 @@ const moreItem = (): HTMLElement | undefined =>
 async function discardItem(m: PageBox): Promise<HTMLElement | undefined> {
   if (moreButton(m)?.getAttribute('aria-expanded') !== 'true') await clickEv(moreButton(m));
   await until(() => !!moreItem());
+  // 菜单打开以后隔三帧把焦点放进菜单（autoFocus）；等它放完再点，同真人的节奏
+  await rest(80);
   return moreItem();
 }
 /** 「丢弃草稿」能不能点：打开「更多」看一眼再关上 */
@@ -2697,7 +2699,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await typeAtEnd(m, '试');
   await waitFor(() => srv.puts().length === 2);
   eq('接着存：带上一次成功响应的 rev', srv.puts()[1]?.rev, 10);
-  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  await waitFor(() => saveNow(m) === '·已自动保存14:30' && (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev === 11);
+  // 存上以后缓存里的草稿换了，React Query 隔一个宏任务才通知页面重渲（第 5.3 步）：等页面按存上的草稿重渲完
+  await rest(50);
   await act(async () => void m.router.navigate({ to: '/audit' } as never));
   await until(() => m.pathname() === '/audit');
   eq('全存上了：离开这一页不拦', [guardOpen(), m.pathname()], [false, '/audit']);
@@ -5962,7 +5966,8 @@ async function openHistory(m: PageBox): Promise<void> {
       all(banner ?? m.box, 'button').map(label),
       text(m.box.querySelector('.sop-version-title')),
       !!m.box.querySelector('.sop-quota, .sop-editor'),
-      document.activeElement === m.box.querySelector('.sop-version-title'),
+      document.activeElement === m.box.querySelector('.sop-version-title') &&
+        m.box.querySelector('.sop-version-title')?.getAttribute('tabindex') === '-1',
     ],
     [{ section: 'tone', v: 2 }, '正在查看v2', ['回到编辑'], 'v2相对v1改了什么', false, true],
   );
@@ -6235,7 +6240,11 @@ async function openHistory(m: PageBox): Promise<void> {
   );
   await clickEv(all(confirm, 'button').find((x) => label(x) === '再看看'));
   await until(() => !modalOf('把v1载入到草稿？'));
-  eq('「再看看」：不载入，版本记录还开着', [bsrv.puts().length, !!historyDrawer()], [0, true]);
+  eq(
+    '「再看看」：不载入，版本记录还开着，焦点回到「载入到草稿再改」（确认框自己不还焦点）',
+    [bsrv.puts().length, !!historyDrawer(), document.activeElement === rowButton('v1', '载入到草稿再改')],
+    [0, true, true],
+  );
   await clickEv(rowButton('v1', '载入到草稿再改'));
   await waitFor(() => !!modalOf('把v1载入到草稿？'));
   await clickEv(all(modalOf('把v1载入到草稿？')!, 'button').find((x) => label(x) === '覆盖并载入'));
@@ -6326,6 +6335,19 @@ async function openHistory(m: PageBox): Promise<void> {
     ['草稿里2节改动（话术原则、异议处理）会丢掉，线上v2不受影响。这一步撤销不了。', ['保留', '丢弃草稿']],
   );
   await clickEv(all(confirm, 'button').find((x) => label(x) === '保留'));
+  await until(() => document.activeElement === moreButton(d));
+  eq('「保留」：焦点回到「更多」（打开确认框的菜单项已经卸下）', document.activeElement === moreButton(d), true);
+  await until(() => !modalOf('丢弃草稿？'));
+  const item2 = await discardItem(d);
+  const enter = new win.KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }) as unknown as Event;
+  await act(async () => void item2?.dispatchEvent(enter));
+  await until(() => !!modalOf('丢弃草稿？'));
+  eq(
+    '键盘在「丢弃草稿」上按 Enter：拦下默认动作（不然这一下会按到弹窗里拿到焦点的关闭按钮），确认框开着',
+    [enter.defaultPrevented, !!modalOf('丢弃草稿？')],
+    [true, true],
+  );
+  await clickEv(all(modalOf('丢弃草稿？')!, 'button').find((x) => label(x) === '保留'));
   await d.unmount();
 
   // 查看改动时，发布条上有问题，点「发布…」跳到第一个问题：先回到编辑，再选中

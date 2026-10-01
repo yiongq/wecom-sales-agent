@@ -1165,8 +1165,16 @@
 
 /*
  * ---------------- 查看改动（主区）：「v2相对v1改了什么」，下一行是那一版的说明与作者、时间，下面是逐节的差异 ----------------
- * 标题由页面程序聚焦（tabIndex=-1），不画焦点框（同 .sop-conflict）
+ * 标题由页面程序聚焦（tabIndex=-1），不画焦点框（同 .sop-conflict）。对比往往比编辑器短：内容区这时排成一列、对比撑满剩下的高度，
+ * 发布条照样在面板底部（它是 sticky 的，内容不够高时会跟在对比后面浮在面板中间）
  */
+.shell-content:has(> .sop-version-wrap) {
+  display: flex;
+  flex-direction: column;
+}
+.sop-version-wrap {
+  flex: 1 0 auto;
+}
 .sop-version {
   max-width: 1040px;
 }
@@ -1192,7 +1200,7 @@
  * ---------------- 回滚确认（§5.14 640，C 页） ----------------
  * 后果列表：每条 16 图标加 14 文字，间隔 8；中性事实 info、固定规则 lock 用 text-2，要留意的 triangle-alert 用 --warning-icon。
  * 差异块：--subtle 底、--r-md、内边距 8，上距 16；标题 13/500；差异本身不画边框，删除行在 subtle 上再叠一层 subtle（§1.2「嵌套的底」，
- * 所以删除行的字和「−」用 text-2）。太长时差异块自己滚动。「为什么回滚」上距 20。底栏的原因写在按钮左边（同发布抽屉）
+ * 所以删除行的字和「−」用 text-2）。太长时差异块自己滚动（最高 360，矮的窗口里不超过视口高度的 40%）。「为什么回滚」上距 20。底栏的原因写在按钮左边（同发布抽屉）
  */
 .sop-rb-list {
   display: flex;
@@ -1228,7 +1236,8 @@
   margin-top: 16px;
 }
 .sop-rb-diff {
-  max-height: 360px;
+  /* 矮的窗口（手机）也放得下整个弹窗：差异块最多占视口高度的 40% */
+  max-height: min(360px, 40vh);
   margin-top: 16px;
   padding: 8px;
   overflow: auto;
