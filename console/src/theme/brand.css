@@ -268,6 +268,15 @@ select {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+/*
+ * 页签条：rc-tabs 的 nav-wrap 是 overflow: hidden（页签多了横着滚），页签的焦点框伸出去 4（宽 2 加偏移 2），第一个页签的左边、
+ * 排满时最后一个的右边会被裁掉。左右各垫 4 再用负外边距抵掉：页签的位置不变，框画得下（rc-tabs 按 nav 量可用宽度，不受影响）
+ */
+.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap,
+.ant-tabs-bottom > .ant-tabs-nav .ant-tabs-nav-wrap {
+  padding-inline: 4px;
+  margin-inline: -4px;
+}
 /* 页签的面板（antd 给有内容的面板 tabIndex 0）是一整块容器：焦点框往里收 2，不画到面板外面去（§3「容器」） */
 .ant-tabs .ant-tabs-content:focus-visible {
   outline-offset: -2px;

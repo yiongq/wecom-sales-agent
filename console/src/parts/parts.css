@@ -105,7 +105,7 @@
   outline-offset: 2px;
 }
 .tech-details-chevron {
-  font-size: 12px;
+  flex: none;
 }
 .tech-details[open] .tech-details-chevron {
   transform: rotate(90deg);

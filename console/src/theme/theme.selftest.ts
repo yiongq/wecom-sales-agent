@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { Button, ConfigProvider, Form, Input, theme } from 'antd';
+import { Alert, Button, ConfigProvider, Form, Input, theme } from 'antd';
 import { createElement, useContext } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ANTD_THEMES, antdTheme } from './antd.js';
@@ -654,8 +654,8 @@ function jsxTags(src: string, name: string): string[] {
 }
 {
   // 令牌给不了的两处写在 brand.css：antd 焦点框的偏移 2（它写死成 1），分段控件选中段字重 500
-  const rule = (selector: string, body: RegExp): boolean => {
-    for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+  const rule = (selector: string, body: RegExp, src: string = css): boolean => {
+    for (const m of src.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
       const sels = m[1]!.split(',').map((x) => x.replace(/\/\*[\s\S]*?\*\//g, '').trim());
       if (sels.includes(selector) && body.test(m[2]!)) return true;
     }
@@ -681,6 +681,20 @@ function jsxTags(src: string, name: string): string[] {
     rule('.ant-segmented .ant-segmented-item-selected', /font-weight:\s*500/),
     'brand.css 没给分段控件的选中段写 font-weight: 500（§5.4）',
   );
+  // 页签条的 nav-wrap 是 overflow: hidden：左右垫 4、负外边距抵掉，第一个页签的焦点框（伸出去 4）才画得全
+  for (const sel of ['.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap', '.ant-tabs-bottom > .ant-tabs-nav .ant-tabs-nav-wrap']) {
+    check(
+      rule(sel, /padding-inline:\s*4px/) && rule(sel, /margin-inline:\s*-4px/),
+      `brand.css 没给 ${sel} 垫 4、抵 −4（第一个页签的焦点框左边被裁掉）`,
+    );
+  }
+  // ⌘K 的当前行（上面对比度表里那两对的出处）：底是 --selected，右侧补充换成 text-2
+  const shellCss = fs.readFileSync(path.join(HERE, '..', 'shell', 'shell.css'), 'utf8');
+  check(rule('.cmdk-row.is-active', /background:\s*var\(--selected\)/, shellCss), 'shell.css 的 ⌘K 当前行底不是 var(--selected)');
+  check(
+    rule('.cmdk-row.is-active .cmdk-hint', /color:\s*var\(--text-2\)/, shellCss),
+    'shell.css 没把 ⌘K 当前行的补充换成 text-2（text-3 在深色的 selected·raised 上只有 4.39）',
+  );
 }
 
 // ---------------- 6. ThemeProvider 的接线 ----------------
@@ -703,8 +717,12 @@ function Probe({ report }: { report: (seen: Seen) => void }) {
     createElement(Form.Item, { label: '名称', name: 'a', required: true }, createElement(Input)),
     createElement(Form.Item, { label: '备注', name: 'b' }, createElement(Input)),
     createElement(Button, null, '关闭'),
+    ...ALERT_TYPES.map((type) => createElement(Alert, { key: type, type, showIcon: true, title: '提示' })),
   );
 }
+/** Alert 的四种图标（§5.12）：lucide 的 info、circle-check、triangle-alert、circle-alert，装饰性的（读屏不念英文名） */
+const ALERT_TYPES = ['info', 'success', 'warning', 'error'] as const;
+const ALERT_ICONS = ['info', 'circle-check', 'triangle-alert', 'circle-alert'];
 for (const mode of MODES) {
   for (const reduce of [false, true]) {
     const env = install(makeEnv(storeOf(), false));
@@ -745,6 +763,13 @@ for (const mode of MODES) {
     check(
       opt !== undefined && opt[3].endsWith('<span class="optional-mark">（选填）</span>'),
       `${label}：选填项的 label 是 ${opt?.[0] ?? '无'}，应在后面加 <span class="optional-mark">（选填）</span>`,
+    );
+    const icons = [...html.matchAll(/<span class="ant-alert-icon[^"]*"[^>]*>([\s\S]*?)<\/span>/g)].map((m) => m[1]!);
+    const lucide = icons.map((i) => /<svg\b[^>]*\bclass="lucide lucide-([a-z-]+)[^"]*"/.exec(i)?.[1] ?? i.slice(0, 60));
+    check(
+      JSON.stringify(lucide) === JSON.stringify(ALERT_ICONS) &&
+        icons.every((i) => /<svg\b[^>]*\baria-hidden="true"/.test(i) && !i.includes('role="img"') && !i.includes('aria-label')),
+      `${label}：Alert 的图标是 ${JSON.stringify(lucide)}，应为 lucide 的 ${ALERT_ICONS.join('、')}，aria-hidden，没有 role=img 与英文名字`,
     );
   }
 }
