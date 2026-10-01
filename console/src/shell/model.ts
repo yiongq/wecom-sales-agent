@@ -74,9 +74,12 @@ export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
 /** 路由的 pathname 带不带 basepath（/console）都认 */
 export const stripBase = (pathname: string): string => pathname.replace(/^\/console(?=\/|$)/, '') || '/';
 
-/** 当前路由对应的导航项：按整段比，最长的那个；没有对应项时是 null（登录页、404） */
+/**
+ * 当前路由对应的导航项：按整段比，最长的那个；没有对应项时是 null（登录页、404）。
+ * 新建一条（/catalog/new/{kind}）选中的是这一类实体，与路由表一致：new 这一段是新建，不是 kind
+ */
 export function selectedNavKey(pathname: string, groups: readonly NavGroup[]): string | null {
-  const here = stripBase(pathname);
+  const here = stripBase(pathname).replace(/^\/catalog\/new(?=\/[^/])/, '/catalog');
   let best: string | null = null;
   for (const g of groups) {
     for (const { key } of g.items) {

@@ -34,6 +34,26 @@
   text-overflow: ellipsis;
 }
 
+/*
+ * 网格按自己的宽度收列：卡片变窄（375 宽的只读页、<1280 的单栏里窗口更窄时）一格放不下时，两列并成一列，4 列退成两列、
+ * 值可以折行。1440 与 1280 宽的详情页主栏都宽于这条线，照常两列、4 列
+ */
+.field-group {
+  container-type: inline-size;
+}
+@container (max-width: 479px) {
+  .field-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .field-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .field-grid-4 .field-label-row,
+  .field-grid-4 .field-value {
+    white-space: normal;
+  }
+}
+
 /* ---------- 一个字段：标签到控件 6，控件到帮助 6 ---------- */
 .field {
   display: flex;
@@ -68,6 +88,59 @@
   color: var(--text-3);
   font-size: 13px;
   line-height: 20px;
+}
+/*
+ * 改过还没保存（§6.5）：标签后 6 处 6px 的 --accent 圆点，再 4 处 13/500 accent-text「已改」；不画左侧竖条。
+ * 「撤销这处」13 accent-text，平时透明，悬停或焦点在这个字段里时出现；一直可以用 Tab 走到（走到它时它自己就在字段里）。
+ * 点击区域 24 高：上下各 2 的内边距用负外边距抵掉，标签行不变高
+ */
+.field-changed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+.field-changed-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+.field-undo {
+  margin: -2px 0 -2px auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+}
+.field:hover > .field-label-row > .field-undo,
+.field:hover > .field-block-row > .field-undo,
+.field:focus-within > .field-label-row > .field-undo,
+.field:focus-within > .field-block-row > .field-undo {
+  opacity: 1;
+}
+.field-undo:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-undo:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.field-block-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .field-help {
   max-width: 40em;
@@ -271,6 +344,20 @@
   gap: 8px;
   max-width: 100%;
 }
+/* 引用的名称链到那一条的详情：正文色，悬停出下划线，键盘可达（§5.5 首列名称的写法） */
+.field-ref-link {
+  border-radius: var(--r-xs);
+  color: inherit;
+}
+.field-ref-link:hover {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-ref-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .ref-option {
   display: flex;
   align-items: center;
@@ -340,8 +427,10 @@
   box-shadow: 0 0 0 1.5px var(--panel);
 }
 /* L 号：每格 28，总宽 336，高 28，--subtle 底，--r-md；格内 13/20 text-3 的月份数字 */
+/* 半格比 336 窄时（1280–1439 宽的只读卡）跟着收窄，每格平分 */
 .month-strip-L {
   width: 336px;
+  max-width: 100%;
   height: 28px;
   border-radius: var(--r-md);
   background: var(--subtle);
@@ -390,6 +479,12 @@
   flex-direction: column;
   gap: 8px;
 }
+/* 逐条列表的一条：输入框与三个按钮一行，这一条的报错写在下面（第 10.2 步，和字段下方的报错一样隔 6） */
+.field-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .field-list-row {
   display: flex;
   align-items: center;
@@ -433,12 +528,35 @@
   background: var(--panel);
   box-shadow: var(--shadow-card);
 }
+/* 一项本身的报错（序号不对这类，落不到子字段上）：写在序号标签下面 */
+.subitem-card > .field-error {
+  margin-bottom: 8px;
+}
 .subitem-label {
   margin-bottom: 8px;
   font-size: 13px;
   line-height: 20px;
   font-weight: 500;
   color: var(--text-2);
+}
+/* 能增删时卡片第一行：序号标签在左，右上角「删除这{itemNoun}」（28 图标按钮，text-3，§6.3）；底部「添加一{itemNoun}」。
+   按钮比标签的行高多 8：上下各让 4，标签和下面的字段仍在原来的位置 */
+.subitem-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -4px 0 4px;
+}
+.subitem-head > .subitem-label {
+  margin-bottom: 0;
+}
+.subitem-head > .icon-btn {
+  margin-right: -6px;
+  color: var(--text-3);
+}
+.subitem-head > .icon-btn:hover {
+  color: var(--text);
 }
 /* 只读时间轴：左侧竖轴宽 40，1px --border 连线，节点直径 22、13/500；全部填好是 --text-2 实心底、--panel 色字 */
 .subitems-timeline {

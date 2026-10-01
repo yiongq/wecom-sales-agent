@@ -212,8 +212,6 @@ const GOOD: ReadonlyArray<readonly [string, string]> = [
   ],
   // 图标表：限定了文件的通用词只在这个文件里放过
   ['console/src/shell/icons.tsx', `export const ICONS = { route: 1, package: 2, 'bed-double': 3 };`],
-  // 旧页面待重做：只放过 LEGACY 里这个文件的这几个词
-  ['console/src/pages/CatalogDrawer.tsx', `export const L = { c: 'route', detail: 2 };`],
 ];
 
 function tree(files: ReadonlyArray<readonly [string, string]>): string {
@@ -253,49 +251,14 @@ check(
   toastRun.out.slice(0, 300),
 );
 
-// 旧页面名单（LEGACY）：只放过名单里的词，同一个文件里的别的词照报
-const withGood = (over: ReadonlyArray<readonly [string, string | null]>): (readonly [string, string])[] => {
-  const map = new Map<string, string | null>(GOOD.map(([f, body]) => [f, body]));
-  for (const [f, body] of over) map.set(f, body);
-  return [...map].filter((e): e is [string, string] => e[1] !== null);
-};
-const DRAWER = 'console/src/pages/CatalogDrawer.tsx';
-const extraDir = tree(withGood([[DRAWER, `export const L = { c: 'route', detail: 2 };\nexport const M = '主材';`]]));
-const extra = runOn(extraDir);
-check(
-  '不变量 11：旧页面名单只放过名单里的词，同一个文件里的「主材」照报',
-  extra.status === 1 && extra.out.includes(`${DRAWER}:3:`) && extra.out.includes('不变量 11：写死了行业包的词「主材」'),
-  extra.out.slice(0, 400),
-);
-check('不变量 11：名单里的词不报', !extra.out.includes(`${DRAWER}:2:`), extra.out.slice(0, 400));
-// 名单里的词在文件里没了（或文件删了），要求删掉这一项
+// 限定了文件的通用词（GENERIC 的 only）：那个文件里没有它了也要删。夹具换掉图标表，只留 route
 const ICONS = 'console/src/shell/icons.tsx';
-const staleDir = tree(
-  withGood([
-    [DRAWER, `export const L = { c: 'route' };`],
-    [ICONS, `export const ICONS = { route: 1 };`],
-  ]),
-);
+const staleDir = tree(GOOD.map(([f, body]) => [f, f === ICONS ? `export const ICONS = { route: 1 };` : body] as const));
 const stale = runOn(staleDir);
-const staleNamed = (run: { out: string }, file: string, term: string): boolean => run.out.includes(`LEGACY 放过 ${file} 里的「${term}」`);
-check(
-  '不变量 11：旧页面名单里过时的项被点名（词没了）',
-  stale.status === 1 && staleNamed(stale, DRAWER, 'detail'),
-  stale.out.slice(0, 600),
-);
-check('不变量 11：还在的项不算过时', !staleNamed(stale, DRAWER, 'route'), stale.out.slice(0, 600));
-const goneDir = tree(withGood([[DRAWER, null]]));
-const gone = runOn(goneDir);
-check(
-  '不变量 11：旧页面名单里过时的项被点名（文件没了）',
-  gone.status === 1 && staleNamed(gone, DRAWER, 'route') && staleNamed(gone, DRAWER, 'detail'),
-  gone.out.slice(0, 600),
-);
-// 限定了文件的通用词：那个文件里没有它了也要删
 const genericStale = (term: string): boolean => stale.out.includes(`GENERIC 只在 ${ICONS} 里放过「${term}」`);
 check('不变量 11：限定了文件的通用词过时了被点名', genericStale('package'), stale.out.slice(0, 600));
 check('不变量 11：限定了文件的通用词还在用就不算过时', !genericStale('route'), stale.out.slice(0, 600));
-for (const d of [all, cleanDir, toastDir, extraDir, staleDir, goneDir]) fs.rmSync(d, { recursive: true, force: true });
+for (const d of [all, cleanDir, toastDir, staleDir]) fs.rmSync(d, { recursive: true, force: true });
 
 if (fails.length) {
   console.error(`check-console-src: ${fails.length} 条失败（${pass} 条通过）：`);

@@ -4,7 +4,7 @@
 import { createRootRoute, createRoute, createRouter, type ErrorComponentProps, Outlet, useRouterState } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
 import { auditSearch } from './audit-search.js';
-import { catalogSearch } from './catalog/params.js';
+import { catalogSearch, itemSearch } from './catalog/params.js';
 import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
@@ -52,6 +52,15 @@ const catalog = createRoute({
   path: '/catalog/$kind',
   validateSearch: catalogSearch,
 }).lazy(() => import('./pages/catalog.lazy.js').then((m) => m.Route));
+// 产品库的一条与新建（第 10.1 步）：kind 同样按行业包取。新建不用 /catalog/$kind/new，new 是合法的条目编号（spec 路由表）
+const catalogItem = createRoute({
+  getParentRoute: () => root,
+  path: '/catalog/$kind/$code',
+  validateSearch: itemSearch,
+}).lazy(() => import('./pages/catalog-item.lazy.js').then((m) => m.ItemRoute));
+const catalogNew = createRoute({ getParentRoute: () => root, path: '/catalog/new/$kind' }).lazy(() =>
+  import('./pages/catalog-item.lazy.js').then((m) => m.NewRoute),
+);
 // 会话列表的 state、stage 筛选：总览的业务数与阶段条带过来（conversations-search.ts）
 const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
@@ -85,7 +94,7 @@ const specimen = SPECIMEN
   : [];
 
 export const router = createRouter({
-  routeTree: root.addChildren([index, sop, catalog, conversations, audit, ...specimen]),
+  routeTree: root.addChildren([index, sop, catalog, catalogItem, catalogNew, conversations, audit, ...specimen]),
   basepath: '/console',
   defaultPendingComponent: PagePending,
   defaultPendingMs: 0,

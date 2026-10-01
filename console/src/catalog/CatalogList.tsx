@@ -57,8 +57,10 @@ export interface CatalogListProps {
   onSearch(next: CatalogSearch, replace?: boolean): void;
   /** 当前时刻：更新列的「今天」、月份条的当前月（走查钉住时钟） */
   now: number;
-  /** 首列的名称画成什么（详情路由在第 10.1 步；在那之前由页面给打开旧抽屉的按钮） */
+  /** 首列的名称画成什么：页面给详情路由的链接 */
   titleLink(row: ListRow, children: ReactNode): ReactNode;
+  /** 引用列里被引用条目的名称链到它的详情（渲染器的 FieldEnv.itemLink）；不给时是纯文本 */
+  itemLink?: FieldEnv['itemLink'];
   /** 引用字段的候选（引用列与引用筛选写被引用条目的名称）；没有引用列时不用给 */
   refItems?(kind: string): readonly RefItem[] | undefined;
   /** 从来没有过条目时空状态里的操作（新建、导入CSV；非编辑角色和匿名不给） */
@@ -399,7 +401,7 @@ export function CatalogList(p: CatalogListProps) {
     p.onSearch(next);
   };
 
-  const env: FieldEnv = { now: p.now, refItems: (k) => p.refItems?.(k), distinct: () => [] };
+  const env: FieldEnv = { now: p.now, refItems: (k) => p.refItems?.(k), distinct: () => [], itemLink: p.itemLink };
   const refsOf = (f: FieldDef): readonly RefItem[] | undefined => (f.type === 'reference' && f.to ? p.refItems?.(f.to) : undefined);
 
   // 从来没有过：替换整块内容，不留空表头（spec「产品库列表」的状态表）

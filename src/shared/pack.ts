@@ -351,7 +351,8 @@ const EMPTY = '没填';
 const UNPICKED = '没选';
 const BAD_SHAPE = '格式不对';
 const NOT_OPTION = '不在可选项里';
-const CODE_RULE = '只能是小写字母、数字和连字符，以字母或数字开头，最长64位';
+/** 编号的格式说明（上架前检查、复制为新草稿的新编号都用这句） */
+export const CODE_RULE = '只能是小写字母、数字和连字符，以字母或数字开头，最长64位';
 /** zod 的 int() 只收安全整数（绝对值不超过 2^53-1），17 位的数字在输入框里敲得出来 */
 const TOO_BIG = '数字太大';
 const MONTHS_RULE = '要写出月份（如「6-9月」「11月-次年4月」）或「全年」';

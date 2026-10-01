@@ -55,6 +55,21 @@ export function writeValue(state: Payload, field: FieldDef, value: unknown): Pay
   return setPath(state, pathOf(field.key), drop ? undefined : value);
 }
 
+/**
+ * 这个字段改过、还没保存（设计系统 §6.5 的「已改」）：表单状态里的值与打开时的不同，按 01 的 sameValue 比（与键序无关）。
+ * 按字段比，不按顶层键：只改了「最累的一段」时，体力强度不算改过
+ */
+export const fieldChanged = (original: Payload, state: Payload, f: FieldDef): boolean =>
+  !sameValue(valueAt(original, f.key), valueAt(state, f.key));
+
+/**
+ * 「撤销这处」：把这个字段放回打开时的值，别的字段不动。原来没有这个键就删掉（删空的嵌套对象一起删），
+ * 所以撤销了每一处改动以后补丁回到空（不变量 16）。不经 writeValue：原值照原样放回，选填的空值也不删。
+ * 放回的值和打开时的内容共用同一个对象，不拷贝：表单状态只经 setPath 这类沿路复制的写法改，从不就地改
+ */
+export const restoreField = (state: Payload, original: Payload, f: FieldDef): Payload =>
+  setPath(state, pathOf(f.key), valueAt(original, f.key));
+
 /** showWhen 没显示出来的字段：值从表单状态里删掉，删空的嵌套对象一起删（有序子项的子字段不支持 showWhen） */
 export function pruneHidden(state: Payload, fields: readonly FieldDef[]): Payload {
   let next = state;
@@ -186,6 +201,16 @@ export function fieldMode(f: FieldDef, ctx: ItemContext): FieldMode {
   return f.lockedWhenActive === true && ctx.status === 'active' ? 'locked' : 'edit';
 }
 
+/**
+ * 有序子项的条数随另一个字段锁定：countFrom 指向的字段上架后锁定了（旅游包已上架线路的天数），不能增删，只能改文字
+ * （spec「有序子项与引用」，验收 18）
+ */
+export function countLocked(entity: EntityType, f: FieldDef, ctx: ItemContext): boolean {
+  if (f.countFrom === undefined) return false;
+  const by = entity.fields.find((x) => x.key === f.countFrom);
+  return by !== undefined && fieldMode(by, ctx) === 'locked';
+}
+
 /** 只锁其中几项的标签字段（旅游包的「国内」）：已上架时这几项的有无不能改，可改的人才看得到锁 */
 export const lockedMembers = (f: FieldDef, ctx: ItemContext): readonly string[] =>
   ctx.canEdit && ctx.status === 'active' && typeof f.lockedWhenActive === 'object' ? f.lockedWhenActive.members : [];
@@ -235,6 +260,43 @@ export function moveItem<T>(items: readonly T[], i: number, d: -1 | 1): T[] | nu
   return next;
 }
 
+/** 值是数组的字段：标签、有序子项、多选引用、不按字符串存的多选 enum */
+export const arrayValued = (f: FieldDef): boolean =>
+  f.type === 'tags' || f.type === 'subItems' || (f.multiple === true && (f.type === 'reference' || (f.type === 'enum' && !f.storeAs)));
+
+/**
+ * 多字段有序子项的一项按行业包的顺序排键：自动编号在前，子字段按 item 的顺序，别的键原样排在最后。条目原样 JSON 给模型，
+ * 键序就是字节，不该随先填哪个子字段变（同新建提交的 inFieldOrder）；现有数据本来就是这个顺序，排了不变
+ */
+export function itemInOrder(f: FieldDef, item: Payload): Payload {
+  const keys = [...(f.autoIndexKey === undefined ? [] : [f.autoIndexKey]), ...(f.item ?? []).map((s) => s.key)];
+  const out: Payload = {};
+  for (const k of keys) if (Object.hasOwn(item, k)) out[k] = item[k];
+  for (const [k, v] of Object.entries(item)) if (!Object.hasOwn(out, k)) out[k] = v;
+  return out;
+}
+
+/**
+ * 「添加一{itemNoun}」加上的第 n 项：自动编号写上 n，必填的数组子字段先放空数组（同新建的空表单），别的子字段空着，
+ * 由上架前检查报「没填」。单字段的有序子项是空串
+ */
+export function blankItem(f: FieldDef, n: number): unknown {
+  if (isSingleItem(f)) return '';
+  let out: Payload = f.autoIndexKey === undefined ? {} : { [f.autoIndexKey]: n };
+  for (const s of f.item ?? []) if (arrayValued(s)) out = writeValue(out, s, []);
+  return out;
+}
+
+/**
+ * 增删以后按位置重排自动编号（spec「有序子项与引用」：autoIndexKey 增删和移动以后自动重排）。编号本来就对的项原样共用，
+ * 没有自动编号时一项都不动
+ */
+export function renumber(f: FieldDef, items: readonly unknown[]): unknown[] {
+  const k = f.autoIndexKey;
+  if (k === undefined) return [...items];
+  return items.map((it, i) => (isRecord(it) && it[k] !== i + 1 ? itemInOrder(f, { ...it, [k]: i + 1 }) : it));
+}
+
 /** 草稿（含新建）里上架后会锁的字段：标签后提醒「上架后锁定」 */
 export const locksOnActivate = (f: FieldDef, ctx: ItemContext): boolean =>
   ctx.canEdit && ctx.status !== 'active' && f.lockedWhenActive === true;
@@ -245,8 +307,12 @@ export const locksOnActivate = (f: FieldDef, ctx: ItemContext): boolean =>
 export type Span = 'half' | 'wide' | 'block';
 
 interface Layout {
-  /** 在表单网格里占多宽（设计系统 §6.0） */
-  span(f: FieldDef): Span;
+  /**
+   * 在表单网格里占多宽（设计系统 §6.0）。mode 不给按可改算。只读（上架后锁定、没有编辑权限）的月份区间和多选 enum
+   * 只占半格：月份条 L 号宽 336，正好是 1440 宽时半格的宽度，多选 enum 只读时是一行文字；这样 E 页的「价格与季节」
+   * 「适合谁去」各少一行，逐日行程露在首屏（spec「产品库详情与编辑」，owner 2026-09-27）
+   */
+  span(f: FieldDef, mode?: FieldMode): Span;
   /** 锁定时能不能挤进 4 列（§6.4：text、intUnit、money、单选 enum） */
   short(f: FieldDef): boolean;
 }
@@ -260,9 +326,9 @@ export const LAYOUT: { readonly [T in FieldType]: Layout } = {
   intUnit: half,
   money: half,
   longText: wide,
-  monthRange: wide,
+  monthRange: { span: (_, mode = 'edit') => (mode === 'edit' ? 'wide' : 'half'), short: () => false },
   tags: wide,
-  enum: { span: (f) => (f.multiple ? 'wide' : 'half'), short: (f) => !f.multiple },
+  enum: { span: (f, mode = 'edit') => (f.multiple && mode === 'edit' ? 'wide' : 'half'), short: (f) => !f.multiple },
   boolean: { span: () => 'half', short: () => false },
   reference: { span: (f) => (f.multiple ? 'wide' : 'half'), short: () => false },
   subItems: { span: (f) => (isSingleItem(f) ? 'wide' : 'block'), short: () => false },
@@ -295,7 +361,10 @@ export const visible = (f: FieldDef, state: Payload): boolean => !f.showWhen || 
 export function groupGrid(entity: EntityType, group: string, state: Payload, ctx: ItemContext): GroupGrid {
   const cells = entity.fields
     .filter((f) => f.group === group && f.type !== 'status' && visible(f, state))
-    .map((f): GridCell => ({ field: f, mode: fieldMode(f, ctx), span: LAYOUT[f.type].span(f) }));
+    .map((f): GridCell => {
+      const mode = fieldMode(f, ctx);
+      return { field: f, mode, span: LAYOUT[f.type].span(f, mode) };
+    });
   const four = cells.length >= 3 && cells.every((c) => c.mode === 'locked' && LAYOUT[c.field.type].short(c.field));
   return { columns: four ? 4 : 2, allLocked: cells.length > 0 && cells.every((c) => c.mode === 'locked'), cells };
 }

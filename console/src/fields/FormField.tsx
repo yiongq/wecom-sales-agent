@@ -4,6 +4,8 @@
 // 锁怎么挂（§6.4）：整卡都锁时字段不挂锁，aria-describedby 指向卡片头的锁定说明；混合卡里锁定字段的标签后挂 12 的 lock；
 // 草稿里上架后会锁的字段，标签后写「上架后锁定」加 lock；没有编辑权限的只读不挂锁。
 // 多字段的有序子项自成区块：标签换成区块头「逐日行程 · 5天」。
+// 改过还没保存的字段（§6.5）：标签后 6 处一个 6px 主色圆点加「已改」；悬停或焦点在这个字段里时，同一行右侧出现「撤销这处」。
+// 外层带 data-field-key（FieldDef.key）：上架前检查点一项时，页面按它找到字段、把焦点放进去。
 import { CircleX, Lock } from 'lucide-react';
 import { useId } from 'react';
 import type { FieldDef } from '../../../src/shared/pack.js';
@@ -30,8 +32,18 @@ export interface FormFieldProps {
   lockNoteId?: string;
   /** 字段下方的报错（第 10.2 步按「碰过的字段」给） */
   error?: string;
+  /** 字段外面、也说的是它的报错的 id（有序子项一项本身的报错，写在序号下面）：拼进控件的 aria-describedby */
+  describedBy?: string;
+  /** 有序子项里各处的报错：键是下标（'2'）或下标接子字段 key（'2.hotel'），写在那一项、那个子字段下方 */
+  itemErrors?: Readonly<Record<string, string>>;
+  /** 有序子项的条数随另一个字段锁定（model.ts 的 countLocked）：不画增删 */
+  countLocked?: boolean;
   lockedMembers?: readonly string[];
   lockGroup?: { tag: string; reason: string };
+  /** 改过、还没保存：标签后写「已改」（只在可改时画） */
+  changed?: boolean;
+  /** 「撤销这处」：把这个字段放回打开时的值；不给就没有这个链接 */
+  onUndo?(): void;
 }
 
 /** 这些控件是一组按钮（分段控件、多选片、开关、逐条列表、子项卡片），没有单个输入框可以挂 label，标签经 aria-labelledby 连上 */
@@ -49,12 +61,30 @@ export function FormField(p: FormFieldProps) {
   const R = RENDERERS[field.type];
   const editing = mode === 'edit' && p.onChange !== undefined;
   const note = error ?? (editing ? field.help : undefined);
+  const describedBy = [p.describedBy, note ? noteId : undefined].filter(Boolean).join(' ') || undefined;
   const labelText = cjk(field.label);
+  const changed = editing && p.changed === true;
+  const undo =
+    changed && p.onUndo ? (
+      <button type="button" className="field-undo" aria-label={`撤销这处：${field.label}`} onClick={p.onUndo}>
+        撤销这处
+      </button>
+    ) : null;
+  const changedMark = changed ? (
+    <span className="field-changed">
+      <span className="field-changed-dot" aria-hidden="true" />
+      已改
+    </span>
+  ) : null;
 
   const head =
     span === 'block' ? (
-      <div id={labelId} className="field-block-head">
-        {cjk([field.label, `${Array.isArray(value) ? value.length : 0}${nounOf(field)}`])}
+      <div className="field-block-row">
+        <div id={labelId} className="field-block-head">
+          {cjk([field.label, `${Array.isArray(value) ? value.length : 0}${nounOf(field)}`])}
+        </div>
+        {changedMark}
+        {undo}
       </div>
     ) : (
       <div className="field-label-row">
@@ -79,12 +109,15 @@ export function FormField(p: FormFieldProps) {
             <Icon of={Lock} size={12} />
           </span>
         ) : null}
+        {changedMark}
+        {undo}
       </div>
     );
 
   return (
     <div
-      className={`field field-${span}${editing ? '' : ' is-static'}`}
+      className={`field field-${span}${editing ? '' : ' is-static'}${changed ? ' is-changed' : ''}`}
+      data-field-key={field.key}
       role={editing ? undefined : 'group'}
       aria-labelledby={editing ? undefined : labelId}
       aria-describedby={editing ? undefined : p.lockNoteId}
@@ -97,10 +130,12 @@ export function FormField(p: FormFieldProps) {
           row={row}
           id={id}
           labelId={labelId}
-          describedBy={note ? noteId : undefined}
+          describedBy={describedBy}
           invalid={error !== undefined}
           lockedMembers={p.lockedMembers}
           lockGroup={p.lockGroup}
+          itemErrors={p.itemErrors}
+          countLocked={p.countLocked}
           onChange={p.onChange!}
         />
       ) : (

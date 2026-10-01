@@ -315,6 +315,7 @@
   list-style: none;
 }
 .check-item {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -370,11 +371,7 @@ button.check-item:focus-visible {
   color: var(--warning-icon);
 }
 .check-icon-pending {
-  box-sizing: border-box;
-  width: 16px;
-  height: 16px;
-  border: 1.5px dashed var(--text-3);
-  border-radius: var(--r-full);
+  color: var(--text-3);
 }
 .check-item-chevron {
   flex: none;
@@ -388,6 +385,13 @@ button.check-item:focus-visible {
   font-size: 14px;
   line-height: 22px;
   color: var(--text);
+}
+
+/* 页签（§4.4）：@rc-component/tabs 1.13.0 在键盘聚焦的那个页签里插一个写死英文的 aria-live「Tab 1 of 2」，读屏会念，
+   还拼进页签自己的名字（「Tab 1 of 2编辑」）；没有开关能关，藏掉（display: none 同时移出无障碍树）。
+   全站的页签都走 antd Tabs，放在这里一处管 */
+.ant-tabs-tab-btn > [aria-live] {
+  display: none;
 }
 
 /* 分页器（§5.5）：页码是 28 的幽灵按钮，当前页 --selected 底、text 500（这些在 theme/antd.ts 的 Pagination 令牌）。
