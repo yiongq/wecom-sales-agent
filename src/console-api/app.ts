@@ -228,8 +228,10 @@ type Listed = ReturnType<typeof listedSessions>[number];
 /** 01 的顺序：(updatedAt desc, id) */
 const byRecent = (a: Listed, b: Listed): number => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 /** 等人接手的在前，同组内仍按 (updatedAt desc, id)（设计系统 §10.0 修正 1：I 页里 F01 在 A01 前） */
-const waitingFirst = (a: Listed, b: Listed): number =>
-  Number(conversationState(b) === 'human') - Number(conversationState(a) === 'human') || byRecent(a, b);
+const waitingFirst =
+  (pack: IndustryPack) =>
+  (a: Listed, b: Listed): number =>
+    Number(conversationState(b, pack) === 'human') - Number(conversationState(a, pack) === 'human') || byRecent(a, b);
 
 const cookie = (value: string, maxAgeSec: number): string =>
   `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSec}`;
@@ -440,9 +442,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // 每条只投影几个字段，不把 store 里的活对象原样返回。不列 sim- 会话。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移
   .get('/conversations', canSeeCustomers, zValidator('query', ConvQuery, badRequest), (c) => {
     const { limit = 20, offset = 0, state, stage, order } = c.req.valid('query');
+    const pack = currentTenant().pack; // 已成交按租户行业包的终态判定（不变量 17）
     const all = listedSessions()
-      .filter((s) => (!state || conversationState(s) === state) && (!stage || s.stage === stage))
-      .toSorted(order === 'waiting_first' ? waitingFirst : byRecent);
+      .filter((s) => (!state || conversationState(s, pack) === state) && (!stage || s.stage === stage))
+      .toSorted(order === 'waiting_first' ? waitingFirst(pack) : byRecent);
     const page: ConversationPage = {
       total: all.length,
       items: all.slice(offset, offset + limit).map((s) => ({
@@ -460,8 +463,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
   .get('/conversations/counts', canSeeCustomers, (c) => {
     const midnight = new Date(clock()).setHours(0, 0, 0, 0); // 服务器时区（TZ）的今天 0 点
     const body: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
+    const pack = currentTenant().pack;
     for (const s of listedSessions()) {
-      const state = conversationState(s);
+      const state = conversationState(s, pack);
       body.total += 1;
       body.byState[state] += 1;
       if (state === 'ai') body.aiByStage[s.stage] = (body.aiByStage[s.stage] ?? 0) + 1;

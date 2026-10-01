@@ -565,14 +565,18 @@ eq(
     [anon.value, anon.breakdown, anon.caption],
     [20, null, ['线路20，销售助手只推荐这些']],
   );
-  // 已成交的数字是 conversationState 判成已成交的会话：口径只写它认作已成交的阶段，不照搬包里的终态
+  // 已成交的数字是 conversationState 判成已成交的会话，即停在行业包终态的会话：口径写终态的阶段名，key 是不是 paid 都一样
   const paidCaption = (pack: IndustryPack) =>
     memberKpis({ counts: COUNTS, waiting: [], latestPaid: null, catalog: [], pack, editor: false, now: NOW })[2]?.caption;
-  const deposit: IndustryPack = {
+  const live = TRAVEL.stages.filter((s) => !s.terminal);
+  const deposit: IndustryPack = { ...TRAVEL, stages: [...live, { key: 'deposit', label: '已付定金', terminal: true }] };
+  eq('已成交的口径：终态的 key 不是 paid 也写它的阶段名', paidCaption(deposit), ['阶段到了「已付定金」的会话']);
+  const two: IndustryPack = {
     ...TRAVEL,
-    stages: [...TRAVEL.stages.filter((s) => !s.terminal), { key: 'deposit', label: '已付定金', terminal: true }],
+    stages: [...live, { key: 'deposit', label: '已付定金', terminal: true }, { key: 'paid', label: '已付全款', terminal: true }],
   };
-  eq('已成交的口径：终态不是已成交的那个阶段时，不写阶段名', paidCaption(deposit), ['已成交的会话']);
+  eq('已成交的口径：两个终态按包里的顺序都写', paidCaption(two), ['阶段到了「已付定金、已付全款」的会话']);
+  eq('已成交的口径：包里没有终态时，不写阶段名', paidCaption({ ...TRAVEL, stages: live }), ['已成交的会话']);
 }
 
 // 客户停在哪一步
@@ -614,6 +618,17 @@ eq(
     [0, 0, 0, 0, 0, 0],
   );
   eq('阶段条：原型上的名字不算阶段', stageRows(TRAVEL, JSON.parse('{"toString": 5}')).at(-1)?.label, '其他');
+  // 停在终态的会话由 conversationState 算作已成交，不是 AI 接待中：计数里即使带着终态，也不合进「其他」
+  eq(
+    '阶段条：终态不画，也不合进「其他」',
+    stageRows(TRAVEL, { ...COUNTS.aiByStage, paid: 2, legacy: 1 })
+      .slice(-2)
+      .map((r) => [r.label, r.count]),
+    [
+      ['促成', 1],
+      ['其他', 1],
+    ],
+  );
 }
 
 // 最近变更
@@ -678,6 +693,8 @@ interface Server {
   /** 等人接手的会话（默认 WAITING）与计数（默认 COUNTS） */
   waiting?: ConversationRow[];
   counts?: ConversationCounts;
+  /** ?state=paid 回的最近一个已成交（默认 A02） */
+  latestPaid?: ConversationRow;
   /** 每次请求等人接手的会话之前调用：用来模拟两次请求之间有人转人工 */
   onWaiting?: () => void;
 }
@@ -701,7 +718,8 @@ function respond(method: string, url: URL): Response {
     const offset = q.has('offset') ? Number(q.get('offset')) : 0;
     return json(200, { items: all.slice(offset, offset + limit), total: all.length });
   }
-  if (method === 'GET' && p === '/conversations' && q.get('state') === 'paid') return json(200, { items: [A02], total: 1 });
+  if (method === 'GET' && p === '/conversations' && q.get('state') === 'paid')
+    return json(200, { items: [server.latestPaid ?? A02], total: 1 });
   if (method === 'GET' && p === '/conversations') return json(200, { items: [], total: 0 });
   if (method === 'GET' && p === '/sop') return json(200, SOP);
   if (method === 'POST' && p === '/sop/draft/check') return json(200, CHECK);
@@ -1115,7 +1133,12 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
     item('package', 'p-2', { id: 'p-2', title: '现代简约三居' }, 'active', at('2026-09-24T09:00:00')),
   ];
   const MAT_ITEMS = [item('material', 'm-1', { id: 'm-1', name: '实木地板' }, 'active', at('2026-09-24T09:00:00'))];
-  server = { pack: HOME, lists: { package: PKG_ITEMS, material: MAT_ITEMS } };
+  // 服务端按家装包的终态判已成交：最近一个已成交停在「已付定金」
+  server = {
+    pack: HOME,
+    lists: { package: PKG_ITEMS, material: MAT_ITEMS },
+    latestPaid: conv('H03', 'deposit', false, 9, at('2026-09-25T14:00:00')),
+  };
   requests = [];
   const m = await mountOverview(member('owner', HOME));
   eq('别的行业包：待上架', m.texts('.ov-todo-title').slice(3), ['装修套餐草稿「暖木 · 两居全包经典版」']);
@@ -1125,8 +1148,12 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
     [m.texts('.ov-kpi-label')[3], m.texts('.ov-kpi-caption')[3], m.texts('.ov-kpi-detail')[3]],
     ['在售方案', '装修套餐1·主材1，销售助手只推荐这些', '另有草稿1条：装修套餐1'],
   );
-  // 家装包的终态「已付定金」不是 conversationState 认的已成交（它只认 key 为 paid 的阶段），口径不写这个名字（plan「Open」）
-  eq('别的行业包：终态不算已成交时，已成交的口径不写阶段名', m.texts('.ov-kpi-caption')[2], '已成交的会话');
+  // 已成交按行业包的终态判定：家装包的终态「已付定金」就是口径（key 不是 paid）
+  eq(
+    '别的行业包：已成交格的口径写终态「已付定金」，明细是停在那里的会话',
+    [m.texts('.ov-kpi-label')[2], m.texts('.ov-kpi-caption')[2], m.texts('.ov-kpi-detail')[2]],
+    ['已成交', '阶段到了「已付定金」的会话', '企微业主·H03·9月25日'],
+  );
   eq('别的行业包：阶段条', m.texts('.ov-stage-label'), ['咨询', '量房', '方案', '其他']);
   eq('别的行业包：系统状态的产品库叫法', m.texts('.ov-system-line'), ['一切正常·线上话术v2·套餐与主材改动已生效']);
   eq('别的行业包：请求这个包的实体', [...new Set(requests.filter((r) => r.includes('/catalog/')))].sort(), [

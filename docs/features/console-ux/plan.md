@@ -64,7 +64,6 @@
 ## Open
 
 - 第 2.2 步（第 9、10.3、12 步已解决列表、详情与导入）：`/catalog/$kind`、`/catalog/$kind/$code`、`/catalog/new/$kind` 的 kind 都按当前租户的行业包取，包里没有的出「没有这个页面」；旧抽屉第 10.3 步删了，`LEGACY` 随之清空并删掉，两个包的「新建」都去新建页。「导入CSV」第 12 步换成按行业包渲染的弹窗，假包的主材也能导入，这一条全部解决了。
-- 第 4 步：`conversationState` 只把 `stage === 'paid'` 算已成交。终态 key 不是 `paid` 的包（家装假包的 `deposit`「已付定金」）里，停在终态的会话算 AI 接待中：总览的已成交格是 0，阶段条把它们归进「其他」（阶段条不含终态，各行之和仍等于 AI 接待中），会话列表的页签也一样。两种改法：`conversationState` 按包的 `terminal` 判定（改不变量 17 与接口的口径，要改 spec、owner 定），或 `checkPack` 要求终态 key 是 `paid`（假包随之改）。第 17 步假包走查前定。总览的已成交格现在只写 `conversationState` 认作已成交的阶段名，没有时写「已成交的会话」，不把「已付定金」写成口径。
 - 待 owner（第 1.4 步）：spec「性能」一节写「preview 不压缩」，与实测不符。vite 8.3.1 的 preview 自带 `@polka/compression`，1 KB 以上的 text、JS、JSON 响应按 `Accept-Encoding` 走 gzip，所以 preview 上 `/console/assets/*` 的 JS、CSS 也是压缩的。它不加 `Vary: Accept-Encoding`，这些响应又带 immutable 长缓存，`Vary` 只有 `Origin`。影响只在本地 preview：真实 host 由 Hono `compress` 加 `Vary`，验收 23 也以 host 为准，所以没改代码。建议在 spec 顶部 `Revisions:` 记一笔，把那句改成「preview 上的压缩是 vite 自带的，不作验收依据」。如果要 preview 的头与 host 完全一致，可以在 `previewWithCsp` 里给 JS、CSS 资源补上 `Vary: Accept-Encoding`。
 - 第 15 步：axe 开上 wcag22aa 与 best-practice 时，成员外壳报一条 `region`（moderate）：侧栏的租户名 `.tenant-name` 不在任何地标里。第 2.2 步以来如此，登录页一步没碰外壳的这部分。第 16 步的无障碍收尾一并处理（例如租户行放进侧栏的地标）。
 - 第 14 步：全站主题（`theme/antd.ts`）的 Segmented 选中段是 antd 默认的淡阴影、字重 400，焦点框也是 antd 默认的；Switch 关着是 `colorTextQuaternary`（text-3）。设计系统 §5.4、§5.20 要的是选中段 1px `--control-border` 的圈、500，焦点 2px `--focus`、外移 2，开关关着 `--control-border`。审计页在 `audit.css` 里就地按 §5.4 改了，话术页和样张也用这两个控件。建议第 16 步改全站主题（`theme.selftest.ts` 的对比度对子随之加），改完删掉 `audit.css` 里那几条。另外，rc-segmented 1.4.0 给整条轨道也加了 `tabIndex=0`：Tab 先停在轨道上，这一站方向键不起作用，要再按一次 Tab 才进选中的那一段。审计页给 Segmented 传了 `tabIndex={-1}`，其余用到 Segmented 的地方（话术页、样张、表单里的单选 enum 与选填 boolean）仍多这一站，第 16 步的键盘走查一并处理。
@@ -636,7 +635,7 @@
   - 第 18 步（A2）：等待时长、接手、待付款与「本月成交额」替换这一版「需要你处理」的会话行。
 - 评审之后（同日，4 条意见全部接受，走查另修 1 处）：
   - 等人接手只取了接口的默认一页：`waitingConversationsQuery` 不带 `limit`，服务端只回最新的 20 个，总览再按最后动静从早到晚重排、拿行数当「N项」，多于 20 个时等得最久的整行不见，「等人接手」格写的「最早」也只是这 20 个里最早的。总览改用自己的 `oldestWaitingQuery`（`overview/queries.ts`）：带 `limit=100`，`total` 多于 100 时取最后一页（`offset = total - 100`），两次之间总数变了按新的总数重取（至多再取 3 次）；「N项」由 `todoCount` 按 `total` 算；没列出的写成一行「还有N个等人接手的会话」（算 N 项），链到 `/conversations?state=human`。「等人接手」格取同一页。铃铛照旧取最新的一页，总览不再与它共用缓存：成员打开总览多一次请求（匿名不取会话，不占按 IP 的额度）。
-  - 已成交格的口径原取包里终态阶段的名字，数字却只算 `conversationState` 判成已成交的会话（只认 `stage === 'paid'`）。改为只写 `conversationState` 认作已成交的阶段名，没有时写「已成交的会话」（家装假包）。停在非 paid 终态的会话算 AI 接待中、在阶段条里归进「其他」，这是 `conversationState` 的口径问题，记进「Open」，自测不再钉住「阶段到了「已付定金」」。
+  - 已成交格的口径原取包里终态阶段的名字，数字却只算 `conversationState` 判成已成交的会话（只认 `stage === 'paid'`）。改为只写 `conversationState` 认作已成交的阶段名，没有时写「已成交的会话」（家装假包）。停在非 paid 终态的会话算 AI 接待中、在阶段条里归进「其他」，这是 `conversationState` 的口径问题，记进「Open」，自测不再钉住「阶段到了「已付定金」」。（2026-10-01 owner 定为按终态判定，已改，见「跨线收尾：按终态判已成交」）
   - spec 顶部加第 4 步评审之后的 `Revisions:`：等人接手的取法；「新建{实体名}」是整格链接里的一行字（链接里不能再套链接）；设计系统 A 页就地改的两处（「等6条」、头像「小」）。「总览」的数据表与状态表同步改。
   - 走查另修：悬停待办行、业务数格、阶段条时字变主色。antd 的 `:where(.css-…) a:hover` 特异度与 `a:hover` 相同，比 `.ov-todo` 等的 `color` 高；初版的悬停截图拍在 antd 0.3 秒的颜色过渡中间，没看出来。三处悬停都钉住 `--text`。
   - 自测 115 → 128 条。纯逻辑：「还有N个」行与计数、它排在话术草稿前面、非 paid 终态的口径。挂载：等人接手 27 个（30项，W025 在最前，格里写最早的三个，请求带 `limit=100`）、105 个（108项，列出最早的 100 个，「还有5个」链到等人接手页签，第二次请求 `offset=5`）、两次请求之间多了一个（按新的总数重取，共 3 次请求）。假接口照服务端：不给 `limit` 时一页 20，按 `(updatedAt 倒序, id)` 排。
@@ -1273,6 +1272,28 @@
   - 丢弃：href `/console/sop`，到话术页的编辑器，没有横幅。
   - 两轮 `securitypolicyviolation` 0 次，控制台错误 0 条，没有漏拦的接口。
 - 门禁：四道都过（`pnpm test` 没带 `PG_TEST_URL`，这次没动服务端与数据库）。没有新增依赖。只读了 `console/src/sop/`，没有改。
+
+### 跨线收尾：按终态判已成交（2026-10-01）
+
+owner 当天对「Open」第 4 步那一条的决定：已成交按租户行业包的终态（`stages` 里标了 `terminal` 的阶段）判定，不再认 `stage === 'paid'`；接口的状态取值名不变。那一条从「Open」删掉。
+
+- 做了什么：
+  - `src/shared/conversation.ts`：`conversationState(row, pack)` 多一个参数（只用 `stages`），新增 `terminalStages(pack)`，判定与总览的口径共用它。
+  - 服务端（`src/console-api/app.ts`）：列表的 `state` 过滤、`order=waiting_first` 与 `/conversations/counts` 都按 `currentTenant().pack` 判定，每个请求取一次包。
+  - console：会话列表每一行的状态传 `/pack` 的数据；总览已成交格的口径写终态的阶段名（`terminalStages`，几个终态用顿号连，没有终态写「已成交的会话」）；阶段条（`conversations/stages.ts`）计数里带着终态也不合进「其他」。外壳的徽标、铃铛只读服务端的计数和 `?state=human`，不用改。
+  - spec 顶部加 2026-10-01 的 `Revisions:`，改不变量 17、「接口改动」的 `conversationState` 签名与口径、`ConvQuery.state` 的语义、「总览」的已成交格与阶段条；设计系统 §5.6 的判定条件同步。
+  - `src/config/source.ts` 的 `__configTest` 加 `swapPack`（只给自测）：假包不进注册表，租户行写它的 `pack_id` 启动不了，服务端自测只能这样换包。
+- 旅游包不变：它只有「已支付」`paid` 一个终态，判定与原来逐个相同。服务端自测原有的会话用例（规则在测试里逐条写出、不调 `conversationState`）一条没改照样过；preview 上旅游包的总览与会话页，改前改后两份构建取出的文字（业务数四格的名称、数字、口径、明细，阶段条，页签，13 行，已成交页签）逐项相同。
+- 家装假包：停在「已付定金」`deposit` 的会话算已成交（转过人工的也算），不再是 AI 接待中或等人接手；总览已成交格写「阶段到了「已付定金」的会话」，阶段条里没有「其他」。
+- 自测：
+  - 服务端 `console.selftest.ts` 296 → 302 项：旅游包下停在 `deposit` 的会话照旧算 AI 接待中、等人接手；换成家装假包后逐页翻完三个 `state`（每行满足按 `deposit` 写出的规则，`paid` 阶段的会话算 AI 接待中或等人接手）、counts 与列表同源（`byState.paid` 2，`aiByStage` 没有 `deposit`、有包外的 `paid`）、`waiting_first` 先列完按终态判的等人接手；换回旅游包后 counts 与换之前逐字节相同；`conversationState` 对家装包与没有终态的包。
+  - 总览 127 → 130 条：终态 key 不是 paid 时口径写它的名字、两个终态按包里的顺序、没有终态写「已成交的会话」、阶段条带着终态不合进「其他」；挂载时家装包的已成交格是「已成交 · 阶段到了「已付定金」的会话 · 企微业主·H03·9月25日」。
+  - 会话列表 128 → 131 条：手写的家装式夹具终态改成 `deposit`「已付定金」（与假包一致），假接口按夹具的终态判定；行的状态（停在终态、转过人工、包外的 `paid`）、页签「已成交2」、阶段条没有「其他」、已成交页签的两行。
+- 变异（隔离副本 `mut-terminal`，每例 300 秒闹钟）：18 例全部失败并点名。判定改回认 `paid`、终态或 `paid` 都算、先看转人工（会话列表自测点名，只跑服务端自测时也各自点名）；终态只取最后一个阶段、只取第一个终态（总览自测点名）；服务端计数、列表过滤、`waiting_first` 各自改用旅游包的规则，`swapPack` 不换；会话行不传包；总览口径只认 key 为 paid、总写「已成交的会话」、只写第一个终态；阶段条把终态合进「其他」。副本还原后与 worktree 逐字节相同，没有留下进程。
+- preview 实测（Chromium，Playwright 1.63，CSP 同线上，端口 4270 与改前构建 4271，接口由 `context.route` 按新规则拦截，时钟钉在 9月26日 14:30，浅色、深色各一轮，探针在仓库外）：旅游包总览「13 / 2 / 1」、已成交格「阶段到了「已支付」的会话 · 企微客户·A02·9月24日」，会话页「全部13 等人接手2 AI接待中10 已成交1」，与改前逐项相同。家装包（7 个会话）总览「7 / 1 / 2」、已成交格「阶段到了「已付定金」的会话 · 企微业主·R06·9月25日」，阶段条「咨询2 量房1 方案1 报价0 签约0」；会话页「全部7 等人接手1 AI接待中4 已成交2」，R06、R07（转过人工）都是「已成交 · 已付定金」，点「已成交」页签只列这两行。改前的构建把 R06 画成「AI接待中」、R07 画成「等人接手」，口径写「已成交的会话」。8 个场景 `securitypolicyviolation` 0 次，控制台错误 0 条，没有漏拦的接口，不横向滚动。
+- 构建：首屏 JS gzip 327,497 → 327,558 B（+61，`terminalStages` 进了入口里的 `conversation.ts`）。没有新文案（口径里的阶段名来自行业包），字体不用重切。
+- 门禁：四道都过；`pnpm test` 带 `PG_TEST_URL`（一次性的 `pgvector/pgvector:pg17` 容器，端口 4272）跑全。没有新增依赖。
+- 评审后补（同日）：`src/shared/pack.ts` 里 `terminal` 的注释补上它现在管的事（已成交的判定、服务端的过滤与计数、转过人工的也不进「等人接手」与徽标铃铛）；`scripts/check-console-src.selftest.ts` 放行夹具里的 `conversationState` 调用改成两个参数的新签名。只动注释和夹具，不改行为，不做变异。
 
 ### 第 6.1 步（2026-09-28）
 
