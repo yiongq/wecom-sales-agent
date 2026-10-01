@@ -51,6 +51,7 @@ import { notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { App } from 'antd';
 import { act, type ReactElement, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
@@ -68,6 +69,7 @@ import { HttpError } from '../api.js';
 import { SopPage } from '../pages/SopPage.js';
 import { SectionDiff } from '../SectionDiff.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
+import { ToastHost } from '../parts/toast.js';
 import { LEAVING_PAGE } from '../parts/UnsavedGuard.js';
 import { needsTrimFallback } from '../typography.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
@@ -203,6 +205,7 @@ import {
   nextToMerge,
   onlineBody,
   onlineLabel,
+  readOnlyMeta,
   remaining,
   restartMerge,
   startMerge,
@@ -2485,7 +2488,8 @@ function fakeServer(start: SopOverview, defs: readonly SopSectionDef[] = TRAVEL)
     if (body.rebaseOnto !== undefined) {
       // 完成合并（第 8 步，同 src/config/sop.ts 的 saveSopDraft）：基线换成 rebaseOnto，节 = 三方合并的结果再应用 edits
       const d = srv.state.draft;
-      if (!d || body.rev === null) return json(422, { error: 'invalid_sop', detail: '没有草稿，不需要合并' });
+      if (body.rev === null) return json(422, { error: 'invalid_sop', detail: '没有草稿，不需要合并' });
+      if (!d || d.rev !== body.rev) return json(409, { error: 'rev_conflict', detail: '草稿已被别人改过' });
       if (body.rebaseOnto !== srv.state.published.id) return json(409, { error: 'rev_conflict', detail: '线上又有新版本' });
       const merged = { ...d, sections: applyEdits(rebased(d), body.edits, defs), basedOn: body.rebaseOnto, rev: srv.nextRev, stale: false };
       srv.nextRev += 1;
@@ -6756,6 +6760,39 @@ async function openHistory(m: PageBox): Promise<void> {
     ],
     [{ tone: '别人存的话术原则。\n\n' }, null],
   );
+  const mineTone = withText(m, 'tone', '我合并的话术原则。\n\n');
+  const kept = restartMerge(markDone(mineTone, 'tone'), { spec: SPEC, online: v4, conflicts: ['objections'], draft: newDraft });
+  const keptOnly = restartMerge(mineTone, { spec: SPEC, online: v4, conflicts: [], draft: newDraft });
+  eq(
+    '重新比一次：合并里改过的节不再冲突了也留在合并里（kept，说明行另写），写法照旧；只剩它时也不是 null；改的写法和新草稿里的一样才不留',
+    [
+      kept && {
+        keys: kept.keys,
+        texts: kept.texts,
+        kept: kept.kept,
+        done: kept.done,
+        meta: [mergeMeta(kept, 'tone'), mergeMeta(kept, 'objections')],
+      },
+      keptOnly && { keys: keptOnly.keys, texts: keptOnly.texts, kept: keptOnly.kept, touched: mergeTouched(keptOnly, SPEC) },
+      restartMerge(withText(m, 'tone', '别人存的话术原则。\n\n'), { spec: SPEC, online: v4, conflicts: [], draft: newDraft }),
+      m.kept,
+    ],
+    [
+      {
+        keys: ['tone', 'objections'],
+        texts: { tone: '我合并的话术原则。\n\n', objections: '定价只有两条规则。\n\n- 先问预算上限。\n\n' },
+        kept: ['tone'],
+        done: [],
+        meta: [
+          ['需合并', '你在合并里改过这一节，右边留着你写的'],
+          ['需合并', '线上v4也改了这一节，在右边改成要发布的样子'],
+        ],
+      },
+      { keys: ['tone'], texts: { tone: '我合并的话术原则。\n\n' }, kept: ['tone'], touched: ['话术原则'] },
+      null,
+      [],
+    ],
+  );
   const outline = memberOutline({
     spec: SPEC,
     published: P_ONLINE,
@@ -6780,8 +6817,18 @@ async function openHistory(m: PageBox): Promise<void> {
   );
   eq(
     '说明行与提醒的写法',
-    [mergeMeta(m), conflictTitle(['话术原则', '异议处理'])],
-    [['需合并', '线上v3也改了这一节，在右边改成要发布的样子'], '有2节在你改的同时被改了：话术原则、异议处理'],
+    [
+      mergeMeta(m, 'tone'),
+      conflictTitle(['话术原则', '异议处理']),
+      readOnlyMeta({ chars: 954, delta: 44, changed: true }),
+      readOnlyMeta({ chars: 954, delta: 0, changed: false }),
+    ],
+    [
+      ['需合并', '线上v3也改了这一节，在右边改成要发布的样子'],
+      '有2节在你改的同时被改了：话术原则、异议处理',
+      ['合并期间只读，完成或退出合并以后再改', '910 → 954字（+44）'],
+      ['合并期间只读，完成或退出合并以后再改', '954字'],
+    ],
   );
   const savedDraft = version(null, withBodies(D_CLEAN, { tone: '我合并的话术原则。\n\n' }), { basedOn: 'v3', rev: 5 });
   const after = withMerged(CLEAN_SOP, online, savedDraft);
@@ -7036,12 +7083,18 @@ async function revertAll(m: PageBox): Promise<void> {
   await clickEv(rowIn(m, 'objections'));
   await until(() => m.section() === 'objections' && !merging(m));
   const objEditable = editorEditable(m);
+  const objMeta = text(m.box.querySelector('.sop-pane-meta'));
   await clickEv(rowIn(m, 'tone'));
   await until(() => merging(m));
   eq(
     '合并期间：改右边不自动保存；别的节只读（自动保存停着）；换回来右边写的还在',
     [srv.puts().length - puts, objEditable, mergeViews(m)[1]?.state.doc.toString().endsWith('合并时加的。')],
     [0, 'false', true],
+  );
+  eq(
+    '合并期间别的节的说明行写为什么只读，不写「可编辑」（字数照写）',
+    [objMeta.startsWith('合并期间只读，完成或退出合并以后再改·'), objMeta.includes('可编辑'), /字（\+\d+）$/.test(objMeta)],
+    [true, false, true],
   );
   await m.unmount();
 }
@@ -7304,6 +7357,236 @@ async function revertAll(m: PageBox): Promise<void> {
     '重新比过以后话术原则不用合并了：去异议处理，焦点在它的标题上；目录只标异议处理',
     [m.section(), text(document.activeElement), tocMark(m, 'tone'), tocMark(m, 'objections'), statusText(m)],
     ['objections', '异议处理', '', '需合并', '还有1节要合并'],
+  );
+  await m.unmount();
+}
+
+/** 完成合并撞上 409 以后「载入最新内容」，等重新比完（横幅没了、状态句是 status） */
+async function finishThenReload(m: PageBox, status: string | null): Promise<void> {
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => text(m.box.querySelector('.sop-banners')).includes('这期间别人又改了'));
+  await clickEv(all(m.box, '.sop-banners button').find((b) => label(b) === '载入最新内容'));
+  await waitFor(() => !m.box.querySelector('.sop-banners .ant-alert') && (status === null ? !merging(m) : statusText(m) === status));
+}
+const MINE_LINE = '我在合并里写的一句。';
+
+// 13.3e3 重新比过以后，合并里改过的话术原则不再冲突了（店长那一版撤回了话术原则、小王又改了异议处理）：话术原则照样留在合并里、
+// 写法照旧，说明行写不再冲突；异议处理新要合并；焦点留在话术原则的标题上
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await typeRight(m, MINE_LINE);
+  const mine = mergeViews(m)[1]?.state.doc.toString();
+  await clickEv(doneButton(m));
+  srv.publishByOther(withBodies(P_ONLINE, { objections: '定价只有两条规则。\n\n- 小王加的。\n\n' }), { publishedByName: '小王' });
+  await finishThenReload(m, '还有2节要合并');
+  await until(() => text(document.activeElement) === '话术原则');
+  eq(
+    '重新比过以后改过的节不再冲突：照样留在合并里、写法照旧、说明行写不再冲突，新冲突的节也要合并；焦点留在这一节的标题上',
+    [
+      m.section(),
+      text(document.activeElement),
+      tocMark(m, 'tone'),
+      tocMark(m, 'objections'),
+      text(m.box.querySelector('.sop-merge .sop-pane-meta')),
+      mergeViews(m).map((v) => v.state.doc.toString()),
+    ],
+    ['tone', '话术原则', '需合并', '需合并', '需合并·你在合并里改过这一节，右边留着你写的', [bodyIn(P_ONLINE, 'tone'), mine]],
+  );
+  await m.unmount();
+}
+
+// 13.3e4 一节也不冲突了（这期间线上回到了 v2 的写法），可话术原则在合并里改过：不退出合并（你写的会丢），话术原则留着；
+// 处理好以后完成合并照常带 rebaseOnto 存下你写的
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await typeRight(m, MINE_LINE);
+  const mine = mergeViews(m)[1]?.state.doc.toString() ?? '';
+  await clickEv(doneButton(m));
+  srv.publishByOther(P_ONLINE, { publishedByName: '小王' });
+  await finishThenReload(m, '还有1节要合并');
+  await until(() => text(document.activeElement) === '话术原则');
+  const kept = [
+    merging(m),
+    m.section(),
+    text(document.activeElement),
+    mergeViews(m).map((v) => v.state.doc.toString()),
+    all(m.box, '.sop-merge-cols span').map((x) => text(x)),
+  ];
+  await clickEv(doneButton(m));
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
+  eq(
+    '不冲突了但改过：留在合并里（左边是 v4 的写法、右边你写的）；完成合并带 rebaseOnto v4 存下你写的，回到发布抽屉',
+    [kept, srv.puts().at(-1), bodyIn(srv.state.draft!.sections, 'tone')],
+    [
+      [true, 'tone', '话术原则', [bodyIn(P_ONLINE, 'tone'), mine], ['线上v4的写法', '你的草稿']],
+      { basedOn: 'v4', rev: 4, edits: [{ key: 'tone', body: mine }], rebaseOnto: 'v4' },
+      mine,
+    ],
+  );
+  await m.unmount();
+}
+
+// 13.3e5 合并期间草稿没了（小王合并以后发布了，线上 v4）：重新比过以后话术原则（你改过）留在合并里，左边是 v4 的；
+// 完成合并在 v4 上新建草稿（rev 为 null，不带 rebaseOnto）
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await typeRight(m, MINE_LINE);
+  const mine = mergeViews(m)[1]?.state.doc.toString() ?? '';
+  await clickEv(doneButton(m));
+  srv.publishByOther(withBodies(V3_SECS, { objections: bodyIn(D_CLEAN, 'objections') }), { publishedByName: '小王' });
+  srv.state = { ...srv.state, draft: null };
+  const checks = srv.checks();
+  await finishThenReload(m, '还有1节要合并');
+  const kept = [
+    merging(m),
+    srv.checks() - checks,
+    mergeViews(m).map((v) => v.state.doc.toString()),
+    text(m.box.querySelector('.sop-merge .sop-pane-meta')),
+  ];
+  await clickEv(doneButton(m));
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
+  eq(
+    '草稿没了：不查，改过的节留在合并里（左边 v4）；完成合并新建一份基于 v4 的草稿，回到发布抽屉',
+    [kept, srv.puts().at(-1), srv.state.draft?.basedOn, bodyIn(srv.state.draft!.sections, 'tone')],
+    [
+      [true, 0, [THEIRS_TONE, mine], '需合并·你在合并里改过这一节，右边留着你写的'],
+      { basedOn: 'v4', rev: null, edits: [{ key: 'tone', body: mine }] },
+      'v4',
+      mine,
+    ],
+  );
+  await m.unmount();
+}
+
+// 13.3e6 一节也不冲突了、合并里也没改过：退出合并模式（没有丢什么，不用确认），报一句「不用再合并了」，焦点回编辑器，
+// 提醒换成发布时自动合并
+{
+  const host = await rootFor(
+    <App>
+      <ToastHost />
+    </App>,
+  );
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await clickEv(doneButton(m));
+  srv.publishByOther(P_ONLINE, { publishedByName: '小王' });
+  await finishThenReload(m, null);
+  await until(() => document.activeElement === cmOf(m));
+  await waitFor(() => all(document.body, '.ant-message-notice').length > 0);
+  eq(
+    '不用合并了、也没改过：退出合并，不弹确认，报「不用再合并了」，焦点回编辑器，提醒是发布时自动合并',
+    [
+      merging(m),
+      modalOf('退出合并？'),
+      all(document.body, '.ant-message-notice').map((x) => text(x)),
+      document.activeElement === cmOf(m),
+      text(m.box.querySelector('.sop-notices .ant-alert')),
+    ],
+    [false, undefined, ['不用再合并了'], true, '草稿打开之后发布过新版本，发布时自动合并'],
+  );
+  await m.unmount();
+  await host.unmount();
+}
+
+// 13.3e7 合并期间只有草稿变了（别人存了一次、改了话术原则，线上照旧 v3）：重新比过以后右边换成新草稿里的写法（你没改过），
+// 看到的就是完成合并要存的
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await clickEv(doneButton(m));
+  const OTHERS = '- 别人存的话术原则。\n\n';
+  const d = srv.state.draft!;
+  srv.state = { ...srv.state, draft: { ...d, sections: withBodies(d.sections, { tone: OTHERS }), rev: d.rev + 1 } };
+  await finishThenReload(m, '还有1节要合并');
+  const shown = [mergeViews(m).map((v) => v.state.doc.toString()), all(m.box, '.sop-merge-cols span').map((x) => text(x))];
+  await clickEv(doneButton(m));
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
+  eq(
+    '只有草稿变了：右边换成别人存的写法（左边照旧 v3），完成合并发的就是看到的、rev 是新草稿的',
+    [shown, srv.puts().at(-1)],
+    [
+      [
+        [THEIRS_TONE, OTHERS],
+        ['线上v3的写法', '你的草稿'],
+      ],
+      { basedOn: 'v3', rev: d.rev + 1, edits: [{ key: 'tone', body: OTHERS }], rebaseOnto: 'v3' },
+    ],
+  );
+  await m.unmount();
+}
+
+// 13.3h 窄屏（<1280）的下拉：进合并以后选中的节带「需合并」，处理好了换成「已处理」（只有合并的标记变了，下拉也要重渲）
+{
+  win.happyDOM.setWindowSize({ width: 1100, height: 1100 });
+  const { m } = await conflictPage({ url: '/console/sop?section=tone' });
+  const mark = (): string => text(m.box.querySelector('.sop-toc-select .sop-toc-option .sop-toc-merge'));
+  const before = [!!m.box.querySelector('.sop-toc-select'), mark()];
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await until(() => mark() !== '');
+  const entered = mark();
+  await clickEv(doneButton(m));
+  await until(() => mark() === '已处理');
+  eq('窄屏的下拉：进合并以后选中的节写「需合并」，处理好了写「已处理」', [before, entered, mark()], [[true, ''], '需合并', '已处理']);
+  await m.unmount();
+  win.happyDOM.setWindowSize({ width: 1440, height: 1100 });
+}
+
+// 13.3i 验收 14 的主路径：检查说能发布，发布时撞上冲突（409，这期间店长发布了 v3）→ 抽屉里「去合并」→ 完成合并 → 回到发布抽屉。
+// 合并以后的检查回来之前，抽屉不再写冲突（409 点名的、上一次检查报的都合并掉了），原因是「正在检查…」；回来以后发布成功
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = mergeScan(srv);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) !== '');
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const d0 = drawerOf('发布草稿')!;
+  const ta = d0.querySelector<HTMLTextAreaElement>('textarea')!;
+  await setText(ta, `${ta.value}合并店长的改动`);
+  await waitFor(() => drawerButton(d0, '发布')?.getAttribute('aria-disabled') === null);
+  srv.publishByOther(V3_SECS, { publishedByName: '店长', publishedAt: '2026-09-26T05:10:00Z' });
+  srv.publishConflict = { keys: ['tone'], current: V3_SECS.filter((x) => x.key === 'tone') };
+  await clickEv(drawerButton(d0, '发布'));
+  await waitFor(() => text(d0.querySelector('.sop-drawer-reason')) === '合并完1节即可发布');
+  srv.publishConflict = null;
+  const conflicted = text(d0.querySelector('.sop-publish-conflict .ant-alert-title'));
+  await clickEv(all(d0, '.sop-publish-conflict button').find((b) => label(b) === '去合并'));
+  await waitFor(() => merging(m) && !drawerOf('发布草稿'));
+  await revertAll(m);
+  await clickEv(doneButton(m));
+  srv.checkHold = true;
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => !merging(m) && !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const d = drawerOf('发布草稿')!;
+  const held = [!!d.querySelector('.sop-publish-conflict'), text(d.querySelector('.sop-drawer-reason')), srv.puts().at(-1)?.rebaseOnto];
+  srv.checkHold = false;
+  await act(async () => srv.checkHeld.at(-1)?.resolve());
+  await waitFor(() => drawerButton(d, '发布')?.getAttribute('aria-disabled') === null);
+  const ready = [!!d.querySelector('.sop-publish-conflict'), text(d.querySelector('.sop-publish-replace'))];
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => barText(m).summary.startsWith('已发布'));
+  eq(
+    '发布 409 → 去合并 → 完成合并 → 回到抽屉：合并以后的检查回来之前不写冲突、原因是正在检查；回来以后替换 v3，发布成功',
+    [conflicted, held, ready, barText(m).summary, bodyIn(srv.state.published.sections, 'tone')],
+    [
+      '有1节在你改的同时被改了：话术原则',
+      [false, '正在检查…', 'v3'],
+      [false, '将替换线上v3（店长·9月26日 13:10发布）'],
+      '已发布v4（改了异议处理）',
+      THEIRS_TONE,
+    ],
   );
   await m.unmount();
 }

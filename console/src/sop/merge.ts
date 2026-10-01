@@ -2,11 +2,12 @@
 // 检查报了在你编辑期间被别人改过的节（rebase.conflicts）时，主区进入合并模式：每个要合并的节左边是线上那一版的写法（只读），
 // 右边是你的草稿（可改，逐块「采用线上的写法」）；每节点「这一节处理好了」，全都处理好了才能「完成合并」。
 // 完成合并是一次 PUT /sop/draft：带 rebaseOnto（合并到的线上版本），edits 是全部要合并的节右边的写法；服务端按发布时的三方
-// 合并把上游别的改动并进来、基线换成线上版本。合并期间不自动保存，退出时恢复。
+// 合并把上游别的改动并进来、基线换成线上版本。合并期间不自动保存，退出时恢复。完成合并时 409（这期间又变了）重新比一次，
+// 合并里改过的节都留在合并里。
 import type { SectionSpecView, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
 import { digits } from '../../../src/shared/format.js';
 import { editableChars } from '../../../src/shared/sop-sections.js';
-import { bodyOf, type OutlineRow, PREAMBLE_NAME } from './outline.js';
+import { bodyOf, type OutlineRow, PREAMBLE_NAME, sectionMeta } from './outline.js';
 import { namesText } from './publish.js';
 
 export interface MergeState {
@@ -20,6 +21,8 @@ export interface MergeState {
   start: Readonly<Record<string, string>>;
   /** 点过「这一节处理好了」的节 */
   done: readonly string[];
+  /** 不再冲突、只因为你在合并里改过右边才留在合并里的节（重新比过以后才有，见 restartMerge） */
+  kept: readonly string[];
 }
 
 const textOf = (sections: readonly SopSectionText[], key: string): string => sections.find((s) => s.key === key)?.text ?? '';
@@ -43,22 +46,37 @@ export function startMerge(input: {
       textOf(input.draft, k),
       input.spec.find((s) => s.key === k)!,
     );
-  return { online: input.online, keys, texts: { ...start }, start, done: [] };
+  return { online: input.online, keys, texts: { ...start }, start, done: [], kept: [] };
 }
 
 /**
- * 合并期间别人又改了草稿或发布了新版本（完成合并时 409）：按新的线上版本与草稿重新比一次。仍要合并的节里，你在合并里改过的
- * 写法留着，没改过的换成新草稿里的；左边换了，「处理好了」都清掉，重看一遍。一节也不用合并了是 null
+ * 合并期间别人又改了草稿或发布了新版本（完成合并时 409）：按新的线上版本与草稿重新比一次。你在合并里改过右边的节都留在合并里、
+ * 写法照旧，哪怕它不再冲突了（kept：不然你写的就没了，而退出合并要先确认）；只有改过的写法已经和新草稿里的一样时才不留。
+ * 别的要合并的节右边换成新草稿里的；左边换了，「处理好了」都清掉，重看一遍。一节也不用留了是 null。
+ * 草稿没了（别人发布或丢弃了）时 draft 传线上版本的节、conflicts 为空
  */
 export function restartMerge(
   prev: MergeState,
   input: { spec: readonly SectionSpecView[]; online: SopVersion; conflicts: readonly string[]; draft: readonly SopSectionText[] },
 ): MergeState | null {
-  const next = startMerge(input);
-  if (!next) return null;
-  const texts: Record<string, string> = { ...next.texts };
-  for (const k of next.keys) if (prev.keys.includes(k) && prev.texts[k] !== prev.start[k]) texts[k] = prev.texts[k]!;
-  return { ...next, texts };
+  const startOf = (k: string): string =>
+    bodyOf(
+      textOf(input.draft, k),
+      input.spec.find((s) => s.key === k)!,
+    );
+  const conflicts = startMerge(input)?.keys ?? [];
+  const mine = prev.keys.filter((k) => prev.texts[k] !== prev.start[k]);
+  const keys = input.spec
+    .filter((s) => !s.locked && (conflicts.includes(s.key) || (mine.includes(s.key) && prev.texts[s.key] !== startOf(s.key))))
+    .map((s) => s.key);
+  if (!keys.length) return null;
+  const start: Record<string, string> = {};
+  const texts: Record<string, string> = {};
+  for (const k of keys) {
+    start[k] = startOf(k);
+    texts[k] = mine.includes(k) ? prev.texts[k]! : start[k];
+  }
+  return { online: input.online, keys, texts, start, done: [], kept: keys.filter((k) => !conflicts.includes(k)) };
 }
 
 /** 左边：线上那一版这一节的正文 */
@@ -124,10 +142,19 @@ export function mergeRows(rows: readonly OutlineRow[], m: Pick<MergeState, 'keys
   }));
 }
 
-/** 中栏说明行（要合并的节）：「需合并 · 线上v4也改了这一节，在右边改成要发布的样子」 */
-export const mergeMeta = (m: Pick<MergeState, 'online'>): string[] => [
+/**
+ * 中栏说明行（要合并的节）：「需合并 · 线上v4也改了这一节，在右边改成要发布的样子」；重新比过以后不再冲突、因为你改过才留着的节
+ * 写「需合并 · 你在合并里改过这一节，右边留着你写的」
+ */
+export const mergeMeta = (m: Pick<MergeState, 'online' | 'kept'>, key: string): string[] => [
   '需合并',
-  `线上v${m.online.versionNo ?? '—'}也改了这一节，在右边改成要发布的样子`,
+  m.kept.includes(key) ? '你在合并里改过这一节，右边留着你写的' : `线上v${m.online.versionNo ?? '—'}也改了这一节，在右边改成要发布的样子`,
+];
+
+/** 合并期间别的可编辑节的说明行：「合并期间只读，完成或退出合并以后再改 · 910 → 954字（+44）」（不写「可编辑」） */
+export const readOnlyMeta = (row: Pick<OutlineRow, 'chars' | 'delta' | 'changed'>): string[] => [
+  '合并期间只读，完成或退出合并以后再改',
+  ...(sectionMeta(row, 'reader') ?? []),
 ];
 
 /** 「有2节在你改的同时被改了：话术原则、异议处理」（发布抽屉与页头下的提醒） */

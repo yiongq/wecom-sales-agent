@@ -91,6 +91,7 @@ import {
   nextToMerge,
   onlineBody,
   onlineLabel,
+  readOnlyMeta,
   restartMerge,
   startMerge,
   withMerged,
@@ -854,8 +855,11 @@ function MemberSop({
   const finishRef = useRef<HTMLButtonElement>(null);
   const exitRef = useRef<HTMLButtonElement>(null);
   const publishButton = useRef<HTMLButtonElement>(null);
-  /** 合并模式里焦点去哪：某一节的标题（进合并、处理好一节换到下一节、重新比过）、「完成合并」、编辑器（退出以后） */
-  const mergeFocus = useRef<{ to: 'title'; key: string } | { to: 'finish' | 'editor' } | null>(null);
+  /**
+   * 合并模式里焦点去哪：某一节的标题（进合并、处理好一节换到下一节）、「完成合并」、编辑器（退出以后）；restart 是重新比过，
+   * 等合并的状态换好以后再定去哪（见下面的 effect）
+   */
+  const mergeFocus = useRef<{ to: 'title'; key: string } | { to: 'finish' | 'editor' | 'restart' } | null>(null);
   /** 进了合并模式：要去的第一节（每进一次是一个新对象；在 effect 里换地址、放焦点，渲染时不能） */
   const [mergeEntered, setMergeEntered] = useState<{ key: string } | null>(null);
   const askMerge = (): void => {
@@ -888,8 +892,21 @@ function MemberSop({
     }
   }
   useEffect(() => {
-    const f = mergeFocus.current;
+    let f = mergeFocus.current;
     if (f === null) return;
+    // 重新比过（这时的 merge 已经是比过的）：还在看的节仍在合并里就留在这一节，不然去第一个；一节也不用合并了，退出合并模式、
+    // 焦点回编辑器（这时没有丢什么：合并里改过的节都还在合并里）
+    if (f.to === 'restart') {
+      if (merge === null) {
+        f = { to: 'editor' };
+        toast('不用再合并了');
+      } else {
+        const key = nav.section !== undefined && merge.keys.includes(nav.section) ? nav.section : merge.keys[0]!;
+        f = { to: 'title', key };
+        if (key !== nav.section || nav.viewing !== undefined) nav.select(key, 'key');
+      }
+      mergeFocus.current = f;
+    }
     const el =
       f.to === 'title'
         ? nav.section === f.key
@@ -940,9 +957,10 @@ function MemberSop({
   const exitMerge = (): void => (touched.length ? setExitAsk(true) : leaveMerge());
   // 完成合并：一次 PUT，带 rebaseOnto 与全部要合并的节右边的写法。成功以后草稿的基线就是合并到的线上版本，写进缓存（不等重取），
   // 回到发布抽屉（同点「发布…」：没有要存的，打开抽屉；草稿换了，自动检查已经在跑），抽屉关上以后焦点回到「发布…」。
-  // 合并期间别人又改了草稿或发布了新版本（409）：横幅说明，「载入最新内容」重新比一次；别的失败就地报错、能重试
+  // 合并期间别人又改了草稿或发布了新版本（409）：横幅说明，「载入最新内容」重新比一次；别的失败就地报错、能重试。
+  // 重新比过以后草稿没了（别人发布或丢弃了）：留着的是你改过的节，在合并到的线上版本上新建一份草稿（rev 为 null，不带 rebaseOnto）
   const finishMerge = async (): Promise<void> => {
-    if (!merge || !draft) return;
+    if (!merge) return;
     const blocked = finishBlock(merge);
     if (blocked) {
       goMerge(blocked.first);
@@ -952,8 +970,13 @@ function MemberSop({
     setFinishing(true);
     setMergeError(null);
     try {
+      const edits = mergeEdits(m);
       const v = await unwrap(
-        api.sop.draft.$put({ json: { basedOn: m.online.id, rev: draft.rev, edits: mergeEdits(m), rebaseOnto: m.online.id } }),
+        api.sop.draft.$put({
+          json: draft
+            ? { basedOn: m.online.id, rev: draft.rev, edits, rebaseOnto: m.online.id }
+            : { basedOn: m.online.id, rev: null, edits },
+        }),
       );
       setMerge(null);
       clearResults();
@@ -968,23 +991,24 @@ function MemberSop({
       setFinishing(false);
     }
   };
-  // 合并期间别人又改过：重取草稿、重查，按新的线上版本与草稿重新比一次（merge.ts 的 restartMerge）。还在看的节仍要合并就留在这一节，
-  // 不然去第一个；一节也不用合并了，退出合并模式
+  // 合并期间别人又改过：重取草稿、重查，按新的线上版本与草稿重新比一次（merge.ts 的 restartMerge：合并里改过的节都留着）。
+  // 草稿没了（别人发布或丢弃了）不查，按线上版本比。焦点与去哪一节等合并的状态换好以后由上面的 effect 定
   const reloadMerge = async (): Promise<void> => {
     setMergeReloading(true);
     try {
       const fresh = await qc.fetchQuery({ ...sopQuery, staleTime: 0 });
-      const r = await checkDraft();
-      const d = 'spec' in fresh ? fresh.draft : null;
-      const input = d && r.rebase.needed && r.online ? { spec, online: r.online, conflicts: r.rebase.conflicts, draft: d.sections } : null;
-      const keys = input ? (startMerge(input)?.keys ?? []) : [];
+      if (!('spec' in fresh)) return;
+      const r = fresh.draft ? await checkDraft() : null;
+      const input = {
+        spec,
+        online: r?.online ?? fresh.published,
+        conflicts: r?.rebase.needed ? r.rebase.conflicts : [],
+        draft: (fresh.draft ?? fresh.published).sections,
+      };
       setMergeError(null);
       setMergeEpoch((n) => n + 1);
-      setMerge((prev) => (prev && input ? restartMerge(prev, input) : null));
-      // 对照按新的写法重建（epoch 变了），标题也是新的：等重渲以后再聚焦
-      const target = nav.section !== undefined && keys.includes(nav.section) ? nav.section : keys[0];
-      mergeFocus.current = target === undefined ? { to: 'editor' } : { to: 'title', key: target };
-      if (target !== undefined && target !== nav.section) nav.select(target, 'key');
+      setMerge((prev) => prev && restartMerge(prev, input));
+      mergeFocus.current = { to: 'restart' };
     } catch (e) {
       setMergeError(e);
     } finally {
@@ -1018,9 +1042,11 @@ function MemberSop({
   // 草稿跟不上线上版本只提示一条：/sop 的 draft.stale 与检查的 rebase.needed 是服务端同一个条件（basedOn 不是线上版本），
   // 检查打开页面就跑，两条会一起出来。检查报了冲突的节时是出错色「有2节在你改的同时被改了」加「去合并」，不然是 info
   // （检查回来之前、回滚以后重查回来之前按 draft.stale）。合并模式里都不出（页头说还有几节要合并）
+  // 检查报的「要合并」是相对它那时的线上版本说的：草稿的基线已经是那一版了（完成合并以后、新的检查回来之前），就是合并掉了，不再写
   const rebase = check.result?.rebase;
-  const rebaseConflicts = rebase?.needed ? rebase.conflicts : [];
-  const rebaseNote = merge ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || rebase?.needed ? 'merge' : null;
+  const behind = !!rebase?.needed && check.result?.online?.id !== draft?.basedOn;
+  const rebaseConflicts = behind && rebase ? rebase.conflicts : [];
+  const rebaseNote = merge ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || behind ? 'merge' : null;
   // 发布抽屉里撞上的节：发布答 409 以后重查回来之前（或没查上时）照 409 点名的写
   const drawerConflicts = (check.running || check.error !== null) && conflict ? conflict.keys : rebaseConflicts;
   const hasNotices = error !== null || rebaseNote !== null || (!merge && (!!rejected || rolledBackNote !== null));
@@ -1139,7 +1165,7 @@ function MemberSop({
               <MergePane
                 key={`${section.key}:${mergeEpoch}`}
                 name={row.name}
-                meta={mergeMeta(merge)}
+                meta={mergeMeta(merge, section.key)}
                 leftLabel={onlineLabel(merge)}
                 left={onlineBody(merge, spec, section.key)}
                 right={merge.texts[section.key] ?? ''}
@@ -1155,8 +1181,9 @@ function MemberSop({
                   key={section.key}
                   row={row}
                   who={editable ? 'editor' : 'reader'}
-                  // 合并期间别的节只读：自动保存停着，上游改过的节完成合并时才并进来
+                  // 合并期间别的节只读：自动保存停着，上游改过的节完成合并时才并进来；说明行写为什么只读，不写「可编辑」
                   frozen={frozen || merge !== null}
+                  meta={merge ? readOnlyMeta(row) : undefined}
                   value={edits[section.key] ?? originalBody(section.key)}
                   baseline={bodyOf(textOf(published, section.key), section.heading)}
                   vocabulary={vocabulary}
