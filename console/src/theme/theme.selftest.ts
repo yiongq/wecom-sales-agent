@@ -316,7 +316,7 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   P('colorErrorHover', ['colorBgContainer'], TEXT),
   P('colorErrorActive', ['colorBgContainer'], TEXT),
   // colorPrimary 实心底上的白字：页面自己的按钮已经没有 type="primary"（第 2.3 步，scripts/check-console-src.ts 查），
-  // rjsf 表单的数组按钮这类 antd 内部的 primary 按钮还在（第 10.3 步删 rjsf）
+  // 01 的 rjsf 表单（第 10.3 步删了）之外，antd 组件内部用主色实底的地方照样按这几对核对
   P('colorTextLightSolid', ['colorPrimary'], TEXT),
   P('colorTextLightSolid', ['colorPrimaryHover'], TEXT),
   P('colorTextLightSolid', ['colorPrimaryActive'], TEXT),

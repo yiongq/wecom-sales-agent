@@ -65,6 +65,7 @@ import { isUniqueViolation, type TenantCtx } from '../db/client.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { profile } from '../profile.js';
 import { indexHealth } from '../retrieval.js';
+import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
   AuditQuery,
   CatalogItemParam,
@@ -271,7 +272,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const userAgent = c.req.header('user-agent')?.slice(0, 512) ?? null;
     const r = await login({ email, password, ip: dbIp(c), userAgent, now: clock() });
     // 未知邮箱、口令错误、账号停用、不是本实例成员：状态码与响应体完全相同
-    if (!r) return fail(c, 401, { error: 'invalid_credentials', detail: '邮箱或口令不对' });
+    if (!r) return fail(c, 401, { error: 'invalid_credentials', detail: '邮箱或密码不对' });
     c.header('Set-Cookie', cookie(r.token, ABSOLUTE_MS / 1000));
     return c.json(meOf(r.user), 200);
   })
@@ -407,14 +408,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return c.json(item, 200);
     },
   )
-  // 只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才一次建出来（见 src/shared/catalog-csv.ts）
+  // 只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才一次建出来（见 src/shared/catalog-csv.ts）。
+  // 表头也认字段的中文标签（后台 UX spec「CSV 导入」）：标签表取自租户的行业包
   .post(
     '/catalog/:kind/import-csv',
     canEdit,
     zValidator('param', CatalogKindParam, badRequest),
     zValidator('json', ImportCsvBody, badRequest),
     async (c) => {
-      const items: CatalogItem[] = await importCatalogCsv(ctxOf(c), c.req.valid('param').kind, c.req.valid('json').csv);
+      const kind = c.req.valid('param').kind;
+      const entity = currentTenant().pack.entities.find((e) => e.kind === kind);
+      const labels = entity ? csvLabelsOf(entity) : undefined;
+      const items: CatalogItem[] = await importCatalogCsv(ctxOf(c), kind, c.req.valid('json').csv, labels);
       return c.json({ items }, 200);
     },
   )

@@ -87,8 +87,8 @@ const BAD: ReadonlyArray<readonly [string, number, number, string]> = [
   ['console/src/i11-shorthand.ts', 2, 11, `export const m = (closing: number) => ({ closing });`],
   // 限定了文件的通用词只在那个文件里放过：图标名 route 写在别处仍是旅游包的 kind
   ['console/src/i11-scoped-generic.ts', 2, 11, `export const icons = { route: 1 };`],
-  // 旧页面名单只放过那两个文件：同一个词写在别的文件里照报
-  ['console/src/pages/Other.tsx', 2, 11, `export const s = '目的地';`],
+  // 旧页面名单只放过那个文件：同一个词写在别的文件里照报
+  ['console/src/pages/Other.tsx', 2, 11, `export const s = 'detail';`],
   // 不变量 17：console 里不读 handedOver，不拿 stage 和 'paid' 比；自测也一样
   ['console/src/i17-access.ts', 2, 17, `export const h = (r: { handedOver: boolean }) => r.handedOver;`],
   ['console/src/i17-optional.ts', 2, 17, `export const h = (r?: { handedOver: boolean }) => r?.handedOver;`],
@@ -212,9 +212,6 @@ const GOOD: ReadonlyArray<readonly [string, string]> = [
   ],
   // 图标表：限定了文件的通用词只在这个文件里放过
   ['console/src/shell/icons.tsx', `export const ICONS = { route: 1, package: 2, 'bed-double': 3 };`],
-  // 旧页面待重做：只放过 LEGACY 里这两个文件的这几个词
-  ['console/src/pages/CatalogPage.tsx', `export const L = { a: '线路', b: '酒店', c: 'route', d: '目的地', hotel: 1, detail: 2 };`],
-  ['console/src/router.tsx', `export type K = 'route' | 'hotel';`],
 ];
 
 function tree(files: ReadonlyArray<readonly [string, string]>): string {
@@ -254,56 +251,14 @@ check(
   toastRun.out.slice(0, 300),
 );
 
-// 旧页面名单（LEGACY）：只放过名单里的词，同一个文件里的别的词照报
-const withGood = (over: ReadonlyArray<readonly [string, string | null]>): (readonly [string, string])[] => {
-  const map = new Map<string, string | null>(GOOD.map(([f, body]) => [f, body]));
-  for (const [f, body] of over) map.set(f, body);
-  return [...map].filter((e): e is [string, string] => e[1] !== null);
-};
-const CATALOG = 'console/src/pages/CatalogPage.tsx';
-const ROUTER = 'console/src/router.tsx';
-const extraDir = tree(
-  withGood([
-    [CATALOG, `export const L = { a: '线路', b: '酒店', c: 'route', d: '目的地', hotel: 1, detail: 2 };\nexport const M = '主材';`],
-  ]),
-);
-const extra = runOn(extraDir);
-check(
-  '不变量 11：旧页面名单只放过名单里的词，同一个文件里的「主材」照报',
-  extra.status === 1 && extra.out.includes(`${CATALOG}:3:`) && extra.out.includes('不变量 11：写死了行业包的词「主材」'),
-  extra.out.slice(0, 400),
-);
-check('不变量 11：名单里的词不报', !extra.out.includes(`${CATALOG}:2:`), extra.out.slice(0, 400));
-// 名单里的词在文件里没了（或文件删了），要求删掉这一项
+// 限定了文件的通用词（GENERIC 的 only）：那个文件里没有它了也要删。夹具换掉图标表，只留 route
 const ICONS = 'console/src/shell/icons.tsx';
-const staleDir = tree(
-  withGood([
-    [CATALOG, `export const L = { a: '线路', b: '酒店', c: 'route', hotel: 1 };`],
-    [ROUTER, null],
-    [ICONS, `export const ICONS = { route: 1 };`],
-  ]),
-);
+const staleDir = tree(GOOD.map(([f, body]) => [f, f === ICONS ? `export const ICONS = { route: 1 };` : body] as const));
 const stale = runOn(staleDir);
-const staleNamed = (file: string, term: string): boolean => stale.out.includes(`LEGACY 放过 ${file} 里的「${term}」`);
-check(
-  '不变量 11：旧页面名单里过时的项被点名（词没了、文件没了）',
-  stale.status === 1 &&
-    staleNamed(CATALOG, '目的地') &&
-    staleNamed(CATALOG, 'detail') &&
-    staleNamed(ROUTER, 'route') &&
-    staleNamed(ROUTER, 'hotel'),
-  stale.out.slice(0, 600),
-);
-check(
-  '不变量 11：还在的项不算过时',
-  !staleNamed(CATALOG, '线路') && !staleNamed(CATALOG, '酒店') && !staleNamed(CATALOG, 'route') && !staleNamed(CATALOG, 'hotel'),
-  stale.out.slice(0, 600),
-);
-// 限定了文件的通用词：那个文件里没有它了也要删
 const genericStale = (term: string): boolean => stale.out.includes(`GENERIC 只在 ${ICONS} 里放过「${term}」`);
 check('不变量 11：限定了文件的通用词过时了被点名', genericStale('package'), stale.out.slice(0, 600));
 check('不变量 11：限定了文件的通用词还在用就不算过时', !genericStale('route'), stale.out.slice(0, 600));
-for (const d of [all, cleanDir, toastDir, extraDir, staleDir]) fs.rmSync(d, { recursive: true, force: true });
+for (const d of [all, cleanDir, toastDir, staleDir]) fs.rmSync(d, { recursive: true, force: true });
 
 if (fails.length) {
   console.error(`check-console-src: ${fails.length} 条失败（${pass} 条通过）：`);

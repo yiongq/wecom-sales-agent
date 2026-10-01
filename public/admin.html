@@ -474,6 +474,33 @@ let S = { sessions:[], orders:[], selected:null, query:'', range:'今日', tab:'
 const draftOf = id => (id && S.drafts[id]) || '';
 const setDraft = (id, v) => { if (id) S.drafts[id] = v; };
 
+// ---------------- 深链 #s=<id> ----------------
+// 后台（/console）的会话列表、铃铛和搜索用新标签打开 /admin.html#s=<id>（docs/features/console-ux/spec.md「会话列表」）：
+// 启动时读 hash 选中这个会话；之后地址栏的 hash 跟着选中项走，刷新、复制地址都还是这个会话。
+// 这个页面用 ADMIN_PASS 的独立登录，真实客户的会话未登录时根本不在列表里：登录流程中 hash 与选中项都不清，
+// 登录框走完、列表重取之后就选中了。第一次取回列表时没有它、又没登录，直接弹登录框说明。
+function hashSession() {
+  const m = /^#s=(.+)$/.exec(location.hash);
+  if (!m) return null;
+  try { return decodeURIComponent(m[1]); } catch (_) { return null; }
+}
+function syncHash() {
+  const want = S.selected ? '#s=' + encodeURIComponent(S.selected) : '';
+  if (location.hash === want || (!want && !/^#s=/.test(location.hash))) return; // 别的 hash 不归这里管
+  try { history.replaceState(null, '', location.pathname + location.search + want); } catch (_) {}
+}
+S.selected = hashSession();
+let deepLink = S.selected; // 还没核对过的深链：启动时第一次取回列表后核对一次（见文件末尾）
+function checkDeepLink() {
+  if (deepLink === null) return;
+  const id = deepLink; deepLink = null;
+  if (!AUTH.on && !S.sessions.some(x => x.id === id)) openLogin('这个会话要登录顾问账号才能看。登录后直接打开它。');
+}
+window.addEventListener('hashchange', () => {
+  const id = hashSession();
+  if (id !== S.selected) { S.selected = id; render(); }
+});
+
 // 只有数据/选中/范围/主题变化时才重绘——否则轮询重绘会让进场动画每 2 秒重播（闪烁）
 let lastSig = '';
 function sigOf() {
@@ -506,6 +533,7 @@ async function load() {
     }
     const sig = sigOf();
     if (sig !== lastSig) render();
+    return true; // 取到了：启动时据此核对深链
   } catch (e) {}
 }
 
@@ -554,6 +582,7 @@ function scoreNote(stage) { return ({
 // 上一次渲染的是哪个会话——用来判断这次是「换了个会话」还是「同一个会话有新数据」
 let lastRendered = '\u0000';
 function render() {
+  syncHash();
   // 全量重绘会踩三个坑：把正在往上翻聊天记录的人拽回底部、打断正在输入的回复、
   // 丢掉光标位置。重绘前先记住这三样，重绘后原样恢复。
   const oldBox = document.querySelector('.msgs');
@@ -1084,7 +1113,7 @@ setTheme(localStorage.getItem('adm-theme') || 'dark');
 
 // 实时：SSE 数据变更即推（服务端 storeEvents），EventSource 自动重连；30s 兜底轮询
 syncMode();
-load();
+load().then(ok => { if (ok) checkDeepLink(); });
 const liveDot = document.querySelector('.live');
 try {
   const es = new EventSource('/api/admin/stream');

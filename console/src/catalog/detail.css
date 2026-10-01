@@ -1,0 +1,640 @@
+/*
+ * 产品库详情（design-system §5.9 卡片、§5.17 检查清单、§6.4 锁定、E、F、L 页）。颜色一律取 brand.css 的变量，这里不新增变量。
+ * 详情组件本身不 import CSS（自测在 Node 里 import 它们），由 pages/catalog-item.lazy.tsx 随详情页的块一起下载。
+ */
+
+/* ---------- 两栏（E 页）：主栏 736、间隔 24、副栏 368，副栏吸顶；1440 宽时正好是内容宽 1128 ---------- */
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 736px) 368px;
+  column-gap: 24px;
+  row-gap: 16px;
+  align-items: start;
+}
+/* 匿名没有副栏 */
+.detail-layout.no-side {
+  grid-template-columns: minmax(0, 736px);
+}
+.detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+/*
+ * 副栏卡片吸顶 top 24（§5.9）：页头这时已经缩成 52 高的吸顶条，从它下沿再往下 24。
+ * 副栏比滚动区高时（草稿的检查清单很长）自己滚，下沿离面板底 24：不然清单的末尾要等整页滚到底才露出来。
+ * 滚动区是面板（上下各留 8）：高 100dvh − 16；卡片的描边与阴影画在盒子外 1–2px，四周各让出 2 不被裁掉，所以吸顶 top 74，
+ * 最高 100dvh − 8 − 74 − 22 − 8（连内边距）
+ */
+.detail-side {
+  position: sticky;
+  top: 74px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-height: calc(100vh - 112px);
+  max-height: calc(100dvh - 112px);
+  margin: -2px;
+  padding: 2px;
+  overflow-y: auto;
+}
+/* 保存条（60 高）出现时，副栏的下沿停在它上面，同样离 24 */
+.detail-layout.has-save-bar .detail-side {
+  max-height: calc(100vh - 172px);
+  max-height: calc(100dvh - 172px);
+}
+/* 宽 <1280（侧栏收成图标栏或隐藏）：副栏落到主栏下方，不吸顶，也不自己滚 */
+@media (max-width: 1279px) {
+  .detail-layout {
+    grid-template-columns: minmax(0, 736px);
+  }
+  .detail-side,
+  .detail-layout.has-save-bar .detail-side {
+    position: static;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+  }
+}
+
+/* 宽 <1024 时顶部提示「建议在电脑上编辑」，不拦（spec 状态表「窄屏」）；只给能编辑的人 */
+.detail-narrow-hint {
+  margin-bottom: 16px;
+}
+@media (min-width: 1024px) {
+  .detail-narrow-hint {
+    display: none;
+  }
+}
+
+/* ---------- 分组卡片（§5.9）：卡片头内边距 16 20 0，标题 15/22/600；头和体之间没有分隔线；卡片体 12 20 20 ---------- */
+.detail-card,
+.detail-side-card {
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.detail-card-head {
+  padding: 16px 20px 0;
+}
+.detail-card-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.detail-card-title,
+.detail-side-title {
+  margin: 0;
+  border-radius: var(--r-xs);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* 副栏点锁定组时焦点落在卡片头；载入最新版本以后落在对比卡的标题；保存失败时没有按钮的 Alert、
+   全都落不到字段的 422 汇总自己拿焦点 */
+.detail-card-title:focus-visible,
+.detail-compare-title:focus-visible,
+.detail-failure .ant-alert:focus-visible,
+.detail-issues:focus-visible,
+.detail-block:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.detail-block:focus {
+  outline: none;
+}
+.detail-block:focus-visible {
+  border-radius: var(--r-md);
+}
+/* 锁定原因：标题下一行，13/20 text-2 */
+.detail-card-reason {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.detail-card-body {
+  padding: 12px 20px 20px;
+}
+
+/* 锁定 Tag（§5.8、§5.9）：高 22，内边距 0 6，--subtle 底，13/20 text-2，前置 12 的 lock（text-3），间隔 4 */
+.lock-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.lock-tag svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* ---------- 副栏 ---------- */
+.detail-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 20px 0;
+}
+.detail-side-body {
+  padding: 12px 20px 20px;
+}
+/* 状态卡：「13项上架后锁定」14/22/500，下一行 13/20 text-2 的说明 */
+.status-headline {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.status-note {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.status-note.is-first {
+  margin-top: 0;
+}
+/* 锁定组各一行：高 32，可点，末尾 chevron-right；行间 2，左右 −8 */
+.lock-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 12px -8px 0;
+  padding: 0;
+  list-style: none;
+}
+.lock-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.lock-row:hover {
+  background: var(--hover);
+}
+.lock-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.lock-row-count {
+  flex: 1;
+  font-size: 14px;
+  line-height: 22px;
+}
+.lock-row-chevron {
+  flex: none;
+  color: var(--text-3);
+}
+/* 上架前检查（§5.17）：卡片内边距 16 20 12，清单左右 −8 */
+.detail-check {
+  padding: 16px 20px 12px;
+}
+/* 最近更新：两列，名称 72 宽 13 text-2，值 14/22 text */
+.detail-meta {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  row-gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+}
+.detail-meta dt {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.detail-meta dd {
+  margin: 0;
+  color: var(--text);
+}
+
+/* ---------- 加载：两栏骨架（静态灰条，StateView 管 300ms 后才看得见） ---------- */
+/* 页头三行与成品同高：面包屑 20、间隔 8、标题 32、间隔 4、状态句 20，下距 20 */
+.detail-skeleton-head {
+  margin-bottom: 20px;
+}
+.detail-skeleton-crumb {
+  width: 200px;
+  margin: 3px 0 11px;
+}
+.detail-skeleton-title {
+  width: 320px;
+  height: 24px;
+  margin: 4px 0 8px;
+}
+.detail-skeleton-status {
+  width: 240px;
+  margin: 3px 0;
+}
+.detail-skeleton-card {
+  box-sizing: border-box;
+  padding: 20px;
+}
+.detail-skeleton-card .skeleton-bar {
+  width: 96px;
+}
+.detail-skeleton-status-card {
+  height: 262px;
+}
+.detail-skeleton-meta-card {
+  height: 118px;
+}
+
+/* ---------- 保存（第 10.2 步） ---------- */
+
+/*
+ * 保存条（§5.16、E 页）：左边 16 clock 用 --warning-icon；改动的中文名 13 text-2，放不下时省略；「展开改动」14/22/500
+ * accent-text，离名字 4，总在；右边说明离「放弃」16（条里按钮间隔 8，说明再让 8）；「放弃」是幽灵按钮，text-2。
+ * 「展开改动」在 .action-bar-hint 里（overflow: hidden，四边贴着它）：点击区 24 高、左右各留 4（离名字的 4 就是这段），
+ * 焦点环往里收（§3 容器会裁掉外框的地方）
+ */
+.save-bar-icon {
+  color: var(--warning-icon);
+}
+.save-bar-hint {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.save-bar-names {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.save-bar-toggle {
+  flex: none;
+  min-height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.save-bar-toggle:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.save-bar-toggle:focus-visible,
+.save-change:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.save-bar-note {
+  margin-right: 8px;
+}
+.action-bar .save-bar-discard {
+  color: var(--text-2);
+}
+/*
+ * 窄屏（spec 状态表：<1024 只提示「建议在电脑上编辑」，不拦）：条高不变，放不下的补充先让出来，
+ * 摘要和两个按钮总在。<768 去掉右边的说明，<480 再去掉改动的中文名和「展开改动」
+ */
+@media (max-width: 767px) {
+  .save-bar-note {
+    display: none;
+  }
+}
+@media (max-width: 479px) {
+  .save-bar-hint {
+    display: none;
+  }
+}
+/*
+ * 「展开改动」的清单：浮层（§3 阴影只给浮层），贴在保存条上方、与面板内容左对齐；宽 320，最高半屏，自己滚。
+ * 定位的参照是保存条本身（sticky 也算定位），名字那一段的 overflow 裁不到它
+ */
+.save-changes {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: var(--panel-px, 32px);
+  box-sizing: border-box;
+  width: 320px;
+  max-width: calc(100% - 2 * var(--panel-px, 32px));
+  max-height: 50vh;
+  max-height: 50dvh;
+  padding: 4px;
+  overflow-y: auto;
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  box-shadow: var(--shadow-menu);
+}
+.save-changes ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.save-change {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.save-change:hover {
+  background: var(--hover);
+}
+.save-change svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* 页头下的横幅与汇总（§5.12：页级 Alert 与内容等宽，放在页头下 16） */
+.detail-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.detail-issues-loose {
+  margin: 0;
+  padding-left: 20px;
+}
+
+/*
+ * 409 之后的对比（spec「保存条」）：一张卡片（§5.9），宽同主栏；每个改过的字段一行，最新版本与你改的两列并排，
+ * 各自按字段类型的只读形态画；「用我的改动」是 28 高的次要按钮
+ */
+.detail-compare {
+  box-sizing: border-box;
+  max-width: 736px;
+  margin-bottom: 16px;
+  padding: 16px 20px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.detail-compare-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.detail-compare-title {
+  margin: 0;
+  border-radius: var(--r-xs);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.detail-compare-count {
+  flex: 1;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.detail-compare-note {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.detail-compare-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.detail-compare-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.detail-compare-row + .detail-compare-row {
+  padding-top: 16px;
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+.detail-compare-label {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.detail-compare-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-self: stretch;
+}
+.detail-compare-side {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+@media (max-width: 767px) {
+  .detail-compare-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+/*
+ * 给读屏念「已保存」：看不见、不占位置（整块在页面末尾，不在一行字里，WebKit 的 text-autospace 问题碰不到它）。
+ * 用 fixed 钉在视口左上：absolute 时它的包含块是 .shell-panel，停在几千像素处的静态位置，把面板撑出一段能被
+ * scrollIntoView 滚动的溢出，整块面板被推上去、滚轮滚不回来
+ */
+.save-live {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- 第 10.3 步：页签、「更多」、上架确认、复制为新草稿、预览 ---------- */
+
+/* 页签「编辑 / 预览」（§4.4）：同列表页的页签，页头下 20（页头自己的下外边距），内容在页签下 16 */
+.detail-tabs > .ant-tabs-nav {
+  margin: 0 0 16px;
+}
+.detail-tabs > .ant-tabs-nav::before {
+  border-bottom-color: var(--divider);
+}
+/* antd 用 text-shadow 假装加粗，这里改成真的 500 */
+.detail-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  font-weight: 500;
+  text-shadow: none;
+}
+
+/* 页头的「更多」（§4.3）：ellipsis 图标，次要按钮样式 32×32：--panel 底，text 色，--shadow-btn；悬停、按下叠一层 */
+.icon-btn.header-more {
+  background: var(--panel);
+  box-shadow: var(--shadow-btn);
+  color: var(--text);
+}
+.icon-btn.header-more:hover {
+  background: linear-gradient(var(--hover), var(--hover)), var(--panel);
+}
+.icon-btn.header-more:active {
+  background: linear-gradient(var(--pressed), var(--pressed)), var(--panel);
+}
+
+/* 弹窗的后果列表（§5.14）：每条 16 图标加 14/22 文字，图标与文字间隔 8，条与条间隔 8；图标按意思取色 */
+.consequences {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.consequence {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.consequence-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--text-2);
+}
+.consequence-warn .consequence-icon {
+  color: var(--warning-icon);
+}
+.consequence-danger .consequence-icon {
+  color: var(--danger);
+}
+.consequence-body {
+  min-width: 0;
+}
+.consequence-strong {
+  font-weight: 500;
+}
+/* 锁定清单（F 页）：按锁定组分行，Tag 在前；「字段 值」字段 text-2、值 text，每段整体不断行，间隔号跟在段尾 */
+.activate-lock-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.activate-lock-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.activate-pairs {
+  min-width: 0;
+}
+.activate-pair {
+  display: inline-block;
+  max-width: 100%;
+}
+.activate-pair-label {
+  margin-right: 4px;
+  color: var(--text-2);
+}
+.activate-pair-label.is-tight {
+  margin-right: 0;
+}
+.activate-pair-value.is-empty {
+  color: var(--text-3);
+}
+
+/* 复制为新草稿：后果列表下面是新编号的输入框（标签、输入框、帮助或报错，同表单字段） */
+.copy-code {
+  margin-top: 16px;
+}
+.copy-code .field-label {
+  display: block;
+  margin-bottom: 6px;
+}
+.copy-code .ant-input.mono {
+  font-family: var(--mono);
+}
+.copy-failure {
+  margin-top: 12px;
+}
+
+/* 「预览」页签（spec「预览」）：375 宽的框，单栏只读；表单网格按自己的宽度收成一列（fields.css 的容器查询） */
+.detail-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.detail-preview-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.detail-preview-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  width: 375px;
+  max-width: 100%;
+  padding: 20px 16px;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.detail-preview-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+.preview-group {
+  padding-top: 16px;
+  border-top: 1px solid var(--divider);
+}
+.preview-group-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}

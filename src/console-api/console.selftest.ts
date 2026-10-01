@@ -767,6 +767,8 @@ for (const [u, role] of [
     unknown.status === 401 && wrong.status === 401 && unknown.text === wrong.text,
     `${unknown.text} / ${wrong.text}`,
   );
+  // console UX spec「登录」：界面只说「密码」，技术详情里的 detail 同步改（plan 第 15 步）
+  check('HTTP 登录：失败的 detail 写「密码」，不写「口令」', wrong.body.detail === '邮箱或密码不对', wrong.text);
   // 口令队列排满（两个槽都占住）：未知邮箱与已有邮箱都在排满 2 秒后 429 busy，状态码与响应体相同，各打一行日志
   session.__authTest.reset();
   const held = [await __passwordTest.occupy(), await __passwordTest.occupy()];
@@ -787,6 +789,11 @@ for (const [u, role] of [
     'HTTP 登录：口令队列排满时未知邮箱与已有邮箱都是 429 busy，响应体相同',
     busy.length === 2 && busy.every((r) => keep(r).status === 429 && r.body.error === 'busy') && busy[0]!.text === busy[1]!.text,
     busy.map((r) => `${r.status} ${r.text}`).join(' | '),
+  );
+  check(
+    'HTTP 登录：排队超时的 detail 写「密码」，不写「口令」',
+    busy.length === 2 && busy.every((r) => r.body.detail === '密码校验排队超时，请稍后再试'),
+    busy.map((r) => r.text).join(' | '),
   );
   check('登录失败：排队超时也打日志', logged.filter((l) => l.includes('排队超时')).length === 2, logged.join(' | '));
 }
@@ -1307,6 +1314,28 @@ check(
     '产品库 HTTP：itinerary 为空、条数不等于 days、带未知键、类型不对 → 422 并列出问题',
     inv.every((r) => r.status === 422 && r.body.error === 'invalid_item' && r.body.issues?.length > 0),
     inv.map((r) => `${r.status}:${r.text.slice(0, 60)}`).join(' | '),
+  );
+  // 后台 UX spec 验收 15 第 10 条：天数与逐日行程不符时，报错写「天数」，不写 payload 的键名 days
+  check(
+    '产品库 HTTP：天数与逐日行程不符 → 422 的报错里是「天数」，不是「days」',
+    inv[1]!.status === 422 &&
+      (inv[1]!.body.issues as { message: string }[]).some((i) => i.message.includes('要和天数（')) &&
+      !inv[1]!.text.includes('days'),
+    inv[1]!.text.slice(0, 200),
+  );
+  // 同一条的另外两处：编号不合规、天号不对，报错写「编号」「天号」，不写 payload 的键名 id、day
+  const badCode = keep(await call('POST', '/catalog/route', { ...O, json: { payload: { ...structuredClone(p), id: 'R_Bad' } } }));
+  const badDays = (cur4.payload.itinerary as Body[]).map((d, i) => (i === 1 ? { ...d, day: 5 } : d));
+  const badDay = keep(await call('PATCH', `/catalog/route/${code}`, { ...O, json: { rev: cur4.rev, set: { itinerary: badDays } } }));
+  const messages = (r: Res) => ((r.body.issues ?? []) as { message: string }[]).map((i) => i.message);
+  check(
+    '产品库 HTTP：编号不合规、天号不对 → 422 的报错里是「编号」「天号」，不是 id、day',
+    badCode.status === 422 &&
+      messages(badCode).some((m) => m.startsWith('编号只能')) &&
+      messages(badCode).every((m) => !/\bid\b/.test(m)) &&
+      badDay.status === 422 &&
+      JSON.stringify(messages(badDay)) === JSON.stringify(['第2天的天号应为2']),
+    `${badCode.text.slice(0, 200)} | ${badDay.text.slice(0, 200)}`,
   );
   const both = await call('PATCH', `/catalog/route/${code}`, {
     ...O,
@@ -2052,7 +2081,7 @@ check(
     [
       '库里已有这个 code',
       `${head}${NL}h-new-1,名,三亚,五星,100,房,亮点,${NL}h-csv-one,名,三亚,五星,100,房,亮点,`,
-      (r) => r.body.rows?.[0]?.row === 2 && JSON.stringify(r.body.rows).includes('已经有了'),
+      (r) => JSON.stringify(r.body.rows) === JSON.stringify([{ row: 2, issues: [{ path: 'id', message: '这个编号已经有了' }] }]),
     ],
     ['过不了 schema（缺必填、id 不合规）', `${head}${NL}H_BAD,名,三亚,五星,100,房,,`, (r) => r.body.rows?.[0]?.row === 1],
     ['只有表头', head, (r) => r.body.rows?.[0]?.row === 0],
@@ -2082,6 +2111,63 @@ check(
     'CSV 导入：非编辑角色 403，匿名 401',
     (await call('POST', '/catalog/hotel/import-csv', { as: agent, json: { csv } })).status === 403 &&
       (await call('POST', '/catalog/hotel/import-csv', { json: { csv } })).status === 401,
+  );
+}
+
+// 后台 UX spec 验收 15 第 9 条：酒店 CSV 用中文表头导入，结果与英文表头相同（标签表取自租户的行业包）；
+// 带「制表符 + =」前缀的格子（导入弹窗下载不合格行时加的防公式前缀），导入后前缀被去掉。
+// 另走一遍验收 19 的「改好后重新导入」：下载的文件每格加引号、带 BOM 和「不合格原因」列，原样交上去，这一列不进数据
+{
+  const NL = String.fromCharCode(10);
+  const TAB = String.fromCharCode(9);
+  const BOM = String.fromCharCode(0xfeff);
+  const cells = (id: string): string[] => [
+    id,
+    '中文表头酒店',
+    '三亚',
+    `${TAB}=五星`,
+    '1880',
+    `${TAB}@海景房`,
+    '私人沙滩、无边泳池',
+    '海岛',
+  ];
+  const en = ['id,name,destination,stars,nightlyFrom,roomType,highlights,tags', cells('h-head-en').join(',')].join(NL);
+  const zh = ['酒店编号,酒店名称,目的地,星级档次,每晚起价,主推房型,酒店亮点,标签', cells('h-head-zh').join(',')].join(NL);
+  const a = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv: en } });
+  const b = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv: zh } });
+  const payloadOf = (r: Res): Body | undefined => (r.body.items as Body[] | undefined)?.[0]?.payload as Body | undefined;
+  const sameButId = (x: Body | undefined, y: Body | undefined): boolean =>
+    !!x && !!y && JSON.stringify({ ...x, id: '' }) === JSON.stringify({ ...y, id: '' });
+  check(
+    '验收 15 第 9 条：中文表头导入 → 200，payload 与英文表头的相同（键序也相同），只差编号',
+    a.status === 200 && b.status === 200 && sameButId(payloadOf(a), payloadOf(b)) && payloadOf(b)?.id === 'h-head-zh',
+    `${a.text.slice(0, 200)} | ${b.text.slice(0, 200)}`,
+  );
+  check(
+    '验收 15 第 9 条：「制表符 + =」「制表符 + @」开头的格子，导入后前缀去掉',
+    payloadOf(b)?.stars === '=五星' && payloadOf(b)?.roomType === '@海景房',
+    JSON.stringify(payloadOf(b)),
+  );
+  const q = (s: string): string => `"${s.replaceAll('"', '""')}"`;
+  const fixed = [
+    ['酒店编号', '酒店名称', '目的地', '星级档次', '每晚起价', '主推房型', '酒店亮点', '标签', '不合格原因'].map(q).join(','),
+    [...cells('h-head-fixed'), '每晚起价：要写整数，写的是「2,6OO」'].map(q).join(','),
+  ].join(String.fromCharCode(13, 10));
+  const c = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv: `${BOM}${fixed}` } });
+  check(
+    '验收 19：下载的不合格行文件改好后原样重新导入 → 200，「不合格原因」列不进数据，防公式前缀不进数据',
+    c.status === 200 && sameButId(payloadOf(c), payloadOf(a)) && !JSON.stringify(payloadOf(c)).includes('不合格'),
+    c.text.slice(0, 300),
+  );
+  const mixed = await call('POST', '/catalog/hotel/import-csv', {
+    ...O,
+    json: { csv: ['id,酒店编号,name,destination,stars,nightlyFrom,roomType,highlights,tags', `h-x,${cells('h-x').join(',')}`].join(NL) },
+  });
+  check(
+    '中文标签与字段名指向同一个字段 → 422 第 0 行「表头重复」，点名后出现的那一列',
+    mixed.status === 422 &&
+      JSON.stringify(mixed.body.rows) === JSON.stringify([{ row: 0, issues: [{ path: '酒店编号', message: '表头重复' }] }]),
+    mixed.text,
   );
 }
 

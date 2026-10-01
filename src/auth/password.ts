@@ -16,7 +16,7 @@ const QUEUE_WAIT_MS = 2_000;
 /** 排队超时 → 429 */
 export class PasswordBusyError extends Error {
   constructor() {
-    super('口令校验排队超时，请稍后再试');
+    super('密码校验排队超时，请稍后再试');
   }
 }
 
