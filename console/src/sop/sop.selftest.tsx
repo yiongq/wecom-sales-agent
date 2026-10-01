@@ -148,6 +148,7 @@ import {
   statText,
   writeDiffMode,
 } from './publish.js';
+import { useDraftCheck } from './check.js';
 import { useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
 import { checkItems } from './SideCards.js';
@@ -4289,46 +4290,54 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const require = createRequire(import.meta.url);
   const src = readFileSync(require.resolve('@codemirror/merge'), 'utf8');
   const theme = src.slice(src.indexOf('EditorView.baseTheme({'), src.indexOf('const collapseCompartment'));
-  const colored = new Map<string, Set<string>>();
+  // 每条带颜色的规则记下整串类名（如 .cm-deletedChunk .cm-deletedText），覆盖要对上整串，只对上最后一个类不算
+  const colored: { chain: string[]; prop: 'color' | 'background' }[] = [];
   for (const m of theme.matchAll(/"([^"]+)":\s*\{([^{}]*)\}/g)) {
     const props = [...m[2]!.matchAll(/(\w+):\s*"([^"]*)"/g)].filter(([, , v]) => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(v!)).map(([, p]) => p!);
     if (!props.length) continue;
     for (const sel of m[1]!.split(',')) {
-      const subject = sel.trim().match(/cm-[A-Za-z]+$/)?.[0];
-      if (!subject) continue;
-      const set = colored.get(subject) ?? new Set<string>();
-      for (const p of props) set.add(p === 'color' ? 'color' : 'background');
-      colored.set(subject, set);
+      if (!/cm-[A-Za-z]+$/.test(sel.trim())) continue;
+      const chain = [...sel.matchAll(/\.(cm-[A-Za-z-]+)/g)].map((x) => x[1]!);
+      for (const p of props) colored.push({ chain, prop: p === 'color' ? 'color' : 'background' });
     }
   }
   check(
     '在 @codemirror/merge 的主题里找到了带颜色的类',
     ['cm-changedLine', 'cm-deletedChunk', 'cm-deletedText', 'cm-changedText', 'cm-collapsedLines', 'cm-inlineChangedLine'].every((k) =>
-      colored.has(k),
+      colored.some((c) => c.chain.at(-1) === k),
     ),
-    [...colored.keys()].join(' '),
+    colored.map((c) => c.chain.join(' ')).join(' | '),
   );
   const css = readFileSync(new URL('./sop.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
     .map((m) => ({ sels: m[1]!.split(',').map((x) => x.trim()), body: m[2]! }))
     .filter((r) => r.sels.some((x) => x.startsWith('.sop-diff')));
+  /** sop.css 的选择器里依次出现 chain 的每个类，并且以最后一个类结尾（可以带伪元素） */
+  const covers = (sel: string, chain: readonly string[]): boolean => {
+    if (!sel.startsWith('.sop-diff .sop-diff-view') || !new RegExp(`\\.${chain.at(-1)}(::?[a-z-]+)?$`).test(sel)) return false;
+    const mine = [...sel.matchAll(/\.(cm-[A-Za-z-]+)/g)].map((x) => x[1]!);
+    let i = 0;
+    for (const c of mine) if (c === chain[i]) i += 1;
+    return i === chain.length;
+  };
   const missing: string[] = [];
-  for (const [cls, props] of colored) {
+  for (const { chain, prop } of colored) {
+    const cls = chain.at(-1)!;
     if (cls.endsWith('Gutter')) {
       if (!rules.some((r) => r.sels.includes('.sop-diff .sop-diff-view .cm-gutters') && /display:\s*none/.test(r.body))) missing.push(cls);
       continue;
     }
-    for (const p of props) {
-      const decl = p === 'color' ? /(^|[;\s])color:/ : /(^|[;\s])background(-color)?:/;
-      const hit = rules.some(
-        (r) =>
-          r.sels.some((x) => x.startsWith('.sop-diff .sop-diff-view') && new RegExp(`\\.${cls}(::?[a-z-]+)?$`).test(x)) &&
-          decl.test(r.body),
-      );
-      if (!hit) missing.push(`${cls} ${p}`);
-    }
+    const decl = prop === 'color' ? /(^|[;\s])color:/ : /(^|[;\s])background(-color)?:/;
+    if (!rules.some((r) => r.sels.some((x) => covers(x, chain)) && decl.test(r.body))) missing.push(`${chain.join(' ')} ${prop}`);
   }
   eq('@codemirror/merge 带颜色的每一类都在 .sop-diff 下盖掉了', missing, []);
+  check(
+    '折叠行两头的 ⦚（@codemirror/merge 的 :before、:after）在 .sop-diff 下去掉',
+    theme.includes('content: \'"⦚"\'') &&
+      ['::before', '::after'].every((ps) =>
+        rules.some((r) => r.sels.includes(`.sop-diff .sop-diff-view .cm-editor .cm-collapsedLines${ps}`) && /content:\s*none/.test(r.body)),
+      ),
+  );
   eq(
     '.sop-diff 下的颜色只用令牌，不写死颜色',
     rules.filter((r) => /#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(r.body)).map((r) => r.sels.join(', ')),
@@ -4367,6 +4376,23 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [a, b, text(r.box)],
     ['true|将替换线上v2（改了说明）', 'false|将替换线上v2（改了说明）', 'true|将替换线上v3'],
   );
+  await r.unmount();
+}
+
+// 11.2c useDraftCheck 的 running：打开页面时已有草稿，检查在挂上的那一刻就发出去，第一次渲染起就记着在路上
+// （发布抽屉等它回来才让发布），回来以后不在路上
+{
+  const seen: boolean[] = [];
+  const pending: ((r: DraftCheck) => void)[] = [];
+  const post = (): Promise<DraftCheck> => new Promise<DraftCheck>((r) => void pending.push(r));
+  function Running() {
+    seen.push(useDraftCheck({ enabled: true, key: 'd1@v2', post, now: () => NOW }).running);
+    return null;
+  }
+  const r = await mount(<Running />);
+  const first = seen[0];
+  await act(async () => pending.shift()?.(FIXED_CHECK()));
+  eq('第一次渲染就在路上，检查回来以后不在路上；只发了一次', [first, seen.at(-1), pending.length], [true, false, 0]);
   await r.unmount();
 }
 
