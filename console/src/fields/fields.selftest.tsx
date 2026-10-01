@@ -6890,9 +6890,10 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     eq(
       '太长的行：标题写出行号（最多三个），说明写上限',
-      [longTitle([2]), longTitle([2, 5, 7, 9]), longNote(1), longNote(2)],
+      [longTitle([2]), longTitle([2, 5, 7]), longTitle([2, 5, 7, 9]), longNote(1), longNote(2)],
       [
         '第2行太长，分成几份也导入不了',
+        '第2、5、7行太长，分成几份也导入不了',
         '第2、5、7行等4行太长，分成几份也导入不了',
         '一次最多导入200行，整份不超过60,000个字、64KB。这一行连同表头单独一份也超了',
         '一次最多导入200行，整份不超过60,000个字、64KB。这几行连同表头单独一份也超了',
@@ -7173,6 +7174,17 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         document.activeElement === btn('下载模板'),
       ],
       [['酒店编号', '酒店名称', '目的地', '星级档次', '每晚起价', '主推房型', '酒店亮点', '标签'], HOTELS[0]!.name, ['选文件'], true],
+    );
+    const rulesTable = document.querySelector<HTMLTableElement>(`${D} .csv-rules table`);
+    eq(
+      '第1步：规则表是固定布局（例子再长也撑不开弹窗，只占一行），至少 600 宽，窄屏时在自己的容器里横向滚动；表头、例子定宽',
+      [
+        rulesTable?.style.tableLayout,
+        rulesTable?.style.width,
+        rulesTable?.style.minWidth,
+        all<HTMLElement>(document, `${D} .csv-rules col`).map((c) => c.style.width),
+      ],
+      ['fixed', '600px', '100%', ['180px', '', '220px']],
     );
     await click(btn('下载模板'));
     eq('下载模板：文件名、UTF-8 带 BOM、只有一行中文表头', await lastDownload(), {

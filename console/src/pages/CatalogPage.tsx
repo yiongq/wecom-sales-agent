@@ -54,9 +54,8 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
   // 导入弹窗：第一次点「导入CSV」才挂上（才下载它的块）；关上以后留着挂载（关的动画照常），下次打开不再等。
   // 每次打开换一个 key，从第1步重新来
   const [csv, setCsv] = useState({ round: 0, open: false });
-  // 关上以后焦点回哪：antd 还给打开它的按钮。从空状态导入的，建好以后空状态卸了、那个按钮不在了，焦点会掉到 body，
-  // 这时放到页头的「导入CSV」（导入按钮同一时刻只挂一份，ref 指着挂着的那份）
-  const opener = useRef<HTMLElement | null>(null);
+  // 关上以后焦点回到「导入CSV」。antd 还给打开它的那个按钮，但从空状态导入的，建好以后空状态卸了、那个按钮不在了，
+  // 焦点会掉到 body；这时页头已经有了一份。导入按钮同一时刻只挂一份，ref 指着挂着的那份
   const importButton = useRef<HTMLButtonElement>(null);
   const refresh = (): Promise<void> => qc.invalidateQueries({ queryKey: ['catalog', entity.kind] });
 
@@ -64,14 +63,7 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
   const actions: ReactNode = can.create ? (
     <>
       {can.csv && (
-        <Button
-          ref={importButton}
-          icon={<Icon of={FileUp} />}
-          onClick={(e) => {
-            opener.current = e.currentTarget;
-            setCsv((c) => ({ round: c.round + 1, open: true }));
-          }}
-        >
+        <Button ref={importButton} icon={<Icon of={FileUp} />} onClick={() => setCsv((c) => ({ round: c.round + 1, open: true }))}>
           导入CSV
         </Button>
       )}
@@ -134,9 +126,7 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
               // 新建的草稿都在草稿页签：搜索与筛选一并清掉，免得把它们筛走
               void navigate({ search: { status: 'draft' } });
             }}
-            afterClose={() => {
-              if (opener.current && !opener.current.isConnected) importButton.current?.focus();
-            }}
+            afterClose={() => importButton.current?.focus()}
           />
         </Suspense>
       ) : null}
