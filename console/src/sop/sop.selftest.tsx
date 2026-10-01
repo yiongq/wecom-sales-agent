@@ -4455,6 +4455,9 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   );
   await typeAtEnd(m, '甲');
   eq('再改一个字：那句没了，回到改了哪几节', barText(m).summary, '草稿改了1节（话术原则）');
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+  eq('再打开发布抽屉：说明是这一次的预填，上一次写的不留', drawerOf('发布草稿')!.querySelector('textarea')!.value, '修改：话术原则。');
   await m.unmount();
 }
 
