@@ -124,6 +124,10 @@ function itemName(entry: AuditEntryView, entity: EntityType | null, lookups: Aud
   return fromDiff ?? cached ?? code ?? '—';
 }
 
+/** 条目名（审计页合并的那一句在摘要里列出前几条的名字）：与句子里的对象名同一个取法 */
+export const auditItemName = (entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups = {}): string =>
+  itemName(entry, entityOf(pack, entry.targetType), lookups);
+
 interface Body {
   parts: AuditPart[];
   tail?: string | null;
@@ -274,6 +278,8 @@ export function describeAudit(
 
 /** 能合成一句的动作：产品库的这几种，同一实体（设计系统 §10.0：CSV 导入的 6 条酒店草稿合成一句） */
 const MERGEABLE = new Set(['catalog.create', 'catalog.update', 'catalog.activate', 'catalog.locked_fix']);
+/** 这个动作的记录能不能与相邻的同类记录合成一句（审计页按页取时，页尾是这类记录就要往后看一眼） */
+export const auditMergeable = (action: string): boolean => MERGEABLE.has(action);
 /** 相邻两条的时间差不超过它才合并（spec「审计日志 · 时间线」） */
 export const AUDIT_RUN_GAP_MS = 5 * 60_000;
 

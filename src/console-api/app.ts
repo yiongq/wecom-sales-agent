@@ -272,7 +272,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const userAgent = c.req.header('user-agent')?.slice(0, 512) ?? null;
     const r = await login({ email, password, ip: dbIp(c), userAgent, now: clock() });
     // 未知邮箱、口令错误、账号停用、不是本实例成员：状态码与响应体完全相同
-    if (!r) return fail(c, 401, { error: 'invalid_credentials', detail: '邮箱或口令不对' });
+    if (!r) return fail(c, 401, { error: 'invalid_credentials', detail: '邮箱或密码不对' });
     c.header('Set-Cookie', cookie(r.token, ABSOLUTE_MS / 1000));
     return c.json(meOf(r.user), 200);
   })

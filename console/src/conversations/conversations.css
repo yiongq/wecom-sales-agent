@@ -1,0 +1,408 @@
+/*
+ * 会话列表（design-system §4.4 页签、§5.5 表格、§5.6 状态、§6.7 阶段条与会话列表首列、§10.2 I 页）。颜色只取 brand.css 的变量。
+ * 由 pages/conversations.lazy.tsx 引入，随会话列表的块下载；组件本身不 import CSS，自测才能在 Node 里直接 import 它们。
+ * 宽 1440 时内容宽 1128：页头到页签 20，页签下 16 是「客户停在哪一步」（宽 560），再下 24 是表格
+ */
+
+/* ---------------- 页签（§4.4）：高 40，项间隔 24，14 text-2；选中项 text 500，下方 2px text 色的线；计数 13 text-3，跟在文字后 4；
+   等人接手用软徽标；整排下方一条 --divider，宽等于内容宽。切换没有动画 ---------------- */
+/* 外层只管放不下时横滚（很窄、数又大时），四周各留 4 放焦点框、不被滚动容器裁掉，再用负外边距抵回去：
+   页头到页签仍是 20，页签到下一块 16 */
+.cv-tabs-scroll {
+  overflow-x: auto;
+  margin: -4px -4px 12px;
+  padding: 4px;
+  scrollbar-width: none;
+}
+.cv-tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+.cv-tabs {
+  display: flex;
+  gap: 24px;
+  width: max-content;
+  min-width: 100%;
+  height: 40px;
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+.cv-tab-btn {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cv-tab-btn:hover {
+  color: var(--text);
+}
+.cv-tab-btn.is-selected {
+  box-shadow: inset 0 -2px 0 var(--text);
+  font-weight: 500;
+  color: var(--text);
+}
+.cv-tab-btn:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.cv-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cv-tab-count {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- 客户停在哪一步：区块头一行 24 高，16/24/600 标题、13 text-3 计数、右侧文字按钮；宽 560 ---------------- */
+.cv-stages {
+  max-width: 560px;
+}
+/* 一行正好 24 高：右侧按钮 28 高，上下各溢出 2，不把区块撑高 */
+.cv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  margin-bottom: 8px;
+}
+.cv-title {
+  flex: none;
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* 窄屏放不下时计数先省略，标题和按钮不折行 */
+.cv-count {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-head-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  margin: 0 -8px 0 auto;
+  padding: 0 6px 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cv-head-btn svg {
+  color: var(--text-3);
+}
+.cv-head-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.cv-head-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.cv-note {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/* 阶段条（§6.7）：每行 32 高、可点、悬停 --hover；阶段名 13 text-2 宽 48，条高 8、--bar 色、没有轨道底，数字 14/500 宽 32 右对齐 */
+.cv-stage-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cv-stage {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 32px;
+  column-gap: 12px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 32px;
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+}
+a.cv-stage:hover {
+  background: var(--hover);
+  color: var(--text);
+  text-decoration: none;
+}
+/* 选中的阶段（地址里的 stage）：--selected 底，阶段名用 text 500 */
+a.cv-stage.is-selected,
+a.cv-stage.is-selected:hover {
+  background: var(--selected);
+}
+.cv-stage.is-selected .cv-stage-label {
+  color: var(--text);
+  font-weight: 500;
+}
+.cv-stage:focus-visible,
+.cv-stage-cell:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.cv-stage-label {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-stage.is-branch .cv-stage-label {
+  padding-left: 8px;
+}
+.cv-stage-track {
+  display: flex;
+  align-items: center;
+  height: 8px;
+}
+.cv-stage-bar {
+  height: 8px;
+  border-radius: var(--r-xs);
+  background: var(--bar);
+}
+.cv-stage-count {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cv-stage.is-zero .cv-stage-count {
+  color: var(--text-3);
+}
+
+/* 「以表格查看」：同样的数字换成小表格（表头 32、行 32，数字右对齐） */
+.cv-stage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 20px;
+}
+.cv-stage-table th,
+.cv-stage-table td {
+  height: 32px;
+  padding: 0;
+  box-shadow: inset 0 -1px 0 var(--divider);
+  text-align: left;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.cv-stage-table thead th {
+  font-weight: 500;
+  color: var(--text-3);
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.cv-stage-table th:last-child,
+.cv-stage-table td {
+  text-align: right;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.cv-stage-table thead th:last-child {
+  font-size: 13px;
+  color: var(--text-3);
+}
+.cv-stage-table th.is-branch {
+  padding-left: 8px;
+}
+.cv-stage-cell {
+  border-radius: var(--r-xs);
+  color: var(--text-2);
+}
+.cv-stage-cell:hover {
+  color: var(--text);
+}
+.cv-stage-cell.is-selected {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* 生效的阶段筛选（§5.5 工具条）：--accent-bg 底、accent-text 500，「阶段：报价」后接 14 的 x，点了清除 */
+.cv-filters {
+  display: flex;
+  margin-top: 24px;
+}
+.cv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--r-sm);
+  background: var(--accent-bg);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--accent-text);
+}
+.cv-chip:hover {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+.cv-chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------------- 表格（§5.5）：直接铺在面板上，左右各 −12；表头 36 高 13/20/500 text-3，下方 1px --border；行 44 高 ---------------- */
+.cv-list {
+  margin-top: 24px;
+}
+.cv-filters + .cv-list {
+  margin-top: 12px;
+}
+.cv-table {
+  margin: 0 -12px;
+}
+.cv-table .ant-table-thead > tr > th {
+  height: 36px;
+  padding-block: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.cv-table .ant-table-thead > tr > th::before {
+  display: none;
+}
+/* 横滚时固定的首列：表头也要不透明，不然滚过去的表头字从底下透出来 */
+.cv-table .ant-table-thead > tr > th.ant-table-cell-fix-start {
+  background: var(--panel);
+}
+.cv-row {
+  cursor: pointer;
+}
+.cv-table .ant-table-tbody > tr > td {
+  white-space: nowrap;
+}
+/* 状态胶囊（22 高）与操作按钮（28 高）是 inline-flex，按基线对齐会把行盒撑高 1–2px：贴着行盒顶对齐，行高正好 44 */
+.cv-table .ant-table-tbody .status,
+.cv-table .ant-table-tbody .cv-open {
+  vertical-align: top;
+}
+.cv-table .ant-table-tbody > tr > td:nth-child(4) {
+  font-variant-numeric: tabular-nums;
+}
+/* 当前的排序列：表头文字 text-2，后接 12 的 chevron-down（text-3）；排序固定，不能点 */
+.cv-sorted {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+}
+.cv-sorted svg {
+  color: var(--text-3);
+}
+
+/* 首列（§6.7）：16 的 messages-square（text-3），间隔 8，「企微客户 · F01」14/500 text，是真正的链接 */
+.cv-conv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cv-conv-icon {
+  flex: none;
+  color: var(--text-3);
+}
+.cv-conv-link {
+  overflow: hidden;
+  border-radius: var(--r-xs);
+  font-weight: 500;
+  color: var(--text);
+  text-overflow: ellipsis;
+}
+.cv-conv-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.cv-conv-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.cv-text-2 {
+  color: var(--text-2);
+}
+.cv-dim {
+  color: var(--text-3);
+}
+.cv-when {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 行内操作（§5.1）：幽灵小按钮，28 高，text-2，后接 14 的 arrow-up-right；悬停 --hover 底、text 字。
+   按钮比一行字高 6，这一格上下内边距各少 3，行高仍是 44 */
+.cv-table .ant-table-tbody > tr > td.cv-op-cell {
+  padding-block: 7.5px;
+}
+.cv-table .cv-open.ant-btn {
+  height: 28px;
+  padding: 0 8px 0 10px;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.cv-table .cv-open.ant-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.cv-open svg {
+  color: var(--text-3);
+}
+
+/* 分页器（§5.5）：只在多于一页时出现；左侧 13 text-3「共21条」，页码在右 */
+.cv-table .ant-table-pagination.ant-pagination {
+  justify-content: flex-start;
+  margin: 16px 12px 0;
+}
+.cv-table .ant-pagination-total-text {
+  margin-inline-end: auto;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* 很窄时（375 宽的内容区 327）四个页签加 24 的间隔放不下（要 329），得横滚才看得到最后一个：间隔收到 16 */
+@media (max-width: 599px) {
+  .cv-tabs {
+    gap: 16px;
+  }
+}

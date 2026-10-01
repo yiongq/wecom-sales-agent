@@ -13,7 +13,7 @@ import type { Role } from '../../../src/shared/console-api.js';
 import { ROLE_LABEL } from '../../../src/shared/ui-labels.js';
 import { Status } from '../parts/Status.js';
 import { cjk } from '../typography.js';
-import { useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
+import { toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { useDocumentTitle } from './hooks.js';
 import { documentTitle, isEditor, type ShellViewer } from './model.js';
 
@@ -138,7 +138,7 @@ export function PageHeader({ title, docTitle, breadcrumb, titleStatus, status, a
         </div>
         {actions && <div className="page-actions">{actions}</div>}
       </header>
-      {viewer?.kind === 'anon' && <AnonBanner onLogin={() => qc.setQueryData<Viewer>(VIEWER_KEY, { kind: 'login' })} />}
+      {viewer?.kind === 'anon' && <AnonBanner onLogin={() => qc.setQueryData<Viewer>(VIEWER_KEY, toLogin)} />}
     </>
   );
 }
