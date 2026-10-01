@@ -86,7 +86,7 @@ import {
   type Autosave,
   useAutosave,
 } from './autosave.js';
-import { Directory, DirectorySelect, type SelectVia, tocListHeight } from './Directory.js';
+import { Directory, DirectorySelect, type SelectVia, swallowEdgeKey, tocListHeight } from './Directory.js';
 import { DiffList, trimEnd } from './DiffView.js';
 import {
   buildDecorations,
@@ -958,9 +958,30 @@ function harness(initial: { current?: string; filter?: OutlineFilter; anon?: boo
     [document.getElementById(`${input?.id}_list`)?.getAttribute('aria-label'), holder()?.style.maxHeight],
     ['话术的节', `${rows.length * 32}px`],
   );
+  // Home / End：光标已经在那一头时拦下（Chromium 会拿它滚整个内容面板，下拉跟着滚出视口）；光标还能动、下拉关着都不拦
+  const edge = async (key: string): Promise<boolean> => {
+    let prevented = false;
+    await act(async () => {
+      prevented = !input!.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }) as unknown as Event);
+    });
+    return prevented;
+  };
+  const openKeys = [await edge('End'), await edge('Home')];
   await clickEv(options.find((o) => text(o).startsWith('异议处理')));
   await settle();
   eq('选一项：换节', picked, ['objections']);
+  const box = document.createElement('input');
+  box.value = '异议';
+  box.setSelectionRange(1, 1);
+  const k = (key: string) => ({ key, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false });
+  const mid = [swallowEdgeKey(k('End'), box), swallowEdgeKey(k('Home'), box)];
+  box.setSelectionRange(2, 2);
+  const atEnd = [swallowEdgeKey(k('End'), box), swallowEdgeKey({ ...k('End'), shiftKey: true }, box), swallowEdgeKey(k('ArrowDown'), box)];
+  eq(
+    'Home / End：下拉开着、空输入框里两个都拦；下拉关上不拦；光标在中间不拦，在尾上拦 End（Shift+End 选字、方向键不拦）',
+    [openKeys, await edge('End'), mid, atEnd],
+    [[true, true], false, [false, false], [true, false, false]],
+  );
   await m.unmount();
 
   // 窗口矮：列表按选择框上下较大的那一边封顶（happy-dom 里选择框在 0 处，下方是整个窗口高）

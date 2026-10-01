@@ -264,6 +264,20 @@ export function tocListHeight(count: number, room: { above: number; below: numbe
   return Math.min(count * OPTION_H, Math.max(4 * OPTION_H, Math.floor(space)));
 }
 
+/**
+ * 下拉开着、焦点在输入框里按 Home / End：光标已经在那一头（空着、或者字打完了）时 Chromium 不把这一下当移光标，
+ * 交给外面滚动，整个内容面板滚到底或顶，下拉跟着选择框滚出视口。只在这种时候拦下；光标还能动时照常移光标
+ */
+export function swallowEdgeKey(
+  e: { key: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
+  input: unknown,
+): boolean {
+  if ((e.key !== 'Home' && e.key !== 'End') || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
+  if (!(input instanceof HTMLInputElement)) return false;
+  const at = e.key === 'Home' ? 0 : input.value.length;
+  return input.selectionStart === at && input.selectionEnd === at;
+}
+
 /** 选择框上方、下方到视口边的距离；还没挂上时当作放得下 */
 function roomAround(el: HTMLElement | null | undefined): { above: number; below: number } {
   if (!el) return { above: Infinity, below: Infinity };
@@ -342,6 +356,9 @@ export const DirectorySelect = memo(
         onOpenChange={(o) => {
           if (o) setRoom(roomAround(selectRef.current?.nativeElement));
           setOpen(o);
+        }}
+        onKeyDown={(e) => {
+          if (open && swallowEdgeKey(e, e.target)) e.preventDefault();
         }}
         showSearch={searchable ? { filterOption: (input, option) => match(names.get(String(option?.value)) ?? '', input) } : false}
         options={rows.map((r) => ({ value: r.key, label: <OptionLabel row={r} /> }))}
