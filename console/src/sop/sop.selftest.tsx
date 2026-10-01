@@ -7424,7 +7424,7 @@ const MINE_LINE = '我在合并里写的一句。';
   await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
   eq(
     '不冲突了但改过：留在合并里（左边是 v4 的写法、右边你写的）；完成合并带 rebaseOnto v4 存下你写的，回到发布抽屉',
-    [kept, srv.puts().at(-1), bodyIn(srv.state.draft!.sections, 'tone')],
+    [kept, srv.puts().at(-1), srv.state.draft && bodyIn(srv.state.draft.sections, 'tone')],
     [
       [true, 'tone', '话术原则', [bodyIn(P_ONLINE, 'tone'), mine], ['线上v4的写法', '你的草稿']],
       { basedOn: 'v4', rev: 4, edits: [{ key: 'tone', body: mine }], rebaseOnto: 'v4' },
@@ -7458,13 +7458,32 @@ const MINE_LINE = '我在合并里写的一句。';
   await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
   eq(
     '草稿没了：不查，改过的节留在合并里（左边 v4）；完成合并新建一份基于 v4 的草稿，回到发布抽屉',
-    [kept, srv.puts().at(-1), srv.state.draft?.basedOn, bodyIn(srv.state.draft!.sections, 'tone')],
+    [kept, srv.puts().at(-1), srv.state.draft?.basedOn, srv.state.draft && bodyIn(srv.state.draft.sections, 'tone')],
     [
       [true, 0, [THEIRS_TONE, mine], '需合并·你在合并里改过这一节，右边留着你写的'],
       { basedOn: 'v4', rev: null, edits: [{ key: 'tone', body: mine }] },
       'v4',
       mine,
     ],
+  );
+  await m.unmount();
+}
+
+// 13.3e5b 草稿没了，你在合并里改成的正是新线上版本的写法（采用了线上的、小王发布的也是这样）：没有要留的，退出合并
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await revertAll(m);
+  await clickEv(doneButton(m));
+  srv.publishByOther(withBodies(V3_SECS, { objections: bodyIn(D_CLEAN, 'objections') }), { publishedByName: '小王' });
+  srv.state = { ...srv.state, draft: null };
+  await finishThenReload(m, null);
+  await rest(100);
+  eq(
+    '草稿没了、你写的和新线上版本一样：不留，退出合并、不弹确认',
+    [merging(m), modalOf('退出合并？'), statusText(m).startsWith('线上v4')],
+    [false, undefined, true],
   );
   await m.unmount();
 }
@@ -7573,7 +7592,12 @@ const MINE_LINE = '我在合并里写的一句。';
   await clickEv(actionButton(m, '完成合并'));
   await waitFor(() => !merging(m) && !!drawerOf('发布草稿')?.querySelector('textarea'));
   const d = drawerOf('发布草稿')!;
-  const held = [!!d.querySelector('.sop-publish-conflict'), text(d.querySelector('.sop-drawer-reason')), srv.puts().at(-1)?.rebaseOnto];
+  const held = [
+    !!d.querySelector('.sop-publish-conflict'),
+    text(d.querySelector('.sop-drawer-reason')),
+    srv.puts().at(-1)?.rebaseOnto,
+    !!m.box.querySelector('.sop-notices'),
+  ];
   srv.checkHold = false;
   await act(async () => srv.checkHeld.at(-1)?.resolve());
   await waitFor(() => drawerButton(d, '发布')?.getAttribute('aria-disabled') === null);
@@ -7581,11 +7605,11 @@ const MINE_LINE = '我在合并里写的一句。';
   await clickEv(drawerButton(d, '发布'));
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   eq(
-    '发布 409 → 去合并 → 完成合并 → 回到抽屉：合并以后的检查回来之前不写冲突、原因是正在检查；回来以后替换 v3，发布成功',
+    '发布 409 → 去合并 → 完成合并 → 回到抽屉：合并以后的检查回来之前抽屉不写冲突、原因是正在检查，页头下也没有提醒；回来以后替换 v3，发布成功',
     [conflicted, held, ready, barText(m).summary, bodyIn(srv.state.published.sections, 'tone')],
     [
       '有1节在你改的同时被改了：话术原则',
-      [false, '正在检查…', 'v3'],
+      [false, '正在检查…', 'v3', false],
       [false, '将替换线上v3（店长·9月26日 13:10发布）'],
       '已发布v4（改了异议处理）',
       THEIRS_TONE,
@@ -7631,7 +7655,7 @@ const MINE_LINE = '我在合并里写的一句。';
       !!drawerOf('发布草稿'),
       srv.puts().length - puts,
       srv.puts().at(-1)?.rebaseOnto,
-      bodyIn(srv.state.draft!.sections, 'tone'),
+      srv.state.draft && bodyIn(srv.state.draft.sections, 'tone'),
       editorText(m),
     ],
     [[1, true], true, 2, 'v3', THEIRS_TONE, THEIRS_TONE],
