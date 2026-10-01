@@ -74,7 +74,7 @@ export interface PublishedResult {
  * 都不是（这期间别人又发布过）返回 null，由调用方按版本号去取
  */
 export const replacedIn = (basedOn: string | null, known: readonly (SopVersion | null | undefined)[]): SopVersion | null =>
-  (basedOn === null ? undefined : known.find((k) => k?.id === basedOn)) ?? null;
+  known.find((k) => k && k.id === basedOn) ?? null;
 
 /** 这次发布改了的可编辑节（相对被替换下来的版本） */
 export function publishedNames(

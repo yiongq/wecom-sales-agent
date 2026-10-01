@@ -2400,8 +2400,8 @@ function fakeServer(start: SopOverview) {
     publishFails: null as { contract: ContractViolation[] } | 'error' | null,
     /** 发布过的版本（线上的与归档的），新的在前；GET /sop/versions 按 before、limit 从这里取 */
     released: [start.published] as SopVersion[],
-    /** GET /sop/versions 答 500 */
-    versionsFail: false,
+    /** GET /sop/versions 答 500，或者答一个不相干的版本（不是 before 前面紧挨着的那一个） */
+    versionsFail: false as boolean | 'other',
     /** 回滚的 sameHashAsTarget（false：这期间固定规则改过） */
     rollbackSameHash: true,
     /** 别人发布了一个新版本（只改了 sections 里与线上不同的节）：线上换了，草稿的 basedOn 从此过期 */
@@ -2446,6 +2446,7 @@ function fakeServer(start: SopOverview) {
     if (call.method === 'GET' && call.path === '/api/console/sop')
       return srv.getFails ? json(500, { error: 'internal' }) : json(200, srv.state);
     if (call.method === 'GET' && call.path === '/api/console/sop/versions') {
+      if (srv.versionsFail === 'other') return json(200, { items: [start.published] });
       if (srv.versionsFail) return json(500, { error: 'internal' });
       const before = call.query.before === undefined ? Infinity : Number(call.query.before);
       const items = srv.released.filter((x) => (x.versionNo ?? 0) < before).slice(0, Number(call.query.limit ?? 50));
@@ -4332,8 +4333,8 @@ function recordScroll(): { calls: string[]; restore(): void } {
   };
   eq(
     '折叠行是按钮、在 Tab 顺序里；正文能程序聚焦、不在 Tab 顺序里',
-    [fold()?.getAttribute('role'), fold()?.tabIndex, d.box.querySelector<HTMLElement>('.cm-content')?.tabIndex],
-    ['button', 0, -1],
+    [fold()?.getAttribute('role'), fold()?.tabIndex, d.box.querySelector('.cm-content')?.getAttribute('tabindex')],
+    ['button', 0, '-1'],
   );
   // 重画出来的折叠行是新的 div：拿掉补上的语义当作新画的，改一下正文让编辑器重画
   fold()!.removeAttribute('role');
@@ -4619,6 +4620,11 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
       false,
       true,
     ],
+  );
+  eq(
+    '「回滚到v2」不在会省略的那段字里（条窄了省略的是「客户下一句就用新话术」，按钮还看得见）',
+    [!!publishBar(m)?.querySelector('.sop-bar-hint-text button'), label(publishBar(m)!.querySelector('.sop-bar-hint-action button')!)],
+    [false, '回滚到v2'],
   );
   eq(
     '这时没有改动：「查看改动」不能点，「发布…」aria-disabled；状态句是 v3',
@@ -5193,8 +5199,8 @@ const lookups = (): Record<string, string>[] =>
 }
 
 // 11.3o2 抽屉检查过以后别人才发布了 v3：被替换的版本不在手上，按版本号取紧挨着的前一个（before=4、limit=1，核对是 basedOn），
-// 条里改了哪几节与「回滚到v3」都照它；取不到时不写改了哪几节、不给回滚，也不报错（发布已经成功了）
-for (const lookupFails of [false, true]) {
+// 条里改了哪几节与「回滚到v3」都照它；取不到（或取回来的不是 basedOn）时不写改了哪几节、不给回滚，也不报错（发布已经成功了）
+for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   srv.versionsFail = lookupFails;
@@ -5217,7 +5223,7 @@ for (const lookupFails of [false, true]) {
     );
   else
     eq(
-      '取不到被替换的版本：只写已发布v4，没有「回滚到…」；抽屉关上，页面不报错',
+      `${lookupFails === 'other' ? '取回来的不是被替换的那一版' : '取不到被替换的版本'}：只写已发布v4，没有「回滚到…」；抽屉关上，页面不报错`,
       [
         barText(m).summary,
         barText(m).hint,
