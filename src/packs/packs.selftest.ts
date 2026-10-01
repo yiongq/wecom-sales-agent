@@ -12,6 +12,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, type CatalogKind } from '../shared/catalog.js';
 import { UNSTORABLE_TEXT } from '../shared/console-api.js';
+import { renovationLPage } from '../shared/pack-fixtures/renovation-l-page.js';
 import { renovation } from '../shared/pack-fixtures/renovation.js';
 import { checkItem, checkPack, ENTITY_ICONS, type CheckIssue, type EntityType, type FieldDef, type IndustryPack } from '../shared/pack.js';
 import { SOP_KNOWN_FIELDS } from '../sop/contract.js';
@@ -78,6 +79,7 @@ const HOTEL = entityOf(travel, 'hotel');
 const packs: [string, IndustryPack][] = [
   ...PACK_IDS.map((id): [string, IndustryPack] => [id, packById(id)!]),
   ['renovation（假包）', renovation],
+  ['renovation（假包冻结的 L 页版）', renovationLPage],
 ];
 for (const [name, p] of packs) checkSame(`${name} 过 checkPack`, checkPack(p), []);
 check('假包不进注册表', packById('renovation') === null && !PACK_IDS.includes('renovation'));

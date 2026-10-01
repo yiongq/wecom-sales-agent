@@ -1,9 +1,8 @@
-// 家装整装包：假的，只用来证明界面换一个行业包不需要改 console（docs/features/console-ux/spec.md「行业包通用架构 · 放在哪里」，
-// 取值见设计系统 §9.2）。只给自测和走查用：不进注册表，也不进构建产物（不变量 25）；console/src 里只有渲染器自测可以 import 它。
-// 不放 src/packs/：那里白名单以外的目录会被公开边界门禁拦下。它的字不进 UI 优先片（scripts/fonts/ui-text.ts 跳过本目录）。
-// 纯数据，只 import 类型；由 src/packs/packs.selftest.ts 跑 checkPack（不变量 13）。
-// 样例（L 页的 4 件主材、5 个套餐）在同目录的 renovation-samples.json，渲染器自测从那里读；钉 L 页写法的断言用冻结的
-// renovation-l-page.ts。往这里加字段时样例跟着补，不用改 console/src（验收 5 第一条）。
+// 家装整装假包的冻结版：设计系统 §9.2 与 L 页画的那一版，照 renovation.ts 在 plan 第 17.1 步之前的样子原样抄来，以后不跟着它改。
+// 渲染器自测 console/src/fields/fields.selftest.tsx 里钉 L 页写法的断言（列表的列与筛选、锁定计数与清单、上架确认、新建空表单、CSV）
+// 用这一份；逐字段、逐样例的通用检查用活的 renovation.ts 和 renovation-samples.json。这样往假包里加字段（验收 5 第一条）只改本目录，
+// 不碰 console/src，自测照样全绿。其余同 renovation.ts：只给自测和走查用，不进注册表与构建产物（不变量 25），
+// 由 src/packs/packs.selftest.ts 跑 checkPack（不变量 13），字不进 UI 优先片。
 import type { EntityType, IndustryPack } from '../pack.js';
 
 const pkg: EntityType = {
@@ -153,7 +152,7 @@ const material: EntityType = {
   activateLine: '上架后，套餐和销售助手可以引用这件主材，按 {unitPrice} 计价',
 };
 
-export const renovation: IndustryPack = {
+export const renovationLPage: IndustryPack = {
   id: 'renovation',
   name: '家装整装',
   vocabulary: {
