@@ -85,11 +85,14 @@
   padding: 8.5px 8px;
   vertical-align: middle;
 }
-.csv-table .ant-table-tbody > tr:hover > td {
-  background: transparent;
-}
 .csv-rules .ant-table-tbody > tr > td {
   vertical-align: top;
+}
+.csv-example {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .csv-results .ant-table-tbody > tr > td {
   padding: 4.5px 8px;
@@ -133,9 +136,6 @@
   color: var(--danger);
 }
 /* 原因：13 danger，一处一行 */
-.csv-col-reason {
-  min-width: 200px;
-}
 .csv-reasons {
   margin: 0;
   padding: 0;
@@ -268,6 +268,7 @@
 /* 底栏：左边幽灵按钮「上一步」，右边按钮间隔 8、主按钮在最右（§5.14） */
 .csv-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -277,6 +278,27 @@
 }
 .csv-footer-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   margin-left: auto;
+}
+
+/* 窄屏（375 宽时弹窗约 359）：步骤条只写当前这一步的名字，其余只画序号；名字仍留给读屏 */
+@media (max-width: 600px) {
+  /* 按内容排：当前这一步带着名字，比别的宽，连线平分剩下的 */
+  .csv-step {
+    flex: 1 1 auto;
+  }
+  .csv-step:not(.is-current) .csv-step-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .csv-step:not(:last-child)::after {
+    margin: 0 8px;
+  }
 }

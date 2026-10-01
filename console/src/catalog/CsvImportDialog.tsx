@@ -35,6 +35,9 @@ import {
   importLabel,
   LIMITS_NOTE,
   lookalikeParts,
+  RESULT_WIDTH,
+  resultWidths,
+  ROW_WIDTH,
   type RowIssue,
   type RowResult,
   STEPS,
@@ -135,12 +138,13 @@ function ResultTable({ entity, table }: { entity: EntityType; table: CsvTable })
   const titleField = entity.fields.find((f) => f.key === entity.titleKey);
   const fields = tableFields(entity, table.keys);
   const titleCol = titleField ? (titleField.key === '$code' ? 'id' : titleField.key) : null;
+  const widths = resultWidths(entity, table);
   const columns: TableColumnsType<RowResult> = [
-    { key: 'row', title: '行号', width: 52, align: 'right', className: 'csv-col-row', render: (_, r) => r.row },
+    { key: 'row', title: '行号', width: ROW_WIDTH, align: 'right', className: 'csv-col-row', render: (_, r) => r.row },
     {
       key: 'result',
       title: '结果',
-      width: 76,
+      width: RESULT_WIDTH,
       render: (_, r) =>
         r.issues.length ? (
           <span className="csv-result is-bad">
@@ -156,6 +160,7 @@ function ResultTable({ entity, table }: { entity: EntityType; table: CsvTable })
     },
     {
       key: 'title',
+      width: widths.title,
       title: titleField ? (
         <>
           {titleField.label}
@@ -180,6 +185,7 @@ function ResultTable({ entity, table }: { entity: EntityType; table: CsvTable })
     },
     ...fields.map((f): TableColumnsType<RowResult>[number] => ({
       key: f.key,
+      width: widths.fields[f.key],
       title: cjk(tableHeader(f)),
       align: numeric(f) ? 'right' : undefined,
       render: (_, r) => <Cell text={cellText(f, r, table.keys)} issues={issuesAt(r, f.key)} />,
@@ -187,7 +193,6 @@ function ResultTable({ entity, table }: { entity: EntityType; table: CsvTable })
     {
       key: 'reason',
       title: '原因',
-      className: 'csv-col-reason',
       render: (_, r) =>
         r.issues.length ? (
           <ul className="csv-reasons">
@@ -207,7 +212,8 @@ function ResultTable({ entity, table }: { entity: EntityType; table: CsvTable })
       columns={columns}
       dataSource={table.rows}
       pagination={false}
-      scroll={{ x: 'max-content', y: 'max(200px, calc(100vh - 460px))' }}
+      // 原因列不定宽，占剩下的：表格的最小宽度是各列加原因的最小宽度，比弹窗宽时横向滚动
+      scroll={{ x: widths.total, y: 'max(200px, calc(100vh - 460px))' }}
       rowClassName={(r) => (r.issues.length ? 'is-bad' : '')}
     />
   );
@@ -364,7 +370,12 @@ export function CsvImportDialog(p: CsvImportDialogProps) {
               key: 'example',
               title: '例子',
               width: 220,
-              render: (_, r) => <span className={r.key === 'id' ? 'mono' : undefined}>{r.example ?? '—'}</span>,
+              // 例子只占一行，长的省略，悬停看全文
+              render: (_, r) => (
+                <span className={r.key === 'id' ? 'csv-example mono' : 'csv-example'} title={r.example ?? undefined}>
+                  {r.example ?? '—'}
+                </span>
+              ),
             },
           ]}
         />

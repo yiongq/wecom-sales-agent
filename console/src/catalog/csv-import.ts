@@ -27,7 +27,7 @@ import type { CsvEncoding } from '../csvFile.js';
 import { moneyUnit, nounOf, type Payload } from '../fields/model.js';
 import { STATUS_LABEL } from '../parts/Status.js';
 import { fieldOfPath, itemTitle, subPathOf } from './detail.js';
-import { headerLabel, type ListRow } from './list.js';
+import { headerLabel, type ListRow, textWidth } from './list.js';
 import { readable } from './save.js';
 
 const BOM = String.fromCharCode(0xfeff);
@@ -283,6 +283,36 @@ export function cellText(f: FieldDef, row: RowResult, keys: readonly (string | n
   if (typeof v === 'boolean') return v ? (f.trueLabel ?? '是') : (f.falseLabel ?? '否');
   const i = keys.indexOf(key);
   return i < 0 ? '' : unguardCell(row.cells[i] ?? '').trim();
+}
+
+/**
+ * 表格的列宽（弹窗里的表格，设计系统 §5.5 与 H 页）：行号、结果定宽；名称与编号、各字段按表头与这份文件的内容估宽（有上限）；
+ * 原因占剩下的，至少 REASON_MIN，写不下就折行。total 是表格的最小宽度：比弹窗宽时表格自己横向滚动（375 宽时就是这样）
+ */
+export const ROW_WIDTH = 40;
+export const RESULT_WIDTH = 72;
+export const REASON_MIN = 170;
+/** 单元格左右内边距各 8（估宽本来就宁宽勿窄：汉字按 1em、西文按 0.6em 算） */
+const PAD = 16;
+export function resultWidths(entity: EntityType, t: CsvTable): { title: number; fields: Record<string, number>; total: number } {
+  const titleField = entity.fields.find((f) => f.key === entity.titleKey);
+  const code: FieldDef = { key: '$code', type: 'text', label: entity.codeLabel, group: '' };
+  const fit = (head: number, texts: string[], max: number): number =>
+    Math.min(max, Math.max(head, ...texts.map((x) => textWidth(x, 14))) + PAD);
+  const title = Math.max(
+    fit(textWidth(`${titleField?.label ?? ''}·编号`, 13), titleField ? t.rows.map((r) => cellText(titleField, r, t.keys)) : [], 240),
+    Math.min(240, Math.max(0, ...t.rows.map((r) => textWidth(cellText(code, r, t.keys), 12.5))) + PAD),
+  );
+  const fields: Record<string, number> = {};
+  for (const f of tableFields(entity, t.keys)) {
+    fields[f.key] = fit(
+      textWidth(tableHeader(f), 13),
+      t.rows.map((r) => cellText(f, r, t.keys)),
+      200,
+    );
+  }
+  const total = ROW_WIDTH + RESULT_WIDTH + title + Object.values(fields).reduce((a, b) => a + b, 0) + REASON_MIN;
+  return { title, fields, total };
 }
 
 /** 形似数字的字母：O、o 像 0，I、l 像 1 */

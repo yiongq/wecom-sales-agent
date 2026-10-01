@@ -152,6 +152,7 @@ import {
   failedName,
   importLabel,
   lookalikeParts,
+  resultWidths,
   submission as csvSubmission,
   tableFields,
   tableHeader,
@@ -6664,6 +6665,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       'H 页：数按列表的写法，写错的照原样，编号照原样',
       [cellText(price, t.rows[0]!, t.keys), cellText(price, t.rows[5]!, t.keys), cellText(fieldOf(HOTEL, '$code'), t.rows[2]!, t.keys)],
       ['3,400', '2,6OO', 'h-songtsam-meili'],
+    );
+    eq(
+      'H 页的列宽：行号、结果定宽，名称与编号、各字段按内容估（设计系统 H 页的 174 / 58 / 68 / 107 / 128 上下），加上原因的最小宽度放得进 880 的弹窗（832）',
+      resultWidths(HOTEL, t),
+      { title: 174, fields: { destination: 55, stars: 68, nightlyFrom: 107, roomType: 128 }, total: 814 },
     );
     eq('形似数字的字母：「2,6OO」的两个 O 各自标出', lookalikeParts('2,6OO'), [
       { text: '2,6', mark: false },
