@@ -1,0 +1,282 @@
+/* CSV 导入弹窗（设计系统 §5.14、§5.5「弹窗和抽屉里的表格」与 H 页）。随产品库页的块下载（pages/catalog.lazy.tsx 引） */
+
+/* 步骤条：22 的圆形序号，步与步之间 1px --divider 连线；已完成的打勾（text-2），当前的 --primary 底，没到的 text-3 */
+.csv-steps {
+  display: flex;
+  align-items: center;
+  margin: 0 0 24px;
+  padding: 0;
+  list-style: none;
+}
+.csv-step {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 22px;
+  white-space: nowrap;
+}
+.csv-step:last-child {
+  flex: none;
+}
+.csv-step:not(:last-child)::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  margin: 0 12px;
+  background: var(--divider);
+}
+.csv-step-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.csv-step.is-done {
+  color: var(--text-2);
+}
+.csv-step.is-current .csv-step-mark {
+  background: var(--primary);
+  box-shadow: none;
+  color: var(--on-primary);
+}
+.csv-step.is-current .csv-step-name {
+  color: var(--text);
+  font-weight: 500;
+}
+.csv-step.is-todo {
+  color: var(--text-3);
+}
+
+.csv-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  outline: none;
+}
+.csv-lead {
+  margin: 0;
+  color: var(--text-2);
+}
+.csv-body > .ant-btn {
+  align-self: flex-start;
+}
+
+/* 弹窗里的表格：表头 32、行 40，单元格内边距 0 8，不做 −12；首列两行的校验结果行高 52（H 页） */
+.csv-table .ant-table-thead > tr > th {
+  padding: 6px 8px;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.csv-table .ant-table-tbody > tr > td {
+  padding: 8.5px 8px;
+  vertical-align: middle;
+}
+.csv-table .ant-table-tbody > tr:hover > td {
+  background: transparent;
+}
+.csv-rules .ant-table-tbody > tr > td {
+  vertical-align: top;
+}
+.csv-results .ant-table-tbody > tr > td {
+  padding: 4.5px 8px;
+  white-space: nowrap;
+}
+.csv-col-row {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.csv-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+}
+.csv-result.is-ok svg {
+  color: var(--success);
+}
+.csv-result.is-bad {
+  color: var(--danger);
+}
+.csv-title {
+  display: flex;
+  flex-direction: column;
+}
+.csv-title-name {
+  color: var(--text);
+}
+.csv-title-code {
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 出错的格子：--danger-bg 底、danger 字、--r-xs（§5.5） */
+.csv-bad {
+  display: inline-block;
+  margin: 0 -6px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+/* 原因：13 danger，一处一行 */
+.csv-col-reason {
+  min-width: 200px;
+}
+.csv-reasons {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+  white-space: normal;
+}
+/* 形似数字的字母（「2,6OO」里的 O）：danger 波浪下划线，同 §6.6 不认识的名字 */
+.csv-lookalike {
+  text-decoration: underline wavy var(--danger);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+/* 文件行：16 图标、文件名 14/500、「按UTF-8读取 · 8行」13 text-2，右边「换一个文件」 */
+.csv-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+.csv-file-icon {
+  flex: none;
+  color: var(--text-2);
+}
+.csv-file-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.csv-file-meta {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.csv-file-action {
+  margin-left: auto;
+}
+.csv-file-action .ant-btn-link {
+  height: auto;
+  padding: 0;
+}
+
+/* 拖放区：虚线框，拖进来时换成 --accent */
+.csv-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 24px;
+  border: 1px dashed var(--control-border);
+  border-radius: var(--r-md);
+  text-align: center;
+}
+.csv-drop.is-over {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.csv-drop-icon {
+  color: var(--text-2);
+}
+.csv-drop-title {
+  font-weight: 500;
+}
+.csv-drop-note {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.csv-tabs .ant-tabs-content > .ant-tabs-tabpane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.csv-tabs .ant-tabs-tabpane-hidden {
+  display: none !important;
+}
+/* 文件行下的一句：13 danger，前面 14 的 circle-x（§5.2 出错） */
+.csv-read-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.csv-lines {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.csv-busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+.csv-busy-icon {
+  animation: csv-spin 1s linear infinite;
+}
+@keyframes csv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.csv-done {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.csv-done-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--success);
+}
+.csv-done-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.csv-done-note {
+  color: var(--text-2);
+}
+
+/* 底栏：左边幽灵按钮「上一步」，右边按钮间隔 8、主按钮在最右（§5.14） */
+.csv-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.csv-footer-back {
+  margin-left: -8px;
+}
+.csv-footer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}

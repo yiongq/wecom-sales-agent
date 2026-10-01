@@ -138,7 +138,7 @@ export function placeLabel(entity: EntityType, at: string): string {
 }
 
 /** 服务端的说明不是中文时（zod 自带的英文说明），不照原样给人看，写成「格式不对」；原文在技术详情里 */
-const readable = (message: string): string => (/\p{Script=Han}/u.test(message) ? message : '格式不对');
+export const readable = (message: string): string => (/\p{Script=Han}/u.test(message) ? message : '格式不对');
 
 /** 字段下方的一句：「当晚住宿：没填」「境内还是境外：没选」；说明本身已经以中文名开头时不再重复 */
 export function issueLine(entity: EntityType, at: string, message: string): string {
