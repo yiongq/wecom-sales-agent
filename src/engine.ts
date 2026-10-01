@@ -1953,13 +1953,17 @@ function addDays(iso: string, n: number): string {
   return t.toISOString().slice(0, 10);
 }
 
-/** 今天在放的那一次节日假期从哪天起（没在放就是 undefined）。10月2号的国庆已经过了「10月1日」那天，
- *  readDepartDates 照旧读成明年的国庆，但客户这时顺口问「国庆期间人多吗」，说的多半就是眼下这个 */
-function holidayInProgress(name: string, today: string): string | undefined {
+/** 今天在放的那一次节日假期：start 是节日那天，end 是假期最后一天（没在放就是 undefined）。10月2号的国庆已经过了
+ *  「10月1日」那天，readDepartDates 照旧读成明年的国庆，但客户这时顺口问「国庆期间人多吗」，说的多半就是眼下这个 */
+function holidayInProgress(name: string, today: string): { start: string; end: string } | undefined {
   const days = HOLIDAY_DAYS[name];
   const solar = SOLAR_HOLIDAYS[name];
   const starts = solar ? [`${today.slice(0, 4)}-${solar}`] : (LUNAR_HOLIDAYS[name] ?? []);
-  return days ? starts.find((d) => d <= today && addDays(d, days - 1) >= today) : undefined;
+  for (const start of days ? starts : []) {
+    const end = addDays(start, days - 1);
+    if (start <= today && today <= end) return { start, end };
+  }
+  return undefined;
 }
 
 /** 认得出具体哪天的说法。只认阿拉伯数字的月日（与此前口径一致）；「十一」只在跟着假期说法时算国庆，
@@ -2012,11 +2016,16 @@ const NEAR_NOT_ON = /^\s*(?:节|假期|长假|期间)?\s*(?:前(?!后)|之前|�
 /** 「过完春节 / 过了国庆」：那个节日之后，同样不是那天 */
 const AFTER_HOLIDAY = /(?:过完|过了)\s*$/;
 
+/** 说的节日（没说哪年，或说的就是正在放的那年）今天正在放假：这次假期还剩的几天，今天到假期最后一天。
+ *  报价、下单不看它，只拿来认顺口一问说的是不是眼下这次（见 departMonths） */
+interface HolidayLeft {
+  from: string;
+  to: string;
+}
 type SpokenDate =
   /** iso 为空：说的是一个用不了的日子（2 月 31 日、写明年份的过去日期、这个月已过的日子）。
-   *  ongoing：说的节日（没说哪年，或说的就是正在放的那年）今天正在放假，记下今天。报价、下单不看它，
-   *  只拿来认顺口一问说的是不是眼下这次（见 departMonths） */
-  { kind: 'date'; iso?: string; exact: boolean; ongoing?: string } | { kind: 'vague' };
+   *  说不准哪天的（vague）也可能带 ongoing：农历表里最后一次春节放到初二以后，下一次不在表里，照样在放眼下这次 */
+  { kind: 'date'; iso?: string; exact: boolean; ongoing?: HolidayLeft } | { kind: 'vague'; ongoing?: HolidayLeft };
 
 /**
  * 一句话里客户说的出发日期（pick）和他在这句里明说的所有具体出发日子（exact，下单核日期用）。
@@ -2069,10 +2078,11 @@ function readDepartDates(
       const iso = solar
         ? `${want ?? (`${year}-${solar}` >= today ? year : year + 1)}-${solar}`
         : LUNAR_HOLIDAYS[name].find((d) => (want ? d.startsWith(`${want}-`) : d >= today));
-      // 正在放的这次节日：没说哪年的，或说的就是这次的年份（「今年国庆」）才算；「明年国庆」说的不是眼下这次
+      // 正在放的这次节日：没说哪年的，或说的就是这次的年份（「今年国庆」）才算；「明年国庆」说的不是眼下这次。
+      // 不看 iso 找没找到：2028 年春节初二到初七，表里没有下一次春节，iso 找不到、读成说不准，眼下这次照样在放
       const now = holidayInProgress(name, today);
-      const ongoing = now && (want === undefined || now.startsWith(`${want}-`)) ? { ongoing: today } : {};
-      date = !iso ? { kind: 'vague' } : { kind: 'date', iso: iso >= today ? iso : undefined, exact: false, ...ongoing };
+      const ongoing = now && (want === undefined || now.start.startsWith(`${want}-`)) ? { ongoing: { from: today, to: now.end } } : {};
+      date = !iso ? { kind: 'vague', ...ongoing } : { kind: 'date', iso: iso >= today ? iso : undefined, exact: false, ...ongoing };
     }
     spans.push({ at, end: at + m[0].length, date });
   }
@@ -2125,15 +2135,17 @@ function spokenDepartDate(text: string, today = todayIso()): SpokenDate | null {
 const ASIDE_QUESTION = /吗|？|\?|呢|多不多|几天|怎么样|咋样|如何|冷不冷|热不热|好不好/;
 const ASIDE_NOT = /出发|走|去|动身|启程|飞|改|换|算了|推迟|延|提前|不去/;
 /** 出发时间说法所在的年月（节假日按那天，只说到月份的按 monthSaid）；说不出是哪个月的返回空。
- *  节日正在放假时眼下这个月也算（见 SpokenDate 的 ongoing）：此前 10月2号顺口问「国庆期间景区人多吗」只读成明年 10 月，
+ *  节日正在放假时，这次假期还剩的那几天所在的月份也算（见 HolidayLeft）：此前 10月2号顺口问「国庆期间景区人多吗」只读成明年 10 月，
  *  和客户早先说的「10月3号出发」不在同一个月，这句问话就冲掉了 10月3号，下单被驳回去再问哪天 */
 function departMonths(pick: SpokenDate, text: string, today = todayIso()): string[] {
-  if (pick.kind === 'date') {
-    const days = [pick.iso, pick.ongoing].filter((d) => d !== undefined);
-    return [...new Set(days.map((d) => d.slice(0, 7)))];
-  }
-  const ym = monthSaid(text, today);
-  return ym ? [`${ym.y}-${String(ym.mo).padStart(2, '0')}`] : [];
+  // 假期最长七天，跨不出两个月：今天和假期最后一天所在的月份就是剩下那几天的全部月份。
+  // 2028 年春节放到 2月1日，1月28号问「春节期间人多吗」，客户早先说的「2月1号出发」也在眼下这次假期里
+  const days = pick.ongoing ? [pick.ongoing.from, pick.ongoing.to] : [];
+  if (pick.kind === 'date' && pick.iso) days.push(pick.iso);
+  const months = days.map((d) => d.slice(0, 7));
+  const ym = pick.kind === 'vague' ? monthSaid(text, today) : undefined;
+  if (ym) months.push(`${ym.y}-${String(ym.mo).padStart(2, '0')}`);
+  return [...new Set(months)];
 }
 function isAside(pick: SpokenDate, text: string): boolean {
   return !(pick.kind === 'date' && pick.exact) && ASIDE_QUESTION.test(text) && !ASIDE_NOT.test(text);

@@ -132,8 +132,17 @@ const cases: [string, string[], string, string][] = [
   ['春节初三', ['2月10号出发，两个人报个价', '春节期间景区人多吗'], '2027-02-08', '2027-02-10'],
   ['春节初七', ['2月12号出发，两个人报个价', '春节期间景区人多吗'], '2027-02-12', '2027-02-12'],
   ['春节放完', ['2月15号出发，两个人报个价', '春节期间景区人多吗'], '2027-02-13', '2028-01-26~'],
-  // 跨月的那次（2028 年初一 1月26日，放到 2月1日）：眼下这次按今天的月份算，剩下的假期都在 2 月
+  // 跨月的那次（2028 年初一 1月26日，放到 2月1日）：1 月里问春节，剩下的假期跨到 2 月，两个月的日子都认
   ['跨月春节的最后一天', ['2月2号出发，两个人报个价', '今年春节期间景区人多吗'], '2028-02-01', '2028-02-02'],
+  ['跨月春节的初一', ['2月1号出发，两个人报个价', '春节期间景区人多吗'], '2028-01-26', '2028-02-01'],
+  ['跨月春节、1 月里问', ['2月1号出发，两个人报个价', '今年春节期间景区人多吗'], '2028-01-28', '2028-02-01'],
+  ['跨月春节、1 月里问、没说哪年', ['2月1号出发，两个人报个价', '春节期间景区人多吗'], '2028-01-28', '2028-02-01'],
+  // 农历表里最后一次（2028 年）放到节日之后：下一次不在表里，问句读成说不准哪天，眼下这次照样在放
+  ['表里最后一次春节、没说哪年', ['1月30号出发，两个人报个价', '春节期间景区人多吗'], '2028-01-28', '2028-01-30'],
+  ['表里最后一次春节的最后一天', ['2月2号出发，两个人报个价', '春节期间景区人多吗'], '2028-02-01', '2028-02-02'],
+  ['表里最后一次端午', ['5月30号出发，两个人报个价', '端午期间人多吗'], '2028-05-29', '2028-05-30'],
+  ['表里最后一次中秋', ['10月5号出发，两个人报个价', '中秋期间人多吗'], '2028-10-04', '2028-10-05'],
+  ['表里最后一次春节放完', ['2月5号出发，两个人报个价', '春节期间景区人多吗'], '2028-02-02', 'vague'],
   // 元旦（1月1日至3日）
   ['元旦第三天', ['1月3号出发，两个人报个价', '元旦期间人多吗'], '2027-01-03', '2027-01-03'],
   ['元旦放完', ['1月5号出发，两个人报个价', '元旦期间人多吗'], '2027-01-04', '2028-01-01~'],
@@ -156,6 +165,9 @@ check(
   '10月8号说「国庆出发」是明年的国庆',
   after,
 );
+// 报价的读法也不受影响：表里没有下一次春节，眼下这次放到一半时说「春节」照旧是说不准哪天，不拿去报价
+const lastNewYear = spokenDepartDate('春节出发', '2028-01-28');
+check(lastNewYear?.kind === 'vague', '2028年1月28号说「春节出发」仍是说不准哪天', lastNewYear);
 
 // ---------- W7 整段对话：报价 → 顺口一问 → 下单（模型调的、安全网兜的都一样） ----------
 let seq = 0;
@@ -166,28 +178,35 @@ const fakeSay = async (sid: string, text: string, steps: Step[]) => {
   assert.equal(script.length, 0, `「${text}」这轮应恰好用完脚本（剩 ${script.length} 步）`);
   return r;
 };
-const oct3 = '2026-10-03';
-for (const today of ['2026-10-02', '2026-10-03']) {
+// [今天, 客户说的那天, 原话里的说法, 顺口一问]
+const talks: [string, string, string, string][] = [
+  ['2026-10-02', '2026-10-03', '10月3号', ask],
+  ['2026-10-03', '2026-10-03', '10月3号', ask],
+  // 农历表里最后一次春节放到一半（下一次不在表里），和跨到 2 月的那几天
+  ['2028-01-28', '2028-01-30', '1月30号', '春节期间景区人多吗'],
+  ['2028-01-28', '2028-02-01', '2月1号', '今年春节期间景区人多吗'],
+];
+for (const [today, day, said, aside] of talks) {
   pinToday(today);
   const orderSteps: [string, Step[]][] = [
     [
       '模型下单',
-      [{ toolCalls: [{ name: 'create_order', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: oct3 } }] }, { content: '好的' }],
+      [{ toolCalls: [{ name: 'create_order', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: day } }] }, { content: '好的' }],
     ],
     ['安全网', [{ content: '好的～' }]],
   ];
   for (const [how, steps] of orderSteps) {
     const sid = newSid(today.slice(5));
-    await fakeSay(sid, '10月3号出发，丽江大理两个人报个价', [
-      { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: oct3 } }] },
+    await fakeSay(sid, `${said}出发，丽江大理两个人报个价`, [
+      { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: day } }] },
       { content: '丽江大理这条报价给您出好了。' },
     ]);
-    await fakeSay(sid, ask, [{ content: '国庆人会多一些，这条线会错峰安排。' }]);
+    await fakeSay(sid, aside, [{ content: '假期人会多一些，这条线会错峰安排。' }]);
     const r = await fakeSay(sid, how === '安全网' ? '行，就订这个' : '行，订吧', steps);
     const order = getOrder(r.orderId ?? '');
     check(
-      order?.departDate === oct3 && getSession(sid)!.orderIds.length === 1,
-      `W7 ${today} 顺口问国庆不冲掉客户说的 10月3号（${how}）`,
+      order?.departDate === day && getSession(sid)!.orderIds.length === 1,
+      `W7 ${today} 顺口问「${aside}」不冲掉客户说的 ${said}（${how}）`,
       order ?? r.text,
     );
   }
@@ -198,5 +217,5 @@ fake.close();
 assert.equal(fails.length, 0, `节日放假中的顺口一问 ${fails.length} 条未通过：\n  ✗ ${fails.join('\n  ✗ ')}`);
 fs.rmSync(varDir, { recursive: true, force: true });
 console.log(
-  'SELFTEST PASS: 节日放假中的顺口一问（国庆 · 五一 · 元旦 · 春节 · 端午 · 中秋放到最后一天认眼下这次 / 放完认下一次 / 写明年份照字面 / W7 报价→顺口一问→下单）',
+  'SELFTEST PASS: 节日放假中的顺口一问（国庆 · 五一 · 元旦 · 春节 · 端午 · 中秋放到最后一天认眼下这次 / 放完认下一次 / 农历表最后一次与跨月的春节 / 写明年份照字面 / W7 报价→顺口一问→下单）',
 );
