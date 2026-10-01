@@ -7370,20 +7370,23 @@ async function finishThenReload(m: PageBox, status: string | null): Promise<void
 }
 const MINE_LINE = '我在合并里写的一句。';
 
-// 13.3e3 重新比过以后，合并里改过的话术原则不再冲突了（店长那一版撤回了话术原则、小王又改了异议处理）：话术原则照样留在合并里、
-// 写法照旧，说明行写不再冲突；异议处理新要合并；焦点留在话术原则的标题上
+// 13.3e3 重新比过以后，合并里改过的异议处理不再冲突了（这期间线上的异议处理回到了 v2 的写法，话术原则又被改了）：异议处理照样
+// 留在合并里、写法照旧，说明行另写；话术原则新要合并；还在看的异议处理不是第一节，也留在这一节、焦点在它的标题上
 {
-  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
+  const { srv, m } = await conflictPage({
+    sections: withBodies(P_ONLINE, { objections: '定价只有两条规则。\n\n- 店长加的。\n\n', preamble: '店长改的前言。\n\n' }),
+    url: '/console/sop?section=objections',
+  });
   await clickEv(noticeMerge(m));
   await waitFor(() => merging(m));
   await typeRight(m, MINE_LINE);
   const mine = mergeViews(m)[1]?.state.doc.toString();
   await clickEv(doneButton(m));
-  srv.publishByOther(withBodies(P_ONLINE, { objections: '定价只有两条规则。\n\n- 小王加的。\n\n' }), { publishedByName: '小王' });
+  srv.publishByOther(withBodies(P_ONLINE, { tone: THEIRS_TONE }), { publishedByName: '小王' });
   await finishThenReload(m, '还有2节要合并');
-  await until(() => text(document.activeElement) === '话术原则');
+  await until(() => text(document.activeElement) === '异议处理');
   eq(
-    '重新比过以后改过的节不再冲突：照样留在合并里、写法照旧、说明行写不再冲突，新冲突的节也要合并；焦点留在这一节的标题上',
+    '重新比过以后改过的节不再冲突：照样留在合并里、写法照旧、说明行另写，新冲突的节也要合并；还在看的节留着，焦点在它的标题上',
     [
       m.section(),
       text(document.activeElement),
@@ -7392,7 +7395,7 @@ const MINE_LINE = '我在合并里写的一句。';
       text(m.box.querySelector('.sop-merge .sop-pane-meta')),
       mergeViews(m).map((v) => v.state.doc.toString()),
     ],
-    ['tone', '话术原则', '需合并', '需合并', '需合并·你在合并里改过这一节，右边留着你写的', [bodyIn(P_ONLINE, 'tone'), mine]],
+    ['objections', '异议处理', '需合并', '需合并', '需合并·你在合并里改过这一节，右边留着你写的', [bodyIn(P_ONLINE, 'objections'), mine]],
   );
   await m.unmount();
 }
