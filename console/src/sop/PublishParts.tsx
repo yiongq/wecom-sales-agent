@@ -6,7 +6,10 @@
 //   有问题时点它跳到第一个问题。
 // - PublishDrawer：640 宽的发布抽屉，从上到下是检查清单（没过的项点了关抽屉并定位）、替换说明、逐节改动（行内 / 并排）、
 //   变更说明（预填改了哪几节，要在预填之外再写至少一个字），底部「取消」「发布」，「发布」不能点时旁边写原因。
-//   发布没成功（422、409 以外的）时错误写在最上面，出来时滚进视口。
+//   发布没成功（422、409 以外的）时错误写在最上面，出来时滚进视口，它的「重试」与「发布」同样先看能不能发布。
+//   发布请求在路上时关不掉（「取消」、关闭按钮不能点，旁边写「正在发布…」；Esc、点遮罩也不管用）：关上并不撤回请求，
+//   没成功时错误也没处写。
+//   别人在这期间发布过（线上已是更新的一版）时，逐节改动左边那一版不叫「线上」（publish.ts 的 baseName）。
 // - ChangesDrawer：「查看改动」与中栏的「查看本节改动」打开的逐节改动，只看。
 // 抽屉关着时不挂（destroyOnHidden）：话术页每敲一个字整页重渲，关着的弹层不能跟着重渲（第 5.1 步 #185 的教训）
 import { Alert, Button, Drawer, type GetRef, Input } from 'antd';
@@ -24,7 +27,7 @@ import { cjk, Sep } from '../typography.js';
 import { DiffList, DiffModeToggle, useDiffMode } from './DiffView.js';
 import type { PublishedHead, SectionChange } from './outline.js';
 import type { LocatedViolation, ProblemTarget } from './problems.js';
-import { changedText, drawerBlock, noteReady, type PublishedResult, publishedText, replaceLine } from './publish.js';
+import { baseName, changedText, diffAgainst, drawerBlock, noteReady, type PublishedResult, publishedText, replaceLine } from './publish.js';
 import { type CheckBudget, checkItems } from './SideCards.js';
 
 // ---------------- 发布条 ----------------
@@ -129,13 +132,14 @@ export function PublishBar(p: PublishBarProps) {
 /**
  * 话术页的抽屉（§5.13 L 640）：头 56，标题 16/24/600 后面可以跟一句 13 text-2 的状态，右边 28 的关闭按钮；头下没有分隔线，
  * 内容滚动以后才出现；体自己滚动。焦点由页面还给打开它的按钮（focusTriggerAfterClose 关掉，antd 还的是打开时的 activeElement，
- * Safari 点按钮不给按钮焦点）
+ * Safari 点按钮不给按钮焦点）。busy 时关不掉：关闭按钮不能点，Esc、点遮罩不调 onClose
  */
 function SopDrawer({
   open,
   title,
   status,
   footer,
+  busy = false,
   onClose,
   afterClose,
   children,
@@ -144,6 +148,7 @@ function SopDrawer({
   title: string;
   status?: string;
   footer?: ReactNode;
+  busy?: boolean;
   onClose: () => void;
   afterClose?: () => void;
   children: ReactNode;
@@ -152,7 +157,7 @@ function SopDrawer({
   return (
     <Drawer
       open={open}
-      onClose={onClose}
+      onClose={busy ? undefined : onClose}
       afterOpenChange={(visible) => {
         if (visible) return;
         setScrolled(false);
@@ -168,7 +173,7 @@ function SopDrawer({
           {status && <span className="sop-drawer-status">{cjk(status)}</span>}
         </>
       }
-      extra={<IconButton icon={X} label="关闭" placement="bottomRight" onClick={onClose} />}
+      extra={<IconButton icon={X} label="关闭" placement="bottomRight" disabled={busy} onClick={onClose} />}
       rootClassName="sop-drawer"
       classNames={{ header: scrolled ? 'is-scrolled' : undefined }}
       footer={footer}
@@ -180,8 +185,8 @@ function SopDrawer({
   );
 }
 
-/** 逐节改动的一块：标题行（左边标题或计数，右边行内 / 并排），下面是各节的差异 */
-function ChangesBlock({ head, changes, published }: { head: ReactNode; changes: readonly SectionChange[]; published: SopVersion }) {
+/** 逐节改动的一块：标题行（左边标题或计数，右边行内 / 并排），下面是各节的差异；base 是左边那一版的名字（baseName） */
+function ChangesBlock({ head, changes, base }: { head: ReactNode; changes: readonly SectionChange[]; base: string }) {
   const [mode, setMode] = useDiffMode();
   return (
     <>
@@ -190,7 +195,7 @@ function ChangesBlock({ head, changes, published }: { head: ReactNode; changes: 
         <DiffModeToggle mode={mode} onChange={setMode} />
       </div>
       {changes.length ? (
-        <DiffList items={changes} mode={mode} labels={[`线上v${published.versionNo ?? '—'}`, '草稿']} />
+        <DiffList items={changes} mode={mode} labels={[base, '草稿']} />
       ) : (
         <p className="sop-changes-none">{cjk('草稿和线上一样')}</p>
       )}
@@ -204,6 +209,7 @@ export function ChangesDrawer({
   section,
   changes,
   published,
+  online,
   onClose,
   afterClose,
 }: {
@@ -211,7 +217,10 @@ export function ChangesDrawer({
   /** 只看这一节时是节名 */
   section: string | null;
   changes: readonly SectionChange[];
+  /** 页面上的线上版本：改动相对它 */
   published: SopVersion;
+  /** 现在的线上版本（同发布抽屉的 replacing） */
+  online: PublishedHead;
   onClose: () => void;
   afterClose?: () => void;
 }) {
@@ -219,14 +228,14 @@ export function ChangesDrawer({
     <SopDrawer
       open={open}
       title={section === null ? '草稿的改动' : `「${section}」的改动`}
-      status={`相对线上v${published.versionNo ?? '—'}`}
+      status={diffAgainst(published, online)}
       onClose={onClose}
       afterClose={afterClose}
     >
       <ChangesBlock
         head={<span className="sop-changes-count">{changes.length ? `改了${digits(changes.length)}节` : ''}</span>}
         changes={changes}
-        published={published}
+        base={baseName(published, online)}
       />
     </SopDrawer>
   );
@@ -316,31 +325,32 @@ export function PublishDrawer(props: PublishDrawerProps) {
     problems,
     noteReady: noteReady(p.note, p.prefill),
   });
-  // 不能发布时点「发布」：去原因所在的地方（没过的第一项、没检查上的「重试」、说明框）
-  const toReason = (): void => {
-    if (block?.focus === 'note') noteRef.current?.focus({ cursor: 'end' });
-    else if (block?.focus === 'checks') checksRef.current?.querySelector<HTMLElement>('button')?.focus();
+  // 按钮旁边写的原因：请求在路上时说「取消」为什么不能点
+  const reason = p.publishing ? '正在发布…' : block?.reason;
+  // 点「发布」（或发布没成功时错误里的「重试」）：不能发布时不发，去原因所在的地方（没过的第一项、没检查上的「重试」、说明框）
+  const submit = (): void => {
+    if (!block) p.onPublish();
+    else if (block.focus === 'note') noteRef.current?.focus({ cursor: 'end' });
+    else if (block.focus === 'checks') checksRef.current?.querySelector<HTMLElement>('button')?.focus();
   };
   return (
     <SopDrawer
       open={p.open}
       title="发布草稿"
+      busy={p.publishing}
       onClose={p.onClose}
       afterClose={p.afterClose}
       footer={
         <>
-          {block && (
+          {reason && (
             <span id={reasonId} className="sop-drawer-reason">
-              {cjk(block.reason)}
+              {cjk(reason)}
             </span>
           )}
-          <Button onClick={p.onClose}>取消</Button>
-          <PrimaryButton
-            blocked={!!block}
-            loading={p.publishing}
-            aria-describedby={block ? reasonId : undefined}
-            onClick={() => (block ? toReason() : p.onPublish())}
-          >
+          <Button disabled={p.publishing} onClick={p.onClose}>
+            取消
+          </Button>
+          <PrimaryButton blocked={!!block} loading={p.publishing} aria-describedby={block ? reasonId : undefined} onClick={submit}>
             发布
           </PrimaryButton>
         </>
@@ -349,7 +359,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
       <div className="sop-publish">
         {error !== null && error !== undefined && (
           <div ref={errorRef} className="sop-publish-error">
-            <ErrorAlert error={error} onRetry={p.onPublish} />
+            <ErrorAlert error={error} onRetry={submit} />
           </div>
         )}
         {p.conflicts.length > 0 && (
@@ -380,7 +390,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
               </h3>
             }
             changes={p.changes}
-            published={p.published}
+            base={baseName(p.published, p.replacing)}
           />
         </section>
         <div className="sop-publish-note">

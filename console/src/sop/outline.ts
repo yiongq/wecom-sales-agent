@@ -134,6 +134,14 @@ export function withSavedDraft(old: SopOverview, draft: SopVersion): SopOverview
   };
 }
 
+/**
+ * 发布成功以后的 /sop：线上换成发布结果、草稿没了，字数按新的线上版本算（同服务端没有草稿时）。节表、上限不变。
+ * 不等重取：重取没成功时条里、状态句照样是刚发布的这一版
+ */
+export function withPublished(old: SopOverview, published: SopVersion): SopOverview {
+  return { ...old, published, draft: null, budget: { ...old.budget, chars: editableChars(published.sections, old.spec) } };
+}
+
 /** 正文开头的「## 标题」行；没有就是前言 */
 function headingFromText(text: string): string | null {
   if (!text.startsWith('## ')) return null;

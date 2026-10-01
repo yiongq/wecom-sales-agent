@@ -826,6 +826,12 @@
   background: var(--frame);
   box-shadow: inset 0 1px 0 var(--divider);
 }
+/* 发布请求在路上时关闭按钮不能点（§5.2 的禁用：text-3，没有悬停） */
+.sop-drawer .icon-btn:disabled {
+  background: transparent;
+  color: var(--text-3);
+  cursor: not-allowed;
+}
 .sop-drawer-reason {
   min-width: 0;
   margin-right: 4px;

@@ -63,6 +63,7 @@ import {
   resolveSection,
   type SectionChange,
   unsavedEdits,
+  withPublished,
   withSavedDraft,
 } from '../sop/outline.js';
 import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
@@ -455,8 +456,10 @@ function MemberSop({
 
   // 发布成功：条里写「已发布v3（改了…）」、带「回滚到v2」（被替换下来的那一版），不弹 toast；抽屉关上，焦点回到「发布…」。
   // 被替换下来的是服务端那时的线上版本（发布结果的 basedOn），不一定是页面打开时的：别人在这期间发布过，就是他发布的那一版，
-  // 改了哪几节也相对它算。422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）关上抽屉，
-  // 由页面上的提示说；别的失败写在抽屉里，写好的说明不丢
+  // 改了哪几节也相对它算。发布结果马上写进 /sop 的缓存（线上是它、草稿没了），不等重取：重取没成功时页头下就地报错，
+  // 条里照样是「已发布v3」、「发布…」不能点，不会看着像没发布出去。
+  // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）关上抽屉，
+  // 由页面上的提示说；别的失败写在抽屉里，写好的说明不丢。请求在路上时抽屉关不掉（PublishDrawer）
   const publish = async (): Promise<void> => {
     if (!draft) return;
     const known = [published, check.result?.online];
@@ -468,6 +471,7 @@ function MemberSop({
       const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft.rev, changeNote: note } }));
       const previous = replacedIn(v.basedOn, known) ?? (await fetchReplaced(v));
       setResult({ versionNo: v.versionNo, names: publishedNames(spec, previous, v), previous });
+      qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) => (old && 'spec' in old ? withPublished(old, v) : old));
       setPublishOpen(false);
       setNote('');
       setPrefill('');
@@ -604,6 +608,8 @@ function MemberSop({
   // 发布成功的那句只在线上还是刚发布的那一版时留着：之后从版本历史回滚过、别人又发布过，它和「回滚到v2」都不再对
   const shownResult = result !== null && result.versionNo === published.versionNo ? result : null;
   const draftKey = checkKey(draft, published.id);
+  // 现在的线上版本：多半就是页面上的；检查发现别人在这期间发布过时是那时的线上版本（替换说明、逐节改动左边叫什么照它）
+  const online = onlineNow(published, check.result?.online);
   // 抽屉与「查看改动」里的逐节改动（含本地还没保存的改动，与目录的「改过」同一口径）；只在开着时算
   const changes = publishMounted || changesOf ? changedSections(spec, published.sections, current.sections, edits) : NO_CHANGES;
   // 抽屉关上以后焦点回到打开它的按钮：关上之后的 effect 里还（抽屉的焦点陷阱这时已经放开），不等收起动画。
@@ -841,7 +847,7 @@ function MemberSop({
         afterClose={() => setPublishMounted(false)}
         spec={spec}
         published={published}
-        replacing={onlineNow(published, check.result?.online)}
+        replacing={online}
         now={now}
         changes={changes}
         located={located}
@@ -861,6 +867,7 @@ function MemberSop({
         section={changesOf?.section ? headingOf(spec, changesOf.section) : null}
         changes={changesOf?.section ? changes.filter((c) => c.key === changesOf.section) : changes}
         published={published}
+        online={online}
         onClose={() => setChangesOf((c) => c && { ...c, open: false })}
         afterClose={() => setChangesOf(null)}
       />

@@ -93,6 +93,17 @@ export function publishedNames(
 export const onlineNow = <T extends Pick<SopVersion, 'versionNo'>>(published: T, fetched: T | null | undefined): T =>
   fetched && (fetched.versionNo ?? 0) > (published.versionNo ?? 0) ? fetched : published;
 
+/**
+ * 逐节改动左边那一版（页面上的线上版本，改动相对它算）叫什么：它还在线上时是「线上v2」；这期间别人发布过、检查另取到的
+ * 线上版本比它新时只写「v2」，「线上」留给真正的线上版本（同一个抽屉里写着「将替换线上v3」）
+ */
+export const baseName = (base: Pick<SopVersion, 'versionNo'>, online: Pick<SopVersion, 'versionNo'>): string =>
+  `${online.versionNo === base.versionNo ? '线上' : ''}v${base.versionNo ?? '—'}`;
+
+/** 「查看改动」标题后面那句：「相对线上v2」；线上已经换了时「相对v2（线上已是v3）」 */
+export const diffAgainst = (base: Pick<SopVersion, 'versionNo'>, online: Pick<SopVersion, 'versionNo'>): string =>
+  `相对${baseName(base, online)}${online.versionNo === base.versionNo ? '' : `（线上已是v${online.versionNo ?? '—'}）`}`;
+
 /** 摘要的名单：「话术原则、异议处理」 */
 export const namesText = (names: readonly string[]): string => names.join('、');
 
