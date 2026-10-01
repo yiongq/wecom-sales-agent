@@ -80,6 +80,33 @@ export function memberOutline(input: MemberOutlineInput): OutlineRow[] {
   });
 }
 
+/** 一节相对线上的改动：before 是线上的正文，after 是草稿（含本地还没保存的改动，按保存时的规则规范化）的 */
+export interface SectionChange {
+  key: string;
+  name: string;
+  before: string;
+  after: string;
+}
+
+/**
+ * 相对线上改过的可编辑节（发布抽屉与「查看改动」的逐节改动），按节表的顺序；与目录的「改过」同一口径（memberOutline）
+ */
+export function changedSections(
+  spec: readonly SectionSpecView[],
+  published: readonly SopSectionText[],
+  current: readonly SopSectionText[],
+  edits: Readonly<Record<string, string>>,
+): SectionChange[] {
+  const out: SectionChange[] = [];
+  for (const [i, s] of spec.entries()) {
+    if (s.locked) continue;
+    const after = Object.hasOwn(edits, s.key) ? savedBody(spec, i, edits[s.key]!) : bodyOf(textOf(current, s.key), s);
+    const before = bodyOf(textOf(published, s.key), s);
+    if (after !== before) out.push({ key: s.key, name: s.heading ?? PREAMBLE_NAME, before, after });
+  }
+  return out;
+}
+
 /**
  * 本地改过、还没存进草稿的节（自动保存要发的）：编辑器里的原文按保存时的规则规范化以后，与草稿（没有草稿就是线上）
  * 这一节的正文不同。body 照原文发，服务端存的时候自己规范化。改回草稿里的样子（含只多了行尾空格）就不算；固定规则节不发
@@ -105,6 +132,14 @@ export function withSavedDraft(old: SopOverview, draft: SopVersion): SopOverview
     draft: { ...draft, stale: draft.basedOn !== old.published.id },
     budget: { ...old.budget, chars: editableChars(draft.sections, old.spec) },
   };
+}
+
+/**
+ * 发布成功以后的 /sop：线上换成发布结果、草稿没了，字数按新的线上版本算（同服务端没有草稿时）。节表、上限不变。
+ * 不等重取：重取没成功时条里、状态句照样是刚发布的这一版
+ */
+export function withPublished(old: SopOverview, published: SopVersion): SopOverview {
+  return { ...old, published, draft: null, budget: { ...old.budget, chars: editableChars(published.sections, old.spec) } };
 }
 
 /** 正文开头的「## 标题」行；没有就是前言 */
@@ -302,11 +337,18 @@ export function quotaTone(chars: number, limit: number): QuotaTone {
   return chars * 100 >= limit * 95 ? 'warning' : 'ok';
 }
 
+/** 写在标签里的百分比：<95% 最多写 94，95%–100% 写 95–100，超限至少写 101，与颜色一致（检查清单「字数在额度内」同一个写法） */
+export function quotaPercent(chars: number, limit: number): number {
+  if (!(limit > 0)) return 0;
+  const tone = quotaTone(chars, limit);
+  const raw = Math.round((chars * 100) / limit);
+  return tone === 'ok' ? Math.min(raw, 94) : tone === 'warning' ? Math.min(Math.max(raw, 95), 100) : Math.max(raw, 101);
+}
+
 /** chars 用 editableChars 算（与服务端同一口径），parts 是可编辑节 */
 export function quotaModel(rows: readonly OutlineRow[], chars: number, limit: number): QuotaModel {
   const tone = limit > 0 ? quotaTone(chars, limit) : 'ok';
-  const raw = limit > 0 ? Math.round((chars * 100) / limit) : 0;
-  const percent = tone === 'ok' ? Math.min(raw, 94) : tone === 'warning' ? Math.min(Math.max(raw, 95), 100) : Math.max(raw, 101);
+  const percent = quotaPercent(chars, limit);
   const tail = tone === 'danger' ? `超出${digits(chars - limit)}字，发布会被拦下` : `还能写${digits(limit - chars)}字`;
   const scaleMax = scaleMaxOf(limit, chars);
   const parts = rows
@@ -331,14 +373,14 @@ export function quotaModel(rows: readonly OutlineRow[], chars: number, limit: nu
 // ---------------- 状态句（spec「状态句」） ----------------
 
 /** 发布人没有名字（命令行导入、系统重渲染）时按来源写 */
-const SOURCE_VERB: Readonly<Record<SopVersion['source'], string>> = {
+export const SOURCE_VERB: Readonly<Record<SopVersion['source'], string>> = {
   import: '导入',
   console: '发布',
   rollback: '回滚',
   rerender: '系统更新',
 };
 
-type PublishedHead = Pick<SopVersion, 'versionNo' | 'publishedAt' | 'publishedByName' | 'source'>;
+export type PublishedHead = Pick<SopVersion, 'versionNo' | 'publishedAt' | 'publishedByName' | 'source'>;
 
 /**
  * 成员：「线上v2 · 老板发布于9月25日 18:30 · 草稿改了2节」；没有改动时最后一段是「没有未发布的改动」。

@@ -3,6 +3,7 @@
 // 并写「超出38字，发布会被拦下」；超限不拦输入。颜色之外，warning、danger 另有图标。
 // 段宽与刻度位置经 React 的 style（CSSOM）写，不是 style 属性，页面 CSP 不拦
 import { CircleAlert, TriangleAlert } from 'lucide-react';
+import type { Ref } from 'react';
 import { digits } from '../../../src/shared/format.js';
 import { Icon } from '../shell/icons.js';
 import { cjk, Sep } from '../typography.js';
@@ -19,10 +20,11 @@ function tickLabels(m: QuotaModel): { warn: string; limit: string } {
   };
 }
 
-export function QuotaBar({ model: m }: { model: QuotaModel }) {
+/** ref：检查清单的「字数在额度内」点了滚到这里、焦点落在它上面（给了 ref 才能程序聚焦） */
+export function QuotaBar({ model: m, ref }: { model: QuotaModel; ref?: Ref<HTMLElement> }) {
   const labels = tickLabels(m);
   return (
-    <section className={`sop-quota is-${m.tone}`} aria-label="可编辑正文的字数">
+    <section ref={ref} tabIndex={ref ? -1 : undefined} className={`sop-quota is-${m.tone}`} aria-label="可编辑正文的字数">
       <div className="sop-quota-text">
         <div className="sop-quota-line">
           {m.tone !== 'ok' && <Icon of={m.tone === 'danger' ? CircleAlert : TriangleAlert} size={14} className="sop-quota-icon" />}

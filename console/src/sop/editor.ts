@@ -8,16 +8,31 @@
 //   只动空白（行尾空格、空行）的改动不标：服务端保存时本来就会规范化掉它们（canonicalBody），目录与额度条也不算它们改过。
 // - 不支持 text-spacing-trim 的浏览器（第 1.3 步的回退），按 haltIndices 给要挤的标点加 .halt，在「看得见的字」上算：
 //   藏起来的「- 」「**」不算。支持的浏览器自己挤，但隔着藏起来的「**」的两个标点它不挤，这几对照样加 .halt。
+// - 检查出的问题（第 6.2 步，spec「检查 · 定位」「行内提醒」）：禁用短语、写错的工具名与字段名，每一处画 danger 波浪线；
+//   写错的名字在那一段之后插一条行内提醒（块级部件，设计系统 §5.12），行业包里有编辑距离 ≤2 的名字时带「改成…」按钮，
+//   点了替换这一段里的那几处。问题由页面经 setProblems 给，位置每次改动都在正文里重新找，改掉了波浪线就没了。
 // 装饰只在这一节的正文上算（一节几千字），每次改动或移动光标整节重算；输入法组字时只平移、不重算。
 import { diff } from '@codemirror/merge';
-import { Compartment, type EditorState, type Extension, Facet, type Range, StateEffect, StateField } from '@codemirror/state';
+import {
+  Annotation,
+  Compartment,
+  type EditorState,
+  type Extension,
+  Facet,
+  type Range,
+  StateEffect,
+  StateField,
+  type TransactionSpec,
+} from '@codemirror/state';
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
 import type { LucideIconData, LucideIconNode } from 'lucide-react';
 import { __iconData as CHECK } from 'lucide-react/dist/esm/icons/check.mjs';
+import { __iconData as CIRCLE_ALERT } from 'lucide-react/dist/esm/icons/circle-alert.mjs';
 import { __iconData as X } from 'lucide-react/dist/esm/icons/x.mjs';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { haltIndices } from '../../../src/shared/typography.js';
 import { needsTrimFallback } from '../typography.js';
+import { type EditorProblem, fixLabel, hintNote, type NameHint, occurrences } from './problems.js';
 
 // ---------------- 内置文案 ----------------
 
@@ -128,7 +143,27 @@ function svgNode([tag, attrs, children]: LucideIconNode): SVGElement {
   return el;
 }
 
-/** 16 的图标，线宽任何尺寸下都是 1.5px（设计系统 §7 的 absoluteStrokeWidth：1.5 × 24 / 16） */
+/** lucide 图标的 SVG，线宽任何尺寸下都是 1.5px（设计系统 §7 的 absoluteStrokeWidth：1.5 × 24 / size） */
+function lucideSvg(data: LucideIconData, size: number): SVGElement {
+  const svg = document.createElementNS(SVG, 'svg');
+  const attrs: Record<string, string> = {
+    width: String(size),
+    height: String(size),
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-width': String((1.5 * 24) / size),
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+    'aria-hidden': 'true',
+    focusable: 'false',
+  };
+  for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
+  for (const n of data.node) svg.append(svgNode(n));
+  return svg;
+}
+
+/** 16 的图标 */
 class IconWidget extends WidgetType {
   constructor(readonly char: string) {
     super();
@@ -141,22 +176,7 @@ class IconWidget extends WidgetType {
     span.className = 'sop-icon';
     span.setAttribute('role', 'img');
     span.setAttribute('aria-label', this.char);
-    const svg = document.createElementNS(SVG, 'svg');
-    const attrs: Record<string, string> = {
-      width: '16',
-      height: '16',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': String((1.5 * 24) / 16),
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      'aria-hidden': 'true',
-      focusable: 'false',
-    };
-    for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
-    for (const n of ICON_CHARS.get(this.char)!.node) svg.append(svgNode(n));
-    span.append(svg);
+    span.append(lucideSvg(ICON_CHARS.get(this.char)!, 16));
     return span;
   }
   ignoreEvent(): boolean {
@@ -387,23 +407,28 @@ export function draftMarks(baseline: string, doc: string): DraftMarks {
 const ITEM_START = /^(?:[-*+]|\d+[.)]) (?=\S)/;
 
 /**
- * 改过的行（从 1 数）扩到它们所在的段落，沟槽里的竖条与段落等高。段落是空行隔开的一块；块里每个顶格的列表项
- * 连同它下面的行（缩进的续行、下一级的列表项、没缩进但也不是列表项的行）各是一段，第一个列表项之前的行是一段。
- * 空行自己算一段
+ * 第 n 行（从 1 数）所在的段落：[首行, 末行]。段落是空行隔开的一块；块里每个顶格的列表项连同它下面的行（缩进的续行、
+ * 下一级的列表项、没缩进但也不是列表项的行）各是一段，第一个列表项之前的行是一段。空行自己算一段。text 是按行切开的正文
  */
+export function paragraphSpan(text: readonly string[], n: number): [number, number] {
+  const blank = (k: number): boolean => BLANK.test(text[k - 1]!);
+  const starts = (k: number): boolean => ITEM_START.test(text[k - 1]!);
+  let a = n;
+  let b = n;
+  if (!blank(n)) {
+    while (a > 1 && !starts(a) && !blank(a - 1)) a -= 1;
+    while (b < text.length && !blank(b + 1) && !starts(b + 1)) b += 1;
+  }
+  return [a, b];
+}
+
+/** 改过的行（从 1 数）扩到它们所在的段落（paragraphSpan），沟槽里的竖条与段落等高 */
 export function paragraphLines(doc: string, lines: readonly number[]): number[] {
   const text = doc.split('\n');
-  const blank = (n: number): boolean => BLANK.test(text[n - 1]!);
-  const starts = (n: number): boolean => ITEM_START.test(text[n - 1]!);
   const out = new Set<number>();
   for (const n of lines) {
     if (out.has(n)) continue;
-    let a = n;
-    let b = n;
-    if (!blank(n)) {
-      while (a > 1 && !starts(a) && !blank(a - 1)) a -= 1;
-      while (b < text.length && !blank(b + 1) && !starts(b + 1)) b += 1;
-    }
+    const [a, b] = paragraphSpan(text, n);
     for (let k = a; k <= b; k++) out.add(k);
   }
   return [...out].sort((x, y) => x - y);
@@ -440,6 +465,226 @@ export const baselineField = StateField.define<BaselineState>({
   },
   provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
 });
+
+// ---------------- 检查出的问题：波浪线与行内提醒 ----------------
+
+/** 换这一节的问题（每次检查以后、换节时由页面给） */
+export const setProblems = StateEffect.define<readonly EditorProblem[]>();
+
+/** 点「改成…」的那一笔：编辑器据此通知页面马上保存 */
+export const problemFix = Annotation.define<boolean>();
+
+const BAD = Decoration.mark({ class: 'sop-bad' });
+
+/** 一条行内提醒插在哪：at 是那一段末行的行尾；indent 是那一段第一行的缩进级（与列表的正文对齐） */
+export interface HintPlace {
+  at: number;
+  indent: number;
+  match: string;
+  hint: NameHint;
+}
+
+/**
+ * 正文里的问题：每一处 match 的 [起, 止]（画波浪线），和行内提醒的位置（写错的名字，每一段每个名字一条，按位置排）
+ */
+export function problemPlaces(doc: string, problems: readonly EditorProblem[]): { marks: [number, number][]; hints: HintPlace[] } {
+  const marks: [number, number][] = [];
+  const hints: HintPlace[] = [];
+  if (!problems.length) return { marks, hints };
+  const text = doc.split('\n');
+  const starts = [0];
+  for (const line of text) starts.push(starts.at(-1)! + line.length + 1);
+  /** pos 所在的行（从 1 数） */
+  const lineAt = (pos: number): number => {
+    let n = 1;
+    while (n < text.length && starts[n]! <= pos) n += 1;
+    return n;
+  };
+  for (const p of problems) {
+    const seen = new Set<number>();
+    for (const [from, to] of occurrences(doc, p.match, p.name)) {
+      marks.push([from, to]);
+      if (!p.hint) continue;
+      const [a, b] = paragraphSpan(text, lineAt(from));
+      if (seen.has(b)) continue;
+      seen.add(b);
+      hints.push({ at: starts[b - 1]! + text[b - 1]!.length, indent: lineShape(text[a - 1]!).indent, match: p.match, hint: p.hint });
+    }
+  }
+  marks.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  hints.sort((x, y) => x.at - y.at);
+  return { marks, hints };
+}
+
+/**
+ * 「改成…」：把 pos 所在那一段里的每一处 match 换成 name，光标放在最后一处后面。
+ * 这一段里已经没有 match（先手改掉了）时是 null
+ */
+export function fixNameAt(state: EditorState, pos: number, match: string, name: string): TransactionSpec | null {
+  const { doc } = state;
+  const [a, b] = paragraphSpan(doc.toString().split('\n'), doc.lineAt(pos).number);
+  const from = doc.line(a).from;
+  const found = occurrences(state.sliceDoc(from, doc.line(b).to), match, true);
+  if (!found.length) return null;
+  const end = from + found.at(-1)![1] + found.length * (name.length - match.length);
+  return {
+    changes: found.map(([s, e]) => ({ from: from + s, to: from + e, insert: name })),
+    selection: { anchor: end },
+    annotations: problemFix.of(true),
+    userEvent: 'input.fix',
+  };
+}
+
+/** 我们自己拼的文字（部件里没有 React 的 cjk()）：要挤的标点包进 .halt */
+function appendText(el: HTMLElement, text: string, fallback: boolean): void {
+  if (!fallback) {
+    el.append(text);
+    return;
+  }
+  const halt = new Set(haltIndices(text));
+  let run = '';
+  let runHalt = false;
+  const push = (): void => {
+    if (!run) return;
+    if (runHalt) {
+      const s = document.createElement('span');
+      s.className = 'halt';
+      s.textContent = run;
+      el.append(s);
+    } else el.append(run);
+    run = '';
+  };
+  for (let i = 0; i < text.length; i++) {
+    if (halt.has(i) !== runHalt) {
+      push();
+      runHalt = !runHalt;
+    }
+    run += text[i];
+  }
+  push();
+}
+
+const el = (tag: string, cls: string): HTMLElement => {
+  const e = document.createElement(tag);
+  e.className = cls;
+  return e;
+};
+
+/**
+ * 行内提醒（设计系统 §5.12、B 页）：留在文字流里，--danger-bg 底；14 的 circle-alert，第一行「提到了不存在的工具「search_route」，
+ * 是不是「查线路 search_routes」？」（候选是芯片），右边幽灵小按钮「改成search_routes」，第二行写后果。
+ * fixable：编辑器能改（只读、409 停住时不给按钮）
+ */
+class HintWidget extends WidgetType {
+  constructor(
+    readonly place: HintPlace,
+    readonly fixable: boolean,
+    readonly fallback: boolean,
+  ) {
+    super();
+  }
+  eq(o: HintWidget): boolean {
+    const a = this.place;
+    const b = o.place;
+    return (
+      a.indent === b.indent &&
+      a.match === b.match &&
+      a.hint.what === b.hint.what &&
+      a.hint.known === b.hint.known &&
+      a.hint.fix?.name === b.hint.fix?.name &&
+      a.hint.fix?.label === b.hint.fix?.label &&
+      this.fixable === o.fixable &&
+      this.fallback === o.fallback
+    );
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const { match, hint, indent } = this.place;
+    const wrap = el('div', `sop-hint-wrap${indent ? ` sop-hint-in${indent}` : ''}`);
+    const box = el('div', 'sop-hint');
+    const icon = el('span', 'sop-hint-icon');
+    icon.append(lucideSvg(CIRCLE_ALERT, 14));
+    const main = el('div', 'sop-hint-main');
+    const row = el('div', 'sop-hint-row');
+    const title = el('div', 'sop-hint-title');
+    appendText(title, `提到了不存在的${hint.what === 'tool' ? '工具' : '字段'}「`, this.fallback);
+    const bad = el('span', 'sop-hint-name');
+    bad.textContent = match;
+    title.append(bad);
+    if (hint.fix) {
+      appendText(title, '」，是不是', this.fallback);
+      // 「芯片」？不拆开折行
+      const tail = el('span', 'sop-hint-nowrap');
+      appendText(tail, '「', this.fallback);
+      const chip = el('span', 'sop-hint-chip');
+      const label = el('span', 'sop-hint-chip-label');
+      label.textContent = hint.fix.label;
+      const name = el('span', 'sop-hint-chip-name');
+      name.textContent = hint.fix.name;
+      chip.append(label, name);
+      tail.append(chip);
+      appendText(tail, '」？', this.fallback);
+      title.append(tail);
+    } else appendText(title, '」', this.fallback);
+    row.append(title);
+    const fix = hint.fix;
+    if (fix && this.fixable) {
+      const button = el('button', 'sop-hint-fix') as HTMLButtonElement;
+      button.type = 'button';
+      button.textContent = fixLabel(fix.name);
+      button.addEventListener('click', () => {
+        const spec = fixNameAt(view.state, view.posAtDOM(wrap), match, fix.name);
+        if (!spec) return;
+        view.dispatch(spec);
+        view.focus();
+      });
+      row.append(button);
+    }
+    const note = el('div', 'sop-hint-note');
+    appendText(note, hintNote(hint), this.fallback);
+    main.append(row, note);
+    box.append(icon, main);
+    wrap.append(box);
+    return wrap;
+  }
+  get estimatedHeight(): number {
+    return 76;
+  }
+}
+
+interface ProblemsState {
+  problems: readonly EditorProblem[];
+  deco: DecorationSet;
+}
+
+function problemDecorations(state: EditorState, problems: readonly EditorProblem[]): DecorationSet {
+  if (!problems.length) return Decoration.none;
+  const { marks, hints } = problemPlaces(state.doc.toString(), problems);
+  const fixable = !state.readOnly;
+  const fallback = state.facet(haltFallback);
+  const out: Range<Decoration>[] = marks.map(([from, to]) => BAD.range(from, to));
+  for (const h of hints) out.push(Decoration.widget({ widget: new HintWidget(h, fixable, fallback), block: true, side: 1 }).range(h.at));
+  return Decoration.set(out, true);
+}
+
+/** 这一节的问题与由它算出的装饰；块级部件只能由 StateField 给（ViewPlugin 不行） */
+export const problemsField = StateField.define<ProblemsState>({
+  create: () => ({ problems: [], deco: Decoration.none }),
+  update(value, tr) {
+    let problems = value.problems;
+    for (const e of tr.effects) if (e.is(setProblems)) problems = e.value;
+    if (problems === value.problems && !tr.docChanged) return value;
+    return { problems, deco: problemDecorations(tr.state, problems) };
+  },
+  provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
+});
+
+/** 页面点清单里的一项：选中这一节正文里第一处 match 并滚过去；找不到（已经改掉了）时是 false */
+export function selectFirst(view: EditorView, match: string, name: boolean): boolean {
+  const first = occurrences(view.state.doc.toString(), match, name)[0];
+  if (!first) return false;
+  view.dispatch({ selection: { anchor: first[0], head: first[1] }, effects: EditorView.scrollIntoView(first[0], { y: 'center' }) });
+  return true;
+}
 
 // ---------------- 版式（设计系统 §2.3 reading 16/28，行宽 ≤640，§6.5、§6.6） ----------------
 
@@ -522,18 +767,91 @@ const theme = EditorView.theme({
     boxDecorationBreak: 'clone',
     WebkitBoxDecorationBreak: 'clone',
   },
+  // 检查出的问题：danger 波浪线（§6.6）
+  '.sop-bad': {
+    textDecorationLine: 'underline',
+    textDecorationStyle: 'wavy',
+    textDecorationColor: 'var(--danger)',
+    textDecorationThickness: '1.5px',
+    textUnderlineOffset: '3px',
+    textDecorationSkipInk: 'none',
+  },
+  // 行内提醒（§5.12、B 页）：上边空 12，左边与那一段的正文对齐；块级部件的高度要量得准，空白用内边距，不用外边距
+  '.sop-hint-wrap': { paddingTop: '12px', whiteSpace: 'normal', cursor: 'default' },
+  '.sop-hint-in1': { paddingLeft: '20px' },
+  '.sop-hint-in2': { paddingLeft: '40px' },
+  '.sop-hint-in3': { paddingLeft: '60px' },
+  '.sop-hint': {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '10px',
+    padding: '8px 12px',
+    borderRadius: 'var(--r-sm)',
+    background: 'var(--danger-bg)',
+    fontSize: '14px',
+    lineHeight: '22px',
+  },
+  '.sop-hint-icon': { flex: 'none', height: '22px', paddingTop: '4px', boxSizing: 'border-box', color: 'var(--danger)' },
+  '.sop-hint-icon svg': { display: 'block' },
+  '.sop-hint-main': { flex: '1', minWidth: '0' },
+  // 放不下时（窄屏）按钮折到第一行下面：标题至少占 240，再加按钮放不下就换行
+  '.sop-hint-row': { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', columnGap: '12px', rowGap: '4px' },
+  '.sop-hint-title': { flex: '1 1 240px', minWidth: '0', fontWeight: '500', color: 'var(--text)', textWrap: 'pretty' },
+  '.sop-hint-name': { fontFamily: 'var(--mono)', fontSize: '12.5px', fontWeight: '400' },
+  '.sop-hint-nowrap': { whiteSpace: 'nowrap' },
+  // 候选是芯片（§6.6），在 danger-bg 上用 panel 底
+  '.sop-hint-chip': {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    boxSizing: 'border-box',
+    height: '22px',
+    margin: '0 2px',
+    padding: '0 6px',
+    borderRadius: 'var(--r-sm)',
+    background: 'var(--panel)',
+    whiteSpace: 'nowrap',
+    verticalAlign: '1px',
+  },
+  '.sop-hint-chip-label': { fontSize: '14px', lineHeight: '20px', fontWeight: '500', color: 'var(--text)' },
+  '.sop-hint-chip-name': { fontFamily: 'var(--mono)', fontSize: '12.5px', lineHeight: '20px', fontWeight: '400', color: 'var(--text-3)' },
+  // 幽灵小按钮（§5.1）：28 高，左右 10，14/500；悬停 --hover、按下 --pressed，焦点 2px --focus 外框
+  '.sop-hint-fix': {
+    flex: 'none',
+    height: '28px',
+    margin: '-3px 0',
+    padding: '0 10px',
+    border: '0',
+    borderRadius: 'var(--r-sm)',
+    background: 'transparent',
+    fontFamily: 'var(--font)',
+    fontSize: '14px',
+    lineHeight: '22px',
+    fontWeight: '500',
+    color: 'var(--text)',
+    whiteSpace: 'nowrap',
+    cursor: 'pointer',
+  },
+  '.sop-hint-fix:hover': { background: 'var(--hover)' },
+  '.sop-hint-fix:active': { background: 'var(--pressed)' },
+  '.sop-hint-fix:focus-visible': { outline: '2px solid var(--focus)', outlineOffset: '2px' },
+  '.sop-hint-note': { marginTop: '2px', fontSize: '13px', lineHeight: '20px', fontWeight: '400', color: 'var(--text-2)' },
 });
 
 /**
  * 话术正文的整套显示：版式、markdown、芯片、图标、挤压回退，加上相对线上的改动标记（线上的正文经 setBaseline 给）。
  * vocabulary 放在 vocabularySlot 里，换包时 reconfigure
  */
-export function sopEditorSetup(opts: { vocabulary?: Vocabulary; baseline?: string | null; halt?: boolean } = {}): Extension {
+export function sopEditorSetup(
+  opts: { vocabulary?: Vocabulary; baseline?: string | null; halt?: boolean; problems?: readonly EditorProblem[] } = {},
+): Extension {
+  const problems = opts.problems ?? [];
   return [
     theme,
     vocabularySlot.of(vocabularyFacet.of(opts.vocabulary ?? NO_VOCABULARY)),
     ...(opts.halt === undefined ? [] : [haltFallback.of(opts.halt)]),
     markdownPlugin,
     baselineField.init((state) => ({ baseline: opts.baseline ?? null, deco: draftDecorations(state, opts.baseline ?? null) })),
+    problemsField.init((state) => ({ problems, deco: problemDecorations(state, problems) })),
   ];
 }

@@ -45,8 +45,8 @@ export const CJK_PUNCT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x2e3a, 0x2e3b],
 ];
 
-/** 由 Noto 画的符号：× – → ⌘ ㎡ ℃（设计系统 §2.1、§2.4） */
-export const NOTO_SYMBOLS: readonly number[] = [0x00d7, 0x2013, 0x2192, 0x2318, 0x33a1, 0x2103];
+/** 由 Noto 画的符号：× – → ⌘ ㎡ ℃ −（设计系统 §2.1、§2.4；减号是差异里删除行的行首与「−1行」，第 6.3 步） */
+export const NOTO_SYMBOLS: readonly number[] = [0x00d7, 0x2013, 0x2192, 0x2318, 0x33a1, 0x2103, 0x2212];
 
 export function cjkPunct(): number[] {
   const out: number[] = [];

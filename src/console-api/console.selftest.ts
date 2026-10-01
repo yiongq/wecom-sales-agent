@@ -2252,6 +2252,87 @@ check(
   );
 }
 
+// 后台 UX spec 验收 15 第 2 条：检查的违规带 match，前端拿它在正文里查找、生成说明。四类带：禁用短语是命中的文本
+// （正则规则是匹配到的那一段，不是正则本身），必需说法是那句原文，工具与字段是名字；其余几类没有这个键
+{
+  const v0 = cfg.currentSop();
+  const tone = bodyOf(v0.sections, 'tone');
+  /** 存一份只改一节的草稿，检查一次、试着发布一次，再丢掉草稿 */
+  const tryDraft = async (key: string, body: string): Promise<{ checked: Body[]; published: Res }> => {
+    const d = await call('PUT', '/sop/draft', {
+      ...O,
+      json: { basedOn: cfg.currentSop().versionId, rev: null, edits: [{ key, body }] },
+    });
+    const ch = await call('POST', '/sop/draft/check', O);
+    const published = await call('POST', '/sop/draft/publish', { ...O, json: { rev: d.body.rev, changeNote: '想发布' } });
+    await call('POST', '/sop/draft/discard', { ...O, json: { rev: d.body.rev } });
+    const ok = d.status === 200 && ch.status === 200 && Array.isArray(ch.body.violations);
+    return { checked: ok ? (ch.body.violations as Body[]) : [], published };
+  };
+  const shown = (vs: readonly Body[]): string =>
+    vs.map((v) => `${v.code}@${v.sectionKey ?? '-'}=${'match' in v ? v.match : '（无）'}`).join(' ');
+
+  const bad = await tryDraft(
+    'tone',
+    [tone, '明显超出我们现有线路的范围，就转人工。', '嫌贵就缩短天数重新报价。', '先调 search_route，再看 destinationMissing。'].join(NL),
+  );
+  check(
+    '违规的 match：话术原则里写进禁用短语 → phrase_forbidden 带命中的文本（纯文本规则是短语本身，正则规则是匹配到的那段）',
+    shown(bad.checked.filter((v) => v.code === 'phrase_forbidden')) ===
+      'phrase_forbidden@tone=明显超出我们现有线路的范围 phrase_forbidden@tone=缩短天数重新报价',
+    shown(bad.checked),
+  );
+  check(
+    '违规的 match：点名不存在的工具与字段 → 带标识符本身；发布 422 的 violations 与检查的相同',
+    shown(bad.checked.filter((v) => v.code !== 'phrase_forbidden')) ===
+      'unknown_tool@tone=search_route unknown_field@tone=destinationMissing' &&
+      bad.published.status === 422 &&
+      shown(bad.published.body.violations ?? []) === shown(bad.checked),
+    `${shown(bad.checked)} | ${bad.published.text.slice(0, 200)}`,
+  );
+  const others = [
+    ...(await tryDraft('wechat-style', `${bodyOf(v0.sections, 'wechat-style')}${NL}## 新节${NL}多出来的一节`)).checked,
+    ...(await tryDraft('tone', `${tone}${NL}${'多'.repeat(5000)}`)).checked,
+  ];
+  check(
+    '违规的 match：structure、over_budget 不带这个键',
+    [...new Set(others.map((v) => v.code))].join() === 'structure,over_budget' && others.every((v) => !('match' in v)),
+    shown(others),
+  );
+
+  // 必需说法今天都在固定规则节里，后台删不到。换一份镜像，把「定价只有两条规则」从定价规则节挪走：先发布一版话术原则里
+  // 也写着这句的（这时两处都有），再用挪过的镜像重新装载配置源（启动重渲染），这句就只剩话术原则里的一处
+  const REQUIRED = '定价只有两条规则';
+  const d1 = await call('PUT', '/sop/draft', {
+    ...O,
+    json: { basedOn: v0.versionId, rev: null, edits: [{ key: 'tone', body: `${tone}${NL}报价前记住：${REQUIRED}。` }] },
+  });
+  const p1 = await call('POST', '/sop/draft/publish', { ...O, json: { rev: d1.body.rev, changeNote: '话术原则里也写上定价规则' } });
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t, { imageSop: testConfigDeps(t).imageSop.replace(REQUIRED, '定价规则') }));
+  const once = cfg.currentSop().renderedPrompt.split(REQUIRED).length === 2;
+  const missing = await tryDraft('tone', tone);
+  check(
+    '违规的 match：删掉一句必需说法 → phrase_missing 带那句原文；发布 422 的 violations 同样带',
+    p1.status === 200 &&
+      once &&
+      shown(missing.checked) === `phrase_missing@-=${REQUIRED}` &&
+      missing.published.status === 422 &&
+      shown(missing.published.body.violations ?? []) === shown(missing.checked),
+    `${p1.status} ${once} ${shown(missing.checked)} | ${missing.published.text.slice(0, 200)}`,
+  );
+
+  // 复原：换回原镜像重新装载，再回滚到这一块开始时的版本
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t));
+  const back = await call('POST', `/sop/versions/${v0.versionId}/rollback`, { ...O, json: { changeNote: '复原话术原则' } });
+  check(
+    '违规的 match：复原后线上的话术原则与这一块开始前相同，没有草稿',
+    back.status === 200 && bodyOf(cfg.currentSop().sections, 'tone') === tone && (await call('GET', '/sop', O)).body.draft === null,
+    back.text.slice(0, 200),
+  );
+}
+
 // /console 的托管与 SPA 回退（第 16 步，验收 17 的路由部分）：用临时的构建产物，测试不依赖真的去构建
 {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-console-dist-'));

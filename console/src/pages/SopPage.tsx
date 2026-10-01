@@ -5,43 +5,54 @@
 // 第 5.3 步：自动保存（sop/autosave.ts：停止输入 1.5 秒后存、带 rev、失败退避重试、⌘S，输入法组字时不存，409 停住并冻结编辑器，
 // 载入最新草稿以后没存上的节以对比形式留着），状态句末尾的保存状态；离开保护管到自动保存还没存上的内容；三栏的布局（右栏是检查清单与
 // 「话术里可以点名的工具」，1280–1439 时检查清单挪到目录下面，<1280 时落到编辑器下面，sop.css）。
-// 检查与发布（第 6 步）、版本记录（第 7 步）还是 01 的做法：页头右侧是检查、发布、丢弃，检查结果在右栏的清单里，
-// 逐节对比和版本历史在页面底部。
+// 第 6.2 步：检查在每次自动保存以后自动跑（sop/check.ts，打开页面时已有草稿也跑一次），页头不再有「检查」；清单里没过的项
+// 点了定位（切到那一节、选中第一处，额度的去额度条）；这一节的问题在编辑器里画波浪线、写错的名字插行内提醒与「改成…」，
+// 其余几类的说明写在编辑卡片上方（sop/problems.ts）。
+// 第 6.3 步：底部常驻的发布条（sop/PublishParts.tsx：摘要、「发布…」不能点的原因、「查看改动」，发布成功以后写在条里、
+// 带「回滚到v2」，不弹 toast）；点「发布…」先存没存上的改动，再打开发布抽屉、检查一次（检查清单、替换说明、逐节改动的
+// 行内 / 并排、预填的变更说明）；中栏说明行末尾的「查看本节改动」。草稿跟不上线上版本时（别人在这期间发布过），替换说明、
+// 成功那句和「回滚到vN」都按服务端那时的线上版本写，不按页面打开时取的。
+// 版本记录（第 7 步）还是 01 的做法：页头右侧是丢弃，版本历史在页面底部。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
 import { queryOptions, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router';
-import { Alert, Button, Card, Collapse, Descriptions, Empty, Input, Modal, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Space, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
-import { memo, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type {
-  AnonSopOverview,
-  DraftCheck,
-  SectionSpecView,
-  SopOverview,
-  SopSectionText,
-  SopVersion,
-} from '../../../src/shared/console-api.js';
+import {
+  memo,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { AnonSopOverview, DraftCheck, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, HttpError, unwrap } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { errorCopy } from '../parts/errors.js';
-import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
 import { toast } from '../parts/toast.js';
 import { LEAVING_PAGE, useUnsavedGuard } from '../parts/UnsavedGuard.js';
-import { SectionDiff } from '../SectionDiff.js';
 import { useViewport } from '../shell/hooks.js';
 import { PageHeader } from '../shell/PageHeader.js';
-import { type DraftEdit, useAutosave } from '../sop/autosave.js';
+import { AutosaveTimingContext, type DraftEdit, type SaveStatus, useAutosave } from '../sop/autosave.js';
+import { checkKey, useDraftCheck } from '../sop/check.js';
 import { Directory, DirectorySelect, type SelectVia } from '../sop/Directory.js';
-import { composingIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
+import { selectFirst } from '../sop/editor.js';
+import { composingIn, editorIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
 import {
   anonOutline,
   anonStatus,
   bodyWithoutHeading,
+  changedSections,
   draftChars,
   memberOutline,
   memberStatus,
@@ -50,10 +61,16 @@ import {
   PREAMBLE_NAME,
   quotaModel,
   resolveSection,
+  type SectionChange,
   unsavedEdits,
+  withPublished,
   withSavedDraft,
 } from '../sop/outline.js';
+import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
+import { barBlock, firstProblem, notePrefill, onlineNow, type PublishedResult, publishedNames, replacedIn } from '../sop/publish.js';
+import { ChangesDrawer, PublishBar, PublishDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
+import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
 import { ConflictBanner, LostEdits, type LostSection, SaveState } from '../sop/SaveParts.js';
 import { CheckCard, ToolsCard } from '../sop/SideCards.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
@@ -76,7 +93,9 @@ function bodyOf(text: string, heading: string | null): string {
   const head = `## ${heading}${NL}${NL}`;
   return text.startsWith(head) ? text.slice(head.length) : text;
 }
-const headingOf = (spec: readonly SectionSpecView[], key: string | null): string =>
+/** 一个版本里这一节的原文（带标题行） */
+const textOf = (v: Pick<SopVersion, 'sections'>, key: string): string => v.sections.find((s) => s.key === key)?.text ?? '';
+const headingOf = (spec: SopOverview['spec'], key: string | null): string =>
   key === null ? '整体' : (spec.find((s) => s.key === key)?.heading ?? PREAMBLE_NAME);
 
 /** 聚焦容器里的 CodeMirror 正文 */
@@ -148,6 +167,33 @@ function Toc({
 /** /sop：页面、载入最新草稿都用这一份（同一个缓存） */
 const sopQuery = queryOptions({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
 
+/**
+ * 检查结果。草稿跟不上线上版本（rebase.needed：别人在这期间发布过）时另带那时的线上版本：页面上的是打开时取的，
+ * 发布抽屉的「将替换线上v3」照这一份写。只取它、不写进 /sop 的缓存：页面上的草稿与逐节改动照旧相对草稿所基于的版本，
+ * 发布时三方合并，别人改的节不算你的改动。取不到算这次检查没跑成（抽屉写「没检查上」、能重试）
+ */
+type SopCheck = DraftCheck & { online: SopVersion | null };
+async function checkDraft(): Promise<SopCheck> {
+  const r = await unwrap(api.sop.draft.check.$post());
+  if (!r.rebase.needed) return { ...r, online: null };
+  const o = await unwrap(api.sop.$get());
+  return { ...r, online: 'spec' in o ? o.published : null };
+}
+
+/**
+ * 发布替换下来的版本不在手上（检查之后别人又发布过）：取版本号紧挨着的前一个，核对是发布结果的 basedOn。
+ * 取不到不报错（发布已经成功了），只是条里不写改了哪几节、不给回滚
+ */
+async function fetchReplaced(v: SopVersion): Promise<SopVersion | null> {
+  if (v.basedOn === null || v.versionNo === null) return null;
+  try {
+    const page = await unwrap(api.sop.versions.$get({ query: { limit: '1', before: String(v.versionNo) } }));
+    return replacedIn(v.basedOn, page.items);
+  } catch {
+    return null;
+  }
+}
+
 export function SopPage() {
   const viewer = useViewer();
   const pack = usePack();
@@ -190,12 +236,14 @@ function Columns({
   check,
   tools,
   editor,
+  checkRef,
 }: {
   toc: ReactNode;
   main: ReactNode;
   check?: ReactNode;
   tools?: ReactNode;
   editor: RefObject<HTMLDivElement | null>;
+  checkRef?: RefObject<HTMLDivElement | null>;
 }) {
   const wide = useViewport() === 'wide';
   return (
@@ -205,7 +253,11 @@ function Columns({
         <div ref={editor} className="sop-col-main sop-editor">
           {main}
         </div>
-        {check && <div className="sop-col-check">{check}</div>}
+        {check && (
+          <div ref={checkRef} className="sop-col-check">
+            {check}
+          </div>
+        )}
         {tools && <div className="sop-col-tools">{tools}</div>}
       </div>
     </div>
@@ -292,14 +344,26 @@ function MemberSop({
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [check, setCheck] = useState<DraftCheck | null>(null);
   const [rejected, setRejected] = useState<HttpError | null>(null);
   const [conflict, setConflict] = useState<{ keys: string[]; current: SopSectionText[] } | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [publishing, setPublishing] = useState(false);
   const [discarding, setDiscarding] = useState(false);
-  const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  // 发布：点了「发布…」、正在先存没存上的改动（from 是点的时候的保存状态：那之后的失败才算这次没存上）；抽屉开着；
+  // 变更说明与它的预填；发布请求在路上；发布没成功（422、409 以外的，写在抽屉里）；成功以后条里的那句
+  const [opening, setOpening] = useState<{ key: string | null; from: SaveStatus } | null>(null);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [prefill, setPrefill] = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<unknown>(null);
+  const [result, setResult] = useState<PublishedResult | null>(null);
+  // 抽屉关上以后要等收起动画放完才卸下，里面的内容留到那时（mounted、changesOf 在 afterClose 里清）
+  const [publishMounted, setPublishMounted] = useState(false);
+  // 「查看改动」「查看本节改动」：section 是只看的那一节，null 是全部
+  const [changesOf, setChangesOf] = useState<{ section: string | null; open: boolean } | null>(null);
+  const [rollbackTarget, setRollbackTarget] = useState<SopVersion | null>(null);
+  const [rolledBackNote, setRolledBackNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<OutlineFilter>('all');
   const [lost, setLost] = useState<Lost | null>(null);
   const [reloading, setReloading] = useState(false);
@@ -315,13 +379,20 @@ function MemberSop({
   };
   // 本地改过、还没存进草稿的节（规范化以后比，改回原样不算）：自动保存要发的就是它们
   const unsaved = useMemo(() => unsavedEdits(spec, current.sections, edits), [spec, current.sections, edits]);
-  // 检查结果、发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废。
-  // 引用不变，版本历史（memo）才不会每敲一个字跟着重渲
+  // 发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废。检查结果不在这里清：
+  // 草稿一变就重跑（useDraftCheck 按 key），跑完之前先留着上一次的。引用不变，版本历史（memo）才不会每敲一个字跟着重渲
   const clearResults = useCallback((): void => {
-    setCheck(null);
     setRejected(null);
     setConflict(null);
   }, []);
+  const timing = useContext(AutosaveTimingContext);
+  // 每次自动保存成功（草稿的 rev 变了）以后检查一次；打开页面时已经有草稿、载入最新草稿、回滚以后线上换了也跑
+  const check = useDraftCheck<SopCheck>({
+    enabled: editable,
+    key: checkKey(draft, published.id),
+    post: checkDraft,
+    now: timing.now,
+  });
   const saver = useAutosave({
     enabled: editable,
     unsaved,
@@ -383,33 +454,41 @@ function MemberSop({
     setLost((prev) => (prev?.edits.length ? { ...prev, loaded: [] } : null));
   }, []);
 
-  const runCheck = () =>
-    run(async () => {
-      setRejected(null);
-      setConflict(null);
-      setCheck(await unwrap(api.sop.draft.check.$post()));
-    });
-  const publish = () =>
-    run(async () => {
-      setRejected(null);
-      setConflict(null);
-      try {
-        const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft!.rev, changeNote: note } }));
-        toast(`已发布v${v.versionNo}`);
-        setPublishing(false);
-        setNote('');
-        clearResults();
-        // 存上的那份草稿已经发布出去了：「已自动保存14:30」不再对应什么
-        saver.resume();
-        await refresh();
-      } catch (e) {
-        setPublishing(false);
-        if (e instanceof HttpError && e.body.error === 'contract') setRejected(e);
-        else if (e instanceof HttpError && e.body.error === 'sop_conflict')
-          setConflict({ keys: e.body.keys ?? [], current: e.body.current ?? [] });
-        else throw e;
-      }
-    });
+  // 发布成功：条里写「已发布v3（改了…）」、带「回滚到v2」（被替换下来的那一版），不弹 toast；抽屉关上，焦点回到「发布…」。
+  // 被替换下来的是服务端那时的线上版本（发布结果的 basedOn），不一定是页面打开时的：别人在这期间发布过，就是他发布的那一版，
+  // 改了哪几节也相对它算。发布结果马上写进 /sop 的缓存（线上是它、草稿没了），不等重取：重取没成功时页头下就地报错，
+  // 条里照样是「已发布v3」、「发布…」不能点，不会看着像没发布出去。
+  // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）关上抽屉，
+  // 由页面上的提示说；别的失败写在抽屉里，写好的说明不丢。请求在路上时抽屉关不掉（PublishDrawer）
+  const publish = async (): Promise<void> => {
+    if (!draft) return;
+    const known = [published, check.result?.online];
+    setPublishing(true);
+    setPublishError(null);
+    setRejected(null);
+    setConflict(null);
+    try {
+      const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft.rev, changeNote: note } }));
+      const previous = replacedIn(v.basedOn, known) ?? (await fetchReplaced(v));
+      setResult({ versionNo: v.versionNo, names: publishedNames(spec, previous, v), previous });
+      qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) => (old && 'spec' in old ? withPublished(old, v) : old));
+      setPublishOpen(false);
+      setNote('');
+      setPrefill('');
+      clearResults();
+      // 存上的那份草稿已经发布出去了：「已自动保存14:30」不再对应什么
+      saver.resume();
+      await refresh();
+    } catch (e) {
+      if (e instanceof HttpError && e.body.error === 'contract') setRejected(e);
+      else if (e instanceof HttpError && e.body.error === 'sop_conflict') {
+        setConflict({ keys: e.body.keys ?? [], current: e.body.current ?? [] });
+        setPublishOpen(false);
+      } else setPublishError(e);
+    } finally {
+      setPublishing(false);
+    }
+  };
   // 失败时也关掉确认框，错误在页面顶上就地显示
   const discard = () =>
     run(async () => {
@@ -424,24 +503,33 @@ function MemberSop({
       await refresh();
     });
 
-  const violations = rejected ? (rejected.body.violations ?? []) : (check?.violations ?? null);
+  const checked = check.result;
+  const violations = useMemo(() => (rejected ? (rejected.body.violations ?? []) : (checked?.violations ?? null)), [rejected, checked]);
+  // 每条问题落在哪一节、点了去哪（phrase_missing 取线上版本里含这句的节）；只随检查结果变，右栏的清单（memo）不逐字重渲
+  const located = useMemo(() => (violations ? locateViolations(violations, published.sections) : null), [violations, published.sections]);
   const rows = memberOutline({
     spec,
     packSections: pack?.sopSections,
     published: published.sections,
     current: current.sections,
     edits,
-    violations,
+    violations: located?.map((v) => ({ sectionKey: v.section })),
   });
   const nav = useSectionNav(rows, editor);
   const tools = pack?.vocabulary.tools;
+  const vocabulary = pack?.vocabulary;
+  // 这一节正文里要标出来的问题：引用只随检查结果、换节、换包变，编辑器不逐字重派
+  const problems = useMemo(
+    () => (located ? editorProblems(located, nav.section ?? '', vocabulary) : undefined),
+    [located, nav.section, vocabulary],
+  );
+  const notes = located && nav.section !== undefined ? sectionNotes(located, nav.section) : undefined;
   const section = spec.find((s) => s.key === nav.section);
   const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
   const changed = rows.filter((r) => r.changed);
-  const textOf = (v: SopVersion, k: string): string => v.sections.find((s) => s.key === k)?.text ?? '';
   const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key)) : [];
-  // 检查、发布、丢弃都是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点
+  // 丢弃是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点（发布条的「发布…」点了先存，见下面）
   const settled = !!draft && unsaved.length === 0 && !saving && !frozen;
   const saveError = saver.status.kind === 'failed' && errorCopy(saver.status.error).place !== 'inline' ? saver.status.error : null;
   const lostLoaded = lost?.loaded.length ? lost.loaded : null;
@@ -472,7 +560,134 @@ function MemberSop({
     else if (frozen) conflictRef.current?.focus();
     else focusEditorIn(editor.current);
   });
-  const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check?.rebase.needed || !!conflict;
+
+  // 点清单里没过的一项：切到那一节（点击进浏览历史，同目录），等编辑器按这一节建好以后选中第一处、滚过去、聚焦；
+  // 没有 match 可选的（结构、固定规则、必需说法，或者已经改掉了）聚焦正文、把卡片上方的说明滚进视口。额度的去额度条
+  const quotaRef = useRef<HTMLElement>(null);
+  const notesRef = useRef<HTMLUListElement>(null);
+  const pendingLocate = useRef<NonNullable<ProblemTarget> | null>(null);
+  const [, setLocateTick] = useState(0);
+  const navRef = useRef(nav);
+  useEffect(() => {
+    navRef.current = nav;
+  });
+  const locate = useCallback((t: NonNullable<ProblemTarget>): void => {
+    if (t.kind === 'quota') {
+      quotaRef.current?.scrollIntoView({ block: 'nearest' });
+      quotaRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    pendingLocate.current = t;
+    if (t.section !== navRef.current.section) navRef.current.select(t.section, 'click');
+    setLocateTick((n) => n + 1);
+  }, []);
+  useEffect(() => {
+    const t = pendingLocate.current;
+    if (t === null || t.kind === 'quota' || t.section !== nav.section) return;
+    const view = editorIn(editor.current);
+    if (!view) return;
+    pendingLocate.current = null;
+    view.focus();
+    if (t.kind === 'match' && selectFirst(view, t.match, t.name)) return;
+    (notesRef.current ?? editor.current)?.scrollIntoView({ block: 'nearest' });
+  });
+
+  // 点了行内提醒的「改成…」：替换已经进了 edits，等这次渲染把最新的改动交给自动保存以后（useAutosave 的 effect 在前面），马上存
+  const fixed = useRef(false);
+  const onFix = useCallback((): void => {
+    fixed.current = true;
+  }, []);
+  useEffect(() => {
+    if (!fixed.current) return;
+    fixed.current = false;
+    saver.flush();
+  });
+
+  // ---------------- 发布（第 6.3 步） ----------------
+  const block = barBlock({ frozen, changed: changed.length, problems: located?.length ?? 0 });
+  // 发布成功的那句只在线上还是刚发布的那一版时留着：之后从版本历史回滚过、别人又发布过，它和「回滚到v2」都不再对
+  const shownResult = result !== null && result.versionNo === published.versionNo ? result : null;
+  const draftKey = checkKey(draft, published.id);
+  // 现在的线上版本：多半就是页面上的；检查发现别人在这期间发布过时是那时的线上版本（替换说明、逐节改动左边叫什么照它）
+  const online = onlineNow(published, check.result?.online);
+  // 抽屉与「查看改动」里的逐节改动（含本地还没保存的改动，与目录的「改过」同一口径）；只在开着时算
+  const changes = publishMounted || changesOf ? changedSections(spec, published.sections, current.sections, edits) : NO_CHANGES;
+  // 抽屉关上以后焦点回到打开它的按钮：关上之后的 effect 里还（抽屉的焦点陷阱这时已经放开），不等收起动画。
+  // 点清单里的一项定位时不还（清掉 publishBack），焦点由定位放到正文里
+  const publishBack = useRef<HTMLElement | null>(null);
+  const changesBack = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = publishBack.current;
+    if (publishOpen || !el) return;
+    publishBack.current = null;
+    if (el.isConnected) el.focus();
+  }, [publishOpen]);
+  const changesShown = changesOf?.open ?? false;
+  useEffect(() => {
+    const el = changesBack.current;
+    if (changesShown || !el) return;
+    changesBack.current = null;
+    if (el.isConnected) el.focus();
+  }, [changesShown]);
+
+  // 点「发布…」：先把没存上的改动存了（⌘S 同一条路），存上以后再打开抽屉、检查一次。这一次存上了（草稿的 rev 变了）时
+  // 自动检查已经在跑，不另发；没有要存的就检查一次。点了以后又存失败了、或者 409 停住，就不打开（状态句与横幅说明原因）。
+  // 存没存上在渲染时看（按上一次渲染的值调整 state），检查在 effect 里发
+  const startPublish = (trigger: HTMLElement): void => {
+    publishBack.current = trigger;
+    setOpening({ key: draftKey, from: saver.status });
+    saver.flush();
+  };
+  const [checkOnOpen, setCheckOnOpen] = useState(0);
+  if (opening !== null) {
+    const st = saver.status;
+    if (frozen || (st.kind === 'failed' && st !== opening.from)) setOpening(null);
+    else if (unsaved.length === 0 && !saving) {
+      setOpening(null);
+      if (draftKey !== null) {
+        // 预填改了哪几节；自己写过的说明留着，只剩上一次的预填（或空着）时换成这一次的
+        const fill = notePrefill(changed.map((r) => r.name));
+        setNote((n) => (n.trim() === '' || n === prefill ? fill : n));
+        setPrefill(fill);
+        setPublishError(null);
+        setPublishOpen(true);
+        setPublishMounted(true);
+        if (draftKey === opening.key) setCheckOnOpen((n) => n + 1);
+      }
+    }
+  }
+  const retryCheck = check.retry;
+  useEffect(() => {
+    if (checkOnOpen > 0) retryCheck();
+  }, [checkOnOpen, retryCheck]);
+  // 发布条上有问题时点「发布…」：跳到第一个问题（清单的顺序）；没有去处的，把检查清单滚进视口
+  const checkRef = useRef<HTMLDivElement>(null);
+  const jumpToProblem = (): void => {
+    const t = located ? firstProblem(located) : null;
+    if (t) locate(t);
+    else checkRef.current?.scrollIntoView({ block: 'nearest' });
+  };
+  // 抽屉里点清单的一项：关抽屉并定位
+  const locateFromDrawer = useCallback(
+    (t: NonNullable<ProblemTarget>): void => {
+      publishBack.current = null;
+      setPublishOpen(false);
+      locate(t);
+    },
+    [locate],
+  );
+  const viewSection = useCallback((key: string, trigger: HTMLElement): void => {
+    changesBack.current = trigger;
+    setChangesOf({ section: key, open: true });
+  }, []);
+
+  // 草稿跟不上线上版本只提示一条：/sop 的 draft.stale 与检查的 rebase.needed 是服务端同一个条件（basedOn 不是线上版本），
+  // 检查打开页面就跑，两条会一起出来。检查报了冲突的节时是出错色、写发布不了，不然是 info（检查回来之前、回滚以后
+  // 重查回来之前按 draft.stale）。发布撞上冲突（409）时由那一条说，这一条不出；发布被拒（422）是合并以后的事，没有冲突的节
+  const rebase = check.result?.rebase;
+  const rebaseConflicts = rebase?.needed ? rebase.conflicts : [];
+  const rebaseNote = conflict ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || rebase?.needed ? 'merge' : null;
+  const hasNotices = error !== null || rebaseNote !== null || !!rejected || !!conflict || rolledBackNote !== null;
 
   return (
     <>
@@ -489,12 +704,6 @@ function MemberSop({
             <>
               <Button disabled={!settled} loading={busy} onClick={() => setDiscarding(true)}>
                 丢弃
-              </Button>
-              <Button disabled={!settled} loading={busy} onClick={() => void runCheck()}>
-                检查
-              </Button>
-              <Button disabled={!settled} loading={busy} onClick={() => setPublishing(true)}>
-                发布
               </Button>
             </>
           )
@@ -521,23 +730,25 @@ function MemberSop({
           {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} titleRef={lostTitle} />}
         </div>
       )}
-      <QuotaBar model={quota} />
+      <QuotaBar model={quota} ref={editable ? quotaRef : undefined} />
       {hasNotices && (
         <Space orientation="vertical" size="middle" className="sop-notices">
           {error !== null && <ErrorAlert error={error} />}
-          {draft?.stale && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
-          {rejected && <ErrorAlert error={rejected} />}
-          {check?.rebase.needed && !rejected && (
+          {rolledBackNote !== null && (
+            <Alert type="warning" showIcon closable={{ onClose: () => setRolledBackNote(null) }} title={cjk(rolledBackNote)} />
+          )}
+          {rebaseNote === 'merge' && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
+          {rebaseNote === 'conflict' && (
             <Alert
-              type={check.rebase.conflicts.length ? 'error' : 'info'}
+              type="error"
+              showIcon
               title={
-                check.rebase.conflicts.length
-                  ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
-                    '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
-                  : '草稿基于的版本已过期，发布时会自动合并别人的改动'
+                `这几节在你编辑期间被别人改过：${rebaseConflicts.map((k) => headingOf(spec, k)).join('、')}。` +
+                '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
               }
             />
           )}
+          {rejected && <ErrorAlert error={rejected} />}
           {conflict && (
             <Alert
               type="error"
@@ -563,6 +774,7 @@ function MemberSop({
 
       <Columns
         editor={editor}
+        checkRef={checkRef}
         toc={<Toc rows={rows} nav={nav} filter={filter} onFilter={setFilter} showCounts />}
         main={
           section &&
@@ -574,39 +786,101 @@ function MemberSop({
               frozen={frozen}
               value={edits[section.key] ?? originalBody(section.key)}
               baseline={bodyOf(textOf(published, section.key), section.heading)}
-              vocabulary={pack?.vocabulary}
+              vocabulary={vocabulary}
+              problems={problems}
+              notes={notes}
+              notesRef={notesRef}
+              onFix={onFix}
+              onViewDiff={viewSection}
               onChange={(v) => {
                 setEdits((e) => ({ ...e, [section.key]: v }));
+                // 发布成功的那句保留到下一次改动
+                if (result !== null) setResult(null);
                 saver.edited();
               }}
             />
           )
         }
-        check={editable && <CheckCard spec={spec} violations={violations} check={check} />}
+        check={
+          editable && (
+            <CheckCard
+              spec={spec}
+              located={located}
+              violations={violations}
+              check={check.result}
+              budget={check.result ?? budget}
+              at={check.at}
+              failed={check.error !== null}
+              onRetry={check.retry}
+              onLocate={locate}
+            />
+          )
+        }
         tools={tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
       />
 
-      <Space orientation="vertical" size="middle" className="sop-after">
-        {draft && <DraftDiff spec={spec} published={published} draft={draft} />}
+      <div className="sop-after">
         <History editable={editable} currentId={published.id} onRolledBack={clearResults} />
-      </Space>
+      </div>
 
-      <Modal
-        destroyOnHidden
-        open={publishing}
-        title="发布草稿"
-        onCancel={() => setPublishing(false)}
-        footer={
-          <>
-            <Button onClick={() => setPublishing(false)}>取消</Button>
-            <PrimaryButton disabled={!note.trim()} loading={busy} onClick={() => void publish()}>
-              发布
-            </PrimaryButton>
-          </>
-        }
-      >
-        <Input.TextArea rows={3} placeholder="变更说明（必填）" value={note} onChange={(e) => setNote(e.target.value)} />
-      </Modal>
+      {editable && (
+        <PublishBar
+          result={shownResult}
+          changed={changed.map((r) => r.name)}
+          problems={located?.length ?? 0}
+          chars={quota.chars}
+          limit={quota.limit}
+          block={block}
+          opening={opening !== null}
+          onPublish={startPublish}
+          onJump={jumpToProblem}
+          onChanges={(trigger) => {
+            changesBack.current = trigger;
+            setChangesOf({ section: null, open: true });
+          }}
+          onRollback={() => result?.previous && setRollbackTarget(result.previous)}
+        />
+      )}
+      <PublishDrawer
+        open={publishOpen}
+        onClose={() => setPublishOpen(false)}
+        afterClose={() => setPublishMounted(false)}
+        spec={spec}
+        published={published}
+        replacing={online}
+        now={now}
+        changes={changes}
+        located={located}
+        budget={check.result ?? budget}
+        check={{ running: check.running, failed: check.error !== null, at: check.at, retry: check.retry }}
+        conflicts={rebaseConflicts.map((k) => headingOf(spec, k))}
+        note={note}
+        prefill={prefill}
+        onNote={setNote}
+        publishing={publishing}
+        error={publishError}
+        onPublish={() => void publish()}
+        onLocate={locateFromDrawer}
+      />
+      <ChangesDrawer
+        open={changesShown}
+        section={changesOf?.section ? headingOf(spec, changesOf.section) : null}
+        changes={changesOf?.section ? changes.filter((c) => c.key === changesOf.section) : changes}
+        published={published}
+        online={online}
+        onClose={() => setChangesOf((c) => c && { ...c, open: false })}
+        afterClose={() => setChangesOf(null)}
+      />
+      <RollbackModal
+        target={rollbackTarget}
+        onClose={() => setRollbackTarget(null)}
+        onDone={(v, target) => {
+          setRollbackTarget(null);
+          setResult(null);
+          clearResults();
+          setRolledBackNote(rollbackNotice(v, target));
+        }}
+      />
       <ConfirmDanger
         open={discarding}
         title="丢弃草稿？"
@@ -623,45 +897,8 @@ function MemberSop({
   );
 }
 
-/**
- * 草稿与已发布版本的逐节对比：只列改过的可编辑节，展开才建编辑器。
- * 它和版本历史都用 memo 包着：编辑器每敲一个字 MemberSop 都重渲，antd 的 Table、Collapse 跟着重渲时会在提交后
- * 再排一次更新，每个字提交两次；自动连按（走查脚本）时这些接连的更新偶尔被 React 当成死循环（#185）
- */
-const DraftDiff = memo(function DraftDiff({
-  spec,
-  published,
-  draft,
-}: {
-  spec: readonly SectionSpecView[];
-  published: SopVersion;
-  draft: SopVersion;
-}) {
-  const textOf = (v: SopVersion, key: string): string => v.sections.find((s) => s.key === key)?.text ?? '';
-  const changed = spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key));
-  return (
-    <Card size="small" title={`与已发布v${published.versionNo}的逐节对比`}>
-      {changed.length === 0 ? (
-        <Typography.Text type="secondary">草稿里的可编辑节与已发布版本相同</Typography.Text>
-      ) : (
-        <Collapse
-          items={changed.map((s) => ({
-            key: s.key,
-            label: s.heading ?? PREAMBLE_NAME,
-            children: (
-              <SectionDiff
-                before={bodyOf(textOf(published, s.key), s.heading)}
-                after={bodyOf(textOf(draft, s.key), s.heading)}
-                beforeLabel={`已发布v${published.versionNo}`}
-                afterLabel="草稿"
-              />
-            ),
-          }))}
-        />
-      )}
-    </Card>
-  );
-});
+/** 抽屉都关着时逐节改动不算 */
+const NO_CHANGES: readonly SectionChange[] = [];
 
 const VERSIONS_PAGE = 50;
 
@@ -674,7 +911,6 @@ const History = memo(function History({
   currentId: string;
   onRolledBack: () => void;
 }) {
-  const qc = useQueryClient();
   // 每一个已发布或归档的版本都要能回滚，所以按版本号倒序往前翻（before 游标）；
   // 接口不给下一页的游标：满一页就以这一页最小的版本号接着翻，不满一页就是到头了
   const q = useInfiniteQuery({
@@ -686,40 +922,8 @@ const History = memo(function History({
   });
   const rows = q.data?.pages.flatMap((p) => p.items) ?? [];
   const [target, setTarget] = useState<SopVersion | null>(null);
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<unknown>(null);
   /** 回滚后的新版本与目标版本的固定规则不同（sameHashAsTarget 为 false）时的说明 */
   const [notice, setNotice] = useState<string | null>(null);
-
-  const rollback = async (): Promise<void> => {
-    if (!target) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const v = await unwrap(api.sop.versions[':id'].rollback.$post({ param: { id: target.id }, json: { changeNote: note } }));
-      setTarget(null);
-      setNote('');
-      onRolledBack();
-      await qc.invalidateQueries({ queryKey: ['sop'] });
-      await qc.invalidateQueries({ queryKey: ['sop-versions'] });
-      toast(`已回滚到v${target.versionNo}：新版本v${v.versionNo}`);
-      setNotice(
-        v.sameHashAsTarget
-          ? null
-          : `v${target.versionNo}之后代码里的固定规则改过，固定规则节用的是现在的写法，所以v${v.versionNo}不会和v${target.versionNo}完全一样。`,
-      );
-    } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const close = (): void => {
-    setTarget(null);
-    setError(null);
-  };
 
   return (
     <Card size="small" title="版本历史">
@@ -764,30 +968,15 @@ const History = memo(function History({
           更早的
         </Button>
       )}
-      <Modal
-        destroyOnHidden
-        open={!!target}
-        title={`回滚到v${target?.versionNo ?? ''}`}
-        onCancel={close}
-        footer={
-          <>
-            <Button onClick={close}>再看看</Button>
-            <PrimaryButton disabled={!note.trim()} loading={busy} onClick={() => void rollback()}>
-              回滚到v{target?.versionNo ?? ''}
-            </PrimaryButton>
-          </>
-        }
-      >
-        <Space orientation="vertical" style={{ width: '100%' }}>
-          <Descriptions
-            size="small"
-            column={1}
-            items={[{ label: '说明', children: '取这个版本的可编辑节、现在的固定规则节，生成并发布一个新版本；已有的草稿不动。' }]}
-          />
-          <Input.TextArea rows={3} placeholder="变更说明（必填）" value={note} onChange={(e) => setNote(e.target.value)} />
-          {error !== null && <ErrorAlert error={error} />}
-        </Space>
-      </Modal>
+      <RollbackModal
+        target={target}
+        onClose={() => setTarget(null)}
+        onDone={(v, t) => {
+          setTarget(null);
+          onRolledBack();
+          setNotice(rollbackNotice(v, t));
+        }}
+      />
     </Card>
   );
 });
