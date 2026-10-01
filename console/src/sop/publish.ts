@@ -104,6 +104,13 @@ export const baseName = (base: Pick<SopVersion, 'versionNo'>, online: Pick<SopVe
 export const diffAgainst = (base: Pick<SopVersion, 'versionNo'>, online: Pick<SopVersion, 'versionNo'>): string =>
   `相对${baseName(base, online)}${online.versionNo === base.versionNo ? '' : `（线上已是v${online.versionNo ?? '—'}）`}`;
 
+/**
+ * 草稿相对比较的那一版没有改动时怎么说（发布条、版本记录的草稿那一行、逐节改动）：那一版就是线上版本时「和线上一样」；
+ * 不是时（草稿跟不上线上版本、自己又没改）写「和v2一样（线上已是v3）」：草稿和线上并不一样，只是没有你的改动
+ */
+export const sameAs = (base: Pick<SopVersion, 'versionNo'>, online: Pick<SopVersion, 'versionNo'>): string =>
+  online.versionNo === base.versionNo ? '和线上一样' : `和v${base.versionNo ?? '—'}一样（线上已是v${online.versionNo ?? '—'}）`;
+
 /** 摘要的名单：「话术原则、异议处理」 */
 export const namesText = (names: readonly string[]): string => names.join('、');
 
@@ -125,7 +132,7 @@ export function barBlock(input: { frozen: boolean; merging?: boolean; changed: n
 } | null {
   if (input.frozen) return { reason: '载入最新草稿以后才能发布', jump: false };
   if (input.merging) return { reason: '完成合并以后才能发布', jump: false };
-  // 左边的摘要已经写了「草稿和线上一样」（或发布成功的那句），这里接着写后半句
+  // 左边的摘要已经写了「草稿和线上一样」（或「草稿和v2一样（线上已是v3）」、发布成功的那句），这里接着写后半句
   if (input.changed === 0) return { reason: '没有可发布的改动', jump: false };
   if (input.problems > 0) return { reason: `改完${digits(input.problems)}个问题即可发布`, jump: true };
   return null;

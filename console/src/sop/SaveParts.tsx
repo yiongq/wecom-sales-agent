@@ -1,6 +1,8 @@
 // 自动保存在页面上的样子（spec「销售话术 · 状态句」「自动保存」，设计系统 §4.3）：
 // - SaveState：状态句的最后一段，「保存中…」「已自动保存14:05」、danger 的「没保存上 · 重试」（「重试」是按钮）；
 //   本次打开页面后还没保存过时不写。按最宽的两种写法占好位置（看不见的两行叠在同一格里），切换时不挤动、不折行。
+// - SaveLive：读屏念保存状态的那一处（role=status），看不见，放在页头以外：页头吸顶时状态句是 display: none，
+//   live region 放在里面就从无障碍树里掉出去，在长正文的下半截打字没保存上时念不出来。状态句与发布条里都不另设 status。
 // - ConflictBanner：409 以后页头下的横幅「草稿刚被别人改过」和「载入最新草稿」；自动保存已经停住，编辑器只读。
 // - LostEdits：载入最新草稿以后，没存上的节以只读对比的形式留着（左边最新草稿、右边你写的），可以选中复制；
 //   又一次 409 时接在后面，关掉之前不丢。
@@ -42,7 +44,8 @@ export function SaveState({ status, onRetry }: { status: SaveStatus; onRetry: ()
       <span className="sop-save-sizer" aria-hidden="true">
         {cjk(['', SAVE_FAILED, RETRY])}
       </span>
-      <span className="sop-save-now" role="status">
+      {/* 读屏由 SaveLive 念（它不随页头吸顶藏起来），这里不再设 status，免得没吸顶时念两遍 */}
+      <span className="sop-save-now">
         {text !== null && <Sep />}
         {failed ? (
           <span className="sop-save-failed">
@@ -62,6 +65,16 @@ export function SaveState({ status, onRetry }: { status: SaveStatus; onRetry: ()
         )}
       </span>
     </span>
+  );
+}
+
+/** 读屏念的保存状态（看不见；页面放在页头以外，见文件头）：「保存中…」「已自动保存14:05」「没保存上，重试」 */
+export function SaveLive({ status }: { status: SaveStatus }) {
+  const said = status.kind === 'failed' ? `${SAVE_FAILED}，${RETRY}` : (saveText(status) ?? '');
+  return (
+    <div className="sop-save-live" role="status">
+      {said}
+    </div>
   );
 }
 

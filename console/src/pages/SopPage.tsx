@@ -78,7 +78,16 @@ import {
 import { discardBlock, historyStatus, loadPlan, type LoadPlan, overwriteText } from '../sop/history.js';
 import { HistoryList, SopActions, useKnownVersion, VersionBanner, VersionView } from '../sop/HistoryParts.js';
 import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
-import { barBlock, firstProblem, notePrefill, onlineNow, type PublishedResult, publishedNames, replacedIn } from '../sop/publish.js';
+import {
+  barBlock,
+  firstProblem,
+  notePrefill,
+  onlineNow,
+  type PublishedResult,
+  publishedNames,
+  replacedIn,
+  sameAs,
+} from '../sop/publish.js';
 import {
   conflictTitle,
   exitText,
@@ -103,7 +112,7 @@ import { MergeActions, MergePane } from '../sop/MergeParts.js';
 import { ChangesDrawer, PublishBar, PublishDrawer, SopDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
-import { ConflictBanner, LostEdits, type LostSection, SaveState } from '../sop/SaveParts.js';
+import { ConflictBanner, LostEdits, type LostSection, SaveLive, SaveState } from '../sop/SaveParts.js';
 import { CheckCard, ToolsCard } from '../sop/SideCards.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
 import { cjk } from '../typography.js';
@@ -1061,6 +1070,7 @@ function MemberSop({
     draft || changed.length > 0
       ? {
           changed: changed.length,
+          same: sameAs(compared, online),
           hashes: check.result
             ? ([
                 ['prompt', check.result.promptHash.slice(0, 12)],
@@ -1273,6 +1283,7 @@ function MemberSop({
           limit={quota.limit}
           block={block}
           opening={opening !== null}
+          unchanged={`草稿${sameAs(compared, online)}`}
           // 页头吸顶时状态句藏起来，没保存上要在常驻的发布条上也看得见（409 另有横幅，滚进视口）
           saveFailed={saver.status.kind === 'failed'}
           onRetrySave={saver.flush}
@@ -1389,6 +1400,8 @@ function MemberSop({
           ? `草稿里${draftChanged.length}节改动（${draftChanged.map((s) => s.heading ?? PREAMBLE_NAME).join('、')}）会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`
           : `草稿会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`}
       </ConfirmDanger>
+      {/* 读屏念保存状态的那一处：在页头以外，页头吸顶、状态句藏起来时照样念「没保存上」 */}
+      {editable && <SaveLive status={saver.status} />}
     </>
   );
 }

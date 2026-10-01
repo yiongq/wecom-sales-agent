@@ -185,8 +185,10 @@ export interface HistoryListProps {
   editable: boolean;
   /** 409 停住时不能载入（编辑器冻着） */
   frozen: boolean;
-  /** 草稿那一行：改了几节；草稿的检查结果里的两个哈希（技术详情）。没有草稿是 null */
-  draft: { changed: number; hashes: readonly (readonly [string, string])[] } | null;
+  /**
+   * 草稿那一行：改了几节，没改时怎么说（sameAs）；草稿的检查结果里的两个哈希（技术详情）。没有草稿是 null
+   */
+  draft: { changed: number; same: string; hashes: readonly (readonly [string, string])[] } | null;
   onContinue: () => void;
   onView: (v: SopVersion) => void;
   onRollback: (v: SopVersion, trigger: HTMLElement) => void;
@@ -215,7 +217,7 @@ export function HistoryList(p: HistoryListProps) {
           <li className="sop-history-row">
             <div className="sop-history-head">
               <Status kind="draft" />
-              <span className="sop-history-meta">{cjk(draftLine(p.draft.changed))}</span>
+              <span className="sop-history-meta">{cjk(draftLine(p.draft.changed, p.draft.same))}</span>
               {p.editable && (
                 <button type="button" className="sop-text-btn sop-history-continue" onClick={p.onContinue}>
                   继续编辑

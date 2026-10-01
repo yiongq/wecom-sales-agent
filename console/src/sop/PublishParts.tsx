@@ -3,7 +3,7 @@
 //   发布成功以后是「已发布v3（改了…）· 客户下一句就用新话术」和文字按钮「回滚到v2」，保留到下一次改动（由页面清掉），不弹 toast。
 //   条窄了放不下时省略的是前面那句，「回滚到v2」不跟着省略（它在 Tab 顺序里，不能被裁到看不见）。
 //   自动保存没保存上（连不上、别的 4xx；409 另有横幅）时左边先写 danger 的「没保存上 · 重试」，后面接着原来的摘要：
-//   页头吸顶时状态句藏起来，在一节长正文的下半截打字也看得见、点得到。读屏由状态句的那一段念（role=status），这里不再念一遍。
+//   页头吸顶时状态句藏起来，在一节长正文的下半截打字也看得见、点得到。读屏由页面上看不见的那一处念（SaveParts 的 SaveLive），这里不另设 status。
 //   右边是「发布…」不能点的原因、次要按钮「查看改动」、主按钮「发布…」：不能点时 aria-disabled（PrimaryButton 的 blocked），
 //   有问题时点它跳到第一个问题。
 // - PublishDrawer：640 宽的发布抽屉，从上到下是冲突（检查报了在你编辑期间被别人改过的节、发布答 409 时：
@@ -32,7 +32,17 @@ import { SAVE_FAILED } from './SaveParts.js';
 import type { PublishedHead, SectionChange } from './outline.js';
 import type { LocatedViolation, ProblemTarget } from './problems.js';
 import { conflictTitle } from './merge.js';
-import { baseName, changedText, diffAgainst, drawerBlock, noteReady, type PublishedResult, publishedText, replaceLine } from './publish.js';
+import {
+  baseName,
+  changedText,
+  diffAgainst,
+  drawerBlock,
+  noteReady,
+  type PublishedResult,
+  publishedText,
+  replaceLine,
+  sameAs,
+} from './publish.js';
 import { type CheckBudget, checkItems } from './SideCards.js';
 
 // ---------------- 发布条 ----------------
@@ -50,6 +60,8 @@ export interface PublishBarProps {
   block: { reason: string; jump: boolean } | null;
   /** 点了「发布…」，正在先存没存上的改动 */
   opening: boolean;
+  /** 草稿没有改动时左边的摘要：「草稿和线上一样」；比较的那一版不是线上版本时「草稿和v2一样（线上已是v3）」（sameAs） */
+  unchanged?: string;
   /** 自动保存没保存上（不含 409）：左边先写「没保存上 · 重试」，「重试」马上存（同状态句的「重试」） */
   saveFailed?: boolean;
   onRetrySave?: () => void;
@@ -66,6 +78,7 @@ export interface PublishBarProps {
 export function PublishBar(p: PublishBarProps) {
   const reasonId = useId();
   const quota = `字数${digits(p.chars)} / ${digits(p.limit)}`;
+  const unchanged = p.unchanged ?? '草稿和线上一样';
   let icon: ReactNode;
   let summary: ReactNode;
   let hint: ReactNode;
@@ -90,7 +103,7 @@ export function PublishBar(p: PublishBarProps) {
     );
   } else if (p.changed.length === 0) {
     icon = <Icon of={CircleCheck} className="sop-bar-icon" />;
-    summary = '草稿和线上一样';
+    summary = unchanged;
     hint = (
       <span className="sop-bar-hint-text">
         <Sep />
@@ -116,7 +129,7 @@ export function PublishBar(p: PublishBarProps) {
   }
   if (p.saveFailed) {
     // 没保存上排在最前：摘要换成「没保存上 · 重试」，原来的摘要降成补充接在后面（窄了先省略它）
-    const rest = p.changed.length ? changedText(p.changed) : '草稿和线上一样';
+    const rest = p.changed.length ? changedText(p.changed) : unchanged;
     icon = <Icon of={CircleX} className="sop-bar-icon is-danger" />;
     summary = (
       <span className="sop-bar-failed">
@@ -230,8 +243,21 @@ export function SopDrawer({
   );
 }
 
-/** 逐节改动的一块：标题行（左边标题或计数，右边行内 / 并排），下面是各节的差异；base 是左边那一版的名字（baseName） */
-function ChangesBlock({ head, changes, base }: { head: ReactNode; changes: readonly SectionChange[]; base: string }) {
+/**
+ * 逐节改动的一块：标题行（左边标题或计数，右边行内 / 并排），下面是各节的差异；base 是改动相对的那一版、online 是现在的
+ * 线上版本（左边那一版的名字 baseName、没有改动时的那句 sameAs 照它们写）
+ */
+function ChangesBlock({
+  head,
+  changes,
+  base,
+  online,
+}: {
+  head: ReactNode;
+  changes: readonly SectionChange[];
+  base: Pick<SopVersion, 'versionNo'>;
+  online: Pick<SopVersion, 'versionNo'>;
+}) {
   const [mode, setMode] = useDiffMode();
   return (
     <>
@@ -240,9 +266,9 @@ function ChangesBlock({ head, changes, base }: { head: ReactNode; changes: reado
         <DiffModeToggle mode={mode} onChange={setMode} />
       </div>
       {changes.length ? (
-        <DiffList items={changes} mode={mode} labels={[base, '草稿']} />
+        <DiffList items={changes} mode={mode} labels={[baseName(base, online), '草稿']} />
       ) : (
-        <p className="sop-changes-none">{cjk('草稿和线上一样')}</p>
+        <p className="sop-changes-none">{cjk(`草稿${sameAs(base, online)}`)}</p>
       )}
     </>
   );
@@ -280,7 +306,8 @@ export function ChangesDrawer({
       <ChangesBlock
         head={<span className="sop-changes-count">{changes.length ? `改了${digits(changes.length)}节` : ''}</span>}
         changes={changes}
-        base={baseName(published, online)}
+        base={published}
+        online={online}
       />
     </SopDrawer>
   );
@@ -445,7 +472,8 @@ export function PublishDrawer(props: PublishDrawerProps) {
               </h3>
             }
             changes={p.changes}
-            base={baseName(p.published, p.replacing)}
+            base={p.published}
+            online={p.replacing}
           />
         </section>
         <div className="sop-publish-note">

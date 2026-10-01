@@ -216,7 +216,7 @@ import {
   withText,
 } from './merge.js';
 import { MergeEditor, REVERT_LABEL } from './MergeParts.js';
-import { PublishDrawer, type PublishDrawerProps, useShownWhileClosing } from './PublishParts.js';
+import { ChangesDrawer, PublishDrawer, type PublishDrawerProps, useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
 import { checkItems } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
@@ -2616,6 +2616,8 @@ async function typeAtEnd(m: PageBox, s: string): Promise<void> {
   await act(async () => view.dispatch({ changes: { from: view.state.doc.length, insert: s }, userEvent: 'input.type' }));
 }
 const saveNow = (m: PageBox): string => text(m.box.querySelector('.sop-save-now'));
+/** 读屏念保存状态的那一处（看不见，在页头以外） */
+const saveLive = (m: PageBox): HTMLElement | null => m.box.querySelector<HTMLElement>('.sop-save-live');
 /** 自测没套 ThemeProvider，antd 在两个汉字的按钮里插了空格（页面上的 autoInsertSpace 是关的） */
 const label = (b: Element): string => text(b).replace(/ /g, '');
 const headerButton = (m: PageBox, name: string): HTMLButtonElement | undefined =>
@@ -2723,13 +2725,15 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     [['更多操作', '版本记录'], ''],
   );
   eq(
-    '状态句的保存那一段按最宽的两种写法占位；会变的那一行是 role=status（读屏念出变化），占位不念',
+    '状态句的保存那一段按最宽的两种写法占位，占位不念；读屏念变化的是页头以外看不见的那一处（role=status，页头吸顶时状态句藏起来也在），页头里没有 status（不念两遍）',
     [
       all(m.box, '.sop-save-sizer').map((e) => text(e)),
-      all(m.box, '.sop-save [role="status"]').map((e) => e.className),
+      all(m.box, '.page-header [role="status"]').length,
+      saveLive(m)?.getAttribute('role'),
+      !!saveLive(m)?.closest('.page-header'),
       all(m.box, '.sop-save-sizer').map((e) => e.getAttribute('aria-hidden')),
     ],
-    [['·已自动保存00:00', '·没保存上·重试'], ['sop-save-now'], ['true', 'true']],
+    [['·已自动保存00:00', '·没保存上·重试'], 0, 'status', false, ['true', 'true']],
   );
   eq('没有没存上的改动：丢弃、发布都能点', await headerDisabled(m), [false, false]);
   await typeAtEnd(m, '测');
@@ -2738,14 +2742,14 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   eq('停止输入以后存：带草稿的 rev，只带改过的节，正文是编辑器里的原文', srv.puts(), [
     { basedOn: 'v2', rev: 4, edits: [{ key: 'tone', body: editorText(m)! }] },
   ]);
-  eq('请求在路上：状态句写「保存中…」', saveNow(m), '·保存中…');
+  eq('请求在路上：状态句写「保存中…」，读屏的那一处同样', [saveNow(m), text(saveLive(m))], ['·保存中…', '保存中…']);
   srv.mode = 'ok';
   await act(async () => srv.held.shift()?.resolve());
   await waitFor(() => saveNow(m) !== '·保存中…');
   eq(
-    '存上了：「已自动保存14:30」，按钮能点，缓存里的草稿换成返回的那份',
-    [saveNow(m), await headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
-    ['·已自动保存14:30', [false, false], 10],
+    '存上了：「已自动保存14:30」（读屏的那一处同样），按钮能点，缓存里的草稿换成返回的那份',
+    [saveNow(m), text(saveLive(m)), await headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
+    ['·已自动保存14:30', '已自动保存14:30', [false, false], 10],
   );
   await typeAtEnd(m, '试');
   await waitFor(() => srv.puts().length === 2);
@@ -7776,7 +7780,8 @@ const byIdCalls = (id?: string): number =>
   ).length;
 
 // 14.1 自动保存没保存上：常驻的发布条左边先写 danger 的「没保存上 · 重试」（页头吸顶时状态句藏起来，在长正文的下半截打字
-// 也看得见、点得到），原来的摘要接在后面；读屏由状态句那一段念，条里不另设 status。「重试」马上存，存上以后条换回原来的样子。
+// 也看得见、点得到），原来的摘要接在后面；读屏由页头以外看不见的那一处念（页头吸顶时它还在），条里不另设 status。
+// 「重试」马上存，存上以后条换回原来的样子。
 // 连不上（自动重试）与别的 4xx（422，不自动试）都这样；409 不写（另有横幅，条的原因是「载入最新草稿以后才能发布」）
 {
   const srv = fakeServer(CLEAN_SOP);
@@ -7791,7 +7796,7 @@ const byIdCalls = (id?: string): number =>
   await waitFor(() => saveNow(m).includes('没保存上'));
   const bar = publishBar(m);
   eq(
-    '连不上：发布条左边先写「没保存上 · 重试」（前面是 danger 的图标），改了哪几节、字数接在后面；状态句照写；条里没有另一个 status',
+    '连不上：发布条左边先写「没保存上 · 重试」（前面是 danger 的图标），改了哪几节、字数接在后面；状态句照写；读屏的那一处念「没保存上，重试」，它不在页头里（吸顶时照样念）、条里没有另一个 status',
     [
       normal,
       barText(m).summary,
@@ -7799,9 +7804,11 @@ const byIdCalls = (id?: string): number =>
       barText(m).hint.startsWith('·草稿改了2节（话术原则、异议处理）·1个问题要改·字数'),
       !!bar?.querySelector('.sop-bar-icon.is-danger'),
       saveNow(m),
+      text(saveLive(m)),
+      !!saveLive(m)?.closest('.page-header, .action-bar'),
       !!bar?.querySelector('[role="status"], [aria-live]'),
     ],
-    ['草稿改了2节（话术原则、异议处理）', '没保存上·重试', '重试', true, true, '·没保存上·重试', false],
+    ['草稿改了2节（话术原则、异议处理）', '没保存上·重试', '重试', true, true, '·没保存上·重试', '没保存上，重试', false, false],
   );
   const puts = srv.puts().length;
   await clickEv(barRetry(m));
@@ -7864,16 +7871,17 @@ const byIdCalls = (id?: string): number =>
   const m = await mountPage('/console/sop?section=preamble', travelOwner, opened, FAST);
   await rest(30);
   eq(
-    '取 v2 的时候：整页是骨架（目录、编辑器、发布条都还没画），只取一次',
+    '取 v2 的时候：整页是骨架（目录、编辑器、发布条都还没画；额度条、筛选、说明行的骨架同取 /sop 时），只取一次',
     [
       opened.draft?.stale,
       !!m.box.querySelector('.sop-skel-editor'),
+      ['.sop-skel-quota', '.sop-skel-filter', '.sop-skel-meta'].map((sel) => !!m.box.querySelector(sel)),
       !!cmOf(m),
       all(m.box, 'a.sop-toc-row').length,
       !!publishBar(m),
       byIdCalls('v2'),
     ],
-    [true, true, false, 0, false, 1],
+    [true, true, [true, true, true], false, 0, false, 1],
   );
   await act(async () => srv.byIdHeld.shift()?.resolve());
   await waitFor(() => !!m.box.querySelector('.ant-alert-error'));
@@ -8132,6 +8140,172 @@ const byIdCalls = (id?: string): number =>
     ['草稿的改动相对线上v3', ['tone', 'objections']],
   );
   await m.unmount();
+}
+
+// 14.7 草稿的基线是这次打开页面以后才见到的线上版本（打开时线上 v2；别人把草稿合并到 v3、发布了 v3，载入最新草稿时见到 v3；
+// 店长又发布了 v4，再载入一次，草稿跟不上、基于 v3）：v3 手上有，不按 id 取，马上按 v3 比，前言（店长改的）不算你改的
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
+  const d = srv.state.draft!;
+  srv.state = {
+    ...srv.state,
+    draft: { ...d, sections: withBodies(d.sections, { preamble: '别人改的前言。\n\n' }), basedOn: 'v3', stale: false, rev: 20 },
+  };
+  const reload = async (): Promise<void> => {
+    srv.mode = 'conflict';
+    await typeAtEnd(m, '我写的');
+    await waitFor(() => !!m.box.querySelector('.sop-conflict'));
+    srv.mode = 'ok';
+    await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
+    await waitFor(() => !m.box.querySelector('.sop-conflict'));
+  };
+  await reload();
+  await waitFor(() => statusText(m).startsWith('线上v3'));
+  eq('载入以后线上是 v3，草稿基于它：不按 id 取', [statusText(m).startsWith('线上v3'), byIdCalls()], [true, 0]);
+  srv.publishByOther(withBodies(OTHER_PREAMBLE, { preamble: '店长又改的前言。\n\n' }), { publishedByName: '店长' });
+  await reload();
+  await waitFor(() => statusText(m).startsWith('线上v4'));
+  eq(
+    '再载入：线上 v4、草稿还基于 v3（这次打开以后见过的线上版本），手上有、不按 id 取；目录只算你改的两节，页头下不报错',
+    [
+      statusText(m).startsWith('线上v4'),
+      byIdCalls(),
+      dotted(m),
+      all(m.box, '.sop-banners .ant-alert-title').some((t) => text(t) === '没取到草稿的基线版本'),
+    ],
+    [true, 0, ['tone', 'objections'], false],
+  );
+  await m.unmount();
+}
+
+// 14.8 打开时草稿就跟不上、v2 已经取到；回滚以后版本的缓存跟着重取（['sop-versions']），v2 这一次没取到：手上的 v2 照用，
+// 页头下不报「没取到草稿的基线版本」，目录照旧只算你改的两节
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
+  srv.released = [...srv.released, version(1, withBodies(P_ONLINE, { preamble: '最早的前言。\n\n' }), { status: 'archived' })];
+  const m = await mountPage('/console/sop?section=tone', travelOwner, srv.state, FAST);
+  await waitFor(() => !!cmOf(m) && summaryOf(m) !== '');
+  const before = dotted(m);
+  srv.byIdFails = true;
+  await openHistory(m);
+  await clickEv(rowButton('v1', '回滚到这版…'));
+  const rb = (): Element | undefined => modalOf('回滚到v1');
+  await waitFor(() => !!rb()?.querySelector('input'));
+  await setText(rb()!.querySelector('input')!, '退回去');
+  await clickEv(all<HTMLButtonElement>(rb()!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1'));
+  await waitFor(() => !rb() && statusText(m).startsWith('线上v4') && byIdCalls('v2') === 2);
+  await rest(50);
+  eq(
+    '回滚以后重取 v2 没取到：不报错，目录照旧两节（前言不算），状态句草稿改了2节',
+    [
+      before,
+      byIdCalls('v2'),
+      all(m.box, '.sop-banners .ant-alert-title').some((t) => text(t) === '没取到草稿的基线版本'),
+      dotted(m),
+      statusText(m).includes('草稿改了2节'),
+    ],
+    [['tone', 'objections'], 2, false, ['tone', 'objections'], true],
+  );
+  await m.unmount();
+}
+
+// 14.9 草稿跟不上线上版本、自己又没改（草稿和它所基于的 v2 一样，店长发布的 v3 只改了前言）：草稿和线上 v3 并不一样，
+// 不写「草稿和线上一样」：发布条写「草稿和v2一样（线上已是v3）」，版本记录的草稿那一行同样；改了一个字、存上以后
+// 连不上时再改回去（没有改动、没保存上），条上「没保存上 · 重试」后面的补充也是这一句
+{
+  const same: SopOverview = {
+    ...CLEAN_SOP,
+    draft: { ...CLEAN_SOP.draft!, sections: P_ONLINE },
+    budget: { ...CLEAN_SOP.budget, chars: editableChars(P_ONLINE, SPEC) },
+  };
+  const srv = fakeServer(same);
+  srv.check = scanRebase;
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
+  const m = await mountPage('/console/sop?section=tone', travelOwner, srv.state, { ...FAST, backoff: [10_000] });
+  await waitFor(() => !!cmOf(m) && !!publishBar(m));
+  eq(
+    '没有你的改动：目录没有圆点，发布条写「草稿和v2一样（线上已是v3）」、「发布…」的原因照旧',
+    [byIdCalls('v2'), dotted(m), barText(m).summary, barText(m).note],
+    [1, [], '草稿和v2一样（线上已是v3）', '没有可发布的改动'],
+  );
+  await typeAtEnd(m, '甲');
+  await waitFor(() => srv.puts().length === 1 && saveNow(m) === '·已自动保存14:30');
+  eq('改了一个字、存上了：条上是草稿改了1节', barText(m).summary, '草稿改了1节（话术原则）');
+  srv.mode = 'network';
+  const view = EditorView.findFromDOM(cmOf(m)!)!;
+  const len = view.state.doc.length;
+  await act(async () => view.dispatch({ changes: { from: len - 1, to: len }, userEvent: 'delete.backward' }));
+  await waitFor(() => saveNow(m).includes('没保存上'));
+  eq(
+    '改回去、没保存上：条上「没保存上 · 重试」，后面的补充是「草稿和v2一样（线上已是v3）」和字数',
+    [barText(m).summary, barText(m).hint.startsWith('·草稿和v2一样（线上已是v3）·字数'), dotted(m)],
+    ['没保存上·重试', true, []],
+  );
+  srv.mode = 'ok';
+  await clickEv(barRetry(m));
+  await waitFor(() => saveNow(m) === '·已自动保存14:30' && srv.puts().length === 3);
+  await openHistory(m);
+  eq(
+    '版本记录的草稿那一行：「未发布 · 和v2一样（线上已是v3）」',
+    text(historyDrawer()?.querySelector('.sop-history-row .sop-history-meta')),
+    '未发布·和v2一样（线上已是v3）',
+  );
+  await m.unmount();
+}
+
+// 14.10 两个抽屉里没有改动时那一句（查看改动、发布抽屉，同发布条）：比较的那一版是线上版本时「草稿和线上一样」，
+// 不是时（草稿跟不上线上版本、自己又没改）「草稿和v2一样（线上已是v3）」
+{
+  const v2 = CLEAN_SOP.published;
+  const v3 = version(3, OTHER_PREAMBLE, { publishedByName: '店长' });
+  const none = (title: string): string => text(drawerOf(title)?.querySelector('.sop-changes-none'));
+  const changesOf = (base: SopVersion, online: SopVersion): ReactElement => (
+    <ChangesDrawer open section={null} changes={[]} published={base} online={online} onClose={noop} />
+  );
+  const c = await rootFor(changesOf(v2, v3));
+  const stale = none('草稿的改动');
+  await c.render(changesOf(v3, v3));
+  eq(
+    '查看改动：基于 v2 时写和v2一样（线上已是v3），基于线上时写和线上一样',
+    [stale, none('草稿的改动')],
+    ['草稿和v2一样（线上已是v3）', '草稿和线上一样'],
+  );
+  await c.unmount();
+  const publishOf = (base: SopVersion, online: SopVersion): ReactElement => (
+    <PublishDrawer
+      open
+      onClose={noop}
+      spec={SPEC}
+      published={base}
+      replacing={online}
+      now={NOW}
+      changes={[]}
+      located={null}
+      budget={null}
+      check={{ running: false, failed: false, at: NOW, retry: noop }}
+      conflicts={[]}
+      onMerge={noop}
+      mergeBusy={false}
+      note=""
+      prefill=""
+      onNote={noop}
+      publishing={false}
+      error={null}
+      onPublish={noop}
+      onLocate={noop}
+    />
+  );
+  const d = await rootFor(publishOf(v2, v3));
+  const staleD = none('发布草稿');
+  await d.render(publishOf(v3, v3));
+  eq('发布抽屉：同上', [staleD, none('发布草稿')], ['草稿和v2一样（线上已是v3）', '草稿和线上一样']);
+  await d.unmount();
 }
 
 respond = null;
