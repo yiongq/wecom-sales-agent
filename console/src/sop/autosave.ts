@@ -8,6 +8,7 @@
 // - 409（rev_conflict，以及并发首次保存撞上的 conflict）：不再重试，自动保存停住，由页面冻结编辑器、提示载入最新草稿。
 // - 输入法组字时（编辑器里是还没上屏的拼音）不存，等字上屏；409 在组字时回来，也等字上屏再停住。
 // - ⌘S / Ctrl+S 立即保存；话术页没有「保存草稿」按钮。
+// - 合并冲突期间（第 8 步）暂停：当作没有要存的改动，完成合并由页面自己存（带 rebaseOnto），退出合并以后照常。
 // 状态机（createAutosaver）不依赖 React，计时器可以换，自测直接驱动；useAutosave 把它接到页面上。
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { SopVersion } from '../../../src/shared/console-api.js';
@@ -252,6 +253,8 @@ export function createAutosaver(deps: AutosaverDeps): Autosaver {
 export interface AutosaveInput {
   /** 能编辑的成员才自动保存 */
   enabled: boolean;
+  /** 暂停（合并期间）：当作没有要存的改动；⌘S 照样拦下浏览器的「存储网页」 */
+  paused?: boolean;
   /** 本地改过、还没存进草稿的节 */
   unsaved: readonly DraftEdit[];
   /** 编辑器正在用输入法组字 */
@@ -289,7 +292,7 @@ class PageSaver {
     this.base = input.base;
     this.saver = createAutosaver({
       timing: () => this.latest.timing,
-      hasPending: () => this.latest.input.enabled && this.latest.input.unsaved.length > 0,
+      hasPending: () => this.latest.input.enabled && !this.latest.input.paused && this.latest.input.unsaved.length > 0,
       composing: () => this.latest.input.composing(),
       send: async () => {
         const { unsaved, send, onSaved } = this.latest.input;

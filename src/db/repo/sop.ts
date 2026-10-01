@@ -156,11 +156,20 @@ export async function insertDraft(
   return row!;
 }
 
-/** 按 rev 乐观锁改草稿的节；rev 对不上（或已不是草稿）返回 null。rev 由触发器加 1 */
-export async function updateDraftSections(tx: Tx, id: string, rev: number, sections: SopSectionRow[]): Promise<SopVersionRow | null> {
+/**
+ * 按 rev 乐观锁改草稿的节；rev 对不上（或已不是草稿）返回 null。rev 由触发器加 1。
+ * 给了 basedOn 时一并换掉草稿的基线（合并冲突以后，后台 UX spec「接口改动 · rebaseOnto」）：触发器只拦 id、租户、来源这几列，不用迁移
+ */
+export async function updateDraftSections(
+  tx: Tx,
+  id: string,
+  rev: number,
+  sections: SopSectionRow[],
+  basedOn?: string,
+): Promise<SopVersionRow | null> {
   const [row] = await tx
     .update(sopVersions)
-    .set({ sections })
+    .set(basedOn === undefined ? { sections } : { sections, basedOn })
     .where(and(eq(sopVersions.id, id), eq(sopVersions.rev, rev), eq(sopVersions.status, 'draft')))
     .returning(columns);
   return row ?? null;

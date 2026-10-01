@@ -572,6 +572,22 @@
   line-height: 20px;
   color: var(--danger);
 }
+/* 合并模式（第 8 步）：要合并的节下一行「需合并」，同问题数的样子；处理好了「已处理」，text-2，勾是 --success */
+.sop-toc-merge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.sop-toc-merge.is-done {
+  color: var(--text-2);
+}
+.sop-toc-merge.is-done > svg {
+  color: var(--success);
+}
 .sop-toc-count {
   flex: none;
   margin-top: 1px;
@@ -625,8 +641,9 @@
 .sop-toc-option .sop-toc-count {
   margin-top: 0;
 }
-/* 下拉里的问题数写在同一行的右端 */
-.sop-toc-option .sop-toc-issue {
+/* 下拉里的问题数、合并的标记写在同一行的右端 */
+.sop-toc-option .sop-toc-issue,
+.sop-toc-option .sop-toc-merge {
   flex: none;
   margin-top: 0;
 }
@@ -1294,4 +1311,171 @@
   font-size: 13px;
   line-height: 20px;
   color: var(--text-2);
+}
+
+/*
+ * ---------------- 冲突合并（第 8 步，spec「销售话术 · 冲突合并」） ----------------
+ * 合并模式没有右栏：中栏占满目录右边（左右对照要宽），最宽 1040（同查看改动）。
+ * 中栏：节标题、说明行（同编辑器），下面是对照卡片（同编辑卡片：panel 底、--r-lg、--shadow-card），卡片里第一行是两栏的名字 13 text-2，
+ * 底部「这一节处理好了」（次要按钮；点过换成 success 的勾加 14 text 的同一句）。
+ * 对照：左右各一个编辑器，正文同编辑器 16/28（§2.3 reading），中间 32 宽一栏放「采用线上的写法」。改到的行照「你没保存上的改动」
+ * 的对比上色：左边（线上的写法）--subtle、改到的字下面一道 1.5px text-3；右边（你的草稿）--accent-bg、改到的字下面一道 2px --accent。
+ * @codemirror/merge 自带的红绿只有浅色一套，都盖掉；选择器比它的主题多一层，与插入顺序无关
+ */
+@media (min-width: 1440px) {
+  @container (min-width: 1280px) {
+    .sop-body.is-merging {
+      grid-template-columns: 264px minmax(0, 1fr);
+    }
+  }
+}
+.sop-merge {
+  max-width: 1040px;
+}
+.sop-merge .sop-pane-title {
+  outline: none;
+}
+.sop-merge-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px minmax(0, 1fr);
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-merge-cols > span {
+  padding: 0 16px;
+}
+.sop-merge-cols > span:last-child {
+  grid-column: 3;
+}
+.sop-merge-card {
+  margin-top: 12px;
+  padding: 12px 0 16px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+/* 合并的对照不自己滚动、不裁切：两栏之间按钮的提示要伸到右边那一栏上面 */
+.sop-merge-card .cm-mergeView {
+  overflow: visible;
+}
+.sop-merge-card .cm-mergeView .cm-editor {
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+}
+.sop-merge-card .cm-mergeView .cm-editor.cm-focused {
+  outline: none;
+}
+.sop-merge-card .cm-mergeView .cm-scroller {
+  font-family: var(--font);
+  line-height: 28px;
+}
+.sop-merge-card .cm-mergeView .cm-content {
+  padding: 0;
+  caret-color: var(--text);
+}
+.sop-merge-card .cm-mergeView .cm-line {
+  padding: 0 16px;
+}
+/* 正文聚焦：同编辑卡片的规矩，框画在这一栏里（往里收 2） */
+.sop-merge-card .cm-mergeView .cm-content:focus-visible,
+.sop-merge-card .cm-mergeView .cm-editor.cm-merge-b.cm-focused .cm-content {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sop-merge-card .cm-mergeView .cm-editor.cm-merge-a .cm-changedLine {
+  background-color: var(--subtle);
+}
+.sop-merge-card .cm-mergeView .cm-editor.cm-merge-b .cm-changedLine {
+  background-color: var(--accent-bg);
+}
+.sop-merge-card .cm-mergeView .cm-editor.cm-merge-a .cm-changedText {
+  background: linear-gradient(var(--text-3), var(--text-3)) bottom / 100% 1.5px no-repeat;
+}
+.sop-merge-card .cm-mergeView .cm-editor.cm-merge-b .cm-changedText {
+  background: linear-gradient(var(--accent), var(--accent)) bottom / 100% 2px no-repeat;
+}
+.sop-merge-card .cm-mergeView .cm-editor .cm-deletedText {
+  background: none;
+}
+/* 两栏之间：32 宽，左右各一条 --divider；按钮 24 见方，与改动那一块的第一行对齐（行高 28） */
+.sop-merge-card .cm-mergeView .cm-merge-revert {
+  width: 32px;
+  box-shadow:
+    inset 1px 0 0 var(--divider),
+    inset -1px 0 0 var(--divider);
+}
+.sop-merge-card .cm-mergeView .cm-merge-revert button.sop-merge-revert {
+  display: grid;
+  place-items: center;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+  margin-top: 2px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  transition:
+    background-color 100ms linear,
+    color 100ms linear;
+}
+.sop-merge-card .cm-mergeView .cm-merge-revert button.sop-merge-revert:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.sop-merge-card .cm-mergeView .cm-merge-revert button.sop-merge-revert:active {
+  background: var(--pressed);
+}
+.sop-merge-card .cm-mergeView .cm-merge-revert button.sop-merge-revert:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.sop-merge-revert > svg {
+  display: block;
+}
+/* 提示（§5.15）：--text 底、--panel 色字 13/20，内边距 4 8，--r-sm，最宽 240，无箭头；悬停或键盘聚焦时出现在按钮右下 */
+.sop-merge-card .cm-mergeView .cm-merge-revert {
+  z-index: 2;
+}
+.sop-merge-revert::after {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 3;
+  display: none;
+  max-width: 240px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--panel);
+  white-space: nowrap;
+  content: attr(aria-label);
+  content: attr(aria-label) / '';
+  pointer-events: none;
+}
+.sop-merge-revert:hover::after,
+.sop-merge-revert:focus-visible::after {
+  display: block;
+}
+.sop-merge-foot {
+  margin-top: 12px;
+}
+.sop-merge-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-height: 32px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-merge-done > svg {
+  color: var(--success);
 }

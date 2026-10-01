@@ -143,8 +143,8 @@ function svgNode([tag, attrs, children]: LucideIconNode): SVGElement {
   return el;
 }
 
-/** lucide 图标的 SVG，线宽任何尺寸下都是 1.5px（设计系统 §7 的 absoluteStrokeWidth：1.5 × 24 / size） */
-function lucideSvg(data: LucideIconData, size: number): SVGElement {
+/** lucide 图标的 SVG，线宽任何尺寸下都是 1.5px（设计系统 §7 的 absoluteStrokeWidth：1.5 × 24 / size）；合并的「采用线上的写法」也用它 */
+export function lucideSvg(data: LucideIconData, size: number): SVGElement {
   const svg = document.createElementNS(SVG, 'svg');
   const attrs: Record<string, string> = {
     width: String(size),

@@ -114,13 +114,17 @@ export const changedText = (names: readonly string[]): string => `草稿改了${
 export const publishedText = (r: Pick<PublishedResult, 'versionNo' | 'names'>): string =>
   `已发布v${r.versionNo ?? '—'}${r.names.length ? `（改了${namesText(r.names)}）` : ''}`;
 
-/** 「发布…」不能点的原因（至多一条，按先后）；null 是能点（还有没存上的改动也能点：点了先存） */
-export function barBlock(input: { frozen: boolean; changed: number; problems: number }): {
+/**
+ * 「发布…」不能点的原因（至多一条，按先后）；null 是能点（还有没存上的改动也能点：点了先存）。
+ * merging：正在合并（第 8 步），完成合并以后回到发布抽屉
+ */
+export function barBlock(input: { frozen: boolean; merging?: boolean; changed: number; problems: number }): {
   reason: string;
   /** 点它跳到第一个问题 */
   jump: boolean;
 } | null {
   if (input.frozen) return { reason: '载入最新草稿以后才能发布', jump: false };
+  if (input.merging) return { reason: '完成合并以后才能发布', jump: false };
   // 左边的摘要已经写了「草稿和线上一样」（或发布成功的那句），这里接着写后半句
   if (input.changed === 0) return { reason: '没有可发布的改动', jump: false };
   if (input.problems > 0) return { reason: `改完${digits(input.problems)}个问题即可发布`, jump: true };
@@ -161,7 +165,7 @@ export function noteReady(note: string, prefill: string): boolean {
 
 /**
  * 抽屉里「发布」不能点的原因（至多一条，按先后）；null 是能点。
- * running：打开抽屉时的检查还没回来；failed：没检查上；conflicts：检查报了在你编辑期间被别人改过的节
+ * running：打开抽屉时的检查还没回来；failed：没检查上；conflicts：检查报了在你编辑期间被别人改过的节（点了去「去合并」）
  */
 export function drawerBlock(input: {
   running: boolean;
@@ -169,10 +173,10 @@ export function drawerBlock(input: {
   conflicts: number;
   problems: number;
   noteReady: boolean;
-}): { reason: string; focus: 'checks' | 'note' | null } | null {
+}): { reason: string; focus: 'checks' | 'note' | 'merge' | null } | null {
   if (input.running) return { reason: '正在检查…', focus: null };
   if (input.failed) return { reason: '没检查上，重试以后再发布', focus: 'checks' };
-  if (input.conflicts > 0) return { reason: `有${digits(input.conflicts)}节被别人改过，发布不了`, focus: null };
+  if (input.conflicts > 0) return { reason: `合并完${digits(input.conflicts)}节即可发布`, focus: 'merge' };
   if (input.problems > 0) return { reason: `改完${digits(input.problems)}个问题即可发布`, focus: 'checks' };
   if (!input.noteReady) return { reason: '在说明里写上为什么改', focus: 'note' };
   return null;

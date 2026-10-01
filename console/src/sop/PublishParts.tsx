@@ -4,7 +4,8 @@
 //   条窄了放不下时省略的是前面那句，「回滚到v2」不跟着省略（它在 Tab 顺序里，不能被裁到看不见）。
 //   右边是「发布…」不能点的原因、次要按钮「查看改动」、主按钮「发布…」：不能点时 aria-disabled（PrimaryButton 的 blocked），
 //   有问题时点它跳到第一个问题。
-// - PublishDrawer：640 宽的发布抽屉，从上到下是检查清单（没过的项点了关抽屉并定位）、替换说明、逐节改动（行内 / 并排）、
+// - PublishDrawer：640 宽的发布抽屉，从上到下是冲突（检查报了在你编辑期间被别人改过的节、发布答 409 时：
+//   「有2节在你改的同时被改了：话术原则」和「去合并」，第 8 步）、检查清单（没过的项点了关抽屉并定位）、替换说明、逐节改动（行内 / 并排）、
 //   变更说明（预填改了哪几节，要在预填之外再写至少一个字），底部「取消」「发布」，「发布」不能点时旁边写原因。
 //   发布没成功（422、409 以外的）时错误写在最上面，出来时滚进视口，它的「重试」与「发布」同样先看能不能发布。
 //   发布请求在路上时关不掉（「取消」、关闭按钮不能点，旁边写「正在发布…」；Esc、点遮罩也不管用）：关上并不撤回请求，
@@ -14,7 +15,7 @@
 // 抽屉关着时不挂（destroyOnHidden）：话术页每敲一个字整页重渲，关着的弹层不能跟着重渲（第 5.1 步 #185 的教训）
 import { Alert, Button, Drawer, type GetRef, Input } from 'antd';
 import { CircleCheck, Info, PencilLine, TriangleAlert, X } from 'lucide-react';
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
+import { type ReactNode, type Ref, useEffect, useId, useRef, useState } from 'react';
 import type { SectionSpecView, SopVersion } from '../../../src/shared/console-api.js';
 import { clockTime, digits } from '../../../src/shared/format.js';
 import { ActionBar } from '../parts/ActionBar.js';
@@ -27,6 +28,7 @@ import { cjk, Sep } from '../typography.js';
 import { DiffList, DiffModeToggle, useDiffMode } from './DiffView.js';
 import type { PublishedHead, SectionChange } from './outline.js';
 import type { LocatedViolation, ProblemTarget } from './problems.js';
+import { conflictTitle } from './merge.js';
 import { baseName, changedText, diffAgainst, drawerBlock, noteReady, type PublishedResult, publishedText, replaceLine } from './publish.js';
 import { type CheckBudget, checkItems } from './SideCards.js';
 
@@ -51,6 +53,8 @@ export interface PublishBarProps {
   onChanges: (trigger: HTMLElement) => void;
   /** 「回滚到v2」：点的那个按钮（回滚确认关上以后焦点还给它） */
   onRollback: (trigger: HTMLElement) => void;
+  /** 「发布…」：完成合并以后回到发布抽屉，抽屉关上时焦点还给它 */
+  publishRef?: Ref<HTMLButtonElement>;
 }
 
 export function PublishBar(p: PublishBarProps) {
@@ -104,7 +108,7 @@ export function PublishBar(p: PublishBarProps) {
       </span>
     );
   }
-  const { block } = p;
+  const { block, publishRef } = p;
   return (
     // display: contents：发布条照样吸在面板底部（sticky 的范围是面板，不是这一层）
     <div className="sop-publish-bar">
@@ -113,6 +117,7 @@ export function PublishBar(p: PublishBarProps) {
           查看改动
         </Button>
         <PrimaryButton
+          ref={publishRef}
           blocked={!!block}
           loading={p.opening}
           aria-describedby={block ? reasonId : undefined}
@@ -285,8 +290,11 @@ export interface PublishDrawerProps {
   located: readonly LocatedViolation[] | null;
   budget: CheckBudget | null;
   check: DrawerCheck;
-  /** 检查报了在你编辑期间被别人改过的节（节名） */
+  /** 检查报了（或发布答 409）在你编辑期间被别人改过的节（节名） */
   conflicts: readonly string[];
+  /** 「去合并」：先存、重查，进了合并模式（第 8 步）才关上抽屉；mergeBusy 是在等的时候（按钮转圈） */
+  onMerge: () => void;
+  mergeBusy: boolean;
   note: string;
   prefill: string;
   onNote: (v: string) => void;
@@ -316,6 +324,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
   const reasonId = useId();
   const noteRef = useRef<GetRef<typeof Input.TextArea>>(null);
   const checksRef = useRef<HTMLDivElement>(null);
+  const mergeRef = useRef<HTMLButtonElement>(null);
   // 发布没成功：错误写在抽屉体的最上面，出来的那一刻滚进视口（点「发布」时多半滚到了底下写说明）
   const errorRef = useRef<HTMLDivElement>(null);
   const { error } = p;
@@ -338,6 +347,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
     if (!block) p.onPublish();
     else if (block.focus === 'note') noteRef.current?.focus({ cursor: 'end' });
     else if (block.focus === 'checks') checksRef.current?.querySelector<HTMLElement>('button')?.focus();
+    else if (block.focus === 'merge') mergeRef.current?.focus();
   };
   return (
     <SopDrawer
@@ -370,10 +380,15 @@ export function PublishDrawer(props: PublishDrawerProps) {
         )}
         {p.conflicts.length > 0 && (
           <Alert
+            className="sop-publish-conflict"
             type="error"
             showIcon
-            title={cjk(`有${p.conflicts.length}节在你改的同时被改了：${p.conflicts.join('、')}`)}
-            description={cjk('这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。')}
+            title={cjk(conflictTitle(p.conflicts))}
+            action={
+              <Button ref={mergeRef} size="small" loading={p.mergeBusy} onClick={p.onMerge}>
+                去合并
+              </Button>
+            }
           />
         )}
         <div ref={checksRef}>

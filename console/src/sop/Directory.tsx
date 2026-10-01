@@ -1,6 +1,6 @@
 // 话术目录（spec「销售话术 · 目录」，设计系统 B 页左栏）：保持 prompt 的原顺序；顶部分段控件「全部 / 可编辑 / 已改」带计数；
 // 固定规则节带锁、节名用次要色，悬停或聚焦时说明锁定原因；改过的节带主色圆点，字数写「954（+44）」；当前节用选中底色；
-// 检查报了问题的节下一行写「1个问题」。底部说明带锁的节是固定规则。
+// 检查报了问题的节下一行写「1个问题」；合并模式里要合并的节下一行写「需合并」，处理好了写「已处理」。底部说明带锁的节是固定规则。
 // 每一节是指向 /sop?section=… 的链接（刷新、后退、分享都能还原）；整个目录只占一个 Tab 位（当前节），上下方向键切换节、
 // Home / End 到头尾，Enter 进入编辑器。宽 <1280 时整个目录换成编辑器上方的下拉选择（DirectorySelect）。
 // 编辑器每敲一个字，页面都按新的字数重渲一次；这里只让字数变了的那一行跟着重渲（TocRow、DirectorySelect 都是 memo，
@@ -9,7 +9,7 @@
 // setState，排一个 Default 优先级的更新；逐字的同步提交接连遇上没做完的 Default 更新，快速连按 50 下 React 就报 #185。
 // 样式在 sop.css，由 pages/sop.lazy.tsx 引入；这里不 import CSS，自测才能在 Node 里直接 import
 import { Segmented, Select, Tooltip } from 'antd';
-import { CircleX, Lock } from 'lucide-react';
+import { CircleAlert, CircleCheck, CircleX, Lock } from 'lucide-react';
 import { type KeyboardEvent, memo, type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../shell/icons.js';
 import { type Matcher, type PinyinLib, pinyinMatcher, plainMatch } from '../shell/search.js';
@@ -85,6 +85,7 @@ interface TocRowProps {
   lockReason: string | null;
   changed: boolean;
   issues: number;
+  merge: OutlineRow['merge'];
   /** 右侧字数；不写字数时是 null */
   count: string | null;
   current: boolean;
@@ -103,6 +104,21 @@ function IssueCount({ n }: { n: number }) {
   );
 }
 
+/** 合并模式里的标记：要合并的节「需合并」（danger，前置 circle-alert），点过「这一节处理好了」的「已处理」（text-2，前置 success 的勾） */
+function MergeMark({ mark }: { mark: NonNullable<OutlineRow['merge']> }) {
+  return mark === 'todo' ? (
+    <span className="sop-toc-merge">
+      <Icon of={CircleAlert} size={14} />
+      需合并
+    </span>
+  ) : (
+    <span className="sop-toc-merge is-done">
+      <Icon of={CircleCheck} size={14} />
+      已处理
+    </span>
+  );
+}
+
 /** 目录的一行。属性全是原始值，别的节在打字时不重渲 */
 const TocRow = memo(function TocRow(p: TocRowProps) {
   const cls = ['sop-toc-row', p.locked && 'is-locked', p.changed && 'is-changed'].filter(Boolean).join(' ');
@@ -111,6 +127,7 @@ const TocRow = memo(function TocRow(p: TocRowProps) {
       <span className="sop-toc-lock">{p.locked && <LockMark />}</span>
       <span className="sop-toc-main">
         <SectionName name={p.name} changed={p.changed} />
+        {p.merge && <MergeMark mark={p.merge} />}
         {p.issues > 0 && <IssueCount n={p.issues} />}
       </span>
       {p.count !== null && <span className="sop-toc-count">{p.count}</span>}
@@ -196,6 +213,7 @@ export function Directory({ rows, current, filter, onFilter, showCounts, hrefOf,
                 lockReason={row.lockReason}
                 changed={row.changed}
                 issues={row.issues}
+                merge={row.merge}
                 count={showCounts ? countText(row) : null}
                 current={row.key === current}
                 tabbable={row.key === tabKey}
@@ -218,7 +236,7 @@ let pinyinLoad: Promise<PinyinLib> | null = null;
 const loadPinyin = (): Promise<PinyinLib> => (pinyinLoad ??= import('pinyin-match').then((m) => m.default as PinyinLib));
 
 /**
- * 下拉里的一项：锁、节名（改过带圆点）、问题数。不写字数：字数逐字在变，写了下拉就得逐字重渲（见文件头）；
+ * 下拉里的一项：锁、节名（改过带圆点）、合并的标记、问题数。不写字数：字数逐字在变，写了下拉就得逐字重渲（见文件头）；
  * 问题数只在检查或发布之后变
  */
 function OptionLabel({ row }: { row: OutlineRow }) {
@@ -226,6 +244,7 @@ function OptionLabel({ row }: { row: OutlineRow }) {
     <span className={['sop-toc-option', row.locked && 'is-locked', row.changed && 'is-changed'].filter(Boolean).join(' ')}>
       <span className="sop-toc-lock">{row.locked && <LockMark />}</span>
       <SectionName name={row.name} changed={row.changed} />
+      {row.merge && <MergeMark mark={row.merge} />}
       {row.issues > 0 && <IssueCount n={row.issues} />}
     </span>
   );
@@ -236,12 +255,19 @@ export type DirectorySelectProps = Pick<DirectoryProps, 'rows' | 'current'> & {
   onSelect: (key: string) => void;
 };
 
-/** 下拉画出来的部分相同：节的顺序、名字、锁、改没改、问题数 */
+/** 下拉画出来的部分相同：节的顺序、名字、锁、改没改、问题数、合并的标记 */
 const sameOptions = (a: readonly OutlineRow[], b: readonly OutlineRow[]): boolean =>
   a.length === b.length &&
   a.every((r, i) => {
     const o = b[i]!;
-    return r.key === o.key && r.name === o.name && r.locked === o.locked && r.changed === o.changed && r.issues === o.issues;
+    return (
+      r.key === o.key &&
+      r.name === o.name &&
+      r.locked === o.locked &&
+      r.changed === o.changed &&
+      r.issues === o.issues &&
+      r.merge === o.merge
+    );
   });
 
 export const DirectorySelect = memo(

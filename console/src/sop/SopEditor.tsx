@@ -133,7 +133,7 @@ export function composingIn(el: HTMLElement | null): boolean {
 
 /**
  * 中栏：节标题、说明行、编辑卡片。who：editor 能改（说明行以「可编辑」开头），reader 是只读的成员，anon 是匿名（可编辑节没有说明行）。
- * frozen：能改的人也暂时改不了（自动保存收到 409、停住的时候），说明行照旧。
+ * frozen：能改的人也暂时改不了（自动保存收到 409、停住的时候），说明行照旧。meta：说明行换成这几段（合并期间别的节写为什么只读）。
  * notes：这一节没有行内提醒的问题（结构、固定规则、必需说法、禁用短语的说明），写在编辑卡片上方，样子同行内提醒（§5.12）；
  * notesRef 给页面定位时滚过去
  */
@@ -141,6 +141,7 @@ export function SectionPane({
   row,
   who,
   frozen = false,
+  meta: metaOver,
   notes,
   notesRef,
   onViewDiff,
@@ -149,13 +150,14 @@ export function SectionPane({
   row: OutlineRow;
   who: 'editor' | 'reader' | 'anon';
   frozen?: boolean;
+  meta?: readonly string[];
   notes?: readonly string[];
   notesRef?: Ref<HTMLUListElement>;
   /** 说明行末尾的「查看本节改动」（这一节相对线上改过时才有）：打开这一节的逐节改动 */
   onViewDiff?: (key: string, trigger: HTMLElement) => void;
 }) {
   const titleId = useId();
-  const meta = row.locked ? null : sectionMeta(row, who);
+  const meta = row.locked ? null : (metaOver ?? sectionMeta(row, who));
   return (
     <section className="sop-pane" aria-labelledby={titleId}>
       <h2 id={titleId} className="sop-pane-title">
