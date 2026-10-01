@@ -50,6 +50,7 @@ import {
 import { ImportCsvBody } from '../../../src/shared/console-api.js';
 import { parseCsv } from '../../../src/shared/csv.js';
 import { absoluteTime } from '../../../src/shared/format.js';
+import { renovationLPage } from '../../../src/shared/pack-fixtures/renovation-l-page.js';
 import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';
 import {
   checkItem,
@@ -265,8 +266,12 @@ const entityOf = (p: IndustryPack, kind: string): EntityType => p.entities.find(
 const fieldOf = (e: EntityType, key: string): FieldDef => e.fields.find((f) => f.key === key)!;
 const ROUTE = entityOf(travel, 'route');
 const HOTEL = entityOf(travel, 'hotel');
-const PKG = entityOf(renovation, 'package');
-const MATERIAL = entityOf(renovation, 'material');
+// 假包两份：钉 L 页写法的断言（PKG、MATERIAL 和挂整页时的 renovationLPage）用冻结的 L 页版；逐字段画三种形态、样例打开不改
+// 这些通用检查用活的 renovation（LIVE_PKG、LIVE_MATERIAL），它比 L 页多出来的字段照样逐个画到
+const PKG = entityOf(renovationLPage, 'package');
+const MATERIAL = entityOf(renovationLPage, 'material');
+const LIVE_PKG = entityOf(renovation, 'package');
+const LIVE_MATERIAL = entityOf(renovation, 'material');
 
 const SICHUAN = ROUTES.find((r) => r.id === 'r-sichuan-lux')!;
 /** 草稿线路 r-guizhou-5d（设计系统 §10.0）：从 r-guizhou 取第 1、2、3、5、6 天 */
@@ -290,117 +295,25 @@ const GUIZHOU_5D: Payload = {
   exclusions: GUIZHOU.exclusions,
 };
 
-// 假包的样例（设计系统 L 页）：4 件主材，5 个套餐（第 5 个是草稿）
-const MATERIALS: Payload[] = [
-  {
-    id: 'm-marcopolo-800',
-    name: '马可波罗 800×800 抛釉砖',
-    category: '瓷砖',
-    brand: '马可波罗',
-    priceUnit: '㎡',
-    unitPrice: 168,
-    warrantyYears: 5,
-    ecoGrade: 'E0级',
-  },
-  {
-    id: 'm-daziran-3c',
-    name: '大自然 三层实木复合地板',
-    category: '地板',
-    brand: '大自然',
-    priceUnit: '㎡',
-    unitPrice: 298,
-    warrantyYears: 10,
-  },
-  {
-    id: 'm-oupai-cab',
-    name: '欧派 整体橱柜',
-    category: '橱柜',
-    brand: '欧派',
-    priceUnit: '延米',
-    unitPrice: 2680,
-    warrantyYears: 5,
-    ecoGrade: 'ENF级',
-  },
-  { id: 'm-jianpai-bath', name: '箭牌 卫浴套装', category: '卫浴', brand: '箭牌', priceUnit: '套', unitPrice: 5980, warrantyYears: 3 },
-];
-const NODES: [string, number][] = [
-  ['拆改', 5],
-  ['水电', 10],
-  ['泥瓦', 15],
-  ['木作', 12],
-  ['油漆', 10],
-  ['安装', 8],
-  ['保洁验收', 3],
-];
-const NUANMU: Payload = {
-  id: 'p-nuanmu-2r',
-  title: '暖木 · 两居全包经典版',
-  pricePerSqm: 1280,
-  minArea: 60,
-  houseTypes: ['两居', '三居'],
-  styles: ['原木', '奶油'],
-  startMonths: '3月-6月、9月-11月',
-  duration: 75,
-  demolition: true,
-  materials: ['m-marcopolo-800', 'm-daziran-3c', 'm-oupai-cab', 'm-jianpai-bath'],
-  nodes: NODES.map(([name, days], i) => ({
-    name,
-    days,
-    checkpoints: `${name}完工后按验收单逐项签字`,
-    ...(i === 2 ? { materials: ['m-marcopolo-800'] } : {}),
-  })),
-  highlights: ['原木色全屋定制', '水电终身保修'],
+// 假包的样例（设计系统 L 页）：4 件主材，5 个套餐（第 5 个是草稿）。放在假包旁边（src/shared/pack-fixtures/），
+// 往假包里加字段时样例在那里跟着补，这份自测不用改（验收 5 第一条）
+const RENO_SAMPLES = JSON.parse(fs.readFileSync(path.join(root, 'src/shared/pack-fixtures/renovation-samples.json'), 'utf8')) as {
+  materials: Payload[];
+  packages: Payload[];
 };
-const PACKAGES: Payload[] = [
-  NUANMU,
-  {
-    ...NUANMU,
-    id: 'p-naiyou-3r',
-    title: '奶油 · 三居全包进阶版',
-    pricePerSqm: 1580,
-    minArea: 90,
-    houseTypes: ['三居', '四居及以上'],
-    startMonths: '3月-5月、9月-11月',
-    duration: 90,
-  },
-  {
-    ...NUANMU,
-    id: 'p-xinzhongshi-flat',
-    title: '新中式 · 大平层定制版',
-    pricePerSqm: 2680,
-    minArea: 140,
-    houseTypes: ['四居及以上', '别墅'],
-    startMonths: '全年',
-    duration: 120,
-  },
-  {
-    ...NUANMU,
-    id: 'p-jijian-1r',
-    title: '极简 · 一居焕新版',
-    pricePerSqm: 980,
-    minArea: 35,
-    houseTypes: ['一居'],
-    startMonths: '全年',
-    duration: 45,
-    demolition: false,
-  },
-  {
-    ...NUANMU,
-    id: 'p-jiufang-part',
-    title: '旧房翻新 · 局部改造包',
-    pricePerSqm: 860,
-    minArea: 20,
-    houseTypes: ['两居', '三居'],
-    startMonths: '3月-11月',
-    duration: 30,
-  },
-];
+const MATERIALS = RENO_SAMPLES.materials;
+const PACKAGES = RENO_SAMPLES.packages;
+const NUANMU = PACKAGES.find((p) => p.id === 'p-nuanmu-2r')!;
 
 // 样例本身要合规，不然后面的「打开不改」测的是一份坏数据
 for (const p of PACKAGES)
-  check(`假包样例 ${p.id} 必须项全过`, checkItem(PKG, p).required.length === 0, JSON.stringify(checkItem(PKG, p).required));
+  check(`假包样例 ${p.id} 必须项全过`, checkItem(LIVE_PKG, p).required.length === 0, JSON.stringify(checkItem(LIVE_PKG, p).required));
 for (const m of MATERIALS)
-  check(`假包样例 ${m.id} 必须项全过`, checkItem(MATERIAL, m).required.length === 0, JSON.stringify(checkItem(MATERIAL, m).required));
+  check(
+    `假包样例 ${m.id} 必须项全过`,
+    checkItem(LIVE_MATERIAL, m).required.length === 0,
+    JSON.stringify(checkItem(LIVE_MATERIAL, m).required),
+  );
 check('r-guizhou-5d 必须项全过', checkItem(ROUTE, GUIZHOU_5D).required.length === 0);
 
 /** 9月26日 14:30（设计系统 §10.0 的场景时刻）：MonthStrip 的当前月是 9 月 */
@@ -516,8 +429,8 @@ function deepFreeze<T>(v: T): T {
 const SAMPLES: [string, EntityType, Payload[]][] = [
   ['线路（data/routes.json）', ROUTE, [...ROUTES, GUIZHOU_5D]],
   ['酒店（data/hotels.json）', HOTEL, HOTELS],
-  ['装修套餐（假包样例）', PKG, PACKAGES],
-  ['主材（假包样例）', MATERIAL, MATERIALS],
+  ['装修套餐（假包样例）', LIVE_PKG, PACKAGES],
+  ['主材（假包样例）', LIVE_MATERIAL, MATERIALS],
 ];
 // 条数只打出来不断言：data/ 里正常加一条线路或酒店，这里照样逐条核对
 check('data/ 下有线路和酒店', ROUTES.length > 0 && HOTELS.length > 0);
@@ -918,8 +831,8 @@ const t0 = Date.now();
 renderItem(travel, ROUTE, SICHUAN);
 renderItem(travel, ROUTE, GUIZHOU_5D);
 renderItem(travel, HOTEL, HOTELS[0]!);
-renderItem(renovation, PKG, NUANMU);
-for (const m of MATERIALS) renderItem(renovation, MATERIAL, m);
+renderItem(renovation, LIVE_PKG, NUANMU);
+for (const m of MATERIALS) renderItem(renovation, LIVE_MATERIAL, m);
 {
   // 应该画到的：两个包每个实体的每个字段、每个子字段，三种形态
   const want = new Set<string>();
@@ -1615,6 +1528,13 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
     '更新',
   ]);
   eq('主材：单位取计价单位字段的金额，表头不写单位', headers(MATERIAL, false), ['主材', '品类', '品牌', '单价', '质保', '状态', '更新']);
+  // 第 17.1 步往活的假包里后加的字段（验收 5 第一条），console/src 没为它们改：主材的产地、规格照字段配置跟在品牌后面成列；
+  // 套餐的含软装只当筛选（成列还是只当筛选待 owner 定，plan「Open」），列仍是 L 页的 8 列
+  eq(
+    '后加的产地、规格：主材照字段配置多两列；套餐的列不变',
+    [headers(LIVE_MATERIAL, false), headers(LIVE_PKG, false)],
+    [['主材', '品类', '品牌', '产地', '规格', '单价', '质保', '状态', '更新'], headers(PKG, false)],
+  );
   eq(
     '数字列右对齐（金额、带单位的整数、有序子项的条数）',
     ROUTE.fields.filter(numeric).map((f) => f.key),
@@ -1660,6 +1580,11 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
     'L 页：1366 宽里不横向滚动',
     tableMinWidth(listColumns(PKG, false), PKG_ROWS) <= 1094,
     String(tableMinWidth(listColumns(PKG, false), PKG_ROWS)),
+  );
+  check(
+    '主材多了后加的产地、规格两列：1366 宽里照样不横向滚动',
+    tableMinWidth(listColumns(LIVE_MATERIAL, false), MATERIAL_ROWS) <= 1094,
+    String(tableMinWidth(listColumns(LIVE_MATERIAL, false), MATERIAL_ROWS)),
   );
   eq(
     '窄屏的首列留宽：最小宽度按 240 算',
@@ -1731,6 +1656,32 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
     ['奶油', '原木'],
   );
   eq('风格：奶油，按「包含」匹配', matching(PKG, PKG_ROWS, 'styles', '奶油').length, PKG_ROWS.length);
+  // 后加的两个筛选（活的假包）：没配两种文字的是否，按钮写字段标签、选项用默认的「否」「是」；没填的条目哪一项都不中
+  const soft = fieldOf(LIVE_PKG, 'softFurnishing');
+  eq(
+    '后加的含软装（是否）：套餐的第 3 个筛选，按钮写标签，选项「否」「是」；草稿「旧房翻新」没填，两边都不中',
+    [
+      filterFields(LIVE_PKG).map(filterName),
+      filterOptions(soft, PKG_ROWS).map((o) => `${o.value}=${o.label}`),
+      matching(LIVE_PKG, PKG_ROWS, 'softFurnishing', 'true'),
+      matching(LIVE_PKG, PKG_ROWS, 'softFurnishing', 'false'),
+    ],
+    [
+      ['适用户型', '风格', '含软装'],
+      ['false=否', 'true=是'],
+      ['p-naiyou-3r', 'p-xinzhongshi-flat'],
+      ['p-nuanmu-2r', 'p-jijian-1r'],
+    ],
+  );
+  eq(
+    '后加的产地（文字）：主材的第二个筛选，取已有的值去重、按拼音排',
+    [filterFields(LIVE_MATERIAL).map(filterName), filterOptions(fieldOf(LIVE_MATERIAL, 'origin'), MATERIAL_ROWS).map((o) => o.label)],
+    [
+      ['品类', '产地'],
+      ['广东东莞', '广东佛山', '广东广州'],
+    ],
+  );
+  eq('产地：广东佛山', matching(LIVE_MATERIAL, MATERIAL_ROWS, 'origin', '广东佛山'), ['m-daziran-3c', 'm-jianpai-bath']);
   const months = fieldOf(PKG, 'startMonths');
   eq(
     '月份区间：1–12 月',
@@ -1995,6 +1946,25 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   eq('主材：单价的单位跟着计价单位写在单元格里', cellsOf(bodyRows(m.box)[0]!).slice(1, 5), ['瓷砖', '马可波罗', '168元/㎡', '5年']);
   eq('主材：次行是品类 · 编号', bodyRows(m.box)[0]!.querySelector('.cell-sub')?.textContent, '瓷砖·m-marcopolo-800');
   await m.unmount();
+  // 后加的字段在列表里（活的假包）：主材的产地写原文、规格写条数，产地是第二个筛选；套餐的含软装是第三个筛选，表头不变
+  const lm = await mount(<CatalogList {...listProps({ entity: LIVE_MATERIAL, rows: MATERIAL_ROWS })} />);
+  eq(
+    '后加的产地写原文、规格写条数（欧派的规格是空的），产地是主材的第二个筛选',
+    [cellsOf(bodyRows(lm.box)[0]!).slice(1, 7), bodyRows(lm.box).map((tr) => cellsOf(tr)[4]), texts(lm.box, '.filter-trigger')],
+    [
+      ['瓷砖', '马可波罗', '广东东莞', '1种', '168元/㎡', '5年'],
+      ['1种', '2种', '0种', '3种'],
+      ['品类', '产地'],
+    ],
+  );
+  await lm.unmount();
+  const lp = await mount(<CatalogList {...listProps({ entity: LIVE_PKG, rows: PKG_ROWS })} />);
+  eq(
+    '后加的含软装：套餐列表的第 3 个筛选，表头仍是 L 页的 8 列',
+    [texts(lp.box, '.filter-trigger'), texts(lp.box, '.list-table thead th').length],
+    [['适用户型', '风格', '含软装'], 8],
+  );
+  await lp.unmount();
 
   const h = await mount(<CatalogList {...listProps({ entity: HOTEL, rows: HOTEL_ROWS })} />);
   const withTags = bodyRows(h.box).find((tr) => (tr.querySelectorAll('td')[4] as HTMLElement).getAttribute('title'));
@@ -2313,11 +2283,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   const nf = await mountPage('/catalog/package', owner(travel), {});
   check('旅游包里没有 package：「没有这个页面」', notFound(nf.box) && !nf.box.querySelector('.list-tabs'));
   await nf.unmount();
-  const nf2 = await mountPage('/catalog/route', owner(renovation), { route: ROUTE_ROWS });
+  const nf2 = await mountPage('/catalog/route', owner(renovationLPage), { route: ROUTE_ROWS });
   check('假包里没有 route：「没有这个页面」（不拿包里的第一个实体顶上）', notFound(nf2.box) && !nf2.box.querySelector('.list-tabs'));
   await nf2.unmount();
 
-  const pk = await mountPage('/catalog/package', owner(renovation), { package: PKG_ROWS });
+  const pk = await mountPage('/catalog/package', owner(renovationLPage), { package: PKG_ROWS });
   eq('假包：页头按装修套餐的配置', header(pk.box), {
     title: '装修套餐',
     status: '共5条·销售助手只推荐已上架的',
@@ -2378,6 +2348,11 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     '假包装修套餐：识别2、计价2、条款3、推荐1，共 8 项（L 页）',
     [rows(PKG), lockTotal(PKG)],
     [['识别2@basic', '计价2@price', '条款3@terms', '推荐1@fit'], 8],
+  );
+  eq(
+    '后加的含软装随条款组锁（活的假包）：条款4、共 9 项',
+    [rows(LIVE_PKG), lockTotal(LIVE_PKG)],
+    [['识别2@basic', '计价2@price', '条款4@terms', '推荐1@fit'], 9],
   );
   eq('主材的编号没有锁定组：算进总数，不单列一行', [rows(MATERIAL).length, lockTotal(MATERIAL)], [1, lockRows(MATERIAL)[0]!.count + 1]);
   eq(
@@ -2937,7 +2912,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
 
   // 假包：L 页下半
   const pkItem = { kind: 'package', ord: 0, rev: 1, ...PKG_ROWS.find((r) => r.code === 'p-nuanmu-2r')! };
-  const pk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(renovation), {
+  const pk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(renovationLPage), {
     items: { 'package/p-nuanmu-2r': pkItem },
     lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
   });
@@ -2964,7 +2939,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   );
   await pk.unmount();
   // 金额的单位取自另一个字段（unitFrom）：只改计价单位，单价的单位跟着变（字段按值记忆，它读的单位字段也算在里面）
-  const nm = await mountDetail('/catalog/new/material', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+  const nm = await mountDetail('/catalog/new/material', owner(renovationLPage), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
   const priceUnitEl = nm.box.querySelector<HTMLElement>('[data-field-key="priceUnit"]');
   const unitText = () => nm.box.querySelector('[data-field-key="unitPrice"] .field-unit')?.textContent;
   const unit0 = unitText();
@@ -2973,6 +2948,66 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   await click(priceUnitEl ? segment(priceUnitEl, '套') : null);
   eq('新建主材：计价单位没选时单价写「元」，选「延米」「套」以后跟着变', [unit0, unit1, unitText()], ['元', '元/延米', '元/套']);
   await nm.unmount();
+  // 第 17.1 步往活的假包里后加的字段（验收 5 第一条）：详情、只读、新建都照字段配置画出来，console/src 的代码没为它们改
+  const lpk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(renovation), {
+    items: { 'package/p-nuanmu-2r': pkItem },
+    lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
+  });
+  const lpkSoft = card(lpk.box, 'terms').querySelector<HTMLElement>('[data-field-key="softFurnishing"]');
+  eq(
+    '后加的含软装：状态句与锁定组多算一项；在施工与条款卡里随条款组锁住，只读写默认的「否」（没配 trueLabel / falseLabel）',
+    [
+      header(lpk.box).status?.split('·')[0],
+      texts(lpk.box, '.lock-row'),
+      lpkSoft?.classList.contains('is-static'),
+      lpkSoft?.querySelector('.field-label')?.textContent,
+      lpkSoft?.querySelector('.field-value')?.textContent,
+    ],
+    ['9项上架后锁定', ['识别2项', '计价2项', '条款4项', '推荐1项'], true, '含软装', '否'],
+  );
+  await lpk.unmount();
+  const lnp = await mountDetail('/catalog/new/package', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+  const lnpSoft = lnp.box.querySelector<HTMLElement>('[data-field-key="softFurnishing"]');
+  eq(
+    '新建套餐：后加的含软装是分段控件，选填的「不填」在最前，标签后写「（选填）」和「上架后锁定」',
+    [
+      lnpSoft ? texts(lnpSoft, '.ant-segmented-item-label') : null,
+      lnpSoft?.querySelector('.optional-mark')?.textContent,
+      lnpSoft?.querySelector('.field-will-lock') !== null,
+    ],
+    [['不填', '否', '是'], '（选填）', true],
+  );
+  await lnp.unmount();
+  const daziran = MATERIAL_ROWS.find((r) => r.code === 'm-daziran-3c')!;
+  const lma = await mountDetail('/catalog/material/m-daziran-3c', agent(renovation), {
+    items: { 'material/m-daziran-3c': { kind: 'material', ord: 0, rev: 1, ...daziran } },
+    lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
+  });
+  const lmaField = (k: string) => card(lma.box, 'basic').querySelector<HTMLElement>(`[data-field-key="${k}"]`);
+  eq(
+    '非编辑成员看主材：后加的产地写原文，规格逐条写成列表',
+    [
+      lmaField('origin')?.querySelector('.field-value')?.textContent,
+      texts(lmaField('specs') ?? document.createElement('i'), '.field-value li'),
+    ],
+    ['广东佛山', ['1210×165×15', '910×125×15']],
+  );
+  await lma.unmount();
+  const lnm = await mountDetail('/catalog/new/material', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+  const lnmField = (k: string) => card(lnm.box, 'basic').querySelector<HTMLElement>(`[data-field-key="${k}"]`);
+  const addSpec = () => all<HTMLButtonElement>(lnmField('specs') ?? lnm.box, 'button').find((b) => b.textContent?.trim() === '添加一种');
+  const specs0 = lnmField('specs')?.querySelectorAll('input').length;
+  await click(addSpec());
+  eq(
+    '新建主材：后加的产地是带例子的联想输入框（suggest 取已有值）；规格是逐条列表，空的时候没有输入框，点「添加一种」多一个带例子的输入框',
+    [
+      lnmField('origin')?.querySelector('.ant-select-auto-complete .ant-select-placeholder')?.textContent,
+      specs0,
+      [...(lnmField('specs')?.querySelectorAll('input') ?? [])].map((i) => i.getAttribute('placeholder')),
+    ],
+    ['例：广东佛山', 0, ['例：800×800']],
+  );
+  await lnm.unmount();
   const nk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(travel), { lists });
   check('旅游包里没有 package：「没有这个页面」', texts(nk.box, '.state-empty-title').includes('没有这个页面'));
   await nk.unmount();
@@ -4183,7 +4218,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   {
     const pkItem = { kind: 'package', ord: 0, rev: 1, ...PKG_ROWS.find((r) => r.code === 'p-nuanmu-2r')! };
     const api = fakeApi((s) => (s.method === 'PATCH' ? json({ ...pkItem, rev: 2 }) : undefined));
-    const pk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(renovation), {
+    const pk = await mountDetail('/catalog/package/p-nuanmu-2r', owner(renovationLPage), {
       items: { 'package/p-nuanmu-2r': pkItem },
       lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
     });
@@ -4360,6 +4395,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         ['计价：计价单位 ㎡ · 单价 168元/㎡', '其他：主材编号 m-marcopolo-800（等宽）'],
       ],
     );
+    eq(
+      '后加的含软装（活的假包）：随条款组进锁定清单，填了「否」写「含软装 否」',
+      lockLines(LIVE_PKG, NUANMU, byName).map(lineText)[2],
+      '条款：工期 75天 · 含拆旧 · 含软装 否 · 包含主材 马可波罗 800×800 抛釉砖、大自然 三层实木复合地板、欧派 整体橱柜、箭牌 卫浴套装',
+    );
     // showWhen 没显示出来的锁定字段不在清单里（上架时它会被删掉）
     const toy: EntityType = {
       ...MATERIAL,
@@ -4432,6 +4472,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         ['houseTypes', 'styles', 'materials', 'nodes', 'highlights'],
         {},
       ],
+    );
+    eq(
+      '后加的规格是必填的数组：新建主材的空表单先放空数组；选填的含软装不放',
+      [blankPayload(LIVE_MATERIAL), Object.keys(blankPayload(LIVE_PKG))],
+      [{ specs: [] }, ['houseTypes', 'styles', 'materials', 'nodes', 'highlights']],
     );
     eq(
       '新建的空表单：showWhen 管着的数组字段不放（它随条件出现）',
@@ -4954,7 +4999,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   {
     const api = fakeApi(() => undefined);
     const row = PKG_ROWS.find((r) => r.code === 'p-jiufang-part')!;
-    const d = await mountDetail('/catalog/package/p-jiufang-part', owner(renovation), {
+    const d = await mountDetail('/catalog/package/p-jiufang-part', owner(renovationLPage), {
       items: { 'package/p-jiufang-part': { kind: 'package', ord: 0, rev: 1, ...row } },
       lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
     });
@@ -4977,6 +5022,26 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         ['识别', '计价', '条款', '推荐'],
         '工期30天·含拆旧·包含主材马可波罗 800×800 抛釉砖、大自然 三层实木复合地板、欧派 整体橱柜、箭牌 卫浴套装',
       ],
+    );
+    await d.unmount();
+    api.restore();
+  }
+
+  // 后加的含软装（活的假包）：草稿「旧房翻新」没填这一项，上架确认的条款一行写「含软装没填」
+  {
+    const api = fakeApi(() => undefined);
+    const row = PKG_ROWS.find((r) => r.code === 'p-jiufang-part')!;
+    const d = await mountDetail('/catalog/package/p-jiufang-part', owner(renovation), {
+      items: { 'package/p-jiufang-part': { kind: 'package', ord: 0, rev: 1, ...row } },
+      lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
+    });
+    await click(activateButton(d.box));
+    await motion();
+    const dlg = dialogTitled('上架');
+    eq(
+      '后加的含软装：草稿「旧房翻新」没填，上架确认的条款一行写「含软装没填」',
+      dlg ? texts(dlg, '.activate-lock-line .activate-pairs')[2] : null,
+      '工期30天·含拆旧·含软装没填·包含主材马可波罗 800×800 抛釉砖、大自然 三层实木复合地板、欧派 整体橱柜、箭牌 卫浴套装',
     );
     await d.unmount();
     api.restore();
@@ -5479,7 +5544,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   }
   // 新建的放弃：确认「放弃填好的内容？」，回到空白；假包的编号帮助同样按实体补
   {
-    const n = await mountDetail('/catalog/new/package', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+    const n = await mountDetail('/catalog/new/package', owner(renovationLPage), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
     const code = n.box.querySelector<HTMLInputElement>('[data-field-key="$code"] input');
     const hints = [n.box.querySelector('[data-field-key="$code"] .field-help')?.textContent, code?.placeholder];
     await typeInto(code, 'p-new');
@@ -5501,7 +5566,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const went: string[] = [];
     for (const [pack, kind, label, rows] of [
       [travel, 'route', '新建线路', { route: ROUTE_ROWS }],
-      [renovation, 'package', '新建装修套餐', { package: PKG_ROWS, material: MATERIAL_ROWS }],
+      [renovationLPage, 'package', '新建装修套餐', { package: PKG_ROWS, material: MATERIAL_ROWS }],
     ] as const) {
       const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
       qc.setQueryData(VIEWER_KEY, owner(pack));
@@ -5633,7 +5698,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   }
   // 假包：施工节点没有 countFrom，新建、已上架都能增删；量词是「个节点」
   {
-    const p = await mountDetail('/catalog/new/package', owner(renovation), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
+    const p = await mountDetail('/catalog/new/package', owner(renovationLPage), { lists: { package: PKG_ROWS, material: MATERIAL_ROWS } });
     const empty = subEdit(p.box, 'nodes').buttons;
     await click(subEdit(p.box, 'nodes').add);
     const node = subEdit(p.box, 'nodes');
@@ -5650,7 +5715,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     await p.unmount();
     const row = PKG_ROWS.find((r) => r.status === 'active')!;
-    const ap = await mountDetail(`/catalog/package/${row.code}`, owner(renovation), {
+    const ap = await mountDetail(`/catalog/package/${row.code}`, owner(renovationLPage), {
       items: { [`package/${row.code}`]: { kind: 'package', ord: 0, rev: 1, ...row } },
       lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
     });
@@ -6321,7 +6386,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   // 12.5 假包：施工节点（节点里只写序号、卡片第一行「节点3」）、移动、主材的分组联想与复制上一个节点、验收要点的 softMax（80）
   {
     const draft = PKG_ROWS.find((x) => x.status === 'draft')!;
-    const p = await mountDetail(`/catalog/package/${draft.code}`, owner(renovation), {
+    const p = await mountDetail(`/catalog/package/${draft.code}`, owner(renovationLPage), {
       items: { [`package/${draft.code}`]: { kind: 'package', ord: 0, rev: 1, ...draft } },
       lists: { package: PKG_ROWS, material: MATERIAL_ROWS },
     });
@@ -6521,6 +6586,17 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [
         ['id', 'name', 'category', 'brand', 'priceUnit', 'unitPrice', 'warrantyYears', 'ecoGrade'],
         ['id', 'name', 'category', 'brand', 'priceUnit', 'unitPrice', 'warrantyYears'],
+      ],
+    );
+    const liveM = entityCsvShape(LIVE_MATERIAL);
+    eq(
+      '后加的字段（活的假包）：含软装是一列是否；主材多产地、规格两列，都必填，规格只有一个子字段，按「、」分隔成一列',
+      [entityCsvShape(LIVE_PKG).flat.get('softFurnishing'), liveM.columns.map((c) => c.key), [...liveM.required], liveM.flat.get('specs')],
+      [
+        'boolean',
+        ['id', 'name', 'category', 'brand', 'origin', 'specs', 'priceUnit', 'unitPrice', 'warrantyYears', 'ecoGrade'],
+        ['id', 'name', 'category', 'brand', 'origin', 'specs', 'priceUnit', 'unitPrice', 'warrantyYears'],
+        'strings',
       ],
     );
     const noCode = entityCsvShape({ ...MATERIAL, fields: MATERIAL.fields.filter((f) => f.key !== '$code') });
@@ -6990,6 +7066,46 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         },
       ],
     );
+    // 后加的产地、规格（活的假包）：新模板多两列，照样逐行检查；后加以前下载的旧模板没有这两列，每行照上架前检查报两项没填
+    const LIVE_M_HEAD = '主材编号,主材名称,品类,品牌,产地,规格,计价单位,单价,质保,环保等级';
+    const lmt = tableOf(
+      checkCsv(
+        LIVE_MATERIAL,
+        [
+          LIVE_M_HEAD,
+          'm-dongpeng-750,东鹏 750×1500 岩板,瓷砖,东鹏,广东东莞,750×1500、600×1200,㎡,328,5,',
+          'm-y,某,瓷砖,某牌,,某规格,㎡,100,5,',
+        ].join('\n'),
+        MATERIAL_ROWS,
+      ),
+    )!;
+    eq(
+      '后加的产地、规格：表格多一列产地（规格按「、」分隔，不成列），规格拆成几种；产地空着报「没填」',
+      [tableFields(LIVE_MATERIAL, lmt.keys).map(tableHeader), lmt.rows[0]!.payload, lmt.rows[1]!.issues],
+      [
+        ['品类', '品牌', '产地', '计价单位', '单价', '质保', '环保等级'],
+        {
+          id: 'm-dongpeng-750',
+          name: '东鹏 750×1500 岩板',
+          category: '瓷砖',
+          brand: '东鹏',
+          origin: '广东东莞',
+          specs: ['750×1500', '600×1200'],
+          priceUnit: '㎡',
+          unitPrice: 328,
+          warrantyYears: 5,
+        },
+        [{ col: 'origin', text: '产地：没填' }],
+      ],
+    );
+    eq(
+      '后加字段以前的旧模板：每行报「产地：没填」「规格：没填」（不是整份表头的问题）',
+      tableOf(checkCsv(LIVE_MATERIAL, [M_HEAD, 'm-a,某,瓷砖,某牌,㎡,100,5,'].join('\n')))?.rows[0]?.issues,
+      [
+        { col: 'origin', text: '产地：没填' },
+        { col: 'specs', text: '规格：没填' },
+      ],
+    );
 
     const t = tableOf(checkCsv(HOTEL, H_CSV, HOTEL_ROWS))!;
     const merged = withServerIssues(HOTEL, t, csvSubmission(t).rows, [
@@ -7035,7 +7151,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     eq(
       '第1步的规则：假包套餐的各种类型（多选、单位、月份、是否、引用、单值的有序子项）',
-      csvRules(renovation, PKG).map((r) => r.how),
+      csvRules(renovationLPage, PKG).map((r) => r.how),
       [
         CODE_RULE,
         '文字',
@@ -7052,7 +7168,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     );
     eq(
       '第1步的规则：假包主材（单选写其中一个，选填标出）',
-      csvRules(renovation, MATERIAL).map((r) => [r.how, r.optional]),
+      csvRules(renovationLPage, MATERIAL).map((r) => [r.how, r.optional]),
       [
         [CODE_RULE, false],
         ['文字', false],
@@ -7065,11 +7181,33 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
     );
     eq(
+      '第1步的规则：后加的含软装没配两种文字，写「是」或「否」；产地是文字，规格可以写几种，例子照着已有的一件写',
+      [
+        csvRules(renovation, LIVE_PKG).find((r) => r.label === '含软装')?.how,
+        csvRules(renovation, LIVE_MATERIAL, MATERIALS[0])
+          .filter((r) => r.label === '产地' || r.label === '规格')
+          .map((r) => [r.label, r.optional, r.how, r.example]),
+      ],
+      [
+        '写「是」或「否」',
+        [
+          ['产地', false, '文字', '广东东莞'],
+          ['规格', false, '可以写几种，用「、」分隔', '800×800'],
+        ],
+      ],
+    );
+    eq(
       '模板：带 BOM，只有一行表头，写字段的中文标签',
       [templateCsv(HOTEL), templateCsv(MATERIAL)],
       [`${CSV_BOM}${H_HEAD}\r\n`, `${CSV_BOM}${M_HEAD}\r\n`],
     );
     check('模板填上一行就能导入', tableOf(checkCsv(HOTEL, `${templateCsv(HOTEL)}${H_ROWS[0]}`, HOTEL_ROWS))?.rows[0]?.issues.length === 0);
+    eq('后加字段的主材模板：表头多产地、规格两列', templateCsv(LIVE_MATERIAL), `${CSV_BOM}${LIVE_M_HEAD}\r\n`);
+    check(
+      '后加字段的主材模板填上一行就能导入',
+      tableOf(checkCsv(LIVE_MATERIAL, `${templateCsv(LIVE_MATERIAL)}m-a,某,瓷砖,某牌,某地,甲、乙,㎡,100,5,`, MATERIAL_ROWS))?.rows[0]
+        ?.issues.length === 0,
+    );
   } catch (e) {
     check('第 13.6 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
@@ -7440,7 +7578,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await pg.unmount();
 
     // 假包的主材：同一个弹窗按它的字段画，提交到它的 kind
-    const mp = await mountList('/catalog/material', owner(renovation), { material: MATERIAL_ROWS });
+    const mp = await mountList('/catalog/material', owner(renovationLPage), { material: MATERIAL_ROWS });
     await click(all<HTMLButtonElement>(mp.box, '.page-actions button').find((b) => squash(b.textContent) === '导入CSV'));
     await until(() => modal() !== null);
     await motion();
@@ -7469,6 +7607,45 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await click(btn('关闭'));
     await motion();
     await mp.unmount();
+
+    // 后加的产地、规格（活的假包）：规则表多两行；导入的表格多一列产地（规格按「、」分隔，不成列）；提交的 CSV 原样带着两列
+    const lmp = await mountList('/catalog/material', owner(renovation), { material: MATERIAL_ROWS });
+    await click(all<HTMLButtonElement>(lmp.box, '.page-actions button').find((b) => squash(b.textContent) === '导入CSV'));
+    await until(() => modal() !== null);
+    await motion();
+    eq('后加的产地、规格：规则表多两行', texts(document, `${D} .csv-rules tbody tr.ant-table-row td:first-child`), [
+      '主材编号',
+      '主材名称',
+      '品类',
+      '品牌',
+      '产地',
+      '规格',
+      '计价单位',
+      '单价',
+      '质保',
+      '环保等级（选填）',
+    ]);
+    await click(btn('选文件'));
+    const M_FILE = [
+      '主材编号,主材名称,品类,品牌,产地,规格,计价单位,单价,质保,环保等级',
+      'm-dongpeng-750,东鹏 750×1500 岩板,瓷砖,东鹏,广东东莞,750×1500、600×1200,㎡,328,5,',
+    ];
+    await pick('主材.csv', M_FILE.join('\n'));
+    eq(
+      '后加的产地成列（规格按「、」分隔，不成列）',
+      [texts(document, `${D} .csv-results thead th:not(.ant-table-cell-scrollbar)`), cellsOf(resultRows()[0]!).map(squash).slice(5, 8)],
+      [
+        ['行号', '结果', '主材名称·编号', '品类', '品牌', '产地', '计价单位', '单价', '质保', '环保等级', '原因'],
+        ['广东东莞', '㎡', '328元/㎡'],
+      ],
+    );
+    reply = () => json({ items: [{ kind: 'material', code: 'm-dongpeng-750', ord: 9, rev: 1, status: 'draft', payload: {} }] });
+    await click(btn('导入1条草稿'));
+    await until(() => stepNow() === '完成');
+    eq('后加的产地、规格：提交的表头与这一行原样', csvSent(posts().length - 1), M_FILE.map(cellsOfLine));
+    await click(btn('关闭'));
+    await motion();
+    await lmp.unmount();
 
     // 从空状态导入：建好以后空状态卸了，打开弹窗的按钮不在了；关上以后焦点放到页头的「导入CSV」，不掉到 body
     const ep = await mountList('/catalog/hotel', owner(travel), { hotel: [] });
