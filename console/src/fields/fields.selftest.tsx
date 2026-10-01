@@ -6642,22 +6642,22 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     // 一行连同表头单独一份也超上限：分成几份也不行。边界与提交的写法相同（表头加这一行，\n 结尾）
     const alone = (cell: string): string => toCsv([head, ['h', cell]], { eol: '\n' });
     const fitC = 'a'.repeat(CSV_MAX_CHARS - alone('').length);
-    const fitB = '汉'.repeat(21_837);
+    // 中文每字 3 字节，再补两个 ASCII：请求体正好 64KB
+    const fitB = `${'汉'.repeat(21_837)}ab`;
     eq(
-      '一行太长：按字符数、按字节数，正好放得下的不算，多一个字就算；点名的是这些行',
+      '一行太长：按字符数、按字节数，正好卡在上限上的不算，多一个字就算；点名的是这些行',
       [
         csvLongRows(head, [
           ['h', fitC],
           ['h', `${fitC}a`],
           ['h', fitB],
-          ['h', `${fitB}汉`],
+          ['h', `${fitB}a`],
         ]),
         alone(fitC).length,
-        csvBodyBytes(alone(fitB)) <= CSV_MAX_BODY_BYTES,
-        csvBodyBytes(alone(`${fitB}汉`)) > CSV_MAX_BODY_BYTES,
+        csvBodyBytes(alone(fitB)),
         csvLongRows(head, many(250)),
       ],
-      [[2, 4], CSV_MAX_CHARS, true, true, []],
+      [[2, 4], CSV_MAX_CHARS, CSV_MAX_BODY_BYTES, []],
     );
     eq(
       '一行太长：要分几份是 Infinity（以前它独占一份，算出来是「1份」），放得下的照旧',
