@@ -5877,7 +5877,8 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     ].map((m) => m[1]);
     eq(
       'G 页：节点 D1–D5，第3天空心（缺当晚住宿）、第4天有报错；「缺：当晚住宿」；每天上移、下移、删除，D1 上移与 D5 下移 aria-disabled；' +
-        '一天里是当天标题、当晚住宿、当天安排、当天餐食；底部「添加一天」；组名「第3天」',
+        '一天里是当天标题、当晚住宿、当天安排、当天餐食；底部「添加一天」；组名「第3天」；没有第一行（缺项）的四天，' +
+        '第一行右边那一格（当晚住宿）标 under-tools，标签行给右上角的按钮让位',
       [
         nodeStates,
         count(g, '缺：当晚住宿'),
@@ -5888,8 +5889,9 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         keyOrder,
         g.includes('添加一天'),
         g.includes('role="group" aria-label="第3天"'),
+        count(g, 'class="field field-half under-tools" data-field-key="hotel"'),
       ],
-      [['D1:done', 'D2:done', 'D3:gap', 'D4:error', 'D5:done'], 1, 5, 5, 5, 2, ['title', 'hotel', 'detail', 'meals'], true, true],
+      [['D1:done', 'D2:done', 'D3:gap', 'D4:error', 'D5:done'], 1, 5, 5, 5, 2, ['title', 'hotel', 'detail', 'meals'], true, true, 4],
     );
     const locked = formOf(IT, SICHUAN.itinerary, { countLocked: true, row: SICHUAN });
     eq(
@@ -5933,6 +5935,8 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         ? `#${(el.textContent ?? '').trim()}`
         : (el.querySelector('.ref-option')?.textContent ?? el.textContent ?? '').trim(),
     );
+  /** 控件的下拉开着时（aria-expanded）读出各组；没有可列的项时 rc-select 不开下拉，这时是空 */
+  const openedGroups = (input: Element | null | undefined) => (input?.getAttribute('aria-expanded') === 'true' ? dropdownGroups() : []);
   /** 打开下拉：焦点放进控件按 Enter（rc-select 的键盘打开） */
   const openDropdown = async (input: Element | null | undefined) => {
     await act(async () => (input as HTMLElement | null)?.focus());
@@ -6004,7 +6008,22 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       '云上西江酒店第4天',
       '—（返程）第5天',
     ]);
+    const popupWidth = document.querySelector<HTMLElement>('.ant-select-dropdown.ref-popup:not(.ant-select-dropdown-hidden)')?.style.width;
     await press(hotelInput(2), 'Escape');
+    // 敲字筛：两组都按名称筛；和输入一模一样的那项不列
+    await typeInto(hotelInput(2), '荔');
+    await settle();
+    const typed = openedGroups(hotelInput(2));
+    await typeInto(hotelInput(2), '云上西江酒店');
+    await settle();
+    const exact = openedGroups(hotelInput(2));
+    await press(hotelInput(2), 'Escape');
+    await typeInto(hotelInput(2), '');
+    eq(
+      '联想的下拉宽 384（窗口不窄时）；敲「荔」两组都只剩荔波荔泉宾馆；敲全「云上西江酒店」，和输入一样的那项不列',
+      [popupWidth, typed, exact],
+      ['384px', ['#酒店库·贵州', '荔波荔泉宾馆h-liquan-libo草稿', '#本条写过的', '荔波荔泉宾馆第2天'], []],
+    );
     // 复制上一天：住宿写成第2天的，焦点进第3天的住宿，按钮随即没了，节点回到实心
     await click(copyBtn(2));
     await settle();
@@ -6020,6 +6039,21 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ['荔波荔泉宾馆', true, null, 'D3:done', null],
     );
 
+    // 目的地改成四川：逐日行程跟着重画，第3天住宿的第一组换成「酒店库·四川」的两家（引用按 filterBy 取本条的目的地）
+    const dest = d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="destination"] input');
+    await typeInto(dest, '四川');
+    await typeInto(hotelInput(2), '');
+    await openDropdown(hotelInput(2));
+    const sichuan = openedGroups(hotelInput(2)).filter((x) => !x.endsWith('天'));
+    await press(hotelInput(2), 'Escape');
+    await typeInto(hotelInput(2), '荔波荔泉宾馆');
+    await typeInto(dest, '贵州');
+    eq('目的地改成四川：第一组换成「酒店库·四川」的两家', sichuan, [
+      '#酒店库·四川',
+      '既下山·稻城h-xiaji-sichuan',
+      '成都博舍h-temple-house-chengdu',
+      '#本条写过的',
+    ]);
     // 库外文本：第4天的「云上西江酒店」不在酒店库里，下方注「酒店库里没有这个，按原文保存」，读屏连上；库里有的不注
     const free4 = subEl(d.box, 'itinerary', 3, 'hotel')?.querySelector('.field-free');
     eq(
@@ -6110,18 +6144,23 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await until(() => barText(d.box) === null);
     // 条数提醒：删一天「还差1天」，再加两天「多了1天」（warning，不是锁定说明）；子字段条数变了不标「已改」
     await click(tool(d.box, 'itinerary', 4, 'remove'));
-    const short = [d.box.querySelector('.count-note')?.textContent, d.box.querySelector('.count-note')?.classList.contains('is-locked')];
+    const noteEl = d.box.querySelector('.count-note');
+    const short = [
+      noteEl?.textContent,
+      noteEl?.classList.contains('is-locked'),
+      !!noteEl?.id && (d.box.querySelector('.subitems-edit')?.getAttribute('aria-describedby') ?? '').split(' ').includes(noteEl.id),
+    ];
     await click(d.box.querySelector('[data-field-key="itinerary"] .field-add'));
     await click(d.box.querySelector('[data-field-key="itinerary"] .field-add'));
     eq(
-      '删一天：区块头右侧「还差1天」；加两天：「多了1天」，新加的两天节点空心；条数变了，子字段不标「已改」',
+      '删一天：区块头右侧「还差1天」，逐日行程这一组的读屏说明连上它；加两天：「多了1天」，新加的两天节点空心；条数变了，子字段不标「已改」',
       [
         short,
         d.box.querySelector('.count-note')?.textContent,
         nodeOf(d.box, 'itinerary', 5),
         d.box.querySelectorAll('[data-field-key="itinerary"] .subitem-card .field-changed').length,
       ],
-      [['还差1天', false], '多了1天', 'D6:gap', 0],
+      [['还差1天', false, true], '多了1天', 'D6:gap', 0],
     );
     await d.unmount();
     api.restore();
@@ -6155,11 +6194,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await e.unmount();
     api.restore();
     const r = await mountDetail('/catalog/route/r-guizhou-5d', agent(travel), {
-      items: { 'route/r-guizhou-5d': GUIZHOU_ITEM },
+      items: { 'route/r-guizhou-5d': { ...GUIZHOU_ITEM, payload: { ...GUIZHOU_5D, days: 6 } } },
       lists: gLists,
     });
     eq(
-      '非编辑成员：逐日行程是只读时间轴，没有条数说明、按钮和复制',
+      '非编辑成员（天数写成 6、行程 5 天）：逐日行程是只读时间轴，没有条数提醒、按钮和复制',
       [
         r.box.querySelectorAll('.count-note, .subitem-tools, .field-copy, .field-add').length,
         r.box.querySelectorAll('[data-field-key="itinerary"] .tl-node').length,
