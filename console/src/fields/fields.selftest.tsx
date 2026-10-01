@@ -40,6 +40,7 @@ import {
   CSV_MAX_CHARS,
   csvBodyBytes,
   csvLabelsOf,
+  csvLongRows,
   csvParts,
   entityCsvShape,
   guardCell,
@@ -152,6 +153,8 @@ import {
   failedCsv,
   failedName,
   importLabel,
+  longNote,
+  longTitle,
   lookalikeParts,
   resultWidths,
   submission as csvSubmission,
@@ -6636,6 +6639,31 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ImportCsvBody.safeParse({ csv: 'x'.repeat(CSV_MAX_CHARS) }).success &&
         !ImportCsvBody.safeParse({ csv: 'x'.repeat(CSV_MAX_CHARS + 1) }).success,
     );
+    // 一行连同表头单独一份也超上限：分成几份也不行。边界与提交的写法相同（表头加这一行，\n 结尾）
+    const alone = (cell: string): string => toCsv([head, ['h', cell]], { eol: '\n' });
+    const fitC = 'a'.repeat(CSV_MAX_CHARS - alone('').length);
+    const fitB = '汉'.repeat(21_837);
+    eq(
+      '一行太长：按字符数、按字节数，正好放得下的不算，多一个字就算；点名的是这些行',
+      [
+        csvLongRows(head, [
+          ['h', fitC],
+          ['h', `${fitC}a`],
+          ['h', fitB],
+          ['h', `${fitB}汉`],
+        ]),
+        alone(fitC).length,
+        csvBodyBytes(alone(fitB)) <= CSV_MAX_BODY_BYTES,
+        csvBodyBytes(alone(`${fitB}汉`)) > CSV_MAX_BODY_BYTES,
+        csvLongRows(head, many(250)),
+      ],
+      [[2, 4], CSV_MAX_CHARS, true, true, []],
+    );
+    eq(
+      '一行太长：要分几份是 Infinity（以前它独占一份，算出来是「1份」），放得下的照旧',
+      [csvParts(head, [...many(3), ['h', `${fitB}汉`], ...many(2)]), csvParts(head, [['h', fitC]]), csvParts(head, [['h', fitB]])],
+      [Infinity, 1, 1],
+    );
   } catch (e) {
     check('第 13.3 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
@@ -6799,6 +6827,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     eq('改好以后重新导入：提交时去掉「不合格原因」列', again && parseCsv(csvSubmission(again).csv)[0], EN_HEAD.split(','));
     const short = failedCsv(tableOf(checkCsv(HOTEL, [EN_HEAD, 'h-short,名'].join('\n'), HOTEL_ROWS))!);
     eq('少了格子的行：补空格子，原因仍在最后一列', parseCsv(short)[1], ['h-short', '名', '', '', '', '', '', '', '有 2 列，表头有 8 列']);
+    const extra = parseCsv(failedCsv(tableOf(checkCsv(HOTEL, [EN_HEAD, 'h-a,名,三亚,五星,100,房,亮点,,多一格'].join('\n'), HOTEL_ROWS))));
+    eq('多了格子的行：原因仍在「不合格原因」那一列，多出来的格子照原样放在它右边', extra, [
+      [...EN_HEAD.split(','), '不合格原因'],
+      ['h-a', '名', '三亚', '五星', '100', '房', '亮点', '', '有 9 列，表头有 8 列', '多一格'],
+    ]);
     const yesNo = tableOf(checkCsv(PKG, ['id,demolition', 'p-x,也许'].join('\n')))!;
     eq('是否写错：说明写法，不标形似数字的字母（只有数值格标）', yesNo.rows[0]!.issues[0], {
       col: 'demolition',
@@ -6846,6 +6879,31 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       rows: 250,
       parts: 2,
     });
+    const hugeRow = `h-huge,${'汉'.repeat(22_000)},三亚,五星,100,房,亮点,`;
+    eq(
+      '有一行连同表头单独一份也超上限：不是「请分成N份」，点名这一行，不画表格（250 行里也有它时先说它）',
+      [
+        checkCsv(HOTEL, [H_HEAD, H_ROWS[0], hugeRow].join('\n'), HOTEL_ROWS),
+        checkCsv(HOTEL, [H_HEAD, ...rows250, hugeRow].join('\n'), HOTEL_ROWS).kind,
+      ],
+      [{ kind: 'long', rows: 2, long: [2] }, 'long'],
+    );
+    eq(
+      '太长的行：标题写出行号（最多三个），说明写上限',
+      [longTitle([2]), longTitle([2, 5, 7, 9]), longNote(1), longNote(2)],
+      [
+        '第2行太长，分成几份也导入不了',
+        '第2、5、7行等4行太长，分成几份也导入不了',
+        '一次最多导入200行，整份不超过60,000个字、64KB。这一行连同表头单独一份也超了',
+        '一次最多导入200行，整份不超过60,000个字、64KB。这几行连同表头单独一份也超了',
+      ],
+    );
+    const hugeTable: CsvTable = {
+      header: EN_HEAD.split(','),
+      keys: EN_HEAD.split(','),
+      rows: [{ row: 1, cells: cellsOfLine(hugeRow), payload: {}, issues: [] }],
+    };
+    check('提交：合格的行放不下时 fits 为假（弹窗据此不发请求）', !csvSubmission(hugeTable).fits);
     const odd = tableOf(
       checkCsv(
         HOTEL,
@@ -6874,6 +6932,15 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
     );
     check('列表还没取到：不查编号是否已经有了（服务端兜底）', tableOf(checkCsv(HOTEL, H_CSV))!.rows[2]!.issues.length === 0);
+    const withDraft: ListRow[] = [
+      ...HOTEL_ROWS,
+      { code: 'h-draft-one', status: 'draft', payload: { id: 'h-draft-one', name: '草稿里的酒店' } },
+    ];
+    eq(
+      '编号撞上已有的草稿：写「（名称，草稿）」',
+      tableOf(checkCsv(HOTEL, [H_HEAD, 'h-draft-one,名,三亚,五星,100,房,亮点,'].join('\n'), withDraft)).rows[0]?.issues,
+      [{ col: 'id', text: '酒店编号：这个编号已经有了（草稿里的酒店，草稿）' }],
+    );
 
     const M_HEAD = '主材编号,主材名称,品类,品牌,计价单位,单价,质保,环保等级';
     const mt = tableOf(
@@ -7078,7 +7145,10 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const posts = () => api.sent.filter((x) => x.method === 'POST');
     const csvSent = (i: number) => parseCsv(((posts()[i]?.body ?? {}) as { csv?: string }).csv ?? '');
 
-    const pg = await mountList('/catalog/hotel', owner(travel), { hotel: HOTEL_ROWS });
+    // 带着搜索与筛选进来：「去草稿页签」要把它们清掉
+    const searched = `/catalog/hotel?q=${encodeURIComponent('松赞')}&f=${encodeURIComponent('destination:云南')}`;
+    const pg = await mountList(searched, owner(travel), { hotel: HOTEL_ROWS });
+    eq('进来时地址带着搜索与筛选', pg.router.state.location.search, { q: '松赞', f: ['destination:云南'] });
     const openBtn = () => all<HTMLButtonElement>(pg.box, '.page-actions button').find((b) => squash(b.textContent) === '导入CSV');
     check('打开之前没有下载弹窗的块、没有挂弹窗', modal() === null);
     await click(openBtn());
@@ -7123,6 +7193,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [stepNow(), fileRow(), readError(), footer()],
       ['选文件', '空.csv按UTF-8读取·0行', '这份文件没有要导入的行', ['上一步']],
     );
+    check('文件行下的那一句是 alert：读屏立刻念出来', document.querySelector(`${D} .csv-read-error`)?.getAttribute('role') === 'alert');
     await pick('只有表头.csv', `${CSV_BOM}${H_HEAD}\r\n`);
     eq('只有表头：同样停在第2步', [stepNow(), fileRow(), readError()], ['选文件', '只有表头.csv按UTF-8读取·0行', '这份文件没有要导入的行']);
     await pick('乱码.csv', Uint8Array.from([0xff, 0xfe, 0x41, 0x00]));
@@ -7246,6 +7317,20 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
       ['导入', '正在导入5条草稿', true, []],
     );
+    // 关了照样会建成：按 Esc、点遮罩（先在遮罩上按下再点）都不关
+    const maskClick = async () => {
+      const wrap = document.querySelector<HTMLElement>(`${D} .ant-modal-wrap`);
+      await act(async () => {
+        wrap?.dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true }) as unknown as Event);
+        wrap?.click();
+      });
+    };
+    await press(modal(), 'Escape');
+    await motion();
+    const afterEsc = stepNow();
+    await maskClick();
+    await motion();
+    eq('导入中：按 Esc、点遮罩都关不掉，仍在第4步', [afterEsc, stepNow()], ['导入', '导入']);
     await act(async () => pending.fail?.(new TypeError('Failed to fetch')));
     await until(() => alertTitles().length > 0);
     eq(
@@ -7300,6 +7385,13 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         posts().length === sentBefore,
       ],
       ['校验结果', ['这份文件太大，请分成2份导入'], '一次最多导入200行，整份不超过60,000个字、64KB', ['上一步'], true],
+    );
+    await click(btn('上一步'));
+    await pick('长.csv', [H_HEAD, H_ROWS[0], `h-huge,${'汉'.repeat(22_000)},三亚,五星,100,房,亮点,`].join('\r\n'));
+    eq(
+      '有一行单独也超上限：第3步写「第2行太长」和上限，没有导入按钮，不发请求',
+      [stepNow(), alertTitles(), footer(), posts().length === sentBefore],
+      ['校验结果', ['第2行太长，分成几份也导入不了'], ['上一步'], true],
     );
     await click(btn('上一步'));
     await click(document.querySelectorAll<HTMLElement>(`${D} .ant-tabs-tab-btn`)[1]);
@@ -7365,6 +7457,47 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await click(btn('关闭'));
     await motion();
     await mp.unmount();
+
+    // 从空状态导入：建好以后空状态卸了，打开弹窗的按钮不在了；关上以后焦点放到页头的「导入CSV」，不掉到 body
+    const ep = await mountList('/catalog/hotel', owner(travel), { hotel: [] });
+    const emptyOpen = () => all<HTMLButtonElement>(ep.box, '.state-empty-actions button').find((b) => squash(b.textContent) === '导入CSV');
+    const headerOpen = () => all<HTMLButtonElement>(ep.box, '.page-actions button').find((b) => squash(b.textContent) === '导入CSV');
+    const opener = emptyOpen();
+    check('还没有条目：「导入CSV」在空状态里，页头没有', opener !== undefined && headerOpen() === undefined);
+    // 浏览器里点按钮会把焦点放上去（happy-dom 的 click() 不会）
+    await act(async () => opener?.focus());
+    await click(opener);
+    await until(() => stepNow() === '下载模板');
+    await motion();
+    await maskClick();
+    await motion();
+    check(
+      '不在导入时点遮罩：关上，焦点回到空状态里的「导入CSV」（还在）',
+      document.querySelector(`${D} .csv-steps`) === null && document.activeElement === opener,
+    );
+    await act(async () => opener?.focus());
+    await click(opener);
+    await until(() => stepNow() === '下载模板');
+    await motion();
+    await click(btn('选文件'));
+    await click(document.querySelectorAll<HTMLElement>(`${D} .ant-tabs-tab-btn`)[1]);
+    await typeInto(document.querySelector(`${D} textarea`), [EN_HEAD, H_ROWS[0]].join('\n'));
+    await click(btn('校验'));
+    reply = () => json({ items: [{ kind: 'hotel', code: 'h-sixsenses-qingcheng', ord: 1, rev: 1, status: 'draft', payload: {} }] });
+    await click(btn('导入1条草稿'));
+    await until(() => stepNow() === '完成' && headerOpen() !== undefined);
+    check(
+      '建好以后列表重新取到，空状态卸了，「导入CSV」到了页头',
+      emptyOpen() === undefined && headerOpen() !== undefined && !opener?.isConnected,
+    );
+    await click(btn('关闭'));
+    await motion();
+    check(
+      '关上：打开它的按钮不在了，焦点放到页头的「导入CSV」，不掉到 body',
+      document.querySelector(`${D} .csv-steps`) === null && document.activeElement === headerOpen(),
+      document.activeElement?.tagName,
+    );
+    await ep.unmount();
 
     api.restore();
     URL.createObjectURL = realCreate;

@@ -28,7 +28,7 @@ export interface CsvIssue {
   label?: string;
 }
 
-// ---------------- 上限（与服务端一致：前端据此预检，超了不发请求） ----------------
+// ---------------- 上限（与服务端一致：前端据此预检，超了不发请求；有一行单独也超了时说是哪一行） ----------------
 
 /** 一次最多导入的数据行 */
 export const CSV_MAX_ROWS = 200;
@@ -328,30 +328,44 @@ const BODY_FRAME = utf8.encode(JSON.stringify({ csv: '' })).length;
 /** 提交给服务端的请求体（{ csv }）按 UTF-8 的字节数 */
 export const csvBodyBytes = (csv: string): number => BODY_FRAME + escapedBytes(csv);
 
+/** 一行（表头或数据行，\n 结尾，与提交时的写法一样）占多少字符、多少字节；表头另算上请求体 {"csv":""} 本身 */
+function lineCost(cells: readonly string[], frame = 0): { chars: number; bytes: number } {
+  const line = toCsv([cells], { eol: '\n' });
+  return { chars: line.length, bytes: frame + escapedBytes(line) };
+}
+const tooBig = (chars: number, bytes: number): boolean => chars > CSV_MAX_CHARS || bytes > CSV_MAX_BODY_BYTES;
+
+/** 连同表头单独一份也超上限的行（数据行号，从 1 起）：分成几份也导入不了 */
+export function csvLongRows(header: readonly string[], rows: readonly (readonly string[])[]): number[] {
+  const base = lineCost(header, BODY_FRAME);
+  return rows.flatMap((r, i) => {
+    const c = lineCost(r);
+    return tooBig(base.chars + c.chars, base.bytes + c.bytes) ? [i + 1] : [];
+  });
+}
+
 /**
  * 按三条上限（行数、csv 字符数、请求体字节数）要分成几份：每份都带表头，按行的顺序能放就放（行用 \n 结尾，与提交时的写法一样）。
- * 1 就是一份放得下
+ * 1 就是一份放得下；有一行连同表头单独一份也放不下时是 Infinity（分成几份也不行，见 csvLongRows）
  */
 export function csvParts(header: readonly string[], rows: readonly (readonly string[])[]): number {
-  const head = toCsv([header], { eol: '\n' });
-  const base = { chars: head.length, bytes: BODY_FRAME + escapedBytes(head) };
+  const base = lineCost(header, BODY_FRAME);
   let parts = 1;
   let n = 0;
   let chars = base.chars;
   let bytes = base.bytes;
   for (const r of rows) {
-    const line = toCsv([r], { eol: '\n' });
-    const c = line.length;
-    const b = escapedBytes(line);
-    if (n > 0 && (n + 1 > CSV_MAX_ROWS || chars + c > CSV_MAX_CHARS || bytes + b > CSV_MAX_BODY_BYTES)) {
+    const c = lineCost(r);
+    if (tooBig(base.chars + c.chars, base.bytes + c.bytes)) return Infinity;
+    if (n > 0 && (n + 1 > CSV_MAX_ROWS || tooBig(chars + c.chars, bytes + c.bytes))) {
       parts += 1;
       n = 0;
       chars = base.chars;
       bytes = base.bytes;
     }
     n += 1;
-    chars += c;
-    bytes += b;
+    chars += c.chars;
+    bytes += c.bytes;
   }
   return parts;
 }

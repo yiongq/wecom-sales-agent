@@ -2072,7 +2072,7 @@ check(
     [
       '库里已有这个 code',
       `${head}${NL}h-new-1,名,三亚,五星,100,房,亮点,${NL}h-csv-one,名,三亚,五星,100,房,亮点,`,
-      (r) => r.body.rows?.[0]?.row === 2 && JSON.stringify(r.body.rows).includes('已经有了'),
+      (r) => JSON.stringify(r.body.rows) === JSON.stringify([{ row: 2, issues: [{ path: 'id', message: '这个编号已经有了' }] }]),
     ],
     ['过不了 schema（缺必填、id 不合规）', `${head}${NL}H_BAD,名,三亚,五星,100,房,,`, (r) => r.body.rows?.[0]?.row === 1],
     ['只有表头', head, (r) => r.body.rows?.[0]?.row === 0],

@@ -2,7 +2,7 @@
 // 1. 下载模板：带 BOM、表头是字段的中文标签；小表写每列怎么填，例子照已有的一条；
 // 2. 选文件：拖放或点选，只在本地读（先 UTF-8 严格解码，不成再 GBK）；保留「粘贴」页签。空文件、只有表头停在这一步；
 // 3. 校验结果：文件行（「按UTF-8读取 · 8行」）、汇总、逐行「合格 / 要改」，出错的格子标出、原因写在最后一列；
-//    超过三条上限写「这份文件太大，请分成N份导入」，不发请求；
+//    超过三条上限写「这份文件太大，请分成N份导入」，有一行单独也超了写「第N行太长」，都不发请求；
 // 4. 导入：全部合格是「导入N条草稿」，有不合格是「只导入合格的N行」加「下载不合格的M行（带原因）」，不放禁用的「全部导入」；
 //    服务端 422 的逐行问题放回第 3 步的表格；
 // 5. 完成：「已建N条草稿」，去草稿页签逐条检查后上架。
@@ -34,6 +34,8 @@ import {
   goodRows,
   importLabel,
   LIMITS_NOTE,
+  longNote,
+  longTitle,
   lookalikeParts,
   RESULT_WIDTH,
   resultWidths,
@@ -63,6 +65,8 @@ export interface CsvImportDialogProps {
   onImported(): void;
   /** 「去草稿页签」：页面换到草稿页签（清掉搜索与筛选） */
   onShowDrafts(): void;
+  /** 关上、动画走完以后（antd 已经试着把焦点还给打开它的按钮）：那个按钮不在了时页面另找地方放焦点 */
+  afterClose?(): void;
 }
 
 /** 导入中：右上角「关闭」点不动，点遮罩、按 Esc 都不关（关了照样会建成） */
@@ -132,6 +136,14 @@ function Cell({ text, issues, mono }: { text: string; issues: readonly RowIssue[
 }
 
 const issuesAt = (row: RowResult, col: string): RowIssue[] => row.issues.filter((i) => i.col === col);
+
+/**
+ * 第 1 步规则表的列宽：表头、例子定宽，怎么填占剩下的。固定布局：例子再长也只占一行（省略，悬停看全文），撑不开弹窗；
+ * 窄屏（375 宽时弹窗约 359）表格比弹窗宽，在自己的容器里横向滚动，怎么填至少 RULES_HOW_MIN
+ */
+const RULES_LABEL = 180;
+const RULES_EXAMPLE = 220;
+const RULES_HOW_MIN = 200;
 
 /** 第 3 步的表格：行号 · 结果 · 名称与编号（一列两行）· 字段 · 原因 */
 function ResultTable({ entity, table }: { entity: EntityType; table: CsvTable }) {
@@ -308,6 +320,8 @@ export function CsvImportDialog(p: CsvImportDialogProps) {
   const doImport = async (): Promise<void> => {
     if (!table) return;
     const sub = submission(table);
+    // 合格的行是预检通过的那份的子集，照理总放得下；放不下也不发请求（spec：超限不发）
+    if (!sub.fits) return;
     setError(null);
     setStep(4);
     setBusy(true);
@@ -353,11 +367,13 @@ export function CsvImportDialog(p: CsvImportDialogProps) {
           rowKey="key"
           pagination={false}
           dataSource={rules}
+          tableLayout="fixed"
+          scroll={{ x: RULES_LABEL + RULES_HOW_MIN + RULES_EXAMPLE }}
           columns={[
             {
               key: 'label',
               title: '表头',
-              width: 180,
+              width: RULES_LABEL,
               render: (_, r) => (
                 <>
                   {cjk(r.label)}
@@ -369,7 +385,7 @@ export function CsvImportDialog(p: CsvImportDialogProps) {
             {
               key: 'example',
               title: '例子',
-              width: 220,
+              width: RULES_EXAMPLE,
               // 例子只占一行，长的省略，悬停看全文
               render: (_, r) => (
                 <span className={r.key === 'id' ? 'csv-example mono' : 'csv-example'} title={r.example ?? undefined}>
@@ -499,6 +515,8 @@ export function CsvImportDialog(p: CsvImportDialogProps) {
       );
     } else if (check.kind === 'big') {
       main = <Alert type="error" showIcon title={cjk(bigTitle(check.parts))} description={cjk(LIMITS_NOTE)} />;
+    } else if (check.kind === 'long') {
+      main = <Alert type="error" showIcon title={cjk(longTitle(check.long))} description={cjk(longNote(check.long.length))} />;
     } else if (check.kind === 'rows') {
       const s = csvSummary(check.table);
       main = (
@@ -581,6 +599,7 @@ export function CsvImportDialog(p: CsvImportDialogProps) {
       mask={busy ? MASK_BUSY : MASK_IDLE}
       keyboard={!busy}
       onCancel={onClose}
+      afterClose={p.afterClose}
       afterOpenChange={(visible) => {
         shown.current = visible;
         if (visible) first.current?.focus();

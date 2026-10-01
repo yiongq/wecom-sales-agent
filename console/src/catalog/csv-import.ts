@@ -1,7 +1,7 @@
 // 产品库 CSV 导入弹窗（spec「CSV 导入（H 页）」，设计系统 H 页，plan 第 12 步）的纯逻辑。不依赖 React，只看行业包的配置和字段类型：
 // - 第 1 步：模板（带 BOM，只有一行表头，写字段的中文标签，只含能平铺的字段）与填写规则，例子取已有的一条；
-// - 第 2、3 步：解码之后的预检。空文件与只有表头；整份的问题（表头、引号）；三条上限；逐行合格与否（共用的 checkCsvRows，
-//   逐行过上架前检查 checkItem，与服务端的 schema 同判，不变量 15）；编号是否已经有了（对照已载入的列表）。
+// - 第 2、3 步：解码之后的预检。空文件与只有表头；整份的问题（表头、引号）；三条上限（有一行单独也超了时写是哪一行）；
+//   逐行合格与否（共用的 checkCsvRows，逐行过上架前检查 checkItem，与服务端的 schema 同判，不变量 15）；编号是否已经有了（对照已载入的列表）。
 //   问题写成「每晚起价：要写整数，写的是「2,6OO」」，标出是哪一格；
 // - 第 4 步：只导入合格的行（过滤以后重新写成 CSV，同样过三条上限）；服务端 422 的逐行问题放回原来的那一行；
 //   下载不合格的行（带原因、每格加引号、危险字符开头的格子加制表符，防公式注入）。
@@ -12,6 +12,7 @@ import {
   CSV_REASON_HEADER,
   type CsvIssue,
   checkCsvRows,
+  csvLongRows,
   csvParts,
   type EntityCsvShape,
   entityCsvShape,
@@ -164,6 +165,8 @@ export type CsvCheck =
   | { kind: 'whole'; rows: number | null; lines: string[] }
   /** 超过三条上限中的一条：要分成 parts 份 */
   | { kind: 'big'; rows: number; parts: number }
+  /** 有的行连同表头单独一份也超上限（long 是这些行的行号）：分成几份也导入不了 */
+  | { kind: 'long'; rows: number; long: number[] }
   | { kind: 'rows'; table: CsvTable };
 
 /** 列的中文名：字段标签；编号写编号的标签 */
@@ -201,10 +204,11 @@ export function checkCsv(entity: EntityType, text: string, existing?: readonly L
   } catch (e) {
     return { kind: 'whole', rows: body.length, lines: wholeLines(entity, shape, e) };
   }
-  const parts = csvParts(
-    sendable(keys, header),
-    body.map((c) => sendable(keys, c)),
-  );
+  const sendHead = sendable(keys, header);
+  const sendBody = body.map((c) => sendable(keys, c));
+  const long = csvLongRows(sendHead, sendBody);
+  if (long.length) return { kind: 'long', rows: body.length, long };
+  const parts = csvParts(sendHead, sendBody);
   if (parts > 1) return { kind: 'big', rows: body.length, parts };
 
   const byCode = new Map((existing ?? []).map((r) => [r.code, r]));
@@ -258,6 +262,12 @@ export const downloadLabel = (t: CsvTable): string => `下载不合格的${badRo
 /** 超过上限时的一句，下面再写三条上限 */
 export const bigTitle = (parts: number): string => `这份文件太大，请分成${parts}份导入`;
 export const LIMITS_NOTE = `一次最多导入${CSV_MAX_ROWS}行，整份不超过${digits(CSV_MAX_CHARS)}个字、${CSV_MAX_BODY_BYTES / 1024}KB`;
+/** 有一行单独也超上限：写出是哪几行（最多三个行号），分成几份也导入不了 */
+export function longTitle(rows: readonly number[]): string {
+  const more = rows.length > 3 ? `等${rows.length}行` : '';
+  return `第${rows.slice(0, 3).join('、')}行${more}太长，分成几份也导入不了`;
+}
+export const longNote = (n: number): string => `${LIMITS_NOTE}。${n > 1 ? '这几行' : '这一行'}连同表头单独一份也超了`;
 
 // ---------------- 第 3 步的表格 ----------------
 
@@ -379,15 +389,17 @@ export function withServerIssues(
 
 /**
  * 下载的不合格行：表头加一列「不合格原因」，几处原因用「；」连；每格都加双引号，危险字符开头的格子在引号内的开头加制表符
- * （先去掉上回下载时加的，不叠加），文件带 BOM。少了格子的行补空格子，原因仍在最后一列
+ * （先去掉上回下载时加的，不叠加），文件带 BOM。原因总在「不合格原因」那一列：少了格子的行补空格子；
+ * 多了格子的行，多出来的放在原因右边（照原样留着，好看出多在哪；再导入时这一行仍是列数不对）
  */
 export function failedCsv(t: CsvTable): string {
   const head = [...sendable(t.keys, t.header), CSV_REASON_HEADER];
   const width = head.length - 1;
   const body = badRows(t).map((r) => {
     const cells = sendable(t.keys, r.cells);
-    while (cells.length < width) cells.push('');
-    return [...cells, r.issues.map((i) => i.text).join('；')];
+    const fields = cells.slice(0, width);
+    while (fields.length < width) fields.push('');
+    return [...fields, r.issues.map((i) => i.text).join('；'), ...cells.slice(width)];
   });
   return (
     BOM +
