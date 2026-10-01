@@ -6,7 +6,7 @@
 // 产品库文本只以文本节点渲染（不变量 28）；值为空写「—」。
 import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
 import { ArrowDown, ArrowUp, Check, CircleX, Lock, Plus, Trash2, TriangleAlert, X } from 'lucide-react';
-import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef } from 'react';
+import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
 import { Status } from '../parts/Status.js';
@@ -652,7 +652,10 @@ function TimelineNode({ label, n, state }: { label: string; n: number; state: 'd
   );
 }
 
-/** 只读：单字段写成列表；多字段写成只读时间轴（竖轴加节点，节点里写得下序号标签就写，写不下只写序号） */
+/**
+ * 只读：单字段写成列表；多字段写成只读时间轴（竖轴加节点，节点里写得下序号标签就写，写不下只写序号）。
+ * 节点对读屏隐藏，每张卡片和编辑时一样是名为「第1天」的组：不然读屏念不到这是第几天
+ */
 function SubItemsView({ field, value }: ViewProps) {
   const items = Array.isArray(value) ? value : [];
   if (!items.length) return <span className="field-text">{NONE}</span>;
@@ -667,6 +670,7 @@ function SubItemsView({ field, value }: ViewProps) {
       </ol>
     );
   }
+  const noun = nounOf(field);
   return (
     <ol className="subitems-timeline">
       {items.map((it, i) => {
@@ -674,7 +678,7 @@ function SubItemsView({ field, value }: ViewProps) {
         return (
           <li key={i} className="tl-item" data-item-index={i}>
             <TimelineNode label={full} n={i + 1} state="done" />
-            <div className="subitem-card">
+            <div className="subitem-card" role="group" aria-label={`第${i + 1}${noun}`}>
               {labelFitsNode(full) ? null : <div className="subitem-label">{cjk(full)}</div>}
               <ItemFields field={field} item={isRecord(it) ? it : {}} mode="readonly" />
             </div>
@@ -1010,11 +1014,14 @@ const renderRefOption = (o: { data: unknown }): ReactNode => {
  * 引用的表单（spec「有序子项与引用」，设计系统 §6 表、§5.3）。联想分两组：
  * 「{实体名}库 · 贵州」是目标实体的列表，有 filterBy 时只列同一取值的（model.ts 的 refLibrary），草稿后跟「草稿」；
  * 「本条写过的」是同一个有序子项里别的项写过的（只有子项里的引用字段有）。组里没有项就不画这一组。
- * allowFree 时是 AutoComplete，可以写库外的文本，写了库外的就在控件下方注「{实体名}库里没有这个，按原文保存」（提示，不是错误）
+ * allowFree 时是 AutoComplete，可以写库外的文本，写了库外的就在控件下方注「{实体名}库里没有这个，按原文保存」（提示，不是错误）；
+ * 下拉开着、列着候选时不注（才敲了「荔」、下拉里就是荔波荔泉宾馆，这时说「库里没有」自相矛盾），收起、没有候选、离开以后照注
  */
 function ReferenceForm(p: FormProps) {
   const { field, value, onChange, id, invalid } = p;
   const env = useFieldEnv();
+  // rc-select 报的开合；它在没有候选时不画下拉（这时也不报合上），所以真画着下拉是「开着、有候选」
+  const [open, setOpen] = useState(false);
   const items = field.to ? env.refItems(field.to) : undefined;
   const noun = (field.to ? env.entityLabel?.(field.to) : undefined) ?? '';
   const keyOf = (it: RefItem): string => (field.store === 'label' ? it.name : it.code);
@@ -1044,7 +1051,8 @@ function ReferenceForm(p: FormProps) {
     // 可以写库外的文本：AutoComplete，联想按眼下的输入筛，和输入一样的那项不列
     const v = typeof c === 'string' ? c : '';
     const keep = (o: RefOpt): boolean => o.value !== v && matchRef(v, o);
-    const free = freeText(field, v, items);
+    const options = groups(libOpts.filter(keep), writtenOpts.filter(keep));
+    const free = !(open && options.length > 0) && freeText(field, v, items);
     const freeId = `${id}-free`;
     return (
       <div className="field-stack">
@@ -1052,8 +1060,9 @@ function ReferenceForm(p: FormProps) {
           {...common}
           {...a11y(p, free ? { noteId: freeId } : undefined)}
           value={v}
-          options={groups(libOpts.filter(keep), writtenOpts.filter(keep))}
+          options={options}
           optionRender={renderRefOption}
+          onOpenChange={setOpen}
           onChange={(s: string) => write(s ?? '')}
         />
         {free ? (

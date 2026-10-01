@@ -582,7 +582,8 @@
 }
 
 /* ---------- 有序子项 ---------- */
-/* 单字段：逐条一个输入框，右边上移、下移、删除；不能用的按钮降到 40% 并设 aria-disabled（§6.3） */
+/* 单字段：逐条一个输入框，右边上移、下移、删除；不能用的按钮设 aria-disabled，图标降到 40%（§6.3）。
+   只降图标、不降按钮：移动以后焦点可能留在到头的按钮上，整个按钮降透明度会把焦点环一起压到 3:1 以下 */
 .field-list-edit {
   display: flex;
   flex-direction: column;
@@ -604,8 +605,10 @@
   min-width: 0;
 }
 .field-list-edit .icon-btn[aria-disabled='true'] {
-  opacity: 0.4;
   cursor: not-allowed;
+}
+.field-list-edit .icon-btn[aria-disabled='true'] > svg {
+  opacity: 0.4;
 }
 .field-add {
   align-self: flex-start;
@@ -679,7 +682,8 @@
   margin-top: 3px;
   color: var(--warning-icon);
 }
-/* 右上角「上移」「下移」「删除这{itemNoun}」：28 图标按钮，text-3，间隔 2（§6.3）；不能用的降到 40% 并设 aria-disabled */
+/* 右上角「上移」「下移」「删除这{itemNoun}」：28 图标按钮，text-3，间隔 2（§6.3）；不能用的设 aria-disabled，
+   图标降到 40%（按钮本身不降：移动以后焦点留在到头的按钮上，焦点环要保持对比度，同逐条列表） */
 .subitem-tools {
   position: absolute;
   top: 11px;
@@ -694,8 +698,10 @@
   color: var(--text);
 }
 .subitem-tools > .icon-btn[aria-disabled='true'] {
-  opacity: 0.4;
   cursor: not-allowed;
+}
+.subitem-tools > .icon-btn[aria-disabled='true'] > svg {
+  opacity: 0.4;
 }
 .subitem-tools > .icon-btn[aria-disabled='true']:hover {
   background: none;

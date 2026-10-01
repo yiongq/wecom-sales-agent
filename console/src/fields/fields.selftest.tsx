@@ -5915,6 +5915,33 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ...(v.split('data-item-index="0"')[1] ?? '').split('data-item-index="1"')[0]!.matchAll(/data-field-key="(\w+)"/g),
     ].map((m) => m[1]);
     eq('只读时间轴：一天里同样是当天标题、当晚住宿一行在前', viewOrder, ['title', 'hotel', 'detail', 'meals']);
+    const groupNames = (s: string) => [...s.matchAll(/class="subitem-card" role="group" aria-label="([^"]*)"/g)].map((m) => m[1]);
+    const pkgView = html(createElement(RENDERERS.subItems.View, { field: NODES_F, value: NUANMU.nodes, row: NUANMU }));
+    eq(
+      '只读时间轴：节点对读屏隐藏，每项的卡片和编辑时一样是名为「第1天」的组（读屏念得到第几天）；假包是「第3个节点」',
+      [
+        groupNames(v),
+        groupNames(pkgView)[2],
+        count(pkgView, 'role="group" aria-label="第'),
+        count(v, 'tl-node is-done" aria-hidden="true"'),
+      ],
+      [['第1天', '第2天', '第3天', '第4天', '第5天'], '第3个节点', (NUANMU.nodes as unknown[]).length, 5],
+    );
+    // aria-disabled 的按钮（到头的上移、下移）自己不降透明度、只降图标：移动以后焦点留在到头的按钮上，
+    // 整个按钮降到 40% 会把焦点环一起压淡（评审实测 1.8:1，§1 要求 3:1）
+    const cssRoot = path.join(root, 'console/src');
+    const dimmed: string[] = [];
+    for (const f of fs.readdirSync(cssRoot, { recursive: true, encoding: 'utf8' }).filter((x) => x.endsWith('.css'))) {
+      const css = fs.readFileSync(path.join(cssRoot, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!/(^|[;\s])opacity\s*:/.test(body!)) continue;
+        for (const one of sel!.split(',')) {
+          const tail = one.trim().split(/\[aria-disabled=['"]?true['"]?\]/);
+          if (tail.length > 1 && !/[\s>+~]/.test(tail.at(-1)!)) dimmed.push(`${f}：${one.trim()}`);
+        }
+      }
+    }
+    eq('aria-disabled 的按钮自己不降透明度，只降图标（焦点环保持对比度）', dimmed, []);
   }
 
   // 12.3 整页：G 页（草稿 r-guizhou-5d）
@@ -5956,6 +5983,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const head = () => d.box.querySelector('[data-field-key="itinerary"] > .field-block-row')?.textContent;
     const nodes = () => [0, 1, 2, 3, 4].map((i) => nodeOf(d.box, 'itinerary', i));
     const opened = [head(), nodes(), [0, 1, 2].map((i) => copyBtn(i)?.textContent ?? null)];
+    // 整个逐日行程里的「复制上一天的…」：只有引用子字段（当晚住宿）有，标题、安排、餐食每天都不同也不画
+    const copies = all<HTMLElement>(d.box, '[data-field-key="itinerary"] .field-copy').map(
+      (b) =>
+        `${b.closest('[data-item-index]')?.getAttribute('data-item-index')}:${b.closest('[data-field-key]')?.getAttribute('data-field-key')}`,
+    );
+    const editBox = d.box.querySelector('[data-field-key="itinerary"] .subitems-edit');
+    const labelledBy = document.getElementById(editBox?.getAttribute('aria-labelledby') || '-');
+    eq(
+      '「复制上一天的…」只在引用子字段（当晚住宿）上：第2、4、5天（和上一天不同）；逐日行程这一组的名字是区块头「逐日行程·5天」',
+      [copies, editBox?.getAttribute('role'), labelledBy?.className, labelledBy?.textContent],
+      [['1:hotel', '3:hotel', '4:hotel'], 'group', 'field-block-head', '逐日行程·5天'],
+    );
 
     // 清空第3天的住宿：节点空心、「缺：当晚住宿」，组的说明连上它；第3天出「复制上一天的当晚住宿」
     await act(async () => hotelInput(2)?.focus());
@@ -6011,14 +6050,42 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const popupWidth = document.querySelector<HTMLElement>('.ant-select-dropdown.ref-popup:not(.ant-select-dropdown-hidden)')?.style.width;
     await press(hotelInput(2), 'Escape');
     // 敲字筛：两组都按名称筛；和输入一模一样的那项不列
+    // 库外提示：下拉列着候选时不注（才敲「荔」、下拉里就是荔波荔泉宾馆），收起、没有候选、离开以后照注
+    const freeNote = () => {
+      const n = subEl(d.box, 'itinerary', 2, 'hotel')?.querySelector('.field-free');
+      return n ? [n.textContent, (hotelInput(2)?.getAttribute('aria-describedby') ?? '').split(' ').includes(n.id)] : null;
+    };
     await typeInto(hotelInput(2), '荔');
     await settle();
     const typed = openedGroups(hotelInput(2));
+    const typedFree = freeNote();
+    // rc-select 的下拉按 which 认 Esc（React 取自 keyCode；press 只带 key），合上要等一个宏任务（MessageChannel）
+    await act(async () => {
+      const esc = new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      Object.defineProperty(esc, 'keyCode', { value: 27 });
+      hotelInput(2)?.dispatchEvent(esc as unknown as Event);
+    });
+    await until(() => hotelInput(2)?.getAttribute('aria-expanded') === 'false');
+    const escFree = [hotelInput(2)?.getAttribute('aria-expanded'), freeNote()];
     await typeInto(hotelInput(2), '云上西江酒店');
     await settle();
     const exact = openedGroups(hotelInput(2));
+    const exactFree = freeNote();
+    await typeInto(hotelInput(2), '荔');
+    await settle();
+    await act(async () => subEl(d.box, 'itinerary', 2, 'title')?.querySelector('input')?.focus());
+    await until(() => hotelInput(2)?.getAttribute('aria-expanded') === 'false');
+    const leftFree = freeNote();
+    await act(async () => hotelInput(2)?.focus());
     await press(hotelInput(2), 'Escape');
     await typeInto(hotelInput(2), '');
+    const FREE = ['酒店库里没有这个，按原文保存', true];
+    eq(
+      '库外提示：敲「荔」、下拉列着荔波荔泉宾馆时不注；Esc 收起以后注（「荔」按原文保存）；敲全「云上西江酒店」、没有候选时注；' +
+        '敲着「荔」离开以后注，读屏说明都连上',
+      [typedFree, escFree, exactFree, leftFree],
+      [null, ['false', FREE], FREE, FREE],
+    );
     eq(
       '联想的下拉宽 384（窗口不窄时）；敲「荔」两组都只剩荔波荔泉宾馆；敲全「云上西江酒店」，和输入一样的那项不列',
       [popupWidth, typed, exact],
@@ -6203,12 +6270,13 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       lists: gLists,
     });
     eq(
-      '非编辑成员（天数写成 6、行程 5 天）：逐日行程是只读时间轴，没有条数提醒、按钮和复制',
+      '非编辑成员（天数写成 6、行程 5 天）：逐日行程是只读时间轴，没有条数提醒、按钮和复制；每天的卡片是名为「第1天」的组',
       [
         r.box.querySelectorAll('.count-note, .subitem-tools, .field-copy, .field-add').length,
         r.box.querySelectorAll('[data-field-key="itinerary"] .tl-node').length,
+        all(r.box, '[data-field-key="itinerary"] .subitem-card').map((c) => `${c.getAttribute('role')}:${c.getAttribute('aria-label')}`),
       ],
-      [0, 5],
+      [0, 5, ['group:第1天', 'group:第2天', 'group:第3天', 'group:第4天', 'group:第5天']],
     );
     await r.unmount();
   }
@@ -6232,9 +6300,23 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     await settle();
     const mats4 = texts(subEl(p.box, 'nodes', 3, 'materials') ?? p.box, '.ant-select-selection-item');
     // 第1个节点的主材下拉：「主材库」四件、「本条写过的」写第几个节点（第3、4个节点都是马可波罗，只列一次）
-    await openDropdown(subEl(p.box, 'nodes', 0, 'materials')?.querySelector('input'));
+    const matInput = () => subEl(p.box, 'nodes', 0, 'materials')?.querySelector('input');
+    await openDropdown(matInput());
     const groups = dropdownGroups();
-    await press(subEl(p.box, 'nodes', 0, 'materials')?.querySelector('input'), 'Escape');
+    // 下拉（不能写库外的）同样两组都按输入筛：敲分组标题里的字（「写」「库」）不列整组，敲「马可」两组各剩一项
+    const searched: string[][] = [];
+    for (const q of ['写', '库', '马可']) {
+      await typeInto(matInput(), q);
+      await settle();
+      searched.push(dropdownGroups());
+    }
+    await typeInto(matInput(), '');
+    await press(matInput(), 'Escape');
+    eq('主材的下拉按输入筛：敲「写」「库」（只在分组标题里）什么也不列；敲「马可」两组各剩马可波罗', searched, [
+      [],
+      [],
+      ['#主材库', '马可波罗 800×800 抛釉砖m-marcopolo-800', '#本条写过的', '马可波罗 800×800 抛釉砖第3个节点'],
+    ]);
     await typeInto(subEl(p.box, 'nodes', 0, 'checkpoints')?.querySelector('textarea'), '一'.repeat(81));
     const soft = subEl(p.box, 'nodes', 0, 'checkpoints')?.querySelector('.field-soft')?.textContent;
     eq(
@@ -6264,6 +6346,41 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
     );
     await p.unmount();
+  }
+
+  // 12.6 联想下拉的宽度：宽屏至少 384（G 页）；窄屏（<992）跟输入框一样宽，375 宽的窗口放不下 384
+  {
+    const popupAt = async (w: number) => {
+      win.happyDOM.setViewport({ width: w, height: 800 });
+      const m = await mount(
+        createElement(RENDERERS.reference.Form, {
+          field: HOTEL_F,
+          value: '',
+          row: GUIZHOU_5D,
+          id: 'pw',
+          labelId: 'pw-label',
+          onChange: () => undefined,
+        }),
+      );
+      const input = m.box.querySelector('input');
+      await openDropdown(input);
+      const pop = document.querySelector<HTMLElement>('.ant-select-dropdown.ref-popup:not(.ant-select-dropdown-hidden)');
+      const got = [pop !== null, pop?.style.width === '384px'];
+      await press(input, 'Escape');
+      await m.unmount();
+      return got;
+    };
+    const narrowPopup = await popupAt(375);
+    const widePopup = await popupAt(1440);
+    win.happyDOM.setViewport({ width: 1440, height: 1100 });
+    eq(
+      '联想的下拉：375 宽时开着、不是 384 宽（跟输入框一样宽）；1440 宽时 384',
+      [narrowPopup, widePopup],
+      [
+        [true, false],
+        [true, true],
+      ],
+    );
   }
 }
 
