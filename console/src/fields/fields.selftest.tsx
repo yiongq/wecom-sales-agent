@@ -6520,6 +6520,28 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [noCode.columns[0]?.key, noCode.columns[0]?.label, noCode.labels['主材编号'], [...noCode.required][0]],
       ['id', '主材编号', 'id', 'id'],
     );
+    const odd = entityCsvShape({
+      ...MATERIAL,
+      fields: [
+        ...MATERIAL.fields,
+        { key: 'note', type: 'text', label: '备注', group: 'basic', showWhen: { key: 'ecoGrade', filled: true } },
+        {
+          key: 'sizes',
+          type: 'enum',
+          multiple: true,
+          storeAs: { join: '/', empty: '—' },
+          options: ['大', '小'],
+          label: '规格',
+          group: 'basic',
+        },
+        { key: 'parts', type: 'subItems', item: [{ key: '', type: 'intUnit', label: '', group: '' }], label: '件数', group: 'basic' },
+      ],
+    });
+    eq(
+      '列的细则：showWhen 管着的按选填算；按字符串存的多选是一格文字；子字段不是文字的单值有序子项不成列',
+      [odd.required.has('note'), odd.flat.get('note'), odd.flat.get('sizes'), odd.flat.has('parts'), odd.nestedRequired],
+      [false, 'string', 'string', false, ['parts']],
+    );
   }
 
   // 13.2 防公式注入：危险字符开头的格子加一个制表符；导入时只去「制表符 + 危险字符」开头的那一个
@@ -6741,6 +6763,14 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         ],
       ],
     );
+    eq('改好以后重新导入：提交时去掉「不合格原因」列', again && parseCsv(csvSubmission(again).csv)[0], EN_HEAD.split(','));
+    const short = failedCsv(tableOf(checkCsv(HOTEL, [EN_HEAD, 'h-short,名'].join('\n'), HOTEL_ROWS))!);
+    eq('少了格子的行：补空格子，原因仍在最后一列', parseCsv(short)[1], ['h-short', '名', '', '', '', '', '', '', '有 2 列，表头有 8 列']);
+    const yesNo = tableOf(checkCsv(PKG, ['id,demolition', 'p-x,也许'].join('\n')))!;
+    eq('是否写错：说明写法，不标形似数字的字母（只有数值格标）', yesNo.rows[0]!.issues[0], {
+      col: 'demolition',
+      text: '拆旧：要写「是」或「否」，写的是「也许」',
+    });
     const twice = failedCsv(tableOf(checkCsv(HOTEL, file, HOTEL_ROWS))!);
     check(
       '再下载一次：前缀不叠加，旧的原因列换成新的',
@@ -7060,9 +7090,20 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       stepNow() === '选文件' && fileRow() === '乱码.csv' && (readError() ?? '').includes('CSV UTF-8'),
       `${fileRow()} ${readError()}`,
     );
-    await pick('新签酒店-GBK.csv', GBK_FILE);
+    // 拖放：在拖放区上发 dragover 与 drop，dataTransfer 里放 GBK 文件
+    const zone = document.querySelector<HTMLElement>(`${D} .csv-drop`)!;
+    const dropEvent = (type: string) => {
+      const ev = new win.Event(type, { bubbles: true, cancelable: true }) as unknown as Event;
+      Object.defineProperty(ev, 'dataTransfer', { value: { files: [new File([GBK_FILE], '新签酒店-GBK.csv', { type: 'text/csv' })] } });
+      return ev;
+    };
+    await act(async () => void zone.dispatchEvent(dropEvent('dragover')));
+    const over = zone.className;
+    await act(async () => void zone.dispatchEvent(dropEvent('drop')));
+    await until(() => stepNow() === '校验结果');
+    check('拖进来时拖放区换成 is-over', over.includes('is-over'), over);
     eq(
-      'GBK 文件（验收 19）：进第3步，文件行写「按GBK读取」，中文照常',
+      'GBK 文件（验收 19）：拖进来就进第3步，文件行写「按GBK读取」，中文照常',
       [stepNow(), fileRow(), resultRows().map((r) => r.querySelector('.csv-title-name')?.textContent)],
       ['校验结果', '新签酒店-GBK.csv按GBK读取·1行换一个文件', ['三亚湾酒店']],
     );
@@ -7231,6 +7272,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       '粘贴英文表头的两行：全部合格，主按钮「导入2条草稿」，没有下载按钮',
       [stepNow(), fileRow(), alertTitles(), footer()],
       ['校验结果', '粘贴的内容2行改粘贴的内容', ['2行都可以导入'], ['上一步', '导入2条草稿']],
+    );
+    reply = () =>
+      json(
+        { error: 'invalid_csv', detail: 'x', rows: [{ row: 0, issues: [{ path: '', message: '一次最多导入 200 行，这份有 201 行' }] }] },
+        422,
+      );
+    await click(btn('导入2条草稿'));
+    await until(() => alertTitles().includes('无法导入这份文件'));
+    eq(
+      '服务端说整份不合格（第0行）：回到第3步写出原因，不再给导入按钮',
+      [stepNow(), squash(document.querySelectorAll(`${D} .csv-body .ant-alert-description`)[1]?.textContent), footer()],
+      ['校验结果', '一次最多导入200行，这份有201行', ['上一步']],
     );
     await press(modal(), 'Escape');
     await motion();

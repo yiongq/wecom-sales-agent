@@ -210,13 +210,11 @@
   line-height: 20px;
   color: var(--text-2);
 }
-.csv-tabs .ant-tabs-content > .ant-tabs-tabpane {
+/* 页签里的内容上下间隔 12；藏起来的页签照旧 display: none */
+.csv-tabs .ant-tabs-tabpane:not(.ant-tabs-tabpane-hidden) {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-.csv-tabs .ant-tabs-tabpane-hidden {
-  display: none !important;
 }
 /* 文件行下的一句：13 danger，前面 14 的 circle-x（§5.2 出错） */
 .csv-read-error {
