@@ -907,11 +907,11 @@ body {
 | 草稿             | 空心 `--neutral-dot` | 默认                               | —        |
 | 只读             | `--neutral-dot`      | 胶囊，`--neutral-bg` 底，text-2 字 | —        |
 
-会话状态只由 `src/shared/conversation.ts` 的 `conversationState(row)` 判定，前后端共用：服务端的过滤和计数，console 的列表、首页、导航徽标、铃铛都调它，数字都来自同一次 counts 响应（spec 不变量 17、18）：
+会话状态只由 `src/shared/conversation.ts` 的 `conversationState(row, pack)` 判定，前后端共用：服务端的过滤和计数，console 的列表、首页、导航徽标、铃铛都调它，数字都来自同一次 counts 响应（spec 不变量 17、18）：
 
-- 已成交：`stage === 'paid'`。
-- 等人接手：`handedOver && stage !== 'paid'`。02 以后还要满足「没有接手人」。
-- 顾问处理中：只有 02 有，条件是 `handedOver`、有接手人、`stage !== 'paid'`，状态值 `assigned`。今天的数据分不出这一类，所以**今天的界面不出现这个状态和它的页签**，也不做成灰掉的样子。
+- 已成交：`stage` 是租户行业包的终态（`stages` 里标了 `terminal` 的阶段；旅游包是 `paid`，家装假包是 `deposit`）。状态值仍叫 `paid`。
+- 等人接手：`handedOver`，且 `stage` 不是终态。02 以后还要满足「没有接手人」。
+- 顾问处理中：只有 02 有，条件是 `handedOver`、有接手人、`stage` 不是终态，状态值 `assigned`。今天的数据分不出这一类，所以**今天的界面不出现这个状态和它的页签**，也不做成灰掉的样子。
 - AI 接待中：其余情况。
 
 ### 5.7 数字徽标
