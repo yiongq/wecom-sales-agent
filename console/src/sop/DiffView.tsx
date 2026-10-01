@@ -6,7 +6,7 @@
 // 折叠的「N行没有改动」键盘也能展开（collapsedKeys）
 import { MergeView, unifiedMergeView } from '@codemirror/merge';
 import { EditorState, type Extension } from '@codemirror/state';
-import { EditorView } from '@codemirror/view';
+import { EditorView, ViewPlugin } from '@codemirror/view';
 import { Segmented } from 'antd';
 import { useEffect, useId, useRef, useState } from 'react';
 import { cspNonce } from '../csp.js';
@@ -28,7 +28,10 @@ export const trimEnd = (c: SectionChange): SectionChange => ({
   after: c.after.replace(/\n+$/, '\n'),
 });
 
-/** 给折叠的那几行补上按钮的语义、放进 Tab 顺序（只补还没补过的：重画出来的是新的 div） */
+/**
+ * 给折叠的那几行补上按钮的语义、放进 Tab 顺序（只补还没补过的：重画出来的是新的 div）。
+ * 每次重画以后由 docViewUpdate 调；第一次画出来时 CodeMirror 不调它，建好编辑器以后由 DiffView 调一次
+ */
 export function markCollapsed(view: EditorView): void {
   for (const el of view.contentDOM.querySelectorAll<HTMLElement>('.cm-collapsedLines')) {
     if (el.getAttribute('role') === 'button') continue;
@@ -44,7 +47,7 @@ export function markCollapsed(view: EditorView): void {
  */
 const collapsedKeys: Extension = [
   EditorView.contentAttributes.of({ tabindex: '-1' }),
-  EditorView.updateListener.of((u) => markCollapsed(u.view)),
+  ViewPlugin.define(() => ({ docViewUpdate: markCollapsed })),
   EditorView.domEventHandlers({
     keydown(e, view) {
       const el = e.target as HTMLElement | null;

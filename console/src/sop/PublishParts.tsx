@@ -348,7 +348,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
     >
       <div className="sop-publish">
         {error !== null && error !== undefined && (
-          <div ref={errorRef}>
+          <div ref={errorRef} className="sop-publish-error">
             <ErrorAlert error={error} onRetry={p.onPublish} />
           </div>
         )}

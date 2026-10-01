@@ -142,8 +142,11 @@ import {
   lineStat,
   notePrefill,
   noteReady,
+  onlineNow,
+  publishedNames,
   publishedText,
   readDiffMode,
+  replacedIn,
   replaceLine,
   statText,
   writeDiffMode,
@@ -4160,6 +4163,24 @@ function recordScroll(): { calls: string[]; restore(): void } {
     ],
     [['将替换线上v2（老板', '9月25日 18:30发布）'], ['将替换线上v1（9月24日 10:02导入）'], '2025年12月31日 10:00发布）'],
   );
+  // 别人在这期间发布过：被替换的、条里改了哪几节、回滚到哪一版，都按服务端那时的线上版本
+  const v2 = version(2, PUBLISHED);
+  const v3 = version(3, DRAFT, { basedOn: 'v2' });
+  eq(
+    '被替换下来的版本按发布结果的 basedOn 认：在已知的版本里找；不在（或没有 basedOn）是 null',
+    [replacedIn('v2', [v3, v2])?.versionNo, replacedIn('v2', [undefined, null, v3]), replacedIn(null, [v2, v3])],
+    [2, null, null],
+  );
+  eq(
+    '这次改了的节相对被替换下来的版本算，固定规则节不算；没取到被替换的版本时不写',
+    [publishedNames(SPEC, v2, v3), publishedNames(SPEC, v3, v3), publishedNames(SPEC, null, v3)],
+    [['话术原则', '异议处理'], [], []],
+  );
+  eq(
+    '将被替换的线上版本：检查时另取到的比页面上的新才用它',
+    [onlineNow(v2, v3).versionNo, onlineNow(v3, v2).versionNo, onlineNow(v2, v2).versionNo, onlineNow(v2, null).versionNo],
+    [3, 3, 2, 2],
+  );
   const pre = notePrefill(['话术原则', '异议处理']);
   eq('变更说明的预填；没有改过的节不预填', [pre, notePrefill([])], ['修改：话术原则、异议处理。', '']);
   eq(
@@ -4302,6 +4323,31 @@ function recordScroll(): { calls: string[]; restore(): void } {
     ],
     [0, 0, 'false'],
   );
+  // 折叠行（@codemirror/merge 只给了点击）：键盘也到得了、能展开
+  const fold = (): HTMLElement | null => d.box.querySelector<HTMLElement>('.cm-collapsedLines');
+  const press = async (target: Element | null, key: string): Promise<Event> => {
+    const e = new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }) as unknown as Event;
+    await act(async () => void target?.dispatchEvent(e));
+    return e;
+  };
+  eq(
+    '折叠行是按钮、在 Tab 顺序里；正文能程序聚焦、不在 Tab 顺序里',
+    [fold()?.getAttribute('role'), fold()?.tabIndex, d.box.querySelector<HTMLElement>('.cm-content')?.tabIndex],
+    ['button', 0, -1],
+  );
+  // 重画出来的折叠行是新的 div：拿掉补上的语义当作新画的，改一下正文让编辑器重画
+  fold()!.removeAttribute('role');
+  await act(async () => inline[0]!.dispatch({ changes: { from: inline[0]!.state.doc.length, insert: '尾' } }));
+  eq('重画以后折叠行照样补上按钮的语义', fold()?.getAttribute('role'), 'button');
+  const other = await press(fold(), 'a');
+  eq('别的键不展开', [!!fold(), other.defaultPrevented], [true, false]);
+  fold()!.focus();
+  const enter = await press(fold(), 'Enter');
+  eq(
+    'Enter 展开（同点击）：折叠行没了，焦点接到这个编辑器的正文上',
+    [!!fold(), enter.defaultPrevented, document.activeElement === d.box.querySelector('.cm-content')],
+    [false, true, true],
+  );
   await d.render(el('inline'));
   eq('同样的内容重渲：不重建编辑器', views()[0] === inline[0], true);
   await d.render(el('split'));
@@ -4316,6 +4362,22 @@ function recordScroll(): { calls: string[]; restore(): void } {
       all(d.box, '.cm-collapsedLines').map((e) => text(e)),
     ],
     [1, ['旧的一行', '再加一行'], ['线上v2', '草稿'], ['「话术原则」线上v2', '「话术原则」草稿'], ['18行没有改动', '18行没有改动']],
+  );
+  eq(
+    '并排：两边的折叠行都是按钮、在 Tab 顺序里',
+    all<HTMLElement>(d.box, '.cm-collapsedLines').map((e) => [e.getAttribute('role'), e.tabIndex]),
+    [
+      ['button', 0],
+      ['button', 0],
+    ],
+  );
+  const left = all<HTMLElement>(d.box, '.cm-collapsedLines')[0]!;
+  left.focus();
+  await press(left, ' ');
+  eq(
+    '在左边按空格：两边一起展开（同点击），焦点接到左边的正文上',
+    [all(d.box, '.cm-collapsedLines').length, document.activeElement === d.box.querySelector('.cm-content')],
+    [0, true],
   );
   await d.unmount();
 
@@ -4497,6 +4559,11 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   );
   const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
   eq(
+    '行内 / 并排有读屏名称；说明最多 500 字（同服务端 PublishBody）；说明下面不说会写进审计日志（审计里没有说明）',
+    [d.querySelector('.sop-diff-mode')?.getAttribute('aria-label'), ta.maxLength, text(d.querySelector('.sop-publish-help'))],
+    ['改动的显示方式', 500, '预填的是改了哪几节，在后面写上为什么改；会写进版本记录'],
+  );
+  eq(
     '变更说明：标签、预填改了哪几节、占位；只有预填时「发布」不能点（aria-disabled），旁边写原因',
     [
       text(d.querySelector('.sop-publish-label')),
@@ -4566,10 +4633,12 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await m.unmount();
 }
 
-// 11.3b 「回滚到v2」：回滚被替换下来的那一版（回滚确认还是 01 的弹窗，第 7 步重做），成功以后条里那句没了
+// 11.3b 「回滚到v2」：回滚被替换下来的那一版（回滚确认还是 01 的弹窗，第 7 步重做），成功以后条里那句没了；
+// 这期间固定规则改过（sameHashAsTarget 为 false）时页面上写一条说明
 {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
+  srv.rollbackSameHash = false;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
   await waitFor(() => summaryOf(m) === '7/7通过');
   await publishVia(m, '先问预算');
@@ -4587,6 +4656,11 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
       text(m.box.querySelector('.page-status')).startsWith('线上v4'),
     ],
     [[{ changeNote: '退回去' }], '草稿和线上一样', true],
+  );
+  eq(
+    '固定规则改过：页面上写一条留意的说明',
+    all(m.box, '.sop-notices .ant-alert-warning').map((e) => text(e.querySelector('.ant-alert-title'))),
+    ['v2之后代码里的固定规则改过，固定规则节用的是现在的写法，所以v4不会和v2完全一样。'],
   );
   await m.unmount();
 }
@@ -4827,25 +4901,44 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await m.unmount();
 }
 
-// 11.3f 发布没成功（500）：错误写在抽屉里，抽屉开着、说明还在；重试成功
+// 11.3f 发布没成功（500）：错误写在抽屉体的最上面、滚进视口，抽屉开着、说明还在；关上再打开不留上一次的错误；重试成功
 {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   srv.publishFails = 'error';
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
   await waitFor(() => summaryOf(m) === '7/7通过');
+  const scrolls = recordScroll();
   await publishVia(m, '先问预算');
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('.sop-publish .ant-alert-error'));
+  scrolls.restore();
   const d = drawerOf('发布草稿')!;
   eq(
-    '500：抽屉里就地报错，说明还在',
-    [!!d.querySelector('.ant-alert-error'), d.querySelector('textarea')?.value.endsWith('先问预算')],
-    [true, true],
+    '500：抽屉体最上面就地报错（在检查清单前面），出来时滚进视口；说明还在',
+    [
+      !!d.querySelector('.sop-publish > .sop-publish-error:first-child .ant-alert-error'),
+      scrolls.calls.includes('sop-publish-error nearest'),
+      d.querySelector('textarea')?.value.endsWith('先问预算'),
+    ],
+    [true, true, true],
   );
+  await clickEv(drawerButton(d, '取消'));
+  await waitFor(() => !drawerOf('发布草稿'));
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const d2 = drawerOf('发布草稿')!;
+  eq(
+    '关上再打开：上一次的错误不留，写好的说明还在',
+    [!!d2.querySelector('.ant-alert-error'), d2.querySelector('textarea')?.value.endsWith('先问预算')],
+    [false, true],
+  );
+  await waitFor(() => drawerButton(d2, '发布')?.getAttribute('aria-disabled') === null);
+  await clickEv(drawerButton(d2, '发布'));
+  await waitFor(() => !!d2.querySelector('.sop-publish-error .ant-alert-error'));
   srv.publishFails = null;
-  await clickEv(all(d, '.ant-alert button').find((b) => label(b) === '重试'));
+  await clickEv(all(d2, '.ant-alert button').find((b) => label(b) === '重试'));
   await waitFor(() => barText(m).summary.startsWith('已发布'));
-  eq('重试：发布成功', [posted('/draft/publish').length, barText(m).summary], [2, '已发布v3（改了话术原则、异议处理）']);
+  eq('重试：发布成功', [posted('/draft/publish').length, barText(m).summary], [3, '已发布v3（改了话术原则、异议处理）']);
   await m.unmount();
 }
 
@@ -5026,6 +5119,114 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await clickEv(barButton(m, '发布…'));
   await rest(40);
   eq('这时点它：不开抽屉', !!drawerOf('发布草稿'), false);
+  await m.unmount();
+}
+
+// 11.3o 页面打开以后别人发布了 v3（只改了前言，自动合并）：页面上的线上版本还是 v2。抽屉的替换说明写那时的线上 v3；
+// 成功那句的「改了…」相对 v3 算（别人改的前言不算你的），「回滚到v3」回到它，不回到 v2、不撤掉别人的发布。
+// 检查报了要合并、另取那时的线上版本没取到：算这次检查没跑成，重试以后照常
+/** 检查按服务端的条件报要不要合并：草稿的 basedOn 不是线上版本 */
+const scanRebase = (st: SopOverview): DraftCheck => ({
+  ...scan(st),
+  rebase: { needed: st.draft!.basedOn !== st.published.id, conflicts: [] },
+});
+const OTHER_PREAMBLE = withBodies(P_ONLINE, { preamble: '别人改的前言。\n\n' });
+const lookups = (): Record<string, string>[] =>
+  calls.filter((c) => c.path === '/api/console/sop/versions' && c.query.before !== undefined).map((c) => c.query);
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
+  srv.getFails = true;
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason')) === '没检查上，重试以后再发布');
+  const d = drawerOf('发布草稿')!;
+  eq(
+    '检查报了要合并、取那时的线上版本没取到：算没检查上，「发布」不能点',
+    [text(d.querySelector('.check-list-meta')), drawerButton(d, '发布')?.getAttribute('aria-disabled')],
+    ['没检查上·重试', 'true'],
+  );
+  srv.getFails = false;
+  await clickEv(all(d, '.check-list-meta button').find((b) => label(b) === '重试'));
+  await waitFor(() => text(d.querySelector('.check-list-meta')) === '检查于14:30');
+  eq(
+    '重试以后：替换说明写那时的线上 v3（店长发布的）；页面写发布时自动合并；逐节改动、预填照旧只有你改的两节',
+    [
+      text(d.querySelector('.sop-publish-replace')),
+      text(m.box.querySelector('.sop-notices .ant-alert-info')),
+      text(m.box.querySelector('.page-status')).startsWith('线上v2'),
+      all(d, '.sop-diff-name').map((e) => text(e)),
+      d.querySelector('textarea')?.value,
+    ],
+    [
+      '将替换线上v3（店长·9月25日 20:00发布）',
+      '草稿打开之后发布过新版本，发布时自动合并',
+      true,
+      ['话术原则', '异议处理'],
+      '修改：话术原则、异议处理。',
+    ],
+  );
+  const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
+  await setText(ta, `${ta.value}先问预算`);
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => barText(m).summary.startsWith('已发布'));
+  await settle();
+  eq(
+    '发布成功：v4 替换的是 v3；条里只写你改的两节（不写别人改的前言），「回滚到v3」；v3 已在手上，不另取',
+    [srv.state.published.basedOn, barText(m), lookups()],
+    ['v3', { summary: '已发布v4（改了话术原则、异议处理）', hint: '·客户下一句就用新话术·回滚到v3', note: '没有可发布的改动' }, []],
+  );
+  await clickEv(barButton(m, '回滚到v3'));
+  await waitFor(() => !!modalOf('回滚到v3')?.querySelector('textarea'));
+  await setText(modalOf('回滚到v3')!.querySelector('textarea')!, '退回去');
+  await clickEv(all(modalOf('回滚到v3')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v3'));
+  await waitFor(() => text(m.box.querySelector('.page-status')).startsWith('线上v5'));
+  await settle();
+  eq(
+    '回滚的是 v3（别人发布的那一版），不是页面打开时的 v2；固定规则没变时不写说明',
+    [posted('/versions/v3/rollback').length, posted('/versions/v2/rollback').length, all(m.box, '.sop-notices .ant-alert-warning').length],
+    [1, 0, 0],
+  );
+  await m.unmount();
+}
+
+// 11.3o2 抽屉检查过以后别人才发布了 v3：被替换的版本不在手上，按版本号取紧挨着的前一个（before=4、limit=1，核对是 basedOn），
+// 条里改了哪几节与「回滚到v3」都照它；取不到时不写改了哪几节、不给回滚，也不报错（发布已经成功了）
+for (const lookupFails of [false, true]) {
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  srv.versionsFail = lookupFails;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.check-list-meta')) === '检查于14:30');
+  const d = drawerOf('发布草稿')!;
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
+  const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
+  await setText(ta, `${ta.value}先问预算`);
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => barText(m).summary.startsWith('已发布'));
+  await settle();
+  if (!lookupFails)
+    eq(
+      '检查之后别人发布了 v3：按版本号取 v3，条里只写你改的两节、「回滚到v3」',
+      [lookups(), barText(m).summary, barText(m).hint],
+      [[{ limit: '1', before: '4' }], '已发布v4（改了话术原则、异议处理）', '·客户下一句就用新话术·回滚到v3'],
+    );
+  else
+    eq(
+      '取不到被替换的版本：只写已发布v4，没有「回滚到…」；抽屉关上，页面不报错',
+      [
+        barText(m).summary,
+        barText(m).hint,
+        all(publishBar(m)!, 'button').map(label),
+        !!drawerOf('发布草稿'),
+        !!m.box.querySelector('.sop-notices'),
+      ],
+      ['已发布v4', '·客户下一句就用新话术', ['查看改动', '发布…'], false, false],
+    );
   await m.unmount();
 }
 
