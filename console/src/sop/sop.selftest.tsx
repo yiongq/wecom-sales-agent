@@ -7079,9 +7079,8 @@ async function revertAll(m: PageBox): Promise<void> {
   eq('点「去合并」：重查回来之前抽屉开着、按钮转圈，回来以后进合并模式、抽屉关上', [waiting, merging(m)], [[true, false, true], true]);
   noteEnglish();
   await clickEv(actionButton(m, '完成合并'));
-  await rest(50);
   eq(
-    '还有没处理的节时点「完成合并」：不发请求，焦点回到这一节的标题',
+    '还有没处理的节时点「完成合并」：不发请求，焦点马上回到这一节的标题（同一节，不换地址、不等重渲）',
     [srv.puts().length, text(document.activeElement), document.activeElement?.tagName],
     [0, '话术原则', 'H2'],
   );
@@ -7274,6 +7273,21 @@ async function revertAll(m: PageBox): Promise<void> {
   await m.unmount();
 }
 
+// 13.3d2 合并期间随地址打开版本记录：「载入到草稿再改」不能点（编辑器里的改动这时不存），查看改动照常
+{
+  const { m } = await conflictPage({ url: '/console/sop?section=tone' });
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await act(async () => void m.router.navigate({ to: '/sop', search: { section: 'tone', view: 'history' } } as never));
+  await waitFor(() => !!rowButton('v2', '载入到草稿再改'));
+  eq(
+    '合并期间的版本记录：v2 的「载入到草稿再改」不能点，「查看改动」能点',
+    [rowButton('v2', '载入到草稿再改')?.disabled, rowButton('v2', '查看改动')?.disabled],
+    [true, false],
+  );
+  await m.unmount();
+}
+
 // 13.3e2 重新比过以后还在看的节不用合并了（店长那一版撤回了话术原则、小王又改了异议处理）：去要合并的第一节，焦点在它的标题上
 {
   const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
@@ -7325,9 +7339,16 @@ async function revertAll(m: PageBox): Promise<void> {
   await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
   await rest(FAST.debounce * 6);
   eq(
-    '有没存上的改动：先存一次再进合并，右边是存上以后的写法；完成合并以后不再自动存（草稿里是合并的写法）',
-    [entered, srv.puts().length - puts, srv.puts().at(-1)?.rebaseOnto, bodyIn(srv.state.draft!.sections, 'tone')],
-    [[1, true], 2, 'v3', THEIRS_TONE],
+    '有没存上的改动：先存一次再进合并，右边是存上以后的写法；完成合并以后回到发布抽屉，不再自动存（草稿里是合并的写法，编辑器里也是）',
+    [
+      entered,
+      !!drawerOf('发布草稿'),
+      srv.puts().length - puts,
+      srv.puts().at(-1)?.rebaseOnto,
+      bodyIn(srv.state.draft!.sections, 'tone'),
+      editorText(m),
+    ],
+    [[1, true], true, 2, 'v3', THEIRS_TONE, THEIRS_TONE],
   );
   await m.unmount();
 }
