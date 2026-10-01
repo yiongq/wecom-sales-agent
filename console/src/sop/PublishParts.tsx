@@ -277,7 +277,7 @@ export interface PublishDrawerProps {
  * 抽屉关上以后要放完收起动画才卸下，这期间照关上那一刻的样子画：发布成功以后线上已经换成新版本，
  * 跟着重画的话收起的那一下会闪成「将替换线上v3」「草稿和线上一样」
  */
-function useShownWhileClosing<T extends { open: boolean }>(props: T): T {
+export function useShownWhileClosing<T extends { open: boolean }>(props: T): T {
   const [last, setLast] = useState(props);
   // 开着时记下这一次的属性（在渲染时按上一次渲染的值调整）
   if (props.open && last !== props) setLast(props);

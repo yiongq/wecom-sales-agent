@@ -41,7 +41,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { act, type ReactElement, useState } from 'react';
+import { act, type ReactElement, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
   AnonSopOverview,
@@ -148,6 +148,7 @@ import {
   statText,
   writeDiffMode,
 } from './publish.js';
+import { useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
 import { checkItems } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
@@ -4343,6 +4344,32 @@ function recordScroll(): { calls: string[]; restore(): void } {
   );
 }
 
+// 11.2b 抽屉收起的那一下照关上那一刻画（useShownWhileClosing）：发布成功以后线上已经是 v3，收起动画里不闪成「将替换线上v3」。
+// happy-dom 没有动画，抽屉一关就卸下，整页测不到这一下，这里直接测钩子
+{
+  let set: (p: { open: boolean; label: string }) => void = () => {};
+  function Shown() {
+    const [p, setP] = useState({ open: true, label: '将替换线上v2' });
+    useEffect(() => {
+      set = setP;
+    }, []);
+    const shown = useShownWhileClosing(p);
+    return <span>{`${shown.open}|${shown.label}`}</span>;
+  }
+  const r = await mount(<Shown />);
+  await act(async () => set({ open: true, label: '将替换线上v2（改了说明）' }));
+  const a = text(r.box);
+  await act(async () => set({ open: false, label: '将替换线上v3' }));
+  const b = text(r.box);
+  await act(async () => set({ open: true, label: '将替换线上v3' }));
+  eq(
+    '开着时跟着变；关上以后留着最后一次开着的样子（open 是 false）；再打开换成新的',
+    [a, b, text(r.box)],
+    ['true|将替换线上v2（改了说明）', 'false|将替换线上v2（改了说明）', 'true|将替换线上v3'],
+  );
+  await r.unmount();
+}
+
 // 11.3 整页：发布条、发布抽屉、查看改动、回滚到v2
 /** 草稿：话术原则、异议处理各改了一处，检查全过 */
 const D_CLEAN = withBodies(P_ONLINE, {
@@ -4390,7 +4417,11 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => !!drawerOf('发布草稿') && text(drawerOf('发布草稿')!.querySelector('.check-list-meta')) === '检查于14:30');
   const d = drawerOf('发布草稿')!;
-  eq('点「发布…」：没有要存的就不存，打开抽屉再检查一次', [srv.puts().length, srv.checks() - checks0], [0, 1]);
+  eq(
+    '点「发布…」：没有要存的就不存，打开抽屉再检查一次，清单下写检查的时间',
+    [srv.puts().length, srv.checks() - checks0, text(d.querySelector('.check-list-meta'))],
+    [0, 1, '检查于14:30'],
+  );
   eq(
     '抽屉：检查清单（7 项）、替换说明、逐节改动只列改过的节、默认行内',
     [
@@ -4659,6 +4690,80 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
     [!!drawerOf('发布草稿'), m.section(), selected(m), document.activeElement === cmOf(m)],
     [false, 'tone', 'search_routes', true],
   );
+  await m.unmount();
+}
+
+// 11.3e2 点抽屉清单里的一项，问题就在正在看的这一节：定位以后焦点留在正文里，抽屉收起、卸下以后也不被还给「发布…」
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  srv.publishFails = { contract: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x', match: 'search_routes' }] };
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await publishVia(m, '先问预算');
+  await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason')) === '改完1个问题即可发布');
+  const d = drawerOf('发布草稿')!;
+  await clickEv(all<HTMLElement>(d, 'button.check-item').find((b) => text(b.querySelector('.check-item-label')) === '工具名都存在'));
+  await waitFor(() => !document.querySelector('.sop-drawer'), 2000);
+  await settle();
+  eq(
+    '同一节里定位：抽屉卸下以后，选中那个名字、焦点仍在正文里',
+    [!!document.querySelector('.sop-drawer'), m.section(), selected(m), document.activeElement === cmOf(m)],
+    [false, 'tone', 'search_routes', true],
+  );
+  await m.unmount();
+}
+
+// 11.3d2 之前没存上、点「发布…」时还在组字：那次失败是点之前的，不算这一次没存上；字上屏、存上以后打开抽屉
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [60_000] });
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.mode = 'invalid';
+  await typeAtEnd(m, '丙');
+  await waitFor(() => saveNow(m).includes('没保存上'));
+  srv.mode = 'ok';
+  const view = EditorView.findFromDOM(m.box.querySelector<HTMLElement>('.sop-editor .cm-content')!)!;
+  let composing = true;
+  Object.defineProperty(view, 'composing', { configurable: true, get: () => composing });
+  await typeAtEnd(m, 'yi');
+  await clickEv(barButton(m, '发布…'));
+  await rest(80);
+  eq(
+    '组字时点「发布…」：先不存、不打开，按钮转圈',
+    [srv.puts().length, !!drawerOf('发布草稿'), !!barButton(m, '发布…')?.classList.contains('ant-btn-loading')],
+    [1, false, true],
+  );
+  const end = view.state.doc.length;
+  await act(async () => view.dispatch({ changes: { from: end - 2, to: end, insert: '乙' }, userEvent: 'input.type.compose' }));
+  composing = false;
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const body =
+    srv
+      .puts()
+      .at(-1)
+      ?.edits.find((e) => e.key === 'tone')?.body ?? '';
+  eq('字上屏、存上以后打开抽屉，存的是汉字', [!!drawerOf('发布草稿'), body.includes('丙乙'), body.includes('yi')], [true, true, false]);
+  await m.unmount();
+}
+
+// 11.3n 发布成功以后改一个字再改回去：条里写「草稿和线上一样」，不再回到「已发布v3」
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await publishVia(m, '先问预算');
+  await waitFor(() => barText(m).summary.startsWith('已发布v3'));
+  await typeAtEnd(m, '甲');
+  await waitFor(() => srv.puts().length === 1);
+  const view = EditorView.findFromDOM(m.box.querySelector<HTMLElement>('.sop-editor .cm-content')!)!;
+  const len = view.state.doc.length;
+  await act(async () => view.dispatch({ changes: { from: len - 1, to: len }, userEvent: 'delete.backward' }));
+  await waitFor(() => srv.puts().length === 2);
+  await settle();
+  eq('改一个字再改回去：条里写草稿和线上一样，不再写已发布v3', [barText(m).summary, !!barButton(m, '回滚到v2')], ['草稿和线上一样', false]);
   await m.unmount();
 }
 
