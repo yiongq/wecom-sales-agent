@@ -86,7 +86,7 @@ import {
   type Autosave,
   useAutosave,
 } from './autosave.js';
-import { Directory, DirectorySelect, type SelectVia } from './Directory.js';
+import { Directory, DirectorySelect, type SelectVia, tocListHeight } from './Directory.js';
 import { DiffList, trimEnd } from './DiffView.js';
 import {
   buildDecorations,
@@ -950,10 +950,41 @@ function harness(initial: { current?: string; filter?: OutlineFilter; anon?: boo
     all(document.body, '.ant-select-dropdown .sop-toc-note').some((n) => text(n).startsWith('带锁的7节')),
   );
   check('节多于 7 个：可以搜', input?.getAttribute('readonly') === null, String(input?.getAttribute('readonly')));
+  // 第 16 步：listbox 有名字（rc-select 不给，打开以后按 id 补上）；列表的高按节数给足，视口放得下时不滚
+  const holder = (): HTMLElement | null =>
+    document.querySelector<HTMLElement>('.ant-select-dropdown:not(.ant-select-dropdown-hidden) [style*="max-height"]');
+  eq(
+    '展开：listbox 的名字「话术的节」；11 节的列表高 352（每项 32），视口放得下不封顶',
+    [document.getElementById(`${input?.id}_list`)?.getAttribute('aria-label'), holder()?.style.maxHeight],
+    ['话术的节', `${rows.length * 32}px`],
+  );
   await clickEv(options.find((o) => text(o).startsWith('异议处理')));
   await settle();
   eq('选一项：换节', picked, ['objections']);
   await m.unmount();
+
+  // 窗口矮：列表按选择框上下较大的那一边封顶（happy-dom 里选择框在 0 处，下方是整个窗口高）
+  win.happyDOM.setWindowSize({ width: 1100, height: 300 });
+  const short = await mount(<H />);
+  await act(async () => {
+    short.box
+      .querySelector('.ant-select')!
+      .dispatchEvent(new win.MouseEvent('mousedown', { bubbles: true, cancelable: true }) as unknown as Event);
+  });
+  await settle();
+  eq('窗口 300 高：列表封顶在 300 − 24 − 56（锁的说明）= 220', holder()?.style.maxHeight, '220px');
+  await short.unmount();
+  win.happyDOM.setWindowSize({ width: 1440, height: 1100 });
+  eq(
+    'tocListHeight：放得下给足；放不下取上下较大的一边扣掉弹层与说明；再小也露出 4 项',
+    [
+      tocListHeight(11, { above: Infinity, below: Infinity }, true),
+      tocListHeight(26, { above: 100, below: 500 }, true),
+      tocListHeight(26, { above: 640, below: 80 }, false),
+      tocListHeight(26, { above: 40, below: 90 }, false),
+    ],
+    [352, 420, 616, 128],
+  );
 }
 
 // ---------------- 6. 逐字重渲不碰弹层 ----------------
@@ -4735,6 +4766,20 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
     ],
     ['7/7通过', 7, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '行内', 2, [true, true]],
   );
+  // 第 16 步（axe heading-order、landmark-unique）：节名在「逐节改动」h3 下面是 h4；抽屉里的清单只是一组，页面右栏的才是地标
+  const pageList = m.box.querySelector('.sop-col-check .check-list');
+  eq(
+    '发布抽屉：节名是 h4；检查清单是 group（div），页面右栏的「发布前检查」仍是有名字的区域（section）',
+    [
+      all(d, '.sop-diff-name').map((e) => e.tagName),
+      d.querySelector('.check-list')?.tagName,
+      d.querySelector('.check-list')?.getAttribute('role'),
+      d.querySelector('.check-list')?.getAttribute('aria-label'),
+      pageList?.tagName,
+      pageList?.getAttribute('role') ?? null,
+    ],
+    [['H4', 'H4'], 'DIV', 'group', '发布前检查', 'SECTION', null],
+  );
   const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
   eq(
     '行内 / 并排有读屏名称；说明最多 500 字（同服务端 PublishBody）；说明下面不说会写进审计日志（审计里没有说明）',
@@ -5189,6 +5234,11 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
       srv.puts().length,
     ],
     ['草稿的改动相对线上v2', '改了3节', ['前言', '话术原则', '异议处理'], true, 0],
+  );
+  eq(
+    '「草稿的改动」抽屉上面没有别的标题：节名是 h3（不跳级）',
+    all(d, '.sop-diff-name').map((e) => e.tagName),
+    ['H3', 'H3', 'H3'],
   );
   const splitInput = all<HTMLElement>(d, '.sop-diff-mode .ant-segmented-item')
     .find((i) => text(i) === '并排')
@@ -6076,6 +6126,15 @@ async function openHistory(m: PageBox): Promise<void> {
       docsIn(m.box.querySelector('.sop-version')!).join('|').includes('先问一句每人预算上限'),
     ],
     [['异议处理'], '客户嫌贵时先问预算上限，再给两档方案·老板·9月25日 18:30·改了1节（异议处理）', 1, true],
+  );
+  eq(
+    '查看改动：页名 h1、「v2相对v1改了什么」h2、节名 h3（不跳级）',
+    [
+      m.box.querySelector('.page-title')?.tagName,
+      m.box.querySelector('.sop-version-title')?.tagName,
+      all(m.box, '.sop-version .sop-diff-name').map((e) => e.tagName),
+    ],
+    ['H1', 'H2', ['H3']],
   );
   await act(async () => m.router.history.back());
   await waitFor(() => !!historyRow('v1'));
