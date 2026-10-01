@@ -19,7 +19,7 @@ import { EmptyBlock, StateView } from '../parts/StateView.js';
 import { ERROR_COPY } from '../parts/errors.js';
 import { SessionExpiredDialog } from '../SessionExpiredDialog.js';
 import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
-import { logout, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
+import { logout, toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { AboutDialog } from './AboutDialog.js';
 import { CommandPalette, type PaletteAction } from './CommandPalette.js';
 import { isMac, useDocumentTitle, useViewport } from './hooks.js';
@@ -89,7 +89,7 @@ export function Shell() {
       </Whole>
     );
   }
-  if (v.kind === 'login') return <LoginPage />;
+  if (v.kind === 'login') return <LoginPage demo={v.demo} />;
   return <Frame viewer={v} />;
 }
 
@@ -142,7 +142,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [mac]);
 
-  const login = useCallback(() => qc.setQueryData<Viewer>(VIEWER_KEY, { kind: 'login' }), [qc]);
+  const login = useCallback(() => qc.setQueryData<Viewer>(VIEWER_KEY, toLogin), [qc]);
   const signOut = useCallback(async (): Promise<void> => {
     setLogoutError(null);
     try {
@@ -170,6 +170,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         if (kind) void navigate({ to: '/catalog/$kind', params: { kind } });
         else if (item.key === '/conversations') void navigate({ to: '/conversations' });
         else if (item.key === '/audit') void navigate({ to: '/audit' });
+        else if (item.key === '/') void navigate({ to: '/' });
         else void navigate({ to: '/sop' });
       };
       return [{ key: `page:${item.key}`, label: item.label, hint: g.title ?? undefined, icon: navIcon(item.icon), action: go }];
@@ -247,8 +248,8 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         placeholder={placeholder}
         pages={pages}
         actions={actions}
-        // 条目详情页在第 10 步（/catalog/$kind/$code）；在那之前打开这个实体的列表
-        openEntity={(kind) => void navigate({ to: '/catalog/$kind', params: { kind: catalogKind(kind) } })}
+        // 「各实体」组的一条打开它的详情页（第 10.1 步）
+        openEntity={(kind, code) => void navigate({ to: '/catalog/$kind/$code', params: { kind: catalogKind(kind), code } })}
         openConversation={(row) => window.open(workbenchHref(row.id), '_blank', 'noopener,noreferrer')}
       />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
@@ -260,5 +261,5 @@ function Frame({ viewer: v }: { viewer: Framed }) {
 export function NotFound() {
   const viewer = shellViewerOf(useViewer().data);
   useDocumentTitle(viewer ? documentTitle(['没有这个页面'], viewer) : '没有这个页面');
-  return <EmptyBlock title="没有这个页面" description="地址可能写错了" link={<Link to="/sop">回到销售话术</Link>} />;
+  return <EmptyBlock title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
 }

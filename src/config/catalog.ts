@@ -18,7 +18,7 @@ import { findTenantBySlug } from '../db/repo/tenants.js';
 import { ALWAYS_LOCKED, applyCatalogPatch, CATALOG_SCHEMAS, lockedFieldChanges, type CatalogKind } from '../shared/catalog.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { CatalogItem } from '../shared/console-api.js';
-import { CatalogCsvError, prepareCatalogCsv } from '../shared/catalog-csv.js';
+import { CatalogCsvError, type CsvLabels, prepareCatalogCsv } from '../shared/catalog-csv.js';
 import { applyCatalogRow, assertConfigWritable, configRuntime, reloadFromDb } from './source.js';
 
 export type { CatalogKind } from '../shared/catalog.js';
@@ -187,10 +187,10 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
 /**
  * CSV 导入（spec「后台 API 与页面 · 产品库」）：解析、转换与逐行校验在 src/shared/catalog-csv.ts；这里在一个事务里查库里已有的 code，
  * 都没有才按顺序全部建成 draft（ord 接在最大值之后），任何一处不合格就一条也不建。每条和后台新建一样写一行 catalog.create 审计。
- * draft 不进快照
+ * draft 不进快照。labels 是表头可以用的中文标签（后台 UX spec「CSV 导入」），由调用方从租户的行业包取
  */
-export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: string): Promise<CatalogItem[]> {
-  const payloads = prepareCatalogCsv(kind, csv);
+export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: string, labels?: CsvLabels): Promise<CatalogItem[]> {
+  const payloads = prepareCatalogCsv(kind, csv, labels);
   assertConfigWritable();
   const rt = runtimeFor(ctx);
   try {
@@ -198,7 +198,7 @@ export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: s
       await lockTenantConfig(tx);
       const existing = new Set((await readCatalogOfKind(tx, kind)).map((r) => r.code));
       const taken = payloads.flatMap((p, i) =>
-        existing.has(String(p.id)) ? [{ row: i + 1, issues: [{ path: 'id', message: '这个 code 已经有了' }] }] : [],
+        existing.has(String(p.id)) ? [{ row: i + 1, issues: [{ path: 'id', message: '这个编号已经有了' }] }] : [],
       );
       if (taken.length) throw new CatalogCsvError(taken);
       let ord = await maxOrd(tx, kind);

@@ -18,6 +18,8 @@ export interface EmptyState {
   action?: ReactNode;
   /** 一个链接，如「清除筛选」 */
   link?: ReactNode;
+  /** 标题的层级：默认 h3（区块里的空状态）；整页的空状态紧跟在页名 h1 下面，传 2，标题层级不跳级 */
+  level?: 2 | 3;
 }
 
 export interface StateViewProps extends ErrorHandlers {
@@ -32,7 +34,8 @@ export interface StateViewProps extends ErrorHandlers {
   children?: ReactNode;
 }
 
-export function EmptyBlock({ icon, title, description, action, link }: EmptyState) {
+export function EmptyBlock({ icon, title, description, action, link, level = 3 }: EmptyState) {
+  const Title = level === 2 ? 'h2' : 'h3';
   return (
     <div className="state-empty">
       {icon && (
@@ -40,7 +43,7 @@ export function EmptyBlock({ icon, title, description, action, link }: EmptyStat
           {icon}
         </div>
       )}
-      <h3 className="state-empty-title">{cjk(title)}</h3>
+      <Title className="state-empty-title">{cjk(title)}</Title>
       {description && <p className="state-empty-desc">{cjk(description)}</p>}
       {(action || link) && (
         <div className="state-empty-actions">

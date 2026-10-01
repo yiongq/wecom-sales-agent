@@ -5,39 +5,53 @@
 // 表单控件只经 model.ts 的 CODECS 读写（不变量 16 的往返），不在挂载时写值：打开一条不做改动，表单状态一个字节也不变。
 // 产品库文本只以文本节点渲染（不变量 28）；值为空写「—」。
 import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
-import { ArrowDown, ArrowUp, Check, Lock, Plus, Trash2, X } from 'lucide-react';
-import { type ComponentType, type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react';
+import { ArrowDown, ArrowUp, Check, CircleX, Lock, Plus, Trash2, TriangleAlert, X } from 'lucide-react';
+import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
 import { Status } from '../parts/Status.js';
+import { useViewport } from '../shell/hooks.js';
 import { IconButton } from '../shell/IconButton.js';
 import { Icon } from '../shell/icons.js';
 import { cjk } from '../typography.js';
 import { useFieldEnv } from './env.js';
 import { FormField } from './FormField.js';
 import {
+  blankItem,
   boolFromSegment,
   boolSegment,
+  charCount,
   CODECS,
+  copyFromPrev,
   enumControl,
   enumFromSegment,
+  freeText,
   indexLabel,
   isSingleItem,
+  itemGaps,
+  itemInOrder,
+  itemRows,
+  itemState,
   keepLockedMembers,
-  LAYOUT,
   labelFitsNode,
   moneyUnit,
   moveItem,
   nounOf,
+  overSoftMax,
   type Payload,
   type RefItem,
+  refLibrary,
   removeAt,
+  renumber,
   replaceAt,
   resolveRef,
   SEG_NONE,
   SEG_UNSET,
+  subChanged,
   togglePick,
+  type Written,
   writeValue,
+  writtenValues,
 } from './model.js';
 import { MonthStrip } from './MonthStrip.js';
 
@@ -66,6 +80,16 @@ export interface FormProps extends ViewProps {
   describedBy?: string;
   /** 字段下方有报错：控件画出错色 */
   invalid?: boolean;
+  /** 有序子项里各处的报错（键是下标，或下标接子字段 key），写在那一项、那个子字段下方（FormField 的 itemErrors） */
+  itemErrors?: Readonly<Record<string, string>>;
+  /** 有序子项的条数随另一个字段锁定：不画增删和移动（多字段的有序子项） */
+  countLocked?: boolean;
+  /** 打开时这个字段的值：多字段的有序子项按它给子字段标「已改」；新建不给 */
+  original?: unknown;
+  /** 本条目的内容：有序子项里的字段要它（引用按 filterBy 筛候选，filterBy 是顶层字段）；顶层字段不给，用 row */
+  scope?: Payload;
+  /** 「本条写过的」：有序子项里的引用字段，别的项写过的值（联想的第二组） */
+  written?: readonly Written[];
   onChange(next: unknown): void;
 }
 
@@ -205,16 +229,17 @@ function LongTextForm(p: FormProps) {
   const { field, value, onChange, id, invalid } = p;
   const v = CODECS.longText.read(value, field);
   const ref = useAutoGrow(v);
-  // 字数在右下角；超过 softMax 的提示在第 11 步
+  // 字数在右下角，有 softMax 时写成「75/120」；超过时字数变成 warning 色（下方的提示由 FormField 换掉帮助），不拦
+  const n = charCount(v);
   return (
     <Input.TextArea
       ref={ref}
       id={id}
-      className="field-textarea"
+      className={overSoftMax(field, v) ? 'field-textarea is-long' : 'field-textarea'}
       value={v}
       rows={3}
       placeholder={field.placeholder}
-      showCount
+      showCount={{ formatter: () => (field.softMax === undefined ? String(n) : `${n}/${field.softMax}`) }}
       status={invalid ? 'error' : undefined}
       onChange={(e) => onChange(CODECS.longText.write(e.target.value, field))}
       {...a11y(p)}
@@ -598,25 +623,39 @@ function SubItemsCell({ field, value }: CellProps) {
   return <span className="field-num">{Array.isArray(value) ? `${value.length}${nounOf(field)}` : NONE}</span>;
 }
 
-/** 多字段有序子项的一项里各子字段的只读值，两列 */
+/** 多字段有序子项的一项里各子字段的只读值：两列，半格的两两排进一行（model.ts 的 itemRows，同表单） */
 function ItemFields({ field, item, mode }: { field: FieldDef; item: Payload; mode: 'readonly' }) {
   return (
     <div className="field-grid field-grid-2">
-      {(field.item ?? []).map((sub) => (
-        <FormField
-          key={sub.key}
-          field={sub}
-          mode={mode}
-          span={LAYOUT[sub.type].span(sub)}
-          value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
-          row={item}
-        />
-      ))}
+      {itemRows(field, mode)
+        .flat()
+        .map(({ field: sub, span }) => (
+          <FormField
+            key={sub.key}
+            field={sub}
+            mode={mode}
+            span={span}
+            value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
+            row={item}
+          />
+        ))}
     </div>
   );
 }
 
-/** 只读：单字段写成列表；多字段写成只读时间轴（竖轴加节点，节点里写得下序号标签就写，写不下只写序号） */
+/** 竖轴上的节点（设计系统 §6.3）：序号标签写得下就写（「D1」），写不下只写序号，完整标签写在卡片第一行 */
+function TimelineNode({ label, n, state }: { label: string; n: number; state: 'done' | 'gap' | 'error' }) {
+  return (
+    <span className={`tl-node is-${state}`} aria-hidden="true">
+      {labelFitsNode(label) ? label : n}
+    </span>
+  );
+}
+
+/**
+ * 只读：单字段写成列表；多字段写成只读时间轴（竖轴加节点，节点里写得下序号标签就写，写不下只写序号）。
+ * 节点对读屏隐藏，每张卡片和编辑时一样是名为「第1天」的组：不然读屏念不到这是第几天
+ */
 function SubItemsView({ field, value }: ViewProps) {
   const items = Array.isArray(value) ? value : [];
   if (!items.length) return <span className="field-text">{NONE}</span>;
@@ -624,29 +663,39 @@ function SubItemsView({ field, value }: ViewProps) {
     return (
       <ol className="field-list">
         {items.map((it, i) => (
-          <li key={i}>{cjk(shown(it))}</li>
+          <li key={i} data-item-index={i}>
+            {cjk(shown(it))}
+          </li>
         ))}
       </ol>
     );
   }
+  const noun = nounOf(field);
   return (
     <ol className="subitems-timeline">
       {items.map((it, i) => {
         const full = indexLabel(field, i + 1);
-        const fits = labelFitsNode(full);
         return (
-          <li key={i} className="tl-item">
-            <span className="tl-node" aria-hidden={fits ? undefined : true}>
-              {fits ? full : i + 1}
-            </span>
-            <div className="subitem-card">
-              {fits ? null : <div className="subitem-label">{cjk(full)}</div>}
+          <li key={i} className="tl-item" data-item-index={i}>
+            <TimelineNode label={full} n={i + 1} state="done" />
+            <div className="subitem-card" role="group" aria-label={`第${i + 1}${noun}`}>
+              {labelFitsNode(full) ? null : <div className="subitem-label">{cjk(full)}</div>}
               <ItemFields field={field} item={isRecord(it) ? it : {}} mode="readonly" />
             </div>
           </li>
         );
       })}
     </ol>
+  );
+}
+
+/** 有序子项里一项的报错（字段下方报错的同一个样子：13 danger，前置 circle-x） */
+function ItemError({ id, text }: { id: string; text: string }) {
+  return (
+    <div id={id} className="field-error">
+      <Icon of={CircleX} size={14} />
+      {cjk(text)}
+    </div>
   );
 }
 
@@ -664,22 +713,31 @@ function SingleListForm(p: FormProps) {
   };
   return (
     <div className="field-list-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
-      {items.map((it, i) => (
-        <div key={i} className="field-list-row">
-          <R.Form
-            field={sub}
-            value={it}
-            row={{}}
-            id={`${id}-${i}`}
-            labelId={labelId}
-            ariaLabel={`${field.label}第${i + 1}${noun}`}
-            onChange={(v) => set(replaceAt(items, i, v))}
-          />
-          <IconButton label="上移" icon={ArrowUp} aria-disabled={i === 0 || undefined} onClick={() => move(i, -1)} />
-          <IconButton label="下移" icon={ArrowDown} aria-disabled={i === items.length - 1 || undefined} onClick={() => move(i, 1)} />
-          <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(removeAt(items, i))} />
-        </div>
-      ))}
+      {items.map((it, i) => {
+        const error = p.itemErrors?.[String(i)];
+        const errorId = `${id}-${i}e`;
+        return (
+          <div key={i} className="field-list-item" data-item-index={i}>
+            <div className="field-list-row">
+              <R.Form
+                field={sub}
+                value={it}
+                row={{}}
+                id={`${id}-${i}`}
+                labelId={labelId}
+                ariaLabel={`${field.label}第${i + 1}${noun}`}
+                describedBy={error === undefined ? undefined : errorId}
+                invalid={error !== undefined}
+                onChange={(v) => set(replaceAt(items, i, v))}
+              />
+              <IconButton label="上移" icon={ArrowUp} aria-disabled={i === 0 || undefined} onClick={() => move(i, -1)} />
+              <IconButton label="下移" icon={ArrowDown} aria-disabled={i === items.length - 1 || undefined} onClick={() => move(i, 1)} />
+              <IconButton label={`删除这${noun}`} icon={Trash2} onClick={() => set(removeAt(items, i))} />
+            </div>
+            {error === undefined ? null : <ItemError id={errorId} text={error} />}
+          </div>
+        );
+      })}
       <Button className="field-add" icon={<Icon of={Plus} />} onClick={() => set([...items, ''])}>
         {`添加一${noun}`}
       </Button>
@@ -687,38 +745,157 @@ function SingleListForm(p: FormProps) {
   );
 }
 
+/** 子项卡片里第一个能填的控件：加了一项以后焦点放进去 */
+const FIRST_CONTROL = 'input:not([type="hidden"]):not([disabled]), textarea:not([disabled])';
+
+/** 增删、移动以后焦点去哪：那一项的第一个控件，或它的上移、下移、删除 */
+type ItemFocus = { index: number; to: 'first' | 'up' | 'down' | 'remove' };
+const FOCUS_CLASS = { up: '.subitem-up', down: '.subitem-down', remove: '.subitem-remove' } as const;
+
 /**
- * 多字段的有序子项（逐日行程、施工节点）：每项一张卡片，按子字段的类型渲染，可以改文字。
- * 竖轴与节点状态、条数提醒、增删与上移下移、自动编号、条数锁定是通用有序子项编辑器（第 11 步）
+ * 多字段的有序子项（逐日行程、施工节点）：通用的有序子项编辑器（spec「有序子项与引用」，设计系统 §6.3）。
+ * - 左侧竖轴，每项一个节点：全部填好实心；有没填的必填子字段空心，卡片第一行写「缺：当晚住宿」；有报错空心、danger。
+ *   序号标签写得下（「D1」）写在节点里，写不下（「节点3」）节点里只写序号，完整标签写在卡片第一行。
+ * - 右侧每项一张卡片，子字段按类型渲染，半格的两两排进一行（model.ts 的 itemRows）；改过的子字段标「已改」（条数没变时）。
+ *   引用子字段的标签行右侧「复制上一{itemNoun}的{字段名}」，联想的第二组是「本条写过的」。
+ * - 卡片右上角「上移」「下移」「删除这{itemNoun}」（28 图标按钮），不做拖动；第一项的上移、最后一项的下移是 aria-disabled；
+ *   底部「添加一{itemNoun}」。autoIndexKey 随增删和移动按位置重排。条数随另一个字段锁定时（已上架线路的天数）
+ *   这四种按钮都不画，区块头写「条数随天数锁定，文字可改」（FormField）。
+ * - 焦点：加了一项进它的第一个控件；删了一项给接替它位置的那一项的「删除」，删光了给「添加」；移动以后跟着那一项走，
+ *   停在它的同一个按钮上（到头了按钮是 aria-disabled，焦点照样在上面）。
+ * 每一项（li）带 data-item-index，子字段带 data-field-key：上架前检查、报错跳到「第3天的当晚住宿」，失焦记位置都靠它们
  */
 function ItemCardsForm(p: FormProps) {
-  const { field, value, onChange } = p;
+  const { field, value, onChange, id, labelId } = p;
   const items = CODECS.subItems.read(value, field);
-  const subs = field.item ?? [];
+  const noun = nounOf(field);
+  const rows = itemRows(field);
+  const cells = rows.flat();
+  // 右上角的按钮压在卡片第一行上：第一行右边那一格（两格的右格，或占满一行的那一格）的标签行给按钮让出位置
+  const first = rows[0] ?? [];
+  const under = first.length === 2 ? first[1] : first[0]?.span === 'wide' ? first[0] : undefined;
+  const tools = !p.countLocked;
+  const top = p.scope ?? p.row;
+  const box = useRef<HTMLDivElement>(null);
+  /** 增删、移动以后焦点要去的地方：等写回后的这一轮画完再挪（每轮画完看一眼，没有就什么也不做） */
+  const focusNext = useRef<ItemFocus | null>(null);
+  const set = (next: readonly unknown[], focus: ItemFocus): void => {
+    focusNext.current = focus;
+    onChange(CODECS.subItems.write(renumber(field, next), field));
+  };
+  const move = (i: number, d: -1 | 1): void => {
+    const next = moveItem(items, i, d);
+    if (next) set(next, { index: i + d, to: d < 0 ? 'up' : 'down' });
+  };
+  useEffect(() => {
+    const f = focusNext.current;
+    const root = box.current;
+    if (!f || !root) return;
+    focusNext.current = null;
+    const card = root.querySelector<HTMLElement>(`:scope > ol > [data-item-index="${f.index}"]`);
+    const target = card?.querySelector<HTMLElement>(f.to === 'first' ? FIRST_CONTROL : FOCUS_CLASS[f.to]);
+    (target ?? root.querySelector<HTMLElement>(':scope > .field-add'))?.focus();
+  });
+  const writeItem = (i: number, item: Payload, sub: FieldDef, v: unknown): void =>
+    onChange(CODECS.subItems.write(replaceAt(items, i, itemInOrder(field, writeValue(item, sub, v))), field));
   return (
-    <div className="subitems-edit">
-      {items.map((it, i) => {
-        const item = isRecord(it) ? it : {};
-        const label = indexLabel(field, i + 1);
-        return (
-          <section key={i} className="subitem-card" aria-label={label}>
-            <div className="subitem-label">{cjk(label)}</div>
-            <div className="field-grid field-grid-2">
-              {subs.map((sub) => (
-                <FormField
-                  key={sub.key}
-                  field={sub}
-                  mode="edit"
-                  span={LAYOUT[sub.type].span(sub)}
-                  value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
-                  row={item}
-                  onChange={(v) => onChange(CODECS.subItems.write(replaceAt(items, i, writeValue(item, sub, v)), field))}
-                />
-              ))}
-            </div>
-          </section>
-        );
-      })}
+    <div ref={box} className="subitems-edit" role="group" aria-labelledby={labelId} aria-describedby={p.describedBy}>
+      {items.length ? (
+        <ol className="subitems-timeline">
+          {items.map((it, i) => {
+            const item = isRecord(it) ? it : {};
+            const label = indexLabel(field, i + 1);
+            const fits = labelFitsNode(label);
+            const gaps = itemGaps(field, item);
+            const error = p.itemErrors?.[String(i)];
+            // 一项本身的报错（天号）写在卡片第一行下面，这一项的每个子字段都连上它：跳过来、Tab 进来，读屏都念得到
+            const errorId = `${id}-${i}e`;
+            const gapId = `${id}-${i}g`;
+            const head = !fits || gaps.length > 0;
+            const cardCls = tools ? 'subitem-card has-tools' : 'subitem-card';
+            return (
+              <li key={i} className="tl-item" data-item-index={i}>
+                <TimelineNode label={label} n={i + 1} state={itemState(field, item, i, p.itemErrors)} />
+                <div className={cardCls} role="group" aria-label={`第${i + 1}${noun}`} aria-describedby={gaps.length ? gapId : undefined}>
+                  {head ? (
+                    <div className="subitem-head">
+                      {fits ? null : <span className="subitem-label">{cjk(label)}</span>}
+                      {gaps.length ? (
+                        <span id={gapId} className="subitem-gap">
+                          <Icon of={TriangleAlert} size={14} />
+                          {cjk(`缺：${gaps.join('、')}`)}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {error === undefined ? null : <ItemError id={errorId} text={error} />}
+                  <div className="field-grid field-grid-2">
+                    {cells.map((cell) => {
+                      const sub = cell.field;
+                      const prev = sub.type === 'reference' ? copyFromPrev(items, i, sub.key) : undefined;
+                      return (
+                        <FormField
+                          key={sub.key}
+                          field={sub}
+                          mode="edit"
+                          span={cell.span}
+                          value={Object.hasOwn(item, sub.key) ? item[sub.key] : undefined}
+                          row={item}
+                          scope={top}
+                          error={p.itemErrors?.[`${i}.${sub.key}`]}
+                          describedBy={error === undefined ? undefined : errorId}
+                          changed={subChanged(p.original, items, i, sub.key)}
+                          written={sub.type === 'reference' ? writtenValues(field, items, i, sub.key) : undefined}
+                          copyPrev={
+                            prev === undefined
+                              ? undefined
+                              : { text: `复制上一${noun}的${sub.label}`, onCopy: () => writeItem(i, item, sub, prev) }
+                          }
+                          className={tools && !head && error === undefined && cell === under ? 'under-tools' : undefined}
+                          onChange={(v) => writeItem(i, item, sub, v)}
+                        />
+                      );
+                    })}
+                  </div>
+                  {tools ? (
+                    <div className="subitem-tools">
+                      <IconButton
+                        label="上移"
+                        icon={ArrowUp}
+                        className="subitem-up"
+                        aria-disabled={i === 0 || undefined}
+                        onClick={() => move(i, -1)}
+                      />
+                      <IconButton
+                        label="下移"
+                        icon={ArrowDown}
+                        className="subitem-down"
+                        aria-disabled={i === items.length - 1 || undefined}
+                        onClick={() => move(i, 1)}
+                      />
+                      <IconButton
+                        label={`删除这${noun}`}
+                        icon={Trash2}
+                        className="subitem-remove"
+                        onClick={() => set(removeAt(items, i), { index: Math.min(i, items.length - 2), to: 'remove' })}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+      {tools ? (
+        <Button
+          className="field-add"
+          icon={<Icon of={Plus} />}
+          onClick={() => set([...items, blankItem(field, items.length + 1)], { index: items.length, to: 'first' })}
+        >
+          {`添加一${noun}`}
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -790,39 +967,121 @@ function RefOption({ item }: { item: RefItem }) {
   );
 }
 
+/** 「本条写过的」里的一项：名称（库里找不到就是原文），右边 13 text-3 写它第一次出现在哪一项（「第2天」） */
+function WrittenOption({ name, at }: { name: string; at: string }) {
+  return (
+    <span className="ref-option">
+      <span className="ref-option-name">{name}</span>
+      <span className="ref-option-at">{at}</span>
+    </span>
+  );
+}
+
+/** 联想里的一项：库里的一条带 item；「本条写过的」带 at（key 另起，免得和库里同名的那条撞） */
+interface RefOpt {
+  key?: string;
+  value: string;
+  label: string;
+  item?: RefItem;
+  at?: string;
+}
+interface RefGroup {
+  key: string;
+  label: ReactNode;
+  options: RefOpt[];
+}
+
+/** 搜索时比名称与编号；分组标题（带 options 的）不算，只比组里的项 */
+const matchRef = (input: string, o: unknown): boolean => {
+  const opt = o as Partial<RefOpt> & { options?: unknown };
+  if (opt.options !== undefined || typeof opt.value !== 'string') return false;
+  return (opt.label ?? '').includes(input) || (opt.item?.code ?? opt.value).toLowerCase().includes(input.toLowerCase());
+};
+
+/**
+ * 联想的下拉至少 384 宽（G 页）：一项是名称、等宽的编号和状态，和输入框一样宽（两列网格的一格 314）时名称被截断；
+ * 输入框更宽时跟输入框一样宽。窄屏（<992）跟输入框一样宽：375 宽的窗口放不下 384，对齐时会被推出左边（实测 −24）
+ */
+const REF_POPUP_WIDTH = 384;
+const REF_POPUP_CLASS = { popup: { root: 'ref-popup' } };
+
+const renderRefOption = (o: { data: unknown }): ReactNode => {
+  const d = o.data as RefOpt;
+  return d.at !== undefined ? <WrittenOption name={d.label} at={d.at} /> : d.item ? <RefOption item={d.item} /> : d.label;
+};
+
+/**
+ * 引用的表单（spec「有序子项与引用」，设计系统 §6 表、§5.3）。联想分两组：
+ * 「{实体名}库 · 贵州」是目标实体的列表，有 filterBy 时只列同一取值的（model.ts 的 refLibrary），草稿后跟「草稿」；
+ * 「本条写过的」是同一个有序子项里别的项写过的（只有子项里的引用字段有）。组里没有项就不画这一组。
+ * allowFree 时是 AutoComplete，可以写库外的文本，写了库外的就在控件下方注「{实体名}库里没有这个，按原文保存」（提示，不是错误）；
+ * 下拉开着、列着候选时不注（才敲了「荔」、下拉里就是荔波荔泉宾馆，这时说「库里没有」自相矛盾），收起、没有候选、离开以后照注
+ */
 function ReferenceForm(p: FormProps) {
   const { field, value, onChange, id, invalid } = p;
   const env = useFieldEnv();
+  // rc-select 报的开合；它在没有候选时不画下拉（这时也不报合上），所以真画着下拉是「开着、有候选」
+  const [open, setOpen] = useState(false);
   const items = field.to ? env.refItems(field.to) : undefined;
+  const noun = (field.to ? env.entityLabel?.(field.to) : undefined) ?? '';
   const keyOf = (it: RefItem): string => (field.store === 'label' ? it.name : it.code);
-  const options = (items ?? []).map((it) => ({ value: keyOf(it), label: it.name, item: it }));
   const c = CODECS.reference.read(value, field);
+  const picked = refValues(field, value);
+  const lib = refLibrary(field, items ?? [], p.scope ?? p.row, picked);
+  const libOpts: RefOpt[] = lib.items.map((it) => ({ value: keyOf(it), label: it.name, item: it }));
+  const writtenOpts: RefOpt[] = (p.written ?? []).map((w) => {
+    const hit = resolveRef(field, w.value, items);
+    return { key: `written:${w.value}`, value: w.value, label: hit?.name ?? w.value, item: hit ?? undefined, at: w.at };
+  });
+  const groups = (library: RefOpt[], written: RefOpt[]): RefGroup[] => [
+    ...(library.length ? [{ key: 'library', label: cjk(lib.filter ? [`${noun}库`, lib.filter] : `${noun}库`), options: library }] : []),
+    ...(written.length ? [{ key: 'written', label: '本条写过的', options: written }] : []),
+  ];
   const write = (next: string | readonly string[] | undefined): void => onChange(CODECS.reference.write(next, field));
-  const match = (input: string, o?: { label: string; item: RefItem }): boolean =>
-    !!o && (o.label.includes(input) || o.item.code.includes(input.toLowerCase()));
-  const common = { id, status: invalid ? ('error' as const) : undefined, loading: items === undefined, ...a11y(p) };
+  const narrow = useViewport() === 'narrow';
+  const common = {
+    id,
+    status: invalid ? ('error' as const) : undefined,
+    loading: items === undefined,
+    popupMatchSelectWidth: narrow ? true : REF_POPUP_WIDTH,
+    classNames: REF_POPUP_CLASS,
+  };
 
   if (field.allowFree && !field.multiple) {
-    // 可以写库外的文本：AutoComplete，联想来自目标实体的列表（分组与「库里没有这个」的提示在第 11 步）
+    // 可以写库外的文本：AutoComplete，联想按眼下的输入筛，和输入一样的那项不列
     const v = typeof c === 'string' ? c : '';
+    const keep = (o: RefOpt): boolean => o.value !== v && matchRef(v, o);
+    const options = groups(libOpts.filter(keep), writtenOpts.filter(keep));
+    const free = !(open && options.length > 0) && freeText(field, v, items);
+    const freeId = `${id}-free`;
     return (
-      <AutoComplete
-        {...common}
-        value={v}
-        options={options.filter((o) => o.value !== v && match(v, o))}
-        optionRender={(o) => <RefOption item={(o.data as { item: RefItem }).item} />}
-        onChange={(s: string) => write(s ?? '')}
-      />
+      <div className="field-stack">
+        <AutoComplete
+          {...common}
+          {...a11y(p, free ? { noteId: freeId } : undefined)}
+          value={v}
+          options={options}
+          optionRender={renderRefOption}
+          onOpenChange={setOpen}
+          onChange={(s: string) => write(s ?? '')}
+        />
+        {free ? (
+          <div id={freeId} className="field-free">
+            {cjk(`${noun}库里没有这个，按原文保存`)}
+          </div>
+        ) : null}
+      </div>
     );
   }
   return (
     <Select
       {...common}
+      {...a11y(p)}
       mode={field.multiple ? 'multiple' : undefined}
-      value={field.multiple ? [...refValues(field, value)] : typeof c === 'string' ? c : undefined}
-      options={options}
-      showSearch={{ filterOption: (input, o) => match(input, o) }}
-      optionRender={(o) => <RefOption item={(o.data as { item: RefItem }).item} />}
+      value={field.multiple ? [...picked] : typeof c === 'string' ? c : undefined}
+      options={groups(libOpts, writtenOpts)}
+      showSearch={{ filterOption: (input, o) => matchRef(input, o) }}
+      optionRender={renderRefOption}
       allowClear={field.required === false}
       onChange={(v: string | string[] | undefined) => write(v)}
     />

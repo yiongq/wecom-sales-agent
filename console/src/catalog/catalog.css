@@ -1,0 +1,302 @@
+/*
+ * 产品库列表（design-system §4.4 页签、§5.3 下拉菜单、§5.5 表格与工具条、D 页、L 页上半）。颜色一律取 brand.css 的变量，
+ * 这里不新增变量。列表组件本身不 import CSS（自测在 Node 里 import 它们），由 pages/catalog.lazy.tsx 随产品库的块一起下载。
+ */
+
+/* ---------- 页签（§4.4）：高 40，项间隔 24，文字 14 text-2；选中 text 500，下方 2px text 色线；计数 13 text-3，跟在文字后 4 ---------- */
+.list-tabs > .ant-tabs-nav {
+  margin: 0 0 16px;
+}
+.list-tabs > .ant-tabs-nav::before {
+  border-bottom-color: var(--divider);
+}
+/* antd 用 text-shadow 假装加粗，这里改成真的 500 */
+.list-tabs .ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  font-weight: 500;
+  text-shadow: none;
+}
+.tab-count {
+  margin-left: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* ---------- 工具条（§5.5）：页签下 16，表格上 12；搜索框 320，筛选按钮随后，右侧 13 text-3 的条数，间隔 8 ---------- */
+.list-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.list-search.ant-input-affix-wrapper {
+  width: 320px;
+  max-width: 100%;
+}
+.list-search .ant-input-prefix {
+  margin-inline-end: 8px;
+}
+.list-search-icon {
+  color: var(--text-3);
+}
+.list-count {
+  margin-left: auto;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+/* 文字按钮（§5.1 链接）：「清除筛选」 */
+.list-link {
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.list-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.list-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* 筛选按钮：次要按钮的变体，高 32，内边距 0 8 0 10，14 text-2，后接 14 chevron-down text-3；
+   生效后 accent-bg 底、accent-text 500，写「目的地：四川」，后接 14 x（单独一个按钮，点击区域 24） */
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-btn);
+}
+.filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.filter-trigger:hover {
+  background: var(--hover);
+}
+.filter-trigger:active {
+  background: var(--pressed);
+}
+.filter-trigger:disabled {
+  background: transparent;
+  color: var(--text-3);
+  cursor: default;
+}
+.filter-chevron {
+  color: var(--text-3);
+}
+.filter-btn.is-active {
+  background: var(--accent-bg);
+  box-shadow: none;
+}
+.filter-btn.is-active .filter-trigger {
+  padding-right: 2px;
+  font-weight: 500;
+  color: var(--accent-text);
+}
+.filter-clear {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.filter-clear:hover {
+  background: var(--hover);
+}
+.filter-trigger:focus-visible,
+.filter-clear:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* 筛选菜单（§5.3）：--raised 底，--r-md，内边距 4，--shadow-menu；选项高 32、圆角 --r-xs、内边距 0 8，
+   选中项 500、右侧 16 check（text 色）；多于 7 项时顶部放搜索框 */
+.filter-menu {
+  box-sizing: border-box;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: var(--shadow-menu);
+}
+/* 外壳只是把焦点转给菜单项，自己不画焦点框 */
+.filter-menu:focus {
+  outline: none;
+}
+.filter-menu .ant-dropdown-menu {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.filter-menu .ant-dropdown-menu-item {
+  padding: 5px 8px;
+  border-radius: var(--r-xs);
+}
+.filter-menu .ant-dropdown-menu-item[aria-checked='true'] {
+  font-weight: 500;
+}
+.filter-menu-search {
+  margin-bottom: 4px;
+}
+.filter-menu-empty {
+  padding: 6px 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* ---------- 表格（§5.5）：不放进卡片，左右各 −12；表头 36 高 13/20/500 text-3，下方 1px --border；
+   单行 44 高，首列两行 56（上下内边距 5.5 + 22 + 2 + 20 + 5.5 + 1px 下边框） ---------- */
+/* antd 给表格外层 max-width: 100%，负外边距撑不开，这里放开 */
+.list-table.ant-table-wrapper {
+  max-width: none;
+  margin: 0 -12px;
+}
+.list-table .ant-table-thead > tr > th {
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+/* 固定的首列（窄屏横滚时）：antd 6 给它 z-index 9，比吸顶页头的 5 高，滚动后会盖住页头。表格自成一层，里面的层级不外溢 */
+.list-table .ant-table-container {
+  isolation: isolate;
+}
+/* 表头是透明底（§5.5），固定的那一格要不透明，横滚时后面的表头才不透出来；悬停的行同理 */
+.list-table .ant-table-thead > tr > th.ant-table-cell-fix-start {
+  background: var(--panel);
+}
+.list-table .ant-table-tbody > tr:hover > td.ant-table-cell-fix-start {
+  background: linear-gradient(var(--hover), var(--hover)) var(--panel);
+}
+/* 当前的排序列（更新）：表头 text-2，后跟 12 的 chevron-down */
+.th-sorted {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+}
+.list-table .ant-table-tbody > tr > td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-table .ant-table-tbody > tr.is-two-line > td {
+  padding-top: 5.5px;
+  padding-bottom: 5.5px;
+}
+/* 首列：主行 14/22/500 text，是真正能点的（悬停出下划线，键盘可达）；次行 13/20 text-3，上间距 2，编号用 --mono 12.5 */
+.cell-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* 名称那一行不裁：名称自己省略，它的焦点框要伸出文字外 4px */
+.cell-name {
+  min-width: 0;
+  white-space: nowrap;
+}
+.cell-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 上下 2、左右 4 的内边距再用等量的负外边距抵掉：占位还是文字那么大，焦点框画在内边距里，不压字 */
+.cell-link {
+  display: block;
+  max-width: calc(100% + 8px);
+  overflow: hidden;
+  margin: -2px -4px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+a.cell-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* 焦点框画在里面：单元格会裁切（§5.20 容器裁切处偏移 −2） */
+a.cell-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.cell-sub {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 更新列：13 text-3，「小林 · 今天13:40」 */
+.cell-updated {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 表格比容器宽、右边还有列时，容器右缘的阴影（antd 自带，颜色取 colorSplit 即 --divider，几乎看不见）加深到
+   --btn-border，看得出还能往右滚；首列固定、下面有列滚过去时左缘的阴影同样加深 */
+.list-table .ant-table-fix-end-shadow-show .ant-table-container::after {
+  box-shadow: inset -10px 0 8px -8px var(--btn-border);
+}
+.list-table .ant-table-cell-fix-start-shadow-show::after {
+  box-shadow: inset 10px 0 8px -8px var(--btn-border);
+}
+/* 分页器（§5.5）：只在超过一页时出现，右下；左侧 13 text-3「共 21 条」，页码是 28 的幽灵按钮（大小与当前页见 theme/antd.ts、
+   parts/parts.css） */
+.list-table .ant-pagination {
+  margin: 16px 12px 0;
+}
+.list-table .ant-pagination-total-text {
+  font-size: 13px;
+  color: var(--text-3);
+}
+/* 页头的状态句还没取到时先占一行（13/20），取到以后下面不跳 */
+.page-status-pending {
+  display: block;
+  height: 20px;
+}

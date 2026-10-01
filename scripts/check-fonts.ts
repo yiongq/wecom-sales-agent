@@ -31,11 +31,6 @@ import { woff2Codepoints } from './fonts/woff2.js';
  * 界面文字里允许不由 Geist 或 UI 优先片画的字符。每条写明出处和理由；出处里没了这个字符，检查会要求删掉这一条。
  */
 const OUTSIDE_OK: ReadonlyArray<{ cp: number; file: string; why: string }> = [
-  {
-    cp: 0xa5,
-    file: 'console/src/pages/CatalogPage.tsx',
-    why: '「¥」：打开产品库会多下载 latin 片；不变量 7 要求去掉它（plan 第 9、10 步）',
-  },
   { cp: 0xfeff, file: 'src/shared/csv.ts', why: 'BOM：解析 CSV 时用来去掉开头的 BOM，不上页面' },
   {
     cp: 0x30fb,

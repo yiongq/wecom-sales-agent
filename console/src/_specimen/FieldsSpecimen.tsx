@@ -62,6 +62,7 @@ function Specimen({ pack }: { pack: IndustryPack }) {
       return target && r ? refItemsOf(target, r) : undefined;
     },
     distinct: (key) => distinctOf(rows ?? [], key),
+    entityLabel: (kind) => pack.entities.find((e) => e.kind === kind)?.label,
   };
   if (!rows) return <p className="spec-label">正在取{entity.label}列表…</p>;
   const row = rows.find((r) => r.code === search.code) ?? rows[0];

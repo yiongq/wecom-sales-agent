@@ -15,10 +15,13 @@ import type { ApiError, Me } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { HttpError } from '../api.js';
 
+export type AnonViewer = { kind: 'anon'; pack: IndustryPack };
+
 export type Viewer =
   | { kind: 'member'; me: Me; pack: IndustryPack }
-  | { kind: 'anon'; pack: IndustryPack }
-  | { kind: 'login' }
+  | AnonViewer
+  /** demo：从匿名演示点「登录」进来时带着原来的匿名视图，登录页的「返回演示」回到它（spec「登录」） */
+  | { kind: 'login'; demo?: AnonViewer }
   | { kind: 'disabled' };
 
 /** 一个请求的结局：拿到了响应（状态码与解析出的 JSON），或者 fetch 自己抛了错（连不上） */

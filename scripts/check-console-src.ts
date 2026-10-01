@@ -25,8 +25,8 @@
 //   模块名（import、export 的来源，import()、require()、类型位置的 import()、declare module：是模块路径，不是界面字符串）、
 //   *.selftest.* 和 _specimen/。对象键和模块名这两处与 spec 原文的出入见 spec 顶部第 3.3 步评审之后的 Revisions。
 //   排除：$ 开头的系统字段 key；会话状态值 ai、human、paid（paid 同时是旅游包的阶段 key）；下面 GENERIC 里的通用词，每项写明理由，
-//   只在某几个文件里通用的写明文件（如图标表的键）；LEGACY 里旧页面待重做的几处（spec 顶部第 3.3 步的 Revisions）。
-//   GENERIC 与 LEGACY 里不再撞上的项也报（限定了文件的，那几个文件里都没有它了才算），免得名单只增不减。
+//   只在某几个文件里通用的写明文件（如图标表的键）。旧页面待重做的名单（spec 顶部第 3.3 步的 Revisions）随第 10.3 步
+//   删掉旧抽屉清空、删了。GENERIC 里不再撞上的项也报（限定了文件的，那几个文件里都没有它了才算），免得名单只增不减。
 //   词表取自本仓库的 src/packs/registry.ts 与 src/shared/pack-fixtures/ 下导出的每个包，自测夹具也用这份真词表。
 // - 17（console 一侧）：会话状态只由 src/shared/conversation.ts 的 conversationState 判定。console/src 里不读 handedOver
 //   （.handedOver、['handedOver']、解构、按名字引用的字符串 'handedOver'，如表格的 dataIndex），
@@ -89,18 +89,6 @@ const GENERIC: Readonly<Record<string, string | { why: string; only: readonly st
 };
 /** GENERIC 里限定了文件的项实际放过的「文件\0词」，用来查过时的项 */
 const genericUsed = new Set<string>();
-
-/**
- * 旧页面待重做：01 留下的产品库页（rjsf 表单、按线路与酒店写死的列）和它的路由参数，第 9、10 步整页重做时删掉这几项
- * （plan「Open」第 2.2 步那条）。只放过这个文件里的这几个词，别的词、别的文件照查；词在文件里没了就要删掉这一项
- */
-const LEGACY: Readonly<Record<string, { terms: readonly string[]; until: string }>> = {
-  'console/src/pages/CatalogPage.tsx': {
-    terms: ['线路', '酒店', 'route', 'hotel', '目的地', 'detail'],
-    until: '第 9、10 步重做产品库页',
-  },
-  'console/src/router.tsx': { terms: ['route', 'hotel'], until: '第 9 步路由参数改按行业包的 kind 取' },
-};
 
 const isPackLike = (v: unknown): v is IndustryPack =>
   typeof v === 'object' &&
@@ -298,9 +286,6 @@ const EQUALITY = new Set([
 const MSG_HANDED_OVER = '不变量 17：读了 handedOver；会话状态只经 src/shared/conversation.ts 的 conversationState 判定';
 const MSG_STAGE_PAID = "不变量 17：拿 stage 和 'paid' 比；会话状态只经 src/shared/conversation.ts 的 conversationState 判定";
 
-/** LEGACY 里实际放过的「文件\0词」，用来查名单里过时的项 */
-const legacyUsed = new Set<string>();
-
 function checkFile(file: string, source: string, hits: Hit[]): void {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file));
   const isPack = isPackConfig(file);
@@ -364,7 +349,6 @@ function checkFile(file: string, source: string, hits: Hit[]): void {
   if (inConsole) collectNames(sf);
 
   // ---------- 不变量 11：写死的行业包词汇（整串比对） ----------
-  const legacy = LEGACY[file];
   const vocabHits = (node: ts.Node, text: string): void => {
     const t = text.trim();
     const what = VOCAB.get(t);
@@ -373,10 +357,6 @@ function checkFile(file: string, source: string, hits: Hit[]): void {
     if (typeof generic === 'string') return;
     if (generic?.only.includes(file)) {
       genericUsed.add(`${file}\0${t}`);
-      return;
-    }
-    if (legacy?.terms.includes(t)) {
-      legacyUsed.add(`${file}\0${t}`);
       return;
     }
     hit(node, `不变量 11：写死了行业包的词「${t}」（${what.join('、')}）；console 只经 /pack 的数据认识行业包`);
@@ -604,7 +584,7 @@ for (const file of [...consoleFiles, ...packFiles].toSorted()) {
   } else checkFile(file, source, hits);
 }
 
-// 名单本身：词表要真的有注册包和假包；白名单与旧页面名单里不再撞上的项要删掉
+// 名单本身：词表要真的有注册包和假包；白名单里不再撞上的项要删掉
 const SELF = 'scripts/check-console-src.ts';
 const problems: string[] = [];
 if (!PACKS.some((p) => !p.who.endsWith('（假包）'))) problems.push(`${SELF}  src/packs/registry.ts 里一个包都没有，不变量 11 的词表是空的`);
@@ -615,10 +595,6 @@ for (const [t, g] of Object.entries(GENERIC)) {
   else if (typeof g !== 'string' && !g.only.some((f) => genericUsed.has(`${f}\0${t}`)))
     problems.push(`${SELF}  GENERIC 只在 ${g.only.join('、')} 里放过「${t}」，这些文件里已经没有它了，删掉这一项`);
 }
-for (const [file, { terms, until }] of Object.entries(LEGACY))
-  for (const t of terms)
-    if (!legacyUsed.has(`${file}\0${t}`))
-      problems.push(`${SELF}  LEGACY 放过 ${file} 里的「${t}」，这个文件里已经没有它了（${until}），删掉这一项`);
 
 if (hits.length || problems.length) {
   console.error('console-src: 违反了后台 UX spec（docs/features/console-ux/spec.md）的不变量：');
