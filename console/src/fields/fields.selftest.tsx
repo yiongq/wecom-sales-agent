@@ -145,6 +145,7 @@ import {
 import {
   cellText,
   checkCsv,
+  type CsvTable,
   csvRules,
   csvSummary,
   downloadLabel,
@@ -6436,7 +6437,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   ];
   const H_CSV = [H_HEAD, ...H_ROWS].join('\r\n');
   const cellsOfLine = (line: string): string[] => parseCsv(line)[0]!;
-  const tableOf = (c: ReturnType<typeof checkCsv>) => (c.kind === 'rows' ? c.table : null);
+  const NO_TABLE: CsvTable = { header: [], keys: [], rows: [] };
+  /** 逐行的结果；不是逐行的（整份的问题、空、太大）时记一条具名的失败、给空表，后面的断言照常点名，自测不崩 */
+  const tableOf = (c: ReturnType<typeof checkCsv>): CsvTable => {
+    check('预检给出逐行的结果', c.kind === 'rows', JSON.stringify(c).slice(0, 200));
+    return c.kind === 'rows' ? c.table : NO_TABLE;
+  };
   /** 中文 Windows 上 Excel 另存的 GBK 文件（字节由 Python 的 gbk 编码器算出，不经本仓库的代码） */
   const GBK_TEXT = `${H_HEAD}\r\nh-gbk-one,三亚湾酒店,三亚,五星,1680,海景房,私人沙滩,海岛\r\n`;
   const GBK_FILE = Uint8Array.from(
@@ -6446,7 +6452,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   );
 
   // 13.1 列与标签：按行业包推出的列与按共用 schema 推出的相同；不能平铺的必填字段让这一类导入不了
-  {
+  try {
     const hotel = entityCsvShape(HOTEL);
     eq(
       '酒店：按行业包推出的列与按 schema 推出的相同（服务端与前端的列一致）',
@@ -6542,10 +6548,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [odd.required.has('note'), odd.flat.get('note'), odd.flat.get('sizes'), odd.flat.has('parts'), odd.nestedRequired],
       [false, 'string', 'string', false, ['parts']],
     );
+  } catch (e) {
+    check('第 13.1 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 
   // 13.2 防公式注入：危险字符开头的格子加一个制表符；导入时只去「制表符 + 危险字符」开头的那一个
-  {
+  try {
     const CR = String.fromCharCode(13);
     const LF = String.fromCharCode(10);
     const danger = ['=1+1', '+86', '-1', '@SUM(A1)', `${TAB}x`, `${CR}x`, `${LF}x`, '＝1', '＋1', '－1', '＠a'];
@@ -6572,10 +6580,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
       [`${TAB}abc`, `${TAB}=1`, '=1', '＠1', `x${TAB}=1`],
     );
+  } catch (e) {
+    check('第 13.2 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 
   // 13.3 写 CSV 与三条上限
-  {
+  try {
     const rows = [
       ['a', 'b,c', '说"好"'],
       ['"开头', '第一行\n第二行', ''],
@@ -6626,13 +6636,23 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ImportCsvBody.safeParse({ csv: 'x'.repeat(CSV_MAX_CHARS) }).success &&
         !ImportCsvBody.safeParse({ csv: 'x'.repeat(CSV_MAX_CHARS + 1) }).success,
     );
+  } catch (e) {
+    check('第 13.3 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 
   // 13.4 解码：先 UTF-8 严格解码，不成再 GBK；都解不开才拒收
-  {
-    const utf = readCsvBytes(new TextEncoder().encode(`${CSV_BOM}${GBK_TEXT}`));
+  try {
+    // 解不开时不崩：记成一种编码写着抛了什么，下面的断言照常点名
+    const safeRead = (b: Uint8Array) => {
+      try {
+        return readCsvBytes(b);
+      } catch (e) {
+        return { encoding: `抛了 ${String(e)}`, text: '' };
+      }
+    };
+    const utf = safeRead(new TextEncoder().encode(`${CSV_BOM}${GBK_TEXT}`));
     eq('解码：UTF-8（带 BOM）按 UTF-8 读，BOM 去掉', [utf.encoding, utf.text === GBK_TEXT], ['utf-8', true]);
-    const gbk = readCsvBytes(GBK_FILE);
+    const gbk = safeRead(GBK_FILE);
     eq('解码：Excel 在中文 Windows 上另存的 GBK 按 GBK 读，中文不乱码', [gbk.encoding, gbk.text === GBK_TEXT], ['gbk', true]);
     const thrown = (f: () => unknown): unknown => {
       try {
@@ -6648,10 +6668,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       bad instanceof CsvEncodingError && bad.message.includes('GBK') && bad.message.includes('CSV UTF-8'),
     );
     check('01 的 decodeCsvFile 不变：GBK 照旧拒收', thrown(() => decodeCsvFile(GBK_FILE)) instanceof CsvEncodingError);
+  } catch (e) {
+    check('第 13.4 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 
   // 13.5 预检：H 页的 8 行（编号已经有了、数写错）；英文表头与中文表头相同；只导入合格的行；下载不合格的行
-  {
+  try {
     const t = tableOf(checkCsv(HOTEL, H_CSV, HOTEL_ROWS))!;
     eq(
       'H 页：第3行编号已经有了，写出名称和状态；第6行每晚起价写错，记下原样的格子；其余合格',
@@ -6674,6 +6696,17 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         { tone: 'warning', title: '6行可以导入，2行要改', note: '要改的格子已标出，原因写在最后一列。导入的都是草稿，逐条检查后再上架' },
         '只导入合格的6行',
         '下载不合格的2行（带原因）',
+      ],
+    );
+    const allGood = tableOf(checkCsv(HOTEL, [H_HEAD, H_ROWS[0], H_ROWS[1]].join('\n'), HOTEL_ROWS));
+    const allBad = tableOf(checkCsv(HOTEL, [H_HEAD, H_ROWS[2], H_ROWS[5]].join('\n'), HOTEL_ROWS));
+    eq(
+      '汇总：全部合格是 info「2行都可以导入」、主按钮「导入2条草稿」；全部要改是 warning「2行都要改」，说改好后换一个文件',
+      [csvSummary(allGood), importLabel(allGood), csvSummary(allBad)],
+      [
+        { tone: 'info', title: '2行都可以导入', note: '导入的都是草稿，逐条检查后再上架' },
+        '导入2条草稿',
+        { tone: 'warning', title: '2行都要改', note: '要改的格子已标出，原因写在最后一列。改好后换一个文件再导入' },
       ],
     );
     eq('H 页：表格的字段列（名称与编号合成首列，数组不画），金额的单位写进表头', tableFields(HOTEL, t.keys).map(tableHeader), [
@@ -6779,10 +6812,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         parseCsv(twice)[0]!.filter((h) => h === '不合格原因').length === 1,
       twice,
     );
+  } catch (e) {
+    check('第 13.5 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 
   // 13.6 预检：空文件、整份的问题、上限、逐行的各种问题；假包主材；服务端 422 的问题放回原来的行；填写规则与模板
-  {
+  try {
     eq(
       '空文件、只有表头、表头加空行：停在第2步',
       [checkCsv(HOTEL, ''), checkCsv(HOTEL, H_HEAD), checkCsv(HOTEL, `${H_HEAD}\r\n\r\n,,,,,,,\r\n`)].map((c) => c.kind),
@@ -6967,10 +7002,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [`${CSV_BOM}${H_HEAD}\r\n`, `${CSV_BOM}${M_HEAD}\r\n`],
     );
     check('模板填上一行就能导入', tableOf(checkCsv(HOTEL, `${templateCsv(HOTEL)}${H_ROWS[0]}`, HOTEL_ROWS))?.rows[0]?.issues.length === 0);
+  } catch (e) {
+    check('第 13.6 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 
   // 13.7 弹窗（挂整页：路由、查询缓存、假接口）：五步、空文件、GBK、H 页、下载、只导入合格的、422、连不上、完成、太大、粘贴、假包
-  {
+  try {
     async function mountList(path: string, viewer: Viewer, lists: Readonly<Record<string, readonly ListRow[]>>) {
       const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
       qc.setQueryData(VIEWER_KEY, viewer);
@@ -6999,7 +7036,11 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const alertTitles = () => texts(document, `${D} .csv-body .ant-alert-title`);
     const resultRows = () => all<HTMLTableRowElement>(document, `${D} .csv-results tbody tr.ant-table-row`);
     const pick = async (name: string, data: Uint8Array<ArrayBuffer> | string) => {
-      const input = document.querySelector<HTMLInputElement>(`${D} input[type="file"]`)!;
+      const input = document.querySelector<HTMLInputElement>(`${D} input[type="file"]`);
+      if (!input) {
+        check(`选文件：这一步有文件框（${name}）`, false, `在第「${stepNow()}」步`);
+        return;
+      }
       const file = new File([typeof data === 'string' ? new TextEncoder().encode(data) : data], name, { type: 'text/csv' });
       Object.defineProperty(input, 'files', { value: [file], configurable: true });
       const before = `${stepNow()}|${fileRow()}|${readError()}`;
@@ -7091,7 +7132,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       `${fileRow()} ${readError()}`,
     );
     // 拖放：在拖放区上发 dragover 与 drop，dataTransfer 里放 GBK 文件
-    const zone = document.querySelector<HTMLElement>(`${D} .csv-drop`)!;
+    const zone = document.querySelector<HTMLElement>(`${D} .csv-drop`) ?? document.createElement('div');
     const dropEvent = (type: string) => {
       const ev = new win.Event(type, { bubbles: true, cancelable: true }) as unknown as Event;
       Object.defineProperty(ev, 'dataTransfer', { value: { files: [new File([GBK_FILE], '新签酒店-GBK.csv', { type: 'text/csv' })] } });
@@ -7205,7 +7246,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
       ['导入', '正在导入5条草稿', true, []],
     );
-    await act(async () => pending.fail!(new TypeError('Failed to fetch')));
+    await act(async () => pending.fail?.(new TypeError('Failed to fetch')));
     await until(() => alertTitles().length > 0);
     eq(
       '连不上：停在第4步，就地报错带重试，左边「上一步」',
@@ -7273,6 +7314,10 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [stepNow(), fileRow(), alertTitles(), footer()],
       ['校验结果', '粘贴的内容2行改粘贴的内容', ['2行都可以导入'], ['上一步', '导入2条草稿']],
     );
+    check(
+      '全部合格的汇总是 info，不是 warning',
+      document.querySelector(`${D} .csv-body .ant-alert`)?.className.includes('ant-alert-info') === true,
+    );
     reply = () =>
       json(
         { error: 'invalid_csv', detail: 'x', rows: [{ row: 0, issues: [{ path: '', message: '一次最多导入 200 行，这份有 201 行' }] }] },
@@ -7324,6 +7369,8 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     api.restore();
     URL.createObjectURL = realCreate;
     (win.HTMLAnchorElement.prototype as unknown as { click(): void }).click = realClick;
+  } catch (e) {
+    check('第 13.7 节跑完、没有半路崩掉', false, e instanceof Error ? (e.stack ?? e.message).slice(0, 300) : String(e));
   }
 }
 
