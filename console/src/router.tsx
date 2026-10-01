@@ -13,6 +13,7 @@ import {
 import type { ReactElement } from 'react';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
+import { sopSearch } from './sop/search.js';
 
 /**
  * 页面的块还在下载：内容面板里马上换成整页骨架，照 StateView 的规矩 300ms 后才看得见（spec「通用部件 · StateView」）。
@@ -50,8 +51,7 @@ const index = createRoute({
     throw redirect({ to: '/sop' });
   },
 });
-// 话术页选中的节（spec 的路由表）：不认识的 key 由页面退回默认节
-const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
+// 话术页选中的节、版本记录、查看改动（sop/search.ts）：不认识的 key 由页面退回默认节
 const sop = createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch }).lazy(() =>
   import('./pages/sop.lazy.js').then((m) => m.Route),
 );

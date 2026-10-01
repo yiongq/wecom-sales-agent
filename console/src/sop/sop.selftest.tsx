@@ -160,6 +160,7 @@ import { QuotaBar } from './QuotaBar.js';
 import { checkItems } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
 import { SopSkeleton } from './SopSkeleton.js';
+import { sopSearch } from './search.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -1056,11 +1057,8 @@ const hrefFor = (k: string): string => `/console/sop?section=${k}`;
 }
 
 // ---------------- 7. 整页的接线 ----------------
-// 路由照 router.tsx 的 /sop（basepath /console，search 只有 section），另有一页 /audit 当「别的页」。
+// 路由照 router.tsx 的 /sop（basepath /console，search 同一个 sopSearch：section、view、v），另有一页 /audit 当「别的页」。
 // 接口的数据预置在 QueryClient 里（staleTime 无限，不会再取）；真发了请求就记下来、永远不回（加载中的骨架靠它停在加载中）。
-
-/** 同 router.tsx 的 sopSearch：只收字符串的 section */
-const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
 
 const requests: string[] = [];
 /** 第 9 节的假服务端：给了就由它回，没给就永远不回（第 7、8 节） */
@@ -2528,8 +2526,53 @@ const publishBar = (m: PageBox): HTMLElement | null => m.box.querySelector<HTMLE
 const barButton = (m: PageBox, name: string): HTMLButtonElement | undefined =>
   all<HTMLButtonElement>(publishBar(m) ?? m.box, 'button').find((b) => label(b) === name);
 const barBlocked = (m: PageBox): boolean => barButton(m, '发布…')?.getAttribute('aria-disabled') === 'true';
-/** [页头的丢弃 disabled，发布条的「发布…」不能点] */
-const headerDisabled = (m: PageBox): boolean[] => [!!headerButton(m, '丢弃')?.disabled, barBlocked(m)];
+/** 页头的「更多」（第 7 步：「丢弃草稿」在它的菜单里） */
+const moreButton = (m: PageBox): HTMLButtonElement | null =>
+  m.box.querySelector<HTMLButtonElement>('.page-actions button[aria-label="更多操作"]');
+const moreItem = (): HTMLElement | undefined =>
+  document.body.querySelector<HTMLElement>('.sop-more-menu .ant-dropdown-menu-item') ?? undefined;
+/** 打开「更多」，拿到「丢弃草稿」那一项 */
+async function discardItem(m: PageBox): Promise<HTMLElement | undefined> {
+  if (moreButton(m)?.getAttribute('aria-expanded') !== 'true') await clickEv(moreButton(m));
+  await until(() => !!moreItem());
+  return moreItem();
+}
+/** 「丢弃草稿」能不能点：打开「更多」看一眼再关上 */
+async function discardBlocked(m: PageBox): Promise<boolean> {
+  const item = await discardItem(m);
+  const blocked = item?.getAttribute('aria-disabled') === 'true';
+  await clickEv(moreButton(m));
+  await until(() => moreButton(m)?.getAttribute('aria-expanded') === 'false');
+  return blocked;
+}
+/** [「更多」里的「丢弃草稿」不能点，发布条的「发布…」不能点] */
+const headerDisabled = async (m: PageBox): Promise<boolean[]> => [await discardBlocked(m), barBlocked(m)];
+/** 开着的版本记录抽屉 */
+const historyDrawer = (): HTMLElement | undefined => drawerOf('版本记录');
+/** 版本记录里 vN 那一行 */
+const historyRow = (no: string): HTMLElement | undefined =>
+  all<HTMLElement>(historyDrawer() ?? document.body, '.sop-history-row').find((r) => text(r.querySelector('.sop-history-no')) === no);
+const rowButton = (no: string, name: string): HTMLButtonElement | undefined =>
+  all<HTMLButtonElement>(historyRow(no) ?? document.body, 'button').find((b) => label(b) === name);
+/** 页头的「版本记录」→ vN 的「回滚到这版…」→ 写上原因 → 「回滚到vN」 */
+async function rollbackFromHistory(m: PageBox, no: string, why: string): Promise<void> {
+  await clickEv(headerButton(m, '版本记录'));
+  await waitFor(() => !!rowButton(no, '回滚到这版…'));
+  await clickEv(rowButton(no, '回滚到这版…'));
+  const modal = (): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === `回滚到${no}`);
+  await waitFor(() => !!modal()?.querySelector('input'));
+  await setText(modal()!.querySelector('input')!, why);
+  await clickEv(all(modal()!, '.ant-modal-footer button').find((b) => label(b) === `回滚到${no}`));
+}
+/** 「更多」→「丢弃草稿」→ 确认框里的「丢弃草稿」 */
+async function discardVia(m: PageBox): Promise<void> {
+  const confirm = (): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === '丢弃草稿？');
+  await clickEv(await discardItem(m));
+  await until(() => !!confirm());
+  await clickEv(all(confirm()!, 'button').find((b) => label(b) === '丢弃草稿'));
+}
 /** 开着的抽屉（标题以 title 开头）；关上以后收起的那一下还在 DOM 里，不算 */
 const drawerOf = (title: string): HTMLElement | undefined =>
   all<HTMLElement>(document.body, '.sop-drawer.ant-drawer-open').find((d) => text(d.querySelector('.ant-drawer-title')).startsWith(title));
@@ -2574,9 +2617,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   srv.mode = 'hold';
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   eq(
-    '页头：没有「保存草稿」「检查」「发布」按钮（检查在自动保存以后自动跑，发布在底部的发布条里），只有丢弃；状态句还没有保存那一段',
-    [all(m.box, '.page-actions button').map(label), saveNow(m)],
-    [['丢弃'], ''],
+    '页头：没有「保存草稿」「检查」「发布」按钮（检查在自动保存以后自动跑，发布在底部的发布条里），只有「更多」与「版本记录」；状态句还没有保存那一段',
+    [all(m.box, '.page-actions button').map((b) => b.getAttribute('aria-label') ?? label(b)), saveNow(m)],
+    [['更多操作', '版本记录'], ''],
   );
   eq(
     '状态句的保存那一段按最宽的两种写法占位；会变的那一行是 role=status（读屏念出变化），占位不念',
@@ -2587,9 +2630,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     ],
     [['·已自动保存00:00', '·没保存上·重试'], ['sop-save-now'], ['true', 'true']],
   );
-  eq('没有没存上的改动：丢弃、发布都能点', headerDisabled(m), [false, false]);
+  eq('没有没存上的改动：丢弃、发布都能点', await headerDisabled(m), [false, false]);
   await typeAtEnd(m, '测');
-  eq('打了字还没存：丢弃不能点，发布条的「发布…」照样能点（点了先存）', headerDisabled(m), [true, false]);
+  eq('打了字还没存：丢弃不能点，发布条的「发布…」照样能点（点了先存）', await headerDisabled(m), [true, false]);
   await waitFor(() => srv.puts().length === 1);
   eq('停止输入以后存：带草稿的 rev，只带改过的节，正文是编辑器里的原文', srv.puts(), [
     { basedOn: 'v2', rev: 4, edits: [{ key: 'tone', body: editorText(m)! }] },
@@ -2600,13 +2643,13 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await waitFor(() => saveNow(m) !== '·保存中…');
   eq(
     '存上了：「已自动保存14:30」，按钮能点，缓存里的草稿换成返回的那份',
-    [saveNow(m), headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
+    [saveNow(m), await headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
     ['·已自动保存14:30', [false, false], 10],
   );
   await typeAtEnd(m, '试');
   await waitFor(() => srv.puts().length === 2);
   eq('接着存：带上一次成功响应的 rev', srv.puts()[1]?.rev, 10);
-  await waitFor(() => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '丢弃')?.disabled);
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
   await act(async () => void m.router.navigate({ to: '/audit' } as never));
   await until(() => m.pathname() === '/audit');
   eq('全存上了：离开这一页不拦', [guardOpen(), m.pathname()], [false, '/audit']);
@@ -3024,14 +3067,10 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   const status = (): string => text(m.box.querySelector('.page-status'));
-  const modal = (title: string): Element | undefined =>
-    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
-  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '丢弃')?.disabled;
+  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && srv.puts().length > 0 && srv.held.length === 0;
   await typeAtEnd(m, '丢');
   await waitFor(saved);
-  await clickEv(headerButton(m, '丢弃'));
-  await until(() => !!modal('丢弃草稿？'));
-  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await discardVia(m);
   await waitFor(() => status().includes('没有未发布的改动'));
   eq('丢弃以后：没有未发布的改动，保存那一段清空', [status().includes('没有未发布的改动'), saveNow(m)], [true, '']);
   await typeAtEnd(m, '发');
@@ -3902,12 +3941,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [1, '4/7通过', '1处', 1],
   );
   eq('这一项没有去处：整行不是按钮', itemOf(m, '必备短语都在')?.tagName, 'DIV');
-  const modal = (title: string): Element | undefined =>
-    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
-  await waitFor(() => !headerButton(m, '丢弃')?.disabled);
-  await clickEv(headerButton(m, '丢弃'));
-  await until(() => !!modal('丢弃草稿？'));
-  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await discardVia(m);
   await waitFor(() => text(m.box.querySelector('.page-status')).includes('没有未发布的改动'));
   await settle();
   eq(
@@ -3951,28 +3985,19 @@ function recordScroll(): { calls: string[]; restore(): void } {
 // 10.3d 只认该认的结果：回滚以后（草稿的 rev 没变、线上换了）再查；两次都在路上时先发的晚回来没跑成，不把后发的成功说成
 // 「没检查上」；丢弃时还在路上的检查回来也不认
 {
-  const modal = (title: string): Element | undefined =>
-    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
   const status = (m: PageBox): string => text(m.box.querySelector('.page-status'));
 
   const srv = fakeServer(BAD_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await act(async () =>
-    m.qc.setQueryData(['sop-versions'], { pages: [{ items: [BAD_SOP.published, version(1, P_ONLINE)] }], pageParams: [undefined] }),
+    m.qc.setQueryData(['sop-versions'], {
+      pages: [{ items: [BAD_SOP.published, version(1, P_ONLINE, { status: 'archived' })] }],
+      pageParams: [undefined],
+    }),
   );
   await waitFor(() => summaryOf(m) !== '');
-  const rollbackButton = (): HTMLButtonElement | undefined =>
-    all<HTMLButtonElement>(m.box, '.sop-after button').find((b) => label(b) === '以此版本回滚');
-  await waitFor(() => !!rollbackButton());
-  await clickEv(rollbackButton());
-  await until(() => !!modal('回滚到v1')?.querySelector('textarea'));
-  const note = modal('回滚到v1')!.querySelector<HTMLTextAreaElement>('textarea')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '退回去');
-    note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
-  });
-  await clickEv(all(modal('回滚到v1')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1'));
+  await rollbackFromHistory(m, 'v1', '退回去');
   await waitFor(() => srv.checks() === 2);
   eq(
     '回滚以后：草稿没存过（rev 还是 4），线上换成 v3，再检查一次',
@@ -4009,10 +4034,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   gone.checkHold = true;
   const g = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await waitFor(() => gone.checks() === 1);
-  await waitFor(() => !headerButton(g, '丢弃')?.disabled);
-  await clickEv(headerButton(g, '丢弃'));
-  await until(() => !!modal('丢弃草稿？'));
-  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await discardVia(g);
   await waitFor(() => status(g).includes('没有未发布的改动'));
   await act(async () => gone.checkHeld[0]?.resolve());
   await rest(60);
@@ -4684,8 +4706,8 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   await clickEv(barButton(m, '回滚到v2'));
-  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('textarea'));
-  await setText(modalOf('回滚到v2')!.querySelector('textarea')!, '退回去');
+  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('input'));
+  await setText(modalOf('回滚到v2')!.querySelector('input')!, '退回去');
   await clickEv(all(modalOf('回滚到v2')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v2'));
   await waitFor(() => barText(m).summary === '草稿和线上一样');
   eq(
@@ -4714,16 +4736,8 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布v3'));
   await settle();
-  await act(async () =>
-    m.qc.setQueryData(['sop-versions'], { pages: [{ items: [srv.state.published, CLEAN_SOP.published] }], pageParams: [undefined] }),
-  );
-  const fromHistory = (): HTMLButtonElement | undefined =>
-    all<HTMLButtonElement>(m.box, '.sop-after button').find((b) => label(b) === '以此版本回滚');
-  await waitFor(() => !!fromHistory());
-  await clickEv(fromHistory());
-  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('textarea'));
-  await setText(modalOf('回滚到v2')!.querySelector('textarea')!, '退回去');
-  await clickEv(all(modalOf('回滚到v2')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v2'));
+  await act(async () => m.qc.setQueryData(['sop-versions'], { pages: [{ items: srv.released }], pageParams: [undefined] }));
+  await rollbackFromHistory(m, 'v2', '退回去');
   await waitFor(() => text(m.box.querySelector('.page-status')).startsWith('线上v4'));
   await settle();
   eq(
@@ -5231,8 +5245,8 @@ const lookups = (): Record<string, string>[] =>
     ['v3', { summary: '已发布v4（改了话术原则、异议处理）', hint: '·客户下一句就用新话术·回滚到v3', note: '没有可发布的改动' }, []],
   );
   await clickEv(barButton(m, '回滚到v3'));
-  await waitFor(() => !!modalOf('回滚到v3')?.querySelector('textarea'));
-  await setText(modalOf('回滚到v3')!.querySelector('textarea')!, '退回去');
+  await waitFor(() => !!modalOf('回滚到v3')?.querySelector('input'));
+  await setText(modalOf('回滚到v3')!.querySelector('input')!, '退回去');
   await clickEv(all(modalOf('回滚到v3')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v3'));
   await waitFor(() => text(m.box.querySelector('.page-status')).startsWith('线上v5'));
   await settle();

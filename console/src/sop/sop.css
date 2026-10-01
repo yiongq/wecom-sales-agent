@@ -462,9 +462,6 @@
     0 0 0 1px var(--accent),
     0 0 0 4px var(--accent-ring);
 }
-.sop-after {
-  margin-top: 32px;
-}
 
 /* ---------------- 目录（B 页左栏） ---------------- */
 .sop-toc {
@@ -1068,4 +1065,224 @@
 }
 .sop-diff .sop-diff-view .cm-gutters {
   display: none;
+}
+
+/*
+ * ---------------- 页头的操作（B 页）：「更多」32 见方的次要按钮（16 的 ellipsis，text-2），「版本记录」前置 history ----------------
+ * 「更多」里只有「丢弃草稿」（菜单项不加 danger）；不能点时右边写原因（13 text-3，同用户菜单的 .menu-value）
+ */
+.sop-more-btn {
+  color: var(--text-2);
+}
+.sop-history-btn {
+  gap: 6px;
+  padding-inline: 12px 14px;
+}
+.sop-history-btn .ant-btn-icon {
+  color: var(--text-2);
+}
+.sop-more-menu .ant-dropdown-menu {
+  min-width: 200px;
+}
+
+/*
+ * ---------------- 版本记录（§5.13 S 420，C 页） ----------------
+ * 每个版本一行，行与行之间一条 --divider，内边距 16 0。第一行 28 高：14/600 的版本号加状态（草稿是 Status 加「未发布 · 改了2节」，
+ * 右边文字按钮「继续编辑」）；变更说明 14/500，下一行 13 text-2；操作是 14/500 的文字按钮，用 Sep 隔开；技术详情在最后，上距 6
+ */
+.sop-history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sop-history-row {
+  padding: 16px 0;
+}
+.sop-history-row + .sop-history-row {
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+.sop-history-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.sop-history-no {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sop-history-continue {
+  margin-left: auto;
+  font-size: 14px;
+  line-height: 22px;
+}
+.sop-history-note {
+  margin: 2px 0 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.sop-history-meta {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-history-head .sop-history-meta {
+  margin: 0;
+}
+.sop-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-height: 28px;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+/* 409 停住时「载入到草稿再改」不能点：text-3，没有悬停 */
+.sop-text-btn:disabled {
+  color: var(--text-3);
+  text-decoration: none;
+  cursor: not-allowed;
+}
+.sop-history-row .tech-details {
+  margin-top: 6px;
+}
+.sop-history-more {
+  padding-top: 8px;
+}
+.sop-history-end {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/*
+ * ---------------- 查看改动（主区）：「v2相对v1改了什么」，下一行是那一版的说明与作者、时间，下面是逐节的差异 ----------------
+ * 标题由页面程序聚焦（tabIndex=-1），不画焦点框（同 .sop-conflict）
+ */
+.sop-version {
+  max-width: 1040px;
+}
+.sop-version-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+  outline: none;
+}
+.sop-version .sop-changes-head {
+  margin-bottom: 4px;
+}
+.sop-version-meta {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/*
+ * ---------------- 回滚确认（§5.14 640，C 页） ----------------
+ * 后果列表：每条 16 图标加 14 文字，间隔 8；中性事实 info、固定规则 lock 用 text-2，要留意的 triangle-alert 用 --warning-icon。
+ * 差异块：--subtle 底、--r-md、内边距 8，上距 16；标题 13/500；差异本身不画边框，删除行在 subtle 上再叠一层 subtle（§1.2「嵌套的底」，
+ * 所以删除行的字和「−」用 text-2）。太长时差异块自己滚动。「为什么回滚」上距 20。底栏的原因写在按钮左边（同发布抽屉）
+ */
+.sop-rb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sop-rb-list > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-rb-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--text-2);
+}
+.sop-rb-icon.is-warning {
+  color: var(--warning-icon);
+}
+.sop-rb-list > li.sop-rb-pending {
+  display: block;
+}
+.sop-rb-pending .skeleton-rows {
+  width: 100%;
+}
+.sop-rb > .ant-alert {
+  margin-top: 16px;
+}
+.sop-rb-diff {
+  max-height: 360px;
+  margin-top: 16px;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+}
+.sop-rb-diff-title,
+.sop-rb-diff-name {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.sop-rb-diff-item {
+  margin-top: 6px;
+}
+.sop-rb-diff-item + .sop-rb-diff-item {
+  margin-top: 12px;
+}
+.sop-rb-diff-name + .sop-diff {
+  margin-top: 6px;
+}
+.sop-rb-diff-none {
+  margin: 6px 0 0;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-rb-diff .sop-diff-view {
+  border-radius: var(--r-xs);
+  box-shadow: none;
+}
+.sop-rb-diff .sop-diff .sop-diff-view .cm-content {
+  padding: 0;
+}
+.sop-rb-note {
+  margin-top: 20px;
+}
+.sop-rb-root .ant-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.sop-rb-root .ant-modal-footer > .ant-btn {
+  margin-inline-start: 0;
+}
+.sop-rb-reason {
+  min-width: 0;
+  margin-right: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
 }

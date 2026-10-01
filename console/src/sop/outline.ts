@@ -30,7 +30,7 @@ export interface OutlineRow {
 }
 
 /** 正文；万一不是规范形（服务端保证是），整段当正文，不让页面崩掉 */
-function bodyOf(text: string, spec: Pick<SectionSpecView, 'key' | 'heading'>): string {
+export function bodyOf(text: string, spec: Pick<SectionSpecView, 'key' | 'heading'>): string {
   try {
     return sectionBody({ key: spec.key, text }, { ...spec, locked: false });
   } catch (e) {
@@ -89,17 +89,19 @@ export interface SectionChange {
 }
 
 /**
- * 相对线上改过的可编辑节（发布抽屉与「查看改动」的逐节改动），按节表的顺序；与目录的「改过」同一口径（memberOutline）
+ * 相对线上改过的可编辑节（发布抽屉与「查看改动」的逐节改动），按节表的顺序；与目录的「改过」同一口径（memberOutline）。
+ * withLocked：固定规则节也比（版本记录的「查看改动」：系统更新改的就是它们）
  */
 export function changedSections(
   spec: readonly SectionSpecView[],
   published: readonly SopSectionText[],
   current: readonly SopSectionText[],
   edits: Readonly<Record<string, string>>,
+  withLocked = false,
 ): SectionChange[] {
   const out: SectionChange[] = [];
   for (const [i, s] of spec.entries()) {
-    if (s.locked) continue;
+    if (s.locked && !withLocked) continue;
     const after = Object.hasOwn(edits, s.key) ? savedBody(spec, i, edits[s.key]!) : bodyOf(textOf(current, s.key), s);
     const before = bodyOf(textOf(published, s.key), s);
     if (after !== before) out.push({ key: s.key, name: s.heading ?? PREAMBLE_NAME, before, after });
