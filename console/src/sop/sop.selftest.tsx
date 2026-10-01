@@ -27,6 +27,11 @@
 //    逐节改动取哪几节、行内 / 并排的存取；差异的两种样子，@codemirror/merge 自带的颜色都被盖掉；整页接假服务端：
 //    点「发布…」先存再开抽屉、只检查一次，发布成功写在条里（不弹 toast）、「回滚到v2」，发布被拒、没成功、检查在路上或没跑成，
 //    查看改动与查看本节改动、焦点回到打开它的按钮，没有草稿、只读成员、匿名、有问题（跳到第一个）、409 停住。
+// 12. 版本记录与回滚（第 7 步，spec「版本记录」「查看改动」「回滚」「载入到草稿再改」「丢弃草稿」，验收 13）：翻页与前一版、每一行的
+//    说明与下一行（来源写成中文）、技术详情、回滚的后果（与草稿有无交集、固定规则改过、草稿的基线不是线上）、载入会盖掉哪几节；
+//    整页接假服务端：抽屉的开关与地址（view=history、后退、刷新）、各行、翻页、取不到；查看改动（v=2、后退、刷新、没有这一版）；
+//    回滚确认（原因必填、失败、成功以后重取）；载入到草稿（马上存、先确认、409 时不能点）；只读成员、匿名；「更多」里的丢弃草稿；
+//    评审补的（12.2h）：看着某一版时去编辑器、没存上的改动算草稿、回滚确认的原因与焦点、抽屉头的线上版本、随地址打开的抽屉的焦点。
 // 整个进程按不支持 text-spacing-trim 的浏览器跑（selftest-env.ts），界面上的 cjk() 与编辑器都走 .halt 回退。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
@@ -155,11 +160,35 @@ import {
   writeDiffMode,
 } from './publish.js';
 import { useDraftCheck } from './check.js';
+import {
+  authorOf,
+  discardBlock,
+  draftLine,
+  HISTORY_FETCH,
+  HISTORY_PAGE,
+  historyRows,
+  historyStatus,
+  loadPlan,
+  nextBefore,
+  overwriteText,
+  previousOf,
+  RERENDER_NOTE,
+  rollbackConsequences,
+  rollbackDiffTitle,
+  rollbackHelp,
+  rollbackPlan,
+  rollbackSectionTitle,
+  versionChanges,
+  versionLine,
+  versionTech,
+  versionTitle,
+} from './history.js';
 import { PublishDrawer, type PublishDrawerProps, useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
 import { checkItems } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
 import { SopSkeleton } from './SopSkeleton.js';
+import { sopSearch } from './search.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -1056,11 +1085,8 @@ const hrefFor = (k: string): string => `/console/sop?section=${k}`;
 }
 
 // ---------------- 7. 整页的接线 ----------------
-// 路由照 router.tsx 的 /sop（basepath /console，search 只有 section），另有一页 /audit 当「别的页」。
+// 路由照 router.tsx 的 /sop（basepath /console，search 同一个 sopSearch：section、view、v），另有一页 /audit 当「别的页」。
 // 接口的数据预置在 QueryClient 里（staleTime 无限，不会再取）；真发了请求就记下来、永远不回（加载中的骨架靠它停在加载中）。
-
-/** 同 router.tsx 的 sopSearch：只收字符串的 section */
-const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
 
 const requests: string[] = [];
 /** 第 9 节的假服务端：给了就由它回，没给就永远不回（第 7、8 节） */
@@ -1159,7 +1185,6 @@ async function mountPage(
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
   if (sop) qc.setQueryData(['sop'], sop);
-  qc.setQueryData(['sop-versions'], { pages: [{ items: [V2] }], pageParams: [undefined] });
   const box = document.createElement('div');
   document.body.append(box);
   const r = createRoot(box);
@@ -2406,8 +2431,14 @@ function fakeServer(start: SopOverview) {
     publishHeld: [] as { resolve(): void }[],
     /** 发布过的版本（线上的与归档的），新的在前；GET /sop/versions 按 before、limit 从这里取 */
     released: [start.published] as SopVersion[],
-    /** GET /sop/versions 答 500，或者答一个不相干的版本（不是 before 前面紧挨着的那一个） */
-    versionsFail: false as boolean | 'other',
+    /** GET /sop/versions 答 500，或者答一个不相干的版本（不是 before 前面紧挨着的那一个），或者只有翻页（带 before）答 500 */
+    versionsFail: false as boolean | 'other' | 'more',
+    /** GET /sop/versions/:id 答 500，或者按住（放开时按那时的 byIdFails 回） */
+    byIdFails: false,
+    byIdHold: false,
+    byIdHeld: [] as { resolve(): void }[],
+    /** 回滚答 422（目标版本过不了现在的契约检查） */
+    rollbackFails: false,
     /** 回滚的 sameHashAsTarget（false：这期间固定规则改过） */
     rollbackSameHash: true,
     /** 别人发布了一个新版本（只改了 sections 里与线上不同的节）：线上换了，草稿的 basedOn 从此过期 */
@@ -2453,10 +2484,20 @@ function fakeServer(start: SopOverview) {
       return srv.getFails ? json(500, { error: 'internal' }) : json(200, srv.state);
     if (call.method === 'GET' && call.path === '/api/console/sop/versions') {
       if (srv.versionsFail === 'other') return json(200, { items: [start.published] });
-      if (srv.versionsFail) return json(500, { error: 'internal' });
+      if (srv.versionsFail === 'more' ? call.query.before !== undefined : srv.versionsFail) return json(500, { error: 'internal' });
       const before = call.query.before === undefined ? Infinity : Number(call.query.before);
       const items = srv.released.filter((x) => (x.versionNo ?? 0) < before).slice(0, Number(call.query.limit ?? 50));
       return json(200, { items });
+    }
+    if (call.method === 'GET' && /^\/api\/console\/sop\/versions\/[^/]+$/.test(call.path)) {
+      if (srv.byIdHold) {
+        const d = deferred<void>();
+        srv.byIdHeld.push({ resolve: () => d.resolve() });
+        await d.promise;
+      }
+      if (srv.byIdFails) return json(500, { error: 'internal' });
+      const v = srv.released.find((x) => x.id === call.path.split('/').at(-1));
+      return v ? json(200, v) : json(404, { error: 'not_found', detail: '没有这个版本' });
     }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/discard') {
       srv.state = { ...srv.state, draft: null };
@@ -2477,10 +2518,16 @@ function fakeServer(start: SopOverview) {
       srv.state = { ...srv.state, draft: null };
       return json(200, release(v));
     }
-    // 回滚：线上换成新的版本号，草稿不动（它的 basedOn 从此过期），同 src/config/sop.ts 的 rollback
+    // 回滚：线上换成新的版本号（可编辑节取目标版本的），草稿不动（它的 basedOn 从此过期），同 src/config/sop.ts 的 rollback
     if (call.method === 'POST' && /^\/api\/console\/sop\/versions\/[^/]+\/rollback$/.test(call.path)) {
+      if (srv.rollbackFails) return json(422, { error: 'contract', detail: '没过', violations: [] });
+      const target = srv.released.find((x) => x.id === call.path.split('/').at(-2));
       const no = (srv.state.published.versionNo ?? 0) + 1;
-      const v = version(no, srv.state.published.sections, { changeNote: (call.body as { changeNote: string }).changeNote });
+      const v = version(no, target?.sections ?? srv.state.published.sections, {
+        source: 'rollback',
+        basedOn: target?.id ?? null,
+        changeNote: (call.body as { changeNote: string }).changeNote,
+      });
       return json(200, { ...release(v), sameHashAsTarget: srv.rollbackSameHash });
     }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/check') {
@@ -2528,8 +2575,55 @@ const publishBar = (m: PageBox): HTMLElement | null => m.box.querySelector<HTMLE
 const barButton = (m: PageBox, name: string): HTMLButtonElement | undefined =>
   all<HTMLButtonElement>(publishBar(m) ?? m.box, 'button').find((b) => label(b) === name);
 const barBlocked = (m: PageBox): boolean => barButton(m, '发布…')?.getAttribute('aria-disabled') === 'true';
-/** [页头的丢弃 disabled，发布条的「发布…」不能点] */
-const headerDisabled = (m: PageBox): boolean[] => [!!headerButton(m, '丢弃')?.disabled, barBlocked(m)];
+/** 页头的「更多」（第 7 步：「丢弃草稿」在它的菜单里） */
+const moreButton = (m: PageBox): HTMLButtonElement | null =>
+  m.box.querySelector<HTMLButtonElement>('.page-actions button[aria-label="更多操作"]');
+const moreItem = (): HTMLElement | undefined =>
+  document.body.querySelector<HTMLElement>('.sop-more-menu .ant-dropdown-menu-item') ?? undefined;
+/** 打开「更多」，拿到「丢弃草稿」那一项 */
+async function discardItem(m: PageBox): Promise<HTMLElement | undefined> {
+  if (moreButton(m)?.getAttribute('aria-expanded') !== 'true') await clickEv(moreButton(m));
+  await until(() => !!moreItem());
+  // 菜单打开以后隔三帧把焦点放进菜单（autoFocus）；等它放完再点，同真人的节奏
+  await rest(80);
+  return moreItem();
+}
+/** 「丢弃草稿」能不能点：打开「更多」看一眼再关上 */
+async function discardBlocked(m: PageBox): Promise<boolean> {
+  const item = await discardItem(m);
+  const blocked = item?.getAttribute('aria-disabled') === 'true';
+  await clickEv(moreButton(m));
+  await until(() => moreButton(m)?.getAttribute('aria-expanded') === 'false');
+  return blocked;
+}
+/** [「更多」里的「丢弃草稿」不能点，发布条的「发布…」不能点] */
+const headerDisabled = async (m: PageBox): Promise<boolean[]> => [await discardBlocked(m), barBlocked(m)];
+/** 开着的版本记录抽屉 */
+const historyDrawer = (): HTMLElement | undefined => drawerOf('版本记录');
+/** 版本记录里 vN 那一行 */
+const historyRow = (no: string): HTMLElement | undefined =>
+  all<HTMLElement>(historyDrawer() ?? document.body, '.sop-history-row').find((r) => text(r.querySelector('.sop-history-no')) === no);
+const rowButton = (no: string, name: string): HTMLButtonElement | undefined =>
+  all<HTMLButtonElement>(historyRow(no) ?? document.body, 'button').find((b) => label(b) === name);
+/** 页头的「版本记录」→ vN 的「回滚到这版…」→ 写上原因 → 「回滚到vN」 */
+async function rollbackFromHistory(m: PageBox, no: string, why: string): Promise<void> {
+  await clickEv(headerButton(m, '版本记录'));
+  await waitFor(() => !!rowButton(no, '回滚到这版…'));
+  await clickEv(rowButton(no, '回滚到这版…'));
+  const modal = (): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === `回滚到${no}`);
+  await waitFor(() => !!modal()?.querySelector('input'));
+  await setText(modal()!.querySelector('input')!, why);
+  await clickEv(all(modal()!, '.ant-modal-footer button').find((b) => label(b) === `回滚到${no}`));
+}
+/** 「更多」→「丢弃草稿」→ 确认框里的「丢弃草稿」 */
+async function discardVia(m: PageBox): Promise<void> {
+  const confirm = (): Element | undefined =>
+    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === '丢弃草稿？');
+  await clickEv(await discardItem(m));
+  await until(() => !!confirm());
+  await clickEv(all(confirm()!, 'button').find((b) => label(b) === '丢弃草稿'));
+}
 /** 开着的抽屉（标题以 title 开头）；关上以后收起的那一下还在 DOM 里，不算 */
 const drawerOf = (title: string): HTMLElement | undefined =>
   all<HTMLElement>(document.body, '.sop-drawer.ant-drawer-open').find((d) => text(d.querySelector('.ant-drawer-title')).startsWith(title));
@@ -2574,9 +2668,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   srv.mode = 'hold';
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   eq(
-    '页头：没有「保存草稿」「检查」「发布」按钮（检查在自动保存以后自动跑，发布在底部的发布条里），只有丢弃；状态句还没有保存那一段',
-    [all(m.box, '.page-actions button').map(label), saveNow(m)],
-    [['丢弃'], ''],
+    '页头：没有「保存草稿」「检查」「发布」按钮（检查在自动保存以后自动跑，发布在底部的发布条里），只有「更多」与「版本记录」；状态句还没有保存那一段',
+    [all(m.box, '.page-actions button').map((b) => b.getAttribute('aria-label') ?? label(b)), saveNow(m)],
+    [['更多操作', '版本记录'], ''],
   );
   eq(
     '状态句的保存那一段按最宽的两种写法占位；会变的那一行是 role=status（读屏念出变化），占位不念',
@@ -2587,9 +2681,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     ],
     [['·已自动保存00:00', '·没保存上·重试'], ['sop-save-now'], ['true', 'true']],
   );
-  eq('没有没存上的改动：丢弃、发布都能点', headerDisabled(m), [false, false]);
+  eq('没有没存上的改动：丢弃、发布都能点', await headerDisabled(m), [false, false]);
   await typeAtEnd(m, '测');
-  eq('打了字还没存：丢弃不能点，发布条的「发布…」照样能点（点了先存）', headerDisabled(m), [true, false]);
+  eq('打了字还没存：丢弃不能点，发布条的「发布…」照样能点（点了先存）', await headerDisabled(m), [true, false]);
   await waitFor(() => srv.puts().length === 1);
   eq('停止输入以后存：带草稿的 rev，只带改过的节，正文是编辑器里的原文', srv.puts(), [
     { basedOn: 'v2', rev: 4, edits: [{ key: 'tone', body: editorText(m)! }] },
@@ -2600,13 +2694,15 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   await waitFor(() => saveNow(m) !== '·保存中…');
   eq(
     '存上了：「已自动保存14:30」，按钮能点，缓存里的草稿换成返回的那份',
-    [saveNow(m), headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
+    [saveNow(m), await headerDisabled(m), (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev],
     ['·已自动保存14:30', [false, false], 10],
   );
   await typeAtEnd(m, '试');
   await waitFor(() => srv.puts().length === 2);
   eq('接着存：带上一次成功响应的 rev', srv.puts()[1]?.rev, 10);
-  await waitFor(() => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '丢弃')?.disabled);
+  await waitFor(() => saveNow(m) === '·已自动保存14:30' && (m.qc.getQueryData(['sop']) as SopOverview).draft?.rev === 11);
+  // 存上以后缓存里的草稿换了，React Query 隔一个宏任务才通知页面重渲（第 5.3 步）：等页面按存上的草稿重渲完
+  await rest(50);
   await act(async () => void m.router.navigate({ to: '/audit' } as never));
   await until(() => m.pathname() === '/audit');
   eq('全存上了：离开这一页不拦', [guardOpen(), m.pathname()], [false, '/audit']);
@@ -3024,14 +3120,10 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
   const m = await mountPage('/console/sop?section=tone', OWNER, MEMBER_SOP, FAST);
   const status = (): string => text(m.box.querySelector('.page-status'));
-  const modal = (title: string): Element | undefined =>
-    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
-  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && !headerButton(m, '丢弃')?.disabled;
+  const saved = (): boolean => saveNow(m) === '·已自动保存14:30' && srv.puts().length > 0 && srv.held.length === 0;
   await typeAtEnd(m, '丢');
   await waitFor(saved);
-  await clickEv(headerButton(m, '丢弃'));
-  await until(() => !!modal('丢弃草稿？'));
-  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await discardVia(m);
   await waitFor(() => status().includes('没有未发布的改动'));
   eq('丢弃以后：没有未发布的改动，保存那一段清空', [status().includes('没有未发布的改动'), saveNow(m)], [true, '']);
   await typeAtEnd(m, '发');
@@ -3902,12 +3994,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [1, '4/7通过', '1处', 1],
   );
   eq('这一项没有去处：整行不是按钮', itemOf(m, '必备短语都在')?.tagName, 'DIV');
-  const modal = (title: string): Element | undefined =>
-    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
-  await waitFor(() => !headerButton(m, '丢弃')?.disabled);
-  await clickEv(headerButton(m, '丢弃'));
-  await until(() => !!modal('丢弃草稿？'));
-  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await discardVia(m);
   await waitFor(() => text(m.box.querySelector('.page-status')).includes('没有未发布的改动'));
   await settle();
   eq(
@@ -3951,28 +4038,19 @@ function recordScroll(): { calls: string[]; restore(): void } {
 // 10.3d 只认该认的结果：回滚以后（草稿的 rev 没变、线上换了）再查；两次都在路上时先发的晚回来没跑成，不把后发的成功说成
 // 「没检查上」；丢弃时还在路上的检查回来也不认
 {
-  const modal = (title: string): Element | undefined =>
-    all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
   const status = (m: PageBox): string => text(m.box.querySelector('.page-status'));
 
   const srv = fakeServer(BAD_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await act(async () =>
-    m.qc.setQueryData(['sop-versions'], { pages: [{ items: [BAD_SOP.published, version(1, P_ONLINE)] }], pageParams: [undefined] }),
+    m.qc.setQueryData(['sop-versions'], {
+      pages: [{ items: [BAD_SOP.published, version(1, P_ONLINE, { status: 'archived' })] }],
+      pageParams: [undefined],
+    }),
   );
   await waitFor(() => summaryOf(m) !== '');
-  const rollbackButton = (): HTMLButtonElement | undefined =>
-    all<HTMLButtonElement>(m.box, '.sop-after button').find((b) => label(b) === '以此版本回滚');
-  await waitFor(() => !!rollbackButton());
-  await clickEv(rollbackButton());
-  await until(() => !!modal('回滚到v1')?.querySelector('textarea'));
-  const note = modal('回滚到v1')!.querySelector<HTMLTextAreaElement>('textarea')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(note, '退回去');
-    note.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
-  });
-  await clickEv(all(modal('回滚到v1')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1'));
+  await rollbackFromHistory(m, 'v1', '退回去');
   await waitFor(() => srv.checks() === 2);
   eq(
     '回滚以后：草稿没存过（rev 还是 4），线上换成 v3，再检查一次',
@@ -4009,10 +4087,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   gone.checkHold = true;
   const g = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await waitFor(() => gone.checks() === 1);
-  await waitFor(() => !headerButton(g, '丢弃')?.disabled);
-  await clickEv(headerButton(g, '丢弃'));
-  await until(() => !!modal('丢弃草稿？'));
-  await clickEv(all(modal('丢弃草稿？')!, 'button').find((b) => label(b) === '丢弃草稿'));
+  await discardVia(g);
   await waitFor(() => status(g).includes('没有未发布的改动'));
   await act(async () => gone.checkHeld[0]?.resolve());
   await rest(60);
@@ -4684,8 +4759,8 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   await clickEv(barButton(m, '回滚到v2'));
-  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('textarea'));
-  await setText(modalOf('回滚到v2')!.querySelector('textarea')!, '退回去');
+  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('input'));
+  await setText(modalOf('回滚到v2')!.querySelector('input')!, '退回去');
   await clickEv(all(modalOf('回滚到v2')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v2'));
   await waitFor(() => barText(m).summary === '草稿和线上一样');
   eq(
@@ -4714,16 +4789,8 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布v3'));
   await settle();
-  await act(async () =>
-    m.qc.setQueryData(['sop-versions'], { pages: [{ items: [srv.state.published, CLEAN_SOP.published] }], pageParams: [undefined] }),
-  );
-  const fromHistory = (): HTMLButtonElement | undefined =>
-    all<HTMLButtonElement>(m.box, '.sop-after button').find((b) => label(b) === '以此版本回滚');
-  await waitFor(() => !!fromHistory());
-  await clickEv(fromHistory());
-  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('textarea'));
-  await setText(modalOf('回滚到v2')!.querySelector('textarea')!, '退回去');
-  await clickEv(all(modalOf('回滚到v2')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v2'));
+  await act(async () => m.qc.setQueryData(['sop-versions'], { pages: [{ items: srv.released }], pageParams: [undefined] }));
+  await rollbackFromHistory(m, 'v2', '退回去');
   await waitFor(() => text(m.box.querySelector('.page-status')).startsWith('线上v4'));
   await settle();
   eq(
@@ -5231,8 +5298,8 @@ const lookups = (): Record<string, string>[] =>
     ['v3', { summary: '已发布v4（改了话术原则、异议处理）', hint: '·客户下一句就用新话术·回滚到v3', note: '没有可发布的改动' }, []],
   );
   await clickEv(barButton(m, '回滚到v3'));
-  await waitFor(() => !!modalOf('回滚到v3')?.querySelector('textarea'));
-  await setText(modalOf('回滚到v3')!.querySelector('textarea')!, '退回去');
+  await waitFor(() => !!modalOf('回滚到v3')?.querySelector('input'));
+  await setText(modalOf('回滚到v3')!.querySelector('input')!, '退回去');
   await clickEv(all(modalOf('回滚到v3')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v3'));
   await waitFor(() => text(m.box.querySelector('.page-status')).startsWith('线上v5'));
   await settle();
@@ -5512,6 +5579,1011 @@ for (const lookupFails of [false, true, 'other'] as const) {
     [false, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '修改：话术原则、异议处理。先问预算'],
   );
   await r.unmount();
+}
+
+// ---------------- 12. 版本记录与回滚（第 7 步） ----------------
+// 12.1 纯函数：翻页与前一版、每一行的说明与下一行（来源写成中文）、技术详情、查看改动的标题与哪几节、回滚的后果
+// （按与草稿有无交集分两种、固定规则改过、草稿的基线不是线上）、差异块的标题、载入到草稿会盖掉哪几节、丢弃不能点的原因、地址上的参数
+const OBJ_V1 = '嫌贵：先认同，再拆价值，然后只给这三条路。\n\n';
+const OBJ_V2 = '嫌贵：先认同，先问一句每人预算上限，再按预算摆两档现成线路。\n\n';
+const H_V1 = version(1, withBodies(PUBLISHED, { objections: OBJ_V1 }), {
+  status: 'archived',
+  source: 'import',
+  changeNote: '首次导入',
+  createdByName: 'import-config',
+  publishedByName: 'import-config',
+  publishedAt: '2026-09-24T02:02:00Z',
+});
+const H_V2 = version(2, withBodies(PUBLISHED, { objections: OBJ_V2 }), {
+  basedOn: 'v1',
+  changeNote: '客户嫌贵时先问预算上限，再给两档方案',
+  publishedAt: '2026-09-25T10:30:00Z',
+});
+/** 草稿改了话术原则与异议处理（B 页），或者只改了话术原则 */
+const HD_BOTH = withBodies(H_V2.sections, { tone: '一句就够，别连发三句恭喜。\n\n', objections: '嫌贵：先认同，再问预算。\n\n' });
+const HD_TONE = withBodies(H_V2.sections, { tone: '一句就够，别连发三句恭喜。\n\n' });
+const hSop = (draft: SopSectionText[] | null, extra: Partial<SopVersion> = {}): SopOverview => ({
+  published: H_V2,
+  draft: draft && { ...version(null, draft, { basedOn: 'v2', rev: 4, publishedAt: null, publishedByName: null, ...extra }), stale: false },
+  spec: SPEC,
+  budget: { chars: editableChars(draft ?? H_V2.sections, SPEC), limit: LIMIT },
+});
+const bodyOfKey = (secs: readonly SopSectionText[], k: string): string => bodyIn(secs, k);
+
+{
+  const page = (from: number, n: number): { items: SopVersion[] } => ({
+    items: Array.from({ length: n }, (_, i) => version(from - i, PUBLISHED, { status: 'archived' })),
+  });
+  eq('一页列 20 个、取 21 个', [HISTORY_PAGE, HISTORY_FETCH], [20, 21]);
+  eq(
+    '取满了（21 个）：下一页从第 20 个往前取；不满（恰好 20 个也算）就到头了',
+    [nextBefore(page(25, 21)), nextBefore(page(20, 20)), nextBefore(page(5, 5))],
+    [6, undefined, undefined],
+  );
+  const { rows: listed, known } = historyRows([page(25, 21), page(5, 5)]);
+  eq(
+    '列出来的去掉多取的那一个，手上的都算',
+    [listed.map((v) => v.versionNo).join(','), known.length],
+    [[...Array.from({ length: 20 }, (_, i) => 25 - i), 5, 4, 3, 2, 1].join(','), 26],
+  );
+  eq('前一版：版本号小 1 的；最早的没有', [previousOf({ versionNo: 6 }, known)?.versionNo, previousOf({ versionNo: 1 }, known)], [5, null]);
+  eq(
+    '作者：人写名字，导入、系统更新写来源（不写 import-config、system）',
+    [
+      authorOf(H_V2),
+      authorOf(H_V1),
+      authorOf({ source: 'rerender', publishedByName: 'system', createdByName: 'system' }),
+      authorOf({ source: 'rollback', publishedByName: null, createdByName: null }),
+    ],
+    ['老板', '系统导入', '系统更新', '回滚'],
+  );
+  eq('后台发布：说明在前，下一行「作者 · 时间 · 改了N节（节名）」，只算可编辑节', versionLine(H_V2, SPEC, H_V1, NOW), {
+    note: '客户嫌贵时先问预算上限，再给两档方案',
+    meta: ['老板', '9月25日 18:30', '改了1节（异议处理）'],
+  });
+  eq('导入：「系统导入 · 时间」，不写改了几节', versionLine(H_V1, SPEC, null, NOW), {
+    note: '首次导入',
+    meta: ['系统导入', '9月24日 10:02'],
+  });
+  const rb = version(3, H_V1.sections, { source: 'rollback', basedOn: 'v1', changeNote: '退回去', publishedAt: '2026-09-26T05:00:00Z' });
+  eq(
+    '回滚：写「回到v1」与改了几节；不知道是哪一版时只写「回滚」',
+    [versionLine(rb, SPEC, H_V2, NOW, 1), versionLine(rb, SPEC, H_V2, NOW).meta],
+    [
+      { note: '退回去', meta: ['老板', '9月26日 13:00', '回到v1', '改了1节（异议处理）'] },
+      ['老板', '9月26日 13:00', '回滚', '改了1节（异议处理）'],
+    ],
+  );
+  const rr = version(4, withBodies(H_V2.sections, {}), {
+    source: 'rerender',
+    changeNote: '启动重渲染：locked_sections 变了',
+    publishedByName: 'system',
+    publishedAt: '2025-12-30T16:00:00Z',
+  });
+  eq('系统更新：说明换成「代码里的固定规则变了」，存下来的原话只进技术详情；不是今年的写年份', versionLine(rr, SPEC, H_V2, NOW), {
+    note: RERENDER_NOTE,
+    meta: ['系统更新', '2025年12月31日 00:00'],
+  });
+  eq(
+    '草稿那一行与抽屉头',
+    [draftLine(2), draftLine(0), historyStatus(H_V2, true), historyStatus(H_V2, false)],
+    [['未发布', '改了2节'], ['未发布', '和线上一样'], ['线上v2', '另有1份草稿'], ['线上v2']],
+  );
+  eq(
+    '技术详情：四个哈希的前 12 位（没有的不写），系统更新另带原话',
+    [versionTech({ ...H_V2, toolsHash: 'b'.repeat(64), prefixHash: 'c'.repeat(64), sopHash: 'd'.repeat(64) }), versionTech(rr)],
+    [
+      [
+        ['prompt', 'aaaaaaaaaaaa'],
+        ['tools', 'bbbbbbbbbbbb'],
+        ['prefix', 'cccccccccccc'],
+        ['sop', 'dddddddddddd'],
+      ],
+      [
+        ['prompt', 'aaaaaaaaaaaa'],
+        ['note', '启动重渲染：locked_sections 变了'],
+      ],
+    ],
+  );
+  const lockedV = withBodies(H_V2.sections, { handoff: '只在客户要求时转人工。\n\n' });
+  eq(
+    '查看改动：标题「v2相对v1改了什么」；固定规则节改了也列（系统更新改的就是它们），按节表的顺序',
+    [
+      versionTitle(2),
+      versionChanges(SPEC, H_V1, H_V2).map((c) => c.name),
+      versionChanges(SPEC, H_V2, { sections: lockedV }).map((c) => c.key),
+    ],
+    ['v2相对v1改了什么', ['异议处理'], ['handoff']],
+  );
+
+  // 回滚的后果
+  const noDraft = rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: null });
+  eq(
+    '没有草稿：会生成v3、v2还在、固定规则节用现在的写法；差异是异议处理 v2 → v1',
+    [
+      rollbackConsequences(noDraft),
+      noDraft.changes.map((c) => [c.key, c.before, c.after]),
+      rollbackSectionTitle(noDraft.changes[0]!, noDraft),
+      rollbackHelp(noDraft.nextNo),
+    ],
+    [
+      [
+        { icon: 'info', text: '会生成v3并立即上线，客户的下一句就按v1的写法回复。' },
+        { icon: 'info', text: 'v2还在，随时能再切回来。' },
+        { icon: 'lock', text: '固定规则节保持现在的写法，不会退回旧版。' },
+      ],
+      [['objections', OBJ_V2, OBJ_V1]],
+      `异议处理${OBJ_V2.length} → ${OBJ_V1.length}字（撤回v2的改动）`,
+      '会作为v3的变更说明，写进版本记录',
+    ],
+  );
+  const both = rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: { base: H_V2, mine: HD_BOTH } });
+  const tone = rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: { base: H_V2, mine: HD_TONE } });
+  const same = rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: { base: H_V2, mine: H_V2.sections } });
+  eq(
+    '有草稿：回滚要改的节（异议处理）和草稿改过的节有交集——先合并；没有交集——自动并入；草稿什么也没改——不写',
+    [rollbackConsequences(both).at(-1), rollbackConsequences(tone).at(-1), both.draft, same.draft],
+    [
+      { icon: 'warning', text: '你的草稿（改了话术原则、异议处理）是在v2上改的。回滚后要先合并，才能发布。' },
+      { icon: 'info', text: '你的草稿会在发布时自动并入。' },
+      { kind: 'merge', names: ['话术原则', '异议处理'], baseNo: 2 },
+      null,
+    ],
+  );
+  // 草稿的基线是 v1（这期间别人发布了 v2，改了异议处理）：草稿也改了异议处理，回滚到 v1 时 v1 → v1 没有上游改动，不用合并
+  const v1Base = withBodies(H_V1.sections, { objections: '嫌贵：我的写法。\n\n' });
+  eq(
+    '草稿的基线不是线上：按基线比（同发布时的三方合并），回到基线那一版没有交集',
+    [
+      rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: { base: H_V1, mine: v1Base } }).draft,
+      rollbackPlan({ spec: SPEC, online: H_V2, target: H_V1, draft: { base: H_V2, mine: v1Base } }).draft?.kind,
+    ],
+    [{ kind: 'auto', names: ['异议处理'], baseNo: 1 }, 'merge'],
+  );
+  // 草稿只改了话术原则；异议处理是别人在 v2 改的（上游），不是草稿改的，不算进「你的草稿（改了…）」
+  eq(
+    '草稿改了哪几节按它的基线比，不按线上：别人在线上改的节不算草稿改的',
+    rollbackPlan({
+      spec: SPEC,
+      online: H_V2,
+      target: H_V1,
+      draft: { base: H_V1, mine: withBodies(H_V1.sections, { tone: '一句就够。\n\n' }) },
+    }).draft,
+    { kind: 'auto', names: ['话术原则'], baseNo: 1 },
+  );
+  const lockedOld = { ...H_V1, sections: withBodies(H_V1.sections, { handoff: '旧的转人工条件。\n\n' }) };
+  const locked = rollbackPlan({ spec: SPEC, online: H_V2, target: lockedOld, draft: null });
+  eq(
+    '目标版本的固定规则节和线上不同：提交之前就写一条 warning；回到更早的版本不写「撤回」',
+    [locked.lockedDiffer, rollbackConsequences(locked).at(-1), rollbackSectionTitle(locked.changes[0]!, { onlineNo: 3, targetNo: 1 })],
+    [
+      true,
+      { icon: 'warning', text: 'v1之后代码里的固定规则改过，回滚后这些节用现在的写法，所以新版本不会和v1完全一样。' },
+      `异议处理${OBJ_V2.length} → ${OBJ_V1.length}字`,
+    ],
+  );
+  eq('差异块的标题', rollbackDiffTitle, '回滚后，线上的可编辑节会变成这样：');
+
+  // 载入到草稿
+  const load = (current: readonly SopSectionText[], edits: Record<string, string> = {}) =>
+    loadPlan({ spec: SPEC, published: H_V2.sections, current, edits, target: H_V1 });
+  eq('没有草稿：v1 与线上不同的节放进编辑器（异议处理），不用确认', load(H_V2.sections), {
+    edits: { objections: OBJ_V1 },
+    changed: 1,
+    overwritten: [],
+  });
+  eq(
+    '草稿改了话术原则与异议处理：两节都换成 v1 的写法，都会盖掉草稿自己改的',
+    [load(HD_BOTH).overwritten, Object.keys(load(HD_BOTH).edits), load(HD_BOTH).edits.tone === bodyOfKey(H_V1.sections, 'tone')],
+    [['话术原则', '异议处理'], ['tone', 'objections'], true],
+  );
+  eq(
+    '编辑器里还没存上的改动也算草稿的；已经是 v1 写法的节不动',
+    [load(H_V2.sections, { preamble: '新前言' }).overwritten, load(H_V1.sections).changed, load(H_V1.sections).edits],
+    [['前言'], 0, {}],
+  );
+  eq('确认框的正文', overwriteText(['话术原则', '异议处理']), '会覆盖草稿里的：话术原则、异议处理。');
+  eq(
+    '丢弃草稿不能点的原因：409 停住、还在保存、还没有草稿',
+    [
+      discardBlock({ draft: true, unsaved: true, saving: false, frozen: true }),
+      discardBlock({ draft: true, unsaved: false, saving: true, frozen: false }),
+      discardBlock({ draft: false, unsaved: true, saving: false, frozen: false }),
+      discardBlock({ draft: false, unsaved: false, saving: false, frozen: false }),
+      discardBlock({ draft: true, unsaved: false, saving: false, frozen: false }),
+    ],
+    ['载入最新草稿以后才能丢弃', '改动还在保存', '改动还在保存', '还没有草稿', null],
+  );
+  eq(
+    '地址上的参数：section 原样，view 只认 history，v 只认正整数（数字或数字串）',
+    [
+      sopSearch({ section: 'tone', view: 'history', v: 2 }),
+      sopSearch({ view: 'other', v: '3' }),
+      sopSearch({ v: 0 }),
+      sopSearch({ v: '2x' }),
+      sopSearch({ v: 1.5 }),
+      sopSearch({ section: 3 }),
+    ],
+    [{ section: 'tone', view: 'history', v: 2 }, { v: 3 }, {}, {}, {}, {}],
+  );
+}
+
+// 12.2 整页：版本记录抽屉
+const historyCalls = (): Call[] => calls.filter((c) => c.method === 'GET' && c.path === '/api/console/sop/versions');
+const searchOf = (m: PageBox): Record<string, unknown> => m.router.state.location.search as Record<string, unknown>;
+const rowText = (no: string, sel: string): string => text(historyRow(no)?.querySelector(sel));
+const rowActions = (no: string): string[] =>
+  all(historyRow(no)?.querySelector('.sop-history-actions') ?? document.createElement('div'), 'button').map(label);
+const historyOwner: Viewer = OWNER;
+async function openHistory(m: PageBox): Promise<void> {
+  await clickEv(headerButton(m, '版本记录'));
+  await waitFor(() => !!historyDrawer()?.querySelector('.sop-history-row, .ant-alert'));
+}
+
+// 12.2a 打开、每一行、关上；地址上 view=history，刷新照样开着；浏览器后退关上
+{
+  const srv = fakeServer(hSop(HD_BOTH));
+  srv.released = [H_V2, H_V1];
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  eq('打开之前不取版本记录', historyCalls().length, 0);
+  const before = historyLength(m);
+  await openHistory(m);
+  const d = historyDrawer()!;
+  eq(
+    '打开：地址上加 view=history（进浏览历史），只取一页（21 个）；抽屉 420 宽，标题后写「线上v2 · 另有1份草稿」',
+    [
+      searchOf(m),
+      historyLength(m) - before,
+      historyCalls().map((c) => c.query),
+      d.querySelector<HTMLElement>('.ant-drawer-content-wrapper')?.style.width,
+      text(d.querySelector('.ant-drawer-title')),
+    ],
+    [{ section: 'tone', view: 'history' }, 1, [{ limit: '21' }], '420px', '版本记录线上v2·另有1份草稿'],
+  );
+  const draftRow = all<HTMLElement>(d, '.sop-history-row')[0]!;
+  eq(
+    '最新的在上：草稿一行「草稿 · 未发布 · 改了2节」与「继续编辑」，再是 v2（线上）、v1',
+    [
+      text(draftRow.querySelector('.status')),
+      text(draftRow.querySelector('.sop-history-meta')),
+      all(draftRow, 'button').map(label),
+      all(d, '.sop-history-no').map((e) => text(e)),
+    ],
+    ['草稿', '未发布·改了2节', ['继续编辑'], ['v2', 'v1']],
+  );
+  eq(
+    'v2：状态「线上」，说明在前、下一行「老板 · 9月25日 18:30 · 改了1节（异议处理）」，只有「查看改动」（线上版本没有回滚、载入）',
+    [rowText('v2', '.status'), rowText('v2', '.sop-history-note'), rowText('v2', 'p.sop-history-meta'), rowActions('v2')],
+    ['线上', '客户嫌贵时先问预算上限，再给两档方案', '老板·9月25日 18:30·改了1节（异议处理）', ['查看改动']],
+  );
+  eq(
+    'v1：「首次导入」「系统导入 · 9月24日 10:02」；最早的版本没有可比的，只有回滚与载入，文字按钮之间用 Sep 隔开',
+    [
+      !!historyRow('v1')?.querySelector('.status'),
+      rowText('v1', '.sop-history-note'),
+      rowText('v1', 'p.sop-history-meta'),
+      rowActions('v1'),
+      all(historyRow('v1')!, '.sop-history-actions .sep').length,
+    ],
+    [false, '首次导入', '系统导入·9月24日 10:02', ['回滚到这版…', '载入到草稿再改'], 1],
+  );
+  const details = historyRow('v2')!.querySelector<HTMLDetailsElement>('details.tech-details');
+  eq(
+    '每行最后是折叠的技术详情：哈希只写前 12 位；页面上别处没有哈希',
+    [details?.open, text(details?.querySelector('pre')), text(d).includes('a'.repeat(13))],
+    [false, 'prompt aaaaaaaaaaaa', false],
+  );
+  await clickEv(d.querySelector('button[aria-label="关闭版本记录"]'));
+  await waitFor(() => !historyDrawer());
+  eq(
+    '关上：地址上去掉 view（不进浏览历史），焦点回到「版本记录」',
+    [searchOf(m), historyLength(m) - before, document.activeElement === headerButton(m, '版本记录')],
+    [{ section: 'tone' }, 1, true],
+  );
+  await openHistory(m);
+  // 焦点先挪到抽屉里（happy-dom 里抽屉不会自己抢焦点，焦点还停在上一次还回来的「版本记录」上，测不出还没还）
+  rowButton('v1', '回滚到这版…')?.focus();
+  await act(async () => m.router.history.back());
+  await waitFor(() => !historyDrawer());
+  eq(
+    '浏览器后退：抽屉关上，焦点回到「版本记录」',
+    [searchOf(m), !!historyDrawer(), document.activeElement === headerButton(m, '版本记录')],
+    [{ section: 'tone' }, false, true],
+  );
+  await m.unmount();
+
+  const again = await mountPage('/console/sop?section=tone&view=history', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => !!historyRow('v1'));
+  eq(
+    '同一个地址刷新：抽屉开着、列着 v2 与 v1',
+    all(historyDrawer()!, '.sop-history-no').map((e) => text(e)),
+    ['v2', 'v1'],
+  );
+  await clickEv(all<HTMLButtonElement>(historyDrawer()!, 'button').find((b) => label(b) === '继续编辑'));
+  await waitFor(() => !historyDrawer() && document.activeElement === cmOf(again));
+  eq('「继续编辑」：抽屉关上，焦点在编辑器正文上', [searchOf(again), document.activeElement === cmOf(again)], [{ section: 'tone' }, true]);
+  await again.unmount();
+}
+
+// 12.2b 翻页（每页 20 个）、到头、取不到
+{
+  // v25 是回滚到 v2 的那一版：v2 在第二页，「回到v2」要另取
+  const many = Array.from({ length: 25 }, (_, i) =>
+    version(25 - i, withBodies(PUBLISHED, { objections: `第${25 - i}版的写法。\n\n` }), {
+      status: i === 0 ? 'published' : 'archived',
+      changeNote: `第${25 - i}次`,
+      ...(i === 0 ? { source: 'rollback' as const, basedOn: 'v2' } : {}),
+    }),
+  );
+  const sop: SopOverview = { published: many[0]!, draft: null, spec: SPEC, budget: { chars: 2303, limit: LIMIT } };
+  const srv = fakeServer(sop);
+  srv.released = many;
+  srv.versionsFail = true;
+  const m = await mountPage('/console/sop?section=tone', historyOwner, sop, FAST);
+  await openHistory(m);
+  const d = historyDrawer()!;
+  eq(
+    '第一次没取到：抽屉体里「没取到」和「重试」，没有列表',
+    [
+      text(d.querySelector('.ant-alert-error .ant-alert-title')),
+      all(d, '.ant-alert-error button').map(label),
+      all(d, '.sop-history-row').length,
+    ],
+    ['没取到', ['重试'], 0],
+  );
+  srv.versionsFail = false;
+  await clickEv(all(d, '.ant-alert-error button').find((b) => label(b) === '重试'));
+  await waitFor(() => all(d, '.sop-history-row').length > 0);
+  await waitFor(() => rowText('v25', 'p.sop-history-meta').includes('回到v2'));
+  eq(
+    '回滚的目标不在已经取到的几页里：按 id 另取，写「回到v2」',
+    [calls.filter((c) => c.path === '/api/console/sop/versions/v2').length, rowText('v25', 'p.sop-history-meta').includes('回到v2')],
+    [1, true],
+  );
+  eq(
+    '重试以后：没有草稿就没有草稿那一行，列 v25 到 v6；v6 的「改了1节」相对多取的 v5 算；底部「更早的版本」',
+    [
+      all(d, '.sop-history-row').length,
+      text(all(d, '.sop-history-no').at(-1)),
+      rowText('v6', 'p.sop-history-meta').endsWith('改了1节（异议处理）'),
+      all(d, '.sop-history-more button').map(label),
+      text(d.querySelector('.ant-drawer-title')),
+    ],
+    [20, 'v6', true, ['更早的版本'], '版本记录线上v25'],
+  );
+  srv.versionsFail = 'more';
+  await clickEv(all(d, '.sop-history-more button').find((b) => label(b) === '更早的版本'));
+  await waitFor(() => !!d.querySelector('.sop-history-more .sop-check-failed'));
+  eq(
+    '翻页没取到：只在底部写「没取到 · 重试」，已列出的留着',
+    [text(d.querySelector('.sop-history-more')), all(d, '.sop-history-row').length, historyCalls().at(-1)?.query],
+    ['没取到·重试', 20, { limit: '21', before: '6' }],
+  );
+  srv.versionsFail = false;
+  await clickEv(all(d, '.sop-history-more button').find((b) => label(b) === '重试'));
+  await waitFor(() => all(d, '.sop-history-row').length === 25);
+  const nos = all(d, '.sop-history-no').map((e) => text(e));
+  eq(
+    '下一页从 v6 往前取（多取的 v5 不重复），列到 v1；到头写「没有更早的版本了」；v1 没有「查看改动」',
+    [new Set(nos).size, nos.at(-1), text(d.querySelector('.sop-history-more')), rowActions('v1')],
+    [25, 'v1', '没有更早的版本了', ['回滚到这版…', '载入到草稿再改']],
+  );
+  await m.unmount();
+}
+
+// 12.2c 查看改动：主区换成「v2相对v1改了什么」，页头下横幅「正在查看v2 · 回到编辑」，地址上 v=2；后退回到版本记录；
+// 同一个地址刷新另取那一对版本；没有这一版、最早的版本；系统更新改了固定规则节也列
+{
+  const srv = fakeServer(hSop(HD_BOTH));
+  srv.released = [H_V2, H_V1];
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  await openHistory(m);
+  await clickEv(rowButton('v2', '查看改动'));
+  await waitFor(() => !historyDrawer() && !!m.box.querySelector('.sop-version-title'));
+  await until(() => document.activeElement === m.box.querySelector('.sop-version-title'));
+  const banner = m.box.querySelector('.sop-banners .ant-alert-info');
+  eq(
+    '查看改动：抽屉关上，地址上 v=2（去掉 view）；横幅「正在查看v2」带「回到编辑」；主区是对比，额度条与编辑器都不在；焦点在标题上',
+    [
+      searchOf(m),
+      text(banner?.querySelector('.ant-alert-title')),
+      all(banner ?? m.box, 'button').map(label),
+      text(m.box.querySelector('.sop-version-title')),
+      !!m.box.querySelector('.sop-quota, .sop-editor'),
+      document.activeElement === m.box.querySelector('.sop-version-title') &&
+        m.box.querySelector('.sop-version-title')?.getAttribute('tabindex') === '-1',
+    ],
+    [{ section: 'tone', v: 2 }, '正在查看v2', ['回到编辑'], 'v2相对v1改了什么', false, true],
+  );
+  eq(
+    '只列变化的节（异议处理），下一行是那一版的说明、作者、时间；两个版本都在版本记录里，不另取',
+    [
+      all(m.box, '.sop-version .sop-diff-name').map((e) => text(e)),
+      text(m.box.querySelector('.sop-version-meta')),
+      historyCalls().length,
+      docsIn(m.box.querySelector('.sop-version')!).join('|').includes('先问一句每人预算上限'),
+    ],
+    [['异议处理'], '客户嫌贵时先问预算上限，再给两档方案·老板·9月25日 18:30·改了1节（异议处理）', 1, true],
+  );
+  await act(async () => m.router.history.back());
+  await waitFor(() => !!historyRow('v1'));
+  eq('后退：回到开着的版本记录', [searchOf(m), !!m.box.querySelector('.sop-editor')], [{ section: 'tone', view: 'history' }, true]);
+  await clickEv(rowButton('v2', '查看改动'));
+  await waitFor(() => !!m.box.querySelector('.sop-version-title'));
+  await clickEv(all(m.box.querySelector('.sop-banners') ?? m.box, 'button').find((b) => label(b) === '回到编辑'));
+  await waitFor(() => document.activeElement === cmOf(m));
+  eq(
+    '回到编辑：地址上去掉 v，编辑器回来、焦点在正文上，改动还在',
+    [searchOf(m), document.activeElement === cmOf(m), editorText(m)],
+    [{ section: 'tone' }, true, bodyIn(HD_BOTH, 'tone')],
+  );
+  await m.unmount();
+
+  const r = await mountPage('/console/sop?section=tone&v=2', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => all(r.box, '.sop-version .sop-diff-name').length > 0);
+  eq(
+    '同一个地址刷新：另取 v2 与它的前一版（before=3、limit=2），对比照样',
+    [historyCalls().at(-1)?.query, all(r.box, '.sop-version .sop-diff-name').map((e) => text(e))],
+    [{ limit: '2', before: '3' }, ['异议处理']],
+  );
+  await r.unmount();
+  const none = await mountPage('/console/sop?section=tone&v=9', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => !!none.box.querySelector('.sop-version .sop-changes-none'));
+  eq('没有这一版', text(none.box.querySelector('.sop-version .sop-changes-none')), '没有v9这个版本');
+  await none.unmount();
+  const first = await mountPage('/console/sop?section=tone&v=1', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => !!first.box.querySelector('.sop-version .sop-changes-none'));
+  eq('最早的版本', text(first.box.querySelector('.sop-version .sop-changes-none')), 'v1是最早的版本，没有可比的');
+  await first.unmount();
+
+  const v3 = version(3, withBodies(H_V2.sections, { handoff: '只在客户要求时转人工。\n\n' }), {
+    source: 'rerender',
+    basedOn: 'v2',
+    changeNote: '启动重渲染：locked_sections 变了',
+    publishedByName: 'system',
+    publishedAt: '2026-09-26T01:00:00Z',
+  });
+  const rsop: SopOverview = { published: v3, draft: null, spec: SPEC, budget: { chars: 2303, limit: LIMIT } };
+  const rsrv = fakeServer(rsop);
+  rsrv.released = [v3, { ...H_V2, status: 'archived' }, H_V1];
+  const rr = await mountPage('/console/sop?section=tone', historyOwner, rsop, FAST);
+  await openHistory(rr);
+  eq(
+    '系统更新那一行：「代码里的固定规则变了」「系统更新 · 9月26日 09:00」，原话在技术详情里',
+    [
+      rowText('v3', '.sop-history-note'),
+      rowText('v3', 'p.sop-history-meta'),
+      rowText('v3', 'pre').includes('启动重渲染：locked_sections 变了'),
+    ],
+    ['代码里的固定规则变了', '系统更新·9月26日 09:00', true],
+  );
+  await clickEv(rowButton('v3', '查看改动'));
+  await waitFor(() => all(rr.box, '.sop-version .sop-diff-name').length > 0);
+  eq(
+    '系统更新改了固定规则节：对比里也列',
+    all(rr.box, '.sop-version .sop-diff-name').map((e) => text(e)),
+    ['转人工条件（满足任一立即调用 handoff_to_human）'],
+  );
+  await rr.unmount();
+}
+
+// 12.2d 回滚确认：后果（有交集要先合并、没有交集自动并入、没有草稿）、差异块、必填的原因、默认焦点、成功与失败
+{
+  const rbModal = (): Element | undefined => modalOf('回滚到v1');
+  const lines = (): string[] => all(rbModal()!, '.sop-rb-list > li').map((e) => text(e));
+  const srv = fakeServer(hSop(HD_BOTH));
+  srv.released = [H_V2, H_V1];
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  await openHistory(m);
+  await clickEv(rowButton('v1', '回滚到这版…'));
+  await waitFor(() => !!rbModal()?.querySelector('input'));
+  // 默认焦点在「再看看」靠弹窗打开的动画放完以后的回调（同 ConfirmDanger），happy-dom 里不触发，在浏览器里走查
+  const modal = rbModal()!;
+  eq(
+    '后果列表：会生成v3、v2还在、固定规则节用现在的写法；草稿改的节和回滚要改的节有交集：先合并（warning）',
+    [lines(), all(modal, '.sop-rb-list > li > svg').map((e) => e.getAttribute('class')?.includes('is-warning') ?? false)],
+    [
+      [
+        '会生成v3并立即上线，客户的下一句就按v1的写法回复。',
+        'v2还在，随时能再切回来。',
+        '固定规则节保持现在的写法，不会退回旧版。',
+        '你的草稿（改了话术原则、异议处理）是在v2上改的。回滚后要先合并，才能发布。',
+      ],
+      [false, false, false, true],
+    ],
+  );
+  eq(
+    '差异块：一节时标题与节名一行；行内差异；「为什么回滚」的占位与说明；「再看看」在「回滚到v1」前面，抽屉还开在下面',
+    [
+      text(modal.querySelector('.sop-rb-diff-title')),
+      all(modal, '.sop-rb-diff .sop-diff-view.is-inline').length,
+      text(modal.querySelector('label')),
+      modal.querySelector('input')?.getAttribute('placeholder'),
+      text(modal.querySelector('.sop-publish-help')),
+      all(modal, '.ant-modal-footer button').map(label),
+      !!historyDrawer(),
+    ],
+    [
+      `回滚后，线上的可编辑节会变成这样：异议处理${OBJ_V2.length} → ${OBJ_V1.length}字（撤回v2的改动）`,
+      1,
+      '为什么回滚',
+      '例：v2的嫌贵话术让客户觉得被追问预算',
+      '会作为v3的变更说明，写进版本记录',
+      ['再看看', '回滚到v1'],
+      true,
+    ],
+  );
+  const submit = (): HTMLButtonElement | undefined =>
+    all<HTMLButtonElement>(modal, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1');
+  await clickEv(submit());
+  await settle();
+  eq(
+    '没写原因：「回滚到v1」aria-disabled，旁边写原因，点了不发、焦点到输入框',
+    [
+      submit()?.getAttribute('aria-disabled'),
+      text(modal.querySelector('.sop-rb-reason')),
+      posted('/versions/v1/rollback').length,
+      document.activeElement === modal.querySelector('input'),
+      modal.querySelector('input')?.getAttribute('aria-invalid'),
+    ],
+    ['true', '写上为什么回滚', 0, true, 'true'],
+  );
+  srv.rollbackFails = true;
+  await setText(modal.querySelector('input')!, 'v2的嫌贵话术让客户觉得被追问预算');
+  await clickEv(submit());
+  await waitFor(() => !!modal.querySelector('.sop-rb .ant-alert-error'));
+  eq(
+    '回滚没成功：错误写在弹窗里，原因还在',
+    [!!modal.querySelector('.sop-rb .ant-alert-error'), modal.querySelector('input')?.value],
+    [true, 'v2的嫌贵话术让客户觉得被追问预算'],
+  );
+  srv.rollbackFails = false;
+  await clickEv(submit());
+  await waitFor(() => !rbModal() && text(m.box.querySelector('.page-status')).startsWith('线上v3'));
+  await waitFor(() => !!historyRow('v3'));
+  eq(
+    '回滚成功：带原因发出（前一次是答 422 的那一个），弹窗关上；线上v3；版本记录重取，v3 是线上、写「回到v1」',
+    [
+      posted('/versions/v1/rollback').map((c) => c.body),
+      rowText('v3', '.status'),
+      rowText('v3', 'p.sop-history-meta').includes('回到v1'),
+      !!historyDrawer(),
+    ],
+    [[{ changeNote: 'v2的嫌贵话术让客户觉得被追问预算' }, { changeNote: 'v2的嫌贵话术让客户觉得被追问预算' }], '线上', true, true],
+  );
+  await m.unmount();
+
+  // 草稿只改了话术原则：没有交集，发布时自动并入；没有草稿：不写草稿那一条；固定规则改过：提交之前就写
+  const tsrv = fakeServer(hSop(HD_TONE));
+  tsrv.released = [H_V2, H_V1];
+  tsrv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const t = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_TONE), FAST);
+  await openHistory(t);
+  await clickEv(rowButton('v1', '回滚到这版…'));
+  await waitFor(() => !!rbModal()?.querySelector('input'));
+  eq('没有交集：「你的草稿会在发布时自动并入。」（info）', lines().at(-1), '你的草稿会在发布时自动并入。');
+  await t.unmount();
+
+  const lockedV1 = { ...H_V1, sections: withBodies(H_V1.sections, { handoff: '旧的转人工条件。\n\n' }) };
+  const nsrv = fakeServer(hSop(null));
+  nsrv.released = [H_V2, lockedV1];
+  const n = await mountPage('/console/sop?section=tone', historyOwner, hSop(null), FAST);
+  await openHistory(n);
+  await clickEv(rowButton('v1', '回滚到这版…'));
+  await waitFor(() => !!rbModal()?.querySelector('input'));
+  eq('没有草稿、v1 之后固定规则改过：没有草稿那一条，提交之前就写固定规则改过（warning）', lines().slice(3), [
+    'v1之后代码里的固定规则改过，回滚后这些节用现在的写法，所以新版本不会和v1完全一样。',
+  ]);
+  await n.unmount();
+}
+
+// 12.2e 草稿的基线不在版本记录里（这期间别人发布过，基线在后面几页）：另取那一版，取的时候是骨架，取不到就地报错、能重试
+{
+  const many = Array.from({ length: 25 }, (_, i) =>
+    version(25 - i, withBodies(PUBLISHED, { objections: `第${25 - i}版的写法。\n\n` }), { status: i === 0 ? 'published' : 'archived' }),
+  );
+  const mine = withBodies(many[22]!.sections, { objections: '我的写法。\n\n' });
+  const sop: SopOverview = {
+    published: many[0]!,
+    draft: { ...version(null, mine, { basedOn: 'v3', rev: 4, publishedAt: null, publishedByName: null }), stale: true },
+    spec: SPEC,
+    budget: { chars: 2303, limit: LIMIT },
+  };
+  const srv = fakeServer(sop);
+  srv.released = many;
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [], rebase: { needed: true, conflicts: [] } });
+  srv.byIdHold = true;
+  srv.byIdFails = true;
+  const m = await mountPage('/console/sop?section=tone', historyOwner, sop, FAST);
+  await openHistory(m);
+  await clickEv(rowButton('v24', '回滚到这版…'));
+  const modal = (): Element | undefined => modalOf('回滚到v24');
+  await waitFor(() => !!modal()?.querySelector('.sop-rb-pending'));
+  eq(
+    '取基线的时候：草稿那一条是骨架，另取 v3',
+    [!!modal()?.querySelector('.sop-rb-pending'), calls.filter((c) => c.path === '/api/console/sop/versions/v3').length],
+    [true, 1],
+  );
+  await act(async () => srv.byIdHeld.shift()?.resolve());
+  await waitFor(() => !!modal()?.querySelector('.ant-alert-error'));
+  eq(
+    '取不到：就地写「没取到草稿的基线版本」和「重试」，回滚照样能做',
+    [text(modal()!.querySelector('.ant-alert-error .ant-alert-title')), all(modal()!, '.ant-alert-error button').map(label)],
+    ['没取到草稿的基线版本', ['重试']],
+  );
+  srv.byIdFails = false;
+  srv.byIdHold = false;
+  await clickEv(all(modal()!, '.ant-alert-error button').find((b) => label(b) === '重试'));
+  await waitFor(() => !modal()?.querySelector('.ant-alert-error') && all(modal()!, '.sop-rb-list > li').length === 4);
+  eq(
+    '取到了：按基线 v3 比，草稿改的异议处理 v3 → v24 也改了，要先合并',
+    text(all(modal()!, '.sop-rb-list > li').at(-1)),
+    '你的草稿（改了异议处理）是在v3上改的。回滚后要先合并，才能发布。',
+  );
+  await m.unmount();
+}
+
+// 12.2f 载入到草稿再改：没有草稿时直接载入、马上存；会盖掉草稿自己改的节时先确认；409 停住时不能载入
+{
+  const NO_DEBOUNCE: AutosaveTiming = { ...FAST, debounce: 1e9 };
+  const srv = fakeServer(hSop(null));
+  srv.released = [H_V2, H_V1];
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone', historyOwner, hSop(null), NO_DEBOUNCE);
+  await openHistory(m);
+  await clickEv(rowButton('v1', '载入到草稿再改'));
+  await waitFor(() => srv.puts().length === 1);
+  await waitFor(() => !historyDrawer() && document.activeElement === cmOf(m));
+  eq(
+    '没有草稿：不用确认，v1 与线上不同的节（异议处理）马上存进新草稿（不等防抖）；抽屉关上，焦点在编辑器',
+    [srv.puts(), !!modalOf('把v1载入到草稿？'), searchOf(m), document.activeElement === cmOf(m)],
+    [[{ basedOn: 'v2', rev: null, edits: [{ key: 'objections', body: OBJ_V1 }] }], false, { section: 'tone' }, true],
+  );
+  await waitFor(() => text(m.box.querySelector('.page-status')).includes('草稿改了1节'));
+  eq('载入以后：状态句「草稿改了1节」', text(m.box.querySelector('.page-status')).includes('草稿改了1节'), true);
+  await m.unmount();
+
+  const bsrv = fakeServer(hSop(HD_BOTH));
+  bsrv.released = [H_V2, H_V1];
+  bsrv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const b = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), NO_DEBOUNCE);
+  await openHistory(b);
+  await clickEv(rowButton('v1', '载入到草稿再改'));
+  await waitFor(() => !!modalOf('把v1载入到草稿？'));
+  const confirm = modalOf('把v1载入到草稿？') ?? document.createElement('div');
+  eq(
+    '会盖掉草稿自己改的节：先确认，点名这几节；「再看看」在前，「覆盖并载入」是危险按钮',
+    [
+      text(confirm.querySelector('.confirm-body')),
+      all(confirm, '.ant-modal-footer button').map(label),
+      !!confirm.querySelector('.danger-solid'),
+      bsrv.puts().length,
+    ],
+    ['会覆盖草稿里的：话术原则、异议处理。', ['再看看', '覆盖并载入'], true, 0],
+  );
+  await clickEv(all(confirm, 'button').find((x) => label(x) === '再看看'));
+  await until(() => !modalOf('把v1载入到草稿？'));
+  eq(
+    '「再看看」：不载入，版本记录还开着，焦点回到「载入到草稿再改」（确认框自己不还焦点）',
+    [bsrv.puts().length, !!historyDrawer(), document.activeElement === rowButton('v1', '载入到草稿再改')],
+    [0, true, true],
+  );
+  await clickEv(rowButton('v1', '载入到草稿再改'));
+  await waitFor(() => !!modalOf('把v1载入到草稿？'));
+  await clickEv(all(modalOf('把v1载入到草稿？') ?? document.createElement('div'), 'button').find((x) => label(x) === '覆盖并载入'));
+  await waitFor(() => bsrv.puts().length === 1);
+  eq(
+    '覆盖并载入：两节都换成 v1 的写法，带草稿的 rev 马上存；编辑器里是 v1 的话术原则',
+    [bsrv.puts()[0], editorText(b)],
+    [
+      {
+        basedOn: 'v2',
+        rev: 4,
+        edits: [
+          { key: 'tone', body: bodyIn(H_V1.sections, 'tone') },
+          { key: 'objections', body: OBJ_V1 },
+        ],
+      },
+      bodyIn(H_V1.sections, 'tone'),
+    ],
+  );
+  await b.unmount();
+
+  const fsrv = fakeServer(hSop(HD_BOTH));
+  fsrv.released = [H_V2, H_V1];
+  fsrv.mode = 'conflict';
+  const f = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  await typeAtEnd(f, '甲');
+  await waitFor(() => editorEditable(f) === 'false');
+  await openHistory(f);
+  eq('409 停住：「载入到草稿再改」不能点', rowButton('v1', '载入到草稿再改')?.disabled, true);
+  await f.unmount();
+}
+
+// 12.2g 只读成员与匿名；「更多」里的丢弃草稿；查看改动时点「发布…」跳到问题先回到编辑
+{
+  const srv = fakeServer(hSop(HD_BOTH));
+  srv.released = [H_V2, H_V1];
+  const agent: Viewer = { ...OWNER, me: { ...(OWNER as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
+  const r = await mountPage('/console/sop?section=tone', agent, hSop(HD_BOTH), FAST);
+  eq(
+    '只读成员：页头只有「版本记录」，没有「更多」',
+    all(r.box, '.page-actions button').map((x) => x.getAttribute('aria-label') ?? label(x)),
+    ['版本记录'],
+  );
+  await openHistory(r);
+  eq(
+    '只读成员的版本记录：能看改动，没有回滚、载入与「继续编辑」',
+    [rowActions('v2'), rowActions('v1'), all<HTMLButtonElement>(historyDrawer()!, 'button').some((x) => label(x) === '继续编辑')],
+    [['查看改动'], [], false],
+  );
+  await r.unmount();
+
+  const anonSop: AnonSopOverview = {
+    published: { versionNo: 2, publishedAt: H_V2.publishedAt!, promptHash: 'a'.repeat(12), sections: H_V2.sections },
+  };
+  calls.length = 0;
+  const a = await mountPage('/console/sop?section=tone&view=history&v=2', { kind: 'anon', pack: packOf(TRAVEL) }, anonSop);
+  await rest(50);
+  eq(
+    '匿名：没有「版本记录」，地址上的 view、v 不管用，不取版本记录',
+    [all(a.box, '.page-actions button').length, !!historyDrawer(), !!a.box.querySelector('.sop-version'), historyCalls().length],
+    [0, false, false, 0],
+  );
+  await a.unmount();
+
+  const none = fakeServer(hSop(null));
+  const n = await mountPage('/console/sop?section=tone', historyOwner, hSop(null), FAST);
+  const item = await discardItem(n);
+  eq(
+    '没有草稿：「丢弃草稿」不能点，右边写「还没有草稿」；菜单项不加 danger',
+    [item?.getAttribute('aria-disabled'), text(item), item?.className.includes('danger')],
+    ['true', '丢弃草稿还没有草稿', false],
+  );
+  await clickEv(item);
+  await settle();
+  eq('点不能点的那一项：不弹确认', !!modalOf('丢弃草稿？'), false);
+  void none;
+  await n.unmount();
+
+  const dsrv = fakeServer(hSop(HD_BOTH));
+  dsrv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const d = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  await clickEv(await discardItem(d));
+  await until(() => !!modalOf('丢弃草稿？'));
+  const confirm = modalOf('丢弃草稿？')!;
+  eq(
+    '「更多」→「丢弃草稿」：确认框写丢掉哪几节、线上不受影响、撤销不了；「保留」在前',
+    [text(confirm.querySelector('.confirm-body')), all(confirm, '.ant-modal-footer button').map(label)],
+    ['草稿里2节改动（话术原则、异议处理）会丢掉，线上v2不受影响。这一步撤销不了。', ['保留', '丢弃草稿']],
+  );
+  await clickEv(all(confirm, 'button').find((x) => label(x) === '保留'));
+  await until(() => document.activeElement === moreButton(d));
+  eq('「保留」：焦点回到「更多」（打开确认框的菜单项已经卸下）', document.activeElement === moreButton(d), true);
+  await until(() => !modalOf('丢弃草稿？'));
+  const item2 = await discardItem(d);
+  const enter = new win.KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }) as unknown as Event;
+  await act(async () => void item2?.dispatchEvent(enter));
+  await until(() => !!modalOf('丢弃草稿？'));
+  eq(
+    '键盘在「丢弃草稿」上按 Enter：拦下默认动作（不然这一下会按到弹窗里拿到焦点的关闭按钮），确认框开着',
+    [enter.defaultPrevented, !!modalOf('丢弃草稿？')],
+    [true, true],
+  );
+  await clickEv(all(modalOf('丢弃草稿？')!, 'button').find((x) => label(x) === '保留'));
+  await d.unmount();
+
+  // 查看改动时，发布条上有问题，点「发布…」跳到第一个问题：先回到编辑，再选中
+  const psrv = fakeServer(hSop(HD_BOTH));
+  psrv.released = [H_V2, H_V1];
+  psrv.check = () => ({
+    ...FIXED_CHECK(),
+    violations: [{ code: 'phrase_forbidden', sectionKey: 'objections', detail: 'x', match: '先认同' }],
+  });
+  const p = await mountPage('/console/sop?section=tone&v=2', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => barBlocked(p) && !!p.box.querySelector('.sop-version-title'));
+  await clickEv(barButton(p, '发布…'));
+  await waitFor(() => !!cmOf(p) && selected(p) === '先认同');
+  eq(
+    '点「发布…」跳到问题：地址上去掉 v、换到异议处理，选中那几个字',
+    [searchOf(p), cmOf(p) ? selected(p) : ''],
+    [{ section: 'objections' }, '先认同'],
+  );
+  await p.unmount();
+}
+
+// 12.2h 评审补的：正在看某一版时打开版本记录，「继续编辑」「载入到草稿再改」一并回到编辑；草稿那一行的技术详情；
+// 只有没存上的改动时也有草稿那一行、回滚确认里「你的草稿」含它们、「丢弃草稿」写「改动还在保存」；回滚确认关上再打开原因是空的、
+// Enter 提交、关上以后焦点回到点的那个按钮（点按钮不给按钮焦点，同 Safari）；正在看某一版、第一个问题就在当前节时点「发布…」；
+// 抽屉头写那时的线上版本；查看回滚出来的那一版写「回到v1」；随地址打开的抽屉关上以后焦点到「版本记录」
+{
+  const NO_DEBOUNCE: AutosaveTiming = { ...FAST, debounce: 1e9 };
+  const srv = fakeServer(hSop(HD_BOTH));
+  srv.released = [H_V2, H_V1];
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone&v=2', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => !!m.box.querySelector('.sop-version-title') && srv.checks() > 0);
+  await openHistory(m);
+  const draftRowOf = (): HTMLElement | undefined => all<HTMLElement>(historyDrawer() ?? document.body, '.sop-history-row')[0];
+  await waitFor(() => !!draftRowOf()?.querySelector('details.tech-details'));
+  eq(
+    '草稿那一行的技术详情：最近一次检查的 prompt、prefix 两个哈希（前 12 位）',
+    text(draftRowOf()?.querySelector('details.tech-details pre')),
+    'prompt bbbbbbbbbbbb prefix cccccccccccc',
+  );
+  await clickEv(all<HTMLButtonElement>(historyDrawer()!, 'button').find((b) => label(b) === '继续编辑'));
+  await waitFor(() => !historyDrawer() && document.activeElement === cmOf(m));
+  eq(
+    '正在看v2时「继续编辑」：抽屉关上，地址上一并去掉 v，编辑器回来、焦点在正文上',
+    [searchOf(m), !!m.box.querySelector('.sop-version'), document.activeElement === cmOf(m)],
+    [{ section: 'tone' }, false, true],
+  );
+  await m.unmount();
+
+  const lsrv = fakeServer(hSop(null));
+  lsrv.released = [H_V2, H_V1];
+  const l = await mountPage('/console/sop?section=objections&v=2', historyOwner, hSop(null), NO_DEBOUNCE);
+  await waitFor(() => !!l.box.querySelector('.sop-version-title'));
+  await openHistory(l);
+  await clickEv(rowButton('v1', '载入到草稿再改'));
+  await waitFor(() => lsrv.puts().length === 1);
+  await waitFor(() => !historyDrawer() && document.activeElement === cmOf(l));
+  eq(
+    '正在看v2时「载入到草稿再改」：马上存，地址上一并去掉 v，编辑器里是 v1 的写法、焦点在正文上',
+    [lsrv.puts().length, searchOf(l), !!l.box.querySelector('.sop-version'), editorText(l), document.activeElement === cmOf(l)],
+    [1, { section: 'objections' }, false, OBJ_V1, true],
+  );
+  await l.unmount();
+
+  // 还没有草稿，异议处理里有没存上的改动（防抖永远不到）
+  const usrv = fakeServer(hSop(null));
+  usrv.released = [H_V2, H_V1];
+  const u = await mountPage('/console/sop?section=objections', historyOwner, hSop(null), NO_DEBOUNCE);
+  await typeAtEnd(u, '甲');
+  const item = await discardItem(u);
+  eq(
+    '没存上的改动还在（不在保存、也还没有草稿）：「丢弃草稿」不能点，写「改动还在保存」',
+    [item?.getAttribute('aria-disabled'), text(item)],
+    ['true', '丢弃草稿改动还在保存'],
+  );
+  await clickEv(moreButton(u));
+  await until(() => moreButton(u)?.getAttribute('aria-expanded') === 'false');
+  await openHistory(u);
+  const urow = draftRowOf()!;
+  eq(
+    '只有没存上的改动：照样有草稿那一行「未发布 · 改了1节」，抽屉头写另有1份草稿；没跑过检查，没有技术详情',
+    [
+      text(urow.querySelector('.status')),
+      text(urow.querySelector('.sop-history-meta')),
+      text(historyDrawer()!.querySelector('.ant-drawer-title')),
+      !!urow.querySelector('details'),
+    ],
+    ['草稿', '未发布·改了1节', '版本记录线上v2·另有1份草稿', false],
+  );
+  const rb = (): Element | undefined => modalOf('回滚到v1');
+  const rbInput = (): HTMLInputElement => rb()!.querySelector('input')!;
+  await clickEv(rowButton('v1', '回滚到这版…'));
+  await waitFor(() => !!rb()?.querySelector('input'));
+  eq(
+    '回滚确认里「你的草稿」含没存上的改动：异议处理和回滚要改的节有交集，要先合并',
+    text(all(rb()!, '.sop-rb-list > li').at(-1)),
+    '你的草稿（改了异议处理）是在v2上改的。回滚后要先合并，才能发布。',
+  );
+  await setText(rbInput(), '写了一半');
+  await clickEv(all(rb()!, '.ant-modal-footer button').find((b) => label(b) === '再看看'));
+  await until(() => document.activeElement === rowButton('v1', '回滚到这版…'));
+  eq(
+    '「再看看」：不回滚，焦点回到「回滚到这版…」（点按钮不给按钮焦点，弹窗自己还不到它）',
+    [posted('/versions/v1/rollback').length, !!historyDrawer(), document.activeElement === rowButton('v1', '回滚到这版…')],
+    [0, true, true],
+  );
+  await clickEv(rowButton('v1', '回滚到这版…'));
+  await waitFor(() => !!rb()?.querySelector('input'));
+  eq('再打开：上一次写了一半的原因不留', rbInput().value, '');
+  await setText(rbInput(), '退回去');
+  await key(rbInput(), 'Enter');
+  await waitFor(() => posted('/versions/v1/rollback').length === 1);
+  eq(
+    '在「为什么回滚」里按 Enter：提交',
+    posted('/versions/v1/rollback').map((c) => c.body),
+    [{ changeNote: '退回去' }],
+  );
+  await u.unmount();
+
+  // 正在看v2、第一个问题就在当前节（异议处理）：点「发布…」先回到编辑，再选中
+  const psrv = fakeServer(hSop(HD_BOTH));
+  psrv.released = [H_V2, H_V1];
+  psrv.check = () => ({
+    ...FIXED_CHECK(),
+    violations: [{ code: 'phrase_forbidden', sectionKey: 'objections', detail: 'x', match: '先认同' }],
+  });
+  const p = await mountPage('/console/sop?section=objections&v=2', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => barBlocked(p) && !!p.box.querySelector('.sop-version-title'));
+  await clickEv(barButton(p, '发布…'));
+  await waitFor(() => !!cmOf(p) && selected(p) === '先认同');
+  eq(
+    '正在看v2、问题就在当前节：点「发布…」地址上去掉 v，选中那几个字',
+    [searchOf(p), cmOf(p) ? selected(p) : ''],
+    [{ section: 'objections' }, '先认同'],
+  );
+  await p.unmount();
+
+  // 页面打开以后别人发布了 v3：抽屉头写那时的线上版本，和列表里的「线上」是同一版
+  const osrv = fakeServer(hSop(HD_BOTH));
+  osrv.released = [H_V2, H_V1];
+  osrv.publishByOther(withBodies(H_V2.sections, { preamble: '别人改的前言。\n\n' }), { publishedByName: '小王' });
+  osrv.check = (s) => ({ ...FIXED_CHECK(), violations: [], rebase: { needed: s.draft!.basedOn !== s.published.id, conflicts: [] } });
+  const o = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => text(o.box.querySelector('.sop-notices')).includes('发布时自动合并'));
+  await openHistory(o);
+  eq(
+    '别人在这期间发布过：抽屉头「线上v3」，列表里 v3 是线上',
+    [
+      text(historyDrawer()!.querySelector('.ant-drawer-title')),
+      rowText('v3', '.status'),
+      text(o.box.querySelector('.page-status')).startsWith('线上v2'),
+    ],
+    ['版本记录线上v3·另有1份草稿', '线上', true],
+  );
+  await o.unmount();
+
+  // 查看回滚出来的那一版（v3 回到 v1）：同版本记录写「回到v1」，目标不在手上时按 id 另取
+  const v3 = version(3, H_V1.sections, { source: 'rollback', basedOn: 'v1', changeNote: '退回去', publishedAt: '2026-09-26T06:31:00Z' });
+  const rsop: SopOverview = { published: v3, draft: null, spec: SPEC, budget: { chars: editableChars(v3.sections, SPEC), limit: LIMIT } };
+  const rsrv = fakeServer(rsop);
+  rsrv.released = [v3, { ...H_V2, status: 'archived' }, H_V1];
+  const r = await mountPage('/console/sop?section=tone&v=3', historyOwner, rsop, FAST);
+  await waitFor(() => text(r.box.querySelector('.sop-version-meta')).includes('回到v1'));
+  eq(
+    '查看回滚出来的那一版：下一行写「回到v1」，目标按 id 另取',
+    [text(r.box.querySelector('.sop-version-meta')), calls.filter((c) => c.path === '/api/console/sop/versions/v1').length],
+    ['退回去·老板·9月26日 14:31·回到v1·改了1节（异议处理）', 1],
+  );
+  await r.unmount();
+
+  // 随地址打开的抽屉：没有点过的按钮，关上以后焦点到页头的「版本记录」
+  const hsrv = fakeServer(hSop(HD_BOTH));
+  hsrv.released = [H_V2, H_V1];
+  const h = await mountPage('/console/sop?section=tone&view=history', historyOwner, hSop(HD_BOTH), FAST);
+  await waitFor(() => !!historyRow('v1'));
+  rowButton('v1', '载入到草稿再改')?.focus();
+  await clickEv(historyDrawer()!.querySelector('button[aria-label="关闭版本记录"]'));
+  await waitFor(() => !historyDrawer());
+  await until(() => document.activeElement === headerButton(h, '版本记录'));
+  eq(
+    '随地址打开的抽屉（刷新、链接带 view=history）：关上以后焦点到「版本记录」',
+    [searchOf(h), document.activeElement === headerButton(h, '版本记录')],
+    [{ section: 'tone' }, true],
+  );
+  await act(async () => void h.router.navigate({ to: '/sop', search: { section: 'tone', view: 'history' } } as never));
+  await waitFor(() => !!historyRow('v1'));
+  rowButton('v1', '载入到草稿再改')?.focus();
+  await act(async () => h.router.history.back());
+  await waitFor(() => !historyDrawer());
+  await until(() => document.activeElement === headerButton(h, '版本记录'));
+  eq(
+    '地址换成 view=history 打开、浏览器后退关上：焦点同样到「版本记录」',
+    [searchOf(h), document.activeElement === headerButton(h, '版本记录')],
+    [{ section: 'tone' }, true],
+  );
+  await h.unmount();
+
+  // 发布条的「回滚到v2」→「再看看」：焦点回到「回滚到v2」（发布以后焦点在「发布…」上，点按钮不挪焦点）
+  const bsrv = fakeServer(CLEAN_SOP);
+  bsrv.check = (s) => scan(s);
+  const b = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(b) === '7/7通过');
+  await publishVia(b, '先问预算');
+  await waitFor(() => barText(b).summary.startsWith('已发布'));
+  await clickEv(barButton(b, '回滚到v2'));
+  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('input'));
+  await clickEv(all(modalOf('回滚到v2')!, '.ant-modal-footer button').find((x) => label(x) === '再看看'));
+  await until(() => document.activeElement === barButton(b, '回滚到v2'));
+  eq('发布条的「回滚到v2」→「再看看」：焦点回到「回滚到v2」', document.activeElement === barButton(b, '回滚到v2'), true);
+  await b.unmount();
 }
 
 respond = null;

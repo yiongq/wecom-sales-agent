@@ -8,6 +8,7 @@ import { cjk } from '../typography.js';
 
 /** 点遮罩不关（antd 6 的写法，maskClosable 已废弃）；模块级常量，属性不随渲染变 */
 const MASK = { closable: false } as const;
+const NO_RETURN = { focusTriggerAfterClose: false } as const;
 
 export interface ConfirmDangerProps {
   open: boolean;
@@ -22,9 +23,23 @@ export interface ConfirmDangerProps {
   /** 返回 Promise 时，按钮在它结束前显示提交中 */
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
+  /**
+   * 关上以后把焦点还给打开它的元素（默认）。确认以后页面自己把焦点放到别处、打开它的元素也跟着卸下时传 false
+   * （话术页的「载入到草稿再改」：点的是版本记录抽屉里的按钮，确认以后抽屉关上、焦点去编辑器）
+   */
+  focusTriggerAfterClose?: boolean;
 }
 
-export function ConfirmDanger({ open, title, children, confirmText, cancelText, onConfirm, onCancel }: ConfirmDangerProps) {
+export function ConfirmDanger({
+  open,
+  title,
+  children,
+  confirmText,
+  cancelText,
+  onConfirm,
+  onCancel,
+  focusTriggerAfterClose = true,
+}: ConfirmDangerProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const confirm = async (): Promise<void> => {
@@ -44,6 +59,7 @@ export function ConfirmDanger({ open, title, children, confirmText, cancelText, 
       width={480}
       title={cjk(title)}
       mask={MASK}
+      focusable={focusTriggerAfterClose ? undefined : NO_RETURN}
       onCancel={onCancel}
       // 弹窗打开时先把焦点放进内容区，这里再挪到取消按钮上：autoFocus 在弹窗还是 display:none 时就跑了，不生效
       afterOpenChange={(visible) => {

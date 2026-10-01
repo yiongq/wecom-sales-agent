@@ -8,6 +8,7 @@ import { catalogSearch, itemSearch } from './catalog/params.js';
 import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
+import { sopSearch } from './sop/search.js';
 
 /**
  * 页面的块还在下载：内容面板里马上换成整页骨架，照 StateView 的规矩 300ms 后才看得见（spec「通用部件 · StateView」）。
@@ -40,8 +41,7 @@ const root = createRootRoute({ component: SPECIMEN ? RootWithSpecimen : Shell, n
 
 // 总览（spec「总览」）：取代原来跳到 /sop 的重定向。scripts/check-console-dist.ts 按这个懒加载文件名把它算进首屏预算
 const index = createRoute({ getParentRoute: () => root, path: '/' }).lazy(() => import('./pages/overview.lazy.js').then((m) => m.Route));
-// 话术页选中的节（spec 的路由表）：不认识的 key 由页面退回默认节
-const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
+// 话术页选中的节、版本记录、查看改动（sop/search.ts）：不认识的 key 由页面退回默认节
 const sop = createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch }).lazy(() =>
   import('./pages/sop.lazy.js').then((m) => m.Route),
 );

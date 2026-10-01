@@ -49,7 +49,8 @@ export interface PublishBarProps {
   /** 有问题时点「发布…」：跳到第一个问题 */
   onJump: () => void;
   onChanges: (trigger: HTMLElement) => void;
-  onRollback: () => void;
+  /** 「回滚到v2」：点的那个按钮（回滚确认关上以后焦点还给它） */
+  onRollback: (trigger: HTMLElement) => void;
 }
 
 export function PublishBar(p: PublishBarProps) {
@@ -70,7 +71,7 @@ export function PublishBar(p: PublishBarProps) {
         {p.result.previous && (
           <span className="sop-bar-hint-action">
             <Sep />
-            <button type="button" className="sop-text-btn" onClick={p.onRollback}>
+            <button type="button" className="sop-text-btn" onClick={(e) => p.onRollback(e.currentTarget)}>
               回滚到v{p.result.previous.versionNo}
             </button>
           </span>
@@ -130,25 +131,30 @@ export function PublishBar(p: PublishBarProps) {
 // ---------------- 抽屉 ----------------
 
 /**
- * 话术页的抽屉（§5.13 L 640）：头 56，标题 16/24/600 后面可以跟一句 13 text-2 的状态，右边 28 的关闭按钮；头下没有分隔线，
- * 内容滚动以后才出现；体自己滚动。焦点由页面还给打开它的按钮（focusTriggerAfterClose 关掉，antd 还的是打开时的 activeElement，
- * Safari 点按钮不给按钮焦点）。busy 时关不掉：关闭按钮不能点，Esc、点遮罩不调 onClose
+ * 话术页的抽屉（§5.13：L 640 发布、查看改动，S 420 版本记录）：头 56，标题 16/24/600 后面可以跟一句 13 text-2 的状态，
+ * 右边 28 的关闭按钮；头下没有分隔线，内容滚动以后才出现；体自己滚动。焦点由页面还给打开它的按钮（focusTriggerAfterClose 关掉，
+ * antd 还的是打开时的 activeElement，Safari 点按钮不给按钮焦点）。busy 时关不掉：关闭按钮不能点，Esc、点遮罩不调 onClose
  */
-function SopDrawer({
+export function SopDrawer({
   open,
   title,
   status,
   footer,
   busy = false,
+  size = 640,
+  closeLabel = '关闭',
   onClose,
   afterClose,
   children,
 }: {
   open: boolean;
   title: string;
-  status?: string;
+  /** 标题后面的状态，数组时各段用 Sep 隔开 */
+  status?: string | readonly string[];
   footer?: ReactNode;
   busy?: boolean;
+  size?: 420 | 640;
+  closeLabel?: string;
   onClose: () => void;
   afterClose?: () => void;
   children: ReactNode;
@@ -165,7 +171,7 @@ function SopDrawer({
       }}
       destroyOnHidden
       focusable={{ focusTriggerAfterClose: false }}
-      size={640}
+      size={size}
       closable={false}
       title={
         <>
@@ -173,7 +179,7 @@ function SopDrawer({
           {status && <span className="sop-drawer-status">{cjk(status)}</span>}
         </>
       }
-      extra={<IconButton icon={X} label="关闭" placement="bottomRight" disabled={busy} onClick={onClose} />}
+      extra={<IconButton icon={X} label={closeLabel} tip="关闭" placement="bottomRight" disabled={busy} onClick={onClose} />}
       rootClassName="sop-drawer"
       classNames={{ header: scrolled ? 'is-scrolled' : undefined }}
       footer={footer}
