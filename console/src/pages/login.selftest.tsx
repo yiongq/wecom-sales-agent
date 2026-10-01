@@ -13,6 +13,8 @@
 //    链接，标签页标题「登录 · 演示」；左键点它回到匿名外壳，地址不变，不重新取 /me、/pack，焦点到内容面板；带修饰键或中键点不拦。
 // 7. 就地登录框（成员身份下会话失效）：同一个表单，不自动聚焦，没有「返回演示」；没填时先画上原因再挪焦点，服务端的错在框里的
 //    Alert 里；登录后框收起，页面没卸载，被拦下的请求重放。
+// 8. 外壳的焦点与地标（plan 第 16 步）：换页以后焦点在 main（只换 search、页面自己放了焦点、第一次打开都不动）；侧栏是 banner，
+//    铃铛弹层与用户菜单是有名字的区域，菜单项里没有嵌套的按钮；没有这个页面时有 h1。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/pages/login.selftest.tsx
 import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
@@ -21,7 +23,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import { App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactElement, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Me } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
@@ -162,17 +164,24 @@ function setValue(el: HTMLInputElement, text: string): void {
   el.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
 }
 
-/** 挂上真的 Shell：/catalog/$kind 是一页只有页头的空页（匿名时页头下挂横幅，「登录后编辑」在横幅里） */
-async function mount(path: string) {
+/**
+ * 挂上真的 Shell：/catalog/$kind 是一页只有页头的空页（匿名时页头下挂横幅，「登录后编辑」在横幅里）。
+ * pages 另加几页（第 8 节：换页以后焦点在哪）；/catalog/$kind 也可以换成别的画法
+ */
+async function mount(path: string, pages: { path: string; component: () => ReactElement }[] = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
   const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
+  const own = pages.find((p) => p.path === '/catalog/$kind');
   const page = createRoute({
     getParentRoute: () => root,
     path: '/catalog/$kind',
-    component: () => createElement(PageHeader, { title: '测试页' }),
+    component: own?.component ?? (() => createElement(PageHeader, { title: '测试页' })),
   });
+  const extra = pages
+    .filter((p) => p.path !== '/catalog/$kind')
+    .map((p) => createRoute({ getParentRoute: () => root, path: p.path, component: p.component }));
   const router = createRouter({
-    routeTree: root.addChildren([page]),
+    routeTree: root.addChildren([page, ...extra]),
     basepath: '/console',
     history: createMemoryHistory({ initialEntries: [path] }),
   });
@@ -607,6 +616,95 @@ async function mount(path: string) {
     document.querySelector('.sidebar') !== null && m.$('.login-page') === null && m.url() === '/catalog/route?status=draft',
   );
   await m.unmount();
+}
+
+// ---------------- 8. 外壳的焦点与地标（plan 第 16 步） ----------------
+// 换页（路径变了）以后焦点在 main；只换 search 不动；页面挂载时自己把焦点放进 main 里的某处就不动；第一次打开页面也不动。
+// 侧栏是 banner 地标，租户名在里面；铃铛的弹层、用户菜单是有名字的区域；菜单项里没有嵌套的按钮；没有这个页面时有 h1
+
+{
+  server = { demo: false, loggedIn: true, login: 'check' };
+  requests = [];
+  /** 这一页里有一个按钮（只换 search 时焦点留在它上面） */
+  const ListPage = (): ReactElement =>
+    createElement(
+      'div',
+      null,
+      createElement(PageHeader, { title: '列表页' }),
+      createElement('button', { type: 'button', className: 'probe-btn' }, '按钮'),
+    );
+  /** 挂载时自己把焦点放到输入框上（就地登录、跳到出错字段那一类） */
+  function OwnFocusPage(): ReactElement {
+    useEffect(() => document.querySelector<HTMLInputElement>('.own-input')?.focus(), []);
+    return createElement(
+      'div',
+      null,
+      createElement(PageHeader, { title: '自己放焦点的页' }),
+      createElement('input', { className: 'own-input', 'aria-label': '输入框' }),
+    );
+  }
+  const m = await mount('/console/catalog/route', [
+    { path: '/catalog/$kind', component: ListPage },
+    { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
+    { path: '/sop', component: OwnFocusPage },
+  ]);
+  const main = (): Element | null => m.$('main#main');
+  check('焦点：第一次打开页面不挪焦点（不在 main 上）', main() !== null && document.activeElement !== main());
+
+  // 地标
+  const banner = document.querySelector('.sidebar');
+  eq(
+    '地标：侧栏是 header（banner），租户名与主导航都在里面',
+    [banner?.tagName, banner?.querySelector('.tenant-name') !== null, banner?.querySelector('nav[aria-label="主导航"]') !== null],
+    ['HEADER', true, true],
+  );
+
+  // 侧栏点「会话」：换页以后焦点在 main
+  const navTo = (label: string): HTMLElement | undefined =>
+    m.$$('.sidebar a.nav-item').find((a) => m.text(a.querySelector('.nav-label')) === label);
+  const conv = navTo('会话');
+  conv?.focus();
+  await m.click(conv);
+  eq('焦点：侧栏换页以后在 main 上', [m.url(), m.text(m.$('h1')), document.activeElement === main()], ['/conversations', '会话页', true]);
+
+  // 后退：路径变了，同样在 main
+  m.$<HTMLButtonElement>('.sidebar a.nav-item')?.focus();
+  await act(async () => m.router.history.back());
+  await settle(m.qc);
+  eq('焦点：后退以后在 main 上', [m.url(), document.activeElement === main()], ['/catalog/route', true]);
+
+  // 只换 search：焦点留在原处
+  const btn = m.$<HTMLButtonElement>('.probe-btn');
+  btn?.focus();
+  await act(async () => void m.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' }, search: { status: 'draft' } as never }));
+  await settle(m.qc);
+  eq('焦点：只换 search 不挪焦点', [m.url(), btn !== null && document.activeElement === btn], ['/catalog/route?status=draft', true]);
+
+  // 页面自己放了焦点：不抢
+  await act(async () => void m.router.navigate({ to: '/sop' }));
+  await settle(m.qc);
+  eq('焦点：页面挂载时自己放进 main 的焦点不被抢走', [m.url(), document.activeElement === m.$('.own-input')], ['/sop', true]);
+
+  // 铃铛的弹层与用户菜单：有名字的区域；菜单项里没有嵌套的按钮
+  await m.click(m.$('.sidebar .bell'));
+  const pop = document.querySelector('.bell-pop');
+  eq('地标：铃铛的弹层是有名字的区域', [pop?.tagName, pop?.getAttribute('aria-label')], ['SECTION', '等人接手的会话']);
+  await m.click(m.$('.sidebar .bell'));
+  await m.click(m.$('.user-btn'));
+  const menu = document.querySelector('.user-menu');
+  eq('地标：用户菜单是有名字的区域', [menu?.tagName, menu?.getAttribute('aria-label')], ['SECTION', '用户菜单']);
+  const reduce = document.querySelector('[role="menuitemcheckbox"]');
+  eq(
+    '用户菜单：「减少动态效果」这一项里没有嵌套的按钮或开关（开关的样子只是装饰，状态由 aria-checked 说）',
+    [reduce !== null, reduce?.querySelector('button, [role="switch"], [tabindex]') ?? null],
+    [true, null],
+  );
+  await m.unmount();
+
+  // 没有这个页面：自己就是这一页的标题
+  const nf = await mount('/console/nope');
+  eq('没有这个页面：标题是 h1', nf.$$('h1').map(nf.text), ['没有这个页面']);
+  await nf.unmount();
 }
 
 if (fails.length) {

@@ -260,6 +260,18 @@ select {
 .ant-checkbox-wrapper .ant-checkbox:has(.ant-checkbox-input:focus-visible) {
   outline-offset: 2px;
 }
+/*
+ * 分段控件里键盘停着的那一段：rc-segmented 1.4.0 只给「选中的那一段」挂焦点样式，必填还没选（一段都不选）时 Tab 进来，
+ * 焦点在某一段的 radio 上却什么也不画。按 radio 的 :focus-visible 画在那一段上，样式同上
+ */
+.ant-segmented .ant-segmented-item:has(.ant-segmented-item-input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* 页签的面板（antd 给有内容的面板 tabIndex 0）是一整块容器：焦点框往里收 2，不画到面板外面去（§3「容器」） */
+.ant-tabs .ant-tabs-content:focus-visible {
+  outline-offset: -2px;
+}
 .ant-segmented .ant-segmented-item-selected {
   font-weight: 500;
 }

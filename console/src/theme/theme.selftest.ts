@@ -670,6 +670,14 @@ function jsxTags(src: string, name: string): string[] {
     check(rule(sel, /outline-offset:\s*2px/), `brand.css 没给 ${sel} 写 outline-offset: 2px（antd 写死 1，§3 要 2）`);
   }
   check(
+    rule('.ant-segmented .ant-segmented-item:has(.ant-segmented-item-input:focus-visible)', /outline:\s*2px solid var\(--focus\)/),
+    'brand.css 没给分段控件里键盘停着的那一段画焦点框（一段都没选时 rc-segmented 不画）',
+  );
+  check(
+    rule('.ant-tabs .ant-tabs-content:focus-visible', /outline-offset:\s*-2px/),
+    'brand.css 没给页签的面板写 outline-offset: -2px（§3 容器）',
+  );
+  check(
     rule('.ant-segmented .ant-segmented-item-selected', /font-weight:\s*500/),
     'brand.css 没给分段控件的选中段写 font-weight: 500（§5.4）',
   );
