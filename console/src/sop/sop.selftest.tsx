@@ -7003,8 +7003,21 @@ async function revertAll(m: PageBox): Promise<void> {
     [text(d0.querySelector('.sop-publish-conflict .ant-alert-title')), all(d0, '.sop-publish-conflict button').map((b) => label(b))],
     ['有1节在你改的同时被改了：话术原则', ['去合并']],
   );
+  srv.checkHold = true;
+  const checks0 = srv.checks();
   await clickEv(all(d0, '.sop-publish-conflict button').find((b) => label(b) === '去合并'));
+  await waitFor(() => srv.checks() === checks0 + 1);
+  const waiting = [
+    !!drawerOf('发布草稿'),
+    merging(m),
+    all(d0, '.sop-publish-conflict button')
+      .find((b) => label(b) === '去合并')
+      ?.classList.contains('ant-btn-loading'),
+  ];
+  srv.checkHold = false;
+  await act(async () => srv.checkHeld.at(-1)?.resolve());
   await waitFor(() => merging(m) && !drawerOf('发布草稿'));
+  eq('点「去合并」：重查回来之前抽屉开着、按钮转圈，回来以后进合并模式、抽屉关上', [waiting, merging(m)], [[true, false, true], true]);
   noteEnglish();
   await clickEv(actionButton(m, '完成合并'));
   await rest(50);
@@ -7225,6 +7238,31 @@ async function revertAll(m: PageBox): Promise<void> {
     '重查说不用合并了：不进合并模式，提醒换成发布时自动合并',
     [merging(m), text(m.box.querySelector('.sop-notices .ant-alert'))],
     [false, '草稿打开之后发布过新版本，发布时自动合并'],
+  );
+  await m.unmount();
+}
+
+// 13.3f2 去合并时先存的那一次改变了要不要合并（存的时候店长那一版又被撤回了）：等存上以后的检查回来再定，不拿存之前的结果进合并；
+// 在等的时候提醒里的「去合并」转圈
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=objections' });
+  srv.mode = 'hold';
+  await typeAtEnd(m, '还在存的一句。');
+  await waitFor(() => srv.held.length === 1);
+  const checks = srv.checks();
+  await clickEv(noticeMerge(m));
+  await waitFor(() => srv.checks() === checks + 1);
+  await rest(60);
+  const spinning = noticeMerge(m)?.classList.contains('ant-btn-loading');
+  srv.publishByOther(withBodies(P_ONLINE, { preamble: '店长改的前言。\n\n' }), { publishedByName: '店长' });
+  srv.mode = 'ok';
+  await act(async () => srv.held.shift()?.resolve());
+  await waitFor(() => !noticeMerge(m) && srv.checks() === checks + 2);
+  await rest(100);
+  eq(
+    '存的那一次以后不用合并了：存上以后再查一次，不进合并模式，提醒换成自动合并；在等的时候「去合并」转圈',
+    [spinning, merging(m), text(m.box.querySelector('.sop-notices .ant-alert'))],
+    [true, false, '草稿打开之后发布过新版本，发布时自动合并'],
   );
   await m.unmount();
 }
