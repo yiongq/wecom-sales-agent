@@ -926,6 +926,17 @@ a.nav-item:hover {
   max-width: 640px;
   margin: 120px auto;
   padding: 0 16px;
+  outline: none;
+}
+/* 启动出错时这一页的 h1「后台」：看不见，只给读屏和标题导航 */
+.boot-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .boot-sidebar .skeleton-bar {
   display: block;

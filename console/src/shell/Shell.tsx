@@ -11,7 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate, useRouter, useRouterState } from '@tanstack/react-router';
 import { Drawer } from 'antd';
 import { Info, LogIn, LogOut, Menu, Moon, Sun, SunMoon } from 'lucide-react';
-import { type MouseEvent, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
 import { LoginPage } from '../pages/LoginPage.js';
@@ -40,10 +40,18 @@ import { shellViewerOf } from './PageHeader.js';
 import { isPaletteShortcut, paletteShortcut, type StaticRow } from './search.js';
 import { Sidebar, TenantRow } from './Sidebar.js';
 
-/** 整页的说明或出错（启动失败、文件模式）：没有外壳，居中一块 */
-function Whole({ children }: { children: ReactElement }) {
+/**
+ * 整页的说明或出错（启动失败、文件模式）：没有外壳，居中一块。这一块就是 main 地标（没有它，axe 报 region 与
+ * landmark-one-main）；它自己没有标题时（启动出错：Alert 或中性的说明）放一个看不见的 h1「后台」，说明的标题接着排 h2
+ */
+function Whole({ heading, children }: { heading?: string; children: ReactNode }) {
   useDocumentTitle('后台');
-  return <div className="boot-whole">{children}</div>;
+  return (
+    <main id="main" tabIndex={-1} className="boot-whole">
+      {heading && <h1 className="boot-sr">{heading}</h1>}
+      {children}
+    </main>
+  );
 }
 
 /** 启动时两个请求都没回来：侧栏骨架（租户行、搜索、6 行导航）加面板骨架，延迟 300ms 出现 */
@@ -78,8 +86,8 @@ export function Shell() {
   if (v === undefined) {
     if (viewer.isPending) return <BootSkeleton />;
     return (
-      <Whole>
-        <StateView error={viewer.error} onRetry={() => void viewer.refetch()} />
+      <Whole heading="后台">
+        <StateView error={viewer.error} level={2} onRetry={() => void viewer.refetch()} />
       </Whole>
     );
   }
@@ -114,9 +122,10 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const pageKey = selected ?? path;
   const [override, setOverride] = useState<{ page: string; collapsed: boolean } | null>(null);
   const collapsed = override?.page === pageKey ? override.collapsed : collapsedByDefault(path);
-  // <992 的导航抽屉：在哪个地址打开的；换了地址（点了导航）就算关上
+  // <992 的导航抽屉：在哪个地址打开的；换了地址（点了导航）就算关上，Esc、点遮罩关上时是 null
   const [drawerAt, setDrawerAt] = useState<string | null>(null);
   const drawerOpen = drawerAt === path;
+  const menuRef = useRef<HTMLButtonElement>(null);
   // 面板自己滚动（路由的滚动还原只管 window）：换了地址回到顶上
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrolledFor = useRef(path);
@@ -230,7 +239,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       </a>
       {mode === 'hidden' ? (
         <header className="topbar">
-          <IconButton icon={Menu} size={32} label="打开导航" placement="bottom" onClick={() => setDrawerAt(path)} />
+          <IconButton ref={menuRef} icon={Menu} size={32} label="打开导航" placement="bottom" onClick={() => setDrawerAt(path)} />
           <TenantRow viewer={sv} pack={pack} collapsed={false} bellPlacement="bottomRight" />
         </header>
       ) : (
@@ -255,8 +264,13 @@ function Frame({ viewer: v }: { viewer: Framed }) {
           size={240}
           closable={false}
           onClose={() => setDrawerAt(null)}
-          // 点了导航关上的（地址换了）不把焦点还给菜单按钮：换页以后焦点在 main（上面的 onRendered）；Esc、点遮罩关上的照常还回去
-          focusable={{ focusTriggerAfterClose: drawerAt === null }}
+          // 关上以后焦点去哪由这里定，不用 antd 的还焦点：点了导航关上的（地址换了）不管，换页以后焦点在 main（上面的
+          // onRendered）；Esc、点遮罩关上的（drawerAt 是 null）还给「打开导航」。antd 的还法靠抽屉打开那一刻记下的焦点，
+          // 记的时机取决于 rc-util 的 layout effect，不归这里管
+          focusable={{ focusTriggerAfterClose: false }}
+          afterOpenChange={(open) => {
+            if (!open && drawerAt === null) menuRef.current?.focus();
+          }}
           aria-label="导航"
           rootClassName="nav-drawer"
         >

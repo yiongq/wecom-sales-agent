@@ -15,6 +15,8 @@
 //    Alert 里；登录后框收起，页面没卸载，被拦下的请求重放。
 // 8. 外壳的焦点与地标（plan 第 16 步）：换页以后焦点在 main（只换 search、页面自己放了焦点、第一次打开都不动）；侧栏是 banner，
 //    铃铛弹层与用户菜单是有名字的区域，菜单项里没有嵌套的按钮；没有这个页面时有 h1。
+// 9. ⌘K 打开页面（别的页、当前页）以后焦点在 main，选外观这类操作还给搜索触发器；窄屏的导航抽屉点导航换页以后焦点在 main，
+//    Esc 关上还给「打开导航」，开着时只有顶栏一个 banner；启动出错、数据库没开的整页是 main 地标，有 h1，标题不跳级。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/pages/login.selftest.tsx
 import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
@@ -30,6 +32,7 @@ import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { ToastHost } from '../parts/toast.js';
 import { endMemberSession, isSessionExpired } from '../session.js';
 import { PageHeader } from '../shell/PageHeader.js';
+import { setReduceMotion } from '../theme/prefs.js';
 import { ThemeProvider } from '../theme/ThemeProvider.js';
 import { toLogin, type Viewer, VIEWER_KEY } from '../viewer.js';
 
@@ -95,6 +98,8 @@ interface Server {
   demo: boolean;
   loggedIn: boolean;
   login: LoginMode;
+  /** 给了就让 /me 回这个（启动出错的整页） */
+  me?: { status: number; body: unknown };
 }
 let server: Server = { demo: false, loggedIn: false, login: 'check' };
 let requests: string[] = [];
@@ -115,7 +120,8 @@ function checkLogin(body: { email?: string; password?: string }): Response {
 
 async function respond(method: string, url: URL, body: unknown): Promise<Response> {
   const p = url.pathname.replace(/^\/api\/console/, '');
-  if (method === 'GET' && p === '/me') return server.loggedIn ? json(200, ME) : unauthorized();
+  if (method === 'GET' && p === '/me')
+    return server.me ? json(server.me.status, server.me.body) : server.loggedIn ? json(200, ME) : unauthorized();
   if (method === 'GET' && p === '/pack') return server.loggedIn || server.demo ? json(200, PACK) : unauthorized();
   if (method === 'POST' && p === '/auth/login') {
     const mode = server.login;
@@ -711,6 +717,103 @@ async function mount(path: string, pages: { path: string; component: () => React
   const nf = await mount('/console/nope');
   eq('没有这个页面：标题是 h1', nf.$$('h1').map(nf.text), ['没有这个页面']);
   await nf.unmount();
+}
+
+// ---------------- 9. ⌘K、窄屏抽屉的焦点；整页出错的地标（第 16 步评审后） ----------------
+
+/** 不在 article、aside、main、nav、section 里的 header 才是 banner 地标 */
+const banners = (): Element[] =>
+  [...document.querySelectorAll('header')].filter((h) => !h.parentElement?.closest('article, aside, main, nav, section'));
+{
+  server = { demo: false, loggedIn: true, login: 'check' };
+  const m = await mount('/console/catalog/route', [
+    { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
+  ]);
+  const main = (): Element | null => m.$('main#main');
+  const trigger = (): HTMLButtonElement | null => m.$<HTMLButtonElement>('.sb-search');
+  const palette = async (): Promise<void> => {
+    trigger()?.focus();
+    await m.click(trigger());
+  };
+  const row = (label: string): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('.cmdk-row')].find((r) => m.text(r.querySelector('.cmdk-label')) === label);
+  await palette();
+  const listed = row('会话') !== undefined;
+  await m.click(row('会话'));
+  eq(
+    '⌘K 打开别的页：关上以后焦点在新页的 main，不还给搜索触发器',
+    [listed, m.url(), document.activeElement === main()],
+    [true, '/conversations', true],
+  );
+  await palette();
+  await m.click(row('会话'));
+  eq('⌘K 打开当前页（地址不变，外壳不挪）：焦点同样放到 main', [m.url(), document.activeElement === main()], ['/conversations', true]);
+  await palette();
+  await m.click(row('外观：浅色'));
+  eq('⌘K 里选外观：关上以后焦点回到搜索触发器', [m.url(), document.activeElement === trigger()], ['/conversations', true]);
+  await m.unmount();
+}
+{
+  // 窄屏（<992）：顶栏是 banner，侧栏在抽屉里。开着「减少动态效果」：antd 不走动效，抽屉关上的收尾（还焦点）当场做完
+  // （happy-dom 不发 transitionend，带动效时抽屉永远停在关到一半）
+  win.happyDOM.setViewport({ width: 800, height: 900 });
+  setReduceMotion(true);
+  server = { demo: false, loggedIn: true, login: 'check' };
+  const m = await mount('/console/catalog/route', [
+    { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
+  ]);
+  const main = (): Element | null => m.$('main#main');
+  const menu = (): HTMLButtonElement | null => m.$<HTMLButtonElement>('.topbar button[aria-label="打开导航"]');
+  const open = async (): Promise<void> => {
+    menu()?.focus();
+    await m.click(menu());
+  };
+  const drawerNav = (label: string): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('.nav-drawer a.nav-item')].find((a) => m.text(a.querySelector('.nav-label')) === label);
+  await open();
+  const inDrawer = document.querySelector('.nav-drawer .sidebar');
+  eq('窄屏抽屉开着：只有顶栏一个 banner，抽屉里的侧栏是 div', [banners().map((b) => b.className), inDrawer?.tagName], [['topbar'], 'DIV']);
+  await m.click(drawerNav('会话'));
+  eq(
+    '窄屏抽屉里点导航：换页，抽屉关上，焦点在 main（不还给「打开导航」）',
+    [m.url(), document.querySelector('.nav-drawer .ant-drawer-open') === null, document.activeElement === main()],
+    ['/conversations', true, true],
+  );
+  await open();
+  await act(async () => {
+    (document.activeElement ?? document.body).dispatchEvent(
+      new win.KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }) as unknown as Event,
+    );
+  });
+  await settle(m.qc);
+  eq('窄屏抽屉按 Esc 关上：焦点回到「打开导航」', [m.url(), document.activeElement === menu()], ['/conversations', true]);
+  await m.unmount();
+  setReduceMotion(false);
+  win.happyDOM.setViewport({ width: 1440, height: 1100 });
+}
+{
+  // 启动出错、数据库没开：没有外壳的整页，这一块是 main；标题 h1，下面的说明 h2
+  const whole = async (status: number, body: unknown) => {
+    server = { demo: false, loggedIn: false, login: 'check', me: { status, body } };
+    const m = await mount('/console/catalog/route');
+    const out = {
+      main: m.$$('main').map((e) => `${e.id}|${e.className}`),
+      headings: m.$$('h1, h2, h3').map((h) => `${h.tagName} ${m.text(h)}`),
+      alert: m.text(m.$('.ant-alert-title')),
+    };
+    await m.unmount();
+    return out;
+  };
+  eq(
+    '整页出错与数据库没开：main 地标，h1 起头、不跳级（500 是 Alert；not_ready 是 h2 的说明；db_disabled 自己就是 h1）',
+    [await whole(500, { error: 'internal' }), await whole(503, { error: 'not_ready' }), await whole(503, { error: 'db_disabled' })],
+    [
+      { main: ['main|boot-whole'], headings: ['H1 后台'], alert: '没取到' },
+      { main: ['main|boot-whole'], headings: ['H1 后台', 'H2 系统正在启动'], alert: '' },
+      { main: ['main|boot-whole'], headings: ['H1 后台只在数据库模式下可用'], alert: '' },
+    ],
+  );
+  server = { demo: false, loggedIn: false, login: 'check' };
 }
 
 if (fails.length) {
