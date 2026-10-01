@@ -876,7 +876,8 @@ function MemberSop({
       if (m) {
         setMerge(m);
         setMergeEpoch((n) => n + 1);
-        // 本地的改动都存上了（unsaved 为空），清掉以后编辑器里还是同样的正文；完成合并以后它们不能再当成没存上的改动发出去
+        // 本地的改动都存上了（unsaved 为空），清掉以后编辑器里还是同样的正文。合并期间 edits 一直是空的（别的节只读，
+        // 对照里的字记在合并的状态里）：完成合并、重新比过（草稿换了）以后，它们不会被当成没存上的改动、盖掉合并的结果
         setEdits({});
         setMergeError(null);
         setResult(null);
@@ -912,7 +913,7 @@ function MemberSop({
       return;
     }
     mergeFocus.current = { to: 'title', key };
-    nav.select(key, 'key');
+    if (key !== nav.section || nav.viewing !== undefined) nav.select(key, 'key');
   };
   const goMergeRef = useRef(goMerge);
   useEffect(() => {
@@ -954,7 +955,6 @@ function MemberSop({
       const v = await unwrap(
         api.sop.draft.$put({ json: { basedOn: m.online.id, rev: draft.rev, edits: mergeEdits(m), rebaseOnto: m.online.id } }),
       );
-      setEdits({});
       setMerge(null);
       clearResults();
       qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) =>
@@ -978,7 +978,6 @@ function MemberSop({
       const d = 'spec' in fresh ? fresh.draft : null;
       const input = d && r.rebase.needed && r.online ? { spec, online: r.online, conflicts: r.rebase.conflicts, draft: d.sections } : null;
       const keys = input ? (startMerge(input)?.keys ?? []) : [];
-      setEdits({});
       setMergeError(null);
       setMergeEpoch((n) => n + 1);
       setMerge((prev) => (prev && input ? restartMerge(prev, input) : null));
@@ -1259,7 +1258,8 @@ function MemberSop({
           spec={spec}
           now={now}
           editable={editable}
-          frozen={frozen}
+          // 合并期间不能载入到草稿（编辑器里的改动这时不存）
+          frozen={frozen || merge !== null}
           draft={draftRow}
           onContinue={() => closeHistory('editor')}
           onView={viewVersion}

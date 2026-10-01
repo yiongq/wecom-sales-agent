@@ -47,7 +47,7 @@ import './selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
 import { EditorState, type RangeSet } from '@codemirror/state';
 import { type Decoration, EditorView } from '@codemirror/view';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -81,6 +81,8 @@ import {
   retryDelay,
   saveFailure,
   type SaveStatus,
+  type Autosave,
+  useAutosave,
 } from './autosave.js';
 import { Directory, DirectorySelect, type SelectVia } from './Directory.js';
 import { DiffList, trimEnd } from './DiffView.js';
@@ -6790,6 +6792,53 @@ async function openHistory(m: PageBox): Promise<void> {
   );
 }
 
+// 13.1b 自动保存暂停（合并期间，autosave.ts 的 paused）：有没存上的改动也不存，计时到了、⌘S、「重试」都不发，⌘S 照样拦下浏览器的
+// 「存储网页」；取消暂停以后照常存
+{
+  const sent: unknown[] = [];
+  const hook: { current: Autosave | null } = { current: null };
+  function H({ paused }: { paused: boolean }) {
+    const a = useAutosave({
+      enabled: true,
+      paused,
+      unsaved: [{ key: 'tone', body: '改了一句。' }],
+      composing: () => false,
+      base: { rev: 4, basedOn: 'v2' },
+      send: async (edits, base) => {
+        sent.push({ edits, base });
+        return version(null, D_CLEAN, { rev: 5, basedOn: 'v2' });
+      },
+      onSaved: noop,
+      onConflict: noop,
+    });
+    useEffect(() => {
+      hook.current = a;
+    });
+    return null;
+  }
+  const el = (paused: boolean): ReactElement => (
+    <AutosaveTimingContext.Provider value={FAST}>
+      <H paused={paused} />
+    </AutosaveTimingContext.Provider>
+  );
+  const r = await rootFor(el(true));
+  await act(async () => hook.current?.edited());
+  await rest(FAST.debounce * 4);
+  await act(async () => hook.current?.flush());
+  const shortcut = await pressSave({ metaKey: true });
+  await rest(FAST.debounce * 2);
+  const whilePaused = sent.length;
+  await r.render(el(false));
+  await act(async () => hook.current?.flush());
+  await waitFor(() => sent.length > 0);
+  eq(
+    '自动保存暂停：计时到了、重试、⌘S 都不发，⌘S 照样拦下浏览器的；取消暂停以后照常存',
+    [whilePaused, shortcut.defaultPrevented, sent],
+    [0, true, [{ edits: [{ key: 'tone', body: '改了一句。' }], base: { rev: 4, basedOn: 'v2' } }]],
+  );
+  await r.unmount();
+}
+
 // 13.2 左右对照（MergeView）：两栏的名字与读屏名称，左边只读、能聚焦，右边能改；两栏之间每块一个「采用线上的写法」，
 // 鼠标按下（库只认 mousedown）、键盘 Enter / 空格都采用这一块，键盘采用以后焦点去下一块的按钮，没有了到右边的正文
 {
@@ -6840,24 +6889,28 @@ async function openHistory(m: PageBox): Promise<void> {
   );
   await r.unmount();
 
-  // 空格也采用；还有下一块时焦点去下一块的按钮（同一个序号：后面的块往前挪了一个）
-  const r2 = await rootFor(<MergeEditor name="异议处理" leftLabel="线上v3的写法" left={LEFT} right={RIGHT} onChange={noop} />);
+  // 空格也采用；后面还有块时焦点去紧挨着的下一块的按钮（同一个序号：后面的块往前挪了一个），不是最后一块的
+  const LEFT3 = '甲一\n\n甲二\n\n共同\n\n甲三\n\n共同二\n\n甲四\n';
+  const RIGHT3 = '乙一\n\n甲二\n\n共同\n\n共同二\n\n乙四\n';
+  const r2 = await rootFor(<MergeEditor name="异议处理" leftLabel="线上v3的写法" left={LEFT3} right={RIGHT3} onChange={noop} />);
   await rest(50);
   const b2 = (): HTMLButtonElement[] => all<HTMLButtonElement>(r2.box, '.cm-merge-revert button');
+  const before3 = b2().length;
   b2()[0]!.focus();
   const sp = await key(b2()[0], ' ');
   await rest(80);
   const right2 = EditorView.findFromDOM(all<HTMLElement>(r2.box, '.sop-merge-view .cm-content')[1]!)!;
   eq(
-    '空格同 Enter；还有一块时焦点到它的按钮上；别的键不管',
+    '空格同 Enter；三块里采用第一块以后，焦点到紧挨着的那一块（现在的第一个按钮）上；别的键不管',
     [
+      before3,
       sp?.defaultPrevented,
       right2.state.doc.toString(),
       b2().length,
       document.activeElement === b2()[0],
       (await key(b2()[0], 'a'))?.defaultPrevented,
     ],
-    [true, '甲一\n\n甲二\n\n共同\n', 1, true, false],
+    [3, true, '甲一\n\n甲二\n\n共同\n\n共同二\n\n乙四\n', 2, true, false],
   );
   await r2.unmount();
 }
@@ -6905,6 +6958,12 @@ const englishButtons = (): string[] =>
   all<HTMLElement>(document.body, 'button, [role="button"]')
     .map((b) => `${text(b)}|${b.getAttribute('aria-label') ?? ''}|${b.getAttribute('title') ?? ''}`)
     .filter((t) => /[A-Za-z]{2,}/.test(t));
+/** 在右边（你的草稿）打字：开头或末尾；没进合并模式时什么也不做，由后面的断言报 */
+async function typeRight(m: PageBox, s: string, at: 'start' | 'end' = 'start'): Promise<void> {
+  const v = mergeViews(m)[1];
+  if (v)
+    await act(async () => v.dispatch({ changes: { from: at === 'end' ? v.state.doc.length : 0, insert: s }, userEvent: 'input.type' }));
+}
 async function revertAll(m: PageBox): Promise<void> {
   for (let i = 0; i < 10; i++) {
     const b = m.box.querySelector('.cm-merge-revert button');
@@ -6972,7 +7031,7 @@ async function revertAll(m: PageBox): Promise<void> {
     ],
   );
   const puts = srv.puts().length;
-  await act(async () => right!.dispatch({ changes: { from: right!.state.doc.length, insert: '合并时加的。' }, userEvent: 'input.type' }));
+  await typeRight(m, '合并时加的。', 'end');
   await rest(FAST.debounce * 4);
   await clickEv(rowIn(m, 'objections'));
   await until(() => m.section() === 'objections' && !merging(m));
@@ -7027,7 +7086,7 @@ async function revertAll(m: PageBox): Promise<void> {
     [0, '话术原则', 'H2'],
   );
   await revertAll(m);
-  const merged = mergeViews(m)[1]!.state.doc.toString();
+  const merged = mergeViews(m)[1]?.state.doc.toString();
   await clickEv(doneButton(m));
   await until(() => document.activeElement === actionButton(m, '完成合并'));
   noteEnglish();
@@ -7045,8 +7104,11 @@ async function revertAll(m: PageBox): Promise<void> {
     [THEIRS_TONE, '已处理', '要合并的节都处理好了', '这一节处理好了', 'status', true, null],
   );
   const checks = srv.checks();
+  // 浏览器里 React Query 通知页面晚于 React 处理别的状态：照那样把通知推迟一点，抽屉要等合并存下的草稿进了缓存再按它预填
+  notifyManager.setScheduler((cb) => setTimeout(cb, 30));
   await clickEv(actionButton(m, '完成合并'));
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea') && !merging(m));
+  notifyManager.setScheduler((cb) => setTimeout(cb, 0));
   await waitFor(() => text(drawerOf('发布草稿')!.querySelector('.sop-drawer-reason')) === '在说明里写上为什么改');
   noteEnglish();
   const d = drawerOf('发布草稿')!;
@@ -7058,7 +7120,7 @@ async function revertAll(m: PageBox): Promise<void> {
       text(d.querySelector('.sop-publish-replace')),
       all(d, '.sop-diff-name').map((e) => text(e)),
       d.querySelector('textarea')?.value,
-      d.querySelector('.sop-publish-conflict'),
+      !!d.querySelector('.sop-publish-conflict'),
       statusText(m).startsWith('线上v3'),
     ],
     [
@@ -7067,7 +7129,7 @@ async function revertAll(m: PageBox): Promise<void> {
       '将替换线上v3（店长·9月26日 13:10发布）',
       ['异议处理'],
       '修改：异议处理。',
-      null,
+      false,
       true,
     ],
   );
@@ -7143,18 +7205,17 @@ async function revertAll(m: PageBox): Promise<void> {
   await waitFor(() => !!noticeMerge(m) && saveNow(m).includes('已自动保存'));
   await clickEv(noticeMerge(m));
   await waitFor(() => merging(m));
-  const right = mergeViews(m)[1]!;
-  await act(async () => right.dispatch({ changes: { from: 0, insert: '合并里改的。' }, userEvent: 'input.type' }));
+  await typeRight(m, '合并里改的。');
   const blocked = await leaveAndStay(m);
   await clickEv(actionButton(m, '退出合并'));
   await until(() => !!modalOf('退出合并？'));
   const body = text(modalOf('退出合并？')?.querySelector('.ant-modal-body'));
-  await clickEv(all(modalOf('退出合并？')!, 'button').find((b) => label(b) === '接着合并'));
+  await clickEv(all(modalOf('退出合并？') ?? document.createElement('div'), 'button').find((b) => label(b) === '接着合并'));
   await until(() => !modalOf('退出合并？') && document.activeElement === actionButton(m, '退出合并'));
   const stayed = [merging(m), document.activeElement === actionButton(m, '退出合并')];
   await clickEv(actionButton(m, '退出合并'));
   await until(() => !!modalOf('退出合并？'));
-  await clickEv(all(modalOf('退出合并？')!, 'button').find((b) => label(b) === '退出合并'));
+  await clickEv(all(modalOf('退出合并？') ?? document.createElement('div'), 'button').find((b) => label(b) === '退出合并'));
   await until(() => !merging(m) && document.activeElement === cmOf(m));
   eq(
     '改过：离开这一页拦下；退出先确认（说明哪几节的写法不会保存）；「接着合并」留在合并里、焦点回到「退出合并」；确认以后退出、焦点回编辑器',
@@ -7170,9 +7231,8 @@ async function revertAll(m: PageBox): Promise<void> {
   const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
   await clickEv(noticeMerge(m));
   await waitFor(() => merging(m));
-  const right = mergeViews(m)[1]!;
-  await act(async () => right.dispatch({ changes: { from: 0, insert: '我合并的。' }, userEvent: 'input.type' }));
-  const mine = right.state.doc.toString();
+  await typeRight(m, '我合并的。');
+  const mine = mergeViews(m)[1]?.state.doc.toString();
   await clickEv(doneButton(m));
   srv.mode = 'error';
   await clickEv(actionButton(m, '完成合并'));
@@ -7214,21 +7274,65 @@ async function revertAll(m: PageBox): Promise<void> {
   await m.unmount();
 }
 
-// 13.3f 去合并之前先存：有没存上的改动时点「去合并」，先存（PUT）再查，右边是存上以后的写法；重查说不用合并了就不进
+// 13.3e2 重新比过以后还在看的节不用合并了（店长那一版撤回了话术原则、小王又改了异议处理）：去要合并的第一节，焦点在它的标题上
 {
   const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
-  srv.held.length = 0;
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m));
+  await clickEv(doneButton(m));
+  srv.publishByOther(withBodies(P_ONLINE, { objections: '定价只有两条规则。\n\n- 小王加的。\n\n' }), { publishedByName: '小王' });
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => text(m.box.querySelector('.sop-banners')).includes('这期间别人又改了'));
+  await clickEv(all(m.box, '.sop-banners button').find((b) => label(b) === '载入最新内容'));
+  await waitFor(() => m.section() === 'objections' && merging(m));
+  await until(() => text(document.activeElement) === '异议处理');
+  eq(
+    '重新比过以后话术原则不用合并了：去异议处理，焦点在它的标题上；目录只标异议处理',
+    [m.section(), text(document.activeElement), tocMark(m, 'tone'), tocMark(m, 'objections'), statusText(m)],
+    ['objections', '异议处理', '', '需合并', '还有1节要合并'],
+  );
+  await m.unmount();
+}
+
+// 13.3f3 去合并之前先存，存没成功（格式不对，422）：不进合并、「去合并」不再转圈，原因由状态句与横幅说
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=objections' });
+  srv.mode = 'invalid';
+  await typeAtEnd(m, '存不上的一句。');
+  await clickEv(noticeMerge(m));
+  await waitFor(() => saveNow(m).includes('没保存上'));
+  await rest(100);
+  eq(
+    '先存没存上：不进合并，「去合并」不转圈，状态句写没保存上',
+    [merging(m), noticeMerge(m)?.classList.contains('ant-btn-loading'), saveNow(m).includes('没保存上')],
+    [false, false, true],
+  );
+  await m.unmount();
+}
+
+// 13.3f 去合并之前先存：有没存上的改动时点「去合并」，先存（PUT）再查，右边是存上以后的写法；完成合并以后编辑器里进合并以前的
+// 那份正文不会被当成没存上的改动再存一次、盖掉合并的结果。重查说不用合并了就不进
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
   await typeAtEnd(m, '还没存的一句。');
   const puts = srv.puts().length;
   await clickEv(noticeMerge(m));
   await waitFor(() => merging(m));
+  const entered = [srv.puts().length - puts, mergeViews(m)[1]?.state.doc.toString().includes('还没存的一句。')];
+  await revertAll(m);
+  await clickEv(doneButton(m));
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => !merging(m) && !!drawerOf('发布草稿'));
+  await rest(FAST.debounce * 6);
   eq(
-    '有没存上的改动：先存一次再进合并，右边是存上以后的写法',
-    [srv.puts().length - puts, mergeViews(m)[1]?.state.doc.toString().includes('还没存的一句。')],
-    [1, true],
+    '有没存上的改动：先存一次再进合并，右边是存上以后的写法；完成合并以后不再自动存（草稿里是合并的写法）',
+    [entered, srv.puts().length - puts, srv.puts().at(-1)?.rebaseOnto, bodyIn(srv.state.draft!.sections, 'tone')],
+    [[1, true], 2, 'v3', THEIRS_TONE],
   );
-  await clickEv(actionButton(m, '退出合并'));
-  await until(() => !!modalOf('退出合并？') || !merging(m));
+  await m.unmount();
+}
+{
+  const { srv, m } = await conflictPage({ url: '/console/sop?section=tone' });
   // 店长那一版被撤回（线上的话术原则又回到 v2 的写法）：重查说不用合并了
   srv.publishByOther(withBodies(P_ONLINE, { preamble: '店长改的前言。\n\n' }), { publishedByName: '店长' });
   await clickEv(noticeMerge(m));
