@@ -730,10 +730,10 @@ const cell = (c: Cell): string =>
     ['改了2处', false, ['划线的字是删去的，加底色的字是新加的', '行程亮点其余3条没改']],
   );
   eq(
-    '抽屉：去处是这条线路；技术详情里是动作编码、对象类型与编号',
+    '抽屉：去处是这条线路（实体与编号）；技术详情里是动作编码、对象类型与编号',
     [v.link, v.tech.rows.slice(0, 2)],
     [
-      { to: 'catalog', kind: 'route', label: '打开这条线路' },
+      { to: 'catalog', kind: 'route', code: 'r-sichuan-lux', label: '打开这条线路' },
       [
         ['动作', 'catalog.update'],
         ['对象', 'route · r-sichuan-lux'],
@@ -869,6 +869,11 @@ const cell = (c: Cell): string =>
     [drawerView(update, HOME, {}).link?.label, drawerView(update, HOME, {}).changes?.rows.map((r) => r.label[0])],
     ['打开这条装修套餐', ['主材档次']],
   );
+  eq(
+    '抽屉：产品库的记录没有编号时没有对象、没有去处（「打开这条」无从链起）',
+    [drawerView({ ...update, targetId: null }, TRAVEL, {}).facts.length, drawerView({ ...update, targetId: null }, TRAVEL, {}).link],
+    [2, null],
+  );
 
   // 不变量 7：每种动作（加一种表外的）在页面上看得见的字里没有动作编码与 UUID
   const CODES = /\b(sop|catalog|auth|platform|config)\.[a-z_]+/;
@@ -954,7 +959,7 @@ async function settle(qc: QueryClient): Promise<void> {
   }
 }
 
-/** 挂上真的 AuditPage：/audit 的 validateSearch 与 router.tsx 同一个；/catalog/$kind、/sop 是抽屉去处用的空页 */
+/** 挂上真的 AuditPage：/audit 的 validateSearch 与 router.tsx 同一个；/catalog/$kind/$code、/sop 是抽屉去处用的空页 */
 async function mount(viewer: Viewer, search = '') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
@@ -962,7 +967,7 @@ async function mount(viewer: Viewer, search = '') {
   const router = createRouter({
     routeTree: root.addChildren([
       createRoute({ getParentRoute: () => root, path: '/audit', validateSearch: auditSearch, component: AuditPage }),
-      createRoute({ getParentRoute: () => root, path: '/catalog/$kind', component: () => null }),
+      createRoute({ getParentRoute: () => root, path: '/catalog/$kind/$code', component: () => null }),
       createRoute({ getParentRoute: () => root, path: '/sop', component: () => null }),
     ]),
     basepath: '/console',
@@ -1317,7 +1322,7 @@ async function mount(viewer: Viewer, search = '') {
   eq(
     '抽屉：去处「打开这条线路」',
     [m.text(document.querySelector('.au-link')), document.querySelector('.au-link')?.getAttribute('href')],
-    ['打开这条线路', '/console/catalog/route'],
+    ['打开这条线路', '/console/catalog/route/r-sichuan-lux'],
   );
   const tech = document.querySelector<HTMLDetailsElement>('.au-tech details');
   eq(
@@ -1413,6 +1418,16 @@ async function mount(viewer: Viewer, search = '') {
   );
   await m.click(document.querySelector('.au-link'));
   eq('点去处：到话术页', m.url(), '/sop');
+  await m.unmount();
+}
+
+// 产品库的去处：点「打开这条线路」到这一条的详情页
+{
+  server = { log: [update] };
+  const m = await mount(member('owner'));
+  await m.click(m.$('.au-row .au-sentence')[0]);
+  await m.click(document.querySelector('.au-link'));
+  eq('点去处：到这条线路的详情', m.url(), '/catalog/route/r-sichuan-lux');
   await m.unmount();
 }
 

@@ -331,7 +331,9 @@ function DrawerBody({ view }: { view: DrawerView }) {
       {view.link && (
         <Link
           className="au-link"
-          {...(view.link.to === 'catalog' ? { to: '/catalog/$kind', params: { kind: catalogKind(view.link.kind) } } : { to: '/sop' })}
+          {...(view.link.to === 'catalog'
+            ? { to: '/catalog/$kind/$code', params: { kind: catalogKind(view.link.kind), code: view.link.code } }
+            : { to: '/sop' })}
         >
           {view.link.label}
           <Icon of={ChevronRight} size={14} />
