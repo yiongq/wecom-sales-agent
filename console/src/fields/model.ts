@@ -423,17 +423,30 @@ export function resolveRef(f: FieldDef, value: string, items: readonly RefItem[]
 /** 一项在竖轴上的节点：done 全部填好（实心）；gap 有没填的必填子字段（空心）；error 这一项有报错（空心，danger） */
 export type ItemState = 'done' | 'gap' | 'error';
 
-const emptyValue = (v: unknown): boolean => v === undefined || v === null || v === '';
+/**
+ * 空串算没填的子字段：上架前检查对它们的空串报「没填」「没选」（文字、长文本、月份区间、单选引用、单选或按字符串存的 enum）；
+ * 数字、是否、数组类型的空串是写法不对，不算缺项
+ */
+const blankIsEmpty = (s: FieldDef): boolean =>
+  s.type === 'text' ||
+  s.type === 'longText' ||
+  s.type === 'monthRange' ||
+  (s.type === 'reference' && !s.multiple) ||
+  (s.type === 'enum' && (!s.multiple || s.storeAs !== undefined));
 
 /**
  * 多字段有序子项的一项里没填的必填子字段，按包里的顺序写标签（「缺：当晚住宿」）。口径同上架前检查报「没填」「没选」的那些：
- * 缺键、null、空串；必填的数组子字段只要求键在（[] 也算填了）。单字段的有序子项没有节点，返回空
+ * 缺键、null，以及上面几种类型的空串；必填的数组子字段只要求键在（[] 也算填了）。单字段的有序子项没有节点，返回空
  */
 export function itemGaps(f: FieldDef, item: unknown): string[] {
   if (isSingleItem(f)) return [];
   const it = isRecord(item) ? item : {};
   return (f.item ?? [])
-    .filter((s) => s.required !== false && emptyValue(Object.hasOwn(it, s.key) ? it[s.key] : undefined))
+    .filter((s) => {
+      if (s.required === false) return false;
+      const v = Object.hasOwn(it, s.key) ? it[s.key] : undefined;
+      return v === undefined || v === null || (v === '' && blankIsEmpty(s));
+    })
     .map((s) => s.label);
 }
 
