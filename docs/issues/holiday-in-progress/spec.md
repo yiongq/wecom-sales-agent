@@ -43,6 +43,10 @@ W7 只在 10月2日、3日失败：`oct3 = next('10-03')` 在 10月4日以后滚
 
 要改，得 owner 拍板，同时改上面这几条断言。另外几处调用方也要一起改：`holidayIn` 只认节日那天（`iso` 改成今天以后，「回复里只说『国庆出发』」这条 departNote 就丢了）；`quoteTimingNote` 有同样的问题；`customerNamedDay` 对「国庆当天」的处理，要重新想清楚 10月1日已经过去以后怎么办。季节价只看月份，不受影响。
 
+## 没改的：别的日子也会让锁定的引擎自测变红
+
+评审把时钟钉到 12-31、01-02、02-08、05-03 时，锁定的 `src/engine.selftest.ts` 在本修复前后都失败，失败清单相同。它用真实时钟算「下一个 10月3号」这类日子，到了这几天 CI 会无缘无故变红，与本修复无关。要根治得让这份自测钉住时钟，属于改锁定文件，由 owner 定；在那之前，这几天看到引擎自测红，先核对是不是这一类。
+
 ## 清单
 
 - [x] `src/engine.ts`：`HOLIDAY_DAYS`、`holidayInProgress`、`SpokenDate.ongoing`（`HolidayLeft`，`date` 和 `vague` 都可带）、`departMonths`；`latestDepart` 加 `today` 参数（只为自测）并导出到 `__engineTest`。
