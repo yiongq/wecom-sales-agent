@@ -172,11 +172,8 @@ async function mount(path: string, pages: { path: string; component: () => React
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
   const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
   const own = pages.find((p) => p.path === '/catalog/$kind');
-  const page = createRoute({
-    getParentRoute: () => root,
-    path: '/catalog/$kind',
-    component: own?.component ?? (() => createElement(PageHeader, { title: '测试页' })),
-  });
+  const component = own?.component ?? (() => createElement(PageHeader, { title: '测试页' }));
+  const page = createRoute({ getParentRoute: () => root, path: '/catalog/$kind', component });
   const extra = pages
     .filter((p) => p.path !== '/catalog/$kind')
     .map((p) => createRoute({ getParentRoute: () => root, path: p.path, component: p.component }));
@@ -673,12 +670,21 @@ async function mount(path: string, pages: { path: string; component: () => React
   await settle(m.qc);
   eq('焦点：后退以后在 main 上', [m.url(), document.activeElement === main()], ['/catalog/route', true]);
 
-  // 只换 search：焦点留在原处
+  // 只换 search：焦点留在原处（在页面里、在侧栏上都一样）
   const btn = m.$<HTMLButtonElement>('.probe-btn');
   btn?.focus();
   await act(async () => void m.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' }, search: { status: 'draft' } as never }));
   await settle(m.qc);
   eq('焦点：只换 search 不挪焦点', [m.url(), btn !== null && document.activeElement === btn], ['/catalog/route?status=draft', true]);
+  const trigger = m.$<HTMLButtonElement>('.sb-search');
+  trigger?.focus();
+  await act(async () => void m.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' }, search: { status: 'active' } as never }));
+  await settle(m.qc);
+  eq(
+    '焦点：只换 search 时焦点在侧栏上也不挪',
+    [m.url(), trigger !== null && document.activeElement === trigger],
+    ['/catalog/route?status=active', true],
+  );
 
   // 页面自己放了焦点：不抢
   await act(async () => void m.router.navigate({ to: '/sop' }));
@@ -692,11 +698,11 @@ async function mount(path: string, pages: { path: string; component: () => React
   await m.click(m.$('.sidebar .bell'));
   await m.click(m.$('.user-btn'));
   const menu = document.querySelector('.user-menu');
-  eq('地标：用户菜单是有名字的区域', [menu?.tagName, menu?.getAttribute('aria-label')], ['SECTION', '用户菜单']);
+  eq('地标：用户菜单是有名字的区域「用户选项」', [menu?.tagName, menu?.getAttribute('aria-label')], ['SECTION', '用户选项']);
   const reduce = document.querySelector('[role="menuitemcheckbox"]');
   eq(
     '用户菜单：「减少动态效果」这一项里没有嵌套的按钮或开关（开关的样子只是装饰，状态由 aria-checked 说）',
-    [reduce !== null, reduce?.querySelector('button, [role="switch"], [tabindex]') ?? null],
+    [reduce !== null, reduce?.querySelector('button, [role="switch"], [tabindex]')?.tagName ?? null],
     [true, null],
   );
   await m.unmount();

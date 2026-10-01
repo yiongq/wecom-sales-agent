@@ -11,6 +11,7 @@ import { Check, ChevronRight, ChevronsUpDown, LogOut } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
 import type { Me } from '../../../src/shared/console-api.js';
 import { ROLE_LABEL } from '../../../src/shared/ui-labels.js';
+import { popupRegion } from '../parts/popupRegion.js';
 import { type Appearance, getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { Icon } from './icons.js';
 import { avatarIndex, firstChar } from './model.js';
@@ -58,6 +59,8 @@ export function userMenuItems({ appearance, reduce }: { appearance: Appearance; 
         </span>
       ),
       popupClassName: 'user-submenu',
+      // 子菜单另挂在 body 下、在地标外面：同样包成有名字的区域（parts/popupRegion.tsx）
+      popupRender: popupRegion('外观'),
       children: APPEARANCES.map((a) => ({
         key: `appearance:${a}`,
         ...checkable('menuitemradio', a === appearance),
@@ -127,18 +130,11 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       }}
       trigger={['click']}
       placement="topLeft"
-      // 外观子菜单挂进上面那块区域里（默认挂在 body 下、在地标外面，axe region）
-      menu={{
-        items,
-        onClick,
-        selectable: false,
-        expandIcon: SUBMENU_ARROW,
-        getPopupContainer: (node) => node.closest<HTMLElement>('.user-menu') ?? document.body,
-      }}
+      menu={{ items, onClick, selectable: false, expandIcon: SUBMENU_ARROW }}
       rootClassName="user-menu-root"
-      // 弹层挂在 body 下、在侧栏的地标外面：整块是一个有名字的区域（axe region），外观子菜单也挂进来
+      // 弹层挂在 body 下、在侧栏的地标外面：整块是一个有名字的区域「用户选项」（axe region）；外观子菜单另挂，见 userMenuItems
       popupRender={(menu) => (
-        <section className="user-menu" aria-label="用户菜单">
+        <section className="user-menu" aria-label="用户选项">
           <div className="user-menu-id">
             <div className="user-menu-name">{me.displayName}</div>
             <div className="user-menu-role">{role}</div>
