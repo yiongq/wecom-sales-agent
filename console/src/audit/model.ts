@@ -225,7 +225,11 @@ export interface Fact {
   code?: string;
 }
 
-export type DrawerLink = { to: 'catalog'; kind: string; label: string } | { to: 'sop'; label: string };
+/**
+ * 抽屉的去处：产品库的一条到它的详情（条目删了照样链过去，由详情页写「没有这条{实体名}」）；
+ * 话术暂时到话术页，不到对应的版本（版本参数 v 在 plan 第 5–8 步，见 plan「Open」第 14 步）
+ */
+export type DrawerLink = { to: 'catalog'; kind: string; code: string; label: string } | { to: 'sop'; label: string };
 
 export interface DrawerView {
   actor: { name: string; human: boolean };
@@ -617,11 +621,12 @@ export function drawerView(entry: AuditEntryView, pack: IndustryPack, lookups: A
     };
   }
 
-  const link: DrawerLink | null = entity
-    ? { to: 'catalog', kind: entity.kind, label: `打开这条${entity.label}` }
-    : entry.action.startsWith('sop.')
-      ? { to: 'sop', label: '打开销售话术' }
-      : null;
+  const link: DrawerLink | null =
+    entity && entry.targetId
+      ? { to: 'catalog', kind: entity.kind, code: entry.targetId, label: `打开这条${entity.label}` }
+      : entry.action.startsWith('sop.')
+        ? { to: 'sop', label: '打开销售话术' }
+        : null;
 
   const target = [entry.targetType, entry.targetId].filter((x) => x !== null).join(' · ');
   // JSON 原文按接口的字段顺序

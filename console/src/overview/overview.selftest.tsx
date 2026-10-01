@@ -744,6 +744,8 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
       page('/audit'),
       page('/conversations'),
       page('/catalog/$kind'),
+      page('/catalog/$kind/$code'),
+      page('/catalog/new/$kind'),
     ]),
     basepath: '/console',
     history: createMemoryHistory({ initialEntries: ['/console/'] }),
@@ -804,12 +806,13 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
   ]);
   eq('需要你处理：danger 只有话术问题那一段', m.texts('.ov-danger'), ['1个问题：话术原则里有个工具名写错了']);
   eq('需要你处理：等人接手画状态胶囊', m.$('.ov-todo .status-human').length, 2);
+  // 待上架：1 条草稿到这一条的详情，多条到这个实体列表的草稿页签
   eq('需要你处理：整行是链接', m.hrefs('a.ov-todo'), [
     '/admin.html#s=wecom%3Acust_A01',
     '/admin.html#s=wecom%3Acust_F01',
     '/console/sop',
-    '/console/catalog/route',
-    '/console/catalog/hotel',
+    '/console/catalog/route/r-guizhou-5d',
+    '/console/catalog/hotel?status=draft',
   ]);
   eq(
     '需要你处理：工作台在新标签打开',
@@ -961,6 +964,28 @@ async function failing(fail: RegExp) {
   WAITING.push(...saved);
 }
 
+// 2.3b 在售数为 0（只有草稿）：编辑者的在售格写「新建{实体名}」、整格链到新建；坐席照旧链到列表，不写新建
+{
+  server = {
+    pack: TRAVEL,
+    lists: { route: ROUTES.filter((r) => r.status === 'draft'), hotel: HOTELS.filter((h) => h.status === 'draft') },
+  };
+  const o = await mountOverview(member('owner'));
+  eq(
+    '在售数为 0：所有者的在售格链到新建第一个实体',
+    [o.texts('.ov-kpi-value')[3], o.texts('.ov-kpi-create'), o.hrefs('a.ov-kpi')[3]],
+    ['0', ['新建线路'], '/console/catalog/new/route'],
+  );
+  await o.unmount();
+  const a = await mountOverview(member('agent'));
+  eq(
+    '在售数为 0：坐席的在售格链到列表，没有新建',
+    [a.texts('.ov-kpi-value')[3], a.texts('.ov-kpi-create'), a.hrefs('a.ov-kpi')[3]],
+    ['0', [], '/console/catalog/route'],
+  );
+  await a.unmount();
+}
+
 // 2.4 demo 匿名：横幅，只有在售一格，只取产品库列表
 {
   const anonList = (xs: CatalogItem[]) =>
@@ -1094,6 +1119,7 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
   requests = [];
   const m = await mountOverview(member('owner', HOME));
   eq('别的行业包：待上架', m.texts('.ov-todo-title').slice(3), ['装修套餐草稿「暖木 · 两居全包经典版」']);
+  eq('别的行业包：待上架链到这个包的实体与编号', m.hrefs('a.ov-todo').slice(3), ['/console/catalog/package/p-1']);
   eq(
     '别的行业包：在售格',
     [m.texts('.ov-kpi-label')[3], m.texts('.ov-kpi-caption')[3], m.texts('.ov-kpi-detail')[3]],

@@ -71,7 +71,7 @@ export type TodoTarget =
   | { kind: 'sop' }
   /** 会话列表的等人接手页签（「还有N个等人接手的会话」） */
   | { kind: 'conversations'; state: 'human' }
-  /** 这个实体的列表；详情路由在第 10 步，在那之前「去上架」也打开列表 */
+  /** 待上架：1 条草稿时是这一条的详情（/catalog/$kind/$code），多条时是这个实体列表的草稿页签 */
   | { kind: 'catalog'; entity: string; code?: string };
 
 export interface TodoRow {
@@ -333,7 +333,7 @@ export function systemView(s: Status, pack: IndustryPack): SystemView {
 
 export type KpiTarget =
   | { kind: 'conversations'; state?: 'human' | 'paid' }
-  /** 实体的列表（第一个实体）；在售数为 0 时明细是「新建{实体名}」 */
+  /** 实体的列表（第一个实体）；在售数为 0、明细是「新建{实体名}」时整格改链到新建（Kpi.create） */
   | { kind: 'catalog'; entity: string };
 
 export interface Kpi {
@@ -344,7 +344,7 @@ export interface Kpi {
   caption: readonly string[];
   /** 明细行：这个数背后的真实构成；null 时不画明细（匿名的在售格） */
   breakdown: readonly string[] | null;
-  /** 在售数为 0 时，编辑者的明细是一个「新建{实体名}」链接 */
+  /** 在售数为 0 时，编辑者的明细是「新建{实体名}」，整格链到这个实体的新建页（/catalog/new/$kind） */
   create?: { entity: string; label: string };
   target: KpiTarget;
 }
@@ -368,7 +368,7 @@ export function inSaleKpi(counts: ReturnType<typeof catalogCounts>, pack: Indust
   // 「另有草稿7条：线路1 · 酒店6」，只列有草稿的实体
   const withDrafts = counts.filter((c) => c.drafts > 0);
   const draftLine = withDrafts.map((c, i) => `${i === 0 ? `另有草稿${drafts}条：` : ''}${c.entity.label}${c.drafts}`);
-  // 在售数为 0：明细给「新建{实体名}」链接，只给编辑者（spec「总览 · 状态」）
+  // 在售数为 0：明细写「新建{实体名}」、整格链到新建，只给编辑者（spec「总览 · 状态」）
   const create = value === 0 && who.editor && first ? { entity: first.kind, label: `新建${first.label}` } : undefined;
   return {
     key: 'inSale',
