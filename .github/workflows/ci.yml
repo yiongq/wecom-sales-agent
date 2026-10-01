@@ -88,6 +88,8 @@ jobs:
       # - src/adapters/wecom.selftest.ts：企微发送链路——分段不劈开 URL/emoji、多链接不硬做卡片、
       #   剥离链接不吞正文。这几条只有对着微信实机才看得见，没有断言就会悄悄坏掉。
       # - src/dejargon.selftest.ts：中文话术夹带英文的出口护栏，重点验证不误伤产品库里的酒店品牌名
+      # - src/engine-holiday.selftest.ts：节日放到一半时的顺口一问（「国庆期间人多吗」）不冲掉客户说过的出发日子，
+      #   时钟钉死在国庆、五一、春节、中秋放假中和放完的那几天。只在那几天坏，平时跑别的自测看不出来。
       # - src/price-guard.selftest.ts：价格出口护栏，两侧都要钉——编价拦得住，
       #   真实报价与「人均 X 万」档位话术零误杀
       # - src/llm.selftest.ts：LLM 调用层（假 fetch，不发真实请求）：思考参数按模型选、1210 自愈、

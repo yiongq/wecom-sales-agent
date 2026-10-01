@@ -1940,6 +1940,27 @@ const LUNAR_HOLIDAYS: Record<string, string[]> = {
 /** 节日按当天算（国庆 = 10月1日）。这只是个大概，所以只拿来补报价、方案书，不拿来改下单日期（见 groundToolArgs） */
 const SOLAR_HOLIDAYS: Record<string, string> = { 国庆: '10-01', 五一: '05-01', 元旦: '01-01' };
 const HOLIDAY_ALIAS: Record<string, string> = { 十一: '国庆', 劳动节: '五一', 大年初一: '春节', 八月十五: '中秋' };
+/** 节日假期从节日那天（上面两张表里的日子）算起放几天，按国务院办公厅每年发的放假安排（法定假日连调休）常见的天数：
+ *  国庆 10月1日至7日，五一 5月1日至5日，元旦 1月1日至3日，春节从初一到初七，端午、中秋连周末三天（个别年份节日落在
+ *  三天里的最后一天，这里一律从节日那天往后数）。只拿来认「这次节日正在放假中」（见 holidayInProgress）。
+ *  节日那天之前放的几天（除夕、端午前的周末）不用管：那时节日那天还没到，本来就读成这一次 */
+const HOLIDAY_DAYS: Record<string, number> = { 国庆: 7, 五一: 5, 元旦: 3, 春节: 7, 端午: 3, 中秋: 3 };
+
+/** iso 往后数 n 天 */
+function addDays(iso: string, n: number): string {
+  const t = new Date(`${iso}T00:00:00Z`);
+  t.setUTCDate(t.getUTCDate() + n);
+  return t.toISOString().slice(0, 10);
+}
+
+/** 今天在放的那一次节日假期从哪天起（没在放就是 undefined）。10月2号的国庆已经过了「10月1日」那天，
+ *  readDepartDates 照旧读成明年的国庆，但客户这时顺口问「国庆期间人多吗」，说的多半就是眼下这个 */
+function holidayInProgress(name: string, today: string): string | undefined {
+  const days = HOLIDAY_DAYS[name];
+  const solar = SOLAR_HOLIDAYS[name];
+  const starts = solar ? [`${today.slice(0, 4)}-${solar}`] : (LUNAR_HOLIDAYS[name] ?? []);
+  return days ? starts.find((d) => d <= today && addDays(d, days - 1) >= today) : undefined;
+}
 
 /** 认得出具体哪天的说法。只认阿拉伯数字的月日（与此前口径一致）；「十一」只在跟着假期说法时算国庆，
  *  不然「十一个人」「十一天」都成了国庆 */
@@ -1992,8 +2013,10 @@ const NEAR_NOT_ON = /^\s*(?:节|假期|长假|期间)?\s*(?:前(?!后)|之前|�
 const AFTER_HOLIDAY = /(?:过完|过了)\s*$/;
 
 type SpokenDate =
-  /** iso 为空：说的是一个用不了的日子（2 月 31 日、写明年份的过去日期、这个月已过的日子） */
-  { kind: 'date'; iso?: string; exact: boolean } | { kind: 'vague' };
+  /** iso 为空：说的是一个用不了的日子（2 月 31 日、写明年份的过去日期、这个月已过的日子）。
+   *  ongoing：说的节日（没说哪年，或说的就是正在放的那年）今天正在放假，记下今天。报价、下单不看它，
+   *  只拿来认顺口一问说的是不是眼下这次（见 departMonths） */
+  { kind: 'date'; iso?: string; exact: boolean; ongoing?: string } | { kind: 'vague' };
 
 /**
  * 一句话里客户说的出发日期（pick）和他在这句里明说的所有具体出发日子（exact，下单核日期用）。
@@ -2001,7 +2024,7 @@ type SpokenDate =
  * 或是把前面说不准的说具体了。此前一律取最后一处，「10月1号出发，玩到10月7号」成了 7 号出发，
  * 「国庆出发吧，孩子下个月还要考试」成了说不准哪天。返程、经历、区间终点（「10月1号到7号」的 7 号）、
  * 别的安排（「这个周末商量一下」）不算；一处都没有返回 pick=null。
- * 节假日取最近的未来那一次，exact=false；today 参数只为自测能模拟任意日期。
+ * 节假日取最近的未来那一次，exact=false；这次节日正在放假时另带 ongoing（见 SpokenDate）。today 参数只为自测能模拟任意日期。
  */
 function readDepartDates(
   text: string,
@@ -2046,7 +2069,10 @@ function readDepartDates(
       const iso = solar
         ? `${want ?? (`${year}-${solar}` >= today ? year : year + 1)}-${solar}`
         : LUNAR_HOLIDAYS[name].find((d) => (want ? d.startsWith(`${want}-`) : d >= today));
-      date = !iso ? { kind: 'vague' } : { kind: 'date', iso: iso >= today ? iso : undefined, exact: false };
+      // 正在放的这次节日：没说哪年的，或说的就是这次的年份（「今年国庆」）才算；「明年国庆」说的不是眼下这次
+      const now = holidayInProgress(name, today);
+      const ongoing = now && (want === undefined || now.startsWith(`${want}-`)) ? { ongoing: today } : {};
+      date = !iso ? { kind: 'vague' } : { kind: 'date', iso: iso >= today ? iso : undefined, exact: false, ...ongoing };
     }
     spans.push({ at, end: at + m[0].length, date });
   }
@@ -2098,11 +2124,16 @@ function spokenDepartDate(text: string, today = todayIso()): SpokenDate | null {
 // 模型按 10月3号 下单被拦下，又去问一遍客户早就说过的日子
 const ASIDE_QUESTION = /吗|？|\?|呢|多不多|几天|怎么样|咋样|如何|冷不冷|热不热|好不好/;
 const ASIDE_NOT = /出发|走|去|动身|启程|飞|改|换|算了|推迟|延|提前|不去/;
-/** 出发时间说法所在的年月（节假日按那天，只说到月份的按 monthSaid）；说不出是哪个月的返回 undefined */
-function departMonth(pick: SpokenDate, text: string): string | undefined {
-  if (pick.kind === 'date') return pick.iso?.slice(0, 7);
-  const ym = monthSaid(text);
-  return ym ? `${ym.y}-${String(ym.mo).padStart(2, '0')}` : undefined;
+/** 出发时间说法所在的年月（节假日按那天，只说到月份的按 monthSaid）；说不出是哪个月的返回空。
+ *  节日正在放假时眼下这个月也算（见 SpokenDate 的 ongoing）：此前 10月2号顺口问「国庆期间景区人多吗」只读成明年 10 月，
+ *  和客户早先说的「10月3号出发」不在同一个月，这句问话就冲掉了 10月3号，下单被驳回去再问哪天 */
+function departMonths(pick: SpokenDate, text: string, today = todayIso()): string[] {
+  if (pick.kind === 'date') {
+    const days = [pick.iso, pick.ongoing].filter((d) => d !== undefined);
+    return [...new Set(days.map((d) => d.slice(0, 7)))];
+  }
+  const ym = monthSaid(text, today);
+  return ym ? [`${ym.y}-${String(ym.mo).padStart(2, '0')}`] : [];
 }
 function isAside(pick: SpokenDate, text: string): boolean {
   return !(pick.kind === 'date' && pick.exact) && ASIDE_QUESTION.test(text) && !ASIDE_NOT.test(text);
@@ -2121,20 +2152,22 @@ function isMonthAside(pick: SpokenDate, text: string): boolean {
  * 会话里客户最近一次说出发时间的那句话读出来的（从最新一句往前找，改口以最新为准），text 是那句原话。
  * 最近那句只是顺口问到节假日、月份（见 isAside）时，往前找：同一个月里更早明说过具体哪天，就以那天为准
  */
-function latestDepart(customerTexts: string[]): { pick: SpokenDate; exact: string[]; text: string } | null {
-  let aside: { pick: SpokenDate; exact: string[]; text: string; month: string } | null = null;
+function latestDepart(customerTexts: string[], today = todayIso()): { pick: SpokenDate; exact: string[]; text: string } | null {
+  let aside: { pick: SpokenDate; exact: string[]; text: string; months: string[] } | null = null;
   const byTheWay = (pick: SpokenDate, t: string): boolean => isAside(pick, t) || isMonthAside(pick, t);
   for (let i = customerTexts.length - 1; i >= 0; i--) {
-    const r = readDepartDates(customerTexts[i]);
+    const r = readDepartDates(customerTexts[i], today);
     if (!r.pick) continue;
     const got = { pick: r.pick, exact: r.exact, text: customerTexts[i] };
-    const month = departMonth(r.pick, customerTexts[i]);
+    const months = departMonths(r.pick, customerTexts[i], today);
     if (!aside) {
-      if (!month || !byTheWay(r.pick, customerTexts[i])) return got;
-      aside = { ...got, month };
+      // 说不出是哪个月的问句也记下：往前找时和哪句都对不上，照样以它为准
+      if (!byTheWay(r.pick, customerTexts[i])) return got;
+      aside = { ...got, months };
       continue;
     }
-    if (month !== aside.month) break;
+    const asideMonths = aside.months;
+    if (!months.some((m) => asideMonths.includes(m))) break;
     if (r.pick.kind === 'date' && r.pick.exact) return got;
     if (!byTheWay(r.pick, customerTexts[i])) break;
   }
@@ -3887,4 +3920,5 @@ export const __engineTest = {
   toolHints,
   dropProposalOffers,
   resolveDepartDate,
+  latestDepart,
 };
