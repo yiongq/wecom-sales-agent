@@ -65,6 +65,7 @@ import { isUniqueViolation, type TenantCtx } from '../db/client.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { profile } from '../profile.js';
 import { indexHealth } from '../retrieval.js';
+import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
   AuditQuery,
   CatalogItemParam,
@@ -407,14 +408,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return c.json(item, 200);
     },
   )
-  // 只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才一次建出来（见 src/shared/catalog-csv.ts）
+  // 只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才一次建出来（见 src/shared/catalog-csv.ts）。
+  // 表头也认字段的中文标签（后台 UX spec「CSV 导入」）：标签表取自租户的行业包
   .post(
     '/catalog/:kind/import-csv',
     canEdit,
     zValidator('param', CatalogKindParam, badRequest),
     zValidator('json', ImportCsvBody, badRequest),
     async (c) => {
-      const items: CatalogItem[] = await importCatalogCsv(ctxOf(c), c.req.valid('param').kind, c.req.valid('json').csv);
+      const kind = c.req.valid('param').kind;
+      const entity = currentTenant().pack.entities.find((e) => e.kind === kind);
+      const labels = entity ? csvLabelsOf(entity) : undefined;
+      const items: CatalogItem[] = await importCatalogCsv(ctxOf(c), kind, c.req.valid('json').csv, labels);
       return c.json({ items }, 200);
     },
   )

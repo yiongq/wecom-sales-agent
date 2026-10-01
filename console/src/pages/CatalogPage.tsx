@@ -3,16 +3,15 @@
 // csvImport 为 true 的实体另有「导入CSV」（不能导入的不渲染这个入口，也不放灰按钮）；非编辑成员和匿名都没有这两个入口。
 // 页签、工具条、表格与各种状态在 catalog/CatalogList.tsx，页签、搜索、筛选都写进地址（catalog/params.ts）。
 // 名称是链到详情页（/catalog/$kind/$code，第 10.1 步）的链接，「新建」去新建页（/catalog/new/$kind，第 10.3 步），
-// 任何行业包的实体都一样。「导入CSV」暂时打开 01 的旧导入弹窗，按需下载、不进本页的块：只认共用 schema 里的 kind，
-// 第 12 步的导入弹窗按行业包渲染以后换掉（plan「Open」）
+// 任何行业包的实体都一样。「导入CSV」打开按行业包渲染的导入弹窗（catalog/CsvImportDialog.tsx，第 12 步），
+// 第一次点时才下载它的块（CSV 的解析与预检都在里面，spec「性能」）
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { Button } from 'antd';
-import { Plus } from 'lucide-react';
-import { lazy, type ReactNode, Suspense, useState } from 'react';
+import { FileUp, Plus } from 'lucide-react';
+import { lazy, type ReactNode, Suspense, useRef, useState } from 'react';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
-import { legacyKind } from '../catalogForm.js';
 import { CatalogList } from '../catalog/CatalogList.js';
 import { filterFields, listActions, listColumns, type ListRow, statusParts } from '../catalog/list.js';
 import type { CatalogSearch } from '../catalog/params.js';
@@ -25,7 +24,7 @@ import { NotFound } from '../shell/Shell.js';
 import { cjk } from '../typography.js';
 import { canEdit, usePack, useViewer } from '../viewer.js';
 
-const CsvImport = lazy(() => import('./CsvImport.js').then((m) => ({ default: m.CsvImport })));
+const CsvImportDialog = lazy(() => import('../catalog/CsvImportDialog.js').then((m) => ({ default: m.CsvImportDialog })));
 
 /** 列表里引用列、引用筛选要的目标实体（写被引用条目的名称）；没有引用列时不多取 */
 function useRefItems(pack: IndustryPack, entity: EntityType, anon: boolean): (kind: string) => readonly RefItem[] | undefined {
@@ -52,21 +51,22 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
   // 更新列的「今天」、月份条的当前月：打开页面时取一次（走查钉住时钟）
   const [now] = useState(() => Date.now());
   const refItems = useRefItems(pack, entity, anon);
-  // 旧导入弹窗认得这个 kind 时是它，否则 null
-  const legacy = legacyKind(entity.kind) ? entity.kind : null;
+  // 导入弹窗：第一次点「导入CSV」才挂上（才下载它的块）；关上以后留着挂载（关的动画照常），下次打开不再等。
+  // 每次打开换一个 key，从第1步重新来
+  const [csv, setCsv] = useState({ round: 0, open: false });
+  // 关上以后焦点回到「导入CSV」。antd 还给打开它的那个按钮，但从空状态导入的，建好以后空状态卸了、那个按钮不在了，
+  // 焦点会掉到 body；这时页头已经有了一份。导入按钮同一时刻只挂一份，ref 指着挂着的那份
+  const importButton = useRef<HTMLButtonElement>(null);
   const refresh = (): Promise<void> => qc.invalidateQueries({ queryKey: ['catalog', entity.kind] });
 
   const can = listActions(editable, entity);
   const actions: ReactNode = can.create ? (
     <>
-      {can.csv &&
-        (legacy !== null ? (
-          <Suspense fallback={<Button>导入CSV</Button>}>
-            <CsvImport kind={legacy} label={entity.label} onDone={refresh} />
-          </Suspense>
-        ) : (
-          <Button>导入CSV</Button>
-        ))}
+      {can.csv && (
+        <Button ref={importButton} icon={<Icon of={FileUp} />} onClick={() => setCsv((c) => ({ round: c.round + 1, open: true }))}>
+          导入CSV
+        </Button>
+      )}
       <PrimaryButton icon={<Icon of={Plus} />} onClick={() => void navigate({ to: '/catalog/new/$kind', params: { kind: entity.kind } })}>
         新建{entity.label}
       </PrimaryButton>
@@ -111,6 +111,25 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
         )}
         emptyActions={actions}
       />
+      {csv.round ? (
+        <Suspense fallback={null}>
+          <CsvImportDialog
+            key={csv.round}
+            open={csv.open}
+            pack={pack}
+            entity={entity}
+            existing={rows}
+            onClose={() => setCsv((c) => ({ ...c, open: false }))}
+            onImported={() => void refresh()}
+            onShowDrafts={() => {
+              setCsv((c) => ({ ...c, open: false }));
+              // 新建的草稿都在草稿页签：搜索与筛选一并清掉，免得把它们筛走
+              void navigate({ search: { status: 'draft' } });
+            }}
+            afterClose={() => importButton.current?.focus()}
+          />
+        </Suspense>
+      ) : null}
     </>
   );
 }

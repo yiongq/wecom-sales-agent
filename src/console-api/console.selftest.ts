@@ -2079,7 +2079,7 @@ check(
     [
       '库里已有这个 code',
       `${head}${NL}h-new-1,名,三亚,五星,100,房,亮点,${NL}h-csv-one,名,三亚,五星,100,房,亮点,`,
-      (r) => r.body.rows?.[0]?.row === 2 && JSON.stringify(r.body.rows).includes('已经有了'),
+      (r) => JSON.stringify(r.body.rows) === JSON.stringify([{ row: 2, issues: [{ path: 'id', message: '这个编号已经有了' }] }]),
     ],
     ['过不了 schema（缺必填、id 不合规）', `${head}${NL}H_BAD,名,三亚,五星,100,房,,`, (r) => r.body.rows?.[0]?.row === 1],
     ['只有表头', head, (r) => r.body.rows?.[0]?.row === 0],
@@ -2109,6 +2109,63 @@ check(
     'CSV 导入：非编辑角色 403，匿名 401',
     (await call('POST', '/catalog/hotel/import-csv', { as: agent, json: { csv } })).status === 403 &&
       (await call('POST', '/catalog/hotel/import-csv', { json: { csv } })).status === 401,
+  );
+}
+
+// 后台 UX spec 验收 15 第 9 条：酒店 CSV 用中文表头导入，结果与英文表头相同（标签表取自租户的行业包）；
+// 带「制表符 + =」前缀的格子（导入弹窗下载不合格行时加的防公式前缀），导入后前缀被去掉。
+// 另走一遍验收 19 的「改好后重新导入」：下载的文件每格加引号、带 BOM 和「不合格原因」列，原样交上去，这一列不进数据
+{
+  const NL = String.fromCharCode(10);
+  const TAB = String.fromCharCode(9);
+  const BOM = String.fromCharCode(0xfeff);
+  const cells = (id: string): string[] => [
+    id,
+    '中文表头酒店',
+    '三亚',
+    `${TAB}=五星`,
+    '1880',
+    `${TAB}@海景房`,
+    '私人沙滩、无边泳池',
+    '海岛',
+  ];
+  const en = ['id,name,destination,stars,nightlyFrom,roomType,highlights,tags', cells('h-head-en').join(',')].join(NL);
+  const zh = ['酒店编号,酒店名称,目的地,星级档次,每晚起价,主推房型,酒店亮点,标签', cells('h-head-zh').join(',')].join(NL);
+  const a = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv: en } });
+  const b = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv: zh } });
+  const payloadOf = (r: Res): Body | undefined => (r.body.items as Body[] | undefined)?.[0]?.payload as Body | undefined;
+  const sameButId = (x: Body | undefined, y: Body | undefined): boolean =>
+    !!x && !!y && JSON.stringify({ ...x, id: '' }) === JSON.stringify({ ...y, id: '' });
+  check(
+    '验收 15 第 9 条：中文表头导入 → 200，payload 与英文表头的相同（键序也相同），只差编号',
+    a.status === 200 && b.status === 200 && sameButId(payloadOf(a), payloadOf(b)) && payloadOf(b)?.id === 'h-head-zh',
+    `${a.text.slice(0, 200)} | ${b.text.slice(0, 200)}`,
+  );
+  check(
+    '验收 15 第 9 条：「制表符 + =」「制表符 + @」开头的格子，导入后前缀去掉',
+    payloadOf(b)?.stars === '=五星' && payloadOf(b)?.roomType === '@海景房',
+    JSON.stringify(payloadOf(b)),
+  );
+  const q = (s: string): string => `"${s.replaceAll('"', '""')}"`;
+  const fixed = [
+    ['酒店编号', '酒店名称', '目的地', '星级档次', '每晚起价', '主推房型', '酒店亮点', '标签', '不合格原因'].map(q).join(','),
+    [...cells('h-head-fixed'), '每晚起价：要写整数，写的是「2,6OO」'].map(q).join(','),
+  ].join(String.fromCharCode(13, 10));
+  const c = await call('POST', '/catalog/hotel/import-csv', { ...O, json: { csv: `${BOM}${fixed}` } });
+  check(
+    '验收 19：下载的不合格行文件改好后原样重新导入 → 200，「不合格原因」列不进数据，防公式前缀不进数据',
+    c.status === 200 && sameButId(payloadOf(c), payloadOf(a)) && !JSON.stringify(payloadOf(c)).includes('不合格'),
+    c.text.slice(0, 300),
+  );
+  const mixed = await call('POST', '/catalog/hotel/import-csv', {
+    ...O,
+    json: { csv: ['id,酒店编号,name,destination,stars,nightlyFrom,roomType,highlights,tags', `h-x,${cells('h-x').join(',')}`].join(NL) },
+  });
+  check(
+    '中文标签与字段名指向同一个字段 → 422 第 0 行「表头重复」，点名后出现的那一列',
+    mixed.status === 422 &&
+      JSON.stringify(mixed.body.rows) === JSON.stringify([{ row: 0, issues: [{ path: '酒店编号', message: '表头重复' }] }]),
+    mixed.text,
   );
 }
 
