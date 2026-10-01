@@ -208,7 +208,8 @@ interface Pair {
 const P = (fg: string, bg: readonly string[], min: number): Pair => ({ fg, bg, min });
 
 // §1.2 主表：底写成从下到上的叠层（alpha 色先叠到它所在的底上：hover、subtle 叠 panel，selected 分别叠 frame 与 panel）。
-// raised 与 hover·raised 只在深色表里有；浅色 raised 就是白，照样查
+// raised、hover·raised 与 subtle·raised 只在深色表里有；浅色 raised 就是白，照样查。subtle·raised 是抽屉、弹窗里的
+// 分段轨道和差异的折叠行：分段控件的焦点框外移 2，正好画在轨道上；折叠行的焦点框往里收 2，画在它自己的底上（验收 2）
 const BGS: Readonly<Record<string, readonly string[]>> = {
   panel: ['panel'],
   frame: ['frame'],
@@ -218,6 +219,7 @@ const BGS: Readonly<Record<string, readonly string[]>> = {
   selected·frame: ['frame', 'selected'],
   selected·panel: ['panel', 'selected'],
   subtle: ['panel', 'subtle'],
+  subtle·raised: ['raised', 'subtle'],
   'accent-bg': ['accent-bg'],
 };
 const FGS: ReadonlyArray<readonly [string, number]> = [
@@ -255,9 +257,11 @@ function brandPairs(): Pair[] {
     P('on-badge', ['badge'], TEXT),
     P('month-on', ['panel', 'month-off'], GRAPHIC),
     P('month-on', ['panel'], GRAPHIC),
-    // 回滚弹窗的差异块：删除行是两层 subtle 叠在 raised 上，这里只用 text 与 text-2（§1.2「嵌套的底」）
+    // 回滚弹窗的差异块：删除行是两层 subtle 叠在 raised 上，这里只用 text 与 text-2（§1.2「嵌套的底」）；
+    // 折叠行也是 subtle，叠在差异块的 subtle 上，焦点框往里收 2 画在它上面（验收 2）
     P('text', ['raised', 'subtle', 'subtle'], TEXT),
     P('text-2', ['raised', 'subtle', 'subtle'], TEXT),
+    P('focus', ['raised', 'subtle', 'subtle'], GRAPHIC),
     // ⌘K 的当前行：--selected 叠在 raised 上；行字 text，右侧补充在当前行上换成 text-2（text-3 在深色这里只有 4.39，第 16 步 axe）
     P('text', ['raised', 'selected'], TEXT),
     P('text-2', ['raised', 'selected'], TEXT),
@@ -350,6 +354,8 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   P('Segmented.itemSelectedColor', ['Segmented.itemSelectedBg'], TEXT),
   // 选中段的圈（§5.4、§1.2 的 1.4.11）：圈把滑块和外面的轨道（subtle 叠 panel）分开，对轨道 ≥3:1
   P('Segmented.boxShadowTertiary', ['colorBgContainer', 'Segmented.trackBg'], GRAPHIC),
+  // 抽屉、弹窗里的分段控件（发布抽屉的「行内 / 并排」）：轨道叠在 raised 上
+  P('Segmented.boxShadowTertiary', ['colorBgElevated', 'Segmented.trackBg'], GRAPHIC),
   // 开关关着的底（§5.4）：放在 panel 上（审计页的「显示登录记录」、样张），关着的白色滑块叠在它上面
   P('Switch.colorTextQuaternary', ['colorBgContainer'], GRAPHIC),
   P('Switch.handleBg', ['Switch.colorTextQuaternary'], GRAPHIC),

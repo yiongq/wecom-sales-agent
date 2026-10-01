@@ -174,7 +174,7 @@ export const DARK: Tokens = {
   'on-accent': '#FFFFFF',
   'accent-text': '#75A2FF',
   'accent-bg': '#15274D',
-  focus: '#2F68EB',
+  focus: '#3F7AFE',
   'accent-ring': 'rgba(47,104,235,.35)',
   success: '#6FCF8C',
   'success-bg': '#10281A',
