@@ -34,6 +34,20 @@ import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { packById } from '../../../src/packs/registry.js';
 import { sameValue } from '../../../src/shared/catalog.js';
+import {
+  catalogCsvColumns,
+  CSV_MAX_BODY_BYTES,
+  CSV_MAX_CHARS,
+  csvBodyBytes,
+  csvLabelsOf,
+  csvParts,
+  entityCsvShape,
+  guardCell,
+  toCsv,
+  unguardCell,
+} from '../../../src/shared/catalog-csv.js';
+import { ImportCsvBody } from '../../../src/shared/console-api.js';
+import { parseCsv } from '../../../src/shared/csv.js';
 import { absoluteTime } from '../../../src/shared/format.js';
 import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';
 import {
@@ -128,6 +142,24 @@ import {
   usableChanges,
   visibleErrors,
 } from '../catalog/save.js';
+import {
+  cellText,
+  checkCsv,
+  csvRules,
+  csvSummary,
+  downloadLabel,
+  failedCsv,
+  failedName,
+  importLabel,
+  lookalikeParts,
+  submission as csvSubmission,
+  tableFields,
+  tableHeader,
+  templateCsv,
+  templateName,
+  withServerIssues,
+} from '../catalog/csv-import.js';
+import { CsvEncodingError, decodeCsvFile, readCsvBytes } from '../csvFile.js';
 import { CatalogItemPage, CatalogNewPage } from '../pages/CatalogItemPage.js';
 import { CatalogPage } from '../pages/CatalogPage.js';
 import { entityIcon } from '../shell/icons.js';
@@ -6381,6 +6413,858 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
         [true, true],
       ],
     );
+  }
+  // ---------------- 13. CSV 导入（plan 第 12 步） ----------------
+  // spec「CSV 导入（H 页）」、验收 15 第 9 条与验收 19，设计系统 §5.14、§5.5 与 H 页。列、表头别名、防公式前缀与三条上限在
+  // src/shared/catalog-csv.ts（前后端共用），弹窗的纯逻辑在 catalog/csv-import.ts，弹窗在 catalog/CsvImportDialog.tsx；
+  // 旅游包的酒店与假包的主材走同一套代码
+  const CSV_BOM = String.fromCharCode(0xfeff);
+  const TAB = String.fromCharCode(9);
+  const H_HEAD = '酒店编号,酒店名称,目的地,星级档次,每晚起价,主推房型,酒店亮点,标签';
+  const EN_HEAD = 'id,name,destination,stars,nightlyFrom,roomType,highlights,tags';
+  /** 设计系统 H 页的 8 行：第 3 行的编号已经有了（data/ 里的松赞梅里），第 6 行的每晚起价把 0 写成了字母 O */
+  const H_ROWS = [
+    'h-sixsenses-qingcheng,青城山六善酒店,四川,顶奢,3400,山景套房,私汤院落、青城后山徒步,养生',
+    'h-jinjiang-chengdu,成都锦江宾馆,四川,五星,900,行政房,老成都地标,城市',
+    'h-songtsam-meili,松赞梅里山居,云南,顶奢,4800,雪山景观套房,日照金山,雪山',
+    'h-amandayan,大研安缦,云南,顶奢,5200,纳西庭院套房,古城旁的安缦,古城',
+    'h-kempinski-guiyang,贵阳凯宾斯基大酒店,贵州,五星,1100,城景房,市中心,城市',
+    'h-yunshang-xijiang,云上西江酒店,贵州,精品,"2,6OO",观景吊脚楼房,千户苗寨夜景,苗寨',
+    'h-liquan-libo,荔波荔泉宾馆,贵州,五星,800,园景房,小七孔旁,山水',
+    'h-songtsam-lhasa,松赞拉萨林卡,西藏,顶奢,3600,布达拉宫景观套房,远眺布达拉宫,藏地',
+  ];
+  const H_CSV = [H_HEAD, ...H_ROWS].join('\r\n');
+  const cellsOfLine = (line: string): string[] => parseCsv(line)[0]!;
+  const tableOf = (c: ReturnType<typeof checkCsv>) => (c.kind === 'rows' ? c.table : null);
+  /** 中文 Windows 上 Excel 另存的 GBK 文件（字节由 Python 的 gbk 编码器算出，不经本仓库的代码） */
+  const GBK_TEXT = `${H_HEAD}\r\nh-gbk-one,三亚湾酒店,三亚,五星,1680,海景房,私人沙滩,海岛\r\n`;
+  const GBK_FILE = Uint8Array.from(
+    'bec6b5eab1e0bac52cbec6b5eac3fbb3c62cc4bfb5c4b5d82cd0c7bcb6b5b5b4ce2cc3bfcdedc6f0bcdb2cd6f7cdc6b7bfd0cd2cbec6b5eac1c1b5e32cb1eac7a90d0a682d67626b2d6f6e652cc8fdd1c7cde5bec6b5ea2cc8fdd1c72ccee5d0c72c313638302cbaa3beb0b7bf2ccbbdc8cbc9b3ccb22cbaa3b5ba0d0a'
+      .match(/../g)!
+      .map((x) => parseInt(x, 16)),
+  );
+
+  // 13.1 列与标签：按行业包推出的列与按共用 schema 推出的相同；不能平铺的必填字段让这一类导入不了
+  {
+    const hotel = entityCsvShape(HOTEL);
+    eq(
+      '酒店：按行业包推出的列与按 schema 推出的相同（服务端与前端的列一致）',
+      hotel.columns.map((c) => c.key),
+      catalogCsvColumns('hotel').columns,
+    );
+    eq(
+      '酒店：每列的写法与必填（数组用「、」分隔，金额是整数）',
+      [[...hotel.flat.entries()], [...hotel.required]],
+      [
+        [
+          ['id', 'string'],
+          ['name', 'string'],
+          ['destination', 'string'],
+          ['stars', 'string'],
+          ['nightlyFrom', 'integer'],
+          ['roomType', 'string'],
+          ['highlights', 'strings'],
+          ['tags', 'strings'],
+        ],
+        ['id', 'name', 'destination', 'stars', 'nightlyFrom', 'roomType', 'highlights', 'tags'],
+      ],
+    );
+    eq('酒店：中文标签是表头的别名（服务端要的标签表）', csvLabelsOf(HOTEL), {
+      酒店编号: 'id',
+      酒店名称: 'name',
+      目的地: 'destination',
+      星级档次: 'stars',
+      每晚起价: 'nightlyFrom',
+      主推房型: 'roomType',
+      酒店亮点: 'highlights',
+      标签: 'tags',
+    });
+    check(
+      '线路：逐日行程必填又不能平铺，和 schema 推出的一样导入不了',
+      entityCsvShape(ROUTE).nestedRequired.includes('itinerary') && !catalogCsvColumns('route').importable,
+    );
+    const pkg = entityCsvShape(PKG);
+    eq(
+      '假包套餐：每种字段类型的写法（多字段的有序子项不成列，只有一个子字段的按「、」分隔）',
+      [[...pkg.flat.entries()], pkg.nestedRequired],
+      [
+        [
+          ['id', 'string'],
+          ['title', 'string'],
+          ['pricePerSqm', 'integer'],
+          ['minArea', 'integer'],
+          ['houseTypes', 'strings'],
+          ['styles', 'strings'],
+          ['startMonths', 'string'],
+          ['duration', 'integer'],
+          ['demolition', 'boolean'],
+          ['materials', 'strings'],
+          ['highlights', 'strings'],
+        ],
+        ['nodes'],
+      ],
+    );
+    const m = entityCsvShape(MATERIAL);
+    eq(
+      '假包主材：列、必填（环保等级选填）',
+      [m.columns.map((c) => c.key), [...m.required]],
+      [
+        ['id', 'name', 'category', 'brand', 'priceUnit', 'unitPrice', 'warrantyYears', 'ecoGrade'],
+        ['id', 'name', 'category', 'brand', 'priceUnit', 'unitPrice', 'warrantyYears'],
+      ],
+    );
+    const noCode = entityCsvShape({ ...MATERIAL, fields: MATERIAL.fields.filter((f) => f.key !== '$code') });
+    eq(
+      '字段配置里没写 $code 的实体：编号列照样有，标签取 codeLabel',
+      [noCode.columns[0]?.key, noCode.columns[0]?.label, noCode.labels['主材编号'], [...noCode.required][0]],
+      ['id', '主材编号', 'id', 'id'],
+    );
+  }
+
+  // 13.2 防公式注入：危险字符开头的格子加一个制表符；导入时只去「制表符 + 危险字符」开头的那一个
+  {
+    const CR = String.fromCharCode(13);
+    const LF = String.fromCharCode(10);
+    const danger = ['=1+1', '+86', '-1', '@SUM(A1)', `${TAB}x`, `${CR}x`, `${LF}x`, '＝1', '＋1', '－1', '＠a'];
+    const safe = ['abc', '1-2', 'a=b', '', ' =1', '五星', '（=）'];
+    eq(
+      '防公式：= + - @、制表符、回车、换行与全角的 ＝＋－＠ 开头的格子，前面加一个制表符',
+      danger.map(guardCell),
+      danger.map((x) => `${TAB}${x}`),
+    );
+    eq('防公式：其余的格子不动', safe.map(guardCell), safe);
+    eq(
+      '去前缀：guardCell 加的那个去掉，往返不变',
+      [...danger, ...safe].map((x) => unguardCell(guardCell(x))),
+      [...danger, ...safe],
+    );
+    eq(
+      '去前缀：只去「制表符 + 危险字符」开头的一个制表符；制表符后面不是危险字符的、不在开头的都不动',
+      [
+        unguardCell(`${TAB}abc`),
+        unguardCell(`${TAB}${TAB}=1`),
+        unguardCell(`${TAB}=1`),
+        unguardCell(`${TAB}＠1`),
+        unguardCell(`x${TAB}=1`),
+      ],
+      [`${TAB}abc`, `${TAB}=1`, '=1', '＠1', `x${TAB}=1`],
+    );
+  }
+
+  // 13.3 写 CSV 与三条上限
+  {
+    const rows = [
+      ['a', 'b,c', '说"好"'],
+      ['"开头', '第一行\n第二行', ''],
+      ['x\r\ny', ' 空格 ', '=1'],
+    ];
+    eq('写 CSV：含逗号、引号、换行的格子加引号，解析回来逐格相同', parseCsv(toCsv(rows)), rows);
+    eq(
+      '写 CSV：quoteAll 每格都加引号；默认 \\r\\n 结尾，可以换成 \\n',
+      [toCsv([['a', '']], { quoteAll: true }), toCsv([['a'], ['b']], { eol: '\n' })],
+      ['"a",""\r\n', 'a\nb\n'],
+    );
+    const head = ['id', 'name'];
+    const many = (n: number, name = '名'): string[][] => Array.from({ length: n }, (_, i) => [`h-${i}`, name]);
+    const sent = (n: number, name = '名'): string => toCsv([head, ...many(n, name)], { eol: '\n' });
+    eq(
+      '上限：200 行一份，201 行两份，401 行三份',
+      [csvParts(head, many(200)), csvParts(head, many(201)), csvParts(head, many(401))],
+      [1, 2, 3],
+    );
+    /** 一份放得下的最多行数 */
+    const most = (name: string): number => {
+      let n = 1;
+      while (csvParts(head, many(n + 1, name)) === 1) n += 1;
+      return n;
+    };
+    const long = 'a'.repeat(400);
+    const han = '汉'.repeat(300);
+    const nChars = most(long);
+    const nBytes = most(han);
+    eq(
+      '上限：按字符数（ASCII 的长行）与按 UTF-8 字节数（中文每字 3 字节）算出的边界正好卡在服务端的闸上',
+      [
+        sent(nChars, long).length <= CSV_MAX_CHARS,
+        sent(nChars + 1, long).length > CSV_MAX_CHARS,
+        sent(nBytes, han).length < CSV_MAX_CHARS,
+        csvBodyBytes(sent(nBytes, han)) <= CSV_MAX_BODY_BYTES,
+        csvBodyBytes(sent(nBytes + 1, han)) > CSV_MAX_BODY_BYTES,
+      ],
+      [true, true, true, true, true],
+    );
+    check(
+      '上限：请求体的字节数就是 {"csv":…} 的 UTF-8 字节数；放得下的那份 ImportCsvBody 也收',
+      csvBodyBytes(sent(nBytes, han)) === Buffer.byteLength(JSON.stringify({ csv: sent(nBytes, han) })) &&
+        ImportCsvBody.safeParse({ csv: sent(nChars, long) }).success,
+    );
+    check(
+      '上限：字符数与服务端的 ImportCsvBody 相同',
+      ImportCsvBody.safeParse({ csv: 'x'.repeat(CSV_MAX_CHARS) }).success &&
+        !ImportCsvBody.safeParse({ csv: 'x'.repeat(CSV_MAX_CHARS + 1) }).success,
+    );
+  }
+
+  // 13.4 解码：先 UTF-8 严格解码，不成再 GBK；都解不开才拒收
+  {
+    const utf = readCsvBytes(new TextEncoder().encode(`${CSV_BOM}${GBK_TEXT}`));
+    eq('解码：UTF-8（带 BOM）按 UTF-8 读，BOM 去掉', [utf.encoding, utf.text === GBK_TEXT], ['utf-8', true]);
+    const gbk = readCsvBytes(GBK_FILE);
+    eq('解码：Excel 在中文 Windows 上另存的 GBK 按 GBK 读，中文不乱码', [gbk.encoding, gbk.text === GBK_TEXT], ['gbk', true]);
+    const thrown = (f: () => unknown): unknown => {
+      try {
+        f();
+      } catch (e) {
+        return e;
+      }
+      return null;
+    };
+    const bad = thrown(() => readCsvBytes(Uint8Array.from([0xff, 0xfe, 0x41, 0x00])));
+    check(
+      '解码：UTF-8 和 GBK 都解不开 → CsvEncodingError，说明怎么另存',
+      bad instanceof CsvEncodingError && bad.message.includes('GBK') && bad.message.includes('CSV UTF-8'),
+    );
+    check('01 的 decodeCsvFile 不变：GBK 照旧拒收', thrown(() => decodeCsvFile(GBK_FILE)) instanceof CsvEncodingError);
+  }
+
+  // 13.5 预检：H 页的 8 行（编号已经有了、数写错）；英文表头与中文表头相同；只导入合格的行；下载不合格的行
+  {
+    const t = tableOf(checkCsv(HOTEL, H_CSV, HOTEL_ROWS))!;
+    eq(
+      'H 页：第3行编号已经有了，写出名称和状态；第6行每晚起价写错，记下原样的格子；其余合格',
+      t.rows.map((r) => r.issues),
+      [
+        [],
+        [],
+        [{ col: 'id', text: '酒店编号：这个编号已经有了（松赞梅里山居，已上架）' }],
+        [],
+        [],
+        [{ col: 'nightlyFrom', text: '每晚起价：要写整数，写的是「2,6OO」', raw: '2,6OO' }],
+        [],
+        [],
+      ],
+    );
+    eq(
+      'H 页：汇总与两个按钮（不放禁用的「全部导入」）',
+      [csvSummary(t), importLabel(t), downloadLabel(t)],
+      [
+        { tone: 'warning', title: '6行可以导入，2行要改', note: '要改的格子已标出，原因写在最后一列。导入的都是草稿，逐条检查后再上架' },
+        '只导入合格的6行',
+        '下载不合格的2行（带原因）',
+      ],
+    );
+    eq('H 页：表格的字段列（名称与编号合成首列，数组不画），金额的单位写进表头', tableFields(HOTEL, t.keys).map(tableHeader), [
+      '目的地',
+      '星级档次',
+      '每晚起价（元）',
+      '主推房型',
+    ]);
+    const price = fieldOf(HOTEL, 'nightlyFrom');
+    eq(
+      'H 页：数按列表的写法，写错的照原样，编号照原样',
+      [cellText(price, t.rows[0]!, t.keys), cellText(price, t.rows[5]!, t.keys), cellText(fieldOf(HOTEL, '$code'), t.rows[2]!, t.keys)],
+      ['3,400', '2,6OO', 'h-songtsam-meili'],
+    );
+    eq('形似数字的字母：「2,6OO」的两个 O 各自标出', lookalikeParts('2,6OO'), [
+      { text: '2,6', mark: false },
+      { text: 'O', mark: true },
+      { text: 'O', mark: true },
+    ]);
+    const en = tableOf(checkCsv(HOTEL, [EN_HEAD, ...H_ROWS].join('\n'), HOTEL_ROWS));
+    check(
+      '英文表头：payload（含键序）与问题都和中文表头的相同',
+      JSON.stringify(en?.rows.map((r) => [r.payload, r.issues])) === JSON.stringify(t.rows.map((r) => [r.payload, r.issues])),
+    );
+    const sub = csvSubmission(t);
+    eq(
+      '只导入合格的6行：提交表头和合格的6行（原样的格子，\\n 结尾），记下它们原来的行号',
+      [parseCsv(sub.csv), sub.csv.includes('\r'), sub.rows, sub.fits],
+      [[H_HEAD.split(','), ...[0, 1, 3, 4, 6, 7].map((i) => cellsOfLine(H_ROWS[i]!))], false, [1, 2, 4, 5, 7, 8], true],
+    );
+    const failed = failedCsv(t);
+    eq(
+      '下载不合格的行：带 BOM；表头加「不合格原因」；2 行，原因在最后一列',
+      [failed.startsWith(CSV_BOM), parseCsv(failed)],
+      [
+        true,
+        [
+          [...H_HEAD.split(','), '不合格原因'],
+          [...cellsOfLine(H_ROWS[2]!), '酒店编号：这个编号已经有了（松赞梅里山居，已上架）'],
+          [...cellsOfLine(H_ROWS[5]!), '每晚起价：要写整数，写的是「2,6OO」'],
+        ],
+      ],
+    );
+    check(
+      '下载不合格的行：每格都加双引号',
+      failed
+        .slice(1)
+        .split('\r\n')
+        .filter(Boolean)
+        .every((line) => line.split('","').length === 9 && line.startsWith('"') && line.endsWith('"')),
+      failed,
+    );
+    eq(
+      '文件名：模板「酒店导入模板.csv」；不合格的行接在原文件名后面，粘贴的用实体名',
+      [
+        templateName(HOTEL),
+        failedName(HOTEL, { name: '新签酒店-9月.csv', encoding: 'utf-8', text: '' }, 2),
+        failedName(HOTEL, { name: null, encoding: null, text: '' }, 3),
+      ],
+      ['酒店导入模板.csv', '新签酒店-9月-不合格的2行.csv', '酒店-不合格的3行.csv'],
+    );
+
+    // 验收 19：以「=」开头的格子在引号内带制表符前缀；改好重新导入，前缀不进数据；再下载一次也不叠加
+    const evil = tableOf(checkCsv(HOTEL, [EN_HEAD, 'h-evil,=HYPERLINK("http://x"),三亚,＋五星,一千,@房,亮点,'].join('\n'), HOTEL_ROWS))!;
+    const file = failedCsv(evil);
+    check(
+      '防公式注入：以 =、全角＋、@ 开头的格子在引号内带制表符前缀',
+      file.includes(`"${TAB}=HYPERLINK(""http://x"")"`) && file.includes(`"${TAB}＋五星"`) && file.includes(`"${TAB}@房"`),
+      file,
+    );
+    const again = tableOf(checkCsv(HOTEL, file.replace('一千', '1000'), HOTEL_ROWS));
+    eq(
+      '改好以后原样重新导入：合格，防公式前缀与「不合格原因」列都不进数据',
+      again?.rows.map((r) => [r.issues, r.payload.name, r.payload.stars, r.payload.roomType, Object.keys(r.payload)]),
+      [
+        [
+          [],
+          '=HYPERLINK("http://x")',
+          '＋五星',
+          '@房',
+          ['id', 'name', 'destination', 'stars', 'nightlyFrom', 'roomType', 'highlights', 'tags'],
+        ],
+      ],
+    );
+    const twice = failedCsv(tableOf(checkCsv(HOTEL, file, HOTEL_ROWS))!);
+    check(
+      '再下载一次：前缀不叠加，旧的原因列换成新的',
+      twice.includes(`"${TAB}=HYPERLINK`) &&
+        !twice.includes(`"${TAB}${TAB}=`) &&
+        parseCsv(twice)[0]!.filter((h) => h === '不合格原因').length === 1,
+      twice,
+    );
+  }
+
+  // 13.6 预检：空文件、整份的问题、上限、逐行的各种问题；假包主材；服务端 422 的问题放回原来的行；填写规则与模板
+  {
+    eq(
+      '空文件、只有表头、表头加空行：停在第2步',
+      [checkCsv(HOTEL, ''), checkCsv(HOTEL, H_HEAD), checkCsv(HOTEL, `${H_HEAD}\r\n\r\n,,,,,,,\r\n`)].map((c) => c.kind),
+      ['empty', 'empty', 'empty'],
+    );
+    eq(
+      '整份的问题：没有的字段、缺编号列、中文标签与字段名重复、字段名重复、没闭合的引号',
+      [
+        checkCsv(HOTEL, `${H_HEAD},nope\r\n${H_ROWS[0]},x`),
+        checkCsv(HOTEL, '酒店名称\r\n名'),
+        checkCsv(HOTEL, `id,${H_HEAD}\r\nh-x,${H_ROWS[0]}`),
+        checkCsv(HOTEL, `${EN_HEAD},name\r\n${H_ROWS[0]},x`),
+        checkCsv(HOTEL, `${H_HEAD}\r\n"h-x,名`),
+      ],
+      [
+        { kind: 'whole', rows: 1, lines: ['「nope」没有这个字段'] },
+        { kind: 'whole', rows: 1, lines: ['「酒店编号」这一列不能少'] },
+        { kind: 'whole', rows: 1, lines: ['「酒店编号」表头重复'] },
+        { kind: 'whole', rows: 1, lines: ['「酒店名称」表头重复'] },
+        { kind: 'whole', rows: null, lines: ['有一个双引号没有闭合'] },
+      ],
+    );
+    const rows250 = Array.from({ length: 250 }, (_, i) => `h-big-${i},名${i},三亚,五星,100,房,亮点,`);
+    eq('250 行：在前端就要分份（验收 19）', checkCsv(HOTEL, [H_HEAD, ...rows250].join('\n'), HOTEL_ROWS), {
+      kind: 'big',
+      rows: 250,
+      parts: 2,
+    });
+    const odd = tableOf(
+      checkCsv(
+        HOTEL,
+        [
+          H_HEAD,
+          'h-a,,三亚,五星,100,房,亮点,',
+          'h-b,名,三亚,五星,100,房,,',
+          'H_BAD,名,三亚,五星,100,房,亮点,',
+          'h-a,名,三亚,五星,100,房,亮点,',
+          'h-c,名,三亚,五星,0,房,亮点,',
+          'h-d,名,三亚,五星,100,房,亮点,,多一格',
+        ].join('\n'),
+        HOTEL_ROWS,
+      ),
+    );
+    eq(
+      '逐行的问题：上架前检查的写法（没填、至少1条、编号规则、大于0），文件内编号重复点名前一行，列数不对是整行的问题',
+      odd?.rows.map((r) => r.issues),
+      [
+        [{ col: 'name', text: '酒店名称：没填' }],
+        [{ col: 'highlights', text: '酒店亮点：至少1条' }],
+        [{ col: 'id', text: `酒店编号：${CODE_RULE}` }],
+        [{ col: 'id', text: '酒店编号：和第1行重复' }],
+        [{ col: 'nightlyFrom', text: '每晚起价：要是大于0的整数' }],
+        [{ col: null, text: '有 9 列，表头有 8 列' }],
+      ],
+    );
+    check('列表还没取到：不查编号是否已经有了（服务端兜底）', tableOf(checkCsv(HOTEL, H_CSV))!.rows[2]!.issues.length === 0);
+
+    const M_HEAD = '主材编号,主材名称,品类,品牌,计价单位,单价,质保,环保等级';
+    const mt = tableOf(
+      checkCsv(
+        MATERIAL,
+        [
+          M_HEAD,
+          'm-dongpeng-750,东鹏 750×1500 岩板,瓷砖,东鹏,㎡,328,5,',
+          'm-marcopolo-800,马可波罗 800×800 抛釉砖,瓷砖,马可波罗,㎡,168,5,E0级',
+          'm-x,某,石材,某牌,㎡,100,5,',
+          'm-y,某,瓷砖,某牌,㎡,100,五年,',
+        ].join('\n'),
+        MATERIAL_ROWS,
+      ),
+    )!;
+    eq(
+      '假包主材：同一套检查（选填的环保等级空着合格；编号已经有了；不在可选项里；质保写成汉字）',
+      mt.rows.map((r) => r.issues),
+      [
+        [],
+        [{ col: 'id', text: '主材编号：这个编号已经有了（马可波罗 800×800 抛釉砖，已上架）' }],
+        [{ col: 'category', text: '品类：不在可选项里' }],
+        [{ col: 'warrantyYears', text: '质保：要写整数，写的是「五年」', raw: '五年' }],
+      ],
+    );
+    eq(
+      '假包主材：表格的字段列与写法（单价的单位跟着计价单位，写在格子里）',
+      [
+        tableFields(MATERIAL, mt.keys).map(tableHeader),
+        cellText(fieldOf(MATERIAL, 'unitPrice'), mt.rows[0]!, mt.keys),
+        cellText(fieldOf(MATERIAL, 'warrantyYears'), mt.rows[0]!, mt.keys),
+        mt.rows[0]!.payload,
+      ],
+      [
+        ['品类', '品牌', '计价单位', '单价', '质保', '环保等级'],
+        '328元/㎡',
+        '5年',
+        {
+          id: 'm-dongpeng-750',
+          name: '东鹏 750×1500 岩板',
+          category: '瓷砖',
+          brand: '东鹏',
+          priceUnit: '㎡',
+          unitPrice: 328,
+          warrantyYears: 5,
+        },
+      ],
+    );
+
+    const t = tableOf(checkCsv(HOTEL, H_CSV, HOTEL_ROWS))!;
+    const merged = withServerIssues(HOTEL, t, csvSubmission(t).rows, [
+      { row: 2, issues: [{ path: 'id', message: '这个编号已经有了' }] },
+      { row: 3, issues: [{ path: 'highlights.0', message: 'Too small: expected string to have >=1 characters' }] },
+      { row: 0, issues: [{ path: '', message: '一次最多导入 200 行，这份有 201 行' }] },
+    ]);
+    eq(
+      '服务端 422：逐行的问题放回原来的行（提交的第2、3行是原来的第2、4行）；英文说明写「格式不对」；第0行的单独给出',
+      [
+        merged.table.rows[1]!.issues,
+        merged.table.rows[3]!.issues,
+        merged.whole,
+        merged.table.rows.filter((r) => !r.issues.length).map((r) => r.row),
+      ],
+      [
+        [{ col: 'id', text: '酒店编号：这个编号已经有了' }],
+        [{ col: 'highlights', text: '酒店亮点第1条：格式不对' }],
+        ['一次最多导入 200 行，这份有 201 行'],
+        [1, 5, 7, 8],
+      ],
+    );
+
+    const meili = HOTELS.find((h) => h.id === 'h-songtsam-meili')!;
+    eq(
+      '第1步的规则：表头、选填、怎么填；例子照着已有的一条写，编号写示例编号',
+      csvRules(travel, HOTEL, meili).map((r) => [r.label, r.optional, r.how, r.example]),
+      [
+        ['酒店编号', false, CODE_RULE, 'h-songtsam-meili'],
+        ['酒店名称', false, '文字', '松赞梅里山居'],
+        ['目的地', false, '文字', '云南'],
+        ['星级档次', false, '文字', '顶奢'],
+        ['每晚起价', false, '整数（元），不写逗号', '4800'],
+        ['主推房型', false, '文字', '雪山景观套房'],
+        ['酒店亮点', false, '可以写几条，用「、」分隔，至少1条', (meili.highlights as string[]).join('、')],
+        ['标签', false, '可以写几个，用「、」分隔', '雪山、藏地、秘境'],
+      ],
+    );
+    eq(
+      '第1步的规则：还没有条目时，例子取 placeholder「例：」后面的，没有就空着',
+      csvRules(travel, HOTEL).map((r) => r.example),
+      ['h-songtsam-meili', null, null, '五星、顶奢', null, '水上别墅', null, null],
+    );
+    eq(
+      '第1步的规则：假包套餐的各种类型（多选、单位、月份、是否、引用、单值的有序子项）',
+      csvRules(renovation, PKG).map((r) => r.how),
+      [
+        CODE_RULE,
+        '文字',
+        '整数（元），不写逗号',
+        '整数（㎡）',
+        '一居、两居、三居、四居及以上、别墅，可以写几个，用「、」分隔',
+        '可以写几个，用「、」分隔',
+        '写出月份，如「6-9月」「11月-次年4月」，或写「全年」',
+        '整数（天）',
+        '写「是」（含拆旧）或「否」（不含拆旧）',
+        '写主材的编号，可以写几个，用「、」分隔',
+        '可以写几条，用「、」分隔',
+      ],
+    );
+    eq(
+      '第1步的规则：假包主材（单选写其中一个，选填标出）',
+      csvRules(renovation, MATERIAL).map((r) => [r.how, r.optional]),
+      [
+        [CODE_RULE, false],
+        ['文字', false],
+        ['瓷砖、地板、橱柜、卫浴、门窗、涂料，写其中一个', false],
+        ['文字', false],
+        ['㎡、延米、件、套，写其中一个', false],
+        ['整数（元），不写逗号', false],
+        ['整数（年）', false],
+        ['ENF级、E0级、E1级，写其中一个', true],
+      ],
+    );
+    eq(
+      '模板：带 BOM，只有一行表头，写字段的中文标签',
+      [templateCsv(HOTEL), templateCsv(MATERIAL)],
+      [`${CSV_BOM}${H_HEAD}\r\n`, `${CSV_BOM}${M_HEAD}\r\n`],
+    );
+    check('模板填上一行就能导入', tableOf(checkCsv(HOTEL, `${templateCsv(HOTEL)}${H_ROWS[0]}`, HOTEL_ROWS))?.rows[0]?.issues.length === 0);
+  }
+
+  // 13.7 弹窗（挂整页：路由、查询缓存、假接口）：五步、空文件、GBK、H 页、下载、只导入合格的、422、连不上、完成、太大、粘贴、假包
+  {
+    async function mountList(path: string, viewer: Viewer, lists: Readonly<Record<string, readonly ListRow[]>>) {
+      const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+      qc.setQueryData(VIEWER_KEY, viewer);
+      for (const [kind, items] of Object.entries(lists)) qc.setQueryData(['catalog', kind], { items });
+      const root = createRootRoute({ component: Outlet });
+      const tree = root.addChildren([
+        createRoute({ getParentRoute: () => root, path: '/catalog/$kind', validateSearch: catalogSearch, component: CatalogPage }),
+      ]);
+      const router = createRouter({ routeTree: tree, history: createMemoryHistory({ initialEntries: [path] }) });
+      await router.load();
+      const m = await mount(
+        <QueryClientProvider client={qc}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+      return { ...m, router, qc };
+    }
+    const D = '.csv-dialog';
+    const modal = () => document.querySelector<HTMLElement>(`${D} .ant-modal`);
+    const stepNow = () => document.querySelector(`${D} .csv-step[aria-current="step"] .csv-step-name`)?.textContent;
+    const squash = (s: string | null | undefined) => (s ?? '').replace(/\s/g, '');
+    const footer = () => all<HTMLElement>(document, `${D} .csv-footer button`).map((b) => squash(b.textContent));
+    const btn = (label: string) => all<HTMLButtonElement>(document, `${D} button`).find((b) => squash(b.textContent) === label);
+    const fileRow = () => document.querySelector(`${D} .csv-file-row`)?.textContent;
+    const readError = () => document.querySelector(`${D} .csv-read-error`)?.textContent ?? null;
+    const alertTitles = () => texts(document, `${D} .csv-body .ant-alert-title`);
+    const resultRows = () => all<HTMLTableRowElement>(document, `${D} .csv-results tbody tr.ant-table-row`);
+    const pick = async (name: string, data: Uint8Array<ArrayBuffer> | string) => {
+      const input = document.querySelector<HTMLInputElement>(`${D} input[type="file"]`)!;
+      const file = new File([typeof data === 'string' ? new TextEncoder().encode(data) : data], name, { type: 'text/csv' });
+      Object.defineProperty(input, 'files', { value: [file], configurable: true });
+      const before = `${stepNow()}|${fileRow()}|${readError()}`;
+      await act(async () => {
+        input.dispatchEvent(new win.Event('change', { bubbles: true }) as unknown as Event);
+      });
+      await until(() => `${stepNow()}|${fileRow()}|${readError()}` !== before);
+    };
+    // 下载：接住 Blob 和文件名，读出原样的字节（Blob.text() 会吞掉 BOM）
+    const downloads: { name: string; bytes: Uint8Array }[] = [];
+    const reads: Promise<void>[] = [];
+    let lastBlob: Blob | null = null;
+    const realCreate = URL.createObjectURL;
+    const realClick = (win.HTMLAnchorElement.prototype as unknown as { click(): void }).click;
+    URL.createObjectURL = (b: Blob) => {
+      lastBlob = b;
+      return 'blob:csv-selftest';
+    };
+    const anchor = win.HTMLAnchorElement.prototype as unknown as { click(this: { download: string }): void };
+    anchor.click = function () {
+      const name = this.download;
+      const b = lastBlob!;
+      reads.push(b.arrayBuffer().then((buf) => void downloads.push({ name, bytes: new Uint8Array(buf) })));
+    };
+    const lastDownload = async () => {
+      await Promise.all(reads);
+      const d = downloads.at(-1);
+      return d
+        ? { name: d.name, head: Array.from(d.bytes.subarray(0, 3)), text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(d.bytes) }
+        : null;
+    };
+
+    let reply: (s: { method: string; url: string; body: unknown }) => Response | Promise<Response> | undefined = () => undefined;
+    const api = fakeApi((s) => (s.method === 'POST' ? reply(s) : undefined));
+    const posts = () => api.sent.filter((x) => x.method === 'POST');
+    const csvSent = (i: number) => parseCsv(((posts()[i]?.body ?? {}) as { csv?: string }).csv ?? '');
+
+    const pg = await mountList('/catalog/hotel', owner(travel), { hotel: HOTEL_ROWS });
+    const openBtn = () => all<HTMLButtonElement>(pg.box, '.page-actions button').find((b) => squash(b.textContent) === '导入CSV');
+    check('打开之前没有下载弹窗的块、没有挂弹窗', modal() === null);
+    await click(openBtn());
+    await until(() => modal() !== null);
+    await motion();
+    eq(
+      '第1步：标题写出对象，步骤条五步、当前是第1步，880 宽',
+      [
+        document.querySelector(`${D} .ant-modal-title`)?.textContent,
+        texts(document, `${D} .csv-step-name`),
+        stepNow(),
+        modal()?.style.width,
+      ],
+      ['从CSV导入酒店', ['下载模板', '选文件', '校验结果', '导入', '完成'], '下载模板', '880px'],
+    );
+    eq(
+      '第1步：规则表每列一行（表头、怎么填、例子取列表的第一条），右下主按钮「选文件」，默认焦点在「下载模板」',
+      [
+        texts(document, `${D} .csv-rules tbody tr.ant-table-row td:first-child`),
+        texts(document, `${D} .csv-rules tbody tr.ant-table-row td:last-child`)[1],
+        footer(),
+        document.activeElement === btn('下载模板'),
+      ],
+      [['酒店编号', '酒店名称', '目的地', '星级档次', '每晚起价', '主推房型', '酒店亮点', '标签'], HOTELS[0]!.name, ['选文件'], true],
+    );
+    await click(btn('下载模板'));
+    eq('下载模板：文件名、UTF-8 带 BOM、只有一行中文表头', await lastDownload(), {
+      name: '酒店导入模板.csv',
+      head: [0xef, 0xbb, 0xbf],
+      text: `${CSV_BOM}${H_HEAD}\r\n`,
+    });
+
+    await click(btn('选文件'));
+    eq(
+      '第2步：「选文件」「粘贴」两个页签，焦点在「选择文件」，底栏只有「上一步」',
+      [stepNow(), texts(document, `${D} .ant-tabs-tab`), document.activeElement === btn('选择文件'), footer()],
+      ['选文件', ['选文件', '粘贴'], true, ['上一步']],
+    );
+    await pick('空.csv', '');
+    eq(
+      '空文件：停在第2步，文件行下写「这份文件没有要导入的行」，没有导入按钮',
+      [stepNow(), fileRow(), readError(), footer()],
+      ['选文件', '空.csv按UTF-8读取·0行', '这份文件没有要导入的行', ['上一步']],
+    );
+    await pick('只有表头.csv', `${CSV_BOM}${H_HEAD}\r\n`);
+    eq('只有表头：同样停在第2步', [stepNow(), fileRow(), readError()], ['选文件', '只有表头.csv按UTF-8读取·0行', '这份文件没有要导入的行']);
+    await pick('乱码.csv', Uint8Array.from([0xff, 0xfe, 0x41, 0x00]));
+    check(
+      '解不开的文件：停在第2步，说明怎么另存',
+      stepNow() === '选文件' && fileRow() === '乱码.csv' && (readError() ?? '').includes('CSV UTF-8'),
+      `${fileRow()} ${readError()}`,
+    );
+    await pick('新签酒店-GBK.csv', GBK_FILE);
+    eq(
+      'GBK 文件（验收 19）：进第3步，文件行写「按GBK读取」，中文照常',
+      [stepNow(), fileRow(), resultRows().map((r) => r.querySelector('.csv-title-name')?.textContent)],
+      ['校验结果', '新签酒店-GBK.csv按GBK读取·1行换一个文件', ['三亚湾酒店']],
+    );
+    check('第3步：焦点在这一步的内容上', document.activeElement === document.querySelector(`${D} .csv-body`));
+    await click(btn('换一个文件'));
+    check('「换一个文件」回到第2步，文件行清掉', stepNow() === '选文件' && fileRow() === undefined);
+
+    await pick('新签酒店-9月.csv', `${CSV_BOM}${H_CSV}`);
+    eq(
+      'H 页：文件行、汇总（warning）与说明',
+      [fileRow(), alertTitles(), document.querySelector(`${D} .csv-body .ant-alert`)?.className.includes('ant-alert-warning')],
+      ['新签酒店-9月.csv按UTF-8读取·8行换一个文件', ['6行可以导入，2行要改'], true],
+    );
+    eq(
+      'H 页：表头（名称与编号合成一列，金额的单位写进表头）',
+      texts(document, `${D} .csv-results thead th:not(.ant-table-cell-scrollbar)`),
+      ['行号', '结果', '酒店名称·编号', '目的地', '星级档次', '每晚起价（元）', '主推房型', '原因'],
+    );
+    const hr = resultRows();
+    eq(
+      'H 页：8 行的结果；第3行编号格标出、第6行每晚起价格标出，原因写在最后一列',
+      [
+        hr.map((r) => squash(r.querySelector('.csv-result')?.textContent)),
+        squash(hr[2]?.querySelector('.csv-title-code .csv-bad')?.textContent),
+        squash(hr[2]?.querySelector('.csv-reasons')?.textContent),
+        squash(hr[5]?.querySelector('td .csv-bad')?.textContent),
+        hr[5]?.querySelectorAll('.csv-lookalike').length,
+        squash(hr[5]?.querySelector('.csv-reasons')?.textContent),
+        all(document, `${D} .csv-results tbody .csv-bad`).length,
+      ],
+      [
+        ['合格', '合格', '要改', '合格', '合格', '要改', '合格', '合格'],
+        'h-songtsam-meili',
+        '酒店编号：这个编号已经有了（松赞梅里山居，已上架）',
+        '2,6OO',
+        4,
+        '每晚起价：要写整数，写的是「2,6OO」',
+        2,
+      ],
+    );
+    eq(
+      'H 页：合格的行按列表的写法（「3,400」右对齐），编号用等宽字',
+      [
+        cellsOf(hr[0]!).map(squash),
+        hr[0]?.querySelector('.csv-title-code .mono')?.textContent,
+        hr[0]?.querySelectorAll<HTMLElement>('td')[5]?.style.textAlign === 'right',
+      ],
+      [['1', '合格', '青城山六善酒店h-sixsenses-qingcheng', '四川', '顶奢', '3,400', '山景套房', ''], 'h-sixsenses-qingcheng', true],
+    );
+    eq('H 页的底栏：上一步、下载不合格的2行（带原因）、只导入合格的6行；没有「全部导入」', footer(), [
+      '上一步',
+      '下载不合格的2行（带原因）',
+      '只导入合格的6行',
+    ]);
+    await click(btn('下载不合格的2行（带原因）'));
+    const fd = await lastDownload();
+    eq(
+      '下载不合格的行：文件名接在原文件名后、带 BOM、两行加原因',
+      [fd?.name, fd?.head, fd && parseCsv(fd.text).map((r) => r.at(-1))],
+      [
+        '新签酒店-9月-不合格的2行.csv',
+        [0xef, 0xbb, 0xbf],
+        ['不合格原因', '酒店编号：这个编号已经有了（松赞梅里山居，已上架）', '每晚起价：要写整数，写的是「2,6OO」'],
+      ],
+    );
+    check('预检和下载都没有发请求', posts().length === 0);
+
+    // 只导入合格的6行：服务端说第1行的编号刚被别人用了（422）→ 放回第1行，回到第3步，主按钮变成「只导入合格的5行」
+    reply = () =>
+      json(
+        { error: 'invalid_csv', detail: 'CSV 有 1 处不合格', rows: [{ row: 1, issues: [{ path: 'id', message: '这个编号已经有了' }] }] },
+        422,
+      );
+    await click(btn('只导入合格的6行'));
+    await until(() => footer().includes('只导入合格的5行'));
+    eq(
+      '提交：表头原样（中文）、只有合格的6行；422 的问题放回原来的第1行',
+      [
+        csvSent(0),
+        stepNow(),
+        squash(resultRows()[0]?.querySelector('.csv-result')?.textContent),
+        squash(resultRows()[0]?.querySelector('.csv-reasons')?.textContent),
+      ],
+      [[H_HEAD.split(','), ...[0, 1, 3, 4, 6, 7].map((i) => cellsOfLine(H_ROWS[i]!))], '校验结果', '要改', '酒店编号：这个编号已经有了'],
+    );
+
+    // 连不上：导入中关不掉，失败后停在第4步、就地报错带重试；重试成功到第5步
+    const pending: { fail?: (e: unknown) => void } = {};
+    reply = () => new Promise<Response>((_, reject) => void (pending.fail = reject));
+    await click(btn('只导入合格的5行'));
+    await until(() => pending.fail !== undefined);
+    eq(
+      '导入中：第4步，「正在导入5条草稿」，右上角关闭点不动，底栏没有按钮',
+      [
+        stepNow(),
+        squash(document.querySelector(`${D} .csv-busy`)?.textContent),
+        document.querySelector<HTMLButtonElement>(`${D} .ant-modal-close`)?.disabled,
+        footer(),
+      ],
+      ['导入', '正在导入5条草稿', true, []],
+    );
+    await act(async () => pending.fail!(new TypeError('Failed to fetch')));
+    await until(() => alertTitles().length > 0);
+    eq(
+      '连不上：停在第4步，就地报错带重试，左边「上一步」',
+      [stepNow(), alertTitles(), btn('重试') !== undefined, footer()],
+      ['导入', ['服务暂时连不上'], true, ['上一步']],
+    );
+    reply = (s) => {
+      const sent = parseCsv((s.body as { csv: string }).csv);
+      const items = sent.slice(1).map((c) => ({ kind: 'hotel', code: c[0], ord: 30, rev: 1, status: 'draft', payload: { id: c[0] } }));
+      return json({ items });
+    };
+    const hotelGets = () => api.sent.filter((x) => x.method === 'GET' && x.url.endsWith('/catalog/hotel')).length;
+    const getsBefore = hotelGets();
+    await click(btn('重试'));
+    await until(() => stepNow() === '完成');
+    eq(
+      '完成：「已建5条草稿」与「去草稿页签逐条检查后上架」，列表随之重新取',
+      [
+        squash(document.querySelector(`${D} .csv-done-title`)?.textContent),
+        squash(document.querySelector(`${D} .csv-done-note`)?.textContent),
+        footer(),
+        csvSent(2).length,
+        hotelGets() > getsBefore,
+      ],
+      ['已建5条草稿', '去草稿页签逐条检查后上架', ['关闭', '去草稿页签'], 6, true],
+    );
+    await click(btn('去草稿页签'));
+    await motion();
+    eq(
+      '去草稿页签：地址换成草稿页签（搜索与筛选清掉），弹窗关上',
+      [pg.router.state.location.search, document.querySelector(`${D} .csv-steps`)],
+      [{ status: 'draft' }, null],
+    );
+
+    // 再打开是新的一轮；250 行在前端就要分份，不发请求；粘贴页签
+    const sentBefore = posts().length;
+    await click(openBtn());
+    await until(() => document.querySelector(`${D} .csv-steps`) !== null);
+    await motion();
+    check('再打开：回到第1步', stepNow() === '下载模板');
+    await click(btn('选文件'));
+    const rows250 = Array.from({ length: 250 }, (_, i) => `h-big-${i},名${i},三亚,五星,100,房,亮点,`);
+    await pick('大.csv', [H_HEAD, ...rows250].join('\r\n'));
+    eq(
+      '250 行（验收 19）：第3步写「这份文件太大，请分成2份导入」和上限，没有导入按钮，不发请求',
+      [
+        stepNow(),
+        alertTitles(),
+        squash(document.querySelector(`${D} .ant-alert-description`)?.textContent),
+        footer(),
+        posts().length === sentBefore,
+      ],
+      ['校验结果', ['这份文件太大，请分成2份导入'], '一次最多导入200行，整份不超过60,000个字、64KB', ['上一步'], true],
+    );
+    await click(btn('上一步'));
+    await click(document.querySelectorAll<HTMLElement>(`${D} .ant-tabs-tab-btn`)[1]);
+    const area = document.querySelector<HTMLTextAreaElement>(`${D} textarea`);
+    check('粘贴页签：占位是模板的表头，以「例：」开头', area?.placeholder === `例：${H_HEAD}`);
+    await click(btn('校验'));
+    check('粘贴的是空的：「粘贴的内容里没有要导入的行」', readError() === '粘贴的内容里没有要导入的行' && stepNow() === '选文件');
+    await typeInto(area, [EN_HEAD, H_ROWS[0], H_ROWS[1]].join('\n'));
+    await click(btn('校验'));
+    eq(
+      '粘贴英文表头的两行：全部合格，主按钮「导入2条草稿」，没有下载按钮',
+      [stepNow(), fileRow(), alertTitles(), footer()],
+      ['校验结果', '粘贴的内容2行改粘贴的内容', ['2行都可以导入'], ['上一步', '导入2条草稿']],
+    );
+    await press(modal(), 'Escape');
+    await motion();
+    check('没在导入时按 Esc 关上', document.querySelector(`${D} .csv-steps`) === null);
+    await pg.unmount();
+
+    // 假包的主材：同一个弹窗按它的字段画，提交到它的 kind
+    const mp = await mountList('/catalog/material', owner(renovation), { material: MATERIAL_ROWS });
+    await click(all<HTMLButtonElement>(mp.box, '.page-actions button').find((b) => squash(b.textContent) === '导入CSV'));
+    await until(() => modal() !== null);
+    await motion();
+    eq(
+      '假包主材：标题、规则表的表头',
+      [
+        document.querySelector(`${D} .ant-modal-title`)?.textContent,
+        texts(document, `${D} .csv-rules tbody tr.ant-table-row td:first-child`),
+      ],
+      ['从CSV导入主材', ['主材编号', '主材名称', '品类', '品牌', '计价单位', '单价', '质保', '环保等级（选填）']],
+    );
+    await click(btn('选文件'));
+    await pick(
+      '主材.csv',
+      ['主材编号,主材名称,品类,品牌,计价单位,单价,质保,环保等级', 'm-dongpeng-750,东鹏 750×1500 岩板,瓷砖,东鹏,㎡,328,5,'].join('\n'),
+    );
+    eq(
+      '假包主材：表头按它的字段，单价带单位',
+      [texts(document, `${D} .csv-results thead th:not(.ant-table-cell-scrollbar)`), cellsOf(resultRows()[0]!).map(squash)[6]],
+      [['行号', '结果', '主材名称·编号', '品类', '品牌', '计价单位', '单价', '质保', '环保等级', '原因'], '328元/㎡'],
+    );
+    reply = () => json({ items: [{ kind: 'material', code: 'm-dongpeng-750', ord: 9, rev: 1, status: 'draft', payload: {} }] });
+    await click(btn('导入1条草稿'));
+    await until(() => stepNow() === '完成');
+    check('假包主材：提交到 /catalog/material/import-csv', posts().at(-1)?.url.endsWith('/catalog/material/import-csv') === true);
+    await click(btn('关闭'));
+    await motion();
+    await mp.unmount();
+
+    api.restore();
+    URL.createObjectURL = realCreate;
+    (win.HTMLAnchorElement.prototype as unknown as { click(): void }).click = realClick;
   }
 }
 

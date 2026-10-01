@@ -51,15 +51,16 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
   // 更新列的「今天」、月份条的当前月：打开页面时取一次（走查钉住时钟）
   const [now] = useState(() => Date.now());
   const refItems = useRefItems(pack, entity, anon);
-  // 导入弹窗：第一次点「导入CSV」才挂上（才下载它的块）；关上以后留着挂载，下次打开不再等
-  const [csv, setCsv] = useState<{ mounted: boolean; open: boolean }>({ mounted: false, open: false });
+  // 导入弹窗：第一次点「导入CSV」才挂上（才下载它的块）；关上以后留着挂载（关的动画照常），下次打开不再等。
+  // 每次打开换一个 key，从第1步重新来
+  const [csv, setCsv] = useState({ round: 0, open: false });
   const refresh = (): Promise<void> => qc.invalidateQueries({ queryKey: ['catalog', entity.kind] });
 
   const can = listActions(editable, entity);
   const actions: ReactNode = can.create ? (
     <>
       {can.csv && (
-        <Button icon={<Icon of={FileUp} />} onClick={() => setCsv({ mounted: true, open: true })}>
+        <Button icon={<Icon of={FileUp} />} onClick={() => setCsv((c) => ({ round: c.round + 1, open: true }))}>
           导入CSV
         </Button>
       )}
@@ -107,17 +108,18 @@ function EntityList({ pack, entity }: { pack: IndustryPack; entity: EntityType }
         )}
         emptyActions={actions}
       />
-      {csv.mounted ? (
+      {csv.round ? (
         <Suspense fallback={null}>
           <CsvImportDialog
+            key={csv.round}
             open={csv.open}
             pack={pack}
             entity={entity}
             existing={rows}
-            onClose={() => setCsv({ mounted: true, open: false })}
+            onClose={() => setCsv((c) => ({ ...c, open: false }))}
             onImported={() => void refresh()}
             onShowDrafts={() => {
-              setCsv({ mounted: true, open: false });
+              setCsv((c) => ({ ...c, open: false }));
               // 新建的草稿都在草稿页签：搜索与筛选一并清掉，免得把它们筛走
               void navigate({ search: { status: 'draft' } });
             }}
