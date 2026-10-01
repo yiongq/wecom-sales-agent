@@ -45,17 +45,17 @@ function cachedVersions(qc: QueryClient): SopVersion[] {
 }
 
 /**
- * 按 id 取一个版本（回滚的目标「回到v1」、草稿的基线）：版本记录里已经有的不再取；版本不会变，取到了就一直用。
- * id 为 null 时不取
+ * 按 id 取一个版本（回滚的目标「回到v1」、草稿的基线）：版本记录里已经有的、调用方手上的（inHand）不再取；
+ * 版本不会变，取到了就一直用。id 为 null 时不取
  */
-export function useKnownVersion(id: string | null) {
+export function useKnownVersion(id: string | null, inHand: readonly SopVersion[] = []) {
   const qc = useQueryClient();
   return useQuery({
     queryKey: [...VERSIONS_KEY, 'id', id],
     queryFn: () => unwrap(api.sop.versions[':id'].$get({ param: { id: id! } })),
     enabled: id !== null,
     staleTime: Infinity,
-    initialData: () => (id === null ? undefined : cachedVersions(qc).find((v) => v.id === id)),
+    initialData: () => (id === null ? undefined : (inHand.find((v) => v.id === id) ?? cachedVersions(qc).find((v) => v.id === id))),
   });
 }
 

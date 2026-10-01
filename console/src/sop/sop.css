@@ -743,6 +743,20 @@
 .sop-bar-icon.is-success {
   color: var(--success);
 }
+/*
+ * 自动保存没保存上：摘要换成 danger 的「没保存上 · 重试」，不缩、不裁（「重试」在 Tab 顺序里，焦点框也要露出来），
+ * 原来的摘要降成后面的补充，放不下时省略的是它
+ */
+.sop-bar-icon.is-danger {
+  color: var(--danger);
+}
+.sop-publish-bar.is-save-failed .action-bar-summary {
+  flex: none;
+  overflow: visible;
+}
+.sop-bar-failed {
+  color: var(--danger);
+}
 .sop-bar-problems {
   color: var(--danger);
 }

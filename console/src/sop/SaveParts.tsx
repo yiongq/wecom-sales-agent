@@ -12,7 +12,8 @@ import { SectionDiff } from '../SectionDiff.js';
 import { cjk, Sep } from '../typography.js';
 import type { SaveStatus } from './autosave.js';
 
-const FAILED = '没保存上';
+/** 自动保存没存上（状态句的保存那一段、发布条的左边） */
+export const SAVE_FAILED = '没保存上';
 const RETRY = '重试';
 
 export function saveText(status: SaveStatus): string | null {
@@ -23,7 +24,7 @@ export function saveText(status: SaveStatus): string | null {
       return `已自动保存${clockTime(status.at)}`;
     case 'failed':
     case 'conflict':
-      return FAILED;
+      return SAVE_FAILED;
     default:
       return null;
   }
@@ -39,13 +40,13 @@ export function SaveState({ status, onRetry }: { status: SaveStatus; onRetry: ()
         {cjk(['', '已自动保存00:00'])}
       </span>
       <span className="sop-save-sizer" aria-hidden="true">
-        {cjk(['', FAILED, RETRY])}
+        {cjk(['', SAVE_FAILED, RETRY])}
       </span>
       <span className="sop-save-now" role="status">
         {text !== null && <Sep />}
         {failed ? (
           <span className="sop-save-failed">
-            {FAILED}
+            {SAVE_FAILED}
             {/* 409 以后不能重试，要先载入最新草稿（横幅上的按钮） */}
             {status.kind === 'failed' && (
               <>

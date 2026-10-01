@@ -37,6 +37,9 @@
 //    整页接按三方比算冲突的假服务端：提醒与发布抽屉的「去合并」（先存、重查）、合并模式的页头、目录、中栏、发布条与焦点，
 //    合并期间不自动保存、别的节只读，逐块采用、这一节处理好了、完成合并回到发布抽屉、发布成功（整个过程没有英文按钮），
 //    两节要合并，退出合并（确认、焦点、离开拦下），完成合并没成功（500、409 重新比一次），重查说不用合并了，家装假包。
+// 14. 话术页两条 owner 决定（2026-10-01）：自动保存没保存上时发布条左边的「没保存上 · 重试」（连不上、422，409 不写）；
+//    打开时草稿就跟不上线上版本，另取草稿所基于的那一版当比较的基准（骨架、整块出错、目录、额度条、状态句、发布条、改动标记、
+//    查看改动、发布抽屉、丢弃确认）；页面打开以后才跟不上的（手上有的不再取、没取到就地报错）；合并以后基准回到线上版本。
 // 整个进程按不支持 text-spacing-trim 的浏览器跑（selftest-env.ts），界面上的 cjk() 与编辑器都走 .halt 回退。
 // 行业包用文件里的夹具（console/src 里只有渲染器自测能 import 行业包，spec「行业包通用架构 · 放在哪里」）：
 // 一份照旅游包的节表写（B 页的场景数据），一份照家装整装假包的节表写，节的 key、标题、条数都和旅游包不同。
@@ -4157,11 +4160,14 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const CONFLICT = 'error：有1节在你改的同时被改了：话术原则去合并';
   for (const conflicts of [[], ['tone']]) {
     const srv = fakeServer(stale);
+    // 草稿基于 v2：页面打开时另取它当比较的基准
+    srv.released = [stale.published, { ...BAD_SOP.published, status: 'archived' }];
     // 后面要去发布：问题清空，发布条的「发布…」能点（提示只看 rebase）
     srv.check = (s) => ({ ...scan(s), violations: [], rebase: { needed: true, conflicts } });
     srv.checkHold = true;
     const m = await mountPage('/console/sop?section=tone', travelOwner, stale, FAST);
-    await waitFor(() => srv.checks() === 1);
+    // 页面等取到草稿所基于的 v2 才画出来（14.2），检查与它同时发出
+    await waitFor(() => srv.checks() === 1 && !!cmOf(m));
     const before = notices(m);
     await act(async () => srv.checkHeld[0]?.resolve());
     await waitFor(() => summaryOf(m) !== '');
@@ -6250,7 +6256,9 @@ async function openHistory(m: PageBox): Promise<void> {
   await n.unmount();
 }
 
-// 12.2e 草稿的基线不在版本记录里（这期间别人发布过，基线在后面几页）：另取那一版，取的时候是骨架，取不到就地报错、能重试
+// 12.2e 草稿的基线不在版本记录里（页面打开时草稿就跟不上线上版本，基线在后面几页）：页面打开时已经另取了那一版当比较的基准
+// （取的时候整页是骨架、取不到整块出错，见 14.2），回滚确认用同一份，不再取、没有骨架。回滚确认自己去取的样子
+// （页面换了基准、还没取到：骨架，取不到就地报错、能重试）见 14.5
 {
   const many = Array.from({ length: 25 }, (_, i) =>
     version(25 - i, withBodies(PUBLISHED, { objections: `第${25 - i}版的写法。\n\n` }), { status: i === 0 ? 'published' : 'archived' }),
@@ -6265,33 +6273,20 @@ async function openHistory(m: PageBox): Promise<void> {
   const srv = fakeServer(sop);
   srv.released = many;
   srv.check = () => ({ ...FIXED_CHECK(), violations: [], rebase: { needed: true, conflicts: [] } });
-  srv.byIdHold = true;
-  srv.byIdFails = true;
   const m = await mountPage('/console/sop?section=tone', historyOwner, sop, FAST);
+  await waitFor(() => !!cmOf(m));
   await openHistory(m);
   await clickEv(rowButton('v24', '回滚到这版…'));
   const modal = (): Element | undefined => modalOf('回滚到v24');
-  await waitFor(() => !!modal()?.querySelector('.sop-rb-pending'));
+  await waitFor(() => all(modal() ?? document.createElement('div'), '.sop-rb-list > li').length === 4);
   eq(
-    '取基线的时候：草稿那一条是骨架，另取 v3',
-    [!!modal()?.querySelector('.sop-rb-pending'), calls.filter((c) => c.path === '/api/console/sop/versions/v3').length],
-    [true, 1],
-  );
-  await act(async () => srv.byIdHeld.shift()?.resolve());
-  await waitFor(() => !!modal()?.querySelector('.ant-alert-error'));
-  eq(
-    '取不到：就地写「没取到草稿的基线版本」和「重试」，回滚照样能做',
-    [text(modal()!.querySelector('.ant-alert-error .ant-alert-title')), all(modal()!, '.ant-alert-error button').map(label)],
-    ['没取到草稿的基线版本', ['重试']],
-  );
-  srv.byIdFails = false;
-  srv.byIdHold = false;
-  await clickEv(all(modal()!, '.ant-alert-error button').find((b) => label(b) === '重试'));
-  await waitFor(() => !modal()?.querySelector('.ant-alert-error') && all(modal()!, '.sop-rb-list > li').length === 4);
-  eq(
-    '取到了：按基线 v3 比，草稿改的异议处理 v3 → v24 也改了，要先合并',
-    text(all(modal()!, '.sop-rb-list > li').at(-1)),
-    '你的草稿（改了异议处理）是在v3上改的。回滚后要先合并，才能发布。',
+    '回滚确认：按页面打开时取到的基线 v3 比（不再取、没有骨架），草稿改的异议处理 v3 → v24 也改了，要先合并',
+    [
+      text(all(modal() ?? document.createElement('div'), '.sop-rb-list > li').at(-1)),
+      !!modal()?.querySelector('.sop-rb-pending'),
+      calls.filter((c) => c.path === '/api/console/sop/versions/v3').length,
+    ],
+    ['你的草稿（改了异议处理）是在v3上改的。回滚后要先合并，才能发布。', false, 1],
   );
   await m.unmount();
 }
@@ -7757,6 +7752,364 @@ const MINE_LINE = '我在合并里写的一句。';
       'v3',
       [{ key: 'wechat-style', body: '我改的语气。\n' }],
     ],
+  );
+  await m.unmount();
+}
+
+// ---------------- 14. 话术页两条 owner 决定（2026-10-01） ----------------
+/** 发布条左边的「重试」（自动保存没保存上时才有） */
+const barRetry = (m: PageBox): HTMLButtonElement | null =>
+  publishBar(m)?.querySelector<HTMLButtonElement>('.sop-bar-failed button') ?? null;
+/** 目录里带「已改」圆点的节 */
+const dotted = (m: PageBox): string[] =>
+  all<HTMLAnchorElement>(m.box, 'a.sop-toc-row')
+    .filter((a) => a.querySelector('.sop-toc-dot[aria-label="已改"]'))
+    .map((a) => a.dataset.key ?? '');
+/** 额度条读屏名称里算改过的节 */
+const quotaChanged = (m: PageBox): string[] =>
+  [...(m.box.querySelector('.sop-quota-bar')?.getAttribute('aria-label') ?? '').matchAll(/([^，：]+?)[\d,]+字（已改）/g)].map((x) => x[1]!);
+/** 按 id 取某一版的请求（草稿的基线、回滚的目标） */
+const byIdCalls = (id?: string): number =>
+  calls.filter(
+    (c) =>
+      c.method === 'GET' && (id ? c.path === `/api/console/sop/versions/${id}` : /^\/api\/console\/sop\/versions\/[^/]+$/.test(c.path)),
+  ).length;
+
+// 14.1 自动保存没保存上：常驻的发布条左边先写 danger 的「没保存上 · 重试」（页头吸顶时状态句藏起来，在长正文的下半截打字
+// 也看得见、点得到），原来的摘要接在后面；读屏由状态句那一段念，条里不另设 status。「重试」马上存，存上以后条换回原来的样子。
+// 连不上（自动重试）与别的 4xx（422，不自动试）都这样；409 不写（另有横幅，条的原因是「载入最新草稿以后才能发布」）
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  // 退避放长：断言时还没自动重试，条上的「重试」是唯一马上存的路
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [10_000] });
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  const normal = barText(m).summary;
+  srv.mode = 'network';
+  await typeAtEnd(m, '加一句。');
+  await waitFor(() => saveNow(m).includes('没保存上'));
+  const bar = publishBar(m);
+  eq(
+    '连不上：发布条左边先写「没保存上 · 重试」（前面是 danger 的图标），改了哪几节、字数接在后面；状态句照写；条里没有另一个 status',
+    [
+      normal,
+      barText(m).summary,
+      text(barRetry(m)),
+      barText(m).hint.startsWith('·草稿改了2节（话术原则、异议处理）·字数'),
+      !!bar?.querySelector('.sop-bar-icon.is-danger'),
+      saveNow(m),
+      !!bar?.querySelector('[role="status"], [aria-live]'),
+    ],
+    ['草稿改了2节（话术原则、异议处理）', '没保存上·重试', '重试', true, true, '·没保存上·重试', false],
+  );
+  const puts = srv.puts().length;
+  await clickEv(barRetry(m));
+  await waitFor(() => srv.puts().length === puts + 1 && saveNow(m).includes('没保存上'));
+  eq(
+    '条上的「重试」：马上存（不等 10 秒的退避）；还连不上，条上照旧',
+    [srv.puts().length - puts, barText(m).summary],
+    [1, '没保存上·重试'],
+  );
+  srv.mode = 'ok';
+  await clickEv(barRetry(m));
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  eq(
+    '连上以后点「重试」：存上了，条换回原来的摘要，没有「重试」',
+    [barText(m).summary, !!publishBar(m)?.querySelector('.sop-bar-icon.is-danger'), barRetry(m)],
+    [normal, false, null],
+  );
+  srv.mode = 'invalid';
+  await typeAtEnd(m, '再一句。');
+  await waitFor(() => saveNow(m).includes('没保存上'));
+  const at = srv.puts().length;
+  await rest(200);
+  eq(
+    '别的 4xx（格式不对，422）：不自动重试，条上同样写「没保存上 · 重试」，页头下另有横幅',
+    [srv.puts().length - at, barText(m).summary, all(m.box, '.sop-banners .ant-alert').length],
+    [0, '没保存上·重试', 1],
+  );
+  srv.mode = 'ok';
+  await clickEv(barRetry(m));
+  await waitFor(() => saveNow(m) === '·已自动保存14:30');
+  eq(
+    '「重试」：存上了，横幅与条上的那句都没了',
+    [barText(m).summary, all(m.box, '.sop-banners .ant-alert').length, srv.puts().length - at],
+    [normal, 0, 1],
+  );
+  srv.mode = 'conflict';
+  await typeAtEnd(m, '第三句。');
+  await waitFor(() => !!m.box.querySelector('.sop-conflict'));
+  eq(
+    '409：条上不写「没保存上」（横幅已经滚进视口），「发布…」的原因是载入最新草稿以后才能发布',
+    [barText(m).summary, barText(m).note, barRetry(m), saveNow(m)],
+    [normal, '载入最新草稿以后才能发布', null, '·没保存上'],
+  );
+  await m.unmount();
+}
+
+// 14.2 打开时草稿就跟不上线上版本（draft.stale：草稿基于 v2 改了话术原则、异议处理，存下以后店长发布了 v3、只改了前言）：
+// 另取 v2 当比较的基准，取到以前整页是骨架（只取一次），没取到整块出错、能重试。取到以后目录、额度条、状态句、发布条、
+// 编辑器的改动标记、查看改动、发布抽屉的逐节改动与预填、丢弃的确认都只算你改的两节，前言（店长改的）不算
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
+  const opened = srv.state;
+  srv.byIdHold = true;
+  srv.byIdFails = true;
+  const m = await mountPage('/console/sop?section=preamble', travelOwner, opened, FAST);
+  await rest(30);
+  eq(
+    '取 v2 的时候：整页是骨架（目录、编辑器、发布条都还没画），只取一次',
+    [
+      opened.draft?.stale,
+      !!m.box.querySelector('.sop-skel-editor'),
+      !!cmOf(m),
+      all(m.box, 'a.sop-toc-row').length,
+      !!publishBar(m),
+      byIdCalls('v2'),
+    ],
+    [true, true, false, 0, false, 1],
+  );
+  await act(async () => srv.byIdHeld.shift()?.resolve());
+  await waitFor(() => !!m.box.querySelector('.ant-alert-error'));
+  eq(
+    '没取到：整块写「没取到」和「重试」（同第一次没取到 /sop），不先按线上版本画出来',
+    [text(m.box.querySelector('.ant-alert-error .ant-alert-title')), all(m.box, '.ant-alert-error button').map(label), !!cmOf(m)],
+    ['没取到', ['重试'], false],
+  );
+  srv.byIdFails = false;
+  srv.byIdHold = false;
+  await clickEv(all(m.box, '.ant-alert-error button').find((b) => label(b) === '重试'));
+  await waitFor(() => !!cmOf(m) && summaryOf(m) !== '');
+  eq(
+    '取到 v2：目录只有你改的两节带圆点（前言是店长改的，不算），额度条也一样；状态句是线上 v3、草稿改了2节；发布条同样两节',
+    [
+      byIdCalls('v2'),
+      dotted(m),
+      quotaChanged(m),
+      statusText(m).startsWith('线上v3·店长发布于'),
+      statusText(m).includes('草稿改了2节'),
+      barText(m).summary,
+    ],
+    [2, ['tone', 'objections'], ['话术原则', '异议处理'], true, true, '草稿改了2节（话术原则、异议处理）'],
+  );
+  eq(
+    '前言（打开的这一节）：编辑器里没有改动标记，说明行只写字数、没有「查看本节改动」',
+    [
+      all(m.box, '.sop-editor .sop-changed').length,
+      text(m.box.querySelector('.sop-pane-meta')).includes('→'),
+      all(m.box, '.sop-pane-meta button').length,
+    ],
+    [0, false, 0],
+  );
+  await clickEv(barButton(m, '查看改动'));
+  await waitFor(() => !!drawerOf('草稿的改动'));
+  const c = drawerOf('草稿的改动')!;
+  eq(
+    '查看改动：相对 v2（线上已是 v3），只有话术原则、异议处理',
+    [text(c.querySelector('.ant-drawer-title')), all(c, '.sop-diff-name').map((e) => text(e))],
+    ['草稿的改动相对v2（线上已是v3）', ['话术原则', '异议处理']],
+  );
+  await clickEv(c.querySelector('.ant-drawer-extra button'));
+  await waitFor(() => !drawerOf('草稿的改动'));
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const d = drawerOf('发布草稿')!;
+  eq(
+    '发布抽屉：替换说明写线上 v3；逐节改动只有你改的两节，预填也是',
+    [
+      text(d.querySelector('.sop-publish-replace')),
+      all(d, '.sop-diff-name').map((e) => text(e)),
+      d.querySelector<HTMLTextAreaElement>('textarea')?.value,
+    ],
+    ['将替换线上v3（店长·9月25日 20:00发布）', ['话术原则', '异议处理'], '修改：话术原则、异议处理。'],
+  );
+  await clickEv(drawerButton(d, '取消'));
+  await waitFor(() => !drawerOf('发布草稿'));
+  await clickEv(await discardItem(m));
+  await until(() => !!modalOf('丢弃草稿？'));
+  eq(
+    '丢弃的确认：草稿里2节改动（话术原则、异议处理），不把店长改的前言算进来',
+    text(modalOf('丢弃草稿？')?.querySelector('.confirm-body')),
+    '草稿里2节改动（话术原则、异议处理）会丢掉，线上v3不受影响。这一步撤销不了。',
+  );
+  await clickEv(all(modalOf('丢弃草稿？')!, 'button').find((x) => label(x) === '保留'));
+  await until(() => !modalOf('丢弃草稿？'));
+  await m.unmount();
+}
+
+// 14.3 草稿没有跟不上（基于线上版本）：比较的基准就是线上版本，不另取
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  eq('草稿基于线上 v2：不按 id 取版本，目录照旧两节', [byIdCalls(), dotted(m)], [0, ['tone', 'objections']]);
+  await m.unmount();
+}
+
+// 14.4 页面打开以后草稿才跟不上（409 以后载入最新草稿：这期间店长发布了 v3，草稿还基于 v2）：v2 就是页面打开时的线上版本，
+// 手上有，不另取；载入以后马上按 v2 比，前言（店长改的）不算你改的
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
+  srv.mode = 'conflict';
+  await typeAtEnd(m, '我写的');
+  await waitFor(() => !!m.box.querySelector('.sop-conflict'));
+  srv.mode = 'ok';
+  await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
+  await waitFor(() => !!m.box.querySelector('.sop-lost'));
+  eq(
+    '载入以后：线上 v3、草稿还基于 v2，马上按 v2 比（目录、状态句只算你改的两节），v2 手上有、不另取',
+    [statusText(m).startsWith('线上v3'), dotted(m), statusText(m).includes('草稿改了2节'), byIdCalls()],
+    [true, ['tone', 'objections'], true, 0],
+  );
+  await m.unmount();
+}
+
+// 14.5 页面画出来以后才换的基准没取到（载入最新草稿：这期间别人把草稿合并到 v3、店长又发布了 v4，v3 页面没见过）：
+// 页面不卸下，改动先按线上版本算，页头下写「没取到草稿的基线版本」和「重试」；重试取到了，报错没了，改动换成按 v3 算
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
+  const d = srv.state.draft!;
+  srv.state = {
+    ...srv.state,
+    draft: { ...d, sections: withBodies(d.sections, { preamble: '别人改的前言。\n\n' }), basedOn: 'v3', stale: false, rev: 20 },
+  };
+  srv.publishByOther(withBodies(OTHER_PREAMBLE, { preamble: '店长又改的前言。\n\n' }), { publishedByName: '店长' });
+  srv.byIdFails = true;
+  srv.mode = 'conflict';
+  await typeAtEnd(m, '我写的');
+  await waitFor(() => !!m.box.querySelector('.sop-conflict'));
+  srv.mode = 'ok';
+  await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
+  const baseBanner = (): Element | undefined =>
+    all(m.box, '.sop-banners .ant-alert').find((a) => text(a.querySelector('.ant-alert-title')) === '没取到草稿的基线版本');
+  await waitFor(() => !!baseBanner());
+  eq(
+    '没取到 v3：页面还在、编辑器能改，页头下写「没取到草稿的基线版本」、改动先按线上版本算、「重试」；前言这时算改过',
+    [
+      !!cmOf(m),
+      editorEditable(m),
+      text(baseBanner()?.querySelector('.ant-alert-description')).includes('改动先按线上版本算，别人改的节也会算进来'),
+      all(baseBanner() ?? document.createElement('div'), '.ant-alert-actions button').map(label),
+      dotted(m),
+      byIdCalls('v3'),
+    ],
+    [true, 'true', true, ['重试'], ['preamble', 'tone', 'objections'], 1],
+  );
+  srv.byIdFails = false;
+  await clickEv(all(baseBanner()!, '.ant-alert-actions button').find((b) => label(b) === '重试'));
+  await waitFor(() => !baseBanner());
+  eq('重试取到了 v3：报错没了，改动按 v3 算（前言不算）', [byIdCalls('v3'), dotted(m), !!cmOf(m)], [2, ['tone', 'objections'], true]);
+  await m.unmount();
+}
+
+// 14.5b 回滚确认自己去取草稿的基线（页面上的那一次没取到、版本记录第一页里也没有它时）：取的时候草稿那一条是骨架，
+// 取不到就地报错、回滚照样能做；在回滚确认里重试取到了，页面上的报错也没了（两边共用一个缓存）。
+// 夹具：草稿换成一份基于 v3 的（线上 v25，页面没见过 v3，版本记录第一页是 v25–v5）
+{
+  const many = Array.from({ length: 25 }, (_, i) =>
+    version(25 - i, withBodies(PUBLISHED, { objections: `第${25 - i}版的写法。\n\n` }), { status: i === 0 ? 'published' : 'archived' }),
+  );
+  const sop: SopOverview = {
+    published: many[0]!,
+    draft: {
+      ...version(null, withBodies(many[0]!.sections, { tone: '- 我改的话术原则。\n\n' }), {
+        basedOn: 'v25',
+        rev: 4,
+        publishedAt: null,
+        publishedByName: null,
+      }),
+      stale: false,
+    },
+    spec: SPEC,
+    budget: { chars: 2303, limit: LIMIT },
+  };
+  const srv = fakeServer(sop);
+  srv.released = many;
+  srv.check = (s) => ({ ...FIXED_CHECK(), violations: [], rebase: { needed: s.draft!.basedOn !== s.published.id, conflicts: [] } });
+  const m = await mountPage('/console/sop?section=tone', historyOwner, sop, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.state = {
+    ...srv.state,
+    draft: {
+      ...srv.state.draft!,
+      sections: withBodies(many[22]!.sections, { objections: '我的写法。\n\n' }),
+      basedOn: 'v3',
+      stale: true,
+      rev: 20,
+    },
+  };
+  srv.byIdFails = true;
+  srv.mode = 'conflict';
+  await typeAtEnd(m, '我写的');
+  await waitFor(() => !!m.box.querySelector('.sop-conflict'));
+  srv.mode = 'ok';
+  await clickEv(all<HTMLButtonElement>(m.box, '.sop-conflict button').find((b) => label(b) === '载入最新草稿'));
+  const pageError = (): boolean => all(m.box, '.sop-banners .ant-alert-title').some((t) => text(t) === '没取到草稿的基线版本');
+  await waitFor(pageError);
+  srv.byIdHold = true;
+  await openHistory(m);
+  await clickEv(rowButton('v24', '回滚到这版…'));
+  const modal = (): Element | undefined => modalOf('回滚到v24');
+  await waitFor(() => !!modal()?.querySelector('.sop-rb-pending'));
+  eq('回滚确认自己再取 v3：草稿那一条是骨架', [!!modal()?.querySelector('.sop-rb-pending'), byIdCalls('v3')], [true, 2]);
+  await act(async () => srv.byIdHeld.shift()?.resolve());
+  await waitFor(() => !!modal()?.querySelector('.ant-alert-error'));
+  eq(
+    '取不到：回滚确认里就地写「没取到草稿的基线版本」和「重试」，回滚照样能做',
+    [text(modal()!.querySelector('.ant-alert-error .ant-alert-title')), all(modal()!, '.ant-alert-error button').map(label)],
+    ['没取到草稿的基线版本', ['重试']],
+  );
+  srv.byIdFails = false;
+  srv.byIdHold = false;
+  await clickEv(all(modal()!, '.ant-alert-error button').find((b) => label(b) === '重试'));
+  await waitFor(() => !modal()?.querySelector('.ant-alert-error') && all(modal()!, '.sop-rb-list > li').length === 4);
+  eq(
+    '取到了：按基线 v3 比，草稿改的异议处理 v3 → v24 也改了，要先合并；页面上的报错也没了',
+    [text(all(modal()!, '.sop-rb-list > li').at(-1)), pageError()],
+    ['你的草稿（改了异议处理）是在v3上改的。回滚后要先合并，才能发布。', false],
+  );
+  await m.unmount();
+}
+
+// 14.6 打开时草稿就跟不上、有冲突的节（店长 v3 改了话术原则和前言）：合并以前相对草稿所基于的 v2 比；完成合并以后草稿的基线
+// 换成线上 v3，比较的基准也跟着是线上版本（「相对线上v3」），前言（合并时自动并进来的）不算改过
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = mergeScan(srv);
+  srv.publishByOther(V3_SECS, { publishedByName: '店长', publishedAt: '2026-09-26T05:10:00Z' });
+  const m = await mountPage('/console/sop?section=objections', travelOwner, srv.state, FAST);
+  await waitFor(() => !!noticeMerge(m));
+  const before = dotted(m);
+  await clickEv(noticeMerge(m));
+  await waitFor(() => merging(m) && !!doneButton(m));
+  await clickEv(doneButton(m));
+  await clickEv(actionButton(m, '完成合并'));
+  await waitFor(() => !merging(m) && !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const d = drawerOf('发布草稿')!;
+  eq(
+    '合并以前：按 v2 比，目录是话术原则、异议处理；完成合并以后抽屉里逐节改动相对线上 v3（前言不算），同样两节',
+    [before, all(d, '.sop-diff-name').map((e) => text(e)), d.querySelector<HTMLTextAreaElement>('textarea')?.value],
+    [['tone', 'objections'], ['话术原则', '异议处理'], '修改：话术原则、异议处理。'],
+  );
+  await clickEv(drawerButton(d, '取消'));
+  await waitFor(() => !drawerOf('发布草稿'));
+  await clickEv(barButton(m, '查看改动'));
+  await waitFor(() => !!drawerOf('草稿的改动'));
+  eq(
+    '完成合并以后：查看改动写相对线上v3，目录照旧两节',
+    [text(drawerOf('草稿的改动')?.querySelector('.ant-drawer-title')), dotted(m)],
+    ['草稿的改动相对线上v3', ['tone', 'objections']],
   );
   await m.unmount();
 }

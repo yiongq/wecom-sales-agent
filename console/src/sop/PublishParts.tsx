@@ -2,6 +2,8 @@
 // - PublishBar：常驻的发布条（ActionBar，吸在面板底部）。左边是摘要「草稿改了2节（话术原则、异议处理）· 1个问题要改 · 字数2,303 / 2,658」，
 //   发布成功以后是「已发布v3（改了…）· 客户下一句就用新话术」和文字按钮「回滚到v2」，保留到下一次改动（由页面清掉），不弹 toast。
 //   条窄了放不下时省略的是前面那句，「回滚到v2」不跟着省略（它在 Tab 顺序里，不能被裁到看不见）。
+//   自动保存没保存上（连不上、别的 4xx；409 另有横幅）时左边先写 danger 的「没保存上 · 重试」，后面接着原来的摘要：
+//   页头吸顶时状态句藏起来，在一节长正文的下半截打字也看得见、点得到。读屏由状态句的那一段念（role=status），这里不再念一遍。
 //   右边是「发布…」不能点的原因、次要按钮「查看改动」、主按钮「发布…」：不能点时 aria-disabled（PrimaryButton 的 blocked），
 //   有问题时点它跳到第一个问题。
 // - PublishDrawer：640 宽的发布抽屉，从上到下是冲突（检查报了在你编辑期间被别人改过的节、发布答 409 时：
@@ -14,7 +16,7 @@
 // - ChangesDrawer：「查看改动」与中栏的「查看本节改动」打开的逐节改动，只看。
 // 抽屉关着时不挂（destroyOnHidden）：话术页每敲一个字整页重渲，关着的弹层不能跟着重渲（第 5.1 步 #185 的教训）
 import { Alert, Button, Drawer, type GetRef, Input } from 'antd';
-import { CircleCheck, Info, PencilLine, TriangleAlert, X } from 'lucide-react';
+import { CircleCheck, CircleX, Info, PencilLine, TriangleAlert, X } from 'lucide-react';
 import { type ReactNode, type Ref, useEffect, useId, useRef, useState } from 'react';
 import type { SectionSpecView, SopVersion } from '../../../src/shared/console-api.js';
 import { clockTime, digits } from '../../../src/shared/format.js';
@@ -26,6 +28,7 @@ import { IconButton } from '../shell/IconButton.js';
 import { Icon } from '../shell/icons.js';
 import { cjk, Sep } from '../typography.js';
 import { DiffList, DiffModeToggle, useDiffMode } from './DiffView.js';
+import { SAVE_FAILED } from './SaveParts.js';
 import type { PublishedHead, SectionChange } from './outline.js';
 import type { LocatedViolation, ProblemTarget } from './problems.js';
 import { conflictTitle } from './merge.js';
@@ -47,6 +50,9 @@ export interface PublishBarProps {
   block: { reason: string; jump: boolean } | null;
   /** 点了「发布…」，正在先存没存上的改动 */
   opening: boolean;
+  /** 自动保存没保存上（不含 409）：左边先写「没保存上 · 重试」，「重试」马上存（同状态句的「重试」） */
+  saveFailed?: boolean;
+  onRetrySave?: () => void;
   onPublish: (trigger: HTMLElement) => void;
   /** 有问题时点「发布…」：跳到第一个问题 */
   onJump: () => void;
@@ -61,7 +67,7 @@ export function PublishBar(p: PublishBarProps) {
   const reasonId = useId();
   const quota = `字数${digits(p.chars)} / ${digits(p.limit)}`;
   let icon: ReactNode;
-  let summary: string;
+  let summary: ReactNode;
   let hint: ReactNode;
   if (p.result && p.changed.length === 0) {
     icon = <Icon of={CircleCheck} className="sop-bar-icon is-success" />;
@@ -108,10 +114,38 @@ export function PublishBar(p: PublishBarProps) {
       </span>
     );
   }
+  if (p.saveFailed) {
+    // 没保存上排在最前：摘要换成「没保存上 · 重试」，原来的摘要降成补充接在后面（窄了先省略它）
+    const rest = p.changed.length ? changedText(p.changed) : '草稿和线上一样';
+    icon = <Icon of={CircleX} className="sop-bar-icon is-danger" />;
+    summary = (
+      <span className="sop-bar-failed">
+        {SAVE_FAILED}
+        <Sep />
+        <button type="button" className="sop-save-retry" onClick={p.onRetrySave}>
+          重试
+        </button>
+      </span>
+    );
+    hint = (
+      <span className="sop-bar-hint-text">
+        <Sep />
+        {cjk(rest)}
+        {p.changed.length > 0 && p.problems > 0 && (
+          <>
+            <Sep />
+            <span className="sop-bar-problems">{digits(p.problems)}个问题要改</span>
+          </>
+        )}
+        <Sep />
+        {quota}
+      </span>
+    );
+  }
   const { block, publishRef } = p;
   return (
     // display: contents：发布条照样吸在面板底部（sticky 的范围是面板，不是这一层）
-    <div className="sop-publish-bar">
+    <div className={p.saveFailed ? 'sop-publish-bar is-save-failed' : 'sop-publish-bar'}>
       <ActionBar label="发布" icon={icon} summary={summary} hint={hint} note={block && <span id={reasonId}>{cjk(block.reason)}</span>}>
         <Button disabled={p.changed.length === 0} onClick={(e) => p.onChanges(e.currentTarget)}>
           查看改动
