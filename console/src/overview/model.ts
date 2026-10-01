@@ -17,7 +17,7 @@ import type {
 } from '../../../src/shared/console-api.js';
 import { auditRuns, describeAudit, type AuditLookups, type AuditPart } from '../../../src/shared/audit-text.js';
 import { absoluteTime, clockTime, dateText, dayKey, dayTime, relativeTime } from '../../../src/shared/format.js';
-import { conversationState } from '../../../src/shared/conversation.js';
+import { terminalStages } from '../../../src/shared/conversation.js';
 import { checkItem, type CheckIssue, type EntityType, type IndustryPack, valueAt } from '../../../src/shared/pack.js';
 import { sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
 import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
@@ -401,9 +401,9 @@ export function memberKpis(input: {
   const oldestFirst = [...input.waiting].sort(byTime);
   const times = oldestFirst.slice(0, TIMES_SHOWN).map((r) => relativeTime(r.updatedAt, now));
   const more = counts.byState.human > times.length && times.length ? `等${counts.byState.human}个` : '';
-  // 口径跟着数字的定义走：数字是 conversationState 判成已成交的会话，只写它认作已成交的阶段名；
-  // 终态不是它认的那个 key 时（家装假包的「已付定金」）不写阶段名，写「已成交的会话」
-  const paidStages = pack.stages.filter((s) => conversationState({ stage: s.key, handedOver: false }) === 'paid').map((s) => s.label);
+  // 口径跟着数字的定义走：数字是 conversationState 判成已成交的会话，即停在行业包终态的会话，口径写终态的阶段名
+  // （旅游包「已支付」，家装假包「已付定金」）；包里没有终态时没有会话算已成交，写「已成交的会话」
+  const paidStages = terminalStages(pack).map((s) => s.label);
   const paid = input.latestPaid;
   return [
     {
