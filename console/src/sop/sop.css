@@ -699,10 +699,20 @@
 .sop-publish-bar {
   display: contents;
 }
+/*
+ * 补充放不下时省略的是前面那段字（.sop-bar-hint-text 自己裁），后面的「· 回滚到v2」不跟着省略：它在 Tab 顺序里，不能被裁到看不见。
+ * 网格第一列最窄是 0，这一层最窄就是「· 回滚到v2」的宽度；这一层不裁（盖掉 ActionBar 的 overflow: hidden），焦点框也露得出来
+ */
 .sop-publish-bar .action-bar-hint {
-  margin: -6px -4px -6px -8px;
-  /* 放不下时省略号（overflow: hidden）；上下右多留的地方给「回滚到v2」的焦点框，不被裁掉 */
-  padding: 6px 4px 6px 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-columns: minmax(0, auto);
+  overflow: visible;
+  margin-left: -8px;
+}
+.sop-bar-hint-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sop-publish-bar .action-bar-summary {
   overflow: hidden;
@@ -1033,6 +1043,19 @@
 .sop-diff .sop-diff-view .cm-editor .cm-collapsedLines::before,
 .sop-diff .sop-diff-view .cm-editor .cm-collapsedLines::after {
   content: none;
+}
+/*
+ * 键盘到得了（DiffView 的 collapsedKeys）：折叠行与展开以后接住焦点的正文用统一的焦点框，编辑器会裁切，向里收 2；
+ * CodeMirror 自带的聚焦虚线框去掉（鼠标点进正文时也会聚焦）
+ */
+.sop-diff .sop-diff-view .cm-editor.cm-focused {
+  outline: none;
+}
+.sop-diff .sop-diff-view .cm-editor .cm-collapsedLines:focus-visible,
+.sop-diff .sop-diff-view .cm-editor .cm-content:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 .sop-diff .sop-diff-view .cm-mergeViewEditor + .cm-mergeViewEditor {
   box-shadow: inset 1px 0 0 var(--border);

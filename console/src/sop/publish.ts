@@ -6,10 +6,10 @@
 // - 行内 / 并排：存在 localStorage，读写包 try/catch（无痕模式、禁用了存储时按默认的行内，只在本页生效）。
 import { Chunk } from '@codemirror/merge';
 import { Text } from '@codemirror/state';
-import type { SopVersion } from '../../../src/shared/console-api.js';
+import type { SectionSpecView, SopVersion } from '../../../src/shared/console-api.js';
 import { absoluteTime, digits } from '../../../src/shared/format.js';
 import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
-import { type PublishedHead, SOURCE_VERB } from './outline.js';
+import { PREAMBLE_NAME, type PublishedHead, SOURCE_VERB } from './outline.js';
 import type { LocatedViolation, ProblemTarget } from './problems.js';
 
 // ---------------- 逐节改动 ----------------
@@ -63,11 +63,35 @@ export function writeDiffMode(mode: DiffMode): void {
 /** 发布成功以后条里的那句：保留到下一次改动 */
 export interface PublishedResult {
   versionNo: number | null;
-  /** 这次改了的节名 */
+  /** 这次改了的节名（相对被替换下来的那一版） */
   names: readonly string[];
-  /** 被替换下来的版本：「回滚到v2」回到它 */
-  previous: SopVersion;
+  /** 被替换下来的版本：「回滚到v2」回到它；没取到（只在别人刚又发布过、又没连上时）是 null，不给回滚 */
+  previous: SopVersion | null;
 }
+
+/**
+ * 发布替换下来的版本：服务端发布结果的 basedOn。先在已知的版本里找（页面打开时的线上版本、检查时取到的线上版本），
+ * 都不是（这期间别人又发布过）返回 null，由调用方按版本号去取
+ */
+export const replacedIn = (basedOn: string | null, known: readonly (SopVersion | null | undefined)[]): SopVersion | null =>
+  (basedOn === null ? undefined : known.find((k) => k?.id === basedOn)) ?? null;
+
+/** 这次发布改了的可编辑节（相对被替换下来的版本） */
+export function publishedNames(
+  spec: readonly SectionSpecView[],
+  previous: Pick<SopVersion, 'sections'> | null,
+  v: Pick<SopVersion, 'sections'>,
+): string[] {
+  if (!previous) return [];
+  const textOf = (x: Pick<SopVersion, 'sections'>, key: string): string => x.sections.find((s) => s.key === key)?.text ?? '';
+  return spec.filter((s) => !s.locked && textOf(previous, s.key) !== textOf(v, s.key)).map((s) => s.heading ?? PREAMBLE_NAME);
+}
+
+/**
+ * 将被替换的线上版本：检查发现草稿跟不上线上版本时另取了一次线上版本，它比页面打开时的新（这期间别人发布过）就用它
+ */
+export const onlineNow = <T extends Pick<SopVersion, 'versionNo'>>(published: T, fetched: T | null | undefined): T =>
+  fetched && (fetched.versionNo ?? 0) > (published.versionNo ?? 0) ? fetched : published;
 
 /** 摘要的名单：「话术原则、异议处理」 */
 export const namesText = (names: readonly string[]): string => names.join('、');

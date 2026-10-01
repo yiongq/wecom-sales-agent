@@ -2,11 +2,12 @@
 // 页面按 key 驱动：key 是存下来的那份草稿（id、rev）加线上版本，变了就跑一次——自动保存存上了、载入最新草稿、
 // 回滚以后线上换了、打开页面时已经有草稿，都是它变了；没有草稿（没改过、发布或丢弃以后）时是 null，清掉结果。
 // 同一时刻可以有几个检查在路上（存得快时），只认最后发出的那一个的结果；没跑成时保留上一次的结果，另记错误，「重试」再跑。
+// 结果的类型由调用方定（R）：话术页在草稿跟不上线上版本时另带一份那时的线上版本。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DraftCheck } from '../../../src/shared/console-api.js';
 
-export interface DraftCheckState {
-  result: DraftCheck | null;
+export interface DraftCheckState<R extends DraftCheck = DraftCheck> {
+  result: R | null;
   /** 最近一次跑成的时刻（清单的「上次14:05」） */
   at: number | null;
   /** 最近一次没跑成；跑成了就清掉 */
@@ -15,22 +16,22 @@ export interface DraftCheckState {
   running: boolean;
 }
 
-const EMPTY: DraftCheckState = { result: null, at: null, error: null, running: false };
+const EMPTY: DraftCheckState<never> = { result: null, at: null, error: null, running: false };
 
-export interface DraftCheckInput {
+export interface DraftCheckInput<R extends DraftCheck = DraftCheck> {
   /** 能编辑的成员才检查（检查接口只给他们） */
   enabled: boolean;
   /** 存下来的草稿与线上版本；没有草稿是 null */
   key: string | null;
-  post(): Promise<DraftCheck>;
+  post(): Promise<R>;
   now(): number;
 }
 
-export function useDraftCheck(input: DraftCheckInput): DraftCheckState & { retry(): void } {
+export function useDraftCheck<R extends DraftCheck = DraftCheck>(input: DraftCheckInput<R>): DraftCheckState<R> & { retry(): void } {
   const { enabled, key } = input;
   /** 要检查的那份草稿；没有（没有草稿、不能编辑）是 null */
   const active = enabled ? key : null;
-  const [state, setState] = useState<DraftCheckState>(() => (active === null ? EMPTY : { ...EMPTY, running: true }));
+  const [state, setState] = useState<DraftCheckState<R>>(() => (active === null ? EMPTY : { ...EMPTY, running: true }));
   const latest = useRef(input);
   useEffect(() => {
     latest.current = input;

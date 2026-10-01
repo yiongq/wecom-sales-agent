@@ -10,7 +10,8 @@
 // 其余几类的说明写在编辑卡片上方（sop/problems.ts）。
 // 第 6.3 步：底部常驻的发布条（sop/PublishParts.tsx：摘要、「发布…」不能点的原因、「查看改动」，发布成功以后写在条里、
 // 带「回滚到v2」，不弹 toast）；点「发布…」先存没存上的改动，再打开发布抽屉、检查一次（检查清单、替换说明、逐节改动的
-// 行内 / 并排、预填的变更说明）；中栏说明行末尾的「查看本节改动」。
+// 行内 / 并排、预填的变更说明）；中栏说明行末尾的「查看本节改动」。草稿跟不上线上版本时（别人在这期间发布过），替换说明、
+// 成功那句和「回滚到vN」都按服务端那时的线上版本写，不按页面打开时取的。
 // 版本记录（第 7 步）还是 01 的做法：页头右侧是丢弃，版本历史在页面底部。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
@@ -30,7 +31,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { AnonSopOverview, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
+import type { AnonSopOverview, DraftCheck, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, HttpError, unwrap } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
@@ -65,7 +66,7 @@ import {
   withSavedDraft,
 } from '../sop/outline.js';
 import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
-import { barBlock, firstProblem, notePrefill, type PublishedResult } from '../sop/publish.js';
+import { barBlock, firstProblem, notePrefill, onlineNow, type PublishedResult, publishedNames, replacedIn } from '../sop/publish.js';
 import { ChangesDrawer, PublishBar, PublishDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
@@ -164,6 +165,33 @@ function Toc({
 
 /** /sop：页面、载入最新草稿都用这一份（同一个缓存） */
 const sopQuery = queryOptions({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
+
+/**
+ * 检查结果。草稿跟不上线上版本（rebase.needed：别人在这期间发布过）时另带那时的线上版本：页面上的是打开时取的，
+ * 发布抽屉的「将替换线上v3」照这一份写。只取它、不写进 /sop 的缓存：页面上的草稿与逐节改动照旧相对草稿所基于的版本，
+ * 发布时三方合并，别人改的节不算你的改动。取不到算这次检查没跑成（抽屉写「没检查上」、能重试）
+ */
+type SopCheck = DraftCheck & { online: SopVersion | null };
+async function checkDraft(): Promise<SopCheck> {
+  const r = await unwrap(api.sop.draft.check.$post());
+  if (!r.rebase.needed) return { ...r, online: null };
+  const o = await unwrap(api.sop.$get());
+  return { ...r, online: 'spec' in o ? o.published : null };
+}
+
+/**
+ * 发布替换下来的版本不在手上（检查之后别人又发布过）：取版本号紧挨着的前一个，核对是发布结果的 basedOn。
+ * 取不到不报错（发布已经成功了），只是条里不写改了哪几节、不给回滚
+ */
+async function fetchReplaced(v: SopVersion): Promise<SopVersion | null> {
+  if (v.basedOn === null || v.versionNo === null) return null;
+  try {
+    const page = await unwrap(api.sop.versions.$get({ query: { limit: '1', before: String(v.versionNo) } }));
+    return replacedIn(v.basedOn, page.items);
+  } catch {
+    return null;
+  }
+}
 
 export function SopPage() {
   const viewer = useViewer();
@@ -358,10 +386,10 @@ function MemberSop({
   }, []);
   const timing = useContext(AutosaveTimingContext);
   // 每次自动保存成功（草稿的 rev 变了）以后检查一次；打开页面时已经有草稿、载入最新草稿、回滚以后线上换了也跑
-  const check = useDraftCheck({
+  const check = useDraftCheck<SopCheck>({
     enabled: editable,
     key: checkKey(draft, published.id),
-    post: () => unwrap(api.sop.draft.check.$post()),
+    post: checkDraft,
     now: timing.now,
   });
   const saver = useAutosave({
@@ -426,19 +454,20 @@ function MemberSop({
   }, []);
 
   // 发布成功：条里写「已发布v3（改了…）」、带「回滚到v2」（被替换下来的那一版），不弹 toast；抽屉关上，焦点回到「发布…」。
-  // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）关上抽屉，由页面上的提示说；
-  // 别的失败写在抽屉里，写好的说明不丢
+  // 被替换下来的是服务端那时的线上版本（发布结果的 basedOn），不一定是页面打开时的：别人在这期间发布过，就是他发布的那一版，
+  // 改了哪几节也相对它算。422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）关上抽屉，
+  // 由页面上的提示说；别的失败写在抽屉里，写好的说明不丢
   const publish = async (): Promise<void> => {
     if (!draft) return;
-    const before = published;
+    const known = [published, check.result?.online];
     setPublishing(true);
     setPublishError(null);
     setRejected(null);
     setConflict(null);
     try {
       const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft.rev, changeNote: note } }));
-      const names = spec.filter((s) => !s.locked && textOf(before, s.key) !== textOf(v, s.key)).map((s) => s.heading ?? PREAMBLE_NAME);
-      setResult({ versionNo: v.versionNo, names, previous: before });
+      const previous = replacedIn(v.basedOn, known) ?? (await fetchReplaced(v));
+      setResult({ versionNo: v.versionNo, names: publishedNames(spec, previous, v), previous });
       setPublishOpen(false);
       setNote('');
       setPrefill('');
@@ -803,7 +832,7 @@ function MemberSop({
             changesBack.current = trigger;
             setChangesOf({ section: null, open: true });
           }}
-          onRollback={() => result && setRollbackTarget(result.previous)}
+          onRollback={() => result?.previous && setRollbackTarget(result.previous)}
         />
       )}
       <PublishDrawer
@@ -812,6 +841,7 @@ function MemberSop({
         afterClose={() => setPublishMounted(false)}
         spec={spec}
         published={published}
+        replacing={onlineNow(published, check.result?.online)}
         now={now}
         changes={changes}
         located={located}

@@ -1061,15 +1061,19 @@ const requests: string[] = [];
 interface Call {
   method: string;
   path: string;
+  /** 查询参数（第 11 节按版本号往前取） */
+  query: Record<string, string>;
   body: unknown;
 }
 let respond: ((call: Call) => Promise<Response>) | null = null;
 const calls: Call[] = [];
 globalThis.fetch = ((input: unknown, init?: RequestInit) => {
   requests.push(String(input));
+  const url = new URL(String(input), 'http://localhost');
   const call: Call = {
     method: (init?.method ?? 'GET').toUpperCase(),
-    path: new URL(String(input), 'http://localhost').pathname,
+    path: url.pathname,
+    query: Object.fromEntries(url.searchParams),
     body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
   };
   calls.push(call);
@@ -2391,6 +2395,15 @@ function fakeServer(start: SopOverview) {
     publishConflict: null as { keys: string[]; current: SopSectionText[] } | null,
     /** 发布答 422 契约没过（带这些问题），或 500（第 11 节） */
     publishFails: null as { contract: ContractViolation[] } | 'error' | null,
+    /** 发布过的版本（线上的与归档的），新的在前；GET /sop/versions 按 before、limit 从这里取 */
+    released: [start.published] as SopVersion[],
+    /** GET /sop/versions 答 500 */
+    versionsFail: false,
+    /** 回滚的 sameHashAsTarget（false：这期间固定规则改过） */
+    rollbackSameHash: true,
+    /** 别人发布了一个新版本（只改了 sections 里与线上不同的节）：线上换了，草稿的 basedOn 从此过期 */
+    publishByOther: (sections: SopSectionText[], extra: Partial<SopVersion> = {}): SopVersion =>
+      release(version((srv.state.published.versionNo ?? 0) + 1, sections, { basedOn: srv.state.published.id, ...extra })),
     held: [] as { resolve(): void }[],
     nextRev: 10,
     puts: (): { basedOn: string; rev: number | null; edits: { key: string; body: string }[] }[] =>
@@ -2408,11 +2421,33 @@ function fakeServer(start: SopOverview) {
     srv.state = { ...srv.state, draft: { ...draft, stale: false } };
     return json(200, draft);
   };
+  /** 新版本上线：原来的线上版本归档，草稿跟不上了就记 stale（同 src/config/sop.ts） */
+  const release = (v: SopVersion): SopVersion => {
+    srv.released = [v, ...srv.released.map((x) => (x.status === 'published' ? { ...x, status: 'archived' as const } : x))];
+    const d = srv.state.draft;
+    srv.state = { ...srv.state, published: v, draft: d ? { ...d, stale: d.basedOn !== v.id } : null };
+    return v;
+  };
+  /** 草稿跟不上线上版本时按三方合并（只有你改过的节用你的，别的取线上的；冲突由 publishConflict 另造） */
+  const rebased = (d: SopVersion): SopSectionText[] => {
+    const pub = srv.state.published;
+    if (d.basedOn === pub.id) return d.sections;
+    const base = srv.released.find((x) => x.id === d.basedOn)?.sections ?? pub.sections;
+    const textIn = (secs: readonly SopSectionText[], key: string): string | undefined => secs.find((x) => x.key === key)?.text;
+    return pub.sections.map((x) =>
+      textIn(d.sections, x.key) === textIn(base, x.key) ? x : { key: x.key, text: textIn(d.sections, x.key)! },
+    );
+  };
   calls.length = 0;
   respond = async (call) => {
     if (call.method === 'GET' && call.path === '/api/console/sop')
       return srv.getFails ? json(500, { error: 'internal' }) : json(200, srv.state);
-    if (call.method === 'GET' && call.path === '/api/console/sop/versions') return json(200, { items: [srv.state.published] });
+    if (call.method === 'GET' && call.path === '/api/console/sop/versions') {
+      if (srv.versionsFail) return json(500, { error: 'internal' });
+      const before = call.query.before === undefined ? Infinity : Number(call.query.before);
+      const items = srv.released.filter((x) => (x.versionNo ?? 0) < before).slice(0, Number(call.query.limit ?? 50));
+      return json(200, { items });
+    }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/discard') {
       srv.state = { ...srv.state, draft: null };
       return json(200, { ok: true });
@@ -2422,17 +2457,16 @@ function fakeServer(start: SopOverview) {
       if (srv.publishFails === 'error') return json(500, { error: 'internal', detail: '出错了' });
       if (srv.publishFails) return json(422, { error: 'contract', detail: '没过', violations: srv.publishFails.contract });
       const no = (srv.state.published.versionNo ?? 0) + 1;
-      const v = version(no, srv.state.draft!.sections, { publishedAt: '2026-09-26T06:31:00Z' });
-      srv.state = { ...srv.state, published: v, draft: null };
-      return json(200, v);
+      // basedOn 是被替换下来的线上版本（同 src/config/sop.ts 的 publishSopDraft）
+      const v = version(no, rebased(srv.state.draft!), { basedOn: srv.state.published.id, publishedAt: '2026-09-26T06:31:00Z' });
+      srv.state = { ...srv.state, draft: null };
+      return json(200, release(v));
     }
     // 回滚：线上换成新的版本号，草稿不动（它的 basedOn 从此过期），同 src/config/sop.ts 的 rollback
     if (call.method === 'POST' && /^\/api\/console\/sop\/versions\/[^/]+\/rollback$/.test(call.path)) {
       const no = (srv.state.published.versionNo ?? 0) + 1;
       const v = version(no, srv.state.published.sections, { changeNote: (call.body as { changeNote: string }).changeNote });
-      const d = srv.state.draft;
-      srv.state = { ...srv.state, published: v, draft: d ? { ...d, stale: d.basedOn !== v.id } : null };
-      return json(200, { ...v, sameHashAsTarget: true });
+      return json(200, { ...release(v), sameHashAsTarget: srv.rollbackSameHash });
     }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/check') {
       // 按住时记下发出时的草稿，放开时照它答（晚回来的是旧草稿的结果）

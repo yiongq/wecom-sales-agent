@@ -1,15 +1,17 @@
 // 话术页的发布（spec「销售话术 · 发布条」「发布抽屉」，设计系统 §5.13、§5.16 与 B 页）：
 // - PublishBar：常驻的发布条（ActionBar，吸在面板底部）。左边是摘要「草稿改了2节（话术原则、异议处理）· 1个问题要改 · 字数2,303 / 2,658」，
 //   发布成功以后是「已发布v3（改了…）· 客户下一句就用新话术」和文字按钮「回滚到v2」，保留到下一次改动（由页面清掉），不弹 toast。
+//   条窄了放不下时省略的是前面那句，「回滚到v2」不跟着省略（它在 Tab 顺序里，不能被裁到看不见）。
 //   右边是「发布…」不能点的原因、次要按钮「查看改动」、主按钮「发布…」：不能点时 aria-disabled（PrimaryButton 的 blocked），
 //   有问题时点它跳到第一个问题。
 // - PublishDrawer：640 宽的发布抽屉，从上到下是检查清单（没过的项点了关抽屉并定位）、替换说明、逐节改动（行内 / 并排）、
 //   变更说明（预填改了哪几节，要在预填之外再写至少一个字），底部「取消」「发布」，「发布」不能点时旁边写原因。
+//   发布没成功（422、409 以外的）时错误写在最上面，出来时滚进视口。
 // - ChangesDrawer：「查看改动」与中栏的「查看本节改动」打开的逐节改动，只看。
 // 抽屉关着时不挂（destroyOnHidden）：话术页每敲一个字整页重渲，关着的弹层不能跟着重渲（第 5.1 步 #185 的教训）
 import { Alert, Button, Drawer, type GetRef, Input } from 'antd';
 import { CircleCheck, Info, PencilLine, TriangleAlert, X } from 'lucide-react';
-import { type ReactNode, useId, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import type { SectionSpecView, SopVersion } from '../../../src/shared/console-api.js';
 import { clockTime, digits } from '../../../src/shared/format.js';
 import { ActionBar } from '../parts/ActionBar.js';
@@ -20,7 +22,7 @@ import { IconButton } from '../shell/IconButton.js';
 import { Icon } from '../shell/icons.js';
 import { cjk, Sep } from '../typography.js';
 import { DiffList, DiffModeToggle, useDiffMode } from './DiffView.js';
-import type { SectionChange } from './outline.js';
+import type { PublishedHead, SectionChange } from './outline.js';
 import type { LocatedViolation, ProblemTarget } from './problems.js';
 import { changedText, drawerBlock, noteReady, type PublishedResult, publishedText, replaceLine } from './publish.js';
 import { type CheckBudget, checkItems } from './SideCards.js';
@@ -58,29 +60,35 @@ export function PublishBar(p: PublishBarProps) {
     summary = publishedText(p.result);
     hint = (
       <>
-        <Sep />
-        {cjk('客户下一句就用新话术')}
-        <Sep />
-        <button type="button" className="sop-text-btn" onClick={p.onRollback}>
-          回滚到v{p.result.previous.versionNo}
-        </button>
+        <span className="sop-bar-hint-text">
+          <Sep />
+          {cjk('客户下一句就用新话术')}
+        </span>
+        {p.result.previous && (
+          <span className="sop-bar-hint-action">
+            <Sep />
+            <button type="button" className="sop-text-btn" onClick={p.onRollback}>
+              回滚到v{p.result.previous.versionNo}
+            </button>
+          </span>
+        )}
       </>
     );
   } else if (p.changed.length === 0) {
     icon = <Icon of={CircleCheck} className="sop-bar-icon" />;
     summary = '草稿和线上一样';
     hint = (
-      <>
+      <span className="sop-bar-hint-text">
         <Sep />
         {quota}
-      </>
+      </span>
     );
   } else {
     icon =
       p.problems > 0 ? <Icon of={TriangleAlert} className="sop-bar-icon is-warning" /> : <Icon of={PencilLine} className="sop-bar-icon" />;
     summary = changedText(p.changed);
     hint = (
-      <>
+      <span className="sop-bar-hint-text">
         {p.problems > 0 && (
           <>
             <Sep />
@@ -89,7 +97,7 @@ export function PublishBar(p: PublishBarProps) {
         )}
         <Sep />
         {quota}
-      </>
+      </span>
     );
   }
   const { block } = p;
@@ -252,8 +260,10 @@ export interface PublishDrawerProps {
   onClose: () => void;
   afterClose?: () => void;
   spec: readonly SectionSpecView[];
-  /** 线上版本（将被替换的） */
+  /** 页面上的线上版本：逐节改动相对它 */
   published: SopVersion;
+  /** 将被替换的线上版本：多半就是 published；检查发现别人在这期间发布过时是那时的线上版本 */
+  replacing: PublishedHead;
   now: number;
   changes: readonly SectionChange[];
   /** 最近一次检查（或发布被拒）的问题，没跑过是 null */
@@ -291,6 +301,12 @@ export function PublishDrawer(props: PublishDrawerProps) {
   const reasonId = useId();
   const noteRef = useRef<GetRef<typeof Input.TextArea>>(null);
   const checksRef = useRef<HTMLDivElement>(null);
+  // 发布没成功：错误写在抽屉体的最上面，出来的那一刻滚进视口（点「发布」时多半滚到了底下写说明）
+  const errorRef = useRef<HTMLDivElement>(null);
+  const { error } = p;
+  useEffect(() => {
+    if (error !== null && error !== undefined) errorRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [error]);
   const items = checkItems(p.spec, p.located, p.budget, p.onLocate);
   const problems = p.located?.length ?? 0;
   const block = drawerBlock({
@@ -331,6 +347,11 @@ export function PublishDrawer(props: PublishDrawerProps) {
       }
     >
       <div className="sop-publish">
+        {error !== null && error !== undefined && (
+          <div ref={errorRef}>
+            <ErrorAlert error={error} onRetry={p.onPublish} />
+          </div>
+        )}
         {p.conflicts.length > 0 && (
           <Alert
             type="error"
@@ -349,7 +370,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
         </div>
         <p className="sop-publish-replace">
           <Icon of={Info} />
-          <span>{cjk(replaceLine(p.published, p.now))}</span>
+          <span>{cjk(replaceLine(p.replacing, p.now))}</span>
         </p>
         <section className="sop-publish-changes" aria-labelledby={`${noteId}-changes`}>
           <ChangesBlock
@@ -378,10 +399,9 @@ export function PublishDrawer(props: PublishDrawerProps) {
             aria-describedby={helpId}
           />
           <p id={helpId} className="sop-publish-help">
-            {cjk('预填的是改了哪几节，在后面写上为什么改；会写进版本记录和审计日志')}
+            {cjk('预填的是改了哪几节，在后面写上为什么改；会写进版本记录')}
           </p>
         </div>
-        {p.error !== null && p.error !== undefined && <ErrorAlert error={p.error} onRetry={p.onPublish} />}
       </div>
     </SopDrawer>
   );

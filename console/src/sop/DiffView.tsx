@@ -2,7 +2,8 @@
 // 行内是 @codemirror/merge 的 unifiedMergeView（allowInlineDiffs、mergeControls: false：只看不改），并排是 MergeView；
 // 两种都只读、自动换行，内置文案用话术编辑器那一份汉化（「18行没有改动」）。选哪一种存在 localStorage（publish.ts）。
 // 颜色全在 sop.css 的 .sop-diff 里：新增行 --success-bg、行首「+」，删除行 --subtle、text-2、删除线、行首「−」，
-// 删除不用红色（@codemirror/merge 自带的红色、绿色和 ⦚ 都覆盖掉）；读屏念「删去：」「发出：」，不只靠颜色
+// 删除不用红色（@codemirror/merge 自带的红色、绿色和 ⦚ 都覆盖掉）；读屏念「删去：」「发出：」，不只靠颜色。
+// 折叠的「N行没有改动」键盘也能展开（collapsedKeys）
 import { MergeView, unifiedMergeView } from '@codemirror/merge';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
@@ -27,6 +28,35 @@ export const trimEnd = (c: SectionChange): SectionChange => ({
   after: c.after.replace(/\n+$/, '\n'),
 });
 
+/** 给折叠的那几行补上按钮的语义、放进 Tab 顺序（只补还没补过的：重画出来的是新的 div） */
+export function markCollapsed(view: EditorView): void {
+  for (const el of view.contentDOM.querySelectorAll<HTMLElement>('.cm-collapsedLines')) {
+    if (el.getAttribute('role') === 'button') continue;
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+  }
+}
+
+/**
+ * 折叠的「N行没有改动」：@codemirror/merge 只给了点击（一个 div），差异的编辑器又不能聚焦，键盘和读屏都到不了。
+ * 补上按钮的语义、放进 Tab 顺序，Enter / 空格照点击展开（并排时两边一起展开，同点击）。展开以后这一行就没了，
+ * 焦点放到这个编辑器的正文上（能程序聚焦、不在 Tab 顺序里），下一个 Tab 接着到下面那一处折叠
+ */
+const collapsedKeys: Extension = [
+  EditorView.contentAttributes.of({ tabindex: '-1' }),
+  EditorView.updateListener.of((u) => markCollapsed(u.view)),
+  EditorView.domEventHandlers({
+    keydown(e, view) {
+      const el = e.target as HTMLElement | null;
+      if (!el?.classList?.contains('cm-collapsedLines') || (e.key !== 'Enter' && e.key !== ' ')) return false;
+      e.preventDefault();
+      el.click();
+      view.contentDOM.focus({ preventScroll: true });
+      return true;
+    },
+  }),
+];
+
 function readOnly(label: string): Extension[] {
   return [
     ...(cspNonce ? [EditorView.cspNonce.of(cspNonce)] : []),
@@ -35,6 +65,7 @@ function readOnly(label: string): Extension[] {
     EditorState.readOnly.of(true),
     EditorView.editable.of(false),
     EditorView.contentAttributes.of({ 'aria-label': label }),
+    collapsedKeys,
   ];
 }
 
@@ -64,6 +95,7 @@ export function DiffView({ change, mode, labels }: { change: SectionChange; mode
           ],
         }),
       });
+      markCollapsed(view);
       return () => view.destroy();
     }
     const view = new MergeView({
@@ -74,6 +106,8 @@ export function DiffView({ change, mode, labels }: { change: SectionChange; mode
       collapseUnchanged: COLLAPSE,
       diffConfig: DIFF_CONFIG,
     });
+    markCollapsed(view.a);
+    markCollapsed(view.b);
     return () => view.destroy();
   }, [before, after, name, mode, beforeLabel, afterLabel]);
   return (
