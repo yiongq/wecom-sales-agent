@@ -1186,6 +1186,7 @@ body {
 | 新建 / 关闭 / 勾 / 下拉 / 进入 / 新标签打开               | `plus` / `x` / `check` / `chevron-down` / `chevron-right` / `arrow-up-right`               |
 | 锁定 / 只读 / 编辑 / 复制 / 下载 / 上传 CSV / 回滚 / 时间 | `lock` / `eye` / `pencil-line` / `copy` / `download` / `file-up` / `undo-2` / `clock`      |
 | 上移 / 下移 / 删除                                        | `arrow-up` / `arrow-down` / `trash-2`                                                      |
+| 采用线上的写法（话术的冲突合并，两栏之间的图标按钮）      | `arrow-right`                                                                              |
 | 信息 / 成功 / 留意 / 出错 / 没过 / 没跑                   | `info` / `circle-check` / `triangle-alert` / `circle-alert` / `circle-x` / `circle-dashed` |
 | 命令行操作者 / 主题 / 退出                                | `square-terminal` / `sun`、`moon` / `log-out`                                              |
 
