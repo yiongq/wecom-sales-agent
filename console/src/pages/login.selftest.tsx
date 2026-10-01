@@ -754,10 +754,15 @@ const banners = (): Element[] =>
   await m.unmount();
 }
 {
-  // 窄屏（<992）：顶栏是 banner，侧栏在抽屉里。开着「减少动态效果」：antd 不走动效，抽屉关上的收尾（还焦点）当场做完
-  // （happy-dom 不发 transitionend，带动效时抽屉永远停在关到一半）
+  // 窄屏（<992）：顶栏是 banner，侧栏在抽屉里。点导航那一段带动效：happy-dom 不发 transitionend，抽屉打开、关上的收尾
+  // （afterOpenChange，还焦点就在这里）等 rc-motion 的 500ms 兜底到点才做，所以等 700ms。这和浏览器里的先后一样：换页先画完、
+  // 焦点先到 main，动效结束才轮到抽屉的收尾，那时再把焦点挪走就错了。Esc 那一段开着「减少动态效果」（不走动效，当场收尾）：
+  // happy-dom 里按 Esc 关上时离场动效停在 leave-active，兜底也不到点
   win.happyDOM.setViewport({ width: 800, height: 900 });
-  setReduceMotion(true);
+  const motionEnd = async (qc: QueryClient): Promise<void> => {
+    await act(async () => new Promise((res) => setTimeout(res, 700)));
+    await settle(qc);
+  };
   server = { demo: false, loggedIn: true, login: 'check' };
   const m = await mount('/console/catalog/route', [
     { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
@@ -767,6 +772,7 @@ const banners = (): Element[] =>
   const open = async (): Promise<void> => {
     menu()?.focus();
     await m.click(menu());
+    await motionEnd(m.qc);
   };
   const drawerNav = (label: string): HTMLElement | undefined =>
     [...document.querySelectorAll<HTMLElement>('.nav-drawer a.nav-item')].find((a) => m.text(a.querySelector('.nav-label')) === label);
@@ -774,11 +780,13 @@ const banners = (): Element[] =>
   const inDrawer = document.querySelector('.nav-drawer .sidebar');
   eq('窄屏抽屉开着：只有顶栏一个 banner，抽屉里的侧栏是 div', [banners().map((b) => b.className), inDrawer?.tagName], [['topbar'], 'DIV']);
   await m.click(drawerNav('会话'));
+  await motionEnd(m.qc);
   eq(
-    '窄屏抽屉里点导航：换页，抽屉关上，焦点在 main（不还给「打开导航」）',
+    '窄屏抽屉里点导航：换页，抽屉关上（动效结束以后），焦点在 main（不还给「打开导航」）',
     [m.url(), document.querySelector('.nav-drawer .ant-drawer-open') === null, document.activeElement === main()],
     ['/conversations', true, true],
   );
+  setReduceMotion(true);
   await open();
   await act(async () => {
     (document.activeElement ?? document.body).dispatchEvent(
