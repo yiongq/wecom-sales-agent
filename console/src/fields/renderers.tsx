@@ -10,6 +10,7 @@ import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayou
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
 import { Status } from '../parts/Status.js';
+import { useViewport } from '../shell/hooks.js';
 import { IconButton } from '../shell/IconButton.js';
 import { Icon } from '../shell/icons.js';
 import { cjk } from '../typography.js';
@@ -993,6 +994,13 @@ const matchRef = (input: string, o: unknown): boolean => {
   return (opt.label ?? '').includes(input) || (opt.item?.code ?? opt.value).toLowerCase().includes(input.toLowerCase());
 };
 
+/**
+ * 联想的下拉至少 384 宽（G 页）：一项是名称、等宽的编号和状态，和输入框一样宽（两列网格的一格 314）时名称被截断；
+ * 输入框更宽时跟输入框一样宽。窄屏（<992）跟输入框一样宽：375 宽的窗口放不下 384，对齐时会被推出左边（实测 −24）
+ */
+const REF_POPUP_WIDTH = 384;
+const REF_POPUP_CLASS = { popup: { root: 'ref-popup' } };
+
 const renderRefOption = (o: { data: unknown }): ReactNode => {
   const d = o.data as RefOpt;
   return d.at !== undefined ? <WrittenOption name={d.label} at={d.at} /> : d.item ? <RefOption item={d.item} /> : d.label;
@@ -1023,7 +1031,14 @@ function ReferenceForm(p: FormProps) {
     ...(written.length ? [{ key: 'written', label: '本条写过的', options: written }] : []),
   ];
   const write = (next: string | readonly string[] | undefined): void => onChange(CODECS.reference.write(next, field));
-  const common = { id, status: invalid ? ('error' as const) : undefined, loading: items === undefined };
+  const narrow = useViewport() === 'narrow';
+  const common = {
+    id,
+    status: invalid ? ('error' as const) : undefined,
+    loading: items === undefined,
+    popupMatchSelectWidth: narrow ? true : REF_POPUP_WIDTH,
+    classNames: REF_POPUP_CLASS,
+  };
 
   if (field.allowFree && !field.multiple) {
     // 可以写库外的文本：AutoComplete，联想按眼下的输入筛，和输入一样的那项不列

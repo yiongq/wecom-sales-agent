@@ -447,6 +447,14 @@
   line-height: 20px;
   color: var(--text-3);
 }
+/* 引用的下拉至少 384 宽（renderers.tsx 的 REF_POPUP_WIDTH，窄屏跟输入框一样宽），也不超出窗口；组里的项和分组标题一样左边距 8（§5.3），
+   antd 默认把组里的项缩进 24 */
+.ref-popup {
+  max-width: calc(100vw - 16px);
+}
+.ref-popup .ant-select-item-option-grouped {
+  padding-inline-start: 8px;
+}
 /* 联想的分组标题（§5.3）：13/500 text-3，内边距 8 8 4；前面有项时上方一条 1px --divider，上下各 4。
    不用外边距：下拉是虚拟列表，按元素的高度排，外边距不算在高度里 */
 .ant-select-item.ant-select-item-group {
@@ -736,7 +744,7 @@
 .tl-item:only-child::before {
   display: none;
 }
-/* 节点：全部填好是 --text-2 实心底、--panel 色字；有缺项空心（--panel 底、1.5 的 --control-border 描边、text-2 字）；
+/* 节点：直径 22（「D1」正好放下，「D12」撑成胶囊）；全部填好是 --text-2 实心底、--panel 色字；有缺项空心（--panel 底、1.5 的 --control-border 描边、text-2 字）；
    有报错同样空心，描边和字换成 --danger */
 .tl-node {
   position: relative;
@@ -745,7 +753,7 @@
   min-width: 22px;
   height: 22px;
   margin-top: 14px;
-  padding: 0 4px;
+  padding: 0 2px;
   border-radius: var(--r-full);
   background: var(--text-2);
   color: var(--panel);

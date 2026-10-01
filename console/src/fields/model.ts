@@ -420,7 +420,7 @@ export function resolveRef(f: FieldDef, value: string, items: readonly RefItem[]
 
 // ---------------- 有序子项编辑器与引用的联想（plan 第 11 步，spec「有序子项与引用」，设计系统 §6.3） ----------------
 
-/** 一项在竖轴上的节点：done 全部填好（实心）；gap 有没填的必填子字段（空心）；error 这一项有报错（空心，danger） */
+/** 一项在竖轴上的节点：done 全部填好（实心）；gap 有没填的必填子字段（空心）；error 这一项有写错的地方（空心，danger） */
 export type ItemState = 'done' | 'gap' | 'error';
 
 /**
@@ -434,27 +434,33 @@ const blankIsEmpty = (s: FieldDef): boolean =>
   (s.type === 'reference' && !s.multiple) ||
   (s.type === 'enum' && (!s.multiple || s.storeAs !== undefined));
 
+/** 多字段有序子项的一项里没填的必填子字段（口径见 itemGaps） */
+function gapFields(f: FieldDef, item: unknown): FieldDef[] {
+  if (isSingleItem(f)) return [];
+  const it = isRecord(item) ? item : {};
+  return (f.item ?? []).filter((s) => {
+    if (s.required === false) return false;
+    const v = Object.hasOwn(it, s.key) ? it[s.key] : undefined;
+    return v === undefined || v === null || (v === '' && blankIsEmpty(s));
+  });
+}
+
 /**
  * 多字段有序子项的一项里没填的必填子字段，按包里的顺序写标签（「缺：当晚住宿」）。口径同上架前检查报「没填」「没选」的那些：
  * 缺键、null，以及上面几种类型的空串；必填的数组子字段只要求键在（[] 也算填了）。单字段的有序子项没有节点，返回空
  */
-export function itemGaps(f: FieldDef, item: unknown): string[] {
-  if (isSingleItem(f)) return [];
-  const it = isRecord(item) ? item : {};
-  return (f.item ?? [])
-    .filter((s) => {
-      if (s.required === false) return false;
-      const v = Object.hasOwn(it, s.key) ? it[s.key] : undefined;
-      return v === undefined || v === null || (v === '' && blankIsEmpty(s));
-    })
-    .map((s) => s.label);
-}
+export const itemGaps = (f: FieldDef, item: unknown): string[] => gapFields(f, item).map((s) => s.label);
 
-/** 第 i 项的节点：这一项或它的子字段下方有报错（itemErrors 的键是 'i' 或 'i.子字段'）时是 error，否则看有没有缺项 */
+/**
+ * 第 i 项的节点（设计系统 §6.3）：有校验错误是 error——这一项本身的报错（天号），或写了却写得不对的子字段的报错
+ * （itemErrors 的键是 'i' 或 'i.子字段'）；没填的子字段离开以后字段下方也报「没填」，节点照旧算缺项（gap，「缺：当晚住宿」），
+ * 红色只留给写错的。没有报错时看缺项
+ */
 export function itemState(f: FieldDef, item: unknown, i: number, errors?: Readonly<Record<string, string>>): ItemState {
   const at = String(i);
-  if (Object.keys(errors ?? {}).some((k) => k === at || k.startsWith(`${at}.`))) return 'error';
-  return itemGaps(f, item).length ? 'gap' : 'done';
+  const gaps = gapFields(f, item).map((s) => `${at}.${s.key}`);
+  if (Object.keys(errors ?? {}).some((k) => k === at || (k.startsWith(`${at}.`) && !gaps.includes(k)))) return 'error';
+  return gaps.length ? 'gap' : 'done';
 }
 
 /**

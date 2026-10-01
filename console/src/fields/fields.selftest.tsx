@@ -5696,15 +5696,18 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [['当天标题', '当晚住宿', '当天餐食'], []],
     );
     eq(
-      '节点：这一项或它的子字段有报错是 error，别的项的报错不算（「20.hotel」「12」不是第 3 项的）；没报错时看缺项',
+      '节点：这一项本身的报错、写了却不对的子字段的报错是 error；没填的子字段离开以后报「没填」，节点仍是缺项（gap）；' +
+        '别的项的报错不算（「20.hotel」「12」不是第 3 项的）；没报错时看缺项',
       [
         itemState(IT, {}, 2, { '2': '第3天的天号应为3' }),
-        itemState(IT, ITS[2], 2, { '2.hotel': '当晚住宿：没填' }),
+        itemState(IT, ITS[2], 2, { '2.hotel': '当晚住宿：不能为空' }),
+        itemState(IT, { ...ITS[2]!, hotel: '' }, 2, { '2.hotel': '当晚住宿：没填' }),
+        itemState(IT, { ...ITS[2]!, hotel: '' }, 2, { '2.hotel': '当晚住宿：没填', '2.title': '当天标题：格式不对' }),
         itemState(IT, ITS[2], 2, { '20.hotel': 'x', '12': 'y', '1.hotel': 'z' }),
         itemState(IT, { day: 3, title: '茂兰' }, 2),
         itemState(IT, ITS[2], 2),
       ],
-      ['error', 'error', 'done', 'gap', 'done'],
+      ['error', 'error', 'gap', 'error', 'done', 'gap', 'done'],
     );
 
     // 条数提醒与上架前检查的那一项同一个口径：天数各种写法（含没填、小数、负数、字符串、超出安全整数）乘以几种条数
@@ -5951,6 +5954,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const opened = [head(), nodes(), [0, 1, 2].map((i) => copyBtn(i)?.textContent ?? null)];
 
     // 清空第3天的住宿：节点空心、「缺：当晚住宿」，组的说明连上它；第3天出「复制上一天的当晚住宿」
+    await act(async () => hotelInput(2)?.focus());
     await typeInto(hotelInput(2), '');
     const card3 = itemEl(d.box, 'itinerary', 2)?.querySelector('.subitem-card');
     const gap = card3?.querySelector('.subitem-gap');
@@ -5973,9 +5977,22 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ],
     );
 
-    // 联想：第3天的住宿按 ↓ 打开，两组：「酒店库·贵州」三家（两家草稿），「本条写过的」写第几天
+    // 离开空着的住宿：字段下方报「当晚住宿：没填」，节点仍是缺项（空心、不是红色），「缺：当晚住宿」还在
+    await act(async () => subEl(d.box, 'itinerary', 2, 'title')?.querySelector('input')?.focus());
+    await settle();
+    eq(
+      '离开空着的第3天住宿：字段下方「当晚住宿：没填」，节点仍是缺项（gap，红色只给写错的），「缺：当晚住宿」还在',
+      [
+        subEl(d.box, 'itinerary', 2, 'hotel')?.querySelector('.field-error')?.textContent,
+        nodeOf(d.box, 'itinerary', 2),
+        card3?.querySelector('.subitem-gap')?.textContent,
+      ],
+      ['当晚住宿：没填', 'D3:gap', '缺：当晚住宿'],
+    );
+    // 联想：第3天的住宿按 Enter 打开，两组：「酒店库·贵州」三家（两家草稿），「本条写过的」写第几天；下拉带 ref-popup（至少 384 宽）
     await openDropdown(hotelInput(2));
     const groups = dropdownGroups();
+    check('联想的下拉带 ref-popup', document.querySelector('.ant-select-dropdown.ref-popup:not(.ant-select-dropdown-hidden)') !== null);
     eq('第3天的住宿：联想分两组，「酒店库·贵州」只有贵州的三家（草稿跟「草稿」），「本条写过的」是别的几天写过的、写第几天', groups, [
       '#酒店库·贵州',
       '贵阳安纳塔拉度假酒店h-anantara-guiyang',
