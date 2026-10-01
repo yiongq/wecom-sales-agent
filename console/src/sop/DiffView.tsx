@@ -52,7 +52,7 @@ const collapsedKeys: Extension = [
     keydown(e, view) {
       const el = e.target as HTMLElement | null;
       if (!el?.classList?.contains('cm-collapsedLines') || (e.key !== 'Enter' && e.key !== ' ')) return false;
-      e.preventDefault();
+      // 返回 true 时 CodeMirror 自己 preventDefault（空格不滚动抽屉）
       el.click();
       view.contentDOM.focus({ preventScroll: true });
       return true;
