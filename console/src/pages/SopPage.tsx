@@ -1,30 +1,19 @@
-// SOP 页（spec「后台 API 与页面 · SOP」）：左侧节列表（固定规则节只读），右侧编辑可编辑节的正文；顶栏是草稿状态、字符预算、
-// 检查 / 发布 / 丢弃；检查结果按 7 个检查项列出，需要 rebase 与冲突时标出；历史列表可以「以此版本回滚」。
+// 销售话术页（spec「销售话术（B、C 页）」）。第 5.1 步做了页头的状态句、额度条和目录（sop/ 下）：
+// 状态句「线上v2 · 老板发布于9月25日 18:30 · 草稿改了2节」；额度条按服务端同一口径实时算（含还没保存的改动）；
+// 目录保持 prompt 的原顺序，分段筛选、锁与锁定原因、键盘，选中的节写进 URL 的 section；宽 <1280 时目录换成下拉。
+// 第 5.2 步做了中栏（sop/SopEditor.tsx）：节标题与说明行、固定规则节的只读说明、按 markdown 显示的编辑器（芯片、图标、改动标记）。
+// 第 5.3 步：自动保存（sop/autosave.ts：停止输入 1.5 秒后存、带 rev、失败退避重试、⌘S，输入法组字时不存，409 停住并冻结编辑器，
+// 载入最新草稿以后没存上的节以对比形式留着），状态句末尾的保存状态；离开保护管到自动保存还没存上的内容；三栏的布局（右栏是检查清单与
+// 「话术里可以点名的工具」，1280–1439 时检查清单挪到目录下面，<1280 时落到编辑器下面，sop.css）。
+// 检查与发布（第 6 步）、版本记录（第 7 步）还是 01 的做法：页头右侧是检查、发布、丢弃，检查结果在右栏的清单里，
+// 逐节对比和版本历史在页面底部。
 // 匿名（demo）只拿到已发布版本的节，全部只读。
-// 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下站内跳转。
-// 整页的版式随后台 UX spec 第 5–7 步重做
-import { LockOutlined } from '@ant-design/icons';
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Collapse,
-  Descriptions,
-  Empty,
-  Input,
-  Menu,
-  Modal,
-  Progress,
-  Row,
-  Space,
-  Table,
-  Tag,
-  Typography,
-} from 'antd';
+// 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
+import { queryOptions, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate, useRouter, useSearch } from '@tanstack/react-router';
+import { Alert, Button, Card, Collapse, Descriptions, Empty, Input, Modal, Space, Table, Typography } from 'antd';
 import dayjs from 'dayjs';
-import { useState } from 'react';
+import { memo, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   AnonSopOverview,
   DraftCheck,
@@ -33,23 +22,46 @@ import type {
   SopSectionText,
   SopVersion,
 } from '../../../src/shared/console-api.js';
-import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
+import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, HttpError, unwrap } from '../api.js';
-import { type CheckItem, CheckList } from '../parts/CheckList.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
+import { errorCopy } from '../parts/errors.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
-import { TechDetails } from '../parts/TechDetails.js';
 import { toast } from '../parts/toast.js';
-import { useUnsavedGuard } from '../parts/UnsavedGuard.js';
+import { LEAVING_PAGE, useUnsavedGuard } from '../parts/UnsavedGuard.js';
 import { SectionDiff } from '../SectionDiff.js';
-import { TextEditor } from '../TextEditor.js';
+import { useViewport } from '../shell/hooks.js';
 import { PageHeader } from '../shell/PageHeader.js';
-import { canEdit, useViewer } from '../viewer.js';
+import { type DraftEdit, useAutosave } from '../sop/autosave.js';
+import { Directory, DirectorySelect, type SelectVia } from '../sop/Directory.js';
+import { composingIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
+import {
+  anonOutline,
+  anonStatus,
+  bodyWithoutHeading,
+  draftChars,
+  memberOutline,
+  memberStatus,
+  type OutlineFilter,
+  type OutlineRow,
+  PREAMBLE_NAME,
+  quotaModel,
+  resolveSection,
+  unsavedEdits,
+  withSavedDraft,
+} from '../sop/outline.js';
+import { QuotaBar } from '../sop/QuotaBar.js';
+import { ConflictBanner, LostEdits, type LostSection, SaveState } from '../sop/SaveParts.js';
+import { CheckCard, ToolsCard } from '../sop/SideCards.js';
+import { SopSkeleton } from '../sop/SopSkeleton.js';
+import { cjk } from '../typography.js';
+import { canEdit, usePack, useViewer } from '../viewer.js';
 
 const NL = '\n';
+const TITLE = '销售话术';
 const SOURCE_LABEL: Record<SopVersion['source'], string> = {
   import: '导入',
   console: '后台发布',
@@ -65,66 +77,220 @@ function bodyOf(text: string, heading: string | null): string {
   return text.startsWith(head) ? text.slice(head.length) : text;
 }
 const headingOf = (spec: readonly SectionSpecView[], key: string | null): string =>
-  key === null ? '整体' : (spec.find((s) => s.key === key)?.heading ?? '前言');
+  key === null ? '整体' : (spec.find((s) => s.key === key)?.heading ?? PREAMBLE_NAME);
+
+/** 聚焦容器里的 CodeMirror 正文 */
+const focusEditorIn = (el: HTMLElement | null): void => el?.querySelector<HTMLElement>('.cm-content')?.focus();
+
+/**
+ * 选中的节在 URL 的 section 上：地址、换节（方向键换节不往浏览历史里加记录）、在目录里按 Enter 进编辑器。
+ * editor 是包着编辑器的容器
+ */
+function useSectionNav(rows: readonly OutlineRow[], editor: RefObject<HTMLDivElement | null>) {
+  const { section: param } = useSearch({ from: '/sop' });
+  const navigate = useNavigate({ from: '/sop' });
+  const router = useRouter();
+  const section = resolveSection(param, rows);
+  const hrefOf = (key: string): string =>
+    router.history.createHref(router.buildLocation({ to: '/sop', search: { section: key } }).publicHref);
+  // 不随渲染变：窄屏下拉是 memo，逐字重渲时不跟着重渲（sop/Directory.tsx 文件头）
+  const select = useCallback(
+    (key: string, via: SelectVia = 'click'): void => {
+      void navigate({ search: (prev) => ({ ...prev, section: key }), replace: via === 'key' });
+    },
+    [navigate],
+  );
+  // Enter 进编辑器。选的就是当前节时编辑器已经在了，直接聚焦；要先换节的，记下这一节，
+  // 等地址换好、编辑器按新的节重建以后（子组件的 effect 先跑）再聚焦
+  const pending = useRef<string | null>(null);
+  useEffect(() => {
+    if (pending.current === null || pending.current !== section) return;
+    pending.current = null;
+    focusEditorIn(editor.current);
+  }, [section, editor]);
+  const enter = (key: string): void => {
+    if (key === section) focusEditorIn(editor.current);
+    else pending.current = key;
+  };
+  return { section, hrefOf, select, enter };
+}
+
+/** 目录：宽 ≥1280 在左栏，窄了是编辑器上方的下拉 */
+function Toc({
+  rows,
+  nav,
+  filter,
+  onFilter,
+  showCounts,
+}: {
+  rows: readonly OutlineRow[];
+  nav: ReturnType<typeof useSectionNav>;
+  filter?: OutlineFilter;
+  onFilter?: (f: OutlineFilter) => void;
+  showCounts: boolean;
+}) {
+  const wide = useViewport() === 'wide';
+  if (!wide) return <DirectorySelect rows={rows} current={nav.section} onSelect={nav.select} />;
+  return (
+    <Directory
+      rows={rows}
+      current={nav.section}
+      filter={filter}
+      onFilter={onFilter}
+      showCounts={showCounts}
+      hrefOf={nav.hrefOf}
+      onSelect={nav.select}
+      onEnter={nav.enter}
+    />
+  );
+}
+
+/** /sop：页面、载入最新草稿都用这一份（同一个缓存） */
+const sopQuery = queryOptions({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
 
 export function SopPage() {
   const viewer = useViewer();
-  const q = useQuery({ queryKey: ['sop'], queryFn: () => unwrap(api.sop.$get()) });
+  const pack = usePack();
+  const q = useQuery(sopQuery);
+  const { section: param } = useSearch({ from: '/sop' });
+  // 已经有数据时重取失败（发布、丢弃、回滚以后刷新）不换成整块出错：页面卸下来，编辑中的内容就丢了。错误在页头下就地显示
+  if (q.data === undefined) {
+    // 匿名没有额度条和分段控件；节标题下那一行，成员总有，匿名只在打开固定规则节时有（节表先取行业包的）
+    const member = viewer.data?.kind !== 'anon';
+    const packRows = pack?.sopSections ?? [];
+    const locked = packRows.find((s) => s.key === resolveSection(param, packRows))?.locked ?? false;
+    return (
+      <>
+        {/* 加载时状态句那一行先占着（看不见），骨架与成品的位置一致 */}
+        <PageHeader title={TITLE} status={q.isPending ? <span className="sop-status-pending" aria-hidden="true" /> : undefined} />
+        <StateView
+          pending={q.isPending}
+          error={q.error}
+          onRetry={() => void q.refetch()}
+          skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={member} filter={member} meta={member || locked} />}
+        />
+      </>
+    );
+  }
+  const refetchError = q.isRefetchError ? <ErrorAlert error={q.error} onRetry={() => void q.refetch()} /> : null;
+  return 'spec' in q.data ? (
+    <MemberSop data={q.data} pack={pack} editable={canEdit(viewer.data)} now={q.dataUpdatedAt} refetchError={refetchError} />
+  ) : (
+    <AnonSop data={q.data} pack={pack} now={q.dataUpdatedAt} refetchError={refetchError} />
+  );
+}
+
+/**
+ * 三栏（设计系统 B 页）：目录、中栏、检查清单、工具卡片各是网格里的一格，放在哪一栏由 sop.css 按宽度定（容器查询），
+ * DOM 的顺序固定是目录 → 中栏 → 检查清单 → 工具，Tab 顺序与 spec「页头操作 → 目录 → 编辑器」一致
+ */
+function Columns({
+  toc,
+  main,
+  check,
+  tools,
+  editor,
+}: {
+  toc: ReactNode;
+  main: ReactNode;
+  check?: ReactNode;
+  tools?: ReactNode;
+  editor: RefObject<HTMLDivElement | null>;
+}) {
+  const wide = useViewport() === 'wide';
+  return (
+    <div className="sop-layout">
+      <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
+        <div className="sop-col-toc">{toc}</div>
+        <div ref={editor} className="sop-col-main sop-editor">
+          {main}
+        </div>
+        {check && <div className="sop-col-check">{check}</div>}
+        {tools && <div className="sop-col-tools">{tools}</div>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 匿名：目录（带锁）加只读正文；页头只有「线上v2 · 9月25日」；没有额度条、按钮、技术详情。
+ * now：状态句里的日期按它判断要不要写年份（取数据取回来的时刻，渲染时不读时钟）
+ */
+function AnonSop({
+  data,
+  pack,
+  now,
+  refetchError,
+}: {
+  data: AnonSopOverview;
+  pack: IndustryPack | undefined;
+  now: number;
+  refetchError: ReactNode;
+}) {
+  const { published } = data;
+  const rows = anonOutline(published.sections, pack?.sopSections);
+  const editor = useRef<HTMLDivElement>(null);
+  const nav = useSectionNav(rows, editor);
+  const shown = published.sections.find((s) => s.key === nav.section);
+  const row = rows.find((r) => r.key === nav.section);
   return (
     <>
-      <PageHeader title="销售话术" />
-      <StateView pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} skeleton={<Skeleton rows={11} />}>
-        {q.data && ('spec' in q.data ? <MemberSop data={q.data} editable={canEdit(viewer.data)} /> : <AnonSop data={q.data} />)}
-      </StateView>
+      <PageHeader title={TITLE} status={<span>{cjk(anonStatus(published, now))}</span>} />
+      {refetchError && <div className="sop-banners">{refetchError}</div>}
+      <Columns
+        editor={editor}
+        toc={<Toc rows={rows} nav={nav} showCounts={false} />}
+        main={
+          shown &&
+          row && <SectionPane key={shown.key} row={row} who="anon" value={bodyWithoutHeading(shown.text)} vocabulary={pack?.vocabulary} />
+        }
+      />
     </>
   );
 }
 
-function AnonSop({ data }: { data: AnonSopOverview }) {
-  const { published } = data;
-  const [key, setKey] = useState(published.sections[0]?.key ?? '');
-  const title = (s: SopSectionText): string => (s.text.startsWith('## ') ? s.text.slice(3, s.text.indexOf(NL)) : '前言');
-  const current = published.sections.find((s) => s.key === key);
-  return (
-    <Space orientation="vertical" style={{ width: '100%' }}>
-      <Typography.Text type="secondary">
-        v{published.versionNo} · 发布于{when(published.publishedAt)} · prompt {published.promptHash}
-      </Typography.Text>
-      <Row gutter={16}>
-        <Col span={6}>
-          <Menu
-            mode="inline"
-            style={{ border: '1px solid var(--border)', borderRadius: 6 }}
-            selectedKeys={[key]}
-            onClick={(e) => setKey(e.key)}
-            items={published.sections.map((s) => ({ key: s.key, label: title(s) }))}
-          />
-        </Col>
-        <Col span={18}>{current && <TextEditor value={current.text} readOnly />}</Col>
-      </Row>
-    </Space>
-  );
+/**
+ * 409 以后没存上的节。edits 是这一次没存上的（编辑器还冻着、显示你写的），载入最新草稿以后变成对比接在 loaded 后面；
+ * loaded 是已经载入过的对比，一次 409 一批，关掉之前一直留着：别人接着在存，再来一次 409 也不能把上一批冲掉
+ */
+interface Lost {
+  edits: DraftEdit[];
+  loaded: LostSection[];
 }
 
-/** 检查结果按 7 个检查项列出（名字固定，见 ui-labels.ts 的 SOP_CHECKS）；服务端的原文（detail）、哈希只在技术详情里 */
-function checkItems(spec: readonly SectionSpecView[], violations: DraftCheck['violations']): CheckItem[] {
-  return SOP_CHECKS.map(([code, label]) => {
-    const hits = violations.filter((v) => v.code === code);
-    const sections = [...new Set(hits.map((v) => headingOf(spec, v.sectionKey)))];
-    return {
-      key: code,
-      label,
-      state: hits.length ? 'fail' : 'pass',
-      note: hits.length ? [`${hits.length}处`, sections.join('、')] : undefined,
-    };
-  });
+/** 这一批没存上的节接在已有的对比后面：左边是载入时草稿里的这一节；同一节第几次没存上（nth）按已有的数 */
+function withLoaded(prev: readonly LostSection[], edits: readonly DraftEdit[], fresh: SopOverview): LostSection[] {
+  const latest = fresh.draft ?? fresh.published;
+  const out = [...prev];
+  for (const e of edits) {
+    const s = fresh.spec.find((x) => x.key === e.key);
+    out.push({
+      key: e.key,
+      nth: out.filter((x) => x.key === e.key).length + 1,
+      name: s?.heading ?? PREAMBLE_NAME,
+      latest: bodyOf(latest.sections.find((x) => x.key === e.key)?.text ?? '', s?.heading ?? null),
+      mine: e.body,
+    });
+  }
+  return out;
 }
 
-function MemberSop({ data, editable }: { data: SopOverview; editable: boolean }) {
+function MemberSop({
+  data,
+  pack,
+  editable,
+  now,
+  refetchError,
+}: {
+  data: SopOverview;
+  pack: IndustryPack | undefined;
+  editable: boolean;
+  now: number;
+  refetchError: ReactNode;
+}) {
   const qc = useQueryClient();
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
-  const [key, setKey] = useState(spec.find((s) => !s.locked)?.key ?? spec[0]!.key);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [check, setCheck] = useState<DraftCheck | null>(null);
   const [rejected, setRejected] = useState<HttpError | null>(null);
@@ -134,23 +300,47 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
   const [discarding, setDiscarding] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState<OutlineFilter>('all');
+  const [lost, setLost] = useState<Lost | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const [reloadError, setReloadError] = useState<unknown>(null);
+  const editor = useRef<HTMLDivElement>(null);
+  /** 载入最新草稿、关掉对比以后焦点去哪（见下面的 effect） */
+  const refocus = useRef<'lost' | 'next' | null>(null);
+  const lostTitle = useRef<HTMLHeadingElement>(null);
 
-  const section = spec.find((s) => s.key === key)!;
   const originalBody = (k: string): string => {
     const s = spec.find((x) => x.key === k)!;
     return bodyOf(current.sections.find((x) => x.key === k)?.text ?? '', s.heading);
   };
-  const dirty = Object.keys(edits).filter((k) => edits[k] !== originalBody(k));
-  const guard = useUnsavedGuard(dirty.length > 0);
-  // 检查结果、发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废
-  const clearResults = (): void => {
+  // 本地改过、还没存进草稿的节（规范化以后比，改回原样不算）：自动保存要发的就是它们
+  const unsaved = useMemo(() => unsavedEdits(spec, current.sections, edits), [spec, current.sections, edits]);
+  // 检查结果、发布被拒、冲突都是对某一份草稿说的：草稿存了、丢了、发布了或者回滚过，就都作废。
+  // 引用不变，版本历史（memo）才不会每敲一个字跟着重渲
+  const clearResults = useCallback((): void => {
     setCheck(null);
     setRejected(null);
     setConflict(null);
-  };
+  }, []);
+  const saver = useAutosave({
+    enabled: editable,
+    unsaved,
+    composing: () => composingIn(editor.current),
+    base: { rev: draft?.rev ?? null, basedOn: draft?.basedOn ?? published.id },
+    send: (list, base) => unwrap(api.sop.draft.$put({ json: { basedOn: base.basedOn, rev: base.rev, edits: list } })),
+    onSaved: (v) => {
+      qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) => (old && 'spec' in old ? withSavedDraft(old, v) : old));
+      clearResults();
+    },
+    onConflict: (list) => setLost((prev) => ({ edits: list, loaded: prev?.loaded ?? [] })),
+  });
+  const frozen = saver.status.kind === 'conflict';
+  const saving = saver.status.kind === 'saving';
+  // 自动保存还没存上（在等、在路上、失败、409 停住），以及载入以后还留着的对比，都算没保存的内容；换节不算离开
+  const guard = useUnsavedGuard(unsaved.length > 0 || lost !== null, LEAVING_PAGE);
   // 先等新数据回来再清掉本地改动，免得编辑器先闪回旧正文
   const refresh = async (): Promise<void> => {
-    await qc.invalidateQueries({ queryKey: ['sop'] });
+    await qc.invalidateQueries({ queryKey: sopQuery.queryKey });
     await qc.invalidateQueries({ queryKey: ['sop-versions'] });
     setEdits({});
   };
@@ -166,21 +356,33 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
     }
   };
 
-  const save = () =>
-    run(async () => {
-      await unwrap(
-        api.sop.draft.$put({
-          json: {
-            basedOn: draft?.basedOn ?? published.id,
-            rev: draft?.rev ?? null,
-            edits: dirty.map((k) => ({ key: k, body: edits[k]! })),
-          },
-        }),
-      );
+  // 409 以后：重取 /sop，编辑器换成最新草稿，没存上的节连同载入时草稿里的写法接在已有的对比后面，自动保存接着来
+  const reloadLatest = async (): Promise<void> => {
+    setReloading(true);
+    setReloadError(null);
+    try {
+      const fresh = await qc.fetchQuery({ ...sopQuery, staleTime: 0 });
+      if (!('spec' in fresh)) return;
+      setEdits({});
       clearResults();
-      toast('草稿已保存');
-      await refresh();
-    });
+      setLost((prev) => {
+        const loaded = withLoaded(prev?.loaded ?? [], prev?.edits ?? [], fresh);
+        return loaded.length ? { edits: [], loaded } : null;
+      });
+      saver.resume();
+      refocus.current = 'lost';
+    } catch (e) {
+      setReloadError(e);
+    } finally {
+      setReloading(false);
+    }
+  };
+  // 只关掉对比；409 停住时这一次没存上的节还要留着，载入以后照样变成对比
+  const closeLost = useCallback(() => {
+    refocus.current = 'next';
+    setLost((prev) => (prev?.edits.length ? { ...prev, loaded: [] } : null));
+  }, []);
+
   const runCheck = () =>
     run(async () => {
       setRejected(null);
@@ -197,6 +399,8 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         setPublishing(false);
         setNote('');
         clearResults();
+        // 存上的那份草稿已经发布出去了：「已自动保存14:30」不再对应什么
+        saver.resume();
         await refresh();
       } catch (e) {
         setPublishing(false);
@@ -215,146 +419,177 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         setDiscarding(false);
       }
       clearResults();
+      saver.resume();
       toast('草稿已丢弃');
       await refresh();
     });
 
   const violations = rejected ? (rejected.body.violations ?? []) : (check?.violations ?? null);
-  const over = budget.chars > budget.limit;
+  const rows = memberOutline({
+    spec,
+    packSections: pack?.sopSections,
+    published: published.sections,
+    current: current.sections,
+    edits,
+    violations,
+  });
+  const nav = useSectionNav(rows, editor);
+  const tools = pack?.vocabulary.tools;
+  const section = spec.find((s) => s.key === nav.section);
+  const row = rows.find((r) => r.key === nav.section);
+  const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
+  const changed = rows.filter((r) => r.changed);
   const textOf = (v: SopVersion, k: string): string => v.sections.find((s) => s.key === k)?.text ?? '';
   const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key)) : [];
-  const items = violations ? checkItems(spec, violations) : [];
+  // 检查、发布、丢弃都是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点
+  const settled = !!draft && unsaved.length === 0 && !saving && !frozen;
+  const saveError = saver.status.kind === 'failed' && errorCopy(saver.status.error).place !== 'inline' ? saver.status.error : null;
+  const lostLoaded = lost?.loaded.length ? lost.loaded : null;
+  const hasBanners = refetchError !== null || saveError !== null || frozen || lostLoaded !== null || reloadError !== null;
+
+  // 409 停住的那一刻，在一节长正文的下半截打字时横幅在视口外、状态句跟着页头缩没了，编辑器只是不再接受输入：
+  // 把横幅滚进视口；焦点原来在编辑器里的，移到横幅上（读屏念出来，下一个 Tab 就到「载入最新草稿」；
+  // 不直接落在按钮上，免得接着敲的空格、回车把它按下去）。焦点在别处（目录、弹窗）的不抢。
+  // 用 layout effect：编辑器变只读时是整个重建的（SopEditor 的 effect），旧的正文一拿掉焦点就掉到 body 上，
+  // 得赶在那之前看焦点在不在编辑器里
+  const conflictRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = conflictRef.current;
+    if (!frozen || !el) return;
+    const typing = editor.current?.contains(document.activeElement) ?? false;
+    // 按底边对齐：横幅紧挨着页头，视口放得下时就一直滚到顶，页头连同状态句「没保存上」也整个露出来
+    el.scrollIntoView({ block: 'end' });
+    if (typing) el.focus({ preventScroll: true });
+  }, [frozen]);
+  // 载入最新草稿、关掉对比以后，按过的按钮随横幅、对比一起卸下，焦点掉到 body 上，读屏什么也不念：
+  // 载入以后有对比的，移到对比的标题上；没有对比、关掉对比以后回到编辑器，还冻着时回到横幅。焦点已经在别处（目录）的不抢
+  useEffect(() => {
+    const want = refocus.current;
+    if (want === null) return;
+    refocus.current = null;
+    if (document.activeElement !== document.body) return;
+    if (want === 'lost' && lostTitle.current) lostTitle.current.focus();
+    else if (frozen) conflictRef.current?.focus();
+    else focusEditorIn(editor.current);
+  });
+  const hasNotices = error !== null || !!draft?.stale || !!rejected || !!check?.rebase.needed || !!conflict;
 
   return (
-    <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
-      {guard}
-      {error !== null && <ErrorAlert error={error} />}
-      <Card size="small">
-        <Space wrap size="large">
-          <span>
-            已发布v{published.versionNo}（{when(published.publishedAt)}）
+    <>
+      <PageHeader
+        title={TITLE}
+        status={
+          <span className={editable ? 'sop-status-line' : undefined}>
+            {cjk(memberStatus(published, changed.length, now))}
+            {editable && <SaveState status={saver.status} onRetry={saver.flush} />}
           </span>
-          {draft ? (
-            <Space>
-              <Status kind="draft" />
-              {draft.stale && <Typography.Text type="secondary">草稿打开之后发布过新版本，发布时自动合并</Typography.Text>}
-            </Space>
-          ) : (
-            <Tag>没有草稿</Tag>
-          )}
-          <span style={{ width: 220, display: 'inline-block' }}>
-            <Progress
-              percent={Math.round((budget.chars / budget.limit) * 100)}
-              status={over ? 'exception' : 'normal'}
-              size="small"
-              format={() => `${budget.chars} / ${budget.limit}字`}
-            />
-          </span>
-          {editable && (
-            <Space>
-              <PrimaryButton disabled={!dirty.length} loading={busy} onClick={() => void save()}>
-                保存草稿{dirty.length ? `（${dirty.length}节）` : ''}
-              </PrimaryButton>
-              <Button disabled={!draft || dirty.length > 0} loading={busy} onClick={() => void runCheck()}>
-                检查
-              </Button>
-              <Button disabled={!draft || dirty.length > 0} loading={busy} onClick={() => setPublishing(true)}>
-                发布
-              </Button>
-              <Button disabled={!draft} loading={busy} onClick={() => setDiscarding(true)}>
+        }
+        actions={
+          editable && (
+            <>
+              <Button disabled={!settled} loading={busy} onClick={() => setDiscarding(true)}>
                 丢弃
               </Button>
-            </Space>
-          )}
-        </Space>
-      </Card>
-
-      {violations && (
-        <Card size="small">
-          <Space orientation="vertical" style={{ width: '100%' }}>
-            {rejected && <ErrorAlert error={rejected} />}
-            {check?.rebase.needed && !rejected && (
-              <Alert
-                type={check.rebase.conflicts.length ? 'error' : 'info'}
-                title={
-                  check.rebase.conflicts.length
-                    ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
-                      '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
-                    : '草稿基于的版本已过期，发布时会自动合并别人的改动'
-                }
+              <Button disabled={!settled} loading={busy} onClick={() => void runCheck()}>
+                检查
+              </Button>
+              <Button disabled={!settled} loading={busy} onClick={() => setPublishing(true)}>
+                发布
+              </Button>
+            </>
+          )
+        }
+      />
+      {guard}
+      {hasBanners && (
+        <div className="sop-banners">
+          {/* 409 停住时重取失败由下面「载入最新草稿」自己的报错说（重试要接着走完载入），这里不重复 */}
+          {!frozen && refetchError}
+          {saveError !== null && <ErrorAlert error={saveError} onRetry={saver.flush} />}
+          {frozen && (
+            <div ref={conflictRef} tabIndex={-1} className="sop-conflict">
+              <ConflictBanner
+                error={saver.status.kind === 'conflict' ? saver.status.error : null}
+                names={(lost?.edits ?? []).map((e) => headingOf(spec, e.key))}
+                loading={reloading}
+                onReload={() => void reloadLatest()}
               />
-            )}
-            <CheckList title="发布前检查" summary={`${items.filter((i) => i.state === 'pass').length}/${items.length}通过`} items={items} />
-            <TechDetails
-              violations={violations}
-              rows={
-                check
-                  ? [
-                      ['prompt', check.promptHash.slice(0, 12)],
-                      ['chars', `${check.chars}/${check.limit}`],
-                    ]
-                  : undefined
+            </div>
+          )}
+          {reloadError !== null && <ErrorAlert error={reloadError} onRetry={() => void reloadLatest()} />}
+          {/* 又一次 409 时上一批对比照样留着（这时编辑器冻着，这一批要载入以后才接上来） */}
+          {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} titleRef={lostTitle} />}
+        </div>
+      )}
+      <QuotaBar model={quota} />
+      {hasNotices && (
+        <Space orientation="vertical" size="middle" className="sop-notices">
+          {error !== null && <ErrorAlert error={error} />}
+          {draft?.stale && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
+          {rejected && <ErrorAlert error={rejected} />}
+          {check?.rebase.needed && !rejected && (
+            <Alert
+              type={check.rebase.conflicts.length ? 'error' : 'info'}
+              title={
+                check.rebase.conflicts.length
+                  ? `这几节在你编辑期间被别人改过：${check.rebase.conflicts.map((k) => headingOf(spec, k)).join('、')}。` +
+                    '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
+                  : '草稿基于的版本已过期，发布时会自动合并别人的改动'
               }
             />
-          </Space>
-        </Card>
-      )}
-      {conflict && (
-        <Alert
-          type="error"
-          showIcon
-          title={`发布被拒：这几节在你编辑期间被别人改过——${conflict.keys.map((k) => headingOf(spec, k)).join('、')}`}
-          description={
-            <Space orientation="vertical" style={{ width: '100%' }}>
-              {conflict.current
-                .filter((s) => conflict.keys.includes(s.key))
-                .map((s) => (
-                  <div key={s.key}>
-                    <Typography.Text type="secondary">当前发布版本的「{headingOf(spec, s.key)}」：</Typography.Text>
-                    <TextEditor value={s.text} readOnly />
-                  </div>
-                ))}
-              <span>这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在上面这份当前版本上重做。</span>
-            </Space>
-          }
-        />
-      )}
-
-      <Row gutter={16}>
-        <Col span={6}>
-          <Menu
-            mode="inline"
-            style={{ border: '1px solid var(--border)', borderRadius: 6 }}
-            selectedKeys={[key]}
-            onClick={(e) => setKey(e.key)}
-            items={spec.map((s) => ({
-              key: s.key,
-              icon: s.locked ? <LockOutlined title="固定规则节：由代码逐条核对，这里只能看" /> : undefined,
-              label: (
-                <Space>
-                  <span>{s.heading ?? '前言'}</span>
-                  {dirty.includes(s.key) && <Tag>未保存</Tag>}
-                </Space>
-              ),
-            }))}
-          />
-        </Col>
-        <Col span={18}>
-          {section.locked && (
-            <Alert type="info" style={{ marginBottom: 8 }} title="固定规则节：由代码逐条核对，这里改不了，要改请联系技术。" />
           )}
-          <TextEditor
-            key={key}
-            value={edits[key] ?? originalBody(key)}
-            readOnly={section.locked || !editable}
-            onChange={(v) => setEdits((e) => ({ ...e, [key]: v }))}
-          />
-        </Col>
-      </Row>
+          {conflict && (
+            <Alert
+              type="error"
+              showIcon
+              title={`发布被拒：这几节在你编辑期间被别人改过——${conflict.keys.map((k) => headingOf(spec, k)).join('、')}`}
+              description={
+                <Space orientation="vertical" style={{ width: '100%' }}>
+                  {conflict.current
+                    .filter((s) => conflict.keys.includes(s.key))
+                    .map((s) => (
+                      <div key={s.key}>
+                        <Typography.Text type="secondary">当前发布版本的「{headingOf(spec, s.key)}」：</Typography.Text>
+                        <SopEditor value={s.text} name={headingOf(spec, s.key)} readOnly vocabulary={pack?.vocabulary} />
+                      </div>
+                    ))}
+                  <span>这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在上面这份当前版本上重做。</span>
+                </Space>
+              }
+            />
+          )}
+        </Space>
+      )}
 
-      {draft && <DraftDiff spec={spec} published={published} draft={draft} />}
+      <Columns
+        editor={editor}
+        toc={<Toc rows={rows} nav={nav} filter={filter} onFilter={setFilter} showCounts />}
+        main={
+          section &&
+          row && (
+            <SectionPane
+              key={section.key}
+              row={row}
+              who={editable ? 'editor' : 'reader'}
+              frozen={frozen}
+              value={edits[section.key] ?? originalBody(section.key)}
+              baseline={bodyOf(textOf(published, section.key), section.heading)}
+              vocabulary={pack?.vocabulary}
+              onChange={(v) => {
+                setEdits((e) => ({ ...e, [section.key]: v }));
+                saver.edited();
+              }}
+            />
+          )
+        }
+        check={editable && <CheckCard spec={spec} violations={violations} check={check} />}
+        tools={tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
+      />
 
-      <History editable={editable} currentId={published.id} onRolledBack={clearResults} />
+      <Space orientation="vertical" size="middle" className="sop-after">
+        {draft && <DraftDiff spec={spec} published={published} draft={draft} />}
+        <History editable={editable} currentId={published.id} onRolledBack={clearResults} />
+      </Space>
 
       <Modal
         destroyOnHidden
@@ -381,15 +616,27 @@ function MemberSop({ data, editable }: { data: SopOverview; editable: boolean })
         onCancel={() => setDiscarding(false)}
       >
         {draftChanged.length
-          ? `草稿里${draftChanged.length}节改动（${draftChanged.map((s) => s.heading ?? '前言').join('、')}）会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`
+          ? `草稿里${draftChanged.length}节改动（${draftChanged.map((s) => s.heading ?? PREAMBLE_NAME).join('、')}）会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`
           : `草稿会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`}
       </ConfirmDanger>
-    </Space>
+    </>
   );
 }
 
-/** 草稿与已发布版本的逐节对比：只列改过的可编辑节，展开才建编辑器 */
-function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[]; published: SopVersion; draft: SopVersion }) {
+/**
+ * 草稿与已发布版本的逐节对比：只列改过的可编辑节，展开才建编辑器。
+ * 它和版本历史都用 memo 包着：编辑器每敲一个字 MemberSop 都重渲，antd 的 Table、Collapse 跟着重渲时会在提交后
+ * 再排一次更新，每个字提交两次；自动连按（走查脚本）时这些接连的更新偶尔被 React 当成死循环（#185）
+ */
+const DraftDiff = memo(function DraftDiff({
+  spec,
+  published,
+  draft,
+}: {
+  spec: readonly SectionSpecView[];
+  published: SopVersion;
+  draft: SopVersion;
+}) {
   const textOf = (v: SopVersion, key: string): string => v.sections.find((s) => s.key === key)?.text ?? '';
   const changed = spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key));
   return (
@@ -400,7 +647,7 @@ function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[
         <Collapse
           items={changed.map((s) => ({
             key: s.key,
-            label: s.heading ?? '前言',
+            label: s.heading ?? PREAMBLE_NAME,
             children: (
               <SectionDiff
                 before={bodyOf(textOf(published, s.key), s.heading)}
@@ -414,11 +661,19 @@ function DraftDiff({ spec, published, draft }: { spec: readonly SectionSpecView[
       )}
     </Card>
   );
-}
+});
 
 const VERSIONS_PAGE = 50;
 
-function History({ editable, currentId, onRolledBack }: { editable: boolean; currentId: string; onRolledBack: () => void }) {
+const History = memo(function History({
+  editable,
+  currentId,
+  onRolledBack,
+}: {
+  editable: boolean;
+  currentId: string;
+  onRolledBack: () => void;
+}) {
   const qc = useQueryClient();
   // 每一个已发布或归档的版本都要能回滚，所以按版本号倒序往前翻（before 游标）；
   // 接口不给下一页的游标：满一页就以这一页最小的版本号接着翻，不满一页就是到头了
@@ -535,4 +790,4 @@ function History({ editable, currentId, onRolledBack }: { editable: boolean; cur
       </Modal>
     </Card>
   );
-}
+});

@@ -2,6 +2,7 @@
 // 哈希、动作编码和 JSON 原文的地方（scripts/check-console-src.ts 查：别的文件读 .detail 都算违规）。
 // 用原生 <details>：键盘可达、展开 0ms，折叠时里面的字不算页面上的可见文字
 import { RightOutlined } from '@ant-design/icons';
+import { type RefObject, useRef, useState } from 'react';
 import type { ApiError, ContractViolation } from '../../../src/shared/console-api.js';
 import { HttpError } from '../api.js';
 
@@ -14,6 +15,8 @@ export interface TechDetailsProps {
   rows?: readonly (readonly [string, string])[];
   /** JSON 原文 */
   json?: unknown;
+  /** 给了就在原文下面放一个「复制」按钮，复制这段字（审计详情抽屉：spec「审计日志 · 详情抽屉」） */
+  copy?: string;
 }
 
 function errorLines(e: unknown): string[] {
@@ -44,7 +47,31 @@ export function techLines(p: TechDetailsProps): string[] {
   ];
 }
 
+/**
+ * 复制原文。剪贴板不可用（非 https、浏览器拒绝）时不报错：选中原文，按钮改写成「已选中，手动复制」，
+ * 用户自己按复制键。复制成功时按钮写「已复制」，不弹 toast（技术详情里的小动作）
+ */
+function CopyButton({ text, target }: { text: string; target: RefObject<HTMLPreElement | null> }) {
+  const [done, setDone] = useState<'copied' | 'selected' | null>(null);
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setDone('copied');
+    } catch {
+      const pre = target.current;
+      if (pre) window.getSelection()?.selectAllChildren(pre);
+      setDone('selected');
+    }
+  };
+  return (
+    <button type="button" className="tech-details-copy" onClick={() => void copy()} aria-live="polite">
+      {done === 'copied' ? '已复制' : done === 'selected' ? '已选中，手动复制' : '复制'}
+    </button>
+  );
+}
+
 export function TechDetails(props: TechDetailsProps) {
+  const pre = useRef<HTMLPreElement>(null);
   const lines = techLines(props);
   if (!lines.length) return null;
   return (
@@ -53,7 +80,10 @@ export function TechDetails(props: TechDetailsProps) {
         <RightOutlined className="tech-details-chevron" aria-hidden="true" />
         技术详情
       </summary>
-      <pre className="tech-details-body">{lines.join('\n')}</pre>
+      <pre ref={pre} className="tech-details-body">
+        {lines.join('\n')}
+      </pre>
+      {props.copy !== undefined && <CopyButton text={props.copy} target={pre} />}
     </details>
   );
 }

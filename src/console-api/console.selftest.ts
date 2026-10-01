@@ -765,6 +765,8 @@ for (const [u, role] of [
     unknown.status === 401 && wrong.status === 401 && unknown.text === wrong.text,
     `${unknown.text} / ${wrong.text}`,
   );
+  // console UX spec「登录」：界面只说「密码」，技术详情里的 detail 同步改（plan 第 15 步）
+  check('HTTP 登录：失败的 detail 写「密码」，不写「口令」', wrong.body.detail === '邮箱或密码不对', wrong.text);
   // 口令队列排满（两个槽都占住）：未知邮箱与已有邮箱都在排满 2 秒后 429 busy，状态码与响应体相同，各打一行日志
   session.__authTest.reset();
   const held = [await __passwordTest.occupy(), await __passwordTest.occupy()];
@@ -785,6 +787,11 @@ for (const [u, role] of [
     'HTTP 登录：口令队列排满时未知邮箱与已有邮箱都是 429 busy，响应体相同',
     busy.length === 2 && busy.every((r) => keep(r).status === 429 && r.body.error === 'busy') && busy[0]!.text === busy[1]!.text,
     busy.map((r) => `${r.status} ${r.text}`).join(' | '),
+  );
+  check(
+    'HTTP 登录：排队超时的 detail 写「密码」，不写「口令」',
+    busy.length === 2 && busy.every((r) => r.body.detail === '密码校验排队超时，请稍后再试'),
+    busy.map((r) => r.text).join(' | '),
   );
   check('登录失败：排队超时也打日志', logged.filter((l) => l.includes('排队超时')).length === 2, logged.join(' | '));
 }

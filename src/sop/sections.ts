@@ -3,12 +3,14 @@
 // 含结尾的换行，所以 joinSop 就是逐节相连，切开再拼回去逐字节相同。
 // 本文件的源码里特殊字符一律写成 \u 转义：编辑器或工具把它们写成原字符时，源码里就混进了本文件要拒绝的东西。
 // sectionBody、editableChars 与 SopStructureError、SopSection、SectionSpec 在 src/shared/sop-sections.ts（console 的额度条也要用），
-// 这里再导出同一份：契约检查的 instanceof 认的是同一个类。
+// 这里再导出同一份：契约检查的 instanceof 认的是同一个类。normalizeBody 的规范化本身（canonicalBody）也在那里，这里只加编码检查。
 import {
+  canonicalBody,
   editableChars as editableCharsOf,
   headingLine,
   sectionBody,
   SopStructureError,
+  toLf,
   type SectionSpec,
   type SopSection,
 } from '../shared/sop-sections.js';
@@ -90,15 +92,10 @@ export function assertSopEncoding(text: string): void {
  * 再补上结尾，非末节补 \n\n，末节补 \n。孤立代理项、控制字符和行分隔符不替换，直接拒绝
  */
 export function normalizeBody(body: string, isLast: boolean): string {
-  const lf = body.replaceAll(BOM, '').replace(/\r\n?/g, '\n');
-  // 先查不能替换的字符：后面的去行尾空白和 trimEnd 会把行尾的 U+2028 当成空白悄悄删掉
-  assertNoIrreparable(lf);
-  const text = lf
-    .normalize('NFC')
-    .replace(/[^\S\n]+$/gm, '')
-    .replace(/^\n+/, '')
-    .trimEnd();
-  const out = text + (isLast ? '\n' : '\n\n');
+  // 先查不能替换的字符：规范化里的去行尾空白和 trimEnd 会把行尾的 U+2028 当成空白悄悄删掉
+  assertNoIrreparable(toLf(body));
+  // 规范化本身在 src/shared/sop-sections.ts：话术页按同一份实时算字数
+  const out = canonicalBody(body, isLast);
   assertSopEncoding(out);
   return out;
 }

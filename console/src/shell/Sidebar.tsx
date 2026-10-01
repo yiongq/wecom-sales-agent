@@ -92,6 +92,10 @@ function NavLink({ item, selected, collapsed }: { item: NavItem; selected: boole
     <Link to="/audit" {...common}>
       {body}
     </Link>
+  ) : item.key === '/' ? (
+    <Link to="/" {...common}>
+      {body}
+    </Link>
   ) : (
     <Link to="/sop" {...common}>
       {body}
