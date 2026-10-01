@@ -975,6 +975,31 @@ async function failing(fail: RegExp) {
     'overview.css：.ov-below 不占盒子，.ov-below.is-waiting 不显示',
     /\.ov-below \{\s*display: contents;\s*\}/.test(css) && /\.ov-below\.is-waiting \{\s*display: none;\s*\}/.test(css),
   );
+  // 检查慢时骨架按真实行数画，它也得与真实的行一样高，不然检查一回来，下面的块照样被推。happy-dom 不排版，量不了 CLS
+  // （375 宽的 CLS 由走查环境实测，见验收 23 的记录），这里从 overview.css 读出来比：每条骨架（条高加上下外边距）
+  // 等于它代替的那一行字的行高（类型、对象、上下文），骨架的对象与上下文之间不另设间距（与真实的行一样是 .ov-todo-main 的 2px）
+  // 顶层、只有这一个选择器的规则（不取 @media 里缩进的，也不取「a,\nb {」这种选择器列表）
+  const rule = (sel: string): string =>
+    new RegExp(`(?<!,\\n)^${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`, 'm').exec(css)?.[1] ?? '';
+  const px = (sel: string, prop: string): number | null => {
+    const v = new RegExp(`(?:^|[;\\s])${prop}:\\s*(\\d+)px;`).exec(rule(sel))?.[1];
+    return v === undefined ? null : Number(v);
+  };
+  const bar = px('.ov-todo-skeleton .skeleton-bar', 'height');
+  const barRow = (sel: string): number | null => {
+    const m = px(sel, 'margin-block');
+    return bar === null || m === null ? null : bar + 2 * m;
+  };
+  eq(
+    'overview.css：骨架每条占满它代替的那行字的行高（类型、对象、上下文），对象与上下文之间不另设间距',
+    [
+      barRow('.ov-todo-skeleton > .skeleton-bar'),
+      barRow('.ov-todo-skeleton .ov-todo-main > .skeleton-bar:first-child'),
+      barRow('.ov-todo-skeleton .ov-todo-main > .skeleton-bar:last-child'),
+      /\.ov-todo-skeleton[^{]*\{[^}]*\bgap:/.test(css),
+    ],
+    [px('.ov-todo-type', 'line-height'), px('.ov-todo-title', 'line-height'), px('.ov-todo-context', 'line-height'), false],
+  );
   const tick = () =>
     act(async () => {
       await new Promise((res) => setTimeout(res, 0));
@@ -1022,6 +1047,11 @@ async function failing(fail: RegExp) {
     '只差发布前检查：下面的块已经显示，待办的骨架按真实行数画 5 行',
     [below(c), c.$('.ov-todo-skeleton').length, c.$('.ov-todo-title').length, c.$('.ov-below .ov-kpi-value').length],
     ['ov-below', 5, 0, 4],
+  );
+  eq(
+    '骨架每行是 overview.css 量行高时假定的结构：一条代替类型，.ov-todo-main 里两条代替对象和上下文',
+    [c.$('.ov-todo-skeleton > .skeleton-bar').length, c.$('.ov-todo-skeleton > .ov-todo-main > .skeleton-bar').length],
+    [5, 10],
   );
   releaseHeld();
   await settle();
