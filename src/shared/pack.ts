@@ -115,7 +115,10 @@ export interface SalesStageDef {
   label: string;
   /** 分支阶段（如异议）排在它的主阶段后面 */
   branchOf?: string;
-  /** 终态不进「客户停在哪一步」 */
+  /**
+   * 终态：停在这里的会话算已成交（conversationState，服务端的 state=paid 过滤、byState 计数、waiting_first
+   * 和 console 的列表、首页都按它），转过人工的也算，不进「等人接手」、徽标和铃铛；也不进「客户停在哪一步」
+   */
   terminal?: boolean;
 }
 
