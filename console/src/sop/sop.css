@@ -1316,7 +1316,7 @@
 /*
  * ---------------- 冲突合并（第 8 步，spec「销售话术 · 冲突合并」） ----------------
  * 合并模式没有右栏：中栏占满目录右边（左右对照要宽），最宽 1040（同查看改动）。
- * 中栏：节标题、说明行（同编辑器），两栏的名字 13 text-2，下面是对照卡片（同编辑卡片：panel 底、--r-lg、--shadow-card），
+ * 中栏：节标题、说明行（同编辑器），下面是对照卡片（同编辑卡片：panel 底、--r-lg、--shadow-card），卡片里第一行是两栏的名字 13 text-2，
  * 底部「这一节处理好了」（次要按钮；点过换成 success 的勾加 14 text 的同一句）。
  * 对照：左右各一个编辑器，正文同编辑器 16/28（§2.3 reading），中间 32 宽一栏放「采用线上的写法」。改到的行照「你没保存上的改动」
  * 的对比上色：左边（线上的写法）--subtle、改到的字下面一道 1.5px text-3；右边（你的草稿）--accent-bg、改到的字下面一道 2px --accent。
@@ -1338,7 +1338,7 @@
 .sop-merge-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px minmax(0, 1fr);
-  margin-top: 12px;
+  margin-bottom: 4px;
   font-size: 13px;
   line-height: 20px;
   color: var(--text-2);
@@ -1350,8 +1350,8 @@
   grid-column: 3;
 }
 .sop-merge-card {
-  margin-top: 4px;
-  padding: 16px 0;
+  margin-top: 12px;
+  padding: 12px 0 16px;
   border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: var(--shadow-card);

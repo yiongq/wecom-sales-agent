@@ -380,7 +380,8 @@ function MemberSop({
   const [discarding, setDiscarding] = useState(false);
   // 发布：点了「发布…」、正在先存没存上的改动（from 是点的时候的保存状态：那之后的失败才算这次没存上）；抽屉开着；
   // 变更说明与它的预填；发布请求在路上；发布没成功（422、409 以外的，写在抽屉里）；成功以后条里的那句
-  const [opening, setOpening] = useState<{ key: string | null; from: SaveStatus } | null>(null);
+  // rev：完成合并以后回到抽屉，等合并存下的那份草稿进了 /sop 的缓存再打开（预填、逐节改动按它算）
+  const [opening, setOpening] = useState<{ key: string | null; from: SaveStatus; rev?: number } | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [note, setNote] = useState('');
   const [prefill, setPrefill] = useState('');
@@ -685,16 +686,16 @@ function MemberSop({
   // 点「发布…」：先把没存上的改动存了（⌘S 同一条路），存上以后再打开抽屉、检查一次。这一次存上了（草稿的 rev 变了）时
   // 自动检查已经在跑，不另发；没有要存的就检查一次。点了以后又存失败了、或者 409 停住，就不打开（状态句与横幅说明原因）。
   // 存没存上在渲染时看（按上一次渲染的值调整 state），检查在 effect 里发
-  const startPublish = (trigger: HTMLElement | null): void => {
+  const startPublish = (trigger: HTMLElement | null, rev?: number): void => {
     publishBack.current = trigger;
-    setOpening({ key: draftKey, from: saver.status });
+    setOpening({ key: draftKey, from: saver.status, ...(rev === undefined ? {} : { rev }) });
     saver.flush();
   };
   const [checkOnOpen, setCheckOnOpen] = useState(0);
   if (opening !== null) {
     const st = saver.status;
     if (frozen || (st.kind === 'failed' && st !== opening.from)) setOpening(null);
-    else if (unsaved.length === 0 && !saving) {
+    else if (unsaved.length === 0 && !saving && (opening.rev === undefined || (draft?.rev ?? -1) >= opening.rev)) {
       setOpening(null);
       if (draftKey !== null) {
         // 预填改了哪几节；自己写过的说明留着，只剩上一次的预填（或空着）时换成这一次的
@@ -903,10 +904,15 @@ function MemberSop({
     mergeFocus.current = null;
     el.focus();
   });
-  // 去合并的某一节（进合并时去第一个，「完成合并」不能点时去第一个没处理的）；正在看某一版的改动时一并回到编辑
+  // 去合并的某一节（进合并时去第一个，「完成合并」不能点时去第一个没处理的）；正在看某一版的改动时一并回到编辑。
+  // 已经在这一节上的直接聚焦（不换地址就没有下一次渲染）
   const goMerge = (key: string): void => {
+    if (key === nav.section && nav.viewing === undefined && mergeTitle.current) {
+      mergeTitle.current.focus();
+      return;
+    }
     mergeFocus.current = { to: 'title', key };
-    if (key !== nav.section || nav.viewing !== undefined) nav.select(key, 'key');
+    nav.select(key, 'key');
   };
   const goMergeRef = useRef(goMerge);
   useEffect(() => {
@@ -954,7 +960,7 @@ function MemberSop({
       qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) =>
         old && 'spec' in old ? withMerged(old, m.online, v) : old,
       );
-      startPublish(publishButton.current);
+      startPublish(publishButton.current, v.rev);
       void qc.invalidateQueries({ queryKey: sopQuery.queryKey });
     } catch (e) {
       setMergeError(e);
@@ -976,8 +982,10 @@ function MemberSop({
       setMergeError(null);
       setMergeEpoch((n) => n + 1);
       setMerge((prev) => (prev && input ? restartMerge(prev, input) : null));
-      if (keys.length) goMerge(nav.section !== undefined && keys.includes(nav.section) ? nav.section : keys[0]!);
-      else mergeFocus.current = { to: 'editor' };
+      // 对照按新的写法重建（epoch 变了），标题也是新的：等重渲以后再聚焦
+      const target = nav.section !== undefined && keys.includes(nav.section) ? nav.section : keys[0];
+      mergeFocus.current = target === undefined ? { to: 'editor' } : { to: 'title', key: target };
+      if (target !== undefined && target !== nav.section) nav.select(target, 'key');
     } catch (e) {
       setMergeError(e);
     } finally {
