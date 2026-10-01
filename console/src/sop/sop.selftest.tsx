@@ -4092,6 +4092,20 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [null, { kind: 'quota' }],
   );
   eq(
+    '同一项里先有落不到节上的、后有能去的：去后面那一处，不跳到清单的下一项',
+    firstProblem(
+      locateViolations(
+        [
+          { code: 'structure', sectionKey: null },
+          { code: 'structure', sectionKey: 'tone' },
+          { code: 'unknown_tool', sectionKey: 'tone', match: 'search_route' },
+        ],
+        P_ONLINE,
+      ),
+    ),
+    { kind: 'section', section: 'tone' },
+  );
+  eq(
     '摘要与发布成功的那句（只动了空白时不写括号）',
     [
       changedText(['话术原则', '异议处理']),
@@ -4113,9 +4127,9 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const pre = notePrefill(['话术原则', '异议处理']);
   eq('变更说明的预填；没有改过的节不预填', [pre, notePrefill([])], ['修改：话术原则、异议处理。', '']);
   eq(
-    '只有预填、删掉了预填末尾的字、空着、只加了空白：不能交',
-    [noteReady(pre, pre), noteReady('修改：话术原则', pre), noteReady('', pre), noteReady(`${pre}  \n`, pre)],
-    [false, false, false, false],
+    '只有预填、删掉了预填末尾的字、空着、只加了空白、没有预填时空着：不能交',
+    [noteReady(pre, pre), noteReady('修改：话术原则', pre), noteReady('', pre), noteReady(`${pre}  \n`, pre), noteReady(' \n', '')],
+    [false, false, false, false, false],
   );
   eq(
     '预填后面写了字、改写了预填、从头自己写：能交',

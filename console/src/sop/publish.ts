@@ -117,11 +117,11 @@ export function replaceLine(published: PublishedHead, now: number): string[] {
 export const notePrefill = (names: readonly string[]): string => (names.length ? `修改：${namesText(names)}。` : '');
 
 /**
- * 变更说明能不能交：要在预填之外再写至少一个字。只剩预填（或删掉了预填末尾的几个字）不算；改写了预填的算自己写的
+ * 变更说明能不能交：要在预填之外再写至少一个字。只剩预填（或删掉了预填末尾的几个字）不算；改写了预填的算自己写的。
+ * 空着（只有空白）也不算：空串是任何预填的开头
  */
 export function noteReady(note: string, prefill: string): boolean {
-  const t = note.trim();
-  return t !== '' && !prefill.trim().startsWith(t);
+  return !prefill.trim().startsWith(note.trim());
 }
 
 /**
