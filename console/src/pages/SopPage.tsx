@@ -572,6 +572,8 @@ function MemberSop({
 
   // ---------------- 发布（第 6.3 步） ----------------
   const block = barBlock({ frozen, changed: changed.length, problems: located?.length ?? 0 });
+  // 发布成功的那句只在线上还是刚发布的那一版时留着：之后从版本历史回滚过、别人又发布过，它和「回滚到v2」都不再对
+  const shownResult = result !== null && result.versionNo === published.versionNo ? result : null;
   const draftKey = checkKey(draft, published.id);
   // 抽屉与「查看改动」里的逐节改动（含本地还没保存的改动，与目录的「改过」同一口径）；只在开着时算
   const changes = publishMounted || changesOf ? changedSections(spec, published.sections, current.sections, edits) : NO_CHANGES;
@@ -788,7 +790,7 @@ function MemberSop({
 
       {editable && (
         <PublishBar
-          result={result}
+          result={shownResult}
           changed={changed.map((r) => r.name)}
           problems={located?.length ?? 0}
           chars={quota.chars}

@@ -4486,6 +4486,35 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await m.unmount();
 }
 
+// 11.3b2 发布以后从版本历史回滚：线上已经不是刚发布的那一版，条里「已发布v3 · 回滚到v2」那句不再留着
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await publishVia(m, '先问预算');
+  await waitFor(() => barText(m).summary.startsWith('已发布v3'));
+  await settle();
+  await act(async () =>
+    m.qc.setQueryData(['sop-versions'], { pages: [{ items: [srv.state.published, CLEAN_SOP.published] }], pageParams: [undefined] }),
+  );
+  const fromHistory = (): HTMLButtonElement | undefined =>
+    all<HTMLButtonElement>(m.box, '.sop-after button').find((b) => label(b) === '以此版本回滚');
+  await waitFor(() => !!fromHistory());
+  await clickEv(fromHistory());
+  await waitFor(() => !!modalOf('回滚到v2')?.querySelector('textarea'));
+  await setText(modalOf('回滚到v2')!.querySelector('textarea')!, '退回去');
+  await clickEv(all(modalOf('回滚到v2')!, '.ant-modal-footer button').find((b) => label(b) === '回滚到v2'));
+  await waitFor(() => text(m.box.querySelector('.page-status')).startsWith('线上v4'));
+  await settle();
+  eq(
+    '版本历史里回滚到 v2：线上 v4，条里不再写「已发布v3」，也没有「回滚到v2」',
+    [posted('/versions/v2/rollback').length, barText(m).summary, !!barButton(m, '回滚到v2')],
+    [1, '草稿和线上一样', false],
+  );
+  await m.unmount();
+}
+
 // 11.3c 有没存上的改动时点「发布…」：马上存（不等防抖），存上之前不开抽屉、按钮转圈；存上以后打开，只有存上以后那一次检查
 {
   const srv = fakeServer(CLEAN_SOP);
