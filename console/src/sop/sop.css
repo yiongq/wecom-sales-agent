@@ -1,0 +1,1071 @@
+/*
+ * 销售话术页（spec「销售话术（B、C 页）」，设计系统 §6.2 与 B 页）。颜色一律取 brand.css 的变量，这里不新增变量。
+ * 由 pages/sop.lazy.tsx 引入，随话术页的块下载。
+ */
+
+/* ---------------- 额度条（§6.2）：页头下 20 通栏；左侧标签宽 560，右侧条宽 720，中间 32；窄了先压条，<1280 上下排 ---------------- */
+.sop-quota {
+  display: grid;
+  grid-template-columns: minmax(0, 560px) minmax(0, 720px);
+  justify-content: space-between;
+  column-gap: 32px;
+  margin-bottom: 24px;
+}
+@media (max-width: 1279px) {
+  .sop-quota {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 8px;
+  }
+}
+.sop-quota-text {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-quota-num {
+  font-weight: 500;
+  color: var(--text);
+}
+/* ≥95% 文字和图标换成 warning，>100% 换成 danger（数字一起换） */
+.sop-quota.is-warning .sop-quota-line,
+.sop-quota.is-warning .sop-quota-num {
+  color: var(--warning);
+}
+.sop-quota.is-warning .sop-quota-icon {
+  color: var(--warning-icon);
+}
+.sop-quota.is-danger .sop-quota-line,
+.sop-quota.is-danger .sop-quota-num,
+.sop-quota.is-danger .sop-quota-icon {
+  color: var(--danger);
+}
+.sop-quota-icon {
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+/* 图例：色块 12×6、圆角 3，与文字间隔 6，项间隔 16 */
+.sop-quota-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+  margin-top: 4px;
+}
+.sop-quota-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sop-quota-swatch {
+  width: 12px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--quota-off);
+}
+.sop-quota-swatch.is-changed {
+  background: var(--accent);
+}
+/* 条：高 6 全圆角，--month-off 底；每个可编辑节一段，段后 2px --panel 缝；刻度 1×12 text-2，下方 13 text-3 的字 */
+.sop-quota-bar {
+  position: relative;
+  height: 44px;
+  min-width: 0;
+}
+.sop-quota-track {
+  position: absolute;
+  top: 7px;
+  right: 0;
+  left: 0;
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--month-off);
+}
+.sop-quota-track > span {
+  flex: none;
+  box-sizing: border-box;
+  border-right: 2px solid var(--panel);
+  background: var(--quota-off);
+}
+.sop-quota-track > span.is-changed {
+  background: var(--accent);
+}
+.sop-quota-tick {
+  position: absolute;
+  top: 4px;
+  width: 1px;
+  height: 12px;
+  background: var(--text-2);
+}
+.sop-quota-tick-label {
+  position: absolute;
+  top: 20px;
+  width: 32px;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* 额度条与三栏之间的提醒（出错、检查的合并提示、发布被拒）：第 6、8 步挪走以前放在这里 */
+.sop-notices {
+  display: flex;
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+/*
+ * 页头下的横幅（§5.12：页级 Alert 与内容等宽，放在页头下 16；页头自己留了 20）：自动保存出错、409 停住、
+ * 载入以后没存上的对比、重取失败。横幅之间 8，最后一个到额度条 20
+ */
+.sop-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -4px 0 20px;
+}
+/* 409 横幅的外层、对比的标题：焦点由页面移过来（SopPage），它们自己不是控件，同 .shell-content 不画焦点框 */
+.sop-conflict,
+.sop-lost .sop-card-title {
+  outline: none;
+}
+
+/*
+ * ---------------- 三栏（B 页）：目录 264，间隔 32，中栏，间隔 32，右栏 296 ----------------
+ * 目录、中栏、检查清单、工具卡片各占一格，DOM 的顺序固定（Tab 顺序：目录 → 编辑器 → 检查清单），放在哪儿按宽度定：
+ * - 窗口 ≥1440 且内容宽 ≥1280：三栏，右栏上面是检查清单，下面 16 是工具卡片。侧栏收起时内容宽 1312（B 页），
+ *   常显的滚动条（Windows、macOS 设成总是显示）再占 15–17，门槛留 32 的余量，差的宽度由中栏让出来（最窄 656）；
+ * - 窗口 1280–1439，或者侧栏展开以后放不下右栏：右栏收掉，检查清单挪到目录下面 24，工具卡片不画（spec「右栏」）；
+ * - 窗口 <1280（.is-narrow，目录是下拉）：一栏，下拉、中栏、检查清单依次往下，都与编辑卡片同宽（最宽 688）。
+ * 第二行是 1fr：跨两行的目录和中栏把多出的高度都放进第二行，第一行只有右栏的检查清单（或左栏的目录）那么高，
+ * 挪到目录下面的清单紧贴目录，右栏的工具卡片紧贴清单
+ */
+.sop-layout {
+  container-type: inline-size;
+}
+.sop-body {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  column-gap: 32px;
+  align-items: start;
+}
+.sop-col-toc {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+.sop-col-main {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+}
+.sop-col-check {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  margin-top: 24px;
+}
+.sop-col-tools {
+  display: none;
+}
+@media (min-width: 1440px) {
+  @container (min-width: 1280px) {
+    .sop-body {
+      grid-template-columns: 264px minmax(0, 1fr) 296px;
+    }
+    .sop-col-toc {
+      grid-row: 1 / span 2;
+    }
+    .sop-col-check {
+      grid-column: 3;
+      grid-row: 1;
+      margin-top: 0;
+    }
+    .sop-col-tools {
+      display: block;
+      grid-column: 3;
+      grid-row: 2;
+      min-width: 0;
+    }
+    /* 卡片之间 16；只读成员没有检查清单，工具卡片顶到最上面 */
+    .sop-col-check + .sop-col-tools {
+      margin-top: 16px;
+    }
+  }
+}
+.sop-body.is-narrow {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: none;
+  row-gap: 16px;
+}
+.sop-body.is-narrow > .sop-col-toc,
+.sop-body.is-narrow > .sop-col-main,
+.sop-body.is-narrow > .sop-col-check {
+  grid-column: 1;
+  grid-row: auto;
+}
+.sop-body.is-narrow > .sop-col-check {
+  max-width: 688px;
+  margin-top: 8px;
+}
+
+/* ---------------- 右栏的卡片（§5.9）：--panel 底、--r-lg、--shadow-card，内边距 16 20 20 ---------------- */
+.sop-card {
+  padding: 16px 20px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.sop-card-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--text);
+}
+/* 检查清单的卡片底边 14（B 页），折叠的技术详情跟在清单下面 */
+.sop-check-card {
+  padding-bottom: 14px;
+}
+/* 检查没跑成：清单下一行的最后一段，danger 的「没检查上 · 重试」，「重试」是文字按钮（同状态句的「重试」） */
+.sop-check-failed {
+  color: var(--danger);
+}
+/* 点清单里的「字数在额度内」滚到额度条、焦点落在它上面（tabIndex=-1，不画焦点框） */
+.sop-quota:focus {
+  outline: none;
+}
+/* 工具：每行一个芯片（§6.6：高 22，内边距 0 6，--r-sm，--subtle 底；中文名 14/500，间隔 4，原名 mono 12.5 text-3） */
+.sop-tools-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sop-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+  white-space: nowrap;
+}
+.sop-tool-label {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--text);
+}
+.sop-tool-name {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+}
+.sop-tools-note {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* ---------------- 载入最新草稿以后，没存上的节的对比 ---------------- */
+.sop-lost-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.sop-lost-note {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-lost-item {
+  margin-top: 16px;
+}
+.sop-lost-name {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--text);
+}
+
+/*
+ * 对比用的是 01 的 SectionDiff（@codemirror/merge），它自带的样式只有浅色一套、改动用红绿（深色下折叠的那一条是白的）。
+ * 这一块里换成令牌色：左边（载入时的草稿）改到的行 --subtle、沟槽 text-3，右边（你写的）--accent-bg、沟槽与下划线 --accent。
+ * 发布抽屉的逐节差异由第 6.3 步另做
+ */
+/* 沟槽底色原是浅色的 #f5f5f5，深色下是一条白边 */
+.sop-lost .cm-mergeView .cm-editor .cm-gutters {
+  border: 0;
+  background: transparent;
+}
+.sop-lost .cm-mergeView .cm-editor .cm-collapsedLines {
+  background: var(--subtle);
+  color: var(--text-2);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-a .cm-changedLine {
+  background-color: var(--subtle);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-b .cm-changedLine {
+  background-color: var(--accent-bg);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-a .cm-changedText {
+  background: none;
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-b .cm-changedText {
+  background: linear-gradient(var(--accent), var(--accent)) bottom / 100% 2px no-repeat;
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-a .cm-changedLineGutter {
+  background: var(--text-3);
+}
+.sop-lost .cm-mergeView .cm-editor.cm-merge-b .cm-changedLineGutter {
+  background: var(--accent);
+}
+
+/*
+ * ---------------- 状态句最后一段：保存状态（§4.3 会变的部分预留固定宽度） ----------------
+ * 行内块，宽度取最宽的两种写法：两行看不见的占位（高 0）撑宽，下面是当前的写法。切换时不挤动、不折行。
+ * 占位用高 0 的块，不用 inline-grid 叠在同一格：两种做法 WebKit 里都一样，行内块更好懂
+ */
+/* 能编辑的成员的状态句占满这一行（后面没有「只读」胶囊）：WebKit 给这个 flex 项算的宽度比内容窄十来 px，保存那一段会折下去 */
+.sop-status-line {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sop-save {
+  display: inline-block;
+  vertical-align: top;
+}
+.sop-save-sizer {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  white-space: nowrap;
+}
+.sop-save-now {
+  display: block;
+  white-space: nowrap;
+}
+.sop-save-failed {
+  color: var(--danger);
+}
+/* 「重试」：文字按钮，跟着 danger 色，悬停下划线；上下各多 2 的点击区（24 高），用负外边距抵掉，行高不变 */
+.sop-save-retry {
+  display: inline-block;
+  margin: -2px 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.sop-save-retry:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.sop-save-retry:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------------- 中栏（B 页）：节标题、说明行、编辑卡片；卡片宽 688 = 正文 640 加左右 24 ---------------- */
+.sop-pane {
+  max-width: 688px;
+}
+.sop-pane-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--text);
+}
+.sop-pane-meta,
+.sop-pane-lock {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+/* 固定规则节：前置 14 的 lock，间隔 6 */
+.sop-pane-lock {
+  display: flex;
+  gap: 6px;
+}
+.sop-pane-lock > svg {
+  flex: none;
+  margin-top: 3px;
+}
+/* 这一节的问题（没有行内提醒的几类）：样子同编辑器里的行内提醒（§5.12）——--danger-bg 底、--r-sm、内边距 8 12，14 的 circle-alert */
+.sop-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sop-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  background: var(--danger-bg);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-note > svg {
+  flex: none;
+  margin-top: 4px;
+  color: var(--danger);
+}
+/*
+ * 编辑卡片（§5.9）：panel 底、--r-lg、--shadow-card。左内边距 12：编辑器正文区自己再留 12，改动的竖条画在那 12 里（editor.ts）。
+ * 获得焦点时照文本域的规矩：描边换成 --accent，外加 3px 的 --accent-ring（§3 焦点）
+ */
+.sop-editor-card {
+  margin-top: 12px;
+  padding: 24px 24px 24px 12px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+/* 窗口 <992（手机上只读查看）：卡片内边距收成 16，左边仍给沟槽的竖条留 12 */
+@media (max-width: 991px) {
+  .sop-editor-card {
+    padding: 16px 16px 16px 4px;
+  }
+}
+.sop-editor-card:focus-within {
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 0 4px var(--accent-ring);
+}
+.sop-after {
+  margin-top: 32px;
+}
+
+/* ---------------- 目录（B 页左栏） ---------------- */
+.sop-toc {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* 分段控件：三段等宽，每段写名字和 text-3 的计数；选中段 --thumb 底加 1px --control-border 的环（§5.4，≥3:1） */
+.sop-toc-filter .ant-segmented-item-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sop-toc-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.sop-toc-filter-n {
+  font-weight: 400;
+  color: var(--text-3);
+}
+.sop-toc-filter .ant-segmented-item-selected,
+.sop-toc-filter .ant-segmented-thumb {
+  box-shadow: 0 0 0 1px var(--control-border);
+}
+.sop-toc-filter .ant-segmented-item-selected .sop-toc-filter-label {
+  font-weight: 500;
+}
+.sop-toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+/* 上面没有分段控件（匿名）：第一行与编辑器顶端对齐，和成员的分段控件一样 */
+.sop-toc-list:first-child {
+  margin-top: 0;
+}
+/* 一行：最小高 40，内边距 9 8，节名允许两行；当前节 --selected 底，无竖条 */
+.sop-toc-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 9px 8px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-toc-row:hover {
+  background: var(--hover);
+  text-decoration: none;
+}
+.sop-toc-row[aria-current='page'] {
+  background: var(--selected);
+}
+/* 列表里的行挨得近，焦点框往里收 2（§3、§5.20） */
+.sop-toc-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sop-toc-lock {
+  display: flex;
+  flex: none;
+  align-items: center;
+  width: 14px;
+  height: 22px;
+  color: var(--text-3);
+}
+.sop-toc-main {
+  flex: 1;
+  min-width: 0;
+}
+.sop-toc-name {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.is-locked .sop-toc-name {
+  color: var(--text-2);
+}
+.sop-toc-row[aria-current='page'] .sop-toc-name {
+  font-weight: 500;
+}
+.sop-toc-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 0 2px 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.sop-toc-issue {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.sop-toc-count {
+  flex: none;
+  margin-top: 1px;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+.is-changed .sop-toc-count {
+  font-weight: 500;
+  color: var(--accent-text);
+}
+.sop-toc-empty {
+  margin: 12px 0 0;
+  padding: 9px 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 底部说明：一条分隔线，下面 13 text-2，前置 lock */
+.sop-toc-note {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 12px 8px 0;
+  box-shadow: inset 0 1px 0 var(--divider);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-toc-note > svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+/* ---------------- 窄屏的下拉 ---------------- */
+.sop-toc-select {
+  width: 100%;
+}
+.sop-toc-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sop-toc-option .sop-toc-name {
+  flex: 1;
+  min-width: 0;
+  -webkit-line-clamp: 1;
+}
+.sop-toc-option .sop-toc-count {
+  margin-top: 0;
+}
+/* 下拉里的问题数写在同一行的右端 */
+.sop-toc-option .sop-toc-issue {
+  flex: none;
+  margin-top: 0;
+}
+/* 下拉底部的锁的说明：上面一条分隔线，与选项同样左右留 8 */
+.ant-select-dropdown .sop-toc-note {
+  margin: 4px 0 0;
+  padding: 8px 8px 4px;
+}
+
+/* ---------------- 加载时的骨架：与成品同尺寸 ---------------- */
+/* 页头的状态句那一行先占着（看不见），骨架从成品的位置开始 */
+.sop-status-pending {
+  display: inline-block;
+  height: 20px;
+}
+.sop-skel-quota {
+  height: 44px;
+}
+.sop-skel-quota > div:first-child {
+  padding-top: 3px;
+}
+.sop-skel-track {
+  height: 6px;
+  margin-top: 7px;
+  border-radius: var(--r-full);
+}
+.sop-skel-filter {
+  height: 32px;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+}
+.sop-skel-row {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 8px 0 30px;
+}
+.sop-skel-select {
+  height: 32px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+}
+.sop-skel-title,
+.sop-skel-meta {
+  display: flex;
+  align-items: center;
+  height: 24px;
+}
+.sop-skel-meta {
+  height: 20px;
+  margin-top: 2px;
+}
+.sop-skel-meta .skeleton-bar {
+  height: 12px;
+}
+.sop-skel-editor {
+  margin-top: 12px;
+  height: 480px;
+  border-radius: var(--r-lg);
+  background: var(--subtle);
+}
+
+/*
+ * ---------------- 发布条（§5.16 与 B 页，第 6.3 步） ----------------
+ * 外层 display: contents：ActionBar 照样以面板为范围吸在底部。左边的补充紧跟摘要，前面的间隔号自己带外边距，抵掉 ActionBar 的间隔
+ */
+.sop-publish-bar {
+  display: contents;
+}
+/*
+ * 补充放不下时省略的是前面那段字（.sop-bar-hint-text 自己裁），后面的「· 回滚到v2」不跟着省略：它在 Tab 顺序里，不能被裁到看不见。
+ * 网格第一列最窄是 0，这一层最窄就是「· 回滚到v2」的宽度；这一层不裁（盖掉 ActionBar 的 overflow: hidden），焦点框也露得出来
+ */
+.sop-publish-bar .action-bar-hint {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-columns: minmax(0, auto);
+  overflow: visible;
+  margin-left: -8px;
+}
+.sop-bar-hint-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sop-publish-bar .action-bar-summary {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.sop-bar-icon {
+  display: block;
+  color: var(--text-2);
+}
+.sop-bar-icon.is-warning {
+  color: var(--warning-icon);
+}
+.sop-bar-icon.is-success {
+  color: var(--success);
+}
+.sop-bar-problems {
+  color: var(--danger);
+}
+/* 窄屏（<768）：一行放不下，摘要占一行，原因和按钮在下一行靠右 */
+@media (max-width: 767px) {
+  .sop-publish-bar .action-bar {
+    flex-wrap: wrap;
+    height: auto;
+    row-gap: 8px;
+    padding-block: 10px;
+  }
+  .sop-publish-bar .action-bar-main {
+    flex-basis: 100%;
+  }
+  .sop-publish-bar .action-bar-side {
+    margin-left: auto;
+  }
+}
+/*
+ * 文字按钮：「回滚到v2」「查看本节改动」。accent-text 500，跟着所在那一行的字号；悬停下划线；
+ * 上下各多 2 的点击区用负外边距抵掉，行高不变（同状态句的「重试」）
+ */
+.sop-text-btn {
+  display: inline-block;
+  margin: -2px 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 500;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.sop-text-btn:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.sop-text-btn:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/*
+ * ---------------- 抽屉（§5.13 L 640）：发布、查看改动 ----------------
+ * 头 56，内边距 0 16 0 24，标题 16/24/600，后面跟 13 text-2 的状态；头下没有分隔线，内容滚动以后才出现 --divider。
+ * 体内边距 4 24 24，自己滚动（滚动的是 .sop-drawer-scroll，好知道滚没滚）。底 60，内边距 0 24，--frame 底，上边一条 --divider，
+ * 按钮靠右、间隔 8，主按钮在最右，不能发布的原因写在按钮左边。--raised 底由主题的 colorBgElevated 给
+ */
+.sop-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+  box-shadow: var(--shadow-modal);
+}
+.sop-drawer .ant-drawer-header {
+  min-height: 56px;
+  padding: 0 16px 0 24px;
+  border-bottom: 0;
+}
+.sop-drawer .ant-drawer-header.is-scrolled {
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+.sop-drawer .ant-drawer-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.sop-drawer-status {
+  margin-left: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.sop-drawer .ant-drawer-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.sop-drawer-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 24px 24px;
+  overflow: auto;
+}
+.sop-drawer .ant-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 60px;
+  padding: 0 24px;
+  border-top: 0;
+  background: var(--frame);
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+/* 发布请求在路上时关闭按钮不能点（§5.2 的禁用：text-3，没有悬停） */
+.sop-drawer .icon-btn:disabled {
+  background: transparent;
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+.sop-drawer-reason {
+  min-width: 0;
+  margin-right: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* 发布抽屉的内容：检查清单、替换说明、逐节改动、变更说明，块与块之间 24 */
+.sop-publish {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.sop-publish-replace {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.sop-publish-replace > svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--text-2);
+}
+.sop-publish-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sop-publish-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.sop-publish-help {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* 逐节改动的标题行：左边标题或「改了2节」，右边行内 / 并排（分段控件，选中段 1px --control-border 的环，同目录的筛选） */
+.sop-changes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.sop-changes-count,
+.sop-changes-none {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-changes-none {
+  margin: 0;
+}
+.sop-diff-mode .ant-segmented-item-selected,
+.sop-diff-mode .ant-segmented-thumb {
+  box-shadow: 0 0 0 1px var(--control-border);
+}
+.sop-diff-mode .ant-segmented-item-selected {
+  font-weight: 500;
+}
+
+/*
+ * ---------------- 差异（§6.5） ----------------
+ * 每节：节名 14/500 加 13 text-2 的「+3行 −1行」，下面是差异块（--r-md，一圈 --border）。正文 14/22，行内边距 2 8，行首留 18 放「+」「−」。
+ * 新增行 --success-bg、行首 --success 的「+」；删除行 --subtle、text-2、1.5px 删除线、行首 text-2 的「−」（text-3 叠在 subtle 上不够 4.5）。
+ * @codemirror/merge 自带的红绿底、红色删除、改动沟槽、折叠行的 ⦚ 与浅色渐变都覆盖掉（它们深色下也是浅色一套）；
+ * 选择器比它的主题多一层（.sop-diff .sop-diff-view），与它的样式谁先插入无关。读屏按生成内容的替代文字念「删去：」「发出：」
+ */
+.sop-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.sop-diff-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sop-diff-name {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+}
+.sop-diff-stat {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-diff-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-diff-cols > span {
+  padding: 0 8px;
+}
+.sop-diff-view {
+  overflow: hidden;
+  border-radius: var(--r-md);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.sop-diff .sop-diff-view .cm-editor {
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 22px;
+}
+.sop-diff .sop-diff-view .cm-scroller {
+  font-family: var(--font);
+  line-height: 22px;
+}
+.sop-diff .sop-diff-view .cm-content {
+  padding: 4px 0;
+}
+.sop-diff .sop-diff-view .cm-line,
+.sop-diff .sop-diff-view div.cm-deletedLine {
+  position: relative;
+  padding: 2px 8px 2px 26px;
+}
+.sop-diff .sop-diff-view .cm-editor .cm-changedLine,
+.sop-diff .sop-diff-view .cm-editor .cm-inlineChangedLine,
+.sop-diff .sop-diff-view .cm-editor .cm-deletedChunk {
+  background: none;
+}
+/* 新增行（行内视图的新行、并排视图右边改到的行） */
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-changedLine {
+  background: var(--success-bg);
+}
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-changedLine::before {
+  position: absolute;
+  left: 8px;
+  /* 先写不带替代文字的一条：不支持替代文字的浏览器丢掉后一条，照样画记号 */
+  content: '+';
+  content: '+' / '发出：';
+  color: var(--success);
+}
+/* 删除行（行内视图里删掉的整行、并排视图左边改到的行） */
+.sop-diff .sop-diff-view .cm-editor .cm-deletedChunk {
+  padding: 0;
+}
+.sop-diff .sop-diff-view .cm-editor div.cm-deletedLine,
+.sop-diff .sop-diff-view .cm-editor.cm-merge-a .cm-changedLine {
+  background: var(--subtle);
+  color: var(--text-2);
+}
+.sop-diff .sop-diff-view .cm-editor div.cm-deletedLine::before,
+.sop-diff .sop-diff-view .cm-editor.cm-merge-a .cm-changedLine::before {
+  position: absolute;
+  left: 8px;
+  content: '−';
+  content: '−' / '删去：';
+  color: var(--text-2);
+}
+.sop-diff .sop-diff-view .cm-editor div.cm-deletedLine > del,
+.sop-diff .sop-diff-view .cm-editor.cm-merge-a .cm-changedText {
+  background: none;
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+.sop-diff .sop-diff-view .cm-editor .cm-deletedChunk .cm-deletedText {
+  background: none;
+}
+/* 新加的字：行里再加一道 1.5px 的 --success 底线 */
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-changedText {
+  background: linear-gradient(var(--success), var(--success)) bottom / 100% 1.5px no-repeat;
+}
+/* 行内的小改动（allowInlineDiffs）：删掉的字 --subtle 底、text-2、删除线，新加的字 --success-bg 底加底线，都带读屏的说明 */
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-inlineChangedLine .cm-changedText {
+  border-radius: var(--r-xs);
+  background:
+    linear-gradient(var(--success), var(--success)) bottom / 100% 1.5px no-repeat,
+    var(--success-bg);
+}
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-inlineChangedLine .cm-changedText::before {
+  content: '' / '发出：';
+}
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-line .cm-deletedText {
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+  color: var(--text-2);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+.sop-diff .sop-diff-view .cm-editor.cm-merge-b .cm-line .cm-deletedText::before {
+  content: '' / '删去：';
+}
+/* 折叠的没改动的行：「18行没有改动」13 text-2，--subtle 底，点了展开 */
+.sop-diff .sop-diff-view .cm-editor .cm-collapsedLines {
+  padding: 2px 8px 2px 26px;
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.sop-diff .sop-diff-view .cm-editor .cm-collapsedLines::before,
+.sop-diff .sop-diff-view .cm-editor .cm-collapsedLines::after {
+  content: none;
+}
+/*
+ * 键盘到得了（DiffView 的 collapsedKeys）：折叠行与展开以后接住焦点的正文用统一的焦点框，编辑器会裁切，向里收 2；
+ * CodeMirror 自带的聚焦虚线框去掉（鼠标点进正文时也会聚焦）
+ */
+.sop-diff .sop-diff-view .cm-editor.cm-focused {
+  outline: none;
+}
+.sop-diff .sop-diff-view .cm-editor .cm-collapsedLines:focus-visible,
+.sop-diff .sop-diff-view .cm-editor .cm-content:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.sop-diff .sop-diff-view .cm-mergeViewEditor + .cm-mergeViewEditor {
+  box-shadow: inset 1px 0 0 var(--border);
+}
+.sop-diff .sop-diff-view .cm-gutters {
+  display: none;
+}
