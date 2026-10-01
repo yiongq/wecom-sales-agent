@@ -417,6 +417,16 @@ eq(
     { text: '更新于13:40' },
     { text: '必须项5/7：第3天当晚住宿没填等', tone: 'danger' },
   ]);
+  // 命令行写的更新人存的是命令名，照设计系统 §11 写成「系统导入」「命令行」
+  eq(
+    '待上架：更新人是 import-config 写「系统导入」，catalog-fix 写「命令行」',
+    ['import-config', 'catalog-fix'].map(
+      (by) =>
+        catalogTodos([{ entity: ROUTE, items: [item('route', 'r-x', GUIZHOU, 'draft', at('2026-09-26T13:40:00'), by)] }], NOW)[0]
+          ?.context[0],
+    ),
+    [{ text: '系统导入更新于13:40' }, { text: '命令行更新于13:40' }],
+  );
   eq('待上架：三条以内不写「等」', catalogTodos([{ entity: HOTEL, items: HOTELS.slice(-2) }], NOW)[0]?.context[1], {
     text: '西双版纳安纳塔拉、腾冲石头纪',
   });

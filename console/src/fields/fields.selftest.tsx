@@ -1566,12 +1566,13 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
 // spec「产品库列表（D 页；L 页上半）」：两个包的真实配置和样例都在这个文件里，列表的纯逻辑、画出来的样子和交互一起测
 
 const IMPORTED_AT = '2026-09-24T10:02:00+08:00';
+/** 命令行导入的条目：更新人存的是命令名 import-config（src/config/transfer.ts），列表里写「系统导入」 */
 const asRow = (p: Payload, extra: Partial<ListRow> = {}): ListRow => ({
   code: p.id as string,
   payload: p,
   status: 'active',
   updatedAt: IMPORTED_AT,
-  updatedByName: null,
+  updatedByName: 'import-config',
   ...extra,
 });
 /** 设计系统 §10.0：20 条已上架（系统导入 · 9月24日），r-sichuan-lux 小林今天 10:12 改过，另有小林 13:40 建的草稿 */
@@ -1888,10 +1889,16 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
   eq('没有更新时间的排在后面', codes(sortRows([{ code: 'a', payload: {} }, ROUTE_ROWS[0]!])), [ROUTE_ROWS[0]!.code, 'a']);
 }
 
-// 8.6 更新列：「小林 · 今天13:40」；更新人为空写「系统导入」；更早的写日期
+// 8.6 更新列：「小林 · 今天13:40」；更新人为空或是命令名 import-config 写「系统导入」，别的命令写「命令行」（设计系统 §11）；
+// 更早的写日期
 {
   eq('今天的写时刻', updatedParts(ROUTE_ROWS.at(-1)!, NOW), ['小林', '今天13:40']);
-  eq('更新人为空写系统导入，更早的写日期', updatedParts(ROUTE_ROWS[1]!, NOW), ['系统导入', '9月24日']);
+  eq('命令行导入的（import-config）写系统导入，更早的写日期', updatedParts(ROUTE_ROWS[1]!, NOW), ['系统导入', '9月24日']);
+  eq(
+    '更新人为空也写系统导入；catalog-fix 写命令行；人名原样',
+    [null, '', 'catalog-fix', '老周'].map((by) => updatedParts({ ...ROUTE_ROWS[1]!, updatedByName: by }, NOW)?.[0]),
+    ['系统导入', '系统导入', '命令行', '老周'],
+  );
   eq('昨天也写日期（L 页的「9月25日」）', listTime('2026-09-25T16:20:00+08:00', NOW), '9月25日');
   eq('今天 0 点', listTime('2026-09-26T00:00:00+08:00', NOW), '今天00:00');
   eq('跨年加年份', listTime('2025-12-31T10:00:00+08:00', NOW), '2025年12月31日');
@@ -2562,9 +2569,12 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   eq('条目名取 titleKey，没有时写编号', [itemTitle(ROUTE, SICHUAN, 'r-sichuan-lux'), itemTitle(ROUTE, {}, 'r-x')], [SICHUAN.title, 'r-x']);
   eq(
-    '更新：更新人为空写「系统导入」；匿名没有更新时间',
-    [updatedOf({ updatedAt: '2026-09-24T10:02:00+08:00', updatedByName: null }, NOW)?.by, updatedOf({}, NOW)],
-    ['系统导入', null],
+    '更新：更新人为空或是 import-config 写「系统导入」，catalog-fix 写「命令行」，人名原样；匿名没有更新时间',
+    [
+      ...[null, 'import-config', 'catalog-fix', '小林'].map((by) => updatedOf({ updatedAt: IMPORTED_AT, updatedByName: by }, NOW)?.by),
+      updatedOf({}, NOW),
+    ],
+    ['系统导入', '系统导入', '命令行', '小林', null],
   );
   eq(
     '引用指向的实体（含有序子项里的引用），去重',
@@ -2901,6 +2911,19 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   await leave();
   eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
   await e.unmount();
+
+  // 命令行导入、没人改过的线路：更新人存的是 import-config，页头与「最近更新」都写「系统导入」（设计系统 §10.0、§11）
+  {
+    const imported = itemOf(ROUTE_ROWS, ROUTE_ROWS[1]!.code);
+    const path = `/catalog/route/${imported.code}`;
+    const im = await mountDetail(path, owner(travel), { items: { [`route/${imported.code}`]: imported }, lists });
+    eq(
+      '命令行导入的线路：页头状态句与「最近更新」写系统导入',
+      [header(im.box).status?.split('·').at(-1), texts(im.box, '.detail-meta dd')],
+      ['系统导入更新于9月24日', ['系统导入', '9月24日']],
+    );
+    await im.unmount();
+  }
 
   // F、G 页：草稿
   const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });

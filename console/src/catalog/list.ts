@@ -7,6 +7,7 @@
 // - 页签的数字按搜索与筛选之后的条目算，默认按更新时间倒序（defaultSort 只有 -$updated 一种）
 import { clockTime, dateText, dayKey, digits, money, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import { type EntityType, type FieldDef, type FieldType, valueAt } from '../../../src/shared/pack.js';
+import { actorName } from '../../../src/shared/ui-labels.js';
 import { moneyUnit, nounOf, parseStored, type RefItem, resolveRef } from '../fields/model.js';
 import { STATUS_LABEL } from '../parts/Status.js';
 import { fieldText, type Matcher, plainMatch } from '../shell/search.js';
@@ -25,7 +26,7 @@ export interface ListRow {
 export const PAGE_SIZE = 50;
 /** 筛选按钮不超过 3 个（spec「产品库列表 · 工具条」） */
 export const MAX_FILTERS = 3;
-/** 更新人为空（CSV、命令行导入的）时写的名字 */
+/** 更新人为空时写的名字；命令行写的命令名由 actorName 换成「系统导入」「命令行」（设计系统 §11） */
 export const IMPORTED_BY = '系统导入';
 
 /** 按 FieldDef.key 取一条的值：$code 是编号，$status 是状态，其余在 payload 里 */
@@ -196,10 +197,10 @@ export function listTime(at: string | number, now: number): string {
   return dayKey(at) === dayKey(now) ? `今天${clockTime(at)}` : dateText(at, now);
 }
 
-/** 「小林 · 今天13:40」的两段；更新人为空写「系统导入」；匿名投影没有更新时间，返回 null */
+/** 「小林 · 今天13:40」的两段；更新人为空或是 import-config 写「系统导入」；匿名投影没有更新时间，返回 null */
 export function updatedParts(row: ListRow, now: number): [string, string] | null {
   if (!row.updatedAt) return null;
-  return [row.updatedByName || IMPORTED_BY, listTime(row.updatedAt, now)];
+  return [actorName(row.updatedByName) ?? IMPORTED_BY, listTime(row.updatedAt, now)];
 }
 
 // ---------------- 搜索 ----------------
