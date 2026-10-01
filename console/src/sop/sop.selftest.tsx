@@ -4100,12 +4100,14 @@ function recordScroll(): { calls: string[]; restore(): void } {
 }
 
 // 10.3e 草稿跟不上线上版本（basedOn 不是线上版本）：只有一条提示。/sop 的 draft.stale 与检查的 rebase.needed 是同一个条件，
-// 检查回来之前按 draft.stale 写 info；回来以后没有冲突的节照旧是这一条，有冲突的节换成出错色的「发布不了」
+// 检查回来之前按 draft.stale 写 info；回来以后没有冲突的节照旧是这一条，有冲突的节换成出错色的「有1节在你改的同时被改了」加「去合并」
+// （第 8 步）。发布答 409 sop_conflict 时抽屉开着，重查回来之前照 409 点名的节写，回来以后照检查的写
 {
   const stale: SopOverview = { ...BAD_SOP, published: version(3, P_ONLINE), draft: { ...BAD_SOP.draft!, stale: true } };
   const notices = (m: PageBox): string[] =>
     all(m.box, '.sop-notices .ant-alert').map((a) => `${/ant-alert-(\w+)/.exec(a.className)?.[1]}：${text(a)}`);
   const MERGE = 'info：草稿打开之后发布过新版本，发布时自动合并';
+  const CONFLICT = 'error：有1节在你改的同时被改了：话术原则去合并';
   for (const conflicts of [[], ['tone']]) {
     const srv = fakeServer(stale);
     // 后面要去发布：问题清空，发布条的「发布…」能点（提示只看 rebase）
@@ -4119,48 +4121,65 @@ function recordScroll(): { calls: string[]; restore(): void } {
     eq(
       `打开一份过期的草稿（${conflicts.length ? '有' : '没有'}冲突的节）：检查回来前后各只有一条提示`,
       [before, notices(m)],
-      [
-        [MERGE],
-        conflicts.length
-          ? [
-              'error：这几节在你编辑期间被别人改过：话术原则。' +
-                '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。',
-            ]
-          : [MERGE],
-      ],
+      [[MERGE], conflicts.length ? [CONFLICT] : [MERGE]],
     );
+    srv.checkHold = false;
     if (conflicts.length) {
-      // 检查报了冲突的节：发布抽屉里写出来，「发布」不能点
-      srv.checkHold = false;
+      // 检查报了冲突的节：发布抽屉里写出来、带「去合并」，「发布」不能点；点「发布」去「去合并」
       await clickEv(barButton(m, '发布…'));
       await waitFor(
         () =>
           !!drawerOf('发布草稿') && srv.checks() === 2 && text(drawerOf('发布草稿')!.querySelector('.sop-drawer-reason')) !== '正在检查…',
       );
       const d = drawerOf('发布草稿')!;
+      const mergeBtn = all<HTMLButtonElement>(d, '.sop-publish-conflict button').find((b) => label(b) === '去合并');
+      await clickEv(all(d, '.ant-drawer-footer button').find((b) => label(b) === '发布'));
       eq(
-        '检查报了冲突的节：发布抽屉里说哪几节被改了，「发布」不能点、旁边写原因',
+        '检查报了冲突的节：发布抽屉里说哪几节被改了、带「去合并」，「发布」不能点、旁边写原因，点了焦点到「去合并」',
         [
           text(d.querySelector('.sop-publish .ant-alert-title')),
           text(d.querySelector('.sop-drawer-reason')),
           all(d, '.ant-drawer-footer button')
             .find((b) => label(b) === '发布')
             ?.getAttribute('aria-disabled'),
+          !!mergeBtn,
+          document.activeElement === mergeBtn,
         ],
-        ['有1节在你改的同时被改了：话术原则', '有1节被别人改过，发布不了', 'true'],
+        ['有1节在你改的同时被改了：话术原则', '合并完1节即可发布', 'true', true, true],
       );
       await clickEv(all(d, '.ant-drawer-footer button').find((b) => label(b) === '取消'));
       await waitFor(() => !drawerOf('发布草稿'));
     } else {
-      // 检查说能合并，发布时撞上冲突（409，这期间别人又发布了）：抽屉关上，由发布被拒的那一条说，合并提示不再重复
+      // 检查说能合并，发布时撞上冲突（409，这期间别人又发布了）：抽屉开着，写撞上的节和「去合并」，同时重查一次；
+      // 重查回来之前照 409 点名的写，回来以后照检查的写（这时检查也报了冲突），页面上的提醒跟着换
       srv.publishConflict = { keys: ['tone'], current: P_ONLINE };
+      await clickEv(barButton(m, '发布…'));
+      await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+      const d = drawerOf('发布草稿')!;
+      const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
+      await setText(ta, `${ta.value}改了话术原则`);
+      await waitFor(() => all(d, '.ant-drawer-footer button').some((b) => label(b) === '发布' && !b.getAttribute('aria-disabled')));
+      const checks = srv.checks();
+      srv.checkHold = true;
+      await clickEv(all(d, '.ant-drawer-footer button').find((b) => label(b) === '发布'));
+      await waitFor(() => srv.checks() === checks + 1);
+      const held = [
+        !!drawerOf('发布草稿'),
+        text(d.querySelector('.sop-publish-conflict .ant-alert-title')),
+        text(d.querySelector('.sop-drawer-reason')),
+        ta.value,
+      ];
+      srv.check = (s) => ({ ...scan(s), violations: [], rebase: { needed: true, conflicts: ['tone'] } });
       srv.checkHold = false;
-      await publishVia(m, '改了话术原则');
-      await waitFor(() => notices(m).some((n) => n.includes('发布被拒')));
+      await act(async () => srv.checkHeld.at(-1)?.resolve());
+      await waitFor(() => text(d.querySelector('.sop-drawer-reason')) === '合并完1节即可发布');
       eq(
-        '发布撞上冲突（409）：抽屉关上，只有发布被拒的那一条',
-        [notices(m).map((n) => n.split('——')[0]), !!drawerOf('发布草稿')],
-        [['error：发布被拒：这几节在你编辑期间被别人改过'], false],
+        '发布撞上冲突（409）：抽屉开着，重查回来之前照 409 写「有1节在你改的同时被改了」、写好的说明不丢；回来以后照检查写，页面上的提醒换成冲突',
+        [held, [text(d.querySelector('.sop-publish-conflict .ant-alert-title')), notices(m)]],
+        [
+          [true, '有1节在你改的同时被改了：话术原则', '正在检查…', '修改：话术原则、异议处理。改了话术原则'],
+          ['有1节在你改的同时被改了：话术原则', [CONFLICT]],
+        ],
       );
     }
     await m.unmount();
@@ -4186,15 +4205,17 @@ function recordScroll(): { calls: string[]; restore(): void } {
     ['+3行 −1行', '+1行', '−2行', '+1,200行'],
   );
   eq(
-    '「发布…」不能点的原因按先后：409 停住、没有改动、有问题（只有有问题时点它跳过去）；都没有就能点',
+    '「发布…」不能点的原因按先后：409 停住、正在合并、没有改动、有问题（只有有问题时点它跳过去）；都没有就能点',
     [
-      barBlock({ frozen: true, changed: 0, problems: 3 }),
+      barBlock({ frozen: true, merging: true, changed: 0, problems: 3 }),
+      barBlock({ frozen: false, merging: true, changed: 0, problems: 3 }),
       barBlock({ frozen: false, changed: 0, problems: 3 }),
       barBlock({ frozen: false, changed: 2, problems: 1 }),
       barBlock({ frozen: false, changed: 2, problems: 0 }),
     ],
     [
       { reason: '载入最新草稿以后才能发布', jump: false },
+      { reason: '完成合并以后才能发布', jump: false },
       { reason: '没有可发布的改动', jump: false },
       { reason: '改完1个问题即可发布', jump: true },
       null,
@@ -4290,7 +4311,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   );
   const ok = { running: false, failed: false, conflicts: 0, problems: 0, noteReady: true };
   eq(
-    '抽屉里「发布」不能点的原因按先后：正在检查、没检查上、有冲突的节、有问题、说明没写；都没有就能点',
+    '抽屉里「发布」不能点的原因按先后：正在检查、没检查上、有冲突的节（点了去「去合并」）、有问题、说明没写；都没有就能点',
     [
       drawerBlock({ running: true, failed: true, conflicts: 1, problems: 2, noteReady: false }),
       drawerBlock({ ...ok, failed: true, conflicts: 1, problems: 2, noteReady: false }),
@@ -4302,7 +4323,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [
       { reason: '正在检查…', focus: null },
       { reason: '没检查上，重试以后再发布', focus: 'checks' },
-      { reason: '有2节被别人改过，发布不了', focus: null },
+      { reason: '合并完2节即可发布', focus: 'merge' },
       { reason: '改完2个问题即可发布', focus: 'checks' },
       { reason: '在说明里写上为什么改', focus: 'note' },
       null,
@@ -5553,6 +5574,8 @@ for (const lookupFails of [false, true, 'other'] as const) {
     budget: null,
     check: { running: false, failed: false, at: NOW, retry: noop },
     conflicts: [],
+    onMerge: noop,
+    mergeBusy: false,
     note: '修改：话术原则、异议处理。先问预算',
     prefill: '修改：话术原则、异议处理。',
     onNote: noop,

@@ -3,10 +3,13 @@
 // 要禁用时优先用 blocked：aria-disabled，外观同禁用，保留焦点，点击照常回调，由调用方跳到第一个原因；
 // 真正的 disabled 只留给提交中这类一闪而过的状态
 import { Button, type ButtonProps } from 'antd';
+import type { Ref } from 'react';
 
 export type PrimaryButtonProps = Omit<ButtonProps, 'type' | 'color' | 'variant' | 'danger' | 'ghost'> & {
   /** 不能执行：aria-disabled，外观同禁用，点击仍回调 onClick（跳到原因） */
   blocked?: boolean;
+  /** 按钮本身（页面要把焦点还给它时用） */
+  ref?: Ref<HTMLButtonElement>;
 };
 
 export function PrimaryButton({ blocked, className, ...rest }: PrimaryButtonProps) {

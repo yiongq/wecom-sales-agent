@@ -75,7 +75,8 @@ export function useDraftCheck<R extends DraftCheck = DraftCheck>(input: DraftChe
     },
     [],
   );
-  return { ...state, retry };
+  // 草稿刚换了的这一次渲染里，上面排的 setState 还没生效：照样算在路上，免得调用方拿上一份草稿的结果当这一份的（去合并要等它）
+  return { ...state, running: state.running || (active !== was && active !== null), retry };
 }
 
 /** 存下来的草稿与线上版本（useDraftCheck 的 key） */

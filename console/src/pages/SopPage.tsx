@@ -16,13 +16,29 @@
 // sop/HistoryParts.tsx）：草稿一行、每个版本先写变更说明，查看改动、回滚到这版…、载入到草稿再改，翻页；「查看改动」以后
 // 主区换成只读对比「v2相对v1改了什么」（地址上 v=2），页头下横幅「正在查看v2 · 回到编辑」。回滚确认（sop/RollbackModal.tsx）
 // 先写后果（有草稿时按有无交集分两种、固定规则改过的提示）、差异与必填的原因；载入到草稿会盖掉草稿自己改过的节时先确认。
+// 第 8 步：冲突合并。检查报了在你编辑期间被别人改过的节（或发布答 409）时，发布抽屉与页头下的提醒写「有2节在你改的同时被改了」
+// 和「去合并」；点了先存没存上的改动、重查一次，拿那时的线上版本与要合并的节进入合并模式（sop/merge.ts、sop/MergeParts.tsx）：
+// 页头写「还有2节要合并」、右侧「退出合并」「完成合并」，目录上要合并的节标「需合并」，中栏是这一节的左右对照（左边线上的写法只读，
+// 右边你的草稿可改、逐块「采用线上的写法」）和「这一节处理好了」；别的节只读，额度条与右栏收起，自动保存暂停。
+// 「完成合并」一次 PUT /sop/draft 带 rebaseOnto，成功以后回到发布抽屉。
 // 匿名（demo）只拿到已发布版本的节，全部只读，没有版本记录。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router';
-import { Alert, Space, Typography } from 'antd';
-import { type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { AnonSopOverview, DraftCheck, SopOverview, SopSectionText, SopVersion } from '../../../src/shared/console-api.js';
+import { Alert, Button, Space } from 'antd';
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { AnonSopOverview, DraftCheck, SopOverview, SopVersion } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, HttpError, unwrap } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
@@ -37,7 +53,7 @@ import { AutosaveTimingContext, type DraftEdit, type SaveStatus, useAutosave } f
 import { checkKey, useDraftCheck } from '../sop/check.js';
 import { Directory, DirectorySelect, type SelectVia } from '../sop/Directory.js';
 import { selectFirst } from '../sop/editor.js';
-import { composingIn, editorIn, SectionPane, SopEditor } from '../sop/SopEditor.js';
+import { composingIn, editorIn, SectionPane } from '../sop/SopEditor.js';
 import {
   anonOutline,
   anonStatus,
@@ -61,6 +77,26 @@ import { discardBlock, historyStatus, loadPlan, type LoadPlan, overwriteText } f
 import { HistoryList, SopActions, VersionBanner, VersionView } from '../sop/HistoryParts.js';
 import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
 import { barBlock, firstProblem, notePrefill, onlineNow, type PublishedResult, publishedNames, replacedIn } from '../sop/publish.js';
+import {
+  conflictTitle,
+  exitText,
+  finishBlock,
+  markDone,
+  mergeEdits,
+  mergeMeta,
+  mergeRows,
+  type MergeState,
+  mergeStatus,
+  mergeTouched,
+  nextToMerge,
+  onlineBody,
+  onlineLabel,
+  restartMerge,
+  startMerge,
+  withMerged,
+  withText,
+} from '../sop/merge.js';
+import { MergeActions, MergePane } from '../sop/MergeParts.js';
 import { ChangesDrawer, PublishBar, PublishDrawer, SopDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
@@ -227,6 +263,7 @@ function Columns({
   tools,
   editor,
   checkRef,
+  merging = false,
 }: {
   toc: ReactNode;
   main: ReactNode;
@@ -234,11 +271,13 @@ function Columns({
   tools?: ReactNode;
   editor: RefObject<HTMLDivElement | null>;
   checkRef?: RefObject<HTMLDivElement | null>;
+  /** 合并模式：没有右栏，中栏占满目录右边（左右对照要宽） */
+  merging?: boolean;
 }) {
   const wide = useViewport() === 'wide';
   return (
     <div className="sop-layout">
-      <div className={`sop-body${wide ? '' : ' is-narrow'}`}>
+      <div className={['sop-body', !wide && 'is-narrow', merging && 'is-merging'].filter(Boolean).join(' ')}>
         <div className="sop-col-toc">{toc}</div>
         <div ref={editor} className="sop-col-main sop-editor">
           {main}
@@ -335,7 +374,8 @@ function MemberSop({
   const current = draft ?? published;
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [rejected, setRejected] = useState<HttpError | null>(null);
-  const [conflict, setConflict] = useState<{ keys: string[]; current: SopSectionText[] } | null>(null);
+  // 发布答 409 sop_conflict 时撞上的节：重查回来之前（或没查上时）抽屉照它写「有N节在你改的同时被改了」
+  const [conflict, setConflict] = useState<{ keys: string[] } | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [discarding, setDiscarding] = useState(false);
   // 发布：点了「发布…」、正在先存没存上的改动（from 是点的时候的保存状态：那之后的失败才算这次没存上）；抽屉开着；
@@ -357,6 +397,15 @@ function MemberSop({
   const [lost, setLost] = useState<Lost | null>(null);
   const [reloading, setReloading] = useState(false);
   const [reloadError, setReloadError] = useState<unknown>(null);
+  // 冲突合并（第 8 步）：合并模式；点了「去合并」、在等先存与重查（from 同 opening）；完成合并的请求在路上、没成功；
+  // 合并期间别人又改过以后重新比一次；退出合并的确认。epoch：重新比过一次，左右对照按新的写法重建
+  const [merge, setMerge] = useState<MergeState | null>(null);
+  const [mergeAsk, setMergeAsk] = useState<{ from: SaveStatus } | null>(null);
+  const [finishing, setFinishing] = useState(false);
+  const [mergeError, setMergeError] = useState<unknown>(null);
+  const [mergeReloading, setMergeReloading] = useState(false);
+  const [exitAsk, setExitAsk] = useState(false);
+  const [mergeEpoch, setMergeEpoch] = useState(0);
   const editor = useRef<HTMLDivElement>(null);
   /** 载入最新草稿、关掉对比以后焦点去哪（见下面的 effect） */
   const refocus = useRef<'lost' | 'next' | null>(null);
@@ -384,6 +433,8 @@ function MemberSop({
   });
   const saver = useAutosave({
     enabled: editable,
+    // 合并期间不自动保存：完成合并自己存（带 rebaseOnto），退出以后照常
+    paused: merge !== null,
     unsaved,
     composing: () => composingIn(editor.current),
     base: { rev: draft?.rev ?? null, basedOn: draft?.basedOn ?? published.id },
@@ -396,8 +447,9 @@ function MemberSop({
   });
   const frozen = saver.status.kind === 'conflict';
   const saving = saver.status.kind === 'saving';
-  // 自动保存还没存上（在等、在路上、失败、409 停住），以及载入以后还留着的对比，都算没保存的内容；换节不算离开
-  const guard = useUnsavedGuard(unsaved.length > 0 || lost !== null, LEAVING_PAGE);
+  // 自动保存还没存上（在等、在路上、失败、409 停住），载入以后还留着的对比，合并里改过的写法，都算没保存的内容；换节不算离开
+  const touched = merge ? mergeTouched(merge, spec) : NO_NAMES;
+  const guard = useUnsavedGuard(unsaved.length > 0 || lost !== null || touched.length > 0, LEAVING_PAGE);
   // 先等新数据回来再清掉本地改动，免得编辑器先闪回旧正文
   const refresh = async (): Promise<void> => {
     await qc.invalidateQueries({ queryKey: sopQuery.queryKey });
@@ -444,8 +496,8 @@ function MemberSop({
   // 被替换下来的是服务端那时的线上版本（发布结果的 basedOn），不一定是页面打开时的：别人在这期间发布过，就是他发布的那一版，
   // 改了哪几节也相对它算。发布结果马上写进 /sop 的缓存（线上是它、草稿没了），不等重取：重取没成功时页头下就地报错，
   // 条里照样是「已发布v3」、「发布…」不能点，不会看着像没发布出去。
-  // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）关上抽屉，
-  // 由页面上的提示说；别的失败写在抽屉里，写好的说明不丢。请求在路上时抽屉关不掉（PublishDrawer）
+  // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）抽屉也开着，写撞上的节和
+  // 「去合并」，同时重查一次（合并要合到那时的线上版本）；别的失败写在抽屉里，写好的说明不丢。请求在路上时抽屉关不掉（PublishDrawer）
   const publish = async (): Promise<void> => {
     if (!draft) return;
     const known = [published, check.result?.online];
@@ -468,8 +520,8 @@ function MemberSop({
     } catch (e) {
       if (e instanceof HttpError && e.body.error === 'contract') setRejected(e);
       else if (e instanceof HttpError && e.body.error === 'sop_conflict') {
-        setConflict({ keys: e.body.keys ?? [], current: e.body.current ?? [] });
-        setPublishOpen(false);
+        setConflict({ keys: e.body.keys ?? [] });
+        check.retry();
       } else setPublishError(e);
     } finally {
       setPublishing(false);
@@ -502,6 +554,8 @@ function MemberSop({
     violations: located?.map((v) => ({ sectionKey: v.section })),
   });
   const nav = useSectionNav(rows, editor);
+  // 合并模式里目录上的「需合并」「已处理」，问题数不写（检查的是合并以前的草稿）
+  const tocRows = useMemo(() => mergeRows(rows, merge), [rows, merge]);
   const tools = pack?.vocabulary.tools;
   const vocabulary = pack?.vocabulary;
   // 这一节正文里要标出来的问题：引用只随检查结果、换节、换包变，编辑器不逐字重派
@@ -521,7 +575,13 @@ function MemberSop({
   const saveError = saver.status.kind === 'failed' && errorCopy(saver.status.error).place !== 'inline' ? saver.status.error : null;
   const lostLoaded = lost?.loaded.length ? lost.loaded : null;
   const hasBanners =
-    refetchError !== null || saveError !== null || frozen || lostLoaded !== null || reloadError !== null || nav.viewing !== undefined;
+    refetchError !== null ||
+    saveError !== null ||
+    frozen ||
+    lostLoaded !== null ||
+    reloadError !== null ||
+    nav.viewing !== undefined ||
+    mergeError !== null;
 
   // 409 停住的那一刻，在一节长正文的下半截打字时横幅在视口外、状态句跟着页头缩没了，编辑器只是不再接受输入：
   // 把横幅滚进视口；焦点原来在编辑器里的，移到横幅上（读屏念出来，下一个 Tab 就到「载入最新草稿」；
@@ -596,7 +656,7 @@ function MemberSop({
   });
 
   // ---------------- 发布（第 6.3 步） ----------------
-  const block = barBlock({ frozen, changed: changed.length, problems: located?.length ?? 0 });
+  const block = barBlock({ frozen, merging: merge !== null, changed: changed.length, problems: located?.length ?? 0 });
   // 发布成功的那句只在线上还是刚发布的那一版时留着：之后从版本历史回滚过、别人又发布过，它和「回滚到v2」都不再对
   const shownResult = result !== null && result.versionNo === published.versionNo ? result : null;
   const draftKey = checkKey(draft, published.id);
@@ -625,7 +685,7 @@ function MemberSop({
   // 点「发布…」：先把没存上的改动存了（⌘S 同一条路），存上以后再打开抽屉、检查一次。这一次存上了（草稿的 rev 变了）时
   // 自动检查已经在跑，不另发；没有要存的就检查一次。点了以后又存失败了、或者 409 停住，就不打开（状态句与横幅说明原因）。
   // 存没存上在渲染时看（按上一次渲染的值调整 state），检查在 effect 里发
-  const startPublish = (trigger: HTMLElement): void => {
+  const startPublish = (trigger: HTMLElement | null): void => {
     publishBack.current = trigger;
     setOpening({ key: draftKey, from: saver.status });
     saver.flush();
@@ -784,6 +844,153 @@ function MemberSop({
     if (wasDiscarding.current && !discarding) moreRef.current?.focus();
     wasDiscarding.current = discarding;
   }, [discarding]);
+  // ---------------- 冲突合并（第 8 步） ----------------
+  // 「去合并」：先把没存上的改动存了（同「发布…」），再重查一次：合并要合到那时的线上版本（检查另取的那一份），要合并的节也按
+  // 那时的算。查回来仍有要合并的节才进合并模式；存失败、409 停住、没查上、查完没有要合并的节了，就不进（原因由状态句、横幅、
+  // 清单、提醒说）。发布抽屉开着时等进了合并模式才关上，在等的时候「去合并」转圈。存没存上、查没查完在渲染时看（同 opening）
+  const mergeStatusId = useId();
+  const mergeTitle = useRef<HTMLHeadingElement>(null);
+  const finishRef = useRef<HTMLButtonElement>(null);
+  const exitRef = useRef<HTMLButtonElement>(null);
+  const publishButton = useRef<HTMLButtonElement>(null);
+  /** 合并模式里焦点去哪：某一节的标题（进合并、处理好一节换到下一节、重新比过）、「完成合并」、编辑器（退出以后） */
+  const mergeFocus = useRef<{ to: 'title'; key: string } | { to: 'finish' | 'editor' } | null>(null);
+  /** 进了合并模式：要去的第一节（每进一次是一个新对象；在 effect 里换地址、放焦点，渲染时不能） */
+  const [mergeEntered, setMergeEntered] = useState<{ key: string } | null>(null);
+  const askMerge = (): void => {
+    setMergeAsk({ from: saver.status });
+    check.retry();
+    saver.flush();
+  };
+  if (mergeAsk !== null) {
+    const st = saver.status;
+    if (frozen || (st.kind === 'failed' && st !== mergeAsk.from)) setMergeAsk(null);
+    else if (unsaved.length === 0 && !saving && !check.running) {
+      setMergeAsk(null);
+      const r = check.result;
+      const m =
+        check.error === null && draft && r?.rebase.needed && r.online
+          ? startMerge({ spec, online: r.online, conflicts: r.rebase.conflicts, draft: draft.sections })
+          : null;
+      if (m) {
+        setMerge(m);
+        setMergeEpoch((n) => n + 1);
+        // 本地的改动都存上了（unsaved 为空），清掉以后编辑器里还是同样的正文；完成合并以后它们不能再当成没存上的改动发出去
+        setEdits({});
+        setMergeError(null);
+        setResult(null);
+        // 抽屉关上时焦点先还给「发布…」，接着由下面换到这一节的标题上
+        setPublishOpen(false);
+        setMergeEntered({ key: m.keys[0]! });
+      }
+    }
+  }
+  useEffect(() => {
+    const f = mergeFocus.current;
+    if (f === null) return;
+    const el =
+      f.to === 'title'
+        ? nav.section === f.key
+          ? mergeTitle.current
+          : null
+        : f.to === 'finish'
+          ? finishRef.current
+          : merge === null
+            ? editor.current?.querySelector<HTMLElement>('.cm-content')
+            : null;
+    // 地址或主区还没换好，下一次渲染再看
+    if (!el) return;
+    mergeFocus.current = null;
+    el.focus();
+  });
+  // 去合并的某一节（进合并时去第一个，「完成合并」不能点时去第一个没处理的）；正在看某一版的改动时一并回到编辑
+  const goMerge = (key: string): void => {
+    mergeFocus.current = { to: 'title', key };
+    if (key !== nav.section || nav.viewing !== undefined) nav.select(key, 'key');
+  };
+  const goMergeRef = useRef(goMerge);
+  useEffect(() => {
+    goMergeRef.current = goMerge;
+  });
+  useEffect(() => {
+    if (mergeEntered) goMergeRef.current(mergeEntered.key);
+  }, [mergeEntered]);
+  // 「这一节处理好了」：换到后面第一个还没处理的节；都处理好了，焦点去「完成合并」
+  const doneWith = (key: string): void => {
+    if (!merge) return;
+    const next = nextToMerge(merge, key);
+    setMerge((m) => m && markDone(m, key));
+    if (next) goMerge(next);
+    else mergeFocus.current = { to: 'finish' };
+  };
+  // 退出合并：合并里改过右边的先确认（改的写法不会保存）；退出以后接着自动保存，焦点回到编辑器
+  const leaveMerge = (): void => {
+    setExitAsk(false);
+    setMerge(null);
+    setMergeError(null);
+    mergeFocus.current = { to: 'editor' };
+  };
+  const exitMerge = (): void => (touched.length ? setExitAsk(true) : leaveMerge());
+  // 完成合并：一次 PUT，带 rebaseOnto 与全部要合并的节右边的写法。成功以后草稿的基线就是合并到的线上版本，写进缓存（不等重取），
+  // 回到发布抽屉（同点「发布…」：没有要存的，打开抽屉；草稿换了，自动检查已经在跑），抽屉关上以后焦点回到「发布…」。
+  // 合并期间别人又改了草稿或发布了新版本（409）：横幅说明，「载入最新内容」重新比一次；别的失败就地报错、能重试
+  const finishMerge = async (): Promise<void> => {
+    if (!merge || !draft) return;
+    const blocked = finishBlock(merge);
+    if (blocked) {
+      goMerge(blocked.first);
+      return;
+    }
+    const m = merge;
+    setFinishing(true);
+    setMergeError(null);
+    try {
+      const v = await unwrap(
+        api.sop.draft.$put({ json: { basedOn: m.online.id, rev: draft.rev, edits: mergeEdits(m), rebaseOnto: m.online.id } }),
+      );
+      setEdits({});
+      setMerge(null);
+      clearResults();
+      qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) =>
+        old && 'spec' in old ? withMerged(old, m.online, v) : old,
+      );
+      startPublish(publishButton.current);
+      void qc.invalidateQueries({ queryKey: sopQuery.queryKey });
+    } catch (e) {
+      setMergeError(e);
+    } finally {
+      setFinishing(false);
+    }
+  };
+  // 合并期间别人又改过：重取草稿、重查，按新的线上版本与草稿重新比一次（merge.ts 的 restartMerge）。还在看的节仍要合并就留在这一节，
+  // 不然去第一个；一节也不用合并了，退出合并模式
+  const reloadMerge = async (): Promise<void> => {
+    setMergeReloading(true);
+    try {
+      const fresh = await qc.fetchQuery({ ...sopQuery, staleTime: 0 });
+      const r = await checkDraft();
+      const d = 'spec' in fresh ? fresh.draft : null;
+      const input = d && r.rebase.needed && r.online ? { spec, online: r.online, conflicts: r.rebase.conflicts, draft: d.sections } : null;
+      const keys = input ? (startMerge(input)?.keys ?? []) : [];
+      setEdits({});
+      setMergeError(null);
+      setMergeEpoch((n) => n + 1);
+      setMerge((prev) => (prev && input ? restartMerge(prev, input) : null));
+      if (keys.length) goMerge(nav.section !== undefined && keys.includes(nav.section) ? nav.section : keys[0]!);
+      else mergeFocus.current = { to: 'editor' };
+    } catch (e) {
+      setMergeError(e);
+    } finally {
+      setMergeReloading(false);
+    }
+  };
+  // 退出合并的确认框不还焦点：「退出合并」以后焦点去编辑器，「接着合并」回到「退出合并」
+  const wasExitAsk = useRef(false);
+  useEffect(() => {
+    if (wasExitAsk.current && !exitAsk && merge !== null) exitRef.current?.focus();
+    wasExitAsk.current = exitAsk;
+  }, [exitAsk, merge]);
+
   // 草稿那一行（存下来的草稿，或者还没存上的改动）；技术详情里是最近一次检查的两个哈希
   const draftRow =
     draft || changed.length > 0
@@ -802,32 +1009,50 @@ function MemberSop({
     draft || unsaved.length > 0 ? { basedOn: draft?.basedOn ?? published.id, mine: mergedSections(spec, current.sections, edits) } : null;
 
   // 草稿跟不上线上版本只提示一条：/sop 的 draft.stale 与检查的 rebase.needed 是服务端同一个条件（basedOn 不是线上版本），
-  // 检查打开页面就跑，两条会一起出来。检查报了冲突的节时是出错色、写发布不了，不然是 info（检查回来之前、回滚以后
-  // 重查回来之前按 draft.stale）。发布撞上冲突（409）时由那一条说，这一条不出；发布被拒（422）是合并以后的事，没有冲突的节
+  // 检查打开页面就跑，两条会一起出来。检查报了冲突的节时是出错色「有2节在你改的同时被改了」加「去合并」，不然是 info
+  // （检查回来之前、回滚以后重查回来之前按 draft.stale）。合并模式里都不出（页头说还有几节要合并）
   const rebase = check.result?.rebase;
   const rebaseConflicts = rebase?.needed ? rebase.conflicts : [];
-  const rebaseNote = conflict ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || rebase?.needed ? 'merge' : null;
-  const hasNotices = error !== null || rebaseNote !== null || !!rejected || !!conflict || rolledBackNote !== null;
+  const rebaseNote = merge ? null : rebaseConflicts.length ? 'conflict' : draft?.stale || rebase?.needed ? 'merge' : null;
+  // 发布抽屉里撞上的节：发布答 409 以后重查回来之前（或没查上时）照 409 点名的写
+  const drawerConflicts = (check.running || check.error !== null) && conflict ? conflict.keys : rebaseConflicts;
+  const hasNotices = error !== null || rebaseNote !== null || (!merge && (!!rejected || rolledBackNote !== null));
 
   return (
     <>
       <PageHeader
         title={TITLE}
         status={
-          <span className={editable ? 'sop-status-line' : undefined}>
-            {cjk(memberStatus(published, changed.length, now))}
-            {editable && <SaveState status={saver.status} onRetry={saver.flush} />}
-          </span>
+          merge ? (
+            <span id={mergeStatusId}>{cjk(mergeStatus(merge))}</span>
+          ) : (
+            <span className={editable ? 'sop-status-line' : undefined}>
+              {cjk(memberStatus(published, changed.length, now))}
+              {editable && <SaveState status={saver.status} onRetry={saver.flush} />}
+            </span>
+          )
         }
         actions={
-          <SopActions
-            editable={editable}
-            discardBlocked={discardBlocked}
-            moreRef={moreRef}
-            historyRef={historyButton}
-            onDiscard={openDiscard}
-            onHistory={openHistory}
-          />
+          merge ? (
+            <MergeActions
+              blocked={finishBlock(merge) !== null}
+              busy={finishing}
+              reasonId={mergeStatusId}
+              finishRef={finishRef}
+              exitRef={exitRef}
+              onExit={exitMerge}
+              onFinish={() => void finishMerge()}
+            />
+          ) : (
+            <SopActions
+              editable={editable}
+              discardBlocked={discardBlocked}
+              moreRef={moreRef}
+              historyRef={historyButton}
+              onDiscard={openDiscard}
+              onHistory={openHistory}
+            />
+          )
         }
       />
       {guard}
@@ -850,13 +1075,29 @@ function MemberSop({
           {/* 又一次 409 时上一批对比照样留着（这时编辑器冻着，这一批要载入以后才接上来） */}
           {lostLoaded && <LostEdits items={lostLoaded} onClose={closeLost} titleRef={lostTitle} />}
           {viewing !== undefined && <VersionBanner no={viewing} onBack={backToEdit} />}
+          {mergeError !== null &&
+            (mergeError instanceof HttpError && mergeError.status === 409 ? (
+              <Alert
+                type="error"
+                showIcon
+                title={cjk('这期间别人又改了草稿或发布了新版本')}
+                description={cjk('载入最新内容以后，你在右边写的留着，要合并的节重新比一次')}
+                action={
+                  <Button size="small" loading={mergeReloading} onClick={() => void reloadMerge()}>
+                    载入最新内容
+                  </Button>
+                }
+              />
+            ) : (
+              <ErrorAlert error={mergeError} onRetry={() => void finishMerge()} />
+            ))}
         </div>
       )}
-      {viewing === undefined && <QuotaBar model={quota} ref={editable ? quotaRef : undefined} />}
+      {viewing === undefined && merge === null && <QuotaBar model={quota} ref={editable ? quotaRef : undefined} />}
       {hasNotices && (
         <Space orientation="vertical" size="middle" className="sop-notices">
           {error !== null && <ErrorAlert error={error} />}
-          {rolledBackNote !== null && (
+          {!merge && rolledBackNote !== null && (
             <Alert type="warning" showIcon closable={{ onClose: () => setRolledBackNote(null) }} title={cjk(rolledBackNote)} />
           )}
           {rebaseNote === 'merge' && <Alert type="info" showIcon title="草稿打开之后发布过新版本，发布时自动合并" />}
@@ -864,33 +1105,15 @@ function MemberSop({
             <Alert
               type="error"
               showIcon
-              title={
-                `这几节在你编辑期间被别人改过：${rebaseConflicts.map((k) => headingOf(spec, k)).join('、')}。` +
-                '这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在当前版本上重做。'
+              title={cjk(conflictTitle(rebaseConflicts.map((k) => headingOf(spec, k))))}
+              action={
+                <Button size="small" loading={mergeAsk !== null} onClick={askMerge}>
+                  去合并
+                </Button>
               }
             />
           )}
-          {rejected && <ErrorAlert error={rejected} />}
-          {conflict && (
-            <Alert
-              type="error"
-              showIcon
-              title={`发布被拒：这几节在你编辑期间被别人改过——${conflict.keys.map((k) => headingOf(spec, k)).join('、')}`}
-              description={
-                <Space orientation="vertical" style={{ width: '100%' }}>
-                  {conflict.current
-                    .filter((s) => conflict.keys.includes(s.key))
-                    .map((s) => (
-                      <div key={s.key}>
-                        <Typography.Text type="secondary">当前发布版本的「{headingOf(spec, s.key)}」：</Typography.Text>
-                        <SopEditor value={s.text} name={headingOf(spec, s.key)} readOnly vocabulary={pack?.vocabulary} />
-                      </div>
-                    ))}
-                  <span>这份草稿已经发布不了：先把你的改动复制出来，丢弃草稿，再在上面这份当前版本上重做。</span>
-                </Space>
-              }
-            />
-          )}
+          {!merge && rejected && <ErrorAlert error={rejected} />}
         </Space>
       )}
 
@@ -902,34 +1125,52 @@ function MemberSop({
         <Columns
           editor={editor}
           checkRef={checkRef}
-          toc={<Toc rows={rows} nav={nav} filter={filter} onFilter={setFilter} showCounts />}
+          merging={merge !== null}
+          toc={<Toc rows={tocRows} nav={nav} filter={filter} onFilter={setFilter} showCounts />}
           main={
-            section &&
-            row && (
-              <SectionPane
-                key={section.key}
-                row={row}
-                who={editable ? 'editor' : 'reader'}
-                frozen={frozen}
-                value={edits[section.key] ?? originalBody(section.key)}
-                baseline={bodyOf(textOf(published, section.key), section.heading)}
-                vocabulary={vocabulary}
-                problems={problems}
-                notes={notes}
-                notesRef={notesRef}
-                onFix={onFix}
-                onViewDiff={viewSection}
-                onChange={(v) => {
-                  setEdits((e) => ({ ...e, [section.key]: v }));
-                  // 发布成功的那句保留到下一次改动
-                  if (result !== null) setResult(null);
-                  saver.edited();
-                }}
+            merge && section && row && merge.keys.includes(section.key) ? (
+              <MergePane
+                key={`${section.key}:${mergeEpoch}`}
+                name={row.name}
+                meta={mergeMeta(merge)}
+                leftLabel={onlineLabel(merge)}
+                left={onlineBody(merge, spec, section.key)}
+                right={merge.texts[section.key] ?? ''}
+                onChange={(t) => setMerge((m) => m && withText(m, section.key, t))}
+                done={merge.done.includes(section.key)}
+                onDone={() => doneWith(section.key)}
+                titleRef={mergeTitle}
               />
+            ) : (
+              section &&
+              row && (
+                <SectionPane
+                  key={section.key}
+                  row={row}
+                  who={editable ? 'editor' : 'reader'}
+                  // 合并期间别的节只读：自动保存停着，上游改过的节完成合并时才并进来
+                  frozen={frozen || merge !== null}
+                  value={edits[section.key] ?? originalBody(section.key)}
+                  baseline={bodyOf(textOf(published, section.key), section.heading)}
+                  vocabulary={vocabulary}
+                  problems={merge ? undefined : problems}
+                  notes={merge ? undefined : notes}
+                  notesRef={notesRef}
+                  onFix={onFix}
+                  onViewDiff={merge ? undefined : viewSection}
+                  onChange={(v) => {
+                    setEdits((e) => ({ ...e, [section.key]: v }));
+                    // 发布成功的那句保留到下一次改动
+                    if (result !== null) setResult(null);
+                    saver.edited();
+                  }}
+                />
+              )
             )
           }
           check={
-            editable && (
+            editable &&
+            merge === null && (
               <CheckCard
                 spec={spec}
                 located={located}
@@ -943,7 +1184,7 @@ function MemberSop({
               />
             )
           }
-          tools={tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
+          tools={merge === null && tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
         />
       )}
 
@@ -963,6 +1204,7 @@ function MemberSop({
             setChangesOf({ section: null, open: true });
           }}
           onRollback={(trigger) => result?.previous && startRollback(result.previous, trigger)}
+          publishRef={publishButton}
         />
       )}
       <PublishDrawer
@@ -977,7 +1219,9 @@ function MemberSop({
         located={located}
         budget={check.result ?? budget}
         check={{ running: check.running, failed: check.error !== null, at: check.at, retry: check.retry }}
-        conflicts={rebaseConflicts.map((k) => headingOf(spec, k))}
+        conflicts={drawerConflicts.map((k) => headingOf(spec, k))}
+        onMerge={askMerge}
+        mergeBusy={mergeAsk !== null}
         note={note}
         prefill={prefill}
         onNote={setNote}
@@ -1042,6 +1286,17 @@ function MemberSop({
         {overwriteText(loadingTarget?.plan.overwritten ?? [])}
       </ConfirmDanger>
       <ConfirmDanger
+        open={exitAsk}
+        title="退出合并？"
+        confirmText="退出合并"
+        cancelText="接着合并"
+        focusTriggerAfterClose={false}
+        onConfirm={leaveMerge}
+        onCancel={() => setExitAsk(false)}
+      >
+        {exitText(touched)}
+      </ConfirmDanger>
+      <ConfirmDanger
         open={discarding}
         title="丢弃草稿？"
         confirmText="丢弃草稿"
@@ -1060,3 +1315,4 @@ function MemberSop({
 
 /** 抽屉都关着时逐节改动不算 */
 const NO_CHANGES: readonly SectionChange[] = [];
+const NO_NAMES: readonly string[] = [];

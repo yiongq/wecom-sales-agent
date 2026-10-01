@@ -27,6 +27,8 @@ export interface OutlineRow {
   changed: boolean;
   /** 最近一次检查在这一节报的问题数 */
   issues: number;
+  /** 合并模式里要合并的节：todo 写「需合并」，done 是点过「这一节处理好了」（merge.ts 的 mergeRows） */
+  merge?: 'todo' | 'done';
 }
 
 /** 正文；万一不是规范形（服务端保证是），整段当正文，不让页面崩掉 */
