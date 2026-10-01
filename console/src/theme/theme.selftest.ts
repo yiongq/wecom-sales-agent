@@ -15,7 +15,7 @@ import vm from 'node:vm';
 import { Alert, Button, ConfigProvider, Form, Input, Tabs, theme } from 'antd';
 import { createElement, useContext } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ANTD_THEMES, antdTheme } from './antd.js';
+import { ANTD_THEMES, antdTheme, SEGMENT_THUMB } from './antd.js';
 import {
   applyPrefs,
   currentThemeState,
@@ -188,6 +188,13 @@ for (const mode of MODES) {
   check(
     comp.Segmented?.boxShadowTertiary === `0 0 0 1px ${border}`,
     `${NAME[mode]} · 分段控件选中段的圈（Segmented.boxShadowTertiary）是 ${String(comp.Segmented?.boxShadowTertiary)}，要 1px --control-border（§5.4）`,
+  );
+  // §3 筛选 0ms：分段控件的字色不过渡，滑块只走 1ms（不能是 0：滑块等 transitionend 才收起，见 antd.ts）；审计的类别、
+  // 话术目录的筛选都是它。滑块不画、选中画在 -item-selected-text 上，在下面 brand.css 的规则里查
+  check(
+    comp.Segmented?.motionDurationSlow === SEGMENT_THUMB && SEGMENT_THUMB === '0.001s' && comp.Segmented?.motionDurationMid === '0s',
+    `${NAME[mode]} · 分段控件的过渡（Segmented.motionDurationMid / motionDurationSlow）是 ${String(comp.Segmented?.motionDurationMid)} / ` +
+      `${String(comp.Segmented?.motionDurationSlow)}，要 0s / 0.001s（§3 筛选 0ms）`,
   );
   check(
     comp.Switch?.colorTextQuaternary === border,
@@ -659,7 +666,7 @@ function jsxTags(src: string, name: string): string[] {
   check(scanned > 0, '5b：console/src 里一个 <Segmented> 都没扫到，扫描写错了');
 }
 {
-  // 令牌给不了的两处写在 brand.css：antd 焦点框的偏移 2（它写死成 1），分段控件选中段字重 500
+  // 令牌给不了的几处写在 brand.css：antd 焦点框的偏移 2（它写死成 1），分段控件不画滑块、选中段画在 -item-selected-text 上
   const rule = (selector: string, body: RegExp, src: string = css): boolean => {
     for (const m of src.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
       const sels = m[1]!.split(',').map((x) => x.replace(/\/\*[\s\S]*?\*\//g, '').trim());
@@ -683,10 +690,20 @@ function jsxTags(src: string, name: string): string[] {
     rule('.ant-tabs .ant-tabs-content:focus-visible', /outline-offset:\s*-2px/),
     'brand.css 没给页签的面板写 outline-offset: -2px（§3 容器）',
   );
-  check(
-    rule('.ant-segmented .ant-segmented-item-selected', /font-weight:\s*500/),
-    'brand.css 没给分段控件的选中段写 font-weight: 500（§5.4）',
-  );
+  // 换段 0ms（§3）：滑块不画，选中段的样子（底、圈、字色、字重 500，§5.4）画在点下去那一帧就有的 -item-selected-text 上
+  check(rule('.ant-segmented .ant-segmented-thumb', /visibility:\s*hidden/), 'brand.css 没把分段控件的滑块藏起来（§3 筛选 0ms）');
+  {
+    const sel = '.ant-segmented .ant-segmented-item-selected-text:not(.ant-segmented-item-disabled)';
+    check(
+      [
+        /background:\s*var\(--thumb\)/,
+        /box-shadow:\s*0 0 0 1px var\(--control-border\)/,
+        /color:\s*var\(--text\)/,
+        /font-weight:\s*500/,
+      ].every((body) => rule(sel, body)),
+      'brand.css 没把分段控件的选中段画在 -item-selected-text 上：--thumb 底、1px --control-border 圈、text、字重 500（§3、§5.4）',
+    );
+  }
   // 页签条的 nav-wrap 是 overflow: hidden：左右垫 4、负外边距抵掉，第一个页签的焦点框（伸出去 4）才画得全
   for (const sel of ['.ant-tabs-top > .ant-tabs-nav .ant-tabs-nav-wrap', '.ant-tabs-bottom > .ant-tabs-nav .ant-tabs-nav-wrap']) {
     check(
