@@ -5,7 +5,8 @@
 // 要另取那一版，取的时候那一条是骨架，取不到就地报错、能重试，回滚照样能做。
 // 下面是差异块「回滚后，线上的可编辑节会变成这样」（--subtle 底，逐节的行内差异），再下面是必填的「为什么回滚」。
 // 按钮「再看看」（默认焦点）和「回滚到v1」（墨色主按钮：回滚会生成新版本，还能再回滚，不是破坏性操作）；
-// 没写原因时「回滚到v1」是 aria-disabled，点了到输入框。成功以后刷新 /sop 与版本记录，toast 报新版本号；
+// 没写原因时「回滚到v1」是 aria-disabled，点了到输入框。关上以后弹窗不还焦点，由页面还给点的那个按钮。
+// 成功以后刷新 /sop 与版本记录，toast 报新版本号；
 // 回滚后的新版本与目标版本的固定规则不同时，调用方用 rollbackNotice 在页面上写说明
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, type GetRef, Input, Modal } from 'antd';
@@ -42,6 +43,9 @@ const ICONS: Readonly<Record<ConsequenceIcon, { of: typeof Info; className: stri
   warning: { of: TriangleAlert, className: 'sop-rb-icon is-warning' },
 };
 
+/** 关上以后不还焦点：由页面还给点的那个按钮（antd 还的是打开时的 activeElement，Safari 点按钮不给按钮焦点） */
+const NO_RETURN = { focusTriggerAfterClose: false } as const;
+
 /** 没写原因时点「回滚到v1」的提示（写在按钮左边，同发布抽屉） */
 const NEED_NOTE = '写上为什么回滚';
 
@@ -57,16 +61,27 @@ export interface RollbackModalProps {
 }
 
 /**
- * 关着时不挂弹层（同 ConfirmDanger：话术页逐字重渲）。关上的动画放完以前照关上那一刻的目标画，放完以后清掉写过的原因与错误
+ * 关着时不挂弹层（同 ConfirmDanger：话术页逐字重渲）。关上的动画放完以前照关上那一刻的目标画。
+ * 每次打开（目标从无到有、换了一个）都从头来，上一次写过的原因与错误不留：在打开时清，不等关上的动画回调
  */
 export function RollbackModal({ target, online, spec, draft, onClose, onDone }: RollbackModalProps) {
   const qc = useQueryClient();
   const [shown, setShown] = useState<SopVersion | null>(target);
-  if (target && target !== shown) setShown(target);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [tried, setTried] = useState(false);
+  // 上一次渲染时的目标：变了（打开、换了一个）就从头来
+  const [last, setLast] = useState<SopVersion | null>(target);
+  if (target !== last) {
+    setLast(target);
+    if (target) {
+      setShown(target);
+      setNote('');
+      setError(null);
+      setTried(false);
+    }
+  }
   const inputRef = useRef<GetRef<typeof Input>>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const noteId = useId();
@@ -109,16 +124,12 @@ export function RollbackModal({ target, online, spec, draft, onClose, onDone }: 
       width={640}
       title={`回滚到v${shown?.versionNo ?? ''}`}
       onCancel={onClose}
+      focusable={NO_RETURN}
       rootClassName="sop-rb-root"
       afterOpenChange={(visible) => {
         // 打开时焦点先进内容区（antd 的焦点陷阱），这里挪到「再看看」上：安全的那个按钮默认聚焦
         if (visible) cancelRef.current?.focus();
-        else {
-          setShown(null);
-          setNote('');
-          setError(null);
-          setTried(false);
-        }
+        else setShown(null);
       }}
       footer={
         <>

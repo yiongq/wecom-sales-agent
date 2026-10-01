@@ -678,8 +678,10 @@ function MemberSop({
   const historyOpen = nav.view === 'history';
   const { navigate } = nav;
   // 抽屉关上、主区换好以后焦点去哪：打开抽屉的按钮（Esc、关闭按钮、浏览器后退）、编辑器（继续编辑、载入、回到编辑）、
-  // 对比的标题（查看改动）。抽屉的焦点陷阱在关上的那次渲染以后就放开了，不等收起动画（同发布抽屉）
+  // 对比的标题（查看改动）。抽屉的焦点陷阱在关上的那次渲染以后就放开了，不等收起动画（同发布抽屉）。
+  // 抽屉是随地址打开的（刷新、别人发来的链接带 view=history）时没有点过的按钮，还给页头的「版本记录」
   const historyBack = useRef<HTMLElement | null>(null);
+  const historyButton = useRef<HTMLButtonElement>(null);
   const focusNext = useRef<'editor' | 'version' | 'trigger' | null>(null);
   const versionRef = useRef<HTMLDivElement>(null);
   const openHistory = useCallback(
@@ -689,21 +691,25 @@ function MemberSop({
     },
     [navigate],
   );
+  // 去编辑器（继续编辑、载入）时正在看某一版的改动的，一并回到编辑（去掉 v），不然编辑器不在、焦点没处放
   const closeHistory = (then: 'editor' | 'trigger' = 'trigger'): void => {
     focusNext.current = then;
-    void navigate({ search: (prev) => ({ ...prev, view: undefined }), replace: true });
+    void navigate({ search: (prev) => ({ ...prev, view: undefined, ...(then === 'editor' ? { v: undefined } : {}) }), replace: true });
   };
+  // 不经 closeHistory 关上的（浏览器后退）：同 Esc
+  const historyWasOpen = useRef(historyOpen);
   useEffect(() => {
-    if (!historyOpen && focusNext.current === null && historyBack.current) focusNext.current = 'trigger';
+    if (historyWasOpen.current && !historyOpen && focusNext.current === null) focusNext.current = 'trigger';
+    historyWasOpen.current = historyOpen;
   }, [historyOpen]);
   useEffect(() => {
     const want = focusNext.current;
     if (want === null || historyOpen) return;
     if (want === 'trigger') {
-      const el = historyBack.current;
+      const el = historyBack.current?.isConnected ? historyBack.current : historyButton.current;
       focusNext.current = null;
       historyBack.current = null;
-      if (el?.isConnected) el.focus();
+      el?.focus();
       return;
     }
     const el =
@@ -757,6 +763,19 @@ function MemberSop({
       setLoadingTarget({ target, plan });
     } else applyLoad(target, plan);
   };
+  // 回滚确认关上以后焦点回到点的那个按钮（版本记录里的「回滚到这版…」、发布条的「回滚到v2」）：弹窗自己不还，
+  // antd 还的是打开时的 activeElement，Safari 点按钮不给按钮焦点（同发布抽屉）
+  const rollbackBack = useRef<HTMLElement | null>(null);
+  const startRollback = useCallback((v: SopVersion, trigger: HTMLElement): void => {
+    rollbackBack.current = trigger;
+    setRollbackTarget(v);
+  }, []);
+  useEffect(() => {
+    const el = rollbackBack.current;
+    if (rollbackTarget !== null || !el) return;
+    rollbackBack.current = null;
+    if (el.isConnected) el.focus();
+  }, [rollbackTarget]);
   const openDiscard = useCallback((): void => setDiscarding(true), []);
   // 丢弃的确认框关上（保留、丢弃以后）：焦点回到「更多」。打开它的菜单项已经随菜单卸下，antd 还焦点会掉到 body 上
   const moreRef = useRef<HTMLButtonElement>(null);
@@ -805,6 +824,7 @@ function MemberSop({
             editable={editable}
             discardBlocked={discardBlocked}
             moreRef={moreRef}
+            historyRef={historyButton}
             onDiscard={openDiscard}
             onHistory={openHistory}
           />
@@ -942,7 +962,7 @@ function MemberSop({
             changesBack.current = trigger;
             setChangesOf({ section: null, open: true });
           }}
-          onRollback={() => result?.previous && setRollbackTarget(result.previous)}
+          onRollback={(trigger) => result?.previous && startRollback(result.previous, trigger)}
         />
       )}
       <PublishDrawer
@@ -979,7 +999,7 @@ function MemberSop({
         open={historyOpen}
         size={420}
         title="版本记录"
-        status={historyStatus(published, draftRow !== null)}
+        status={historyStatus(online, draftRow !== null)}
         closeLabel="关闭版本记录"
         onClose={() => closeHistory()}
       >
@@ -991,7 +1011,7 @@ function MemberSop({
           draft={draftRow}
           onContinue={() => closeHistory('editor')}
           onView={viewVersion}
-          onRollback={(v) => setRollbackTarget(v)}
+          onRollback={startRollback}
           onLoad={startLoad}
         />
       </SopDrawer>

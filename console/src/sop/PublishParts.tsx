@@ -49,7 +49,8 @@ export interface PublishBarProps {
   /** 有问题时点「发布…」：跳到第一个问题 */
   onJump: () => void;
   onChanges: (trigger: HTMLElement) => void;
-  onRollback: () => void;
+  /** 「回滚到v2」：点的那个按钮（回滚确认关上以后焦点还给它） */
+  onRollback: (trigger: HTMLElement) => void;
 }
 
 export function PublishBar(p: PublishBarProps) {
@@ -70,7 +71,7 @@ export function PublishBar(p: PublishBarProps) {
         {p.result.previous && (
           <span className="sop-bar-hint-action">
             <Sep />
-            <button type="button" className="sop-text-btn" onClick={p.onRollback}>
+            <button type="button" className="sop-text-btn" onClick={(e) => p.onRollback(e.currentTarget)}>
               回滚到v{p.result.previous.versionNo}
             </button>
           </span>

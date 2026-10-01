@@ -84,6 +84,14 @@ export function useVersionPair(no: number | undefined) {
   });
 }
 
+/** 回滚的目标「回到v1」的版本号：手上（版本记录、查看改动的那一对）有就直接用，没有另取；不是回滚、还没取到是 undefined */
+function useRolledBackTo(v: SopVersion, known: readonly SopVersion[]): number | null | undefined {
+  const rollbackOf = v.source === 'rollback' ? v.basedOn : null;
+  const inHand = rollbackOf ? known.find((k) => k.id === rollbackOf) : undefined;
+  const target = useKnownVersion(rollbackOf && !inHand ? rollbackOf : null);
+  return (inHand ?? target.data)?.versionNo;
+}
+
 // ---------------- 页头的操作 ----------------
 
 /**
@@ -94,6 +102,7 @@ export const SopActions = memo(function SopActions({
   editable,
   discardBlocked,
   moreRef,
+  historyRef,
   onDiscard,
   onHistory,
 }: {
@@ -101,6 +110,8 @@ export const SopActions = memo(function SopActions({
   /** 「丢弃草稿」不能点的原因（history.ts 的 discardBlock） */
   discardBlocked: string | null;
   moreRef?: Ref<HTMLButtonElement>;
+  /** 「版本记录」：抽屉是随地址打开的、没有点过的按钮时，关上以后焦点还给它 */
+  historyRef?: Ref<HTMLButtonElement>;
   onDiscard: () => void;
   onHistory: (trigger: HTMLElement) => void;
 }) {
@@ -152,7 +163,13 @@ export const SopActions = memo(function SopActions({
           </Tooltip>
         </Dropdown>
       )}
-      <Button className="sop-history-btn" aria-haspopup="dialog" icon={<Icon of={History} />} onClick={(e) => onHistory(e.currentTarget)}>
+      <Button
+        ref={historyRef}
+        className="sop-history-btn"
+        aria-haspopup="dialog"
+        icon={<Icon of={History} />}
+        onClick={(e) => onHistory(e.currentTarget)}
+      >
         版本记录
       </Button>
     </>
@@ -246,11 +263,7 @@ function VersionRow({
   onLoad,
 }: HistoryListProps & { v: SopVersion; prev: SopVersion | null; known: readonly SopVersion[] }) {
   const live = v.status === 'published';
-  // 回滚的目标「回到v1」：版本记录里有就直接用，没有另取
-  const rollbackOf = v.source === 'rollback' ? v.basedOn : null;
-  const inHand = rollbackOf ? known.find((k) => k.id === rollbackOf) : undefined;
-  const target = useKnownVersion(rollbackOf && !inHand ? rollbackOf : null);
-  const line = versionLine(v, spec, prev, now, (inHand ?? target.data)?.versionNo);
+  const line = versionLine(v, spec, prev, now, useRolledBackTo(v, known));
   const titleId = useId();
   const actions: { key: string; node: ReactNode }[] = [];
   // 最早的版本没有前一版可比
@@ -360,7 +373,7 @@ function VersionDiff({
   now: number;
   mode: ReturnType<typeof useDiffMode>[0];
 }) {
-  const line = versionLine(v, spec, prev, now);
+  const line = versionLine(v, spec, prev, now, useRolledBackTo(v, [prev]));
   const changes = versionChanges(spec, prev, v);
   return (
     <>
