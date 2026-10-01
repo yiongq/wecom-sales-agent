@@ -167,9 +167,16 @@ function TodoLine({ row }: { row: TodoRow }) {
       </Link>
     );
   }
-  // 条目详情（/catalog/$kind/$code）在第 10 步；在那之前「去上架」「逐条检查」都打开这个实体的列表
+  // 待上架：1 条草稿「去上架」到这一条的详情；多条「逐条检查」到这个实体列表的草稿页签
+  if (t.code !== undefined) {
+    return (
+      <Link to="/catalog/$kind/$code" params={{ kind: catalogKind(t.entity), code: t.code }} className="ov-todo">
+        {body}
+      </Link>
+    );
+  }
   return (
-    <Link to="/catalog/$kind" params={{ kind: catalogKind(t.entity) }} className="ov-todo">
+    <Link to="/catalog/$kind" params={{ kind: catalogKind(t.entity) }} search={{ status: 'draft' }} className="ov-todo">
       {body}
     </Link>
   );
@@ -300,12 +307,19 @@ function KpiTile({ kpi }: { kpi: Kpi }) {
       </span>
       <span className="ov-kpi-caption">{cjk(kpi.caption)}</span>
       {kpi.breakdown && <span className="ov-kpi-detail">{cjk(kpi.breakdown)}</span>}
-      {/* 在售数为 0：明细是「新建{实体名}」（只给编辑者）。新建路由在第 10 步，在那之前和整格一样打开这个实体的列表 */}
+      {/* 在售数为 0：明细是「新建{实体名}」（只给编辑者），整格链到新建。链接里不能再套链接，所以它是格里的一行字 */}
       {kpi.create && <span className="ov-kpi-detail ov-kpi-create">{kpi.create.label}</span>}
       <Icon of={ArrowUpRight} size={14} className="ov-kpi-arrow" />
     </>
   );
   const t = kpi.target;
+  if (kpi.create) {
+    return (
+      <Link to="/catalog/new/$kind" params={{ kind: catalogKind(kpi.create.entity) }} className="ov-kpi">
+        {body}
+      </Link>
+    );
+  }
   if (t.kind === 'catalog') {
     return (
       <Link to="/catalog/$kind" params={{ kind: catalogKind(t.entity) }} className="ov-kpi">
