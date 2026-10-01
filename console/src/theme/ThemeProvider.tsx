@@ -4,7 +4,7 @@
 // Alert 是无描边的语义底色块（§5.12：标题 14/22/500 text、说明 13/20 text-2，16 的 lucide 描线图标）。
 // <html> 的两个属性首帧由 /console/theme-boot.js 设好，之后由 prefs.ts 改；这里只是跟着它们走
 import { ConfigProvider, type ConfigProviderProps } from 'antd';
-import { CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-react';
+import { CircleAlert, CircleCheck, Ellipsis, Info, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Icon } from '../shell/icons.js';
 import { antdTheme } from './antd.js';
@@ -26,6 +26,20 @@ const ALERT: ConfigProviderProps['alert'] = {
   styles: {
     title: { fontSize: 14, lineHeight: '22px', fontWeight: 500, color: 'var(--text)' },
     description: { fontSize: 13, lineHeight: '20px', color: 'var(--text-2)' },
+  },
+};
+
+/**
+ * 页签排不下时 rc-tabs 露出的「更多」按钮：它的读屏名字取自里面的图标，antd 的是 role=img、aria-label="ellipsis"（英文）。
+ * 换成 lucide 的 ellipsis，名字写「更多」
+ */
+const TABS: ConfigProviderProps['tabs'] = {
+  more: {
+    icon: (
+      <span role="img" aria-label="更多" className="tabs-more-icon">
+        <Icon of={Ellipsis} />
+      </span>
+    ),
   },
 };
 
@@ -66,7 +80,7 @@ function snapshot(): string {
 export function ThemeProvider({
   children,
   ...rest
-}: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button' | 'alert' | 'tooltip'>) {
+}: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button' | 'alert' | 'tooltip' | 'tabs'>) {
   // 第三个参数只给 theme.selftest.ts 用：它在 Node 里用 react-dom/server 渲染这个组件，核对传给 ConfigProvider 的东西
   const key = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [mode, reduce] = key.split('|');
@@ -82,7 +96,7 @@ export function ThemeProvider({
   const [outer] = useState(() => ({ token: { motion: reduce === '1' } }));
   return (
     <ConfigProvider theme={outer}>
-      <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON} alert={ALERT} tooltip={TOOLTIP}>
+      <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON} alert={ALERT} tooltip={TOOLTIP} tabs={TABS}>
         {children}
       </ConfigProvider>
     </ConfigProvider>

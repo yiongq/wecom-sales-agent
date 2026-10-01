@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { Alert, Button, ConfigProvider, Form, Input, theme } from 'antd';
+import { Alert, Button, ConfigProvider, Form, Input, Tabs, theme } from 'antd';
 import { createElement, useContext } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ANTD_THEMES, antdTheme } from './antd.js';
@@ -718,6 +718,7 @@ function Probe({ report }: { report: (seen: Seen) => void }) {
     createElement(Form.Item, { label: '备注', name: 'b' }, createElement(Input)),
     createElement(Button, null, '关闭'),
     ...ALERT_TYPES.map((type) => createElement(Alert, { key: type, type, showIcon: true, title: '提示' })),
+    createElement(Tabs, { items: [{ key: 'a', label: '甲' }] }),
   );
 }
 /** Alert 的四种图标（§5.12）：lucide 的 info、circle-check、triangle-alert、circle-alert，装饰性的（读屏不念英文名） */
@@ -770,6 +771,12 @@ for (const mode of MODES) {
       JSON.stringify(lucide) === JSON.stringify(ALERT_ICONS) &&
         icons.every((i) => /<svg\b[^>]*\baria-hidden="true"/.test(i) && !i.includes('role="img"') && !i.includes('aria-label')),
       `${label}：Alert 的图标是 ${JSON.stringify(lucide)}，应为 lucide 的 ${ALERT_ICONS.join('、')}，aria-hidden，没有 role=img 与英文名字`,
+    );
+    // 页签排不下时露出的「更多」按钮，读屏名字取自里面的图标：要是中文的「更多」，不是 antd 图标的 ellipsis
+    const more = /<button[^>]*class="ant-tabs-nav-more"[^>]*>([\s\S]*?)<\/button>/.exec(html)?.[1] ?? '';
+    check(
+      /role="img" aria-label="更多"/.test(more) && /lucide-ellipsis/.test(more) && !/aria-label="ellipsis"/.test(more),
+      `${label}：页签的「更多」按钮里是 ${more.slice(0, 160) || '无'}，名字应为「更多」（lucide ellipsis），不是英文 ellipsis`,
     );
   }
 }
