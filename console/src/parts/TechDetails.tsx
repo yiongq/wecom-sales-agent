@@ -1,10 +1,11 @@
 // 技术详情（spec「通用部件」、不变量 7、8）：默认折叠的「技术详情」，是 console 里唯一读取服务端 detail、显示机器码、
 // 哈希、动作编码和 JSON 原文的地方（scripts/check-console-src.ts 查：别的文件读 .detail 都算违规）。
 // 用原生 <details>：键盘可达、展开 0ms，折叠时里面的字不算页面上的可见文字
-import { RightOutlined } from '@ant-design/icons';
+import { ChevronRight } from 'lucide-react';
 import { type RefObject, useRef, useState } from 'react';
 import type { ApiError, ContractViolation } from '../../../src/shared/console-api.js';
 import { HttpError } from '../api.js';
+import { Icon } from '../shell/icons.js';
 
 export interface TechDetailsProps {
   /** 出错时的原始错误：HttpError 列出状态码、机器码、服务端 detail 与逐条问题；其余错误列出类型与消息 */
@@ -77,7 +78,7 @@ export function TechDetails(props: TechDetailsProps) {
   return (
     <details className="tech-details">
       <summary>
-        <RightOutlined className="tech-details-chevron" aria-hidden="true" />
+        <Icon of={ChevronRight} size={12} className="tech-details-chevron" />
         技术详情
       </summary>
       <pre ref={pre} className="tech-details-body">

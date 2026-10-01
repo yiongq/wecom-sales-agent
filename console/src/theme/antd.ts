@@ -118,6 +118,9 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
       motionDurationFast: '0.1s',
       motionDurationMid: '0.16s',
       motionDurationSlow: '0.2s',
+      // 焦点框 2px（§3、§5.20）：antd 自带的焦点框（按钮、开关、分段控件、页签……）宽度取这个，默认是 3。
+      // 颜色是上面的 colorPrimaryBorder（--focus）；antd 把偏移写死成 1，统一成 2 写在 brand.css
+      lineWidthFocus: 2,
       wireframe: false,
     },
     components: {
@@ -211,6 +214,8 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
         titleFontSize: 14,
         ...ZERO_MOTION,
       },
+      // 选中段（§5.4）：--thumb 底加 1px --control-border 的圈（只靠底色只有 1.1–1.2:1，圈要 ≥3:1，§1.2），字重 500 写在 brand.css。
+      // antd 给选中段和滑块画的是 boxShadowTertiary（全局是 0.08 的淡圈），在这一个组件里换掉
       Segmented: {
         trackBg: t.subtle,
         trackPadding: 2,
@@ -219,6 +224,7 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
         itemHoverBg: 'transparent',
         itemSelectedBg: t.thumb,
         itemSelectedColor: t.text,
+        boxShadowTertiary: `0 0 0 1px ${t['control-border']}`,
       },
       Tag: { defaultBg: t.subtle, defaultColor: t['text-2'] },
       // Alert（§5.12）：--r-md，内边距 10 12，图标 16；warning 的图标用 --warning-icon（组件层的 colorWarning 只给图标用）
@@ -246,7 +252,9 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
         footerMarginTop: 0,
       } as ComponentsConfig['Modal'],
       Drawer: { footerPaddingBlock: 14, footerPaddingInline: 24 },
-      Switch: { trackHeight: 18, trackMinWidth: 32, handleSize: 14, handleBg: '#FFFFFF' },
+      // 开关关着的底（§5.4）：--control-border（≥3:1）。antd 取 colorTextQuaternary，全局令牌里它是 text-3，在这一个组件里换掉；
+      // 悬停取 colorTextTertiary（text-3）照旧
+      Switch: { trackHeight: 18, trackMinWidth: 32, handleSize: 14, handleBg: '#FFFFFF', colorTextQuaternary: t['control-border'] },
       // Tooltip 是 --text 底、--panel 色字（§5.15）。antd 的字色取 colorTextLightSolid（白），深色主题下白字叠在浅底上看不见
       Tooltip: { maxWidth: 240, colorTextLightSolid: t.panel },
       // 反相 toast（§5.15）：--text 底、--panel 色字，成功图标用 --toast-icon。§8 原写「字色在 className 里设」，

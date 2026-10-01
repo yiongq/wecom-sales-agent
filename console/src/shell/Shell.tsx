@@ -4,13 +4,14 @@
 //   （会话过期时弹出，不卸载页面）；viewer 已经有值时，刷新失败也照旧按原来的身份渲染。
 // - 收起是受控的：进入销售话术页时默认收起为 56，换页时回到那一页的默认；视口三档由 useViewport() 判断，
 //   992–1279 固定是图标栏，<992 侧栏隐藏，52 高的顶栏里的菜单按钮打开抽屉。
-// - 每页首个可聚焦元素是「跳到主要内容」；侧栏的导航是 nav 地标，内容面板是 main 地标。
+// - 每页首个可聚焦元素是「跳到主要内容」；侧栏是 banner 地标（header，导航是里面的 nav），内容面板是 main 地标；
+//   换页以后焦点放到 main（spec「可访问性与响应式」，下面 Frame 里订阅路由的 onRendered）。
 // - 退出没成功（服务端的会话还在）时仍是成员，错误就地显示在内容区顶上
 import { useQueryClient } from '@tanstack/react-query';
-import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
+import { Link, Outlet, useNavigate, useRouter, useRouterState } from '@tanstack/react-router';
 import { Drawer } from 'antd';
 import { Info, LogIn, LogOut, Menu, Moon, Sun, SunMoon } from 'lucide-react';
-import { type MouseEvent, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
 import { LoginPage } from '../pages/LoginPage.js';
@@ -22,7 +23,7 @@ import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { logout, toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { AboutDialog } from './AboutDialog.js';
 import { CommandPalette, type PaletteAction } from './CommandPalette.js';
-import { isMac, useDocumentTitle, useViewport } from './hooks.js';
+import { focusMain, isMac, useDocumentTitle, useViewport } from './hooks.js';
 import { IconButton } from './IconButton.js';
 import { navIcon } from './icons.js';
 import {
@@ -39,10 +40,18 @@ import { shellViewerOf } from './PageHeader.js';
 import { isPaletteShortcut, paletteShortcut, type StaticRow } from './search.js';
 import { Sidebar, TenantRow } from './Sidebar.js';
 
-/** 整页的说明或出错（启动失败、文件模式）：没有外壳，居中一块 */
-function Whole({ children }: { children: ReactElement }) {
+/**
+ * 整页的说明或出错（启动失败、文件模式）：没有外壳，居中一块。这一块就是 main 地标（没有它，axe 报 region 与
+ * landmark-one-main）；它自己没有标题时（启动出错：Alert 或中性的说明）放一个看不见的 h1「后台」，说明的标题接着排 h2
+ */
+function Whole({ heading, children }: { heading?: string; children: ReactNode }) {
   useDocumentTitle('后台');
-  return <div className="boot-whole">{children}</div>;
+  return (
+    <main id="main" tabIndex={-1} className="boot-whole">
+      {heading && <h1 className="boot-sr">{heading}</h1>}
+      {children}
+    </main>
+  );
 }
 
 /** 启动时两个请求都没回来：侧栏骨架（租户行、搜索、6 行导航）加面板骨架，延迟 300ms 出现 */
@@ -77,15 +86,15 @@ export function Shell() {
   if (v === undefined) {
     if (viewer.isPending) return <BootSkeleton />;
     return (
-      <Whole>
-        <StateView error={viewer.error} onRetry={() => void viewer.refetch()} />
+      <Whole heading="后台">
+        <StateView error={viewer.error} level={2} onRetry={() => void viewer.refetch()} />
       </Whole>
     );
   }
   if (v.kind === 'disabled') {
     return (
       <Whole>
-        <EmptyBlock title={ERROR_COPY.db_disabled!.title as string} />
+        <EmptyBlock level={1} title={ERROR_COPY.db_disabled!.title as string} />
       </Whole>
     );
   }
@@ -113,9 +122,10 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const pageKey = selected ?? path;
   const [override, setOverride] = useState<{ page: string; collapsed: boolean } | null>(null);
   const collapsed = override?.page === pageKey ? override.collapsed : collapsedByDefault(path);
-  // <992 的导航抽屉：在哪个地址打开的；换了地址（点了导航）就算关上
+  // <992 的导航抽屉：在哪个地址打开的；换了地址（点了导航）就算关上，Esc、点遮罩关上时是 null
   const [drawerAt, setDrawerAt] = useState<string | null>(null);
   const drawerOpen = drawerAt === path;
+  const menuRef = useRef<HTMLButtonElement>(null);
   // 面板自己滚动（路由的滚动还原只管 window）：换了地址回到顶上
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrolledFor = useRef(path);
@@ -125,6 +135,17 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     scrollRef.current?.scrollTo({ top: 0 });
   }, [path]);
   const mode = sidebarMode(tier, collapsed);
+  // 换页以后焦点到主要内容（spec「可访问性与响应式 · 焦点」）：点了侧栏、⌘K、页面里的链接，或者后退前进，新的一页画出来以后
+  // 焦点放到 main（读屏从新页面读起，下一个 Tab 是页头的操作），不留在侧栏或消失在 body 上。只换 search（页签、筛选、选中的节）
+  // 不算换页；页面自己在挂载时把焦点放进了 main 里的某处（就地登录、跳到出错的字段）就不动它；第一次打开页面也不动
+  const router = useRouter();
+  useEffect(
+    () =>
+      router.subscribe('onRendered', (e) => {
+        if (e.fromLocation !== undefined && e.pathChanged) focusMain();
+      }),
+    [router],
+  );
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -157,7 +178,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     await qc.resetQueries({ queryKey: VIEWER_KEY });
   }, [qc]);
 
-  const focusMain = (e: MouseEvent<HTMLAnchorElement>): void => {
+  const skipToMain = (e: MouseEvent<HTMLAnchorElement>): void => {
     e.preventDefault();
     document.getElementById('main')?.focus();
   };
@@ -207,17 +228,18 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       onLogin={login}
       onSignOut={() => void signOut()}
       onToggle={!inDrawer && tier === 'wide' ? () => setOverride({ page: pageKey, collapsed: !collapsed }) : undefined}
+      inDrawer={inDrawer}
     />
   );
 
   return (
     <div className={`shell shell-${mode}`}>
-      <a className="skip-link" href="#main" onClick={focusMain}>
+      <a className="skip-link" href="#main" onClick={skipToMain}>
         跳到主要内容
       </a>
       {mode === 'hidden' ? (
         <header className="topbar">
-          <IconButton icon={Menu} size={32} label="打开导航" placement="bottom" onClick={() => setDrawerAt(path)} />
+          <IconButton ref={menuRef} icon={Menu} size={32} label="打开导航" placement="bottom" onClick={() => setDrawerAt(path)} />
           <TenantRow viewer={sv} pack={pack} collapsed={false} bellPlacement="bottomRight" />
         </header>
       ) : (
@@ -236,7 +258,22 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         </div>
       </div>
       {mode === 'hidden' && (
-        <Drawer open={drawerOpen} placement="left" size={240} closable={false} onClose={() => setDrawerAt(null)} rootClassName="nav-drawer">
+        <Drawer
+          open={drawerOpen}
+          placement="left"
+          size={240}
+          closable={false}
+          onClose={() => setDrawerAt(null)}
+          // 关上以后焦点去哪由这里定，不用 antd 的还焦点：点了导航关上的（地址换了）不管，换页以后焦点在 main（上面的
+          // onRendered）；Esc、点遮罩关上的（drawerAt 是 null）还给「打开导航」。antd 的还法靠抽屉打开那一刻记下的焦点，
+          // 记的时机取决于 rc-util 的 layout effect，不归这里管
+          focusable={{ focusTriggerAfterClose: false }}
+          afterOpenChange={(open) => {
+            if (!open && drawerAt === null) menuRef.current?.focus();
+          }}
+          aria-label="导航"
+          rootClassName="nav-drawer"
+        >
           {sidebar(true)}
         </Drawer>
       )}
@@ -261,5 +298,5 @@ function Frame({ viewer: v }: { viewer: Framed }) {
 export function NotFound() {
   const viewer = shellViewerOf(useViewer().data);
   useDocumentTitle(viewer ? documentTitle(['没有这个页面'], viewer) : '没有这个页面');
-  return <EmptyBlock title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
+  return <EmptyBlock level={1} title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
 }

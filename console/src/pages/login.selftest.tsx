@@ -13,6 +13,10 @@
 //    链接，标签页标题「登录 · 演示」；左键点它回到匿名外壳，地址不变，不重新取 /me、/pack，焦点到内容面板；带修饰键或中键点不拦。
 // 7. 就地登录框（成员身份下会话失效）：同一个表单，不自动聚焦，没有「返回演示」；没填时先画上原因再挪焦点，服务端的错在框里的
 //    Alert 里；登录后框收起，页面没卸载，被拦下的请求重放。
+// 8. 外壳的焦点与地标（plan 第 16 步）：换页以后焦点在 main（只换 search、页面自己放了焦点、第一次打开都不动）；侧栏是 banner，
+//    铃铛弹层与用户菜单是有名字的区域，菜单项里没有嵌套的按钮；没有这个页面时有 h1。
+// 9. ⌘K 打开页面（别的页、当前页）以后焦点在 main，选外观这类操作还给搜索触发器；窄屏的导航抽屉点导航换页以后焦点在 main，
+//    Esc 关上还给「打开导航」，开着时只有顶栏一个 banner；启动出错、数据库没开的整页是 main 地标，有 h1，标题不跳级。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/pages/login.selftest.tsx
 import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
@@ -21,13 +25,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import { App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { act, createElement } from 'react';
+import { act, createElement, type ReactElement, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Me } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { ToastHost } from '../parts/toast.js';
 import { endMemberSession, isSessionExpired } from '../session.js';
 import { PageHeader } from '../shell/PageHeader.js';
+import { setReduceMotion } from '../theme/prefs.js';
 import { ThemeProvider } from '../theme/ThemeProvider.js';
 import { toLogin, type Viewer, VIEWER_KEY } from '../viewer.js';
 
@@ -93,6 +98,8 @@ interface Server {
   demo: boolean;
   loggedIn: boolean;
   login: LoginMode;
+  /** 给了就让 /me 回这个（启动出错的整页） */
+  me?: { status: number; body: unknown };
 }
 let server: Server = { demo: false, loggedIn: false, login: 'check' };
 let requests: string[] = [];
@@ -113,7 +120,8 @@ function checkLogin(body: { email?: string; password?: string }): Response {
 
 async function respond(method: string, url: URL, body: unknown): Promise<Response> {
   const p = url.pathname.replace(/^\/api\/console/, '');
-  if (method === 'GET' && p === '/me') return server.loggedIn ? json(200, ME) : unauthorized();
+  if (method === 'GET' && p === '/me')
+    return server.me ? json(server.me.status, server.me.body) : server.loggedIn ? json(200, ME) : unauthorized();
   if (method === 'GET' && p === '/pack') return server.loggedIn || server.demo ? json(200, PACK) : unauthorized();
   if (method === 'POST' && p === '/auth/login') {
     const mode = server.login;
@@ -162,17 +170,21 @@ function setValue(el: HTMLInputElement, text: string): void {
   el.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
 }
 
-/** 挂上真的 Shell：/catalog/$kind 是一页只有页头的空页（匿名时页头下挂横幅，「登录后编辑」在横幅里） */
-async function mount(path: string) {
+/**
+ * 挂上真的 Shell：/catalog/$kind 是一页只有页头的空页（匿名时页头下挂横幅，「登录后编辑」在横幅里）。
+ * pages 另加几页（第 8 节：换页以后焦点在哪）；/catalog/$kind 也可以换成别的画法
+ */
+async function mount(path: string, pages: { path: string; component: () => ReactElement }[] = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
   const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
-  const page = createRoute({
-    getParentRoute: () => root,
-    path: '/catalog/$kind',
-    component: () => createElement(PageHeader, { title: '测试页' }),
-  });
+  const own = pages.find((p) => p.path === '/catalog/$kind');
+  const component = own?.component ?? (() => createElement(PageHeader, { title: '测试页' }));
+  const page = createRoute({ getParentRoute: () => root, path: '/catalog/$kind', component });
+  const extra = pages
+    .filter((p) => p.path !== '/catalog/$kind')
+    .map((p) => createRoute({ getParentRoute: () => root, path: p.path, component: p.component }));
   const router = createRouter({
-    routeTree: root.addChildren([page]),
+    routeTree: root.addChildren([page, ...extra]),
     basepath: '/console',
     history: createMemoryHistory({ initialEntries: [path] }),
   });
@@ -607,6 +619,209 @@ async function mount(path: string) {
     document.querySelector('.sidebar') !== null && m.$('.login-page') === null && m.url() === '/catalog/route?status=draft',
   );
   await m.unmount();
+}
+
+// ---------------- 8. 外壳的焦点与地标（plan 第 16 步） ----------------
+// 换页（路径变了）以后焦点在 main；只换 search 不动；页面挂载时自己把焦点放进 main 里的某处就不动；第一次打开页面也不动。
+// 侧栏是 banner 地标，租户名在里面；铃铛的弹层、用户菜单是有名字的区域；菜单项里没有嵌套的按钮；没有这个页面时有 h1
+
+{
+  server = { demo: false, loggedIn: true, login: 'check' };
+  requests = [];
+  /** 这一页里有一个按钮（只换 search 时焦点留在它上面） */
+  const ListPage = (): ReactElement =>
+    createElement(
+      'div',
+      null,
+      createElement(PageHeader, { title: '列表页' }),
+      createElement('button', { type: 'button', className: 'probe-btn' }, '按钮'),
+    );
+  /** 挂载时自己把焦点放到输入框上（就地登录、跳到出错字段那一类） */
+  function OwnFocusPage(): ReactElement {
+    useEffect(() => document.querySelector<HTMLInputElement>('.own-input')?.focus(), []);
+    return createElement(
+      'div',
+      null,
+      createElement(PageHeader, { title: '自己放焦点的页' }),
+      createElement('input', { className: 'own-input', 'aria-label': '输入框' }),
+    );
+  }
+  const m = await mount('/console/catalog/route', [
+    { path: '/catalog/$kind', component: ListPage },
+    { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
+    { path: '/sop', component: OwnFocusPage },
+  ]);
+  const main = (): Element | null => m.$('main#main');
+  check('焦点：第一次打开页面不挪焦点（不在 main 上）', main() !== null && document.activeElement !== main());
+
+  // 地标
+  const banner = document.querySelector('.sidebar');
+  eq(
+    '地标：侧栏是 header（banner），租户名与主导航都在里面',
+    [banner?.tagName, banner?.querySelector('.tenant-name') !== null, banner?.querySelector('nav[aria-label="主导航"]') !== null],
+    ['HEADER', true, true],
+  );
+
+  // 侧栏点「会话」：换页以后焦点在 main
+  const navTo = (label: string): HTMLElement | undefined =>
+    m.$$('.sidebar a.nav-item').find((a) => m.text(a.querySelector('.nav-label')) === label);
+  const conv = navTo('会话');
+  conv?.focus();
+  await m.click(conv);
+  eq('焦点：侧栏换页以后在 main 上', [m.url(), m.text(m.$('h1')), document.activeElement === main()], ['/conversations', '会话页', true]);
+
+  // 后退：路径变了，同样在 main
+  m.$<HTMLButtonElement>('.sidebar a.nav-item')?.focus();
+  await act(async () => m.router.history.back());
+  await settle(m.qc);
+  eq('焦点：后退以后在 main 上', [m.url(), document.activeElement === main()], ['/catalog/route', true]);
+
+  // 只换 search：焦点留在原处（在页面里、在侧栏上都一样）
+  const btn = m.$<HTMLButtonElement>('.probe-btn');
+  btn?.focus();
+  await act(async () => void m.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' }, search: { status: 'draft' } as never }));
+  await settle(m.qc);
+  eq('焦点：只换 search 不挪焦点', [m.url(), btn !== null && document.activeElement === btn], ['/catalog/route?status=draft', true]);
+  const trigger = m.$<HTMLButtonElement>('.sb-search');
+  trigger?.focus();
+  await act(async () => void m.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' }, search: { status: 'active' } as never }));
+  await settle(m.qc);
+  eq(
+    '焦点：只换 search 时焦点在侧栏上也不挪',
+    [m.url(), trigger !== null && document.activeElement === trigger],
+    ['/catalog/route?status=active', true],
+  );
+
+  // 页面自己放了焦点：不抢
+  await act(async () => void m.router.navigate({ to: '/sop' }));
+  await settle(m.qc);
+  eq('焦点：页面挂载时自己放进 main 的焦点不被抢走', [m.url(), document.activeElement === m.$('.own-input')], ['/sop', true]);
+
+  // 铃铛的弹层与用户菜单：有名字的区域；菜单项里没有嵌套的按钮
+  await m.click(m.$('.sidebar .bell'));
+  const pop = document.querySelector('.bell-pop');
+  eq('地标：铃铛的弹层是有名字的区域', [pop?.tagName, pop?.getAttribute('aria-label')], ['SECTION', '等人接手的会话']);
+  await m.click(m.$('.sidebar .bell'));
+  await m.click(m.$('.user-btn'));
+  const menu = document.querySelector('.user-menu');
+  eq('地标：用户菜单是有名字的区域「用户选项」', [menu?.tagName, menu?.getAttribute('aria-label')], ['SECTION', '用户选项']);
+  const reduce = document.querySelector('[role="menuitemcheckbox"]');
+  eq(
+    '用户菜单：「减少动态效果」这一项里没有嵌套的按钮或开关（开关的样子只是装饰，状态由 aria-checked 说）',
+    [reduce !== null, reduce?.querySelector('button, [role="switch"], [tabindex]')?.tagName ?? null],
+    [true, null],
+  );
+  await m.unmount();
+
+  // 没有这个页面：自己就是这一页的标题
+  const nf = await mount('/console/nope');
+  eq('没有这个页面：标题是 h1', nf.$$('h1').map(nf.text), ['没有这个页面']);
+  await nf.unmount();
+}
+
+// ---------------- 9. ⌘K、窄屏抽屉的焦点；整页出错的地标（第 16 步评审后） ----------------
+
+/** 不在 article、aside、main、nav、section 里的 header 才是 banner 地标 */
+const banners = (): Element[] =>
+  [...document.querySelectorAll('header')].filter((h) => !h.parentElement?.closest('article, aside, main, nav, section'));
+{
+  server = { demo: false, loggedIn: true, login: 'check' };
+  const m = await mount('/console/catalog/route', [
+    { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
+  ]);
+  const main = (): Element | null => m.$('main#main');
+  const trigger = (): HTMLButtonElement | null => m.$<HTMLButtonElement>('.sb-search');
+  const palette = async (): Promise<void> => {
+    trigger()?.focus();
+    await m.click(trigger());
+  };
+  const row = (label: string): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('.cmdk-row')].find((r) => m.text(r.querySelector('.cmdk-label')) === label);
+  await palette();
+  const listed = row('会话') !== undefined;
+  await m.click(row('会话'));
+  eq(
+    '⌘K 打开别的页：关上以后焦点在新页的 main，不还给搜索触发器',
+    [listed, m.url(), document.activeElement === main()],
+    [true, '/conversations', true],
+  );
+  await palette();
+  await m.click(row('会话'));
+  eq('⌘K 打开当前页（地址不变，外壳不挪）：焦点同样放到 main', [m.url(), document.activeElement === main()], ['/conversations', true]);
+  await palette();
+  await m.click(row('外观：浅色'));
+  eq('⌘K 里选外观：关上以后焦点回到搜索触发器', [m.url(), document.activeElement === trigger()], ['/conversations', true]);
+  await m.unmount();
+}
+{
+  // 窄屏（<992）：顶栏是 banner，侧栏在抽屉里。点导航那一段带动效：happy-dom 不发 transitionend，抽屉打开、关上的收尾
+  // （afterOpenChange，还焦点就在这里）等 rc-motion 的 500ms 兜底到点才做，所以等 700ms。这和浏览器里的先后一样：换页先画完、
+  // 焦点先到 main，动效结束才轮到抽屉的收尾，那时再把焦点挪走就错了。Esc 那一段开着「减少动态效果」（不走动效，当场收尾）：
+  // happy-dom 里按 Esc 关上时离场动效停在 leave-active，兜底也不到点
+  win.happyDOM.setViewport({ width: 800, height: 900 });
+  const motionEnd = async (qc: QueryClient): Promise<void> => {
+    await act(async () => new Promise((res) => setTimeout(res, 700)));
+    await settle(qc);
+  };
+  server = { demo: false, loggedIn: true, login: 'check' };
+  const m = await mount('/console/catalog/route', [
+    { path: '/conversations', component: () => createElement(PageHeader, { title: '会话页' }) },
+  ]);
+  const main = (): Element | null => m.$('main#main');
+  const menu = (): HTMLButtonElement | null => m.$<HTMLButtonElement>('.topbar button[aria-label="打开导航"]');
+  const open = async (): Promise<void> => {
+    menu()?.focus();
+    await m.click(menu());
+    await motionEnd(m.qc);
+  };
+  const drawerNav = (label: string): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('.nav-drawer a.nav-item')].find((a) => m.text(a.querySelector('.nav-label')) === label);
+  await open();
+  const inDrawer = document.querySelector('.nav-drawer .sidebar');
+  eq('窄屏抽屉开着：只有顶栏一个 banner，抽屉里的侧栏是 div', [banners().map((b) => b.className), inDrawer?.tagName], [['topbar'], 'DIV']);
+  await m.click(drawerNav('会话'));
+  await motionEnd(m.qc);
+  eq(
+    '窄屏抽屉里点导航：换页，抽屉关上（动效结束以后），焦点在 main（不还给「打开导航」）',
+    [m.url(), document.querySelector('.nav-drawer .ant-drawer-open') === null, document.activeElement === main()],
+    ['/conversations', true, true],
+  );
+  setReduceMotion(true);
+  await open();
+  await act(async () => {
+    (document.activeElement ?? document.body).dispatchEvent(
+      new win.KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }) as unknown as Event,
+    );
+  });
+  await settle(m.qc);
+  eq('窄屏抽屉按 Esc 关上：焦点回到「打开导航」', [m.url(), document.activeElement === menu()], ['/conversations', true]);
+  await m.unmount();
+  setReduceMotion(false);
+  win.happyDOM.setViewport({ width: 1440, height: 1100 });
+}
+{
+  // 启动出错、数据库没开：没有外壳的整页，这一块是 main；标题 h1，下面的说明 h2
+  const whole = async (status: number, body: unknown) => {
+    server = { demo: false, loggedIn: false, login: 'check', me: { status, body } };
+    const m = await mount('/console/catalog/route');
+    const out = {
+      main: m.$$('main').map((e) => `${e.id}|${e.className}`),
+      headings: m.$$('h1, h2, h3').map((h) => `${h.tagName} ${m.text(h)}`),
+      alert: m.text(m.$('.ant-alert-title')),
+    };
+    await m.unmount();
+    return out;
+  };
+  eq(
+    '整页出错与数据库没开：main 地标，h1 起头、不跳级（500 是 Alert；not_ready 是 h2 的说明；db_disabled 自己就是 h1）',
+    [await whole(500, { error: 'internal' }), await whole(503, { error: 'not_ready' }), await whole(503, { error: 'db_disabled' })],
+    [
+      { main: ['main|boot-whole'], headings: ['H1 后台'], alert: '没取到' },
+      { main: ['main|boot-whole'], headings: ['H1 后台', 'H2 系统正在启动'], alert: '' },
+      { main: ['main|boot-whole'], headings: ['H1 后台只在数据库模式下可用'], alert: '' },
+    ],
+  );
+  server = { demo: false, loggedIn: false, login: 'check' };
 }
 
 if (fails.length) {

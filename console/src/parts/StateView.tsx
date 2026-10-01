@@ -18,8 +18,11 @@ export interface EmptyState {
   action?: ReactNode;
   /** 一个链接，如「清除筛选」 */
   link?: ReactNode;
-  /** 标题的层级：默认 h3（区块里的空状态）；整页的空状态紧跟在页名 h1 下面，传 2，标题层级不跳级 */
-  level?: 2 | 3;
+  /**
+   * 标题的层级：默认 h3（区块里的空状态）；整页的空状态紧跟在页名 h1 下面，传 2，标题层级不跳级；
+   * 没有页头、它自己就是这一页的标题（「没有这个页面」「没有这条线路」）时传 1
+   */
+  level?: 1 | 2 | 3;
 }
 
 export interface StateViewProps extends ErrorHandlers {
@@ -31,11 +34,13 @@ export interface StateViewProps extends ErrorHandlers {
   skeleton?: ReactNode;
   /** 有值就显示空状态（调用方判断数据是不是空的） */
   empty?: EmptyState | null | false;
+  /** 中性的出错写成说明时，标题的层级（同 EmptyState.level）：默认 h3；整页的启动出错在看不见的 h1 下面，传 2 */
+  level?: 2 | 3;
   children?: ReactNode;
 }
 
 export function EmptyBlock({ icon, title, description, action, link, level = 3 }: EmptyState) {
-  const Title = level === 2 ? 'h2' : 'h3';
+  const Title = level === 1 ? 'h1' : level === 2 ? 'h2' : 'h3';
   return (
     <div className="state-empty">
       {icon && (
@@ -83,11 +88,12 @@ export function PageSkeleton() {
   );
 }
 
-function ErrorState({ error, ctx, ...handlers }: { error: unknown; ctx?: CopyContext } & ErrorHandlers) {
+function ErrorState({ error, ctx, level, ...handlers }: { error: unknown; ctx?: CopyContext; level?: 2 | 3 } & ErrorHandlers) {
   const { copy, label, onAction } = errorLine(error, handlers, ctx);
   if (copy.tone !== 'neutral') return <ErrorAlert error={error} title="没取到" ctx={ctx} {...handlers} />;
   return (
     <EmptyBlock
+      level={level}
       title={copy.title}
       description={copy.next && copy.next !== label ? copy.next : undefined}
       action={label && onAction ? <Button onClick={onAction}>{label}</Button> : undefined}
@@ -104,8 +110,8 @@ export function RouteError({ error, onRetry }: { error: unknown; onRetry: () => 
   return e instanceof PageCrash ? <ErrorAlert error={e} onRetry={onRetry} /> : <StateView error={e} onRetry={onRetry} />;
 }
 
-export function StateView({ pending, error, ctx, skeleton, empty, children, ...handlers }: StateViewProps) {
-  if (error !== undefined && error !== null) return <ErrorState error={error} ctx={ctx} {...handlers} />;
+export function StateView({ pending, error, ctx, skeleton, empty, level, children, ...handlers }: StateViewProps) {
+  if (error !== undefined && error !== null) return <ErrorState error={error} ctx={ctx} level={level} {...handlers} />;
   if (pending) {
     return (
       <div className="state-skeleton" role="status" aria-label="正在载入">

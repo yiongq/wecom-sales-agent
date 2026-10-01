@@ -1,11 +1,12 @@
 // 全站的 antd ConfigProvider：按 <html> 上的 data-theme / data-reduce-motion 取亮暗主题（antd.ts），
 // 关掉水波纹（wave），表单只给选填字段加「（选填）」、不画星号（design-system §8、§5.2），
 // 按钮不在两个汉字之间插空格（「关闭」不写成「关 闭」；中文不手打空格，design-system §2.5），
-// Alert 是无描边的语义底色块（§5.12：标题 14/22/500 text、说明 13/20 text-2，图标用描线的）。
+// Alert 是无描边的语义底色块（§5.12：标题 14/22/500 text、说明 13/20 text-2，16 的 lucide 描线图标）。
 // <html> 的两个属性首帧由 /console/theme-boot.js 设好，之后由 prefs.ts 改；这里只是跟着它们走
-import { CheckCircleOutlined, ExclamationCircleOutlined, InfoCircleOutlined, WarningOutlined } from '@ant-design/icons';
 import { ConfigProvider, type ConfigProviderProps } from 'antd';
+import { CircleAlert, CircleCheck, Ellipsis, Info, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Icon } from '../shell/icons.js';
 import { antdTheme } from './antd.js';
 import { applyPrefs, currentThemeState, REDUCED_MOTION_QUERY, watchPrefs } from './prefs.js';
 
@@ -14,16 +15,31 @@ const BUTTON: ConfigProviderProps['button'] = { autoInsertSpace: false };
 /** Tooltip 无箭头（design-system §5.15） */
 const TOOLTIP: ConfigProviderProps['tooltip'] = { arrow: false };
 
-// 图标先用 @ant-design/icons 里描线的那一套，接 lucide 时换成 info / circle-check / triangle-alert / circle-alert
+// 图标是装饰（Icon 带 aria-hidden）：标题与说明已经把话说全了。@ant-design/icons 的图标是 role=img、带英文 aria-label
+// （info-circle），读屏会在中文界面里念英文
 const ALERT: ConfigProviderProps['alert'] = {
   variant: 'filled',
-  infoIcon: <InfoCircleOutlined />,
-  successIcon: <CheckCircleOutlined />,
-  warningIcon: <WarningOutlined />,
-  errorIcon: <ExclamationCircleOutlined />,
+  infoIcon: <Icon of={Info} />,
+  successIcon: <Icon of={CircleCheck} />,
+  warningIcon: <Icon of={TriangleAlert} />,
+  errorIcon: <Icon of={CircleAlert} />,
   styles: {
     title: { fontSize: 14, lineHeight: '22px', fontWeight: 500, color: 'var(--text)' },
     description: { fontSize: 13, lineHeight: '20px', color: 'var(--text-2)' },
+  },
+};
+
+/**
+ * 页签排不下时 rc-tabs 露出的「更多」按钮：它的读屏名字取自里面的图标，antd 的是 role=img、aria-label="ellipsis"（英文）。
+ * 换成 lucide 的 ellipsis，名字写「更多」
+ */
+const TABS: ConfigProviderProps['tabs'] = {
+  more: {
+    icon: (
+      <span role="img" aria-label="更多" className="tabs-more-icon">
+        <Icon of={Ellipsis} />
+      </span>
+    ),
   },
 };
 
@@ -64,7 +80,7 @@ function snapshot(): string {
 export function ThemeProvider({
   children,
   ...rest
-}: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button' | 'alert' | 'tooltip'>) {
+}: Omit<ConfigProviderProps, 'theme' | 'wave' | 'form' | 'button' | 'alert' | 'tooltip' | 'tabs'>) {
   // 第三个参数只给 theme.selftest.ts 用：它在 Node 里用 react-dom/server 渲染这个组件，核对传给 ConfigProvider 的东西
   const key = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [mode, reduce] = key.split('|');
@@ -80,7 +96,7 @@ export function ThemeProvider({
   const [outer] = useState(() => ({ token: { motion: reduce === '1' } }));
   return (
     <ConfigProvider theme={outer}>
-      <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON} alert={ALERT} tooltip={TOOLTIP}>
+      <ConfigProvider {...rest} theme={theme} wave={WAVE} form={FORM} button={BUTTON} alert={ALERT} tooltip={TOOLTIP} tabs={TABS}>
         {children}
       </ConfigProvider>
     </ConfigProvider>

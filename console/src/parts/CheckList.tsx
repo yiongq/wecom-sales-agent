@@ -61,12 +61,18 @@ export interface CheckListProps {
   items: readonly CheckItem[];
   /** 标题的级别：默认 h3（话术页的发布抽屉里）；和别的卡片并列时给 2（详情页副栏的「状态」「最近更新」是 h2） */
   headingLevel?: 2 | 3;
+  /**
+   * 页面上的清单是一个有名字的区域（地标）；弹窗、抽屉里的传 false，只是一组：发布抽屉开着时页面右栏的「发布前检查」还在，
+   * 两个同名的地标读屏分不清（axe landmark-unique）
+   */
+  landmark?: boolean;
 }
 
-export function CheckList({ title, summary, meta, items, headingLevel = 3 }: CheckListProps) {
+export function CheckList({ title, summary, meta, items, headingLevel = 3, landmark = true }: CheckListProps) {
   const Heading = headingLevel === 2 ? 'h2' : 'h3';
+  const Box = landmark ? 'section' : 'div';
   return (
-    <section className="check-list" aria-label={title}>
+    <Box className="check-list" aria-label={title} role={landmark ? undefined : 'group'}>
       <div className="check-list-head">
         <Heading className="check-list-title">{cjk(title)}</Heading>
         {summary && <span className="check-list-summary">{typeof summary === 'string' ? cjk(summary) : summary}</span>}
@@ -79,6 +85,6 @@ export function CheckList({ title, summary, meta, items, headingLevel = 3 }: Che
           </li>
         ))}
       </ul>
-    </section>
+    </Box>
   );
 }

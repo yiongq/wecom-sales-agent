@@ -8,9 +8,9 @@
 // 原因：Tooltip、下拉打开过一次以后，弹层的 Portal 一直挂着，它（@rc-component/portal 2.2.1）每次重渲都在 effect 里
 // setState，排一个 Default 优先级的更新；逐字的同步提交接连遇上没做完的 Default 更新，快速连按 50 下 React 就报 #185。
 // 样式在 sop.css，由 pages/sop.lazy.tsx 引入；这里不 import CSS，自测才能在 Node 里直接 import
-import { Segmented, Select, Tooltip } from 'antd';
+import { type RefSelectProps, Segmented, Select, Tooltip } from 'antd';
 import { CircleAlert, CircleCheck, CircleX, Lock } from 'lucide-react';
-import { type KeyboardEvent, memo, type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, memo, type MouseEvent, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Icon } from '../shell/icons.js';
 import { type Matcher, type PinyinLib, pinyinMatcher, plainMatch } from '../shell/search.js';
 import { cjk } from '../typography.js';
@@ -186,6 +186,7 @@ export function Directory({ rows, current, filter, onFilter, showCounts, hrefOf,
       {filter !== undefined && onFilter && (
         <Segmented<OutlineFilter>
           block
+          tabIndex={-1}
           className="sop-toc-filter"
           aria-label="显示哪些节"
           value={filter}
@@ -250,6 +251,40 @@ function OptionLabel({ row }: { row: OutlineRow }) {
   );
 }
 
+/** 下拉里每项高 32（§8 的 optionHeight） */
+const OPTION_H = 32;
+
+/**
+ * 下拉列表的高（room 是选择框上方、下方到视口边的距离）：放得下就按节数给足、不在下拉里滚（节不多时全部看得见，键盘也不用滚）；
+ * 放不下（节多的行业包、矮窗口）按上下较大的那一边封顶，超出的在列表里滚（方向键走 activedescendant，rc-select 把当前项滚进视野），
+ * 至少露出 4 项。扣掉的是列表以外的：弹层离选择框 4、上下内边距各 4、离视口边留 12；有锁的说明时再扣它（分隔线、内边距、至多两行）
+ */
+export function tocListHeight(count: number, room: { above: number; below: number }, note: boolean): number {
+  const space = Math.max(room.above, room.below) - 24 - (note ? 56 : 0);
+  return Math.min(count * OPTION_H, Math.max(4 * OPTION_H, Math.floor(space)));
+}
+
+/**
+ * 下拉开着、焦点在输入框里按 Home / End：光标已经在那一头（空着、或者字打完了）时 Chromium 不把这一下当移光标，
+ * 交给外面滚动，整个内容面板滚到底或顶，下拉跟着选择框滚出视口。只在这种时候拦下；光标还能动时照常移光标
+ */
+export function swallowEdgeKey(
+  e: { key: string; altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean },
+  input: unknown,
+): boolean {
+  if ((e.key !== 'Home' && e.key !== 'End') || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
+  if (!(input instanceof HTMLInputElement)) return false;
+  const at = e.key === 'Home' ? 0 : input.value.length;
+  return input.selectionStart === at && input.selectionEnd === at;
+}
+
+/** 选择框上方、下方到视口边的距离；还没挂上时当作放得下 */
+function roomAround(el: HTMLElement | null | undefined): { above: number; below: number } {
+  if (!el) return { above: Infinity, below: Infinity };
+  const r = el.getBoundingClientRect();
+  return { above: r.top, below: window.innerHeight - r.bottom };
+}
+
 export type DirectorySelectProps = Pick<DirectoryProps, 'rows' | 'current'> & {
   /** 要不变的函数：下拉只在节表、锁、改没改、问题数、当前节变了时重渲 */
   onSelect: (key: string) => void;
@@ -274,6 +309,9 @@ export const DirectorySelect = memo(
   function DirectorySelect({ rows, current, onSelect }: DirectorySelectProps) {
     const [pinyin, setPinyin] = useState<PinyinLib | null>(null);
     const [open, setOpen] = useState(false);
+    // 打开的那一刻量选择框上下的空间（页面滚过、窗口矮时都不同），列表的高按它封顶
+    const selectRef = useRef<RefSelectProps>(null);
+    const [room, setRoom] = useState(() => roomAround(null));
     const searchable = rows.length > 7;
     useEffect(() => {
       if (!open || !searchable || pinyin) return;
@@ -287,22 +325,49 @@ export const DirectorySelect = memo(
     }, [open, searchable, pinyin]);
     const match: Matcher = useMemo(() => (pinyin ? pinyinMatcher(pinyin) : plainMatch), [pinyin]);
     const names = useMemo(() => new Map(rows.map((r) => [r.key, r.name])), [rows]);
+    // 下拉里的 listbox 要有名字（axe aria-input-field-name）：rc-select 1.10.1 不给它名字，也没有传名字的属性，
+    // 打开以后按它的 id（`${id}_list`）补上。弹层可能晚几帧才画出来，没找到就下一帧再找（至多 30 帧）
+    const selectId = useId();
+    useEffect(() => {
+      if (!open) return;
+      let frame = 0;
+      let raf = 0;
+      const label = (): void => {
+        const list = document.getElementById(`${selectId}_list`);
+        if (list) list.setAttribute('aria-label', '话术的节');
+        else if (frame++ < 30) raf = requestAnimationFrame(label);
+      };
+      label();
+      return () => cancelAnimationFrame(raf);
+    }, [open, selectId]);
     return (
       <Select<string>
+        ref={selectRef}
+        id={selectId}
         className="sop-toc-select"
         aria-label="选择节"
-        // 节不多（旅游包 11 节），不用虚拟列表：全部选项都在 DOM 里，读屏数得出总数
+        // 节不多（旅游包 11 节），不用虚拟列表：全部选项都在 DOM 里，读屏数得出总数。
+        // 列表的高度按节数给足，视口放不下时封顶（tocListHeight）。只有封顶、列表在滚的时候 axe 报 scrollable-region-focusable
+        // （会滚的那一层里没有能聚焦的东西）：焦点一直在输入框上，方向键走 activedescendant，当前项由 rc-select 滚进视野
         virtual={false}
+        listHeight={tocListHeight(rows.length, room, lockNote(rows) !== null)}
         value={current}
         onChange={(k) => onSelect(k)}
-        onOpenChange={setOpen}
+        onOpenChange={(o) => {
+          if (o) setRoom(roomAround(selectRef.current?.nativeElement));
+          setOpen(o);
+        }}
+        onKeyDown={(e) => {
+          if (open && swallowEdgeKey(e, e.target)) e.preventDefault();
+        }}
         showSearch={searchable ? { filterOption: (input, option) => match(names.get(String(option?.value)) ?? '', input) } : false}
         options={rows.map((r) => ({ value: r.key, label: <OptionLabel row={r} /> }))}
+        // 弹层挂在 body 下、在地标外面：包成有名字的区域（parts/popupRegion.tsx）
         popupRender={(menu) => (
-          <>
+          <section aria-label="选择节">
             {menu}
             <LockNote rows={rows} />
-          </>
+          </section>
         )}
       />
     );

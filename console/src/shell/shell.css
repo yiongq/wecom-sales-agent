@@ -542,6 +542,31 @@ a.nav-item:hover {
 .menu-check {
   color: var(--text);
 }
+/* 「减少动态效果」右边的开关样子（§5.4 的小号：28×16，滑块 12 白色；关着 --control-border，开着 --accent），不是控件 */
+.menu-switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--control-border);
+}
+.menu-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+}
+.menu-switch.is-on {
+  background: var(--accent);
+}
+.menu-switch.is-on::after {
+  left: 14px;
+}
 .user-submenu .ant-dropdown-menu {
   min-width: 160px;
 }
@@ -616,13 +641,18 @@ a.nav-item:hover {
 }
 
 /* ---------------- 页头（§4.3）与匿名横幅（§5.12） ---------------- */
+/*
+ * 标题块与右侧操作一行；标题块放不下 280 宽时（375 宽的只读页）操作折到标题块下面、左对齐，状态句不再被按钮挤成
+ * 一列一两个字。吸顶条固定 52 高，不折
+ */
 .page-header {
   position: sticky;
   top: 0;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 12px 16px;
   margin-bottom: 20px;
 }
 .page-header.with-banner {
@@ -639,6 +669,7 @@ a.nav-item:hover {
  */
 .page-header.is-stuck {
   box-sizing: border-box;
+  flex-wrap: nowrap;
   height: 52px;
   margin: 0 calc(-1 * var(--panel-px, 0px)) calc(var(--page-header-h) - 52px + 20px);
   padding: 0 var(--panel-px, 0px);
@@ -661,7 +692,7 @@ a.nav-item:hover {
   display: none;
 }
 .page-header-main {
-  flex: 1;
+  flex: 1 1 280px;
   min-width: 0;
 }
 .page-title {
@@ -723,6 +754,8 @@ a.nav-item:hover {
   font-size: 13px;
   line-height: 20px;
   color: var(--text-2);
+  /* 折行时最后一行不只剩一个字 */
+  text-wrap: pretty;
 }
 .page-actions {
   display: flex;
@@ -823,6 +856,10 @@ a.nav-item:hover {
 .cmdk-row.is-active {
   background: var(--selected);
 }
+/* 当前行的补充：text-3 叠在深色的 selected·raised（#2D2D30）上只有 4.39，换成 text-2（§5.18） */
+.cmdk-row.is-active .cmdk-hint {
+  color: var(--text-2);
+}
 .cmdk-icon {
   display: inline-grid;
   flex: none;
@@ -897,6 +934,17 @@ a.nav-item:hover {
   max-width: 640px;
   margin: 120px auto;
   padding: 0 16px;
+  outline: none;
+}
+/* 启动出错时这一页的 h1「后台」：看不见，只给读屏和标题导航 */
+.boot-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .boot-sidebar .skeleton-bar {
   display: block;

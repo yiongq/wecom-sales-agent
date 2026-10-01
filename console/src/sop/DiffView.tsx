@@ -126,17 +126,31 @@ export function DiffView({ change, mode, labels }: { change: SectionChange; mode
   );
 }
 
-/** 逐节改动的列表：每节一个标题行（节名、「+3行 −1行」）加差异 */
-export function DiffList({ items, mode, labels }: { items: readonly SectionChange[]; mode: DiffMode; labels: readonly [string, string] }) {
+/**
+ * 逐节改动的列表：每节一个标题行（节名、「+3行 −1行」）加差异。节名的标题层级接着它上面那个标题往下排，不跳级（axe heading-order）：
+ * 发布抽屉里在「逐节改动」h3 下面是 h4（默认）；查看改动在页面的 h2 下面、「草稿的改动」抽屉里上面没有标题，都是 h3
+ */
+export function DiffList({
+  items,
+  mode,
+  labels,
+  level = 4,
+}: {
+  items: readonly SectionChange[];
+  mode: DiffMode;
+  labels: readonly [string, string];
+  level?: 3 | 4;
+}) {
   const id = useId();
+  const Name = level === 3 ? 'h3' : 'h4';
   return (
     <div className="sop-diff">
       {items.map(trimEnd).map((c, i) => (
         <section key={c.key} className="sop-diff-item" aria-labelledby={`${id}-${i}`}>
           <div className="sop-diff-head">
-            <h4 id={`${id}-${i}`} className="sop-diff-name">
+            <Name id={`${id}-${i}`} className="sop-diff-name">
               {cjk(c.name)}
-            </h4>
+            </Name>
             <span className="sop-diff-stat">{statText(lineStat(c.before, c.after))}</span>
           </div>
           <DiffView change={c} mode={mode} labels={labels} />
@@ -165,6 +179,13 @@ const MODE_OPTIONS: { label: string; value: DiffMode }[] = [
 
 export function DiffModeToggle({ mode, onChange }: { mode: DiffMode; onChange: (m: DiffMode) => void }) {
   return (
-    <Segmented<DiffMode> className="sop-diff-mode" aria-label="改动的显示方式" options={MODE_OPTIONS} value={mode} onChange={onChange} />
+    <Segmented<DiffMode>
+      className="sop-diff-mode"
+      tabIndex={-1}
+      aria-label="改动的显示方式"
+      options={MODE_OPTIONS}
+      value={mode}
+      onChange={onChange}
+    />
   );
 }

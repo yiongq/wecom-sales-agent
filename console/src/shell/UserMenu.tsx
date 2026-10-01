@@ -6,11 +6,12 @@
 // 外观与「减少动态效果」存在 localStorage（theme/prefs.ts，读写都包 try/catch）；切外观时下一帧就是终值颜色（data-theme-switching）。
 // 读屏：用户按钮的名字是「名字，角色」（收起时名字和角色都不画，按钮上只剩头像）；外观三项是 menuitemradio、
 // 减少动态效果是 menuitemcheckbox，都带 aria-checked；子菜单的箭头换成 lucide 的 chevron-right，不带 antd 图标的英文名
-import { Dropdown, type MenuProps, Switch, Tooltip } from 'antd';
+import { Dropdown, type MenuProps, Tooltip } from 'antd';
 import { Check, ChevronRight, ChevronsUpDown, LogOut } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
 import type { Me } from '../../../src/shared/console-api.js';
 import { ROLE_LABEL } from '../../../src/shared/ui-labels.js';
+import { popupRegion } from '../parts/popupRegion.js';
 import { type Appearance, getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { Icon } from './icons.js';
 import { avatarIndex, firstChar } from './model.js';
@@ -58,6 +59,8 @@ export function userMenuItems({ appearance, reduce }: { appearance: Appearance; 
         </span>
       ),
       popupClassName: 'user-submenu',
+      // 子菜单另挂在 body 下、在地标外面：同样包成有名字的区域（parts/popupRegion.tsx）
+      popupRender: popupRegion('外观'),
       children: APPEARANCES.map((a) => ({
         key: `appearance:${a}`,
         ...checkable('menuitemradio', a === appearance),
@@ -75,7 +78,8 @@ export function userMenuItems({ appearance, reduce }: { appearance: Appearance; 
       label: (
         <span className="menu-row">
           <span>减少动态效果</span>
-          <Switch size="small" checked={reduce} tabIndex={-1} aria-hidden="true" />
+          {/* 只是个样子：开关状态由这一项的 aria-checked 说（菜单项里再放一个按钮是嵌套的可交互元素，读屏照样能停上去） */}
+          <span className={reduce ? 'menu-switch is-on' : 'menu-switch'} aria-hidden="true" />
         </span>
       ),
     },
@@ -128,15 +132,16 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       placement="topLeft"
       menu={{ items, onClick, selectable: false, expandIcon: SUBMENU_ARROW }}
       rootClassName="user-menu-root"
+      // 弹层挂在 body 下、在侧栏的地标外面：整块是一个有名字的区域「用户选项」（axe region）；外观子菜单另挂，见 userMenuItems
       popupRender={(menu) => (
-        <div className="user-menu">
+        <section className="user-menu" aria-label="用户选项">
           <div className="user-menu-id">
             <div className="user-menu-name">{me.displayName}</div>
             <div className="user-menu-role">{role}</div>
           </div>
           <div className="user-menu-divider" />
           {menu}
-        </div>
+        </section>
       )}
     >
       <Tooltip title={`${me.displayName}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>

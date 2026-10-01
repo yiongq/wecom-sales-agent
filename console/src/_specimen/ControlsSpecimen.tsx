@@ -40,7 +40,7 @@ export function ControlsSpecimen() {
         <Pagination defaultCurrent={3} total={120} showSizeChanger={false} />
       </Section>
       <Section title="分段控件">
-        <Segmented options={TABS.map((t) => ({ value: t.key, label: t.label }))} defaultValue="active" />
+        <Segmented tabIndex={-1} options={TABS.map((t) => ({ value: t.key, label: t.label }))} defaultValue="active" />
       </Section>
       <Section title="复选框与开关">
         <div className="spec-controls">

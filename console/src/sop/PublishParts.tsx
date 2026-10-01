@@ -252,11 +252,14 @@ function ChangesBlock({
   changes,
   base,
   online,
+  level,
 }: {
   head: ReactNode;
   changes: readonly SectionChange[];
   base: Pick<SopVersion, 'versionNo'>;
   online: Pick<SopVersion, 'versionNo'>;
+  /** 节名的标题层级（DiffList） */
+  level?: 3 | 4;
 }) {
   const [mode, setMode] = useDiffMode();
   return (
@@ -266,7 +269,7 @@ function ChangesBlock({
         <DiffModeToggle mode={mode} onChange={setMode} />
       </div>
       {changes.length ? (
-        <DiffList items={changes} mode={mode} labels={[baseName(base, online), '草稿']} />
+        <DiffList items={changes} mode={mode} labels={[baseName(base, online), '草稿']} level={level} />
       ) : (
         <p className="sop-changes-none">{cjk(`草稿${sameAs(base, online)}`)}</p>
       )}
@@ -308,6 +311,7 @@ export function ChangesDrawer({
         changes={changes}
         base={published}
         online={online}
+        level={3}
       />
     </SopDrawer>
   );
@@ -454,6 +458,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
         )}
         <div ref={checksRef}>
           <CheckList
+            landmark={false}
             title="发布前检查"
             summary={p.located ? `${items.filter((i) => i.state === 'pass').length}/${items.length}通过` : undefined}
             meta={<CheckMeta check={p.check} />}
