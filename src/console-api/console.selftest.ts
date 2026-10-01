@@ -765,6 +765,8 @@ for (const [u, role] of [
     unknown.status === 401 && wrong.status === 401 && unknown.text === wrong.text,
     `${unknown.text} / ${wrong.text}`,
   );
+  // console UX spec「登录」：界面只说「密码」，技术详情里的 detail 同步改（plan 第 15 步）
+  check('HTTP 登录：失败的 detail 写「密码」，不写「口令」', wrong.body.detail === '邮箱或密码不对', wrong.text);
   // 口令队列排满（两个槽都占住）：未知邮箱与已有邮箱都在排满 2 秒后 429 busy，状态码与响应体相同，各打一行日志
   session.__authTest.reset();
   const held = [await __passwordTest.occupy(), await __passwordTest.occupy()];
@@ -785,6 +787,11 @@ for (const [u, role] of [
     'HTTP 登录：口令队列排满时未知邮箱与已有邮箱都是 429 busy，响应体相同',
     busy.length === 2 && busy.every((r) => keep(r).status === 429 && r.body.error === 'busy') && busy[0]!.text === busy[1]!.text,
     busy.map((r) => `${r.status} ${r.text}`).join(' | '),
+  );
+  check(
+    'HTTP 登录：排队超时的 detail 写「密码」，不写「口令」',
+    busy.length === 2 && busy.every((r) => r.body.detail === '密码校验排队超时，请稍后再试'),
+    busy.map((r) => r.text).join(' | '),
   );
   check('登录失败：排队超时也打日志', logged.filter((l) => l.includes('排队超时')).length === 2, logged.join(' | '));
 }
@@ -1305,6 +1312,28 @@ check(
     '产品库 HTTP：itinerary 为空、条数不等于 days、带未知键、类型不对 → 422 并列出问题',
     inv.every((r) => r.status === 422 && r.body.error === 'invalid_item' && r.body.issues?.length > 0),
     inv.map((r) => `${r.status}:${r.text.slice(0, 60)}`).join(' | '),
+  );
+  // 后台 UX spec 验收 15 第 10 条：天数与逐日行程不符时，报错写「天数」，不写 payload 的键名 days
+  check(
+    '产品库 HTTP：天数与逐日行程不符 → 422 的报错里是「天数」，不是「days」',
+    inv[1]!.status === 422 &&
+      (inv[1]!.body.issues as { message: string }[]).some((i) => i.message.includes('要和天数（')) &&
+      !inv[1]!.text.includes('days'),
+    inv[1]!.text.slice(0, 200),
+  );
+  // 同一条的另外两处：编号不合规、天号不对，报错写「编号」「天号」，不写 payload 的键名 id、day
+  const badCode = keep(await call('POST', '/catalog/route', { ...O, json: { payload: { ...structuredClone(p), id: 'R_Bad' } } }));
+  const badDays = (cur4.payload.itinerary as Body[]).map((d, i) => (i === 1 ? { ...d, day: 5 } : d));
+  const badDay = keep(await call('PATCH', `/catalog/route/${code}`, { ...O, json: { rev: cur4.rev, set: { itinerary: badDays } } }));
+  const messages = (r: Res) => ((r.body.issues ?? []) as { message: string }[]).map((i) => i.message);
+  check(
+    '产品库 HTTP：编号不合规、天号不对 → 422 的报错里是「编号」「天号」，不是 id、day',
+    badCode.status === 422 &&
+      messages(badCode).some((m) => m.startsWith('编号只能')) &&
+      messages(badCode).every((m) => !/\bid\b/.test(m)) &&
+      badDay.status === 422 &&
+      JSON.stringify(messages(badDay)) === JSON.stringify(['第2天的天号应为2']),
+    `${badCode.text.slice(0, 200)} | ${badDay.text.slice(0, 200)}`,
   );
   const both = await call('PATCH', `/catalog/route/${code}`, {
     ...O,

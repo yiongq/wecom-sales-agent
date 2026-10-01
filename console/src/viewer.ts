@@ -7,7 +7,7 @@ import { api, HttpError, unwrap } from './api.js';
 import { type Outcome, resolveBoot, type Viewer } from './shell/boot.js';
 import { beginMemberSession, isMemberSession, logoutMemberSession } from './session.js';
 
-export type { Viewer } from './shell/boot.js';
+export type { AnonViewer, Viewer } from './shell/boot.js';
 
 export const VIEWER_KEY = ['viewer'] as const;
 
@@ -42,6 +42,9 @@ export function logout(): Promise<void> {
 export function useViewer() {
   return useQuery({ queryKey: VIEWER_KEY, queryFn: loadViewer, staleTime: 60_000 });
 }
+
+/** 去登录页（侧栏、⌘K 的「登录」，横幅的「登录后编辑」）：从 demo 匿名来的带上原来的匿名视图，「返回演示」回到它 */
+export const toLogin = (prev: Viewer | undefined): Viewer => (prev?.kind === 'anon' ? { kind: 'login', demo: prev } : { kind: 'login' });
 
 /** 就地登录成功后的成员视图：行业包沿用之前拿到的那份（同一个部署、同一个租户） */
 export function memberViewer(prev: Viewer | undefined, me: Me): Viewer | undefined {

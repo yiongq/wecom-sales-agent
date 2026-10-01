@@ -15,7 +15,7 @@ export const isEditor = (v: ShellViewer): boolean => v.kind === 'member' && (v.m
 // ---------------- 侧栏 ----------------
 
 /** 导航项的图标：固定页面用自己的图标，实体用行业包给的 lucide 名称 */
-export type NavIcon = { page: 'sop' | 'conversations' | 'audit' } | { entity: string };
+export type NavIcon = { page: 'overview' | 'sop' | 'conversations' | 'audit' } | { entity: string };
 
 export interface NavItem {
   /** 按它匹配当前路由：不带 /console 的路径 */
@@ -44,7 +44,7 @@ export const packEntities = (pack: IndustryPack): EntityType[] =>
 
 /**
  * 侧栏的导航（spec「信息架构」，设计系统 §4.2）：顺序固定，产品库分组名和各实体取自行业包。
- * 会话只给成员（匿名没有入口）；审计日志只给所有者、管理员。「总览」随第 4 步的路由加上，「平台 / 系统」要后端
+ * 会话只给成员（匿名没有入口）；审计日志只给所有者、管理员。「平台 / 系统」要后端
  */
 export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
   const entities = packEntities(pack).map((e): NavItem => ({
@@ -54,7 +54,14 @@ export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
     entity: e.kind,
   }));
   const groups: NavGroup[] = [
-    { key: 'main', title: null, items: [{ key: '/sop', label: '销售话术', icon: { page: 'sop' } }] },
+    {
+      key: 'main',
+      title: null,
+      items: [
+        { key: '/', label: '总览', icon: { page: 'overview' } },
+        { key: '/sop', label: '销售话术', icon: { page: 'sop' } },
+      ],
+    },
     { key: 'catalog', title: pack.nav.catalogGroup, items: entities },
   ];
   const ops: NavItem[] = [];
@@ -67,9 +74,12 @@ export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
 /** 路由的 pathname 带不带 basepath（/console）都认 */
 export const stripBase = (pathname: string): string => pathname.replace(/^\/console(?=\/|$)/, '') || '/';
 
-/** 当前路由对应的导航项：按整段比，最长的那个；没有对应项时是 null（登录页、404） */
+/**
+ * 当前路由对应的导航项：按整段比，最长的那个；没有对应项时是 null（登录页、404）。
+ * 新建一条（/catalog/new/{kind}）选中的是这一类实体，与路由表一致：new 这一段是新建，不是 kind
+ */
 export function selectedNavKey(pathname: string, groups: readonly NavGroup[]): string | null {
-  const here = stripBase(pathname);
+  const here = stripBase(pathname).replace(/^\/catalog\/new(?=\/[^/])/, '/catalog');
   let best: string | null = null;
   for (const g of groups) {
     for (const { key } of g.items) {
@@ -130,7 +140,7 @@ export function conversationLabel(row: Pick<ConversationRow, 'id' | 'channel'>, 
 }
 
 /**
- * 工作台里打开这个会话。admin.html 读 #s=<id> 选中它是第 13 步的事：在那之前这个链接只打开工作台、不选中会话（plan「Open」）
+ * 工作台里打开这个会话：admin.html 启动时读 #s=<id> 选中它，登录框走完后仍然选中（spec「会话列表」，plan 第 13 步）
  */
 export const workbenchHref = (id: string): string => `/admin.html#s=${encodeURIComponent(id)}`;
 

@@ -9,9 +9,9 @@ import { useRef } from 'react';
 import { cjk } from '../typography.js';
 import { Icon } from './icons.js';
 
-const LICENSES = `${import.meta.env.BASE_URL}licenses/`;
-
 export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  // 在组件里取（不在模块顶层）：自测在 Node 里经产品库页 import 外壳，那里没有 import.meta.env
+  const LICENSES = `${import.meta.env.BASE_URL}licenses/`;
   const closeRef = useRef<HTMLButtonElement>(null);
   return (
     <Modal

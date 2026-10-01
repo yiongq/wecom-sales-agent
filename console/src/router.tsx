@@ -1,16 +1,11 @@
 // 路由（TanStack Router，代码式定义）：挂在 /console 下。登录与否由 Shell 判断，不单独占一个路由。
 // 各页按路由拆包（spec「性能 · 按路由拆包」）：这里只留路径与参数，页面组件在 pages/*.lazy.tsx，由 .lazy() 按需下载。
 // 入口集合里不能有页面代码，scripts/check-console-dist.ts 按 vite 的 manifest 查预算与 @codemirror
-import {
-  createRootRoute,
-  createRoute,
-  createRouter,
-  type ErrorComponentProps,
-  Outlet,
-  redirect,
-  useRouterState,
-} from '@tanstack/react-router';
+import { createRootRoute, createRoute, createRouter, type ErrorComponentProps, Outlet, useRouterState } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
+import { auditSearch } from './audit-search.js';
+import { catalogSearch, itemSearch } from './catalog/params.js';
+import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
 
@@ -43,30 +38,37 @@ function RootWithSpecimen(): ReactElement {
 
 const root = createRootRoute({ component: SPECIMEN ? RootWithSpecimen : Shell, notFoundComponent: NotFound });
 
-const index = createRoute({
-  getParentRoute: () => root,
-  path: '/',
-  beforeLoad: () => {
-    throw redirect({ to: '/sop' });
-  },
-});
+// 总览（spec「总览」）：取代原来跳到 /sop 的重定向。scripts/check-console-dist.ts 按这个懒加载文件名把它算进首屏预算
+const index = createRoute({ getParentRoute: () => root, path: '/' }).lazy(() => import('./pages/overview.lazy.js').then((m) => m.Route));
 // 话术页选中的节（spec 的路由表）：不认识的 key 由页面退回默认节
 const sopSearch = (s: Record<string, unknown>): { section?: string } => (typeof s.section === 'string' ? { section: s.section } : {});
 const sop = createRoute({ getParentRoute: () => root, path: '/sop', validateSearch: sopSearch }).lazy(() =>
   import('./pages/sop.lazy.js').then((m) => m.Route),
 );
+// 产品库列表：kind 原样交给页面，页面按当前租户的行业包找实体，包里没有的是「没有这个页面」（第 9 步）。
+// 页签、搜索、筛选写进地址（spec 路由表的 status、q、f；不变量 22）
 const catalog = createRoute({
   getParentRoute: () => root,
   path: '/catalog/$kind',
-  params: {
-    parse: (p: { kind: string }): { kind: 'route' | 'hotel' } => ({ kind: p.kind === 'hotel' ? 'hotel' : 'route' }),
-    stringify: (p: { kind: 'route' | 'hotel' }) => ({ kind: p.kind }),
-  },
+  validateSearch: catalogSearch,
 }).lazy(() => import('./pages/catalog.lazy.js').then((m) => m.Route));
-const conversations = createRoute({ getParentRoute: () => root, path: '/conversations' }).lazy(() =>
+// 产品库的一条与新建（第 10.1 步）：kind 同样按行业包取。新建不用 /catalog/$kind/new，new 是合法的条目编号（spec 路由表）
+const catalogItem = createRoute({
+  getParentRoute: () => root,
+  path: '/catalog/$kind/$code',
+  validateSearch: itemSearch,
+}).lazy(() => import('./pages/catalog-item.lazy.js').then((m) => m.ItemRoute));
+const catalogNew = createRoute({ getParentRoute: () => root, path: '/catalog/new/$kind' }).lazy(() =>
+  import('./pages/catalog-item.lazy.js').then((m) => m.NewRoute),
+);
+// 会话列表的 state、stage 筛选：总览的业务数与阶段条带过来（conversations-search.ts）
+const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
 );
-const audit = createRoute({ getParentRoute: () => root, path: '/audit' }).lazy(() => import('./pages/audit.lazy.js').then((m) => m.Route));
+// 审计日志的类别与「显示登录记录」写进地址（audit-search.ts）
+const audit = createRoute({ getParentRoute: () => root, path: '/audit', validateSearch: auditSearch }).lazy(() =>
+  import('./pages/audit.lazy.js').then((m) => m.Route),
+);
 
 const specimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark' } =>
   s.theme === 'light' || s.theme === 'dark' ? { theme: s.theme } : {};
@@ -92,7 +94,7 @@ const specimen = SPECIMEN
   : [];
 
 export const router = createRouter({
-  routeTree: root.addChildren([index, sop, catalog, conversations, audit, ...specimen]),
+  routeTree: root.addChildren([index, sop, catalog, catalogItem, catalogNew, conversations, audit, ...specimen]),
   basepath: '/console',
   defaultPendingComponent: PagePending,
   defaultPendingMs: 0,

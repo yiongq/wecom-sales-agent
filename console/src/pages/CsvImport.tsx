@@ -23,7 +23,7 @@ export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () 
   if (!shape.importable) {
     return (
       <Tooltip title={`${props.label}的必填字段${shape.nestedRequired.join('、')}不是平铺字段，CSV只收平铺字段，请用「新建」`}>
-        <Button disabled>CSV导入</Button>
+        <Button disabled>导入CSV</Button>
       </Tooltip>
     );
   }
@@ -68,7 +68,7 @@ export function CsvImport(props: { kind: CatalogKind; label: string; onDone: () 
           setOpen(true);
         }}
       >
-        CSV导入
+        导入CSV
       </Button>
       <Modal
         destroyOnHidden
