@@ -7780,10 +7780,11 @@ const byIdCalls = (id?: string): number =>
 // 连不上（自动重试）与别的 4xx（422，不自动试）都这样；409 不写（另有横幅，条的原因是「载入最新草稿以后才能发布」）
 {
   const srv = fakeServer(CLEAN_SOP);
-  srv.check = (s) => scan(s);
+  // 话术原则里一个工具名不对：条上带「1个问题要改」
+  srv.check = () => FIXED_CHECK();
   // 退避放长：断言时还没自动重试，条上的「重试」是唯一马上存的路
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [10_000] });
-  await waitFor(() => summaryOf(m) === '7/7通过');
+  await waitFor(() => summaryOf(m) === '6/7通过');
   const normal = barText(m).summary;
   srv.mode = 'network';
   await typeAtEnd(m, '加一句。');
@@ -7795,7 +7796,7 @@ const byIdCalls = (id?: string): number =>
       normal,
       barText(m).summary,
       text(barRetry(m)),
-      barText(m).hint.startsWith('·草稿改了2节（话术原则、异议处理）·字数'),
+      barText(m).hint.startsWith('·草稿改了2节（话术原则、异议处理）·1个问题要改·字数'),
       !!bar?.querySelector('.sop-bar-icon.is-danger'),
       saveNow(m),
       !!bar?.querySelector('[role="status"], [aria-live]'),
@@ -7815,8 +7816,8 @@ const byIdCalls = (id?: string): number =>
   await waitFor(() => saveNow(m) === '·已自动保存14:30');
   eq(
     '连上以后点「重试」：存上了，条换回原来的摘要，没有「重试」',
-    [barText(m).summary, !!publishBar(m)?.querySelector('.sop-bar-icon.is-danger'), barRetry(m)],
-    [normal, false, null],
+    [barText(m).summary, !!publishBar(m)?.querySelector('.sop-bar-icon.is-danger'), !!barRetry(m)],
+    [normal, false, false],
   );
   srv.mode = 'invalid';
   await typeAtEnd(m, '再一句。');
@@ -7841,8 +7842,8 @@ const byIdCalls = (id?: string): number =>
   await waitFor(() => !!m.box.querySelector('.sop-conflict'));
   eq(
     '409：条上不写「没保存上」（横幅已经滚进视口），「发布…」的原因是载入最新草稿以后才能发布',
-    [barText(m).summary, barText(m).note, barRetry(m), saveNow(m)],
-    [normal, '载入最新草稿以后才能发布', null, '·没保存上'],
+    [barText(m).summary, barText(m).note, !!barRetry(m), saveNow(m)],
+    [normal, '载入最新草稿以后才能发布', false, '·没保存上'],
   );
   await m.unmount();
 }
@@ -7851,9 +7852,12 @@ const byIdCalls = (id?: string): number =>
 // 另取 v2 当比较的基准，取到以前整页是骨架（只取一次），没取到整块出错、能重试。取到以后目录、额度条、状态句、发布条、
 // 编辑器的改动标记、查看改动、发布抽屉的逐节改动与预填、丢弃的确认都只算你改的两节，前言（店长改的）不算
 {
+  localStorage.setItem(DIFF_MODE_KEY, 'split');
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
+  // 再早的 v1 只有前言不同：载入到草稿时看会盖掉哪几节
+  srv.released = [...srv.released, version(1, withBodies(P_ONLINE, { preamble: '最早的前言。\n\n' }), { status: 'archived' })];
   const opened = srv.state;
   srv.byIdHold = true;
   srv.byIdFails = true;
@@ -7907,9 +7911,13 @@ const byIdCalls = (id?: string): number =>
   await waitFor(() => !!drawerOf('草稿的改动'));
   const c = drawerOf('草稿的改动')!;
   eq(
-    '查看改动：相对 v2（线上已是 v3），只有话术原则、异议处理',
-    [text(c.querySelector('.ant-drawer-title')), all(c, '.sop-diff-name').map((e) => text(e))],
-    ['草稿的改动相对v2（线上已是v3）', ['话术原则', '异议处理']],
+    '查看改动：相对 v2（线上已是 v3），只有话术原则、异议处理，并排的左栏写 v2',
+    [
+      text(c.querySelector('.ant-drawer-title')),
+      all(c, '.sop-diff-name').map((e) => text(e)),
+      all(c.querySelector('.sop-diff-cols') ?? c, 'span').map((e) => text(e)),
+    ],
+    ['草稿的改动相对v2（线上已是v3）', ['话术原则', '异议处理'], ['v2', '草稿']],
   );
   await clickEv(c.querySelector('.ant-drawer-extra button'));
   await waitFor(() => !drawerOf('草稿的改动'));
@@ -7921,9 +7929,10 @@ const byIdCalls = (id?: string): number =>
     [
       text(d.querySelector('.sop-publish-replace')),
       all(d, '.sop-diff-name').map((e) => text(e)),
+      all(d.querySelector('.sop-diff-cols') ?? d, 'span').map((e) => text(e)),
       d.querySelector<HTMLTextAreaElement>('textarea')?.value,
     ],
-    ['将替换线上v3（店长·9月25日 20:00发布）', ['话术原则', '异议处理'], '修改：话术原则、异议处理。'],
+    ['将替换线上v3（店长·9月25日 20:00发布）', ['话术原则', '异议处理'], ['v2', '草稿'], '修改：话术原则、异议处理。'],
   );
   await clickEv(drawerButton(d, '取消'));
   await waitFor(() => !drawerOf('发布草稿'));
@@ -7936,6 +7945,17 @@ const byIdCalls = (id?: string): number =>
   );
   await clickEv(all(modalOf('丢弃草稿？')!, 'button').find((x) => label(x) === '保留'));
   await until(() => !modalOf('丢弃草稿？'));
+  await openHistory(m);
+  await clickEv(rowButton('v1', '载入到草稿再改'));
+  await waitFor(() => !!modalOf('把v1载入到草稿？'));
+  eq(
+    '载入 v1：会盖掉的是草稿自己改的两节，不含店长改的前言',
+    text(modalOf('把v1载入到草稿？')?.querySelector('.confirm-body')),
+    '会覆盖草稿里的：话术原则、异议处理。',
+  );
+  await clickEv(all(modalOf('把v1载入到草稿？')!, 'button').find((x) => label(x) === '再看看'));
+  await until(() => !modalOf('把v1载入到草稿？'));
+  localStorage.removeItem(DIFF_MODE_KEY);
   await m.unmount();
 }
 

@@ -605,8 +605,8 @@ function MemberSop({
   const viewing = nav.viewing;
   const saveError = saver.status.kind === 'failed' && errorCopy(saver.status.error).place !== 'inline' ? saver.status.error : null;
   const lostLoaded = lost?.loaded.length ? lost.loaded : null;
-  // 页面已经画出来以后才换的基准没取到：改动先按线上版本算着，页头下就地报错、能重试（第一次打开时没取到是整块出错）
-  const baseError = shown && base.baseline === null ? base.error : null;
+  // 页面已经画出来以后才换的基准没取到：改动先按线上版本算着，页头下就地报错、能重试（第一次打开时没取到是整块出错，见下面的 SopPending）
+  const baseError = base.baseline === null ? base.error : null;
   const hasBanners =
     refetchError !== null ||
     baseError !== null ||
