@@ -1665,7 +1665,8 @@ check(
 }
 
 // 后台 UX spec 验收 15 第 5、6 条：会话的 state / stage / order 过滤与排序，/conversations/counts 与列表同源。
-// 判定按 spec 的规则在这里逐条写出来，不调 conversationState：paid 是 stage === 'paid'；human 是转人工且没付款；其余是 ai
+// 判定按 spec 的规则在这里逐条写出来，不调 conversationState：paid 是停在行业包终态的会话（旅游包只有 paid 一个终态）；
+// human 是转人工且没成交；其余是 ai。块末尾把租户的包换成家装假包（终态 deposit），同样逐条核对，换回以后各数不变
 {
   const store = await import('../store.js');
   const { conversationState, shortIdOf } = await import('../shared/conversation.js');
@@ -1862,14 +1863,96 @@ check(
     __profileTest.reset();
   }
 
+  // 已成交按租户行业包的终态判定（不变量 17）：家装假包的终态是「已付定金」deposit；旅游包的 paid 在它那里是包外的阶段
+  const { renovation } = await import('../shared/pack-fixtures/renovation.js');
+  const { packById } = await import('../packs/registry.js');
+  const travelPack = packById('travel')!;
+  const RENO: typeof RULE = {
+    ai: (r) => !r.handedOver && r.stage !== 'deposit',
+    human: (r) => r.handedOver && r.stage !== 'deposit',
+    paid: (r) => r.stage === 'deposit',
+  };
+  seed('wecom:cust_V01', 'deposit', false, T2 + 6000);
+  seed('wecom:cust_V02', 'deposit', true, T2 + 6100); // 付了定金以后又转人工：家装包里算已成交
+  seed('wecom:cust_V03', 'measure', true, T2 + 6200);
+  const countsNow = async () => {
+    const r = await call('GET', '/conversations/counts', O);
+    return { status: r.status, text: r.text, body: r.body as typeof cb };
+  };
+  const idsOf = (p: { rows: Row[] }) => p.rows.map((r) => r.id);
+  const tCounts = await countsNow();
+  const tPer = Object.fromEntries(await Promise.all(['ai', 'human', 'paid'].map(async (s) => [s, await pageAll(`&state=${s}`)] as const)));
+  check(
+    '旅游包：deposit 不是它的阶段，停在那里的会话照旧算 AI 接待中或等人接手，已成交只有 paid',
+    idsOf(tPer.ai!).includes('wecom:cust_V01') &&
+      idsOf(tPer.human!).includes('wecom:cust_V02') &&
+      tPer.paid!.rows.every((r) => r.stage === 'paid') &&
+      tCounts.body.aiByStage.deposit === 1 &&
+      tCounts.body.byState.paid === tPer.paid!.total,
+    tCounts.text,
+  );
+  const prevPack = cfg.__configTest.swapPack(renovation);
+  try {
+    const rCounts = await countsNow();
+    const rAll = await pageAll('');
+    const rPer = Object.fromEntries(
+      await Promise.all(['ai', 'human', 'paid'].map(async (s) => [s, await pageAll(`&state=${s}`)] as const)),
+    );
+    const rWrong = Object.entries(rPer).flatMap(([s, p]) => p.rows.filter((r) => !RENO[s]!(r)).map((r) => `${s}:${r.id}`));
+    check(
+      '家装包：state=paid 是停在「已付定金」的会话（含转过人工的），paid 阶段的会话算 AI 接待中或等人接手',
+      rWrong.length === 0 &&
+        idsOf(rPer.paid!).toSorted().join() === 'wecom:cust_V01,wecom:cust_V02' &&
+        idsOf(rPer.ai!).includes('wecom:cust_P01') &&
+        idsOf(rPer.human!).includes('wecom:cust_P02') &&
+        idsOf(rPer.human!).includes('wecom:cust_V03') &&
+        rPer.ai!.total + rPer.human!.total + rPer.paid!.total === rAll.total,
+      rWrong.join(','),
+    );
+    check(
+      '家装包：counts 与列表同源，byState 按终态分，aiByStage 里没有终态、有包外的 paid',
+      rCounts.status === 200 &&
+        rCounts.body.byState.paid === 2 &&
+        rCounts.body.byState.ai === rPer.ai!.total &&
+        rCounts.body.byState.human === rPer.human!.total &&
+        rCounts.body.total === rAll.total &&
+        sum(rCounts.body.aiByStage) === rCounts.body.byState.ai &&
+        !('deposit' in rCounts.body.aiByStage) &&
+        rCounts.body.aiByStage.paid === 1,
+      rCounts.text,
+    );
+    const rListed = store.listSessions().filter((x) => !x.id.startsWith('sim-'));
+    const rHumans = rListed.filter((x) => RENO.human!(x)).toSorted(recent);
+    const rWf = await pageAll('&order=waiting_first');
+    check(
+      '家装包：waiting_first 先列完按终态判的等人接手（转人工后付了定金的不在其中）',
+      idsOf(rWf).slice(0, rHumans.length).join() === rHumans.map((x) => x.id).join() &&
+        !rHumans.some((x) => x.id === 'wecom:cust_V02') &&
+        rHumans.some((x) => x.id === 'wecom:cust_P02'),
+      idsOf(rWf).join(),
+    );
+  } finally {
+    cfg.__configTest.swapPack(prevPack);
+  }
+  check('换回旅游包：counts 与换之前逐字节相同', (await countsNow()).text === tCounts.text, tCounts.text);
+
   // 全站唯一的判定与短码
   check(
-    'conversationState：paid 优先，其次转人工，其余 AI 接待中',
-    conversationState({ stage: 'paid', handedOver: true }) === 'paid' &&
-      conversationState({ stage: 'handoff', handedOver: true }) === 'human' &&
-      conversationState({ stage: 'quote', handedOver: true }) === 'human' &&
-      conversationState({ stage: 'handoff', handedOver: false }) === 'ai' &&
-      conversationState({ stage: 'closing', handedOver: false }) === 'ai',
+    'conversationState：旅游包的终态 paid 优先，其次转人工，其余 AI 接待中',
+    conversationState({ stage: 'paid', handedOver: true }, travelPack) === 'paid' &&
+      conversationState({ stage: 'handoff', handedOver: true }, travelPack) === 'human' &&
+      conversationState({ stage: 'quote', handedOver: true }, travelPack) === 'human' &&
+      conversationState({ stage: 'handoff', handedOver: false }, travelPack) === 'ai' &&
+      conversationState({ stage: 'closing', handedOver: false }, travelPack) === 'ai',
+  );
+  check(
+    'conversationState：家装包只认终态 deposit；paid 不是它的终态；没有终态的包里没有已成交',
+    conversationState({ stage: 'deposit', handedOver: true }, renovation) === 'paid' &&
+      conversationState({ stage: 'deposit', handedOver: false }, renovation) === 'paid' &&
+      conversationState({ stage: 'paid', handedOver: false }, renovation) === 'ai' &&
+      conversationState({ stage: 'paid', handedOver: true }, renovation) === 'human' &&
+      conversationState({ stage: 'sign', handedOver: false }, renovation) === 'ai' &&
+      conversationState({ stage: 'paid', handedOver: false }, { stages: travelPack.stages.map(({ terminal: _t, ...st }) => st) }) === 'ai',
   );
   const vm = await import('node:vm');
   const adminSrc = /const shortIdOf = (s => .+);\n/.exec(fs.readFileSync(new URL('../../public/admin.html', import.meta.url), 'utf8'))?.[1];

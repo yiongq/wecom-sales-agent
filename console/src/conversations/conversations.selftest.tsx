@@ -93,7 +93,7 @@ const TRAVEL: IndustryPack = {
   sopSections: [{ key: 'preamble', heading: null, locked: false }],
   nav: { catalogGroup: '产品库', entities: ['route'] },
 };
-/** 另一份行业包：阶段、客户的叫法都不同，页面照样画（界面不认行业） */
+/** 另一份行业包：阶段、客户的叫法都不同，页面照样画（界面不认行业）。终态同家装假包是「已付定金」，key 不是 paid */
 const HOME: IndustryPack = {
   ...TRAVEL,
   id: 'fixture-home',
@@ -103,7 +103,7 @@ const HOME: IndustryPack = {
     { key: 'consult', label: '咨询' },
     { key: 'measure', label: '量房' },
     { key: 'sign', label: '签约' },
-    { key: 'paid', label: '已付款', terminal: true },
+    { key: 'deposit', label: '已付定金', terminal: true },
   ],
   nav: { catalogGroup: '套餐', entities: ['package'] },
 };
@@ -275,6 +275,25 @@ const COUNTS: ConversationCounts = {
     ['8月17日', '2025年12月30日'],
   );
   eq('行：家装包的叫法', rowView(conv('H01', 'measure', false, 3, '2026-09-26T13:00:00'), HOME, NOW).label, ['企微业主', 'H01']);
+  // 已成交按行业包的终态判定：家装包停在「已付定金」的算已成交（转过人工也一样，阶段照写）；旅游包的 paid 在这里只是包外的阶段
+  eq(
+    '行：家装包的终态「已付定金」算已成交，paid 不算',
+    [
+      conv('H03', 'deposit', false, 9, '2026-09-25T14:00:00'),
+      conv('H05', 'deposit', true, 9, '2026-09-25T14:00:00'),
+      conv('H04', 'paid', false, 9, '2026-09-25T14:00:00'),
+      conv('H06', 'paid', true, 9, '2026-09-25T14:00:00'),
+    ].map((c) => {
+      const r = rowView(c, HOME, NOW);
+      return [r.state, r.stage];
+    }),
+    [
+      ['paid', '已付定金'],
+      ['paid', '已付定金'],
+      ['ai', 'paid'],
+      ['human', '—'],
+    ],
+  );
   eq('行：读屏念的名字', rowAria(f01), '企微客户 F01，等人接手，在工作台打开（新标签页）');
   eq('行：网页渠道不写渠道名（sim- 会话本来就不列出）', rowView({ ...SCENE[0]!, channel: 'simulator' }, TRAVEL, NOW).label[0], '网页客户');
 }
@@ -286,6 +305,8 @@ Date.now = () => NOW;
 
 interface Server {
   conversations: ConversationRow[];
+  /** 租户的行业包，服务端按它的终态判已成交；默认旅游包 */
+  pack?: IndustryPack;
   /** 这些路径回 500 */
   fail?: RegExp;
 }
@@ -300,10 +321,11 @@ function respond(method: string, url: URL): Response {
   const q = url.searchParams;
   if (server.fail?.test(`${method} ${p}`)) return json(500, { error: 'internal', detail: '故意的' });
   const all = server.conversations;
+  const pack = server.pack ?? TRAVEL;
   if (method === 'GET' && p === '/conversations/counts') {
     const c: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
     for (const row of all) {
-      const s = conversationState(row);
+      const s = conversationState(row, pack);
       c.total += 1;
       c.byState[s] += 1;
       if (s === 'ai') c.aiByStage[row.stage] = (c.aiByStage[row.stage] ?? 0) + 1;
@@ -313,9 +335,9 @@ function respond(method: string, url: URL): Response {
   if (method === 'GET' && p === '/conversations') {
     const st = q.get('state');
     const sg = q.get('stage');
-    const waiting = (r: ConversationRow): number => (q.get('order') === 'waiting_first' && conversationState(r) === 'human' ? 1 : 0);
+    const waiting = (r: ConversationRow): number => (q.get('order') === 'waiting_first' && conversationState(r, pack) === 'human' ? 1 : 0);
     const rows = all
-      .filter((r) => (!st || conversationState(r) === st) && (!sg || r.stage === sg))
+      .filter((r) => (!st || conversationState(r, pack) === st) && (!sg || r.stage === sg))
       .sort((a, b) => waiting(b) - waiting(a) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? -1 : 1));
     const limit = Number(q.get('limit') ?? 20);
     const offset = Number(q.get('offset') ?? 0);
@@ -800,7 +822,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [['业主的会话会出现在这里'], ['业主在企业微信里发来第一句话后就会出现']],
   );
   await homeNone.unmount();
-  server = { conversations: SCENE.filter((c) => conversationState(c) !== 'paid') };
+  server = { conversations: SCENE.filter((c) => conversationState(c, TRAVEL) !== 'paid') };
   const tab = await mount(member('owner'), '?state=paid');
   eq(
     '页签无结果：页签留着，表格换成一句话，不给清除筛选',
@@ -868,13 +890,15 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   await m.unmount();
 }
 
-// 2.8 换一个行业包：阶段名、客户的叫法跟着换
+// 2.8 换一个行业包：阶段名、客户的叫法跟着换；已成交按这个包的终态「已付定金」判定
 {
   server = {
+    pack: HOME,
     conversations: [
       conv('H01', 'measure', false, 3, '2026-09-26T13:00:00'),
       conv('H02', 'consult', true, 2, '2026-09-26T14:00:00'),
-      conv('H03', 'paid', false, 9, '2026-09-25T14:00:00'),
+      conv('H03', 'deposit', false, 9, '2026-09-25T14:00:00'),
+      conv('H05', 'deposit', true, 6, '2026-09-25T12:00:00'),
     ],
   };
   const m = await mount(member('owner', HOME));
@@ -884,7 +908,12 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [['业主停在哪一步'], ['企业微信里的业主会话·接手和回复目前在工作台里完成']],
   );
   eq(
-    '家装包：阶段条按包里的阶段',
+    '家装包：页签的已成交数停在「已付定金」的会话（含转过人工的）',
+    m.tabs().map((t) => t[0]),
+    ['全部4', '等人接手1', 'AI接待中1', '已成交2'],
+  );
+  eq(
+    '家装包：阶段条按包里的阶段，不含终态，也没有「其他」',
     m.stages().map((s) => s[0] + s[1]),
     ['咨询0', '量房1', '签约0'],
   );
@@ -894,11 +923,25 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [
       ['企微业主·H02', '等人接手', '—'],
       ['企微业主·H01', 'AI接待中', '量房'],
-      ['企微业主·H03', '已成交', '已付款'],
+      ['企微业主·H03', '已成交', '已付定金'],
+      ['企微业主·H05', '已成交', '已付定金'],
     ],
   );
   check('家装包：页面上没有旅游包的阶段名', !/报价|推荐|问需|促成/.test(m.box.textContent ?? ''), m.box.textContent ?? '');
   await m.unmount();
+  const paid = await mount(member('owner', HOME), '?state=paid');
+  eq(
+    '家装包：已成交页签列出停在「已付定金」的会话',
+    [paid.tabs()[3], paid.rows().map((r) => r.slice(0, 3))],
+    [
+      ['已成交2', 'true'],
+      [
+        ['企微业主·H03', '已成交', '已付定金'],
+        ['企微业主·H05', '已成交', '已付定金'],
+      ],
+    ],
+  );
+  await paid.unmount();
 }
 
 Date.now = realNow;

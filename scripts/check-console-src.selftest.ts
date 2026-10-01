@@ -198,7 +198,8 @@ const GOOD: ReadonlyArray<readonly [string, string]> = [
     [
       `// 注释里提到 handedOver 和 stage === 'paid' 不算`,
       `import { conversationState } from '../../src/shared/conversation.js';`,
-      `export const paid = (r: { stage: string; handedOver: boolean }) => conversationState(r) === 'paid';`,
+      `type Pk = { stages: { key: string; label: string; terminal?: boolean }[] };`,
+      `export const paid = (r: { stage: string; handedOver: boolean }, pack: Pk) => conversationState(r, pack) === 'paid';`,
       `export const row = (stage: string) => ({ stage, handedOver: true });`,
       `export const tab = (state: string) => state === 'paid';`,
       `export const same = (stage: string, other: string) => stage === other;`,

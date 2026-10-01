@@ -367,6 +367,20 @@
   color: var(--danger);
 }
 /* 「重试」：文字按钮，跟着 danger 色，悬停下划线；上下各多 2 的点击区（24 高），用负外边距抵掉，行高不变 */
+/*
+ * 读屏念保存状态的那一处（SaveLive）：看不见、不占地方，用 fixed 钉在左上（同产品库详情的 .save-live）。
+ * 不放进状态句：页头吸顶时 .page-status 是 display: none，放在里面就念不出来
+ */
+.sop-save-live {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .sop-save-retry {
   display: inline-block;
   margin: -2px 0;
@@ -735,6 +749,20 @@
 }
 .sop-bar-icon.is-success {
   color: var(--success);
+}
+/*
+ * 自动保存没保存上：摘要换成 danger 的「没保存上 · 重试」，不缩、不裁（「重试」在 Tab 顺序里，焦点框也要露出来），
+ * 原来的摘要降成后面的补充，放不下时省略的是它
+ */
+.sop-bar-icon.is-danger {
+  color: var(--danger);
+}
+.sop-publish-bar.is-save-failed .action-bar-summary {
+  flex: none;
+  overflow: visible;
+}
+.sop-bar-failed {
+  color: var(--danger);
 }
 .sop-bar-problems {
   color: var(--danger);

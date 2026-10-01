@@ -761,6 +761,16 @@ export const __configTest = {
     reloadBackoff = RELOAD_BACKOFF_MS;
     // 不清 catalogListeners：它们是各模块加载时登记的（retrieval.ts），模块不会再加载一次
   },
+  /**
+   * 换掉装载好的行业包，返回原来那份：后台接口按另一个包（家装假包）判定会话状态时用。
+   * 假包不进注册表（不变量 25），租户行里写它的 pack_id 启动不了，只能这样换
+   */
+  swapPack(pack: IndustryPack): IndustryPack {
+    if (!loaded) throw new ConfigNotReadyError();
+    const prev = loaded.pack;
+    loaded.pack = pack;
+    return prev;
+  },
   /** 锁重取间隔与重读退避调短，测试不用真等几秒 */
   setTimings(t: { reacquireMs?: number; reloadBackoffMs?: number[] }): void {
     if (t.reacquireMs !== undefined) reacquireMs = t.reacquireMs;

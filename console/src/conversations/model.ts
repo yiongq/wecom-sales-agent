@@ -118,7 +118,7 @@ export interface RowView {
 }
 
 export function rowView(row: ConversationRow, pack: IndustryPack, now: number): RowView {
-  const state = conversationState(row);
+  const state = conversationState(row, pack);
   // 转人工不算阶段：等人接手的行、以及阶段停在 handoff 的行都写「—」，页面上不出现「转人工」这类阶段名（验收 6）
   const stage = state === 'human' || row.stage === 'handoff' ? '—' : stageLabel(pack, row.stage);
   return {

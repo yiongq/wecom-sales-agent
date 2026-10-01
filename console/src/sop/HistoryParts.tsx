@@ -46,17 +46,17 @@ function cachedVersions(qc: QueryClient): SopVersion[] {
 }
 
 /**
- * 按 id 取一个版本（回滚的目标「回到v1」、草稿的基线）：版本记录里已经有的不再取；版本不会变，取到了就一直用。
- * id 为 null 时不取
+ * 按 id 取一个版本（回滚的目标「回到v1」、草稿的基线）：版本记录里已经有的、调用方手上的（inHand）不再取；
+ * 版本不会变，取到了就一直用。id 为 null 时不取
  */
-export function useKnownVersion(id: string | null) {
+export function useKnownVersion(id: string | null, inHand: readonly SopVersion[] = []) {
   const qc = useQueryClient();
   return useQuery({
     queryKey: [...VERSIONS_KEY, 'id', id],
     queryFn: () => unwrap(api.sop.versions[':id'].$get({ param: { id: id! } })),
     enabled: id !== null,
     staleTime: Infinity,
-    initialData: () => (id === null ? undefined : cachedVersions(qc).find((v) => v.id === id)),
+    initialData: () => (id === null ? undefined : (inHand.find((v) => v.id === id) ?? cachedVersions(qc).find((v) => v.id === id))),
   });
 }
 
@@ -187,8 +187,10 @@ export interface HistoryListProps {
   editable: boolean;
   /** 409 停住时不能载入（编辑器冻着） */
   frozen: boolean;
-  /** 草稿那一行：改了几节；草稿的检查结果里的两个哈希（技术详情）。没有草稿是 null */
-  draft: { changed: number; hashes: readonly (readonly [string, string])[] } | null;
+  /**
+   * 草稿那一行：改了几节，没改时怎么说（sameAs）；草稿的检查结果里的两个哈希（技术详情）。没有草稿是 null
+   */
+  draft: { changed: number; same: string; hashes: readonly (readonly [string, string])[] } | null;
   onContinue: () => void;
   onView: (v: SopVersion) => void;
   onRollback: (v: SopVersion, trigger: HTMLElement) => void;
@@ -217,7 +219,7 @@ export function HistoryList(p: HistoryListProps) {
           <li className="sop-history-row">
             <div className="sop-history-head">
               <Status kind="draft" />
-              <span className="sop-history-meta">{cjk(draftLine(p.draft.changed))}</span>
+              <span className="sop-history-meta">{cjk(draftLine(p.draft.changed, p.draft.same))}</span>
               {p.editable && (
                 <button type="button" className="sop-text-btn sop-history-continue" onClick={p.onContinue}>
                   继续编辑
