@@ -6025,24 +6025,29 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       ['384px', ['#酒店库·贵州', '荔波荔泉宾馆h-liquan-libo草稿', '#本条写过的', '荔波荔泉宾馆第2天'], []],
     );
     // 复制上一天：住宿写成第2天的，焦点进第3天的住宿，按钮随即没了，节点回到实心
+    // 焦点先放在按钮上（happy-dom 的 click() 不挪焦点，不先放的话焦点本来就在住宿里）
+    await act(async () => copyBtn(2)?.focus());
+    const onButton = document.activeElement === copyBtn(2);
     await click(copyBtn(2));
     await settle();
+    check('复制前焦点在「复制上一天的当晚住宿」上', onButton);
     eq(
       '点「复制上一天的当晚住宿」：第3天的住宿是第2天的「荔波荔泉宾馆」，焦点进第3天的住宿，复制按钮没了，节点实心，没有缺项',
       [
         hotelInput(2)?.value,
         document.activeElement === hotelInput(2),
-        copyBtn(2) ?? null,
+        copyBtn(2) !== undefined,
         nodeOf(d.box, 'itinerary', 2),
-        card3?.querySelector('.subitem-gap') ?? null,
+        card3?.querySelector('.subitem-gap') !== null,
       ],
-      ['荔波荔泉宾馆', true, null, 'D3:done', null],
+      ['荔波荔泉宾馆', true, false, 'D3:done', false],
     );
 
     // 目的地改成四川：逐日行程跟着重画，第3天住宿的第一组换成「酒店库·四川」的两家（引用按 filterBy 取本条的目的地）
     const dest = d.box.querySelector<HTMLInputElement>('[data-group="basic"] [data-field-key="destination"] input');
-    await typeInto(dest, '四川');
+    // 先清空住宿、再改目的地：逐日行程的值不变，只靠 filterBy 的取值进按字段记忆的 deps 才重画
     await typeInto(hotelInput(2), '');
+    await typeInto(dest, '四川');
     await openDropdown(hotelInput(2));
     const sichuan = openedGroups(hotelInput(2)).filter((x) => !x.endsWith('天'));
     await press(hotelInput(2), 'Escape');
@@ -6061,9 +6066,9 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [
         free4?.textContent,
         !!free4?.id && (hotelInput(3)?.getAttribute('aria-describedby') ?? '').split(' ').includes(free4.id),
-        subEl(d.box, 'itinerary', 0, 'hotel')?.querySelector('.field-free') ?? null,
+        subEl(d.box, 'itinerary', 0, 'hotel')?.querySelector('.field-free') !== null,
       ],
-      ['酒店库里没有这个，按原文保存', true, null],
+      ['酒店库里没有这个，按原文保存', true, false],
     );
 
     // 长文本：第4天的当天安排改到 131 字，字数 warning、帮助换成提示；改回 75 字，提示收起、帮助回来
@@ -6238,14 +6243,14 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       [
         [nodeOf(p.box, 'nodes', 2), head3],
         moved,
-        [copyText, mats4, subEl(p.box, 'nodes', 3, 'materials')?.querySelector('.field-copy') ?? null],
+        [copyText, mats4, subEl(p.box, 'nodes', 3, 'materials')?.querySelector('.field-copy') !== null],
         groups,
         soft,
       ],
       [
         ['3:done', '节点3'],
         ['水电', '拆改'],
-        ['复制上一个节点的用到的主材', ['马可波罗 800×800 抛釉砖'], null],
+        ['复制上一个节点的用到的主材', ['马可波罗 800×800 抛釉砖'], false],
         [
           '#主材库',
           '马可波罗 800×800 抛釉砖m-marcopolo-800',
