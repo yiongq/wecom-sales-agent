@@ -77,8 +77,8 @@ export function versionLine(
   return { note: v.changeNote ?? '', meta };
 }
 
-/** 草稿那一行：「未发布 · 改了2节」 */
-export const draftLine = (changed: number): string[] => ['未发布', changed > 0 ? `改了${digits(changed)}节` : '和线上一样'];
+/** 草稿那一行：「未发布 · 改了2节」；没改时是 same（publish.ts 的 sameAs：「和线上一样」或「和v2一样（线上已是v3）」） */
+export const draftLine = (changed: number, same = '和线上一样'): string[] => ['未发布', changed > 0 ? `改了${digits(changed)}节` : same];
 
 /** 抽屉头的状态：「线上v2 · 另有1份草稿」 */
 export const historyStatus = (online: Pick<SopVersion, 'versionNo'>, hasDraft: boolean): string[] => [

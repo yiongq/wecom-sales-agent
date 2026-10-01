@@ -21,6 +21,8 @@
 // 页头写「还有2节要合并」、右侧「退出合并」「完成合并」，目录上要合并的节标「需合并」，中栏是这一节的左右对照（左边线上的写法只读，
 // 右边你的草稿可改、逐块「采用线上的写法」）和「这一节处理好了」；别的节只读，额度条与右栏收起，自动保存暂停。
 // 「完成合并」一次 PUT /sop/draft 带 rebaseOnto，成功以后回到发布抽屉。
+// owner 2026-10-01 的两条：自动保存没保存上时，常驻的发布条左边也写「没保存上 · 重试」（页头吸顶时状态句看不见）；
+// 草稿跟不上线上版本时，改动都相对草稿所基于的那一版算（useDraftBase），别人发布的改动不算你的。
 // 匿名（demo）只拿到已发布版本的节，全部只读，没有版本记录。
 // 出错就地显示（ErrorAlert，文案取 ERROR_COPY），成功只报 toast；丢弃走 ConfirmDanger；有没保存的改动时拦下离开这一页的跳转
 import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -74,9 +76,18 @@ import {
   withSavedDraft,
 } from '../sop/outline.js';
 import { discardBlock, historyStatus, loadPlan, type LoadPlan, overwriteText } from '../sop/history.js';
-import { HistoryList, SopActions, VersionBanner, VersionView } from '../sop/HistoryParts.js';
+import { HistoryList, SopActions, useKnownVersion, VersionBanner, VersionView } from '../sop/HistoryParts.js';
 import { editorProblems, locateViolations, type ProblemTarget, sectionNotes } from '../sop/problems.js';
-import { barBlock, firstProblem, notePrefill, onlineNow, type PublishedResult, publishedNames, replacedIn } from '../sop/publish.js';
+import {
+  barBlock,
+  firstProblem,
+  notePrefill,
+  onlineNow,
+  type PublishedResult,
+  publishedNames,
+  replacedIn,
+  sameAs,
+} from '../sop/publish.js';
 import {
   conflictTitle,
   exitText,
@@ -101,7 +112,7 @@ import { MergeActions, MergePane } from '../sop/MergeParts.js';
 import { ChangesDrawer, PublishBar, PublishDrawer, SopDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
-import { ConflictBanner, LostEdits, type LostSection, SaveState } from '../sop/SaveParts.js';
+import { ConflictBanner, LostEdits, type LostSection, SaveLive, SaveState } from '../sop/SaveParts.js';
 import { CheckCard, ToolsCard } from '../sop/SideCards.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
 import { cjk } from '../typography.js';
@@ -225,32 +236,55 @@ export function SopPage() {
   const viewer = useViewer();
   const pack = usePack();
   const q = useQuery(sopQuery);
-  const { section: param } = useSearch({ from: '/sop' });
   // 已经有数据时重取失败（发布、丢弃、回滚以后刷新）不换成整块出错：页面卸下来，编辑中的内容就丢了。错误在页头下就地显示
-  if (q.data === undefined) {
-    // 匿名没有额度条和分段控件；节标题下那一行，成员总有，匿名只在打开固定规则节时有（节表先取行业包的）
-    const member = viewer.data?.kind !== 'anon';
-    const packRows = pack?.sopSections ?? [];
-    const locked = packRows.find((s) => s.key === resolveSection(param, packRows))?.locked ?? false;
-    return (
-      <>
-        {/* 加载时状态句那一行先占着（看不见），骨架与成品的位置一致 */}
-        <PageHeader title={TITLE} status={q.isPending ? <span className="sop-status-pending" aria-hidden="true" /> : undefined} />
-        <StateView
-          pending={q.isPending}
-          error={q.error}
-          onRetry={() => void q.refetch()}
-          skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={member} filter={member} meta={member || locked} />}
-        />
-      </>
-    );
-  }
+  if (q.data === undefined)
+    return <SopPending member={viewer.data?.kind !== 'anon'} pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} />;
   const refetchError = q.isRefetchError ? <ErrorAlert error={q.error} onRetry={() => void q.refetch()} /> : null;
   return 'spec' in q.data ? (
     <MemberSop data={q.data} pack={pack} editable={canEdit(viewer.data)} now={q.dataUpdatedAt} refetchError={refetchError} />
   ) : (
     <AnonSop data={q.data} pack={pack} now={q.dataUpdatedAt} refetchError={refetchError} />
   );
+}
+
+/**
+ * 加载与第一次没取到（整块错误加重试）：骨架与成品的位置一致。匿名没有额度条和分段控件；节标题下那一行，成员总有，
+ * 匿名只在打开固定规则节时有（节表先取行业包的）
+ */
+function SopPending({ member, pending, error, onRetry }: { member: boolean; pending: boolean; error: unknown; onRetry: () => void }) {
+  const pack = usePack();
+  const { section: param } = useSearch({ from: '/sop' });
+  const packRows = pack?.sopSections ?? [];
+  const locked = packRows.find((s) => s.key === resolveSection(param, packRows))?.locked ?? false;
+  return (
+    <>
+      {/* 加载时状态句那一行先占着（看不见），骨架与成品的位置一致 */}
+      <PageHeader title={TITLE} status={pending ? <span className="sop-status-pending" aria-hidden="true" /> : undefined} />
+      <StateView
+        pending={pending}
+        error={error}
+        onRetry={onRetry}
+        skeleton={<SopSkeleton sections={pack?.sopSections.length ?? 11} quota={member} filter={member} meta={member || locked} />}
+      />
+    </>
+  );
+}
+
+/**
+ * 草稿的改动相对哪一版算（目录与额度条的「改过」、状态句与发布条的「草稿改了N节」、编辑器的改动标记、逐节改动、
+ * 丢弃与载入的确认）：草稿跟不上线上版本（draft.stale：草稿存下以后别人发布过）时是草稿所基于的那一版，不然是线上版本。
+ * 拿新的线上版本比，别人改的节会算成你改的，逐节改动写成你删掉了别人加的句子；发布时服务端按三方合并，那些节取的是别人的写法。
+ * 那一版要另取（同回滚确认，两边共用一个缓存）；这次打开页面以后见过的线上版本不再取：回滚、别人发布或回滚以后，
+ * 草稿的基线多半就是原来的线上版本。baseline 为 null 是还没取到（pending）或没取到（error）
+ */
+function useDraftBase({ published, draft }: SopOverview) {
+  const [seen, setSeen] = useState<readonly SopVersion[]>([published]);
+  if (!seen.some((v) => v.id === published.id)) setSeen([...seen, published]);
+  const id = draft?.stale && draft.basedOn !== null ? draft.basedOn : null;
+  const q = useKnownVersion(id, seen);
+  const { refetch } = q;
+  const retry = useCallback(() => void refetch(), [refetch]);
+  return { baseline: id === null ? published : (q.data ?? null), pending: id !== null && q.isPending, error: q.error, retry };
 }
 
 /**
@@ -373,6 +407,12 @@ function MemberSop({
   const qc = useQueryClient();
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
+  // 草稿的改动相对它算（useDraftBase）：多半是线上版本，草稿跟不上线上版本时是草稿所基于的那一版。第一次打开时等它取到再画，
+  // 之后换了（回滚、载入最新草稿以后草稿跟不上了）不卸下页面：取到之前先按线上版本比，没取到在页头下就地报错
+  const base = useDraftBase(data);
+  const compared = base.baseline ?? published;
+  const [shown, setShown] = useState(base.baseline !== null);
+  if (!shown && base.baseline !== null) setShown(true);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [rejected, setRejected] = useState<HttpError | null>(null);
   // 发布答 409 sop_conflict 时撞上的节：重查回来之前（或没查上时）抽屉照它写「有N节在你改的同时被改了」
@@ -550,7 +590,7 @@ function MemberSop({
   const rows = memberOutline({
     spec,
     packSections: pack?.sopSections,
-    published: published.sections,
+    published: compared.sections,
     current: current.sections,
     edits,
     violations: located?.map((v) => ({ sectionKey: v.section })),
@@ -570,14 +610,17 @@ function MemberSop({
   const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
   const changed = rows.filter((r) => r.changed);
-  const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(published, s.key) !== textOf(draft, s.key)) : [];
+  const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(compared, s.key) !== textOf(draft, s.key)) : [];
   // 丢弃是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点（发布条的「发布…」点了先存，见下面）
   const discardBlocked = discardBlock({ draft: !!draft, unsaved: unsaved.length > 0, saving, frozen });
   const viewing = nav.viewing;
   const saveError = saver.status.kind === 'failed' && errorCopy(saver.status.error).place !== 'inline' ? saver.status.error : null;
   const lostLoaded = lost?.loaded.length ? lost.loaded : null;
+  // 页面已经画出来以后才换的基准没取到：改动先按线上版本算着，页头下就地报错、能重试（第一次打开时没取到是整块出错，见下面的 SopPending）
+  const baseError = base.baseline === null ? base.error : null;
   const hasBanners =
     refetchError !== null ||
+    baseError !== null ||
     saveError !== null ||
     frozen ||
     lostLoaded !== null ||
@@ -665,7 +708,7 @@ function MemberSop({
   // 现在的线上版本：多半就是页面上的；检查发现别人在这期间发布过时是那时的线上版本（替换说明、逐节改动左边叫什么照它）
   const online = onlineNow(published, check.result?.online);
   // 抽屉与「查看改动」里的逐节改动（含本地还没保存的改动，与目录的「改过」同一口径）；只在开着时算
-  const changes = publishMounted || changesOf ? changedSections(spec, published.sections, current.sections, edits) : NO_CHANGES;
+  const changes = publishMounted || changesOf ? changedSections(spec, compared.sections, current.sections, edits) : NO_CHANGES;
   // 抽屉关上以后焦点回到打开它的按钮：关上之后的 effect 里还（抽屉的焦点陷阱这时已经放开），不等收起动画。
   // 点清单里的一项定位时不还（清掉 publishBack），焦点由定位放到正文里
   const publishBack = useRef<HTMLElement | null>(null);
@@ -819,7 +862,7 @@ function MemberSop({
     toast(`已把v${target.versionNo}载入草稿`);
   };
   const startLoad = (target: SopVersion, trigger: HTMLElement): void => {
-    const plan = loadPlan({ spec, published: published.sections, current: current.sections, edits, target });
+    const plan = loadPlan({ spec, published: compared.sections, current: current.sections, edits, target });
     if (plan.overwritten.length) {
       loadBack.current = trigger;
       setLoadingTarget({ target, plan });
@@ -1027,6 +1070,7 @@ function MemberSop({
     draft || changed.length > 0
       ? {
           changed: changed.length,
+          same: sameAs(compared, online),
           hashes: check.result
             ? ([
                 ['prompt', check.result.promptHash.slice(0, 12)],
@@ -1050,6 +1094,9 @@ function MemberSop({
   // 发布抽屉里撞上的节：发布答 409 以后重查回来之前（或没查上时）照 409 点名的写
   const drawerConflicts = (check.running || check.error !== null) && conflict ? conflict.keys : rebaseConflicts;
   const hasNotices = error !== null || rebaseNote !== null || (!merge && (!!rejected || rolledBackNote !== null));
+
+  // 第一次打开、草稿跟不上线上版本：取到草稿所基于的那一版以前是骨架，没取到是整块出错（同取 /sop）
+  if (!shown) return <SopPending member pending={base.pending} error={base.error} onRetry={base.retry} />;
 
   return (
     <>
@@ -1093,6 +1140,11 @@ function MemberSop({
         <div className="sop-banners">
           {/* 409 停住时重取失败由下面「载入最新草稿」自己的报错说（重试要接着走完载入），这里不重复 */}
           {!frozen && refetchError}
+          {baseError !== null && (
+            <ErrorAlert error={baseError} title="没取到草稿的基线版本" onRetry={base.retry}>
+              {cjk('改动先按线上版本算，别人改的节也会算进来')}
+            </ErrorAlert>
+          )}
           {saveError !== null && <ErrorAlert error={saveError} onRetry={saver.flush} />}
           {frozen && (
             <div ref={conflictRef} tabIndex={-1} className="sop-conflict">
@@ -1185,7 +1237,7 @@ function MemberSop({
                   frozen={frozen || merge !== null}
                   meta={merge ? readOnlyMeta(row) : undefined}
                   value={edits[section.key] ?? originalBody(section.key)}
-                  baseline={bodyOf(textOf(published, section.key), section.heading)}
+                  baseline={bodyOf(textOf(compared, section.key), section.heading)}
                   vocabulary={vocabulary}
                   problems={merge ? undefined : problems}
                   notes={merge ? undefined : notes}
@@ -1231,6 +1283,10 @@ function MemberSop({
           limit={quota.limit}
           block={block}
           opening={opening !== null}
+          unchanged={`草稿${sameAs(compared, online)}`}
+          // 页头吸顶时状态句藏起来，没保存上要在常驻的发布条上也看得见（409 另有横幅，滚进视口）
+          saveFailed={saver.status.kind === 'failed'}
+          onRetrySave={saver.flush}
           onPublish={startPublish}
           onJump={jumpToProblem}
           onChanges={(trigger) => {
@@ -1246,7 +1302,7 @@ function MemberSop({
         onClose={() => setPublishOpen(false)}
         afterClose={() => setPublishMounted(false)}
         spec={spec}
-        published={published}
+        published={compared}
         replacing={online}
         now={now}
         changes={changes}
@@ -1268,7 +1324,7 @@ function MemberSop({
         open={changesShown}
         section={changesOf?.section ? headingOf(spec, changesOf.section) : null}
         changes={changesOf?.section ? changes.filter((c) => c.key === changesOf.section) : changes}
-        published={published}
+        published={compared}
         online={online}
         onClose={() => setChangesOf((c) => c && { ...c, open: false })}
         afterClose={() => setChangesOf(null)}
@@ -1344,6 +1400,8 @@ function MemberSop({
           ? `草稿里${draftChanged.length}节改动（${draftChanged.map((s) => s.heading ?? PREAMBLE_NAME).join('、')}）会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`
           : `草稿会丢掉，线上v${published.versionNo}不受影响。这一步撤销不了。`}
       </ConfirmDanger>
+      {/* 读屏念保存状态的那一处：在页头以外，页头吸顶、状态句藏起来时照样念「没保存上」 */}
+      {editable && <SaveLive status={saver.status} />}
     </>
   );
 }
