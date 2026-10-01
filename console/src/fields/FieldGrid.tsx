@@ -3,7 +3,8 @@
 // （model.ts 的 groupGrid）。卡片本身（标题、锁定 Tag 与原因）由页面画（catalog/CatalogDetail.tsx），这里只排卡片体。
 // 锁怎么挂（§6.4）：卡片头声明了锁定、整卡又都锁着时，字段不挂锁，经 aria-describedby 指向卡片头的原因；混合卡里
 // 锁定的字段挂锁；锁定组已经在别的卡片头声明过（原因每组只说一次），这张卡虽然整卡锁着，字段照样挂锁。
-// 给了 original（打开时的内容）就标出改过的字段（「已改」），并给「撤销这处」。
+// 给了 original（打开时的内容）就标出改过的字段（「已改」），并给「撤销这处」；有序子项另按它给子字段标「已改」。
+// 有序子项的区块头右侧写条数提醒或「条数随天数锁定，文字可改」（model.ts 的 countNote，第 11 步）。
 // 给了 onUpdate（按函数改表单状态）时，每个字段只在自己的值（和它读的单位字段）变了才重画：详情页逐字重渲，
 // 下拉、联想、Tooltip 打开过一次以后弹层还挂着，@rc-component/portal 每次重画都在 effect 里 setState，
 // 快速连按时 React 报 #185（Maximum update depth exceeded，话术页第 5 步遇到过同一个问题）。
@@ -12,6 +13,7 @@ import { type FieldDef, type EntityType, valueAt } from '../../../src/shared/pac
 import { FormField, type FormFieldProps, type LockMark } from './FormField.js';
 import {
   countLocked,
+  countNote,
   fieldChanged,
   type GridCell,
   groupGrid,
@@ -51,8 +53,14 @@ interface GridBase {
 export type FieldGridProps = GridBase &
   ({ onChange(next: Payload): void; onUpdate?: never } | { onUpdate(fn: (state: Payload) => Payload): void; onChange?: never });
 
-/** 字段读的另一个字段（金额的单位取自 unitFrom）：它变了这个字段也要重画 */
-const depsOf = (f: FieldDef, state: Payload): readonly unknown[] => (f.unitFrom === undefined ? [] : [valueAt(state, f.unitFrom)]);
+/**
+ * 字段读的别的字段：它们变了这个字段也要重画。金额的单位取自 unitFrom；引用按 filterBy 筛候选（目的地换了，
+ * 「酒店库 · 贵州」跟着换），有序子项里的引用子字段同样。条数提醒不在这里：它是字符串 prop（countNote），本身就比
+ */
+const depsOf = (f: FieldDef, state: Payload): readonly unknown[] => {
+  const keys = [f.unitFrom, f.filterBy, ...(f.item ?? []).map((s) => s.filterBy)].filter((k): k is string => k !== undefined);
+  return keys.map((k) => valueAt(state, k));
+};
 
 export type MemoProps = FormFieldProps & { deps: readonly unknown[] };
 
@@ -70,7 +78,8 @@ export function itemErrorsOf(errors: Notes, key: string): Notes {
 }
 
 /**
- * 只在画出来的东西变了时重画：回调（onChange、onUndo）按函数改状态，不怕旧；row 只给金额取单位，单位在 deps 里比。
+ * 只在画出来的东西变了时重画：回调（onChange、onUndo）按函数改状态，不怕旧；row 只给金额取单位、引用取 filterBy 的值，
+ * 这两样在 deps 里比。
  * 值按引用比：writeValue 只复制改动路径上的对象，别的字段的值还是原来那个；有序子项里各处的报错每次是新对象，按内容比
  */
 export function sameCell(a: MemoProps, b: MemoProps): boolean {
@@ -114,6 +123,9 @@ export function FieldGrid(p: FieldGridProps) {
       error: errors?.[f.key],
       itemErrors: f.type === 'subItems' ? itemErrorsOf(errors, f.key) : undefined,
       countLocked: f.type === 'subItems' ? countLocked(entity, f, ctx) : undefined,
+      countNote: f.type === 'subItems' ? countNote(entity, f, state, ctx) : undefined,
+      // 有序子项按打开时的值给子字段标「已改」；值取自打开时的那个对象，引用不变，不妨碍按字段记忆
+      original: f.type === 'subItems' && original !== undefined ? valueAt(original, f.key) : undefined,
       changed: original !== undefined && fieldChanged(original, state, f),
       onUndo: original === undefined ? undefined : () => apply((s) => restoreField(s, original, f)),
       lockedMembers: lockedMembers(f, ctx),

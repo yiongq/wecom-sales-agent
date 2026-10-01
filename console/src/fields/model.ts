@@ -398,20 +398,207 @@ export interface RefItem {
   name: string;
   /** 匿名的列表没有状态 */
   status?: 'draft' | 'active';
+  /** 这一条的内容：联想按 filterBy 筛候选时取对方的同名字段（第 11 步）；不给就筛不出来 */
+  payload?: Payload;
 }
 
-/** 把目标实体的列表换成引用候选。payload 里取不到名称的写编号 */
+/** 把目标实体的列表换成引用候选。payload 里取不到名称的写编号；payload 原样带着（同一个对象，不拷贝） */
 export function refItemsOf(
   target: EntityType,
   items: readonly { code: string; status?: 'draft' | 'active'; payload: object }[],
 ): RefItem[] {
   return items.map((it) => {
     const name = valueAt(it.payload as Payload, target.titleKey);
-    return { code: it.code, name: typeof name === 'string' && name ? name : it.code, status: it.status };
+    return { code: it.code, name: typeof name === 'string' && name ? name : it.code, status: it.status, payload: it.payload as Payload };
   });
 }
 
 /** 引用的值指向哪一条：store 为 label 时按名称找，否则按编号找；库里找不到（allowFree 写的库外文本、被删的条目）返回 null */
 export function resolveRef(f: FieldDef, value: string, items: readonly RefItem[] | undefined): RefItem | null {
   return items?.find((it) => (f.store === 'label' ? it.name === value : it.code === value)) ?? null;
+}
+
+// ---------------- 有序子项编辑器与引用的联想（plan 第 11 步，spec「有序子项与引用」，设计系统 §6.3） ----------------
+
+/** 一项在竖轴上的节点：done 全部填好（实心）；gap 有没填的必填子字段（空心）；error 这一项有写错的地方（空心，danger） */
+export type ItemState = 'done' | 'gap' | 'error';
+
+/**
+ * 空串算没填的子字段：上架前检查对它们的空串报「没填」「没选」（文字、长文本、月份区间、单选引用、单选或按字符串存的 enum）；
+ * 数字、是否、数组类型的空串是写法不对，不算缺项
+ */
+const blankIsEmpty = (s: FieldDef): boolean =>
+  s.type === 'text' ||
+  s.type === 'longText' ||
+  s.type === 'monthRange' ||
+  (s.type === 'reference' && !s.multiple) ||
+  (s.type === 'enum' && (!s.multiple || s.storeAs !== undefined));
+
+/** 多字段有序子项的一项里没填的必填子字段（口径见 itemGaps） */
+function gapFields(f: FieldDef, item: unknown): FieldDef[] {
+  if (isSingleItem(f)) return [];
+  const it = isRecord(item) ? item : {};
+  return (f.item ?? []).filter((s) => {
+    if (s.required === false) return false;
+    const v = Object.hasOwn(it, s.key) ? it[s.key] : undefined;
+    return v === undefined || v === null || (v === '' && blankIsEmpty(s));
+  });
+}
+
+/**
+ * 多字段有序子项的一项里没填的必填子字段，按包里的顺序写标签（「缺：当晚住宿」）。口径同上架前检查报「没填」「没选」的那些：
+ * 缺键、null，以及上面几种类型的空串；必填的数组子字段只要求键在（[] 也算填了）。单字段的有序子项没有节点，返回空
+ */
+export const itemGaps = (f: FieldDef, item: unknown): string[] => gapFields(f, item).map((s) => s.label);
+
+/**
+ * 第 i 项的节点（设计系统 §6.3）：有校验错误是 error——这一项本身的报错（天号），或写了却写得不对的子字段的报错
+ * （itemErrors 的键是 'i' 或 'i.子字段'）；没填的子字段离开以后字段下方也报「没填」，节点照旧算缺项（gap，「缺：当晚住宿」），
+ * 红色只留给写错的。没有报错时看缺项
+ */
+export function itemState(f: FieldDef, item: unknown, i: number, errors?: Readonly<Record<string, string>>): ItemState {
+  const at = String(i);
+  const gaps = gapFields(f, item).map((s) => `${at}.${s.key}`);
+  if (Object.keys(errors ?? {}).some((k) => k === at || (k.startsWith(`${at}.`) && !gaps.includes(k)))) return 'error';
+  return gaps.length ? 'gap' : 'done';
+}
+
+/**
+ * 条数提醒（区块头右侧，13 warning）：条数与 countFrom 指向的字段对不上时写「还差1天」「多了1天」，与上架前检查的那一项
+ * 同一个口径（src/shared/pack.ts 的 checkItem）：那个字段没填或没填对（不是整数、小于下限）时由它自己报，这里不写
+ */
+export function countGap(entity: EntityType, f: FieldDef, state: Payload): string | undefined {
+  if (f.countFrom === undefined) return undefined;
+  const by = entity.fields.find((x) => x.key === f.countFrom);
+  const want = valueAt(state, f.countFrom);
+  const items = valueAt(state, f.key);
+  if (!by || typeof want !== 'number' || !Number.isSafeInteger(want) || want < (by.min ?? 0) || !Array.isArray(items)) {
+    return undefined;
+  }
+  const diff = want - items.length;
+  return diff === 0 ? undefined : diff > 0 ? `还差${diff}${nounOf(f)}` : `多了${-diff}${nounOf(f)}`;
+}
+
+/** 区块头右侧的说明：条数随另一个字段锁定时「条数随天数锁定，文字可改」（13 text-2），不然是条数提醒（可能没有） */
+export function countNote(entity: EntityType, f: FieldDef, state: Payload, ctx: ItemContext): string | undefined {
+  if (!countLocked(entity, f, ctx)) return countGap(entity, f, state);
+  const by = entity.fields.find((x) => x.key === f.countFrom);
+  return `条数随${by?.label ?? ''}锁定，文字可改`;
+}
+
+export interface ItemCell {
+  field: FieldDef;
+  /** half 占一格，wide 占满一行（子字段里没有 block） */
+  span: Span;
+}
+
+/**
+ * 一项里的子字段怎么排（设计系统 §6.0、§6.3）：两列网格，半格的两两排进一行，占满一行的单占一行。照包里的顺序，
+ * 一个半格先占一行的左边，后面的第一个半格补到它右边，夹在中间的占满一行的字段排到这一行下面。DOM 顺序就是画出来的顺序
+ * （不用 grid-auto-flow: dense：它只挪视觉位置，Tab 和读屏的顺序不跟着变）。
+ * 旅游包的一天是「当天标题、当晚住宿」一行，再是当天安排、当天餐食：E 页首屏要看得见第一天的这一行（spec「产品库详情与编辑」）。
+ * 返回一行一行的；只读时（mode 不是 edit）多选 enum、月份区间只占一格，同表单网格
+ */
+export function itemRows(f: FieldDef, mode: FieldMode = 'edit'): ItemCell[][] {
+  const rows: ItemCell[][] = [];
+  let open: ItemCell[] | null = null;
+  for (const s of f.item ?? []) {
+    const cell: ItemCell = { field: s, span: LAYOUT[s.type].span(s, mode) };
+    if (cell.span !== 'half') rows.push([cell]);
+    else if (open) {
+      open.push(cell);
+      open = null;
+    } else {
+      open = [cell];
+      rows.push(open);
+    }
+  }
+  return rows;
+}
+
+/**
+ * 「复制上一{itemNoun}的{字段名}」要复制的值：上一项这个子字段填了、和这一项的不一样时是那个值，否则 undefined（不画按钮）。
+ * 第一项没有上一项
+ */
+export function copyFromPrev(items: readonly unknown[], i: number, key: string): unknown {
+  if (i <= 0 || i >= items.length) return undefined;
+  const at = (it: unknown): unknown => (isRecord(it) && Object.hasOwn(it, key) ? it[key] : undefined);
+  const prev = at(items[i - 1]);
+  return filled(prev) && !sameValue(prev, at(items[i])) ? prev : undefined;
+}
+
+/** 本条别的项里写过的一个值，at 是第一次出现在哪一项（「第2天」） */
+export interface Written {
+  value: string;
+  at: string;
+}
+
+/**
+ * 「本条写过的」：同一个有序子项里，别的项在这个子字段上写过的值（多选的展开），按出现的先后去重，跳过第 i 项自己和空的
+ */
+export function writtenValues(f: FieldDef, items: readonly unknown[], i: number, key: string): Written[] {
+  const out: Written[] = [];
+  items.forEach((it, k) => {
+    if (k === i || !isRecord(it) || !Object.hasOwn(it, key)) return;
+    const v = it[key];
+    for (const x of Array.isArray(v) ? v : [v]) {
+      if (typeof x === 'string' && x !== '' && !out.some((w) => w.value === x)) out.push({ value: x, at: `第${k + 1}${nounOf(f)}` });
+    }
+  });
+  return out;
+}
+
+/** filterBy 的取值写进分组标题：文字、数字照写，别的（没填、数组、对象）不写 */
+const filterText = (v: unknown): string | undefined =>
+  typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : undefined;
+
+/**
+ * 引用联想的第一组「{实体名}库 · 贵州」（spec「有序子项与引用」）：目标实体的列表，有 filterBy 时只留对方同名字段和本条目
+ * 取值相同的（旅游包按目的地）。scope 是本条目的内容（filterBy 是顶层字段）；本条目这个字段没填时不筛，标题只写「{实体名}库」。
+ * keep 里的值（已经选上的）即使筛掉了也留在候选里：下拉要靠候选写出名称
+ */
+export function refLibrary(
+  f: FieldDef,
+  items: readonly RefItem[],
+  scope: Payload,
+  keep: readonly string[] = [],
+): { items: RefItem[]; filter: string | undefined } {
+  const want = f.filterBy === undefined ? undefined : valueAt(scope, f.filterBy);
+  const filter = filterText(want);
+  if (f.filterBy === undefined || filter === undefined) return { items: [...items], filter: undefined };
+  const by = f.filterBy;
+  const keyOf = (it: RefItem): string => (f.store === 'label' ? it.name : it.code);
+  return {
+    items: items.filter((it) => (it.payload !== undefined && sameValue(valueAt(it.payload, by), want)) || keep.includes(keyOf(it))),
+    filter,
+  };
+}
+
+/**
+ * allowFree 的引用写了库外的文本：控件下方注「{实体名}库里没有这个，按原文保存」（提示，不是错误）。
+ * 候选还没取到时不说（不知道库里有没有）
+ */
+export const freeText = (f: FieldDef, value: unknown, items: readonly RefItem[] | undefined): boolean =>
+  f.allowFree === true &&
+  !f.multiple &&
+  typeof value === 'string' &&
+  value !== '' &&
+  items !== undefined &&
+  resolveRef(f, value, items) === null;
+
+/** 长文本的字数：按字符数，一个汉字、一个表情都算一个（右下角的计数与 softMax 的提示都按它） */
+export const charCount = (s: string): number => [...s].length;
+
+/** 长文本超过 softMax：字数变成 warning 色，提示「手机上会很长（建议120字以内）」，不拦上架 */
+export const overSoftMax = (f: FieldDef, v: unknown): boolean =>
+  f.type === 'longText' && f.softMax !== undefined && typeof v === 'string' && charCount(v) > f.softMax;
+
+/**
+ * 有序子项第 i 项的子字段改过（「已改」）：条数没变时按位置和打开时的那一项比（与保存条逐项、逐个子字段列改动同一个口径，
+ * catalog/save.ts）；条数变了只在区块头标「已改」，子字段不标
+ */
+export function subChanged(original: unknown, items: readonly unknown[], i: number, key: string): boolean {
+  if (!Array.isArray(original) || original.length !== items.length) return false;
+  const at = (it: unknown): unknown => (isRecord(it) && Object.hasOwn(it, key) ? it[key] : undefined);
+  return !sameValue(at(original[i]), at(items[i]));
 }
