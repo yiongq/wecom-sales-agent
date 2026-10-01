@@ -119,6 +119,7 @@ import {
   sectionMeta,
   stepSection,
   unsavedEdits,
+  withPublished,
   withSavedDraft,
 } from './outline.js';
 import {
@@ -135,8 +136,10 @@ import {
 } from './problems.js';
 import {
   barBlock,
+  baseName,
   changedText,
   DIFF_MODE_KEY,
+  diffAgainst,
   drawerBlock,
   firstProblem,
   lineStat,
@@ -152,7 +155,7 @@ import {
   writeDiffMode,
 } from './publish.js';
 import { useDraftCheck } from './check.js';
-import { useShownWhileClosing } from './PublishParts.js';
+import { PublishDrawer, type PublishDrawerProps, useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
 import { checkItems } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
@@ -2398,6 +2401,9 @@ function fakeServer(start: SopOverview) {
     publishConflict: null as { keys: string[]; current: SopSectionText[] } | null,
     /** 发布答 422 契约没过（带这些问题），或 500（第 11 节） */
     publishFails: null as { contract: ContractViolation[] } | 'error' | null,
+    /** 发布按住（放开时按那时的 publishFails 回） */
+    publishHold: false,
+    publishHeld: [] as { resolve(): void }[],
     /** 发布过的版本（线上的与归档的），新的在前；GET /sop/versions 按 before、limit 从这里取 */
     released: [start.published] as SopVersion[],
     /** GET /sop/versions 答 500，或者答一个不相干的版本（不是 before 前面紧挨着的那一个） */
@@ -2457,6 +2463,11 @@ function fakeServer(start: SopOverview) {
       return json(200, { ok: true });
     }
     if (call.method === 'POST' && call.path === '/api/console/sop/draft/publish') {
+      if (srv.publishHold) {
+        const d = deferred<void>();
+        srv.publishHeld.push({ resolve: () => d.resolve() });
+        await d.promise;
+      }
       if (srv.publishConflict) return json(409, { error: 'sop_conflict', detail: '冲突', ...srv.publishConflict });
       if (srv.publishFails === 'error') return json(500, { error: 'internal', detail: '出错了' });
       if (srv.publishFails) return json(422, { error: 'contract', detail: '没过', violations: srv.publishFails.contract });
@@ -4279,6 +4290,19 @@ function recordScroll(): { calls: string[]; restore(): void } {
     ['inline', ['split', 'split'], 'inline', 'inline', false],
   );
   localStorage.removeItem(DIFF_MODE_KEY);
+
+  const [at2, at3] = [{ versionNo: 2 }, { versionNo: 3 }];
+  eq(
+    '逐节改动左边那一版：还在线上时是「线上v2」；线上已是 v3 时只写「v2」，「查看改动」写线上已是哪一版',
+    [baseName(at2, at2), diffAgainst(at2, at2), baseName(at2, at3), diffAgainst(at2, at3)],
+    ['线上v2', '相对线上v2', 'v2', '相对v2（线上已是v3）'],
+  );
+  const pubd = withPublished(MEMBER_SOP, version(3, DRAFT, { basedOn: 'v2' }));
+  eq(
+    '发布成功以后的 /sop：线上换成发布结果、没有草稿，字数按它算，节表与上限不变',
+    [pubd.published.versionNo, pubd.draft, pubd.budget, pubd.spec === MEMBER_SOP.spec],
+    [3, null, { chars: editableChars(DRAFT, SPEC), limit: MEMBER_SOP.budget.limit }, true],
+  );
 }
 
 // 11.2 差异的样子：行内是一个编辑器（unifiedMergeView，没有逐块采用的按钮、没有改动沟槽），并排是左右两个；没改的折叠、写中文；
@@ -4915,7 +4939,8 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
   await m.unmount();
 }
 
-// 11.3f 发布没成功（500）：错误写在抽屉体的最上面、滚进视口，抽屉开着、说明还在；关上再打开不留上一次的错误；重试成功
+// 11.3f 发布没成功（500）：错误写在抽屉体的最上面、滚进视口，抽屉开着、说明还在；错误里的「重试」同「发布」先看能不能发布；
+// 关上再打开不留上一次的错误；重试成功
 {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
@@ -4936,6 +4961,17 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
     ],
     [true, true, true],
   );
+  const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
+  const mine = ta.value;
+  await setText(ta, '修改：话术原则、异议处理。');
+  await clickEv(all(d, '.sop-publish-error button').find((b) => label(b) === '重试'));
+  await settle();
+  eq(
+    '说明改回只剩预填，点错误里的「重试」：同「发布」，不发，焦点到说明框',
+    [posted('/draft/publish').length, text(d.querySelector('.sop-drawer-reason')), document.activeElement === ta],
+    [1, '在说明里写上为什么改', true],
+  );
+  await setText(ta, mine);
   await clickEv(drawerButton(d, '取消'));
   await waitFor(() => !drawerOf('发布草稿'));
   await clickEv(barButton(m, '发布…'));
@@ -5242,6 +5278,236 @@ for (const lookupFails of [false, true, 'other'] as const) {
       ['已发布v4', '·客户下一句就用新话术', ['查看改动', '发布…'], false, false],
     );
   await m.unmount();
+}
+
+// 11.3o3 别人在这期间发布过（检查另取到线上 v3）：逐节改动左边那一版是页面上的 v2，不再叫「线上」（并排的栏头、读屏名称），
+// 同一个抽屉里「线上」只指替换说明里的 v3；「查看改动」写相对v2（线上已是v3）
+{
+  localStorage.setItem(DIFF_MODE_KEY, 'split');
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = scanRebase;
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.check-list-meta')) === '检查于14:30');
+  const d = drawerOf('发布草稿')!;
+  eq(
+    '发布抽屉：替换说明写线上v3；并排左栏与读屏名称写 v2，不写线上v2',
+    [
+      text(d.querySelector('.sop-publish-replace')),
+      all(d.querySelector('.sop-diff-cols')!, 'span').map((e) => text(e)),
+      all(d, '.cm-content')
+        .slice(0, 2)
+        .map((e) => e.getAttribute('aria-label')),
+    ],
+    ['将替换线上v3（店长·9月25日 20:00发布）', ['v2', '草稿'], ['「话术原则」v2', '「话术原则」草稿']],
+  );
+  await clickEv(drawerButton(d, '取消'));
+  await waitFor(() => !drawerOf('发布草稿'));
+  await clickEv(barButton(m, '查看改动'));
+  await waitFor(() => !!drawerOf('草稿的改动'));
+  const c = drawerOf('草稿的改动')!;
+  eq(
+    '查看改动：标题后写相对v2（线上已是v3），左栏写 v2',
+    [text(c.querySelector('.ant-drawer-title')), all(c.querySelector('.sop-diff-cols')!, 'span').map((e) => text(e))],
+    ['草稿的改动相对v2（线上已是v3）', ['v2', '草稿']],
+  );
+  localStorage.removeItem(DIFF_MODE_KEY);
+  await m.unmount();
+}
+
+// 11.3p 发布成功了、紧接着重取 /sop 没成功：条里照样是「已发布v3（改了…）· 回滚到v2」、「发布…」不能点，状态句是 v3，
+// 页头下就地报错（发布结果直接写进缓存，不等重取）；之后再改，从 v3 新建草稿存起，不带已经发布出去的那份草稿的 rev
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  srv.getFails = true;
+  await publishVia(m, '先问预算');
+  await waitFor(() => !!m.box.querySelector('.sop-banners .ant-alert'));
+  await settle();
+  eq(
+    '重取没成功：条里写已发布v3 与「回滚到v2」，「发布…」不能点；状态句线上v3；页头下报错；抽屉关上、不弹 toast',
+    [
+      barText(m),
+      barBlocked(m),
+      text(m.box.querySelector('.page-status')).startsWith('线上v3'),
+      all(m.box, '.sop-banners .ant-alert-title').map((t) => text(t)),
+      !!drawerOf('发布草稿'),
+      all(document.body, '.ant-message-notice').length,
+    ],
+    [
+      { summary: '已发布v3（改了话术原则、异议处理）', hint: '·客户下一句就用新话术·回滚到v2', note: '没有可发布的改动' },
+      true,
+      true,
+      ['服务暂时连不上'],
+      false,
+      0,
+    ],
+  );
+  await typeAtEnd(m, '庚');
+  await waitFor(() => srv.puts().length === 1);
+  eq(
+    '之后再改：从 v3 新建草稿（rev 为 null，basedOn 是 v3）',
+    srv.puts().map((b) => [b.rev, b.basedOn]),
+    [[null, 'v3']],
+  );
+  await m.unmount();
+}
+
+// 11.3q 发布请求在路上：「取消」、关闭按钮不能点，Esc、点遮罩也关不掉（关上并不撤回请求，没成功时错误也没处写）；
+// 回来答 500，错误写在还开着的抽屉里，这时又能关
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  srv.publishHold = true;
+  srv.publishFails = 'error';
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await publishVia(m, '先问预算');
+  await waitFor(() => srv.publishHeld.length === 1);
+  const d = drawerOf('发布草稿')!;
+  const close = d.querySelector<HTMLButtonElement>('.ant-drawer-extra button[aria-label="关闭"]');
+  eq(
+    '在路上：「发布」转圈，「取消」与关闭按钮 disabled，旁边写正在发布',
+    [
+      drawerButton(d, '发布')?.classList.contains('ant-btn-loading'),
+      drawerButton(d, '取消')?.disabled,
+      close?.disabled,
+      text(d.querySelector('.sop-drawer-reason')),
+    ],
+    [true, true, true, '正在发布…'],
+  );
+  await key(d.querySelector('.sop-drawer-scroll'), 'Escape');
+  await clickEv(d.querySelector('.ant-drawer-mask'));
+  await clickEv(close);
+  await clickEv(drawerButton(d, '取消'));
+  await settle();
+  eq('这时按 Esc、点遮罩、点关闭与「取消」：抽屉还开着', drawerOf('发布草稿') === d, true);
+  await act(async () => srv.publishHeld.shift()?.resolve());
+  await waitFor(() => !!d.querySelector('.sop-publish-error .ant-alert-error'));
+  eq(
+    '答 500：错误写在还开着的抽屉里，「取消」与关闭按钮又能点，不再写正在发布',
+    [
+      drawerOf('发布草稿') === d,
+      !!d.querySelector('.sop-publish-error .ant-alert-error'),
+      drawerButton(d, '取消')?.disabled,
+      close?.disabled,
+      d.querySelector('.sop-drawer-reason'),
+    ],
+    [true, true, false, false, null],
+  );
+  await key(d.querySelector('.sop-drawer-scroll'), 'Escape');
+  await waitFor(() => !drawerOf('发布草稿'));
+  eq('回来以后 Esc 照常关上', !!drawerOf('发布草稿'), false);
+  await m.unmount();
+}
+
+// 11.3r 点「发布…」先存，这一次撞上 409：不打开抽屉、按钮不再转圈（原因写载入最新草稿）；载入最新草稿以后抽屉也不会自己打开
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
+  await waitFor(() => summaryOf(m) === '7/7通过');
+  await typeAtEnd(m, '辛');
+  srv.mode = 'conflict';
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => editorEditable(m) === 'false');
+  await rest(40);
+  eq(
+    '存的时候 409：不打开抽屉，「发布…」不再转圈、不能点',
+    [!!drawerOf('发布草稿'), barButton(m, '发布…')?.classList.contains('ant-btn-loading'), barBlocked(m), srv.puts().length],
+    [false, false, true, 1],
+  );
+  srv.mode = 'ok';
+  await clickEv(m.box.querySelector('.sop-conflict .ant-alert-actions button'));
+  await waitFor(() => editorEditable(m) === 'true');
+  await rest(80);
+  eq('载入最新草稿以后：抽屉也不会自己打开', !!drawerOf('发布草稿'), false);
+  await m.unmount();
+}
+
+// 11.3s 有问题、但没有一个落得到节上（节表整体不对）：点「发布…」不开抽屉、不换节，把检查清单滚进视口；
+// 发布抽屉的体滚动以后头下才有分隔线，滚回顶上又没了
+{
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => ({ ...scan(s), violations: [{ code: 'structure', sectionKey: null, detail: 'x' }] });
+  const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => /^[0-6]\/7通过$/.test(summaryOf(m)));
+  const scrolls = recordScroll();
+  await clickEv(barButton(m, '发布…'));
+  await settle();
+  scrolls.restore();
+  eq(
+    '没有去处的问题：「发布…」aria-disabled，点了不开抽屉、不换节，检查清单滚进视口',
+    [barBlocked(m), !!drawerOf('发布草稿'), m.section(), scrolls.calls],
+    [true, false, 'tone', ['sop-col-check nearest']],
+  );
+  await m.unmount();
+
+  const srv2 = fakeServer(CLEAN_SOP);
+  srv2.check = (s) => scan(s);
+  const m2 = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
+  await waitFor(() => summaryOf(m2) === '7/7通过');
+  await clickEv(barButton(m2, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
+  const d = drawerOf('发布草稿')!;
+  const body = d.querySelector<HTMLElement>('.sop-drawer-scroll')!;
+  const divided = (): boolean | undefined => d.querySelector('.ant-drawer-header')?.classList.contains('is-scrolled');
+  const scrollTo = async (y: number): Promise<void> => {
+    body.scrollTop = y;
+    await act(async () => void body.dispatchEvent(new win.Event('scroll') as unknown as Event));
+  };
+  const top = divided();
+  await scrollTo(120);
+  const down = divided();
+  await scrollTo(0);
+  eq('抽屉头下的分隔线：在顶上没有，滚下去有，滚回来又没了', [top, down, divided()], [false, true, false]);
+  await m2.unmount();
+}
+
+// 11.3u 发布抽屉收起的那一下（useShownWhileClosing 接在抽屉上）：关上时传进来的新属性（发布成功以后线上已是 v3、没有改动、
+// 说明清空）不画，还是关上那一刻的样子
+{
+  const v3 = version(3, D_CLEAN, { publishedByName: '店长' });
+  const props = (over: Partial<PublishDrawerProps>): PublishDrawerProps => ({
+    open: true,
+    onClose: noop,
+    spec: SPEC,
+    published: CLEAN_SOP.published,
+    replacing: CLEAN_SOP.published,
+    now: NOW,
+    changes: changedSections(SPEC, P_ONLINE, D_CLEAN, {}),
+    located: null,
+    budget: null,
+    check: { running: false, failed: false, at: NOW, retry: noop },
+    conflicts: [],
+    note: '修改：话术原则、异议处理。先问预算',
+    prefill: '修改：话术原则、异议处理。',
+    onNote: noop,
+    publishing: false,
+    error: null,
+    onPublish: noop,
+    onLocate: noop,
+    ...over,
+  });
+  const r = await rootFor(<PublishDrawer {...props({})} />);
+  // happy-dom 没有收起动画，抽屉关上就卸下；卸下之前 React 照关上时的属性画过的那一遍留在拿下来的节点上
+  const d = drawerOf('发布草稿')!;
+  const [replace, body, ta] = [
+    d.querySelector('.sop-publish-replace'),
+    d.querySelector('.sop-publish-changes'),
+    d.querySelector('textarea'),
+  ];
+  await r.render(<PublishDrawer {...props({ open: false, published: v3, replacing: v3, changes: [], note: '', prefill: '' })} />);
+  eq(
+    '关上的那一刻：替换说明、逐节改动、说明都还是关上之前的',
+    [!!drawerOf('发布草稿'), text(replace), all(body!, '.sop-diff-name').map((e) => text(e)), ta?.value],
+    [false, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '修改：话术原则、异议处理。先问预算'],
+  );
+  await r.unmount();
 }
 
 respond = null;
