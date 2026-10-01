@@ -4297,11 +4297,13 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [baseName(at2, at2), diffAgainst(at2, at2), baseName(at2, at3), diffAgainst(at2, at3)],
     ['线上v2', '相对线上v2', 'v2', '相对v2（线上已是v3）'],
   );
-  const pubd = withPublished(MEMBER_SOP, version(3, DRAFT, { basedOn: 'v2' }));
+  // 发布结果与草稿的字数不同（三方合并时取了别人改的节），字数按发布结果算
+  const merged = withBodies(DRAFT, { preamble: '别人改的前言。\n\n' });
+  const pubd = withPublished(MEMBER_SOP, version(3, merged, { basedOn: 'v2' }));
   eq(
     '发布成功以后的 /sop：线上换成发布结果、没有草稿，字数按它算，节表与上限不变',
-    [pubd.published.versionNo, pubd.draft, pubd.budget, pubd.spec === MEMBER_SOP.spec],
-    [3, null, { chars: editableChars(DRAFT, SPEC), limit: MEMBER_SOP.budget.limit }, true],
+    [pubd.published.versionNo, pubd.draft, pubd.budget, pubd.spec === MEMBER_SOP.spec, MEMBER_SOP.budget.chars !== pubd.budget.chars],
+    [3, null, { chars: editableChars(merged, SPEC), limit: MEMBER_SOP.budget.limit }, true, true],
   );
 }
 
@@ -5494,7 +5496,9 @@ for (const lookupFails of [false, true, 'other'] as const) {
     ...over,
   });
   const r = await rootFor(<PublishDrawer {...props({})} />);
-  // happy-dom 没有收起动画，抽屉关上就卸下；卸下之前 React 照关上时的属性画过的那一遍留在拿下来的节点上
+  // 打开的动画放完（antd 的 motionDeadline 500 毫秒；happy-dom 不发 transitionend）以后再关，关上时才有收起的那一段：
+  // 收起期间照关上时的属性画，卸下以后画过的样子留在拿下来的节点上
+  await rest(600);
   const d = drawerOf('发布草稿')!;
   const [replace, body, ta] = [
     d.querySelector('.sop-publish-replace'),
