@@ -349,10 +349,10 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
         },
         {
           key: 'open',
-          title: '',
+          // 表头看不见，但要有读屏念得出的字（aria-label 不算表头文字，axe empty-table-header）
+          title: <span className="cv-sr">操作</span>,
           align: 'right',
           className: 'cv-op-cell',
-          onHeaderCell: () => ({ 'aria-label': '操作' }),
           render: (_, r) => (
             <Button
               type="text"

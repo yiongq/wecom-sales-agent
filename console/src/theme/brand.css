@@ -245,3 +245,21 @@ select {
   animation-duration: 0s !important;
   transition-duration: 0s !important;
 }
+/*
+ * antd 自带控件的两处令牌管不到的写法（§5.4、§5.20；令牌在 theme/antd.ts）。antd 的样式表插在前面，同权重时这里的赢。
+ * 一、焦点框：宽 2 由 lineWidthFocus 给、颜色是 colorPrimaryBorder（--focus），antd 把偏移写死成 1，这里统一成 2（§3）。
+ * 二、分段控件的选中段字重 500（圈由 Segmented 的 boxShadowTertiary 画）
+ */
+.ant-btn:not(:disabled):focus-visible,
+.ant-switch:focus-visible,
+.ant-segmented .ant-segmented-item-focused,
+.ant-tabs .ant-tabs-tab.ant-tabs-tab-focus .ant-tabs-tab-btn:focus-visible,
+.ant-pagination .ant-pagination-item:focus-visible,
+.ant-pagination .ant-pagination-prev:focus-visible .ant-pagination-item-link,
+.ant-pagination .ant-pagination-next:focus-visible .ant-pagination-item-link,
+.ant-checkbox-wrapper .ant-checkbox:has(.ant-checkbox-input:focus-visible) {
+  outline-offset: 2px;
+}
+.ant-segmented .ant-segmented-item-selected {
+  font-weight: 500;
+}

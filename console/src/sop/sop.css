@@ -469,7 +469,7 @@
   flex-direction: column;
   min-width: 0;
 }
-/* 分段控件：三段等宽，每段写名字和 text-3 的计数；选中段 --thumb 底加 1px --control-border 的环（§5.4，≥3:1） */
+/* 分段控件：三段等宽，每段写名字和 text-3 的计数（计数不跟选中段加粗）；选中段的环与字重在全站主题里（theme/antd.ts、brand.css） */
 .sop-toc-filter .ant-segmented-item-label {
   display: flex;
   align-items: center;
@@ -484,13 +484,6 @@
 .sop-toc-filter-n {
   font-weight: 400;
   color: var(--text-3);
-}
-.sop-toc-filter .ant-segmented-item-selected,
-.sop-toc-filter .ant-segmented-thumb {
-  box-shadow: 0 0 0 1px var(--control-border);
-}
-.sop-toc-filter .ant-segmented-item-selected .sop-toc-filter-label {
-  font-weight: 500;
 }
 .sop-toc-list {
   display: flex;
@@ -911,13 +904,6 @@
 }
 .sop-changes-none {
   margin: 0;
-}
-.sop-diff-mode .ant-segmented-item-selected,
-.sop-diff-mode .ant-segmented-thumb {
-  box-shadow: 0 0 0 1px var(--control-border);
-}
-.sop-diff-mode .ant-segmented-item-selected {
-  font-weight: 500;
 }
 
 /*

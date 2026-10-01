@@ -7,7 +7,7 @@
 // - 每页首个可聚焦元素是「跳到主要内容」；侧栏的导航是 nav 地标，内容面板是 main 地标。
 // - 退出没成功（服务端的会话还在）时仍是成员，错误就地显示在内容区顶上
 import { useQueryClient } from '@tanstack/react-query';
-import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
+import { Link, Outlet, useNavigate, useRouter, useRouterState } from '@tanstack/react-router';
 import { Drawer } from 'antd';
 import { Info, LogIn, LogOut, Menu, Moon, Sun, SunMoon } from 'lucide-react';
 import { type MouseEvent, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -22,7 +22,7 @@ import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { logout, toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { AboutDialog } from './AboutDialog.js';
 import { CommandPalette, type PaletteAction } from './CommandPalette.js';
-import { isMac, useDocumentTitle, useViewport } from './hooks.js';
+import { focusMain, isMac, useDocumentTitle, useViewport } from './hooks.js';
 import { IconButton } from './IconButton.js';
 import { navIcon } from './icons.js';
 import {
@@ -85,7 +85,7 @@ export function Shell() {
   if (v.kind === 'disabled') {
     return (
       <Whole>
-        <EmptyBlock title={ERROR_COPY.db_disabled!.title as string} />
+        <EmptyBlock level={1} title={ERROR_COPY.db_disabled!.title as string} />
       </Whole>
     );
   }
@@ -125,6 +125,17 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     scrollRef.current?.scrollTo({ top: 0 });
   }, [path]);
   const mode = sidebarMode(tier, collapsed);
+  // 换页以后焦点到主要内容（spec「可访问性与响应式 · 焦点」）：点了侧栏、⌘K、页面里的链接，或者后退前进，新的一页画出来以后
+  // 焦点放到 main（读屏从新页面读起，下一个 Tab 是页头的操作），不留在侧栏或消失在 body 上。只换 search（页签、筛选、选中的节）
+  // 不算换页；页面自己在挂载时把焦点放进了 main 里的某处（就地登录、跳到出错的字段）就不动它；第一次打开页面也不动
+  const router = useRouter();
+  useEffect(
+    () =>
+      router.subscribe('onRendered', (e) => {
+        if (e.fromLocation !== undefined && e.pathChanged) focusMain();
+      }),
+    [router],
+  );
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -157,7 +168,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     await qc.resetQueries({ queryKey: VIEWER_KEY });
   }, [qc]);
 
-  const focusMain = (e: MouseEvent<HTMLAnchorElement>): void => {
+  const skipToMain = (e: MouseEvent<HTMLAnchorElement>): void => {
     e.preventDefault();
     document.getElementById('main')?.focus();
   };
@@ -207,12 +218,13 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       onLogin={login}
       onSignOut={() => void signOut()}
       onToggle={!inDrawer && tier === 'wide' ? () => setOverride({ page: pageKey, collapsed: !collapsed }) : undefined}
+      inDrawer={inDrawer}
     />
   );
 
   return (
     <div className={`shell shell-${mode}`}>
-      <a className="skip-link" href="#main" onClick={focusMain}>
+      <a className="skip-link" href="#main" onClick={skipToMain}>
         跳到主要内容
       </a>
       {mode === 'hidden' ? (
@@ -236,7 +248,17 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         </div>
       </div>
       {mode === 'hidden' && (
-        <Drawer open={drawerOpen} placement="left" size={240} closable={false} onClose={() => setDrawerAt(null)} rootClassName="nav-drawer">
+        <Drawer
+          open={drawerOpen}
+          placement="left"
+          size={240}
+          closable={false}
+          onClose={() => setDrawerAt(null)}
+          // 点了导航关上的（地址换了）不把焦点还给菜单按钮：换页以后焦点在 main（上面的 onRendered）；Esc、点遮罩关上的照常还回去
+          focusable={{ focusTriggerAfterClose: drawerAt === null }}
+          aria-label="导航"
+          rootClassName="nav-drawer"
+        >
           {sidebar(true)}
         </Drawer>
       )}
@@ -261,5 +283,5 @@ function Frame({ viewer: v }: { viewer: Framed }) {
 export function NotFound() {
   const viewer = shellViewerOf(useViewer().data);
   useDocumentTitle(viewer ? documentTitle(['没有这个页面'], viewer) : '没有这个页面');
-  return <EmptyBlock title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
+  return <EmptyBlock level={1} title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
 }

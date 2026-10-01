@@ -461,15 +461,15 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     [4, 2, ['异议0']],
   );
   eq(
-    '表头：会话 状态 阶段 消息 最后动静（按它倒序）、操作列只给读屏',
-    m.$('.cv-table thead th').map((th) => [th.textContent?.trim(), th.getAttribute('aria-sort'), th.getAttribute('aria-label')]),
+    '表头：会话 状态 阶段 消息 最后动静（按它倒序）、操作列的字只给读屏（看不见，但是表头里的文字，第 16 步）',
+    m.$('.cv-table thead th').map((th) => [th.textContent?.trim(), th.getAttribute('aria-sort'), th.querySelector('.cv-sr') !== null]),
     [
-      ['会话', null, null],
-      ['状态', null, null],
-      ['阶段', null, null],
-      ['消息', null, null],
-      ['最后动静', 'descending', null],
-      ['', null, '操作'],
+      ['会话', null, false],
+      ['状态', null, false],
+      ['阶段', null, false],
+      ['消息', null, false],
+      ['最后动静', 'descending', false],
+      ['操作', null, true],
     ],
   );
   eq('表格：等人接手的在前，其余按最后动静倒序（设计系统 §10.0 修正 1：F01 在 A01 前）', m.rows(), [

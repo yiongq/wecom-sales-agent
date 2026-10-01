@@ -14,6 +14,7 @@ import { Ellipsis, History } from 'lucide-react';
 import { memo, type ReactNode, type Ref, useId, useState } from 'react';
 import type { SectionSpecView, SopVersion } from '../../../src/shared/console-api.js';
 import { api, unwrap } from '../api.js';
+import { popupRegion } from '../parts/popupRegion.js';
 import { Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
 import { TechDetails } from '../parts/TechDetails.js';
@@ -139,6 +140,7 @@ export const SopActions = memo(function SopActions({
           autoFocus
           destroyOnHidden
           rootClassName="sop-more-menu"
+          popupRender={popupRegion('更多操作')}
           menu={{
             items,
             selectable: false,
@@ -379,7 +381,7 @@ function VersionDiff({
     <>
       <p className="sop-version-meta">{cjk([...(line.note ? [line.note] : []), ...line.meta])}</p>
       {changes.length ? (
-        <DiffList items={changes} mode={mode} labels={[`v${prev.versionNo}`, `v${v.versionNo}`]} />
+        <DiffList items={changes} mode={mode} labels={[`v${prev.versionNo}`, `v${v.versionNo}`]} level={3} />
       ) : (
         <p className="sop-changes-none">{cjk('各节的写法都没变')}</p>
       )}

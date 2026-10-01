@@ -264,6 +264,14 @@
   white-space: nowrap;
 }
 
+/*
+ * 多选与标签的输入框：antd 只给 4 宽，键盘停在它上面、axe 量的点击目标也是它（点整个框都会聚焦它，但量不出来）。
+ * 至少 24 宽（WCAG 2.5.8，spec「可访问性与响应式 · 点击目标」）
+ */
+.ant-select.ant-select-multiple .ant-select-input {
+  min-width: 24px;
+}
+
 /* 分段控件只占自己的宽度（字段是纵向 flex，默认会被拉满一格） */
 .field > .ant-segmented {
   align-self: flex-start;
@@ -362,14 +370,16 @@
   display: inline-flex;
   color: var(--text-3);
 }
-/* 删除按钮：12 的 x，点击区域 24 */
+/*
+ * 删除按钮：12 的 x，点击区域 24（按钮本身 24 见方，负外边距抵回，占位仍是原来的 16 高、14 宽；
+ * 原来用 ::before 扩出点击区域，读屏和 axe 量到的目标只有 16）。焦点框画在里面那 16 见方上
+ */
 .field-tag-close {
-  position: relative;
   display: inline-grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
-  margin-right: -2px;
+  width: 24px;
+  height: 24px;
+  margin: -4px -6px -4px -4px;
   padding: 0;
   border: 0;
   border-radius: var(--r-xs);
@@ -377,17 +387,12 @@
   color: var(--text-3);
   cursor: pointer;
 }
-.field-tag-close::before {
-  content: '';
-  position: absolute;
-  inset: -4px;
-}
 .field-tag-close:hover {
   color: var(--text);
 }
 .field-tag-close:focus-visible {
   outline: 2px solid var(--focus);
-  outline-offset: 0;
+  outline-offset: -4px;
 }
 .field-more {
   font-size: 13px;

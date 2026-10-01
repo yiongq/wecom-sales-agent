@@ -13,6 +13,7 @@ import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
 import { paletteConversationsQuery, paletteListQuery } from '../queries.js';
 import { cjk } from '../typography.js';
+import { focusMain } from './hooks.js';
 import { entityIcon, Icon } from './icons.js';
 import { conversationLabel, packEntities, type ShellViewer } from './model.js';
 import {
@@ -119,9 +120,14 @@ export function CommandPalette(props: CommandPaletteProps) {
     if (i >= 0) void lists[i]?.refetch();
   };
 
+  // 打开页面或条目的那几行：关上以后焦点到新页面的 main（不还给搜索触发器，spec「可访问性与响应式 · 焦点」）；
+  // 外观、关于这些操作照常还给打开 ⌘K 之前的地方
+  const [navigating, setNavigating] = useState(false);
   const run = (i: number): void => {
     const row = rows[i];
     if (!row) return;
+    const group = groups.find((g) => g.rows.includes(row))?.key ?? '';
+    setNavigating(group === 'pages' || group.startsWith('entity:'));
     onClose();
     row.action();
   };
@@ -143,11 +149,16 @@ export function CommandPalette(props: CommandPaletteProps) {
       maskTransitionName=""
       rootClassName="cmdk-root"
       destroyOnHidden
+      focusable={{ focusTriggerAfterClose: !navigating }}
       afterOpenChange={(visible) => {
-        if (visible) inputRef.current?.focus();
-        else {
+        if (visible) {
+          setNavigating(false);
+          inputRef.current?.focus();
+        } else {
           setQuery('');
           setActive(0);
+          // 打开的是这一页本身时地址不变，外壳不会挪焦点，这里放到 main
+          if (navigating) focusMain();
         }
       }}
     >

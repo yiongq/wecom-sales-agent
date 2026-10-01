@@ -77,6 +77,7 @@ function ItemNotFound({ entity }: { entity: EntityType }) {
   useDocumentTitle(viewer ? documentTitle([title], viewer) : title);
   return (
     <EmptyBlock
+      level={1}
       title={title}
       description="可能已被删除或地址写错了"
       link={

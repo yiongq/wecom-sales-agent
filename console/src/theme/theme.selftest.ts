@@ -178,6 +178,21 @@ for (const mode of MODES) {
   const reduced = antdTheme(mode, true).token ?? {};
   check(reduced.motion === false && reduced.motionDurationMid === '0s', `${NAME[mode]} · 减少动态效果时 token.motion 不是 false`);
   check(antdTheme(mode, false).token?.motion !== false, `${NAME[mode]} · 没开减少动态效果时 token.motion 却是 false`);
+  // §5.4、§5.20：焦点框 2px；分段控件选中段的圈与关着的开关都是 --control-border（对比度在 3 里另算）
+  check(
+    DESIGN[mode].lineWidthFocus === 2,
+    `${NAME[mode]} · antd 的焦点框宽 lineWidthFocus 是 ${String(DESIGN[mode].lineWidthFocus)}，要 2（§5.20）`,
+  );
+  const comp = (ANTD_THEMES[mode].components ?? {}) as Readonly<Record<string, Dict | undefined>>;
+  const border = TOKENS[mode]['control-border'];
+  check(
+    comp.Segmented?.boxShadowTertiary === `0 0 0 1px ${border}`,
+    `${NAME[mode]} · 分段控件选中段的圈（Segmented.boxShadowTertiary）是 ${String(comp.Segmented?.boxShadowTertiary)}，要 1px --control-border（§5.4）`,
+  );
+  check(
+    comp.Switch?.colorTextQuaternary === border,
+    `${NAME[mode]} · 开关关着的底（Switch.colorTextQuaternary）是 ${String(comp.Switch?.colorTextQuaternary)}，要 --control-border（§5.4）`,
+  );
 }
 
 // ---------------- 3. 对比度 ----------------
@@ -243,6 +258,9 @@ function brandPairs(): Pair[] {
     // 回滚弹窗的差异块：删除行是两层 subtle 叠在 raised 上，这里只用 text 与 text-2（§1.2「嵌套的底」）
     P('text', ['raised', 'subtle', 'subtle'], TEXT),
     P('text-2', ['raised', 'subtle', 'subtle'], TEXT),
+    // ⌘K 的当前行：--selected 叠在 raised 上；行字 text，右侧补充在当前行上换成 text-2（text-3 在深色这里只有 4.39，第 16 步 axe）
+    P('text', ['raised', 'selected'], TEXT),
+    P('text-2', ['raised', 'selected'], TEXT),
     // 收起侧栏的当前项靠 control-border 描边和外面的 frame 区分；分段控件的选中段对 subtle 轨道已在主表里（§1.2 按 1.4.11 处理的两处）
     P('control-border', ['frame'], GRAPHIC),
     // 反相 toast 与 Tooltip：--text 底、--panel 色字，成功图标 --toast-icon（§5.15）
@@ -330,6 +348,11 @@ const COMPONENT_PAIRS: readonly Pair[] = [
   P('Segmented.itemColor', ['colorBgContainer', 'Segmented.trackBg'], TEXT),
   P('Segmented.itemHoverColor', ['colorBgContainer', 'Segmented.trackBg', 'Segmented.itemHoverBg'], TEXT),
   P('Segmented.itemSelectedColor', ['Segmented.itemSelectedBg'], TEXT),
+  // 选中段的圈（§5.4、§1.2 的 1.4.11）：圈把滑块和外面的轨道（subtle 叠 panel）分开，对轨道 ≥3:1
+  P('Segmented.boxShadowTertiary', ['colorBgContainer', 'Segmented.trackBg'], GRAPHIC),
+  // 开关关着的底（§5.4）：放在 panel 上（审计页的「显示登录记录」、样张），关着的白色滑块叠在它上面
+  P('Switch.colorTextQuaternary', ['colorBgContainer'], GRAPHIC),
+  P('Switch.handleBg', ['Switch.colorTextQuaternary'], GRAPHIC),
   P('Tag.defaultColor', ['colorBgContainer', 'Tag.defaultBg'], TEXT),
   P('Table.headerColor', ['colorBgContainer', 'Table.headerBg'], TEXT),
   P('colorText', ['colorBgContainer', 'Table.rowHoverBg'], TEXT),
@@ -373,7 +396,8 @@ function antdResolver(mode: ThemeMode): Resolve {
     const dot = ref.indexOf('.');
     const v = dot < 0 ? DESIGN[mode][ref] : components[ref.slice(0, dot)]?.[ref.slice(dot + 1)];
     if (typeof v !== 'string') throw new Error(`${ref} 没有显式写成颜色（antd.ts），antd 会自己派生`);
-    return v;
+    // 1px 的圈（Segmented 的 boxShadowTertiary）：取圈的颜色
+    return /^0 0 0 1px (\S+)$/.exec(v)?.[1] ?? v;
   };
 }
 
@@ -572,12 +596,14 @@ expect(boot('blocked', true), 'data-theme=light data-reduce-motion=无', '读 lo
 // ghost 与 color="primary" 的非实心变体，字和描边取 colorPrimary / Hover / Active：深色下叠在 raised 上只有 3.52、2.84、2.26，
 // 只够图形不够文字。实心的 type="primary" 由 3 里 colorTextLightSolid 那几对管。ghost 放在默认按钮上是白字透明底，同样不行
 
-/** 源码里每个 <Button …> 开始标签的全文：跳过 {…} 与引号里的内容，箭头函数的 > 不算标签结束 */
-function buttonTags(src: string): string[] {
+/** 源码里每个 <名字 …> 开始标签的全文：跳过 {…} 与引号里的内容，箭头函数的 > 不算标签结束 */
+function jsxTags(src: string, name: string): string[] {
   const tags: string[] = [];
-  for (const m of src.matchAll(/<Button(?![\w.])/g)) {
+  for (const m of src.matchAll(new RegExp(`<${name}(?![\\w.])`, 'g'))) {
     let depth = 0;
     let i = m.index + m[0].length;
+    // 带类型参数的写法 <Segmented<DiffMode> …>：先跳过类型参数
+    if (src[i] === '<') i = src.indexOf('>', i) + 1;
     for (; i < src.length; i += 1) {
       const c = src[i];
       if (c === '"' || c === "'" || c === '`') {
@@ -597,7 +623,7 @@ function buttonTags(src: string): string[] {
   let scanned = 0;
   for (const rel of fs.readdirSync(srcDir, { recursive: true, encoding: 'utf8' })) {
     if (!rel.endsWith('.tsx')) continue;
-    for (const tag of buttonTags(fs.readFileSync(path.join(srcDir, rel), 'utf8'))) {
+    for (const tag of jsxTags(fs.readFileSync(path.join(srcDir, rel), 'utf8'), 'Button')) {
       scanned += 1;
       const primary = /\s(?:type|color)=(?:"primary"|'primary'|\{\s*['"]primary['"]\s*\})/.test(tag);
       const hollow = /\svariant=(?:"|'|\{\s*['"])(?!solid['"])/.test(tag);
@@ -609,6 +635,44 @@ function buttonTags(src: string): string[] {
     }
   }
   check(scanned > 0, '5：console/src 里一个 <Button> 都没扫到，扫描写错了');
+}
+
+// ---------------- 5b. 分段控件与 antd 焦点框（第 16 步） ----------------
+// rc-segmented 1.4.0 给整条轨道也放了 tabIndex 0：Tab 先停在轨道上，那一站方向键不起作用，要再按一次 Tab 才进选中的那一段。
+// 每个 <Segmented> 都传 tabIndex={-1}，Tab 直接进选中的那一段（没选的时候进第一段）
+{
+  const srcDir = path.join(HERE, '..');
+  let scanned = 0;
+  for (const rel of fs.readdirSync(srcDir, { recursive: true, encoding: 'utf8' })) {
+    if (!rel.endsWith('.tsx') || rel.includes('selftest')) continue;
+    for (const tag of jsxTags(fs.readFileSync(path.join(srcDir, rel), 'utf8'), 'Segmented')) {
+      scanned += 1;
+      check(/\stabIndex=\{-1\}/.test(tag), `${rel} 的 ${tag.replace(/\s+/g, ' ')}：没传 tabIndex={-1}，Tab 会先停在整条轨道上`);
+    }
+  }
+  check(scanned > 0, '5b：console/src 里一个 <Segmented> 都没扫到，扫描写错了');
+}
+{
+  // 令牌给不了的两处写在 brand.css：antd 焦点框的偏移 2（它写死成 1），分段控件选中段字重 500
+  const rule = (selector: string, body: RegExp): boolean => {
+    for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      const sels = m[1]!.split(',').map((x) => x.replace(/\/\*[\s\S]*?\*\//g, '').trim());
+      if (sels.includes(selector) && body.test(m[2]!)) return true;
+    }
+    return false;
+  };
+  for (const sel of [
+    '.ant-btn:not(:disabled):focus-visible',
+    '.ant-switch:focus-visible',
+    '.ant-segmented .ant-segmented-item-focused',
+    '.ant-tabs .ant-tabs-tab.ant-tabs-tab-focus .ant-tabs-tab-btn:focus-visible',
+  ]) {
+    check(rule(sel, /outline-offset:\s*2px/), `brand.css 没给 ${sel} 写 outline-offset: 2px（antd 写死 1，§3 要 2）`);
+  }
+  check(
+    rule('.ant-segmented .ant-segmented-item-selected', /font-weight:\s*500/),
+    'brand.css 没给分段控件的选中段写 font-weight: 500（§5.4）',
+  );
 }
 
 // ---------------- 6. ThemeProvider 的接线 ----------------

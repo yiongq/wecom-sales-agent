@@ -9,6 +9,7 @@ import { ArrowDown, ArrowUp, Check, CircleX, Lock, Plus, Trash2, TriangleAlert, 
 import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
+import { popupRegion } from '../parts/popupRegion.js';
 import { Status } from '../parts/Status.js';
 import { useViewport } from '../shell/hooks.js';
 import { IconButton } from '../shell/IconButton.js';
@@ -145,7 +146,7 @@ function TextForm(p: FormProps) {
     // 联想：'distinct' 取本实体已有的值，数组就是给定的几项；只列包含当前输入、又不等于它的
     const pool = field.suggest === 'distinct' ? env.distinct(field.key) : field.suggest;
     const options = pool.filter((s) => s !== v && s.includes(v)).map((s) => ({ value: s }));
-    return <AutoComplete {...common} options={options} onChange={(c: string) => set(c ?? '')} />;
+    return <AutoComplete {...common} options={options} popupRender={popupRegion(field.label)} onChange={(c: string) => set(c ?? '')} />;
   }
   return <Input {...common} onChange={(e) => set(e.target.value)} />;
 }
@@ -440,6 +441,7 @@ function EnumForm(p: FormProps) {
       return (
         <Segmented
           id={id}
+          tabIndex={-1}
           options={segs}
           value={cur}
           onChange={(v) => write(enumFromSegment(v))}
@@ -450,6 +452,7 @@ function EnumForm(p: FormProps) {
     }
     return (
       <Select
+        popupRender={popupRegion(field.label)}
         id={id}
         value={one}
         options={options.map((o) => ({ value: o, label: o }))}
@@ -484,6 +487,7 @@ function EnumForm(p: FormProps) {
   if (enumControl(field) === 'chips') return <Chips options={options} picks={picks} onToggle={toggle} labelId={labelId} p={p} />;
   return (
     <Select
+      popupRender={popupRegion(field.label)}
       id={id}
       mode="multiple"
       value={[...picks]}
@@ -563,6 +567,7 @@ function TagsForm(p: FormProps) {
   };
   return (
     <Select
+      popupRender={popupRegion(field.label)}
       id={id}
       mode="tags"
       value={[...cur]}
@@ -607,6 +612,7 @@ function BooleanForm(p: FormProps) {
   return (
     <Segmented
       id={id}
+      tabIndex={-1}
       options={segs}
       value={boolSegment(v, optional)}
       onChange={(s) => onChange(CODECS.boolean.write(boolFromSegment(s), field))}
@@ -1057,6 +1063,7 @@ function ReferenceForm(p: FormProps) {
     return (
       <div className="field-stack">
         <AutoComplete
+          popupRender={popupRegion(field.label)}
           {...common}
           {...a11y(p, free ? { noteId: freeId } : undefined)}
           value={v}
@@ -1075,6 +1082,7 @@ function ReferenceForm(p: FormProps) {
   }
   return (
     <Select
+      popupRender={popupRegion(field.label)}
       {...common}
       {...a11y(p)}
       mode={field.multiple ? 'multiple' : undefined}

@@ -1,4 +1,4 @@
-// 外壳用到的几个 hook：视口三档、标签页标题、数字变了闪一次、本机是不是 Mac（⌘K 的提示写法）
+// 外壳用到的几个 hook：视口三档、标签页标题、数字变了闪一次、本机是不是 Mac（⌘K 的提示写法）；换页以后把焦点放到 main
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { RAIL_MIN, viewportTier, type ViewportTier, WIDE_MIN } from './model.js';
 
@@ -47,3 +47,14 @@ export function useChangeFlash(value: number | undefined): number {
 /** 本机是不是 Mac：⌘K 的按法与提示按它分（search.ts 的 isPaletteShortcut、paletteShortcut） */
 export const isMac = (): boolean =>
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+
+/**
+ * 换页以后把焦点放到主要内容 main（spec「可访问性与响应式 · 焦点」）。页面自己已经把焦点放进了 main 里的某处时不动它
+ * （就地登录、跳到出错的字段、新建以后的第一个字段）
+ */
+export function focusMain(): void {
+  const main = document.getElementById('main');
+  const active = document.activeElement;
+  if (!main || (active && active !== main && main.contains(active))) return;
+  main.focus({ preventScroll: true });
+}

@@ -39,8 +39,9 @@ export function Bell({ pack, placement }: { pack: IndustryPack; placement: Popov
   const now = waiting.dataUpdatedAt;
   const rows = waiting.data?.items ?? [];
 
+  // 弹层挂在 body 下、在侧栏的地标外面：自己是一个有名字的区域（读屏的地标列表里有它，axe region）
   const content = (
-    <div className="bell-pop">
+    <section className="bell-pop" aria-label="等人接手的会话">
       {stale && (
         <div className="bell-stale" role="alert">
           <span>没取到最新的</span>
@@ -86,7 +87,7 @@ export function Bell({ pack, placement }: { pack: IndustryPack; placement: Popov
           查看全部会话
         </Link>
       </div>
-    </div>
+    </section>
   );
 
   return (

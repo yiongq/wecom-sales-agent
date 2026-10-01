@@ -27,6 +27,7 @@ import { ActionBar } from '../parts/ActionBar.js';
 import { type CheckItem, CheckList } from '../parts/CheckList.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
+import { popupRegion } from '../parts/popupRegion.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { Status } from '../parts/Status.js';
 import { TechDetails } from '../parts/TechDetails.js';
@@ -176,6 +177,7 @@ function MoreMenu({ onCopy, buttonRef }: { onCopy(): void; buttonRef: RefObject<
       onOpenChange={setOpen}
       trigger={['click']}
       placement="bottomRight"
+      popupRender={popupRegion('更多')}
       menu={{
         items: [{ key: 'copy', label: '复制为新草稿' }],
         onClick: ({ domEvent }) => {

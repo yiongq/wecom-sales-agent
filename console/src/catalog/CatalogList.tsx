@@ -254,7 +254,7 @@ export function FilterButton(props: {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [pinyin, setPinyin] = useState<PinyinLib | null>(null);
-  const popup = useRef<HTMLDivElement>(null);
+  const popup = useRef<HTMLElement>(null);
   // 按钮经外层的 span 找：Dropdown 的子元素上不另挂 ref，免得和 antd 自己挂的 ref 抢
   const box = useRef<HTMLSpanElement>(null);
   const focusTrigger = (): void => box.current?.querySelector<HTMLButtonElement>('.filter-trigger')?.focus();
@@ -313,10 +313,12 @@ export function FilterButton(props: {
         }}
         popupRender={(menu) => (
           // 打开后 antd（autoFocus）聚焦的是这层外壳：它本来不可聚焦，焦点留在按钮上，键盘选不了。
-          // 让它可聚焦，再把焦点转给选中的那一项（没有就第一项），方向键和 Enter 才用得上（spec「可访问性 · 键盘」）
-          <div
+          // 让它可聚焦，再把焦点转给选中的那一项（没有就第一项），方向键和 Enter 才用得上（spec「可访问性 · 键盘」）。
+          // 它挂在 body 下、在页面的地标外面，是一块有名字的区域（parts/popupRegion.tsx）
+          <section
             ref={popup}
             className="filter-menu"
+            aria-label={`筛选：${name}`}
             tabIndex={-1}
             onFocus={(e) => {
               if (e.target !== e.currentTarget) return;
@@ -348,7 +350,7 @@ export function FilterButton(props: {
               />
             )}
             {shown.length ? menu : <div className="filter-menu-empty">{cjk(`没有找到「${query.trim()}」`)}</div>}
-          </div>
+          </section>
         )}
       >
         <button type="button" className="filter-trigger" aria-haspopup="menu" aria-expanded={open} disabled={!options.length}>

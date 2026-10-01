@@ -38,6 +38,8 @@ export interface SidebarProps {
   onSignOut: () => void;
   /** 收起 / 展开；图标栏档位和抽屉里没有这个按钮 */
   onToggle?: () => void;
+  /** <992 时放在导航抽屉里：抽屉本身是对话框，侧栏不再是页面的 banner 地标（那时顶栏是） */
+  inDrawer?: boolean;
 }
 
 export function TenantMark({ name }: { name: string }) {
@@ -156,8 +158,10 @@ export function Sidebar(props: SidebarProps) {
       className="sidebar-toggle"
     />
   );
+  // 侧栏是页面的 banner 地标（租户、搜索、导航、用户都在里面，axe region）；导航另是里面的 nav 地标
+  const Root = props.inDrawer ? 'div' : 'header';
   return (
-    <div className={collapsed ? 'sidebar is-collapsed' : 'sidebar'}>
+    <Root className={collapsed ? 'sidebar is-collapsed' : 'sidebar'}>
       <div className="sb-tenant">
         <TenantRow viewer={viewer} pack={pack} collapsed={collapsed} bellPlacement="rightTop" />
       </div>
@@ -204,6 +208,6 @@ export function Sidebar(props: SidebarProps) {
         {viewer.kind === 'anon' && <IconButton icon={Info} label="关于" placement={collapsed ? 'right' : 'top'} onClick={props.onAbout} />}
         {toggle}
       </div>
-    </div>
+    </Root>
   );
 }

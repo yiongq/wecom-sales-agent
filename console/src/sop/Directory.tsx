@@ -10,7 +10,7 @@
 // 样式在 sop.css，由 pages/sop.lazy.tsx 引入；这里不 import CSS，自测才能在 Node 里直接 import
 import { Segmented, Select, Tooltip } from 'antd';
 import { CircleAlert, CircleCheck, CircleX, Lock } from 'lucide-react';
-import { type KeyboardEvent, memo, type MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, memo, type MouseEvent, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Icon } from '../shell/icons.js';
 import { type Matcher, type PinyinLib, pinyinMatcher, plainMatch } from '../shell/search.js';
 import { cjk } from '../typography.js';
@@ -186,6 +186,7 @@ export function Directory({ rows, current, filter, onFilter, showCounts, hrefOf,
       {filter !== undefined && onFilter && (
         <Segmented<OutlineFilter>
           block
+          tabIndex={-1}
           className="sop-toc-filter"
           aria-label="显示哪些节"
           value={filter}
@@ -287,22 +288,42 @@ export const DirectorySelect = memo(
     }, [open, searchable, pinyin]);
     const match: Matcher = useMemo(() => (pinyin ? pinyinMatcher(pinyin) : plainMatch), [pinyin]);
     const names = useMemo(() => new Map(rows.map((r) => [r.key, r.name])), [rows]);
+    // 下拉里的 listbox 要有名字（axe aria-input-field-name）：rc-select 1.10.1 不给它名字，也没有传名字的属性，
+    // 打开以后按它的 id（`${id}_list`）补上。弹层可能晚几帧才画出来，没找到就下一帧再找（至多 30 帧）
+    const selectId = useId();
+    useEffect(() => {
+      if (!open) return;
+      let frame = 0;
+      let raf = 0;
+      const label = (): void => {
+        const list = document.getElementById(`${selectId}_list`);
+        if (list) list.setAttribute('aria-label', '话术的节');
+        else if (frame++ < 30) raf = requestAnimationFrame(label);
+      };
+      label();
+      return () => cancelAnimationFrame(raf);
+    }, [open, selectId]);
     return (
       <Select<string>
+        id={selectId}
         className="sop-toc-select"
         aria-label="选择节"
-        // 节不多（旅游包 11 节），不用虚拟列表：全部选项都在 DOM 里，读屏数得出总数
+        // 节不多（旅游包 11 节），不用虚拟列表：全部选项都在 DOM 里，读屏数得出总数。
+        // 列表的高度按节数给足（每项 32，§8 的 optionHeight），不在下拉里再滚：会滚的区域里没有能聚焦的东西，
+        // 键盘用户滚不动它（axe scrollable-region-focusable；方向键在输入框上走 activedescendant）
         virtual={false}
+        listHeight={rows.length * 32}
         value={current}
         onChange={(k) => onSelect(k)}
         onOpenChange={setOpen}
         showSearch={searchable ? { filterOption: (input, option) => match(names.get(String(option?.value)) ?? '', input) } : false}
         options={rows.map((r) => ({ value: r.key, label: <OptionLabel row={r} /> }))}
+        // 弹层挂在 body 下、在地标外面：包成有名字的区域（parts/popupRegion.tsx）
         popupRender={(menu) => (
-          <>
+          <section aria-label="选择节">
             {menu}
             <LockNote rows={rows} />
-          </>
+          </section>
         )}
       />
     );

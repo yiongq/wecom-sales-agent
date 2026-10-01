@@ -197,7 +197,18 @@ export function SopDrawer({
 }
 
 /** 逐节改动的一块：标题行（左边标题或计数，右边行内 / 并排），下面是各节的差异；base 是左边那一版的名字（baseName） */
-function ChangesBlock({ head, changes, base }: { head: ReactNode; changes: readonly SectionChange[]; base: string }) {
+function ChangesBlock({
+  head,
+  changes,
+  base,
+  level,
+}: {
+  head: ReactNode;
+  changes: readonly SectionChange[];
+  base: string;
+  /** 节名的标题层级（DiffList） */
+  level?: 3 | 4;
+}) {
   const [mode, setMode] = useDiffMode();
   return (
     <>
@@ -206,7 +217,7 @@ function ChangesBlock({ head, changes, base }: { head: ReactNode; changes: reado
         <DiffModeToggle mode={mode} onChange={setMode} />
       </div>
       {changes.length ? (
-        <DiffList items={changes} mode={mode} labels={[base, '草稿']} />
+        <DiffList items={changes} mode={mode} labels={[base, '草稿']} level={level} />
       ) : (
         <p className="sop-changes-none">{cjk('草稿和线上一样')}</p>
       )}
@@ -247,6 +258,7 @@ export function ChangesDrawer({
         head={<span className="sop-changes-count">{changes.length ? `改了${digits(changes.length)}节` : ''}</span>}
         changes={changes}
         base={baseName(published, online)}
+        level={3}
       />
     </SopDrawer>
   );
@@ -393,6 +405,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
         )}
         <div ref={checksRef}>
           <CheckList
+            landmark={false}
             title="发布前检查"
             summary={p.located ? `${items.filter((i) => i.state === 'pass').length}/${items.length}通过` : undefined}
             meta={<CheckMeta check={p.check} />}
