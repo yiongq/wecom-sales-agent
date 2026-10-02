@@ -26,6 +26,9 @@ const resets = new WeakSet<Session>();
 
 const stateOf = (s: Session): SeqState => states.get(s) ?? { last: 0, windowStart: 1 };
 
+/** 旧数据可能是畸形的（没有 messages、数组里有 null）：跳过它们，与开工时「碰到才出错、不在导入期崩」一致 */
+const isMsg = (m: unknown): m is ChatMessage => typeof m === 'object' && m !== null;
+
 /** 消息的 seq；还没分配过的返回 undefined */
 export function seqOf(m: ChatMessage): number | undefined {
   return seqs.get(m);
@@ -47,8 +50,9 @@ export function windowStartOf(s: Session): number {
  */
 export function seedSeqs(s: Session, firstSeq = 1): void {
   if (!Number.isInteger(firstSeq) || firstSeq < 1) throw new RangeError(`firstSeq 必须是正整数：${firstSeq}`);
-  s.messages.forEach((m, i) => seqs.set(m, firstSeq + i));
-  states.set(s, { last: firstSeq + s.messages.length - 1, windowStart: firstSeq });
+  const msgs = Array.isArray(s.messages) ? s.messages.filter(isMsg) : [];
+  msgs.forEach((m, i) => seqs.set(m, firstSeq + i));
+  states.set(s, { last: firstSeq + msgs.length - 1, windowStart: firstSeq });
 }
 
 /**
@@ -70,7 +74,8 @@ export function noteWindowReset(s: Session): void {
  * lenient（文件存储与 demo 类会话）：不抛，只给最后一条有 seq 的消息之后那段分配；锁定自测里整体替换 messages 的写法照旧可用
  */
 export function assignSeqs(s: Session, mode: 'strict' | 'lenient' = 'strict'): ChatMessage[] {
-  const msgs = s.messages;
+  if (!Array.isArray(s.messages)) return [];
+  const msgs = s.messages.filter(isMsg);
   const st = stateOf(s);
   const reset = resets.delete(s);
   let k = 0;

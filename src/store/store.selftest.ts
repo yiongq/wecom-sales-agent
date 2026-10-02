@@ -125,6 +125,23 @@ const session = (id: string, messages: ChatMessage[], channel = 'wecom'): Sessio
   h3.messages.push(msg('agent', '重置'));
   assignSeqs(h3, 'lenient');
   check('seq 宽松模式：不调 noteWindowReset 的重置照常，接着最大 seq', seqsOf(h3).join() === '2');
+  const h4 = session('wecom:seq-h4', [msg('customer', '1'), msg('agent', '2')]);
+  assignSeqs(h4, 'lenient');
+  h4.messages.splice(1, 0, msg('system', '插进来的'));
+  h4.messages.push(msg('customer', '3'));
+  assignSeqs(h4, 'lenient');
+  check('seq 宽松模式：中间插入的不分配，已有的号不变，尾部接着分配', seqsOf(h4).join() === '1,,2,3', seqsOf(h4).join());
+
+  // 旧数据可能是畸形的：没有 messages、数组里有 null。开工时这类会话碰到才出错，不能让 store 在导入期就崩
+  const bad = { ...session('wecom:seq-bad', []), messages: undefined } as unknown as Session;
+  check(
+    'seq：没有 messages 的会话不抛，什么都不分配',
+    throws(() => assignSeqs(bad, 'lenient')) === null && throws(() => seedSeqs(bad, 1)) === null,
+  );
+  const holes = session('wecom:seq-holes', [msg('customer', 'a'), null as unknown as ChatMessage, msg('agent', 'b')]);
+  check('seq：消息数组里的 null 被跳过，不抛', throws(() => seedSeqs(holes, 1)) === null && seqOf(holes.messages[2]) === 2);
+  holes.messages.push(null as unknown as ChatMessage, msg('customer', 'c'));
+  check('seq：宽松分配跳过 null', throws(() => assignSeqs(holes, 'lenient')) === null && seqOf(holes.messages[4]) === 3);
 
   const i = session('wecom:seq-i', [msg('customer', 'a'), msg('agent', 'b'), msg('customer', 'c')]);
   seedSeqs(i, 11);
@@ -173,6 +190,8 @@ fs.writeFileSync(ORDERS_FILE, JSON.stringify(fixtureOrders(), null, 2));
 const store = await import('../store.js');
 const shutdown = await import('../shutdown.js');
 const { SessionStoreStartupError, StoreLaggingError } = await import('./backend.js');
+// store 的 exit 钩子可能在最后再写一次 JSON：清理排在它之后（exit 监听按注册顺序执行），中途抛错也照样清
+process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 const readDisk = (): Session[] => JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')) as Session[];
 const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id === id);
 
@@ -214,9 +233,16 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   await store.flushSession('wecom:u1');
   check('没有改动时 flushSession 立即 resolve', Date.now() - t1 < 50);
 
+  // 订阅者先无条件记下收到了什么，再看盘上：落盘失败时盘读不出来，也不能让断言跟着落空
   const got: string[] = [];
   const off = store.onCommitted((ev) => {
-    got.push(`${ev.type}:${ev.id}:${(onDisk(ev.id)?.messages.length ?? 0) > 4 ? '已落盘' : '未落盘'}`);
+    let disk: string;
+    try {
+      disk = (onDisk(ev.id)?.messages.length ?? 0) > 4 ? '已落盘' : '未落盘';
+    } catch {
+      disk = '读盘失败';
+    }
+    got.push(`${ev.type}:${ev.id}:${disk}`);
   });
   u1.messages.push(msg('customer', '要两个人'));
   store.saveSession(u1);
@@ -237,11 +263,16 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   store.saveSession(u1);
   store.emitAfterCommit('wecom:u1', { type: 'conversation.changed', id: 'wecom:u1' });
   let lagErr: unknown = null;
+  const tLag = Date.now();
   await store.flushSession('wecom:u1', { timeoutMs: 600 }).catch((err: unknown) => {
     lagErr = err;
   });
+  const lagTook = Date.now() - tLag;
   check('落盘失败：flushSession 超时以 StoreLaggingError reject', lagErr instanceof StoreLaggingError);
+  check('落盘失败：按传入的 timeoutMs 超时', lagTook >= 550 && lagTook < 1500, `${lagTook}ms`);
   check('落盘失败：事件不发', got.length === 0, got.join());
+  const stuck = await store.drainStore(100);
+  check('落盘失败：drainStore 返回没落盘的会话', stuck.undrained.includes('wecom:u1'), JSON.stringify(stuck));
   const failed = store.storeHealth();
   check('落盘失败：storeHealth 报积压与错误码', failed.dirty === 1 && failed.lagMs > 0 && !!failed.lastError, JSON.stringify(failed));
   check(
@@ -251,9 +282,13 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   console.error = origErr;
   fs.rmSync(SESSIONS_FILE, { recursive: true });
   fs.renameSync(`${SESSIONS_FILE}.bak`, SESSIONS_FILE);
-  store.saveSession(u1);
-  await store.flushSession('wecom:u1');
-  check('恢复之后：排着的事件随下一次成功落盘发出', got.join() === 'conversation.changed:wecom:u1:已落盘', got.join());
+  // 恢复磁盘、不做新的改动，drain 也要把上次失败留下的写出去
+  const healed = await store.drainStore(1000);
+  check(
+    '恢复之后：drainStore 写出上次失败留下的改动',
+    healed.undrained.length === 0 && onDisk('wecom:u1')?.messages.at(-1)?.content === '好的',
+  );
+  check('恢复之后：排着的事件随下一次成功落盘恰好发出一次', got.join() === 'conversation.changed:wecom:u1:已落盘', got.join());
   check('恢复之后：积压清零', store.storeHealth().dirty === 0);
   off();
 
@@ -305,6 +340,15 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   for (const v of ['postgres', 'DB', 'File', 'pg']) {
     const r = await tryEnv({ SESSION_STORE: v });
     check(`SESSION_STORE=${v} → env_invalid`, r.startsWith('env_invalid:') && r.includes('SESSION_STORE'), r);
+  }
+  // 线上是 CONFIG_SOURCE=db：非法值同样在装载配置之前拒绝（不会走到 DATABASE_URL 的检查，更不会静默落到文件存储）
+  for (const v of ['postgres', 'DB']) {
+    const r = await tryEnv({ SESSION_STORE: v, CONFIG_SOURCE: 'db' });
+    check(
+      `SESSION_STORE=${v} 且 CONFIG_SOURCE=db → env_invalid，排在 DB 依赖之前`,
+      r.startsWith('env_invalid:') && r.includes('SESSION_STORE') && !r.includes('DATABASE_URL'),
+      r,
+    );
   }
   const leaky = await tryEnv({ SESSION_STORE: 'postgres://agent_app:hunter2@db:5432/agent' });
   check('SESSION_STORE 的非法值像连接串时不回显', leaky.startsWith('env_invalid:') && !leaky.includes('hunter2'), leaky);
@@ -405,70 +449,108 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
 
 // ---------------- 三段停机：顺序与时限 ----------------
 {
-  let active = true;
-  type Rec = { phase: string; at: number; deadline: number };
+  type Mode = 'off' | 'timing' | 'hang-normal' | 'hang-drain' | 'cap';
+  let mode: Mode = 'off';
+  type Rec = { phase: string; at: number; end: number; deadline: number };
   let recs: Rec[] = [];
-  let hang: 'normal' | 'drain' | null = null;
   let start = 0;
+  const busyWait = (ms: number) => {
+    const t = Date.now();
+    while (Date.now() - t < ms) {
+      /* 同步阻塞事件循环 */
+    }
+  };
   const hook =
     (phase: 'normal' | 'drain' | 'late') =>
     async ({ deadline }: { deadline: number }) => {
-      if (!active) return;
-      recs.push({ phase, at: Date.now() - start, deadline: deadline - start });
-      if (hang === phase) await new Promise(() => {});
-      await sleep(10);
+      if (mode === 'off') return;
+      const rec: Rec = { phase, at: Date.now() - start, end: -1, deadline: deadline - start };
+      recs.push(rec);
+      if (mode === `hang-${phase}` || (mode === 'cap' && phase !== 'normal')) await new Promise(() => {});
+      if (mode === 'cap') {
+        await sleep(550);
+        busyWait(300); // 跨过 normal 的截止（第 600ms）才放开事件循环
+      } else await sleep(phase === 'normal' && mode === 'timing' ? 200 : 10);
+      rec.end = Date.now() - start;
     };
   shutdown.onShutdown(hook('late'), { phase: 'late' });
   shutdown.onShutdown(hook('drain'), { phase: 'drain' });
   shutdown.onShutdown(hook('normal'));
   shutdown.onShutdown(async () => {
-    if (active) throw new Error('钩子自己出错');
+    if (mode === 'timing') throw new Error('钩子自己出错');
   });
+  const run = async (m: Mode): Promise<{ ok: boolean; took: number }> => {
+    mode = m;
+    recs = [];
+    start = Date.now();
+    const ok = await shutdown.runShutdownHooks(800);
+    return { ok, took: Date.now() - start };
+  };
 
   const origErr = console.error;
   const errs: string[] = [];
   console.error = (...a: unknown[]) => void errs.push(a.map(String).join(' '));
-  start = Date.now();
-  const ok = await shutdown.runShutdownHooks(800);
-  check('三段停机：依次 normal → drain → late', recs.map((r) => r.phase).join() === 'normal,drain,late', JSON.stringify(recs));
-  check('三段停机：都按时结束返回 true（出错的钩子只记日志）', ok && errs.some((l) => l.includes('钩子自己出错')));
-  const [n, dr, l] = recs;
-  check('三段停机：normal 的截止是总上限的 6/8', Math.abs(n.deadline - 600) <= 30, String(n.deadline));
-  check('三段停机：drain 的时限是 1.5/8，从 normal 结束时算', Math.abs(dr.deadline - dr.at - 150) <= 30, `${dr.at} ${dr.deadline}`);
-  check('三段停机：late 的时限是 0.5/8', Math.abs(l.deadline - l.at - 50) <= 30, `${l.at} ${l.deadline}`);
+  try {
+    const t = await run('timing');
+    const [n, dr, l] = recs;
+    check('三段停机：依次 normal → drain → late', recs.map((r) => r.phase).join() === 'normal,drain,late', JSON.stringify(recs));
+    check('三段停机：后一段在前一段的钩子结束之后才开始', dr.at >= n.end && l.at >= dr.end, JSON.stringify(recs));
+    check('三段停机：都按时结束返回 true（出错的钩子只记日志）', t.ok && errs.some((x) => x.includes('钩子自己出错')));
+    check('三段停机：normal 的截止是总上限的 6/8，从开始算', Math.abs(n.deadline - 600) <= 10, String(n.deadline));
+    check('三段停机：drain 的时限是 1.5/8，从 normal 结束时算', Math.abs(dr.deadline - dr.at - 150) <= 10, `${dr.at} ${dr.deadline}`);
+    check('三段停机：late 的时限是 0.5/8，从 drain 结束时算', Math.abs(l.deadline - l.at - 50) <= 10, `${l.at} ${l.deadline}`);
 
-  for (const phase of ['normal', 'drain'] as const) {
-    recs = [];
-    hang = phase;
-    start = Date.now();
-    const r = await shutdown.runShutdownHooks(800);
-    const took = Date.now() - start;
-    check(`三段停机：${phase} 段卡住 → 返回 false`, r === false);
-    check(`三段停机：${phase} 段卡住，后面的段照样跑`, recs.map((x) => x.phase).join() === 'normal,drain,late', JSON.stringify(recs));
-    check(`三段停机：${phase} 段卡住，总耗时不超过上限`, took <= 800 + 60, `${took}ms`);
-    check(
-      `三段停机：${phase} 段超时有一行日志`,
-      errs.some((x) => x.includes(`${phase} 段超时`)),
-    );
+    const hn = await run('hang-normal');
+    check('三段停机：normal 卡住 → 返回 false，后两段照样跑', !hn.ok && recs.map((x) => x.phase).join() === 'normal,drain,late');
+    check('三段停机：normal 卡住，到第 600ms 才进 drain', hn.took >= 590 && hn.took <= 720, `${hn.took}ms`);
+    const hd = await run('hang-drain');
+    check('三段停机：drain 卡住 → 返回 false，late 照样跑', !hd.ok && recs.map((x) => x.phase).join() === 'normal,drain,late');
+    check('三段停机：drain 卡住只等它自己的 1.5/8', hd.took >= 150 && hd.took <= 320, `${hd.took}ms`);
+    check('三段停机：超时的段各有一行日志', errs.some((x) => x.includes('normal 段超时')) && errs.some((x) => x.includes('drain 段超时')));
+    const cap = await run('cap');
+    check('三段停机：normal 的计时器因阻塞晚触发时，后两段不顺延，总耗时不超过上限', !cap.ok && cap.took <= 800 + 60, `${cap.took}ms`);
+  } finally {
+    console.error = origErr;
+    mode = 'off';
   }
-  console.error = origErr;
-  active = false;
-  hang = null;
 }
 
 // ---------------- 信号接线：SIGTERM 依次跑三段再以 143 退出（子进程） ----------------
 const storeUrl = pathToFileURL(path.join(import.meta.dirname, '..', 'store.ts')).href;
-const runChild = (name: string, code: string, env: Record<string, string>) => {
-  const file = path.join(VAR_DIR, `${name}.mts`);
-  fs.writeFileSync(file, code);
-  // 单进程：node 自己带 tsx 加载器，超时直接杀它，不留孤儿
-  return spawnSync(process.execPath, ['--import', 'tsx', file], {
+/** env 里取值为 undefined 的变量从子进程环境里删掉（做到真正的「未设」） */
+const childEnv = (env: Record<string, string | undefined>): NodeJS.ProcessEnv => {
+  const out: NodeJS.ProcessEnv = { ...process.env };
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined) delete out[k];
+    else out[k] = v;
+  }
+  return out;
+};
+const runFile = (file: string, env: Record<string, string | undefined>) => {
+  const t0 = Date.now();
+  // 单进程：node 自己带 tsx 加载器；超时用 SIGKILL（子进程装了 SIGTERM 的处理，SIGTERM 杀不掉卡住的它），不留孤儿
+  const r = spawnSync(process.execPath, ['--import', 'tsx', file], {
     cwd: process.cwd(),
-    env: { ...process.env, ...env },
-    timeout: 20_000,
+    env: childEnv(env),
+    timeout: 15_000,
+    killSignal: 'SIGKILL',
     encoding: 'utf8',
   });
+  return { ...r, took: Date.now() - t0 };
 };
+const runChild = (name: string, code: string, env: Record<string, string | undefined>) => {
+  const file = path.join(VAR_DIR, `${name}.mts`);
+  fs.writeFileSync(file, code);
+  return runFile(file, env);
+};
+/** 一个装好 fixture 的独立数据目录 */
+const freshVarDir = (name: string, sessions: unknown[] = fixtureSessions(), orders: unknown[] = fixtureOrders()): string => {
+  const dir = fs.mkdtempSync(path.join(VAR_DIR, `${name}-`));
+  fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify(sessions, null, 2));
+  fs.writeFileSync(path.join(dir, 'orders.json'), JSON.stringify(orders, null, 2));
+  return dir;
+};
+const sessionsIn = (dir: string): Session[] => JSON.parse(fs.readFileSync(path.join(dir, 'sessions.json'), 'utf8')) as Session[];
 {
   const out = path.join(VAR_DIR, 'phases.txt');
   const r = runChild(
@@ -485,62 +567,192 @@ const runChild = (name: string, code: string, env: Record<string, string>) => {
   );
   const order = fs.existsSync(out) ? fs.readFileSync(out, 'utf8').trim().split('\n').join() : '';
   check('SIGTERM：经 store 的导入期接线，三段依次跑完', order === 'normal,drain,late', `${order} ${(r.stderr ?? '').slice(0, 300)}`);
-  check('SIGTERM：退出码 143', r.status === 143, `status=${r.status}`);
+  check(
+    'SIGTERM：自己以 143 退出（不是超时被杀）',
+    r.status === 143 && r.signal === null && !r.error,
+    `status=${r.status} signal=${r.signal}`,
+  );
+  check('SIGTERM：钩子跑完就退，不等到总上限', r.took < 5000, `${r.took}ms`);
+}
+
+// ---------------- exit 时同步写出去抖里的改动（R7 的同步落盘点，子进程） ----------------
+{
+  const saveThen = (tail: string) =>
+    `const s = await import(${JSON.stringify(storeUrl)});\n` +
+    `const x = s.getOrCreateSession('wecom:exit-1', 'wecom');\n` +
+    `x.messages.push({ role: 'customer', content: '最后一句', at: Date.now() });\n` +
+    `s.saveSession(x);\n` +
+    tail;
+  const dirA = freshVarDir('exit-a');
+  const a = runChild('exit-a', saveThen(`process.exit(0);\n`), { VAR_DIR: dirA });
+  check(
+    'exit：去抖里的改动在 process.exit 时同步写出',
+    a.status === 0 && sessionsIn(dirA).some((x) => x.id === 'wecom:exit-1'),
+    a.stderr.slice(0, 200),
+  );
+  const dirB = freshVarDir('exit-b');
+  const b = runChild('exit-b', saveThen(`setInterval(() => {}, 1000);\nprocess.kill(process.pid, 'SIGTERM');\n`), { VAR_DIR: dirB });
+  check('exit：SIGTERM 之后同样写出', b.status === 143 && sessionsIn(dirB).some((x) => x.id === 'wecom:exit-1'), `status=${b.status}`);
+  const dirC = freshVarDir('exit-c');
+  const sj = JSON.stringify(path.join(dirC, 'sessions.json'));
+  const c = runChild(
+    'exit-c',
+    `import fs from 'node:fs';\n` +
+      `fs.renameSync(${sj}, ${sj} + '.bak'); fs.mkdirSync(${sj}); fs.writeFileSync(${sj} + '/blocker', 'x');\n` +
+      saveThen(
+        `await new Promise((r) => setTimeout(r, 400));\n` + // 去抖落盘失败一次
+          `fs.rmSync(${sj}, { recursive: true }); fs.renameSync(${sj} + '.bak', ${sj});\n` +
+          `process.exit(0);\n`,
+      ),
+    { VAR_DIR: dirC },
+  );
+  check(
+    'exit：上次落盘失败留下的改动，恢复之后在 exit 时再写一次',
+    c.status === 0 && sessionsIn(dirC).some((x) => x.id === 'wecom:exit-1') && c.stderr.includes('落盘失败'),
+    c.stderr.slice(0, 200),
+  );
+}
+
+// ---------------- 畸形的旧数据不让 store 在导入期崩（与开工时一致） ----------------
+{
+  const dir = freshVarDir('malformed', [
+    { ...session('wecom:no-msgs', []), messages: undefined },
+    session('wecom:null-msg', [msg('customer', 'a'), null as unknown as ChatMessage]),
+  ]);
+  const r = runChild(
+    'malformed',
+    `const s = await import(${JSON.stringify(storeUrl)});\n` +
+      `s.saveSession(s.getSession('wecom:no-msgs'));\n` +
+      `const y = s.getSession('wecom:null-msg'); y.messages.push({ role: 'agent', content: 'b', at: Date.now() }); s.saveSession(y);\n` +
+      `console.log('seq=' + s.seqOf(y.messages.at(-1)));\n` +
+      `process.exit(0);\n`,
+    { VAR_DIR: dir },
+  );
+  check(
+    '畸形数据：缺 messages、数组里有 null 的会话照常导入与 saveSession',
+    r.status === 0 && r.stdout.includes('seq=2'),
+    `${r.status} ${r.stderr.slice(0, 300)}`,
+  );
+}
+
+// ---------------- server.ts 的真实接线：文件存储而 var/ 里有标记文件，拒绝启动（不变量 15 的文件一半） ----------------
+{
+  const dir = freshVarDir('server-marker');
+  fs.writeFileSync(path.join(dir, store.SESSIONS_IN_DB_MARKER), '{}');
+  const r = runFile(path.join(import.meta.dirname, '..', 'server.ts'), {
+    VAR_DIR: dir,
+    CONFIG_SOURCE: 'file',
+    SESSION_STORE: undefined,
+    SERVER_SELFTEST: undefined,
+    PORT: '0',
+    LLM_MOCK: '1',
+  });
+  check(
+    'server：var/ 里有标记文件 → 以 1 退出、打出 sessions_in_db，没有开始监听',
+    r.status === 1 && r.stderr.includes('（sessions_in_db）') && !r.error,
+    `status=${r.status} ${(r.stderr ?? '').slice(0, 300)}`,
+  );
 }
 
 // ---------------- 导入期行为与 SESSION_STORE 无关（不变量 1，R3） ----------------
 {
-  const probe = (store: string) => {
-    const dir = fs.mkdtempSync(path.join(VAR_DIR, `import-${store || 'unset'}-`));
-    fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify(fixtureSessions(), null, 2));
-    fs.writeFileSync(path.join(dir, 'orders.json'), JSON.stringify(fixtureOrders(), null, 2));
+  // fixture 里另放一个几天前的种子会话和一个过期的访客：保鲜与清理在导入期的效果看得见
+  const day = 86_400_000;
+  const probeSessions = (): Session[] => [
+    // 种子全都是几天前的，保鲜才会动（它把最新的种子挪到 5 分钟前）
+    ...fixtureSessions().map((x) => (x.id.startsWith('wecom:cust_') ? { ...x, updatedAt: Date.now() - 3 * day } : x)),
+    { ...session('wecom:cust_OLD', [msg('customer', '旧种子', Date.now() - 3 * day)]), updatedAt: Date.now() - 3 * day },
+    { ...session('sim-stalestalestale1', [msg('customer', '过期访客', 1)], 'simulator'), updatedAt: Date.now() - 2 * day },
+  ];
+  const child =
+    `import dc from 'node:diagnostics_channel';\n` +
+    `let sockets = 0;\n` +
+    `dc.subscribe('net.client.socket', () => { sockets++; });\n` +
+    `const timers = { setInterval: 0, setTimeout: 0 };\n` +
+    `const oi = globalThis.setInterval, ot = globalThis.setTimeout;\n` +
+    `globalThis.setInterval = (...a) => { timers.setInterval++; return oi(...a); };\n` +
+    `globalThis.setTimeout = (...a) => { timers.setTimeout++; return ot(...a); };\n` +
+    `const s = await import(${JSON.stringify(storeUrl)});\n` +
+    `await new Promise((r) => ot(r, 300));\n` +
+    `const old = s.getSession('wecom:cust_OLD');\n` +
+    `console.log(JSON.stringify({\n` +
+    `  mode: s.sessionStoreMode(),\n` +
+    `  sessions: s.listSessions().map((x) => x.id).toSorted(),\n` +
+    `  seqs: s.getSession('wecom:u1').messages.map((m) => s.seqOf(m)),\n` +
+    `  orders: s.listOrders().map((o) => o.id),\n` +
+    `  freshened: Date.now() - old.updatedAt < 600000,\n` +
+    `  listeners: ['exit', 'SIGTERM', 'SIGINT'].map((e) => process.listenerCount(e)),\n` +
+    `  sockets,\n` +
+    `  timers,\n` +
+    `}));\n` +
+    `process.exit(0);\n`;
+  const probe = (label: string, storeEnv: string | undefined, opts: { readOnly?: boolean } = {}) => {
+    const dir = freshVarDir(`import-${label}`, probeSessions());
+    if (opts.readOnly) fs.chmodSync(dir, 0o555);
     const before = fs.readdirSync(dir).toSorted().join();
-    const r = runChild(
-      `import-${store || 'unset'}`,
-      `const s = await import(${JSON.stringify(storeUrl)});\n` +
-        `await new Promise((r) => setTimeout(r, 300));\n` +
-        `const kinds = process.getActiveResourcesInfo().filter((k) => k !== 'Timeout' && k !== 'TTYWrap').toSorted();\n` +
-        `console.log(JSON.stringify({\n` +
-        `  mode: s.sessionStoreMode(),\n` +
-        `  sessions: s.listSessions().map((x) => x.id).toSorted(),\n` +
-        `  seqs: s.getSession('wecom:u1').messages.map((m) => s.seqOf(m)),\n` +
-        `  orders: s.listOrders().map((o) => o.id),\n` +
-        `  listeners: ['exit', 'SIGTERM', 'SIGINT'].map((e) => process.listenerCount(e)),\n` +
-        `  resources: kinds,\n` +
-        `}));\n` +
-        `process.exit(0);\n`,
-      {
-        VAR_DIR: dir,
-        SESSION_STORE: store,
-        CONFIG_SOURCE: store === 'db' ? 'db' : '',
-        DATABASE_URL: 'postgres://agent_app:x@127.0.0.1:1/none',
-      },
-    );
+    const r = runChild(`import-${label}`, child, {
+      VAR_DIR: dir,
+      SESSION_STORE: storeEnv,
+      CONFIG_SOURCE: storeEnv === 'db' ? 'db' : '',
+      DATABASE_URL: 'postgres://agent_app:x@127.0.0.1:1/none',
+    });
     const after = fs.readdirSync(dir).toSorted().join();
-    return { out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').slice(0, 300), status: r.status, filesSame: before === after };
+    if (opts.readOnly) fs.chmodSync(dir, 0o755);
+    // stdout 里还有 store 自己的保鲜与清理日志，结果是最后一行
+    const out = (r.stdout ?? '').trim().split('\n').at(-1) ?? '';
+    return { out, err: r.stderr ?? '', status: r.status, filesSame: before === after };
   };
-  const asFile = probe('file');
-  const asDb = probe('db');
-  const unset = probe('');
-  check('导入期：子进程正常退出', asFile.status === 0 && asDb.status === 0 && unset.status === 0, `${asFile.err} ${asDb.err}`);
+  const asFile = probe('file', 'file');
+  const asDb = probe('db', 'db');
+  const unset = probe('unset', undefined);
   check(
-    '导入期：SESSION_STORE=db 与 file、未设时的行为相同',
-    asFile.out !== '' && asFile.out === asDb.out && asFile.out === unset.out,
-    `${asFile.out}\n${asDb.out}`,
+    '导入期：子进程正常退出',
+    asFile.status === 0 && asDb.status === 0 && unset.status === 0,
+    `${asFile.err.slice(0, 200)} ${asDb.err.slice(0, 200)}`,
   );
-  const parsed = JSON.parse(asFile.out || '{}') as { mode?: string; resources?: string[]; seqs?: number[]; listeners?: number[] };
+  check(
+    '导入期：SESSION_STORE=db 与 file、真正未设时的行为相同',
+    asFile.out !== '' && asFile.out === asDb.out && asFile.out === unset.out,
+    `${asFile.out}\n${asDb.out}\n${unset.out}`,
+  );
+  const parsed = JSON.parse(asFile.out || '{}') as {
+    mode?: string;
+    sessions?: string[];
+    seqs?: number[];
+    freshened?: boolean;
+    listeners?: number[];
+    sockets?: number;
+    timers?: { setInterval: number; setTimeout: number };
+  };
   check('导入期：读进 JSON 并记好 seq，模式是 file（initSessionStore 之前）', parsed.mode === 'file' && parsed.seqs?.join() === '1,2,3');
+  check('导入期：保鲜把旧种子挪到眼前、清理删掉过期访客', parsed.freshened === true && !parsed.sessions?.includes('sim-stalestalestale1'));
+  check('导入期：起了保鲜与清理的定时器', (parsed.timers?.setInterval ?? 0) >= 1, JSON.stringify(parsed.timers));
   check(
     '导入期：exit 与信号的钩子都已注册',
     (parsed.listeners ?? []).every((n) => n >= 1),
     JSON.stringify(parsed.listeners),
   );
-  check(
-    '导入期：没有为会话建立任何连接',
-    (parsed.resources ?? []).every((k) => !/TCP|GetAddrInfo/i.test(k)),
-    JSON.stringify(parsed.resources),
+  check('导入期：没有发起任何网络连接（db 存储下也不为会话连库）', parsed.sockets === 0, String(parsed.sockets));
+  check('导入期：探针写完就删，数据目录里没多出文件', asFile.filesSame && asDb.filesSame && unset.filesSame);
+  // 探测本身：连一次网络，计数器要看得见
+  const control = runChild(
+    'socket-control',
+    `import dc from 'node:diagnostics_channel'; import net from 'node:net';\n` +
+      `let n = 0; dc.subscribe('net.client.socket', () => { n++; });\n` +
+      `net.connect(1, '127.0.0.1').on('error', () => {});\n` +
+      `console.log(n); process.exit(0);\n`,
+    {},
   );
-  check('导入期：数据目录里不多不少（探针已删）', asFile.filesSame && asDb.filesSame);
+  check('导入期：连接计数的探测是灵的（正对照）', control.stdout.trim() === '1', control.stdout + control.stderr.slice(0, 200));
+  if (process.getuid?.() !== 0) {
+    const roFile = probe('ro-file', 'file', { readOnly: true });
+    const roDb = probe('ro-db', 'db', { readOnly: true });
+    check(
+      '导入期：数据目录不可写时，两种模式都在启动时喊出来',
+      roFile.err.includes('数据目录不可写') && roDb.err.includes('数据目录不可写'),
+      `${roFile.err.slice(0, 120)} | ${roDb.err.slice(0, 120)}`,
+    );
+  }
 }
 
 // ---------------- /healthz 的 store 与 ok ----------------
@@ -562,13 +774,19 @@ const runChild = (name: string, code: string, env: Record<string, string>) => {
   fs.mkdirSync(SESSIONS_FILE);
   fs.writeFileSync(path.join(SESSIONS_FILE, 'blocker'), 'x');
   const u1 = store.getSession('wecom:u1')!;
-  store.saveSession(u1);
-  await sleep(300);
   const realNow = Date.now;
   const base = realNow();
-  Date.now = () => base + 121_000;
-  const lagging = await health();
-  Date.now = realNow;
+  let lagging: Awaited<ReturnType<typeof health>>;
+  try {
+    store.saveSession(u1);
+    await sleep(300); // 去抖落盘失败一次
+    Date.now = () => base + 60_000;
+    store.saveSession(u1); // 一分钟后又改一次：积压按最早那次算
+    Date.now = () => base + 121_000;
+    lagging = await health();
+  } finally {
+    Date.now = realNow;
+  }
   check(
     '/healthz：积压超过 2 分钟时 ok 为 false，HTTP 照旧 200',
     lagging.ok === false && (lagging.store.lagMs as number) > 120_000,
@@ -582,8 +800,6 @@ const runChild = (name: string, code: string, env: Record<string, string>) => {
   console.error = origErr;
   check('/healthz：恢复落盘之后 ok', (await health()).ok === true);
 }
-
-fs.rmSync(VAR_DIR, { recursive: true, force: true });
 
 if (fails.length) {
   console.error(`STORE SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);

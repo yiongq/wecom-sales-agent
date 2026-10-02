@@ -62,7 +62,8 @@ const fileBackend = createFileBackend({
   sessions,
   orders,
   owns: (id) => !pgBackend || isDemoClassId(id),
-  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId),
+  // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）
+  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId),
   isReal: (id) => !isDemoClassId(id),
   afterPersist: () => storeEvents.emit('change'),
 });

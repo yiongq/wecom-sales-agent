@@ -56,8 +56,10 @@ export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise
   const start = Date.now();
   let ok = true;
   for (const phase of PHASES) {
-    // normal 的截止从开始算；drain、late 各自从上一段结束时算，早结束的段把余下的时间留给进程退出
-    const deadline = (phase === 'normal' ? start : Date.now()) + timeoutMs * SHARE[phase];
+    // normal 的截止从开始算；drain、late 各自从上一段结束时算，早结束的段把余下的时间留给进程退出。
+    // 都不超过总上限：normal 的计时器因为事件循环阻塞晚触发时，后两段不整体顺延
+    const own = (phase === 'normal' ? start : Date.now()) + timeoutMs * SHARE[phase];
+    const deadline = Math.min(own, start + timeoutMs);
     if (!(await runPhase(phase, deadline))) ok = false;
   }
   return ok;
