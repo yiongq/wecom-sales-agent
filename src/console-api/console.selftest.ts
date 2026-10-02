@@ -2498,6 +2498,19 @@ check(
       ['catalog.update', 'catalog.create', 'sop.publish', 'auth.login', 'platform.user_create'].every((a) => kinds.has(a)),
     `${[...kinds].join(',')} | ${odd.slice(0, 4).join(' | ')}`,
   );
+  // 时间线（02 第 8 步）：后台改、上架在同一事务里接着记的 catalog.version 都并进了那次写入，不单独成句
+  const { auditRuns } = await import('../shared/audit-text.js');
+  const loose = auditRuns(real)
+    .flat()
+    .filter((e) => e.action === 'catalog.version');
+  check(
+    '审计时间线：真实记录里每个 catalog.version 都并进了它那次写入（这一轮没有启动补写）',
+    real.filter((e) => e.action === 'catalog.version').length >= 2 && loose.length === 0,
+    loose
+      .slice(0, 4)
+      .map((e) => `${e.id} ${e.targetId} ${JSON.stringify(e.diff)}`)
+      .join(' | '),
+  );
 }
 
 // 后台 UX spec 验收 15 第 2 条：检查的违规带 match，前端拿它在正文里查找、生成说明。四类带：禁用短语是命中的文本
