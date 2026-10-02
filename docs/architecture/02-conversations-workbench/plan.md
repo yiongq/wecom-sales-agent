@@ -391,7 +391,7 @@
     - 新文件 `src/adapters/wecom-02.selftest.ts`（6 项，串在 `handoff.selftest.ts` 之后）：照 `wecom.selftest.ts` 的写法搭一份最小的假企微服务端（假 `fetch`、`syncFromCallback`、`__test.resetForTest` 当重启、往盘上的在途表写消息），驱动真正的适配器。断言：文本消息记下的 `msgid` 与原消息相同、`sentAt === send_time * 1000`；非文本占位带 `sentAt`；重放时原文相同、msgid 不同的判成新消息（记下、生成新回复、不重发回上一句的那条），msgid 相同的判成已记下（不重复记、只回一次）。`handoff.selftest.ts` 里原来叫「企微文本消息带上 msgid 与 sentAt」的那条是直接调引擎，改了名字，不再说成适配器。
     - `handoff.selftest.ts`（90 → 102 项）：保鲜之后 `handoff.at` 与触发它的客户消息间隔不变、`firstHandoffAt` 不早于 `createdAt`、`assignee.at` 一起挪；旧形状（`handedOver`、没有 `firstHandoffAt`）付款后 `handoffBeforePaid` 为 true（从没转过的为 false 原来就有）；重放夹欢迎语时，假模型抓到的请求里最后一条 user 是客户这句、排在欢迎语之后、contextNote 紧挨在它前面，会话里的顺序不变；安全网与模型两条入口的超长原话 quote 截到 200 个码点（第 200 个码点是 emoji，结果 well-formed）；模型不给 reason 时记录的原因是兜底文案，不写「AI 已转人工：」那条；安全网、promise、claimed 各配一句带日期的原话，记录都有 `departNote`，claimed 的 system 消息逐字等于「AI 已转人工：回复里答应了转接顾问（引擎补记）\n（出行时间）」；固定原因的期望值全部写成字面量，不再从 `HANDOFF_REASON` 取；带 `ADMIN_PASS` 的 `/api/sessions` 列表返回原对象。临时 `VAR_DIR` 照 `store.selftest.ts` 在退出时删掉。
     - `console.selftest.ts`（302 → 305 项）「会话只读列表」一段：一个会话带接手人、转人工记录、一条带 `sentAt` 的客户消息，后面再跟一条 agent 消息。断言行的 `assignee` 恰为 `{ userId, name }`，`handoff` 恰为 `{ kind, at（ISO）, reason }`（原话与出行时间备注不进列表），`lastCustomerAt` 是 `sentAt`；`byState.assigned` 为 1、四项之和等于 total，`?state=assigned` 只返回它。下一段按三态逐条核对，所以断言完把接手人摘掉。
-  - 没补的：`activePack` 的 DB 配置分支（审查 tests[5]）。本阶段只有旅游包，DB 模式下租户的包与文件模式取到的是同一份，线上走不出差别。第一个非旅游包的租户上线前补；`console.selftest.ts` 已有的 `__configTest.swapPack` 能把租户的包换成家装假包，可以借它断言 `isTerminalStage('deposit')`。
+  - `activePack` 的 DB 配置分支（审查 tests[5]）：在 `console.selftest.ts` 里借 `__configTest.swapPack` 把租户的包换成家装假包，断言 `isTerminalStage('deposit')` 为真、`'paid'` 为假、`terminalStageKey()` 是 `deposit`。
   - 变异（`git worktree add --detach` 到 scratchpad 的隔离副本，逐个打、跑完删掉）：共 31 个，全部杀掉，每个都由新加的那条断言报出。企微适配器的四个（不传 `msgid` / `sentAt`；两处 `send_time * 1000` 改成 `send_time`；重放对齐只比原文；占位去掉 `sentAt`）先确认在 `handoff.selftest.ts` 与锁定的 `wecom.selftest.ts` 下都存活，再由 `wecom-02.selftest.ts` 杀掉。三处代码改动各自撤回（保鲜三个字段整体与逐个撤回、判定去掉 `|| handedOver`、不挪 history）由 `handoff.selftest.ts` 杀掉，其中不挪 history 在锁定的 `engine.selftest.ts` 下存活。`ConversationRow` 七个（`lastCustomerAt` 不看 `sentAt` / 取任意角色的最后一条、`assignee` 恒 null / 原样展开、`handoff` 恒 null / `at` 不转 ISO、counts 把 assigned 算进 human）由 `console.selftest.ts` 杀掉。quote 与兜底六个（安全网不截 / 按码元截、引擎四处都不截、工具提示不截、去掉兜底原因、reason 为空也写 system 消息）、departNote 四个（三个入口不带、claimed 的 system 消息丢掉出行时间）、固定原因四个（request 与 complaint 互换、改 promise / model / refund 的文案）、带凭据的列表也走匿名投影一个，由 `handoff.selftest.ts` 杀掉。
   - 门禁四个全绿；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
 
@@ -443,6 +443,6 @@
 ### 交接（2026-10-02，第 3 步）
 
 - 已完成：第 3 步。转人工记录与五条入口、四态与「已成交客户要人工」、终态会话保留终态、重置与交还清什么、`handoffBeforePaid`、两处非追加写改成只追加、`cleanText` 全部换上、`/api/orders/:id` 白名单、匿名投影、`legacy_admin_writes`、`handoff.selftest.ts`（102 项）与 `adapters/wecom-02.selftest.ts`（6 项）。审查之后改了三处代码（种子保鲜挪转人工的时刻、旧形状会话的 `handoffBeforePaid`、重放夹欢迎语时发给模型的历史顺序），补了审查指出的自测缺口，见「实施记录 · 第 3 步」的「审查之后改的」。锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
-- 半成品：无。`activePack` 的 DB 配置分支没有自测，第一个非旅游包的租户上线前补。
+- 半成品：无。
 - 阻塞：无。「Open」第 1 步带出的三处：顾问姓名的改写留第 13 步，`/pay` 响应体已按推荐先做，advisor 模式的支付页仍在第 15 步之前定。
 - 下一步：第 4 步「迁移：新表、RLS、授权、触发器、清除与删除函数」。先读 spec「数据库」与各节的 DDL、授权表，01 spec 的「迁移纪律」；`HandoffRecord`、`Assignee` 等的字段已定在 `src/shared/conversation-types.ts`，表的列照它们写。

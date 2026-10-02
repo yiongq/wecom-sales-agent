@@ -1942,6 +1942,13 @@ check(
   );
   const prevPack = cfg.__configTest.swapPack(renovation);
   try {
+    // 02 第 3 步：引擎与旧接口判「阶段是不是终态」在 DB 配置模式下取租户的行业包，不是注册表里的旅游包
+    const { isTerminalStage, terminalStageKey } = await import('../handoff/record.js');
+    check(
+      '终态判定：DB 配置模式下按租户的行业包（家装包的 deposit 是终态，旅游包的 paid 不是）',
+      isTerminalStage('deposit') && !isTerminalStage('paid') && String(terminalStageKey()) === 'deposit',
+      `${isTerminalStage('deposit')} ${isTerminalStage('paid')} ${terminalStageKey()}`,
+    );
     const rCounts = await countsNow();
     const rAll = await pageAll('');
     const rPer = Object.fromEntries(
