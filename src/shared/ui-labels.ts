@@ -79,6 +79,8 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'catalog.update': { label: '修改', group: 'catalog', icon: 'pencil-line' },
   'catalog.activate': { label: '上架', group: 'catalog', icon: 'circle-check' },
   'catalog.locked_fix': { label: '修正锁定内容', group: 'catalog', icon: 'lock' },
+  // 02「报价快照」：上架、改了已上架条目的内容、启动补写时记下的条目版本；方案书链接按版本号固定报价
+  'catalog.version': { label: '记下新版本', group: 'catalog', icon: 'history' },
   'auth.login': { label: '登录', group: 'account', icon: 'log-in', login: true },
   'auth.logout': { label: '退出登录', group: 'account', icon: 'log-out', login: true },
   'config.import': { label: '导入初始配置', group: 'platform', icon: 'download' },

@@ -1,5 +1,5 @@
 // 产品库条目版本（02 spec「报价快照」）：只追加，启动时全量读进内存
-import { asc } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { catalogItemVersions } from '../schema.js';
 import type { CatalogKind } from './catalog.js';
@@ -37,4 +37,13 @@ export async function readCatalogVersions(tx: Tx): Promise<CatalogVersionRow[]> 
     .orderBy(asc(catalogItemVersions.kind), asc(catalogItemVersions.code), asc(catalogItemVersions.version));
   // kind 列没有 CHECK，外键保证它是 catalog_items 里已有的 kind
   return rows.map((r) => ({ ...r, kind: r.kind as CatalogKind }));
+}
+
+/** 这一条已有的最大版本号；一行都没有时是 0。写新版本前在同一事务里取（条目行已经 FOR UPDATE 锁住，同一条的写入串行） */
+export async function maxCatalogVersion(tx: Tx, kind: CatalogKind, code: string): Promise<number> {
+  const [row] = await tx
+    .select({ n: sql<number>`coalesce(max(${catalogItemVersions.version}), 0)::int` })
+    .from(catalogItemVersions)
+    .where(and(eq(catalogItemVersions.kind, kind), eq(catalogItemVersions.code, code)));
+  return row?.n ?? 0;
 }

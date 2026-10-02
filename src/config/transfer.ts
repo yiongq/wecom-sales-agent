@@ -5,6 +5,7 @@ import path from 'node:path';
 import { lockTenantConfig, withTenant, type Db, type TenantCtx, type TenantLock } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { countCatalogItems, insertActiveItems, readActiveCatalog, type CatalogKind } from '../db/repo/catalog.js';
+import { insertCatalogVersion } from '../db/repo/catalog-versions.js';
 import { countSopVersions, insertPublishedSop, readPublishedSop } from '../db/repo/sop.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import { renderSystemPrompt } from '../prompt/system.js';
@@ -146,6 +147,22 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
         const by = { userId: null, name: 'import-config' };
         await insertActiveItems(tx, tenant.id, 'route', routes, by);
         await insertActiveItems(tx, tenant.id, 'hotel', hotels, by);
+        // 导入直接是 active，等于上架：每条写版本 1（02「报价快照」），之后启动时就没有要补写的
+        for (const [kind, list] of [
+          ['route', routes],
+          ['hotel', hotels],
+        ] as const) {
+          for (const payload of list) {
+            await insertCatalogVersion(tx, {
+              kind,
+              code: String(payload.id),
+              version: 1,
+              payload,
+              source: 'activate',
+              createdByName: by.name,
+            });
+          }
+        }
         await writeAudit(tx, { action: 'config.import', diff: { sections: merged.length, routes: routes.length, hotels: hotels.length } });
         return { code: EXIT.ok, hashes, versionNo: 1, message: `已导入 SOP v1、${routes.length} 条线路、${hotels.length} 家酒店` };
       }

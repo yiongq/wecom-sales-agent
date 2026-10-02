@@ -11,6 +11,8 @@ export interface CatalogRow {
   ord: number;
   status: 'draft' | 'active';
   rev: number;
+  /** 当前内容的条目版本（02「报价快照」）：与 catalog_item_versions 里这一条的最新一行对应；草稿恒为默认的 1、没有版本行 */
+  version: number;
   payload: Record<string, unknown>;
   updatedByName: string | null;
   updatedAt: Date;
@@ -22,6 +24,7 @@ const columns = {
   ord: catalogItems.ord,
   status: catalogItems.status,
   rev: catalogItems.rev,
+  version: catalogItems.version,
   payload: catalogItems.payload,
   updatedByName: catalogItems.updatedByName,
   updatedAt: catalogItems.updatedAt,
@@ -124,7 +127,10 @@ export async function insertDraftItem(
   return row!;
 }
 
-/** 按 rev 乐观锁整条替换 payload；rev 对不上返回 null。rev 加 1 与 updated_at 由触发器负责 */
+/**
+ * 按 rev 乐观锁整条替换 payload；rev 对不上返回 null。rev 加 1 与 updated_at 由触发器负责。
+ * 给了 version 就在同一条 UPDATE 里一起改（active 条目内容变了，02「报价快照」）：分两条写触发器会让 rev 加 2
+ */
 export async function updateItemPayload(
   tx: Tx,
   kind: CatalogKind,
@@ -132,16 +138,17 @@ export async function updateItemPayload(
   rev: number,
   payload: Record<string, unknown>,
   by: { userId: string | null; name: string | null },
+  version?: number,
 ): Promise<CatalogRow | null> {
   const [row] = await tx
     .update(catalogItems)
-    .set({ payload, updatedBy: by.userId, updatedByName: by.name })
+    .set({ payload, updatedBy: by.userId, updatedByName: by.name, ...(version === undefined ? {} : { version }) })
     .where(and(eq(catalogItems.kind, kind), eq(catalogItems.code, code), eq(catalogItems.rev, rev)))
     .returning(columns);
   return row ?? null;
 }
 
-/** draft → active；rev 对不上或已不是 draft 返回 null */
+/** draft → active，条目版本记成 1（02「报价快照」：上架写版本 1）；rev 对不上或已不是 draft 返回 null */
 export async function activateItem(
   tx: Tx,
   kind: CatalogKind,
@@ -151,8 +158,19 @@ export async function activateItem(
 ): Promise<CatalogRow | null> {
   const [row] = await tx
     .update(catalogItems)
-    .set({ status: 'active', updatedBy: by.userId, updatedByName: by.name })
+    .set({ status: 'active', version: 1, updatedBy: by.userId, updatedByName: by.name })
     .where(and(eq(catalogItems.kind, kind), eq(catalogItems.code, code), eq(catalogItems.rev, rev), eq(catalogItems.status, 'draft')))
     .returning(columns);
   return row ?? null;
+}
+
+/**
+ * 只改 catalog_items.version（启动补写：版本行与这一列对不上时对齐，02「报价快照」）。触发器照常让 rev 加 1、
+ * 更新 updated_at；内容不动
+ */
+export async function setItemVersion(tx: Tx, kind: CatalogKind, code: string, version: number): Promise<void> {
+  await tx
+    .update(catalogItems)
+    .set({ version })
+    .where(and(eq(catalogItems.kind, kind), eq(catalogItems.code, code)));
 }

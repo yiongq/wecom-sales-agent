@@ -195,6 +195,11 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       return { parts: [plain(`上架了${noun}`), ...name()] };
     case 'catalog.locked_fix':
       return { parts: [plain(`修正了${noun}`), ...name()], ...fieldsTail(changed()) };
+    case 'catalog.version': {
+      // 「小林 记下了线路「…」的第2版」：之后发出的方案书按这一版报价，已发出的不变
+      const v = int(diff.version);
+      return { parts: [plain(`记下了${noun}`), ...name(), plain(v === null ? '的新版本' : `的第${v}版`)] };
+    }
     case 'auth.login':
       return { parts: [plain('登录了')] };
     case 'auth.logout':
