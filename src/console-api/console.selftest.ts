@@ -1664,6 +1664,53 @@ check(
     (await call('GET', '/conversations', { as: agent })).status === 200 && (await call('GET', '/audit', { as: agent })).status === 403,
   );
   check('会话列表：匿名 → 401', (await call('GET', '/conversations')).status === 401);
+
+  // 02 的四个新键的取值（02 spec「后台接口」ConversationRow）：接手人只投影 userId 与 name，转人工记录只投影 kind、ISO 的 at 与 reason，
+  // lastCustomerAt 取客户最后一条消息的 sentAt（后面的 agent 消息不算）；有接手人的会话是第四态 assigned
+  const D = 'wecom:conv-d';
+  seed(D, 'wecom', T + 7000, (sess) => {
+    sess.handedOver = true;
+    sess.stage = 'handoff';
+    sess.handoff = {
+      kind: 'complaint',
+      at: T + 1000,
+      reason: '客户投诉',
+      quote: '会话列表不该出现的原话',
+      departNote: '会话列表不该出现的备注',
+    };
+    sess.assignee = { userId: 'u-conv-d', name: '小林', at: T + 2000 };
+    sess.messages.push(
+      { role: 'customer', content: '在吗', at: T + 1500, sentAt: T + 1200, msgid: 'msg-conv-d' },
+      { role: 'agent', content: '在的', at: T + 2500, author: 'human', authorId: 'u-conv-d', authorName: '小林' },
+    );
+  });
+  const assigned = await call('GET', '/conversations?state=assigned', O);
+  const d = (assigned.body.items as Body[] | undefined)?.[0];
+  check(
+    '会话列表：assignee 恰为 {userId, name}，handoff 恰为 {kind, at（ISO）, reason}，lastCustomerAt 是客户那条的 sentAt',
+    JSON.stringify(d?.assignee) === JSON.stringify({ userId: 'u-conv-d', name: '小林' }) &&
+      JSON.stringify(d?.handoff) === JSON.stringify({ kind: 'complaint', at: new Date(T + 1000).toISOString(), reason: '客户投诉' }) &&
+      d?.lastCustomerAt === new Date(T + 1200).toISOString(),
+    JSON.stringify(d),
+  );
+  const dCounts = (await call('GET', '/conversations/counts', O)).body as { total: number; byState: Record<string, number> };
+  check(
+    '会话列表：有接手人的会话 byState.assigned 为 1、四项之和等于 total，?state=assigned 只返回它',
+    dCounts.byState.assigned === 1 &&
+      Object.values(dCounts.byState).reduce((a, b) => a + b, 0) === dCounts.total &&
+      assigned.status === 200 &&
+      assigned.body.total === 1 &&
+      (assigned.body.items as Body[]).map((x) => x.id).join() === D,
+    `${JSON.stringify(dCounts)} ${assigned.text.slice(0, 200)}`,
+  );
+  check(
+    '会话列表：转人工记录的原话与出行时间备注不进列表',
+    !assigned.text.includes('不该出现的原话') && !assigned.text.includes('不该出现的备注'),
+  );
+  // 下一段按 ai / human / paid 三态逐条核对：把接手人摘掉，它回到等人接手
+  const dSess = store.getSession(D)!;
+  delete dSess.assignee;
+  store.saveSession(dSess, false);
 }
 
 // 后台 UX spec 验收 15 第 5、6 条：会话的 state / stage / order 过滤与排序，/conversations/counts 与列表同源。

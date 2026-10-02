@@ -16,7 +16,8 @@ import type { Order, Session } from '../types.js';
 
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
-process.env.VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-handoff-selftest-'));
+const VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-handoff-selftest-'));
+process.env.VAR_DIR = VAR_DIR;
 process.env.CONFIG_SOURCE = 'file';
 process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微轮询
 process.env.ADMIN_USER = 'admin';
@@ -29,6 +30,12 @@ interface Step {
   toolCalls?: { name: string; args: Record<string, unknown> }[];
 }
 const script: Step[] = [];
+/** 发给假模型的 chat 请求体（按到达顺序），看模型输入的顺序用 */
+interface WireMsg {
+  role: string;
+  content: string | null;
+}
+const requests: { messages: WireMsg[] }[] = [];
 const fake = http.createServer((req, res) => {
   const chunks: Buffer[] = [];
   req.on('data', (c: Buffer) => chunks.push(c));
@@ -39,6 +46,7 @@ const fake = http.createServer((req, res) => {
       res.end(JSON.stringify({ data: input.map(() => ({ embedding: [1, 0, 0] })), usage: { prompt_tokens: 0 } }));
       return;
     }
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: WireMsg[] });
     const step = script.shift();
     const message = step?.toolCalls
       ? {
@@ -68,6 +76,8 @@ process.env.LLM_MAX_RETRY = '0';
 
 const { app } = await import('../server.js');
 const store = await import('../store.js');
+// store 的 exit 钩子可能在最后再写一次 JSON：清理排在它之后（exit 监听按注册顺序执行），中途抛错也照样清
+process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 const { handleMessage, inboundText, notifyPaid } = await import('../engine.js');
 const { enterHandoff, HANDOFF_REASON } = await import('./record.js');
 const { cleanText } = await import('../shared/text.js');
@@ -235,11 +245,11 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
     json(HANDOFF_REASON),
   );
   check('固定原因：agent 是「共享工作台转人工」', HANDOFF_REASON.agent === '共享工作台转人工');
-  // 安全网三类：类型由 handoffReply 同一个判断给出，原因是固定说明，quote 是本轮原话
-  for (const [text, kind] of [
-    ['转人工', 'request'],
-    ['我要投诉', 'complaint'],
-    ['转人工，我想取消订单', 'refund'],
+  // 安全网三类：类型由 handoffReply 同一个判断给出，原因是固定说明（期望值写成字面量，不从实现的表里取），quote 是本轮原话
+  for (const [text, kind, reason] of [
+    ['转人工', 'request', '客户要找顾问'],
+    ['我要投诉', 'complaint', '客户投诉'],
+    ['转人工，我想取消订单', 'refund', '客户要退款或改订单'],
   ] as const) {
     const sid = newSid('NET');
     const before = Date.now();
@@ -247,7 +257,7 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
     const s = sess(sid);
     check(
       `安全网（${kind}）：记录的类型、原因、原话与时间`,
-      s.handoff?.kind === kind && s.handoff.reason === HANDOFF_REASON[kind] && s.handoff.quote === text && s.handoff.at >= before,
+      s.handoff?.kind === kind && s.handoff.reason === reason && s.handoff.quote === text && s.handoff.at >= before,
       json(s.handoff),
     );
     check(
@@ -278,6 +288,38 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
       s.handoff?.quote === '转人工' && s.messages[0]?.content === '转人工',
     );
   }
+  // quote 截到 200 个码点（spec「≤200 字」）：第 200 个码点是 emoji，截断不切开代理对
+  const SMILE = String.fromCodePoint(0x1f600);
+  const wellFormed = (x: string) => {
+    try {
+      encodeURIComponent(x); // 有孤立代理项就抛 URIError
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  {
+    const sid = newSid('LONGQ');
+    const text = `转人工，${'好'.repeat(195)}${SMILE}${'后面的话'.repeat(30)}`;
+    await say(sid, text);
+    const q = sess(sid).handoff?.quote ?? '';
+    check(
+      '安全网：超长原话的 quote 截到 200 个码点，第 200 个是完整的 emoji',
+      sess(sid).handoff?.kind === 'request' && [...q].length === 200 && q.endsWith(SMILE) && wellFormed(q),
+      `${[...q].length} ${json(q.slice(-4))}`,
+    );
+  }
+  // 安全网也附出行时间：原话里说了哪天出发，记录带 departNote
+  {
+    const sid = newSid('NETDATE');
+    await say(sid, '10月12号出发，转人工');
+    const h = sess(sid).handoff;
+    check(
+      '安全网：原话带出行时间时记录有 departNote',
+      h?.kind === 'request' && h.reason === '客户要找顾问' && !!h.departNote?.includes('10月12号'),
+      json(h),
+    );
+  }
 
   // 模型调 handoff_to_human：原因取模型给的（记录 ≤120、system 消息照旧 ≤200），出行时间在调工具之前算好，system 消息一次写成整条
   {
@@ -306,6 +348,37 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
     );
     check('model：回复的 stage 是 handoff、计数 1', r.stage === 'handoff' && s.handoffCount === 1 && s.assignee === null);
   }
+  {
+    // 模型调工具时的 quote 同样截到 200 个码点
+    const sid = newSid('MODELQ');
+    const text = `想找个专人帮我们规划，${'细'.repeat(188)}${SMILE}${'后面的话'.repeat(30)}`;
+    await say(sid, text, [
+      { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户想找专人规划' } }] },
+      { content: '好的，顾问会尽快联系您～' },
+    ]);
+    const q = sess(sid).handoff?.quote ?? '';
+    check(
+      'model：超长原话的 quote 截到 200 个码点，第 200 个是完整的 emoji',
+      sess(sid).handoff?.kind === 'model' && [...q].length === 200 && q.endsWith(SMILE) && wellFormed(q),
+      `${[...q].length} ${json(q.slice(-4))}`,
+    );
+  }
+  {
+    // 模型调 handoff_to_human 不给 reason：记录的原因用兜底文案，后台不写「AI 已转人工：」那条（02 之前就不写）
+    const sid = newSid('NOREASON');
+    await say(sid, '能找个专人帮我们规划吗', [
+      { toolCalls: [{ name: 'handoff_to_human', args: {} }] },
+      { content: '好的，顾问会尽快联系您～' },
+    ]);
+    const s = sess(sid);
+    check(
+      'model：模型没给原因时记录的原因是「AI 判断要请顾问处理」，不写「AI 已转人工：」的 system 消息',
+      s.handoff?.kind === 'model' &&
+        s.handoff.reason === 'AI 判断要请顾问处理' &&
+        !s.messages.some((m) => m.role === 'system' && m.content.startsWith('AI 已转人工：')),
+      json({ h: s.handoff, m: s.messages.map((m) => [m.role, m.content]) }),
+    );
+  }
 
   // 改行程承诺（promise）
   {
@@ -316,10 +389,16 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
       'promise：记录的类型、固定原因与原话',
       r.handoff === true &&
         s.handoff?.kind === 'promise' &&
-        s.handoff.reason === HANDOFF_REASON.promise &&
+        s.handoff.reason === '回复里答应了改行程，要顾问重排' &&
         s.handoff.quote === '这条能改成5天吗',
       json(s.handoff),
     );
+  }
+  {
+    const sid = newSid('PROMISEDATE');
+    await say(sid, '我们10月12号出发，这条能改成5天吗', [{ content: '可以的，我按5天帮您重排行程。' }]);
+    const h = sess(sid).handoff;
+    check('promise：原话带出行时间时记录有 departNote', h?.kind === 'promise' && !!h.departNote?.includes('10月12号'), json(h));
   }
 
   // 同一轮模型已调过 handoff_to_human、改行程承诺又命中：保留第一次的 model 记录，计数不加，只发一条事件
@@ -353,6 +432,20 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
     check(
       'claimed：system 消息照旧',
       s.messages.some((m) => m.role === 'system' && m.content === 'AI 已转人工：回复里答应了转接顾问（引擎补记）'),
+    );
+  }
+  {
+    // 原话带出行时间：记录有 departNote，system 消息与 02 之前逐字相同（原因后面换行附上出行时间）
+    const sid = newSid('CLAIMEDDATE');
+    await say(sid, '我们10月12号出发，签证这块能让顾问帮我看看吗', [{ content: '好的，签证这块我马上为您转接资深顾问，请稍候～' }]);
+    const s = sess(sid);
+    const note = s.handoff?.departNote;
+    const sys = s.messages.filter((m) => m.role === 'system' && m.content.startsWith('AI 已转人工：'));
+    check('claimed：原话带出行时间时记录有 departNote', s.handoff?.kind === 'claimed' && !!note?.includes('10月12号'), json(s.handoff));
+    check(
+      'claimed：system 消息一次写成「AI 已转人工：回复里答应了转接顾问（引擎补记）\\n（<出行时间>）」',
+      sys.length === 1 && sys[0]!.content === `AI 已转人工：回复里答应了转接顾问（引擎补记）\n（${note}）`,
+      json(sys),
     );
   }
 
@@ -496,6 +589,52 @@ const mkOrder = (s: Session): Order => {
   const o = mkOrder(sess(sid));
   store.markOrderPaid(o.id);
   check('没转过人工就付款：handoffBeforePaid 为 false', store.getOrder(o.id)?.handoffBeforePaid === false);
+}
+{
+  // 02 之前就转了人工、现在还在转人工中的旧形状（种子 F01、A01 与线上旧会话：没有 firstHandoffAt，导入也不回填）：付款时算转过人工（不变量 26）
+  const sid = newSid('OLDSHAPE');
+  await say(sid, '你好', [{ content: '您好～想去哪儿玩？' }]);
+  const s = sess(sid);
+  s.handedOver = true;
+  s.stage = 'handoff';
+  store.saveSession(s);
+  const o = mkOrder(s);
+  store.markOrderPaid(o.id);
+  check(
+    '旧形状（handedOver、没有 firstHandoffAt）付款：handoffBeforePaid 为 true',
+    !('firstHandoffAt' in s) && !('handoff' in s) && store.getOrder(o.id)?.handoffBeforePaid === true,
+    json(store.getOrder(o.id)),
+  );
+}
+{
+  // 种子保鲜（store.freshenDemoData）把转人工记录、firstHandoffAt、接手人的时刻跟着消息一起挪：相对间隔不变
+  const H = 3_600_000;
+  const t0 = Date.now() - 4 * H;
+  const s = store.getOrCreateSession('wecom:cust_HXF01', 'wecom');
+  s.messages.push(
+    { role: 'customer', content: '转人工', at: t0 + 60_000 },
+    { role: 'agent', content: '好的，马上为您转接顾问～', at: t0 + 61_000 },
+  );
+  s.handedOver = true;
+  s.stage = 'handoff';
+  s.handoff = { kind: 'request', at: t0 + 60_500, reason: '客户要找顾问', quote: '转人工' };
+  s.firstHandoffAt = t0 + 60_500;
+  s.handoffCount = 1;
+  s.assignee = { userId: 'u-member-1', name: '小林', at: t0 + 120_000 };
+  store.saveSession(s, false);
+  s.createdAt = t0;
+  s.updatedAt = t0 + 120_000;
+  store.freshenDemoData();
+  const delta = s.createdAt - t0;
+  check(
+    '种子保鲜：handoff.at 与触发它的客户消息的间隔不变，firstHandoffAt 不早于 createdAt，接手时刻一起挪',
+    delta > 3 * H &&
+      s.messages[0]!.at === t0 + 60_000 + delta &&
+      s.handoff.at - s.messages[0]!.at === 500 &&
+      s.firstHandoffAt - s.createdAt === 60_500 &&
+      s.assignee.at === t0 + 120_000 + delta,
+    json({ delta, h: s.handoff, f: s.firstHandoffAt, c: s.createdAt, a: s.assignee, m: s.messages[0] }),
+  );
 }
 {
   // 模型调工具转人工的已成交客户：阶段同样保留终态
@@ -657,6 +796,17 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
     '带 ADMIN_PASS 照旧返回原对象（含成员身份）',
     adminRead.text.includes('u-member-1') && adminRead.text.includes('小林') && adminOrders.text.includes('cancelReason'),
   );
+  // 旧工作台（admin.html）用列表看会话：带凭据的列表同样是原对象
+  const adminList = await hit('/api/sessions', { headers: ADMIN });
+  const listedSeed = (adminList.body as Session[]).find((x) => x.id === seed.s.id);
+  check(
+    '带 ADMIN_PASS 的会话列表照旧返回原对象（含成员的 user id 与姓名）',
+    adminList.status === 200 &&
+      adminList.text.includes('u-member-1') &&
+      adminList.text.includes('小林') &&
+      json(listedSeed) === json(seed.s),
+    `${adminList.status} ${json(listedSeed?.assignee)}`,
+  );
   check(
     '匿名投影只拷贝，identity map 里的活对象不变',
     seed.s.assignee?.userId === 'u-member-1' &&
@@ -738,7 +888,7 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
   await say(sid, '你好', [{ content: '您好～想去哪儿玩？' }], { msgid: 'msg-opts-1', sentAt });
   const first = sess(sid).messages[0];
   check(
-    'opts：企微文本消息带上 msgid 与 sentAt',
+    'opts：带 msgid、sentAt 调引擎时记在客户消息上（适配器传没传见 adapters/wecom-02.selftest.ts）',
     first?.role === 'customer' && first.msgid === 'msg-opts-1' && first.sentAt === sentAt,
     json(first),
   );
@@ -750,6 +900,42 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
     'opts：alreadyRecorded 时引擎不再记一遍这句，回复照常生成',
     msgs.filter((m) => m.role === 'customer').length === 2 && msgs.at(-1)?.role === 'agent' && r.text.includes('在的'),
     json(msgs.map((m) => [m.role, m.content])),
+  );
+  // 重放「已记下、回复还没生成」且这句后面夹了欢迎语：会话里这句留在原位，发给模型的历史与 02 之前逐字相同——
+  // 这句排在欢迎语之后、是最后一条 user，contextNote 插在它前面（llm.ts buildWire）
+  const WELCOME = '欢迎回来～上次聊到哪儿了？';
+  sess(sid).messages.push(
+    { role: 'customer', content: '西藏几月去合适', at: Date.now(), msgid: 'msg-opts-3' },
+    { role: 'agent', content: WELCOME, at: Date.now() },
+  );
+  store.saveSession(sess(sid));
+  requests.length = 0;
+  await say(sid, '西藏几月去合适', [{ content: '西藏一般5到10月去比较合适～' }], { msgid: 'msg-opts-3', alreadyRecorded: true });
+  const wire = requests[0]?.messages ?? [];
+  const lastUser = wire.findLastIndex((m) => m.role === 'user');
+  const welcomeAt = wire.findIndex((m) => m.role === 'assistant' && m.content === WELCOME);
+  const tail = sess(sid)
+    .messages.slice(-3)
+    .map((m) => [m.role, m.content]);
+  check(
+    'opts：alreadyRecorded 而这句后面夹了欢迎语，发给模型的最后一条 user 是这句、排在欢迎语之后，contextNote 紧挨在它前面',
+    requests.length === 1 &&
+      wire[lastUser]?.content === '西藏几月去合适' &&
+      welcomeAt > 0 &&
+      welcomeAt < lastUser - 1 &&
+      wire[lastUser - 1]?.role === 'system' &&
+      wire.slice(lastUser + 1).every((m) => m.role === 'assistant' || m.role === 'tool'),
+    json(wire.slice(-5).map((m) => [m.role, (m.content ?? '').slice(0, 20)])),
+  );
+  check(
+    'opts：会话里这句仍在欢迎语前面，回复追加在末尾（消息只追加）',
+    json(tail) ===
+      json([
+        ['customer', '西藏几月去合适'],
+        ['agent', WELCOME],
+        ['agent', '西藏一般5到10月去比较合适～'],
+      ]),
+    json(tail),
   );
   const NUL = String.fromCharCode(0);
   const HIGH = String.fromCharCode(0xd83d);
@@ -769,6 +955,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts）`,
+  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts）`,
 );
 process.exit(0);
