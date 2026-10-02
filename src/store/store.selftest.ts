@@ -1282,20 +1282,22 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
   const { importSessions, exportSessions } = await import('../cli/session-transfer.js');
   const { isDemoClassId, normalizeForStore, rowToMessage, sessionState, SESSIONS_IN_DB_MARKER } = await import('./project.js');
   const t = await openTestDb({ dataDir: process.env.STORE_DATA_DIR! });
-  const fx = await installPgSessionStore(t, { varDir: v });
+  // 主链用 demo 租户；中途崩溃（crash*）与补写标记（fresh）各用自己的租户与 var/
+  const slug = process.env.XFER_SLUG ?? 'demo';
+  const fx = await installPgSessionStore(t, { slug, varDir: v });
   // 命令行的库经 fixture 那个会计数的 db：看得到事务发出的 set transaction / set local
-  const base = { db: fx.deps.db, tenantSlug: 'demo', varDir: v, keepDir: keep, lock: async () => fakeLock() };
+  const base = { db: fx.deps.db, tenantSlug: slug, varDir: v, keepDir: keep, lock: async () => fakeLock() };
   const su = <R = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<R[]> =>
     t.pg.transaction(async (tx) => {
       await tx.exec('SET LOCAL ROLE NONE');
       return (await tx.query<R>(text, params)).rows;
     });
-  const counts = async (slug = 'demo'): Promise<string> => {
+  const counts = async (tenantSlug = slug): Promise<string> => {
     const [r] = await su<{ c: number; m: number; o: number; v: number }>(
       `select (select count(*)::int from conversations where tenant_id = t.id) c, (select count(*)::int from messages where tenant_id = t.id) m,
               (select count(*)::int from orders where tenant_id = t.id) o, (select count(*)::int from orders where tenant_id = t.id and voided_at is not null) v
          from tenants t where t.slug = $1`,
-      [slug],
+      [tenantSlug],
     );
     return `${r!.c}/${r!.m}/${r!.o}/${r!.v}`;
   };
@@ -1305,6 +1307,63 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
     JSON.stringify([read(dir, 'sessions.json'), read(dir, 'orders.json'), read(dir, SESSIONS_IN_DB_MARKER)]);
   const keeps = (): string[] => (fs.existsSync(keep) ? fs.readdirSync(keep).toSorted() : []);
   const has = (r: { lines: string[] }, s: string): boolean => r.lines.some((l) => l.includes(s));
+  const markerOf = (dir: string): { tenant?: string; at?: string; sessions?: number } | null =>
+    JSON.parse(read(dir, SESSIONS_IN_DB_MARKER) ?? 'null') as { tenant?: string; at?: string; sessions?: number } | null;
+  /** 记录时序的假锁：每次 release 的那一刻都记下数据目录的样子（两个 JSON 与标记文件），断言锁一直持到最后一次写之后 */
+  const timedLock = (dir: string) => {
+    const at: string[] = [];
+    return {
+      at,
+      lock: async () => {
+        const l = fakeLock();
+        const release = l.release;
+        l.release = async () => {
+          at.push(files(dir));
+          await release();
+        };
+        return l;
+      },
+    };
+  };
+  /** 一次 fs 调用抛错（模拟磁盘或权限出错），跑完 fn 再换回来 */
+  const failing = async <R>(name: 'copyFileSync', fn: () => Promise<R>): Promise<R> => {
+    const real = fs[name];
+    fs[name] = (() => {
+      throw Object.assign(new Error('模拟的文件系统错误'), { code: 'EIO' });
+    }) as never;
+    try {
+      return await fn();
+    } finally {
+      fs[name] = real;
+    }
+  };
+  /**
+   * 照常执行 fn，同时按先后记下数据目录 dir 里的改名、删除与对 dir 本身的 fsync：看改写 var/ 的顺序，
+   * 以及每次改名、删除之后都把目录落了盘（崩溃之后改名的先后也成立）
+   */
+  const traced = async <R>(dir: string, fn: () => Promise<R>): Promise<{ r: R; ops: string[] }> => {
+    const ops: string[] = [];
+    const real = { renameSync: fs.renameSync, rmSync: fs.rmSync, fsyncSync: fs.fsyncSync };
+    const ino = fs.statSync(dir).ino;
+    const inDir = (p: fs.PathLike): boolean => path.dirname(path.resolve(String(p))) === path.resolve(dir);
+    fs.renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      real.renameSync(a, b);
+      if (inDir(b)) ops.push(`rename ${path.basename(String(b))}`);
+    }) as typeof fs.renameSync;
+    fs.rmSync = ((p: fs.PathLike, opts?: fs.RmOptions) => {
+      real.rmSync(p, opts);
+      if (inDir(p)) ops.push(`rm ${path.basename(String(p))}`);
+    }) as typeof fs.rmSync;
+    fs.fsyncSync = ((fd: number) => {
+      real.fsyncSync(fd);
+      if (fs.fstatSync(fd).ino === ino) ops.push('fsync dir');
+    }) as typeof fs.fsyncSync;
+    try {
+      return { r: await fn(), ops };
+    } finally {
+      Object.assign(fs, real);
+    }
+  };
   const fx6 = xferFixture();
   const realOf = (all: Session[]): Session[] => all.filter((s) => fx6.real.includes(s.id));
   const store = (): Promise<StoreMod> => import('../store.js');
@@ -1377,9 +1436,15 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
     const tenantless = await importSessions({ ...base, tenantSlug: 'no-such-tenant' });
     ck('import：没有这个租户时退出码 1', tenantless.code === 1 && has(tenantless, 'tenant_not_found'));
 
-    // 首次导入
+    // 首次导入（记录时序的锁：release 在写完标记与两个 JSON 之后）
     const modes0 = fx.stats.txModes.length;
-    const first = await importSessions(base);
+    const firstLock = timedLock(v);
+    const { r: first, ops: firstOps } = await traced(v, () => importSessions({ ...base, lock: firstLock.lock }));
+    ck(
+      'import：提交之后先写标记、再 sessions.json、再 orders.json，每次改名之后都 fsync 数据目录',
+      firstOps.join() === 'rename sessions-in-db.json,fsync dir,rename sessions.json,fsync dir,rename orders.json,fsync dir',
+      firstOps.join(),
+    );
     ck(
       'import：一个 longRunning 事务（放宽语句超时与事务空闲超时）',
       fx.stats.txModes.slice(modes0).join() ===
@@ -1437,7 +1502,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
         keptOrders.length === 3 &&
         (read(v, 'sessions.json') ?? '').includes('种子\\u0000'),
     );
-    const marker = JSON.parse(read(v, SESSIONS_IN_DB_MARKER) ?? 'null') as { tenant?: string; at?: string; sessions?: number } | null;
+    const marker = markerOf(v);
     ck(
       'import：写了标记文件 { tenant, at, sessions }，没留下临时文件',
       marker?.tenant === 'demo' &&
@@ -1445,6 +1510,11 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
         !Number.isNaN(Date.parse(marker.at ?? '')) &&
         fs.readdirSync(v).every((f) => !f.endsWith('.tmp')),
       JSON.stringify(marker),
+    );
+    ck(
+      'import：租户锁一直持到写完标记文件与两个 JSON 之后才放（release 那一刻数据目录已是最终的样子）',
+      firstLock.at.length > 0 && firstLock.at.every((f) => f === rewritten),
+      firstLock.at.map((f) => f.slice(0, 80)).join(' | '),
     );
     const k1 = keeps();
     ck(
@@ -1486,7 +1556,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
         (await counts()) === '3/11/3/0' &&
         read(v, 'sessions.json') === JSON.stringify(demoSessions, null, 2) &&
         read(v, 'orders.json') === JSON.stringify(keptOrders, null, 2) &&
-        fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+        markerOf(v)?.sessions === 3 &&
         keeps().length === 2,
       finish.lines.join(' / '),
     );
@@ -1498,12 +1568,14 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       'import：JSON 已只剩 demo 类而没有标记文件 → 补完改写、补写标记，退出码 0',
       finishMarker.code === 0 &&
         has(finishMarker, '逐个一致：补完改写') &&
-        fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+        markerOf(v)?.tenant === 'demo' &&
+        markerOf(v)?.sessions === 3 &&
         (await counts()) === '3/11/3/0',
       finishMarker.lines.join(' / '),
     );
 
-    // 一批 500 个：1001 个会话分批写、按预载的循环分三批读回；提交之后复制原件失败 → 1、说明库已提交；修好再跑一次补完改写
+    // 一批 500 个：1001 个会话分批写、按预载的循环分三批读回。--keep 写不进去在开事务之前就以 1 退出；
+    // 提交之后、写完标记而改写 JSON 之前失败 → 1、说明库已提交；修好再跑一次补完改写；再导出（读的也不止一页）
     await su(`insert into tenants (slug, name, pack_id) values ('demo3', 'demo3', 'travel') on conflict (slug) do nothing`);
     const many = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-many-'));
     const t1 = Date.parse('2026-09-21T00:00:00.000Z');
@@ -1519,27 +1591,63 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       updatedAt: t1 + i,
     }));
     fs.writeFileSync(path.join(many, 'sessions.json'), JSON.stringify(manySessions, null, 2));
+    const manyBefore = files(many);
     const blocker = path.join(path.dirname(v), `xfer-blocker-${process.pid}`);
     fs.writeFileSync(blocker, 'x'); // --keep 的上级是个文件：建不了目录
-    const broken = await importSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: path.join(blocker, 'keep') });
+    const blockedKeep = path.join(blocker, 'keep');
+    for (const [label, run] of [
+      ['import', () => importSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: blockedKeep })],
+      ['import --dry-run', () => importSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: blockedKeep, dryRun: true })],
+      ['export', () => exportSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: blockedKeep })],
+    ] as const) {
+      const tx0 = fx.stats.txModes.length;
+      const r = await run();
+      ck(
+        `${label}：--keep 写不进去（上级是个文件）→ 开事务之前就以 1 退出、提示什么都没动，库与文件都没动`,
+        r.code === 1 &&
+          has(r, '--keep') &&
+          has(r, '什么都没动') &&
+          fx.stats.txModes.length === tx0 &&
+          (await counts('demo3')) === '0/0/0/0' &&
+          files(many) === manyBefore,
+        `${r.lines.join(' / ')} ${await counts('demo3')} ${JSON.stringify(fx.stats.txModes.slice(tx0))}`,
+      );
+    }
+    // 提交之后写完标记、改写 sessions.json 时失败（它的临时文件名被一个目录占着）
+    fs.mkdirSync(path.join(many, 'sessions.json.tmp'));
+    const manyKeeps = keeps().length;
+    const broken = await importSessions({ ...base, tenantSlug: 'demo3', varDir: many });
     ck(
-      'import：1001 个会话分批写入、读回逐个一致后提交；之后复制原件失败 → 退出码 1，说明库已提交、再跑一次会补完改写',
+      'import：1001 个会话分批写入、读回逐个一致后提交；之后先写好标记，改写 JSON 时失败 → 退出码 1，说明库已提交、再跑一次会补完改写',
       broken.code === 1 &&
         has(broken, '库已提交') &&
         (await counts('demo3')) === '1001/1001/0/0' &&
-        !fs.existsSync(path.join(many, SESSIONS_IN_DB_MARKER)) &&
-        (read(many, 'sessions.json') ?? '').includes('wmXferMany1000'),
+        markerOf(many)?.sessions === 1001 &&
+        read(many, 'sessions.json') === JSON.parse(manyBefore)[0] &&
+        keeps().length === manyKeeps + 1,
       `${broken.lines.join(' / ')} ${await counts('demo3')}`,
     );
+    fs.rmdirSync(path.join(many, 'sessions.json.tmp'));
     const recovered = await importSessions({ ...base, tenantSlug: 'demo3', varDir: many });
     ck(
-      'import：修好之后再跑一次 → 逐个一致、补完改写，退出码 0',
+      'import：修好之后再跑一次 → 逐个一致、补完改写，退出码 0，标记文件记的是库里的 1001 个',
       recovered.code === 0 &&
         has(recovered, '库里已有这 1001 个真实会话、逐个一致：补完改写') &&
         recovered.stats.dbSessions === 1001 &&
         read(many, 'sessions.json') === '[]' &&
-        fs.existsSync(path.join(many, SESSIONS_IN_DB_MARKER)),
+        markerOf(many)?.tenant === 'demo3' &&
+        markerOf(many)?.sessions === 1001,
       recovered.lines.join(' / '),
+    );
+    const manyExp = await exportSessions({ ...base, tenantSlug: 'demo3', varDir: many });
+    const manyJson = JSON.parse(read(many, 'sessions.json') ?? '[]') as Session[];
+    ck(
+      'export：1001 个真实会话（不止一页）全部导出进 JSON，删掉标记文件',
+      manyExp.code === 0 &&
+        manyExp.stats.sessions === 1001 &&
+        new Set(manyJson.filter((s) => !isDemoClassId(s.id)).map((s) => s.id)).size === 1001 &&
+        !fs.existsSync(path.join(many, SESSIONS_IN_DB_MARKER)),
+      `${manyExp.lines.join(' / ')} ${manyJson.length}`,
     );
 
     // 内容不同：另一份 var/，库里已有会话
@@ -1560,6 +1668,9 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
         '库里没有这个会话',
       ],
       ['订单金额不同', (_s, o) => void (o.find((x) => x.id === 'ORD-20240501-0007')!.totalPrice = 1), 'HA01', '订单不同'],
+      // 消息与订单都一样、只有 state 不同：同样不是「逐个一致」
+      ['只改了 stage', (s) => void (s.find((x) => x.id === XFER.beta)!.stage = 'quote'), 'TA02', '字段 stage 不同'],
+      ['只改了昵称', (s) => void (s.find((x) => x.id === XFER.alpha)!.profile.nickname = '小李'), 'HA01', '字段 profile 不同'],
     ];
     for (const [label, edit, code, why] of diffs) {
       const dir = otherVar(edit);
@@ -1579,6 +1690,16 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       s.find((x) => x.id === XFER.gamma)!.messages.push({ role: 'customer', content: 'x', at: 1.25 });
     });
     const lossyBefore = files(lossy);
+    const badDry = await importSessions({ ...base, tenantSlug: 'demo2', varDir: lossy, dryRun: true });
+    ck(
+      'import --dry-run：首次导入读回与 JSON 不等时同样退出码 2、点名第一个不等的会话短码，库与文件都没动',
+      badDry.code === 2 &&
+        has(badDry, 'TA02') &&
+        has(badDry, '第 4 条消息不同') &&
+        (await counts('demo2')) === '0/0/0/0' &&
+        files(lossy) === lossyBefore,
+      `${badDry.lines.join(' / ')} ${await counts('demo2')}`,
+    );
     const bad = await importSessions({ ...base, tenantSlug: 'demo2', varDir: lossy });
     ck(
       'import：首次导入读回与 JSON 不等 → 回滚、退出码 2、点名第一个不等的会话短码，库与文件都没动',
@@ -1596,10 +1717,69 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
 
   // export 与 resync 这两步不起 store：store 在导入期读 JSON、退出时可能再写一遍，会盖掉命令行刚改写的文件（应用要求已停）
   if (step === 'export') {
+    const pristine = files(v);
+    const n0 = await counts();
+    // --keep 在 var/ 之内（含经符号链接绕进去的）：export 同样拒绝
+    const link = path.join(path.dirname(keep), `link-${path.basename(v)}`);
+    fs.symlinkSync(v, link);
+    for (const [label, keepDir] of [
+      ['在 var/ 之下', path.join(v, 'keep')],
+      ['就是 var/', v],
+      ['经符号链接指进 var/', path.join(link, 'keep')],
+    ] as const) {
+      const r = await exportSessions({ ...base, keepDir });
+      ck(
+        `export：--keep ${label}时拒绝（1），什么都没动`,
+        r.code === 1 && has(r, '--keep') && files(v) === pristine && !fs.existsSync(path.join(v, 'keep')),
+        r.lines.join(' / '),
+      );
+    }
+    fs.unlinkSync(link);
+    // 复制原件失败：退出码 1，标记文件还在、两个 JSON 逐字节没变
+    const kc = keeps().length;
+    const copyFail = await failing('copyFileSync', () => exportSessions(base));
+    ck(
+      'export：复制原件失败 → 退出码 1、提示标记文件还在，两个 JSON 与标记文件逐字节没变，--keep 下没留下空目录',
+      copyFail.code === 1 && has(copyFail, '标记文件还在') && files(v) === pristine && keeps().length === kc,
+      copyFail.lines.join(' / '),
+    );
+    // 改写 JSON 中途失败（某个临时文件名被目录占着）：先 orders.json、再 sessions.json、最后删标记，
+    // 停在哪一步都不会让之后的 import / --resync 作废订单
+    for (const blocked of ['sessions.json.tmp', 'orders.json.tmp']) {
+      fs.mkdirSync(path.join(v, blocked));
+      const r = await exportSessions(base);
+      ck(
+        `export：${blocked} 写不了 → 退出码 1，标记文件还在、sessions.json 没变`,
+        r.code === 1 &&
+          fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+          read(v, 'sessions.json') === JSON.parse(pristine)[0] &&
+          (blocked === 'orders.json.tmp' ? files(v) === pristine : read(v, 'orders.json') !== JSON.parse(pristine)[1]),
+        r.lines.join(' / '),
+      );
+      fs.rmdirSync(path.join(v, blocked));
+      const imp = await importSessions(base);
+      const rs = await importSessions({ ...base, resync: true });
+      ck(
+        `export 在 ${blocked} 处失败之后：import 与 --resync 都是 0（已经导入过），不作废任何订单`,
+        imp.code === 0 && has(imp, '已经导入过') && rs.code === 0 && (await counts()) === n0 && n0.endsWith('/0'),
+        `${imp.lines.join(' / ')} | ${rs.lines.join(' / ')} ${await counts()}`,
+      );
+      const [ps, po] = JSON.parse(pristine) as [string, string];
+      fs.writeFileSync(path.join(v, 'sessions.json'), ps);
+      fs.writeFileSync(path.join(v, 'orders.json'), po);
+    }
+    ck('export 的失败用例之后数据目录回到原样', files(v) === pristine);
+
     const before = { s: read(v, 'sessions.json'), o: read(v, 'orders.json'), n: await counts() };
     const k0 = keeps().length;
     const modes0 = fx.stats.txModes.length;
-    const exp = await exportSessions(base);
+    const expLock = timedLock(v);
+    const { r: exp, ops: expOps } = await traced(v, () => exportSessions({ ...base, lock: expLock.lock }));
+    ck(
+      'export：先 orders.json、再 sessions.json、最后删标记，每一步之后都 fsync 数据目录',
+      expOps.join() === 'rename orders.json,fsync dir,rename sessions.json,fsync dir,rm sessions-in-db.json,fsync dir',
+      expOps.join(),
+    );
     const modes = fx.stats.txModes.slice(modes0);
     ck(
       'export：在 REPEATABLE READ READ ONLY 的 longRunning 事务里读',
@@ -1612,6 +1792,11 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       exp.lines.join(' / '),
     );
     ck('export：删掉了标记文件、库没动', !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) && (await counts()) === before.n);
+    ck(
+      'export：租户锁一直持到写完两个 JSON、删掉标记文件之后才放',
+      expLock.at.length > 0 && expLock.at.every((f) => f === files(v)) && JSON.parse(files(v))[2] === null,
+      expLock.at.map((f) => f.slice(0, 80)).join(' | '),
+    );
     ck(
       'export：原 JSON 逐字节复制到 --keep 下新建的目录',
       keeps().length === k0 + 1 &&
@@ -1663,6 +1848,53 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       '导出结果原样交给 import-sessions（dry-run）：逐个一致，会补完改写',
       plainDry.code === 0 && has(plainDry, '会补完改写') && files(v) === exported,
     );
+    // 没有标记文件时再 export：JSON 与库里逐个一致 → 已经导出过、0、什么都不动；文件存储下改过（JSON 比库新）→ 2、什么都不动；
+    // 库里有 JSON 里没有的真实会话 → 照常导出，只把它补进来
+    const k1 = keeps().length;
+    const again = await exportSessions(base);
+    ck(
+      'export：没有标记文件、JSON 与库里逐个一致时再导出 → 退出码 0（已经导出过），文件与 --keep 都没动',
+      again.code === 0 && has(again, '已经导出过') && files(v) === exported && keeps().length === k1,
+      again.lines.join(' / '),
+    );
+    const newer = (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).map((x) =>
+      x.id === XFER.alpha
+        ? { ...x, messages: [...x.messages, { role: 'customer' as const, content: '文件存储下的新消息', at: Date.now() }] }
+        : x,
+    );
+    fs.writeFileSync(path.join(v, 'sessions.json'), JSON.stringify(newer, null, 2));
+    const newerFiles = files(v);
+    const clobber = await exportSessions(base);
+    ck(
+      'export：没有标记文件、JSON 比库新（文件存储下又聊过）→ 退出码 2，点名短码、提示 import-sessions --resync，文件、库与 --keep 都没动',
+      clobber.code === 2 &&
+        has(clobber, 'HA01') &&
+        has(clobber, 'import-sessions --resync') &&
+        files(v) === newerFiles &&
+        (await counts()) === before.n &&
+        keeps().length === k1,
+      clobber.lines.join(' / '),
+    );
+    const [es] = JSON.parse(exported) as [string];
+    fs.writeFileSync(
+      path.join(v, 'sessions.json'),
+      JSON.stringify(
+        (JSON.parse(es) as Session[]).filter((x) => x.id !== XFER.gamma),
+        null,
+        2,
+      ),
+    );
+    const fill = await exportSessions(base);
+    ck(
+      'export：没有标记文件、库里有 JSON 里没有的真实会话 → 照常导出，把它补进 JSON',
+      fill.code === 0 &&
+        has(fill, '已导出 3 个真实会话') &&
+        (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).some((x) => x.id === XFER.gamma) &&
+        !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)),
+      fill.lines.join(' / '),
+    );
+    fs.writeFileSync(path.join(v, 'sessions.json'), es);
+    ck('export 的再导出用例之后数据目录回到导出的样子', files(v) === exported);
     return;
   }
   if (step === 'resync') {
@@ -1695,6 +1927,27 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
     // 写完之后读回与 JSON 不等（文件里有一条 at 不是整数毫秒，进库之后对不上）：回滚、退出码 2，库不动
     const lossy = snapshot(
       (s) => void s.find((x) => x.id === XFER.delta)!.messages.push({ role: 'customer', content: '晚点再说', at: Date.now() + 0.5 }),
+    );
+    const lossyFiles = files(lossy);
+    const lossyDry = await importSessions({ ...base, varDir: lossy, resync: true, dryRun: true });
+    ck(
+      '--resync --dry-run：写完读回与 JSON 不等时同样退出码 2、点名短码，库与文件都没动',
+      lossyDry.code === 2 && has(lossyDry, 'TA04') && (await counts()) === before && files(lossy) === lossyFiles,
+      lossyDry.lines.join(' / '),
+    );
+    // JSON 里缺了库里的一个会话（alpha 与它的订单）：作废只算文件里这些会话在库里有、文件里没有的订单，不碰 alpha 的
+    const noAlpha = snapshot((s, o) => {
+      s.splice(
+        s.findIndex((x) => x.id === XFER.alpha),
+        1,
+      );
+      for (let i = o.length - 1; i >= 0; i--) if (o[i]!.sessionId === XFER.alpha) o.splice(i, 1);
+    });
+    const noAlphaDry = await importSessions({ ...base, varDir: noAlpha, resync: true, dryRun: true });
+    ck(
+      '--resync（dry-run）：JSON 缺了库里的某个会话时，作废数只算文件里这些会话的（beta 的 1 张，不含 alpha 的 2 张）',
+      noAlphaDry.code === 0 && noAlphaDry.stats.voided === 1 && (await counts()) === before,
+      `${noAlphaDry.lines.join(' / ')} ${JSON.stringify(noAlphaDry.stats)}`,
     );
     const lossyRun = await importSessions({ ...base, varDir: lossy, resync: true });
     ck(
@@ -1816,11 +2069,81 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
     return;
   }
 
+  // 中途崩溃（另一个租户 demo4、另一份 var/）：提交之后写好标记、改写 sessions.json 时失败 → 1；这时两种存储都拒绝启动（crashstart），
+  // 重跑 import 按逐个一致补完改写（crashfix）
+  if (step === 'crash') {
+    const pristine = files(v);
+    fs.mkdirSync(path.join(v, 'sessions.json.tmp'));
+    const r = await importSessions(base);
+    fs.rmdirSync(path.join(v, 'sessions.json.tmp'));
+    ck(
+      'import：提交之后先写标记，改写 JSON 之前失败 → 退出码 1、库已提交；标记在、两个 JSON 还是原件',
+      r.code === 1 &&
+        has(r, '库已提交') &&
+        (await counts()) === '3/11/3/0' &&
+        markerOf(v)?.tenant === slug &&
+        markerOf(v)?.sessions === 3 &&
+        JSON.stringify((JSON.parse(files(v)) as unknown[]).slice(0, 2)) === JSON.stringify((JSON.parse(pristine) as unknown[]).slice(0, 2)),
+      `${r.lines.join(' / ')} ${await counts()}`,
+    );
+    return;
+  }
+  if (step === 'crashfix') {
+    const r = await importSessions(base);
+    ck(
+      'import：写了标记、改写 JSON 之前崩了之后重跑 → 逐个一致、补完改写，退出码 0',
+      r.code === 0 &&
+        has(r, '逐个一致：补完改写') &&
+        (await counts()) === '3/11/3/0' &&
+        (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).every((x) => isDemoClassId(x.id)) &&
+        markerOf(v)?.sessions === 3,
+      r.lines.join(' / '),
+    );
+    return;
+  }
+  // 补写标记（demo5）：库里已有会话、这份 var/ 只有 demo 类而没有标记文件（没经过 import-sessions 直接以 db 存储起）
+  if (step === 'fresh') {
+    const side = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-side-'));
+    fs.writeFileSync(path.join(side, 'sessions.json'), JSON.stringify(fx6.sessions, null, 2));
+    fs.writeFileSync(path.join(side, 'orders.json'), JSON.stringify(fx6.orders, null, 2));
+    const seeded = await importSessions({ ...base, varDir: side });
+    ck(
+      '补写标记的前提：库里已有 3 个会话，这份 var/ 里只有 demo 类、没有标记文件',
+      seeded.code === 0 &&
+        (await counts()) === '3/11/3/0' &&
+        !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+        (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).every((x) => isDemoClassId(x.id)),
+      seeded.lines.join(' / '),
+    );
+  }
   const st = await store();
+  if (step === 'crashstart') {
+    ck('写了标记、JSON 还是原件：文件存储以 sessions_in_db 拒绝启动', (await startupReason(st, null)) === 'sessions_in_db');
+    ck('写了标记、JSON 还是原件：db 存储以 real_in_json 拒绝启动', (await startupReason(st, fx.deps)) === 'real_in_json');
+    return;
+  }
+  if (step === 'fresh') {
+    const t0 = Date.now();
+    ck('没有标记文件、JSON 里没有真实会话：db 存储启动成功', (await startupReason(st, fx.deps)) === 'ok');
+    const m = markerOf(v);
+    ck(
+      'db 存储启动之后补写了标记文件 { tenant, at, sessions: 预载的真实会话数 }，没留下临时文件',
+      m?.tenant === 'demo5' &&
+        m.sessions === 3 &&
+        Date.parse(m.at ?? '') >= t0 - 1000 &&
+        Object.keys(m).join() === 'tenant,at,sessions' &&
+        fs.readdirSync(v).every((f) => !f.endsWith('.tmp')),
+      JSON.stringify(m),
+    );
+    ck('补写的标记文件让文件存储以 sessions_in_db 拒绝启动', (await startupReason(st, null)) === 'sessions_in_db');
+    return;
+  }
   if (step === 'dbstart') {
     // 导入（含补完改写）之后：文件存储以 sessions_in_db 拒绝；db 存储启动，预载重建的就是原 JSON 经 normalizeForStore（不变量 14、15）
     ck('import 写的标记文件让文件存储以 sessions_in_db 拒绝启动', (await startupReason(st, null)) === 'sessions_in_db');
+    const markerBefore = read(v, SESSIONS_IN_DB_MARKER);
     ck('补完改写之后 db 存储启动成功', (await startupReason(st, fx.deps)) === 'ok');
+    ck('db 存储启动时标记文件已在：原样不动（不重写）', !!markerBefore && read(v, SESSIONS_IN_DB_MARKER) === markerBefore);
     const dump = memDump(st);
     const want = {
       sessions: realOf(fx6.sessions)
@@ -4029,6 +4352,34 @@ async function pgSuites(): Promise<void> {
         history[XFER.delta] === windowOf(XFER.delta),
       JSON.stringify(history),
     );
+    // 同一个落盘的 PGlite 上另两条链，各用自己的租户与 var/：import 写完标记、改写 JSON 之前崩了（crash → crashstart → crashfix），
+    // 没经过 import 直接以 db 存储起时补写标记（fresh）
+    const sideChain = (label: string, slug: string, steps: string[], sessions: unknown[], orders: unknown[]): void => {
+      const sv = freshVarDir(label, sessions, orders);
+      for (const step of steps) {
+        const env = {
+          VAR_DIR: sv,
+          STORE_DATA_DIR: dataDir,
+          XFER_STEP: step,
+          XFER_SLUG: slug,
+          XFER_KEEP: keep,
+          LLM_MOCK: '1',
+          DEMO_PRUNE_HOURS: '0',
+        };
+        const r = runStoreChild('xfer', env, 90_000);
+        merge(`导入导出 ${step}`, r);
+        check(`导入导出 ${step}：子进程正常结束`, r.status === 0, `status=${r.status} ${r.out.slice(-600)}`);
+        if (r.status !== 0) break;
+      }
+    };
+    sideChain('xfer-crash', 'demo4', ['crash', 'crashstart', 'crashfix'], fx6.sessions, fx6.orders);
+    sideChain(
+      'xfer-fresh',
+      'demo5',
+      ['fresh'],
+      fx6.sessions.filter((x) => !fx6.real.includes(x.id)),
+      fx6.orders.filter((o) => !fx6.real.includes(o.sessionId)),
+    );
   }
 
   // ---- 真实 Postgres（PG_TEST_URL）：第二个进程、另一写者、COMMIT 之后回包丢掉（验收 8） ----
@@ -4086,7 +4437,8 @@ async function pgSuites(): Promise<void> {
       ADMIN_PASS: '',
     });
     const serverTs = path.join(repo, 'src', 'server.ts');
-    const first = spawn(process.execPath, ['--import', 'tsx', serverTs], { cwd: repo, env: serverEnv(freshVarDir('srv1', [], []), port) });
+    const srv1 = freshVarDir('srv1', [], []);
+    const first = spawn(process.execPath, ['--import', 'tsx', serverTs], { cwd: repo, env: serverEnv(srv1, port) });
     let firstOut = '';
     first.stdout.on('data', (c: Buffer) => (firstOut += c.toString()));
     first.stderr.on('data', (c: Buffer) => (firstOut += c.toString()));
@@ -4096,6 +4448,18 @@ async function pgSuites(): Promise<void> {
     check('真实 PG：第一个进程以 SESSION_STORE=db 启动、监听', firstOut.includes('[server] 已启动'), firstOut.slice(-500));
     const hz = (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json().catch(() => ({}))) as { store?: { mode?: string } };
     check('真实 PG：第一个进程的 /healthz 报 store.mode = db', hz.store?.mode === 'db', JSON.stringify(hz.store));
+    const srvMarker = (() => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(srv1, 'sessions-in-db.json'), 'utf8')) as { tenant?: unknown; sessions?: unknown };
+      } catch {
+        return null;
+      }
+    })();
+    check(
+      '真实 PG：server.ts 没经过 import-sessions 直接以 db 存储起来之后，var/ 里补写了标记文件（tenant 是 DEFAULT_TENANT_SLUG）',
+      srvMarker?.tenant === 'demo' && Number.isInteger(srvMarker.sessions),
+      JSON.stringify(srvMarker),
+    );
     const second = spawnSync(process.execPath, ['--import', 'tsx', serverTs], {
       cwd: repo,
       env: serverEnv(freshVarDir('srv2', [], []), await portOf()),
