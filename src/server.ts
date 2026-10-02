@@ -14,6 +14,7 @@ import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
+import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
 import {
   getOrder,
   getSession,
@@ -379,8 +380,10 @@ app.get('/api/sessions/:id', sessionReadAuth, (c) => {
 app.post('/api/sessions/:id/handoff', sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  // 与引擎触发的转人工走同一个入口：记下被「吸」走前的阶段（交还时还原用），重复接管不覆盖
-  enterHandoff(s);
+  // 已在转人工中就什么都不改（R11：旧 /handoff 只以 agent 进入转人工，不设接手人）
+  if (s.handedOver) return c.json(s);
+  // 与引擎触发的转人工走同一个入口：记下被「吸」走前的阶段（交还时还原用），带上转人工记录
+  enterHandoff(s, { kind: 'agent', at: Date.now(), reason: HANDOFF_REASON.agent });
   s.updatedAt = Date.now();
   saveSession(s);
   return c.json(s);
@@ -392,16 +395,21 @@ app.post('/api/sessions/:id/resume', sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   s.handedOver = false;
+  // 交还清掉转人工记录与接手人（R9）；firstHandoffAt、handoffCount 不清。完整的交还状态机在 02 第 13 步
+  delete s.handoff;
+  delete s.assignee;
   // 只在原阶段是 handoff（被转人工"吸"走）时才还原——否则会把 closing 的客户
   // 拉回 quote，成交概率、漏斗计数跟着倒退，且已落盘不可逆。
   if (s.stage === 'handoff') {
     // 优先用接管前记下的真实阶段。反推只是没有该记录时的兜底：它对「阶段已推进、
     // 但推进过程不由本系统记录」的会话必然失真（种子演示会话 stage=quote 却无
     // lastQuote，反推会一路掉到 discovery——现场演一次接管就把客户打回问需）。
+    // 「已付」照旧按订单读：旧数据里有「stage=handoff 而订单已付」的会话（种子 A01）；写入的是行业包的终态
     const paid = s.orderIds.map((id) => getOrder(id)).some((o) => o?.status === 'paid');
-    const inferred = paid ? 'paid' : s.orderIds.length ? 'closing' : s.lastQuote ? 'quote' : 'discovery';
+    const done = terminalStageKey();
+    const inferred = paid ? done : s.orderIds.length ? 'closing' : s.lastQuote ? 'quote' : 'discovery';
     // 已支付是既成事实，优先级高于记录值（接管期间完成支付的情况）
-    s.stage = paid ? 'paid' : (s.stageBeforeHandoff ?? inferred);
+    s.stage = paid ? done : (s.stageBeforeHandoff ?? inferred);
     delete s.stageBeforeHandoff;
   }
   s.messages.push({ role: 'system', content: '顾问已将会话交还 AI，自动应答恢复', at: Date.now() });

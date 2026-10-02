@@ -37,6 +37,8 @@ import { profile } from './profile.js';
 import { renderSystemPrompt } from './prompt/system.js';
 import { ConfigNotReadyError, configMode, currentSop } from './config/source.js';
 import { promptHashes } from './config/hashes.js';
+import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
+import { cleanText } from './shared/text.js';
 
 // 阶段排序，用于「只前进不倒退」地推导销售阶段（handoff/paid 另行处理）
 const STAGE_RANK: Record<SalesStage, number> = {
@@ -67,9 +69,9 @@ const OBJECTION_INTENT =
 /** 这轮调了哪些工具 → 该处于哪个阶段（取最靠后的），与当前阶段取较大值不回退 */
 function deriveStage(current: SalesStage, calls: ToolCall[]): SalesStage {
   let derived: SalesStage = current === 'greeting' ? 'discovery' : current; // 客户已开口，至少进问需
-  // paid 不做吸收态：已成交客户再发起新咨询（本轮有销售工具调用）视为新旅程，从问需重推。
+  // 终态（旅游包是 paid）不做吸收态：已成交客户再发起新咨询（本轮有销售工具调用）视为新旅程，从问需重推。
   // 只查了详情不算：付完款问「第三天住哪」「几点的飞机」是在问自己这趟，引擎还会替他预取详情（planDetailPrefetch）
-  if (current === 'paid' && calls.some((c) => c.name !== 'get_route_detail')) derived = 'discovery';
+  if (isTerminalStage(current) && calls.some((c) => c.name !== 'get_route_detail')) derived = 'discovery';
   const bump = (s: SalesStage) => {
     if (STAGE_RANK[s] > STAGE_RANK[derived]) derived = s;
   };
@@ -506,7 +508,7 @@ async function deterministicRecommend(dest: string, session: Session): Promise<s
   const lines = list
     .slice(0, 2)
     .map(
-      (r) => `· ${r.title}\n  ${r.days} 天 · ${r.hotelLevel} · 人均 ${yuan(r.priceFrom)} 起\n  ${(r.highlights?.[0] ?? '').slice(0, 42)}`,
+      (r) => `· ${r.title}\n  ${r.days} 天 · ${r.hotelLevel} · 人均 ${yuan(r.priceFrom)} 起\n  ${cleanText(r.highlights?.[0] ?? '', 42)}`,
     );
   return `${dest}是我们的主力目的地，给您挑了这些：\n\n${lines.join('\n\n')}\n\n您几位出行、大概什么时候走？我按人数和日期给您出准确报价～`;
 }
@@ -1565,7 +1567,7 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
           if (res.proposalUrl) {
             links = [res.proposalUrl];
             // 已成交的客户不因补发一份方案书被推回报价阶段
-            if (session.stage !== 'paid') session.stage = deriveStage(session.stage, [{ name: 'generate_proposal', args }]);
+            if (!isTerminalStage(session.stage)) session.stage = deriveStage(session.stage, [{ name: 'generate_proposal', args }]);
             session.profile = deriveProfile(session.profile, [{ name: 'generate_proposal', args }], '');
           } else {
             console.warn(`[engine] 补发方案书被工具拒绝（改为问句）：${res.error ?? ''}`);
@@ -1891,14 +1893,24 @@ function dropTransferClaims(text: string): string {
 const REFUND_REQUEST = /退款|退订|退钱|退我钱|退改|取消|不想去|不去了|不要了/;
 const CHANGE_REQUEST =
   /改期|改签|推迟|延期|(?:日期|时间|人数|天数|行程|线路)[^，,。！？]{0,3}(?:改|换|调)|(?:改|换|调)[^，,。！？]{0,4}(?:日期|时间|人数|天数|行程|线路)/;
-function handoffReply(session: Session, text: string): string {
-  // 会话里有订单就把它一并交代给顾问。只能从 orderIds 取：create_order 成功后 lastQuote 已经清空
-  // 改单时被替代的旧单不算：交代给顾问、告诉客户「付款卡片仍然有效」的得是新的那张
-  const order = session.orderIds
+/**
+ * 会话里还有效的最近一张订单。只能从 orderIds 取：create_order 成功后 lastQuote 已经清空。
+ * 改单时被替代的旧单不算：交代给顾问、告诉客户「付款卡片仍然有效」的得是新的那张
+ */
+function liveOrderOf(session: Session): Order | undefined {
+  return session.orderIds
     .map((id) => getOrder(id))
     .toReversed()
     .find((o) => o && o.status !== 'cancelled' && o.status !== 'superseded');
-  const kind = isComplaint(text) ? 'complaint' : REFUND_REQUEST.test(text) || (order && CHANGE_REQUEST.test(text)) ? 'refund' : 'request';
+}
+/** 安全网三类转人工的类型：handoffReply 按它挑措辞，转人工记录按它记类型（在 enterHandoff 之前算） */
+function safetyNetKind(session: Session, text: string): 'complaint' | 'refund' | 'request' {
+  if (isComplaint(text)) return 'complaint';
+  return REFUND_REQUEST.test(text) || (liveOrderOf(session) && CHANGE_REQUEST.test(text)) ? 'refund' : 'request';
+}
+function handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string {
+  // 会话里有订单就把它一并交代给顾问
+  const order = liveOrderOf(session);
   const head = {
     complaint: '非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～',
     refund: '退改由资深顾问为您处理，马上为您转接，请稍候～',
@@ -2345,7 +2357,9 @@ function departNoteForHandoff(session: Session, today = todayIso()): string | un
     let reading = pick.kind === 'date' ? pick.iso : undefined;
     const ym = pick.kind === 'vague' ? monthSaid(said[i], today) : undefined;
     if (ym) reading = `${ym.y}年${ym.mo}月`;
-    const quote = said[i].length > 40 ? `${said[i].slice(0, 40)}…` : said[i];
+    const whole = cleanText(said[i]);
+    const cut = cleanText(whole, 40);
+    const quote = cut === whole ? whole : `${cut}…`;
     return `客户原话里的出行时间：「${quote}」${reading ? `，按今天（${today}）算是 ${reading}` : ''}`;
   }
   return undefined;
@@ -2576,7 +2590,7 @@ function planPrefetch(session: Session, text: string): Record<string, unknown>[]
     .filter((p) => !p.off)
     .map((p) => ({ at: p.at, args: { destination: p.kw, ...extra } }));
   if (offs.length) {
-    calls.push({ at: offs[0].at, args: { destination: offs.map((p) => p.kw).join('、'), query: query.slice(0, 200), ...extra } });
+    calls.push({ at: offs[0].at, args: { destination: offs.map((p) => p.kw).join('、'), query: cleanText(query, 200), ...extra } });
   }
   return calls
     .toSorted((a, b) => a.at - b.at)
@@ -2969,7 +2983,7 @@ function customerBudget(said: string[], session: Session): { cap: number; total?
     if (BUDGET_FLOOR.test(said[i]) || !TOTAL_BUDGET.test(said[i])) return undefined;
     const heads = travelersKnown(session, said);
     const total = Math.max(...(rangeEnds.length ? rangeEnds : amounts));
-    return heads && total >= 1000 ? { cap: Math.round(total / heads), total, heads, text: said[i].slice(0, 40) } : undefined;
+    return heads && total >= 1000 ? { cap: Math.round(total / heads), total, heads, text: cleanText(said[i], 40) } : undefined;
   }
   return undefined;
 }
@@ -3031,7 +3045,7 @@ function groundToolArgs(
         const lifted = said.toReversed().find((t) => liftsBudget(t) || (spokenMoney(t).amounts.length > 0 && isBudgetTalk(t)));
         notes.budgetNote =
           lifted && liftsBudget(lifted)
-            ? `客户说了「${lifted.slice(0, 30)}」，预算放开了，这次没按预算筛。不要再拿之前说的预算比、说超了多少，也不要再问预算。`
+            ? `客户说了「${cleanText(lifted, 30)}」，预算放开了，这次没按预算筛。不要再拿之前说的预算比、说超了多少，也不要再问预算。`
             : '客户没说过每人预算（或说的不是每人上限），这次没按预算筛。不要替客户假设预算，' +
               '也不要说「比您的预算高/低多少」；想按价位挑，直接问客户每人预算大概多少。';
       }
@@ -3130,7 +3144,7 @@ function groundToolArgs(
       !customerNamedDay(session, latest.text, out.departDate, d.kind === 'date' ? d.iso : undefined)
     ) {
       error =
-        `客户说的出发时间还只是个大概（原话「${latest.text.slice(0, 30)}」），没说具体哪天，这次没有下单。` +
+        `客户说的出发时间还只是个大概（原话「${cleanText(latest.text, 30)}」），没说具体哪天，这次没有下单。` +
         '先直接问客户具体哪天出发（如「国庆具体哪天走？」），客户说了日子再调 create_order；不要自己挑一天，也不要说已经下单。';
     }
     // 给别人另订一份（见 otherPartyPending）：成单安全网走的是同一个判断
@@ -3255,13 +3269,28 @@ function serialize<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** 对外入口：同会话串行，跨会话并发 */
-export function handleMessage(sessionId: string, text: string, channel: string): Promise<AgentReply> {
-  return serialize(sessionId, () => handleMessageInner(sessionId, text, channel));
+/** 客户消息进会话前的清洗与截断。企微重放对齐（adapters/wecom.ts）按同一个调用比对原文，否则长消息永远对不上 */
+export function inboundText(text: string): string {
+  return cleanText(text, 2000); // 超长输入截断：防恶意长文刷爆 prompt token
 }
 
-async function handleMessageInner(sessionId: string, text: string, channel: string): Promise<AgentReply> {
-  text = text.slice(0, 2000); // 超长输入截断：防恶意长文刷爆 prompt token
+/** handleMessage 的可选参数（02 spec「消息只追加」） */
+export interface HandleOpts {
+  /** 渠道消息 id：企微文本消息带上，记在客户消息上，重放时按它对齐 */
+  msgid?: string;
+  /** 企微 send_time（毫秒）：发送窗口从它起算（R18） */
+  sentAt?: number;
+  /** 这句客户原话已经记在会话末尾（企微重放：上次停在「已记下、回复还没生成」），引擎不再 push 一遍 */
+  alreadyRecorded?: boolean;
+}
+
+/** 对外入口：同会话串行，跨会话并发 */
+export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
+  return serialize(sessionId, () => handleMessageInner(sessionId, text, channel, opts));
+}
+
+async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
+  text = inboundText(text);
   const session = getOrCreateSession(sessionId, channel);
 
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
@@ -3286,6 +3315,11 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     session.lastShownRoutes = undefined;
     session.seenRouteIds = undefined;
     session.missedDestinations = undefined;
+    // 转人工记录、接手人与两种计数一起清（R9）；firstHandoffAt、handoffCount 永不清
+    delete session.handoff;
+    delete session.assignee;
+    delete session.turnSignals;
+    delete session.negativeHits;
     session.updatedAt = Date.now();
     const reply = '好的，我们重新开始～这次想去哪儿玩呢？😊';
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
@@ -3293,9 +3327,18 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     return { text: reply, stage: 'greeting' };
   }
 
-  session.messages.push({ role: 'customer', content: text, at: Date.now() });
-  // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
-  if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+  // 企微重放时这句可能已经记在会话末尾（见 HandleOpts.alreadyRecorded）：不再记一遍，也不删了重记（消息只追加）
+  if (!opts.alreadyRecorded) {
+    session.messages.push({
+      role: 'customer',
+      content: text,
+      at: Date.now(),
+      ...(opts.msgid ? { msgid: opts.msgid } : {}),
+      ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
+    });
+    // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
+    if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+  }
   // 先落一次盘：客户这句话立刻出现在作战室（并经 SSE 推给前端），顾问看到的是
   // 「客户刚说了什么 + AI 正在生成回复」。此前要等整轮跑完（4~10 秒）才落盘，
   // 后台看起来像卡住了——延迟其实来自这里，不是 SSE。
@@ -3303,10 +3346,11 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   // 已转人工：AI 彻底沉默，只记录客户消息（供后台人工查看），不再自动回复。
   // 转人工的那一句确认在触发时已发过，之后重复「已转人工」既烦又不专业。
+  // 阶段停在终态（已成交客户要人工，R9）的不改回 handoff：成交统计不变
   if (session.handedOver) {
-    session.stage = 'handoff';
+    if (!isTerminalStage(session.stage)) session.stage = 'handoff';
     saveSession(session); // 客户消息已在上方入库
-    return { text: '', stage: 'handoff', handoff: true, silent: true };
+    return { text: '', stage: session.stage, handoff: true, silent: true };
   }
 
   // 重置口令被 reset_command 关掉（prod）：已入库、已转人工时照常静默（上面），否则回一句固定话术，
@@ -3321,17 +3365,25 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
   if (isHandoffIntent(text)) {
-    enterHandoff(session);
-    const reply = answerIdentity(text, handoffReply(session, text));
+    const kind = safetyNetKind(session, text);
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind,
+      at: Date.now(),
+      reason: HANDOFF_REASON[kind],
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
+    const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind)));
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
-    return { text: reply, stage: 'handoff', handoff: true };
+    return { text: reply, stage: session.stage, handoff: true };
   }
 
   // 客户要重发支付链接：确定性地重发那张待付款单，不经过模型、不转人工（见 RESEND_ASK）
   const resend = resendPayReply(session, text);
   if (resend) {
-    const reply = answerIdentity(text, resend);
+    const reply = cleanText(answerIdentity(text, resend));
     session.messages.push({ role: 'agent', content: reply, at: Date.now() });
     saveSession(session);
     return { text: reply, stage: session.stage };
@@ -3390,13 +3442,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
         /* 观测者出错不影响对话 */
       }
     }
-    return executeTool(name, args, session, toolHints(session)).then((r) => {
-      // 转人工原因刚记进后台（tools.ts 推的最后一条 system 消息）：附上客户说出行时间的原话，见 departNoteForHandoff
-      const rec = session.messages.at(-1);
-      if (name === 'handoff_to_human' && rec?.role === 'system' && rec.content.startsWith('AI 已转人工：')) {
-        const note = departNoteForHandoff(session);
-        if (note) rec.content += `\n（${note}）`;
-      }
+    // 转人工记录要的本轮原话与出行时间在执行前算好，工具把 system 消息一次写成整条（见 departNoteForHandoff）
+    const hints: ToolHints =
+      name === 'handoff_to_human'
+        ? { ...toolHints(session), handoff: { quote: cleanText(text, 200), departNote: departNoteForHandoff(session) } }
+        : toolHints(session);
+    return executeTool(name, args, session, hints).then((r) => {
       // 告诉过客户「这里没有现成线路」的目的地记进会话，之后判断转人工要用（见 Session.missedDestinations）
       if (name === 'search_routes' && typeof args.destination === 'string' && r.includes('"destinationMiss"')) {
         const at = Date.now();
@@ -3490,7 +3541,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       .replace(/<\/?(?:think|tool_call|arg_key|arg_value)>/gi, '')
       .trim() || fallbackReply(session.stage);
   if (session.handedOver) {
-    session.stage = 'handoff'; // 工具触发的转人工优先
+    if (!isTerminalStage(session.stage)) session.stage = 'handoff'; // 工具触发的转人工优先；终态保留（R9）
     // 不是模型自己转的，就是生成期间顾问在后台接管了（/handoff 改的是同一个 session 对象，
     // 而引擎在调模型前特意先落了一次盘，让顾问立刻看到客户消息——等于鼓励在这几秒里接管）。
     // 这时 AI 的回复不能再发：客户会同时收到顾问和 AI 两套说法（报价、日期、承诺可能互相矛盾）。
@@ -3499,15 +3550,15 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (!calls.some((c) => c.name === 'handoff_to_human')) {
       session.messages.push({ role: 'system', content: '顾问已接管会话，AI 本轮生成的回复未发送', at: Date.now() });
       saveSession(session);
-      return { text: '', stage: 'handoff', handoff: true, silent: true };
+      return { text: '', stage: session.stage, handoff: true, silent: true };
     }
     // 模型自己转的人工：接管前记下的是本轮开始时的阶段；这轮若已查线路/报价（回复会发出去），
     // 按工具调用补推一次，交还 AI 时才不倒退
     if (session.stageBeforeHandoff) session.stageBeforeHandoff = deriveStage(session.stageBeforeHandoff, calls);
   } else {
     const derived = deriveStage(stageAtStart, calls);
-    // 本轮 await 期间客户刚付了款（stage 已被 notifyPaid 置为 paid）时，不许用推导结果盖回去
-    session.stage = session.stage === 'paid' && stageAtStart !== 'paid' ? 'paid' : derived;
+    // 本轮 await 期间客户刚付了款（stage 已被 notifyPaid 置为终态）时，不许用推导结果盖回去
+    session.stage = isTerminalStage(session.stage) && !isTerminalStage(stageAtStart) ? session.stage : derived;
     // 异议不调工具，推不出来，只能从客户原话认。放在 deriveStage 之后，
     // 由 isObjection 自己卡住上界（已下单/已成交一律不回落）。
     if (isObjection(session, text)) session.stage = 'objection';
@@ -3698,7 +3749,15 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 此前在这里直接返回，模型给压缩版编的「每人大约 13,800 元」就绕过价格护栏发给了客户。
     visible = keptBesideCustomPromise(visible);
     customHandoff = customHandoffReply(text);
-    enterHandoff(session);
+    // 同一轮模型已经调过 handoff_to_human 的，这里保留那条 model 记录、计数不加（enterHandoff 已在转人工中只升级 emergency）
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind: 'promise',
+      at: Date.now(),
+      reason: HANDOFF_REASON.promise,
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
   } else {
     // 承诺了链接却没链接：只是这轮少调了一次工具，不构成对客户的承诺，
     // 就地补上链接或改问一句继续对话，不转人工——否则一次工具漏调就吃掉一条线索
@@ -3727,16 +3786,22 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
         : `${kept ? `${kept}\n\n` : ''}这个我记下了，会请顾问在微信上跟您确认。`;
       session.messages.push({
         role: 'system',
-        content: `待顾问跟进：客户问「${text.slice(0, 60)}」，AI 答应请顾问确认（未转人工）`,
+        content: `待顾问跟进：客户问「${cleanText(text, 60)}」，AI 答应请顾问确认（未转人工）`,
         at: Date.now(),
       });
     } else {
       console.warn(`[engine] 回复说了转接却没调 handoff_to_human，按转人工处理（会话 ${session.id}）：${visible.slice(0, 60)}`);
-      enterHandoff(session);
       const note = departNoteForHandoff(session);
+      enterHandoff(session, {
+        kind: 'claimed',
+        at: Date.now(),
+        reason: HANDOFF_REASON.claimed,
+        quote: cleanText(text, 200),
+        ...(note ? { departNote: note } : {}),
+      });
       session.messages.push({
         role: 'system',
-        content: `AI 已转人工：回复里答应了转接顾问（引擎补记）${note ? `\n（${note}）` : ''}`,
+        content: `AI 已转人工：${HANDOFF_REASON.claimed}${note ? `\n（${note}）` : ''}`,
         at: Date.now(),
       });
     }
@@ -3821,13 +3886,15 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   if (customHandoff) visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
   if (session.handedOver) visible = dropPostHandoffPromises(visible);
 
+  // 模型输出原样进会话前去掉 NUL、修好孤立代理项（不截长度）：带着它们的消息进不了库（不变量 16）
+  visible = cleanText(visible);
   session.messages.push({ role: 'agent', content: visible, at: Date.now() });
   // 回复里说了「由顾问跟您确认」「我让顾问确认」（守卫换上的，或模型照 SOP 说的）却没转人工：记一条给后台，
   // 顾问才看得到有件事等着他确认——此前客户付款前一直等，没人知道（同「嘴上说转接却没转」是一类空头承诺）
   if (!session.handedOver && DEFER_TO_CONSULTANT.test(visible)) {
     session.messages.push({
       role: 'system',
-      content: `待顾问确认：客户问「${text.slice(0, 60)}」，AI 回复说由顾问确认（未转人工）`,
+      content: `待顾问确认：客户问「${cleanText(text, 60)}」，AI 回复说由顾问确认（未转人工）`,
       at: Date.now(),
     });
   } else if (!session.handedOver && promisesContact(visible, session)) {
@@ -3835,7 +3902,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 此前「签证这块需要专人办理，顾问会在微信上联系您～」发出去，后台什么都没有，没人知道答应过要联系（第三轮复核 H1/H2）
     session.messages.push({
       role: 'system',
-      content: `待顾问跟进：客户问「${text.slice(0, 60)}」，AI 回复说顾问会在微信上联系（未转人工）`,
+      content: `待顾问跟进：客户问「${cleanText(text, 60)}」，AI 回复说顾问会在微信上联系（未转人工）`,
       at: Date.now(),
     });
   }
@@ -3888,10 +3955,11 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
   if (!order) return null;
   const session = getSession(order.sessionId);
   if (!session) return null;
-  const text =
+  const text = cleanText(
     `已收到您的支付，太开心啦 🎉\n《${order.routeTitle}》${order.travelers} 位出行、` +
-    `${order.departDate} 出发已确认预订。\n专属旅行顾问稍后会与您对接行程细节和出行准备，` +
-    `有任何想法随时跟我说～`;
+      `${order.departDate} 出发已确认预订。\n专属旅行顾问稍后会与您对接行程细节和出行准备，` +
+      `有任何想法随时跟我说～`,
+  );
   session.stage = 'paid';
   session.messages.push({ role: 'agent', content: text, at: Date.now() });
   saveSession(session);

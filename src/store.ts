@@ -298,13 +298,15 @@ export function getOrder(id: string): Order | undefined {
 }
 
 /** 只有待付款的单能付。被新订单替代的旧单（superseded）不能再付：此前 status !== 'paid' 就置为已付，
- *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成 */
+ *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成。
+ *  付款时记下会话是否曾经转过人工（handoffBeforePaid，R9）：转人工的标记交还时会清，firstHandoffAt 不清 */
 export function markOrderPaid(id: string): Order | undefined {
   const o = orders.get(id);
   if (!o) return undefined;
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
+    o.handoffBeforePaid = sessions.get(o.sessionId)?.firstHandoffAt != null;
     backendFor(o.sessionId).scheduleOrder(id);
   }
   return o;

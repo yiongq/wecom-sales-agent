@@ -21,8 +21,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentReply, ChannelAdapter } from '../types.js';
-import { handleMessage } from '../engine.js';
+import type { AgentReply, ChannelAdapter, ChatMessage } from '../types.js';
+import { handleMessage, inboundText } from '../engine.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, saveSession } from '../store.js';
 import { loadRoutes } from '../tools.js';
 
@@ -750,31 +750,31 @@ async function handleEnterSession(cfg: WecomConfig, msg: KfMessage): Promise<voi
   // 昵称回填留到客户首条消息（会话建好后）再做，此处不为未发言客户建空会话
 }
 
+/** 重放对齐的结果：fresh 照常处理；recorded 这句已记下、回复还没生成；generated 回复已生成，原样重发 text */
+type ReplayAlignment = { kind: 'fresh' } | { kind: 'recorded' } | { kind: 'generated'; text: string };
+
 /**
- * 重放前把会话历史对齐到「这条消息从没处理过」，返回非 null 表示上次已生成回复、只差发送。
- * 上次进程可能停在三个位置：
+ * 重放前看上次进程停在哪儿。上次进程可能停在三个位置：
  *   1. 还没进引擎（会话里没有这句）→ 照常重跑；
- *   2. 引擎已记下客户这句、回复还没生成 → 摘掉这句再重跑，否则客户同一句话在历史里出现两次，
- *      模型和后台顾问都会看到重复；
+ *   2. 引擎已记下客户这句、回复还没生成 → 告诉引擎这句已经记过（alreadyRecorded），不再记一遍，
+ *      否则客户同一句话在历史里出现两次，模型和后台顾问都会看到重复；也不删了重记（消息只追加，02 spec R5）；
  *   3. 回复已生成入库、发送没完成（或发了没来得及记完成）→ 原样重发那条，不再跑一轮 LLM：
  *      万一其实发过，客户看到的也只是同一句话两遍，而不是两条说法不一的回复。
+ * 「是不是这句」：记下的消息带 msgid 时按 msgid 比；02 之前记下的没有 msgid，按原文比
  */
-function alignSessionForReplay(sessionId: string, text: string): string | null {
+function alignSessionForReplay(sessionId: string, msg: KfMessage): ReplayAlignment {
   const s = getSession(sessionId);
-  if (!s) return null;
-  const said = text.slice(0, 2000); // 与引擎入库前的截断一致，否则长消息永远对不上
+  if (!s) return { kind: 'fresh' };
+  const said = inboundText(msg.text?.content ?? ''); // 与引擎入库前是同一个调用，否则长消息永远对不上
+  const same = (m: ChatMessage | undefined): boolean =>
+    m?.role === 'customer' && (m.msgid !== undefined ? m.msgid === msg.msgid : m.content === said);
   // 欢迎语不排队（handleEnterSession 直接写进会话），可能正好插在这一轮中间。它不是任何一句话的回复：
   // 算进来的话，「客户这句 + 欢迎回来」会被当成情况 3，把欢迎语当回复重发，客户问的事就没人答了
   const talk = s.messages.filter((m) => m.role !== 'system' && !(m.role === 'agent' && WELCOME_TEXTS.has(m.content)));
   const last = talk.at(-1);
-  if (last?.role === 'customer' && last.content === said) {
-    s.messages.splice(s.messages.lastIndexOf(last), 1);
-    saveSession(s, false);
-    return null;
-  }
-  const prev = talk.at(-2);
-  if (last?.role === 'agent' && prev?.role === 'customer' && prev.content === said) return last.content;
-  return null;
+  if (same(last)) return { kind: 'recorded' };
+  if (last?.role === 'agent' && same(talk.at(-2))) return { kind: 'generated', text: last.content };
+  return { kind: 'fresh' };
 }
 
 /** 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放 */
@@ -805,7 +805,7 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
     const seen = replay ? session.messages.findIndex((m) => m.msgid === msg.msgid) : -1;
     if (seen < 0) {
       const content = PLACEHOLDER[msg.msgtype] ?? `[其他消息：${msg.msgtype}]`;
-      session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid });
+      session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid, sentAt: msg.send_time * 1000 });
       // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
       if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
       saveSession(session);
@@ -830,12 +830,16 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
   console.log(`[wecom] ${replay ? '重放' : '收到'}客户消息: "${msg.text.content.slice(0, 40)}"`);
   // 不发「稍等」占位：几秒延迟本就像真人顾问在查资料，逐条占位反而更显机械。
   try {
-    const generated = replay ? alignSessionForReplay(sessionId, msg.text.content) : null;
-    if (generated !== null) console.log('[wecom] 重放：上次回复已生成，原样重发');
+    const aligned: ReplayAlignment = replay ? alignSessionForReplay(sessionId, msg) : { kind: 'fresh' };
+    if (aligned.kind === 'generated') console.log('[wecom] 重放：上次回复已生成，原样重发');
     const reply: AgentReply =
-      generated !== null
-        ? { text: generated, stage: getSession(sessionId)?.stage ?? 'discovery' }
-        : await handleMessage(sessionId, msg.text.content, 'wecom');
+      aligned.kind === 'generated'
+        ? { text: aligned.text, stage: getSession(sessionId)?.stage ?? 'discovery' }
+        : await handleMessage(sessionId, msg.text.content, 'wecom', {
+            msgid: msg.msgid,
+            sentAt: msg.send_time * 1000,
+            ...(aligned.kind === 'recorded' ? { alreadyRecorded: true } : {}),
+          });
     void enrichCustomerProfile(cfg, msg.external_userid); // 会话已建，异步补昵称回填后台展示
     if (reply.silent || !reply.text.trim()) {
       console.log(`[wecom] 静默（阶段=${reply.stage}，转人工后不自动回复）`);

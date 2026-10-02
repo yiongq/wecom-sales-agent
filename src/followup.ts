@@ -12,6 +12,7 @@
 import { flushStoreNow, getSession, listSessions, onShutdown, saveSession } from './store.js';
 import { completeText } from './llm.js';
 import { numEnv } from './env.js';
+import { cleanText } from './shared/text.js';
 import type { Session, SalesStage } from './types.js';
 import { profileForPrompt } from './types.js';
 
@@ -94,7 +95,8 @@ async function composeFollowUp(s: Session): Promise<string> {
     '不要催付款、不要制造焦虑、不要用感叹号堆情绪；不出现价格数字和链接；' +
     '线路的天数和住宿是固定的，不要提缩短天数、换酒店档次、重新搭配行程；只输出消息正文。';
   const user = `销售阶段：${s.stage}\n客户画像：${JSON.stringify(profileForPrompt(s.profile))}\n最近对话：\n${recent}`;
-  const out = (await completeText(sys, user)).trim().split('\n')[0];
+  // 模型输出进会话前去掉 NUL、修好孤立代理项（02 spec 不变量 16），与引擎写进会话的 AI 回复同一口径
+  const out = cleanText((await completeText(sys, user)).trim().split('\n')[0]);
   // 生成内容同样不许带链接/订单号（跟进消息是主动外发，风险更高）
   const cleaned = out
     .replace(/https?:\/\/\S+/g, '')
