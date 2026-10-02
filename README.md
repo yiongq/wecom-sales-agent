@@ -322,6 +322,7 @@ bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
 **回到文件模式或更早的版本**（01 spec「导入、导出与回滚」的第 3 种回滚）：
 
 - 会话在库里时（`.env` 有 `SESSION_STORE=db`，`var/` 里有 `sessions-in-db.json`），先用 02 的镜像回到文件存储：`docker compose -f deploy/compose.yml stop app`，跑 `src/cli/export-sessions.ts`（用法见 [deploy/compose.yml](deploy/compose.yml) 开头），去掉 `SESSION_STORE=db` 再起。不做这一步，deploy.sh 拒绝部署 02 之前的 tag，也不会自动回滚到 02 之前的 `:prev`（[deploy/rollback-guard.sh](deploy/rollback-guard.sh)）。
+- 后台改过已上架条目的内容（改价之类，`/healthz` 的 `config.catalogVersioned` 为 true）之后，同样拒绝回到 02 之前的镜像：02 之前的镜像不写产品库条目版本，那期间发出的方案书链接回到 02 之后会按版本 1 显示旧价，回到文件存储也去不掉这一条。要回滚只能回到 02 之后的镜像。
 - 先导出后台改过的内容。导出要写进挂进容器的宿主目录，写在容器里的文件会随 `--rm` 删掉：`install -d -o 1000 -g 1000 /root/export-<日期>`，再 `docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app node --import tsx src/cli/export-config.ts --tenant <slug> --out /export`。回到旧 tag 时把那一版的 `data/sop.md` 先放进这个目录（例如 `target-sop.md`），加 `--image-sop /export/target-sop.md`。
 - 把三个文件拷进要部署的那条线的 `data/`，两个 JSON 用 `oxfmt` 格式化，提交、打 tag；`.env` 去掉 `CONFIG_SOURCE=db`，再部署这个 tag。
 - 那条线是换成 compose 之前的版本时，deploy.sh 不收它的 tag（否则会先把服务器上的 `deploy/` 同步删掉，到迁移那一步才失败）：在那个 tag 的 worktree 里跑它自己的 `deploy.sh`，它用 `docker run` 换掉 compose 起的同名容器。之后再部署新的 tag，换容器那一步会接管这个容器。

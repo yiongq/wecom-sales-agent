@@ -67,7 +67,7 @@
   - `eval/run.ts` 的 `CONFIG_TEST_DB=pglite` 同时装上 PG 会话存储，会话 id 改用 `eval:<用例>-<时间>`；跑完断言库里有每个用例的会话、消息与内存一致。
   - 用 DB 模式 mock eval 与等价套件找出漏网的原地修改（冻结会抛 `TypeError`）与数组错位（`WindowCorruptError`），逐处改成只追加，改动记进实施记录。
   - 对应验收 2、7。到这一步，存储层的形状定下来了。
-- [ ] 8. 产品库版本、按轮固定快照、开放五个字段（3.5）：
+- [x] 8. 产品库版本、按轮固定快照、开放五个字段（3.5）：2026-10-03 完成，结构、本步定的十四条、改了的非锁定断言（含 spec 清单之外的几处）、自测、变异与真实 PG 结果、给第 9、10、13、24 步的注意见「实施记录 · 第 8 步」；带出「Open」三条。
   - 上架写版本 1，active 条目每次改动写新版本并更新 `catalog_items.version`（`src/config/catalog.ts` 与 `catalog-fix`），审计 `catalog.version`；全部版本读进内存；启动补写缺失的版本；`/healthz` 的 `config.catalogVersioned`。
   - `pinCatalogForTurn`；引擎的 `handleMessageInner` 与跟进生成包进去。
   - `generate_proposal` 在版本大于 1 时追加 `?v=`；链接白名单、`linksFromCalls`、企微卡片识别接受它；`public/proposal.html` 把 `v` 转给 `/api/proposal/:routeId`；`/proposal/*` 与 `/api/proposal/:routeId` 按版本渲染、只读内存；订单记 `catalogVersion`。
@@ -620,6 +620,57 @@
   - 变异（源码拷进 scratchpad 的隔离副本，只跑等价套件）：审查给的撤回变异（`tools.ts` 的 system 消息不带备注、`engine.ts` runTool 的 `.then` 里恢复 `rec.content +=`）红 2 项（`sessions.wecom:parity-ho-model.messages.3.content` 两边不同、PG 那边的场景期望）；verify 只核对「转人工各入口」一组红 29 项（只让 PG 一边跳过红 18 项）；给 `searchYunnan` 多加一步用不到的脚本红 8 项；子进程不预加载 `parity-clock.ts` 红 2 项（两边的时钟断言）。只把 db 子进程的时钟拨快一天（在 `parity-clock.ts` 之前多预加载一个 +24 小时的 `Date`）现在全绿、743 项；同一变异打在修之前的套件上报 `sessions.wecom:parity-ho-promise.handoff.departNote` 的假差异。对照：前三个变异打在修之前的套件上都是绿的（669、564、669 项）。
   - 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器，`127.0.0.1:55432`）与不带各跑一遍都全绿，PASS 行 61；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
 
+### 第 8 步 · 产品库版本、按轮固定快照、开放五个字段（2026-10-03）
+
+- 结构：
+  - 仓储：`src/db/repo/catalog.ts` 的 `CatalogRow` 多 `version`；`updateItemPayload` 多一个可选的 `version`，与 payload 在同一条 UPDATE 里改（分两条写，`catalog_items_guard` 会让 rev 加 2）；`activateItem` 一并把 `version` 写成 1；`setItemVersion` 只给启动补写对齐用。`catalog-versions.ts` 加 `maxCatalogVersion`。
+  - 配置源 `src/config/source.ts`：`CatalogSnapshot` 加 `versions`（键 `route:<code>` / `hotel:<code>`，`catalogVersionKey`，与 `turn_traces.catalog_versions` 同一个写法），与 routes、hotels 是同一代；`Loaded.history` 存全部条目的全部版本（deep-frozen 的 payload），只追加。`initConfig` 在第 6、7 步的同一个 REPEATABLE READ 只读事务里多读一次 `catalog_item_versions`；第 9 步 rerender 之后是启动补写（`backfillPlan` + `writeBackfill`）。`applyCatalogRow` 收行上的 `version`，没见过的版本加进历史；`reloadOnce` 同样读版本并进历史。新增 `pinCatalogForTurn`（AsyncLocalStorage）、`catalogItemAt`（匿名路由按版本取 payload，只读内存）、`catalogVersioned`。
+  - 写入 `src/config/catalog.ts`：`nextVersion` 只在 active 条目的 payload 文本真的变了时，在同一事务里取 `max(version) + 1`、写版本行（source `console` / `fix`，`created_by_name` 是操作者）；`versionAudit` 写 `catalog.version`（diff `{ version, source }`），排在 `catalog.update` / `catalog.locked_fix` 之后。上架写版本 1（source `activate`）与一行 `catalog.version`。`src/config/transfer.ts` 的 import-config 首次导入同一事务里给每条写版本 1（见下面第 3 条）。
+  - 工具与引擎：`src/tools.ts` 加 `routeVersion`（DB 模式取 `currentCatalog().versions`，一轮之内是这一轮那一代；文件模式恒为 1）、`proposalVersionSuffix`（版本 1 是空串）、`routeForProposal`（链接上的 `v` → 那个版本的线路，不合法、大于当前版本、线路不在时 null，只读内存）、`quoteFor`（`createQuote` 抽出的按给定线路算价）；`generate_proposal` 的链接追加后缀，`create_order` 记 `catalogVersion`。`src/engine.ts`：`handleMessage` 把 `handleMessageInner` 包进 `pinCatalogForTurn`；链接白名单认 `?v=<n>`（`proposalSuffixOf`）。`src/followup.ts` 的话术生成包一层。
+  - 渠道与页面：`src/adapters/wecom.ts` 的 `ALL_LINKS_RE` 与 `extractCard` 认后缀，卡片按链接的版本取线路；`src/server.ts` 的 `/api/proposal/:routeId`、`/proposal/*` 走 `routeForProposal` + `quoteFor`，`/healthz` 的 `config` 加 `catalogVersioned`；`public/proposal.html` 把地址里的 `v` 原样转给接口；`public/chat.html`、`public/admin.html` 的站内链接正则认后缀（第 10 条）。
+  - 审计文案：`src/shared/ui-labels.ts` 的 `AUDIT_ACTIONS` 加 `catalog.version`（「记下新版本」，图标 `history`），`src/shared/audit-text.ts` 的句子「记下了线路「…」的第2版」。
+  - 开放五个字段：`src/shared/catalog.ts` 的 `LOCKED_WHEN_ACTIVE` 去掉 `priceFrom`、`bestSeason`、`inclusions`、`exclusions` 与酒店的 `nightlyFrom`，另加 `REPRICE_FIELDS` 与 `isRepriceField`；旅游包（`src/packs/travel/console-pack.ts`）这五个字段去掉 `lockedWhenActive` 与 `lockGroup`，去掉线路的「计价」「条款」与酒店的「计价」三个锁定组；console 的保存条（`console/src/catalog/save.ts` 的 `saveCopy`、`REPRICE_NOTE`，`CatalogDetail.tsx` 给 `SaveBar` 传 `kind`）；`src/cli/catalog-fix.ts` 的警告改成「已上架的条目会写一个新的条目版本……已发出的方案书按发出时的版本」。
+  - `deploy/rollback-guard.sh`：第 6 步留的位置补上 `catalogVersioned`（第 13 条）；README「回到文件模式或更早的版本」加一条。
+- spec 写得不够、本步定的（选最小、最贴原文的）：
+  1. **新版本号**：写入事务里取 `max(version) + 1`（条目行已 `FOR UPDATE` 锁住，同一条的写入串行；主键兜底），同一条 UPDATE 里把 `catalog_items.version` 改成它。快照里的版本取内存历史里的最大版本号，不读 `catalog_items.version` 这一列。
+  2. **「内容变化」** = payload 的 JSON 文本变了；原样提交回去（审计 diff 为空、rev 照旧加 1）不写版本。草稿的新建、编辑、CSV 导入都不写。
+  3. **import-config 写版本 1**：首次导入直接是 active，等于上架：同一事务里每条写版本 1（source `activate`、`created_by_name` 是 `import-config`），不另记 `catalog.version`（`config.import` 那一行就是这次导入）。spec 的启动补写只为「01 镜像期间上架的」条目设；不写的话每个新租户第一次启动都要补写、给每一条记一行系统审计。
+  4. **启动补写的位置与范围**：initConfig 第 9 步、rerender 之后（与 rerender 一样等前面只读的检查都通过才写），一个事务、取配置写锁。除了 spec 写的两类，`catalog_items.version` 与最终的最新版本对不上时一并对齐（触发器会让 rev 加 1）；补写的版本 `created_by_name` 是 `system`，审计的操作者是 system。补写失败以 `db_unreachable` 拒绝启动（与写 rerender 同一处理）。
+  5. **文件模式**：没有版本，每条线就是版本 1：链接不带 `v`，`?v=1` 与不带 `v` 相同，`?v=2` 起 404；订单记 `catalogVersion: 1`（等价套件要两种存储的订单相同，PG 那边的租户也是版本 1）；`/healthz` 的 `catalogVersioned` 是 false。
+  6. **`v` 不是正整数**按 `/^[1-9]\d{0,8}$/`：`01`、`1.0`、空串、负数、超过 9 位都算，404。页面 `/proposal/*` 带了 `v` 而没有这个版本时回 404，正文是原样的 proposal.html（客户端照常显示「方案不存在或已失效」）；不带 `v` 时与开工时相同（线路不存在也是 200 的页面）。
+  7. **不带 `v` 在 DB 模式下按版本 1 的 payload 渲染**，标题与分享卡片也是；与 01 写的「已发出的方案书会显示改后的行程文案」不同，这是 02 spec「不带 v 按版本 1」的本意（console.selftest 一条断言因此改了，见下）。
+  8. **链接白名单**：版本后缀要等于这一轮那次 `generate_proposal` 给的（版本 1 与出错的调用是空串）；模型抄丢或写错后缀的抹成空位，由出口修补换成工具给的链接；完整 URL 剥域名时留下 `?v=<n>`。版本 1 的链接判定与开工时相同。`linksFromCalls` 的正则本来只看前缀，不用改。
+  9. **固定快照包在哪**：`handleMessage` 的 `serialize` 回调里包住 `handleMessageInner`（轮到这一轮真正开始时记快照），与包住它的正文等价，少一层缩进改动；跟进包住 `composeFollowUp`（第 10 步的出口护栏要包进同一层）。`currentCatalog()` 在轮内返回固定的那一代，匿名路由、后台写入、`/healthz` 不在轮内，看到的是最新的。
+  10. **企微卡片与网页模拟器**：卡片按链接的版本取线路（不带 `v` 是版本 1），版本不存在不做卡片、原样发纯文本；`chat.html` 的「查看行程方案」链接与 `admin.html` 的卡片、链接正则一并认后缀——不认的话模拟器里点开的是版本 1 的旧价。spec 只点名了白名单、`linksFromCalls` 与企微卡片，这两处是同一个后缀的认法。
+  11. **保存条**：已上架、改动里有 `REPRICE_FIELDS` 的字段时，说明换成 spec 的那一句「改价只影响之后的报价和方案书，已发出的方案书和订单不变」；只改别的字段时照旧「销售助手下一条回复就用新内容」。理由：这一句说的是改价；只改亮点时原句仍然准确，后台 UX spec 与 fields.selftest 钉着原句。判断放在 `src/shared/catalog.ts` 的 `REPRICE_FIELDS`（与 `LOCKED_WHEN_ACTIVE` 同一处），console 只按实体的 kind 查，不写字段名。
+  12. **锁定组**：五个字段不再锁之后，线路的「计价」「条款」与酒店的「计价」三组没有字段了、原因（「改了会变价」）也不再成立，从旅游包里去掉；页面上它们本来就按「这一组有锁定的字段才画」，所以只是不再出现。
+  13. **回滚检查**：`curl 127.0.0.1:<端口>/healthz`，内容里是 `"catalogVersioned":false` 才算没有这条风险；true、连不上、或没有这个字段都按有风险（第 6 步的注意）。只有这一条风险时不打印回到文件存储的步骤（帮不上忙），写明只能回到 02 之后的镜像；同时有会话存储的风险时照旧打印那套步骤。目标是 02 之后的镜像时照常回滚。
+  14. **审计**：每个版本行都有一行 `catalog.version`（上架、后台改、catalog-fix、补写）。副作用：同一个人连着改几条或上架几条时，时间线上 `catalog.update` / `catalog.activate` 与 `catalog.version` 交错，不再合成「修改了N条」「上架了N条」（CSV 导入的「新建了N条草稿」不受影响），记进「Open」。
+- 偏离：没有与 spec 冲突的。比原文多的：上面 3（import 写版本 1）、4 的对齐 `catalog_items.version`、10 的 chat.html 与 admin.html、11 的只在改了计价与条款字段时换句。
+- 改了的非锁定断言：
+  - spec「测试与 CI」允许的（`config.selftest.ts`、`console.selftest.ts` 断言五个计价与条款字段 422 的用例），都改成断言能改且产生新版本，或换成仍锁定的字段：config 的「active 改 priceFrom 被点名」→ 不再点名；「删掉 inclusions 算改」→ 不算、删 aliases 算；「酒店改 nightlyFrom 被点名」→ 不算、改 name 照旧点名；「锁定表与 spec 一致」→ 新的锁定表与 `REPRICE_FIELDS`；DB 段逐个 422 的清单去掉四项；「unset 锁定字段也拒」换成 aliases；「上架后锁定字段不能再改」换成 title。console 的逐个 422 清单去掉四项、「一次改多个」12 → 8；「上架之后 priceFrom 锁定」→ title 锁定、priceFrom 能改且写版本 2；另加「开放的字段逐个 200、各写一个新版本、不带 v 的报价不变、酒店 nightlyFrom 200 而 name 422」。
+  - 清单之外、随 spec 写定的行为跟着变的（已按下面做了，记进「Open」请 owner 确认补进清单）：
+    - `console.selftest.ts`「公开的方案书接口拿到新 highlights」→「不带 v 仍是改之前的、?v=2 拿到新 highlights，quote 都不变」（spec「不带 v 按版本 1」）。
+    - `packs.selftest.ts` 两条改坏用例（「锁定组没写原因 / 标签」）：改坏的组从酒店的 `price` 换成 `id`（`price` 组随 nightlyFrom 开放去掉了），断言的仍是 checkPack 点名被改坏的那一组。
+    - `console/src/fields/fields.selftest.tsx`：设计系统 E、F 页照 02 之前的旅游包画（计价、条款两组锁定，线路 13 项、酒店 4 项），原来的断言照页面写。照同一文件里假包「L 页版」的做法，在自测里从活的旅游包派生一份「E、F 页版」（五个字段加回锁定、加回两组原因），原来钉页面的断言一条没改；活的旅游包另加「9.0」一节（锁定组只剩识别 5、推荐 4，共 9 项，酒店 3 项；五个字段在已上架条目上是输入框；保存条按改动换句）与一段整页（状态句「9项上架后锁定」、卡片头只声明识别与推荐、只改亮点照旧、再改每人起价换句）。
+    - 只改夹具：`config.selftest.ts`「没有 active 线路」删线路之前先删版本行（导入写了版本 1，外键指着它们）。
+- 新自测（`config.selftest.ts` 末尾「条目版本、按版本渲染的方案书、按轮固定快照」一节，单开租户 `vers`；另有 `console.selftest.ts`、`db.selftest.ts` 的几条）：
+  - 文件模式：链接（带不带日期）逐字节不变、`?v=1` 与不带相同、`?v=2` 404、订单记 1、`catalogVersioned` false。
+  - 导入写版本 1、payload 逐字节相同；改 active 条目写版本 2（source、操作者、payload、`catalog_items.version`、rev 只加 1、审计）、内存跟着变、`catalogVersioned` true、原样提交不写；之后新链接带 `?v=2`；不带 `v` 按版本 1、`?v=2` 按新内容；`3`、`0`、`-1`、`01`、`1.0`、`abc`、空串、11 位数在接口与页面都 404；页面的分享卡片按版本写；这些匿名请求 `queryCount` 不变。
+  - 草稿的新建与编辑不写版本；上架写版本 1 与审计。
+  - 验收 19：后台改 `priceFrom` → 版本 3；改之前发出的两种链接报价不变、`?v=3` 新价、`?v=4` 404 且不查库；已有订单金额与版本不变；新订单新价、记 3；新链接带 `?v=3`；改 `title` 仍 422 且不写版本。其余三个开放字段各写一个版本；酒店 `nightlyFrom` 写版本 2、快照是新价；catalog-fix 改识别字段写版本（source fix）与审计；重启后全部版本进内存。
+  - 启动补写：删掉 `r-guizhou` 的全部版本行后重启 → 版本 1（backfill、payload 是条目当前的、审计记 system），链接照常、不带 `v`；直接改 `r-sanya` 的 payload（模拟 01 镜像期间改过）后重启 → 版本 2、`catalog_items.version` 对齐、不带 `v` 仍是改之前的；再重启不写。
+  - 按轮固定（本机假 `/chat/completions`）：模型先 `get_route_detail`，回第二步之前后台把这条线的价改了（版本 2），这一轮的 `generate_proposal` 仍是开始时那一代（链接不带 `?v=`、每人价是旧的），回复里的链接也是；模型照这一轮看到的报的「每人 28,800 元起，两位合计 57,600 元」被价格护栏原样放行（不固定的话护栏看的是新价，这两句会被删）；下一轮链接带 `?v=2`。
+  - 链接白名单：丢了后缀、后缀写错（`?v=1`）的换成工具给的那条；完整 URL 剥掉域名留后缀；对得上的原样留着、只出现一次。企微卡片：带 `?v=2` 的卡片链接与挖掉的原文都带后缀、剥完正文不留；`?v=9` 不做卡片。重读：库里新提交、内存还没有的版本经 `reloadFromDb` 读进来。
+  - `db.selftest.ts`：rollback-guard 七种情况（问的是宿主端口上的 `/healthz`；true 而部署 02 之前的 tag 拒绝、不打印导出步骤；true 而自动回滚到 02 之前的镜像拒绝；true 而目标是 02 之后的放行；连不上拒绝；没有这个字段拒绝；有标记又 true 两条都点名、照常打印步骤），假 curl 缺省回 `catalogVersioned: false`，原来的用例不变；真实 PG 部分：import-config 写版本 1、catalog-fix 写版本 2（agent_app 有 INSERT），最新一版与条目的 json 文本逐字节相同。
+  - 计数：`config.selftest.ts` 454 → 503；`console.selftest.ts` 306 → 310；`db.selftest.ts` 不带 PG 480 → 487、带 PG 876 → 884；`console/src/fields/fields.selftest.tsx` 1717 → 1724；等价套件 743 → 744（订单多了 `catalogVersion`，比较器多探一种字段形状）；`store.selftest.ts`（402 / 425）、`packs.selftest.ts`（222）、`audit-text.selftest.ts`（46）数目不变。
+- 变异（源码拷进 scratchpad 的隔离副本，逐个打、只跑相关自测）：41 个，39 个杀掉。版本号：不加 1（撞主键）、`catalog_items.version` 不跟着改、内存里的版本号不变、历史不加新版本；草稿也写版本、原样提交也写版本；上架不写版本 1、import-config 不写版本 1、catalog-fix 不写版本、`catalog.version` 审计漏写；`?v=` 在版本 1 时也加、从来不加；`v` 大于当前版本照常渲染、`v` 不校验、不带 `v` 用当前内容；`v` 不合法时查库（`queryCount` 抓到）、页面带了不存在的版本不回 404、页面不按版本写分享卡片；固定快照不生效（`pinCatalogForTurn` 直接调 fn、`currentCatalog()` 不看固定的那份、引擎不包）——三个都由价格护栏那条红（回复被安全网换成按新价的整句）；补写漏没有版本行的、漏内容不同的、不对齐 `catalog_items.version`、不记审计；重读不读版本；订单不记版本；多开放 `title`、`segments`、酒店的 `name`，五个字段里还锁着一个；回滚检查不看 `catalogVersioned`、取不到按没有风险；`/healthz` 恒为 false；白名单不比版本后缀；企微卡片丢后缀、不按版本取线路；保存条不传 kind、一律换句。存活两个：白名单剥域名时丢掉后缀（等价变异：剥下来的 `/proposal/…/2` 随即被后面那道相对链接的检查抹成空位，出口修补放回同一个位置的是带后缀的真链接，结果逐字相同）；跟进生成不包 `pinCatalogForTurn`（`composeFollowUp` 现在不读产品库，没有可观察的差别；第 10 步把出口护栏包进同一层时补断言，见「注意（第 10 步）」）。没有自测的两处：`public/proposal.html` 把 `v` 转给接口、`chat.html` / `admin.html` 的链接正则（页面脚本，锁定的 `server.selftest.ts` 只抽了别的函数）。
+- 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器，`127.0.0.1:55432`）与不带各跑一遍都全绿；mock eval 19/19（文件与 DB 两种配置模式）；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变；`check-fonts` 通过（保存条新句与审计新句的字都在 UI 优先片里，没有重跑字体）。
+- 注意（第 9 步）：trace 的 `catalogVersions` 用 `catalogVersionKey` 与轮内的 `currentCatalog().versions`（已固定），记本轮工具结果里出现过的条目；`routeVersion()` 可以直接用。
+- 注意（第 10 步）：任务表驱动的跟进生成与出口护栏要包在同一个 `pinCatalogForTurn` 里（现在只包了 `composeFollowUp`）。
+- 注意（第 13、20 步）：`CatalogItem`（后台接口）没有带 `version`；J 页或订单卡要显示「按第几版报价」时再加，订单上有 `catalogVersion`。
+- 注意（第 24 步）：走查种子里改过价的线路，方案书链接带 `?v=`；`chat.html` 与 `admin.html` 已经认它。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -633,6 +684,10 @@
   - **交还消息里的顾问姓名会经匿名旧接口漏出**（第 3 步写投影之前定；第 3 步没等到答复，投影函数按消息逐条写好，改写规则随第 13 步的交还消息一起加）。spec「接手、人工回复与交还」规定交还时记一条 system 消息「{姓名}把会话交还 AI」；种子会话既能被成员接手、又对匿名可读，「后台接口」规定的匿名投影只去掉 `assignee.userId` 与消息的 `authorId`、`authorName`，管不到正文，`admin.html:939` 会原样显示它，与不变量 44（匿名响应里没有成员姓名）冲突。推荐：匿名投影把 `release()` 按固定模板生成的这条改写成「顾问把会话交还 AI」（模板由同一个常量产生，确定性可测）。备选：正文本身就写「顾问把会话交还 AI」，姓名只在 J 页由结构化记录显示（spec 的那句文案要改）。
   - **`POST /api/orders/:id/pay` 的响应体**（第 3 步；已按推荐先做，见「实施记录 · 第 3 步」裁定 10，owner 另有决定再改）。409 与 200 两个分支（`server.ts:462`、`483`）都带订单原对象，demo 下匿名可调；02 之后会带出 `confirmedBy`、`paidMarkedBy`、`cancelReason`。R22 只管 `GET /api/orders/:id`。推荐：改用同一个 R22 白名单投影（`pay.html` 只看状态码与 `res.ok`，锁定断言不读响应体）。
   - **advisor 模式下支付页从哪儿知道收款方式**（第 15 步之前定）。R22 白名单里没有收款方式，`confirmed=false` 分不清「online 待付款」与「advisor 待确认」；`/pay/:orderId` 能由服务端注入，`/pay.html?orderId=` 这条静态兜底（`pay.html:314`，`server.ts:698`）注入不到。推荐：`/pay.html?orderId=` 跳到 `/pay/:id`，页面只靠服务端注入。备选：白名单加 `paymentMode`（改 R22；锁定断言只看 `id`，不受影响）。
+- 第 8 步带出的（都已按下面做了，owner 不同意可以改回）：
+  - **spec「测试与 CI」最后一条的清单漏了几处随本步写定的行为跟着变的非锁定断言**：`console.selftest.ts`「公开的方案书接口拿到新 highlights」（「不带 v 按版本 1」之后，不带 v 的是改之前的那份）；`packs.selftest.ts` 两条改坏用例改坏的组从酒店的 `price` 换成 `id`（`price` 组随 nightlyFrom 开放去掉了）；`console/src/fields/fields.selftest.tsx` 照设计系统 E、F 页写的锁定组断言（「13项上架后锁定」、计价与条款两组）改用自测里派生的「E、F 页版」旅游包核对（与假包 L 页版同一个做法，断言本身一条没改），活的旅游包另加断言。做法与理由见「实施记录 · 第 8 步」的「改了的非锁定断言」。请把这几处补进 spec 那份清单。
+  - **设计系统 E、F 页与后台 UX spec 的示例数字是 02 之前的旅游包**：02 之后的旅游包线路是 9 项上架后锁定（识别 5、推荐 4），酒店 3 项，没有计价、条款两组；页面的写法与规则不变。UX spec 已 implemented，示例要不要改、怎么改（修订路径见 AGENTS.md）由 owner 定，本步没动这两份文档。
+  - **审计时间线不再合并连着改的几条**：每个条目版本都记一行 `catalog.version`（spec「审计新动作」），它和 `catalog.update` / `catalog.activate` 交错，同一个人连着改几条、上架几条时不再合成「修改了N条」「上架了N条」（CSV 导入的「新建了N条草稿」不受影响）。要合并的话，可以让 `auditRuns` 把紧跟在一次写入之后、同一条目同一操作者的 `catalog.version` 并进那次写入（句子不变，版本号进详情）；这是后台 UX 的改动，等 owner 定。
 - 第 6 步审查带出的另一处（已按下面做了，owner 不同意可以改回）：**`export-sessions` 多了退出码 2**。spec「导入、导出与切换」的 export 只写了成功（0），命令行约定也只有 0、1、3；但没有标记文件、而 JSON 里的真实会话与库里不一致时（多半是回退到文件存储之后又误跑了一次 export），照「同 id 以库为准」会用库里的旧版本悄悄盖掉文件存储期间的新消息与付款状态。现在以 2 拒绝、什么都不动，提示改用 `import-sessions --resync`；全部一致就当无操作返回 0。spec 那一节要同步一句。
 - 第 6 步审查带出的一处（已按下面做了，owner 不同意可以改回）：**没经过 import-sessions、直接以 db 存储起的实例也要有标记文件**。spec「导入、导出与切换」写的是标记文件「import 改写 JSON 时一起写，export 写完 JSON 后删掉」，回滚检查只看标记文件（与第 8 步的 `catalogVersioned`）。新实例、新租户一上来就设 `SESSION_STORE=db`（JSON 里本来没有真实会话），会话全在库里而 var/ 里没有标记：去掉 `SESSION_STORE` 之后文件存储照常启动、客户历史在应用里看不到（不变量 15 对这类实例失效）；deploy.sh 部署 01 的 tag 或自动回滚到 01 的 `:prev` 也放行（回滚检查失效）；之后再 `--resync` 还会把这些会话在库里、文件里没有的订单作废。现在：`initSessionStore` 的 db 分支装上 PG 后端之后，没有标记就补写一份（`sessions` 是预载的真实会话数）；`rollback-guard.sh` 另读服务器 `.env`，`SESSION_STORE=db` 也算有风险（做法与验证见「实施记录 · 第 6 步」的「审查之后改的」第 5 条）。请 owner 确认，并把 spec「标记文件」那句补成「import 改写 JSON 时写、db 存储启动时没有就补写，export 写完 JSON 后删掉」，回滚检查的条件加上「服务器 `.env` 里是 `SESSION_STORE=db`」。
 - 第 5 步审查带出的一处（已按下面做了，owner 不同意可以改）：**两种启动失败借用了现有的 reason**。spill 回放时读写文件出错（`EISDIR`、`EACCES`、改名失败）与其余意外错误用 `spill_conflict`（spec 写的是「spill 文件接不上库里的 last_seq」），重复调 `initSessionStore` 用 `sessions_in_db`（spec 写的是「文件存储而 var/ 里有标记文件」）；两处 detail 都写明实情（文件名与错误码、「只能调一次」）。要分开的话给 spec 的 `SessionStoreStartupError` 加两个 reason（比如 `spill_unreadable`、`already_installed`），代码两处各改一行。
@@ -705,3 +760,10 @@
 - 半成品：无。
 - 阻塞：无。「Open」里第 1、4、5、6 步带出的几处照旧，本步没有新增，都不挡第 8 步。
 - 下一步：第 8 步「产品库版本、按轮固定快照、开放五个字段」。先读 spec「报价快照与产品库字段开放」、R14、不变量 35–37、验收 19，「实施记录 · 第 4 步」仓储清单里的 `catalog-versions.ts`，与「实施记录 · 第 6 步」的「注意（第 8 步）」（`rollback-guard.sh` 的 `catalogVersioned`）。改了引擎读产品库的路径之后，等价套件与 DB 模式 eval 照跑；第 9、10、12、13 步要在等价套件里补的项见「实施记录 · 第 7 步」的「注意」。
+
+### 交接（2026-10-03，第 8 步）
+
+- 已完成：第 8 步。条目版本的写入（上架、后台改、catalog-fix、import-config 首次导入）与 `catalog.version` 审计、全部版本读进内存、启动补写（含对齐 `catalog_items.version`）、`/healthz` 的 `config.catalogVersioned`；`pinCatalogForTurn`，引擎一轮与跟进生成包进去；`generate_proposal` 在版本大于 1 时带 `?v=`，白名单、企微卡片、网页模拟器与后台旧页认它，`/proposal/*`、`/api/proposal/:routeId` 按版本渲染、只读内存、不合法或不存在的版本 404 不查库，订单记 `catalogVersion`；以上全绿之后开放五个计价与条款字段，旅游包的锁定组去掉计价、条款，保存条在改了它们时写明「改价只影响之后的报价和方案书，已发出的方案书和订单不变」；`rollback-guard.sh` 看 `catalogVersioned`。改了的非锁定断言（spec 允许的与清单之外的几处）逐条记在「实施记录 · 第 8 步」。本机真实 PG 上全过；锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
+- 半成品：无。
+- 阻塞：无。「Open」新增第 8 步带出的三条（spec 测试清单补几处断言、设计系统 E、F 页的示例数字、审计时间线不再合并连着改的几条），都不挡第 9 步；第 1、4、5、6 步带出的几处照旧。
+- 下一步：第 9 步「逐轮 trace、护栏事件、用量」。先读「实施记录 · 第 8 步」的「注意（第 9 步）」：trace 的 `catalogVersions` 用 `catalogVersionKey` 与轮内（已固定的）`currentCatalog().versions`；以及「实施记录 · 第 7 步」的「注意」里第 9 步要在等价套件里补的项。
