@@ -28,6 +28,19 @@ interface TurnOut {
   reply: unknown;
   leftover: number;
 }
+/** 一轮的 trace（第 9 步）：两种存储都收集，内容与存储无关，逐项比。turnId、时刻与耗时不比 */
+interface TraceOut {
+  sid: string;
+  outcome: string;
+  stageBefore: string | null;
+  stageAfter: string | null;
+  finalText: string;
+  catalogVersions: Record<string, number>;
+  guards: { guard: string; action: string; removed: string[]; added: string[] }[];
+  calls: { name: string; prefetch: boolean }[];
+  /** 每次模型调用的失败类别（成功为 null） */
+  llm: (string | null)[];
+}
 interface ScenarioOut {
   name: string;
   ids: string[];
@@ -38,6 +51,8 @@ interface ScenarioOut {
   sessions: Record<string, unknown>;
   orders: unknown[];
   notes: Record<string, unknown>;
+  /** 这个场景里结束的每一轮的 trace（onTurnEnd 收到的，按结束顺序） */
+  traces: TraceOut[];
   error: string | null;
 }
 interface CheckOut {
@@ -65,6 +80,8 @@ const DB_SESSION_CHECK = {
   window: '内存里每条消息的 seq 与库里的窗口对得上',
   orders: '库里未作废的订单与内存相同',
   frozen: '内存里的消息都已冻结（原地修改会抛 TypeError）',
+  traces: '库里有这个会话每一轮的 trace（id、outcome 与护栏事件条数与内存相同）',
+  turnIds: '库里窗口内消息的 turn_id 与内存的关联相同，每条回复都关联到它那一轮',
 };
 const DB_SCENARIO_CHECK = {
   drained: '排空写队列之后库里不欠改动',
@@ -146,7 +163,7 @@ function canon(x: unknown, ids = new Map<string, string>()): unknown {
   return x;
 }
 /** 逐项比的几样：每一轮的回复、发出的消息、会话投影、订单、场景记下的观测 */
-const COMPARED = ['turns', 'sent', 'sessions', 'orders', 'notes'] as const;
+const COMPARED = ['turns', 'sent', 'sessions', 'orders', 'notes', 'traces'] as const;
 type Compared = Pick<ScenarioOut, (typeof COMPARED)[number]>;
 /**
  * 两边一个场景的比较（真比较与下面「比较器对每个字段都敏感」的探测走的是同一个函数）：规范化之后逐项 deepStrictEqual，
@@ -177,7 +194,7 @@ function firstDiff(a: unknown, b: unknown, at = '$', names: [string, string] = [
  * 场景合起来会碰到的字段：两边收集到的结果里都得有。比较器只探得到收集到了的字段，收集时就少收的（投影里漏了 stage、订单漏了金额）
  * 要靠这一条拦
  */
-const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply', string[]> = {
+const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply' | 'trace', string[]> = {
   session: [
     'id',
     'channel',
@@ -214,9 +231,16 @@ const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply', string[]> = {
     'handoffBeforePaid',
   ],
   reply: ['text', 'stage', 'handoff', 'orderId', 'silent', 'idle'],
+  trace: ['sid', 'outcome', 'stageBefore', 'stageAfter', 'finalText', 'catalogVersions', 'guards', 'calls', 'llm'],
 };
 function keysSeen(out: ChildOut): Record<keyof typeof MUST_SEE, Set<string>> {
-  const seen = { session: new Set<string>(), message: new Set<string>(), order: new Set<string>(), reply: new Set<string>() };
+  const seen = {
+    session: new Set<string>(),
+    message: new Set<string>(),
+    order: new Set<string>(),
+    reply: new Set<string>(),
+    trace: new Set<string>(),
+  };
   const add = (set: Set<string>, o: unknown) => {
     if (o && typeof o === 'object') for (const k of Object.keys(o)) set.add(k);
   };
@@ -227,6 +251,7 @@ function keysSeen(out: ChildOut): Record<keyof typeof MUST_SEE, Set<string>> {
     }
     for (const o of sc.orders) add(seen.order, o);
     for (const t of sc.turns) add(seen.reply, t.reply);
+    for (const t of sc.traces) add(seen.trace, t);
   }
   return seen;
 }
@@ -355,6 +380,17 @@ function anchors(out: ChildOut): [string, boolean, string][] {
       said(lgs, 'agent').at(-1)?.startsWith('云南这边') === true,
     lg?.notes,
   );
+  // 第 9 步：trace 的比较不是空比——有护栏改了文本的轮次，也有确定性路径、沉默与转人工的轮次
+  const traces = out.scenarios.flatMap((x) => x.traces);
+  const outcomes = new Set(traces.map((x) => x.outcome));
+  add(
+    'trace：每一轮都收集到了，其中有护栏事件、有工具调用，outcome 有 replied、handoff、silent、reset',
+    traces.length >= 20 &&
+      traces.some((x) => x.guards.length > 0) &&
+      traces.some((x) => x.calls.length > 0) &&
+      ['replied', 'handoff', 'silent', 'reset'].every((o) => outcomes.has(o)),
+    { n: traces.length, outcomes: [...outcomes], guards: traces.flatMap((x) => x.guards.map((g) => g.guard)) },
+  );
   return res;
 }
 
@@ -436,7 +472,7 @@ if (file && db) {
     const d = db.scenarios[i];
     if (!d || compareScenario(f, d).length) continue;
     // 探的是子进程收集到的全部几样（不按 COMPARED 取）：逐项比漏了哪一样，那一样的字段就探不出差异
-    const raw = { turns: f.turns, sent: f.sent, sessions: f.sessions, orders: f.orders, notes: f.notes };
+    const raw = { turns: f.turns, sent: f.sent, sessions: f.sessions, orders: f.orders, notes: f.notes, traces: f.traces };
     for (const { path: p, time } of leafShapes(raw)) {
       const perturbed = structuredClone(raw);
       perturb(perturbed, p);
@@ -660,6 +696,23 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   );
 
   const { handleMessage, onToolCall } = await import('../engine.js');
+  const { onTurnEnd } = await import('../trace/recorder.js');
+  /** 这个进程里结束的每一轮（第 9 步的 trace）：场景收集 TraceOut，PG 那边拿 turnId 核对库里 */
+  const turnLog: { sid: string; turnId: string; guards: number; t: TraceOut }[] = [];
+  onTurnEnd((f) => {
+    const t: TraceOut = {
+      sid: f.turn.conversationId,
+      outcome: f.outcome,
+      stageBefore: f.stageBefore,
+      stageAfter: f.stageAfter,
+      finalText: f.finalText,
+      catalogVersions: { ...f.turn.catalogVersions },
+      guards: f.turn.guards.map((g) => ({ guard: g.guard, action: g.action, removed: [...g.removed], added: [...g.added] })),
+      calls: f.turn.calls.map((c) => ({ name: c.name, prefetch: c.prefetch })),
+      llm: f.turn.llm.map((c) => c.error),
+    };
+    turnLog.push({ sid: t.sid, turnId: f.turn.turnId, guards: f.turn.guards.length, t });
+  });
   const { app } = await import('../server.js');
   const { __test: wecomTest, syncFromCallback } = await import('../adapters/wecom.js');
   const { runFollowUpScan } = await import('../followup.js');
@@ -775,6 +828,12 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     );
   }
 
+  /** 以超级用户查库（一个事务里临时换回会话用户，排着的落库不会跟着变成超级用户） */
+  const su = <R>(text: string, params: unknown[]): Promise<R[]> =>
+    t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (await tx.query<R>(text, params)).rows;
+    });
   /** 场景之后 PG 那边的库里核对（文件那边只核对消息没被冻结） */
   type DbExtra = (id: string, stored: Awaited<ReturnType<typeof readStoredConversations>>, mem: Session) => [string, boolean, string][];
   async function verify(name: string, ids: string[], extra?: DbExtra): Promise<void> {
@@ -829,6 +888,38 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
         `${id}：${DB_SESSION_CHECK.frozen}`,
         mem.messages.every((m) => Object.isFrozen(m)),
       );
+      // 第 9 步：每一轮的 trace 随会话落库，AI 回复的 turn_id 与内存的 WeakMap 关联相同
+      const dbTraces = await su<{ id: string; outcome: string; guards: number }>(
+        `select t.id, t.outcome, (select count(*)::int from guard_events g where g.tenant_id = t.tenant_id and g.turn_id = t.id) as guards
+           from turn_traces t where t.tenant_id = $1 and t.conversation_id = $2`,
+        [tenantId, id],
+      );
+      const memTurns = turnLog.filter((x) => x.sid === id);
+      const key = (l: { id: string; outcome: string; guards: number }[]) => JSON.stringify(l.toSorted((a, b) => a.id.localeCompare(b.id)));
+      ck(
+        name,
+        `${id}：${DB_SESSION_CHECK.traces}`,
+        key(dbTraces) === key(memTurns.map((x) => ({ id: x.turnId, outcome: x.t.outcome, guards: x.guards }))),
+        `库里 ${key(dbTraces)}，内存 ${memTurns.length} 轮`,
+      );
+      const dbTurnOf = new Map(
+        (
+          await su<{ seq: number; turn_id: string | null }>(
+            'select seq, turn_id from messages where tenant_id = $1 and conversation_id = $2',
+            [tenantId, id],
+          )
+        ).map((r) => [Number(r.seq), r.turn_id] as const),
+      );
+      const linked = new Set([...dbTurnOf.values()].filter((v): v is string => v !== null));
+      const replied = memTurns.filter((x) => x.t.finalText !== '');
+      ck(
+        name,
+        `${id}：${DB_SESSION_CHECK.turnIds}`,
+        mem.messages.every((m) => (dbTurnOf.get(store.seqOf(m) ?? -1) ?? null) === (store.turnIdOf(m) ?? null)) &&
+          replied.every((x) => linked.has(x.turnId)) &&
+          [...linked].every((v) => memTurns.some((x) => x.turnId === v)),
+        `库里关联了 ${linked.size} 条，有回复的 ${replied.length} 轮`,
+      );
       for (const [n, ok, detail] of extra?.(id, stored, mem) ?? []) ck(name, `${id}：${n}`, ok, detail);
     }
     const h = store.storeHealth();
@@ -837,8 +928,9 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   }
 
   async function scenario(name: string, ids: string[], body: (o: Ctx) => Promise<void>, extra?: DbExtra): Promise<void> {
-    const so: ScenarioOut = { name, ids, turns: [], sent: [], sessions: {}, orders: [], notes: {}, error: null };
+    const so: ScenarioOut = { name, ids, turns: [], sent: [], sessions: {}, orders: [], notes: {}, traces: [], error: null };
     const sentFrom = sent.length;
+    const tracesFrom = turnLog.length;
     const o: Ctx = { out: so, note: (k, v) => void (so.notes[k] = v) };
     try {
       await body(o);
@@ -848,6 +940,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
       script.length = 0;
     }
     so.sent = sent.slice(sentFrom);
+    so.traces = turnLog.slice(tracesFrom).map((x) => x.t);
     for (const id of ids) so.sessions[id] = store.getSession(id) ? normalizeForStore(store.getSession(id)) : null;
     // 订单号是随机的：按会话、创建先后与内容排（父进程再把订单号换成编号）
     so.orders = store
