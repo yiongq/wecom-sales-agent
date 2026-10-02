@@ -62,6 +62,7 @@ import {
   type FieldType,
   type IndustryPack,
 } from '../../../src/shared/pack.js';
+import { HttpError } from '../api.js';
 import { CatalogList, type CatalogListProps, FilterButton, MENU_SEARCH_OVER } from '../catalog/CatalogList.js';
 import {
   type ActivePick,
@@ -2114,6 +2115,9 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [texts(empty.box, '.state-empty-title'), texts(empty.box, '.state-empty-desc'), texts(empty.box, '.state-empty-actions button')],
     [['从第一条线路开始'], ['上架后，销售助手会向客户推荐它'], ['新建线路']],
   );
+  // 列表上面只有页名 h1：空状态、筛选无结果、中性的出错，标题都是 h2（axe heading-order，验收之后的复验）
+  const levels = (root: ParentNode): string[] => all<HTMLElement>(root, '.state-empty-title').map((e) => e.tagName);
+  eq('从来没有过：标题是 h2（紧跟页名 h1，不跳级）', levels(empty.box), ['H2']);
   await empty.unmount();
 
   const none = await mount(<CatalogList {...listProps({ search: { q: 'zzzz' } })} />);
@@ -2127,6 +2131,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [none.box.querySelectorAll('.state-empty .ant-btn').length, none.box.querySelectorAll('.list-table').length],
     [0, 0],
   );
+  eq('筛选无结果：标题是 h2（工具条与页签里没有标题，上面就是页名 h1）', levels(none.box), ['H2']);
   await none.unmount();
 
   const pending = await mount(<CatalogList {...listProps({ rows: undefined })} />);
@@ -2153,6 +2158,19 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [['没取到'], 0],
   );
   await failed.unmount();
+  const starting = await mount(
+    <CatalogList {...listProps({ rows: undefined, error: new HttpError(503, { error: 'not_ready', detail: '系统正在启动' }) })} />,
+  );
+  eq(
+    '中性的出错（系统正在启动）：写成说明加重试，标题是 h2（单独挂载没有外层主题，antd 在按钮的两个汉字间插空格，比较时去掉）',
+    [
+      texts(starting.box, '.state-empty-title'),
+      levels(starting.box),
+      texts(starting.box, '.state-empty-actions button').map((t) => t.replace(/ /g, '')),
+    ],
+    [['系统正在启动'], ['H2'], ['重试']],
+  );
+  await starting.unmount();
 }
 
 // 8.8 交互：搜索、页签、筛选、清除都经 onSearch 改地址（搜索边敲边改，用 replace）

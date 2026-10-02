@@ -8,7 +8,7 @@ import { MergeView, unifiedMergeView } from '@codemirror/merge';
 import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { Segmented } from 'antd';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cspNonce } from '../csp.js';
 import { cjk } from '../typography.js';
 import type { SectionChange } from './outline.js';
@@ -127,8 +127,15 @@ export function DiffView({ change, mode, labels }: { change: SectionChange; mode
 }
 
 /**
+ * 一节改动的区域名「前言的改动」，不只写节名：抽屉、回滚确认开着时，下面的中栏也是以节名为名的区域（「前言」），
+ * 两个同名的区域地标读屏分不开（axe landmark-unique）。回滚确认的逐节差异也用它
+ */
+export const changeRegionName = (sectionName: string): string => `${sectionName}的改动`;
+
+/**
  * 逐节改动的列表：每节一个标题行（节名、「+3行 −1行」）加差异。节名的标题层级接着它上面那个标题往下排，不跳级（axe heading-order）：
- * 发布抽屉里在「逐节改动」h3 下面是 h4（默认）；查看改动在页面的 h2 下面、「草稿的改动」抽屉里上面没有标题，都是 h3
+ * 发布抽屉里在「逐节改动」h3 下面是 h4（默认）；查看改动在页面的 h2 下面、「草稿的改动」抽屉里上面没有标题，都是 h3。
+ * 每节是一个区域，名字见 changeRegionName
  */
 export function DiffList({
   items,
@@ -141,16 +148,13 @@ export function DiffList({
   labels: readonly [string, string];
   level?: 3 | 4;
 }) {
-  const id = useId();
   const Name = level === 3 ? 'h3' : 'h4';
   return (
     <div className="sop-diff">
-      {items.map(trimEnd).map((c, i) => (
-        <section key={c.key} className="sop-diff-item" aria-labelledby={`${id}-${i}`}>
+      {items.map(trimEnd).map((c) => (
+        <section key={c.key} className="sop-diff-item" aria-label={changeRegionName(c.name)}>
           <div className="sop-diff-head">
-            <Name id={`${id}-${i}`} className="sop-diff-name">
-              {cjk(c.name)}
-            </Name>
+            <Name className="sop-diff-name">{cjk(c.name)}</Name>
             <span className="sop-diff-stat">{statText(lineStat(c.before, c.after))}</span>
           </div>
           <DiffView change={c} mode={mode} labels={labels} />

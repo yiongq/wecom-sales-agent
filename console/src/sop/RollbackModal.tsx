@@ -20,7 +20,7 @@ import { Skeleton } from '../parts/StateView.js';
 import { toast } from '../parts/toast.js';
 import { Icon } from '../shell/icons.js';
 import { cjk } from '../typography.js';
-import { DiffView, trimEnd } from './DiffView.js';
+import { changeRegionName, DiffView, trimEnd } from './DiffView.js';
 import {
   type ConsequenceIcon,
   rollbackConsequences,
@@ -169,7 +169,7 @@ export function RollbackModal({ target, online, spec, draft, onClose, onDone }: 
               {cjk(plan.changes.length === 1 ? rollbackDiffTitle + rollbackSectionTitle(plan.changes[0]!, plan) : rollbackDiffTitle)}
             </p>
             {plan.changes.map((c) => (
-              <section key={c.key} className="sop-rb-diff-item" aria-label={c.name}>
+              <section key={c.key} className="sop-rb-diff-item" aria-label={changeRegionName(c.name)}>
                 {plan.changes.length > 1 && <p className="sop-rb-diff-name">{cjk(rollbackSectionTitle(c, plan))}</p>}
                 <div className="sop-diff">
                   <DiffView change={trimEnd(c)} mode="inline" labels={[`v${plan.onlineNo}`, `v${plan.targetNo}`]} />

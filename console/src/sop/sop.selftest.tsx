@@ -636,6 +636,24 @@ async function settle(): Promise<void> {
 }
 const all = <T extends Element>(root: ParentNode, sel: string): T[] => [...root.querySelectorAll<T>(sel)];
 const text = (el: Element | null | undefined): string => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+/**
+ * 有名字的区域地标（section 带 aria-label 或 aria-labelledby、role=region）的名字。抽屉、弹窗开着时它们和下面的页面同时在，
+ * 同名的两个区域读屏分不开（axe landmark-unique）
+ */
+const regionNames = (...roots: ParentNode[]): string[] =>
+  roots.flatMap((r) =>
+    all<HTMLElement>(r, 'section[aria-label], section[aria-labelledby], [role="region"]')
+      .filter((e) => (e.getAttribute('role') ?? 'region') === 'region')
+      .map(
+        (e) =>
+          e.getAttribute('aria-label') ??
+          (e.getAttribute('aria-labelledby') ?? '')
+            .split(/\s+/)
+            .map((id) => text(document.getElementById(id)))
+            .join(' '),
+      ),
+  );
+const repeated = (names: string[]): string[] => names.filter((n, i) => names.indexOf(n) !== i);
 async function key(el: Element | null | undefined, k: string, mods: { altKey?: boolean } = {}): Promise<Event | null> {
   if (!el) return null;
   const e = new win.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...mods }) as unknown as Event;
@@ -4811,6 +4829,16 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
     ],
     [['H4', 'H4'], 'DIV', 'group', '发布前检查', 'SECTION', null],
   );
+  // 验收之后的复验（axe landmark-unique）：每节改动的区域叫「话术原则的改动」，不和中栏的「话术原则」同名
+  eq(
+    '发布抽屉：逐节改动每节的区域名是「节名的改动」；中栏仍叫「话术原则」，页面与抽屉的区域地标没有重名',
+    [
+      all(d, '.sop-diff-item').map((e) => e.getAttribute('aria-label')),
+      regionNames(m.box).includes('话术原则'),
+      repeated(regionNames(m.box, d)),
+    ],
+    [['话术原则的改动', '异议处理的改动'], true, []],
+  );
   const ta = d.querySelector<HTMLTextAreaElement>('textarea')!;
   eq(
     '行内 / 并排有读屏名称；说明最多 500 字（同服务端 PublishBody）；说明下面不说会写进审计日志（审计里没有说明）',
@@ -5270,6 +5298,15 @@ const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
     '「草稿的改动」抽屉上面没有别的标题：节名是 h3（不跳级）',
     all(d, '.sop-diff-name').map((e) => e.tagName),
     ['H3', 'H3', 'H3'],
+  );
+  eq(
+    '「草稿的改动」：每节的区域名是「节名的改动」，不和中栏的「前言」同名，页面与抽屉的区域地标没有重名',
+    [
+      all(d, '.sop-diff-item').map((e) => e.getAttribute('aria-label')),
+      regionNames(m.box).includes('前言'),
+      repeated(regionNames(m.box, d)),
+    ],
+    [['前言的改动', '话术原则的改动', '异议处理的改动'], true, []],
   );
   const splitInput = all<HTMLElement>(d, '.sop-diff-mode .ant-segmented-item')
     .find((i) => text(i) === '并排')
@@ -6275,6 +6312,11 @@ async function openHistory(m: PageBox): Promise<void> {
       ['再看看', '回滚到v1'],
       true,
     ],
+  );
+  eq(
+    '差异块：每节的区域名是「节名的改动」（中栏选到这一节时不和它同名）；页面、版本记录与弹窗的区域地标没有重名',
+    [all(modal, '.sop-rb-diff-item').map((e) => e.getAttribute('aria-label')), repeated(regionNames(document.body))],
+    [['异议处理的改动'], []],
   );
   const submit = (): HTMLButtonElement | undefined =>
     all<HTMLButtonElement>(modal, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1');
