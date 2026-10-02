@@ -11,6 +11,9 @@
 #   install -d -o 1000 -g 1000 /root/export-<日期>
 #   docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app \
 #     node --import tsx src/cli/export-config.ts --tenant <slug> --out /export [--image-sop /export/target-sop.md]
+# 会话在文件与库之间切换（02 spec「导入、导出与切换」）先 stop app；--keep 同样是挂进来的宿主目录，而且不能在 var/ 之内：
+#   docker compose -f deploy/compose.yml run --rm -v /root/sessions-keep-<日期>:/keep app \
+#     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]     # export-sessions 再加 --var /app/var
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
 # deploy.sh 的 rsync 保护规则（P /.env*）都已覆盖这个命名，.dockerignore 也排除了它们。
