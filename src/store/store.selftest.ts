@@ -1692,10 +1692,26 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       editedDry.code === 0 && editedDry.stats.pushed === 2 && editedDry.stats.appendedTo === 1 && (await counts()) === before,
       `${editedDry.lines.join(' / ')} ${JSON.stringify(editedDry.stats)}`,
     );
+    // 写完之后读回与 JSON 不等（文件里有一条 at 不是整数毫秒，进库之后对不上）：回滚、退出码 2，库不动
+    const lossy = snapshot(
+      (s) => void s.find((x) => x.id === XFER.delta)!.messages.push({ role: 'customer', content: '晚点再说', at: Date.now() + 0.5 }),
+    );
+    const lossyRun = await importSessions({ ...base, varDir: lossy, resync: true });
+    ck(
+      '--resync：写完读回与 JSON 不等时回滚、退出码 2、点名短码，库与文件都没动',
+      lossyRun.code === 2 &&
+        has(lossyRun, 'TA04') &&
+        has(lossyRun, '已回滚') &&
+        (await counts()) === before &&
+        !fs.existsSync(path.join(lossy, SESSIONS_IN_DB_MARKER)),
+      lossyRun.lines.join(' / '),
+    );
     const seqs = async () =>
       Object.fromEntries(
         (
-          await su<{ id: string; last_seq: number; window_start_seq: number }>('select id, last_seq, window_start_seq from conversations')
+          await su<{ id: string; last_seq: number; window_start_seq: number }>(
+            "select c.id, c.last_seq, c.window_start_seq from conversations c join tenants t on t.id = c.tenant_id where t.slug = 'demo'",
+          )
         ).map((r) => [r.id, [r.last_seq, r.window_start_seq]]),
       );
     const prev = await seqs();
@@ -1721,7 +1737,9 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
         now[XFER.delta]![1] === 1,
       `${JSON.stringify(prev)} → ${JSON.stringify(now)}`,
     );
-    const voided = await su<{ id: string; void_reason: string | null }>('select id, void_reason from orders where voided_at is not null');
+    const voided = await su<{ id: string; void_reason: string | null }>(
+      "select o.id, o.void_reason from orders o join tenants t on t.id = o.tenant_id where t.slug = 'demo' and o.voided_at is not null",
+    );
     ck(
       '--resync：这些会话在库里有、文件里没有的订单作废（void_reason = resync，行还在）',
       r.stats.voided === 1 && voided.length === 1 && voided[0]!.id === `ord_${'b2'.repeat(12)}` && voided[0]!.void_reason === 'resync',
