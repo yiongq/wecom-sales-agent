@@ -541,11 +541,15 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   });
   check('initSessionStore(null)：有标记文件时以 sessions_in_db 拒绝', reason === 'sessions_in_db', reason);
   fs.unlinkSync(marker);
-  let rejected = false;
-  await store.initSessionStore({ db: null as never, tenantId: 't', varDir: VAR_DIR }).catch(() => {
-    rejected = true;
+  let dbReason = '';
+  await store.initSessionStore({ db: {} as never, tenantId: 't', varDir: VAR_DIR }).catch((e: unknown) => {
+    dbReason = e instanceof SessionStoreStartupError ? e.reason : String(e);
   });
-  check('initSessionStore(deps)：PG 后端还没有时拒绝，不回落到文件存储', rejected && store.sessionStoreMode() === 'file');
+  check(
+    'initSessionStore(deps)：库用不了时以 db_unreachable 拒绝，不回落到文件存储、不留半装载状态',
+    dbReason === 'db_unreachable' && store.sessionStoreMode() === 'file' && store.getSession('wecom:u1') !== undefined,
+    dbReason,
+  );
 }
 
 // ---------------- SESSION_STORE 的校验（接在 01 的 initConfigFromEnv 上） ----------------

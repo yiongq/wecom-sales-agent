@@ -9,10 +9,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { tenantLockTaken } from './config/source.js';
 import type { Db } from './db/client.js';
 import type { AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
 import { profile } from './profile.js';
+import { shortIdOf } from './shared/conversation.js';
+import { gracefulExit, onShutdown } from './shutdown.js';
 import {
   SessionStoreStartupError,
   StoreLaggingError,
@@ -23,6 +26,7 @@ import {
 import { onCommitted, type DomainEvent } from './store/events.js';
 import { createFileBackend } from './store/file-backend.js';
 import {
+  openPgBackend,
   type AuditActor,
   type ConsentItem,
   type JobOp,
@@ -55,8 +59,7 @@ const sessions = new Map<string, Session>();
 const orders = new Map<string, Order>();
 
 /** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
-// 写成断言而不是类型标注：initSessionStore 接上之前没有赋值点，标注会让 TS 把它收窄成 null
-let pgBackend = null as PgBackend | null;
+let pgBackend: PgBackend | null = null;
 
 const fileBackend = createFileBackend({
   varDir: VAR_DIR,
@@ -106,7 +109,29 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     }
     return;
   }
-  throw new Error('这个版本还没有接上 PG 会话存储的启动（02 plan 第 5 步），不要设 SESSION_STORE=db');
+  if (pgBackend) throw new Error('PG 会话存储已经装上了');
+  const backend = await openPgBackend({
+    ...deps,
+    sessions,
+    orders,
+    onConflict: (detail) => gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`),
+    writable: () => !tenantLockTaken(),
+  });
+  backend.install();
+  pgBackend = backend;
+  onShutdown(
+    async ({ deadline }) => {
+      const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
+      const real = undrained.filter((id) => !isDemoClassId(id));
+      if (real.length) {
+        console.error(
+          `[store] drain 段结束时还有 ${real.length} 个会话没落库（${real.map((id) => shortIdOf(id)).join('、')}），退出时写进 spill`,
+        );
+      }
+    },
+    { phase: 'drain' },
+  );
+  onShutdown(() => backend.close(), { phase: 'late' });
 }
 
 /** 等这个会话当前的改动落库（db）或落盘（file）。超时以 StoreLaggingError reject，改动仍在写队列里 */
