@@ -21,7 +21,7 @@ import {
 } from '../db/repo/conversations.js';
 import { cancelPendingJobs, enqueueJob, setJobStatus, type JobKind, type JobStatus } from '../db/repo/jobs.js';
 import { insertMessages, readMessagesFrom, readRecentCustomerMsgids, readWindowMessages } from '../db/repo/messages.js';
-import { readLiveOrders, upsertOrders } from '../db/repo/orders.js';
+import { readLiveOrders, readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
 import { insertOutboundSends, type OutboundSendRow } from '../db/repo/outbound.js';
 import { insertGuardEvents, insertTurnTraces, type GuardEventRow, type TurnTraceRow } from '../db/repo/traces.js';
 import { shortIdOf } from '../shared/conversation.js';
@@ -92,9 +92,16 @@ export interface TelemetryRows {
 
 // ---------------- spill 文件 ----------------
 
+/** spill 里的订单：normalizeForStore 之后的原始对象与作废信息，不在 spill 时投影（投影失败的订单正是 poisoned 的原因），回放时再投影 */
 interface SpillOrder {
   order: Record<string, unknown>;
   voided: { at: number; reason: 'reset' | 'resync' } | null;
+}
+/** 记了作废、还没落库的订单：原始对象（订单已移出内存）与作废的时间、原因，取快照时才投影 */
+interface VoidedOrder {
+  order: Record<string, unknown>;
+  at: number;
+  reason: 'reset' | 'resync';
 }
 interface SpillSideRows {
   audits: AuditItem[];
@@ -167,12 +174,14 @@ interface Entry {
   since: number | null;
   sinceNext: number | null;
   inflight: Snap | null;
+  /** 已经排了一个 microtask 去起落库：同一段同步代码里的改动合进同一个快照 */
+  kickQueued: boolean;
   attempts: number;
   timer: NodeJS.Timeout | null;
   /** 数据类错误停写的原因（SQLSTATE 与约束名、window_corrupt、projection） */
   poisoned: string | null;
   orderIds: Set<string>;
-  voids: Map<string, OrderRowShape>;
+  voids: Map<string, VoidedOrder>;
   audits: AuditItem[];
   jobs: JobOp[];
   consents: ConsentItem[];
@@ -195,6 +204,11 @@ export interface PgBackendDeps {
   writable(): boolean;
   /** 每次提交之后调（store.ts 接旧 /api/admin/stream 的 change，只在提交之后发，不变量 10） */
   afterCommit?(): void;
+  /**
+   * 这些会话名下的订单已经在库里了：收养的孤儿订单随会话提交了，或者 JSON 读进来的副本库里已有（作废的也算）。
+   * store.ts 接 fileBackend.markChanged，让 orders.json 去掉它们
+   */
+  ordersTaken?(sessionIds: readonly string[]): void;
 }
 
 export interface PgStoreStats {
@@ -204,6 +218,8 @@ export interface PgStoreStats {
   /** COMMIT 时断线、重试时按 flush_id 认出上一次其实提交了 */
   recognized: number;
   retries: number;
+  /** 最近一次排重试用的退避（毫秒），没排过为 0 */
+  lastRetryDelayMs: number;
   slowTx: number;
   /** 存档点里写失败、丢掉的 trace / 护栏事件 / 账本批次 */
   telemetryDropped: number;
@@ -219,6 +235,8 @@ export interface PgBackend extends StoreBackend {
   install(): void;
   /** saveSession 之前：map 里有同 id 的另一个对象就拒绝（日志一行、不落库），不变量 3 */
   accepts(s: Session): boolean;
+  /** 收养了、还没随会话在库里提交过一次的孤儿订单：这段时间里仍归文件后端，orders.json 照写（崩溃不丢） */
+  adoptedUncommitted(orderId: string): boolean;
   /** deleteOrdersOfSession：订单记作废（voided_at、void_reason），调用方随后把它移出内存 */
   voidOrder(o: Order, reason: 'reset' | 'resync'): void;
   queueAudit(sessionId: string, item: AuditItem): void;
@@ -274,11 +292,17 @@ interface Preloaded {
   orders: Order[];
   seqs: Map<string, ConversationSeqs>;
   msgids: Map<string, Set<string>>;
+  /** orders.json 读进来、所属会话是预载的那些订单：库里已有（作废的也算）的 id，与库里没有的 id */
+  jsonInDb: string[];
+  jsonAdopt: string[];
 }
 
-/** 分批预载全部真实会话、窗口内的消息、未作废订单与 7 天 msgid 集合，并逐批校验（R2）。整个预载一个只读的长事务 */
+/**
+ * 分批预载全部真实会话、窗口内的消息、未作废订单与 7 天 msgid 集合，并逐批校验（R2）；最后按 id 查 orders.json 读进来的、
+ * 所属会话是预载的那些订单在不在库里（作废的也查）。整个预载一个只读的长事务
+ */
 async function preload(d: PgBackendDeps): Promise<Preloaded> {
-  const out: Preloaded = { sessions: [], orders: [], seqs: new Map(), msgids: new Map() };
+  const out: Preloaded = { sessions: [], orders: [], seqs: new Map(), msgids: new Map(), jsonInDb: [], jsonAdopt: [] };
   const since = new Date(Date.now() - MSGID_WINDOW_MS);
   try {
     await withTenant(
@@ -328,6 +352,12 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
           }
           after = rows.at(-1)!.id;
           if (rows.length < PRELOAD_BATCH) break;
+        }
+        const json: string[] = [];
+        for (const [id, o] of d.orders) if (typeof id === 'string' && out.seqs.has(o.sessionId)) json.push(id);
+        if (json.length) {
+          const inDb = new Set(await readOrderIdsIn(tx, json));
+          for (const id of json) (inDb.has(id) ? out.jsonInDb : out.jsonAdopt).push(id);
         }
       },
       { isolation: 'repeatable read', readOnly: true, longRunning: true },
@@ -383,25 +413,30 @@ const spillOrderRow = (o: SpillOrder): OrderRowShape => orderToRow(o.order as un
  * 库里的 last_seq 等于「已提交到第几条」→ 按一次落库写入；已经等于文件里最后一条的 seq 且内容一致 → 跳过；其余接不上
  */
 async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skipped' | 'conflict'> {
-  const row = await lockConversation(tx, entry.id);
-  if (row && row.flushId === entry.flushId) return row.lastSeq === entry.lastSeq ? 'skipped' : 'conflict';
+  let row = await lockConversation(tx, entry.id);
   let base: number;
   let side: SpillSideRows;
-  if (entry.inflight && row && row.flushId === entry.inflight.flushId && row.lastSeq === entry.inflight.lastSeq) {
-    base = entry.inflight.lastSeq;
-    side = rowSide(entry);
-  } else if ((row?.lastSeq ?? 0) === entry.committedSeq && (row !== null || entry.committedSeq === 0)) {
-    base = entry.committedSeq;
-    side = entry.inflight ? rowSide(entry.inflight, entry) : rowSide(entry);
-  } else if (row && row.lastSeq === entry.lastSeq && entry.messages.length) {
-    const inDb = await readMessagesFrom(tx, entry.id, entry.messages[0]!.seq);
-    const want = entry.messages.map((m) => rowToMessage(messageToRow(m.message, m.seq)));
-    return isDeepStrictEqual(inDb.map(rowToMessage), want) ? 'skipped' : 'conflict';
-  } else {
-    return 'conflict';
+  for (;;) {
+    if (row && row.flushId === entry.flushId) return row.lastSeq === entry.lastSeq ? 'skipped' : 'conflict';
+    if (entry.inflight && row && row.flushId === entry.inflight.flushId && row.lastSeq === entry.inflight.lastSeq) {
+      base = entry.inflight.lastSeq;
+      side = rowSide(entry);
+    } else if ((row?.lastSeq ?? 0) === entry.committedSeq && (row !== null || entry.committedSeq === 0)) {
+      base = entry.committedSeq;
+      side = entry.inflight ? rowSide(entry.inflight, entry) : rowSide(entry);
+    } else if (row && row.lastSeq === entry.lastSeq && entry.messages.length) {
+      const inDb = await readMessagesFrom(tx, entry.id, entry.messages[0]!.seq);
+      const want = entry.messages.map((m) => rowToMessage(messageToRow(m.message, m.seq)));
+      return isDeepStrictEqual(inDb.map(rowToMessage), want) ? 'skipped' : 'conflict';
+    } else {
+      return 'conflict';
+    }
+    if (row || (await insertConversation(tx, conversationValuesFrom(entry.state, entry.lastCustomerAt)))) break;
+    // 插入撞上别的事务刚提交的同一行（上一个进程还没完成的 COMMIT）：插入等到它提交才返回，这时再锁一次就看得见，按库里的行重新判定
+    row = await lockConversation(tx, entry.id);
+    if (!row) return 'conflict';
   }
   const values = conversationValuesFrom(entry.state, entry.lastCustomerAt);
-  if (!row) await insertConversation(tx, values);
   await insertMessages(
     tx,
     entry.id,
@@ -413,52 +448,89 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skip
   return 'applied';
 }
 
+/** 文件系统错误与其余意外错误的标签：只有错误名与 errno 码，不带路径与 message */
+const fsLabel = (e: unknown): string => {
+  const code = (e as NodeJS.ErrnoException | null)?.code;
+  const name = e instanceof Error ? e.name : 'unknown';
+  return code ? `${name}/${code}` : name;
+};
+
 /**
  * 按时间顺序回放 var/ 下的 spill 文件。接不上以 spill_conflict 拒绝启动（文件留着）；某条回放仍然失败（数据类错误）就把
- * 文件改名 .failed、记一行，从库里的状态起；全部成功就删掉文件。返回回放与跳过的会话数
+ * 文件改名 .failed、记一行（点名已回放与失败的会话，要人工处理），从库里的状态起；全部成功就删掉文件。
+ * 读不出来或结构不对（version、sessions）的文件同样改名 .failed。文件系统出错与其余意外错误以 spill_conflict 拒绝启动，
+ * detail 只写文件名与错误码。返回回放与跳过的会话数
  */
 async function replaySpills(d: PgBackendDeps): Promise<{ applied: number; skipped: number }> {
   let names: string[];
   try {
     names = fs.readdirSync(d.varDir).filter((f) => SPILL_RE.test(f));
-  } catch {
-    return { applied: 0, skipped: 0 };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0 };
+    throw new SessionStoreStartupError('spill_conflict', `读不了数据目录里的 spill 文件（${fsLabel(e)}）`);
   }
   let applied = 0;
   let skipped = 0;
   for (const name of names.toSorted()) {
-    const file = path.join(d.varDir, name);
-    let doc: SpillDoc;
     try {
-      doc = JSON.parse(fs.readFileSync(file, 'utf8')) as SpillDoc;
-    } catch {
-      fs.renameSync(file, `${file}.failed`);
-      console.error(`[store] spill 文件 ${name} 读不出来，已改名 .failed，从库里的状态起`);
+      const r = await replayFile(d, name);
+      applied += r.applied;
+      skipped += r.skipped;
+    } catch (e) {
+      if (e instanceof SessionStoreStartupError) throw e;
+      throw new SessionStoreStartupError('spill_conflict', `${name}：${fsLabel(e)}`);
+    }
+  }
+  return { applied, skipped };
+}
+
+async function replayFile(d: PgBackendDeps, name: string): Promise<{ applied: number; skipped: number }> {
+  const file = path.join(d.varDir, name);
+  const raw = fs.readFileSync(file, 'utf8');
+  let doc: SpillDoc | null = null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<SpillDoc> | null;
+    if (parsed && typeof parsed === 'object' && parsed.version === 1 && Array.isArray(parsed.sessions)) doc = parsed as SpillDoc;
+  } catch {
+    doc = null;
+  }
+  if (!doc) {
+    fs.renameSync(file, `${file}.failed`);
+    console.error(
+      `[store] spill 文件 ${name} 读不出来（不是 JSON，或 version、sessions 对不上），已改名 .failed，从库里的状态起；需要人工处理`,
+    );
+    return { applied: 0, skipped: 0 };
+  }
+  if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
+  let applied = 0;
+  let skipped = 0;
+  const done: string[] = [];
+  const failed: string[] = [];
+  for (const entry of doc.sessions) {
+    let r: 'applied' | 'skipped' | 'conflict';
+    try {
+      r = await detached(() => withTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
+    } catch (e) {
+      if (classify(e) === 'retry') throw new SessionStoreStartupError('db_unreachable', `回放 ${name} 时连不上库（${errLabel(e)}）`);
+      failed.push(`${short(entry.id)}（${errLabel(e)}）`);
+      console.error(`[store] 回放 ${name} 里的会话 ${short(entry.id)} 失败（${errLabel(e)}）`);
       continue;
     }
-    if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
-    let failed = false;
-    for (const entry of doc.sessions) {
-      let r: 'applied' | 'skipped' | 'conflict';
-      try {
-        r = await detached(() => withTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
-      } catch (e) {
-        if (classify(e) === 'retry') throw new SessionStoreStartupError('db_unreachable', `回放 ${name} 时连不上库（${errLabel(e)}）`);
-        failed = true;
-        console.error(`[store] 回放 ${name} 里的会话 ${short(entry.id)} 失败（${errLabel(e)}）`);
-        continue;
-      }
-      if (r === 'conflict') {
-        throw new SessionStoreStartupError('spill_conflict', `${name} 里的会话 ${short(entry.id)} 接不上库里的 last_seq`);
-      }
-      if (r === 'applied') applied++;
-      else skipped++;
+    if (r === 'conflict') {
+      throw new SessionStoreStartupError('spill_conflict', `${name} 里的会话 ${short(entry.id)} 接不上库里的 last_seq`);
     }
-    if (failed) {
-      fs.renameSync(file, `${file}.failed`);
-      console.error(`[store] spill 文件 ${name} 有会话回放失败，已改名 .failed，从库里的状态起（修好原因后改回原名再启动）`);
-    } else fs.unlinkSync(file);
+    done.push(short(entry.id));
+    if (r === 'applied') applied++;
+    else skipped++;
   }
+  if (failed.length) {
+    fs.renameSync(file, `${file}.failed`);
+    // 不能叫人改回原名重启：已回放的会话之后再写过库，flush_id 与 last_seq 就和文件对不上，改回原名必然 spill_conflict
+    console.error(
+      `[store] spill 文件 ${name} 有会话回放失败，已改名 .failed，从库里的状态起；需要人工处理，不要直接改回原名重启。` +
+        `已回放：${done.join('、') || '无'}；失败：${failed.join('、')}`,
+    );
+  } else fs.unlinkSync(file);
   return { applied, skipped };
 }
 
@@ -478,6 +550,10 @@ export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
 function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: number; skipped: number }): PgBackend {
   const ctx = systemCtx(d.tenantId);
   const entries = new Map<string, Entry>();
+  /** 收养了、还没随会话在库里提交过一次的孤儿订单 id：提交之前仍归文件后端（orders.json 照写），提交之后 ordersTaken */
+  const adopted = new Set<string>();
+  /** 本进程记了作废的订单 id：作废的订单不再进写队列，upsert 不会把 voided_at 写回 NULL */
+  const voidedIds = new Set<string>();
   let conflict = false;
   let closed = false;
   let lastError: string | null = null;
@@ -486,6 +562,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     commits: 0,
     recognized: 0,
     retries: 0,
+    lastRetryDelayMs: 0,
     slowTx: 0,
     telemetryDropped: 0,
     foreign: 0,
@@ -505,6 +582,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     since: null,
     sinceNext: null,
     inflight: null,
+    kickQueued: false,
     attempts: 0,
     timer: null,
     poisoned: null,
@@ -519,17 +597,26 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     msgids,
   });
 
-  /** 这个会话的写队列。不是预载来的：新建的会话（seq 从 1 起），或第 6 步之前 JSON 里读来的真实会话——窗口整段都还没提交 */
+  /**
+   * 这个会话的写队列。不是预载来的就是新建的会话（seq 从 1 起；JSON 里的真实会话在启动时以 real_in_json 拒绝）。
+   * 窗口里已有 seq 的消息仍整段算没提交（防御：不会只写尾巴留下空洞）
+   */
   function entryOf(s: Session): Entry {
     let e = entries.get(s.id);
     if (!e) {
       e = newEntry(s, false, 0, new Set());
       for (const m of Array.isArray(s.messages) ? s.messages : []) if (m && seqOf(m) !== undefined) e.pending.push(m);
-      // 孤儿订单（所属会话不在内存里，留在 orders.json）在同 id 的会话又建出来时转归 PG（plan 第 2 步）
-      for (const o of d.orders.values()) if (o.sessionId === s.id) e.orderIds.add(o.id);
+      // 孤儿订单（所属会话不在内存里，留在 orders.json）在同 id 的会话又建出来时转归 PG（plan 第 2 步）：
+      // 随它的第一次落库写进库；提交之前仍归文件后端，提交之后才让 orders.json 去掉它
+      for (const o of d.orders.values()) adopt(e, o);
       entries.set(s.id, e);
     }
     return e;
+  }
+  function adopt(e: Entry, o: Order): void {
+    if (o.sessionId !== e.id || voidedIds.has(o.id)) return;
+    e.orderIds.add(o.id);
+    adopted.add(o.id);
   }
   const entryById = (id: string): Entry | null => {
     const s = d.sessions.get(id);
@@ -537,12 +624,21 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
   };
   const isDirty = (e: Entry): boolean => e.gen !== e.committedGen;
 
+  /**
+   * 标脏，起落库推迟到 microtask：同一段同步代码里的改动（引擎重置的作废订单、清转人工、追加回复与 saveSession，
+   * 建单与 orderIds.push）合进同一个快照、同一个事务，库里不会留下半个重置
+   */
   function change(e: Entry): void {
     e.gen++;
     const now = Date.now();
     e.since ??= now;
     if (e.inflight) e.sinceNext ??= now;
-    kick(e);
+    if (e.kickQueued) return;
+    e.kickQueued = true;
+    queueMicrotask(() => {
+      e.kickQueued = false;
+      kick(e);
+    });
   }
 
   function rejectWaiters(e: Entry): void {
@@ -558,7 +654,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     rejectWaiters(e);
   }
 
-  /** 第一个 await 之前同步取好快照（第 1 步）：没提交的消息进快照即冻结，排着的附带行一起移进快照 */
+  /**
+   * 第一个 await 之前同步取好快照（第 1 步）：没提交的消息（schedule 分配 seq 时已冻结）、会话投影、排着的订单（这时才投影）
+   * 与附带行一起移进快照。投影失败就抛，排着的原样留在写队列上（随 spill 写出）
+   */
   function takeSnapshot(e: Entry): Snap {
     const s = e.session;
     for (const m of e.pending) Object.freeze(m);
@@ -569,10 +668,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     }
     const orders: OrderRowShape[] = [];
     for (const id of e.orderIds) {
-      const o = d.orders.get(id);
+      const o = voidedIds.has(id) ? undefined : d.orders.get(id);
       if (o) orders.push(orderToRow(o));
     }
-    orders.push(...e.voids.values());
+    for (const v of e.voids.values()) orders.push(orderToRow(v.order as unknown as Order, { at: v.at, reason: v.reason }));
     const snap: Snap = {
       flushId: randomUUID(),
       gen: e.gen,
@@ -599,9 +698,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     return snap;
   }
 
-  /** 排一次落库：同一会话至多一个在途，在途期间的改动合并成它提交之后的那一次 */
+  /**
+   * 排一次落库：同一会话至多一个在途，在途期间的改动合并成它提交之后的那一次。
+   * 租户锁在别的进程手里（held_by_other）时不起落库：改动留给 exit 时的 spill，免得把新的持锁进程也撞成 store_conflict
+   */
   function kick(e: Entry): void {
-    if (closed || conflict || e.poisoned || e.inflight || !isDirty(e)) return;
+    if (closed || conflict || e.poisoned || e.inflight || !isDirty(e) || !d.writable()) return;
     detached(() => {
       let snap: Snap;
       try {
@@ -621,8 +723,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     let cur = await lockConversation(tx, e.id);
     if (!cur) {
       if (e.inDb || snap.baseSeq !== 0) throw new StoreConflictError(e.id, `会话 ${short(e.id)} 的行不在库里了`);
-      await insertConversation(tx, snap.values);
-      cur = { lastSeq: 0, windowStartSeq: 1, flushId: null };
+      if (await insertConversation(tx, snap.values)) cur = { lastSeq: 0, windowStartSeq: 1, flushId: null };
+      else {
+        // 新会话第一次落库 COMMIT 时断线、服务端稍后才提交：重试时那一行还看不见（锁不到），插入在主键上等到它提交、
+        // 冲突了不报错。再锁一次就看得见，照常按 flush_id 与 last_seq 判定（多半是认出已提交）
+        cur = await lockConversation(tx, e.id);
+        if (!cur) throw new StoreConflictError(e.id, `会话 ${short(e.id)} 的行插入时冲突，锁时又不见了`);
+      }
     }
     if (cur.flushId === snap.flushId) {
       // 上一次尝试其实提交了（COMMIT 时断线）：回滚本事务，补做提交后的步骤
@@ -679,7 +786,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     } else failed(e, snap, error);
   }
 
-  /** 第 7 步之后：记下已提交到第几条，把排在这次落库上的领域事件交给订阅者，放行在等的 flush，接着排下一次 */
+  /**
+   * 第 7 步之后：记下已提交到第几条，把排在这次落库上的领域事件交给订阅者，收养的孤儿订单交还文件后端（orders.json 去掉它），
+   * 放行在等的 flush，接着排下一次
+   */
   function afterCommit(e: Entry, snap: Snap): void {
     stats.commits++;
     e.inflight = null;
@@ -690,6 +800,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     e.committedGen = snap.gen;
     e.since = isDirty(e) ? (e.sinceNext ?? Date.now()) : null;
     e.sinceNext = null;
+    let taken = false;
+    for (const r of snap.orders) if (adopted.delete(r.id)) taken = true;
+    if (taken) d.ordersTaken?.([e.id]);
     deliverCommitted(snap.events);
     d.afterCommit?.();
     for (const w of e.waiters) {
@@ -724,10 +837,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     e.attempts++;
     stats.retries++;
     const delay = RETRY_MS[Math.min(e.attempts - 1, RETRY_MS.length - 1)]!;
+    stats.lastRetryDelayMs = delay;
     console.warn(`[store] 会话 ${short(e.id)} 落库失败（${label}），第 ${e.attempts} 次，${delay / 1000} 秒后重试`);
     e.timer = setTimeout(() => {
       e.timer = null;
-      if (!closed && !conflict) detached(() => void runFlush(e, snap));
+      // 租户锁到点时已在别人手里：不再写库，这个快照留在「在途」位置给 spill
+      if (!closed && !conflict && d.writable()) detached(() => void runFlush(e, snap));
     }, delay);
     e.timer.unref();
   }
@@ -758,22 +873,24 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     });
   }
 
+  /** spill 里的一个会话：消息、投影、订单都存 normalizeForStore 之后的原始对象，不在这里投影（回放时才投影） */
   function spillEntryOf(e: Entry): SpillEntry {
     const s = e.session;
     const inf = e.inflight;
     const orders = new Map<string, SpillOrder>();
-    const put = (r: OrderRowShape): void => {
-      orders.set(r.id, { order: r.data, voided: r.voidedAt ? { at: r.voidedAt.getTime(), reason: r.voidReason ?? 'reset' } : null });
-    };
+    const live = (o: Order): SpillOrder => ({ order: normalizeForStore(o) as unknown as Record<string, unknown>, voided: null });
     for (const r of inf?.orders ?? []) {
-      const live = r.voidedAt ? undefined : d.orders.get(r.id);
-      put(live ? orderToRow(live) : r);
+      const now = r.voidedAt || voidedIds.has(r.id) ? undefined : d.orders.get(r.id);
+      orders.set(
+        r.id,
+        now ? live(now) : { order: r.data, voided: r.voidedAt ? { at: r.voidedAt.getTime(), reason: r.voidReason ?? 'reset' } : null },
+      );
     }
     for (const id of e.orderIds) {
-      const o = d.orders.get(id);
-      if (o) put(orderToRow(o));
+      const o = voidedIds.has(id) ? undefined : d.orders.get(id);
+      if (o) orders.set(id, live(o));
     }
-    for (const r of e.voids.values()) put(r);
+    for (const [id, v] of e.voids) orders.set(id, { order: v.order, voided: { at: v.at, reason: v.reason } });
     return {
       id: e.id,
       committedSeq: e.committedSeq,
@@ -800,7 +917,23 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
         d.sessions.set(s.id, s);
         entries.set(s.id, newEntry(s, true, seqs.lastSeq, pre.msgids.get(s.id) ?? new Set()));
       }
+      // orders.json 读进来、所属会话是预载的订单：库里已有的（作废的也算）以库为准，删掉 JSON 副本、让 orders.json 去掉它
+      // （作废的不会复活）；库里没有的挂到这个会话的写队列上，提交之前仍归文件后端
+      const taken = new Set<string>();
+      for (const id of pre.jsonInDb) {
+        const o = d.orders.get(id);
+        if (o) taken.add(o.sessionId);
+        d.orders.delete(id);
+      }
       for (const o of pre.orders) d.orders.set(o.id, o);
+      for (const id of pre.jsonAdopt) {
+        const o = d.orders.get(id);
+        const e = o ? entries.get(o.sessionId) : undefined;
+        if (!o || !e) continue;
+        adopt(e, o);
+        change(e);
+      }
+      if (taken.size) d.ordersTaken?.([...taken]);
     },
     accepts(s) {
       const cur = d.sessions.get(s.id);
@@ -809,6 +942,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       console.warn(`[store] 会话 ${short(s.id)}：saveSession 收到同 id 的另一个对象，不落库（db 存储下 identity map 里的对象是唯一的）`);
       return false;
     },
+    adoptedUncommitted: (orderId) => adopted.has(orderId),
     schedule(s) {
       const e = entryOf(s);
       let fresh: ChatMessage[];
@@ -824,13 +958,17 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
         }
       }
       e.pending.push(...fresh);
-      for (const m of fresh) if (m.role === 'customer' && typeof m.msgid === 'string') e.msgids.add(m.msgid);
+      for (const m of fresh) {
+        // 分配了 seq 就冻结：起落库推迟到 microtask，冻结不能等到取快照，否则「saveSession 之后再改」是否进库要看时机
+        Object.freeze(m);
+        if (m.role === 'customer' && typeof m.msgid === 'string') e.msgids.add(m.msgid);
+      }
       change(e);
     },
     scheduleOrder(orderId) {
       const o = d.orders.get(orderId);
       const e = o ? entryById(o.sessionId) : null;
-      if (!o || !e) return;
+      if (!o || !e || voidedIds.has(orderId)) return;
       e.orderIds.add(orderId);
       change(e);
     },
@@ -838,11 +976,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       const e = entryById(o.sessionId);
       if (!e) return;
       e.orderIds.delete(o.id);
-      try {
-        e.voids.set(o.id, orderToRow(o, { at: Date.now(), reason }));
-      } catch (err) {
-        poison(e, errLabel(err));
-      }
+      voidedIds.add(o.id);
+      // 存原始对象（订单随后移出内存），取快照时才投影：投影失败只让会话 poisoned，作废照样随 spill 写出
+      e.voids.set(o.id, { order: normalizeForStore(o) as unknown as Record<string, unknown>, at: Date.now(), reason });
       change(e);
     },
     emitAfterCommit(sessionId, ev) {

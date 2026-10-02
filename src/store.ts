@@ -66,8 +66,9 @@ const fileBackend = createFileBackend({
   sessions,
   orders,
   owns: (id) => !pgBackend || isDemoClassId(id),
-  // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）
-  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId),
+  // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
+  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
+  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id),
   isReal: (id) => !isDemoClassId(id),
   afterPersist: () => storeEvents.emit('change'),
 });
@@ -110,8 +111,9 @@ export interface SessionStoreDeps {
  * deps 为 null（文件存储）：var/ 下有标记文件时以 sessions_in_db reject，否则立即 resolve。
  * deps 不为 null（db 存储）：分批预载真实会话与订单（R2）→ 校验（每个会话的 last_seq 与窗口一致、订单引用的会话都在、
  * 库里没有 demo 类）→ 回放 spill 文件 → 装上 PG 后端 → 登记 drain 与 late 两段停机钩子。
+ * 预载之前先查 JSON：sessions.json 里有真实会话（不是 demo 类）就以 real_in_json reject、JSON 原样不动（db 存储下 JSON
+ * 只装 demo 类，R6；不拒绝的话，没碰过的真实会话会在下一次 demo 落盘时从 sessions.json 消失，库里也没有）。
  * 任何一步失败都以 SessionStoreStartupError reject，不留半装载状态，绝不回落到文件存储。
- * （JSON 里有真实会话时的 real_in_json 拒绝在第 6 步加）
  */
 export async function initSessionStore(deps: SessionStoreDeps | null): Promise<void> {
   if (deps === null) {
@@ -123,7 +125,17 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     }
     return;
   }
-  if (pgBackend) throw new Error('PG 会话存储已经装上了');
+  // 装过一次再调：会话已经由库管着（只可能是调用方调了两次，自测与 eval 才会碰到）
+  if (pgBackend) throw new SessionStoreStartupError('sessions_in_db', 'PG 会话存储已经装上了，initSessionStore 只能调一次');
+  const real = [...sessions.keys()].filter((id) => !isDemoClassId(id));
+  if (real.length) {
+    const shown = real.slice(0, 5).map((id) => shortIdOf(id) || '?');
+    throw new SessionStoreStartupError(
+      'real_in_json',
+      `sessions.json 里有 ${real.length} 个真实会话（${shown.join('、')}${real.length > shown.length ? ' 等' : ''}）：` +
+        'db 存储下 JSON 只装 demo 类，先跑 import-sessions 把它们导进库',
+    );
+  }
   const backend = await openPgBackend({
     ...deps,
     sessions,
@@ -131,6 +143,7 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     onConflict: (detail) => gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`),
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
+    ordersTaken: (ids) => fileBackend.markChanged(ids),
   });
   backend.install();
   pgBackend = backend;
