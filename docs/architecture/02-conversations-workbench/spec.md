@@ -4,9 +4,10 @@ Status: draft
 Phase: 2 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」
 Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（implemented：`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、`CONFIG_SOURCE`、后台子应用与鉴权）；[后台 UX 重做](../../features/console-ux/spec.md)（implemented：设计系统、`conversationState`、counts、外壳与铃铛，以及「依赖 02 的后端」移交清单）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)、[ADR-002](../../adr/adr-002-console-vite-react.md)、[ADR-004](../../adr/adr-004-pack-field-rendering.md)
 Amends: 01 的「两种模式与启动装载」（`SESSION_STORE` 的校验、条目版本的启动补写、`/healthz` 的新字段）、「数据库」（新表、`tenants` 三个保留期列、`catalog_items.version`）、「withTenant」（新选项 `longRunning`、`inTenantTx()`）、「产品库 · 编辑规则」（按 01 裁决 R8 与开放问题 5 的推迟条款，`LOCKED_WHEN_ACTIVE` 去掉五个计价与条款字段）、「审计」（新动作、`writeAuditAs`）、「后台 API 与页面」（新接口）；后台 UX spec 的「接口改动」（`CONVERSATION_STATES` 加 `assigned`、`ConversationRow` 新字段、`ConversationCounts.byState` 新键、`AUDIT_ACTIONS` 新动作）。只做新增，或执行 01、UX spec 自己写明「由 02 定 / 02 之后」的条款；改写已实现条款的几处不走 Amends，见下一行
-Supersedes in part: [01](../01-pg-config-console/spec.md) 的不变量 4；[后台 UX 重做](../../features/console-ux/spec.md) 的不变量 27 最后一句、「外壳」铃铛新标签打开 `admin.html#s=<id>` 与计数的 30 秒轮询、「会话列表（I 页）」的状态句「接手和回复目前在工作台里完成」与新标签打开 `/admin.html`、验收 20（开放问题 1，owner 2026-10-02 选 A「部分取代」）。原因：db 存储下一轮里的 `saveSession` 要排出落库，01 不变量 4 只在读路径上还成立；J 页的详情接口要给成员看消息正文；UX spec 里这几处「今天 / 目前」是 J 页与 SSE 到位之前的过渡写法，本阶段交付了它们。改成什么逐条见「与 01、后台 UX spec 的关系」
+Supersedes in part: [01](../01-pg-config-console/spec.md) 的不变量 4；[后台 UX 重做](../../features/console-ux/spec.md) 的不变量 27 最后一句、「外壳」铃铛新标签打开 `admin.html#s=<id>` 与计数的 30 秒轮询、「会话列表（I 页）」的状态句「接手和回复目前在工作台里完成」与新标签打开 `/admin.html`、验收 20 的「点一行，新标签页打开工作台并选中该会话」与同条 `ADMIN_PASS` 那一句（开放问题 1，owner 2026-10-02 选 A「部分取代」）。原因：db 存储下一轮里的 `saveSession` 要排出落库，01 不变量 4 只在读路径上还成立（本 spec 不变量 9）；J 页的详情接口要给成员看消息正文；UX spec 里这几处「今天 / 目前」是 J 页与 SSE 到位之前的过渡写法，本阶段交付了它们，点一行进的是 console 的 J 页，不再经过 `ADMIN_PASS` 登录。改成什么逐条见「与 01、后台 UX spec 的关系」
 Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整性与运维、安全隐私与 spec 质量）后就地修订（draft，尚无代码依赖），同日加入 owner 定的「可观测性与告警」（R24）。主要改动：store 的导入期行为改为与存储模式无关，信号与停机钩子搬进 `src/shutdown.ts`，停机分 normal、drain、late 三段，排不空的改动写进 spill 文件（原为「db 存储下导入期什么都不做」「普通阶段排空，至多丢在途的一次」）；seq 改在 `saveSession` 时同步分配（原为提交时分配，发送账本、`reply` 拿不到）；确定性错误不再重试，会话标成 poisoned 并告警（原为一律退避重试）；切换加标记文件 `var/sessions-in-db.json` 与 `import-sessions --resync`（原为导出之后切不回去）；企微 msgid 去重分三种情况（原为「查到就当已处理」，会吞掉已入库未回复的重放）；`messages.msgid` 不建唯一索引；预载、导入、导出按批读写并放宽语句超时；清除函数改看 `agent_app` 改不了的数据（`updated_at` 只进不退、`paid_at` 写一次），清除时抹掉订单里的客户标识，审计不存会话 id；新增平台的行权删除与撤回同意（R23）；旧 `/handoff` 不设接手人，旧写接口在 prod 由新开关关掉（标记已付除外），匿名的旧读接口去掉成员身份；共享契约的类型挪进 `src/shared/`；`/api/orders/:id` 改为白名单投影；已付会话转人工保留终态并单列提醒（开放问题 12）；`?v=` 与隐私说明改从内存读；用量改挂在 `recordUsage` 上；跟进受 `FOLLOWUP_ENABLED` 控制、加 `sending` 状态；回滚检查加条目版本；改正「锁定断言要求链接后紧跟换行」的错误引用；开放问题按「什么时候定、没答复怎么办」重排，新增 12–14。
 Revisions: 2026-10-02 owner 定下开放问题 1–14：1 选 A（「部分取代」，规则写进 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部各加 `Superseded in part by:`），2–14 照推荐（6、12 选 A）。各条就地标「已定」，选项与理由保留。随之改写（行为、接口、数据形状不变）：顶部加 `Supersedes in part:`，`Amends:` 末句改指它（原为「怎么落见开放问题 1」）；「前置条件」的答复规则改为「已全部定下」（原为 1、6、12 开工前必须答复，4、3 没答复就停在第 11.1、14 步，5、8、9、2、7、14 没答复按推荐先做，10、11、13 接真实租户之前定）；非目标、承接表、R9、R13、R15、R20、环境变量表、`negativeLevel` 注释、外部通道、保留期 DDL 注释、同意流程、外部拨测、OpenTelemetry 原文开关、「与 01、后台 UX spec 的关系」、验收 12、15、35 与被否决的方案里「由开放问题 N 定 / 推荐 / 选定的那个」的写法换成定下的结论
+Revisions: 2026-10-02 评审之后再改两处。一、不变量 9 补上前半句「DB 模式下，处理一轮对话的读路径不发出数据库查询……会话与 trace 的写入只经这个会话的写队列」，「测试与 CI」的 store 自测随之加一项：「与 01、后台 UX spec 的关系」原已写明 01 不变量 4 改写后落在本 spec 不变量 9，不变量本身却漏了读路径，`SESSION_STORE=db` 下没有一条不变量守住它。二、对 UX 验收 20 的取代范围，本 spec 与 UX spec 顶部写成同一个：取代「点一行，新标签页打开工作台并选中该会话」与同条 `ADMIN_PASS` 那一句，其余照旧（原为本 spec 写整条、UX 顶部只写前一句）。01 顶部随之改指「与 01、后台 UX spec 的关系」，不再写「02 不变量 9」
 
 ## 背景与问题
 
@@ -1261,7 +1262,7 @@ src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>
 
 - `src/selftest-env.ts` 把 `SESSION_STORE` 钉成 `file`（与它钉 profile 的做法相同）；锁定的 7 组自测、文件模式 eval 与其余进程内套件因此都跑文件存储，断言一条不改。以子进程跑的锁定断言靠「导入期行为与模式无关」（R3）。
 - 新增套件，串进 `test`，每组先设临时 `VAR_DIR` 再动态 import：
-  - `src/store/store.selftest.ts`：PGlite 部分（seq 分配与 `WindowCorruptError`、预载往返、写队列顺序与合并、冻结、窗口推进、重置作废、冲突退出、COMMIT 断线后认出已提交、数据类错误标 poisoned 而别的会话照常、NUL 与切开的 emoji 不堵队列、存档点里的 trace 写失败不影响会话、事件只在提交后、`chat()` 在 `withTenant` 里调用即断言失败、在 `withTenant` 回调里 `saveSession` 照常落库、三段停机与 spill 写出和回放、清理与新消息竞争、标记文件的两个拒绝、导入往返与 `--resync`）；真实 Postgres 部分，有 `PG_TEST_URL` 才跑（新表的 RLS 与授权逐格、触发器拒绝倒退 `updated_at` 与改 `paid_at`、清除函数拒删未到期数据、不在 `withTenant` 里调用报错、`agent_app` 对消息的 UPDATE / DELETE / TRUNCATE 报 permission denied、以子进程跑 `import-sessions` / `export-sessions` / `erase-conversation` 断言退出码）。
+  - `src/store/store.selftest.ts`：PGlite 部分（seq 分配与 `WindowCorruptError`、预载往返、写队列顺序与合并、冻结、窗口推进、重置作废、冲突退出、COMMIT 断线后认出已提交、数据类错误标 poisoned 而别的会话照常、NUL 与切开的 emoji 不堵队列、存档点里的 trace 写失败不影响会话、事件只在提交后、`chat()` 在 `withTenant` 里调用即断言失败、在 `withTenant` 回调里 `saveSession` 照常落库、连接池计数下一轮除写队列的落库外不发查询、三段停机与 spill 写出和回放、清理与新消息竞争、标记文件的两个拒绝、导入往返与 `--resync`）；真实 Postgres 部分，有 `PG_TEST_URL` 才跑（新表的 RLS 与授权逐格、触发器拒绝倒退 `updated_at` 与改 `paid_at`、清除函数拒删未到期数据、不在 `withTenant` 里调用报错、`agent_app` 对消息的 UPDATE / DELETE / TRUNCATE 报 permission denied、以子进程跑 `import-sessions` / `export-sessions` / `erase-conversation` 断言退出码）。
   - `src/store/parity.selftest.ts`：同一组场景（含 E5「生成中接管」、模型返回后推送前接管、生成中付款、重置、裁剪、重放、跟进、转人工各入口）分别跑在文件存储与 PG 存储上，会话 id 用非 demo 类的 `wecom:parity-*`，比较回复文本、会话投影与订单，并断言 PG 里确实有这些会话。
   - `src/handoff/handoff.selftest.ts`：三类触发与撤回同意的向量表（命中与不命中各一组）、四种状态、接手状态机（并发接手、自动接手、别人接手中 409、坐席带 force 403、交还恢复阶段、终态会话转人工保留终态、接手代次）、重置清掉接手人与计数、历史里的「【顾问】」与出口去前缀、敏感信息类别。
   - `src/jobs/jobs.selftest.ts`：跟进的排程、取消、`FOLLOWUP_ENABLED` 关时不排、最多发一次（`sending` 之后「崩溃」不重发、之前「崩溃」重来）、过护栏、拒绝识别；通知任务；清理任务；启动时 `running` 的各类任务的去向。
@@ -1373,7 +1374,7 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 - **改写了已 implemented 的条款**（不是新增，amendment 管不到；开放问题 1 定为「部分取代」，本 spec 顶部 `Supersedes in part:` 点名这几处）：
   - 01 不变量 4「DB 模式下，处理一轮对话不发出任何数据库查询」：`SESSION_STORE=db` 时一轮里的 `saveSession` 会排出落库（在写队列里、与 `chat()` 并行）。改写为「DB 模式下，一轮的读路径不查库；会话写入只经写队列，落库事务里不调模型」（本 spec 不变量 9）。`SESSION_STORE=file` 时原文照旧成立。
   - UX 不变量 27 的最后一句「会话接口的响应里没有客户画像字段和消息正文」：J 页的详情接口要给成员看消息正文和需求要素。改写为「会话列表与计数接口的响应里没有客户画像字段和消息正文（`needSummary` 只用规范化的取值）；详情接口只给成员，只读成员看到的正文打码」。
-  - UX spec 会话列表与外壳里「今天 / 目前」的条款（新标签打开 `admin.html#s=`、状态句「接手和回复目前在工作台里完成」、铃铛 30 秒轮询）换成同一 spec 里已经设计好的 J 页与 SSE；UX 验收 20 因此在 02 之后按「在当前标签打开 J 页并选中该会话」验证。
+  - UX spec 会话列表与外壳里「今天 / 目前」的条款（新标签打开 `admin.html#s=`、状态句「接手和回复目前在工作台里完成」、铃铛 30 秒轮询）换成同一 spec 里已经设计好的 J 页与 SSE。UX 验收 20 的「点一行，新标签页打开工作台并选中该会话」因此在 02 之后按「在当前标签打开 J 页并选中该会话」验证；同条「带 `ADMIN_PASS` 时，对一个真实会话再走一次：登录框走完后仍然选中」不再适用（点一行进的是 console 的 J 页，不经过 `ADMIN_PASS` 登录；`admin.html` 自己的深链照旧，见 R11）；同条其余部分照旧。
 - 01 与 UX spec 顶部已各加一行 `Superseded in part by:`（2026-10-02），列出上面这几处，正文不动；`Amended by:` 在开工时（plan 第 1 步）加，同时把 UX plan「Open」里交接卡措辞那一条标为由本 spec 解决。
 
 ## 不变量
@@ -1390,7 +1391,7 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 6. 保留期内的会话、消息、trace，`agent_app` 删不掉：清除函数只删已过保留期的行，判断依据的 `updated_at` 只进不退、`paid_at` 写一次不改；只有平台身份经 `erase_conversation` 能删保留期内的。
 7. db 存储下进过落库快照的消息对象是 frozen 的，任何字段写入都抛 `TypeError`；真实会话的数组错位在下一次 `saveSession` 时被查出。
 8. 同一会话的落库按 `saveSession` 的发生顺序生效，任何时刻至多一个在途；`saveSession` 返回时新消息已有 seq。
-9. 落库事务的回调里不 await 任何模型调用、渠道发送或别的会话；`chat()` 被调用时当前异步上下文不在 `withTenant` 里。
+9. DB 模式下，处理一轮对话的读路径不发出数据库查询（会话、订单、产品库版本都读内存），会话与 trace 的写入只经这个会话的写队列；落库事务的回调里不 await 任何模型调用、渠道发送或别的会话；`chat()` 被调用时当前异步上下文不在 `withTenant` 里。
 10. 领域事件、SSE、`/api/admin/stream` 的 `change`、任务的排程，只在包含该改动的事务提交之后发生；提交失败时不发生。唯一的例外是带转人工的落库失败时外部通道的 `unsaved` 通知。
 11. `sim-` 与 `wecom:cust_` 开头的会话及其订单永不出现在 PG 里。
 12. 落库发现另一写者时，进程走优雅停机，不重试、不吞错；数据类错误不重试，只停这一个会话的落库并告警，其余会话照常落库。
