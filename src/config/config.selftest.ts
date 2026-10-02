@@ -3216,6 +3216,36 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
         reply.text,
       );
       check('按轮固定：下一轮新出的链接带 ?v=2', (await proposalUrlOf(code)) === `/proposal/${code}/2?v=2`, seenCalls.join());
+
+      // 链接白名单认 ?v= 后缀，而且要和这次 generate_proposal 给的一样：模型抄丢了后缀（客户点开会是版本 1 的旧价）就换成真链接；
+      // 连域名一起写的剥掉域名、留着后缀
+      const linkTurn = async (sid: string, content: string): Promise<string> => {
+        script.push({ toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }] }, { content });
+        const r = await handleMessage(sid, '北京那条线出个两个人的方案书', 'wecom');
+        if (script.length) fails.push(`「${content}」这轮没用完脚本`);
+        script.length = 0;
+        return r.text;
+      };
+      const dropped = await linkTurn('wecom:wmCFGPIN0002', `方案书在这：/proposal/${code}/2 您先看看`);
+      check(
+        '链接白名单：模型写的链接丢了 ?v=2 → 换成这次工具给的那条',
+        dropped.includes(`/proposal/${code}/2?v=2`) && !/\/proposal\/r-beijing\/2(?!\?v=2)/.test(dropped),
+        dropped,
+      );
+      const wrong = await linkTurn('wecom:wmCFGPIN0003', `方案书在这：/proposal/${code}/2?v=1 您先看看`);
+      check(
+        '链接白名单：版本后缀写错的（?v=1）同样换成真链接',
+        wrong.includes(`/proposal/${code}/2?v=2`) && !wrong.includes('?v=1'),
+        wrong,
+      );
+      const absolute = await linkTurn('wecom:wmCFGPIN0004', `方案书在这：https://www.yuntu.com/proposal/${code}/2?v=2 您先看看`);
+      check(
+        '链接白名单：完整 URL 剥掉域名，留下 ?v=2',
+        absolute.includes(`/proposal/${code}/2?v=2`) && !absolute.includes('yuntu.com'),
+        absolute,
+      );
+      const kept = await linkTurn('wecom:wmCFGPIN0005', `方案书在这：/proposal/${code}/2?v=2 您先看看`);
+      check('链接白名单：后缀对得上的链接原样留着、只出现一次', kept.split(`/proposal/${code}/2?v=2`).length === 2, kept);
     } finally {
       for (const k of keys) {
         if (saved[k] === undefined) delete process.env[k];
@@ -3223,6 +3253,49 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       }
       fake.close();
     }
+  }
+
+  // 企微卡片认 ?v=：卡片链接带着后缀、挖掉的原文也带着；不存在的版本不做卡片（原样发纯文本）
+  {
+    const { __test: wecomTest } = await import('../adapters/wecom.js');
+    const BASE = 'https://x.test';
+    const body = `方案书在这：${BASE}/proposal/r-beijing/2?v=2 您先看看`;
+    const card = wecomTest.extractCard(body, BASE);
+    check(
+      '企微卡片：带 ?v=2 的链接做成卡片，卡片链接与挖掉的原文都带后缀，剥完正文不留后缀',
+      card?.url === `${BASE}/proposal/r-beijing/2?v=2` &&
+        card.raw === `${BASE}/proposal/r-beijing/2?v=2` &&
+        !wecomTest.stripLink(body, card.raw).includes('?v='),
+      JSON.stringify(card),
+    );
+    check(
+      '企微卡片：不带 v 的照旧；版本不存在（?v=9）不做卡片',
+      wecomTest.extractCard(`${BASE}/proposal/r-beijing/2`, BASE)?.url === `${BASE}/proposal/r-beijing/2` &&
+        wecomTest.extractCard(`${BASE}/proposal/r-beijing/2?v=9`, BASE) === null,
+    );
+  }
+
+  // COMMIT 结果不明时整体重读：库里多出来的版本（提交了、内存还没加进来）也一起读进内存
+  {
+    const it = await itemRow('r-beijing');
+    const next = { ...(JSON.parse(it.payload) as Route), priceFrom: 99800 };
+    await asSuper(async () => {
+      await t.pg.query(
+        `insert into catalog_item_versions (tenant_id, kind, code, version, payload, source) values ($1, 'route', 'r-beijing', $2, $3::json, 'console')`,
+        [tenantId, it.version + 1, JSON.stringify(next)],
+      );
+      await t.pg.query(
+        `update catalog_items set payload = $3::json, version = $2 where tenant_id = $1 and kind = 'route' and code = 'r-beijing'`,
+        [tenantId, it.version + 1, JSON.stringify(next)],
+      );
+    });
+    await cfg.reloadFromDb();
+    check(
+      '重读：库里新提交的版本进了内存，新版本按新价、不带 v 的照旧',
+      cfg.currentCatalog().versions['route:r-beijing'] === it.version + 1 &&
+        (await quoteAt('r-beijing', String(it.version + 1))).total === 99800 * 2 &&
+        (await quoteAt('r-beijing')).total !== 99800 * 2,
+    );
   }
   cfg.__configTest.reset();
 }
@@ -3282,6 +3355,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变 / 配了企微凭据必须显式设置 profile）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变 / 条目版本：写入与审计、按版本渲染与 404 不查库、订单记版本、启动补写、重读、按轮固定、链接白名单与企微卡片 / 配了企微凭据必须显式设置 profile）`,
 );
 process.exit(0);
