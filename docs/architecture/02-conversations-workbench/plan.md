@@ -55,7 +55,7 @@
   - `src/db/testing.ts` 加 `installPgSessionStore()`（PGlite 上装好 db 存储，只给自测与 `eval/run.ts` 用）。
   - `store.selftest.ts` 的 PGlite 部分：spec「测试与 CI」列的那些，含模拟崩溃后重启、SIGTERM 发生在一轮中间。
   - 对应验收 4、5、6、8、28 的存储部分，以及不变量 3、4、7–10、12、13、16。
-- [ ] 6. 导入导出与切换（2.5）：
+- [x] 6. 导入导出与切换（2.5）：2026-10-02 完成，结构、本步定的九条、自测、变异与真实 PG 结果、给第 7、8、16、26 步的注意见「实施记录 · 第 6 步」。没有与 spec 冲突的，没带出「Open」。
   - `src/cli/import-sessions.ts`（`--keep`、标记文件、`--resync`）、`export-sessions.ts`（删标记）；只用 `project.ts` 与 `src/db/repo/**`，不 import 运行时模块。
   - `initSessionStore` 的 `real_in_json` 拒绝。
   - 测试夹具：一份含真实会话、种子、访客、孤儿订单、`followup`、`quoteHistory`、昵称、旧格式订单号、NUL 与孤立代理项的 `var/`。
@@ -527,6 +527,36 @@
   - 变异（源码拷进 scratchpad 的三个隔离副本，逐个打、只跑 `store.selftest`；真实 PG 的用例改密码会互相撞，带 `PG_TEST_URL` 的一个一个跑）：74 个，全部杀掉。审查报的存活变异 18 个（S02、S03、P20–P25、P31、P33、P36–P38、P40、P45、P46、S04、S07）都变红，各自死在上面对应的那条断言上（S03 由一轮中间 SIGTERM 那组杀掉：钩子挪进 normal 段时回复那次落库进了 spill）。这次改动的代表性变异 18 个也都杀掉：第 1 条 `ownsOrder` 不看已收养、提交后不通知、启动不删 JSON 副本、启动不收养、收养不记「未提交」；第 2 条同步起落库、`schedule` 不冻结；第 3 条 spill 时投影订单；第 4 条不校验结构、不包文件系统错误、重复装上抛普通错误；第 5 条日志改回「改回原名再启动」、不点名会话；第 6 条插入不带 `ON CONFLICT`、冲突后不再锁（这两个只有真实 PG 的用例杀得掉）；第 7 条 `kick()` 不看 `writable()`、退避定时器不看；第 8 条不查 `real_in_json`。审查那一轮的其余 38 个也都杀掉，其中 P29、P30（回放时 flush_id 对上而 last_seq 对不上，照样按已回放跳过、按在途已提交补写）当时也存活、不在清单里，补了上面两条手造库状态的用例。改的过程中漏过三个：P03b（在途期间排进来的审计在提交后被清掉）与 P39（drain 不看 `writable()`）被 microtask 合并与 `kick()` 的新检查盖住了，各补一条用例；F7b 是用例的等待差 40 毫秒没跨过 1 秒退避，拉长之后杀掉。没列的两个：P05（第一个 await 之后才取快照）不再适用；P41（非预载会话窗口里已有 seq 的消息不算未提交）在 `real_in_json` 提前到本步之后走不到，是等价变异。
   - `pnpm test` 带 `PG_TEST_URL` 与不带各跑一遍，都全绿，PASS 行 60；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
 
+### 第 6 步 · 导入导出与切换（2026-10-02）
+
+- 结构：
+  - `src/cli/session-transfer.ts`：`importSessions` / `exportSessions` 与退出码 `EXIT`，自测直接调；`src/cli/import-sessions.ts`、`export-sessions.ts` 是薄包装（`DATABASE_URL`、`holdTenantLock` 取锁，import 的 `--var` 缺省与应用相同：`VAR_DIR`，没设就是 `./var`）。只 import `src/store/project.ts`、`src/db/repo/**`、`src/db/client.ts` 与 `src/shared/**`，`isDemoClassId` 用 project.ts 的（check-boundaries 照过）。
+  - 读法共用：`src/db/repo/conversations.ts` 加 `readSessionBatch`（会话行、窗口内消息、未作废订单三条语句）与 `orderLikeConversations`；`src/store/project.ts` 加 `rebuildSessions`（按会话分组、窗口与 `last_seq` / `window_start_seq` 对不对、`rowToSession`）与 `SESSIONS_JSON`、`ORDERS_JSON`、`SPILL_FILE_RE`。`pg-backend.ts` 的预载、`file-backend.ts` 的文件名改用它们，行为不变（第 5 步的预载与校验自测照过）。命令行的首次读回、「已有会话」的比对、`--resync` 之后的读回、export 都走这一条。
+  - `deploy/rollback-guard.sh`（在服务器上跑）与 `deploy.sh` 的 `guard_rollback`（经 ssh 把本地这份交给 `bash -s`），两处调用；README「回到文件模式或更早的版本」与 `deploy/compose.yml` 开头补了用法。
+- spec 写得不够、本步定的（选最小、最贴原文的）：
+  1. **首次导入的分批与读回**：先用 `orderLikeConversations`（`unnest` 之后 `order by`，库的缺省排序规则，与 `readConversationsAfter` 的分页同序）把这些 id 排好，按这个顺序每 500 个一批写。库里本来没有会话，所以写完一批，「上一批最后一个 id 之后的 500 个」正好是这一批，也就是启动预载的那一页：每批写完按 `readSessionBatch` + `rebuildSessions` 读回、逐个与 `normalizeForStore` 之后的 JSON `deepStrictEqual`，再核对读回的个数。按 JS 的字符串序分批不行：它和库的排序规则（如 en_US.utf8）不同，写的一批和预载的一页对不上。点名的「第一个不等的」按库的顺序。
+  2. **「逐个一致」**：JSON 里每个真实会话经 `normalizeForStore` 与按预载读法重建的库里那份 `deepStrictEqual`，它的订单（按 id 排）与库里这个会话的未作废订单相同；库里多出来的会话不影响判定。JSON 里没有真实会话、也没有标记（改写完 JSON、写标记之前崩了）同样算一致，补写标记、0。
+  3. **原件**：每次在 `--keep` 下新建 `<import|resync|export>-<时间>-<随机>/` 再复制（`COPYFILE_EXCL`），不覆盖之前的原件：切换步骤第 4 步的 export 与之后的 `--resync` 多半用同一个 `--keep`，直接复制会把首次导入的原件盖掉。「`--keep` 在 var/ 之内」按真实路径判断（解析符号链接，还不存在的部分接在最近一个已有上级目录的 realpath 后面），等于或在 `--var` 之下都拒绝（1）。
+  4. **顺序与拒绝**：查租户（没有 → 1）→ `--keep` → 取锁（拿不到 → 3）→ 数据目录里有没回放的 `store-spill-*.json` → 1（那是 db 存储停机时没落库的改动，导入导出都会把它们丢掉；先以 db 存储启动一次让它回放）；`.json.failed` 只提示一行 → 读 JSON（不是合法 JSON、不是数组、某条没有字符串 id → 1；不回显解析错误，里面带着出错处的原文片段）。锁一直持到改写完 JSON、写好标记。两个 JSON 的读法与文件后端相同（按 id，同 id 以后出现的为准）。
+  5. **提交之后**：复制原件 → 改写两个 JSON（与文件后端同一种写法 `JSON.stringify(…, null, 2)`，先写 `.tmp`、fsync、再改名）→ 写标记 `{ tenant: <slug>, at: <ISO 时间>, sessions: <库里这个租户的真实会话数> }`。中途失败退出码 1，写明「库已提交，修好原因后再跑一次会按逐个一致补完改写，在那之前不要启动应用」。export 的标记最后删，中途失败时它还在，文件存储照旧拒绝启动。
+  6. **`--resync`**：「库里的窗口是文件窗口的前缀」按进库之后的样子比（文件里的消息经 `messageToRow` → `rowToMessage` 走一趟，与预载重建的库里窗口逐条 `isDeepStrictEqual`），条数够但有一条不同就不是前缀。`flush_id` 写 NULL（不是应用的快照）。库里有、文件里没有的未作废订单作废（`void_reason='resync'`）；文件里有、库里已作废的订单不恢复、单独计数（库里不拦 `voided_at` 写回 NULL，第 5 步的注意）。写完之后同样按预载读法读回、与 JSON 比对（期望里去掉没恢复的那几张），不等就回滚、退出码 2。`--dry-run` 与首次导入一样：写进事务、读回，最后回滚，打印条数。JSON 里没有真实会话而有标记时与不带 `--resync` 一样，0、不动。
+  7. **export「同 id 以库为准」也管订单**：JSON 里 id 在库里、而库里已作废的订单从 JSON 里去掉（与预载对 orders.json 的处理同一口径），库里未作废的盖掉 JSON 里的同 id 副本；会话同样以库里的为准，JSON 里只有的照留。
+  8. **回滚前检查**：判断抽成 `deploy/rollback-guard.sh <部署目录> <目标> [<compose 项目名>]`，没有标记文件就放行（不看镜像）；有标记时目标是镜像就 `docker run --rm --entrypoint /bin/sh <镜像> -c 'test -e /app/src/store/pg-backend.ts'`，0 放行、1 是 02 之前的、其余（docker 出错）也按 02 之前处理；目标是 `pre-02` 表示调用方已按 tag 的文件树判定。拒绝时退出码 3，按顺序打印 stop app → `export-sessions` → 去掉 `SESSION_STORE=db` 再起 → 部署旧 tag。`deploy.sh`：部署的 tag 里没有 `src/store/pg-backend.ts` 时，在第 3 步的服务器检查之后、rsync 之前 `guard_rollback pre-02`；健康检查失败后的自动回滚在确认 `:prev` 存在之后、起 `:prev` 之前 `guard_rollback "${NAME}:prev"`，被拒就以 1 退出（服务不可用，与「没有 :prev」同一处理）。`/healthz` 的 `config.catalogVersioned` 第 8 步才有：脚本里 `risks` 那一段留了注释。
+  9. 命令行的事务：import 是一个 `longRunning` 读写事务（默认隔离级别）；export 是 `REPEATABLE READ READ ONLY` 的 `longRunning` 事务，读完才动文件。两个都不写审计（spec 没要求）。
+- 偏离：没有与 spec 冲突的。比原文多的：上面 1 为了让「每批写完按预载同一条路径读回」字面成立多了一条只读语句；2 的「JSON 里没有真实会话也没有标记」与 7 的订单按库为准是 spec 没写到的情况，按同一口径补上。
+- 自测：
+  - `store.selftest.ts` 的 xfer 子进程链（落盘的 PGlite，一步一个子进程：import → dbstart → export → filechat → resync → dbstart2 → export2；export、resync、export2 不起 store，免得 store 退出时把命令行刚改写的 JSON 再写一遍）。夹具 `xferFixture()`：3 个真实会话（followup、quoteHistory、昵称、转人工记录、`author`、消息上的未知键、空窗口），种子与访客各一，孤儿订单，旧格式订单号 `ORD-20240501-0007`；NUL 与孤立代理项用 `String.fromCharCode` 构造，被规范化的字符串恰好 5 条，种子里另有一个 NUL 不计数。子进程设 `DEMO_PRUNE_HOURS=0`（夹具时间是固定的过去时刻，否则访客被闲置清理）。覆盖：dry-run 不写库不改文件不建 `--keep`；`--keep` 在 var 之下 / 就是 var / 经符号链接指进 var；import 与 export 拿不到锁 3；spill 在时 1；首次导入的 seq、`window_start_seq`、`last_seq`、`flush_id`、state 与订单 data 原样（昵称里的 NUL 去掉了）、JSON 逐字节是 demo 类与孤儿订单、标记内容、原件逐字节在 `--keep`、longRunning 的两条 `set local`；再导入 0；补完改写（原件放回、标记删掉）0；JSON 只剩 demo 类而没有标记 0 并补写标记；1001 个会话三批写入读回、提交之后复制原件失败 1 并说明、修好再跑补完改写 0；改一条消息 / 多一个会话 / 订单金额不同各 2 并点名短码、提示 `--resync`；首次导入读回不等（`at` 不是整数毫秒）回滚、2、点名第一个；import 写的标记让文件存储以 `sessions_in_db` 拒绝；补完改写之后 db 存储启动成功，identity map 与原 JSON 经 `normalizeForStore` 之后 `deepStrictEqual`（不变量 14），JSON 里没有真实会话（不变量 15）；db 存储下再聊两句；export 在只读快照里读、删标记、原件进 `--keep`、导出的就是 db 存储停机前的内存，再交给 `--resync --dry-run` 什么都不追加、不带 `--resync` 是逐个一致；文件存储照常启动，再聊几轮、重置一个、新来一个，db 存储而 JSON 里有真实会话以 `real_in_json` 拒绝；不带 `--resync` 2；条数够而有一条不同的变体推进窗口；写完读回不等的变体（新会话里一条 `at` 带小数）回滚、2；`--resync` 新写 1、追加 2 个会话、推进 1 个（窗口起点 = 原 `last_seq` + 1）、作废 1 张（`void_reason='resync'`）、已作废的不复活；db 存储启动之后内存与文件存储下聊完的经 JSON 规范化 `deepStrictEqual`，每个会话库里窗口内的消息与内存相同、seq 对得上，重置过的会话历史比窗口长；export 把 JSON 里真实会话的陈旧副本、已作废订单、改过金额的订单副本都换成库里的。
+  - 真实 PG（有 `PG_TEST_URL` 才跑，与第 5 步的同一个临时库，另建租户 xfer 并 import-config）：以子进程跑两个命令行，`--dry-run` 0 且库不动 → 首次导入 0（打印条数与规范化 5 条）→ 再导入 0 → 真的 `server.ts` 以 db 存储起来、`/healthz` 报 db、这时 import 与 export 都是 3 → SIGTERM 143 → export 0、删标记 → 改一条消息后 import 2、点名短码 → `--resync` 0、窗口推到 7、`last_seq` 12、消息 17 条 → server.ts 再以 db 存储启动、SIGTERM 143。
+  - `db.selftest.ts` 的部署脚本段：rollback-guard 六种情况（没有标记不看镜像、两个都是 02 之后放行、02 之前拒绝并按顺序打印步骤、docker 出错拒绝、`pre-02` 有无标记）；deploy.sh 用本机执行的假 ssh 与总成功的假 pnpm 跑到 rsync：02 之前的 tag 而有标记 1 且没碰 rsync、没有标记照常、02 之后的 tag 不做这道检查；自动回滚在起 `:prev` 之前检查并以 1 退出、两处是同一个 `guard_rollback`。
+  - `src/db/testing.ts` 的 `txModes` 也记 `set local …`，看得到 longRunning 放宽的超时。
+  - 计数：`store.selftest.ts` 不带 PG 294 → 363、带 PG 304 → 385；`db.selftest.ts` 不带 PG 466 → 477、带 PG 862 → 873。
+- 变异（源码拷进 scratchpad 的隔离副本，三个副本并行，只跑相关自测）：39 个，全部杀掉。读回：首次读回不比对、每批都从头读、读回只读第一批、`--resync` 之后不读回比对（首轮存活：正确的 `--resync` 写不出不等的库，补「写完读回不等」的变体之后杀掉）；补完改写误判：已有会话不判一致、「已经导入过」不看标记、比对不看订单；`--resync` 的前缀判定：只看条数、一律成立、推进窗口差一；作废：漏写、原因写错、已作废的复活；标记文件不写、不删；`--keep` 在 var 之内放行、不解析符号链接；持锁不拒（import 与 export）；dry-run 不回滚；不查 spill；原件不复制；导出不以库为准、留着已作废订单；改写 JSON 不滤掉真实会话；export 不用只读快照、import 不放宽超时；seq 从 0 起；规范化计数不算键；预载的 `rebuildSessions` 不校验窗口；回滚检查一律放行、02 之前的镜像放行、docker 出错放行、不看标记文件、部署旧 tag 不检查、自动回滚不检查。
+- 真实 PG：本机 `pgvector/pgvector:pg17` 一次性容器（`127.0.0.1:55432`）。`pnpm test` 带 `PG_TEST_URL` 与不带各跑一遍都全绿，PASS 行 60（本步没加新套件）；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
+- 注意（第 7 步）：等价套件与 DB 模式 eval 不经命令行，照旧 `installPgSessionStore` + `initSessionStore`；要造「已导入」的库可以直接调 `importSessions`（`lock: async () => fakeLock()`，`db` 用 fixture 的那个会计数的）。
+- 注意（第 8 步）：`deploy/rollback-guard.sh` 的 `risks` 加「正在运行的实例 `/healthz` 的 `config.catalogVersioned` 为 true」：要多一个宿主端口参数（`guard_rollback` 传 `$HOST_PORT`），自动回滚时正在跑的是没起来的新容器，`/healthz` 可能取不到，取不到按有风险处理；db.selftest 部署段的假 docker 旁边再加一个假 curl。
+- 注意（第 16 步）：`erase-conversation` 同样「要求应用已停」，取锁与退出码 3 照 `session-transfer.ts` 的写法（先查租户、再取锁、`finally` 里放锁）。
+- 注意（第 26 步）：演练与线上切换照 `deploy/compose.yml` 开头的命令；`--keep` 是挂进容器的宿主目录（`-v /root/sessions-keep-<日期>:/keep`），每跑一次多一个子目录，第 5 步删原件时整个目录删掉；导入打印的会话、消息、订单数与之后 console `/status` 的会话数对照。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -596,3 +626,10 @@
 - 半成品：无。
 - 阻塞：无。「Open」里第 1、4 步带出的五处照旧，第 5 步审查带出一处（两种启动失败借用了现有的 reason），都不挡第 6 步。
 - 下一步：第 6 步「导入导出与切换」。先读「实施记录 · 第 5 步」的「注意（第 6 步）」：`real_in_json` 已在本步做了（别再加一份），`insertConversation` 冲突返回 null，命令行只用 `project.ts` 与 `src/db/repo/**`，读回比对走预载同一条路，`--resync` 别把作废订单当活订单 upsert。
+
+### 交接（2026-10-02，第 6 步）
+
+- 已完成：第 6 步。`import-sessions`（首次导入按库的 id 排序每 500 个一批写、每批按预载的同一页读回比对，补完改写，内容不同 2，`--dry-run`，`--resync`）与 `export-sessions`（只读快照、合并进 JSON、同 id 以库为准、删标记），逻辑在 `src/cli/session-transfer.ts`；预载与命令行共用 `readSessionBatch` + `rebuildSessions`；`deploy/rollback-guard.sh` 与 `deploy.sh` 两处接线（部署 02 之前的 tag、自动回滚到 02 之前的 `:prev`）；`store.selftest.ts` 不带 PG 363 项、带 PG 385 项，`db.selftest.ts` 477 / 873 项。39 个变异全部杀掉；本机真实 PG 上全过；锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
+- 半成品：无。
+- 阻塞：无。没有新的「Open」；第 1、4、5 步带出的六处照旧，都不挡第 7 步。
+- 下一步：第 7 步「等价套件与 DB 模式 mock eval」。先读「实施记录 · 第 5 步」的「注意（第 7 步）」与本步的「注意（第 7 步）」。
