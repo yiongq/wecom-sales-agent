@@ -406,10 +406,12 @@ export function CatalogList(p: CatalogListProps) {
   const env: FieldEnv = { now: p.now, refItems: (k) => p.refItems?.(k), distinct: () => [], itemLink: p.itemLink };
   const refsOf = (f: FieldDef): readonly RefItem[] | undefined => (f.type === 'reference' && f.to ? p.refItems?.(f.to) : undefined);
 
-  // 从来没有过：替换整块内容，不留空表头（spec「产品库列表」的状态表）
+  // 从来没有过：替换整块内容，不留空表头（spec「产品库列表」的状态表）。列表上面只有页名 h1，空状态与出错的标题都是 h2
+  // （axe heading-order，同会话、审计两页）
   if (rows && rows.length === 0) {
     return (
       <EmptyBlock
+        level={2}
         icon={<Icon of={entityIcon(entity.icon)} size={20} />}
         title={`从第一条${entity.label}开始`}
         description="上架后，销售助手会向客户推荐它"
@@ -452,12 +454,13 @@ export function CatalogList(p: CatalogListProps) {
 
   let body: ReactNode;
   if (p.error !== undefined && p.error !== null) {
-    body = <StateView error={p.error} onRetry={p.onRetry} />;
+    body = <StateView error={p.error} level={2} onRetry={p.onRetry} />;
   } else if (!shown) {
     body = <StateView pending skeleton={<Skeleton rows={8} rowHeight={two ? 56 : 44} />} />;
   } else if (shown.length === 0) {
     body = (
       <EmptyBlock
+        level={2}
         icon={<Icon of={Search} size={20} />}
         title={`没有符合条件的${entity.label}`}
         // 这里连搜索和页签一起回到默认（只有搜索、只有页签时也要能出去），与工具条上只清筛选按钮的「清除筛选」

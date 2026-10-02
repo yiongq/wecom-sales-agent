@@ -4,6 +4,7 @@
 // 角色仍在 Tooltip（「名字·角色」）、菜单的身份块和读屏里：裁掉不是隐藏。
 // 用户菜单向上弹出：身份块、外观（浅色〔默认〕/ 深色 / 跟随系统）、减少动态效果、关于、退出登录。没有单键切主题的快捷键。
 // 外观与「减少动态效果」存在 localStorage（theme/prefs.ts，读写都包 try/catch）；切外观时下一帧就是终值颜色（data-theme-switching）。
+// 点这两样只改偏好，菜单（连同外观子菜单）不收起，勾、开关和「外观」右边的值当场换成新的；关于、退出登录点了照常收起。
 // 读屏：用户按钮的名字是「名字，角色」（收起时名字和角色都不画，按钮上只剩头像）；外观三项是 menuitemradio、
 // 减少动态效果是 menuitemcheckbox，都带 aria-checked；子菜单的箭头换成 lucide 的 chevron-right，不带 antd 图标的英文名
 import { Dropdown, type MenuProps, Tooltip } from 'antd';
@@ -102,12 +103,14 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
   // 偏好只存在 prefs.ts 一处（⌘K、别的标签页也会改），每次渲染现读；这里改了以后重渲一次
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const { appearance, reduceMotion: reduce } = getPrefs();
-  // 点「减少动态效果」只拨开关，菜单不收起
+  // 点外观、「减少动态效果」只改偏好，菜单不收起。收起不行：antd 的弹层收起以后不再重渲内容（@rc-component/trigger 关着时
+  // 缓存弹层），点得快时外观子菜单还会被点之前悬停排下的定时器重新打开，勾停在旧值上，直到再打开菜单（验收之后在浏览器里看到）
   const keepOpen = useRef(false);
   const items = userMenuItems({ appearance, reduce });
 
   const onClick: MenuProps['onClick'] = ({ key }) => {
     if (key.startsWith('appearance:')) {
+      keepOpen.current = true;
       setAppearance(key.slice('appearance:'.length) as Appearance);
       rerender();
     } else if (key === 'reduce-motion') {
@@ -130,7 +133,8 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       }}
       trigger={['click']}
       placement="topLeft"
-      menu={{ items, onClick, selectable: false, expandIcon: SUBMENU_ARROW }}
+      // multiple：rc-menu 点了条目就收起子菜单，只有 multiple 时不收；selectable 关着，multiple 不管别的
+      menu={{ items, onClick, selectable: false, multiple: true, expandIcon: SUBMENU_ARROW }}
       rootClassName="user-menu-root"
       // 弹层挂在 body 下、在侧栏的地标外面：整块是一个有名字的区域「用户选项」（axe region）；外观子菜单另挂，见 userMenuItems
       popupRender={(menu) => (
