@@ -2441,6 +2441,8 @@ await t.close();
     'case "$*" in',
     // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）
     '  *pg-backend.ts*) exit "${FAKE_PG_BACKEND:-0}" ;;',
+    // 自动回滚被拒时打印目标镜像的 APP_REVISION
+    '  *"image inspect"*) printf "PATH=/usr/local/bin\\nAPP_REVISION=%s\\n" "${FAKE_REVISION:-old-v1}" ;;',
     '  *pg_dumpall*) echo "-- globals" ;;',
     '  *pg_dump*) echo "dump" ;;',
     // 目录里有哪些表的数据段：缺省是 01 的四张加 02 的会话三张，FAKE_TOC 换掉它
@@ -2709,16 +2711,23 @@ await t.close();
   fs.mkdirSync(path.join(gsrv, 'var'), { recursive: true });
   const markerFile = path.join(gsrv, 'var', 'sessions-in-db.json');
   const setMarker = (on: boolean): void => {
-    if (on) fs.writeFileSync(markerFile, '{"tenant":"demo","at":"2026-10-02T00:00:00.000Z","sessions":3}\n');
+    if (on) fs.writeFileSync(markerFile, '{"tenant":"acme-2","at":"2026-10-02T00:00:00.000Z","sessions":3}\n');
     else fs.rmSync(markerFile, { force: true });
   };
-  const guard = (target: string, marker: boolean, pgBackend?: number) => {
+  /** 服务器 .env：缺省没有（与只有标记文件的情形分开测） */
+  const setEnvFile = (text: string | null): void => {
+    if (text === null) fs.rmSync(path.join(gsrv, '.env'), { force: true });
+    else fs.writeFileSync(path.join(gsrv, '.env'), text);
+  };
+  const guard = (target: string, marker: boolean, pgBackend?: number, envText: string | null = null) => {
     fs.rmSync(log, { force: true });
     setMarker(marker);
+    setEnvFile(envText);
     if (pgBackend === undefined) delete env.FAKE_PG_BACKEND;
     else env.FAKE_PG_BACKEND = String(pgBackend);
-    const r = run('bash', ['-s', '--', gsrv, target, 'side1'], tmp, guardSrc);
+    const r = run('bash', ['-s', '--', gsrv, target, 'side1', '3999'], tmp, guardSrc);
     delete env.FAKE_PG_BACKEND;
+    setEnvFile(null);
     return {
       ...r,
       docker: calls()
@@ -2726,17 +2735,48 @@ await t.close();
         .filter((l) => l.startsWith('docker ')),
     };
   };
-  const refusedWithSteps = (out: string): boolean =>
-    out.includes('拒绝回滚') &&
-    out.includes('sessions-in-db.json') &&
-    out.includes('src/cli/export-sessions.ts --tenant <slug> --keep /keep --var /app/var') &&
-    out.includes('去掉 SESSION_STORE=db') &&
-    out.includes('4. 再部署旧 tag') &&
-    out.indexOf('export-sessions') < out.indexOf('去掉 SESSION_STORE=db') &&
-    out.indexOf('去掉 SESSION_STORE=db') < out.indexOf('4. 再部署旧 tag');
+  const dcOf = (project: string, port: string): string =>
+    `APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml`;
+  /** 拒绝时打印的步骤。pre-02（部署旧 tag）：stop → export → 去掉 SESSION_STORE=db 再起、按端口确认 → 部署旧 tag */
+  const refusedWithSteps = (out: string, o: { slug?: string; project?: string; port?: string; why?: string } = {}): boolean => {
+    const dc = dcOf(o.project ?? 'side1', o.port ?? '3999');
+    return (
+      out.includes('拒绝回滚') &&
+      out.includes(o.why ?? 'sessions-in-db.json') &&
+      out.includes(`1. ${dc} stop app`) &&
+      out.includes(`${dc} run --rm -v /root/sessions-keep-<日期>:/keep app`) &&
+      out.includes(`src/cli/export-sessions.ts --tenant ${o.slug ?? 'acme-2'} --keep /keep --var /app/var`) &&
+      out.includes(
+        `去掉 SESSION_STORE=db，${dc} up -d app，curl -fsS http://127.0.0.1:${o.port ?? '3999'}/healthz 确认 store.mode = file`,
+      ) &&
+      out.includes('4. 再部署旧 tag') &&
+      out.indexOf('export-sessions') < out.indexOf('去掉 SESSION_STORE=db') &&
+      out.indexOf('去掉 SESSION_STORE=db') < out.indexOf('4. 再部署旧 tag')
+    );
+  };
+  /**
+   * 自动回滚被拒（目标是镜像）：:current 已是没过健康检查的新镜像，导出用它；去掉 SESSION_STORE=db 之后直接起目标镜像、
+   * 重打 :current，按端口确认 revision 是目标镜像的 APP_REVISION；不再说「部署旧 tag」
+   */
+  const refusedAutoSteps = (out: string, target: string, o: { slug?: string; rev?: string; why?: string } = {}): boolean => {
+    const dc = dcOf('side1', '3999');
+    return (
+      out.includes('拒绝回滚') &&
+      out.includes(o.why ?? 'sessions-in-db.json') &&
+      out.includes('side1:current 已是这次没过健康检查的新镜像') &&
+      out.includes(`1. ${dc} stop app`) &&
+      out.includes(`src/cli/export-sessions.ts --tenant ${o.slug ?? 'acme-2'} --keep /keep --var /app/var`) &&
+      out.includes('用的是 side1:current，也就是这次的新镜像里的 export-sessions') &&
+      out.includes(`APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} side1:current`) &&
+      out.includes(`curl -fsS http://127.0.0.1:3999/healthz 确认 revision 是 ${o.rev ?? 'old-v1'}`) &&
+      !out.includes('再部署旧 tag') &&
+      out.indexOf('export-sessions') < out.indexOf('去掉 SESSION_STORE=db') &&
+      out.indexOf('去掉 SESSION_STORE=db') < out.indexOf('up -d --no-deps app')
+    );
+  };
   const g1 = guard('side1:prev', false);
   check(
-    '回滚前检查：没有标记文件时照常回滚，不看镜像',
+    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看镜像',
     g1.code === 0 && g1.docker.length === 0,
     `${g1.code} ${g1.out} ${g1.docker.join()}`,
   );
@@ -2750,23 +2790,43 @@ await t.close();
   );
   const g3 = guard('side1:prev', true, 1);
   check(
-    '回滚前检查：有标记文件、目标镜像里没有 pg-backend.ts（02 之前的）时拒绝（3），按顺序打印 export → 去掉 SESSION_STORE=db → 部署旧 tag',
-    g3.code === 3 && refusedWithSteps(g3.out),
+    '回滚前检查：有标记文件、目标镜像里没有 pg-backend.ts（02 之前的，自动回滚）时拒绝（3），打印带 HOST_PORT 的自动回滚步骤：' +
+      '用 :current 导出 → 去掉 SESSION_STORE=db → 直接起目标镜像、重打 :current → 按端口确认目标镜像的 APP_REVISION；租户取自标记文件',
+    g3.code === 3 &&
+      refusedAutoSteps(g3.out, 'side1:prev') &&
+      g3.docker.some((l) => l.includes('image inspect') && l.includes('side1:prev')),
     `${g3.code} ${g3.out}`,
   );
   const g4 = guard('side1:prev', true, 125);
   check(
     '回滚前检查：docker 出错、看不出目标镜像时按 02 之前处理，拒绝',
-    g4.code === 3 && g4.out.includes('docker 出错') && refusedWithSteps(g4.out),
+    g4.code === 3 && g4.out.includes('docker 出错') && refusedAutoSteps(g4.out, 'side1:prev'),
     `${g4.code} ${g4.out}`,
   );
   const g5 = guard('pre-02', true);
   check(
-    '回滚前检查：调用方已判定是 02 之前的（pre-02）、有标记文件时拒绝，不再看镜像',
-    g5.code === 3 && g5.docker.length === 0 && refusedWithSteps(g5.out),
+    '回滚前检查：调用方已判定是 02 之前的（pre-02）、有标记文件时拒绝，不再看镜像；打印的命令带 HOST_PORT、租户取自标记文件',
+    g5.code === 3 && g5.docker.length === 0 && refusedWithSteps(g5.out) && g5.out.includes('HOST_PORT=3999'),
+    g5.out,
   );
   const g6 = guard('pre-02', false);
   check('回滚前检查：pre-02 而没有标记文件时照常', g6.code === 0, g6.out);
+  // 没有标记文件而 .env 是 db 存储（没经过 import-sessions 直接以 db 存储起、补写标记之前的实例）：同样拒绝；租户取自 .env
+  const dbEnv = 'DEPLOY_PROFILE=demo\n  SESSION_STORE=db\r\nDEFAULT_TENANT_SLUG=acme-3\n';
+  const g7 = guard('pre-02', false, undefined, dbEnv);
+  check(
+    '回滚前检查：没有标记文件而 .env 里是 SESSION_STORE=db 时拒绝（pre-02），租户取自 .env 的 DEFAULT_TENANT_SLUG',
+    g7.code === 3 && refusedWithSteps(g7.out, { slug: 'acme-3', why: '.env 里是 SESSION_STORE=db' }),
+    g7.out,
+  );
+  const g8 = guard('side1:prev', false, 1, dbEnv);
+  check(
+    '回滚前检查：没有标记文件而 .env 里是 SESSION_STORE=db，自动回滚到 02 之前的镜像同样拒绝',
+    g8.code === 3 && refusedAutoSteps(g8.out, 'side1:prev', { slug: 'acme-3', why: '.env 里是 SESSION_STORE=db' }),
+    g8.out,
+  );
+  const g9 = guard('pre-02', false, undefined, 'SESSION_STORE=db\nSESSION_STORE=file\n');
+  check('回滚前检查：.env 里同名以最后一行为准，不是 db 存储时照常', g9.code === 0, g9.out);
 
   // deploy.sh 的两处接线。部署旧 tag：在碰服务器之前（rsync 之前）检查；ssh 换成在本机执行远端命令，门禁一律成功，
   // 「服务器」是临时目录（旁路实例的三个值），rsync 一调用就记下并失败
@@ -2791,7 +2851,10 @@ await t.close();
   const d1 = deployTo('new-v1', true);
   check(
     'deploy.sh：部署 02 之前的 tag 而服务器 var/ 里有标记文件，rsync 之前拒绝（1）并打印回退步骤',
-    d1.code === 1 && refusedWithSteps(d1.out) && d1.out.includes('new-v1 是 02 之前的版本') && !d1.log.includes('rsync '),
+    d1.code === 1 &&
+      refusedWithSteps(d1.out, { slug: '<slug>' }) &&
+      d1.out.includes('new-v1 是 02 之前的版本') &&
+      !d1.log.includes('rsync '),
     `${d1.code} ${d1.out.slice(-600)}`,
   );
   const d2 = deployTo('new-v1', false);
@@ -2815,9 +2878,10 @@ await t.close();
     rb > 0 && rb < gp && gp < up && /if ! guard_rollback "\$\{NAME\}:prev"; then\n *echo [^\n]*\n *exit 1\nfi\n/.test(deploySrc),
   );
   check(
-    'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s',
-    /guard_rollback\(\) \{ ssh "\$\{SERVER\}" bash -s -- "\$REMOTE_DIR" "\$1" "\$NAME" <deploy\/rollback-guard\.sh; \}/.test(deploySrc) &&
-      (deploySrc.match(/guard_rollback /g) ?? []).length === 2,
+    'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s（带上项目名与宿主端口）',
+    /guard_rollback\(\) \{ ssh "\$\{SERVER\}" bash -s -- "\$REMOTE_DIR" "\$1" "\$NAME" "\$HOST_PORT" <deploy\/rollback-guard\.sh; \}/.test(
+      deploySrc,
+    ) && (deploySrc.match(/guard_rollback /g) ?? []).length === 2,
   );
   fs.rmSync(tmp, { recursive: true, force: true });
 }
