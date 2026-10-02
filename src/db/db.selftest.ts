@@ -225,6 +225,22 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
       JSON.stringify(mine),
     );
   }
+  // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
+  // 只能是 tenants 的三个保留期列，而且只是给 agent_platform 的 UPDATE（02 spec 授权表）
+  const colAcl = await run<{ acl: string }>(
+    `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
+       from pg_attribute a join pg_class c on c.oid = a.attrelid
+       cross join lateral aclexplode(a.attacl) x
+       left join pg_roles r on r.oid = x.grantee
+      where c.relnamespace = 'public'::regnamespace and a.attacl is not null
+      order by 1`,
+  );
+  check(
+    `${label}授权：带列级授权的只有 tenants 的三个保留期列，只给了 agent_platform 的 UPDATE`,
+    colAcl.map((r) => r.acl).join(',') ===
+      ['retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map((c) => `tenants.${c} agent_platform UPDATE`).join(','),
+    colAcl.map((r) => r.acl).join(','),
+  );
   const fns = await run<{ proname: string; secdef: boolean; acl: string; config: string }>(
     `select proname, prosecdef as secdef, coalesce(proacl::text, '') as acl, coalesce(proconfig::text, '') as config from pg_proc
       where pronamespace = 'public'::regnamespace order by 1`,
@@ -350,6 +366,22 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
       `insert into consents (tenant_id, conversation_id, category, decision, notice_version, at) values ($1, $2, 'health', 'asked', 1, now())`,
       [tenantId, convId],
     );
+  /** 与会话有关的任务：照约定 payload 带 sessionId，dedupe_key 照 spec 带会话 id（followup:<会话>:<阶段>） */
+  const sessionJob = (tenantId: string, convId: string, kind: string, status: string): Promise<unknown> =>
+    su(
+      `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, max_attempts, payload, finished_at)
+       values ($1, $2, $3, now(), $4, 3, $5::json, $6::timestamptz)`,
+      [
+        tenantId,
+        kind,
+        `${kind}:${convId}:${status}`,
+        status,
+        JSON.stringify({ sessionId: convId, stage: 'discovery' }),
+        ['pending', 'running', 'sending'].includes(status) ? null : ago(1),
+      ],
+    );
+  const jobsOf = (tenantId: string, id: string): Promise<number> =>
+    n(`select count(*)::int as n from jobs where tenant_id = $1 and payload->>'sessionId' = $2`, [tenantId, id]);
   const exists = (tenantId: string, id: string): Promise<number> =>
     n('select count(*)::int as n from conversations where tenant_id = $1 and id = $2', [tenantId, id]);
   /** 会话名下还剩的：[会话行, 消息, trace, 这些 trace 的护栏事件, 同意记录, 发送账本] */
@@ -386,28 +418,42 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   await consent(P, 'lead-old');
   await send(P, 'lead-old', 'm-lead-old', 11);
   await order(P, 'ord_lead_old', 'lead-old', false);
+  await sessionJob(P, 'lead-old', 'followup', 'pending');
+  await sessionJob(P, 'lead-old', 'handoff_notify', 'done');
   // 别的租户里同一个 id 的会话，同样到期：清 P 的不能碰到它
   await conv(Q, 'lead-old', 11);
   const qTrace = await trace(Q, 'lead-old', 11);
   await send(Q, 'lead-old', 'm-q-lead-old', 11);
+  await sessionJob(Q, 'lead-old', 'followup', 'pending');
   // 线索、9 天前：没到期（过了 trace 的 7 天，混用了列就会被清掉）。它有 11 天前、8 天前（过了 trace 的 7 天、没过线索的 10 天）、1 天前的三条 trace，一条 11 天前的发送账本
   const leadNew = await conv(P, 'lead-new', 9);
   const leadNewOldTrace = await trace(P, 'lead-new', 11);
   const leadNewMidTrace = await trace(P, 'lead-new', 8);
   const leadNewTrace = await trace(P, 'lead-new', 1);
   await send(P, 'lead-new', 'm-lead-new', 11);
+  await sessionJob(P, 'lead-new', 'followup', 'pending');
   // 客户（写过 paid_at）：11 天前按客户保留期没到期；31 天前到期
   const cust11 = await conv(P, 'cust-11', 11);
   await order(P, 'ord_cust_11', 'cust-11', true);
   const cust31 = await conv(P, 'cust-31', 31);
   await order(P, 'ord_cust_31', 'cust-31', true);
   await send(P, 'cust-31', 'm-cust-31', 31);
+  await sessionJob(P, 'cust-31', 'followup', 'cancelled');
 
   // ---- 调用方的租户与 p_now ----
   check(`${L}清除：不在 withTenant 里调用报错`, (await outcome(purgeAs('agent_app', null, 'lead-old', nowIso(), 2, leadOld))) === DENIED);
   check(`${L}清除：事务设的是别的租户时报错`, (await outcome(purgeAs('agent_app', Q, 'lead-old', nowIso(), 2, leadOld))) === DENIED);
   check(`${L}清除：p_now 在 10 分钟之后报错`, (await outcome(purge('lead-new', 2, leadNew, nowIso(10 * 60_000)))) === BAD_PARAM);
   check(`${L}清除：p_now 在 10 分钟之前报错`, (await outcome(purge('lead-new', 2, leadNew, nowIso(-10 * 60_000)))) === BAD_PARAM);
+  // 5 分钟这条线：差 6 分钟报错，差 4 分钟照常（没到期，返回 false）
+  for (const min of [6, -6]) {
+    const r = await outcome(purge('lead-new', 2, leadNew, nowIso(min * 60_000)));
+    check(`${L}清除：p_now 差 ${min} 分钟报错`, r === BAD_PARAM, r);
+  }
+  for (const min of [4, -4]) {
+    const r = await purge('lead-new', 2, leadNew, nowIso(min * 60_000)).catch((e: unknown) => pgErr(e)?.code ?? notDb(e));
+    check(`${L}清除：p_now 差 ${min} 分钟照常调用`, r === false, String(r));
+  }
   check(`${L}清除：p_now 为空报错`, (await outcome(purgeAs('agent_app', P, 'lead-new', null, 2, leadNew))) === BAD_PARAM);
   check(`${L}清除：被拒之后两个会话都还在`, (await exists(P, 'lead-old')) === 1 && (await exists(P, 'lead-new')) === 1);
 
@@ -456,6 +502,10 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     JSON.stringify(await owned(Q, 'lead-old', [qTrace])) === '[1,2,1,1,0,1]',
     JSON.stringify(await owned(Q, 'lead-old', [qTrace])),
   );
+  check(
+    `${L}清除：payload.sessionId 是它的任务都删了（pending 与已结束的），别的租户同 id 的、别的会话的都在`,
+    (await jobsOf(P, 'lead-old')) === 0 && (await jobsOf(Q, 'lead-old')) === 1 && (await jobsOf(P, 'lead-new')) === 1,
+  );
   check(`${L}清除：已经清掉的会话再清一次返回 false`, (await purge('lead-old', 2, leadOld)) === false);
   check(`${L}清除：31 天前的客户到期，返回 true`, (await purge('cust-31', 2, cust31)) === true);
   const [custOrder] = await su<{ session_id: string | null; status: string; paid: boolean; data: string }>(
@@ -467,6 +517,7 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     custOrder?.session_id === null && custOrder.status === 'paid' && custOrder.paid && !custOrder.data.includes('sessionId'),
     JSON.stringify(custOrder),
   );
+  check(`${L}清除：客户会话的任务（已取消的跟进）也删了`, (await jobsOf(P, 'cust-31')) === 0);
 
   // ---- 往回改「最后动静」、把已付订单改成取消：都绕不过保留期 ----
   const bumped = await conv(P, 'bumped', 1);
@@ -491,14 +542,70 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   check(`${L}触发器：agent_app 清空 paid_at 报错`, clearPaid === 'trigger', clearPaid);
   const movePaid = await why(as('agent_app', P, `update orders set paid_at = paid_at - interval '1 day' where id = 'ord_cancelled'`));
   check(`${L}触发器：agent_app 改 paid_at 报错`, movePaid === 'trigger', movePaid);
+  // 把已付订单从会话上摘下来（置空、改挂到别的会话），会话就成了线索：agent_app 做不到（R20）
+  const moved = await conv(P, 'moved', 11);
+  await order(P, 'ord_moved', 'moved', true);
+  const toNull = await why(as('agent_app', P, `update orders set session_id = null where id = 'ord_moved'`));
+  check(`${L}触发器：agent_app 把已付订单的 session_id 置空报错`, toNull === 'trigger', toNull);
+  const toOther = await why(as('agent_app', P, `update orders set session_id = 'lead-new' where id = 'ord_moved'`));
+  check(`${L}触发器：agent_app 把已付订单改挂到别的会话报错`, toOther === 'trigger', toOther);
+  // 与 upsertOrders 同一种写法：除主键外都以这次为准，session_id 写回同一个值
+  const upsertMoved = (sessionId: string, status: string): Promise<unknown> =>
+    as(
+      'agent_app',
+      P,
+      `insert into orders (tenant_id, id, session_id, route_id, status, total_price, created_at, paid_at, data)
+       values ($1, 'ord_moved', $2, 'r-guizhou', $3, 100, $4::timestamptz, $5::timestamptz, $6::json)
+       on conflict (tenant_id, id) do update set session_id = excluded.session_id, route_id = excluded.route_id,
+         status = excluded.status, total_price = excluded.total_price, created_at = excluded.created_at,
+         paid_at = excluded.paid_at, data = excluded.data`,
+      [P, sessionId, status, ago(40), ago(39), JSON.stringify({ id: 'ord_moved', sessionId, routeId: 'r-guizhou', totalPrice: 100 })],
+    );
+  const sameUpsert = await why(upsertMoved('moved', 'cancelled'));
+  check(`${L}触发器：agent_app 按 id upsert、session_id 写回同一个值可以`, sameUpsert === 'ok', sameUpsert);
+  const otherUpsert = await why(upsertMoved('lead-new', 'paid'));
+  check(`${L}触发器：agent_app 经 upsert 改挂到别的会话同样报错`, otherUpsert === 'trigger', otherUpsert);
+  const [movedOrder] = await su<{ session_id: string | null; status: string }>(
+    `select session_id, status from orders where tenant_id = $1 and id = 'ord_moved'`,
+    [P],
+  );
+  check(
+    `${L}清除：摘已付订单被拒之后，订单仍挂在原会话上，11 天前的客户仍返回 false`,
+    movedOrder?.session_id === 'moved' &&
+      movedOrder.status === 'cancelled' &&
+      (await purge('moved', 2, moved)) === false &&
+      (await exists(P, 'moved')) === 1,
+    JSON.stringify(movedOrder),
+  );
+  // 外键的 SET NULL 动作以表的属主执行：直接删会话时已付订单照常置空
+  await conv(P, 'fk-del', 1);
+  await order(P, 'ord_fk_del', 'fk-del', true);
+  const fkDel = await outcome(su(`delete from conversations where tenant_id = $1 and id = 'fk-del'`, [P]));
+  const [fkOrder] = await su<{ session_id: string | null; paid: boolean }>(
+    `select session_id, paid_at is not null as paid from orders where tenant_id = $1 and id = 'ord_fk_del'`,
+    [P],
+  );
+  check(
+    `${L}外键：直接删会话时，已付订单的 session_id 照常置空`,
+    fkDel === 'ok' && fkOrder?.session_id === null && fkOrder.paid,
+    `${fkDel} ${JSON.stringify(fkOrder)}`,
+  );
 
   // ---- trace 与没有会话的发送账本：按 trace 保留期 ----
   await send(P, 'ghost-old', 'm-ghost-old', 11);
   await send(P, 'ghost-mid', 'm-ghost-mid', 8);
   await send(P, 'ghost-new', 'm-ghost-new', 4);
-  const traces = (pNow: string, txTenant: string | null = P): Promise<{ n: number }[]> =>
+  const traces = (pNow: string | null, txTenant: string | null = P): Promise<{ n: number }[]> =>
     as<{ n: number }>('agent_app', txTenant, 'select purge_expired_traces($1, $2::timestamptz) as n', [P, pNow]);
   check(`${L}清除 trace：p_now 在 10 分钟之后报错`, (await outcome(traces(nowIso(10 * 60_000)))) === BAD_PARAM);
+  for (const [what, pNow] of [
+    ['差 6 分钟（未来）', nowIso(6 * 60_000)],
+    ['差 6 分钟（过去）', nowIso(-6 * 60_000)],
+    ['为空', null],
+  ] as const) {
+    const r = await outcome(traces(pNow));
+    check(`${L}清除 trace：p_now ${what}报错`, r === BAD_PARAM, r);
+  }
   check(`${L}清除 trace：不在 withTenant 里调用报错`, (await outcome(traces(nowIso(), null))) === DENIED);
   const tr = await traces(nowIso());
   check(`${L}清除 trace：返回删除条数（11 天、8 天前的两条 trace，两条没有会话的过期发送账本）`, tr[0]?.n === 4, JSON.stringify(tr));
@@ -530,31 +637,69 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   await job(P, 'recent-done', 'done', 29);
   await job(P, 'still-open', 'pending', null);
   await job(Q, 'q-old-done', 'done', 31);
-  const jobsAs = (pNow: string, txTenant: string | null = P): Promise<{ n: number }[]> =>
+  const jobsAs = (pNow: string | null, txTenant: string | null = P): Promise<{ n: number }[]> =>
     as<{ n: number }>('agent_app', txTenant, 'select purge_finished_jobs($1, $2::timestamptz) as n', [P, pNow]);
   check(`${L}清除任务：p_now 在 10 分钟之后报错`, (await outcome(jobsAs(nowIso(10 * 60_000)))) === BAD_PARAM);
+  for (const [what, pNow] of [
+    ['差 6 分钟（未来）', nowIso(6 * 60_000)],
+    ['差 6 分钟（过去）', nowIso(-6 * 60_000)],
+    ['为空', null],
+  ] as const) {
+    const r = await outcome(jobsAs(pNow));
+    check(`${L}清除任务：p_now ${what}报错`, r === BAD_PARAM, r);
+  }
   check(`${L}清除任务：不在 withTenant 里调用报错`, (await outcome(jobsAs(nowIso(), null))) === DENIED);
   const pj = await jobsAs(nowIso());
-  const leftJobs = await su<{ k: string }>('select dedupe_key as k from jobs where tenant_id = any($1::uuid[]) order by 1', [[P, Q]]);
+  const leftJobs = await su<{ k: string }>(
+    `select dedupe_key as k from jobs where tenant_id = any($1::uuid[]) and payload->>'sessionId' is null order by 1`,
+    [[P, Q]],
+  );
   check(`${L}清除任务：删掉结束超过 30 天的四种，返回条数`, pj[0]?.n === 4, JSON.stringify(pj));
   check(
     `${L}清除任务：没满 30 天的、没结束的、别的租户的都还在`,
     leftJobs.map((r) => r.k).join(',') === 'q-old-done,recent-done,still-open',
     leftJobs.map((r) => r.k).join(','),
   );
+  check(`${L}清除任务：与会话有关、没结束的任务不动`, (await jobsOf(P, 'lead-new')) === 1 && (await jobsOf(Q, 'lead-old')) === 1);
 
   // ---- 行权删除：只有平台身份能调，不看保留期 ----
-  const eraseUpdated = await conv(P, 'erase-me', 0.01, 3);
-  const eraseTrace = await trace(P, 'erase-me', 0.01);
-  await consent(P, 'erase-me');
-  await send(P, 'erase-me', 'm-erase-me', 0.01);
-  await order(P, 'ord_erase', 'erase-me', true);
+  // 企微会话：id 是 wecom:<external_userid>；跟进与转人工通知的 dedupe_key、payload 里都带着它
+  const EXT = 'wmEraseQ7f3a9';
+  const ERASE = `wecom:${EXT}`;
+  const eraseUpdated = await conv(P, ERASE, 0.01, 3);
+  const eraseTrace = await trace(P, ERASE, 0.01);
+  await consent(P, ERASE);
+  await send(P, ERASE, 'm-erase-me', 0.01);
+  await order(P, 'ord_erase', ERASE, true);
+  await sessionJob(P, ERASE, 'followup', 'pending');
+  await sessionJob(P, ERASE, 'handoff_notify', 'running');
+  await sessionJob(P, ERASE, 'handoff_notify', 'done');
+  /** 全库每张 public 表逐行转成文本找 external_userid，返回找到它的表 */
+  const tablesWith = async (needle: string): Promise<{ tables: string[]; hits: string[] }> => {
+    const tables = (
+      await su<{ t: string }>(
+        `select relname as t from pg_class where relnamespace = 'public'::regnamespace and relkind in ('r', 'p') order by 1`,
+      )
+    ).map((r) => r.t);
+    const hits: string[] = [];
+    for (const tb of tables) {
+      const [h] = await su<{ n: number }>(`select count(*)::int as n from public."${tb}" t where t::text like $1`, [`%${needle}%`]);
+      if (h?.n) hits.push(tb);
+    }
+    return { tables, hits };
+  };
+  const beforeErase = await tablesWith(EXT);
+  check(
+    `${L}删除之前：全库扫描找得到它（会话、消息、trace、同意记录、发送账本、订单、任务）`,
+    beforeErase.hits.join(',') === 'consents,conversations,jobs,messages,orders,outbound_sends,turn_traces',
+    beforeErase.hits.join(','),
+  );
   const eraseAs = (role: DbRole, txTenant: string | null, reason: string): Promise<unknown> =>
-    as<{ r: unknown }>(role, txTenant, 'select erase_conversation($1, $2, $3) as r', [P, 'erase-me', reason]).then((r) => r[0]?.r);
+    as<{ r: unknown }>(role, txTenant, 'select erase_conversation($1, $2, $3) as r', [P, ERASE, reason]).then((r) => r[0]?.r);
   check(`${L}删除：agent_app 调 erase_conversation 报 permission denied`, (await outcome(eraseAs('agent_app', P, '客户要求'))) === DENIED);
   check(
     `${L}删除：agent_platform 调 purge_conversation 报 permission denied`,
-    (await outcome(purgeAs('agent_platform', P, 'erase-me', nowIso(), 3, eraseUpdated))) === DENIED,
+    (await outcome(purgeAs('agent_platform', P, ERASE, nowIso(), 3, eraseUpdated))) === DENIED,
   );
   check(
     `${L}删除：agent_platform 调另两个清除函数也报 permission denied`,
@@ -564,13 +709,30 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   check(`${L}删除：不在 withTenant 里调用报错`, (await outcome(eraseAs('agent_platform', null, '客户要求'))) === DENIED);
   check(`${L}删除：事务设的是别的租户时报错`, (await outcome(eraseAs('agent_platform', Q, '客户要求'))) === DENIED);
   check(`${L}删除：没写原因报错`, (await outcome(eraseAs('agent_platform', P, '  '))) === BAD_PARAM);
-  check(`${L}删除：上面几次被拒之后会话还在`, (await exists(P, 'erase-me')) === 1);
+  check(`${L}删除：上面几次被拒之后会话还在`, (await exists(P, ERASE)) === 1 && (await jobsOf(P, ERASE)) === 3);
   const counts = await eraseAs('agent_platform', P, '客户要求删除');
-  const wantCounts = { conversations: 1, messages: 3, traces: 1, guardEvents: 1, consents: 1, outboundSends: 1, orders: 1 };
+  const wantCounts = {
+    conversations: 1,
+    messages: 3,
+    traces: 1,
+    guardEvents: 1,
+    consents: 1,
+    outboundSends: 1,
+    orders: 1,
+    jobs: 3,
+  };
   check(`${L}删除：保留期内的会话也删，返回各类条数`, JSON.stringify(counts) === JSON.stringify(wantCounts), JSON.stringify(counts));
   check(
-    `${L}删除：会话行、消息、trace、护栏事件、同意记录、发送账本都没了`,
-    JSON.stringify(await owned(P, 'erase-me', [eraseTrace])) === '[0,0,0,0,0,0]',
+    `${L}删除：会话行、消息、trace、护栏事件、同意记录、发送账本、任务（pending、running、done）都没了`,
+    JSON.stringify(await owned(P, ERASE, [eraseTrace])) === '[0,0,0,0,0,0]' && (await jobsOf(P, ERASE)) === 0,
+  );
+  // 验收 27：库里搜不到它的 external_userid
+  const afterErase = await tablesWith(EXT);
+  check(
+    `${L}验收 27：删除之后全库搜不到它的 external_userid（orders、audit_log、outbound_sends、consents、turn_traces、jobs 都在扫描之列）`,
+    ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'jobs'].every((tb) => afterErase.tables.includes(tb)) &&
+      afterErase.hits.length === 0,
+    afterErase.hits.join(','),
   );
   const [eraseOrder] = await su<{ session_id: string | null; paid: boolean; data: string }>(
     `select session_id, paid_at is not null as paid, data::text as data from orders where tenant_id = $1 and id = 'ord_erase'`,
@@ -593,20 +755,22 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
       audits[0].target_id === null &&
       Object.keys(diff).toSorted().join(',') === [...Object.keys(wantCounts), 'reason'].toSorted().join(',') &&
       diff.reason === '客户要求删除' &&
-      diff.messages === 3,
+      diff.messages === 3 &&
+      diff.jobs === 3,
     JSON.stringify(audits),
   );
-  // 不变量 42：清除或删除之后，本租户的订单、审计、发送账本、同意记录、trace 里都搜不到它的 id（会话 id 里就是 external_userid）
-  for (const id of ['lead-old', 'cust-31', 'erase-me']) {
+  // 不变量 42：清除或删除之后，本租户的订单、审计、发送账本、同意记录、trace 里都搜不到它的 id（会话 id 里就是 external_userid）；
+  // 任务按验收 27 一并删（payload 带 sessionId 的约定）
+  for (const id of ['lead-old', 'cust-31', ERASE]) {
     const hits = await su<{ t: string; n: number }>(
-      ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'messages', 'conversations']
+      ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'messages', 'conversations', 'jobs']
         .map((tb) => `select '${tb}' as t, count(*)::int as n from ${tb} x where x.tenant_id = $1 and strpos(x::text, $2) > 0`)
         .join(' union all '),
       [P, id],
     );
     check(
       `${L}不变量 42：${id} 被清除或删除之后，本租户的各表里都搜不到它`,
-      hits.length === 7 && hits.every((h) => h.n === 0),
+      hits.length === 8 && hits.every((h) => h.n === 0),
       JSON.stringify(hits.filter((h) => h.n)),
     );
   }
@@ -1405,6 +1569,7 @@ await expectWhy([
   ['作废原因只有两种', () => insOrder(A, 'ord_v', { voidReason: 'oops' }), 'orders_void_reason_check'],
   ['订单 data.id 与 id 不一致', () => insOrder(A, 'ord_d', { data: { id: 'ord_x' } }), 'orders_data_check'],
   ['订单 data 不是对象', () => insOrder(A, 'ord_d', { data: ['ord_d'] }), 'orders_data_check'],
+  ['订单 data 没有 id', () => insOrder(A, 'ord_n', { data: { routeId: 'r-a' } }), 'orders_data_check'],
   ['订单的会话不存在', () => insOrder(A, 'ord_f', { sessionId: 'c-none' }), 'orders_session_fk'],
   ['订单的会话在别的租户', () => insOrder(B, 'ord_f', { sessionId: 'c-a' }), 'orders_session_fk'],
   ['旧数据的订单号（不是 ord_ 开头）、没有会话', () => insOrder(A, 'A1B2-c3_d4'), 'ok'],
@@ -1545,6 +1710,11 @@ await expectWhy([
 {
   const future = iso(Date.now() + 10 * 60_000);
   check('02 触发器：插入时 updated_at 晚于 now() + 5 分钟被拒', (await why(insConv(A, 'c-future', { updatedAt: future }))) === 'trigger');
+  // 5 分钟这条线：晚 6 分钟被拒，晚 4 分钟可以（客户端与库的时钟差在这之内）
+  const in6 = await why(insConv(A, 'c-plus6', { updatedAt: iso(Date.now() + 6 * 60_000) }));
+  check('02 触发器：updated_at 晚 6 分钟被拒', in6 === 'trigger', in6);
+  const in4 = await why(insConv(A, 'c-plus4', { updatedAt: iso(Date.now() + 4 * 60_000) }));
+  check('02 触发器：updated_at 晚 4 分钟可以', in4 === 'ok', in4);
   check(
     '02 触发器：导入写入过去的 updated_at 不受影响',
     (await outcome(insConv(A, 'c-trg', { updatedAt: '2001-01-01T00:00:00.000Z' }))) === 'ok',
@@ -1812,11 +1982,18 @@ await expectWhy([
       ord('ord_d', { sessionId: 'wecom:wm-2' }),
     ]),
   );
-  await asApp(R, (tx) =>
-    repoOrders.upsertOrders(tx, [
-      ord('ord_a', { status: 'paid', paidAt: new Date(T0 + 9), data: { id: 'ord_a', sessionId: 'wecom:wm-1', status: 'paid' } }),
-    ]),
-  );
+  const paidA = ord('ord_a', { status: 'paid', paidAt: new Date(T0 + 9), data: { id: 'ord_a', sessionId: 'wecom:wm-1', status: 'paid' } });
+  const upsertPaid = await why(asApp(R, (tx) => repoOrders.upsertOrders(tx, [paidA])));
+  check('仓储：upsertOrders 写入 paid_at，session_id 写回同一个值', upsertPaid === 'ok', upsertPaid);
+  const paidAgain = await why(asApp(R, (tx) => repoOrders.upsertOrders(tx, [paidA])));
+  check('仓储：已付订单原样再 upsert 一次（落库每次都写）不被触发器拦', paidAgain === 'ok', paidAgain);
+  for (const [what, sessionId] of [
+    ['改挂到别的会话', 'wecom:wm-3'],
+    ['session_id 置空', null],
+  ] as const) {
+    const moved = await why(asApp(R, (tx) => repoOrders.upsertOrders(tx, [{ ...paidA, sessionId }])));
+    check(`仓储：upsertOrders 把订单${what}被触发器拒`, moved === 'trigger', moved);
+  }
   const live = await asApp(R, (tx) => repoOrders.readLiveOrders(tx, ['wecom:wm-1', 'wecom:wm-3']));
   check('仓储：只读这批会话里未作废的订单', live.map((o) => o.id).join(',') === 'ord_a,ord_c', live.map((o) => o.id).join(','));
   check(
@@ -2252,7 +2429,8 @@ await t.close();
     '  *pg_dump*) echo "dump" ;;',
     // 目录里有哪些表的数据段：缺省是 01 的四张加 02 的会话三张，FAKE_TOC 换掉它
     '  *"pg_restore --list"*) cat >/dev/null; for t in ${FAKE_TOC:-memberships sop_versions catalog_items audit_log conversations messages orders}; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
-    '  *psql*) echo "2|43" ;;',
+    // 两张配置表的行数，以及库里已有的会话三张表；FAKE_PSQL 换掉它（库停在 01 时第三段为空）
+    '  *psql*) echo "${FAKE_PSQL:-2|43|conversations messages orders}" ;;',
     '  *) exit 97 ;;',
     'esac',
   ]);
@@ -2464,7 +2642,38 @@ await t.close();
       r.out,
     );
   }
+  // 库停在 01（deploy.sh 装了新版本脚本，构建或迁移失败）：会话三张表不存在，告警一行、备份照做；
+  // 只建了其中一部分时，已有的照样要有数据段
+  env.FAKE_TOC = 'memberships sop_versions catalog_items audit_log';
+  env.FAKE_PSQL = '2|43|';
+  const behind = backup(deployDir('behind', ['COMPOSE_PROJECT=behind'], 'behind-sessions'));
+  check(
+    'backup.sh：库里还没有会话三张表时告警一行、照常备份（不因为迁移没跑成每晚整份不出）',
+    behind.code === 0 &&
+      behind.out.split('\n').filter((l) => l.includes('库里还没有 conversations messages orders')).length === 1 &&
+      ['agent.dump.age', 'globals.sql.age', 'var.tar.gz.age'].every((f) => fs.existsSync(path.join(bk, 'behind', day, f))),
+    behind.out,
+  );
+  env.FAKE_PSQL = '2|43|conversations';
+  const partial = backup(deployDir('partial', ['COMPOSE_PROJECT=partial'], 'x'));
+  check(
+    'backup.sh：库里有 conversations 而导出里没有它的数据段，照样非零退出',
+    partial.code === 1 &&
+      partial.out.includes('没有 conversations 的 TABLE DATA') &&
+      !fs.existsSync(path.join(bk, 'partial', day, 'agent.dump.age')),
+    partial.out,
+  );
+  env.FAKE_TOC = 'memberships sop_versions catalog_items audit_log conversations';
+  const partialOk = backup(deployDir('partial-ok', ['COMPOSE_PROJECT=partial-ok'], 'x'));
+  check(
+    'backup.sh：只查库里已有的那几张，缺的两张只告警',
+    partialOk.code === 0 &&
+      partialOk.out.includes('库里还没有 messages orders') &&
+      fs.existsSync(path.join(bk, 'partial-ok', day, 'agent.dump.age')),
+    partialOk.out,
+  );
   delete env.FAKE_TOC;
+  delete env.FAKE_PSQL;
   const rclone = calls()
     .split('\n')
     .filter((l) => l.startsWith('rclone '));
@@ -3075,6 +3284,97 @@ async function realPostgres(superUrl: string): Promise<void> {
       );
     }
     await purgeChecks({ su: sq, as: asRole }, '真实 PG ');
+
+    // ---- 两条连接并发：清除与落库抢同一个会话行；两个认领抢同一批任务 ----
+    {
+      const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+      const [{ id: K }] = await sq<{ id: string }>(
+        `insert into tenants (slug, name, pack_id, retention_lead_days) values ('tenant-race', 'K', 'travel', 10) returning id`,
+      );
+      // (a) 线索、11 天前：到期。连接 1 像落库那样锁住会话行；连接 2 拿旧的预期值清除，要等这把锁
+      const old = new Date(Date.now() - 11 * 86_400_000).toISOString();
+      await sq(
+        `insert into conversations (tenant_id, id, channel, stage, handed_over, state, last_seq, window_start_seq, created_at, updated_at)
+         values ($1, 'race', 'wecom', 'discovery', false, '{"id":"race"}', 1, 1, $2::timestamptz, $2::timestamptz)`,
+        [K, old],
+      );
+      await sq(
+        `insert into messages (tenant_id, conversation_id, seq, role, content, at) values ($1, 'race', 1, 'customer', '第1句', $2::timestamptz)`,
+        [K, old],
+      );
+      const writer = await login(APP);
+      const purger = await login(APP);
+      for (const c of [writer, purger]) {
+        await c.query('begin');
+        await c.query(`select set_config('app.tenant_id', $1, true)`, [K]);
+      }
+      await writer.query(`select 1 from conversations where id = 'race' for update`);
+      const [{ pid }] = (await purger.query<{ pid: number }>('select pg_backend_pid() as pid')).rows;
+      const purged = purger.query<{ ok: boolean }>(`select purge_conversation($1, 'race', now(), 1, $2::timestamptz) as ok`, [K, old]).then(
+        (r) => r.rows[0]?.ok,
+        (e: unknown) => pgErr(e)?.code ?? notDb(e),
+      );
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        waiting = (await sq(`select 1 from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'`, [pid])).length === 1;
+        if (!waiting) await sleep(20);
+      }
+      await writer.query(
+        `insert into messages (tenant_id, conversation_id, seq, role, content, at) values ($1, 'race', 2, 'customer', '第2句', now())`,
+        [K],
+      );
+      await writer.query(`update conversations set last_seq = 2, updated_at = now() where id = 'race'`);
+      await writer.query('commit');
+      const got = await purged;
+      await purger.query('commit').catch(() => {});
+      const [left] = await sq<{ c: number; m: number }>(
+        `select (select count(*)::int from conversations where tenant_id = $1 and id = 'race') as c,
+                (select count(*)::int from messages where tenant_id = $1 and conversation_id = 'race') as m`,
+        [K],
+      );
+      check('真实 PG 并发：清除等在落库锁住的会话行上', waiting);
+      check('真实 PG 并发：落库推进 last_seq 与 updated_at 提交之后，拿旧预期值的清除返回 false', got === false, String(got));
+      check('真实 PG 并发：会话与刚落库的消息都在', left?.c === 1 && left.m === 2, JSON.stringify(left));
+
+      // (b) 十二个到期任务；第一个认领拿到 5 个、不提交，第二个认领不等它，拿另外 5 个
+      const { claimDueJobs } = await import('./repo/jobs.js');
+      for (let i = 0; i < 12; i++) {
+        await sq(
+          `insert into jobs (tenant_id, kind, dedupe_key, run_at, max_attempts, payload) values ($1, 'followup', $2, now() - make_interval(secs => $3), 1, '{}')`,
+          [K, `race:${i}`, 100 - i],
+        );
+      }
+      const at = new Date();
+      let release = (): void => {};
+      const gate = new Promise<void>((r) => (release = r));
+      let firstReady = (_ids: string[]): void => {};
+      const ready = new Promise<string[]>((r) => (firstReady = r));
+      const first = withTenant(appDb.db, ctx(K), async (tx) => {
+        const ids = (await claimDueJobs(tx, at, 5)).map((j) => j.id);
+        firstReady(ids);
+        await gate;
+        return ids;
+      }).catch((e: unknown) => {
+        firstReady([]);
+        return `error ${pgErr(e)?.code ?? notDb(e)}`;
+      });
+      const ids1 = await ready;
+      const second = withTenant(appDb.db, ctx(K), async (tx) => (await claimDueJobs(tx, at, 5)).map((j) => j.id)).catch(
+        (e: unknown) => `error ${pgErr(e)?.code ?? notDb(e)}`,
+      );
+      let timer: NodeJS.Timeout | undefined;
+      const early = await Promise.race([second, new Promise<'blocked'>((r) => (timer = setTimeout(() => r('blocked'), 3000)))]);
+      clearTimeout(timer);
+      release();
+      const firstIds = await first;
+      const ids2 = await second;
+      check('真实 PG 并发：第一个认领还没提交时，第二个认领不等它的行锁', Array.isArray(early), String(early));
+      check(
+        '真实 PG 并发：两个认领各拿 5 个，id 不相交',
+        Array.isArray(firstIds) && Array.isArray(ids2) && ids1.length === 5 && ids2.length === 5 && ids2.every((id) => !ids1.includes(id)),
+        JSON.stringify({ ids1, ids2 }),
+      );
+    }
 
     // ---- 认证函数 ----
     const lookup = async (c: InstanceType<typeof pg.Client>, tenant: string): Promise<{ o_user_id: string; o_password_hash: string }[]> =>
