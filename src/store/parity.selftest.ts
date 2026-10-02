@@ -6,7 +6,8 @@
 // 转人工各入口（安全网三类、模型调工具、改行程承诺、回复说了转接、旧 /handoff）。
 // store 是进程级单例，一个进程只能装一种后端：本文件带上 PARITY_CHILD 再起两次自己（单进程 node --import tsx，spawnSync 带
 // SIGKILL 超时），两个子进程跑同一份场景脚本与假模型（输入逐字相同），各自把原始结果写进文件，由父进程规范化、比较。
-// 两个子进程的配置源相同（PGlite 上 installSeededConfig），只差会话存储；会话 id 一律是非 demo 类的 wecom:parity-*。
+// 两个子进程的配置源相同（PGlite 上 installSeededConfig），钟也相同（父进程定的基准时刻，见 parity-clock.ts），只差会话存储；
+// 会话 id 一律是非 demo 类的 wecom:parity-*。
 // 用法：npx tsx src/store/parity.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawnSync } from 'node:child_process';
@@ -53,6 +54,27 @@ interface ChildOut {
   fatal: string | null;
 }
 
+/**
+ * 场景之后的核对项（子进程 verify 产出），父进程按每组场景的 ids 逐个会话要求它们都在、都通过：verify 跳过哪一组、哪个会话，
+ * 父进程都会少项（各项本身过没过另外逐条报）。放在子进程入口之前：子进程在模块求值到这里之前就开跑
+ */
+const DB_SESSION_CHECK = {
+  present: '库里有这个会话',
+  rebuilt: '库里按预载那条路重建的会话与内存相同',
+  seqs: '库里的消息 seq 从 1 起连续，条数等于 last_seq',
+  window: '内存里每条消息的 seq 与库里的窗口对得上',
+  orders: '库里未作废的订单与内存相同',
+  frozen: '内存里的消息都已冻结（原地修改会抛 TypeError）',
+};
+const DB_SCENARIO_CHECK = {
+  drained: '排空写队列之后库里不欠改动',
+  healthy: '库里：没有 poisoned 的会话、没有撞上另一写者',
+  identity: '库里：saveSession 没收到过副本（identity map 唯一）',
+};
+const FILE_SESSION_CHECK = '文件存储下消息不冻结';
+/** 经企微适配器走的那几轮，标签里用这个箭头（父进程据此要求处理链排空） */
+const WECOM_TURN = ' ⇐ ';
+
 const CHILD = process.env.PARITY_CHILD;
 if (CHILD === 'file' || CHILD === 'db') await childMain(CHILD);
 
@@ -72,13 +94,27 @@ function check(name: string, cond: boolean, detail = ''): void {
   else fails.push(`${name}${detail ? ' — ' + detail : ''}`);
 }
 
+/**
+ * 两个子进程共用的基准时刻：当天本地 12:00。子进程预加载 parity-clock.ts，从这个时刻起走（各自现取「今天」的话，先后跑的两个子进程
+ * 跨过本地零点就会报假差异）；正午离两头都远，也让套件不受在几点跑的影响
+ */
+const CLOCK_MS = new Date().setHours(12, 0, 0, 0);
+const CLOCK_MODULE = fileURLToPath(new URL('./parity-clock.ts', import.meta.url));
+
 function runChild(mode: Mode): ChildOut | null {
   const varDir = fs.mkdtempSync(path.join(ROOT, `${mode}-`));
   const result = path.join(ROOT, `${mode}.json`);
   // 单进程：node 自己带 tsx 加载器；超时用 SIGKILL，不留孤儿
-  const r = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url)], {
+  const r = spawnSync(process.execPath, ['--import', 'tsx', '--import', CLOCK_MODULE, fileURLToPath(import.meta.url)], {
     cwd: process.cwd(),
-    env: { ...process.env, PARITY_CHILD: mode, PARITY_RESULT: result, VAR_DIR: varDir, CONFIG_SOURCE: 'file' },
+    env: {
+      ...process.env,
+      PARITY_CHILD: mode,
+      PARITY_RESULT: result,
+      PARITY_CLOCK_MS: String(CLOCK_MS),
+      VAR_DIR: varDir,
+      CONFIG_SOURCE: 'file',
+    },
     timeout: 240_000,
     killSignal: 'SIGKILL',
     encoding: 'utf8',
@@ -295,6 +331,17 @@ function anchors(out: ChildOut): [string, boolean, string][] {
         .every((t) => (t.reply as { silent?: boolean }).silent === true),
     kinds,
   );
+  const hm = ho('model');
+  add(
+    '模型调 handoff_to_human：客户原话带出行时间，转人工记录里有 departNote',
+    hm?.handoff?.departNote?.includes('10月12号') === true,
+    hm?.handoff,
+  );
+  add(
+    '模型调 handoff_to_human：「AI 已转人工」那条 system 消息里含出行时间（一次写成，第 1 步第 4 处写入点）',
+    said(hm, 'system').some((c) => c.startsWith('AI 已转人工：') && c.includes('客户原话里的出行时间：「我们10月12号出发')),
+    said(hm, 'system'),
+  );
   const lg = sc('转人工各入口');
   const lgs = ho('legacy');
   add(
@@ -341,6 +388,39 @@ if (file && db) {
     }
   }
   for (const c of [...file.checks, ...db.checks]) check(`${c.scenario}：${c.name}`, c.ok, c.detail);
+  // 场景之后的核对确实逐组、逐个会话做了且通过。重置、裁剪两组 PG 那边另有专项核对（每个会话都要有），按名字确认
+  const DB_EXTRA_CHECK: Record<string, string[]> = {
+    重置: ['库里重置之前的消息都还在（窗口之前还有消息）', '窗口起点推进到重置回复那一条', '订单在库里记作废（void_reason=reset），不删'],
+    裁剪: ['库里 402 条全留着，窗口起点推进到第 102 条', '内存照旧只留 301 条'],
+  };
+  const passed = (out: ChildOut, scenario: string, name: string): boolean =>
+    out.checks.some((c) => c.scenario === scenario && c.name === name && c.ok);
+  for (const s of db.scenarios) {
+    const missing = Object.values(DB_SCENARIO_CHECK).filter((n) => !passed(db, s.name, n));
+    check(`${s.name}：PG 子进程做了这组的库里核对`, !missing.length, `少了或没过：${missing.join('；')}`);
+    for (const id of s.ids) {
+      const want = [...Object.values(DB_SESSION_CHECK), ...(DB_EXTRA_CHECK[s.name] ?? [])].map((n) => `${id}：${n}`);
+      const lack = want.filter((n) => !passed(db, s.name, n));
+      check(`${s.name}：PG 子进程逐项核对了 ${id} 在库里`, !lack.length, `少了或没过：${lack.join('；')}`);
+    }
+  }
+  for (const s of file.scenarios) {
+    for (const id of s.ids) check(`${s.name}：文件子进程核对了 ${id}`, passed(file, s.name, `${id}：${FILE_SESSION_CHECK}`));
+  }
+  // 模型脚本逐轮恰好用完（少调模型就剩步数；跟进那组记在 notes 的 leftover*），经企微的每一轮处理链都排空了；多调由子进程的
+  // overrun 管。现在没有哪一轮该剩步数，以后真有，在场景里给那一轮标出期望值
+  for (const out of [file, db]) {
+    for (const s of out.scenarios) {
+      const left = [
+        ...s.turns.map((t) => [t.label, t.leftover] as const),
+        ...Object.entries(s.notes).filter(([k]) => k.startsWith('leftover')),
+      ].filter(([, n]) => n !== 0);
+      check(`${out.mode} · ${s.name}：每一轮的模型脚本都恰好用完（没有少调模型）`, !left.length, JSON.stringify(left));
+      const viaWecom = s.turns.filter((t) => t.label.includes(WECOM_TURN));
+      const stuck = viaWecom.filter((t) => (t.reply as { idle?: unknown } | null)?.idle !== true).map((t) => t.label);
+      if (viaWecom.length) check(`${out.mode} · ${s.name}：经企微的每一轮处理链都排空了`, !stuck.length, stuck.join('；'));
+    }
+  }
   for (const out of [file, db]) {
     const seen = keysSeen(out);
     for (const [kind, keys] of Object.entries(MUST_SEE) as [keyof typeof MUST_SEE, string[]][]) {
@@ -349,7 +429,6 @@ if (file && db) {
     }
   }
   for (const out of [file, db]) for (const [n, ok, detail] of anchors(out)) check(`${out.mode} · ${n}`, ok, detail);
-  check('PG 子进程做了库里的核对', db.checks.filter((c) => c.name.includes('库里')).length >= 20, String(db.checks.length));
 
   // 比较器对每一个字段都敏感（防止为了比得上多去掉字段）：在文件那一份的原始结果上，每一种字段形状改一处，规范化之后必须与 PG 那份不同；
   // 时间戳的取值改了必须仍然相同（只有它们被抹掉）。每一处是一项断言
@@ -571,6 +650,14 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     out.checks.push({ scenario, name, ok, detail: ok ? '' : detail });
   };
   ck('装配', `会话存储是 ${mode}`, store.sessionStoreMode() === mode, store.sessionStoreMode());
+  const clock = Number(process.env.PARITY_CLOCK_MS);
+  const clockNow = [Date.now(), new Date().getTime()];
+  ck(
+    '装配',
+    'Date.now() 与无参 new Date() 都从父进程给的基准时刻起走',
+    clockNow.every((x) => x >= clock && x - clock < 60_000),
+    `基准 ${clock}，现在 ${clockNow.join('、')}`,
+  );
 
   const { handleMessage, onToolCall } = await import('../engine.js');
   const { app } = await import('../server.js');
@@ -670,7 +757,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     await syncFromCallback(`tok-${msgSeq}`);
     const done = await idle();
     o.out.turns.push({
-      label: `wecom:${uid} ⇐ ${msgtype === 'text' ? text : `[${msgtype}]`}`,
+      label: `wecom:${uid}${WECOM_TURN}${msgtype === 'text' ? text : `[${msgtype}]`}`,
       reply: { idle: done },
       leftover: takeLeftover(),
     });
@@ -694,34 +781,34 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     if (mode === 'file') {
       for (const id of ids) {
         const s = store.getSession(id);
-        ck(name, `${id}：文件存储下消息不冻结`, !!s && !s.messages.some((m) => Object.isFrozen(m)));
+        ck(name, `${id}：${FILE_SESSION_CHECK}`, !!s && !s.messages.some((m) => Object.isFrozen(m)));
       }
       return;
     }
     const { undrained } = await store.drainStore(10_000);
-    ck(name, '排空写队列之后库里不欠改动', undrained.length === 0, undrained.join(','));
+    ck(name, DB_SCENARIO_CHECK.drained, undrained.length === 0, undrained.join(','));
     const stored = await readStoredConversations(t, tenantId);
     for (const id of ids) {
       const mem = store.getSession(id);
       const got = stored.get(id);
-      ck(name, `${id}：库里有这个会话`, !!mem && !!got);
+      ck(name, `${id}：${DB_SESSION_CHECK.present}`, !!mem && !!got);
       if (!mem || !got) continue;
       const want = normalizeForStore(mem);
       ck(
         name,
-        `${id}：库里按预载那条路重建的会话与内存相同`,
+        `${id}：${DB_SESSION_CHECK.rebuilt}`,
         !!got.session && isDeepStrictEqual(got.session, want),
         got.session ? (firstDiff(want, got.session, '$', ['内存', '库里']) ?? '') : '窗口与 last_seq、window_start_seq 对不上',
       );
       ck(
         name,
-        `${id}：库里的消息 seq 从 1 起连续，条数等于 last_seq`,
+        `${id}：${DB_SESSION_CHECK.seqs}`,
         got.seqs.length === got.lastSeq && got.seqs.every((q, i) => q === i + 1),
         `${got.seqs.length} 条，last_seq=${got.lastSeq}`,
       );
       ck(
         name,
-        `${id}：内存里每条消息的 seq 与库里的窗口对得上`,
+        `${id}：${DB_SESSION_CHECK.window}`,
         mem.messages.every((m, i) => store.seqOf(m) === got.windowStartSeq + i) &&
           got.windowStartSeq === got.lastSeq - mem.messages.length + 1,
         `window_start_seq=${got.windowStartSeq} last_seq=${got.lastSeq} 内存 ${mem.messages.length} 条`,
@@ -733,20 +820,20 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
         .toSorted((a, b) => a.id.localeCompare(b.id));
       ck(
         name,
-        `${id}：库里未作废的订单与内存相同`,
+        `${id}：${DB_SESSION_CHECK.orders}`,
         isDeepStrictEqual(got.liveOrders, memOrders),
         firstDiff(memOrders, got.liveOrders, '$', ['内存', '库里']) ?? '',
       );
       ck(
         name,
-        `${id}：内存里的消息都已冻结（原地修改会抛 TypeError）`,
+        `${id}：${DB_SESSION_CHECK.frozen}`,
         mem.messages.every((m) => Object.isFrozen(m)),
       );
       for (const [n, ok, detail] of extra?.(id, stored, mem) ?? []) ck(name, `${id}：${n}`, ok, detail);
     }
     const h = store.storeHealth();
-    ck(name, '库里：没有 poisoned 的会话、没有撞上另一写者', !h.poisoned.length && !h.conflict, JSON.stringify(h));
-    ck(name, '库里：saveSession 没收到过副本（identity map 唯一）', store.__storeTest.pgStats()?.foreign === 0);
+    ck(name, DB_SCENARIO_CHECK.healthy, !h.poisoned.length && !h.conflict, JSON.stringify(h));
+    ck(name, DB_SCENARIO_CHECK.identity, store.__storeTest.pgStats()?.foreign === 0);
   }
 
   async function scenario(name: string, ids: string[], body: (o: Ctx) => Promise<void>, extra?: DbExtra): Promise<void> {
@@ -912,7 +999,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
       script.push(...steps);
       await syncFromCallback(`tok-rp-${msgSeq}`);
       const done = await idle();
-      o.out.turns.push({ label: `wecom:${uid} ⇐ 重放「${text}」`, reply: { idle: done }, leftover: takeLeftover() });
+      o.out.turns.push({ label: `wecom:${uid}${WECOM_TURN}重放「${text}」`, reply: { idle: done }, leftover: takeLeftover() });
     };
     await recorded('parity-rp-recorded', '你好，想看看', [], [{ content: '您好～这次想去哪儿玩？' }]);
     await recorded('parity-rp-generated', '你好，想去玩', [{ role: 'agent', content: '您好～想去哪儿玩呢？', at: Date.now() }], []);
@@ -993,9 +1080,10 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
       await say(o, sid, text, []);
       await say(o, sid, '在吗', []);
     }
-    // 模型调 handoff_to_human
+    // 模型调 handoff_to_human：原话带出行时间，转人工备注随「AI 已转人工」那条 system 消息一次写成（第 1 步第 4 处写入点，
+    // 原来是工具写完之后再 rec.content += 原地追加，PG 存储下会抛 TypeError）
     await say(o, HO.model, '想去云南看看', searchYunnan);
-    await say(o, HO.model, '想换几个景点', [
+    await say(o, HO.model, '我们10月12号出发，想换几个景点', [
       { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户要换景点' } }] },
       { content: '好的，我马上为您转接资深顾问，请稍候～' },
     ]);
@@ -1016,10 +1104,6 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     await say(o, HO.legacy, '想去云南看看', searchYunnan);
   });
 
-  ck(
-    '收尾',
-    '每个场景的模型脚本都恰好用完，没有多出来的模型请求',
-    script.length === 0 && overrun === 0,
-    `剩 ${script.length} 步，多 ${overrun} 次`,
-  );
+  // 少调模型由父进程逐轮看 leftover；这里只管多调（脚本空了还来的请求）
+  ck('收尾', '没有多出来的模型请求（脚本空了还来的）', overrun === 0, `多 ${overrun} 次`);
 }
