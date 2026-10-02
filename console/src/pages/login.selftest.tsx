@@ -17,6 +17,7 @@
 //    铃铛弹层与用户菜单是有名字的区域，菜单项里没有嵌套的按钮；没有这个页面时有 h1。
 // 9. ⌘K 打开页面（别的页、当前页）以后焦点在 main，选外观这类操作还给搜索触发器；窄屏的导航抽屉点导航换页以后焦点在 main，
 //    Esc 关上还给「打开导航」，开着时只有顶栏一个 banner；启动出错、数据库没开的整页是 main 地标，有 h1，标题不跳级。
+// 10. 用户菜单里选外观：菜单与外观子菜单不收起，勾、aria-checked 与「外观」右边的值当场换成新选的；点「关于」照常收起。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/pages/login.selftest.tsx
 import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
@@ -822,6 +823,78 @@ const banners = (): Element[] =>
     ],
   );
   server = { demo: false, loggedIn: false, login: 'check' };
+}
+
+// ---------------- 10. 用户菜单里选外观（验收之后，2026-10-02） ----------------
+// 外观三项和「减少动态效果」一样只改偏好，菜单不收起：子菜单的勾、aria-checked 与「外观」右边的值当场换成新选的。
+// 原来点了就收起，antd 的弹层收起以后不再重渲内容，点得快时子菜单又被悬停的定时器打开，勾还停在旧值上，直到再打开菜单。
+// 点「关于」照常收起
+{
+  server = { demo: false, loggedIn: true, login: 'check' };
+  const m = await mount('/console/catalog/route');
+  const shown = (sel: string): boolean => {
+    const el = document.querySelector(sel);
+    return el !== null && !/-hidden\b/.test(el.className);
+  };
+  const radios = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('.user-submenu [role="menuitemradio"]')];
+  // 子菜单开没开看「外观」这一项的 aria-expanded（rc-menu 当场改）：happy-dom 里弹层的离场动效收不了尾，弹层一直在
+  const title = (): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('.user-menu .ant-dropdown-menu-submenu-title')].find((t) => m.text(t).startsWith('外观'));
+  const look = (): unknown[] => [
+    document.documentElement.getAttribute('data-theme'),
+    m.$('.user-btn')?.getAttribute('aria-expanded'),
+    shown('.user-menu-root'),
+    m.text(document.querySelector('.user-menu .menu-value')),
+    title()?.getAttribute('aria-expanded'),
+    radios().map(
+      (li) => `${m.text(li)}${li.getAttribute('aria-checked') === 'true' ? '（选中）' : ''}${li.querySelector('.menu-check') ? '勾' : ''}`,
+    ),
+  ];
+  const wait = async (ms: number): Promise<void> => {
+    await act(async () => new Promise((res) => setTimeout(res, ms)));
+    await settle(m.qc);
+  };
+  await m.click(m.$('.user-btn'));
+  // 悬停「外观」：rc-menu 等 0.1 秒才开子菜单，弹层再晚一帧画出来
+  await act(async () => void title()?.dispatchEvent(new win.MouseEvent('mouseover', { bubbles: true }) as unknown as Event));
+  await wait(300);
+  eq('外观：打开子菜单，默认浅色', look(), ['light', 'true', true, '浅色', 'true', ['浅色（默认）（选中）勾', '深色', '跟随系统']]);
+  const pick = async (label: string): Promise<void> => {
+    await m.click(radios().find((li) => m.text(li) === label));
+    await wait(600);
+  };
+  await pick('深色');
+  eq('外观：选深色，菜单与子菜单都开着，勾、aria-checked 与右边的值当场是深色', look(), [
+    'dark',
+    'true',
+    true,
+    '深色',
+    'true',
+    ['浅色（默认）', '深色（选中）勾', '跟随系统'],
+  ]);
+  await pick('跟随系统');
+  eq('外观：再选跟随系统（系统是浅色），同样当场换', look(), [
+    'light',
+    'true',
+    true,
+    '跟随系统',
+    'true',
+    ['浅色（默认）', '深色', '跟随系统（选中）勾'],
+  ]);
+  await pick('浅色（默认）');
+  await m.click([...document.querySelectorAll<HTMLElement>('.user-menu [role="menuitem"]')].find((li) => m.text(li) === '关于'));
+  await wait(600);
+  // happy-dom 里下拉的离场动效收不了尾（不发 animationend），收起看用户按钮的 aria-expanded
+  eq(
+    '外观：选回浅色以后点「关于」，菜单照常收起、打开关于',
+    [
+      document.documentElement.getAttribute('data-theme'),
+      m.$('.user-btn')?.getAttribute('aria-expanded'),
+      !!document.querySelector('.about-line'),
+    ],
+    ['light', 'false', true],
+  );
+  await m.unmount();
 }
 
 if (fails.length) {
