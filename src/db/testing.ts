@@ -2,6 +2,7 @@
 // 与生产一致的地方：三个角色都在，库的属主是 agent_owner，迁移以 agent_owner 执行，所以表和函数的属主、
 // 默认权限、授权都和真实库相同。不一致的地方：PGlite 以超级用户连接，默认绕过 RLS；RLS 与授权的结论
 // 以真实 Postgres 上的套件为准（spec R13），这里要看 agent_app 视角时自己 SET ROLE。
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +14,7 @@ import pg from 'pg';
 import { initConfig, type ConfigDeps } from '../config/source.js';
 import { imageCode, importConfig } from '../config/transfer.js';
 import { assertPgUrl, countingLogger, registerDriver, resetSessionTenant, type Db, type TenantLock } from './client.js';
-import { MIGRATIONS_DIR } from './migrate.js';
+import { MIGRATIONS_DIR, runMigrations } from './migrate.js';
 import * as schema from './schema.js';
 
 export interface TestDb {
@@ -147,6 +148,8 @@ export interface StoreFaults {
   gate: Promise<void> | null;
   /** 设了就让下一次归还连接抛它（只一次）：事务已经提交，调用方却收到错误——模拟 COMMIT 之后回包丢失 */
   releaseOnce: Error | null;
+  /** releaseOnce 之前先放过这么多次归还（给「第二次落库才丢回包」用） */
+  skipReleases: number;
 }
 
 export interface PgStoreFixture {
@@ -173,7 +176,7 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
   const tenantId = (await t.pg.query<{ id: string }>('select id from tenants where slug = $1', [slug])).rows[0]!.id;
   await t.pg.exec('SET ROLE agent_app');
   const stats = { queries: 0, acquires: 0 };
-  const faults: StoreFaults = { acquire: null, gate: null, releaseOnce: null };
+  const faults: StoreFaults = { acquire: null, gate: null, releaseOnce: null, skipReleases: 0 };
   const db: Db = drizzle(t.pg, {
     schema,
     logger: {
@@ -191,9 +194,14 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
         db,
         release: async (destroy) => {
           if (destroy) await resetSessionTenant(db);
+          if (!faults.releaseOnce) return;
+          if (faults.skipReleases > 0) {
+            faults.skipReleases--;
+            return;
+          }
           const err = faults.releaseOnce;
           faults.releaseOnce = null;
-          if (err) throw err;
+          throw err;
         },
       };
     },
@@ -202,15 +210,17 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
 }
 
 /**
- * 真实 Postgres 上「COMMIT 之后回包丢掉」的连接（02 验收 8）：dropCommitReply 大于 0 时，下一条 COMMIT 照常发到库里执行，
- * 之后这条连接上的一切都当作断线（抛不带 code 的「连接意外中断」，与 node-postgres 一样），归还时销毁
+ * 真实 Postgres 上「COMMIT 之后回包丢掉」的连接（02 验收 8）：dropCommitReply 大于 0 时（先放过 skipCommits 条），下一条 COMMIT
+ * 照常发到库里执行，之后这条连接上的一切都当作断线（抛不带 code 的「连接意外中断」，与 node-postgres 一样），归还时销毁
  */
-export async function openFlakyDb(url: string): Promise<{ db: Db; close(): Promise<void>; faults: { dropCommitReply: number } }> {
+export async function openFlakyDb(
+  url: string,
+): Promise<{ db: Db; close(): Promise<void>; faults: { dropCommitReply: number; skipCommits: number } }> {
   assertPgUrl(url);
   const pool = new pg.Pool({ connectionString: url, max: 3 });
   pool.on('error', () => {});
   pool.on('connect', (c) => c.on('error', () => {}));
-  const faults = { dropCommitReply: 0 };
+  const faults = { dropCommitReply: 0, skipCommits: 0 };
   const db: Db = drizzleNodePg(pool, { schema, logger: countingLogger });
   const lost = (): Error => new Error('Connection terminated unexpectedly');
   registerDriver(db, {
@@ -223,6 +233,10 @@ export async function openFlakyDb(url: string): Promise<{ db: Db; close(): Promi
           if (dropped) throw lost();
           const text = typeof config === 'string' ? config : config.text;
           if (faults.dropCommitReply > 0 && text?.trim().toLowerCase() === 'commit') {
+            if (faults.skipCommits > 0) {
+              faults.skipCommits--;
+              return client.query(config as never, values as never);
+            }
             faults.dropCommitReply--;
             await client.query(config as never, values as never);
             dropped = true;
@@ -238,4 +252,90 @@ export async function openFlakyDb(url: string): Promise<{ db: Db; close(): Promi
     },
   });
   return { db, close: () => pool.end(), faults };
+}
+
+// ---------------- 真实 Postgres 上的一次性库（给 src/ 下别的套件用：它们不能 import pg） ----------------
+
+export interface RealPgFixture {
+  /** 临时库里各身份的连接串 */
+  urls: { super: string; owner: string; app: string; platform: string };
+  /** 建好的租户（slug 默认 demo） */
+  tenantId: string;
+  /** 以超级用户在临时库里执行一条 SQL */
+  query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<R[]>;
+  /** 删库、断开 */
+  drop(): Promise<void>;
+}
+
+/**
+ * PG_TEST_URL（专用测试集群的超级用户连接串）上建一个临时库：按 deploy/db-init/roles.sql 建角色（角色是集群级的，
+ * 已存在就改口令，与 db.selftest 同一做法）、以 agent_owner 跑迁移、以超级用户建租户。不要指向开发或线上用的集群
+ */
+export async function createRealPgFixture(superUrl: string, opts: { slug?: string } = {}): Promise<RealPgFixture> {
+  assertPgUrl(superUrl);
+  const lit = (v: string): string => `'${v.replaceAll("'", "''")}'`;
+  const ident = (v: string): string => `"${v.replaceAll('"', '""')}"`;
+  const su = new pg.Client({ connectionString: superUrl });
+  su.on('error', () => {});
+  await su.connect();
+  const dbName = `agent_storetest_${randomBytes(4).toString('hex')}`;
+  const pw = { owner: randomBytes(12).toString('hex'), app: randomBytes(12).toString('hex'), platform: randomBytes(12).toString('hex') };
+  const urlAs = (user: string | null, password: string | null): string => {
+    const u = new URL(superUrl);
+    if (user !== null) u.username = user;
+    if (password !== null) u.password = password;
+    u.pathname = `/${dbName}`;
+    return u.toString();
+  };
+  let inDb: pg.Client | null = null;
+  const drop = async (): Promise<void> => {
+    await inDb?.end().catch(() => {});
+    await su.query(`drop database if exists ${ident(dbName)} with (force)`).catch(() => {});
+    await su.end().catch(() => {});
+  };
+  try {
+    const [me] = (await su.query<{ s: boolean }>('select rolsuper as s from pg_roles where rolname = current_user')).rows;
+    if (!me?.s) throw new Error('PG_TEST_URL 必须是超级用户：要建库、建角色');
+    const roles = ['agent_owner', 'agent_app', 'agent_platform'];
+    const existing = new Set(
+      (await su.query<{ r: string }>('select rolname as r from pg_roles where rolname = any($1)', [roles])).rows.map((x) => x.r),
+    );
+    const statements = fs
+      .readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'deploy', 'db-init', 'roles.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() && !l.startsWith('--'))
+      .map((l) => {
+        const m = /^CREATE ROLE (\w+) /.exec(l);
+        const line = m && existing.has(m[1]!) ? l.replace('CREATE ROLE', 'ALTER ROLE') : l;
+        return line
+          .replaceAll(":'owner_password'", lit(pw.owner))
+          .replaceAll(":'app_password'", lit(pw.app))
+          .replaceAll(":'platform_password'", lit(pw.platform))
+          .replaceAll(':"db_name"', ident(dbName));
+      });
+    for (const stmt of statements) await su.query(stmt);
+    const urls = {
+      super: urlAs(null, null),
+      owner: urlAs('agent_owner', pw.owner),
+      app: urlAs('agent_app', pw.app),
+      platform: urlAs('agent_platform', pw.platform),
+    };
+    await runMigrations(urls.owner);
+    const c = new pg.Client({ connectionString: urls.super });
+    c.on('error', () => {});
+    await c.connect();
+    inDb = c;
+    const slug = opts.slug ?? 'demo';
+    const [t] = (await c.query<{ id: string }>(`insert into tenants (slug, name, pack_id) values ($1, $1, 'travel') returning id`, [slug]))
+      .rows;
+    return {
+      urls,
+      tenantId: t!.id,
+      query: async <R>(text: string, params: unknown[] = []) => (await c.query(text, params)).rows as R[],
+      drop,
+    };
+  } catch (e) {
+    await drop();
+    throw e;
+  }
 }
