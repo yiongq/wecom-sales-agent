@@ -161,6 +161,8 @@ const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
 let dbInstalled = false;
 let loaded: Loaded | null = null;
 let lockState: 'held' | 'lost' = 'held';
+/** 重取时发现锁已在另一个进程手里（held_by_other）：此后本进程不该再写会话（02 spec「identity map 与写入 · 停机」） */
+let lockTaken = false;
 let sopStale = false;
 let catalogStale = false;
 let shuttingDown = false;
@@ -186,6 +188,11 @@ export function currentCatalog(): CatalogSnapshot {
 /** 产品库快照变化后回调；retrieval.ts 在加载时注册，用来失效并重建索引 */
 export function onCatalogChanged(cb: (snap: CatalogSnapshot) => void): void {
   catalogListeners.push(cb);
+}
+
+/** 租户锁已被另一个进程拿走（重取得到 held_by_other）。PG 会话存储的 drain 段据此不写库、直接 spill */
+export function tenantLockTaken(): boolean {
+  return lockTaken;
 }
 
 export function configHealth(): ConfigHealth {
@@ -647,6 +654,7 @@ async function reacquireOnce(): Promise<void> {
     console.log('[config] 租户锁已重新取得，配置写入恢复');
   } else if (r === 'held_by_other') {
     // 另一个进程已经接管：先跑全部停机钩子（在途的企微回复发完、会话落盘），再退出
+    lockTaken = true;
     console.error('[config] 租户锁已被另一个进程拿走，本进程优雅退出');
     cur.deps.gracefulExit(1);
   } else {
@@ -763,6 +771,7 @@ export const __configTest = {
     dbInstalled = false;
     loaded = null;
     lockState = 'held';
+    lockTaken = false;
     sopStale = false;
     catalogStale = false;
     shuttingDown = false;

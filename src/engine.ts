@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentReply, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
-import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, saveSession } from './store.js';
+import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, saveSession } from './store.js';
 import {
   enterHandoff,
   executeTool,
@@ -3301,6 +3301,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   if (isReset && profile().flags.reset_command) {
     session.stage = 'greeting';
     session.profile = {};
+    // 只追加（R5）：db 存储下库里的旧消息都留着，重置只体现为窗口起点推进到重置回复那一条；先告诉 store 这是重置，
+    // 严格模式的 seq 分配才不把「窗口里原有的消息全没了」当成整体换成了副本。文件存储下什么都不变
+    noteWindowReset(session);
     session.messages = [];
     // 订单要真删，不能只清引用：后台按 sessionId 反查订单，GMV/成交率也是直接扫
     // orders 算的，留着孤儿订单会让重置后的会话仍显示订单、仍计入经营数据

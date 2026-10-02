@@ -77,9 +77,10 @@ export async function lockConversation(tx: Tx, id: string): Promise<Conversation
 
 /**
  * 落库第 2 步「没有这一行就插入」：不给 seqs 时 last_seq = 0、window_start_seq = 1；导入一次写好时带上最终值。
- * 返回库里生成的 ref
+ * 返回库里生成的 ref；这一行已经在了（主键冲突）返回 null、不报错，什么都不改：另一个事务插入还没提交时，插入在主键上
+ * 等到它提交才返回，调用方接着 lockConversation 就看得见那一行（新会话第一次落库 COMMIT 断线之后的重试）
  */
-export async function insertConversation(tx: Tx, row: ConversationValues, seqs?: ConversationSeqs): Promise<{ ref: string }> {
+export async function insertConversation(tx: Tx, row: ConversationValues, seqs?: ConversationSeqs): Promise<{ ref: string } | null> {
   const { tenantId } = currentTenantCtx();
   const [out] = await tx
     .insert(conversations)
@@ -90,8 +91,9 @@ export async function insertConversation(tx: Tx, row: ConversationValues, seqs?:
       windowStartSeq: seqs?.windowStartSeq ?? 1,
       flushId: seqs?.flushId ?? null,
     })
+    .onConflictDoNothing({ target: [conversations.tenantId, conversations.id] })
     .returning({ ref: conversations.ref });
-  return out!;
+  return out ?? null;
 }
 
 /** 落库第 4 步：投影列、state、last_seq、window_start_seq、updated_at、flush_id 一起写；created_at 不动。返回是否改到了行 */

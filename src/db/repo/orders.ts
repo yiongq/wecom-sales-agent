@@ -48,6 +48,19 @@ export async function upsertOrders(tx: Tx, rows: readonly OrderRow[]): Promise<v
   }
 }
 
+/** 预载：这些订单 id 里库里有的（作废的也算）。orders.json 里的旧副本据此以库为准，作废的不会复活 */
+export async function readOrderIdsIn(tx: Tx, ids: readonly string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const rows = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(sql`${orders.id} = any(${sql.param(ids.slice(i, i + CHUNK))}::text[])`);
+    out.push(...rows.map((r) => r.id));
+  }
+  return out;
+}
+
 /** 预载与导出：这批会话的未作废订单，按创建时间排序 */
 export async function readLiveOrders(tx: Tx, sessionIds: readonly string[]): Promise<OrderRow[]> {
   if (!sessionIds.length) return [];
