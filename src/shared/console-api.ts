@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
+import type { HandoffKind } from './conversation-types.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
@@ -81,8 +82,8 @@ export const PatchItemBody = z.strictObject({
   unset: z.array(z.string().min(1).max(64)).max(64).optional(),
 });
 
-/** 会话状态（docs/features/console-ux/spec.md「接口改动」）。判定只在 src/shared/conversation.ts 的 conversationState 里 */
-export const CONVERSATION_STATES = ['ai', 'human', 'paid'] as const;
+/** 会话状态（docs/features/console-ux/spec.md「接口改动」；02 加 assigned）。判定只在 src/shared/conversation.ts 的 conversationState 里 */
+export const CONVERSATION_STATES = ['ai', 'human', 'assigned', 'paid'] as const;
 export type ConversationState = (typeof CONVERSATION_STATES)[number];
 
 /** 会话只读列表：offset 分页，limit ≤ 100。state、stage、order 由后台 UX spec 增补：服务端先过滤、排序，再分页 */
@@ -275,7 +276,7 @@ export interface AnonCatalogItem {
   payload: Route | Hotel;
 }
 
-/** 会话只读列表的一行：只投影这几个字段，不带消息正文和客户画像 */
+/** 会话只读列表的一行：只投影这几个字段，不带消息正文和客户画像（needSummary 只用规范化的取值） */
 export interface ConversationRow {
   id: string;
   channel: string;
@@ -283,6 +284,12 @@ export interface ConversationRow {
   handedOver: boolean;
   messageCount: number;
   updatedAt: string;
+  /** 02 新增：会话标题后半段，如「贵州银发4人」（见 needSummary） */
+  needSummary: string | null;
+  assignee: { userId: string | null; name: string } | null;
+  handoff: { kind: HandoffKind; at: string; reason: string } | null;
+  /** 客户最后一条消息的时间：企微 send_time，没有就用处理时刻 */
+  lastCustomerAt: string | null;
 }
 
 export interface ConversationPage {

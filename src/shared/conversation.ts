@@ -3,7 +3,8 @@
 // console 里不直接读 handedOver、也不拿 stage 和 'paid' 比（plan 第 3.3 步的检查拦这两种写法）。
 // 已成交按租户行业包的终态（stages 里标了 terminal 的阶段）判定：旅游包是「已支付」paid，家装假包是「已付定金」deposit。
 // 状态值仍叫 paid（接口的取值名不变），只是判定不再认 'paid' 这个阶段 key。
-import type { ConversationRow, ConversationState } from './console-api.js';
+// 02 扩成四态（docs/architecture/02-conversations-workbench/spec.md「转人工记录与四种状态」、R12）：转人工且有接手人是 assigned。
+import type { ConversationState } from './console-api.js';
 import type { IndustryPack, SalesStageDef } from './pack.js';
 
 /** 行业包的终态阶段，按包里的顺序：会话的阶段停在其中之一就算已成交 */
@@ -11,14 +12,66 @@ export function terminalStages(pack: Pick<IndustryPack, 'stages'>): SalesStageDe
   return pack.stages.filter((s) => s.terminal === true);
 }
 
-/** paid（已成交）：stage 是行业包的终态；human（等人接手）：handedOver 且没成交；ai（AI 接待中）：其余 */
+const isTerminal = (stage: string, pack: Pick<IndustryPack, 'stages'>): boolean => terminalStages(pack).some((s) => s.key === stage);
+
+/**
+ * paid（已成交）：stage 是行业包的终态；assigned（顾问处理中）：handedOver 且有接手人；human（等人接手）：handedOver 且没有接手人；
+ * ai（AI 接待中）：其余。没有接手人的数据上判定与 02 之前逐个相同。
+ * 参数是结构类型：Session（assignee 可选）与 ConversationRow 都能直接传
+ */
 export function conversationState(
-  row: Pick<ConversationRow, 'stage' | 'handedOver'>,
+  row: { stage: string; handedOver: boolean; assignee?: { userId: string | null; name: string } | null },
   pack: Pick<IndustryPack, 'stages'>,
 ): ConversationState {
-  if (terminalStages(pack).some((s) => s.key === row.stage)) return 'paid';
-  if (row.handedOver) return 'human';
+  if (isTerminal(row.stage, pack)) return 'paid';
+  if (row.handedOver) return row.assignee ? 'assigned' : 'human';
   return 'ai';
+}
+
+/** 「已成交客户要人工」（R9，开放问题 12 选 A）：终态、handedOver、没有接手人。状态仍是 paid，铃铛弹层与 A2 单列一组 */
+export function paidNeedsHuman(
+  row: { stage: string; handedOver: boolean; assignee?: unknown },
+  pack: Pick<IndustryPack, 'stages'>,
+): boolean {
+  return row.handedOver && !row.assignee && isTerminal(row.stage, pack);
+}
+
+export interface NeedProfile {
+  destinationInterest?: string;
+  segment?: string;
+  travelers?: number | string;
+}
+export interface NeedVocabulary {
+  /** 产品库里 active 条目的目的地名 */
+  destinations: readonly string[];
+  /** 行业包客群词表：键 → 短标签 */
+  segments: Readonly<Record<string, string>>;
+}
+
+/** 人数只认整数：数字，或整句就是「4」「4人」「4位」这样的写法；「2大1小」这种说不准总数的不取 */
+const HEADCOUNT = /^(\d{1,3})\s*[人位]?$/;
+
+/**
+ * 会话标题后半段，如「贵州带爸妈4人」。只用规范化的取值：目的地取 destinationInterest 里命中的第一个词表目的地
+ * （按在原文里出现的位置，同一位置取长的），客群只认词表里的键，人数只取数字；画像里的自由文本一个字也不回显。
+ * 取不到的部分省略，全空时为 null。不含昵称
+ */
+export function needSummary(profile: NeedProfile, vocab: NeedVocabulary): string | null {
+  const interest = profile.destinationInterest ?? '';
+  let destination = '';
+  let at = -1;
+  for (const d of vocab.destinations) {
+    const i = d ? interest.indexOf(d) : -1;
+    if (i >= 0 && (at < 0 || i < at || (i === at && d.length > destination.length))) {
+      destination = d;
+      at = i;
+    }
+  }
+  const segment = profile.segment !== undefined && Object.hasOwn(vocab.segments, profile.segment) ? vocab.segments[profile.segment] : '';
+  const raw = profile.travelers;
+  const n = typeof raw === 'number' ? raw : Number(HEADCOUNT.exec(raw?.trim() ?? '')?.[1] ?? NaN);
+  const travelers = Number.isInteger(n) && n > 0 && n < 1000 ? `${n}人` : '';
+  return `${destination}${segment}${travelers}` || null;
 }
 
 /**

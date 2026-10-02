@@ -147,6 +147,10 @@ const conv = (short: string, stage: string, handedOver: boolean, messageCount: n
   handedOver,
   messageCount,
   updatedAt,
+  needSummary: null,
+  assignee: null,
+  handoff: null,
+  lastCustomerAt: null,
 });
 /** 接口的 ?state=human 按最后动静倒序：F01（8分钟前）在 A01（26分钟前）前面 */
 const WAITING = [
@@ -156,7 +160,7 @@ const WAITING = [
 const A02 = conv('A02', 'paid', false, 5, at('2026-09-24T17:20:00'));
 const COUNTS: ConversationCounts = {
   total: 13,
-  byState: { ai: 10, human: 2, paid: 1 },
+  byState: { ai: 10, human: 2, assigned: 0, paid: 1 },
   aiByStage: { discovery: 4, recommend: 3, quote: 2, closing: 1 },
   updatedToday: 6,
 };
@@ -538,7 +542,7 @@ eq(
     conv('B08', 'quote', true, 1, new Date(NOW - 3 * MIN).toISOString()),
   ];
   const k = memberKpis({
-    counts: { ...COUNTS, byState: { ai: 6, human: 6, paid: 0 } },
+    counts: { ...COUNTS, byState: { ai: 6, human: 6, assigned: 0, paid: 0 } },
     waiting: four,
     latestPaid: null,
     catalog: catalogCounts([{ entity: ROUTE, items: [] }]),
@@ -1200,7 +1204,7 @@ const waitingTitles = (titles: string[]): string[] => titles.filter((t) => t.sta
 const humanRequests = (): string[] => requests.filter((r) => r.includes('state=human'));
 {
   const many = [...WAITING, ...olderWaiting(25)];
-  const byState = { ai: 10, human: 27, paid: 1 };
+  const byState = { ai: 10, human: 27, assigned: 0, paid: 1 };
   server = { pack: TRAVEL, lists: SCENE, waiting: many, counts: { ...COUNTS, total: 38, byState } };
   requests = [];
   const m = await mountOverview(member('owner'));
@@ -1219,7 +1223,12 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
 {
   // 多于一整页（100）：取最后一页（等得最久的 100 个），其余写成一行「还有5个」链到会话列表
   const lots = [...WAITING, ...olderWaiting(103)];
-  server = { pack: TRAVEL, lists: SCENE, waiting: lots, counts: { ...COUNTS, total: 116, byState: { ai: 10, human: 105, paid: 1 } } };
+  server = {
+    pack: TRAVEL,
+    lists: SCENE,
+    waiting: lots,
+    counts: { ...COUNTS, total: 116, byState: { ai: 10, human: 105, assigned: 0, paid: 1 } },
+  };
   requests = [];
   const m = await mountOverview(member('owner'));
   const titles = waitingTitles(m.texts('.ov-todo-title'));

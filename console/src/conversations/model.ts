@@ -28,13 +28,14 @@ export interface Tab {
 }
 
 /**
- * 状态页签的顺序：全部之后是等人接手、AI接待中、已成交（设计系统 I 页）。写成 Record：02 给 ConversationState 加上
- * 「顾问处理中」时这里不跟着排进去，typecheck 就失败（今天没有这个页签，也不做成灰的）
+ * 状态页签的顺序：全部之后是等人接手、顾问处理中、AI接待中、已成交（设计系统 I 页、02 spec R12）。写成 Record：
+ * ConversationState 加减一种时这里不跟着改，typecheck 就失败
  */
-const TAB_RANK: Readonly<Record<ConversationState, number>> = { human: 1, ai: 2, paid: 3 };
+const TAB_RANK: Readonly<Record<ConversationState, number>> = { human: 1, assigned: 2, ai: 3, paid: 4 };
 
 export function tabs(counts: ConversationCounts | undefined): Tab[] {
-  const states = (Object.keys(TAB_RANK) as ConversationState[]).sort((a, b) => TAB_RANK[a] - TAB_RANK[b]);
+  // 「顾问处理中」页签到 02 第 19 步才画（只在有这种会话或地址里选了它时出现，不做成灰的）
+  const states = (Object.keys(TAB_RANK) as ConversationState[]).filter((s) => s !== 'assigned').sort((a, b) => TAB_RANK[a] - TAB_RANK[b]);
   return [
     { key: 'all', label: '全部', count: counts?.total ?? null, soft: false },
     ...states.map((s) => ({ key: s, label: STATUS_LABEL[s], count: counts?.byState[s] ?? null, soft: s === 'human' })),

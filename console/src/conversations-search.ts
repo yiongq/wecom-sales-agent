@@ -5,7 +5,7 @@
 import type { ConversationState } from '../../src/shared/console-api.js';
 
 /** 会话状态的取值；ConversationState 加减一种时这里不跟着改，typecheck 就失败 */
-const CONVERSATION_STATE: Readonly<Record<ConversationState, true>> = { ai: true, human: true, paid: true };
+const CONVERSATION_STATE: Readonly<Record<ConversationState, true>> = { ai: true, human: true, assigned: true, paid: true };
 
 export interface ConversationsSearch {
   state?: ConversationState;

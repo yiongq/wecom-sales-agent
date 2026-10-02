@@ -136,7 +136,7 @@ async function respond(method: string, url: URL, body: unknown): Promise<Respons
   }
   if (method === 'GET' && p.startsWith('/catalog/')) return json(200, { items: [] });
   if (method === 'GET' && p === '/conversations/counts')
-    return json(200, { total: 0, byState: { ai: 0, human: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 });
+    return json(200, { total: 0, byState: { ai: 0, human: 0, assigned: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 });
   if (method === 'GET' && p === '/conversations') return json(200, { items: [], total: 0 });
   return json(404, { error: 'not_found' });
 }

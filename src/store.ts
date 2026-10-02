@@ -155,6 +155,11 @@ export function freshenDemoData(): void {
     s.createdAt += delta;
     s.updatedAt += delta;
     for (const m of s.messages ?? []) m.at += delta;
+    // 02 的转人工记录与接手人也是会话上的时刻，不跟着挪的话 handoff.at 会早于触发它的那句、firstHandoffAt 早于 createdAt。
+    // sentAt 只有真实企微消息才带，种子没有
+    if (s.handoff) s.handoff.at += delta;
+    if (s.firstHandoffAt != null) s.firstHandoffAt += delta;
+    if (s.assignee) s.assignee.at += delta;
   }
   for (const o of orders.values()) {
     if (DEMO_SESSION_RE.test(o.sessionId)) {
@@ -298,13 +303,17 @@ export function getOrder(id: string): Order | undefined {
 }
 
 /** 只有待付款的单能付。被新订单替代的旧单（superseded）不能再付：此前 status !== 'paid' 就置为已付，
- *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成 */
+ *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成。
+ *  付款时记下会话是否曾经转过人工（handoffBeforePaid，R9）：转人工的标记交还时会清，firstHandoffAt 不清。
+ *  02 之前转的人工没有 firstHandoffAt（导入不回填），付款时正在转人工中的也算转过（不变量 26） */
 export function markOrderPaid(id: string): Order | undefined {
   const o = orders.get(id);
   if (!o) return undefined;
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
+    const s = sessions.get(o.sessionId);
+    o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
     backendFor(o.sessionId).scheduleOrder(id);
   }
   return o;

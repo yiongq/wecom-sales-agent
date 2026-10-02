@@ -18,4 +18,43 @@ export type HandoffKind =
   | 'consent' // 客户不同意或撤回同意处理敏感信息（R23）
   | 'agent'; // 顾问在后台接手，或旧工作台点了转人工
 
+/** 一次转人工的记录：进入时写下，交还、重置时清（R9） */
+export interface HandoffRecord {
+  kind: HandoffKind;
+  at: number;
+  /** 给顾问看的一句原因，≤120 字：model / claimed 取模型给的 reason，其余按 kind 写固定说明 */
+  reason: string;
+  /** 触发这次转人工的那句客户原话，≤200 字；agent 没有 */
+  quote?: string;
+  /** 客户原话里识别出的出行时间（departNoteForHandoff 的结果） */
+  departNote?: string;
+}
+
+/** 接手人 */
+export interface Assignee {
+  /** console 成员的 user id；共享工作台（ADMIN_PASS 旧接口）为 null */
+  userId: string | null;
+  /** 写入时的显示名快照；共享工作台写「共享工作台」 */
+  name: string;
+  at: number;
+}
+
 export type OrderStatus = 'pending_payment' | 'paid' | 'cancelled' | 'superseded';
+
+/** 收款方式：online 是今天的模拟支付，advisor 是顾问确认收款（spec「收款流程」） */
+export type PaymentMode = 'online' | 'advisor';
+
+/** 出站消息的类别，记进发送账本（spec「企微：发送账本、回执与去重」） */
+export type OutboundKind = 'ai' | 'human' | 'followup' | 'notice' | 'welcome' | 'menu' | 'card';
+
+/** 企微 48 小时、5 条的发送窗口 */
+export interface SendWindow {
+  /** 客户最后一条消息的 sentAt（企微 send_time），没有就用 at */
+  lastCustomerAt: number | null;
+  /** lastCustomerAt + 48 小时 */
+  closesAt: number | null;
+  /** lastCustomerAt 之后 accepted 与 unknown 的分段数（send_msg_on_event 不计） */
+  used: number;
+  /** max(0, 5 - used)；窗口已过为 0 */
+  remaining: number;
+}

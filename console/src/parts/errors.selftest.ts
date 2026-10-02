@@ -223,9 +223,11 @@ for (const kind of Object.keys(STATUS_LABEL) as StatusKind[]) {
   const s = html(createElement(Status, { kind }));
   check(`Status ${kind}：圆点加「${STATUS_LABEL[kind]}」`, s.includes('status-dot') && s.includes(STATUS_LABEL[kind]));
 }
+// 02 spec R12 加了第四态「顾问处理中」（assigned）：会话状态恰是这四种叫法
 check(
-  'Status：四种会话状态之外的叫法一个都没有',
-  !Object.values(STATUS_LABEL).some((l) => ['待人工', '已转人工', '待接管', '需要介入', '顾问处理中'].includes(l)),
+  'Status：会话状态恰是 AI接待中、等人接手、顾问处理中、已成交，之外的叫法一个都没有',
+  [STATUS_LABEL.ai, STATUS_LABEL.human, STATUS_LABEL.assigned, STATUS_LABEL.paid].join() === 'AI接待中,等人接手,顾问处理中,已成交' &&
+    !Object.values(STATUS_LABEL).some((l) => ['待人工', '已转人工', '待接管', '需要介入'].includes(l)),
 );
 
 if (fails.length) {

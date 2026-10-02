@@ -3,8 +3,10 @@
 // 缺失时抛清晰错误；ROUTES_PATH 仅供测试指向 fixture，默认 data/routes.json。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js';
+import type { HandoffRecord, Hotel, Route, SalesSegment, Session } from './types.js';
 import { SALES_SEGMENTS } from './types.js';
+import { cleanText } from './shared/text.js';
+import { enterHandoff, HANDOFF_REASON } from './handoff/record.js';
 import { peakMonths } from './shared/season.js';
 import { deepFreeze } from './shared/freeze.js';
 import { configMode, currentCatalog } from './config/source.js';
@@ -15,6 +17,8 @@ import { todayIso } from './env.js';
 
 // 工具定义是纯数据，搬到 tool-defs.ts：配置层要用它算 tools_hash、核对 SOP 点名的工具，又不能 import 本模块（本模块加载时就读 var/）
 export { toolDefs, type ToolDef } from './tool-defs.js';
+// 进入转人工搬到 handoff/record.ts（02 spec「模块与依赖方向」），这里再导出，原有的 import 不用改
+export { enterHandoff };
 
 function routesPath(): string {
   return process.env.ROUTES_PATH ?? path.join(process.cwd(), 'data', 'routes.json');
@@ -626,7 +630,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
       // 传了 query 的那 1/3 推荐了最接近的芬兰极光——这才是要的口径（sop.md 转人工条件）。
       // 所以没传 query 时拿目的地和客户原话补做一次语义召回，两种传法走同一条路、结果形态一致。
       if (!order && !args.query?.trim() && indexReady()) {
-        const got = await recall([q, ctx.customerText?.slice(0, 200)].filter(Boolean).join('。'));
+        const got = await recall([q, ctx.customerText && cleanText(ctx.customerText, 200)].filter(Boolean).join('。'));
         if (got) ({ order, list } = got);
       }
       // 同类型的现成线路排最前（普吉、斐济 → 巴厘岛、马代、三亚），语义召回的补在后面。召回不可用时同类型的照样给得出
@@ -1031,18 +1035,6 @@ export const HANDOFF_NOTE =
   '客户要的地方我们没有现成线路时，只说顾问会联系评估，不要替顾问承诺能去、能安排或能定制原目的地（不说「帮您落实冰岛行程」「为您定制冰岛之旅」）。';
 
 /**
- * 进入转人工。引擎的各条转人工路径（明确诉求安全网、改行程护栏）和 handoff_to_human 工具
- * 都必须走这里：此前只有后台「接管」会记 stageBeforeHandoff，引擎触发的转人工（包括正则
- * 误伤）一律不记，顾问点「交还 AI」时只能反推阶段，recommend 的客户被打回 discovery。
- * 已在转人工中就不覆盖——否则记下的会是 handoff 本身，原阶段永久丢失（与 server.ts 的接管同一规则）。
- */
-export function enterHandoff(session: Session, prevStage: SalesStage = session.stage): void {
-  if (session.stage !== 'handoff' && prevStage !== 'handoff') session.stageBeforeHandoff = prevStage;
-  session.handedOver = true;
-  session.stage = 'handoff';
-}
-
-/**
  * 记下这次查到的线路，供下一轮会话状态带给模型（见 Session.lastShownRoutes）。
  * 新查到的排前面、与旧的去重，封顶 5 条；查空了不清——客户看过的线路还在对话里。
  */
@@ -1073,6 +1065,11 @@ export interface ToolHints {
   elder?: boolean;
   /** 客户提过高反、海拔 */
   altitudeWorry?: boolean;
+  /**
+   * handoff_to_human 记进转人工记录的两项，由引擎在调工具之前算好：quote 是本轮客户原话，departNote 是 departNoteForHandoff 的结果。
+   * departNote 也附在后台那条「AI 已转人工」的 system 消息后面，一次写成整条（02 spec「消息只追加」）
+   */
+  handoff?: Pick<HandoffRecord, 'quote' | 'departNote'>;
 }
 
 /**
@@ -1240,13 +1237,25 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
       });
     }
     case 'handoff_to_human': {
-      enterHandoff(session);
-      const reason = String(args.reason ?? '')
-        .trim()
-        .slice(0, 200);
+      const said = String(args.reason ?? '').trim();
+      const reason = cleanText(said, 200);
+      const { quote, departNote } = hints.handoff ?? {};
+      enterHandoff(session, {
+        kind: 'model',
+        at: Date.now(),
+        reason: cleanText(said, 120) || HANDOFF_REASON.model,
+        ...(quote ? { quote } : {}),
+        ...(departNote ? { departNote } : {}),
+      });
       // 原因此前只回给了模型，接手的顾问在后台看不到客户要什么（「想去南极，10 月两位」），得从头翻聊天记录。
-      // system 消息只在后台显示，不发给客户、也不进模型历史
-      if (reason) session.messages.push({ role: 'system', content: `AI 已转人工：${reason}`, at: Date.now() });
+      // 客户说出行时间的原话附在后面（见 engine.ts departNoteForHandoff）。system 消息只在后台显示，不发给客户、也不进模型历史
+      if (reason) {
+        session.messages.push({
+          role: 'system',
+          content: `AI 已转人工：${reason}${departNote ? `\n（${departNote}）` : ''}`,
+          at: Date.now(),
+        });
+      }
       saveSession(session);
       return JSON.stringify({ ok: true, reason, note: HANDOFF_NOTE });
     }

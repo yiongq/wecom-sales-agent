@@ -10,6 +10,7 @@
 // 只删那一句、不整条替换：同一条回复里通常还有真实报价和对别的问题的回答（见 price-guard dropSentences）。
 // 判断全是确定性的：比价按线路 bestSeason 算两个日子各自上不上浮，预算按客户原话里的数和这次报价比。
 import { dropSentences, namedRoutes, priceMentions, routeNames, sentenceUnits, spokenMoney } from './price-guard.js';
+import { cleanText } from './shared/text.js';
 import type { TurnToolCall } from './price-guard.js';
 // tools.ts 也 import 本文件（create_quote 的预算比较），是循环引用：两边都只在函数里用对方的导出，模块加载时不碰，所以安全
 import { LOWLAND_MAX_ALTITUDE, loadRoutes, mentionsPlace, peakMonths } from './tools.js';
@@ -79,7 +80,7 @@ export function budgetCap(session: Session): BudgetCap | undefined {
       amount,
       per: PER_PERSON_WORD.test(t) ? 'person' : TOTAL_WORD.test(t) ? 'total' : 'unclear',
       floor: BUDGET_FLOOR_WORD.test(t),
-      said: t.slice(0, 40),
+      said: cleanText(t, 40),
       heads: headsIn(t),
     };
   }

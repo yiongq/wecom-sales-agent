@@ -1627,9 +1627,11 @@ check(
     top.text.slice(0, 200),
   );
   const c = (top.body.items as Body[])[0]!;
+  // 02 加了 needSummary、assignee、handoff、lastCustomerAt 四个键（02 spec「后台接口」）
   check(
-    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt',
-    JSON.stringify(Object.keys(c)) === '["id","channel","stage","handedOver","messageCount","updatedAt"]' &&
+    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt、needSummary、assignee、handoff、lastCustomerAt',
+    JSON.stringify(Object.keys(c)) ===
+      '["id","channel","stage","handedOver","messageCount","updatedAt","needSummary","assignee","handoff","lastCustomerAt"]' &&
       c.handedOver === true &&
       c.stage === 'handoff' &&
       c.messageCount === 3 &&
@@ -1662,6 +1664,53 @@ check(
     (await call('GET', '/conversations', { as: agent })).status === 200 && (await call('GET', '/audit', { as: agent })).status === 403,
   );
   check('会话列表：匿名 → 401', (await call('GET', '/conversations')).status === 401);
+
+  // 02 的四个新键的取值（02 spec「后台接口」ConversationRow）：接手人只投影 userId 与 name，转人工记录只投影 kind、ISO 的 at 与 reason，
+  // lastCustomerAt 取客户最后一条消息的 sentAt（后面的 agent 消息不算）；有接手人的会话是第四态 assigned
+  const D = 'wecom:conv-d';
+  seed(D, 'wecom', T + 7000, (sess) => {
+    sess.handedOver = true;
+    sess.stage = 'handoff';
+    sess.handoff = {
+      kind: 'complaint',
+      at: T + 1000,
+      reason: '客户投诉',
+      quote: '会话列表不该出现的原话',
+      departNote: '会话列表不该出现的备注',
+    };
+    sess.assignee = { userId: 'u-conv-d', name: '小林', at: T + 2000 };
+    sess.messages.push(
+      { role: 'customer', content: '在吗', at: T + 1500, sentAt: T + 1200, msgid: 'msg-conv-d' },
+      { role: 'agent', content: '在的', at: T + 2500, author: 'human', authorId: 'u-conv-d', authorName: '小林' },
+    );
+  });
+  const assigned = await call('GET', '/conversations?state=assigned', O);
+  const d = (assigned.body.items as Body[] | undefined)?.[0];
+  check(
+    '会话列表：assignee 恰为 {userId, name}，handoff 恰为 {kind, at（ISO）, reason}，lastCustomerAt 是客户那条的 sentAt',
+    JSON.stringify(d?.assignee) === JSON.stringify({ userId: 'u-conv-d', name: '小林' }) &&
+      JSON.stringify(d?.handoff) === JSON.stringify({ kind: 'complaint', at: new Date(T + 1000).toISOString(), reason: '客户投诉' }) &&
+      d?.lastCustomerAt === new Date(T + 1200).toISOString(),
+    JSON.stringify(d),
+  );
+  const dCounts = (await call('GET', '/conversations/counts', O)).body as { total: number; byState: Record<string, number> };
+  check(
+    '会话列表：有接手人的会话 byState.assigned 为 1、四项之和等于 total，?state=assigned 只返回它',
+    dCounts.byState.assigned === 1 &&
+      Object.values(dCounts.byState).reduce((a, b) => a + b, 0) === dCounts.total &&
+      assigned.status === 200 &&
+      assigned.body.total === 1 &&
+      (assigned.body.items as Body[]).map((x) => x.id).join() === D,
+    `${JSON.stringify(dCounts)} ${assigned.text.slice(0, 200)}`,
+  );
+  check(
+    '会话列表：转人工记录的原话与出行时间备注不进列表',
+    !assigned.text.includes('不该出现的原话') && !assigned.text.includes('不该出现的备注'),
+  );
+  // 下一段按 ai / human / paid 三态逐条核对：把接手人摘掉，它回到等人接手
+  const dSess = store.getSession(D)!;
+  delete dSess.assignee;
+  store.saveSession(dSess, false);
 }
 
 // 后台 UX spec 验收 15 第 5、6 条：会话的 state / stage / order 过滤与排序，/conversations/counts 与列表同源。
@@ -1734,9 +1783,9 @@ check(
       !per.human.rows.some((r) => r.id === 'wecom:cust_P02') &&
       per.human.rows.some((r) => r.id === 'wecom:cust_H01'),
   );
-  const leakedKeys = all.rows.filter((r) => ['profile', 'nickname', 'messages'].some((k) => k in r) || Object.keys(r).length !== 6);
+  const leakedKeys = all.rows.filter((r) => ['profile', 'nickname', 'messages'].some((k) => k in r) || Object.keys(r).length !== 10);
   check(
-    '会话列表：ConversationRow 的键里没有 profile、nickname、messages，只有 6 个投影字段',
+    '会话列表：ConversationRow 的键里没有 profile、nickname、messages，只有 10 个投影字段（02 加了 4 个）',
     all.rows.length > 0 && leakedKeys.length === 0,
     leakedKeys.map((r) => Object.keys(r).join('|')).join(' '),
   );
@@ -1789,7 +1838,7 @@ check(
     `${quoteAll.total} / ${quoteAi.total}`,
   );
   const bad = await Promise.all(
-    ['state=assigned', 'state=AI', 'stage=Quote', 'stage=quote-1', `stage=${'a'.repeat(33)}`, 'order=latest'].map(
+    ['state=handoff', 'state=AI', 'stage=Quote', 'stage=quote-1', `stage=${'a'.repeat(33)}`, 'order=latest'].map(
       async (q) => (await call('GET', `/conversations?${q}`, O)).status,
     ),
   );
@@ -1804,9 +1853,9 @@ check(
   const cb = counts.body as { total: number; byState: Record<string, number>; aiByStage: Record<string, number>; updatedToday: number };
   const sum = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0);
   check(
-    'counts：byState 三项之和等于 total，aiByStage 之和等于 byState.ai（不变量 18）',
+    'counts：byState 四项之和等于 total，aiByStage 之和等于 byState.ai（不变量 18；02 加了 assigned）',
     counts.status === 200 &&
-      JSON.stringify(Object.keys(cb.byState).toSorted()) === '["ai","human","paid"]' &&
+      JSON.stringify(Object.keys(cb.byState).toSorted()) === '["ai","assigned","human","paid"]' &&
       sum(cb.byState) === cb.total &&
       sum(cb.aiByStage) === cb.byState.ai,
     counts.text,
@@ -1893,6 +1942,13 @@ check(
   );
   const prevPack = cfg.__configTest.swapPack(renovation);
   try {
+    // 02 第 3 步：引擎与旧接口判「阶段是不是终态」在 DB 配置模式下取租户的行业包，不是注册表里的旅游包
+    const { isTerminalStage, terminalStageKey } = await import('../handoff/record.js');
+    check(
+      '终态判定：DB 配置模式下按租户的行业包（家装包的 deposit 是终态，旅游包的 paid 不是）',
+      isTerminalStage('deposit') && !isTerminalStage('paid') && String(terminalStageKey()) === 'deposit',
+      `${isTerminalStage('deposit')} ${isTerminalStage('paid')} ${terminalStageKey()}`,
+    );
     const rCounts = await countsNow();
     const rAll = await pageAll('');
     const rPer = Object.fromEntries(
