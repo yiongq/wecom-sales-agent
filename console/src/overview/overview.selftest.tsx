@@ -10,7 +10,7 @@
 //    也不发这些请求；demo 匿名只有「在售」一格、只取产品库列表；审计按页往前取，一次导入不被截断；等人接手多于接口的
 //    默认一页（20）乃至一整页（100）时，等得最久的照样列在最前、计数按总数；换一个行业包，
 //    实体、阶段、叫法都跟着换，请求的是那个包的 kind；阶段条和业务数链到带 state、stage 的会话列表（验收 10）；
-//    每次挂载的总览，文字、标签页标题和读屏属性里都没有验收 6 禁用的五个词。
+//    每次挂载的总览从首帧（各块的骨架）、载完到卸载前，文字、标签页标题和读屏属性里都没有验收 6 禁用的五个词。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/overview/overview.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -771,15 +771,30 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
 
 const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
 
-// 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览在载完和卸载前各记一份：
-// 文字、标签页标题，以及 title、aria-label、placeholder 这些读屏与悬停读得到的属性；最后（2.8）一起扫
+/** 一个元素在总览的哪一块（按区块的类名，都不是就是「需要你处理」） */
+const blockOf = (e: HTMLElement): string =>
+  e.closest('.ov-recent')
+    ? '最近变更'
+    : e.closest('.ov-stages-block')
+      ? '阶段'
+      : e.closest('.ov-kpi-block')
+        ? '业务数'
+        : e.closest('.ov-system')
+          ? '系统状态'
+          : '需要你处理';
+
+// 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览记三份：首帧（请求都还没回来，
+// 各块画着骨架）、载完、卸载前。每份是文字、标签页标题（页头写的「总览 · 租户名」），以及 title、aria-label、placeholder
+// 这些读屏与悬停读得到的属性；另记下哪些块被扫到时画着骨架。最后（2.8）一起扫
 const BANNED = ['顾问处理中', '待人工', '已转人工', '待接管', '需要介入'];
 const SPOKEN_ATTRS = ['title', 'aria-label', 'aria-description', 'placeholder', 'alt'];
 const rendered: string[] = [];
+const loadingSeen = new Set<string>();
 let mounts = 0;
 function seen(box: HTMLElement): void {
   const attrs = [...box.querySelectorAll('*')].flatMap((el) => SPOKEN_ATTRS.map((a) => el.getAttribute(a) ?? ''));
   rendered.push([document.title, box.textContent ?? '', ...attrs].join('\n'));
+  for (const s of box.querySelectorAll<HTMLElement>('.state-skeleton')) loadingSeen.add(blockOf(s));
 }
 
 /** 挂上真的 OverviewPage：路由只有它和几个空页（链接要能算出地址），查询缓存里放好来者；等请求都回来 */
@@ -806,9 +821,13 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
   const box = document.createElement('div');
   document.body.append(box);
   const r = createRoot(box);
+  // 上一次挂载写的标签页标题不算这一次的
+  document.title = '';
+  mounts += 1;
   await act(async () =>
     r.render(createElement(QueryClientProvider, { client: qc }, createElement(RouterProvider, { router: router as never }))),
   );
+  seen(box);
   for (let i = 0; i < 40; i += 1) {
     await act(async () => {
       await new Promise((res) => setTimeout(res, 0));
@@ -816,7 +835,6 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
     });
     if (i > 3 && qc.isFetching() === 0) break;
   }
-  mounts += 1;
   seen(box);
   const $ = (sel: string): HTMLElement[] => [...box.querySelectorAll<HTMLElement>(sel)];
   return {
@@ -931,16 +949,6 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
 }
 
 // 2.2 某个接口出错：只有用它的那一块写「没取到」，其余照常（验收 10）
-const blockOf = (e: HTMLElement): string =>
-  e.closest('.ov-recent')
-    ? '最近变更'
-    : e.closest('.ov-stages-block')
-      ? '阶段'
-      : e.closest('.ov-kpi-block')
-        ? '业务数'
-        : e.closest('.ov-system')
-          ? '系统状态'
-          : '需要你处理';
 async function failing(fail: RegExp) {
   server = { pack: TRAVEL, lists: SCENE, fail };
   const m = await mountOverview(member('owner'));
@@ -1311,9 +1319,14 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
 
 // 2.8 验收 6 的禁用词：上面挂过的每一份总览（所有者、管理员、坐席、匿名，各块出错、扣住请求的先后，另一个行业包）
 check(
-  '禁用词（验收 6）：每次挂载都扫了载完与卸载前两份',
-  mounts > 0 && rendered.length === mounts * 2,
+  '禁用词（验收 6）：每次挂载都扫了首帧、载完与卸载前三份',
+  mounts > 0 && rendered.length === mounts * 3,
   `挂载 ${mounts} 次，扫了 ${rendered.length} 份`,
+);
+eq(
+  '禁用词（验收 6）：五块画骨架（载入中）时都扫到了',
+  [...loadingSeen].sort(),
+  ['需要你处理', '系统状态', '业务数', '最近变更', '阶段'].sort(),
 );
 for (const w of BANNED) {
   const hit = rendered.find((t) => t.includes(w));
