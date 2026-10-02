@@ -102,12 +102,14 @@
   - `src/console-api/app.ts` 按 spec「后台接口」链式加全部新接口、权限中间件、新错误码；写接口 `await flushSession(id, { timeoutMs: 5000 })`、超时 503 `store_lagging`；审计新动作（会话类记 `ref`）与 `AUDIT_ACTIONS`（含 K 页的「会话与订单」分段）；viewer 打码；`/orders` 的角色限制与从 identity map 计算；`/events` 的 SSE（环形缓冲、`resync`、心跳、每 60 秒复核登录）；`/api/admin/stream` 改为提交后发；`/status` 带会话数与 poisoned。
   - `console.selftest.ts` 新用例：spec「测试与 CI」列的那些（权限矩阵逐格含 403 与 409 的分界、路由枚举、并发接手恰一个成功、别人接手中回复 409 且没发送、自动接手、交还恢复阶段、不同意后交还 409、事件里没有正文、事件流登录失效后关闭、`order=waiting_first` 与 counts 四项之和）。
   - 开放问题 12（A）在接口上的部分（`paidNeedsHuman` 的数据）一起做。
+  - 旧接口匿名投影里，交还时那条「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」（spec「后台接口」匿名投影一条；`server.ts` 的 `anonMessage` 留了位置），自测覆盖接手并交还种子会话之后的匿名读。
   - 对应验收 9、10、11 的接口部分，以及不变量 17、20–25、27、28、31、39 的接口部分、41、43–45、47。
 - [ ] 14. 外部通知（1.5）：`Notifier` 的企微群机器人实现（开放问题 3，与告警不同群）、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。
 - [ ] 15. 收款流程与 SOP 措辞（3.5）：
   - `src/payment/`：`paymentMode`、`confirmOrder`、`markPaidByAdvisor`、`cancelOrder`（坐席只限接手人本人；提交之后才发付款确认）；后台的三个订单接口接上；advisor 模式下 `create_order` 的 `payNote`、`/pay` 页的说明、价格规则护栏的替换句、`repairLinks` / `placeLinks` 的说明句、重发链接、成单安全网、企微支付卡片、跟进 closing 段的确定性文本；online 模式逐字节不变。
   - `data/sop.md` 锁定节的两处改动、`SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 加 `payNote`；契约清单短语一条不删。记下改前改后的四个哈希（`/healthz` 与 `PREFIX sha256`）。
   - 真实模型回归（花钱，不进 CI）：按 01 交接里的「真实模型对比」跑法，`--cases` 指向仓库外的 realOnly 用例文件，文件、DB 交替各至少 3 遍，记 p90、命中率与通过的用例集合，和改动前比较。
+  - advisor 模式下收款方式只经 `/pay/:orderId` 的服务端注入，`/pay.html?orderId=` 跳到 `/pay/:orderId`（spec「收款流程」、验收 23）。
   - 自测：prod profile 的整条链路（`payNote`、页面说明、替换句、匿名 404、未确认 409、非接手人坐席 409、审计两行、付款确认在提交之后）；demo profile 与开工时相同。
   - 对应验收 23、24，以及不变量 19、20 的付款部分、39。
 - [ ] 16. 隐私说明、敏感信息同意、保留期、行权删除（4）：开放问题 2、7 已定：保留期用迁移的默认值（即裁决值），同意流程照 spec；PIA 要求改同意细节时另行修订 spec。
@@ -149,6 +151,7 @@
   - 对应验收 31，以及 32 的本机部分。
 - [ ] 27. demo 线上切换（1）：由 owner 在线上执行第 26 步的切换步骤；切换前后的哈希、会话数、停机时长与不敏感的证据记进「验收记录」，主机与路径另记；第一份备份验证通过后删掉 `--keep` 里的原件。对应验收 32。
 - [ ] 28. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节
+  - 发版与 README（owner 2026-10-03 定）：02 全部做完、验收通过之后才发版到 main（连同 dev 上已有的后台 UX 改造）；README 在这时对照最终实现一次更新，之前不改。2026-10-03 核对过一遍 dev 上的 README，要改的要点：第 48 行「无数据库、无前端框架」已不成立（01 起有 Postgres 与 Vite + React 后台）；架构图只画了文件模式，缺后台、Postgres 与两种会话存储，`销售SOP.md` 应为 `data/sop.md`，`markPaid` 应为 `markOrderPaid`，工具框缺搜酒店与方案书；在线体验表缺 `/console/` 一行；可靠性设计缺价格规则与服务承诺护栏（`price-rules.ts`）、确定性转人工、注入防护与如实回答是 AI；区间写法 `~~` 在 GitHub 上渲染成删除线，改用 en dash；引导页是四步不是三步；本地跑法与门禁一节的自测数量、单独跑某组的命令、`lint` 与 `typecheck` 的组成、权限表与账号说明已过时；部署一节缺 `/console/` 账号与 DB 模式、会话存储切换与回滚检查；「生产化路径 / 当前刻意不做」里单实例、内存为权威、Redis、消息队列（任务表已在 02 做了）、限流计数几条要按 01、02 的现状重写；企微一节的回调地址写法要去掉「公网 IP」。
 - [ ] 29. 清理临时探针与测试
 - [ ] 30. owner 确认验收通过后，spec 顶部改 `Status: implemented`
 
@@ -628,17 +631,19 @@
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
 
+- 2026-10-03 owner 确认下面标「已定」的八处照现在的做法（第 1 步带出的三处照各自的推荐），连同实施记录里比 spec 原文更严的几处（旧接口只认 `ADMIN_PASS`；第 6 步 import、export 的写序、目录 fsync、`--keep` 先验可写），已就地补进 spec（顶部 2026-10-03 的 `Revisions:`）。第 1 步的第一处在第 13 步写交还消息时落地，第三处在第 15 步落地，其余已实现。
+
 - 开放问题的答复（owner 2026-10-02，已写进 spec 各条与顶部 `Revisions:`）：1 选 A「部分取代」，规则进了 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部已加 `Superseded in part by:`；2 线索 180、客户 730、trace 90 天，按租户可改；3 企微群机器人，与告警不同群；4 词表加规则；5 `channel_inbox` 留在 04、做三条缓解；6 选 A；7 照推荐做，PIA 出结论后复核；8 保守口径；9 02 不做改价；10 固定的回归步骤，不做发布闸；11 仓库外事项全部完成才接第一个真实租户；12 选 A；13 以后在另一台境内机器上自建 Langfuse，02 只埋点；14 国内云厂商的拨测。
 - 第 1 步盘点带出、要 owner 定的三处（都不挡第 2 步）：
-  - **交还消息里的顾问姓名会经匿名旧接口漏出**（第 3 步写投影之前定；第 3 步没等到答复，投影函数按消息逐条写好，改写规则随第 13 步的交还消息一起加）。spec「接手、人工回复与交还」规定交还时记一条 system 消息「{姓名}把会话交还 AI」；种子会话既能被成员接手、又对匿名可读，「后台接口」规定的匿名投影只去掉 `assignee.userId` 与消息的 `authorId`、`authorName`，管不到正文，`admin.html:939` 会原样显示它，与不变量 44（匿名响应里没有成员姓名）冲突。推荐：匿名投影把 `release()` 按固定模板生成的这条改写成「顾问把会话交还 AI」（模板由同一个常量产生，确定性可测）。备选：正文本身就写「顾问把会话交还 AI」，姓名只在 J 页由结构化记录显示（spec 的那句文案要改）。
-  - **`POST /api/orders/:id/pay` 的响应体**（第 3 步；已按推荐先做，见「实施记录 · 第 3 步」裁定 10，owner 另有决定再改）。409 与 200 两个分支（`server.ts:462`、`483`）都带订单原对象，demo 下匿名可调；02 之后会带出 `confirmedBy`、`paidMarkedBy`、`cancelReason`。R22 只管 `GET /api/orders/:id`。推荐：改用同一个 R22 白名单投影（`pay.html` 只看状态码与 `res.ok`，锁定断言不读响应体）。
-  - **advisor 模式下支付页从哪儿知道收款方式**（第 15 步之前定）。R22 白名单里没有收款方式，`confirmed=false` 分不清「online 待付款」与「advisor 待确认」；`/pay/:orderId` 能由服务端注入，`/pay.html?orderId=` 这条静态兜底（`pay.html:314`，`server.ts:698`）注入不到。推荐：`/pay.html?orderId=` 跳到 `/pay/:id`，页面只靠服务端注入。备选：白名单加 `paymentMode`（改 R22；锁定断言只看 `id`，不受影响）。
-- 第 6 步审查带出的另一处（已按下面做了，owner 不同意可以改回）：**`export-sessions` 多了退出码 2**。spec「导入、导出与切换」的 export 只写了成功（0），命令行约定也只有 0、1、3；但没有标记文件、而 JSON 里的真实会话与库里不一致时（多半是回退到文件存储之后又误跑了一次 export），照「同 id 以库为准」会用库里的旧版本悄悄盖掉文件存储期间的新消息与付款状态。现在以 2 拒绝、什么都不动，提示改用 `import-sessions --resync`；全部一致就当无操作返回 0。spec 那一节要同步一句。
-- 第 6 步审查带出的一处（已按下面做了，owner 不同意可以改回）：**没经过 import-sessions、直接以 db 存储起的实例也要有标记文件**。spec「导入、导出与切换」写的是标记文件「import 改写 JSON 时一起写，export 写完 JSON 后删掉」，回滚检查只看标记文件（与第 8 步的 `catalogVersioned`）。新实例、新租户一上来就设 `SESSION_STORE=db`（JSON 里本来没有真实会话），会话全在库里而 var/ 里没有标记：去掉 `SESSION_STORE` 之后文件存储照常启动、客户历史在应用里看不到（不变量 15 对这类实例失效）；deploy.sh 部署 01 的 tag 或自动回滚到 01 的 `:prev` 也放行（回滚检查失效）；之后再 `--resync` 还会把这些会话在库里、文件里没有的订单作废。现在：`initSessionStore` 的 db 分支装上 PG 后端之后，没有标记就补写一份（`sessions` 是预载的真实会话数）；`rollback-guard.sh` 另读服务器 `.env`，`SESSION_STORE=db` 也算有风险（做法与验证见「实施记录 · 第 6 步」的「审查之后改的」第 5 条）。请 owner 确认，并把 spec「标记文件」那句补成「import 改写 JSON 时写、db 存储启动时没有就补写，export 写完 JSON 后删掉」，回滚检查的条件加上「服务器 `.env` 里是 `SESSION_STORE=db`」。
-- 第 5 步审查带出的一处（已按下面做了，owner 不同意可以改）：**两种启动失败借用了现有的 reason**。spill 回放时读写文件出错（`EISDIR`、`EACCES`、改名失败）与其余意外错误用 `spill_conflict`（spec 写的是「spill 文件接不上库里的 last_seq」），重复调 `initSessionStore` 用 `sessions_in_db`（spec 写的是「文件存储而 var/ 里有标记文件」）；两处 detail 都写明实情（文件名与错误码、「只能调一次」）。要分开的话给 spec 的 `SessionStoreStartupError` 加两个 reason（比如 `spill_unreadable`、`already_installed`），代码两处各改一行。
+  - 已定 · **交还消息里的顾问姓名会经匿名旧接口漏出**（第 3 步写投影之前定；第 3 步没等到答复，投影函数按消息逐条写好，改写规则随第 13 步的交还消息一起加）。spec「接手、人工回复与交还」规定交还时记一条 system 消息「{姓名}把会话交还 AI」；种子会话既能被成员接手、又对匿名可读，「后台接口」规定的匿名投影只去掉 `assignee.userId` 与消息的 `authorId`、`authorName`，管不到正文，`admin.html:939` 会原样显示它，与不变量 44（匿名响应里没有成员姓名）冲突。推荐：匿名投影把 `release()` 按固定模板生成的这条改写成「顾问把会话交还 AI」（模板由同一个常量产生，确定性可测）。备选：正文本身就写「顾问把会话交还 AI」，姓名只在 J 页由结构化记录显示（spec 的那句文案要改）。
+  - 已定 · **`POST /api/orders/:id/pay` 的响应体**（第 3 步；已按推荐先做，见「实施记录 · 第 3 步」裁定 10，owner 另有决定再改）。409 与 200 两个分支（`server.ts:462`、`483`）都带订单原对象，demo 下匿名可调；02 之后会带出 `confirmedBy`、`paidMarkedBy`、`cancelReason`。R22 只管 `GET /api/orders/:id`。推荐：改用同一个 R22 白名单投影（`pay.html` 只看状态码与 `res.ok`，锁定断言不读响应体）。
+  - 已定 · **advisor 模式下支付页从哪儿知道收款方式**（第 15 步之前定）。R22 白名单里没有收款方式，`confirmed=false` 分不清「online 待付款」与「advisor 待确认」；`/pay/:orderId` 能由服务端注入，`/pay.html?orderId=` 这条静态兜底（`pay.html:314`，`server.ts:698`）注入不到。推荐：`/pay.html?orderId=` 跳到 `/pay/:id`，页面只靠服务端注入。备选：白名单加 `paymentMode`（改 R22；锁定断言只看 `id`，不受影响）。
+- 第 6 步审查带出的另一处（已按下面做了，owner 不同意可以改回）：已定 · **`export-sessions` 多了退出码 2**。spec「导入、导出与切换」的 export 只写了成功（0），命令行约定也只有 0、1、3；但没有标记文件、而 JSON 里的真实会话与库里不一致时（多半是回退到文件存储之后又误跑了一次 export），照「同 id 以库为准」会用库里的旧版本悄悄盖掉文件存储期间的新消息与付款状态。现在以 2 拒绝、什么都不动，提示改用 `import-sessions --resync`；全部一致就当无操作返回 0。spec 那一节要同步一句。
+- 第 6 步审查带出的一处（已按下面做了，owner 不同意可以改回）：已定 · **没经过 import-sessions、直接以 db 存储起的实例也要有标记文件**。spec「导入、导出与切换」写的是标记文件「import 改写 JSON 时一起写，export 写完 JSON 后删掉」，回滚检查只看标记文件（与第 8 步的 `catalogVersioned`）。新实例、新租户一上来就设 `SESSION_STORE=db`（JSON 里本来没有真实会话），会话全在库里而 var/ 里没有标记：去掉 `SESSION_STORE` 之后文件存储照常启动、客户历史在应用里看不到（不变量 15 对这类实例失效）；deploy.sh 部署 01 的 tag 或自动回滚到 01 的 `:prev` 也放行（回滚检查失效）；之后再 `--resync` 还会把这些会话在库里、文件里没有的订单作废。现在：`initSessionStore` 的 db 分支装上 PG 后端之后，没有标记就补写一份（`sessions` 是预载的真实会话数）；`rollback-guard.sh` 另读服务器 `.env`，`SESSION_STORE=db` 也算有风险（做法与验证见「实施记录 · 第 6 步」的「审查之后改的」第 5 条）。请 owner 确认，并把 spec「标记文件」那句补成「import 改写 JSON 时写、db 存储启动时没有就补写，export 写完 JSON 后删掉」，回滚检查的条件加上「服务器 `.env` 里是 `SESSION_STORE=db`」。
+- 第 5 步审查带出的一处（已按下面做了，owner 不同意可以改）：已定 · **两种启动失败借用了现有的 reason**。spill 回放时读写文件出错（`EISDIR`、`EACCES`、改名失败）与其余意外错误用 `spill_conflict`（spec 写的是「spill 文件接不上库里的 last_seq」），重复调 `initSessionStore` 用 `sessions_in_db`（spec 写的是「文件存储而 var/ 里有标记文件」）；两处 detail 都写明实情（文件名与错误码、「只能调一次」）。要分开的话给 spec 的 `SessionStoreStartupError` 加两个 reason（比如 `spill_unreadable`、`already_installed`），代码两处各改一行。
 - 第 4 步审查带出的两处（都已按下面做了，owner 不同意可以改回）：
-  - **清除与删除连带删会话的任务（按验收 27 扩了删除范围）**。spec 写的是「删除范围与清除函数相同」，不变量 42 的表清单里也没有 `jobs`；但跟进的 `dedupe_key` 是 `followup:<会话>:<阶段>`，会话 id 就是 `wecom:<external_userid>`，验收 27 要求删除之后「库里搜不到它的 external_userid」，结束的任务还要再留 30 天，不删就过不了这条。现在的做法：约定与会话有关的任务 `payload` 必带 `sessionId`，`purge_conversation`、`erase_conversation` 一并删 `payload->>'sessionId' = p_id` 的任务（任何状态），`erase_conversation` 的返回值与审计多一项 `jobs`。owner 要改回原文的范围，就把这两条 DELETE 去掉、把验收 27 的「库里」收窄成不变量 42 的那几张表；或者改成不删、把任务的 `dedupe_key` 与 `payload` 改用不含会话 id 的引用。请 owner 把定下的写法补进 spec「数据库 · 清除与删除函数」与不变量 42。
-  - **`orders` 触发器多管了 `session_id`**。spec「数据库 · 触发器」只写了 `paid_at` 写一次；`agent_app` 对 `orders` 是整表 UPDATE，把已付订单的 `session_id` 置空或改挂，会话就按线索的保留期被提前清除，与 R20、不变量 6 矛盾。现在 `session_id` 非空之后只有 `agent_owner`（清除与删除函数、外键动作）能改，理由与验证见「实施记录 · 第 4 步」的「审查之后改的」第 1 条。请 owner 把这一句补进 spec 的触发器那一段。
+  - 已定 · **清除与删除连带删会话的任务（按验收 27 扩了删除范围）**。spec 写的是「删除范围与清除函数相同」，不变量 42 的表清单里也没有 `jobs`；但跟进的 `dedupe_key` 是 `followup:<会话>:<阶段>`，会话 id 就是 `wecom:<external_userid>`，验收 27 要求删除之后「库里搜不到它的 external_userid」，结束的任务还要再留 30 天，不删就过不了这条。现在的做法：约定与会话有关的任务 `payload` 必带 `sessionId`，`purge_conversation`、`erase_conversation` 一并删 `payload->>'sessionId' = p_id` 的任务（任何状态），`erase_conversation` 的返回值与审计多一项 `jobs`。owner 要改回原文的范围，就把这两条 DELETE 去掉、把验收 27 的「库里」收窄成不变量 42 的那几张表；或者改成不删、把任务的 `dedupe_key` 与 `payload` 改用不含会话 id 的引用。请 owner 把定下的写法补进 spec「数据库 · 清除与删除函数」与不变量 42。
+  - 已定 · **`orders` 触发器多管了 `session_id`**。spec「数据库 · 触发器」只写了 `paid_at` 写一次；`agent_app` 对 `orders` 是整表 UPDATE，把已付订单的 `session_id` 置空或改挂，会话就按线索的保留期被提前清除，与 R20、不变量 6 矛盾。现在 `session_id` 非空之后只有 `agent_owner`（清除与删除函数、外键动作）能改，理由与验证见「实施记录 · 第 4 步」的「审查之后改的」第 1 条。请 owner 把这一句补进 spec 的触发器那一段。
 
 ## 交接记录
 

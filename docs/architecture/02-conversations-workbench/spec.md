@@ -8,6 +8,7 @@ Supersedes in part: [01](../01-pg-config-console/spec.md) 的不变量 4；[后�
 Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整性与运维、安全隐私与 spec 质量）后就地修订（draft，尚无代码依赖），同日加入 owner 定的「可观测性与告警」（R24）。主要改动：store 的导入期行为改为与存储模式无关，信号与停机钩子搬进 `src/shutdown.ts`，停机分 normal、drain、late 三段，排不空的改动写进 spill 文件（原为「db 存储下导入期什么都不做」「普通阶段排空，至多丢在途的一次」）；seq 改在 `saveSession` 时同步分配（原为提交时分配，发送账本、`reply` 拿不到）；确定性错误不再重试，会话标成 poisoned 并告警（原为一律退避重试）；切换加标记文件 `var/sessions-in-db.json` 与 `import-sessions --resync`（原为导出之后切不回去）；企微 msgid 去重分三种情况（原为「查到就当已处理」，会吞掉已入库未回复的重放）；`messages.msgid` 不建唯一索引；预载、导入、导出按批读写并放宽语句超时；清除函数改看 `agent_app` 改不了的数据（`updated_at` 只进不退、`paid_at` 写一次），清除时抹掉订单里的客户标识，审计不存会话 id；新增平台的行权删除与撤回同意（R23）；旧 `/handoff` 不设接手人，旧写接口在 prod 由新开关关掉（标记已付除外），匿名的旧读接口去掉成员身份；共享契约的类型挪进 `src/shared/`；`/api/orders/:id` 改为白名单投影；已付会话转人工保留终态并单列提醒（开放问题 12）；`?v=` 与隐私说明改从内存读；用量改挂在 `recordUsage` 上；跟进受 `FOLLOWUP_ENABLED` 控制、加 `sending` 状态；回滚检查加条目版本；改正「锁定断言要求链接后紧跟换行」的错误引用；开放问题按「什么时候定、没答复怎么办」重排，新增 12–14。
 Revisions: 2026-10-02 owner 定下开放问题 1–14：1 选 A（「部分取代」，规则写进 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部各加 `Superseded in part by:`），2–14 照推荐（6、12 选 A）。各条就地标「已定」，选项与理由保留。随之改写（行为、接口、数据形状不变）：顶部加 `Supersedes in part:`，`Amends:` 末句改指它（原为「怎么落见开放问题 1」）；「前置条件」的答复规则改为「已全部定下」（原为 1、6、12 开工前必须答复，4、3 没答复就停在第 11.1、14 步，5、8、9、2、7、14 没答复按推荐先做，10、11、13 接真实租户之前定）；非目标、承接表、R9、R13、R15、R20、环境变量表、`negativeLevel` 注释、外部通道、保留期 DDL 注释、同意流程、外部拨测、OpenTelemetry 原文开关、「与 01、后台 UX spec 的关系」、验收 12、15、35 与被否决的方案里「由开放问题 N 定 / 推荐 / 选定的那个」的写法换成定下的结论
 Revisions: 2026-10-02 评审之后再改两处。一、不变量 9 补上前半句「DB 模式下，处理一轮对话的读路径不发出数据库查询……会话与 trace 的写入只经这个会话的写队列」，「测试与 CI」的 store 自测随之加一项：「与 01、后台 UX spec 的关系」原已写明 01 不变量 4 改写后落在本 spec 不变量 9，不变量本身却漏了读路径，`SESSION_STORE=db` 下没有一条不变量守住它。二、对 UX 验收 20 的取代范围，本 spec 与 UX spec 顶部写成同一个：取代「点一行，新标签页打开工作台并选中该会话」与同条 `ADMIN_PASS` 那一句，其余照旧（原为本 spec 写整条、UX 顶部只写前一句）。01 顶部随之改指「与 01、后台 UX spec 的关系」，不再写「02 不变量 9」
+Revisions: 2026-10-03 owner 确认 plan「Open」里标「已定」的八处，连同实施记录里比原文更严的几处（旧接口只认 `ADMIN_PASS`；import、export 的写序、目录 fsync、`--keep` 先验可写），就地补进本文；一的改写在第 13 步、三在第 15 步落地，其余以已实现的为准。一、匿名可读的旧接口把交还时按固定模板生成的「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」，旧接口只认 `ADMIN_PASS`、只带 console 登录的请求按匿名处理（原为「带 `ADMIN_PASS` 或成员登录的请求照旧返回原对象」，投影管不到正文里的姓名，与不变量 44 冲突）；二、`POST /api/orders/:id/pay` 两个分支响应体里的订单用 R22 的白名单投影（原文没管这个响应体，demo 下匿名可调，会带出成员身份），不变量 43 与验收 9 随之加这一句；三、advisor 模式下收款方式只经 `/pay/:orderId` 的服务端注入，`/pay.html?orderId=` 跳到 `/pay/:orderId`（原文没说页面从哪儿知道收款方式，R22 白名单里没有这个字段），验收 23 加这一句；四、`orders` 的触发器另拦非属主改已写的 `session_id`（原为只拦改 `paid_at`；`agent_app` 能把已付订单的 `session_id` 置空，会话就按线索的保留期被提前清除），R20、不变量 6、验收 5 与真实 PG 的测试项随之写进这一条；五、清除与行权删除一并删 payload 里 `sessionId` 是这个会话的任务，与会话有关的任务 payload 必带 `sessionId`，`erase_conversation` 的返回值含 `jobs`，不变量 42 加 `jobs`（原为删除范围不含任务；跟进任务的键里带着会话 id，过不了验收 27）；六、`spill_conflict` 也用于回放时文件系统出错、其余意外错误与 spill 不是本租户，`sessions_in_db` 也用于 PG 后端装上之后再调 `initSessionStore`（原为各只有一种含义；不另加拒绝原因，detail 写明实情）；七、db 存储启动时没有标记文件就补写（补写失败只记日志、照常启动），`SessionStoreDeps` 加 `tenantSlug`；import 先写标记再改写 JSON，export 先写订单再写会话最后删标记，改名之后对目录 fsync；`--keep` 在开事务之前先验可写；没有标记而 JSON 与库不一致时 export 以退出码 2 拒绝、一致时当无操作；回滚检查另看服务器 `.env` 的 `SESSION_STORE=db`（原为标记文件只由 import 写、回滚检查只看标记文件与 `catalogVersioned`，不经 import 直接以 db 存储起的实例两道检查都失效），验收 3、32 随之补。
 
 ## 背景与问题
 
@@ -133,9 +134,9 @@ Revisions: 2026-10-02 评审之后再改两处。一、不变量 9 补上前半�
 | R17 | 跟进                                                 | db 存储下改由任务表驱动，同样受 `FOLLOWUP_ENABLED` 控制：AI 回复后按阶段阈值排一个 `followup` 任务，客户回话就取消；到点时在活对象上重判资格（复用抽出来的 `shouldFollowUp`）、生成话术、过出口护栏、记账并把任务改成 `sending` 一起提交，再推送；进程在 `sending` 之后崩溃，任务记 `abandoned`、不重发；之前停机或崩溃，任务回到 `pending`。文件存储下的扫描器照旧（锁定的 `llm.selftest.ts` F1 测它），两种存储共用资格判断、护栏和拒绝识别                                                                                                                                                                                                                              | `src/jobs/`                                              | —                         |
 | R18 | 企微额度                                             | 每次 send_msg 自带 msgid 并记一行 `outbound_sends`；同一分段重试时沿用同一个 msgid。窗口按保守口径算：客户最后一条消息的 `send_time` 起 48 小时，自那以后至多 5 次 send_msg，结果不明（超时、网络异常）的也计数；规则的细节待实测（开放问题 8）。AI 回复不受账本拦（客户刚说过话）；跟进要求剩余 ≥2 条且窗口剩余 ≥2 小时；人工回复在剩 0 条或窗口已过时拒绝并写明原因。接收 `msg_send_fail` 回执，按 msgid 记失败并给会话加一条 system 消息                                                                                                                                                                                                                                | `src/quota/ledger.ts`                                    | —                         |
 | R19 | 收款                                                 | 收款方式随 `mock_pay`：开（demo）照旧；关（prod）是「顾问确认收款」：AI 建的单先由顾问确认价格，顾问在微信里发收款方式，客户付完由顾问在 console 确认收款，触发付款确认。system prompt 在两种方式下必须相同（00 不变量 12），所以 SOP 锁定节的成交措辞改成两种方式都成立的写法，这是本阶段唯一一次有意改变前缀。旧的 `ADMIN_PASS` 标记已付保留                                                                                                                                                                                                                                                                                                                             | `src/payment/`；`data/sop.md` 两处                       | 顾问改价（开放问题 9）    |
-| R20 | 保留期                                               | 三个保留期存在 `tenants` 上，清理只经 SECURITY DEFINER 清除函数。函数自己按租户设置算截止时间、只删过期的行，判断只看 `agent_app` 改不了的数据：`conversations.updated_at` 由触发器保证只进不退、不超过「现在 + 5 分钟」，订单的 `paid_at` 写一次就不能改。清除时一并抹掉订单 `data` 里的客户标识；会话类审计记不含客户标识的 `ref`。时长按开放问题 2：线索 180 天、客户 730 天、trace 90 天，写成迁移的默认值，按租户由平台命令行改                                                                                                                                                                                                                                       | `purge_conversation`、`purge_expired_traces`             | —                         |
+| R20 | 保留期                                               | 三个保留期存在 `tenants` 上，清理只经 SECURITY DEFINER 清除函数。函数自己按租户设置算截止时间、只删过期的行，判断只看 `agent_app` 改不了的数据：`conversations.updated_at` 由触发器保证只进不退、不超过「现在 + 5 分钟」，订单的 `paid_at` 写一次就不能改，订单已写的 `session_id` 只有属主（清除与删除函数、外键动作）能改。清除时一并抹掉订单 `data` 里的客户标识；会话类审计记不含客户标识的 `ref`。时长按开放问题 2：线索 180 天、客户 730 天、trace 90 天，写成迁移的默认值，按租户由平台命令行改                                                                                                                                                                     | `purge_conversation`、`purge_expired_traces`             | —                         |
 | R21 | 01 开放问题 6：生产实例的 rerender                   | 维持自动发布。一个实例一个租户期间，rerender 只在运维发起的代码部署时发生；契约检查仍然拦着（不过就拒绝启动），每次 rerender 有审计和版本记录。改成「先出草稿、确认前拒绝启动」会让每次改了硬性要求的部署都变成一次需要人工介入的停服。04 同部署多租户时再按租户隔离（01 开放问题 6 原文）                                                                                                                                                                                                                                                                                                                                                                                 | —                                                        | 按租户隔离（04）          |
-| R22 | 公开路由                                             | 白名单只加 `/privacy`。`/api/orders/:id` 改为白名单投影 `{ id, routeTitle, travelers, departDate, totalPrice, status, createdAt, paidAt, confirmed, supersededBy }`（`pay.html` 与 `chat.html` 用到的字段加 advisor 模式要的 `confirmed`），锁定断言只看 `id`。其余新接口都在管理面；新套件枚举全部路由，白名单以外的匿名请求在 prod 下一律 401 或 404                                                                                                                                                                                                                                                                                                                     | `server.ts`                                              | —                         |
+| R22 | 公开路由                                             | 白名单只加 `/privacy`。`/api/orders/:id` 改为白名单投影 `{ id, routeTitle, travelers, departDate, totalPrice, status, createdAt, paidAt, confirmed, supersededBy }`（`pay.html` 与 `chat.html` 用到的字段加 advisor 模式要的 `confirmed`），锁定断言只看 `id`。`POST /api/orders/:id/pay` 两个分支响应体里的订单也用这个投影。其余新接口都在管理面；新套件枚举全部路由，白名单以外的匿名请求在 prod 下一律 401 或 404                                                                                                                                                                                                                                                      | `server.ts`                                              | —                         |
 | R23 | 个人要求删除、撤回同意                               | 平台身份的删除路径：`erase_conversation`（SECURITY DEFINER，只 GRANT 给 `agent_platform`，不看保留期）与停机执行的 `erase-conversation` 命令行，删除范围与清除函数相同，审计只记条数与原因。同意记录多一个取值 `withdrawn`；客户说「撤回同意」「删除我的信息」这类话，记一条并转人工（`kind='consent'`），由租户按隐私说明里的行权方式处理。备份里的副本随备份的保留期滚掉，隐私说明里写明                                                                                                                                                                                                                                                                                 | `src/cli/erase-conversation.ts`                          | 客户自助行权（以后）      |
 | R24 | 可观测性与告警（owner 2026-10-02）                   | 日志用 pino 输出 JSON，每行带租户、会话 id、请求 id，prod 下不写客户原话。告警推到企微群机器人 webhook（URL 只在服务器的 env 文件里）：备份失败、反复重启或健康检查失败、模型连续出错或超时、企微发送失败、租户锁丢失、磁盘将满，外加写库的冲突、poisoned 与积压。外部拨测探 `/healthz`。回复延迟 p90、转人工率、AI 出错率、每日费用由 SQL 从 `turn_traces` 与 `usage_daily` 算，在 console 总览里给所有者与管理员看，不上时序数据库。OpenTelemetry 埋点默认关闭（没配 OTLP 端点就不加载导出器）：每轮一条 trace，模型调用、工具调用、护栏各一个 span，属性用 OTel 的 `gen_ai.*` 加 Langfuse 的会话与用户属性；客户原文默认不进 span。Langfuse 本阶段不部署（开放问题 13） | `src/log.ts`、`src/ops/`、`src/otel/`、`deploy/watch.sh` | Langfuse（开放问题 13）   |
 
@@ -200,15 +201,18 @@ export function isDemoClassId(id: string): boolean;
 export interface SessionStoreDeps {
   db: Db;
   tenantId: string;
+  /** 补写标记文件时记进 tenant（与 import-sessions 写的相同） */
+  tenantSlug: string;
   varDir: string;
 }
 /**
  * 导入期已经按文件后端读好 JSON（两种模式相同，R3）。
  * deps 为 null（文件存储）：var/ 下有标记文件 sessions-in-db.json 时以 sessions_in_db reject，否则立即 resolve。
  * 否则依次：JSON 里有真实会话 → real_in_json → 分批预载真实会话与订单（R2）→ 校验（每个会话的 last_seq 与窗口一致、
- * 订单引用的会话都在）→ 回放 spill 文件 → 装上 PG 后端 → 登记 drain 与 late 两段停机钩子。
+ * 订单引用的会话都在）→ 回放 spill 文件 → 装上 PG 后端 → var/ 下没有标记文件就补写一份（写不进去只记一行错误、照常启动，
+ * 下次启动再补，回滚检查另看服务器 .env 的 SESSION_STORE=db）→ 登记 drain 与 late 两段停机钩子。
  * （条目版本的启动补写属于配置装载，在 initConfig 里做，与会话存储无关，见「报价快照」）
- * 任何一步失败都以 SessionStoreStartupError reject，不留半装载状态
+ * 除补写标记文件外，任何一步失败都以 SessionStoreStartupError reject，不留半装载状态
  */
 export function initSessionStore(deps: SessionStoreDeps | null): Promise<void>;
 
@@ -245,8 +249,8 @@ export class SessionStoreStartupError extends Error {
       | 'demo_class_in_db'
       | 'orphan_order'
       | 'real_in_json' // db 存储而 JSON 里有真实会话：重跑 import-sessions（补完改写或提示 --resync）
-      | 'sessions_in_db' // 文件存储而 var/ 里有标记文件：会话在库里，先 export-sessions
-      | 'spill_conflict', // spill 文件接不上库里的 last_seq
+      | 'sessions_in_db' // 文件存储而 var/ 里有标记文件：会话在库里，先 export-sessions；PG 后端已装上之后再调 initSessionStore 也用它（只能装一次）
+      | 'spill_conflict', // spill 文件接不上库里的 last_seq；回放时文件系统出错、其余意外错误、spill 不是本租户的也用它（detail 只写文件名与错误码）
     detail: string,
   );
 }
@@ -525,7 +529,7 @@ export class ConsentDeclinedError extends Error {} // → 409 consent_declined
   - `reply`：`reply`（每个请求生成一个 clientId），没人接手时以共享工作台接手。响应形状照旧（`{ ok }`）。
   - 锁定的 `server.selftest.ts` 在没有 console 成员接手的 `sim-` 会话上依次调 handoff、resume、reply，结果照旧都是 200，人工回复落进会话。
 - 生成途中被接手（E5）：接手改的是 identity map 里同一个对象，引擎调完模型后看到 `handedOver` 照旧静默。模型返回之后还有几次 `await`（`strandedReply`、`deterministicRecommend`、`repairLinks`），这期间的接手由接手代次兜住：引擎在轮次开始时记下 `takeoverGen`，在把 AI 回复 push 进会话之前同步比较一次，适配器在调 `sendRich` 之前再比较一次；变了就不发，记一条 system「本轮未发送（顾问已接手）」。
-- 交还时不给客户发消息（与今天相同），记一条 system 消息「{姓名}把会话交还 AI」。
+- 交还时不给客户发消息（与今天相同），记一条 system 消息「{姓名}把会话交还 AI」。这条消息由一个固定模板生成，匿名可读的旧接口把它改写成「顾问把会话交还 AI」（「后台接口」匿名投影一条）。
 - 发给模型的历史：`author='human'` 的消息映射成 `assistant`，正文前加「【顾问】」。窗口里有这样的消息时，contextNote 末尾多一句：「历史里标【顾问】的话是人工顾问说的，不是你说的；顾问答应过的事以顾问为准，不要改口，也不要在自己的回复里写【顾问】。」出口在最后一步去掉 AI 回复开头的「【顾问】」。
 - 人工回复正文不过价格护栏（人可以做承诺），只做渠道已有的去 markdown；长度 1–2000 字。
 
@@ -668,6 +672,7 @@ export function shouldFollowUp(s: Session, now: number): boolean;
 - **跟进**（db 存储，`FOLLOWUP_ENABLED=1` 时才排，与文件存储的扫描器同一开关，默认关）：AI 回复落库时，若会话满足 `shouldFollowUp` 的静态条件（未转人工、企微渠道、非 demo 类、非终态、阶段在阈值表里、最后一条非 system 消息是我们发的、没有 `followupOptOut`、本阶段没跟过、未到 `MAX_PER_SESSION`、失败次数未到 `MAX_PUSH_FAILURES`），排 `followup:<会话>:<阶段>`，`runAt` = 最后动静 + 该阶段的阈值，落在 22:00–9:00 就顺延到 9:00。客户回话时取消。到点后：在活对象上重判 `shouldFollowUp` → 生成话术 → 过出口护栏（`guardOutbound`，与 AI 回复同一套：价格、链接白名单、内部用语、空头承诺、去 markdown）→ 查发送账本（R18）→ 记账（count、stages、pendingAt）并把任务改成 `sending`，随同一次会话落库提交 → 推送 → 成功则 `done`，明确失败则退账、`failed`、失败计数加 1。
 - **重启与停机**：停机的 normal 段把还没进 `sending` 的 `running` 跟进改回 `pending`（下次启动再追，与今天相同）。启动时：`running` 的跟进改回 `pending`（还没记账，什么都没发）；`sending` 的跟进改记 `abandoned`、不重发（记过账，可能已经发了）；其余种类的 `running` 改回 `pending`、`attempts` 加 1，达到 `max_attempts` 记 `failed`。
 - **拒绝识别**（两种存储都做）：客户说「不用了」「别发了」「不需要了」「已经订别家了」「不考虑了」这类话（按小句判，疑问与否定排除），记 `followupOptOut`，取消已排的跟进。
+- 与会话有关的任务（`followup`、`handoff_notify`）`payload` 必带 `sessionId`：清除与行权删除据它把任务一并删掉，否则 `dedupe_key` 与 `payload` 里的会话 id（`wecom:<external_userid>`）会在删除之后留下来（验收 27、不变量 42）。
 - `handoff_notify`：转人工提交后立即排一个，10 分钟后若仍没人接手再排一个；企微窗口剩不到 4 小时、仍在转人工中时排一个。至多重试 3 次。
 - `retention_purge`：每天 3:30 一个，`dedupe_key` 是 `retention_purge:<日期>`，见 R20。
 
@@ -751,12 +756,12 @@ export class OrderStateError extends Error { constructor(readonly status: OrderS
 - **SOP**：`data/sop.md` 的锁定节里两处改成两种方式都成立的写法（措辞在实施时定，约束如下）：「能力边界」里「付款只走我们发给您的官方支付链接（就是 create_order 返回的那条）」改成「付款只认 create_order 返回的订单链接，或顾问在微信里发给您的收款方式」；「各阶段目标」的 closing 加一句「工具结果里有 payNote 时，按 payNote 跟客户说怎么付款」。`SOP_KNOWN_FIELDS` 加 `payNote`，旅游包 `console-pack.ts` 的 `sopFields` 同步加（`packs.selftest.ts` 断言两者的键相同）。契约清单里的短语一条不删。这是本阶段唯一一次有意改变 system prompt，改前改后的四个哈希记进 plan；DB 模式下由 01 的启动重渲染生成 `rerender` 版本；要跑一遍真实模型回归（AGENTS.md）。
 - **advisor 模式下变的东西**（online 模式逐字节不变）：
   - `create_order` 结果多一个 `payNote`：「这是订单确认链接：顾问会在微信里跟客户核对价格并发收款方式，不要说点链接付款。」
-  - `/pay/:orderId` 页面：标题仍是「<线路> · 订单支付」（锁定断言）；没有付款按钮，按订单状态写「订单已提交 · 顾问会在微信里跟您核对价格，并发来收款方式」「价格已确认 · 请按顾问在微信里发的方式付款」「已收款」「已被替代」「已取消」。
+  - `/pay/:orderId` 页面：标题仍是「<线路> · 订单支付」（锁定断言）；没有付款按钮，按订单状态写「订单已提交 · 顾问会在微信里跟您核对价格，并发来收款方式」「价格已确认 · 请按顾问在微信里发的方式付款」「已收款」「已被替代」「已取消」。收款方式由 `/pay/:orderId` 的服务端注入告诉页面；`/pay.html?orderId=` 这条静态入口一律跳到 `/pay/:orderId`，R22 的白名单不为它加字段。
   - 价格规则护栏把「资金托管」一类说法换成的那句（`price-rules.ts`，今天是「付款只走我们发给您的官方支付链接。」）改成「付款以订单链接和顾问发给您的收款方式为准。」；锁定的 `price-guard.selftest.ts` 测的是 demo（online）下的输出，不变。
   - 出口修补（`repairLinks`、`placeLinks`）补发订单链接时的说明句、重发支付链接、成单安全网、企微支付卡片、跟进模板的 closing 段：同一意思的确定性文本，不说「点链接付款」。
   - 建单后排一次 `handoff_notify`（类型「待确认的订单」），A2 的「待付款」列出它。
 - 顾问确认价格只是确认 AI 按规则算出的金额，不改金额；金额不对就取消，让 AI 重新报价，或在系统外处理（开放问题 9）。
-- `POST /api/orders/:id/pay` 与带 `ADMIN_PASS` 的标记已付保持原样（锁定断言）；advisor 模式下这条旧路径不要求先确认，审计记共享工作台，付款确认同样在提交之后发。
+- `POST /api/orders/:id/pay` 与带 `ADMIN_PASS` 的标记已付保持原样（锁定断言），只是两个分支（200 与 409）响应体里的订单换成 R22 的白名单投影（锁定断言不读响应体）；advisor 模式下这条旧路径不要求先确认，审计记共享工作台，付款确认同样在提交之后发。
 
 ### 通知
 
@@ -947,7 +952,7 @@ export interface QuickReply {
 - 新错误码：403 `forbidden`（角色不够，如坐席带 `force` 接手）、409 `assigned_to_other`（带 `assigneeName`）、409 `not_assignee`、409 `consent_declined`、409 `send_window_closed` / `send_quota_exhausted`（带 `closesAt`、`remaining`）、409 `order_state`、404 `conversation_not_found`（含 `sim-` 访客会话：console 不列也不开它们）、503 `store_file_mode`（只在 db 存储有的接口：更早的消息、trace、运行数字；快捷回复只要求 01 的 DB 配置模式，两种会话存储下都可用）、503 `store_lagging`。
 - `/orders` 与 `/orders/summary` 从 identity map 算（含 demo 类订单，作废的已不在内存里），不查 `orders` 表：种子订单不进库，A2 的「本月成交额」在 demo 上要算得出 207,440。所有者、管理员以外的角色，`/orders` 只接受 `status=pending_payment`（A2「待付款」只要这一类），其余 403。
 - 种子会话（`wecom:cust_`）在 console 里照常可看、可接手（01 起会话列表就列它们），只是没有 trace，也没有窗口以外的旧消息：这两类接口对它们返回空。
-- 匿名可读的旧接口（`/api/sessions`、`/api/sessions/:id`、`/api/orders` 的匿名分支，种子与访客本人）返回去掉成员身份的投影：去掉 `assignee.userId`、消息的 `authorId`、订单的 `confirmedBy`、`paidMarkedBy`、`cancelReason`，接手人与消息作者的姓名一律写「顾问」（01 不变量 31）。带 `ADMIN_PASS` 或成员登录的请求照旧返回原对象。
+- 匿名可读的旧接口（`/api/sessions`、`/api/sessions/:id`、`/api/orders` 的匿名分支，种子与访客本人）返回去掉成员身份的投影：去掉 `assignee.userId`、消息的 `authorId`、订单的 `confirmedBy`、`paidMarkedBy`、`cancelReason`，接手人与消息作者的姓名一律写「顾问」，交还时按固定模板生成的那条 system 消息「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」（01 不变量 31、本 spec 不变量 44）。带 `ADMIN_PASS` 的请求照旧返回原对象；旧接口不认 console 的登录，成员在旧接口上拿到的也是投影。
 - `GET /conversations` 与 `/conversations/counts` 的语义照后台 UX spec，多了 `assigned`。`order=waiting_first` 把 `human` 排最前，其余照旧。
 - 审计新动作：`conversation.takeover`、`conversation.reassign`、`conversation.release`、`order.confirm`、`order.mark_paid`、`order.cancel`、`quick_reply.create` / `update` / `archive` / `move`、`catalog.version`（随产品库写入）、`privacy.publish`、`platform.tenant_retention`、`platform.erase`（只记条数与原因）、`system.purge`（`actor_kind='system'`，diff 只有条数）。会话类动作的 `target_id` 是会话行的 `ref`（随机 uuid，不含客户标识），diff 里带短码；订单类是订单号。人工回复不记审计：消息本身带操作者。共享工作台的操作记 `actor_kind='user'`、`actor_user_id` 为空、`actor_name='共享工作台'`。`AUDIT_ACTIONS` 加这些动作的中文与分组，K 页的分段控件多一段「会话与订单」。
 
@@ -1021,10 +1026,10 @@ ALTER TABLE tenants
 - **敏感信息同意**（只在发布过隐私说明时启用；细节见开放问题 7）：客户消息里第一次出现某个类别（`sensitiveCategoriesOf`）而会话还没问过时，本轮回复之后追加一条企微菜单消息：「您提到了{家人的健康情况 / 孩子的信息}，这属于敏感个人信息。我们只用它来推荐合适的线路、安排行程强度和住宿，不做别的用途，按隐私说明保存，您可以随时撤回。不提供也能继续咨询，只是推荐可能没那么贴合。可以吗？隐私说明：<PUBLIC_BASE_URL>/privacy」。菜单两项「同意」「不同意」。客户点了就按 `menu_id` 记一条同意记录。没点：按开放问题 7 的裁决，下一次出现同类别信息时再问一次（至多两次），仍没点就记第二条 `asked`、照常接待，contextNote 提示模型不要在回复里主动提这一类信息。点「不同意」：回一句确认，`enterHandoff(kind='consent')`，由顾问处理；这个会话不能再交还 AI（`release` 返回 409 `consent_declined`），之后客户点了「同意」才解除。同意记录只追加。
 - **撤回同意与删除请求**（R23）：客户的话命中 `consentWithdrawalOf`：对已问过的类别各记一条 `withdrawn`，回固定的一句「好的，已经记下您的要求，顾问会尽快联系您处理。」，`enterHandoff(kind='consent', reason='客户要求撤回同意或删除信息')`，本轮不调模型。删除由租户经平台执行：
   - `erase-conversation --tenant <slug> --id <会话 id> --reason <文字>`（platform 身份，要取租户锁，所以要求应用已停：在跑的话 identity map 会把会话写回去；`var/` 里有 spill 文件时拒绝）。
-  - 调 `erase_conversation(p_tenant, p_id, p_reason)`：删除范围与清除函数相同（会话行连同消息、trace、护栏事件、同意记录，按 id 删发送账本，订单的 `session_id` 置空、`data` 去掉 `sessionId`），不看保留期；写一行 `platform.erase` 审计，只有各类的条数与原因。
+  - 调 `erase_conversation(p_tenant, p_id, p_reason)`：删除范围与清除函数相同（会话行连同消息、trace、护栏事件、同意记录，按 id 删发送账本与 payload 里 `sessionId` 是它的任务，订单的 `session_id` 置空、`data` 去掉 `sessionId`），不看保留期；写一行 `platform.erase` 审计，只有各类的条数与原因。
   - 文件存储下没有这条路径（demo 不接真实客户）。备份里的副本随备份的保留期滚掉，隐私说明正文写明。
 - **保留期清理**：
-  - 线索（订单里没有 `paid_at` 的）的会话在最后动静之后 `retention_lead_days` 天、客户（有任何一张订单写过 `paid_at`，作废、取消的也算）的在 `retention_customer_days` 天到期；到期会话连同消息、trace、护栏事件、发送账本、同意记录删除；它的订单保留，`session_id` 置空、`data` 去掉 `sessionId`，不再进 identity map。「最后动静」是 `conversations.updated_at`，等于 `session.updatedAt`（跟进不刷新它，与今天相同）。
+  - 线索（订单里没有 `paid_at` 的）的会话在最后动静之后 `retention_lead_days` 天、客户（有任何一张订单写过 `paid_at`，作废、取消的也算）的在 `retention_customer_days` 天到期；到期会话连同消息、trace、护栏事件、发送账本、同意记录与 payload 里 `sessionId` 是它的任务删除；它的订单保留，`session_id` 置空、`data` 去掉 `sessionId`，不再进 identity map。「最后动静」是 `conversations.updated_at`，等于 `session.updatedAt`（跟进不刷新它，与今天相同）。
   - trace 与护栏事件另按 `retention_trace_days` 到期（早于会话到期）；没有会话的发送账本行（老客户进入会话但没说话）同样按它到期。
   - 每天一次 `retention_purge` 任务：列出候选会话（库里 `updated_at` 早于截止时间），逐个在它的写队列上处理：内存里这个会话有未落库的改动、内存里的 `updatedAt` 还在保留期内、有一轮正在处理或有任务在跑，就跳过；否则调 `purge_conversation(p_tenant, p_id, p_now, p_expected_last_seq, p_expected_updated_at)`（函数内再按租户设置与这两个预期值判一次，不符就返回 false），返回 true 就在同一个 tick 里移出内存，并把这个会话对象记进墓碑（`WeakSet`）：之后拿着旧对象的 `saveSession` 记一行日志、不执行；客户再来时 `getSession` 建的是新对象。最后调 `purge_expired_traces` 与 `purge_finished_jobs`。写一行 `system.purge` 审计，diff 只有各类的条数。
   - 日志：prod 下日志不写客户原话（R24）。现有护栏、转人工、跟进等日志里引用原话的地方改经 `logQuote(text)`：demo 照旧输出原文，prod 只写「«N字»」；新代码的日志只写会话短码或 `ref`。排查问题要看原话时查 trace（有保留期、有权限）。compose 另给 app 服务配 `json-file` 轮转（`max-size: 20m`、`max-file: 5`）。
@@ -1185,7 +1190,7 @@ CREATE TABLE quick_replies (
 触发器（custom 迁移，属主 `agent_owner`）：
 
 - `conversations` 的 BEFORE INSERT OR UPDATE：`NEW.updated_at > now() + interval '5 minutes'` 就报错；UPDATE 时 `NEW.updated_at := greatest(OLD.updated_at, NEW.updated_at)`。导入写入过去的时间不受影响。
-- `orders` 的 BEFORE UPDATE：`OLD.paid_at IS NOT NULL AND NEW.paid_at IS DISTINCT FROM OLD.paid_at` 就报错。
+- `orders` 的 BEFORE UPDATE：`OLD.paid_at IS NOT NULL AND NEW.paid_at IS DISTINCT FROM OLD.paid_at` 就报错；`OLD.session_id IS NOT NULL AND NEW.session_id IS DISTINCT FROM OLD.session_id` 而当前角色不是 `agent_owner` 也报错（清除与删除函数、外键的 `SET NULL` 动作以属主执行，照常放行）。否则 `agent_app` 把已付订单的 `session_id` 置空或改挂，会话就会按线索的保留期被提前清除（R20、不变量 6）。
 
 授权（RLS 套件逐格断言；没有任何角色对新表有 DELETE 或 TRUNCATE）：
 
@@ -1205,7 +1210,7 @@ purge_conversation(p_tenant uuid, p_id text, p_now timestamptz, p_expected_last_
   -- |p_now − now()| 超过 5 分钟就报错（不许传一个未来的「现在」把没到期的数据删掉）；
   -- 库里的 last_seq、updated_at 与两个预期值不符就返回 false（清理时会话又有了动静）；
   -- 这个会话有没有任何一张订单写过 paid_at，取 retention_customer_days 或 retention_lead_days；
-  -- updated_at 早于 p_now − 保留期才删：会话行（级联消息、trace、护栏事件、同意记录）、按 id 删发送账本，
+  -- updated_at 早于 p_now − 保留期才删：会话行（级联消息、trace、护栏事件、同意记录）、按 id 删发送账本与 payload 里 sessionId 是它的任务（任何状态），
   -- 订单 session_id 置空并 data := (data::jsonb - 'sessionId')::json，返回 true；否则 false
 purge_expired_traces(p_tenant uuid, p_now timestamptz) RETURNS int
   -- 同样校验 p_now；删 started_at 早于 p_now − retention_trace_days 的 trace（级联护栏事件），
@@ -1214,7 +1219,7 @@ purge_finished_jobs(p_tenant uuid, p_now timestamptz) RETURNS int
   -- 删 finished_at 早于 30 天的 done、cancelled、abandoned、failed 任务
 -- 只 GRANT 给 agent_platform（R23）
 erase_conversation(p_tenant uuid, p_id text, p_reason text) RETURNS json
-  -- 不看保留期；删除范围与 purge_conversation 相同；写一行 platform.erase 审计；返回各类的条数
+  -- 不看保留期；删除范围与 purge_conversation 相同；写一行 platform.erase 审计；返回各类的条数（含 jobs）
 ```
 
 - 迁移 lint：`catalog_items.version` 是带 DEFAULT 的 NOT NULL，不用标注；回填用 `DO` 块按租户 `set_config` 后 `INSERT … SELECT`，不用动态 `EXECUTE`。`tenants` 的三列带 CHECK，会命中 `add-check` 规则（`ALTER TABLE` 与 `CHECK` 同句），标注 `-- migration-allow: add-check 新列带默认值且满足约束，旧镜像不写这几列`。
@@ -1233,21 +1238,21 @@ src/cli/privacy-publish.ts    --tenant <slug> --file <path>
 src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>   # 要求应用已停
 ```
 
-- **标记文件** `var/sessions-in-db.json`（`{ tenant, at, sessions }`）表示「真实会话在库里，JSON 只剩 demo 类」。import 改写 JSON 时一起写（先写临时文件再改名），export 写完 JSON 后删掉。它决定启动时的两个拒绝（`real_in_json`、`sessions_in_db`）和 `deploy.sh` 的回滚检查。
+- **标记文件** `var/sessions-in-db.json`（`{ tenant, at, sessions }`）表示「真实会话在库里，JSON 只剩 demo 类」。import 在改写 JSON 之前写，db 存储启动时没有就补写（`sessions` 是预载的真实会话数），export 写完 JSON 后删掉。import 写标记、import 与 export 改写 JSON 都先写临时文件再改名，改名与 export 删标记之后对目录 fsync；启动时的补写只先写临时文件再改名。不经 import、一上来就以 db 存储起的实例因此也有它；补写失败时由回滚检查另看服务器 `.env` 兜住。它决定启动时的两个拒绝（`real_in_json`、`sessions_in_db`）和 `deploy.sh` 的回滚检查。
 - **import-sessions**：
   - 读 `sessions.json`、`orders.json`，按 `isDemoClassId` 分成真实与 demo 类；订单跟着所属会话走，所属会话不在真实会话里的订单（孤儿订单）留在 JSON，由文件后端原样保留。
   - 库里这个租户还没有会话时：一个 `withTenant(…, { longRunning: true })` 事务，按 500 个会话一批写入：消息按数组下标写 `seq`（从 1 起），`window_start_seq = 1`，`last_seq = 消息条数`；`state` 与订单 `data` 原样；不对产品库建外键。每批写完在同一事务里按启动预载的同一条路径读回，经 `normalizeForStore` 后逐个 `deepStrictEqual`，不等就回滚、退出码 2 并点名第一个不等的会话短码；打印被规范化的字符串条数。
-  - 提交后把两个原文件复制到 `--keep`，把 JSON 改写成只剩 demo 类，写标记文件，打印真实会话数、消息数、订单数。
+  - 提交后把两个原文件复制到 `--keep`，先写标记文件，再把 JSON 改写成只剩 demo 类（顺序是标记、`sessions.json`、`orders.json`。还没写标记时崩溃，JSON 仍是原件、文件存储照常能起；写了标记而 `sessions.json` 还没改写时，两种存储都拒绝启动；`sessions.json` 已改写而 `orders.json` 还没改写时，文件存储拒绝启动，db 存储照常启动、预载时以库为准接管 `orders.json` 里的真实订单。几种情况重跑 import 都能收尾），打印真实会话数、消息数、订单数。`--keep` 在开事务之前先验可写，写不进去就以 1 退出、什么都不动。
   - 库里已有会话时：JSON 里没有真实会话且有标记，退出码 0（已经导入过）；JSON 里的真实会话与库里逐个一致，补完改写与标记，退出码 0；不一致退出码 2，提示用 `--resync`。拿不到租户锁退出码 3。`--dry-run` 只打印将写入的条数与往返结果。
   - `--resync`（回退到文件存储跑过一段之后再切回）：JSON 里每个真实会话，库里没有就按首次导入写；库里有、而库里的窗口是文件窗口的前缀，就把多出来的消息追加上去；否则把 `window_start_seq` 推到 `last_seq + 1`，把文件窗口整个作为新消息追加（历史里会重复一段，不丢）。`state` 换成文件里的。订单按 `id` upsert，这些会话在库里有、文件里没有的订单作废（`void_reason='resync'`）。之后同样改写 JSON、写标记，退出码 0。
-- **export-sessions**：在 `REPEATABLE READ READ ONLY` 的 `longRunning` 事务里按批读出全部真实会话（窗口内的消息）与未作废订单，把原 JSON 复制到 `--keep`，合并进 `--var` 下的两个 JSON（同 id 以库为准），删掉标记文件。导出结果再交给 `import-sessions --resync`，退出码 0（验收 3）。窗口以外的旧消息不进 JSON，与文件存储的裁剪语义一致。
+- **export-sessions**：在 `REPEATABLE READ READ ONLY` 的 `longRunning` 事务里按批读出全部真实会话（窗口内的消息）与未作废订单，把原 JSON 复制到 `--keep`，合并进 `--var` 下的两个 JSON（同 id 以库为准；先写订单、再写会话，最后删掉标记文件）。没有标记文件、而 JSON 里的真实会话与库里重建的不一致时以退出码 2 拒绝、什么都不动：多半是回退到文件存储之后又误跑了一次 export，照「同 id 以库为准」会盖掉文件存储期间的新消息与付款状态，提示改用 `import-sessions --resync`；全部一致、且库里没有 JSON 以外的真实会话时当无操作返回 0（不复制原件、不改文件）；库里另有 JSON 没有的真实会话时照常导出，把它们补进来；JSON 里没有真实会话时照常导出。`--keep` 与 import 一样在开事务之前先验可写，写不进去以 1 退出、什么都不动；拿不到租户锁以 3 退出。导出结果再交给 `import-sessions --resync`，退出码 0（验收 3）。窗口以外的旧消息不进 JSON，与文件存储的裁剪语义一致。
 - **切换步骤**（demo 由 owner 在线上执行，第一次在本机 compose 上演练）：
   1. 以文件存储部署 02 的镜像（`SESSION_STORE` 不设），确认 `/healthz` 的 `store.mode = file`，记下 `config` 的四个哈希（这次部署会因为 SOP 改动产生一个 rerender 版本）。
   2. `docker compose stop app`；以 app 身份跑 `import-sessions --keep <var 之外的目录>`，核对打印的条数。
   3. `.env` 加 `SESSION_STORE=db`，`docker compose up -d app`；核对 `/healthz` 的 `store.mode = db`、console `/status` 的会话数等于导入的会话数，后台能打开一个导入的会话。
   4. 失败就 `stop app`，跑 `export-sessions`，去掉 `SESSION_STORE=db` 再起；导入之后 db 存储期间的新消息都在导出里。之后再切回：停 app，`import-sessions --resync`，回到第 3 步。
   5. 切换后第一份备份做完恢复验证（验收 31），就删掉 `--keep` 目录里的原件。
-- **回滚到 02 之前的镜像**（`:prev` 或指定的旧 tag）：先按第 4 步回到文件存储，再部署旧 tag。01 的镜像不认识 `SESSION_STORE`，也不写条目版本：在 db 存储下回滚会让客户历史全部消失，在改过价之后回滚会让那期间发出的链接回来后按版本 1 显示旧价。所以 `deploy.sh` 回滚（含健康检查失败后的自动回滚）前检查：目标镜像里没有 `src/store/pg-backend.ts`（02 之前的镜像），而服务器 `var/` 里有标记文件、或正在运行的实例 `/healthz` 的 `config.catalogVersioned` 为 true（有条目版本大于 1）时拒绝，并打印上面的步骤。两个都是 02 之后的镜像时照常回滚。
+- **回滚到 02 之前的镜像**（`:prev` 或指定的旧 tag）：先按第 4 步回到文件存储，再部署旧 tag。01 的镜像不认识 `SESSION_STORE`，也不写条目版本：在 db 存储下回滚会让客户历史全部消失，在改过价之后回滚会让那期间发出的链接回来后按版本 1 显示旧价。所以 `deploy.sh` 回滚（含健康检查失败后的自动回滚）前检查：目标镜像里没有 `src/store/pg-backend.ts`（02 之前的镜像），而服务器 `var/` 里有标记文件、服务器 `.env` 里是 `SESSION_STORE=db`、或正在运行的实例 `/healthz` 的 `config.catalogVersioned` 为 true（有条目版本大于 1）时拒绝，并打印上面的步骤。两个都是 02 之后的镜像时照常回滚。
 
 ### 压测
 
@@ -1262,7 +1267,7 @@ src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>
 
 - `src/selftest-env.ts` 把 `SESSION_STORE` 钉成 `file`（与它钉 profile 的做法相同）；锁定的 7 组自测、文件模式 eval 与其余进程内套件因此都跑文件存储，断言一条不改。以子进程跑的锁定断言靠「导入期行为与模式无关」（R3）。
 - 新增套件，串进 `test`，每组先设临时 `VAR_DIR` 再动态 import：
-  - `src/store/store.selftest.ts`：PGlite 部分（seq 分配与 `WindowCorruptError`、预载往返、写队列顺序与合并、冻结、窗口推进、重置作废、冲突退出、COMMIT 断线后认出已提交、数据类错误标 poisoned 而别的会话照常、NUL 与切开的 emoji 不堵队列、存档点里的 trace 写失败不影响会话、事件只在提交后、`chat()` 在 `withTenant` 里调用即断言失败、在 `withTenant` 回调里 `saveSession` 照常落库、连接池计数下一轮除写队列的落库外不发查询、三段停机与 spill 写出和回放、清理与新消息竞争、标记文件的两个拒绝、导入往返与 `--resync`）；真实 Postgres 部分，有 `PG_TEST_URL` 才跑（新表的 RLS 与授权逐格、触发器拒绝倒退 `updated_at` 与改 `paid_at`、清除函数拒删未到期数据、不在 `withTenant` 里调用报错、`agent_app` 对消息的 UPDATE / DELETE / TRUNCATE 报 permission denied、以子进程跑 `import-sessions` / `export-sessions` / `erase-conversation` 断言退出码）。
+  - `src/store/store.selftest.ts`：PGlite 部分（seq 分配与 `WindowCorruptError`、预载往返、写队列顺序与合并、冻结、窗口推进、重置作废、冲突退出、COMMIT 断线后认出已提交、数据类错误标 poisoned 而别的会话照常、NUL 与切开的 emoji 不堵队列、存档点里的 trace 写失败不影响会话、事件只在提交后、`chat()` 在 `withTenant` 里调用即断言失败、在 `withTenant` 回调里 `saveSession` 照常落库、连接池计数下一轮除写队列的落库外不发查询、三段停机与 spill 写出和回放、清理与新消息竞争、标记文件的两个拒绝、导入往返与 `--resync`）；真实 Postgres 部分，有 `PG_TEST_URL` 才跑（新表的 RLS 与授权逐格、触发器拒绝倒退 `updated_at`、改 `paid_at` 与非属主改已写的 `session_id`、清除函数拒删未到期数据、不在 `withTenant` 里调用报错、`agent_app` 对消息的 UPDATE / DELETE / TRUNCATE 报 permission denied、以子进程跑 `import-sessions` / `export-sessions` / `erase-conversation` 断言退出码）。
   - `src/store/parity.selftest.ts`：同一组场景（含 E5「生成中接管」、模型返回后推送前接管、生成中付款、重置、裁剪、重放、跟进、转人工各入口）分别跑在文件存储与 PG 存储上，会话 id 用非 demo 类的 `wecom:parity-*`，比较回复文本、会话投影与订单，并断言 PG 里确实有这些会话。
   - `src/handoff/handoff.selftest.ts`：三类触发与撤回同意的向量表（命中与不命中各一组）、四种状态、接手状态机（并发接手、自动接手、别人接手中 409、坐席带 force 403、交还恢复阶段、终态会话转人工保留终态、接手代次）、重置清掉接手人与计数、历史里的「【顾问】」与出口去前缀、敏感信息类别。
   - `src/jobs/jobs.selftest.ts`：跟进的排程、取消、`FOLLOWUP_ENABLED` 关时不排、最多发一次（`sending` 之后「崩溃」不重发、之前「崩溃」重来）、过护栏、拒绝识别；通知任务；清理任务；启动时 `running` 的各类任务的去向。
@@ -1388,7 +1393,7 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 3. db 存储下 `getSession`、`getOrder`、`listSessions`、`saveSession` 同步返回；同一个 id 两次 `getSession` 返回同一个对象。
 4. 每个真实会话在库里的消息，seq 从 1 起连续、无空洞，`(tenant_id, conversation_id, seq)` 唯一；内存窗口里的消息顺序与 seq 顺序一致，`window_start_seq` 等于窗口第一条的 seq。
 5. `agent_app` 与 `agent_platform` 对 `messages` 都没有 UPDATE、DELETE、TRUNCATE；对任何新表都没有 DELETE、TRUNCATE。
-6. 保留期内的会话、消息、trace，`agent_app` 删不掉：清除函数只删已过保留期的行，判断依据的 `updated_at` 只进不退、`paid_at` 写一次不改；只有平台身份经 `erase_conversation` 能删保留期内的。
+6. 保留期内的会话、消息、trace，`agent_app` 删不掉：清除函数只删已过保留期的行，判断依据的 `updated_at` 只进不退、`paid_at` 写一次不改、订单已写的 `session_id` 只有属主能改；只有平台身份经 `erase_conversation` 能删保留期内的。
 7. db 存储下进过落库快照的消息对象是 frozen 的，任何字段写入都抛 `TypeError`；真实会话的数组错位在下一次 `saveSession` 时被查出。
 8. 同一会话的落库按 `saveSession` 的发生顺序生效，任何时刻至多一个在途；`saveSession` 返回时新消息已有 seq。
 9. DB 模式下，处理一轮对话的读路径不发出数据库查询（会话、订单、产品库版本都读内存），会话与 trace 的写入只经这个会话的写队列；落库事务的回调里不 await 任何模型调用、渠道发送或别的会话；`chat()` 被调用时当前异步上下文不在 `withTenant` 里。
@@ -1439,11 +1444,11 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 39. `mock_pay` 关时，匿名请求改变不了订单状态；确认价格、确认收款、取消订单只经有权限的成员（坐席只限接手人本人）或带 `ADMIN_PASS` 的旧接口，每次一行审计。
 40. 没有发布隐私说明时，欢迎语与开工时逐字节相同、不发同意菜单；发布了时首次欢迎语带 `/privacy` 链接。
 41. 同意记录只追加；客户不同意或撤回同意的会话不能交还 AI。
-42. 一个会话被清除或删除之后，`orders`、`audit_log`、`outbound_sends`、`consents`、`turn_traces` 里都搜不到它的 `external_userid`。
+42. 一个会话被清除或删除之后，`orders`、`audit_log`、`outbound_sends`、`consents`、`turn_traces`、`jobs` 里都搜不到它的 `external_userid`。
 
 公开路由与后台：
 
-43. `/api/orders/:id` 的响应键集合恰为 R22 的白名单；`server` 与 `consoleApi` 注册的路由里，白名单以外的在 prod 下匿名请求一律 401 或 404。
+43. `/api/orders/:id` 的响应键集合恰为 R22 的白名单，`POST /api/orders/:id/pay` 的 200 与 409 响应体里 `order` 的键集合同样；`server` 与 `consoleApi` 注册的路由里，白名单以外的在 prod 下匿名请求一律 401 或 404。
 44. 匿名响应里没有成员的 user id 与姓名（01 不变量 31），旧接口的匿名分支同样。
 45. counts 的 `byState` 四项之和等于 `total`，`aiByStage` 之和等于 `byState.ai`；徽标与标题前缀只数 `human`。
 46. console 的界面文案与 `handoff_note` 时间线里没有「待人工」「已转人工」「待接管」「需要介入」。
@@ -1459,13 +1464,13 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 
 1. **锁定套件零修改。** 与开工提交相比，锁定清单里的文件 diff 为空；`pnpm test` 全绿。开发机 `.env` 里写着 `SESSION_STORE=db`、`CONFIG_SOURCE=db` 与 `DATABASE_URL` 时，`pnpm test` 的结果不变。
 2. **两种存储等价。** 等价套件的每个场景在文件存储与 PG 存储上的回复文本、会话投影（去掉 seq 与时间戳）、订单都相同，PG 里确实有这些会话；DB 模式 mock eval（`eval:` 会话）通过的用例集合与文件模式相同，跑完后库里有每个用例的会话，库里的消息与内存一致。
-3. **导入往返与切换。** 用一份含真实会话、种子、访客、孤儿订单、带可选字段（`followup`、`quoteHistory`、昵称）、含 NUL 与孤立代理项的 `var/` 做导入：每个真实会话与订单往返相等（规范化之后），打印规范化条数；demo 类与孤儿订单留在 JSON；写了标记文件，原件在 `--keep`；再导入一次退出码 0；改动一条消息后再导入退出码 2；应用持锁时退出码 3。导出（标记文件被删）→ 文件存储下再聊几轮 → `--resync` → db 存储启动：库里有导出之后的新消息，内存与库一致。db 存储下 JSON 里塞一个真实会话，启动以 `real_in_json` 拒绝；文件存储下有标记文件，以 `sessions_in_db` 拒绝。真实 Postgres 上以子进程执行一遍。
+3. **导入往返与切换。** 用一份含真实会话、种子、访客、孤儿订单、带可选字段（`followup`、`quoteHistory`、昵称）、含 NUL 与孤立代理项的 `var/` 做导入：每个真实会话与订单往返相等（规范化之后），打印规范化条数；demo 类与孤儿订单留在 JSON；写了标记文件，原件在 `--keep`；再导入一次退出码 0；改动一条消息后再导入退出码 2；应用持锁时退出码 3。导出（标记文件被删）→ 文件存储下再聊几轮 → `--resync` → db 存储启动：库里有导出之后的新消息，内存与库一致。db 存储下 JSON 里塞一个真实会话，启动以 `real_in_json` 拒绝；文件存储下有标记文件，以 `sessions_in_db` 拒绝。没有标记时再 export：JSON 与库逐个一致返回 0、什么都不动，JSON 比库新返回 2、什么都不动。库里已有会话而 `var/` 没有标记时以 db 存储启动，补写了标记，之后文件存储以 `sessions_in_db` 拒绝。真实 Postgres 上以子进程执行一遍。
 4. **重启不丢。** db 存储下跑 20 轮，SIGTERM 后重启：identity map 与停机前经 `JSON.parse(JSON.stringify(…))` 规范化之后 `deepStrictEqual`。mock LLM 延迟 6 秒的一轮进行中发 SIGTERM：重启后这一轮的客户消息与回复都在库里。drain 段让 PG 不可写：停机写出 spill 文件，恢复 PG 后重启回放，库与停机前的内存一致；把 spill 文件的「已提交到第几条」改错一格，启动以 `spill_conflict` 拒绝。模拟崩溃（落库前丢弃进程）后重启：只少最后一次未提交的落库，库与内存一致。
-5. **只追加与清除权限。** 以 `agent_app` 对 `messages` 执行 UPDATE、DELETE、TRUNCATE 都报 permission denied；`purge_conversation` 对没到期的会话返回 false 且库不变；先把 `updated_at` 改成 2000 年（被触发器挡回原值）或把已付订单改成取消，再调清除函数，仍返回 false；改 `paid_at` 报错；传一个 10 分钟之后的 `p_now` 报错；不在 `withTenant` 里调用报错。db 存储下改写一条已落库消息的 `content` 抛 `TypeError`，从会话中间删一条消息后 `saveSession`，会话标成 poisoned。重置之后库里旧消息仍在、窗口推进、订单作废，内存与 E6、E6p 的断言一致。
+5. **只追加与清除权限。** 以 `agent_app` 对 `messages` 执行 UPDATE、DELETE、TRUNCATE 都报 permission denied；`purge_conversation` 对没到期的会话返回 false 且库不变；先把 `updated_at` 改成 2000 年（被触发器挡回原值）或把已付订单改成取消，再调清除函数，仍返回 false；改 `paid_at` 报错；以 `agent_app` 把已付订单的 `session_id` 置空或改挂报错，之后对这个保留期内的客户会话清除仍返回 false；传一个 10 分钟之后的 `p_now` 报错；不在 `withTenant` 里调用报错。db 存储下改写一条已落库消息的 `content` 抛 `TypeError`，从会话中间删一条消息后 `saveSession`，会话标成 poisoned。重置之后库里旧消息仍在、窗口推进、订单作废，内存与 E6、E6p 的断言一致。
 6. **顺序与事务边界。** 同一会话连续十次 `saveSession`，库里的消息顺序与内存相同；在 `withTenant` 回调里调 `chat()` 断言失败，在 `withTenant` 回调里 `saveSession` 照常落库；提交失败时没有事件发出，恢复后补上。
 7. **并发行为在 PG 存储上成立。** 生成途中顾问在 console 接手：本轮 AI 回复不发出，记一条「本轮未发送」；模型返回之后、推送之前接手（在 `strandedReply` 的 await 里接手）：同样不发出；生成中客户付款：阶段停在已付，之后客户再发消息仍是已付。
 8. **另一写者。** 真实 Postgres 上，第二个进程连同一个库拒绝启动；人为让库里的 `last_seq` 前进一格后再落库，进程以优雅停机退出，日志点名 `store_conflict`；让 COMMIT 之后的回包丢掉（假连接），重试认出已提交，不停机、不重复插入。
-9. **prod 鉴权。** prod profile 下，管理面接口（`/api/console/*` 除登录外，含全部新接口与 `/events`；`/api/admin/*`；会话与订单列表）匿名请求一律 401；枚举全部注册路由，白名单以外的匿名请求都是 401 或 404；白名单里的每条公开路由逐条断言能匿名访问、只返回凭 id 能取到的那一条，`/api/orders/:id` 的键集合恰为白名单；`/privacy` 匿名 200（发布过）或 404；旧的 handoff、resume、reply 返回 404，带凭据的标记已付照旧 200。成员接手一个种子会话后，demo 匿名读它的响应里没有成员 uuid 与姓名。删掉一个成员的 auth_session，他的事件流在 60 秒内收到 `auth` 并关闭。
+9. **prod 鉴权。** prod profile 下，管理面接口（`/api/console/*` 除登录外，含全部新接口与 `/events`；`/api/admin/*`；会话与订单列表）匿名请求一律 401；枚举全部注册路由，白名单以外的匿名请求都是 401 或 404；白名单里的每条公开路由逐条断言能匿名访问、只返回凭 id 能取到的那一条，`/api/orders/:id` 与 `POST /api/orders/:id/pay` 两个分支里 `order` 的键集合恰为白名单；`/privacy` 匿名 200（发布过）或 404；旧的 handoff、resume、reply 返回 404，带凭据的标记已付照旧 200。成员接手一个种子会话后，demo 匿名读它的响应里没有成员 uuid 与姓名。删掉一个成员的 auth_session，他的事件流在 60 秒内收到 `auth` 并关闭。
 10. **四种状态一致**（原 UX 验收 26 第 1 条）。用 02 的种子场景（设计系统 §10.0 第 5 条：14 个会话）：在工作台接手一个等人接手的会话：它从铃铛弹层与 A2「需要你处理」里消失，侧栏与铃铛的徽标减 1，在列表与 J 页分组里显示为「顾问处理中」；会话页出现「顾问处理中」页签，counts 的 `byState.assigned` 加 1、四项之和仍等于 `total`；另一位顾问打开同一会话看到「小林处理中」，「接手会话」不可用并写明原因；两个浏览器同时点「接手会话」，恰有一个成功、另一个看到 409 的说明。用后台 UX 验收 4 的 13 个种子会话重跑 UX 验收 6（在 `admin.html` 里把 B01 转人工，它成为等人接手，四处计数都是 3，页面上不出现「顾问处理中」），照旧通过。
 11. **人工回复即接手。** 在没人接手的会话上直接回复：调用者成为接手人，消息带「顾问 · 姓名」，客户侧收到「【顾问】…」；让落库暂停 3 秒，假企微接口在落库提交之后才收到这条；在别人接手中的会话上回复：409、客户没收到、会话没变；写库积压时回复 503、什么都没改；旧接口 `/api/sessions/:id/reply` 走同一套规则。交还 AI 之后的下一轮模型请求里，顾问那几句以「【顾问】」开头，contextNote 带说明。
 12. **曾经转过人工与终态。** 转人工 → 接手 → 交还 → 再转人工：`firstHandoffAt` 是第一次的时间，`handoffCount` 为 2；交还后客户付款，订单的 `handoffBeforePaid` 为 true。已付的会话里客户说「我要退款」：阶段仍是「已支付」、状态仍是已成交、徽标不变，会话出现在铃铛弹层与 A2 的「已成交客户要人工」里，外部通道收到一条；客户再发一句，阶段与状态都不变；有人接手后它从那一组消失。重置一个已接手的会话后再触发转人工：状态是等人接手，不是顾问处理中。（开放问题 12 的 A。）
@@ -1479,7 +1484,7 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 20. **trace。** 一轮里价格护栏删了一句：库里有这一轮的 trace（带 `catalog_versions`）和一行 `price` 护栏事件；J 页这条回复下出现「AI原稿里删了1句 · 展开」，展开是对照；所有者能看到「AI为什么这么回」里的模型、耗时和参数，坐席请求 trace 原文得到 403。
 21. **用量。** 跑一组 mock 对话、一次跟进、一次洞察、一次检索向量化后，`usage_daily` 里本租户当天各（模型、用途）的调用数与 token 数等于 `recordUsage` 收到的合计。
 22. **跟进。** db 存储、`FOLLOWUP_ENABLED=1` 下：AI 回复后排出跟进任务，客户回话后取消；到点发出的跟进过了价格护栏（造一个带编造金额的跟进话术，发出的文本里没有它）；进入 `sending` 后模拟崩溃，重启后不重发，记 `abandoned`；进入 `sending` 之前模拟崩溃，重启后照常发一次；客户说「别发了」之后不再排。`FOLLOWUP_ENABLED` 未设时不排任何跟进任务。文件存储下锁定的 F1 断言照旧。
-23. **收款流程。** prod profile（advisor）：`create_order` 的结果带 `payNote`；`/pay/<单号>` 没有付款按钮、按状态写说明、标题仍是「<线路> · 订单支付」；价格护栏的替换句是 advisor 的写法；匿名 `POST /api/orders/:id/pay` 返回 404；未确认就「确认收款」返回 409；不是接手人的坐席确认价格得到 409 `not_assignee`；确认价格、确认收款各一行审计，客户收到付款确认，订单 `handoffBeforePaid` 正确。demo profile 下这条链路与开工时相同。
+23. **收款流程。** prod profile（advisor）：`create_order` 的结果带 `payNote`；`/pay/<单号>` 没有付款按钮、按状态写说明、标题仍是「<线路> · 订单支付」；`/pay.html?orderId=<单号>` 跳到 `/pay/<单号>`；价格护栏的替换句是 advisor 的写法；匿名 `POST /api/orders/:id/pay` 返回 404；未确认就「确认收款」返回 409；不是接手人的坐席确认价格得到 409 `not_assignee`；确认价格、确认收款各一行审计，客户收到付款确认，订单 `handoffBeforePaid` 正确。demo profile 下这条链路与开工时相同。
 24. **前缀。** 自动：DB 模式 mock eval 每个请求的 system 与 tools 哈希等于 `/healthz` 报的值；SOP 改动之外的每一步提交，`promptPrefix()` 的两个哈希与上一步相同（plan 记下每次的值）。手动：SOP 改动后按「文件 → DB → 文件」交替跑 realOnly 用例各至少 3 遍，两种模式的 p90 都不超过 8 秒，通过的用例集合与改动前相比不少，数字记进 plan。
 25. **保留期清理。** 把测试租户的保留期设成线索 7 天、客户 30 天、trace 7 天，造三个会话：最后动静在 8 天前的线索、6 天前的线索（它有一条 8 天前的 trace）、8 天前但有一张已付订单的客户。清理之后：第一个连同消息、trace、发送账本消失，内存与 console 里也没有它；第二个还在，只有那条 8 天前的 trace 没了；第三个原样，订单不受影响。`system.purge` 审计只有条数。另造一个有已付订单、最后动静在 31 天前的客户会话：会话被清除，订单还在、`session_id` 为空，`orders`、`audit_log`、`outbound_sends` 里搜不到它的 `external_userid`。清理时恰好有一条新消息进来的会话：这次不清，消息照常落库。prod profile 下跑一组含价格护栏命中与转人工的对话，日志里搜不到其中任何一句客户原话。
 26. **隐私与同意。** 发布隐私说明后，新客户的欢迎语末尾有链接，`/privacy` 显示正文；客户说「我妈有高血压」，回复之后多一条同意菜单（写明用途、影响、可撤回与链接），点「同意」记一条 `granted`；没点的会话下一次提到同类信息再问一次，之后不再问；另一个会话点「不同意」，转人工（类型 consent）、AI 不再回复，交还 AI 返回 409；客户说「把我的信息删掉」，记 `withdrawn`、回固定的一句、转人工。重新发布一版隐私说明，60 秒内 `/privacy` 显示新版。没发布隐私说明的 demo 实例，欢迎语与开工时逐字节相同，不发同意菜单。
@@ -1488,7 +1493,7 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 29. **demo 照常。** db 存储下：网页与企微的「重置」都生效（E6、E6p 的行为），种子保鲜、访客清理、`admin.html` 匿名只读与旧写接口、模拟支付、AI 标识都照旧；`admin.html` 的列表 401 时弹登录框。
 30. **压测。** 按「压测」一节跑完，通过条件全部满足，数字记进 plan。
 31. **备份与恢复。** 把一份含会话的加密备份恢复到新集群：`/healthz` 的 `config` 哈希与 console `/status` 的会话数与原库一致；`conversations`、`messages`、`orders` 行数相同；随机抽 3 个会话，console 里的消息与原库相同；备份时恰有一轮在途的那个客户，恢复后的第一次企微拉取让他恰好收到一次回复，已回复过的消息不重复回复。
-32. **demo 切换与回滚检查。** 线上按「切换步骤」执行：切换前后 `config` 的四个哈希相同（SOP 改动那次 rerender 之后的值）；`store.mode = db`，console `/status` 的会话数等于导入数；后台能打开导入的会话；切换期间的停机时间记进 plan。本机演练里：有标记文件或改过价时，`deploy.sh` 拒绝回滚到 01 的镜像并打印步骤；两个 02 镜像之间的回滚照常。
+32. **demo 切换与回滚检查。** 线上按「切换步骤」执行：切换前后 `config` 的四个哈希相同（SOP 改动那次 rerender 之后的值）；`store.mode = db`，console `/status` 的会话数等于导入数；后台能打开导入的会话；切换期间的停机时间记进 plan。本机演练里：有标记文件、服务器 `.env` 里是 `SESSION_STORE=db`（即使没有标记文件）或改过价时，`deploy.sh` 拒绝回滚到 01 的镜像并打印步骤；两个 02 镜像之间的回滚照常。
 33. **走查。** 用 Playwright 在浅色、深色下各走一遍并截图：I 页四个页签 → J 页接手 → 回复 → 交还 → 交接卡 → 「AI原稿里删了1句」展开 → 铃铛与标题 → 浏览器通知 → A2（含「已成交客户要人工」与运行数字）→ 快捷回复管理；只用键盘经「更多」完成一次交还 AI；axe 的 `color-contrast` 0 条违规，截图存到 `docs/architecture/02-conversations-workbench/walkthrough/`。
 34. **可观测性。** prod profile、`LOG_FORMAT=json` 下跑一组含价格护栏命中与转人工的对话：标准输出每行都能解析成 JSON，轮次里的行带 `tenant`、`conv`、`turn`，请求里的行带与响应头 `x-request-id` 相同的 `req`，搜不到客户原话与会话原 id。假 webhook 上：mock LLM 连续 5 次超时收到一条 `model_errors`，30 分钟内再 5 次不再收到，恢复后收到「已恢复」；假企微连续失败收到 `wecom_send`；租户锁丢失收到 `tenant_lock`；用假 `docker`、`curl`、`df` 跑 `watch.sh` 收到重启、健康检查、磁盘三类，`backup.sh` 中途失败收到备份告警；所有告警里没有客户原话与 `external_userid`。种好 `turn_traces` 与 `usage_daily` 后 `/metrics` 的四个数与手算一致，坐席请求得到 403，总览的四个格只有所有者、管理员看得到。没设 OTLP 端点时进程里没有加载 `@opentelemetry/*`；设成进程内的假接收端时每轮收到一条 trace，含 `chat`、`execute_tool`、`guard` 三类 span 与 `gen_ai.operation.name`、`langfuse.session.id`，没有客户原话；设了 `OTEL_CAPTURE_CONTENT=1` 才有。外部拨测配好后停掉 app，通知在 10 分钟内到达（手动，记进 plan）。
 35. **02 范围内的上线前置条件。** 验收 15、17、23、25、26、27、34 都通过；plan「上线清单」逐项写明状态（PIA、委托处理约定、系统页 spec、租户的保留期、按 PIA 复核同意细节、企微额度实测、真实模型回归等）。上线清单是否清空不是本 spec implemented 的条件，是接第一个真实租户的条件。
