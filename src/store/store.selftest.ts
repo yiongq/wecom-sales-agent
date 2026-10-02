@@ -1401,6 +1401,24 @@ async function childPg(ck: Ck): Promise<void> {
     const f3 = writeSpill('2026-01-01T00-00-03-000Z', [e3]);
     const r3 = await open();
     ck('spill 回放：库里已经等于文件里最后一条的 seq 且内容一致 → 跳过', r3.b.stats().replaySkipped === 1 && !fs.existsSync(f3));
+    // 只有会话投影与审计、没有新消息的一条：回放提交之后、删文件之前崩溃，再回放靠 flush_id 认出（内容比对管不到它）
+    const eState = entry({
+      committedSeq: 4,
+      lastSeq: 4,
+      messages: [],
+      audits: [audit('selftest.replay.stateonly')],
+      state: { ...base, stage: 'quote' },
+    });
+    writeSpill('2026-01-01T00-00-03-500Z', [eState]);
+    await open();
+    writeSpill('2026-01-01T00-00-03-600Z', [eState]);
+    const rState = await open();
+    ck(
+      'spill 回放：没有新消息的一条（只有投影与审计）回放两遍，审计只写一次、第二遍认出跳过',
+      rState.b.stats().replaySkipped === 1 &&
+        (await count(`select count(*)::int as n from audit_log where action = 'selftest.replay.stateonly'`)) === 1 &&
+        rState.deps.sessions.get(R)?.stage === 'quote',
+    );
     const e4 = entry({ committedSeq: 3, lastSeq: 4, messages: [{ seq: 4, message: { ...m(4), content: '内容不同' } }] });
     const f4 = writeSpill('2026-01-01T00-00-04-000Z', [e4]);
     ck('spill 回放：seq 对上了内容却不同 → spill_conflict', (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'spill_conflict');
@@ -1731,6 +1749,17 @@ async function childPg(ck: Ck): Promise<void> {
       'WindowCorruptError：从会话中间删一条再 saveSession，会话标 poisoned（验收 5），新消息照样有 seq',
       poisoned(w.id) && store.seqOf(w.messages.at(-1)!) === 4 && store.storeHealth().lastError === `window_corrupt · ${shortIdOf(w.id)}`,
     );
+    let again: unknown = null;
+    try {
+      say(w, 'customer', '5'); // 数组仍然错位：之后对它改用宽松模式，saveSession 不抛
+    } catch (e) {
+      again = e;
+    }
+    ck(
+      'WindowCorruptError：poisoned 之后再 saveSession 不抛（改用宽松模式），新消息照样有 seq',
+      again === null && store.seqOf(w.messages.at(-1)!) === 5,
+      String(again),
+    );
     await sleep(30);
     ck('WindowCorruptError：库里不动', (await convRow(w.id))?.last_seq === 3);
     const { app } = await import('../server.js');
@@ -1810,15 +1839,17 @@ async function childPg(ck: Ck): Promise<void> {
     ck('chat()：在 withTenant 回调里调用即断言失败（不变量 9）', /不能在 withTenant/.test(inside), inside);
     ck('chat()：在外面照常', typeof (await chat(opts)) === 'string');
     const s = mk('wecom:wmInTx');
+    await store.flushSession(s.id);
     let wasIn = false;
+    const retries0 = stats().retries;
     await withTenant(t.db, ctxOf(tid), async () => {
       wasIn = inTenantTx();
       say(s, 'customer', '事务里存的');
     });
     await store.flushSession(s.id);
     ck(
-      '在 withTenant 回调里 saveSession 照常落库（排出的落库不继承那个上下文）',
-      wasIn && (await dbMsgs(s.id)).length === 1 && !poisoned(s.id),
+      '在 withTenant 回调里 saveSession 照常落库：排出的落库不继承那个上下文，一次就成（不是靠重试）',
+      wasIn && (await dbMsgs(s.id)).length === 1 && !poisoned(s.id) && stats().retries === retries0,
     );
   }
 
@@ -2441,7 +2472,7 @@ async function pgSuites(): Promise<void> {
     const spill2Path = path.join(varDisk, spill2[0] ?? 'missing');
     const original = fs.existsSync(spill2Path) ? fs.readFileSync(spill2Path, 'utf8') : '{}';
     const tampered = JSON.parse(original) as { sessions: { id: string; committedSeq: number }[] };
-    const victim = tampered.sessions.find((s) => s.id === 'wecom:wmUw2a');
+    const victim = (tampered.sessions ?? []).find((s) => s.id === 'wecom:wmUw2a');
     if (victim) victim.committedSeq += 1;
     fs.writeFileSync(spill2Path, JSON.stringify(tampered));
     const c5 = disk([]);
