@@ -109,6 +109,18 @@ export function auditActionsParam(group: AuditGroup | 'all', showLogin: boolean)
 /** 非人操作者的名字（设计系统 §11：写「命令行」，不写 import-config、user-create 这类命令名） */
 export const ACTOR_KIND_LABEL: Readonly<Record<'system' | 'platform', string>> = { system: '系统', platform: '命令行' };
 
+/**
+ * 命令行写进条目更新人的命令名（src/config/transfer.ts 的 import-config、src/config/catalog.ts 的 catalog-fix），界面上按
+ * 设计系统 §11 换掉：导入写「系统导入」，别的命令写「命令行」。库里存的是命令名，已有的租户库也是，所以在显示时换
+ */
+export const CLI_ACTOR_LABEL: Readonly<Record<string, string>> = { 'import-config': '系统导入', 'catalog-fix': '命令行' };
+
+/** 显示用的更新人：命令名换成 §11 的写法，人名原样；没有名字时是 null，由调用处决定写什么 */
+export function actorName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  return Object.hasOwn(CLI_ACTOR_LABEL, name) ? CLI_ACTOR_LABEL[name]! : name;
+}
+
 /** 启动重渲染的原因（sop.rerender 的 diff.causes，src/config/source.ts 的 CAUSE） */
 export const RERENDER_CAUSE_LABEL: Readonly<Record<string, string>> = {
   hard_rules: '固定要求',

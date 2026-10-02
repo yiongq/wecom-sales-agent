@@ -125,7 +125,7 @@
   --on-accent: #ffffff;
   --accent-text: #75a2ff;
   --accent-bg: #15274d;
-  --focus: #2f68eb;
+  --focus: #3f7afe;
   --accent-ring: rgba(47, 104, 235, 0.35);
   /* semantic */
   --success: #6fcf8c;
@@ -281,6 +281,17 @@ select {
 .ant-tabs .ant-tabs-content:focus-visible {
   outline-offset: -2px;
 }
-.ant-segmented .ant-segmented-item-selected {
+/*
+ * 分段控件换段 0ms（§3「筛选 0ms」）：antd 换段时画一块滑块从旧段移到新段，移完才给新段 -item-selected。滑块的过渡在
+ * theme/antd.ts 里压到 1ms，可它从出现到收起仍要 4–6 帧，这几帧里旧段看着还选着。所以滑块不画；新段从点下去那一帧起就带
+ * -item-selected-text，选中的样子（--thumb 底、1px --control-border 圈、text、字重 500，同 antd.ts 的 Segmented）按它画
+ */
+.ant-segmented .ant-segmented-thumb {
+  visibility: hidden;
+}
+.ant-segmented .ant-segmented-item-selected-text:not(.ant-segmented-item-disabled) {
+  background: var(--thumb);
+  box-shadow: 0 0 0 1px var(--control-border);
+  color: var(--text);
   font-weight: 500;
 }

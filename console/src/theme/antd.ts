@@ -30,6 +30,9 @@ const TOAST_ICON: Readonly<Record<ThemeMode, Readonly<Record<'error' | 'info' | 
 /** 三档动效时长全部归零 */
 const ZERO_MOTION = { motionDurationFast: '0s', motionDurationMid: '0s', motionDurationSlow: '0s' } as const;
 
+/** 分段控件滑块的过渡时长（见下面 Segmented）：大于 0，又短到看不出移动 */
+export const SEGMENT_THUMB = '0.001s';
+
 /**
  * 算法的最后一步：把种子色钉回令牌值。colorPrimary、colorLink 和四个语义色是 antd 的种子，token 里写的值只当输入，
  * 深色算法会把它们和底色混一遍（#2F68EB 出来是 #2B5BCB，#FF9B8F 出来是 #DC877D），不钉住就和 brand.css 对不上
@@ -225,6 +228,12 @@ function build(mode: ThemeMode, t: Tokens): ThemeConfig {
         itemSelectedBg: t.thumb,
         itemSelectedColor: t.text,
         boxShadowTertiary: `0 0 0 1px ${t['control-border']}`,
+        // 换段 0ms（§3「筛选 0ms」）：段的字色、悬停不过渡；滑块从旧段移到新段的过渡取 motionDurationSlow（全局 0.2s），压到 1ms。
+        // 不能归零：rc-segmented 的滑块要等 transitionend 才收起、把 -item-selected 还给新段，0s 的过渡不发这个事件，滑块会
+        // 一直停着。滑块本身不画，选中的样子画在点下去就有的 -item-selected-text 上（brand.css）。「减少动态效果」开着时
+        // motion 是 false，antd 根本不画滑块
+        motionDurationMid: '0s',
+        motionDurationSlow: SEGMENT_THUMB,
       },
       Tag: { defaultBg: t.subtle, defaultColor: t['text-2'] },
       // Alert（§5.12）：--r-md，内边距 10 12，图标 16；warning 的图标用 --warning-icon（组件层的 colorWarning 只给图标用）

@@ -12,7 +12,8 @@
 // 6. 实体图标：两个包的实体图标都画得出来，集合里只有 box 自己落到兜底的 box；
 // 7. 在 DOM 里挂载（happy-dom，selftest-dom.ts）：两个包每个字段的表单形态和各分组卡片，挂载、effect 跑完都不写值；
 //    再经组件点、敲、删，核对写回表单状态的值和补丁：分段控件的「不填」、是否、标签的锁住成员、多选片、
-//    逐条列表的改删移、有序子项按下标经 writeValue 写回、引用的删和自由输入。
+//    逐条列表的改删移、有序子项按下标经 writeValue 写回、引用的删和自由输入；两个包每个字段、子字段在可改与只读形态里
+//    看得见的标签和可访问名都是 field.label（验收 3）。
 // 8. 产品库列表（plan 第 9 步，spec「产品库列表」）：两个包的列、表头与列宽，筛选按字段类型生成的选项与「包含」匹配，
 //    搜索、页签计数、排序、更新列，URL 状态的解析与改写；挂进 DOM 画 D 页、L 页、主材、匿名、分页、各种状态，
 //    再经组件敲字、点页签、点清除、开筛选菜单，核对写回地址的内容和焦点落在哪；再挂整页（路由、查询缓存），
@@ -1482,16 +1483,96 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
   await terms.unmount();
 }
 
+// 7.3 标签（验收 3「表单与只读形态里没有它的标签」）：两个包的每个字段、子字段，在可改与两种只读（上架后锁定、没有编辑权限）
+// 形态里各挂一次 FormField。看得见的标签就是 field.label，控件（只读时是字段那一组）的可访问名也是它；有序子项的区块头以它开头，
+// 每一项里子字段的标签再逐个核对。可访问名按 aria-labelledby、aria-label、label[for] 的顺序取
+{
+  const t3 = Date.now();
+  const textOf = (el: Element | null | undefined): string => (el?.textContent ?? '').trim();
+  const nameOf = (el: Element): string => {
+    const by = el.getAttribute('aria-labelledby');
+    if (by)
+      return by
+        .split(/\s+/)
+        .map((ref) => textOf(document.getElementById(ref)))
+        .join(' ');
+    const label = el.getAttribute('aria-label');
+    if (label !== null) return label.trim();
+    const id = el.getAttribute('id');
+    return textOf(id ? document.querySelector(`label[for="${id}"]`) : el.closest('label'));
+  };
+  /** 可改时承载名字的元素：输入框、下拉、一组按钮；不算有序子项里各项的子字段 */
+  const CONTROL =
+    'input:not([type="hidden"]), textarea, [role="combobox"], [role="group"], [role="radiogroup"], [aria-labelledby], [aria-label]';
+  const bad: string[] = [];
+  let checked = 0;
+  let statusOnly = 0;
+  function labelOf(tag: string, el: Element, f: FieldDef, editing: boolean): void {
+    checked += 1;
+    const block = el.classList.contains('field-block');
+    const same = (s: string): boolean => (block ? s.startsWith(f.label) : s === f.label);
+    const head = el.querySelector(block ? '.field-block-head' : '.field-label');
+    if (!head || head.closest('.field') !== el || !same(textOf(head))) bad.push(`${tag}：看得见的标签是「${textOf(head)}」`);
+    if (!editing) {
+      if (!same(nameOf(el))) bad.push(`${tag}：只读那一组的名字是「${nameOf(el)}」`);
+      return;
+    }
+    const controls = all(el, CONTROL).filter((c) => c.closest('.field') === el);
+    // 状态字段三种形态都是只显示的 StatusShow，没有控件；别的类型可改时一定有
+    if (!controls.length) {
+      if (f.type === 'status') statusOnly += 1;
+      else bad.push(`${tag}：可改时没有控件`);
+      return;
+    }
+    if (!controls.some((c) => same(nameOf(c))))
+      bad.push(`${tag}：控件的名字是 ${controls.map((c) => `「${nameOf(c)}」`).join('')}，没有一个是「${f.label}」`);
+  }
+  for (const [tag, { field, value, row }] of firstProps) {
+    for (const mode of ['edit', 'locked', 'readonly'] as const) {
+      const editing = mode === 'edit';
+      const m = await mount(
+        <FormField
+          field={field}
+          mode={mode}
+          span={LAYOUT[field.type].span(field, mode)}
+          value={value}
+          row={row}
+          onChange={editing ? () => undefined : undefined}
+        />,
+      );
+      const el = m.box.querySelector('.field');
+      if (!el) bad.push(`${tag}（${mode}）：没画出字段`);
+      else {
+        labelOf(`${tag}（${mode}）`, el, field, editing);
+        // 有序子项每一项里的子字段（FormField 套在有序子项里）
+        for (const sub of all(el, '.field').filter((s) => s !== el)) {
+          const def = field.item?.find((s) => s.key === sub.getAttribute('data-field-key'));
+          if (def) labelOf(`${tag}.${def.key}（${mode}，项里）`, sub, def, editing);
+          else bad.push(`${tag}（${mode}）：项里有个认不出的字段 ${String(sub.getAttribute('data-field-key'))}`);
+        }
+      }
+      await m.unmount();
+    }
+  }
+  check(
+    `两个包每个字段、子字段在可改与只读形态里都有标签，就是 field.label（${firstProps.size} 个 × 3 种形态，连项里的子字段共 ${checked} 处，` +
+      `其中 ${statusOnly} 处是状态字段，可改时也只显示；${Date.now() - t3}ms）`,
+    bad.length === 0 && checked > firstProps.size * 3,
+    bad.join('\n'),
+  );
+}
+
 // ---------------- 8. 产品库列表（plan 第 9 步） ----------------
 // spec「产品库列表（D 页；L 页上半）」：两个包的真实配置和样例都在这个文件里，列表的纯逻辑、画出来的样子和交互一起测
 
 const IMPORTED_AT = '2026-09-24T10:02:00+08:00';
+/** 命令行导入的条目：更新人存的是命令名 import-config（src/config/transfer.ts），列表里写「系统导入」 */
 const asRow = (p: Payload, extra: Partial<ListRow> = {}): ListRow => ({
   code: p.id as string,
   payload: p,
   status: 'active',
   updatedAt: IMPORTED_AT,
-  updatedByName: null,
+  updatedByName: 'import-config',
   ...extra,
 });
 /** 设计系统 §10.0：20 条已上架（系统导入 · 9月24日），r-sichuan-lux 小林今天 10:12 改过，另有小林 13:40 建的草稿 */
@@ -1808,10 +1889,16 @@ const idsWhere = (rows: readonly Payload[], ok: (p: Payload) => boolean): string
   eq('没有更新时间的排在后面', codes(sortRows([{ code: 'a', payload: {} }, ROUTE_ROWS[0]!])), [ROUTE_ROWS[0]!.code, 'a']);
 }
 
-// 8.6 更新列：「小林 · 今天13:40」；更新人为空写「系统导入」；更早的写日期
+// 8.6 更新列：「小林 · 今天13:40」；更新人为空或是命令名 import-config 写「系统导入」，别的命令写「命令行」（设计系统 §11）；
+// 更早的写日期
 {
   eq('今天的写时刻', updatedParts(ROUTE_ROWS.at(-1)!, NOW), ['小林', '今天13:40']);
-  eq('更新人为空写系统导入，更早的写日期', updatedParts(ROUTE_ROWS[1]!, NOW), ['系统导入', '9月24日']);
+  eq('命令行导入的（import-config）写系统导入，更早的写日期', updatedParts(ROUTE_ROWS[1]!, NOW), ['系统导入', '9月24日']);
+  eq(
+    '更新人为空也写系统导入；catalog-fix 写命令行；人名原样',
+    [null, '', 'catalog-fix', '老周'].map((by) => updatedParts({ ...ROUTE_ROWS[1]!, updatedByName: by }, NOW)?.[0]),
+    ['系统导入', '系统导入', '命令行', '老周'],
+  );
   eq('昨天也写日期（L 页的「9月25日」）', listTime('2026-09-25T16:20:00+08:00', NOW), '9月25日');
   eq('今天 0 点', listTime('2026-09-26T00:00:00+08:00', NOW), '今天00:00');
   eq('跨年加年份', listTime('2025-12-31T10:00:00+08:00', NOW), '2025年12月31日');
@@ -2482,9 +2569,12 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   eq('条目名取 titleKey，没有时写编号', [itemTitle(ROUTE, SICHUAN, 'r-sichuan-lux'), itemTitle(ROUTE, {}, 'r-x')], [SICHUAN.title, 'r-x']);
   eq(
-    '更新：更新人为空写「系统导入」；匿名没有更新时间',
-    [updatedOf({ updatedAt: '2026-09-24T10:02:00+08:00', updatedByName: null }, NOW)?.by, updatedOf({}, NOW)],
-    ['系统导入', null],
+    '更新：更新人为空或是 import-config 写「系统导入」，catalog-fix 写「命令行」，人名原样；匿名没有更新时间',
+    [
+      ...[null, 'import-config', 'catalog-fix', '小林'].map((by) => updatedOf({ updatedAt: IMPORTED_AT, updatedByName: by }, NOW)?.by),
+      updatedOf({}, NOW),
+    ],
+    ['系统导入', '系统导入', '命令行', '小林', null],
   );
   eq(
     '引用指向的实体（含有序子项里的引用），去重',
@@ -2821,6 +2911,19 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   await leave();
   eq('撤销以后没有改动：直接离开，不拦', e.router.state.location.pathname, '/catalog/route');
   await e.unmount();
+
+  // 命令行导入、没人改过的线路：更新人存的是 import-config，页头与「最近更新」都写「系统导入」（设计系统 §10.0、§11）
+  {
+    const imported = itemOf(ROUTE_ROWS, ROUTE_ROWS[1]!.code);
+    const path = `/catalog/route/${imported.code}`;
+    const im = await mountDetail(path, owner(travel), { items: { [`route/${imported.code}`]: imported }, lists });
+    eq(
+      '命令行导入的线路：页头状态句与「最近更新」写系统导入',
+      [header(im.box).status?.split('·').at(-1), texts(im.box, '.detail-meta dd')],
+      ['系统导入更新于9月24日', ['系统导入', '9月24日']],
+    );
+    await im.unmount();
+  }
 
   // F、G 页：草稿
   const d = await mountDetail('/catalog/route/r-guizhou-5d', owner(travel), { items: { 'route/r-guizhou-5d': GUIZHOU_ITEM }, lists });

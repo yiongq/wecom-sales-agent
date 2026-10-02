@@ -1,6 +1,7 @@
 // 产品库详情的纯逻辑（spec「产品库详情与编辑（E、F 页；L 页下半）」，设计系统 §6.4、E、F、L 页）。只看行业包的配置和字段类型，
 // 不依赖 React：锁定组的计数与在哪张卡片头声明、卡片头要不要声明、页头的状态句、上架前检查每一项的写法、检查项指向哪个字段。
 import { type CheckIssue, type EntityType, type FieldDef, valueAt } from '../../../src/shared/pack.js';
+import { actorName } from '../../../src/shared/ui-labels.js';
 import { isSingleItem, type ItemContext, LAYOUT, type Payload, visible } from '../fields/model.js';
 import { IMPORTED_BY, listTime } from './list.js';
 
@@ -80,7 +81,7 @@ export function itemTitle(entity: EntityType, payload: Payload, code: string): s
   return typeof t === 'string' && t !== '' ? t : code;
 }
 
-/** 条目的更新人与更新时间：「小林」「今天10:12」；更新人为空写「系统导入」；匿名没有 */
+/** 条目的更新人与更新时间：「小林」「今天10:12」；更新人为空或是 import-config 写「系统导入」（actorName）；匿名没有 */
 export interface Updated {
   by: string;
   at: string;
@@ -90,7 +91,7 @@ export interface Updated {
 
 export function updatedOf(item: { updatedAt?: string; updatedByName?: string | null }, now: number): Updated | null {
   if (!item.updatedAt) return null;
-  return { by: item.updatedByName || IMPORTED_BY, at: listTime(item.updatedAt, now), iso: item.updatedAt };
+  return { by: actorName(item.updatedByName) ?? IMPORTED_BY, at: listTime(item.updatedAt, now), iso: item.updatedAt };
 }
 
 /**

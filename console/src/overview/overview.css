@@ -60,6 +60,14 @@
   vertical-align: -2px;
 }
 
+/* 「需要你处理」下面的各块（OverviewPage）：不占一层盒子；首次加载待办落定之前不显示，免得待办一到把它们推下去（验收 23 的 CLS） */
+.ov-below {
+  display: contents;
+}
+.ov-below.is-waiting {
+  display: none;
+}
+
 /* ---------------- ① 需要你处理：待办行（§5.11） ---------------- */
 .ov-todos {
   margin: 0;
@@ -158,11 +166,18 @@ a.ov-todo:hover .ov-todo-action {
   background: var(--hover);
   color: var(--text);
 }
+/* 骨架行与真实的行一样高（宽屏 64；窄屏类型一行 20、对象 22 加上下文 20，共 86）：每条骨架占满它代替的那一行字的行高 */
 .ov-todo-skeleton .skeleton-bar {
   height: 12px;
 }
-.ov-todo-skeleton .ov-todo-main {
-  gap: 10px;
+.ov-todo-skeleton > .skeleton-bar {
+  margin-block: 4px;
+}
+.ov-todo-skeleton .ov-todo-main > .skeleton-bar:first-child {
+  margin-block: 5px;
+}
+.ov-todo-skeleton .ov-todo-main > .skeleton-bar:last-child {
+  margin-block: 4px;
 }
 
 /* ---------------- ② 系统状态（§5.11）：一行 22 高，16 circle-check（--success）加 14 text「一切正常」，其余 text-2 ---------------- */

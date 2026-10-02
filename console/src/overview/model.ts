@@ -20,7 +20,7 @@ import { absoluteTime, clockTime, dateText, dayKey, dayTime, relativeTime } from
 import { terminalStages } from '../../../src/shared/conversation.js';
 import { checkItem, type CheckIssue, type EntityType, type IndustryPack, valueAt } from '../../../src/shared/pack.js';
 import { sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
-import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
+import { actorName, SOP_CHECKS } from '../../../src/shared/ui-labels.js';
 import { conversationLabel } from '../shell/model.js';
 
 // ---------------- 共用 ----------------
@@ -45,8 +45,8 @@ export function updatedWhen(at: string, now: number): string {
   return absoluteTime(at, now);
 }
 
-/** 「小林更新于13:40」；没有更新人时只写「更新于13:40」 */
-export const updatedBy = (name: string | null, at: string, now: number): string => `${name ?? ''}更新于${updatedWhen(at, now)}`;
+/** 「小林更新于13:40」；命令名换成「系统导入」「命令行」（actorName）；没有更新人时只写「更新于13:40」 */
+export const updatedBy = (name: string | null, at: string, now: number): string => `${actorName(name) ?? ''}更新于${updatedWhen(at, now)}`;
 
 /**
  * 上架前检查的一条问题写成一句（接在「必须项12/13：」「建议1条没做：」后面）：字段名接 message，有序子项取中文路径的后两段，
@@ -418,7 +418,7 @@ export function memberKpis(input: {
       key: 'waiting',
       label: '等人接手',
       value: counts.byState.human,
-      caption: ['AI已转人工、还没成交的会话'],
+      caption: ['AI交给人工、还没成交的会话'],
       breakdown: [times.length ? `最后动静：${times.join('、')}${more}` : '现在没有等人接手的会话'],
       target: { kind: 'conversations', state: 'human' },
     },

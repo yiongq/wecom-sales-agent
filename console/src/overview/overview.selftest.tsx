@@ -9,12 +9,15 @@
 //    某个接口 500 时只有用它的那一块写「没取到」（验收 10：/audit 500 只有「最近变更」出错）；坐席没有「最近变更」和草稿类待办，
 //    也不发这些请求；demo 匿名只有「在售」一格、只取产品库列表；审计按页往前取，一次导入不被截断；等人接手多于接口的
 //    默认一页（20）乃至一整页（100）时，等得最久的照样列在最前、计数按总数；换一个行业包，
-//    实体、阶段、叫法都跟着换，请求的是那个包的 kind；阶段条和业务数链到带 state、stage 的会话列表（验收 10）。
+//    实体、阶段、叫法都跟着换，请求的是那个包的 kind；阶段条和业务数链到带 state、stage 的会话列表（验收 10）；
+//    每次挂载的总览从首帧（各块的骨架）、载完到卸载前，文字、标签页标题和读屏属性里都没有验收 6 禁用的五个词。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/overview/overview.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
 import './selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { act, createElement } from 'react';
@@ -55,7 +58,7 @@ import {
   updatedWhen,
   waitingTodos,
 } from './model.js';
-import { OverviewPage } from './OverviewPage.js';
+import { OverviewPage, TODO_WAIT_MS } from './OverviewPage.js';
 
 let pass = 0;
 const fails: string[] = [];
@@ -417,6 +420,16 @@ eq(
     { text: '更新于13:40' },
     { text: '必须项5/7：第3天当晚住宿没填等', tone: 'danger' },
   ]);
+  // 命令行写的更新人存的是命令名，照设计系统 §11 写成「系统导入」「命令行」
+  eq(
+    '待上架：更新人是 import-config 写「系统导入」，catalog-fix 写「命令行」',
+    ['import-config', 'catalog-fix'].map(
+      (by) =>
+        catalogTodos([{ entity: ROUTE, items: [item('route', 'r-x', GUIZHOU, 'draft', at('2026-09-26T13:40:00'), by)] }], NOW)[0]
+          ?.context[0],
+    ),
+    [{ text: '系统导入更新于13:40' }, { text: '命令行更新于13:40' }],
+  );
   eq('待上架：三条以内不写「等」', catalogTodos([{ entity: HOTEL, items: HOTELS.slice(-2) }], NOW)[0]?.context[1], {
     text: '西双版纳安纳塔拉、腾冲石头纪',
   });
@@ -498,7 +511,7 @@ eq(
   kpis.map((k) => k.caption),
   [
     ['企业微信里的客户会话，不含网页试聊'],
-    ['AI已转人工、还没成交的会话'],
+    ['AI交给人工、还没成交的会话'],
     ['阶段到了「已支付」的会话'],
     ['线路20', '酒店23，销售助手只推荐这些'],
   ],
@@ -688,6 +701,8 @@ interface Server {
   lists: Record<string, object[]>;
   /** 这些路径回 500 */
   fail?: RegExp;
+  /** 这些请求先扣住，releaseHeld() 才回（测首次加载的先后） */
+  hold?: RegExp;
   /** 审计每页最多给几条（不看请求的 limit），用来测按页往前取 */
   auditPage?: number;
   /** 等人接手的会话（默认 WAITING）与计数（默认 COUNTS） */
@@ -739,14 +754,48 @@ function respond(method: string, url: URL): Response {
   return json(404, { error: 'not_found' });
 }
 
+let held: Array<() => void> = [];
+function releaseHeld(): void {
+  const h = held;
+  held = [];
+  h.forEach((f) => f());
+}
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
   const method = (init?.method ?? 'GET').toUpperCase();
   requests.push(`${method} ${url.pathname}${url.search}`);
+  if (server.hold?.test(`${method} ${url.pathname.replace(/^\/api\/console/, '')}`))
+    return new Promise<Response>((res) => held.push(() => res(respond(method, url))));
   return respond(method, url);
 }) as typeof fetch;
 
 const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
+
+/** 一个元素在总览的哪一块（按区块的类名，都不是就是「需要你处理」） */
+const blockOf = (e: HTMLElement): string =>
+  e.closest('.ov-recent')
+    ? '最近变更'
+    : e.closest('.ov-stages-block')
+      ? '阶段'
+      : e.closest('.ov-kpi-block')
+        ? '业务数'
+        : e.closest('.ov-system')
+          ? '系统状态'
+          : '需要你处理';
+
+// 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览记三份：首帧（请求都还没回来，
+// 各块画着骨架）、载完、卸载前。每份是文字、标签页标题（页头写的「总览 · 租户名」），以及 title、aria-label、placeholder
+// 这些读屏与悬停读得到的属性；另记下哪些块被扫到时画着骨架。最后（2.8）一起扫
+const BANNED = ['顾问处理中', '待人工', '已转人工', '待接管', '需要介入'];
+const SPOKEN_ATTRS = ['title', 'aria-label', 'aria-description', 'placeholder', 'alt'];
+const rendered: string[] = [];
+const loadingSeen = new Set<string>();
+let mounts = 0;
+function seen(box: HTMLElement): void {
+  const attrs = [...box.querySelectorAll('*')].flatMap((el) => SPOKEN_ATTRS.map((a) => el.getAttribute(a) ?? ''));
+  rendered.push([document.title, box.textContent ?? '', ...attrs].join('\n'));
+  for (const s of box.querySelectorAll<HTMLElement>('.state-skeleton')) loadingSeen.add(blockOf(s));
+}
 
 /** 挂上真的 OverviewPage：路由只有它和几个空页（链接要能算出地址），查询缓存里放好来者；等请求都回来 */
 async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void = () => {}) {
@@ -772,9 +821,13 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
   const box = document.createElement('div');
   document.body.append(box);
   const r = createRoot(box);
+  // 上一次挂载写的标签页标题不算这一次的
+  document.title = '';
+  mounts += 1;
   await act(async () =>
     r.render(createElement(QueryClientProvider, { client: qc }, createElement(RouterProvider, { router: router as never }))),
   );
+  seen(box);
   for (let i = 0; i < 40; i += 1) {
     await act(async () => {
       await new Promise((res) => setTimeout(res, 0));
@@ -782,6 +835,7 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
     });
     if (i > 3 && qc.isFetching() === 0) break;
   }
+  seen(box);
   const $ = (sel: string): HTMLElement[] => [...box.querySelectorAll<HTMLElement>(sel)];
   return {
     box,
@@ -789,6 +843,7 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
     texts: (sel: string): string[] => $(sel).map((e) => (e.textContent ?? '').trim()),
     hrefs: (sel: string): string[] => $(sel).map((e) => e.getAttribute('href') ?? ''),
     async unmount() {
+      seen(box);
       await act(async () => r.unmount());
       box.remove();
       qc.clear();
@@ -894,16 +949,6 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
 }
 
 // 2.2 某个接口出错：只有用它的那一块写「没取到」，其余照常（验收 10）
-const blockOf = (e: HTMLElement): string =>
-  e.closest('.ov-recent')
-    ? '最近变更'
-    : e.closest('.ov-stages-block')
-      ? '阶段'
-      : e.closest('.ov-kpi-block')
-        ? '业务数'
-        : e.closest('.ov-system')
-          ? '系统状态'
-          : '需要你处理';
 async function failing(fail: RegExp) {
   server = { pack: TRAVEL, lists: SCENE, fail };
   const m = await mountOverview(member('owner'));
@@ -942,6 +987,111 @@ async function failing(fail: RegExp) {
   );
   const h = await failing(/^GET \/catalog\/hotel$/);
   eq('一个实体的列表 500：待办里只少这一行，业务数出错', [h.blocks, h.todos, h.stages], [['需要你处理', '业务数'], 4, 6]);
+}
+
+// 2.2b 首次加载的先后（验收 23 的 CLS）：「需要你处理」的行数定下来之前（等人接手、话术、各实体列表），下面各块照常挂上、
+// 各自取数，但包在不显示的 .ov-below 里，免得待办一到把它们推下去。行数定了就显示；这时还在等的发布前检查由按真实行数画的
+// 骨架占位（检查只往话术那一行里补字）。行数一直定不下来（这里扣住酒店列表）时，过了 TODO_WAIT_MS 也显示
+{
+  const css = fs.readFileSync(path.join(import.meta.dirname, 'overview.css'), 'utf8');
+  check(
+    'overview.css：.ov-below 不占盒子，.ov-below.is-waiting 不显示',
+    /\.ov-below \{\s*display: contents;\s*\}/.test(css) && /\.ov-below\.is-waiting \{\s*display: none;\s*\}/.test(css),
+  );
+  // 检查慢时骨架按真实行数画，它也得与真实的行一样高，不然检查一回来，下面的块照样被推。happy-dom 不排版，量不了 CLS
+  // （375 宽的 CLS 由走查环境实测，见验收 23 的记录），这里从 overview.css 读出来比：每条骨架（条高加上下外边距）
+  // 等于它代替的那一行字的行高（类型、对象、上下文），骨架的对象与上下文之间不另设间距（与真实的行一样是 .ov-todo-main 的 2px）
+  // 顶层、只有这一个选择器的规则（不取 @media 里缩进的，也不取「a,\nb {」这种选择器列表）
+  const rule = (sel: string): string =>
+    new RegExp(`(?<!,\\n)^${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`, 'm').exec(css)?.[1] ?? '';
+  const px = (sel: string, prop: string): number | null => {
+    const v = new RegExp(`(?:^|[;\\s])${prop}:\\s*(\\d+)px;`).exec(rule(sel))?.[1];
+    return v === undefined ? null : Number(v);
+  };
+  const bar = px('.ov-todo-skeleton .skeleton-bar', 'height');
+  const barRow = (sel: string): number | null => {
+    const m = px(sel, 'margin-block');
+    return bar === null || m === null ? null : bar + 2 * m;
+  };
+  eq(
+    'overview.css：骨架每条占满它代替的那行字的行高（类型、对象、上下文），对象与上下文之间不另设间距',
+    [
+      barRow('.ov-todo-skeleton > .skeleton-bar'),
+      barRow('.ov-todo-skeleton .ov-todo-main > .skeleton-bar:first-child'),
+      barRow('.ov-todo-skeleton .ov-todo-main > .skeleton-bar:last-child'),
+      /\.ov-todo-skeleton[^{]*\{[^}]*\bgap:/.test(css),
+    ],
+    [px('.ov-todo-type', 'line-height'), px('.ov-todo-title', 'line-height'), px('.ov-todo-context', 'line-height'), false],
+  );
+  const tick = () =>
+    act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+      await win.happyDOM.waitUntilComplete();
+    });
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await tick();
+  };
+  const blocks = (b: Element | undefined) =>
+    ['.ov-system', '.ov-kpi-block', '.ov-recent', '.ov-stages-block'].filter((sel) => b?.querySelector(sel)).length;
+  const below = (m: { $(sel: string): HTMLElement[] }): string | undefined => m.$('.ov-below')[0]?.className;
+
+  // 扣住一份实体列表：行数定不下来
+  server = { pack: TRAVEL, lists: SCENE, hold: /^GET \/catalog\/hotel$/ };
+  requests = [];
+  // Date.now 钉在场景时刻，量真实耗时用 performance.now()
+  const t0 = performance.now();
+  const m = await mountOverview(member('owner'));
+  const waited = Math.round(performance.now() - t0);
+  eq(
+    `行数没定：下面四块都挂上了、请求也发了，但还不显示；待办是 3 行的骨架（挂载用了 ${waited}ms，不到 ${TODO_WAIT_MS}ms）`,
+    [
+      waited < TODO_WAIT_MS,
+      m.$('.ov-todo-skeleton').length,
+      below(m),
+      blocks(m.$('.ov-below')[0]),
+      requests.filter((r) => /^GET \/api\/console\/(status|audit)\b/.test(r)).length >= 2,
+      m.$('.ov-below .ov-kpi-value').length,
+    ],
+    [true, 3, 'ov-below is-waiting', 4, true, 0],
+  );
+  releaseHeld();
+  await settle();
+  eq(
+    '行数定了、全都回来：下面的块显示，待办是真实的 5 行',
+    [below(m), m.$('.ov-todo-title').length, m.$('.ov-todo-skeleton').length],
+    ['ov-below', 5, 0],
+  );
+  await m.unmount();
+
+  // 扣住发布前检查：行数已经定了
+  server = { pack: TRAVEL, lists: SCENE, hold: /^POST \/sop\/draft\/check$/ };
+  const c = await mountOverview(member('owner'));
+  eq(
+    '只差发布前检查：下面的块已经显示，待办的骨架按真实行数画 5 行',
+    [below(c), c.$('.ov-todo-skeleton').length, c.$('.ov-todo-title').length, c.$('.ov-below .ov-kpi-value').length],
+    ['ov-below', 5, 0, 4],
+  );
+  eq(
+    '骨架每行是 overview.css 量行高时假定的结构：一条代替类型，.ov-todo-main 里两条代替对象和上下文',
+    [c.$('.ov-todo-skeleton > .skeleton-bar').length, c.$('.ov-todo-skeleton > .ov-todo-main > .skeleton-bar').length],
+    [5, 10],
+  );
+  releaseHeld();
+  await settle();
+  eq('检查回来：5 行骨架换成 5 行待办', [c.$('.ov-todo-title').length, c.$('.ov-todo-skeleton').length], [5, 0]);
+  await c.unmount();
+
+  // 行数一直定不下来：过了上限照样显示
+  server = { pack: TRAVEL, lists: SCENE, hold: /^GET \/catalog\/hotel$/ };
+  const slow = await mountOverview(member('owner'));
+  check('行数一直定不下来：先不显示', below(slow) === 'ov-below is-waiting');
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, TODO_WAIT_MS + 50));
+  });
+  eq(`过了 ${TODO_WAIT_MS}ms 还没定：下面的块照样显示，待办还是骨架`, [below(slow), slow.$('.ov-todo-skeleton').length], ['ov-below', 3]);
+  releaseHeld();
+  await settle();
+  await slow.unmount();
 }
 
 // 2.3 坐席：没有「最近变更」和草稿类待办，也不发这些请求；右栏挪到左栏的位置
@@ -1166,6 +1316,27 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
 
 // 2.7 从阶段条、业务数跳到会话列表之后，地址里的 state、stage 进到接口查询、页签与阶段条的选中：
 // 随第 13 步挪到会话列表自己的自测（console/src/conversations/conversations.selftest.tsx）
+
+// 2.8 验收 6 的禁用词：上面挂过的每一份总览（所有者、管理员、坐席、匿名，各块出错、扣住请求的先后，另一个行业包）
+check(
+  '禁用词（验收 6）：每次挂载都扫了首帧、载完与卸载前三份',
+  mounts > 0 && rendered.length === mounts * 3,
+  `挂载 ${mounts} 次，扫了 ${rendered.length} 份`,
+);
+eq(
+  '禁用词（验收 6）：五块画骨架（载入中）时都扫到了',
+  [...loadingSeen].sort(),
+  ['需要你处理', '系统状态', '业务数', '最近变更', '阶段'].sort(),
+);
+for (const w of BANNED) {
+  const hit = rendered.find((t) => t.includes(w));
+  const at = hit?.indexOf(w) ?? -1;
+  check(
+    `禁用词（验收 6）：总览里没有「${w}」`,
+    !hit,
+    hit ? `出现在「${hit.slice(Math.max(0, at - 16), at + w.length + 16).replace(/\s+/g, ' ')}」` : '',
+  );
+}
 
 if (fails.length) {
   console.error(`overview: ${fails.length} 条断言失败（通过 ${pass} 条）`);
