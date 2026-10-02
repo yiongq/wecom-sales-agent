@@ -129,8 +129,11 @@ CREATE TRIGGER conversations_guard_updated_at BEFORE INSERT OR UPDATE ON convers
   FOR EACH ROW EXECUTE FUNCTION conversations_guard_updated_at();
 --> statement-breakpoint
 
--- 「客户」按有没有写过 paid_at 判（保留期更长）：写入之后不能改、不能清空
-CREATE FUNCTION orders_guard_paid_at() RETURNS trigger
+-- 「客户」按会话名下有没有写过 paid_at 的订单判（保留期更长），清除函数的判断只看 agent_app 改不了的数据（R20）：
+-- paid_at 写入之后不能改、不能清空；session_id 写入之后 agent_app 不能置空、不能改挂到别的会话（否则已付客户的会话
+-- 就按线索的保留期提前清除）。清除与删除函数是 SECURITY DEFINER，外键的 SET NULL 动作以表的属主执行，两处的
+-- current_user 都是 agent_owner，照常放行。从空写成某个会话可以；同值写回（upsert）不算改
+CREATE FUNCTION orders_guard() RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, public, pg_temp
 AS $$
@@ -139,12 +142,16 @@ BEGIN
     RAISE EXCEPTION 'orders: paid_at 写入之后不能改、不能清空'
       USING ERRCODE = 'check_violation';
   END IF;
+  IF OLD.session_id IS NOT NULL AND NEW.session_id IS DISTINCT FROM OLD.session_id AND current_user <> 'agent_owner' THEN
+    RAISE EXCEPTION 'orders: session_id 写入之后只有清除与删除函数能改'
+      USING ERRCODE = 'check_violation';
+  END IF;
   RETURN NEW;
 END;
 $$;
 --> statement-breakpoint
-CREATE TRIGGER orders_guard_paid_at BEFORE UPDATE ON orders
-  FOR EACH ROW EXECUTE FUNCTION orders_guard_paid_at();
+CREATE TRIGGER orders_guard BEFORE UPDATE ON orders
+  FOR EACH ROW EXECUTE FUNCTION orders_guard();
 --> statement-breakpoint
 
 -- ===== 清除与删除函数：agent_app 对新表没有 DELETE，过了保留期的行只能经这几个函数删 =====
