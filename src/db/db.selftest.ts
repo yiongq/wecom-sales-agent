@@ -1843,7 +1843,7 @@ await expectWhy([
   const importFlush = randomUUID();
   const r1 = await asApp(R, async (tx) => {
     const before = await repoConv.lockConversation(tx, 'wecom:wm-1');
-    const { ref } = await repoConv.insertConversation(tx, values('wecom:wm-1'));
+    const ref = (await repoConv.insertConversation(tx, values('wecom:wm-1')))?.ref ?? '';
     const locked = await repoConv.lockConversation(tx, 'wecom:wm-1');
     await repoMsg.insertMessages(tx, 'wecom:wm-1', [msg(1), msg(2), msg(3)]);
     const updated = await repoConv.updateConversation(
@@ -1871,6 +1871,17 @@ await expectWhy([
     JSON.stringify(r1),
   );
   check('仓储：insertConversation 返回库里生成的 ref', /^[0-9a-f-]{36}$/.test(r1.ref), r1.ref);
+  // 主键冲突时返回 null、不报错、不改那一行（新会话第一次落库 COMMIT 断线之后的重试靠它，02 第 5 步）
+  const dup = await asApp(R, async (tx) => ({
+    again: await repoConv.insertConversation(tx, values('wecom:wm-1', { stage: 'quote' })),
+    row: await repoConv.lockConversation(tx, 'wecom:wm-1'),
+    stage: (await repoConv.readConversationsAfter(tx, null, 10)).find((c) => c.id === 'wecom:wm-1')?.stage,
+  }));
+  check(
+    '仓储：insertConversation 撞上已有的行返回 null，不报错、不改那一行',
+    dup.again === null && dup.row?.lastSeq === 3 && dup.row.flushId === flushId && dup.stage === 'discovery',
+    JSON.stringify(dup),
+  );
   check('仓储：updateConversation 改到了这一行，不存在的会话改不到', r1.updated && !r1.missing);
   await asApp(R, async (tx) => {
     await repoConv.insertConversation(tx, values('wecom:wm-2'));
