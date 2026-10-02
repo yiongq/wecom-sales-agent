@@ -2432,10 +2432,15 @@ await t.close();
   fs.mkdirSync(bin);
   const fake = (name: string, lines: string[]): void =>
     fs.writeFileSync(path.join(bin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
-  for (const name of ['ssh', 'rsync', 'pnpm']) fake(name, [`echo "${name} $*" >> "$FAKE_LOG"`, 'exit 97']);
+  // 一调用就记下并失败；FAKE_SSH_LOCAL 时 ssh 把远端命令交给本机的 bash（stdin 照传），FAKE_PNPM_OK 时 pnpm 一律成功
+  fake('ssh', ['echo "ssh $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_SSH_LOCAL:-}" ]; then shift; exec bash -c "$*"; fi', 'exit 97']);
+  fake('rsync', ['echo "rsync $*" >> "$FAKE_LOG"', 'exit 97']);
+  fake('pnpm', ['echo "pnpm $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_PNPM_OK:-}" ]; then exit 0; fi', 'exit 97']);
   fake('docker', [
     'echo "docker $PWD|$*" >> "$FAKE_LOG"',
     'case "$*" in',
+    // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）
+    '  *pg-backend.ts*) exit "${FAKE_PG_BACKEND:-0}" ;;',
     '  *pg_dumpall*) echo "-- globals" ;;',
     '  *pg_dump*) echo "dump" ;;',
     // 目录里有哪些表的数据段：缺省是 01 的四张加 02 的会话三张，FAKE_TOC 换掉它
@@ -2694,6 +2699,125 @@ await t.close();
       rclone.includes('rclone delete --min-age 30d remote:bk/side1') &&
       rclone.includes('rclone rmdirs --leave-root remote:bk/side1'),
     rclone.join(' / '),
+  );
+
+  // 回滚前检查（02 spec「回滚到 02 之前的镜像」，plan 第 6 步）：目标是 02 之前的镜像（没有 src/store/pg-backend.ts）而
+  // var/ 里有标记文件时拒绝，打印先回到文件存储的步骤；两个都是 02 之后的镜像时照常回滚。判断在 deploy/rollback-guard.sh 里，
+  // deploy.sh 经 ssh 交给服务器上的 bash -s；这里在本机对临时目录跑，docker 是假的
+  const guardSrc = fs.readFileSync(path.join(repoRoot, 'deploy', 'rollback-guard.sh'), 'utf8');
+  const gsrv = path.join(tmp, 'guard-srv');
+  fs.mkdirSync(path.join(gsrv, 'var'), { recursive: true });
+  const markerFile = path.join(gsrv, 'var', 'sessions-in-db.json');
+  const setMarker = (on: boolean): void => {
+    if (on) fs.writeFileSync(markerFile, '{"tenant":"demo","at":"2026-10-02T00:00:00.000Z","sessions":3}\n');
+    else fs.rmSync(markerFile, { force: true });
+  };
+  const guard = (target: string, marker: boolean, pgBackend?: number) => {
+    fs.rmSync(log, { force: true });
+    setMarker(marker);
+    if (pgBackend === undefined) delete env.FAKE_PG_BACKEND;
+    else env.FAKE_PG_BACKEND = String(pgBackend);
+    const r = run('bash', ['-s', '--', gsrv, target, 'side1'], tmp, guardSrc);
+    delete env.FAKE_PG_BACKEND;
+    return {
+      ...r,
+      docker: calls()
+        .split('\n')
+        .filter((l) => l.startsWith('docker ')),
+    };
+  };
+  const refusedWithSteps = (out: string): boolean =>
+    out.includes('拒绝回滚') &&
+    out.includes('sessions-in-db.json') &&
+    out.includes('src/cli/export-sessions.ts --tenant <slug> --keep /keep --var /app/var') &&
+    out.includes('去掉 SESSION_STORE=db') &&
+    out.includes('4. 再部署旧 tag') &&
+    out.indexOf('export-sessions') < out.indexOf('去掉 SESSION_STORE=db') &&
+    out.indexOf('去掉 SESSION_STORE=db') < out.indexOf('4. 再部署旧 tag');
+  const g1 = guard('side1:prev', false);
+  check(
+    '回滚前检查：没有标记文件时照常回滚，不看镜像',
+    g1.code === 0 && g1.docker.length === 0,
+    `${g1.code} ${g1.out} ${g1.docker.join()}`,
+  );
+  const g2 = guard('side1:prev', true, 0);
+  check(
+    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚',
+    g2.code === 0 &&
+      g2.docker.length === 1 &&
+      g2.docker[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/store/pg-backend.ts'),
+    `${g2.code} ${g2.out} ${g2.docker.join()}`,
+  );
+  const g3 = guard('side1:prev', true, 1);
+  check(
+    '回滚前检查：有标记文件、目标镜像里没有 pg-backend.ts（02 之前的）时拒绝（3），按顺序打印 export → 去掉 SESSION_STORE=db → 部署旧 tag',
+    g3.code === 3 && refusedWithSteps(g3.out),
+    `${g3.code} ${g3.out}`,
+  );
+  const g4 = guard('side1:prev', true, 125);
+  check(
+    '回滚前检查：docker 出错、看不出目标镜像时按 02 之前处理，拒绝',
+    g4.code === 3 && g4.out.includes('docker 出错') && refusedWithSteps(g4.out),
+    `${g4.code} ${g4.out}`,
+  );
+  const g5 = guard('pre-02', true);
+  check(
+    '回滚前检查：调用方已判定是 02 之前的（pre-02）、有标记文件时拒绝，不再看镜像',
+    g5.code === 3 && g5.docker.length === 0 && refusedWithSteps(g5.out),
+  );
+  const g6 = guard('pre-02', false);
+  check('回滚前检查：pre-02 而没有标记文件时照常', g6.code === 0, g6.out);
+
+  // deploy.sh 的两处接线。部署旧 tag：在碰服务器之前（rsync 之前）检查；ssh 换成在本机执行远端命令，门禁一律成功，
+  // 「服务器」是临时目录（旁路实例的三个值），rsync 一调用就记下并失败
+  fs.mkdirSync(path.join(repo, 'deploy'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'deploy', 'rollback-guard.sh'), guardSrc);
+  commitAndTag('v02', ['src/store/pg-backend.ts']);
+  const dsrv = path.join(tmp, 'deploy-srv');
+  fs.mkdirSync(path.join(dsrv, 'var'), { recursive: true });
+  fs.writeFileSync(path.join(dsrv, '.env'), 'DEPLOY_PROFILE=demo\n');
+  fs.writeFileSync(path.join(dsrv, '.env.db'), `${goodDb.join('\n')}\n`);
+  fs.writeFileSync(path.join(dsrv, '.env.migrate'), 'DATABASE_OWNER_URL=postgres://agent_owner:o@db:5432/agent\n');
+  const deployTo = (tag: string, marker: boolean): { code: number | null; out: string; log: string } => {
+    fs.rmSync(log, { force: true });
+    const m = path.join(dsrv, 'var', 'sessions-in-db.json');
+    if (marker) fs.writeFileSync(m, '{}\n');
+    else fs.rmSync(m, { force: true });
+    Object.assign(env, { SERVER: 'fake@srv', REMOTE_DIR: dsrv, NAME: 'side1', HOST_PORT: '3999', FAKE_SSH_LOCAL: '1', FAKE_PNPM_OK: '1' });
+    const r = run('bash', ['deploy.sh', tag], repo);
+    for (const k of ['SERVER', 'REMOTE_DIR', 'NAME', 'HOST_PORT', 'FAKE_SSH_LOCAL', 'FAKE_PNPM_OK']) delete env[k];
+    return { ...r, log: calls() };
+  };
+  const d1 = deployTo('new-v1', true);
+  check(
+    'deploy.sh：部署 02 之前的 tag 而服务器 var/ 里有标记文件，rsync 之前拒绝（1）并打印回退步骤',
+    d1.code === 1 && refusedWithSteps(d1.out) && d1.out.includes('new-v1 是 02 之前的版本') && !d1.log.includes('rsync '),
+    `${d1.code} ${d1.out.slice(-600)}`,
+  );
+  const d2 = deployTo('new-v1', false);
+  check(
+    'deploy.sh：部署 02 之前的 tag、服务器没有标记文件时照常往下走（到 rsync）',
+    d2.code !== 0 && !d2.out.includes('拒绝回滚') && d2.log.includes('rsync '),
+    `${d2.code} ${d2.out.slice(-400)}`,
+  );
+  const d3 = deployTo('v02', true);
+  check(
+    'deploy.sh：部署 02 之后的 tag 不做这道检查，有标记文件也照常往下走',
+    d3.code !== 0 && !d3.out.includes('拒绝回滚') && d3.log.includes('rsync ') && !d3.log.includes('bash -s -- ' + dsrv + ' pre-02'),
+    `${d3.code} ${d3.out.slice(-400)}`,
+  );
+  // 自动回滚：:prev 在服务器上之后、起 :prev 之前过同一道检查，过不了就停下（不起 :prev）
+  const rb = deploySrc.indexOf('[rollback] 回滚到上一个镜像');
+  const gp = deploySrc.indexOf('if ! guard_rollback "${NAME}:prev"; then');
+  const up = deploySrc.indexOf('up -d --no-deps app');
+  check(
+    'deploy.sh：健康检查失败后的自动回滚先过回滚前检查，拒绝时以 1 退出、不起 :prev',
+    rb > 0 && rb < gp && gp < up && /if ! guard_rollback "\$\{NAME\}:prev"; then\n *echo [^\n]*\n *exit 1\nfi\n/.test(deploySrc),
+  );
+  check(
+    'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s',
+    /guard_rollback\(\) \{ ssh "\$\{SERVER\}" bash -s -- "\$REMOTE_DIR" "\$1" "\$NAME" <deploy\/rollback-guard\.sh; \}/.test(deploySrc) &&
+      (deploySrc.match(/guard_rollback /g) ?? []).length === 2,
   );
   fs.rmSync(tmp, { recursive: true, force: true });
 }
