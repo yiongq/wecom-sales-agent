@@ -13,8 +13,11 @@ import { migrate } from 'drizzle-orm/pglite/migrator';
 import pg from 'pg';
 import { initConfig, type ConfigDeps } from '../config/source.js';
 import { imageCode, importConfig } from '../config/transfer.js';
-import { assertPgUrl, countingLogger, registerDriver, resetSessionTenant, type Db, type TenantLock } from './client.js';
+import { rebuildSessions, rowToOrder } from '../store/project.js';
+import type { Order, Session } from '../types.js';
+import { assertPgUrl, countingLogger, registerDriver, resetSessionTenant, withTenant, type Db, type TenantLock } from './client.js';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.js';
+import { readSessionBatch } from './repo/conversations.js';
 import * as schema from './schema.js';
 
 export interface TestDb {
@@ -213,6 +216,59 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
     },
   });
   return { deps: { db, tenantId, tenantSlug: slug, varDir: opts.varDir }, faults, stats };
+}
+
+// ---------------- 读回库里的会话（02 plan 第 7 步：等价套件与 DB 模式 mock eval 拿它和内存比） ----------------
+
+export interface StoredConversation {
+  /** 按启动预载的同一条路（readSessionBatch + rebuildSessions）重建的会话；窗口与 last_seq、window_start_seq 对不上时为 null */
+  session: Session | null;
+  lastSeq: number;
+  windowStartSeq: number;
+  /** 库里这个会话全部消息的 seq（含重置、裁剪推进过去的），按 seq 排 */
+  seqs: number[];
+  /** 未作废的订单（预载读的那些），与作废了的订单 */
+  liveOrders: Order[];
+  voided: { id: string; reason: string | null }[];
+}
+
+/**
+ * 一个租户在库里的全部真实会话。重建走预载的同一条路（以 agent_app 经 withTenant，受 RLS 约束）；全部消息的 seq 与作废订单
+ * 以超级用户直接查（窗口之前的消息与作废订单预载不读）。调用方先 drainStore，排着的改动才在库里
+ */
+export async function readStoredConversations(t: TestDb, tenantId: string): Promise<Map<string, StoredConversation>> {
+  const out = new Map<string, StoredConversation>();
+  const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+  await withTenant(t.db, ctx, async (tx) => {
+    let after: string | null = null;
+    for (;;) {
+      const batch = await readSessionBatch(tx, after, 500);
+      if (!batch.rows.length) break;
+      for (const { row, session } of rebuildSessions(batch.rows, batch.messages)) {
+        const liveOrders = batch.orders
+          .filter((o) => o.sessionId === row.id)
+          .map(rowToOrder)
+          .toSorted((a, b) => a.id.localeCompare(b.id));
+        out.set(row.id, { session, lastSeq: row.lastSeq, windowStartSeq: row.windowStartSeq, seqs: [], liveOrders, voided: [] });
+      }
+      after = batch.rows.at(-1)!.id;
+      if (batch.rows.length < 500) break;
+    }
+  });
+  const su = <R>(text: string): Promise<R[]> =>
+    t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (await tx.query<R>(text, [tenantId])).rows;
+    });
+  const seqs = await su<{ id: string; seq: number }>(
+    'select conversation_id as id, seq from messages where tenant_id = $1 order by conversation_id, seq',
+  );
+  for (const r of seqs) out.get(r.id)?.seqs.push(Number(r.seq));
+  const voided = await su<{ id: string; sid: string | null; reason: string | null }>(
+    'select id, session_id as sid, void_reason as reason from orders where tenant_id = $1 and voided_at is not null order by id',
+  );
+  for (const r of voided) if (r.sid) out.get(r.sid)?.voided.push({ id: r.id, reason: r.reason });
+  return out;
 }
 
 /**
