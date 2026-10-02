@@ -8,7 +8,8 @@
 #
 # 1. 以超级用户在 db 容器里经本地 socket 导出：pg_dump -Fc，外加 pg_dumpall --globals-only --no-role-passwords。
 #    主机上不存超级用户口令。不用任何受 RLS 约束的角色导出，也不加 --enable-row-security：没设租户时它会静默导出 0 行。
-# 2. 校验：pg_restore --list 里四张 RLS 表都有 TABLE DATA；sop_versions、catalog_items 的行数为 0 就非零退出并告警。
+# 2. 校验：pg_restore --list 里 01 的四张 RLS 表与 02 的 conversations、messages、orders 都有 TABLE DATA；
+#    sop_versions、catalog_items 的行数为 0 就非零退出并告警（会话三张表的行数可以为 0：文件存储下库里没有会话）。
 # 3. var/（会话、订单、企微 cursor、客服二维码）打成 tar。
 # 4. 两份都在离开本机前用 age 公钥加密，私钥不放在服务器上；明文只在 0700 的临时目录里短暂存在。
 #    本地按日期建目录（0700），保留 7 天。
@@ -76,9 +77,9 @@ chmod 700 "$ROOT" "$DEST"
 dc exec -T db pg_dump -U postgres -Fc "$DB" >"$TMP/agent.dump"
 dc exec -T db pg_dumpall -U postgres --globals-only --no-role-passwords >"$TMP/globals.sql"
 
-# 2) 校验：四张 RLS 表都有数据段；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
+# 2) 校验：这几张 RLS 表都有数据段（空表也有）；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
 toc="$(dc exec -T db pg_restore --list <"$TMP/agent.dump")"
-for t in memberships sop_versions catalog_items audit_log; do
+for t in memberships sop_versions catalog_items audit_log conversations messages orders; do
   if ! grep -Eq "TABLE DATA public ${t} " <<<"$toc"; then
     alarm "导出里没有 ${t} 的 TABLE DATA，备份不可用"
     exit 1
