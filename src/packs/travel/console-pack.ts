@@ -21,10 +21,9 @@ const route: EntityType = {
     { key: 'sell', label: '卖点' },
     { key: 'alias', label: '客户怎么叫' },
   ],
+  // 计价与条款两组（每人起价、最佳季节、费用包含与不含）02 有了条目版本之后不再锁：改了只影响之后的报价和方案书
   lockGroups: {
     id: { tag: '识别', reason: '销售助手靠这些认出客户说的是哪条线，改名会让对话里的旧说法认不出来' },
-    price: { tag: '计价', reason: '已发给客户的方案书按这些数算价，改了会变价' },
-    terms: { tag: '条款', reason: '已发出的方案书按这些条款承诺' },
     rec: { tag: '推荐', reason: '推荐和安全护栏按这些筛线路，包括给长辈换低海拔线路、区分境内外' },
   },
   fields: [
@@ -86,8 +85,6 @@ const route: EntityType = {
       unit: '元/人',
       label: '每人起价',
       group: 'price',
-      lockedWhenActive: true,
-      lockGroup: 'price',
       help: '填淡季、4人以下的价；旺季上浮10%、4人及以上95折由系统算',
     },
     {
@@ -95,8 +92,6 @@ const route: EntityType = {
       type: 'monthRange',
       label: '最佳季节',
       group: 'price',
-      lockedWhenActive: true,
-      lockGroup: 'price',
       monthMeaning: '这些月份出发报价上浮10%，「全年」不加价',
       yearRoundLabel: '全年（不加价）',
     },
@@ -185,8 +180,6 @@ const route: EntityType = {
       required: false,
       recommend: true,
       group: 'terms',
-      lockedWhenActive: true,
-      lockGroup: 'terms',
     },
     {
       key: 'exclusions',
@@ -197,8 +190,6 @@ const route: EntityType = {
       required: false,
       recommend: true,
       group: 'terms',
-      lockedWhenActive: true,
-      lockGroup: 'terms',
     },
     { key: 'hotelLevel', type: 'text', label: '住宿档次', group: 'sell', suggest: 'distinct', placeholder: '例：顶级野奢' },
     {
@@ -257,16 +248,16 @@ const hotel: EntityType = {
     { key: 'price', label: '价格' },
     { key: 'sell', label: '卖点' },
   ],
+  // 每晚起价 02 有了条目版本之后不再锁（同线路的计价组）
   lockGroups: {
     id: { tag: '识别', reason: '销售助手靠这些认出客户说的是哪家酒店，改名会让对话里的旧说法认不出来' },
-    price: { tag: '计价', reason: '已发给客户的方案书按这个价算，改了会变价' },
   },
   fields: [
     { key: '$code', type: 'text', label: '酒店编号', group: 'basic', lockGroup: 'id' },
     { key: 'name', type: 'text', label: '酒店名称', group: 'basic', lockedWhenActive: true, lockGroup: 'id' },
     { key: 'destination', type: 'text', label: '目的地', group: 'basic', lockedWhenActive: true, lockGroup: 'id', suggest: 'distinct' },
     { key: 'stars', type: 'text', label: '星级档次', group: 'basic', suggest: 'distinct', placeholder: '例：五星、顶奢' },
-    { key: 'nightlyFrom', type: 'money', unit: '元/晚', label: '每晚起价', group: 'price', lockedWhenActive: true, lockGroup: 'price' },
+    { key: 'nightlyFrom', type: 'money', unit: '元/晚', label: '每晚起价', group: 'price' },
     { key: 'roomType', type: 'text', label: '主推房型', group: 'sell', placeholder: '例：水上别墅' },
     {
       key: 'highlights',

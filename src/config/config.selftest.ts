@@ -27,8 +27,16 @@ const toolDefsModule = await import('../tool-defs.js');
 const { toolDefs: toolDefsViaTools } = await import('../tools.js');
 const { promptPrefix, __engineTest } = await import('../engine.js');
 const { loadRoutes, loadHotels, searchHotels } = await import('../tools.js');
-const { RouteSchema, HotelSchema, lockedFieldChanges, mergeKeyOrder, applyCatalogPatch, LOCKED_WHEN_ACTIVE, ALWAYS_LOCKED } =
-  await import('../shared/catalog.js');
+const {
+  RouteSchema,
+  HotelSchema,
+  lockedFieldChanges,
+  mergeKeyOrder,
+  applyCatalogPatch,
+  LOCKED_WHEN_ACTIVE,
+  ALWAYS_LOCKED,
+  REPRICE_FIELDS,
+} = await import('../shared/catalog.js');
 const { deepFreeze } = await import('../shared/freeze.js');
 const { sha256 } = await import('./hashes.js');
 type SopSection = import('../sop/sections.js').SopSection;
@@ -374,7 +382,8 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     for (const k of drop) delete next[k];
     return lockedFieldChanges('route', status, r, next).join(',');
   };
-  check('锁定：active 改 priceFrom 被点名', changed({ priceFrom: 1 }) === 'priceFrom');
+  // 02 第 8 步：计价与条款的五个字段开放（spec「测试与 CI」允许改的断言：原为 priceFrom 被点名）
+  check('锁定：active 改 priceFrom 不再被点名（02 开放）', changed({ priceFrom: 1 }) === '');
   check('锁定：active 同时改 title 与 days，按锁定表顺序点名', changed({ days: 99, title: '新标题' }) === 'title,days');
   check(
     '锁定：「国内」这一项的有无算锁定字段',
@@ -386,7 +395,11 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     '锁定：aliases 换顺序也算改',
     lockedFieldChanges('route', 'active', multi, { ...multi, aliases: (multi.aliases as string[]).toReversed() }).join(',') === 'aliases',
   );
-  check('锁定：active 删掉 inclusions 算改', changed({}, 'active', ['inclusions']) === 'inclusions');
+  // 02 第 8 步：原为「删掉 inclusions 算改」，inclusions 开放之后删掉它也不算锁定字段的改动；换成仍锁定的可选字段 aliases
+  check(
+    '锁定：active 删掉 inclusions 不算（02 开放），删掉 aliases 算改',
+    changed({}, 'active', ['inclusions']) === '' && changed({}, 'active', ['aliases']) === 'aliases',
+  );
   check(
     '锁定：highlights、itinerary、intensity、hotelLevel 可以改',
     changed({ highlights: ['新亮点'], itinerary: [], intensity: undefined, hotelLevel: '五星' }) === '',
@@ -406,15 +419,19 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
       lockedFieldChanges('route', 'active', { ...r, tags: noDomestic }, { ...r, tags: [...noDomestic, '国内游'] }).length === 0,
   );
   const h = freshHotels()[0]!;
+  // 02 第 8 步：原为「改 nightlyFrom 被点名」，nightlyFrom 开放之后不算；改 name 照旧点名
   check(
-    '锁定：酒店 active 改 nightlyFrom 被点名、改 stars 不算',
-    lockedFieldChanges('hotel', 'active', h, { ...h, nightlyFrom: 1, stars: '奢华' }).join(',') === 'nightlyFrom',
+    '锁定：酒店 active 改 nightlyFrom、stars 都不算（02 开放），改 name 照旧点名',
+    lockedFieldChanges('hotel', 'active', h, { ...h, nightlyFrom: 1, stars: '奢华' }).join(',') === '' &&
+      lockedFieldChanges('hotel', 'active', h, { ...h, name: '新名' }).join(',') === 'name',
   );
+  // 02 第 8 步：锁定表去掉 priceFrom、bestSeason、inclusions、exclusions 与酒店的 nightlyFrom，它们记在 REPRICE_FIELDS
   check(
-    '锁定：锁定表与 spec 一致',
-    LOCKED_WHEN_ACTIVE.route.join(',') ===
-      'id,title,destination,days,priceFrom,bestSeason,segments,aliases,maxAltitude,overseas,tags:国内,inclusions,exclusions' &&
-      LOCKED_WHEN_ACTIVE.hotel.join(',') === 'id,name,destination,nightlyFrom' &&
+    '锁定：锁定表与 spec 一致（02 开放五个计价与条款字段，识别字段照旧）',
+    LOCKED_WHEN_ACTIVE.route.join(',') === 'id,title,destination,days,segments,aliases,maxAltitude,overseas,tags:国内' &&
+      LOCKED_WHEN_ACTIVE.hotel.join(',') === 'id,name,destination' &&
+      REPRICE_FIELDS.route.join(',') === 'priceFrom,bestSeason,inclusions,exclusions' &&
+      REPRICE_FIELDS.hotel.join(',') === 'nightlyFrom' &&
       ALWAYS_LOCKED.join(',') === 'id' &&
       ALWAYS_LOCKED.every(
         (f) => (LOCKED_WHEN_ACTIVE.route as readonly string[]).includes(f) && (LOCKED_WHEN_ACTIVE.hotel as readonly string[]).includes(f),
@@ -2112,10 +2129,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     item0.status === 'active' && JSON.stringify(r0) === JSON.stringify((JSON.parse(routesRaw) as Route[]).find((r) => r.id === CODE)),
   );
 
-  // 锁定字段：逐个改，422 并逐个点名，库和快照都不变
+  // 锁定字段：逐个改，422 并逐个点名，库和快照都不变。02 第 8 步开放的计价与条款字段（priceFrom、bestSeason、inclusions、
+  // exclusions）不在这里了，改成下面「开放的字段」断言能改且产生新版本（spec「测试与 CI」允许改的断言）
   const lockedEdits: [string, Record<string, unknown>][] = [
-    ['priceFrom', { priceFrom: r0.priceFrom + 1 }],
-    ['bestSeason', { bestSeason: '6-9月' }],
     ['segments', { segments: [...r0.segments].toReversed() }],
     ['aliases', { aliases: [...r0.aliases!, '新别名'] }],
     ['maxAltitude', { maxAltitude: r0.maxAltitude! + 1 }],
@@ -2123,8 +2139,6 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     ['destination', { destination: '别处' }],
     ['days', { days: r0.days + 1 }],
     ['title', { title: '新标题' }],
-    ['inclusions', { inclusions: [...r0.inclusions!, '新含'] }],
-    ['exclusions', { exclusions: [...r0.exclusions!, '新不含'] }],
     ['tags:国内', { tags: r0.tags.filter((x) => x !== '国内') }],
   ];
   const beforeDb = await dbPayload(CODE);
@@ -2138,8 +2152,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     );
   }
   check('锁定：被拒之后库和快照都没变', (await dbPayload(CODE)) === beforeDb && snapPayload(CODE) === beforeSnap);
-  const unsetLocked = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set: {}, unset: ['inclusions'] }));
-  check('锁定：unset 锁定字段也拒', unsetLocked.name === 'CatalogLockedFieldError' && unsetLocked.fields?.join(',') === 'inclusions');
+  // 02 第 8 步：原来 unset 的是 inclusions（已开放），换成仍锁定的可选字段 aliases
+  const unsetLocked = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set: {}, unset: ['aliases'] }));
+  check('锁定：unset 锁定字段也拒', unsetLocked.name === 'CatalogLockedFieldError' && unsetLocked.fields?.join(',') === 'aliases');
 
   // 改 highlights：200，下一次 get_route_detail 返回新内容；其他条目不变，这一条除 highlights 外的字节也不变
   const proposalQuote = async (): Promise<string> => {
@@ -2250,9 +2265,10 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     (await cat.activateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev })).status === 'active' &&
       cfg.currentCatalog().generation === genBefore + 1,
   );
+  // 02 第 8 步：原为改 priceFrom 被拒，priceFrom 开放之后换成识别字段 title
   check(
     '上架：上架后锁定字段不能再改',
-    (await errOf(cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev, set: { priceFrom: 2 } }))).name ===
+    (await errOf(cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev, set: { title: '上架后改名' } }))).name ===
       'CatalogLockedFieldError',
   );
   check(
@@ -2953,52 +2969,109 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       (await proposalUrlOf('r-vers-draft')) === '/proposal/r-vers-draft/2',
   );
 
-  // 订单记下单时的版本；之后 catalog-fix 改价（停应用 → 改 → 重启）：写版本 3（source=fix），已有订单金额不变，
-  // 改之前发出的两种链接报价不变，?v=3 按新价
+  // 验收 19：给一条 active 线路改 priceFrom（后台）。改之前发出的链接（不带 v、?v=2）报价不变；之后新出的链接带 ?v=3、按新价；
+  // ?v=4 还不存在 → 404，期间没有数据库查询；已有订单金额不变；改 title 仍 422
   const s1 = freshSession();
   await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s1);
   const { getOrder } = await import('../store.js');
   const order1 = getOrder(getSession(s1.id)!.orderIds[0]!)!;
   check('版本：订单记下单时线路的版本（2）', order1.catalogVersion === 2 && order1.totalPrice === before.total);
   const price0 = (cfg.currentCatalog().routes.find((r) => r.id === 'r-xian') as Route).priceFrom;
+  const cur3 = (await cat.getCatalogItem(ctx, 'route', 'r-xian'))!;
+  const priced = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: cur3.rev, set: { priceFrom: price0 + 1000 } });
+  const rows3 = await versionRows('r-xian');
+  check(
+    '改价：后台改 priceFrom → 200，写版本 3（source=console），catalog_items.version 跟着改，审计 catalog.version',
+    (priced.payload as Route).priceFrom === price0 + 1000 &&
+      rows3.length === 3 &&
+      rows3[2]!.source === 'console' &&
+      (await itemRow('r-xian')).version === 3 &&
+      (await versionAudits('r-xian')).map((a) => `${a.diff.version}:${a.diff.source}`).join() === '2:console,3:console',
+  );
+  const q1 = queryCount();
+  const afterPrice = [await quoteAt('r-xian'), await quoteAt('r-xian', '2'), await quoteAt('r-xian', '3'), await quoteAt('r-xian', '4')];
+  check(
+    '改价：改之前发出的链接（不带 v、?v=2）报价不变，?v=3 按新价，?v=4 → 404',
+    afterPrice[0]!.total === before.total &&
+      afterPrice[1]!.total === before.total &&
+      afterPrice[2]!.total === (price0 + 1000) * 2 &&
+      afterPrice[3]!.status === 404,
+    JSON.stringify(afterPrice),
+  );
+  check('改价：这几次匿名请求（含 404）没有数据库查询', queryCount() === q1, `${q1} → ${queryCount()}`);
+  check('改价：已有订单金额不变', getOrder(order1.id)?.totalPrice === before.total && getOrder(order1.id)?.catalogVersion === 2);
+  const s2 = freshSession();
+  await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s2);
+  const order2 = getOrder(getSession(s2.id)!.orderIds[0]!)!;
+  check('改价：之后的新订单按新价、记版本 3', order2.totalPrice === (price0 + 1000) * 2 && order2.catalogVersion === 3);
+  check('改价：之后新出的方案书链接带 ?v=3', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2?v=3');
+  const titled = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: priced.rev, set: { title: '西安改名' } }).then(
+    () => null,
+    (e: unknown) => e as { name?: string; fields?: string[] },
+  );
+  check(
+    '改价：改 title 仍是 CatalogLockedFieldError（422），不产生版本',
+    titled?.constructor.name === 'CatalogLockedFieldError' &&
+      titled.fields?.join() === 'title' &&
+      (await versionRows('r-xian')).length === 3,
+  );
+
+  // 开放的其余字段（spec「测试与 CI」允许改的断言：原为逐个 422）：bestSeason、inclusions、exclusions 与酒店的 nightlyFrom 各自能改，
+  // 各写一个新版本；识别字段照旧锁定
+  let rev = priced.rev;
+  const xianNow = priced.payload as Route;
+  for (const [field, value] of [
+    ['bestSeason', '6-9月'],
+    ['inclusions', [...xianNow.inclusions!, '新含的一项']],
+    ['exclusions', [...xianNow.exclusions!, '新不含的一项']],
+  ] as const) {
+    const n = (await versionRows('r-xian')).length;
+    const r = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev, set: { [field]: value } });
+    rev = r.rev;
+    check(
+      `开放：active 线路改 ${field} → 200，写版本 ${n + 1}`,
+      (await versionRows('r-xian')).length === n + 1 && cfg.currentCatalog().versions['route:r-xian'] === n + 1,
+    );
+  }
+  const hotelCode = cfg.currentCatalog().hotels[0]!.id;
+  const hotel = (await cat.getCatalogItem(ctx, 'hotel', hotelCode))!;
+  const nightly = (hotel.payload as import('../shared/catalog-types.js').Hotel).nightlyFrom + 100;
+  await cat.updateCatalogItem(ctx, 'hotel', hotelCode, { rev: hotel.rev, set: { nightlyFrom: nightly } });
+  check(
+    '开放：active 酒店改 nightlyFrom → 200，写版本 2，快照里是新价',
+    (await versionRows(hotelCode, 'hotel')).map((r) => `${r.version}:${r.source}`).join() === '1:activate,2:console' &&
+      cfg.currentCatalog().versions[`hotel:${hotelCode}`] === 2 &&
+      loadHotels().find((h) => h.id === hotelCode)?.nightlyFrom === nightly,
+  );
+
+  // catalog-fix（停应用 → 改 → 重启）照旧是识别字段的修正途径，改了同样写新版本（source=fix）
+  const nFix = (await versionRows('r-xian')).length;
   cfg.__configTest.reset();
   await cat.fixLockedFields({
     db: t.db,
     tenantSlug: 'vers',
     kind: 'route',
     code: 'r-xian',
-    set: { priceFrom: price0 + 1000 },
-    reason: '供应商调价',
+    set: { aliases: [...(xianNow.aliases ?? []), '古都'] },
+    reason: '补一个客户常说的叫法',
   });
-  const rows3 = await versionRows('r-xian');
+  const rowsFix = await versionRows('r-xian');
   check(
-    'catalog-fix：改价写版本 3（source=fix），catalog_items.version 跟着改，审计 catalog.version',
-    rows3.length === 3 &&
-      rows3[2]!.source === 'fix' &&
-      rows3[2]!.by === 'catalog-fix' &&
-      (await itemRow('r-xian')).version === 3 &&
-      (await versionAudits('r-xian')).map((a) => `${a.diff.version}:${a.diff.source}`).join() === '2:console,3:fix',
+    'catalog-fix：改识别字段写一个新版本（source=fix），catalog_items.version 跟着改，审计 catalog.version',
+    rowsFix.length === nFix + 1 &&
+      rowsFix.at(-1)!.source === 'fix' &&
+      rowsFix.at(-1)!.by === 'catalog-fix' &&
+      (await itemRow('r-xian')).version === nFix + 1 &&
+      (await versionAudits('r-xian')).at(-1)?.diff.source === 'fix',
   );
   await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
   check(
-    '版本：重启后全部版本读进内存，当前是 3',
-    cfg.currentCatalog().versions['route:r-xian'] === 3 && (await totalVersions()) === items + 3,
+    '版本：重启后全部版本读进内存',
+    cfg.currentCatalog().versions['route:r-xian'] === nFix + 1 &&
+      (await quoteAt('r-xian')).total === before.total &&
+      (await quoteAt('r-xian', '3')).total === (price0 + 1000) * 2 &&
+      (await quoteAt('r-xian', String(nFix + 2))).status === 404,
   );
-  const afterFix = [await quoteAt('r-xian'), await quoteAt('r-xian', '2'), await quoteAt('r-xian', '3'), await quoteAt('r-xian', '4')];
-  check(
-    '版本：改价之后不带 v 与 ?v=2 的报价不变，?v=3 按新价，?v=4 → 404',
-    afterFix[0]!.total === before.total &&
-      afterFix[1]!.total === before.total &&
-      afterFix[2]!.total === (price0 + 1000) * 2 &&
-      afterFix[3]!.status === 404,
-    JSON.stringify(afterFix),
-  );
-  check('版本：已有订单金额不变', getOrder(order1.id)?.totalPrice === before.total && getOrder(order1.id)?.catalogVersion === 2);
-  const s2 = freshSession();
-  await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s2);
-  const order2 = getOrder(getSession(s2.id)!.orderIds[0]!)!;
-  check('版本：改价之后的新订单按新价、记版本 3', order2.totalPrice === (price0 + 1000) * 2 && order2.catalogVersion === 3);
-  check('版本：改价之后的方案书链接带 ?v=3', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2?v=3');
 
   // 启动补写：删掉一个 active 条目的全部版本行（模拟 01 镜像期间上架的）后重启 → 补写版本 1，链接照常打开；
   // 直接改条目内容（模拟 01 镜像期间改过）后重启 → 补写下一个版本，catalog_items.version 跟着对齐；再重启什么都不写
@@ -3047,7 +3120,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
   check('补写：再重启没有要补写的', (await totalVersions()) === nBefore && (await versionAudits('r-sanya')).length === 1);
 
-  // 按轮固定快照：一轮里模型先看了线路，改动在这一轮中间提交，这一轮之后的工具结果与链接仍是开始时那一代
+  // 按轮固定快照：一轮里模型先看了线路，改价在这一轮中间提交，这一轮之后的工具结果、链接与价格护栏仍是开始时那一代
   {
     interface Step {
       content?: string;
@@ -3103,20 +3176,22 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     try {
       const code = 'r-beijing';
       const r0 = cfg.currentCatalog().routes.find((r) => r.id === code) as Route;
+      const money = (n: number): string => n.toLocaleString('en-US');
       const gen0 = cfg.currentCatalog().generation;
       const seenCalls: string[] = [];
       const off = onToolCall((name) => void seenCalls.push(name));
       script.push(
         { toolCalls: [{ name: 'get_route_detail', args: { routeId: code } }] },
         {
-          // 模型看完线路、这一轮还没结束：后台在这时改了这条线并提交（版本 2）
+          // 模型看完线路、这一轮还没结束：后台在这时改了这条线的价并提交（版本 2）
           before: async () => {
             const it = (await cat.getCatalogItem(ctx, 'route', code))!;
-            await cat.updateCatalogItem(ctx, 'route', code, { rev: it.rev, set: { highlights: ['这一轮中间改的亮点'] } });
+            await cat.updateCatalogItem(ctx, 'route', code, { rev: it.rev, set: { priceFrom: r0.priceFrom + 2000 } });
           },
           toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }],
         },
-        { content: '北京这条线的详细方案书给您生成好了，您先看看：' },
+        // 模型照这一轮看到的报：每人是开始时的起价，两位合计跟着算
+        { content: `北京这条线每人 ${money(r0.priceFrom)} 元起，两位合计 ${money(r0.priceFrom * 2)} 元，详细方案书给您生成好了：` },
       );
       const reply = await handleMessage('wecom:wmCFGPIN0001', '北京那条线出个两个人的方案书', 'wecom');
       off();
@@ -3135,6 +3210,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
         JSON.stringify(proposal),
       );
       check('按轮固定：回复里的链接也是那一代的', reply.text.includes(`/proposal/${code}/2`) && !reply.text.includes('?v='), reply.text);
+      check(
+        '按轮固定：价格护栏看的也是开始时那一代，照这一轮工具结果报的价原样发出',
+        reply.text.includes(`每人 ${money(r0.priceFrom)} 元起`) && reply.text.includes(`两位合计 ${money(r0.priceFrom * 2)} 元`),
+        reply.text,
+      );
       check('按轮固定：下一轮新出的链接带 ?v=2', (await proposalUrlOf(code)) === `/proposal/${code}/2?v=2`, seenCalls.join());
     } finally {
       for (const k of keys) {

@@ -1227,18 +1227,16 @@ check(
   const proposal = async (): Promise<Body> =>
     (await (await app.request(`/api/proposal/${code}?travelers=2&departDate=${departDate}`)).json()) as Body;
   const quoteBefore = JSON.stringify((await proposal()).quote);
+  // 02 第 8 步开放了 priceFrom、bestSeason、inclusions、exclusions（spec「测试与 CI」允许改的断言）：它们不在这里了，
+  // 改成后面「开放的计价与条款字段」断言能改且产生新版本；识别字段照旧 422
   const lockedChanges: Record<string, unknown> = {
     title: `${p.title}改`,
     destination: `${p.destination}改`,
     days: p.days + 1,
-    priceFrom: p.priceFrom + 1,
-    bestSeason: `${p.bestSeason}改`,
     segments: p.segments.includes('商务') ? p.segments.filter((x: string) => x !== '商务') : [...p.segments, '商务'],
     aliases: [...(p.aliases ?? []), '改名'],
     maxAltitude: (p.maxAltitude ?? 0) + 1,
     overseas: !p.overseas,
-    inclusions: [...(p.inclusions ?? []), '改'],
-    exclusions: [...(p.exclusions ?? []), '改'],
   };
   const results: string[] = [];
   for (const [field, value] of Object.entries(lockedChanges)) {
@@ -1255,7 +1253,7 @@ check(
     tagged.text,
   );
   const all = await call('PATCH', `/catalog/route/${code}`, { ...O, json: { rev: item.rev, set: { ...lockedChanges, tags } } });
-  check('产品库 HTTP：一次改多个锁定字段 → 422 逐个点名', all.status === 422 && all.body.fields?.length === 12, all.text.slice(0, 200));
+  check('产品库 HTTP：一次改多个锁定字段 → 422 逐个点名', all.status === 422 && all.body.fields?.length === 8, all.text.slice(0, 200));
   check(
     '产品库 HTTP：被拒之后库和快照都不变',
     JSON.stringify(cfg.currentCatalog().routes) === snapBefore && (await get()).rev === item.rev,
@@ -1285,6 +1283,39 @@ check(
       JSON.stringify(after.quote) === quoteBefore &&
       JSON.stringify(afterV2.quote) === quoteBefore,
   );
+
+  // 开放的计价与条款字段（02 第 8 步，spec「测试与 CI」允许改的断言：原为逐个 422）：逐个能改、各写一个新的条目版本，
+  // 改之前发出的方案书（不带 v）报价不变
+  {
+    let rev = (await get()).rev as number;
+    const results: string[] = [];
+    for (const [field, value] of Object.entries({
+      priceFrom: p.priceFrom + 1000,
+      bestSeason: '1月',
+      inclusions: [...(p.inclusions ?? []), '改'],
+      exclusions: [...(p.exclusions ?? []), '改'],
+    })) {
+      const v = cfg.currentCatalog().versions[`route:${code}`]!;
+      const r = await call('PATCH', `/catalog/route/${code}`, { ...O, json: { rev, set: { [field]: value } } });
+      if (r.status !== 200 || cfg.currentCatalog().versions[`route:${code}`] !== v + 1)
+        results.push(`${field}:${r.status}:${r.text.slice(0, 80)}`);
+      rev = r.body.rev as number;
+    }
+    check('产品库 HTTP：active 线路逐个改开放的计价与条款字段 → 200，各写一个新版本', results.length === 0, results.join(' | '));
+    check('产品库 HTTP：改价之后，不带 v 的方案书报价不变', JSON.stringify((await proposal()).quote) === quoteBefore);
+    const hotel = cfg.currentCatalog().hotels[0]!;
+    const h = (await call('GET', `/catalog/hotel/${hotel.id}`, O)).body;
+    const hp = await call('PATCH', `/catalog/hotel/${hotel.id}`, {
+      ...O,
+      json: { rev: h.rev, set: { nightlyFrom: hotel.nightlyFrom + 100 } },
+    });
+    const hn = await call('PATCH', `/catalog/hotel/${hotel.id}`, { ...O, json: { rev: hp.body.rev, set: { name: `${hotel.name}改` } } });
+    check(
+      '产品库 HTTP：active 酒店改 nightlyFrom → 200（02 开放），改 name 仍 422',
+      hp.status === 200 && hn.status === 422 && JSON.stringify(hn.body.fields) === '["name"]',
+      `${hp.text.slice(0, 120)} / ${hn.text.slice(0, 120)}`,
+    );
+  }
 
   // 表单把 itinerary 整个提交回来，键序还被打乱：只改了 itinerary[0].detail
   const cur2 = await get();
@@ -1444,8 +1475,22 @@ check(
     act.status === 200 && act.body.status === 'active' && cfg.currentCatalog().routes.some((r) => r.id === 'r-http-new'),
     act.text.slice(0, 200),
   );
-  const lockedNow = await call('PATCH', '/catalog/route/r-http-new', { ...O, json: { rev: act.body.rev, set: { priceFrom: 1 } } });
-  check('上架 HTTP：上架之后 priceFrom 锁定', lockedNow.status === 422 && lockedNow.body.error === 'locked_field');
+  // 02 第 8 步：原为「上架之后 priceFrom 锁定」，priceFrom 开放之后换成识别字段 title；priceFrom 改成能改、产生新版本
+  const lockedNow = await call('PATCH', '/catalog/route/r-http-new', {
+    ...O,
+    json: { rev: act.body.rev, set: { title: '上架之后改名' } },
+  });
+  check(
+    '上架 HTTP：上架之后 title 锁定',
+    lockedNow.status === 422 && lockedNow.body.error === 'locked_field' && JSON.stringify(lockedNow.body.fields) === '["title"]',
+  );
+  const v1Http = cfg.currentCatalog().versions['route:r-http-new'];
+  const pricedNow = await call('PATCH', '/catalog/route/r-http-new', { ...O, json: { rev: act.body.rev, set: { priceFrom: 1 } } });
+  check(
+    '上架 HTTP：上架之后 priceFrom 能改（02 开放），写下一个条目版本',
+    pricedNow.status === 200 && v1Http === 1 && cfg.currentCatalog().versions['route:r-http-new'] === 2,
+    pricedNow.text.slice(0, 200),
+  );
   check(
     '产品库 HTTP：不存在的条目 → 404；kind 不对 → 400',
     (await call('GET', '/catalog/route/nope', O)).status === 404 &&

@@ -42,7 +42,9 @@ main(async () => {
       return 3;
     }
     try {
-      console.warn(`[catalog-fix] ⚠️ 已发出的方案书会按新值重算：${kind} ${code} 的 ${Object.keys(set).join('、')}`);
+      console.warn(
+        `[catalog-fix] ⚠️ 改 ${kind} ${code} 的 ${Object.keys(set).join('、')}：已上架的条目会写一个新的条目版本，之后的报价与方案书按新值，已发出的方案书按发出时的版本`,
+      );
       const item = await fixLockedFields({ db, tenantSlug, kind, code, set, reason });
       console.log(`[catalog-fix] 已修正 ${kind} ${code}（rev ${item.rev}）。docker compose up -d app 让应用重新装载`);
       return 0;
