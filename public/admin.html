@@ -447,19 +447,23 @@ const STAGES = {
 const STEP_ORDER = ['greeting','discovery','recommend','quote','objection','closing','paid'];
 const SCORE = { greeting:10, discovery:25, recommend:45, quote:65, objection:55, closing:82, paid:100, handoff:88 };
 const REACH = { greeting:0, discovery:1, recommend:2, quote:3, objection:3, closing:4, paid:5 };
-// 卡片预览需要线路标题/天数/酒店档，按 routeId 懒加载一次即缓存。
-// 用 pending 去重，避免同一 routeId 在多条消息里触发多次请求。
+// 卡片预览需要线路标题/天数/酒店档，按 routeId + 链接上的版本（?v=，不带是版本 1）懒加载一次即缓存：
+// 与企微 extractCard 一样取链接指的那一版；接口 404（没有这个版本）记成 false，不画卡片、也不再请求。
+// 用 pending 去重，避免同一条链接在多条消息里触发多次请求。
 const routeMetaPending = new Set();
-function loadRouteMeta(routeId) {
-  if (S.routeMeta[routeId] || routeMetaPending.has(routeId)) return;
-  routeMetaPending.add(routeId);
-  fetch('/api/proposal/' + encodeURIComponent(routeId))
-    .then(r => r.ok ? r.json() : null)
+const routeMetaKey = (routeId, v) => routeId + (v ? '?v=' + v : '');
+function loadRouteMeta(routeId, v) {
+  const key = routeMetaKey(routeId, v);
+  if (S.routeMeta[key] !== undefined || routeMetaPending.has(key)) return;
+  routeMetaPending.add(key);
+  fetch('/api/proposal/' + encodeURIComponent(routeId) + (v ? '?v=' + encodeURIComponent(v) : ''))
+    .then(r => r.ok ? r.json() : (r.status === 404 ? { missing: true } : null))
     .then(d => {
-      if (d && d.route) { S.routeMeta[routeId] = d.route; render(); }
+      if (d && d.route) { S.routeMeta[key] = d.route; render(); }
+      else if (d && d.missing) S.routeMeta[key] = false;
     })
     .catch(() => {})
-    .finally(() => routeMetaPending.delete(routeId));
+    .finally(() => routeMetaPending.delete(key));
 }
 
 const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -911,10 +915,11 @@ function detailHTML(s) {
     const all = text.match(LINK_RE) || [];
     if (all.length !== 1) return null;
     const raw = all[0];
-    const prop = raw.match(/\/proposal\/([A-Za-z0-9_-]+)\/(\d+)/);
+    const prop = raw.match(/\/proposal\/([A-Za-z0-9_-]+)\/(\d+)(?:\/[\d-]+)?(?:\?v=(\d+))?/);
     if (prop) {
-      const r = S.routeMeta[prop[1]];
-      if (!r) { loadRouteMeta(prop[1]); return null; }
+      // 没取过就去取；接口 404 记成了 false，不画卡片，loadRouteMeta 也不再请求
+      const r = S.routeMeta[routeMetaKey(prop[1], prop[3])];
+      if (!r) { loadRouteMeta(prop[1], prop[3]); return null; }
       return { raw, href: raw.replace(/^https?:\/\/[^/]+/, ''), t: r.title+' · 行程方案书',
                d: r.days+' 天 · '+prop[2]+' 位出行 · '+r.hotelLevel+'｜含逐日行程与费用说明' };
     }
