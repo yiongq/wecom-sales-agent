@@ -9,7 +9,16 @@
 // - 夜间不打扰（QUIET_HOURS），到点顺延到次日
 // - 已转人工、已成交、访客模拟会话一律不追
 // - 追问内容走 LLM 生成（带上下文，比模板自然），失败时用阶段模板兜底
-import { flushStoreNow, getSession, listSessions, onShutdown, saveSession } from './store.js';
+import {
+  flushSession,
+  flushStoreNow,
+  getSession,
+  isDemoClassId,
+  listSessions,
+  onShutdown,
+  saveSession,
+  sessionStoreMode,
+} from './store.js';
 import { completeText } from './llm.js';
 import { numEnv } from './env.js';
 import { cleanText } from './shared/text.js';
@@ -191,6 +200,16 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
       meta.pendingAt = Date.now();
       saveSession(fresh, false);
       flushStoreNow();
+      // db 存储下真实会话的记账在 PG 写队列里，flushStoreNow 管不到：等它提交了再推送。记不上账就不推（账已经记在内存里，
+      // 宁可漏一条也不重发，与上面的 at-most-once 一致）。文件存储下不进这个分支
+      if (sessionStoreMode() === 'db' && !isDemoClassId(fresh.id)) {
+        try {
+          await flushSession(fresh.id, { timeoutMs: 5000 });
+        } catch {
+          console.error(`[followup] 跟进 ${s.id} 的记账没能落库，本轮不推送`);
+          continue;
+        }
+      }
       let ok: boolean;
       try {
         ok = await push(s.id, text);
