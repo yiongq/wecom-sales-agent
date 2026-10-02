@@ -62,7 +62,7 @@
   - `store.selftest.ts`：往返、重复导入 0、补完改写 0、内容不同 2、持锁 3、导出 → 文件存储下再聊 → `--resync` → 一致、`--dry-run` 不写库、两个启动拒绝；真实 PG 部分以子进程执行两个命令行并断言退出码。
   - `deploy.sh` 回滚前检查：目标是 02 之前的镜像，而服务器 `var/` 里有标记文件或 `/healthz` 的 `config.catalogVersioned` 为 true 时拒绝，并打印 spec 的回退步骤（`catalogVersioned` 在第 8 步才有，先只查标记文件）。
   - 对应验收 3，以及不变量 14、15。
-- [ ] 7. 等价套件与 DB 模式 mock eval（1.5）：
+- [x] 7. 等价套件与 DB 模式 mock eval（1.5）：2026-10-03 完成，套件结构、怎么找漏网的原地修改与错位（没找到新的，产品代码没改）、两边有意不同的地方、变异与真实 PG 结果、留给第 9、10、12、13 步补的项见「实施记录 · 第 7 步」。
   - `src/store/parity.selftest.ts`：spec「测试与 CI」列的场景，会话 id 用 `wecom:parity-*`，各跑在文件存储与 PG 存储上并比较，断言 PG 里有这些会话。
   - `eval/run.ts` 的 `CONFIG_TEST_DB=pglite` 同时装上 PG 会话存储，会话 id 改用 `eval:<用例>-<时间>`；跑完断言库里有每个用例的会话、消息与内存一致。
   - 用 DB 模式 mock eval 与等价套件找出漏网的原地修改（冻结会抛 `TypeError`）与数组错位（`WindowCorruptError`），逐处改成只追加，改动记进实施记录。
@@ -572,6 +572,45 @@
   - 变异（源码拷进 scratchpad 的三个隔离副本，只跑相关自测）：25 个，全部杀掉。审查报的存活变异 9 个（M03、M13、M23、M24b、M41、M43、M47、M48、M55）都变红；上面五条各自的代表性变异 16 个：import 先改写 JSON 再写标记、export 先 sessions.json、改名之后不 fsync 目录；没有标记也照常导出、全部一致也照常导出；import 到提交之后才建 `--keep` 子目录、export 读完库才建、没用上的子目录不删；`guard_rollback` 不传端口、`dc` 不带端口、自动回滚被拒也打印部署旧 tag 那套、租户不从标记文件取；db 存储启动不补写标记、补写的 `sessions` 恒为 0、已有标记也重写、回滚检查不看 `.env`。首轮存活两个（目录 fsync、export 读完库才建子目录：export 的事务只读，后果看不出来），补了「按先后记下改名与目录 fsync」与「`--keep` 写不进去时没发事务」两条断言之后杀掉。
   - `pnpm test` 带 `PG_TEST_URL` 与不带各跑一遍都全绿，PASS 行 60；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
 
+### 第 7 步 · 等价套件与 DB 模式 mock eval（2026-10-03）
+
+- 结构：
+  - `src/store/parity.selftest.ts`（串在 `store.selftest.ts` 之后，约 6 秒）：父进程带 `PARITY_CHILD=file|db` 再起两次自己（单进程 `node --import tsx`，`spawnSync` 带 `killSignal: 'SIGKILL'`、240 秒超时）。两个子进程跑同一份场景脚本：本机假模型（按脚本回话、可拖延、请求一到就通知场景，脚本多调少调都记下）、假企微接口（替换全局 `fetch`，只接 `qyapi.weixin.qq.com`，其余照发）、`app.request` 调旧写接口。两个子进程的配置源相同（PGlite 上 `installSeededConfig`，导入 `data/`），PG 那个另 `installPgSessionStore` + `initSessionStore`，只差会话存储。子进程把原始结果写进文件：每一轮的回复（或抛出的错误）与没用完的脚本步数、发给企微的消息、`normalizeForStore` 之后的会话投影、订单、场景记下的观测；父进程规范化之后逐项比较。
+  - 8 组场景、18 个会话（一律 `wecom:parity-*`）：E5 生成中接手（经企微适配器，假模型拖 400ms 期间调真的旧 `/handoff`）；模型返回后推送前接手（经企微适配器，见下面取舍 3）；生成中付款（拖 400ms 期间调真的 `POST /api/orders/:id/pay`，之后再聊一句）；重置（报价、安全网建单、付款、投诉转人工、重置、再聊）；裁剪（引擎的 400→300 与企微适配器非文本占位的 400→300 各一个会话，各先追加 400 条）；企微重放（已记下没回复、已回复没发出、后面夹了欢迎语，各在 `resetForTest` 之后从盘上的在途表重放）；跟进（一条送达、一条没送达，扫两轮）；转人工各入口（安全网 request / complaint / refund、模型调 `handoff_to_human`、改行程承诺、回复说了转接、旧 `/handoff` 两次加人工回复与交还，各自之后再说一句）。
+  - 规范化只做两件事：九个时间键（`at`、`createdAt`、`updatedAt`、`paidAt`、`sentAt`、`lastAt`、`pendingAt`、`firstHandoffAt`、`confirmedAt`）的毫秒数取值换成占位，键照留；随机订单号按它在这个场景里第一次出现的顺序换成 `ord#N`（订单号出现在回复正文、`orderIds`、订单里，同一张单换成同一个编号）。seq 不在内存投影里（WeakMap），无须去掉。比较的五样是每一轮的回复、发出的消息、会话投影、订单、场景观测。
+  - PG 子进程每组场景之后 `drainStore`，用新加的 `readStoredConversations`（`src/db/testing.ts`：以 `agent_app` 经 `withTenant` 走 `readSessionBatch` + `rebuildSessions`，即启动预载那条路；另以超级用户读全部消息的 seq 与作废订单）逐个会话断言：库里有；重建出的会话与内存 `normalizeForStore` 之后 `deepStrictEqual`；seq 从 1 到 `last_seq` 连续；内存里每条消息的 seq 对得上窗口；库里未作废的订单与内存相同；内存里的消息都已冻结；整体没有 poisoned、没有冲突、`foreign` 为 0。重置组另断言旧消息都在、窗口起点是重置回复、订单记作废（`void_reason='reset'`）；裁剪组另断言库里 402 条全留、窗口起点 102、内存 301 条。文件子进程断言消息没被冻结。
+  - 父进程另有三类自检：场景本身的期望（两边各验一遍：接手真的发生、付款落在生成途中、重放没有重记、跟进推送那一刻持久副本里已记账、六类入口的类型……场景悄悄失效时两边照样相同，要靠它们拦）；比较器对每个字段都敏感（在文件那份原始结果上，每一种字段形状改一处，经同一个 `compareScenario` 必须比得出来，338 处；按取值判断是毫秒时间戳的改了必须仍相同，81 处）；两边收集到的会话、消息、订单、回复的字段覆盖一张清单（防收集时就少收，比较器探不到）。合计 669 项（不带 PG 与带 PG 相同）。
+  - `eval/run.ts`：`CONFIG_TEST_DB=pglite` 时在同一个 PGlite 上 `installPgSessionStore` + `initSessionStore`；会话 id 改成 `eval:<用例 id>-<时间>`（文件模式照旧 `sim-eval-`，渠道两边都照旧 `simulator`）。跑完 `checkStoredSessions`：排空写队列，按预载那条路读回，逐个用例断言会话在库里、与内存一致、seq 连续、窗口对得上、订单相同，以及没有积压、poisoned 与冲突；打印「DB 模式：19 个用例的会话入库核对，0 处与内存不符」，有不符就以 1 退出（`pnpm test` 变红）。前缀哈希的核对没动；文件模式那一遍的输出与行为不变（只多记了一个会话 id 列表）。通过的用例集合两种模式相同（都是 19/19，跳过 32 条 realOnly）。
+  - `package.json` 的 `test` 在 `store.selftest.ts` 之后加 `tsx src/store/parity.selftest.ts`。
+- 找漏网的原地修改与数组错位：两个套件都跑在冻结与严格模式上，没有一轮抛 `TypeError`，没有会话 poisoned。本步没有找到第 1 步盘点的六处之外的原地修改或错位，所以没有改产品代码，文件存储下的行为一个字节没变。六处在本步各由一组场景在 PG 存储上兜住：
+
+  | 位置（开工提交的行号）           | 原来                                | 现在（第 3、5 步改的）                                 | 本步在 PG 上由谁兜住                                        |
+  | -------------------------------- | ----------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------- |
+  | 重置 `engine.ts:3275`            | `messages = []`，订单真删           | 先 `noteWindowReset`，库里推进窗口、订单作废；内存照旧 | 「重置」：旧消息都在、窗口起点是重置回复、订单 `reset` 作废 |
+  | 裁剪 `engine.ts:3298`            | `splice(0, …)` 留 300               | 内存照旧，库里全留、窗口推进                           | 「裁剪」引擎那个会话                                        |
+  | 裁剪 `adapters/wecom.ts:810`     | 非文本占位自带 400→300              | 同上                                                   | 「裁剪」企微那个会话（第 1 步说的单独覆盖）                 |
+  | 转人工备注 `engine.ts:3398`      | 对已入库的 system 消息 `content +=` | 工具执行前算好出行时间，system 消息一次写成            | 「转人工各入口」的模型、改行程、说了转接（原话带出行时间）  |
+  | 企微重放 `adapters/wecom.ts:771` | `splice` 删掉这句再重跑             | `{ alreadyRecorded: true }`，不删不重记                | 「企微重放」三种情况                                        |
+  | 保鲜 `store.ts:188–195`          | 平移种子的时间戳                    | 照旧，种子不进 PG、不冻结                              | 不在本套件（demo 类不进库）                                 |
+
+  另在 scratchpad 的隔离副本里做了一次探测（探针不进仓库）：一个 `--import` 预加载模块在自测本身之前给进程装上 PGlite 上的 PG 会话存储，再跑现有自测，让它们的每一条路径都走冻结与严格模式。`engine.selftest`、`handoff.selftest`、`wecom.selftest`、`wecom-02.selftest`、`dejargon.selftest`、`engine-holiday.selftest` 全过，冻结写入 0 次、poisoned 0 个；`llm.selftest` 到 F1 为止全过。碰到的三处都不在产品代码里：(1) `server.selftest.ts:835` 原地改非种子会话消息的 `at`，抛 `TypeError`（锁定自测自己的写法，第 1 步已记）；(2) `console.selftest.ts` 会话列表的夹具把 `updatedAt` 设在 2030 年（触发器拒绝晚于现在 5 分钟以上的 `updated_at`，23514）、接手人的 `userId` 是 `u-conv-d`（`assignee_user_id` 是 uuid 列，22P02），四个夹具会话 poisoned：夹具数据，不是写入路径，第 13 步写的是真实成员 id；(3) `llm.selftest` 在 F1 跑过一次停机钩子之后挂住：late 段已关掉 PG 后端，之后的跟进记不上账、一直不推送，是探针把停机之后的进程接着用造成的。
+
+- 两边有意不同、不比的地方（都是 spec 写明的）：内存里两边逐字段相同（比了）。库里：重置与裁剪只推进窗口、旧消息全留，文件存储下内存之外什么都不留；重置时订单在库里记作废、文件存储下删掉（内存里两边都移出，`getOrder` 都是 undefined）；文件存储下消息不冻结、seq 只在本进程有效。跟进的持久化路径不同（文件：`flushStoreNow` 同步写 JSON；PG：等 `flushSession` 提交），推送那一刻各自持久副本里的记账两边相同（比了）。没有发现 spec 没写的差异。
+- 取舍与偏离：
+  1. 两个子进程都用 DB 配置模式，不用文件配置：只差会话存储，输入（SOP、产品库）逐字相同；生产上 `SESSION_STORE=db` 本来就要求 `CONFIG_SOURCE=db`，文件存储加 DB 配置也是 02 之前线上 demo 的组合。
+  2. 订单号换成编号：订单号是随机的，两边必然不同；不是去掉字段，同一张单在回复正文、`orderIds`、订单里换成同一个编号，结构照比。
+  3. 「模型返回后推送前接手」：`strandedReply` 里的 await（`create_quote` 是同步算价）没有 I/O 窗口，从外面插不进去。做法：`onToolCall` 观测者在模型最后一步已返回（脚本已空）、不是预取的那次 `create_quote` 调用时排一个 microtask，以旧 `/handoff` 同一套写法接手（`enterHandoff(kind='agent')` + `saveSession`）；microtask 在 `await runTool` 的续体之前跑完。今天的机制只有 `handedOver`：这一轮的 AI 回复照样写进会话、照样发出（两边相同，场景期望里写明了）。验收 7 的「同样不发出」要第 13 步的接手代次。
+  4. 两处「生成途中」（E5 与付款）都在假模型拖延期间经 `app.request` 调真的旧接口，不直接改字段。
+  5. DB 模式 eval 的渠道照旧是 `simulator`（访客日预算等按渠道走的逻辑两种模式相同），只换会话 id 的前缀。
+  6. 交接标题按实际日期写 2026-10-03。
+- 变异（源码拷进 scratchpad 的隔离副本，逐个打、跑等价套件或 DB 模式 eval、还原）：21 个，全部杀掉。首轮 19 个里存活 4 个，各补一处之后杀掉：逐项比少了 `orders`（比较器探测原来按同一张 `COMPARED` 取要探的字段，比较漏了哪一样就连探都不探；改成探子进程收集到的全部五样）；把人数当时间戳抹掉（探测原来按 `TIME_KEYS` 判断哪处是时间戳，同一张表给自己作证；改成按取值的量级判断）；只去掉 `saveSession` 时的冻结（取快照时照样冻结，场景结束时消息都是冻的，等价套件看不出，第 5 步 `store.selftest` 的「schedule 不冻结」变异管它；换成两处都不冻，由「内存里的消息都已冻结」杀掉）；企微重放不传 `alreadyRecorded`（两边都多记一遍、照样相同；为它加了「场景本身的期望」，由「客户这句都只记一次」杀掉）。其余首轮就杀掉：PG 下会话投影多一个字段、回复多一个字、重置不把订单移出内存、重置不作废订单、快照的最后一条不插库（等价套件与 DB 模式 eval 各一次）、eval 不装 PG 会话存储、eval 的 DB 模式仍用 `sim-eval-`、规范化丢掉 `stage`、收集时投影里没有 `stage`、引擎原地改一条已落库的消息（`TypeError`）、引擎裁剪改成删中间（`WindowCorruptError` → poisoned）、重置不调 `noteWindowReset`、PG 下跟进不等记账提交就推送、PG 子进程不做库里的核对。另补两个：会话行的 `state` 少存 `handoff`、预载重建消息时丢掉 `msgid`，都由等价套件杀掉（后者先在 eval 上跑时存活：eval 的用例走网页渠道，消息没有 `msgid`）。
+- 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器，`127.0.0.1:55432`）与不带各跑一遍，都全绿，PASS 行 61（多了本步一行）。等价套件 669 项，两次相同（只用 PGlite，不看 `PG_TEST_URL`）；DB 模式 eval「19 个用例的会话入库核对，0 处与内存不符」、前缀哈希 22 个请求 0 个不符；`store.selftest` 402 / 425、`db.selftest` 480 / 876 项照旧。文件模式 eval 与开工时的 `eval/run.ts` 对跑一次，输出（抹掉耗时与随机 id）逐行相同，`--json` 里的通过数、断言数、结果与失败相同。锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
+- 注意（第 9、10、12、13 步，以及之后改会话写入的步骤）：
+  - 第 13 步：「模型返回后推送前接手」那组的场景期望改成「AI 回复不发出、记一条『本轮未发送（顾问已接手）』」（接手代次），E5 的 system 文案统一之后两边照比；`takeover` / `release` / `reply` 新接口各补一组场景（成员接手、人工回复带 `author='human'`、交还），两边比较、PG 那边照样核对库里；`console.selftest.ts` 的列表夹具要在 db 存储下跑的话，`assignee.userId` 得换成真实成员 id。
+  - 第 10 步：db 存储下跟进改由任务表驱动之后，「跟进」那组的 PG 一边换成任务表的路径（排程、认领、`sending`、记账提交后推送），文件一边仍是扫描器；比较发出的跟进与记账照旧，PG 那边加「任务表里的状态」。
+  - 第 9、12 步：trace、护栏事件、账本行有了生产者之后，PG 子进程的核对加「库里有这一轮的 trace / 账本行」，`readStoredConversations` 跟着读。
+  - 之后新增的会话写入路径（第 11、13、14、16 步）都在本套件加一组场景：PG 存储下的冻结与严格模式会把原地修改与错位当场报出来；新路径也要进 eval 的用例或探针过一遍。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -650,3 +689,10 @@
 - 半成品：无。
 - 阻塞：无。第 6 步审查带出「Open」一条（不经 import 的 db 存储实例补写标记、回滚检查看 `.env`，已按推荐做了，等 owner 确认并补进 spec）；另外 export 多了退出码 2，spec「export-sessions」那段要同步一句。第 1、4、5 步带出的六处照旧，都不挡第 7 步。
 - 下一步：第 7 步「等价套件与 DB 模式 mock eval」。先读「实施记录 · 第 5 步」的「注意（第 7 步）」与本步的「注意（第 7 步）」。
+
+### 交接（2026-10-03，第 7 步）
+
+- 已完成：第 7 步。`src/store/parity.selftest.ts`（8 组场景、18 个 `wecom:parity-*` 会话，文件存储与 PG 存储各起一个子进程跑同一份脚本，逐项比较回复、发出的消息、会话投影与订单，PG 那边按预载那条路核对库里与内存一致；另有场景期望、比较器对每个字段敏感、收集字段覆盖三类自检，共 669 项）；`eval/run.ts` 的 DB 模式装上 PG 会话存储、改用 `eval:` 会话、跑完核对库里；`src/db/testing.ts` 加 `readStoredConversations`。没有找到第 1 步那六处之外的原地修改与数组错位，产品代码没改；隔离副本里另用探针把现有自测跑在 PG 存储上，碰到的三处都在测试代码、夹具或探针本身。21 个变异全部杀掉；本机真实 PG 上全过；锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
+- 半成品：无。
+- 阻塞：无。「Open」里第 1、4、5、6 步带出的几处照旧，本步没有新增，都不挡第 8 步。
+- 下一步：第 8 步「产品库版本、按轮固定快照、开放五个字段」。先读 spec「报价快照与产品库字段开放」、R14、不变量 35–37、验收 19，「实施记录 · 第 4 步」仓储清单里的 `catalog-versions.ts`，与「实施记录 · 第 6 步」的「注意（第 8 步）」（`rollback-guard.sh` 的 `catalogVersioned`）。改了引擎读产品库的路径之后，等价套件与 DB 模式 eval 照跑；第 9、10、12、13 步要在等价套件里补的项见「实施记录 · 第 7 步」的「注意」。
