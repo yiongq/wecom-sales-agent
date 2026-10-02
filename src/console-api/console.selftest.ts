@@ -1275,10 +1275,15 @@ check(
     others(cfg.currentCatalog().routes) === others(JSON.parse(snapBefore) as { id: string }[]) &&
       JSON.stringify({ ...mine, highlights: p.highlights }) === JSON.stringify(p),
   );
+  // 02「报价快照」：改了 active 条目的内容就是版本 2；不带 v 的链接按版本 1（改之前发出的那份），带 ?v=2 才是新内容
   const after = await proposal();
+  const afterV2 = (await (await app.request(`/api/proposal/${code}?travelers=2&departDate=${departDate}&v=2`)).json()) as Body;
   check(
-    '产品库 HTTP：公开的方案书接口拿到新 highlights，quote 不变',
-    JSON.stringify(after.route.highlights) === JSON.stringify(hl) && JSON.stringify(after.quote) === quoteBefore,
+    '产品库 HTTP：改了 highlights，公开的方案书接口不带 v 仍是改之前的、?v=2 拿到新 highlights，quote 都不变',
+    JSON.stringify(after.route.highlights) === JSON.stringify(p.highlights) &&
+      JSON.stringify(afterV2.route.highlights) === JSON.stringify(hl) &&
+      JSON.stringify(after.quote) === quoteBefore &&
+      JSON.stringify(afterV2.quote) === quoteBefore,
   );
 
   // 表单把 itinerary 整个提交回来，键序还被打乱：只改了 itinerary[0].detail

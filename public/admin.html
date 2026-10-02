@@ -906,7 +906,7 @@ function detailHTML(s) {
       + '</div>';
   });
   // 与 src/adapters/wecom.ts 的 extractCard 同规则：正文里恰好一条站内链接才做卡片
-  const LINK_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g;
+  const LINK_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?/g;
   const cardOf = (text) => {
     const all = text.match(LINK_RE) || [];
     if (all.length !== 1) return null;
@@ -932,7 +932,7 @@ function detailHTML(s) {
 
   // 先转义再把站内路径替换成链接，顺序不能反——反了等于把消息内容当 HTML 执行
   const linkify = (escaped) => escaped.replace(
-    /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g,
+    /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?/g,
     (u) => '<a class="slink" target="_blank" rel="noopener" href="' + u.replace(/^https?:\/\/[^/]+/, '') + '">' + u + '</a>');
 
   let msgs = (s.messages||[]).map((m,j) => {

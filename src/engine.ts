@@ -35,7 +35,7 @@ import { BUDGET_LIFTED, dropUnbackedClaims, liftsBudget } from './price-rules.js
 import { numEnv, todayIso } from './env.js';
 import { profile } from './profile.js';
 import { renderSystemPrompt } from './prompt/system.js';
-import { ConfigNotReadyError, configMode, currentSop } from './config/source.js';
+import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from './config/source.js';
 import { promptHashes } from './config/hashes.js';
 import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
@@ -850,6 +850,16 @@ function dropLinkPromise(text: string, kind: LinkKind, hole: string): string {
     }
   }
   return tidyLinkText(kept.join('').split(hole).join(''));
+}
+
+/** 这次 generate_proposal 给的链接带的版本后缀（「?v=2」；版本 1 与出错的调用是空串），链接白名单按它核对模型写的链接 */
+function proposalSuffixOf(c: ToolCall): string {
+  try {
+    const url = (JSON.parse(c.result ?? '') as { proposalUrl?: unknown }).proposalUrl;
+    return typeof url === 'string' ? (/\?v=\d+$/.exec(url)?.[0] ?? '') : '';
+  } catch {
+    return '';
+  }
 }
 
 /** 本轮工具真给过的链接（模型调了 generate_proposal / create_order，只是没贴出来），按调用顺序、去重。
@@ -3284,9 +3294,12 @@ export interface HandleOpts {
   alreadyRecorded?: boolean;
 }
 
-/** 对外入口：同会话串行，跨会话并发 */
+/**
+ * 对外入口：同会话串行，跨会话并发。一轮的正文包在 pinCatalogForTurn 里（02 R14、不变量 36）：轮到它真正开始时记下产品库快照，
+ * 这一轮的工具、链接上的 ?v= 与护栏都看这一代，中途有人改价也不混用。文件模式下什么都不做
+ */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  return serialize(sessionId, () => handleMessageInner(sessionId, text, channel, opts));
+  return serialize(sessionId, () => pinCatalogForTurn(() => handleMessageInner(sessionId, text, channel, opts)));
 }
 
 async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
@@ -3693,11 +3706,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 改单后被替代的旧单不放行：模型从历史里抄回旧链接，客户点开只会看到「已被新订单替代」。
   // 抹成空位后照常由出口修补换成现在那张待付款单的链接（见 repairLinks）
   const allowedPay = new Set(session.orderIds.filter((id) => getOrder(id)?.status !== 'superseded').map((id) => '/pay/' + id));
-  // 方案书链接是无状态的（/proposal/线路id/人数[/日期]），本轮真调过 generate_proposal
-  // 且线路 id 对得上才放行——参数都编在路径里，页面按同一套规则重算，编不出假价格
-  const proposalPathOk = (pathOnly: string): boolean => {
+  // 方案书链接是无状态的（/proposal/线路id/人数[/日期][?v=版本]），本轮真调过 generate_proposal
+  // 且线路 id 对得上才放行——参数都编在路径里，页面按同一套规则重算，编不出假价格。
+  // 版本后缀（02「报价快照」）也要和那次调用给的一样：模型抄丢了 ?v=2，客户点开的就是版本 1 的旧价，抹成空位由出口修补换成真链接
+  const proposalPathOk = (pathOnly: string, version = ''): boolean => {
     const m = pathOnly.match(/^\/proposal\/([A-Za-z0-9_-]+)\/\d+/);
-    return !!m && calls.some((c) => c.name === 'generate_proposal' && c.args.routeId === m[1]);
+    return !!m && calls.some((c) => c.name === 'generate_proposal' && c.args.routeId === m[1] && proposalSuffixOf(c) === version);
   };
   visible = visible
     // 完整 URL 一律剥成相对路径再判断：模型会连域名一起编（实测发出过
@@ -3707,14 +3721,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // URL 到中文标点为止：「方案：https://…，您先看看」按 \S+ 会把逗号后面的正文一起吞掉
     .replace(/https?:\/\/[^\s，。！？、；：“”‘’（）【】《》「」～]+/g, (u) => {
       let pathOnly: string;
+      let version: string;
       try {
-        pathOnly = new URL(u).pathname;
+        const url = new URL(u);
+        pathOnly = url.pathname;
+        version = /^\?v=\d+$/.test(url.search) ? url.search : '';
       } catch {
         return HOLE.other;
       }
       const pay = pathOnly.match(/^\/pay\/([A-Za-z0-9_-]+)$/);
       if (pay) return allowedPay.has('/pay/' + pay[1]) ? '/pay/' + pay[1] : HOLE.pay;
-      if (proposalPathOk(pathOnly)) return pathOnly;
+      if (proposalPathOk(pathOnly, version)) return pathOnly + version;
       return pathOnly.startsWith('/proposal/') ? HOLE.proposal : HOLE.other;
     })
     // 支付路径的变体和截断的半截也要抹：A18 模型写了「/p/ord_5d0b…」，引擎补上真链接后这半截还留在正文里。
@@ -3727,8 +3744,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     )
     // 相对形式的方案链接同样要校验线路 id，防模型拼一个不存在的线路。没带人数的（「/proposal/r-guizhou」）、
     // 截断的（「/proposal/r-sanya/3…」）同样抹成空位，出口修补换成真的
-    .replace(/(^|[^:\w/])(\/proposals?\/[A-Za-z0-9_-]*(?:\/[\d-]*)*)(…+|\.{2,}|⋯+)?/g, (full, pre: string, link: string, cut?: string) =>
-      !cut && /^\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?$/.test(link) && proposalPathOk(link) ? full : pre + HOLE.proposal,
+    .replace(
+      /(^|[^:\w/])(\/proposals?\/[A-Za-z0-9_-]*(?:\/[\d-]*)*)(\?v=\d+)?(…+|\.{2,}|⋯+)?/g,
+      (full, pre: string, link: string, version: string | undefined, cut?: string) =>
+        !cut && /^\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?$/.test(link) && proposalPathOk(link, version ?? '')
+          ? full
+          : pre + HOLE.proposal,
     )
     // markdown 在微信/后台都不渲染，直接落库前就清掉（企微渠道层 wechatify 是二道保险）
     .replace(/\*\*(.+?)\*\*/g, '$1')
