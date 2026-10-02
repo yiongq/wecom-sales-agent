@@ -2555,6 +2555,35 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     shown.innerHTML.includes('<header>') && !shown.innerHTML.includes('<img src=x') && shown.innerHTML.includes('>DNaN<'),
     shown.innerHTML.slice(0, 200),
   );
+  // 方案页脚本把地址里的 v 原样转给接口（02「报价快照」）：正文与报价是脚本取回来的，不转的话 ?v=2 的页面按版本 1 显示旧价
+  const requested = async (loc: { pathname: string; search: string }): Promise<string> => {
+    let url = '';
+    vm.runInNewContext(script, {
+      document: { getElementById: () => ({ innerHTML: '' }), title: '' },
+      location: loc,
+      URLSearchParams,
+      encodeURIComponent,
+      fetch: async (u: string) => {
+        url = u;
+        return { ok: false, json: async () => ({}) };
+      },
+    });
+    // 脚本在第一个 await 之前就调了 fetch：跑完 runInNewContext，url 已经有了
+    await new Promise((r) => setTimeout(r, 1));
+    return url;
+  };
+  const withV = await requested({ pathname: `/proposal/${r0.id}/2`, search: '?v=2' });
+  const dated = await requested({ pathname: `/proposal/${r0.id}/3/2026-11-01`, search: '?v=3' });
+  const noV = await requested({ pathname: `/proposal/${r0.id}/2`, search: '' });
+  check(
+    '方案页脚本：地址带 ?v=2 时请求接口带 v=2（带日期的也带），不带时请求里没有 v',
+    new URL(withV, 'http://x').searchParams.get('v') === '2' &&
+      new URL(dated, 'http://x').searchParams.get('v') === '3' &&
+      new URL(dated, 'http://x').searchParams.get('departDate') === '2026-11-01' &&
+      noV.startsWith(`/api/proposal/${r0.id}?`) &&
+      !new URL(noV, 'http://x').searchParams.has('v'),
+    `${withV} | ${dated} | ${noV}`,
+  );
 }
 
 // ---------------- 检索（第 9 步：验收 11） ----------------
@@ -3073,20 +3102,35 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       (await quoteAt('r-xian', String(nFix + 2))).status === 404,
   );
 
-  // 启动补写：删掉一个 active 条目的全部版本行（模拟 01 镜像期间上架的）后重启 → 补写版本 1，链接照常打开；
-  // 直接改条目内容（模拟 01 镜像期间改过）后重启 → 补写下一个版本，catalog_items.version 跟着对齐；再重启什么都不写
+  // 启动补写：删掉一个 active 条目的全部版本行（模拟 01 镜像期间上架的，线路与酒店各一条）后重启 → 补写版本 1，链接照常打开；
+  // 直接改条目内容（模拟 01 镜像期间小林改过非锁定字段）后重启 → 补写下一个版本，catalog_items 这一行不动（「更新于」与改它的人
+  // 照旧，catalog_items.version 落后、内存里取大）；再重启什么都不写
+  const hotel01 = cfg.currentCatalog().hotels[1]!.id;
   cfg.__configTest.reset();
-  await asSuper(() =>
-    t.pg.query(`delete from catalog_item_versions where tenant_id = $1 and kind = 'route' and code = 'r-guizhou'`, [tenantId]),
-  );
+  await asSuper(async () => {
+    await t.pg.query(`delete from catalog_item_versions where tenant_id = $1 and kind = 'route' and code = 'r-guizhou'`, [tenantId]);
+    await t.pg.query(`delete from catalog_item_versions where tenant_id = $1 and kind = 'hotel' and code = $2`, [tenantId, hotel01]);
+  });
   const sanya = await itemRow('r-sanya');
   const sanyaEdited = JSON.stringify({ ...(JSON.parse(sanya.payload) as Record<string, unknown>), highlights: ['01 镜像期间改的亮点'] });
   await asSuper(() =>
-    t.pg.query(`update catalog_items set payload = $2::json where tenant_id = $1 and kind = 'route' and code = 'r-sanya'`, [
-      tenantId,
-      sanyaEdited,
-    ]),
+    t.pg.query(
+      `update catalog_items set payload = $2::json, updated_by_name = '小林' where tenant_id = $1 and kind = 'route' and code = 'r-sanya'`,
+      [tenantId, sanyaEdited],
+    ),
   );
+  const stamp = async (code: string): Promise<string> =>
+    asSuper(async () =>
+      JSON.stringify(
+        (
+          await t.pg.query(
+            `select rev, version, updated_at::text as at, updated_by_name as by from catalog_items where tenant_id = $1 and kind = 'route' and code = $2`,
+            [tenantId, code],
+          )
+        ).rows[0],
+      ),
+    );
+  const sanyaStamp = await stamp('r-sanya');
   await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
   const gz = await versionRows('r-guizhou');
   check(
@@ -3098,17 +3142,27 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       (await versionAudits('r-guizhou')).map((a) => `${a.diff.version}:${a.diff.source}:${a.kind}`).join() === '1:backfill:system',
   );
   check(
+    '补写：酒店也补（没有版本行的 active 酒店写了版本 1，快照里是 1，审计记 system）',
+    (await versionRows(hotel01, 'hotel')).map((r) => `${r.version}:${r.source}`).join() === '1:backfill' &&
+      cfg.currentCatalog().versions[`hotel:${hotel01}`] === 1 &&
+      (await versionAudits(hotel01)).map((a) => `${a.diff.version}:${a.diff.source}:${a.kind}`).join() === '1:backfill:system',
+  );
+  check(
     '补写：补了版本 1 的线路，链接照常打开、不带 v',
     (await quoteAt('r-guizhou')).status === 200 && (await proposalUrlOf('r-guizhou')) === '/proposal/r-guizhou/2',
   );
   const sy = await versionRows('r-sanya');
   check(
-    '补写：内容与最新版本不同的条目写了版本 2（backfill），catalog_items.version 对齐成 2',
+    '补写：内容与最新版本不同的条目写了版本 2（backfill），内存里是版本 2',
     sy.length === 2 &&
       sy[1]!.source === 'backfill' &&
       sy[1]!.payload === (await itemRow('r-sanya')).payload &&
-      (await itemRow('r-sanya')).version === 2 &&
       cfg.currentCatalog().versions['route:r-sanya'] === 2,
+  );
+  check(
+    '补写：catalog_items 这一行不动（rev、version 列、更新于、改它的人都照旧），后台不会显示成「小林更新于重启时刻」',
+    (await stamp('r-sanya')) === sanyaStamp && JSON.parse(sanyaStamp).by === '小林' && JSON.parse(sanyaStamp).version === 1,
+    `${await stamp('r-sanya')} / ${sanyaStamp}`,
   );
   check(
     '补写：不带 v 的链接仍是 01 镜像期间改之前的那份（版本 1），?v=2 是改后的',
@@ -3118,7 +3172,30 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   const nBefore = await totalVersions();
   cfg.__configTest.reset();
   await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
-  check('补写：再重启没有要补写的', (await totalVersions()) === nBefore && (await versionAudits('r-sanya')).length === 1);
+  check(
+    '补写：再重启没有要补写的，内存里仍是版本 2（这一列落后也取大）',
+    (await totalVersions()) === nBefore &&
+      (await versionAudits('r-sanya')).length === 1 &&
+      cfg.currentCatalog().versions['route:r-sanya'] === 2,
+  );
+  {
+    // 补写之后原样提交一次（内容没变，带回的是落后的这一列）：内存里的版本不退回 1；再改一次按 max(version) + 1 写版本 3、这一列跟上
+    const it = (await cat.getCatalogItem(ctx, 'route', 'r-sanya'))!;
+    const same = await cat.updateCatalogItem(ctx, 'route', 'r-sanya', {
+      rev: it.rev,
+      set: { highlights: (it.payload as Route).highlights },
+    });
+    const keptV = cfg.currentCatalog().versions['route:r-sanya'];
+    await cat.updateCatalogItem(ctx, 'route', 'r-sanya', { rev: same.rev, set: { highlights: ['补写之后再改'] } });
+    check(
+      '补写：之后原样提交内存仍是版本 2，再改写版本 3、catalog_items.version 跟上',
+      keptV === 2 &&
+        cfg.currentCatalog().versions['route:r-sanya'] === 3 &&
+        (await itemRow('r-sanya')).version === 3 &&
+        (await versionRows('r-sanya')).map((r) => r.version).join() === '1,2,3',
+      `${keptV}`,
+    );
+  }
 
   // 按轮固定快照：一轮里模型先看了线路，改价在这一轮中间提交，这一轮之后的工具结果、链接与价格护栏仍是开始时那一代
   {
@@ -3219,9 +3296,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
       // 链接白名单认 ?v= 后缀，而且要和这次 generate_proposal 给的一样：模型抄丢了后缀（客户点开会是版本 1 的旧价）就换成真链接；
       // 连域名一起写的剥掉域名、留着后缀
-      const linkTurn = async (sid: string, content: string): Promise<string> => {
-        script.push({ toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }] }, { content });
-        const r = await handleMessage(sid, '北京那条线出个两个人的方案书', 'wecom');
+      const linkTurn = async (sid: string, content: string, routeId = code, ask = '北京那条线出个两个人的方案书'): Promise<string> => {
+        script.push({ toolCalls: [{ name: 'generate_proposal', args: { routeId, travelers: 2 } }] }, { content });
+        const r = await handleMessage(sid, ask, 'wecom');
         if (script.length) fails.push(`「${content}」这轮没用完脚本`);
         script.length = 0;
         return r.text;
@@ -3246,6 +3323,218 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       );
       const kept = await linkTurn('wecom:wmCFGPIN0005', `方案书在这：/proposal/${code}/2?v=2 您先看看`);
       check('链接白名单：后缀对得上的链接原样留着、只出现一次', kept.split(`/proposal/${code}/2?v=2`).length === 2, kept);
+
+      // ?v= 的半角问号不是句末：链接后面同一行接着会被按句删、截半句的话，链接不会被切成「/2?」（不带 v，点开是版本 1 的旧价）。
+      // 同一句话放在版本 1 的线路（r-guizhou）上对照：护栏连着链接整句删掉的，版本 2 也整句删、不留半截；版本 1 留下链接的，
+      // 版本 2 留下带完整 ?v=2 的链接，企微卡片也按 ?v=2 出
+      const { __test: wecomCard } = await import('../adapters/wecom.js');
+      const LINK = '\u0001';
+      const sameLine: [string, string][] = [
+        ['提议发方案', `详细方案给您：${LINK} 需要的话我也可以把方案书发您`],
+        ['编出来的总价', `方案书：${LINK} 两位总价 88,888 元，您看看～`],
+        ['编出来的每人价', `方案书在这：${LINK} 每人只要 3,000 元，超划算。`],
+        ['转接说法', `方案书：${LINK} 我已为您转接资深顾问，稍后联系您`],
+        ['规则词·名额紧张', `方案书在这：${LINK} 名额紧张，建议尽快下单哦。`],
+        ['规则词·名额紧张（逗号）', `方案书在这：${LINK}，名额紧张，建议尽快下单。`],
+        ['规则词·儿童价', `方案书给您：${LINK} 带小孩还有儿童价优惠。`],
+        ['半句截断', `方案书在这 ${LINK} 您先看看，有问题随时说，`],
+        ['半句截断（规则词）', `方案书在这 ${LINK} 有问题随时说，`],
+      ];
+      const keptLink: string[] = [];
+      for (const [i, [label, content]] of sameLine.entries()) {
+        const out = await linkTurn(`wecom:wmCFGPIN01${String(i).padStart(2, '0')}`, content.replace(LINK, `/proposal/${code}/2?v=2`));
+        const v1 = await linkTurn(
+          `wecom:wmCFGPIN02${String(i).padStart(2, '0')}`,
+          content.replace(LINK, '/proposal/r-guizhou/2'),
+          'r-guizhou',
+          '贵州那条线出个两个人的方案书',
+        );
+        const has = out.includes(`/proposal/${code}/2?v=2`);
+        if (has) keptLink.push(label);
+        const card = wecomCard.extractCard(out, 'https://x.test');
+        check(
+          `?v= 不断句·${label}：没有切成「/2?」的半截链接，与版本 1 同形（留下的话带完整的 ?v=2，企微卡片也带）`,
+          !new RegExp(`/proposal/${code}/2(?!\\?v=2)`).test(out) &&
+            has === v1.includes('/proposal/r-guizhou/2') &&
+            (!has ||
+              (card?.url === `https://x.test/proposal/${code}/2?v=2` &&
+                out.replace(`/proposal/${code}/2?v=2`, LINK) === v1.replace('/proposal/r-guizhou/2', LINK))),
+          `${out} | 版本 1：${v1} | ${JSON.stringify(card)}`,
+        );
+      }
+      // 转人工那一轮（模型同时调了 handoff_to_human）：兑现不了的许诺按句删（dropPostHandoffPromises），同样与版本 1 同形
+      {
+        const handoffTurn = async (sid: string, routeId: string, link: string, ask: string): Promise<string> => {
+          script.push(
+            {
+              toolCalls: [
+                { name: 'generate_proposal', args: { routeId, travelers: 2 } },
+                { name: 'handoff_to_human', args: { reason: '客户想找人细聊行程：目的地见方案，出行时间未知，2 人' } },
+              ],
+            },
+            { content: `方案书：${link} 有问题随时找我。` },
+          );
+          const r = await handleMessage(sid, ask, 'wecom');
+          if (script.length) fails.push(`转人工那一轮（${routeId}）没用完脚本`);
+          script.length = 0;
+          return r.text;
+        };
+        const out = await handoffTurn('wecom:wmCFGPIN0301', code, `/proposal/${code}/2?v=2`, '北京那条线出个两个人的方案书');
+        const v1 = await handoffTurn('wecom:wmCFGPIN0302', 'r-guizhou', '/proposal/r-guizhou/2', '贵州那条线出个两个人的方案书');
+        check(
+          '?v= 不断句·转人工那一轮：没有切成「/2?」的半截链接，与版本 1 同形',
+          !new RegExp(`/proposal/${code}/2(?!\\?v=2)`).test(out) &&
+            out.replace(`/proposal/${code}/2?v=2`, LINK) === v1.replace('/proposal/r-guizhou/2', LINK),
+          `${out} | 版本 1：${v1}`,
+        );
+      }
+      check(
+        '?v= 不断句：链接后面接着的话没被删的三种，链接都带完整的 ?v=2',
+        keptLink.join() === '提议发方案,半句截断,半句截断（规则词）',
+        keptLink.join(),
+      );
+      // 出口最后一道：改写正文的护栏之后，本轮这条线成功调用给的后缀缺了就补回去、悬着的「?」换掉；版本 1、只有出错的调用、
+      // 别的线路、后缀对得上的都原样
+      {
+        const et = __engineTest;
+        const ok = (routeId: string, url: string) => ({
+          name: 'generate_proposal',
+          args: { routeId, travelers: 2 },
+          result: JSON.stringify({ proposalUrl: url }),
+        });
+        const bad = {
+          name: 'generate_proposal',
+          args: { routeId: 'r-x', travelers: '两' },
+          result: JSON.stringify({ error: '人数要是数字' }),
+        };
+        const fix = et.restoreProposalSuffixes;
+        check(
+          '兜底：丢了的后缀补回去、悬着的「?」换掉（带日期的也补），对得上的不动',
+          fix('方案书：/proposal/r-x/2? 您看看', [bad, ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-x/2?v=2 您看看' &&
+            fix('方案书：/proposal/r-x/2? 您看看', [ok('r-x', '/proposal/r-x/2?v=2'), bad]) === '方案书：/proposal/r-x/2?v=2 您看看' &&
+            fix('方案书：/proposal/r-x/2', [ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-x/2?v=2' &&
+            fix('见 /proposal/r-x/3/2026-11-01，', [ok('r-x', '/proposal/r-x/3/2026-11-01?v=4')]) ===
+              '见 /proposal/r-x/3/2026-11-01?v=4，' &&
+            fix('方案书：/proposal/r-x/2?v=2 您看看', [ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-x/2?v=2 您看看',
+        );
+        check(
+          '兜底：版本 1、只有出错的调用、别的线路都原样',
+          fix('方案书：/proposal/r-x/2? 您看看', [ok('r-x', '/proposal/r-x/2')]) === '方案书：/proposal/r-x/2? 您看看' &&
+            fix('方案书：/proposal/r-x/2? 您看看', [bad]) === '方案书：/proposal/r-x/2? 您看看' &&
+            fix('方案书：/proposal/r-y/2? 您看看', [ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-y/2? 您看看',
+        );
+      }
+      // 正文里没有 ?v= 时切句与开工时相同（锁定的 price-guard.selftest 另有全套）：「?」照常断句
+      {
+        const { sentenceUnits } = await import('../price-guard.js');
+        const units = (t: string): string[] => sentenceUnits(t).map((u) => t.slice(u.start, u.end));
+        check(
+          '?v= 不断句：只在「?」后面紧跟 v=数字 时不断，别的「?」照常是句末',
+          JSON.stringify(units('好吗?v 不是后缀?v=2 才是')) === JSON.stringify(['好吗?', 'v 不是后缀?v=2 才是']) &&
+            JSON.stringify(units('真的?vip 价')) === JSON.stringify(['真的?', 'vip 价']),
+          JSON.stringify(units('好吗?v 不是后缀?v=2 才是')),
+        );
+      }
+
+      // 同一线路本轮先有一次出错的调用（人数写成「两」，工具让模型改了重试）、再成功拿到 ?v=2：只拿成功那次的后缀核对，
+      // 丢了后缀的链接不能借出错那次的空串过关，要换成工具给的那条（这里连日期一起丢了：出口的补后缀只补后缀、补不回日期）
+      {
+        script.push(
+          {
+            toolCalls: [
+              { name: 'generate_proposal', args: { routeId: code, travelers: '两' } },
+              { name: 'generate_proposal', args: { routeId: code, travelers: 2, departDate: offDate } },
+            ],
+          },
+          { content: `方案书给您：\n/proposal/${code}/2\n您先看看` },
+        );
+        const r = await handleMessage('wecom:wmCFGPIN0006', '北京那条线出个两个人的方案书，1月15号出发', 'wecom');
+        const errored = !(await executeTool('generate_proposal', { routeId: code, travelers: '两' }, freshSession())).includes(
+          'proposalUrl',
+        );
+        check(
+          '链接白名单：先失败一次、再成功拿到 ?v=2，不带 v 的链接换成工具给的那条（带日期与 ?v=2）',
+          script.length === 0 &&
+            errored &&
+            r.text.includes(`/proposal/${code}/2/${offDate}?v=2`) &&
+            !/\/proposal\/r-beijing\/2(?!\/[\d-]+\?v=2)/.test(r.text),
+          r.text,
+        );
+        script.length = 0;
+      }
+
+      // 价格护栏看的是开始时那一代（G1）：这一轮不调带价的工具（护栏只能拿产品库价核对），模型回话之前后台改了价。
+      // 回开始时那一代的价原样发出；反过来回改后的新价（这一轮开始时还不是这个价）被删
+      const priceNow = (): number => (cfg.currentCatalog().routes.find((r) => r.id === code) as Route).priceFrom;
+      const reprice = async (to: number): Promise<void> => {
+        const it = (await cat.getCatalogItem(ctx, 'route', code))!;
+        await cat.updateCatalogItem(ctx, 'route', code, { rev: it.rev, set: { priceFrom: to } });
+      };
+      {
+        const old = priceNow();
+        script.push({ before: () => reprice(old + 3000), content: `北京这条线每人 ${money(old)} 元起，您看看行程合不合适～` });
+        const r = await handleMessage('wecom:wmCFGPIN0007', '北京那条线大概多少钱', 'wecom');
+        check(
+          '按轮固定·价格护栏：这一轮不调带价工具、轮内改了价，回开始时那一代的价原样发出',
+          script.length === 0 && priceNow() === old + 3000 && r.text.includes(`每人 ${money(old)} 元起`),
+          r.text,
+        );
+        script.length = 0;
+      }
+      {
+        const old = priceNow();
+        script.push({ before: () => reprice(old + 3000), content: `北京这条线每人 ${money(old + 3000)} 元起，您看看行程合不合适～` });
+        const r = await handleMessage('wecom:wmCFGPIN0008', '北京那条线大概多少钱', 'wecom');
+        check(
+          '按轮固定·价格护栏：回改后的新价被当成没有出处删掉',
+          script.length === 0 && priceNow() === old + 3000 && !r.text.includes(money(old + 3000)),
+          r.text,
+        );
+        script.length = 0;
+      }
+
+      // 固定包在 serialize 里面（M29）：同一会话两轮排队，第一轮挂在模型那儿时改价；排在后面的第二轮轮到它真正开始时才记快照，
+      // 按新价出、链接带新版本（包在 serialize 外面的话，第二轮记的是排队那一刻的旧价）
+      {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        let entered!: () => void;
+        const inFirst = new Promise<void>((r) => (entered = r));
+        script.push(
+          {
+            before: async () => {
+              entered();
+              await gate;
+            },
+            content: '好的，我先帮您看看～',
+          },
+          { toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }] },
+          { content: '方案书给您生成好了：' },
+        );
+        const sid = 'wecom:wmCFGPIN0009';
+        const first = handleMessage(sid, '北京那条线怎么样', 'wecom');
+        await inFirst;
+        const second = handleMessage(sid, '北京那条线出个两个人的方案书', 'wecom');
+        const newPrice = priceNow() + 1000;
+        await reprice(newPrice);
+        const vNew = cfg.currentCatalog().versions[`route:${code}`]!;
+        release();
+        await first;
+        const r2 = await second;
+        const prop2 = JSON.parse(toolResults.filter((x) => x.includes('proposalUrl')).at(-1) ?? '{}') as {
+          proposalUrl?: string;
+          perPerson?: number;
+        };
+        check(
+          '按轮固定：同一会话排在后面的一轮轮到它才记快照——第一轮挂着时改的价，第二轮按新价、链接带新版本',
+          script.length === 0 &&
+            prop2.perPerson === newPrice &&
+            prop2.proposalUrl === `/proposal/${code}/2?v=${vNew}` &&
+            r2.text.includes(`/proposal/${code}/2?v=${vNew}`),
+          `${JSON.stringify(prop2)} | v${vNew} | ${r2.text}`,
+        );
+        script.length = 0;
+      }
     } finally {
       for (const k of keys) {
         if (saved[k] === undefined) delete process.env[k];
@@ -3272,6 +3561,97 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       '企微卡片：不带 v 的照旧；版本不存在（?v=9）不做卡片',
       wecomTest.extractCard(`${BASE}/proposal/r-beijing/2`, BASE)?.url === `${BASE}/proposal/r-beijing/2` &&
         wecomTest.extractCard(`${BASE}/proposal/r-beijing/2?v=9`, BASE) === null,
+    );
+  }
+
+  // 网页模拟器（chat.html）与旧后台（admin.html）的站内链接正则认 ?v= 后缀，点开的才是发出时的那一版；旧后台的方案书卡片按链接上的
+  // 版本取线路（缓存按线路 + 版本），接口 404 时不画卡片、不再请求（与企微 extractCard 同规则）。从页面里抽出这几段原样在 vm 里跑
+  {
+    const vm = await import('node:vm');
+    const pub = (f: string): string => fs.readFileSync(path.join(root, 'public', f), 'utf8');
+    const cut = (src: string, start: string, end: string): string => {
+      const a = src.indexOf(start);
+      const b = a < 0 ? -1 : src.indexOf(end, a + start.length);
+      if (b < 0) throw new Error(`页面里找不到「${start}」`);
+      return src.slice(a, b + end.length);
+    };
+    const text = '方案书在这：/proposal/r-x/2?v=2 您先看看';
+    const chat = pub('chat.html');
+    const chatFns = vm.runInNewContext(
+      [
+        cut(chat, 'const esc = ', ';\n'),
+        cut(chat, 'function tidyBullets(', '\n  }\n'),
+        cut(chat, 'function renderContent(', '\n  }\n'),
+        cut(chat, 'const SITE_LINK_RE = ', ';\n'),
+        '({ renderContent, SITE_LINK_RE })',
+      ].join('\n'),
+    ) as { renderContent: (t: string) => string; SITE_LINK_RE: RegExp };
+    check(
+      '网页模拟器：方案书链接连同 ?v=2 做成链接，站内链接正则把后缀算在同一条里',
+      chatFns.renderContent(text).includes('href="/proposal/r-x/2?v=2"') &&
+        JSON.stringify(text.match(chatFns.SITE_LINK_RE)) === JSON.stringify(['/proposal/r-x/2?v=2']),
+      chatFns.renderContent(text),
+    );
+
+    const admin = pub('admin.html');
+    const fetched: string[] = [];
+    let status = 200;
+    const S = { routeMeta: {} as Record<string, unknown> };
+    let renders = 0;
+    const adminFns = vm.runInNewContext(
+      [
+        cut(admin, 'const esc = ', ';\n'),
+        cut(admin, 'const routeMetaPending = ', '\n}\n'),
+        cut(admin, '  const LINK_RE = ', ';\n'),
+        cut(admin, '  const cardOf = ', '\n  };\n'),
+        cut(admin, '  const linkify = ', "'</a>');\n"),
+        '({ cardOf, linkify })',
+      ].join('\n'),
+      {
+        S,
+        render: () => void renders++,
+        fetch: async (u: string) => {
+          fetched.push(u);
+          return {
+            ok: status === 200,
+            status,
+            json: async () => ({
+              route: { title: `第${new URL(u, 'http://x').searchParams.get('v') ?? '1'}版`, days: 5, hotelLevel: '高端' },
+            }),
+          };
+        },
+        encodeURIComponent,
+        ordLabel: () => '',
+        yuan: (n: number) => String(n),
+      },
+    ) as { cardOf: (t: string) => { href: string; t: string } | null; linkify: (e: string) => string };
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 1));
+    };
+    check('旧后台：站内链接连同 ?v=2 做成链接', adminFns.linkify(text).includes('href="/proposal/r-x/2?v=2"'), adminFns.linkify(text));
+    const first = adminFns.cardOf(text);
+    await settle();
+    const card = adminFns.cardOf(text);
+    check(
+      '旧后台：方案书卡片按链接上的版本取线路（请求带 v=2、缓存按线路 + 版本），卡片链接带后缀',
+      first === null &&
+        fetched.join() === '/api/proposal/r-x?v=2' &&
+        card?.t === '第2版 · 行程方案书' &&
+        card.href === '/proposal/r-x/2?v=2' &&
+        adminFns.cardOf('方案书在这：/proposal/r-x/2 您先看看') === null &&
+        fetched.at(-1) === '/api/proposal/r-x',
+      `${fetched.join()} | ${JSON.stringify(card)}`,
+    );
+    status = 404;
+    adminFns.cardOf('方案书在这：/proposal/r-x/2?v=9 您先看看');
+    await settle();
+    const n = fetched.length;
+    check(
+      '旧后台：版本不存在（接口 404）不画卡片，也不再请求',
+      adminFns.cardOf('方案书在这：/proposal/r-x/2?v=9 您先看看') === null &&
+        fetched.length === n &&
+        fetched.at(-1) === '/api/proposal/r-x?v=9',
+      fetched.join(),
     );
   }
 
