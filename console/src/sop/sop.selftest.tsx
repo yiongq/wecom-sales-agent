@@ -6273,7 +6273,8 @@ async function openHistory(m: PageBox): Promise<void> {
   const srv = fakeServer(hSop(HD_BOTH));
   srv.released = [H_V2, H_V1];
   srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
-  const m = await mountPage('/console/sop?section=tone', historyOwner, hSop(HD_BOTH), FAST);
+  // 中栏开着异议处理，正是回滚要改的那一节：差异块的区域若也只叫节名，就和中栏撞名（axe landmark-unique）
+  const m = await mountPage('/console/sop?section=objections', historyOwner, hSop(HD_BOTH), FAST);
   await openHistory(m);
   await clickEv(rowButton('v1', '回滚到这版…'));
   await waitFor(() => !!rbModal()?.querySelector('input'));
@@ -6314,9 +6315,13 @@ async function openHistory(m: PageBox): Promise<void> {
     ],
   );
   eq(
-    '差异块：每节的区域名是「节名的改动」（中栏选到这一节时不和它同名）；页面、版本记录与弹窗的区域地标没有重名',
-    [all(modal, '.sop-rb-diff-item').map((e) => e.getAttribute('aria-label')), repeated(regionNames(document.body))],
-    [['异议处理的改动'], []],
+    '差异块：每节的区域名是「节名的改动」；中栏开着同一节、仍叫「异议处理」，页面、版本记录与弹窗的区域地标没有重名',
+    [
+      all(modal, '.sop-rb-diff-item').map((e) => e.getAttribute('aria-label')),
+      regionNames(m.box).includes('异议处理'),
+      repeated(regionNames(document.body)),
+    ],
+    [['异议处理的改动'], true, []],
   );
   const submit = (): HTMLButtonElement | undefined =>
     all<HTMLButtonElement>(modal, '.ant-modal-footer button').find((b) => label(b) === '回滚到v1');
