@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import type { ChatMessage, Order, Session } from '../types.js';
 
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
@@ -163,6 +164,222 @@ const session = (id: string, messages: ChatMessage[], channel = 'wecom'): Sessio
   check('seq：起点不是正整数时拒绝', rangeErr);
 }
 
+// ---------------- project：会话、订单、消息与行的往返（纯函数，plan 第 5 步） ----------------
+{
+  const p = await import('./project.js');
+  const NUL = String.fromCharCode(0);
+  const LONE = String.fromCharCode(0xd83d); // 孤立的高位代理项
+  const REPL = String.fromCharCode(0xfffd);
+  const UID = '1b4e28ba-2fa1-11d2-883f-0016d3cca427';
+  /** 模拟库：json 列按文本存取（键序原样），timestamptz 按毫秒往返 */
+  const viaJson = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+  const viaDbMsg = (r: ReturnType<typeof p.messageToRow>) => ({
+    ...r,
+    at: new Date(r.at.getTime()),
+    sentAt: r.sentAt && new Date(r.sentAt.getTime()),
+    extra: r.extra && viaJson(r.extra),
+  });
+  const t0 = 1_760_000_000_000;
+  const messages: ChatMessage[] = [
+    { role: 'customer', content: '想去云南', at: t0, msgid: 'msgA1', sentAt: t0 - 1500 },
+    { role: 'agent', content: '好的，几位出行？', at: t0 + 1000 }, // agent 而没有 author：缺省 ai
+    { role: 'agent', content: '我是顾问小林', at: t0 + 2000, author: 'human', authorId: UID, authorName: '小林' },
+    { role: 'agent', content: '共享工作台回复', at: t0 + 3000, author: 'human', authorId: null, authorName: '共享工作台' },
+    { role: 'agent', content: '还在考虑吗', at: t0 + 4000, author: 'followup' },
+    { role: 'system', content: 'AI 已转人工：客户投诉', at: t0 + 5000, card: { kind: 'handoff', n: 1 }, tag: 'x' } as ChatMessage,
+    // 已知字段放不进列的：customer 带 author、非 human 带 authorName、authorId 不是 uuid、msgid 不是串
+    { role: 'customer', content: `含${NUL}的话${LONE}`, at: t0 + 6000, author: 'ai', authorName: '冒名' } as ChatMessage,
+    {
+      role: 'agent',
+      content: '怪 id',
+      at: t0 + 7000,
+      author: 'human',
+      authorId: 'not-a-uuid',
+      authorName: '某人',
+      msgid: 42,
+    } as unknown as ChatMessage,
+  ];
+  const sessionObj = {
+    id: 'wecom:wmRoundTrip1',
+    channel: 'wecom',
+    stage: 'quote',
+    profile: { destinationInterest: '云南', segment: '带爸妈', travelers: '4', nickname: `小王${NUL}🙂${LONE}`, notes: ['爸妈腿脚慢'] },
+    messages,
+    orderIds: ['ord_1a2b3c4d', 'ord_0123456789abcdef01234567'],
+    handedOver: true,
+    createdAt: t0 - 86_400_000,
+    updatedAt: t0 + 7000,
+    lastQuote: { routeId: 'r-yunnan-mid', routeTitle: '云南', travelers: 4, perPerson: 3280, total: 13120, departDate: '2026-11-01' },
+    quoteHistory: [{ routeId: 'r-yunnan-mid', travelers: 4, perPerson: 3280, total: 13120, departDate: '2026-11-01' }],
+    stageBeforeHandoff: 'quote',
+    followup: { count: 1, stages: ['quote'], lastAt: t0 - 3600_000, failures: 0 },
+    handoff: { kind: 'complaint', at: t0 + 5000, reason: '客户投诉', quote: '你们太差了', departNote: '（11月1号出发）' },
+    firstHandoffAt: t0 - 7200_000,
+    handoffCount: 2,
+    assignee: { userId: null, name: '共享工作台', at: t0 + 3000 },
+    lastShownRoutes: undefined, // 值为 undefined 的键：JSON 里没有它
+    futureField: { nested: [1, 'two', null, `three${NUL}`] }, // 将来的字段：原样往返
+  } as unknown as Session;
+
+  const row = p.sessionToRow(sessionObj);
+  const msgRows = sessionObj.messages.map((m, i) => p.messageToRow(m, i + 1));
+  const rebuilt = p.rowToSession(
+    { state: viaJson(row.state) },
+    msgRows.map((r) => p.rowToMessage(viaDbMsg(r))),
+  );
+  const expected = p.normalizeForStore(sessionObj);
+  check(
+    'project：会话经投影再重建，与 normalizeForStore 之后的原对象 deepStrictEqual',
+    isDeepStrictEqual(rebuilt, expected),
+    JSON.stringify(rebuilt).slice(0, 300),
+  );
+  check(
+    'project：state 不含 messages，键序与原对象相同',
+    Object.keys(row.state).join() ===
+      Object.keys(expected)
+        .filter((k) => k !== 'messages')
+        .join(),
+  );
+  check(
+    'project：state 里值为 undefined 的键去掉',
+    !('lastShownRoutes' in row.state) && !JSON.stringify(row.state).includes('lastShownRoutes'),
+  );
+  check(
+    'project：投影列取自会话（转人工、接手人、客户最后一条的 sentAt）',
+    row.id === 'wecom:wmRoundTrip1' &&
+      row.handedOver &&
+      row.handoffKind === 'complaint' &&
+      row.handoffAt?.getTime() === t0 + 5000 &&
+      row.firstHandoffAt?.getTime() === t0 - 7200_000 &&
+      row.assigneeUserId === null &&
+      row.assigneeName === '共享工作台' &&
+      row.lastCustomerAt?.getTime() === t0 + 6000 &&
+      row.createdAt.getTime() === t0 - 86_400_000 &&
+      row.updatedAt.getTime() === t0 + 7000,
+  );
+  const nick = (row.state.profile as { nickname: string }).nickname;
+  check('project：昵称里的 NUL 去掉、孤立代理项换成 U+FFFD', nick === `小王🙂${REPL}`, JSON.stringify(nick));
+  check('project：重建后的消息不含 NUL 与孤立代理项', rebuilt.messages[6]!.content === `含的话${REPL}`);
+  const [c1, a1, h1, h2, f1, sys, odd1, odd2] = msgRows;
+  check('project：客户消息的 msgid、sentAt 进列', c1!.msgid === 'msgA1' && c1!.sentAt?.getTime() === t0 - 1500 && c1!.extra === null);
+  check(
+    'project：role=agent 而没有 author 的，author 列为 NULL，重建后也没有 author 键',
+    a1!.author === null && !('author' in rebuilt.messages[1]!),
+  );
+  check(
+    'project：author=human 带 authorId / authorName 进列',
+    h1!.author === 'human' && h1!.authorUserId === UID && h1!.authorName === '小林' && h1!.extra === null,
+  );
+  check(
+    'project：共享工作台的 authorId 为 null，往返后仍是 null',
+    h2!.authorUserId === null && h2!.authorName === '共享工作台' && rebuilt.messages[3]!.authorId === null,
+  );
+  check('project：author=followup 进列，不带操作者', f1!.author === 'followup' && f1!.authorUserId === null && f1!.authorName === null);
+  check('project：已知字段以外的键进 extra', isDeepStrictEqual(sys!.extra, { card: { kind: 'handoff', n: 1 }, tag: 'x' }));
+  check(
+    'project：customer 带的 author、authorName 不进列（messages_author_human_check 的 NULL 语义由投影守住）',
+    odd1!.author === null &&
+      odd1!.authorName === null &&
+      odd1!.authorUserId === null &&
+      isDeepStrictEqual(odd1!.extra, { author: 'ai', authorName: '冒名' }),
+  );
+  check(
+    'project：authorId 不是 uuid、msgid 不是串的，原值进 extra，列为 NULL',
+    odd2!.author === 'human' &&
+      odd2!.authorUserId === null &&
+      odd2!.authorName === '某人' &&
+      odd2!.msgid === null &&
+      isDeepStrictEqual(odd2!.extra, { authorId: 'not-a-uuid', msgid: 42 }),
+  );
+  check(
+    'project：消息的行投影里没有一条「没有 author 却带操作者」',
+    msgRows.every((r) => r.author === 'human' || (r.authorUserId === null && r.authorName === null)),
+  );
+
+  const orderOld = {
+    id: 'ord_1a2b3c4d', // 旧格式：8 位十六进制
+    sessionId: 'wecom:wmRoundTrip1',
+    routeId: 'r-yunnan-mid',
+    routeTitle: `云南${NUL}环线`,
+    travelers: 4,
+    departDate: '2026-11-01',
+    totalPrice: 13120,
+    status: 'superseded',
+    createdAt: t0 - 3600_000,
+    supersededBy: 'ord_0123456789abcdef01234567',
+    legacyNote: { from: '01' },
+  } as unknown as Order;
+  const orderNew = {
+    id: 'ord_0123456789abcdef01234567',
+    sessionId: 'wecom:wmRoundTrip1',
+    routeId: 'r-yunnan-mid',
+    routeTitle: '云南环线',
+    travelers: 4,
+    departDate: '2026-11-01',
+    totalPrice: 13120,
+    status: 'paid',
+    createdAt: t0 - 1800_000,
+    paidAt: t0 - 600_000,
+    handoffBeforePaid: true,
+    confirmedAt: t0 - 900_000,
+    confirmedBy: { userId: null, name: '共享工作台' },
+  } as Order;
+  for (const o of [orderOld, orderNew]) {
+    const r = p.orderToRow(o);
+    check(
+      `project：订单 ${o.id} 经投影再重建，与 normalizeForStore 之后的原对象 deepStrictEqual`,
+      isDeepStrictEqual(p.rowToOrder({ data: viaJson(r.data) }), p.normalizeForStore(o)),
+    );
+  }
+  const ro = p.orderToRow(orderNew);
+  check(
+    'project：订单的列取自订单，未作废',
+    ro.id === orderNew.id &&
+      ro.sessionId === orderNew.sessionId &&
+      ro.status === 'paid' &&
+      ro.totalPrice === 13120 &&
+      ro.paidAt?.getTime() === t0 - 600_000 &&
+      ro.confirmedAt?.getTime() === t0 - 900_000 &&
+      ro.voidedAt === null &&
+      ro.voidReason === null,
+  );
+  const rv = p.orderToRow(orderNew, { at: t0, reason: 'reset' });
+  check(
+    'project：作废的订单带 voided_at 与原因，data 不变',
+    rv.voidedAt?.getTime() === t0 && rv.voidReason === 'reset' && isDeepStrictEqual(rv.data, ro.data),
+  );
+  check('project：订单 data 里的 NUL 去掉', (p.orderToRow(orderOld).data.routeTitle as string) === '云南环线');
+
+  const n = p.normalizeForStore({ a: undefined, b: [undefined, 1], d: new Date(t0), [`k${NUL}`]: 'v', ['__proto__']: { x: 1 } } as Record<
+    string,
+    unknown
+  >);
+  check(
+    'normalizeForStore：按 JSON 的语义取（undefined 去掉或变 null、Date 变串），键也清洗，__proto__ 是自有键',
+    !('a' in n) &&
+      isDeepStrictEqual(n.b, [null, 1]) &&
+      n.d === new Date(t0).toISOString() &&
+      n.k === 'v' &&
+      Object.getPrototypeOf(n) === Object.prototype &&
+      Object.hasOwn(n, '__proto__'),
+    JSON.stringify(n),
+  );
+  let projErr = '';
+  try {
+    p.sessionToRow({ ...sessionObj, createdAt: Number.NaN });
+  } catch (e) {
+    projErr = e instanceof p.ProjectionError ? e.field : String(e);
+  }
+  check('project：时间不是有限的毫秒数时抛 ProjectionError', projErr === 'createdAt', projErr);
+  check(
+    'project：isDemoClassId 与标记文件名在纯模块里，store 原样再导出',
+    p.isDemoClassId('sim-x') &&
+      p.isDemoClassId('wecom:cust_B01') &&
+      !p.isDemoClassId('wecom:u1') &&
+      p.SESSIONS_IN_DB_MARKER === 'sessions-in-db.json',
+  );
+}
+
 // ---------------- 文件后端：导入期读 JSON、seq、flushSession、事件 ----------------
 const SESSIONS_FILE = path.join(VAR_DIR, 'sessions.json');
 const ORDERS_FILE = path.join(VAR_DIR, 'orders.json');
@@ -200,6 +417,11 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   check('文件存储：导入期读进 JSON', !!u1 && !!store.getSession('wecom:cust_A01') && !!store.getOrder('ord_fixture1'));
   check('文件存储：读 JSON 时按条数记 seq', u1.messages.map((m) => store.seqOf(m)).join() === '1,2,3');
   check('文件存储：sessionStoreMode 是 file', store.sessionStoreMode() === 'file');
+  const proj = await import('./project.js');
+  check(
+    'store 再导出的 isDemoClassId、SESSIONS_IN_DB_MARKER 就是 project.ts 的',
+    store.isDemoClassId === proj.isDemoClassId && store.SESSIONS_IN_DB_MARKER === proj.SESSIONS_IN_DB_MARKER,
+  );
   check(
     'isDemoClassId：sim- 与 wecom:cust_ 是 demo 类，其余不是',
     store.isDemoClassId('sim-x') &&

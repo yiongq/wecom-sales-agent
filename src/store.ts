@@ -21,11 +21,13 @@ import {
 } from './store/backend.js';
 import { onCommitted, type DomainEvent } from './store/events.js';
 import { createFileBackend } from './store/file-backend.js';
-import { seqOf } from './store/seq.js';
+// isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
+import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
+import { noteWindowReset, seqOf } from './store/seq.js';
 import type { Session, Order } from './types.js';
 
 export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
-export { SessionStoreStartupError, StoreLaggingError, onCommitted, seqOf };
+export { SessionStoreStartupError, StoreLaggingError, onCommitted, seqOf, noteWindowReset, isDemoClassId, SESSIONS_IN_DB_MARKER };
 export type { DomainEvent, SessionStoreMode, StoreHealth };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
@@ -40,18 +42,8 @@ export function varDir(): string {
   return VAR_DIR;
 }
 
-/** 「真实会话在库里，JSON 只剩 demo 类」的标记文件（spec「导入、导出与切换」） */
-export const SESSIONS_IN_DB_MARKER = 'sessions-in-db.json';
-
 const sessions = new Map<string, Session>();
 const orders = new Map<string, Order>();
-
-const DEMO_CLASS_RE = /^(sim-|wecom:cust_)/;
-
-/** sim- 或 wecom:cust_ 开头：demo 类会话（网页访客与种子），永不进 PG（R6） */
-export function isDemoClassId(id: string): boolean {
-  return DEMO_CLASS_RE.test(id);
-}
 
 /** PG 后端，db 存储下由 initSessionStore 装上（第 5 步）；装上之前与文件存储下都是 null */
 // 写成断言而不是类型标注：第 5 步之前没有赋值点，标注会让 TS 把它收窄成 null
