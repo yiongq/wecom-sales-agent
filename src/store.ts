@@ -36,11 +36,22 @@ import {
 } from './store/pg-backend.js';
 // isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
 import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
-import { noteWindowReset, seqOf } from './store/seq.js';
+import { linkTurn, noteWindowReset, seqOf, turnIdOf } from './store/seq.js';
+import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
 import type { Session, Order } from './types.js';
 
 export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
-export { SessionStoreStartupError, StoreLaggingError, onCommitted, seqOf, noteWindowReset, isDemoClassId, SESSIONS_IN_DB_MARKER };
+export {
+  SessionStoreStartupError,
+  StoreLaggingError,
+  onCommitted,
+  seqOf,
+  noteWindowReset,
+  isDemoClassId,
+  SESSIONS_IN_DB_MARKER,
+  linkTurn,
+  turnIdOf,
+};
 export type { AuditActor, ConsentItem, DomainEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
@@ -164,6 +175,9 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     { phase: 'drain' },
   );
   onShutdown(() => backend.close(), { phase: 'late' });
+  // 用量：每 30 秒与 drain 段累加进 usage_daily（spec「逐轮 trace、护栏事件与用量」），不经会话写队列。已冲突、租户锁在别人手里时不写
+  startUsageDaily((deltas) => backend.writeUsage(deltas));
+  onShutdown(() => flushUsageDaily(), { phase: 'drain' });
 }
 
 /**

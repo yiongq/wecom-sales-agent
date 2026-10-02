@@ -24,6 +24,7 @@ import { insertMessages, readMessagesFrom, readRecentCustomerMsgids } from '../d
 import { readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
 import { insertOutboundSends, type OutboundSendRow } from '../db/repo/outbound.js';
 import { insertGuardEvents, insertTurnTraces, type GuardEventRow, type TurnTraceRow } from '../db/repo/traces.js';
+import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 import { SessionStoreStartupError, StoreConflictError, StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
@@ -45,7 +46,7 @@ import {
   type MessageRowShape,
   type OrderRowShape,
 } from './project.js';
-import { assignSeqs, lastSeqOf, seedSeqs, seqOf, WindowCorruptError, windowStartOf } from './seq.js';
+import { assignSeqs, lastSeqOf, linkTurn, seedSeqs, seqOf, turnIdOf, WindowCorruptError, windowStartOf } from './seq.js';
 
 // 模块加载时取一个空的异步上下文：每次落库都在它里面启动。在 withTenant 回调或轮次上下文里调 saveSession，
 // 排出的落库也不继承那个上下文（withTenant 不能嵌套，轮次的 trace 也不该串进落库）
@@ -245,6 +246,11 @@ export interface PgBackend extends StoreBackend {
   queueTelemetry(sessionId: string, rows: TelemetryRows): void;
   /** demo 类会话的审计：单独一个短事务（R6） */
   writeStandaloneAudit(item: AuditItem): Promise<void>;
+  /**
+   * 用量累加进 usage_daily（02 spec「用量」：每 30 秒与 drain 段由累加器调，不经会话写队列）。一个短事务；已冲突、late 段之后、
+   * 租户锁在别人手里时不写、直接 reject（累加器把这批留着下次再试）
+   */
+  writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
   /** late 段：此后不再发起落库，退避中的重试也停掉；没落库的留给 exit 时的 spill */
   close(): void;
@@ -326,6 +332,11 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
               );
             }
             seedSeqs(session, row.windowStartSeq);
+            // AI 回复所属的轮次（messages.turn_id）记回 WeakMap：重启之后 J 页照样认得出哪条回复有 trace
+            for (const r of messages) {
+              const m = r.turnId && r.conversationId === row.id ? session.messages[r.seq - row.windowStartSeq] : undefined;
+              if (m) linkTurn(m, r.turnId!);
+            }
             for (const m of session.messages) Object.freeze(m);
             out.sessions.push(session);
             out.seqs.set(row.id, { lastSeq: row.lastSeq, windowStartSeq: row.windowStartSeq, flushId: row.flushId });
@@ -667,7 +678,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       baseSeq: e.committedSeq,
       lastSeq,
       windowStartSeq: windowStartOf(s),
-      messages: e.pending.map((m) => messageToRow(m, seqOf(m)!)),
+      messages: e.pending.map((m) => messageToRow(m, seqOf(m)!, turnIdOf(m) ?? null)),
       values: conversationValuesFrom(sessionState(s), lastCustomerAtOf(s.messages)),
       orders,
       audits: e.audits,
@@ -1001,6 +1012,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       e.telemetry.guards.push(...(rows.guards ?? []));
       e.telemetry.outbound.push(...(rows.outbound ?? []));
       change(e);
+    },
+    async writeUsage(deltas) {
+      if (!deltas.length) return;
+      if (closed || conflict || !d.writable()) throw new Error('usage_daily 现在不写库（已冲突、已停机或租户锁不在本进程）');
+      await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas)));
     },
     async writeStandaloneAudit(item) {
       try {
