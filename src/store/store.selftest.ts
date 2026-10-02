@@ -6,7 +6,9 @@
 // 一轮不查库、孤儿订单的收养与交接、同一段同步代码的改动合进一个事务、spill 回放的接续判定与错误类型、drain、租户锁被拿走后不写库；
 // 落盘的 PGlite 上一串「启动」：20 轮后 SIGTERM、一轮中间 SIGTERM（都让最后一次落库卡在退避里，靠 drain 段排空）、
 // drain 段 PG 不可写写出 spill 与回放（含在途快照的附带行与作废）、spill_conflict、模拟崩溃、另一写者、孤儿订单重启不复活、late 段之后不落库）；
-// 真实 Postgres 部分有 PG_TEST_URL 才跑（第二个进程拒绝启动、另一写者、COMMIT 之后回包丢掉、新会话 COMMIT 晚到）。导入导出在第 6 步加。
+// 真实 Postgres 部分有 PG_TEST_URL 才跑（第二个进程拒绝启动、另一写者、COMMIT 之后回包丢掉、新会话 COMMIT 晚到）。
+// 第 6 步：导入导出与切换（落盘的 PGlite 上一步一个子进程：首次导入与往返、各种拒绝、重复导入、补完改写、内容不同、读回不等、
+// db 存储启动、导出、文件存储下再聊、--resync、再以 db 存储启动；真实 PG 上以子进程执行两个命令行，持锁的是真的 server.ts）。
 // 用法：npx tsx src/store/store.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawn, spawnSync } from 'node:child_process';
@@ -18,6 +20,9 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { ChatMessage, Order, Session } from '../types.js';
+
+/** 第 6 步导入导出夹具里的真实会话 id（子进程入口在下面就要用，所以放在最前面） */
+const XFER = { alpha: 'wecom:wmXferAlpha01', beta: 'wecom:wmXferBeta02', gamma: 'wecom:wmXferGamma03', delta: 'wecom:wmXferDelta04' };
 
 // PG 会话存储的几组在子进程里跑：本文件带上 STORE_SELFTEST_CHILD 再起一次自己（见文件末尾的 childMain）
 const CHILD_MODE = process.env.STORE_SELFTEST_CHILD ?? '';
@@ -557,7 +562,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   const ojBefore = fs.readFileSync(ORDERS_FILE, 'utf8');
   let dbReason = '';
   let dbDetail = '';
-  await store.initSessionStore({ db: {} as never, tenantId: 't', varDir: VAR_DIR }).catch((e: unknown) => {
+  await store.initSessionStore({ db: {} as never, tenantId: 't', tenantSlug: 't', varDir: VAR_DIR }).catch((e: unknown) => {
     dbReason = e instanceof SessionStoreStartupError ? e.reason : String(e);
     dbDetail = e instanceof SessionStoreStartupError ? e.detail : '';
   });
@@ -1062,7 +1067,7 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `STORE SELFTEST PASS: ${pass} 项断言全通（seq 的严格与宽松模式 / 投影往返 / 文件后端读 JSON、flushSession 等落盘、事件在落盘之后、落盘失败不发事件 / 标记文件 / SESSION_STORE 校验 / boot 的失败分支 / 三段停机的顺序与时限 / SIGTERM / 导入期与模式无关 / healthz / PGlite：预载往返与校验、写队列、冻结、窗口推进、重置作废、事件在提交后、COMMIT 断线、poisoned、存档点、chat() 与 withTenant、一轮不查库、孤儿订单、spill 回放、drain、重启与崩溃${realPgRan ? ' / 真实 PG：第二个进程、另一写者、COMMIT 之后回包丢掉' : '；真实 PG 部分未跑'}）`,
+  `STORE SELFTEST PASS: ${pass} 项断言全通（seq 的严格与宽松模式 / 投影往返 / 文件后端读 JSON、flushSession 等落盘、事件在落盘之后、落盘失败不发事件 / 标记文件 / SESSION_STORE 校验 / boot 的失败分支 / 三段停机的顺序与时限 / SIGTERM / 导入期与模式无关 / healthz / PGlite：预载往返与校验、写队列、冻结、窗口推进、重置作废、事件在提交后、COMMIT 断线、poisoned、存档点、chat() 与 withTenant、一轮不查库、孤儿订单、spill 回放、drain、重启与崩溃 / 导入导出：往返、重复导入、补完改写、内容不同、持锁、--keep、spill、导出 → 文件存储 → --resync → db 存储${realPgRan ? ' / 真实 PG：第二个进程、另一写者、COMMIT 之后回包丢掉、两个命令行的退出码' : '；真实 PG 部分未跑'}）`,
 );
 process.exit(0);
 
@@ -1092,6 +1097,7 @@ async function childMain(mode: string): Promise<never> {
     if (mode === 'pg') await childPg(ck);
     else if (mode === 'disk') await childDisk(res, save);
     else if (mode === 'rpg') await childRealPg(res, save);
+    else if (mode === 'xfer') await childXfer(ck, res);
     else res.fails.push(`未知的子进程模式 ${mode}`);
   } catch (e) {
     res.fails.push(`子进程 ${mode} 抛错：${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
@@ -1135,6 +1141,1094 @@ function traceRow(id: string, conversationId: string) {
     llm: [],
     signals: null,
   };
+}
+
+// ---------------- 导入导出的夹具（plan 第 6 步，验收 3） ----------------
+
+/**
+ * 一份 var/：真实会话三个（followup、quoteHistory、昵称、转人工记录、author、消息上的未知键、空窗口）、种子与访客各一、
+ * 孤儿订单、旧格式订单号。NUL 与孤立代理项运行时构造（不写进源码字面量）：被 normalizeForStore 改动的字符串恰好 5 条，
+ * 都在真实会话与它们的订单里；种子里另有一个 NUL，不进库、不计数
+ */
+function xferFixture(): { sessions: Session[]; orders: Order[]; real: string[]; normalized: number; messages: number } {
+  const NUL = String.fromCharCode(0);
+  const HI = String.fromCharCode(0xd83d);
+  const LO = String.fromCharCode(0xdc00);
+  const t0 = Date.parse('2026-09-20T08:00:00.000Z');
+  const ordNew = `ord_${'a1'.repeat(12)}`;
+  const ordOld = 'ORD-20240501-0007';
+  const ordBeta = `ord_${'b2'.repeat(12)}`;
+  const alpha = {
+    id: XFER.alpha,
+    channel: 'wecom',
+    stage: 'quote',
+    profile: { destinationInterest: '云南', travelers: '2人', nickname: `小王${NUL}` },
+    messages: [
+      { role: 'customer', content: '你好，想去云南', at: t0, msgid: 'xfer-msg-a1', sentAt: t0 - 1500 },
+      { role: 'agent', content: '您好，云南有几条线路可以选', at: t0 + 1000 },
+      { role: 'customer', content: `两个人${NUL}多少钱`, at: t0 + 60_000, msgid: 'xfer-msg-a2', sentAt: t0 + 59_000 },
+      { role: 'agent', content: '两位一共 6,560 元', at: t0 + 61_000 },
+      { role: 'system', content: '已为客户生成订单', at: t0 + 62_000 },
+    ],
+    orderIds: [ordOld, ordNew],
+    handedOver: false,
+    createdAt: t0 - 5000,
+    updatedAt: t0 + 62_000,
+    lastQuote: { routeId: 'r-yunnan-mid', routeTitle: '云南', travelers: 2, perPerson: 3280, total: 6560, departDate: '2026-11-01' },
+    quoteHistory: [
+      { routeId: 'r-yunnan-mid', travelers: 2, perPerson: 3500, total: 7000, departDate: '2026-12-30' },
+      { routeId: 'r-yunnan-mid', travelers: 2, perPerson: 3280, total: 6560, departDate: '2026-11-01' },
+    ],
+    seenRouteIds: ['r-yunnan-mid'],
+    followup: { count: 1, stages: ['quote'], lastAt: t0 + 3_600_000 },
+  };
+  const beta = {
+    id: XFER.beta,
+    channel: 'wecom',
+    stage: 'handoff',
+    stageBeforeHandoff: 'discovery',
+    profile: { nickname: '李姐', segment: 'parents' },
+    messages: [
+      { role: 'customer', content: '带爸妈去贵州', at: t0 + 100_000 },
+      { role: 'agent', content: `可以的${HI}`, at: t0 + 101_000 },
+      { role: 'agent', content: '方案书已发您', at: t0 + 102_000, card: { [`title${LO}`]: '贵州' } },
+      { role: 'agent', content: '您好，还在考虑吗', at: t0 + 200_000, author: 'followup' },
+      { role: 'customer', content: '我要人工', at: t0 + 300_000 },
+      { role: 'system', content: 'AI 已转人工：客户要人工', at: t0 + 300_500 },
+    ],
+    orderIds: [ordBeta],
+    handedOver: true,
+    handoff: { kind: 'request', at: t0 + 300_500, reason: '客户要人工', quote: '我要人工' },
+    firstHandoffAt: t0 + 300_500,
+    handoffCount: 1,
+    assignee: null,
+    createdAt: t0 + 99_000,
+    updatedAt: t0 + 300_500,
+  };
+  // 旧形状：没有任何可选字段，窗口是空的
+  const gamma = {
+    id: XFER.gamma,
+    channel: 'wecom',
+    stage: 'greeting',
+    profile: {},
+    messages: [],
+    orderIds: [],
+    handedOver: false,
+    createdAt: t0 + 400_000,
+    updatedAt: t0 + 400_000,
+  };
+  const seed = {
+    id: 'wecom:cust_X01',
+    channel: 'wecom',
+    stage: 'paid',
+    profile: {},
+    messages: [{ role: 'customer', content: `种子${NUL}`, at: t0 }],
+    orderIds: ['ord_seed_X01'],
+    handedOver: false,
+    createdAt: t0,
+    updatedAt: t0,
+  };
+  const visitor = {
+    id: 'sim-xfervisitor000001',
+    channel: 'simulator',
+    stage: 'greeting',
+    profile: {},
+    messages: [{ role: 'customer', content: '访客', at: t0 }],
+    orderIds: [],
+    handedOver: false,
+    createdAt: t0,
+    updatedAt: t0,
+  };
+  const order = (id: string, sessionId: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    sessionId,
+    routeId: 'r-yunnan-mid',
+    routeTitle: '云南·大理丽江 6 日',
+    travelers: 2,
+    departDate: '2026-11-01',
+    totalPrice: 6560,
+    status: 'pending_payment',
+    createdAt: t0 + 62_000,
+    ...extra,
+  });
+  const orders = [
+    order('ord_seed_X01', seed.id, { status: 'paid', paidAt: t0 + 1000 }),
+    order(ordNew, XFER.alpha),
+    order(`ord_${'d4'.repeat(12)}`, 'wecom:wmXferGone99', { createdAt: t0 - 86_400_000 }),
+    order(ordOld, XFER.alpha, { routeTitle: `云南${LO}`, status: 'paid', paidAt: t0 + 63_000, totalPrice: 6000 }),
+    order(ordBeta, XFER.beta, { createdAt: t0 + 102_000 }),
+    order(`ord_${'c3'.repeat(12)}`, visitor.id),
+  ];
+  return {
+    sessions: [seed, alpha, visitor, beta, gamma] as unknown as Session[],
+    orders: orders as unknown as Order[],
+    real: [XFER.alpha, XFER.beta, XFER.gamma],
+    normalized: 5,
+    messages: alpha.messages.length + beta.messages.length,
+  };
+}
+
+// ---------------- 子进程 xfer：落盘的 PGlite 上的导入导出（一个子进程一步，XFER_STEP） ----------------
+// import（首次导入与各种拒绝、重复导入、补完改写、内容不同、读回不等）→ dbstart（db 存储启动、再聊一轮）→ export →
+// filechat（文件存储下再聊几轮、重置一个、新来一个）→ resync → dbstart2（db 存储启动，内存与库一致）
+async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
+  const step = process.env.XFER_STEP ?? '';
+  const v = process.env.VAR_DIR!;
+  const keep = process.env.XFER_KEEP!;
+  const { openTestDb, installPgSessionStore, fakeLock } = await import('../db/testing.js');
+  const { withTenant } = await import('../db/client.js');
+  const { readConversationsAfter } = await import('../db/repo/conversations.js');
+  const { readMessagesFrom } = await import('../db/repo/messages.js');
+  const { importSessions, exportSessions } = await import('../cli/session-transfer.js');
+  const { isDemoClassId, normalizeForStore, rowToMessage, sessionState, SESSIONS_IN_DB_MARKER } = await import('./project.js');
+  const t = await openTestDb({ dataDir: process.env.STORE_DATA_DIR! });
+  // 主链用 demo 租户；中途崩溃（crash*）与补写标记（fresh）各用自己的租户与 var/
+  const slug = process.env.XFER_SLUG ?? 'demo';
+  const fx = await installPgSessionStore(t, { slug, varDir: v });
+  // 命令行的库经 fixture 那个会计数的 db：看得到事务发出的 set transaction / set local
+  const base = { db: fx.deps.db, tenantSlug: slug, varDir: v, keepDir: keep, lock: async () => fakeLock() };
+  const su = <R = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<R[]> =>
+    t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (await tx.query<R>(text, params)).rows;
+    });
+  const counts = async (tenantSlug = slug): Promise<string> => {
+    const [r] = await su<{ c: number; m: number; o: number; v: number }>(
+      `select (select count(*)::int from conversations where tenant_id = t.id) c, (select count(*)::int from messages where tenant_id = t.id) m,
+              (select count(*)::int from orders where tenant_id = t.id) o, (select count(*)::int from orders where tenant_id = t.id and voided_at is not null) v
+         from tenants t where t.slug = $1`,
+      [tenantSlug],
+    );
+    return `${r!.c}/${r!.m}/${r!.o}/${r!.v}`;
+  };
+  const read = (dir: string, f: string): string | null =>
+    fs.existsSync(path.join(dir, f)) ? fs.readFileSync(path.join(dir, f), 'utf8') : null;
+  const files = (dir: string): string =>
+    JSON.stringify([read(dir, 'sessions.json'), read(dir, 'orders.json'), read(dir, SESSIONS_IN_DB_MARKER)]);
+  const keeps = (): string[] => (fs.existsSync(keep) ? fs.readdirSync(keep).toSorted() : []);
+  const has = (r: { lines: string[] }, s: string): boolean => r.lines.some((l) => l.includes(s));
+  const markerOf = (dir: string): { tenant?: string; at?: string; sessions?: number } | null =>
+    JSON.parse(read(dir, SESSIONS_IN_DB_MARKER) ?? 'null') as { tenant?: string; at?: string; sessions?: number } | null;
+  /** 记录时序的假锁：每次 release 的那一刻都记下数据目录的样子（两个 JSON 与标记文件），断言锁一直持到最后一次写之后 */
+  const timedLock = (dir: string) => {
+    const at: string[] = [];
+    return {
+      at,
+      lock: async () => {
+        const l = fakeLock();
+        const release = l.release;
+        l.release = async () => {
+          at.push(files(dir));
+          await release();
+        };
+        return l;
+      },
+    };
+  };
+  /** 一次 fs 调用抛错（模拟磁盘或权限出错），跑完 fn 再换回来 */
+  const failing = async <R>(name: 'copyFileSync', fn: () => Promise<R>): Promise<R> => {
+    const real = fs[name];
+    fs[name] = (() => {
+      throw Object.assign(new Error('模拟的文件系统错误'), { code: 'EIO' });
+    }) as never;
+    try {
+      return await fn();
+    } finally {
+      fs[name] = real;
+    }
+  };
+  /**
+   * 照常执行 fn，同时按先后记下数据目录 dir 里的改名、删除与对 dir 本身的 fsync：看改写 var/ 的顺序，
+   * 以及每次改名、删除之后都把目录落了盘（崩溃之后改名的先后也成立）
+   */
+  const traced = async <R>(dir: string, fn: () => Promise<R>): Promise<{ r: R; ops: string[] }> => {
+    const ops: string[] = [];
+    const real = { renameSync: fs.renameSync, rmSync: fs.rmSync, fsyncSync: fs.fsyncSync };
+    const ino = fs.statSync(dir).ino;
+    const inDir = (p: fs.PathLike): boolean => path.dirname(path.resolve(String(p))) === path.resolve(dir);
+    fs.renameSync = ((a: fs.PathLike, b: fs.PathLike) => {
+      real.renameSync(a, b);
+      if (inDir(b)) ops.push(`rename ${path.basename(String(b))}`);
+    }) as typeof fs.renameSync;
+    fs.rmSync = ((p: fs.PathLike, opts?: fs.RmOptions) => {
+      real.rmSync(p, opts);
+      if (inDir(p)) ops.push(`rm ${path.basename(String(p))}`);
+    }) as typeof fs.rmSync;
+    fs.fsyncSync = ((fd: number) => {
+      real.fsyncSync(fd);
+      if (fs.fstatSync(fd).ino === ino) ops.push('fsync dir');
+    }) as typeof fs.fsyncSync;
+    try {
+      return { r: await fn(), ops };
+    } finally {
+      Object.assign(fs, real);
+    }
+  };
+  const fx6 = xferFixture();
+  const realOf = (all: Session[]): Session[] => all.filter((s) => fx6.real.includes(s.id));
+  const store = (): Promise<StoreMod> => import('../store.js');
+  const { SessionStoreStartupError } = await import('./backend.js');
+  const startupReason = async (st: StoreMod, deps: Parameters<StoreMod['initSessionStore']>[0]): Promise<string> =>
+    st.initSessionStore(deps).then(
+      () => 'ok',
+      (e: unknown) => (e instanceof SessionStoreStartupError ? e.reason : String(e)),
+    );
+
+  if (step === 'import') {
+    const pristine = files(v);
+    // --dry-run：照样写进事务、读回比对，最后回滚；库与文件都不动
+    const dry = await importSessions({ ...base, dryRun: true });
+    ck(
+      'import --dry-run：退出码 0，打印将写入的条数与往返结果',
+      dry.code === 0 &&
+        has(dry, 'dry-run：会写入 3 个真实会话、11 条消息、3 张订单') &&
+        has(dry, `被规范化的字符串 ${fx6.normalized} 条`) &&
+        has(dry, '读回与 JSON 逐个一致'),
+      dry.lines.join(' / '),
+    );
+    ck(
+      'import --dry-run：不写库、不改文件、不建 --keep',
+      (await counts()) === '0/0/0/0' && files(v) === pristine && keeps().length === 0,
+      await counts(),
+    );
+
+    // --keep 在 var/ 之内（含经符号链接绕进去的）拒绝
+    const link = path.join(path.dirname(keep), `link-${path.basename(v)}`);
+    fs.symlinkSync(v, link);
+    for (const [label, keepDir] of [
+      ['在 var/ 之下', path.join(v, 'keep')],
+      ['就是 var/', v],
+      ['经符号链接指进 var/', path.join(link, 'keep')],
+    ] as const) {
+      const r = await importSessions({ ...base, keepDir });
+      ck(
+        `import：--keep ${label}时拒绝（1），什么都没动`,
+        r.code === 1 && has(r, '--keep') && (await counts()) === '0/0/0/0' && files(v) === pristine && !fs.existsSync(path.join(v, 'keep')),
+        r.lines.join(' / '),
+      );
+    }
+    fs.unlinkSync(link);
+    // 拿不到租户锁（应用还在跑）
+    const locked = await importSessions({ ...base, lock: async () => null });
+    ck(
+      'import：拿不到租户锁时退出码 3，什么都没动',
+      locked.code === 3 && has(locked, 'lock_held') && (await counts()) === '0/0/0/0' && files(v) === pristine,
+      locked.lines.join(' / '),
+    );
+    const lockedExp = await exportSessions({ ...base, lock: async () => null });
+    ck(
+      'export：拿不到租户锁时退出码 3，什么都没动',
+      lockedExp.code === 3 && files(v) === pristine && keeps().length === 0,
+      lockedExp.lines.join(' / '),
+    );
+    // 数据目录里有没回放的 spill
+    const spill = path.join(v, 'store-spill-2026-10-01T00-00-00-000Z.json');
+    fs.writeFileSync(spill, '{}');
+    const spilled = await importSessions(base);
+    ck(
+      'import：数据目录里有没回放的 spill 时拒绝（1）并点名文件',
+      spilled.code === 1 && has(spilled, 'store-spill-2026-10-01T00-00-00-000Z.json') && (await counts()) === '0/0/0/0',
+      spilled.lines.join(' / '),
+    );
+    const spilledExp = await exportSessions(base);
+    ck('export：数据目录里有没回放的 spill 时同样拒绝', spilledExp.code === 1 && has(spilledExp, 'spill') && files(v) === pristine);
+    fs.unlinkSync(spill);
+    const tenantless = await importSessions({ ...base, tenantSlug: 'no-such-tenant' });
+    ck('import：没有这个租户时退出码 1', tenantless.code === 1 && has(tenantless, 'tenant_not_found'));
+
+    // 首次导入（记录时序的锁：release 在写完标记与两个 JSON 之后）
+    const modes0 = fx.stats.txModes.length;
+    const firstLock = timedLock(v);
+    const { r: first, ops: firstOps } = await traced(v, () => importSessions({ ...base, lock: firstLock.lock }));
+    ck(
+      'import：提交之后先写标记、再 sessions.json、再 orders.json，每次改名之后都 fsync 数据目录',
+      firstOps.join() === 'rename sessions-in-db.json,fsync dir,rename sessions.json,fsync dir,rename orders.json,fsync dir',
+      firstOps.join(),
+    );
+    ck(
+      'import：一个 longRunning 事务（放宽语句超时与事务空闲超时）',
+      fx.stats.txModes.slice(modes0).join() ===
+        "set local statement_timeout = '60s',set local idle_in_transaction_session_timeout = '120s'",
+      JSON.stringify(fx.stats.txModes.slice(modes0)),
+    );
+    ck(
+      'import：首次导入退出码 0，打印真实会话数、消息数、订单数与被规范化的字符串条数',
+      first.code === 0 &&
+        has(first, '已导入 3 个真实会话、11 条消息、3 张订单') &&
+        has(first, `被规范化的字符串 ${fx6.normalized} 条`) &&
+        first.stats.normalized === fx6.normalized,
+      first.lines.join(' / '),
+    );
+    ck('import：库里是 3 个会话、11 条消息、3 张订单（demo 类与孤儿订单不进库）', (await counts()) === '3/11/3/0', await counts());
+    const rows = await su<{ id: string; last_seq: number; window_start_seq: number; flush_id: string | null; seqs: number[] | null }>(
+      `select c.id, c.last_seq, c.window_start_seq, c.flush_id, (select array_agg(seq order by seq) from messages m where m.tenant_id = c.tenant_id and m.conversation_id = c.id) seqs
+         from conversations c order by c.id`,
+    );
+    ck(
+      'import：消息按数组下标写 seq（从 1 起），window_start_seq = 1，last_seq = 消息条数',
+      rows.length === 3 &&
+        rows.every((r) => {
+          const n = (fx6.sessions.find((s) => s.id === r.id)?.messages ?? []).length;
+          return (
+            r.window_start_seq === 1 &&
+            r.last_seq === n &&
+            r.flush_id === null &&
+            (r.seqs ?? []).join() === Array.from({ length: n }, (_, i) => i + 1).join()
+          );
+        }),
+      JSON.stringify(rows),
+    );
+    const states = await su<{ id: string; state: Record<string, unknown> }>('select id, state from conversations');
+    ck(
+      'import：state 是会话去掉 messages 之后经 normalizeForStore 的原样（昵称里的 NUL 去掉了）',
+      states.every((r) => isDeepStrictEqual(r.state, sessionState(fx6.sessions.find((s) => s.id === r.id)!))) &&
+        (states.find((r) => r.id === XFER.alpha)?.state.profile as { nickname?: string } | undefined)?.nickname === '小王',
+    );
+    const odata = await su<{ id: string; data: Record<string, unknown> }>('select id, data from orders');
+    ck(
+      'import：订单 data 原样（经 normalizeForStore），旧格式订单号照收',
+      odata.length === 3 &&
+        odata.every((r) => isDeepStrictEqual(r.data, normalizeForStore(fx6.orders.find((o) => o.id === r.id)))) &&
+        odata.some((r) => r.id === 'ORD-20240501-0007'),
+      JSON.stringify(odata.map((r) => r.id)),
+    );
+    const demoSessions = fx6.sessions.filter((s) => !fx6.real.includes(s.id));
+    const keptOrders = fx6.orders.filter((o) => !fx6.real.includes(o.sessionId));
+    const rewritten = files(v);
+    ck(
+      'import：JSON 改写成只剩 demo 类会话与 demo 类、孤儿订单（与文件后端同一种写法，种子里的 NUL 原样留着）',
+      read(v, 'sessions.json') === JSON.stringify(demoSessions, null, 2) &&
+        read(v, 'orders.json') === JSON.stringify(keptOrders, null, 2) &&
+        keptOrders.length === 3 &&
+        (read(v, 'sessions.json') ?? '').includes('种子\\u0000'),
+    );
+    const marker = markerOf(v);
+    ck(
+      'import：写了标记文件 { tenant, at, sessions }，没留下临时文件',
+      marker?.tenant === 'demo' &&
+        marker.sessions === 3 &&
+        !Number.isNaN(Date.parse(marker.at ?? '')) &&
+        fs.readdirSync(v).every((f) => !f.endsWith('.tmp')),
+      JSON.stringify(marker),
+    );
+    ck(
+      'import：租户锁一直持到写完标记文件与两个 JSON 之后才放（release 那一刻数据目录已是最终的样子）',
+      firstLock.at.length > 0 && firstLock.at.every((f) => f === rewritten),
+      firstLock.at.map((f) => f.slice(0, 80)).join(' | '),
+    );
+    const k1 = keeps();
+    ck(
+      'import：原件逐字节复制到 --keep 下新建的目录（--keep 原来不存在也行）',
+      k1.length === 1 &&
+        first.stats.kept === path.join(keep, k1[0]!) &&
+        JSON.stringify([read(first.stats.kept, 'sessions.json'), read(first.stats.kept, 'orders.json'), null]) === pristine,
+      k1.join(),
+    );
+
+    // 再导入一次：JSON 里没有真实会话、有标记 → 0，什么都不动
+    const again = await importSessions(base);
+    ck(
+      'import：再导入一次退出码 0（已经导入过），库与文件都没动',
+      again.code === 0 && has(again, '已经导入过') && (await counts()) === '3/11/3/0' && files(v) === rewritten && keeps().length === 1,
+      again.lines.join(' / '),
+    );
+    const againResync = await importSessions({ ...base, resync: true });
+    ck(
+      'import --resync：JSON 里没有真实会话、有标记时同样 0、不动',
+      againResync.code === 0 && has(againResync, '已经导入过') && files(v) === rewritten,
+    );
+
+    // 补完改写：提交之后、改写 JSON 之前崩了（JSON 还是原件、没有标记）→ 逐个一致，补完改写与标记，0
+    fs.copyFileSync(path.join(first.stats.kept!, 'sessions.json'), path.join(v, 'sessions.json'));
+    fs.copyFileSync(path.join(first.stats.kept!, 'orders.json'), path.join(v, 'orders.json'));
+    fs.unlinkSync(path.join(v, SESSIONS_IN_DB_MARKER));
+    const dryFinish = await importSessions({ ...base, dryRun: true });
+    ck(
+      'import --dry-run：库里已有、逐个一致时只说会补完改写，什么都不动',
+      dryFinish.code === 0 && has(dryFinish, '会补完改写') && files(v) === pristine,
+      dryFinish.lines.join(' / '),
+    );
+    const finish = await importSessions(base);
+    ck(
+      'import：库里已有、JSON 里的真实会话与库里逐个一致 → 补完改写 JSON 与标记，退出码 0，库没动',
+      finish.code === 0 &&
+        has(finish, '逐个一致：补完改写') &&
+        (await counts()) === '3/11/3/0' &&
+        read(v, 'sessions.json') === JSON.stringify(demoSessions, null, 2) &&
+        read(v, 'orders.json') === JSON.stringify(keptOrders, null, 2) &&
+        markerOf(v)?.sessions === 3 &&
+        keeps().length === 2,
+      finish.lines.join(' / '),
+    );
+
+    // 改写完 JSON、写标记之前崩了（JSON 已经只剩 demo 类、没有标记）：同样逐个一致（JSON 里没有真实会话），补写标记，0
+    fs.unlinkSync(path.join(v, SESSIONS_IN_DB_MARKER));
+    const finishMarker = await importSessions(base);
+    ck(
+      'import：JSON 已只剩 demo 类而没有标记文件 → 补完改写、补写标记，退出码 0',
+      finishMarker.code === 0 &&
+        has(finishMarker, '逐个一致：补完改写') &&
+        markerOf(v)?.tenant === 'demo' &&
+        markerOf(v)?.sessions === 3 &&
+        (await counts()) === '3/11/3/0',
+      finishMarker.lines.join(' / '),
+    );
+
+    // 一批 500 个：1001 个会话分批写、按预载的循环分三批读回。--keep 写不进去在开事务之前就以 1 退出；
+    // 提交之后、写完标记而改写 JSON 之前失败 → 1、说明库已提交；修好再跑一次补完改写；再导出（读的也不止一页）
+    await su(`insert into tenants (slug, name, pack_id) values ('demo3', 'demo3', 'travel') on conflict (slug) do nothing`);
+    const many = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-many-'));
+    const t1 = Date.parse('2026-09-21T00:00:00.000Z');
+    const manySessions = Array.from({ length: 1001 }, (_, i) => ({
+      id: `wecom:wmXferMany${String(i).padStart(4, '0')}`,
+      channel: 'wecom',
+      stage: 'greeting',
+      profile: {},
+      messages: [{ role: 'customer', content: `第 ${i} 位`, at: t1 + i }],
+      orderIds: [],
+      handedOver: false,
+      createdAt: t1,
+      updatedAt: t1 + i,
+    }));
+    fs.writeFileSync(path.join(many, 'sessions.json'), JSON.stringify(manySessions, null, 2));
+    const manyBefore = files(many);
+    const blocker = path.join(path.dirname(v), `xfer-blocker-${process.pid}`);
+    fs.writeFileSync(blocker, 'x'); // --keep 的上级是个文件：建不了目录
+    const blockedKeep = path.join(blocker, 'keep');
+    for (const [label, run] of [
+      ['import', () => importSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: blockedKeep })],
+      ['import --dry-run', () => importSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: blockedKeep, dryRun: true })],
+      ['export', () => exportSessions({ ...base, tenantSlug: 'demo3', varDir: many, keepDir: blockedKeep })],
+    ] as const) {
+      const tx0 = fx.stats.txModes.length;
+      const r = await run();
+      ck(
+        `${label}：--keep 写不进去（上级是个文件）→ 开事务之前就以 1 退出、提示什么都没动，库与文件都没动`,
+        r.code === 1 &&
+          has(r, '--keep') &&
+          has(r, '什么都没动') &&
+          fx.stats.txModes.length === tx0 &&
+          (await counts('demo3')) === '0/0/0/0' &&
+          files(many) === manyBefore,
+        `${r.lines.join(' / ')} ${await counts('demo3')} ${JSON.stringify(fx.stats.txModes.slice(tx0))}`,
+      );
+    }
+    // 提交之后写完标记、改写 sessions.json 时失败（它的临时文件名被一个目录占着）
+    fs.mkdirSync(path.join(many, 'sessions.json.tmp'));
+    const manyKeeps = keeps().length;
+    const broken = await importSessions({ ...base, tenantSlug: 'demo3', varDir: many });
+    ck(
+      'import：1001 个会话分批写入、读回逐个一致后提交；之后先写好标记，改写 JSON 时失败 → 退出码 1，说明库已提交、再跑一次会补完改写',
+      broken.code === 1 &&
+        has(broken, '库已提交') &&
+        (await counts('demo3')) === '1001/1001/0/0' &&
+        markerOf(many)?.sessions === 1001 &&
+        read(many, 'sessions.json') === JSON.parse(manyBefore)[0] &&
+        keeps().length === manyKeeps + 1,
+      `${broken.lines.join(' / ')} ${await counts('demo3')}`,
+    );
+    fs.rmdirSync(path.join(many, 'sessions.json.tmp'));
+    const recovered = await importSessions({ ...base, tenantSlug: 'demo3', varDir: many });
+    ck(
+      'import：修好之后再跑一次 → 逐个一致、补完改写，退出码 0，标记文件记的是库里的 1001 个',
+      recovered.code === 0 &&
+        has(recovered, '库里已有这 1001 个真实会话、逐个一致：补完改写') &&
+        recovered.stats.dbSessions === 1001 &&
+        read(many, 'sessions.json') === '[]' &&
+        markerOf(many)?.tenant === 'demo3' &&
+        markerOf(many)?.sessions === 1001,
+      recovered.lines.join(' / '),
+    );
+    const manyExp = await exportSessions({ ...base, tenantSlug: 'demo3', varDir: many });
+    const manyJson = JSON.parse(read(many, 'sessions.json') ?? '[]') as Session[];
+    ck(
+      'export：1001 个真实会话（不止一页）全部导出进 JSON，删掉标记文件',
+      manyExp.code === 0 &&
+        manyExp.stats.sessions === 1001 &&
+        new Set(manyJson.filter((s) => !isDemoClassId(s.id)).map((s) => s.id)).size === 1001 &&
+        !fs.existsSync(path.join(many, SESSIONS_IN_DB_MARKER)),
+      `${manyExp.lines.join(' / ')} ${manyJson.length}`,
+    );
+
+    // 内容不同：另一份 var/，库里已有会话
+    const otherVar = (edit: (s: Session[], o: Order[]) => void): string => {
+      const dir = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-diff-'));
+      const f = xferFixture();
+      edit(f.sessions, f.orders);
+      fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify(f.sessions, null, 2));
+      fs.writeFileSync(path.join(dir, 'orders.json'), JSON.stringify(f.orders, null, 2));
+      return dir;
+    };
+    const diffs: [string, (s: Session[], o: Order[]) => void, string, string][] = [
+      ['改了一条消息', (s) => void (s.find((x) => x.id === XFER.beta)!.messages[1]!.content = '改过的'), 'TA02', '第 2 条消息不同'],
+      [
+        '多一个库里没有的真实会话',
+        (s) => void s.push({ ...s.find((x) => x.id === XFER.gamma)!, id: 'wecom:wmXferExtra77' }),
+        'RA77',
+        '库里没有这个会话',
+      ],
+      ['订单金额不同', (_s, o) => void (o.find((x) => x.id === 'ORD-20240501-0007')!.totalPrice = 1), 'HA01', '订单不同'],
+      // 消息与订单都一样、只有 state 不同：同样不是「逐个一致」
+      ['只改了 stage', (s) => void (s.find((x) => x.id === XFER.beta)!.stage = 'quote'), 'TA02', '字段 stage 不同'],
+      ['只改了昵称', (s) => void (s.find((x) => x.id === XFER.alpha)!.profile.nickname = '小李'), 'HA01', '字段 profile 不同'],
+    ];
+    for (const [label, edit, code, why] of diffs) {
+      const dir = otherVar(edit);
+      const before = files(dir);
+      const r = await importSessions({ ...base, varDir: dir });
+      ck(
+        `import：库里已有会话而 JSON ${label} → 退出码 2，点名短码 ${code}、提示 --resync，库与文件都没动`,
+        r.code === 2 && has(r, code) && has(r, why) && has(r, '--resync') && (await counts()) === '3/11/3/0' && files(dir) === before,
+        r.lines.join(' / '),
+      );
+    }
+
+    // 首次导入时读回不等（at 不是整数毫秒，进库之后对不上）：回滚、退出码 2、点名第一个不等的会话
+    await su(`insert into tenants (slug, name, pack_id) values ('demo2', 'demo2', 'travel') on conflict (slug) do nothing`);
+    const lossy = otherVar((s) => {
+      s.find((x) => x.id === XFER.beta)!.messages[3]!.at += 0.5;
+      s.find((x) => x.id === XFER.gamma)!.messages.push({ role: 'customer', content: 'x', at: 1.25 });
+    });
+    const lossyBefore = files(lossy);
+    const badDry = await importSessions({ ...base, tenantSlug: 'demo2', varDir: lossy, dryRun: true });
+    ck(
+      'import --dry-run：首次导入读回与 JSON 不等时同样退出码 2、点名第一个不等的会话短码，库与文件都没动',
+      badDry.code === 2 &&
+        has(badDry, 'TA02') &&
+        has(badDry, '第 4 条消息不同') &&
+        (await counts('demo2')) === '0/0/0/0' &&
+        files(lossy) === lossyBefore,
+      `${badDry.lines.join(' / ')} ${await counts('demo2')}`,
+    );
+    const bad = await importSessions({ ...base, tenantSlug: 'demo2', varDir: lossy });
+    ck(
+      'import：首次导入读回与 JSON 不等 → 回滚、退出码 2、点名第一个不等的会话短码，库与文件都没动',
+      bad.code === 2 &&
+        has(bad, 'TA02') &&
+        has(bad, '第 4 条消息不同') &&
+        has(bad, '已回滚') &&
+        (await counts('demo2')) === '0/0/0/0' &&
+        files(lossy) === lossyBefore,
+      `${bad.lines.join(' / ')} ${await counts('demo2')}`,
+    );
+    res.data.imported = true;
+    return;
+  }
+
+  // export 与 resync 这两步不起 store：store 在导入期读 JSON、退出时可能再写一遍，会盖掉命令行刚改写的文件（应用要求已停）
+  if (step === 'export') {
+    const pristine = files(v);
+    const n0 = await counts();
+    // --keep 在 var/ 之内（含经符号链接绕进去的）：export 同样拒绝
+    const link = path.join(path.dirname(keep), `link-${path.basename(v)}`);
+    fs.symlinkSync(v, link);
+    for (const [label, keepDir] of [
+      ['在 var/ 之下', path.join(v, 'keep')],
+      ['就是 var/', v],
+      ['经符号链接指进 var/', path.join(link, 'keep')],
+    ] as const) {
+      const r = await exportSessions({ ...base, keepDir });
+      ck(
+        `export：--keep ${label}时拒绝（1），什么都没动`,
+        r.code === 1 && has(r, '--keep') && files(v) === pristine && !fs.existsSync(path.join(v, 'keep')),
+        r.lines.join(' / '),
+      );
+    }
+    fs.unlinkSync(link);
+    // 复制原件失败：退出码 1，标记文件还在、两个 JSON 逐字节没变
+    const kc = keeps().length;
+    const copyFail = await failing('copyFileSync', () => exportSessions(base));
+    ck(
+      'export：复制原件失败 → 退出码 1、提示标记文件还在，两个 JSON 与标记文件逐字节没变，--keep 下没留下空目录',
+      copyFail.code === 1 && has(copyFail, '标记文件还在') && files(v) === pristine && keeps().length === kc,
+      copyFail.lines.join(' / '),
+    );
+    // 改写 JSON 中途失败（某个临时文件名被目录占着）：先 orders.json、再 sessions.json、最后删标记，
+    // 停在哪一步都不会让之后的 import / --resync 作废订单
+    for (const blocked of ['sessions.json.tmp', 'orders.json.tmp']) {
+      fs.mkdirSync(path.join(v, blocked));
+      const r = await exportSessions(base);
+      ck(
+        `export：${blocked} 写不了 → 退出码 1，标记文件还在、sessions.json 没变`,
+        r.code === 1 &&
+          fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+          read(v, 'sessions.json') === JSON.parse(pristine)[0] &&
+          (blocked === 'orders.json.tmp' ? files(v) === pristine : read(v, 'orders.json') !== JSON.parse(pristine)[1]),
+        r.lines.join(' / '),
+      );
+      fs.rmdirSync(path.join(v, blocked));
+      const imp = await importSessions(base);
+      const rs = await importSessions({ ...base, resync: true });
+      ck(
+        `export 在 ${blocked} 处失败之后：import 与 --resync 都是 0（已经导入过），不作废任何订单`,
+        imp.code === 0 && has(imp, '已经导入过') && rs.code === 0 && (await counts()) === n0 && n0.endsWith('/0'),
+        `${imp.lines.join(' / ')} | ${rs.lines.join(' / ')} ${await counts()}`,
+      );
+      const [ps, po] = JSON.parse(pristine) as [string, string];
+      fs.writeFileSync(path.join(v, 'sessions.json'), ps);
+      fs.writeFileSync(path.join(v, 'orders.json'), po);
+    }
+    ck('export 的失败用例之后数据目录回到原样', files(v) === pristine);
+
+    const before = { s: read(v, 'sessions.json'), o: read(v, 'orders.json'), n: await counts() };
+    const k0 = keeps().length;
+    const modes0 = fx.stats.txModes.length;
+    const expLock = timedLock(v);
+    const { r: exp, ops: expOps } = await traced(v, () => exportSessions({ ...base, lock: expLock.lock }));
+    ck(
+      'export：先 orders.json、再 sessions.json、最后删标记，每一步之后都 fsync 数据目录',
+      expOps.join() === 'rename orders.json,fsync dir,rename sessions.json,fsync dir,rm sessions-in-db.json,fsync dir',
+      expOps.join(),
+    );
+    const modes = fx.stats.txModes.slice(modes0);
+    ck(
+      'export：在 REPEATABLE READ READ ONLY 的 longRunning 事务里读',
+      modes.some((q) => /repeatable read/i.test(q) && /read only/i.test(q)) && modes.some((q) => /statement_timeout = '60s'/.test(q)),
+      JSON.stringify(modes),
+    );
+    ck(
+      'export：退出码 0，打印导出的会话、消息与订单数',
+      exp.code === 0 && has(exp, '已导出 3 个真实会话') && has(exp, '3 张未作废订单'),
+      exp.lines.join(' / '),
+    );
+    ck('export：删掉了标记文件、库没动', !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) && (await counts()) === before.n);
+    ck(
+      'export：租户锁一直持到写完两个 JSON、删掉标记文件之后才放',
+      expLock.at.length > 0 && expLock.at.every((f) => f === files(v)) && JSON.parse(files(v))[2] === null,
+      expLock.at.map((f) => f.slice(0, 80)).join(' | '),
+    );
+    ck(
+      'export：原 JSON 逐字节复制到 --keep 下新建的目录',
+      keeps().length === k0 + 1 &&
+        !!exp.stats.kept &&
+        read(exp.stats.kept, 'sessions.json') === before.s &&
+        read(exp.stats.kept, 'orders.json') === before.o,
+    );
+    const sj = JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[];
+    const oj = JSON.parse(read(v, 'orders.json') ?? '[]') as Order[];
+    const was = { s: JSON.parse(before.s ?? '[]') as Session[], o: JSON.parse(before.o ?? '[]') as Order[] };
+    ck(
+      'export：合并进 JSON，demo 类会话、demo 类与孤儿订单原样留着',
+      was.s.every((s) =>
+        isDeepStrictEqual(
+          sj.find((x) => x.id === s.id),
+          s,
+        ),
+      ) &&
+        was.o.every((o) =>
+          isDeepStrictEqual(
+            oj.find((x) => x.id === o.id),
+            o,
+          ),
+        ) &&
+        sj.length === was.s.length + 3 &&
+        oj.length === was.o.length + 3,
+      `${sj.length} ${oj.length}`,
+    );
+    res.data.exported = {
+      sessions: sj.filter((s) => !isDemoClassId(s.id)).toSorted((a, b) => a.id.localeCompare(b.id)),
+      orders: oj.filter((o) => !isDemoClassId(o.sessionId)).toSorted((a, b) => a.id.localeCompare(b.id)),
+    };
+    // 导出结果再交给 import-sessions：--resync 什么都不追加；不带 --resync 是逐个一致（dry-run 都不动库与文件）
+    const exported = files(v);
+    const dry = await importSessions({ ...base, resync: true, dryRun: true });
+    ck(
+      '导出结果交给 import-sessions --resync（dry-run）：退出码 0，库里已是这些，不追加、不推进、不作废，什么都没动',
+      dry.code === 0 &&
+        dry.stats.created === 0 &&
+        dry.stats.appended === 0 &&
+        dry.stats.pushed === 0 &&
+        dry.stats.voided === 0 &&
+        (await counts()) === before.n &&
+        files(v) === exported,
+      dry.lines.join(' / '),
+    );
+    const plainDry = await importSessions({ ...base, dryRun: true });
+    ck(
+      '导出结果原样交给 import-sessions（dry-run）：逐个一致，会补完改写',
+      plainDry.code === 0 && has(plainDry, '会补完改写') && files(v) === exported,
+    );
+    // 没有标记文件时再 export：JSON 与库里逐个一致 → 已经导出过、0、什么都不动；文件存储下改过（JSON 比库新）→ 2、什么都不动；
+    // 库里有 JSON 里没有的真实会话 → 照常导出，只把它补进来
+    const k1 = keeps().length;
+    const again = await exportSessions(base);
+    ck(
+      'export：没有标记文件、JSON 与库里逐个一致时再导出 → 退出码 0（已经导出过），文件与 --keep 都没动',
+      again.code === 0 && has(again, '已经导出过') && files(v) === exported && keeps().length === k1,
+      again.lines.join(' / '),
+    );
+    const newer = (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).map((x) =>
+      x.id === XFER.alpha
+        ? { ...x, messages: [...x.messages, { role: 'customer' as const, content: '文件存储下的新消息', at: Date.now() }] }
+        : x,
+    );
+    fs.writeFileSync(path.join(v, 'sessions.json'), JSON.stringify(newer, null, 2));
+    const newerFiles = files(v);
+    const clobber = await exportSessions(base);
+    ck(
+      'export：没有标记文件、JSON 比库新（文件存储下又聊过）→ 退出码 2，点名短码、提示 import-sessions --resync，文件、库与 --keep 都没动',
+      clobber.code === 2 &&
+        has(clobber, 'HA01') &&
+        has(clobber, 'import-sessions --resync') &&
+        files(v) === newerFiles &&
+        (await counts()) === before.n &&
+        keeps().length === k1,
+      clobber.lines.join(' / '),
+    );
+    const [es] = JSON.parse(exported) as [string];
+    fs.writeFileSync(
+      path.join(v, 'sessions.json'),
+      JSON.stringify(
+        (JSON.parse(es) as Session[]).filter((x) => x.id !== XFER.gamma),
+        null,
+        2,
+      ),
+    );
+    const fill = await exportSessions(base);
+    ck(
+      'export：没有标记文件、库里有 JSON 里没有的真实会话 → 照常导出，把它补进 JSON',
+      fill.code === 0 &&
+        has(fill, '已导出 3 个真实会话') &&
+        (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).some((x) => x.id === XFER.gamma) &&
+        !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)),
+      fill.lines.join(' / '),
+    );
+    fs.writeFileSync(path.join(v, 'sessions.json'), es);
+    ck('export 的再导出用例之后数据目录回到导出的样子', files(v) === exported);
+    return;
+  }
+  if (step === 'resync') {
+    const before = await counts();
+    const plain = await importSessions(base);
+    ck(
+      '文件存储下聊过之后不带 --resync 导入：退出码 2，提示 --resync，库与文件都没动',
+      plain.code === 2 && has(plain, '--resync') && (await counts()) === before && !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)),
+      plain.lines.join(' / '),
+    );
+    // 先把文件存储下聊完的 JSON 存一份：后面拿它的变体做 dry-run
+    const snapshot = (edit: (s: Session[], o: Order[]) => void): string => {
+      const dir = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-resync-'));
+      const s = JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[];
+      const o = JSON.parse(read(v, 'orders.json') ?? '[]') as Order[];
+      edit(s, o);
+      fs.writeFileSync(path.join(dir, 'sessions.json'), JSON.stringify(s, null, 2));
+      fs.writeFileSync(path.join(dir, 'orders.json'), JSON.stringify(o, null, 2));
+      return dir;
+    };
+    const plainSnap = snapshot(() => {});
+    // 条数够、内容不同（文件存储下改过一条）：库里的窗口不是文件窗口的前缀，也要推进窗口起点
+    const edited = snapshot((s) => void (s.find((x) => x.id === XFER.alpha)!.messages[1]!.content = '文件存储下改过的一句'));
+    const editedDry = await importSessions({ ...base, varDir: edited, resync: true, dryRun: true });
+    ck(
+      '--resync（dry-run）：库里的窗口与文件窗口条数够但有一条不同，不算前缀，推进窗口起点、整段追加',
+      editedDry.code === 0 && editedDry.stats.pushed === 2 && editedDry.stats.appendedTo === 1 && (await counts()) === before,
+      `${editedDry.lines.join(' / ')} ${JSON.stringify(editedDry.stats)}`,
+    );
+    // 写完之后读回与 JSON 不等（文件里有一条 at 不是整数毫秒，进库之后对不上）：回滚、退出码 2，库不动
+    const lossy = snapshot(
+      (s) => void s.find((x) => x.id === XFER.delta)!.messages.push({ role: 'customer', content: '晚点再说', at: Date.now() + 0.5 }),
+    );
+    const lossyFiles = files(lossy);
+    const lossyDry = await importSessions({ ...base, varDir: lossy, resync: true, dryRun: true });
+    ck(
+      '--resync --dry-run：写完读回与 JSON 不等时同样退出码 2、点名短码，库与文件都没动',
+      lossyDry.code === 2 && has(lossyDry, 'TA04') && (await counts()) === before && files(lossy) === lossyFiles,
+      lossyDry.lines.join(' / '),
+    );
+    // JSON 里缺了库里的一个会话（alpha 与它的订单）：作废只算文件里这些会话在库里有、文件里没有的订单，不碰 alpha 的
+    const noAlpha = snapshot((s, o) => {
+      s.splice(
+        s.findIndex((x) => x.id === XFER.alpha),
+        1,
+      );
+      for (let i = o.length - 1; i >= 0; i--) if (o[i]!.sessionId === XFER.alpha) o.splice(i, 1);
+    });
+    const noAlphaDry = await importSessions({ ...base, varDir: noAlpha, resync: true, dryRun: true });
+    ck(
+      '--resync（dry-run）：JSON 缺了库里的某个会话时，作废数只算文件里这些会话的（beta 的 1 张，不含 alpha 的 2 张）',
+      noAlphaDry.code === 0 && noAlphaDry.stats.voided === 1 && (await counts()) === before,
+      `${noAlphaDry.lines.join(' / ')} ${JSON.stringify(noAlphaDry.stats)}`,
+    );
+    const lossyRun = await importSessions({ ...base, varDir: lossy, resync: true });
+    ck(
+      '--resync：写完读回与 JSON 不等时回滚、退出码 2、点名短码，库与文件都没动',
+      lossyRun.code === 2 &&
+        has(lossyRun, 'TA04') &&
+        has(lossyRun, '已回滚') &&
+        (await counts()) === before &&
+        !fs.existsSync(path.join(lossy, SESSIONS_IN_DB_MARKER)),
+      lossyRun.lines.join(' / '),
+    );
+    const seqs = async () =>
+      Object.fromEntries(
+        (
+          await su<{ id: string; last_seq: number; window_start_seq: number }>(
+            "select c.id, c.last_seq, c.window_start_seq from conversations c join tenants t on t.id = c.tenant_id where t.slug = 'demo'",
+          )
+        ).map((r) => [r.id, [r.last_seq, r.window_start_seq]]),
+      );
+    const prev = await seqs();
+    const k0 = keeps().length;
+    const r = await importSessions({ ...base, resync: true });
+    const now = await seqs();
+    ck('--resync：退出码 0', r.code === 0, r.lines.join(' / '));
+    ck(
+      '--resync：库里没有的（文件存储下新来的）按首次写入；窗口是前缀的追加多出来的；重置过的推进窗口起点、整段追加',
+      r.stats.created === 1 &&
+        r.stats.appendedTo === 2 &&
+        (r.stats.appended ?? 0) >= 3 &&
+        r.stats.pushed === 1 &&
+        (r.stats.pushedMessages ?? 0) >= 1,
+      JSON.stringify(r.stats),
+    );
+    ck(
+      '--resync：前缀的窗口起点不动、last_seq 往后加；接不上的窗口起点推到原 last_seq + 1；新会话从 1 起',
+      now[XFER.alpha]![1] === prev[XFER.alpha]![1] &&
+        now[XFER.alpha]![0]! > prev[XFER.alpha]![0]! &&
+        now[XFER.beta]![1] === prev[XFER.beta]![0]! + 1 &&
+        now[XFER.beta]![0] === prev[XFER.beta]![0]! + (r.stats.pushedMessages ?? 0) &&
+        now[XFER.delta]![1] === 1,
+      `${JSON.stringify(prev)} → ${JSON.stringify(now)}`,
+    );
+    const voided = await su<{ id: string; void_reason: string | null }>(
+      "select o.id, o.void_reason from orders o join tenants t on t.id = o.tenant_id where t.slug = 'demo' and o.voided_at is not null",
+    );
+    ck(
+      '--resync：这些会话在库里有、文件里没有的订单作废（void_reason = resync，行还在）',
+      r.stats.voided === 1 && voided.length === 1 && voided[0]!.id === `ord_${'b2'.repeat(12)}` && voided[0]!.void_reason === 'resync',
+      JSON.stringify(voided),
+    );
+    // 库里已作废的订单又出现在文件里（陈旧的 JSON）：不复活（库里不拦 voided_at 写回 NULL，只有这里守）
+    const stale = fx6.orders.find((o) => o.id === `ord_${'b2'.repeat(12)}`)!;
+    const staleDir = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-stale-'));
+    for (const f of ['sessions.json', 'orders.json']) fs.copyFileSync(path.join(plainSnap, f), path.join(staleDir, f));
+    fs.writeFileSync(
+      path.join(staleDir, 'orders.json'),
+      JSON.stringify([...(JSON.parse(read(staleDir, 'orders.json') ?? '[]') as Order[]), stale], null, 2),
+    );
+    const staleDry = await importSessions({ ...base, varDir: staleDir, resync: true, dryRun: true });
+    const [staleRow] = await su<{ v: boolean }>('select voided_at is not null as v from orders where id = $1', [stale.id]);
+    ck(
+      '--resync（dry-run）：库里已作废、文件里还有的订单不恢复，读回照样一致，退出码 0',
+      staleDry.code === 0 && staleDry.stats.skippedVoided === 1 && staleDry.stats.voided === 0 && staleRow?.v === true,
+      `${staleDry.lines.join(' / ')} ${JSON.stringify(staleDry.stats)}`,
+    );
+    const sj = JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[];
+    ck(
+      '--resync：之后同样改写 JSON（只剩 demo 类）、写标记文件，原件进 --keep',
+      sj.length > 0 &&
+        sj.every((s) => isDemoClassId(s.id)) &&
+        fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+        keeps().length === k0 + 1 &&
+        path.basename(r.stats.kept ?? '').startsWith('resync-'),
+    );
+    return;
+  }
+
+  if (step === 'export2') {
+    // 同 id 以库为准：JSON 里有真实会话的陈旧副本、库里已作废订单的陈旧副本、改过金额的订单副本时，导出之后都是库里的样子
+    const { readSessionBatch } = await import('../db/repo/conversations.js');
+    const { rebuildSessions, rowToOrder } = await import('./project.js');
+    const ctx = { tenantId: fx.deps.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+    const sj = JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[];
+    const oj = JSON.parse(read(v, 'orders.json') ?? '[]') as Order[];
+    const voidedId = `ord_${'b2'.repeat(12)}`;
+    const staleAlpha = fx6.sessions.find((s) => s.id === XFER.alpha)!;
+    const staleOrder = { ...fx6.orders.find((o) => o.id === 'ORD-20240501-0007')!, totalPrice: 1 };
+    fs.writeFileSync(path.join(v, 'sessions.json'), JSON.stringify([...sj, staleAlpha], null, 2));
+    fs.writeFileSync(path.join(v, 'orders.json'), JSON.stringify([...oj, fx6.orders.find((o) => o.id === voidedId)!, staleOrder], null, 2));
+    const exp = await exportSessions(base);
+    const batch = await withTenant(fx.deps.db, ctx, (tx) => readSessionBatch(tx, null, 1000));
+    const dbAlpha = rebuildSessions(batch.rows, batch.messages).find((x) => x.row.id === XFER.alpha)?.session;
+    const dbOrder = batch.orders.map(rowToOrder).find((o) => o.id === 'ORD-20240501-0007');
+    const after = {
+      s: JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[],
+      o: JSON.parse(read(v, 'orders.json') ?? '[]') as Order[],
+    };
+    ck(
+      'export：JSON 里真实会话的陈旧副本被库里的盖掉（同 id 以库为准）',
+      exp.code === 0 &&
+        !!dbAlpha &&
+        after.s.filter((s) => s.id === XFER.alpha).length === 1 &&
+        isDeepStrictEqual(
+          after.s.find((s) => s.id === XFER.alpha),
+          dbAlpha,
+        ),
+      exp.lines.join(' / '),
+    );
+    ck(
+      'export：库里已作废的订单从 JSON 里去掉，改过金额的订单副本换回库里的',
+      !after.o.some((o) => o.id === voidedId) &&
+        !!dbOrder &&
+        isDeepStrictEqual(
+          after.o.find((o) => o.id === 'ORD-20240501-0007'),
+          dbOrder,
+        ) &&
+        dbOrder.totalPrice === 6000,
+    );
+    return;
+  }
+
+  // 中途崩溃（另一个租户 demo4、另一份 var/）：提交之后写好标记、改写 sessions.json 时失败 → 1；这时两种存储都拒绝启动（crashstart），
+  // 重跑 import 按逐个一致补完改写（crashfix）
+  if (step === 'crash') {
+    const pristine = files(v);
+    fs.mkdirSync(path.join(v, 'sessions.json.tmp'));
+    const r = await importSessions(base);
+    fs.rmdirSync(path.join(v, 'sessions.json.tmp'));
+    ck(
+      'import：提交之后先写标记，改写 JSON 之前失败 → 退出码 1、库已提交；标记在、两个 JSON 还是原件',
+      r.code === 1 &&
+        has(r, '库已提交') &&
+        (await counts()) === '3/11/3/0' &&
+        markerOf(v)?.tenant === slug &&
+        markerOf(v)?.sessions === 3 &&
+        JSON.stringify((JSON.parse(files(v)) as unknown[]).slice(0, 2)) === JSON.stringify((JSON.parse(pristine) as unknown[]).slice(0, 2)),
+      `${r.lines.join(' / ')} ${await counts()}`,
+    );
+    return;
+  }
+  if (step === 'crashfix') {
+    const r = await importSessions(base);
+    ck(
+      'import：写了标记、改写 JSON 之前崩了之后重跑 → 逐个一致、补完改写，退出码 0',
+      r.code === 0 &&
+        has(r, '逐个一致：补完改写') &&
+        (await counts()) === '3/11/3/0' &&
+        (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).every((x) => isDemoClassId(x.id)) &&
+        markerOf(v)?.sessions === 3,
+      r.lines.join(' / '),
+    );
+    return;
+  }
+  // 补写标记（demo5）：库里已有会话、这份 var/ 只有 demo 类而没有标记文件（没经过 import-sessions 直接以 db 存储起）
+  if (step === 'fresh') {
+    const side = fs.mkdtempSync(path.join(path.dirname(v), 'xfer-side-'));
+    fs.writeFileSync(path.join(side, 'sessions.json'), JSON.stringify(fx6.sessions, null, 2));
+    fs.writeFileSync(path.join(side, 'orders.json'), JSON.stringify(fx6.orders, null, 2));
+    const seeded = await importSessions({ ...base, varDir: side });
+    ck(
+      '补写标记的前提：库里已有 3 个会话，这份 var/ 里只有 demo 类、没有标记文件',
+      seeded.code === 0 &&
+        (await counts()) === '3/11/3/0' &&
+        !fs.existsSync(path.join(v, SESSIONS_IN_DB_MARKER)) &&
+        (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).every((x) => isDemoClassId(x.id)),
+      seeded.lines.join(' / '),
+    );
+  }
+  const st = await store();
+  if (step === 'crashstart') {
+    ck('写了标记、JSON 还是原件：文件存储以 sessions_in_db 拒绝启动', (await startupReason(st, null)) === 'sessions_in_db');
+    ck('写了标记、JSON 还是原件：db 存储以 real_in_json 拒绝启动', (await startupReason(st, fx.deps)) === 'real_in_json');
+    return;
+  }
+  if (step === 'fresh') {
+    const t0 = Date.now();
+    ck('没有标记文件、JSON 里没有真实会话：db 存储启动成功', (await startupReason(st, fx.deps)) === 'ok');
+    const m = markerOf(v);
+    ck(
+      'db 存储启动之后补写了标记文件 { tenant, at, sessions: 预载的真实会话数 }，没留下临时文件',
+      m?.tenant === 'demo5' &&
+        m.sessions === 3 &&
+        Date.parse(m.at ?? '') >= t0 - 1000 &&
+        Object.keys(m).join() === 'tenant,at,sessions' &&
+        fs.readdirSync(v).every((f) => !f.endsWith('.tmp')),
+      JSON.stringify(m),
+    );
+    ck('补写的标记文件让文件存储以 sessions_in_db 拒绝启动', (await startupReason(st, null)) === 'sessions_in_db');
+    return;
+  }
+  if (step === 'dbstart') {
+    // 导入（含补完改写）之后：文件存储以 sessions_in_db 拒绝；db 存储启动，预载重建的就是原 JSON 经 normalizeForStore（不变量 14、15）
+    ck('import 写的标记文件让文件存储以 sessions_in_db 拒绝启动', (await startupReason(st, null)) === 'sessions_in_db');
+    const markerBefore = read(v, SESSIONS_IN_DB_MARKER);
+    ck('补完改写之后 db 存储启动成功', (await startupReason(st, fx.deps)) === 'ok');
+    ck('db 存储启动时标记文件已在：原样不动（不重写）', !!markerBefore && read(v, SESSIONS_IN_DB_MARKER) === markerBefore);
+    const dump = memDump(st);
+    const want = {
+      sessions: realOf(fx6.sessions)
+        .map((s) => normalizeForStore(s))
+        .toSorted((a, b) => a.id.localeCompare(b.id)),
+      orders: fx6.orders
+        .filter((o) => !isDemoClassId(o.sessionId))
+        .map((o) => normalizeForStore(o))
+        .toSorted((a, b) => a.id.localeCompare(b.id)),
+    };
+    ck(
+      '不变量 14：db 存储启动后经预载重建的每个真实会话与订单，与原 JSON 经 normalizeForStore 之后 deepStrictEqual',
+      isDeepStrictEqual(dump, JSON.parse(JSON.stringify(want))),
+      `${JSON.stringify(dump).slice(0, 300)}`,
+    );
+    ck(
+      'db 存储启动后 demo 类会话、订单与孤儿订单仍在（JSON 里）',
+      !!st.getSession('wecom:cust_X01') &&
+        !!st.getSession('sim-xfervisitor000001') &&
+        !!st.getOrder('ord_seed_X01') &&
+        !!st.getOrder(`ord_${'d4'.repeat(12)}`),
+    );
+    ck(
+      '不变量 15：db 存储启动之后 JSON 里没有真实会话',
+      (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).every((s) => !fx6.real.includes(s.id)),
+    );
+    process.env.LLM_MOCK = '1';
+    const { handleMessage } = await import('../engine.js');
+    await handleMessage(XFER.alpha, '还有别的推荐吗', 'wecom');
+    await handleMessage(XFER.gamma, '你好', 'wecom');
+    const drained = await st.drainStore(5000);
+    ck('db 存储下再聊两句，都落了库', drained.undrained.length === 0 && st.storeHealth().dirty === 0, JSON.stringify(drained));
+    res.data.afterDb = memDump(st);
+    return;
+  }
+  if (step === 'filechat') {
+    ck('导出之后（标记文件删了）文件存储照常启动', (await startupReason(st, null)) === 'ok' && st.sessionStoreMode() === 'file');
+    process.env.LLM_MOCK = '1';
+    const { handleMessage } = await import('../engine.js');
+    await handleMessage(XFER.alpha, '想再加一个人', 'wecom');
+    await handleMessage(XFER.alpha, '三个人多少钱', 'wecom');
+    await handleMessage(XFER.gamma, '在吗', 'wecom');
+    await handleMessage(XFER.beta, '重置', 'wecom');
+    await handleMessage(XFER.delta, '你好，我想去西藏', 'wecom');
+    st.flushStoreNow();
+    res.data.fileAfter = memDump(st);
+    res.data.betaOrders = st.listOrders().filter((o) => o.sessionId === XFER.beta).length;
+    // db 存储而 JSON 里有真实会话：预载之前以 real_in_json 拒绝（不碰库与 JSON）
+    const before = files(v);
+    ck(
+      'db 存储而 JSON 里有真实会话（导出之后）：以 real_in_json 拒绝启动，JSON 不动',
+      (await startupReason(st, fx.deps)) === 'real_in_json' && files(v) === before,
+    );
+    return;
+  }
+  if (step === 'dbstart2') {
+    ck('--resync 之后 db 存储启动成功', (await startupReason(st, fx.deps)) === 'ok');
+    res.data.dump = memDump(st);
+    // 内存与库一致：每个真实会话库里窗口内的消息就是内存里的（同一投影），窗口起点与 last_seq 就是内存里 seq 的样子
+    const ctx = { tenantId: fx.deps.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+    const rows = await withTenant(fx.deps.db, ctx, (tx) => readConversationsAfter(tx, null, 1000));
+    const mismatched: string[] = [];
+    for (const r of rows) {
+      const s = st.getSession(r.id);
+      const win = await withTenant(fx.deps.db, ctx, (tx) => readMessagesFrom(tx, r.id, r.windowStartSeq));
+      const ok =
+        !!s &&
+        isDeepStrictEqual(JSON.parse(JSON.stringify(s.messages)), win.map(rowToMessage)) &&
+        win.length === r.lastSeq - r.windowStartSeq + 1 &&
+        (s.messages.length === 0 || (st.seqOf(s.messages[0]!) === r.windowStartSeq && st.seqOf(s.messages.at(-1)!) === r.lastSeq));
+      if (!ok) mismatched.push(r.id);
+    }
+    ck(
+      '--resync 之后 db 存储启动：每个真实会话库里窗口内的消息与内存相同，seq 对得上',
+      rows.length === 4 && mismatched.length === 0,
+      mismatched.join(),
+    );
+    res.data.history = Object.fromEntries(
+      await Promise.all(
+        rows.map(async (r) => [r.id, (await withTenant(fx.deps.db, ctx, (tx) => readMessagesFrom(tx, r.id, 1))).length] as const),
+      ),
+    );
+    return;
+  }
+  res.fails.push(`未知的 XFER_STEP ${step}`);
 }
 
 // ---------------- 子进程 pg：PGlite 上的进程内各组 ----------------
@@ -2761,7 +3855,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
   };
   if (scenario === 'conflict') {
     const main = await openDb(APP);
-    await store.initSessionStore({ db: main.db, tenantId, varDir });
+    await store.initSessionStore({ db: main.db, tenantId, tenantSlug: 'demo', varDir });
     const s = store.getOrCreateSession('wecom:wmRpgConf', 'wecom');
     say(s, 'customer', '冲突前');
     await store.flushSession(s.id);
@@ -2789,7 +3883,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
   }
   if (scenario === 'commitdrop') {
     const flaky = await openFlakyDb(APP);
-    await store.initSessionStore({ db: flaky.db, tenantId, varDir });
+    await store.initSessionStore({ db: flaky.db, tenantId, tenantSlug: 'demo', varDir });
     const s = store.getOrCreateSession('wecom:wmRpgDrop', 'wecom');
     say(s, 'customer', '第一句');
     say(s, 'agent', '第二句');
@@ -2835,7 +3929,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     // 新会话第一次落库：客户端立即收到断线，COMMIT 过 1.5 秒才到库里。1 秒后的重试锁不到那一行（还没提交、看不见），
     // 插入在主键上等它提交、冲突了不报错，再锁一次就认出已提交：不 poisoned、不重复插入
     const flaky = await openFlakyDb(APP);
-    await store.initSessionStore({ db: flaky.db, tenantId, varDir });
+    await store.initSessionStore({ db: flaky.db, tenantId, tenantSlug: 'demo', varDir });
     flaky.faults.dropCommitReply = 1;
     flaky.faults.delayCommitMs = 1500;
     const s = store.getOrCreateSession('wecom:wmRpgNewDelay', 'wecom');
@@ -3216,11 +4310,86 @@ async function pgSuites(): Promise<void> {
     );
   }
 
+  // ---- 导入导出与切换（plan 第 6 步，验收 3、不变量 14、15）：落盘的 PGlite 上一串子进程，一步一个 ----
+  {
+    const fx6 = xferFixture();
+    const dataDir = fs.mkdtempSync(path.join(VAR_DIR, 'xferdata-'));
+    const v = freshVarDir('xfer', fx6.sessions, fx6.orders);
+    // --keep 在 var/ 之外、事先不存在（导入时建）
+    const keep = path.join(VAR_DIR, `xferkeep-${randomUUID()}`);
+    const data: Record<string, ChildResult['data']> = {};
+    for (const step of ['import', 'dbstart', 'export', 'filechat', 'resync', 'dbstart2', 'export2']) {
+      // 夹具的时间戳是固定的过去时刻：关掉访客的闲置清理（demo 行为，与导入导出无关），访客会话一路都在
+      const env = { VAR_DIR: v, STORE_DATA_DIR: dataDir, XFER_STEP: step, XFER_KEEP: keep, LLM_MOCK: '1', DEMO_PRUNE_HOURS: '0' };
+      const r = runStoreChild('xfer', env, 90_000);
+      data[step] = merge(`导入导出 ${step}`, r);
+      check(`导入导出 ${step}：子进程正常结束`, r.status === 0, `status=${r.status} ${r.out.slice(-600)}`);
+      if (r.status !== 0) break;
+    }
+    check(
+      'export：导出的真实会话与订单就是 db 存储停机前的内存（导入之后 db 存储期间的新消息都在导出里）',
+      !!data.dbstart?.afterDb && sameMem(data.export?.exported, data.dbstart.afterDb),
+      `${brief(data.export?.exported, 300)} / ${brief(data.dbstart?.afterDb, 300)}`,
+    );
+    const fileAfter = data.filechat?.fileAfter as { sessions: Session[]; orders: Order[] } | undefined;
+    check(
+      '文件存储下聊过：重置的会话订单删了（之后由 --resync 作废），新来了一个客户',
+      data.filechat?.betaOrders === 0 && !!fileAfter?.sessions.some((s) => s.id === XFER.delta),
+      `${String(data.filechat?.betaOrders)}`,
+    );
+    check(
+      '导出 → 文件存储下再聊 → --resync → db 存储启动：identity map 与文件存储下聊完的内存经 JSON 规范化之后 deepStrictEqual（验收 3）',
+      !!fileAfter && fileAfter.sessions.length === 4 && sameMem(data.dbstart2?.dump, fileAfter),
+      `${brief(data.dbstart2?.dump, 300)} / ${brief(fileAfter, 300)}`,
+    );
+    const history = (data.dbstart2?.history ?? {}) as Record<string, number>;
+    const windowOf = (id: string): number => fileAfter?.sessions.find((s) => s.id === id)?.messages.length ?? -1;
+    check(
+      '--resync 之后：库里有导出之后的新消息；重置过的会话旧消息仍在库里（窗口之外），历史比窗口长',
+      history[XFER.alpha] === windowOf(XFER.alpha) &&
+        windowOf(XFER.alpha) > fx6.sessions.find((s) => s.id === XFER.alpha)!.messages.length &&
+        history[XFER.beta]! > windowOf(XFER.beta) &&
+        history[XFER.delta] === windowOf(XFER.delta),
+      JSON.stringify(history),
+    );
+    // 同一个落盘的 PGlite 上另两条链，各用自己的租户与 var/：import 写完标记、改写 JSON 之前崩了（crash → crashstart → crashfix），
+    // 没经过 import 直接以 db 存储起时补写标记（fresh）
+    const sideChain = (label: string, slug: string, steps: string[], sessions: unknown[], orders: unknown[]): void => {
+      const sv = freshVarDir(label, sessions, orders);
+      for (const step of steps) {
+        const env = {
+          VAR_DIR: sv,
+          STORE_DATA_DIR: dataDir,
+          XFER_STEP: step,
+          XFER_SLUG: slug,
+          XFER_KEEP: keep,
+          LLM_MOCK: '1',
+          DEMO_PRUNE_HOURS: '0',
+        };
+        const r = runStoreChild('xfer', env, 90_000);
+        merge(`导入导出 ${step}`, r);
+        check(`导入导出 ${step}：子进程正常结束`, r.status === 0, `status=${r.status} ${r.out.slice(-600)}`);
+        if (r.status !== 0) break;
+      }
+    };
+    sideChain('xfer-crash', 'demo4', ['crash', 'crashstart', 'crashfix'], fx6.sessions, fx6.orders);
+    sideChain(
+      'xfer-fresh',
+      'demo5',
+      ['fresh'],
+      fx6.sessions.filter((x) => !fx6.real.includes(x.id)),
+      fx6.orders.filter((o) => !fx6.real.includes(o.sessionId)),
+    );
+  }
+
   // ---- 真实 Postgres（PG_TEST_URL）：第二个进程、另一写者、COMMIT 之后回包丢掉（验收 8） ----
   const PG_TEST_URL = process.env.PG_TEST_URL;
   if (!PG_TEST_URL) {
     if (process.env.CI === 'true') fails.push('CI 下必须设 PG_TEST_URL：另一写者与 COMMIT 断线只在真实 Postgres 上测，不能静默跳过');
-    else console.log('STORE SELFTEST：没有 PG_TEST_URL，跳过真实 Postgres 部分（第二个进程、另一写者、COMMIT 之后回包丢掉）');
+    else
+      console.log(
+        'STORE SELFTEST：没有 PG_TEST_URL，跳过真实 Postgres 部分（第二个进程、另一写者、COMMIT 之后回包丢掉、两个命令行的退出码）',
+      );
     return;
   }
   realPgRan = true;
@@ -3268,7 +4437,8 @@ async function pgSuites(): Promise<void> {
       ADMIN_PASS: '',
     });
     const serverTs = path.join(repo, 'src', 'server.ts');
-    const first = spawn(process.execPath, ['--import', 'tsx', serverTs], { cwd: repo, env: serverEnv(freshVarDir('srv1', [], []), port) });
+    const srv1 = freshVarDir('srv1', [], []);
+    const first = spawn(process.execPath, ['--import', 'tsx', serverTs], { cwd: repo, env: serverEnv(srv1, port) });
     let firstOut = '';
     first.stdout.on('data', (c: Buffer) => (firstOut += c.toString()));
     first.stderr.on('data', (c: Buffer) => (firstOut += c.toString()));
@@ -3278,6 +4448,18 @@ async function pgSuites(): Promise<void> {
     check('真实 PG：第一个进程以 SESSION_STORE=db 启动、监听', firstOut.includes('[server] 已启动'), firstOut.slice(-500));
     const hz = (await (await fetch(`http://127.0.0.1:${port}/healthz`)).json().catch(() => ({}))) as { store?: { mode?: string } };
     check('真实 PG：第一个进程的 /healthz 报 store.mode = db', hz.store?.mode === 'db', JSON.stringify(hz.store));
+    const srvMarker = (() => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(srv1, 'sessions-in-db.json'), 'utf8')) as { tenant?: unknown; sessions?: unknown };
+      } catch {
+        return null;
+      }
+    })();
+    check(
+      '真实 PG：server.ts 没经过 import-sessions 直接以 db 存储起来之后，var/ 里补写了标记文件（tenant 是 DEFAULT_TENANT_SLUG）',
+      srvMarker?.tenant === 'demo' && Number.isInteger(srvMarker.sessions),
+      JSON.stringify(srvMarker),
+    );
     const second = spawnSync(process.execPath, ['--import', 'tsx', serverTs], {
       cwd: repo,
       env: serverEnv(freshVarDir('srv2', [], []), await portOf()),
@@ -3370,6 +4552,124 @@ async function pgSuites(): Promise<void> {
         dn.dirty === 0,
       JSON.stringify(dn) + rn.out.slice(-300),
     );
+
+    // ---- 导入导出（plan 第 6 步，验收 3）：两个命令行以子进程执行、断言退出码；持锁的是真的 server.ts（db 存储） ----
+    await fxr.query(`insert into tenants (slug, name, pack_id) values ('xfer', 'xfer', 'travel')`);
+    const cli = (name: string, args: string[]) => {
+      const r = spawnSync(process.execPath, ['--import', 'tsx', path.join(repo, 'src', 'cli', `${name}.ts`), ...args], {
+        cwd: repo,
+        env: { ...base, DATABASE_URL: fxr.urls.app },
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
+      return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    };
+    check('真实 PG：import-config 给 xfer 租户导入配置（给 server 启动用）', cli('import-config', ['--tenant', 'xfer']).status === 0);
+    const fx6 = xferFixture();
+    const xv = freshVarDir('rpg-xfer', fx6.sessions, fx6.orders);
+    const xk = path.join(VAR_DIR, `rpg-xferkeep-${randomUUID()}`);
+    const marker = path.join(xv, 'sessions-in-db.json');
+    const imp = (...extra: string[]) => cli('import-sessions', ['--tenant', 'xfer', '--keep', xk, '--var', xv, ...extra]);
+    const exp = () => cli('export-sessions', ['--tenant', 'xfer', '--keep', xk, '--var', xv]);
+    const xCounts = async (): Promise<string> => {
+      const [r] = await fxr.query<{ c: number; m: number; o: number }>(
+        `select (select count(*)::int from conversations where tenant_id = t.id) c, (select count(*)::int from messages where tenant_id = t.id) m,
+                (select count(*)::int from orders where tenant_id = t.id) o from tenants t where t.slug = 'xfer'`,
+      );
+      return `${r!.c}/${r!.m}/${r!.o}`;
+    };
+    /** 真的 server.ts 以 db 存储起在 xfer 租户上，等到监听；返回进程、输出与退出 */
+    const startXferServer = async () => {
+      const p = await portOf();
+      const proc = spawn(process.execPath, ['--import', 'tsx', serverTs], {
+        cwd: repo,
+        env: { ...serverEnv(xv, p), DEFAULT_TENANT_SLUG: 'xfer' },
+      });
+      let out = '';
+      proc.stdout.on('data', (c: Buffer) => (out += c.toString()));
+      proc.stderr.on('data', (c: Buffer) => (out += c.toString()));
+      const exit = new Promise<number | null>((r) => proc.on('exit', (code) => r(code)));
+      cleanup.push(() => proc.kill('SIGKILL'));
+      for (let i = 0; i < 300 && !out.includes('[server] 已启动') && proc.exitCode === null; i++) await sleep(100);
+      const hz = out.includes('[server] 已启动')
+        ? ((await (await fetch(`http://127.0.0.1:${p}/healthz`)).json().catch(() => ({}))) as { store?: { mode?: string } })
+        : {};
+      const stop = async (): Promise<number | null | 'timeout'> => {
+        proc.kill('SIGTERM');
+        return Promise.race([exit, sleep(15_000).then(() => 'timeout' as const)]);
+      };
+      return { out: () => out, mode: hz.store?.mode, stop };
+    };
+
+    const xDry = imp('--dry-run');
+    check(
+      '真实 PG：import-sessions --dry-run 退出码 0，只打印条数与往返结果，库不动',
+      xDry.status === 0 &&
+        xDry.out.includes('dry-run：会写入 3 个真实会话、11 条消息、3 张订单') &&
+        (await xCounts()) === '0/0/0' &&
+        !fs.existsSync(marker),
+      xDry.out.slice(-400),
+    );
+    const xImported = imp();
+    check(
+      '真实 PG：import-sessions 首次导入退出码 0，打印会话、消息、订单与规范化条数，写了标记文件（验收 3）',
+      xImported.status === 0 &&
+        xImported.out.includes('已导入 3 个真实会话、11 条消息、3 张订单') &&
+        xImported.out.includes(`被规范化的字符串 ${fx6.normalized} 条`) &&
+        (await xCounts()) === '3/11/3' &&
+        fs.existsSync(marker),
+      `${xImported.out.slice(-400)} ${await xCounts()}`,
+    );
+    const xAgain = imp();
+    check('真实 PG：再导入一次退出码 0', xAgain.status === 0 && xAgain.out.includes('已经导入过'), xAgain.out.slice(-300));
+    const s1 = await startXferServer();
+    check('真实 PG：导入之后 server.ts 以 db 存储启动，/healthz 报 db', s1.mode === 'db', s1.out().slice(-500));
+    const held = imp();
+    const heldExp = exp();
+    check(
+      '真实 PG：应用持锁时 import-sessions、export-sessions 都以 3 退出，库与文件不动',
+      held.status === 3 &&
+        held.out.includes('lock_held') &&
+        heldExp.status === 3 &&
+        fs.existsSync(marker) &&
+        (await xCounts()) === '3/11/3',
+      `${held.status} ${heldExp.status} ${held.out.slice(-200)}`,
+    );
+    check('真实 PG：server.ts 收到 SIGTERM 优雅退出（143）', (await s1.stop()) === 143);
+    const e1 = exp();
+    const exported = JSON.parse(fs.readFileSync(path.join(xv, 'sessions.json'), 'utf8')) as Session[];
+    check(
+      '真实 PG：应用停了之后 export-sessions 退出码 0，删掉标记文件，真实会话回到 JSON',
+      e1.status === 0 && !fs.existsSync(marker) && fx6.real.every((id) => exported.some((s) => s.id === id)),
+      e1.out.slice(-300),
+    );
+    // 文件存储下改了一条消息（库里的窗口不再是文件窗口的前缀）：不带 --resync 是 2，带上是 0、窗口推进、整段追加
+    exported.find((s) => s.id === XFER.beta)!.messages[1]!.content = '改过的';
+    fs.writeFileSync(path.join(xv, 'sessions.json'), JSON.stringify(exported, null, 2));
+    const diff = imp();
+    check(
+      '真实 PG：JSON 与库里不一致时 import-sessions 退出码 2，点名短码、提示 --resync，库不动',
+      diff.status === 2 &&
+        diff.out.includes('TA02') &&
+        diff.out.includes('--resync') &&
+        (await xCounts()) === '3/11/3' &&
+        !fs.existsSync(marker),
+      diff.out.slice(-300),
+    );
+    const rs = imp('--resync');
+    const [beta] = await fxr.query<{ last_seq: number; window_start_seq: number }>(
+      `select last_seq, window_start_seq from conversations where id = $1 and tenant_id = (select id from tenants where slug = 'xfer')`,
+      [XFER.beta],
+    );
+    check(
+      '真实 PG：import-sessions --resync 退出码 0，接不上的窗口推到 last_seq + 1、整段追加（历史不丢），写回标记文件',
+      rs.status === 0 && beta?.window_start_seq === 7 && beta.last_seq === 12 && (await xCounts()) === '3/17/3' && fs.existsSync(marker),
+      `${rs.out.slice(-300)} ${JSON.stringify(beta)} ${await xCounts()}`,
+    );
+    const s2 = await startXferServer();
+    check('真实 PG：--resync 之后 server.ts 以 db 存储启动', s2.mode === 'db', s2.out().slice(-500));
+    check('真实 PG：第二次启动的 server.ts 收到 SIGTERM 优雅退出（143）', (await s2.stop()) === 143);
   } finally {
     for (const f of cleanup.reverse()) await Promise.resolve(f()).catch(() => {});
     await fxr.drop();

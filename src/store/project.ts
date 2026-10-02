@@ -7,6 +7,11 @@ import type { ChatMessage, Order, Session } from '../types.js';
 
 /** 「真实会话在库里，JSON 只剩 demo 类」的标记文件（spec「导入、导出与切换」）。store.ts 原样再导出，命令行从这里取 */
 export const SESSIONS_IN_DB_MARKER = 'sessions-in-db.json';
+/** var/ 下文件后端的两个 JSON：文件后端读写它们，import-sessions / export-sessions 改写它们 */
+export const SESSIONS_JSON = 'sessions.json';
+export const ORDERS_JSON = 'orders.json';
+/** PG 后端停机时写下的 spill 文件（var/store-spill-<时间>.json），下次 db 存储启动时回放 */
+export const SPILL_FILE_RE = /^store-spill-.+\.json$/;
 
 const DEMO_CLASS_RE = /^(sim-|wecom:cust_)/;
 
@@ -146,6 +151,36 @@ export function sessionToRow(s: Session): ConversationValuesShape {
 /** 预载重建：state 原样，再挂上窗口里的消息（按 seq 排好） */
 export function rowToSession(row: { state: Record<string, unknown> }, messages: ChatMessage[]): Session {
   return { ...row.state, messages } as unknown as Session;
+}
+
+/** 重建一个会话要用的列（repo/conversations.ts 的 ConversationRow 的子集） */
+export interface SessionRowShape {
+  id: string;
+  state: Record<string, unknown>;
+  lastSeq: number;
+  windowStartSeq: number;
+}
+
+/**
+ * 启动预载与 import-sessions / export-sessions 共用的重建（R2，不变量 14）：一批会话行配上它们窗口里的消息行
+ * （repo 的 readSessionBatch，按会话、seq 排好），逐个 rowToSession。窗口里的条数或 seq 对不上 last_seq、window_start_seq 时
+ * session 为 null（预载据此以 preload_integrity 拒绝启动）；windowCount 是窗口里实际读到的条数。结果与 rows 同序
+ */
+export function rebuildSessions<R extends SessionRowShape>(
+  rows: readonly R[],
+  messages: readonly (MessageRowShape & { conversationId: string })[],
+): { row: R; session: Session | null; windowCount: number }[] {
+  const byConv = new Map<string, (MessageRowShape & { conversationId: string })[]>();
+  for (const m of messages) {
+    const list = byConv.get(m.conversationId) ?? [];
+    list.push(m);
+    byConv.set(m.conversationId, list);
+  }
+  return rows.map((row) => {
+    const list = byConv.get(row.id) ?? [];
+    const consistent = list.length === row.lastSeq - row.windowStartSeq + 1 && list.every((m, i) => m.seq === row.windowStartSeq + i);
+    return { row, session: consistent ? rowToSession(row, list.map(rowToMessage)) : null, windowCount: list.length };
+  });
 }
 
 // ---------------- 消息 ----------------

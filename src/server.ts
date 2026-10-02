@@ -870,8 +870,8 @@ if (!SELFTEST) {
     // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
     initSessionStore: () => {
       if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
-      const { db, tenantId } = configRuntime();
-      return initSessionStore({ db, tenantId, varDir: varDir() });
+      const { db, tenantId, deps } = configRuntime();
+      return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
     },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {

@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { Order, Session } from '../types.js';
 import { StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
 import { deliverCommitted, type DomainEvent } from './events.js';
+import { ORDERS_JSON, SESSIONS_JSON } from './project.js';
 import { assignSeqs, seedSeqs } from './seq.js';
 
 export interface FileBackendDeps {
@@ -35,8 +36,8 @@ export interface FileBackend extends StoreBackend {
 const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
 
 export function createFileBackend(d: FileBackendDeps): FileBackend {
-  const SESSIONS_FILE = path.join(d.varDir, 'sessions.json');
-  const ORDERS_FILE = path.join(d.varDir, 'orders.json');
+  const SESSIONS_FILE = path.join(d.varDir, SESSIONS_JSON);
+  const ORDERS_FILE = path.join(d.varDir, ORDERS_JSON);
 
   /** 有没落盘改动的会话 → 最早一次改动的时刻 */
   const dirty = new Map<string, number>();

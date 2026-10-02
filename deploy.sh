@@ -2,6 +2,7 @@
 # 按 git tag 部署：git archive <tag> → 归档目录里跑四个门禁 → 查服务器 .env → rsync → 服务器上 build →
 # 换容器（docker compose：先拉起 db、跑迁移，再换 app）→ 健康检查（revision 必须等于这个 tag），失败回滚到 :prev（不跑迁移）。
 # 线上跑的每一版都是一个提交过、过了四个门禁的 tag；工作区里未提交的改动永远上不了线。
+# 回到 02 之前的镜像（部署旧 tag、自动回滚到 :prev）之前先过 deploy/rollback-guard.sh：会话在库里时拒绝，先回到文件存储。
 # 服务器上的 .env*（应用、db、migrate、platform 各一份，见 deploy/compose.yml 开头）与 var/（会话、订单、客服二维码）不受影响：
 # rsync 既不发送也不删除它们，app 容器把 var/ 挂卷进去。数据库在 compose 的数据卷里，部署不碰它。
 #
@@ -75,6 +76,10 @@ echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}$([[
 # 项目名、容器名用 NAME，宿主端口用 HOST_PORT：旁路实例因此有自己的 compose 项目、数据库卷和容器名，碰不到线上。
 # 新版本与回滚只差 APP_IMAGE
 compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
+# 回滚前检查（02 spec「回滚到 02 之前的镜像」）：目标是 02 之前的镜像而真实会话在库里时拒绝，并打印先回到文件存储的步骤。
+# 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02（已按 tag 的文件树判定）。
+# 用的是本地这份脚本：02 之前的 tag 里没有它。项目名与宿主端口传进去：打印的手工命令要带上（旁路实例不能去抢线上的端口）
+guard_rollback() { ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$1" "$NAME" "$HOST_PORT" <deploy/rollback-guard.sh; }
 
 # 1) 归档：只取 tag 里提交过的文件。目录权限改成 755：rsync -a 会把源目录的权限带到 REMOTE_DIR 上，mktemp 给的是 700
 BUILD_DIR="$(mktemp -d)"
@@ -128,6 +133,11 @@ if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_(CORP_ID|APP_SECRET|KF_OPEN_KFID
 fi
 CHECK
   echo "错误：服务器 .env 没过检查，中止部署（服务器上什么都没动）。新实例先创建 .env（参考 .env.example，至少配 LLM_API_KEY、ADMIN_PASS 与 DEPLOY_PROFILE），以及 .env.db、.env.migrate（见 deploy/compose.yml 开头）。" >&2
+  exit 1
+fi
+# 部署 02 之前的 tag 就是回滚到 02 之前的镜像（tag 里没有 src/store/pg-backend.ts）：会话在库里时在 rsync 之前拦下
+if ! git cat-file -e "refs/tags/${TAG}:src/store/pg-backend.ts" 2>/dev/null && ! guard_rollback pre-02; then
+  echo "错误：${TAG} 是 02 之前的版本，拒绝部署（服务器上什么都没动）。按上面的步骤先回到文件存储，再部署它。" >&2
   exit 1
 fi
 
@@ -215,6 +225,10 @@ ssh "${SERVER}" "docker logs --tail 40 ${NAME}" >&2 || true
 echo "[rollback] 回滚到上一个镜像 ${NAME}:prev" >&2
 if ! ssh "${SERVER}" "docker image inspect ${NAME}:prev >/dev/null 2>&1"; then
   echo "错误：服务器上没有 ${NAME}:prev（首次部署？），无法自动回滚，服务当前不可用！" >&2
+  exit 1
+fi
+if ! guard_rollback "${NAME}:prev"; then
+  echo "错误：${NAME}:prev 是 02 之前的镜像而会话在库里，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2
   exit 1
 fi
 if ssh "${SERVER}" "set -e

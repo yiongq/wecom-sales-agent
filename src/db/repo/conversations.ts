@@ -1,8 +1,10 @@
 // 会话行（02 spec「数据库」「identity map 与写入」）：预载与导出的分批读，一次落库里「锁行 → 插消息 → 更新会话行」中会话行的几步。
 // 只收发行的 TS 类型；Session 与行之间的投影在 src/store/project.ts。租户取 withTenant 的上下文
-import { and, asc, eq, gt } from 'drizzle-orm';
-import { currentTenantCtx, type Tx } from '../client.js';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { conversations } from '../schema.js';
+import { readWindowMessages, type MessageRow } from './messages.js';
+import { readLiveOrders, type OrderRow } from './orders.js';
 
 /** 由 Session 投影出来、每次落库整行写入的列 */
 export interface ConversationValues {
@@ -63,6 +65,38 @@ export async function readConversationsAfter(tx: Tx, afterId: string | null, lim
     .where(afterId === null ? undefined : gt(conversations.id, afterId))
     .orderBy(asc(conversations.id))
     .limit(limit);
+}
+
+/**
+ * 这些会话 id 按 conversations.id 的排序（库的缺省排序规则，与 readConversationsAfter 的分页同序）排好。import-sessions 按它分批写入，
+ * 库里本来没有会话时，每写完一批，上一批最后一个 id 之后的那一页正好就是这一批
+ */
+export async function orderLikeConversations(tx: Tx, ids: readonly string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  const rows = rowsOf<{ id: string }>(
+    await tx.execute(sql`select u.id from unnest(${sql.param([...ids])}::text[]) as u(id) order by u.id`),
+  );
+  return rows.map((r) => r.id);
+}
+
+/** 启动预载与 import-sessions / export-sessions 读的一批：会话行、它们窗口内的消息（按会话、seq 排序）、未作废订单 */
+export interface SessionBatch {
+  rows: ConversationRow[];
+  messages: MessageRow[];
+  orders: OrderRow[];
+}
+
+/**
+ * 预载与导入导出共用的读法（R2，不变量 14）：afterId（不含）之后按 id 的 limit 个会话，三条语句；没有会话行时只发第一条。
+ * 重建在 src/store/project.ts 的 rebuildSessions、rowToOrder
+ */
+export async function readSessionBatch(tx: Tx, afterId: string | null, limit: number): Promise<SessionBatch> {
+  const rows = await readConversationsAfter(tx, afterId, limit);
+  if (!rows.length) return { rows, messages: [], orders: [] };
+  const ids = rows.map((r) => r.id);
+  const messages = await readWindowMessages(tx, ids);
+  const orders = await readLiveOrders(tx, ids);
+  return { rows, messages, orders };
 }
 
 /** 落库第 2 步：锁住这一行（SELECT … FOR UPDATE）；没有这一行返回 null */
