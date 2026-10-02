@@ -1627,9 +1627,11 @@ check(
     top.text.slice(0, 200),
   );
   const c = (top.body.items as Body[])[0]!;
+  // 02 加了 needSummary、assignee、handoff、lastCustomerAt 四个键（02 spec「后台接口」）
   check(
-    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt',
-    JSON.stringify(Object.keys(c)) === '["id","channel","stage","handedOver","messageCount","updatedAt"]' &&
+    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt、needSummary、assignee、handoff、lastCustomerAt',
+    JSON.stringify(Object.keys(c)) ===
+      '["id","channel","stage","handedOver","messageCount","updatedAt","needSummary","assignee","handoff","lastCustomerAt"]' &&
       c.handedOver === true &&
       c.stage === 'handoff' &&
       c.messageCount === 3 &&
@@ -1734,9 +1736,9 @@ check(
       !per.human.rows.some((r) => r.id === 'wecom:cust_P02') &&
       per.human.rows.some((r) => r.id === 'wecom:cust_H01'),
   );
-  const leakedKeys = all.rows.filter((r) => ['profile', 'nickname', 'messages'].some((k) => k in r) || Object.keys(r).length !== 6);
+  const leakedKeys = all.rows.filter((r) => ['profile', 'nickname', 'messages'].some((k) => k in r) || Object.keys(r).length !== 10);
   check(
-    '会话列表：ConversationRow 的键里没有 profile、nickname、messages，只有 6 个投影字段',
+    '会话列表：ConversationRow 的键里没有 profile、nickname、messages，只有 10 个投影字段（02 加了 4 个）',
     all.rows.length > 0 && leakedKeys.length === 0,
     leakedKeys.map((r) => Object.keys(r).join('|')).join(' '),
   );
@@ -1789,7 +1791,7 @@ check(
     `${quoteAll.total} / ${quoteAi.total}`,
   );
   const bad = await Promise.all(
-    ['state=assigned', 'state=AI', 'stage=Quote', 'stage=quote-1', `stage=${'a'.repeat(33)}`, 'order=latest'].map(
+    ['state=handoff', 'state=AI', 'stage=Quote', 'stage=quote-1', `stage=${'a'.repeat(33)}`, 'order=latest'].map(
       async (q) => (await call('GET', `/conversations?${q}`, O)).status,
     ),
   );
@@ -1804,9 +1806,9 @@ check(
   const cb = counts.body as { total: number; byState: Record<string, number>; aiByStage: Record<string, number>; updatedToday: number };
   const sum = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0);
   check(
-    'counts：byState 三项之和等于 total，aiByStage 之和等于 byState.ai（不变量 18）',
+    'counts：byState 四项之和等于 total，aiByStage 之和等于 byState.ai（不变量 18；02 加了 assigned）',
     counts.status === 200 &&
-      JSON.stringify(Object.keys(cb.byState).toSorted()) === '["ai","human","paid"]' &&
+      JSON.stringify(Object.keys(cb.byState).toSorted()) === '["ai","assigned","human","paid"]' &&
       sum(cb.byState) === cb.total &&
       sum(cb.aiByStage) === cb.byState.ai,
     counts.text,

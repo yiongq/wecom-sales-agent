@@ -1,8 +1,21 @@
 // 全项目共享契约。构建各模块时以此为准，不要私自改动已有字段。
 import type { SalesSegment } from './shared/catalog-types.js';
+import type { Assignee, HandoffRecord, OrderStatus } from './shared/conversation-types.js';
+import { cleanText } from './shared/text.js';
 
 // 产品库的类型搬到 shared/catalog-types.ts（前后端共用，只依赖 zod），这里再导出，原有的 import 不用改
 export { SALES_SEGMENTS, type Hotel, type Route, type SalesSegment } from './shared/catalog-types.js';
+// 会话相关的共享契约类型定义在 shared/conversation-types.ts（02 spec「模块与依赖方向」），服务端模块经这里引用
+export type {
+  Assignee,
+  HandoffKind,
+  HandoffRecord,
+  MessageAuthor,
+  OrderStatus,
+  OutboundKind,
+  PaymentMode,
+  SendWindow,
+} from './shared/conversation-types.js';
 
 /** 销售阶段，由引擎在每轮回复后判定 */
 export type SalesStage =
@@ -19,8 +32,15 @@ export interface ChatMessage {
   role: 'customer' | 'agent' | 'system';
   content: string;
   at: number;
-  /** 企微非文本消息的占位带上原消息的 msgid，重放时据此判断是否已经记过。01 迁入时保留 */
+  /** 企微客户消息的 msgid（02 起文本消息也带，不只非文本占位），重放时据此判断是否已经记过。01 迁入时保留 */
   msgid?: string;
+  /** 企微客户消息的 send_time（毫秒）：发送窗口从它起算（R18）；比处理时刻 at 早 */
+  sentAt?: number;
+  /** 只用于 role='agent'：ai（缺省）、human（顾问人工回复）、followup（自动跟进） */
+  author?: 'ai' | 'human' | 'followup';
+  /** author='human' 时：操作者的 user id（共享工作台为 null）与写入时的姓名快照 */
+  authorId?: string | null;
+  authorName?: string;
 }
 
 /** 从对话中沉淀的客户画像，引擎每轮增量更新 */
@@ -52,7 +72,7 @@ export function profileForPrompt(p: CustomerProfile): Partial<CustomerProfile> {
     travelers,
     dates,
     budget,
-    ...(notes?.length ? { notes: notes.slice(0, 5).map((n) => String(n).slice(0, 40)) } : {}),
+    ...(notes?.length ? { notes: notes.slice(0, 5).map((n) => cleanText(String(n), 40)) } : {}),
   };
 }
 
@@ -118,6 +138,22 @@ export interface Session {
    * 之后 AI 不再应答，客户问「那你推荐的那个多少钱」没人理（见 engine.ts unwarrantedHandoff）。
    */
   missedDestinations?: { place: string; at: number }[];
+  /** 本次转人工的记录（R9）：交还、重置时清 */
+  handoff?: HandoffRecord;
+  /** 第一次转人工的时间，永不清 */
+  firstHandoffAt?: number;
+  /** 转人工次数，只增不减 */
+  handoffCount?: number;
+  /** 接手人：从「未转人工」进入转人工时清成 null，交还、重置时清 */
+  assignee?: Assignee | null;
+  /** 最近 6 轮是否失败（0 / 1，新的在后），R15；重置时清 */
+  turnSignals?: number[];
+  /** 最近 3 条客户消息的负面情绪命中（0 / 1 / 2 = 无 / 弱 / 强），R15；重置时清 */
+  negativeHits?: number[];
+  /** 客户说了不要再发跟进（02 第 10 步） */
+  followupOptOut?: { at: number; quote: string };
+  /** 敏感信息的同意状态（R23，02 第 16 步） */
+  consent?: Partial<Record<'health' | 'minor', 'asked' | 'granted' | 'declined' | 'withdrawn'>>;
 }
 
 export interface Order {
@@ -130,11 +166,21 @@ export interface Order {
   totalPrice: number; // 元
   /** superseded：客户下单后改了人数/日期，同一条线重新下了一单，这张待付款的旧单作废（见 tools.ts create_order）。
    *  此前旧单一直挂着待付款，模型嘴上说「之前那笔作废了」，客户点旧链接照样能付，后台也看到两张待付款 */
-  status: 'pending_payment' | 'paid' | 'cancelled' | 'superseded';
+  status: OrderStatus;
   createdAt: number;
   paidAt?: number;
   /** 替代它的新订单号（status=superseded 时有） */
   supersededBy?: string;
+  /** 标记已付时，会话是否曾经转过人工（R9） */
+  handoffBeforePaid?: boolean;
+  /** 下单时线路的条目版本（02 第 8 步） */
+  catalogVersion?: number;
+  /** advisor 收款方式下顾问确认价格的时间与操作者（02 第 15 步） */
+  confirmedAt?: number;
+  confirmedBy?: { userId: string | null; name: string };
+  /** 顾问确认收款的操作者（02 第 15 步） */
+  paidMarkedBy?: { userId: string | null; name: string };
+  cancelReason?: string;
 }
 
 /** 引擎对一条客户消息的处理结果 */

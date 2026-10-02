@@ -299,6 +299,10 @@ const row = (id: string, channel = 'wecom'): ConversationRow => ({
   handedOver: true,
   messageCount: 2,
   updatedAt: '',
+  needSummary: null,
+  assignee: null,
+  handoff: null,
+  lastCustomerAt: null,
 });
 eq('会话标签：企微客户 · F01', conversationLabel(row('wecom:cust_F01'), PACK), ['企微客户', 'F01']);
 eq(

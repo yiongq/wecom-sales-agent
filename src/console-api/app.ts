@@ -88,6 +88,7 @@ import {
   type CatalogItem,
   type ConversationCounts,
   type ConversationPage,
+  type ConversationRow,
   type DraftCheck,
   type Me,
   type Role,
@@ -96,7 +97,8 @@ import {
   type SopVersion,
   type Status,
 } from '../shared/console-api.js';
-import { conversationState } from '../shared/conversation.js';
+import { SALES_SEGMENTS } from '../shared/catalog-types.js';
+import { conversationState, needSummary, type NeedVocabulary } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
@@ -225,6 +227,38 @@ const meOf = (u: AuthedUser): Me => ({
  */
 const listedSessions = () => listSessions().filter((s) => !s.id.startsWith('sim-'));
 type Listed = ReturnType<typeof listedSessions>[number];
+
+/**
+ * needSummary 的词表：目的地取产品库 active 条目的 destination；客群取旅游包的五个客群值，短标签暂时就是客群值本身
+ * （「贵州银发4人」）。spec 举例的「带爸妈」这类短标签要进行业包的词汇表，用到的字不在 UI 优先片里，要重切字体，留给画列表的第 19 步
+ */
+const needVocabulary = (): NeedVocabulary => ({
+  destinations: [...new Set(currentCatalog().routes.map((r) => r.destination))],
+  segments: Object.fromEntries(SALES_SEGMENTS.map((k) => [k, k])),
+});
+
+/** 客户最后一条消息的时间：企微 send_time（sentAt），没有就用处理时刻 at */
+function lastCustomerAt(s: Listed): string | null {
+  for (let i = s.messages.length - 1; i >= 0; i -= 1) {
+    const m = s.messages[i]!;
+    if (m.role === 'customer') return new Date(m.sentAt ?? m.at).toISOString();
+  }
+  return null;
+}
+
+/** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像 */
+const conversationRow = (s: Listed, vocab: NeedVocabulary): ConversationRow => ({
+  id: s.id,
+  channel: s.channel,
+  stage: s.stage,
+  handedOver: s.handedOver,
+  messageCount: s.messages.length,
+  updatedAt: new Date(s.updatedAt).toISOString(),
+  needSummary: needSummary(s.profile, vocab),
+  assignee: s.assignee ? { userId: s.assignee.userId, name: s.assignee.name } : null,
+  handoff: s.handoff ? { kind: s.handoff.kind, at: new Date(s.handoff.at).toISOString(), reason: s.handoff.reason } : null,
+  lastCustomerAt: lastCustomerAt(s),
+});
 /** 01 的顺序：(updatedAt desc, id) */
 const byRecent = (a: Listed, b: Listed): number => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 /** 等人接手的在前，同组内仍按 (updatedAt desc, id)（设计系统 §10.0 修正 1：I 页里 F01 在 A01 前） */
@@ -439,30 +473,24 @@ export const consoleApi = new Hono<ConsoleEnv>()
 
   // ---------------- 会话只读列表 ----------------
   // 读现有的文件 store：先按 state、stage 过滤，按 (updatedAt desc, id) 或 waiting_first 排序，再 offset 分页；
-  // 每条只投影几个字段，不把 store 里的活对象原样返回。不列 sim- 会话。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移
+  // 每条只投影几个字段（conversationRow）。不列 sim- 会话。演示数据保鲜会整体平移时间戳，保鲜期间翻页可能漂移
   .get('/conversations', canSeeCustomers, zValidator('query', ConvQuery, badRequest), (c) => {
     const { limit = 20, offset = 0, state, stage, order } = c.req.valid('query');
     const pack = currentTenant().pack; // 已成交按租户行业包的终态判定（不变量 17）
     const all = listedSessions()
       .filter((s) => (!state || conversationState(s, pack) === state) && (!stage || s.stage === stage))
       .toSorted(order === 'waiting_first' ? waitingFirst(pack) : byRecent);
+    const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,
-      items: all.slice(offset, offset + limit).map((s) => ({
-        id: s.id,
-        channel: s.channel,
-        stage: s.stage,
-        handedOver: s.handedOver,
-        messageCount: s.messages.length,
-        updatedAt: new Date(s.updatedAt).toISOString(),
-      })),
+      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, vocab)),
     };
     return c.json(page, 200);
   })
   // 一次同步遍历算完（后台 UX spec「接口改动」）：同一次响应里 byState 之和等于 total，aiByStage 之和等于 byState.ai（不变量 18）
   .get('/conversations/counts', canSeeCustomers, (c) => {
     const midnight = new Date(clock()).setHours(0, 0, 0, 0); // 服务器时区（TZ）的今天 0 点
-    const body: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
+    const body: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, assigned: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
     const pack = currentTenant().pack;
     for (const s of listedSessions()) {
       const state = conversationState(s, pack);

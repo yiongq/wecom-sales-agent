@@ -115,6 +115,10 @@ const conv = (short: string, stage: string, handedOver: boolean, messageCount: n
   handedOver,
   messageCount,
   updatedAt: at(updatedAt),
+  needSummary: null,
+  assignee: null,
+  handoff: null,
+  lastCustomerAt: null,
 });
 /** seed-demo.py --scenario console-ux --now 2026-09-26T14:30+08:00 的 13 个会话（顺序打乱，由假接口排） */
 const SCENE: ConversationRow[] = [
@@ -162,7 +166,7 @@ const SCENE: ConversationRow[] = [
 // 页签
 const COUNTS: ConversationCounts = {
   total: 13,
-  byState: { ai: 10, human: 2, paid: 1 },
+  byState: { ai: 10, human: 2, assigned: 0, paid: 1 },
   aiByStage: { discovery: 4, recommend: 3, quote: 2, closing: 1 },
   updatedToday: 6,
 };
@@ -323,7 +327,7 @@ function respond(method: string, url: URL): Response {
   const all = server.conversations;
   const pack = server.pack ?? TRAVEL;
   if (method === 'GET' && p === '/conversations/counts') {
-    const c: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
+    const c: ConversationCounts = { total: 0, byState: { ai: 0, human: 0, assigned: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 };
     for (const row of all) {
       const s = conversationState(row, pack);
       c.total += 1;

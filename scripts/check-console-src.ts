@@ -67,7 +67,7 @@ const isPackConfig = (f: string): boolean =>
 // ---------- 不变量 11 的词表 ----------
 
 /** 会话状态值（ConversationState），不是行业包的词；paid 碰巧也是旅游包的阶段 key */
-const SESSION_STATES = new Set(['ai', 'human', 'paid']);
+const SESSION_STATES = new Set(['ai', 'human', 'assigned', 'paid']);
 
 /** 通用词白名单：撞上了行业包的词，但 console 自己也要用。每项写明理由；只在某几个文件里通用的，only 写明文件，别处照报 */
 const GENERIC: Readonly<Record<string, string | { why: string; only: readonly string[] }>> = {
