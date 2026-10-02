@@ -1156,11 +1156,24 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     cfg.configHealth().lock === 'lost' && thrown(() => cfg.assertConfigWritable()) === 'ConfigLockLostError',
   );
   check('锁：lost 期间对话照常（读缓存）', loadRoutes().length > 0 && cfg.currentSop().versionNo === 1);
+  // 02 spec「两种会话存储与启动」：租户锁不在本进程手里时 /healthz 的 ok 为 false，HTTP 照旧 200（外部拨测看 ok）
+  const { app: healthApp } = await import('../server.js');
+  const healthOf = async (): Promise<{ status: number; ok: boolean }> => {
+    const r = await healthApp.request('/healthz');
+    return { status: r.status, ok: ((await r.json()) as { ok: boolean }).ok };
+  };
+  const lostHealth = await healthOf();
+  check(
+    '/healthz：租户锁 lost 时 ok 为 false，HTTP 照旧 200',
+    lostHealth.status === 200 && lostHealth.ok === false,
+    JSON.stringify(lostHealth),
+  );
   await wait(40);
   check('锁：连不上就一直重取，仍是 lost', lock.reacquired >= 2 && cfg.configHealth().lock === 'lost', String(lock.reacquired));
   lock.next = 'ok';
   await wait(40);
   check('锁：重取成功回到 held', cfg.configHealth().lock === 'held');
+  check('/healthz：锁重新拿到之后 ok 恢复为 true', (await healthOf()).ok === true);
   lock.next = 'held_by_other';
   lock.lose();
   await wait(40);
@@ -1367,6 +1380,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     try {
       await boot({
         initConfig: init,
+        initSessionStore: async () => {},
         serve: (onListening) => {
           calls.push('serve');
           onListening();

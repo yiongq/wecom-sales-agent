@@ -60,6 +60,8 @@ const PACK_SELFTEST = 'console/src/fields/fields.selftest.tsx';
 const PACK_REGISTRY = 'src/packs/registry.ts';
 const PACKS_DIR = 'src/packs/';
 const PACK_FIXTURES = 'src/shared/pack-fixtures/';
+/** 02 的纯函数模块（还没建的照样登记，建出来就管） */
+const PURE_STORE = ['src/store/project.ts', 'src/store/seq.ts', 'src/handoff/triggers.ts'];
 
 const IMPORT_RULES: ImportRule[] = [
   {
@@ -110,6 +112,20 @@ const IMPORT_RULES: ImportRule[] = [
     desc: 'src/prompt/ 与 src/sop/ 不能 import src/db/ 和 src/config/',
     applies: (f) => under(f, 'src/prompt/') || under(f, 'src/sop/'),
     bad: (i) => under(i.target, 'src/db/') || under(i.target, 'src/config/'),
+  },
+  {
+    // 02 spec「模块与依赖方向」：这几个文件是纯函数，配向量表或往返自测
+    desc: `${PURE_STORE.join('、')} 是纯函数：不 import src/db/、store、engine、tools、llm、adapters`,
+    applies: (f) => PURE_STORE.includes(f),
+    bad: (i) =>
+      under(i.target, 'src/db/') ||
+      under(i.target, 'src/adapters/') ||
+      ['src/store.ts', 'src/engine.ts', 'src/tools.ts', 'src/llm.ts'].includes(i.target ?? ''),
+  },
+  {
+    desc: 'src/db/、src/config/、src/cli/ 不 import src/store/（project.ts 除外）',
+    applies: (f) => (under(f, 'src/db/') || under(f, 'src/config/') || under(f, 'src/cli/')) && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/store/') && i.target !== 'src/store/project.ts',
   },
   {
     // 自测要动态 import 运行时模块来搭场景，这一条不管 *.selftest.ts（上面几条照管）

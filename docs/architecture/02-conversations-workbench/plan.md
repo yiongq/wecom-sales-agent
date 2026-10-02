@@ -24,7 +24,7 @@
     - 匿名可读、直接返回 store 原对象的旧接口；
     - 锁定套件与 `eval/cases.json` 里含「高反、受伤、骨折、护照、证件、丢了、被困、走丢、急救、失望、无语、垃圾、坑、离谱、不用了、别发了、不需要、撤回、删除」的客户原话，逐句写下它们现在的期望结果（第 11、16 步的规则不许改变这些结果）。
   - 文档收尾：01 spec 与后台 UX spec 顶部各加一行 `Amended by: [02 · 会话入库 + 坐席工作台](../../architecture/02-conversations-workbench/spec.md)`（路径按各自位置写对）。「部分取代」规则与两份 spec 的 `Superseded in part by:` 已在 2026-10-02 加好（开放问题 1 选 A），不再动。其余不动；后台 UX plan「Open」里交接卡措辞那一条标「已由 02 spec 解决（R12）」；总参考「开放问题」里 identity map、自测存储、`rerender` 三条写明「已由 02 spec 定」。
-- [ ] 2. store 门面、停机与启动顺序（2.5）：
+- [x] 2. store 门面、停机与启动顺序（2.5）：2026-10-02 完成，取舍与第 5、6 步要注意的事见「实施记录 · 第 2 步」。
   - `src/shutdown.ts`：从 `store.ts` 搬出信号接线、`onShutdown`、`runShutdownHooks`、`gracefulExit`，加 normal / drain / late 三段与各段时限；`store.ts` 原样再导出。
   - `src/store/backend.ts` 的 `StoreBackend`；`src/store/seq.ts` 的 `assignSeqs`（文件存储与 demo 类用宽松模式）；把 `src/store.ts` 现有的持久化抽成文件后端，导出的名字与行为不变，导入期副作用两种模式相同（R3）。
   - 新增 `sessionStoreMode()`、`isDemoClassId()`、`initSessionStore()`（文件分支：标记文件 → `sessions_in_db`）、`flushSession(id, { timeoutMs })`、`drainStore()`、`seqOf()`、`emitAfterCommit()` / `onCommitted()`（文件后端在落盘之后发）、`storeHealth()`；`SESSION_STORE` 的校验接进 01 的 `initConfigFromEnv`（非法值、`db` 而 `CONFIG_SOURCE` 不是 `db` → `env_invalid`）。
@@ -310,6 +310,31 @@
    - 注意（第 10 步）：拒绝识别别按子串收「不用」「算了」：「先不用发方案了，我再想想」（`engine.selftest:1225`）、「不用再看看了，就订这个」（`engine.selftest:3571`，W9 纯函数的反例）、「不用倒时差」（`engine.selftest:2091`、`4205`，`cases.json:40`、`128`）、「算了 就这个吧 订」（`cases.json:809`）、「别的不考虑」（`engine.selftest:385` 等）。
    - 注意（第 16 步）：撤回同意类的词零命中；同意菜单只在发布过隐私说明后启用，DB 模式 mock eval 的 `installSeededConfig` 不能顺手发布隐私说明。
 
+### 第 2 步 · store 门面、停机与启动顺序（2026-10-02）
+
+- 结构：`src/store.ts` 仍持有两张 Map，落盘搬进 `src/store/file-backend.ts`（读 JSON、损坏改名、探针、200ms 去抖、原子写、`exit` 时同步写出，内容与时机照旧）；`src/store/backend.ts` 是 `StoreBackend`、`StoreHealth`，以及 `SessionStoreStartupError`、`StoreLaggingError`（放这里而不是 store.ts：`boot.ts` 要认它们，又不该带上 store 的导入期副作用；store.ts 再导出）；`src/store/events.ts` 是 `DomainEvent` 与提交后的总线；`src/store/seq.ts` 是 seq 分配。门面按会话 id 选后端：装了 PG 后端（第 5 步）时真实会话走 PG，demo 类与文件存储走文件。
+- 与 spec 写法不同、记在这里的取舍：
+  - `sessionStoreMode()` 返回当前装着的后端（装上 PG 后端之后才是 `db`），不直接读 `SESSION_STORE`：第 5、7 步的自测要在 `selftest-env.ts` 钉着 `file` 的进程里显式装上 PG 存储，读环境变量就会在那里报错的模式。`SESSION_STORE` 的取值只在两处读：`initConfigFromEnv` 校验，`server.ts` 的 `boot` 接线据此给 `initSessionStore` 传依赖或 `null`。
+  - `assignSeqs(session, mode)` 多一个 `'strict' | 'lenient'`（默认 strict），由后端选：文件后端一律 lenient，第 5 步的 PG 后端对真实会话用 strict。strict 按「实施记录 · 第 1 步」第 1 类的注意写：已有 seq 的必须是数组开头连续的一段、逐条加 1、最后一条等于分配过的最大 seq、第一条不早于上次的窗口起点；窗口里原有的消息全没了，只有先调过 `noteWindowReset(session)` 才算重置，否则当整体换成副本。引擎的重置路径在第 5 步接上 `noteWindowReset`（文件存储下不需要）。
+  - `StoreBackend` 多一个 `emitAfterCommit(sessionId, ev)`：事件要排在那个后端的下一次提交上。
+  - `initSessionStore(deps)` 在第 5 步之前直接拒绝启动（普通 `Error`，不借用 spec 的拒绝原因），不回落到文件存储。
+  - 停机钩子收到 `{ deadline }`（这一段的截止时刻），drain 段的钩子按它算剩余预算；`runShutdownHooks(timeoutMs)` 按 6 : 1.5 : 0.5 分给三段，normal 从开始算、后两段从上一段结束时算，所以锁定自测里的 `runShutdownHooks(200)` / `(3000)` 照旧。日志前缀由 `[store]` 改成 `[shutdown]`（没有自测截这几行）。
+  - `src/shared/conversation-types.ts` 提前建出，先放 `DomainEvent` 要的 `HandoffKind`、`MessageAuthor`、`OrderStatus`，第 3 步补其余。
+- 文件后端的写库健康：`dirty` 与 `lagMs` 按「有没落盘改动的会话」算，落盘失败时 `lastError` 记 errno 码（如 `EISDIR`）；事件与 `flushSession` 的等待只在落盘成功之后放行，失败时留到下一次成功（不自动重试，与开工时相同：下一次改动才再落盘）；`exit` 时上次落盘失败留下的改动也再写一次。
+- `/healthz`：加 `store: { mode, dirty, lagMs, conflict, poisoned }`（`poisoned` 是个数）；`ok` 在冲突、有 poisoned、积压超过 120 秒或租户锁是 `lost` 时为 false，HTTP 照旧 200。
+- `scripts/check-boundaries.ts` 加两条：`src/store/project.ts`、`seq.ts`、`src/handoff/triggers.ts` 是纯函数；`src/db/`、`src/config/`、`src/cli/` 不 import `src/store/`（`project.ts` 除外）。
+- 新自测 `src/store/store.selftest.ts` 串在 `server.selftest.ts` 之后。锁定套件全绿、断言零修改；`PREFIX sha256` 与第 1 步相同。
+- 审查（四路，每路的发现另由一个 agent 反驳核实）之后改的：db 存储下孤儿订单（所属会话不在内存里）也归文件后端落盘，不再被过滤掉；`assignSeqs` / `seedSeqs` 跳过畸形的旧数据（没有 messages、数组里有 null），与开工时「碰到才出错、不在导入期崩」一致；drain、late 两段的截止不超过总上限（normal 的计时器因事件循环阻塞晚触发时不顺延）；自测补上落盘失败时事件确实没发、flush 的超时、积压按最早一次改动算、drain 的失败路径、宽松模式的中间插入、exit 时同步写出（含上次落盘失败后再写一次）、真实 `server.ts` 遇标记文件拒绝启动、导入期不发起网络连接与保鲜清理照常、`/healthz` 在锁 `lost` 时 `ok` 为 false（在 `config.selftest.ts` 的锁状态机里）。文件存储下 `storeEvents` 的 `change` 照旧不论落盘成败都发（R3），改成「提交后发」归第 13 步。
+- 在隔离副本里重放审查者报的 14 个变异（落盘失败也发事件、三段都从开始算、去掉总上限、宽松模式从第一条没 seq 的起分配、flush 忽略超时、积压按最近一次改动算、server 不调 initSessionStore、drain 一律报空、exit 只在有定时器时写、导入期在 db 下连网或跳过保鲜、SESSION_STORE 只在非 DB 配置时校验、seq 不防畸形数据、去掉孤儿订单归属），`store.selftest.ts` 杀掉 13 个；剩下的孤儿订单归属要到第 5 步装上 PG 后端才测得到（见下）。
+- 注意（第 5 步）：
+  - 严格模式抛 `WindowCorruptError` 之后不改状态；PG 后端捕获后把会话标成 poisoned，之后对这个会话改用 `assignSeqs(s, 'lenient')`，新消息照样有 seq，spill 才写得出「未提交的消息连同 seq」。
+  - 引擎的重置路径在 `messages = []` 之前调 `noteWindowReset(session)`（经 store 再导出）。
+  - seq 的状态以会话对象为键：`saveSession` 收到与 identity map 里不是同一个对象的同 id 会话时，PG 后端要拒绝或迁移状态（不变量 3），否则宽松模式会编出重复的 seq。
+  - 孤儿订单的归属：有了 `!sessions.has(o.sessionId)` 这一条，之后同 id 的真实会话又建出来时，这张订单要转归 PG 后端；补「db 存储下落盘之后孤儿订单仍在 orders.json」的用例。
+  - `installPgSessionStore()` 写在 `src/db/testing.ts` 会撞上依赖规则（`src/db/` 不 import `store` 与 `src/store/**`）：让它只建 PGlite 库与租户、返回 `SessionStoreDeps`，由调用方 `initSessionStore(deps)`；或者放到 `src/store/testing.ts`。不为它在规则里开例外。
+- 注意（第 6 步）：命令行不能 import `store.ts`（01 的配置层规则），`isDemoClassId` 与标记文件名要搬到纯模块（`project.ts`）再由 store.ts 再导出，不要在 CLI 里抄一份正则。
+- 验收 1 的 `.env` 一项：在仓库副本里写 `SESSION_STORE=db`、`CONFIG_SOURCE=db`、`DATABASE_URL`（指向不存在的库）、`DEFAULT_TENANT_SLUG` 再跑 `pnpm test`，退出码 0，PASS 行数与工作区相同（58 行），`PREFIX sha256` 相同。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -347,3 +372,10 @@
 - 半成品：无。
 - 阻塞：无。「Open」里新增三处待 owner 定，最早的一处在第 3 步写匿名投影之前要答复。
 - 下一步：第 2 步「store 门面、停机与启动顺序」。先读「实施记录 · 第 1 步」第 1 类的「注意（第 2 步）」：`assignSeqs` 要校验连续，重置要显式告诉 store。
+
+### 交接（2026-10-02，第 2 步）
+
+- 已完成：第 2 步。store 门面与文件后端、三段停机、`SESSION_STORE` 校验、boot 多一步、`/healthz` 的 `store` 与 `ok`、`store.selftest.ts`（110 项）。锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
+- 半成品：无。
+- 阻塞：无。「Open」里第 1 步带出的三处仍待 owner 定，最早的一处（交还消息里的顾问姓名）在第 3 步写匿名投影之前要答复；没答复就先按推荐做，投影函数留好改写的位置。
+- 下一步：第 3 步「与存储无关的引擎与类型改动」。先读「实施记录 · 第 1 步」第 2、3、5、7 类与「Open」。
