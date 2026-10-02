@@ -193,6 +193,8 @@ export interface PgBackendDeps {
   onConflict(detail: string): void;
   /** 租户锁还在本进程手里。被别的进程拿走（held_by_other）时 drain 不写库，直接 spill */
   writable(): boolean;
+  /** 每次提交之后调（store.ts 接旧 /api/admin/stream 的 change，只在提交之后发，不变量 10） */
+  afterCommit?(): void;
 }
 
 export interface PgStoreStats {
@@ -689,6 +691,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     e.since = isDirty(e) ? (e.sinceNext ?? Date.now()) : null;
     e.sinceNext = null;
     deliverCommitted(snap.events);
+    d.afterCommit?.();
     for (const w of e.waiters) {
       if (w.gen <= e.committedGen) {
         e.waiters.delete(w);

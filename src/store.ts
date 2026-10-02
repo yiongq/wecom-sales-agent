@@ -80,6 +80,20 @@ const backendFor = (sessionId: string): StoreBackend => (pgBackend && !isDemoCla
 const pgFor = (sessionId: string): PgBackend | null =>
   pgBackend && !isDemoClassId(sessionId) && sessions.has(sessionId) ? pgBackend : null;
 
+let changeTimer: NodeJS.Timeout | null = null;
+/**
+ * db 存储下真实会话的提交：旧的 /api/admin/stream 照样收到 storeEvents 的 change（与文件后端一样约 200ms 合并一次），
+ * 只在提交之后（不变量 10）。文件存储下 change 仍由文件后端在每次去抖落盘之后发
+ */
+function committedChange(): void {
+  if (changeTimer) return;
+  changeTimer = setTimeout(() => {
+    changeTimer = null;
+    storeEvents.emit('change');
+  }, 200);
+  changeTimer.unref();
+}
+
 /** 当前装着的会话存储：装上 PG 后端之后是 'db'，否则 'file'。SESSION_STORE 的取值由 01 的 initConfigFromEnv 校验 */
 export function sessionStoreMode(): SessionStoreMode {
   return pgBackend ? 'db' : 'file';
@@ -116,6 +130,7 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     orders,
     onConflict: (detail) => gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`),
     writable: () => !tenantLockTaken(),
+    afterCommit: committedChange,
   });
   backend.install();
   pgBackend = backend;

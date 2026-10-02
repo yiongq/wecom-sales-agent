@@ -1605,11 +1605,17 @@ async function childPg(ck: Ck): Promise<void> {
     const off = store.onCommitted((ev) => {
       if (ev.id === s.id) got.push(ev.type);
     });
+    await sleep(250); // 上一次提交合并出来的那个 change 先发完
+    let changes = 0;
+    const onChange = (): void => {
+      changes++;
+    };
+    store.storeEvents.on('change', onChange);
     let open!: () => void;
     fx.faults.gate = new Promise<void>((r) => (open = r));
     store.emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
-    await sleep(30);
-    ck('事件：落库还没提交时不发', got.length === 0);
+    await sleep(250);
+    ck('事件：落库还没提交时不发（领域事件与旧 /api/admin/stream 的 change 都不发）', got.length === 0 && changes === 0);
     fx.faults.gate = null;
     fx.faults.acquire = fakeDbError('08006');
     const retries0 = stats().retries;
@@ -1623,8 +1629,12 @@ async function childPg(ck: Ck): Promise<void> {
       String(h.lastError),
     );
     fx.faults.acquire = null;
+    ck('事件：提交失败时旧 /api/admin/stream 的 change 也不发', changes === 0);
     await store.flushSession(s.id, { timeoutMs: 4000 }); // 1 秒后的那次重试
     ck('事件：恢复之后随重试提交恰好发出一次', got.join() === 'conversation.changed', got.join());
+    await sleep(250);
+    ck('事件：提交之后旧 /api/admin/stream 收到 change（约 200ms 合并一次）', changes === 1, String(changes));
+    store.storeEvents.off('change', onChange);
     off();
   }
 
@@ -1911,6 +1921,44 @@ async function childPg(ck: Ck): Promise<void> {
       '附带行：demo 类会话的 trace、任务不入库',
       (await count(`select count(*)::int as n from turn_traces where conversation_id like 'sim-%'`)) === 0,
     );
+  }
+
+  // ---- 失败分两类：按 SQLSTATE（spec「失败」） ----
+  {
+    const table: [string, Error, 'data' | 'retry'][] = [
+      ['22P05（数据，如 text 里的 NUL）', fakeDbError('22P05'), 'data'],
+      ['23505（约束）', fakeDbError('23505'), 'data'],
+      ['42501（权限）', fakeDbError('42501'), 'data'],
+      ['不带 code 的 TypeError（确定性的程序错误）', new TypeError('x is undefined'), 'data'],
+      ['08006（连接）', fakeDbError('08006'), 'retry'],
+      ['40001（串行化失败）', fakeDbError('40001'), 'retry'],
+      ['40P01（死锁）', fakeDbError('40P01'), 'retry'],
+      ['57014（语句超时）', fakeDbError('57014'), 'retry'],
+      ['53300（连接数满）', fakeDbError('53300'), 'retry'],
+      ['57P01（库在停机）', fakeDbError('57P01'), 'retry'],
+      ['ECONNREFUSED（网络层）', fakeDbError('ECONNREFUSED'), 'retry'],
+      ['不带 code 的「连接意外中断」', new Error('Connection terminated unexpectedly'), 'retry'],
+    ];
+    let i = 0;
+    for (const [label, err, want] of table) {
+      const s = mk(`wecom:wmClassify${++i}`);
+      const r0 = stats().retries;
+      fx.faults.acquire = err;
+      say(s, 'customer', label);
+      await sleep(20);
+      fx.faults.acquire = null;
+      const got = poisoned(s.id) ? 'data' : stats().retries - r0 === 1 ? 'retry' : '?';
+      ck(`失败分类：${label} → ${want === 'data' ? '不重试、标 poisoned' : '退避重试'}`, got === want, got);
+    }
+    // 慢事务：单个落库事务超过 2 秒记一行 warn 并计数
+    const s = mk('wecom:wmSlow1');
+    await store.flushSession(s.id);
+    const slow0 = stats().slowTx;
+    fx.faults.gate = sleep(2100) as Promise<void>;
+    say(s, 'customer', '慢');
+    fx.faults.gate = null;
+    await store.flushSession(s.id, { timeoutMs: 5000 });
+    ck('慢事务：超过 2 秒的落库计数', stats().slowTx - slow0 === 1);
   }
 
   // ---- drain：退避中的重试立即再试；租户锁在别人手里时不写库 ----
