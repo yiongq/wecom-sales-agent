@@ -121,6 +121,39 @@ export function isUniqueViolation(e: unknown, constraint?: string): boolean {
   return false;
 }
 
+/**
+ * 驱动错误的错误码与约束名：SQLSTATE（如 23514）或网络层的 errno 码（如 ECONNREFUSED），沿 cause 链找第一个带 code 的；
+ * 两个驱动的错误都带 code / constraint，经 drizzle 的包在 cause 里。没有就是 null（node-postgres 的「连接意外中断」不带 code）
+ */
+export function pgErrorOf(e: unknown): { code: string | null; constraint: string | null } {
+  for (let x: unknown = e; x && typeof x === 'object'; x = (x as { cause?: unknown }).cause) {
+    const err = x as { code?: unknown; constraint?: unknown };
+    if (typeof err.code === 'string' && err.code) {
+      return { code: err.code, constraint: typeof err.constraint === 'string' && err.constraint ? err.constraint : null };
+    }
+  }
+  return { code: null, constraint: null };
+}
+
+/**
+ * 在事务里开一个存档点跑 fn（02 spec「identity map 与写入」第 6 步的 SAVEPOINT telemetry）：fn 成功就释放存档点；
+ * fn 抛错就回到存档点、返回 { ok: false, error }，事务照常往下走。回到存档点本身失败（连接断了、事务已经坏了）才抛。
+ * name 只能是小写字母与下划线
+ */
+export async function trySavepoint(tx: Tx, name: string, fn: () => Promise<void>): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  if (!/^[a-z_]{1,32}$/.test(name)) throw new Error(`存档点名不合法：${name}`);
+  const sp = sql.identifier(name);
+  await tx.execute(sql`savepoint ${sp}`);
+  try {
+    await fn();
+  } catch (error) {
+    await tx.execute(sql`rollback to savepoint ${sp}`);
+    return { ok: false, error };
+  }
+  await tx.execute(sql`release savepoint ${sp}`);
+  return { ok: true };
+}
+
 /** 两个驱动的 execute 结果都带 rows */
 export function rowsOf<T>(result: unknown): T[] {
   const rows = (result as { rows?: unknown }).rows;

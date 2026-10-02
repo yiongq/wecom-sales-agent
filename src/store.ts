@@ -10,6 +10,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Db } from './db/client.js';
+import type { AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
 import { profile } from './profile.js';
 import {
@@ -21,6 +22,14 @@ import {
 } from './store/backend.js';
 import { onCommitted, type DomainEvent } from './store/events.js';
 import { createFileBackend } from './store/file-backend.js';
+import {
+  type AuditActor,
+  type ConsentItem,
+  type JobOp,
+  type PgBackend,
+  type PgStoreStats,
+  type TelemetryRows,
+} from './store/pg-backend.js';
 // isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
 import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
 import { noteWindowReset, seqOf } from './store/seq.js';
@@ -28,7 +37,7 @@ import type { Session, Order } from './types.js';
 
 export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
 export { SessionStoreStartupError, StoreLaggingError, onCommitted, seqOf, noteWindowReset, isDemoClassId, SESSIONS_IN_DB_MARKER };
-export type { DomainEvent, SessionStoreMode, StoreHealth };
+export type { AuditActor, ConsentItem, DomainEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
 export const storeEvents = new EventEmitter();
@@ -45,9 +54,9 @@ export function varDir(): string {
 const sessions = new Map<string, Session>();
 const orders = new Map<string, Order>();
 
-/** PG 后端，db 存储下由 initSessionStore 装上（第 5 步）；装上之前与文件存储下都是 null */
-// 写成断言而不是类型标注：第 5 步之前没有赋值点，标注会让 TS 把它收窄成 null
-let pgBackend = null as StoreBackend | null;
+/** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
+// 写成断言而不是类型标注：initSessionStore 接上之前没有赋值点，标注会让 TS 把它收窄成 null
+let pgBackend = null as PgBackend | null;
 
 const fileBackend = createFileBackend({
   varDir: VAR_DIR,
@@ -64,6 +73,9 @@ fileBackend.probe();
 
 /** 这个会话的改动交给哪个后端：db 存储下真实会话走 PG，其余（demo 类、文件存储）走文件 */
 const backendFor = (sessionId: string): StoreBackend => (pgBackend && !isDemoClassId(sessionId) ? pgBackend : fileBackend);
+/** 只管内存里有的会话的 PG 后端：db 存储下的真实会话；孤儿订单（所属会话不在内存里）与 demo 类归文件后端 */
+const pgFor = (sessionId: string): PgBackend | null =>
+  pgBackend && !isDemoClassId(sessionId) && sessions.has(sessionId) ? pgBackend : null;
 
 /** 当前装着的会话存储：装上 PG 后端之后是 'db'，否则 'file'。SESSION_STORE 的取值由 01 的 initConfigFromEnv 校验 */
 export function sessionStoreMode(): SessionStoreMode {
@@ -79,7 +91,10 @@ export interface SessionStoreDeps {
 /**
  * 导入期已经按文件后端读好 JSON（两种模式相同，R3）。
  * deps 为 null（文件存储）：var/ 下有标记文件时以 sessions_in_db reject，否则立即 resolve。
- * deps 不为 null（db 存储）：预载 PG 并换上 PG 后端（第 5 步实现；在那之前拒绝启动，绝不回落到文件存储）
+ * deps 不为 null（db 存储）：分批预载真实会话与订单（R2）→ 校验（每个会话的 last_seq 与窗口一致、订单引用的会话都在、
+ * 库里没有 demo 类）→ 回放 spill 文件 → 装上 PG 后端 → 登记 drain 与 late 两段停机钩子。
+ * 任何一步失败都以 SessionStoreStartupError reject，不留半装载状态，绝不回落到文件存储。
+ * （JSON 里有真实会话时的 real_in_json 拒绝在第 6 步加）
  */
 export async function initSessionStore(deps: SessionStoreDeps | null): Promise<void> {
   if (deps === null) {
@@ -91,7 +106,7 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     }
     return;
   }
-  throw new Error('这个版本还没有 PG 会话存储（02 plan 第 5 步），不要设 SESSION_STORE=db');
+  throw new Error('这个版本还没有接上 PG 会话存储的启动（02 plan 第 5 步），不要设 SESSION_STORE=db');
 }
 
 /** 等这个会话当前的改动落库（db）或落盘（file）。超时以 StoreLaggingError reject，改动仍在写队列里 */
@@ -107,7 +122,37 @@ export async function drainStore(timeoutMs: number): Promise<{ undrained: string
 
 /** 改动随这个会话的下一次落库提交；提交后才交给 onCommitted 的订阅者 */
 export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
-  backendFor(sessionId).emitAfterCommit(sessionId, ev);
+  (pgFor(sessionId) ?? fileBackend).emitAfterCommit(sessionId, ev);
+}
+
+// ---------------- 排进「这个会话下一次落库」的附带行 ----------------
+// db 存储的真实会话随它的下一次落库提交（spec「identity map 与写入」第 5、6 步）。demo 类会话的 trace、账本、同意记录只在内存（R6），
+// 文件存储下这几类也只在内存（R16）；审计例外，见 queueAudit。第 5 步只有订单与审计真有生产者，其余的生产者在第 9、10、12、16 步
+
+/**
+ * 一行审计（带操作者与 IP）：db 存储的真实会话随它的下一次落库写；db 存储的 demo 类会话（以及内存里没有的会话）单独一个短事务（R6）。
+ * 文件存储下不写：会话类审计在文件存储下的去处由第 13 步定
+ */
+export function queueAudit(sessionId: string, actor: AuditActor, entry: AuditEntry): void {
+  const pg = pgFor(sessionId);
+  if (pg) pg.queueAudit(sessionId, { actor, entry });
+  else if (pgBackend) void pgBackend.writeStandaloneAudit({ actor, entry });
+}
+/** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
+export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
+  pgFor(sessionId)?.queueJobs(sessionId, ops);
+}
+/** 同意记录（第 16 步）：同上 */
+export function queueConsents(sessionId: string, items: readonly ConsentItem[]): void {
+  pgFor(sessionId)?.queueConsents(sessionId, items);
+}
+/** trace、护栏事件、账本行（第 9、12 步）：同上，写在存档点里，写失败只丢这几行 */
+export function queueTelemetry(sessionId: string, rows: TelemetryRows): void {
+  pgFor(sessionId)?.queueTelemetry(sessionId, rows);
+}
+/** 企微去重集合（第 12 步用）：db 存储下是预载的最近 7 天带 msgid 的客户消息，加上本进程记下的；文件存储下为空 */
+export function recentMsgids(sessionId: string): ReadonlySet<string> {
+  return pgFor(sessionId)?.recentMsgids(sessionId) ?? new Set();
 }
 
 /** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
@@ -270,9 +315,12 @@ export function listSessions(): Session[] {
  * 否则后台「N 小时未回应」失真、介入队列会漏掉真正该救的客户。
  */
 export function saveSession(s: Session, touch = true): void {
+  const b = backendFor(s.id);
+  // db 存储下 identity map 里的对象是唯一的（不变量 3）：同 id 的另一个对象，PG 后端记一行日志、不落库，也不换掉 map 里的
+  if (b === pgBackend && !pgBackend.accepts(s)) return;
   if (touch) s.updatedAt = Date.now();
   sessions.set(s.id, s);
-  backendFor(s.id).schedule(s);
+  b.schedule(s);
 }
 
 /** 入参不含 id/createdAt/status，由 store 统一生成 */
@@ -286,7 +334,7 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   orders.set(order.id, order);
-  backendFor(order.sessionId).scheduleOrder(order.id);
+  (pgFor(order.sessionId) ?? fileBackend).scheduleOrder(order.id);
   return order;
 }
 
@@ -306,7 +354,7 @@ export function markOrderPaid(id: string): Order | undefined {
     o.paidAt = Date.now();
     const s = sessions.get(o.sessionId);
     o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
-    backendFor(o.sessionId).scheduleOrder(id);
+    (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
   }
   return o;
 }
@@ -317,7 +365,7 @@ export function supersedeOrder(id: string, byId: string): boolean {
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  backendFor(o.sessionId).scheduleOrder(id);
+  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
   return true;
 }
 
@@ -326,20 +374,29 @@ export function supersedeOrder(id: string, byId: string): boolean {
  * 只清 session.orderIds 是不够的——后台按 orderIds 之外还会用 sessionId 反查订单，
  * 而且 GMV / 成交率是直接扫 orders 算的，留着孤儿订单会让重置后的会话
  * 仍然显示订单、仍然计入经营数据。
+ * db 存储的真实会话：库里不删，记作废（voided_at、void_reason='reset'），内存里照样移出，之后 getOrder 返回 undefined（R5）
  */
 export function deleteOrdersOfSession(sessionId: string): number {
+  const pg = pgFor(sessionId);
   let n = 0;
   for (const [id, o] of orders) {
     if (o.sessionId === sessionId) {
+      pg?.voidOrder(o, 'reset');
       orders.delete(id);
       n += 1;
     }
   }
-  // db 存储下改为把订单记作废、不删（R5，第 5 步）
-  if (n) fileBackend.markChanged([sessionId]);
+  if (n && !pg) fileBackend.markChanged([sessionId]);
   return n;
 }
 
 export function listOrders(): Order[] {
   return [...orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
 }
+
+/** 仅供自测：PG 后端的计数（落库次数、认出已提交、慢事务、丢掉的存档点批次等）；文件存储下为 null */
+export const __storeTest = {
+  pgStats(): PgStoreStats | null {
+    return pgBackend?.stats() ?? null;
+  },
+};

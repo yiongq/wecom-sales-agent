@@ -1,6 +1,7 @@
 // OpenAI 兼容 chat completions 封装（默认智谱），含多轮工具调用循环。
 // LLM_MOCK=1 走确定性脚本：按用户消息关键词驱动真实工具调用，
 // 离线跑通「问需 → 推荐 → 报价 → 下单」全链路，是集成冒烟的生命线。
+import { inTenantTx } from './db/client.js';
 import type { ToolDef } from './tools.js';
 import { recordUsage } from './usage.js';
 import { gatedFetch, gateBusy } from './llm-gate.js';
@@ -98,6 +99,8 @@ export function observeRequests(cb: ((req: ObservedRequest) => void) | null): vo
 
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
 export async function chat(opts: ChatOptions): Promise<string> {
+  // 落库事务的回调里不调模型（02 不变量 9）：在 withTenant 里调到这里，说明有人把模型调用放进了事务，持锁跨过整次生成
+  if (inTenantTx()) throw new Error('chat() 不能在 withTenant 的回调里调用：落库事务里只有 SQL，不调模型（02 不变量 9）');
   // 在 mock 与真实分支之前看：两条路发出去的前缀是同一份
   requestObserver?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
   return process.env.LLM_MOCK === '1' || opts.forceMock ? mockChat(opts) : realChat(opts);

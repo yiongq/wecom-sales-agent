@@ -43,6 +43,19 @@ export class StoreLaggingError extends Error {
   }
 }
 
+/**
+ * 落库时库里的 last_seq 与「已提交到第几条」对不上（或该有的会话行不见了）：有另一写者。不重试，PG 后端标 conflict、走优雅停机，
+ * drain 段不再写库、直接 spill（spec「identity map 与写入 · 失败」、不变量 12）
+ */
+export class StoreConflictError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly detail: string,
+  ) {
+    super(`store_conflict：${detail}`);
+  }
+}
+
 export interface StoreBackend {
   readonly mode: SessionStoreMode;
   /** saveSession 调：同步分配 seq（assignSeqs）、标脏并排进这个会话的写队列 */
