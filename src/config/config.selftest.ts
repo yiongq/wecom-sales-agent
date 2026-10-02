@@ -1517,9 +1517,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
   await newTenant('no-routes');
   await imp('no-routes');
-  await asSuper(() =>
-    t.pg.query(`delete from catalog_items where kind = 'route' and tenant_id = (select id from tenants where slug = 'no-routes')`),
-  );
+  // 导入时每条写了版本 1（02「报价快照」），条目版本外键指着它们：先删版本行
+  await asSuper(async () => {
+    for (const table of ['catalog_item_versions', 'catalog_items'])
+      await t.pg.query(`delete from ${table} where kind = 'route' and tenant_id = (select id from tenants where slug = 'no-routes')`);
+  });
   await expectFail('没有 active 线路', 'no_active_routes', d({ tenantSlug: 'no-routes' }));
 
   await expectFail('镜像里的 data/sop.md 缺失（空文件）', 'image_sop_invalid', d({ imageSop: '' }));
@@ -2743,6 +2745,406 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     cfg.__configTest.reset();
     server.close();
   }
+}
+
+// ---------------- 条目版本、按版本渲染的方案书、按轮固定快照（02 第 8 步：验收 19，不变量 35–37） ----------------
+{
+  const cat = await import('./catalog.js');
+  const http = await import('node:http');
+  process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
+  const { app } = await import('../server.js');
+  const { onToolCall } = await import('../engine.js');
+  const getJson = async (url: string): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const res = await app.request(url);
+    return { status: res.status, body: res.ok ? ((await res.json()) as Record<string, unknown>) : {} };
+  };
+  const proposalUrlOf = async (routeId: string, extra: Record<string, unknown> = {}): Promise<string> =>
+    String(
+      (JSON.parse(await executeTool('generate_proposal', { routeId, travelers: 2, ...extra }, freshSession())) as { proposalUrl?: string })
+        .proposalUrl,
+    );
+  const quoteAt = async (routeId: string, v?: string): Promise<{ status: number; total?: number; highlights?: string }> => {
+    const r = await getJson(`/api/proposal/${routeId}?travelers=2&departDate=${offDate}${v === undefined ? '' : `&v=${v}`}`);
+    return {
+      status: r.status,
+      total: (r.body.quote as { total?: number } | undefined)?.total,
+      highlights: JSON.stringify((r.body.route as { highlights?: unknown } | undefined)?.highlights),
+    };
+  };
+
+  // 文件模式：没有版本，链接与开工时逐字节相同；?v=1 与不带 v 相同，?v=2 是 404；订单记版本 1
+  cfg.__configTest.reset();
+  {
+    check('版本·文件模式：方案书链接不带 ?v=', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2');
+    check(
+      '版本·文件模式：带日期的链接也不变',
+      (await proposalUrlOf('r-xian', { departDate: offDate })) === `/proposal/r-xian/2/${offDate}`,
+    );
+    const plain = await getJson(`/api/proposal/r-xian?travelers=2`);
+    const v1 = await getJson(`/api/proposal/r-xian?travelers=2&v=1`);
+    check(
+      '版本·文件模式：?v=1 与不带 v 相同，?v=2 → 404',
+      plain.status === 200 &&
+        JSON.stringify(v1.body) === JSON.stringify(plain.body) &&
+        (await getJson(`/api/proposal/r-xian?v=2`)).status === 404,
+    );
+    const s = freshSession();
+    await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s);
+    const { getOrder } = await import('../store.js');
+    check('版本·文件模式：订单记 catalogVersion 1', getOrder(getSession(s.id)!.orderIds[0]!)?.catalogVersion === 1);
+    check(
+      '版本·文件模式：/healthz 的 catalogVersioned 是 false',
+      ((await getJson('/healthz')).body.config as { catalogVersioned?: unknown }).catalogVersioned === false,
+    );
+  }
+
+  // DB 模式：单开一个租户，版本从干净的状态开始
+  await newTenant('vers');
+  check('版本：导入新租户', (await imp('vers')).code === EXIT.ok);
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  const tenantId = cfg.currentCatalog().tenantId;
+  const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营丁', ip: null } };
+  const versionRows = async (
+    code: string,
+    kind = 'route',
+  ): Promise<{ version: number; source: string; by: string | null; payload: string }[]> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ version: number; source: string; by: string | null; payload: string }>(
+            `select version, source, created_by_name as by, payload::text as payload from catalog_item_versions
+              where tenant_id = $1 and kind = $2 and code = $3 order by version`,
+            [tenantId, kind, code],
+          )
+        ).rows,
+    );
+  const itemRow = async (code: string, kind = 'route'): Promise<{ version: number; rev: number; payload: string }> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ version: number; rev: number; payload: string }>(
+            `select version, rev, payload::text as payload from catalog_items where tenant_id = $1 and kind = $2 and code = $3`,
+            [tenantId, kind, code],
+          )
+        ).rows[0]!,
+    );
+  const versionAudits = async (code: string): Promise<{ diff: { version?: number; source?: string }; kind: string }[]> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ diff: { version?: number; source?: string }; kind: string }>(
+            `select diff, actor_kind as kind from audit_log where tenant_id = $1 and action = 'catalog.version' and target_id = $2 order by id`,
+            [tenantId, code],
+          )
+        ).rows,
+    );
+  const totalVersions = async (): Promise<number> =>
+    asSuper(
+      async () =>
+        (await t.pg.query<{ n: number }>(`select count(*)::int as n from catalog_item_versions where tenant_id = $1`, [tenantId])).rows[0]!
+          .n,
+    );
+  const healthVersioned = async (): Promise<unknown> =>
+    ((await getJson('/healthz')).body.config as { catalogVersioned?: unknown }).catalogVersioned;
+
+  const items = cfg.currentCatalog().routes.length + cfg.currentCatalog().hotels.length;
+  check('版本：导入时每条 active 条目写了版本 1（source=activate）', (await totalVersions()) === items, String(await totalVersions()));
+  check(
+    '版本：导入之后快照里每条都是版本 1，catalogVersioned 是 false，启动时没有要补写的',
+    Object.keys(cfg.currentCatalog().versions).length === items &&
+      Object.values(cfg.currentCatalog().versions).every((v) => v === 1) &&
+      !cfg.catalogVersioned() &&
+      (await healthVersioned()) === false &&
+      (await versionAudits('r-xian')).length === 0,
+  );
+  const xian0 = (await versionRows('r-xian'))[0];
+  check(
+    '版本：版本 1 的 payload 与条目逐字节相同',
+    xian0?.source === 'activate' && xian0.by === 'import-config' && xian0.payload === (await itemRow('r-xian')).payload,
+  );
+  check('版本：版本 1 的线路，方案书链接与开工时逐字节相同', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2');
+
+  // 改 active 条目的内容（后台，非锁定字段）：同一事务里写版本 2、catalog_items.version 跟着改，rev 只加 1，审计 catalog.version
+  const before = await quoteAt('r-xian');
+  const xian = (await cat.getCatalogItem(ctx, 'route', 'r-xian'))!;
+  const hl = ['版本二的第一条亮点', ...(xian.payload as Route).highlights.slice(1)];
+  const linkV1 = await proposalUrlOf('r-xian');
+  const u = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: xian.rev, set: { highlights: hl } });
+  const rows2 = await versionRows('r-xian');
+  check(
+    '版本：改了 active 条目 → 写版本 2（source=console，记操作者），payload 是改后的',
+    rows2.length === 2 &&
+      rows2[1]!.version === 2 &&
+      rows2[1]!.source === 'console' &&
+      rows2[1]!.by === '运营丁' &&
+      rows2[1]!.payload === (await itemRow('r-xian')).payload,
+    JSON.stringify(rows2.map((r) => [r.version, r.source, r.by])),
+  );
+  check(
+    '版本：catalog_items.version 改成 2，rev 只加 1',
+    (await itemRow('r-xian')).version === 2 && u.rev === xian.rev + 1 && (await itemRow('r-xian')).rev === xian.rev + 1,
+  );
+  const aud = await versionAudits('r-xian');
+  check(
+    '版本：审计 catalog.version 一行（version 2、console）',
+    aud.length === 1 && aud[0]!.diff.version === 2 && aud[0]!.diff.source === 'console' && aud[0]!.kind === 'user',
+    JSON.stringify(aud),
+  );
+  check(
+    '版本：内存里的快照与历史跟着更新，catalogVersioned 变成 true',
+    cfg.currentCatalog().versions['route:r-xian'] === 2 && cfg.catalogVersioned() && (await healthVersioned()) === true,
+  );
+  const same = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: u.rev, set: { highlights: hl } });
+  check(
+    '版本：原样提交回去（内容没变）不产生新版本',
+    (await versionRows('r-xian')).length === 2 && (await itemRow('r-xian')).version === 2 && same.rev === u.rev + 1,
+  );
+
+  // 方案书：之后新出的链接带 ?v=2；改之前发出的（不带 v）按版本 1 渲染；?v=3 还不存在 → 404，期间没有数据库查询
+  const linkV2 = await proposalUrlOf('r-xian');
+  check('版本：之后新出的方案书链接带 ?v=2', linkV1 === '/proposal/r-xian/2' && linkV2 === '/proposal/r-xian/2?v=2', linkV2);
+  const old = await quoteAt('r-xian');
+  const v2 = await quoteAt('r-xian', '2');
+  check(
+    '版本：不带 v 的链接按版本 1（改之前的亮点），?v=2 是改后的；报价相同',
+    old.status === 200 &&
+      old.highlights === before.highlights &&
+      v2.highlights === JSON.stringify(hl) &&
+      old.total === before.total &&
+      v2.total === before.total,
+    `${old.highlights?.slice(0, 30)} / ${v2.highlights?.slice(0, 30)}`,
+  );
+  const q0 = queryCount();
+  const bad: string[] = [];
+  for (const v of ['3', '0', '-1', '01', '1.0', 'abc', '', '99999999999']) {
+    if ((await quoteAt('r-xian', v)).status !== 404) bad.push(`api:${v}`);
+    if ((await app.request(`/proposal/r-xian/2?v=${v}`)).status !== 404) bad.push(`page:${v}`);
+  }
+  check('版本：v 不是正整数或大于当前版本 → 404（接口与页面）', bad.length === 0, bad.join(','));
+  const v1Page = await (await app.request('/proposal/r-xian/2')).text();
+  const v2Page = await (await app.request('/proposal/r-xian/2?v=2')).text();
+  check(
+    '版本：页面的分享卡片按版本写（不带 v 是版本 1 的第一条亮点，?v=2 是新的）',
+    v2Page.includes('版本二的第一条亮点') && !v1Page.includes('版本二的第一条亮点') && v1Page.includes('<title>'),
+  );
+  check('版本：以上匿名请求（含 404）都没有数据库查询', queryCount() === q0, `${q0} → ${queryCount()}`);
+
+  // 草稿的编辑不产生版本；上架写版本 1
+  const draft = await cat.createCatalogItem(ctx, 'route', {
+    ...(JSON.parse(routesRaw) as Record<string, unknown>[])[0]!,
+    id: 'r-vers-draft',
+    title: '版本测试草稿',
+  });
+  const d1 = await cat.updateCatalogItem(ctx, 'route', 'r-vers-draft', {
+    rev: draft.rev,
+    set: { priceFrom: 1000, title: '版本测试草稿二' },
+  });
+  check('版本：草稿的新建与编辑不产生版本', (await versionRows('r-vers-draft')).length === 0);
+  await cat.activateCatalogItem(ctx, 'route', 'r-vers-draft', { rev: d1.rev });
+  const act = await versionRows('r-vers-draft');
+  check(
+    '版本：上架写版本 1（source=activate），审计 catalog.version，进快照的版本是 1',
+    act.length === 1 &&
+      act[0]!.version === 1 &&
+      act[0]!.source === 'activate' &&
+      act[0]!.payload === (await itemRow('r-vers-draft')).payload &&
+      (await versionAudits('r-vers-draft')).map((a) => `${a.diff.version}:${a.diff.source}`).join() === '1:activate' &&
+      cfg.currentCatalog().versions['route:r-vers-draft'] === 1 &&
+      (await proposalUrlOf('r-vers-draft')) === '/proposal/r-vers-draft/2',
+  );
+
+  // 订单记下单时的版本；之后 catalog-fix 改价（停应用 → 改 → 重启）：写版本 3（source=fix），已有订单金额不变，
+  // 改之前发出的两种链接报价不变，?v=3 按新价
+  const s1 = freshSession();
+  await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s1);
+  const { getOrder } = await import('../store.js');
+  const order1 = getOrder(getSession(s1.id)!.orderIds[0]!)!;
+  check('版本：订单记下单时线路的版本（2）', order1.catalogVersion === 2 && order1.totalPrice === before.total);
+  const price0 = (cfg.currentCatalog().routes.find((r) => r.id === 'r-xian') as Route).priceFrom;
+  cfg.__configTest.reset();
+  await cat.fixLockedFields({
+    db: t.db,
+    tenantSlug: 'vers',
+    kind: 'route',
+    code: 'r-xian',
+    set: { priceFrom: price0 + 1000 },
+    reason: '供应商调价',
+  });
+  const rows3 = await versionRows('r-xian');
+  check(
+    'catalog-fix：改价写版本 3（source=fix），catalog_items.version 跟着改，审计 catalog.version',
+    rows3.length === 3 &&
+      rows3[2]!.source === 'fix' &&
+      rows3[2]!.by === 'catalog-fix' &&
+      (await itemRow('r-xian')).version === 3 &&
+      (await versionAudits('r-xian')).map((a) => `${a.diff.version}:${a.diff.source}`).join() === '2:console,3:fix',
+  );
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  check(
+    '版本：重启后全部版本读进内存，当前是 3',
+    cfg.currentCatalog().versions['route:r-xian'] === 3 && (await totalVersions()) === items + 3,
+  );
+  const afterFix = [await quoteAt('r-xian'), await quoteAt('r-xian', '2'), await quoteAt('r-xian', '3'), await quoteAt('r-xian', '4')];
+  check(
+    '版本：改价之后不带 v 与 ?v=2 的报价不变，?v=3 按新价，?v=4 → 404',
+    afterFix[0]!.total === before.total &&
+      afterFix[1]!.total === before.total &&
+      afterFix[2]!.total === (price0 + 1000) * 2 &&
+      afterFix[3]!.status === 404,
+    JSON.stringify(afterFix),
+  );
+  check('版本：已有订单金额不变', getOrder(order1.id)?.totalPrice === before.total && getOrder(order1.id)?.catalogVersion === 2);
+  const s2 = freshSession();
+  await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s2);
+  const order2 = getOrder(getSession(s2.id)!.orderIds[0]!)!;
+  check('版本：改价之后的新订单按新价、记版本 3', order2.totalPrice === (price0 + 1000) * 2 && order2.catalogVersion === 3);
+  check('版本：改价之后的方案书链接带 ?v=3', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2?v=3');
+
+  // 启动补写：删掉一个 active 条目的全部版本行（模拟 01 镜像期间上架的）后重启 → 补写版本 1，链接照常打开；
+  // 直接改条目内容（模拟 01 镜像期间改过）后重启 → 补写下一个版本，catalog_items.version 跟着对齐；再重启什么都不写
+  cfg.__configTest.reset();
+  await asSuper(() =>
+    t.pg.query(`delete from catalog_item_versions where tenant_id = $1 and kind = 'route' and code = 'r-guizhou'`, [tenantId]),
+  );
+  const sanya = await itemRow('r-sanya');
+  const sanyaEdited = JSON.stringify({ ...(JSON.parse(sanya.payload) as Record<string, unknown>), highlights: ['01 镜像期间改的亮点'] });
+  await asSuper(() =>
+    t.pg.query(`update catalog_items set payload = $2::json where tenant_id = $1 and kind = 'route' and code = 'r-sanya'`, [
+      tenantId,
+      sanyaEdited,
+    ]),
+  );
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  const gz = await versionRows('r-guizhou');
+  check(
+    '补写：没有版本行的 active 条目写了版本 1（source=backfill，payload 是条目当前的），审计记 system',
+    gz.length === 1 &&
+      gz[0]!.version === 1 &&
+      gz[0]!.source === 'backfill' &&
+      gz[0]!.payload === (await itemRow('r-guizhou')).payload &&
+      (await versionAudits('r-guizhou')).map((a) => `${a.diff.version}:${a.diff.source}:${a.kind}`).join() === '1:backfill:system',
+  );
+  check(
+    '补写：补了版本 1 的线路，链接照常打开、不带 v',
+    (await quoteAt('r-guizhou')).status === 200 && (await proposalUrlOf('r-guizhou')) === '/proposal/r-guizhou/2',
+  );
+  const sy = await versionRows('r-sanya');
+  check(
+    '补写：内容与最新版本不同的条目写了版本 2（backfill），catalog_items.version 对齐成 2',
+    sy.length === 2 &&
+      sy[1]!.source === 'backfill' &&
+      sy[1]!.payload === (await itemRow('r-sanya')).payload &&
+      (await itemRow('r-sanya')).version === 2 &&
+      cfg.currentCatalog().versions['route:r-sanya'] === 2,
+  );
+  check(
+    '补写：不带 v 的链接仍是 01 镜像期间改之前的那份（版本 1），?v=2 是改后的',
+    (await quoteAt('r-sanya')).highlights !== JSON.stringify(['01 镜像期间改的亮点']) &&
+      (await quoteAt('r-sanya', '2')).highlights === JSON.stringify(['01 镜像期间改的亮点']),
+  );
+  const nBefore = await totalVersions();
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  check('补写：再重启没有要补写的', (await totalVersions()) === nBefore && (await versionAudits('r-sanya')).length === 1);
+
+  // 按轮固定快照：一轮里模型先看了线路，改动在这一轮中间提交，这一轮之后的工具结果与链接仍是开始时那一代
+  {
+    interface Step {
+      content?: string;
+      toolCalls?: { name: string; args: Record<string, unknown> }[];
+      /** 回这一步之前先做的事（在这一轮中间改产品库） */
+      before?: () => Promise<void>;
+    }
+    const script: Step[] = [];
+    const toolResults: string[] = [];
+    const fake = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        void (async () => {
+          res.setHeader('content-type', 'application/json');
+          if (req.url?.endsWith('/embeddings')) {
+            const input = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input: string[] }).input;
+            res.end(JSON.stringify({ data: input.map(() => ({ embedding: [1, 0, 0] })), usage: { prompt_tokens: 0 } }));
+            return;
+          }
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { role: string; content: string | null }[] };
+          const last = body.messages.at(-1);
+          if (last?.role === 'tool') toolResults.push(String(last.content));
+          const step = script.shift();
+          await step?.before?.();
+          const message = step?.toolCalls
+            ? {
+                role: 'assistant',
+                content: null,
+                tool_calls: step.toolCalls.map((c, i) => ({
+                  id: `call_${toolResults.length}_${i}`,
+                  type: 'function',
+                  function: { name: c.name, arguments: JSON.stringify(c.args) },
+                })),
+              }
+            : { role: 'assistant', content: step?.content ?? '（假模型脚本已耗尽）' };
+          res.end(JSON.stringify({ choices: [{ message, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+        })();
+      });
+    });
+    await new Promise<void>((r) => fake.listen(0, '127.0.0.1', () => r()));
+    const keys = ['LLM_MOCK', 'LLM_PROVIDER', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL', 'LLM_HEDGE_MODEL', 'LLM_MAX_RETRY'] as const;
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    Object.assign(process.env, {
+      LLM_MOCK: '0',
+      LLM_PROVIDER: '',
+      LLM_BASE_URL: `http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`,
+      LLM_API_KEY: 'selftest-fake-key',
+      LLM_MODEL: 'selftest-fake',
+      LLM_HEDGE_MODEL: '',
+      LLM_MAX_RETRY: '0',
+    });
+    try {
+      const code = 'r-beijing';
+      const r0 = cfg.currentCatalog().routes.find((r) => r.id === code) as Route;
+      const gen0 = cfg.currentCatalog().generation;
+      const seenCalls: string[] = [];
+      const off = onToolCall((name) => void seenCalls.push(name));
+      script.push(
+        { toolCalls: [{ name: 'get_route_detail', args: { routeId: code } }] },
+        {
+          // 模型看完线路、这一轮还没结束：后台在这时改了这条线并提交（版本 2）
+          before: async () => {
+            const it = (await cat.getCatalogItem(ctx, 'route', code))!;
+            await cat.updateCatalogItem(ctx, 'route', code, { rev: it.rev, set: { highlights: ['这一轮中间改的亮点'] } });
+          },
+          toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }],
+        },
+        { content: '北京这条线的详细方案书给您生成好了，您先看看：' },
+      );
+      const reply = await handleMessage('wecom:wmCFGPIN0001', '北京那条线出个两个人的方案书', 'wecom');
+      off();
+      const proposal = JSON.parse(toolResults.find((r) => r.includes('proposalUrl')) ?? '{}') as {
+        proposalUrl?: string;
+        perPerson?: number;
+      };
+      check(
+        '按轮固定：脚本恰好用完，这一轮里真的改了版本',
+        script.length === 0 && cfg.currentCatalog().versions[`route:${code}`] === 2 && cfg.currentCatalog().generation > gen0,
+        `${script.length}`,
+      );
+      check(
+        '按轮固定：改动之后这一轮的 generate_proposal 仍按开始时那一代（链接不带 ?v=、报价是开始时的）',
+        proposal.proposalUrl === `/proposal/${code}/2` && proposal.perPerson === r0.priceFrom,
+        JSON.stringify(proposal),
+      );
+      check('按轮固定：回复里的链接也是那一代的', reply.text.includes(`/proposal/${code}/2`) && !reply.text.includes('?v='), reply.text);
+      check('按轮固定：下一轮新出的链接带 ?v=2', (await proposalUrlOf(code)) === `/proposal/${code}/2?v=2`, seenCalls.join());
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+      fake.close();
+    }
+  }
+  cfg.__configTest.reset();
 }
 
 // ---------------- 部署 profile：配了企微凭据就必须显式设置（00 开放问题 1，2026-09-26 owner 定） ----------------
