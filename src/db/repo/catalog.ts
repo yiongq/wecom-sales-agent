@@ -11,7 +11,10 @@ export interface CatalogRow {
   ord: number;
   status: 'draft' | 'active';
   rev: number;
-  /** 当前内容的条目版本（02「报价快照」）：与 catalog_item_versions 里这一条的最新一行对应；草稿恒为默认的 1、没有版本行 */
+  /**
+   * 条目版本（02「报价快照」）：02 的写入在同一条 UPDATE 里改成新版本号；启动补写不改这一列，所以它可能落后于
+   * catalog_item_versions 的最新一行（内存里两者取大，见 src/config/source.ts 的 currentVersionOf）。草稿恒为默认的 1、没有版本行
+   */
   version: number;
   payload: Record<string, unknown>;
   updatedByName: string | null;
@@ -162,15 +165,4 @@ export async function activateItem(
     .where(and(eq(catalogItems.kind, kind), eq(catalogItems.code, code), eq(catalogItems.rev, rev), eq(catalogItems.status, 'draft')))
     .returning(columns);
   return row ?? null;
-}
-
-/**
- * 只改 catalog_items.version（启动补写：版本行与这一列对不上时对齐，02「报价快照」）。触发器照常让 rev 加 1、
- * 更新 updated_at；内容不动
- */
-export async function setItemVersion(tx: Tx, kind: CatalogKind, code: string, version: number): Promise<void> {
-  await tx
-    .update(catalogItems)
-    .set({ version })
-    .where(and(eq(catalogItems.kind, kind), eq(catalogItems.code, code)));
 }

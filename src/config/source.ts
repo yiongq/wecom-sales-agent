@@ -20,7 +20,7 @@ import {
 } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
-import { readActiveCatalog, setItemVersion, type CatalogRow } from '../db/repo/catalog.js';
+import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
 import { insertCatalogVersion, readCatalogVersions, type CatalogVersionRow } from '../db/repo/catalog-versions.js';
 import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
@@ -180,6 +180,12 @@ function addVersion(h: VersionHistory, kind: CatalogRow['kind'], code: string, v
   if (!m.has(version)) m.set(version, deepFreeze(structuredClone(payload)));
 }
 const latestOf = (h: VersionHistory, key: string): number => Math.max(0, ...(h.get(key)?.keys() ?? []));
+/**
+ * 条目的当前版本：行上的 version 与版本历史里最大的那个取大。启动补写不改 catalog_items.version（改了触发器会把「更新于」
+ * 写成启动时刻），补写出的新版本只在历史里，这一列落后；之后的写入照旧按 max(version) + 1 取号、同一条 UPDATE 里改这一列
+ */
+const currentVersionOf = (row: { kind: CatalogRow['kind']; code: string; version: number }, h: VersionHistory): number =>
+  Math.max(row.version, latestOf(h, catalogVersionKey(row.kind, row.code)));
 
 const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
   route: new Map(rows.filter((r) => r.kind === 'route').map((r) => [r.code, r.ord])),
@@ -364,7 +370,7 @@ function snapshotOf(tenantId: string, rows: readonly CatalogRow[], gen: number, 
   const versions: Record<string, number> = {};
   for (const r of rows) {
     const key = catalogVersionKey(r.kind, r.code);
-    const v = latestOf(history, key);
+    const v = currentVersionOf(r, history);
     if (v > 0) versions[key] = v;
   }
   return deepFreeze({ tenantId, generation: gen, routes: of<Route>('route'), hotels: of<Hotel>('hotel'), versions });
@@ -374,33 +380,26 @@ type VersionWrite = { kind: CatalogRow['kind']; code: string; version: number; p
 
 /**
  * 启动补写（02 spec「报价快照」）要写的：没有任何版本行的 active 条目（回滚到 01 镜像期间上架的）以当前 payload 写版本 1；
- * 最新版本的 payload 与条目不同的（01 镜像期间改过）写下一个版本；catalog_items.version 与最终的最新版本对不上的对齐
+ * 最新版本的 payload 与条目不同的（01 镜像期间改过）写下一个版本。不动 catalog_items 这一行（见 currentVersionOf）
  */
-function backfillPlan(
-  items: readonly CatalogRow[],
-  versions: readonly CatalogVersionRow[],
-): { writes: VersionWrite[]; align: CatalogRow[] } {
+function backfillPlan(items: readonly CatalogRow[], versions: readonly CatalogVersionRow[]): VersionWrite[] {
   const history = historyOf(versions);
   const writes: VersionWrite[] = [];
-  const align: CatalogRow[] = [];
   for (const it of items) {
     const key = catalogVersionKey(it.kind, it.code);
     const latest = latestOf(history, key);
-    let final = latest;
     if (latest === 0 || JSON.stringify(history.get(key)!.get(latest)) !== JSON.stringify(it.payload)) {
-      final = latest + 1;
-      writes.push({ kind: it.kind, code: it.code, version: final, payload: it.payload });
+      writes.push({ kind: it.kind, code: it.code, version: latest + 1, payload: it.payload });
     }
-    if (it.version !== final) align.push({ ...it, version: final });
   }
-  return { writes, align };
+  return writes;
 }
 
 /** 启动补写的写入：一个事务，取配置写锁；每个新版本记 source='backfill' 与一行 catalog.version 审计 */
-async function writeBackfill(d: ConfigDeps, tenantId: string, plan: ReturnType<typeof backfillPlan>): Promise<void> {
+async function writeBackfill(d: ConfigDeps, tenantId: string, writes: readonly VersionWrite[]): Promise<void> {
   await withTenant(d.db, systemCtx(tenantId), async (tx) => {
     await lockTenantConfig(tx);
-    for (const w of plan.writes) {
+    for (const w of writes) {
       await insertCatalogVersion(tx, { ...w, source: 'backfill', createdByName: 'system' });
       await writeAudit(tx, {
         action: 'catalog.version',
@@ -409,11 +408,8 @@ async function writeBackfill(d: ConfigDeps, tenantId: string, plan: ReturnType<t
         diff: { version: w.version, source: 'backfill' },
       });
     }
-    for (const a of plan.align) await setItemVersion(tx, a.kind, a.code, a.version);
   });
-  if (plan.writes.length) {
-    console.log(`[config] 条目版本启动补写：${plan.writes.map((w) => `${catalogVersionKey(w.kind, w.code)} v${w.version}`).join('、')}`);
-  }
+  console.log(`[config] 条目版本启动补写：${writes.map((w) => `${catalogVersionKey(w.kind, w.code)} v${w.version}`).join('、')}`);
 }
 
 /** 从库里的一行构造缓存用的 PublishedSop：sections 用与镜像合并之后的全部节 */
@@ -609,9 +605,9 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
     const current = rerender ? await dbStep('写入 rerender 版本', () => writeRerender(d, tenant.id, row, rerender)) : row;
     // 9（02）条目版本的启动补写，两种会话存储都做；补写的版本随后与读到的一起进内存
-    const plan = backfillPlan(items, versions);
-    if (plan.writes.length || plan.align.length) await dbStep('补写条目版本', () => writeBackfill(d, tenant.id, plan));
-    const history = historyOf([...versions, ...plan.writes]);
+    const backfill = backfillPlan(items, versions);
+    if (backfill.length) await dbStep('补写条目版本', () => writeBackfill(d, tenant.id, backfill));
+    const history = historyOf([...versions, ...backfill]);
     // 10
     loaded = {
       deps: d,
@@ -732,7 +728,8 @@ export function applyCatalogRow(row: {
   if (!cur || row.status !== 'active') return;
   catalogWrites++;
   addVersion(cur.history, row.kind, row.code, row.version, row.payload);
-  const versions = { ...cur.catalog.versions, [catalogVersionKey(row.kind, row.code)]: row.version };
+  // 内容没变的写入（原样提交）带回的是这一列上的版本，启动补写之后它可能落后于历史：取大（见 currentVersionOf）
+  const versions = { ...cur.catalog.versions, [catalogVersionKey(row.kind, row.code)]: currentVersionOf(row, cur.history) };
   const key = row.kind === 'route' ? 'routes' : 'hotels';
   const ords = cur.ords[row.kind];
   const idOf = (x: unknown): string => String((x as { id: unknown }).id);
