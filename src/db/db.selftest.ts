@@ -2452,6 +2452,14 @@ await t.close();
     '  *) exit 97 ;;',
     'esac',
   ]);
+  // rollback-guard.sh 问正在运行的实例 /healthz 的 config.catalogVersioned（02 第 8 步）：缺省是 false；
+  // FAKE_HEALTHZ 换掉回的内容，FAKE_CURL_FAIL 时像连不上那样以 7 退出
+  fake('curl', [
+    'echo "curl $*" >> "$FAKE_LOG"',
+    'if [ -n "${FAKE_CURL_FAIL:-}" ]; then exit 7; fi',
+    `d='{"ok":true,"config":{"mode":"db","catalogVersioned":false}}'`,
+    'printf "%s" "${FAKE_HEALTHZ:-$d}"',
+  ]);
   // 假的 age：-o 的下一个是输出，最后一个参数是输入，原样拷过去
   fake('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
   fake('rclone', ['echo "rclone $*" >> "$FAKE_LOG"']);
@@ -2719,20 +2727,28 @@ await t.close();
     if (text === null) fs.rmSync(path.join(gsrv, '.env'), { force: true });
     else fs.writeFileSync(path.join(gsrv, '.env'), text);
   };
-  const guard = (target: string, marker: boolean, pgBackend?: number, envText: string | null = null) => {
+  /** health：正在运行的实例 /healthz 回的内容；null 是连不上；缺省是 catalogVersioned 为 false 的那份 */
+  const guard = (target: string, marker: boolean, pgBackend?: number, envText: string | null = null, health?: string | null) => {
     fs.rmSync(log, { force: true });
     setMarker(marker);
     setEnvFile(envText);
     if (pgBackend === undefined) delete env.FAKE_PG_BACKEND;
     else env.FAKE_PG_BACKEND = String(pgBackend);
+    if (health === null) env.FAKE_CURL_FAIL = '1';
+    else if (health !== undefined) env.FAKE_HEALTHZ = health;
     const r = run('bash', ['-s', '--', gsrv, target, 'side1', '3999'], tmp, guardSrc);
     delete env.FAKE_PG_BACKEND;
+    delete env.FAKE_CURL_FAIL;
+    delete env.FAKE_HEALTHZ;
     setEnvFile(null);
     return {
       ...r,
       docker: calls()
         .split('\n')
         .filter((l) => l.startsWith('docker ')),
+      curl: calls()
+        .split('\n')
+        .filter((l) => l.startsWith('curl ')),
     };
   };
   const dcOf = (project: string, port: string): string =>
@@ -2827,6 +2843,48 @@ await t.close();
   );
   const g9 = guard('pre-02', false, undefined, 'SESSION_STORE=db\nSESSION_STORE=file\n');
   check('回滚前检查：.env 里同名以最后一行为准，不是 db 存储时照常', g9.code === 0, g9.out);
+
+  // 条目版本（02 第 8 步）：正在运行的实例 /healthz 的 config.catalogVersioned 为 true 时，回滚到 02 之前的镜像同样拒绝；
+  // 取不到、看不出来时按有风险处理。只有这一条风险时不打印回到文件存储的步骤（帮不上忙），写明只能回到 02 之后的镜像
+  const versioned = '{"ok":true,"config":{"mode":"db","catalogVersioned":true},"store":{"mode":"file"}}';
+  const catalogRefused = (out: string, why: string): boolean =>
+    out.includes('拒绝回滚') && out.includes(why) && out.includes('要回滚只能回到 02 之后的镜像') && !out.includes('export-sessions');
+  check(
+    '回滚前检查：问的是本机宿主端口上的 /healthz',
+    g1.curl.length === 1 && g1.curl[0]!.includes('http://127.0.0.1:3999/healthz'),
+    g1.curl.join(' | '),
+  );
+  const g10 = guard('pre-02', false, undefined, null, versioned);
+  check(
+    '回滚前检查：catalogVersioned 为 true、部署 02 之前的 tag → 拒绝（3），点名这一条，不打印导出步骤',
+    g10.code === 3 && catalogRefused(g10.out, 'config.catalogVersioned 为 true'),
+    g10.out,
+  );
+  const g11 = guard('side1:prev', false, 1, null, versioned);
+  check(
+    '回滚前检查：catalogVersioned 为 true、自动回滚到 02 之前的镜像 → 拒绝',
+    g11.code === 3 && catalogRefused(g11.out, 'config.catalogVersioned 为 true') && g11.docker.length >= 1,
+    g11.out,
+  );
+  const g12 = guard('side1:prev', false, 0, null, versioned);
+  check('回滚前检查：catalogVersioned 为 true、目标是 02 之后的镜像 → 照常回滚', g12.code === 0, g12.out);
+  const g13 = guard('pre-02', false, undefined, null, null);
+  check(
+    '回滚前检查：/healthz 取不到（连不上）→ 按有风险处理，拒绝',
+    g13.code === 3 && catalogRefused(g13.out, '看不出有没有条目版本大于 1'),
+    g13.out,
+  );
+  const g14 = guard('pre-02', false, undefined, null, '{"ok":true,"config":{"mode":"db"}}');
+  check('回滚前检查：/healthz 里没有 catalogVersioned（看不出来）→ 拒绝', g14.code === 3 && catalogRefused(g14.out, '看不出'), g14.out);
+  const g15 = guard('pre-02', true, undefined, null, versioned);
+  check(
+    '回滚前检查：有标记文件又 catalogVersioned 为 true → 两条都点名，照常打印回到文件存储的步骤',
+    g15.code === 3 &&
+      refusedWithSteps(g15.out) &&
+      g15.out.includes('config.catalogVersioned 为 true') &&
+      g15.out.includes('要回滚只能回到 02 之后的镜像'),
+    g15.out,
+  );
 
   // deploy.sh 的两处接线。部署旧 tag：在碰服务器之前（rsync 之前）检查；ssh 换成在本机执行远端命令，门禁一律成功，
   // 「服务器」是临时目录（旁路实例的三个值），rsync 一调用就记下并失败
@@ -3793,6 +3851,19 @@ async function realPostgres(superUrl: string): Promise<void> {
     check('真实 PG：重启后快照是修正后的值', cfg.currentCatalog().routes.find((r) => r.id === 'r-tibet-lux')?.priceFrom === 99999);
     const [fixAudit] = await sq<{ reason: string }>(`select diff->>'reason' as reason from audit_log where action = 'catalog.locked_fix'`);
     check('真实 PG：写了一行带 reason 的 catalog.locked_fix 审计', fixAudit?.reason === '测试调价');
+    // 02 第 8 步：import-config（agent_app）给每条写了版本 1，catalog-fix 写了版本 2；版本行与条目的 json 文本逐字节相同
+    const tibet = await sq<{ version: number; source: string; same: boolean }>(
+      `select v.version, v.source, v.payload::text = i.payload::text as same from catalog_item_versions v
+         join catalog_items i using (tenant_id, kind, code) where v.code = 'r-tibet-lux' order by v.version`,
+    );
+    check(
+      '真实 PG：import-config 写版本 1、catalog-fix 写版本 2（agent_app 有 INSERT），最新一版与条目逐字节相同',
+      tibet.map((r) => `${r.version}:${r.source}`).join() === '1:activate,2:fix' &&
+        tibet[1]!.same &&
+        cfg.currentCatalog().versions['route:r-tibet-lux'] === 2 &&
+        cfg.catalogVersioned(),
+      JSON.stringify(tibet),
+    );
   } finally {
     for (const f of cleanup.reverse()) await f().catch(() => {});
     await su

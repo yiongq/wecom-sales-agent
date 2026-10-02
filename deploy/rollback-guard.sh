@@ -2,8 +2,10 @@
 # 回滚前检查（02 spec「导入、导出与切换 · 回滚到 02 之前的镜像」）。在服务器上跑：deploy.sh 部署一个 02 之前的 tag、
 # 以及健康检查失败后自动回滚到 :prev 之前，经 ssh 把本脚本交给 bash -s。
 # 01 的镜像不认识 SESSION_STORE、不读库里的会话：真实会话在库里时（var/ 里有 sessions-in-db.json，或 .env 里是
-# SESSION_STORE=db）回滚到它，客户历史在应用里全部消失，那期间的新消息也不进库。所以目标是 02 之前的镜像（镜像里没有
-# src/store/pg-backend.ts）而有这种风险时拒绝，并打印先回到文件存储的步骤；两个都是 02 之后的镜像时照常回滚。
+# SESSION_STORE=db）回滚到它，客户历史在应用里全部消失，那期间的新消息也不进库。01 的镜像也不写产品库条目版本：
+# 正在运行的实例有条目版本大于 1（/healthz 的 config.catalogVersioned 为 true）时回滚到它，那期间发出的方案书链接不带 v、
+# 按当时的内容渲染，回到 02 之后被当成版本 1、显示旧价。所以目标是 02 之前的镜像（镜像里没有 src/store/pg-backend.ts）
+# 而有这些风险时拒绝，并打印先回到文件存储的步骤；两个都是 02 之后的镜像时照常回滚。
 #
 # 用法：rollback-guard.sh <部署目录> <目标> [<compose 项目名> [<宿主端口>]]
 #   <目标> 是镜像名（如 wecom-sales-agent:prev）：自动回滚。看镜像里有没有 /app/src/store/pg-backend.ts；docker 出错、判断不了时按 02 之前算
@@ -29,8 +31,17 @@ fi
 if [ "$(env_val SESSION_STORE "$env_file")" = db ]; then
   risks+=(".env 里是 SESSION_STORE=db：真实会话在库里（db 存储）")
 fi
-# 第 8 步在这里加一条：正在运行的实例 /healthz 的 config.catalogVersioned 为 true（有条目版本大于 1，改过价之后回滚，
-# 那期间发出的链接回来后按版本 1 显示旧价）：curl 127.0.0.1:${port}/healthz 判断，取不到按有风险处理
+session_risks=${#risks[@]}
+# 有条目版本大于 1（02「报价快照」）：问正在运行的实例。自动回滚时跑着的是没过健康检查的新容器，/healthz 可能取不到；
+# 取不到、或里面没有这个字段（看不出来）时按有风险处理
+catalog_risk=""
+health=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/healthz" 2>/dev/null)
+case "$health" in
+  *'"catalogVersioned":false'*) ;;
+  *'"catalogVersioned":true'*) catalog_risk="正在运行的实例 /healthz 的 config.catalogVersioned 为 true：有条目版本大于 1（改过上架条目的价格或内容）" ;;
+  *) catalog_risk="取不到 127.0.0.1:${port}/healthz 的 config.catalogVersioned，看不出有没有条目版本大于 1，按有风险处理" ;;
+esac
+[ -n "$catalog_risk" ] && risks+=("$catalog_risk")
 [ ${#risks[@]} -eq 0 ] && exit 0
 
 if [ "$target" != pre-02 ]; then
@@ -51,6 +62,12 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
 {
   echo "拒绝回滚：目标是 02 之前的镜像（没有 src/store/pg-backend.ts），而"
   for r in "${risks[@]}"; do echo "  - ${r}"; done
+  if [ -n "$catalog_risk" ]; then
+    echo "02 之前的镜像不写条目版本：那期间发出的方案书链接回到 02 之后会按版本 1 显示旧价。回到文件存储也去不掉这一条，"
+    echo "要回滚只能回到 02 之后的镜像。"
+  fi
+  # 只有条目版本这一条风险时，下面回到文件存储的步骤帮不上忙，不打印
+  [ "$session_risks" -eq 0 ] && exit 3
   if [ "$target" = pre-02 ]; then
     echo "先用 02 的镜像回到文件存储，再部署旧 tag（在 ${dir} 下）："
   else
