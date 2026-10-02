@@ -1,0 +1,129 @@
+// 任务表（02 spec「任务表与跟进」）：入队（同一 dedupe_key 至多一个没结束的）、认领（FOR UPDATE SKIP LOCKED）、改状态。
+// 删除只经 purge_finished_jobs
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
+import { jobs } from '../schema.js';
+
+export type JobKind = 'followup' | 'handoff_notify' | 'retention_purge';
+export type JobStatus = 'pending' | 'running' | 'sending' | 'done' | 'failed' | 'cancelled' | 'abandoned';
+
+export interface JobRow {
+  id: string;
+  kind: JobKind;
+  dedupeKey: string;
+  runAt: Date;
+  status: JobStatus;
+  attempts: number;
+  maxAttempts: number;
+  payload: unknown;
+  lastError: string | null;
+  createdAt: Date;
+  claimedAt: Date | null;
+  finishedAt: Date | null;
+}
+
+/** 结束的四种状态：改成它们时记 finished_at */
+const FINISHED: readonly JobStatus[] = ['done', 'failed', 'cancelled', 'abandoned'];
+
+/** 入队。同一 dedupeKey 已有 pending、running 或 sending 的任务时什么都不做，返回 null；否则返回新任务的 id */
+export async function enqueueJob(
+  tx: Tx,
+  spec: { kind: JobKind; dedupeKey: string; runAt: Date; payload: unknown; maxAttempts: number },
+): Promise<string | null> {
+  const { tenantId } = currentTenantCtx();
+  const [row] = await tx
+    .insert(jobs)
+    .values({ tenantId, ...spec })
+    // 冲突目标是部分唯一索引 jobs_open_uq：谓词要与索引的写法一致，Postgres 才认得出它
+    .onConflictDoNothing({
+      target: [jobs.tenantId, jobs.dedupeKey],
+      where: sql`${jobs.status} IN ('pending', 'running', 'sending')`,
+    })
+    .returning({ id: jobs.id });
+  return row?.id ?? null;
+}
+
+interface RawJob {
+  id: string;
+  kind: JobKind;
+  dedupe_key: string;
+  run_at: string | Date;
+  status: JobStatus;
+  attempts: number;
+  max_attempts: number;
+  payload: unknown;
+  last_error: string | null;
+  created_at: string | Date;
+  claimed_at: string | Date | null;
+  finished_at: string | Date | null;
+}
+const toDate = (v: string | Date): Date => (v instanceof Date ? v : new Date(v));
+
+/**
+ * 认领一批到点的任务：status='pending' AND run_at <= now ORDER BY run_at LIMIT n FOR UPDATE SKIP LOCKED，改成 running、
+ * 记 claimed_at。now 由调用方给（与 runAt 同一个时钟）。调用方随即提交，再执行任务
+ */
+export async function claimDueJobs(tx: Tx, now: Date, limit: number): Promise<JobRow[]> {
+  const at = now.toISOString();
+  const rows = rowsOf<RawJob>(
+    await tx.execute(sql`
+      update ${jobs} set status = 'running', claimed_at = ${at}::timestamptz
+       where (tenant_id, id) in (
+         select tenant_id, id from ${jobs}
+          where status = 'pending' and run_at <= ${at}::timestamptz
+          order by run_at
+          limit ${limit}
+          for update skip locked)
+      returning id, kind, dedupe_key, run_at, status, attempts, max_attempts, payload, last_error, created_at, claimed_at, finished_at`),
+  );
+  return rows
+    .map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      dedupeKey: r.dedupe_key,
+      runAt: toDate(r.run_at),
+      status: r.status,
+      attempts: r.attempts,
+      maxAttempts: r.max_attempts,
+      payload: r.payload,
+      lastError: r.last_error,
+      createdAt: toDate(r.created_at),
+      claimedAt: r.claimed_at === null ? null : toDate(r.claimed_at),
+      finishedAt: r.finished_at === null ? null : toDate(r.finished_at),
+    }))
+    .toSorted((a, b) => a.runAt.getTime() - b.runAt.getTime());
+}
+
+/**
+ * 改一个任务的状态。from 给出时只在当前状态是其中之一时才改（比如只有 running 才能改成 sending）；
+ * 改成结束的四种状态时记 finished_at。返回是否改到了
+ */
+export async function setJobStatus(
+  tx: Tx,
+  id: string,
+  status: JobStatus,
+  opts: { from?: readonly JobStatus[]; lastError?: string | null; attemptsDelta?: number; runAt?: Date } = {},
+): Promise<boolean> {
+  const out = await tx
+    .update(jobs)
+    .set({
+      status,
+      ...(FINISHED.includes(status) ? { finishedAt: sql`now()` } : {}),
+      ...(opts.lastError !== undefined ? { lastError: opts.lastError } : {}),
+      ...(opts.attemptsDelta ? { attempts: sql`${jobs.attempts} + ${opts.attemptsDelta}` } : {}),
+      ...(opts.runAt ? { runAt: opts.runAt } : {}),
+    })
+    .where(and(eq(jobs.id, id), opts.from ? inArray(jobs.status, [...opts.from]) : undefined))
+    .returning({ id: jobs.id });
+  return out.length === 1;
+}
+
+/** 取消这个 dedupeKey 还没开始执行的任务（客户回话、重置）；返回取消的条数 */
+export async function cancelPendingJobs(tx: Tx, dedupeKey: string): Promise<number> {
+  const out = await tx
+    .update(jobs)
+    .set({ status: 'cancelled', finishedAt: sql`now()` })
+    .where(and(eq(jobs.dedupeKey, dedupeKey), eq(jobs.status, 'pending')))
+    .returning({ id: jobs.id });
+  return out.length;
+}
