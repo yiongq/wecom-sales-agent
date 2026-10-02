@@ -418,7 +418,7 @@ export function memberKpis(input: {
       key: 'waiting',
       label: '等人接手',
       value: counts.byState.human,
-      caption: ['AI已转人工、还没成交的会话'],
+      caption: ['AI交给人工、还没成交的会话'],
       breakdown: [times.length ? `最后动静：${times.join('、')}${more}` : '现在没有等人接手的会话'],
       target: { kind: 'conversations', state: 'human' },
     },

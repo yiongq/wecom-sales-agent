@@ -9,7 +9,8 @@
 //    某个接口 500 时只有用它的那一块写「没取到」（验收 10：/audit 500 只有「最近变更」出错）；坐席没有「最近变更」和草稿类待办，
 //    也不发这些请求；demo 匿名只有「在售」一格、只取产品库列表；审计按页往前取，一次导入不被截断；等人接手多于接口的
 //    默认一页（20）乃至一整页（100）时，等得最久的照样列在最前、计数按总数；换一个行业包，
-//    实体、阶段、叫法都跟着换，请求的是那个包的 kind；阶段条和业务数链到带 state、stage 的会话列表（验收 10）。
+//    实体、阶段、叫法都跟着换，请求的是那个包的 kind；阶段条和业务数链到带 state、stage 的会话列表（验收 10）；
+//    每次挂载的总览，文字、标签页标题和读屏属性里都没有验收 6 禁用的五个词。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/overview/overview.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -510,7 +511,7 @@ eq(
   kpis.map((k) => k.caption),
   [
     ['企业微信里的客户会话，不含网页试聊'],
-    ['AI已转人工、还没成交的会话'],
+    ['AI交给人工、还没成交的会话'],
     ['阶段到了「已支付」的会话'],
     ['线路20', '酒店23，销售助手只推荐这些'],
   ],
@@ -770,6 +771,17 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
 
 const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
 
+// 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览在载完和卸载前各记一份：
+// 文字、标签页标题，以及 title、aria-label、placeholder 这些读屏与悬停读得到的属性；最后（2.8）一起扫
+const BANNED = ['顾问处理中', '待人工', '已转人工', '待接管', '需要介入'];
+const SPOKEN_ATTRS = ['title', 'aria-label', 'aria-description', 'placeholder', 'alt'];
+const rendered: string[] = [];
+let mounts = 0;
+function seen(box: HTMLElement): void {
+  const attrs = [...box.querySelectorAll('*')].flatMap((el) => SPOKEN_ATTRS.map((a) => el.getAttribute(a) ?? ''));
+  rendered.push([document.title, box.textContent ?? '', ...attrs].join('\n'));
+}
+
 /** 挂上真的 OverviewPage：路由只有它和几个空页（链接要能算出地址），查询缓存里放好来者；等请求都回来 */
 async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -804,6 +816,8 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
     });
     if (i > 3 && qc.isFetching() === 0) break;
   }
+  mounts += 1;
+  seen(box);
   const $ = (sel: string): HTMLElement[] => [...box.querySelectorAll<HTMLElement>(sel)];
   return {
     box,
@@ -811,6 +825,7 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
     texts: (sel: string): string[] => $(sel).map((e) => (e.textContent ?? '').trim()),
     hrefs: (sel: string): string[] => $(sel).map((e) => e.getAttribute('href') ?? ''),
     async unmount() {
+      seen(box);
       await act(async () => r.unmount());
       box.remove();
       qc.clear();
@@ -1293,6 +1308,22 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
 
 // 2.7 从阶段条、业务数跳到会话列表之后，地址里的 state、stage 进到接口查询、页签与阶段条的选中：
 // 随第 13 步挪到会话列表自己的自测（console/src/conversations/conversations.selftest.tsx）
+
+// 2.8 验收 6 的禁用词：上面挂过的每一份总览（所有者、管理员、坐席、匿名，各块出错、扣住请求的先后，另一个行业包）
+check(
+  '禁用词（验收 6）：每次挂载都扫了载完与卸载前两份',
+  mounts > 0 && rendered.length === mounts * 2,
+  `挂载 ${mounts} 次，扫了 ${rendered.length} 份`,
+);
+for (const w of BANNED) {
+  const hit = rendered.find((t) => t.includes(w));
+  const at = hit?.indexOf(w) ?? -1;
+  check(
+    `禁用词（验收 6）：总览里没有「${w}」`,
+    !hit,
+    hit ? `出现在「${hit.slice(Math.max(0, at - 16), at + w.length + 16).replace(/\s+/g, ' ')}」` : '',
+  );
+}
 
 if (fails.length) {
   console.error(`overview: ${fails.length} 条断言失败（通过 ${pass} 条）`);
