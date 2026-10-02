@@ -144,6 +144,8 @@ export async function installSeededConfig(
 export interface StoreFaults {
   /** 设了就让借连接抛它：模拟连不上、PG 不可写 */
   acquire: Error | null;
+  /** acquire 设了时先放过这么多次借连接（给「第二次借连接才失败」用） */
+  skipAcquires: number;
   /** 设了就先等它再借连接：模拟落库变慢、暂停（不占着 PGlite 的连接） */
   gate: Promise<void> | null;
   /** 设了就让下一次归还连接抛它（只一次）：事务已经提交，调用方却收到错误——模拟 COMMIT 之后回包丢失 */
@@ -156,8 +158,8 @@ export interface PgStoreFixture {
   /** initSessionStore 的依赖。db 是同一个 PGlite 上另开的 drizzle 实例：会话存储的读写都经它，故障与计数只管它 */
   deps: { db: Db; tenantId: string; varDir: string };
   faults: StoreFaults;
-  /** 经这个 db 发出的查询条数（不进 queryCount() 的全局计数）与借连接次数 */
-  stats: { queries: number; acquires: number };
+  /** 经这个 db 发出的查询条数（不进 queryCount() 的全局计数）、借连接次数，与发过的 `set transaction …`（事务的隔离级别与读写模式） */
+  stats: { queries: number; acquires: number; txModes: string[] };
 }
 
 /** 带 SQLSTATE 的假驱动错误（连接类用 08006，数据类用 23514 之类） */
@@ -175,13 +177,14 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
   await t.pg.query(`insert into tenants (slug, name, pack_id) values ($1, $1, 'travel') on conflict (slug) do nothing`, [slug]);
   const tenantId = (await t.pg.query<{ id: string }>('select id from tenants where slug = $1', [slug])).rows[0]!.id;
   await t.pg.exec('SET ROLE agent_app');
-  const stats = { queries: 0, acquires: 0 };
-  const faults: StoreFaults = { acquire: null, gate: null, releaseOnce: null, skipReleases: 0 };
+  const stats = { queries: 0, acquires: 0, txModes: [] as string[] };
+  const faults: StoreFaults = { acquire: null, skipAcquires: 0, gate: null, releaseOnce: null, skipReleases: 0 };
   const db: Db = drizzle(t.pg, {
     schema,
     logger: {
-      logQuery() {
+      logQuery(query) {
         stats.queries++;
+        if (/^set transaction /i.test(query)) stats.txModes.push(query);
       },
     },
   });
@@ -189,7 +192,10 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
     acquire: async () => {
       stats.acquires++;
       if (faults.gate) await faults.gate;
-      if (faults.acquire) throw faults.acquire;
+      if (faults.acquire) {
+        if (faults.skipAcquires > 0) faults.skipAcquires--;
+        else throw faults.acquire;
+      }
       return {
         db,
         release: async (destroy) => {
@@ -211,22 +217,25 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
 
 /**
  * 真实 Postgres 上「COMMIT 之后回包丢掉」的连接（02 验收 8）：dropCommitReply 大于 0 时（先放过 skipCommits 条），下一条 COMMIT
- * 照常发到库里执行，之后这条连接上的一切都当作断线（抛不带 code 的「连接意外中断」，与 node-postgres 一样），归还时销毁
+ * 照常发到库里执行，之后这条连接上的一切都当作断线（抛不带 code 的「连接意外中断」，与 node-postgres 一样），归还时销毁。
+ * delayCommitMs 大于 0 时客户端先收到断线，COMMIT 过这么久才发到库里（之后再销毁连接）：服务端提交得比重试晚
  */
 export async function openFlakyDb(
   url: string,
-): Promise<{ db: Db; close(): Promise<void>; faults: { dropCommitReply: number; skipCommits: number } }> {
+): Promise<{ db: Db; close(): Promise<void>; faults: { dropCommitReply: number; skipCommits: number; delayCommitMs: number } }> {
   assertPgUrl(url);
   const pool = new pg.Pool({ connectionString: url, max: 3 });
   pool.on('error', () => {});
   pool.on('connect', (c) => c.on('error', () => {}));
-  const faults = { dropCommitReply: 0, skipCommits: 0 };
+  const faults = { dropCommitReply: 0, skipCommits: 0, delayCommitMs: 0 };
+  const late = new Set<Promise<unknown>>();
   const db: Db = drizzleNodePg(pool, { schema, logger: countingLogger });
   const lost = (): Error => new Error('Connection terminated unexpectedly');
   registerDriver(db, {
     async acquire() {
       const client = await pool.connect();
       let dropped = false;
+      let delayed: Promise<unknown> | null = null;
       // drizzle 拿到的不是 Pool 时只调 query：包一层，COMMIT 之后让回包「丢掉」
       const conn = {
         async query(config: { text?: string } | string, values?: unknown[]) {
@@ -238,6 +247,13 @@ export async function openFlakyDb(
               return client.query(config as never, values as never);
             }
             faults.dropCommitReply--;
+            if (faults.delayCommitMs > 0) {
+              const ms = faults.delayCommitMs;
+              dropped = true;
+              delayed = new Promise((r) => setTimeout(r, ms)).then(() => client.query(config as never, values as never)).catch(() => {});
+              late.add(delayed);
+              throw lost();
+            }
             await client.query(config as never, values as never);
             dropped = true;
             throw lost();
@@ -247,11 +263,22 @@ export async function openFlakyDb(
       };
       return {
         db: drizzleNodePg(conn as never, { schema, logger: countingLogger }),
-        release: async (destroy) => client.release(destroy || dropped),
+        release: async (destroy) => {
+          // 推迟的 COMMIT 还没发出去：先不销毁这条连接，等它发完（调用方照样立即拿到断线）
+          if (delayed) void delayed.finally(() => client.release(true));
+          else client.release(destroy || dropped);
+        },
       };
     },
   });
-  return { db, close: () => pool.end(), faults };
+  return {
+    db,
+    close: async () => {
+      await Promise.all(late);
+      await pool.end();
+    },
+    faults,
+  };
 }
 
 // ---------------- 真实 Postgres 上的一次性库（给 src/ 下别的套件用：它们不能 import pg） ----------------

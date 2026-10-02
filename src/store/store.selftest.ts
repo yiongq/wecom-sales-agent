@@ -3,9 +3,10 @@
 // SESSION_STORE 的非法组合与 boot() 的失败分支、标记文件、三段停机的顺序与时限、导入期行为与模式无关。
 // 第 5 步：投影的往返（纯函数）；PG 后端的 PGlite 部分（子进程里：预载往返与校验、写队列的顺序与合并、冻结、窗口推进、
 // 重置作废、事件只在提交后、COMMIT 断线后认出已提交、数据类错误与 poisoned、NUL 与切开的 emoji、存档点、chat() 与 withTenant、
-// 一轮不查库、孤儿订单、spill 回放的接续判定、drain；落盘的 PGlite 上一串「启动」：20 轮后 SIGTERM、一轮中间 SIGTERM、
-// drain 段 PG 不可写写出 spill 与回放、spill_conflict、模拟崩溃、另一写者）；真实 Postgres 部分有 PG_TEST_URL 才跑
-// （第二个进程拒绝启动、另一写者、COMMIT 之后回包丢掉）。导入导出在第 6 步加。
+// 一轮不查库、孤儿订单的收养与交接、同一段同步代码的改动合进一个事务、spill 回放的接续判定与错误类型、drain、租户锁被拿走后不写库；
+// 落盘的 PGlite 上一串「启动」：20 轮后 SIGTERM、一轮中间 SIGTERM（都让最后一次落库卡在退避里，靠 drain 段排空）、
+// drain 段 PG 不可写写出 spill 与回放（含在途快照的附带行与作废）、spill_conflict、模拟崩溃、另一写者、孤儿订单重启不复活、late 段之后不落库）；
+// 真实 Postgres 部分有 PG_TEST_URL 才跑（第二个进程拒绝启动、另一写者、COMMIT 之后回包丢掉、新会话 COMMIT 晚到）。导入导出在第 6 步加。
 // 用法：npx tsx src/store/store.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawn, spawnSync } from 'node:child_process';
@@ -551,14 +552,29 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   });
   check('initSessionStore(null)：有标记文件时以 sessions_in_db 拒绝', reason === 'sessions_in_db', reason);
   fs.unlinkSync(marker);
+  // sessions.json 里有真实会话（wecom:u1、wecom:u2）：预载之前就以 real_in_json 拒绝，库一下都不碰（db 给的是个空对象），JSON 原样不动
+  const sjBefore = fs.readFileSync(SESSIONS_FILE, 'utf8');
+  const ojBefore = fs.readFileSync(ORDERS_FILE, 'utf8');
   let dbReason = '';
+  let dbDetail = '';
   await store.initSessionStore({ db: {} as never, tenantId: 't', varDir: VAR_DIR }).catch((e: unknown) => {
     dbReason = e instanceof SessionStoreStartupError ? e.reason : String(e);
+    dbDetail = e instanceof SessionStoreStartupError ? e.detail : '';
   });
+  await sleep(250); // 有落盘的话也该落完了
   check(
-    'initSessionStore(deps)：库用不了时以 db_unreachable 拒绝，不回落到文件存储、不留半装载状态',
-    dbReason === 'db_unreachable' && store.sessionStoreMode() === 'file' && store.getSession('wecom:u1') !== undefined,
-    dbReason,
+    'initSessionStore(deps)：sessions.json 里有真实会话 → 预载之前以 real_in_json 拒绝（提示 import-sessions，只写短码），仍是文件存储',
+    dbReason === 'real_in_json' &&
+      dbDetail.includes('import-sessions') &&
+      dbDetail.includes(' 2 个真实会话') &&
+      !dbDetail.includes('wecom:u1') &&
+      store.sessionStoreMode() === 'file' &&
+      store.getSession('wecom:u1') !== undefined,
+    `${dbReason} ${dbDetail}`,
+  );
+  check(
+    'initSessionStore(deps)：real_in_json 拒绝时 JSON 原样不动',
+    fs.readFileSync(SESSIONS_FILE, 'utf8') === sjBefore && fs.readFileSync(ORDERS_FILE, 'utf8') === ojBefore,
   );
 }
 
@@ -1436,17 +1452,196 @@ async function childPg(ck: Ck): Promise<void> {
       detail,
     );
     fs.unlinkSync(f5);
-    const f6 = writeSpill('2026-01-01T00-00-06-000Z', [entry({})], 'not-this-tenant');
-    ck('spill 回放：别的租户的 spill → spill_conflict', (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'spill_conflict');
-    fs.unlinkSync(f6);
-    const longId = `wecom:${'r'.repeat(195)}`;
-    const f7 = writeSpill('2026-01-01T00-00-07-000Z', [
-      entry({ id: longId, committedSeq: 0, lastSeq: 1, messages: [{ seq: 1, message: m(1) }], state: { ...base, id: longId } }),
+    // 在途那次没提交（库里的 flush_id 不是它）：按「已提交到第几条」写入，在途快照带的审计也要写进去
+    const eLost = entry({
+      committedSeq: 4,
+      inflight: { flushId: randomUUID(), lastSeq: 5, audits: [audit('selftest.replay.inflightlost')], jobs: [], consents: [] },
+      lastSeq: 5,
+      messages: [{ seq: 5, message: m(5) }],
+      audits: [audit('selftest.replay.afterlost')],
+    });
+    writeSpill('2026-01-01T00-00-05-500Z', [eLost]);
+    await open();
+    ck(
+      'spill 回放：在途那次没提交（库里的 flush_id 不是它）→ 按一次落库写入，在途快照带的审计与之后排的都写进去',
+      (await convRow(R))?.last_seq === 5 &&
+        (await count(`select count(*)::int as n from audit_log where action = 'selftest.replay.inflightlost'`)) === 1 &&
+        (await count(`select count(*)::int as n from audit_log where action = 'selftest.replay.afterlost'`)) === 1,
+    );
+    // flush_id 对上而 last_seq 对不上（库被别人动过）：两种都按接不上处理，不跳过、不按在途已提交补写
+    const lostFlush = (await convRow(R))!.flush_id!;
+    const fA = writeSpill('2026-01-01T00-00-05-600Z', [
+      entry({
+        flushId: lostFlush,
+        committedSeq: 5,
+        lastSeq: 7,
+        messages: [
+          { seq: 6, message: m(6) },
+          { seq: 7, message: m(7) },
+        ],
+      }),
     ]);
     ck(
-      'spill 回放：回放仍失败（数据类错误）→ 文件改名 .failed，从库里的状态起',
-      (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'ok' && !fs.existsSync(f7) && fs.existsSync(`${f7}.failed`),
+      'spill 回放：库里是这一条的回放 flush_id、last_seq 却不是文件里最后一条 → spill_conflict，不当成已回放跳过',
+      (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'spill_conflict' && fs.existsSync(fA),
     );
+    fs.unlinkSync(fA);
+    const fB = writeSpill('2026-01-01T00-00-05-700Z', [
+      entry({
+        committedSeq: 3,
+        inflight: { flushId: lostFlush, lastSeq: 4, audits: [], jobs: [], consents: [] },
+        lastSeq: 6,
+        messages: [
+          { seq: 5, message: m(5) },
+          { seq: 6, message: m(6) },
+        ],
+      }),
+    ]);
+    ck(
+      'spill 回放：库里是在途那次的 flush_id、last_seq 却不是它的 → spill_conflict，不按在途已提交补写',
+      (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'spill_conflict' && fs.existsSync(fB) && (await convRow(R))?.last_seq === 5,
+    );
+    fs.unlinkSync(fB);
+    // 别的租户的 spill：换成本租户就能干净写入的一条（接得上库里的 last_seq），照样拒绝，库里不多出消息
+    const msgsBefore = (await dbMsgs(R)).length;
+    const f6 = writeSpill(
+      '2026-01-01T00-00-06-000Z',
+      [entry({ committedSeq: 5, lastSeq: 6, messages: [{ seq: 6, message: m(6) }] })],
+      'not-this-tenant',
+    );
+    let d6 = '';
+    try {
+      await openPgBackend(probeDeps(tR, dir));
+    } catch (e) {
+      d6 = e instanceof SessionStoreStartupError ? `${e.reason} ${e.detail}` : String(e);
+    }
+    ck(
+      'spill 回放：别的租户的 spill → spill_conflict，detail 写明不是本租户，库里没多出消息，文件留着',
+      d6.startsWith('spill_conflict') && d6.includes('不是本租户') && (await dbMsgs(R)).length === msgsBefore && fs.existsSync(f6),
+      d6,
+    );
+    fs.unlinkSync(f6);
+    // 结构不对的文件（缺 sessions、version 不认识）按读不出处理：改名 .failed，不抛别的错
+    const f6a = path.join(dir, 'store-spill-2026-01-01T00-00-06-100Z.json');
+    fs.writeFileSync(f6a, JSON.stringify({ version: 1, tenant: tR, at: now }));
+    const f6b = path.join(dir, 'store-spill-2026-01-01T00-00-06-200Z.json');
+    fs.writeFileSync(f6b, JSON.stringify({ version: 2, tenant: tR, at: now, sessions: [] }));
+    ck(
+      'spill 回放：缺 sessions、version 不认识的文件按读不出处理，改名 .failed，照常启动',
+      (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'ok' &&
+        fs.existsSync(`${f6a}.failed`) &&
+        fs.existsSync(`${f6b}.failed`) &&
+        !fs.existsSync(f6a) &&
+        !fs.existsSync(f6b),
+    );
+    // 文件系统出错（这里是同名的目录，读它 EISDIR）：以 spill_conflict 拒绝，detail 只写文件名与错误码
+    const f6c = path.join(dir, 'store-spill-2026-01-01T00-00-06-300Z.json');
+    fs.mkdirSync(f6c);
+    let d6c = '';
+    try {
+      await openPgBackend(probeDeps(tR, dir));
+    } catch (e) {
+      d6c = e instanceof SessionStoreStartupError ? `${e.reason} ${e.detail}` : `other:${String(e)}`;
+    }
+    ck(
+      'spill 回放：文件系统出错 → SessionStoreStartupError(spill_conflict)，detail 是文件名与错误码',
+      d6c.startsWith('spill_conflict') && d6c.includes(path.basename(f6c)) && d6c.includes('EISDIR') && !d6c.includes(dir),
+      d6c,
+    );
+    fs.rmdirSync(f6c);
+    // 一个文件里一条回放成功、一条仍失败：改名 .failed，日志点名哪些已回放、哪些失败，要人工处理，不再叫人改回原名重启
+    const longId = `wecom:${'r'.repeat(195)}`;
+    const okId = 'wecom:wmReplayOk7';
+    const f7 = writeSpill('2026-01-01T00-00-07-000Z', [
+      entry({ id: okId, committedSeq: 0, lastSeq: 1, messages: [{ seq: 1, message: m(1) }], state: { ...base, id: okId } }),
+      entry({ id: longId, committedSeq: 0, lastSeq: 1, messages: [{ seq: 1, message: m(1) }], state: { ...base, id: longId } }),
+    ]);
+    const logs: string[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    let r7: string;
+    try {
+      r7 = await reasonOf(openPgBackend(probeDeps(tR, dir)));
+    } finally {
+      console.error = origErr;
+    }
+    ck(
+      'spill 回放：回放仍失败（数据类错误）→ 文件改名 .failed，从库里的状态起',
+      r7 === 'ok' && !fs.existsSync(f7) && fs.existsSync(`${f7}.failed`) && (await convRow(okId))?.last_seq === 1,
+    );
+    const line = logs.find((l) => l.includes('改名 .failed') && l.includes(path.basename(f7))) ?? '';
+    ck(
+      'spill 回放：.failed 的日志要人工处理，点名已回放与失败的会话（短码），不叫人改回原名重启',
+      line.includes('需要人工处理') &&
+        line.includes(`已回放：${shortIdOf(okId)}`) &&
+        line.includes(`失败：${shortIdOf(longId)}`) &&
+        !line.includes('改回原名再启动') &&
+        !line.includes(okId),
+      line,
+    );
+  }
+
+  // ---- spill 不投影订单：订单投影失败让会话 poisoned，spillSync 照样写出这个会话（不变量 13） ----
+  {
+    const tP = await newTenant('poison-order');
+    const dir = fs.mkdtempSync(path.join(VAR, 'poison-order-'));
+    const deps = probeDeps(tP, dir);
+    const sid = 'wecom:wmBadOrderSpill';
+    // 旧的 orders.json 里就可能有这样的孤儿单：createdAt 为 null，投影成行时抛 ProjectionError
+    const badOrder = {
+      id: 'ord_badcreated1',
+      sessionId: sid,
+      routeId: 'r-yunnan-mid',
+      routeTitle: '云南',
+      travelers: 2,
+      departDate: '2026-11-01',
+      totalPrice: 6560,
+      status: 'paid',
+      createdAt: null,
+    } as unknown as Order;
+    deps.orders.set(badOrder.id, badOrder);
+    const b = await openPgBackend(deps);
+    b.install();
+    const s = {
+      id: sid,
+      channel: 'wecom',
+      stage: 'greeting',
+      profile: {},
+      messages: [{ role: 'customer', content: '坏订单的主人', at: Date.now() }],
+      orderIds: [],
+      handedOver: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as Session;
+    deps.sessions.set(sid, s);
+    b.schedule(s);
+    await sleep(30);
+    const h = b.health();
+    ck(
+      'spill：收养的孤儿订单投影失败（createdAt 为 null）→ 会话 poisoned',
+      h.poisoned.includes(shortIdOf(sid)) && /projection order\.createdAt/.test(h.lastError ?? ''),
+      String(h.lastError),
+    );
+    s.messages.push({ role: 'agent', content: '照样服务', at: Date.now() });
+    b.schedule(s);
+    const n = b.spillSync();
+    const file = fs.readdirSync(dir).find((f) => /^store-spill-.+\.json$/.test(f));
+    const doc = file
+      ? (JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) as {
+          sessions: { id: string; messages: { message: ChatMessage }[]; orders: { order: Record<string, unknown> }[]; poisoned: string }[];
+        })
+      : null;
+    const se = doc?.sessions.find((x) => x.id === sid);
+    ck(
+      'spill：poisoned 的会话照样写出消息与原始订单（spill 里不投影订单）',
+      n === 1 &&
+        se?.messages.map((x) => x.message.content).join() === '坏订单的主人,照样服务' &&
+        se.orders.length === 1 &&
+        se.orders[0]!.order.createdAt === null &&
+        /projection/.test(se.poisoned),
+      String(JSON.stringify(se ?? null)).slice(0, 300),
+    );
+    b.close();
   }
 
   const store = await import('../store.js');
@@ -1458,13 +1653,28 @@ async function childPg(ck: Ck): Promise<void> {
     (await reasonOf(store.initSessionStore(fx.deps))) === 'db_unreachable' && store.sessionStoreMode() === 'file' && !store.getSession(A),
   );
   fx.faults.acquire = null;
+  const modes0 = fx.stats.txModes.length;
   await store.initSessionStore(fx.deps);
+  ck(
+    '预载：整个预载一个 REPEATABLE READ 只读的事务',
+    fx.stats.txModes.slice(modes0).some((q) => /repeatable read/i.test(q) && /read only/i.test(q)),
+    JSON.stringify(fx.stats.txModes.slice(modes0)),
+  );
+  let twice = '';
+  try {
+    await store.initSessionStore(fx.deps);
+  } catch (e) {
+    twice = e instanceof SessionStoreStartupError ? e.reason : `other:${String(e)}`;
+  }
+  ck('initSessionStore：装上之后再调一次也以 SessionStoreStartupError 拒绝（sessions_in_db）', twice === 'sessions_in_db', twice);
   const stats = () => store.__storeTest.pgStats()!;
   const mk = (id: string) => store.getOrCreateSession(id, 'wecom');
   const say = (s: Session, role: ChatMessage['role'], content: string): void => {
     s.messages.push({ role, content, at: Date.now() });
     store.saveSession(s);
   };
+  /** 等排在 microtask 里的起落库跑起来（写队列在 microtask 里取快照） */
+  const tick = () => new Promise<void>((r) => setImmediate(r));
   const poisoned = (id: string) => store.storeHealth().poisoned.includes(shortIdOf(id));
 
   // ---- 预载往返 ----
@@ -1474,7 +1684,7 @@ async function childPg(ck: Ck): Promise<void> {
     ck(
       '预载往返：rowToSession 重建的会话与 normalizeForStore 之后的原对象（只留窗口）deepStrictEqual',
       isDeepStrictEqual(a, proj.normalizeForStore(seedA)),
-      JSON.stringify(a).slice(0, 300),
+      String(JSON.stringify(a ?? null)).slice(0, 300),
     );
     ck('预载：窗口里的消息按库里的 seq 记上 seq', a.messages.map((x) => store.seqOf(x)).join() === '3,4,5');
     ck(
@@ -1502,15 +1712,30 @@ async function childPg(ck: Ck): Promise<void> {
     ck('saveSession 返回时新消息已有 seq（同步分配）', store.seqOf(s.messages.at(-1)!) === 10);
     await store.flushSession(s.id);
     const n = stats().attempts - before;
-    ck('写队列：连续十次 saveSession，第一次在途，其余九次合并成下一次', n === 2, String(n));
+    ck('写队列：同一段同步代码里的十次 saveSession 合进一次落库（起落库推迟到 microtask）', n === 1, String(n));
+    let open!: () => void;
+    fx.faults.gate = new Promise<void>((r) => (open = r));
+    const b2 = stats().attempts;
+    say(s, 'customer', '第11句');
+    await tick(); // 这一次已经起了，卡在闸门前
+    for (let i = 12; i <= 20; i++) say(s, i % 2 ? 'customer' : 'agent', `第${i}句`);
+    fx.faults.gate = null;
+    open();
+    await store.flushSession(s.id);
+    const n2 = stats().attempts - b2;
+    ck('写队列：在途期间的九次 saveSession 合并成它提交之后的那一次', n2 === 2, String(n2));
     const rows = await dbMsgs(s.id);
     ck(
       '写队列：库里的消息顺序与内存相同',
       rows.map((r) => r.content).join() === s.messages.map((x) => x.content).join() &&
-        rows.map((r) => r.seq).join() === '1,2,3,4,5,6,7,8,9,10',
+        rows.map((r) => r.seq).join() === Array.from({ length: 20 }, (_, i) => i + 1).join(),
     );
     const c = await convRow(s.id);
-    ck('写队列：会话行的 last_seq、window_start_seq、flush_id', c?.last_seq === 10 && c.window_start_seq === 1 && c.flush_id !== null);
+    ck('写队列：会话行的 last_seq、window_start_seq、flush_id', c?.last_seq === 20 && c.window_start_seq === 1 && c.flush_id !== null);
+    s.messages.push({ role: 'customer', content: '带 msgid 的', at: Date.now(), msgid: 'mid-local-1' });
+    store.saveSession(s);
+    ck('去重集合：本进程分配了 seq 的客户消息的 msgid 进集合', store.recentMsgids(s.id).has('mid-local-1'));
+    await store.flushSession(s.id);
   }
   {
     const s1 = mk('wecom:wmGate1');
@@ -1526,7 +1751,11 @@ async function childPg(ck: Ck): Promise<void> {
     say(s2, 'customer', 'b1');
     await sleep(30);
     ck('写队列：同一会话至多一个落库在途，不同会话各起一次', fx.stats.acquires - acq0 === 2, String(fx.stats.acquires - acq0));
-    ck('写队列：在途期间 storeHealth 报积压', store.storeHealth().dirty === 2 && store.storeHealth().lagMs >= 0);
+    ck(
+      '写队列：在途期间 storeHealth 报积压，lagMs 从最早一次没提交的改动算起',
+      store.storeHealth().dirty === 2 && store.storeHealth().lagMs >= 20,
+      JSON.stringify(store.storeHealth()),
+    );
     fx.faults.gate = null;
     open();
     await store.flushSession(s1.id);
@@ -1553,7 +1782,7 @@ async function childPg(ck: Ck): Promise<void> {
     fresh.content = '存之前可以改';
     ck('冻结：saveSession 之前的新消息还能改', !Object.isFrozen(fresh));
     store.saveSession(s);
-    ck('冻结：进快照即冻结（没有在途时 saveSession 同步取快照）', Object.isFrozen(fresh));
+    ck('冻结：saveSession 分配 seq 时即冻结（起落库在 microtask 里，冻结不等取快照）', Object.isFrozen(fresh));
     await store.flushSession(s.id);
     ck('冻结：冻结之前的改动随快照落库', (await dbMsgs(s.id)).at(-1)?.content === '存之前可以改');
   }
@@ -1614,6 +1843,72 @@ async function childPg(ck: Ck): Promise<void> {
     ck('重置：不 poisoned', !poisoned(sid));
   }
 
+  // ---- 同一段同步代码里的复合改动合进一个事务：重置一个带订单、已转人工的会话，只借一次连接，库里没有半个重置 ----
+  {
+    const { enterHandoff } = await import('../handoff/record.js');
+    const sid = 'wecom:wmResetTx1';
+    for (const text of ['想去云南玩', '2个人，11月1号出发', '就订这个']) await handleMessage(sid, text, 'wecom');
+    const s = store.getSession(sid)!;
+    const oid = s.orderIds[0] ?? '';
+    enterHandoff(s, { kind: 'request', at: Date.now(), reason: '客户要人工', quote: '转人工' });
+    store.saveSession(s);
+    await store.flushSession(sid);
+    const conv = async () =>
+      (
+        await su<{
+          stage: string;
+          handed_over: boolean;
+          handoff_kind: string | null;
+          last_seq: number;
+          window_start_seq: number;
+          order_ids: string[];
+          has_handoff: boolean;
+        }>(
+          `select stage, handed_over, handoff_kind, last_seq, window_start_seq,
+                  state->'orderIds' as order_ids, (state->'handoff') is not null as has_handoff
+             from conversations where id = $1`,
+          [sid],
+        )
+      )[0];
+    const pre = await conv();
+    ck(
+      '复合改动：先有一个带订单、已转人工的会话',
+      oid !== '' && pre?.handed_over === true && pre.has_handoff && pre.order_ids.includes(oid),
+    );
+    // 第一次借连接放行，第二次起都失败：把重置拆成两次提交的话，库里会停在第一次提交的样子
+    fx.faults.acquire = fakeDbError('08006');
+    fx.faults.skipAcquires = 1;
+    const a0 = fx.stats.acquires;
+    const r = await handleMessage(sid, '重置', 'wecom');
+    await sleep(60);
+    const acquired = fx.stats.acquires - a0;
+    const post = await conv();
+    const ord = (await su<{ voided: boolean }>('select voided_at is not null as voided from orders where id = $1', [oid]))[0];
+    const tail = (await dbMsgs(sid)).at(-1);
+    const dirty = store.storeHealth().dirty;
+    fx.faults.acquire = null;
+    fx.faults.skipAcquires = 0;
+    ck(
+      '复合改动：真引擎「重置」里的作废订单、清转人工、重置回复与 saveSession 合进一次落库（只借了一次连接）',
+      acquired === 1 && dirty === 0,
+      `acquired=${acquired} dirty=${dirty}`,
+    );
+    ck(
+      '复合改动：库里没有中间态，全是重置之后的样子（阶段、转人工、订单引用与作废、窗口起点、重置回复）',
+      !!pre &&
+        post?.stage === 'greeting' &&
+        !post.handed_over &&
+        post.handoff_kind === null &&
+        !post.has_handoff &&
+        post.order_ids.length === 0 &&
+        post.last_seq === pre.last_seq + 1 &&
+        post.window_start_seq === post.last_seq &&
+        ord?.voided === true &&
+        tail?.content === r.text,
+      JSON.stringify({ pre, post, ord, tail }),
+    );
+  }
+
   // ---- 事件只在提交后；提交失败时不发，恢复后补上 ----
   {
     const s = mk('wecom:wmEvents1');
@@ -1668,7 +1963,8 @@ async function childPg(ck: Ck): Promise<void> {
     let open!: () => void;
     fx.faults.gate = new Promise<void>((r) => (open = r));
     say(s, 'agent', 'c2'); // 第一次落库：在闸门前等着
-    say(s, 'customer', 'c3'); // 合并进第二次
+    await tick();
+    say(s, 'customer', 'c3'); // 在途期间来的，合并进第二次
     store.emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
     fx.faults.releaseOnce = fakeDbError('08006', '模拟 COMMIT 之后回包丢了');
     fx.faults.skipReleases = 1; // 第二次落库的回包才丢
@@ -1699,16 +1995,21 @@ async function childPg(ck: Ck): Promise<void> {
   // ---- 数据类错误：不重试，这个会话标 poisoned，别的会话照常 ----
   const longId = `wecom:${'x'.repeat(195)}`;
   {
+    const r0 = stats().retries;
+    const a0 = stats().attempts;
     const bad = mk(longId);
     say(bad, 'customer', '超长 id');
-    await sleep(50);
+    await sleep(1200); // 过了第一次退避（1 秒）：要是排了重试，这时已经又试过一次
     const h = store.storeHealth();
     ck(
       '数据类错误：违反 CHECK 的投影（id 超长）不重试，会话标 poisoned，storeHealth 点名短码',
-      h.poisoned.includes(shortIdOf(longId)) &&
-        h.lastError === `23514 conversations_id_check · ${shortIdOf(longId)}` &&
-        stats().retries >= 0,
+      h.poisoned.includes(shortIdOf(longId)) && h.lastError === `23514 conversations_id_check · ${shortIdOf(longId)}`,
       String(h.lastError),
+    );
+    ck(
+      '数据类错误：只试了一次，退避时间过去之后也没有重试',
+      stats().retries === r0 && stats().attempts - a0 === 1,
+      `retries +${stats().retries - r0} attempts +${stats().attempts - a0}`,
     );
     const t0 = Date.now();
     let lag: unknown = null;
@@ -1874,16 +2175,17 @@ async function childPg(ck: Ck): Promise<void> {
 
   // ---- 孤儿订单与 demo 类 ----
   {
+    const ordersOnDisk = () => JSON.parse(fs.readFileSync(path.join(VAR, 'orders.json'), 'utf8')) as Order[];
     ck('孤儿订单：所属会话不在内存里的订单照样在内存（文件后端管）', !!store.getOrder('ord_orphan1'));
     store.markOrderPaid('ord_orphan1');
+    await store.drainStore(1000); // 只有孤儿订单这一处改动：要靠它自己让文件后端落盘
+    ck(
+      '孤儿订单：db 存储下孤儿订单的改动本身让文件后端落盘，orders.json 里是改过的',
+      ordersOnDisk().some((o) => o.id === 'ord_orphan1' && o.status === 'paid'),
+    );
     const demo = store.getSession('sim-storeselftestdemo1')!;
     say(demo, 'customer', 'demo 类照旧走 JSON');
     await store.drainStore(1000);
-    const onDisk = JSON.parse(fs.readFileSync(path.join(VAR, 'orders.json'), 'utf8')) as Order[];
-    ck(
-      '孤儿订单：db 存储下落盘之后仍在 orders.json（改动照写）',
-      onDisk.some((o) => o.id === 'ord_orphan1' && o.status === 'paid'),
-    );
     const sj = JSON.parse(fs.readFileSync(path.join(VAR, 'sessions.json'), 'utf8')) as Session[];
     ck(
       'db 存储：sessions.json 只装 demo 类，demo 会话照旧落盘、不进库',
@@ -1891,13 +2193,26 @@ async function childPg(ck: Ck): Promise<void> {
         sj.find((x) => x.id === 'sim-storeselftestdemo1')?.messages.at(-1)?.content === 'demo 类照旧走 JSON' &&
         (await count(`select count(*)::int as n from conversations where id like 'sim-%' or id like 'wecom:cust_%'`)) === 0,
     );
+    // 同 id 的真实会话又建出来，订单被收养；PG 暂时不可写，这期间先来一次 demo 落盘：订单还没随会话提交，仍归文件后端
+    fx.faults.acquire = fakeDbError('08006');
     const g = mk('wecom:wmGone');
     say(g, 'customer', '我回来了');
-    await store.flushSession(g.id);
+    await sleep(30); // 落库失败一次，在 1 秒退避里
+    say(demo, 'customer', '收养之后的 demo 落盘');
+    await sleep(350); // 文件后端的去抖落盘
+    ck(
+      '孤儿订单：收养之后、随会话在库里提交之前，demo 落盘的 orders.json 里仍有它（崩溃不丢）',
+      ordersOnDisk().some((o) => o.id === 'ord_orphan1' && o.status === 'paid') &&
+        (await count('select count(*)::int as n from orders where id = $1', ['ord_orphan1'])) === 0,
+    );
+    fx.faults.acquire = null;
+    await store.flushSession(g.id, { timeoutMs: 4000 });
     const row = (
       await su<{ session_id: string; status: string }>('select session_id, status from orders where id = $1', ['ord_orphan1'])
     )[0];
     ck('孤儿订单：同 id 的真实会话又建出来，订单转归 PG、随它的落库写进库', row?.session_id === 'wecom:wmGone' && row.status === 'paid');
+    await store.drainStore(1000);
+    ck('孤儿订单：随会话在库里提交之后，文件后端重写 orders.json 去掉它', !ordersOnDisk().some((o) => o.id === 'ord_orphan1'));
   }
 
   // ---- 附带行：审计（带操作者与 IP）、任务、同意记录；demo 类的审计单独一个短事务 ----
@@ -1921,8 +2236,21 @@ async function childPg(ck: Ck): Promise<void> {
     ]);
     store.queueConsents(s.id, [{ category: 'health', decision: 'asked', noticeVersion: 1, evidence: null, at: Date.now() }]);
     await store.flushSession(s.id);
+    // 在途期间排进来的审计、订单改动：不并进在途的那次，随它提交之后的下一次落库写，不丢
+    let open!: () => void;
+    fx.faults.gate = new Promise<void>((r) => (open = r));
+    say(s, 'customer', '在途的这一次');
+    await tick();
+    store.queueAudit(s.id, { kind: 'system', userId: null, name: null, ip: null }, { action: 'selftest.queued.inflight' });
+    fx.faults.gate = null;
+    open();
+    await store.flushSession(s.id);
+    ck(
+      '附带行：在途期间排进来的审计随下一次落库写进去',
+      (await count(`select count(*)::int as n from audit_log where action = 'selftest.queued.inflight'`)) === 1,
+    );
     const audits = await su<{ action: string; actor_name: string | null; ip: string | null; actor_kind: string }>(
-      `select action, actor_name, host(ip) as ip, actor_kind from audit_log where action like 'selftest.queued%' order by id`,
+      `select action, actor_name, host(ip) as ip, actor_kind from audit_log where action in ('selftest.queued', 'selftest.queued2') order by id`,
     );
     ck(
       '附带行：审计随会话的落库写，各自带操作者与 IP',
@@ -1978,7 +2306,9 @@ async function childPg(ck: Ck): Promise<void> {
       say(s, 'customer', label);
       await sleep(20);
       fx.faults.acquire = null;
-      const got = poisoned(s.id) ? 'data' : stats().retries - r0 === 1 ? 'retry' : '?';
+      const dr = stats().retries - r0;
+      const got =
+        poisoned(s.id) && dr === 0 ? 'data' : !poisoned(s.id) && dr === 1 ? 'retry' : `? poisoned=${poisoned(s.id)} retries+${dr}`;
       ck(`失败分类：${label} → ${want === 'data' ? '不重试、标 poisoned' : '退避重试'}`, got === want, got);
     }
     // 慢事务：单个落库事务超过 2 秒记一行 warn 并计数
@@ -1987,9 +2317,27 @@ async function childPg(ck: Ck): Promise<void> {
     const slow0 = stats().slowTx;
     fx.faults.gate = sleep(2100) as Promise<void>;
     say(s, 'customer', '慢');
+    await tick(); // 落库已经起了、在闸门前等着
     fx.faults.gate = null;
     await store.flushSession(s.id, { timeoutMs: 5000 });
     ck('慢事务：超过 2 秒的落库计数', stats().slowTx - slow0 === 1);
+    // 退避：1 秒、5 秒、30 秒、2 分钟、之后每 2 分钟。drain 让退避中的重试立即再试，不用真等
+    await store.drainStore(3000); // 上面分类表里排着重试的先都提交掉
+    const b = mk('wecom:wmBackoff1');
+    say(b, 'customer', 'b0');
+    await store.flushSession(b.id);
+    fx.faults.acquire = fakeDbError('08006');
+    say(b, 'agent', 'b1');
+    await sleep(20);
+    const delays = [stats().lastRetryDelayMs];
+    for (let i = 0; i < 4; i++) {
+      await store.drainStore(30);
+      delays.push(stats().lastRetryDelayMs);
+    }
+    fx.faults.acquire = null;
+    const rb = await store.drainStore(2000);
+    ck('退避：连续失败依次等 1 秒、5 秒、30 秒、2 分钟、之后每 2 分钟', delays.join() === '1000,5000,30000,120000,120000', delays.join());
+    ck('退避：恢复之后提交', (await dbMsgs(b.id)).length === 2 && !rb.undrained.includes(b.id));
   }
 
   // ---- drain：退避中的重试立即再试；租户锁在别人手里时不写库 ----
@@ -2010,18 +2358,38 @@ async function childPg(ck: Ck): Promise<void> {
       `${took}ms ${r.undrained.length}`,
     );
     ck('drain：poisoned 的会话留给 spill（在 undrained 里）', r.undrained.includes(longId) && r.undrained.includes('wecom:wmCorrupt1'));
+    // 租户锁被别的进程拿走（held_by_other）：normal 段里也不再写库，退避到点的重试也不发，改动全部留给 spill
+    const idle = mk('wecom:wmLockIdle');
+    say(idle, 'customer', 'l1');
+    await store.flushSession(idle.id);
+    fx.faults.acquire = fakeDbError('08006');
+    say(s, 'customer', 'd3'); // 失败一次，1 秒后重试
+    await sleep(30);
+    fx.faults.acquire = null;
     config.__configTest.setTimings({ reacquireMs: 10 });
     lock.next = 'held_by_other';
     lock.lose();
     await sleep(100);
     ck('租户锁被另一个进程拿走：tenantLockTaken() 为真', config.tenantLockTaken());
-    fx.faults.acquire = fakeDbError('08006');
-    say(s, 'customer', 'd3');
-    await sleep(30);
-    fx.faults.acquire = null;
     const st0 = stats().attempts;
-    const r2 = await store.drainStore(300);
-    ck('drain：租户锁在别人手里时不写库，全部留给 spill', r2.undrained.includes(s.id) && stats().attempts === st0);
+    say(idle, 'customer', 'held_by_other 之后的这一句');
+    await sleep(30);
+    ck('租户锁在别人手里：saveSession 不起落库', stats().attempts === st0, `attempts +${stats().attempts - st0}`);
+    const r2 = await store.drainStore(300); // d3 还在 1 秒的退避里：drain 也不许提前重试
+    ck(
+      'drain：租户锁在别人手里时不写库（退避中的重试也不提前试），全部留给 spill',
+      r2.undrained.includes(s.id) && r2.undrained.includes(idle.id) && stats().attempts === st0,
+      `attempts +${stats().attempts - st0}`,
+    );
+    await sleep(1000); // d3 的退避到点了（失败之后已过 1 秒多）
+    ck(
+      '租户锁在别人手里：退避到点的重试也不发，库里没有新写入',
+      stats().attempts === st0 &&
+        !(await dbMsgs(idle.id)).some((x) => x.content === 'held_by_other 之后的这一句') &&
+        !(await dbMsgs(s.id)).some((x) => x.content === 'd3'),
+      `attempts +${stats().attempts - st0}`,
+    );
+    // 子进程退出时 exit 钩子写 spill：父进程查它（带着「held_by_other 之后的这一句」）
   }
 }
 
@@ -2036,6 +2404,19 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
   const t = await openTestDb({ dataDir: process.env.STORE_DATA_DIR! });
   const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
   const ctx = { tenantId: fx.deps.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+  /** 以超级用户查：一个事务里临时换回会话用户 */
+  const su = <R = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<R[]> =>
+    t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (await tx.query<R>(text, params)).rows;
+    });
+  const ordersJson = (): Order[] => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(process.env.VAR_DIR!, 'orders.json'), 'utf8')) as Order[];
+    } catch {
+      return [];
+    }
+  };
   const store = await import('../store.js');
   const { SessionStoreStartupError } = await import('./backend.js');
   try {
@@ -2075,6 +2456,22 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
         rows.map(async (r) => [r.id, (await withTenant(fx.deps.db, ctx, (tx) => readMessagesFrom(tx, r.id, 1))).length] as const),
       ),
     );
+    // spill 回放之后库里的附带行：任务、同意记录、订单（作废的也列）
+    res.data.side = {
+      jobs: (await su<{ k: string }>(`select dedupe_key as k from jobs where status = 'pending' order by 1`)).map((r) => r.k),
+      consents: Object.fromEntries(
+        (await su<{ c: string; n: number }>('select conversation_id as c, count(*)::int as n from consents group by 1')).map((r) => [
+          r.c,
+          r.n,
+        ]),
+      ),
+      orders: await su<{ id: string; session_id: string | null; voided: boolean; void_reason: string | null }>(
+        'select id, session_id, voided_at is not null as voided, void_reason from orders order by id',
+      ),
+    };
+    res.data.voidedInMem = (res.data.side as { orders: { id: string; voided: boolean }[] }).orders
+      .filter((o) => o.voided && store.getOrder(o.id) !== undefined)
+      .map((o) => o.id);
   }
   const scenario = steps.find((s) => s !== 'dump');
   if (!scenario) return;
@@ -2112,10 +2509,14 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
       'wecom:wmR20b': ['在吗', '带爸妈去哪好', '4个人', '十月底', '贵州有什么', '报个价', '再便宜点', '下单', '怎么付款', '谢谢'],
     };
     for (let i = 0; i < 10; i++) for (const [sid, texts] of Object.entries(scripts)) await handleMessage(sid, texts[i]!, 'wecom');
-    // 停机前最后一刻还有在途与排着的落库：drain 段要把它们排空
+    // 停机前最后一次落库失败一次、停在 1 秒的退避里：只有 drain 段立即重试才排得空（drain 钩子没接上就会进 spill）
     const a = store.getSession('wecom:wmR20a')!;
+    fx.faults.acquire = fakeDbError('08006');
     say(a, 'system', '停机前的最后一条');
     say(a, 'agent', '再补一句');
+    await sleep(30);
+    fx.faults.acquire = null;
+    res.data.retryPending = { dirty: store.storeHealth().dirty, retries: store.__storeTest.pgStats()?.retries ?? 0 };
     res.data.before = memDump(store);
     await sigterm();
   }
@@ -2158,35 +2559,74 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
     const { handleMessage } = await import('../engine.js');
     const t0 = Date.now();
     const turn = handleMessage('wecom:wmMid1', '你好，想去云南看看', 'wecom');
-    store.onShutdown(() => turn);
+    // normal 段等这一轮；回复那次落库失败一次、停在退避里，这一轮结束之后才恢复：只有 drain 段立即重试才排得空
+    store.onShutdown(async () => {
+      await turn;
+      await sleep(20);
+      res.data.replyRetried = (store.__storeTest.pgStats()?.retries ?? 0) >= 1;
+      fx.faults.acquire = null;
+      save();
+    });
     await sleep(1000);
     res.data.sigtermAfterMs = Date.now() - t0;
-    res.data.customerSaved = (store.getSession('wecom:wmMid1')?.messages.length ?? 0) === 1;
+    res.data.customerSaved = (store.getSession('wecom:wmMid1')?.messages.length ?? 0) === 1 && store.storeHealth().dirty === 0;
+    fx.faults.acquire = fakeDbError('08006');
     await sigterm();
   }
   if (scenario === 'unwritable') {
-    // drain 段 PG 不可写：停机写出 spill 文件，恢复后重启回放，库与停机前的内存一致（验收 4）
+    // drain 段 PG 不可写：停机写出 spill 文件，恢复后重启回放，库与停机前的内存一致（验收 4）。
+    // 在途（失败、等着重试）的快照与之后排进来的各带一份订单、审计、任务、同意记录，另一个会话断库期间作废一张已提交的订单
+    const order = (sessionId: string) =>
+      store.createOrder({
+        sessionId,
+        routeId: 'r-yunnan-mid',
+        routeTitle: '云南',
+        travelers: 2,
+        departDate: '2026-11-01',
+        totalPrice: 6560,
+      });
+    const actor = { kind: 'user' as const, userId: null, name: '小林', ip: null };
+    const job = (sid: string, key: string) => ({
+      op: 'enqueue' as const,
+      kind: 'followup' as const,
+      dedupeKey: `followup:${sid}:${key}`,
+      runAt: Date.now() + 3600_000,
+      payload: { sessionId: sid },
+      maxAttempts: 3,
+    });
     const a = mk(`wecom:wmUw${tag}a`);
     say(a, 'customer', '先落库的');
     say(a, 'agent', '这句也落了');
     const b = mk(`wecom:wmUw${tag}b`);
     say(b, 'customer', 'b 先落库的');
+    const dd = mk(`wecom:wmUw${tag}d`);
+    dd.orderIds.push(order(dd.id).id);
+    say(dd, 'customer', 'd 下了单');
     await store.flushSession(a.id);
     await store.flushSession(b.id);
+    await store.flushSession(dd.id);
     fx.faults.acquire = fakeDbError('08006', '模拟 PG 不可写');
+    // 第一段同步代码：进各自在途的那个快照
+    store.queueAudit(a.id, actor, { action: `selftest.spill${tag}.inflight` });
     say(a, 'customer', '没落库的');
-    store.createOrder({
-      sessionId: a.id,
-      routeId: 'r-yunnan-mid',
-      routeTitle: '云南',
-      travelers: 2,
-      departDate: '2026-11-01',
-      totalPrice: 6560,
-    });
-    store.queueAudit(a.id, { kind: 'user', userId: null, name: '小林', ip: null }, { action: `selftest.spill${tag}` });
-    say(b, 'agent', 'b 没落库的');
     const c = mk(`wecom:wmUw${tag}c`);
+    c.orderIds.push(order(c.id).id);
     say(c, 'customer', '库里还没有这个会话');
+    store.queueJobs(dd.id, [job(dd.id, `inflight${tag}`)]);
+    store.queueConsents(dd.id, [{ category: 'health', decision: 'asked', noticeVersion: 1, evidence: null, at: Date.now() }]);
+    say(dd, 'customer', 'd 断库时说的');
+    await sleep(50); // 快照都取了、各失败一次，停在退避里
+    // 之后排进来的：留在写队列顶层
+    store.queueAudit(a.id, actor, { action: `selftest.spill${tag}` });
+    a.orderIds.push(order(a.id).id);
+    store.saveSession(a);
+    say(b, 'agent', 'b 没落库的');
+    res.data.voidedOrder = dd.orderIds[0];
+    store.deleteOrdersOfSession(dd.id);
+    dd.orderIds = [];
+    store.queueJobs(dd.id, [job(dd.id, `queued${tag}`)]);
+    store.queueConsents(dd.id, [{ category: 'minor', decision: 'granted', noticeVersion: 1, evidence: null, at: Date.now() }]);
+    store.saveSession(dd);
     await sleep(100);
     res.data.dirtyBefore = store.storeHealth().dirty;
     res.data.before = memDump(store);
@@ -2229,6 +2669,71 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
     say(s, 'agent', '冲突后的这一句');
     save();
     await new Promise(() => {});
+  }
+  if (scenario === 'orphan') {
+    // orders.json 里的孤儿订单：同 id 的会话建出来 → 随它的落库进库 → orders.json 去掉它 → 重置（作废）
+    const oid = 'ord_diskorphan1';
+    const sid = 'wecom:wmDiskOrphan';
+    res.data.orphanBefore = store.getOrder(oid)?.status ?? null;
+    const s = mk(sid);
+    say(s, 'customer', '孤儿订单的主人回来了');
+    await store.flushSession(sid);
+    await store.drainStore(1000);
+    res.data.jsonAfterCommit = ordersJson().some((o) => o.id === oid);
+    res.data.dbAfterCommit =
+      (
+        await su<{ session_id: string; voided: boolean }>('select session_id, voided_at is not null as voided from orders where id = $1', [
+          oid,
+        ])
+      )[0] ?? null;
+    store.deleteOrdersOfSession(sid);
+    s.orderIds = [];
+    store.saveSession(s);
+    await store.flushSession(sid);
+    res.data.dbAfterVoid =
+      (
+        await su<{ voided: boolean; void_reason: string | null }>(
+          'select voided_at is not null as voided, void_reason from orders where id = $1',
+          [oid],
+        )
+      )[0] ?? null;
+    res.data.gone = store.getOrder(oid) === undefined;
+    await sigterm();
+  }
+  if (scenario === 'orphan2') {
+    // 重启时 orders.json 里还留着那张作废订单的旧副本（老版本的进程没来得及重写 JSON）：以库为准，不复活、不取消作废；
+    // 另一张属于预载会话、库里没有的订单挂到这个会话的写队列上
+    const oid = 'ord_diskorphan1';
+    res.data.staleGone = store.getOrder(oid) === undefined;
+    res.data.superseded = store.supersedeOrder(oid, 'ord_x');
+    res.data.paid = store.markOrderPaid(oid) !== undefined;
+    res.data.adoptInMem = store.getOrder('ord_jsonadopt1')?.sessionId ?? null;
+    await store.flushSession('wecom:wmCrash1');
+    await store.drainStore(1000);
+    const json = ordersJson();
+    res.data.staleInJson = json.some((o) => o.id === oid);
+    res.data.adoptInJson = json.some((o) => o.id === 'ord_jsonadopt1');
+    res.data.dbStale =
+      (
+        await su<{ status: string; voided: boolean; void_reason: string | null }>(
+          'select status, voided_at is not null as voided, void_reason from orders where id = $1',
+          [oid],
+        )
+      )[0] ?? null;
+    res.data.dbAdopt =
+      (await su<{ session_id: string | null }>('select session_id from orders where id = $1', ['ord_jsonadopt1']))[0] ?? null;
+    // late 段关了写队列：之后的 saveSession 不再起落库（留给 exit 时的 spill）
+    store.onShutdown(
+      async () => {
+        const a0 = store.__storeTest.pgStats()!.attempts;
+        say(store.getSession('wecom:wmCrash1')!, 'customer', 'late 段之后的这一句');
+        await sleep(30);
+        res.data.lateAttempts = store.__storeTest.pgStats()!.attempts - a0;
+        save();
+      },
+      { phase: 'late' },
+    );
+    await sigterm();
   }
   if (scenario === 'poisonspill') {
     // poisoned 的会话停机时随 spill 写出；原因没修好就重启，回放仍失败 → spill 改名 .failed，从库里的状态起
@@ -2291,10 +2796,11 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     await store.flushSession(s.id);
     const got: string[] = [];
     store.onCommitted((ev) => got.push(ev.type));
-    // 第一次落库照常；在途期间合并进来的第二次（一条消息加一个事件）COMMIT 之后回包丢掉
+    // 第一次落库照常；之后来的第二次（一条消息加一个事件）COMMIT 之后回包丢掉
     flaky.faults.skipCommits = 1;
     flaky.faults.dropCommitReply = 1;
     say(s, 'customer', '第三句');
+    await new Promise<void>((r) => setImmediate(r)); // 第一次已经起了
     say(s, 'agent', 'COMMIT 之后回包丢了的这一句');
     store.emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
     const t0 = Date.now();
@@ -2321,6 +2827,41 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
       poisoned: h.poisoned.length,
       dirty: h.dirty,
       events: got,
+      dropsLeft: flaky.faults.dropCommitReply,
+    };
+    await flaky.close();
+  }
+  if (scenario === 'newcommitdelay') {
+    // 新会话第一次落库：客户端立即收到断线，COMMIT 过 1.5 秒才到库里。1 秒后的重试锁不到那一行（还没提交、看不见），
+    // 插入在主键上等它提交、冲突了不报错，再锁一次就认出已提交：不 poisoned、不重复插入
+    const flaky = await openFlakyDb(APP);
+    await store.initSessionStore({ db: flaky.db, tenantId, varDir });
+    flaky.faults.dropCommitReply = 1;
+    flaky.faults.delayCommitMs = 1500;
+    const s = store.getOrCreateSession('wecom:wmRpgNewDelay', 'wecom');
+    say(s, 'customer', '新会话的第一句');
+    say(s, 'agent', '第二句');
+    let flushed = 'ok';
+    await store.flushSession(s.id, { timeoutMs: 8000 }).catch((e: unknown) => {
+      flushed = String(e);
+    });
+    const check = await openDb(APP, { max: 1 });
+    const { readMessagesFrom } = await import('../db/repo/messages.js');
+    const { readConversationsAfter } = await import('../db/repo/conversations.js');
+    const inDb = await withTenant(check.db, ctx, async (tx) => ({
+      seqs: (await readMessagesFrom(tx, s.id, 1)).map((m) => m.seq),
+      rows: (await readConversationsAfter(tx, null, 100)).filter((r) => r.id === s.id).map((r) => r.lastSeq),
+    }));
+    await check.close();
+    const h = store.storeHealth();
+    res.data.newcommit = {
+      flushed,
+      stats: store.__storeTest.pgStats(),
+      seqs: inDb.seqs,
+      rows: inDb.rows,
+      conflict: h.conflict,
+      poisoned: h.poisoned.length,
+      dirty: h.dirty,
       dropsLeft: flaky.faults.dropCommitReply,
     };
     await flaky.close();
@@ -2352,16 +2893,27 @@ async function pgSuites(): Promise<void> {
     }
     return { status: r.status, signal: r.signal, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, took: Date.now() - t0, result };
   };
-  /** 子进程里的断言并进本进程的计数 */
-  const merge = (label: string, r: ReturnType<typeof runStoreChild>): ChildResult['data'] => {
+  /**
+   * 子进程里的断言并进本进程的计数。disk 子进程启动失败（startup 不是预期的那个）时把 reason 与 detail 也记成失败，
+   * 后面的断言拿不到数据时不至于只剩一段堆栈
+   */
+  const merge = (label: string, r: ReturnType<typeof runStoreChild>, expectStartup?: string): ChildResult['data'] => {
     if (!r.result) {
       fails.push(`${label}：子进程没留下结果（status=${r.status} signal=${r.signal}）${r.out.slice(-600)}`);
       return {};
     }
     pass += r.result.pass;
     for (const f of r.result.fails) fails.push(`${label}：${f}`);
+    const st = r.result.data.startup;
+    if (expectStartup !== undefined && st !== expectStartup) {
+      fails.push(
+        `${label}：启动结果是 ${String(st)}（预期 ${expectStartup}）${String(r.result.data.startupDetail ?? '')} ${r.out.slice(-300)}`,
+      );
+    }
     return r.result.data;
   };
+  /** 断言的 detail：undefined 也能截断 */
+  const brief = (x: unknown, n = 200): string => String(JSON.stringify(x ?? null)).slice(0, n);
   const spillsIn = (dir: string) => fs.readdirSync(dir).filter((f) => /^store-spill-.+\.json$/.test(f));
   const sameMem = (a: unknown, b: unknown): boolean => isDeepStrictEqual(a, b);
 
@@ -2390,6 +2942,12 @@ async function pgSuites(): Promise<void> {
     const r = runStoreChild('pg', { VAR_DIR: dir }, 120_000);
     merge('PGlite', r);
     check('PGlite：子进程正常结束', r.status === 0, `status=${r.status} ${r.out.slice(-400)}`);
+    const exitSpill = spillsIn(dir);
+    check(
+      '租户锁在别人手里时没写库的改动，进程退出时写进 spill',
+      exitSpill.length === 1 && fs.readFileSync(path.join(dir, exitSpill[0]!), 'utf8').includes('held_by_other 之后的这一句'),
+      exitSpill.join(),
+    );
   }
 
   // ---- 落盘的 PGlite：重启、停机、崩溃、spill 与回放（一个库，一串「启动」） ----
@@ -2400,16 +2958,22 @@ async function pgSuites(): Promise<void> {
       runStoreChild('disk', { VAR_DIR: varDisk, STORE_DATA_DIR: dataDir, STORE_STEPS: steps.join(','), LLM_MOCK: '1', ...extra }, 90_000);
 
     const c1 = disk(['turns20']);
-    const d1 = merge('重启 1', c1);
+    const d1 = merge('重启 1', c1, 'ok');
     check('SIGTERM：20 轮之后收到 SIGTERM，以 143 退出（优雅停机）', c1.status === 143, `status=${c1.status} ${c1.out.slice(-400)}`);
-    check('SIGTERM：停机前 drain 段排空，没有 spill', spillsIn(varDisk).length === 0);
+    check(
+      'SIGTERM：停机前最后一次落库停在退避里，drain 段立即重试排空，没有 spill',
+      ((d1.retryPending as { dirty?: number } | undefined)?.dirty ?? 0) >= 1 &&
+        ((d1.retryPending as { retries?: number } | undefined)?.retries ?? 0) >= 1 &&
+        spillsIn(varDisk).length === 0,
+      `${brief(d1.retryPending)} ${spillsIn(varDisk).join()}`,
+    );
     const c2 = disk(['dump', 'midturn']);
-    const d2 = merge('重启 2', c2);
+    const d2 = merge('重启 2', c2, 'ok');
     const before1 = (d1.before ?? null) as { sessions: Session[] } | null;
     check(
       '重启不丢：20 轮之后 SIGTERM 再启动，identity map 与停机前经 JSON 规范化之后 deepStrictEqual（验收 4）',
       !!before1 && before1.sessions.length === 2 && sameMem(d2.dump, before1),
-      JSON.stringify(d2.dump).slice(0, 200),
+      brief(d2.dump),
     );
     check('重启：库里的 last_seq 与窗口起点就是内存里 seq 的样子', d2.seqsMatch === true);
     check(
@@ -2417,8 +2981,14 @@ async function pgSuites(): Promise<void> {
       c2.status === 143 && c2.took >= 6000 && d2.customerSaved === true,
       `status=${c2.status} took=${c2.took}`,
     );
+    check(
+      'SIGTERM 在一轮中间：回复那次落库停在退避里，drain 段立即重试排空，没有 spill',
+      d2.replyRetried === true && spillsIn(varDisk).length === 0,
+      `${String(d2.replyRetried)} ${spillsIn(varDisk).join()}`,
+    );
     const c3 = disk(['dump', 'unwritable'], { STORE_TAG: '1' });
-    const d3 = merge('重启 3', c3);
+    const d3 = merge('重启 3', c3, 'ok');
+    check('SIGTERM 在一轮中间：重启时没有要回放的 spill', (d3.stats as { replayed?: number } | undefined)?.replayed === 0);
     const mid = (d3.dump as { sessions: Session[] } | undefined)?.sessions.find((s) => s.id === 'wecom:wmMid1');
     check(
       'SIGTERM 在一轮中间：重启后这一轮的客户消息与回复都在库里（验收 4）',
@@ -2435,36 +3005,90 @@ async function pgSuites(): Promise<void> {
       spill1.length === 1 && !fs.readdirSync(varDisk).some((f) => f.endsWith('.tmp')),
       spill1.join(),
     );
+    type SpillSide = { audits: unknown[]; jobs: unknown[]; consents: unknown[] };
     const spillDoc = spill1.length
       ? (JSON.parse(fs.readFileSync(path.join(varDisk, spill1[0]!), 'utf8')) as {
-          sessions: { id: string; committedSeq: number; messages: unknown[]; orders: unknown[]; audits: unknown[] }[];
+          sessions: (SpillSide & {
+            id: string;
+            committedSeq: number;
+            messages: unknown[];
+            orders: { voided: unknown }[];
+            inflight: (SpillSide & { flushId: string }) | null;
+          })[];
         })
       : null;
+    const sp = (id: string) => spillDoc?.sessions.find((s) => s.id === id);
     check(
       'spill：每个有未提交改动的会话一条，带已提交到第几条、未提交的消息、订单与审计',
-      spillDoc?.sessions.length === 3 &&
-        spillDoc.sessions.find((s) => s.id === 'wecom:wmUw1a')?.committedSeq === 2 &&
-        spillDoc.sessions.find((s) => s.id === 'wecom:wmUw1a')?.messages.length === 1 &&
-        spillDoc.sessions.find((s) => s.id === 'wecom:wmUw1a')?.orders.length === 1 &&
-        spillDoc.sessions.find((s) => s.id === 'wecom:wmUw1a')?.audits.length === 1 &&
-        spillDoc.sessions.find((s) => s.id === 'wecom:wmUw1c')?.committedSeq === 0,
-      JSON.stringify(spillDoc?.sessions.map((s) => [s.id, s.committedSeq, s.messages.length])),
+      spillDoc?.sessions.length === 4 &&
+        sp('wecom:wmUw1a')?.committedSeq === 2 &&
+        sp('wecom:wmUw1a')?.messages.length === 1 &&
+        sp('wecom:wmUw1a')?.orders.length === 1 &&
+        sp('wecom:wmUw1a')?.audits.length === 1 &&
+        sp('wecom:wmUw1c')?.committedSeq === 0 &&
+        sp('wecom:wmUw1c')?.orders.length === 1,
+      brief(
+        spillDoc?.sessions.map((s) => [s.id, s.committedSeq, s.messages.length, s.orders.length, s.audits.length]),
+        400,
+      ),
+    );
+    check(
+      'spill：在途（失败、等着重试）那个快照带的审计、任务、同意记录分开记在 inflight 里，之后排的在顶层',
+      sp('wecom:wmUw1a')?.inflight?.audits.length === 1 &&
+        sp('wecom:wmUw1c')?.inflight !== null &&
+        sp('wecom:wmUw1d')?.inflight?.jobs.length === 1 &&
+        sp('wecom:wmUw1d')?.inflight?.consents.length === 1 &&
+        sp('wecom:wmUw1d')?.jobs.length === 1 &&
+        sp('wecom:wmUw1d')?.consents.length === 1,
+      brief(sp('wecom:wmUw1d'), 400),
+    );
+    check(
+      'spill：断库期间作废的订单带着作废信息写进 spill',
+      sp('wecom:wmUw1d')?.orders.length === 1 && !!sp('wecom:wmUw1d')?.orders[0]?.voided,
     );
     const before3 = d3.before as { sessions: Session[]; orders: Order[] } | undefined;
     const c4 = disk(['dump', 'unwritable'], { STORE_TAG: '2' });
-    const d4 = merge('重启 4', c4);
+    const d4 = merge('重启 4', c4, 'ok');
     check(
       'spill 回放：恢复 PG 后重启，先回放 spill，库与停机前的内存一致（验收 4）',
-      !!before3 && sameMem(d4.dump, before3) && (d4.stats as { replayed?: number } | undefined)?.replayed === 3,
-      JSON.stringify(d4.stats),
+      !!before3 && sameMem(d4.dump, before3) && (d4.stats as { replayed?: number } | undefined)?.replayed === 4,
+      brief(d4.stats),
     );
     check(
-      'spill 回放：订单与审计一起回放',
-      (d4.audits as string[] | undefined)?.includes('selftest.spill1') === true && (before3?.orders.length ?? 0) > 0,
+      'spill 回放：订单与审计一起回放（在途快照带的审计与之后排的都在）',
+      (d4.audits as string[] | undefined)?.includes('selftest.spill1') === true &&
+        (d4.audits as string[]).includes('selftest.spill1.inflight') &&
+        (before3?.orders.length ?? 0) > 0,
+      brief(d4.audits),
     );
     check(
       'spill 回放：库里的消息就是停机前内存里的（没提交的那几条补上了）',
       (d4.dbMessages as Record<string, number> | undefined)?.['wecom:wmUw1a'] === 3,
+    );
+    const side4 = d4.side as
+      | {
+          jobs: string[];
+          consents: Record<string, number>;
+          orders: { id: string; session_id: string | null; voided: boolean; void_reason: string | null }[];
+        }
+      | undefined;
+    check(
+      'spill 回放：在途快照与顶层的任务、同意记录都写进库',
+      !!side4 &&
+        side4.jobs.includes('followup:wecom:wmUw1d:inflight1') &&
+        side4.jobs.includes('followup:wecom:wmUw1d:queued1') &&
+        side4.consents['wecom:wmUw1d'] === 2,
+      brief(side4 && { jobs: side4.jobs, consents: side4.consents }, 400),
+    );
+    const vo = side4?.orders.find((o) => o.id === d3.voidedOrder);
+    check(
+      'spill 回放：断库期间的作废写进库，重启后 getOrder 拿不到作废单；在途快照里新会话的订单也进了库',
+      !!vo &&
+        vo.voided &&
+        vo.void_reason === 'reset' &&
+        (d4.voidedInMem as string[] | undefined)?.length === 0 &&
+        side4!.orders.some((o) => o.session_id === 'wecom:wmUw1c' && !o.voided),
+      brief({ vo, inMem: d4.voidedInMem }),
     );
     const spill2 = spillsIn(varDisk);
     check('spill 回放：回放成功后删掉旧的 spill，这次停机写出新的', spill2.length === 1 && spill2[0] !== spill1[0]);
@@ -2476,7 +3100,7 @@ async function pgSuites(): Promise<void> {
     if (victim) victim.committedSeq += 1;
     fs.writeFileSync(spill2Path, JSON.stringify(tampered));
     const c5 = disk([]);
-    const d5 = merge('重启 5', c5);
+    const d5 = merge('重启 5', c5, 'spill_conflict');
     check(
       'spill 回放：「已提交到第几条」改错一格，启动以 spill_conflict 拒绝，点名会话短码，spill 留着（验收 4）',
       c5.status === 1 && d5.startup === 'spill_conflict' && String(d5.startupDetail).includes('UW2A') && fs.existsSync(spill2Path),
@@ -2485,16 +3109,16 @@ async function pgSuites(): Promise<void> {
     fs.writeFileSync(spill2Path, original);
     const before4 = d4.before as unknown;
     const c6 = disk(['dump', 'crash']);
-    const d6 = merge('重启 6', c6);
+    const d6 = merge('重启 6', c6, 'ok');
     check('spill 改回原样之后照常回放启动', sameMem(d6.dump, before4) && spillsIn(varDisk).length === 0);
     check('模拟崩溃：进程被 SIGKILL', c6.signal === 'SIGKILL', `${c6.status} ${c6.signal}`);
     check('模拟崩溃：没有停机钩子，也没有 spill', spillsIn(varDisk).length === 0);
     const c7 = disk(['dump', 'conflict']);
-    const d7 = merge('重启 7', c7);
+    const d7 = merge('重启 7', c7, 'ok');
     check(
       '模拟崩溃后重启：只少最后一次没提交的落库，库与内存一致（验收 4）',
       sameMem(d7.dump, d6.before) && d7.seqsMatch === true,
-      JSON.stringify(
+      brief(
         (d7.dump as { sessions: Session[] } | undefined)?.sessions.find((s) => s.id === 'wecom:wmCrash1')?.messages.map((m) => m.content),
       ),
     );
@@ -2509,20 +3133,20 @@ async function pgSuites(): Promise<void> {
       conflictSpill.length === 1 && fs.readFileSync(path.join(varDisk, conflictSpill[0]!), 'utf8').includes('冲突后的这一句'),
     );
     const c8 = disk([]);
-    const d8 = merge('重启 8', c8);
+    const d8 = merge('重启 8', c8, 'spill_conflict');
     check(
       '另一写者之后：spill 接不上库里的 last_seq，启动以 spill_conflict 拒绝（要人来查）',
       c8.status === 1 && d8.startup === 'spill_conflict',
     );
     for (const f of spillsIn(varDisk)) fs.unlinkSync(path.join(varDisk, f));
     const c9 = disk(['dump', 'poisonspill']);
-    const d9 = merge('重启 9', c9);
+    const d9 = merge('重启 9', c9, 'ok');
     check(
       'poisoned 的会话：停机时随 spill 写出',
       c9.status === 143 && (d9.poisoned as string[] | undefined)?.length === 1 && spillsIn(varDisk).length === 1,
     );
     const c10 = disk(['dump']);
-    const d10 = merge('重启 10', c10);
+    const d10 = merge('重启 10', c10, 'ok');
     check(
       'poisoned 的 spill：原因没修好就重启，回放仍失败 → 改名 .failed，从库里的状态起',
       c10.status === 0 &&
@@ -2530,6 +3154,65 @@ async function pgSuites(): Promise<void> {
         spillsIn(varDisk).length === 0 &&
         fs.readdirSync(varDisk).some((f) => f.endsWith('.json.failed')),
       `${c10.status} ${String(d10.startup)} ${c10.out.slice(-300)}`,
+    );
+
+    // ---- 孤儿订单在 JSON 与 PG 之间的交接：收养 → 提交后 orders.json 去掉它 → 重置作废 → 重启（JSON 里还留着旧副本也不复活） ----
+    const ordersFile = path.join(varDisk, 'orders.json');
+    const ordersNow = (): Order[] => (fs.existsSync(ordersFile) ? (JSON.parse(fs.readFileSync(ordersFile, 'utf8')) as Order[]) : []);
+    const orphan = {
+      id: 'ord_diskorphan1',
+      sessionId: 'wecom:wmDiskOrphan',
+      routeId: 'r-yunnan-mid',
+      routeTitle: '云南',
+      travelers: 2,
+      departDate: '2026-11-01',
+      totalPrice: 6560,
+      status: 'pending_payment',
+      createdAt: Date.now() - 86_400_000,
+    } as Order;
+    fs.writeFileSync(ordersFile, JSON.stringify([...ordersNow(), orphan], null, 2));
+    const c11 = disk(['orphan']);
+    const d11 = merge('重启 11', c11, 'ok');
+    check('孤儿订单（重启链）：启动时在内存里（文件后端管）', d11.orphanBefore === 'pending_payment' && c11.status === 143, brief(d11));
+    check(
+      '孤儿订单（重启链）：随收养它的会话提交之后进了库，orders.json 去掉它',
+      (d11.dbAfterCommit as { session_id?: string } | null)?.session_id === 'wecom:wmDiskOrphan' && d11.jsonAfterCommit === false,
+      brief(d11),
+    );
+    check(
+      '孤儿订单（重启链）：重置之后库里记作废，内存里拿不到',
+      (d11.dbAfterVoid as { voided?: boolean; void_reason?: string } | null)?.voided === true &&
+        (d11.dbAfterVoid as { void_reason?: string }).void_reason === 'reset' &&
+        d11.gone === true,
+    );
+    // 模拟老版本没来得及重写 JSON：作废订单的旧副本塞回 orders.json；另放一张属于预载会话、库里没有的订单
+    const adoptee = { ...orphan, id: 'ord_jsonadopt1', sessionId: 'wecom:wmCrash1' } as Order;
+    fs.writeFileSync(ordersFile, JSON.stringify([...ordersNow(), orphan, adoptee], null, 2));
+    const c12 = disk(['orphan2']);
+    const d12 = merge('重启 12', c12, 'ok');
+    check(
+      '孤儿订单（重启链）：JSON 里留着作废订单的旧副本也不复活：getOrder 是 undefined，碰它（改单、付款）什么都不做',
+      d12.staleGone === true && d12.superseded === false && d12.paid === false,
+      brief(d12),
+    );
+    check(
+      '孤儿订单（重启链）：库里仍是作废，orders.json 重写之后没有它',
+      (d12.dbStale as { voided?: boolean; status?: string } | null)?.voided === true &&
+        (d12.dbStale as { status?: string }).status === 'pending_payment' &&
+        d12.staleInJson === false,
+      brief(d12.dbStale),
+    );
+    check(
+      'JSON 里属于预载会话、库里没有的订单：挂到这个会话的写队列上，提交之后进库、orders.json 去掉它',
+      d12.adoptInMem === 'wecom:wmCrash1' &&
+        (d12.dbAdopt as { session_id?: string } | null)?.session_id === 'wecom:wmCrash1' &&
+        d12.adoptInJson === false,
+      brief({ m: d12.adoptInMem, db: d12.dbAdopt, j: d12.adoptInJson }),
+    );
+    check(
+      'late 段之后不再起落库（close 停掉写队列）',
+      d12.lateAttempts === 0 && c12.status === 143,
+      `${String(d12.lateAttempts)} ${c12.status}`,
     );
   }
 
@@ -2660,6 +3343,32 @@ async function pgSuites(): Promise<void> {
       '真实 PG：认出已提交之后补做提交后的步骤，事件恰好一次',
       dd?.events.filter((e) => e === 'conversation.changed').length === 1,
       JSON.stringify(dd?.events),
+    );
+    const rn = runStoreChild('rpg', rpgEnv(freshVarDir('rpg-newdelay', [], []), 'newcommitdelay'), 60_000);
+    const dn = merge('真实 PG 新会话 COMMIT 晚到', rn).newcommit as
+      | {
+          flushed: string;
+          stats: { recognized: number; attempts: number } | null;
+          seqs: number[];
+          rows: number[];
+          conflict: boolean;
+          poisoned: number;
+          dirty: number;
+          dropsLeft: number;
+        }
+      | undefined;
+    check(
+      '真实 PG：新会话第一次落库 COMMIT 断线、服务端稍后才提交，重试插入冲突不报错、再锁一次认出已提交，不 poisoned、不重复插入',
+      rn.status === 0 &&
+        dn?.dropsLeft === 0 &&
+        dn.flushed === 'ok' &&
+        dn.stats?.recognized === 1 &&
+        dn.seqs.join() === '1,2' &&
+        dn.rows.join() === '2' &&
+        !dn.conflict &&
+        dn.poisoned === 0 &&
+        dn.dirty === 0,
+      JSON.stringify(dn) + rn.out.slice(-300),
     );
   } finally {
     for (const f of cleanup.reverse()) await Promise.resolve(f()).catch(() => {});
