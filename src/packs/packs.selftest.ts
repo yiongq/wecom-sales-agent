@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, type CatalogKind } from '../shared/catalog.js';
+import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../shared/catalog.js';
 import { UNSTORABLE_TEXT } from '../shared/console-api.js';
 import { renovationLPage } from '../shared/pack-fixtures/renovation-l-page.js';
 import { renovation } from '../shared/pack-fixtures/renovation.js';
@@ -404,6 +404,12 @@ for (const e of travel.entities) {
     `${kind}：带 lockedWhenActive 的字段（加上永远只读的编号）等于 LOCKED_WHEN_ACTIVE`,
     sorted([...locked, ...ALWAYS_LOCKED]),
     sorted(LOCKED_WHEN_ACTIVE[kind]),
+  );
+  // 后台保存条按字段上的 reprices 标记写改价那一句（经 /pack 下发，console 不认字段名）；服务端的开放清单是 REPRICE_FIELDS
+  checkSame(
+    `${kind}：标了 reprices 的字段等于 REPRICE_FIELDS，而且都没有上架后锁定`,
+    sorted(e.fields.filter((f) => f.reprices && !f.lockedWhenActive).map((f) => f.key)),
+    sorted(REPRICE_FIELDS[kind]),
   );
 
   const fromSchema = new Map<string, { leaf: z.ZodType; ownOptional: boolean }>();

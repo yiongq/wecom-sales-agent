@@ -483,7 +483,7 @@ function ChangesPanel({ id, changes, onJump }: { id: string; changes: readonly C
  * 新建时左边只写「还没保存」，不列改动
  */
 function SaveBar({
-  kind,
+  entity,
   status,
   changes,
   saving,
@@ -491,8 +491,8 @@ function SaveBar({
   onDiscard,
   onJump,
 }: {
-  /** 实体的 kind：改了计价与条款字段时说明换成 REPRICE_NOTE（saveCopy） */
-  kind: string;
+  /** 改了行业包标了 reprices 的字段（计价与条款）时说明换成 REPRICE_NOTE（saveCopy） */
+  entity: EntityType;
   status: 'new' | 'draft' | 'active';
   changes: readonly Change[];
   saving: boolean;
@@ -505,7 +505,7 @@ function SaveBar({
   const toggle = useRef<HTMLButtonElement>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   const listId = useId();
-  const copy = saveCopy(status, changes, kind);
+  const copy = saveCopy(status, changes, entity);
   // 清单是浮层：在它和「展开改动」以外按下就收起（焦点不动）
   useEffect(() => {
     if (!open) return;
@@ -1253,7 +1253,7 @@ export function CatalogDetail(props: CatalogDetailProps) {
       )}
       {showBar ? (
         <SaveBar
-          kind={entity.kind}
+          entity={entity}
           status={ctx.status}
           changes={changes}
           saving={saving}

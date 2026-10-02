@@ -274,8 +274,11 @@ const liveTravel = packById('travel')!;
  */
 const travel: IndustryPack = (() => {
   const p = structuredClone(liveTravel);
-  const lock = (e: EntityType, key: string, group: string): void =>
-    void Object.assign(fieldOf(e, key), { lockedWhenActive: true, lockGroup: group });
+  const lock = (e: EntityType, key: string, group: string): void => {
+    const f = fieldOf(e, key);
+    Object.assign(f, { lockedWhenActive: true, lockGroup: group });
+    delete f.reprices;
+  };
   const route = entityOf(p, 'route');
   const { id, rec } = route.lockGroups;
   route.lockGroups = {
@@ -2527,21 +2530,36 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   const at = (...paths: string[]) => paths.map((path) => ({ path, label: path }));
   const OLD = '销售助手下一条回复就用新内容';
+  // 只按行业包字段上的 reprices 标记判断（经 /pack 下发），不认字段名：没标的包（E、F 页版的旅游包把这五个字段锁回去、去掉了标记）照旧
+  const unmarked = (e: EntityType): EntityType => ({
+    ...e,
+    fields: e.fields.map((f) => {
+      const g = { ...f };
+      delete g.reprices;
+      return g;
+    }),
+  });
   eq(
-    '02：保存条的说明：已上架改了计价或条款字段写 REPRICE_NOTE；只改别的、草稿、不在开放清单里的实体照旧',
+    '02：保存条的说明：已上架改了标了 reprices 的字段写 REPRICE_NOTE；只改别的、草稿、包里没标的照旧',
     [
-      saveCopy('active', at('priceFrom'), 'route').note,
-      saveCopy('active', at('inclusions.2'), 'route').note,
-      saveCopy('active', at('highlights.1', 'bestSeason'), 'route').note,
-      saveCopy('active', at('exclusions'), 'route').note,
-      saveCopy('active', at('nightlyFrom'), 'hotel').note,
-      saveCopy('active', at('highlights.1', 'itinerary.2.hotel'), 'route').note,
-      saveCopy('active', at('priceFrom'), 'hotel').note,
-      saveCopy('active', at('priceFrom'), 'package').note,
-      saveCopy('draft', at('priceFrom'), 'route').note,
+      saveCopy('active', at('priceFrom'), LIVE_ROUTE).note,
+      saveCopy('active', at('inclusions.2'), LIVE_ROUTE).note,
+      saveCopy('active', at('highlights.1', 'bestSeason'), LIVE_ROUTE).note,
+      saveCopy('active', at('exclusions'), LIVE_ROUTE).note,
+      saveCopy('active', at('nightlyFrom'), LIVE_HOTEL).note,
+      saveCopy('active', at('highlights.1', 'itinerary.2.hotel'), LIVE_ROUTE).note,
+      saveCopy('active', at('priceFrom'), LIVE_HOTEL).note,
+      saveCopy('active', at('priceFrom'), unmarked(LIVE_ROUTE)).note,
+      saveCopy('active', at('priceFrom')).note,
+      saveCopy('draft', at('priceFrom'), LIVE_ROUTE).note,
       saveCopy('active').note,
     ],
-    [REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, OLD, OLD, OLD, '草稿保存后仍不会推荐给客户', OLD],
+    [REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, OLD, OLD, OLD, OLD, '草稿保存后仍不会推荐给客户', OLD],
+  );
+  eq(
+    '02：活的旅游包标了 reprices 的正是这五个字段',
+    [LIVE_ROUTE, LIVE_HOTEL].map((e) => e.fields.filter((f) => f.reprices).map((f) => f.key)),
+    [['priceFrom', 'bestSeason', 'inclusions', 'exclusions'], ['nightlyFrom']],
   );
   eq('02：REPRICE_NOTE 的原文（02 spec）', REPRICE_NOTE, '改价只影响之后的报价和方案书，已发出的方案书和订单不变');
 }

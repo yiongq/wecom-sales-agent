@@ -85,6 +85,7 @@ const route: EntityType = {
       unit: '元/人',
       label: '每人起价',
       group: 'price',
+      reprices: true,
       help: '填淡季、4人以下的价；旺季上浮10%、4人及以上95折由系统算',
     },
     {
@@ -92,6 +93,7 @@ const route: EntityType = {
       type: 'monthRange',
       label: '最佳季节',
       group: 'price',
+      reprices: true,
       monthMeaning: '这些月份出发报价上浮10%，「全年」不加价',
       yearRoundLabel: '全年（不加价）',
     },
@@ -180,6 +182,7 @@ const route: EntityType = {
       required: false,
       recommend: true,
       group: 'terms',
+      reprices: true,
     },
     {
       key: 'exclusions',
@@ -190,6 +193,7 @@ const route: EntityType = {
       required: false,
       recommend: true,
       group: 'terms',
+      reprices: true,
     },
     { key: 'hotelLevel', type: 'text', label: '住宿档次', group: 'sell', suggest: 'distinct', placeholder: '例：顶级野奢' },
     {
@@ -257,7 +261,7 @@ const hotel: EntityType = {
     { key: 'name', type: 'text', label: '酒店名称', group: 'basic', lockedWhenActive: true, lockGroup: 'id' },
     { key: 'destination', type: 'text', label: '目的地', group: 'basic', lockedWhenActive: true, lockGroup: 'id', suggest: 'distinct' },
     { key: 'stars', type: 'text', label: '星级档次', group: 'basic', suggest: 'distinct', placeholder: '例：五星、顶奢' },
-    { key: 'nightlyFrom', type: 'money', unit: '元/晚', label: '每晚起价', group: 'price' },
+    { key: 'nightlyFrom', type: 'money', unit: '元/晚', label: '每晚起价', group: 'price', reprices: true },
     { key: 'roomType', type: 'text', label: '主推房型', group: 'sell', placeholder: '例：水上别墅' },
     {
       key: 'highlights',

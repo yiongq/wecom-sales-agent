@@ -40,6 +40,11 @@ export interface FieldDef {
   lockedWhenActive?: true | { members: string[] };
   /** 指向 EntityType.lockGroups 的 key */
   lockGroup?: string;
+  /**
+   * 改了它就是改价（02「报价快照」：计价与条款）。已上架的条目改了这样的字段，保存条写明只影响之后的报价和方案书、
+   * 已发出的方案书和订单不变；console 只按这个标记判断，不认字段名（不变量 11）
+   */
+  reprices?: true;
   /** 条件显示；显示出来就必填 */
   showWhen?: { key: string; filled: true };
   unit?: string;
@@ -229,7 +234,7 @@ function dupes(xs: readonly string[]): string[] {
 // 但 src/shared 的字符串都算界面用字（scripts/fonts/ui-text.ts），会进每次预载的 UI 优先片，所以这里的话只用界面已有的字。
 
 /** 有序子项里的字段不支持的配置：上架前检查与锁定都按顶层字段算，子字段里写了也不生效 */
-const ITEM_UNSUPPORTED = ['showWhen', 'countFrom', 'recommend', 'lockedWhenActive', 'lockGroup', 'unitFrom'] as const;
+const ITEM_UNSUPPORTED = ['showWhen', 'countFrom', 'recommend', 'lockedWhenActive', 'lockGroup', 'unitFrom', 'reprices'] as const;
 
 export function checkPack(pack: IndustryPack): string[] {
   const out: string[] = [];

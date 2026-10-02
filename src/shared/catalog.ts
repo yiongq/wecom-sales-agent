@@ -84,16 +84,13 @@ export const LOCKED_WHEN_ACTIVE = {
 
 /**
  * 02 开放的计价与条款字段（02 spec「报价快照与产品库字段开放」、01 开放问题 5）：active 条目上能改，改了写一个新的条目版本，
- * 只影响之后的报价和方案书；已发出的方案书按发出时的版本渲染，订单下单时就冻结了金额。后台保存条据它换说明
+ * 只影响之后的报价和方案书；已发出的方案书按发出时的版本渲染，订单下单时就冻结了金额。旅游包给这几个字段标了 reprices
+ * （后台保存条据那个标记换说明，经 /pack 下发），packs.selftest 核对两边一致
  */
 export const REPRICE_FIELDS = {
   route: ['priceFrom', 'bestSeason', 'inclusions', 'exclusions'],
   hotel: ['nightlyFrom'],
 } as const;
-
-/** 这个实体的这个顶层字段是不是 REPRICE_FIELDS 里的（实体不是 route、hotel 时一律不是） */
-export const isRepriceField = (kind: string, key: string): boolean =>
-  (Object.hasOwn(REPRICE_FIELDS, kind) ? (REPRICE_FIELDS[kind as CatalogKind] as readonly string[]) : []).includes(key);
 
 /** 值相等：对象不看键序，数组看顺序。console 的表单据它判断哪些顶层字段改过 */
 export function sameValue(a: unknown, b: unknown): boolean {
