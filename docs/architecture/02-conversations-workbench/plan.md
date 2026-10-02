@@ -41,7 +41,7 @@
   - `/api/orders/:id` 改为白名单投影（R22）；匿名可读的旧接口改为去掉成员身份的投影；`profile.ts` 加开关 `legacy_admin_writes`（demo 开、prod 封顶关）并接到旧的 handoff、resume、reply 上。
   - 新建 `src/handoff/handoff.selftest.ts`：记录与五个入口、四态判定、终态会话转人工、重置清接手人、`handoffBeforePaid`、公开投影的键集合、匿名投影没有成员身份。
   - 锁定套件全绿、前缀哈希不变。对应验收 12，以及 7、13、16 在文件存储下的部分。
-- [ ] 4. 迁移：新表、RLS、授权、触发器、清除与删除函数（3.5）：
+- [x] 4. 迁移：新表、RLS、授权、触发器、清除与删除函数（3.5）：2026-10-02 完成，迁移文件、函数与仓储的取舍、给后面哪一步用、真实 PG 结果见「实施记录 · 第 4 步」。
   - `src/db/schema.ts` 加 spec「数据库」与各节列出的全部表、`tenants` 三列、`catalog_items.version`；drizzle-kit 生成；custom 迁移写 RLS 模板、授权（spec 的授权表）、两个触发器、`orders` 带列清单的外键、四个清除与删除函数、`catalog_item_versions` 的按租户回填。
   - `scripts/check-migrations.ts` 通过（`tenants` 三列标 `-- migration-allow: add-check` 和原因）。
   - `src/db/client.ts`：`withTenant` 的 `longRunning` 选项、`inTenantTx()`；`src/db/repo/audit.ts` 加 `writeAuditAs`。
@@ -395,6 +395,46 @@
   - 变异（`git worktree add --detach` 到 scratchpad 的隔离副本，逐个打、跑完删掉）：共 31 个，全部杀掉，每个都由新加的那条断言报出。企微适配器的四个（不传 `msgid` / `sentAt`；两处 `send_time * 1000` 改成 `send_time`；重放对齐只比原文；占位去掉 `sentAt`）先确认在 `handoff.selftest.ts` 与锁定的 `wecom.selftest.ts` 下都存活，再由 `wecom-02.selftest.ts` 杀掉。三处代码改动各自撤回（保鲜三个字段整体与逐个撤回、判定去掉 `|| handedOver`、不挪 history）由 `handoff.selftest.ts` 杀掉，其中不挪 history 在锁定的 `engine.selftest.ts` 下存活。`ConversationRow` 七个（`lastCustomerAt` 不看 `sentAt` / 取任意角色的最后一条、`assignee` 恒 null / 原样展开、`handoff` 恒 null / `at` 不转 ISO、counts 把 assigned 算进 human）由 `console.selftest.ts` 杀掉。quote 与兜底六个（安全网不截 / 按码元截、引擎四处都不截、工具提示不截、去掉兜底原因、reason 为空也写 system 消息）、departNote 四个（三个入口不带、claimed 的 system 消息丢掉出行时间）、固定原因四个（request 与 complaint 互换、改 promise / model / refund 的文案）、带凭据的列表也走匿名投影一个，由 `handoff.selftest.ts` 杀掉。
   - 门禁四个全绿；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
 
+### 第 4 步 · 迁移、仓储函数与库自测（2026-10-02）
+
+- 迁移两个：`drizzle/0002_conversations.sql`（drizzle-kit 生成：十二张表、索引、约束、`tenants` 三列、`catalog_items.version`）与 `drizzle/0003_conversations_rls.sql`（custom：RLS、`orders_session_fk`、两个触发器、四个函数、授权、回填）；编号、journal、snapshot 都是 drizzle-kit 的产物，之后再跑 `pnpm db:generate` 报 no schema changes。0002 生成之后只手加了三行注释：drizzle-kit 把 `tenants` 三列的 CHECK 拆成三条 `ALTER TABLE … ADD CONSTRAINT … CHECK`（不是 spec 写的同一句），三条各标一行 `-- migration-allow: add-check 新列带默认值且满足约束，旧镜像不写这几列`。
+- 约束名：CHECK 是 `<表>_<列>_check`（`conversations_state_check`、`orders_data_check` 等）；复合外键 `messages_conversation_fk`、`turn_traces_conversation_fk`、`guard_events_turn_fk`、`consents_conversation_fk`、`catalog_item_versions_item_fk`，custom 里的 `orders_session_fk`。第 5 步按 SQLSTATE 与约束名记 poisoned 时用得上。
+- spec 没写细、本步定的：
+  - 两个触发器违反时报 `check_violation`（23514），消息以「conversations: 」「orders: 」开头，与 01 的触发器同一口径；第 5 步归数据类、不重试。
+  - 四个函数：调用方的租户为空或不等于 `p_tenant` 报 `insufficient_privilege`（42501，与 01 认证函数同一口径）；`p_now` 为空或与 `now()` 差超过 5 分钟、`erase_conversation` 的原因为空报 `invalid_parameter_value`（22023）。预期值用 `IS DISTINCT FROM` 比，传 NULL 也算不符。保留期与「30 天」按 `n × 24 小时` 算，不随会话时区的夏令时变（与 01 会话期限同一写法）。
+  - `purge_conversation` 先 `FOR UPDATE` 锁会话行；先改订单再删会话（删了之后外键已把 `session_id` 置空，就找不到这些订单）；会话不在了返回 false。
+  - `purge_expired_traces` 返回 trace 与发送账本两类删除条数之和（spec 只写「删除条数」）。
+  - `erase_conversation` 同样先锁行，级联的几类在删之前数；返回 `{conversations, messages, traces, guardEvents, consents, outboundSends, orders}`；会话不存在时各类为 0、审计照写（留下有过这次请求的记录），第 16 步的命令行看 `conversations` 是否为 0。审计行 `actor_kind=platform`、`actor_name='erase-conversation'`（与 01 平台命令行写命令名的做法一样）、`target_*` 为空，diff 是各类条数加 `reason`。
+  - 0001 的默认权限已不给 PUBLIC 执行新函数；spec 写了「对 PUBLIC 撤销 EXECUTE」，四个函数仍显式 `REVOKE` 一次（标 `migration-allow: revoke`）。
+  - 回填照 spec 用 `DO` 块按租户 `set_config` 后 `INSERT … SELECT`，另加 `ON CONFLICT DO NOTHING`，最后把租户设置清回空串（drizzle 把所有待跑的迁移放在一个事务里，后面的迁移不该带着最后一个租户）。
+  - 订单 `data` 去掉 `sessionId` 照 spec 写 `(data::jsonb - 'sessionId')::json`：这几张单的键序会按 jsonb 重排，它们已经不进 identity map，不影响往返；`data` 里要是有 `\u0000`，jsonb 转换会报错，靠第 5 步的 `normalizeForStore` 兜住。
+- 照 spec 原文、记一笔的：`messages_author_human_check` 是 `author = 'human' OR (author_user_id IS NULL AND author_name IS NULL)`，`author` 为 NULL 时整式是 NULL、CHECK 视为通过，「没有 author 却带 `author_name`」的行拦不住，靠第 5 步的消息投影保证。不变量 11 在库里的保证是会话 id 的 CHECK 加 `orders_session_fk`（`session_id` 非空就必须是库里的真实会话）；`session_id` 为空的订单库不管，靠第 5 步只写真实会话的订单。spec 没列的索引一个没加：`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引，删会话时这两条外键动作要扫表，第 25 步压测时看，要加就另写迁移。
+- `client.ts`：导出 `WithTenantOpts`；`longRunning` 的两句 `SET LOCAL` 在事务开头、租户检查之前；`inTenantTx()` 返回布尔。`audit.ts`：`writeAudit` 改成调 `writeAuditAs(tx, 上下文的 actor, entry)`，行为不变。
+- 仓储函数（只收发各文件里定义的行类型：时间是 `Date`，json 列是对象、键序靠驱动的 `JSON.parse` 保持；租户一律取 `currentTenantCtx()`，不收参数）。清单与给哪一步用：
+  - `conversations.ts`：`readConversationsAfter(tx, afterId, limit)`（按 id keyset 分批，第 5 步预载、第 6 步导出）；`lockConversation`、`insertConversation(tx, values, seqs?)`、`updateConversation(tx, values, seqs)`（第 5 步一次落库的第 2、4 步；`insertConversation` 带 seqs 给第 6 步导入一次写好；`updateConversation` 不动 `created_at`）。
+  - `messages.ts`：`insertMessages`（每 1,000 行一条 INSERT）、`readWindowMessages(tx, ids)`（第 5、6 步）。
+  - `orders.ts`：`upsertOrders`（除主键外以这次为准，`--resync` 的作废也走它）、`readLiveOrders(tx, sessionIds)`（第 5、6 步）。
+  - `catalog-versions.ts`：`insertCatalogVersion`、`readCatalogVersions`（第 8 步）。`catalog_items.version` 的改动留给第 8 步在 `catalog.ts` 里做；注意 01 的 `catalog_items_guard` 每次 UPDATE 都会让 `rev` 加 1。
+  - `traces.ts`：`insertTurnTraces`、`insertGuardEvents`（第 9 步，经第 5 步的存档点）。`usage.ts`：`addUsage`（第 9 步；同一批里重复的键先合并，一条语句里同一行冲突两次会报错）。
+  - `jobs.ts`：`enqueueJob`（冲突目标是部分唯一索引 `jobs_open_uq`，已有没结束的返回 null）、`claimDueJobs(tx, now, limit)`、`setJobStatus(tx, id, status, { from?, lastError?, attemptsDelta?, runAt? })`（改成结束的四种状态记 `finished_at`）、`cancelPendingJobs(tx, dedupeKey)`（第 10、14、16 步）。
+  - `outbound.ts`：`insertOutboundSends`、`setOutboundStatus(tx, msgid, status, { errcode?, failType? })`（第 12 步）。
+  - `quick-replies.ts`：`listQuickReplies`、`createQuickReply`、`updateQuickReply`、`archiveQuickReply`、`moveQuickReply`（第 22 步）。`consents.ts`：`appendConsents`；`privacy.ts`：`publishPrivacyNotice`（平台身份）、`readLatestPrivacyNotice`（第 16 步）。
+  - `metrics.ts`：`readMetrics(tx, { since, sinceDay, today })`，四条 SQL，费用按千分之一元返回（第 18 步换算成元、缓存 60 秒、算服务器时区的日期）。
+  - `audit.ts`：`writeAuditAs`（第 5 步）。
+- 偏离与理由（都在签名层面，后面的步骤可以改）：`claimDueJobs` 的「现在」由调用方传（spec 写 `run_at <= now()`）：`runAt` 是进程的时钟算的，同一个时钟比较，自测也能认领到点的任务，`claimed_at` 也记它。`listQuickReplies` 不在 plan 列的「增改、归档、上下移」里，第 22 步「空表首次读取时写入」与 J 页都要读，增改也要读回才验得了，所以加上。spec 里本步没做的读法留给各自的步骤：7 天 msgid 集合与账本预载（第 5、12 步）、清理候选与清除函数的 TS 包装（第 16 步）、往前翻页读消息（第 13 步）、trace 原文（第 9、13 步）。
+- 自测 `src/db/db.selftest.ts`：不带 PG 189 → 433 项，带 PG 329 → 802 项（+244 / +473）。01 的断言一条没删、没放宽：「七张表」改成十九张；函数检查多一类「清除与删除函数」（只授权给各自的角色、SECURITY DEFINER、钉 search_path）；`why()` 认触发器的前缀加上 conversations、orders；备份自测的假 `docker` 目录缺省多三张表（`FAKE_TOC` 可换）。新增的：
+  - PGlite：第二个 PGlite 先只跑 0000、0001，造两个租户的 active / draft 条目，再跑全部，断言每个 active 条目一行版本 1、payload 文本逐字节相同、草稿不写；十二张表的 CHECK 与外键逐条按约束名断言（含 `sim-`、`wecom:cust_`、`state.id`、`data.id`、msgid 33 字节）；`jobs_open_uq`；删会话时级联与 `SET NULL (session_id)`（`tenant_id` 不被置空）；两个触发器；每个仓储函数至少一次冒烟（以 `agent_app` 经 `withTenant`）；`longRunning` 只管那一个事务；`inTenantTx`；`writeAuditAs`。
+  - 清除与删除函数的行为写成 `purgeChecks`，PGlite 与真实 PG 各跑一遍：保留期设成线索 10、客户 30、trace 7 天（三个不同，取错列查得出）；不在 `withTenant` 里、别的租户、`p_now` 前后 10 分钟与 NULL 都报错；没到期、预期值不符、`updated_at` 改成 2000 年被挡回、已付订单改成取消，都返回 false 且库不变；到期时会话行、消息、trace、护栏事件、同意记录、发送账本都没了，订单留下、`session_id` 为空、`data` 没有 `sessionId`，别的租户的同 id 会话不动；trace 与没有会话的发送账本按 trace 保留期删；任务按 30 天删；`erase_conversation` 只有平台能调、不看保留期、审计只有条数与原因；三个会话清除或删除之后本租户各表里都搜不到它的 id（不变量 42）。
+  - 真实 PG：新表逐格权限、两个角色对新表都没有 DELETE / TRUNCATE、`tenants` 三列的列级 UPDATE（平台能改、改别的列与应用改都报 permission denied）、函数 EXECUTE 逐个、没设租户时 SELECT 0 行与 INSERT 被 RLS 拒（十二张表）、A 的事务里看不到也改不到 B 的行、`agent_app` 与 `agent_platform` 对 `messages` 的 UPDATE / DELETE / TRUNCATE 报 permission denied、同一条池内连接上 `longRunning` 之后回到 5 秒与 10 秒。
+- 真实 PG：本机 `pgvector/pgvector:pg17` 一次性容器（`127.0.0.1:55432`），`db.selftest` 802 项全过；`pnpm test` 带 `PG_TEST_URL` 与不带各跑一遍，都全绿，PASS 行 60（与第 3 步相同，本步没加新套件）。
+- 变异（`git worktree add --detach` 到 scratchpad 的隔离副本，逐个打、只跑 `db.selftest`，授权类带真实 PG）：74 个，杀掉 73 个。覆盖两个触发器（去掉 `greatest`、5 分钟改 5 年、允许清空或改 `paid_at`）、外键动作（不带列清单、改成 CASCADE）、四个函数的租户与 `p_now` 校验、客户的判定（按 status 判）、保留期取错列、两个预期值、截止时间算反、订单不去 `sessionId`、不删账本、trace 函数的保留期列与「没有会话」条件与返回值、任务的 30 天与 failed、删除的原因、审计不记原因或记了 `target_id`、计数、函数与表的授权（给 messages 加 UPDATE / DELETE、jobs 加 TRUNCATE、tenants 整表 UPDATE、隐私说明给应用 INSERT、函数多授一个角色）、RLS（NO FORCE、`USING (true)`）、回填（不设租户、带上草稿）、0002 的四处约束、`client.ts` 三处（含 `SET LOCAL` 改成会话级）、`writeAuditAs`、各仓储函数一到三处、`backup.sh` 少查一张表。剩下的一个是等价变异：`purge_conversation` 删发送账本时去掉 `tenant_id` 条件，函数在 FORCE RLS 下以调用方的租户执行，别的租户的行本来就看不到。首轮另有一个存活（`insertConversation` 不理会带进来的 seqs），补了一条断言后杀掉。
+- 锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
+- 注意（第 5 步）：
+  - 触发器取 `greatest(OLD, NEW)`：库里的 `updated_at` 可能比这次写进去的大（内存里的时间回拨过），往返比对时以库为准。清除函数的预期 `updated_at` 要逐毫秒相等，只由 JS 写入（毫秒）时才成立，不要在 SQL 里写 `now()`。
+  - `insertConversation` 是普通 INSERT，同一会话撞上报 23505（数据类）；靠「同一会话串行落库」不撞。写 `state`、订单 `data` 时 `id` 必须与行的 id 一致（CHECK）。
+  - 一次落库里先插会话行（若没有），再插消息、订单（外键）；trace 先于护栏事件。
+- 注意（第 16 步）：`AUDIT_ACTIONS` 还没有 `platform.erase`、`system.purge`、`privacy.publish`，K 页显示要加。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -446,3 +486,10 @@
 - 半成品：无。
 - 阻塞：无。「Open」第 1 步带出的三处：顾问姓名的改写留第 13 步，`/pay` 响应体已按推荐先做，advisor 模式的支付页仍在第 15 步之前定。
 - 下一步：第 4 步「迁移：新表、RLS、授权、触发器、清除与删除函数」。先读 spec「数据库」与各节的 DDL、授权表，01 spec 的「迁移纪律」；`HandoffRecord`、`Assignee` 等的字段已定在 `src/shared/conversation-types.ts`，表的列照它们写。
+
+### 交接（2026-10-02，第 4 步）
+
+- 已完成：第 4 步。迁移 `0002_conversations`（drizzle-kit）与 `0003_conversations_rls`（custom）；`withTenant` 的 `longRunning`、`inTenantTx()`、`writeAuditAs`；`src/db/repo/` 十二个新仓储文件；`deploy/backup.sh` 查会话三张表的数据段；`db.selftest.ts` 不带 PG 433 项、带 PG 802 项。本机真实 PG 上全过，锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
+- 半成品：无。仓储函数还没有调用方（不接进运行时），签名第 5 步起可按需调整。
+- 阻塞：无。「Open」第 1 步带出的三处照旧（第 13、15 步之前定），本步没有新增。
+- 下一步：第 5 步「PG 后端」。先读「实施记录 · 第 4 步」的仓储清单与「注意（第 5 步）」，以及「实施记录 · 第 2 步」「第 3 步」里给第 5 步的注意（`installPgSessionStore` 放哪儿、孤儿订单归属、`noteWindowReset`、poisoned 之后改宽松模式）。
