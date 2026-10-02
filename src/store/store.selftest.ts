@@ -562,7 +562,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   const ojBefore = fs.readFileSync(ORDERS_FILE, 'utf8');
   let dbReason = '';
   let dbDetail = '';
-  await store.initSessionStore({ db: {} as never, tenantId: 't', varDir: VAR_DIR }).catch((e: unknown) => {
+  await store.initSessionStore({ db: {} as never, tenantId: 't', tenantSlug: 't', varDir: VAR_DIR }).catch((e: unknown) => {
     dbReason = e instanceof SessionStoreStartupError ? e.reason : String(e);
     dbDetail = e instanceof SessionStoreStartupError ? e.detail : '';
   });
@@ -3532,7 +3532,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
   };
   if (scenario === 'conflict') {
     const main = await openDb(APP);
-    await store.initSessionStore({ db: main.db, tenantId, varDir });
+    await store.initSessionStore({ db: main.db, tenantId, tenantSlug: 'demo', varDir });
     const s = store.getOrCreateSession('wecom:wmRpgConf', 'wecom');
     say(s, 'customer', '冲突前');
     await store.flushSession(s.id);
@@ -3560,7 +3560,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
   }
   if (scenario === 'commitdrop') {
     const flaky = await openFlakyDb(APP);
-    await store.initSessionStore({ db: flaky.db, tenantId, varDir });
+    await store.initSessionStore({ db: flaky.db, tenantId, tenantSlug: 'demo', varDir });
     const s = store.getOrCreateSession('wecom:wmRpgDrop', 'wecom');
     say(s, 'customer', '第一句');
     say(s, 'agent', '第二句');
@@ -3606,7 +3606,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     // 新会话第一次落库：客户端立即收到断线，COMMIT 过 1.5 秒才到库里。1 秒后的重试锁不到那一行（还没提交、看不见），
     // 插入在主键上等它提交、冲突了不报错，再锁一次就认出已提交：不 poisoned、不重复插入
     const flaky = await openFlakyDb(APP);
-    await store.initSessionStore({ db: flaky.db, tenantId, varDir });
+    await store.initSessionStore({ db: flaky.db, tenantId, tenantSlug: 'demo', varDir });
     flaky.faults.dropCommitReply = 1;
     flaky.faults.delayCommitMs = 1500;
     const s = store.getOrCreateSession('wecom:wmRpgNewDelay', 'wecom');

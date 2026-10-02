@@ -156,7 +156,7 @@ export interface StoreFaults {
 
 export interface PgStoreFixture {
   /** initSessionStore 的依赖。db 是同一个 PGlite 上另开的 drizzle 实例：会话存储的读写都经它，故障与计数只管它 */
-  deps: { db: Db; tenantId: string; varDir: string };
+  deps: { db: Db; tenantId: string; tenantSlug: string; varDir: string };
   faults: StoreFaults;
   /** 经这个 db 发出的查询条数（不进 queryCount() 的全局计数）、借连接次数，与发过的 `set transaction …`、`set local …`（事务的隔离级别与读写模式、longRunning 放宽的超时） */
   stats: { queries: number; acquires: number; txModes: string[] };
@@ -212,7 +212,7 @@ export async function installPgSessionStore(t: TestDb, opts: { slug?: string; va
       };
     },
   });
-  return { deps: { db, tenantId, varDir: opts.varDir }, faults, stats };
+  return { deps: { db, tenantId, tenantSlug: slug, varDir: opts.varDir }, faults, stats };
 }
 
 /**

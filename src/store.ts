@@ -103,6 +103,8 @@ export function sessionStoreMode(): SessionStoreMode {
 export interface SessionStoreDeps {
   db: Db;
   tenantId: string;
+  /** 补写标记文件时记进 tenant（与 import-sessions 写的同一种内容） */
+  tenantSlug: string;
   varDir: string;
 }
 
@@ -113,6 +115,7 @@ export interface SessionStoreDeps {
  * 库里没有 demo 类）→ 回放 spill 文件 → 装上 PG 后端 → 登记 drain 与 late 两段停机钩子。
  * 预载之前先查 JSON：sessions.json 里有真实会话（不是 demo 类）就以 real_in_json reject、JSON 原样不动（db 存储下 JSON
  * 只装 demo 类，R6；不拒绝的话，没碰过的真实会话会在下一次 demo 落盘时从 sessions.json 消失，库里也没有）。
+ * 装上之后 var/ 里没有标记文件就补写一份（没经过 import-sessions、直接以 db 存储起的实例）。
  * 任何一步失败都以 SessionStoreStartupError reject，不留半装载状态，绝不回落到文件存储。
  */
 export async function initSessionStore(deps: SessionStoreDeps | null): Promise<void> {
@@ -147,6 +150,7 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
   });
   backend.install();
   pgBackend = backend;
+  ensureMarker(deps);
   onShutdown(
     async ({ deadline }) => {
       const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
@@ -160,6 +164,28 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     { phase: 'drain' },
   );
   onShutdown(() => backend.close(), { phase: 'late' });
+}
+
+/**
+ * db 存储装上之后，数据目录里没有标记文件就补写一份（{ tenant, at, sessions: 预载的真实会话数 }，先写临时文件再改名）：
+ * 没经过 import-sessions、一上来就以 db 存储起的实例（新实例、新租户）也有它，之后去掉 SESSION_STORE 时文件存储照样以
+ * sessions_in_db 拒绝（不变量 15），deploy.sh 的回滚前检查也认得出。写不进去只记一行错误、照常启动：db 存储本身是好的，
+ * 回滚前检查另外看 .env 的 SESSION_STORE，下次启动再补
+ */
+function ensureMarker(deps: SessionStoreDeps): void {
+  const file = path.join(deps.varDir, SESSIONS_IN_DB_MARKER);
+  if (fs.existsSync(file)) return;
+  const real = [...sessions.keys()].filter((id) => !isDemoClassId(id)).length;
+  const tmp = `${file}.tmp`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify({ tenant: deps.tenantSlug, at: new Date().toISOString(), sessions: real })}\n`);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    console.error(
+      `[store] ⚠️ 补写 ${SESSIONS_IN_DB_MARKER} 失败（${(e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.name : 'unknown')}）：` +
+        '去掉 SESSION_STORE=db 之前先跑 export-sessions',
+    );
+  }
 }
 
 /** 等这个会话当前的改动落库（db）或落盘（file）。超时以 StoreLaggingError reject，改动仍在写队列里 */
