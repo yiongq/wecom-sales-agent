@@ -132,17 +132,22 @@ export function rowsOf<T>(result: unknown): T[] {
 
 const tenantStore = new AsyncLocalStorage<TenantCtx>();
 
+export interface WithTenantOpts {
+  isolation?: 'read committed' | 'repeatable read';
+  readOnly?: boolean;
+  /**
+   * 只给预载、导入、导出、清理用（02 spec「数据库」）：事务开头把语句超时放宽到 60 秒、事务空闲超时放宽到 120 秒。
+   * agent_app 登录时带的 5 秒与 10 秒（roles.sql）在这几处会先于停机信号断开连接
+   */
+  longRunning?: boolean;
+}
+
 /**
- * 租户数据的唯一入口：BEGIN → 断言会话级的租户 GUC 为空（不为空说明有人在会话级 SET 过，销毁这条连接并抛错）
- * → 事务内 set_config → fn → COMMIT；fn 抛错就 ROLLBACK。ctx 经 AsyncLocalStorage 传给 fn 里调用的仓储与审计函数。
- * 在 withTenant 里再嵌套 withTenant 会抛错，不管租户是否相同。
+ * 租户数据的唯一入口：BEGIN →（longRunning 时放宽两个超时）→ 断言会话级的租户 GUC 为空（不为空说明有人在会话级 SET 过，
+ * 销毁这条连接并抛错）→ 事务内 set_config → fn → COMMIT；fn 抛错就 ROLLBACK。ctx 经 AsyncLocalStorage 传给 fn 里调用的
+ * 仓储与审计函数。在 withTenant 里再嵌套 withTenant 会抛错，不管租户是否相同。
  */
-export async function withTenant<T>(
-  db: Db,
-  ctx: TenantCtx,
-  fn: (tx: Tx) => Promise<T>,
-  opts: { isolation?: 'read committed' | 'repeatable read'; readOnly?: boolean } = {},
-): Promise<T> {
+export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Promise<T>, opts: WithTenantOpts = {}): Promise<T> {
   if (tenantStore.getStore()) throw new Error('withTenant 不能嵌套');
   const driver = drivers.get(db);
   if (!driver) throw new Error('这个 Db 不是经 openDb / openTestDb 打开的');
@@ -154,6 +159,11 @@ export async function withTenant<T>(
   let leaked = false;
   try {
     return await conn.db.transaction(async (tx) => {
+      // SET LOCAL 只管本事务，提交或回滚后回到角色的默认值，连接归还时不留痕
+      if (opts.longRunning) {
+        await tx.execute(sql`set local statement_timeout = '60s'`);
+        await tx.execute(sql`set local idle_in_transaction_session_timeout = '120s'`);
+      }
       // 事务里还没设过，读到的就是会话级的值。事务级 set_config 在提交后会留下一个空串，所以空串也算「空」
       const [row] = rowsOf<{ v: string | null }>(await tx.execute(sql`select current_setting('app.tenant_id', true) as v`));
       if (row?.v) {
@@ -171,6 +181,11 @@ export async function withTenant<T>(
 /** 单连接驱动（PGlite）没法销毁连接，只能清掉会话级的租户设置，相当于换了一条干净连接 */
 export async function resetSessionTenant(db: Db): Promise<void> {
   await db.execute(sql`reset app.tenant_id`);
+}
+
+/** 当前异步上下文是否在某个 withTenant 的回调里（读同一个 AsyncLocalStorage）。chat() 入口用它断言不在落库事务里 */
+export function inTenantTx(): boolean {
+  return tenantStore.getStore() !== undefined;
 }
 
 /** 在 withTenant 之外调用即抛 */

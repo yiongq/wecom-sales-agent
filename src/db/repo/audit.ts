@@ -1,6 +1,6 @@
-// 审计（spec「审计」）：只追加。租户与操作者从 withTenant 的上下文取，调用方只给动作和内容
+// 审计（spec「审计」）：只追加。租户从 withTenant 的上下文取；操作者默认也从上下文取，调用方只给动作和内容
 import { and, desc, eq, lt, sql, type SQL } from 'drizzle-orm';
-import { currentTenantCtx, type Tx } from '../client.js';
+import { currentTenantCtx, type TenantCtx, type Tx } from '../client.js';
 import { auditLog } from '../schema.js';
 
 export interface AuditEntry {
@@ -11,7 +11,15 @@ export interface AuditEntry {
 }
 
 export async function writeAudit(tx: Tx, entry: AuditEntry): Promise<void> {
-  const { tenantId, actor } = currentTenantCtx();
+  await writeAuditAs(tx, currentTenantCtx().actor, entry);
+}
+
+/**
+ * 显式给出操作者（02 spec「identity map 与写入」第 5 步）：一次落库合并了几个人的改动，事务的上下文只有一个操作者，
+ * 每行审计要记各自的操作者与 IP。租户仍取事务的上下文
+ */
+export async function writeAuditAs(tx: Tx, actor: TenantCtx['actor'], entry: AuditEntry): Promise<void> {
+  const { tenantId } = currentTenantCtx();
   await tx.insert(auditLog).values({
     tenantId,
     actorUserId: actor.userId,
