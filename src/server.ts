@@ -18,12 +18,15 @@ import {
   getOrder,
   getSession,
   gracefulExit,
+  initSessionStore,
   listOrders,
   listSessions,
   markOrderPaid,
   onShutdown,
   saveSession,
   storeEvents,
+  storeHealth,
+  varDir,
 } from './store.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
 import { activeModels, CHEAP_TIER_MODELS, llmCfg, llmStats } from './llm.js';
@@ -40,7 +43,15 @@ import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guar
 import { profile } from './profile.js';
 import type { ChannelAdapter } from './types.js';
 import { boot } from './boot.js';
-import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
+import {
+  closeConfig,
+  configHealth,
+  configMode,
+  configRuntime,
+  initConfigFromEnv,
+  markConfigShuttingDown,
+  prefixSummary,
+} from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
 import { consolePages } from './console-api/host.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
@@ -173,17 +184,28 @@ function configSummary(): Record<string, unknown> {
   return { mode, ...hashes, lock: health?.lock ?? null, sopStale: health?.sopStale ?? false, catalogStale: health?.catalogStale ?? false };
 }
 
-app.get('/healthz', (c) =>
-  c.json({
-    ok: true,
+/** 写库健康（02 spec「两种会话存储与启动」）：只有个数与毫秒数，不带会话数和任何会话 id */
+function storeSummary(): { mode: string; dirty: number; lagMs: number; conflict: boolean; poisoned: number } {
+  const h = storeHealth();
+  return { mode: h.mode, dirty: h.dirty, lagMs: h.lagMs, conflict: h.conflict, poisoned: h.poisoned.length };
+}
+
+// HTTP 状态照旧 200（deploy.sh 只看 revision）；外部拨测看 ok：写库冲突、有会话停写、积压超过 2 分钟、租户锁不在本进程手里时为 false
+app.get('/healthz', (c) => {
+  const config = configSummary();
+  const store = storeSummary();
+  const ok = !store.conflict && store.poisoned === 0 && store.lagMs <= 120_000 && config.lock !== 'lost';
+  return c.json({
+    ok,
     revision: process.env.APP_REVISION || 'dev',
     models: activeModels(),
     visitorLLM: budgetStatus(),
     llmGate: gateStatus(),
     llm: llmStats(),
-    config: configSummary(),
-  }),
-);
+    config,
+    store,
+  });
+});
 
 // 模型用量与成本（JD 明确要求的「模型调用成本」指标）
 // 用量与成本：聚合数字，不含任何客户信息，演示模式下也放行（这正是要展示的指标之一）
@@ -768,6 +790,12 @@ if (!SELFTEST) {
   onShutdown(closeConfig, { phase: 'late' });
   await boot({
     initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
+    // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
+    initSessionStore: () => {
+      if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
+      const { db, tenantId } = configRuntime();
+      return initSessionStore({ db, tenantId, varDir: varDir() });
+    },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {
         logStartup(info.port);

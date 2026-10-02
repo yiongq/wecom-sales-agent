@@ -1,13 +1,32 @@
-// 内存 Map + JSON 落盘（var/sessions.json、var/orders.json）。
-// 写入防抖 200ms + 原子写（tmp+rename）；进程退出时同步 flush。demo 规模无需数据库。
-// 注意：数据权威在本进程内存，多副本部署会脑裂——本项目按单实例设计。
+// 会话存储门面（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）。
+// 内存里的两张 Map 是本进程的权威，getSession / getOrder / saveSession 都是同步的；持久化交给后端：
+// 文件存储是 var/sessions.json、var/orders.json 的整文件重写（src/store/file-backend.ts）；db 存储（SESSION_STORE=db）
+// 另由 PG 后端管真实会话，demo 类会话仍走文件（R6）。
+// 导入期行为与存储模式无关（R3）：读 JSON、探针、exit 钩子、信号接线（src/shutdown.ts）、保鲜与清理定时器；
+// db 存储另由 boot() 在 initConfig 之后调 initSessionStore。
+// 注意：数据权威在本进程内存，多副本部署会脑裂——本项目按单实例设计（01 的租户锁拒绝第二个进程）。
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import type { Db } from './db/client.js';
 import { numEnv } from './env.js';
 import { profile } from './profile.js';
+import {
+  SessionStoreStartupError,
+  StoreLaggingError,
+  type SessionStoreMode,
+  type StoreBackend,
+  type StoreHealth,
+} from './store/backend.js';
+import { onCommitted, type DomainEvent } from './store/events.js';
+import { createFileBackend } from './store/file-backend.js';
+import { seqOf } from './store/seq.js';
 import type { Session, Order } from './types.js';
+
+export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
+export { SessionStoreStartupError, StoreLaggingError, onCommitted, seqOf };
+export type { DomainEvent, SessionStoreMode, StoreHealth };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
 export const storeEvents = new EventEmitter();
@@ -15,77 +34,92 @@ storeEvents.setMaxListeners(100);
 
 // VAR_DIR 可用 env 覆盖（selftest 指到临时目录，避免污染真实数据）
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
-const SESSIONS_FILE = path.join(VAR_DIR, 'sessions.json');
-const ORDERS_FILE = path.join(VAR_DIR, 'orders.json');
+
+/** 数据目录：boot 拼 initSessionStore 的依赖用，与本模块读写的是同一个 */
+export function varDir(): string {
+  return VAR_DIR;
+}
+
+/** 「真实会话在库里，JSON 只剩 demo 类」的标记文件（spec「导入、导出与切换」） */
+export const SESSIONS_IN_DB_MARKER = 'sessions-in-db.json';
 
 const sessions = new Map<string, Session>();
 const orders = new Map<string, Order>();
 
-// 启动时恢复上次落盘的数据。损坏文件不能静默当空库——那会在下一次落盘时
-// 被空数据覆盖、损失永久化；改名备份留住现场，人工可从备份恢复。
-function loadFile<T>(file: string, target: Map<string, T>): void {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, 'utf8');
-  } catch {
-    return; // 首次运行无文件
-  }
-  try {
-    const arr = JSON.parse(raw) as T[];
-    for (const item of arr) target.set((item as { id: string }).id, item);
-  } catch (e) {
-    const backup = `${file}.corrupt-${Date.now()}`;
-    try {
-      fs.renameSync(file, backup);
-      console.error(`[store] ${path.basename(file)} 解析失败，已备份到 ${backup}:`, e);
-    } catch {
-      console.error(`[store] ${path.basename(file)} 解析失败且无法备份:`, e);
+const DEMO_CLASS_RE = /^(sim-|wecom:cust_)/;
+
+/** sim- 或 wecom:cust_ 开头：demo 类会话（网页访客与种子），永不进 PG（R6） */
+export function isDemoClassId(id: string): boolean {
+  return DEMO_CLASS_RE.test(id);
+}
+
+/** PG 后端，db 存储下由 initSessionStore 装上（第 5 步）；装上之前与文件存储下都是 null */
+// 写成断言而不是类型标注：第 5 步之前没有赋值点，标注会让 TS 把它收窄成 null
+let pgBackend = null as StoreBackend | null;
+
+const fileBackend = createFileBackend({
+  varDir: VAR_DIR,
+  sessions,
+  orders,
+  owns: (id) => !pgBackend || isDemoClassId(id),
+  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId),
+  isReal: (id) => !isDemoClassId(id),
+  afterPersist: () => storeEvents.emit('change'),
+});
+fileBackend.load();
+fileBackend.probe();
+
+/** 这个会话的改动交给哪个后端：db 存储下真实会话走 PG，其余（demo 类、文件存储）走文件 */
+const backendFor = (sessionId: string): StoreBackend => (pgBackend && !isDemoClassId(sessionId) ? pgBackend : fileBackend);
+
+/** 当前装着的会话存储：装上 PG 后端之后是 'db'，否则 'file'。SESSION_STORE 的取值由 01 的 initConfigFromEnv 校验 */
+export function sessionStoreMode(): SessionStoreMode {
+  return pgBackend ? 'db' : 'file';
+}
+
+export interface SessionStoreDeps {
+  db: Db;
+  tenantId: string;
+  varDir: string;
+}
+
+/**
+ * 导入期已经按文件后端读好 JSON（两种模式相同，R3）。
+ * deps 为 null（文件存储）：var/ 下有标记文件时以 sessions_in_db reject，否则立即 resolve。
+ * deps 不为 null（db 存储）：预载 PG 并换上 PG 后端（第 5 步实现；在那之前拒绝启动，绝不回落到文件存储）
+ */
+export async function initSessionStore(deps: SessionStoreDeps | null): Promise<void> {
+  if (deps === null) {
+    if (fs.existsSync(path.join(VAR_DIR, SESSIONS_IN_DB_MARKER))) {
+      throw new SessionStoreStartupError(
+        'sessions_in_db',
+        `${VAR_DIR} 下有 ${SESSIONS_IN_DB_MARKER}：真实会话在库里，要切回文件存储先跑 export-sessions`,
+      );
     }
+    return;
   }
-}
-loadFile<Session>(SESSIONS_FILE, sessions);
-loadFile<Order>(ORDERS_FILE, orders);
-
-// 启动即探测 VAR_DIR 可写性。典型事故：docker 绑定挂载的 var/ 归 root、容器进程是 node(1000)，
-// 落盘全部 EACCES 但服务表面正常——所有会话/订单只活在内存，重启即全丢。必须在启动时就喊出来。
-try {
-  fs.mkdirSync(VAR_DIR, { recursive: true });
-  const probe = path.join(VAR_DIR, '.write-probe');
-  fs.writeFileSync(probe, String(Date.now()));
-  fs.unlinkSync(probe);
-} catch (e) {
-  console.error(
-    `[store] ⚠️⚠️ 数据目录不可写: ${VAR_DIR} —— 会话/订单将只存在内存，进程重启即全部丢失！` +
-      '请修复目录权限（docker 部署：chown -R 1000:1000 该目录）。',
-    e,
-  );
+  throw new Error('这个版本还没有 PG 会话存储（02 plan 第 5 步），不要设 SESSION_STORE=db');
 }
 
-// 原子写：先写 .tmp 再 rename（同一文件系统内 rename 原子），崩溃不会留半截文件
-function writeAtomic(file: string, data: string): void {
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, file);
+/** 等这个会话当前的改动落库（db）或落盘（file）。超时以 StoreLaggingError reject，改动仍在写队列里 */
+export function flushSession(id: string, opts?: { timeoutMs?: number }): Promise<void> {
+  return backendFor(id).flush(id, opts);
 }
 
-function persistNow(): void {
-  try {
-    fs.mkdirSync(VAR_DIR, { recursive: true });
-    writeAtomic(SESSIONS_FILE, JSON.stringify([...sessions.values()], null, 2));
-    writeAtomic(ORDERS_FILE, JSON.stringify([...orders.values()], null, 2));
-  } catch (e) {
-    console.error('[store] 落盘失败:', e);
-  }
+/** drain 阶段调用：排空所有写队列；超时返回还没落库的会话 id（日志只写短码） */
+export async function drainStore(timeoutMs: number): Promise<{ undrained: string[] }> {
+  const parts = await Promise.all([fileBackend, ...(pgBackend ? [pgBackend] : [])].map((b) => b.drain(timeoutMs)));
+  return { undrained: parts.flatMap((p) => p.undrained) };
 }
 
-let saveTimer: NodeJS.Timeout | null = null;
-function schedulePersist(): void {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    persistNow();
-    storeEvents.emit('change'); // 每次落盘（约 200ms 去抖后）通知一次
-  }, 200);
+/** 改动随这个会话的下一次落库提交；提交后才交给 onCommitted 的订阅者 */
+export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
+  backendFor(sessionId).emitAfterCommit(sessionId, ev);
+}
+
+/** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
+export function storeHealth(): StoreHealth {
+  return (pgBackend ?? fileBackend).health();
 }
 
 /**
@@ -93,82 +127,14 @@ function schedulePersist(): void {
  * 记账还在去抖窗口里时进程被 SIGKILL / OOM 杀掉，重启后同一条跟进会再发一遍。
  */
 export function flushStoreNow(): void {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-  persistNow();
-  storeEvents.emit('change');
+  fileBackend.flushNow();
 }
 
-// 退出兜底：防抖窗口内的未落盘变更在进程结束前同步写出
+// 退出兜底：没落盘的变更在进程结束前同步写出（文件），没落库的真实会话写进 spill 文件（PG）
 process.on('exit', () => {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    persistNow();
-  }
+  fileBackend.spillSync();
+  pgBackend?.spillSync();
 });
-
-// ---------------- 优雅停机 ----------------
-// 此前收到 SIGTERM 立刻 process.exit：deploy.sh 给的 `docker stop -t 10` 宽限期一秒都没用上，
-// 正在跑 LLM 的客户消息被拦腰截断——企微那条消息已记为「处理过」，重启后不会再回，客户永远等不到。
-// 现在先跑各模块注册的收尾钩子（企微：停止拉新消息、等进行中的回复发完），再退出。
-type ShutdownHook = () => unknown;
-const shutdownHooks: ShutdownHook[] = [];
-const lateHooks: ShutdownHook[] = [];
-
-/**
- * 注册停机收尾钩子。收到 SIGINT/SIGTERM 时普通钩子并发执行；{ phase: 'late' } 的钩子等普通钩子全部结束后才跑
- * （配置源的连接池与租户锁：在途的回复还要读配置，最后才能关）。总等待有上限（见下）
- */
-export function onShutdown(fn: ShutdownHook, opts: { phase?: 'late' } = {}): void {
-  (opts.phase === 'late' ? lateHooks : shutdownHooks).push(fn);
-}
-
-// 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
-// 连 'exit' 阶段的同步落盘都跑不到。留约 2s 给落盘和进程退出。
-const SHUTDOWN_TIMEOUT_MS = 8000;
-
-/** 跑完全部停机钩子，最多等 timeoutMs。返回 false 表示超时（仍有钩子没结束） */
-export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  const settle = async (hooks: ShutdownHook[]): Promise<void> => {
-    const rs = await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));
-    for (const r of rs) if (r.status === 'rejected') console.error('[store] 停机钩子异常:', r.reason);
-  };
-  const all = settle(shutdownHooks)
-    .then(() => settle(lateHooks))
-    .then(() => true);
-  const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs);
-  });
-  try {
-    return await Promise.race([all, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-let shuttingDown = false;
-
-/**
- * 优雅退出：跑完全部停机钩子（有上限）再以 code 退出。SIGTERM 走的就是这条路；配置源发现租户锁被别的进程拿走时也调它。
- * 已在退出中时再调直接退出（终端里连按 Ctrl+C 就是想马上退）
- */
-export function gracefulExit(code: number, why = `退出码 ${code}`): void {
-  if (shuttingDown) process.exit(code);
-  shuttingDown = true;
-  console.log(`[store] ${why}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
-  void runShutdownHooks().then((ok) => {
-    if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
-    process.exit(code);
-  });
-}
-
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`));
-}
 
 // ---------------- demo 数据保鲜 ----------------
 // 种子演示会话（id 形如 wecom:cust_B01，真实企微 external_userid 不会长这样）的时间戳
@@ -195,7 +161,7 @@ export function freshenDemoData(): void {
       if (o.paidAt) o.paidAt += delta;
     }
   }
-  schedulePersist();
+  fileBackend.markChanged(demo.map((s) => s.id));
   console.log(`[store] demo 保鲜：${demo.length} 个演示会话时间前移 ${(delta / 3_600_000).toFixed(1)} 小时`);
 }
 
@@ -235,6 +201,7 @@ function evictExcessVisitorSessions(): void {
     sessions.delete(s.id);
     for (const oid of s.orderIds ?? []) orders.delete(oid);
   }
+  fileBackend.markChanged(victims.map((s) => s.id));
   if (victims.length) {
     console.warn(`[store] 网页访客会话超过上限 ${VISITOR_SESSION_MAX}，已淘汰最旧的 ${victims.length} 个`);
   }
@@ -243,17 +210,18 @@ function evictExcessVisitorSessions(): void {
 export function pruneStaleVisitorData(): void {
   if (!PRUNE_MS) return;
   const cutoff = Date.now() - PRUNE_MS;
-  let n = 0;
+  const gone: string[] = [];
   for (const s of sessions.values()) {
     if (!VISITOR_SESSION_RE.test(s.id) || s.channel !== 'simulator') continue;
     if (s.updatedAt >= cutoff) continue;
     if (hasPaidOrder(s)) continue; // 有成交记录，保留
     sessions.delete(s.id);
     for (const oid of s.orderIds ?? []) orders.delete(oid); // 连同订单一起删，不留孤儿
-    n++;
+    gone.push(s.id);
   }
+  const n = gone.length;
   if (n) {
-    schedulePersist();
+    fileBackend.markChanged(gone);
     console.log(`[store] 已清理 ${n} 个闲置网页访客会话（阈值 ${PRUNE_MS / 3_600_000}h，仅 sim-）`);
   }
 }
@@ -284,7 +252,7 @@ export function getOrCreateSession(id: string, channel: string): Session {
     sessions.set(id, s);
     // 新建访客会话时顺手检查总量，别等到下一次整点清理才发现已经被灌爆
     if (VISITOR_SESSION_RE.test(id) && channel === 'simulator') evictExcessVisitorSessions();
-    schedulePersist();
+    backendFor(id).schedule(s);
   }
   return s;
 }
@@ -298,14 +266,15 @@ export function listSessions(): Session[] {
 }
 
 /**
- * 落盘会话。默认把 updatedAt 刷新为现在——它代表「这条会话最后一次有动静」。
+ * 落盘会话：同步给新消息分配 seq（返回时新消息已有 seq，不变量 8）、标脏并排进这个会话的写队列。
+ * 默认把 updatedAt 刷新为现在——它代表「这条会话最后一次有动静」。
  * touch=false 用于系统主动写入（如自动跟进）：跟进不该把客户的沉默时长清零，
  * 否则后台「N 小时未回应」失真、介入队列会漏掉真正该救的客户。
  */
 export function saveSession(s: Session, touch = true): void {
   if (touch) s.updatedAt = Date.now();
   sessions.set(s.id, s);
-  schedulePersist();
+  backendFor(s.id).schedule(s);
 }
 
 /** 入参不含 id/createdAt/status，由 store 统一生成 */
@@ -319,7 +288,7 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   orders.set(order.id, order);
-  schedulePersist();
+  backendFor(order.sessionId).scheduleOrder(order.id);
   return order;
 }
 
@@ -335,7 +304,7 @@ export function markOrderPaid(id: string): Order | undefined {
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
-    schedulePersist();
+    backendFor(o.sessionId).scheduleOrder(id);
   }
   return o;
 }
@@ -346,7 +315,7 @@ export function supersedeOrder(id: string, byId: string): boolean {
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  schedulePersist();
+  backendFor(o.sessionId).scheduleOrder(id);
   return true;
 }
 
@@ -364,7 +333,8 @@ export function deleteOrdersOfSession(sessionId: string): number {
       n += 1;
     }
   }
-  if (n) schedulePersist();
+  // db 存储下改为把订单记作废、不删（R5，第 5 步）
+  if (n) fileBackend.markChanged([sessionId]);
   return n;
 }
 

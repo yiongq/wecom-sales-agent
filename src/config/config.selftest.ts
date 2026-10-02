@@ -1367,6 +1367,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     try {
       await boot({
         initConfig: init,
+        initSessionStore: async () => {},
         serve: (onListening) => {
           calls.push('serve');
           onListening();

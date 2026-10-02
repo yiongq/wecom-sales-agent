@@ -260,13 +260,24 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
   };
 }
 
-/** 生产入口：先校验 CONFIG_SOURCE（非法值报 env_invalid）；是 db 就构造依赖再装载，否则按文件模式 */
+/** 只回显看起来像个取值的短词：配错位置的整行环境变量里可能带着连接串口令 */
+const shownValue = (name: string, v: string): string => (/^[a-z]{1,16}$/i.test(v) ? `${name}=${v}` : `${name} 的值`);
+
+/**
+ * 生产入口：先校验 CONFIG_SOURCE 与 SESSION_STORE（非法值报 env_invalid）；是 db 就构造依赖再装载，否则按文件模式。
+ * SESSION_STORE（02 spec R1）：未设、空串、file 是文件存储，db 是 PG 会话存储且要求 CONFIG_SOURCE=db，绝不回落
+ */
 export async function initConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: number) => void): Promise<void> {
   const mode = env.CONFIG_SOURCE ?? '';
   if (mode !== '' && mode !== 'file' && mode !== 'db') {
-    // 只回显看起来像个取值的短词：配错位置的整行环境变量里可能带着连接串口令
-    const shown = /^[a-z]{1,16}$/i.test(mode) ? `CONFIG_SOURCE=${mode}` : 'CONFIG_SOURCE 的值';
-    throw startup('env_invalid', `${shown} 不合法，只能是 file 或 db`);
+    throw startup('env_invalid', `${shownValue('CONFIG_SOURCE', mode)} 不合法，只能是 file 或 db`);
+  }
+  const store = env.SESSION_STORE ?? '';
+  if (store !== '' && store !== 'file' && store !== 'db') {
+    throw startup('env_invalid', `${shownValue('SESSION_STORE', store)} 不合法，只能是 file 或 db`);
+  }
+  if (store === 'db' && mode !== 'db') {
+    throw startup('env_invalid', 'SESSION_STORE=db 要求 CONFIG_SOURCE=db（会话存储不会回落到文件）');
   }
   if (mode !== 'db') return initConfig(null);
   return initConfig(await productionConfigDeps(env, gracefulExit));
@@ -563,7 +574,7 @@ export function currentTenant(): { name: string; pack: IndustryPack } {
 
 // ---------------- 给编辑流程用 ----------------
 
-/** 只给 src/config/sop.ts、catalog.ts 用：装载时的库、租户、依赖与镜像节 */
+/** 只给 src/config/sop.ts、catalog.ts 用，以及 boot 给 db 会话存储拼依赖：装载时的库、租户、依赖与镜像节 */
 export function configRuntime(): { db: Db; tenantId: string; deps: ConfigDeps; imageSections: readonly SopSection[] } {
   if (!loaded) throw new ConfigNotReadyError();
   return { db: loaded.deps.db, tenantId: loaded.tenantId, deps: loaded.deps, imageSections: loaded.imageSections };

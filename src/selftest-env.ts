@@ -6,3 +6,6 @@ import { PROFILE_ENV_NAMES } from './profile.js';
 
 for (const k of PROFILE_ENV_NAMES) process.env[k] = '';
 process.env.DEPLOY_PROFILE = 'demo';
+// 会话存储同样钉成文件存储（02 spec R1）：本机 .env 写着 SESSION_STORE=db 时，自测与 eval 也不跑在 PG 会话存储上。
+// PG 会话存储由新套件与 DB 模式 mock eval 显式装上
+process.env.SESSION_STORE = 'file';
