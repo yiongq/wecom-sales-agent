@@ -2439,8 +2439,14 @@ await t.close();
   fake('docker', [
     'echo "docker $PWD|$*" >> "$FAKE_LOG"',
     'case "$*" in',
-    // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）
+    // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）；
+    // 正在跑的容器的镜像（docker inspect 回 sha256:running，FAKE_RUNNING 没设时 inspect 失败）用 FAKE_RUNNING
+    '  *sha256:running*pg-backend.ts*) exit "${FAKE_RUNNING:-0}" ;;',
     '  *pg-backend.ts*) exit "${FAKE_PG_BACKEND:-0}" ;;',
+    '  *"inspect --format {{.Image}}"*) if [ -n "${FAKE_RUNNING:-}" ]; then echo sha256:running; else exit 1; fi ;;',
+    // rollback-guard.sh 直接问库有没有条目版本大于 1：FAKE_CATALOG_DB 是 t / f / none（表不存在）/ down（缺省，exec 失败）
+    '  *to_regclass*catalog_item_versions*) case "${FAKE_CATALOG_DB:-down}" in down) exit 1 ;; none) echo f ;; *) echo t ;; esac ;;',
+    '  *"from catalog_item_versions where version > 1"*) echo "${FAKE_CATALOG_DB}" ;;',
     // 自动回滚被拒时打印目标镜像的 APP_REVISION
     '  *"image inspect"*) printf "PATH=/usr/local/bin\\nAPP_REVISION=%s\\n" "${FAKE_REVISION:-old-v1}" ;;',
     '  *pg_dumpall*) echo "-- globals" ;;',
@@ -2727,8 +2733,19 @@ await t.close();
     if (text === null) fs.rmSync(path.join(gsrv, '.env'), { force: true });
     else fs.writeFileSync(path.join(gsrv, '.env'), text);
   };
-  /** health：正在运行的实例 /healthz 回的内容；null 是连不上；缺省是 catalogVersioned 为 false 的那份 */
-  const guard = (target: string, marker: boolean, pgBackend?: number, envText: string | null = null, health?: string | null) => {
+  /**
+   * health：正在运行的实例 /healthz 回的内容；null 是连不上；缺省是 catalogVersioned 为 false 的那份。
+   * db：直接问库的结果（t / f / none / down，缺省 down）；running：正在跑的容器的镜像里 test pg-backend.ts 的退出码（缺省 inspect 失败）；
+   * envDb：服务器 .env.db
+   */
+  const guard = (
+    target: string,
+    marker: boolean,
+    pgBackend?: number,
+    envText: string | null = null,
+    health?: string | null,
+    o: { db?: string; running?: number; envDb?: string } = {},
+  ) => {
     fs.rmSync(log, { force: true });
     setMarker(marker);
     setEnvFile(envText);
@@ -2736,10 +2753,12 @@ await t.close();
     else env.FAKE_PG_BACKEND = String(pgBackend);
     if (health === null) env.FAKE_CURL_FAIL = '1';
     else if (health !== undefined) env.FAKE_HEALTHZ = health;
+    if (o.db !== undefined) env.FAKE_CATALOG_DB = o.db;
+    if (o.running !== undefined) env.FAKE_RUNNING = String(o.running);
+    if (o.envDb !== undefined) fs.writeFileSync(path.join(gsrv, '.env.db'), o.envDb);
     const r = run('bash', ['-s', '--', gsrv, target, 'side1', '3999'], tmp, guardSrc);
-    delete env.FAKE_PG_BACKEND;
-    delete env.FAKE_CURL_FAIL;
-    delete env.FAKE_HEALTHZ;
+    for (const k of ['FAKE_PG_BACKEND', 'FAKE_CURL_FAIL', 'FAKE_HEALTHZ', 'FAKE_CATALOG_DB', 'FAKE_RUNNING']) delete env[k];
+    fs.rmSync(path.join(gsrv, '.env.db'), { force: true });
     setEnvFile(null);
     return {
       ...r,
@@ -2844,46 +2863,101 @@ await t.close();
   const g9 = guard('pre-02', false, undefined, 'SESSION_STORE=db\nSESSION_STORE=file\n');
   check('回滚前检查：.env 里同名以最后一行为准，不是 db 存储时照常', g9.code === 0, g9.out);
 
-  // 条目版本（02 第 8 步）：正在运行的实例 /healthz 的 config.catalogVersioned 为 true 时，回滚到 02 之前的镜像同样拒绝；
-  // 取不到、看不出来时按有风险处理。只有这一条风险时不打印回到文件存储的步骤（帮不上忙），写明只能回到 02 之后的镜像
+  // 条目版本（02 第 8 步）：正在运行的实例 /healthz 的 config.catalogVersioned 为 true 时，回滚到 02 之前的镜像同样拒绝（4）。
+  // /healthz 取不到、或里面没有这个字段时直接问库；库也问不到时，正在跑的容器本身是 02 之前的镜像就不算，否则按有风险处理。
+  // 有这一条时不打印回到文件存储的步骤（去不掉它），写明只能回到 02 之后的镜像
   const versioned = '{"ok":true,"config":{"mode":"db","catalogVersioned":true},"store":{"mode":"file"}}';
   const catalogRefused = (out: string, why: string): boolean =>
     out.includes('拒绝回滚') && out.includes(why) && out.includes('要回滚只能回到 02 之后的镜像') && !out.includes('export-sessions');
+  const psqlCalls = (g: { docker: string[] }): string[] => g.docker.filter((l) => l.includes('exec -T db psql'));
   check(
-    '回滚前检查：问的是本机宿主端口上的 /healthz',
-    g1.curl.length === 1 && g1.curl[0]!.includes('http://127.0.0.1:3999/healthz'),
+    '回滚前检查：问的是本机宿主端口上的 /healthz；/healthz 说了 false 就不问库',
+    g1.curl.length === 1 && g1.curl[0]!.includes('http://127.0.0.1:3999/healthz') && psqlCalls(g1).length === 0,
     g1.curl.join(' | '),
   );
   const g10 = guard('pre-02', false, undefined, null, versioned);
   check(
-    '回滚前检查：catalogVersioned 为 true、部署 02 之前的 tag → 拒绝（3），点名这一条，不打印导出步骤',
-    g10.code === 3 && catalogRefused(g10.out, 'config.catalogVersioned 为 true'),
+    '回滚前检查：catalogVersioned 为 true、部署 02 之前的 tag → 拒绝（4），点名这一条，不打印导出步骤，不问库',
+    g10.code === 4 && catalogRefused(g10.out, 'config.catalogVersioned 为 true') && psqlCalls(g10).length === 0,
     g10.out,
   );
   const g11 = guard('side1:prev', false, 1, null, versioned);
   check(
-    '回滚前检查：catalogVersioned 为 true、自动回滚到 02 之前的镜像 → 拒绝',
-    g11.code === 3 && catalogRefused(g11.out, 'config.catalogVersioned 为 true') && g11.docker.length >= 1,
+    '回滚前检查：catalogVersioned 为 true、自动回滚到 02 之前的镜像 → 拒绝（4）',
+    g11.code === 4 && catalogRefused(g11.out, 'config.catalogVersioned 为 true') && g11.docker.length >= 1,
     g11.out,
   );
   const g12 = guard('side1:prev', false, 0, null, versioned);
   check('回滚前检查：catalogVersioned 为 true、目标是 02 之后的镜像 → 照常回滚', g12.code === 0, g12.out);
-  const g13 = guard('pre-02', false, undefined, null, null);
+  // 首次上 02 失败后的自动回滚：新容器没过健康检查（/healthz 连不上），:prev 是 01；迁移的回填只写了版本 1 → 问库得 f，照常回滚
+  const g13 = guard('side1:prev', false, 1, null, null, { db: 'f' });
   check(
-    '回滚前检查：/healthz 取不到（连不上）→ 按有风险处理，拒绝',
-    g13.code === 3 && catalogRefused(g13.out, '看不出有没有条目版本大于 1'),
-    g13.out,
+    '回滚前检查：/healthz 连不上、目标是 02 之前的镜像（首次上 02 失败的自动回滚）→ 问库，没有版本大于 1 的条目，照常回滚；' +
+      '问的是这个项目的 db 服务、按 .env.db 的库名（缺省 agent），在 / 下执行',
+    g13.code === 0 &&
+      psqlCalls(g13).length === 2 &&
+      psqlCalls(g13).every((l) => l.startsWith('docker /|compose -p side1 exec -T db psql -U postgres -d agent -Atc')) &&
+      psqlCalls(g13)[1]!.includes('select exists(select 1 from catalog_item_versions where version > 1)'),
+    `${g13.code} ${g13.out} ${g13.docker.join(' / ')}`,
   );
-  const g14 = guard('pre-02', false, undefined, null, '{"ok":true,"config":{"mode":"db"}}');
-  check('回滚前检查：/healthz 里没有 catalogVersioned（看不出来）→ 拒绝', g14.code === 3 && catalogRefused(g14.out, '看不出'), g14.out);
+  const g13b = guard('pre-02', false, undefined, null, null, { db: 'none', envDb: 'POSTGRES_PASSWORD=x\nAGENT_DB=agent_side\n' });
+  check(
+    '回滚前检查：/healthz 连不上、库里还没有 catalog_item_versions（02 之前的库）→ 没有这条风险；库名取 .env.db 的 AGENT_DB，表不在就不再查',
+    g13b.code === 0 && psqlCalls(g13b).length === 1 && psqlCalls(g13b)[0]!.includes('-d agent_side '),
+    `${g13b.code} ${g13b.out} ${g13b.docker.join(' / ')}`,
+  );
+  const g13c = guard('pre-02', false, undefined, null, null, { db: 't' });
+  check(
+    '回滚前检查：/healthz 连不上、库里有版本大于 1 的条目 → 拒绝（4），点名库里查到的',
+    g13c.code === 4 && catalogRefused(g13c.out, '库里的 catalog_item_versions 有版本大于 1 的条目'),
+    g13c.out,
+  );
+  const g13d = guard('side1:prev', false, 1, null, null, { running: 0 });
+  check(
+    '回滚前检查：/healthz 与库都问不到、正在跑的是 02 之后的镜像 → 按有风险处理，拒绝（4），提示先确认 db 在跑',
+    g13d.code === 4 &&
+      catalogRefused(g13d.out, '也问不到库，看不出有没有条目版本大于 1') &&
+      g13d.out.includes('docker compose -p side1 ps db') &&
+      g13d.docker.some((l) => l.includes('inspect --format {{.Image}} side1')),
+    g13d.out,
+  );
+  const g13e = guard('pre-02', false, undefined, null, null, {});
+  check(
+    '回滚前检查：/healthz 与库都问不到、也看不出正在跑的镜像 → 拒绝（4）',
+    g13e.code === 4 && catalogRefused(g13e.out, '也问不到库'),
+    g13e.out,
+  );
+  const g13f = guard('side1:prev', false, 1, null, null, { running: 1 });
+  check(
+    '回滚前检查：/healthz 与库都问不到、正在跑的容器本身就是 02 之前的镜像 → 这一条不算风险，照常回滚',
+    g13f.code === 0,
+    `${g13f.code} ${g13f.out}`,
+  );
+  // 线上跑着 01（02 还没发版），从 dev 部署一个 01 的 tag：01 的 /healthz 没有这个字段，库是 01 的
+  const g14 = guard('pre-02', false, undefined, null, '{"ok":true,"config":{"mode":"db"}}', { db: 'none' });
+  check('回滚前检查：/healthz 里没有 catalogVersioned（跑着的是 01）、库里没有这张表 → 照常', g14.code === 0, `${g14.code} ${g14.out}`);
+  const g14b = guard('pre-02', false, undefined, null, '{"ok":true,"config":{"mode":"db"}}', { db: 'f' });
+  check('回滚前检查：/healthz 里没有 catalogVersioned、库里没有版本大于 1 的条目 → 照常', g14b.code === 0, `${g14b.code} ${g14b.out}`);
+  const g14c = guard('pre-02', false, undefined, null, '{"ok":true,"config":{"mode":"db"}}', { db: 't' });
+  check(
+    '回滚前检查：/healthz 里没有 catalogVersioned、库里有版本大于 1 的条目 → 拒绝（4）',
+    g14c.code === 4 && catalogRefused(g14c.out, '库里的'),
+    g14c.out,
+  );
   const g15 = guard('pre-02', true, undefined, null, versioned);
   check(
-    '回滚前检查：有标记文件又 catalogVersioned 为 true → 两条都点名，照常打印回到文件存储的步骤',
-    g15.code === 3 &&
-      refusedWithSteps(g15.out) &&
-      g15.out.includes('config.catalogVersioned 为 true') &&
-      g15.out.includes('要回滚只能回到 02 之后的镜像'),
+    '回滚前检查：有标记文件又 catalogVersioned 为 true → 拒绝（4），两条都点名，不打印回到文件存储的步骤（做完了也照样拒绝）',
+    g15.code === 4 &&
+      g15.out.includes('sessions-in-db.json') &&
+      catalogRefused(g15.out, 'config.catalogVersioned 为 true') &&
+      !g15.out.includes('再部署旧 tag'),
     g15.out,
+  );
+  const g16 = guard('pre-02', true, undefined, null, null, { db: 'f' });
+  check(
+    '回滚前检查：有标记文件、/healthz 连不上而库里没有版本大于 1 的条目 → 只有会话这一条，拒绝（3）并打印回到文件存储的步骤',
+    g16.code === 3 && refusedWithSteps(g16.out) && !g16.out.includes('要回滚只能回到 02 之后的镜像'),
+    g16.out,
   );
 
   // deploy.sh 的两处接线。部署旧 tag：在碰服务器之前（rsync 之前）检查；ssh 换成在本机执行远端命令，门禁一律成功，
@@ -2921,6 +2995,23 @@ await t.close();
     d2.code !== 0 && !d2.out.includes('拒绝回滚') && d2.log.includes('rsync '),
     `${d2.code} ${d2.out.slice(-400)}`,
   );
+  env.FAKE_HEALTHZ = '{"ok":true,"config":{"mode":"db","catalogVersioned":true}}';
+  const d4 = deployTo('new-v1', false);
+  delete env.FAKE_HEALTHZ;
+  check(
+    'deploy.sh：部署 02 之前的 tag 而改过上架条目的内容 → rsync 之前拒绝（1），提示只能部署 02 之后的 tag，不说先回到文件存储',
+    d4.code === 1 &&
+      d4.out.includes('new-v1 是 02 之前的版本') &&
+      d4.out.includes('只能部署 02 之后的 tag') &&
+      !d4.out.includes('先回到文件存储') &&
+      !d4.log.includes('rsync '),
+    `${d4.code} ${d4.out.slice(-600)}`,
+  );
+  check(
+    'deploy.sh：只有会话在库里时（3）才说先回到文件存储',
+    d1.out.includes('会话在库里：按上面的步骤先回到文件存储，再部署它') && !d1.out.includes('只能部署 02 之后的 tag'),
+    d1.out.slice(-300),
+  );
   const d3 = deployTo('v02', true);
   check(
     'deploy.sh：部署 02 之后的 tag 不做这道检查，有标记文件也照常往下走',
@@ -2929,11 +3020,16 @@ await t.close();
   );
   // 自动回滚：:prev 在服务器上之后、起 :prev 之前过同一道检查，过不了就停下（不起 :prev）
   const rb = deploySrc.indexOf('[rollback] 回滚到上一个镜像');
-  const gp = deploySrc.indexOf('if ! guard_rollback "${NAME}:prev"; then');
+  const gp = deploySrc.indexOf('guard_rollback "${NAME}:prev" || {');
   const up = deploySrc.indexOf('up -d --no-deps app');
   check(
     'deploy.sh：健康检查失败后的自动回滚先过回滚前检查，拒绝时以 1 退出、不起 :prev',
-    rb > 0 && rb < gp && gp < up && /if ! guard_rollback "\$\{NAME\}:prev"; then\n *echo [^\n]*\n *exit 1\nfi\n/.test(deploySrc),
+    rb > 0 &&
+      rb < gp &&
+      gp < up &&
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[34*]\) echo "[^\n]*" >&2 ;;\n){3} {2}esac\n {2}exit 1\n\}\n/.test(
+        deploySrc,
+      ),
   );
   check(
     'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s（带上项目名与宿主端口）',
