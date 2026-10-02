@@ -8,7 +8,10 @@
 #
 # 1. 以超级用户在 db 容器里经本地 socket 导出：pg_dump -Fc，外加 pg_dumpall --globals-only --no-role-passwords。
 #    主机上不存超级用户口令。不用任何受 RLS 约束的角色导出，也不加 --enable-row-security：没设租户时它会静默导出 0 行。
-# 2. 校验：pg_restore --list 里四张 RLS 表都有 TABLE DATA；sop_versions、catalog_items 的行数为 0 就非零退出并告警。
+# 2. 校验：pg_restore --list 里 01 的四张 RLS 表都有 TABLE DATA；02 的 conversations、messages、orders 在库里存在时
+#    也要有（行数可以为 0：文件存储下库里没有会话）。这三张表不存在时只告警一行、备份照做：deploy.sh 先装新版本脚本、
+#    后跑迁移，构建或迁移失败时库停在 01，不能因此每晚的备份整份不出。表在不在是导出之前查的。
+#    sop_versions、catalog_items 的行数为 0 就非零退出并告警。
 # 3. var/（会话、订单、企微 cursor、客服二维码）打成 tar。
 # 4. 两份都在离开本机前用 age 公钥加密，私钥不放在服务器上；明文只在 0700 的临时目录里短暂存在。
 #    本地按日期建目录（0700），保留 7 天。
@@ -72,20 +75,28 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$DEST"
 chmod 700 "$ROOT" "$DEST"
 
-# 1) 导出
+# 1) 导出。先查两张配置表的行数，以及 02 的会话三张表里库里已有的（空格分开）：在导出之前查，导出之后才建的表这次不要求
+probe="$(dc exec -T db psql -U postgres -d "$DB" -Atc "select (select count(*) from sop_versions), (select count(*) from catalog_items), (select coalesce(string_agg(t, ' ' order by o), '') from unnest(array['conversations', 'messages', 'orders']) with ordinality as u(t, o) where to_regclass('public.' || t) is not null)")"
+IFS='|' read -r sop_rows catalog_rows session_tables <<<"$probe"
 dc exec -T db pg_dump -U postgres -Fc "$DB" >"$TMP/agent.dump"
 dc exec -T db pg_dumpall -U postgres --globals-only --no-role-passwords >"$TMP/globals.sql"
 
-# 2) 校验：四张 RLS 表都有数据段；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
+# 2) 校验：这几张 RLS 表都有数据段（空表也有）；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
+required=(memberships sop_versions catalog_items audit_log)
+absent=()
+for t in conversations messages orders; do
+  if [[ " ${session_tables:-} " == *" ${t} "* ]]; then required+=("$t"); else absent+=("$t"); fi
+done
+if ((${#absent[@]})); then
+  alarm "库里还没有 ${absent[*]}（02 的迁移没跑成？），这次不查它们的数据段，备份照做"
+fi
 toc="$(dc exec -T db pg_restore --list <"$TMP/agent.dump")"
-for t in memberships sop_versions catalog_items audit_log; do
+for t in "${required[@]}"; do
   if ! grep -Eq "TABLE DATA public ${t} " <<<"$toc"; then
     alarm "导出里没有 ${t} 的 TABLE DATA，备份不可用"
     exit 1
   fi
 done
-counts="$(dc exec -T db psql -U postgres -d "$DB" -Atc 'select (select count(*) from sop_versions), (select count(*) from catalog_items)')"
-IFS='|' read -r sop_rows catalog_rows <<<"$counts"
 if [[ "${sop_rows:-0}" == 0 || "${catalog_rows:-0}" == 0 ]]; then
   alarm "sop_versions ${sop_rows:-?} 行、catalog_items ${catalog_rows:-?} 行：有一张是空的，备份不可用"
   exit 1
