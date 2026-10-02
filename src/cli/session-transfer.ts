@@ -3,7 +3,9 @@
 // （store、引擎、工具、模型、渠道；scripts/check-boundaries.ts 守）。以 app 身份运行、要求应用已停：先取租户锁。
 // 读回比对与启动预载走同一条路：repo 的 readSessionBatch（每批 500 个）加 project.ts 的 rebuildSessions、rowToOrder（不变量 14）；
 // 首次导入按库里 id 的排序分批写，每批写完读回的正好是预载的那一页。
-// 退出码：0 成功或已一致；2 库里已有不一致的内容，或读回与 JSON 不等（已回滚）；3 拿不到租户锁；1 其他错误。
+// 退出码：0 成功或已一致；2 库里已有不一致的内容，或读回与 JSON 不等（已回滚），或 export 时 JSON 比库新；3 拿不到租户锁；1 其他错误。
+// 改写 var/ 的顺序保证中途崩溃都落在安全的中间态：import 先写标记再改写 JSON（sessions.json → orders.json），export 先 orders.json、
+// 再 sessions.json、最后删标记；每次改名之后对目录 fsync，改名的先后在断电之后也成立。
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -90,7 +92,7 @@ interface TransferOptions {
 }
 
 export interface ImportSessionsOptions extends TransferOptions {
-  /** 只打印将写入的条数与往返结果：照样写进事务、读回比对，最后回滚；文件一个都不动 */
+  /** 只打印将写入的条数与往返结果：照样写进事务、读回比对，最后回滚；文件一个都不动（--keep 只试写一次、随即删掉） */
   dryRun?: boolean;
   /** 回退到文件存储跑过一段之后再切回：按 spec 的规则把 JSON 的改动接到库里 */
   resync?: boolean;
@@ -242,17 +244,79 @@ function checkSpill(varDir: string): string[] {
 
 const stamp = (ms: number): string => new Date(ms).toISOString().replace(/[:.]/g, '-');
 
-/** 把 var/ 里的两个原文件复制到 --keep 下新建的一个目录（每次一个，不覆盖上一次的原件）。返回那个目录，没有文件时 null */
-function keepOriginals(keepDir: string, varDir: string, label: string, now: number): string | null {
-  const names = [SESSIONS_JSON, ORDERS_JSON].filter((n) => fs.existsSync(path.join(varDir, n)));
-  if (!names.length) return null;
-  fs.mkdirSync(keepDir, { recursive: true });
-  const dir = fs.mkdtempSync(path.join(keepDir, `${label}-${stamp(now)}-`));
-  for (const n of names) fs.copyFileSync(path.join(varDir, n), path.join(dir, n), fs.constants.COPYFILE_EXCL);
-  return dir;
+/** --keep 下这次要用的子目录（每次一个，不覆盖上一次的原件）。discard：没用上时删掉它与本次新建的上级目录（只删空目录） */
+interface KeepTo {
+  dir: string;
+  discard(): void;
 }
 
-/** 先写临时文件、落到盘上，再改名：崩溃不会留下半截文件 */
+/** 从 dir 往上逐级删空目录，删到 top（含）为止；top 为 undefined 时什么都不删 */
+function removeEmptyUpTo(dir: string, top: string | undefined): void {
+  if (!top) return;
+  for (let p = path.resolve(dir); ; p = path.dirname(p)) {
+    try {
+      fs.rmdirSync(p);
+    } catch {
+      return;
+    }
+    if (p === path.resolve(top) || path.dirname(p) === p) return;
+  }
+}
+
+/**
+ * 取锁之后、开事务之前把 --keep 下这次要用的子目录建好并试写一次：写不进去（宿主目录没先建好、属主不对）就以 1 退出，
+ * 库与文件都没动——不能等到库已提交才发现原件放不进去
+ */
+function prepareKeep(keepDir: string, label: string, now: number): KeepTo {
+  let created: string | undefined;
+  let dir: string | null = null;
+  try {
+    created = fs.mkdirSync(keepDir, { recursive: true });
+    dir = fs.mkdtempSync(path.join(keepDir, `${label}-${stamp(now)}-`));
+    const probe = path.join(dir, '.write-probe');
+    fs.writeFileSync(probe, '');
+    fs.unlinkSync(probe);
+  } catch (e) {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    removeEmptyUpTo(keepDir, created);
+    throw new Stop(
+      EXIT.error,
+      `--keep（${keepDir}）写不进去（${(e as NodeJS.ErrnoException).code ?? errLabel(e)}）：宿主目录要先建好、属主给容器内的 node（install -d -o 1000 -g 1000）；什么都没动`,
+    );
+  }
+  const made = dir;
+  return {
+    dir: made,
+    discard: () => {
+      try {
+        fs.rmdirSync(made);
+      } catch {
+        return; // 里面已经有原件（复制到一半失败）：留着
+      }
+      removeEmptyUpTo(path.dirname(made), created);
+    },
+  };
+}
+
+/** 把 var/ 里的两个原文件复制到 prepareKeep 建好的目录。返回那个目录，没有文件时 null */
+function keepOriginals(keepTo: KeepTo, varDir: string): string | null {
+  const names = [SESSIONS_JSON, ORDERS_JSON].filter((n) => fs.existsSync(path.join(varDir, n)));
+  if (!names.length) return null;
+  for (const n of names) fs.copyFileSync(path.join(varDir, n), path.join(keepTo.dir, n), fs.constants.COPYFILE_EXCL);
+  return keepTo.dir;
+}
+
+/** 目录本身落到盘上：之前的改名、删除在断电之后也按发生的先后可见 */
+function fsyncDir(dir: string): void {
+  const fd = fs.openSync(dir, 'r');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** 先写临时文件、落到盘上，再改名，再 fsync 所在目录：崩溃不会留下半截文件，两次改名的先后也落了盘 */
 function writeAtomic(file: string, data: string): void {
   const tmp = `${file}.tmp`;
   const fd = fs.openSync(tmp, 'w');
@@ -263,14 +327,11 @@ function writeAtomic(file: string, data: string): void {
     fs.closeSync(fd);
   }
   fs.renameSync(tmp, file);
+  fsyncDir(path.dirname(file));
 }
 
 /** 两个 JSON 的写法与文件后端落盘相同 */
-function writeJson(varDir: string, sessions: readonly Session[], orders: readonly Order[]): void {
-  fs.mkdirSync(varDir, { recursive: true });
-  writeAtomic(path.join(varDir, SESSIONS_JSON), JSON.stringify(sessions, null, 2));
-  writeAtomic(path.join(varDir, ORDERS_JSON), JSON.stringify(orders, null, 2));
-}
+const jsonOf = (items: readonly (Session | Order)[]): string => JSON.stringify(items, null, 2);
 
 // ---------------- 库：读法与启动预载相同 ----------------
 
@@ -491,8 +552,10 @@ export async function importSessions(o: ImportSessionsOptions): Promise<Sessions
         `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app），什么都没动`,
       );
     }
+    let keepTo: KeepTo | null = null;
     try {
       lines.push(...checkSpill(o.varDir));
+      keepTo = prepareKeep(o.keepDir, o.resync ? 'resync' : 'import', now());
       const files = readVar(o.varDir);
       const sp = split(files);
       const markerFile = path.join(o.varDir, SESSIONS_IN_DB_MARKER);
@@ -593,15 +656,18 @@ export async function importSessions(o: ImportSessionsOptions): Promise<Sessions
         return { code: EXIT.ok, lines, stats };
       }
 
-      // 提交之后：原件复制到 --keep → JSON 改写成只剩 demo 类与孤儿订单 → 写标记文件。中途失败时库里已经是 JSON 的样子，
-      // 再跑一次就按「逐个一致」补完改写
+      // 提交之后：原件复制到 --keep → 写标记文件 → sessions.json 只剩 demo 类 → orders.json 只剩 demo 类与孤儿订单。
+      // 标记先写：中途崩溃时要么还没有标记、JSON 是原件（文件存储照旧能起，库里那份由之后的 import 判一致或 --resync 接上），
+      // 要么有标记、JSON 里还有真实会话（两种存储都拒绝启动）。库里已经是 JSON 的样子，再跑一次就按「逐个一致」补完改写
       try {
-        stats.kept = keepOriginals(o.keepDir, o.varDir, o.resync ? 'resync' : 'import', now());
-        writeJson(o.varDir, sp.demo, sp.kept);
+        stats.kept = keepOriginals(keepTo, o.varDir);
+        fs.mkdirSync(o.varDir, { recursive: true });
         writeAtomic(
           markerFile,
           `${JSON.stringify({ tenant: o.tenantSlug, at: new Date(now()).toISOString(), sessions: outcome.dbSessions })}\n`,
         );
+        writeAtomic(path.join(o.varDir, SESSIONS_JSON), jsonOf(sp.demo));
+        writeAtomic(path.join(o.varDir, ORDERS_JSON), jsonOf(sp.kept));
       } catch (e) {
         throw new Stop(
           EXIT.error,
@@ -626,6 +692,8 @@ export async function importSessions(o: ImportSessionsOptions): Promise<Sessions
       lines.push(tail);
       return { code: EXIT.ok, lines, stats };
     } finally {
+      // 没复制原件（dry-run、已经导入过、拒绝、出错）：试写时建的子目录删掉
+      if (keepTo && !stats.kept) keepTo.discard();
       await lock.release();
     }
   } catch (e) {
@@ -660,7 +728,9 @@ function resyncLine(c: ResyncCounts, s: Partial<SessionStats>): string {
 
 /**
  * export-sessions（spec「导入、导出与切换」）：REPEATABLE READ READ ONLY 的 longRunning 事务里按批读出全部真实会话（窗口内的消息）
- * 与未作废订单，原 JSON 复制到 --keep，合并进 --var 下的两个 JSON（同 id 以库为准：库里作废了的订单从 JSON 里去掉），删掉标记文件
+ * 与未作废订单，原 JSON 复制到 --keep，合并进 --var 下的两个 JSON（同 id 以库为准：库里作废了的订单从 JSON 里去掉），删掉标记文件。
+ * 没有标记文件而 JSON 里有真实会话（已经导出过、文件存储下可能又跑过）：先与库里逐个比对，有不一致就以 2 拒绝（JSON 比库新，
+ * 照常导出会把它们盖掉），全部一致就是已经导出过、什么都不动；库里还有 JSON 里没有的真实会话时照常导出（只把它们补进来）
  */
 export async function exportSessions(o: TransferOptions): Promise<SessionsResult> {
   const lines: string[] = [];
@@ -677,8 +747,12 @@ export async function exportSessions(o: TransferOptions): Promise<SessionsResult
         `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app），什么都没动`,
       );
     }
+    let keepTo: KeepTo | null = null;
     try {
       lines.push(...checkSpill(o.varDir));
+      keepTo = prepareKeep(o.keepDir, 'export', now());
+      const markerFile = path.join(o.varDir, SESSIONS_IN_DB_MARKER);
+      const marked = fs.existsSync(markerFile);
       const files = readVar(o.varDir);
       const { all, inDb } = await withTenant(
         o.db,
@@ -686,6 +760,22 @@ export async function exportSessions(o: TransferOptions): Promise<SessionsResult
         async (tx) => ({ all: await readAll(tx), inDb: new Set(await readOrderIdsIn(tx, [...files.orders.keys()])) }),
         { isolation: 'repeatable read', readOnly: true, longRunning: true },
       );
+      const sp = split(files);
+      if (!marked && sp.real.length) {
+        const bad = firstDifference(sp, all);
+        if (bad) {
+          throw new Stop(
+            EXIT.inconsistent,
+            `会话不在库里（没有 ${SESSIONS_IN_DB_MARKER}），JSON 里的真实会话 ${short(bad.id)} 与库里不一致（${bad.why}）：JSON 比库新，` +
+              'export 会覆盖它们；什么都没动。要切回 db 存储请用 import-sessions --resync',
+          );
+        }
+        if ([...all.keys()].every((id) => files.sessions.has(id))) {
+          stats.sessions = 0;
+          lines.push(`没有 ${SESSIONS_IN_DB_MARKER}，JSON 里的 ${sp.real.length} 个真实会话与库里逐个一致：已经导出过，什么都没动`);
+          return { code: EXIT.ok, lines, stats };
+        }
+      }
       const sessions = new Map(files.sessions);
       const orders = new Map(files.orders);
       const live = new Map<string, Order>();
@@ -697,11 +787,15 @@ export async function exportSessions(o: TransferOptions): Promise<SessionsResult
       }
       for (const id of inDb) if (!live.has(id)) orders.delete(id);
       for (const [id, ord] of live) orders.set(id, ord);
-      // 标记文件最后删：中途失败时它还在，文件存储照旧拒绝启动，再跑一次就好
+      // 先 orders.json、再 sessions.json、最后删标记：中途崩溃时要么只多出几张订单（所属会话不在 JSON 里，下次 import 当孤儿留着、
+      // db 存储预载时认出库里已有而丢掉），要么标记还在（文件存储照旧拒绝启动）。再跑一次就好
       try {
-        stats.kept = keepOriginals(o.keepDir, o.varDir, 'export', now());
-        writeJson(o.varDir, [...sessions.values()], [...orders.values()]);
-        fs.rmSync(path.join(o.varDir, SESSIONS_IN_DB_MARKER), { force: true });
+        stats.kept = keepOriginals(keepTo, o.varDir);
+        fs.mkdirSync(o.varDir, { recursive: true });
+        writeAtomic(path.join(o.varDir, ORDERS_JSON), jsonOf([...orders.values()]));
+        writeAtomic(path.join(o.varDir, SESSIONS_JSON), jsonOf([...sessions.values()]));
+        fs.rmSync(markerFile, { force: true });
+        fsyncDir(o.varDir);
       } catch (e) {
         throw new Stop(
           EXIT.error,
@@ -723,6 +817,7 @@ export async function exportSessions(o: TransferOptions): Promise<SessionsResult
       );
       return { code: EXIT.ok, lines, stats };
     } finally {
+      if (keepTo && !stats.kept) keepTo.discard();
       await lock.release();
     }
   } catch (e) {

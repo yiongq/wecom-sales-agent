@@ -5,7 +5,8 @@
 //     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]
 // --keep 必须在 var/ 之外（原件不进每晚 var/ 的备份），并且是挂进来的宿主目录：写在容器里的会随 --rm 删掉。
 // --var 缺省与应用相同（VAR_DIR，没设就是 ./var）。--resync：回退到文件存储跑过一段之后再切回。
-// 退出码：0 已导入、已经导入过或补完改写；2 库里已有不一致的内容（提示 --resync）或读回与 JSON 不等；3 应用还在跑（拿不到租户锁）；1 其他错误
+// 退出码：0 已导入、已经导入过或补完改写；2 库里已有不一致的内容（提示 --resync）或读回与 JSON 不等；3 应用还在跑（拿不到租户锁）；
+// 1 其他错误（--keep 写不进去在开事务之前就发现，什么都不动）
 import path from 'node:path';
 import { holdTenantLock } from '../db/client.js';
 import { args, dbFromEnv, main, need } from './common.js';
