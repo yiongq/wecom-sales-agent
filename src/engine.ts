@@ -438,7 +438,10 @@ function quoteShown(session: Session, total: number): boolean {
 function trimDangling(text: string): string {
   const t = text.trimEnd();
   if (!/[：:，,、]$/.test(t)) return text;
-  const cut = Math.max(...['。', '！', '？', '!', '?', '～', '~', '…', '\n'].map((c) => t.lastIndexOf(c)));
+  // 方案书链接的版本后缀（/proposal/…/2?v=2）里的「?」不是句末：截在那儿链接就只剩「/2?」，点开是版本 1 的旧价
+  let q = t.lastIndexOf('?');
+  while (q >= 0 && VERSION_SUFFIX_AHEAD.test(t.slice(q + 1))) q = q > 0 ? t.lastIndexOf('?', q - 1) : -1;
+  const cut = Math.max(q, ...['。', '！', '？', '!', '～', '~', '…', '\n'].map((c) => t.lastIndexOf(c)));
   if (cut <= 0) return text;
   return t.slice(0, t[cut] === '\n' ? cut : cut + 1).trimEnd() || text;
 }
@@ -739,8 +742,14 @@ function markLinkHoles(text: string): string {
   return out;
 }
 
-/** 按句切开（保留句末标点和换行），和 keptBesideCustomPromise 同一套边界 */
-const splitSentences = (s: string): string[] => s.split(/(?<=[。！？!?\n])/);
+/**
+ * 半角「?」后面紧跟「v=数字」是方案书链接的版本后缀（/proposal/…/2?v=2，02「报价快照」），不是句末。按句删的护栏在这里断句，
+ * 会把「v=2 …」当成另一句删掉，链接只剩「/2?」、点开是版本 1 的旧价。版本 1 的链接里没有「?」，切法与开工时相同
+ */
+const VERSION_SUFFIX_AHEAD = /^v=\d/;
+
+/** 按句切开（保留句末标点和换行），和 keptBesideCustomPromise 同一套边界；链接版本后缀里的「?」不断句（见 VERSION_SUFFIX_AHEAD） */
+const splitSentences = (s: string): string[] => s.split(/(?<=[。！？!\n]|\?(?!v=\d))/);
 
 /** 不点名的链接说法归哪一类：先看这句，这句两样都没提再看整条回复；两样都提了就说不准 */
 function genericKind(sentence: string, whole: string): LinkKind | undefined {
@@ -852,14 +861,39 @@ function dropLinkPromise(text: string, kind: LinkKind, hole: string): string {
   return tidyLinkText(kept.join('').split(hole).join(''));
 }
 
-/** 这次 generate_proposal 给的链接带的版本后缀（「?v=2」；版本 1 与出错的调用是空串），链接白名单按它核对模型写的链接 */
-function proposalSuffixOf(c: ToolCall): string {
+/** 这次 generate_proposal 给的链接；出错的调用（结果里没有 proposalUrl）是 null */
+function proposalUrlOf(c: ToolCall): string | null {
   try {
     const url = (JSON.parse(c.result ?? '') as { proposalUrl?: unknown }).proposalUrl;
-    return typeof url === 'string' ? (/\?v=\d+$/.exec(url)?.[0] ?? '') : '';
+    return typeof url === 'string' ? url : null;
   } catch {
-    return '';
+    return null;
   }
+}
+
+/** 这次 generate_proposal 给的链接带的版本后缀（「?v=2」；版本 1 与出错的调用是空串），链接白名单按它核对模型写的链接 */
+function proposalSuffixOf(c: ToolCall): string {
+  return /\?v=\d+$/.exec(proposalUrlOf(c) ?? '')?.[0] ?? '';
+}
+
+/**
+ * 出口最后一道（所有改写正文的护栏之后、定稿之前）：本轮这条线路成功的 generate_proposal 给了版本后缀（?v=2）时，正文里这条线的
+ * /proposal/<id>/<n>[/<日期>] 都得带着它。哪道护栏按句删、截半句时把「v=2」切掉了，链接只剩「/2?」，点开是版本 1 的旧价：
+ * 缺了就补回去，悬着的「?」一并换掉。本轮这条线是版本 1（后缀是空串）、文件模式、没有成功调用时原样返回
+ */
+function restoreProposalSuffixes(text: string, calls: ToolCall[]): string {
+  const want = new Map<string, string>();
+  for (const c of calls) {
+    if (c.name === 'generate_proposal' && proposalUrlOf(c) !== null) want.set(String(c.args.routeId), proposalSuffixOf(c));
+  }
+  if (![...want.values()].some(Boolean)) return text;
+  return text.replace(
+    /(^|[^:\w/])(\/proposal\/([A-Za-z0-9_-]+)\/\d+(?:\/[\d-]+)?)(\?(?:v=\d*)?)?/g,
+    (full, pre: string, link: string, id: string, tail: string | undefined) => {
+      const suffix = want.get(id);
+      return !suffix || tail === suffix ? full : pre + link + suffix;
+    },
+  );
 }
 
 /** 本轮工具真给过的链接（模型调了 generate_proposal / create_order，只是没贴出来），按调用顺序、去重。
@@ -1056,7 +1090,7 @@ function dropPromiseClauses(sentence: string): string {
 }
 function dropPostHandoffPromises(text: string): string {
   const kept = text
-    .split(/(?<=[。！？!?\n～~])/)
+    .split(/(?<=[。！？!\n～~]|\?(?!v=\d))/)
     .map((s) => (!AFTER_HANDOFF_PROMISE.test(s) ? s : HANDOFF_WORDS.test(s) ? dropPromiseClauses(s) : ''))
     .join('');
   const out = tidyLinkText(kept);
@@ -1869,8 +1903,8 @@ function transferClaim(sentence: string, contact = true): { done: boolean } | nu
 function claimsTransfer(sentence: string, contact = true): boolean {
   return !!transferClaim(sentence, contact);
 }
-/** 按句切，「～」也算句末（「马上为您转接，请稍候～北欧那条…」不能连着后半句一起摘） */
-const transferSentences = (s: string): string[] => s.split(/(?<=[。！？!?\n～~])/);
+/** 按句切，「～」也算句末（「马上为您转接，请稍候～北欧那条…」不能连着后半句一起摘）；链接版本后缀里的「?」不断句 */
+const transferSentences = (s: string): string[] => s.split(/(?<=[。！？!\n～~]|\?(?!v=\d))/);
 /**
  * 回复说了转接。付过款的客户听到「顾问会在微信上联系您」说的是售后对接（发行程确认书、拉群），不是转人工；
  * 最后一句在问客户挑哪个（见 ASKS_TO_CHOOSE）的，前面没说已经办了的转接（「我帮您转接资深顾问，申请看看」）只是选项之一。
@@ -3709,9 +3743,13 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 方案书链接是无状态的（/proposal/线路id/人数[/日期][?v=版本]），本轮真调过 generate_proposal
   // 且线路 id 对得上才放行——参数都编在路径里，页面按同一套规则重算，编不出假价格。
   // 版本后缀（02「报价快照」）也要和那次调用给的一样：模型抄丢了 ?v=2，客户点开的就是版本 1 的旧价，抹成空位由出口修补换成真链接
+  // 同一线路本轮有成功的调用时只拿成功的核对：出错的那次（参数不对让模型重试）后缀是空串，丢了 ?v=2 的链接会借它过关
   const proposalPathOk = (pathOnly: string, version = ''): boolean => {
     const m = pathOnly.match(/^\/proposal\/([A-Za-z0-9_-]+)\/\d+/);
-    return !!m && calls.some((c) => c.name === 'generate_proposal' && c.args.routeId === m[1] && proposalSuffixOf(c) === version);
+    if (!m) return false;
+    const same = calls.filter((c) => c.name === 'generate_proposal' && c.args.routeId === m[1]);
+    const ok = same.filter((c) => proposalUrlOf(c) !== null);
+    return (ok.length ? ok : same).some((c) => proposalSuffixOf(c) === version);
   };
   visible = visible
     // 完整 URL 一律剥成相对路径再判断：模型会连域名一起编（实测发出过
@@ -3916,6 +3954,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   if (customHandoff) visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
   if (session.handedOver) visible = dropPostHandoffPromises(visible);
+  // 改写正文的护栏都跑完了：本轮这条线的方案书链接缺了版本后缀的补回去（见 restoreProposalSuffixes）
+  visible = restoreProposalSuffixes(visible, calls);
 
   // 模型输出原样进会话前去掉 NUL、修好孤立代理项（不截长度）：带着它们的消息进不了库（不变量 16）
   visible = cleanText(visible);
@@ -4003,6 +4043,7 @@ export const __orderTest = { haggling, OTHER_ORDER, RESEND_ASK, claimsTransfer, 
 /** 仅供自测使用的内部函数出口 */
 export const __engineTest = {
   dejargon,
+  restoreProposalSuffixes,
   CUSTOM_PROMISE,
   LINK_PROMISE,
   PROPOSAL_PROMISE,
