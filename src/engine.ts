@@ -3394,7 +3394,14 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 拿被改过的 stage 去 deriveStage 会把 paid 推回 discovery/recommend，已成交客户在
   // 后台漏斗里凭空退档，followup 里 `stage === 'paid'` 的免打扰保护也跟着失效。
   const stageAtStart = session.stage;
-  const history = historyWindow(session.messages.filter((m) => m.role !== 'system')).map((m) => ({
+  const talk = session.messages.filter((m) => m.role !== 'system');
+  // 企微重放「已记下、回复还没生成」：这句后面可能夹了欢迎语（handleEnterSession 直接写进会话）。会话里这句留在原位（消息只追加），
+  // 发给模型的历史照 02 之前的样子把它挪到末尾（那时适配器删掉再记一遍），模型回答的是客户这句，contextNote 也插在它前面
+  if (opts.alreadyRecorded) {
+    const i = talk.findLastIndex((m) => m.role === 'customer');
+    if (i >= 0 && i < talk.length - 1) talk.push(...talk.splice(i, 1));
+  }
+  const history = historyWindow(talk).map((m) => ({
     role: m.role === 'customer' ? ('user' as const) : ('assistant' as const),
     content: m.content,
   }));
