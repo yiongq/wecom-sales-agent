@@ -375,6 +375,31 @@ const lookups = { itemName: (kind: string, code: string) => (kind === 'route' &&
     [calls4.length, c4.items.length, c4.next === null],
     [1 + MAX_EXTRA_FETCHES, 5 * (1 + MAX_EXTRA_FETCHES), false],
   );
+  // 页尾是一行 catalog.version（02 第 8 步）：它比自己那次修改新，修改在下一页。往后看一眼，把那次修改取进来，两行合成一句
+  const calls7: (number | undefined)[] = [];
+  const saved = new Date(Date.parse(at('10:15:00'))).toISOString();
+  const log7 = [
+    ...mk(4, 'sop.publish', null, 20),
+    entry({ action: 'catalog.version', targetType: 'route', targetId: 'r-v', at: saved, diff: { version: 2, source: 'console' } }),
+    entry({ action: 'catalog.update', targetType: 'route', targetId: 'r-v', at: saved, diff: { hotelLevel: ['高端', '奢华'] } }),
+    ...mk(3, 'sop.discard', null, 10),
+  ];
+  const c7 = await loadAuditChunk(serve(log7, calls7), FIRST_CURSOR, 5);
+  const lines7 = timelineGroups(c7.items, TRAVEL, {}, NOW).flatMap((g) => g.lines);
+  eq(
+    '页尾是版本行：接着取到它那次修改，这一页 6 条、合成 5 句，最后一句是那次修改（句尾写版本号）',
+    [
+      c7.items.length,
+      calls7.length,
+      lines7.length,
+      lines7
+        .at(-1)
+        ?.parts.map((p) => p.text)
+        .join(''),
+      lines7.at(-1)?.summary?.text,
+    ],
+    [6, 2, 5, '修改了线路「r-v」', '改了：住宿档次（第2版）'],
+  );
   // 空日志
   const c5 = await loadAuditChunk(async () => ({ items: [], nextBefore: null }), FIRST_CURSOR, 5);
   eq('空日志：没有记录，也没有下一页', c5, { items: [], next: null });

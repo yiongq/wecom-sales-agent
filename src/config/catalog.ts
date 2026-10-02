@@ -2,8 +2,11 @@
 // 每个写函数在 withTenant 里第一句取配置写锁；更新按 rev 乐观锁；写库的是「旧 payload 应用补丁」按旧键序递归合并的对象，
 // 值取请求原文，不取 zod 的输出；合并后的整条再过一遍 schema。提交之后用 RETURNING 的行更新快照，结果不明时整体重读。
 // 接口上没有下架和删除：已上架的条目回不到 draft（触发器也拦），删了已发出的方案书就 404。
+// 条目版本（02 spec「报价快照与产品库字段开放」）：上架写版本 1；active 条目的内容每次经后台或 catalog-fix 变了，在同一事务里
+// 写版本 n + 1、改 catalog_items.version，各记一行 catalog.version 审计。草稿的编辑不产生版本
 import { isUniqueViolation, lockTenantConfig, withTenant, type Db, type TenantCtx, type Tx } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
+import { insertCatalogVersion, maxCatalogVersion } from '../db/repo/catalog-versions.js';
 import {
   activateItem,
   insertDraftItem,
@@ -82,6 +85,27 @@ function topLevelDiff(prev: Record<string, unknown>, next: Record<string, unknow
 
 const by = (ctx: TenantCtx): { userId: string | null; name: string | null } => ({ userId: ctx.actor.userId, name: ctx.actor.name });
 
+/**
+ * active 条目这次写入要不要一个新版本：内容（payload 的字节）变了才要，原样提交回去不算。要的话在同一事务里写版本行，
+ * 返回新版本号（调用方在同一条 UPDATE 里把 catalog_items.version 改成它，再记 versionAudit）；不要返回 undefined
+ */
+async function nextVersion(
+  tx: Tx,
+  cur: CatalogRow,
+  next: Record<string, unknown>,
+  source: 'console' | 'fix',
+  name: string | null,
+): Promise<number | undefined> {
+  if (cur.status !== 'active' || JSON.stringify(next) === JSON.stringify(cur.payload)) return undefined;
+  const version = (await maxCatalogVersion(tx, cur.kind, cur.code)) + 1;
+  await insertCatalogVersion(tx, { kind: cur.kind, code: cur.code, version, payload: next, source, createdByName: name });
+  return version;
+}
+
+/** 新版本的审计：排在这次修改（或上架、修正）那一行之后 */
+const versionAudit = (tx: Tx, kind: CatalogKind, code: string, version: number, source: 'activate' | 'console' | 'fix'): Promise<void> =>
+  writeAudit(tx, { action: 'catalog.version', targetType: kind, targetId: code, diff: { version, source } });
+
 function runtimeFor(ctx: TenantCtx): ReturnType<typeof configRuntime> {
   const rt = configRuntime();
   if (ctx.tenantId !== rt.tenantId) throw new Error('这个租户不是本进程装载的租户');
@@ -158,9 +182,11 @@ export async function updateCatalogItem(ctx: TenantCtx, kind: CatalogKind, code:
     const locked = lockedFieldChanges(kind, cur.status, cur.payload, next);
     if (locked.length) throw new CatalogLockedFieldError(locked);
     validate(kind, next);
-    const row = await updateItemPayload(tx, kind, code, cur.rev, next, by(ctx));
+    const version = await nextVersion(tx, cur, next, 'console', ctx.actor.name);
+    const row = await updateItemPayload(tx, kind, code, cur.rev, next, by(ctx), version);
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
     await writeAudit(tx, { action: 'catalog.update', targetType: kind, targetId: code, diff: topLevelDiff(cur.payload, next) });
+    if (version !== undefined) await versionAudit(tx, kind, code, version, 'console');
     return row;
   });
 }
@@ -178,6 +204,9 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
     const row = await activateItem(tx, kind, code, cur.rev, by(ctx));
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
     await writeAudit(tx, { action: 'catalog.activate', targetType: kind, targetId: code, diff: { status: ['draft', 'active'] } });
+    // 上架写版本 1：草稿没有版本行（草稿的编辑不产生版本），上架时的内容就是版本 1
+    await insertCatalogVersion(tx, { kind, code, version: 1, payload: row.payload, source: 'activate', createdByName: ctx.actor.name });
+    await versionAudit(tx, kind, code, 1, 'activate');
     return row;
   });
 }
@@ -247,7 +276,8 @@ export async function fixLockedFields(input: {
     );
     if (idChanged.length) throw new CatalogLockedFieldError(idChanged);
     validate(input.kind, next);
-    const updated = await updateItemPayload(tx, input.kind, input.code, cur.rev, next, { userId: null, name: 'catalog-fix' });
+    const version = await nextVersion(tx, cur, next, 'fix', 'catalog-fix');
+    const updated = await updateItemPayload(tx, input.kind, input.code, cur.rev, next, { userId: null, name: 'catalog-fix' }, version);
     if (!updated) throw new CatalogRevConflictError('条目在修正期间被改过');
     await writeAudit(tx, {
       action: 'catalog.locked_fix',
@@ -255,6 +285,7 @@ export async function fixLockedFields(input: {
       targetId: input.code,
       diff: { ...topLevelDiff(cur.payload, next), reason: input.reason },
     });
+    if (version !== undefined) await versionAudit(tx, input.kind, input.code, version, 'fix');
     return updated;
   });
   return toItem(row);

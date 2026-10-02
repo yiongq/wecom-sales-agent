@@ -13,7 +13,7 @@ import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
-import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
+import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
 import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
 import {
   getOrder,
@@ -42,9 +42,10 @@ import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
-import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, Session } from './types.js';
+import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, Route, Session } from './types.js';
 import { boot } from './boot.js';
 import {
+  catalogVersioned,
   closeConfig,
   configHealth,
   configMode,
@@ -247,7 +248,15 @@ function configSummary(): Record<string, unknown> {
   } catch {
     /* 文件模式下 SOP 读不到：启动预检另有告警 */
   }
-  return { mode, ...hashes, lock: health?.lock ?? null, sopStale: health?.sopStale ?? false, catalogStale: health?.catalogStale ?? false };
+  return {
+    mode,
+    ...hashes,
+    lock: health?.lock ?? null,
+    sopStale: health?.sopStale ?? false,
+    catalogStale: health?.catalogStale ?? false,
+    // 有条目版本大于 1（02「报价快照」）：deploy/rollback-guard.sh 据此拒绝回滚到 02 之前的镜像
+    catalogVersioned: catalogVersioned(),
+  };
 }
 
 /** 写库健康（02 spec「两种会话存储与启动」）：只有个数与毫秒数，不带会话数和任何会话 id */
@@ -643,15 +652,17 @@ function isSaneDepartDate(s: string): boolean {
 // ---------------- 行程方案书 ----------------
 // 无状态：参数在 URL 里，页面按与报价工具同一套规则重算，不引入新的持久化与清理负担。
 // 客户拿到的链接长期有效，也不会因为演示数据清理而失效。
+// 带 ?v= 时按产品库条目的那个版本渲染，不带按版本 1（02「报价快照」）：改价之后已发出的链接报价不变。版本只从内存取，
+// v 不是正整数或大于当前版本时 404，不查库（不变量 35）
 app.get('/api/proposal/:routeId', (c) => {
-  const route = loadRoutes().find((r) => r.id === c.req.param('routeId'));
+  const route = routeForProposal(c.req.param('routeId'), c.req.query('v'));
   if (!route?.itinerary?.length) return c.json({ error: 'proposal not available' }, 404);
   const travelers = Math.min(50, Math.max(1, Math.floor(Number(c.req.query('travelers')) || 2)));
   // 这个端点是公开可拼的，不能只靠工具层校验：手拼 2027-02-30 会生成一份写着
   // 不存在日期的正式方案书发出去。日期不合法就当没传，按标准价出方案。
   const raw = c.req.query('departDate');
   const departDate = raw && isSaneDepartDate(raw) ? raw : undefined;
-  const quote = createQuote({ routeId: route.id, travelers, departDate });
+  const quote = quoteFor(route, { travelers, departDate });
   return c.json({ route, travelers, departDate, quote });
 });
 
@@ -663,8 +674,7 @@ app.get('/api/proposal/:routeId', (c) => {
  * 再闪成标题」，很掉价。这里在发出 HTML 前就把真实标题写进去，第一个字节就是对的。
  * 顺带写 og:*，客户在微信里转发方案书时卡片才有线路名和摘要，而不是一条秃链接。
  */
-function renderProposalHtml(html: string, routeId: string, travelers: number): string {
-  const route = loadRoutes().find((r) => r.id === routeId);
+function renderProposalHtml(html: string, route: Route | null, travelers: number): string {
   if (!route) return html;
   const title = `${route.title} · 行程方案书`;
   const desc = `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜${(route.highlights?.[0] ?? '').slice(0, 40)}`;
@@ -692,7 +702,11 @@ async function serveProposal(c: Context): Promise<Response> {
   const routeId = c.req.param('routeId') ?? '';
   // 人数在路径第二段（/proposal/<id>/<人数>[/<日期]），取不到按 2 人
   const travelers = Math.min(50, Math.max(1, Math.floor(Number((c.req.param('rest') ?? '').split('/')[0]) || 2)));
-  return c.html(renderProposalHtml(html, routeId, travelers));
+  // 标题与分享卡片按链接指的版本写（不带 v 是版本 1）。带了 v 却没有这个版本：404，页面照常出它的「方案不存在或已失效」
+  const v = c.req.query('v');
+  const route = routeForProposal(routeId, v);
+  if (v !== undefined && !route) return c.html(html, 404);
+  return c.html(renderProposalHtml(html, route, travelers));
 }
 
 app.get('/proposal/:routeId/:rest{.*}', serveProposal);

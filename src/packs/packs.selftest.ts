@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, type CatalogKind } from '../shared/catalog.js';
+import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../shared/catalog.js';
 import { UNSTORABLE_TEXT } from '../shared/console-api.js';
 import { renovationLPage } from '../shared/pack-fixtures/renovation-l-page.js';
 import { renovation } from '../shared/pack-fixtures/renovation.js';
@@ -177,8 +177,9 @@ const BREAKS: [string, IndustryPack, (p: IndustryPack) => void, string][] = [
   ],
   ['实体 kind 重复', travel, (p) => void p.entities.push({ ...entityOf(p, 'hotel') }), 'kind「hotel」重复'],
   ['分组 key 重复', travel, (p) => void entityOf(p, 'hotel').groups.push({ key: 'basic', label: '又一个' }), 'groups：key「basic」重复'],
-  ['锁定组没写原因', travel, (p) => void (entityOf(p, 'hotel').lockGroups.price.reason = ''), 'lockGroups[price]：tag 和 reason 都要写'],
-  ['锁定组没写标签', travel, (p) => void (entityOf(p, 'hotel').lockGroups.price.tag = ''), 'lockGroups[price]：tag 和 reason 都要写'],
+  // 02 第 8 步：酒店的计价组随 nightlyFrom 开放去掉了，改坏的换成识别组（断言的是 checkPack 点名被改坏的那一组）
+  ['锁定组没写原因', travel, (p) => void (entityOf(p, 'hotel').lockGroups.id!.reason = ''), 'lockGroups[id]：tag 和 reason 都要写'],
+  ['锁定组没写标签', travel, (p) => void (entityOf(p, 'hotel').lockGroups.id!.tag = ''), 'lockGroups[id]：tag 和 reason 都要写'],
   ['列表列不是本实体的字段', travel, (p) => void entityOf(p, 'route').list.columns.push('rating'), 'list.columns「rating」'],
   ['筛选不是本实体的字段', travel, (p) => void entityOf(p, 'hotel').list.filters.push('stars2'), 'list.filters「stars2」'],
   ['搜索不是本实体的字段', travel, (p) => void entityOf(p, 'hotel').list.search.push('city'), 'list.search「city」'],
@@ -403,6 +404,12 @@ for (const e of travel.entities) {
     `${kind}：带 lockedWhenActive 的字段（加上永远只读的编号）等于 LOCKED_WHEN_ACTIVE`,
     sorted([...locked, ...ALWAYS_LOCKED]),
     sorted(LOCKED_WHEN_ACTIVE[kind]),
+  );
+  // 后台保存条按字段上的 reprices 标记写改价那一句（经 /pack 下发，console 不认字段名）；服务端的开放清单是 REPRICE_FIELDS
+  checkSame(
+    `${kind}：标了 reprices 的字段等于 REPRICE_FIELDS，而且都没有上架后锁定`,
+    sorted(e.fields.filter((f) => f.reprices && !f.lockedWhenActive).map((f) => f.key)),
+    sorted(REPRICE_FIELDS[kind]),
   );
 
   const fromSchema = new Map<string, { leaf: z.ZodType; ownOptional: boolean }>();

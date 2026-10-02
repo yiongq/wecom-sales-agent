@@ -73,24 +73,23 @@ export const CATALOG_SCHEMAS: Readonly<Record<CatalogKind, z.ZodType<Route> | z.
 
 /** 任何状态下都不可改 */
 export const ALWAYS_LOCKED = ['id'] as const;
-/** active 条目不可改的字段（理由见 spec「各字段为什么锁」）。'tags:国内' 指 tags 里「国内」这一项的有无 */
+/**
+ * active 条目不可改的字段（理由见 01 spec「各字段为什么锁」）。'tags:国内' 指 tags 里「国内」这一项的有无。
+ * 02 有了条目版本（报价快照）之后，计价与条款的五个字段去掉了，见 REPRICE_FIELDS；识别字段照旧锁定（02 spec R14、非目标）
+ */
 export const LOCKED_WHEN_ACTIVE = {
-  route: [
-    'id',
-    'title',
-    'destination',
-    'days',
-    'priceFrom',
-    'bestSeason',
-    'segments',
-    'aliases',
-    'maxAltitude',
-    'overseas',
-    'tags:国内',
-    'inclusions',
-    'exclusions',
-  ],
-  hotel: ['id', 'name', 'destination', 'nightlyFrom'],
+  route: ['id', 'title', 'destination', 'days', 'segments', 'aliases', 'maxAltitude', 'overseas', 'tags:国内'],
+  hotel: ['id', 'name', 'destination'],
+} as const;
+
+/**
+ * 02 开放的计价与条款字段（02 spec「报价快照与产品库字段开放」、01 开放问题 5）：active 条目上能改，改了写一个新的条目版本，
+ * 只影响之后的报价和方案书；已发出的方案书按发出时的版本渲染，订单下单时就冻结了金额。旅游包给这几个字段标了 reprices
+ * （后台保存条据那个标记换说明，经 /pack 下发），packs.selftest 核对两边一致
+ */
+export const REPRICE_FIELDS = {
+  route: ['priceFrom', 'bestSeason', 'inclusions', 'exclusions'],
+  hotel: ['nightlyFrom'],
 } as const;
 
 /** 值相等：对象不看键序，数组看顺序。console 的表单据它判断哪些顶层字段改过 */

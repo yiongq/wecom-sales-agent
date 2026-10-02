@@ -20,6 +20,7 @@ import {
   sessionStoreMode,
 } from './store.js';
 import { completeText } from './llm.js';
+import { pinCatalogForTurn } from './config/source.js';
 import { numEnv } from './env.js';
 import { cleanText } from './shared/text.js';
 import type { Session, SalesStage } from './types.js';
@@ -131,7 +132,8 @@ const composeWaiters = new Set<() => void>();
 
 /** 生成话术，但停机时提前返回 null（生成本身继续跑完，结果不用） */
 async function composeUnlessStopping(s: Session): Promise<string | null> {
-  const composing = composeFollowUp(s);
+  // 跟进生成同样固定这一代产品库快照（02 R14）：话术要过的出口护栏（第 10 步）与生成看到同一份
+  const composing = pinCatalogForTurn(() => composeFollowUp(s));
   composing.catch(() => undefined); // 停机时被弃用的那次生成，失败也别变成未捕获 rejection
   let wake!: () => void;
   const stopped = new Promise<null>((r) => {

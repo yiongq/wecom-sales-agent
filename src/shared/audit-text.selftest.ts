@@ -437,6 +437,62 @@ eq(
   '小林 修改了2条酒店',
 );
 
+// 条目版本（02「报价快照」）：后台改、上架、catalog-fix 在同一事务里接着记一行 catalog.version（比那次写入新，排在它前面）。
+// 它并进那次写入：每次保存仍是一句，连着改几条仍合成「修改了N条」；系统的启动补写单独成句；审计行照写，只是不单独成句
+{
+  const ver = (hm: string, code: string, version: number, over: Partial<AuditEntryView> = {}) =>
+    entry({ action: 'catalog.version', at: at(hm), targetType: 'route', targetId: code, diff: { version, source: 'console' }, ...over });
+  const upd = (hm: string, code: string, over: Partial<AuditEntryView> = {}) =>
+    entry({ action: 'catalog.update', at: at(hm), targetType: 'route', targetId: code, diff: { hotelLevel: ['高端', '奢华'] }, ...over });
+  const twoSaves = [ver('11:00:20', 'r-b', 2), upd('11:00:20', 'r-b'), ver('11:00:00', 'r-a', 3), upd('11:00:00', 'r-a')];
+  const runs = auditRuns(twoSaves);
+  eq('版本行：小林连着改两条线路只出一句，版本行并进各自那次修改', shape(runs), [['r-b', 'r-a']]);
+  eq('版本行：合起来的句子与没有版本行时相同', line(describeAudit(runs[0]!, TRAVEL)), '小林 修改了2条线路');
+  const one = auditRuns([ver('11:00:20', 'r-b', 2), upd('11:00:20', 'r-b')]);
+  eq('版本行：改一条是一句，句尾写版本号', shape(one), [['r-b']]);
+  eq('版本行：总览一行写完的样子', line(describeAudit(one[0]![0]!, TRAVEL)), '小林 修改了线路「r-b」的住宿档次（第2版）');
+  eq('版本行：审计页的句子与摘要', twoLines(describeAudit(one[0]![0]!, TRAVEL)), ['小林 修改了线路「r-b」', '改了：住宿档次（第2版）']);
+  const activated = auditRuns([
+    ver('11:00:20', 'r-c', 1, { diff: { version: 1, source: 'activate' } }),
+    entry({ action: 'catalog.activate', at: at('11:00:20'), targetType: 'route', targetId: 'r-c', diff: { status: ['draft', 'active'] } }),
+  ]);
+  eq(
+    '版本行：上架记的版本 1 并进上架那一句，不写版本号',
+    [shape(activated), line(describeAudit(activated[0]![0]!, TRAVEL))],
+    [[['r-c']], '小林 上架了线路「r-c」'],
+  );
+  const backfill = ver('09:00:00', 'r-d', 2, {
+    actorKind: 'system',
+    actorName: null,
+    diff: { version: 2, source: 'backfill' },
+  });
+  const withBackfill = auditRuns([backfill, upd('09:00:00', 'r-d', { actorKind: 'system', actorName: null })]);
+  eq('版本行：系统的启动补写单独成句（前面那条哪怕同一条目、同一操作者也不并）', shape(withBackfill), [['r-d'], ['r-d']]);
+  eq('版本行：补写那一句', line(describeAudit(backfill, TRAVEL)), '系统 记下了线路「r-d」的第2版');
+  eq(
+    '版本行：diff 里有 version 写「第N版」，没有时写「的新版本」',
+    [
+      line(describeAudit(ver('10:00:00', 'r-e', 2), TRAVEL)),
+      line(describeAudit(ver('10:00:00', 'r-e', 2, { diff: { source: 'console' } }), TRAVEL)),
+    ],
+    ['小林 记下了线路「r-e」的第2版', '小林 记下了线路「r-e」的新版本'],
+  );
+  eq(
+    '版本行：不是同一条目、不是同一操作者、隔了别的记录的不并',
+    shape(
+      auditRuns([
+        ver('10:00:03', 'r-f', 2),
+        upd('10:00:03', 'r-g'),
+        ver('10:00:02', 'r-h', 2, { actorName: '老板' }),
+        upd('10:00:02', 'r-h'),
+        ver('10:00:01', 'r-i', 2),
+        entry({ action: 'auth.login', at: at('10:00:01') }),
+      ]),
+    ),
+    [['r-f'], ['r-g'], ['r-h'], ['r-h'], ['r-i'], [null]],
+  );
+}
+
 // ---------------- 3. ui-labels ----------------
 
 const parsed = (actions: string | undefined) => AuditQuery.safeParse(actions === undefined ? {} : { actions });

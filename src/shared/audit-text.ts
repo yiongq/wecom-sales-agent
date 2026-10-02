@@ -195,6 +195,11 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       return { parts: [plain(`上架了${noun}`), ...name()] };
     case 'catalog.locked_fix':
       return { parts: [plain(`修正了${noun}`), ...name()], ...fieldsTail(changed()) };
+    case 'catalog.version': {
+      // 「小林 记下了线路「…」的第2版」：之后发出的方案书按这一版报价，已发出的不变
+      const v = int(diff.version);
+      return { parts: [plain(`记下了${noun}`), ...name(), plain(v === null ? '的新版本' : `的第${v}版`)] };
+    }
     case 'auth.login':
       return { parts: [plain('登录了')] };
     case 'auth.logout':
@@ -261,7 +266,7 @@ export function describeAudit(
   const first = run[0];
   if (!first) throw new Error('describeAudit：没有记录');
   const def = auditAction(first.action);
-  const body = run.length > 1 ? merged(first, run.length, pack) : single(first, pack, lookups);
+  const body = run.length > 1 ? merged(first, run.length, pack) : withVersion(single(first, pack, lookups), first);
   const actor = auditActor(first);
   const tail = body.tail ?? null;
   return {
@@ -278,18 +283,58 @@ export function describeAudit(
 
 /** 能合成一句的动作：产品库的这几种，同一实体（设计系统 §10.0：CSV 导入的 6 条酒店草稿合成一句） */
 const MERGEABLE = new Set(['catalog.create', 'catalog.update', 'catalog.activate', 'catalog.locked_fix']);
-/** 这个动作的记录能不能与相邻的同类记录合成一句（审计页按页取时，页尾是这类记录就要往后看一眼） */
-export const auditMergeable = (action: string): boolean => MERGEABLE.has(action);
+/** 这几种写入在同一事务里接着记一行 catalog.version（02「报价快照」），那一行并进这次写入，不单独成句 */
+const WRITES_VERSION = new Set(['catalog.update', 'catalog.activate', 'catalog.locked_fix']);
+/**
+ * 这个动作的记录能不能与相邻的记录合成一句（审计页按页取时，页尾是这类记录就要往后看一眼）。catalog.version 也算：
+ * 它比自己那次写入新，排在前面，页尾是它时那次写入在下一页
+ */
+export const auditMergeable = (action: string): boolean => MERGEABLE.has(action) || action === 'catalog.version';
+
+/** auditRuns 并掉的版本行：键是它并进的那次写入（同一个对象），describeAudit 据此在句尾写「（第N版）」 */
+const absorbedVersion = new WeakMap<AuditEntryView, AuditEntryView>();
+
+/**
+ * version 是不是 write 那次写入在同一事务里记的版本行：同一条目、同一操作者、紧挨着（version 在前，新的在前）、相隔不超过 gapMs。
+ * 系统的启动补写（source='backfill'）前面没有写入，单独成句
+ */
+function versionOfWrite(version: AuditEntryView, write: AuditEntryView | undefined, gapMs: number): boolean {
+  return (
+    !!write &&
+    version.action === 'catalog.version' &&
+    !(isRecord(version.diff) && version.diff.source === 'backfill') &&
+    WRITES_VERSION.has(write.action) &&
+    write.targetType === version.targetType &&
+    write.targetId === version.targetId &&
+    write.actorKind === version.actorKind &&
+    write.actorName === version.actorName &&
+    Math.abs(Date.parse(write.at) - Date.parse(version.at)) <= gapMs
+  );
+}
+
+/** 单条写入并进了版本行、版本号大于 1 时句尾补「（第N版）」（上架恒为第 1 版，不写） */
+function withVersion(body: Body, entry: AuditEntryView): Body {
+  const ver = absorbedVersion.get(entry);
+  const v = ver && isRecord(ver.diff) ? int(ver.diff.version) : null;
+  if (v === null || v <= 1) return body;
+  return { ...body, tail: `${body.tail ?? ''}（第${v}版）`, summary: body.summary ? `${body.summary}（第${v}版）` : `第${v}版` };
+}
 /** 相邻两条的时间差不超过它才合并（spec「审计日志 · 时间线」） */
 export const AUDIT_RUN_GAP_MS = 5 * 60_000;
 
 /**
  * 按 spec 合并连续的同类记录：同一操作者、同一动作、同一实体、相邻两条相隔不超过 5 分钟。只合并产品库的动作；
- * 输入是接口的顺序（新的在前），输出每组也是新的在前，各组按原顺序
+ * 输入是接口的顺序（新的在前），输出每组也是新的在前，各组按原顺序。
+ * 后台改、上架、catalog-fix 在同一事务里接着记的 catalog.version 先并进那次写入（不出现在输出里，句尾写版本号，见
+ * versionOfWrite），所以每次保存仍是一句、连着改几条仍合成「修改了N条」；审计行照写，只是不单独成句
  */
 export function auditRuns(entries: readonly AuditEntryView[], gapMs = AUDIT_RUN_GAP_MS): AuditEntryView[][] {
   const runs: AuditEntryView[][] = [];
-  for (const e of entries) {
+  for (const [i, e] of entries.entries()) {
+    if (versionOfWrite(e, entries[i + 1], gapMs)) {
+      absorbedVersion.set(entries[i + 1]!, e);
+      continue;
+    }
     const run = runs.at(-1);
     const last = run?.at(-1);
     const same =

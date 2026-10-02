@@ -69,15 +69,18 @@
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const yuan = n => '¥' + Number(n).toLocaleString('zh-CN');
 
-// 路径形如 /proposal/:routeId/:travelers[/:departDate]
+// 路径形如 /proposal/:routeId/:travelers[/:departDate][?v=版本]
 const seg = location.pathname.split('/').filter(Boolean);
 const [, routeId, travelers, departDate] = seg;
+// 产品库条目版本：原样转给接口，服务端按那个版本的线路渲染、校验（不带就是版本 1）
+const version = new URLSearchParams(location.search).get('v');
 
 (async () => {
   const app = document.getElementById('app');
   try {
     const qs = new URLSearchParams({ travelers: travelers || '2' });
     if (departDate) qs.set('departDate', departDate);
+    if (version !== null) qs.set('v', version);
     const res = await fetch('/api/proposal/' + encodeURIComponent(routeId) + '?' + qs);
     if (!res.ok) throw new Error('not found');
     const d = await res.json();

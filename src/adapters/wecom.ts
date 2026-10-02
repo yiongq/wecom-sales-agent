@@ -24,7 +24,7 @@ import path from 'node:path';
 import type { AgentReply, ChannelAdapter, ChatMessage } from '../types.js';
 import { handleMessage, inboundText } from '../engine.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, saveSession } from '../store.js';
-import { loadRoutes } from '../tools.js';
+import { routeForProposal } from '../tools.js';
 
 const API_BASE = 'https://qyapi.weixin.qq.com/cgi-bin';
 const VAR_DIR = process.env.VAR_DIR ?? path.resolve('var');
@@ -396,8 +396,8 @@ async function uploadThumb(cfg: WecomConfig): Promise<string | null> {
   return task;
 }
 
-/** 正文里出现的所有站内链接（方案书/支付） */
-const ALL_LINKS_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g;
+/** 正文里出现的所有站内链接（方案书/支付）。方案书链接可能带版本后缀 ?v=（02「报价快照」），算在同一条里 */
+const ALL_LINKS_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?/g;
 
 /** 卡片上的出发日期写成正文里的样子（「10月12日」），跨年才带年份。
  *  此前直接拼 YYYY-MM-DD：正文刚说完「10月12日出发」，紧跟着的卡片却是「2026-10-12 出发」，像系统单据 */
@@ -413,15 +413,16 @@ function cnDate(iso: string, now = new Date()): string {
  *  （尤其是支付链接）在剥离正文时被一起吞掉，客户永远拿不到付款入口。 */
 function extractCard(text: string, baseUrl: string): { title: string; desc: string; url: string; raw: string } | null {
   if ((text.match(ALL_LINKS_RE) ?? []).length !== 1) return null;
-  const prop = text.match(/(?:https?:\/\/[^\s]*)?\/proposal\/([A-Za-z0-9_-]+)\/(\d+)(?:\/([\d-]+))?/);
+  const prop = text.match(/(?:https?:\/\/[^\s]*)?\/proposal\/([A-Za-z0-9_-]+)\/(\d+)(?:\/([\d-]+))?(?:\?v=(\d+))?/);
   if (prop) {
-    const route = loadRoutes().find((r) => r.id === prop[1]);
+    // 卡片上的线路取链接指的那个版本（不带 v 是版本 1），与点开的方案书同一份；版本不存在就不做卡片，原样发纯文本
+    const route = routeForProposal(prop[1]!, prop[4]);
     if (!route) return null;
     const travelers = Number(prop[2]);
     return {
       title: `${route.title} · 行程方案书`,
       desc: `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜含逐日行程与费用说明`,
-      url: `${baseUrl}/proposal/${route.id}/${travelers}${prop[3] ? '/' + prop[3] : ''}`,
+      url: `${baseUrl}/proposal/${route.id}/${travelers}${prop[3] ? '/' + prop[3] : ''}${prop[4] ? `?v=${prop[4]}` : ''}`,
       raw: prop[0],
     };
   }
