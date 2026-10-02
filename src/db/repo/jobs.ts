@@ -1,5 +1,5 @@
 // 任务表（02 spec「任务表与跟进」）：入队（同一 dedupe_key 至多一个没结束的）、认领（FOR UPDATE SKIP LOCKED）、改状态。
-// 删除只经 purge_finished_jobs
+// 删除只经 purge_finished_jobs，以及清除、删除一个会话时的 purge_conversation、erase_conversation
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { jobs } from '../schema.js';
@@ -25,7 +25,11 @@ export interface JobRow {
 /** 结束的四种状态：改成它们时记 finished_at */
 const FINISHED: readonly JobStatus[] = ['done', 'failed', 'cancelled', 'abandoned'];
 
-/** 入队。同一 dedupeKey 已有 pending、running 或 sending 的任务时什么都不做，返回 null；否则返回新任务的 id */
+/**
+ * 入队。同一 dedupeKey 已有 pending、running 或 sending 的任务时什么都不做，返回 null；否则返回新任务的 id。
+ * 约定：与某个会话有关的任务（跟进、转人工通知），payload 必带 `sessionId`（会话 id）。清除与删除函数按
+ * `payload->>'sessionId'` 删掉它的任务（任何状态），不带就会把 dedupe_key 里的 external_userid 留在库里（验收 27）
+ */
 export async function enqueueJob(
   tx: Tx,
   spec: { kind: JobKind; dedupeKey: string; runAt: Date; payload: unknown; maxAttempts: number },

@@ -162,7 +162,8 @@ CREATE TRIGGER orders_guard BEFORE UPDATE ON orders
 
 -- 只 GRANT 给 agent_app。库里的 last_seq、updated_at 与两个预期值不符（清理时会话又有了动静）就返回 false；
 -- 写过 paid_at 的会话按 retention_customer_days，否则按 retention_lead_days；updated_at 早于 p_now − 保留期才删：
--- 会话行（级联消息、trace、护栏事件、同意记录）、按 id 删发送账本，订单 session_id 置空并去掉 data 里的 sessionId
+-- 会话行（级联消息、trace、护栏事件、同意记录）、按 id 删发送账本，订单 session_id 置空并去掉 data 里的 sessionId；
+-- 任务按 payload 里的 sessionId 删（任何状态：跟进的 dedupe_key 带着会话 id，验收 27 要库里搜不到 external_userid）
 CREATE FUNCTION purge_conversation(
   p_tenant uuid, p_id text, p_now timestamptz, p_expected_last_seq int, p_expected_updated_at timestamptz
 ) RETURNS boolean
@@ -206,6 +207,7 @@ BEGIN
      SET session_id = NULL, data = (data::jsonb - 'sessionId')::json
    WHERE tenant_id = p_tenant AND session_id = p_id;
   DELETE FROM public.outbound_sends WHERE tenant_id = p_tenant AND conversation_id = p_id;
+  DELETE FROM public.jobs WHERE tenant_id = p_tenant AND payload->>'sessionId' = p_id;
   DELETE FROM public.conversations WHERE tenant_id = p_tenant AND id = p_id;
   RETURN true;
 END;
@@ -285,6 +287,7 @@ DECLARE
   v_consents int;
   v_sends int;
   v_orders int;
+  v_jobs int;
   v_counts json;
 BEGIN
   IF p_tenant IS NULL OR NULLIF(current_setting('app.tenant_id', true), '')::uuid IS DISTINCT FROM p_tenant THEN
@@ -308,11 +311,13 @@ BEGIN
   GET DIAGNOSTICS v_orders = ROW_COUNT;
   DELETE FROM public.outbound_sends WHERE tenant_id = p_tenant AND conversation_id = p_id;
   GET DIAGNOSTICS v_sends = ROW_COUNT;
+  DELETE FROM public.jobs WHERE tenant_id = p_tenant AND payload->>'sessionId' = p_id;
+  GET DIAGNOSTICS v_jobs = ROW_COUNT;
   DELETE FROM public.conversations WHERE tenant_id = p_tenant AND id = p_id;
   GET DIAGNOSTICS v_conversations = ROW_COUNT;
   v_counts := json_build_object(
     'conversations', v_conversations, 'messages', v_messages, 'traces', v_traces, 'guardEvents', v_guard_events,
-    'consents', v_consents, 'outboundSends', v_sends, 'orders', v_orders
+    'consents', v_consents, 'outboundSends', v_sends, 'orders', v_orders, 'jobs', v_jobs
   );
   INSERT INTO public.audit_log (tenant_id, actor_name, actor_kind, action, diff)
   VALUES (p_tenant, 'erase-conversation', 'platform', 'platform.erase', v_counts::jsonb || jsonb_build_object('reason', p_reason));
