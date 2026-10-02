@@ -42,7 +42,7 @@ import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
-import type { ChannelAdapter } from './types.js';
+import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, Session } from './types.js';
 import { boot } from './boot.js';
 import {
   closeConfig,
@@ -155,6 +155,71 @@ async function sessionReadAuth(c: Context, next: Next): Promise<Response | void>
   if (SEED_SESSION_RE.test(id) && profile().flags.anon_readonly_admin) return lookupLimit(c, next);
   return adminAuth(c, next);
 }
+
+/**
+ * 旧工作台（admin.html）的三个写接口：转人工、交还、人工回复，归开关 legacy_admin_writes（02 spec R11）。
+ * 关掉（prod）时像不存在一样 404，带不带凭据都一样；旧的带凭据标记已付不归它管（见 payAuth）
+ */
+const legacyWrites: MiddlewareHandler = async (c, next) => (profile().flags.legacy_admin_writes ? next() : c.notFound());
+
+// ---------------- 匿名可读的投影（02 spec「后台接口」、不变量 44） ----------------
+// 匿名可读的旧接口（会话列表、单会话、订单列表的匿名分支）不带成员身份：接手人与消息作者去掉 user id、姓名一律写「顾问」，
+// 订单去掉确认人、标记已付的人与取消原因。只拷贝，不改 identity map 里的活对象。
+// 带 ADMIN_PASS 的请求照旧返回原对象；「带凭据」只认 isAdminReq（Basic），不认 console 的登录 cookie
+const ANON_MEMBER_NAME = '顾问';
+type AnonMessage = Omit<ChatMessage, 'authorId'>;
+type AnonSession = Omit<Session, 'assignee' | 'messages'> & { assignee?: Omit<Assignee, 'userId'> | null; messages: AnonMessage[] };
+type AnonOrder = Omit<Order, 'confirmedBy' | 'paidMarkedBy' | 'cancelReason'>;
+
+/** 按消息逐条投影（第 13 步在这里加交还消息的改写规则） */
+function anonMessage(m: ChatMessage): AnonMessage {
+  const out: ChatMessage = { ...m };
+  delete out.authorId;
+  if (out.authorName !== undefined) out.authorName = ANON_MEMBER_NAME;
+  return out;
+}
+
+function anonSession(s: Session): AnonSession {
+  const { assignee, ...rest } = s;
+  const out: AnonSession = { ...rest, messages: s.messages.map(anonMessage) };
+  if (assignee !== undefined) out.assignee = assignee && { name: ANON_MEMBER_NAME, at: assignee.at };
+  return out;
+}
+
+function anonOrder(o: Order): AnonOrder {
+  const out: Order = { ...o };
+  delete out.confirmedBy;
+  delete out.paidMarkedBy;
+  delete out.cancelReason;
+  return out;
+}
+
+/** /api/orders/:id 与模拟支付的响应体：R22 的白名单（不变量 43），带不带凭据一律投影。pay.html、chat.html 用到的字段都在里面 */
+interface PublicOrder {
+  id: string;
+  routeTitle: string;
+  travelers: number;
+  departDate: string;
+  totalPrice: number;
+  status: OrderStatus;
+  createdAt: number;
+  paidAt: number | null;
+  /** 顾问确认过价格（advisor 收款方式，02 第 15 步）：确认人的姓名不对外 */
+  confirmed: boolean;
+  supersededBy: string | null;
+}
+const publicOrder = (o: Order): PublicOrder => ({
+  id: o.id,
+  routeTitle: o.routeTitle,
+  travelers: o.travelers,
+  departDate: o.departDate,
+  totalPrice: o.totalPrice,
+  status: o.status,
+  createdAt: o.createdAt,
+  paidAt: o.paidAt ?? null,
+  confirmed: o.confirmedAt != null,
+  supersededBy: o.supersededBy ?? null,
+});
 
 // 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
 app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
@@ -368,16 +433,16 @@ app.get('/api/sessions', anonReadable, (c) => {
   const all = listSessions();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
-  return c.json(all.filter((s) => visible(s.id)));
+  return c.json(all.filter((s) => visible(s.id)).map(anonSession));
 });
 
 app.get('/api/sessions/:id', sessionReadAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  return c.json(s);
+  return c.json(isAdminReq(c) ? s : anonSession(s));
 });
 
-app.post('/api/sessions/:id/handoff', sameOriginOnly, adminAuth, (c) => {
+app.post('/api/sessions/:id/handoff', legacyWrites, sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   // 已在转人工中就什么都不改（R11：旧 /handoff 只以 agent 进入转人工，不设接手人）
@@ -391,7 +456,7 @@ app.post('/api/sessions/:id/handoff', sameOriginOnly, adminAuth, (c) => {
 
 // 接管的反向操作：把会话交还 AI 继续自动应答。没有它，误接管（或正则误伤转人工）
 // 的客户就永久沉默——AI 不理、人工忘了跟，线索静默流失。
-app.post('/api/sessions/:id/resume', sameOriginOnly, adminAuth, (c) => {
+app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   s.handedOver = false;
@@ -430,7 +495,7 @@ app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   }
 });
 
-app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
+app.post('/api/sessions/:id/reply', legacyWrites, sameOriginOnly, adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   const body = await c.req.json<{ text?: unknown }>().catch(() => null);
@@ -461,14 +526,14 @@ app.get('/api/orders', anonReadable, (c) => {
   const all = listOrders();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
-  return c.json(all.filter((o) => visible(o.sessionId)));
+  return c.json(all.filter((o) => visible(o.sessionId)).map(anonOrder));
 });
 
-// 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）
+// 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
 app.get('/api/orders/:id', lookupLimit, (c) => {
   const o = getOrder(c.req.param('id'));
   if (!o) return c.json({ error: 'order not found' }, 404);
-  return c.json(o);
+  return c.json(publicOrder(o));
 });
 
 /**
@@ -489,7 +554,7 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   if (!order) return c.json({ error: 'order not found' }, 404);
   // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
   if (order.status === 'superseded' || order.status === 'cancelled') {
-    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order }, 409);
+    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicOrder(order) }, 409);
   }
   if (order.status !== 'paid') {
     markOrderPaid(id);
@@ -510,7 +575,9 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       }
     }
   }
-  return c.json({ ok: true, order: getOrder(id) });
+  // 响应体同 GET /api/orders/:id 的白名单（plan「Open」第 1 步带出的第二条，按推荐先做）
+  const after = getOrder(id);
+  return c.json({ ok: true, order: after && publicOrder(after) });
 });
 
 /**
@@ -749,6 +816,8 @@ const port = Number(process.env.PORT) || 3200;
 /** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
 function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
+  // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
+  console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
   // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
   // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
   // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
