@@ -3,8 +3,10 @@
 Status: draft
 Phase: 2 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」
 Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（implemented：`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、`CONFIG_SOURCE`、后台子应用与鉴权）；[后台 UX 重做](../../features/console-ux/spec.md)（implemented：设计系统、`conversationState`、counts、外壳与铃铛，以及「依赖 02 的后端」移交清单）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)、[ADR-002](../../adr/adr-002-console-vite-react.md)、[ADR-004](../../adr/adr-004-pack-field-rendering.md)
-Amends: 01 的「两种模式与启动装载」（`SESSION_STORE` 的校验、条目版本的启动补写、`/healthz` 的新字段）、「数据库」（新表、`tenants` 三个保留期列、`catalog_items.version`）、「withTenant」（新选项 `longRunning`、`inTenantTx()`）、「产品库 · 编辑规则」（按 01 裁决 R8 与开放问题 5 的推迟条款，`LOCKED_WHEN_ACTIVE` 去掉五个计价与条款字段）、「审计」（新动作、`writeAuditAs`）、「后台 API 与页面」（新接口）；后台 UX spec 的「接口改动」（`CONVERSATION_STATES` 加 `assigned`、`ConversationRow` 新字段、`ConversationCounts.byState` 新键、`AUDIT_ACTIONS` 新动作）。只做新增，或执行 01、UX spec 自己写明「由 02 定 / 02 之后」的条款；01 不变量 4 与 UX 不变量 27 被本阶段改写，怎么落见「与 01、后台 UX spec 的关系」与开放问题 1
+Amends: 01 的「两种模式与启动装载」（`SESSION_STORE` 的校验、条目版本的启动补写、`/healthz` 的新字段）、「数据库」（新表、`tenants` 三个保留期列、`catalog_items.version`）、「withTenant」（新选项 `longRunning`、`inTenantTx()`）、「产品库 · 编辑规则」（按 01 裁决 R8 与开放问题 5 的推迟条款，`LOCKED_WHEN_ACTIVE` 去掉五个计价与条款字段）、「审计」（新动作、`writeAuditAs`）、「后台 API 与页面」（新接口）；后台 UX spec 的「接口改动」（`CONVERSATION_STATES` 加 `assigned`、`ConversationRow` 新字段、`ConversationCounts.byState` 新键、`AUDIT_ACTIONS` 新动作）。只做新增，或执行 01、UX spec 自己写明「由 02 定 / 02 之后」的条款；改写已实现条款的几处不走 Amends，见下一行
+Supersedes in part: [01](../01-pg-config-console/spec.md) 的不变量 4；[后台 UX 重做](../../features/console-ux/spec.md) 的不变量 27 最后一句、「外壳」铃铛新标签打开 `admin.html#s=<id>` 与计数的 30 秒轮询、「会话列表（I 页）」的状态句「接手和回复目前在工作台里完成」与新标签打开 `/admin.html`、验收 20（开放问题 1，owner 2026-10-02 选 A「部分取代」）。原因：db 存储下一轮里的 `saveSession` 要排出落库，01 不变量 4 只在读路径上还成立；J 页的详情接口要给成员看消息正文；UX spec 里这几处「今天 / 目前」是 J 页与 SSE 到位之前的过渡写法，本阶段交付了它们。改成什么逐条见「与 01、后台 UX spec 的关系」
 Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整性与运维、安全隐私与 spec 质量）后就地修订（draft，尚无代码依赖），同日加入 owner 定的「可观测性与告警」（R24）。主要改动：store 的导入期行为改为与存储模式无关，信号与停机钩子搬进 `src/shutdown.ts`，停机分 normal、drain、late 三段，排不空的改动写进 spill 文件（原为「db 存储下导入期什么都不做」「普通阶段排空，至多丢在途的一次」）；seq 改在 `saveSession` 时同步分配（原为提交时分配，发送账本、`reply` 拿不到）；确定性错误不再重试，会话标成 poisoned 并告警（原为一律退避重试）；切换加标记文件 `var/sessions-in-db.json` 与 `import-sessions --resync`（原为导出之后切不回去）；企微 msgid 去重分三种情况（原为「查到就当已处理」，会吞掉已入库未回复的重放）；`messages.msgid` 不建唯一索引；预载、导入、导出按批读写并放宽语句超时；清除函数改看 `agent_app` 改不了的数据（`updated_at` 只进不退、`paid_at` 写一次），清除时抹掉订单里的客户标识，审计不存会话 id；新增平台的行权删除与撤回同意（R23）；旧 `/handoff` 不设接手人，旧写接口在 prod 由新开关关掉（标记已付除外），匿名的旧读接口去掉成员身份；共享契约的类型挪进 `src/shared/`；`/api/orders/:id` 改为白名单投影；已付会话转人工保留终态并单列提醒（开放问题 12）；`?v=` 与隐私说明改从内存读；用量改挂在 `recordUsage` 上；跟进受 `FOLLOWUP_ENABLED` 控制、加 `sending` 状态；回滚检查加条目版本；改正「锁定断言要求链接后紧跟换行」的错误引用；开放问题按「什么时候定、没答复怎么办」重排，新增 12–14。
+Revisions: 2026-10-02 owner 定下开放问题 1–14：1 选 A（「部分取代」，规则写进 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部各加 `Superseded in part by:`），2–14 照推荐（6、12 选 A）。各条就地标「已定」，选项与理由保留。随之改写（行为、接口、数据形状不变）：顶部加 `Supersedes in part:`，`Amends:` 末句改指它（原为「怎么落见开放问题 1」）；「前置条件」的答复规则改为「已全部定下」（原为 1、6、12 开工前必须答复，4、3 没答复就停在第 11.1、14 步，5、8、9、2、7、14 没答复按推荐先做，10、11、13 接真实租户之前定）；非目标、承接表、R9、R13、R15、R20、环境变量表、`negativeLevel` 注释、外部通道、保留期 DDL 注释、同意流程、外部拨测、OpenTelemetry 原文开关、「与 01、后台 UX spec 的关系」、验收 12、15、35 与被否决的方案里「由开放问题 N 定 / 推荐 / 选定的那个」的写法换成定下的结论
 
 ## 背景与问题
 
@@ -45,12 +47,12 @@ Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整�
 ## 非目标
 
 - 系统页（平台管理员的只读诊断）与租户品牌色：接第一个真实租户之前另写 spec（后台 UX spec 开放问题 3，owner 2026-10-02 定）。
-- `channel_inbox` 与渠道层 v2、按账号拆企微单例、同部署多租户（04）；本阶段只做开放问题 5 推荐的缓解措施。
+- `channel_inbox` 与渠道层 v2、按账号拆企微单例、同部署多租户（04）；本阶段只做开放问题 5 定下的三条缓解措施。
 - 多副本：fence read、每会话 advisory lock、选主（05）。本阶段仍只跑单副本，靠 01 的租户锁拒绝第二个进程。
 - 护栏重构成有序 Guard 流水线、阈值与币种改配置（04）。本阶段只在现有改写点记事件，不改护栏顺序与逻辑。
 - 看板拆分（AI 独立成交、人机协同成交、按原因的转人工率，03）。本阶段把它们需要的数据存下来（`firstHandoffAt`、`handoffBeforePaid`、转人工类型），console 只给四个运行数字（R24）。
 - trace 查看器与「存为回归用例」（03）；政策陈述护栏（03）；真实模型发布闸（03）。
-- 部署 Langfuse、Prometheus 或任何时序数据库：运行数字由 SQL 从 `turn_traces` 与 `usage_daily` 算；Langfuse 怎么接见开放问题 13（owner 2026-10-02 定）。
+- 部署 Langfuse、Prometheus 或任何时序数据库：运行数字由 SQL 从 `turn_traces` 与 `usage_daily` 算；Langfuse 以后在另一台境内机器上自建，本阶段只做埋点（开放问题 13，owner 2026-10-02 定）。
 - 开放产品库的识别字段（`title`、`destination`、`days`、`aliases`、`segments`、`maxAltitude`、`overseas`、tags 里的「国内」）：要等护栏有「改名、改目的地」的回归用例（01 开放问题 5）。
 - 顾问改订单价格、顾问新建订单：确认或取消 AI 建的单之外的收款操作留在系统外（开放问题 9）。
 - 订单列表页：设计系统里没有这一页。订单出现在 J 页右栏和 A2「待付款」里；要做订单页先补设计系统。
@@ -68,11 +70,7 @@ Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整�
 - 01 与后台 UX spec 都是 `Status: implemented`，线上 demo 以 `CONFIG_SOURCE=db` 运行。
 - `pnpm test` 在开工提交上全绿；记下锁定文件的清单与各自的 sha256：`src/*.selftest.ts` 的 6 个（engine、dejargon、engine-holiday、price-guard、llm、server）、`src/adapters/wecom.selftest.ts`、`eval/cases.json`。下文「锁定套件」指前 7 个。
 - `src/db/client.ts` 的 `withTenant`、`holdTenantLock`、`queryCount`，`src/config/source.ts` 的 `configMode()` 与租户锁状态机，`src/boot.ts` 的启动顺序，与 01 spec 一致。
-- 开放问题的答复规则（每条另写了「什么时候定」）：
-  - 开工前必须有 owner 答复：1、6、12。
-  - 到对应步骤时没有答复就停下：4（第 11.1 步）、3（第 14 步）。
-  - 到对应步骤时没有答复就按推荐先做，并在 plan「Open」里写明：5、8（第 12 步）、9（第 15 步）、2、7（第 16 步）、14（第 17 步）。
-  - 接第一个真实租户之前定，不阻塞本阶段任何步骤：10、11、13。
+- 开放问题 1–14 已由 owner 在 2026-10-02 全部定下（见「开放问题」各条），不阻塞任何步骤。
 
 ## 从总参考、01 与后台 UX spec 接过来的事项
 
@@ -92,18 +90,18 @@ Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整�
 | 一轮之内固定产品库快照                                                        | 01 R6                                       | 开放计价字段之前做                                                             | R14              |
 | 锁定字段按什么顺序开放                                                        | 01 开放问题 5                               | 开放五个计价与条款字段，识别字段不动                                           | R14              |
 | 生产实例的 `rerender` 是否改成先出草稿                                        | 01 开放问题 6（02 开工前定）                | 维持自动发布                                                                   | R21              |
-| 线上内容的真实模型回归                                                        | 01 开放问题 10（接第一个真实租户之前定）    | 开放问题 10                                                                    | —                |
+| 线上内容的真实模型回归                                                        | 01 开放问题 10（接第一个真实租户之前定）    | 固定的回归步骤，不做发布闸（开放问题 10）                                      | —                |
 | 下架或删除条目；线路 CSV 的逐日行程；线路的 `region` 字段                     | 01 非目标、01 plan「Open」                  | 不在 02，归产品库后续 spec                                                     | 非目标           |
 | `admin.html` 列表 401 时自动弹登录框                                          | 01 非目标、00                               | 本阶段做，不改 `load()` 与 `sigOf()` 的源码                                    | R11              |
 | 跟进过护栏、识别拒绝；交还不清标记；`/reply` 服务端校验；转人工即时推送       | 总参考「冻结阶段的小修范围」、00 非目标     | 全部本阶段做                                                                   | R8、R9、R17      |
 | 付款确认不看转人工（00 非目标）                                               | 00                                          | 付款确认照发；终态不再被改回 `handoff`                                         | R9               |
 | 人工回复和 AI 用同一账号发、客户分不清（00 非目标）                           | 00                                          | 人工回复在客户侧带「【顾问】」                                                 | R8               |
 | prod 收款流程；「带凭据可以标记已付」的去留                                   | 00「mock_pay 与 prod 的真实客户」           | 顾问确认收款流程；旧凭据路径保留（锁定自测钉住）                               | R19              |
-| demo 下「重置」的底线                                                         | 总参考开放问题、00 非目标                   | 开放问题 6                                                                     | R5               |
-| `channel_inbox` 是否提前                                                      | 总参考开放问题                              | 开放问题 5                                                                     | R7               |
-| SSE 之外的转人工推送通道                                                      | 总参考开放问题                              | 开放问题 3                                                                     | R13              |
-| 负面情绪的识别方式                                                            | 总参考                                      | 开放问题 4                                                                     | R15              |
-| 保留期多长；日志里的客户原话也要有保留期                                      | 总参考                                      | 开放问题 2；prod 日志不写原话                                                  | R20、R24         |
+| demo 下「重置」的底线                                                         | 总参考开放问题、00 非目标                   | 不删数据：推进窗口、订单作废（开放问题 6）                                     | R5               |
+| `channel_inbox` 是否提前                                                      | 总参考开放问题                              | 留在 04，做三条缓解（开放问题 5）                                              | R7               |
+| SSE 之外的转人工推送通道                                                      | 总参考开放问题                              | 企微群机器人，与告警不同群（开放问题 3）                                       | R13              |
+| 负面情绪的识别方式                                                            | 总参考                                      | 确定性的词表加规则（开放问题 4）                                               | R15              |
+| 保留期多长；日志里的客户原话也要有保留期                                      | 总参考                                      | 线索 180、客户 730、trace 90 天（开放问题 2）；prod 日志不写原话               | R20、R24         |
 | 依赖 02 的后端第 1–7、13 项；J 页、A2、四种状态、实时通知、接手交还、快捷回复 | 后台 UX spec 开放问题 2（owner 2026-10-02） | 本阶段做；第 8 项已满足，第 9、11 项不排期，第 10、12 项另写 spec              | 「后台」         |
 | 第 1 项的「脱敏后的消息正文」                                                 | 后台 UX spec「依赖 02 的后端」              | 只读成员看到的正文按规则打码；SSE、通知、日志、告警里没有正文                  | 「后台接口」     |
 | 原验收 26 的四条                                                              | 后台 UX spec 提交 `e8ab450`                 | 写进本 spec 验收 10、14、15、16                                                | —                |
@@ -123,18 +121,18 @@ Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整�
 | R6  | 种子与访客会话                                       | `sim-` 和 `wecom:cust_` 开头的会话及其订单（「demo 类」）永不进 PG，表上有 CHECK。两种存储下都由现有的 JSON 落盘、保鲜、清理负责；db 存储下 JSON 文件只装 demo 类。它们的 trace、发送账本、同意记录只在内存；对它们的 console 操作照常写审计，审计单独一个短事务。理由：保鲜每小时改写种子的时间戳；访客上限 5000、闲置 24 小时就删，进库只会制造写入；它们凭 id 匿名可读，是 demo 的公开数据                                                                                                                                                                                                                                                                              | `isDemoClassId()`                                        | 网页渠道转正（04）        |
 | R7  | 三个同步落盘点                                       | 进程退出：停机分三段，normal（停企微拉取、等处理链、停任务认领）→ drain（排空写队列、写用量）→ late（关连接池、放锁），总上限仍是 8 秒；drain 超时、遇到冲突或租户锁已在别人手里时，`exit` 钩子把没落库的真实会话同步写进 `var/store-spill-<时间>.json`，下次启动回放。崩溃（没有停机）丢失自上次成功提交以来的改动，受 `lagMs` 约束。跟进记账：任务表的「记账提交后再推送」代替同步落盘。企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解：客户文本消息也记 `msgid`，处理前按三种情况去重（「企微」）；备份先打包 `var/` 再 `pg_dump`；重放对齐看发送账本，已送出的回复不再补发                                                                    | R4、R17、R18                                             | `channel_inbox`（04）     |
 | R8  | 消息作者；交还后 AI 怎么分清人工说的话；客户怎么分清 | `ChatMessage` 加可选的 `author`（`ai` / `human` / `followup`，只用于 `role='agent'`，缺省视为 `ai`）。人工回复在客户侧和发给模型的历史里都带前缀「【顾问】」，正文入库时不带。窗口里有人工消息的轮次，contextNote 多一句说明。AI 出站文本开头的「【顾问】」由出口去掉。system prompt 不动                                                                                                                                                                                                                                                                                                                                                                                  | `src/engine.ts` 历史映射；渠道发送                       | 租户自定前缀（03）        |
-| R9  | 转人工记录、曾经转过人工、付款与转人工               | `enterHandoff(session, record)` 必须带类型和原因，五条入口无一例外；`handoff` 在交还和重置时清，`firstHandoffAt` 与 `handoffCount` 永不清；订单付款时记 `handoffBeforePaid`。付款确认照发（客户要知道钱到了）。已在终态的会话进入转人工时阶段保留终态（成交统计不变），转人工记录照写、通知照发；它在列表和计数里仍是「已成交」，在铃铛弹层与 A2 里单列「已成交客户要人工」（开放问题 12 的推荐做法，开工前定）；客户再发消息不把阶段改回 `handoff`                                                                                                                                                                                                                        | `src/handoff/record.ts`                                  | —                         |
+| R9  | 转人工记录、曾经转过人工、付款与转人工               | `enterHandoff(session, record)` 必须带类型和原因，五条入口无一例外；`handoff` 在交还和重置时清，`firstHandoffAt` 与 `handoffCount` 永不清；订单付款时记 `handoffBeforePaid`。付款确认照发（客户要知道钱到了）。已在终态的会话进入转人工时阶段保留终态（成交统计不变），转人工记录照写、通知照发；它在列表和计数里仍是「已成交」，在铃铛弹层与 A2 里单列「已成交客户要人工」（开放问题 12，owner 2026-10-02 选 A）；客户再发消息不把阶段改回 `handoff`                                                                                                                                                                                                                      | `src/handoff/record.ts`                                  | —                         |
 | R10 | 接手的语义；要不要用企微原生转接                     | 系统内部接手：企微侧保持「由智能助手接待」，顾问在 console 里回复，经 send_msg 以客服账号发出。原生转接（状态 3）下 API 发不了消息，也回不到智能助手（没有 3→1），交还 AI 只能结束会话。接手是内存里的同步比较并设置，单进程下两个并发接手恰有一个成功；`origin=5` 的消息（接待人员在企微客户端发的）只记日志                                                                                                                                                                                                                                                                                                                                                              | `src/handoff/takeover.ts`                                | —                         |
 | R11 | `admin.html` 与 console 两个工作台                   | console 的 J 页是唯一的成员工作台：I 页、铃铛、A2 都链到 J 页。`admin.html` 保留 demo 的匿名只读展示、深链和 `ADMIN_PASS` 旧写接口。旧 `/handoff` 只以 `kind='agent'` 进入转人工、不设接手人；旧 `/reply` 以「共享工作台」接手后回复；旧 `/resume` 按交还处理。「共享工作台」的权限与坐席相同（不能改派、不能交还成员接手的会话）。新开关 `legacy_admin_writes`（demo 开、prod 封顶关）管旧的 handoff、resume、reply；旧的标记已付不受它管，锁定的 `server.selftest.ts` 断言 prod 带凭据能标记已付。匿名可读的旧接口返回去掉成员身份的投影。列表 401 时弹登录框在 `load()` 之外实现                                                                                        | `server.ts` 旧路由改调状态机；`profile.ts`               | 去掉 `ADMIN_PASS`（另写） |
 | R12 | 第四种状态；措辞                                     | `conversationState` 加 `assigned`：终态 → `paid`；转人工且有接手人 → `assigned`；转人工且没有接手人 → `human`；其余 `ai`。没有接手人的数据上判定与今天逐个相同。「顾问处理中」在有这种会话时才出现（页签、分组都不画成灰的），所以后台 UX 验收 6 的 13 个种子场景照旧成立。交接卡第一行写「AI交给人工 · 14:18」，顾问主动接手写「小林接手 · 14:18」                                                                                                                                                                                                                                                                                                                        | `src/shared/conversation.ts`                             | —                         |
-| R13 | 通知怎么到顾问手上                                   | 三层：console 打开时，SSE 推事件，铃铛、标题、浏览器通知在提交后 5 秒内更新；SSE 断了退回 30 秒轮询；console 没开时，经一个外部通道推送，通道由开放问题 3 定，接口是 `Notifier`。推送内容只有短码、转人工类型和工作台链接，不含客户原话和 `external_userid`。10 分钟仍没人接手时再提醒一次，企微窗口剩不到 4 小时也提醒一次                                                                                                                                                                                                                                                                                                                                                | `src/notify/`                                            | —                         |
+| R13 | 通知怎么到顾问手上                                   | 三层：console 打开时，SSE 推事件，铃铛、标题、浏览器通知在提交后 5 秒内更新；SSE 断了退回 30 秒轮询；console 没开时，推到企微群机器人（开放问题 3，与告警不同群），接口是 `Notifier`。推送内容只有短码、转人工类型和工作台链接，不含客户原话和 `external_userid`。10 分钟仍没人接手时再提醒一次，企微窗口剩不到 4 小时也提醒一次                                                                                                                                                                                                                                                                                                                                           | `src/notify/`                                            | —                         |
 | R14 | 报价快照的形状；按轮固定快照；开放哪些字段           | 快照 = 产品库条目的不可改版本（`catalog_item_versions`）。active 条目每变一次内容生成新版本；方案书链接在版本大于 1 时追加 `?v=<版本>`，不带 `v` 等于版本 1。版本 1 的链接在文件存储和导入数据下逐字节不变（已发出的链接要能打开，锁定断言钉住路径形状，见「背景」）。全部版本在启动时读进内存，匿名请求不查库。订单本来就在下单时冻结金额和线路名。一轮之内 `loadRoutes()` / `loadHotels()` 返回同一代快照。之后开放 `priceFrom`、`bestSeason`、`nightlyFrom`、`inclusions`、`exclusions`                                                                                                                                                                                 | `catalog_item_versions`；`pinCatalogForTurn`             | 识别字段（另议）          |
-| R15 | 三类确定性触发                                       | 紧急情况：固定应急话术、立即转人工、本轮不调模型；已转人工时不回话，只把记录升级为紧急并再次通知。交互失败：一轮里出现「模型没给出可用文本」「检索无结果」「客户重复提问」之一即算失败，价格或注入护栏命中的轮次不算；连续 2 轮失败或最近 6 轮里 3 轮失败就转人工。负面情绪：识别方式由开放问题 4 定，推荐确定性的词表加规则                                                                                                                                                                                                                                                                                                                                               | `src/handoff/triggers.ts`                                | —                         |
+| R15 | 三类确定性触发                                       | 紧急情况：固定应急话术、立即转人工、本轮不调模型；已转人工时不回话，只把记录升级为紧急并再次通知。交互失败：一轮里出现「模型没给出可用文本」「检索无结果」「客户重复提问」之一即算失败，价格或注入护栏命中的轮次不算；连续 2 轮失败或最近 6 轮里 3 轮失败就转人工。负面情绪：确定性的词表加规则（开放问题 4）                                                                                                                                                                                                                                                                                                                                                              | `src/handoff/triggers.ts`                                | —                         |
 | R16 | trace、护栏事件、用量                                | 每处理一条客户消息收集一条轮次记录（含确定性路径），护栏只在改了文本时记一行；db 存储下随会话的下一次落库写进 `turn_traces` 与 `guard_events`，文件存储下只用于 OpenTelemetry 导出（R24）。字段名沿用 01 的 `sopVersion`、`prefixHash`；记本轮用到的产品库条目版本，不记进程内的代际号。用量挂在 `usage.ts` 的 `recordUsage` 上（所有模型调用的唯一汇聚点），按（租户、天、模型、用途）累加，每 30 秒和停机时 upsert 进 `usage_daily`；`usage.json` 照旧                                                                                                                                                                                                                   | `src/trace/`                                             | Guard 流水线（04）        |
 | R17 | 跟进                                                 | db 存储下改由任务表驱动，同样受 `FOLLOWUP_ENABLED` 控制：AI 回复后按阶段阈值排一个 `followup` 任务，客户回话就取消；到点时在活对象上重判资格（复用抽出来的 `shouldFollowUp`）、生成话术、过出口护栏、记账并把任务改成 `sending` 一起提交，再推送；进程在 `sending` 之后崩溃，任务记 `abandoned`、不重发；之前停机或崩溃，任务回到 `pending`。文件存储下的扫描器照旧（锁定的 `llm.selftest.ts` F1 测它），两种存储共用资格判断、护栏和拒绝识别                                                                                                                                                                                                                              | `src/jobs/`                                              | —                         |
 | R18 | 企微额度                                             | 每次 send_msg 自带 msgid 并记一行 `outbound_sends`；同一分段重试时沿用同一个 msgid。窗口按保守口径算：客户最后一条消息的 `send_time` 起 48 小时，自那以后至多 5 次 send_msg，结果不明（超时、网络异常）的也计数；规则的细节待实测（开放问题 8）。AI 回复不受账本拦（客户刚说过话）；跟进要求剩余 ≥2 条且窗口剩余 ≥2 小时；人工回复在剩 0 条或窗口已过时拒绝并写明原因。接收 `msg_send_fail` 回执，按 msgid 记失败并给会话加一条 system 消息                                                                                                                                                                                                                                | `src/quota/ledger.ts`                                    | —                         |
 | R19 | 收款                                                 | 收款方式随 `mock_pay`：开（demo）照旧；关（prod）是「顾问确认收款」：AI 建的单先由顾问确认价格，顾问在微信里发收款方式，客户付完由顾问在 console 确认收款，触发付款确认。system prompt 在两种方式下必须相同（00 不变量 12），所以 SOP 锁定节的成交措辞改成两种方式都成立的写法，这是本阶段唯一一次有意改变前缀。旧的 `ADMIN_PASS` 标记已付保留                                                                                                                                                                                                                                                                                                                             | `src/payment/`；`data/sop.md` 两处                       | 顾问改价（开放问题 9）    |
-| R20 | 保留期                                               | 三个保留期存在 `tenants` 上，清理只经 SECURITY DEFINER 清除函数。函数自己按租户设置算截止时间、只删过期的行，判断只看 `agent_app` 改不了的数据：`conversations.updated_at` 由触发器保证只进不退、不超过「现在 + 5 分钟」，订单的 `paid_at` 写一次就不能改。清除时一并抹掉订单 `data` 里的客户标识；会话类审计记不含客户标识的 `ref`。时长由开放问题 2 定，迁移里的默认值只是占位                                                                                                                                                                                                                                                                                           | `purge_conversation`、`purge_expired_traces`             | —                         |
+| R20 | 保留期                                               | 三个保留期存在 `tenants` 上，清理只经 SECURITY DEFINER 清除函数。函数自己按租户设置算截止时间、只删过期的行，判断只看 `agent_app` 改不了的数据：`conversations.updated_at` 由触发器保证只进不退、不超过「现在 + 5 分钟」，订单的 `paid_at` 写一次就不能改。清除时一并抹掉订单 `data` 里的客户标识；会话类审计记不含客户标识的 `ref`。时长按开放问题 2：线索 180 天、客户 730 天、trace 90 天，写成迁移的默认值，按租户由平台命令行改                                                                                                                                                                                                                                       | `purge_conversation`、`purge_expired_traces`             | —                         |
 | R21 | 01 开放问题 6：生产实例的 rerender                   | 维持自动发布。一个实例一个租户期间，rerender 只在运维发起的代码部署时发生；契约检查仍然拦着（不过就拒绝启动），每次 rerender 有审计和版本记录。改成「先出草稿、确认前拒绝启动」会让每次改了硬性要求的部署都变成一次需要人工介入的停服。04 同部署多租户时再按租户隔离（01 开放问题 6 原文）                                                                                                                                                                                                                                                                                                                                                                                 | —                                                        | 按租户隔离（04）          |
 | R22 | 公开路由                                             | 白名单只加 `/privacy`。`/api/orders/:id` 改为白名单投影 `{ id, routeTitle, travelers, departDate, totalPrice, status, createdAt, paidAt, confirmed, supersededBy }`（`pay.html` 与 `chat.html` 用到的字段加 advisor 模式要的 `confirmed`），锁定断言只看 `id`。其余新接口都在管理面；新套件枚举全部路由，白名单以外的匿名请求在 prod 下一律 401 或 404                                                                                                                                                                                                                                                                                                                     | `server.ts`                                              | —                         |
 | R23 | 个人要求删除、撤回同意                               | 平台身份的删除路径：`erase_conversation`（SECURITY DEFINER，只 GRANT 给 `agent_platform`，不看保留期）与停机执行的 `erase-conversation` 命令行，删除范围与清除函数相同，审计只记条数与原因。同意记录多一个取值 `withdrawn`；客户说「撤回同意」「删除我的信息」这类话，记一条并转人工（`kind='consent'`），由租户按隐私说明里的行权方式处理。备份里的副本随备份的保留期滚掉，隐私说明里写明                                                                                                                                                                                                                                                                                 | `src/cli/erase-conversation.ts`                          | 客户自助行权（以后）      |
@@ -277,16 +275,16 @@ await initConfig()  →  await initSessionStore(deps | null)  →  serve()
 
 环境变量：
 
-| 变量                          | 进哪个 compose 服务                              | 说明                                                                                             |
-| ----------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `SESSION_STORE`               | app                                              | `db` 开启 PG 会话存储，要求 `CONFIG_SOURCE=db`；未设、空串、`file` 都是文件存储                  |
-| `NOTIFY_WEBHOOK_URL`          | app                                              | 转人工的外部通知通道（开放问题 3 选群机器人时）。等同密钥，只在服务器 env 文件里，日志里一律脱敏 |
-| `ALERT_WEBHOOK_URL`           | app；主机上 `watch.sh` 与 backup 服务的 env 文件 | 告警用的企微群机器人（R24）。等同密钥，同上                                                      |
-| `INSTANCE_LABEL`              | app、backup、`watch.sh`                          | 告警里的实例名（如「demo」），不写域名与 IP                                                      |
-| `LOG_FORMAT`                  | app                                              | `json` 输出 pino JSON；未设时照旧纯文本（自测与本机开发）。compose 里设 `json`                   |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | app                                              | 设了才加载 OpenTelemetry 导出器；未设时不导出、不加载（R24）                                     |
-| `OTEL_CAPTURE_CONTENT`        | app                                              | `1` 时 span 带客户与 AI 的原文；默认不带，开它要先过开放问题 13                                  |
-| `PUBLIC_BASE_URL`             | app                                              | 已有。隐私说明链接与通知里的工作台链接用它拼                                                     |
+| 变量                          | 进哪个 compose 服务                              | 说明                                                                                                          |
+| ----------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `SESSION_STORE`               | app                                              | `db` 开启 PG 会话存储，要求 `CONFIG_SOURCE=db`；未设、空串、`file` 都是文件存储                               |
+| `NOTIFY_WEBHOOK_URL`          | app                                              | 转人工通知用的企微群机器人（开放问题 3），与告警不是同一个群。等同密钥，只在服务器 env 文件里，日志里一律脱敏 |
+| `ALERT_WEBHOOK_URL`           | app；主机上 `watch.sh` 与 backup 服务的 env 文件 | 告警用的企微群机器人（R24）。等同密钥，同上                                                                   |
+| `INSTANCE_LABEL`              | app、backup、`watch.sh`                          | 告警里的实例名（如「demo」），不写域名与 IP                                                                   |
+| `LOG_FORMAT`                  | app                                              | `json` 输出 pino JSON；未设时照旧纯文本（自测与本机开发）。compose 里设 `json`                                |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | app                                              | 设了才加载 OpenTelemetry 导出器；未设时不导出、不加载（R24）                                                  |
+| `OTEL_CAPTURE_CONTENT`        | app                                              | `1` 时 span 带客户与 AI 的原文；默认不带，自建的 Langfuse 有了保留期与权限之前不开（开放问题 13）             |
+| `PUBLIC_BASE_URL`             | app                                              | 已有。隐私说明链接与通知里的工作台链接用它拼                                                                  |
 
 `/healthz` 加 `store: { mode, dirty, lagMs, conflict, poisoned }`（`poisoned` 只是个数），不带会话数和任何会话 id；`ok` 在以下任一情况为 `false`：`store.conflict`、`poisoned > 0`、`lagMs > 120000`、租户锁不在本进程手里。HTTP 状态照旧 200（`deploy.sh` 只看 revision），外部拨测看 `ok`（R24）。console 的 `/status` 给成员多带 `conversations` 与 `poisoned` 的短码。
 
@@ -549,7 +547,7 @@ export function turnFailed(s: TurnSignals): boolean;
 /** 最近 6 轮（新的在后）：最后 2 轮都失败，或其中 3 轮失败 */
 export function failureThresholdReached(recent: readonly number[]): boolean;
 
-/** 负面情绪（开放问题 4 定方式；推荐方案的签名）：0 无、1 弱、2 强 */
+/** 负面情绪（开放问题 4：词表加规则）：0 无、1 弱、2 强 */
 export function negativeLevel(text: string): 0 | 1 | 2;
 /** 最近 3 条客户消息里有 1 次强或 2 次弱 */
 export function sentimentThresholdReached(recent: readonly number[]): boolean;
@@ -798,7 +796,7 @@ export interface Notifier {
   - 收到 `handoff` 事件时，用户授权过就弹浏览器通知：标题「企微客户 · 7F3A 等人接手」，紧急情况写「紧急 · 企微客户 · 7F3A」，已成交客户写「已成交客户要人工 · 企微客户 · 7F3A」；正文是转人工类型的中文（「客户要投诉」），不含客户原话；`tag` 为 `handoff:<id>`，点击聚焦窗口并打开 J 页。
   - 授权只在用户点铃铛弹层底部「开启桌面提醒」时申请；被拒绝时那一行改成说明，不再申请。
   - SSE 连不上或断开超过 30 秒，退回后台 UX spec 的 30 秒轮询，重连成功后停掉轮询。
-- 外部通道（开放问题 3）：消息体只有类型、短码、时间与链接。发送失败按任务重试，不影响 SSE。
+- 外部通道（企微群机器人，开放问题 3）：消息体只有类型、短码、时间与链接。发送失败按任务重试，不影响 SSE。
 - **库写不进去时的转人工**：SSE 与 `handoff_notify` 任务照旧只在提交之后发生。带 `handoff.started` 的那次落库失败时，外部通道先发一条 `unsaved: true` 的通知：`emergency` 立即，其余在失败持续 30 秒后；之后提交成功不再重发。库故障期间 console 本身也登不进（鉴权要查库），这条是顾问唯一能收到的提醒。
 
 ### 后台接口
@@ -1014,12 +1012,12 @@ ALTER TABLE tenants
   ADD COLUMN retention_lead_days     int NOT NULL DEFAULT 180 CHECK (retention_lead_days BETWEEN 7 AND 3650),
   ADD COLUMN retention_customer_days int NOT NULL DEFAULT 730 CHECK (retention_customer_days BETWEEN 7 AND 3650),
   ADD COLUMN retention_trace_days    int NOT NULL DEFAULT 90  CHECK (retention_trace_days BETWEEN 7 AND 3650);
--- 默认值只是占位（取开放问题 2 的推荐值）：每个租户的实际值由 tenant-retention 设置；以后要改默认值就另写一个迁移
+-- 默认值即开放问题 2 的裁决（owner 2026-10-02）；租户要别的值由 tenant-retention 设置；以后要改默认值就另写一个迁移
 ```
 
 - **隐私说明**：`privacy-publish --tenant <slug> --file <path>`（platform 身份）发布新版本，记 `privacy.publish` 审计。DB 配置模式下，当前版本在 `initConfig` 之后读进内存，之后每 60 秒在后台查一次最大版本号（不在对话的轮次里）；`GET /privacy`、欢迎语、同意记录的 `notice_version` 都从内存取。`GET /privacy` 公开，返回当前版本的纯文本页面（转义、`no-store`），没有发布过就 404。文件配置模式（demo）下没有隐私说明。
 - **欢迎语**：发布过隐私说明时，首次欢迎语与老客户补发的欢迎语末尾加一行「隐私说明：<PUBLIC_BASE_URL>/privacy」；没发布时欢迎语与今天逐字节相同（demo 不发布，锁定断言不变）。
-- **敏感信息同意**（只在发布过隐私说明时启用；细节见开放问题 7）：客户消息里第一次出现某个类别（`sensitiveCategoriesOf`）而会话还没问过时，本轮回复之后追加一条企微菜单消息：「您提到了{家人的健康情况 / 孩子的信息}，这属于敏感个人信息。我们只用它来推荐合适的线路、安排行程强度和住宿，不做别的用途，按隐私说明保存，您可以随时撤回。不提供也能继续咨询，只是推荐可能没那么贴合。可以吗？隐私说明：<PUBLIC_BASE_URL>/privacy」。菜单两项「同意」「不同意」。客户点了就按 `menu_id` 记一条同意记录。没点：按开放问题 7 的推荐，下一次出现同类别信息时再问一次（至多两次），仍没点就记第二条 `asked`、照常接待，contextNote 提示模型不要在回复里主动提这一类信息。点「不同意」：回一句确认，`enterHandoff(kind='consent')`，由顾问处理；这个会话不能再交还 AI（`release` 返回 409 `consent_declined`），之后客户点了「同意」才解除。同意记录只追加。
+- **敏感信息同意**（只在发布过隐私说明时启用；细节见开放问题 7）：客户消息里第一次出现某个类别（`sensitiveCategoriesOf`）而会话还没问过时，本轮回复之后追加一条企微菜单消息：「您提到了{家人的健康情况 / 孩子的信息}，这属于敏感个人信息。我们只用它来推荐合适的线路、安排行程强度和住宿，不做别的用途，按隐私说明保存，您可以随时撤回。不提供也能继续咨询，只是推荐可能没那么贴合。可以吗？隐私说明：<PUBLIC_BASE_URL>/privacy」。菜单两项「同意」「不同意」。客户点了就按 `menu_id` 记一条同意记录。没点：按开放问题 7 的裁决，下一次出现同类别信息时再问一次（至多两次），仍没点就记第二条 `asked`、照常接待，contextNote 提示模型不要在回复里主动提这一类信息。点「不同意」：回一句确认，`enterHandoff(kind='consent')`，由顾问处理；这个会话不能再交还 AI（`release` 返回 409 `consent_declined`），之后客户点了「同意」才解除。同意记录只追加。
 - **撤回同意与删除请求**（R23）：客户的话命中 `consentWithdrawalOf`：对已问过的类别各记一条 `withdrawn`，回固定的一句「好的，已经记下您的要求，顾问会尽快联系您处理。」，`enterHandoff(kind='consent', reason='客户要求撤回同意或删除信息')`，本轮不调模型。删除由租户经平台执行：
   - `erase-conversation --tenant <slug> --id <会话 id> --reason <文字>`（platform 身份，要取租户锁，所以要求应用已停：在跑的话 identity map 会把会话写回去；`var/` 里有 spill 文件时拒绝）。
   - 调 `erase_conversation(p_tenant, p_id, p_reason)`：删除范围与清除函数相同（会话行连同消息、trace、护栏事件、同意记录，按 id 删发送账本，订单的 `session_id` 置空、`data` 去掉 `sessionId`），不看保留期；写一行 `platform.erase` 审计，只有各类的条数与原因。
@@ -1329,7 +1327,7 @@ export function startAlerts(): void; // 挂上各处的订阅（模型、企微�
 | 磁盘（`deploy/watch.sh`）     | 数据卷或根分区使用率 ≥ 85%，≥ 95% 再发一次                                                                                  | 回到 80% 以下         |
 
 - `deploy/watch.sh` 由主机的 cron 每分钟跑一次，读服务器上运维 env 文件里的 `ALERT_WEBHOOK_URL` 与 `INSTANCE_LABEL`，去重状态存在一个小文件里；路径与 cron 配置另记。
-- **外部拨测**：一家外部拨测服务（开放问题 14）每 1–5 分钟探一次公网 `/healthz`，非 200 或响应里没有 `"ok":true` 连续两次就通知（拨测服务自己的通知，能配 webhook 的话也推到同一个群）。它覆盖 app、主机和 `watch.sh` 一起挂掉的情况。
+- **外部拨测**：国内云厂商的拨测服务（开放问题 14，探测点在境内）每 1–5 分钟探一次公网 `/healthz`，非 200 或响应里没有 `"ok":true` 连续两次就通知（拨测服务自己的通知，能配 webhook 的话也推到同一个群）。它覆盖 app、主机和 `watch.sh` 一起挂掉的情况。
 
 **运行数字**
 
@@ -1361,7 +1359,7 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 
 - 每轮一条 trace：根 span `invoke_agent <行业包的助手名>`（`gen_ai.operation.name=invoke_agent`、`gen_ai.agent.name`、`gen_ai.conversation.id`、`app.turn.outcome`、`app.sop.version`、`app.prefix.hash`）；每次模型调用一个 `chat <模型>`（`gen_ai.operation.name=chat`、`gen_ai.provider.name`、`gen_ai.request.model`、`gen_ai.response.model`、`gen_ai.usage.input_tokens`、`gen_ai.usage.output_tokens`、`app.llm.cached_tokens`、`app.llm.hedged`，失败带 `error.type`）；每次工具调用一个 `execute_tool <工具名>`（`gen_ai.operation.name=execute_tool`、`gen_ai.tool.name`、`app.tool.prefetch`）；每个护栏事件一个 `guard <名字>`（`app.guard.action`、删去与补上的句数）。
 - Langfuse 的属性同时写上：`langfuse.session.id` 与 `langfuse.user.id` 都取会话的 `ref`（不用 `external_userid`），`langfuse.trace.name=turn`。属性名在实施时按当时的 OTel GenAI 语义约定与 Langfuse 文档核对（GenAI 约定仍在演进），版本写在代码注释里。
-- 原文默认不进 span：不写 `gen_ai.input.messages`、`gen_ai.output.messages`、工具参数与结果。`OTEL_CAPTURE_CONTENT=1` 时才写本轮客户原话、最终回复和工具参数；在开放问题 13 定下接收端之前不开。
+- 原文默认不进 span：不写 `gen_ai.input.messages`、`gen_ai.output.messages`、工具参数与结果。`OTEL_CAPTURE_CONTENT=1` 时才写本轮客户原话、最终回复和工具参数；自建的 Langfuse（开放问题 13）部署好、有了保留期与权限之前不开。
 - 没设端点时：不加载任何 `@opentelemetry/*` 模块、不起导出线程、不向外连接；`endTurn` 里只有一次判断。导出失败只记日志，不影响对话。
 
 ## 与 01、后台 UX spec 的关系
@@ -1372,11 +1370,11 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
   - 01 裁决 R6「按轮固定快照（02 放开计价字段之前）」→ `pinCatalogForTurn`。
   - 01 开放问题 6「02 spec 开工前定」→ R21。
   - UX spec「依赖 02 的后端」第 2 项「02 之后 `conversationState` 的返回值、`ConvQuery.state`、`ConversationCounts.byState` 都加第四种状态 `assigned`，`human` 改为『转人工且没有接手人』」→ R12。
-- **改写了已 implemented 的条款**（不是新增，AGENTS.md 的 amendment 规则管不到，怎么落由开放问题 1 定）：
+- **改写了已 implemented 的条款**（不是新增，amendment 管不到；开放问题 1 定为「部分取代」，本 spec 顶部 `Supersedes in part:` 点名这几处）：
   - 01 不变量 4「DB 模式下，处理一轮对话不发出任何数据库查询」：`SESSION_STORE=db` 时一轮里的 `saveSession` 会排出落库（在写队列里、与 `chat()` 并行）。改写为「DB 模式下，一轮的读路径不查库；会话写入只经写队列，落库事务里不调模型」（本 spec 不变量 9）。`SESSION_STORE=file` 时原文照旧成立。
   - UX 不变量 27 的最后一句「会话接口的响应里没有客户画像字段和消息正文」：J 页的详情接口要给成员看消息正文和需求要素。改写为「会话列表与计数接口的响应里没有客户画像字段和消息正文（`needSummary` 只用规范化的取值）；详情接口只给成员，只读成员看到的正文打码」。
   - UX spec 会话列表与外壳里「今天 / 目前」的条款（新标签打开 `admin.html#s=`、状态句「接手和回复目前在工作台里完成」、铃铛 30 秒轮询）换成同一 spec 里已经设计好的 J 页与 SSE；UX 验收 20 因此在 02 之后按「在当前标签打开 J 页并选中该会话」验证。
-- 开放问题 1 定下之后：01 与 UX spec 顶部各加一行（`Amended by:`，或开放问题 1 选 A 时再加 `Superseded in part by:`）指向本 spec，其余不动；UX plan「Open」里交接卡措辞那一条标为由本 spec 解决。
+- 01 与 UX spec 顶部已各加一行 `Superseded in part by:`（2026-10-02），列出上面这几处，正文不动；`Amended by:` 在开工时（plan 第 1 步）加，同时把 UX plan「Open」里交接卡措辞那一条标为由本 spec 解决。
 
 ## 不变量
 
@@ -1469,10 +1467,10 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 9. **prod 鉴权。** prod profile 下，管理面接口（`/api/console/*` 除登录外，含全部新接口与 `/events`；`/api/admin/*`；会话与订单列表）匿名请求一律 401；枚举全部注册路由，白名单以外的匿名请求都是 401 或 404；白名单里的每条公开路由逐条断言能匿名访问、只返回凭 id 能取到的那一条，`/api/orders/:id` 的键集合恰为白名单；`/privacy` 匿名 200（发布过）或 404；旧的 handoff、resume、reply 返回 404，带凭据的标记已付照旧 200。成员接手一个种子会话后，demo 匿名读它的响应里没有成员 uuid 与姓名。删掉一个成员的 auth_session，他的事件流在 60 秒内收到 `auth` 并关闭。
 10. **四种状态一致**（原 UX 验收 26 第 1 条）。用 02 的种子场景（设计系统 §10.0 第 5 条：14 个会话）：在工作台接手一个等人接手的会话：它从铃铛弹层与 A2「需要你处理」里消失，侧栏与铃铛的徽标减 1，在列表与 J 页分组里显示为「顾问处理中」；会话页出现「顾问处理中」页签，counts 的 `byState.assigned` 加 1、四项之和仍等于 `total`；另一位顾问打开同一会话看到「小林处理中」，「接手会话」不可用并写明原因；两个浏览器同时点「接手会话」，恰有一个成功、另一个看到 409 的说明。用后台 UX 验收 4 的 13 个种子会话重跑 UX 验收 6（在 `admin.html` 里把 B01 转人工，它成为等人接手，四处计数都是 3，页面上不出现「顾问处理中」），照旧通过。
 11. **人工回复即接手。** 在没人接手的会话上直接回复：调用者成为接手人，消息带「顾问 · 姓名」，客户侧收到「【顾问】…」；让落库暂停 3 秒，假企微接口在落库提交之后才收到这条；在别人接手中的会话上回复：409、客户没收到、会话没变；写库积压时回复 503、什么都没改；旧接口 `/api/sessions/:id/reply` 走同一套规则。交还 AI 之后的下一轮模型请求里，顾问那几句以「【顾问】」开头，contextNote 带说明。
-12. **曾经转过人工与终态。** 转人工 → 接手 → 交还 → 再转人工：`firstHandoffAt` 是第一次的时间，`handoffCount` 为 2；交还后客户付款，订单的 `handoffBeforePaid` 为 true。已付的会话里客户说「我要退款」：阶段仍是「已支付」、状态仍是已成交、徽标不变，会话出现在铃铛弹层与 A2 的「已成交客户要人工」里，外部通道收到一条；客户再发一句，阶段与状态都不变；有人接手后它从那一组消失。重置一个已接手的会话后再触发转人工：状态是等人接手，不是顾问处理中。（按开放问题 12 的推荐写；owner 选了别的做法就按它改写这一条。）
+12. **曾经转过人工与终态。** 转人工 → 接手 → 交还 → 再转人工：`firstHandoffAt` 是第一次的时间，`handoffCount` 为 2；交还后客户付款，订单的 `handoffBeforePaid` 为 true。已付的会话里客户说「我要退款」：阶段仍是「已支付」、状态仍是已成交、徽标不变，会话出现在铃铛弹层与 A2 的「已成交客户要人工」里，外部通道收到一条；客户再发一句，阶段与状态都不变；有人接手后它从那一组消失。重置一个已接手的会话后再触发转人工：状态是等人接手，不是顾问处理中。（开放问题 12 的 A。）
 13. **交接卡。** 五种入口（要人工、投诉、模型转人工、改行程承诺、顾问主动接手）各造一个会话：交接卡的第一行、原因、客户原话、识别出的日期、停在哪个阶段都对；措辞是「AI交给人工 · hh:mm」或「小林接手 · hh:mm」；对话里「AI 已转人工：…」的 system 消息渲染成时间线行；工作台的禁用词扫描（界面文案加时间线）通过。
 14. **工作台列表**（原 UX 验收 26 第 2 条）。每行的标题占满第一行、状态在第二行；320 宽下「企微客户 · 7F3A · 贵州带爸妈4人」不被截断；等人接手的行写原因和等待时长，≥10 分钟用 danger。
-15. **5 秒内通知**（原 UX 验收 26 第 3 条）。后台开着时，在假企微接口上让客户说「我要投诉」：5 秒内铃铛徽标加 1、标签页标题出现「(N) 」；授权了浏览器通知时弹出一条，正文没有客户原话。断开 SSE 后 30 秒内由轮询补上。外部通道（开放问题 3 选定的那个）收到一条不含客户原话和 `external_userid` 的消息；10 分钟没人接手再收到一条。让 PG 不可写后客户说「我在山上头很疼喘不上气」：外部通道立即收到一条标「记录暂未保存」的紧急通知，PG 恢复后不再重发。
+15. **5 秒内通知**（原 UX 验收 26 第 3 条）。后台开着时，在假企微接口上让客户说「我要投诉」：5 秒内铃铛徽标加 1、标签页标题出现「(N) 」；授权了浏览器通知时弹出一条，正文没有客户原话。断开 SSE 后 30 秒内由轮询补上。转人工通知群的机器人（开放问题 3）收到一条不含客户原话和 `external_userid` 的消息；10 分钟没人接手再收到一条。让 PG 不可写后客户说「我在山上头很疼喘不上气」：外部通道立即收到一条标「记录暂未保存」的紧急通知，PG 恢复后不再重发。
 16. **A2**（原 UX 验收 26 第 4 条）。「本月成交额」等于当月已付且未作废订单的金额之和（种子场景 207,440），明细「另有待付85,600元」；「需要你处理」的顺序照设计系统 A2；坐席看不到本月成交额，请求 `/orders?status=paid` 得到 403。
 17. **三类确定性触发。** 紧急、交互失败、负面情绪各有一张向量表：命中的句子确定性转人工、类型对；出行前的提问（「去西藏会不会高反」）、否定、转述、价格护栏命中的轮次都不触发。紧急情况那一轮没有模型请求；已转人工的会话里客户说紧急情况，不回话、记录升级、再通知一次。
 18. **发送账本与去重。** 客户一句话之后连发 5 次：第 6 次人工回复被拒并写明「这一轮已经发满 5 条」；假企微接口对一个分段先超时再成功：账本是一行、同一个 msgid，计 1 条；只超时：记 unknown、计入额度；回一个 `msg_send_fail`（`fail_type` 4）：对应消息显示没送达、会话多一条说明、前端收到 `send_failed`；剩 1 条时跟进不发。去重的五种情况各一个用例，其中「客户这句已入库、回复还没生成时进程被杀」重启后客户恰好收到一次回复；「回复已送出」的重放不补发。
@@ -1492,29 +1490,29 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 32. **demo 切换与回滚检查。** 线上按「切换步骤」执行：切换前后 `config` 的四个哈希相同（SOP 改动那次 rerender 之后的值）；`store.mode = db`，console `/status` 的会话数等于导入数；后台能打开导入的会话；切换期间的停机时间记进 plan。本机演练里：有标记文件或改过价时，`deploy.sh` 拒绝回滚到 01 的镜像并打印步骤；两个 02 镜像之间的回滚照常。
 33. **走查。** 用 Playwright 在浅色、深色下各走一遍并截图：I 页四个页签 → J 页接手 → 回复 → 交还 → 交接卡 → 「AI原稿里删了1句」展开 → 铃铛与标题 → 浏览器通知 → A2（含「已成交客户要人工」与运行数字）→ 快捷回复管理；只用键盘经「更多」完成一次交还 AI；axe 的 `color-contrast` 0 条违规，截图存到 `docs/architecture/02-conversations-workbench/walkthrough/`。
 34. **可观测性。** prod profile、`LOG_FORMAT=json` 下跑一组含价格护栏命中与转人工的对话：标准输出每行都能解析成 JSON，轮次里的行带 `tenant`、`conv`、`turn`，请求里的行带与响应头 `x-request-id` 相同的 `req`，搜不到客户原话与会话原 id。假 webhook 上：mock LLM 连续 5 次超时收到一条 `model_errors`，30 分钟内再 5 次不再收到，恢复后收到「已恢复」；假企微连续失败收到 `wecom_send`；租户锁丢失收到 `tenant_lock`；用假 `docker`、`curl`、`df` 跑 `watch.sh` 收到重启、健康检查、磁盘三类，`backup.sh` 中途失败收到备份告警；所有告警里没有客户原话与 `external_userid`。种好 `turn_traces` 与 `usage_daily` 后 `/metrics` 的四个数与手算一致，坐席请求得到 403，总览的四个格只有所有者、管理员看得到。没设 OTLP 端点时进程里没有加载 `@opentelemetry/*`；设成进程内的假接收端时每轮收到一条 trace，含 `chat`、`execute_tool`、`guard` 三类 span 与 `gen_ai.operation.name`、`langfuse.session.id`，没有客户原话；设了 `OTEL_CAPTURE_CONTENT=1` 才有。外部拨测配好后停掉 app，通知在 10 分钟内到达（手动，记进 plan）。
-35. **02 范围内的上线前置条件。** 验收 15、17、23、25、26、27、34 都通过；plan「上线清单」逐项写明状态（PIA、委托处理约定、系统页 spec、开放问题 2、7、8、10、11、13 的结论等）。上线清单是否清空不是本 spec implemented 的条件，是接第一个真实租户的条件。
+35. **02 范围内的上线前置条件。** 验收 15、17、23、25、26、27、34 都通过；plan「上线清单」逐项写明状态（PIA、委托处理约定、系统页 spec、租户的保留期、按 PIA 复核同意细节、企微额度实测、真实模型回归等）。上线清单是否清空不是本 spec implemented 的条件，是接第一个真实租户的条件。
 
 ## 开放问题
 
-每条写明选项、推荐、什么时候定、没答复怎么办（汇总见「前置条件」）。
+14 条已由 owner 在 2026-10-02 全部定下，裁决写在各条开头，选项与理由留着备查，不阻塞任何步骤。还要在接第一个真实租户之前核实或完成的（7 按 PIA 复核、8 的实测、10 的回归、11 的仓库外事项）记在 plan「上线清单」。
 
-1. **本阶段改写 01、UX spec 的已实现条款，走哪条路**（翻 ready 时定，依据 AGENTS.md：implemented 之后改决定要新 spec 取代，amendment 只能新增；没答复不能翻 ready）。涉及「与 01、后台 UX spec 的关系」里列的三处：01 不变量 4、UX 不变量 27 的最后一句、UX 会话列表与外壳里「今天」的条款。
+1. **本阶段改写 01、UX spec 的已实现条款，走哪条路** 已定（owner 2026-10-02：选 A。规则写进了 `docs/spec-driven-dev.md`「改变决定」与 AGENTS.md；本 spec 顶部 `Supersedes in part:` 点名取代的条款，01 与 UX spec 顶部各加了一行 `Superseded in part by:`）。依据 AGENTS.md：implemented 之后改决定要新 spec 取代，amendment 只能新增。涉及「与 01、后台 UX spec 的关系」里列的三处：01 不变量 4、UX 不变量 27 的最后一句、UX 会话列表与外壳里「今天」的条款（连同 UX 验收 20）。
    - A（推荐）：在 `docs/spec-driven-dev.md` 与 AGENTS.md 加「部分取代」：后来的 spec 可以点名取代已 implemented spec 的个别条款，被取代的 spec 顶部加一行 `Superseded in part by:` 列出条款号，原文不动。02 用它取代这三处，其余照 Amends。规则清楚，以后 03、04 还会遇到同样的事。
    - B：不改流程，owner 确认这几处本来就是「今天 / 01 范围内」的写法，02 的读法成立，在 01 与 UX spec 的 `Amended by:` 里点名。省事，但等于让 amendment 改了原有条款，开了口子。
    - 不可行：另写一份 spec 整份取代 01 或 UX spec（AGENTS.md 现有的取代只有整份，为三条改动作废两份已实现的 spec 不合理）。
-2. **保留期多长**（第 16 步开工前定，最迟接第一个真实租户之前；依据个人信息保护法第 19、47 条的最短必要，以及行业下限；没答复就用迁移里的占位默认值先做，在「Open」里写明）。推荐：没有成交的线索 180 天；有过付款的客户 730 天（旅游包：《旅行社条例实施细则》第 50 条要求合同及相关资料保存不少于两年，聊天记录算不算「相关资料」未核实，按算处理）；trace 90 天；prod 的应用日志不写客户原话（R24），原话只留在有保留期、有权限的 trace 里。备选：线索 90 天（更少留存，但跟进周期长的客户会在成交前被清掉）；客户 3 年（覆盖诉讼时效，但超出最短必要要另写理由）。保留期按租户可改，不同行业包的下限另议。
-3. **SSE 之外的转人工推送通道**（第 14 步开工前定，依据第一个真实租户的顾问人数与是否要「点了就接手」；没答复就停在第 14 步）。推荐：企微群机器人 webhook，只要一个 URL、不用改企业的应用配置，顾问群里人人可见，适合几个人的顾问团队；与告警（R24）用同一种通道、不同的群。备选：企微应用消息（要 agentid、应用密钥、可见范围和可信 IP，能按人推、能做「接手」按钮并把别人的卡片置灰），顾问超过 5 人或要按人派单时再换。
-4. **负面情绪怎么识别**（第 11.1 步开工前定，依据锁定原话与 eval 原话过一遍的结果；没答复就停在第 11.1 步，其余步骤照做）。推荐 A：确定性的词表加规则（强烈的辱骂与「垃圾 / 废物 / 滚」这类针对我们的话算强，「失望 / 无语 / 太差了 / 坑人 / 离谱 / 敷衍」这类算弱；按小句判，疑问、否定、转述别人的评价排除；最近 3 条里 1 强或 2 弱就转人工），可解释、可回归、零延迟。备选 B：每轮多一次模型分类，会突破 8 秒线、结果不稳定；备选 C：让主模型顺带打标签，要改工具定义或输出格式，改前缀且不确定。
-5. **`channel_inbox` 是否从 04 提前**（第 12 步开工时按推荐做，第 26 步的恢复演练验证；演练里复现了重复回复或丢消息，就在接第一个真实租户之前另写 spec 提前做）。推荐：留在 04，本阶段做 R7 的三条缓解（客户消息带 msgid 并按五种情况去重、备份先打包 `var/` 再导出库、重放按发送账本判断已送出）；验收 31 要求恢复后在途的客户恰好收到一次回复。备选：提前到 02，把 cursor、已处理集合和在途表搬进 PG，与客户消息同一事务，约多 3–4 个工程日，并要改写企微适配器的状态层。
-6. **demo 下「重置」的底线**（开工前由 owner 确认；依据锁定的 E6 与 E6p：demo 下重置后已付订单也从 `getOrder` 消失）。推荐 A：demo 下客户看到的行为不变（含已转人工也能重来、订单从会话里消失），实现上不删数据：消息窗口推进、订单记作废，已付的订单也作废但留在库里；prod 照旧关掉重置，不做白名单。备选 B「demo 下已付订单不作废、客户重来后仍能看到」与 E6p 冲突，不可选；备选 C「重置时调清除函数真删」要让清除函数能删没到期的数据，见「被否决的方案」。这一条实际上已由锁定断言定下，owner 确认即可。
-7. **敏感信息同意的细节**（第 16 步开工前定，最迟接第一个真实租户之前；依据个人信息保护法第 28–31 条与 PIA 的结论；没答复就按推荐先做，在「Open」里写明）。推荐：类别取健康信息与 14 周岁以下孩子的信息两类；第一次出现时用企微菜单问，写明用途、必要性、对个人的影响、可撤回与隐私说明链接；没点就在下一次出现同类信息时再问一次，仍没点就照常接待、提示模型不主动提这类信息；不同意就转人工，且不能交还 AI。要确认的点：带娃出游极常见，「孩子 5 岁」也要问是否太打扰；菜单点击能不能算「单独同意」（GB/T 45574-2025 的形式要求，未读到原文）；没点时照常接待是否够（备选：第二次仍没点就转人工，更稳妥但打扰大）。
-8. **企微额度与接口行为的待核实点**（第 12 步按保守口径先做；接第一个真实租户之前在测试客服账号上实测，结论记进 plan，只改 `src/quota/ledger.ts` 与适配器的常量）：客户每发一条消息后额度是恢复成 5 条还是累加；48 小时从哪一条起算；`send_msg_on_event` 发的欢迎语算不算进 5 条；同一 msgid 重发时接口是去重还是报错；`sync_msg` 能拉到多久以前的消息（决定去重集合留 7 天是否够）。推荐：核实之前按 R18 的保守口径算（只会少发，不会多发）。备选：按官方文档的字面口径算，发得多一些，但有撞墙的风险。
-9. **顾问能不能改订单价格**（第 15 步按推荐做；接第一个真实租户之前依据试点商家的成交习惯再定）。推荐：02 不做；金额不对就取消订单，让 AI 按规则重新报价，或在系统外处理。备选：另写 spec 做改价：必须由人发起、写原因、留审计，价格护栏的出处要认这张单。
-10. **线上内容的真实模型回归**（01 开放问题 10，接第一个真实租户之前定，不阻塞本阶段）。推荐：把「`export-config` → 文件模式跑 realOnly 用例」写成上线前的固定步骤，此后每月一次、以及每次 prod 租户发布 SOP 之后一次，结果记在私有笔记；不做成发布闸（03 的真实模型发布闸会取代它）。备选：现在就做成发布闸，每次发布花钱、拖慢发布，且与 03 重复。
-11. **接第一个真实租户之前、仓库之外的事项**（owner 负责，接第一个真实租户之前完成，不阻塞本阶段；依据总参考「接真实租户之前必须有的」）：PIA；与模型厂商的委托处理约定；地方网信办登记是否适用（以属地的书面答复为准）；租户的隐私说明正文（含行权方式与备份保存期）。推荐：全部完成之后才接第一个真实租户，进度记在 plan「上线清单」（只记完成与否，内容另记）。备选：试点期先签简版委托处理约定、PIA 随后补齐，风险由 owner 承担。
-12. **已成交的会话又转人工，怎么呈现**（开工前定，因为第 3 步的 `enterHandoff` 依赖它；依据付款后的退款、投诉、出行中的紧急情况要不要进「等人接手」与徽标）。推荐 A：阶段保留终态，状态仍是「已成交」，成交统计不受影响；转人工记录照写、通知照发，铃铛弹层与 A2 单列「已成交客户要人工」，徽标不变（UX 不变量 19 不动）。备选 B：照今天的做法把阶段改成 `handoff`，会话回到「等人接手」、计入徽标，交还后恢复终态；不用加界面，但「已成交」的数字会随转人工来回变，`console.selftest.ts` 里「付款以后又转人工的算已成交」要改。
-13. **Langfuse 怎么接**（接第一个真实租户之前定；本阶段只做默认关闭的 OpenTelemetry 埋点，属性已按 Langfuse 能识别的写，不部署 Langfuse）。推荐 A：在另一台境内机器上自建 Langfuse，OTLP 端点指过去；数据不出境，以后要看对话原文（`OTEL_CAPTURE_CONTENT=1`）也能在同一套保留期与权限下开。代价：自建要 ClickHouse、Redis 与对象存储（另加 Postgres），多一台机器和一份运维。备选 B：用 Langfuse Cloud，只发元数据（耗时、token、成本、出错与否，会话与用户都用 `ref`，不发原文）；省事，但 Langfuse Cloud 没有中国区，哪怕只是可关联到个人的 `ref` 也可能算个人信息出境，要先过个人信息出境的合规评估。备选 C：暂不接，靠 console 的 trace 与运行数字，等排查需求真的出现再定。
-14. **外部拨测用哪家**（第 17 步按推荐配；owner 选定账号，账号信息另记）。推荐：国内云厂商的拨测服务，探测点在境内，能配 webhook 推到告警群。备选：海外的免费拨测服务，探测点在境外，访问境内站点的结果会受跨境网络影响，容易误报。
+2. **保留期多长** 已定（owner 2026-10-02：照推荐，线索 180 天、客户 730 天、trace 90 天，写成迁移的默认值，按租户可改）。依据个人信息保护法第 19、47 条的最短必要，以及行业下限。推荐：没有成交的线索 180 天；有过付款的客户 730 天（旅游包：《旅行社条例实施细则》第 50 条要求合同及相关资料保存不少于两年，聊天记录算不算「相关资料」未核实，按算处理）；trace 90 天；prod 的应用日志不写客户原话（R24），原话只留在有保留期、有权限的 trace 里。备选：线索 90 天（更少留存，但跟进周期长的客户会在成交前被清掉）；客户 3 年（覆盖诉讼时效，但超出最短必要要另写理由）。保留期按租户可改，不同行业包的下限另议。
+3. **SSE 之外的转人工推送通道** 已定（owner 2026-10-02：照推荐，企微群机器人 webhook，与告警不在同一个群）。依据第一个真实租户的顾问人数与是否要「点了就接手」。推荐：企微群机器人 webhook，只要一个 URL、不用改企业的应用配置，顾问群里人人可见，适合几个人的顾问团队；与告警（R24）用同一种通道、不同的群。备选：企微应用消息（要 agentid、应用密钥、可见范围和可信 IP，能按人推、能做「接手」按钮并把别人的卡片置灰），顾问超过 5 人或要按人派单时再换。
+4. **负面情绪怎么识别** 已定（owner 2026-10-02：选 A，确定性的词表加规则）。词表实施时先拿锁定原话与 eval 原话过一遍（「确定性转人工触发」最后一条）。推荐 A：确定性的词表加规则（强烈的辱骂与「垃圾 / 废物 / 滚」这类针对我们的话算强，「失望 / 无语 / 太差了 / 坑人 / 离谱 / 敷衍」这类算弱；按小句判，疑问、否定、转述别人的评价排除；最近 3 条里 1 强或 2 弱就转人工），可解释、可回归、零延迟。备选 B：每轮多一次模型分类，会突破 8 秒线、结果不稳定；备选 C：让主模型顺带打标签，要改工具定义或输出格式，改前缀且不确定。
+5. **`channel_inbox` 是否从 04 提前** 已定（owner 2026-10-02：照推荐，留在 04，本阶段做三条缓解）。第 26 步的恢复演练验证；演练里复现了重复回复或丢消息，就在接第一个真实租户之前另写 spec 提前做。推荐：留在 04，本阶段做 R7 的三条缓解（客户消息带 msgid 并按五种情况去重、备份先打包 `var/` 再导出库、重放按发送账本判断已送出）；验收 31 要求恢复后在途的客户恰好收到一次回复。备选：提前到 02，把 cursor、已处理集合和在途表搬进 PG，与客户消息同一事务，约多 3–4 个工程日，并要改写企微适配器的状态层。
+6. **demo 下「重置」的底线** 已定（owner 2026-10-02：选 A）。依据锁定的 E6 与 E6p：demo 下重置后已付订单也从 `getOrder` 消失。推荐 A：demo 下客户看到的行为不变（含已转人工也能重来、订单从会话里消失），实现上不删数据：消息窗口推进、订单记作废，已付的订单也作废但留在库里；prod 照旧关掉重置，不做白名单。备选 B「demo 下已付订单不作废、客户重来后仍能看到」与 E6p 冲突，不可选；备选 C「重置时调清除函数真删」要让清除函数能删没到期的数据，见「被否决的方案」。这一条实际上已由锁定断言定下。
+7. **敏感信息同意的细节** 已定（owner 2026-10-02：照推荐做；PIA 出结论后按它复核下面「要确认的点」，要改就在接第一个真实租户之前改）。依据个人信息保护法第 28–31 条与 PIA 的结论。推荐：类别取健康信息与 14 周岁以下孩子的信息两类；第一次出现时用企微菜单问，写明用途、必要性、对个人的影响、可撤回与隐私说明链接；没点就在下一次出现同类信息时再问一次，仍没点就照常接待、提示模型不主动提这类信息；不同意就转人工，且不能交还 AI。要确认的点：带娃出游极常见，「孩子 5 岁」也要问是否太打扰；菜单点击能不能算「单独同意」（GB/T 45574-2025 的形式要求，未读到原文）；没点时照常接待是否够（备选：第二次仍没点就转人工，更稳妥但打扰大）。
+8. **企微额度与接口行为的待核实点** 已定（owner 2026-10-02：照推荐，核实之前按 R18 的保守口径算；接第一个真实租户之前在测试客服账号上实测，结论记进 plan，只改 `src/quota/ledger.ts` 与适配器的常量）。待核实：客户每发一条消息后额度是恢复成 5 条还是累加；48 小时从哪一条起算；`send_msg_on_event` 发的欢迎语算不算进 5 条；同一 msgid 重发时接口是去重还是报错；`sync_msg` 能拉到多久以前的消息（决定去重集合留 7 天是否够）。推荐：核实之前按 R18 的保守口径算（只会少发，不会多发）。备选：按官方文档的字面口径算，发得多一些，但有撞墙的风险。
+9. **顾问能不能改订单价格** 已定（owner 2026-10-02：照推荐，02 不做改价；以后依据试点商家的成交习惯要做，就按备选另写 spec）。推荐：02 不做；金额不对就取消订单，让 AI 按规则重新报价，或在系统外处理。备选：另写 spec 做改价：必须由人发起、写原因、留审计，价格护栏的出处要认这张单。
+10. **线上内容的真实模型回归**（01 开放问题 10）已定（owner 2026-10-02：照推荐，写成固定的回归步骤，不做发布闸；第一次在接第一个真实租户之前跑）。不阻塞本阶段。推荐：把「`export-config` → 文件模式跑 realOnly 用例」写成上线前的固定步骤，此后每月一次、以及每次 prod 租户发布 SOP 之后一次，结果记在私有笔记；不做成发布闸（03 的真实模型发布闸会取代它）。备选：现在就做成发布闸，每次发布花钱、拖慢发布，且与 03 重复。
+11. **接第一个真实租户之前、仓库之外的事项** 已定（owner 2026-10-02：照推荐，全部完成之后才接第一个真实租户）。owner 负责，不阻塞本阶段；依据总参考「接真实租户之前必须有的」。事项：PIA；与模型厂商的委托处理约定；地方网信办登记是否适用（以属地的书面答复为准）；租户的隐私说明正文（含行权方式与备份保存期）。推荐：全部完成之后才接第一个真实租户，进度记在 plan「上线清单」（只记完成与否，内容另记）。备选：试点期先签简版委托处理约定、PIA 随后补齐，风险由 owner 承担。
+12. **已成交的会话又转人工，怎么呈现** 已定（owner 2026-10-02：选 A，保留「已成交」，铃铛弹层与 A2 单列「已成交客户要人工」）。第 3 步的 `enterHandoff` 依赖它；依据付款后的退款、投诉、出行中的紧急情况要不要进「等人接手」与徽标。推荐 A：阶段保留终态，状态仍是「已成交」，成交统计不受影响；转人工记录照写、通知照发，铃铛弹层与 A2 单列「已成交客户要人工」，徽标不变（UX 不变量 19 不动）。备选 B：照今天的做法把阶段改成 `handoff`，会话回到「等人接手」、计入徽标，交还后恢复终态；不用加界面，但「已成交」的数字会随转人工来回变，`console.selftest.ts` 里「付款以后又转人工的算已成交」要改。
+13. **Langfuse 怎么接** 已定（owner 2026-10-02：选 A，以后在另一台境内机器上自建 Langfuse，OTLP 端点指过去；02 只做埋点、不部署）。本阶段的 OpenTelemetry 埋点默认关闭，属性已按 Langfuse 能识别的写。推荐 A：在另一台境内机器上自建 Langfuse，OTLP 端点指过去；数据不出境，以后要看对话原文（`OTEL_CAPTURE_CONTENT=1`）也能在同一套保留期与权限下开。代价：自建要 ClickHouse、Redis 与对象存储（另加 Postgres），多一台机器和一份运维。备选 B：用 Langfuse Cloud，只发元数据（耗时、token、成本、出错与否，会话与用户都用 `ref`，不发原文）；省事，但 Langfuse Cloud 没有中国区，哪怕只是可关联到个人的 `ref` 也可能算个人信息出境，要先过个人信息出境的合规评估。备选 C：暂不接，靠 console 的 trace 与运行数字，等排查需求真的出现再定。
+14. **外部拨测用哪家** 已定（owner 2026-10-02：照推荐，国内云厂商的拨测服务）。第 17 步配；owner 选定账号，账号信息另记。推荐：国内云厂商的拨测服务，探测点在境内，能配 webhook 推到告警群。备选：海外的免费拨测服务，探测点在境外，访问境内站点的结果会受跨境网络影响，容易误报。
 
 ## 被否决的方案
 
@@ -1550,6 +1548,6 @@ export function exportTurn(t: TurnContext, outcome: TurnOutcome, meta: { tenant:
 - **订单随会话一起删除**：订单是成交记录，删会话时只断开它与客户标识的关联（`session_id` 置空、`data` 去掉 `sessionId`）。
 - **行权删除做成 console 里的一个按钮**：要么给 `agent_app` 删没到期数据的权限，不变量 6 就不成立；要么在应用运行中删，identity map 会把会话写回去。平台命令行加停机，频率低，代价可以接受。
 - **运行数字进 Prometheus 或别的时序数据库**（owner 2026-10-02 否决）：一个实例一个租户，四个数用 SQL 现算就够，多一个组件多一份运维。
-- **02 就部署 Langfuse**（owner 2026-10-02 否决）：自建要 ClickHouse、Redis、对象存储，Cloud 有出境问题；先把埋点做成默认关闭、属性对得上，接哪里留给开放问题 13。
+- **02 就部署 Langfuse**（owner 2026-10-02 否决）：自建要 ClickHouse、Redis、对象存储，Cloud 有出境问题；先把埋点做成默认关闭、属性对得上，以后在境内自建（开放问题 13）。
 - **OpenTelemetry 默认打开、span 默认带原文**：没有接收端时白耗资源；原文进第三方系统就是一次新的个人信息处理，要先有保留期、权限和出境的结论。
 - **告警走短信、邮件或自建告警平台**（owner 2026-10-02 选群机器人）：群机器人只要一个 URL，顾问与老板都在企业微信里。

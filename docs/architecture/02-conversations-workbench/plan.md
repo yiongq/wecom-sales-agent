@@ -8,11 +8,11 @@
 - 先读：`AGENTS.md`；本目录 `spec.md` 全文；01 spec 的「两种模式与启动装载」「withTenant」「迁移纪律」「RLS、授权与认证函数」「测试与 CI」；后台 UX spec 的「外壳」「总览」「会话列表」「会话工作台」「依赖 02 的后端」；`docs/features/console-ux/design-system.md` 的 §5.6、§6.7、§10.0 与 A2、I、J 三页。然后 `git log -5`，再读本文件的「交接记录」与「Open」。
 - **锁定套件**（断言一条不许改）：`src/engine.selftest.ts`、`src/dejargon.selftest.ts`、`src/engine-holiday.selftest.ts`、`src/price-guard.selftest.ts`、`src/llm.selftest.ts`、`src/server.selftest.ts`、`src/adapters/wecom.selftest.ts`，以及 `eval/cases.json`。任何一步让它们变红，都先找自己的改动；确认是 spec 与锁定断言冲突时，停下写进「Open」，不改断言。要改的非锁定断言只限 spec「测试与 CI」最后一条列的那些，PR 里写明理由。
 - 前缀：除第 15 步的 SOP 改动外，每一步结束时 `engine.selftest.ts` 打印的 `PREFIX sha256` 都要等于第 1 步记下的值；第 15 步之后等于第 15 步记下的新值。
-- 开放问题没答复时怎么办，按 spec「前置条件」的四类处理。
+- spec 的 14 个开放问题 owner 已在 2026-10-02 全部定下（答复见本文件「Open」），不阻塞任何步骤；各步照 spec 里写定的结论做。
 - 原地变异测试在隔离副本里跑（Stop 钩子会对工作区跑门禁）；复现卡死的脚本用单进程加超时，收尾查 `ps`，不留孤儿进程。
 
 - [ ] 1. 开工核对（0.5）：
-  - 确认 spec 是 `ready`，开放问题 1、6、12 已有 owner 答复，结论记进「Open」；没有答复就停下。
+  - 确认 spec 是 `ready`。
   - 记下开工提交的 sha；记下锁定套件 8 个文件的 sha256（`shasum -a 256 <文件>`）。验收 1 以它们为基准。
   - 跑四个门禁，记下 `PREFIX sha256` 的 system 与 tools 两个哈希。
   - 只读盘点，结果写进「实施记录 · 第 1 步」，后面的步骤照着改：
@@ -23,7 +23,7 @@
     - 日志里引用客户原话的位置（`console.log/warn/error` 里拼了客户消息或回复原文的）；
     - 匿名可读、直接返回 store 原对象的旧接口；
     - 锁定套件与 `eval/cases.json` 里含「高反、受伤、骨折、护照、证件、丢了、被困、走丢、急救、失望、无语、垃圾、坑、离谱、不用了、别发了、不需要、撤回、删除」的客户原话，逐句写下它们现在的期望结果（第 11、16 步的规则不许改变这些结果）。
-  - 文档收尾（按开放问题 1 的答复）：01 spec 与后台 UX spec 顶部各加一行 `Amended by: [02 · 会话入库 + 坐席工作台](../../architecture/02-conversations-workbench/spec.md)`（路径按各自位置写对）；选 A 时另在 `docs/spec-driven-dev.md` 与 AGENTS.md 写「部分取代」规则，两份 spec 再加 `Superseded in part by:` 列出条款号。其余不动；后台 UX plan「Open」里交接卡措辞那一条标「已由 02 spec 解决（R12）」；总参考「开放问题」里 identity map、自测存储、`rerender` 三条写明「已由 02 spec 定」。
+  - 文档收尾：01 spec 与后台 UX spec 顶部各加一行 `Amended by: [02 · 会话入库 + 坐席工作台](../../architecture/02-conversations-workbench/spec.md)`（路径按各自位置写对）。「部分取代」规则与两份 spec 的 `Superseded in part by:` 已在 2026-10-02 加好（开放问题 1 选 A），不再动。其余不动；后台 UX plan「Open」里交接卡措辞那一条标「已由 02 spec 解决（R12）」；总参考「开放问题」里 identity map、自测存储、`rerender` 三条写明「已由 02 spec 定」。
 - [ ] 2. store 门面、停机与启动顺序（2.5）：
   - `src/shutdown.ts`：从 `store.ts` 搬出信号接线、`onShutdown`、`runShutdownHooks`、`gracefulExit`，加 normal / drain / late 三段与各段时限；`store.ts` 原样再导出。
   - `src/store/backend.ts` 的 `StoreBackend`；`src/store/seq.ts` 的 `assignSeqs`（文件存储与 demo 类用宽松模式）；把 `src/store.ts` 现有的持久化抽成文件后端，导出的名字与行为不变，导入期副作用两种模式相同（R3）。
@@ -35,7 +35,7 @@
 - [ ] 3. 与存储无关的引擎与类型改动（3）：
   - `src/shared/conversation-types.ts`（`HandoffKind`、`HandoffRecord`、`Assignee`、`MessageAuthor`、`OrderStatus`、`PaymentMode`、`OutboundKind`、`SendWindow`），`src/types.ts` 等从这里 import 再导出；`src/shared/text.ts` 的 `cleanText`，引擎的入口截断与企微重放对齐里的截断一起换成它。
   - `src/types.ts`：`ChatMessage.sentAt` / `author` / `authorId` / `authorName`；`Session` 与 `Order` 的新字段。
-  - `src/handoff/record.ts`：新签名的 `enterHandoff`（`tools.ts` 再导出）；五条入口都带记录；`firstHandoffAt`、`handoffCount`；从未转人工进入时清接手人；终态会话按开放问题 12 的答复处理；重置清掉接手人与计数；终态阶段不再被改回 `handoff`；`markOrderPaid` 写 `handoffBeforePaid`。
+  - `src/handoff/record.ts`：新签名的 `enterHandoff`（`tools.ts` 再导出）；五条入口都带记录；`firstHandoffAt`、`handoffCount`；从未转人工进入时清接手人；终态会话按开放问题 12 的 A 处理（R9）；重置清掉接手人与计数；终态阶段不再被改回 `handoff`；`markOrderPaid` 写 `handoffBeforePaid`。
   - 五处非追加写里与存储无关的两处：转人工备注在工具执行前拼好；企微重放改传 `{ alreadyRecorded: true }`（有 msgid 按 msgid，旧数据按文本）。`handleMessage` 多可选的 `opts`，企微文本消息带上 `msgid` 与 `sentAt`。
   - `src/shared/conversation.ts`：四态的 `conversationState`（结构类型参数）、`paidNeedsHuman`、规范化的 `needSummary`；`src/shared/console-api.ts` 的 `CONVERSATION_STATES` 与 `ConversationRow` 新字段；`console.selftest.ts` 的「6 个投影字段」改成新键集合；`scripts/check-console-src.ts` 的状态白名单加 `assigned`；console 里用到 `TAB_RANK`、状态名表的地方先补上第四态（界面还不显示它，第 19 步再画）。
   - `/api/orders/:id` 改为白名单投影（R22）；匿名可读的旧接口改为去掉成员身份的投影；`profile.ts` 加开关 `legacy_admin_writes`（demo 开、prod 封顶关）并接到旧的 handoff、resume、reply 上。
@@ -91,9 +91,9 @@
   - 向量表写进 `handoff.selftest.ts`：命中、出行前提问、否定、转述、价格或注入护栏命中的轮次；第 1 步盘点出的锁定原话逐句跑一遍，结果与盘点相同。
   - 失败阈值让某条锁定断言变红时，停下写进「Open」，由 owner 在「阈值改 3」与别的办法之间定。
   - 对应验收 17 的紧急与交互失败部分，以及不变量 29、30。
-  - [ ] 11.1 负面情绪（1.5）：开放问题 4 定了之后做；按选定的方式实现 `negativeLevel` 与阈值，向量表同上。对应验收 17 的其余部分。
+  - [ ] 11.1 负面情绪（1.5）：按开放问题 4 定下的词表加规则实现 `negativeLevel` 与阈值，向量表同上。对应验收 17 的其余部分。
 - [ ] 12. 企微：发送账本、回执、去重、前缀（3.5）：
-  - 开工前看开放问题 5、8 的答复；没答复就按推荐做（缓解措施、保守口径），在「Open」里写明。
+  - 开放问题 5、8 已定：做 R7 的三条缓解，额度按 R18 的保守口径算。
   - `ChannelAdapter.push` 的 `opts`；`src/quota/ledger.ts`；`sendText` / `sendRich` / 欢迎语 / 菜单每个分段自带 msgid（重试沿用）并记账，超时与网络异常记 `unknown`；没有会话的欢迎语单独一个事务；`sync_msg` 接收 `msg_send_fail`；去重与重放的五种情况；适配器在 `sendRich` 之前比较接手代次；人工回复在两个渠道的客户侧加「【顾问】」；`author='human'` 的历史映射与 contextNote 说明；出口去掉 AI 回复开头的「【顾问】」。
   - 新建 `src/quota/quota.selftest.ts`：窗口与剩余条数（`sentAt` 起算）、`unknown` 计数、重试同一 msgid、回执、跟进与人工回复的放行、五种去重情况（含「已入库未回复」重启后恰好回复一次）；历史里的「【顾问】」写进 `handoff.selftest.ts`。
   - 对应验收 18，以及不变量 18、28 的适配器部分、33、34。
@@ -101,16 +101,16 @@
   - `src/handoff/takeover.ts`（`takeover`、`release`、`reply`、接手代次、`clientId` 去重、`ForbiddenError`、`ConsentDeclinedError`、回复的「查健康 → 入库 → 等提交 → 发送」顺序）；引擎在 push AI 回复之前比较接手代次；旧接口 `/api/sessions/:id/handoff|resume|reply` 按 spec 改调它们（共享工作台）。
   - `src/console-api/app.ts` 按 spec「后台接口」链式加全部新接口、权限中间件、新错误码；写接口 `await flushSession(id, { timeoutMs: 5000 })`、超时 503 `store_lagging`；审计新动作（会话类记 `ref`）与 `AUDIT_ACTIONS`（含 K 页的「会话与订单」分段）；viewer 打码；`/orders` 的角色限制与从 identity map 计算；`/events` 的 SSE（环形缓冲、`resync`、心跳、每 60 秒复核登录）；`/api/admin/stream` 改为提交后发；`/status` 带会话数与 poisoned。
   - `console.selftest.ts` 新用例：spec「测试与 CI」列的那些（权限矩阵逐格含 403 与 409 的分界、路由枚举、并发接手恰一个成功、别人接手中回复 409 且没发送、自动接手、交还恢复阶段、不同意后交还 409、事件里没有正文、事件流登录失效后关闭、`order=waiting_first` 与 counts 四项之和）。
-  - 开放问题 12 的答复在接口上的部分（`paidNeedsHuman` 的数据）一起做。
+  - 开放问题 12（A）在接口上的部分（`paidNeedsHuman` 的数据）一起做。
   - 对应验收 9、10、11 的接口部分，以及不变量 17、20–25、27、28、31、39 的接口部分、41、43–45、47。
-- [ ] 14. 外部通知（1.5）：开放问题 3 定了之后做。`Notifier` 的选定实现、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。
+- [ ] 14. 外部通知（1.5）：`Notifier` 的企微群机器人实现（开放问题 3，与告警不同群）、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。
 - [ ] 15. 收款流程与 SOP 措辞（3.5）：
   - `src/payment/`：`paymentMode`、`confirmOrder`、`markPaidByAdvisor`、`cancelOrder`（坐席只限接手人本人；提交之后才发付款确认）；后台的三个订单接口接上；advisor 模式下 `create_order` 的 `payNote`、`/pay` 页的说明、价格规则护栏的替换句、`repairLinks` / `placeLinks` 的说明句、重发链接、成单安全网、企微支付卡片、跟进 closing 段的确定性文本；online 模式逐字节不变。
   - `data/sop.md` 锁定节的两处改动、`SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 加 `payNote`；契约清单短语一条不删。记下改前改后的四个哈希（`/healthz` 与 `PREFIX sha256`）。
   - 真实模型回归（花钱，不进 CI）：按 01 交接里的「真实模型对比」跑法，`--cases` 指向仓库外的 realOnly 用例文件，文件、DB 交替各至少 3 遍，记 p90、命中率与通过的用例集合，和改动前比较。
   - 自测：prod profile 的整条链路（`payNote`、页面说明、替换句、匿名 404、未确认 409、非接手人坐席 409、审计两行、付款确认在提交之后）；demo profile 与开工时相同。
   - 对应验收 23、24，以及不变量 19、20 的付款部分、39。
-- [ ] 16. 隐私说明、敏感信息同意、保留期、行权删除（4）：开放问题 2、7 没答复就按推荐做（保留期用迁移里的占位默认值），在「Open」里写明。
+- [ ] 16. 隐私说明、敏感信息同意、保留期、行权删除（4）：开放问题 2、7 已定：保留期用迁移的默认值（即裁决值），同意流程照 spec；PIA 要求改同意细节时另行修订 spec。
   - `privacy-publish`、`tenant-retention`、`erase-conversation` 三个 platform 命令行；隐私说明读进内存与 60 秒轮询；`GET /privacy`；欢迎语按发布与否加链接；同意菜单（用途、影响、可撤回、链接）、`menu_id` 回调记录、再问一次、不同意转人工（`kind='consent'`）且不能交还、撤回同意。
   - `retention_purge` 任务的执行体（跳过有动静的会话、带预期值调清除函数、同一个 tick 移出内存并记墓碑、`purge_expired_traces`、`purge_finished_jobs`、`system.purge` 审计）。
   - `logQuote()`：第 1 步盘点出的日志位置逐个改经它；compose 的 app 服务配日志轮转。
@@ -120,7 +120,7 @@
   - `src/log.ts`（`pino` 钉精确版本）：`LOG_FORMAT=json` 时输出 JSON、`boot()` 把 `console.*` 接过去；请求中间件生成 `req` 与 `x-request-id`；轮次里的 `tenant`、`conv`（`ref` 或短码）、`turn`；`redact` 盖住凭据字段。
   - `src/ops/alert.ts` 与 `startAlerts()`：spec「告警」表里 app 侧的五个键，去重、限流、恢复消息、推送失败不抛。
   - `deploy/watch.sh`（重启次数、健康检查、磁盘、备份是否超过 26 小时没成功）与 `deploy/backup.sh` 的失败告警；`ALERT_WEBHOOK_URL`、`INSTANCE_LABEL`、`LOG_FORMAT` 进 `.env.example` 与 compose 的说明；cron 的配置写进部署文档（路径另记）。
-  - 开放问题 14 没答复就按推荐，由 owner 配好外部拨测（账号另记），停一次 app 确认通知能到，结果记进「验收记录」。
+  - 由 owner 配好国内云厂商的外部拨测（开放问题 14，账号另记），停一次 app 确认通知能到，结果记进「验收记录」。
   - 新建 `src/ops/ops.selftest.ts` 的日志与告警部分（含 `watch.sh`、`backup.sh` 的子进程用例）。
   - 对应验收 34 的日志与告警部分，以及不变量 32、48、50。
 - [ ] 18. 可观测性：运行数字与 OpenTelemetry（2.5）：
@@ -144,7 +144,7 @@
 - [ ] 25. 压测（1.5）：`scripts/load/run.ts` 按 spec「压测」一节（含 5,000 × 300 的预载）；本机真实 Postgres、db 存储；结果与数字记进「验收记录」。对应验收 30。
 - [ ] 26. 部署与演练（2）：
   - `deploy/backup.sh` 先打包 `var/` 再 `pg_dump`；`deploy.sh` 的回滚检查（第 6、8 步）在本机实测，含健康检查失败后的自动回滚与两个 02 镜像之间的回滚。
-  - 在本机 compose 上按 spec「切换步骤」完整走一遍：以文件存储部署 → 停 app → 导入（`--keep`）→ db 存储起 → 回退（导出、去掉开关）→ 文件存储下聊几轮 → `--resync` 切回；然后做一次含会话的备份恢复演练，备份时让一轮在途，恢复后让假企微接口重放最近的消息，确认那位客户恰好收到一次回复、已回复的不重复。演练结论用来验证开放问题 5 的推荐；复现了重复或丢失就写进「Open」并告诉 owner。
+  - 在本机 compose 上按 spec「切换步骤」完整走一遍：以文件存储部署 → 停 app → 导入（`--keep`）→ db 存储起 → 回退（导出、去掉开关）→ 文件存储下聊几轮 → `--resync` 切回；然后做一次含会话的备份恢复演练，备份时让一轮在途，恢复后让假企微接口重放最近的消息，确认那位客户恰好收到一次回复、已回复的不重复。演练结论用来验证开放问题 5 的裁决（留在 04）；复现了重复或丢失就写进「Open」并告诉 owner。
   - 本机装上 `watch.sh` 的 cron，用一个测试群机器人把告警端到端走一遍。
   - 对应验收 31，以及 32 的本机部分。
 - [ ] 27. demo 线上切换（1）：由 owner 在线上执行第 26 步的切换步骤；切换前后的哈希、会话数、停机时长与不敏感的证据记进「验收记录」，主机与路径另记；第一份备份验证通过后删掉 `--keep` 里的原件。对应验收 32。
@@ -172,7 +172,7 @@
 **第三级**（只由 owner 决定）：
 
 - owner 判断第一个真实租户在两个月以后，或第 14 步开工时已过第 53 个工程日，可以把第 14、15、16 步（外部通知、收款流程、隐私与同意、保留期清理、行权删除）拆成另一份 spec。spec 要改：目标 6 的后半句、目标 12、13，验收 15 的外部通道部分、23、25、26、27、35，开放问题 2、3、7、9；在顶部写 `Revisions:`。拆出去之后 prod 实例继续只做验收和预演（00 的运行规则），不接真实客户。
-- OpenTelemetry 导出（第 18 步后半，约 1.5 天）推到开放问题 13 定下之后：recorder 照收、trace 照存，只是不导出。spec 要改：R24 的 OpenTelemetry 一句、「可观测性与告警」的最后一节、不变量 49、验收 34 的 OpenTelemetry 一句。这是 owner 2026-10-02 定下的范围，只有 owner 能砍。
+- OpenTelemetry 导出（第 18 步后半，约 1.5 天）推到自建 Langfuse 部署的时候（开放问题 13）：recorder 照收、trace 照存，只是不导出。spec 要改：R24 的 OpenTelemetry 一句、「可观测性与告警」的最后一节、不变量 49、验收 34 的 OpenTelemetry 一句。这是 owner 2026-10-02 定下的范围，只有 owner 能砍。
 
 每砍一项，都在 spec 顶部加一行 `Revisions:`，写明改了哪些目标、接口和验收编号。**不能砍**：第 2–7 步（表的形状、只追加、identity map、写队列、三段停机与 spill、导入往返，以后补都要再迁一次数据或会丢数据）；第 3、13 步的转人工记录、四种状态、接手状态机与 `/reply` 校验；第 8 步的条目版本（之后才能开放计价字段）；第 11 步的紧急情况与交互失败；第 12 步的发送账本（没有它顾问会撞上看不见的 48 小时 / 5 条墙）；第 17 步的告警（出事没人知道，比少一个功能代价大）。
 
@@ -184,9 +184,11 @@
 - [ ] 与模型厂商的委托处理约定
 - [ ] 地方网信办登记是否适用的书面答复
 - [ ] 租户的隐私说明正文（含行权方式与备份保存期）已经 `privacy-publish`
-- [ ] 租户的保留期已经 `tenant-retention` 设好（开放问题 2）
+- [ ] 租户的保留期已确认（默认是开放问题 2 的裁决值，要别的值用 `tenant-retention` 设）
 - [ ] 系统页与租户品牌色的 spec（后台 UX spec 开放问题 3）
-- [ ] 开放问题 7（同意细节）、8（企微额度实测）、10（真实模型回归）、11、13（Langfuse）有结论
+- [ ] PIA 出结论后复核同意细节（开放问题 7 的「要确认的点」），要改的已改
+- [ ] 测试客服账号上实测企微额度与接口行为（开放问题 8），结论记进本文件
+- [ ] 真实模型回归作为上线前的固定步骤跑过一次（开放问题 10），结果记在私有笔记
 - [ ] 告警群与转人工通知群已建好，外部拨测已配（开放问题 14）
 - [ ] 开放问题 5 的恢复演练没有复现重复回复或丢消息（第 26 步）
 
@@ -212,6 +214,8 @@
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
+
+- 开放问题的答复（owner 2026-10-02，已写进 spec 各条与顶部 `Revisions:`）：1 选 A「部分取代」，规则进了 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部已加 `Superseded in part by:`；2 线索 180、客户 730、trace 90 天，按租户可改；3 企微群机器人，与告警不同群；4 词表加规则；5 `channel_inbox` 留在 04、做三条缓解；6 选 A；7 照推荐做，PIA 出结论后复核；8 保守口径；9 02 不做改价；10 固定的回归步骤，不做发布闸；11 仓库外事项全部完成才接第一个真实租户；12 选 A；13 以后在另一台境内机器上自建 Langfuse，02 只埋点；14 国内云厂商的拨测。
 
 ## 交接记录
 
