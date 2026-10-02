@@ -1,6 +1,6 @@
 // 产品库详情（spec「产品库详情与编辑（E、F 页；L 页下半）」，设计系统 §4.3、§5.9、§5.16、§5.17、§6.4、§6.5、E、F、G、L 页；
 // plan 第 10.1、10.2 步）。
-// 页头：面包屑「产品库 / 线路 / 条目名」（分组名是纯文本）、标题后跟状态、状态句「13项上架后锁定 · 小林更新于今天10:12」。
+// 页头：面包屑「产品库 / 线路 / 条目名」（分组名是纯文本）、标题后跟状态、状态句「9项上架后锁定 · 小林更新于今天10:12」。
 // 两栏：主栏按 groups 的顺序排分组卡片，字段按类型渲染（fields/FieldGrid）；副栏吸顶放状态与锁定组、上架前检查、最近更新；
 // 宽 <1280 时副栏落到主栏下方（detail.css）。
 // 锁定（§6.4）：已上架、可以编辑时，每个锁定组在它第一张整字段锁定的卡片头声明一次：Tag「上架后锁定 · 计价」，下一行写原因；
@@ -361,7 +361,7 @@ function SideCard({ title, aside, children }: { title: string; aside?: ReactNode
 }
 
 /**
- * 状态卡（E、F 页）：状态；能编辑时写「13项上架后锁定」（草稿「上架后13项会锁定」），下面每个锁定组一行（「识别 5项」），
+ * 状态卡（E、F 页）：状态；能编辑时写「9项上架后锁定」（草稿「上架后9项会锁定」），下面每个锁定组一行（「识别 5项」），
  * 点了滚到声明它的卡片。没有编辑权限时只写状态的意思，不列锁定（这些字段对他并没有被锁）
  */
 function StatusCard({
@@ -483,6 +483,7 @@ function ChangesPanel({ id, changes, onJump }: { id: string; changes: readonly C
  * 新建时左边只写「还没保存」，不列改动
  */
 function SaveBar({
+  kind,
   status,
   changes,
   saving,
@@ -490,6 +491,8 @@ function SaveBar({
   onDiscard,
   onJump,
 }: {
+  /** 实体的 kind：改了计价与条款字段时说明换成 REPRICE_NOTE（saveCopy） */
+  kind: string;
   status: 'new' | 'draft' | 'active';
   changes: readonly Change[];
   saving: boolean;
@@ -502,7 +505,7 @@ function SaveBar({
   const toggle = useRef<HTMLButtonElement>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   const listId = useId();
-  const copy = saveCopy(status);
+  const copy = saveCopy(status, changes, kind);
   // 清单是浮层：在它和「展开改动」以外按下就收起（焦点不动）
   useEffect(() => {
     if (!open) return;
@@ -1250,6 +1253,7 @@ export function CatalogDetail(props: CatalogDetailProps) {
       )}
       {showBar ? (
         <SaveBar
+          kind={entity.kind}
           status={ctx.status}
           changes={changes}
           saving={saving}

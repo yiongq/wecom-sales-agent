@@ -13,7 +13,7 @@ export const lockReason = (reason: string): string => `${reason.replace(/[。.]$
 
 /**
  * 上架后锁定的字段：lockedWhenActive（整个字段，或只锁几个成员的标签）与编号（建好后永远只读）。
- * 「13项上架后锁定」数的就是这些：旅游包的线路是识别 5（含编号）、计价 2、条款 2、推荐 4（含只锁「国内」的标签）
+ * 「9项上架后锁定」数的就是这些：旅游包的线路是识别 5（含编号）、推荐 4（含只锁「国内」的标签）；计价与条款两组 02 有了条目版本之后不再锁
  */
 export const locksOnActive = (f: FieldDef): boolean => f.type !== 'status' && (f.key === '$code' || f.lockedWhenActive !== undefined);
 

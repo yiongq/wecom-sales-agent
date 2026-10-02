@@ -5,7 +5,7 @@
 //   一项里的子字段），写成「当晚住宿：没填」；落不到字段上的留给顶部的汇总；
 // - 「只显示碰过的字段」：失焦过的位置、点过保存以后全部；
 // - 409 之后的对比：你改过的字段，逐个与最新版本并排。
-import { sameValue } from '../../../src/shared/catalog.js';
+import { isRepriceField, sameValue } from '../../../src/shared/catalog.js';
 import { parseMonthRange } from '../../../src/shared/format.js';
 import { type CheckIssue, checkItem, type EntityType, type FieldDef, valueAt } from '../../../src/shared/pack.js';
 import { fieldChanged, fieldMode, isSingleItem, type ItemContext, nounOf, type Payload, pruneHidden, visible } from '../fields/model.js';
@@ -88,12 +88,20 @@ export const usableChanges = (
     (f) => fieldMode(f, ctx) === 'edit' && !sameValue(valueAt(state, f.key), valueAt(compare.mine, f.key)),
   );
 
+/** 已上架的条目改了计价或条款（02 spec「报价快照与产品库字段开放」）：保存条换成这一句 */
+export const REPRICE_NOTE = '改价只影响之后的报价和方案书，已发出的方案书和订单不变';
+
 /**
  * 保存条右边的说明与主按钮（设计系统 E、G 页）：草稿存了也不推荐；已上架的写接口返回时快照已经更新（01）；
- * 新建存下来就是一条草稿（spec「新建」：保存即建草稿，第 10.3 步）
+ * 新建存下来就是一条草稿（spec「新建」：保存即建草稿，第 10.3 步）。
+ * 已上架、改动里有 02 开放的计价与条款字段（REPRICE_FIELDS）时，说明换成 REPRICE_NOTE：存下来是一个新的条目版本，
+ * 已发出的方案书按发出时的版本渲染，订单的金额下单时就定了
  */
-export function saveCopy(status: 'new' | 'draft' | 'active'): { note: string; button: string } {
-  if (status === 'active') return { note: '销售助手下一条回复就用新内容', button: '保存并立即生效' };
+export function saveCopy(status: 'new' | 'draft' | 'active', changes: readonly Change[] = [], kind = ''): { note: string; button: string } {
+  if (status === 'active') {
+    const repriced = changes.some((c) => isRepriceField(kind, c.path.split('.')[0]!));
+    return { note: repriced ? REPRICE_NOTE : '销售助手下一条回复就用新内容', button: '保存并立即生效' };
+  }
   if (status === 'new') return { note: '保存后是一条草稿，不会推荐给客户', button: '保存草稿' };
   return { note: '草稿保存后仍不会推荐给客户', button: '保存草稿' };
 }

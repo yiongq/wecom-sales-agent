@@ -140,6 +140,7 @@ import {
   lockedFieldLabel,
   placeIssues,
   placeOf,
+  REPRICE_NOTE,
   saveCopy,
   saveSummary,
   touchedPlaces,
@@ -263,9 +264,33 @@ const load = (f: string): Payload[] => JSON.parse(fs.readFileSync(path.join(root
 const ROUTES = load('routes.json');
 const HOTELS = load('hotels.json');
 
-const travel = packById('travel')!;
 const entityOf = (p: IndustryPack, kind: string): EntityType => p.entities.find((e) => e.kind === kind)!;
 const fieldOf = (e: EntityType, key: string): FieldDef => e.fields.find((f) => f.key === key)!;
+/** 活的旅游包：02 第 8 步开放了计价与条款五个字段（每人起价、最佳季节、费用包含与不含、每晚起价），已上架的条目上能改 */
+const liveTravel = packById('travel')!;
+/**
+ * 设计系统 E、F 页照 02 第 8 步之前的旅游包画：计价、条款两组上架后锁定（线路 13 项、酒店 4 项）。照页面核对锁定组、卡片声明、
+ * 网格写法与上架确认的断言用这一版，与下面假包的 L 页版同一个做法；活的旅游包另有断言，见「9.0 02：计价与条款字段不再锁定」
+ */
+const travel: IndustryPack = (() => {
+  const p = structuredClone(liveTravel);
+  const lock = (e: EntityType, key: string, group: string): void =>
+    void Object.assign(fieldOf(e, key), { lockedWhenActive: true, lockGroup: group });
+  const route = entityOf(p, 'route');
+  const { id, rec } = route.lockGroups;
+  route.lockGroups = {
+    id: id!,
+    price: { tag: '计价', reason: '已发给客户的方案书按这些数算价，改了会变价' },
+    terms: { tag: '条款', reason: '已发出的方案书按这些条款承诺' },
+    rec: rec!,
+  };
+  for (const k of ['priceFrom', 'bestSeason']) lock(route, k, 'price');
+  for (const k of ['inclusions', 'exclusions']) lock(route, k, 'terms');
+  const hotel = entityOf(p, 'hotel');
+  hotel.lockGroups = { ...hotel.lockGroups, price: { tag: '计价', reason: '已发给客户的方案书按这个价算，改了会变价' } };
+  lock(hotel, 'nightlyFrom', 'price');
+  return p;
+})();
 const ROUTE = entityOf(travel, 'route');
 const HOTEL = entityOf(travel, 'hotel');
 // 假包两份：钉 L 页写法的断言（PKG、MATERIAL 和挂整页时的 renovationLPage）用冻结的 L 页版；逐字段画三种形态、样例打开不改
@@ -2473,6 +2498,54 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
 // ---------------- 9. 产品库详情（plan 第 10.1 步） ----------------
 // spec「产品库详情与编辑（E、F 页；L 页下半）」：纯逻辑在 catalog/detail.ts，整页在 pages/CatalogItemPage.tsx
 
+// 9.0 02：计价与条款字段不再锁定（02 spec「报价快照与产品库字段开放」）。活的旅游包上：锁定组只剩识别、推荐；这五个字段在
+// 已上架的条目上能改；保存条改了它们时写明「改价只影响之后的报价和方案书，已发出的方案书和订单不变」
+{
+  const LIVE_ROUTE = entityOf(liveTravel, 'route');
+  const LIVE_HOTEL = entityOf(liveTravel, 'hotel');
+  const rows = (e: EntityType) => lockRows(e).map((r) => `${r.tag}${r.count}@${r.card}`);
+  eq(
+    '02：旅游包的线路只剩识别5、推荐4两组，共9项；酒店只剩识别3项',
+    [rows(LIVE_ROUTE), lockTotal(LIVE_ROUTE), rows(LIVE_HOTEL), lockTotal(LIVE_HOTEL), lockPhrase(LIVE_ROUTE, ACTIVE)],
+    [['识别5@basic', '推荐4@fit'], 9, ['识别3@basic'], 3, '9项上架后锁定'],
+  );
+  eq(
+    '02：已上架的线路上计价与条款字段是输入框，识别字段照旧锁定；酒店的每晚起价也能改',
+    [
+      ...['priceFrom', 'bestSeason', 'inclusions', 'exclusions', 'title', 'days', 'aliases'].map((k) =>
+        fieldMode(fieldOf(LIVE_ROUTE, k), ACTIVE),
+      ),
+      fieldMode(fieldOf(LIVE_HOTEL, 'nightlyFrom'), ACTIVE),
+      fieldMode(fieldOf(LIVE_HOTEL, 'name'), ACTIVE),
+    ],
+    ['edit', 'edit', 'edit', 'edit', 'locked', 'locked', 'locked', 'edit', 'locked'],
+  );
+  eq(
+    '02：卡片头不再声明计价、条款（价格与季节、费用包含与不含两张卡没有锁定）',
+    [cardLocks(LIVE_ROUTE, 'price', ACTIVE), cardLocks(LIVE_ROUTE, 'terms', ACTIVE), cardLocks(LIVE_HOTEL, 'price', ACTIVE)],
+    [[], [], []],
+  );
+  const at = (...paths: string[]) => paths.map((path) => ({ path, label: path }));
+  const OLD = '销售助手下一条回复就用新内容';
+  eq(
+    '02：保存条的说明：已上架改了计价或条款字段写 REPRICE_NOTE；只改别的、草稿、不在开放清单里的实体照旧',
+    [
+      saveCopy('active', at('priceFrom'), 'route').note,
+      saveCopy('active', at('inclusions.2'), 'route').note,
+      saveCopy('active', at('highlights.1', 'bestSeason'), 'route').note,
+      saveCopy('active', at('exclusions'), 'route').note,
+      saveCopy('active', at('nightlyFrom'), 'hotel').note,
+      saveCopy('active', at('highlights.1', 'itinerary.2.hotel'), 'route').note,
+      saveCopy('active', at('priceFrom'), 'hotel').note,
+      saveCopy('active', at('priceFrom'), 'package').note,
+      saveCopy('draft', at('priceFrom'), 'route').note,
+      saveCopy('active').note,
+    ],
+    [REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, REPRICE_NOTE, OLD, OLD, OLD, '草稿保存后仍不会推荐给客户', OLD],
+  );
+  eq('02：REPRICE_NOTE 的原文（02 spec）', REPRICE_NOTE, '改价只影响之后的报价和方案书，已发出的方案书和订单不变');
+}
+
 // 9.1 锁定组：计数、在哪张卡片头声明（每组只说一次）、什么时候声明；状态句的锁定那一段
 {
   const rows = (e: EntityType) => lockRows(e).map((r) => `${r.tag}${r.count}@${r.card}`);
@@ -3543,6 +3616,31 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   const errorAt = (root: ParentNode, sel: string) => root.querySelector(`${sel} .field-error`)?.textContent ?? null;
   const hardestText = String(readValue(SICHUAN, 'intensity.hardest'));
   const hl = SICHUAN.highlights as string[];
+
+  // 02 第 8 步：活的旅游包里，已上架线路的每人起价、费用包含能直接改；改了它们，保存条写明改价只影响之后的报价和方案书
+  {
+    const api = fakeApi(() => undefined);
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', owner(liveTravel), {
+      items: { 'route/r-sichuan-lux': SICHUAN_ITEM },
+      lists,
+    });
+    const priceIn = e.box.querySelector<HTMLInputElement>('[data-field-key="priceFrom"] input');
+    eq(
+      '02 整页：状态句写「9项上架后锁定」，卡片头只声明识别与推荐，每人起价是输入框',
+      [header(e.box).status?.startsWith('9项上架后锁定'), headTags(e.box), !!priceIn],
+      [true, ['上架后锁定·识别', '上架后锁定·推荐'], true],
+    );
+    await typeInto(e.box.querySelector('[data-field-key="highlights"] [data-item-index="1"] input'), `${hl[1]}（改）`);
+    const onlyCopy = barText(e.box)?.note;
+    await typeInto(priceIn, String(Number(SICHUAN.priceFrom) + 1000));
+    eq(
+      '02 整页：只改亮点时保存条照旧；再改每人起价，说明换成「改价只影响之后的报价和方案书，已发出的方案书和订单不变」',
+      [onlyCopy, barText(e.box)?.note, barText(e.box)?.names],
+      ['销售助手下一条回复就用新内容', REPRICE_NOTE, '每人起价、行程亮点第2条'],
+    );
+    await e.unmount();
+    api.restore();
+  }
 
   // E 页：打开不改没有保存条；改两处出现，写法照设计系统 E 页；展开改动；⌘S 按打开时的 rev 发补丁；存好以后页面换成返回的条目
   {
