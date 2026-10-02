@@ -15,13 +15,13 @@ import { appendConsents, type ConsentRow } from '../db/repo/consents.js';
 import {
   insertConversation,
   lockConversation,
-  readConversationsAfter,
+  readSessionBatch,
   updateConversation,
   type ConversationSeqs,
 } from '../db/repo/conversations.js';
 import { cancelPendingJobs, enqueueJob, setJobStatus, type JobKind, type JobStatus } from '../db/repo/jobs.js';
-import { insertMessages, readMessagesFrom, readRecentCustomerMsgids, readWindowMessages } from '../db/repo/messages.js';
-import { readLiveOrders, readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
+import { insertMessages, readMessagesFrom, readRecentCustomerMsgids } from '../db/repo/messages.js';
+import { readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
 import { insertOutboundSends, type OutboundSendRow } from '../db/repo/outbound.js';
 import { insertGuardEvents, insertTurnTraces, type GuardEventRow, type TurnTraceRow } from '../db/repo/traces.js';
 import { shortIdOf } from '../shared/conversation.js';
@@ -36,10 +36,11 @@ import {
   normalizeForStore,
   orderToRow,
   ProjectionError,
+  rebuildSessions,
   rowToMessage,
   rowToOrder,
-  rowToSession,
   sessionState,
+  SPILL_FILE_RE,
   type ConversationValuesShape,
   type MessageRowShape,
   type OrderRowShape,
@@ -58,7 +59,6 @@ const MSGID_WINDOW_MS = 7 * 86_400_000;
 const RETRY_MS = [1_000, 5_000, 30_000, 120_000];
 /** 单个落库事务超过它记一行 warn 并计数 */
 const SLOW_TX_MS = 2_000;
-const SPILL_RE = /^store-spill-.+\.json$/;
 
 // ---------------- 排进下一次落库的附带行 ----------------
 
@@ -311,31 +311,20 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
       async (tx) => {
         let after: string | null = null;
         for (;;) {
-          const rows = await readConversationsAfter(tx, after, PRELOAD_BATCH);
+          // 会话行、窗口内消息、未作废订单的读法与重建，和 import-sessions / export-sessions 的读回是同一条路（不变量 14）
+          const { rows, messages, orders: ords } = await readSessionBatch(tx, after, PRELOAD_BATCH);
           if (!rows.length) break;
           const ids = rows.map((r) => r.id);
-          const msgs = await readWindowMessages(tx, ids);
-          const ords = await readLiveOrders(tx, ids);
           const mids = await readRecentCustomerMsgids(tx, ids, since);
-          const byConv = new Map<string, typeof msgs>();
-          for (const m of msgs) {
-            const list = byConv.get(m.conversationId) ?? [];
-            list.push(m);
-            byConv.set(m.conversationId, list);
-          }
           const batch = new Set(ids);
-          for (const row of rows) {
+          for (const { row, session, windowCount } of rebuildSessions(rows, messages)) {
             if (isDemoClassId(row.id)) throw new SessionStoreStartupError('demo_class_in_db', `库里有 demo 类会话 ${short(row.id)}`);
-            const list = byConv.get(row.id) ?? [];
-            const consistent =
-              list.length === row.lastSeq - row.windowStartSeq + 1 && list.every((m, i) => m.seq === row.windowStartSeq + i);
-            if (!consistent) {
+            if (!session) {
               throw new SessionStoreStartupError(
                 'preload_integrity',
-                `会话 ${short(row.id)} 的 last_seq=${row.lastSeq}、window_start_seq=${row.windowStartSeq}，窗口里却是 ${list.length} 条`,
+                `会话 ${short(row.id)} 的 last_seq=${row.lastSeq}、window_start_seq=${row.windowStartSeq}，窗口里却是 ${windowCount} 条`,
               );
             }
-            const session = rowToSession(row, list.map(rowToMessage));
             seedSeqs(session, row.windowStartSeq);
             for (const m of session.messages) Object.freeze(m);
             out.sessions.push(session);
@@ -464,7 +453,7 @@ const fsLabel = (e: unknown): string => {
 async function replaySpills(d: PgBackendDeps): Promise<{ applied: number; skipped: number }> {
   let names: string[];
   try {
-    names = fs.readdirSync(d.varDir).filter((f) => SPILL_RE.test(f));
+    names = fs.readdirSync(d.varDir).filter((f) => SPILL_FILE_RE.test(f));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0 };
     throw new SessionStoreStartupError('spill_conflict', `读不了数据目录里的 spill 文件（${fsLabel(e)}）`);
