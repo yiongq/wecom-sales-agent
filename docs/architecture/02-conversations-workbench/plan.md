@@ -11,7 +11,7 @@
 - spec 的 14 个开放问题 owner 已在 2026-10-02 全部定下（答复见本文件「Open」），不阻塞任何步骤；各步照 spec 里写定的结论做。
 - 原地变异测试在隔离副本里跑（Stop 钩子会对工作区跑门禁）；复现卡死的脚本用单进程加超时，收尾查 `ps`，不留孤儿进程。
 
-- [ ] 1. 开工核对（0.5）：
+- [x] 1. 开工核对（0.5）：2026-10-02 完成，基准、盘点与要注意的事见「实施记录 · 第 1 步」，带出三处要 owner 定的记在「Open」（都不挡第 2 步）。
   - 确认 spec 是 `ready`。
   - 记下开工提交的 sha；记下锁定套件 8 个文件的 sha256（`shasum -a 256 <文件>`）。验收 1 以它们为基准。
   - 跑四个门禁，记下 `PREFIX sha256` 的 system 与 tools 两个哈希。
@@ -207,6 +207,109 @@
   - 没点同意菜单时「AI 不在回复里使用该信息」：做不到确定性保证，改为「再问一次、仍没点就照常接待并提示模型不主动提」，严格的做法列为开放问题 7 的备选。
   - 只读成员的正文「把敏感类别所在的消息折叠」：只做号码类打码，折叠留给 PIA 的结论。
 
+### 第 1 步 · 开工核对（2026-10-02）
+
+**基准**
+
+- 前置条件逐项核对通过：spec `Status: ready`；01 与后台 UX spec 都是 implemented；线上 demo 自 2026-09-26 起 `CONFIG_SOURCE=db`（01 plan 验收 23）；`withTenant`、`holdTenantLock`、`queryCount`（`src/db/client.ts`）、`configMode()`（`src/config/source.ts`）与 `src/boot.ts` 的启动顺序与 01 spec 一致。
+- 开工提交 `f5c895b82cbf808efa6b4e58dbd49f4d63e5af21`（dev，合并 PR #68）。
+- 锁定文件 sha256（验收 1 的基准）：
+
+  ```
+  c71a4966983925bc422a55240b289675584485693a49d6410f5e5d5a2555a6e3  src/engine.selftest.ts
+  166c124e28cec35a9b8b0e306bbda653e653ee5795fd186388185812e32a3941  src/dejargon.selftest.ts
+  351fd745fcb65ed6f87605fe3deb4a60841598e983b44a6d91c9493571ff9cb8  src/engine-holiday.selftest.ts
+  d3f11083704b51fc13bc6be93933a094c2e0abd0310da6f87021e3df4a8d92a1  src/price-guard.selftest.ts
+  4a577bb23225aa54881c783ffe7bd41b1e115179a2f8b62044af21b70b07dc04  src/llm.selftest.ts
+  f371ea7e93fd75bd0c3054b36276cb55476672b3462576edf8dfc3fd6c5f9f61  src/server.selftest.ts
+  d37341de95e87956b643dfd6ef5aee28011e39a7ce5391148e0157f9800c7882  src/adapters/wecom.selftest.ts
+  aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.json
+  ```
+
+- 四个门禁在开工提交上全绿（mock eval 19/19，跳过 32 条 realOnly）。`PREFIX sha256 system=6c202d633b603a0b391634bcaf75da9d3ed42c30f848ad092a2467f713d9a423 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`：第 2–14 步每步结束时都要等于它。
+
+**文档收尾**
+
+- 01 spec、后台 UX spec 顶部各加一行 `Amended by: 02`；后台 UX plan「Open」交接卡措辞那一条标「已由 02 spec 解决（R12）」。
+- 总参考：「本阶段 spec 必须处理的点」里 identity map 一条、「开放问题」里自测存储一条标「已由 02 spec 定」。plan 写的第三条「`rerender`」总参考里没有：它是 01 开放问题 6，由 02 R21 定，01 已 implemented、正文不动。另把开放问题里同样已由 02 定的三条（`channel_inbox`、SSE 之外的推送通道、demo 下重置的底线）一并标上。
+
+**盘点**
+
+行号按开工提交。每类由一个只读 agent 盘点、另一个 agent 换办法复核找漏找错，下面是合并之后的结果；「注意」是后面的步骤要照着做的。
+
+1. 对 `session.messages` 的非 push 写：6 处，正好是 spec 的五类，没有别的写入点。
+   - 重置 `engine.ts:3275`（`messages = []`），订单真删 `engine.ts:3278` → 第 3、5 步。
+   - 裁剪 `engine.ts:3298`，另有 `adapters/wecom.ts:810`（非文本占位不经引擎，自带同样的 400→300，spec 没点名）→ 第 5 步；等价套件单独覆盖 810。
+   - 转人工备注 `engine.ts:3398`（经 3395 的别名 `rec` 改 `tools.ts:1249` 写入的 system 消息）→ 第 3 步。db 存储下这一行会抛 `TypeError`：真实模型路径被 `llm.ts:792–796` 吞成工具错误（转人工已生效、备注缺失），mock 路径（`llm.ts:974`）整轮失败。
+   - 企微重放对齐 `adapters/wecom.ts:771`（`splice` 删已记的客户原话）→ 第 3、12 步。
+   - 保鲜 `store.ts:188–195`（会话时间、消息 `m.at += delta`、订单 `createdAt` / `paidAt`）→ 照旧，前提是 demo 类不进 PG、不冻结。plan 给的 grep 漏了 `+=`，第 7 步复查改用 `\.(content|at|role|msgid)\s*(\+|-)?=[^=]`；zsh 下 `--include` 要加引号。
+   - 注意（第 2 步）：`assignSeqs` 的字面规则（已有 seq 的严格递增、排在没 seq 的前面）查不出中间删除（`[1,2,4]` 仍递增）与尾部删除，验收 5 却要求查出中间删除，所以还要校验「带 seq 的相邻差 1，最后一条等于已分配的最大 seq」。整体换成副本（`map` 出新对象）在 WeakMap 里查不到 seq，看起来和重置（`messages = []`）一样；要分清就得让重置路径显式告诉 store（推进窗口的调用），否则只能靠等价套件查。第 2 步定下做法记进本记录。
+   - 注意（第 3 步）：改成 `alreadyRecorded` 之后，这句客户原话留在原位、`at` 是原值；今天是删掉再 push 到欢迎语之后、拿新的 `at`。锁定的 W1 只数条数（`wecom.selftest.ts:738–762` 是中间删除、660–681 是尾部删除，文件存储宽松模式下照旧通过），但 spec 说的「内存里的结果与今天逐字节相同」在这一处不成立。
+   - 注意（第 7 步）：锁定的 `server.selftest.ts:835` 原地改非种子会话消息的 `at`，db 存储下会抛 `TypeError`；锁定套件钉文件存储所以不受影响，等价套件与 DB 模式 eval 不能照搬这种写法。
+
+2. 写死的 `'paid'`：
+   - 阶段判断，第 3 步改看行业包终态（旅游包下等价）：`engine.ts:72`（`deriveStage`，锁定 `engine.selftest:2500`、`2522` 钉住）、`1568`、`3510`（两处）；`followup.ts:72` 归第 10 步（资格「非终态」）；`server.ts:379–382` 旧 `/resume` 归第 13 步 `release`：订单读法留作「`stage=handoff` 而订单已付」的兜底（`scripts/seed-demo.py:156` 的 A01 就是这种形状），写入的 `'paid'` 改取终态 key。
+   - 阶段写入保留：`engine.ts:3895` `notifyPaid`（锁定 `engine.selftest:191`、`2518`，`server.selftest:1253`）。多终态的包写哪个，本阶段只有旅游包，不处理。
+   - 订单状态 `OrderStatus`，不改：`engine.ts:1868`、`1911`，`insight.ts:22`，`server.ts:464`，`store.ts:223`、`336`，`admin.html` / `chat.html` / `pay.html` 的订单标签。
+   - 状态名 `paid`（会话状态，不是阶段），第 3 步补第四态 `assigned`：`shared/console-api.ts:85`、`console-api/app.ts:465`（counts 初值）、`scripts/check-console-src.ts:70`、`console/src/conversations/model.ts:34`（`TAB_RANK`）、`console/src/conversations-search.ts:8`、`console/src/parts/Status.tsx:6` 与 `STATUS_LABEL`（不补 typecheck 不过）；`shared/conversation.ts:19` 扩成四态。
+   - 不改：表的键（`engine.ts:49`、`insight.ts:15`、`143`，`types.ts:15`，`console-pack.ts:335`）；`admin.html` 的阶段表与 701 的 `isDone`（R11）。
+
+3. 进入转人工与改 `handedOver`：现有 5 处 `enterHandoff` 调用正好是 spec 的五条入口。
+   - 定义 `tools.ts:1039–1042`：1042 写死 `stage='handoff'`，第 3 步终态保留；锁定 `engine.selftest:644`（E1）钉住非终态仍是 `handoff`。
+   - `request` / `complaint` / `refund`：`engine.ts:3324`。kind 现在是 `handoffReply` 的内部变量（1897–1901），第 3 步抽出来在 `enterHandoff` 之前算；quote 取本轮原话，departNote 可直接算。
+   - `model`：`tools.ts:1243`；reason 在 1244–1246 截 200，记录要 ≤120；mock 的 `llm.ts:974` 也走这里。
+   - `promise`：`engine.ts:3701`。同一轮模型已调过 `handoff_to_human` 时保留第一次的 `model` 记录，计数不加。
+   - `claimed`：`engine.ts:3735`。模型没给 reason，用 3739 现有的固定说明「回复里答应了转接顾问（引擎补记）」。
+   - `agent`：`server.ts:361` 旧 `/handoff`。reason「共享工作台转人工」，不设接手人；第 3 步接 `legacy_admin_writes`。
+   - 强制改回 `handoff`：`engine.ts:3307`（客户再发消息）、`3493`（模型返回后看到 `handedOver`），第 3 步都跳过终态。`AgentReply.stage` 的字面量 3309、3328、3502：非终态照旧 `'handoff'`（锁定 `engine.selftest:196`、`199`、`680`、`1908`），终态会话 spec 没写，按 `session.stage` 返回。
+   - 清标记：`engine.ts:3280–3282` 重置，另清 `handoff`、`assignee`、`turnSignals`、`negativeHits`（plan 第 3 步的「重置清掉接手人与计数」指这两个计数；`handoffCount` 不清）；`server.ts:372–385` 旧 `/resume`，第 3 步接开关、第 13 步改调 `release`；旧 `/reply` `server.ts:403` 同样。
+   - 其余：`store.ts:336` `markOrderPaid` 写 `handoffBeforePaid`（第 3 步）；`engine.ts:3500`「顾问已接管会话，AI 本轮生成的回复未发送」与 spec 的「本轮未发送（顾问已接手）」在第 13 步统一；`insight.ts:26` 按当前标记算转人工成交额，归 03；`admin.html:1048` 的交还在第 13 步之后遇成员接手会收到 409，弹的是「服务端未响应」（R11 不改 `admin.html`，只记一笔）。
+
+4. 发送（第 12 步）：
+   - send_msg 请求点只有 `adapters/wecom.ts:607`（文本：602 按 2000 字节分段，604 每段至多 3 次，`callApi` 换 token 时再发一次）与 `452`（卡片，不重试）；`send_msg_on_event` 在 `637`，调用点 `726` 没有 uid，要把 718 算好的 uid 传进去。
+   - 调用：`737` 老客户补发欢迎（`welcome`）、`820` 非文本引导、`845` AI 回复（含 836 的重放）、`864` 异常道歉、`584`/`589`/`591`/`595` 在 `sendRich` 里、`1122` push → `sendRich`。push 的实现：`wecom.ts:1113`、`simulator.ts:26`、`server.ts:59`（兜底，可不改）；接口 `types.ts:157`。push 的调用：`server.ts:412` 旧 `/reply`（`human`）、`470` 付款确认（`notice`）、`791` 跟进（`followup`，`followup.ts:194`）。
+   - spec 没点名 kind 的：820 与 864 记 `ai`，595（卡片失败后补发的文本）记 `card`。发送时手上没有 `ChatMessage` 的：845（`AgentReply` 只有 text，重放只拿 content）、470（`notifyPaid` 只返回 text）、820 与跟进（发成功才写进会话），第 12 步把消息对象带出来。
+   - 注意（会碰锁定断言）：一、`wecom.ts:1128` 的 `resetForTest` 只清适配器内存，卡死没出结果的分段不能算 `accepted` / `unknown`，否则 W1「停机超时」（`wecom.selftest:638–657`）与「队头」（704–731）变红；二、819 判断「引导提示发过没有」保留会话检查，账本只作补充（925–928）；三、`msg_send_fail` 在 958 处单独拦下，放在 `markHandled` 之后或让 `onSendFail` 幂等；只放宽 958 的过滤，它会进在途表、被当成非文本客户消息，给客户发一条引导（888）。
+   - 注意（其余）：取 access_token 失败（`wecom.ts:75`，`callApi` 的 90、100 行）时 send_msg 根本没发，不算 `unknown`；625 是分段最终失败的汇合点，`settle` 与第 17 步的 `wecom_send` 告警挂在这里；按 msgid 判「后面有没有 AI 回复」要跳过 742 写进会话的欢迎语；跟进的额度检查放在重判之后、记账之前，额度不够不算失败；`engine.ts:3824` 是 AI 回复写进会话处，第 12 步在它之前去掉开头的「【顾问】」，第 13 步在它之前比较接手代次（`takeoverGen` 第 13 步才建，第 12 步先接桩）。
+   - 状态层照旧（R7）：cursor `wecom.ts:110`、`162`、`945`、`971`；`handled` `112`、`197`、`221`、`959`；在途表 `965`、`899`；冷启动 `960`；重放 `995`、`1008`；落盘 `974`。
+
+5. 截断：全部是按 UTF-16 码元的 `.slice(0, N)`；src 里没有任何去掉 U+0000 的代码，只有拒绝型的 `storableText`。
+   - 第 3 步换 `cleanText`：入口 `engine.ts:3264` 与重放对齐 `adapters/wecom.ts:765`（必须是同一个调用）；`tools.ts:1246` reason；`engine.ts:2348` departNote 里的原话（40）；`engine.ts:3730`、`3830`、`3838` system 消息（60）；`engine.ts:509` 确定性推荐里的亮点（42）；工具结果与参数里的客户原话（第 9 步进 trace）`engine.ts:2972`、`3034`、`3133`、`2579`，`price-rules.ts:82`。可选：`tools.ts:629`、`types.ts:55`。
+   - 没截断、进库前也要清洗：`server.ts:407` 旧 `/reply`（第 13 步 `cleanText` 1–2000）；`wecom.ts:664` 昵称、`engine.ts:247` `destinationInterest`（`normalizeForStore` 兜住）；AI 回复全文（`engine.ts:3824`）与跟进话术（`followup.ts:97`、`215`）不去 NUL，模型输出带 NUL 会让会话 poisoned：第 3 步在 push 之前过 `cleanText`（不截长度），或第 5 步在消息行投影里清洗，二选一并记进实施记录。
+   - spec 长度对不上现状：`HandoffRecord.reason` ≤120（现截 200），`quote` ≤200（现在没有这一截）。
+   - 不用改：`engine.ts:441`、`wecom.ts:320` 的分段（已防切开代理对）、`wecom.ts:456` 卡片、`server.ts:573`、`llm.ts:286`，以及各处数组截取。`engine.ts:666` 的 U+0001–U+0003 链接记号发出前已抹掉，第 9 步 `noteGuard` 的前后文可能带着它们。
+
+6. 日志里的客户原话（第 16 步改经 `logQuote`，传原文而不是截过的串；`logQuote` 在第 17 步的 `src/log.ts` 里，第 16 步先把函数建出来）：
+   - 19 处：`adapters/wecom.ts:830`；`engine.ts:414`、`1052`、`1537`、`1546`、`3156`（tags 那一段）、`3157`、`3381`、`3533`、`3691`、`3717`、`3723`、`3734`、`3756`（两段）、`3770`、`3787`、`3799`、`3805`；`followup.ts:219`。
+   - 打会话原 id 的 33 处（第 17 步，不变量 48）：`engine.ts:178`、`188`、`414`、`1537`、`1546`、`3156`、`3157`、`3381`、`3533`、`3691`、`3717`、`3723`、`3734`、`3756`、`3770`、`3787`、`3799`、`3805`、`3844`、`3881`；`llm.ts:671`、`743`；`followup.ts:170`、`177`、`197`、`209`、`219`、`221`；`wecom.ts:849`、`999`、`1117`；`server.ts:60`、`704`（请求路径里的 id）。其中 3 处被锁定断言钉住原 id：`llm.ts:743`（`llm.selftest:734–736`）、`server.ts:60`（`server.selftest:705–706`）、`wecom.ts:1117`（`server.selftest:745–748`），所以第 17 步按 profile 处理：prod 写 ref 或短码，demo 原样，与 `logQuote` 同一口径。`wecom.ts:849` 在引擎轮次结束之后，上下文要包在 `handleCustomerMessage`（781）上。
+   - 未验证、第 16、17 步复核：`store.ts:40`、`42`，`wecom.ts:175`、`177`，`usage.ts:93` 把 `JSON.parse` 的错误整个打出来，片段里可能带原话或会话 id，改成只打 `e.name` 与位置；`llm.ts:286` 的 `LlmHttpError` 带上游响应体前 300 字，`llm.ts:432`、`452`、`520`，`wecom.ts:863`，`server.ts:704` 打它。
+
+7. 匿名可读、直接返回 store 原对象的旧接口（第 3 步改投影，只拷贝，不改 identity map 里的活对象）：
+   - `GET /api/sessions` 的匿名分支 `server.ts:348`（346 带 `ADMIN_PASS` 照旧）、`GET /api/sessions/:id` `server.ts:354`（handler 不分匿名与管理员）：去掉 `assignee.userId`、消息的 `authorId`，姓名写「顾问」。
+   - `GET /api/orders` 的匿名分支 `server.ts:434`：去掉 `confirmedBy`、`paidMarkedBy`、`cancelReason`。
+   - `GET /api/orders/:id` `server.ts:441`：R22 白名单，带不带凭据一律投影；`confirmed` 取布尔（`confirmedAt` 有值），公开投影里不能有成员姓名。`pay.html:417`、`chat.html:531` 与 `/pay/:orderId` 的服务端注入用到的字段都在白名单里。
+   - `POST /api/orders/:id/pay` 的响应体 `server.ts:462`、`483` 也带订单原对象（demo 下匿名可调），spec 没覆盖，见「Open」。
+   - 成员身份的来源不只种子订单：`sim-` 访客订单也能被成员确认、取消，自测两类都要覆盖。
+   - 旧接口只认 `ADMIN_PASS`（`isAdminReq`），不认 console 的 cookie：成员在旧接口上拿到的是投影，比 spec「成员登录的请求照旧返回原对象」更严，按 `isAdminReq` 判，不另加 cookie 查询。
+   - console-api 在 demo 下的匿名分支（`/pack`、`/status`、`/sop`、`/catalog`）都是投影，不用改。
+   - `chat.html:645–647` 恢复历史直接渲染 content，人工回复不带「【顾问】」，与实时推送不一致，第 12 或 13 步处理。
+
+8. 锁定套件与 `eval/cases.json` 里含词表词的客户原话，逐句现在的期望（其余 18 个词在客户原话里零命中）：
+   - `engine.selftest.ts:1226` p2b「先不用了」：模型调一次，回复等于模型原文、不补方案书链接，不转人工。
+   - `engine.selftest.ts:2652` U7③「我们一家人想出去玩，我和老公，两个孩子，还有我婆婆72岁，孩子想看熊猫，婆婆也怕高反」：模型两步（脚本恰好用完），不转人工。
+   - `engine.selftest.ts:2662` U7「我们俩度蜜月 听说高反挺吓人的 想去云南」：预取云南、模型一步，不转人工。
+   - `engine.selftest.ts:4189` Y5「算了 听说高反挺吓人的 换云南吧」：模型一步，编价与高反担保被删，不转人工。
+   - `engine.selftest.ts:420` planPrefetch，同一句：纯函数返回 `[{ destination: '云南' }]`。
+   - `engine.selftest.ts:3618` W12「九寨海拔高吗 我妈怕高反」：纯函数不预取。
+   - `engine.selftest.ts:3156` R3「另外，孩子要带护照吗」：纯正则，不算另一张单。
+   - `dejargon.selftest.ts:565`「海拔三千米会不会高反」：`BUDGET_RE` 不匹配。
+   - `eval/cases.json:699` retrieval-03「我们一家人，我和老公带两个孩子，还有婆婆72岁也怕高反，孩子想去成都看熊猫」（realOnly）：不转人工、调 `search_routes`、回复含 3,5xx 米的海拔。
+   - `eval/cases.json:785` retrieval-05 第 2 轮「算了 听说高反挺吓人的 换云南吧」（realOnly）：本轮有 `search_routes`。
+   - 注意（第 11 步）：`fakeSay`（`engine.selftest:610`）要求脚本恰好用完，任何「本轮不调模型」的规则误命中上面几句都会变红；两条 eval 只在第 15 步的真实模型回归里跑。向量表把以上 10 句都放进「不触发」（「怕高反」「听说高反」是出行前的顾虑，主定义要求此刻有症状），另加「支付链接找不到了」（`engine.selftest:3246`、`3544`，`dejargon.selftest:267`：证件丢失别写成宽松的「找不到」）与「先交钱然后人跑了咋整」（`cases.json:518`：被困走失别把「人跑了」算进去）。
+   - 注意（第 11.1 步）：「你们这个是骗人的吧」（`cases.json:218` 的小句，现按打消疑虑处理）、「你们靠谱吗，不会是骗人的吧」（`cases.json:233`，mock 也跑，期望 discovery、不道歉不转接）：负面情绪要收「骗人」，就照 `DOUBT_CLAUSE` 排除疑问小句；不与 `isComplaint` 已命中的（`engine.selftest:195`、`679`、`1945`，`dejargon.selftest:384–424`）重复计数。
+   - 注意（第 10 步）：拒绝识别别按子串收「不用」「算了」：「先不用发方案了，我再想想」（`engine.selftest:1225`）、「不用再看看了，就订这个」（`engine.selftest:3571`，W9 纯函数的反例）、「不用倒时差」（`engine.selftest:2091`、`4205`，`cases.json:40`、`128`）、「算了 就这个吧 订」（`cases.json:809`）、「别的不考虑」（`engine.selftest:385` 等）。
+   - 注意（第 16 步）：撤回同意类的词零命中；同意菜单只在发布过隐私说明后启用，DB 模式 mock eval 的 `installSeededConfig` 不能顺手发布隐私说明。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -216,6 +319,10 @@
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
 
 - 开放问题的答复（owner 2026-10-02，已写进 spec 各条与顶部 `Revisions:`）：1 选 A「部分取代」，规则进了 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部已加 `Superseded in part by:`；2 线索 180、客户 730、trace 90 天，按租户可改；3 企微群机器人，与告警不同群；4 词表加规则；5 `channel_inbox` 留在 04、做三条缓解；6 选 A；7 照推荐做，PIA 出结论后复核；8 保守口径；9 02 不做改价；10 固定的回归步骤，不做发布闸；11 仓库外事项全部完成才接第一个真实租户；12 选 A；13 以后在另一台境内机器上自建 Langfuse，02 只埋点；14 国内云厂商的拨测。
+- 第 1 步盘点带出、要 owner 定的三处（都不挡第 2 步）：
+  - **交还消息里的顾问姓名会经匿名旧接口漏出**（第 3 步写投影之前定）。spec「接手、人工回复与交还」规定交还时记一条 system 消息「{姓名}把会话交还 AI」；种子会话既能被成员接手、又对匿名可读，「后台接口」规定的匿名投影只去掉 `assignee.userId` 与消息的 `authorId`、`authorName`，管不到正文，`admin.html:939` 会原样显示它，与不变量 44（匿名响应里没有成员姓名）冲突。推荐：匿名投影把 `release()` 按固定模板生成的这条改写成「顾问把会话交还 AI」（模板由同一个常量产生，确定性可测）。备选：正文本身就写「顾问把会话交还 AI」，姓名只在 J 页由结构化记录显示（spec 的那句文案要改）。
+  - **`POST /api/orders/:id/pay` 的响应体**（第 3 步）。409 与 200 两个分支（`server.ts:462`、`483`）都带订单原对象，demo 下匿名可调；02 之后会带出 `confirmedBy`、`paidMarkedBy`、`cancelReason`。R22 只管 `GET /api/orders/:id`。推荐：改用同一个 R22 白名单投影（`pay.html` 只看状态码与 `res.ok`，锁定断言不读响应体）。
+  - **advisor 模式下支付页从哪儿知道收款方式**（第 15 步之前定）。R22 白名单里没有收款方式，`confirmed=false` 分不清「online 待付款」与「advisor 待确认」；`/pay/:orderId` 能由服务端注入，`/pay.html?orderId=` 这条静态兜底（`pay.html:314`，`server.ts:698`）注入不到。推荐：`/pay.html?orderId=` 跳到 `/pay/:id`，页面只靠服务端注入。备选：白名单加 `paymentMode`（改 R22；锁定断言只看 `id`，不受影响）。
 
 ## 交接记录
 
@@ -233,3 +340,10 @@
 - 半成品：无，还没写任何代码。
 - 阻塞：无。plan 不再等任何答复；接第一个真实租户之前的仓库外事项在「上线清单」里，不挡开发。
 - 下一步：新会话从第 1 步「开工核对」开始。线上仍是 `demo-v2`，后台 UX 改造只在 `dev`、owner 定先不发版；02 的第 27 步「demo 线上切换」由 owner 执行。
+
+### 交接（2026-10-02，第 1 步）
+
+- 已完成：第 1 步。基准哈希、前缀哈希、八类盘点记在「实施记录 · 第 1 步」；01、UX spec 的 `Amended by:` 与总参考的标注已加。
+- 半成品：无。
+- 阻塞：无。「Open」里新增三处待 owner 定，最早的一处在第 3 步写匿名投影之前要答复。
+- 下一步：第 2 步「store 门面、停机与启动顺序」。先读「实施记录 · 第 1 步」第 1 类的「注意（第 2 步）」：`assignSeqs` 要校验连续，重置要显式告诉 store。
