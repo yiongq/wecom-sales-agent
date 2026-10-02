@@ -49,7 +49,7 @@
   - `src/db/db.selftest.ts`：「七张表」的断言与权限期望表扩到新表；PGlite 上迁移连跑两遍、CHECK（含 `conversations.id` 拒绝 demo 类、`state.id` 一致）、`jobs` 的 open 唯一、复合外键与 `SET NULL (session_id)`、两个触发器。真实 PG 部分：新表逐格权限、没有 DELETE / TRUNCATE、清除函数拒删未到期数据与「未来的 now」、不在 `withTenant` 里调用报错、`erase_conversation` 只有 platform 能调。
   - `deploy/backup.sh` 的 TABLE DATA 校验加三张表（行数为 0 不告警；审查之后改成表在库里存在时才要求）。
   - 对应验收 5 的权限与清除函数部分，以及不变量 5、6、11。
-- [ ] 5. PG 后端（5）：
+- [x] 5. PG 后端（5）：2026-10-02 完成，结构、各条取舍与偏离、变异与真实 PG 结果、给第 6、7、9、10、12、13、14、16、17 步的入口与注意见「实施记录 · 第 5 步」。
   - `src/store/project.ts`：`sessionToRow` / `rowToSession`、`orderToRow` / `rowToOrder`、消息的行投影（未知键进 `extra`）、`normalizeForStore`。纯函数，先写往返自测。
   - `src/store/pg-backend.ts`：分批预载（`longRunning`）与 7 天 msgid 集合、每会话写队列与合并（`AsyncLocalStorage.snapshot()` 起落库）、一次落库的七步（spec「identity map 与写入」，含 `flush_id` 与存档点）、进快照即冻结、失败的两类与 poisoned、`StoreConflictError` → 优雅停机、drain 段排空、`spillSync` 与启动回放；`deleteOrdersOfSession` 在 db 存储下作废订单；重置与裁剪体现为窗口推进；demo 类会话仍走 JSON，对它们的审计单独一个事务。
   - `src/db/testing.ts` 加 `installPgSessionStore()`（PGlite 上装好 db 存储，只给自测与 `eval/run.ts` 用）。
@@ -450,6 +450,54 @@
   - 注意（第 5、6 步）：已有订单的 `session_id` 只能写回原值（触发器）；内存里订单的 `sessionId` 不会变，照 `upsertOrders` 写即可。撞上它报 23514、消息以「orders: 」开头，归数据类。
   - 注意（第 10、14 步）：任务 `payload` 必带 `sessionId`（与会话有关的跟进、转人工通知都是），否则清除与删除带不走它，`dedupe_key` 里的 external_userid 会留在库里；`retention_purge` 不属于某个会话，不带。
 
+### 第 5 步 · PG 后端（2026-10-02）
+
+- 结构：
+  - `src/store/project.ts`（纯函数）：`sessionState` / `sessionToRow` / `conversationValuesFrom` / `rowToSession`、`messageToRow` / `rowToMessage`、`orderToRow` / `rowToOrder`、`normalizeForStore`、`lastCustomerAtOf`、`ProjectionError`；`isDemoClassId` 与 `SESSIONS_IN_DB_MARKER` 搬到这里，`store.ts` 原样再导出（自测断言是同一个函数与值）。行的形状写成与 `src/db/repo/` 同构的接口（纯模块不能 import 那边，调用处按结构对上）。
+  - `src/store/pg-backend.ts`：`openPgBackend(deps)` 做预载 → 校验 → 回放 spill（回放过就再预载一遍），返回还没装上的后端，不碰 identity map；`install()` 才把会话与订单放进 map。`PgBackend` 在 `StoreBackend` 之外多 `accepts`、`voidOrder`、`queueAudit` / `queueJobs` / `queueConsents` / `queueTelemetry`、`writeStandaloneAudit`、`recentMsgids`、`close`、`stats`。`StoreConflictError` 在 `backend.ts`。
+  - `src/store.ts`：`initSessionStore` 的 db 分支（装上后端、登记 drain 段 `drainStore(剩余预算)` 与 late 段 `close()`）；`saveSession` 先经 `accepts` 查 identity；订单按 `pgFor`（db 存储、真实会话、而且会话在内存里）路由，否则归文件后端；`deleteOrdersOfSession` 在 db 存储下逐张 `voidOrder(o, 'reset')` 再移出内存；新导出 `queueAudit`、`queueJobs`、`queueConsents`、`queueTelemetry`、`recentMsgids`、`noteWindowReset`、`__storeTest.pgStats()`。文件存储下每个分支都退回原来的调用，行为逐字节不变（锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变）。
+  - 其余：`src/engine.ts` 的重置在 `messages = []` 之前调 `noteWindowReset(session)`；`src/llm.ts` 的 `chat()` 入口 `inTenantTx()` 为真就抛；`src/db/client.ts` 加 `pgErrorOf`（沿 cause 链取错误码与约束名）与 `trySavepoint`（回到存档点成功就返回 `{ ok: false, error }`，回不去才抛）；`src/db/repo/messages.ts` 加 `readRecentCustomerMsgids`、`readMessagesFrom`；`src/config/source.ts` 加 `tenantLockTaken()`（重取得到 `held_by_other` 时置真）。
+  - 测试装配（`src/db/testing.ts`）：`openTestDb({ dataDir })` 能落盘、能再打开（被 SIGKILL 之后也行）；`installPgSessionStore(t, { varDir })` 建租户、切成 `agent_app`，返回 `{ deps, faults, stats }`：`deps.db` 是同一个 PGlite 上另开的 drizzle 实例，故障注入（`acquire` 抛、`gate` 卡、`releaseOnce` / `skipReleases` 模拟 COMMIT 之后回包丢失）与计数只管它，查询不进 `queryCount()`；调用方自己 `initSessionStore(fixture.deps)`（依赖规则不许 `src/db/` import store，没开例外）。另有 `fakeDbError(code)`、`openFlakyDb(url)`（node-postgres：放过 `skipCommits` 条之后让 COMMIT 照常执行、回包丢掉）、`createRealPgFixture(superUrl)`（建临时库、按 `roles.sql` 建角色、迁移、建租户；`src/store/` 下的套件不能 import `pg`，所以放这里）。
+- spec 写得不够、本步定的（选最小、最贴原文的）：
+  1. **何时取快照**：没有在途的落库时，`saveSession` 当场同步取快照并起落库（不去抖）；有在途的就只标脏，提交之后接着取下一次。所以「进快照即冻结」发生在 `saveSession` 里：之后再改这条消息立刻抛 `TypeError`，不会有「改了但碰巧赶上快照」的不确定。
+  2. **flush_id**：每个快照一个，同一快照的重试沿用（spec「flush_id 是上一次重试的值」）。重试时先看 flush_id：库里是本快照的且 last_seq 等于快照最后一条 → 已提交，回滚本事务、补做提交后的步骤；是本快照的而 last_seq 不对 → 冲突；不是本快照的再比 last_seq。先看 flush_id 是为了没有新消息的快照（只改会话投影、只带审计）：它的 last_seq 本来就等于「已提交到第几条」，按 last_seq 判会重写一遍、审计记两行。
+  3. **重试**重做同一个快照；退避期间来的改动排在它提交之后的下一次，不并进重试。
+  4. **失败分类**：SQLSTATE 22、23、42 类、`WindowCorruptError`、`ProjectionError`（时间不是有限的毫秒数）、不带 code 的 `TypeError` / `RangeError` / `SyntaxError` → 不重试、poisoned；`StoreConflictError` → 冲突；其余（spec 点名的 08、40001、40P01、57014、53、57P，spec 没点名的类，errno 码，不带 code 的「连接意外中断」）→ 退避重试。spec 没点名的类按重试处理：不丢数据，积压在 `/healthz` 看得见。`lastError` 形如 `23514 conversations_id_check · 7F3A`。
+  5. **poisoned** 之后对这个会话改用 `assignSeqs(s, 'lenient')`，`flushSession` 立即以 `StoreLaggingError` reject；失败的那个快照留在「在途」位置不再重试，停机时连同之后的改动写进 spill。
+  6. **spill 文件**（`var/store-spill-<ISO 时间，冒号与点换成 ->.json`，先写 `.tmp` 再改名）：每个会话一条，除了 spec 列的（已提交到第几条、没提交的消息连同 seq、会话投影、排着的订单与审计），还写在途那次的 `flushId` / `lastSeq` 与它的附带行（分开记）、一个回放用的 `flushId`、排着的任务与同意记录（spec 没列，按不变量 13「没落库的改动要么已提交，要么在 spill 里」一并写；trace 与账本行照 spec 不写）。回放按会话逐条：库里是这一条的回放 flush_id → 已回放过，跳过；库里是在途那次的 flush_id 与 last_seq → 在途那次其实提交了，只补它之后的消息与附带行；库里的 last_seq 等于「已提交到第几条」→ 按一次落库写入；库里已经等于文件里最后一条的 seq 且内容一致 → 跳过（spec 原文）；其余 `spill_conflict`（点名短码，文件留着）。别的租户的 spill → `spill_conflict`；读不出来的文件、有一条回放仍失败（数据类）的文件 → 改名 `.json.failed`、记一行，从库里的状态起；回放时连不上库 → `db_unreachable`。全部成功就删掉文件，再预载一遍。
+  7. **预载**每批四条语句（会话行、窗口内消息、未作废订单、7 天 msgid），整个预载一个 `REPEATABLE READ READ ONLY` 的 `longRunning` 事务。校验：窗口内消息条数等于 `last_seq − window_start_seq + 1` 且 seq 逐条连续（否则 `preload_integrity`）；订单 `data.sessionId`、`data.id` 与列一致、会话在这一批里（否则 `orphan_order`）；有 demo 类 id（表上的 CHECK 本来就拦，纵深防御）→ `demo_class_in_db`；预载里的库错误一律 `db_unreachable`（带错误码）。企微去重集合 = 预载的最近 7 天（按 `at`，不看窗口）加上本进程分配过 seq 的客户消息的 msgid，`recentMsgids(id)` 读它（文件存储下为空）。
+  8. **消息投影**：已知字段的取值放不进列的（customer 带 author、非 human 带 authorName / authorId、authorId 不是 uuid、msgid 不是串、sentAt 不是数）原值进 `extra`、列为 NULL，重建时 `extra` 盖在列上，`messages_author_human_check` 的 NULL 语义由此守住（自测断言行投影里没有一条「没有 author 却带操作者」）。`author='human'` 的消息重建时一定带 `authorId`（列为 NULL 时写 `null`）：共享工作台的 `authorId: null` 原样往返；没有 `authorId` 键的 human 消息往返后多一个 `null`（不变量 17 要求必带，02 之前的数据没有 human）。`assignee_user_id` 有外键到 `users`，写进不存在的 user id 会 23503、poisoned（第 13 步写入真实成员 id）。
+  9. **identity map**：`saveSession` 收到同 id 的另一个对象 → `accepts` 拒绝（日志一行、`foreign` 计数），既不落库也不换掉 map 里的。
+  10. **不是预载来的会话**（新建的，或第 6 步之前 JSON 里读来的真实会话）建写队列时，窗口里已有 seq 的消息整段算没提交：JSON 里来的真实会话第一次落库从 seq 1 写全窗口，不会只写尾巴留下空洞。第 6 步加 `real_in_json` 拒绝之后线上走不到这条。
+  11. **孤儿订单**：所属会话不在内存里的订单归文件后端（`orders.json`），改动照写；同 id 的会话建出来时转进它的写队列，随第一次落库写进库。
+  12. **附带行的入口**：`queueAudit`（真实会话随落库写，各自带操作者与 IP；db 存储下的 demo 类或内存里没有的会话单独一个短事务，只试一次、失败记一行；文件存储下不写，会话类审计在文件存储下的去处第 13 步定）；`queueJobs`（`enqueue` / `cancel` / `status` 三种，时间是毫秒）、`queueConsents`、`queueTelemetry`（`traces` / `guards` / `outbound`，写在 `SAVEPOINT telemetry` 里）只对 db 存储的真实会话，其余丢弃（R6、R16）。本步只有订单与审计有生产者，其余由自测直接调。
+  13. **旧 `/api/admin/stream`**：db 存储下真实会话每次提交之后发 `storeEvents` 的 `change`（与文件后端一样约 200ms 合并一次），提交失败不发。不发的话 db 存储下 `admin.html` 对真实会话不再刷新；不变量 10 本来就要求「提交之后」。文件存储下仍是文件后端在每次去抖落盘后发（照旧不论成败，改成提交后发归第 13 步）。
+  14. **停机**：drain 段把退避中的重试立即再试一次，在预算内等所有非 poisoned 的会话提交；已冲突或 `tenantLockTaken()` 时不写库，直接返回全部积压（日志只写短码）。late 段 `close()`：此后不起新的落库、退避的定时器清掉；还在途的那次要么提交（spill 里就没有它），要么失败（留给 spill）。冲突时 `onConflict` → `gracefulExit(1, 'store_conflict（会话 短码）：落库撞上另一写者')`。
+  15. 单个落库事务超过 2 秒（从借连接算起）记一行 warn、`slowTx` 加 1；存档点里写失败 `telemetryDropped` 加 1；认出已提交 `recognized` 加 1（`__storeTest.pgStats()` 读）。
+- 偏离与理由：
+  - `installPgSessionStore` 不装 store，只返回依赖（brief 与第 2 步记录给的第二种写法）；名字照 plan 留着，第 7 步的 `eval/run.ts` 用它再 `initSessionStore(fixture.deps)`。
+  - spill 比 spec 多写了在途那次的 `flushId` 与回放用的 `flushId`、任务与同意记录（见上面第 6 条）。只是多写，spec 写的回放规则（「等于已提交到第几条就写」「等于最后一条且内容一致就跳过」「其余拒绝」）原样都在。
+  - PG 的「另一写者」在自测里照真实写者的样子：锁行、插一条消息、推进 `last_seq`。只推 `last_seq` 不插消息的话库本身就不自洽了，之后每次启动都以 `preload_integrity` 拒绝（这也是对的，只是测不到 spill 那一步）。
+- 自测（`store.selftest.ts`，第 4 步结束时 110 项）：投影往返（纯函数，24 项）；PG 的几组都跑在子进程里（本文件带 `STORE_SELFTEST_CHILD` 再起一次自己，结果同步写进文件，被信号杀掉之前也来得及）：
+  - PGlite 进程内（97 项，含 `installSeededConfig` 的 DB 配置模式）：预载往返（窗口、seq、冻结、作废订单不进、7 天 msgid）、四种拒绝原因与 1001 个会话三批、spill 回放的接续判定（五种情况、`.failed`、别的租户、只有投影与审计的一条回放两遍）、库连不上时 `db_unreachable` 且不留半装载、写队列（十次合并成两次、在途期间不另起、不同会话并发）、冻结、裁剪推进窗口、引擎重置（窗口推进到重置回复、已付订单作废而 `paid_at` 不动、E6p 的内存行为）、事件与旧 `change` 只在提交后（在途、失败都不发，恢复后恰一次）、COMMIT 之后回包丢失（库里已有、store 当作没有，重试认出、不重复、事件一次）、数据类错误（id 超长、订单金额为负、中间删除）poisoned 且别的会话照常、`/healthz` 的 `ok` 为 false、identity map 拒绝副本、NUL / 第 2000 字的 emoji / 直接写进来的 NUL 与孤立代理项、存档点（非法护栏名丢一批并计数、合法的照写）、`chat()` 在 `withTenant` 里断言失败、`withTenant` 回调里 `saveSession` 一次成功（不靠重试）、一轮的读路径不查库、孤儿订单与 demo 类落盘、附带行三类与 demo 类审计的短事务、十二种错误的分类、慢事务计数、drain 立即重试与锁在别人手里时不写库。
+  - 落盘的 PGlite 上一串「启动」（十个子进程交接同一个库）：20 轮后 SIGTERM（143，drain 排空，重启后 identity map 经 JSON 规范化后 `deepStrictEqual`）→ mock LLM 延迟 6 秒的一轮中间 SIGTERM（normal 段等这一轮，重启后客户消息与回复都在）→ drain 段 PG 不可写写出 spill（三个会话、订单、审计）→ 重启回放、库与停机前的内存一致、spill 删掉 → 「已提交到第几条」改错一格 `spill_conflict` → 改回照常 → SIGKILL 模拟崩溃（没有 spill，重启后只少最后一次没提交的落库）→ 另一写者（以 1 优雅退出、日志点名 `store_conflict`、drain 不写库、进 spill）→ 之后启动 `spill_conflict` → poisoned 的会话随 spill 写出 → 原因没修好就重启，`.failed`、从库里起。
+  - 真实 PG（9 项，有 `PG_TEST_URL` 才跑；CI 下没有就失败）：真的 `server.ts` 以 `SESSION_STORE=db` 起、`/healthz` 报 `db`；第二个进程连同一个库以 `lock_held` 拒绝启动；第一个 SIGTERM 以 143 退出；另一写者让 `last_seq` 前进一格后再落库，以 1 优雅退出、日志点名 `store_conflict`、没落库的进 spill；COMMIT 之后回包丢掉（`openFlakyDb`），重试认出已提交、不停机、seq 1–4 不重复、事件一次。
+  - 合计：不带 PG 256 项、带 PG 265 项，约 30 秒（`pnpm test` 由 144 秒到约 180 秒）。
+- 变异（源码拷进 scratchpad 的三个隔离副本，逐个打、只跑 `store.selftest`）：38 个，全部杀掉。覆盖合并顺序（在途时另起、提交后不清已提交的）、冻结（快照、预载）、seq 预期、poisoned 分类（42 当重试、冲突当重试、连接类当数据类）、spill 回放的接续判定（认不出在途已提交、在途已提交时附带行也重写、认不出已回放、库里超前也照写、内容一致也不跳过、不删文件、不写在途那次的消息、「已提交到第几条」写错）、事件早发、`flush_id` 认领（不认、每次重试换新的）、drain 跳过 PG、空异步上下文、退避、identity map、孤儿订单转归、去重集合的天数、存档点、poisoned 之后仍用严格模式、预载校验两处、窗口起点、重置不作废、旧 `change`、`noteWindowReset`、`chat()` 断言、消息投影、`normalizeForStore`、慢事务计数、预载只读一批。首轮存活两个，补断言后杀掉：去掉空上下文（`withTenant` 回调里排出的落库嵌套报错，退避重试时又在空上下文里成功，掩盖了它；补「一次就成、没有重试」）；poisoned 之后仍用严格模式（没有用例对错位的会话再存一次；补上）。seq 预期、`flush_id` 的三个另在真实 PG 部分各被两到三项杀掉。
+- 真实 PG：本机 `pgvector/pgvector:pg17` 一次性容器（`127.0.0.1:55432`）。`pnpm test` 带 `PG_TEST_URL` 与不带各跑一遍都全绿，PASS 行 60（本步没加新套件）；`db.selftest` 861 项照旧。锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256` 不变。
+- 注意（第 6 步）：
+  - `real_in_json` 拒绝要排在 `openPgBackend` 之前（JSON 里的真实会话在导入期已经进了 map）；在那之前 db 存储下 JSON 里的真实会话会在第一次 `saveSession` 时整段写进库（上面第 10 条）。
+  - 命令行只用 `project.ts`（`isDemoClassId`、`SESSIONS_IN_DB_MARKER`、投影）与 `src/db/repo/**`：导入用 `insertConversation(tx, values, seqs)` 一次写好、`insertMessages`、`upsertOrders`；读回比对走预载同一条路（`readConversationsAfter` / `readWindowMessages` / `readLiveOrders` 加 `rowToSession` / `rowToMessage` / `rowToOrder`），两边都先 `normalizeForStore`；`--resync` 的作废用 `orderToRow(o, { at, reason: 'resync' })`。
+  - 导入时 `var/` 里若有 `store-spill-*.json` 或 `.failed`，要先处理（回放或人工确认），否则切到 db 存储时会被回放进去。
+- 注意（第 7 步）：等价套件与 DB 模式 eval 用 `installPgSessionStore(t, { varDir })` 后 `initSessionStore(fixture.deps)`；冻结会让漏网的原地修改抛 `TypeError`，数组错位会让会话 poisoned（`storeHealth().poisoned` 点名），两种都要当失败报出来。`server.selftest.ts:835` 那种原地改 `at` 的写法不能照搬。
+- 注意（第 9 步）：trace 经 `queueTelemetry(sessionId, { traces, guards })`，行是 `TurnTraceRow` / `GuardEventRow`（护栏名要满足 `^[a-z_]{2,40}$`，否则那一批在存档点里丢掉）；demo 类与文件存储下这几行不入库。用量的 drain 段写入另挂一个 drain 钩子，不经会话写队列。
+- 注意（第 10 步）：任务经 `queueJobs`（`enqueue` 的 `payload` 必带 `sessionId`，第 4 步约定），随会话落库提交、也写进 spill；认领（`claimDueJobs`）是任务自己的短事务，不经会话写队列。
+- 注意（第 12 步）：去重的情况 2 读 `recentMsgids(id)`；账本行经 `queueTelemetry(id, { outbound })`，`msg_send_fail` 的状态更新（`setOutboundStatus`）单独一个短事务。
+- 注意（第 13 步）：`reply` 等的「积压超过 5 秒、已冲突或 poisoned → 503」读 `storeHealth()`（`flushSession` 对 poisoned 与冲突立即 reject）；`/status` 的 poisoned 短码就是 `storeHealth().poisoned`；console 写接口的审计走 `queueAudit`，文件存储下会话类审计的去处在这一步定；`assignee.userId` 写真实的成员 id（外键到 `users`）。
+- 注意（第 14 步）：带转人工的落库失败时的 `unsaved` 通知要挂在 `pg-backend.ts` 的 `failed()` / `poison()` 上（现在只记日志）。
+- 注意（第 16 步）：清除函数删掉会话之后，内存与写队列都要同一个 tick 摘掉它（`pg-backend` 还没有 `forget(id)`，要加）；否则这个会话的下一次落库发现行不在了，按 `StoreConflictError` 处理，整个进程优雅停机。
+- 注意（第 17 步）：告警挂在 `poison()`（poisoned）、`failed()` 的冲突分支（`store_conflict`）与 `storeHealth().lagMs`（积压）；慢事务与存档点丢弃有计数（`__storeTest.pgStats()` 是自测口子，告警另开读法）。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -511,3 +559,10 @@
 - 半成品：无。仓储函数还没有调用方（不接进运行时），签名第 5 步起可按需调整。
 - 阻塞：无。「Open」第 1 步带出的三处照旧（第 13、15 步之前定）；第 4 步审查带出两处（任务按验收 27 一并删、`orders` 触发器管 `session_id`），已按推荐做了，等 owner 确认并补进 spec，不挡第 5 步。
 - 下一步：第 5 步「PG 后端」。先读「实施记录 · 第 4 步」的仓储清单、「注意（第 5 步）」与「审查之后改的」里给第 5、6、10、14 步的注意，以及「实施记录 · 第 2 步」「第 3 步」里给第 5 步的注意（`installPgSessionStore` 放哪儿、孤儿订单归属、`noteWindowReset`、poisoned 之后改宽松模式）。
+
+### 交接（2026-10-02，第 5 步）
+
+- 已完成：第 5 步。`src/store/project.ts`（投影与 `normalizeForStore`，`isDemoClassId`、标记文件名搬来）、`src/store/pg-backend.ts`（预载与校验、每会话写队列与合并、一次落库七步、进快照即冻结、失败两类与 poisoned、冲突即优雅停机、drain、spill 与回放）、`initSessionStore` 的 db 分支、`deleteOrdersOfSession` 作废、重置调 `noteWindowReset`、`chat()` 的 `withTenant` 断言、附带行的入口；`src/db/testing.ts` 的 `installPgSessionStore`（返回依赖与故障注入）、`openFlakyDb`、`createRealPgFixture`、落盘的 PGlite；`store.selftest.ts` 不带 PG 256 项、带 PG 265 项。38 个变异全部杀掉；本机真实 PG 上全过；锁定套件零修改，`PREFIX sha256` 与第 1 步相同。
+- 半成品：无。
+- 阻塞：无。「Open」里第 1、4 步带出的五处照旧，不挡第 6 步。
+- 下一步：第 6 步「导入导出与切换」。先读「实施记录 · 第 5 步」的「注意（第 6 步）」：`real_in_json` 排在 `openPgBackend` 之前，命令行只用 `project.ts` 与 `src/db/repo/**`，读回比对走预载同一条路。
