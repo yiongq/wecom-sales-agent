@@ -17,7 +17,10 @@ export interface TurnSignals {
   emptyModelReply: boolean;
   /** 本轮 search_routes 什么也没返回，且不是 destinationMiss */
   noRetrievalResult: boolean;
-  /** 这句与前 2 条客户消息之一重复（去标点空白后相同，或字二元组 Jaccard ≥ 0.8，长度 ≥ 4 字） */
+  /**
+   * 这句在问（问号、句末吗/呢/么、疑问词，见 isQuestion），且与前 2 条客户消息之一重复（去标点空白后相同，
+   * 或字二元组 Jaccard ≥ 0.8，长度 ≥ 4 字）；重复回答、重复确认不算（owner 2026-10-03）
+   */
   repeatedQuestion: boolean;
   guardHit: 'price' | 'injection' | null;
 }
@@ -219,6 +222,97 @@ export function emergencyOf(text: string): EmergencyKind | null {
 // 交互失败
 // ---------------------------------------------------------------------------------------------
 
+// 在问：重复提问的前提（owner 2026-10-03 定，plan「Open」第 11 步选 B）。重复回答、重复确认不算：锁定的 engine.selftest V4
+// 把「两位 12号」连说三遍，是在回答。按小句判，有一个小句在问就算：后面跟问号（全角半角）、以吗呢么结尾，或带着疑问词。
+// 疑问词不按子串收：「几」要接量词（「几乎」「十几个」「过几天」「这几天」不算），「哪怕」「无论如何」「不怎么样」「没什么」
+// 「门票什么的」不算，后面接着都、也的是任指（「什么都行」「哪天都可以」「去不去都行」）。
+// 判之前先归一：照 src/jobs/optout.ts，全角转半角、英文小写、繁体常用字转简体，emoji 与微信表情码当分隔。
+
+/** 繁体常用字 → 简体：只收疑问说法与上面那几个排除里会出现的字 */
+const TRAD_ASK: Record<string, string> = {
+  嗎: '吗',
+  麼: '么',
+  麽: '么',
+  幾: '几',
+  個: '个',
+  號: '号',
+  為: '为',
+  甚: '什',
+  樣: '样',
+  沒: '没',
+  這: '这',
+  誰: '谁',
+  問: '问',
+  請: '请',
+  裡: '里',
+  裏: '里',
+  兒: '儿',
+  時: '时',
+  點: '点',
+  間: '间',
+  種: '种',
+  條: '条',
+  歲: '岁',
+  週: '周',
+  張: '张',
+  塊: '块',
+  輛: '辆',
+  層: '层',
+  萬: '万',
+  無: '无',
+  論: '论',
+  著: '着',
+  還: '还',
+  過: '过',
+  幹: '干',
+  長: '长',
+  遠: '远',
+  們: '们',
+};
+const TRAD_ASK_RE = new RegExp(`[${Object.keys(TRAD_ASK).join('')}]`, 'g');
+
+/** 「几」后面接的量词（「几号」「几天」「几个」「几位」……） */
+const MEASURE = '(?:号|天|日|晚|夜|点|月|周|星期|年|岁|个|位|人|间|种|条|次|家|张|块|元|站|趟|口|层|辆|小时|分钟|钟)';
+/** 小句以吗、呢、么结尾。「那么」「这么」「多么」「要么」不是问，「什么」「怎么」归疑问词；「早着呢」不是问 */
+const ASK_TAIL = /(?:吗|(?<!着)呢|(?<![那这多要什怎])么)$/;
+/** 「还没定呢」「正在看呢」：句末的呢是在陈述 */
+const STATED_NE = /(?:还没|还在|正在)[^，]*呢$/;
+/** 疑问词的这些用法不是在问，判之前先从小句里去掉 */
+const NOT_ASKING = new RegExp(
+  [
+    // 任指：疑问词（或正反问）后面隔着至多两个字接都、也（「什么都行」「哪天都可以」「几个人都行」「去不去都行」）
+    `(?:(?<![为凭])什么|(?<!为)啥|谁|哪(?:里|儿|个|些|天|家|种|条|位)?|(?<!不)怎么|怎样|咋|多少|几${MEASURE}?|(\\p{Script=Han})[不没]\\1)[^，我你他她们]{0,2}?(?:都|也)`,
+    // 没什么、没多少、没几天、没多久
+    '没有?(?:什么|啥|多少|几|多久|怎么)',
+    // 不怎么样、哪怕、无论如何、不管多少钱
+    '不怎么|不怎样|哪怕',
+    '(?:无论|不论|不管)[^，]*',
+    // 「门票什么的」是「等等」（「干什么的」「是什么的」还是在问）
+    '(?<![干做是搞])什么的',
+    // 多少有点、多少有些：是「稍微」；多多少少
+    '多少(?:有点|有些|会)|多多少少',
+  ].join('|'),
+  'gu',
+);
+/** 疑问词与正反问（能不能、可不可以、是不是、有没有、行不行……）。「几」前面是数字、十、好、这、那、过、前、近的不是问 */
+const ASK_WORDS = new RegExp(
+  '为什么|为啥|凭什么|干嘛|干吗|什么|啥|谁|哪|怎么|怎样|咋|如何|多少|多久|多长时间|多远|请问|想问|可以吗|' +
+    `(?<![\\d十百千万好过再多这那前后没些近])几${MEASURE}|` +
+    '(?![不没])(\\p{Script=Han})[不没]\\1',
+  'u',
+);
+
+function clauseAsks(c: Clause): boolean {
+  if (c.asked) return true;
+  if (ASK_TAIL.test(c.text) && !STATED_NE.test(c.text)) return true;
+  return ASK_WORDS.test(c.text.replace(NOT_ASKING, ' '));
+}
+
+/** 这句客户消息是在问：有一个小句后面跟问号、以吗呢么结尾，或带着疑问词（不按子串收，见上） */
+export function isQuestion(text: string): boolean {
+  return clausesOf(text.replace(TRAD_ASK_RE, (ch) => TRAD_ASK[ch] ?? ch)).some(clauseAsks);
+}
+
 /** 去掉标点、空白与 emoji，只留字（汉字、字母、数字） */
 const squash = (s: string): string => normalize(s).replace(/[^\p{L}\p{N}]+/gu, '');
 
@@ -241,12 +335,12 @@ const REPEAT_MIN_CHARS = 4;
 const REPEAT_JACCARD = 0.8;
 
 /**
- * 这句与前 2 条客户消息之一重复：去标点空白后相同，或字二元组 Jaccard ≥ 0.8；长度 ≥ 4 字。
- * previous 是这句之前的客户消息（旧的在前），只看最后 2 条
+ * 这句在问（isQuestion），且与前 2 条客户消息之一重复：去标点空白后相同，或字二元组 Jaccard ≥ 0.8；长度 ≥ 4 字。
+ * 重复回答、重复确认（「两位 12号」「就订这个」）不算。previous 是这句之前的客户消息（旧的在前），只看最后 2 条
  */
 export function repeatedQuestion(text: string, previous: readonly string[]): boolean {
   const cur = squash(text);
-  if ([...cur].length < REPEAT_MIN_CHARS) return false;
+  if ([...cur].length < REPEAT_MIN_CHARS || !isQuestion(text)) return false;
   const grams = bigrams(cur);
   return previous.slice(-2).some((p) => {
     const prev = squash(p);
