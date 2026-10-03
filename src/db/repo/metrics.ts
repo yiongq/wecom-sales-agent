@@ -1,8 +1,15 @@
 // 运行数字（02 spec「可观测性与告警 · 运行数字」，R24）：在 turn_traces、usage_daily 上现算的四条 SQL。
 // 窗口的起点与「今天」由调用方按服务器时区算好传进来；结果的缓存在调用方
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { rowsOf, type Tx } from '../client.js';
-import { turnTraces, usageDaily } from '../schema.js';
+import { tenants, turnTraces, usageDaily } from '../schema.js';
+
+/** 这个租户的 trace 保留期（天，7–3650）：运行数字的窗口不超过它（tenants 不带 RLS，agent_app 可读） */
+export async function readTraceRetentionDays(tx: Tx, tenantId: string): Promise<number> {
+  const [row] = await tx.select({ days: tenants.retentionTraceDays }).from(tenants).where(eq(tenants.id, tenantId));
+  if (!row) throw new Error('租户行不存在');
+  return row.days;
+}
 
 export interface MetricsRow {
   /** 窗口内的轮次数 */

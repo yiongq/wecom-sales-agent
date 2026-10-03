@@ -111,10 +111,15 @@ export async function lockConversation(tx: Tx, id: string): Promise<Conversation
 
 /**
  * 落库第 2 步「没有这一行就插入」：不给 seqs 时 last_seq = 0、window_start_seq = 1；导入一次写好时带上最终值。
- * 返回库里生成的 ref；这一行已经在了（主键冲突）返回 null、不报错，什么都不改：另一个事务插入还没提交时，插入在主键上
+ * ref 不给时由库生成（导入）；PG 后端给它建写队列时生成的那个（第 18 步：没提交过的新会话也有 ref）。
+ * 返回这一行的 ref；这一行已经在了（主键冲突）返回 null、不报错，什么都不改：另一个事务插入还没提交时，插入在主键上
  * 等到它提交才返回，调用方接着 lockConversation 就看得见那一行（新会话第一次落库 COMMIT 断线之后的重试）
  */
-export async function insertConversation(tx: Tx, row: ConversationValues, seqs?: ConversationSeqs): Promise<{ ref: string } | null> {
+export async function insertConversation(
+  tx: Tx,
+  row: ConversationValues & { ref?: string },
+  seqs?: ConversationSeqs,
+): Promise<{ ref: string } | null> {
   const { tenantId } = currentTenantCtx();
   const [out] = await tx
     .insert(conversations)

@@ -120,6 +120,8 @@ interface SpillSideRows {
 /** spill 文件里的一个会话（spec「停机」）：已提交到第几条、没提交的消息连同 seq、会话投影、排着的订单与附带行；trace 与账本行不写 */
 interface SpillEntry extends SpillSideRows {
   id: string;
+  /** 会话行的 ref（第 18 步起写；之前的 spill 没有，回放时由库生成）：还没插进库的新会话回放时用它，日志与 OpenTelemetry 里的引用前后一致 */
+  ref?: string;
   committedSeq: number;
   /** 在途（或等着重试）的那次落库：提交没得到确认。回放时库里的 flush_id 是它，说明它其实提交了，只补它之后的 */
   inflight: (SpillSideRows & { flushId: string; lastSeq: number }) | null;
@@ -171,6 +173,11 @@ interface Waiter {
 
 interface Entry {
   id: string;
+  /**
+   * 会话行的 ref（随机 uuid，不含客户标识）：预载的取库里的；新会话在建写队列时生成、第一次落库插入时写进去，
+   * 所以还没提交过也有（日志、OpenTelemetry 用，第 17、18 步）
+   */
+  ref: string;
   session: Session;
   /** 库里有这个会话的行（预载来的，或提交过一次） */
   inDb: boolean;
@@ -269,6 +276,8 @@ export interface PgBackend extends StoreBackend {
    */
   writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
+  /** 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；不归 PG 后端管的为 null */
+  refOf(sessionId: string): string | null;
   /**
    * 任务表的单独短事务（认领、改状态、启动与停机时的归位、与会话无关的排程；02 spec「任务表与跟进」）：不经会话写队列，
    * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
@@ -343,6 +352,8 @@ interface Preloaded {
   sessions: Session[];
   orders: Order[];
   seqs: Map<string, ConversationSeqs>;
+  /** 会话行的 ref（不含客户标识的引用） */
+  refs: Map<string, string>;
   msgids: Map<string, Set<string>>;
   /** orders.json 读进来、所属会话是预载的那些订单：库里已有（作废的也算）的 id，与库里没有的 id */
   jsonInDb: string[];
@@ -354,7 +365,7 @@ interface Preloaded {
  * 所属会话是预载的那些订单在不在库里（作废的也查）。整个预载一个只读的长事务
  */
 async function preload(d: PgBackendDeps): Promise<Preloaded> {
-  const out: Preloaded = { sessions: [], orders: [], seqs: new Map(), msgids: new Map(), jsonInDb: [], jsonAdopt: [] };
+  const out: Preloaded = { sessions: [], orders: [], seqs: new Map(), refs: new Map(), msgids: new Map(), jsonInDb: [], jsonAdopt: [] };
   const since = new Date(Date.now() - MSGID_WINDOW_MS);
   try {
     await withTenant(
@@ -394,6 +405,7 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
             for (const m of session.messages) Object.freeze(m);
             out.sessions.push(session);
             out.seqs.set(row.id, { lastSeq: row.lastSeq, windowStartSeq: row.windowStartSeq, flushId: row.flushId });
+            out.refs.set(row.id, row.ref);
             out.msgids.set(row.id, new Set());
           }
           for (const r of mids) out.msgids.get(r.conversationId)?.add(r.msgid);
@@ -492,7 +504,8 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skip
     } else {
       return 'conflict';
     }
-    if (row || (await insertConversation(tx, conversationValuesFrom(entry.state, entry.lastCustomerAt)))) break;
+    const ins = { ...conversationValuesFrom(entry.state, entry.lastCustomerAt), ...(entry.ref ? { ref: entry.ref } : {}) };
+    if (row || (await insertConversation(tx, ins))) break;
     // 插入撞上别的事务刚提交的同一行（上一个进程还没完成的 COMMIT）：插入等到它提交才返回，这时再锁一次就看得见，按库里的行重新判定
     row = await lockConversation(tx, entry.id);
     if (!row) return 'conflict';
@@ -639,8 +652,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     stats.telemetryDropped++;
     holder.telemetry = emptyTelemetry();
   };
-  const newEntry = (s: Session, inDb: boolean, committedSeq: number, msgids: Set<string>): Entry => ({
+  const newEntry = (s: Session, ref: string, inDb: boolean, committedSeq: number, msgids: Set<string>): Entry => ({
     id: s.id,
+    ref,
     session: s,
     inDb,
     committedSeq,
@@ -673,7 +687,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
   function entryOf(s: Session): Entry {
     let e = entries.get(s.id);
     if (!e) {
-      e = newEntry(s, false, 0, new Set());
+      e = newEntry(s, randomUUID(), false, 0, new Set());
       for (const m of Array.isArray(s.messages) ? s.messages : []) if (m && seqOf(m) !== undefined) e.pending.push(m);
       // 孤儿订单（所属会话不在内存里，留在 orders.json）在同 id 的会话又建出来时转归 PG（plan 第 2 步）：
       // 随它的第一次落库写进库；提交之前仍归文件后端，提交之后才让 orders.json 去掉它
@@ -796,7 +810,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     let cur = await lockConversation(tx, e.id);
     if (!cur) {
       if (e.inDb || snap.baseSeq !== 0) throw new StoreConflictError(e.id, `会话 ${short(e.id)} 的行不在库里了`);
-      if (await insertConversation(tx, snap.values)) cur = { lastSeq: 0, windowStartSeq: 1, flushId: null };
+      if (await insertConversation(tx, { ...snap.values, ref: e.ref })) cur = { lastSeq: 0, windowStartSeq: 1, flushId: null };
       else {
         // 新会话第一次落库 COMMIT 时断线、服务端稍后才提交：重试时那一行还看不见（锁不到），插入在主键上等到它提交、
         // 冲突了不报错。再锁一次就看得见，照常按 flush_id 与 last_seq 判定（多半是认出已提交）
@@ -970,6 +984,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     for (const [id, v] of e.voids) orders.set(id, { order: v.order, voided: { at: v.at, reason: v.reason } });
     return {
       id: e.id,
+      ref: e.ref,
       committedSeq: e.committedSeq,
       inflight: inf ? { flushId: inf.flushId, lastSeq: inf.lastSeq, audits: inf.audits, jobs: inf.jobs, consents: inf.consents } : null,
       flushId: randomUUID(),
@@ -992,7 +1007,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       for (const s of pre.sessions) {
         const seqs = pre.seqs.get(s.id)!;
         d.sessions.set(s.id, s);
-        entries.set(s.id, newEntry(s, true, seqs.lastSeq, pre.msgids.get(s.id) ?? new Set()));
+        entries.set(s.id, newEntry(s, pre.refs.get(s.id)!, true, seqs.lastSeq, pre.msgids.get(s.id) ?? new Set()));
       }
       // orders.json 读进来、所属会话是预载的订单：库里已有的（作废的也算）以库为准，删掉 JSON 副本、让 orders.json 去掉它
       // （作废的不会复活）；库里没有的挂到这个会话的写队列上，提交之前仍归文件后端
@@ -1120,6 +1135,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     recentMsgids(sessionId) {
       return entries.get(sessionId)?.msgids ?? new Set();
     },
+    refOf: (sessionId) => entries.get(sessionId)?.ref ?? null,
     jobsTx(fn) {
       if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
       if (closed) return Promise.reject(new JobsTxRefused('closed'));
