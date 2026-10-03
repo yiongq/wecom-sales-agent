@@ -1273,28 +1273,32 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     await say(o, TR.emergency, '我们被困在山上了', []);
     await say(o, TR.emergency, '在吗', []);
     await say(o, TR.escalate, '转人工', []);
-    await say(o, TR.escalate, '护照丢了', []);
-    await say(o, TR.sentiment, '无语', [{ content: '抱歉～您想去哪儿玩？' }]);
-    await say(o, TR.sentiment, '太离谱了', []);
+    await say(o, TR.escalate, '我护照丢了', []);
+    await say(o, TR.sentiment, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
+    await say(o, TR.sentiment, '你们也太离谱了', []);
     await say(o, TR.windows, '西藏几月去合适', [{ content: '西藏一般5到10月去～' }]);
     await say(o, TR.windows, '西藏几月去合适', [{ content: '5到10月都合适～' }]);
-    await say(o, TR.windows, '无语', [{ content: '抱歉～我说得更具体些。' }]);
+    await say(o, TR.windows, '你们回复太敷衍了', [{ content: '抱歉～我说得更具体些。' }]);
   });
 
   // ======== 10. 企微重放同一条弱负面消息（第 11 步审查带出的）：上次停在「已记下、回复还没生成」，客户这句与它的情绪窗口值
   // 已经一起落了库（引擎在入库与记窗口之间没有 await）；走启动重放，窗口不再记一遍、不转人工、照常回复 ========
   await scenario('企微重放·情绪', ['wecom:parity-rp-negative'], async (o) => {
     await restart();
-    const m = customerMsg('parity-rp-negative', '无语');
+    const m = customerMsg('parity-rp-negative', '你们回复太敷衍了');
     const s = store.getOrCreateSession('wecom:parity-rp-negative', 'wecom');
-    s.messages.push({ role: 'customer', content: '无语', at: Date.now(), msgid: m.msgid, sentAt: m.send_time * 1000 });
+    s.messages.push({ role: 'customer', content: '你们回复太敷衍了', at: Date.now(), msgid: m.msgid, sentAt: m.send_time * 1000 });
     s.negativeHits = [1];
     store.saveSession(s);
     pendOnDisk(m);
     script.push({ content: '抱歉让您久等了～您想去哪儿玩？' });
     await syncFromCallback(`tok-rpn-${msgSeq}`);
     const done = await idle();
-    o.out.turns.push({ label: `wecom:parity-rp-negative${WECOM_TURN}重放「无语」`, reply: { idle: done }, leftover: takeLeftover() });
+    o.out.turns.push({
+      label: `wecom:parity-rp-negative${WECOM_TURN}重放「你们回复太敷衍了」`,
+      reply: { idle: done },
+      leftover: takeLeftover(),
+    });
   });
 
   // 少调模型由父进程逐轮看 leftover；这里只管多调（脚本空了还来的请求）

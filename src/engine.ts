@@ -3538,6 +3538,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 阶段停在终态（已成交客户要人工，R9）的不改回 handoff：成交统计不变
   if (session.handedOver) {
     if (!isTerminalStage(session.stage)) session.stage = 'handoff';
+    // 人工接待期间客户的话也进情绪窗口（spec：最近 3 条客户消息），只记不判：交还 AI 之后窗口里是最近 3 条，
+    // 转人工那一句带的弱词不会隔着整段人工接待和交还后的一句凑成 2 弱（第 11 步第二轮审查 engine[2]）。重放不再记，同下
+    if (!opts.alreadyRecorded) {
+      const level = isComplaint(text) ? 0 : negativeLevel(text);
+      setWindow(session, 'negativeHits', pushWindow(session.negativeHits, level, SENTIMENT_WINDOW));
+    }
     saveSession(session); // 客户消息已在上方入库
     return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
   }

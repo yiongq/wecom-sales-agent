@@ -952,34 +952,73 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
 // ---------------- 9. 确定性转人工触发的向量表（R15、开放问题 4、R23；plan 第 11、11.1 步） ----------------
 const triggers = await import('./triggers.js');
 const corpus = await import('./triggers.corpus.js');
+/** 精确优先的四个数（owner 2026-10-03）：售前与一般咨询的误判率、全部「不是」的误判率、明确正例的召回、全部正例的召回 */
+function rates(
+  name: string,
+  t: { yes: readonly boolean[]; model: readonly boolean[]; presale: readonly boolean[]; other: readonly boolean[] },
+): void {
+  const n = (xs: readonly boolean[]): number => xs.filter(Boolean).length;
+  const pct = (a: number, b: number): string => `${a}/${b}=${((a / b) * 100).toFixed(1)}%`;
+  const fpPre = n(t.presale);
+  const fpAll = fpPre + n(t.other);
+  const notAll = t.presale.length + t.other.length;
+  const hitYes = n(t.yes);
+  const hitAll = hitYes + n(t.model);
+  console.log(
+    `  ${name}：售前与一般咨询误判 ${pct(fpPre, t.presale.length)}，全部「不是」误判 ${pct(fpAll, notAll)}，` +
+      `明确正例召回 ${pct(hitYes, t.yes.length)}，全部正例召回 ${pct(hitAll, t.yes.length + t.model.length)}`,
+  );
+  check(
+    `${name}·精确优先的目标：售前误判 ≤ 1%、全部「不是」误判 ≤ 2%、明确正例召回 ≥ 95%`,
+    fpPre <= t.presale.length * 0.01 && fpAll <= notAll * 0.02 && hitYes >= t.yes.length * 0.95,
+  );
+}
+const evalSays = (
+  JSON.parse(fs.readFileSync(path.join(process.cwd(), 'eval', 'cases.json'), 'utf8')) as { turns: { say: string }[] }[]
+).flatMap((c) => c.turns.map((t) => t.say));
 {
-  // 标注语料（triggers.corpus.ts）逐条跑：审查判为属实的例句、原来向量表的全部句子、成对反例（plan「实施记录 · 第 11 步」审查之后改的）
+  // 标注语料（triggers.corpus.ts）逐条跑，精确优先（owner 2026-10-03）：明确正例要判对，「精确优先：主模型兜」的与两组「不是」都不判
   const { emergencyOf } = triggers;
   const C = corpus;
   const no = [...C.EMERGENCY_NO_PRESALE, ...C.EMERGENCY_NO_OTHER];
   check(
-    `紧急情况语料：至少 200 句（${C.EMERGENCY_YES.length + no.length}），不算的一侧至少一半是售前语境（${C.EMERGENCY_NO_PRESALE.length} / ${no.length}）`,
-    C.EMERGENCY_YES.length + no.length >= 200 && C.EMERGENCY_NO_PRESALE.length * 2 >= no.length,
+    `紧急情况语料：至少 600 句（${C.EMERGENCY_YES.length + C.EMERGENCY_MODEL.length + no.length}），不是的一侧至少一半是售前语境（${C.EMERGENCY_NO_PRESALE.length} / ${no.length}）`,
+    C.EMERGENCY_YES.length + C.EMERGENCY_MODEL.length + no.length >= 600 && C.EMERGENCY_NO_PRESALE.length * 2 >= no.length,
   );
-  for (const [t, kind] of C.EMERGENCY_YES) check(`紧急情况算：「${t}」→ ${kind}`, emergencyOf(t) === kind, String(emergencyOf(t)));
-  for (const t of no) check(`紧急情况不算：「${t}」`, emergencyOf(t) === null, String(emergencyOf(t)));
+  for (const [t, kind] of C.EMERGENCY_YES) check(`紧急情况·明确：「${t}」→ ${kind}`, emergencyOf(t) === kind, String(emergencyOf(t)));
+  for (const [t] of C.EMERGENCY_MODEL)
+    check(`紧急情况·精确优先不判（主模型兜）：「${t}」`, emergencyOf(t) === null, String(emergencyOf(t)));
+  for (const t of no) check(`紧急情况·不是：「${t}」`, emergencyOf(t) === null, String(emergencyOf(t)));
+  rates('紧急情况', {
+    yes: C.EMERGENCY_YES.map(([t, k]) => emergencyOf(t) === k),
+    model: C.EMERGENCY_MODEL.map(([t, k]) => emergencyOf(t) === k),
+    presale: C.EMERGENCY_NO_PRESALE.map((t) => emergencyOf(t) !== null),
+    other: C.EMERGENCY_NO_OTHER.map((t) => emergencyOf(t) !== null),
+  });
   // eval 的全部客户原话（含 realOnly）：一句都不算紧急情况
-  const casesPath = path.join(process.cwd(), 'eval', 'cases.json');
-  const evalSays = (JSON.parse(fs.readFileSync(casesPath, 'utf8')) as { turns: { say: string }[] }[]).flatMap((c) =>
-    c.turns.map((t) => t.say),
-  );
   const evalEmergency = evalSays.filter((t) => emergencyOf(t) !== null);
   check(`eval 原话（${evalSays.length} 句）没有一句算紧急情况`, evalSays.length >= 100 && evalEmergency.length === 0, json(evalEmergency));
 }
 {
   const { negativeLevel, sentimentThresholdReached } = triggers;
   const C = corpus;
+  const no = [...C.NEGATIVE_NO_PRESALE, ...C.NEGATIVE_NO_OTHER];
+  const all = C.NEGATIVE_YES.length + C.NEGATIVE_MODEL.length + no.length;
   check(
-    `负面情绪语料：至少 200 句（${C.NEGATIVE.length}），强、弱、无各有`,
-    C.NEGATIVE.length >= 200 && [0, 1, 2].every((l) => C.NEGATIVE.some(([, x]) => x === l)),
+    `负面情绪语料：至少 450 句（${all}），明确正例里强、弱都有`,
+    all >= 450 && [1, 2].every((l) => C.NEGATIVE_YES.some(([, x]) => x === l)),
   );
   const label = ['无', '弱', '强'] as const;
-  for (const [t, l] of C.NEGATIVE) check(`负面情绪·${label[l]}：「${t}」`, negativeLevel(t) === l, String(negativeLevel(t)));
+  for (const [t, l] of C.NEGATIVE_YES) check(`负面情绪·明确${label[l]}：「${t}」`, negativeLevel(t) === l, String(negativeLevel(t)));
+  for (const [t] of C.NEGATIVE_MODEL)
+    check(`负面情绪·精确优先不计（主模型兜）：「${t}」`, negativeLevel(t) === 0, String(negativeLevel(t)));
+  for (const t of no) check(`负面情绪·不是：「${t}」`, negativeLevel(t) === 0, String(negativeLevel(t)));
+  rates('负面情绪', {
+    yes: C.NEGATIVE_YES.map(([t, l]) => negativeLevel(t) === l),
+    model: C.NEGATIVE_MODEL.map(([t]) => negativeLevel(t) > 0),
+    presale: C.NEGATIVE_NO_PRESALE.map((t) => negativeLevel(t) > 0),
+    other: C.NEGATIVE_NO_OTHER.map((t) => negativeLevel(t) > 0),
+  });
   check(
     '情绪阈值：最近 3 条里 1 强或 2 弱',
     sentimentThresholdReached([2]) &&
@@ -990,10 +1029,6 @@ const corpus = await import('./triggers.corpus.js');
       !sentimentThresholdReached([0, 0, 1]) &&
       !sentimentThresholdReached([1, 0, 0, 1]) &&
       !sentimentThresholdReached([2, 0, 0, 0]),
-  );
-  const casesPath = path.join(process.cwd(), 'eval', 'cases.json');
-  const evalSays = (JSON.parse(fs.readFileSync(casesPath, 'utf8')) as { turns: { say: string }[] }[]).flatMap((c) =>
-    c.turns.map((t) => t.say),
   );
   const evalNegative = evalSays.filter((t) => negativeLevel(t) !== 0);
   check('eval 原话没有一句算负面情绪', evalNegative.length === 0, json(evalNegative));
@@ -1029,8 +1064,20 @@ const corpus = await import('./triggers.corpus.js');
     !failureThresholdReached([1, 0, 1, 0, 0, 0, 1]) && failureThresholdReached([1, 0, 1, 0, 0, 1]),
   );
   // 在问（owner 2026-10-03，plan「Open」第 11 步选 B）：重复提问只认在问的话。标注语料逐条跑（不按子串收、应答的「呢」不算……）
-  check(`在问语料：至少 200 句（${corpus.ASKING.length}）`, corpus.ASKING.length >= 200);
-  for (const [t, want] of corpus.ASKING) check(`在问：「${t}」${want ? '算' : '不算'}`, isQuestion(t) === want);
+  {
+    const C = corpus;
+    const all = C.ASKING_YES.length + C.ASKING_MODEL.length + C.ASKING_NO_PRESALE.length + C.ASKING_NO_OTHER.length;
+    check(`在问语料：至少 350 句（${all}）`, all >= 350);
+    for (const t of C.ASKING_YES) check(`在问·明确：「${t}」`, isQuestion(t));
+    for (const t of C.ASKING_MODEL) check(`在问·精确优先不认（漏认只少记一次失败）：「${t}」`, !isQuestion(t));
+    for (const t of [...C.ASKING_NO_PRESALE, ...C.ASKING_NO_OTHER]) check(`在问·不是：「${t}」`, !isQuestion(t));
+    rates('在问', {
+      yes: C.ASKING_YES.map(isQuestion),
+      model: C.ASKING_MODEL.map(isQuestion),
+      presale: C.ASKING_NO_PRESALE.map(isQuestion),
+      other: C.ASKING_NO_OTHER.map(isQuestion),
+    });
+  }
   check(
     '重复提问：在问的重复算（「去九寨要几天？」「这条线多少钱」「有没有亲子线路」各问两遍）',
     repeatedQuestion('去九寨要几天？', ['去九寨要几天？']) &&
@@ -1050,11 +1097,13 @@ const corpus = await import('./triggers.corpus.js');
       !repeatedQuestion('什么都行，就这个', ['什么都行，就这个']),
   );
   check(
-    '重复提问：句末「呢」的应答与确认连说两遍不算（「可以的呢」「嗯嗯好的呢」）；在问的「呢」照算',
+    '重复提问：句末「呢」一律不算在问（精确优先，owner 2026-10-03）：应答、确认、陈述与「那贵州的线路呢」连说两遍都不算；带明确问法的照算',
     !repeatedQuestion('可以的呢', ['可以的呢']) &&
       !repeatedQuestion('嗯嗯好的呢', ['嗯嗯好的呢']) &&
       !repeatedQuestion('没问题呢', ['你好', '没问题呢']) &&
-      repeatedQuestion('那贵州的线路呢', ['那贵州的线路呢']),
+      !repeatedQuestion('孩子才5岁呢', ['孩子才5岁呢']) &&
+      !repeatedQuestion('那贵州的线路呢', ['那贵州的线路呢']) &&
+      repeatedQuestion('那贵州的线路多少钱呢', ['那贵州的线路多少钱呢']),
   );
   check(
     '重复提问：去标点空白后相同算',
@@ -1252,7 +1301,7 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   const sid = newSid('NEG2');
   await say(sid, '你好', [{ content: '您好～想去哪儿玩？' }]);
   requests.length = 0;
-  const r = await say(sid, '什么垃圾玩意');
+  const r = await say(sid, '你们这群废物');
   const s = sess(sid);
   check(
     '负面情绪 1 强：投诉措辞、kind=sentiment、本轮不调模型、窗口清零',
@@ -1265,12 +1314,12 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   );
   // 2 弱转人工，1 弱不转
   const sid2 = newSid('NEG11');
-  const r1 = await say(sid2, '无语', [{ content: '抱歉让您久等了～您想去哪儿玩？' }]);
+  const r1 = await say(sid2, '你们回复太敷衍了', [{ content: '抱歉让您久等了～您想去哪儿玩？' }]);
   check(
     '负面情绪 1 弱：照常调模型、不转人工，窗口记下 [1]',
     !sess(sid2).handedOver && r1.text.includes('抱歉') && json(sess(sid2).negativeHits) === '[1]',
   );
-  const r2 = await say(sid2, '太离谱了');
+  const r2 = await say(sid2, '你们也太离谱了');
   check(
     '负面情绪 2 弱（最近 3 条）：第二句转人工，投诉措辞，kind=sentiment',
     r2.text === COMPLAINT_HEAD && sess(sid2).handoff?.kind === 'sentiment',
@@ -1278,10 +1327,10 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   );
   // 两次弱隔了 3 条以上：第二次时第一次已滑出窗口，不转
   const sid3 = newSid('NEG1001');
-  await say(sid3, '无语', [{ content: '您想去哪儿玩？' }]);
+  await say(sid3, '你们回复太敷衍了', [{ content: '您想去哪儿玩？' }]);
   await say(sid3, '去云南', [{ content: '云南很好～几位出行？' }]);
   await say(sid3, '两个人', [{ content: '好的～大概什么时候出发？' }]);
-  await say(sid3, '太离谱了', [{ content: '抱歉～我再给您找找。' }]);
+  await say(sid3, '你们也太离谱了', [{ content: '抱歉～我再给您找找。' }]);
   check(
     '负面情绪：两次弱隔了 2 条以上，只算最近 3 条，不转',
     !sess(sid3).handedOver && json(sess(sid3).negativeHits) === '[1]',
@@ -1300,18 +1349,18 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
     sess(sid5).handoff?.kind === 'complaint' && !('negativeHits' in sess(sid5)),
   );
   await legacy(sid5, 'resume');
-  const r5 = await say(sid5, '无语', [{ content: '抱歉～您想去哪儿玩？' }]);
+  const r5 = await say(sid5, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
   check(
     '投诉交还之后一句弱：不转人工（投诉那条没有重复计成强）',
     !sess(sid5).handedOver && r5.text.includes('抱歉'),
     json(sess(sid5).negativeHits),
   );
-  // 窗口到了阈值、却是安全网先转了人工（「太差了，转人工」按普通诉求转）：交还之后一句中性的话不按情绪转人工，要这一句本身负面
+  // 窗口到了阈值、却是安全网先转了人工（「你们太差了，转人工」按普通诉求转）：交还之后一句中性的话不按情绪转人工，要这一句本身负面
   const sid6 = newSid('NEGSTALE');
-  await say(sid6, '无语', [{ content: '抱歉～您想去哪儿玩？' }]);
-  await say(sid6, '太差了，转人工');
+  await say(sid6, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
+  await say(sid6, '你们太差了，转人工');
   check(
-    '前置：「太差了，转人工」按普通诉求转人工，窗口 [1,1]',
+    '前置：「你们太差了，转人工」按普通诉求转人工，窗口 [1,1]',
     sess(sid6).handoff?.kind === 'request' && json(sess(sid6).negativeHits) === '[1,1]',
   );
   await legacy(sid6, 'resume');
@@ -1351,7 +1400,7 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   );
   // 文件存储：两个窗口随会话落盘（重启读的就是这份 JSON）
   const sidN = newSid('PERSIST');
-  await say(sidN, '无语', [{ content: '抱歉～您想去哪儿玩？' }]);
+  await say(sidN, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
   await say(sidN, '两个人', [{ content: '' }, { content: '' }]);
   await store.flushSession(sidQ);
   await store.flushSession(sidN);
@@ -1488,9 +1537,16 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   );
 }
 {
-  // 审查之后补的端到端（plan「实施记录 · 第 11 步」审查之后改的）：售前的问法照常交给模型；正在发生的紧急情况不调模型
+  // 审查之后补的端到端（plan「实施记录 · 第 11 步」审查之后改的与精确优先）：售前的问法、出行前的假设与目的地新闻照常交给模型；
+  // 客户这边此刻正在发生的紧急情况不调模型
   const { emergencyReason } = await import('./record.js');
-  for (const t of ['九寨沟地震以后恢复了吗', '你们这是骨折价啊', '我高反体质适合去西藏吗']) {
+  for (const t of [
+    '九寨沟地震以后恢复了吗',
+    '你们这是骨折价啊',
+    '我高反体质适合去西藏吗',
+    '台风来了 我们下周去三亚的行程会受影响吗',
+    '到时候孩子发烧了怎么办',
+  ]) {
     const sid = newSid('E2ENO');
     requests.length = 0;
     const r = await say(sid, t, [{ content: '这个我帮您看看～' }]);
@@ -1503,6 +1559,8 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   for (const [t, kind] of [
     ['孩子丢了', 'stranded'],
     ['我现在喘不上气怎么办', 'medical'],
+    ['我们被困在缆车上了', 'stranded'],
+    ['我现在喘不上气', 'medical'],
   ] as const) {
     const sid = newSid('E2EYES');
     requests.length = 0;
@@ -1526,6 +1584,60 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
     !sess(sidS).handedOver && requests.length === 2 && rS.text.includes('轻松的线路') && !('negativeHits' in sess(sidS)),
     json({ rS, h: sess(sidS).handoff, n: sess(sidS).negativeHits }),
   );
+  // 冲着我们的重话：问句式的「你们是骗子吧」是在打消疑虑、不是投诉，后面单独的「滚」算强，一句就转人工（投诉措辞、kind=sentiment）
+  const sidG = newSid('E2EGUN');
+  await say(sidG, '你好', [{ content: '您好～想去哪儿玩？' }]);
+  requests.length = 0;
+  const rG = await say(sidG, '你们是骗子吧 滚');
+  check(
+    '端到端：「你们是骗子吧 滚」按负面情绪转人工（kind=sentiment）、模型请求 0 次、投诉措辞',
+    requests.length === 0 && sess(sidG).handoff?.kind === 'sentiment' && rG.text.startsWith('非常抱歉给您带来不好的体验'),
+    json({ rG, h: sess(sidG).handoff }),
+  );
+  // 句末「呢」的陈述连说三遍：精确优先下句末呢一律不算在问，不算重复提问、不转人工
+  const sidC = newSid('E2ENE5');
+  await say(sidC, '想带孩子去三亚', [{ content: '三亚很适合亲子～孩子几岁了？' }]);
+  const asksC = ['孩子几岁了呀？', '方便说下孩子几岁吗？', '那孩子是几岁呢？'];
+  const neC: string[] = [];
+  for (const ask of asksC) neC.push((await say(sidC, '孩子才5岁呢', [{ content: ask }])).text);
+  check(
+    '端到端：「孩子才5岁呢」连说三遍不转人工、问句原样发出、失败窗口不留',
+    !sess(sidC).handedOver && neC.every((t, i) => t.includes(asksC[i]!)) && !('turnSignals' in sess(sidC)),
+    json({ neC, w: sess(sidC).turnSignals }),
+  );
+  // 人工接待期间客户的话也进情绪窗口（第二轮审查 engine[2]）：转人工那句带的弱词被接待期间的 3 句挤出窗口，交还后一句弱不转
+  const sidH = newSid('E2EHOLD');
+  await say(sidH, '你们也太离谱了，转人工');
+  check(
+    '前置：「你们也太离谱了，转人工」按普通诉求转人工，情绪窗口 [1]',
+    sess(sidH).handoff?.kind === 'request' && json(sess(sidH).negativeHits) === '[1]',
+    json(sess(sidH).negativeHits),
+  );
+  for (const t of ['好的', '我等一下', '顾问在吗']) await say(sidH, t);
+  check(
+    '人工接待期间的 3 句中性的话进了情绪窗口，把转人工那句的弱挤出去（窗口不留）',
+    sess(sidH).handedOver && !('negativeHits' in sess(sidH)),
+    json(sess(sidH).negativeHits),
+  );
+  await legacy(sidH, 'resume');
+  const rH = await say(sidH, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
+  check(
+    '交还之后一句弱：只算最近 3 条客户消息，不按情绪转人工，照常调模型',
+    !sess(sidH).handedOver && rH.text.includes('抱歉') && json(sess(sidH).negativeHits) === '[1]',
+    json({ rH, n: sess(sidH).negativeHits, h: sess(sidH).handoff }),
+  );
+  // 已转人工期间的强词只记不判：不回话，交还后窗口里还在就照阈值判（这里交还前又说了 3 句，已滑出）
+  const sidI = newSid('E2EHOLD2');
+  await say(sidI, '转人工');
+  const rI = await say(sidI, '你们这群废物');
+  check(
+    '已转人工时说强词：不回话、只记进情绪窗口 [2]、不重复转人工',
+    rI.silent === true &&
+      json(sess(sidI).negativeHits) === '[2]' &&
+      sess(sidI).handoffCount === 1 &&
+      sess(sidI).handoff?.kind === 'request',
+    json({ rI, n: sess(sidI).negativeHits, h: sess(sidI).handoff }),
+  );
   // 句末「呢」的应答连说三遍：在回答，不算重复提问
   const sidN = newSid('E2ENE');
   await say(sidN, '想去三亚玩', [{ content: '三亚很好～两位大人对吗？' }]);
@@ -1543,18 +1655,21 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   // 以 alreadyRecorded 重跑同一句：情绪窗口不再记一遍；交互失败的窗口那一轮还没记，照常记。db 存储下见 store/parity.selftest
   const sid = newSid('REPLAYNEG');
   await say(sid, '你好', [{ content: '您好～想去哪儿玩？' }], { msgid: 'rp-neg-0' });
-  sess(sid).messages.push({ role: 'customer', content: '无语', at: Date.now(), msgid: 'rp-neg-1' });
+  sess(sid).messages.push({ role: 'customer', content: '你们回复太敷衍了', at: Date.now(), msgid: 'rp-neg-1' });
   sess(sid).negativeHits = [1];
   store.saveSession(sess(sid));
   requests.length = 0;
-  const r = await say(sid, '无语', [{ content: '抱歉让您久等了～您想去哪儿玩？' }], { msgid: 'rp-neg-1', alreadyRecorded: true });
+  const r = await say(sid, '你们回复太敷衍了', [{ content: '抱歉让您久等了～您想去哪儿玩？' }], {
+    msgid: 'rp-neg-1',
+    alreadyRecorded: true,
+  });
   check(
     '企微重放同一条弱负面消息：情绪窗口只计一次（仍是 [1]），不转人工，照常调模型，这句只记一条',
     !sess(sid).handedOver &&
       json(sess(sid).negativeHits) === '[1]' &&
       requests.length === 1 &&
       r.text.includes('抱歉') &&
-      sess(sid).messages.filter((m) => m.role === 'customer' && m.content === '无语').length === 1,
+      sess(sid).messages.filter((m) => m.role === 'customer' && m.content === '你们回复太敷衍了').length === 1,
     json({ r, n: sess(sid).negativeHits, h: sess(sid).handoff }),
   );
   const sidF = newSid('REPLAYFAIL');

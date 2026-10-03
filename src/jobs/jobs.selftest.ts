@@ -992,7 +992,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     script.push({ content: '西藏一般5到10月去～' }, { content: '5到10月都合适～' }, { content: '抱歉～我说得更具体些。' });
     await handleMessage(W, '西藏几月去合适', 'wecom');
     await handleMessage(W, '西藏几月去合适', 'wecom');
-    await handleMessage(W, '无语', 'wecom');
+    await handleMessage(W, '你们回复太敷衍了', 'wecom');
     await flush(W);
     const [row] = await su<{ t: unknown; n: unknown }>(
       `select state->'turnSignals' as t, state->'negativeHits' as n from conversations where id = $1`,
