@@ -10,7 +10,7 @@
 //   落盘的 PGlite 一串四个进程：sending 之前被 SIGKILL → 重启照常发一次；sending 之后（推送途中）被 SIGKILL → 重启记 abandoned、不重发；
 //   rpg（PG_TEST_URL 设了才跑）：真实 Postgres 上另一个认领者拿着 5 个任务不提交，runner 不等它、拿到其余 7 个，两边不相交；
 //         另一个认领者把正在生成话术的那一行归位、重新认领之后，原认领者的 sending 改不中、不推送（认领令牌）。
-// 子进程预加载 src/store/parity-clock.ts，钟从当天本地 12:00 起走：夜间时段的断言不受在几点跑的影响（rpg 例外，用真钟）。
+// 子进程预加载 src/store/parity-clock.ts，钟从当天本地 12:00 起走：夜间时段的断言不受在几点跑的影响（rpg 例外：用真钟，关掉夜间时段）。
 // 文件存储下的扫描器由锁定的 llm.selftest F1 测；拒绝识别的向量表在这里。
 // 用法：npx tsx src/jobs/jobs.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
@@ -276,7 +276,13 @@ async function parentMain(): Promise<never> {
   let realPgRan = false;
   if (process.env.PG_TEST_URL) {
     realPgRan = true;
-    const r = runChild('rpg', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rpg-')) }, { clockMs: null });
+    // 真实 PG 子进程用真钟（库的 now() 不跟着拨），CI 在 UTC 下跑：凌晨跑时跟进会被夜间时段顺延到 9:00、根本不到点。
+    // 这里关掉夜间时段（开始与结束同一个钟点），夜间顺延由 main 子进程在钉住的钟上测
+    const r = runChild(
+      'rpg',
+      { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rpg-')), FOLLOWUP_QUIET_START: '0', FOLLOWUP_QUIET_END: '0' },
+      { clockMs: null },
+    );
     merge('真实 PG', r);
     check('真实 PG 子进程正常结束', r.status === 0, `status=${r.status} ${r.out.slice(-1500)}`);
   }
@@ -347,7 +353,12 @@ async function childMain(mode: string): Promise<never> {
   });
   await new Promise<void>((r) => fake.listen(0, '127.0.0.1', r));
   fake.unref();
-  const releaseHung = (content = '出行日期定下来了吗？'): void => {
+  /**
+   * 放行卡住的那一步。先等假模型真的收到那个请求：执行体标成 started 时生成话术的请求可能还没发到（CI 上机器慢时就是这样），
+   * 这时放行只放了个空，那个请求随后到达、一直卡到 LLM 超时，子进程被父进程的超时杀掉
+   */
+  const releaseHung = async (content = '出行日期定下来了吗？'): Promise<void> => {
+    if (!(await waitFor(() => hung.length > 0, 10_000))) fails.push('假模型 10 秒内没收到要卡住的那个请求');
     for (const r of hung.splice(0)) reply(r, content);
   };
   const fakeUrl = `http://127.0.0.1:${(fake.address() as AddressInfo).port}`;
@@ -476,7 +487,7 @@ async function storeSetup(opts: { dataDir?: string; dbConfig: boolean }) {
 
 // ---------------- main：PGlite 上的进程内各组 ----------------
 
-async function childMainSuite(script: Step[], releaseHung: (content?: string) => void, calls: () => number): Promise<void> {
+async function childMainSuite(script: Step[], releaseHung: (content?: string) => Promise<void>, calls: () => number): Promise<void> {
   const { store, fx, lock, su, jobsOf, jobsFor, flush, silent, retire } = await storeSetup({ dbConfig: true });
   const runner = await import('./runner.js');
   const followup = await import('../followup.js');
@@ -677,7 +688,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     store.saveSession(s);
     s.messages.push({ role: 'agent', content: '好的，您慢慢看，有想法随时说～', at: Date.now() });
     store.saveSession(s);
-    releaseHung();
+    await releaseHung();
     await tick;
     await flush(N);
     const j = await jobsFor(N);
@@ -978,7 +989,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     const stop0 = runner.__jobsTest.stop().then(() => (stopped0 = true));
     await Promise.race([stop0, sleep(2000)]);
     check('停机：生成话术途中停机立即结束，不等模型', stopped0 && Date.now() - t0 < 1000, `${Date.now() - t0}ms`);
-    releaseHung();
+    await releaseHung();
     await stop0;
     await tick;
     const j = await jobsFor(I);
@@ -1202,7 +1213,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     await flush(N2);
     // 生成回来之后重判取消（changed）；认领者写这个结果时借连接失败（这段时间里别的借连接一样失败，之后照常重试）
     fx.faults.acquire = fakeDbError('08006');
-    releaseHung();
+    await releaseHung();
     await tick;
     fx.faults.acquire = null;
     const j1 = await jobsFor(N2);
@@ -1384,7 +1395,7 @@ async function childDisk(mode: string, script: Step[], res: ChildResult, save: (
 
 // ---------------- 真实 Postgres：两个认领者 ----------------
 
-async function childRealPg(script: Step[], releaseHung: (content?: string) => void): Promise<void> {
+async function childRealPg(script: Step[], releaseHung: (content?: string) => Promise<void>): Promise<void> {
   const { createRealPgFixture } = await import('../db/testing.js');
   const { openDb, withTenant } = await import('../db/client.js');
   const { claimDueJobs } = await import('../db/repo/jobs.js');
@@ -1464,7 +1475,7 @@ async function childRealPg(script: Step[], releaseHung: (content?: string) => vo
       const theirs = (await withTenant(other.db, ctx, (tx) => claimDueJobs(tx, new Date(Date.now() + 1000), 10))).find(
         (j) => j.id === mine?.id,
       );
-      releaseHung();
+      await releaseHung();
       await tick;
       await store.flushSession(R, { timeoutMs: 5000 });
       const [row] = await fx.query<{ status: string; claimed_at: Date | string }>(`select status, claimed_at from jobs where id = $1`, [
