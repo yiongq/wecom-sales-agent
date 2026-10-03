@@ -2252,6 +2252,93 @@ await expectWhy([
         '[{"m":"out-1","status":"failed","errcode":null,"fail_type":4,"seq":2},{"m":"out-2","status":"accepted","errcode":45009,"fail_type":null,"seq":null}]',
     JSON.stringify(sends),
   );
+  // 预载（第 12 步）：只读各会话最后一条客户消息（last_customer_at）之后的发送；没有客户消息、没有会话行的不读
+  const ins = (conversationId: string, channelMsgid: string, at: number) => ({
+    conversationId,
+    channelMsgid,
+    messageSeq: null,
+    kind: 'ai' as const,
+    sentAt: new Date(at),
+    status: 'accepted' as const,
+    errcode: null,
+    failType: null,
+  });
+  await asApp(R, (tx) =>
+    repoOutbound.insertOutboundSends(tx, [
+      ins('wecom:wm-1', 'out-3', T0 + 600),
+      ins('wecom:wm-2', 'out-4', T0 + 600),
+      ins('wecom:wm-1', 'out-5', T0 + 500),
+    ]),
+  );
+  const pre = await asApp(R, (tx) => repoOutbound.readOutboundAfterLastCustomer(tx, ['wecom:wm-1', 'wecom:wm-2', 'wecom:wm-new']));
+  check(
+    '仓储：预载只读最后一条客户消息之后的发送（同一时刻的算），没有客户消息的会话与没有会话行的不读',
+    JSON.stringify(pre.map((r) => [r.conversationId, r.channelMsgid, r.sentAt.getTime()])) ===
+      JSON.stringify([
+        ['wecom:wm-1', 'out-5', T0 + 500],
+        ['wecom:wm-1', 'out-3', T0 + 600],
+      ]),
+    JSON.stringify(pre),
+  );
+  // 回执（第 12 步）：还不是 failed 的那一行记 failed 与 fail_type，返回会话 id；已是 failed、找不到的返回 null；没有会话行的也改
+  const m1 = await asApp(R, (tx) => repoOutbound.markOutboundFailed(tx, 'out-3', 6));
+  const m2 = await asApp(R, (tx) => repoOutbound.markOutboundFailed(tx, 'out-3', 4));
+  const m3 = await asApp(R, (tx) => repoOutbound.markOutboundFailed(tx, 'out-none', 4));
+  const m4 = await asApp(R, (tx) => repoOutbound.markOutboundFailed(tx, 'out-2', 10));
+  const [o3] = await q<{ status: string; fail_type: number | null }>(
+    `select status, fail_type from outbound_sends where tenant_id = $1 and channel_msgid = 'out-3'`,
+    [R],
+  );
+  check(
+    '仓储：markOutboundFailed 改还不是 failed 的那一行、返回会话 id；重复的回执与找不到的返回 null、不改 fail_type',
+    m1 === 'wecom:wm-1' && m2 === null && m3 === null && m4 === 'wecom:wm-new' && o3?.status === 'failed' && o3.fail_type === 6,
+    JSON.stringify({ m1, m2, m3, m4, o3 }),
+  );
+  // 同一 msgid 再写一次（第 12 步审查之后：超时那一刻先记 unknown，之后升 accepted 或收到回执）：upsert 成一行，只认三种变化
+  const up = (
+    channelMsgid: string,
+    status: 'accepted' | 'unknown' | 'failed' | 'rejected',
+    at: number,
+    more: Partial<{ errcode: number; failType: number }> = {},
+  ) => ({
+    ...ins('wecom:wm-1', channelMsgid, at),
+    status,
+    errcode: more.errcode ?? null,
+    failType: more.failType ?? null,
+  });
+  await asApp(R, (tx) => repoOutbound.insertOutboundSends(tx, [up('out-6', 'unknown', T0 + 700), up('out-7', 'accepted', T0 + 700)]));
+  await asApp(R, (tx) =>
+    repoOutbound.insertOutboundSends(tx, [
+      up('out-6', 'accepted', T0 + 800), // unknown 升 accepted，sent_at 往后挪
+      up('out-7', 'unknown', T0 + 900), // accepted 不降回 unknown
+      up('out-3', 'unknown', T0 + 900), // 已是 failed 的不动
+      up('out-8', 'unknown', T0 + 700, { errcode: 45009 }), // 同一批里同一 msgid 两行：只留后一行
+      up('out-8', 'failed', T0 + 750, { failType: 4 }),
+    ]),
+  );
+  const ups = await q<{ m: string; status: string; at: number; errcode: number | null; fail_type: number | null }>(
+    `select channel_msgid as m, status, (extract(epoch from sent_at) * 1000)::float8 as at, errcode, fail_type from outbound_sends where tenant_id = $1 and channel_msgid in ('out-3', 'out-6', 'out-7', 'out-8') order by 1`,
+    [R],
+  );
+  check(
+    '仓储：同一 msgid 再写是 upsert（仍一行）：unknown 升 accepted、sent_at 往后挪；accepted 不降回 unknown；已 failed 的不动；同一批两行只留后一行',
+    JSON.stringify(ups.map((r) => [r.m, r.status, Number(r.at) - T0, r.errcode, r.fail_type])) ===
+      JSON.stringify([
+        ['out-3', 'failed', 600, null, 6],
+        ['out-6', 'accepted', 800, null, null],
+        ['out-7', 'accepted', 700, null, null],
+        ['out-8', 'failed', 750, null, 4],
+      ]),
+    JSON.stringify(ups),
+  );
+  // 预载的下界：last_customer_at（企微 send_time）与那条客户消息本机收到的时刻（messages.at）里较早的一个
+  await asApp(R, (tx) => repoOutbound.insertOutboundSends(tx, [ins('wecom:wm-1', 'out-9', T0 + 100)]));
+  const pre2 = await asApp(R, (tx) => repoOutbound.readOutboundAfterLastCustomer(tx, ['wecom:wm-1']));
+  check(
+    '仓储：预载从 min(last_customer_at, 最后一条客户消息的 at) 读起（本机钟比企微慢时也读得全）',
+    pre2.some((r) => r.channelMsgid === 'out-9') && !pre2.some((r) => r.channelMsgid === 'out-1'),
+    JSON.stringify(pre2.map((r) => [r.channelMsgid, r.sentAt.getTime() - T0])),
+  );
 
   // 快捷回复：增改、归档、上下移
   const titles = async (): Promise<string> => (await asApp(R, (tx) => repoQr.listQuickReplies(tx))).map((x) => x.title).join(',');

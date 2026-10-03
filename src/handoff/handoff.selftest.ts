@@ -78,7 +78,7 @@ const { app } = await import('../server.js');
 const store = await import('../store.js');
 // store 的 exit 钩子可能在最后再写一次 JSON：清理排在它之后（exit 监听按注册顺序执行），中途抛错也照样清
 process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
-const { handleMessage, inboundText, notifyPaid } = await import('../engine.js');
+const { guardOutbound, handleMessage, inboundText, notifyPaid } = await import('../engine.js');
 const { enterHandoff, HANDOFF_REASON } = await import('./record.js');
 const { cleanText } = await import('../shared/text.js');
 const { conversationState, needSummary, paidNeedsHuman } = await import('../shared/conversation.js');
@@ -948,6 +948,80 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
   );
 }
 
+// ---------------- 9. 历史里的「【顾问】」与出口去前缀（02 spec「接手、人工回复与交还」、不变量 18；plan 第 12 步） ----------------
+{
+  const NOTE = '历史里标【顾问】的话是人工顾问说的，不是你说的；顾问答应过的事以顾问为准，不要改口，也不要在自己的回复里写【顾问】。';
+  const HUMAN = '我是顾问小林，明天给您回电话确认酒店';
+  const sid = newSid('ADVISOR');
+  await say(sid, '想去云南', [{ content: '云南很适合，您几位出行？' }]);
+  sess(sid).messages.push(
+    { role: 'agent', content: HUMAN, at: Date.now(), author: 'human', authorId: null, authorName: '共享工作台' },
+    { role: 'agent', content: '【顾问】房型也帮您留着', at: Date.now(), author: 'human', authorId: null, authorName: '共享工作台' },
+  );
+  store.saveSession(sess(sid));
+  requests.length = 0;
+  const r = await say(sid, '好的，谢谢', [{ content: '【顾问】：好的，有问题随时找我～' }]);
+  const wire = requests[0]?.messages ?? [];
+  const assistant = wire.filter((m) => m.role === 'assistant').map((m) => m.content);
+  check(
+    '历史：author=human 的消息映射成 assistant、正文前加「【顾问】」；已经以它开头的不叠两遍；AI 自己的回复不加',
+    assistant.includes(`【顾问】${HUMAN}`) &&
+      assistant.includes('【顾问】房型也帮您留着') &&
+      assistant.includes('云南很适合，您几位出行？'),
+    json(assistant),
+  );
+  const lastUser = wire.findLastIndex((m) => m.role === 'user');
+  const note = wire[lastUser - 1];
+  check(
+    'contextNote：窗口里有人工回复时末尾多一句说明（独立的 system 消息，不在 system prompt 里）',
+    note?.role === 'system' && (note.content ?? '').endsWith(`\n${NOTE}`) && !(wire[0]?.content ?? '').includes(NOTE),
+    json(note),
+  );
+  check(
+    '会话里存的人工回复是原文（不加前缀）',
+    sess(sid).messages.some((m) => m.author === 'human' && m.content === HUMAN),
+  );
+  const last = sess(sid).messages.at(-1);
+  check(
+    '出口：AI 回复开头的「【顾问】」（带冒号）去掉，发出去的与记下的相同',
+    r.text === '好的，有问题随时找我～' && last?.content === r.text && last.author === undefined,
+    json({ r: r.text, last }),
+  );
+
+  // 没有人工回复的会话：历史与会话里的原文相同，没有「【顾问】」，contextNote 没有那句说明
+  const plain = newSid('PLAIN');
+  await say(plain, '想去云南', [{ content: '云南很适合，您几位出行？' }]);
+  requests.length = 0;
+  await say(plain, '两个人', [{ content: '好的～大概什么时候出发？' }]);
+  const w2 = requests[0]?.messages ?? [];
+  const stored = sess(plain)
+    .messages.filter((m) => m.role === 'agent')
+    .map((m) => m.content);
+  check(
+    '没有人工回复的会话：发给模型的 assistant 就是会话里的原文，整个请求里没有「【顾问】」',
+    json(w2.filter((m) => m.role === 'assistant').map((m) => m.content)) === json(stored.slice(0, -1)) &&
+      !w2.some((m) => (m.content ?? '').includes('【顾问】')),
+    json(w2.map((m) => [m.role, (m.content ?? '').slice(0, 30)])),
+  );
+  // 整条只有「【顾问】」：换成兜底话术，不发空串
+  const r2 = await say(plain, '在吗', [{ content: '【顾问】' }]);
+  check(
+    '出口：整条只有「【顾问】」时换成兜底话术，不发空的、不以它开头',
+    r2.text.trim().length > 0 && !r2.text.includes('【顾问】') && sess(plain).messages.at(-1)?.content === r2.text,
+    json(r2.text),
+  );
+  // 客户问身份、模型照着历史以「【顾问】」开头：身份句接在最前面之前先去前缀，回复里一处「【顾问】」都不留（审查 compat[0]）
+  const who = await say(sid, '你是机器人吗', [{ content: '【顾问】在的～您想去哪儿玩？' }]);
+  check(
+    '出口：客户问身份、模型以「【顾问】」开头：身份句在最前面，回复里没有「【顾问】」',
+    who.text.startsWith('我是云途定制旅行的 AI 旅行顾问') && who.text.includes('在的～您想去哪儿玩？') && !who.text.includes('【顾问】'),
+    json(who.text),
+  );
+  // 跟进话术走同一个出口
+  const g = await guardOutbound(sess(plain), '【顾问】出行日期定下来了吗？', { kind: 'followup' });
+  check('跟进的出口护栏（guardOutbound）同样去掉开头的「【顾问】」', g === '出行日期定下来了吗？', json(g));
+}
+
 fake.close();
 if (fails.length) {
   console.error(`HANDOFF SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);
@@ -955,6 +1029,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts）`,
+  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 历史里的「【顾问】」与出口去前缀（含问身份））`,
 );
 process.exit(0);
