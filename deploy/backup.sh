@@ -16,14 +16,20 @@
 # 4. 两份都在离开本机前用 age 公钥加密，私钥不放在服务器上；明文只在 0700 的临时目录里短暂存在。
 #    本地按日期建目录（0700），保留 7 天。
 # 5. 异地副本经 rclone 复制到 BACKUP_OFFSITE，保留 30 天。没配异地目标时每次都在 stderr 告警，本地备份照常。
+# 6. 告警（02 spec「可观测性与告警」、R24）：任何一步失败（trap 在非零退出时）推一条到企微群机器人，只带失败在哪一步与退出码；
+#    成功时把时刻写进 <BACKUP_DIR>/<项目名>/last-success（watch.sh 据此查「上次成功的备份早于 26 小时」），上一次失败过就再推
+#    一条「已恢复」。推不出去、没配地址只写 stderr，不改变退出码。
 #
-# 配置写在部署目录的 .env.backup（不进仓库，deploy.sh 的 rsync 不碰 .env*）：
+# 配置写在部署目录的 .env.backup（不进仓库，deploy.sh 的 rsync 不碰 .env*），之后再读运维 env 文件 .env.ops（watch.sh 读同一份，
+# 后读的盖前面的）：
 #   BACKUP_AGE_RECIPIENTS  必填，age 公钥（age1…），多个用空格分开
 #   BACKUP_DIR             本地备份的根目录，缺省 /var/backups；备份写在 <BACKUP_DIR>/<项目名>/<日期>
 #   BACKUP_OFFSITE         rclone 目标（如 remote:bucket/backups），写在 <BACKUP_OFFSITE>/<项目名>/<日期>；地域约束另记
 #   COMPOSE_PROJECT        compose 项目名。部署目录是 /opt/wecom-sales-agent 时缺省 wecom-sales-agent；别的目录（旁路实例、
 #                          本机演练）必须写明（旁路实例用它自己的 NAME），否则会导出线上的库、配上这个目录的 var/
 #   AGENT_DB               库名，缺省 agent
+#   ALERT_WEBHOOK_URL      失败告警的企微群机器人地址（等同密钥，一般写在 .env.ops）；不填只写 stderr
+#   INSTANCE_LABEL         告警里的实例名（不写域名与 IP），缺省是项目名
 # 本地和异地的路径都带项目名：旁路实例抄一份 .env.backup 跑，也不会盖掉线上同一天的备份。
 #
 # 恢复固定这几步（新集群上，每月演练一次）：
@@ -43,12 +49,55 @@ if [[ ! -f .env ]]; then
   echo "backup: $(pwd) 不是部署目录（缺 .env）。用法：backup.sh <部署目录>" >&2
   exit 1
 fi
-if [[ -f .env.backup ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env.backup
-  set +a
-fi
+for f in .env.backup .env.ops; do
+  if [[ -f "$f" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$f"
+    set +a
+  fi
+done
+
+# 6) 告警：任何一步失败都推一条（只有哪一步与退出码），成功时记下时刻供 watch.sh 查；推送失败不改变退出码
+STEP='准备'
+ROOT=''
+TMP=''
+json_escape() {
+  local s=${1//\\/\\\\}
+  printf '%s' "${s//\"/\\\"}"
+}
+notify() {
+  local content resp rc
+  content="[${INSTANCE_LABEL:-${COMPOSE_PROJECT:-wecom-sales-agent}}] $1 · $(date '+%F %T')"
+  if [[ -z "${ALERT_WEBHOOK_URL:-}" ]]; then
+    echo "backup: ⚠️ 没配 ALERT_WEBHOOK_URL，这条告警只记在这里：${content}" >&2
+    return 0
+  fi
+  resp="$(curl -s -m 5 --retry 2 --retry-delay 1 --retry-connrefused -H 'content-type: application/json' \
+    -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"$(json_escape "$content")\"}}" "$ALERT_WEBHOOK_URL" 2>/dev/null)"
+  rc=$?
+  if ((rc != 0)) || [[ "$resp" != *'"errcode":0'* ]]; then echo "backup: ⚠️ 告警没推出去（curl 退出码 ${rc}）：${content}" >&2; fi
+  return 0
+}
+on_exit() {
+  local rc=$?
+  set +e
+  [[ -n "$TMP" ]] && rm -rf "$TMP"
+  if ((rc == 0)); then
+    if [[ -n "$ROOT" && -d "$ROOT" ]]; then
+      date +%s >"$ROOT/last-success.tmp" && mv "$ROOT/last-success.tmp" "$ROOT/last-success"
+      if [[ -f "$ROOT/last-failure" ]]; then
+        rm -f "$ROOT/last-failure"
+        notify "已恢复：备份成功"
+      fi
+    fi
+  else
+    [[ -n "$ROOT" && -d "$ROOT" ]] && date +%s >"$ROOT/last-failure"
+    notify "备份失败（${STEP}这一步，退出码 ${rc}），这次的备份不可用"
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
 
 RECIPIENTS="${BACKUP_AGE_RECIPIENTS:?backup: 缺 BACKUP_AGE_RECIPIENTS（写在 .env.backup）}"
 if [[ -z "${COMPOSE_PROJECT:-}" && "$(pwd)" != /opt/wecom-sales-agent ]]; then
@@ -71,16 +120,17 @@ alarm() { echo "backup: ⚠️ $*" >&2; }
 DAY="$(date +%F)"
 DEST="${ROOT}/${DAY}"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$DEST"
 chmod 700 "$ROOT" "$DEST"
 
+STEP='导出'
 # 1) 导出。先查两张配置表的行数，以及 02 的会话三张表里库里已有的（空格分开）：在导出之前查，导出之后才建的表这次不要求
 probe="$(dc exec -T db psql -U postgres -d "$DB" -Atc "select (select count(*) from sop_versions), (select count(*) from catalog_items), (select coalesce(string_agg(t, ' ' order by o), '') from unnest(array['conversations', 'messages', 'orders']) with ordinality as u(t, o) where to_regclass('public.' || t) is not null)")"
 IFS='|' read -r sop_rows catalog_rows session_tables <<<"$probe"
 dc exec -T db pg_dump -U postgres -Fc "$DB" >"$TMP/agent.dump"
 dc exec -T db pg_dumpall -U postgres --globals-only --no-role-passwords >"$TMP/globals.sql"
 
+STEP='校验'
 # 2) 校验：这几张 RLS 表都有数据段（空表也有）；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
 required=(memberships sop_versions catalog_items audit_log)
 absent=()
@@ -102,6 +152,7 @@ if [[ "${sop_rows:-0}" == 0 || "${catalog_rows:-0}" == 0 ]]; then
   exit 1
 fi
 
+STEP='打包 var/'
 # 3) var/
 if [[ -d var ]]; then
   tar -czf "$TMP/var.tar.gz" var
@@ -109,6 +160,7 @@ else
   alarm "部署目录里没有 var/，这次没备份会话与订单"
 fi
 
+STEP='加密'
 # 4) 加密，写进当天的目录；明文随临时目录一起删掉
 age_args=()
 for r in $RECIPIENTS; do age_args+=(-r "$r"); done
@@ -120,6 +172,7 @@ echo "backup: ${DEST}（sop_versions ${sop_rows} 行，catalog_items ${catalog_r
 # 本地保留 7 天：只清理按日期命名的目录
 find "$ROOT" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' -mtime +7 -exec rm -rf {} +
 
+STEP='异地复制'
 # 5) 异地，保留 30 天
 if [[ -z "${BACKUP_OFFSITE:-}" ]]; then
   alarm "没有配异地目标（BACKUP_OFFSITE），这份备份只在本机"
