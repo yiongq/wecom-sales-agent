@@ -12,7 +12,7 @@ import { Check, ChevronRight, ChevronsUpDown, LogOut } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
 import type { Me } from '../../../src/shared/console-api.js';
 import { ROLE_LABEL } from '../../../src/shared/ui-labels.js';
-import { popupRegion } from '../parts/popupRegion.js';
+import { PopupRegion, popupRegion } from '../parts/popupRegion.js';
 import { type Appearance, getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { Icon } from './icons.js';
 import { avatarIndex, firstChar } from './model.js';
@@ -106,9 +106,12 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
   // 点外观、「减少动态效果」只改偏好，菜单不收起。收起不行：antd 的弹层收起以后不再重渲内容（@rc-component/trigger 关着时
   // 缓存弹层），点得快时外观子菜单还会被点之前悬停排下的定时器重新打开，勾停在旧值上，直到再打开菜单（验收之后在浏览器里看到）
   const keepOpen = useRef(false);
+  const button = useRef<HTMLButtonElement>(null);
   const items = userMenuItems({ appearance, reduce });
 
-  const onClick: MenuProps['onClick'] = ({ key }) => {
+  const onClick: MenuProps['onClick'] = ({ key, domEvent }) => {
+    // 键盘的 Enter 在 keydown 里就点了菜单项：拦下默认动作，这一下不再落到随即拿到焦点的按钮上（同话术页、条目详情的「更多」）
+    if (domEvent.type === 'keydown') domEvent.preventDefault();
     if (key.startsWith('appearance:')) {
       keepOpen.current = true;
       setAppearance(key.slice('appearance:'.length) as Appearance);
@@ -117,8 +120,11 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       keepOpen.current = true;
       setReduceMotion(!reduce);
       rerender();
-    } else if (key === 'about') onAbout();
-    else if (key === 'logout') onSignOut();
+    } else if (key === 'about') {
+      // 先把焦点放回用户按钮再开「关于」：弹窗记下打开时的焦点、关上时还回去，菜单项那时已经收起，还不回去就掉到 body 上
+      button.current?.focus();
+      onAbout();
+    } else if (key === 'logout') onSignOut();
   };
 
   return (
@@ -133,23 +139,35 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       }}
       trigger={['click']}
       placement="topLeft"
+      // 键盘打开时焦点进菜单（第一项「外观」）；鼠标点开的不动（parts/popupRegion.tsx）。收起以后卸下：rc-menu 只在鼠标移开时
+      // 清掉高亮，键盘停过的那一项不卸下的话，下次用鼠标点开还亮着
+      autoFocus
+      destroyOnHidden
       // multiple：rc-menu 点了条目就收起子菜单，只有 multiple 时不收；selectable 关着，multiple 不管别的
       menu={{ items, onClick, selectable: false, multiple: true, expandIcon: SUBMENU_ARROW }}
       rootClassName="user-menu-root"
-      // 弹层挂在 body 下、在侧栏的地标外面：整块是一个有名字的区域「用户选项」（axe region）；外观子菜单另挂，见 userMenuItems
+      // 弹层挂在 body 下、在侧栏的地标外面：整块是一个有名字的区域「用户选项」（axe region）；外观子菜单另挂，见 userMenuItems。
+      // 包的这一层接住打开时的 focus()、Esc 与 Tab 把焦点还给用户按钮（parts/popupRegion.tsx）
       popupRender={(menu) => (
-        <section className="user-menu" aria-label="用户选项">
+        <PopupRegion className="user-menu" label="用户选项">
           <div className="user-menu-id">
             <div className="user-menu-name">{me.displayName}</div>
             <div className="user-menu-role">{role}</div>
           </div>
           <div className="user-menu-divider" />
           {menu}
-        </section>
+        </PopupRegion>
       )}
     >
       <Tooltip title={`${me.displayName}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>
-        <button type="button" className="user-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`${me.displayName}，${role}`}>
+        <button
+          ref={button}
+          type="button"
+          className="user-btn"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={`${me.displayName}，${role}`}
+        >
           <Avatar name={me.displayName} />
           <UserNames name={me.displayName} role={role} />
           <Icon of={ChevronsUpDown} size={14} className="user-chevron" />
