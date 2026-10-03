@@ -3355,7 +3355,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   text = inboundText(text);
   const session = getOrCreateSession(sessionId, channel);
   // 逐轮 trace（02 spec）：确定性路径也记。每个出口经 done 结束这一轮，与写进回复、saveSession 在同一段同步代码里
-  startTurn(sessionId);
+  startTurn(sessionId, text);
   const stageBefore = session.stage;
   const done = (outcome: TurnOutcome, r: AgentReply, msg?: ChatMessage): AgentReply => {
     endTurn(outcome, r.text, stageBefore, session.stage, msg);
