@@ -40,7 +40,7 @@ import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
-import { humanReplyVerdict } from './quota/ledger.js';
+import { holdSend, humanReplyVerdict } from './quota/ledger.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
@@ -514,17 +514,26 @@ app.post('/api/sessions/:id/reply', legacyWrites, sameOriginOnly, adminAuth, asy
   const body = await c.req.json<{ text?: unknown }>().catch(() => null);
   const text = typeof body?.text === 'string' ? body.text.trim() : '';
   if (!text) return c.json({ error: 'text 不能为空' }, 400);
-  // 企微渠道先查发送账本（R18、不变量 34）：剩 0 条或窗口已过就拒绝并写明原因，什么都不改。第 13 步改调 reply() 之后由它抛 SendWindowError
+  const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
+  // 企微渠道先查发送账本（R18、不变量 34）：剩 0 条或窗口已过就拒绝并写明原因，什么都不改。放行就在同一段同步代码里占一个名额
+  // （并发的另一条看得到它，剩 1 条时只放一条；推送的第一个分段接过这一行），推送结束后没用上的撤掉。
+  // 第 13 步改调 reply() 之后由它抛 SendWindowError
+  let release = (): void => {};
   if (s.channel === 'wecom') {
     const verdict = humanReplyVerdict(s.id, Date.now());
     if (!verdict.ok) return c.json({ ok: false, error: verdict.message, reason: verdict.reason, closesAt: verdict.closesAt }, 409);
+    release = holdSend(s.id, 'human', message);
   }
-  const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
   s.messages.push(message);
   s.updatedAt = Date.now();
   saveSession(s);
   // 人工回复：发送账本记 human，客户侧正文前加「【顾问】」（适配器加，会话里存原文）
-  const sent = await adapterFor(s.channel).push(s.id, text, { kind: 'human', message });
+  let sent: boolean;
+  try {
+    sent = await adapterFor(s.channel).push(s.id, text, { kind: 'human', message });
+  } finally {
+    release();
+  }
   if (!sent) {
     // 发送失败必须让操作者知道：否则后台显示"已回复"、客户实际什么都没收到
     s.messages.push({

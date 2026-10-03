@@ -18,7 +18,7 @@ import {
   shouldFollowUp,
   type SessionWithFollowup,
 } from '../followup.js';
-import { followupWindowAllows, mayHaveDelivered } from '../quota/ledger.js';
+import { followupWindowAllows, holdSend, mayHaveDelivered } from '../quota/ledger.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { flushSession, getSession, jobOpApplied, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
 import type { ChatMessage, PushOpts, Session } from '../types.js';
@@ -173,6 +173,30 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   }
   // 生成期间额度可能被别的发送用掉（顾问在后台发了消息）：记账之前在活对象上再判一次
   if (!followupQuotaAllows(fresh, clock())) return { status: 'cancelled', lastError: 'quota' };
+  // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象，账本行据它取 seq）。判过额度就在同一段同步代码里占一个名额：
+  // 下面要等记账落库才推送，这段时间里顾问的人工回复看得到它（不变量 34）；推送的第一个分段接过这一行，推送结束后没用上的撤掉
+  const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
+  const release = holdSend(sid, 'followup', message);
+  try {
+    return await sendAfterLedger({ job, ctx, fresh, sid, text, message, release, clock, push });
+  } finally {
+    release();
+  }
+}
+
+/** 记账、改成 sending 并提交之后推送（run 的后半段；release 在推送一返回就调，结果不明的判断不算预占的那一行） */
+async function sendAfterLedger(a: {
+  job: JobRow;
+  ctx: JobCtx;
+  fresh: SessionWithFollowup;
+  sid: string;
+  text: string;
+  message: ChatMessage;
+  release: () => void;
+  clock: () => number;
+  push: PushFn;
+}): Promise<JobOutcome> {
+  const { job, ctx, fresh, sid, text, message, release, clock } = a;
   // 记账并把任务改成 sending，同一段同步代码里排进同一次落库；提交之后才推送（最多发一次）
   const meta = (fresh.followup ??= {});
   const stage = fresh.stage;
@@ -198,16 +222,16 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
     console.error(`[followup] 跟进 ${short(sid)} 的任务已不在本次认领手里（sending 没改中），不推送`);
     return { status: 'handled' };
   }
-  // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象，账本行据它取 seq）
-  const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
   let ok: boolean;
   try {
-    ok = await push(sid, text, { kind: 'followup', message });
+    ok = await a.push(sid, text, { kind: 'followup', message });
   } catch (e) {
     // 结果不明（可能已经送达）：按已发处理——账不退、pendingAt 留着，任务记 abandoned，不重试
     console.error(`[followup] 跟进 ${short(sid)} 推送结果不明，按已发处理、不再重试（${e instanceof Error ? e.name : 'unknown'}）`);
     queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'push_unknown' })]);
     return { status: 'handled' };
+  } finally {
+    release();
   }
   if (!ok && mayHaveDelivered(sid, message)) {
     // 企微超时、网络异常（发送账本里记 unknown）或只发出去一部分：同样是结果不明，按已发处理（02 第 12 步）
