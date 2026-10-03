@@ -3454,6 +3454,18 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 所以 prod 用 reset_command 开关把它关掉：口令按普通客户消息处理，见下方转人工静默之后的固定回复
   const isReset = /^\s*(重置|重新开始|重来|清空会话|reset)\s*$/i.test(text);
   if (isReset && profile().flags.reset_command) {
+    // 企微的口令带 msgid：先把这句记下、分到 seq（db 存储下随这次落库进库，在重置之后的窗口之外），msgid 就进了 7 天集合，
+    // 重放或重新拉到这条时按去重情况 2 跳过，不再重置一遍（02 第 12 步审查 once[5]）。窗口里照旧只留重置回复；文件存储下什么都不变
+    if (opts.msgid && !opts.alreadyRecorded) {
+      session.messages.push({
+        role: 'customer',
+        content: text,
+        at: Date.now(),
+        msgid: opts.msgid,
+        ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
+      });
+      saveSession(session);
+    }
     session.stage = 'greeting';
     session.profile = {};
     // 只追加（R5）：db 存储下库里的旧消息都留着，重置只体现为窗口起点推进到重置回复那一条；先告诉 store 这是重置，
@@ -4082,6 +4094,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   visible = trimDangling(visible);
   noteGuard('dangling', beforeDangling, visible, 'strip');
 
+  // 去掉 AI 回复开头的「【顾问】」（模型照着历史学了人工回复的样子），发给客户的 AI 回复不以它开头（不变量 18）。
+  // 身份句要接在最前面：先去，否则模型写的「【顾问】」被挤到第二行，出口最后一步认不出（02 第 12 步审查 compat[0]）
+  const dropAdvisorPrefix = (): void => {
+    const before = visible;
+    visible = stripAdvisorPrefix(visible);
+    if (visible === before) return;
+    visible = visible.trim() || (session.handedOver ? HANDED_OVER_FALLBACK : fallbackReply(session.stage));
+    noteGuard('advisor_prefix', before, visible, 'strip');
+  };
+  dropAdvisorPrefix();
+
   // 身份诚实安全网：客户直接问了，但模型的回复里没承认 —— 补一句在最前面。
   // 「装成真人」是这类产品最不能碰的红线，不能交给提示词碰运气。
   // 必须排在注入/百科/价格这些整条替换的护栏之后：排在前面时，补上的承认句会跟着模型原文一起被换掉
@@ -4105,13 +4128,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   visible = restoreProposalSuffixes(visible, calls);
   noteGuard('proposal_suffix', beforeSuffix, visible, 'patch');
 
-  // 出口的最后一步：去掉 AI 回复开头的「【顾问】」（模型照着历史学了人工回复的样子），发给客户的 AI 回复不以它开头（不变量 18）
-  const beforeAdvisor = visible;
-  visible = stripAdvisorPrefix(visible);
-  if (visible !== beforeAdvisor) {
-    visible = visible.trim() || (session.handedOver ? HANDED_OVER_FALLBACK : fallbackReply(session.stage));
-    noteGuard('advisor_prefix', beforeAdvisor, visible, 'strip');
-  }
+  // 出口的最后一步再去一次（上面几步只往后接，正常时这里什么都不改）
+  dropAdvisorPrefix();
   // 模型输出原样进会话前去掉 NUL、修好孤立代理项（不截长度）：带着它们的消息进不了库（不变量 16）
   visible = cleanText(visible);
   const replyMsg: ChatMessage = { role: 'agent', content: visible, at: Date.now() };

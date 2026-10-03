@@ -1010,6 +1010,13 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
     r2.text.trim().length > 0 && !r2.text.includes('【顾问】') && sess(plain).messages.at(-1)?.content === r2.text,
     json(r2.text),
   );
+  // 客户问身份、模型照着历史以「【顾问】」开头：身份句接在最前面之前先去前缀，回复里一处「【顾问】」都不留（审查 compat[0]）
+  const who = await say(sid, '你是机器人吗', [{ content: '【顾问】在的～您想去哪儿玩？' }]);
+  check(
+    '出口：客户问身份、模型以「【顾问】」开头：身份句在最前面，回复里没有「【顾问】」',
+    who.text.startsWith('我是云途定制旅行的 AI 旅行顾问') && who.text.includes('在的～您想去哪儿玩？') && !who.text.includes('【顾问】'),
+    json(who.text),
+  );
   // 跟进话术走同一个出口
   const g = await guardOutbound(sess(plain), '【顾问】出行日期定下来了吗？', { kind: 'followup' });
   check('跟进的出口护栏（guardOutbound）同样去掉开头的「【顾问】」', g === '出行日期定下来了吗？', json(g));
@@ -1022,6 +1029,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 历史里的「【顾问】」与出口去前缀）`,
+  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 历史里的「【顾问】」与出口去前缀（含问身份））`,
 );
 process.exit(0);
