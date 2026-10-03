@@ -1285,6 +1285,33 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
       s8.assignee?.userId === B.userId,
     json(s8.messages.slice(-3)),
   );
+  // 模型一返回就比（不只在 push 之前）：生成途中接手又交还，这一轮不再往下走成单安全网，不替客户建单
+  const s10 = fresh('TK10', 'discovery');
+  armed = null;
+  await say(s10.id, '丽江大理两个人报个价', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-yunnan-mid', travelers: 2 } }] },
+    { content: '丽江大理这条每人 16,800 元，2 位总价 33,600 元。' },
+  ]);
+  armed = {
+    sid: s10.id,
+    act: () => {
+      tk.takeover(s10.id, A);
+      tk.release(s10.id, A);
+    },
+  };
+  const r10 = await say(s10.id, '就订这个，12月10号出发', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '云南' } }] },
+    { content: '好的～' },
+  ]);
+  check(
+    '接手代次：模型一返回就比，生成途中接手又交还的这一轮不走成单安全网（不替客户建单），记「本轮未发送（顾问已接手）」',
+    !!s10.lastQuote &&
+      r10.silent === true &&
+      s10.orderIds.length === 0 &&
+      !store.listOrders().some((o) => o.sessionId === s10.id) &&
+      s10.messages.at(-1)?.content === tk.TAKEN_OVER_NOTE,
+    json({ orders: s10.orderIds, last: s10.messages.at(-1) }),
+  );
   armed = null;
   // 旧接口改调状态机：成员接手中，共享工作台的 /resume 与 /reply 都是 409、什么都不改
   const s9 = fresh('TK9');

@@ -4339,6 +4339,15 @@ async function dbStoreChild(): Promise<never> {
       ) && au.every((a) => !String(a.target_id).includes('wmDB13')),
       JSON.stringify(au),
     );
+    // 回复即接手时才进入的转人工：当场就有人处理，enterHandoff 排的两个转人工通知在同一次落库里取消，不往群里发「等人接手」
+    const notify = await su<{ status: string }>(`select status from jobs where kind = 'handoff_notify' and payload->>'sessionId' = $1`, [
+      SR,
+    ]);
+    ck(
+      '接手时才进入的转人工：两个转人工通知（立即、10 分钟没人接手）随同一次落库取消',
+      notify.length === 2 && notify.every((j) => j.status === 'cancelled'),
+      JSON.stringify(notify),
+    );
 
     // ---- /status：会话数与 poisoned 短码 ----
     const status = await req('GET', '/status', own);
