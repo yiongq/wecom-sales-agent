@@ -282,6 +282,17 @@ select {
   outline-offset: -2px;
 }
 /*
+ * 下拉菜单的项（含子菜单的标题）：antd 的焦点框偏移 1，画在项外面 3；菜单的 ul 是 overflow: auto，用户菜单去掉了 ul 的内边距，
+ * 项贴着 ul 的边，框的上、左、右被裁掉（「外观」只剩一条下划线）。往里收 2（§3「容器会裁掉外框的地方…菜单项」），所有菜单一样。
+ * 选择器照 antd 的写（下拉菜单与子菜单弹层里的 ul 下的项）：权重相同、这里在后面才盖得住，只写项的类盖不住
+ */
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-item:focus-visible,
+.ant-dropdown .ant-dropdown-menu .ant-dropdown-menu-submenu-title:focus-visible,
+.ant-dropdown-menu-submenu .ant-dropdown-menu .ant-dropdown-menu-item:focus-visible,
+.ant-dropdown-menu-submenu .ant-dropdown-menu .ant-dropdown-menu-submenu-title:focus-visible {
+  outline-offset: -2px;
+}
+/*
  * 分段控件换段 0ms（§3「筛选 0ms」）：antd 换段时画一块滑块从旧段移到新段，移完才给新段 -item-selected。滑块的过渡在
  * theme/antd.ts 里压到 1ms，可它从出现到收起仍要 4–6 帧，这几帧里旧段看着还选着。所以滑块不画；新段从点下去那一帧起就带
  * -item-selected-text，选中的样子（--thumb 底、1px --control-border 圈、text、字重 500，同 antd.ts 的 Segmented）按它画
