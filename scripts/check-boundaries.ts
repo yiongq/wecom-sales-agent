@@ -26,6 +26,8 @@ interface Imp {
   line: number;
   spec: string;
   typeOnly: boolean;
+  /** 动态 import('x')（运行到才加载）；require('x') 不算 */
+  dynamic: boolean;
   pkg: string | null;
   target: string | null;
 }
@@ -60,6 +62,9 @@ const PACK_SELFTEST = 'console/src/fields/fields.selftest.tsx';
 const PACK_REGISTRY = 'src/packs/registry.ts';
 const PACKS_DIR = 'src/packs/';
 const PACK_FIXTURES = 'src/shared/pack-fixtures/';
+/** OpenTelemetry 导出（02 spec R24、不变量 49）：没设端点时一个 @opentelemetry/* 都不加载，所以它们只在 src/otel/ 里 import */
+const OTEL_DIR = 'src/otel/';
+const OTEL_PKG = /^@opentelemetry\//;
 /** 02 的纯函数模块（还没建的照样登记，建出来就管） */
 const PURE_STORE = ['src/store/project.ts', 'src/store/seq.ts', 'src/handoff/triggers.ts', 'src/jobs/optout.ts'];
 
@@ -126,6 +131,24 @@ const IMPORT_RULES: ImportRule[] = [
     // 02 spec「逐轮 trace、护栏事件与用量」：trace 与用量经 store 的入口（queueTelemetry、PG 后端的 writeUsage）落库，不直接碰库
     desc: 'src/trace/ 不 import src/db/（trace 与用量经 store 的入口落库）',
     applies: (f) => under(f, 'src/trace/') && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/db/'),
+  },
+  // 以下三条是 02 spec R24、不变量 49：没设 OTEL_EXPORTER_OTLP_ENDPOINT 时进程不加载任何 @opentelemetry/*。
+  // src/otel/ 只由 src/ops/otel.ts 在设了端点时动态 import；import type 编译后就没了，不算
+  {
+    desc: `@opentelemetry/* 只能在 ${OTEL_DIR} 里 import（不变量 49：没设端点时一个都不加载；import type 除外）`,
+    applies: (f) => !under(f, OTEL_DIR),
+    bad: (i) => i.pkg !== null && OTEL_PKG.test(i.pkg) && !i.typeOnly,
+  },
+  {
+    desc: `${OTEL_DIR}** 只能经动态 import() 加载（不变量 49；import type 除外）`,
+    applies: (f) => !under(f, OTEL_DIR),
+    bad: (i) => under(i.target, OTEL_DIR) && !i.typeOnly && !i.dynamic,
+  },
+  {
+    // 02 spec「OpenTelemetry」：导出只经 recorder 的 onTurnEnd 拿那一轮，不碰库
+    desc: `${OTEL_DIR} 不 import src/db/（只经 onTurnEnd 拿数据）`,
+    applies: (f) => under(f, OTEL_DIR),
     bad: (i) => under(i.target, 'src/db/'),
   },
   {
@@ -232,10 +255,10 @@ function scriptKind(file: string): ts.ScriptKind {
 function importsOf(file: string, text: string): Imp[] {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind(file));
   const found: Imp[] = [];
-  const add = (lit: ts.Node | undefined, typeOnly: boolean) => {
+  const add = (lit: ts.Node | undefined, typeOnly: boolean, dynamic = false) => {
     if (!lit || !ts.isStringLiteralLike(lit)) return;
     const line = sf.getLineAndCharacterOfPosition(lit.getStart(sf)).line + 1;
-    found.push({ line, spec: lit.text, typeOnly, ...resolve(file, lit.text) });
+    found.push({ line, spec: lit.text, typeOnly, dynamic, ...resolve(file, lit.text) });
   };
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node)) add(node.moduleSpecifier, node.importClause?.isTypeOnly ?? false);
@@ -246,7 +269,7 @@ function importsOf(file: string, text: string): Imp[] {
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
     )
-      add(node.arguments[0], false);
+      add(node.arguments[0], false, node.expression.kind === ts.SyntaxKind.ImportKeyword);
     else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) add(node.argument.literal, true);
     ts.forEachChild(node, visit);
   };

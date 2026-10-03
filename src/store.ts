@@ -253,6 +253,13 @@ export function queueTelemetry(sessionId: string, rows: TelemetryRows): void {
   pgFor(sessionId)?.queueTelemetry(sessionId, rows);
 }
 /**
+ * 会话行的 ref（随机 uuid，不含客户标识；02 spec「数据库」conversations.ref）：db 存储下的真实会话有，新会话在第一次落库之前也有
+ * （建写队列时生成、插入时写进去）；文件存储与 demo 类会话为 null，调用方退回短码（日志的 conv 同一口径，R24）
+ */
+export function conversationRef(sessionId: string): string | null {
+  return pgFor(sessionId)?.refOf(sessionId) ?? null;
+}
+/**
  * 任务表的单独短事务（第 10 步：认领、改状态、启动与停机时的归位、与会话无关的排程）：只在 db 存储下有，不经会话写队列。
  * 文件存储下以 JobsTxRefused('closed') reject（文件存储没有任务表，跟进由扫描器驱动）
  */

@@ -63,6 +63,7 @@ import {
 } from '../config/source.js';
 import { isUniqueViolation, type TenantCtx } from '../db/client.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
+import { readMetricsView } from '../ops/metrics.js';
 import { profile } from '../profile.js';
 import { indexHealth } from '../retrieval.js';
 import { csvLabelsOf } from '../shared/catalog-csv.js';
@@ -74,6 +75,7 @@ import {
   CreateItemBody,
   ImportCsvBody,
   LoginBody,
+  MetricsQuery,
   PatchItemBody,
   PublishBody,
   RevBody,
@@ -91,6 +93,7 @@ import {
   type ConversationRow,
   type DraftCheck,
   type Me,
+  type MetricsView,
   type Role,
   type RollbackResult,
   type SopOverview,
@@ -102,7 +105,7 @@ import { conversationState, needSummary, type NeedVocabulary } from '../shared/c
 import type { IndustryPack } from '../shared/pack.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
-import { listSessions } from '../store.js';
+import { listSessions, sessionStoreMode } from '../store.js';
 import { safeEqual } from '../wecom-crypto.js';
 
 type ConsoleEnv = { Variables: { user: AuthedUser | null; token: string | null } };
@@ -189,6 +192,8 @@ const ownerOrAdmin: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
 };
 const canEdit = ownerOrAdmin;
 const canAudit = ownerOrAdmin;
+/** 钱与运行数字（02 spec「后台接口」权限表：本月成交额、运行数字）：只有 owner / admin */
+const canSeeMoney = ownerOrAdmin;
 
 /** 请求体、查询串、路径参数不合规：400，逐条列出 */
 const badRequest = (
@@ -512,6 +517,17 @@ export const consoleApi = new Hono<ConsoleEnv>()
       actions: q.actions?.split(','),
     });
     return c.json(page, 200);
+  })
+
+  // ---------------- 运行数字（02 spec「可观测性与告警 · 运行数字」） ----------------
+  // 只在 db 存储下有（trace 只在那时入库）：文件存储 503 store_file_mode。权限先于它：角色不够照样 403
+  .get('/metrics', canSeeMoney, zValidator('query', MetricsQuery, badRequest), async (c) => {
+    if (sessionStoreMode() !== 'db') {
+      const body: ApiError = { error: 'store_file_mode', detail: '运行数字只在 SESSION_STORE=db 时有' };
+      return c.json(body, 503);
+    }
+    const body: MetricsView = await readMetricsView(ctxOf(c), c.req.valid('query').days ?? 7, clock());
+    return c.json(body, 200);
   })
 
   // 没匹配上的路径回 JSON，不落到静态文件：成员与 demo 下的匿名 404；prod 下匿名 401（除了登录处处 401）

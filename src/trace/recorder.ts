@@ -24,6 +24,10 @@ export interface TraceCall {
   prefetch: boolean;
   resultHead: string;
   resultBytes: number;
+  /** 开始时刻（毫秒时间戳）：只在内存，给 OpenTelemetry 补建 span 用（第 18 步），不进库、trace 行的形状不变 */
+  startedAt: number;
+  /** 执行时抛错（noteToolError）：只在内存，同 startedAt；OpenTelemetry 据此标出错 */
+  failed?: true;
 }
 /** error：这次模型调用的失败类别；成功为 null。AI 出错率按它算（R24） */
 export type LlmErrorKind = 'timeout' | 'rate_limited' | 'http_5xx' | 'bad_response' | null;
@@ -40,6 +44,8 @@ export interface TraceLlmCall {
   cachedTokens: number;
   reasoningTokens: number;
   error: LlmErrorKind;
+  /** 开始时刻（毫秒时间戳，收到 onLlmCall 时减去 ms）：只在内存，同 TraceCall.startedAt */
+  startedAt: number;
 }
 export interface GuardEvent {
   /** 改写点的名字（guard_events.guard 的 CHECK：^[a-z_]{2,40}$） */
@@ -75,6 +81,8 @@ export interface FinishedTurn {
   stageBefore: SalesStage | null;
   stageAfter: SalesStage | null;
   durationMs: number;
+  /** 本轮客户原话（引擎经 startTurn 给的；企微非文本消息等没给的为空串）。只在内存，只给 OTEL_CAPTURE_CONTENT=1 的导出用（R24） */
+  input: string;
 }
 
 interface PendingTool {
@@ -89,8 +97,10 @@ interface Holder {
   stageBefore: SalesStage | null;
   /** 还没出结果的工具调用，按 onToolCall 收到的 args 对象认（引擎拿同一个对象去执行） */
   tools: PendingTool[];
-  /** 本轮的模型调用（llm.ts 的 CallTrace，之后还会记上工具与复用）与它的用量 */
-  llm: { trace: CallTrace; usage: Omit<TraceLlmCall, keyof CallTrace> | null }[];
+  /** 本轮的模型调用（llm.ts 的 CallTrace，之后还会记上工具与复用）、它的用量与开始时刻 */
+  llm: { trace: CallTrace; usage: Omit<TraceLlmCall, keyof CallTrace | 'startedAt'> | null; startedAt: number }[];
+  /** 本轮客户原话（startTurn 给的），只在内存 */
+  input: string;
 }
 
 const turns = new AsyncLocalStorage<Holder>();
@@ -102,7 +112,7 @@ const SENTENCE_MAX = 200;
  * 这一轮抛错时记 outcome='error' 再原样抛出
  */
 export function withTurnScope<T>(fn: () => Promise<T>): Promise<T> {
-  const h: Holder = { ctx: null, ended: false, stageBefore: null, tools: [], llm: [] };
+  const h: Holder = { ctx: null, ended: false, stageBefore: null, tools: [], llm: [], input: '' };
   return turns.run(h, () =>
     fn().then(undefined, (e: unknown) => {
       if (h.ctx && !h.ended) finish(h, 'error', '', h.stageBefore, getSession(h.ctx.conversationId)?.stage ?? null);
@@ -117,8 +127,11 @@ function live(): Holder | null {
   return h?.ctx && !h.ended ? h : null;
 }
 
-/** 引擎在 handleMessageInner 开头调；两种存储都收集（只在内存）。不在 withTurnScope 里（不经 handleMessage）时什么都不做 */
-export function startTurn(conversationId: string): void {
+/**
+ * 引擎在 handleMessageInner 开头调；两种存储都收集（只在内存）。不在 withTurnScope 里（不经 handleMessage）时什么都不做。
+ * input 是本轮客户原话：只留在内存、交给 onTurnEnd 的订阅者（OTEL_CAPTURE_CONTENT=1 时导出），不进 trace 行
+ */
+export function startTurn(conversationId: string, input = ''): void {
   const h = turns.getStore();
   if (!h || h.ctx) return;
   let sopVersion: number | null = null;
@@ -145,6 +158,7 @@ export function startTurn(conversationId: string): void {
     draft: null,
   };
   h.stageBefore = getSession(conversationId)?.stage ?? null;
+  h.input = input;
 }
 
 /** 这一轮调模型时实际用的 SOP 版本与前缀哈希（引擎在 turnPrefix 之后调；轮内发布了新版本时以这次为准） */
@@ -261,9 +275,10 @@ function noteCatalogVersions(ctx: TurnContext, args: Record<string, unknown>, re
 export function traceToolCall(name: string, args: Record<string, unknown>, _sessionId: string, meta?: { prefetch?: boolean }): void {
   const h = live();
   if (!h) return;
-  const call: TraceCall = { name, args: {}, ms: 0, prefetch: !!meta?.prefetch, resultHead: '', resultBytes: 0 };
+  const t0 = Date.now();
+  const call: TraceCall = { name, args: {}, ms: 0, prefetch: !!meta?.prefetch, resultHead: '', resultBytes: 0, startedAt: t0 };
   h.ctx!.calls.push(call);
-  h.tools.push({ call, args, t0: Date.now() });
+  h.tools.push({ call, args, t0 });
 }
 
 /** 引擎执行完一次工具（args 是交给 onToolCall 的同一个对象）：耗时、执行时的参数、结果的前 4 KB、条目版本 */
@@ -280,9 +295,25 @@ export function noteToolResult(args: Record<string, unknown>, result: string): v
   noteCatalogVersions(h.ctx!, args, result);
 }
 
+/**
+ * 引擎执行一次工具时抛错（args 同上）：记下真实耗时、执行时的参数与只在内存的失败标记（不进库，trace 行的形状不变，
+ * resultBytes 照旧是 0、没有结果）。不记的话这次调用在 finish 里只补参数，耗时是 0、看起来像成功
+ */
+export function noteToolError(args: Record<string, unknown>): void {
+  const h = live();
+  if (!h) return;
+  const i = h.tools.findIndex((p) => p.args === args);
+  if (i < 0) return;
+  const [p] = h.tools.splice(i, 1);
+  p!.call.ms = Date.now() - p!.t0;
+  p!.call.args = normalizeForStore(args);
+  p!.call.failed = true;
+}
+
+// llm.ts 在一次调用结束（成功或失败）时通知，带这次的耗时：开始时刻倒推出来
 onLlmCall((c) => {
   const h = live();
-  if (h) h.llm.push({ trace: c, usage: null });
+  if (h) h.llm.push({ trace: c, usage: null, startedAt: Date.now() - c.ms });
 });
 
 // 主对话每次调用的 token：llm.ts 先通知 onLlmCall、再记用量，这一笔归最近一次还没有用量、同一模型的成功调用
@@ -302,8 +333,8 @@ onUsage((e) => {
 
 const endObservers = new Set<(t: FinishedTurn) => void>();
 /**
- * 轮次结束的订阅（自测用；第 18 步的 OpenTelemetry 导出也挂在这里：设了 OTEL_EXPORTER_OTLP_ENDPOINT 时由 boot() 订阅
- * src/otel/export.ts 的 exportTurn）。没人订阅时 endTurn 里只有一次判断
+ * 轮次结束的订阅（自测用；OpenTelemetry 导出也挂在这里：设了 OTEL_EXPORTER_OTLP_ENDPOINT 时 boot() 经 src/ops/otel.ts
+ * 动态 import src/otel/export.ts 再订阅，见第 18 步）。没人订阅时 endTurn 里只有一次判断
  */
 export function onTurnEnd(fn: (t: FinishedTurn) => void): () => void {
   endObservers.add(fn);
@@ -324,10 +355,10 @@ function finish(
   h.ended = true;
   const t = h.ctx!;
   const durationMs = Math.max(0, Date.now() - t.startedAt);
-  // 没等到结果的工具调用（执行时抛错）：参数照记
+  // 没等到结果、也没记过失败的工具调用（还在执行，或成单安全网那处抛错，引擎那里没接 noteToolError）：参数照记
   for (const p of h.tools) p.call.args = normalizeForStore(p.args);
   h.tools = [];
-  t.llm = h.llm.map(({ trace: c, usage }) => ({
+  t.llm = h.llm.map(({ trace: c, usage, startedAt }) => ({
     model: c.model,
     hedged: c.hedged,
     ms: c.ms,
@@ -339,11 +370,12 @@ function finish(
     cachedTokens: usage?.cachedTokens ?? 0,
     reasoningTokens: usage?.reasoningTokens ?? 0,
     error: c.error,
+    startedAt,
   }));
   // AI 回复消息经 WeakMap 关联 turnId（落库进 messages.turn_id）：与回复同一段同步代码里调，排出的那次落库取快照时已经关联上
   if (reply) linkTurn(reply, t.turnId);
   if (endObservers.size) {
-    const done: FinishedTurn = { turn: t, outcome, finalText, stageBefore, stageAfter, durationMs };
+    const done: FinishedTurn = { turn: t, outcome, finalText, stageBefore, stageAfter, durationMs, input: h.input };
     for (const fn of endObservers) {
       try {
         fn(done);
@@ -367,8 +399,9 @@ function finish(
     stageAfter,
     draft: t.draft,
     finalText: finalText ? cleanText(finalText) : null,
-    calls: t.calls.map((c) => ({ ...c })),
-    llm: t.llm,
+    // 开始时刻与失败标记只在内存（OpenTelemetry 用），不进库：trace 行的 calls、llm 与第 9 步的形状相同
+    calls: t.calls.map(({ startedAt: _s, failed: _f, ...c }) => c),
+    llm: t.llm.map(({ startedAt: _s, ...c }) => c),
     signals: null,
   };
   const guards: GuardRow[] = t.guards.map((g, ord) => ({
