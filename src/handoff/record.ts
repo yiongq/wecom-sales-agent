@@ -5,7 +5,8 @@ import { configMode, currentTenant } from '../config/source.js';
 import { packById } from '../packs/registry.js';
 import { terminalStages } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
-import { emitAfterCommit } from '../store.js';
+import { handoffNotifyOps } from '../jobs/notify.js';
+import { emitAfterCommit, queueJobs } from '../store.js';
 import type { HandoffKind, HandoffRecord, SalesStage, Session } from '../types.js';
 
 /**
@@ -50,7 +51,8 @@ export function terminalStageKey(): SalesStage {
  * 从「未转人工」进入时：assignee = null；首次进入时 firstHandoffAt = record.at；handoffCount + 1。
  * stageBeforeHandoff 的写法与 02 之前相同：已在转人工中不覆盖，否则记下的会是 handoff 本身，原阶段永久丢失。
  * 阶段是行业包终态时保留终态（R9，开放问题 12 选 A：成交统计不变），否则改成 handoff。
- * 每次进入或升级都 emitAfterCommit({ type: 'handoff.started', … })，事件随这个会话的下一次落盘（落库）发出
+ * 每次进入或升级都 emitAfterCommit({ type: 'handoff.started', … })，事件随这个会话的下一次落盘（落库）发出；
+ * db 存储下同时排 handoff_notify 任务（src/jobs/notify.ts），随同一次落库提交
  */
 export function enterHandoff(session: Session, record: HandoffRecord, prevStage: SalesStage = session.stage): void {
   const terminal = isTerminalStage(session.stage);
@@ -77,4 +79,6 @@ export function enterHandoff(session: Session, record: HandoffRecord, prevStage:
     escalated,
     paidCustomer: terminal,
   });
+  // 转人工通知（02 spec「任务表与跟进」）：立即一个、10 分钟仍没人接手再一个，随这次转人工的落库提交（db 存储的真实会话；其余丢弃）
+  queueJobs(session.id, handoffNotifyOps(session.id, record.at, { escalated }));
 }

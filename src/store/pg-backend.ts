@@ -19,7 +19,7 @@ import {
   updateConversation,
   type ConversationSeqs,
 } from '../db/repo/conversations.js';
-import { cancelPendingJobs, enqueueJob, setJobStatus, type JobKind, type JobStatus } from '../db/repo/jobs.js';
+import { cancelPendingJobs, cancelPendingJobsOfSession, enqueueJob, setJobStatus, type JobKind, type JobStatus } from '../db/repo/jobs.js';
 import { insertMessages, readMessagesFrom, readRecentCustomerMsgids } from '../db/repo/messages.js';
 import { readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
 import { insertOutboundSends, type OutboundSendRow } from '../db/repo/outbound.js';
@@ -69,18 +69,26 @@ export interface AuditItem {
   actor: AuditActor;
   entry: AuditEntry;
 }
-/** 任务的排程与状态变化（第 10 步起有生产者）；时间是毫秒，能原样写进 spill */
+/**
+ * 任务的排程与状态变化（第 10 步起有生产者）；时间是毫秒，能原样写进 spill。
+ * status 的 claimedAt 是认领令牌（只改 claimed_at 仍是它的那一行）；report 为 true 时，提交之后经 jobOpApplied 报回改中了没有
+ * （跟进的 running → sending：没改中就不推送）
+ */
 export type JobOp =
   | { op: 'enqueue'; kind: JobKind; dedupeKey: string; runAt: number; payload: unknown; maxAttempts: number }
   | { op: 'cancel'; dedupeKey: string }
+  /** 取消这个会话某一种还没开始执行的任务（按 payload 的 sessionId） */
+  | { op: 'cancelSession'; kind: JobKind; sessionId: string }
   | {
       op: 'status';
       id: string;
       status: JobStatus;
       from?: JobStatus[];
+      claimedAt?: number;
       lastError?: string | null;
       attemptsDelta?: number;
       runAt?: number;
+      report?: boolean;
     };
 /** 同意记录（第 16 步起有生产者）：会话 id 由落库补上，时间是毫秒 */
 export type ConsentItem = Omit<ConsentRow, 'conversationId' | 'at'> & { at: number };
@@ -151,6 +159,8 @@ interface Snap {
   consents: ConsentItem[];
   telemetry: Required<TelemetryRows>;
   events: DomainEvent[];
+  /** 这次落库里改中了的 report 状态变化（任务 id）：提交之后才交给 jobOpApplied */
+  applied: string[];
 }
 
 interface Waiter {
@@ -191,6 +201,8 @@ interface Entry {
   waiters: Set<Waiter>;
   /** 企微去重集合：预载的最近 7 天，加上本进程分配过 seq 的客户消息 */
   msgids: Set<string>;
+  /** 已提交、改中了的 report 状态变化（任务 id），jobOpApplied 取走 */
+  applied: Set<string>;
 }
 
 export interface PgBackendDeps {
@@ -245,6 +257,8 @@ export interface PgBackend extends StoreBackend {
   voidOrder(o: Order, reason: 'reset' | 'resync'): void;
   queueAudit(sessionId: string, item: AuditItem): void;
   queueJobs(sessionId: string, ops: readonly JobOp[]): void;
+  /** report 的状态变化已随这个会话的落库提交、而且改中了：取走（只报一次）。没提交、没改中都是 false */
+  jobOpApplied(sessionId: string, jobId: string): boolean;
   queueConsents(sessionId: string, items: readonly ConsentItem[]): void;
   queueTelemetry(sessionId: string, rows: TelemetryRows): void;
   /** demo 类会话的审计：单独一个短事务（R6） */
@@ -255,6 +269,11 @@ export interface PgBackend extends StoreBackend {
    */
   writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
+  /**
+   * 任务表的单独短事务（认领、改状态、启动与停机时的归位、与会话无关的排程；02 spec「任务表与跟进」）：不经会话写队列，
+   * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
+   */
+  jobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   /** late 段：此后不再发起落库，退避中的重试也停掉；没落库的留给 exit 时的 spill */
   close(): void;
   stats(): PgStoreStats;
@@ -295,6 +314,14 @@ const stamp = (): string => new Date().toISOString().replace(/[:.]/g, '-');
 const short = (id: string): string => shortIdOf(id) || '?';
 
 class AlreadyCommitted extends Error {}
+
+/** jobsTx 主动不写：已冲突、已停机（late 段之后）、租户锁不在本进程手里 */
+export class JobsTxRefused extends Error {
+  override readonly name = 'JobsTxRefused';
+  constructor(readonly code: 'conflict' | 'closed' | 'held_by_other') {
+    super(`任务表这次不写（${code}）`);
+  }
+}
 
 /**
  * writeUsage 没写进去。code：主动不写的三种（conflict 已冲突、closed 已停机、held_by_other 租户锁不在本进程），
@@ -404,7 +431,9 @@ const rowSide = (side: SpillSideRows, extra?: SpillSideRows): SpillSideRows => (
   consents: [...side.consents, ...(extra?.consents ?? [])],
 });
 
-async function writeSideRows(tx: Tx, sessionId: string, side: SpillSideRows): Promise<void> {
+/** 审计、任务、同意记录。返回改中了的 report 状态变化（任务 id） */
+async function writeSideRows(tx: Tx, sessionId: string, side: SpillSideRows): Promise<string[]> {
+  const applied: string[] = [];
   for (const a of side.audits) await writeAuditAs(tx, a.actor, a.entry);
   for (const j of side.jobs) {
     if (j.op === 'enqueue') {
@@ -417,19 +446,24 @@ async function writeSideRows(tx: Tx, sessionId: string, side: SpillSideRows): Pr
       });
     } else if (j.op === 'cancel') {
       await cancelPendingJobs(tx, j.dedupeKey);
+    } else if (j.op === 'cancelSession') {
+      await cancelPendingJobsOfSession(tx, j.kind, j.sessionId);
     } else {
-      await setJobStatus(tx, j.id, j.status, {
+      const ok = await setJobStatus(tx, j.id, j.status, {
         from: j.from,
+        claimedAt: j.claimedAt === undefined ? undefined : new Date(j.claimedAt),
         lastError: j.lastError,
         attemptsDelta: j.attemptsDelta,
         runAt: j.runAt === undefined ? undefined : new Date(j.runAt),
       });
+      if (ok && j.report) applied.push(j.id);
     }
   }
   await appendConsents(
     tx,
     side.consents.map((c) => ({ ...c, conversationId: sessionId, at: new Date(c.at) })),
   );
+  return applied;
 }
 
 const spillOrderRow = (o: SpillOrder): OrderRowShape => orderToRow(o.order as unknown as Order, o.voided ?? undefined);
@@ -629,6 +663,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     events: [],
     waiters: new Set(),
     msgids,
+    applied: new Set(),
   });
 
   /**
@@ -723,6 +758,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       consents: e.consents,
       telemetry: e.telemetry,
       events: e.events,
+      applied: [],
     };
     e.orderIds = new Set();
     e.voids = new Map();
@@ -780,9 +816,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     await insertMessages(tx, e.id, snap.messages);
     // 4 会话行：投影列、state、last_seq、window_start_seq、updated_at、flush_id
     await updateConversation(tx, snap.values, { lastSeq: snap.lastSeq, windowStartSeq: snap.windowStartSeq, flushId: snap.flushId });
-    // 5 订单、审计（各自的操作者）、任务、同意记录
+    // 5 订单、审计（各自的操作者）、任务、同意记录。改中了的 report 状态变化记在快照上，提交之后才交出去（按 flush_id 认出
+    // 上一次其实提交了的，走不到这里，留着的正是提交了的那一次的结果）
     await upsertOrders(tx, snap.orders);
-    await writeSideRows(tx, e.id, snap);
+    snap.applied = await writeSideRows(tx, e.id, snap);
     // 6 存档点里写 trace、护栏事件、账本行：出错只丢这几行，会话照常提交
     const t = snap.telemetry;
     if (t.traces.length || t.guards.length || t.outbound.length) {
@@ -840,6 +877,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     let taken = false;
     for (const r of snap.orders) if (adopted.delete(r.id)) taken = true;
     if (taken) d.ordersTaken?.([e.id]);
+    for (const id of snap.applied) e.applied.add(id);
     deliverCommitted(snap.events);
     d.afterCommit?.();
     for (const w of e.waiters) {
@@ -1038,6 +1076,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       e.jobs.push(...ops);
       change(e);
     },
+    jobOpApplied(sessionId, jobId) {
+      return entries.get(sessionId)?.applied.delete(jobId) ?? false;
+    },
     queueConsents(sessionId, items) {
       const e = entryById(sessionId);
       if (!e || !items.length) return;
@@ -1078,6 +1119,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     },
     recentMsgids(sessionId) {
       return entries.get(sessionId)?.msgids ?? new Set();
+    },
+    jobsTx(fn) {
+      if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
+      if (closed) return Promise.reject(new JobsTxRefused('closed'));
+      if (!d.writable()) return Promise.reject(new JobsTxRefused('held_by_other'));
+      return detached(() => withTenant(d.db, ctx, fn));
     },
     flush(sessionId, opts = {}) {
       const e = entries.get(sessionId);

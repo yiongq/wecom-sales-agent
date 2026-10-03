@@ -25,6 +25,7 @@ import {
   markOrderPaid,
   onShutdown,
   saveSession,
+  sessionStoreMode,
   storeEvents,
   storeHealth,
   varDir,
@@ -36,6 +37,7 @@ import { usageToday } from './usage.js';
 import { gateStatus } from './llm-gate.js';
 import { buildIndex } from './retrieval.js';
 import { startFollowUpScheduler } from './followup.js';
+import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
@@ -875,6 +877,12 @@ function logStartup(listeningPort: number): void {
   }
 }
 
+/** 跟进推给客户的那一下（扫描器与任务表共用） */
+function pushFollowUp(sessionId: string, text: string): Promise<boolean> {
+  const s = getSession(sessionId);
+  return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+}
+
 if (!SELFTEST) {
   // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
   onShutdown(markConfigShuttingDown);
@@ -903,12 +911,10 @@ if (!SELFTEST) {
     },
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
     buildIndex,
-    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
-    startFollowUpScheduler: () =>
-      startFollowUpScheduler((sessionId, text) => {
-        const s = getSession(sessionId);
-        return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
-      }),
+    storeMode: sessionStoreMode,
+    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
+    startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
+    startJobs: () => startJobs(pushFollowUp),
     startWecom,
     exit: (code) => process.exit(code),
   });

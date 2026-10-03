@@ -335,8 +335,8 @@ function anchors(out: ChildOut): [string, boolean, string][] {
   const pushes = (fu?.notes.pushes ?? []) as { id: string; text: string; durableAtPush: { count?: number; pending?: boolean } | null }[];
   add(
     '跟进：第一轮推两条（一条送达、一条没送达），第二轮只重试没送达的；推送那一刻持久副本里已记账；送达的写进会话，没送达的退账、失败计 2 次',
-    fu?.notes.scan1 === 1 &&
-      fu.notes.scan2 === 0 &&
+    fu?.notes.round1 === 1 &&
+      fu.notes.round2 === 0 &&
       pushes.length === 3 &&
       pushes.every((x) => x.durableAtPush?.pending === true && (x.durableAtPush.count ?? 0) >= 1) &&
       ok?.followup?.count === 1 &&
@@ -716,6 +716,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   const { app } = await import('../server.js');
   const { __test: wecomTest, syncFromCallback } = await import('../adapters/wecom.js');
   const { runFollowUpScan } = await import('../followup.js');
+  const jobs = await import('../jobs/runner.js');
   const { enterHandoff, HANDOFF_REASON } = await import('../handoff/record.js');
   const { normalizeForStore } = await import('./project.js');
   const { todayIso } = await import('../env.js');
@@ -1104,49 +1105,80 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     );
   });
 
-  // ======== 7. 跟进：文件存储的扫描器（先同步落盘再推送）与 PG 存储下第 5 步的路径（先等记账提交再推送） ========
-  // 推送那一刻，各自的持久副本（sessions.json / 库里的会话行）里已经记了账；两边发出的跟进与记账相同
+  // ======== 7. 跟进：文件存储的扫描器（先同步落盘再推送）与 PG 存储的任务表（第 10 步：记账与 sending 一起提交之后再推送） ========
+  // 推送那一刻，各自的持久副本（sessions.json / 库里的会话行）里已经记了账；两边发出的跟进与记账相同。PG 那边另核对任务表里的状态。
+  // 两个会话的先后在两边相同：扫描器按 updatedAt 从新到旧（ok 沉默 4 小时、fail 5 小时），任务表按 run_at（ok 是报价后 2 小时、
+  // fail 是异议后 4 小时，ok 的更早）
   await scenario('跟进', ['wecom:parity-fu-ok', 'wecom:parity-fu-fail'], async (o) => {
-    const silent = (sid: string, hours: number) => {
+    const silent = (sid: string, stage: Session['stage'], hours: number) => {
       const f = store.getOrCreateSession(sid, 'wecom');
-      f.stage = 'quote';
+      f.stage = stage;
       f.updatedAt = Date.now() - hours * 3600_000;
       f.messages.push({ role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt });
       store.saveSession(f, false);
     };
-    silent('wecom:parity-fu-ok', 4);
-    silent('wecom:parity-fu-fail', 5);
     type Fu = { count?: number; stages?: string[]; pendingAt?: number; failures?: number };
+    const su = <R>(sql: string, params: unknown[]): Promise<R[]> =>
+      t.pg.transaction(async (tx) => {
+        await tx.exec('SET LOCAL ROLE NONE');
+        return (await tx.query<R>(sql, params)).rows;
+      });
     const durable = async (id: string): Promise<unknown> => {
       let fu: Fu | undefined;
       if (mode === 'file') {
         const all = JSON.parse(fs.readFileSync(path.join(VAR, 'sessions.json'), 'utf8')) as (Session & { followup?: Fu })[];
         fu = all.find((s) => s.id === id)?.followup;
       } else {
-        const rows = await t.pg.transaction(async (tx) => {
-          await tx.exec('SET LOCAL ROLE NONE');
-          return (await tx.query<{ f: Fu | null }>("select state->'followup' as f from conversations where id = $1", [id])).rows;
-        });
-        fu = rows[0]?.f ?? undefined;
+        fu = (await su<{ f: Fu | null }>("select state->'followup' as f from conversations where id = $1", [id]))[0]?.f ?? undefined;
       }
       return fu ? { count: fu.count, stages: fu.stages, pending: fu.pendingAt != null, failures: fu.failures ?? 0 } : null;
     };
     const pushes: unknown[] = [];
+    let delivered = 0;
     const push = async (id: string, text: string): Promise<boolean> => {
       pushes.push({ id, text, durableAtPush: await durable(id) });
+      if (id.endsWith('-ok')) delivered += 1;
       return id.endsWith('-ok');
     };
     const noon = new Date();
     noon.setHours(12, 0, 0, 0); // 避开夜间免打扰
+    /** 一轮：文件存储扫一遍；PG 存储认领一批到点的任务。返回这一轮送达的条数 */
+    const round = async (at: number): Promise<number> => {
+      const before = delivered;
+      if (mode === 'file') await runFollowUpScan(push, noon);
+      else await jobs.runJobsOnce(at);
+      for (const id of ['wecom:parity-fu-ok', 'wecom:parity-fu-fail']) await store.flushSession(id);
+      return delivered - before;
+    };
     process.env.FOLLOWUP_ENABLED = '1';
     try {
+      if (mode === 'db') jobs.__jobsTest.start(push);
+      silent('wecom:parity-fu-ok', 'quote', 4);
+      silent('wecom:parity-fu-fail', 'objection', 5);
+      for (const id of ['wecom:parity-fu-ok', 'wecom:parity-fu-fail']) await store.flushSession(id);
       script.push({ content: '出行日期定下来了吗？' }, { content: '您更想哪天出发？' });
-      o.note('scan1', await runFollowUpScan(push, noon));
+      o.note('round1', await round(Date.now()));
       o.note('leftover1', takeLeftover());
-      // 第二轮：发出去的那个这个阶段追过了，不再追；没送达的退了账、失败计 1 次，再追一次（又没送达）
+      // 第二轮：发出去的那个这个阶段追过了，不再追；没送达的退了账、失败计 1 次，再追一次（又没送达）。
+      // 扫描器下一轮就会再扫到它；任务表按扫描器的间隔排了重试，拨到那之后
       script.push({ content: '这两天方便聊聊出发日期吗？' });
-      o.note('scan2', await runFollowUpScan(push, noon));
+      o.note('round2', await round(Date.now() + 16 * 60_000));
       o.note('leftover2', takeLeftover());
+      if (mode === 'db') {
+        const rows = await su<{ sid: string; status: string; last_error: string | null }>(
+          `select payload->>'sessionId' as sid, status, last_error from jobs where kind = 'followup' and payload->>'sessionId' like 'wecom:parity-fu-%' order by created_at`,
+          [],
+        );
+        const of = (sid: string) => rows.filter((r) => r.sid === sid).map((r) => r.status);
+        ck(
+          '跟进',
+          'PG：任务表里送达的那个 done；没送达的两次 failed（push_failed），还排着下一次重试',
+          JSON.stringify(of('wecom:parity-fu-ok')) === JSON.stringify(['done']) &&
+            JSON.stringify(of('wecom:parity-fu-fail')) === JSON.stringify(['failed', 'failed', 'pending']) &&
+            rows.filter((r) => r.status === 'failed').every((r) => r.last_error === 'push_failed'),
+          JSON.stringify(rows),
+        );
+      }
     } finally {
       process.env.FOLLOWUP_ENABLED = '';
     }
