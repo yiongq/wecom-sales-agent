@@ -31,3 +31,33 @@ export function deliverCommitted(events: readonly DomainEvent[]): void {
     }
   }
 }
+
+// ---------------- 库写不进去时的转人工（02 spec「通知」，不变量 10 唯一的例外） ----------------
+
+export type HandoffStartedEvent = Extract<DomainEvent, { type: 'handoff.started' }>;
+
+const unsavedSubscribers = new Set<(ev: HandoffStartedEvent) => void>();
+
+/**
+ * 带 handoff.started 的落库没写进去：那次落库失败（连接类，正在退避重试；或数据类，会话停写），或它排在一次失败的落库后面，
+ * 或会话已停写（poisoned）时又转人工。PG 后端每次失败都会再报一遍同一个事件，订阅者按 id 与 at 去重；提交成功时这个事件照常
+ * 经 onCommitted 发出（订阅者据此取消还没发的提醒）。外部通道的 unsaved 通知（src/notify/handoff.ts）订阅它
+ */
+export function onHandoffUnsaved(cb: (ev: HandoffStartedEvent) => void): () => void {
+  unsavedSubscribers.add(cb);
+  return () => void unsavedSubscribers.delete(cb);
+}
+
+/** PG 后端在落库失败、会话停写时调：只交 handoff.started。订阅者抛错只记日志 */
+export function deliverHandoffUnsaved(events: readonly DomainEvent[]): void {
+  for (const ev of events) {
+    if (ev.type !== 'handoff.started') continue;
+    for (const cb of unsavedSubscribers) {
+      try {
+        cb(ev);
+      } catch (e) {
+        console.error('[store] 转人工没落库的订阅者出错:', e instanceof Error ? e.message : e);
+      }
+    }
+  }
+}
