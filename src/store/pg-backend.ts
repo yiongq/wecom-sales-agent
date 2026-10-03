@@ -222,7 +222,10 @@ export interface PgStoreStats {
   /** 最近一次排重试用的退避（毫秒），没排过为 0 */
   lastRetryDelayMs: number;
   slowTx: number;
-  /** 存档点里写失败、丢掉的 trace / 护栏事件 / 账本批次 */
+  /**
+   * 丢掉的 trace / 护栏事件 / 账本批次：存档点里写失败的；以数据类错误失败的那次落库快照里的；会话 poisoned 时排着的
+   * 与之后再来的（poisoned 会话不再落库，spill 也不带它们）
+   */
   telemetryDropped: number;
   /** saveSession 收到与 identity map 里不同的同 id 对象、拒绝落库的次数 */
   foreign: number;
@@ -255,6 +258,8 @@ export interface PgBackend extends StoreBackend {
   /** late 段：此后不再发起落库，退避中的重试也停掉；没落库的留给 exit 时的 spill */
   close(): void;
   stats(): PgStoreStats;
+  /** 这个会话还留在内存里的遥测行数（排着的加在途快照里的，自测用） */
+  queuedTelemetry(sessionId: string): number;
 }
 
 const systemCtx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } });
@@ -571,6 +576,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
   };
 
   const emptyTelemetry = (): Required<TelemetryRows> => ({ traces: [], guards: [], outbound: [] });
+  const hasTelemetry = (t: TelemetryRows): boolean => !!(t.traces?.length || t.guards?.length || t.outbound?.length);
+  /** 再也写不进库的遥测行（spill 不带它们）：丢掉、算一批（与存档点里写失败同一个口径） */
+  const dropTelemetry = (holder: { telemetry: Required<TelemetryRows> }): void => {
+    if (!hasTelemetry(holder.telemetry)) return;
+    stats.telemetryDropped++;
+    holder.telemetry = emptyTelemetry();
+  };
   const newEntry = (s: Session, inDb: boolean, committedSeq: number, msgids: Set<string>): Entry => ({
     id: s.id,
     session: s,
@@ -650,6 +662,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     if (e.poisoned) return;
     e.poisoned = label;
     lastError = `${label} · ${short(e.id)}`;
+    // 此后不再起落库：排着的遥测行再也写不进库，现在就丢掉、计数，不留在内存里；之后来的在 queueTelemetry 丢。
+    // 在途的那次落库不动（window_corrupt 时它照常跑完，提交了就照样写进去；它以数据类错误失败时在 failed 里丢）
+    dropTelemetry(e);
     console.error(`[store] 会话 ${short(e.id)} 停止落库（${label}）：内存照旧服务客户，停机时写进 spill；修好原因后重启回放`);
     rejectWaiters(e);
   }
@@ -829,6 +844,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       return;
     }
     if (kind === 'data') {
+      // 这次落库不会再试：快照里的遥测行（spill 不带）一并丢掉、计数
+      dropTelemetry(snap);
       poison(e, label);
       return;
     }
@@ -1007,7 +1024,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     },
     queueTelemetry(sessionId, rows) {
       const e = entryById(sessionId);
-      if (!e) return;
+      if (!e || !hasTelemetry(rows)) return;
+      // poisoned 的会话不再落库：收下就只进不出，直接丢掉、计数
+      if (e.poisoned) {
+        stats.telemetryDropped++;
+        return;
+      }
       e.telemetry.traces.push(...(rows.traces ?? []));
       e.telemetry.guards.push(...(rows.guards ?? []));
       e.telemetry.outbound.push(...(rows.outbound ?? []));
@@ -1126,5 +1148,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       }
     },
     stats: () => ({ ...stats }),
+    queuedTelemetry(sessionId) {
+      const e = entries.get(sessionId);
+      const n = (t: Required<TelemetryRows>): number => t.traces.length + t.guards.length + t.outbound.length;
+      return e ? n(e.telemetry) + (e.inflight ? n(e.inflight.telemetry) : 0) : 0;
+    },
   };
 }

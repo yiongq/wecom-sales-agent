@@ -492,4 +492,8 @@ export const __storeTest = {
   pgStats(): PgStoreStats | null {
     return pgBackend?.stats() ?? null;
   },
+  /** db 存储下这个会话还留在内存里的遥测行数；文件存储下为 0 */
+  pgQueuedTelemetry(sessionId: string): number {
+    return pgBackend?.queuedTelemetry(sessionId) ?? 0;
+  },
 };
