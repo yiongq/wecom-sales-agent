@@ -40,6 +40,8 @@ interface TraceOut {
   calls: { name: string; prefetch: boolean }[];
   /** 每次模型调用的失败类别（成功为 null） */
   llm: (string | null)[];
+  /** 交互失败信号（第 11 步）；没走到出口护栏的轮次为 null */
+  signals: unknown;
 }
 interface ScenarioOut {
   name: string;
@@ -215,6 +217,8 @@ const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply' | 'trace', stri
     'seenRouteIds',
     'followup',
     'lastShownRoutes',
+    'turnSignals',
+    'negativeHits',
   ],
   message: ['role', 'content', 'at', 'msgid', 'sentAt'],
   order: [
@@ -231,7 +235,7 @@ const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply' | 'trace', stri
     'handoffBeforePaid',
   ],
   reply: ['text', 'stage', 'handoff', 'orderId', 'silent', 'idle'],
-  trace: ['sid', 'outcome', 'stageBefore', 'stageAfter', 'finalText', 'catalogVersions', 'guards', 'calls', 'llm'],
+  trace: ['sid', 'outcome', 'stageBefore', 'stageAfter', 'finalText', 'catalogVersions', 'guards', 'calls', 'llm', 'signals'],
 };
 function keysSeen(out: ChildOut): Record<keyof typeof MUST_SEE, Set<string>> {
   const seen = {
@@ -379,6 +383,24 @@ function anchors(out: ChildOut): [string, boolean, string][] {
       lg.sent.some((x) => x.to === 'parity-ho-legacy' && x.content.startsWith('顾问回复')) &&
       said(lgs, 'agent').at(-1)?.startsWith('云南这边') === true,
     lg?.notes,
+  );
+  // 第 11 步：确定性触发各走到了自己的那条路
+  const tr = (id: string): S | null => ses('确定性触发', id);
+  const tre = tr('wecom:parity-tr-emergency');
+  const tru = tr('wecom:parity-tr-escalate');
+  const trs = tr('wecom:parity-tr-sentiment');
+  const trw = tr('wecom:parity-tr-windows');
+  add(
+    '确定性触发：紧急情况转人工（不调模型）、已转人工时升级为 emergency 且计数不加、2 弱转人工、两个窗口留在会话上',
+    tre?.handoff?.kind === 'emergency' &&
+      said(tre, 'agent').at(-1)?.startsWith('您的安全最要紧') === true &&
+      tru?.handoff?.kind === 'emergency' &&
+      tru.handoffCount === 1 &&
+      trs?.handoff?.kind === 'sentiment' &&
+      JSON.stringify(trw?.turnSignals) === '[1,0]' &&
+      JSON.stringify(trw?.negativeHits) === '[1]' &&
+      trw?.handedOver === false,
+    { e: tre?.handoff, u: tru?.handoff, s: trs?.handoff, w: [trw?.turnSignals, trw?.negativeHits] },
   );
   // 第 9 步：trace 的比较不是空比——有护栏改了文本的轮次，也有确定性路径、沉默与转人工的轮次
   const traces = out.scenarios.flatMap((x) => x.traces);
@@ -710,6 +732,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
       guards: f.turn.guards.map((g) => ({ guard: g.guard, action: g.action, removed: [...g.removed], added: [...g.added] })),
       calls: f.turn.calls.map((c) => ({ name: c.name, prefetch: c.prefetch })),
       llm: f.turn.llm.map((c) => c.error),
+      signals: f.signals,
     };
     turnLog.push({ sid: t.sid, turnId: f.turn.turnId, guards: f.turn.guards.length, t });
   });
@@ -1227,6 +1250,25 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     o.note('legacyReply', await legacy(HO.legacy, 'reply'));
     o.note('legacyResume', await legacy(HO.legacy, 'resume'));
     await say(o, HO.legacy, '想去云南看看', searchYunnan);
+  });
+
+  // ======== 9. 确定性转人工触发（第 11 步）：紧急情况、已转人工时升级、负面情绪、失败与情绪的窗口随会话落库 ========
+  const TR = {
+    emergency: 'wecom:parity-tr-emergency',
+    escalate: 'wecom:parity-tr-escalate',
+    sentiment: 'wecom:parity-tr-sentiment',
+    windows: 'wecom:parity-tr-windows',
+  };
+  await scenario('确定性触发', Object.values(TR), async (o) => {
+    await say(o, TR.emergency, '我们被困在山上了', []);
+    await say(o, TR.emergency, '在吗', []);
+    await say(o, TR.escalate, '转人工', []);
+    await say(o, TR.escalate, '护照丢了', []);
+    await say(o, TR.sentiment, '无语', [{ content: '抱歉～您想去哪儿玩？' }]);
+    await say(o, TR.sentiment, '太离谱了', []);
+    await say(o, TR.windows, '西藏几月去合适', [{ content: '西藏一般5到10月去～' }]);
+    await say(o, TR.windows, '西藏几月去合适', [{ content: '5到10月都合适～' }]);
+    await say(o, TR.windows, '无语', [{ content: '抱歉～我说得更具体些。' }]);
   });
 
   // 少调模型由父进程逐轮看 leftover；这里只管多调（脚本空了还来的请求）

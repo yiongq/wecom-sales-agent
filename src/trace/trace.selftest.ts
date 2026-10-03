@@ -310,6 +310,7 @@ const traceRows = (sid: string) =>
     calls: { name: string; args: Record<string, unknown>; ms: number; prefetch: boolean; resultHead: string; resultBytes: number }[];
     llm: Record<string, unknown>[];
     duration_ms: number;
+    signals: Record<string, unknown> | null;
   }>('select * from turn_traces where conversation_id = $1 order by started_at, id', [sid]);
 const guardRows = (turnId: string) =>
   su<{ ord: number; guard: string; action: string; removed: string[]; added: string[] }>(
@@ -685,6 +686,13 @@ const YUNNAN = 'r-yunnan-mid';
     json(msgs),
   );
   check('沉默的那轮：final_text 为空', rows[3]?.final_text === null);
+  // 第 11 步：走模型的一轮在出口护栏之后记下交互失败信号（turn_traces.signals），确定性路径为 NULL
+  check(
+    '交互失败信号：走模型的那轮存四个信号，重置、安全网转人工、沉默为 NULL',
+    json(rows[0]?.signals) === json({ emptyModelReply: false, noRetrievalResult: false, repeatedQuestion: false, guardHit: null }) &&
+      rows.slice(1).every((r) => r.signals === null),
+    json(rows.map((r) => r.signals)),
+  );
 }
 
 // ---------------- 企微非文本消息：不经引擎，同样记一轮（回提示 deterministic、已转人工 silent），提示消息关联 turn_id ----------------

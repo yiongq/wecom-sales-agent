@@ -295,7 +295,7 @@ async function parentMain(): Promise<never> {
   console.log(
     `JOBS SELFTEST PASS: ${pass} 项断言全通（拒绝识别 / 排程与取消 / 开关关时不排 / 到点发出过护栏 / 记账与 sending 先提交 / 明确失败退账重试 / ` +
       `结果不明按已发 / 别发了之后不再排 / 夜间顺延 / 启动归位 / 停机改回 pending / 转人工通知与清理的排程 / sending 前后崩溃 / ` +
-      `重试用完不再排 / 额度不够不调模型 / 锁不在手里不认领 / 结果补写 / 跟进话术的链接与联系承诺 / 重置取消通知 / 文件存储下要成交的话不算拒绝` +
+      `重试用完不再排 / 额度不够不调模型 / 锁不在手里不认领 / 结果补写 / 跟进话术的链接与联系承诺 / 重置取消通知 / 紧急情况的通知与升级 / 两个窗口落库 / 文件存储下要成交的话不算拒绝` +
       `${realPgRan ? ' / 真实 PG：两个认领者不重复认领、认领令牌' : '；真实 PG 部分未跑'}）`,
   );
   process.exit(0);
@@ -951,6 +951,60 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
       '转人工通知：10 分钟的到点也标 done',
       (await jobsFor(J, 'handoff_notify')).every((j) => j.status === 'done'),
     );
+  }
+
+  // ---- 紧急情况（plan 第 11 步、验收 17）：未转人工时两个通知随这次转人工提交；已转人工时不回话、记录升级、再排一个立即的 ----
+  {
+    const E = 'wecom:wmJobsE1';
+    const r1 = await handleMessage(E, '孩子走丢了', 'wecom'); // 紧急情况，不调模型
+    await flush(E);
+    const n1 = await jobsFor(E, 'handoff_notify');
+    check(
+      '紧急情况（db 存储）：应急话术，立即与 10 分钟两个通知随这次转人工提交',
+      r1.handoff === true &&
+        store.getSession(E)!.handoff?.kind === 'emergency' &&
+        n1.length === 2 &&
+        n1.every((j) => j.payload.escalated === false),
+      json(n1),
+    );
+    const U = 'wecom:wmJobsE2';
+    await handleMessage(U, '转人工', 'wecom');
+    await flush(U);
+    const before = await jobsFor(U, 'handoff_notify');
+    const r2 = await handleMessage(U, '我们被困在山上了', 'wecom');
+    await flush(U);
+    const s = store.getSession(U)!;
+    const added = (await jobsFor(U, 'handoff_notify')).filter((j) => !before.some((b) => b.id === j.id));
+    check(
+      '已转人工时说紧急情况（db 存储）：不回话，记录升级为 emergency，再排一个立即的 handoff_notify（escalated）',
+      r2.silent === true &&
+        r2.text === '' &&
+        s.handoff?.kind === 'emergency' &&
+        before.length === 2 &&
+        added.length === 1 &&
+        added[0]!.payload.escalated === true &&
+        added[0]!.runAt === s.handoff.at &&
+        added[0]!.key.endsWith(':started'),
+      json({ before, added }),
+    );
+    // 两个窗口随会话落库（conversations.state）：一句弱、一轮重复提问
+    const W = 'wecom:wmJobsE3';
+    script.push({ content: '西藏一般5到10月去～' }, { content: '5到10月都合适～' }, { content: '抱歉～我说得更具体些。' });
+    await handleMessage(W, '西藏几月去合适', 'wecom');
+    await handleMessage(W, '西藏几月去合适', 'wecom');
+    await handleMessage(W, '无语', 'wecom');
+    await flush(W);
+    const [row] = await su<{ t: unknown; n: unknown }>(
+      `select state->'turnSignals' as t, state->'negativeHits' as n from conversations where id = $1`,
+      [W],
+    );
+    const asJson = (v: unknown) => (typeof v === 'string' ? v : json(v));
+    check(
+      '窗口随会话落库：turnSignals、negativeHits 在 conversations.state 里',
+      !store.getSession(W)!.handedOver && asJson(row?.t) === '[1,0]' && asJson(row?.n) === '[1]',
+      json(row),
+    );
+    await retire(E, U, W);
   }
 
   // ---- retention_purge：第一批之前排下一个 3:30；到点标 done、同一个事务排下一天的 ----
