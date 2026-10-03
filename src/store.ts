@@ -38,7 +38,7 @@ import {
 } from './store/pg-backend.js';
 // isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
 import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
-import { lastSeqOf, linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
+import { linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
 import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
 import type { ChatMessage, MessageAuthor, Session, Order } from './types.js';
 
@@ -54,7 +54,6 @@ export {
   SESSIONS_IN_DB_MARKER,
   linkTurn,
   turnIdOf,
-  lastSeqOf,
   windowStartOf,
 };
 export type { AuditActor, ConsentItem, DomainEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };

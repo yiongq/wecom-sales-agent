@@ -11,6 +11,7 @@ import { SALES_SEGMENTS } from '../shared/catalog-types.js';
 import type { ConversationCounts, ConversationDetail, ConversationRow, MessageView, OrderView } from '../shared/console-api.js';
 import { conversationState, needParts, needSummary, paidNeedsHuman, type NeedVocabulary } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
+import { cleanText } from '../shared/text.js';
 import { getOrder, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
 import type { ChatMessage, MessageAuthor, Order, Session } from '../types.js';
 import { maskNumbers } from './mask.js';
@@ -167,7 +168,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 function needOf(s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationDetail['need'] {
   const p = needParts(s.profile, vocab);
   const dates = typeof s.profile.dates === 'string' && ISO_DATE.test(s.profile.dates) ? s.profile.dates : null;
-  const budgetRaw = typeof s.profile.budget === 'string' ? s.profile.budget.trim().slice(0, 20) : '';
+  const budgetRaw = typeof s.profile.budget === 'string' ? cleanText(s.profile.budget.trim(), 20) : '';
   const budget = budgetRaw ? (viewer ? maskNumbers(budgetRaw) : budgetRaw) : null;
   return { ...p, dates, budget };
 }
