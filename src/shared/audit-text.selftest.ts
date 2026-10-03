@@ -497,16 +497,67 @@ eq(
 
 const parsed = (actions: string | undefined) => AuditQuery.safeParse(actions === undefined ? {} : { actions });
 const groups = auditGroups(TRAVEL).map((g) => g.key);
+// 02 spec「后台接口」：K 页的分段控件多一段「会话与订单」（接手、改派、交还、订单动作与快捷回复）
 eq(
-  '审计类别：全部 / 销售话术 / 产品库 / 账号与登录 / 平台与配置',
+  '审计类别：全部 / 销售话术 / 产品库 / 会话与订单 / 账号与登录 / 平台与配置',
   auditGroups(TRAVEL).map((g) => g.label),
-  ['全部', '销售话术', '产品库', '账号与登录', '平台与配置'],
+  ['全部', '销售话术', '产品库', '会话与订单', '账号与登录', '平台与配置'],
 );
 eq(
   '审计类别：产品库那一类的名字跟着行业包的侧栏分组名',
   auditGroups({ nav: { catalogGroup: '套餐与主材', entities: [] } }).map((g) => g.label),
-  ['全部', '销售话术', '套餐与主材', '账号与登录', '平台与配置'],
+  ['全部', '销售话术', '套餐与主材', '会话与订单', '账号与登录', '平台与配置'],
 );
+// 02 第 13 步的会话类、订单类与快捷回复的句子：对象是 diff 里的短码（审计不存会话 id）与快捷回复的标题
+{
+  const say = (action: string, diff: unknown, targetType = 'conversation') =>
+    line(describeAudit(entry({ action, targetType, targetId: 'f3a0c1d2-0000-4000-8000-000000000001', diff }), TRAVEL));
+  eq(
+    '会话与订单：每种动作的句子',
+    [
+      say('conversation.takeover', { shortId: '7F3A' }),
+      say('conversation.reassign', { shortId: '7F3A', from: '小林' }),
+      say('conversation.release', { shortId: '7F3A' }),
+      say('order.confirm', { shortId: 'A01', totalPrice: 85600 }, 'order'),
+      say('order.mark_paid', { shortId: 'A01', totalPrice: 85600 }, 'order'),
+      say('order.cancel', { shortId: 'A01', reason: '客户改主意了' }, 'order'),
+      say('quick_reply.create', { title: '问出行日期' }, 'quick_reply'),
+      say('quick_reply.move', { title: '问出行日期', direction: 'down' }, 'quick_reply'),
+      say('conversation.takeover', null),
+    ],
+    [
+      '小林 接手了会话7F3A',
+      '小林 接过了会话7F3A（原来是小林在处理）',
+      '小林 交还了会话7F3A',
+      '小林 确认了会话A01的订单价格（85,600元）',
+      '小林 确认收到了会话A01的付款（85,600元）',
+      '小林 取消了会话A01的订单',
+      '小林 新建了常用回复「问出行日期」',
+      '小林 下移了常用回复「问出行日期」',
+      '小林 接手了一个会话',
+    ],
+  );
+  eq(
+    '会话与订单：都在「会话与订单」一类，句子里没有会话 id',
+    [
+      ...new Set(
+        [
+          'conversation.takeover',
+          'conversation.reassign',
+          'conversation.release',
+          'order.confirm',
+          'order.mark_paid',
+          'order.cancel',
+          'quick_reply.create',
+          'quick_reply.update',
+          'quick_reply.archive',
+          'quick_reply.move',
+        ].map((a) => auditAction(a)?.group),
+      ),
+    ],
+    ['conversation'],
+  );
+}
 check(
   '审计类别：每个动作都属于一个类别',
   Object.values(AUDIT_ACTIONS).every((d) => groups.includes(d.group)),

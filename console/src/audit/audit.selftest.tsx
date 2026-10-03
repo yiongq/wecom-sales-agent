@@ -308,10 +308,11 @@ const lookups = { itemName: (kind: string, code: string) => (kind === 'route' &&
     [loginSearch(true, { cat: 'sop' }), loginSearch(false, { cat: 'sop', login: 1 })],
     [{ cat: 'sop', login: 1 }, { cat: 'sop' }],
   );
+  // 02 spec「后台接口」：K 页的分段控件多一段「会话与订单」
   eq(
-    '分段控件：五段，产品库那一类的名字取行业包',
+    '分段控件：六段，产品库那一类的名字取行业包',
     [groupOptions(TRAVEL).map((g) => g.label), groupOptions(HOME)[2]!.label],
-    [['全部', '销售话术', '产品库', '账号与登录', '平台与配置'], '套餐库'],
+    [['全部', '销售话术', '产品库', '会话与订单', '账号与登录', '平台与配置'], '套餐库'],
   );
 }
 

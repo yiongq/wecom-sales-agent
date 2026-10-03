@@ -3,6 +3,7 @@
 // 取自行业包；对象名从 diff 和产品库缓存（lookups）拼，查不到用编号。表里没有的动作兜底为「{操作者} 执行了一项操作」，
 // 动作编码只放进技术详情。不依赖 React；diff 是库里的 JSON，形状按写审计的代码读，每一步都防着形状不对。
 import type { AuditEntryView } from './console-api.js';
+import { money } from './format.js';
 import type { EntityType, FieldDef, IndustryPack } from './pack.js';
 import { ACTOR_KIND_LABEL, auditAction, type AuditGroup, RERENDER_CAUSE_LABEL, roleLabel } from './ui-labels.js';
 
@@ -143,6 +144,21 @@ const account = (diff: Record<string, unknown>): AuditPart => {
   const email = str(diff.email);
   return email ? strong(email) : plain('一个账号');
 };
+/** 会话类、订单类动作的对象：「会话」加 diff 里的短码；没有短码时写「一个会话」 */
+const conv = (diff: Record<string, unknown>): AuditPart[] => {
+  const id = str(diff.shortId);
+  return id ? [plain('会话'), strong(id)] : [plain('一个会话')];
+};
+/** 订单类动作句尾的金额（diff.totalPrice） */
+const amount = (diff: Record<string, unknown>): Pick<Body, 'tail' | 'summary'> => {
+  const n = typeof diff.totalPrice === 'number' && Number.isFinite(diff.totalPrice) ? diff.totalPrice : null;
+  return n === null ? {} : { tail: `（${money(n)}）`, summary: money(n) };
+};
+/** 快捷回复的标题（diff.title）；没有时不写 */
+const replyTitle = (diff: Record<string, unknown>): AuditPart[] => {
+  const t = str(diff.title);
+  return t ? [plain('「'), strong(t), plain('」')] : [];
+};
 const revoked = (diff: Record<string, unknown>): string | null => {
   const n = int(diff.revokedSessions);
   return n !== null && n > 0 ? `退出了${n}处登录` : null;
@@ -236,6 +252,34 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
         tail: `（原来是${roleLabel(diff.role)}）`,
         summary: `原来是${roleLabel(diff.role)}`,
       };
+    // 02「后台接口」：会话类的对象是 diff 里的短码（审计不存会话 id），订单类同样写所属会话的短码
+    case 'conversation.takeover':
+      return { parts: [plain('接手了'), ...conv(diff)] };
+    case 'conversation.reassign': {
+      const from = str(diff.from);
+      return {
+        parts: [plain('接过了'), ...conv(diff)],
+        ...(from ? { tail: `（原来是${from}在处理）`, summary: `原来是${from}在处理` } : {}),
+      };
+    }
+    case 'conversation.release':
+      return { parts: [plain('交还了'), ...conv(diff)] };
+    case 'order.confirm':
+      return { parts: [plain('确认了'), ...conv(diff), plain('的订单价格')], ...amount(diff) };
+    case 'order.mark_paid':
+      return { parts: [plain('确认收到了'), ...conv(diff), plain('的付款')], ...amount(diff) };
+    case 'order.cancel': {
+      const reason = str(diff.reason);
+      return { parts: [plain('取消了'), ...conv(diff), plain('的订单')], ...(reason ? { summary: `原因：${reason}` } : {}) };
+    }
+    case 'quick_reply.create':
+      return { parts: [plain('新建了常用回复'), ...replyTitle(diff)] };
+    case 'quick_reply.update':
+      return { parts: [plain('修改了常用回复'), ...replyTitle(diff)] };
+    case 'quick_reply.archive':
+      return { parts: [plain('收起了常用回复'), ...replyTitle(diff)] };
+    case 'quick_reply.move':
+      return { parts: [plain(diff.direction === 'down' ? '下移了常用回复' : '上移了常用回复'), ...replyTitle(diff)] };
     default:
       return { parts: [plain('执行了一项操作')] };
   }

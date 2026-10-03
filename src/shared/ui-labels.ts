@@ -38,18 +38,20 @@ export const SOP_CHECKS = Object.entries(SOP_CHECK_LABEL) as ReadonlyArray<reado
 
 // ---------------- 审计动作 ----------------
 
-/** 审计页的类别（spec「审计日志 · 筛选」）；「全部」不是类别 */
-export type AuditGroup = 'sop' | 'catalog' | 'account' | 'platform';
+/** 审计页的类别（spec「审计日志 · 筛选」；02 加「会话与订单」）；「全部」不是类别 */
+export type AuditGroup = 'sop' | 'catalog' | 'conversation' | 'account' | 'platform';
 
 /**
  * 审计页的类别与名字，按显示顺序。产品库那一类的名字取行业包的 nav.catalogGroup，与侧栏的分组名相同
- * （旅游包是「产品库」，spec K 页照旅游包写）；其余几类是界面自己的词
+ * （旅游包是「产品库」，spec K 页照旅游包写）；其余几类是界面自己的词。
+ * 「会话与订单」是 02 spec「后台接口」加的一段：接手、改派、交还、确认价格、确认收款、取消订单
  */
 export function auditGroups(pack: Pick<IndustryPack, 'nav'>): ReadonlyArray<{ key: AuditGroup | 'all'; label: string }> {
   return [
     { key: 'all', label: '全部' },
     { key: 'sop', label: '销售话术' },
     { key: 'catalog', label: pack.nav.catalogGroup },
+    { key: 'conversation', label: '会话与订单' },
     { key: 'account', label: '账号与登录' },
     { key: 'platform', label: '平台与配置' },
   ];
@@ -90,6 +92,21 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'platform.user_disable': { label: '停用账号', group: 'account', icon: 'user-x' },
   'platform.member_role': { label: '改角色', group: 'account', icon: 'user-cog' },
   'platform.member_remove': { label: '移出租户', group: 'account', icon: 'user-minus' },
+  // 02 spec「后台接口」的新动作。会话类的 target 是会话行的 ref（不含客户标识），diff 带短码；订单类的 target 是订单号
+  'conversation.takeover': { label: '接手会话', group: 'conversation', icon: 'hand' },
+  'conversation.reassign': { label: '换人处理', group: 'conversation', icon: 'arrow-right-left' },
+  'conversation.release': { label: '交还AI', group: 'conversation', icon: 'bot' },
+  'order.confirm': { label: '确认价格', group: 'conversation', icon: 'badge-check' },
+  'order.mark_paid': { label: '确认收款', group: 'conversation', icon: 'banknote' },
+  'order.cancel': { label: '取消订单', group: 'conversation', icon: 'circle-x' },
+  // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。界面上的叫法「快捷回复」用到的字还不在 UI 优先片里，
+  // 第 22 步画管理抽屉时重切字体再改；这里先写「常用回复」
+  'quick_reply.create': { label: '新建常用回复', group: 'conversation', icon: 'message-square-plus' },
+  'quick_reply.update': { label: '修改常用回复', group: 'conversation', icon: 'square-pen' },
+  'quick_reply.archive': { label: '收起常用回复', group: 'conversation', icon: 'archive' },
+  'quick_reply.move': { label: '移动常用回复', group: 'conversation', icon: 'arrow-up-down' },
+  // spec 列的另外四个（privacy.publish、platform.tenant_retention、platform.erase、system.purge）随第 16 步的生产者一起加：
+  // 这张表只收有人写的动作（console.selftest 逐个核对）
 };
 
 /** 这个动作的定义；表里没有（以后新增的动作）时是 null。只认自有属性，toString 这类原型上的名字查不到 */
