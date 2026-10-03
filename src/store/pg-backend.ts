@@ -328,6 +328,14 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
           const ids = rows.map((r) => r.id);
           const mids = await readRecentCustomerMsgids(tx, ids, since);
           const batch = new Set(ids);
+          // 带 turn_id 的消息先按会话分好组：每个会话只看自己那几条，不在每个会话里把整批消息扫一遍
+          const turnRows = new Map<string, typeof messages>();
+          for (const r of messages) {
+            if (!r.turnId) continue;
+            const list = turnRows.get(r.conversationId);
+            if (list) list.push(r);
+            else turnRows.set(r.conversationId, [r]);
+          }
           for (const { row, session, windowCount } of rebuildSessions(rows, messages)) {
             if (isDemoClassId(row.id)) throw new SessionStoreStartupError('demo_class_in_db', `库里有 demo 类会话 ${short(row.id)}`);
             if (!session) {
@@ -338,8 +346,8 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
             }
             seedSeqs(session, row.windowStartSeq);
             // AI 回复所属的轮次（messages.turn_id）记回 WeakMap：重启之后 J 页照样认得出哪条回复有 trace
-            for (const r of messages) {
-              const m = r.turnId && r.conversationId === row.id ? session.messages[r.seq - row.windowStartSeq] : undefined;
+            for (const r of turnRows.get(row.id) ?? []) {
+              const m = session.messages[r.seq - row.windowStartSeq];
               if (m) linkTurn(m, r.turnId!);
             }
             for (const m of session.messages) Object.freeze(m);
