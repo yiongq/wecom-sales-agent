@@ -39,6 +39,8 @@ import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from '
 import { promptHashes } from './config/hashes.js';
 import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
+import { shortIdOf } from './shared/conversation.js';
+import { followupOptOutOf } from './jobs/optout.js';
 import {
   endTurn,
   noteDraft,
@@ -682,6 +684,8 @@ const BARE_ACK = /^(?:好的?|好嘞|好滴|嗯+|行|可以|没问题|收到|当
 const HOLE = { proposal: '\u0001', pay: '\u0002', other: '\u0003' } as const;
 // oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
 const ANY_HOLE = /[\u0001-\u0003]/g;
+/** 空位连同前面的空格（收尾时一起去掉，「官网 https://… 预约」不留成「官网  预约」） */
+const HOLE_WITH_SPACE = new RegExp(`[ \\t]*${ANY_HOLE.source}`, 'g');
 /** 有没有空位（不带 g，test 不留 lastIndex） */
 // oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
 const HAS_HOLE = /[\u0001-\u0003]/;
@@ -3289,6 +3293,71 @@ function withNotes(result: string, notes: Record<string, string>): string {
   }
 }
 
+/** 本会话放行的支付链接：真实订单里没被改单替代的（模型从历史里抄回旧单的链接，客户点开只会看到「已被新订单替代」） */
+function allowedPayLinks(session: Session): Set<string> {
+  return new Set(session.orderIds.filter((id) => getOrder(id)?.status !== 'superseded').map((id) => '/pay/' + id));
+}
+
+/**
+ * 链接白名单：只放行 allowedPay 里的支付链接与 proposalPathOk 认可的方案书链接，其余 URL（模型幻觉、客户诱导复述的外部链接）
+ * 一律抹成空位记号（HOLE）。对话轮次与跟进（guardOutbound）共用这一套
+ */
+function whitelistLinks(
+  visible: string,
+  allowedPay: ReadonlySet<string>,
+  proposalPathOk: (pathOnly: string, version?: string) => boolean,
+): string {
+  return (
+    visible
+      // 完整 URL 一律剥成相对路径再判断：模型会连域名一起编（实测发出过
+      // https://www.yuntu.com/proposal/...），只校验路径等于放行了一个我们不控制的域名——
+      // 形态上就是钓鱼。剥掉域名后由渠道层统一拼真实公网前缀，模型编什么域名都没用。
+      // 抹掉的地方留一个空位记号（HOLE），出口修补据此知道这里本该有一条链接（见 repairLinks）。
+      // URL 到中文标点为止：「方案：https://…，您先看看」按 \S+ 会把逗号后面的正文一起吞掉
+      .replace(/https?:\/\/[^\s，。！？、；：“”‘’（）【】《》「」～]+/g, (u) => {
+        let pathOnly: string;
+        let version: string;
+        try {
+          const url = new URL(u);
+          pathOnly = url.pathname;
+          version = /^\?v=\d+$/.test(url.search) ? url.search : '';
+        } catch {
+          return HOLE.other;
+        }
+        const pay = pathOnly.match(/^\/pay\/([A-Za-z0-9_-]+)$/);
+        if (pay) return allowedPay.has('/pay/' + pay[1]) ? '/pay/' + pay[1] : HOLE.pay;
+        if (proposalPathOk(pathOnly, version)) return pathOnly + version;
+        return pathOnly.startsWith('/proposal/') ? HOLE.proposal : HOLE.other;
+      })
+      // 支付路径的变体和截断的半截也要抹：A18 模型写了「/p/ord_5d0b…」，引擎补上真链接后这半截还留在正文里。
+      // 认的是「/p/ /pa/ /o/ + 订单号」和 /pay/ /payment/ /order/ 开头的任何路径（后面没有 id、跟着「…」的也算），
+      // 只有 /pay/<本会话的真订单号> 放行
+      .replace(
+        /(^|[^:\w/])\/(?:(pay)|pays|payment|orders?|(?:p|pa|o)(?=\/ord_))\/([A-Za-z0-9_-]*)(?:…+|\.{2,}|⋯+)?/g,
+        (full, pre: string, pay: string | undefined, id: string) =>
+          pay && id && !/[….⋯]$/.test(full) && allowedPay.has('/pay/' + id) ? full : pre + HOLE.pay,
+      )
+      // 相对形式的方案链接同样要校验线路 id，防模型拼一个不存在的线路。没带人数的（「/proposal/r-guizhou」）、
+      // 截断的（「/proposal/r-sanya/3…」）同样抹成空位，出口修补换成真的
+      .replace(
+        /(^|[^:\w/])(\/proposals?\/[A-Za-z0-9_-]*(?:\/[\d-]*)*)(\?v=\d+)?(…+|\.{2,}|⋯+)?/g,
+        (full, pre: string, link: string, version: string | undefined, cut?: string) =>
+          !cut && /^\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?$/.test(link) && proposalPathOk(link, version ?? '')
+            ? full
+            : pre + HOLE.proposal,
+      )
+  );
+}
+
+/** 去 markdown（对话轮次与跟进共用） */
+function stripMarkdown(visible: string): string {
+  return visible
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^(\s*)[-*]\s+/gm, '$1· ')
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
 /**
  * 工具调用观测钩子。评测器订阅它来断言「这一轮该调的工具调了没」，
  * 生产上也可用来统计工具使用分布（哪个工具最常用、哪个从来没被调过）。
@@ -3411,6 +3480,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     });
     // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
     if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+  }
+  // 跟进的拒绝识别（02 spec「任务表与跟进」，两种存储都做）：客户说「别发了」这类话就记下，此后这个会话不再跟进。
+  // 只记标记，这一轮照常回复；db 存储下排着的跟进随这次落库取消（src/jobs/followup.ts 的落库钩子：客户回话即取消）
+  if (!session.followupOptOut && followupOptOutOf(text)) {
+    session.followupOptOut = { at: Date.now(), quote: cleanText(text, 200) };
+    console.log(`[followup] 客户拒绝跟进，此后不再跟进（会话 ${shortIdOf(session.id) || '?'}）`);
   }
   // 先落一次盘：客户这句话立刻出现在作战室（并经 SSE 推给前端），顾问看到的是
   // 「客户刚说了什么 + AI 正在生成回复」。此前要等整轮跑完（4~10 秒）才落盘，
@@ -3776,7 +3851,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 外部链接）一律抹掉。不能用「含 /pay/ 就跳过清洗」——幻觉链接恰恰就长这样。
   // 改单后被替代的旧单不放行：模型从历史里抄回旧链接，客户点开只会看到「已被新订单替代」。
   // 抹成空位后照常由出口修补换成现在那张待付款单的链接（见 repairLinks）
-  const allowedPay = new Set(session.orderIds.filter((id) => getOrder(id)?.status !== 'superseded').map((id) => '/pay/' + id));
+  const allowedPay = allowedPayLinks(session);
   // 方案书链接是无状态的（/proposal/线路id/人数[/日期][?v=版本]），本轮真调过 generate_proposal
   // 且线路 id 对得上才放行——参数都编在路径里，页面按同一套规则重算，编不出假价格。
   // 版本后缀（02「报价快照」）也要和那次调用给的一样：模型抄丢了 ?v=2，客户点开的就是版本 1 的旧价，抹成空位由出口修补换成真链接
@@ -3789,52 +3864,11 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     return (ok.length ? ok : same).some((c) => proposalSuffixOf(c) === version);
   };
   const beforeLinks = visible;
-  visible = visible
-    // 完整 URL 一律剥成相对路径再判断：模型会连域名一起编（实测发出过
-    // https://www.yuntu.com/proposal/...），只校验路径等于放行了一个我们不控制的域名——
-    // 形态上就是钓鱼。剥掉域名后由渠道层统一拼真实公网前缀，模型编什么域名都没用。
-    // 抹掉的地方留一个空位记号（HOLE），出口修补据此知道这里本该有一条链接（见 repairLinks）。
-    // URL 到中文标点为止：「方案：https://…，您先看看」按 \S+ 会把逗号后面的正文一起吞掉
-    .replace(/https?:\/\/[^\s，。！？、；：“”‘’（）【】《》「」～]+/g, (u) => {
-      let pathOnly: string;
-      let version: string;
-      try {
-        const url = new URL(u);
-        pathOnly = url.pathname;
-        version = /^\?v=\d+$/.test(url.search) ? url.search : '';
-      } catch {
-        return HOLE.other;
-      }
-      const pay = pathOnly.match(/^\/pay\/([A-Za-z0-9_-]+)$/);
-      if (pay) return allowedPay.has('/pay/' + pay[1]) ? '/pay/' + pay[1] : HOLE.pay;
-      if (proposalPathOk(pathOnly, version)) return pathOnly + version;
-      return pathOnly.startsWith('/proposal/') ? HOLE.proposal : HOLE.other;
-    })
-    // 支付路径的变体和截断的半截也要抹：A18 模型写了「/p/ord_5d0b…」，引擎补上真链接后这半截还留在正文里。
-    // 认的是「/p/ /pa/ /o/ + 订单号」和 /pay/ /payment/ /order/ 开头的任何路径（后面没有 id、跟着「…」的也算），
-    // 只有 /pay/<本会话的真订单号> 放行
-    .replace(
-      /(^|[^:\w/])\/(?:(pay)|pays|payment|orders?|(?:p|pa|o)(?=\/ord_))\/([A-Za-z0-9_-]*)(?:…+|\.{2,}|⋯+)?/g,
-      (full, pre: string, pay: string | undefined, id: string) =>
-        pay && id && !/[….⋯]$/.test(full) && allowedPay.has('/pay/' + id) ? full : pre + HOLE.pay,
-    )
-    // 相对形式的方案链接同样要校验线路 id，防模型拼一个不存在的线路。没带人数的（「/proposal/r-guizhou」）、
-    // 截断的（「/proposal/r-sanya/3…」）同样抹成空位，出口修补换成真的
-    .replace(
-      /(^|[^:\w/])(\/proposals?\/[A-Za-z0-9_-]*(?:\/[\d-]*)*)(\?v=\d+)?(…+|\.{2,}|⋯+)?/g,
-      (full, pre: string, link: string, version: string | undefined, cut?: string) =>
-        !cut && /^\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?$/.test(link) && proposalPathOk(link, version ?? '')
-          ? full
-          : pre + HOLE.proposal,
-    );
+  visible = whitelistLinks(visible, allowedPay, proposalPathOk);
   noteGuard('link_whitelist', beforeLinks, visible, 'strip');
   const beforeMarkdown = visible;
-  visible = visible
-    // markdown 在微信/后台都不渲染，直接落库前就清掉（企微渠道层 wechatify 是二道保险）
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^(\s*)[-*]\s+/gm, '$1· ')
-    .replace(/[ \t]{2,}/g, ' ');
+  // markdown 在微信/后台都不渲染，直接落库前就清掉（企微渠道层 wechatify 是二道保险）
+  visible = stripMarkdown(visible);
   noteGuard('markdown', beforeMarkdown, visible, 'strip');
   // 链接该在却不在的位置标成空位（记号不算文本的改动）；整条都被抹空才换成兜底，算链接修补
   const beforeHoles = visible;
@@ -4104,6 +4138,65 @@ function logSlowTurn(
   console.warn(
     `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms · ${t.tag()}`,
   );
+}
+
+/**
+ * AI 回复所用的同一套出口护栏，给跟进这类不在对话轮次里的出站文本（02 spec「任务表与跟进」）：链接白名单、去 markdown、内部用语、
+ * 空头承诺（改行程、说了发链接却没有链接、说了转接顾问）、价格规则与服务承诺、价格。
+ * 与对话轮次不同的只有「没有这一轮」：没有工具调用（方案书链接一律抹掉，支付链接只认本会话没被替代的真订单），没有客户这一句
+ * （金额只认会话里有出处的）；命中的只删那几句，不补链接、不换兜底话术、不转人工。全删光或删完只剩残句时返回空串，由调用方决定发什么。
+ * 不在轮次里调用时 noteGuard 什么都不记（02「逐轮 trace」只记对话轮次）
+ */
+export async function guardOutbound(session: Session, text: string, _opts: { kind: 'followup' }): Promise<string> {
+  let visible = cleanText(text);
+  const beforeLinks = visible;
+  visible = whitelistLinks(visible, allowedPayLinks(session), () => false);
+  noteGuard('link_whitelist', beforeLinks, visible, 'strip');
+  const beforeMarkdown = visible;
+  visible = stripMarkdown(visible);
+  noteGuard('markdown', beforeMarkdown, visible, 'strip');
+  // 说了发链接、链接却不在（抹掉的、占位符、冒号后面空着）：这里不补链接，承诺那几句连同空位一起删
+  const beforeHoles = visible;
+  visible = markLinkHoles(visible);
+  for (const kind of ['pay', 'proposal'] as const) {
+    if (visible.includes(HOLE[kind]) || (!SITE_LINK.test(visible) && promiseInsertAt(visible, kind) >= 0)) {
+      visible = dropLinkPromise(visible, kind, HOLE[kind]);
+    }
+  }
+  // 抹掉的无关网址留下的空位连同前面的空格一起去掉（与 repairLinks 收尾相同）
+  visible = tidyLinkText(visible.replace(HOLE_WITH_SPACE, ''));
+  noteGuard('repair_links', beforeHoles, visible, 'drop_sentence');
+  const beforeJargon = visible;
+  visible = dejargon(visible, session.id);
+  noteGuard('dejargon', beforeJargon, visible, 'replace');
+  // 改行程的承诺（系统做不到）：对话轮次里转人工，这里只删那几句
+  const beforeCustom = visible;
+  visible = neutralizeStandardDays(visible, session, []);
+  if (CUSTOM_PROMISE.test(visible)) visible = keptBesideCustomPromise(visible);
+  noteGuard('custom_promise', beforeCustom, visible, 'drop_sentence');
+  // 说了「为您转接顾问」：跟进不转人工，删掉那几句
+  if (saysTransfer(visible, session)) {
+    const before = visible;
+    visible = dropTransferClaims(visible);
+    noteGuard('handoff_claims', before, visible, 'drop_sentence');
+  }
+  const beforeGuards = visible;
+  const saidAll = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+  const claims = dropUnbackedClaims(visible, session, [], { travelers: travelersKnown(session, saidAll) });
+  if (claims.text !== visible) {
+    noteGuard('unbacked_claims', visible, claims.text, 'drop_sentence');
+    visible = claims.text;
+  }
+  const unbacked = findUnbackedPriceHits(visible, session, '', []);
+  if (unbacked.length) {
+    console.error(`[engine] ⚠️ 跟进话术里有无出处的金额，删掉那几句（会话 ${shortIdOf(session.id) || '?'}）`);
+    const before = visible;
+    visible = dropSentences(visible, unbacked).text;
+    noteGuard('price', before, visible, 'drop_sentence');
+  }
+  if (strandedAfterDrop(beforeGuards, visible)) visible = '';
+  visible = trimDangling(visible);
+  return cleanText(visible.replace(ANY_HOLE, '')).trim();
 }
 
 /** 支付成功后的主动跟进：写入会话并置 stage=paid，推送由调用方经 adapter 完成 */

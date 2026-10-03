@@ -1,4 +1,4 @@
-// 沉默唤醒 / 自动跟进调度器。
+// 沉默唤醒 / 自动跟进：资格判断、话术生成与出口护栏（两种存储共用），以及文件存储下的扫描器。
 //
 // 此前所有主动外发都要人点（顾问在后台点发送、或有人点了支付按钮触发回执），
 // 没有任何按时间触发的跟进——而销售场景里「报价后沉默」恰恰是最该追的时刻：
@@ -7,29 +7,19 @@
 // 设计要点：
 // - 每个会话每个阶段只追一次，且全程最多 MAX_PER_SESSION 次，绝不变成骚扰
 // - 夜间不打扰（QUIET_HOURS），到点顺延到次日
-// - 已转人工、已成交、访客模拟会话一律不追
-// - 追问内容走 LLM 生成（带上下文，比模板自然），失败时用阶段模板兜底
-import {
-  flushSession,
-  flushStoreNow,
-  getSession,
-  isDemoClassId,
-  listSessions,
-  onShutdown,
-  saveSession,
-  sessionStoreMode,
-} from './store.js';
+// - 已转人工、已成交、demo 类会话、客户说过「别发了」的一律不追
+// - 追问内容走 LLM 生成（带上下文，比模板自然），失败时用阶段模板兜底；发出前过与 AI 回复同一套出口护栏
+// 调度两种存储不同（02 spec R17）：文件存储是这里的扫描器（锁定的 llm.selftest F1 测它）；db 存储由任务表驱动（src/jobs/followup.ts），
+// 那里排程、到点重判都调这里的 shouldFollowUp，话术同样经 followUpText
+import { flushStoreNow, getSession, isDemoClassId, listSessions, onShutdown, saveSession, sessionStoreMode } from './store.js';
 import { completeText } from './llm.js';
 import { pinCatalogForTurn } from './config/source.js';
+import { guardOutbound } from './engine.js';
 import { numEnv } from './env.js';
+import { isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
 import type { Session, SalesStage } from './types.js';
 import { profileForPrompt } from './types.js';
-
-// 种子演示会话（wecom:cust_*）的 external_userid 是编出来的，send_msg 必然失败。
-// 不排除的话，一开 FOLLOWUP_ENABLED=1 就会每轮为它们各烧一次 LLM 生成话术，
-// 再对企微发一次注定失败的请求，永远收敛不了。与 store.ts 的 DEMO_SESSION_RE 同源。
-const DEMO_SESSION_RE = /^wecom:cust_/;
 
 /** 连续推送失败多少次后放弃该会话的这个阶段，不再每轮重试 */
 const MAX_PUSH_FAILURES = 3;
@@ -41,6 +31,8 @@ const IDLE_MINUTES: Partial<Record<SalesStage, number>> = {
   objection: 240, // 提了异议没下文
   recommend: 360, // 看过线路没反应，隔久一点再问
 };
+/** 可能排过跟进的阶段（db 存储下客户回话时，按它们拼出要取消的任务键） */
+export const FOLLOWUP_STAGES = Object.keys(IDLE_MINUTES) as SalesStage[];
 
 /** 兜底话术：LLM 不可用时按阶段发，每条都得是能直接发给客户的正经话。
  *  线路的天数和住宿是固定的（sop.md 能力边界），只提真做得到的：换出发日期或人数重新报价、看别的现成线路。
@@ -52,18 +44,37 @@ const TEMPLATE: Partial<Record<SalesStage, string>> = {
   objection: '上次您提到的顾虑我记着呢——您更在意价格，还是出发时间？告诉我，我按这个帮您挑别的现成线路，或换个日期重新报价～',
   recommend: '之前给您看的几条线路，感觉哪条更对味一些？或者告诉我哪里不合适，我再帮您挑～',
 };
+const DEFAULT_TEMPLATE = '想起您之前的行程，还有什么我能帮上忙的随时说～';
 
 const MAX_PER_SESSION = Math.max(0, numEnv('FOLLOWUP_MAX_PER_SESSION', 2));
 const SCAN_MS = Math.max(60_000, numEnv('FOLLOWUP_SCAN_MS', 15 * 60_000));
+/** 推送明确失败之后多久再追一次：与扫描器的间隔相同（db 存储下由任务表排这一次） */
+export const FOLLOWUP_RETRY_MS = SCAN_MS;
 const QUIET_START = numEnv('FOLLOWUP_QUIET_START', 22); // 22:00 起不打扰
 const QUIET_END = numEnv('FOLLOWUP_QUIET_END', 9); // 次日 09:00 恢复
 
-function inQuietHours(d = new Date()): boolean {
+export function inQuietHours(d = new Date()): boolean {
   const h = d.getHours();
   return QUIET_START > QUIET_END ? h >= QUIET_START || h < QUIET_END : h >= QUIET_START && h < QUIET_END;
 }
 
-interface FollowupMeta {
+/** 落在夜间免打扰时段里的时刻顺延到时段结束的那个整点（本地时间）；不在时段里的原样返回 */
+export function deferQuiet(t: number): number {
+  const d = new Date(t);
+  if (!inQuietHours(d)) return t;
+  const end = new Date(d);
+  end.setHours(QUIET_END, 0, 0, 0);
+  // 时段跨零点（22–9）而现在是零点之前，结束的是明天那个整点
+  if (end.getTime() <= t) end.setDate(end.getDate() + 1);
+  return end.getTime();
+}
+
+/** FOLLOWUP_ENABLED=1 才跟进（两种存储同一开关，默认关） */
+export function followupEnabled(): boolean {
+  return process.env.FOLLOWUP_ENABLED === '1';
+}
+
+export interface FollowupMeta {
   count?: number;
   /** 已经在哪些阶段追过，避免同一阶段反复追 */
   stages?: string[];
@@ -74,24 +85,36 @@ interface FollowupMeta {
    *  客户可能已经收到、对话记录里却没有这条；不管收没收到，都不会再发第二遍 */
   pendingAt?: number;
 }
-type SessionWithFollowup = Session & { followup?: FollowupMeta };
+export type SessionWithFollowup = Session & { followup?: FollowupMeta };
 
-function shouldFollowUp(s: SessionWithFollowup): boolean {
-  if (s.handedOver) return false; // 人工在跟，别插嘴
-  if (s.channel !== 'wecom') return false; // 只追真实客户，不骚扰网页访客
-  if (DEMO_SESSION_RE.test(s.id)) return false; // 种子演示数据，发不出去也不该发
-  if (s.stage === 'paid' || s.stage === 'handoff') return false;
-  if ((s.followup?.failures ?? 0) >= MAX_PUSH_FAILURES) return false;
+/**
+ * 跟进资格里不看时间的那部分（02 spec「任务表与跟进」的静态条件）：开关开着、未转人工、企微渠道、非 demo 类、非终态、
+ * 阶段在阈值表里、最后一条非 system 消息是我们发的、客户没说过「别发了」、本阶段没跟过、未到 MAX_PER_SESSION、
+ * 失败次数未到 MAX_PUSH_FAILURES。满足时返回这个阶段与它的沉默阈值（毫秒），否则 null
+ */
+export function followupStage(s: SessionWithFollowup): { stage: SalesStage; idleMs: number } | null {
+  if (!followupEnabled()) return null;
+  if (s.handedOver) return null; // 人工在跟，别插嘴
+  if (s.channel !== 'wecom') return null; // 只追真实客户，不骚扰网页访客
+  if (isDemoClassId(s.id)) return null; // 种子演示数据与网页访客，发不出去也不该发
+  if (s.stage === 'handoff' || isTerminalStage(s.stage)) return null;
+  if (s.followupOptOut) return null; // 客户说过「不用了」「别发了」
+  if ((s.followup?.failures ?? 0) >= MAX_PUSH_FAILURES) return null;
   const threshold = IDLE_MINUTES[s.stage];
-  if (!threshold) return false;
+  if (!threshold) return null;
   const meta = s.followup ?? {};
-  if ((meta.count ?? 0) >= MAX_PER_SESSION) return false;
-  if (meta.stages?.includes(s.stage)) return false; // 这个阶段追过了
-  const idleMin = (Date.now() - s.updatedAt) / 60_000;
-  if (idleMin < threshold) return false;
+  if ((meta.count ?? 0) >= MAX_PER_SESSION) return null;
+  if (meta.stages?.includes(s.stage)) return null; // 这个阶段追过了
   // 最后一条必须是我们发的——客户刚说完话还没回他，那是回复不是跟进
   const last = (s.messages ?? []).filter((m) => m.role !== 'system').at(-1);
-  return !!last && last.role === 'agent';
+  if (!last || last.role !== 'agent') return null;
+  return { stage: s.stage, idleMs: threshold * 60_000 };
+}
+
+/** 两种存储共用的资格判断：静态条件都满足，且从最后动静（updatedAt，跟进不刷新它）起沉默够了这个阶段的阈值 */
+export function shouldFollowUp(s: Session, now: number): boolean {
+  const due = followupStage(s);
+  return !!due && now - s.updatedAt >= due.idleMs;
 }
 
 async function composeFollowUp(s: Session): Promise<string> {
@@ -113,7 +136,20 @@ async function composeFollowUp(s: Session): Promise<string> {
     .replace(/\/pay\/\S+/g, '')
     .replace(/ord_[A-Za-z0-9]+/g, '')
     .trim();
-  return cleaned || TEMPLATE[s.stage] || '想起您之前的行程，还有什么我能帮上忙的随时说～';
+  return cleaned || templateFor(s.stage);
+}
+
+const templateFor = (stage: SalesStage): string => TEMPLATE[stage] || DEFAULT_TEMPLATE;
+
+/**
+ * 要发出去的跟进话术：生成（失败或为空时用阶段模板）→ 过出口护栏（guardOutbound，与 AI 回复同一套）→ 护栏删光了就换阶段模板。
+ * 生成与护栏包在同一个 pinCatalogForTurn 里（02 R14）：护栏核对价格、链接用的产品库与生成时看到的是同一代
+ */
+export function followUpText(s: Session): Promise<string> {
+  return pinCatalogForTurn(async () => {
+    const guarded = await guardOutbound(s, await composeFollowUp(s), { kind: 'followup' });
+    return guarded || templateFor(s.stage);
+  });
 }
 
 // ---------------- 停机 ----------------
@@ -130,10 +166,9 @@ let scanTimer: NodeJS.Timeout | null = null;
 /** 正在等话术生成的扫描：停机时逐个叫醒，让它们放弃这次生成。生成结束就移除，不随扫描次数累积 */
 const composeWaiters = new Set<() => void>();
 
-/** 生成话术，但停机时提前返回 null（生成本身继续跑完，结果不用） */
+/** 生成话术（含出口护栏），但停机时提前返回 null（生成本身继续跑完，结果不用） */
 async function composeUnlessStopping(s: Session): Promise<string | null> {
-  // 跟进生成同样固定这一代产品库快照（02 R14）：话术要过的出口护栏（第 10 步）与生成看到同一份
-  const composing = pinCatalogForTurn(() => composeFollowUp(s));
+  const composing = followUpText(s);
   composing.catch(() => undefined); // 停机时被弃用的那次生成，失败也别变成未捕获 rejection
   let wake!: () => void;
   const stopped = new Promise<null>((r) => {
@@ -158,9 +193,13 @@ async function drainForShutdown(): Promise<void> {
 }
 onShutdown(drainForShutdown);
 
-/** 扫描一轮。push 由调用方注入（server 传 adapterFor），便于测试 */
+/**
+ * 扫描一轮。push 由调用方注入（server 传 adapterFor），便于测试。
+ * 只管文件存储：db 存储下真实会话的记账在 PG 写队列里，这里的同步落盘管不到，跟进改由任务表驱动（startJobs），扫描器什么都不做
+ */
 export function runFollowUpScan(push: (sessionId: string, text: string) => Promise<boolean>, now = new Date()): Promise<number> {
-  if (process.env.FOLLOWUP_ENABLED !== '1' || stopping) return Promise.resolve(0);
+  if (!followupEnabled() || stopping) return Promise.resolve(0);
+  if (sessionStoreMode() === 'db') return Promise.resolve(0);
   if (inQuietHours(now)) return Promise.resolve(0);
   // 上一轮还没扫完就不叠一轮：生成话术慢（每条要调一次 LLM），会话一多就会跨过扫描间隔。
   // 两轮并发时同一个会话在两边都还没记账，各生成一条、各推一次
@@ -176,7 +215,7 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
   let sent = 0;
   for (const s of listSessions() as SessionWithFollowup[]) {
     if (stopping) break;
-    if (!shouldFollowUp(s)) continue;
+    if (!shouldFollowUp(s, Date.now())) continue;
     try {
       const text = await composeUnlessStopping(s);
       if (text === null || stopping) {
@@ -186,7 +225,7 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
       // 生成话术要几秒到几十秒，这期间客户很可能已经回消息了——那就不是跟进而是打断。
       // 用最新的会话对象重新判一次，避免发出「您之前的顾虑…」跟在客户刚说完的话后面。
       const fresh = getSession(s.id) as SessionWithFollowup | undefined;
-      if (!fresh || !shouldFollowUp(fresh)) {
+      if (!fresh || !shouldFollowUp(fresh, Date.now())) {
         console.log(`[followup] ${s.id} 在生成话术期间已有新动静，本轮跳过`);
         continue;
       }
@@ -202,16 +241,6 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
       meta.pendingAt = Date.now();
       saveSession(fresh, false);
       flushStoreNow();
-      // db 存储下真实会话的记账在 PG 写队列里，flushStoreNow 管不到：等它提交了再推送。记不上账就不推（账已经记在内存里，
-      // 宁可漏一条也不重发，与上面的 at-most-once 一致）。文件存储下不进这个分支
-      if (sessionStoreMode() === 'db' && !isDemoClassId(fresh.id)) {
-        try {
-          await flushSession(fresh.id, { timeoutMs: 5000 });
-        } catch {
-          console.error(`[followup] 跟进 ${s.id} 的记账没能落库，本轮不推送`);
-          continue;
-        }
-      }
       let ok: boolean;
       try {
         ok = await push(s.id, text);
@@ -235,7 +264,8 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
         );
         continue;
       }
-      fresh.messages.push({ role: 'agent', content: text, at: Date.now() });
+      // 后台按 author 标「自动跟进」（02 spec「消息只追加」）
+      fresh.messages.push({ role: 'agent', content: text, at: Date.now(), author: 'followup' });
       meta.failures = 0;
       saveSession(fresh, false);
       sent += 1;
@@ -248,7 +278,7 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
 }
 
 export function startFollowUpScheduler(push: (sessionId: string, text: string) => Promise<boolean>): void {
-  if (process.env.FOLLOWUP_ENABLED !== '1') {
+  if (!followupEnabled()) {
     console.log('[followup] 未启用（设 FOLLOWUP_ENABLED=1 开启自动跟进）');
     return;
   }
@@ -266,4 +296,4 @@ function resetForTest(): void {
   scanTask = null;
 }
 
-export const __followupTest = { resetForTest, TEMPLATE };
+export const __followupTest = { resetForTest, TEMPLATE, MAX_PUSH_FAILURES, MAX_PER_SESSION };
