@@ -37,7 +37,19 @@ import { profile } from './profile.js';
 import { renderSystemPrompt } from './prompt/system.js';
 import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from './config/source.js';
 import { promptHashes } from './config/hashes.js';
-import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
+import { emergencyReason, HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
+import {
+  emergencyOf,
+  FAILURE_WINDOW,
+  failureThresholdReached,
+  negativeLevel,
+  pushWindow,
+  repeatedQuestion,
+  SENTIMENT_WINDOW,
+  sentimentThresholdReached,
+  turnFailed,
+  type TurnSignals,
+} from './handoff/triggers.js';
 import { cleanText } from './shared/text.js';
 import { shortIdOf, stripAdvisorPrefix, withAdvisorPrefix } from './shared/conversation.js';
 import { followupOptOutOf } from './jobs/optout.js';
@@ -47,6 +59,7 @@ import {
   noteDraft,
   noteGuard,
   notePrefix,
+  noteSignals,
   noteToolError,
   noteToolResult,
   startTurn,
@@ -3518,16 +3531,48 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     session.followupOptOut = { at: Date.now(), quote: cleanText(text, 200) };
     console.log(`[followup] 客户拒绝跟进，此后不再跟进（会话 ${shortIdOf(session.id) || '?'}）`);
   }
+  // 负面情绪的窗口（02 spec「确定性转人工触发」、R15、开放问题 4）：每条客户消息的强弱都记进最近 3 条客户消息的窗口，
+  // 紧急那一句、已转人工期间的、prod 下被关掉的重置口令那一句也记（第 11 步第三轮审查 consistency[1]：原先这几句不记，
+  // 更早的弱词会多留一轮）；阈值只在下面 AI 接待的路径上判。投诉（isComplaint）由安全网按投诉转人工，记 0，不重复计。
+  // 企微重放（alreadyRecorded）不再记：这句上次已经和它的窗口值一起落了库（记窗口与入库在同一段同步代码里，同一次落库的快照里两样都在）
+  const negative = isComplaint(text) ? 0 : negativeLevel(text);
+  if (!opts.alreadyRecorded) setWindow(session, 'negativeHits', pushWindow(session.negativeHits, negative, SENTIMENT_WINDOW));
   // 先落一次盘：客户这句话立刻出现在作战室（并经 SSE 推给前端），顾问看到的是
   // 「客户刚说了什么 + AI 正在生成回复」。此前要等整轮跑完（4~10 秒）才落盘，
   // 后台看起来像卡住了——延迟其实来自这里，不是 SSE。
   saveSession(session);
+
+  // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
+  // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个
+  // 立即的 handoff_notify，随下面静默分支的落库提交。终态会话（已付款、正在出行）照样转人工、阶段保留终态（R9）
+  const emergency = emergencyOf(text);
+  if (emergency) {
+    const wasHandedOver = session.handedOver;
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind: 'emergency',
+      at: Date.now(),
+      reason: emergencyReason(emergency),
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
+    if (!wasHandedOver) {
+      // 同一句在问身份时先承认是 AI（00 不变量 16）
+      const reply = cleanText(answerIdentity(text, EMERGENCY_REPLY));
+      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      session.messages.push(msg);
+      saveSession(session);
+      return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
+    }
+  }
 
   // 已转人工：AI 彻底沉默，只记录客户消息（供后台人工查看），不再自动回复。
   // 转人工的那一句确认在触发时已发过，之后重复「已转人工」既烦又不专业。
   // 阶段停在终态（已成交客户要人工，R9）的不改回 handoff：成交统计不变
   if (session.handedOver) {
     if (!isTerminalStage(session.stage)) session.stage = 'handoff';
+    // 人工接待期间客户的话也进了情绪窗口（上面入库时记的），这里只记不判：交还 AI 之后窗口里是最近 3 条，
+    // 转人工那一句带的弱词不会隔着整段人工接待和交还后的一句凑成 2 弱（第 11 步第二轮审查 engine[2]）
     saveSession(session); // 客户消息已在上方入库
     return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
   }
@@ -3542,6 +3587,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     return done('deterministic', { text: reply, stage: session.stage }, msg);
   }
 
+  // 负面情绪：这条客户消息的强弱在入库时已经记进窗口（见上）；企微重放不再记，阈值照现有的窗口判。
+  // 交互失败的窗口在回复出来之后才记，重放照常记
+
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
   if (isHandoffIntent(text)) {
@@ -3555,6 +3603,25 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       ...(departNote ? { departNote } : {}),
     });
     const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind)));
+    const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    session.messages.push(msg);
+    saveSession(session);
+    return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
+  }
+
+  // 负面情绪达到阈值（最近 3 条里 1 强或 2 弱），而且这一句本身是负面的（交还之后一句中性的话不按情绪转人工）：
+  // 与投诉同样处理（handoffReply 的投诉措辞），kind='sentiment'，本轮不调模型；窗口清零
+  if (negative > 0 && sentimentThresholdReached(session.negativeHits ?? [])) {
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind: 'sentiment',
+      at: Date.now(),
+      reason: HANDOFF_REASON.sentiment,
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
+    delete session.negativeHits;
+    const reply = cleanText(answerIdentity(text, handoffReply(session, text, 'complaint')));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     session.messages.push(msg);
     saveSession(session);
@@ -3737,12 +3804,14 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   noteDraft(raw);
 
   // 兜底剥掉可能残留的 <state>/<think>/<tool_call> 标签（正常已无）
-  let visible =
-    raw
-      .replace(/<state>[\s\S]*?<\/state>/g, '')
-      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
-      .replace(/<\/?(?:think|tool_call|arg_key|arg_value)>/gi, '')
-      .trim() || fallbackReply(session.stage);
+  const usable = raw
+    .replace(/<state>[\s\S]*?<\/state>/g, '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+    .replace(/<\/?(?:think|tool_call|arg_key|arg_value)>/gi, '')
+    .trim();
+  // 模型没给出可用文本、落到兜底话术：交互失败的信号之一（R15 的 emptyModelReply）
+  const emptyModelReply = !usable;
+  let visible = usable || fallbackReply(session.stage);
   if (session.handedOver) {
     if (!isTerminalStage(session.stage)) session.stage = 'handoff'; // 工具触发的转人工优先；终态保留（R9）
     // 不是模型自己转的，就是生成期间顾问在后台接管了（/handoff 改的是同一个 session 对象，
@@ -4015,6 +4084,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   const replaceVisible = (fallback: string, handedOver = HANDED_OVER_FALLBACK): void => {
     visible = customHandoff ? '' : session.handedOver ? handedOver : fallback;
   };
+  /** 本轮价格或注入护栏命中（同一处判断）：这一轮不算交互失败（R15、不变量 30） */
+  let guardHit: TurnSignals['guardHit'] = null;
 
   // 注入劫持安全网：输入像注入，且回复已经不在聊旅行了（没有任何业务词）或夹带了被劫持的
   // 输出，说明模型被带跑了——直接换成顾问口吻的拒绝。模型干净地拒绝时两条都不命中，不受影响。
@@ -4023,6 +4094,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     const before = visible;
     replaceVisible(INJECTION_REPLY);
     noteGuard('injection', before, visible, 'replace');
+    guardHit = 'injection';
   }
 
   // 百科式回答护栏：客户提到了我们在卖的目的地，回复却像本地理教科书且不含任何产品信息
@@ -4072,6 +4144,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     const before = visible;
     visible = rewriteUnbackedPrices(visible, unbacked, { session, text, calls, customHandoff: !!customHandoff });
     noteGuard('price', before, visible, 'drop_sentence');
+    guardHit ??= 'price';
   }
 
   // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
@@ -4128,6 +4201,36 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   visible = restoreProposalSuffixes(visible, calls);
   noteGuard('proposal_suffix', beforeSuffix, visible, 'patch');
 
+  // 交互失败（02 spec「确定性转人工触发」、R15、不变量 30）：出口护栏都跑完之后判。这一轮已经转了人工的（模型调了工具、
+  // 改行程承诺、回复里说了转接）不再算一轮。达到阈值（最近 6 轮里最后 2 轮都失败或其中 3 轮失败）时这一轮的回复换成
+  // handoffReply 的「普通诉求」措辞、kind='failure'，计数清零。重复提问只认在问的话（owner 2026-10-03，见 repeatedQuestion）
+  if (!session.handedOver) {
+    const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+    const signals: TurnSignals = {
+      emptyModelReply,
+      noRetrievalResult: retrievalEmpty(calls),
+      repeatedQuestion: repeatedQuestion(text, said.slice(0, -1)),
+      guardHit,
+    };
+    noteSignals(signals);
+    const failed = turnFailed(signals);
+    setWindow(session, 'turnSignals', pushWindow(session.turnSignals, failed ? 1 : 0, FAILURE_WINDOW));
+    if (failed && failureThresholdReached(session.turnSignals ?? [])) {
+      const departNote = departNoteForHandoff(session);
+      enterHandoff(session, {
+        kind: 'failure',
+        at: Date.now(),
+        reason: HANDOFF_REASON.failure,
+        quote: cleanText(text, 200),
+        ...(departNote ? { departNote } : {}),
+      });
+      delete session.turnSignals;
+      const before = visible;
+      visible = answerIdentity(text, handoffReply(session, text, 'request'));
+      noteGuard('turn_failure', before, visible, 'handoff');
+    }
+  }
+
   // 出口的最后一步再去一次（上面几步只往后接，正常时这里什么都不改）
   dropAdvisorPrefix();
   // 模型输出原样进会话前去掉 NUL、修好孤立代理项（不截长度）：带着它们的消息进不了库（不变量 16）
@@ -4162,6 +4265,32 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
   // 这一轮转了人工（开始时没转，见上面的静默）记 handoff；访客日预算用完、走了离线脚本记 budget
   return done(session.handedOver ? 'handoff' : degraded ? 'budget' : 'replied', reply, replyMsg);
+}
+
+/** 紧急情况的固定应急话术（02 spec「确定性转人工触发」） */
+const EMERGENCY_REPLY =
+  '您的安全最要紧。如果有生命危险，请马上拨打 120（在境外请拨当地的急救电话）；证件丢了先到就近的派出所或我国使领馆求助。我已经通知顾问，会尽快联系您。';
+
+/** 本轮 search_routes 什么也没返回（每次都是空数组）。destinationMiss 的结果带着替代线路，不是空的 */
+function retrievalEmpty(calls: ToolCall[]): boolean {
+  const searches = calls.filter((c) => c.name === 'search_routes' && typeof c.result === 'string');
+  return (
+    searches.length > 0 &&
+    searches.every((c) => {
+      try {
+        const rows: unknown = JSON.parse(c.result!);
+        return Array.isArray(rows) && rows.length === 0;
+      } catch {
+        return false;
+      }
+    })
+  );
+}
+
+/** 失败与情绪的窗口：pushWindow 全 0 时返回 undefined，会话上就不留这个键 */
+function setWindow(session: Session, key: 'turnSignals' | 'negativeHits', w: number[] | undefined): void {
+  if (w) session[key] = w;
+  else delete session[key];
 }
 
 /** 「由顾问跟您确认」「我让顾问确认」「这个我请顾问确认一下」 */
@@ -4282,6 +4411,9 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
   saveSession(session);
   return { sessionId: session.id, text, message };
 }
+
+/** 仅供自测：确定性转人工触发（handoff.selftest.ts）。应急话术给断言比对 */
+export const __triggerTest = { EMERGENCY_REPLY };
 
 /** 仅供自测：订单与转人工这组判定 */
 export const __orderTest = { haggling, OTHER_ORDER, RESEND_ASK, claimsTransfer, saysDay, trimDangling, monthSaid };
