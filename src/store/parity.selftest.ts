@@ -3,7 +3,7 @@
 // 库里的消息与内存一致。比较之前只做两件事：时间戳的取值换成占位（键照留），随机的订单号按出现顺序换成编号；别的字段原样比。
 // 场景：E5 生成中接手；模型返回之后、推送之前接手（strandedReply 的 await 里，第 13 步起经接手代次不发）；生成中付款；重置；
 // 裁剪（引擎与企微适配器两处）；企微重放（已记下没回复、已回复没发出、后面夹了欢迎语）；跟进（文件存储的扫描器，与 PG 存储下先等记账
-// 提交再推送）；转人工各入口（安全网三类、模型调工具、改行程承诺、回复说了转接、旧 /handoff）；接手、人工回复与交还（第 13 步）。
+// 提交再推送）；转人工各入口（安全网三类、模型调工具、改行程承诺、回复说了转接、旧 /handoff）；确定性触发与企微重放·情绪（第 11 步）；接手、人工回复与交还（第 13 步）。
 // store 是进程级单例，一个进程只能装一种后端：本文件带上 PARITY_CHILD 再起两次自己（单进程 node --import tsx，spawnSync 带
 // SIGKILL 超时），两个子进程跑同一份场景脚本与假模型（输入逐字相同），各自把原始结果写进文件，由父进程规范化、比较。
 // 两个子进程的配置源相同（PGlite 上 installSeededConfig），钟也相同（父进程定的基准时刻，见 parity-clock.ts），只差会话存储；
@@ -45,6 +45,8 @@ interface TraceOut {
   calls: { name: string; prefetch: boolean }[];
   /** 每次模型调用的失败类别（成功为 null） */
   llm: (string | null)[];
+  /** 交互失败信号（第 11 步）；没走到出口护栏的轮次为 null */
+  signals: unknown;
 }
 interface ScenarioOut {
   name: string;
@@ -221,6 +223,8 @@ const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply' | 'trace', stri
     'seenRouteIds',
     'followup',
     'lastShownRoutes',
+    'turnSignals',
+    'negativeHits',
   ],
   message: ['role', 'content', 'at', 'msgid', 'sentAt'],
   order: [
@@ -237,7 +241,7 @@ const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply' | 'trace', stri
     'handoffBeforePaid',
   ],
   reply: ['text', 'stage', 'handoff', 'orderId', 'silent', 'idle'],
-  trace: ['sid', 'outcome', 'stageBefore', 'stageAfter', 'finalText', 'catalogVersions', 'guards', 'calls', 'llm'],
+  trace: ['sid', 'outcome', 'stageBefore', 'stageAfter', 'finalText', 'catalogVersions', 'guards', 'calls', 'llm', 'signals'],
 };
 function keysSeen(out: ChildOut): Record<keyof typeof MUST_SEE, Set<string>> {
   const seen = {
@@ -424,6 +428,34 @@ function anchors(out: ChildOut): [string, boolean, string][] {
       lg.sent.some((x) => x.to === 'parity-ho-legacy' && x.content.startsWith('【顾问】顾问回复')) &&
       said(lgs, 'agent').at(-1)?.startsWith('云南这边') === true,
     lg?.notes,
+  );
+  // 第 11 步：确定性触发各走到了自己的那条路
+  const tr = (id: string): S | null => ses('确定性触发', id);
+  const tre = tr('wecom:parity-tr-emergency');
+  const tru = tr('wecom:parity-tr-escalate');
+  const trs = tr('wecom:parity-tr-sentiment');
+  const trw = tr('wecom:parity-tr-windows');
+  add(
+    '确定性触发：紧急情况转人工（不调模型）、已转人工时升级为 emergency 且计数不加、2 弱转人工、两个窗口留在会话上',
+    tre?.handoff?.kind === 'emergency' &&
+      said(tre, 'agent').at(-1)?.startsWith('您的安全最要紧') === true &&
+      tru?.handoff?.kind === 'emergency' &&
+      tru.handoffCount === 1 &&
+      trs?.handoff?.kind === 'sentiment' &&
+      JSON.stringify(trw?.turnSignals) === '[1,0]' &&
+      JSON.stringify(trw?.negativeHits) === '[1]' &&
+      trw?.handedOver === false,
+    { e: tre?.handoff, u: tru?.handoff, s: trs?.handoff, w: [trw?.turnSignals, trw?.negativeHits] },
+  );
+  const rpn = ses('企微重放·情绪', 'wecom:parity-rp-negative');
+  add(
+    '企微重放同一条弱负面消息：情绪窗口只计一次（仍是 [1]）、不转人工、这句只记一条、照常回复并发出',
+    rpn?.handedOver === false &&
+      JSON.stringify(rpn.negativeHits) === '[1]' &&
+      said(rpn, 'customer').length === 1 &&
+      said(rpn, 'agent').at(-1) === '抱歉让您久等了～您想去哪儿玩？' &&
+      sc('企微重放·情绪')?.sent.length === 1,
+    { h: rpn?.handoff, n: rpn?.negativeHits, sent: sc('企微重放·情绪')?.sent },
   );
   // 第 9 步：trace 的比较不是空比——有护栏改了文本的轮次，也有确定性路径、沉默与转人工的轮次
   const traces = out.scenarios.flatMap((x) => x.traces);
@@ -763,6 +795,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
       guards: f.turn.guards.map((g) => ({ guard: g.guard, action: g.action, removed: [...g.removed], added: [...g.added] })),
       calls: f.turn.calls.map((c) => ({ name: c.name, prefetch: c.prefetch })),
       llm: f.turn.llm.map((c) => c.error),
+      signals: f.signals,
     };
     turnLog.push({ sid: t.sid, turnId: f.turn.turnId, guards: f.turn.guards.length, t });
   });
@@ -1297,7 +1330,46 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     await say(o, HO.legacy, '想去云南看看', searchYunnan);
   });
 
-  // ======== 9. 接手、人工回复与交还（第 13 步：后台成员经接手状态机操作） ========
+  // ======== 9. 确定性转人工触发（第 11 步）：紧急情况、已转人工时升级、负面情绪、失败与情绪的窗口随会话落库 ========
+  const TR = {
+    emergency: 'wecom:parity-tr-emergency',
+    escalate: 'wecom:parity-tr-escalate',
+    sentiment: 'wecom:parity-tr-sentiment',
+    windows: 'wecom:parity-tr-windows',
+  };
+  await scenario('确定性触发', Object.values(TR), async (o) => {
+    await say(o, TR.emergency, '我们被困在山上了', []);
+    await say(o, TR.emergency, '在吗', []);
+    await say(o, TR.escalate, '转人工', []);
+    await say(o, TR.escalate, '我护照丢了', []);
+    await say(o, TR.sentiment, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
+    await say(o, TR.sentiment, '你们也太离谱了', []);
+    await say(o, TR.windows, '西藏几月去合适', [{ content: '西藏一般5到10月去～' }]);
+    await say(o, TR.windows, '西藏几月去合适', [{ content: '5到10月都合适～' }]);
+    await say(o, TR.windows, '你们回复太敷衍了', [{ content: '抱歉～我说得更具体些。' }]);
+  });
+
+  // ======== 10. 企微重放同一条弱负面消息（第 11 步审查带出的）：上次停在「已记下、回复还没生成」，客户这句与它的情绪窗口值
+  // 已经一起落了库（引擎在入库与记窗口之间没有 await）；走启动重放，窗口不再记一遍、不转人工、照常回复 ========
+  await scenario('企微重放·情绪', ['wecom:parity-rp-negative'], async (o) => {
+    await restart();
+    const m = customerMsg('parity-rp-negative', '你们回复太敷衍了');
+    const s = store.getOrCreateSession('wecom:parity-rp-negative', 'wecom');
+    s.messages.push({ role: 'customer', content: '你们回复太敷衍了', at: Date.now(), msgid: m.msgid, sentAt: m.send_time * 1000 });
+    s.negativeHits = [1];
+    store.saveSession(s);
+    pendOnDisk(m);
+    script.push({ content: '抱歉让您久等了～您想去哪儿玩？' });
+    await syncFromCallback(`tok-rpn-${msgSeq}`);
+    const done = await idle();
+    o.out.turns.push({
+      label: `wecom:parity-rp-negative${WECOM_TURN}重放「你们回复太敷衍了」`,
+      reply: { idle: done },
+      leftover: takeLeftover(),
+    });
+  });
+
+  // ======== 11. 接手、人工回复与交还（第 13 步：后台成员经接手状态机操作） ========
   // 成员接手一个 AI 接待中的会话 → 客户再说话 AI 静默 → 人工回复（带 author='human'，经企微发出、客户侧带「【顾问】」；
   // 同一个 clientId 再提交一次不重发）→ 交还（记「小林把会话交还 AI」）→ 下一轮模型请求里顾问那句以「【顾问】」开头、contextNote 带说明。
   // 会话类审计两种存储都写：db 存储随落库、target 是会话行的 ref；文件存储单独一个短事务、没有 ref

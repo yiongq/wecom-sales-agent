@@ -1,6 +1,7 @@
 // 全项目共享契约。构建各模块时以此为准，不要私自改动已有字段。
 import type { SalesSegment } from './shared/catalog-types.js';
 import type { Assignee, HandoffRecord, OrderStatus, OutboundKind } from './shared/conversation-types.js';
+import type { SensitiveCategory } from './handoff/triggers.js';
 import { cleanText } from './shared/text.js';
 
 // 产品库的类型搬到 shared/catalog-types.ts（前后端共用，只依赖 zod），这里再导出，原有的 import 不用改
@@ -153,7 +154,7 @@ export interface Session {
   /** 客户说了不要再发跟进（02 第 10 步） */
   followupOptOut?: { at: number; quote: string };
   /** 敏感信息的同意状态（R23，02 第 16 步） */
-  consent?: Partial<Record<'health' | 'minor', 'asked' | 'granted' | 'declined' | 'withdrawn'>>;
+  consent?: Partial<Record<SensitiveCategory, 'asked' | 'granted' | 'declined' | 'withdrawn'>>;
 }
 
 export interface Order {
