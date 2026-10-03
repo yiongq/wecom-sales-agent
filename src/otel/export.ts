@@ -47,6 +47,7 @@ const LOG_EVERY_MS = 60_000;
 
 let provider: BasicTracerProvider | null = null;
 let tracer: Tracer | null = null;
+let breakNext = false;
 
 /** 一分钟至多一行，其余计数，下一行带上「另有 N 次」 */
 function throttled(): (line: string) => void {
@@ -138,6 +139,10 @@ const messages = (role: 'user' | 'assistant', text: string): string =>
 export function exportTurn(f: FinishedTurn, meta: TurnMeta): void {
   if (!tracer) return;
   try {
+    if (breakNext) {
+      breakNext = false;
+      throw new Error('模拟的构建失败');
+    }
     build(tracer, f, meta);
   } catch (e) {
     warnBuild(`[otel] 这一轮没导出（${errorLabel(e)}）；对话不受影响`);
@@ -226,3 +231,10 @@ function build(tr: Tracer, f: FinishedTurn, meta: TurnMeta): void {
   if (f.outcome === 'error') root.setStatus({ code: SpanStatusCode.ERROR });
   root.end(end);
 }
+
+/** 仅供自测：让下一轮补建 span 时抛错（exportTurn 要兜住：这一轮不导出、只记日志，对话照常） */
+export const __otelTest = {
+  breakNextBuild(): void {
+    breakNext = true;
+  },
+};
