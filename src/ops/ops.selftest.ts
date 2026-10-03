@@ -1,10 +1,12 @@
 // 可观测性自测（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警」、R24、不变量 49、验收 34）。
 // 第 18 步先建这个套件，管运行数字与 OpenTelemetry；第 17 步往这里加日志与告警的部分（plan 记了这一顺序调整）。
 // 运行数字：PGlite 上造 trace 与 usage_daily 行，逐字段核对口径（p90 只算 replied、转人工率按会话、出错率含 llm 里的 error、
-// 今天按服务器时区）、60 秒缓存、文件存储 503、角色 403；带 PG_TEST_URL 时同一份数据在真实 Postgres 上（agent_app、RLS）再算一遍。
+// 今天按服务器时区）、窗口按租户的 trace 保留期截断、60 秒缓存、文件存储 503、角色 403；带 PG_TEST_URL 时同一份数据在真实
+// Postgres 上（agent_app、RLS）再算一遍。
 // OpenTelemetry：子进程里没设端点时一个 @opentelemetry/* 都没加载（加载钩子与 require.cache）、不向外连接；设了端点时进程内的
 // 假 OTLP/HTTP 接收端收到的 span 名字、父子关系、起止时刻与属性逐项对，默认没有原文与 external_userid，OTEL_CAPTURE_CONTENT=1
-// 时才有；导出端点挂掉时对话照常、只记日志；停机时 flush。另有 check-boundaries 新加的三条规则。
+// 时才有；没有 ref 的会话用不会撞的匿名引用；出错的模型调用、执行时抛错的工具与出错的轮次带 error.type；导出端点挂掉时对话照常、
+// 只记日志；停机时 flush，端点不通时按 drain 段的截止时刻放弃。另有 check-boundaries 新加的三条规则。
 // 用法：npx tsx src/ops/ops.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawn, spawnSync } from 'node:child_process';
@@ -154,9 +156,10 @@ interface Got {
   span: OtlpSpan;
   attrs: Record<string, unknown>;
 }
-const receiver = { bodies: [] as string[], paths: [] as string[], down: false };
+// mode：ok 照收；down 直接断开连接；hang 收下请求不回；s503 回 503（导出器会退避重试）
+const receiver = { bodies: [] as string[], paths: [] as string[], mode: 'ok' as 'ok' | 'down' | 'hang' | 's503' };
 const otlp = http.createServer((req, res) => {
-  if (receiver.down) {
+  if (receiver.mode === 'down') {
     req.socket.destroy();
     return;
   }
@@ -164,6 +167,12 @@ const otlp = http.createServer((req, res) => {
   req.on('data', (c: Buffer) => chunks.push(c));
   req.on('end', () => {
     receiver.paths.push(`${req.method} ${req.url}`);
+    if (receiver.mode === 'hang') return;
+    if (receiver.mode === 's503') {
+      res.statusCode = 503;
+      res.end();
+      return;
+    }
     let buf = Buffer.concat(chunks);
     if (req.headers['content-encoding'] === 'gzip') buf = gunzipSync(buf);
     if (req.url === '/v1/traces') receiver.bodies.push(buf.toString('utf8'));
@@ -368,13 +377,14 @@ const store = await import('../store.js');
 const recorder = await import('../trace/recorder.js');
 const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await import('../db/testing.js');
 const { withTenant, queryCount } = await import('../db/client.js');
-const { readMetrics } = await import('../db/repo/metrics.js');
+const { readMetrics, readTraceRetentionDays } = await import('../db/repo/metrics.js');
+const { shortIdOf } = await import('../shared/conversation.js');
 const accounts = await import('../auth/accounts.js');
 const { SESSION_COOKIE } = await import('../auth/session.js');
 const { consoleApi, __consoleTest } = await import('../console-api/app.js');
 const { metricsWindow, __metricsTest } = await import('./metrics.js');
 const { boot } = await import('../boot.js');
-const { startOtelExport } = await import('./otel.js');
+const { startOtelExport, providerName } = await import('./otel.js');
 const { handleMessage } = await import('../engine.js');
 const { createRequire } = await import('node:module');
 const otelLoaded = (): number =>
@@ -661,6 +671,44 @@ __metricsTest.reset();
   check('days=90（trace 默认保留期）→ 200', max.status === 200 && max.body.days === 90, json(max.body));
 }
 
+// ---------------- 窗口按租户的 trace 保留期截断：trace 与费用同一个窗口，days 返回实际天数 ----------------
+{
+  await su('update tenants set retention_trace_days = 30 where id = $1', [DEMO]);
+  // 保留期之外、请求的 90 天之内：40 天前的一轮（清理还没跑，库里还在）与一笔用量
+  const old = new Date(NOW);
+  old.setDate(old.getDate() - 40);
+  await su(
+    `insert into turn_traces (tenant_id, id, conversation_id, started_at, duration_ms, outcome, prefix_hash, catalog_versions, calls, llm)
+     values ($1, gen_random_uuid(), 'wecom:wmMetricA', $2, 100, 'replied', repeat('a', 64), '{}', '[]', '[]')`,
+    [DEMO, old.toISOString()],
+  );
+  await su(`insert into usage_daily (tenant_id, day, model, purpose, calls, cost_milli_cny) values ($1, $2::date, 'm', 'chat', 1, 4000)`, [
+    DEMO,
+    shDay(-40),
+  ]);
+  __metricsTest.reset();
+  const r = await api('GET', '/metrics?days=90', { token: tokens.owner });
+  check(
+    '保留期 30、请求 90：days=30，轮次与费用都按 30 天算（40 天前的那一轮与那笔 4 元用量不算；按 90 天是 17 轮、16.8 元）',
+    r.status === 200 && r.body.days === 30 && r.body.turns === 16 && close(r.body.costRangeYuan, 12.8) && close(r.body.costTodayYuan, 1.3),
+    json(r.body),
+  );
+  const q0 = queryCount();
+  await api('GET', '/me', { token: tokens.owner });
+  const perSession = queryCount() - q0;
+  const q1 = queryCount();
+  const sixty = await api('GET', '/metrics?days=60', { token: tokens.owner });
+  check(
+    '缓存键是实际天数：请求 60 也截到 30，用的是刚才那份（保留期也在缓存里，除了认会话不查库）',
+    sixty.status === 200 && json(sixty.body) === json(r.body) && queryCount() - q1 === perSession,
+    `${json(sixty.body)} 查询 ${queryCount() - q1}`,
+  );
+  const week = await api('GET', '/metrics?days=7', { token: tokens.owner });
+  check('保留期 30、请求 7：照旧 7 天', week.status === 200 && week.body.days === 7, json(week.body));
+  await su('update tenants set retention_trace_days = 90 where id = $1', [DEMO]);
+  __metricsTest.reset();
+}
+
 // ---------------- 真实 Postgres：agent_app 经 RLS 读同一份数据 ----------------
 {
   const PG_TEST_URL = process.env.PG_TEST_URL;
@@ -689,6 +737,14 @@ __metricsTest.reset();
             m.costTodayMilliCny === 1300 &&
             m.costRangeMilliCny === 3800,
           json(m),
+        );
+        const keep = await withTenant(app.db, ctx, (tx) => readTraceRetentionDays(tx, fxr.tenantId), { readOnly: true });
+        await fxr.query('update tenants set retention_trace_days = 30 where id = $1', [fxr.tenantId]);
+        const keep30 = await withTenant(app.db, ctx, (tx) => readTraceRetentionDays(tx, fxr.tenantId), { readOnly: true });
+        check(
+          '真实 PG：agent_app 在只读事务里读得到本租户的 trace 保留期（默认 90，改成 30 之后是 30）',
+          keep === 90 && keep30 === 30,
+          `${keep} ${keep30}`,
         );
         const [e] = await fxr.query<{ id: string }>(
           `insert into tenants (slug, name, pack_id) values ('empty', 'empty', 'travel') returning id`,
@@ -741,6 +797,35 @@ async function say(
   );
   script.length = 0;
   return { text: reply, turn: got[0]! };
+}
+
+// ---------------- gen_ai.provider.name：LLM_PROVIDER，没有就按 LLM_BASE_URL 的主机名 ----------------
+{
+  const saved = { p: process.env.LLM_PROVIDER, b: process.env.LLM_BASE_URL };
+  const cases: [string, string | undefined, string][] = [
+    ['', 'https://api.deepseek.com/v1', 'deepseek'],
+    ['', 'https://deepseek.com', 'deepseek'],
+    ['', 'https://open.bigmodel.cn/api/paas/v4', 'zhipu'],
+    ['', undefined, 'zhipu'],
+    ['', fakeLlmUrl, 'openai_compatible'],
+    ['', 'https://deepseek.com.example.net/v1', 'openai_compatible'],
+    ['', '不是地址', 'openai_compatible'],
+    ['DeepSeek', fakeLlmUrl, 'deepseek'],
+    ['zhipu', 'https://api.deepseek.com/v1', 'zhipu'],
+  ];
+  const got = cases.map(([p, b]) => {
+    process.env.LLM_PROVIDER = p;
+    if (b === undefined) delete process.env.LLM_BASE_URL;
+    else process.env.LLM_BASE_URL = b;
+    return providerName();
+  });
+  process.env.LLM_PROVIDER = saved.p;
+  process.env.LLM_BASE_URL = saved.b;
+  check(
+    'gen_ai.provider.name：LLM_PROVIDER 优先；没写时 deepseek.com 是约定的 deepseek，bigmodel.cn 与没设是 zhipu，其余是自定义的 openai_compatible（没有 _OTHER）',
+    got.every((g, i) => g === cases[i]![2]),
+    json(got),
+  );
 }
 
 // ---------------- boot()：只有设了端点才调 startOtel；它失败也照常启动 ----------------
@@ -854,7 +939,7 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
       '根 span 的属性：gen_ai.* 与 app.*、Langfuse 的会话与用户都是 ref、trace 名 turn',
       r['gen_ai.operation.name'] === 'invoke_agent' &&
         r['gen_ai.agent.name'] === 'travel' &&
-        r['gen_ai.provider.name'] === '_OTHER' &&
+        r['gen_ai.provider.name'] === 'openai_compatible' &&
         r['gen_ai.conversation.id'] === ref &&
         r['app.turn.outcome'] === 'replied' &&
         r['app.sop.version'] === f.turn.sopVersion &&
@@ -865,8 +950,18 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
         r['app.channel'] === 'wecom' &&
         r['langfuse.session.id'] === ref &&
         r['langfuse.user.id'] === ref &&
-        r['langfuse.trace.name'] === 'turn',
+        r['langfuse.trace.name'] === 'turn' &&
+        !('error.type' in r) &&
+        root.span.status?.code !== 2,
       json(r),
+    );
+    check(
+      '每个 span 都带 gen_ai.conversation.id（约定里推理与工具 span「有就写」）与 Langfuse 的会话、用户，都是 ref',
+      kids.length > 0 &&
+        [root, ...kids].every(
+          (g) => g.attrs['gen_ai.conversation.id'] === ref && g.attrs['langfuse.session.id'] === ref && g.attrs['langfuse.user.id'] === ref,
+        ),
+      json(kids.map((k) => [k.span.name, k.attrs['gen_ai.conversation.id']])),
     );
     check(
       'resource：service.name=wecom-sales-agent、service.version=APP_REVISION',
@@ -890,7 +985,7 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
             s.span.name === 'chat glm-5.3-flashx' &&
             s.span.kind === 3 &&
             String(s.span.endTimeUnixNano) === ns(c.startedAt + c.ms) &&
-            s.attrs['gen_ai.provider.name'] === '_OTHER' &&
+            s.attrs['gen_ai.provider.name'] === 'openai_compatible' &&
             s.attrs['gen_ai.request.model'] === 'glm-5.3-flashx' &&
             s.attrs['gen_ai.response.model'] === c.model &&
             s.attrs['gen_ai.usage.input_tokens'] === c.promptTokens &&
@@ -1029,10 +1124,11 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   const { root, kids } = treeOf(await flush(), f.turn.turnId);
   const chat = kids.find((k) => k.attrs['gen_ai.operation.name'] === 'chat');
   check(
-    '出错的轮次：根 outcome=error、状态 ERROR；chat 带 error.type=http_5xx、状态 ERROR、没有用量与 response.model',
+    '出错的轮次：根 outcome=error、状态 ERROR、error.type 取出错的模型调用的类别；chat 带 error.type=http_5xx、状态 ERROR、没有用量与 response.model',
     f.outcome === 'error' &&
       root?.attrs['app.turn.outcome'] === 'error' &&
       root.span.status?.code === 2 &&
+      root.attrs['error.type'] === 'http_5xx' &&
       chat?.attrs['error.type'] === 'http_5xx' &&
       chat.span.status?.code === 2 &&
       !('gen_ai.usage.input_tokens' in chat.attrs) &&
@@ -1040,21 +1136,131 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
       chat.attrs['gen_ai.request.model'] === 'glm-5.3-flashx',
     json({ root: root?.attrs, chat: chat?.attrs, status: root?.span.status }),
   );
+  // 出错不在模型调用上（llm 里没有出错的一项）：根的 error.type 是兜底的 _OTHER
+  const synthetic = {
+    ...f,
+    turn: { ...f.turn, turnId: 'otel-selftest-error-no-llm', llm: f.turn.llm.map((c) => ({ ...c, error: null })) },
+  };
+  receiver.bodies.length = 0;
+  otel.exportTurn(synthetic, {
+    tenant: 'demo',
+    conversationRef: 'otel-selftest-ref',
+    channel: 'wecom',
+    agent: 'travel',
+    provider: 'zhipu',
+    requestModel: 'glm-5.3-flashx',
+  });
+  const s = treeOf(await flush(), synthetic.turn.turnId).root;
+  check(
+    '出错的轮次、模型调用都没出错：根 error.type=_OTHER、状态 ERROR',
+    s?.attrs['error.type'] === '_OTHER' && s.span.status?.code === 2,
+    json(s?.attrs),
+  );
 }
 
-// ---------------- demo 类会话：没有 ref，用短码 ----------------
+// ---------------- 执行时抛错的工具调用：真实耗时、error.type=_OTHER、状态 ERROR；trace 行形状不变 ----------------
 {
-  const sid = 'wecom:cust_OtelDemo';
-  receiver.bodies.length = 0;
-  const { turn: f } = await say(sid, '你好', [{ content: '您好呀～这次想去哪儿玩呢？' }]);
-  const { root } = treeOf(await flush(), f.turn.turnId);
+  // recorder 直接造一轮：工具挂 40 毫秒后抛错
+  const sid = 'sim-ops-tool-fail';
+  const args: Record<string, unknown> = { routeId: 'R-NOPE' };
+  const from = finished.length;
+  await recorder.withTurnScope(async () => {
+    recorder.startTurn(sid, '在吗');
+    recorder.traceToolCall('create_quote', args, sid);
+    await new Promise((r) => setTimeout(r, 40));
+    recorder.noteToolError(args);
+    recorder.endTurn('replied', '好的', 'greeting', 'greeting');
+  });
+  const u = finished.slice(from).find((x) => x.turn.conversationId === sid);
+  const c = u?.turn.calls[0];
   check(
-    'demo 类会话：会话引用是短码（与日志的 conv 同一口径），不带会话原 id',
-    store.conversationRef(sid) === null &&
-      root?.attrs['langfuse.session.id'] === 'DEMO' &&
-      root.attrs['gen_ai.conversation.id'] === 'DEMO' &&
-      !receiver.bodies.join('\n').includes('OtelDemo'),
-    json(root?.attrs),
+    'recorder：执行时抛错的工具调用记下真实耗时、执行时的参数与只在内存的失败标记，没有结果',
+    !!c && c.ms >= 40 && c.failed === true && c.resultBytes === 0 && c.resultHead === '' && json(c.args) === json(args),
+    json(c),
+  );
+  // 这一轮已经经 onTurnEnd 交给导出器了（startOtelExport 订阅的），这里只 flush
+  const tool = treeOf(await flush(), u?.turn.turnId ?? '-').kids.find((k) => k.attrs['gen_ai.operation.name'] === 'execute_tool');
+  check(
+    '导出：这次工具调用的 span 用真实耗时（不是 0 毫秒）、error.type=_OTHER、状态 ERROR',
+    !!tool &&
+      !!c &&
+      String(tool.span.startTimeUnixNano) === ns(c.startedAt) &&
+      String(tool.span.endTimeUnixNano) === ns(c.startedAt + c.ms) &&
+      tool.attrs['error.type'] === '_OTHER' &&
+      tool.span.status?.code === 2,
+    json(tool),
+  );
+
+  // 真引擎：模型要报价的线路不存在，executeTool 抛错（llm.ts 把错误交回模型，这一轮照常回复）
+  const real = 'wecom:wmOtelToolFail';
+  receiver.bodies.length = 0;
+  const { text, turn: f } = await say(real, '这条线两个人多少钱', [
+    { toolCalls: [{ name: 'create_quote', args: { routeId: 'R-OTEL-NOPE', travelers: 2 } }] },
+    { content: '抱歉，这条线路暂时查不到，我帮您换一条看看～' },
+  ]);
+  const call = f.turn.calls.find((x) => x.name === 'create_quote');
+  const { kids } = treeOf(await flush(), f.turn.turnId);
+  const span = kids.find((k) => k.span.name === 'execute_tool create_quote');
+  const ok = kids.filter((k) => k.attrs['gen_ai.operation.name'] === 'execute_tool' && k !== span);
+  check(
+    '真引擎：工具执行时抛错，这一轮照常回复；recorder 记了失败，span 带 error.type=_OTHER、状态 ERROR，起止是记下的时刻',
+    f.outcome === 'replied' &&
+      text.includes('换一条') &&
+      call?.failed === true &&
+      !!span &&
+      span.attrs['error.type'] === '_OTHER' &&
+      span.span.status?.code === 2 &&
+      String(span.span.endTimeUnixNano) === ns(call.startedAt + call.ms) &&
+      ok.every((k) => !('error.type' in k.attrs) && k.span.status?.code !== 2),
+    json({ call, span: span?.attrs, status: span?.span.status }),
+  );
+  const row = (await su<{ calls: Record<string, unknown>[] }>('select calls from turn_traces where id = $1', [f.turn.turnId]))[0];
+  const stored = row?.calls.find((x) => x.name === 'create_quote');
+  check(
+    'trace 行的形状不变：失败标记只在内存，calls 里没有 failed，耗时是记下的那个、没有结果',
+    !!stored && !('failed' in stored) && !('startedAt' in stored) && stored.ms === call?.ms && stored.resultBytes === 0,
+    json(row),
+  );
+}
+
+// ---------------- 没有 ref 的会话（demo 类，文件存储同一条路）：按会话 id 算的匿名引用 ----------------
+{
+  const a = 'wecom:cust_OtelQz7K';
+  const b = 'wecom:cust_OtherQz7K';
+  check('前提：这两个会话的短码相同（末 4 位），都没有 ref', shortIdOf(a) === 'QZ7K' && shortIdOf(b) === 'QZ7K');
+  receiver.bodies.length = 0;
+  const ta = await say(a, '你好', [{ content: '您好呀～这次想去哪儿玩呢？' }]);
+  const ta2 = await say(a, '云南', [{ content: '云南很不错～几位出行呢？' }]);
+  const tb = await say(b, '你好', [{ content: '您好呀～这次想去哪儿玩呢？' }]);
+  const all = await flush();
+  const ra = treeOf(all, ta.turn.turn.turnId);
+  const idA = String(ra.root?.attrs['langfuse.session.id']);
+  const idA2 = treeOf(all, ta2.turn.turn.turnId).root?.attrs['langfuse.session.id'];
+  const idB = treeOf(all, tb.turn.turn.turnId).root?.attrs['langfuse.session.id'];
+  check(
+    '没有 ref：会话、用户与 gen_ai.conversation.id 是同一个 anon-<16 位十六进制>，每个 span 都是它',
+    store.conversationRef(a) === null &&
+      /^anon-[0-9a-f]{16}$/.test(idA) &&
+      !!ra.root &&
+      [ra.root, ...ra.kids].every(
+        (g) => g.attrs['langfuse.session.id'] === idA && g.attrs['langfuse.user.id'] === idA && g.attrs['gen_ai.conversation.id'] === idA,
+      ),
+    json(ra.root?.attrs),
+  );
+  check(
+    '匿名引用：末 4 位相同的两个会话不同，同一会话两轮相同',
+    idA2 === idA && typeof idB === 'string' && /^anon-[0-9a-f]{16}$/.test(idB) && idB !== idA,
+    json({ idA, idA2, idB }),
+  );
+  const segs = (id: string): string[] => [...Array(id.length - 3).keys()].map((i) => id.toLowerCase().slice(i, i + 4));
+  const raw = receiver.bodies.join('\n');
+  check(
+    '匿名引用里没有会话原 id 的任何一段（每个 4 字符片段都不在里面），导出里也没有短码、前缀与原 id',
+    [a, b].every((id) => segs(id).every((seg) => !idA.includes(seg) && !String(idB).includes(seg))) &&
+      !/qz7k/i.test(raw) &&
+      !raw.includes('cust_') &&
+      !raw.includes('wecom:'),
+    json({ idA, idB }),
   );
 }
 
@@ -1087,7 +1293,7 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
 // ---------------- 导出端点挂掉：对话照常，只记日志 ----------------
 {
   const sid = `wecom:${EXT}`;
-  receiver.down = true;
+  receiver.mode = 'down';
   const warns: string[] = [];
   const origWarn = console.warn;
   console.warn = (...a: unknown[]) => void warns.push(a.map(String).join(' '));
@@ -1098,7 +1304,7 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
     await otel.flushOtel();
   } finally {
     console.warn = origWarn;
-    receiver.down = false;
+    receiver.mode = 'ok';
   }
   const line = warns.find((w) => w.startsWith('[otel] 导出'));
   check('导出端点挂掉：这一轮照常回复', r.turn.outcome === 'replied' && r.text.includes('丽江大理'), r.text);
@@ -1119,6 +1325,63 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   check('停机：drain 段把排着的 span 导出去了', !!treeOf(spansReceived(), f.turn.turnId).root, json(receiver.paths.slice(-3)));
 }
 
+// ---------------- 停机时端点挂住、拒连、503：按 drain 段的截止时刻放弃，按时返回 ----------------
+{
+  // 拒连：开一个端口再关掉
+  const refusedUrl = await new Promise<string>((resolve) => {
+    const s = http.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address() as AddressInfo;
+      s.close(() => resolve(`http://127.0.0.1:${port}`));
+    });
+  });
+  // 导出器照默认的 10 秒超时一直重试：不按 deadline 放弃的话 drain 段会被拖满
+  process.env.OTEL_EXPORTER_OTLP_TIMEOUT = '10000';
+  const sample = finished.at(-1)!;
+  const n = 1 + sample.turn.llm.length + sample.turn.calls.length + sample.turn.guards.length;
+  for (const [label, mode, endpoint] of [
+    ['挂住', 'hang', otlpUrl],
+    ['拒连', 'ok', refusedUrl],
+    ['回 503', 's503', otlpUrl],
+  ] as const) {
+    receiver.mode = mode;
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = endpoint;
+    await otel.startOtel();
+    otel.exportTurn(sample, {
+      tenant: 'demo',
+      conversationRef: 'otel-selftest-ref',
+      channel: 'wecom',
+      agent: 'travel',
+      provider: 'zhipu',
+      requestModel: 'glm-5.3-flashx',
+    });
+    const logs: string[] = [];
+    const orig = { warn: console.warn, error: console.error };
+    console.warn = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    console.error = (...a: unknown[]) => void logs.push(a.map(String).join(' '));
+    const t0 = Date.now();
+    let ok = false;
+    try {
+      ok = await store.runShutdownHooks(8000);
+    } finally {
+      console.warn = orig.warn;
+      console.error = orig.error;
+    }
+    const ms = Date.now() - t0;
+    check(
+      `停机时端点${label}：runShutdownHooks(8000) 返回 true，drain 段在 1.5 秒的预算之内结束`,
+      ok && ms < 1500,
+      `${ok} ${ms}ms ${json(logs)}`,
+    );
+    check(
+      `停机时端点${label}：记一行「[otel] 停机时导出未完成，已放弃 ${n} 条」（不带端点地址），没有「drain 段超时」`,
+      logs.includes(`[otel] 停机时导出未完成，已放弃 ${n} 条`) && !logs.some((l) => l.includes('drain 段超时') || l.includes('127.0.0.1')),
+      json(logs),
+    );
+  }
+  receiver.mode = 'ok';
+}
+
 check('全程没有未处理的 rejection', unhandled === 0, String(unhandled));
 otlp.close();
 fakeLlm.close();
@@ -1129,6 +1392,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `OPS SELFTEST PASS: ${pass} 项断言全通（边界 lint / 没设端点不加载、不连接 / 运行数字逐字段、时区、60 秒缓存、文件存储 503、角色 403、参数 / OpenTelemetry 的 span 树与属性、默认无原文、capture、出错、短码、端点挂掉、停机 flush）`,
+  `OPS SELFTEST PASS: ${pass} 项断言全通（边界 lint / 没设端点不加载、不连接 / 运行数字逐字段、时区、保留期截断、60 秒缓存、文件存储 503、角色 403、参数 / OpenTelemetry 的 span 树与属性、provider、默认无原文、capture、出错与工具失败、匿名引用、端点挂掉、停机 flush 与按时放弃）`,
 );
 process.exit(0);
