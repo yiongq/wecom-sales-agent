@@ -26,7 +26,8 @@
 #   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent
 #   .env          应用自己的 env（LLM key、企微、ADMIN_PASS、DEPLOY_PROFILE……）；DB 模式再加 CONFIG_SOURCE=db、
 #                 DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent、DEFAULT_TENANT_SLUG。不能有 owner、platform
-#                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）
+#                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）。
+#                 转人工通知（02 spec「通知」）：NOTIFY_WEBHOOK_URL（转人工通知群的机器人，与告警不是同一个群；等同密钥，日志里不出现它）
 # 口令进连接串时，URL 保留字符（@ : / ? # %）要百分号编码；生成时只用字母数字最省事。
 # 轮换口令见 db-init/roles.sh 开头。
 #
