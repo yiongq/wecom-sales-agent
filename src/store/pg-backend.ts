@@ -255,6 +255,11 @@ export interface PgBackend extends StoreBackend {
    */
   writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
+  /**
+   * 任务表的单独短事务（认领、改状态、启动与停机时的归位、与会话无关的排程；02 spec「任务表与跟进」）：不经会话写队列，
+   * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
+   */
+  jobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   /** late 段：此后不再发起落库，退避中的重试也停掉；没落库的留给 exit 时的 spill */
   close(): void;
   stats(): PgStoreStats;
@@ -295,6 +300,14 @@ const stamp = (): string => new Date().toISOString().replace(/[:.]/g, '-');
 const short = (id: string): string => shortIdOf(id) || '?';
 
 class AlreadyCommitted extends Error {}
+
+/** jobsTx 主动不写：已冲突、已停机（late 段之后）、租户锁不在本进程手里 */
+export class JobsTxRefused extends Error {
+  override readonly name = 'JobsTxRefused';
+  constructor(readonly code: 'conflict' | 'closed' | 'held_by_other') {
+    super(`任务表这次不写（${code}）`);
+  }
+}
 
 /**
  * writeUsage 没写进去。code：主动不写的三种（conflict 已冲突、closed 已停机、held_by_other 租户锁不在本进程），
@@ -1078,6 +1091,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     },
     recentMsgids(sessionId) {
       return entries.get(sessionId)?.msgids ?? new Set();
+    },
+    jobsTx(fn) {
+      if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
+      if (closed) return Promise.reject(new JobsTxRefused('closed'));
+      if (!d.writable()) return Promise.reject(new JobsTxRefused('held_by_other'));
+      return detached(() => withTenant(d.db, ctx, fn));
     },
     flush(sessionId, opts = {}) {
       const e = entries.get(sessionId);

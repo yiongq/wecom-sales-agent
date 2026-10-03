@@ -1404,7 +1404,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
         },
         preflight: () => void calls.push('preflight'),
         buildIndex: async () => void calls.push('buildIndex'),
+        storeMode: () => 'file',
         startFollowUpScheduler: () => void calls.push('followup'),
+        startJobs: () => void calls.push('jobs'),
         startWecom: () => void calls.push('startWecom'),
         exit: (c) => void exits.push(c),
       });

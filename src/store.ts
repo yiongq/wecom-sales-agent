@@ -10,7 +10,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { tenantLockTaken } from './config/source.js';
-import type { Db } from './db/client.js';
+import type { Db, Tx } from './db/client.js';
 import type { AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
 import { profile } from './profile.js';
@@ -26,6 +26,7 @@ import {
 import { onCommitted, type DomainEvent } from './store/events.js';
 import { createFileBackend } from './store/file-backend.js';
 import {
+  JobsTxRefused,
   openPgBackend,
   type AuditActor,
   type ConsentItem,
@@ -42,6 +43,7 @@ import type { Session, Order } from './types.js';
 
 export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
 export {
+  JobsTxRefused,
   SessionStoreStartupError,
   StoreLaggingError,
   onCommitted,
@@ -243,6 +245,21 @@ export function queueConsents(sessionId: string, items: readonly ConsentItem[]):
 export function queueTelemetry(sessionId: string, rows: TelemetryRows): void {
   pgFor(sessionId)?.queueTelemetry(sessionId, rows);
 }
+/**
+ * 任务表的单独短事务（第 10 步：认领、改状态、启动与停机时的归位、与会话无关的排程）：只在 db 存储下有，不经会话写队列。
+ * 文件存储下以 JobsTxRefused('closed') reject（文件存储没有任务表，跟进由扫描器驱动）
+ */
+export function withJobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return pgBackend ? pgBackend.jobsTx(fn) : Promise.reject(new JobsTxRefused('closed'));
+}
+
+/** saveSession 之后的订阅者：只为 db 存储的真实会话调（排、取消跟进，src/jobs/followup.ts）。与 saveSession 同一段同步代码，排出的附带行进同一次落库 */
+const saveHooks = new Set<(s: Session) => void>();
+export function onSessionSaved(cb: (s: Session) => void): () => void {
+  saveHooks.add(cb);
+  return () => saveHooks.delete(cb);
+}
+
 /** 企微去重集合（第 12 步用）：db 存储下是预载的最近 7 天带 msgid 的客户消息，加上本进程记下的；文件存储下为空 */
 export function recentMsgids(sessionId: string): ReadonlySet<string> {
   return pgFor(sessionId)?.recentMsgids(sessionId) ?? new Set();
@@ -414,6 +431,14 @@ export function saveSession(s: Session, touch = true): void {
   if (touch) s.updatedAt = Date.now();
   sessions.set(s.id, s);
   b.schedule(s);
+  if (b !== pgBackend) return;
+  for (const cb of saveHooks) {
+    try {
+      cb(s);
+    } catch (e) {
+      console.error('[store] saveSession 的订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+    }
+  }
 }
 
 /** 入参不含 id/createdAt/status，由 store 统一生成 */
