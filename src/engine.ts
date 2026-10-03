@@ -4147,9 +4147,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   // 交互失败（02 spec「确定性转人工触发」、R15、不变量 30）：出口护栏都跑完之后判。这一轮已经转了人工的（模型调了工具、
   // 改行程承诺、回复里说了转接）不再算一轮。达到阈值（最近 6 轮里最后 2 轮都失败或其中 3 轮失败）时这一轮的回复换成
-  // handoffReply 的「普通诉求」措辞、kind='failure'，计数清零。
-  // 转人工这一步先不开（failureHandoff.enabled 为 false）：spec 的阈值让锁定的 engine.selftest V4（同一句「两位 12号」连说三遍）
-  // 变红，由 owner 定阈值改 3 还是别的办法（plan「Open」第 11 步）。信号、窗口与 trace 的 signals 照记
+  // handoffReply 的「普通诉求」措辞、kind='failure'，计数清零。重复提问只认在问的话（owner 2026-10-03，见 repeatedQuestion）
   if (!session.handedOver) {
     const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
     const signals: TurnSignals = {
@@ -4161,7 +4159,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     noteSignals(signals);
     const failed = turnFailed(signals);
     setWindow(session, 'turnSignals', pushWindow(session.turnSignals, failed ? 1 : 0, FAILURE_WINDOW));
-    if (failed && failureHandoff.enabled && failureThresholdReached(session.turnSignals ?? [])) {
+    if (failed && failureThresholdReached(session.turnSignals ?? [])) {
       const departNote = departNoteForHandoff(session);
       enterHandoff(session, {
         kind: 'failure',
@@ -4210,12 +4208,6 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 这一轮转了人工（开始时没转，见上面的静默）记 handoff；访客日预算用完、走了离线脚本记 budget
   return done(session.handedOver ? 'handoff' : degraded ? 'budget' : 'replied', reply, replyMsg);
 }
-
-/**
- * 交互失败达到阈值时转人工（R15）。默认关：等 owner 在 plan「Open」第 11 步定下阈值（锁定的 V4 在 spec 的阈值下变红）。
- * 自测经 __triggerTest.failureHandoff 打开它，测转人工这一步本身
- */
-const failureHandoff = { enabled: false };
 
 /** 紧急情况的固定应急话术（02 spec「确定性转人工触发」） */
 const EMERGENCY_REPLY =
@@ -4357,8 +4349,8 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
   return { sessionId: session.id, text };
 }
 
-/** 仅供自测：确定性转人工触发（handoff.selftest.ts）。failureHandoff.enabled 打开交互失败的转人工；应急话术给断言比对 */
-export const __triggerTest = { failureHandoff, EMERGENCY_REPLY };
+/** 仅供自测：确定性转人工触发（handoff.selftest.ts）。应急话术给断言比对 */
+export const __triggerTest = { EMERGENCY_REPLY };
 
 /** 仅供自测：订单与转人工这组判定 */
 export const __orderTest = { haggling, OTHER_ORDER, RESEND_ASK, claimsTransfer, saysDay, trimDangling, monthSaid };
