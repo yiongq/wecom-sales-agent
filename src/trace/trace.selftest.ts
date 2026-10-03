@@ -1,10 +1,12 @@
 // 逐轮 trace、护栏事件与用量的自测（docs/architecture/02-conversations-workbench/spec.md「逐轮 trace、护栏事件与用量」、R16、
 // 不变量 9、验收 20 的数据部分、21）。PGlite 上装 DB 配置与 db 会话存储；模型与 embedding 是本机的假服务，按脚本回话、
-// 每次回包带用量。覆盖：价格护栏删句那一轮的 trace 与 price 事件、没改文本的护栏不记、确定性路径与出错的轮次、
-// demo 类会话不入库、存档点里真实的 trace 写失败不影响会话、读路径不查库、usage_daily 与 recordUsage 收到的合计相同（含 embedding）、
-// 30 秒写入不重复累加、drain 段写一次、重启预载认回 turn_id、后台读接口的仓储函数。
+// 每次回包带用量。覆盖：价格护栏删句那一轮的 trace 与 price 事件、没改文本的护栏不记、连环改写读出的是相对原稿的净差、
+// 确定性路径（含企微非文本消息）与出错的轮次、demo 类会话不入库、存档点里真实的 trace 写失败不影响会话、poisoned 会话的遥测丢掉并计数、
+// 读路径不查库、usage_daily 与 recordUsage 收到的合计相同（含 embedding）、30 秒写入不重复累加、写失败的原因码、drain 段写一次、
+// 重启预载认回 turn_id、后台读接口的仓储函数。
 // 用法：npx tsx src/trace/trace.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -108,6 +110,11 @@ function check(name: string, cond: boolean, detail = ''): void {
   else fails.push(`${name}${detail ? `：${detail}` : ''}`);
 }
 const json = (v: unknown): string => JSON.stringify(v);
+async function waitFor(cond: () => boolean, ms = 5000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  return cond();
+}
 
 // store 先于一切会记用量的模块：usage_daily 的累加器在它的导入期订阅 onUsage
 const store = await import('../store.js');
@@ -152,6 +159,24 @@ process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
   const NUL = String.fromCharCode(0);
   const d4 = sentenceDiff('甲。', `乙${NUL}。`);
   check('按句对比：补上的句子去掉 NUL', json(d4) === json({ removed: ['甲。'], added: ['乙。'] }), json(d4));
+  // 一轮的净差（J 页读它）：后面删掉的、前面补上的抵消，删了又补回的也抵消，同一句按次数算
+  const { netGuardDiff } = traceRepo;
+  const n1 = netGuardDiff([
+    { removed: ['原句。'], added: ['中间。'] },
+    { removed: ['中间。'], added: ['兜底。'] },
+  ]);
+  check('净差：连着改同一句，中间那句抵消', json(n1) === json({ removed: ['原句。'], added: ['兜底。'] }), json(n1));
+  const n2 = netGuardDiff([
+    { removed: ['甲。', '乙。'], added: [] },
+    { removed: [], added: ['乙。', '丙。'] },
+    { removed: ['好的。'], added: [] },
+  ]);
+  check('净差：删了又补回的不算删去', json(n2) === json({ removed: ['甲。', '好的。'], added: ['丙。'] }), json(n2));
+  const n3 = netGuardDiff([
+    { removed: [], added: ['好的。', '好的。'] },
+    { removed: ['好的。'], added: [] },
+  ]);
+  check('净差：同一句补了两次、删了一次，净补一次', json(n3) === json({ removed: [], added: ['好的。'] }), json(n3));
   // 不在轮次里：什么都不做、不抛
   recorder.noteGuard('price', 'a。', 'b。', 'replace');
   recorder.startTurn('wecom:wmNoScope');
@@ -434,6 +459,12 @@ const YUNNAN = 'r-yunnan-mid';
 // ---------------- 出口的每个改写点改了文本都记一条，名字照 spec ----------------
 {
   const QUOTE: Step = { toolCalls: [{ name: 'create_quote', args: { routeId: YUNNAN, travelers: 2 } }] };
+  const MDLINK = '**方案链接**我这就发您～';
+  // 同一句先后被两道护栏改的两轮：[会话, 模型原稿]
+  const chained = new Map<string, string>([
+    ['wecom:wmG_link', '好的，方案给您：https://www.yuntu.com/proposal/r-fake/2 您先看看～'],
+    ['wecom:wmG_mdlink', MDLINK],
+  ]);
   const QUOTED: Step = { content: '丽江大理·洱海古城 6 日，两位总价 33,600 元，要不要我帮您订？' };
   // [会话, 前置的几轮, 这一轮客户说的, 模型脚本, 这一轮应当记下的护栏]
   const table: [string, [string, Step[]][], string, Step[], string[]][] = [
@@ -493,6 +524,8 @@ const YUNNAN = 'r-yunnan-mid';
   table.push(
     // 整条被 markdown 抹空：链接空位之后兜底（记在 repair_links 名下）
     ['wecom:wmG_empty', [], '你好', [{ content: '** **' }], ['markdown', 'repair_links']],
+    // 连环改写：去 markdown 改了这一句，出口修补再把同一句（许了方案链接却没有）换掉
+    ['wecom:wmG_mdlink', [], '你好', [{ content: MDLINK }], ['markdown', 'repair_links']],
     // 「6 天版」指的是现成线路的标准天数：改成「6 天这条」，记在改行程承诺名下（replace）
     ['wecom:wmG_days', [], '想去云南玩', [{ content: '6 天版的丽江大理线很舒服，您几位出行？' }], ['custom_promise']],
     // 库外目的地、客户没坚持：摘掉转接的话（handoff_claims · drop_sentence）
@@ -540,6 +573,37 @@ const YUNNAN = 'r-yunnan-mid';
           json(g.filter((x) => x.guard === 'custom_promise').map((x) => x.action)) === json(['handoff', 'append']) &&
           g.every((x, i) => x.ord === i),
         json(g),
+      );
+    }
+    const draft = chained.get(sid);
+    if (draft !== undefined) {
+      // 逐事件相加是删 2 补 2（中间那句算了两遍）；J 页读的是相对模型原稿的净差：删 1 补 1，「删去」里只有模型原句
+      const [row] = (await traceRows(sid)).slice(-1);
+      const g = row ? await guardRows(row.id) : [];
+      const r = row
+        ? await withTenant(fx.deps.db, sysCtx, async (tx) => ({
+            totals: await traceRepo.readGuardTotals(tx, [row.id]),
+            diff: await traceRepo.readTurnDiff(tx, sid, row.id),
+          }))
+        : null;
+      const direct = recorder.sentenceDiff(draft, row?.final_text ?? '');
+      const pre =
+        g.length === 2 &&
+        g.reduce((a, x) => a + x.removed.length, 0) === 2 &&
+        g.reduce((a, x) => a + x.added.length, 0) === 2 &&
+        g[1]!.removed[0] === g[0]!.added[0];
+      check(`${sid} 前提：两道护栏连着改同一句，逐事件相加是删 2 补 2`, pre, json(g));
+      check(
+        `${sid}：消息上的改写句数是净差，删 1 补 1`,
+        json(r ? [...r.totals.values()] : null) === json([{ removed: 1, added: 1 }]),
+        json(r ? [...r.totals] : null),
+      );
+      check(
+        `${sid}：改写对照的「删去」只有模型原句，净差等于原稿与发出的直接对比，逐事件的照原样留着`,
+        json(r?.diff?.removed) === json(recorder.sentenceDiff(draft, '').removed) &&
+          json([r?.diff?.removed, r?.diff?.added]) === json([direct.removed, direct.added]) &&
+          r?.diff?.events.length === 2,
+        json({ diff: r?.diff, direct }),
       );
     }
     if (sid === 'wecom:wmG_net') {
@@ -622,6 +686,101 @@ const YUNNAN = 'r-yunnan-mid';
   check('沉默的那轮：final_text 为空', rows[3]?.final_text === null);
 }
 
+// ---------------- 企微非文本消息：不经引擎，同样记一轮（回提示 deterministic、已转人工 silent），提示消息关联 turn_id ----------------
+{
+  const wecom = await import('../adapters/wecom.js');
+  // 假企微服务端：sync_msg 按 cursor 返回之后的消息，send_msg 记下发了什么；别的请求（假模型）照常走
+  const realFetch = globalThis.fetch;
+  const wxLog: Record<string, unknown>[] = [];
+  const wxSent: { to: string; content: string }[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname !== 'qyapi.weixin.qq.com') return realFetch(input, init);
+    const ep = url.pathname.replace(/^\/cgi-bin\//, '');
+    const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
+    if (ep === 'gettoken') return res({ errcode: 0, access_token: 'selftest-token', expires_in: 7200 });
+    const body = (init?.body ? JSON.parse(String(init.body)) : {}) as { cursor?: string; touser?: string; text?: { content?: string } };
+    if (ep === 'kf/sync_msg') {
+      const from = Number(String(body.cursor ?? '').split(':')[1] ?? 0) || 0;
+      const list = wxLog.slice(from);
+      return res({ errcode: 0, next_cursor: `0:${from + list.length}`, has_more: 0, msg_list: list });
+    }
+    if (ep === 'kf/send_msg') {
+      wxSent.push({ to: String(body.touser), content: String(body.text?.content ?? '') });
+      return res({ errcode: 0 });
+    }
+    if (ep === 'kf/customer/batchget') return res({ errcode: 0, customer_list: [] });
+    return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
+  }) as typeof fetch;
+  const WX_ENV = { WECOM_CORP_ID: 'selftest-corp', WECOM_APP_SECRET: 'selftest-secret', WECOM_KF_OPEN_KFID: 'selftest-kf' };
+  Object.assign(process.env, WX_ENV);
+  const uid = 'wmTraceImage';
+  const sid = `wecom:${uid}`;
+  let k = 0;
+  /** 客户发一张图片：等适配器处理完、这个会话落库，返回这一轮 */
+  const image = async (): Promise<(typeof finished)[number] | undefined> => {
+    k += 1;
+    const from = finished.length;
+    const mine = () => finished.slice(from).filter((f) => f.turn.conversationId === sid);
+    wxLog.push({
+      msgid: `trace-img-${k}`,
+      open_kfid: 'selftest-kf',
+      external_userid: uid,
+      send_time: Math.floor(Date.now() / 1000),
+      origin: 3,
+      msgtype: 'image',
+    });
+    await wecom.syncFromCallback(`tok-trace-img-${k}`);
+    await waitFor(() => mine().length > 0 && !wecom.__test.inspectForTest().busy);
+    await store.flushSession(sid).catch(() => undefined);
+    check(`企微图片 #${k}：恰好一轮`, mine().length === 1, String(mine().length));
+    return mine()[0];
+  };
+  const t1 = await image();
+  check(
+    '企微图片：回固定提示的一轮 outcome=deterministic，没有原稿与模型调用',
+    t1?.outcome === 'deterministic' && !t1.turn.llm.length && t1.turn.draft === null && !!t1.finalText,
+    json(t1),
+  );
+  check('企微图片：客户收到的就是那句提示，只一条', json(wxSent.map((x) => x.content)) === json([t1?.finalText]), json(wxSent));
+  const [row, ...more] = await traceRows(sid);
+  check(
+    '企微图片：库里有这一轮的 trace，outcome=deterministic、final_text 是那句提示',
+    !!row && !more.length && row.id === t1?.turn.turnId && row.outcome === 'deterministic' && row.final_text === t1.finalText,
+    json(row),
+  );
+  const msgs = await msgRows(sid);
+  check(
+    '企微图片：占位不关联，提示消息的 turn_id 是这一轮',
+    json(msgs.map((m) => [m.role, m.content, m.turn_id])) ===
+      json([
+        ['customer', '[图片]', null],
+        ['agent', t1?.finalText, row?.id],
+      ]),
+    json(msgs),
+  );
+  // 已转人工再发图片：只记占位、不回话，记一轮 silent
+  const s = store.getSession(sid)!;
+  s.handedOver = true;
+  store.saveSession(s);
+  await store.flushSession(sid);
+  const t2 = await image();
+  const rows = await traceRows(sid);
+  const msgs2 = await msgRows(sid);
+  check(
+    '企微图片（已转人工）：不回话，记一轮 silent、final_text 为空，没有关联的消息',
+    t2?.outcome === 'silent' &&
+      wxSent.length === 1 &&
+      json(rows.map((r) => r.outcome)) === json(['deterministic', 'silent']) &&
+      rows[1]!.final_text === null &&
+      msgs2.length === 3 &&
+      msgs2.every((m) => m.turn_id !== rows[1]!.id),
+    json({ rows: rows.map((r) => [r.outcome, r.final_text]), msgs2 }),
+  );
+  for (const key of Object.keys(WX_ENV)) process.env[key] = '';
+  globalThis.fetch = realFetch;
+}
+
 // ---------------- 模型调用出错：outcome=error，llm 里带失败类别 ----------------
 {
   const cases: [string, Step, string][] = [
@@ -683,6 +842,107 @@ const YUNNAN = 'r-yunnan-mid';
   );
   await say(sid, '想去云南玩', [{ content: '云南这边古城和雪山都很美，您几位出行呢？' }]);
   check('存档点：下一轮的 trace 照常写进去', (await traceRows(sid)).length === 1);
+}
+
+// ---------------- poisoned 的会话：遥测行不再留在内存里（写不进库、spill 也不带），丢掉并计数 ----------------
+{
+  const queued = (id: string): number => store.__storeTest.pgQueuedTelemetry(id);
+  const poisonedN = (): number => store.storeHealth().poisoned.length;
+  const batch = () => ({
+    guards: [{ turnId: randomUUID(), ord: 0, guard: 'price', action: 'drop_sentence' as const, removed: ['编的那句。'], added: [] }],
+  });
+  // id 超长（违反 conversations_id_check）：第一次落库就是数据类错误
+  const longA = `wecom:${'a'.repeat(195)}`;
+  const longB = `wecom:${'b'.repeat(195)}`;
+  // 落库在途（卡在借连接上）时排进来的一批：标 poisoned 时丢掉
+  const p0 = poisonedN();
+  let open!: () => void;
+  fx.faults.gate = new Promise<void>((r) => (open = r));
+  const a = store.getOrCreateSession(longA, 'wecom');
+  a.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+  store.saveSession(a);
+  await new Promise((r) => setTimeout(r, 0));
+  store.queueTelemetry(longA, batch());
+  const queuedA = queued(longA);
+  const d0 = pgStats().telemetryDropped;
+  fx.faults.gate = null;
+  open();
+  await waitFor(() => poisonedN() > p0);
+  check(
+    'poisoned：标上时排着的那批遥测丢掉、计数',
+    queuedA === 1 && poisonedN() === p0 + 1 && queued(longA) === 0 && pgStats().telemetryDropped - d0 === 1,
+    json({ queuedA, after: queued(longA), dropped: pgStats().telemetryDropped - d0 }),
+  );
+  // 与会话改动进了同一个快照的一批：落库失败、标 poisoned 时同样丢掉
+  const d1 = pgStats().telemetryDropped;
+  const b = store.getOrCreateSession(longB, 'wecom');
+  b.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+  store.saveSession(b);
+  store.queueTelemetry(longB, batch());
+  await waitFor(() => poisonedN() > p0 + 1);
+  check(
+    'poisoned：在途快照里的那批遥测同样丢掉、计数',
+    queued(longB) === 0 && pgStats().telemetryDropped - d1 === 1,
+    json({ after: queued(longB), dropped: pgStats().telemetryDropped - d1 }),
+  );
+  // 落库在途时因为整体换成副本（window_corrupt）标 poisoned：在途的那次照常跑完，它快照里的 trace 照样写进库、不算丢
+  const sidW = 'wecom:wmTraceCorrupt';
+  const w = store.getOrCreateSession(sidW, 'wecom');
+  w.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+  store.saveSession(w);
+  await store.flushSession(sidW);
+  const tid = randomUUID();
+  const c0 = pgStats().commits;
+  const d3 = pgStats().telemetryDropped;
+  let openW!: () => void;
+  fx.faults.gate = new Promise<void>((r) => (openW = r));
+  w.messages.push({ role: 'agent', content: '您好呀～', at: Date.now() });
+  store.saveSession(w);
+  store.queueTelemetry(sidW, {
+    traces: [
+      {
+        id: tid,
+        conversationId: sidW,
+        startedAt: new Date(),
+        durationMs: 1,
+        outcome: 'replied',
+        sopVersion: config.currentSop().versionNo,
+        prefixHash: config.currentSop().prefixHash,
+        catalogVersions: {},
+        stageBefore: 'greeting',
+        stageAfter: 'greeting',
+        draft: null,
+        finalText: '您好呀～',
+        calls: [],
+        llm: [],
+        signals: null,
+      },
+    ],
+    guards: [{ turnId: tid, ord: 0, guard: 'price', action: 'drop_sentence', removed: ['编的那句。'], added: [] }],
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  w.messages = w.messages.map((m) => ({ ...m }));
+  store.saveSession(w);
+  const corruptPoisoned = store.storeHealth().poisoned.length === p0 + 3;
+  fx.faults.gate = null;
+  openW();
+  await waitFor(() => pgStats().commits > c0);
+  const wrote = await su<{ n: number }>(
+    'select (select count(*) from turn_traces where id = $1)::int + (select count(*) from guard_events where turn_id = $1)::int as n',
+    [tid],
+  );
+  check(
+    'window_corrupt 时在途的那次落库照常提交，它快照里的 trace 与护栏事件照样写进库、不算丢',
+    corruptPoisoned && pgStats().commits === c0 + 1 && wrote[0]!.n === 2 && pgStats().telemetryDropped === d3 && queued(sidW) === 0,
+    json({ corruptPoisoned, commits: pgStats().commits - c0, wrote, dropped: pgStats().telemetryDropped - d3 }),
+  );
+  // poisoned 之后再跑几轮：内存照旧服务，trace 照样收集，但不再留在写队列上，每轮丢一批、计数
+  const d2 = pgStats().telemetryDropped;
+  for (const text of ['想去云南玩', '两个人', '十月出发']) {
+    await say(longA, text, [{ content: '好的～还有什么想了解的随时说。' }]);
+    check(`poisoned 之后的一轮「${text}」：遥测行不留在内存里`, queued(longA) === 0, String(queued(longA)));
+  }
+  check('poisoned 之后跑三轮：丢弃计数涨 3', pgStats().telemetryDropped - d2 === 3, String(pgStats().telemetryDropped - d2));
 }
 
 // ---------------- 读路径不查库（不变量 9）：一轮里除写队列的落库外不发查询 ----------------
@@ -839,6 +1099,27 @@ async function usageMatches(label: string): Promise<void> {
   check('写库失败：这批用量留在累加器里', pendingCalls === 1, String(pendingCalls));
   await usageDaily.flushUsageDaily();
   await usageMatches('写库失败之后再写');
+  // 库报的错（drizzle 包了一层，SQLSTATE 在 cause 里）：日志打出 SQLSTATE，不打错误原文
+  script.push({ content: '库报错时的一条洞察' });
+  await completeText('s', 'u', { purpose: 'insight' });
+  await su('ALTER TABLE usage_daily ADD CONSTRAINT usage_selftest_reject CHECK (calls < 0) NOT VALID');
+  const warns: string[] = [];
+  const warn0 = console.warn;
+  console.warn = (...a: unknown[]) => void warns.push(a.map(String).join(' '));
+  try {
+    await usageDaily.flushUsageDaily();
+  } finally {
+    console.warn = warn0;
+    await su('ALTER TABLE usage_daily DROP CONSTRAINT usage_selftest_reject');
+  }
+  const line = warns.find((w) => w.startsWith('[usage]')) ?? '';
+  check(
+    'usage_daily 写失败：日志打出库报的 SQLSTATE（沿 cause 链取），不打错误原文',
+    line.includes('（23514）') && !line.includes('usage_selftest_reject') && !line.includes('（Error）'),
+    json(warns),
+  );
+  await usageDaily.flushUsageDaily();
+  await usageMatches('库报错之后再写');
 }
 
 // ---------------- 重启预载：messages.turn_id 记回 WeakMap ----------------
@@ -847,7 +1128,16 @@ async function usageMatches(label: string): Promise<void> {
   const sessions = new Map<string, Session>();
   const orders = new Map<string, Order>();
   const probeVar = fs.mkdtempSync(path.join(VAR_DIR, 'probe-'));
-  const b = await openPgBackend({ db: fx.deps.db, tenantId, varDir: probeVar, sessions, orders, onConflict() {}, writable: () => true });
+  let writable = true;
+  const b = await openPgBackend({
+    db: fx.deps.db,
+    tenantId,
+    varDir: probeVar,
+    sessions,
+    orders,
+    onConflict() {},
+    writable: () => writable,
+  });
   b.install();
   const s = sessions.get('wecom:wmTracePrice');
   const [row] = await traceRows('wecom:wmTracePrice');
@@ -859,7 +1149,75 @@ async function usageMatches(label: string): Promise<void> {
       store.turnIdOf(ai) === row.id &&
       s!.messages.filter((m) => m.role === 'customer').every((m) => store.turnIdOf(m) === undefined),
   );
+  // 整批（一批里有全部会话）每个会话窗口里每条消息的关联都与库里的 turn_id 一致：只认自己会话的行，不串到别的会话
+  const dbTurns = await su<{ conversation_id: string; seq: number; turn_id: string | null; window_start_seq: number }>(
+    `select m.conversation_id, m.seq, m.turn_id, c.window_start_seq
+       from messages m join conversations c on c.tenant_id = m.tenant_id and c.id = m.conversation_id
+      where m.tenant_id = $1 and m.seq >= c.window_start_seq order by 1, 2`,
+    [tenantId],
+  );
+  const mismatch: string[] = [];
+  let linked = 0;
+  for (const r of dbTurns) {
+    const m = sessions.get(r.conversation_id)?.messages[r.seq - r.window_start_seq];
+    const got = m ? (store.turnIdOf(m) ?? null) : 'missing';
+    if (got !== r.turn_id) mismatch.push(`${r.conversation_id}#${r.seq}: ${got} / ${r.turn_id}`);
+    if (r.turn_id) linked += 1;
+  }
+  check(
+    '重启预载：每个会话窗口里每条消息的 turn_id 都与库里一致（多个会话、几十条关联）',
+    !mismatch.length && linked >= 20 && new Set(dbTurns.filter((r) => r.turn_id).map((r) => r.conversation_id)).size >= 10,
+    `${mismatch.slice(0, 5).join('；')} linked=${linked}`,
+  );
+
+  // writeUsage 主动不写时分得出原因（UsageWriteError.code）；这几次都不写库
+  const delta = {
+    day: todayIso(),
+    model: 'glm-5.3-flashx',
+    purpose: 'chat' as const,
+    calls: 1,
+    promptTokens: 1,
+    completionTokens: 1,
+    cachedTokens: 0,
+    reasoningTokens: 0,
+    costMilliCny: 1,
+  };
+  const codeOf = (be: typeof b): Promise<unknown> =>
+    be.writeUsage([delta]).then(
+      () => 'written',
+      (e: unknown) => (e as { code?: unknown }).code,
+    );
+  writable = false;
+  const held = await codeOf(b);
+  writable = true;
+  // 另一写者：本进程这边先给 wmTraceClean 落一条，探针手里的那份就落后了，它再落库就撞上
+  const cid = 'wecom:wmTraceClean';
+  const live = store.getSession(cid)!;
+  live.messages.push({ role: 'customer', content: '还在吗', at: Date.now() });
+  store.saveSession(live);
+  await store.flushSession(cid);
+  const stale = sessions.get(cid)!;
+  stale.messages.push({ role: 'customer', content: '探针这边的一句', at: Date.now() });
+  b.schedule(stale);
+  await b.flush(cid).catch(() => undefined);
+  const conflicted = await codeOf(b);
   b.close();
+  const b2 = await openPgBackend({
+    db: fx.deps.db,
+    tenantId,
+    varDir: probeVar,
+    sessions: new Map(),
+    orders: new Map(),
+    onConflict() {},
+    writable: () => true,
+  });
+  b2.close();
+  const closedCode = await codeOf(b2);
+  check(
+    'writeUsage 主动不写分得出原因：锁不在本进程、已冲突、已停机',
+    held === 'held_by_other' && conflicted === 'conflict' && closedCode === 'closed',
+    json([held, conflicted, closedCode]),
+  );
 }
 
 // ---------------- 停机的 drain 段写一次用量 ----------------
@@ -881,6 +1239,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `TRACE SELFTEST PASS: ${pass} 项断言全通（按句对比 / 失败分类 / 价格护栏删句的 trace 与 price 事件 / 没改文本不记 / 确定性路径 / 出错的轮次 / demo 类不入库 / 存档点 / 读路径不查库 / 轮次用量 / usage_daily 合计、重复写、写失败、drain / 预载认回 turn_id / 仓储读法）`,
+  `TRACE SELFTEST PASS: ${pass} 项断言全通（按句对比 / 净差 / 失败分类 / 价格护栏删句的 trace 与 price 事件 / 没改文本不记 / 连环改写 / 确定性路径 / 企微非文本消息 / 出错的轮次 / demo 类不入库 / 存档点 / poisoned 的遥测 / 读路径不查库 / 轮次用量 / usage_daily 合计、重复写、写失败与原因码、drain / 预载认回 turn_id / 仓储读法）`,
 );
 process.exit(0);
