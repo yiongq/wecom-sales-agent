@@ -409,7 +409,12 @@ const YUNNAN = 'r-yunnan-mid';
     );
     check(
       '仓储：改写对照按会话取，别的会话、不是 uuid 的都取不到',
-      json(r.diff?.map((x) => [x.guard, x.removed])) === json([['price', [dropped]]]) && r.otherDiff === null && r.badId === null,
+      json(r.diff?.events.map((x) => [x.guard, x.removed])) === json([['price', [dropped]]]) && r.otherDiff === null && r.badId === null,
+    );
+    check(
+      '仓储：改写对照的净差（只有一个事件时就是它）',
+      json(r.diff?.removed) === json([dropped]) && r.diff?.added.length === 0,
+      json(r.diff),
     );
     check('仓储：trace 原文整行、别的会话取不到', r.trace?.draft === raw && r.trace.llm.length === 1 && r.otherTrace === null);
     check('仓储：消息上的改写句数', json([...r.totals]) === json([[row.id, { removed: 1, added: 0 }]]), json([...r.totals]));

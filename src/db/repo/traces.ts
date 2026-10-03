@@ -1,5 +1,6 @@
 // 逐轮 trace 与护栏事件（02 spec「逐轮 trace、护栏事件与用量」）：只追加，在落库第 6 步的存档点里写。
-// 后台读接口（第 13 步挂上）用的四个读法也在这里：每轮的步骤摘要、护栏改写对照、trace 原文、消息上的改写句数
+// 后台读接口（第 13 步挂上）用的四个读法也在这里：每轮的步骤摘要、护栏改写对照、trace 原文、消息上的改写句数。
+// 改写对照与改写句数给 J 页的都是相对模型原稿的净差（netGuardDiff）：逐事件的 removed / added 不能直接相加
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { guardEvents, turnTraces } from '../schema.js';
@@ -85,10 +86,41 @@ async function turnOf(tx: Tx, conversationId: string, turnId: string): Promise<b
   return rows.length > 0;
 }
 
-/** 护栏改写对照（GET /conversations/:id/turns/:turnId/diff）：这一轮的护栏事件按 ord 排；这一轮不在这个会话名下时为 null */
-export async function readTurnDiff(tx: Tx, conversationId: string, turnId: string): Promise<GuardEventRow[] | null> {
+/**
+ * 一轮的护栏事件按 ord 串起来、相对模型原稿的净差：后面的事件删掉的、本轮前面某个事件补上的句子互相抵消（删了又补回的同样抵消）。
+ * 逐事件的 removed / added 不能直接相加：同一句先被一道护栏改、再被下一道改时（去掉站外链接之后整句换成兜底），
+ * 中间那句会被算成「删去」，句数也多算一遍。同一句出现几次按几次算；删去与补上各按第一次出现的顺序
+ */
+export function netGuardDiff(events: readonly { removed: readonly string[]; added: readonly string[] }[]): {
+  removed: string[];
+  added: string[];
+} {
+  const removed: string[] = [];
+  const added: string[] = [];
+  const take = (list: string[], s: string): boolean => {
+    const i = list.indexOf(s);
+    if (i < 0) return false;
+    list.splice(i, 1);
+    return true;
+  };
+  for (const e of events) {
+    for (const s of e.removed) if (!take(added, s)) removed.push(s);
+    for (const s of e.added) if (!take(removed, s)) added.push(s);
+  }
+  return { removed, added };
+}
+
+/** 护栏改写对照：removed / added 是相对模型原稿的净差（J 页「删去 / 发出」对照读它），events 是逐事件的原样（按 ord） */
+export interface TurnDiff {
+  removed: string[];
+  added: string[];
+  events: GuardEventRow[];
+}
+
+/** 护栏改写对照（GET /conversations/:id/turns/:turnId/diff）：这一轮的护栏事件按 ord 排与它们的净差；这一轮不在这个会话名下时为 null */
+export async function readTurnDiff(tx: Tx, conversationId: string, turnId: string): Promise<TurnDiff | null> {
   if (!(await turnOf(tx, conversationId, turnId))) return null;
-  return tx
+  const events = await tx
     .select({
       turnId: guardEvents.turnId,
       ord: guardEvents.ord,
@@ -100,6 +132,7 @@ export async function readTurnDiff(tx: Tx, conversationId: string, turnId: strin
     .from(guardEvents)
     .where(eq(guardEvents.turnId, turnId))
     .orderBy(asc(guardEvents.ord));
+  return { ...netGuardDiff(events), events };
 }
 
 /** trace 原文（GET /conversations/:id/turns/:turnId，只给所有者、管理员）：整行；这一轮不在这个会话名下时为 null */
@@ -128,20 +161,28 @@ export async function readTurnTrace(tx: Tx, conversationId: string, turnId: stri
   return r ?? null;
 }
 
-/** J 页消息上的「AI原稿里删了N句」（MessageView.guarded）：这些轮次的护栏事件里删去与补上的句数之和；没有护栏事件的轮次不在结果里 */
+/**
+ * J 页消息上的「AI原稿里删了N句」（MessageView.guarded）：这些轮次相对模型原稿的净差（netGuardDiff）里删去与补上的句数，
+ * 不是逐事件的句数之和。没有护栏事件、或净差为空（删了又补回）的轮次不在结果里
+ */
 export async function readGuardTotals(tx: Tx, turnIds: readonly string[]): Promise<Map<string, { removed: number; added: number }>> {
   const ids = turnIds.filter((id) => UUID_RE.test(id));
   const out = new Map<string, { removed: number; added: number }>();
   if (!ids.length) return out;
   const rows = await tx
-    .select({
-      turnId: guardEvents.turnId,
-      removed: sql<number>`sum(json_array_length(${guardEvents.removed}))::int`,
-      added: sql<number>`sum(json_array_length(${guardEvents.added}))::int`,
-    })
+    .select({ turnId: guardEvents.turnId, removed: guardEvents.removed, added: guardEvents.added })
     .from(guardEvents)
     .where(sql`${guardEvents.turnId} = any(${sql.param([...ids])}::uuid[])`)
-    .groupBy(guardEvents.turnId);
-  for (const r of rows) out.set(r.turnId, { removed: Number(r.removed), added: Number(r.added) });
+    .orderBy(asc(guardEvents.turnId), asc(guardEvents.ord));
+  const byTurn = new Map<string, { removed: string[]; added: string[] }[]>();
+  for (const r of rows) {
+    const list = byTurn.get(r.turnId);
+    if (list) list.push(r);
+    else byTurn.set(r.turnId, [r]);
+  }
+  for (const [turnId, events] of byTurn) {
+    const net = netGuardDiff(events);
+    if (net.removed.length || net.added.length) out.set(turnId, { removed: net.removed.length, added: net.added.length });
+  }
   return out;
 }
