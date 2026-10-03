@@ -40,6 +40,7 @@ import { promptHashes } from './config/hashes.js';
 import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
 import { shortIdOf, stripAdvisorPrefix, withAdvisorPrefix } from './shared/conversation.js';
+import { convLabel } from './log.js';
 import { followupOptOutOf } from './jobs/optout.js';
 import { cancelHandoffNotifyOps } from './jobs/notify.js';
 import {
@@ -192,7 +193,7 @@ function dejargon(text: string, sessionId: string): string {
     return pre + zh;
   });
   if (hit.length) {
-    console.warn(`[engine] 话术夹带英文已替换（会话 ${sessionId}）: ${hit.join(', ')}`);
+    console.warn(`[engine] 话术夹带英文已替换（会话 ${convLabel(sessionId)}）: ${hit.join(', ')}`);
   }
   const internal: string[] = [];
   for (const [re, to] of INTERNAL_TERMS) {
@@ -202,7 +203,7 @@ function dejargon(text: string, sessionId: string): string {
     });
   }
   if (internal.length) {
-    console.warn(`[engine] 话术夹带内部用语已替换（会话 ${sessionId}）: ${internal.join(', ')}`);
+    console.warn(`[engine] 话术夹带内部用语已替换（会话 ${convLabel(sessionId)}）: ${internal.join(', ')}`);
   }
   // oxlint-disable-next-line no-control-regex -- 链接先被换成 \u0000序号\u0000 占位，英文替换碰不到网址；正文里不会有这个字符
   return masked.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => links[Number(i)]);
@@ -428,7 +429,7 @@ function resendPayReply(session: Session, text: string): string | undefined {
   if (!o) return undefined;
   // 得是在说付款：点名了支付/付款/订单，或只说「链接」「卡片」而最近发出去的站内链接就是支付链接
   if (!/支付|付款|付钱|交钱|收银|订单/.test(text) && !(/链接|卡片/.test(text) && lastSiteLinkIsPay(session))) return undefined;
-  console.warn(`[engine] 客户要重发支付链接，引擎直接重发待付款订单 ${o.id}（会话 ${session.id}）：${text}`);
+  console.warn(`[engine] 客户要重发支付链接，引擎直接重发待付款订单 ${o.id}（会话 ${convLabel(session.id)}）：${text}`);
   return `好的，支付链接给您重新发一次：\n/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
 }
 /** 最近一条带站内链接的回复里，最后那条是支付链接（不是方案书） */
@@ -1597,7 +1598,7 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
     // 模型真拿到了链接却一个字没提（「已为您锁定名额～」），链接照样补在末尾
     if (!holes() && insertAt < 0 && !fromCalls.length) continue;
     console.warn(
-      `[engine] ⚠️ 回复承诺了${kind === 'pay' ? '支付' : '方案书'}链接但正文无有效链接，已修补（会话 ${session.id}）：${visible.slice(0, 60)}`,
+      `[engine] ⚠️ 回复承诺了${kind === 'pay' ? '支付' : '方案书'}链接但正文无有效链接，已修补（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`,
     );
 
     let links = fromCalls;
@@ -1606,7 +1607,7 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
       // 说的是另一张单：待付款的这张是客户本人的，补进去就成了「闺蜜那单的支付链接」（C06）。
       // 删掉承诺和「订好啦」这类没发生的事，问合成一单还是请顾问单独下；已转人工就只删不问
       if (pending && talksOtherOrder(text, visible)) {
-        console.warn(`[engine] 回复在说另一张单，不拿本人订单补支付链接（会话 ${session.id}）：${visible.slice(0, 60)}`);
+        console.warn(`[engine] 回复在说另一张单，不拿本人订单补支付链接（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
         const rest = splitSentences(dropLinkPromise(out, kind, hole))
           .filter((s) => !ORDER_DONE_CLAIM.test(s))
           .join('')
@@ -3230,8 +3231,8 @@ function groundToolArgs(
             `「先按 ${n} 位报的；如果是 ${n} 位大人再带小朋友，告诉我孩子几岁，我按实际人数重算」。只顺带说这一句，不要另起一轮追问。`;
     }
   }
-  if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${session.id}）：${fixed.join('；')}`);
-  if (error) console.warn(`[engine] ${name} 未执行（会话 ${session.id}）：${error.slice(0, 60)}`);
+  if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${convLabel(session.id)}）：${fixed.join('；')}`);
+  if (error) console.warn(`[engine] ${name} 未执行（会话 ${convLabel(session.id)}）：${error.slice(0, 60)}`);
   return { args: out, notes, error };
 }
 
@@ -3622,7 +3623,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 客户没坚持库外目的地就转人工：驳回，让模型接着答（见 unwarrantedHandoff）
     if (name === 'handoff_to_human' && unwarrantedHandoff(session, text, String(modelArgs.reason ?? ''))) {
       handoffDeclined = true;
-      console.warn(`[engine] 驳回转人工：客户没坚持原目的地（会话 ${session.id}）：${String(modelArgs.reason ?? '').slice(0, 60)}`);
+      console.warn(
+        `[engine] 驳回转人工：客户没坚持原目的地（会话 ${convLabel(session.id)}）：${String(modelArgs.reason ?? '').slice(0, 60)}`,
+      );
       return Promise.resolve(JSON.stringify({ error: HANDOFF_DECLINED }));
     }
     const call: ToolCall = { name, args };
@@ -3784,7 +3787,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 此前安全网只看这一句，照 3 人的报价建了单，把客户本人那张 2 人的待付款单作废了
   const friendsOwn = wantsOrder ? otherPartyPending(session, session.lastQuote!.routeId, session.lastQuote!.travelers) : undefined;
   if (friendsOwn) {
-    console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${session.id}）：${text}`);
+    console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${convLabel(session.id)}）：${text}`);
     const rest = splitSentences(visible)
       .filter((s) => !ORDER_DONE_CLAIM.test(s))
       .join('')
@@ -3932,7 +3935,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   visible = neutralizeStandardDays(visible, session, calls);
   // 承诺改行程：系统真的做不到，转人工是对的（真人顾问能重排）
   if (CUSTOM_PROMISE.test(visible)) {
-    console.error(`[engine] ⚠️ 拦截空头承诺·承诺重排行程（会话 ${session.id}）：${visible.slice(0, 80)}`);
+    console.error(`[engine] ⚠️ 拦截空头承诺·承诺重排行程（会话 ${convLabel(session.id)}）：${visible.slice(0, 80)}`);
     // 只摘掉许下空头承诺的那几句，其余照常发给客户。客户常在同一条消息里问两件事
     // （「能改成 5 天吗」+「能保证看到极光吗」），整条替换会把第二个问题的回答一起吞掉，
     // 客户看到的是答非所问。转人工仍然立刻执行——系统确实改不了行程，这条不能松。
@@ -3972,14 +3975,14 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (handoffDeclined || unwarrantedHandoff(session, text, visible)) {
       const kept = dropTransferClaims(visible);
       if (kept !== visible)
-        console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${session.id}）：${visible.slice(0, 60)}`);
+        console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
       visible = kept || fallbackReply(session.stage);
       noteGuard('handoff_claims', beforeClaims, visible, 'drop_sentence');
     } else if (!isHandoffIntent(text) && !WANTS_PERSON.test(text) && !DEMANDS_EXCEPTION.test(text)) {
       // 客户没要找人，只是问了件要顾问确认的事（专票、资质…），模型顺口说了「我帮您转接」。
       // 真转过去 AI 就此沉默，客户接着问资金、问电话都没人回（guard-13 实测）——演示当场卡住。
       // 所以摘掉转接的话、改成「记下了，请顾问确认」，后台记一条待跟进，AI 照常接着聊。
-      console.warn(`[engine] 回复说了转接但客户没要找人，改为记下待顾问确认（会话 ${session.id}）：${visible.slice(0, 60)}`);
+      console.warn(`[engine] 回复说了转接但客户没要找人，改为记下待顾问确认（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
       const kept = dropTransferClaims(visible);
       visible = /顾问[^。！？\n]{0,12}(?:确认|核实|跟您|联系)/.test(kept)
         ? kept
@@ -3991,7 +3994,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
         at: Date.now(),
       });
     } else {
-      console.warn(`[engine] 回复说了转接却没调 handoff_to_human，按转人工处理（会话 ${session.id}）：${visible.slice(0, 60)}`);
+      console.warn(`[engine] 回复说了转接却没调 handoff_to_human，按转人工处理（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
       const note = departNoteForHandoff(session);
       enterHandoff(session, {
         kind: 'claimed',
@@ -4019,7 +4022,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 注入劫持安全网：输入像注入，且回复已经不在聊旅行了（没有任何业务词）或夹带了被劫持的
   // 输出，说明模型被带跑了——直接换成顾问口吻的拒绝。模型干净地拒绝时两条都不命中，不受影响。
   if (visible && INJECTION_INTENT.test(text) && (!ON_TOPIC.test(visible) || hasHijackResidue(visible, text))) {
-    console.error(`[engine] ⚠️ 拦截注入劫持（会话 ${session.id}）：输入=${text.slice(0, 60)} 输出=${visible.slice(0, 60)}`);
+    console.error(`[engine] ⚠️ 拦截注入劫持（会话 ${convLabel(session.id)}）：输入=${text.slice(0, 60)} 输出=${visible.slice(0, 60)}`);
     const before = visible;
     replaceVisible(INJECTION_REPLY);
     noteGuard('injection', before, visible, 'replace');
@@ -4036,7 +4039,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (dests.length) {
       const rec = await deterministicRecommend(dests[0], session);
       if (rec) {
-        console.error(`[engine] ⚠️ 拦截百科式回答（会话 ${session.id}，目的地 ${dests[0]}）：${visible.slice(0, 60)}`);
+        console.error(`[engine] ⚠️ 拦截百科式回答（会话 ${convLabel(session.id)}，目的地 ${dests[0]}）：${visible.slice(0, 60)}`);
         visible = rec;
         session.stage = deriveStage(session.stage, [{ name: 'search_routes', args: { destination: dests[0] } }]);
         session.profile.destinationInterest = dests[0];
@@ -4054,7 +4057,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 人数按客户原话认一份交给规则词守卫：还没报价时它自己认不出几位，「两位一共 3 万」没法折成每人去核「在预算内」
   const claims = dropUnbackedClaims(visible, session, calls, { travelers: travelersKnown(session, saidAll) });
   if (claims.dropped.length) {
-    console.error(`[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${session.id}）：${claims.dropped.join(' | ').slice(0, 160)}`);
+    console.error(
+      `[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${convLabel(session.id)}）：${claims.dropped.join(' | ').slice(0, 160)}`,
+    );
   }
   if (claims.text !== visible) {
     const before = visible;
@@ -4068,7 +4073,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 本轮的工具调用（含预取）一并交给护栏：产品库的价只按本会话出现过的线路放行，编一条线路配上别的线路的真价不再能过
   const unbacked = findUnbackedPriceHits(visible, session, text, calls);
   if (unbacked.length) {
-    console.error(`[engine] ⚠️ 拦截无出处的报价 ${unbacked.map((h) => h.value).join(', ')}（会话 ${session.id}）：`, visible.slice(0, 120));
+    console.error(
+      `[engine] ⚠️ 拦截无出处的报价 ${unbacked.map((h) => h.value).join(', ')}（会话 ${convLabel(session.id)}）：`,
+      visible.slice(0, 120),
+    );
     const before = visible;
     visible = rewriteUnbackedPrices(visible, unbacked, { session, text, calls, customHandoff: !!customHandoff });
     noteGuard('price', before, visible, 'drop_sentence');
@@ -4076,7 +4084,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
   if (strandedAfterDrop(beforeGuards, visible)) {
-    console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${session.id}）：${visible.slice(0, 80)}`);
+    console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${convLabel(session.id)}）：${visible.slice(0, 80)}`);
     const before = visible;
     visible = customHandoff ? '' : session.handedOver ? HANDED_OVER_FALLBACK : await strandedReply({ session, text, calls, runTool });
     noteGuard('stranded', before, visible, 'replace');
@@ -4153,7 +4161,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
   saveSession(session);
   logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs, tag: turn.tag });
-  if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${session.id}）· ${turn.tag()}`);
+  if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${convLabel(session.id)}）· ${turn.tag()}`);
 
   const reply: AgentReply = { text: visible, stage: session.stage };
   if (session.handedOver) reply.handoff = true;
@@ -4191,7 +4199,7 @@ function logSlowTurn(
   if (totalMs <= Math.max(0, numEnv('LLM_SLOW_TURN_MS', 8000))) return;
   const pf = t.prefetchTimes.length ? `预取 ${t.prefetchMs}ms（${t.prefetchTimes.join(' + ')}）` : `预取 ${t.prefetchMs}ms`;
   console.warn(
-    `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${sessionId}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms · ${t.tag()}`,
+    `[engine] ⚠️ 整轮耗时 ${totalMs}ms（会话 ${convLabel(sessionId)}）：${pf} · 模型 ${t.modelMs}ms · 出口 ${totalMs - t.prefetchMs - t.modelMs}ms · ${t.tag()}`,
   );
 }
 

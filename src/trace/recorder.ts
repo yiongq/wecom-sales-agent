@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { catalogVersionKey, configMode, currentCatalog, currentSop } from '../config/source.js';
 import { onLlmCall, type CallTrace } from '../llm.js';
+import { noteTurnLog, withLogContext } from '../log.js';
 import { sentenceUnits } from '../price-guard.js';
 import { cleanText } from '../shared/text.js';
 import { getSession, isDemoClassId, linkTurn, queueTelemetry, sessionStoreMode, type TelemetryRows } from '../store.js';
@@ -113,11 +114,14 @@ const SENTENCE_MAX = 200;
  */
 export function withTurnScope<T>(fn: () => Promise<T>): Promise<T> {
   const h: Holder = { ctx: null, ended: false, stageBefore: null, tools: [], llm: [], input: '' };
+  // 日志的上下文也为这一轮另开一层：startTurn 把 conv 与 turn 记进去（R24），不改外面请求的那一层
   return turns.run(h, () =>
-    fn().then(undefined, (e: unknown) => {
-      if (h.ctx && !h.ended) finish(h, 'error', '', h.stageBefore, getSession(h.ctx.conversationId)?.stage ?? null);
-      throw e;
-    }),
+    withLogContext({}, () =>
+      fn().then(undefined, (e: unknown) => {
+        if (h.ctx && !h.ended) finish(h, 'error', '', h.stageBefore, getSession(h.ctx.conversationId)?.stage ?? null);
+        throw e;
+      }),
+    ),
   );
 }
 
@@ -159,6 +163,8 @@ export function startTurn(conversationId: string, input = ''): void {
   };
   h.stageBefore = getSession(conversationId)?.stage ?? null;
   h.input = input;
+  // 这一轮的日志带 conv（ref 或短码）与 turn（这一条 trace 的 id），租户由 log.ts 补上
+  noteTurnLog(conversationId, h.ctx.turnId);
 }
 
 /** 这一轮调模型时实际用的 SOP 版本与前缀哈希（引擎在 turnPrefix 之后调；轮内发布了新版本时以这次为准） */

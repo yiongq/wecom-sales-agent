@@ -6,6 +6,7 @@ import type { ToolDef } from './tools.js';
 import type { LlmErrorKind } from './trace/recorder.js';
 import { recordUsage, type UsagePurpose } from './usage.js';
 import { gatedFetch, gateBusy } from './llm-gate.js';
+import { convLabel } from './log.js';
 import { numEnv, todayIso } from './env.js';
 
 export interface ChatTurn {
@@ -674,7 +675,7 @@ async function realChat(opts: ChatOptions): Promise<string> {
       if (hit) {
         stats.toolReused += 1;
         trace.at(-1)?.reused.push(name);
-        console.log(`[llm] 本轮已用相同参数调过 ${name}，直接复用结果（会话 ${opts.sessionId ?? '-'}）`);
+        console.log(`[llm] 本轮已用相同参数调过 ${name}，直接复用结果（会话 ${opts.sessionId == null ? '-' : convLabel(opts.sessionId)}）`);
         return hit;
       }
       const run = opts.executeTool(name, args);
@@ -779,7 +780,7 @@ function logSlowTurn(totalMs: number, trace: CallTrace[], sessionId?: string): v
     const tools = c.tools.length ? ` → ${c.tools.join('+')} ${c.toolMs}ms${c.reused.length ? `（复用 ${c.reused.length} 次）` : ''}` : '';
     return `#${i + 1} ${c.model}${c.hedged ? '（对冲）' : ''} ${c.ms}ms${tools}`;
   });
-  console.warn(`[llm] ⚠️ 本轮工具循环耗时 ${totalMs}ms（会话 ${sessionId ?? '-'}）：${steps.join(' · ')}`);
+  console.warn(`[llm] ⚠️ 本轮工具循环耗时 ${totalMs}ms（会话 ${sessionId == null ? '-' : convLabel(sessionId)}）：${steps.join(' · ')}`);
 }
 
 async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise<string> {
