@@ -57,6 +57,18 @@ const HEADCOUNT = /^(\d{1,3})\s*[人位]?$/;
  * 取不到的部分省略，全空时为 null。不含昵称
  */
 export function needSummary(profile: NeedProfile, vocab: NeedVocabulary): string | null {
+  const { destination, segment, travelers } = needParts(profile, vocab);
+  return `${destination ?? ''}${segment ?? ''}${travelers ?? ''}` || null;
+}
+
+/**
+ * needSummary 的三段（J 页右栏的需求要素与它同源，02 第 13 步）：目的地、客群短标签、「N人」，取不到的为 null。
+ * 规则同 needSummary：只用规范化的取值，画像里的自由文本一个字也不回显
+ */
+export function needParts(
+  profile: NeedProfile,
+  vocab: NeedVocabulary,
+): { destination: string | null; segment: string | null; travelers: string | null } {
   const interest = profile.destinationInterest ?? '';
   let destination = '';
   let at = -1;
@@ -71,7 +83,7 @@ export function needSummary(profile: NeedProfile, vocab: NeedVocabulary): string
   const raw = profile.travelers;
   const n = typeof raw === 'number' ? raw : Number(HEADCOUNT.exec(raw?.trim() ?? '')?.[1] ?? NaN);
   const travelers = Number.isInteger(n) && n > 0 && n < 1000 ? `${n}人` : '';
-  return `${destination}${segment}${travelers}` || null;
+  return { destination: destination || null, segment: segment || null, travelers: travelers || null };
 }
 
 /**

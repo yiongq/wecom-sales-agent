@@ -3,13 +3,15 @@
 // 后半走 server.ts 的 app.request（子应用挂在真实位置上）：验收 5、6、9、15、16 的 HTTP 部分。
 // 用法：npx tsx src/console-api/console.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import type { SopSectionText } from '../shared/console-api.js';
+import type { ConversationCounts, ConversationDetail, ConversationRow, OrderView, SopSectionText } from '../shared/console-api.js';
+import type { ChatMessage, Session } from '../types.js';
 
 // 先设临时 VAR_DIR 再动态 import：server 会连带加载 store.ts，它在加载时就读 VAR_DIR
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
@@ -18,6 +20,9 @@ process.env.VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-console-selftes
 process.env.LLM_MOCK = '1';
 process.env.CONFIG_SOURCE = 'file';
 process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
+
+// 02 第 13 步：db 存储才有的后台接口在子进程里测（store 是进程级单例，本进程跑的是文件存储），见末尾的 dbStoreChild
+if (process.env.CONSOLE_SELFTEST_CHILD === 'db') await dbStoreChild();
 
 const { openTestDb, installSeededConfig, fakeLock, testConfigDeps } = await import('../db/testing.js');
 const { hashPassword, verifyPassword, fakeHash, __passwordTest } = await import('../auth/password.js');
@@ -2441,7 +2446,7 @@ check(
   const most = await call('GET', `/audit?limit=1&actions=${Array.from({ length: 32 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`, O);
   check('AuditQuery.actions：32 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
 
-  // AUDIT_ACTIONS 就是系统写审计的全部动作：src/ 下 writeAudit 写的 action 字面量与它逐个相同，新加一种动作要同时给它中文
+  // AUDIT_ACTIONS 就是系统写审计的全部动作：src/ 下 writeAudit、queueAudit 写的 action 字面量与它逐个相同，新加一种动作要同时给它中文
   const { AUDIT_ACTIONS, auditActionsParam } = await import('../shared/ui-labels.js');
   const srcRoot = fileURLToPath(new URL('..', import.meta.url));
   const written = new Set<string>();
@@ -2451,7 +2456,8 @@ check(
       if (d.isDirectory()) scan(p);
       else if (d.name.endsWith('.ts') && !d.name.endsWith('.selftest.ts')) {
         const text = fs.readFileSync(p, 'utf8');
-        if (!text.includes('writeAudit(')) continue;
+        // 02 第 13 步起会话类审计经 store 的 queueAudit（随会话落库，或单独一个短事务）
+        if (!text.includes('writeAudit(') && !text.includes('queueAudit(')) continue;
         for (const m of text.matchAll(/\baction:\s*'([a-z_]+\.[a-z_]+)'/g)) written.add(m[1]!);
       }
     }
@@ -2887,6 +2893,10 @@ check(
   fs.rmSync(dist, { recursive: true, force: true });
 }
 
+// ---------------- 02 第 13 步：接手状态机与后台接口（02 spec「后台接口」「接手、人工回复与交还」「通知」） ----------------
+// 这一段跑在文件存储上（selftest-env 钉住）；db 存储才有的（更早的消息、trace、写库积压）在末尾的子进程里
+await workbenchSuite();
+
 // 命名错误映射：23505（写函数都先转成命名错误，接口上走不到，这里直接看映射）
 check(
   '错误映射：23505（经 drizzle 包在 cause 里）→ 409',
@@ -2998,6 +3008,1433 @@ check('错误映射：不认识的错误 → null（按 500 处理）', __consol
     encoded.length === 0 && seen.some((r) => r.text.length >= 4096),
     encoded.map((r) => `${r.status} ${r.headers.get('content-encoding')} ${r.headers.get('cache-control')}`).join(','),
   );
+}
+
+/**
+ * 02 第 13 步的后台接口（文件存储）：权限矩阵逐格（含 403 与 409 的分界）、路由枚举、接手状态机经 HTTP 的各条路、
+ * 事件流、计数与排序、viewer 打码、匿名旧接口、订单与快捷回复、/status。db 存储才有的部分在 runDbStoreChild()
+ */
+async function workbenchSuite(): Promise<void> {
+  const store = await import('../store.js');
+  const tk = await import('../handoff/takeover.js');
+  const { enterHandoff } = await import('../handoff/record.js');
+  const { subscribe } = await import('../adapters/simulator.js');
+  const { consoleApi } = await import('./app.js');
+  const { __eventsTest, eventTiming } = await import('./events.js');
+  const { maskNumbers } = await import('./mask.js');
+  const { conversationState, shortIdOf } = await import('../shared/conversation.js');
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const pack = cfg.currentTenant().pack;
+
+  // ---- 成员：主管、两个坐席；所有者、管理员、只读用前面登录好的 ----
+  const SUP = { email: 'sup13@example.com', password: 'sup13-password-1', name: '主管丁' };
+  const VW = { email: 'vw13@example.com', password: 'vw13-password-1', name: '只读戊' };
+  const AG1 = { email: 'ag13a@example.com', password: 'ag13a-password-1', name: '小林' };
+  const AG2 = { email: 'ag13b@example.com', password: 'ag13b-password-1', name: '小王' };
+  for (const [u, role] of [
+    [SUP, 'supervisor'],
+    [AG1, 'agent'],
+    [AG2, 'agent'],
+    [VW, 'viewer'],
+  ] as const) {
+    const r = await asPlatform(() =>
+      accounts.createUser(t.db, { tenantSlug: 'demo', email: u.email, name: u.name, role, password: pw(u.password) }),
+    );
+    check(`第 13 步准备：建一个 ${role}（${u.name}）`, r.code === 0, r.message);
+  }
+  const sup = await httpLogin(SUP.email, SUP.password, '203.0.113.131');
+  const ag1 = await httpLogin(AG1.email, AG1.password, '203.0.113.132');
+  const ag2 = await httpLogin(AG2.email, AG2.password, '203.0.113.133');
+  // 前面的用例停用过 READER，只读成员另建一个
+  const vw = await httpLogin(VW.email, VW.password, '203.0.113.134');
+  const ids = { ag1: String(ag1.body.userId), ag2: String(ag2.body.userId), sup: String(sup.body.userId) };
+  const ROLES = { owner, admin, supervisor: sup, agent: ag1, viewer: vw } as const;
+  type RoleName = keyof typeof ROLES;
+  const enc = encodeURIComponent;
+
+  /** 一个可列的会话（id 不是 sim-）：渠道默认是网页模拟器，推送经 subscribe 收得到；企微渠道的只用来测发送窗口 */
+  const mk = (id: string, o: { channel?: string; customer?: string; stage?: Session['stage'] } = {}) => {
+    const s = store.getOrCreateSession(id, o.channel ?? 'simulator');
+    s.messages.push({ role: 'customer', content: o.customer ?? '你好，想去云南', at: Date.now() });
+    if (o.stage) s.stage = o.stage;
+    store.saveSession(s);
+    return s;
+  };
+  const toHuman = (id: string, kind: 'request' | 'refund' = 'request') => {
+    const s = store.getSession(id)!;
+    enterHandoff(s, {
+      kind,
+      at: Date.now(),
+      reason: kind === 'request' ? '客户要找顾问' : '客户要退款或改订单',
+      quote: s.messages.at(-1)?.content,
+    });
+    store.saveSession(s);
+    return s;
+  };
+  const pushes = new Map<string, string[]>();
+  const capture = (id: string) => {
+    const list: string[] = [];
+    pushes.set(id, list);
+    subscribe(id, (text) => list.push(text));
+    return list;
+  };
+
+  // ---- 路由枚举：consoleApi 注册的每个路由都在 01 的清单或本步的矩阵里，矩阵里的每一行都注册了 ----
+  const ROUTES_01 = [
+    'POST /auth/login',
+    'POST /auth/logout',
+    'GET /me',
+    'GET /pack',
+    'GET /status',
+    'GET /sop',
+    'GET /sop/versions',
+    'GET /sop/versions/:id',
+    'PUT /sop/draft',
+    'POST /sop/draft/check',
+    'POST /sop/draft/publish',
+    'POST /sop/draft/discard',
+    'POST /sop/versions/:id/rollback',
+    'GET /catalog/:kind',
+    'GET /catalog/:kind/:code',
+    'POST /catalog/:kind',
+    'PATCH /catalog/:kind/:code',
+    'POST /catalog/:kind/import-csv',
+    'POST /catalog/:kind/:code/activate',
+    'GET /conversations',
+    'GET /conversations/counts',
+    'GET /audit',
+  ];
+  /** 02 新接口的权限表（spec「后台接口」权限）：哪些角色过得了权限这一层；匿名一律 401 */
+  const ALL: RoleName[] = ['owner', 'admin', 'supervisor', 'agent', 'viewer'];
+  const HANDLE: RoleName[] = ['owner', 'admin', 'supervisor', 'agent'];
+  const MONEY: RoleName[] = ['owner', 'admin'];
+  const REPLIES: RoleName[] = ['owner', 'admin', 'supervisor'];
+  const S0 = 'wecom:wb13-matrix';
+  mk(S0);
+  const MATRIX: { route: string; url: string; json?: unknown; allowed: RoleName[]; sse?: true }[] = [
+    { route: 'GET /conversations/:id', url: `/conversations/${enc(S0)}`, allowed: ALL },
+    { route: 'GET /conversations/:id/messages', url: `/conversations/${enc(S0)}/messages?beforeSeq=10`, allowed: ALL },
+    { route: 'GET /conversations/:id/turns', url: `/conversations/${enc(S0)}/turns`, allowed: ALL },
+    {
+      route: 'GET /conversations/:id/turns/:turnId/diff',
+      url: `/conversations/${enc(S0)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/diff`,
+      allowed: ALL,
+    },
+    {
+      route: 'GET /conversations/:id/turns/:turnId',
+      url: `/conversations/${enc(S0)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`,
+      allowed: MONEY,
+    },
+    // 写接口拿不存在的会话、订单与不合规的请求体测：过了权限这一层的回 404 / 400，不动任何东西
+    { route: 'POST /conversations/:id/takeover', url: '/conversations/wecom%3AwmNOSUCH13/takeover', json: {}, allowed: HANDLE },
+    { route: 'POST /conversations/:id/release', url: '/conversations/wecom%3AwmNOSUCH13/release', allowed: HANDLE },
+    {
+      route: 'POST /conversations/:id/reply',
+      url: '/conversations/wecom%3AwmNOSUCH13/reply',
+      json: { text: '矩阵', clientId: '0b7c5e1a-1d2e-4f30-8a41-000000000002' },
+      allowed: HANDLE,
+    },
+    { route: 'GET /orders', url: '/orders', allowed: MONEY },
+    { route: 'GET /orders', url: '/orders?status=paid', allowed: MONEY },
+    { route: 'GET /orders', url: '/orders?status=pending_payment', allowed: ALL },
+    { route: 'GET /orders/summary', url: '/orders/summary', allowed: MONEY },
+    { route: 'POST /orders/:id/confirm', url: '/orders/ord_nosuch13/confirm', allowed: HANDLE },
+    { route: 'POST /orders/:id/mark-paid', url: '/orders/ord_nosuch13/mark-paid', allowed: HANDLE },
+    { route: 'POST /orders/:id/cancel', url: '/orders/ord_nosuch13/cancel', json: { reason: '矩阵' }, allowed: HANDLE },
+    { route: 'GET /quick-replies', url: '/quick-replies', allowed: ALL },
+    { route: 'POST /quick-replies', url: '/quick-replies', json: {}, allowed: REPLIES },
+    { route: 'PATCH /quick-replies/:id', url: '/quick-replies/nosuch', json: { title: '矩阵' }, allowed: REPLIES },
+    { route: 'POST /quick-replies/:id/archive', url: '/quick-replies/nosuch/archive', allowed: REPLIES },
+    { route: 'POST /quick-replies/:id/move', url: '/quick-replies/nosuch/move', json: { direction: 'up' }, allowed: REPLIES },
+    { route: 'GET /metrics', url: '/metrics', allowed: MONEY },
+    { route: 'GET /events', url: '/events', allowed: ALL, sse: true },
+  ];
+  const registered = new Set(
+    consoleApi.routes
+      .filter((r) => r.method !== 'ALL' && !r.path.includes('*'))
+      .map((r) => `${r.method} ${r.path.replace(/^\/api\/console/, '')}`),
+  );
+  const known = new Set([...ROUTES_01, ...MATRIX.map((m) => m.route)]);
+  check(
+    '路由枚举：consoleApi 注册的每个路由都在 01 的清单或第 13 步的权限矩阵里（漏挂权限的新路由在这里现形）',
+    [...registered].every((r) => known.has(r)),
+    [...registered].filter((r) => !known.has(r)).join(','),
+  );
+  check(
+    '路由枚举：矩阵与 01 清单里的每个路由都注册了',
+    [...known].every((r) => registered.has(r)),
+    [...known].filter((r) => !registered.has(r)).join(','),
+  );
+  /** 一个会话、一种角色的请求：SSE 只看状态码，连上就断开 */
+  const hit = async (m: (typeof MATRIX)[number], who: Who | null): Promise<Res> => {
+    if (!m.sse)
+      return call(m.route.split(' ')[0]!, m.url, {
+        ...(who ? { as: who } : {}),
+        ...(m.json !== undefined ? { json: m.json } : {}),
+        ip: '203.0.113.140',
+      });
+    const headers: Record<string, string> = { 'x-forwarded-for': '203.0.113.141' };
+    if (who) headers.cookie = `${session.SESSION_COOKIE}=${who.token}`;
+    const res = await app.request(`/api/console${m.url}`, { headers });
+    await res.body?.cancel();
+    return { status: res.status, body: {}, text: '', headers: res.headers };
+  };
+  const cells: string[] = [];
+  for (const m of MATRIX) {
+    for (const role of ALL) {
+      const r = await hit(m, ROLES[role]);
+      const want = m.allowed.includes(role);
+      // 过了权限：不是 401、403（落到 404、400、409、503 store_file_mode 都算过了这一层）；没过：403 forbidden
+      const ok = want
+        ? r.status !== 401 && r.status !== 403 && (r.status < 500 || r.body.error === 'store_file_mode')
+        : r.status === 403 && r.body.error === 'forbidden';
+      if (!ok) cells.push(`${m.url} ${role} → ${r.status} ${r.text.slice(0, 80)}`);
+    }
+    const anon = await hit(m, null);
+    if (anon.status !== 401) cells.push(`${m.url} 匿名（demo）→ ${anon.status}`);
+  }
+  check(
+    '权限矩阵：第 13 步的每个新接口逐个角色过一遍（过了权限的不是 401/403，没过的是 403 forbidden，匿名 401）',
+    cells.length === 0,
+    cells.join(' | '),
+  );
+  __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+  try {
+    const prodAnon: string[] = [];
+    for (const m of MATRIX) {
+      const r = await hit(m, null);
+      if (r.status !== 401) prodAnon.push(`${m.url} → ${r.status}`);
+    }
+    check('权限矩阵：prod 匿名一律 401（含 /events）', prodAnon.length === 0, prodAnon.join(','));
+  } finally {
+    __profileTest.reset();
+  }
+
+  // ---- 枚举 server 与 consoleApi 的全部路由：prod 下白名单以外的匿名请求一律 401 或 404（验收 9、不变量 43） ----
+  {
+    const savedPass = process.env.ADMIN_PASS;
+    process.env.ADMIN_PASS = 'route-enum-pass'; // prod 没配 ADMIN_PASS 起不来；配了，管理接口匿名才是 401 而不是 503
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    try {
+      // 公开路由（R22 与 00 的白名单）：凭 id 取到的那一条、方案书、支付页、企微回调、健康检查、首页跳转、后台页面与登录
+      const PUBLIC = [
+        /^GET \/$/,
+        /^GET \/healthz$/,
+        /^GET \/api\/orders\/:id$/,
+        /^GET \/pay\/:orderId$/,
+        /^GET \/api\/proposal\/:routeId$/,
+        /^GET \/proposal\//,
+        /^(GET|POST) \/wecom\/callback$/,
+        /^GET \/kf-qr\.png$/,
+        /^GET \/console/,
+        /^POST \/api\/console\/auth\/login$/,
+      ];
+      const fill = (p: string): string =>
+        p
+          .replace(/:rest\{[^}]*\}/, '2')
+          .replace(/:kind/, 'route')
+          .replace(/:turnId/, '0b7c5e1a-1d2e-4f30-8a41-000000000001')
+          .replace(/:id|:sessionId/g, 'wecom%3AwmENUM13')
+          .replace(/:[A-Za-z]+/g, 'x13');
+      const seenRoutes = new Set<string>();
+      const leaks: string[] = [];
+      for (const r of app.routes) {
+        if (r.method === 'ALL' || r.path.includes('*')) continue;
+        const key = `${r.method} ${r.path}`;
+        if (seenRoutes.has(key) || PUBLIC.some((re) => re.test(key))) continue;
+        seenRoutes.add(key);
+        const body = r.method === 'GET' || r.method === 'HEAD' ? undefined : '{}';
+        const res = await app.request(fill(r.path), {
+          method: r.method,
+          headers: { 'x-forwarded-for': '198.51.100.213', ...(body ? { 'content-type': 'application/json', 'content-length': '2' } : {}) },
+          body,
+        });
+        await res.body?.cancel();
+        if (res.status !== 401 && res.status !== 404) leaks.push(`${key} → ${res.status}`);
+      }
+      check(
+        '路由枚举：server 与 consoleApi 注册的、白名单以外的路由，prod 下匿名一律 401 或 404',
+        leaks.length === 0 && seenRoutes.size >= 50,
+        `${seenRoutes.size} 个；${leaks.join(' | ')}`,
+      );
+    } finally {
+      __profileTest.reset();
+      if (savedPass === undefined) delete process.env.ADMIN_PASS;
+      else process.env.ADMIN_PASS = savedPass;
+    }
+  }
+
+  // ---- 接手：成为接手人、别人接手中 409、坐席带 force 403、主管改派、代次 ----
+  {
+    const S1 = 'wecom:wb13-take';
+    mk(S1);
+    const gen0 = tk.takeoverGen(S1);
+    const t1 = keep(await call('POST', `/conversations/${enc(S1)}/takeover`, { as: ag1, json: {} }));
+    const s1 = store.getSession(S1)!;
+    check(
+      '接手：没人接手的 AI 会话 → 200，以 agent 进入转人工、接手人是他（真实成员 id）、状态 assigned、代次加 1',
+      t1.status === 200 &&
+        s1.handedOver &&
+        s1.handoff?.kind === 'agent' &&
+        s1.handoff.reason === tk.MEMBER_TAKEOVER_REASON &&
+        s1.assignee?.userId === ids.ag1 &&
+        s1.assignee.name === AG1.name &&
+        conversationState(s1, pack) === 'assigned' &&
+        tk.takeoverGen(S1) === gen0 + 1,
+      `${t1.text} ${JSON.stringify(s1.assignee)}`,
+    );
+    const again = await call('POST', `/conversations/${enc(S1)}/takeover`, { as: ag1, json: {} });
+    check('接手：已经是自己 → 200，什么都不改（代次不加）', again.status === 200 && tk.takeoverGen(S1) === gen0 + 1);
+    const before = JSON.stringify(store.getSession(S1));
+    const other = keep(await call('POST', `/conversations/${enc(S1)}/takeover`, { as: ag2, json: {} }));
+    check(
+      '接手：别人接手中，坐席不带 force → 409 assigned_to_other，带上接手人的名字，会话不变',
+      other.status === 409 &&
+        other.body.error === 'assigned_to_other' &&
+        other.body.assigneeName === AG1.name &&
+        JSON.stringify(store.getSession(S1)) === before,
+      other.text,
+    );
+    const forced = keep(await call('POST', `/conversations/${enc(S1)}/takeover`, { as: ag2, json: { force: true } }));
+    check(
+      '接手：坐席带 force 改派 → 403 forbidden（角色不够），会话不变',
+      forced.status === 403 && forced.body.error === 'forbidden' && JSON.stringify(store.getSession(S1)) === before,
+      forced.text,
+    );
+    const viewerTake = await call('POST', `/conversations/${enc(S1)}/takeover`, { as: vw, json: {} });
+    check('接手：只读成员 → 403（权限在中间件就拦下）', viewerTake.status === 403 && viewerTake.body.error === 'forbidden');
+    const supNoForce = await call('POST', `/conversations/${enc(S1)}/takeover`, { as: sup, json: {} });
+    check('接手：主管不带 force 也是 409（改派要明说）', supNoForce.status === 409 && supNoForce.body.error === 'assigned_to_other');
+    const reassign = await call('POST', `/conversations/${enc(S1)}/takeover`, { as: sup, json: { force: true } });
+    check(
+      '改派：主管带 force → 200，接手人换成主管，代次再加 1',
+      reassign.status === 200 && store.getSession(S1)!.assignee?.userId === ids.sup && tk.takeoverGen(S1) === gen0 + 2,
+      reassign.text,
+    );
+    // 交还：别人的 → 坐席 409 not_assignee；只读 403；主管交还别人的照样可以
+    const notMine = keep(await call('POST', `/conversations/${enc(S1)}/release`, { as: ag1 }));
+    check('交还：坐席交还别人接手的 → 409 not_assignee', notMine.status === 409 && notMine.body.error === 'not_assignee', notMine.text);
+    check('交还：只读 → 403', (await call('POST', `/conversations/${enc(S1)}/release`, { as: vw })).status === 403);
+    // 会话类审计：target 在文件存储下没有 ref（为空），diff 带短码；操作者是真实成员
+    await sleep(100);
+    const au = await call('GET', '/audit?actions=conversation.takeover,conversation.reassign,conversation.release', O);
+    const mine = ((au.body.items ?? []) as Body[]).filter((x) => (x.diff as Body | null)?.shortId === shortIdOf(S1));
+    check(
+      '审计：接手与改派各一行（会话与订单一类），diff 带短码、改派记原来的接手人，target 不含会话 id',
+      mine.length === 2 &&
+        mine.some((x) => x.action === 'conversation.takeover' && x.actorName === AG1.name) &&
+        mine.some((x) => x.action === 'conversation.reassign' && x.actorName === SUP.name && (x.diff as Body).from === AG1.name) &&
+        mine.every((x) => x.targetType === 'conversation' && x.targetId === null),
+      JSON.stringify(mine),
+    );
+  }
+
+  // ---- 并发接手恰一个成功（不变量 22） ----
+  {
+    const S2 = 'wecom:wb13-race';
+    mk(S2);
+    toHuman(S2);
+    const [a, b] = await Promise.all([
+      call('POST', `/conversations/${enc(S2)}/takeover`, { as: ag1, json: {} }),
+      call('POST', `/conversations/${enc(S2)}/takeover`, { as: ag2, json: {} }),
+    ]);
+    const st = [a.status, b.status].toSorted();
+    const winner = a.status === 200 ? AG1.name : AG2.name;
+    check(
+      '并发接手：两个坐席同时接手，恰一个 200、另一个 409 assigned_to_other，接手人是成功的那个',
+      st.join() === '200,409' && store.getSession(S2)!.assignee?.name === winner && [a, b].some((r) => r.body.assigneeName === winner),
+      `${a.status} ${b.status} ${JSON.stringify(store.getSession(S2)!.assignee)}`,
+    );
+    // 别人接手中回复：409、客户没收到、会话没变（不变量 23）
+    const loser = winner === AG1.name ? ag2 : ag1;
+    const got = capture(S2);
+    const snap = JSON.stringify(store.getSession(S2));
+    const r = keep(
+      await call('POST', `/conversations/${enc(S2)}/reply`, {
+        as: loser,
+        json: { text: '我来回一句', clientId: '0b7c5e1a-1d2e-4f30-8a41-000000000003' },
+      }),
+    );
+    check(
+      '人工回复：别人接手中 → 409 assigned_to_other，客户没收到，会话不变',
+      r.status === 409 && r.body.error === 'assigned_to_other' && got.length === 0 && JSON.stringify(store.getSession(S2)) === snap,
+      r.text,
+    );
+  }
+
+  // ---- 人工回复即接手、clientId 去重、交还恢复阶段（不变量 17、20、23、25） ----
+  {
+    const S3 = 'wecom:wb13-reply';
+    const s3 = mk(S3, { stage: 'quote' });
+    toHuman(S3);
+    const got = capture(S3);
+    const clientId = '0b7c5e1a-1d2e-4f30-8a41-000000000004';
+    const r1 = keep(await call('POST', `/conversations/${enc(S3)}/reply`, { as: ag2, json: { text: '您好，我是顾问小王', clientId } }));
+    const human = s3.messages.filter((m) => m.role === 'agent' && m.author === 'human');
+    check(
+      '人工回复：没人接手时回复 → 200，回复者成为接手人，消息带 author=human、操作者 id 与姓名，客户侧收到「【顾问】…」',
+      r1.status === 200 &&
+        r1.body.sent === true &&
+        r1.body.persisted === true &&
+        typeof r1.body.seq === 'number' &&
+        store.seqOf(human[0]!) === r1.body.seq &&
+        s3.assignee?.userId === ids.ag2 &&
+        human.length === 1 &&
+        human[0]!.authorId === ids.ag2 &&
+        human[0]!.authorName === AG2.name &&
+        got.join() === '【顾问】您好，我是顾问小王',
+      `${r1.text} ${JSON.stringify(human)} ${JSON.stringify(got)}`,
+    );
+    const r2 = await call('POST', `/conversations/${enc(S3)}/reply`, { as: ag2, json: { text: '您好，我是顾问小王', clientId } });
+    check(
+      '人工回复：同一个 clientId 再提交 → 返回第一次的结果，不重发、不多记一条',
+      r2.status === 200 && r2.text === r1.text && got.length === 1 && s3.messages.filter((m) => m.author === 'human').length === 1,
+      `${r2.text} ${got.length}`,
+    );
+    const r3 = await call('POST', `/conversations/${enc(S3)}/reply`, {
+      as: ag2,
+      json: { text: '第二句', clientId: '0b7c5e1a-1d2e-4f30-8a41-000000000005' },
+    });
+    check('人工回复：换一个 clientId 照常发', r3.status === 200 && got.length === 2 && got[1] === '【顾问】第二句');
+    check(
+      '人工回复：正文为空、超过 2000 字、clientId 不是 uuid → 400',
+      (await call('POST', `/conversations/${enc(S3)}/reply`, { as: ag2, json: { text: '', clientId } })).status === 400 &&
+        (await call('POST', `/conversations/${enc(S3)}/reply`, { as: ag2, json: { text: 'x'.repeat(2001), clientId } })).status === 400 &&
+        (await call('POST', `/conversations/${enc(S3)}/reply`, { as: ag2, json: { text: 'x', clientId: 'abc' } })).status === 400,
+    );
+    const rel = keep(await call('POST', `/conversations/${enc(S3)}/release`, { as: ag2 }));
+    check(
+      '交还：接手人本人 → 200，清 handedOver、handoff、assignee，阶段恢复成转人工前的 quote，记「小王把会话交还 AI」，firstHandoffAt 与 handoffCount 不清',
+      rel.status === 200 &&
+        !s3.handedOver &&
+        s3.handoff === undefined &&
+        s3.assignee === undefined &&
+        s3.stage === 'quote' &&
+        s3.messages.at(-1)?.role === 'system' &&
+        s3.messages.at(-1)?.content === `${AG2.name}把会话交还 AI` &&
+        s3.handoffCount === 1 &&
+        typeof s3.firstHandoffAt === 'number',
+      `${rel.text} ${s3.stage} ${s3.messages.at(-1)?.content}`,
+    );
+    check(
+      '交还：没在转人工中再交还 → 200，什么都不改',
+      (await call('POST', `/conversations/${enc(S3)}/release`, { as: ag2 })).status === 200 &&
+        s3.messages.at(-1)?.content === `${AG2.name}把会话交还 AI`,
+    );
+  }
+
+  // ---- 没人接手的会话，任何能处理的成员都能交还；不同意处理敏感信息的不能交还（不变量 41） ----
+  {
+    const S4 = 'wecom:wb13-consent';
+    mk(S4);
+    const s4 = toHuman(S4);
+    s4.consent = { health: 'declined' };
+    store.saveSession(s4);
+    const d = (await call('GET', `/conversations/${enc(S4)}`, { as: ag1 })).body as ConversationDetail;
+    check(
+      '详情：客户不同意 → consentDeclined 为 true，can.release 为 false',
+      d.consentDeclined === true && d.can.release === false,
+      JSON.stringify(d.can),
+    );
+    const r = keep(await call('POST', `/conversations/${enc(S4)}/release`, { as: ag1 }));
+    check(
+      '交还：客户不同意处理敏感信息 → 409 consent_declined，会话不变',
+      r.status === 409 && r.body.error === 'consent_declined' && s4.handedOver,
+      r.text,
+    );
+    s4.consent = { health: 'granted' };
+    store.saveSession(s4);
+    const ok = await call('POST', `/conversations/${enc(S4)}/release`, { as: ag1 });
+    check('交还：没人接手时坐席也能交还', ok.status === 200 && !s4.handedOver, ok.text);
+  }
+
+  // ---- 已成交客户要人工（开放问题 12 选 A 的接口部分） ----
+  {
+    const S5 = 'wecom:wb13-paid';
+    mk(S5, { stage: 'paid' });
+    toHuman(S5, 'refund');
+    const grp = await call('GET', '/conversations?group=paid_needs_human', { as: ag1 });
+    const counts = (await call('GET', '/conversations/counts', O)).body as ConversationCounts;
+    check(
+      '已成交客户要人工：状态仍是 paid（计数不进 human），?group=paid_needs_human 列出它，行里带转人工原因与时间',
+      grp.status === 200 &&
+        (grp.body.items as ConversationRow[]).some((x) => x.id === S5 && x.handoff?.kind === 'refund' && x.stage === 'paid') &&
+        conversationState(store.getSession(S5)!, pack) === 'paid' &&
+        counts.byState.paid >= 1,
+      grp.text.slice(0, 300),
+    );
+    await call('POST', `/conversations/${enc(S5)}/takeover`, { as: ag1, json: {} });
+    const after = await call('GET', '/conversations?group=paid_needs_human', { as: ag1 });
+    check(
+      '已成交客户要人工：有人接手之后从这一组消失，状态仍是 paid',
+      !(after.body.items as ConversationRow[]).some((x) => x.id === S5) && conversationState(store.getSession(S5)!, pack) === 'paid',
+    );
+    check('ConvQuery：group 只认 paid_needs_human', (await call('GET', '/conversations?group=nope', { as: ag1 })).status === 400);
+  }
+
+  // ---- 企微发送窗口：剩 0 条或窗口已过 → 409，什么都不改 ----
+  {
+    const S6 = 'wecom:wb13-window';
+    const s6 = store.getOrCreateSession(S6, 'wecom');
+    s6.messages.push({ role: 'customer', content: '在吗', at: Date.now() - 50 * 3_600_000, sentAt: Date.now() - 50 * 3_600_000 });
+    store.saveSession(s6);
+    const snap = JSON.stringify(s6);
+    const r = keep(
+      await call('POST', `/conversations/${enc(S6)}/reply`, {
+        as: ag1,
+        json: { text: '还在吗', clientId: '0b7c5e1a-1d2e-4f30-8a41-000000000006' },
+      }),
+    );
+    check(
+      '人工回复：企微窗口已过 → 409 send_window_closed，带 closesAt 与 remaining，会话不变（没接手）',
+      r.status === 409 &&
+        r.body.error === 'send_window_closed' &&
+        typeof r.body.closesAt === 'number' &&
+        r.body.remaining === 0 &&
+        JSON.stringify(s6) === snap,
+      r.text,
+    );
+    const d = (await call('GET', `/conversations/${enc(S6)}`, { as: ag1 })).body as ConversationDetail;
+    check(
+      '详情：企微渠道带发送窗口（剩 0 条）',
+      d.sendWindow?.remaining === 0 && d.sendWindow.closesAt !== null,
+      JSON.stringify(d.sendWindow),
+    );
+  }
+
+  // ---- 404：不存在的、sim- 访客会话 console 不开 ----
+  {
+    const sim = 'sim-wb13visitor00000000000001';
+    store.getOrCreateSession(sim, 'simulator');
+    const r1 = keep(await call('GET', `/conversations/${enc(sim)}`, { as: ag1 }));
+    const r2 = await call('POST', `/conversations/${enc(sim)}/takeover`, { as: ag1, json: {} });
+    const r3 = await call('GET', '/conversations/wecom%3AwmNOSUCH13', { as: ag1 });
+    check(
+      '404 conversation_not_found：sim- 访客会话（详情与接手都是）、不存在的会话',
+      [r1, r2, r3].every((r) => r.status === 404 && r.body.error === 'conversation_not_found') && !store.getSession(sim)!.handedOver,
+      [r1, r2, r3].map((r) => r.text).join(' | '),
+    );
+  }
+
+  // ---- 文件存储：只在 db 存储有的接口 503 store_file_mode（权限先于它），种子会话也一样 ----
+  {
+    const S = 'wecom:wb13-take';
+    const rs = [
+      await call('GET', `/conversations/${enc(S)}/messages?beforeSeq=5`, { as: vw }),
+      await call('GET', `/conversations/${enc(S)}/turns`, { as: vw }),
+      await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/diff`, { as: vw }),
+      await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`, O),
+    ];
+    keep(rs[0]!);
+    check(
+      '文件存储：更早的消息、步骤摘要、改写对照、trace 原文 → 503 store_file_mode',
+      rs.every((r) => r.status === 503 && r.body.error === 'store_file_mode'),
+      rs.map((r) => r.text).join(' | '),
+    );
+    const viewerTrace = await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`, { as: vw });
+    check('文件存储：trace 原文对只读成员仍是 403（权限先于存储模式）', viewerTrace.status === 403);
+    const d = (await call('GET', `/conversations/${enc(S)}`, O)).body as ConversationDetail;
+    check(
+      '文件存储：详情里 turnId、guarded 为 null，hasEarlier 为 false，can.traces 为 false',
+      d.messages.every((m) => m.turnId === null && m.guarded === null) && d.hasEarlier === false && d.can.traces === false,
+    );
+  }
+
+  // ---- 计数与 waiting_first（不变量 45） ----
+  {
+    const list = await call('GET', '/conversations?order=waiting_first&limit=100', O);
+    const rows = list.body.items as ConversationRow[];
+    const states = rows.map((r) => conversationState(r, pack));
+    const firstNonHuman = states.findIndex((x) => x !== 'human');
+    const c = (await call('GET', '/conversations/counts', O)).body as ConversationCounts;
+    check(
+      'order=waiting_first：等人接手的全排在最前，其余照旧按 updatedAt 倒序',
+      states.slice(firstNonHuman < 0 ? states.length : firstNonHuman).every((x) => x !== 'human') && states.includes('human'),
+      states.join(','),
+    );
+    check(
+      'counts：四项之和等于 total，assigned 数到顾问处理中的会话，aiByStage 之和等于 byState.ai',
+      Object.values(c.byState).reduce((a, b) => a + b, 0) === c.total &&
+        c.byState.assigned ===
+          store.listSessions().filter((s) => !s.id.startsWith('sim-') && conversationState(s, pack) === 'assigned').length &&
+        c.byState.assigned >= 2 &&
+        Object.values(c.aiByStage).reduce((a, b) => a + b, 0) === c.byState.ai,
+      JSON.stringify(c),
+    );
+  }
+
+  // ---- viewer 打码（不变量 47）、详情的结构 ----
+  {
+    const S7 = 'wecom:wb13-mask';
+    const s7 = mk(S7, { customer: '我手机 13812345678，身份证 11010119900101123X，卡号 6222 0212 3456 7890，2026-10-12 出发两位' });
+    toHuman(S7);
+    s7.profile = { destinationInterest: '云南', travelers: '2人', dates: '2026-10-12', budget: '每人两万' };
+    store.saveSession(s7);
+    const asOwner = (await call('GET', `/conversations/${enc(S7)}`, O)).body as ConversationDetail;
+    const asViewer = (await call('GET', `/conversations/${enc(S7)}`, { as: vw })).body as ConversationDetail;
+    const vt = JSON.stringify(asViewer);
+    check(
+      'viewer 打码：正文与交接卡的客户原话里手机号、证件号、银行卡号只留后 4 位，日期不动；所有者看到原文',
+      !vt.includes('13812345678') &&
+        !vt.includes('11010119900101123X') &&
+        !vt.includes('6222 0212 3456 7890') &&
+        asViewer.messages[0]!.text.includes('*******5678') &&
+        asViewer.messages[0]!.text.includes('123X') &&
+        asViewer.messages[0]!.text.includes('**** **** **** 7890') &&
+        asViewer.messages[0]!.text.includes('2026-10-12') &&
+        (asViewer.handoffCard?.quote ?? '').includes('*******5678') &&
+        asOwner.messages[0]!.text.includes('13812345678') &&
+        (asOwner.handoffCard?.quote ?? '').includes('13812345678'),
+      `${asViewer.messages[0]?.text} / ${asViewer.handoffCard?.quote}`,
+    );
+    check(
+      '详情：需求要素只用规范化的取值（目的地取词表、人数取数字、日期取 YYYY-MM-DD），只读成员的 can 全是 false',
+      asOwner.need.destination === '云南' &&
+        asOwner.need.travelers === '2人' &&
+        asOwner.need.dates === '2026-10-12' &&
+        asOwner.need.budget === '每人两万' &&
+        Object.values(asViewer.can).every((v) => v === false) &&
+        asOwner.paymentMode === 'online' &&
+        asOwner.sendWindow === null &&
+        asOwner.handoffCard?.kind === 'request' &&
+        asOwner.messages.every((m, i, a) => i === 0 || m.seq > a[i - 1]!.seq),
+      JSON.stringify({ need: asOwner.need, can: asViewer.can }),
+    );
+    check(
+      '打码：价格、人数、订单号、短于 11 位的数字不动；一长串数字加字母也不卡（正则没有指数级回溯）',
+      maskNumbers('每人 28800 元，两位共 57,600 元，订单 ord_13812345678abc，电话 400-123-4567') ===
+        '每人 28800 元，两位共 57,600 元，订单 ord_13812345678abc，电话 400-123-4567' &&
+        (() => {
+          const t0 = Date.now();
+          maskNumbers(`${'1 '.repeat(5000)}${'1'.repeat(5000)}a`);
+          return Date.now() - t0 < 500;
+        })(),
+    );
+    // handoff_note：以「AI 已转人工」开头的 system 消息在 MessageView 里标出来；顾问消息带姓名
+    s7.messages.push({ role: 'system', content: 'AI 已转人工：客户要找顾问', at: Date.now() });
+    store.saveSession(s7);
+    const d2 = (await call('GET', `/conversations/${enc(S7)}`, O)).body as ConversationDetail;
+    check(
+      '详情：「AI 已转人工」的 system 消息 kind=handoff_note',
+      d2.messages.at(-1)?.kind === 'handoff_note' && d2.messages[0]!.kind === 'message',
+    );
+  }
+
+  // ---- 匿名可读的旧接口：成员接手并交还种子会话之后，响应里没有成员姓名与 user id（不变量 44） ----
+  {
+    const SEED = 'wecom:cust_W13';
+    const seedS = store.getOrCreateSession(SEED, 'simulator');
+    seedS.messages.push({ role: 'customer', content: '想去云南', at: Date.now() });
+    store.saveSession(seedS);
+    await call('POST', `/conversations/${enc(SEED)}/reply`, {
+      as: ag1,
+      json: { text: '帮您看了云南的线路', clientId: '0b7c5e1a-1d2e-4f30-8a41-000000000007' },
+    });
+    const mid = await app.request(`/api/sessions/${enc(SEED)}`, { headers: { 'x-forwarded-for': '198.51.100.214' } });
+    const midText = await mid.text();
+    await call('POST', `/conversations/${enc(SEED)}/release`, { as: ag1 });
+    const one = await app.request(`/api/sessions/${enc(SEED)}`, { headers: { 'x-forwarded-for': '198.51.100.215' } });
+    const oneText = await one.text();
+    const list = await app.request('/api/sessions', { headers: { 'x-forwarded-for': '198.51.100.216' } });
+    const listText = await list.text();
+    const leak = (txt: string) => [AG1.name, ids.ag1].filter((x) => txt.includes(x));
+    check(
+      '匿名旧接口：接手中与交还之后，单会话与列表里都没有成员姓名与 user id；交还消息改写成「顾问把会话交还 AI」',
+      mid.status === 200 &&
+        one.status === 200 &&
+        list.status === 200 &&
+        leak(midText).length === 0 &&
+        leak(oneText).length === 0 &&
+        leak(listText).length === 0 &&
+        oneText.includes('顾问把会话交还 AI') &&
+        midText.includes('"authorName":"顾问"') &&
+        midText.includes('"assignee":{"name":"顾问"') &&
+        store.getSession(SEED)!.messages.at(-1)?.content === `${AG1.name}把会话交还 AI`,
+      `${leak(midText)} ${leak(oneText)} ${leak(listText)} ${oneText.slice(-300)}`,
+    );
+  }
+
+  // ---- /status：会话数与停写会话的短码（不进 /healthz） ----
+  {
+    const st = await call('GET', '/status', O);
+    check(
+      '/status：成员看得到真实会话数与 poisoned 短码（文件存储下为空数组）',
+      st.status === 200 &&
+        st.body.conversations === store.storeHealth().conversations &&
+        st.body.conversations > 0 &&
+        JSON.stringify(st.body.poisoned) === '[]',
+      st.text.slice(0, 200),
+    );
+    const anon = await call('GET', '/status', { ip: '198.51.100.217' });
+    check('/status：匿名投影里没有会话数', anon.status === 200 && !('conversations' in anon.body));
+  }
+
+  // ---- 订单：/orders 的角色限制与从内存算、本月成交额、三个订单动作（不变量 39 的接口部分） ----
+  {
+    const SO = 'wecom:wb13-order';
+    const so = mk(SO);
+    const order = (price: number, at = Date.now()) => {
+      const o = store.createOrder({
+        sessionId: SO,
+        routeId: 'r-yunnan-mid',
+        routeTitle: '云南 丽江大理',
+        travelers: 2,
+        departDate: '2026-12-10',
+        totalPrice: price,
+      });
+      o.createdAt = at;
+      so.orderIds.push(o.id);
+      store.saveSession(so);
+      return o;
+    };
+    const o1 = order(10_000);
+    const o2 = order(20_000);
+    const o3 = order(30_000);
+    toHuman(SO);
+    await call('POST', `/conversations/${enc(SO)}/takeover`, { as: ag1, json: {} });
+    const asAgent = await call('GET', '/orders', { as: ag1 });
+    const pending = await call('GET', '/orders?status=pending_payment', { as: ag1 });
+    const all = await call('GET', '/orders?limit=100', O);
+    check(
+      '/orders：坐席不带 status 403、只看待付款 200；所有者看全部（从 identity map 算，键集合是 OrderView）',
+      asAgent.status === 403 &&
+        pending.status === 200 &&
+        (pending.body.items as OrderView[]).every((x) => x.status === 'pending_payment') &&
+        (pending.body.items as OrderView[]).some((x) => x.id === o1.id) &&
+        all.status === 200 &&
+        all.body.total === store.listOrders().length &&
+        JSON.stringify(Object.keys((all.body.items as Body[])[0]!)) ===
+          '["id","routeTitle","travelers","departDate","totalPrice","status","createdAt","paidAt","confirmed","handoffBeforePaid"]',
+      `${asAgent.status} ${pending.status} ${all.text.slice(0, 200)}`,
+    );
+    const notMine = keep(await call('POST', `/orders/${o1.id}/confirm`, { as: ag2 }));
+    check(
+      '确认价格：不是接手人的坐席 → 409 not_assignee，订单不变',
+      notMine.status === 409 && notMine.body.error === 'not_assignee' && o1.confirmedAt === undefined,
+      notMine.text,
+    );
+    check('确认价格：只读 → 403', (await call('POST', `/orders/${o1.id}/confirm`, { as: vw })).status === 403);
+    const conf = await call('POST', `/orders/${o1.id}/confirm`, { as: ag1 });
+    const conf2 = await call('POST', `/orders/${o1.id}/confirm`, { as: ag1 });
+    check(
+      '确认价格：接手人本人 → 200，记确认时刻与姓名；重复确认幂等',
+      conf.status === 200 &&
+        (conf.body.confirmed as Body | null)?.by === AG1.name &&
+        conf2.status === 200 &&
+        conf2.text === conf.text &&
+        o1.confirmedBy?.userId === ids.ag1,
+      conf.text,
+    );
+    const notice = capture(SO);
+    const paid = await call('POST', `/orders/${o1.id}/mark-paid`, { as: ag1 });
+    check(
+      '确认收款（online 模式）：接手人本人 → 200，订单已付、记下操作者与 handoffBeforePaid，提交之后给客户发付款确认',
+      paid.status === 200 &&
+        o1.status === 'paid' &&
+        o1.paidMarkedBy?.userId === ids.ag1 &&
+        o1.handoffBeforePaid === true &&
+        notice.some((x) => x.startsWith('已收到您的支付')),
+      `${paid.text} ${JSON.stringify(notice)}`,
+    );
+    const paidAgain = await call('POST', `/orders/${o1.id}/mark-paid`, { as: ag1 });
+    check(
+      '确认收款：已付的再确认 → 200，不再发付款确认',
+      paidAgain.status === 200 && notice.filter((x) => x.startsWith('已收到您的支付')).length === 1,
+    );
+    const cancelPaid = keep(await call('POST', `/orders/${o1.id}/cancel`, { as: ag1, json: { reason: '客户改主意' } }));
+    check(
+      '取消订单：已付的 → 409 order_state，带订单现在的状态',
+      cancelPaid.status === 409 && cancelPaid.body.error === 'order_state' && cancelPaid.body.status === 'paid',
+      cancelPaid.text,
+    );
+    const cancel = await call('POST', `/orders/${o2.id}/cancel`, { as: sup, json: { reason: '客户改主意了' } });
+    check(
+      '取消订单：主管任何订单都能取消 → 200 cancelled，记原因',
+      cancel.status === 200 && o2.status === 'cancelled' && o2.cancelReason === '客户改主意了',
+      cancel.text,
+    );
+    check('取消订单：原因为空 → 400', (await call('POST', `/orders/${o3.id}/cancel`, { as: sup, json: { reason: '' } })).status === 400);
+    check('订单动作：不存在的订单 → 404', (await call('POST', '/orders/ord_nosuch13/confirm', { as: sup })).status === 404);
+    // advisor 收款方式（mock_pay 关，prod）：没确认价格就确认收款 → 409 order_state（unconfirmed）
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    try {
+      const unconfirmed = await call('POST', `/orders/${o3.id}/mark-paid`, { as: ag1 });
+      const d = (await call('GET', `/conversations/${enc(SO)}`, { as: ag1 })).body as ConversationDetail;
+      check(
+        '确认收款（advisor 模式）：没确认价格 → 409 order_state、status=unconfirmed；详情里 paymentMode=advisor',
+        unconfirmed.status === 409 &&
+          unconfirmed.body.error === 'order_state' &&
+          unconfirmed.body.status === 'unconfirmed' &&
+          o3.status === 'pending_payment' &&
+          d.paymentMode === 'advisor',
+        unconfirmed.text,
+      );
+    } finally {
+      __profileTest.reset();
+    }
+    const summary = await call('GET', '/orders/summary', O);
+    const now = new Date();
+    const from = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const want = store
+      .listOrders()
+      .filter((o) => o.status === 'paid' && (o.paidAt ?? 0) >= from)
+      .reduce((a, o) => a + o.totalPrice, 0);
+    const wantPending = store
+      .listOrders()
+      .filter((o) => o.status === 'pending_payment')
+      .reduce((a, o) => a + o.totalPrice, 0);
+    check(
+      '/orders/summary：本月已付的总额与笔数、现在待付款的总额（从内存算）；坐席 403',
+      summary.status === 200 &&
+        summary.body.paidTotal === want &&
+        summary.body.paidTotal >= 10_000 &&
+        summary.body.pendingTotal === wantPending &&
+        summary.body.month === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}` &&
+        (await call('GET', '/orders/summary', { as: ag1 })).status === 403,
+      summary.text,
+    );
+    await sleep(100);
+    const au = await call('GET', '/audit?actions=order.confirm,order.mark_paid,order.cancel', O);
+    const rows = ((au.body.items ?? []) as Body[]).filter((x) => [o1.id, o2.id].includes(String(x.targetId)));
+    check(
+      '审计：确认价格、确认收款、取消订单各一行（target 是订单号，diff 带短码），重复的确认与收款不再记',
+      rows.length === 3 &&
+        rows.filter((x) => x.action === 'order.confirm').length === 1 &&
+        rows.filter((x) => x.action === 'order.mark_paid').length === 1 &&
+        rows.filter((x) => x.action === 'order.cancel').length === 1 &&
+        rows.every((x) => x.targetType === 'order' && (x.diff as Body).shortId === shortIdOf(SO)),
+      JSON.stringify(rows),
+    );
+  }
+
+  // ---- 快捷回复：读给所有成员，管理给主管以上；写入与审计同一事务 ----
+  {
+    const created = await call('POST', '/quick-replies', { as: sup, json: { title: '问日期', body: '您大概什么时候出发呢？' } });
+    const second = await call('POST', '/quick-replies', { as: O.as, json: { title: '问人数', body: '这次几位出行？' } });
+    check(
+      '快捷回复：主管、所有者能建；坐席 403',
+      created.status === 200 &&
+        second.status === 200 &&
+        (await call('POST', '/quick-replies', { as: ag1, json: { title: 'x', body: 'y' } })).status === 403,
+    );
+    const id = String(created.body.id);
+    const list = await call('GET', '/quick-replies', { as: vw });
+    check(
+      '快捷回复：只读成员也能读，按 ord 排',
+      list.status === 200 && JSON.stringify((list.body.items as Body[]).map((x) => x.title)) === '["问日期","问人数"]',
+      list.text,
+    );
+    const patched = await call('PATCH', `/quick-replies/${id}`, { as: sup, json: { body: '您打算哪天出发？' } });
+    const moved = await call('POST', `/quick-replies/${id}/move`, { as: sup, json: { direction: 'down' } });
+    const list2 = await call('GET', '/quick-replies', { as: ag1 });
+    check(
+      '快捷回复：改正文（标题不动）、下移',
+      patched.status === 200 &&
+        patched.body.title === '问日期' &&
+        patched.body.body === '您打算哪天出发？' &&
+        moved.status === 200 &&
+        moved.body.moved === true &&
+        JSON.stringify((list2.body.items as Body[]).map((x) => x.title)) === '["问人数","问日期"]',
+      `${patched.text} ${list2.text}`,
+    );
+    const archived = await call('POST', `/quick-replies/${id}/archive`, { as: sup });
+    const list3 = await call('GET', '/quick-replies', { as: ag1 });
+    check(
+      '快捷回复：归档之后不再列出，再归档 404；标题超长 400',
+      archived.status === 200 &&
+        !(list3.body.items as Body[]).some((x) => x.id === id) &&
+        (await call('POST', `/quick-replies/${id}/archive`, { as: sup })).status === 404 &&
+        (await call('POST', '/quick-replies', { as: sup, json: { title: 'x'.repeat(21), body: 'y' } })).status === 400,
+    );
+    const au = await call('GET', '/audit?actions=quick_reply.create,quick_reply.update,quick_reply.move,quick_reply.archive', O);
+    check(
+      '审计：快捷回复的新建、修改、移动、归档各记一行',
+      ['quick_reply.create', 'quick_reply.update', 'quick_reply.move', 'quick_reply.archive'].every((a) =>
+        ((au.body.items ?? []) as Body[]).some((x) => x.action === a && x.targetId === id),
+      ),
+      au.text.slice(0, 300),
+    );
+  }
+
+  // ---- 事件流（不变量 31）：提交后才推、不带正文、Last-Event-ID 续传与 resync、心跳、登录失效后关闭 ----
+  {
+    __eventsTest.reset();
+    check(
+      '事件流：默认每 20 秒心跳、每 60 秒复核登录、计数去抖 300ms',
+      JSON.stringify(eventTiming()) === JSON.stringify({ heartbeatMs: 20_000, recheckMs: 60_000, countsDebounceMs: 300 }),
+    );
+    __eventsTest.setTiming({ heartbeatMs: 80, recheckMs: 150, countsDebounceMs: 30 });
+    interface Ev {
+      id?: string;
+      event?: string;
+      data?: string;
+      comment?: string;
+    }
+    const open = async (who: Who | null, headers: Record<string, string> = {}) => {
+      const h: Record<string, string> = { 'x-forwarded-for': '203.0.113.160', ...headers };
+      if (who) h.cookie = `${session.SESSION_COOKIE}=${who.token}`;
+      const res = await app.request('/api/console/events', { headers: h });
+      const reader2 = res.body?.getReader();
+      const dec = new TextDecoder();
+      let raw = '';
+      let done = false;
+      let pending: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+      const pump = async (until: (raw: string) => boolean, ms = 3000): Promise<boolean> => {
+        const deadline = Date.now() + ms;
+        if (!reader2) return until(raw);
+        while (!done && !until(raw)) {
+          const left = deadline - Date.now();
+          if (left <= 0) break;
+          pending ??= reader2.read();
+          const r = await Promise.race([pending, sleep(left).then(() => null)]);
+          if (r === null) break;
+          pending = null;
+          if (r.done) done = true;
+          else raw += dec.decode(r.value, { stream: true });
+        }
+        return until(raw);
+      };
+      const events = (): Ev[] =>
+        raw
+          .split('\n\n')
+          .filter((b) => b.trim())
+          .map((b) => {
+            const ev: Ev = {};
+            for (const line of b.split('\n')) {
+              if (line.startsWith(':')) ev.comment = line;
+              else if (line.startsWith('id: ')) ev.id = line.slice(4);
+              else if (line.startsWith('event: ')) ev.event = line.slice(7);
+              else if (line.startsWith('data: ')) ev.data = line.slice(6);
+            }
+            return ev;
+          });
+      return { res, pump, events, raw: () => raw, done: () => done, close: () => reader2?.cancel() };
+    };
+    const anon = await open(null);
+    check('事件流：匿名 → 401', anon.res.status === 401);
+    const es = await open(ag1);
+    check(
+      '事件流：成员连上 200，带安全头与 text/event-stream',
+      es.res.status === 200 && secured(es.res.headers) && (es.res.headers.get('content-type') ?? '').startsWith('text/event-stream'),
+    );
+    await es.pump((r) => r.includes('event: counts'));
+    const first = es.events()[0];
+    check(
+      '事件流：没带 Last-Event-ID 时先收一条当前的 counts，id 是「启动标识-序号」',
+      first?.event === 'counts' &&
+        new RegExp(`^${__eventsTest.boot}-\\d+$`).test(first.id ?? '') &&
+        (JSON.parse(first.data ?? '{}') as ConversationCounts).total > 0,
+      JSON.stringify(first),
+    );
+    const SECRET = 'SSE不该出现的原话13800001111';
+    const SE = 'wecom:wb13-sse';
+    const se = store.getOrCreateSession(SE, 'simulator');
+    se.profile = { destinationInterest: 'SSE不该出现的画像' };
+    se.messages.push({ role: 'customer', content: SECRET, at: Date.now() });
+    store.saveSession(se);
+    toHuman(SE);
+    const simV = store.getOrCreateSession('sim-wb13sse000000000000000001', 'simulator');
+    simV.messages.push({ role: 'customer', content: '访客的话', at: Date.now() });
+    store.saveSession(simV);
+    await es.pump((r) => r.includes('event: handoff') && r.includes('event: message'), 3000);
+    await es.pump(() => false, 400);
+    const evs = es.events();
+    const handoff = evs.find((e) => e.event === 'handoff');
+    check(
+      '事件流：转人工提交之后推 handoff（类型、ISO 时间、paidCustomer）、message（seq 与作者）、conversation 与去抖后的 counts',
+      !!handoff &&
+        (JSON.parse(handoff.data ?? '{}') as Body).kind === 'request' &&
+        (JSON.parse(handoff.data ?? '{}') as Body).paidCustomer === false &&
+        evs.some(
+          (e) =>
+            e.event === 'message' &&
+            (JSON.parse(e.data ?? '{}') as Body).author === 'customer' &&
+            (JSON.parse(e.data ?? '{}') as Body).id === SE,
+        ) &&
+        evs.some((e) => e.event === 'conversation' && (JSON.parse(e.data ?? '{}') as Body).id === SE) &&
+        evs.filter((e) => e.event === 'counts').length >= 2,
+      es.raw().slice(-600),
+    );
+    check(
+      '事件流：没有消息正文、客户原话和画像，没有 sim- 访客会话的事件',
+      !es.raw().includes(SECRET) &&
+        !es.raw().includes('13800001111') &&
+        !es.raw().includes('SSE不该出现的画像') &&
+        !es.raw().includes('sim-wb13sse') &&
+        !es.raw().includes('访客的话'),
+      es.raw().slice(-400),
+    );
+    const ids2 = evs.filter((e) => e.id).map((e) => Number(e.id!.split('-')[1]));
+    check(
+      '事件流：id 的序号逐条递增',
+      ids2.every((n, i) => i === 0 || n > ids2[i - 1]!),
+      ids2.join(','),
+    );
+    await es.pump((r) => r.includes(': ping'), 1000);
+    check('事件流：注释心跳', es.raw().includes(': ping'));
+    // 续传：带本次启动的 Last-Event-ID 只补它之后的；别的启动的、序号超前的 → resync
+    const mark = evs.find((e) => e.event === 'handoff')!.id!;
+    const resume = await open(ag1, { 'last-event-id': mark });
+    await resume.pump(() => false, 600);
+    const re = resume.events();
+    const markN = Number(mark.split('-')[1]);
+    const afterMark = evs.filter((e) => e.id && Number(e.id.split('-')[1]) > markN && e.event !== 'counts').map((e) => e.id);
+    check(
+      '事件流：带本次启动的 Last-Event-ID 重连，补发它之后的事件（一条不少），不先发 resync 也不重发它自己与更早的',
+      re.length > 0 &&
+        re[0]!.event !== 'resync' &&
+        re.every((e) => !e.id || Number(e.id.split('-')[1]) > markN) &&
+        afterMark.every((id) => re.some((e) => e.id === id)) &&
+        afterMark.length > 0,
+      resume.raw().slice(0, 300),
+    );
+    void resume.close();
+    const foreign = await open(ag1, { 'last-event-id': 'deadbeef-3' });
+    await foreign.pump((r) => r.includes('event: resync'), 1500);
+    check('事件流：Last-Event-ID 不是本次启动的 → 先发 resync', foreign.events()[0]?.event === 'resync', foreign.raw().slice(0, 200));
+    void foreign.close();
+    const ahead = await open(ag1, { 'last-event-id': `${__eventsTest.boot}-999999` });
+    await ahead.pump((r) => r.includes('event: resync'), 1500);
+    check('事件流：序号超前（不可能的 id）→ resync', ahead.events()[0]?.event === 'resync');
+    void ahead.close();
+    // 环形缓冲只留最近 500 条：比它还旧的 Last-Event-ID → resync
+    const oldMark = `${__eventsTest.boot}-1`;
+    for (let i = 0; i < 520; i++) __eventsTest.publish('send_failed', { id: 'wecom:wb13-flood', failType: null });
+    const stale = await open(ag1, { 'last-event-id': oldMark });
+    await stale.pump((r) => r.includes('event: resync'), 1500);
+    check(
+      '事件流：比环形缓冲（500 条）还旧的 Last-Event-ID → resync',
+      __eventsTest.ringSize() === 500 && stale.events()[0]?.event === 'resync',
+    );
+    void stale.close();
+    void es.close();
+    // 登录失效（删掉 auth_session）：下一次复核时发 auth 并关闭
+    const viewerStream = await open(vw);
+    check('事件流：只读成员也能连', viewerStream.res.status === 200);
+    void viewerStream.close();
+    const ag3 = await httpLogin(AG1.email, AG1.password, '203.0.113.161');
+    const doomed = await open(ag3);
+    await doomed.pump((r) => r.includes('event: counts'));
+    await asSuper(() => t.pg.query('delete from auth_sessions where token_hash = $1', [createHash('sha256').update(ag3.token).digest()]));
+    const closed = await doomed.pump(() => false, 1500).then(() => doomed.done());
+    check(
+      '事件流：删掉这个登录的 auth_session 之后，下一次复核发 auth 并关闭连接',
+      closed && doomed.events().some((e) => e.event === 'auth'),
+      doomed.raw().slice(-200),
+    );
+    __eventsTest.reset();
+  }
+
+  // ---- db 存储才有的部分：子进程 ----
+  runDbStoreChild();
+}
+
+/** 起 db 存储的子进程（单进程 node --import tsx，SIGKILL 超时），把它的断言并进本进程 */
+function runDbStoreChild(): void {
+  const result = path.join(process.env.VAR_DIR!, 'db-child.json');
+  const r = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url)], {
+    cwd: process.cwd(),
+    env: { ...process.env, CONSOLE_SELFTEST_CHILD: 'db', CONSOLE_CHILD_RESULT: result },
+    timeout: 180_000,
+    killSignal: 'SIGKILL',
+    encoding: 'utf8',
+  });
+  const ok = r.status === 0 && fs.existsSync(result);
+  check('db 存储子进程正常结束', ok, `status=${r.status} signal=${r.signal} ${(r.stderr ?? '').slice(-1500)}`);
+  if (!fs.existsSync(result)) return;
+  const out = JSON.parse(fs.readFileSync(result, 'utf8')) as { checks: [string, boolean, string][]; fatal: string | null };
+  check('db 存储子进程没有中途抛错', out.fatal === null, out.fatal ?? '');
+  check('db 存储子进程：断言都跑到了', out.checks.length >= 15, String(out.checks.length));
+  for (const [name, okc, detail] of out.checks) check(`db 存储：${name}`, okc, detail);
+}
+
+/**
+ * db 存储（PGlite 上的 PG 会话存储）下的后台接口：J 页的 turnId 与护栏改写句数、步骤摘要、改写对照（只读成员打码）、trace 原文（只给所有者、
+ * 管理员）、更早的消息（重置之后窗口以前的）、种子会话返回空、写库积压时写接口 503 store_lagging（等提交超时的已在内存生效，回复在改动
+ * 之前就拒绝、什么都没改）、人工回复入库带操作者、会话类审计的 target 是会话行的 ref、/status。结果写进 CONSOLE_CHILD_RESULT
+ */
+async function dbStoreChild(): Promise<never> {
+  const out: { checks: [string, boolean, string][]; fatal: string | null } = { checks: [], fatal: null };
+  const ck = (name: string, ok: boolean, detail = ''): void => void out.checks.push([name, ok, ok ? '' : detail.slice(0, 600)]);
+  try {
+    const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../db/testing.js');
+    const accounts = await import('../auth/accounts.js');
+    const authSession = await import('../auth/session.js');
+    const { randomUUID } = await import('node:crypto');
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const t = await openTestDb();
+    await t.pg.query(`insert into tenants (slug, name, pack_id) values ('demo', 'demo', 'travel')`);
+    await installSeededConfig(t);
+    /** 以超级用户读库：角色只在这个事务里换（PGlite 只有一条连接，落库的事务与它排队，不会串了角色） */
+    const su = <R>(text: string, params: unknown[] = []): Promise<R[]> =>
+      t.pg.transaction(async (tx) => {
+        await tx.exec('SET LOCAL ROLE NONE');
+        return (await tx.query<R>(text, params)).rows;
+      });
+    const users = [
+      { email: 'own-db13@example.com', name: '老板', role: 'owner' },
+      { email: 'ag-db13@example.com', name: '小林', role: 'agent' },
+      { email: 'vw-db13@example.com', name: '看客', role: 'viewer' },
+    ] as const;
+    for (const u of users) {
+      await t.pg.exec('SET ROLE agent_platform');
+      try {
+        await accounts.createUser(t.db, {
+          tenantSlug: 'demo',
+          email: u.email,
+          name: u.name,
+          role: u.role,
+          password: async () => `${u.role}-db13-password`,
+        });
+      } finally {
+        await t.pg.exec('SET ROLE agent_app');
+      }
+    }
+    const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
+    const store = await import('../store.js');
+    await store.initSessionStore(fx.deps);
+    const { app } = await import('../server.js');
+    const { subscribe } = await import('../adapters/simulator.js');
+    ck('装配：会话存储是 db', store.sessionStoreMode() === 'db');
+    interface W {
+      token: string;
+      csrf: string;
+      userId: string;
+    }
+    let ipN = 0;
+    const login = async (email: string, password: string): Promise<W> => {
+      ipN += 1;
+      const body = JSON.stringify({ email, password });
+      const res = await app.request('/api/console/auth/login', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(Buffer.byteLength(body)),
+          'x-forwarded-for': `203.0.113.${200 + ipN}`,
+        },
+        body,
+      });
+      const me = (await res.json()) as { csrf: string; userId: string };
+      const token = new RegExp(`^${authSession.SESSION_COOKIE}=([A-Za-z0-9_-]{43});`).exec(res.headers.get('set-cookie') ?? '')?.[1] ?? '';
+      return { token, csrf: me.csrf, userId: me.userId };
+    };
+    const req = async (
+      method: string,
+      url: string,
+      who: W,
+      json?: unknown,
+    ): Promise<{ status: number; body: Record<string, any>; text: string }> => {
+      const headers: Record<string, string> = {
+        'x-forwarded-for': '203.0.113.250',
+        cookie: `${authSession.SESSION_COOKIE}=${who.token}`,
+        'x-csrf': who.csrf,
+      };
+      let body: string | undefined;
+      if (json !== undefined) {
+        body = JSON.stringify(json);
+        headers['content-type'] = 'application/json';
+        headers['content-length'] = String(Buffer.byteLength(body));
+      }
+      const res = await app.request(`/api/console${url}`, { method, headers, body });
+      const text = await res.text();
+      let parsed: Record<string, any> = {};
+      try {
+        parsed = JSON.parse(text) as Record<string, any>;
+      } catch {
+        /* 不是 JSON */
+      }
+      return { status: res.status, body: parsed, text };
+    };
+    const own = await login(users[0].email, 'owner-db13-password');
+    const ag = await login(users[1].email, 'agent-db13-password');
+    const vw = await login(users[2].email, 'viewer-db13-password');
+    const enc = encodeURIComponent;
+
+    // ---- trace 类：J 页消息上的 turnId 与改写句数、步骤摘要、改写对照、trace 原文 ----
+    const SID = 'wecom:wmDB13trace';
+    const s = store.getOrCreateSession(SID, 'simulator');
+    s.messages.push({ role: 'customer', content: '西藏多少钱？我电话 13812345678', at: Date.now() });
+    const replyMsg: ChatMessage = { role: 'agent', content: '西藏这条每人 12,800 元起。', at: Date.now() };
+    s.messages.push(replyMsg);
+    const turnId = randomUUID();
+    store.linkTurn(replyMsg, turnId);
+    store.saveSession(s);
+    store.queueTelemetry(SID, {
+      traces: [
+        {
+          id: turnId,
+          conversationId: SID,
+          startedAt: new Date(),
+          durationMs: 1234,
+          outcome: 'replied',
+          sopVersion: 1,
+          prefixHash: 'a'.repeat(64),
+          catalogVersions: { 'route:r-tibet': 1 },
+          stageBefore: 'greeting',
+          stageAfter: 'quote',
+          draft: '西藏这条每人 9,999 元，电话 13812345678 我记下了。西藏这条每人 12,800 元起。',
+          finalText: replyMsg.content,
+          calls: [
+            { name: 'search_routes', prefetch: true },
+            { name: 'create_quote', prefetch: false },
+          ],
+          llm: [{ model: 'glm-x', ms: 900 }],
+          signals: null,
+        },
+      ],
+      guards: [
+        {
+          turnId,
+          ord: 0,
+          guard: 'price',
+          action: 'drop_sentence',
+          removed: ['西藏这条每人 9,999 元，电话 13812345678 我记下了。'],
+          added: [],
+        },
+      ],
+    });
+    await store.flushSession(SID);
+    const d = await req('GET', `/conversations/${enc(SID)}`, own);
+    const msgs = (d.body.messages ?? []) as { turnId: string | null; guarded: unknown; role: string }[];
+    ck(
+      '详情：AI 回复带 turnId 与相对原稿的改写句数，客户消息没有；hasEarlier 为 false；所有者 can.traces 为 true',
+      d.status === 200 &&
+        msgs[1]?.turnId === turnId &&
+        JSON.stringify(msgs[1]?.guarded) === JSON.stringify({ removed: 1, added: 0 }) &&
+        msgs[0]?.turnId === null &&
+        d.body.hasEarlier === false &&
+        d.body.can.traces === true,
+      d.text.slice(0, 400),
+    );
+    const steps = await req('GET', `/conversations/${enc(SID)}/turns`, vw);
+    ck(
+      '步骤摘要：每轮的工具名换成行业包的中文名、带是否预取，不含参数与耗时；只读成员能看',
+      steps.status === 200 &&
+        JSON.stringify(steps.body.turns?.[0]?.steps) ===
+          JSON.stringify([
+            { name: 'search_routes', label: '查线路', prefetch: true },
+            { name: 'create_quote', label: '算报价', prefetch: false },
+          ]) &&
+        !steps.text.includes('1234') &&
+        !steps.text.includes('glm-x'),
+      steps.text,
+    );
+    const diffV = await req('GET', `/conversations/${enc(SID)}/turns/${turnId}/diff`, vw);
+    const diffO = await req('GET', `/conversations/${enc(SID)}/turns/${turnId}/diff`, own);
+    ck(
+      '改写对照：删去的句子（净差）与逐个护栏；只读成员看到的打码，所有者看到原文',
+      diffV.status === 200 &&
+        diffV.body.removed?.length === 1 &&
+        !diffV.text.includes('13812345678') &&
+        diffV.text.includes('*******5678') &&
+        diffV.body.events?.[0]?.guard === 'price' &&
+        diffO.text.includes('13812345678'),
+      `${diffV.text} | ${diffO.text}`,
+    );
+    const trO = await req('GET', `/conversations/${enc(SID)}/turns/${turnId}`, own);
+    const trA = await req('GET', `/conversations/${enc(SID)}/turns/${turnId}`, ag);
+    ck(
+      'trace 原文：所有者拿到原稿、耗时、模型、前缀与条目版本；坐席 403',
+      trO.status === 200 &&
+        trO.body.draft?.includes('9,999') &&
+        trO.body.durationMs === 1234 &&
+        trO.body.prefixHash === 'a'.repeat(64) &&
+        trO.body.catalogVersions?.['route:r-tibet'] === 1 &&
+        trA.status === 403,
+      `${trO.text.slice(0, 300)} ${trA.status}`,
+    );
+    const other = store.getOrCreateSession('wecom:wmDB13other', 'simulator');
+    other.messages.push({ role: 'customer', content: '在吗', at: Date.now() });
+    store.saveSession(other);
+    const cross = await req('GET', `/conversations/${enc('wecom:wmDB13other')}/turns/${turnId}/diff`, own);
+    const nosuch = await req('GET', `/conversations/${enc(SID)}/turns/${randomUUID()}`, own);
+    const notUuid = await req('GET', `/conversations/${enc(SID)}/turns/not-a-uuid/diff`, own);
+    ck(
+      'trace 类：别的会话的轮次、不存在的轮次、不是 uuid 的都是 404',
+      [cross, nosuch, notUuid].every((r) => r.status === 404),
+      [cross, nosuch, notUuid].map((r) => r.status).join(),
+    );
+
+    // ---- 更早的消息：重置之后窗口以前的从库里读，按 seq 升序 ----
+    const { handleMessage } = await import('../engine.js');
+    const SE = 'wecom:wmDB13early';
+    for (const text of ['第一句', '第二句', '第三句']) {
+      const x = store.getOrCreateSession(SE, 'simulator');
+      x.messages.push({ role: 'customer', content: text, at: Date.now() });
+      store.saveSession(x);
+    }
+    await store.flushSession(SE);
+    await handleMessage(SE, '重置', 'simulator');
+    await store.flushSession(SE);
+    const de = await req('GET', `/conversations/${enc(SE)}`, ag);
+    const first = (de.body.messages as { seq: number }[])[0]!.seq;
+    const page = await req('GET', `/conversations/${enc(SE)}/messages?beforeSeq=${first}`, vw);
+    const page2 = await req('GET', `/conversations/${enc(SE)}/messages?beforeSeq=${first}&limit=2`, ag);
+    ck(
+      '更早的消息：重置之后 hasEarlier 为 true，按 seq 往前取到窗口以前的三句（升序），limit 截掉更早的并报 hasEarlier',
+      de.body.hasEarlier === true &&
+        JSON.stringify((page.body.messages as { text: string }[]).map((m) => m.text)) === '["第一句","第二句","第三句"]' &&
+        page.body.hasEarlier === false &&
+        JSON.stringify((page2.body.messages as { text: string }[]).map((m) => m.text)) === '["第二句","第三句"]' &&
+        page2.body.hasEarlier === true,
+      `${de.text.slice(0, 200)} | ${page.text} | ${page2.text}`,
+    );
+    ck('更早的消息：beforeSeq 缺失或不是正整数 → 400', (await req('GET', `/conversations/${enc(SE)}/messages`, ag)).status === 400);
+
+    // ---- 种子会话（demo 类不进库）：更早的消息与步骤摘要返回空，改写对照 404，详情照常 ----
+    const SEED = 'wecom:cust_D13';
+    const seed = store.getOrCreateSession(SEED, 'simulator');
+    seed.messages.push({ role: 'customer', content: '种子', at: Date.now() });
+    store.saveSession(seed);
+    const sm = await req('GET', `/conversations/${enc(SEED)}/messages?beforeSeq=5`, ag);
+    const st = await req('GET', `/conversations/${enc(SEED)}/turns`, ag);
+    const sd = await req('GET', `/conversations/${enc(SEED)}`, own);
+    ck(
+      '种子会话：更早的消息与步骤摘要返回空，详情里 turnId 为 null、can.traces 为 false',
+      sm.status === 200 &&
+        sm.text === '{"messages":[],"hasEarlier":false}' &&
+        st.status === 200 &&
+        st.text === '{"turns":[]}' &&
+        sd.status === 200 &&
+        sd.body.can.traces === false,
+      `${sm.text} ${st.text}`,
+    );
+
+    // ---- 人工回复入库：author=human、操作者是真实成员（外键），seq 与库里一致；会话类审计的 target 是 ref ----
+    const SR = 'wecom:wmDB13reply';
+    const sr = store.getOrCreateSession(SR, 'simulator');
+    sr.messages.push({ role: 'customer', content: '有人吗', at: Date.now() });
+    store.saveSession(sr);
+    const pushed: string[] = [];
+    subscribe(SR, (x) => pushed.push(x));
+    const rr = await req('POST', `/conversations/${enc(SR)}/reply`, ag, { text: '在的，我是顾问', clientId: randomUUID() });
+    const row = await su<{ author: string; author_user_id: string; author_name: string; seq: number }>(
+      `select author, author_user_id, author_name, seq from messages where conversation_id = $1 and author = 'human'`,
+      [SR],
+    );
+    const conv = await su<{ ref: string; assignee_user_id: string | null }>(
+      'select ref, assignee_user_id from conversations where id = $1',
+      [SR],
+    );
+    const au = await su<{ action: string; target_id: string; actor_user_id: string; diff: { shortId?: string } }>(
+      `select action, target_id, actor_user_id, diff from audit_log where action like 'conversation.%' and target_type = 'conversation'`,
+    );
+    ck(
+      '人工回复（db）：200、persisted，库里那条 author=human、操作者 id 与姓名、seq 等于返回的 seq；接手人写进会话行',
+      rr.status === 200 &&
+        rr.body.persisted === true &&
+        rr.body.sent === true &&
+        row.length === 1 &&
+        row[0]!.author_user_id === ag.userId &&
+        row[0]!.author_name === '小林' &&
+        Number(row[0]!.seq) === rr.body.seq &&
+        conv[0]?.assignee_user_id === ag.userId &&
+        pushed.join() === '【顾问】在的，我是顾问',
+      `${rr.text} ${JSON.stringify(row)} ${JSON.stringify(conv)}`,
+    );
+    ck(
+      '会话类审计（db）：随落库写，target_id 是会话行的 ref（不含客户标识），diff 带短码',
+      au.some(
+        (a) => a.action === 'conversation.takeover' && a.target_id === conv[0]?.ref && a.actor_user_id === ag.userId && !!a.diff.shortId,
+      ) && au.every((a) => !String(a.target_id).includes('wmDB13')),
+      JSON.stringify(au),
+    );
+
+    // ---- /status：会话数与 poisoned 短码 ----
+    const status = await req('GET', '/status', own);
+    ck(
+      '/status（db）：会话数是真实会话（不含种子），poisoned 为空',
+      status.status === 200 &&
+        status.body.conversations === store.storeHealth().conversations &&
+        status.body.conversations >= 4 &&
+        status.body.poisoned?.length === 0,
+      status.text.slice(-200),
+    );
+
+    // ---- 写库积压：等提交超时 → 503 store_lagging（改动已在内存生效）；积压超过 5 秒时人工回复在改动之前就 503 ----
+    const SL = 'wecom:wmDB13lag';
+    const sl = store.getOrCreateSession(SL, 'simulator');
+    sl.messages.push({ role: 'customer', content: '在吗', at: Date.now() });
+    store.saveSession(sl);
+    await store.flushSession(SL);
+    let open!: () => void;
+    fx.faults.gate = new Promise<void>((r) => (open = r));
+    const t0 = Date.now();
+    const lag = await req('POST', `/conversations/${enc(SL)}/takeover`, ag, {});
+    ck(
+      '写库积压：接手等提交超过 5 秒 → 503 store_lagging，改动已在内存生效（接手人已是他）',
+      lag.status === 503 && lag.body.error === 'store_lagging' && Date.now() - t0 >= 4900 && sl.assignee?.userId === ag.userId,
+      `${lag.text} ${Date.now() - t0}ms`,
+    );
+    await sleep(300); // 积压已经超过 5 秒
+    const before = sl.messages.length;
+    const pushedL: string[] = [];
+    subscribe(SL, (x) => pushedL.push(x));
+    const lagReply = await req('POST', `/conversations/${enc(SL)}/reply`, ag, { text: '积压时的回复', clientId: randomUUID() });
+    ck(
+      '写库积压：积压超过 5 秒时人工回复 → 503 store_lagging，什么都没改、客户没收到',
+      lagReply.status === 503 && lagReply.body.error === 'store_lagging' && sl.messages.length === before && pushedL.length === 0,
+      lagReply.text,
+    );
+    fx.faults.gate = null;
+    open();
+    await store.flushSession(SL, { timeoutMs: 5000 });
+    const ok = await req('POST', `/conversations/${enc(SL)}/reply`, ag, { text: '恢复之后的回复', clientId: randomUUID() });
+    ck(
+      '写库积压：恢复之后照常回复',
+      ok.status === 200 && ok.body.persisted === true && pushedL.join() === '【顾问】恢复之后的回复',
+      ok.text,
+    );
+
+    // ---- 人工回复只在提交之后发（不变量 20、验收 11）：落库暂停时客户收不到，放开、提交之后才收到；推送那一刻库里已有这一条 ----
+    let open2!: () => void;
+    fx.faults.gate = new Promise<void>((r) => (open2 = r));
+    let pushedAt = 0;
+    let inDbAtPush: Promise<boolean> | null = null;
+    const pushedO: string[] = [];
+    subscribe(SL, (x) => {
+      pushedO.push(x);
+      pushedAt = Date.now();
+      // 订阅回调是同步的，这一刻起查库：推送之前已经提交的话查得到
+      inDbAtPush ??= su<{ n: number }>(`select count(*)::int as n from messages where conversation_id = $1 and content = '暂停时的回复'`, [
+        SL,
+      ]).then((r) => (r[0]?.n ?? 0) === 1);
+    });
+    const pending = req('POST', `/conversations/${enc(SL)}/reply`, ag, { text: '暂停时的回复', clientId: randomUUID() });
+    await sleep(1500);
+    const beforeOpen = pushedO.length;
+    const openedAt = Date.now();
+    fx.faults.gate = null;
+    open2();
+    const ordered = await pending;
+    const committedFirst = await (inDbAtPush ?? Promise.resolve(false));
+    ck(
+      '人工回复：落库暂停时客户收不到，提交之后才发（推送那一刻库里已有这一条），persisted 为 true',
+      beforeOpen === 0 &&
+        ordered.status === 200 &&
+        ordered.body.persisted === true &&
+        pushedO.at(-1) === '【顾问】暂停时的回复' &&
+        pushedAt >= openedAt &&
+        committedFirst,
+      `${ordered.text} 放开前 ${beforeOpen} 条，推送时库里 ${String(committedFirst)}`,
+    );
+    // ---- 等提交超过 5 秒：照发，返回 persisted: false（改动仍在写队列里） ----
+    let open3!: () => void;
+    fx.faults.gate = new Promise<void>((r) => (open3 = r));
+    const slow = await req('POST', `/conversations/${enc(SL)}/reply`, ag, { text: '等不到提交的回复', clientId: randomUUID() });
+    ck(
+      '人工回复：等提交超过 5 秒也照发，返回 persisted: false',
+      slow.status === 200 && slow.body.sent === true && slow.body.persisted === false && pushedO.at(-1) === '【顾问】等不到提交的回复',
+      slow.text,
+    );
+    fx.faults.gate = null;
+    open3();
+    await store.drainStore(5000);
+  } catch (e) {
+    out.fatal = e instanceof Error ? `${e.name}: ${e.message}\n${e.stack ?? ''}` : String(e);
+  }
+  fs.writeFileSync(process.env.CONSOLE_CHILD_RESULT!, JSON.stringify(out));
+  process.exit(0);
 }
 
 await t.close();

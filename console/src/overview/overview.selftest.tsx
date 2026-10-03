@@ -261,6 +261,9 @@ const STATUS: Status = {
     editedSections: ['tone'],
     catalog: { route: { changed: [], onlyDb: [], onlyImage: [] }, hotel: { changed: [], onlyDb: [], onlyImage: [] } },
   },
+  // 02 第 13 步给 Status 加的两项（只为类型补上，断言没动）
+  conversations: 0,
+  poisoned: [],
 };
 
 let auditId = 30;

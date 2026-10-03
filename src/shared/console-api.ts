@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
-import type { HandoffKind } from './conversation-types.js';
+import type { HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
@@ -103,6 +103,11 @@ export const ConvQuery = z.object({
     .optional(),
   /** waiting_first = 等人接手的在前，其余按 (updatedAt desc, id)；不给时是 01 的顺序 (updatedAt desc, id) */
   order: z.enum(['waiting_first']).optional(),
+  /**
+   * 02 第 13 步（开放问题 12 选 A 的接口部分）：paid_needs_human 只列「已成交客户要人工」（终态、转人工、没有接手人，见 paidNeedsHuman）。
+   * 铃铛弹层与 A2 单列这一组；它们的状态仍是 paid、不进徽标
+   */
+  group: z.enum(['paid_needs_human']).optional(),
 });
 
 export const AuditQuery = z
@@ -124,6 +129,22 @@ export const AuditQuery = z
  * 实际窗口再按这个租户的 trace 保留期截断（min(days, retention_trace_days)），见 MetricsView.days
  */
 export const MetricsQuery = z.object({ days: intParam(90).optional() });
+
+// ---------------- 02：会话工作台、订单、快捷回复（docs/architecture/02-conversations-workbench/spec.md「后台接口」） ----------------
+
+/** 人工回复：clientId 是前端生成的 uuid，同一个 clientId 10 分钟内重复提交返回第一次的结果、不重发 */
+export const ReplyBody = z.strictObject({ text: str.min(1).max(2000), clientId: z.uuid() });
+/** 接手；force 是改派（别人接手中时，只有 supervisor 以上） */
+export const TakeoverBody = z.strictObject({ force: z.boolean().optional() });
+export const CancelOrderBody = z.strictObject({ reason: str.min(1).max(200) });
+/** 更早的消息：seq 小于 beforeSeq 的最近 limit 条（默认 50） */
+export const MessagesQuery = z.object({ beforeSeq: intParam(INT4_MAX), limit: intParam(100).optional() });
+export const OrdersQuery = z.object({
+  status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']).optional(),
+  limit: intParam(100).optional(),
+});
+export const QuickReplyBody = z.strictObject({ title: str.min(1).max(20), body: str.min(1).max(500) });
+export const MoveBody = z.strictObject({ direction: z.enum(['up', 'down']) });
 
 // ---------------- 领域类型 ----------------
 
@@ -214,6 +235,13 @@ export interface ApiError {
   issues?: { path: string; message: string }[];
   /** CSV 导入按行的问题；row 是数据行号，0 表示表头或整份文件 */
   rows?: { row: number; issues: { path: string; message: string }[] }[];
+  /** 409 assigned_to_other：正在处理这个会话的人 */
+  assigneeName?: string;
+  /** 409 send_window_closed / send_quota_exhausted：窗口关闭的时刻（毫秒，同 SendWindow.closesAt）与剩余条数 */
+  closesAt?: number | null;
+  remaining?: number;
+  /** 409 order_state：订单现在的状态（unconfirmed：还没确认价格） */
+  status?: string;
 }
 
 export interface Me {
@@ -249,6 +277,10 @@ export interface Status {
   catalogStale: boolean;
   index: { indexGeneration: number | null; snapshotGeneration: number; stale: boolean; lastError: string | null };
   drift: ConfigDrift;
+  /** 02：真实会话数（不含 demo 类；只经这里给成员看，不进 /healthz） */
+  conversations: number;
+  /** 02：因数据类错误停写的会话短码（storeHealth().poisoned） */
+  poisoned: string[];
 }
 
 export interface SopOverview {
@@ -351,3 +383,178 @@ export interface MetricsView {
   /** 窗口内之和 / 1000 */
   costRangeYuan: number;
 }
+
+// ---------------- 02：会话工作台、订单、快捷回复、事件流的响应 ----------------
+
+/** J 页的一条消息（02 spec「后台接口」） */
+export interface MessageView {
+  /** db 存储下是库里的 seq；文件存储下是本进程分配的 seq，跨重启不保证（「identity map 与写入」） */
+  seq: number;
+  role: 'customer' | 'agent' | 'system';
+  author: MessageAuthor;
+  /** 顾问人工回复的姓名快照（共享工作台写「共享工作台」）；其余为 null */
+  authorName: string | null;
+  /** 只读成员（viewer）看到的是打码后的正文：手机号、证件号、银行卡号只留后 4 位 */
+  text: string;
+  /** handoff_note：以「AI 已转人工」开头的 system 消息，界面按时间线行渲染，不显示原文（「后台页面」） */
+  kind: 'message' | 'handoff_note';
+  at: string;
+  /** 这条回复所属那一轮的 trace（只有 db 存储的真实会话；文件存储与 demo 类会话为 null） */
+  turnId: string | null;
+  /** 护栏改过这条 AI 回复：删了几句、补了几处（相对模型原稿的净差）；展开时读 /conversations/:id/turns/:turnId/diff */
+  guarded: { removed: number; added: number } | null;
+  /** 发送账本里这条消息的状态（企微）：failed 时带原因码；账本里没有这条时为 null */
+  delivery: { status: 'accepted' | 'rejected' | 'unknown' | 'failed'; failType: number | null } | null;
+}
+
+/** J 页右栏与对话里的订单（ConversationDetail.orders、GET /orders） */
+export interface OrderView {
+  id: string;
+  routeTitle: string;
+  travelers: number;
+  departDate: string;
+  totalPrice: number;
+  status: OrderStatus;
+  createdAt: string;
+  paidAt: string | null;
+  /** 顾问确认过价格：时刻与确认人的姓名 */
+  confirmed: { at: string; by: string } | null;
+  /** 标记已付时会话是否曾经转过人工（R9）；没付或旧数据为 null */
+  handoffBeforePaid: boolean | null;
+}
+
+/** GET /conversations/:id：J 页一次取全 */
+export interface ConversationDetail {
+  row: ConversationRow;
+  /** 内存窗口，按 seq 升序 */
+  messages: MessageView[];
+  /** 窗口之前库里还有更早的消息（只有 db 存储的真实会话）；按 seq 往前翻页读 /conversations/:id/messages */
+  hasEarlier: boolean;
+  handoffCard: {
+    kind: HandoffKind;
+    at: string;
+    reason: string;
+    /** 触发这次转人工的客户原话；viewer 同样打码 */
+    quote: string | null;
+    departNote: string | null;
+    stageBefore: string | null;
+    assigneeName: string | null;
+  } | null;
+  /** 需求要素：规范化的取值，与 needSummary 同源 */
+  need: { destination: string | null; segment: string | null; travelers: string | null; dates: string | null; budget: string | null };
+  quote: {
+    routeId: string;
+    routeTitle: string;
+    travelers: number;
+    perPerson: number | null;
+    total: number | null;
+    departDate: string | null;
+  } | null;
+  orders: OrderView[];
+  /** 企微渠道才有 */
+  sendWindow: SendWindow | null;
+  paymentMode: PaymentMode;
+  /** 客户不同意或撤回了同意处理敏感信息（R23）：「交还AI」不可用（02 第 13 步加的一项，界面据此写明原因） */
+  consentDeclined: boolean;
+  /** 当前成员此刻能做什么（权限表与接手状态机同一套判断） */
+  can: {
+    takeover: boolean;
+    reply: boolean;
+    release: boolean;
+    reassign: boolean;
+    confirmOrder: boolean;
+    markPaid: boolean;
+    traces: boolean;
+  };
+}
+
+/** GET /conversations/:id/messages：窗口以外更早的消息（只在 db 存储），按 seq 升序 */
+export interface MessagesPage {
+  messages: MessageView[];
+  /** 这一页之前还有 */
+  hasEarlier: boolean;
+}
+
+/** GET /conversations/:id/turns：每轮的工具步骤摘要（名字取行业包的工具词表），不含参数与耗时 */
+export interface TurnStepsView {
+  turns: {
+    turnId: string;
+    startedAt: string;
+    outcome: string;
+    steps: { name: string; label: string; prefetch: boolean }[];
+  }[];
+}
+
+/** GET /conversations/:id/turns/:turnId/diff：护栏删去 / 补上的句子（相对模型原稿的净差）与逐个护栏的原样 */
+export interface TurnDiffView {
+  removed: string[];
+  added: string[];
+  events: { guard: string; action: string; removed: string[]; added: string[] }[];
+}
+
+/** GET /conversations/:id/turns/:turnId：trace 原文（只给所有者、管理员）：原稿、参数、耗时、模型、前缀 */
+export interface TurnTraceView {
+  turnId: string;
+  startedAt: string;
+  durationMs: number;
+  outcome: string;
+  sopVersion: number | null;
+  prefixHash: string;
+  catalogVersions: Record<string, number>;
+  stageBefore: string | null;
+  stageAfter: string | null;
+  draft: string | null;
+  finalText: string | null;
+  calls: unknown[];
+  llm: unknown[];
+  signals: unknown;
+}
+
+/** POST /conversations/:id/reply */
+export interface ReplyResultView {
+  sent: boolean;
+  seq: number;
+  /** false：已发出，记录稍后保存（等满 5 秒还没提交） */
+  persisted: boolean;
+}
+
+/** GET /orders */
+export interface OrderPage {
+  items: OrderView[];
+  /** 过滤之后的条数 */
+  total: number;
+}
+
+/** GET /orders/summary：本月（服务器时区的自然月）的成交额与待付款 */
+export interface OrderSummary {
+  /** 如 2026-10 */
+  month: string;
+  paidTotal: number;
+  paidCount: number;
+  /** 现在待付款（pending_payment）的订单，不限月份 */
+  pendingTotal: number;
+  pendingCount: number;
+}
+
+export interface QuickReply {
+  id: string;
+  ord: number;
+  title: string;
+  body: string;
+}
+
+/**
+ * GET /events（SSE）的事件名与 data（JSON）。只带 id、状态、类型、seq 与时间，不带消息正文、客户原话和画像（不变量 31）。
+ * resync：Last-Event-ID 不是本次启动的或比环形缓冲还旧，前端整体重取；auth：登录失效，随后关闭连接，前端回登录页
+ */
+export interface ConsoleEventMap {
+  counts: ConversationCounts;
+  handoff: { id: string; kind: HandoffKind; at: string; escalated: boolean; paidCustomer: boolean };
+  conversation: { id: string; change: 'changed' | 'assigned' | 'released'; assigneeName: string | null };
+  message: { id: string; seq: number; author: MessageAuthor };
+  order: { id: string; orderId: string; status: OrderStatus; confirmed: boolean };
+  send_failed: { id: string; failType: number | null };
+  resync: Record<string, never>;
+  auth: Record<string, never>;
+}
+export type ConsoleEventName = keyof ConsoleEventMap;

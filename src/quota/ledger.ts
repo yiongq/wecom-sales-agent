@@ -385,6 +385,24 @@ export function mayHaveDelivered(sessionId: string, message: ChatMessage): boole
   return rowsOf(sessionId, message).some((r) => COUNTED.has(r.status));
 }
 
+/** 送达状态的轻重：一条消息分几段时取最重的 */
+const DELIVERY_RANK = { accepted: 0, unknown: 1, rejected: 2, failed: 3 } as const;
+export type DeliveryStatus = keyof typeof DELIVERY_RANK;
+
+/**
+ * J 页消息的送达状态（02 第 13 步，MessageView.delivery）：只读内存里的账本（不变量 9）。一条消息分几段、加卡片时取最重的：
+ * failed（收到回执）> rejected（接口明确报错）> unknown（结果不明）> accepted；还在发的、预占的不算。账本里没有这条为 null
+ */
+export function deliveryOf(sessionId: string, message: ChatMessage): { status: DeliveryStatus; failType: number | null } | null {
+  let worst: Row | null = null;
+  for (const r of rowsOf(sessionId, message)) {
+    if (r.status === 'pending') continue;
+    if (!worst || DELIVERY_RANK[r.status] > DELIVERY_RANK[worst.status as DeliveryStatus]) worst = r;
+  }
+  if (!worst || worst.status === 'pending') return null;
+  return { status: worst.status, failType: worst.status === 'failed' ? worst.failType : null };
+}
+
 /** msg_send_fail 给会话加的说明（spec 原文：4 窗口过了、6 发满 5 条、其余带原因码） */
 export function sendFailText(failType: number): string {
   if (failType === 4) return WINDOW_CLOSED_TEXT;

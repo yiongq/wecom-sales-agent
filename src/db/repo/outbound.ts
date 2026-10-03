@@ -48,6 +48,24 @@ export async function insertOutboundSends(tx: Tx, rows: readonly OutboundSendRow
     });
 }
 
+/** 后台「看更早的消息」（02 第 13 步）：这个会话里对应这几条消息（message_seq）的账本行，J 页据此写没送达的原因 */
+export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: readonly number[]): Promise<OutboundSendRow[]> {
+  if (!seqs.length) return [];
+  return tx
+    .select({
+      conversationId: outboundSends.conversationId,
+      channelMsgid: outboundSends.channelMsgid,
+      messageSeq: outboundSends.messageSeq,
+      kind: outboundSends.kind,
+      sentAt: outboundSends.sentAt,
+      status: outboundSends.status,
+      errcode: outboundSends.errcode,
+      failType: outboundSends.failType,
+    })
+    .from(outboundSends)
+    .where(and(eq(outboundSends.conversationId, conversationId), sql`${outboundSends.messageSeq} = any(${sql.param([...seqs])}::int[])`));
+}
+
 /** 按 msgid 改状态（回执）；errcode、failType 不给就不动。返回是否找到了这一行 */
 export async function setOutboundStatus(
   tx: Tx,
