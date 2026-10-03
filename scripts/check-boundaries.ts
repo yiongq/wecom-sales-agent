@@ -123,6 +123,12 @@ const IMPORT_RULES: ImportRule[] = [
       ['src/store.ts', 'src/engine.ts', 'src/tools.ts', 'src/llm.ts'].includes(i.target ?? ''),
   },
   {
+    // 02 spec「逐轮 trace、护栏事件与用量」：trace 与用量经 store 的入口（queueTelemetry、PG 后端的 writeUsage）落库，不直接碰库
+    desc: 'src/trace/ 不 import src/db/（trace 与用量经 store 的入口落库）',
+    applies: (f) => under(f, 'src/trace/') && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/db/'),
+  },
+  {
     desc: 'src/db/、src/config/、src/cli/ 不 import src/store/（project.ts 除外）',
     applies: (f) => (under(f, 'src/db/') || under(f, 'src/config/') || under(f, 'src/cli/')) && !isSelftest(f),
     bad: (i) => under(i.target, 'src/store/') && i.target !== 'src/store/project.ts',

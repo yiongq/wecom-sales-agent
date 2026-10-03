@@ -34,6 +34,19 @@ export function seqOf(m: ChatMessage): number | undefined {
   return seqs.get(m);
 }
 
+// 消息所属的轮次（02 spec「逐轮 trace」：AI 回复消息经 WeakMap 关联 turnId，落库进 messages.turn_id）。与 seq 一样不往对象上加字段
+const turns = new WeakMap<ChatMessage, string>();
+
+/** 这条消息是哪一轮 trace 的回复；没关联过的返回 undefined */
+export function turnIdOf(m: ChatMessage): string | undefined {
+  return turns.get(m);
+}
+
+/** 把消息关联到一轮 trace（recorder 的 endTurn、PG 预载按 turn_id 列重建时调）。冻结的消息也行 */
+export function linkTurn(m: ChatMessage, turnId: string): void {
+  turns.set(m, turnId);
+}
+
 /** 会话分配过的最大 seq（没分配过为 0） */
 export function lastSeqOf(s: Session): number {
   return stateOf(s).last;

@@ -24,6 +24,7 @@ import { insertMessages, readMessagesFrom, readRecentCustomerMsgids } from '../d
 import { readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
 import { insertOutboundSends, type OutboundSendRow } from '../db/repo/outbound.js';
 import { insertGuardEvents, insertTurnTraces, type GuardEventRow, type TurnTraceRow } from '../db/repo/traces.js';
+import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 import { SessionStoreStartupError, StoreConflictError, StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
@@ -45,7 +46,7 @@ import {
   type MessageRowShape,
   type OrderRowShape,
 } from './project.js';
-import { assignSeqs, lastSeqOf, seedSeqs, seqOf, WindowCorruptError, windowStartOf } from './seq.js';
+import { assignSeqs, lastSeqOf, linkTurn, seedSeqs, seqOf, turnIdOf, WindowCorruptError, windowStartOf } from './seq.js';
 
 // 模块加载时取一个空的异步上下文：每次落库都在它里面启动。在 withTenant 回调或轮次上下文里调 saveSession，
 // 排出的落库也不继承那个上下文（withTenant 不能嵌套，轮次的 trace 也不该串进落库）
@@ -221,7 +222,10 @@ export interface PgStoreStats {
   /** 最近一次排重试用的退避（毫秒），没排过为 0 */
   lastRetryDelayMs: number;
   slowTx: number;
-  /** 存档点里写失败、丢掉的 trace / 护栏事件 / 账本批次 */
+  /**
+   * 丢掉的 trace / 护栏事件 / 账本批次：存档点里写失败的；以数据类错误失败的那次落库快照里的；会话 poisoned 时排着的
+   * 与之后再来的（poisoned 会话不再落库，spill 也不带它们）
+   */
   telemetryDropped: number;
   /** saveSession 收到与 identity map 里不同的同 id 对象、拒绝落库的次数 */
   foreign: number;
@@ -245,10 +249,17 @@ export interface PgBackend extends StoreBackend {
   queueTelemetry(sessionId: string, rows: TelemetryRows): void;
   /** demo 类会话的审计：单独一个短事务（R6） */
   writeStandaloneAudit(item: AuditItem): Promise<void>;
+  /**
+   * 用量累加进 usage_daily（02 spec「用量」：每 30 秒与 drain 段由累加器调，不经会话写队列）。一个短事务；已冲突、late 段之后、
+   * 租户锁在别人手里时不写、直接 reject（累加器把这批留着下次再试）。失败一律以 UsageWriteError reject，code 分得出原因
+   */
+  writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
   /** late 段：此后不再发起落库，退避中的重试也停掉；没落库的留给 exit 时的 spill */
   close(): void;
   stats(): PgStoreStats;
+  /** 这个会话还留在内存里的遥测行数（排着的加在途快照里的，自测用） */
+  queuedTelemetry(sessionId: string): number;
 }
 
 const systemCtx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } });
@@ -285,6 +296,20 @@ const short = (id: string): string => shortIdOf(id) || '?';
 
 class AlreadyCommitted extends Error {}
 
+/**
+ * writeUsage 没写进去。code：主动不写的三种（conflict 已冲突、closed 已停机、held_by_other 租户锁不在本进程），
+ * 或库报的 SQLSTATE / errno 码（沿 cause 链取，取不到是错误名）。message 里只有 code，不带驱动错误的原文
+ */
+export class UsageWriteError extends Error {
+  override readonly name = 'UsageWriteError';
+  constructor(
+    readonly code: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`usage_daily 没写进去（${code}）`, options);
+  }
+}
+
 // ---------------- 预载 ----------------
 
 interface Preloaded {
@@ -317,6 +342,14 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
           const ids = rows.map((r) => r.id);
           const mids = await readRecentCustomerMsgids(tx, ids, since);
           const batch = new Set(ids);
+          // 带 turn_id 的消息先按会话分好组：每个会话只看自己那几条，不在每个会话里把整批消息扫一遍
+          const turnRows = new Map<string, typeof messages>();
+          for (const r of messages) {
+            if (!r.turnId) continue;
+            const list = turnRows.get(r.conversationId);
+            if (list) list.push(r);
+            else turnRows.set(r.conversationId, [r]);
+          }
           for (const { row, session, windowCount } of rebuildSessions(rows, messages)) {
             if (isDemoClassId(row.id)) throw new SessionStoreStartupError('demo_class_in_db', `库里有 demo 类会话 ${short(row.id)}`);
             if (!session) {
@@ -326,6 +359,11 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
               );
             }
             seedSeqs(session, row.windowStartSeq);
+            // AI 回复所属的轮次（messages.turn_id）记回 WeakMap：重启之后 J 页照样认得出哪条回复有 trace
+            for (const r of turnRows.get(row.id) ?? []) {
+              const m = session.messages[r.seq - row.windowStartSeq];
+              if (m) linkTurn(m, r.turnId!);
+            }
             for (const m of session.messages) Object.freeze(m);
             out.sessions.push(session);
             out.seqs.set(row.id, { lastSeq: row.lastSeq, windowStartSeq: row.windowStartSeq, flushId: row.flushId });
@@ -560,6 +598,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
   };
 
   const emptyTelemetry = (): Required<TelemetryRows> => ({ traces: [], guards: [], outbound: [] });
+  const hasTelemetry = (t: TelemetryRows): boolean => !!(t.traces?.length || t.guards?.length || t.outbound?.length);
+  /** 再也写不进库的遥测行（spill 不带它们）：丢掉、算一批（与存档点里写失败同一个口径） */
+  const dropTelemetry = (holder: { telemetry: Required<TelemetryRows> }): void => {
+    if (!hasTelemetry(holder.telemetry)) return;
+    stats.telemetryDropped++;
+    holder.telemetry = emptyTelemetry();
+  };
   const newEntry = (s: Session, inDb: boolean, committedSeq: number, msgids: Set<string>): Entry => ({
     id: s.id,
     session: s,
@@ -639,6 +684,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     if (e.poisoned) return;
     e.poisoned = label;
     lastError = `${label} · ${short(e.id)}`;
+    // 此后不再起落库：排着的遥测行再也写不进库，现在就丢掉、计数，不留在内存里；之后来的在 queueTelemetry 丢。
+    // 在途的那次落库不动（window_corrupt 时它照常跑完，提交了就照样写进去；它以数据类错误失败时在 failed 里丢）
+    dropTelemetry(e);
     console.error(`[store] 会话 ${short(e.id)} 停止落库（${label}）：内存照旧服务客户，停机时写进 spill；修好原因后重启回放`);
     rejectWaiters(e);
   }
@@ -667,7 +715,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       baseSeq: e.committedSeq,
       lastSeq,
       windowStartSeq: windowStartOf(s),
-      messages: e.pending.map((m) => messageToRow(m, seqOf(m)!)),
+      messages: e.pending.map((m) => messageToRow(m, seqOf(m)!, turnIdOf(m) ?? null)),
       values: conversationValuesFrom(sessionState(s), lastCustomerAtOf(s.messages)),
       orders,
       audits: e.audits,
@@ -818,6 +866,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       return;
     }
     if (kind === 'data') {
+      // 这次落库不会再试：快照里的遥测行（spill 不带）一并丢掉、计数
+      dropTelemetry(snap);
       poison(e, label);
       return;
     }
@@ -996,11 +1046,28 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     },
     queueTelemetry(sessionId, rows) {
       const e = entryById(sessionId);
-      if (!e) return;
+      if (!e || !hasTelemetry(rows)) return;
+      // poisoned 的会话不再落库：收下就只进不出，直接丢掉、计数
+      if (e.poisoned) {
+        stats.telemetryDropped++;
+        return;
+      }
       e.telemetry.traces.push(...(rows.traces ?? []));
       e.telemetry.guards.push(...(rows.guards ?? []));
       e.telemetry.outbound.push(...(rows.outbound ?? []));
       change(e);
+    },
+    async writeUsage(deltas) {
+      if (!deltas.length) return;
+      if (conflict) throw new UsageWriteError('conflict');
+      if (closed) throw new UsageWriteError('closed');
+      if (!d.writable()) throw new UsageWriteError('held_by_other');
+      try {
+        await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas)));
+      } catch (err) {
+        // drizzle 把驱动错误包一层，SQLSTATE 在 cause 里：在这一侧取好（src/trace 不 import src/db/**）
+        throw new UsageWriteError(pgErrorOf(err).code ?? (err instanceof Error ? err.name : 'unknown'), { cause: err });
+      }
     },
     async writeStandaloneAudit(item) {
       try {
@@ -1110,5 +1177,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       }
     },
     stats: () => ({ ...stats }),
+    queuedTelemetry(sessionId) {
+      const e = entries.get(sessionId);
+      const n = (t: Required<TelemetryRows>): number => t.traces.length + t.guards.length + t.outbound.length;
+      return e ? n(e.telemetry) + (e.inflight ? n(e.inflight.telemetry) : 0) : 0;
+    },
   };
 }

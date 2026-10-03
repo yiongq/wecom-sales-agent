@@ -83,7 +83,7 @@ async function embed(texts: string[]): Promise<number[][] | null> {
       data?: { embedding: number[] }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
-    recordUsage(EMBED_MODEL, d.usage?.prompt_tokens ?? 0, d.usage?.completion_tokens ?? 0);
+    recordUsage(EMBED_MODEL, d.usage?.prompt_tokens ?? 0, d.usage?.completion_tokens ?? 0, undefined, 0, 0, 'embedding');
     return d.data?.map((x) => x.embedding) ?? null;
   } catch (e) {
     console.error('[retrieval] embedding 调用异常，本次退回关键词匹配:', e instanceof Error ? e.message : e);

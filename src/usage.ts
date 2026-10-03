@@ -128,7 +128,33 @@ export function costOf(model: string, promptTokens: number, completionTokens: nu
   return (fresh * p.in + hit * p.cachedIn + completionTokens * p.out) / 1_000_000;
 }
 
-/** 每次真实模型调用后记一笔。sessionId 可空（后台洞察/建议这类非会话调用） */
+/** 这次调用的用途（02 spec「逐轮 trace、护栏事件与用量」）：usage_daily 按它分列，与库里 purpose 的 CHECK 同一组值 */
+export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding';
+
+/** recordUsage 记下的一笔，交给 onUsage 的订阅者（轮次的 trace、usage_daily 的累加器）。token 是夹过上下界之后计入 usage.json 的那份 */
+export interface UsageEvent {
+  /** 服务器时区的日期（与 usage.json 的 day 同一个口径），'YYYY-MM-DD' */
+  day: string;
+  model: string;
+  purpose: UsagePurpose;
+  sessionId?: string;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
+  /** costOf 算出的金额（元） */
+  cny: number;
+}
+
+const usageListeners = new Set<(e: UsageEvent) => void>();
+
+/** 订阅每一笔用量，返回退订函数。订阅者出错不影响记账与对话 */
+export function onUsage(cb: (e: UsageEvent) => void): () => void {
+  usageListeners.add(cb);
+  return () => usageListeners.delete(cb);
+}
+
+/** 每次真实模型调用后记一笔。sessionId 可空（后台洞察/建议这类非会话调用）；purpose 缺省 chat */
 export function recordUsage(
   model: string,
   promptTokens: number,
@@ -136,6 +162,7 @@ export function recordUsage(
   sessionId?: string,
   cachedTokens = 0,
   reasoningTokens = 0,
+  purpose: UsagePurpose = 'chat',
 ): void {
   if (state.day !== today()) state = blank();
   const m = (state.byModel[model] ??= { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, cny: 0 });
@@ -144,11 +171,13 @@ export function recordUsage(
   m.cachedTokens ??= 0;
   m.reasoningTokens ??= 0;
   const cny = costOf(model, promptTokens, completionTokens, cachedTokens);
+  const cached = Math.min(Math.max(0, cachedTokens), promptTokens);
+  const reasoning = Math.min(Math.max(0, reasoningTokens), completionTokens);
   m.calls += 1;
   m.promptTokens += promptTokens;
   m.completionTokens += completionTokens;
-  m.cachedTokens += Math.min(Math.max(0, cachedTokens), promptTokens);
-  m.reasoningTokens += Math.min(Math.max(0, reasoningTokens), completionTokens);
+  m.cachedTokens += cached;
+  m.reasoningTokens += reasoning;
   m.cny += cny;
   if (sessionId) {
     const s = (state.bySession[sessionId] ??= { calls: 0, cny: 0 });
@@ -156,6 +185,25 @@ export function recordUsage(
     s.cny += cny;
   }
   persist();
+  if (!usageListeners.size) return;
+  const ev: UsageEvent = {
+    day: state.day,
+    model,
+    purpose,
+    ...(sessionId ? { sessionId } : {}),
+    promptTokens,
+    completionTokens,
+    cachedTokens: cached,
+    reasoningTokens: reasoning,
+    cny,
+  };
+  for (const cb of usageListeners) {
+    try {
+      cb(ev);
+    } catch {
+      /* 订阅者出错不影响记账 */
+    }
+  }
 }
 
 export function usageToday(): {

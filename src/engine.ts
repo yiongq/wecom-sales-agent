@@ -3,7 +3,7 @@
 // 就是 closing），可靠且反映真实行为；画像同理从工具参数沉淀。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentReply, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
+import type { AgentReply, ChatMessage, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
 import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, saveSession } from './store.js';
 import {
@@ -39,6 +39,17 @@ import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from '
 import { promptHashes } from './config/hashes.js';
 import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
+import {
+  endTurn,
+  noteDraft,
+  noteGuard,
+  notePrefix,
+  noteToolResult,
+  startTurn,
+  traceToolCall,
+  withTurnScope,
+  type TurnOutcome,
+} from './trace/recorder.js';
 
 // 阶段排序，用于「只前进不倒退」地推导销售阶段（handoff/paid 另行处理）
 const STAGE_RANK: Record<SalesStage, number> = {
@@ -2447,14 +2458,16 @@ export function sopFileText(): string {
  * 这一轮的 system 与它的追溯标签（spec「渲染与哈希」每轮可追溯：SOP 版本与前缀哈希前 12 位）。两样在轮开始时同一刻取：
  * 模型往返期间发布了新版本，日志仍记这一轮实际用的那个。文件模式的版本记 file，哈希按这一轮的 system 算，要打日志时才算
  */
-function turnPrefix(): { system: string; tag: () => string } {
+function turnPrefix(): { system: string; tag: () => string; sopVersion: number | null; prefixHash: () => string } {
   const system = buildSystemPrompt();
   if (configMode() === 'db') {
     const s = currentSop();
     const tag = `SOP v${s.versionNo} · 前缀 ${s.prefixHash.slice(0, 12)}`;
-    return { system, tag: () => tag };
+    return { system, tag: () => tag, sopVersion: s.versionNo, prefixHash: () => s.prefixHash };
   }
-  return { system, tag: () => `SOP file · 前缀 ${promptHashes(system, JSON.stringify(toolDefs), '').prefixHash.slice(0, 12)}` };
+  let hash = '';
+  const prefixHash = (): string => (hash ||= promptHashes(system, JSON.stringify(toolDefs), '').prefixHash);
+  return { system, tag: () => `SOP file · 前缀 ${prefixHash().slice(0, 12)}`, sopVersion: null, prefixHash };
 }
 
 /** 发给模型的固定前缀：system 是请求里第一条 system 消息的全文，tools 是 JSON.stringify(toolDefs)。
@@ -3291,6 +3304,8 @@ export function onToolCall(fn: ToolObserver): () => void {
   toolObservers.add(fn);
   return () => toolObservers.delete(fn);
 }
+// 逐轮 trace 的订阅者（02 spec「逐轮 trace」）：调用记进当前这一轮，结果由 runTool 执行完补上（noteToolResult）
+onToolCall(traceToolCall);
 
 // 同会话串行：一个客户手快连发几条、或网络重发时，多个 handleMessage 会并发跑。
 // 它们共享同一个 session 对象，谁先 await 回来谁先 push——实测四条消息倒序入库，
@@ -3333,12 +3348,19 @@ export interface HandleOpts {
  * 这一轮的工具、链接上的 ?v= 与护栏都看这一代，中途有人改价也不混用。文件模式下什么都不做
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  return serialize(sessionId, () => pinCatalogForTurn(() => handleMessageInner(sessionId, text, channel, opts)));
+  return serialize(sessionId, () => pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts))));
 }
 
 async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
   text = inboundText(text);
   const session = getOrCreateSession(sessionId, channel);
+  // 逐轮 trace（02 spec）：确定性路径也记。每个出口经 done 结束这一轮，与写进回复、saveSession 在同一段同步代码里
+  startTurn(sessionId);
+  const stageBefore = session.stage;
+  const done = (outcome: TurnOutcome, r: AgentReply, msg?: ChatMessage): AgentReply => {
+    endTurn(outcome, r.text, stageBefore, session.stage, msg);
+    return r;
+  };
 
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
   // 这是演示项目，拿手机微信反复走流程是主要用法（2026-09 曾限定为仅网页，被要求改回）。
@@ -3372,9 +3394,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     delete session.negativeHits;
     session.updatedAt = Date.now();
     const reply = '好的，我们重新开始～这次想去哪儿玩呢？😊';
-    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    session.messages.push(msg);
     saveSession(session);
-    return { text: reply, stage: 'greeting' };
+    return done('reset', { text: reply, stage: 'greeting' }, msg);
   }
 
   // 企微重放时这句可能已经记在会话末尾（见 HandleOpts.alreadyRecorded）：不再记一遍，也不删了重记（消息只追加）
@@ -3400,16 +3423,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   if (session.handedOver) {
     if (!isTerminalStage(session.stage)) session.stage = 'handoff';
     saveSession(session); // 客户消息已在上方入库
-    return { text: '', stage: session.stage, handoff: true, silent: true };
+    return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
   }
 
   // 重置口令被 reset_command 关掉（prod）：已入库、已转人工时照常静默（上面），否则回一句固定话术，
   // 不调模型，阶段、画像、订单一概不动。交给模型的话，它可能顺着口令说「已经清空、重新开始」，会话其实什么都没变
   if (isReset) {
     const reply = '想换方向或改订单，直接告诉我新的需求就行～';
-    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    session.messages.push(msg);
     saveSession(session);
-    return { text: reply, stage: session.stage };
+    return done('deterministic', { text: reply, stage: session.stage }, msg);
   }
 
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
@@ -3425,18 +3449,20 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       ...(departNote ? { departNote } : {}),
     });
     const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind)));
-    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    session.messages.push(msg);
     saveSession(session);
-    return { text: reply, stage: session.stage, handoff: true };
+    return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
   }
 
   // 客户要重发支付链接：确定性地重发那张待付款单，不经过模型、不转人工（见 RESEND_ASK）
   const resend = resendPayReply(session, text);
   if (resend) {
     const reply = cleanText(answerIdentity(text, resend));
-    session.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    session.messages.push(msg);
     saveSession(session);
-    return { text: reply, stage: session.stage };
+    return done('deterministic', { text: reply, stage: session.stage }, msg);
   }
 
   const ordersBefore = session.orderIds.length;
@@ -3516,6 +3542,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       }
       const out = withNotes(r, notes);
       call.result = out;
+      noteToolResult(args, out);
       return out;
     });
   };
@@ -3559,6 +3586,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
   const modelStart = Date.now();
   const turn = turnPrefix();
+  notePrefix(turn.sopVersion, turn.prefixHash());
   const raw = await chat({
     system: turn.system,
     contextNote,
@@ -3589,6 +3617,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   });
   // 额度已在调用前占掉（tryReserveVisitorLLM），失败也不退还：token 是真花出去了
   const modelMs = Date.now() - modelStart;
+  noteDraft(raw);
 
   // 兜底剥掉可能残留的 <state>/<think>/<tool_call> 标签（正常已无）
   let visible =
@@ -3607,7 +3636,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (!calls.some((c) => c.name === 'handoff_to_human')) {
       session.messages.push({ role: 'system', content: '顾问已接管会话，AI 本轮生成的回复未发送', at: Date.now() });
       saveSession(session);
-      return { text: '', stage: session.stage, handoff: true, silent: true };
+      return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
     }
     // 模型自己转的人工：接管前记下的是本轮开始时的阶段；这轮若已查线路/报价（回复会发出去），
     // 按工具调用补推一次，交还 AI 时才不倒退
@@ -3643,7 +3672,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       .filter((s) => !ORDER_DONE_CLAIM.test(s))
       .join('')
       .trim();
+    const before = visible;
     if (!/[？?]/.test(rest)) visible = [rest, askOtherOrder(friendsOwn, text)].filter(Boolean).join('\n\n');
+    noteGuard('other_order', before, visible, 'patch');
   }
   // 客户最近说的人数和这次报价对不上（报的 2 位，客户刚问「4个人多少钱」）：按报价的人数建单就是替客户定了人数，留给模型问
   const saidTravelers = wantsOrder
@@ -3677,10 +3708,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       );
     if (existing) {
       session.stage = 'closing';
+      const before = visible;
       visible =
         `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、` +
         `${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n` +
         `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
+      noteGuard('order_net', before, visible, 'replace');
     } else {
       const departDate = wantDate;
       if (departDate) {
@@ -3696,7 +3729,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
               /* 忽略 */
             }
           }
-          const res = JSON.parse(await executeTool('create_order', netArgs, session)) as {
+          const out = await executeTool('create_order', netArgs, session);
+          noteToolResult(netArgs, out);
+          const res = JSON.parse(out) as {
             orderId?: string;
             payUrl?: string;
             total?: number;
@@ -3722,10 +3757,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
               ? `\n之前那张 ${old.travelers} 位、${cardDate(old.departDate)}出发的订单已作废，旧链接失效，按这张付款就行。`
               : '';
             // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
+            const before = visible;
             visible =
               `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、` +
               `${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n请点此完成支付：${res.payUrl}\n` +
               '名额以付款为准，付款后顾问会与您确认行程细节～';
+            noteGuard('order_net', before, visible, 'replace');
           }
         } catch (e) {
           console.error('[engine] 成单安全网建单失败（保留模型原回复）:', e);
@@ -3751,6 +3788,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     const ok = same.filter((c) => proposalUrlOf(c) !== null);
     return (ok.length ? ok : same).some((c) => proposalSuffixOf(c) === version);
   };
+  const beforeLinks = visible;
   visible = visible
     // 完整 URL 一律剥成相对路径再判断：模型会连域名一起编（实测发出过
     // https://www.yuntu.com/proposal/...），只校验路径等于放行了一个我们不控制的域名——
@@ -3788,15 +3826,24 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
         !cut && /^\/proposal\/[A-Za-z0-9_-]+\/\d+(?:\/[\d-]+)?$/.test(link) && proposalPathOk(link, version ?? '')
           ? full
           : pre + HOLE.proposal,
-    )
+    );
+  noteGuard('link_whitelist', beforeLinks, visible, 'strip');
+  const beforeMarkdown = visible;
+  visible = visible
     // markdown 在微信/后台都不渲染，直接落库前就清掉（企微渠道层 wechatify 是二道保险）
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^(\s*)[-*]\s+/gm, '$1· ')
     .replace(/[ \t]{2,}/g, ' ');
+  noteGuard('markdown', beforeMarkdown, visible, 'strip');
+  // 链接该在却不在的位置标成空位（记号不算文本的改动）；整条都被抹空才换成兜底，算链接修补
+  const beforeHoles = visible;
   visible = markLinkHoles(visible).trim() || fallbackReply(session.stage);
+  noteGuard('repair_links', beforeHoles, visible, 'patch');
 
+  const beforeJargon = visible;
   visible = dejargon(visible, session.id);
+  noteGuard('dejargon', beforeJargon, visible, 'replace');
 
   // 空头承诺护栏：模型说要「帮您重排」，但系统没有这个能力；
   // 或者承诺了链接而清洗后正文里根本没有链接。
@@ -3805,6 +3852,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 「6 天版给您报价如下」说的是那条 6 天的现成线路，不是许诺重排。只在 N 不是上下文里任何
   // 一条现成线路的标准天数时，「N 天版」才算改行程承诺——实测 flashx 3 遍里 1 遍这么说，
   // 准备成交的客户被当成改行程转了人工，AI 此后不再应答。
+  const beforeCustom = visible;
   visible = neutralizeStandardDays(visible, session, calls);
   // 承诺改行程：系统真的做不到，转人工是对的（真人顾问能重排）
   if (CUSTOM_PROMISE.test(visible)) {
@@ -3817,6 +3865,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // **这里不能提前 return**：留下来的仍是模型原文，必须照常走完下面的身份/注入/价格护栏。
     // 此前在这里直接返回，模型给压缩版编的「每人大约 13,800 元」就绕过价格护栏发给了客户。
     visible = keptBesideCustomPromise(visible);
+    noteGuard('custom_promise', beforeCustom, visible, 'handoff');
     customHandoff = customHandoffReply(text);
     // 同一轮模型已经调过 handoff_to_human 的，这里保留那条 model 记录、计数不加（enterHandoff 已在转人工中只升级 emergency）
     const departNote = departNoteForHandoff(session);
@@ -3830,7 +3879,11 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   } else {
     // 承诺了链接却没链接：只是这轮少调了一次工具，不构成对客户的承诺，
     // 就地补上链接或改问一句继续对话，不转人工——否则一次工具漏调就吃掉一条线索
+    // 「N 天版」改成「N 天这条」（指的是现成线路）也记在改行程这道护栏名下
+    noteGuard('custom_promise', beforeCustom, visible, 'replace');
+    const beforeRepair = visible;
     visible = dropProposalOffers(await repairLinks(visible, { session, text, calls, runTool })) || fallbackReply(session.stage);
+    noteGuard('repair_links', beforeRepair, visible, 'patch');
   }
   visible = visible.replace(ANY_HOLE, ''); // 空位记号绝不能发给客户
 
@@ -3839,11 +3892,13 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 反过来的只有一种：转人工拿的是库外目的地当理由、客户又没坚持（或这轮刚驳回过）——摘掉转接的话，继续对话
   // 驳回过的，回复里说转接、说「顾问会在微信上联系您」的句子一律摘掉，不管 saysTransfer 认没认出来
   if (!session.handedOver && !customHandoff && (handoffDeclined || saysTransfer(visible, session))) {
+    const beforeClaims = visible;
     if (handoffDeclined || unwarrantedHandoff(session, text, visible)) {
       const kept = dropTransferClaims(visible);
       if (kept !== visible)
         console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${session.id}）：${visible.slice(0, 60)}`);
       visible = kept || fallbackReply(session.stage);
+      noteGuard('handoff_claims', beforeClaims, visible, 'drop_sentence');
     } else if (!isHandoffIntent(text) && !WANTS_PERSON.test(text) && !DEMANDS_EXCEPTION.test(text)) {
       // 客户没要找人，只是问了件要顾问确认的事（专票、资质…），模型顺口说了「我帮您转接」。
       // 真转过去 AI 就此沉默，客户接着问资金、问电话都没人回（guard-13 实测）——演示当场卡住。
@@ -3853,6 +3908,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       visible = /顾问[^。！？\n]{0,12}(?:确认|核实|跟您|联系)/.test(kept)
         ? kept
         : `${kept ? `${kept}\n\n` : ''}这个我记下了，会请顾问在微信上跟您确认。`;
+      noteGuard('handoff_claims', beforeClaims, visible, 'patch');
       session.messages.push({
         role: 'system',
         content: `待顾问跟进：客户问「${cleanText(text, 60)}」，AI 答应请顾问确认（未转人工）`,
@@ -3888,10 +3944,13 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 输出，说明模型被带跑了——直接换成顾问口吻的拒绝。模型干净地拒绝时两条都不命中，不受影响。
   if (visible && INJECTION_INTENT.test(text) && (!ON_TOPIC.test(visible) || hasHijackResidue(visible, text))) {
     console.error(`[engine] ⚠️ 拦截注入劫持（会话 ${session.id}）：输入=${text.slice(0, 60)} 输出=${visible.slice(0, 60)}`);
+    const before = visible;
     replaceVisible(INJECTION_REPLY);
+    noteGuard('injection', before, visible, 'replace');
   }
 
   // 百科式回答护栏：客户提到了我们在卖的目的地，回复却像本地理教科书且不含任何产品信息
+  const beforeEncyclopedia = visible;
   if (session.handedOver && ENCYCLOPEDIA_HINT.test(visible) && !HAS_PRODUCT.test(visible)) {
     // 已转人工，不再改写成线路推荐（推荐末尾要客户「告诉我几位出行」，之后没人应）。
     // 改行程转人工只留后面附的转人工说明；模型自己转的，原文里就有它的转接说明，照发
@@ -3908,6 +3967,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       }
     }
   }
+  noteGuard('encyclopedia', beforeEncyclopedia, visible, 'replace');
 
   // 价格规则 / 预算判断 / 服务承诺（见 price-rules.ts）：「儿童价」「比国庆便宜」「在您预算内」「名额紧张」「支持开专票」
   // 这类话对不上工具结果和写死的定价规则，删掉那一句（服务承诺换成「由顾问确认」），其余照发。排在价格护栏前面：
@@ -3921,7 +3981,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     console.error(`[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${session.id}）：${claims.dropped.join(' | ').slice(0, 160)}`);
   }
   if (claims.text !== visible) {
+    const before = visible;
     visible = claims.text || (customHandoff ? '' : session.handedOver ? HANDED_OVER_FALLBACK : fallbackReply(session.stage));
+    noteGuard('unbacked_claims', before, visible, 'drop_sentence');
   }
 
   // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。
@@ -3931,35 +3993,58 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   const unbacked = findUnbackedPriceHits(visible, session, text, calls);
   if (unbacked.length) {
     console.error(`[engine] ⚠️ 拦截无出处的报价 ${unbacked.map((h) => h.value).join(', ')}（会话 ${session.id}）：`, visible.slice(0, 120));
+    const before = visible;
     visible = rewriteUnbackedPrices(visible, unbacked, { session, text, calls, customHandoff: !!customHandoff });
+    noteGuard('price', before, visible, 'drop_sentence');
   }
 
   // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
   if (strandedAfterDrop(beforeGuards, visible)) {
     console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${session.id}）：${visible.slice(0, 80)}`);
+    const before = visible;
     visible = customHandoff ? '' : session.handedOver ? HANDED_OVER_FALLBACK : await strandedReply({ session, text, calls, runTool });
+    noteGuard('stranded', before, visible, 'replace');
   }
   // 客户提过带娃、没说清孩子算不算：回复别替他写成「两位大人」（flow-07），人数照客户说的写
   // 问大人还是孩子的那句不动（见 ASKS_ADULT_OR_KID）
-  if (kidsHeadcountUnclear(saidAll) && !saidAll.some((t) => /大人/.test(t))) visible = unassumeAdults(visible);
+  if (kidsHeadcountUnclear(saidAll) && !saidAll.some((t) => /大人/.test(t))) {
+    const before = visible;
+    visible = unassumeAdults(visible);
+    noteGuard('adults', before, visible, 'patch');
+  }
 
   // 停在半句上的回复（「可以直接说：」）截到上一个完整句。放在整条替换的护栏之后：替换过的兜底话术本身是完整的
+  const beforeDangling = visible;
   visible = trimDangling(visible);
+  noteGuard('dangling', beforeDangling, visible, 'strip');
 
   // 身份诚实安全网：客户直接问了，但模型的回复里没承认 —— 补一句在最前面。
   // 「装成真人」是这类产品最不能碰的红线，不能交给提示词碰运气。
   // 必须排在注入/百科/价格这些整条替换的护栏之后：排在前面时，补上的承认句会跟着模型原文一起被换掉
   //（「你是机器人吗？西藏每人多少钱」+ 编价 → 客户只收到价格兜底，身份问题没人答）。
+  const beforeIdentity = visible;
   visible = answerIdentity(text, visible);
+  noteGuard('identity', beforeIdentity, visible, 'append');
 
-  if (customHandoff) visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
-  if (session.handedOver) visible = dropPostHandoffPromises(visible);
+  if (customHandoff) {
+    const before = visible;
+    visible = visible ? `${visible}\n\n${customHandoff}` : customHandoff;
+    noteGuard('custom_promise', before, visible, 'append');
+  }
+  if (session.handedOver) {
+    const before = visible;
+    visible = dropPostHandoffPromises(visible);
+    noteGuard('post_handoff', before, visible, 'drop_sentence');
+  }
   // 改写正文的护栏都跑完了：本轮这条线的方案书链接缺了版本后缀的补回去（见 restoreProposalSuffixes）
+  const beforeSuffix = visible;
   visible = restoreProposalSuffixes(visible, calls);
+  noteGuard('proposal_suffix', beforeSuffix, visible, 'patch');
 
   // 模型输出原样进会话前去掉 NUL、修好孤立代理项（不截长度）：带着它们的消息进不了库（不变量 16）
   visible = cleanText(visible);
-  session.messages.push({ role: 'agent', content: visible, at: Date.now() });
+  const replyMsg: ChatMessage = { role: 'agent', content: visible, at: Date.now() };
+  session.messages.push(replyMsg);
   // 回复里说了「由顾问跟您确认」「我让顾问确认」（守卫换上的，或模型照 SOP 说的）却没转人工：记一条给后台，
   // 顾问才看得到有件事等着他确认——此前客户付款前一直等，没人知道（同「嘴上说转接却没转」是一类空头承诺）
   if (!session.handedOver && DEFER_TO_CONSULTANT.test(visible)) {
@@ -3986,7 +4071,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   if (session.orderIds.length > ordersBefore) {
     reply.orderId = session.orderIds[session.orderIds.length - 1];
   }
-  return reply;
+  // 这一轮转了人工（开始时没转，见上面的静默）记 handoff；访客日预算用完、走了离线脚本记 budget
+  return done(session.handedOver ? 'handoff' : degraded ? 'budget' : 'replied', reply, replyMsg);
 }
 
 /** 「由顾问跟您确认」「我让顾问确认」「这个我请顾问确认一下」 */

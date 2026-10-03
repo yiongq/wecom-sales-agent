@@ -25,6 +25,7 @@ import type { AgentReply, ChannelAdapter, ChatMessage } from '../types.js';
 import { handleMessage, inboundText } from '../engine.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, saveSession } from '../store.js';
 import { routeForProposal } from '../tools.js';
+import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
 
 const API_BASE = 'https://qyapi.weixin.qq.com/cgi-bin';
 const VAR_DIR = process.env.VAR_DIR ?? path.resolve('var');
@@ -800,32 +801,45 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
       link: '[链接]',
       location: '[位置]',
     };
-    // 客户发了内容就算开口了：一律记一条占位（没有会话就建一个），后台和接管的顾问才看得到客户发过图片。
-    // 重放时按 msgid 判断记没记过，不比文本：连着发的两张图片，占位一模一样
-    const session = getOrCreateSession(sessionId, 'wecom');
-    const seen = replay ? session.messages.findIndex((m) => m.msgid === msg.msgid) : -1;
-    if (seen < 0) {
-      const content = PLACEHOLDER[msg.msgtype] ?? `[其他消息：${msg.msgtype}]`;
-      session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid, sentAt: msg.send_time * 1000 });
-      // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
-      if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
-      saveSession(session);
-    }
-    if (session.handedOver) {
-      console.log(`[wecom] 静默（${msg.msgtype} 消息，转人工后不自动回复）`);
-      return; // 与文本消息一致：只入库，交给真人
-    }
-    const hint = HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
-    // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
-    if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
-    if (await sendText(cfg, msg.external_userid, hint)) {
-      const s = getSession(sessionId);
-      if (s) {
-        s.messages.push({ role: 'agent', content: hint, at: Date.now() });
-        saveSession(s);
+    // 这一条不经引擎，同样是一轮（02 R16「每处理一条客户消息收集一条轮次记录」）：口径同引擎的确定性路径，
+    // 回了固定提示记 deterministic、已转人工不回话记 silent；重放时提示已经发过、什么都不做的不算一轮（同重发已生成的回复）。
+    // 只记轮次、关联提示消息的 turnId，客户收到的与会话里记下的都不变
+    return withTurnScope(async () => {
+      // 客户发了内容就算开口了：一律记一条占位（没有会话就建一个），后台和接管的顾问才看得到客户发过图片。
+      // 重放时按 msgid 判断记没记过，不比文本：连着发的两张图片，占位一模一样
+      const session = getOrCreateSession(sessionId, 'wecom');
+      startTurn(sessionId);
+      const stageBefore = session.stage;
+      const seen = replay ? session.messages.findIndex((m) => m.msgid === msg.msgid) : -1;
+      if (seen < 0) {
+        const content = PLACEHOLDER[msg.msgtype] ?? `[其他消息：${msg.msgtype}]`;
+        session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid, sentAt: msg.send_time * 1000 });
+        // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
+        if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+        saveSession(session);
       }
-    }
-    return;
+      if (session.handedOver) {
+        console.log(`[wecom] 静默（${msg.msgtype} 消息，转人工后不自动回复）`);
+        endTurn('silent', '', stageBefore, session.stage);
+        return; // 与文本消息一致：只入库，交给真人
+      }
+      const hint = HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
+      // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
+      if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
+      if (await sendText(cfg, msg.external_userid, hint)) {
+        const s = getSession(sessionId);
+        if (s) {
+          const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
+          s.messages.push(sent);
+          saveSession(s);
+          // 与写进提示、saveSession 同一段同步代码：排出的那次落库里提示已关联上这一轮
+          endTurn('deterministic', hint, stageBefore, s.stage, sent);
+          return;
+        }
+      }
+      // 没发出去（或会话已不在）：照样是回固定提示的一轮，只是没有记进会话的那条消息可关联
+      endTurn('deterministic', hint, stageBefore, getSession(sessionId)?.stage ?? session.stage);
+    });
   }
   const t0 = Date.now();
   console.log(`[wecom] ${replay ? '重放' : '收到'}客户消息: "${msg.text.content.slice(0, 40)}"`);
