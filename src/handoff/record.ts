@@ -1,5 +1,6 @@
 // 转人工记录（docs/architecture/02-conversations-workbench/spec.md「转人工记录与四种状态」、R9）。
-// 五条入口（确定性安全网、模型调工具、改行程承诺、回复里说了转接、后台接手）都经 enterHandoff，带上类型与原因。
+// 五条入口（确定性安全网、模型调工具、改行程承诺、回复里说了转接、后台接手）都经 enterHandoff，带上类型与原因；
+// 02 新增的紧急情况、交互失败、负面情绪（第 11 步，src/handoff/triggers.ts）同样经它。
 // 从 tools.ts 搬来，tools.ts 再导出；判「阶段是不是终态」的帮手也在这里，引擎和旧接口共用。
 import { configMode, currentTenant } from '../config/source.js';
 import { packById } from '../packs/registry.js';
@@ -8,6 +9,7 @@ import type { IndustryPack } from '../shared/pack.js';
 import { handoffNotifyOps } from '../jobs/notify.js';
 import { emitAfterCommit, queueJobs } from '../store.js';
 import type { HandoffKind, HandoffRecord, SalesStage, Session } from '../types.js';
+import type { EmergencyKind } from './triggers.js';
 
 /**
  * 按类型写的固定原因（model 取模型给的原因，这里的只在模型没给时兜底）。
@@ -21,7 +23,22 @@ export const HANDOFF_REASON = {
   promise: '回复里答应了改行程，要顾问重排',
   claimed: '回复里答应了转接顾问（引擎补记）',
   agent: '共享工作台转人工',
+  emergency: '客户遇到紧急情况',
+  failure: '客户的问题 AI 几轮都没答上',
+  sentiment: '客户情绪不满',
 } as const satisfies Partial<Record<HandoffKind, string>>;
+
+/** 紧急情况的类型写进原因，顾问一眼看出是哪一类（R15） */
+const EMERGENCY_LABEL: Record<EmergencyKind, string> = {
+  altitude: '高反',
+  injury: '受伤',
+  medical: '急病',
+  documents: '证件丢失',
+  stranded: '被困或走失',
+};
+export function emergencyReason(kind: EmergencyKind): string {
+  return `${HANDOFF_REASON.emergency}（${EMERGENCY_LABEL[kind]}）`;
+}
 
 /** 判阶段用的行业包：DB 配置模式取启动时装载的租户包，文件模式取注册表里的旅游包 */
 export function activePack(): IndustryPack {
