@@ -18,7 +18,8 @@ import { guardOutbound } from './engine.js';
 import { numEnv } from './env.js';
 import { isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
-import type { Session, SalesStage } from './types.js';
+import { mayHaveDelivered } from './quota/ledger.js';
+import type { ChatMessage, PushOpts, Session, SalesStage } from './types.js';
 import { profileForPrompt } from './types.js';
 
 /** 连续推送失败多少次后放弃该会话的这个阶段，不再每轮重试 */
@@ -194,7 +195,10 @@ onShutdown(drainForShutdown);
  * 扫描一轮。push 由调用方注入（server 传 adapterFor），便于测试。
  * 只管文件存储：db 存储下真实会话的记账在 PG 写队列里，这里的同步落盘管不到，跟进改由任务表驱动（startJobs），扫描器什么都不做
  */
-export function runFollowUpScan(push: (sessionId: string, text: string) => Promise<boolean>, now = new Date()): Promise<number> {
+export function runFollowUpScan(
+  push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>,
+  now = new Date(),
+): Promise<number> {
   if (!followupEnabled() || stopping) return Promise.resolve(0);
   if (sessionStoreMode() === 'db') return Promise.resolve(0);
   if (inQuietHours(now)) return Promise.resolve(0);
@@ -208,7 +212,7 @@ export function runFollowUpScan(push: (sessionId: string, text: string) => Promi
   return task;
 }
 
-async function scanOnce(push: (sessionId: string, text: string) => Promise<boolean>): Promise<number> {
+async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>): Promise<number> {
   let sent = 0;
   for (const s of listSessions() as SessionWithFollowup[]) {
     if (stopping) break;
@@ -238,12 +242,19 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
       meta.pendingAt = Date.now();
       saveSession(fresh, false);
       flushStoreNow();
+      // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象）
+      const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
       let ok: boolean;
       try {
-        ok = await push(s.id, text);
+        ok = await push(s.id, text, { kind: 'followup', message });
       } catch (e) {
         // 推送抛异常：结果不明（可能已经送达）。账不退、pendingAt 留着，按已发处理——宁可漏一条，不能重发
         console.error(`[followup] 跟进 ${s.id} 推送结果不明，按已发处理、不再重试:`, e instanceof Error ? e.message : e);
+        continue;
+      }
+      if (!ok && mayHaveDelivered(s.id, message)) {
+        // 企微超时、网络异常（发送账本里记 unknown）或只发出去一部分：同样是结果不明，按已发处理（02 第 12 步）
+        console.error(`[followup] 跟进 ${s.id} 推送结果不明（超时或网络异常），按已发处理、不再重试`);
         continue;
       }
       delete meta.pendingAt;
@@ -262,7 +273,8 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
         continue;
       }
       // 后台按 author 标「自动跟进」（02 spec「消息只追加」）
-      fresh.messages.push({ role: 'agent', content: text, at: Date.now(), author: 'followup' });
+      message.at = Date.now();
+      fresh.messages.push(message);
       meta.failures = 0;
       saveSession(fresh, false);
       sent += 1;
@@ -274,7 +286,7 @@ async function scanOnce(push: (sessionId: string, text: string) => Promise<boole
   return sent;
 }
 
-export function startFollowUpScheduler(push: (sessionId: string, text: string) => Promise<boolean>): void {
+export function startFollowUpScheduler(push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>): void {
   if (!followupEnabled()) {
     console.log('[followup] 未启用（设 FOLLOWUP_ENABLED=1 开启自动跟进）');
     return;
