@@ -130,12 +130,9 @@ async function composeFollowUp(s: Session): Promise<string> {
   const user = `销售阶段：${s.stage}\n客户画像：${JSON.stringify(profileForPrompt(s.profile))}\n最近对话：\n${recent}`;
   // 模型输出进会话前去掉 NUL、修好孤立代理项（02 spec 不变量 16），与引擎写进会话的 AI 回复同一口径
   const out = cleanText((await completeText(sys, user, { purpose: 'followup' })).trim().split('\n')[0]);
-  // 生成内容同样不许带链接/订单号（跟进消息是主动外发，风险更高）
-  const cleaned = out
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/\/pay\/\S+/g, '')
-    .replace(/ord_[A-Za-z0-9]+/g, '')
-    .trim();
+  // 订单号先抹掉（跟进消息是主动外发，风险更高）：支付链接随之成了半截，白名单按假支付链接抹成空位。网址不在这里清：
+  // 原文交给 guardOutbound，它的链接白名单才看得见「说了给链接」的地方，连同承诺那句一起删（此前先抹成空串，「方案链接： 」照发）
+  const cleaned = out.replace(/ord_[A-Za-z0-9]+/g, '').trim();
   return cleaned || templateFor(s.stage);
 }
 

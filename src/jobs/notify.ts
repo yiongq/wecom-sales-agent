@@ -31,6 +31,14 @@ export function handoffNotifyOps(sessionId: string, at: number, opts: { escalate
   return opts.escalated ? [op('started', at)] : [op('started', at), op('unclaimed', at + HANDOFF_UNCLAIMED_MS)];
 }
 
+/**
+ * 重置时取消这个会话所有待执行的转人工通知（02 spec「消息只追加」重置那一行），随重置那次落库提交。按 payload 的 sessionId 取消，
+ * 不按转人工记录拼键：升级会覆盖记录里的时刻。已在执行的（running）不动，与 cancel 的口径相同
+ */
+export function cancelHandoffNotifyOps(sessionId: string): JobOp[] {
+  return [{ op: 'cancelSession', kind: 'handoff_notify', sessionId }];
+}
+
 /** 第 14 步之前的执行体：记一行、标 done（不留 pending：留着会每 5 秒被认领一次） */
 export function runHandoffNotifyJob(job: JobRow): Promise<JobOutcome> {
   const p = (job.payload ?? {}) as { sessionId?: unknown; reason?: unknown };

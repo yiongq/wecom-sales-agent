@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentReply, ChatMessage, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
-import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, saveSession } from './store.js';
+import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, queueJobs, saveSession } from './store.js';
 import {
   enterHandoff,
   executeTool,
@@ -41,6 +41,7 @@ import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
 import { shortIdOf } from './shared/conversation.js';
 import { followupOptOutOf } from './jobs/optout.js';
+import { cancelHandoffNotifyOps } from './jobs/notify.js';
 import {
   endTurn,
   noteDraft,
@@ -3456,7 +3457,9 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     session.lastShownRoutes = undefined;
     session.seenRouteIds = undefined;
     session.missedDestinations = undefined;
-    // 转人工记录、接手人与两种计数一起清（R9）；firstHandoffAt、handoffCount 永不清
+    // 转人工记录、接手人与两种计数一起清（R9）；firstHandoffAt、handoffCount 永不清。待执行的转人工通知一并取消，随这次落库提交
+    // （db 存储；文件存储与 demo 类没有任务表，queueJobs 什么都不做）
+    queueJobs(session.id, cancelHandoffNotifyOps(session.id));
     delete session.handoff;
     delete session.assignee;
     delete session.turnSignals;
@@ -4142,7 +4145,7 @@ function logSlowTurn(
 
 /**
  * AI 回复所用的同一套出口护栏，给跟进这类不在对话轮次里的出站文本（02 spec「任务表与跟进」）：链接白名单、去 markdown、内部用语、
- * 空头承诺（改行程、说了发链接却没有链接、说了转接顾问）、价格规则与服务承诺、价格。
+ * 空头承诺（改行程、说了发链接却没有链接、说了转接顾问、说了由顾问确认或顾问会联系）、价格规则与服务承诺、价格。
  * 与对话轮次不同的只有「没有这一轮」：没有工具调用（方案书链接一律抹掉，支付链接只认本会话没被替代的真订单），没有客户这一句
  * （金额只认会话里有出处的）；命中的只删那几句，不补链接、不换兜底话术、不转人工。全删光或删完只剩残句时返回空串，由调用方决定发什么。
  * 不在轮次里调用时 noteGuard 什么都不记（02「逐轮 trace」只记对话轮次）
@@ -4178,6 +4181,13 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
   if (saysTransfer(visible, session)) {
     const before = visible;
     visible = dropTransferClaims(visible);
+    noteGuard('handoff_claims', before, visible, 'drop_sentence');
+  }
+  // 「由顾问跟您确认」「顾问会在微信上联系您」：AI 回复里说了会给顾问记一条待办，跟进是主动外发，不替顾问揽活，按句删掉
+  const deferred = transferSentences(visible);
+  if (deferred.some((s) => DEFER_TO_CONSULTANT.test(s) || promisesContact(s, session))) {
+    const before = visible;
+    visible = tidyLinkText(deferred.filter((s) => !DEFER_TO_CONSULTANT.test(s) && !promisesContact(s, session)).join(''));
     noteGuard('handoff_claims', before, visible, 'drop_sentence');
   }
   const beforeGuards = visible;
