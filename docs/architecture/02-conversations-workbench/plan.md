@@ -136,7 +136,7 @@
   - console 自测：四态与计数同源、标题前缀只数 `human`、禁用词扫描、13 个种子的 UX 验收 6 照旧。
   - 对应验收 10 的界面部分、15 的界面部分，以及不变量 45、46。
 - [ ] 20. 前端：J 页（4.5）：
-  - [ ] 20.1 先修后台 UX plan「Open」第 1 条：`popupRegion` 包的下拉菜单键盘打不开（照列表筛选的写法，确认点弹层空白处不抢输入框焦点）；话术页、条目详情的「更多」一起受益（0.5）。
+  - [x] 20.1 先修后台 UX plan「Open」第 1 条：`popupRegion` 包的下拉菜单键盘打不开（照列表筛选的写法，确认点弹层空白处不抢输入框焦点）；话术页、条目详情的「更多」一起受益（0.5）。2026-10-03 做完（分支 `fix/02-step20-1-popup-keyboard`），见「实施记录 · 第 20.1 步」。
   - [ ] 20.2 照 spec「后台页面」与设计系统 J 页：三栏、分组列表、对话头与「更多」、五种消息呈现与 `handoff_note` 时间线、改写对照、「显示AI步骤」、交接卡、输入框与发送窗口（含 `persisted: false`）、右栏卡片与订单动作（订单相关部分等第 15 步合并，之前接桩）、「AI为什么这么回」、不同意时「交还AI」不可用、viewer 的打码正文、加载 / 空 / 出错。console 自测覆盖交接卡措辞、接手前输入框禁用、409 与 503 的说明、发送窗口为 0 时禁用、键盘打开「更多」（4）。
   - 对应验收 11、13、14 的界面部分，以及 20 的界面部分。
 - [ ] 21. 前端：总览 A2 与运行数字格（2）：等人接手与已成交客户要人工的行、「接手」、待付款行（「等你确认价格」等第 15 步合并）、排序、「本月成交额」格与权限、四个运行数字格与权限。console 自测用 02 种子场景断言顺序与金额。对应验收 16 与 34 的界面部分。
@@ -832,6 +832,16 @@
   - 变异（源码拷进 scratchpad 本线专用的隔离副本，逐个打、只跑 `ops.selftest`）：19 个，全部杀掉。第 1 条：没有 ref 时仍用短码、每轮换一个密钥（同一会话两轮不同）、引用里带会话 id 的末段；第 2 条：其余地址写 `_OTHER`、不按主机名认 deepseek；第 3 条：子 span 不带 `gen_ai.conversation.id`（只在根上）、根 span 出错不写 `error.type`、根的 `error.type` 一律 `_OTHER`；第 4 条：引擎不在失败分支记、`noteToolError` 不记失败标记、不记耗时、导出不给失败的工具设 ERROR、失败标记进了 trace 行；第 6 条：窗口不截断、缓存键用请求的 days、保留期不缓存（每次请求都查库）；第 7 条：停机不看 deadline（等 shutdown 自己结束，三种端点都是 1.5 秒、返回 false、只有「drain 段超时」）、放弃时不记那一行、钩子不传 deadline（按 8 秒总上限算）。第 5 条只改注释，没有可打的变异。改好之后三种端点下 `runShutdownHooks(8000)` 都是约 1001 毫秒返回 true（隔离副本里探针量的）。
   - 计数：`ops.selftest` 89 / 91 → 111 / 114（不带 / 带 PG），其余套件不变；四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器 `pgtest-02s18fix`，`127.0.0.1:55442`）与不带各跑一遍都全绿，PASS 行 64，mock eval 19/19（文件与 DB 两种配置模式）；其余套件的数目与改之前相同（`store.selftest` 403 / 426、等价套件 908、`trace.selftest` 176、`jobs.selftest` 95 / 100、`db.selftest` 497 / 894）；锁定套件 8 个文件的 sha256 与基准相同、断言零修改，`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变。开工时合并 `origin/dev` 没有新提交（已是最新）。
 
+### 第 20.1 步 · popupRegion 的键盘（2026-10-03）
+
+- 另开一条线做（与主线的第 11–13 步并行），只改 console 前端：`console/src/parts/popupRegion.tsx`、`shell/UserMenu.tsx`、`catalog/CatalogDetail.tsx`，新套件 `console/src/parts/popupRegion.selftest.tsx` 串进 `test`（登录页自测之后）。修法、取舍、自测覆盖、变异与 Chromium 实测都记在后台 UX plan「实施记录 · popupRegion 的键盘」，这里只记要点。
+- 修法：`PopupRegion` 经 ref 接住 rc-dropdown 打开时与按 Tab 时调的 `focus()`，转给菜单项（勾着的那一项，没有就第一项），本身仍不可聚焦；上一下输入是指针时不转，鼠标点开的样子同改之前；Esc、Tab 把焦点还给开着菜单的菜单按钮（`aria-haspopup="menu"` 且 `aria-expanded="true"`），子菜单里的 Esc 只关子菜单。下拉选择与联想的弹层（也经它包）点四周的内边距不再让输入框失焦（origin/dev 上会）。用户菜单、条目详情的「更多」加 `autoFocus` 与 `destroyOnHidden`；用户菜单的 Enter 拦默认动作、「关于」之前焦点先回用户按钮。
+- 自测：新套件 91 条；happy-dom 里先按浏览器的规矩补上焦点（不可聚焦的元素 `focus()` 无效）、默认动作与布局，原来的 bug 在没补的 happy-dom 里看不出来。现有 console 套件断言零修改、条数不变（shell 143、登录页 125、sop 811、fields 1,725）。变异 21 例（隔离副本，只跑本套件）都失败并点名。
+- 浏览器：Chromium 151（Playwright 1.62）对仓库外的本机后台（PGlite + `server.ts` 的 app 托管 `console/dist`），浅色、深色各一轮，48/48；同样的操作对 origin/dev 的构建复现原来的 bug。
+- 门禁：四个门禁全绿；`pnpm test` 不带 `PG_TEST_URL` 跑一遍（本步不碰服务端），新套件 91 条，其余 console 套件条数同 dev，mock eval 19/19（文件与 DB 两种配置模式）；`src/` 零改动，锁定套件 8 个文件与 README 零改动，`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变。首屏 JS 326,483 / 420,000 B（同一时刻的 dev 是 325,954），换页最多 169,685 / 250,000 B（dev 169,683）。收尾时取了一次 `origin/dev`，没有新提交，合并是空操作。
+- 带出的四条记进后台 UX plan「Open」（都不挡 02）：话术页编辑器光标停在软换行处、第一次自动保存以后会把焦点从页头拉回编辑器（CodeMirror 的 `enforceCursorAssoc`，origin/dev 上同样）；菜单项的焦点框偏移是 antd 的 1，设计系统 §3 写 −2；「丢弃草稿」不能点时键盘到不了它、读屏听不到原因；话术目录的下拉没经 `popupRegion`，点内边距输入框失焦。
+- 注意（第 20.2 步）：J 页对话头的「更多」照这三个入口写：菜单按钮带 `aria-haspopup="menu"` 与 `aria-expanded`（「打开它的按钮」靠这两个找），Dropdown 带 `autoFocus`、`destroyOnHidden`、`popupRender={popupRegion(…)}`，菜单项的 `onClick` 在 keydown 时拦下默认动作（打开弹窗的那一下 Enter 不落到弹窗里的按钮上）；自测照 `popupRegion.selftest.tsx` 的做法（先补焦点规矩，Enter 打开、焦点在菜单项上、Esc 回按钮）。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -955,3 +965,10 @@
 - 半成品：无。分支没 push。留着的一处：成单安全网那处 `executeTool` 抛错还没接 `noteToolError`（engine.ts 只许加一处），见「审查之后改的」第 4 条。
 - 阻塞：无。本步没有新的「Open」。
 - 下一步：主线照旧是第 10–13 步；第 17 步做的时候先读「实施记录 · 第 18 步」的「注意（第 17 步）」（往 `ops.selftest.ts` 里加用例的位置、日志的 `conv` 与导出的匿名引用不是同一口径）。第 21 步画四个运行数字格时读「注意（第 21 步）」。
+
+### 交接（2026-10-03，第 20.1 步）
+
+- 已完成：第 20.1 步（另开一条线，分支 `fix/02-step20-1-popup-keyboard`，没 push）。`popupRegion` 包的下拉菜单键盘打得开：用户菜单、话术页「更多」里的「丢弃草稿」、条目详情「更多」里的「复制为新草稿」只用键盘走得完；下拉选择与联想点弹层空白处焦点留在输入框里。后台 UX plan「Open」那一条已标成在本步处理，实施记录记在那边。只改 console 前端，README 没动，锁定套件零修改。
+- 半成品：无。
+- 阻塞：无。后台 UX plan「Open」新加四条（编辑器拉回焦点、菜单项焦点框偏移、禁用的「丢弃草稿」、话术目录的下拉），都不挡 02。
+- 下一步：主线照旧；第 20.2 步做 J 页时先读「实施记录 · 第 20.1 步」的「注意（第 20.2 步）」。PR 合并时把后台 UX plan「Open」与本 plan 第 20.1 步里的分支名换成 PR 号。
