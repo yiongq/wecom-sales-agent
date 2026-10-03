@@ -1651,6 +1651,68 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   );
 }
 {
+  // 第四轮（第三轮盲测审查之后）的端到端：情绪窗口是最近 3 条客户消息，紧急那一句、prod 下被关掉的重置口令那一句也进窗口
+  // （consistency[1]）；「还没定几个人」连说三遍、「说了多少遍」说的是孩子（blind-sentiment[0]、[4]）都不转人工
+  const sidE = newSid('E4EMG');
+  await say(sidE, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
+  await say(sidE, '好的', [{ content: '好的～几位出行？' }]);
+  const rE = await say(sidE, '我们被困在山上了');
+  check(
+    '前置：弱、中性之后紧急转人工，紧急那一句也进情绪窗口（[1,0,0]）',
+    rE.text === EMERGENCY_REPLY && sess(sidE).handoff?.kind === 'emergency' && json(sess(sidE).negativeHits) === '[1,0,0]',
+    json({ rE, n: sess(sidE).negativeHits }),
+  );
+  await legacy(sidE, 'resume');
+  requests.length = 0;
+  const rE2 = await say(sidE, '你们回复太慢了', [{ content: '抱歉让您久等了～' }]);
+  check(
+    '交还之后一句弱：最近 3 条是 [0,0,1]，不按情绪转人工、照常调模型',
+    !sess(sidE).handedOver && requests.length === 1 && rE2.text.includes('久等') && json(sess(sidE).negativeHits) === '[1]',
+    json({ rE2, n: sess(sidE).negativeHits, h: sess(sidE).handoff }),
+  );
+  const sidR = newSid('E4RESET');
+  __profileTest.use({ DEPLOY_PROFILE: 'demo', FLAG_RESET_COMMAND: 'off' });
+  try {
+    await say(sidR, '你们回复太敷衍了', [{ content: '抱歉～您想去哪儿玩？' }]);
+    await say(sidR, '好的', [{ content: '好的～几位出行？' }]);
+    const rR = await say(sidR, '重置');
+    check(
+      '重置口令被关掉时回固定话术，这一句也进情绪窗口（[1,0,0]）',
+      rR.text === '想换方向或改订单，直接告诉我新的需求就行～' && json(sess(sidR).negativeHits) === '[1,0,0]',
+      json({ rR, n: sess(sidR).negativeHits }),
+    );
+    requests.length = 0;
+    const rR2 = await say(sidR, '你们回复太慢了', [{ content: '抱歉让您久等了～' }]);
+    check(
+      '口令之后一句弱：最近 3 条只有 1 弱，不按情绪转人工、照常调模型',
+      !sess(sidR).handedOver && requests.length === 1 && rR2.text.includes('久等'),
+      json({ rR2, n: sess(sidR).negativeHits, h: sess(sidR).handoff }),
+    );
+  } finally {
+    __profileTest.reset();
+  }
+  const sidD = newSid('E4UNDECIDED');
+  await say(sidD, '想去三亚玩', [{ content: '三亚很好～几位出行？' }]);
+  const asksD = ['大概几位呢？', '方便说下人数吗？', '那先按两位给您看？'];
+  const outD: string[] = [];
+  for (const ask of asksD) outD.push((await say(sidD, '还没定几个人', [{ content: ask }])).text);
+  check(
+    '端到端：「还没定几个人」连说三遍不算重复提问、不转人工、问句原样发出、失败窗口不留',
+    !sess(sidD).handedOver && outD.every((t, i) => t.includes(asksD[i]!)) && !('turnSignals' in sess(sidD)),
+    json({ outD, w: sess(sidD).turnSignals }),
+  );
+  const sidK = newSid('E4KIDS');
+  requests.length = 0;
+  await say(sidK, '孩子8岁，说了多少遍了，孩子就是不听，非要去迪士尼', [{ content: '迪士尼很适合～' }]);
+  await say(sidK, '我都说了三遍了，他还是吵着要去上海', [{ content: '上海迪士尼也很好～' }]);
+  const rK = await say(sidK, '大概多少钱', [{ content: '要看选哪条线路～您几位出行？' }]);
+  check(
+    '端到端：「说了多少遍」说的是孩子，两句都不记情绪、不转人工，第 3 句照常回复',
+    !sess(sidK).handedOver && requests.length === 3 && rK.text.includes('选哪条线路') && !('negativeHits' in sess(sidK)),
+    json({ rK, n: sess(sidK).negativeHits, h: sess(sidK).handoff }),
+  );
+}
+{
   // 企微重放（state[0]）：上次停在「已记下、回复还没生成」，客户这句与它的情绪窗口值已经一起落了库（入库与记窗口之间没有 await）。
   // 以 alreadyRecorded 重跑同一句：情绪窗口不再记一遍；交互失败的窗口那一轮还没记，照常记。db 存储下见 store/parity.selftest
   const sid = newSid('REPLAYNEG');
@@ -1765,6 +1827,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 触发的标注语料：紧急、情绪、在问，失败、敏感信息、撤回同意的向量 / 紧急不调模型与升级 / 情绪 1 强 2 弱 / 交互失败的窗口与阈值 / 售前问法与自述的端到端 / 企微重放不重复记情绪 / 历史里的「【顾问】」与出口去前缀（含问身份））`,
+  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 触发的标注语料：紧急、情绪、在问，失败、敏感信息、撤回同意的向量 / 紧急不调模型与升级 / 情绪 1 强 2 弱 / 交互失败的窗口与阈值 / 售前问法与自述的端到端 / 情绪窗口含紧急与被关掉的重置口令 / 企微重放不重复记情绪 / 历史里的「【顾问】」与出口去前缀（含问身份））`,
 );
 process.exit(0);

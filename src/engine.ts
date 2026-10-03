@@ -3531,6 +3531,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     session.followupOptOut = { at: Date.now(), quote: cleanText(text, 200) };
     console.log(`[followup] 客户拒绝跟进，此后不再跟进（会话 ${shortIdOf(session.id) || '?'}）`);
   }
+  // 负面情绪的窗口（02 spec「确定性转人工触发」、R15、开放问题 4）：每条客户消息的强弱都记进最近 3 条客户消息的窗口，
+  // 紧急那一句、已转人工期间的、prod 下被关掉的重置口令那一句也记（第 11 步第三轮审查 consistency[1]：原先这几句不记，
+  // 更早的弱词会多留一轮）；阈值只在下面 AI 接待的路径上判。投诉（isComplaint）由安全网按投诉转人工，记 0，不重复计。
+  // 企微重放（alreadyRecorded）不再记：这句上次已经和它的窗口值一起落了库（记窗口与入库在同一段同步代码里，同一次落库的快照里两样都在）
+  const negative = isComplaint(text) ? 0 : negativeLevel(text);
+  if (!opts.alreadyRecorded) setWindow(session, 'negativeHits', pushWindow(session.negativeHits, negative, SENTIMENT_WINDOW));
   // 先落一次盘：客户这句话立刻出现在作战室（并经 SSE 推给前端），顾问看到的是
   // 「客户刚说了什么 + AI 正在生成回复」。此前要等整轮跑完（4~10 秒）才落盘，
   // 后台看起来像卡住了——延迟其实来自这里，不是 SSE。
@@ -3565,12 +3571,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 阶段停在终态（已成交客户要人工，R9）的不改回 handoff：成交统计不变
   if (session.handedOver) {
     if (!isTerminalStage(session.stage)) session.stage = 'handoff';
-    // 人工接待期间客户的话也进情绪窗口（spec：最近 3 条客户消息），只记不判：交还 AI 之后窗口里是最近 3 条，
-    // 转人工那一句带的弱词不会隔着整段人工接待和交还后的一句凑成 2 弱（第 11 步第二轮审查 engine[2]）。重放不再记，同下
-    if (!opts.alreadyRecorded) {
-      const level = isComplaint(text) ? 0 : negativeLevel(text);
-      setWindow(session, 'negativeHits', pushWindow(session.negativeHits, level, SENTIMENT_WINDOW));
-    }
+    // 人工接待期间客户的话也进了情绪窗口（上面入库时记的），这里只记不判：交还 AI 之后窗口里是最近 3 条，
+    // 转人工那一句带的弱词不会隔着整段人工接待和交还后的一句凑成 2 弱（第 11 步第二轮审查 engine[2]）
     saveSession(session); // 客户消息已在上方入库
     return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
   }
@@ -3585,12 +3587,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     return done('deterministic', { text: reply, stage: session.stage }, msg);
   }
 
-  // 负面情绪（02 spec「确定性转人工触发」、R15、开放问题 4）：这条客户消息的强弱记进最近 3 条的窗口。
-  // 投诉（isComplaint）由下面的安全网按投诉转人工，这一条记 0，不重复计。
-  // 企微重放（alreadyRecorded）：这句上次已经和它的窗口值一起落了库（入库与记窗口之间没有 await，同一次落库的快照里两样都在），
-  // 不再记一遍，阈值照现有的窗口判。交互失败的窗口在回复出来之后才记，重放照常记
-  const negative = isComplaint(text) ? 0 : negativeLevel(text);
-  if (!opts.alreadyRecorded) setWindow(session, 'negativeHits', pushWindow(session.negativeHits, negative, SENTIMENT_WINDOW));
+  // 负面情绪：这条客户消息的强弱在入库时已经记进窗口（见上）；企微重放不再记，阈值照现有的窗口判。
+  // 交互失败的窗口在回复出来之后才记，重放照常记
 
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
@@ -3611,8 +3609,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
   }
 
-  // 负面情绪达到阈值（最近 3 条里 1 强或 2 弱），而且这一句本身是负面的：与投诉同样处理（handoffReply 的投诉措辞），
-  // kind='sentiment'，本轮不调模型；窗口清零
+  // 负面情绪达到阈值（最近 3 条里 1 强或 2 弱），而且这一句本身是负面的（交还之后一句中性的话不按情绪转人工）：
+  // 与投诉同样处理（handoffReply 的投诉措辞），kind='sentiment'，本轮不调模型；窗口清零
   if (negative > 0 && sentimentThresholdReached(session.negativeHits ?? [])) {
     const departNote = departNoteForHandoff(session);
     enterHandoff(session, {

@@ -21,8 +21,8 @@ export interface TurnSignals {
   /** 本轮 search_routes 什么也没返回，且不是 destinationMiss */
   noRetrievalResult: boolean;
   /**
-   * 这句在问（问号、句末吗/呢/么、疑问词，见 isQuestion），且与前 2 条客户消息之一重复（去标点空白后相同，
-   * 或字二元组 Jaccard ≥ 0.8，长度 ≥ 4 字）；重复回答、重复确认不算（owner 2026-10-03）
+   * 这句是高把握的问句（问号、句末吗/么、正反问、明确问法；句末呢、陈述里内嵌的疑问词与任指不算，见 isQuestion），
+   * 且与前 2 条客户消息之一重复（去标点空白后相同，或字二元组 Jaccard ≥ 0.8，长度 ≥ 4 字）；重复回答、重复确认不算（owner 2026-10-03）
    */
   repeatedQuestion: boolean;
   guardHit: 'price' | 'injection' | null;
@@ -294,7 +294,7 @@ function pastBefore(c: Clause, at: number): boolean {
   return lastIndexOf(PAST, before) > cut || (c.carried.past && cut < 0);
 }
 
-/** 小句是在问：后面跟问号、以吗呢么嘛结尾、「了没」，或带着问法（吧不算：「太离谱了吧」是在抱怨）。紧急情况与情绪用 */
+/** 小句是在问：后面跟问号、以吗呢么嘛结尾、「了没」，或带着问法（吧不算：「太离谱了吧」是在抱怨）。敏感信息与撤回同意用 */
 const ASKING_TAIL = /(?:[吗呢么嘛]|了没有?)$/;
 const ASKING_WORDS =
   /会不会|是不是|是否|有没有|能不能|可不可以|怎么办|怎么样|咋办|咋整|如何|为什么|为啥|(?<![很好不最许])多少(?![数年女有])|多久|哪(?:里|儿|个|些)|什么时候|啥时候|怎么(?!这么|那么|回事)|(?![不没])(\p{Script=Han})[不没]\1/u;
@@ -315,15 +315,23 @@ const negatedBefore = (clause: string, at: number): boolean => NEG_BEFORE.test(f
 //      跟我一起来的朋友、团里的阿姨……，或者关键词本身带着人（「联系不上我妈」「把我们扔下了」「孩子丢了」）。
 //      朋友、同事、有人、博主、隔壁团的大爷、他她都不算，省掉主语的也不算（「护照丢了」「车翻了」交给主模型）；
 //   2. 已经发生或正在发生：关键词直接带了、啦、咯（摔伤了、晕过去了、被困在山上了），或者同一句话里有此刻标记
-//      （现在、刚刚、刚才、突然、正在、还在、一直在、不停地），或者是本身就在持续的说法（吐个不停、高烧不退、喘不上气、
-//      止不住地流血、走不了、出不去、被困在……上/里），或者报了体温（39度）。光说程度（很严重、得厉害）不算；
+//      （现在、刚刚、刚才、突然、正在、还在、一直在、一直 + 吐烧咳喘这类症状动词、不停地；光说「一直」不算：「我一直高反」
+//      也可能是体质），或者是本身就在持续的说法（吐个不停、高烧不退、喘不上气、止不住地流血、走不了、出不去、被困在……上/里），
+//      或者报了体温（39度）。光说程度（很严重、得厉害）不算。摔了一跤、跌倒、滑倒、摔破要同一句话里说了起不来、动不了、
+//      走不了、站不起来、骨折、肿得厉害、流血这类后果（「昨天摔了一跤，不碍事」不算）；车船坏了、抛锚、陷住要同一句话里
+//      说了走不了、出不来、回不去；「流了好多血」要说了伤在哪儿（头、手、腿……）；
 //   3. 不是在问：整条消息里除了求助的问法（怎么办、要不要去医院、去哪补办、能来接吗……）、问身份、打招呼，没有别的问句
 //      （是非问、X不X、会不会、能……吗一律不算）；
 //   4. 整条消息不是假设、将来、出行前（如果、万一、到时候、等到、出发前、下周、X 月的团、能不能去、适合），不是差点、以为、
 //      虚惊、好了、退烧了，不说价钱、不开玩笑，不问政策（退款、保险、改期），不是转述（听说、网上、视频、X 说）；
 //      关键词前面不是否定、担心、拿不准（可能、好像）、以前（上次、去年、昨天），不是俚语与夸张（骨折价、贵到吐血、
-//      震撼到休克、要晕倒了），天灾路况要人就在关键词所在的小句里、前面不是那边那里（「我们这边地震了」）。
-// 拿不准就不判：「我朋友高反了很严重」（没有同行标记）、行程中描述症状却问「是不是高反了」都交给主模型。
+//      震撼到休克、要晕倒了），天灾路况要人就在关键词所在的小句里、前面不是那边那里（「我们这边地震了」）；
+//   5. 旁观的人用泛称也不算：有个老人、一个孩子、隔壁桌的孩子、旁边的小孩、我们看到一个孩子落水了（「我们团里一个老人」
+//      「我们有个孩子」是自己这边的）；事情已经解决的不算，中间隔着宾语也一样（后来找到酒店了、在超市找到他了、已经回到
+//      酒店了、联系上我妈了；「导游联系上警察了」「回到刚才的地方找了」还没解决）；关键词后面的小句说了没事、不要紧、
+//      不严重、小伤的不算（只看关键词后面的：「以前没事，现在高反了」不受影响）。
+// 拿不准就不判：「我朋友高反了很严重」（没有同行标记）、行程中描述症状却问「是不是高反了」、只说疼痛（头疼想吐、肚子疼）
+// 都交给主模型。
 
 /** 同行的家人（走失、联系不上要有人） */
 const FAMILY =
@@ -349,6 +357,12 @@ interface EmergencyRule {
   trapped?: boolean;
   /** 叫救护车、打 120：前面是求救（帮我、快、赶紧、请）就算，不然要有人、已经打了 */
   ambulance?: boolean;
+  /** 摔了一跤、跌倒、滑倒、摔破：同一句话里要说了后果（起不来、动不了、骨折、肿得厉害、流血），摔的不能是东西 */
+  fall?: boolean;
+  /** 车船坏了、抛锚、陷住：同一句话里要说了走不了、出不来、回不去 */
+  vehicle?: boolean;
+  /** 流了好多血：同一句话里要说了伤在哪儿或怎么伤的（「为了这趟旅行流了好多血」说的是花钱） */
+  bleeding?: boolean;
 }
 // 同一小句里按这个顺序（spec 的类型顺序）取第一个算数的
 const EMERGENCY_RULES: EmergencyRule[] = [
@@ -357,6 +371,12 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     kind: 'injury',
     re: /骨折|摔断(?:腿|胳膊|手|脚)?|摔伤|摔倒|摔下(?:山|楼|去|来|悬崖|马)|受伤|扭伤|扭到(?:了)?(?:脚|腰|腿|手)?|崴(?:了)?脚|脚崴|脱臼|撞伤|撞到头|磕到头|磕破|划伤|割伤|烫伤|烧伤|流血|车祸|撞车|被车撞|(?:车子?|大巴|巴士|客车|船|皮划艇|竹筏|筏子)翻了|侧翻|溺水|落水|掉进(?:了)?(?:河|湖|海|水|沟|山沟|悬崖|江)|坠崖|被(?:狗|蛇|猴子|熊|牦牛|马|蜂|蜜蜂|马蜂|虫|水母)(?:咬|蛰|蜇|踢|撞)/g,
   },
+  {
+    kind: 'injury',
+    re: /摔了(?:一?跤|一下|个跟头|个大跟头)?|跌了一?跤|跌倒|跌伤|绊倒|滑倒|滑下(?:山|去|来)|摔破/g,
+    fall: true,
+  },
+  { kind: 'injury', re: /流了?(?:好多|很多|不少|一地|满脸|一身|一大摊|这么多|那么多)的?血/g, bleeding: true },
   {
     kind: 'medical',
     re: /无法呼吸|没法呼吸|不能呼吸|呼吸困难|喘不上气|喘不过气|喘不上来|喘不过来|上不来气|叫不醒|不省人事/g,
@@ -388,6 +408,11 @@ const EMERGENCY_RULES: EmergencyRule[] = [
     withParty: true,
     ongoing: true,
   },
+  {
+    kind: 'stranded',
+    re: /(?:车子?|汽车|大巴|巴士|客车|中巴|面包车|越野车|船|游船|快艇|皮划艇|竹筏)[^，]{0,4}?(?:坏|抛锚|陷|熄火)/g,
+    vehicle: true,
+  },
   { kind: 'stranded', re: /被[^，]{0,4}?(?:扔|丢|甩|落)(?:下|在)|走丢|走失|走散|迷路|迷了路|找不到路/g },
   { kind: 'stranded', re: /被困|困在|困住|下不了山|回不去了|回不来了|出不去了/g, trapped: true },
   {
@@ -407,9 +432,17 @@ const E_HYPO =
 /** 出行前：时间、能不能去、适不适合、换个地方（「能去哪个医院」是求助，不算） */
 const E_PRETRIP =
   /出发前|出行前|出发之前|出门前|还没出发|没出发|下周|下个?礼拜|下星期|下个月|下月|明年|过几天|过两天|月底|[一二三四五六七八九十\d]+月份?(?:的|去|出发|初|中旬|底)|国庆|五一|春节|暑假|寒假|元旦|端午|中秋|清明|十一(?![点号个岁日月])|报名|报团|(?<!哪)能去(?![^，]{0,4}(?:医院|急诊|诊所|派出所|使馆))|还能去|能不能去|可以去|去得了|去不了|适合|合适|跟得上|跟不上|吃得消|受得了|能参加|成行|低海拔|海拔低|换(?:个|一|成)|改去|改成|改为/;
-/** 差点、以为、虚惊；已经好了、找到了 */
-const E_NEAR =
-  /差点|差一点|险些|以为|虚惊|还好|幸好|好在|幸亏|没事了|没事啦|没啥事|没什么事|没大碍|不碍事|问题不大|找到了|找到啦|找回来了|找着了|联系上了|(?<![准备收拾订弄安排说定办做])好了|好多了|好点了|好些了|好转|缓过来|缓解|(?:烧|热)(?:已经|也)?退了|退烧(?!药)|恢复|出院|(?<=[折病烧冒伤])刚好|痊愈|不疼了|不痛了|不难受了|没那么(?:严重|难受|疼)|精神(?:挺|还|很)?好|拆石膏|拆线|没好利索|补办好/;
+/** 差点、以为、虚惊；已经好了、找到了。找到、找回中间隔着宾语也算（后来找到酒店了、在超市找到他了）；联系上的要是家人、
+ *  我们或他她（「导游联系上警察了」还没解决），回到的要是酒店、车上、住处这类安全的地方（「回到刚才的地方找了」还在找） */
+const E_NEAR = new RegExp(
+  '差点|差一点|险些|以为|虚惊|还好|幸好|好在|幸亏|没事了|没事啦|没啥事|没什么事|没大碍|不碍事|问题不大|' +
+    '(?<![没不])找(?:到|着|回)[^,，。.！!？?；;\\s]{0,6}?[了啦]|' +
+    `联系上(?:[了啦]|(?:我的?|我们的?)?(?:${FAMILY}|他们?|她们?|我们)[了啦])|` +
+    '回到了?(?:酒店|宾馆|民宿|住处|住的地方|房间|车上|大巴上|营地|家里?|市区|县城|镇上|山下|安全的地方|集合点|集合的地方)' +
+    '[^,，。.！!？?；;\\s]{0,3}?[了啦]|' +
+    '(?<![准备收拾订弄安排说定办做])好了|好多了|好点了|好些了|好转|缓过来|缓解|(?:烧|热)(?:已经|也)?退了|退烧(?!药)|恢复|出院|' +
+    '(?<=[折病烧冒伤])刚好|痊愈|不疼了|不痛了|不难受了|没那么(?:严重|难受|疼)|精神(?:挺|还|很)?好|拆石膏|拆线|没好利索|补办好',
+);
 /** 体质、病史、习惯 */
 const E_HABIT = /体质|病史|老毛病|毛病|慢性|一向|向来|从小|每次|每回|每趟|经常|老是|总是|平时|一般|通常|(?<!不)容易/;
 /** 说价钱（骨折价、贵到吐血、看到账单心梗）：整条不判 */
@@ -448,7 +481,19 @@ const E_FEVER = /^[^，]{0,3}?\d{2}(?:\.\d)?度|^\d{2}(?:\.\d)?度/;
 const E_NOW = /现在|此刻|刚刚|刚才|突然|正在|还在|一直在|一直(?:吐|呕|流血|发烧|烧|抽|咳|拉|喘|哭|晕|疼|痛|昏|发抖)|不停(?:地|的)?/;
 /** 本身就在持续的说法（同一句话里有它，关键词就算正在发生） */
 const E_ONGOING =
-  /吐个不停|上吐下泻|高烧不退|烧(?:还|也|一直)?不退|喘不(?:上|过)(?:来|气)|上不来气|止不住(?:地|的)?(?:流血|吐|流)|血止不住|流血不止|走不了|动不了|起不来|站不起来|出不去|下不了山|回不去|过不去|叫不醒|醒不过来|说不出话|不省人事/;
+  /吐个不停|上吐下泻|高烧不退|烧(?:还|也|一直)?不退|喘不(?:上|过)(?:来|气)|上不来气|止不住(?:地|的)?(?:流血|吐|流)|血止不住|流血不止|走不了|动不了|起不来|站不起来|出不去|出不来|下不了山|下不来|回不去|回不来|过不去|叫不醒|醒不过来|说不出话|不省人事/;
+/** 摔了一跤、跌倒、滑倒、摔破的后果：同一句话里有它才算（「我妈摔了一跤，起不来了」「我摔了一跤 脚肿得老高 好像骨折了」） */
+const E_FALL_HURT =
+  /起不来|爬不起来|站不起来|动不了|走不了|骨折|断了|肿得(?:老高|很高|厉害|很厉害|不行|像)|肿起来了|流血|流了?(?:好多|很多|不少)?的?血|出血|血止不住/;
+/** 摔的是东西：把手机摔了、相机摔坏了 */
+const E_FALL_THING = /把[^，]{0,6}$|(?:手机|相机|电脑|平板|镜头|屏幕|东西|碗|杯子|盘子|包|箱子|行李箱|眼镜|无人机|手表|充电宝)$/;
+/** 车船坏了、抛锚、陷住之后困在那儿 */
+const E_VEHICLE_STUCK = /走不了|出不来|出不去|回不去|回不来|开不了|开不出去|开不动|动不了|下不来|下不了山|过不去/;
+/** 流了好多血说了伤在哪儿或怎么伤的 */
+const E_WOUND = /头|脸|手|脚|腿|胳膊|膝盖|鼻子|嘴|额头|伤口|后脑|眼睛|耳朵|牙|摔|磕|割|划|撞|咬|伤|砸|刺/;
+/** 关键词后面的小句说了没事、不要紧、不严重、小伤（「孩子刚才摔倒了，没事」「孩子手划伤了，不严重」）；问的「没事吧」不算 */
+const E_FINE_AFTER =
+  /^(?:不过|但是?|还好|幸好|好在|应该|目前|暂时|人)?(?:[^，]{0,2}得)?(?:没事|没什么事|没啥事|不要紧|不严重|小伤|问题不大|没大碍|不碍事)(?![吗吧么嘛呢])/;
 /** 被困说了在哪儿：在山上、在电梯里、在半路 */
 const E_TRAPPED_AT = /^在?[^，了啦咯]{0,8}?(?:上|里|中|上面|里面|半路|路上|半山腰?)/;
 /** 被困说的是问题、工作、会议，或者家里 */
@@ -497,9 +542,16 @@ const COMPANION_PHRASE = new RegExp(
 const COMPANION_MARK = '◎';
 /** 客户这边的人 */
 const PARTY_MENTION = new RegExp(`${COMPANION_MARK}|我们?|咱们?|俺们?|自己|${FAMILY}|一家人?|全家|全团|一车人`, 'g');
+/** 旁观的人用泛称：有个老人、一个孩子、隔壁桌的孩子、旁边的小孩（「我们团里一个老人」「我们有个孩子」是自己这边的）。
+ *  要排在 OTHER_MENTION 最前面，与 FAMILY 里的孩子、老人在同一处结束，平局判别人 */
+const BYSTANDER = '(?:孩子|小孩|小朋友|宝宝|娃|老人家?|老太太|老大爷|老爷爷|老奶奶)';
 /** 不是客户这边的人（朋友、同事、有人、博主、隔壁、前面的车……） */
-const OTHER_MENTION =
-  /朋友|同事|同学|邻居|网友|别人|(?<!老)人家|(?<![所没])有人|有个|有位|游客|客人|路人|博主|网红|主播|大爷|大妈|大叔|大哥|大姐|阿姨|叔叔|小伙子?|姑娘|司机|导游|领队|他们|她们|表[哥姐弟妹]|堂[哥姐弟妹]|舅舅?|姨妈?|小姨|大姨|姑姑|伯伯|嫂子?|婶婶?|亲戚|闺蜜|室友|领导|老板|隔壁|别的车|一辆车|其他人|别的人|陌生人|外国人/g;
+const OTHER_MENTION = new RegExp(
+  `(?<!(?:我|我们|咱们|俺们|${COMPANION_MARK}|家)(?:里|的)?)(?:有|一)(?:个|位)${BYSTANDER}|` +
+    `(?:别人|人家|隔壁|旁边|前面|后面|对面|邻座|别的团|其他团)[^，我]{0,4}?${BYSTANDER}|` +
+    '朋友|同事|同学|邻居|网友|别人|(?<!老)人家|(?<![所没])有人|有个|有位|游客|客人|路人|博主|网红|主播|大爷|大妈|大叔|大哥|大姐|阿姨|叔叔|小伙子?|姑娘|司机|导游|领队|他们|她们|表[哥姐弟妹]|堂[哥姐弟妹]|舅舅?|姨妈?|小姨|大姨|姑姑|伯伯|嫂子?|婶婶?|亲戚|闺蜜|室友|领导|老板|隔壁|别的车|一辆车|其他人|别的人|陌生人|外国人',
+  'g',
+);
 /** 和、跟、被、把、给……后面的人不是主语（「我们的车和别人撞车了」「被导游扔在半路」） */
 const NOT_SUBJECT_LEAD = /[和跟与同被把给让叫帮]$/;
 
@@ -526,30 +578,45 @@ function slangOf(k: string, before: string, after: string, t: string): boolean {
   return k === '撞车' && /日期|日程|时间|行程|档期|安排|活动|计划|会议|航班|假期|节日/.test(t);
 }
 
-/** 关键词这一处是不是高把握的说法（见本节开头的 1、2 条与小句里的排除）。sentenceBefore 是同一句话里前面小句的原文 */
-function emergencyAt(rule: EmergencyRule, m: RegExpMatchArray, c: Clause, sentenceBefore: string, sentenceNow: boolean): boolean {
+/** 关键词带着家人开头（「孩子丢了」「小孩不见了」）：要看前面是不是旁观的泛称（「有个小孩不见了」） */
+const FAMILY_LEAD = new RegExp(`^${FAMILY}`);
+
+/** 同一句话：前面小句的原文、整句的原文、有没有此刻标记 */
+interface SentenceCtx {
+  before: string;
+  text: string;
+  now: boolean;
+}
+
+/** 关键词这一处是不是高把握的说法（见本节开头的 1、2、5 条与小句里的排除） */
+function emergencyAt(rule: EmergencyRule, m: RegExpMatchArray, c: Clause, sentence: SentenceCtx): boolean {
   const t = c.text;
   const at = m.index ?? 0;
   const k = m[0];
   const before = t.slice(0, at);
   const after = t.slice(at + k.length);
   if (slangOf(k, before, after, t)) return false;
+  // 摔了一跤、跌倒：要说了后果、摔的不是东西；车船坏了要困住了；流了好多血要说了伤在哪儿
+  if (rule.fall && (!E_FALL_HURT.test(sentence.text) || E_FALL_THING.test(before))) return false;
+  if (rule.vehicle && !E_VEHICLE_STUCK.test(sentence.text)) return false;
+  if (rule.bleeding && !E_WOUND.test(sentence.text)) return false;
   if (E_NEG_BEFORE.test(before) || (m.groups?.between && /[没不未别无]/.test(m.groups.between))) return false;
   // 叫救护车：前面是求救就算（帮我叫救护车、快叫救护车），不然照常要有人、已经打了
   if (rule.ambulance && E_RESCUE_LEAD.test(before)) return true;
   if (E_EXAGGERATE.test(before) || E_UNSURE.test(before) || E_AFTER_SKIP.test(after) || pastBefore(c, at)) return false;
   // 已经发生或正在发生
   const attached = k.includes('了') || E_ATTACHED.test(after) || E_HAPPENED_BEFORE.test(before);
-  let realized = attached || sentenceNow || !!rule.ongoing || E_FEVER.test(k + after);
+  let realized = attached || sentence.now || !!rule.ongoing || E_FEVER.test(k + after);
   if (rule.trapped) {
     if (E_TRAPPED_ABSTRACT.test(t) || E_NOT_STUCK.test(t)) return false;
     realized ||= E_TRAPPED_AT.test(after) || k.endsWith('在') || after.startsWith('在');
   }
   if (/^被[^，]{0,4}?(?:扔|丢|甩|落)在/.test(k)) realized = true;
   if (!realized) return false;
-  if (rule.withParty) return true;
+  // 关键词里带着人：「把我们扔下了」「找不到我女儿了」就是客户这边；「孩子丢了」要看前面是不是「有个」「隔壁桌的」这类旁观
+  if (rule.withParty) return !FAMILY_LEAD.test(k) || lastPerson(`${sentence.before}，${before}${k}`) !== 'other';
   if (rule.disaster) return !E_ELSEWHERE.test(before) && lastPerson(before) === 'party';
-  return lastPerson(`${sentenceBefore}，${before}`) === 'party';
+  return lastPerson(`${sentence.before}，${before}`) === 'party';
 }
 
 /** 客户本人或同行的人此刻正处在危险或困境里：高反、受伤、急病、证件丢失、被困走失。精确优先：只认把握很大的说法
@@ -562,19 +629,24 @@ export function emergencyOf(text: string): EmergencyKind | null {
   for (const re of [E_HYPO, E_PRETRIP, E_NEAR, E_HABIT, E_PRICE, E_POLICY, E_HEARSAY]) if (re.test(whole)) return null;
   const clauses = clausesOf(cleaned);
   if (clauses.some(askingNotHelp)) return null;
+  // 最后一个说没事、不要紧、不严重的小句：它前面的命中都不算（只看关键词后面的）
+  const fineAt = clauses.findLastIndex((o) => !o.asked && E_FINE_AFTER.test(o.text));
   for (let i = 0; i < clauses.length; i += 1) {
     const c = clauses[i]!;
-    if (c.carried.hypo || COND.test(c.text)) continue;
+    if (c.carried.hypo || COND.test(c.text) || i < fineAt) continue;
     const same = clauses.filter((o) => o.sentence === c.sentence);
-    const sentenceBefore = same
-      .filter((o) => clauses.indexOf(o) < i)
-      .map((o) => o.text)
-      .join('，');
-    const sentenceText = same.map((o) => o.text).join('，');
-    const sentenceNow = E_NOW.test(sentenceText) || E_ONGOING.test(sentenceText);
+    const text = same.map((o) => o.text).join('，');
+    const sentence: SentenceCtx = {
+      before: same
+        .filter((o) => clauses.indexOf(o) < i)
+        .map((o) => o.text)
+        .join('，'),
+      text,
+      now: E_NOW.test(text) || E_ONGOING.test(text),
+    };
     for (const rule of EMERGENCY_RULES) {
       for (const m of c.text.matchAll(rule.re)) {
-        if (emergencyAt(rule, m, c, sentenceBefore, sentenceNow)) return rule.kind;
+        if (emergencyAt(rule, m, c, sentence)) return rule.kind;
       }
     }
   }
@@ -598,11 +670,14 @@ const THIRD_PARTY = /朋友|同事|邻居|网友|同学|别人|人家/;
 //      什么时候、为什么、为啥、可以吗、请问、想问。
 // 不算：句末「呢」一律不算（「孩子才5岁呢」「可以的呢」「那贵州呢」；真在问的「呢」交给模型，漏认只是少记一次失败），句末的嘛、
 // 「X 不」「X 没」、「是吧」「对吧」、不带问号的「还是」、英文也不收。陈述里内嵌的疑问词不算：小句里疑问词前面有知道、清楚、
-// 问问、看看、想想、确认、商量、考虑、说不好、回头、等我（「我知道怎么去机场」「等我确认一下几号出发再告诉你」）；任指不算：
+// 问问、看看、想想、确认、商量、考虑、说不好、回头、等我、没定、待定、还没想好（「我知道怎么去机场」「还没定几个人」
+// 「等我确认一下几号出发再告诉你」），或者小句以「（就、得、要）看」开头（「看你们包不包」「得看孩子去不去」；「你看几号合适」
+// 照算）；想、打算、准备、计划之后的「玩、住、待几天」是不定数（「我想出去玩几天」；「这条线要玩几天」照算）；
+// 没、不之后隔至多两个字的「什么」「啥」是否定陈述（「也没干什么」「不需要什么特别的」）；任指不算：
 // 疑问词或正反问后面隔着至多三个字接都、也、就（「什么都行」「哪天都可以」「去不去都行」），同一个疑问词说两遍（「想去哪就去哪」
 // 「你说多少就多少」），随便、无论、不管、不论、哪怕之后（「随便哪家都行」「不管多少钱」）；「为什么都不回我」照算。
-// 疑问词不按子串收：「几」前面是数字、十、好、过、再、多、等、这、那、前、后、没、些、近的，后面接后、以后、之后、内、再、就的，
-// 「几个问题」不算（「十几个」「过几天」「我想多待几天」「几天后给你答复」）；「没什么」「没多少」「不怎么样」「门票什么的」
+// 疑问词不按子串收：「几」前面是数字、十、好、过、再、多（最多、至多照算：「最多几个人」）、等、这、那、前、后、没、些、近的，
+// 后面接后、以后、之后、内、再、就的，「几个问题」不算（「十几个」「过几天」「我想多待几天」「几天后给你答复」）；「没什么」「没多少」「不怎么样」「门票什么的」
 // 「多少有点」「很多少数民族」「说了多少遍」「怎么这么」「怎么说呢」「多大点事」「动不动」「时不时」不算。
 // 判之前先归一：全角转半角、英文小写、繁体常用字转简体，emoji 与微信表情码当分隔。
 
@@ -613,14 +688,16 @@ const MEASURE =
 const ASK_TAIL = /(?:吗|(?<![那这多要什怎])么)$/;
 /** 内嵌：疑问词前面是知道、问问、看看、确认……（陈述里提到一个问题，不是在问我们） */
 const EMBEDDED =
-  /知道|晓得|清楚|确定|问问|看看|想想|想好|在想|琢磨|纠结|犹豫|确认|商量|考虑|决定|说不好|说不准|告诉|通知|记得|忘了|回头|等我|研究|打听/;
+  /知道|晓得|清楚|确定|问问|看看|想想|想好|在想|琢磨|纠结|犹豫|确认|商量|考虑|决定|说不好|说不准|告诉|通知|记得|忘了|回头|等我|研究|打听|[没未待]定/;
+/** 小句以「（就、得、要）看」开头：「看你们包不包」「就看天气好不好了」是条件，不是在问（「你看几号合适」照算） */
+const DEPENDS_LEAD = /^(?:就|得|要|还得|还要|全|主要|那就|那得)?看/;
 /** 疑问词与正反问（带位置：看它前面有没有内嵌的说法、后面有没有任指的都也就） */
 const ASK_WORDS = new RegExp(
   '为什么|为啥|凭什么|请问|想问|可以吗|能否|是否|多长时间|什么时候|啥时候|' +
     '(?<!不)怎么(?!这么|那么|说|回事)|怎样|(?<!不)咋|如何|(?<!没)多少(?!有点|有些|会)|多久|多远|' +
     '(?<![很好许诸众差不最太更那这再过])多(?:高|大|长|重|贵|宽|深|冷|热)(?![型家量部半数多点])|' +
-    `(?<![\\d十百千万好过再多等这那前后没些近])几${MEASURE}(?!后|以后|之后|内|以内|再|就|问题)|` +
-    '哪(?!怕)|谁|(?<!没|没有)什么(?!的)|(?<!没|没有)啥|' +
+    `(?<![\\d十百千万好过再等这那前后没些近])(?<!(?<![最至])多)几${MEASURE}(?!后|以后|之后|内|以内|再|就|问题)|` +
+    '哪(?!怕)|谁|(?<!(?:没|没有|不)\\p{Script=Han}{0,2})什么(?!的)|(?<!(?:没|没有|不)\\p{Script=Han}{0,2})啥|' +
     '(?![不没])(\\p{Script=Han}{1,2})[不没]\\1',
   'gu',
 );
@@ -629,7 +706,7 @@ const EVERY_AFTER = /^[^，]{0,3}?[都也就]/;
 const EVERY_ANOTA_AFTER = /^[^，]{0,3}?[都也](?:行|可以|好|无所谓|一样|没关系|随便|成)/;
 /** 随便、无论、不管、不论、哪怕之后都是任指；动不动、时不时、说了多少遍、多么不是问 */
 const NOT_ASKING_REST =
-  /(?:随便|无论|不管|不论|哪怕)[^，]*|谁(?:知道|晓得)|(?:们|了|和|跟|与|同|约)几(?:个|位|家)|(?:多|再)(?:待|玩|住|呆|留|逛|歇)几|休息几|动不动|时不时|(?:说|问|讲|发|催|提|强调|解释|重复)了?(?:都|有)?(?:多少|几)(?:遍|次|回)|多多少少|(?<=[很好许不最])多少/g;
+  /(?:随便|无论|不管|不论|哪怕)[^，]*|谁(?:知道|晓得)|(?:们|了|和|跟|与|同|约)几(?:个|位|家)|(?:多|再)(?:待|玩|住|呆|留|逛|歇)几|休息几|(?:想|打算|准备|计划)[^，]{0,8}?(?:玩|住|待|呆|躺|歇|逛|泡|安静|休息)几(?=天|晚|夜)|动不动|时不时|(?:说|问|讲|发|催|提|强调|解释|重复)了?(?:都|有)?(?:多少|几)(?:遍|次|回)|多多少少|(?<=[很好许不最])多少/g;
 
 function clauseAsks(c: Clause): boolean {
   if (c.asked) return true;
@@ -638,13 +715,14 @@ function clauseAsks(c: Clause): boolean {
   for (const m of t.matchAll(ASK_WORDS)) {
     const word = m[0];
     const at = m.index;
-    if (EMBEDDED.test(t.slice(0, at))) continue;
+    if (EMBEDDED.test(t.slice(0, at)) || DEPENDS_LEAD.test(t.slice(0, at))) continue;
     const after = t.slice(at + word.length);
     // 正反问的任指要接都行、都可以这类（「去不去都行」）；「是不是每天都要早起」还在问
     const aNotA = /[不没]/.test(word) && word.length >= 3;
     if (!word.startsWith('为') && (aNotA ? EVERY_ANOTA_AFTER : EVERY_AFTER).test(after)) continue;
     // 同一个疑问词说两遍：「想去哪就去哪」「你说多少就多少」「什么时候便宜什么时候去」
-    if (word.length <= 4 && (after.includes(word) || t.slice(0, at).includes(word))) continue;
+    // （按原文数：「想玩几天就玩几天」前一个几天被上面的「想……玩几」去掉了，也还是说了两遍）
+    if (word.length <= 4 && (after.includes(word) || t.slice(0, at).includes(word) || c.text.split(word).length > 2)) continue;
     return true;
   }
   return false;
@@ -708,19 +786,28 @@ export function failureThresholdReached(recent: readonly number[]): boolean {
 // 负面情绪（开放问题 4：词表加规则）：精确优先（owner 2026-10-03，第 11 步第二轮审查之后），只认冲着我们的重话。
 // 漏掉的由主模型兜（第 15 步的 SOP 加一句：客户明显冲着我们发火时，先安抚再调 handoff_to_human）。
 //   强：明确冲着我们（你们、你、您、客服、这个机器人、AI、这家、顾问、回复）的辱骂（「你是傻逼吗」「你们这群废物」「垃圾客服」
-//       「智障AI」「你他妈能不能快点」「神经病啊你」），本身就冲着人的（操你、去死、滚蛋、你算什么东西、闭嘴），
-//       或者单独成句的「滚」「垃圾」「骗子」「傻逼」这类（含叠说「滚滚滚」「垃圾垃圾垃圾」；「你们是骗子吧 滚」的滚）。
-//       自嘲（「我真是个智障」「我减肥失败了，是个废物」）、泛指、冲着别人的（「我老公是个白痴」「那家店真垃圾」）都不算。
-//   弱：明确冲着我们的抱怨（你们太差了、你们不靠谱、对你们很失望、后悔找你们了、回复太慢了），或者本身就在说这次对话的
-//       （答非所问、说了多少遍了、别敷衍我、听不懂人话、浪费我时间、白问了、鸡同鸭讲）。没有对象的一律不算（「太失望了」
-//       「无语」「太离谱了」交给主模型）；点名别家平台的（携程、别家、上家）、售前疑虑（怕被坑、你们靠谱吗）不算。
+//       「智障AI」「你他妈能不能快点」「神经病啊你」「你们就是黑心商家」「你们这群流氓」「客服是死了吗」「你好蠢」
+//       「你们是不是傻」），本身就冲着人的（操你、去死、滚蛋、你算什么东西、闭嘴），或者单独成句的「滚」「垃圾」「骗子」
+//       「傻逼」这类（含叠说「滚滚滚」「垃圾垃圾垃圾」、「死骗子」「大骗子」「一群骗子」；「你们是骗子吧 滚」的滚）；骂人的词
+//       所在的那段没点到人时，看同一句话里前面最近点到的人（「你们又搞错了，真是个白痴」）。自嘲（「我真是个智障」
+//       「我太蠢了」「我减肥失败了，是个废物」）、泛指（「这设计太蠢了」）、冲着别人的（「我老公是个白痴」「那家店真垃圾」）都不算。
+//   弱：明确冲着我们的抱怨（你们太差了、你们不靠谱、对你们很失望、后悔找你们了、回复太慢了、你们怎么这么慢、你们说话不算话、
+//       客服太不负责任了、你们收费不透明），「你们的 / 你们安排的 + 导游、酒店、司机」也是我们（「你们安排的酒店太烂了」），
+//       对象放在后面单独一段的也算（「太失望了，你们」）；或者本身就在说这次对话的（答非所问、说了多少遍了、别敷衍我、
+//       听不懂人话、浪费我时间、白问了、鸡同鸭讲、我的订单怎么被你们取消了）。没有对象的一律不算（「太失望了」「无语」
+//       「太离谱了」交给主模型）；点名别家平台的（携程、别家、上家）、售前疑虑（怕被坑、你们靠谱吗）不算；「说了多少遍了」
+//       这一类同一句话里说的是家人或别人的（「说了多少遍了，孩子就是不听」）不算。
 // 都排除：疑问（打消疑虑的「你们不会是骗子吧」「你们是不是很敷衍」；问句式的辱骂「你是傻逼吗」照算强，「太坑了吧」
 // 「别敷衍我好吗」是抱怨不是问）、否定（「没让我失望」「不是说你们差」）、假设、转述（朋友说、网上、评论）、以前、玩笑（哈哈）。
 // 按标点分段判（不按空格：「这里的 垃圾 很多」是一段），整条消息取最大值；单独成句的「滚」按空格分开也认（「你们是骗子吧 滚」）。
 
 /** 冲着我们的人：你们、你、您、客服、机器人、AI、这家、顾问；回复、回答说的是这次对话 */
 const US =
-  /你们|你(?!好)|您(?!好)|客服|机器人|ai|这家(?!酒店|餐厅|民宿|饭店|店|景区|宾馆|网红|航空|医院)|你家|贵司|顾问|小编|人工智能|(?<![a-z])(?:bot|you)(?![a-z])|回复|回答/g;
+  /(?:你们|你|您)(?!好(?:$|[^\p{Script=Han}]|[啊呀哇吗呢哈嘛我请在想问]))|客服|机器人|ai|这家(?!酒店|餐厅|民宿|饭店|店|景区|宾馆|网红|航空|医院)|你家|贵司|顾问|小编|人工智能|(?<![a-z])(?:bot|you)(?![a-z])|回复|回答/gu;
+/** 我们的人与东西：「你们导游」「你们安排的酒店」「您的司机」（「你们那边」「你们那边的天气」不是） */
+const OWNED_BY_US =
+  /(?:(?:你们|你家|贵司)(?:(?:安排|推荐|订|定|找|选|派|提供|给我们?安排|帮我们?订|帮我们?安排)?的)?|(?:你|您)(?:安排|推荐|订|定|找|选|派|提供)?的)(?:这个|那个|这些|那些|这位|那位)?$/;
+const OWNED_KIND = /^(?:导游|司机|领队|酒店|景区|景点|餐厅)$/;
 /** 客户自己：骂人的词前面最近点到自己是自嘲（「我真是个白痴」）；抱怨的词前面的我是说话的人（「我对你们很失望」），不算对象 */
 const SELF = /我们?|自己|俺|老子/g;
 /** 别的人与别的东西（家人、别家、那边、酒店、天气）：最近点到的是它们，就不是冲着我们 */
@@ -734,22 +821,25 @@ const OTHER_AGENCY =
 /** 开玩笑（emoji 在归一前看原文） */
 const JOKE = /哈哈|hhh|笑死|233|开玩笑|逗你|[😂🤣]/u;
 /** 打消疑虑的问法里的「骗子」「坑」「黑店」不算（「你们不会是骗子吧」「你们是不是黑店」） */
-const DOUBT_WORD = /骗|坑|黑店|割韭菜|智商税|宰客|靠谱|正规/;
+const DOUBT_WORD = /骗|坑|黑店|黑心|土匪|强盗|割韭菜|智商税|宰客|靠谱|正规/;
 /** 强：本身就冲着人的 */
 const STRONG_DIRECTED =
   /操你|艹你|日你|你妈的?|你妈逼|去你妈|去你大爷|你大爷|(?<![想要])去死|死全家|草泥马|cnm|nmsl|狗日的|滚犊子|滚蛋|滚开|给我滚|滚远点|滚一边|滚出去|(?<![a-z])fuck\s*(?:you|u)(?![a-z])|你算(?:个)?什么东西|闭嘴|放你妈的屁|人工智障/;
 /** 骂人的词 */
 const INSULT =
-  /傻[逼比屄bx×]|煞笔|(?<![a-z])sb(?![a-z])|智障|脑残|弱智|白痴|蠢货|蠢猪|笨蛋|人渣|畜生|贱人|狗东西|王八蛋|混蛋|神经病|放屁|狗屁|垃圾|废物|骗子|猪脑子?|(?<=是)猪(?=[吗啊吧呀]|$)|脑子进水|有病|骗钱的|吸血鬼|一坨屎|狗屎|(?<![a-z])(?:fuck|shit|stupid|idiot|useless)(?![a-z])/g;
+  /傻[逼比屄bx×]|煞笔|(?<![a-z])sb(?![a-z])|智障|脑残|弱智|白痴|蠢货|蠢猪|笨蛋|人渣|畜生|贱人|狗东西|王八蛋|混蛋|神经病|放屁|狗屁|垃圾|废物|骗子|猪脑子?|(?<=是)猪(?=[吗啊吧呀]|$)|脑子进水|有病|骗钱的|吸血鬼|一坨屎|狗屎|黑心|黑店|土匪|强盗|流氓|良心被狗吃|死了吗|(?<![a-z])(?:fuck|shit|stupid|idiot|useless)(?![a-z])/g;
+/** 冲着人的蠢、笨、傻（「你好蠢」「这个机器人太蠢了」「你们真笨」「你傻吗」「你们是不是傻」）：要冲着我们，「笨重」「蠢蠢欲动」不算 */
+const STUPID =
+  /(?:太|好|真|很|真的很|真的|这么|那么|也太|简直|就是)?(?:蠢|笨)(?:死了?|透了|到家了?)?(?:吧|啊|呀|了|啦)*$|是不是(?:傻|蠢|笨)|傻(?:的|子)?(?:吗|吧|啊|呀)$/;
 /** 骂人的词后面接着我们（「垃圾公司」「傻逼AI」「智障客服」「弱智回答」「神经病啊你」） */
 const INSULT_TARGET_AFTER =
   /^\s*的?(?:客服|机器人|ai|公司|平台|系统|回复|回答|顾问|旅行社|app|软件|bot)|^(?:吧|啊|呀|吗|了|啦)*(?:你们?|您)$/;
 /** 骂人的词后面接着东西：白痴问题、垃圾袋、垃圾分类、智障儿童 */
 const INSULT_OBJECT = /^的?(?:问题|操作|设计|游戏|食品|袋|桶|分类|处理|回收|站|车|场|短信|广告|邮件|篓|堆|费|利用|儿童|人士)/;
 /** 单独成句：整段除了骂人的词只剩语气词、你、你们、真、简直、他妈的（「垃圾垃圾垃圾」「智障吧」「滚吧你」「真他妈垃圾」） */
-const BARE_FILLER = /你们?|您|快|赶紧|赶快|真的?|简直|就是|他妈的?|tmd|特么|中的|吧|啊|呀|了|啦|嘛|哦|呢|吗/g;
+const BARE_FILLER = /你们?|您|快|赶紧|赶快|真的?|简直|就是|他妈的?|tmd|特么|中的|一群|这群|一帮|这帮|一伙|这伙|吧|啊|呀|了|啦|嘛|哦|呢|吗/g;
 const BARE_INSULT =
-  /傻[逼比屄bx×]|煞笔|sb|智障|脑残|弱智|白痴|蠢货|蠢猪|笨蛋|人渣|畜生|贱人|狗东西|王八蛋|混蛋|神经病|放屁|狗屁|垃圾|废物|骗子|滚+(?:蛋|开|一边去?|远点|出去)?/g;
+  /傻[逼比屄bx×]|煞笔|sb|智障|脑残|弱智|白痴|蠢货|蠢猪|笨蛋|人渣|畜生|贱人|狗东西|王八蛋|混蛋|神经病|放屁|狗屁|垃圾|废物|(?:大|死|臭|老)?骗子|滚+(?:蛋|开|一边去?|远点|出去)?/g;
 /** 破客服、破系统、破 AI */
 const BROKEN = /破(?:客服|机器人|ai|系统|回复|回答|app|软件|bot)/;
 const isBareEdgeInsult = (w: string): boolean => {
@@ -764,10 +854,18 @@ const INTENSIFIER = /他妈的?|tmd|特么|尼玛/;
 
 /** 弱：抱怨的词（要冲着我们） */
 const WEAK =
-  /失望|无语|差劲|(?:太|很|真|好|特别|非常|超|贼|也太|这么)差|烂透|(?:太|好|真|很)烂|(?<![天地水矿土泥大有])坑(?!进|位)(?:人|爹|钱|我|死)?|黑店|宰客|割韭菜|智商税|离谱|敷衍|忽悠|糊弄|烦死了|(?:好|真|很)烦|(?<!麻)烦人|气死|(?<![名人])气人|生气|火大|恼火|不耐烦|受够了|忍无可忍|服了|不靠谱|不专业|慢死了|太慢|好慢|没用|一点用(?:都|也)?没有|不满意|不满(?![\d一二两三四五六七八九十]|足|月|岁|周)|过分|糟糕|后悔|一言难尽|乱七八糟|啰嗦|摆设|怎么回事|什么态度/g;
+  /失望|无语|差劲|(?:太|很|真|好|特别|非常|超|贼|也太|这么)差|烂透|(?:太|好|真|很)烂|(?<![天地水矿土泥大有])坑(?!进|位)(?:人|爹|钱|我|死)?|黑店|宰客|割韭菜|智商税|离谱|敷衍|忽悠|糊弄|烦死了|(?:好|真|很)烦|(?<!麻)烦人|气死|(?<![名人])气人|生气|火大|恼火|不耐烦|受够了|忍无可忍|服了|不靠谱|不专业|慢死了|太慢|好慢|没用|一点用(?:都|也)?没有|不满意|不满(?![\d一二两三四五六七八九十]|足|月|岁|周)|过分|糟糕|后悔|一言难尽|乱七八糟|啰嗦|摆设|怎么回事|什么态度|不负责任|(?:太|很|真|好|也太|这么|一点都|一点也|根本)不负责|没有?诚信|诚信都没有|一点诚信|不讲(?:信用|诚信)|不守信用|说话不算话|言而无信|靠不住|不厚道|(?:这么|那么|真)慢|效率(?:太|好|真|很)?低|不透明|乱收费|推卸责任|脏死了|(?:太|好|真)脏|绕圈子|兜圈子|(?<!说)废话(?!不多说|少说)|(?:太|真|很|也太|真的|实在)不行(?!了?吗)|(?:沟通|聊天|说话|交流)(?:起来)?(?:真|太|好|很|特别)?(?:累|费劲)/g;
+/** 「慢」说的是行程节奏（「你们的行程节奏这么慢，老人肯定喜欢」）不算 */
+const SLOW_PACE = /节奏|悠闲|休闲|轻松|喜欢|适合|不累|慢游|慢生活|慢慢/;
+/** 弱：只认前面最近点到的是我们的（「你根本没听懂我说什么」；「我没听懂你的意思」不算） */
+const WEAK_US_BEFORE = /没听懂|没看懂|不是一回事|等于没说|答的都不是/g;
 /** 本身就在说这次对话的抱怨：不要另外的对象。反问里照算（「你听不懂人话吗」「还要我说几遍？」） */
 const WEAK_RHETORICAL =
-  /答非所问|牛头不对马嘴|驴唇不对马嘴|鸡同鸭讲|白问了|一问三不知|跟没(?:说|回答|回)一样|(?:说|问|讲|发|催)了(?:都|有)?(?:多少|好?几|[两三四五六七八九十\d]+)(?:遍|次)|还要我说几遍|听不懂人话|不懂人话|有完没完|烦不烦|浪费我的?时间/;
+  /答非所问|牛头不对马嘴|驴唇不对马嘴|鸡同鸭讲|白问了|一问三不知|跟没(?:说|回答|回)一样|(?:说|问|讲|发|催)了(?:都|有)?(?:多少|好?几|[两三四五六七八九十\d]+)(?:遍|次)|还要我说几遍|听不懂人话|不懂人话|有完没完|烦不烦|浪费我的?时间|怎么(?:又|就|能|会)?被(?:你们|你|客服)(?:给)?[^，,]{0,4}?(?:取消|弄丢|搞丢|搞错|弄错|扣|吞|删)|(?:你们|你|客服)怎么(?:又|就|能|可以)?(?:把|给)[^，,]{1,6}?(?:取消|弄丢|搞丢|搞错|弄错|删)了/;
+/** 「说了多少遍了」这一类：同一句话里说的是家人或别人（「说了多少遍了，孩子就是不听」「跟孩子说了多少遍了」）就不是冲着我们 */
+const REPEAT_SAID = /^(?:说|问|讲|发|催)了|^还要我说/;
+const PEOPLE =
+  /老公|老婆|妈妈|我妈|我爸|爸爸|老妈|老爸|爱人|媳妇|对象|男朋友|女朋友|男友|女友|孩子|小孩|儿子|女儿|闺女|宝宝|娃|婆婆|公公|老人|家人|爸妈|父母|闺蜜|领导|老板|同事|室友|朋友|队友|(?<!其)他们?|她们?/;
 /** 同上，问句里不算（「你们会不会坑我」「你们是不是在敷衍我」是在打消疑虑）：别敷衍我、坑我 */
 const WEAK_DIRECTED = /(?:别|不要|少)(?:再)?(?:跟我)?(?:敷衍|坑|忽悠|糊弄|绕圈子)|(?:敷衍|坑|忽悠|糊弄)我/;
 /** 褒义的离谱、无语（「便宜得离谱」「美到让人无语」「好看得离谱」） */
@@ -776,26 +874,35 @@ const POSITIVE_BEFORE =
 /** 售前疑虑：怕被坑、担心被坑、最怕导游敷衍；被坑过、被坑怕了 */
 const WORRY_BEFORE = /怕|担心|担忧|害怕|顾虑|万一|会不会|避免|防止|以防|小心/;
 /** 问句（打消疑虑与一般的问）；「太坑了吧」「别敷衍我好吗」是抱怨，不算问 */
-const SEG_ASKING = /[吗么嘛]$|是不是|会不会|不会是|有没有|靠不靠谱|专不专业|正不正规|(?<![了])吧$/;
+const SEG_ASKING = /(?:吗|(?<![什怎那这多要])么|嘛)$|是不是|会不会|不会是|有没有|靠不靠谱|专不专业|正不正规|(?<![了])吧$/;
 const COMPLAINT_TAG = /了吧$|^(?:你们?)?(?:别|不要|少|不许)[^，]*(?:好吗|行吗|好不好|行不行)$/;
 
 interface Segment {
   text: string;
   asked: boolean;
   carried: { hypo: boolean; hearsay: boolean; past: boolean; agency: boolean };
+  /** 同一句话（。！？换行分号之间）：前面几段的原文、整句的原文 */
+  before: string;
+  sentence: string;
+  /** 同一句话里下一段只是对象（「太失望了，你们」） */
+  nextIsUs: boolean;
 }
+
+/** 下一段只剩冲着我们的对象 */
+const ONLY_US = /^(?:你们?|您|客服|这家)(?:啊|呀|啦|真是|真的)?$/;
 
 /** 按标点分段（不按空格），假设、转述、以前在同一句话里往后带（与小句同样的规则） */
 function segmentsOf(text: string): Segment[] {
   const parts = normalize(text).split(/([，,、：:～~…。！!？?；;\n]+|(?<!\d)\.|\.(?!\d))/);
-  const out: Segment[] = [];
+  const raws: { text: string; asked: boolean; carried: Segment['carried']; sentence: number }[] = [];
   const none = { hypo: false, hearsay: false, past: false, agency: false };
   let carried = { ...none };
+  let sentence = 0;
   for (let i = 0; i < parts.length; i += 2) {
     const raw = (parts[i] ?? '').replace(/\s+/g, ' ').trim();
     const boundary = parts[i + 1] ?? '';
     if (raw) {
-      out.push({ text: raw, asked: QUESTION_MARK.test(boundary), carried: { ...carried } });
+      raws.push({ text: raw, asked: QUESTION_MARK.test(boundary), carried: { ...carried }, sentence });
       carried = {
         hypo: carried.hypo || COND.test(raw),
         hearsay: carriedAfter(raw, carried.hearsay, HEARSAY, hearsayCutAt(raw)),
@@ -803,9 +910,34 @@ function segmentsOf(text: string): Segment[] {
         agency: carried.agency || OTHER_AGENCY.test(raw),
       };
     }
-    if (SENTENCE_END.test(boundary)) carried = { ...none };
+    if (SENTENCE_END.test(boundary)) {
+      carried = { ...none };
+      sentence += 1;
+    }
   }
-  return out;
+  return raws.map((r, i) => {
+    const same = raws.filter((o) => o.sentence === r.sentence);
+    const next = raws[i + 1];
+    return {
+      text: r.text,
+      asked: r.asked,
+      carried: r.carried,
+      before: same
+        .slice(0, same.indexOf(r))
+        .map((o) => o.text)
+        .join('，'),
+      sentence: same.map((o) => o.text).join('，'),
+      nextIsUs: !!next && next.sentence === r.sentence && ONLY_US.test(next.text),
+    };
+  });
+}
+
+/** 这段话里点到了我们（你们、你、您、客服、机器人、AI、顾问……） */
+function targetsUs(s: string): boolean {
+  US.lastIndex = 0;
+  const hit = US.test(s);
+  US.lastIndex = 0;
+  return hit;
 }
 
 /** 一段话里最近（last）或最早（first）点到的人：'us' | 'self' | 'other' | null。让、对、给后面的人不算（宾语） */
@@ -828,7 +960,9 @@ function targetIn(s: string, pick: 'last' | 'first'): 'us' | 'self' | 'other' | 
         prefix.endsWith('的') &&
         !/(?:你们|你|您|你家|贵司|这家)的$/.test(prefix);
       const at = pick === 'last' ? m.index + m[0].length : -m.index;
-      const w = theirs ? 'other' : who;
+      // 「你们导游」「你们安排的酒店」：我们的人与东西
+      const ours = who === 'other' && OWNED_KIND.test(m[0]) && OWNED_BY_US.test(prefix);
+      const w = theirs ? 'other' : ours ? 'us' : who;
       if (!best || at > best.at || (at === best.at && w !== 'us')) best = { at, who: w };
     }
   }
@@ -849,7 +983,7 @@ function sentimentNegated(t: string, at: number): boolean {
 
 /** 这一处前面（本段里的，或同一句话里前面带过来的）有没有转述、以前、别家（「携程客服太差了」「我在别家报过，导游很敷衍」；
  *  别家在后面的照算：「你们这个价格也太坑了吧 别家便宜一千」） */
-function heardOrPast(s: Segment, at: number): boolean {
+function heardOrPast(s: Pick<Segment, 'text' | 'asked' | 'carried'>, at: number): boolean {
   const c: Clause = { text: s.text, asked: s.asked, carried: s.carried, sentence: 0 };
   return !!hearsayBefore(c, at) || pastBefore(c, at) || s.carried.agency || OTHER_AGENCY.test(s.text.slice(0, at));
 }
@@ -877,7 +1011,12 @@ function strongInSegment(s: Segment, asking: boolean): boolean {
     if (asking && DOUBT_WORD.test(x[0])) continue;
     const who = targetIn(t.slice(0, at), 'last');
     if (who === 'us' || (who === null && INSULT_TARGET_AFTER.test(after))) return true;
+    // 这一段没点到人：看同一句话里前面最近点到的人（「你们又搞错了，真是个白痴」；「我又搞错了，真是个白痴」是自嘲）
+    if (who === null && s.before && targetIn(s.before, 'last') === 'us') return true;
   }
+  // 冲着人的蠢、笨、傻：前面最近点到的是我们（「你好蠢」「你们的AI真的很蠢」「你是不是傻」；「我太蠢了」是自嘲）
+  const st = STUPID.exec(t);
+  if (st && ok(st.index) && targetIn(t.slice(0, st.index), 'last') === 'us') return true;
   // 什么破客服、这破 AI：后面就是我们
   const broken = BROKEN.exec(t);
   if (broken && ok(broken.index)) return true;
@@ -891,7 +1030,10 @@ function weakInSegment(s: Segment, asking: boolean): boolean {
   // 本身就在说这次对话的：答非所问、说了多少遍（反问「你听不懂人话吗」照算）、别敷衍我
   for (const re of asking ? [WEAK_RHETORICAL] : [WEAK_RHETORICAL, WEAK_DIRECTED]) {
     const x = re.exec(t);
-    if (x && !heardOrPast(s, x.index) && !sentimentNegated(t, x.index) && targetIn(t.slice(0, x.index), 'last') !== 'other') return true;
+    if (!x || heardOrPast(s, x.index) || sentimentNegated(t, x.index) || targetIn(t.slice(0, x.index), 'last') === 'other') continue;
+    // 「说了多少遍了」说的是家人或别人：同一句话里点到了家人、他她，又没点到我们（审查 blind-sentiment[4]）
+    if (REPEAT_SAID.test(x[0]) && PEOPLE.test(s.sentence) && !targetsUs(s.sentence)) continue;
+    return true;
   }
   if (asking) return false;
   // 正反问里的「不靠谱」「不专业」不是在说不靠谱（「你们靠不靠谱」），先折掉
@@ -902,10 +1044,17 @@ function weakInSegment(s: Segment, asking: boolean): boolean {
     const after = f.slice(at + m[0].length);
     if (heardOrPast({ ...s, text: f }, at) || sentimentNegated(f, at)) continue;
     if (WORRY_BEFORE.test(before) || /^.?(?:过|怕)/.test(after) || POSITIVE_BEFORE.test(before)) continue;
-    // 冲着我们：前面（说话的我不算）最近点到的是我们；或者前面没点到别人、后面最先点到的是我们（「后悔找你们了」「我真服了你们」）
+    if (m[0].includes('慢') && SLOW_PACE.test(f)) continue;
+    // 冲着我们：前面（说话的我不算）最近点到的是我们；或者前面没点到别人、后面最先点到的是我们（「后悔找你们了」「我真服了你们」），
+    // 或者同一句话里下一段只是对象（「太失望了，你们」）
     const who = targetIn(before.replace(SELF, ''), 'last');
     if (who === 'us') return true;
-    if (who === null && targetIn(after.replace(SELF, ''), 'first') === 'us') return true;
+    if (who === null && (targetIn(after.replace(SELF, ''), 'first') === 'us' || s.nextIsUs)) return true;
+  }
+  // 没听懂、不是一回事、等于没说：只认前面最近点到的是我们（「你根本没听懂我说什么」；「我没听懂你的意思」不算）
+  for (const m of f.matchAll(WEAK_US_BEFORE)) {
+    if (heardOrPast({ ...s, text: f }, m.index) || sentimentNegated(f, m.index)) continue;
+    if (targetIn(f.slice(0, m.index).replace(SELF, ''), 'last') === 'us') return true;
   }
   return false;
 }
