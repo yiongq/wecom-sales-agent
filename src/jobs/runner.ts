@@ -176,9 +176,34 @@ async function settle(job: JobRow, out: JobOutcome & { attemptsDelta?: number })
   if (!changed) console.warn(`[jobs] ${job.kind} 的结果没改中：这一行已不在本次认领手里（被归位或重新认领过），以库里的为准`);
 }
 
-/** 结果写进库之后：跟进的排程认识跟着改（见 followupJobs.afterSettle） */
+/**
+ * 用完重试记 failed 的 retention_purge 与 handoff_notify（02 spec 的 jobs 告警，startAlerts 订阅）：认领者写下 failed 的那一处，
+ * 与启动归位时一并记 failed 的（kind 为 null，只有个数）。跟进不算（它失败有自己的退账与重排）。只交种类、错误名与个数
+ */
+export interface JobFailure {
+  kind: Exclude<JobKind, 'followup'> | null;
+  lastError: string | null;
+  count: number;
+}
+const failedListeners = new Set<(f: JobFailure) => void>();
+export function onJobFailed(cb: (f: JobFailure) => void): () => void {
+  failedListeners.add(cb);
+  return () => failedListeners.delete(cb);
+}
+function jobFailed(f: JobFailure): void {
+  for (const cb of failedListeners) {
+    try {
+      cb(f);
+    } catch {
+      /* 订阅者出错不影响认领 */
+    }
+  }
+}
+
+/** 结果写进库之后：跟进的排程认识跟着改（见 followupJobs.afterSettle）；用完重试的通知与清理报给告警 */
 function afterSettled(job: JobRow, out: JobOutcome): void {
   if (job.kind === 'followup') followupJobs.afterSettle(job, out);
+  else if (out.status === 'failed') jobFailed({ kind: job.kind, lastError: out.lastError ?? null, count: 1 });
 }
 
 async function runClaimed(job: JobRow, now: number): Promise<void> {
@@ -238,6 +263,7 @@ async function recover(): Promise<boolean> {
     const r = await withJobsTx(recoverJobsAtStartup);
     recovered = true;
     const n = r.followupRequeued + r.followupAbandoned + r.otherRequeued + r.otherFailed;
+    if (r.otherFailed) jobFailed({ kind: null, lastError: null, count: r.otherFailed });
     if (n) {
       console.log(
         `[jobs] 启动归位：跟进 ${r.followupRequeued} 个改回 pending、${r.followupAbandoned} 个 sending 记 abandoned（不重发）；` +
@@ -382,4 +408,10 @@ export const __jobsTest = {
   mine: () => [...mine.values()].map((m) => ({ id: m.job.id, kind: m.job.kind, phase: m.phase })),
   /** 结果没写进库、等着下一拍补写的任务 id */
   unsettled: () => [...unsettled.keys()],
+  /** 换掉某一类的执行体（第 14、16 步之前的通知与清理不会出错，告警的自测要它抛错），返回原来的 */
+  setHandler(kind: JobKind, fn: JobHandler): JobHandler {
+    const prev = handlers[kind];
+    handlers[kind] = fn;
+    return prev;
+  },
 };

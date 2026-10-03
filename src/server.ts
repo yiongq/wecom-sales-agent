@@ -59,10 +59,14 @@ import {
   prefixSummary,
 } from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
+import { convLabel, convLabelsIn, requestLogContext } from './log.js';
+import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
+// 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
+app.use('/*', requestLogContext);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -74,7 +78,7 @@ function adapterFor(channel: string): ChannelAdapter {
   return {
     name: 'unknown',
     push(sessionId) {
-      console.error(`[server] ⚠️ 会话 ${sessionId} 的渠道「${channel}」未知，消息未送达`);
+      console.error(`[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」未知，消息未送达`);
       return Promise.resolve(false);
     },
   };
@@ -835,7 +839,7 @@ app.use('/*', serveStatic({ root: './public' }));
 // 会直接冒成 500 纯文本——压测实测约 3% 的请求命中，而这正是公开演示链接被点的那条路径。
 // 企微渠道早有 catch（adapters/wecom.ts），网页端一直漏着。
 app.onError((err, c) => {
-  console.error(`[server] 未捕获异常 ${c.req.method} ${c.req.path}:`, err instanceof Error ? err.message : err);
+  console.error(`[server] 未捕获异常 ${c.req.method} ${convLabelsIn(c.req.path)}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
   if (c.req.path === '/api/chat') {
     return c.json({ reply: { text: '抱歉，我这边卡了一下，麻烦您再发一次～', stage: 'discovery' } }, 200);
@@ -940,5 +944,7 @@ if (!SELFTEST) {
     exit: (code) => process.exit(code),
     // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
     startOtel: startOtelExport,
+    // 告警（02 spec R24）：起企微之后挂上各处的订阅，推送只在后台
+    startAlerts,
   });
 }

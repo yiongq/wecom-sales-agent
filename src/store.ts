@@ -13,6 +13,7 @@ import { tenantLockTaken } from './config/source.js';
 import type { Db, Tx } from './db/client.js';
 import type { AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
+import { setConvRefResolver } from './log.js';
 import { profile } from './profile.js';
 import { shortIdOf } from './shared/conversation.js';
 import { gracefulExit, onShutdown } from './shutdown.js';
@@ -63,6 +64,26 @@ export type OutboundFailResult = { ok: true; sessionId: string | null } | { ok: 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
 export const storeEvents = new EventEmitter();
 storeEvents.setMaxListeners(100);
+
+/**
+ * 写库的事故（02 spec「可观测性与告警」的 store 告警，startAlerts 订阅）：conflict 是落库撞上另一写者（随后优雅停机），
+ * spill 是 drain 段结束时还有真实会话没落库、退出时要写进 spill 文件。只带会话短码与个数
+ */
+export type StoreIncident = { kind: 'conflict'; detail: string } | { kind: 'spill'; sessions: number };
+const incidentHooks = new Set<(i: StoreIncident) => void>();
+export function onStoreIncident(cb: (i: StoreIncident) => void): () => void {
+  incidentHooks.add(cb);
+  return () => incidentHooks.delete(cb);
+}
+function incident(i: StoreIncident): void {
+  for (const cb of incidentHooks) {
+    try {
+      cb(i);
+    } catch {
+      /* 订阅者出错不影响停机 */
+    }
+  }
+}
 
 // VAR_DIR 可用 env 覆盖（selftest 指到临时目录，避免污染真实数据）
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
@@ -160,7 +181,10 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     ...deps,
     sessions,
     orders,
-    onConflict: (detail) => gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`),
+    onConflict: (detail) => {
+      incident({ kind: 'conflict', detail });
+      gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`);
+    },
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
     ordersTaken: (ids) => fileBackend.markChanged(ids),
@@ -176,6 +200,7 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
         console.error(
           `[store] drain 段结束时还有 ${real.length} 个会话没落库（${real.map((id) => shortIdOf(id)).join('、')}），退出时写进 spill`,
         );
+        incident({ kind: 'spill', sessions: real.length });
       }
     },
     { phase: 'drain' },
@@ -263,6 +288,8 @@ export function queueTelemetry(sessionId: string, rows: TelemetryRows): void {
 export function conversationRef(sessionId: string): string | null {
   return pgFor(sessionId)?.refOf(sessionId) ?? null;
 }
+// 日志的 conv（R24）：db 存储的真实会话写 ref，其余由 log.ts 退回短码
+setConvRefResolver(conversationRef);
 /**
  * 任务表的单独短事务（第 10 步：认领、改状态、启动与停机时的归位、与会话无关的排程）：只在 db 存储下有，不经会话写队列。
  * 文件存储下以 JobsTxRefused('closed') reject（文件存储没有任务表，跟进由扫描器驱动）
@@ -306,6 +333,16 @@ export function markOutboundFailedInDb(channelMsgid: string, failType: number): 
 /** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
 export function storeHealth(): StoreHealth {
   return (pgBackend ?? fileBackend).health();
+}
+
+/**
+ * 告警读的两个计数（02 spec 的 store 告警）：丢掉的遥测批次（存档点里写失败的、poisoned 会话丢掉的），启动时回放失败、改名 .failed
+ * 的 spill 文件数。只在 db 存储下有，文件存储下为 null
+ */
+export function storeCounters(): { telemetryDropped: number; replayFailedFiles: number } | null {
+  if (!pgBackend) return null;
+  const s = pgBackend.stats();
+  return { telemetryDropped: s.telemetryDropped, replayFailedFiles: s.replayFailedFiles };
 }
 
 /**
@@ -558,5 +595,9 @@ export const __storeTest = {
   /** db 存储下这个会话还留在内存里的遥测行数；文件存储下为 0 */
   pgQueuedTelemetry(sessionId: string): number {
     return pgBackend?.queuedTelemetry(sessionId) ?? 0;
+  },
+  /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
+  emitIncident(i: StoreIncident): void {
+    incident(i);
   },
 };
