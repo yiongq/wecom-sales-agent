@@ -579,6 +579,19 @@ async function fileSuite(h: Harness): Promise<void> {
       json(rows3),
     );
 
+    // 还在发的那一段（结果没出来）：可能已经送达，算进已用条数（只会少发）
+    const sidP = 'wecom:wmQpending';
+    seedSession(h, sidP);
+    h.plan.set('wmQpending', ['hang']);
+    void push(sidP, '付款已确认');
+    await waitFor(() => h.reqTo('wmQpending').length === 1);
+    const wp = ledger.sendWindow(sidP, Date.now());
+    check(
+      '还在发、结果没出来的那一段：一行 pending，算进已用条数',
+      wp.used === 1 && wp.remaining === 4 && h.rowsOf(sidP)[0]?.status === 'pending',
+      json({ wp, rows: h.rowsOf(sidP) }),
+    );
+
     // 取 access_token 失败：send_msg 被企微以 42001 拒掉，强刷 token 又失败，这一段根本没发出去，不记
     const sid4 = 'wecom:wmQtoken';
     seedSession(h, sid4);
@@ -1087,6 +1100,33 @@ async function dbSuite(h: Harness): Promise<void> {
       'db：回执比账本行先到：落库的就是 failed、fail_type 4，说明只有一条',
       ok && rows.length === 1 && rows[0]!.fail_type === 4 && notes.length === 1,
       json({ rows, notes }),
+    );
+  }
+
+  // ---- 同上，而落库卡过 5 秒（回执那边等落库超时、按 msgid 改库时那一行还没写进去，改了个空）：排着的那一行本身已经记成 failed ----
+  {
+    const sid = 'wecom:wmQd5b';
+    const { s } = seedSession(h, sid);
+    await flush(sid);
+    let release = (): void => {};
+    fx.faults.gate = new Promise<void>((r) => (release = r));
+    const m: ChatMessage = { role: 'agent', content: '已收到您的支付', at: Date.now() };
+    s.messages.push(m);
+    store.saveSession(s);
+    await wecom.wecomAdapter.push(sid, m.content, { kind: 'notice', message: m });
+    const [row] = h.rowsOf(sid);
+    h.serverLog.push(h.failEvent(row!.msgid, 4));
+    await h.sync();
+    await sleep(5_300); // 回执那边的 flushSession 超时，改库的短事务排在卡住的落库后面
+    release();
+    fx.faults.gate = null;
+    const ok = await waitFor(async () => (await sendsOf(sid)).length === 1);
+    await flush(sid);
+    const rows = await sendsOf(sid);
+    check(
+      'db：落库卡过 5 秒、改库的短事务先跑了个空：写进库的那一行照样是 failed、fail_type 4',
+      ok && rows[0]?.status === 'failed' && rows[0]?.fail_type === 4,
+      json(rows),
     );
   }
 

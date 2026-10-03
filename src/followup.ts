@@ -19,6 +19,7 @@ import { numEnv } from './env.js';
 import { isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
 import { mayHaveDelivered } from './quota/ledger.js';
+import { shortIdOf } from './shared/conversation.js';
 import type { ChatMessage, PushOpts, Session, SalesStage } from './types.js';
 import { profileForPrompt } from './types.js';
 
@@ -254,7 +255,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
       }
       if (!ok && mayHaveDelivered(s.id, message)) {
         // 企微超时、网络异常（发送账本里记 unknown）或只发出去一部分：同样是结果不明，按已发处理（02 第 12 步）
-        console.error(`[followup] 跟进 ${s.id} 推送结果不明（超时或网络异常），按已发处理、不再重试`);
+        console.error(`[followup] 跟进 ${shortIdOf(s.id) || '?'} 推送结果不明（超时或网络异常），按已发处理、不再重试`);
         continue;
       }
       delete meta.pendingAt;
