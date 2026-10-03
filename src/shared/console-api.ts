@@ -120,8 +120,8 @@ export const AuditQuery = z
   .refine((q) => !(q.action && q.actions), { message: 'action 与 actions 只能给一个' });
 
 /**
- * 运行数字的统计窗口（02 spec「可观测性与告警 · 运行数字」）：近 days 个自然日（含今天，按服务器时区），1–90，默认 7。
- * 上限 90 是 trace 的默认保留期（开放问题 2）：再往前库里本来就没有 trace 了
+ * 运行数字的统计窗口（02 spec「可观测性与告警 · 运行数字」）：近 days 个自然日（含今天，按服务器时区），1–90，默认 7（上限照 spec）。
+ * 实际窗口再按这个租户的 trace 保留期截断（min(days, retention_trace_days)），见 MetricsView.days
  */
 export const MetricsQuery = z.object({ days: intParam(90).optional() });
 
@@ -336,7 +336,7 @@ export interface AuditPage {
  * 由 turn_traces、usage_daily 现算，内存缓存 60 秒；窗口是近 days 个自然日（含今天），受 trace 保留期限制
  */
 export interface MetricsView {
-  /** 统计窗口，默认 7 */
+  /** 实际的统计窗口（天）：min(请求的 days（默认 7）, 这个租户的 trace 保留期)；下面几项都按它算，界面据此写「近 N 天」 */
   days: number;
   /** 窗口内的轮次数（库里只有真实会话） */
   turns: number;

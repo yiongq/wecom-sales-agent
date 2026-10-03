@@ -1,10 +1,12 @@
 // 运行数字（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 运行数字」、R24）：GET /api/console/metrics 的
 // 窗口、换算与 60 秒缓存。SQL 在 src/db/repo/metrics.ts（四条，在 turn_traces、usage_daily 上现算）。
 // 窗口是近 days 个自然日、含今天，起点是 days-1 天前那天的 0 点，「今天」与 usage_daily.day 同一个口径：服务器时区（TZ）。
+// 窗口受 trace 保留期限制：实际天数 = min(请求的 days, 这个租户的 retention_trace_days)，trace 的三项与两项费用都按它算
+// （usage_daily 不归保留期清理，不截的话费用会比比率多算几天），MetricsView.days 返回它。
 // 后台接口，不在轮次里：对话的读路径不经这里（不变量 9）。
 import { configRuntime } from '../config/source.js';
 import { withTenant, type TenantCtx } from '../db/client.js';
-import { readMetrics } from '../db/repo/metrics.js';
+import { readMetrics, readTraceRetentionDays } from '../db/repo/metrics.js';
 import { todayIso } from '../env.js';
 import type { MetricsView } from '../shared/console-api.js';
 
@@ -19,9 +21,7 @@ export function metricsWindow(now: number, days: number): { since: Date; sinceDa
 }
 
 async function compute(ctx: TenantCtx, days: number, now: number): Promise<MetricsView> {
-  const { db, tenantId } = configRuntime();
-  if (ctx.tenantId !== tenantId) throw new Error('这个租户不是本进程装载的租户');
-  const m = await withTenant(db, ctx, (tx) => readMetrics(tx, metricsWindow(now, days)), { readOnly: true });
+  const m = await withTenant(configRuntime().db, ctx, (tx) => readMetrics(tx, metricsWindow(now, days)), { readOnly: true });
   return {
     days,
     turns: m.turns,
@@ -33,15 +33,13 @@ async function compute(ctx: TenantCtx, days: number, now: number): Promise<Metri
   };
 }
 
-/** 按（租户、days）缓存 60 秒；在算的那一次也共用（并发的请求不各查一遍），算失败不留缓存 */
-const cache = new Map<string, { at: number; value: Promise<MetricsView> }>();
+type Cache<T> = Map<string, { at: number; value: Promise<T> }>;
 
-/** now 是调用方的时钟（后台接口的 clock）：窗口与缓存都按它算 */
-export function readMetricsView(ctx: TenantCtx, days: number, now: number): Promise<MetricsView> {
-  const key = `${ctx.tenantId}|${days}`;
+/** 按键缓存 60 秒；在算的那一次也共用（并发的请求不各查一遍），算失败不留缓存；时钟往回走就重算 */
+function cached<T>(cache: Cache<T>, key: string, now: number, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
   if (hit && now >= hit.at && now - hit.at < TTL_MS) return hit.value;
-  const value = compute(ctx, days, now);
+  const value = fn();
   cache.set(key, { at: now, value });
   value.catch(() => {
     if (cache.get(key)?.value === value) cache.delete(key);
@@ -49,9 +47,25 @@ export function readMetricsView(ctx: TenantCtx, days: number, now: number): Prom
   return value;
 }
 
+/** 租户的 trace 保留期（按租户）与运行数字（按租户与实际天数：请求 60 与 90 截到同一个保留期时共用一份） */
+const retention: Cache<number> = new Map();
+const views: Cache<MetricsView> = new Map();
+
+/** now 是调用方的时钟（后台接口的 clock）：窗口与缓存都按它算 */
+export async function readMetricsView(ctx: TenantCtx, days: number, now: number): Promise<MetricsView> {
+  const { db, tenantId } = configRuntime();
+  if (ctx.tenantId !== tenantId) throw new Error('这个租户不是本进程装载的租户');
+  const keep = await cached(retention, ctx.tenantId, now, () =>
+    withTenant(db, ctx, (tx) => readTraceRetentionDays(tx, ctx.tenantId), { readOnly: true }),
+  );
+  const effective = Math.min(days, keep);
+  return cached(views, `${ctx.tenantId}|${effective}`, now, () => compute(ctx, effective, now));
+}
+
 /** 仅供自测：清空缓存 */
 export const __metricsTest = {
   reset(): void {
-    cache.clear();
+    retention.clear();
+    views.clear();
   },
 };
