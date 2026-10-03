@@ -9,6 +9,7 @@ Revisions: 2026-10-02 首版草稿经三路评审（代码现实、数据完整�
 Revisions: 2026-10-02 owner 定下开放问题 1–14：1 选 A（「部分取代」，规则写进 `docs/spec-driven-dev.md` 与 AGENTS.md，01 与 UX spec 顶部各加 `Superseded in part by:`），2–14 照推荐（6、12 选 A）。各条就地标「已定」，选项与理由保留。随之改写（行为、接口、数据形状不变）：顶部加 `Supersedes in part:`，`Amends:` 末句改指它（原为「怎么落见开放问题 1」）；「前置条件」的答复规则改为「已全部定下」（原为 1、6、12 开工前必须答复，4、3 没答复就停在第 11.1、14 步，5、8、9、2、7、14 没答复按推荐先做，10、11、13 接真实租户之前定）；非目标、承接表、R9、R13、R15、R20、环境变量表、`negativeLevel` 注释、外部通道、保留期 DDL 注释、同意流程、外部拨测、OpenTelemetry 原文开关、「与 01、后台 UX spec 的关系」、验收 12、15、35 与被否决的方案里「由开放问题 N 定 / 推荐 / 选定的那个」的写法换成定下的结论
 Revisions: 2026-10-02 评审之后再改两处。一、不变量 9 补上前半句「DB 模式下，处理一轮对话的读路径不发出数据库查询……会话与 trace 的写入只经这个会话的写队列」，「测试与 CI」的 store 自测随之加一项：「与 01、后台 UX spec 的关系」原已写明 01 不变量 4 改写后落在本 spec 不变量 9，不变量本身却漏了读路径，`SESSION_STORE=db` 下没有一条不变量守住它。二、对 UX 验收 20 的取代范围，本 spec 与 UX spec 顶部写成同一个：取代「点一行，新标签页打开工作台并选中该会话」与同条 `ADMIN_PASS` 那一句，其余照旧（原为本 spec 写整条、UX 顶部只写前一句）。01 顶部随之改指「与 01、后台 UX spec 的关系」，不再写「02 不变量 9」
 Revisions: 2026-10-03 owner 确认 plan「Open」里标「已定」的八处，连同实施记录里比原文更严的几处（旧接口只认 `ADMIN_PASS`；import、export 的写序、目录 fsync、`--keep` 先验可写），就地补进本文；一的改写在第 13 步、三在第 15 步落地，其余以已实现的为准。一、匿名可读的旧接口把交还时按固定模板生成的「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」，旧接口只认 `ADMIN_PASS`、只带 console 登录的请求按匿名处理（原为「带 `ADMIN_PASS` 或成员登录的请求照旧返回原对象」，投影管不到正文里的姓名，与不变量 44 冲突）；二、`POST /api/orders/:id/pay` 两个分支响应体里的订单用 R22 的白名单投影（原文没管这个响应体，demo 下匿名可调，会带出成员身份），不变量 43 与验收 9 随之加这一句；三、advisor 模式下收款方式只经 `/pay/:orderId` 的服务端注入，`/pay.html?orderId=` 跳到 `/pay/:orderId`（原文没说页面从哪儿知道收款方式，R22 白名单里没有这个字段），验收 23 加这一句；四、`orders` 的触发器另拦非属主改已写的 `session_id`（原为只拦改 `paid_at`；`agent_app` 能把已付订单的 `session_id` 置空，会话就按线索的保留期被提前清除），R20、不变量 6、验收 5 与真实 PG 的测试项随之写进这一条；五、清除与行权删除一并删 payload 里 `sessionId` 是这个会话的任务，与会话有关的任务 payload 必带 `sessionId`，`erase_conversation` 的返回值含 `jobs`，不变量 42 加 `jobs`（原为删除范围不含任务；跟进任务的键里带着会话 id，过不了验收 27）；六、`spill_conflict` 也用于回放时文件系统出错、其余意外错误与 spill 不是本租户，`sessions_in_db` 也用于 PG 后端装上之后再调 `initSessionStore`（原为各只有一种含义；不另加拒绝原因，detail 写明实情）；七、db 存储启动时没有标记文件就补写（补写失败只记日志、照常启动），`SessionStoreDeps` 加 `tenantSlug`；import 先写标记再改写 JSON，export 先写订单再写会话最后删标记，改名之后对目录 fsync；`--keep` 在开事务之前先验可写；没有标记而 JSON 与库不一致时 export 以退出码 2 拒绝、一致时当无操作；回滚检查另看服务器 `.env` 的 `SESSION_STORE=db`（原为标记文件只由 import 写、回滚检查只看标记文件与 `catalogVersioned`，不经 import 直接以 db 存储起的实例两道检查都失效），验收 3、32 随之补。
+Revisions: 2026-10-03 owner 定（第 11 步 Open）：交互失败的「重复提问」只认在问的话（问号、句末吗/呢/么、疑问词），重复回答不算；阈值不变。原为与前 2 条客户消息之一重复即算（锁定 engine.selftest V4 连说三遍「两位 12号」会被转人工）。
 
 ## 背景与问题
 
@@ -545,7 +546,7 @@ export function emergencyOf(text: string): EmergencyKind | null;
 export interface TurnSignals {
   emptyModelReply: boolean; // 模型没给出可用文本，落到兜底话术（engine.ts 里空回复那一处）
   noRetrievalResult: boolean; // 本轮 search_routes 什么也没返回，且不是 destinationMiss
-  repeatedQuestion: boolean; // 这句与前 2 条客户消息之一重复（去标点空白后相同，或字二元组 Jaccard ≥ 0.8，长度 ≥ 4 字）
+  repeatedQuestion: boolean; // 这句在问（问号、句末吗/呢/么、疑问词），且与前 2 条客户消息之一重复（去标点空白后相同，或字二元组 Jaccard ≥ 0.8，长度 ≥ 4 字）；重复回答不算
   guardHit: 'price' | 'injection' | null; // 有值时整轮不算失败
 }
 export function turnFailed(s: TurnSignals): boolean;
