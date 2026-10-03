@@ -3,7 +3,8 @@
 //   满足 shouldFollowUp 的静态条件就排 followup:<会话>:<阶段>，runAt = 最后动静 + 该阶段阈值，落在夜间顺延；客户回话即取消。
 // 执行——到点：查发送账本（不看话术，在生成之前）→ 生成话术并过出口护栏 → 在活对象上重判 shouldFollowUp 与额度 → 记账（count、
 //   stages、pendingAt）并把任务改成 sending（带认领令牌），随同一次会话落库提交 → 确认 sending 改中了 → 推送 → 成功 done；明确失败
-//   退账、failed、失败计数加 1（之后按扫描器的节奏再排一次）；推送抛异常（结果不明）按已发处理：账不退、记 abandoned。
+//   退账、failed、失败计数加 1（之后按扫描器的节奏再排一次）；推送结果不明（抛异常，或返回 false 而发送账本里这条有 unknown /
+//   accepted 的分段：企微超时、网络异常，第 12 步）按已发处理：账不退、记 abandoned。
 //   记账与 sending 提交之后才推送，推送不在落库事务里。
 // 资格判断、话术、护栏、夜间时段与文件存储下的扫描器共用 src/followup.ts。
 import type { JobRow } from '../db/repo/jobs.js';
@@ -17,12 +18,13 @@ import {
   shouldFollowUp,
   type SessionWithFollowup,
 } from '../followup.js';
+import { followupWindowAllows, holdSend, mayHaveDelivered } from '../quota/ledger.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { flushSession, getSession, jobOpApplied, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
-import type { Session } from '../types.js';
+import type { ChatMessage, PushOpts, Session } from '../types.js';
 import type { JobCtx, JobOutcome } from './runner.js';
 
-export type PushFn = (sessionId: string, text: string) => Promise<boolean>;
+export type PushFn = (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>;
 
 /** 跟进任务的重试上限：只管推送之前的执行体出错（推送失败另有 MAX_PUSH_FAILURES） */
 const FOLLOWUP_MAX_ATTEMPTS = 3;
@@ -136,13 +138,14 @@ async function composeUnlessStopping(s: Session): Promise<string | null> {
 }
 
 /**
- * 发送账本的额度判断（R18：跟进要求剩余 ≥2 条且窗口剩余 ≥2 小时）。账本第 12 步才有：本步是桩，一律放行，
- * 第 12 步换成 src/quota/ledger.ts 的判断。额度不够不算失败（任务记 cancelled、不退账也不计失败次数），也不再排：
- * 窗口只在客户再开口时重开，那时客户回话取消、AI 回复落库重排。不看话术，所以在生成之前判（不够就不调模型）
+ * 发送账本的额度判断（R18、不变量 34：跟进要求窗口剩余 ≥2 条且 ≥2 小时，src/quota/ledger.ts，只读内存）。额度不够不算失败
+ * （任务记 cancelled、不退账也不计失败次数），也不再排：窗口只在客户再开口时重开，那时客户回话取消、AI 回复落库重排。
+ * 不看话术，所以在生成之前判（不够就不调模型）；记账之前在活对象上再判一次
  */
-let quotaAllows = (_s: Session): boolean => true;
-export function followupQuotaAllows(s: Session): boolean {
-  return quotaAllows(s);
+const ledgerAllows = (s: Session, now: number): boolean => followupWindowAllows(s.id, now);
+let quotaAllows: (s: Session, now: number) => boolean = ledgerAllows;
+export function followupQuotaAllows(s: Session, now: number): boolean {
+  return quotaAllows(s, now);
 }
 
 async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
@@ -156,11 +159,11 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   const at = followupRunAt(s, due.idleMs, now);
   if (at > now) return { status: 'pending', runAt: at };
   if (!push) return { status: 'pending', runAt: now + FOLLOWUP_RETRY_MS, lastError: 'no_push' };
-  // 额度不够：不生成话术（不调模型），记 cancelled、之后不再排（见 afterSettle）
-  if (!followupQuotaAllows(s)) return { status: 'cancelled', lastError: 'quota' };
   // 排程按认领时给的「现在」往后走（自测拨钟时也一致）；账上记的时刻用真钟
   const t0 = Date.now();
   const clock = (): number => now + (Date.now() - t0);
+  // 额度不够：不生成话术（不调模型），记 cancelled、之后不再排（见 afterSettle）
+  if (!followupQuotaAllows(s, clock())) return { status: 'cancelled', lastError: 'quota' };
   const text = await composeUnlessStopping(s);
   if (text === null || stopping) return { status: 'stopped' };
   // 生成话术要几秒到几十秒，这期间客户可能回了消息：在活对象上重判（spec：到点后在活对象上重判 shouldFollowUp）
@@ -169,7 +172,31 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
     return { status: 'cancelled', lastError: 'changed' };
   }
   // 生成期间额度可能被别的发送用掉（顾问在后台发了消息）：记账之前在活对象上再判一次
-  if (!followupQuotaAllows(fresh)) return { status: 'cancelled', lastError: 'quota' };
+  if (!followupQuotaAllows(fresh, clock())) return { status: 'cancelled', lastError: 'quota' };
+  // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象，账本行据它取 seq）。判过额度就在同一段同步代码里占一个名额：
+  // 下面要等记账落库才推送，这段时间里顾问的人工回复看得到它（不变量 34）；推送的第一个分段接过这一行，推送结束后没用上的撤掉
+  const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
+  const release = holdSend(sid, 'followup', message);
+  try {
+    return await sendAfterLedger({ job, ctx, fresh, sid, text, message, release, clock, push });
+  } finally {
+    release();
+  }
+}
+
+/** 记账、改成 sending 并提交之后推送（run 的后半段；release 在推送一返回就调，结果不明的判断不算预占的那一行） */
+async function sendAfterLedger(a: {
+  job: JobRow;
+  ctx: JobCtx;
+  fresh: SessionWithFollowup;
+  sid: string;
+  text: string;
+  message: ChatMessage;
+  release: () => void;
+  clock: () => number;
+  push: PushFn;
+}): Promise<JobOutcome> {
+  const { job, ctx, fresh, sid, text, message, release, clock } = a;
   // 记账并把任务改成 sending，同一段同步代码里排进同一次落库；提交之后才推送（最多发一次）
   const meta = (fresh.followup ??= {});
   const stage = fresh.stage;
@@ -197,10 +224,18 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   }
   let ok: boolean;
   try {
-    ok = await push(sid, text);
+    ok = await a.push(sid, text, { kind: 'followup', message });
   } catch (e) {
     // 结果不明（可能已经送达）：按已发处理——账不退、pendingAt 留着，任务记 abandoned，不重试
     console.error(`[followup] 跟进 ${short(sid)} 推送结果不明，按已发处理、不再重试（${e instanceof Error ? e.name : 'unknown'}）`);
+    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'push_unknown' })]);
+    return { status: 'handled' };
+  } finally {
+    release();
+  }
+  if (!ok && mayHaveDelivered(sid, message)) {
+    // 企微超时、网络异常（发送账本里记 unknown）或只发出去一部分：同样是结果不明，按已发处理（02 第 12 步）
+    console.error(`[followup] 跟进 ${short(sid)} 推送结果不明（超时或网络异常），按已发处理、不再重试`);
     queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'push_unknown' })]);
     return { status: 'handled' };
   }
@@ -221,7 +256,8 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
     return { status: 'handled' };
   }
   // 后台按 author 标「自动跟进」（02 spec「消息只追加」）
-  fresh.messages.push({ role: 'agent', content: text, at: Date.now(), author: 'followup' });
+  message.at = Date.now();
+  fresh.messages.push(message);
   meta.failures = 0;
   saveWith(fresh, [statusOp(job, 'done', 'sending')]);
   console.log(`[followup] 已跟进 ${short(sid)}（阶段=${stage}）`);
@@ -285,8 +321,8 @@ export const followupJobs = {
     known.clear();
     selfSaving = null;
   },
-  /** 仅供自测：换掉额度判断（null 换回桩） */
-  setQuotaForTest(fn: ((s: Session) => boolean) | null): void {
-    quotaAllows = fn ?? ((_s: Session): boolean => true);
+  /** 仅供自测：换掉额度判断（null 换回发送账本的判断） */
+  setQuotaForTest(fn: ((s: Session, now: number) => boolean) | null): void {
+    quotaAllows = fn ?? ledgerAllows;
   },
 };

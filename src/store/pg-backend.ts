@@ -22,7 +22,7 @@ import {
 import { cancelPendingJobs, cancelPendingJobsOfSession, enqueueJob, setJobStatus, type JobKind, type JobStatus } from '../db/repo/jobs.js';
 import { insertMessages, readMessagesFrom, readRecentCustomerMsgids } from '../db/repo/messages.js';
 import { readOrderIdsIn, upsertOrders } from '../db/repo/orders.js';
-import { insertOutboundSends, type OutboundSendRow } from '../db/repo/outbound.js';
+import { insertOutboundSends, markOutboundFailed, readOutboundAfterLastCustomer, type OutboundSendRow } from '../db/repo/outbound.js';
 import { insertGuardEvents, insertTurnTraces, type GuardEventRow, type TurnTraceRow } from '../db/repo/traces.js';
 import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
@@ -276,6 +276,18 @@ export interface PgBackend extends StoreBackend {
    */
   writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
+  /** 预载的发送账本行（各会话最后一条客户消息之后的，第 12 步）：取走一次，之后返回空的（账本在内存里，src/quota/ledger.ts） */
+  takePreloadedOutbound(): Map<string, OutboundSendRow[]>;
+  /**
+   * 还没有会话的账本行（老客户进入会话时补发的欢迎语，会话不在内存里）：单独一个短事务，只试一次、失败记一行。
+   * 已冲突、late 段之后、租户锁在别人手里时不写
+   */
+  writeStandaloneOutbound(rows: readonly OutboundSendRow[]): Promise<void>;
+  /**
+   * 收到 msg_send_fail：单独一个短事务按 msgid 记 failed 与 fail_type（不经会话写队列）。写成了是 ok，带那一行的会话 id（找不到、
+   * 已经是 failed 为 null）；这次没写（同上三种情况、库报错，记一行）不是 ok，调用方再试一次
+   */
+  markOutboundFailed(channelMsgid: string, failType: number): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
   /** 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；不归 PG 后端管的为 null */
   refOf(sessionId: string): string | null;
   /**
@@ -355,6 +367,8 @@ interface Preloaded {
   /** 会话行的 ref（不含客户标识的引用） */
   refs: Map<string, string>;
   msgids: Map<string, Set<string>>;
+  /** 发送账本：各会话最后一条客户消息之后的发送（第 12 步） */
+  outbound: Map<string, OutboundSendRow[]>;
   /** orders.json 读进来、所属会话是预载的那些订单：库里已有（作废的也算）的 id，与库里没有的 id */
   jsonInDb: string[];
   jsonAdopt: string[];
@@ -365,7 +379,16 @@ interface Preloaded {
  * 所属会话是预载的那些订单在不在库里（作废的也查）。整个预载一个只读的长事务
  */
 async function preload(d: PgBackendDeps): Promise<Preloaded> {
-  const out: Preloaded = { sessions: [], orders: [], seqs: new Map(), refs: new Map(), msgids: new Map(), jsonInDb: [], jsonAdopt: [] };
+  const out: Preloaded = {
+    sessions: [],
+    orders: [],
+    seqs: new Map(),
+    refs: new Map(),
+    msgids: new Map(),
+    outbound: new Map(),
+    jsonInDb: [],
+    jsonAdopt: [],
+  };
   const since = new Date(Date.now() - MSGID_WINDOW_MS);
   try {
     await withTenant(
@@ -409,6 +432,11 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
             out.msgids.set(row.id, new Set());
           }
           for (const r of mids) out.msgids.get(r.conversationId)?.add(r.msgid);
+          for (const r of await readOutboundAfterLastCustomer(tx, ids)) {
+            const list = out.outbound.get(r.conversationId);
+            if (list) list.push(r);
+            else out.outbound.set(r.conversationId, [r]);
+          }
           for (const r of ords) {
             const o = rowToOrder(r);
             if (r.sessionId === null || !batch.has(r.sessionId) || o.sessionId !== r.sessionId || o.id !== r.id) {
@@ -1134,6 +1162,38 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     },
     recentMsgids(sessionId) {
       return entries.get(sessionId)?.msgids ?? new Set();
+    },
+    takePreloadedOutbound() {
+      const out = pre.outbound;
+      pre.outbound = new Map();
+      return out;
+    },
+    async writeStandaloneOutbound(rows) {
+      if (!rows.length) return;
+      if (conflict || closed || !d.writable()) {
+        console.error(
+          `[store] 没有会话的发送账本行这次不写（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}），丢弃 ${rows.length} 行`,
+        );
+        return;
+      }
+      try {
+        await detached(() => withTenant(d.db, ctx, (tx) => insertOutboundSends(tx, rows)));
+      } catch (err) {
+        console.error(`[store] 没有会话的发送账本行没写进去（${errLabel(err)}），丢弃 ${rows.length} 行`);
+      }
+    },
+    async markOutboundFailed(channelMsgid, failType) {
+      if (conflict || closed || !d.writable()) {
+        console.error(`[store] msg_send_fail 回执这次不写库（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
+        return { ok: false };
+      }
+      try {
+        const sessionId = await detached(() => withTenant(d.db, ctx, (tx) => markOutboundFailed(tx, channelMsgid, failType)));
+        return { ok: true, sessionId };
+      } catch (err) {
+        console.error(`[store] msg_send_fail 回执没写进库（${errLabel(err)}）`);
+        return { ok: false };
+      }
     },
     refOf: (sessionId) => entries.get(sessionId)?.ref ?? null,
     jobsTx(fn) {
