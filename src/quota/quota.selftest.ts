@@ -9,7 +9,9 @@
 //         短事务、回执单独一个短事务（与还没写进库的行）、去重情况 2（重置之后只在 7 天集合里）、跟进的额度（剩 1 条、窗口剩不到 2 小时
 //         不调模型也不重排，剩 2 条照发）、跟进经真企微适配器「只超时」记 abandoned、账不退、之后不再发；
 //   crash → restart（落盘的 PGlite 与 var/）：客户这句已入库、回复还没生成时进程被 SIGKILL，重启后恰好回复一次；回复已送出的那条
-//         重放不补发（账本行由预载读回）；
+//         重放不补发（账本行由预载读回）；第一次尝试超时（已送达）、重试挂住时被杀，重启后不重发（超时那一刻已记 unknown）；
+//         重启之后才收到的回执改得到库（预载的行），cursor 回退再收到一次不重复加说明；
+//   stop → stopped（文件存储，同一个 var/）：停机的 normal 段截止之后才生成好的回复不开始发，留在在途表，重启后恰好补发一次；
 //   rpg（PG_TEST_URL 设了才跑）：真实 Postgres 上没有会话的欢迎语短事务、回执短事务。
 // 用法：npx tsx src/quota/quota.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
@@ -28,6 +30,9 @@ const H = 3_600_000;
 /** crash → restart 两个子进程共用的两个客户 */
 const KILL_A = 'wmQkA';
 const KILL_B = 'wmQkB';
+const KILL_C = 'wmQkC';
+/** stop → stopped 两个子进程共用的客户 */
+const STOP_U = 'wmQstop';
 
 let pass = 0;
 const fails: string[] = [];
@@ -133,6 +138,15 @@ async function parentMain(): Promise<never> {
     merge('进程被杀 → 重启', r);
     check('进程被杀 → 重启：正常结束', r.status === 0, `status=${r.status} ${r.out.slice(-1500)}`);
   }
+  {
+    const env = { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'stop-')) };
+    const a = runChild('stop', env, NOON);
+    merge('停机截止', a);
+    check('停机截止：子进程正常结束', a.status === 0, `status=${a.status} signal=${a.signal} ${a.out.slice(-1500)}`);
+    const b = runChild('stopped', env, NOON + 120_000);
+    merge('停机截止 → 重启', b);
+    check('停机截止 → 重启：正常结束', b.status === 0, `status=${b.status} ${b.out.slice(-1500)}`);
+  }
   let realPgRan = false;
   if (process.env.PG_TEST_URL) {
     realPgRan = true;
@@ -149,7 +163,8 @@ async function parentMain(): Promise<never> {
   console.log(
     `QUOTA SELFTEST PASS: ${pass} 项断言全通（窗口与剩余条数从 sentAt 起算 / unknown 计数 / 重试同一 msgid 一行 / 取 token 失败不记 / 卡片一行 / ` +
       `回执三种说明与 send.failed / 人工回复发满 5 条与窗口已过被拒 / 客户侧「【顾问】」 / 去重五种情况 / 接手代次 / 跟进的额度与结果不明 / ` +
-      `账本随落库、没有会话的欢迎语与回执的短事务 / 已入库未回复被杀后恰好回复一次、已送出不补发` +
+      `账本随落库、没有会话的欢迎语与回执的短事务 / 已入库未回复被杀后恰好回复一次、已送出不补发 / 审查之后：重启后的回执改库、` +
+      `超时即记 unknown、停机截止后不开始发、回执改库重试、多段的 seq、重置口令去重、人工回复的卡片与前缀、窗口按最后一次尝试与 min 起点、并发只放一条` +
       `${realPgRan ? ' / 真实 PG：欢迎语与回执的短事务' : '；真实 PG 部分未跑'}）`,
   );
   process.exit(0);
@@ -175,6 +190,8 @@ interface SendReq {
   msgid: string;
   type: string;
   content: string;
+  /** 链接卡片的标题 */
+  title: string;
 }
 /**
  * 这一次 send_msg 怎么回：ok 送达；timeout 送达之后超时（客户收到了，我们不知道）；lost 没送达就超时；hang 永不返回；
@@ -202,6 +219,8 @@ async function childMain(mode: string): Promise<never> {
     else if (mode === 'db') await dbSuite(h);
     else if (mode === 'crash') await crashSuite(h, () => (flushLogs(), save()));
     else if (mode === 'restart') await restartSuite(h);
+    else if (mode === 'stop') await stopSuite(h);
+    else if (mode === 'stopped') await stoppedSuite(h);
     else if (mode === 'rpg') await realPgSuite(h);
     else fails.push(`不认识的子进程 ${mode}`);
   } catch (e) {
@@ -282,7 +301,7 @@ async function harness() {
   const requests: SendReq[] = [];
   const delivered = new Map<string, SendReq>();
   const plan = new Map<string, Outcome[]>();
-  const fake = { tokenFails: false, thumbOk: false };
+  const fake = { tokenFails: false, thumbOk: false, sendDelayMs: 0 };
   const realFetch = globalThis.fetch;
   const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
   const timeoutError = (): Error => new DOMException('The operation was aborted due to timeout', 'TimeoutError');
@@ -307,8 +326,10 @@ async function harness() {
         msgid: String(body.msgid ?? ''),
         type: String(body.msgtype),
         content: String(body.text?.content ?? body.link?.url ?? ''),
+        title: String(body.link?.title ?? ''),
       };
       requests.push(req);
+      if (fake.sendDelayMs) await sleep(fake.sendDelayMs);
       const o = plan.get(req.to)?.shift() ?? 'ok';
       if (o === 'expired') return res({ errcode: 42001, errmsg: 'selftest: access_token expired' });
       if (typeof o === 'object') return res({ errcode: o.errcode, errmsg: 'selftest' });
@@ -514,6 +535,55 @@ async function fileSuite(h: Harness): Promise<void> {
     const open = 'wecom:wmQwin-open';
     seedSession(h, open, { sentAgo: 60_000 });
     check('刚说过话、还没发过：跟进放行', ledger.followupWindowAllows(open, Date.now()));
+
+    // 本机钟比企微慢 5 秒：客户这句的 sentAt（企微的钟）比本机收到它的时刻还晚。窗口起点取 min(sentAt, at)，与账本行同一个钟，
+    // 之后的发送照样计数（审查 window[2]）
+    const skew = 'wecom:wmQskew';
+    const sk = h.store.getOrCreateSession(skew, 'wecom');
+    const at = Date.now();
+    sk.messages.push({ role: 'customer', content: '在吗', at, msgid: 'q-skew-1', sentAt: at + 5000 });
+    h.store.saveSession(sk);
+    await push(skew, '付款已确认');
+    const ws = ledger.sendWindow(skew, Date.now());
+    check(
+      '钟差（本机比企微慢 5 秒）：窗口起点是本机收到这句的时刻，之后的发送照样计数（已用 1 条）',
+      ws.lastCustomerAt === at && ws.closesAt === at + 48 * H && ws.used === 1,
+      json(ws),
+    );
+  }
+
+  // ---------------- 剩 1 条时并发两条人工回复：检查与预占在同一段同步代码里，只放一条，另一条 409 写明原因（审查 window[3]） ----------------
+  // 带站内链接的回复要先等缩略图上传（缓存还是冷的）：检查与第一个分段记账之间隔着几次 await，另一条请求正好插进来
+  {
+    process.env.PUBLIC_BASE_URL = 'https://travel.example.com';
+    h.fake.thumbOk = true;
+    const uid = 'wmQrace';
+    const sid = `wecom:${uid}`;
+    seedSession(h, sid);
+    for (let i = 0; i < 4; i++) ledger.recordSend(sid, 'human', null).settle('accepted');
+    const n0 = h.msgsOf(sid).length;
+    const rs = await Promise.all([
+      legacyReply(sid, '方案书：/proposal/r-guizhou/2'),
+      legacyReply(sid, '贵州这条线的方案书：/proposal/r-guizhou/2'),
+    ]);
+    process.env.PUBLIC_BASE_URL = '';
+    h.fake.thumbOk = false;
+    const refused = rs.filter((r) => r.status === 409);
+    check(
+      '并发两条人工回复、剩 1 条：一条 200、一条 409（quota_exhausted，写明「这一轮已经发满 5 条」）',
+      json(rs.map((r) => r.status).toSorted()) === json([200, 409]) &&
+        refused[0]?.body.reason === 'quota_exhausted' &&
+        String(refused[0]?.body.error).includes('这一轮已经发满 5 条'),
+      json(rs),
+    );
+    check(
+      '并发两条人工回复、剩 1 条：只发出一条（一张卡片），会话只多一条，已用 5 条、没有留下预占的行',
+      h.reqTo(uid).length === 1 &&
+        h.msgsOf(sid).length === n0 + 1 &&
+        ledger.sendWindow(sid, Date.now()).used === 5 &&
+        h.rowsOf(sid).every((r) => !r.held && r.status === 'accepted'),
+      json({ reqs: h.reqTo(uid), rows: h.rowsOf(sid).map((r) => [r.kind, r.status, r.held]) }),
+    );
   }
 
   // ---------------- 一个分段：先超时再成功是一行、同一个 msgid、计 1 条；只超时记 unknown、计入额度 ----------------
@@ -592,6 +662,25 @@ async function fileSuite(h: Harness): Promise<void> {
       json({ wp, rows: h.rowsOf(sidP) }),
     );
 
+    // 第一次没送达就超时，退避期间客户又说了一句，重试才送达：按最后一次尝试的时刻计数，这一行算进新窗口（只会多算，审查 window[1]）
+    const sidL = 'wecom:wmQlate';
+    const { s: sl } = seedSession(h, sidL);
+    h.plan.set('wmQlate', ['lost', 'ok']);
+    const pl = push(sidL, '付款已确认');
+    await waitFor(() => h.reqTo('wmQlate').length === 1);
+    await sleep(50);
+    const t = Date.now();
+    sl.messages.push({ role: 'customer', content: '在吗', at: t, msgid: 'q-late-2', sentAt: t });
+    h.store.saveSession(sl);
+    await pl;
+    const wl = ledger.sendWindow(sidL, Date.now());
+    const rl = h.rowsOf(sidL);
+    check(
+      '重试晚于客户的新消息送达：一行 accepted，最后一次尝试的时刻在新消息之后，算进新窗口（已用 1 条）',
+      wl.lastCustomerAt === t && wl.used === 1 && rl.length === 1 && rl[0]!.status === 'accepted' && rl[0]!.lastAttemptAt >= t,
+      json({ wl, rl: rl.map((r) => ({ ...r, message: null })), t }),
+    );
+
     // 取 access_token 失败：send_msg 被企微以 42001 拒掉，强刷 token 又失败，这一段根本没发出去，不记
     const sid4 = 'wecom:wmQtoken';
     seedSession(h, sid4);
@@ -632,6 +721,56 @@ async function fileSuite(h: Harness): Promise<void> {
       json({ reqs, rows: rows.map((r) => ({ ...r, message: !!r.message })) }),
     );
     check('卡片：已用 2 条', ledger.sendWindow(sid, Date.now()).used === 2);
+  }
+
+  // ---------------- 人工回复带站内链接：「【顾问】」加在拆完卡片之后，只加在客户读到的正文上（审查 spec[1]） ----------------
+  // 只有链接（或「方案书：链接」这种标签加链接）的：不单独发一条「【顾问】」，前缀加在卡片标题上；账本行数与 AI 同形的回复相同
+  {
+    process.env.PUBLIC_BASE_URL = 'https://travel.example.com';
+    h.fake.thumbOk = true;
+    const shapes: [string, string][] = [
+      ['只有链接', '/proposal/r-guizhou/2'],
+      ['标签加链接', '方案书：/proposal/r-guizhou/2'],
+      ['正文加链接', '方案书在这儿：/proposal/r-guizhou/2 人均 15,800'],
+    ];
+    for (const [i, [label, text]] of shapes.entries()) {
+      const got: Record<string, { reqs: SendReq[]; rows: number }> = {};
+      for (const kind of ['ai', 'human'] as const) {
+        const uid = `wmQhl-${kind}-${i}`;
+        const sid = `wecom:${uid}`;
+        const { s } = seedSession(h, sid);
+        const m: ChatMessage = { role: 'agent', content: text, at: Date.now() };
+        s.messages.push(m);
+        h.store.saveSession(s);
+        await push(sid, text, { kind, message: m });
+        got[kind] = { reqs: h.reqTo(uid), rows: h.rowsOf(sid).length };
+      }
+      const ai = got.ai!;
+      const human = got.human!;
+      const sameShape =
+        json(human.reqs.map((r) => r.type)) === json(ai.reqs.map((r) => r.type)) && human.rows === ai.rows && human.rows === ai.reqs.length;
+      if (i < 2) {
+        check(
+          `人工回复${label}：客户只收到一张卡片、没有单独的「【顾问】」，卡片标题带「【顾问】」；账本行数与 AI 同形回复相同（1 行）`,
+          sameShape &&
+            json(human.reqs.map((r) => r.type)) === json(['link']) &&
+            human.reqs[0]!.title.startsWith('【顾问】') &&
+            !ai.reqs[0]!.title.includes('【顾问】'),
+          json(got),
+        );
+      } else {
+        check(
+          `人工回复${label}：正文前加「【顾问】」、卡片标题不加；与 AI 同形回复一样是正文加卡片两行`,
+          sameShape &&
+            json(human.reqs.map((r) => r.type)) === json(['text', 'link']) &&
+            human.reqs[0]!.content === `【顾问】${ai.reqs[0]!.content}` &&
+            !human.reqs[1]!.title.includes('【顾问】'),
+          json(got),
+        );
+      }
+    }
+    process.env.PUBLIC_BASE_URL = '';
+    h.fake.thumbOk = false;
   }
 
   // ---------------- 旧 /reply：客户一句话之后连发 5 次，第 6 次被拒并写明「这一轮已经发满 5 条」；客户侧带「【顾问】」 ----------------
@@ -1156,6 +1295,119 @@ async function dbSuite(h: Harness): Promise<void> {
     );
   }
 
+  // ---- 回执改库的短事务没写成：进本进程的待补，隔一拍再试一次（审查 once[3]） ----
+  {
+    // 内存里有这一行：说明照常加，库里那一行由重试改成 failed
+    const sid = 'wecom:wmQr1';
+    const { s } = seedSession(h, sid);
+    const m: ChatMessage = { role: 'agent', content: '已收到您的支付', at: Date.now() };
+    s.messages.push(m);
+    store.saveSession(s);
+    await wecom.wecomAdapter.push(sid, m.content, { kind: 'notice', message: m });
+    await flush(sid);
+    const [row] = h.rowsOf(sid);
+    // 先让说明那次落库借到连接，回执的短事务借连接时失败
+    fx.faults.skipAcquires = 1;
+    fx.faults.acquire = new Error('selftest: 库连不上');
+    h.serverLog.push(h.failEvent(row!.msgid, 6));
+    await h.sync();
+    await sleep(300); // 第一次改库失败（连接借不到），排进待补
+    const failedFirst = fx.faults.skipAcquires === 0 && (await sendsOf(sid).catch(() => []))[0]?.status !== 'failed';
+    fx.faults.acquire = null;
+    fx.faults.skipAcquires = 0;
+    const fixed = await waitFor(async () => (await sendsOf(sid))[0]?.status === 'failed', 5000);
+    await flush(sid);
+    check(
+      '回执改库第一次失败（内存里有这一行）：隔一拍重试改成 failed、fail_type 6，说明只有一条',
+      failedFirst && fixed && (await sendsOf(sid))[0]?.fail_type === 6 && h.msgsOf(sid).filter((x) => x.role === 'system').length === 1,
+      json({ rows: await sendsOf(sid), msgs: h.msgsOf(sid).map((x) => x.role) }),
+    );
+
+    // 内存里没有这一行（预载窗口之外、库里才有）：重试改中了，照样给会话加说明
+    const sid2 = 'wecom:wmQr2';
+    seedSession(h, sid2);
+    await flush(sid2);
+    const outside = 'e'.repeat(32);
+    await su(
+      `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status) select tenant_id, id, $2, 'ai', now() - interval '3 days', 'accepted' from conversations where id = $1`,
+      [sid2, outside],
+    );
+    fx.faults.acquire = new Error('selftest: 库连不上');
+    h.serverLog.push(h.failEvent(outside, 4));
+    await h.sync();
+    await sleep(300);
+    fx.faults.acquire = null;
+    const hit = await waitFor(() => h.msgsOf(sid2).at(-1)?.content === '客户超过 48 小时没说话，这条发不出去了', 5000);
+    const [o] = await su<{ status: string; fail_type: number | null }>(
+      'select status, fail_type from outbound_sends where channel_msgid = $1',
+      [outside],
+    );
+    check(
+      '回执改库第一次失败（内存里没有这一行）：重试改中了，库里 failed、fail_type 4，会话照样加说明',
+      hit && o?.status === 'failed' && o.fail_type === 4,
+      json({ o, last: h.msgsOf(sid2).at(-1) }),
+    );
+  }
+
+  // ---- 分三段的跟进（送达之后才写进会话）：三行的 message_seq 都等于这条消息的 seq（审查 once[4]） ----
+  {
+    const uid = 'wmQd8';
+    const sid = `wecom:${uid}`;
+    seedSession(h, sid);
+    await flush(sid);
+    const para = '这条线第一天抵达贵阳，入住市区酒店，晚上可以去青云市集逛逛小吃。'.repeat(15);
+    const text = [para, para, para].join('\n\n');
+    const msg: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
+    h.fake.sendDelayMs = 5;
+    const ok = await wecom.wecomAdapter.push(sid, text, { kind: 'followup', message: msg });
+    h.fake.sendDelayMs = 0;
+    const s = store.getSession(sid)!;
+    s.messages.push(msg); // 调用方在推送返回之后的同一段同步代码里写进会话（同跟进的执行体）
+    store.saveSession(s, false);
+    await flush(sid);
+    const seq = store.seqOf(msg);
+    const rows = await sendsOf(sid);
+    check(
+      '分三段的跟进：三行账本的 message_seq 都等于这条消息的 seq',
+      ok && h.reqTo(uid).length === 3 && rows.length === 3 && seq !== undefined && rows.every((r) => r.message_seq === seq),
+      json({ seq, rows: rows.map((r) => [r.kind, r.status, r.message_seq]) }),
+    );
+  }
+
+  // ---- 「重置」口令按 msgid 去重：重放与重新拉到都不再重置一遍（审查 once[5]；demo 的重置照常生效） ----
+  {
+    const uid = 'wmQd7';
+    const sid = `wecom:${uid}`;
+    h.serverLog.push(h.customerMsg(uid, '想去云南看看'));
+    await h.sync();
+    const reset = h.customerMsg(uid, '重置');
+    h.serverLog.push(reset);
+    await h.sync();
+    const afterReset = h.msgsOf(sid).map((x) => x.content);
+    h.serverLog.push(h.customerMsg(uid, '两个人'));
+    await h.sync();
+    await flush(sid);
+    check(
+      '重置（前提）：照常生效，窗口里只剩重置回复；口令的 msgid 进了 7 天集合',
+      afterReset.length === 1 && afterReset[0]!.includes('重新开始') && store.recentMsgids(sid).has(reset.msgid),
+      json(afterReset),
+    );
+    const n0 = h.msgsOf(sid).length;
+    const sent0 = h.reqTo(uid).length;
+    for (const via of ['重放', '重新拉到'] as const) {
+      await h.restart();
+      if (via === '重放') h.pendOnDisk(reset);
+      else h.rewindTo(reset);
+      const c0 = h.calls();
+      await h.sync();
+      check(
+        `重置口令（${via}）：跳过，不再重置一遍、不再回「重新开始」，之后的对话还在`,
+        h.calls() === c0 && h.reqTo(uid).length === sent0 && h.msgsOf(sid).length === n0,
+        json({ calls: h.calls() - c0, sent: h.reqTo(uid).slice(sent0), msgs: h.msgsOf(sid).map((x) => x.content.slice(0, 12)) }),
+      );
+    }
+  }
+
   // ---- 跟进：额度用发送账本（剩 1 条、窗口剩不到 2 小时都不调模型、不重排；剩 2 条照发）；经真企微适配器只超时按已发处理 ----
   {
     const runner = await import('../jobs/runner.js');
@@ -1236,7 +1488,8 @@ async function dbSuite(h: Harness): Promise<void> {
     h.plan.set('wmQfu', ['timeout', 'timeout', 'timeout']);
     h.script.push({ content: '出行日期定下来了吗？' });
     await runner.runJobsOnce();
-    await flush(fu);
+    // 结果不明的跟进没写进会话：账本行等不到 seq，过了上限才以 message_seq 为 NULL 落库
+    await waitFor(async () => (await flush(fu), (await sendsOf(fu)).length === 1), 8000);
     const jf = await jobsFor(fu);
     const meta = (store.getSession(fu) as Session & { followup?: { count?: number; stages?: string[]; failures?: number } }).followup;
     const rowsF = await sendsOf(fu);
@@ -1283,6 +1536,18 @@ async function crashSuite(h: Harness, saveNow: () => void): Promise<void> {
       (await su(`select 1 from outbound_sends where conversation_id = $1 and status = 'accepted'`, [`wecom:${KILL_B}`])).length === 1,
   );
   check('（前提）B 的回复已送出、账本行已落库', bRow && h.reqTo(KILL_B).length === 1);
+  // C：回复的第一次尝试超时（其实已送达），退避之后的重试挂住（审查 once[1]）：超时那一刻这一行就记 unknown、随落库进库
+  h.plan.set(KILL_C, ['timeout', 'hang']);
+  const c = h.customerMsg(KILL_C, '新疆几月去合适', { msgid: 'qk-c-1' });
+  h.serverLog.push(c);
+  void h.wecom.syncFromCallback('tok-c');
+  const cReady = await waitFor(
+    async () =>
+      h.reqTo(KILL_C).length === 2 &&
+      (await su(`select 1 from outbound_sends where conversation_id = $1 and status = 'unknown'`, [`wecom:${KILL_C}`])).length === 1,
+    10_000,
+  );
+  check('（前提）C 的第一次尝试超时、已送达，重试挂住；账本行已按 unknown 落库', cReady && h.deliveredTo(KILL_C).length === 1);
   // A：客户这句已入库、模型卡住（回复还没生成）
   h.script.push({ hang: true });
   const a = h.customerMsg(KILL_A, '想去云南看看', { msgid: 'qk-a-1' });
@@ -1299,16 +1564,17 @@ async function crashSuite(h: Harness, saveNow: () => void): Promise<void> {
   const st = h.readState();
   h.writeState({ ...st, pending: [...(st.pending ?? []), { msg: b, tries: 0 }] });
   const pend = h.readState().pending?.map((p) => p.msg.msgid);
-  check('（前提）盘上的在途表里是 A 与 B', json(pend) === json([a.msgid, b.msgid]), json(pend));
+  check('（前提）盘上的在途表里是 C、A 与 B', json(pend) === json([c.msgid, a.msgid, b.msgid]), json(pend));
   saveNow();
   process.kill(process.pid, 'SIGKILL');
   await sleep(10_000);
 }
 
 async function restartSuite(h: Harness): Promise<void> {
-  const { su, flush } = await pgSetup(h, { dataDir: process.env.QUOTA_DATA_DIR! });
+  const { su, flush, sendsOf } = await pgSetup(h, { dataDir: process.env.QUOTA_DATA_DIR! });
   const A = `wecom:${KILL_A}`;
   const B = `wecom:${KILL_B}`;
+  const C = `wecom:${KILL_C}`;
   check(
     '（前提）重启之后预载出 B 的账本行：已用 1 条',
     h.ledger.sendWindow(B, Date.now()).used === 1,
@@ -1330,6 +1596,12 @@ async function restartSuite(h: Harness): Promise<void> {
     json({ sent: h.reqTo(KILL_A), calls: h.calls() - c0, msgs }),
   );
   check('回复已送出的那条重放：不补发', h.reqTo(KILL_B).length === 0);
+  const cRows = await sendsOf(C);
+  check(
+    '第一次超时（已送达）、重试挂住时被杀：重启后不重发（预载读回 unknown 的那一行），库里仍是一行 unknown',
+    h.reqTo(KILL_C).length === 0 && cRows.length === 1 && cRows[0]!.status === 'unknown' && cRows[0]!.kind === 'ai',
+    json({ sent: h.reqTo(KILL_C), cRows }),
+  );
   check('重放之后在途表清空', await waitFor(() => !(h.readState().pending ?? []).length));
   // 再重新拉到一次 A（恢复了更早的 var/ 备份）：回复已送出，跳过
   const a = h.customerMsg(KILL_A, '想去云南看看', { msgid: 'qk-a-1' });
@@ -1339,6 +1611,81 @@ async function restartSuite(h: Harness): Promise<void> {
   const c1 = h.calls();
   await h.sync();
   check('已回复过的消息重新拉到：不再回复', h.reqTo(KILL_A).length === 1 && h.calls() === c1);
+
+  // 重启之后才收到 B 那条回复的 msg_send_fail（停机期间到达、新进程拉到）：预载来的行也改得到库（审查 spec[0]、once[0]、window[0]）
+  const [bRow] = await sendsOf(B);
+  const NOTE4 = '客户超过 48 小时没说话，这条发不出去了';
+  const notes = async (): Promise<number> =>
+    (await su(`select 1 from messages where conversation_id = $1 and role = 'system' and content = $2`, [B, NOTE4])).length;
+  const ev = h.failEvent(bRow!.channel_msgid, 4);
+  h.serverLog.push(ev);
+  await h.sync();
+  const marked = await waitFor(async () => (await sendsOf(B))[0]?.status === 'failed');
+  await flush(B);
+  const after = (await sendsOf(B))[0];
+  check(
+    '重启之后的回执：库里那一行（预载来的）改成 failed、fail_type 4，会话的说明只有一条',
+    marked && after?.fail_type === 4 && (await notes()) === 1,
+    json({ after, notes: await notes() }),
+  );
+  // cursor 回退（恢复了更早的 var/），同一条回执再收到一次：已经是 failed，不再加说明
+  await h.restart();
+  h.rewindTo(ev);
+  await h.sync();
+  await sleep(200);
+  await flush(B);
+  check(
+    'cursor 回退、同一条回执再收到一次：不重复加说明，库里仍是 failed、fail_type 4',
+    (await notes()) === 1 && (await sendsOf(B))[0]?.status === 'failed' && (await sendsOf(B))[0]?.fail_type === 4,
+  );
+}
+
+// ======================================================================================
+// stop → stopped：停机的 normal 段截止之后才生成好的回复（文件存储，同一个 var/）
+// ======================================================================================
+
+/**
+ * 模型在 normal 段截止之后才回包：适配器不开始 send_msg（账本行已无处可写，退出时还没回包的话重启后会再发一遍），这条留在在途表里
+ * （审查 once[2]）。假企微对这个客户的 send_msg 一律挂住：万一发了，就像退出时响应还没回的那一次
+ */
+async function stopSuite(h: Harness): Promise<void> {
+  const sid = `wecom:${STOP_U}`;
+  await h.sync(); // 冷启动，建出状态文件
+  h.plan.set(STOP_U, ['hang', 'hang', 'hang']);
+  h.script.push({ hang: true });
+  const m = h.customerMsg(STOP_U, '想去西藏看看', { msgid: 'qs-1' });
+  h.serverLog.push(m);
+  void h.wecom.syncFromCallback('tok-stop');
+  check('（前提）模型在生成中', await waitFor(() => h.hung.length > 0, 10_000));
+  const t0 = Date.now();
+  const stopped = h.store.runShutdownHooks(2000); // normal 段到第 1.5 秒
+  await sleep(1700);
+  await h.releaseHung('西藏 5–10 月最合适～您几位出行？');
+  const ok = await stopped;
+  const replied = await waitFor(() => (h.store.getSession(sid)?.messages ?? []).some((x) => x.role === 'agent'), 5000);
+  await sleep(300);
+  check('（前提）normal 段超时、回复在截止之后才生成好、写进了会话', !ok && replied && Date.now() - t0 >= 1500);
+  check('normal 段截止之后：不开始 send_msg', h.reqTo(STOP_U).length === 0, json(h.reqTo(STOP_U)));
+  check(
+    'normal 段截止之后：这条留在盘上的在途表里（重启后重放）',
+    await waitFor(() => (h.readState().pending ?? []).some((p) => p.msg.msgid === m.msgid), 3000),
+    json(h.readState().pending),
+  );
+}
+
+async function stoppedSuite(h: Harness): Promise<void> {
+  const sid = `wecom:${STOP_U}`;
+  const c0 = h.calls();
+  await h.sync(); // 启动重放
+  check(
+    '停机截止 → 重启：按情况 4 原样补发一次，不再调模型',
+    h.reqTo(STOP_U).length === 1 &&
+      h.deliveredTo(STOP_U)[0]?.content === '西藏 5–10 月最合适～您几位出行？' &&
+      h.calls() === c0 &&
+      (h.store.getSession(sid)?.messages ?? []).filter((x) => x.role === 'agent').length === 1,
+    json({ sent: h.reqTo(STOP_U), calls: h.calls() - c0 }),
+  );
+  check('停机截止 → 重启：补发之后在途表清空', await waitFor(() => !(h.readState().pending ?? []).length));
 }
 
 // ======================================================================================
