@@ -87,3 +87,19 @@ export function shortIdOf(id: string): string {
     .slice(-4)
     .toUpperCase();
 }
+
+/**
+ * 人工回复的标记（02 spec「接手、人工回复与交还」、不变量 18）：人工回复在客户侧（企微与网页模拟器）以它开头；发给模型的历史里
+ * author='human' 的消息同样以它开头，模型才分得清哪些话是顾问说的；AI 回复写进会话之前去掉开头的它
+ */
+export const ADVISOR_PREFIX = '【顾问】';
+
+/** 正文前加「【顾问】」；已经以它开头的原样返回（顾问自己打了的不叠两遍） */
+export function withAdvisorPrefix(text: string): string {
+  return text.startsWith(ADVISOR_PREFIX) ? text : `${ADVISOR_PREFIX}${text}`;
+}
+
+/** 去掉开头的「【顾问】」（可连着几个，后面可跟冒号与空白）；没有就原样返回 */
+export function stripAdvisorPrefix(text: string): string {
+  return text.replace(/^\s*(?:【顾问】[\s:：]*)+/, '');
+}

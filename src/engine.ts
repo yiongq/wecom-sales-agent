@@ -39,7 +39,7 @@ import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from '
 import { promptHashes } from './config/hashes.js';
 import { HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
-import { shortIdOf } from './shared/conversation.js';
+import { shortIdOf, stripAdvisorPrefix, withAdvisorPrefix } from './shared/conversation.js';
 import { followupOptOutOf } from './jobs/optout.js';
 import { cancelHandoffNotifyOps } from './jobs/notify.js';
 import {
@@ -3414,6 +3414,20 @@ export interface HandleOpts {
   alreadyRecorded?: boolean;
 }
 
+/** 这一轮写进会话的那条回复消息（02 第 12 步：渠道发送时交给发送账本，账本行据它取 seq）。不往 AgentReply 上加字段 */
+const replyMessages = new WeakMap<AgentReply, ChatMessage>();
+
+/** handleMessage 返回的回复对应会话里的哪条消息；静默、没写进会话的没有 */
+export function replyMessageOf(r: AgentReply): ChatMessage | undefined {
+  return replyMessages.get(r);
+}
+
+/**
+ * 发给模型的历史里人工回复的说明（02 spec「接手、人工回复与交还」）：窗口里有 author='human' 的消息时加在 contextNote 末尾。
+ * 没有人工消息的会话一个字节都不变；contextNote 在 system prompt 之外（独立的 system 消息），前缀哈希不受影响
+ */
+const ADVISOR_NOTE = '历史里标【顾问】的话是人工顾问说的，不是你说的；顾问答应过的事以顾问为准，不要改口，也不要在自己的回复里写【顾问】。';
+
 /**
  * 对外入口：同会话串行，跨会话并发。一轮的正文包在 pinCatalogForTurn 里（02 R14、不变量 36）：轮到它真正开始时记下产品库快照，
  * 这一轮的工具、链接上的 ?v= 与护栏都看这一代，中途有人改价也不混用。文件模式下什么都不做
@@ -3430,6 +3444,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   const stageBefore = session.stage;
   const done = (outcome: TurnOutcome, r: AgentReply, msg?: ChatMessage): AgentReply => {
     endTurn(outcome, r.text, stageBefore, session.stage, msg);
+    if (msg) replyMessages.set(r, msg);
     return r;
   };
 
@@ -3556,9 +3571,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     const i = talk.findLastIndex((m) => m.role === 'customer');
     if (i >= 0 && i < talk.length - 1) talk.push(...talk.splice(i, 1));
   }
-  const history = historyWindow(talk).map((m) => ({
+  // 人工回复（author='human'）映射成 assistant、正文前加「【顾问】」：交还之后模型分得清哪些话是顾问说的（不变量 18）
+  const windowed = historyWindow(talk);
+  const advisorInWindow = windowed.some((m) => m.role === 'agent' && m.author === 'human');
+  const history = windowed.map((m) => ({
     role: m.role === 'customer' ? ('user' as const) : ('assistant' as const),
-    content: m.content,
+    content: m.role === 'agent' && m.author === 'human' ? withAdvisorPrefix(m.content) : m.content,
   }));
 
   // 记录本轮工具调用，用于事后推导阶段/画像
@@ -3639,7 +3657,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   // 会话状态在预取之前拼：预取的结果已经以工具消息的形式给了模型，不必在状态里再列一遍。
   // 三样齐全时附一句「这一轮报价」（见 quoteTimingNote）
-  const contextNote = [buildContextNote(session), quoteTimingNote(session, text), headcountAskNote(session, text)]
+  const contextNote = [
+    buildContextNote(session),
+    quoteTimingNote(session, text),
+    headcountAskNote(session, text),
+    advisorInWindow ? ADVISOR_NOTE : '',
+  ]
     .filter(Boolean)
     .join('\n');
   const prefetch: PrefetchedCall[] = [];
@@ -4082,6 +4105,13 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   visible = restoreProposalSuffixes(visible, calls);
   noteGuard('proposal_suffix', beforeSuffix, visible, 'patch');
 
+  // 出口的最后一步：去掉 AI 回复开头的「【顾问】」（模型照着历史学了人工回复的样子），发给客户的 AI 回复不以它开头（不变量 18）
+  const beforeAdvisor = visible;
+  visible = stripAdvisorPrefix(visible);
+  if (visible !== beforeAdvisor) {
+    visible = visible.trim() || (session.handedOver ? HANDED_OVER_FALLBACK : fallbackReply(session.stage));
+    noteGuard('advisor_prefix', beforeAdvisor, visible, 'strip');
+  }
   // 模型输出原样进会话前去掉 NUL、修好孤立代理项（不截长度）：带着它们的消息进不了库（不变量 16）
   visible = cleanText(visible);
   const replyMsg: ChatMessage = { role: 'agent', content: visible, at: Date.now() };
@@ -4210,11 +4240,15 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
   }
   if (strandedAfterDrop(beforeGuards, visible)) visible = '';
   visible = trimDangling(visible);
-  return cleanText(visible.replace(ANY_HOLE, '')).trim();
+  // 与 AI 回复同一个出口：开头的「【顾问】」去掉（不变量 18）
+  return stripAdvisorPrefix(cleanText(visible.replace(ANY_HOLE, ''))).trim();
 }
 
-/** 支付成功后的主动跟进：写入会话并置 stage=paid，推送由调用方经 adapter 完成 */
-export async function notifyPaid(orderId: string): Promise<{ sessionId: string; text: string } | null> {
+/**
+ * 支付成功后的主动跟进：写入会话并置 stage=paid，推送由调用方经 adapter 完成。
+ * message 是写进会话的那条（推送时交给发送账本，02 第 12 步）
+ */
+export async function notifyPaid(orderId: string): Promise<{ sessionId: string; text: string; message: ChatMessage } | null> {
   const order = getOrder(orderId);
   if (!order) return null;
   const session = getSession(order.sessionId);
@@ -4225,9 +4259,10 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
       `有任何想法随时跟我说～`,
   );
   session.stage = 'paid';
-  session.messages.push({ role: 'agent', content: text, at: Date.now() });
+  const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
+  session.messages.push(message);
   saveSession(session);
-  return { sessionId: session.id, text };
+  return { sessionId: session.id, text, message };
 }
 
 /** 仅供自测：订单与转人工这组判定 */
