@@ -21,6 +21,7 @@
 // - 发送账本（02 第 12 步，src/quota/ledger.ts）：每个 send_msg 分段带一个我们生成的 msgid、记一行，重试沿用；
 //   sync_msg 里的 msg_send_fail 回执按 msgid 记进账本。客户消息按 msgid 去重（五种情况，见 dedupeFor），
 //   新拉到的与启动时的在途重放同一套规则；回复已生成而账本里没送出的原样重发、不再跑模型。
+//   停机的 normal 段截止之后不再开始新的 send_msg（那时账本行已无处可写）：客户消息留在在途表，重启时按情况 4 恰好补发一次。
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -303,6 +304,11 @@ interface SendCtx {
   message: ChatMessage | null;
 }
 
+// 停机：normal 段的截止时刻（drainForShutdown 拿到）。过了它不再开始新的 send_msg：drain 段之后账本行已无处可写，
+// 这时才开始、退出时还没回包的一次发送，重启后情况 4 会再发一遍（02 第 12 步审查 once[2]）
+let sendsClosedAt = Number.POSITIVE_INFINITY;
+const sendsClosed = (): boolean => Date.now() >= sendsClosedAt;
+
 // 客户进入会话时的欢迎语（本账号 API 托管，微信自带欢迎语不生效，须由此发）。
 // AI 显式标识（00 spec「AI 显式标识」）：第一句写明「AI 旅行顾问」，正文写明人工入口；账号名在企微后台另改。
 // 身份只在这里说一次：system prompt 仍是「主动自我介绍不提 AI、被问就承认」，对话中不反复自称
@@ -489,6 +495,7 @@ async function sendLinkCard(
   // 整体包 try/catch：callApi 用 AbortSignal.timeout，网络抖动会 reject 而不是返回 errcode。
   // 漏掉会让异常冲出 push()，调用方的纯文本兜底永不执行——正文已经发出去了、链接却没了。
   try {
+    entry.attempt();
     const data = await callApi<{ errcode?: number; errmsg?: string }>(cfg, 'kf/send_msg', {
       touser: externalUserId,
       open_kfid: cfg.openKfId,
@@ -625,15 +632,20 @@ function stripLink(body: string, raw: string): string {
  *  客户对话主链路与后台推送共用这一条路径——此前卡片逻辑只写在 push() 里，
  *  而客户消息的回复走的是 handleCustomerMessage → sendText，卡片代码对客户而言是死代码。 */
 async function sendRich(cfg: WecomConfig, uid: string, body: string, ctx: SendCtx): Promise<boolean> {
+  // 人工回复（kind='human'）的客户侧正文前加「【顾问】」（不变量 18）：加在拆完卡片之后，只加在客户读到的正文上——
+  // 加在整条前面的话，只贴了一条链接时会单独发一条只有「【顾问】」的消息、多占一条额度，「方案书：<链接>」的标签也认不出来
+  const advisor = ctx.kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
   const card = cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
-  if (!card) return sendText(cfg, uid, body, ctx);
+  if (!card) return sendText(cfg, uid, advisor(body), ctx);
   // 先把缩略图备好再动正文。stripLink 会把「方案书在这儿」改成「见下方卡片」，
   // 此前先发了改过的正文才去传缩略图，缩略图一失败（接口报错、之后 60 秒冷却期内每一张都算），
   // 客户读到「见下方卡片」，下方却是一条纯文本链接。拿不到缩略图就原样发正文，链接留在原处
   const thumb = await uploadThumb(cfg).catch(() => null);
-  if (!thumb) return sendText(cfg, uid, body, ctx);
+  if (!thumb) return sendText(cfg, uid, advisor(body), ctx);
   const prose = stripLink(body, card.raw);
-  const textOk = prose ? await sendText(cfg, uid, prose, ctx) : true;
+  // 只有卡片、没有正文的人工回复：前缀加在卡片标题上（客户仍看得出是顾问发的，也不多发一条）
+  if (!prose && ctx.kind === 'human') card.title = withAdvisorPrefix(card.title);
+  const textOk = prose ? await sendText(cfg, uid, advisor(prose), ctx) : true;
   if (await sendLinkCard(cfg, uid, card, thumb, ctx.message)) return textOk;
   // 缩略图就绪、卡片本身却发送失败（接口报错、网络异常，少见）：正文已按「见下方卡片」发出，收不回来了。
   // 把链接补发在正文下方——「下方」来的是一条带标题的链接而不是卡片，措辞差一点，但链接一定送达
@@ -656,6 +668,7 @@ async function sendText(cfg: WecomConfig, externalUserId: string, text: string, 
     let errcode: number | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise((r) => setTimeout(r, 800 * attempt));
+      entry.attempt();
       try {
         const data = await callApi<{ errcode?: number; errmsg?: string }>(cfg, 'kf/send_msg', {
           touser: externalUserId,
@@ -676,8 +689,12 @@ async function sendText(cfg: WecomConfig, externalUserId: string, text: string, 
         if (data.errcode !== 45009 && data.errcode !== -1) break;
       } catch (e) {
         lastErr = String(e); // 网络异常/超时，重试
-        // 超时与网络异常：请求可能已经到了企微、消息可能已经送达，结果不明（计入额度）；取 token 失败是根本没发
-        if (!(e instanceof TokenError)) outcome = 'unknown';
+        // 超时与网络异常：请求可能已经到了企微、消息可能已经送达，结果不明（计入额度）；取 token 失败是根本没发。
+        // 立刻记 unknown 并排进落库，不等重试跑完：重试途中进程被杀或停机，重启后情况 4 看到 unknown 就不再重发
+        if (!(e instanceof TokenError)) {
+          outcome = 'unknown';
+          entry.unknown();
+        }
       }
     }
     // 分段最终的结果（第 17 步的 wecom_send 告警也挂在这里）
@@ -864,8 +881,11 @@ function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
 /** 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明（不变量 28 的适配器部分；代次第 13 步才有生产者） */
 const TAKEN_OVER_NOTE = '本轮未发送（顾问已接手）';
 
-/** 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放 */
-async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = false): Promise<void> {
+/**
+ * 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放。
+ * 返回 'deferred'：停机的 normal 段已截止、回复没开始发，这条留在在途表里，重启后重放（情况 4 原样补发、情况 3 重跑）
+ */
+async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = false): Promise<'deferred' | void> {
   const sessionId = SESSION_PREFIX + msg.external_userid;
   if (msg.msgtype !== 'text' || !msg.text?.content) {
     // 小红书来的客户第一条常是笔记截图、行程截图或语音。一句「只能处理文字」是把
@@ -913,6 +933,11 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
       const hint = HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
       // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
       if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
+      // 停机的 normal 段已截止：不开始发，留给重启时重放（占位已记下，那时补发提示；这一轮也那时再记）
+      if (sendsClosed()) {
+        console.log('[wecom] 停机中、发送已截止，引导提示留到重启后补发');
+        return 'deferred';
+      }
       // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
       const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
       if (await sendText(cfg, msg.external_userid, hint, { kind: 'ai', message: sent })) {
@@ -957,6 +982,12 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
     if (reply.silent || !reply.text.trim()) {
       console.log(`[wecom] 静默（阶段=${reply.stage}，转人工后不自动回复）`);
       return; // 转人工后 AI 沉默，交给真人
+    }
+    if (sendsClosed()) {
+      // 停机的 normal 段已截止（回复在 drain、late 段才生成好）：这时开始发，账本行已无处可写，退出时还没回包的话重启后会再发一遍。
+      // 不发，留在在途表里：回复已写进会话，重启后按情况 4 原样补发一次
+      console.log('[wecom] 停机中、发送已截止，回复留到重启后补发');
+      return 'deferred';
     }
     if (takeoverGen(sessionId) !== gen) {
       console.log('[wecom] 生成期间顾问接手，本轮 AI 回复不发');
@@ -1018,11 +1049,12 @@ function dispatch(cfg: WecomConfig, msg: KfMessage, replay = false): void {
     return;
   }
   enqueueForUser(msg.external_userid || msg.msgid, async () => {
+    let deferred = false;
     try {
-      await handleCustomerMessage(cfg, msg, replay);
+      deferred = (await handleCustomerMessage(cfg, msg, replay)) === 'deferred';
     } finally {
-      // 回复成功、静默、发送失败、异常兜底都算「处理完」；只有进程死在半路才会留在在途表里
-      inflight.delete(msg.msgid);
+      // 回复成功、静默、发送失败、异常兜底都算「处理完」；只有进程死在半路、或停机截止后没开始发的（deferred）才留在在途表里
+      if (!deferred) inflight.delete(msg.msgid);
       scheduleStateSave();
     }
   });
@@ -1209,9 +1241,13 @@ export function startWecom(): void {
   })().catch((err) => console.error('[wecom] 启动失败，仅靠回调拉取:', err));
 }
 
-/** 停机钩子：停止拉新消息，等进行中的拉取与各客户的处理链跑完，再把状态落盘 */
-async function drainForShutdown(): Promise<void> {
+/**
+ * 停机钩子：停止拉新消息，等进行中的拉取与各客户的处理链跑完，再把状态落盘。normal 段截止（ctx.deadline）之后不再开始新的
+ * send_msg（见 sendsClosed）
+ */
+async function drainForShutdown(ctx?: { deadline: number }): Promise<void> {
   stopping = true;
+  if (ctx) sendsClosedAt = ctx.deadline;
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
@@ -1251,10 +1287,13 @@ export const wecomAdapter: ChannelAdapter = {
       return false;
     }
     if (!sessionId.startsWith(SESSION_PREFIX)) return false;
+    if (sendsClosed()) {
+      // 停机的 normal 段已截止：不再开始新的 send_msg（账本行已无处可写），按没发出去返回（跟进退账、之后再排）
+      console.error('[wecom] 停机中、发送已截止，这次推送不发');
+      return false;
+    }
     const uid = sessionId.slice(SESSION_PREFIX.length);
-    const kind = opts?.kind ?? 'notice';
-    const body = formatForWecom(cfg, text);
-    return sendRich(cfg, uid, kind === 'human' ? withAdvisorPrefix(body) : body, { kind, message: opts?.message ?? null });
+    return sendRich(cfg, uid, formatForWecom(cfg, text), { kind: opts?.kind ?? 'notice', message: opts?.message ?? null });
   },
 };
 
@@ -1276,6 +1315,7 @@ async function resetForTest(): Promise<void> {
   pendingRequested = false;
   pendingToken = undefined;
   stopping = false;
+  sendsClosedAt = Number.POSITIVE_INFINITY;
   userChains.clear();
   eventTasks.clear();
   welcomeBackAt.clear();
