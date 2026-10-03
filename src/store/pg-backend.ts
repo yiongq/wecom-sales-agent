@@ -251,7 +251,7 @@ export interface PgBackend extends StoreBackend {
   writeStandaloneAudit(item: AuditItem): Promise<void>;
   /**
    * 用量累加进 usage_daily（02 spec「用量」：每 30 秒与 drain 段由累加器调，不经会话写队列）。一个短事务；已冲突、late 段之后、
-   * 租户锁在别人手里时不写、直接 reject（累加器把这批留着下次再试）
+   * 租户锁在别人手里时不写、直接 reject（累加器把这批留着下次再试）。失败一律以 UsageWriteError reject，code 分得出原因
    */
   writeUsage(deltas: readonly UsageDelta[]): Promise<void>;
   recentMsgids(sessionId: string): ReadonlySet<string>;
@@ -295,6 +295,20 @@ const stamp = (): string => new Date().toISOString().replace(/[:.]/g, '-');
 const short = (id: string): string => shortIdOf(id) || '?';
 
 class AlreadyCommitted extends Error {}
+
+/**
+ * writeUsage 没写进去。code：主动不写的三种（conflict 已冲突、closed 已停机、held_by_other 租户锁不在本进程），
+ * 或库报的 SQLSTATE / errno 码（沿 cause 链取，取不到是错误名）。message 里只有 code，不带驱动错误的原文
+ */
+export class UsageWriteError extends Error {
+  override readonly name = 'UsageWriteError';
+  constructor(
+    readonly code: string,
+    options?: { cause?: unknown },
+  ) {
+    super(`usage_daily 没写进去（${code}）`, options);
+  }
+}
 
 // ---------------- 预载 ----------------
 
@@ -1045,8 +1059,15 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     },
     async writeUsage(deltas) {
       if (!deltas.length) return;
-      if (closed || conflict || !d.writable()) throw new Error('usage_daily 现在不写库（已冲突、已停机或租户锁不在本进程）');
-      await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas)));
+      if (conflict) throw new UsageWriteError('conflict');
+      if (closed) throw new UsageWriteError('closed');
+      if (!d.writable()) throw new UsageWriteError('held_by_other');
+      try {
+        await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas)));
+      } catch (err) {
+        // drizzle 把驱动错误包一层，SQLSTATE 在 cause 里：在这一侧取好（src/trace 不 import src/db/**）
+        throw new UsageWriteError(pgErrorOf(err).code ?? (err instanceof Error ? err.name : 'unknown'), { cause: err });
+      }
     },
     async writeStandaloneAudit(item) {
       try {

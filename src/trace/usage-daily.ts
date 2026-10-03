@@ -95,6 +95,8 @@ async function flushOnce(): Promise<void> {
       for (const c of COUNTERS) a[c] += d[c];
       a.milli += d.costMilliCny;
     }
+    // 只打原因码：PG 后端的 writeUsage 已在 db 一侧归好类（UsageWriteError.code：SQLSTATE 沿 cause 链取，或 conflict / closed /
+    // held_by_other），不打错误原文
     const code = (e as { code?: unknown })?.code;
     console.warn(
       `[usage] usage_daily 写入失败（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}），这批用量留到下一次再写`,
