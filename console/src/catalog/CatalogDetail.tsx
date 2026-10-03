@@ -169,7 +169,7 @@ function statusLine(lock: string | null, u: Updated | null, now: number): ReactN
  * 页头的「更多」（§4.3：ellipsis 图标，次要按钮样式 32×32，放在操作区最左）：产品库一条里只有「复制为新草稿」。
  * 菜单开着时按钮的 Tooltip 不压在菜单上。buttonRef 给弹窗关上以后把焦点还回来（打开它的菜单项已经收起了）
  */
-function MoreMenu({ onCopy, buttonRef }: { onCopy(): void; buttonRef: RefObject<HTMLButtonElement | null> }) {
+export function MoreMenu({ onCopy, buttonRef }: { onCopy(): void; buttonRef: RefObject<HTMLButtonElement | null> }) {
   const [open, setOpen] = useState(false);
   return (
     <Dropdown
@@ -177,6 +177,10 @@ function MoreMenu({ onCopy, buttonRef }: { onCopy(): void; buttonRef: RefObject<
       onOpenChange={setOpen}
       trigger={['click']}
       placement="bottomRight"
+      // 键盘打开时焦点进菜单；鼠标点开的不动。包的这一层接住打开时的 focus()（parts/popupRegion.tsx）。收起以后卸下，
+      // 键盘停过的那一项下次用鼠标点开时不还亮着（同用户菜单）
+      autoFocus
+      destroyOnHidden
       popupRender={popupRegion('更多')}
       menu={{
         items: [{ key: 'copy', label: '复制为新草稿' }],
