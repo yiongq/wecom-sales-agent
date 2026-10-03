@@ -1022,6 +1022,293 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
   check('跟进的出口护栏（guardOutbound）同样去掉开头的「【顾问】」', g === '出行日期定下来了吗？', json(g));
 }
 
+// ---------------- 11. 接手状态机（02 spec「接手、人工回复与交还」、不变量 22–25、27、28；plan 第 13 步） ----------------
+{
+  const tk = await import('./takeover.js');
+  const { onToolCall } = await import('../engine.js');
+  const errName = (fn: () => unknown): string => {
+    try {
+      fn();
+      return 'ok';
+    } catch (e) {
+      return e instanceof Error ? e.constructor.name : String(e);
+    }
+  };
+  const A: import('./takeover.js').Actor = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000a1', name: '小林', role: 'agent' };
+  const B: import('./takeover.js').Actor = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000b2', name: '小王', role: 'agent' };
+  const SUP: import('./takeover.js').Actor = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000c3', name: '主管', role: 'supervisor' };
+  const VIEW: import('./takeover.js').Actor = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000d4', name: '只读', role: 'viewer' };
+  const SHARED = tk.sharedActor();
+  const fresh = (tag: string, stage: Session['stage'] = 'quote') => {
+    const sid = newSid(tag);
+    const s = store.getOrCreateSession(sid, 'simulator');
+    s.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+    s.stage = stage;
+    store.saveSession(s);
+    return s;
+  };
+
+  // 接手：比较并设置，单进程下两个并发的接手恰有一个成功（不变量 22）
+  const s1 = fresh('TK1');
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => tk.takeover(s1.id, A)),
+    Promise.resolve().then(() => tk.takeover(s1.id, B)),
+  ]);
+  check(
+    '接手：两个并发的接手恰有一个成功，另一个抛 AssignedToOtherError 带接手人的名字',
+    results.filter((r) => r.status === 'fulfilled').length === 1 &&
+      results.some((r) => r.status === 'rejected' && r.reason instanceof tk.AssignedToOtherError && r.reason.assigneeName === '小林') &&
+      s1.assignee?.userId === A.userId,
+    json(results.map((r) => r.status)),
+  );
+  check(
+    '接手：未转人工时先以 kind=agent 进入转人工（成员写「顾问主动接手」），阶段改成 handoff、记下原阶段',
+    s1.handedOver &&
+      s1.handoff?.kind === 'agent' &&
+      s1.handoff.reason === '顾问主动接手' &&
+      s1.stage === 'handoff' &&
+      s1.stageBeforeHandoff === 'quote',
+    json(s1.handoff),
+  );
+  const g1 = tk.takeoverGen(s1.id);
+  check(
+    '接手：已经是自己 → changed=false，代次不加',
+    json(tk.takeover(s1.id, A)) === json({ changed: false, reassignedFrom: null }) && tk.takeoverGen(s1.id) === g1,
+  );
+  check(
+    '接手：别人接手中，坐席与共享工作台带 force 都抛 ForbiddenError，只读成员什么都抛 ForbiddenError',
+    errName(() => tk.takeover(s1.id, B, { force: true })) === 'ForbiddenError' &&
+      errName(() => tk.takeover(s1.id, SHARED, { force: true })) === 'ForbiddenError' &&
+      errName(() => tk.takeover(s1.id, SHARED)) === 'AssignedToOtherError' &&
+      errName(() => tk.takeover(fresh('TKV').id, VIEW)) === 'ForbiddenError' &&
+      s1.assignee?.userId === A.userId,
+  );
+  const re = tk.takeover(s1.id, SUP, { force: true });
+  check(
+    '改派：supervisor 带 force → 接手人换成他、返回原来的接手人，代次加 1',
+    re.changed && re.reassignedFrom === '小林' && s1.assignee?.userId === SUP.userId && tk.takeoverGen(s1.id) === g1 + 1,
+  );
+  check('接手：不存在的会话抛 ConversationNotFoundError', errName(() => tk.takeover('wecom:wmNOSUCH', A)) === 'ConversationNotFoundError');
+
+  // 交还：别人接手的坐席交还 → NotHandlingError；supervisor 能交还别人的；恢复阶段；不清两个窗口（不变量 25）
+  check(
+    '交还：坐席交还别人接手的 → NotHandlingError，会话不变',
+    errName(() => tk.release(s1.id, A)) === 'NotHandlingError' && s1.handedOver,
+  );
+  check('交还：只读成员 → ForbiddenError', errName(() => tk.release(s1.id, VIEW)) === 'ForbiddenError');
+  s1.turnSignals = [1];
+  s1.negativeHits = [1];
+  tk.release(s1.id, SUP);
+  check(
+    '交还：清 handedOver、handoff、assignee，阶段恢复成转人工前的 quote，记「主管把会话交还 AI」，失败与情绪两个窗口不清、计数不清',
+    !s1.handedOver &&
+      s1.handoff === undefined &&
+      s1.assignee === undefined &&
+      s1.stage === 'quote' &&
+      s1.stageBeforeHandoff === undefined &&
+      s1.messages.at(-1)?.content === '主管把会话交还 AI' &&
+      tk.isReleaseNote(s1.messages.at(-1)!) &&
+      json(s1.turnSignals) === '[1]' &&
+      json(s1.negativeHits) === '[1]' &&
+      s1.handoffCount === 1,
+    json({ stage: s1.stage, last: s1.messages.at(-1) }),
+  );
+  const n = s1.messages.length;
+  tk.release(s1.id, A);
+  check('交还：没在转人工中 → 什么都不改', s1.messages.length === n);
+  // 已付按订单读的兜底（种子 A01 的形状：stage=handoff 而订单已付），写入的是行业包终态
+  const s2 = fresh('TK2', 'closing');
+  const o2 = store.createOrder({
+    sessionId: s2.id,
+    routeId: 'r-yunnan-mid',
+    routeTitle: '云南',
+    travelers: 2,
+    departDate: '2026-12-10',
+    totalPrice: 100,
+  });
+  s2.orderIds.push(o2.id);
+  enterHandoff(s2, { kind: 'request', at: Date.now(), reason: HANDOFF_REASON.request });
+  store.markOrderPaid(o2.id);
+  tk.release(s2.id, SHARED);
+  check('交还：接管期间订单已付 → 阶段写行业包终态 paid（共享工作台能交还没人接手的）', s2.stage === 'paid' && !s2.handedOver, s2.stage);
+  // 不同意处理敏感信息的不能交还（R23、不变量 41）
+  const s3 = fresh('TK3');
+  enterHandoff(s3, { kind: 'consent', at: Date.now(), reason: '客户不同意处理健康信息' });
+  s3.consent = { health: 'withdrawn' };
+  check(
+    '交还：客户撤回了同意 → ConsentDeclinedError，会话不变',
+    errName(() => tk.release(s3.id, SUP)) === 'ConsentDeclinedError' && s3.handedOver,
+  );
+  check(
+    'consentDeclined：declined 与 withdrawn 算，granted、asked 不算',
+    tk.consentDeclined({ consent: { health: 'declined' } }) && !tk.consentDeclined({ consent: { health: 'granted', minor: 'asked' } }),
+  );
+  // 终态会话：接手与交还都不动终态（不变量 27）
+  const s4 = fresh('TK4', 'paid');
+  enterHandoff(s4, { kind: 'refund', at: Date.now(), reason: HANDOFF_REASON.refund });
+  tk.takeover(s4.id, A);
+  check(
+    '终态会话：转人工之后接手，阶段仍是 paid，状态仍是已成交',
+    s4.stage === 'paid' && conversationState(s4, packById('travel')!) === 'paid',
+  );
+  tk.release(s4.id, A);
+  check('终态会话：交还之后阶段仍是 paid', s4.stage === 'paid' && !s4.handedOver);
+
+  // 人工回复：没人接手时先接手；clientId 去重；发送失败记一条；别人接手中不发不改（不变量 17、23）
+  const sent: { id: string; text: string; kind: string; human: boolean }[] = [];
+  let failNext = false;
+  tk.setReplyTransport(async (id, text, opts) => {
+    sent.push({ id, text, kind: opts.kind, human: opts.message?.author === 'human' });
+    if (failNext) {
+      failNext = false;
+      return false;
+    }
+    return true;
+  });
+  const s5 = fresh('TK5');
+  const r1 = await tk.reply(s5.id, B, '  您好，我是顾问小王  ', 'c1');
+  const human = s5.messages.filter((m) => m.author === 'human');
+  check(
+    '人工回复：没人接手时回复者先成为接手人；消息带 author=human、操作者 id 与姓名、去掉首尾空白；经渠道以 kind=human 发出，提交之后才发',
+    r1.sent &&
+      r1.persisted &&
+      r1.seq === store.seqOf(human[0]!) &&
+      s5.assignee?.userId === B.userId &&
+      human.length === 1 &&
+      human[0]!.content === '您好，我是顾问小王' &&
+      human[0]!.authorId === B.userId &&
+      human[0]!.authorName === '小王' &&
+      json(sent) === json([{ id: s5.id, text: '您好，我是顾问小王', kind: 'human', human: true }]),
+    json({ r1, sent }),
+  );
+  const r1b = await tk.reply(s5.id, B, '您好，我是顾问小王', 'c1');
+  check(
+    '人工回复：同一个 clientId 再提交返回第一次的结果、不重发',
+    r1b === r1 && sent.length === 1 && s5.messages.filter((m) => m.author === 'human').length === 1,
+  );
+  const before5 = json(s5);
+  let thrown = '';
+  await tk.reply(s5.id, A, '我也来一句', 'c2').catch((e: unknown) => (thrown = (e as Error).constructor.name));
+  check(
+    '人工回复：别人接手中 → AssignedToOtherError，不发、会话不变',
+    thrown === 'AssignedToOtherError' && sent.length === 1 && json(s5) === before5,
+  );
+  thrown = '';
+  await tk.reply(s5.id, VIEW, 'x', 'c3').catch((e: unknown) => (thrown = (e as Error).constructor.name));
+  check('人工回复：只读成员 → ForbiddenError', thrown === 'ForbiddenError');
+  thrown = '';
+  await tk.reply(s5.id, B, '   ', 'c4').catch((e: unknown) => (thrown = (e as Error).constructor.name));
+  check('人工回复：正文只有空白 → 拒绝、不改', thrown === 'RangeError' && sent.length === 1);
+  failNext = true;
+  const r2 = await tk.reply(s5.id, B, '这条发不出去', 'c5');
+  check(
+    '人工回复：发送失败 → sent=false，会话追加一条「未能发送」',
+    !r2.sent && s5.messages.at(-1)?.role === 'system' && s5.messages.at(-1)?.content === tk.REPLY_FAILED_NOTE,
+    json(s5.messages.at(-1)),
+  );
+  // 企微渠道：窗口没开（客户没说过话）→ SendWindowError，什么都不改
+  const w = store.getOrCreateSession(newSid('TKW'), 'wecom');
+  store.saveSession(w);
+  thrown = '';
+  let windowErr: unknown = null;
+  await tk.reply(w.id, A, '在吗', 'c6').catch((e: unknown) => {
+    windowErr = e;
+    thrown = (e as Error).constructor.name;
+  });
+  check(
+    '人工回复：企微窗口没开 → SendWindowError（window_closed、剩 0 条），没接手、没记消息、没发',
+    thrown === 'SendWindowError' &&
+      (windowErr as InstanceType<typeof tk.SendWindowError>).reason === 'window_closed' &&
+      (windowErr as InstanceType<typeof tk.SendWindowError>).remaining === 0 &&
+      !w.handedOver &&
+      w.messages.length === 0 &&
+      sent.length === 2,
+  );
+
+  // 接手代次（不变量 28 的引擎部分）：这一轮开始之后有人接手（含接手之后又交还），AI 回复不写进会话、不发，记「本轮未发送（顾问已接手）」
+  let armed: { sid: string; act: () => void } | null = null;
+  onToolCall((name, _a, sid) => {
+    if (armed && armed.sid === sid && name === 'search_routes') {
+      const act = armed.act;
+      armed = null;
+      act();
+    }
+  });
+  const s6 = fresh('TK6', 'discovery');
+  armed = { sid: s6.id, act: () => tk.takeover(s6.id, A) };
+  const r6 = await say(s6.id, '想去云南', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '云南' } }] },
+    { content: '云南这边有丽江大理两条线～' },
+  ]);
+  check(
+    '接手代次：生成途中成员接手 → 回复静默、AI 那句不写进会话，记一条「本轮未发送（顾问已接手）」',
+    r6.silent === true &&
+      r6.text === '' &&
+      !s6.messages.some((m) => m.content.includes('丽江大理两条线')) &&
+      s6.messages.at(-1)?.content === tk.TAKEN_OVER_NOTE,
+    json(s6.messages.slice(-2)),
+  );
+  const s7 = fresh('TK7', 'discovery');
+  armed = {
+    sid: s7.id,
+    act: () => {
+      tk.takeover(s7.id, A);
+      tk.release(s7.id, A);
+    },
+  };
+  const r7 = await say(s7.id, '想去云南', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '云南' } }] },
+    { content: '云南这边有丽江大理两条线～' },
+  ]);
+  check(
+    '接手代次：生成途中接手之后又交还（已不在转人工中）→ 这一轮仍不发，记「本轮未发送（顾问已接手）」',
+    r7.silent === true &&
+      !s7.handedOver &&
+      !s7.messages.some((m) => m.content.includes('丽江大理两条线')) &&
+      s7.messages.at(-1)?.content === tk.TAKEN_OVER_NOTE,
+    json(s7.messages.slice(-3)),
+  );
+  // 模型自己调了转人工、同时又有人接手：同样不发（之前只看 handedOver，会把模型那句转接话术发出去）
+  const s8 = fresh('TK8', 'discovery');
+  armed = { sid: s8.id, act: () => void 0 };
+  onToolCall((name, _a, sid) => {
+    if (sid === s8.id && name === 'handoff_to_human') queueMicrotask(() => tk.takeover(s8.id, B));
+  });
+  const r8 = await say(s8.id, '帮我找个人', [
+    { toolCalls: [{ name: 'handoff_to_human', args: { reason: '客户要找人' } }] },
+    { content: '好的，我马上为您转接资深顾问～' },
+  ]);
+  check(
+    '接手代次：模型调了转人工、途中又被成员接手 → 那句转接话术也不发',
+    r8.silent === true &&
+      !s8.messages.some((m) => m.role === 'agent' && m.content.includes('马上为您转接')) &&
+      s8.assignee?.userId === B.userId,
+    json(s8.messages.slice(-3)),
+  );
+  armed = null;
+  // 旧接口改调状态机：成员接手中，共享工作台的 /resume 与 /reply 都是 409、什么都不改
+  const s9 = fresh('TK9');
+  tk.takeover(s9.id, A);
+  const snap9 = json(s9);
+  const post = (op: string, body?: unknown) =>
+    app.request(`/api/sessions/${encodeURIComponent(s9.id)}/${op}`, {
+      method: 'POST',
+      headers: {
+        ...ADMIN,
+        'x-forwarded-for': '198.51.100.90',
+        ...(body ? { 'content-type': 'application/json', 'content-length': String(json(body).length) } : {}),
+      },
+      body: body ? json(body) : undefined,
+    });
+  const rs = await post('resume');
+  const rr = await post('reply', { text: '共享工作台来回' });
+  check(
+    '旧接口：成员接手中，共享工作台的 /resume 与 /reply → 409，会话不变、没发',
+    rs.status === 409 && rr.status === 409 && json(s9) === snap9 && sent.length === 2,
+    `${rs.status} ${rr.status}`,
+  );
+}
+
 fake.close();
 if (fails.length) {
   console.error(`HANDOFF SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);
@@ -1029,6 +1316,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 历史里的「【顾问】」与出口去前缀（含问身份））`,
+  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 历史里的「【顾问】」与出口去前缀（含问身份） / 接手状态机：并发接手、改派、交还、人工回复与 clientId、接手代次、旧接口改调）`,
 );
 process.exit(0);

@@ -1,9 +1,9 @@
 // 两种会话存储的等价套件（docs/architecture/02-conversations-workbench/spec.md「测试与 CI」「消息只追加」，验收 2、7；plan 第 7 步）。
 // 同一组场景分别跑在文件存储与 PG 存储上，比较每一轮的回复、发给企微的消息、会话投影与订单，并断言 PG 里确实有这些会话、
 // 库里的消息与内存一致。比较之前只做两件事：时间戳的取值换成占位（键照留），随机的订单号按出现顺序换成编号；别的字段原样比。
-// 场景：E5 生成中接手；模型返回之后、推送之前接手（strandedReply 的 await 里）；生成中付款；重置；裁剪（引擎与企微适配器两处）；
-// 企微重放（已记下没回复、已回复没发出、后面夹了欢迎语）；跟进（文件存储的扫描器，与 PG 存储下先等记账提交再推送）；
-// 转人工各入口（安全网三类、模型调工具、改行程承诺、回复说了转接、旧 /handoff）。
+// 场景：E5 生成中接手；模型返回之后、推送之前接手（strandedReply 的 await 里，第 13 步起经接手代次不发）；生成中付款；重置；
+// 裁剪（引擎与企微适配器两处）；企微重放（已记下没回复、已回复没发出、后面夹了欢迎语）；跟进（文件存储的扫描器，与 PG 存储下先等记账
+// 提交再推送）；转人工各入口（安全网三类、模型调工具、改行程承诺、回复说了转接、旧 /handoff）；接手、人工回复与交还（第 13 步）。
 // store 是进程级单例，一个进程只能装一种后端：本文件带上 PARITY_CHILD 再起两次自己（单进程 node --import tsx，spawnSync 带
 // SIGKILL 超时），两个子进程跑同一份场景脚本与假模型（输入逐字相同），各自把原始结果写进文件，由父进程规范化、比较。
 // 两个子进程的配置源相同（PGlite 上 installSeededConfig），钟也相同（父进程定的基准时刻，见 parity-clock.ts），只差会话存储；
@@ -21,6 +21,11 @@ import type { AddressInfo } from 'node:net';
 import type { ChatMessage, Session } from '../types.js';
 
 type Mode = 'file' | 'db';
+
+/** 第 13 步的后台成员（坐席）：接手人、人工回复的作者。两个子进程都在库里建这一行（PG 那边 assignee_user_id 有外键） */
+const PARITY_MEMBER = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000a1', name: '小林', role: 'agent' as const };
+/** 人工回复的 clientId：两边相同，同一个重发一次，第二次不再发 */
+const PARITY_CLIENT_ID = '5f0f6c1e-2b3a-4c5d-8e6f-000000000013';
 
 /** 一轮：回复（或抛出的错误）与这一轮没用完的脚本步数（多调、少调模型都看得出来） */
 interface TurnOut {
@@ -282,12 +287,50 @@ function anchors(out: ChildOut): [string, boolean, string][] {
   const af = sc('模型返回后推送前接手');
   const afs = ses('模型返回后推送前接手', 'wecom:parity-after');
   add(
-    '模型返回后推送前接手：接手恰好发生一次、发生在 strandedReply 的 create_quote 里；今天的机制下 AI 回复照样发出（第 13 步改成不发）',
+    '模型返回后推送前接手：接手恰好发生一次、发生在 strandedReply 的 create_quote 里；接手代次变了，AI 回复不发、不写进会话，记一条「本轮未发送（顾问已接手）」（第 13 步，验收 7）',
     af?.notes.takeovers === 1 &&
       af.notes.armedLeft === false &&
       afs?.handoff?.kind === 'agent' &&
-      af.sent.some((x) => x.content.startsWith('按 4 位给您报好了')),
-    { notes: af?.notes, handoff: afs?.handoff },
+      afs.assignee?.name === '共享工作台' &&
+      !af.sent.some((x) => x.content.startsWith('按 4 位给您报好了')) &&
+      !said(afs, 'agent').some((c) => c.startsWith('按 4 位给您报好了')) &&
+      said(afs, 'system').includes('本轮未发送（顾问已接手）'),
+    { notes: af?.notes, handoff: afs?.handoff, sent: af?.sent },
+  );
+  const tko = sc('接手、人工回复与交还');
+  const tks = ses('接手、人工回复与交还', 'wecom:parity-tk');
+  const human = (tks?.messages ?? []).filter((m) => m.role === 'agent' && m.author === 'human');
+  add(
+    '接手、人工回复与交还：成员接手（kind=agent、接手人是他、代次加 1），客户再说话 AI 静默',
+    JSON.stringify((tko?.notes.takeover as unknown) ?? null) === JSON.stringify({ changed: true, reassignedFrom: null }) &&
+      JSON.stringify(tko?.notes.afterTakeover) === JSON.stringify({ assignee: PARITY_MEMBER.userId, handoff: 'agent', gen: 1 }) &&
+      (tko?.turns ?? []).filter((t) => t.label.endsWith('在吗')).every((t) => (t.reply as { silent?: boolean }).silent === true),
+    tko?.notes,
+  );
+  add(
+    '接手、人工回复与交还：人工回复带 author=human 与操作者，经企微发出、客户侧以「【顾问】」开头，同一个 clientId 不重发',
+    human.length === 1 &&
+      human[0]!.authorId === PARITY_MEMBER.userId &&
+      human[0]!.authorName === PARITY_MEMBER.name &&
+      human[0]!.content === '我是顾问小林，云南的线路我帮您看过了' &&
+      JSON.stringify(tko?.notes.reply) === JSON.stringify({ sent: true, persisted: true, sameResult: true, pushes: 1 }) &&
+      (tko?.sent ?? []).filter((x) => x.content.startsWith('【顾问】我是顾问小林')).length === 1,
+    { notes: tko?.notes.reply, human, sent: tko?.sent },
+  );
+  add(
+    '接手、人工回复与交还：交还清掉转人工与接手人、记「小林把会话交还 AI」，下一轮模型请求里顾问那句带「【顾问】」、contextNote 带说明；两行会话类审计',
+    tks?.handedOver === false &&
+      tks.assignee === undefined &&
+      tks.handoff === undefined &&
+      tks.handoffCount === 1 &&
+      said(tks, 'system').includes('小林把会话交还 AI') &&
+      JSON.stringify(tko?.notes.history) === JSON.stringify({ advisor: true, note: true }) &&
+      JSON.stringify(tko?.notes.audits) ===
+        JSON.stringify([
+          ['conversation.takeover', '小林', PARITY_MEMBER.userId],
+          ['conversation.release', '小林', PARITY_MEMBER.userId],
+        ]),
+    { notes: tko?.notes, system: said(tks, 'system') },
   );
   const pd = sc('生成中付款');
   const pds = ses('生成中付款', 'wecom:parity-paid');
@@ -677,6 +720,13 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   const { openTestDb, installSeededConfig, installPgSessionStore, readStoredConversations } = await import('../db/testing.js');
   const t = await openTestDb();
   await installSeededConfig(t);
+  // 第 13 步：后台成员（接手人、人工回复的作者）。PG 那边 assignee_user_id 有外键到 users，两边都用同一个固定的 id，比较才对得上
+  await t.pg.exec('RESET ROLE');
+  await t.pg.query(`insert into users (id, email, display_name, password_hash) values ($1, 'parity-agent@example.com', $2, 'x')`, [
+    PARITY_MEMBER.userId,
+    PARITY_MEMBER.name,
+  ]);
+  await t.pg.exec('SET ROLE agent_app');
   const store = await import('../store.js');
   let tenantId = '';
   if (mode === 'db') {
@@ -720,7 +770,8 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   const { __test: wecomTest, syncFromCallback } = await import('../adapters/wecom.js');
   const { runFollowUpScan } = await import('../followup.js');
   const jobs = await import('../jobs/runner.js');
-  const { enterHandoff, HANDOFF_REASON } = await import('../handoff/record.js');
+  const tk = await import('../handoff/takeover.js');
+  const { shortIdOf } = await import('../shared/conversation.js');
   const { normalizeForStore } = await import('./project.js');
   const { todayIso } = await import('../env.js');
 
@@ -757,16 +808,9 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   };
   const legacy = (id: string, op: 'handoff' | 'resume' | 'reply') =>
     post(`/api/sessions/${encodeURIComponent(id)}/${op}`, op === 'reply' ? { text: '顾问回复：给您核了一下，这个日期可以' } : undefined);
-  /** 与旧 /api/sessions/:id/handoff 同一套写法（共享工作台接手），给只能同步插进引擎途中的那一处用 */
-  const deskTakeover = (id: string): void => {
-    const s = sess(id);
-    if (s.handedOver) return;
-    enterHandoff(s, { kind: 'agent', at: Date.now(), reason: HANDOFF_REASON.agent });
-    s.updatedAt = Date.now();
-    store.saveSession(s);
-  };
 
   // ---------------- 「模型返回之后、推送之前」的接手：引擎在模型返回之后调的那次工具一到，排一个 microtask 接手 ----------------
+  // 第 13 步起经接手状态机（共享工作台的 takeover）：接手代次加 1，引擎在 push AI 回复之前比较，这一轮不发
   let armed: { sid: string; tool: string } | null = null;
   let takeovers = 0;
   onToolCall((name, _args, sid, meta) => {
@@ -774,7 +818,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     if (!armed || armed.sid !== sid || armed.tool !== name || meta?.prefetch || script.length) return;
     armed = null;
     takeovers += 1;
-    queueMicrotask(() => deskTakeover(sid));
+    queueMicrotask(() => void tk.takeover(sid, tk.sharedActor()));
   });
 
   // ---------------- 场景框架 ----------------
@@ -1251,6 +1295,58 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     o.note('legacyReply', await legacy(HO.legacy, 'reply'));
     o.note('legacyResume', await legacy(HO.legacy, 'resume'));
     await say(o, HO.legacy, '想去云南看看', searchYunnan);
+  });
+
+  // ======== 9. 接手、人工回复与交还（第 13 步：后台成员经接手状态机操作） ========
+  // 成员接手一个 AI 接待中的会话 → 客户再说话 AI 静默 → 人工回复（带 author='human'，经企微发出、客户侧带「【顾问】」；
+  // 同一个 clientId 再提交一次不重发）→ 交还（记「小林把会话交还 AI」）→ 下一轮模型请求里顾问那句以「【顾问】」开头、contextNote 带说明。
+  // 会话类审计两种存储都写：db 存储随落库、target 是会话行的 ref；文件存储单独一个短事务、没有 ref
+  const TK = 'wecom:parity-tk';
+  await scenario('接手、人工回复与交还', [TK], async (o) => {
+    await say(o, TK, '你好', [{ content: '您好～这次想去哪儿玩？' }]);
+    o.note('takeover', tk.takeover(TK, PARITY_MEMBER));
+    await store.flushSession(TK);
+    const held = sess(TK);
+    o.note('afterTakeover', { assignee: held.assignee?.userId ?? null, handoff: held.handoff?.kind ?? null, gen: tk.takeoverGen(TK) });
+    await say(o, TK, '在吗', []);
+    const sentBefore = sent.length;
+    const r1 = await tk.reply(TK, PARITY_MEMBER, '我是顾问小林，云南的线路我帮您看过了', PARITY_CLIENT_ID);
+    const r2 = await tk.reply(TK, PARITY_MEMBER, '我是顾问小林，云南的线路我帮您看过了', PARITY_CLIENT_ID);
+    o.note('reply', { sent: r1.sent, persisted: r1.persisted, sameResult: r1 === r2, pushes: sent.length - sentBefore });
+    tk.release(TK, PARITY_MEMBER);
+    await store.flushSession(TK);
+    let history: WireMsg[] = [];
+    await say(o, TK, '那就丽江大理吧', [
+      {
+        content: (msgs) => {
+          history = msgs;
+          return '好的，丽江大理这条您几位出行？';
+        },
+      },
+    ]);
+    o.note('history', {
+      advisor: history.some((m) => m.role === 'assistant' && m.content === '【顾问】我是顾问小林，云南的线路我帮您看过了'),
+      note: history.some((m) => m.role === 'system' && (m.content ?? '').includes('历史里标【顾问】的话是人工顾问说的')),
+    });
+    await sleep(100); // 文件存储下的审计是单独的短事务，等它写完
+    const shortId = shortIdOf(TK);
+    const audits = await su<{ action: string; actor_name: string; actor_user_id: string | null; target_id: string | null }>(
+      `select action, actor_name, actor_user_id, target_id from audit_log where diff->>'shortId' = $1 order by id`,
+      [shortId],
+    );
+    o.note(
+      'audits',
+      audits.map((a) => [a.action, a.actor_name, a.actor_user_id]),
+    );
+    const ref = mode === 'db' ? (await su<{ ref: string }>('select ref from conversations where id = $1', [TK]))[0]?.ref : null;
+    ck(
+      '接手、人工回复与交还',
+      mode === 'db' ? '会话类审计的 target 是会话行的 ref（不含客户标识）' : '文件存储下会话类审计没有 target（没有 ref）',
+      audits.length === 2 &&
+        audits.every((a) => a.target_id === (ref ?? null)) &&
+        audits.every((a) => !String(a.target_id).includes('parity')),
+      JSON.stringify({ audits, ref }),
+    );
   });
 
   // 少调模型由父进程逐轮看 leftover；这里只管多调（脚本空了还来的请求）

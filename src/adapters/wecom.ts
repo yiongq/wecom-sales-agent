@@ -27,7 +27,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ChannelAdapter, ChatMessage, OutboundKind, PushOpts } from '../types.js';
 import { handleMessage, inboundText, replyMessageOf } from '../engine.js';
-import { takeoverGen } from '../handoff/takeover.js';
+// 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明，与引擎同一句（不变量 28 的适配器部分）
+import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
 import { onSendFail, recordSend, replyDelivered, type SendResult } from '../quota/ledger.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
@@ -858,8 +859,14 @@ function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
   if (!s) return { kind: 'fresh' };
   const talk = s.messages.filter((m) => m.role !== 'system' && !(m.role === 'agent' && WELCOME_TEXTS.has(m.content)));
   const isAiReply = (m: ChatMessage | undefined): m is ChatMessage => m?.role === 'agent' && (m.author === undefined || m.author === 'ai');
+  // 情况 4 的补发不看转人工（安全网那一轮的回复照样补发），但顾问已经接手的不补：接手代次只在进程内，上一个进程里适配器因为接手
+  // 没发的那条，重启之后会被当成「没送出」再发一遍（02 第 13 步，不变量 28）
   const sentOrSkip = (reply: ChatMessage): Dedupe =>
-    replyDelivered(sessionId, reply) ? { kind: 'skip', why: '回复已送出' } : { kind: 'resend', message: reply };
+    replyDelivered(sessionId, reply)
+      ? { kind: 'skip', why: '回复已送出' }
+      : s.handedOver && s.assignee
+        ? { kind: 'skip', why: '顾问已接手' }
+        : { kind: 'resend', message: reply };
   const at = talk.findIndex((m) => m.role === 'customer' && m.msgid === msg.msgid);
   if (at < 0) {
     if (recentMsgids(sessionId).has(msg.msgid)) return { kind: 'skip', why: '已不在会话窗口里' };
@@ -877,9 +884,6 @@ function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
   if (!reply) return s.handedOver ? { kind: 'skip', why: '会话已转人工' } : { kind: 'recorded' };
   return sentOrSkip(reply);
 }
-
-/** 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明（不变量 28 的适配器部分；代次第 13 步才有生产者） */
-const TAKEN_OVER_NOTE = '本轮未发送（顾问已接手）';
 
 /**
  * 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放。
