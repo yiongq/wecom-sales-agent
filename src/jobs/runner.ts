@@ -4,7 +4,11 @@
 // 执行体出错（还没到 sending）按 max_attempts 重试；跟进的 sending 与之后的状态由执行体经会话写队列改（记账与 sending 同一次提交）。
 // 启动：先把上一个进程留下的 running、sending 归位（running 的跟进回 pending、sending 的跟进记 abandoned 不重发、其余 running 回 pending
 // 且 attempts + 1，到 max_attempts 记 failed），再开始认领。停机 normal 段：不再认领，把还没进 sending 的 running 跟进改回 pending。
+// 认领者写的每一次状态变化都带认领令牌（claimed_at 等于认领时写下的）：租户锁丢失期间另一个进程归位、重新认领过的行改不中。
+// 租户锁不在本进程手里（锁连接断开还没重取到、或已被别的进程拿走）时不认领、不执行，认领了还没开始的放回 pending。
+// 结果没写进库的（短事务失败）留在本进程的待补队列里，下一拍先补写一次，再失败就留给下次启动归位。
 // 读路径不查库（不变量 9）：认领在后台定时器里，排程与取消经会话写队列。
+import { configHealth, tenantLockTaken } from '../config/source.js';
 import {
   cancelPendingJobs,
   claimDueJobs,
@@ -115,6 +119,18 @@ let tickTask: Promise<number> | null = null;
 let lastPurgeEnsure = 0;
 let lastClaimLog = 0;
 
+/** 结果没写进库的：下一拍先补写一次（照样带令牌），再失败就留给下次启动归位 */
+const unsettled = new Map<string, { job: JobRow; out: JobOutcome & { attemptsDelta?: number } }>();
+
+/** 租户锁在本进程手里：锁连接断开（lost，正在重取）或已被另一个进程拿走时，不认领、不执行 */
+const lockHeld = (): boolean => configHealth().lock === 'held' && !tenantLockTaken();
+
+const logThrottled = (msg: string): void => {
+  if (Date.now() - lastClaimLog < CLAIM_LOG_MS) return;
+  lastClaimLog = Date.now();
+  console.error(msg);
+};
+
 /** 执行体出错：attempts + 1，到 max_attempts 记 failed，否则按退避改回 pending */
 function retryOutcome(job: JobRow, now: number, e: unknown): JobOutcome & { attemptsDelta: number } {
   const attempts = job.attempts + 1;
@@ -123,20 +139,29 @@ function retryOutcome(job: JobRow, now: number, e: unknown): JobOutcome & { atte
   return { status: 'pending', runAt: now + RETRY_MS[Math.min(attempts - 1, RETRY_MS.length - 1)]!, lastError, attemptsDelta: 1 };
 }
 
-/** 把执行体的结果写进库：只改仍是 running 的；done 之后要接着排的（retention_purge 的下一天）在同一个事务里排 */
+/**
+ * 把执行体的结果写进库：只改仍是本次认领、仍是 running 的那一行（认领令牌）；done 之后要接着排的（retention_purge 的下一天）
+ * 在同一个事务里排（键去重，改没改中都一样）。没改中（别的认领者归位、重新认领过）以库里的为准，记一行
+ */
 async function settle(job: JobRow, out: JobOutcome & { attemptsDelta?: number }): Promise<void> {
   if (out.status === 'handled' || out.status === 'stopped') return;
-  await withJobsTx(async (tx) => {
+  const claimedAt = job.claimedAt ?? undefined;
+  const changed = await withJobsTx(async (tx) => {
     if (out.status === 'pending') {
-      await setJobStatus(tx, job.id, 'pending', {
+      return setJobStatus(tx, job.id, 'pending', {
         from: ['running'],
+        claimedAt,
         runAt: new Date(out.runAt),
         lastError: out.lastError,
         attemptsDelta: out.attemptsDelta,
       });
-      return;
     }
-    await setJobStatus(tx, job.id, out.status, { from: ['running'], lastError: out.lastError, attemptsDelta: out.attemptsDelta });
+    const ok = await setJobStatus(tx, job.id, out.status, {
+      from: ['running'],
+      claimedAt,
+      lastError: out.lastError,
+      attemptsDelta: out.attemptsDelta,
+    });
     for (const spec of out.enqueueNext ?? []) {
       await enqueueJob(tx, {
         kind: spec.kind,
@@ -146,7 +171,14 @@ async function settle(job: JobRow, out: JobOutcome & { attemptsDelta?: number })
         maxAttempts: spec.maxAttempts,
       });
     }
+    return ok;
   });
+  if (!changed) console.warn(`[jobs] ${job.kind} 的结果没改中：这一行已不在本次认领手里（被归位或重新认领过），以库里的为准`);
+}
+
+/** 结果写进库之后：跟进的排程认识跟着改（见 followupJobs.afterSettle） */
+function afterSettled(job: JobRow, out: JobOutcome): void {
+  if (job.kind === 'followup') followupJobs.afterSettle(job, out);
 }
 
 async function runClaimed(job: JobRow, now: number): Promise<void> {
@@ -165,16 +197,39 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
     out = (slot.phase as Phase) === 'sending' ? { status: 'handled' } : retryOutcome(job, now, e);
   }
   if (out.status === 'stopped') return; // 留在 mine 里：停机钩子按它改回 pending
-  slot.phase = 'settling';
+  await settleOrQueue(job, out);
+}
+
+/** 写下结果；没写进去（库抖动、语句超时）就进待补队列，下一拍补写（任务留在 running，本进程不会再认领它） */
+async function settleOrQueue(job: JobRow, out: JobOutcome & { attemptsDelta?: number }): Promise<void> {
+  const slot = mine.get(job.id);
+  if (slot) slot.phase = 'settling';
   try {
     await settle(job, out);
   } catch (e) {
-    // 结果没写进去：任务留在 running，本进程不会再认领它；下次启动按「启动时的去向」归位
-    console.error(`[jobs] ${job.kind} 的结果没写进库（${errName(e)}），留到下次启动归位`);
+    console.error(`[jobs] ${job.kind} 的结果没写进库（${errName(e)}），下一拍补写`);
+    unsettled.set(job.id, { job, out });
+    return;
   } finally {
     mine.delete(job.id);
   }
-  if (job.kind === 'followup') followupJobs.afterSettle(job, out);
+  afterSettled(job, out);
+}
+
+/** 补写上一拍没写进去的结果（结果已知，带令牌只改仍是本次认领的 running，写两次也一样）；再失败就留给下次启动归位 */
+async function retryUnsettled(): Promise<void> {
+  // 一拍里只补这一次：补写失败的不再放回队列（删掉正在遍历的这一项不影响 Map 的遍历）
+  for (const [id, { job, out }] of unsettled) {
+    unsettled.delete(id);
+    try {
+      await settle(job, out);
+    } catch (e) {
+      console.error(`[jobs] ${job.kind} 的结果补写也没写进去（${errName(e)}），留到下次启动归位`);
+      if (job.kind === 'followup') followupJobs.forget(job);
+      continue;
+    }
+    afterSettled(job, out);
+  }
 }
 
 /** 启动时归位上一个进程留下的 running 与 sending。没做成之前不认领：本进程认领的 running 会被当成上一个进程的 */
@@ -191,10 +246,7 @@ async function recover(): Promise<boolean> {
     }
     return true;
   } catch (e) {
-    if (Date.now() - lastClaimLog >= CLAIM_LOG_MS) {
-      lastClaimLog = Date.now();
-      console.error(`[jobs] 启动归位没做成（${errName(e)}），下一拍再试，之前不认领`);
-    }
+    logThrottled(`[jobs] 启动归位没做成（${errName(e)}），下一拍再试，之前不认领`);
     return false;
   }
 }
@@ -219,22 +271,30 @@ async function ensurePurge(now: number): Promise<void> {
 }
 
 async function tickOnce(now: number): Promise<number> {
+  if (!lockHeld()) {
+    logThrottled('[jobs] 租户锁不在本进程手里，不认领、不执行（重新取到锁之后照常）');
+    return 0;
+  }
   if (!recovered && !(await recover())) return 0;
+  await retryUnsettled();
   await ensurePurge(now);
   let claimed: JobRow[];
   try {
     claimed = await withJobsTx((tx) => claimDueJobs(tx, new Date(now), BATCH));
   } catch (e) {
-    if (Date.now() - lastClaimLog >= CLAIM_LOG_MS) {
-      lastClaimLog = Date.now();
-      console.error(`[jobs] 认领失败（${errName(e)}），5 秒后再试`);
-    }
+    logThrottled(`[jobs] 认领失败（${errName(e)}），5 秒后再试`);
     return 0;
   }
   for (const job of claimed) mine.set(job.id, { job, phase: 'claimed' });
   const t0 = Date.now();
-  for (const job of claimed) {
+  for (const [i, job] of claimed.entries()) {
     if (stopping) break; // 没开始的留在 running：跟进由停机钩子改回 pending，其余由下次启动归位
+    if (!lockHeld()) {
+      // 执行途中锁丢了：认领了还没开始的放回 pending（带令牌、不算一次尝试），由持锁的进程去做
+      logThrottled(`[jobs] 租户锁不在本进程手里，这一批还没开始的 ${claimed.length - i} 个放回 pending`);
+      for (const rest of claimed.slice(i)) await settleOrQueue(rest, { status: 'pending', runAt: rest.runAt.getTime() });
+      break;
+    }
     await runClaimed(job, now + (Date.now() - t0));
   }
   return claimed.length;
@@ -263,13 +323,15 @@ async function stopJobs(): Promise<void> {
   followupJobs.stop();
   const back = [...mine.values()]
     .filter((m) => m.job.kind === 'followup' && (m.phase === 'claimed' || m.phase === 'started'))
-    .map((m) => m.job.id);
+    .map((m) => m.job);
   if (back.length) {
     try {
       await withJobsTx(async (tx) => {
-        for (const id of back) await setJobStatus(tx, id, 'pending', { from: ['running'] });
+        for (const job of back) {
+          await setJobStatus(tx, job.id, 'pending', { from: ['running'], claimedAt: job.claimedAt ?? undefined });
+        }
       });
-      for (const id of back) mine.delete(id);
+      for (const job of back) mine.delete(job.id);
       console.log(`[jobs] 停机：${back.length} 个还没发出的跟进改回 pending，下次启动再追`);
     } catch (e) {
       console.error(`[jobs] 停机时跟进没能改回 pending（${errName(e)}），下次启动归位`);
@@ -314,7 +376,10 @@ export const __jobsTest = {
     tickTask = null;
     lastPurgeEnsure = 0;
     mine.clear();
+    unsettled.clear();
     followupJobs.reset();
   },
   mine: () => [...mine.values()].map((m) => ({ id: m.job.id, kind: m.job.kind, phase: m.phase })),
+  /** 结果没写进库、等着下一拍补写的任务 id */
+  unsettled: () => [...unsettled.keys()],
 };

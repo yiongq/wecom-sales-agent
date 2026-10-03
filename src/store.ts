@@ -237,6 +237,13 @@ export function queueAudit(sessionId: string, actor: AuditActor, entry: AuditEnt
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);
 }
+/**
+ * 经 queueJobs 排的、带 report 的状态变化已随这个会话的落库提交、而且改中了（取走，只报一次）。跟进在 flushSession 之后据它判断
+ * running → sending 是不是本次认领的那一行：没改中（别的认领者归位、重新认领过）就不推送。文件存储与 demo 类恒为 false
+ */
+export function jobOpApplied(sessionId: string, jobId: string): boolean {
+  return pgFor(sessionId)?.jobOpApplied(sessionId, jobId) ?? false;
+}
 /** 同意记录（第 16 步）：同上 */
 export function queueConsents(sessionId: string, items: readonly ConsentItem[]): void {
   pgFor(sessionId)?.queueConsents(sessionId, items);

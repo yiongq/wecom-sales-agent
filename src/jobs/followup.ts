@@ -1,9 +1,10 @@
 // db 存储下的跟进（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」，R17、不变量 38）：
 // 排程——会话落库时（saveSession 的订阅者，与这次 saveSession 同一段同步代码，排出的任务随同一次落库提交）：
 //   满足 shouldFollowUp 的静态条件就排 followup:<会话>:<阶段>，runAt = 最后动静 + 该阶段阈值，落在夜间顺延；客户回话即取消。
-// 执行——到点：在活对象上重判 shouldFollowUp → 生成话术并过出口护栏 → 查发送账本 → 记账（count、stages、pendingAt）并把任务改成
-//   sending，随同一次会话落库提交 → 推送 → 成功 done；明确失败退账、failed、失败计数加 1（之后按扫描器的节奏再排一次）；
-//   推送抛异常（结果不明）按已发处理：账不退、记 abandoned。记账与 sending 提交之后才推送，推送不在落库事务里。
+// 执行——到点：查发送账本（不看话术，在生成之前）→ 生成话术并过出口护栏 → 在活对象上重判 shouldFollowUp 与额度 → 记账（count、
+//   stages、pendingAt）并把任务改成 sending（带认领令牌），随同一次会话落库提交 → 确认 sending 改中了 → 推送 → 成功 done；明确失败
+//   退账、failed、失败计数加 1（之后按扫描器的节奏再排一次）；推送抛异常（结果不明）按已发处理：账不退、记 abandoned。
+//   记账与 sending 提交之后才推送，推送不在落库事务里。
 // 资格判断、话术、护栏、夜间时段与文件存储下的扫描器共用 src/followup.ts。
 import type { JobRow } from '../db/repo/jobs.js';
 import {
@@ -17,7 +18,7 @@ import {
   type SessionWithFollowup,
 } from '../followup.js';
 import { shortIdOf } from '../shared/conversation.js';
-import { flushSession, getSession, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
+import { flushSession, getSession, jobOpApplied, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
 import type { Session } from '../types.js';
 import type { JobCtx, JobOutcome } from './runner.js';
 
@@ -41,17 +42,23 @@ const enqueueOp = (sessionId: string, stage: string, runAt: number): JobOp => ({
   maxAttempts: FOLLOWUP_MAX_ATTEMPTS,
 });
 const cancelOp = (dedupeKey: string): JobOp => ({ op: 'cancel', dedupeKey });
+/**
+ * 执行体改这个任务的状态：只改仍是本次认领的那一行（claimed_at 等于认领时写下的，认领令牌）。report：提交之后经 jobOpApplied
+ * 报回改中了没有（running → sending 用它：锁丢失期间另一个进程归位、重新认领过这一行，就改不中，这次不推送）
+ */
 const statusOp = (
-  id: string,
+  job: JobRow,
   status: 'sending' | 'done' | 'failed' | 'abandoned',
   from: 'running' | 'sending',
-  lastError?: string,
+  opts: { lastError?: string; report?: boolean } = {},
 ): JobOp => ({
   op: 'status',
-  id,
+  id: job.id,
   status,
   from: [from],
-  ...(lastError ? { lastError } : {}),
+  ...(job.claimedAt ? { claimedAt: job.claimedAt.getTime() } : {}),
+  ...(opts.lastError ? { lastError: opts.lastError } : {}),
+  ...(opts.report ? { report: true } : {}),
 });
 
 /**
@@ -130,10 +137,12 @@ async function composeUnlessStopping(s: Session): Promise<string | null> {
 
 /**
  * 发送账本的额度判断（R18：跟进要求剩余 ≥2 条且窗口剩余 ≥2 小时）。账本第 12 步才有：本步是桩，一律放行，
- * 第 12 步换成 src/quota/ledger.ts 的判断。额度不够不算失败（任务记 cancelled、不退账也不计失败次数）
+ * 第 12 步换成 src/quota/ledger.ts 的判断。额度不够不算失败（任务记 cancelled、不退账也不计失败次数），也不再排：
+ * 窗口只在客户再开口时重开，那时客户回话取消、AI 回复落库重排。不看话术，所以在生成之前判（不够就不调模型）
  */
-export function followupQuotaAllows(_s: Session): boolean {
-  return true;
+let quotaAllows = (_s: Session): boolean => true;
+export function followupQuotaAllows(s: Session): boolean {
+  return quotaAllows(s);
 }
 
 async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
@@ -147,6 +156,8 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   const at = followupRunAt(s, due.idleMs, now);
   if (at > now) return { status: 'pending', runAt: at };
   if (!push) return { status: 'pending', runAt: now + FOLLOWUP_RETRY_MS, lastError: 'no_push' };
+  // 额度不够：不生成话术（不调模型），记 cancelled、之后不再排（见 afterSettle）
+  if (!followupQuotaAllows(s)) return { status: 'cancelled', lastError: 'quota' };
   // 排程按认领时给的「现在」往后走（自测拨钟时也一致）；账上记的时刻用真钟
   const t0 = Date.now();
   const clock = (): number => now + (Date.now() - t0);
@@ -157,6 +168,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   if (!fresh || !shouldFollowUp(fresh, clock()) || fresh.stage !== p.stage) {
     return { status: 'cancelled', lastError: 'changed' };
   }
+  // 生成期间额度可能被别的发送用掉（顾问在后台发了消息）：记账之前在活对象上再判一次
   if (!followupQuotaAllows(fresh)) return { status: 'cancelled', lastError: 'quota' };
   // 记账并把任务改成 sending，同一段同步代码里排进同一次落库；提交之后才推送（最多发一次）
   const meta = (fresh.followup ??= {});
@@ -166,7 +178,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   meta.stages = [...(meta.stages ?? []), stage];
   meta.lastAt = Date.now();
   meta.pendingAt = Date.now();
-  saveWith(fresh, [statusOp(job.id, 'sending', 'running')]);
+  saveWith(fresh, [statusOp(job, 'sending', 'running', { report: true })]);
   ctx.markSending();
   known.set(sid, null);
   try {
@@ -174,7 +186,13 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   } catch {
     // 记账没提交上（库积压、会话 poisoned）：不推送。账已在内存里、随之后的落库或 spill 写下，任务记 abandoned（不再执行）
     console.error(`[followup] 跟进 ${short(sid)} 的记账没能落库，不推送`);
-    queueJobs(sid, [statusOp(job.id, 'abandoned', 'sending', 'ledger_not_committed')]);
+    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'ledger_not_committed' })]);
+    return { status: 'handled' };
+  }
+  if (!jobOpApplied(sid, job.id)) {
+    // running → sending 提交了却没改中：这一行已不在本次认领手里（租户锁丢失期间另一个进程启动归位、重新认领过它，由那边发）。
+    // 不推送；已提交的账不退（多记一次是安全的一侧，宁可漏一条），任务状态以库里的为准
+    console.error(`[followup] 跟进 ${short(sid)} 的任务已不在本次认领手里（sending 没改中），不推送`);
     return { status: 'handled' };
   }
   let ok: boolean;
@@ -183,7 +201,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   } catch (e) {
     // 结果不明（可能已经送达）：按已发处理——账不退、pendingAt 留着，任务记 abandoned，不重试
     console.error(`[followup] 跟进 ${short(sid)} 推送结果不明，按已发处理、不再重试（${e instanceof Error ? e.name : 'unknown'}）`);
-    queueJobs(sid, [statusOp(job.id, 'abandoned', 'sending', 'push_unknown')]);
+    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'push_unknown' })]);
     return { status: 'handled' };
   }
   delete meta.pendingAt;
@@ -191,7 +209,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
     // 明确没送达：退账、失败计数加 1、任务 failed。还没到 MAX_PUSH_FAILURES 就按扫描器的节奏再排一次（同一个键，旧的已结束）
     Object.assign(meta, before);
     meta.failures = (meta.failures ?? 0) + 1;
-    const ops = [statusOp(job.id, 'failed', 'sending', 'push_failed')];
+    const ops = [statusOp(job, 'failed', 'sending', { lastError: 'push_failed' })];
     const again = followupStage(fresh);
     if (again && again.stage === stage) {
       const runAt = followupRunAt(fresh, again.idleMs, clock() + FOLLOWUP_RETRY_MS);
@@ -205,14 +223,16 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   // 后台按 author 标「自动跟进」（02 spec「消息只追加」）
   fresh.messages.push({ role: 'agent', content: text, at: Date.now(), author: 'followup' });
   meta.failures = 0;
-  saveWith(fresh, [statusOp(job.id, 'done', 'sending')]);
+  saveWith(fresh, [statusOp(job, 'done', 'sending')]);
   console.log(`[followup] 已跟进 ${short(sid)}（阶段=${stage}）`);
   return { status: 'handled' };
 }
 
 /**
- * 认领者写下结果之后：任务没进 sending 就结束了（取消、改回 pending），本进程对这个会话的认识要跟着改。
- * 取消的那条可能挡过一次排程（生成话术期间客户回话、AI 又回了一句：同一个键的新任务撞上还没结束的这条，什么都没排），按活对象再排一次
+ * 认领者写下结果之后：任务没进 sending 就结束了（取消、重试用完记 failed、改回 pending），本进程对这个会话的认识要跟着改。
+ * 只有「生成期间客户回了话」（cancelled、changed）要按活对象再排一次：那段时间里 AI 回复的排程撞上了还没结束的这条（同一个键），
+ * 什么都没排。其余结束的（重试用完、额度不够、不再满足资格、会话不在）都不再排，记成「确知没有」，等客户下一次回话、AI 回复
+ * 落库时照正常排程再来：failed 之后立刻同键重排，max_attempts 就封顶不了；额度不够时重排，每 5 秒就要调一次模型
  */
 function afterSettle(job: JobRow, out: JobOutcome): void {
   const sid = (job.payload as { sessionId?: unknown } | null)?.sessionId;
@@ -221,13 +241,26 @@ function afterSettle(job: JobRow, out: JobOutcome): void {
     known.set(sid, { key: job.dedupeKey, runAt: out.runAt });
     return;
   }
-  if (out.status !== 'cancelled' && out.status !== 'failed') return;
-  if (known.get(sid)?.key === job.dedupeKey) known.delete(sid);
+  if (out.status === 'handled' || out.status === 'stopped') return;
+  const k = known.get(sid);
+  const same = k?.key === job.dedupeKey;
+  if (out.status !== 'cancelled' || out.lastError !== 'changed') {
+    // 不知道（重启之后）也记成没有：之后哪次与客户无关的落库都不会把它立刻再排出来
+    if (k === undefined || same) known.set(sid, null);
+    return;
+  }
+  if (same) known.delete(sid);
   const s = getSession(sid);
   if (s && followupEnabled()) {
     const ops = planOps(s);
     if (ops.length) queueJobs(sid, ops);
   }
+}
+
+/** 认领者的结果补写也没写进库（任务留在 running，等下次启动归位）：本进程不再自以为排着这个键 */
+function forget(job: JobRow): void {
+  const sid = (job.payload as { sessionId?: unknown } | null)?.sessionId;
+  if (typeof sid === 'string' && known.get(sid)?.key === job.dedupeKey) known.delete(sid);
 }
 
 export const followupJobs = {
@@ -240,6 +273,7 @@ export const followupJobs = {
   },
   run,
   afterSettle,
+  forget,
   /** 停机 normal 段：叫醒正在生成话术的执行体，此后不再进 sending */
   stop(): void {
     stopping = true;
@@ -250,5 +284,9 @@ export const followupJobs = {
     stopping = false;
     known.clear();
     selfSaving = null;
+  },
+  /** 仅供自测：换掉额度判断（null 换回桩） */
+  setQuotaForTest(fn: ((s: Session) => boolean) | null): void {
+    quotaAllows = fn ?? ((_s: Session): boolean => true);
   },
 };
