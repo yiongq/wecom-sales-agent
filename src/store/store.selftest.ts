@@ -473,7 +473,9 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
 
   // 订阅者先无条件记下收到了什么，再看盘上：落盘失败时盘读不出来，也不能让断言跟着落空
   const got: string[] = [];
+  // 02 第 13 步起 saveSession 自己也排 conversation.changed、message.appended（后台事件流用），这里只看手排的那一种
   const off = store.onCommitted((ev) => {
+    if (ev.type !== 'conversation.released') return;
     let disk: string;
     try {
       disk = (onDisk(ev.id)?.messages.length ?? 0) > 4 ? '已落盘' : '未落盘';
@@ -484,10 +486,10 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   });
   u1.messages.push(msg('customer', '要两个人'));
   store.saveSession(u1);
-  store.emitAfterCommit('wecom:u1', { type: 'conversation.changed', id: 'wecom:u1' });
+  store.emitAfterCommit('wecom:u1', { type: 'conversation.released', id: 'wecom:u1' });
   check('事件不在 emitAfterCommit 里同步发出', got.length === 0);
   await store.flushSession('wecom:u1');
-  check('事件在落盘之后才发出，发出时改动已在盘上', got.join() === 'conversation.changed:wecom:u1:已落盘', got.join());
+  check('事件在落盘之后才发出，发出时改动已在盘上', got.join() === 'conversation.released:wecom:u1:已落盘', got.join());
 
   // 落盘失败：sessions.json 换成一个非空目录，rename 失败
   const errs: string[] = [];
@@ -497,9 +499,15 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   fs.mkdirSync(SESSIONS_FILE);
   fs.writeFileSync(path.join(SESSIONS_FILE, 'blocker'), 'x');
   got.length = 0;
+  // 旧 /api/admin/stream 的 change（02 第 13 步）：文件存储下也改成落盘成功之后才发，失败不发
+  let fileChanges = 0;
+  const onFileChange = (): void => {
+    fileChanges += 1;
+  };
+  store.storeEvents.on('change', onFileChange);
   u1.messages.push(msg('agent', '好的'));
   store.saveSession(u1);
-  store.emitAfterCommit('wecom:u1', { type: 'conversation.changed', id: 'wecom:u1' });
+  store.emitAfterCommit('wecom:u1', { type: 'conversation.released', id: 'wecom:u1' });
   let lagErr: unknown = null;
   const tLag = Date.now();
   await store.flushSession('wecom:u1', { timeoutMs: 600 }).catch((err: unknown) => {
@@ -509,6 +517,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   check('落盘失败：flushSession 超时以 StoreLaggingError reject', lagErr instanceof StoreLaggingError);
   check('落盘失败：按传入的 timeoutMs 超时', lagTook >= 550 && lagTook < 1500, `${lagTook}ms`);
   check('落盘失败：事件不发', got.length === 0, got.join());
+  check('落盘失败：旧 /api/admin/stream 的 change 也不发', fileChanges === 0, String(fileChanges));
   const stuck = await store.drainStore(100);
   check('落盘失败：drainStore 返回没落盘的会话', stuck.undrained.includes('wecom:u1'), JSON.stringify(stuck));
   const failed = store.storeHealth();
@@ -526,7 +535,9 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
     '恢复之后：drainStore 写出上次失败留下的改动',
     healed.undrained.length === 0 && onDisk('wecom:u1')?.messages.at(-1)?.content === '好的',
   );
-  check('恢复之后：排着的事件随下一次成功落盘恰好发出一次', got.join() === 'conversation.changed:wecom:u1:已落盘', got.join());
+  check('恢复之后：排着的事件随下一次成功落盘恰好发出一次', got.join() === 'conversation.released:wecom:u1:已落盘', got.join());
+  check('恢复之后：旧 /api/admin/stream 的 change 随这次成功落盘发出', fileChanges >= 1, String(fileChanges));
+  store.storeEvents.off('change', onFileChange);
   check('恢复之后：积压清零', store.storeHealth().dirty === 0);
   off();
 
@@ -3018,7 +3029,7 @@ async function childPg(ck: Ck): Promise<void> {
     await store.flushSession(s.id);
     const got: string[] = [];
     const off = store.onCommitted((ev) => {
-      if (ev.id === s.id) got.push(ev.type);
+      if (ev.id === s.id && ev.type === 'conversation.released') got.push(ev.type);
     });
     await sleep(250); // 上一次提交合并出来的那个 change 先发完
     let changes = 0;
@@ -3028,7 +3039,7 @@ async function childPg(ck: Ck): Promise<void> {
     store.storeEvents.on('change', onChange);
     let open!: () => void;
     fx.faults.gate = new Promise<void>((r) => (open = r));
-    store.emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
+    store.emitAfterCommit(s.id, { type: 'conversation.released', id: s.id });
     await sleep(250);
     ck('事件：落库还没提交时不发（领域事件与旧 /api/admin/stream 的 change 都不发）', got.length === 0 && changes === 0);
     fx.faults.gate = null;
@@ -3046,7 +3057,7 @@ async function childPg(ck: Ck): Promise<void> {
     fx.faults.acquire = null;
     ck('事件：提交失败时旧 /api/admin/stream 的 change 也不发', changes === 0);
     await store.flushSession(s.id, { timeoutMs: 4000 }); // 1 秒后的那次重试
-    ck('事件：恢复之后随重试提交恰好发出一次', got.join() === 'conversation.changed', got.join());
+    ck('事件：恢复之后随重试提交恰好发出一次', got.join() === 'conversation.released', got.join());
     await sleep(250);
     ck('事件：提交之后旧 /api/admin/stream 收到 change（约 200ms 合并一次）', changes === 1, String(changes));
     store.storeEvents.off('change', onChange);
@@ -3060,14 +3071,14 @@ async function childPg(ck: Ck): Promise<void> {
     await store.flushSession(s.id);
     const got: string[] = [];
     const off = store.onCommitted((ev) => {
-      if (ev.id === s.id) got.push(ev.type);
+      if (ev.id === s.id && ev.type === 'conversation.released') got.push(ev.type);
     });
     let open!: () => void;
     fx.faults.gate = new Promise<void>((r) => (open = r));
     say(s, 'agent', 'c2'); // 第一次落库：在闸门前等着
     await tick();
     say(s, 'customer', 'c3'); // 在途期间来的，合并进第二次
-    store.emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
+    store.emitAfterCommit(s.id, { type: 'conversation.released', id: s.id });
     fx.faults.releaseOnce = fakeDbError('08006', '模拟 COMMIT 之后回包丢了');
     fx.faults.skipReleases = 1; // 第二次落库的回包才丢
     const st0 = stats();
@@ -3088,7 +3099,7 @@ async function childPg(ck: Ck): Promise<void> {
     );
     ck(
       'COMMIT 断线：补做提交后的步骤，事件恰好发出一次，不冲突、不停写',
-      got.join() === 'conversation.changed' && !store.storeHealth().conflict && !poisoned(s.id),
+      got.join() === 'conversation.released' && !store.storeHealth().conflict && !poisoned(s.id),
       got.join(),
     );
     off();
@@ -3904,7 +3915,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     say(s, 'customer', '第三句');
     await new Promise<void>((r) => setImmediate(r)); // 第一次已经起了
     say(s, 'agent', 'COMMIT 之后回包丢了的这一句');
-    store.emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
+    store.emitAfterCommit(s.id, { type: 'conversation.released', id: s.id });
     const t0 = Date.now();
     let flushed = 'ok';
     await store.flushSession(s.id, { timeoutMs: 6000 }).catch((e: unknown) => {
@@ -4531,7 +4542,7 @@ async function pgSuites(): Promise<void> {
     );
     check(
       '真实 PG：认出已提交之后补做提交后的步骤，事件恰好一次',
-      dd?.events.filter((e) => e === 'conversation.changed').length === 1,
+      dd?.events.filter((e) => e === 'conversation.released').length === 1,
       JSON.stringify(dd?.events),
     );
     const rn = runStoreChild('rpg', rpgEnv(freshVarDir('rpg-newdelay', [], []), 'newcommitdelay'), 60_000);

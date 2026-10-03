@@ -8,10 +8,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
-import { tenantLockTaken } from './config/source.js';
-import type { Db, Tx } from './db/client.js';
-import type { AuditEntry } from './db/repo/audit.js';
+import { configMode, configRuntime, tenantLockTaken } from './config/source.js';
+import { withTenant, type Db, type Tx } from './db/client.js';
+import { writeAuditAs, type AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
 import { profile } from './profile.js';
 import { shortIdOf } from './shared/conversation.js';
@@ -37,9 +38,9 @@ import {
 } from './store/pg-backend.js';
 // isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
 import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
-import { linkTurn, noteWindowReset, seqOf, turnIdOf } from './store/seq.js';
+import { lastSeqOf, linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
 import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
-import type { Session, Order } from './types.js';
+import type { ChatMessage, MessageAuthor, Session, Order } from './types.js';
 
 export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
 export {
@@ -53,6 +54,8 @@ export {
   SESSIONS_IN_DB_MARKER,
   linkTurn,
   turnIdOf,
+  lastSeqOf,
+  windowStartOf,
 };
 export type { AuditActor, ConsentItem, DomainEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
 /** 一行发送账本（落库的形状）：src/quota 经这里取，不直接 import src/db/** */
@@ -230,12 +233,36 @@ export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
 
 /**
  * 一行审计（带操作者与 IP）：db 存储的真实会话随它的下一次落库写；db 存储的 demo 类会话（以及内存里没有的会话）单独一个短事务（R6）。
- * 文件存储下不写：会话类审计在文件存储下的去处由第 13 步定
+ * 文件存储（02 第 13 步定）：DB 配置模式下同样单独一个短事务（与 db 存储的 demo 类同一个做法，只试一次、失败记一行）；
+ * 文件配置模式没有审计表，不写
  */
 export function queueAudit(sessionId: string, actor: AuditActor, entry: AuditEntry): void {
   const pg = pgFor(sessionId);
   if (pg) pg.queueAudit(sessionId, { actor, entry });
   else if (pgBackend) void pgBackend.writeStandaloneAudit({ actor, entry });
+  else if (configMode() === 'db') void writeFileModeAudit(actor, entry);
+}
+
+/** 文件存储下审计的短事务在空的异步上下文里起：调用方在 withTenant 回调里排审计也不会嵌套（同 PG 后端的写队列） */
+const detachedAudit = AsyncLocalStorage.snapshot();
+async function writeFileModeAudit(actor: AuditActor, entry: AuditEntry): Promise<void> {
+  try {
+    const { db, tenantId } = configRuntime();
+    await detachedAudit(() => withTenant(db, { tenantId, actor }, (tx) => writeAuditAs(tx, actor, entry)));
+  } catch (e) {
+    const code = (e as { code?: unknown }).code;
+    console.error(`[store] 审计没写进去（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}）：${entry.action}`);
+  }
+}
+
+/**
+ * 写库跟不上（02 spec「接手、人工回复与交还」）：这个会话所在的后端积压超过 5 秒、已冲突，或这个会话因数据类错误停写（poisoned）。
+ * 人工回复与订单动作在改动之前查它，是真就 503 store_lagging、什么都不改
+ */
+export function storeLagging(sessionId: string): boolean {
+  const b = backendFor(sessionId);
+  const h = b.health();
+  return h.lagMs > 5000 || h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
 }
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
@@ -350,6 +377,8 @@ export function freshenDemoData(): void {
     if (DEMO_SESSION_RE.test(o.sessionId)) {
       o.createdAt += delta;
       if (o.paidAt) o.paidAt += delta;
+      // 02 第 13 步起后台能确认种子订单的价格：确认时刻同样跟着挪
+      if (o.confirmedAt != null) o.confirmedAt += delta;
     }
   }
   fileBackend.markChanged(demo.map((s) => s.id));
@@ -468,7 +497,9 @@ export function saveSession(s: Session, touch = true): void {
   if (b === pgBackend && !pgBackend.accepts(s)) return;
   if (touch) s.updatedAt = Date.now();
   sessions.set(s.id, s);
+  const unseq = unseqTail(s);
   b.schedule(s);
+  emitSaved(s, unseq);
   if (b !== pgBackend) return;
   for (const cb of saveHooks) {
     try {
@@ -477,6 +508,56 @@ export function saveSession(s: Session, touch = true): void {
       console.error('[store] saveSession 的订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
     }
   }
+}
+
+/** 消息数组尾部还没分配 seq 的消息（这次 saveSession 要分配的那一段）；畸形的旧数据（没有 messages、数组里有 null）跳过 */
+function unseqTail(s: Session): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  if (!Array.isArray(s.messages)) return out;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i];
+    if (typeof m !== 'object' || m === null) continue;
+    if (seqOf(m) !== undefined) break;
+    out.unshift(m);
+  }
+  return out;
+}
+
+/** 事件里的作者：客户、系统原样，agent 消息看 author（缺省是 AI） */
+const authorOf = (m: ChatMessage): MessageAuthor => (m.role === 'agent' ? (m.author ?? 'ai') : m.role);
+
+/**
+ * 每次 saveSession 排两类提交后的领域事件（02 第 13 步，后台的事件流与计数据此推送）：这次分到 seq 的每条消息一个 message.appended，
+ * 会话本身一个 conversation.changed。只有 id、seq 与作者，不带正文（不变量 31）。停写（poisoned）的会话不再提交，不排
+ */
+function emitSaved(s: Session, unseq: readonly ChatMessage[]): void {
+  if (pgBackend?.isPoisoned(s.id)) return;
+  for (const m of unseq) {
+    const seq = seqOf(m);
+    if (seq !== undefined) emitAfterCommit(s.id, { type: 'message.appended', id: s.id, seq, author: authorOf(m) });
+  }
+  emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
+}
+
+/** 订单改动的提交后事件（后台事件流的 order） */
+function emitOrder(o: Order): void {
+  emitAfterCommit(o.sessionId, {
+    type: 'order.changed',
+    id: o.sessionId,
+    orderId: o.id,
+    status: o.status,
+    confirmed: o.confirmedAt != null,
+  });
+}
+
+/**
+ * 不经 createOrder / markOrderPaid / supersedeOrder 的订单改动（02 第 13 步，后台的确认价格、确认收款、取消订单，src/payment/orders.ts）：
+ * 排进订单所属会话的下一次落库，提交后发 order.changed
+ */
+export function saveOrder(o: Order): void {
+  if (orders.get(o.id) !== o) return;
+  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(o.id);
+  emitOrder(o);
 }
 
 /** 入参不含 id/createdAt/status，由 store 统一生成 */
@@ -491,6 +572,7 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
   };
   orders.set(order.id, order);
   (pgFor(order.sessionId) ?? fileBackend).scheduleOrder(order.id);
+  emitOrder(order);
   return order;
 }
 
@@ -511,6 +593,7 @@ export function markOrderPaid(id: string): Order | undefined {
     const s = sessions.get(o.sessionId);
     o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
     (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+    emitOrder(o);
   }
   return o;
 }
@@ -522,6 +605,7 @@ export function supersedeOrder(id: string, byId: string): boolean {
   o.status = 'superseded';
   o.supersededBy = byId;
   (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+  emitOrder(o);
   return true;
 }
 
