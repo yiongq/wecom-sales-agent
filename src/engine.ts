@@ -47,6 +47,7 @@ import {
   noteDraft,
   noteGuard,
   notePrefix,
+  noteToolError,
   noteToolResult,
   startTurn,
   traceToolCall,
@@ -3608,7 +3609,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       name === 'handoff_to_human'
         ? { ...toolHints(session), handoff: { quote: cleanText(text, 200), departNote: departNoteForHandoff(session) } }
         : toolHints(session);
-    return executeTool(name, args, session, hints).then((r) => {
+    const running = executeTool(name, args, session, hints);
+    // 执行时抛错：耗时与失败记进这一轮（只在内存，OpenTelemetry 用），错误照旧交给调用方
+    running.catch(() => noteToolError(args));
+    return running.then((r) => {
       // 告诉过客户「这里没有现成线路」的目的地记进会话，之后判断转人工要用（见 Session.missedDestinations）
       if (name === 'search_routes' && typeof args.destination === 'string' && r.includes('"destinationMiss"')) {
         const at = Date.now();

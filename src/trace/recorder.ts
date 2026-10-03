@@ -26,6 +26,8 @@ export interface TraceCall {
   resultBytes: number;
   /** 开始时刻（毫秒时间戳）：只在内存，给 OpenTelemetry 补建 span 用（第 18 步），不进库、trace 行的形状不变 */
   startedAt: number;
+  /** 执行时抛错（noteToolError）：只在内存，同 startedAt；OpenTelemetry 据此标出错 */
+  failed?: true;
 }
 /** error：这次模型调用的失败类别；成功为 null。AI 出错率按它算（R24） */
 export type LlmErrorKind = 'timeout' | 'rate_limited' | 'http_5xx' | 'bad_response' | null;
@@ -293,6 +295,21 @@ export function noteToolResult(args: Record<string, unknown>, result: string): v
   noteCatalogVersions(h.ctx!, args, result);
 }
 
+/**
+ * 引擎执行一次工具时抛错（args 同上）：记下真实耗时、执行时的参数与只在内存的失败标记（不进库，trace 行的形状不变，
+ * resultBytes 照旧是 0、没有结果）。不记的话这次调用在 finish 里只补参数，耗时是 0、看起来像成功
+ */
+export function noteToolError(args: Record<string, unknown>): void {
+  const h = live();
+  if (!h) return;
+  const i = h.tools.findIndex((p) => p.args === args);
+  if (i < 0) return;
+  const [p] = h.tools.splice(i, 1);
+  p!.call.ms = Date.now() - p!.t0;
+  p!.call.args = normalizeForStore(args);
+  p!.call.failed = true;
+}
+
 // llm.ts 在一次调用结束（成功或失败）时通知，带这次的耗时：开始时刻倒推出来
 onLlmCall((c) => {
   const h = live();
@@ -338,7 +355,7 @@ function finish(
   h.ended = true;
   const t = h.ctx!;
   const durationMs = Math.max(0, Date.now() - t.startedAt);
-  // 没等到结果的工具调用（执行时抛错）：参数照记
+  // 没等到结果、也没记过失败的工具调用（还在执行，或成单安全网那处抛错，引擎那里没接 noteToolError）：参数照记
   for (const p of h.tools) p.call.args = normalizeForStore(p.args);
   h.tools = [];
   t.llm = h.llm.map(({ trace: c, usage, startedAt }) => ({
@@ -382,8 +399,8 @@ function finish(
     stageAfter,
     draft: t.draft,
     finalText: finalText ? cleanText(finalText) : null,
-    // 开始时刻只在内存（OpenTelemetry 用），不进库：trace 行的 calls、llm 与第 9 步的形状相同
-    calls: t.calls.map(({ startedAt: _s, ...c }) => c),
+    // 开始时刻与失败标记只在内存（OpenTelemetry 用），不进库：trace 行的 calls、llm 与第 9 步的形状相同
+    calls: t.calls.map(({ startedAt: _s, failed: _f, ...c }) => c),
     llm: t.llm.map(({ startedAt: _s, ...c }) => c),
     signals: null,
   };
