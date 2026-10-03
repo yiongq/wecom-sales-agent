@@ -14,6 +14,7 @@ import { cleanText } from '../shared/text.js';
 import { getSession, isDemoClassId, linkTurn, queueTelemetry, sessionStoreMode, type TelemetryRows } from '../store.js';
 import { normalizeForStore } from '../store/project.js';
 import type { ChatMessage, SalesStage } from '../types.js';
+import type { TurnSignals } from '../handoff/triggers.js';
 import { onUsage } from '../usage.js';
 
 /** 一次工具调用：参数是执行时的那份，结果只留前 4,096 字节（按 UTF-8，不切开字符） */
@@ -75,6 +76,8 @@ export interface FinishedTurn {
   stageBefore: SalesStage | null;
   stageAfter: SalesStage | null;
   durationMs: number;
+  /** 这一轮的交互失败信号（noteSignals）；没走到出口护栏的轮次为 null */
+  signals: TurnSignals | null;
 }
 
 interface PendingTool {
@@ -91,6 +94,8 @@ interface Holder {
   tools: PendingTool[];
   /** 本轮的模型调用（llm.ts 的 CallTrace，之后还会记上工具与复用）与它的用量 */
   llm: { trace: CallTrace; usage: Omit<TraceLlmCall, keyof CallTrace> | null }[];
+  /** 交互失败信号（turn_traces.signals） */
+  signals: TurnSignals | null;
 }
 
 const turns = new AsyncLocalStorage<Holder>();
@@ -102,7 +107,7 @@ const SENTENCE_MAX = 200;
  * 这一轮抛错时记 outcome='error' 再原样抛出
  */
 export function withTurnScope<T>(fn: () => Promise<T>): Promise<T> {
-  const h: Holder = { ctx: null, ended: false, stageBefore: null, tools: [], llm: [] };
+  const h: Holder = { ctx: null, ended: false, stageBefore: null, tools: [], llm: [], signals: null };
   return turns.run(h, () =>
     fn().then(undefined, (e: unknown) => {
       if (h.ctx && !h.ended) finish(h, 'error', '', h.stageBefore, getSession(h.ctx.conversationId)?.stage ?? null);
@@ -200,6 +205,15 @@ export function noteGuard(guard: string, before: string, after: string, action: 
   const { removed, added } = sentenceDiff(before, after);
   if (!removed.length && !added.length) return;
   h.ctx!.guards.push({ guard, action, removed, added, at: Date.now() });
+}
+
+/**
+ * 这一轮的交互失败信号（02 spec「确定性转人工触发」、R15）：引擎在出口护栏之后算好交给这里，trace 的 signals 列存它。
+ * 确定性路径（安全网、紧急情况、负面情绪、重发链接）不走到出口护栏，signals 为 null
+ */
+export function noteSignals(s: TurnSignals): void {
+  const h = live();
+  if (h) h.signals = { ...s };
 }
 
 /** 结果的前 maxBytes 个 UTF-8 字节，不切开字符 */
@@ -343,7 +357,7 @@ function finish(
   // AI 回复消息经 WeakMap 关联 turnId（落库进 messages.turn_id）：与回复同一段同步代码里调，排出的那次落库取快照时已经关联上
   if (reply) linkTurn(reply, t.turnId);
   if (endObservers.size) {
-    const done: FinishedTurn = { turn: t, outcome, finalText, stageBefore, stageAfter, durationMs };
+    const done: FinishedTurn = { turn: t, outcome, finalText, stageBefore, stageAfter, durationMs, signals: h.signals };
     for (const fn of endObservers) {
       try {
         fn(done);
@@ -369,7 +383,7 @@ function finish(
     finalText: finalText ? cleanText(finalText) : null,
     calls: t.calls.map((c) => ({ ...c })),
     llm: t.llm,
-    signals: null,
+    signals: h.signals ? { ...h.signals } : null,
   };
   const guards: GuardRow[] = t.guards.map((g, ord) => ({
     turnId: t.turnId,
