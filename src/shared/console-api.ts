@@ -119,6 +119,12 @@ export const AuditQuery = z
   })
   .refine((q) => !(q.action && q.actions), { message: 'action 与 actions 只能给一个' });
 
+/**
+ * 运行数字的统计窗口（02 spec「可观测性与告警 · 运行数字」）：近 days 个自然日（含今天，按服务器时区），1–90，默认 7。
+ * 上限 90 是 trace 的默认保留期（开放问题 2）：再往前库里本来就没有 trace 了
+ */
+export const MetricsQuery = z.object({ days: intParam(90).optional() });
+
 // ---------------- 领域类型 ----------------
 
 export interface SopSectionText {
@@ -323,4 +329,25 @@ export interface AuditPage {
   items: AuditEntryView[];
   /** 下一页的 before；没有更多时为 null */
   nextBefore: number | null;
+}
+
+/**
+ * 运行数字（02 spec「可观测性与告警 · 运行数字」，R24）：GET /api/console/metrics，所有者、管理员可读，只在 db 存储下有。
+ * 由 turn_traces、usage_daily 现算，内存缓存 60 秒；窗口是近 days 个自然日（含今天），受 trace 保留期限制
+ */
+export interface MetricsView {
+  /** 统计窗口，默认 7 */
+  days: number;
+  /** 窗口内的轮次数（库里只有真实会话） */
+  turns: number;
+  /** outcome='replied' 的轮次 duration_ms 的 90 分位（毫秒，取整）；没有这样的轮次为 null */
+  replyP90Ms: number | null;
+  /** 窗口内有 outcome='handoff' 轮次的会话 / 窗口内有轮次的会话；没有轮次为 null */
+  handoffRate: number | null;
+  /** 有模型调用出错（llm 数组里 error 非空）或 outcome='error' 的轮次 / 全部轮次；没有轮次为 null */
+  aiErrorRate: number | null;
+  /** usage_daily 今天（服务器时区）的 cost_milli_cny 之和 / 1000 */
+  costTodayYuan: number;
+  /** 窗口内之和 / 1000 */
+  costRangeYuan: number;
 }
