@@ -84,6 +84,7 @@ const DB_SESSION_CHECK = {
   frozen: '内存里的消息都已冻结（原地修改会抛 TypeError）',
   traces: '库里有这个会话每一轮的 trace（id、outcome 与护栏事件条数与内存相同）',
   turnIds: '库里窗口内消息的 turn_id 与内存的关联相同，每条回复都关联到它那一轮',
+  outbound: '库里的发送账本行与内存的账本相同（msgid、kind、status、对应消息的 seq；第 12 步）',
 };
 const DB_SCENARIO_CHECK = {
   drained: '排空写队列之后库里不欠改动',
@@ -380,7 +381,8 @@ function anchors(out: ChildOut): [string, boolean, string][] {
       lg.notes.legacyResume === 200 &&
       lgs?.handedOver === false &&
       lgs.handoffCount === 1 &&
-      lg.sent.some((x) => x.to === 'parity-ho-legacy' && x.content.startsWith('顾问回复')) &&
+      // 人工回复在企微客户侧以「【顾问】」开头（第 12 步，不变量 18）
+      lg.sent.some((x) => x.to === 'parity-ho-legacy' && x.content.startsWith('【顾问】顾问回复')) &&
       said(lgs, 'agent').at(-1)?.startsWith('云南这边') === true,
     lg?.notes,
   );
@@ -729,6 +731,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
 
   const { handleMessage, onToolCall } = await import('../engine.js');
   const { onTurnEnd } = await import('../trace/recorder.js');
+  const { __ledgerTest: ledgerTest } = await import('../quota/ledger.js');
   /** 这个进程里结束的每一轮（第 9 步的 trace）：场景收集 TraceOut，PG 那边拿 turnId 核对库里 */
   const turnLog: { sid: string; turnId: string; guards: number; t: TraceOut }[] = [];
   onTurnEnd((f) => {
@@ -954,6 +957,23 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
           [...linked].every((v) => memTurns.some((x) => x.turnId === v)),
         `库里关联了 ${linked.size} 条，有回复的 ${replied.length} 轮`,
       );
+      // 第 12 步：经企微适配器发出去的每个分段一行账，随会话落库；message_seq 是对应那条消息的 seq
+      const dbSends = await su<{ m: string; kind: string; status: string; seq: number | null }>(
+        'select channel_msgid as m, kind, status, message_seq as seq from outbound_sends where tenant_id = $1 and conversation_id = $2',
+        [tenantId, id],
+      );
+      const memSends = ledgerTest
+        .rows(id)
+        .filter((r) => r.status !== 'pending')
+        .map((r) => ({ m: r.msgid, kind: r.kind, status: r.status, seq: r.message ? (store.seqOf(r.message) ?? null) : null }));
+      const sendKey = (l: { m: string; kind: string; status: string; seq: number | null }[]) =>
+        JSON.stringify(l.map((r) => ({ ...r, seq: r.seq === null ? null : Number(r.seq) })).toSorted((a, b) => a.m.localeCompare(b.m)));
+      ck(
+        name,
+        `${id}：${DB_SESSION_CHECK.outbound}`,
+        sendKey(dbSends) === sendKey(memSends),
+        `库里 ${sendKey(dbSends)}，内存 ${sendKey(memSends)}`,
+      );
       for (const [n, ok, detail] of extra?.(id, stored, mem) ?? []) ck(name, `${id}：${n}`, ok, detail);
     }
     const h = store.storeHealth();
@@ -1143,11 +1163,15 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   // 两个会话的先后在两边相同：扫描器按 updatedAt 从新到旧（ok 沉默 4 小时、fail 5 小时），任务表按 run_at（ok 是报价后 2 小时、
   // fail 是异议后 4 小时，ok 的更早）
   await scenario('跟进', ['wecom:parity-fu-ok', 'wecom:parity-fu-fail'], async (o) => {
+    // 客户先问过一句（带 sentAt）：db 存储下跟进查发送账本的窗口（第 12 步），没有客户消息窗口就没开、一条都不发
     const silent = (sid: string, stage: Session['stage'], hours: number) => {
       const f = store.getOrCreateSession(sid, 'wecom');
       f.stage = stage;
       f.updatedAt = Date.now() - hours * 3600_000;
-      f.messages.push({ role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt });
+      f.messages.push(
+        { role: 'customer', content: '这条线多少钱', at: f.updatedAt - 60_000, sentAt: f.updatedAt - 60_000 },
+        { role: 'agent', content: '这条线每人 19,800 元起', at: f.updatedAt },
+      );
       store.saveSession(f, false);
     };
     type Fu = { count?: number; stages?: string[]; pendingAt?: number; failures?: number };

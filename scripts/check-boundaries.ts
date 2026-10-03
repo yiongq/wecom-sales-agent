@@ -139,6 +139,12 @@ const IMPORT_RULES: ImportRule[] = [
     applies: (f) => under(f, 'src/trace/') && !isSelftest(f),
     bad: (i) => under(i.target, 'src/db/'),
   },
+  {
+    // 02 spec「企微：发送账本、回执与去重」：账本行经会话写队列（queueTelemetry）与 store 的两个短事务入口落库，不直接碰库
+    desc: 'src/quota/ 不 import src/db/（发送账本经 store 的入口落库）',
+    applies: (f) => under(f, 'src/quota/') && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/db/'),
+  },
   // 以下三条是 02 spec R24、不变量 49：没设 OTEL_EXPORTER_OTLP_ENDPOINT 时进程不加载任何 @opentelemetry/*。
   // src/otel/ 只由 src/ops/otel.ts 在设了端点时动态 import；import type 编译后就没了，不算
   {

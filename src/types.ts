@@ -1,6 +1,6 @@
 // 全项目共享契约。构建各模块时以此为准，不要私自改动已有字段。
 import type { SalesSegment } from './shared/catalog-types.js';
-import type { Assignee, HandoffRecord, OrderStatus } from './shared/conversation-types.js';
+import type { Assignee, HandoffRecord, OrderStatus, OutboundKind } from './shared/conversation-types.js';
 import type { SensitiveCategory } from './handoff/triggers.js';
 import { cleanText } from './shared/text.js';
 
@@ -200,6 +200,17 @@ export interface AgentReply {
  */
 export interface ChannelAdapter {
   name: string;
-  /** 返回 false 表示确定发送失败（如企微 API 报错），调用方据此提示操作者 */
-  push(sessionId: string, text: string): Promise<boolean>;
+  /**
+   * 返回 false 表示没有全部送达（企微接口报错，或超时、网络异常而结果不明），调用方据此提示操作者。
+   * 要分清「明确没送达」与「结果不明」的调用方（跟进）看发送账本的 mayHaveDelivered(opts.message)（02 第 12 步）。
+   * opts 不给时 kind 按 'notice' 记（付款确认等服务端推送）；kind='human' 时客户侧正文前加「【顾问】」
+   */
+  push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean>;
+}
+
+/** push 的可选参数（02 spec「企微：发送账本、回执与去重」）：发送账本记哪一类、对应会话里的哪条消息（经 seq 关联） */
+export interface PushOpts {
+  kind: OutboundKind;
+  /** 对应的会话消息；送达之后才写进会话的（跟进）也先把对象带上，写进会话时用同一个对象 */
+  message?: ChatMessage;
 }
