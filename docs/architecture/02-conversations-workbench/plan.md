@@ -781,6 +781,10 @@
   - 变异（源码拷进 scratchpad 的隔离副本，逐个打、只跑 `jobs.selftest`，令牌那四个带真实 PG）：22 个，21 个杀掉。第 1 条：只看一个小句、应答表放宽成吞掉任何小句（向量表与文件存储的端到端都红）；第 2 条：不归一表情、`LEAD` 不含「以后」、叠说不折叠、繁体不转简体、破折号连字符不当分隔；第 3 条：failed 也重排；第 4 条：额度检查放回生成之后（生成之前不判）、额度不够也重排；第 5 条：running → sending 不带令牌、不看改没改中照推、仓储的 `setJobStatus` 不比 `claimed_at`、PG 后端丢掉 `setJobStatus` 的返回值（一律当改中）、锁不在手里照样认领；第 6 条：settle 失败不补写；第 7 条：网址仍预清洗；第 8 条：联系类句子不删、只删「由顾问确认」不删「顾问会联系」；第 9 条：重置不取消通知、PG 后端不执行 `cancelSession`。存活的一个等价：settle 失败之后照旧立刻 `afterSettle`（不等补写）——那时任务还是 running，按活对象再排撞上它、什么都没排，补写之后的那次 `afterSettle` 照样排上，结果相同。
   - 计数：`jobs.selftest` 77 / 80 → 95 / 100（不带 / 带 PG），其余不变（`store.selftest` 403 / 426、等价套件 908、`trace.selftest` 176）；`pnpm test` 的 PASS 行仍是 63。
   - 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器，`127.0.0.1:55432`）与不带各跑一遍都全绿，mock eval 19/19（文件与 DB 两种配置模式）；锁定套件 8 个文件的 sha256 与第 1 步相同，断言零修改，锁定的 `llm.selftest` F1 照过，`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变。
+  - PR #79 第一次 CI 红的两处（都是自测本身的问题，产品代码没动）：
+    - main 子进程被 240 秒超时杀掉：N 组（生成话术期间客户回话）在 `waitFor(phase === 'started')` 之后、`releaseHung()` 之前没有 await，而 `started` 在调执行体之前就置上了，生成话术的请求这时可能还没到假模型服务器。CI 的机器慢一点，`releaseHung()` 放行了个空，请求随后到达、一直卡到 `LLM_TIMEOUT_MS`（600 秒）。给假服务器加 30ms 处理延迟在本机确定性复现（输出停在同一处）。改成 `releaseHung` 先等假模型真收到那个请求再放行（10 秒没收到记一条失败），四处调用都 await。这是第 10 步原有的竞态，不是 CI 慢在哪：本机整个子进程几秒跑完。
+    - 真实 PG 的令牌两条：rpg 子进程用真钟（库的 `now()` 不跟着拨），CI 是 UTC、在 03:16 跑，跟进的 `runAt` 落在夜间时段、顺延到 9:00，根本没到点，没认领就没有可查的行。不是 `claimed_at` 的精度、时区或 PG 版本（CI 的服务与本机同是 `pgvector/pgvector:pg17`），也不依赖被杀的 main 子进程。rpg 子进程改为关掉夜间时段（`FOLLOWUP_QUIET_START` 与 `FOLLOWUP_QUIET_END` 都设 0），夜间顺延照旧由 main 在钉住的钟上测。
+    - 本机复现与验证：`TZ=UTC`、本机时间 03:23 UTC 跑出同样的两条失败；修好之后 `TZ=UTC` 加真实 PG、假服务器加 30ms 延迟、压满 10 个核三种条件下 `jobs.selftest` 都是 100 项全过，`CI=true TZ=UTC` 带 PG 的完整 `pnpm test` 全绿。
 
 ## 验收记录
 
