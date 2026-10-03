@@ -87,7 +87,10 @@ if (CHILD === 'no-otel') {
     },
     preflight: () => {},
     buildIndex: async () => {},
+    // 自测只看 startOtel 的位置：两种存储的后台任务都不起
+    storeMode: () => 'file',
     startFollowUpScheduler: () => {},
+    startJobs: () => {},
     startWecom: () => void calls.push('wecom'),
     exit: (c) => void calls.push(`exit ${c}`),
     startOtel: async () => {
@@ -756,7 +759,10 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
       },
       preflight: () => {},
       buildIndex: async () => {},
+      // 自测只看 startOtel 的位置：两种存储的后台任务都不起
+      storeMode: () => 'file',
       startFollowUpScheduler: () => {},
+      startJobs: () => {},
       startWecom: () => void calls.push('wecom'),
       exit: (c) => void calls.push(`exit ${c}`),
       startOtel: async () => {

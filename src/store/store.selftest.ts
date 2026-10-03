@@ -633,7 +633,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
 // ---------------- boot()：会话存储在配置之后、监听之前 ----------------
 {
   const { boot } = await import('../boot.js');
-  const run = async (init: { config?: () => Promise<void>; store?: () => Promise<void> }) => {
+  const run = async (init: { config?: () => Promise<void>; store?: () => Promise<void>; mode?: 'file' | 'db' }) => {
     const calls: string[] = [];
     const exits: number[] = [];
     const logs: string[] = [];
@@ -655,7 +655,9 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
         },
         preflight: () => void calls.push('preflight'),
         buildIndex: async () => void calls.push('buildIndex'),
+        storeMode: () => init.mode ?? 'file',
         startFollowUpScheduler: () => void calls.push('followup'),
+        startJobs: () => void calls.push('jobs'),
         startWecom: () => void calls.push('startWecom'),
         exit: (c) => void exits.push(c),
       });
@@ -669,6 +671,12 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
     'boot：配置 → 会话存储 → 监听 → 预检、索引、跟进、企微',
     ok.calls === 'config,store,serve,preflight,buildIndex,followup,startWecom' && ok.exits === '',
     ok.calls,
+  );
+  const dbOk = await run({ mode: 'db' });
+  check(
+    'boot：db 存储下监听之后起任务表（startJobs）代替跟进扫描器',
+    dbOk.calls === 'config,store,serve,preflight,buildIndex,jobs,startWecom' && dbOk.exits === '',
+    dbOk.calls,
   );
   const refused = await run({
     store: async () => {

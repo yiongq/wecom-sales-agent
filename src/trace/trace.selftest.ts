@@ -131,7 +131,8 @@ const config = await import('../config/source.js');
 const cat = await import('../config/catalog.js');
 const { handleMessage } = await import('../engine.js');
 const { getInsights, getSuggestion, getDraftReply } = await import('../insight.js');
-const { runFollowUpScan } = await import('../followup.js');
+const { deferQuiet } = await import('../followup.js');
+const jobs = await import('../jobs/runner.js');
 const { buildIndex } = await import('../retrieval.js');
 const { __llmTest } = await import('../llm.js');
 const { todayIso } = await import('../env.js');
@@ -1044,8 +1045,14 @@ async function usageMatches(label: string): Promise<void> {
   check(`${label}：usage_daily 里当天各（模型、用途）的调用数、token 数与金额等于 recordUsage 收到的合计`, !bad.length, bad.join('；'));
 }
 {
-  // 一次跟进、一次洞察、一次建议、一次代拟（各自的用途）
+  // 一次跟进、一次洞察、一次建议、一次代拟（各自的用途）。db 存储下跟进由任务表驱动（第 10 步）：装上任务表的钩子，
+  // 会话落库时排上跟进，再认领一批（夜里跑的话拨到早上 9 点，避开免打扰）
   const fsid = 'wecom:wmTraceFollow';
+  const pushed: string[] = [];
+  jobs.__jobsTest.start(async (id) => {
+    pushed.push(id);
+    return true;
+  });
   const s = store.getOrCreateSession(fsid, 'wecom');
   s.stage = 'recommend';
   s.messages.push({ role: 'customer', content: '想去云南看看', at: Date.now() - 8 * 3_600_000 });
@@ -1054,15 +1061,9 @@ async function usageMatches(label: string): Promise<void> {
   s.createdAt = s.updatedAt;
   store.saveSession(s, false);
   await store.flushSession(fsid);
-  const pushed: string[] = [];
   script.push({ content: '上次聊到的云南线路，您更想看古城还是雪山呢？' });
-  const noon = new Date();
-  noon.setHours(12, 0, 0, 0);
-  const sent = await runFollowUpScan(async (id) => {
-    pushed.push(id);
-    return true;
-  }, noon);
-  check('前提：发了一次跟进', sent === 1 && json(pushed) === json([fsid]), `${sent} ${json(pushed)}`);
+  await jobs.runJobsOnce(deferQuiet(Date.now()));
+  check('前提：发了一次跟进', json(pushed) === json([fsid]), json(pushed));
   script.push({ content: '漏斗最大流失点在报价之后。建议在报价后两小时内跟进。转人工线索价值高，优先接手。' });
   await getInsights();
   script.push({ content: '先确认出行人数和日期' });
