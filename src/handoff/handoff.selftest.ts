@@ -951,99 +951,18 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
 
 // ---------------- 9. 确定性转人工触发的向量表（R15、开放问题 4、R23；plan 第 11、11.1 步） ----------------
 const triggers = await import('./triggers.js');
+const corpus = await import('./triggers.corpus.js');
 {
+  // 标注语料（triggers.corpus.ts）逐条跑：审查判为属实的例句、原来向量表的全部句子、成对反例（plan「实施记录 · 第 11 步」审查之后改的）
   const { emergencyOf } = triggers;
-  // 命中：此刻正处在危险或困境里，类型对
-  const hits: [string, string][] = [
-    ['我现在高反了，头疼得厉害', 'altitude'],
-    ['我妈高反很严重，喘不上气', 'altitude'],
-    ['我有点高反', 'altitude'],
-    ['高反了怎么办', 'altitude'],
-    ['我已经在拉萨了，高反很难受', 'altitude'],
-    ['以前没事，现在高反了', 'altitude'],
-    ['我怕高反，结果真的高反了', 'altitude'],
-    ['婆婆在拉萨肺水肿了', 'altitude'],
-    ['我摔倒了，腿可能骨折了', 'injury'],
-    ['我们出车祸了', 'injury'],
-    ['老公爬山摔伤了，流了好多血', 'injury'],
-    ['我老公在拉萨突然晕倒了', 'medical'],
-    ['孩子发烧了', 'medical'],
-    ['孩子发高烧39度', 'medical'],
-    ['我妈心脏病犯了', 'medical'],
-    ['能不能帮我叫救护车', 'medical'],
-    ['刚打了120', 'medical'],
-    ['我们在医院急诊', 'medical'],
-    ['护照丢了', 'documents'],
-    ['我的护照被偷了', 'documents'],
-    ['身份证找不到了', 'documents'],
-    ['护照丢了怎么办', 'documents'],
-    ['不会吧，护照丢了', 'documents'],
-    ['孩子走丢了', 'stranded'],
-    ['我们被困在山上了', 'stranded'],
-    ['我们迷路了', 'stranded'],
-    ['联系不上我妈', 'stranded'],
-    ['导游把我们扔下了', 'stranded'],
-  ];
-  for (const [t, kind] of hits) check(`紧急情况命中：「${t}」→ ${kind}`, emergencyOf(t) === kind, String(emergencyOf(t)));
-  // 不命中。plan「实施记录 · 第 1 步」第 8 类盘点的锁定原话与 eval 原话（10 句）逐句照旧：出行前的顾虑，不是此刻有症状
-  const locked = [
-    '先不用了',
-    '我们一家人想出去玩，我和老公，两个孩子，还有我婆婆72岁，孩子想看熊猫，婆婆也怕高反',
-    '我们俩度蜜月 听说高反挺吓人的 想去云南',
-    '算了 听说高反挺吓人的 换云南吧',
-    '九寨海拔高吗 我妈怕高反',
-    '另外，孩子要带护照吗',
-    '海拔三千米会不会高反',
-    '我们一家人，我和老公带两个孩子，还有婆婆72岁也怕高反，孩子想去成都看熊猫',
-    // 词表里宽泛的词各配一个反例：「找不到」要和证件连着，「跑了」不收
-    '支付链接找不到了',
-    '先交钱然后人跑了咋整',
-  ];
-  const misses = [
-    ...locked,
-    // 出行前的提问与假设
-    '去西藏会不会高反',
-    '高反怎么办',
-    '高反严重吗',
-    '如果到了拉萨，高反了怎么办',
-    '万一护照丢了怎么办',
-    '滑雪容易受伤吗',
-    '冬天会封路吗',
-    '那边会地震吗',
-    '三亚8月台风多吗',
-    '附近有医院吗',
-    '附近有救护车吗',
-    '怕孩子在景区走丢',
-    '老人容易骨折',
-    '担心车祸',
-    '孩子要带什么药',
-    '我爸有心脏病，能去西藏吗',
-    // 否定、已经好了
-    '没有高反',
-    '护照没丢',
-    '别把护照弄丢了',
-    '高反好多了',
-    // 转述别人或以前的经历
-    '我上次去西藏高反过',
-    '朋友去西藏高反了',
-    '我妈去年骨折过，能去吗',
-    '听说有人在那边走丢了',
-    '听说去年，有人在山上被困了',
-    '我骨折过，能去吗',
-    '孩子走丢过一次',
-    // 反例：同一个字在别的意思里
-    '我对海鲜过敏',
-    '我是摄影发烧友',
-    '我晕车',
-    '我老迷路',
-    '手机摔坏了',
-    '困了想睡觉',
-    '护照快过期了',
-    '护照号找不到在哪填',
-    '门票120块',
-    '能看到雪山吗',
-  ];
-  for (const t of misses) check(`紧急情况不命中：「${t}」`, emergencyOf(t) === null, String(emergencyOf(t)));
+  const C = corpus;
+  const no = [...C.EMERGENCY_NO_PRESALE, ...C.EMERGENCY_NO_OTHER];
+  check(
+    `紧急情况语料：至少 200 句（${C.EMERGENCY_YES.length + no.length}），不算的一侧至少一半是售前语境（${C.EMERGENCY_NO_PRESALE.length} / ${no.length}）`,
+    C.EMERGENCY_YES.length + no.length >= 200 && C.EMERGENCY_NO_PRESALE.length * 2 >= no.length,
+  );
+  for (const [t, kind] of C.EMERGENCY_YES) check(`紧急情况算：「${t}」→ ${kind}`, emergencyOf(t) === kind, String(emergencyOf(t)));
+  for (const t of no) check(`紧急情况不算：「${t}」`, emergencyOf(t) === null, String(emergencyOf(t)));
   // eval 的全部客户原话（含 realOnly）：一句都不算紧急情况
   const casesPath = path.join(process.cwd(), 'eval', 'cases.json');
   const evalSays = (JSON.parse(fs.readFileSync(casesPath, 'utf8')) as { turns: { say: string }[] }[]).flatMap((c) =>
@@ -1054,82 +973,13 @@ const triggers = await import('./triggers.js');
 }
 {
   const { negativeLevel, sentimentThresholdReached } = triggers;
-  const strong = [
-    '垃圾',
-    '滚',
-    '滚吧',
-    '你们就是垃圾',
-    '垃圾公司',
-    '什么垃圾玩意',
-    '你们这垃圾AI',
-    '傻逼',
-    '滚蛋',
-    '你们真是废物',
-    '去死吧',
-    '等了半天，垃圾',
-  ];
-  for (const t of strong) check(`负面情绪·强：「${t}」`, negativeLevel(t) === 2, String(negativeLevel(t)));
-  const weak = [
-    '太失望了',
-    '无语',
-    '太差了',
-    '你们这是坑人',
-    '太离谱了',
-    '敷衍',
-    '烦死了',
-    '受够了',
-    '答非所问',
-    '感觉不靠谱',
-    '我真服了你们',
-    '服了',
-    '你们回得太慢了',
-    '说了三遍了，无语',
-  ];
-  for (const t of weak) check(`负面情绪·弱：「${t}」`, negativeLevel(t) === 1, String(negativeLevel(t)));
-  const none = [
-    // 第 1 步第 8 类「注意（第 11.1 步）」：打消疑虑的问法，不是负面情绪
-    '你们这个是骗人的吧',
-    '你们靠谱吗，不会是骗人的吧',
-    '先不用了',
-    // 疑问
-    '你们是不是很敷衍',
-    '这么离谱吗',
-    '你们靠谱吗',
-    // 否定
-    '不会让您失望的',
-    '别让我失望',
-    '不离谱',
-    '我不是很失望',
-    '也不是不靠谱',
-    // 转述别人的评价、说的是别家或以前
-    '朋友说你们很坑',
-    '网上说太差了',
-    '上次那家旅行社太坑了',
-    '别家太差了',
-    // 反例：垃圾、滚、废物、差、坑、烦、服了、火大在别的意思里
-    '西藏需要带垃圾袋吗',
-    '景区垃圾很多',
-    '这里的垃圾很多',
-    '垃圾分类严格吗',
-    '这垃圾桶太小了',
-    '滚烫的温泉',
-    '摇滚音乐节',
-    '废物利用',
-    '差不多就行',
-    '温差很大',
-    '时差太大',
-    '天坑人很多',
-    '麻烦您了',
-    '麻烦人家帮忙',
-    '我服了晕车药',
-    '我有点不舒服了',
-    '篝火大会几点',
-    // 嫌贵是异议，不是情绪
-    '太贵了',
-    '不用了',
-    '算了',
-  ];
-  for (const t of none) check(`负面情绪·无：「${t}」`, negativeLevel(t) === 0, String(negativeLevel(t)));
+  const C = corpus;
+  check(
+    `负面情绪语料：至少 200 句（${C.NEGATIVE.length}），强、弱、无各有`,
+    C.NEGATIVE.length >= 200 && [0, 1, 2].every((l) => C.NEGATIVE.some(([, x]) => x === l)),
+  );
+  const label = ['无', '弱', '强'] as const;
+  for (const [t, l] of C.NEGATIVE) check(`负面情绪·${label[l]}：「${t}」`, negativeLevel(t) === l, String(negativeLevel(t)));
   check(
     '情绪阈值：最近 3 条里 1 强或 2 弱',
     sentimentThresholdReached([2]) &&
@@ -1178,101 +1028,9 @@ const triggers = await import('./triggers.js');
     '失败阈值：只看最近 6 轮（第 7 轮以前的失败滑出窗口）',
     !failureThresholdReached([1, 0, 1, 0, 0, 0, 1]) && failureThresholdReached([1, 0, 1, 0, 0, 1]),
   );
-  // 在问（owner 2026-10-03，plan「Open」第 11 步选 B）：重复提问只认在问的话。问号、句末吗呢么、疑问词；不按子串收
-  const asking: string[] = [
-    '去九寨要几天？',
-    '去九寨要几天?',
-    '去九寨要几天',
-    '这条线多少钱',
-    '有没有亲子线路',
-    '这个行吗',
-    '那贵州呢',
-    '好么',
-    '怎么去九寨',
-    '怎样报名',
-    '如何退款',
-    '几号出发',
-    '几位能成团',
-    '西藏几月去合适',
-    '哪条线好',
-    '去哪里玩好',
-    '什么时候去合适',
-    '要带啥',
-    '谁来接机',
-    '为什么这么贵',
-    '为什么都不回我',
-    '能不能便宜点',
-    '可不可以改日期',
-    '改到周六可以吗',
-    '是不是含机票',
-    '行不行',
-    '去不去得了',
-    '请问签证怎么办',
-    '想问一下签证',
-    '去九寨要多久',
-    '那你们还在营业呢？',
-    // 归一：emoji、微信表情码、全角问号、繁体
-    '有亲子线路吗😊',
-    '有亲子线路吗[微笑]',
-    '有亲子线路吗🙏🏻',
-    '去九寨要幾天',
-    '有沒有親子線路',
-    '這個行嗎',
-    '為什麼這麼貴',
-    '多少錢一位',
-    '幾號出發',
-    '这条线能走﹖带娃',
-  ];
-  const stating: string[] = [
-    '两位 12号',
-    '两位12号',
-    '10月12号出发',
-    '两个大人',
-    '对，两位大人',
-    '我说了两个人',
-    '预算两万',
-    '就订这个',
-    '确认一下，就这个',
-    '好的',
-    '好的好的',
-    '嗯',
-    '好吧',
-    '行吧',
-    // 不按子串收
-    '几乎没问题',
-    '哪怕贵一点也行',
-    '什么都行，就这个',
-    '什么都行',
-    '哪天都可以',
-    '几个人都行',
-    '去不去都行',
-    '十几个人',
-    '二十几岁',
-    '过几天再说',
-    '这几天有空',
-    '玩了好几天',
-    '没什么',
-    '没多久就到',
-    '门票什么的都包',
-    '不怎么样',
-    '无论如何要去',
-    '不管多少钱都订',
-    '多少有点贵',
-    '多多少少会累',
-    '早着呢',
-    '我们还没定呢',
-    '不不不，两个人',
-    '那么就这样',
-    '好，就这么',
-    '要么去云南',
-    // 归一之后照样不算：emoji、表情码、全角、繁体
-    '两位 12号😊',
-    '两位１２号[微笑]',
-    '什麼都行',
-    '過幾天再說',
-  ];
-  for (const t of asking) check(`在问：「${t}」算`, isQuestion(t));
-  for (const t of stating) check(`在问：「${t}」不算`, !isQuestion(t));
+  // 在问（owner 2026-10-03，plan「Open」第 11 步选 B）：重复提问只认在问的话。标注语料逐条跑（不按子串收、应答的「呢」不算……）
+  check(`在问语料：至少 200 句（${corpus.ASKING.length}）`, corpus.ASKING.length >= 200);
+  for (const [t, want] of corpus.ASKING) check(`在问：「${t}」${want ? '算' : '不算'}`, isQuestion(t) === want);
   check(
     '重复提问：在问的重复算（「去九寨要几天？」「这条线多少钱」「有没有亲子线路」各问两遍）',
     repeatedQuestion('去九寨要几天？', ['去九寨要几天？']) &&
@@ -1290,6 +1048,13 @@ const triggers = await import('./triggers.js');
       !repeatedQuestion('好的好的', ['好的好的']) &&
       !repeatedQuestion('嗯嗯嗯嗯', ['嗯嗯嗯嗯']) &&
       !repeatedQuestion('什么都行，就这个', ['什么都行，就这个']),
+  );
+  check(
+    '重复提问：句末「呢」的应答与确认连说两遍不算（「可以的呢」「嗯嗯好的呢」）；在问的「呢」照算',
+    !repeatedQuestion('可以的呢', ['可以的呢']) &&
+      !repeatedQuestion('嗯嗯好的呢', ['嗯嗯好的呢']) &&
+      !repeatedQuestion('没问题呢', ['你好', '没问题呢']) &&
+      repeatedQuestion('那贵州的线路呢', ['那贵州的线路呢']),
   );
   check(
     '重复提问：去标点空白后相同算',
@@ -1722,6 +1487,87 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
     sess(sid6).handoff?.kind === 'model' && json(sess(sid6).turnSignals) === '[1]',
   );
 }
+{
+  // 审查之后补的端到端（plan「实施记录 · 第 11 步」审查之后改的）：售前的问法照常交给模型；正在发生的紧急情况不调模型
+  const { emergencyReason } = await import('./record.js');
+  for (const t of ['九寨沟地震以后恢复了吗', '你们这是骨折价啊', '我高反体质适合去西藏吗']) {
+    const sid = newSid('E2ENO');
+    requests.length = 0;
+    const r = await say(sid, t, [{ content: '这个我帮您看看～' }]);
+    check(
+      `端到端：「${t}」不转人工、照常调模型`,
+      !sess(sid).handedOver && requests.length === 1 && r.text.includes('帮您看看'),
+      json({ r, n: requests.length, h: sess(sid).handoff }),
+    );
+  }
+  for (const [t, kind] of [
+    ['孩子丢了', 'stranded'],
+    ['我现在喘不上气怎么办', 'medical'],
+  ] as const) {
+    const sid = newSid('E2EYES');
+    requests.length = 0;
+    const r = await say(sid, t);
+    check(
+      `端到端：「${t}」转人工（emergency）、模型请求 0 次、回应急话术`,
+      requests.length === 0 &&
+        r.text === EMERGENCY_REPLY &&
+        sess(sid).handoff?.kind === 'emergency' &&
+        sess(sid).handoff?.reason === emergencyReason(kind),
+      json({ r, n: requests.length, h: sess(sid).handoff }),
+    );
+  }
+  // 客户自述与家人的情况不是冲着我们的负面情绪：两句都照常交给模型
+  const sidS = newSid('E2ESELF');
+  requests.length = 0;
+  await say(sidS, '我英语很差', [{ content: '没关系，我们有中文导游～' }]);
+  const rS = await say(sidS, '我妈身体也很差，能去吗', [{ content: '可以的，我们有轻松的线路～' }]);
+  check(
+    '端到端：「我英语很差」接「我妈身体也很差，能去吗」不转人工、照常调模型、情绪窗口不留',
+    !sess(sidS).handedOver && requests.length === 2 && rS.text.includes('轻松的线路') && !('negativeHits' in sess(sidS)),
+    json({ rS, h: sess(sidS).handoff, n: sess(sidS).negativeHits }),
+  );
+  // 句末「呢」的应答连说三遍：在回答，不算重复提问
+  const sidN = newSid('E2ENE');
+  await say(sidN, '想去三亚玩', [{ content: '三亚很好～两位大人对吗？' }]);
+  const asks = ['10月出发可以吗？', '住海边的酒店可以吗？', '那我给您出方案可以吗？'];
+  const ne: string[] = [];
+  for (const ask of asks) ne.push((await say(sidN, '可以的呢', [{ content: ask }])).text);
+  check(
+    '端到端：「可以的呢」连说三遍不转人工、问句原样发出、失败窗口不留',
+    !sess(sidN).handedOver && ne.every((t, i) => t.includes(asks[i]!)) && !('turnSignals' in sess(sidN)),
+    json({ ne, w: sess(sidN).turnSignals }),
+  );
+}
+{
+  // 企微重放（state[0]）：上次停在「已记下、回复还没生成」，客户这句与它的情绪窗口值已经一起落了库（入库与记窗口之间没有 await）。
+  // 以 alreadyRecorded 重跑同一句：情绪窗口不再记一遍；交互失败的窗口那一轮还没记，照常记。db 存储下见 store/parity.selftest
+  const sid = newSid('REPLAYNEG');
+  await say(sid, '你好', [{ content: '您好～想去哪儿玩？' }], { msgid: 'rp-neg-0' });
+  sess(sid).messages.push({ role: 'customer', content: '无语', at: Date.now(), msgid: 'rp-neg-1' });
+  sess(sid).negativeHits = [1];
+  store.saveSession(sess(sid));
+  requests.length = 0;
+  const r = await say(sid, '无语', [{ content: '抱歉让您久等了～您想去哪儿玩？' }], { msgid: 'rp-neg-1', alreadyRecorded: true });
+  check(
+    '企微重放同一条弱负面消息：情绪窗口只计一次（仍是 [1]），不转人工，照常调模型，这句只记一条',
+    !sess(sid).handedOver &&
+      json(sess(sid).negativeHits) === '[1]' &&
+      requests.length === 1 &&
+      r.text.includes('抱歉') &&
+      sess(sid).messages.filter((m) => m.role === 'customer' && m.content === '无语').length === 1,
+    json({ r, n: sess(sid).negativeHits, h: sess(sid).handoff }),
+  );
+  const sidF = newSid('REPLAYFAIL');
+  await say(sidF, '想去云南玩', [{ content: '云南很好～几位出行？' }], { msgid: 'rp-fail-0' });
+  sess(sidF).messages.push({ role: 'customer', content: '两个人', at: Date.now(), msgid: 'rp-fail-1' });
+  store.saveSession(sess(sidF));
+  await say(sidF, '两个人', [{ content: '' }, { content: '' }], { msgid: 'rp-fail-1', alreadyRecorded: true });
+  check(
+    '企微重放：交互失败的窗口那一轮还没记，重跑照常记（空回复 → [1]）',
+    json(sess(sidF).turnSignals) === '[1]',
+    json(sess(sidF).turnSignals),
+  );
+}
 
 fake.close();
 if (fails.length) {
@@ -1730,6 +1576,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 触发向量表：紧急、失败、情绪、敏感信息、撤回同意 / 紧急不调模型与升级 / 情绪 1 强 2 弱 / 交互失败的窗口与阈值）`,
+  `HANDOFF SELFTEST PASS: ${pass} 项断言全通（cleanText / 四态与已成交客户要人工 / needSummary / 五条入口的记录与事件 / emergency 升级 / 终态会话转人工 / 交还与重置清什么 / handoffBeforePaid / 种子保鲜 / /api/orders/:id 白名单 / 匿名投影 / legacy_admin_writes / handleMessage opts / 触发的标注语料：紧急、情绪、在问，失败、敏感信息、撤回同意的向量 / 紧急不调模型与升级 / 情绪 1 强 2 弱 / 交互失败的窗口与阈值 / 售前问法与自述的端到端 / 企微重放不重复记情绪）`,
 );
 process.exit(0);
