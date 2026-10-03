@@ -44,6 +44,7 @@ import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guar
 import { profile } from './profile.js';
 import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, Route, Session } from './types.js';
 import { boot } from './boot.js';
+import { startOtelExport } from './ops/otel.js';
 import {
   catalogVersioned,
   closeConfig,
@@ -911,5 +912,7 @@ if (!SELFTEST) {
       }),
     startWecom,
     exit: (code) => process.exit(code),
+    // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
+    startOtel: startOtelExport,
   });
 }

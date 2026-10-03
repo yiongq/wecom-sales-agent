@@ -17,6 +17,11 @@ export interface BootDeps {
   startFollowUpScheduler(): void;
   startWecom(): void;
   exit(code: number): void;
+  /**
+   * OpenTelemetry（02 spec R24，默认关闭）：只在设了 OTEL_EXPORTER_OTLP_ENDPOINT 时调，在会话存储就绪之后、监听之前。
+   * 生产是 src/ops/otel.ts 的 startOtelExport（动态 import 导出器、订阅 onTurnEnd）；失败只记日志，照常启动、不导出
+   */
+  startOtel?(): Promise<void>;
 }
 
 export async function boot(d: BootDeps): Promise<void> {
@@ -35,6 +40,14 @@ export async function boot(d: BootDeps): Promise<void> {
     else console.error('[boot] 会话存储装载失败，拒绝启动：', e);
     d.exit(1);
     return;
+  }
+  // 没设端点时这里只有一次判断：不加载任何 @opentelemetry/*、启动不多花时间（不变量 49）
+  if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() && d.startOtel) {
+    try {
+      await d.startOtel();
+    } catch (e) {
+      console.error('[boot] OpenTelemetry 没起来（不导出，对话照常）：', e instanceof Error ? e.message : e);
+    }
   }
   d.serve(() => {
     d.preflight();
