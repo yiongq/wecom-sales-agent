@@ -40,11 +40,12 @@ import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
+import { humanReplyVerdict } from './quota/ledger.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
-import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, Route, Session } from './types.js';
+import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
 import { boot } from './boot.js';
 import { startOtelExport } from './ops/otel.js';
 import {
@@ -513,10 +514,17 @@ app.post('/api/sessions/:id/reply', legacyWrites, sameOriginOnly, adminAuth, asy
   const body = await c.req.json<{ text?: unknown }>().catch(() => null);
   const text = typeof body?.text === 'string' ? body.text.trim() : '';
   if (!text) return c.json({ error: 'text 不能为空' }, 400);
-  s.messages.push({ role: 'agent', content: text, at: Date.now() });
+  // 企微渠道先查发送账本（R18、不变量 34）：剩 0 条或窗口已过就拒绝并写明原因，什么都不改。第 13 步改调 reply() 之后由它抛 SendWindowError
+  if (s.channel === 'wecom') {
+    const verdict = humanReplyVerdict(s.id, Date.now());
+    if (!verdict.ok) return c.json({ ok: false, error: verdict.message, reason: verdict.reason, closesAt: verdict.closesAt }, 409);
+  }
+  const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
+  s.messages.push(message);
   s.updatedAt = Date.now();
   saveSession(s);
-  const sent = await adapterFor(s.channel).push(s.id, text);
+  // 人工回复：发送账本记 human，客户侧正文前加「【顾问】」（适配器加，会话里存原文）
+  const sent = await adapterFor(s.channel).push(s.id, text, { kind: 'human', message });
   if (!sent) {
     // 发送失败必须让操作者知道：否则后台显示"已回复"、客户实际什么都没收到
     s.messages.push({
@@ -574,7 +582,10 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
     const followUp = await notifyPaid(id);
     if (followUp) {
       const s = getSession(followUp.sessionId);
-      const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text);
+      const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text, {
+        kind: 'notice',
+        message: followUp.message,
+      });
       // 同 /reply：会话里记着「已收到您的支付」，客户却没收到，得让顾问在后台看见、去另行告知。
       // 种子会话除外：对应的企微客户是编造的，推送必然失败，公开演示每付一次就会多一条失败备注
       if (!sent && s && !SEED_SESSION_RE.test(s.id)) {
@@ -878,10 +889,10 @@ function logStartup(listeningPort: number): void {
   }
 }
 
-/** 跟进推给客户的那一下（扫描器与任务表共用） */
-function pushFollowUp(sessionId: string, text: string): Promise<boolean> {
+/** 跟进推给客户的那一下（扫描器与任务表共用）；opts 带 kind='followup' 与要写进会话的那条消息（发送账本用） */
+function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
   const s = getSession(sessionId);
-  return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
+  return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
 }
 
 if (!SELFTEST) {
