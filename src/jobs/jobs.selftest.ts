@@ -4,8 +4,12 @@
 //         在推送之前已提交、明确失败退账并按节奏重试到上限、推送结果不明按已发处理、「别发了」之后不再排、夜间顺延（排程时与执行时）、
 //         启动时各类 running / sending 的去向、停机 normal 段把还没进 sending 的跟进改回 pending、handoff_notify 与 retention_purge
 //         的排程、db 存储下扫描器不动、出口护栏本身；
+//         审查之后加的：重试用完只留一条 failed、额度不够不调模型也不再排、租户锁不在手里不认领、结果写失败下一拍补写、跟进话术里的
+//         链接与「顾问会联系您」交给护栏删、重置取消待执行的转人工通知；
+//   file：文件存储、mock 引擎，「不用了，就订这个」照常建单，沉默到阈值之后扫描器照常发出 closing 跟进；
 //   落盘的 PGlite 一串四个进程：sending 之前被 SIGKILL → 重启照常发一次；sending 之后（推送途中）被 SIGKILL → 重启记 abandoned、不重发；
-//   rpg（PG_TEST_URL 设了才跑）：真实 Postgres 上另一个认领者拿着 5 个任务不提交，runner 不等它、拿到其余 7 个，两边不相交。
+//   rpg（PG_TEST_URL 设了才跑）：真实 Postgres 上另一个认领者拿着 5 个任务不提交，runner 不等它、拿到其余 7 个，两边不相交；
+//         另一个认领者把正在生成话术的那一行归位、重新认领之后，原认领者的 sending 改不中、不推送（认领令牌）。
 // 子进程预加载 src/store/parity-clock.ts，钟从当天本地 12:00 起走：夜间时段的断言不受在几点跑的影响（rpg 例外，用真钟）。
 // 文件存储下的扫描器由锁定的 llm.selftest F1 测；拒绝识别的向量表在这里。
 // 用法：npx tsx src/jobs/jobs.selftest.ts
@@ -84,7 +88,38 @@ async function parentMain(): Promise<never> {
       '不考虑了',
       '那就不考虑了',
       '算了，不考虑了',
-      '这个价位太高了，不考虑了',
+      // 常见的「别发了」说法：带时间副词或客气的前缀、带 emoji 与微信表情码、叠说、破折号连字符、英文应答、繁体
+      '以后别发了',
+      '请不要再发了',
+      '麻烦别发了',
+      '拜托别发了',
+      '今后不要再发了',
+      '求你别发了',
+      '以后别再联系我了',
+      '麻烦您以后别再发了',
+      '不用了😊',
+      '👍不用了👍',
+      '别发了[捂脸]',
+      '好的不用了[微笑]',
+      '不考虑了[OK]',
+      '不用了不用了',
+      '不用了！！',
+      '不用了——谢谢',
+      '不用了-谢谢',
+      'ok不用了',
+      'OK 不用了',
+      '不用了thx',
+      '不用了 thank you',
+      '別發了',
+      '不要再發了',
+      '不考慮了',
+      '已經在別家訂了',
+      '謝謝，不用了',
+      // 其余小句只是客气话或应答
+      '不用了，谢谢您的推荐',
+      '不需要了，有需要我再联系你',
+      '好吧，不用了',
+      '嗯嗯 不用了 谢谢啦',
     ];
     const no = [
       // 第 1 步第 8 类的反例与锁定原话
@@ -116,11 +151,47 @@ async function parentMain(): Promise<never> {
       '不考虑别的了',
       '不需要接送',
       '不用了解了，直接下单',
+      // 拒绝小句后面跟着成交、问询、改需求、看别的线路：谢绝的是某个附加项，不是跟进（审查之后改的第 1 条）
+      '不用了，就订这个',
+      '不用了，直接下单吧',
+      '不需要了，就订这条',
+      '算了不用了，订吧',
+      '不用了，发我付款链接',
+      '不考虑了，看看云南吧',
+      '不用了，换个日期吧',
+      '好的不用了，帮我改成3个人',
+      '不用了 我就要这条',
+      '嗯不用了 订吧',
+      '不用了，再给我看看贵州的',
+      '不用了，就这个吧',
+      '好的不用了，帮我订吧',
+      '不需要了，就三亚那条',
+      '不用了，我明天付款',
+      '不用了不用了，订吧',
+      '不用了😊就订这个',
+      '不用了 我再想想',
+      '不用了，我先跟家里人商量下',
+      '太贵了，不考虑了，有没有便宜点的？',
+      '这个价位太高了，不考虑了',
+      '那就不考虑了，换个便宜点的吧',
+      '不考虑了 有没有国内的',
+      '那就不用了，我们换个目的地',
+      // 疑问照旧排除（spec「疑问与否定排除」）；只有应答、只有占位的不算
+      '可以别发了吗',
+      '别再发了好吗？',
+      '能不能别再发了？',
+      '算了',
+      '好的谢谢',
+      '[图片]',
     ];
     const missed = yes.filter((t) => !followupOptOutOf(t));
     const wrong = no.filter((t) => followupOptOutOf(t));
-    check('拒绝识别：「不用了」「别发了」「不需要了」「已经订别家了」「不考虑了」这类小句都认得出', !missed.length, json(missed));
-    check('拒绝识别：锁定原话、反例、疑问、否定、「先」「暂时」、带宾语的都不算', !wrong.length, json(wrong));
+    check(
+      '拒绝识别：「不用了」「别发了」「不需要了」「已经订别家了」「不考虑了」这类小句都认得出（带前缀、表情、叠说、繁体的也算）',
+      !missed.length,
+      json(missed),
+    );
+    check('拒绝识别：锁定原话、反例、疑问、否定、「先」「暂时」、带宾语的，以及拒绝之外还有别的内容的，都不算', !wrong.length, json(wrong));
   }
 
   const runChild = (
@@ -170,6 +241,13 @@ async function parentMain(): Promise<never> {
     check('main 子进程正常结束', r.status === 0, `status=${r.status} signal=${r.signal} ${r.out.slice(-1500)}`);
   }
 
+  // ---- 文件存储：经 mock 引擎的拒绝识别与扫描器 ----
+  {
+    const r = runChild('file', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'file-')) });
+    merge('文件存储', r);
+    check('文件存储子进程正常结束', r.status === 0, `status=${r.status} signal=${r.signal} ${r.out.slice(-1500)}`);
+  }
+
   // ---- 落盘的 PGlite：sending 前后被 SIGKILL，各自重启一次 ----
   {
     const dataDir = fs.mkdtempSync(path.join(ROOT, 'pgdata-'));
@@ -210,8 +288,9 @@ async function parentMain(): Promise<never> {
   }
   console.log(
     `JOBS SELFTEST PASS: ${pass} 项断言全通（拒绝识别 / 排程与取消 / 开关关时不排 / 到点发出过护栏 / 记账与 sending 先提交 / 明确失败退账重试 / ` +
-      `结果不明按已发 / 别发了之后不再排 / 夜间顺延 / 启动归位 / 停机改回 pending / 转人工通知与清理的排程 / sending 前后崩溃` +
-      `${realPgRan ? ' / 真实 PG：两个认领者不重复认领' : '；真实 PG 部分未跑'}）`,
+      `结果不明按已发 / 别发了之后不再排 / 夜间顺延 / 启动归位 / 停机改回 pending / 转人工通知与清理的排程 / sending 前后崩溃 / ` +
+      `重试用完不再排 / 额度不够不调模型 / 锁不在手里不认领 / 结果补写 / 跟进话术的链接与联系承诺 / 重置取消通知 / 文件存储下要成交的话不算拒绝` +
+      `${realPgRan ? ' / 真实 PG：两个认领者不重复认领、认领令牌' : '；真实 PG 部分未跑'}）`,
   );
   process.exit(0);
 }
@@ -235,6 +314,9 @@ async function childMain(mode: string): Promise<never> {
   };
   const script: Step[] = [];
   const hung: http.ServerResponse[] = [];
+  /** 假模型收到的对话请求（不算向量） */
+  let chatCalls = 0;
+  const calls = (): number => chatCalls;
   const reply = (r: http.ServerResponse, content: string): void => {
     r.setHeader('content-type', 'application/json');
     r.end(
@@ -254,6 +336,7 @@ async function childMain(mode: string): Promise<never> {
         r.end(JSON.stringify({ data: (body.input ?? []).map((_, i) => ({ embedding: [1, i % 3, 2] })), usage: { prompt_tokens: 5 } }));
         return;
       }
+      chatCalls += 1;
       const step = script.shift();
       if (step?.hang) {
         hung.push(r);
@@ -284,8 +367,9 @@ async function childMain(mode: string): Promise<never> {
     DEMO_PRUNE_HOURS: '0',
   });
   try {
-    if (mode === 'main') await childMainSuite(script, releaseHung);
-    else if (mode === 'rpg') await childRealPg();
+    if (mode === 'main') await childMainSuite(script, releaseHung, calls);
+    else if (mode === 'rpg') await childRealPg(script, releaseHung);
+    else if (mode === 'file') await childFile();
     else await childDisk(mode, script, res, save);
   } catch (e) {
     fails.push(`子进程抛错：${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
@@ -317,7 +401,8 @@ async function storeSetup(opts: { dataDir?: string; dbConfig: boolean }) {
   const store = await import('../store.js');
   const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await import('../db/testing.js');
   const t = await openTestDb(opts.dataDir ? { dataDir: opts.dataDir } : {});
-  if (opts.dbConfig) await installSeededConfig(t, { deps: { lock: async () => fakeLock() } });
+  const lock = fakeLock();
+  if (opts.dbConfig) await installSeededConfig(t, { deps: { lock: async () => lock } });
   const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
   await store.initSessionStore(fx.deps);
   /** 以超级用户查：一个事务里临时换回会话用户 */
@@ -386,16 +471,18 @@ async function storeSetup(opts: { dataDir?: string; dbConfig: boolean }) {
   /** 一个场景结束：它的会话还排着的任务取消掉，后面拨钟的认领碰不到它们 */
   const retire = (...sids: string[]) =>
     su(`update jobs set status = 'cancelled', finished_at = now() where status = 'pending' and payload->>'sessionId' = any($1)`, [sids]);
-  return { store, t, fx, su, jobsOf, jobsFor, flush, silent, retire };
+  return { store, t, fx, lock, su, jobsOf, jobsFor, flush, silent, retire };
 }
 
 // ---------------- main：PGlite 上的进程内各组 ----------------
 
-async function childMainSuite(script: Step[], releaseHung: (content?: string) => void): Promise<void> {
-  const { store, su, jobsOf, jobsFor, flush, silent, retire } = await storeSetup({ dbConfig: true });
+async function childMainSuite(script: Step[], releaseHung: (content?: string) => void, calls: () => number): Promise<void> {
+  const { store, fx, lock, su, jobsOf, jobsFor, flush, silent, retire } = await storeSetup({ dbConfig: true });
   const runner = await import('./runner.js');
   const followup = await import('../followup.js');
-  const { followupRunAt } = await import('./followup.js');
+  const { followupRunAt, followupJobs } = await import('./followup.js');
+  const { fakeDbError } = await import('../db/testing.js');
+  const { configHealth, __configTest } = await import('../config/source.js');
   const { guardOutbound, handleMessage } = await import('../engine.js');
   const { nextPurgeAt, retentionPurgeSpec, runRetentionPurgeJob } = await import('./purge.js');
   const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS } = await import('./notify.js');
@@ -489,6 +576,30 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     check('护栏：编造的金额连同那句删掉', !/13,?579/.test(price) && price.includes('天气不错'), price);
     check('护栏：删完只剩一句问话（残句）也返回空串', (await g('这条线现在每人 13,579 元。您更想哪天出发？')) === '');
     check('护栏：全删光返回空串（调用方换模板）', (await g('这条线现在每人 13,579 元')) === '');
+    // 「由顾问确认」「顾问会联系您」：AI 回复里会给顾问记待办，跟进不替顾问揽活，按句删（审查之后改的第 8 条）
+    check('护栏：「稍后顾问会联系您」那句删掉，删光返回空串', (await g('稍后顾问会联系您确认细节，您看方便吗？')) === '');
+    const defer = await g('这个我请顾问确认一下。您看哪天出发合适？');
+    check('护栏：「请顾问确认」那句删掉，其余照发', defer === '您看哪天出发合适？', defer);
+    const contact = await g('出发日期定了吗？顾问会在微信上联系您，您几位出行？');
+    check('护栏：「顾问会在微信上联系您」那句删掉，其余照发', contact === '出发日期定了吗？', contact);
+  }
+
+  // ---- 跟进话术：网址不预先抹掉，交给护栏连同「说了给链接」的那句一起删；联系承诺同样删；删光换阶段模板（第 7、8 条） ----
+  {
+    const s = store.getOrCreateSession('wecom:wmJobsText', 'wecom');
+    s.stage = 'quote';
+    const tpl = followup.__followupTest.TEMPLATE.quote!;
+    script.push(
+      { content: '方案链接：https://evil.example.com/x 您看看哪天出发合适？' },
+      { content: '详细方案：https://www.yuntu.com/proposal/r-sichuan/2 出发日期定了吗？' },
+      { content: '稍后顾问会联系您确认细节，您看方便吗？' },
+    );
+    const t1 = await followup.followUpText(s);
+    const t2 = await followup.followUpText(s);
+    const t3 = await followup.followUpText(s);
+    check('跟进话术：站外链接连同「方案链接：」那句删掉（不发半句空冒号），删光换阶段模板', t1 === tpl, t1);
+    check('跟进话术：方案书链接（跟进没有本轮的方案书调用）连同那句删掉，换阶段模板', t2 === tpl, t2);
+    check('跟进话术：「顾问会联系您」删光换阶段模板', t3 === tpl, t3);
   }
 
   // ---- 排程与取消：AI 回复落库时排、客户回话即取消（经引擎的真实轮次） ----
@@ -977,6 +1088,165 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     await retire(K);
   }
 
+  // ---- 执行体出错到 max_attempts：只留一条 failed，不再同键重排，之后拨钟几天也不再调模型（审查之后改的第 3 条） ----
+  {
+    const K2 = 'wecom:wmJobsK2';
+    silent(K2, 'quote', 3 * H);
+    await flush(K2);
+    // 生成之后（模型已经调过）、记账之前抛：记账之前那次额度判断抛错（生成之前那次放行）。只对这个会话
+    let phase = 0;
+    let thrown = 0;
+    followupJobs.setQuotaForTest((x) => {
+      if (x.id !== K2) return true;
+      phase ^= 1;
+      if (phase === 1) return true;
+      thrown += 1;
+      throw new Error('boom');
+    });
+    const t0 = Date.now();
+    const m0 = calls();
+    await runner.runJobsOnce(t0);
+    const a1 = await jobsFor(K2);
+    await runner.runJobsOnce(a1[0]!.runAt);
+    const a2 = await jobsFor(K2);
+    await runner.runJobsOnce(a2[0]!.runAt);
+    await flush(K2);
+    const a3 = await jobsFor(K2);
+    check(
+      '重试用完：第三次出错记 failed（attempts 3），只此一条、没有同键新排的 pending',
+      thrown === 3 && a3.length === 1 && a3[0]!.status === 'failed' && a3[0]!.attempts === 3 && a3[0]!.lastError === 'Error',
+      json({ thrown, a1, a2, a3 }),
+    );
+    const m1 = calls();
+    for (let d = 1; d <= 3; d++) {
+      await runner.runJobsOnce(t0 + d * 24 * H);
+      await flush(K2);
+    }
+    const a4 = await jobsFor(K2);
+    check(
+      '重试用完：之后拨钟三天不再认领、不再调模型（max_attempts 封顶得住）',
+      m1 - m0 === 3 && calls() === m1 && thrown === 3 && a4.length === 1 && !pushedTo(K2).length,
+      json({ calls: [m0, m1, calls()], thrown, a4 }),
+    );
+    followupJobs.setQuotaForTest(null);
+    await retire(K2);
+  }
+
+  // ---- 额度不够：生成之前就判，不调模型；记 cancelled，之后不再排（第 4 条，第 12 步换掉桩之后照样成立） ----
+  {
+    const Q = 'wecom:wmJobsQ';
+    silent(Q, 'quote', 3 * H);
+    await flush(Q);
+    followupJobs.setQuotaForTest((x) => x.id !== Q);
+    const m0 = calls();
+    const t0 = Date.now();
+    for (let k = 0; k < 6; k++) {
+      await runner.runJobsOnce(t0 + k * 5000);
+      await flush(Q);
+    }
+    await runner.runJobsOnce(t0 + 24 * H);
+    await flush(Q);
+    const j = await jobsFor(Q);
+    check(
+      '额度不够：拨钟七拍，模型调用 0 次；只有一条 cancelled（quota），没有反复出现的新任务，不推送',
+      calls() === m0 && j.length === 1 && j[0]!.status === 'cancelled' && j[0]!.lastError === 'quota' && !pushedTo(Q).length,
+      json({ calls: calls() - m0, j }),
+    );
+    followupJobs.setQuotaForTest(null);
+    await retire(Q);
+  }
+
+  // ---- 租户锁不在本进程手里（锁连接断开、正在重取）：不认领、不执行；重新取到之后照常（第 5 条） ----
+  {
+    const P = 'wecom:wmJobsP';
+    silent(P, 'quote', 3 * H);
+    await flush(P);
+    __configTest.setTimings({ reacquireMs: 30 });
+    lock.next = 'unreachable';
+    lock.lose();
+    const lost = configHealth().lock === 'lost';
+    const n = await runner.runJobsOnce();
+    const j1 = await jobsFor(P);
+    check(
+      '锁丢失：认领 0 条，到点的跟进仍是 pending、不推送',
+      lost && n === 0 && j1.length === 1 && j1[0]!.status === 'pending' && !pushedTo(P).length,
+      json({ lost, n, j1 }),
+    );
+    lock.next = 'ok';
+    const back = await waitFor(() => configHealth().lock === 'held', 3000);
+    script.push({ content: '出发日期定下来了吗？' });
+    await runner.runJobsOnce();
+    await flush(P);
+    check(
+      '锁重新取到：照常认领、发出',
+      back && pushedTo(P).length === 1 && (await jobsFor(P))[0]?.status === 'done',
+      json({ back, n: pushedTo(P).length }),
+    );
+    __configTest.setTimings({ reacquireMs: 5000 });
+    await retire(P);
+  }
+
+  // ---- 认领者写结果的短事务失败：进待补队列，下一拍补上；之后同一会话照常能排新的跟进（第 6 条） ----
+  {
+    const N2 = 'wecom:wmJobsN2';
+    silent(N2, 'quote', 3 * H);
+    await flush(N2);
+    script.push({ hang: true });
+    const tick = runner.runJobsOnce();
+    await waitFor(() => runner.__jobsTest.mine().some((m) => m.phase === 'started'));
+    const s = store.getSession(N2)!;
+    s.messages.push({ role: 'customer', content: '我再看看', at: Date.now() });
+    store.saveSession(s);
+    s.messages.push({ role: 'agent', content: '好的，您慢慢看，有想法随时说～', at: Date.now() });
+    store.saveSession(s);
+    await flush(N2);
+    // 生成回来之后重判取消（changed）；认领者写这个结果时借连接失败（这段时间里别的借连接一样失败，之后照常重试）
+    fx.faults.acquire = fakeDbError('08006');
+    releaseHung();
+    await tick;
+    fx.faults.acquire = null;
+    const j1 = await jobsFor(N2);
+    check(
+      '结果没写进库：任务还在 running，进了待补队列',
+      j1.length === 1 && j1[0]!.status === 'running' && json(runner.__jobsTest.unsettled()) === json([j1[0]!.id]),
+      json({ j1, unsettled: runner.__jobsTest.unsettled() }),
+    );
+    await runner.runJobsOnce();
+    await flush(N2);
+    const j2 = await jobsFor(N2);
+    check(
+      '下一拍补写：记 cancelled（changed），同一个键按 AI 那句回复照常排出新的跟进',
+      j2.length === 2 &&
+        j2[0]!.status === 'cancelled' &&
+        j2[0]!.lastError === 'changed' &&
+        j2[1]!.status === 'pending' &&
+        j2[1]!.key === `followup:${N2}:quote` &&
+        j2[1]!.runAt === followupRunAt(store.getSession(N2)!, 120 * 60_000) &&
+        !runner.__jobsTest.unsettled().length,
+      json(j2),
+    );
+    await retire(N2);
+  }
+
+  // ---- 重置：待执行的 handoff_notify 一并取消（spec「消息只追加」重置那一行；第 9 条） ----
+  {
+    const R = 'wecom:wmJobsReset';
+    await handleMessage(R, '转人工', 'wecom');
+    await flush(R);
+    const n1 = await jobsFor(R, 'handoff_notify');
+    await handleMessage(R, '重置', 'wecom');
+    await flush(R);
+    const n2 = await jobsFor(R, 'handoff_notify');
+    check(
+      '重置：转人工之后重置，这个会话的 handoff_notify 都是 cancelled',
+      n1.length === 2 &&
+        n1.every((j) => j.status === 'pending') &&
+        n2.length === 2 &&
+        n2.every((j) => j.status === 'cancelled' && j.finished),
+      json({ n1, n2 }),
+    );
+  }
+
   // ---- db 存储下扫描器不动（跟进只由任务表驱动）；文件存储也认 followupOptOut ----
   {
     const L = 'wecom:wmJobsL';
@@ -996,6 +1266,39 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     check('两种存储共用的资格判断：有 followupOptOut 就不跟进', !followup.shouldFollowUp(optedOut, Date.now()));
     await retire(L);
   }
+}
+
+// ---------------- 文件存储：经 mock 引擎的拒绝识别与扫描器 ----------------
+
+async function childFile(): Promise<void> {
+  process.env.LLM_MOCK = '1'; // mock 引擎按关键词驱动真实工具：报价、建单
+  const store = await import('../store.js');
+  const { handleMessage } = await import('../engine.js');
+  const followup = await import('../followup.js');
+  const ID = 'wecom:wmJobsFileClose';
+  const d = new Date(Date.now() + 40 * 24 * 3_600_000);
+  await handleMessage(ID, `想去四川，2个大人，${d.getMonth() + 1}月${d.getDate()}号出发，预算每人一万`, 'wecom');
+  const q = store.getSession(ID)!;
+  check('文件存储：前提是先报了价', store.sessionStoreMode() === 'file' && q.stage === 'quote', q.stage);
+  await handleMessage(ID, '不用了，就订这个', 'wecom');
+  const s = store.getSession(ID) as Session & { followup?: { stages?: string[] } };
+  check(
+    '文件存储：「不用了，就订这个」照常建单、进 closing，不记 followupOptOut（审查之后改的第 1 条）',
+    s.stage === 'closing' && s.orderIds.length === 1 && !s.followupOptOut,
+    json({ stage: s.stage, orders: s.orderIds.length, optOut: s.followupOptOut }),
+  );
+  s.updatedAt = Date.now() - 3 * 3_600_000 - 60_000; // 沉默到 closing 的阈值（3 小时）之后
+  store.saveSession(s, false);
+  const pushed: { id: string; text: string }[] = [];
+  const n = await followup.runFollowUpScan(async (id, text) => {
+    pushed.push({ id, text });
+    return true;
+  }, new Date());
+  check(
+    '文件存储：沉默到阈值之后扫描器照常发出 closing 的催付跟进',
+    n === 1 && pushed.length === 1 && pushed[0]!.id === ID && json(s.followup?.stages) === json(['closing']),
+    json({ n, pushed, f: s.followup }),
+  );
 }
 
 // ---------------- 落盘的 PGlite：sending 前后崩溃 ----------------
@@ -1081,7 +1384,7 @@ async function childDisk(mode: string, script: Step[], res: ChildResult, save: (
 
 // ---------------- 真实 Postgres：两个认领者 ----------------
 
-async function childRealPg(): Promise<void> {
+async function childRealPg(script: Step[], releaseHung: (content?: string) => void): Promise<void> {
   const { createRealPgFixture } = await import('../db/testing.js');
   const { openDb, withTenant } = await import('../db/client.js');
   const { claimDueJobs } = await import('../db/repo/jobs.js');
@@ -1092,9 +1395,10 @@ async function childRealPg(): Promise<void> {
     const store = await import('../store.js');
     await store.initSessionStore({ db: app.db, tenantId: fx.tenantId, tenantSlug: 'demo', varDir: process.env.VAR_DIR! });
     const runner = await import('./runner.js');
-    const { push } = makePush();
+    const { push, pushes } = makePush();
     runner.__jobsTest.start(push);
     await runner.runJobsOnce(); // 启动归位与清理的排程先做掉，之后的 running 都是这两个认领者的
+    const ctx = { tenantId: fx.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     for (let i = 0; i < 12; i++) {
       await fx.query(
         `insert into jobs (tenant_id, kind, dedupe_key, run_at, max_attempts, payload) values ($1, 'handoff_notify', $2, $3::timestamptz, 4, '{}')`,
@@ -1106,7 +1410,6 @@ async function childRealPg(): Promise<void> {
     const gate = new Promise<void>((r) => (release = r));
     let ready = (_ids: string[]): void => {};
     const got = new Promise<string[]>((r) => (ready = r));
-    const ctx = { tenantId: fx.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     const holder = withTenant(other.db, ctx, async (tx) => {
       const ids = (await claimDueJobs(tx, new Date(), 5)).map((j) => j.id);
       ready(ids);
@@ -1135,6 +1438,50 @@ async function childRealPg(): Promise<void> {
         !done.some((id) => held.includes(id)),
       json({ n, done: done.length, running: running.length }),
     );
+
+    // ---- 认领令牌（审查之后改的第 5 条）：租户锁丢失期间起来的第二个进程把正在生成话术的那一行归位、认领成自己的，
+    //      原认领者的 running → sending 改不中（claimed_at 已不是它写的），落库照常提交，但不推送 ----
+    {
+      const R = 'wecom:wmJobsRpgToken';
+      const s = store.getOrCreateSession(R, 'wecom') as Session & { followup?: { count?: number } };
+      const at = Date.now() - 3 * 3_600_000;
+      s.stage = 'quote';
+      s.messages.push(
+        { role: 'customer', content: '这条线多少钱', at: at - 60_000 },
+        { role: 'agent', content: '这条线每人 19,800 元起，您几位出行？', at },
+      );
+      s.createdAt = Math.min(s.createdAt, at - 60_000);
+      s.updatedAt = at;
+      store.saveSession(s, false);
+      await store.flushSession(R, { timeoutMs: 5000 });
+      script.push({ hang: true });
+      const tick = runner.runJobsOnce();
+      await waitFor(() => runner.__jobsTest.mine().some((m) => m.phase === 'started'));
+      const [mine] = await fx.query<{ id: string }>(`select id from jobs where dedupe_key = $1 and status = 'running'`, [
+        `followup:${R}:quote`,
+      ]);
+      await fx.query(`update jobs set status = 'pending', claimed_at = null where id = $1`, [mine?.id]);
+      const theirs = (await withTenant(other.db, ctx, (tx) => claimDueJobs(tx, new Date(Date.now() + 1000), 10))).find(
+        (j) => j.id === mine?.id,
+      );
+      releaseHung();
+      await tick;
+      await store.flushSession(R, { timeoutMs: 5000 });
+      const [row] = await fx.query<{ status: string; claimed_at: Date | string }>(`select status, claimed_at from jobs where id = $1`, [
+        mine?.id,
+      ]);
+      check(
+        '真实 PG：另一个认领者归位、重新认领之后，原认领者不推送；那一行仍是对方认领的 running',
+        !!mine &&
+          !!theirs?.claimedAt &&
+          !pushes.some((p) => p.id === R) &&
+          row?.status === 'running' &&
+          new Date(row.claimed_at).getTime() === theirs.claimedAt.getTime(),
+        json({ mine, theirs: theirs?.claimedAt, row, pushes: pushes.length }),
+      );
+      check('真实 PG：没推送的那次，已提交的账不退（多记一次是安全的一侧）', s.followup?.count === 1, json(s.followup));
+      await fx.query(`update jobs set status = 'cancelled', finished_at = now() where id = $1`, [mine?.id]);
+    }
   } finally {
     await other.close().catch(() => {});
     await app.close().catch(() => {});
