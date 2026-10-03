@@ -243,6 +243,13 @@ export function queueConsents(sessionId: string, items: readonly ConsentItem[]):
 export function queueTelemetry(sessionId: string, rows: TelemetryRows): void {
   pgFor(sessionId)?.queueTelemetry(sessionId, rows);
 }
+/**
+ * 会话行的 ref（随机 uuid，不含客户标识；02 spec「数据库」conversations.ref）：db 存储下的真实会话有，新会话在第一次落库之前也有
+ * （建写队列时生成、插入时写进去）；文件存储与 demo 类会话为 null，调用方退回短码（日志的 conv 同一口径，R24）
+ */
+export function conversationRef(sessionId: string): string | null {
+  return pgFor(sessionId)?.refOf(sessionId) ?? null;
+}
 /** 企微去重集合（第 12 步用）：db 存储下是预载的最近 7 天带 msgid 的客户消息，加上本进程记下的；文件存储下为空 */
 export function recentMsgids(sessionId: string): ReadonlySet<string> {
   return pgFor(sessionId)?.recentMsgids(sessionId) ?? new Set();
