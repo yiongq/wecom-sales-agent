@@ -402,6 +402,16 @@ function anchors(out: ChildOut): [string, boolean, string][] {
       trw?.handedOver === false,
     { e: tre?.handoff, u: tru?.handoff, s: trs?.handoff, w: [trw?.turnSignals, trw?.negativeHits] },
   );
+  const rpn = ses('企微重放·情绪', 'wecom:parity-rp-negative');
+  add(
+    '企微重放同一条弱负面消息：情绪窗口只计一次（仍是 [1]）、不转人工、这句只记一条、照常回复并发出',
+    rpn?.handedOver === false &&
+      JSON.stringify(rpn.negativeHits) === '[1]' &&
+      said(rpn, 'customer').length === 1 &&
+      said(rpn, 'agent').at(-1) === '抱歉让您久等了～您想去哪儿玩？' &&
+      sc('企微重放·情绪')?.sent.length === 1,
+    { h: rpn?.handoff, n: rpn?.negativeHits, sent: sc('企微重放·情绪')?.sent },
+  );
   // 第 9 步：trace 的比较不是空比——有护栏改了文本的轮次，也有确定性路径、沉默与转人工的轮次
   const traces = out.scenarios.flatMap((x) => x.traces);
   const outcomes = new Set(traces.map((x) => x.outcome));
@@ -1269,6 +1279,22 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     await say(o, TR.windows, '西藏几月去合适', [{ content: '西藏一般5到10月去～' }]);
     await say(o, TR.windows, '西藏几月去合适', [{ content: '5到10月都合适～' }]);
     await say(o, TR.windows, '无语', [{ content: '抱歉～我说得更具体些。' }]);
+  });
+
+  // ======== 10. 企微重放同一条弱负面消息（第 11 步审查带出的）：上次停在「已记下、回复还没生成」，客户这句与它的情绪窗口值
+  // 已经一起落了库（引擎在入库与记窗口之间没有 await）；走启动重放，窗口不再记一遍、不转人工、照常回复 ========
+  await scenario('企微重放·情绪', ['wecom:parity-rp-negative'], async (o) => {
+    await restart();
+    const m = customerMsg('parity-rp-negative', '无语');
+    const s = store.getOrCreateSession('wecom:parity-rp-negative', 'wecom');
+    s.messages.push({ role: 'customer', content: '无语', at: Date.now(), msgid: m.msgid, sentAt: m.send_time * 1000 });
+    s.negativeHits = [1];
+    store.saveSession(s);
+    pendOnDisk(m);
+    script.push({ content: '抱歉让您久等了～您想去哪儿玩？' });
+    await syncFromCallback(`tok-rpn-${msgSeq}`);
+    const done = await idle();
+    o.out.turns.push({ label: `wecom:parity-rp-negative${WECOM_TURN}重放「无语」`, reply: { idle: done }, leftover: takeLeftover() });
   });
 
   // 少调模型由父进程逐轮看 leftover；这里只管多调（脚本空了还来的请求）

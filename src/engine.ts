@@ -3553,9 +3553,11 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
 
   // 负面情绪（02 spec「确定性转人工触发」、R15、开放问题 4）：这条客户消息的强弱记进最近 3 条的窗口。
-  // 投诉（isComplaint）由下面的安全网按投诉转人工，这一条记 0，不重复计
+  // 投诉（isComplaint）由下面的安全网按投诉转人工，这一条记 0，不重复计。
+  // 企微重放（alreadyRecorded）：这句上次已经和它的窗口值一起落了库（入库与记窗口之间没有 await，同一次落库的快照里两样都在），
+  // 不再记一遍，阈值照现有的窗口判。交互失败的窗口在回复出来之后才记，重放照常记
   const negative = isComplaint(text) ? 0 : negativeLevel(text);
-  setWindow(session, 'negativeHits', pushWindow(session.negativeHits, negative, SENTIMENT_WINDOW));
+  if (!opts.alreadyRecorded) setWindow(session, 'negativeHits', pushWindow(session.negativeHits, negative, SENTIMENT_WINDOW));
 
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
