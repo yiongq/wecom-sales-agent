@@ -284,10 +284,10 @@ export interface PgBackend extends StoreBackend {
    */
   writeStandaloneOutbound(rows: readonly OutboundSendRow[]): Promise<void>;
   /**
-   * 收到 msg_send_fail：单独一个短事务按 msgid 记 failed 与 fail_type（不经会话写队列）。返回那一行的会话 id；
-   * 找不到、已经是 failed、或这次没写（同上三种情况、库报错，记一行）时为 null
+   * 收到 msg_send_fail：单独一个短事务按 msgid 记 failed 与 fail_type（不经会话写队列）。写成了是 ok，带那一行的会话 id（找不到、
+   * 已经是 failed 为 null）；这次没写（同上三种情况、库报错，记一行）不是 ok，调用方再试一次
    */
-  markOutboundFailed(channelMsgid: string, failType: number): Promise<string | null>;
+  markOutboundFailed(channelMsgid: string, failType: number): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
   /** 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；不归 PG 后端管的为 null */
   refOf(sessionId: string): string | null;
   /**
@@ -1185,13 +1185,14 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     async markOutboundFailed(channelMsgid, failType) {
       if (conflict || closed || !d.writable()) {
         console.error(`[store] msg_send_fail 回执这次不写库（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
-        return null;
+        return { ok: false };
       }
       try {
-        return await detached(() => withTenant(d.db, ctx, (tx) => markOutboundFailed(tx, channelMsgid, failType)));
+        const sessionId = await detached(() => withTenant(d.db, ctx, (tx) => markOutboundFailed(tx, channelMsgid, failType)));
+        return { ok: true, sessionId };
       } catch (err) {
         console.error(`[store] msg_send_fail 回执没写进库（${errLabel(err)}）`);
-        return null;
+        return { ok: false };
       }
     },
     refOf: (sessionId) => entries.get(sessionId)?.ref ?? null,

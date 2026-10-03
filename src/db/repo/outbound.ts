@@ -2,7 +2,7 @@
 import { and, eq, gte, ne, sql } from 'drizzle-orm';
 import type { OutboundKind } from '../../shared/conversation-types.js';
 import { currentTenantCtx, type Tx } from '../client.js';
-import { conversations, outboundSends } from '../schema.js';
+import { conversations, messages, outboundSends } from '../schema.js';
 
 export type OutboundStatus = 'accepted' | 'rejected' | 'unknown' | 'failed';
 
@@ -19,10 +19,33 @@ export interface OutboundSendRow {
   failType: number | null;
 }
 
+/**
+ * 写账本行。同一个 msgid 再写一次是同一分段的后续（第 12 步：超时那一刻先记 unknown，之后重试成功升 accepted、最后一次尝试的时刻
+ * 往后挪；或收到回执记 failed）：按 (tenant_id, channel_msgid) upsert，仍是一行（不变量 33）。只认三种变化：unknown 升 accepted、
+ * unknown 刷新（errcode、sent_at）、还不是 failed 的记 failed；其余（比如已 failed 的又来一个 unknown）不动。sent_at 只往后挪。
+ * 同一批里同一 msgid 只留最后一行（ON CONFLICT 不能在一条语句里改同一行两次）
+ */
 export async function insertOutboundSends(tx: Tx, rows: readonly OutboundSendRow[]): Promise<void> {
   if (!rows.length) return;
   const { tenantId } = currentTenantCtx();
-  await tx.insert(outboundSends).values(rows.map((r) => ({ tenantId, ...r })));
+  const last = new Map<string, OutboundSendRow>();
+  for (const r of rows) {
+    last.delete(r.channelMsgid);
+    last.set(r.channelMsgid, r);
+  }
+  await tx
+    .insert(outboundSends)
+    .values([...last.values()].map((r) => ({ tenantId, ...r })))
+    .onConflictDoUpdate({
+      target: [outboundSends.tenantId, outboundSends.channelMsgid],
+      set: {
+        status: sql`excluded.status`,
+        errcode: sql`excluded.errcode`,
+        failType: sql`excluded.fail_type`,
+        sentAt: sql`greatest(${outboundSends.sentAt}, excluded.sent_at)`,
+      },
+      setWhere: sql`${outboundSends.status} <> 'failed' and (excluded.status = 'failed' or (${outboundSends.status} = 'unknown' and excluded.status in ('unknown', 'accepted')))`,
+    });
 }
 
 /** 按 msgid 改状态（回执）；errcode、failType 不给就不动。返回是否找到了这一行 */
@@ -58,11 +81,13 @@ export async function markOutboundFailed(tx: Tx, channelMsgid: string, failType:
 }
 
 /**
- * 预载（第 12 步）：这批会话里、各自最后一条客户消息（conversations.last_customer_at）之后的发送，按会话、时间排。
- * 发送窗口与重放对齐只看这一段；没有客户消息的会话窗口本来就没开，不读
+ * 预载（第 12 步）：这批会话里、各自最后一条客户消息之后的发送，按会话、时间排。发送窗口与重放对齐只看这一段；没有客户消息的会话
+ * （last_customer_at 为空）窗口本来就没开，不读。「之后」与内存的账本同一个口径：从 last_customer_at（企微 send_time）与这条客户消息
+ * 本机收到的时刻（messages.at）里较早的一个算起，本机钟比企微慢时也读得全
  */
 export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: readonly string[]): Promise<OutboundSendRow[]> {
   if (!conversationIds.length) return [];
+  const lastCustomerLocalAt = sql`select ${messages.at} from ${messages} where ${messages.tenantId} = ${outboundSends.tenantId} and ${messages.conversationId} = ${outboundSends.conversationId} and ${messages.role} = 'customer' order by ${messages.seq} desc limit 1`;
   return tx
     .select({
       conversationId: outboundSends.conversationId,
@@ -79,7 +104,8 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
     .where(
       and(
         sql`${outboundSends.conversationId} = any(${sql.param([...conversationIds])}::text[])`,
-        gte(outboundSends.sentAt, conversations.lastCustomerAt),
+        gte(outboundSends.sentAt, sql`least(${conversations.lastCustomerAt}, (${lastCustomerLocalAt}))`),
+        sql`${conversations.lastCustomerAt} is not null`,
       ),
     )
     .orderBy(outboundSends.conversationId, outboundSends.sentAt);

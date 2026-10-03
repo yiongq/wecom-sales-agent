@@ -57,6 +57,8 @@ export {
 export type { AuditActor, ConsentItem, DomainEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
 /** 一行发送账本（落库的形状）：src/quota 经这里取，不直接 import src/db/** */
 export type OutboundRow = NonNullable<TelemetryRows['outbound']>[number];
+/** 回执改库的结果（markOutboundFailedInDb） */
+export type OutboundFailResult = { ok: true; sessionId: string | null } | { ok: false };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
 export const storeEvents = new EventEmitter();
@@ -293,9 +295,12 @@ export function takePreloadedOutbound(): Map<string, OutboundRow[]> {
 export function writeStandaloneOutbound(rows: readonly OutboundRow[]): Promise<void> {
   return pgBackend ? pgBackend.writeStandaloneOutbound(rows) : Promise.resolve();
 }
-/** msg_send_fail 的状态更新：db 存储下单独一个短事务，返回那一行的会话 id（没找到、已是 failed、没写成为 null）；文件存储下恒为 null */
-export function markOutboundFailedInDb(channelMsgid: string, failType: number): Promise<string | null> {
-  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType) : Promise.resolve(null);
+/**
+ * msg_send_fail 的状态更新：db 存储下单独一个短事务。写成了是 ok，带那一行的会话 id（没找到、已是 failed 为 null）；没写成（库报错、
+ * 冲突、late 段之后、租户锁在别人手里）不是 ok，调用方据此再试。文件存储下恒为 ok、会话 id 为 null
+ */
+export function markOutboundFailedInDb(channelMsgid: string, failType: number): Promise<OutboundFailResult> {
+  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType) : Promise.resolve({ ok: true, sessionId: null });
 }
 
 /** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
