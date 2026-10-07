@@ -5,6 +5,7 @@
 // 状态值仍叫 paid（接口的取值名不变），只是判定不再认 'paid' 这个阶段 key。
 // 02 扩成四态（docs/architecture/02-conversations-workbench/spec.md「转人工记录与四种状态」、R12）：转人工且有接手人是 assigned。
 import type { ConversationState } from './console-api.js';
+import type { HandoffKind } from './conversation-types.js';
 import type { IndustryPack, SalesStageDef } from './pack.js';
 
 /** 行业包的终态阶段，按包里的顺序：会话的阶段停在其中之一就算已成交 */
@@ -114,4 +115,48 @@ export function withAdvisorPrefix(text: string): string {
 /** 去掉开头的「【顾问】」（可连着几个，后面可跟冒号与空白）；没有就原样返回 */
 export function stripAdvisorPrefix(text: string): string {
   return text.replace(/^\s*(?:【顾问】[\s:：]*)+/, '');
+}
+
+// ---------------- 转人工提醒的标题与正文（02 spec「通知」，plan 第 14 步） ----------------
+// 外部通道（企微群机器人，src/notify/）与浏览器通知（第 19 步）同一个写法：标题是会话标签、短码与状态，紧急情况与已成交客户要人工
+// 在标题上标出来；正文是类型的中文。只按类型写死，不带转人工记录里的原因（model、claimed 的原因是模型写的，可能带着客户原话）
+
+/** 提醒的类型：转人工的类型，加上只在提醒里有的三种（待确认的订单、企微窗口快关了、10 分钟仍没人接手） */
+export type HandoffNoticeKind = HandoffKind | 'order_unconfirmed' | 'window_closing' | 'still_waiting';
+
+/** 类型的中文。不用「待人工」「已转人工」「待接管」「需要介入」这类状态词（设计系统 §11） */
+export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = {
+  request: '客户要找顾问',
+  complaint: '客户要投诉',
+  refund: '客户要退款或改订单',
+  emergency: '客户遇到紧急情况',
+  failure: '客户的问题 AI 几轮都没答上',
+  sentiment: '客户情绪不满',
+  model: 'AI 判断要请顾问处理',
+  promise: 'AI 答应了改行程，要顾问重排',
+  claimed: 'AI 答应了转接顾问',
+  consent: '客户不同意处理敏感信息，或要求撤回、删除',
+  agent: '工作台转给了顾问',
+  order_unconfirmed: '有订单等你确认价格',
+  window_closing: '企微 48 小时窗口剩不到 4 小时，过了就发不出去',
+  still_waiting: '转人工 10 分钟了，还没人接手',
+};
+
+/** 渠道的短名（与 console 外壳的会话标签同一张表）：会话标签「企微客户」的前半截 */
+const CHANNEL_SHORT: Readonly<Record<string, string>> = { wecom: '企微', simulator: '网页' };
+
+/** 会话标签的前半截：渠道短名加行业包里客户的叫法，如「企微客户」 */
+export function channelCustomerLabel(channel: string, customer: string): string {
+  return `${Object.hasOwn(CHANNEL_SHORT, channel) ? CHANNEL_SHORT[channel] : ''}${customer}`;
+}
+
+/**
+ * 提醒的标题：「企微客户 · 7F3A 等人接手」；紧急情况「紧急 · 企微客户 · 7F3A」，已成交客户「已成交客户要人工 · 企微客户 · 7F3A」，
+ * 两样都是时紧急在前；待确认的订单「企微客户 · 7F3A 等你确认价格」
+ */
+export function handoffNoticeTitle(n: { label: string; shortId: string; kind: HandoffNoticeKind; paidCustomer: boolean }): string {
+  const tag = `${n.label} · ${n.shortId || '····'}`;
+  const marks = [...(n.kind === 'emergency' ? ['紧急'] : []), ...(n.paidCustomer ? ['已成交客户要人工'] : [])];
+  if (marks.length) return `${marks.join(' · ')} · ${tag}`;
+  return `${tag} ${n.kind === 'order_unconfirmed' ? '等你确认价格' : '等人接手'}`;
 }

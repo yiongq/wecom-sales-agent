@@ -24,7 +24,7 @@ import {
   type StoreBackend,
   type StoreHealth,
 } from './store/backend.js';
-import { onCommitted, type DomainEvent } from './store/events.js';
+import { onCommitted, onHandoffUnsaved, type DomainEvent, type HandoffStartedEvent } from './store/events.js';
 import { createFileBackend } from './store/file-backend.js';
 import {
   JobsTxRefused,
@@ -48,6 +48,7 @@ export {
   SessionStoreStartupError,
   StoreLaggingError,
   onCommitted,
+  onHandoffUnsaved,
   seqOf,
   noteWindowReset,
   isDemoClassId,
@@ -56,7 +57,7 @@ export {
   turnIdOf,
   windowStartOf,
 };
-export type { AuditActor, ConsentItem, DomainEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
+export type { AuditActor, ConsentItem, DomainEvent, HandoffStartedEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
 /** 一行发送账本（落库的形状）：src/quota 经这里取，不直接 import src/db/** */
 export type OutboundRow = NonNullable<TelemetryRows['outbound']>[number];
 /** 回执改库的结果（markOutboundFailedInDb） */
@@ -278,6 +279,13 @@ export function storeUnrecoverable(sessionId: string): boolean {
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);
+}
+/**
+ * 给这个会话还没提交的 enqueue（dedupeKey 相同的）的 payload 并进几个字段，返回改了几个（第 14 步：unsaved 通知发出之后给立即的那个
+ * handoff_notify 标上 unsavedSent，提交或经 spill 回放之后执行到它时不补发）。文件存储与 demo 类恒为 0
+ */
+export function patchQueuedJob(sessionId: string, dedupeKey: string, patch: Record<string, unknown>): number {
+  return pgFor(sessionId)?.patchQueuedJob(sessionId, dedupeKey, patch) ?? 0;
 }
 /**
  * 经 queueJobs 排的、带 report 的状态变化已随这个会话的落库提交、而且改中了（取走，只报一次）。跟进在 flushSession 之后据它判断

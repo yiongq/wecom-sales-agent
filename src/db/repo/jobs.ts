@@ -65,16 +65,23 @@ const toDate = (v: string | Date): Date => (v instanceof Date ? v : new Date(v))
 
 /**
  * 认领一批到点的任务：status='pending' AND run_at <= now ORDER BY run_at LIMIT n FOR UPDATE SKIP LOCKED，改成 running、
- * 记 claimed_at。now 由调用方给（与 runAt 同一个时钟）。调用方随即提交，再执行任务
+ * 记 claimed_at。now 由调用方给（与 runAt 同一个时钟）。kinds 给了就只认领这几类（认领分道，02 plan 第 14 步）。
+ * 调用方随即提交，再执行任务
  */
-export async function claimDueJobs(tx: Tx, now: Date, limit: number): Promise<JobRow[]> {
+export async function claimDueJobs(tx: Tx, now: Date, limit: number, kinds?: readonly JobKind[]): Promise<JobRow[]> {
   const at = now.toISOString();
+  const onlyKinds = kinds
+    ? sql` and kind in (${sql.join(
+        kinds.map((k) => sql`${k}`),
+        sql`, `,
+      )})`
+    : sql``;
   const rows = rowsOf<RawJob>(
     await tx.execute(sql`
       update ${jobs} set status = 'running', claimed_at = ${at}::timestamptz
        where (tenant_id, id) in (
          select tenant_id, id from ${jobs}
-          where status = 'pending' and run_at <= ${at}::timestamptz
+          where status = 'pending' and run_at <= ${at}::timestamptz${onlyKinds}
           order by run_at
           limit ${limit}
           for update skip locked)

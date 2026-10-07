@@ -497,7 +497,8 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
   const { configHealth, __configTest } = await import('../config/source.js');
   const { guardOutbound, handleMessage } = await import('../engine.js');
   const { nextPurgeAt, retentionPurgeSpec, runRetentionPurgeJob } = await import('./purge.js');
-  const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS } = await import('./notify.js');
+  const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('./notify.js');
+  const { sendWindow } = await import('../quota/ledger.js');
   const { push, pushes, behave } = makePush();
   runner.__jobsTest.start(push);
   const H = 3_600_000;
@@ -959,35 +960,40 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     await retire(G);
   }
 
-  // ---- 转人工通知：立即一个、10 分钟一个，随转人工的落库提交；第 14 步之前到点只标 done ----
+  // ---- 转人工通知：立即一个、10 分钟一个、企微窗口关闭前 4 小时一个，随转人工的落库提交（没配 NOTIFY_WEBHOOK_URL：到点只 warn、标 done） ----
   {
     const J = 'wecom:wmJobsJ';
     await handleMessage(J, '转人工', 'wecom'); // 确定性安全网，不调模型
     await flush(J);
     const s = store.getSession(J)!;
     const at = s.handoff?.at ?? 0;
+    const closes = sendWindow(J, at).closesAt ?? 0;
     const n1 = await jobsFor(J, 'handoff_notify');
     check(
-      '转人工通知：两个任务随转人工提交，runAt 是转人工时刻与 +10 分钟，payload 带 sessionId',
+      '转人工通知：三个任务随转人工提交，runAt 是转人工时刻、+10 分钟与窗口关闭前 4 小时，payload 带 sessionId',
       s.handedOver &&
-        n1.length === 2 &&
+        closes > at &&
+        n1.length === 3 &&
         n1.every((j) => j.status === 'pending' && j.max === 4 && j.payload.sessionId === J) &&
-        json(n1.map((j) => j.runAt).toSorted()) === json([at, at + HANDOFF_UNCLAIMED_MS]),
+        json(n1.map((j) => j.runAt).toSorted()) === json([at, at + HANDOFF_UNCLAIMED_MS, closes - WINDOW_NOTICE_MS]),
       json(n1),
     );
     check('转人工：不排跟进', (await jobsFor(J)).length === 0);
     await runner.runJobsOnce();
     const n2 = await jobsFor(J, 'handoff_notify');
     check(
-      '转人工通知：立即的那个到点标 done，10 分钟的还排着',
-      n2.filter((j) => j.status === 'done').length === 1 && n2.filter((j) => j.status === 'pending').length === 1,
+      '转人工通知：立即的那个到点标 done，10 分钟与窗口的还排着',
+      n2.filter((j) => j.status === 'done').length === 1 && n2.filter((j) => j.status === 'pending').length === 2,
       json(n2),
     );
     await runner.runJobsOnce(at + HANDOFF_UNCLAIMED_MS + 1000);
+    const n3 = await jobsFor(J, 'handoff_notify');
     check(
-      '转人工通知：10 分钟的到点也标 done',
-      (await jobsFor(J, 'handoff_notify')).every((j) => j.status === 'done'),
+      '转人工通知：10 分钟的到点也标 done，窗口的还排着',
+      n3.filter((j) => j.status === 'done').length === 2 && n3.find((j) => j.key.endsWith(':window'))?.status === 'pending',
+      json(n3),
     );
+    await retire(J);
   }
 
   // ---- 紧急情况（plan 第 11 步、验收 17）：未转人工时两个通知随这次转人工提交；已转人工时不回话、记录升级、再排一个立即的 ----
@@ -997,10 +1003,10 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     await flush(E);
     const n1 = await jobsFor(E, 'handoff_notify');
     check(
-      '紧急情况（db 存储）：应急话术，立即与 10 分钟两个通知随这次转人工提交',
+      '紧急情况（db 存储）：应急话术，立即、10 分钟与窗口三个通知随这次转人工提交',
       r1.handoff === true &&
         store.getSession(E)!.handoff?.kind === 'emergency' &&
-        n1.length === 2 &&
+        n1.length === 3 &&
         n1.every((j) => j.payload.escalated === false),
       json(n1),
     );
@@ -1017,7 +1023,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
       r2.silent === true &&
         r2.text === '' &&
         s.handoff?.kind === 'emergency' &&
-        before.length === 2 &&
+        before.length === 3 &&
         added.length === 1 &&
         added[0]!.payload.escalated === true &&
         added[0]!.runAt === s.handoff.at &&
@@ -1341,9 +1347,9 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     const n2 = await jobsFor(R, 'handoff_notify');
     check(
       '重置：转人工之后重置，这个会话的 handoff_notify 都是 cancelled',
-      n1.length === 2 &&
+      n1.length === 3 &&
         n1.every((j) => j.status === 'pending') &&
-        n2.length === 2 &&
+        n2.length === 3 &&
         n2.every((j) => j.status === 'cancelled' && j.finished),
       json({ n1, n2 }),
     );

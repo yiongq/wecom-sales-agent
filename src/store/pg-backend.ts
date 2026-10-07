@@ -28,7 +28,7 @@ import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 import { SessionStoreStartupError, StoreConflictError, StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
-import { deliverCommitted, type DomainEvent } from './events.js';
+import { deliverCommitted, deliverHandoffUnsaved, type DomainEvent } from './events.js';
 import {
   conversationValuesFrom,
   isDemoClassId,
@@ -264,6 +264,12 @@ export interface PgBackend extends StoreBackend {
   voidOrder(o: Order, reason: 'reset' | 'resync'): void;
   queueAudit(sessionId: string, item: AuditItem): void;
   queueJobs(sessionId: string, ops: readonly JobOp[]): void;
+  /**
+   * 给还没提交的 enqueue（在途快照与写队列上、dedupeKey 相同的）的 payload 并进几个字段，返回改了几个。第 14 步：库写不进去时
+   * unsaved 通知发出之后，给这次转人工立即的那个 handoff_notify 标上 unsavedSent，之后提交（或停机写进 spill、重启回放）再执行到它
+   * 时不补发。在途的那次尝试已经写过这一行的不受影响（同一进程里由通知模块的内存记录兜住）
+   */
+  patchQueuedJob(sessionId: string, dedupeKey: string, patch: Record<string, unknown>): number;
   /** report 的状态变化已随这个会话的落库提交、而且改中了：取走（只报一次）。没提交、没改中都是 false */
   jobOpApplied(sessionId: string, jobId: string): boolean;
   queueConsents(sessionId: string, items: readonly ConsentItem[]): void;
@@ -768,6 +774,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     dropTelemetry(e);
     console.error(`[store] 会话 ${short(e.id)} 停止落库（${label}）：内存照旧服务客户，停机时写进 spill；修好原因后重启回放`);
     rejectWaiters(e);
+    // 排着的转人工再也提交不了：交给外部通道的 unsaved 通知（02 spec「通知」）。在途的那次照常跑完，失败时在 failed 里报
+    deliverHandoffUnsaved(e.events);
   }
 
   /**
@@ -950,9 +958,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     if (kind === 'data') {
       // 这次落库不会再试：快照里的遥测行（spill 不带）一并丢掉、计数
       dropTelemetry(snap);
+      // 快照里的转人工提交不了（排在它后面的由 poison 报）：交给外部通道的 unsaved 通知（02 spec「通知」）
+      deliverHandoffUnsaved(snap.events);
       poison(e, label);
       return;
     }
+    // 这次与排在它后面的转人工还没提交：交给外部通道的 unsaved 通知（emergency 立即，其余失败持续 30 秒后；每次失败都报，订阅者去重）
+    deliverHandoffUnsaved([...snap.events, ...e.events]);
     lastError = `${label} · ${short(e.id)}`;
     if (closed) return; // late 段之后不再重试：没提交的随 spill 写出
     e.attempts++;
@@ -1108,6 +1120,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       if (!e) return;
       e.events.push(ev);
       change(e);
+      // 停写的会话、或在途的那次已经失败过在等重试：这次转人工排在一次提交不了的落库后面，同样交给 unsaved 通知
+      if (ev.type === 'handoff.started' && (e.poisoned || (e.inflight && e.attempts > 0))) deliverHandoffUnsaved([ev]);
     },
     queueAudit(sessionId, item) {
       const e = entryById(sessionId);
@@ -1120,6 +1134,21 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
       if (!e || !ops.length) return;
       e.jobs.push(...ops);
       change(e);
+    },
+    patchQueuedJob(sessionId, dedupeKey, patch) {
+      const e = entries.get(sessionId);
+      if (!e) return 0;
+      let n = 0;
+      for (const list of [e.inflight?.jobs, e.jobs]) {
+        if (!list) continue;
+        list.forEach((op, i) => {
+          if (op.op !== 'enqueue' || op.dedupeKey !== dedupeKey) return;
+          const base = op.payload && typeof op.payload === 'object' ? (op.payload as Record<string, unknown>) : {};
+          list[i] = { ...op, payload: { ...base, ...patch } };
+          n++;
+        });
+      }
+      return n;
     },
     jobOpApplied(sessionId, jobId) {
       return entries.get(sessionId)?.applied.delete(jobId) ?? false;
