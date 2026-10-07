@@ -201,7 +201,7 @@ async function parentMain(): Promise<never> {
   }
   console.log(
     `NOTIFY SELFTEST PASS: ${pass} 项断言全通（标题与正文 / 排程 / 立即发且内容不含原话与客户标识 / 已成交与紧急 / 有人接手不发 / ` +
-      '交还后再转人工不串 / 窗口剩不到 4 小时 / 待确认的订单 / 失败按 max_attempts 重试到 failed / 没配 URL 只 warn / 分道认领 / ' +
+      '交还后再转人工不串 / 窗口剩不到 4 小时（额度用完也照发、只发一次） / 待确认的订单 / 失败按 max_attempts 重试到 failed / 没配 URL 只 warn / 分道认领 / ' +
       'unsaved：紧急立即、其余等够、期间提交不发、只发一次、提交后不补发、发不出去照常提醒、停写也发 / 日志里没有地址）',
   );
   process.exit(0);
@@ -349,7 +349,7 @@ async function childSuite(rig: Rig): Promise<void> {
   const { handleMessage } = await import('../engine.js');
   const { enterHandoff, HANDOFF_REASON } = await import('../handoff/record.js');
   const { orderUnconfirmedNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('../jobs/notify.js');
-  const { sendWindow } = await import('../quota/ledger.js');
+  const { sendWindow, recordSend } = await import('../quota/ledger.js');
   const { __handoffNotifyTest } = await import('./handoff.js');
   const { __notifierTest } = await import('./notifier.js');
   const { deliverHandoffUnsaved } = await import('../store/events.js');
@@ -640,6 +640,29 @@ async function childSuite(rig: Rig): Promise<void> {
       '窗口：到窗口关闭的时刻还没新消息 → done（window_closed），不发',
       j3b?.status === 'done' && j3b.lastError === 'window_closed',
       json(j3b),
+    );
+
+    // 审查之后改的第 1 条：这一轮的发送额度（5 条）用完了也照发，正文多一句，不顺延；只发这一次
+    const W4 = seeded('NW04', 45 * H);
+    await handOver(W4);
+    for (let i = 0; i < 5; i++) recordSend(W4.id, 'notice', null).settle('accepted');
+    check('窗口：（前提）这一轮额度已用完', sendWindow(W4.id, Date.now()).remaining === 0);
+    const now4 = Date.now();
+    await runner.runJobsOnce(now4);
+    const closes4 = sendWindow(W4.id, now4).closesAt!;
+    const w4 = okFor('NW04').filter((h) => h.content.includes('窗口剩不到 4 小时'));
+    check(
+      '窗口：额度用完也照发，正文多一句「发送额度已用完」，不顺延',
+      w4.length === 1 &&
+        w4[0]!.content.includes('这个窗口的发送额度已用完，没法再主动发消息') &&
+        (await job(W4.id, 'window'))?.status === 'done',
+      json(w4),
+    );
+    await runner.runJobsOnce(closes4 + 1000);
+    check(
+      '窗口：额度用完那条只发一次，不会在之后的拍里重发',
+      okFor('NW04').filter((h) => h.content.includes('窗口剩不到 4 小时')).length === 1,
+      json(okFor('NW04')),
     );
   }
 

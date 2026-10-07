@@ -21,6 +21,11 @@ export interface HandoffNotice {
   /** 这次转人工的记录还没写进库（库写不进去时的转人工）；提交之后不再补发 */
   unsaved: boolean;
   /**
+   * 窗口快关了，这个企微窗口的发送额度（剩余条数）已用完：顾问没法再靠这个通道主动发消息（审查之后改的第 1 条，
+   * plan「实施记录 · 第 14 步」）。只在 kind 为 window_closing 时有意义
+   */
+  quotaExhausted?: boolean;
+  /**
    * 会话标签的前半截，如「企微客户」（channelCustomerLabel：渠道短名加行业包里客户的叫法）。spec 的接口里没有这一项，
    * 标题「企微客户 · 7F3A 等人接手」要它（plan「实施记录 · 第 14 步」）
    */
@@ -42,9 +47,16 @@ export function workbenchLink(): string {
 
 const TIME_LABEL: Partial<Record<HandoffNoticeKind, string>> = { window_closing: '窗口关闭', order_unconfirmed: '下单' };
 
-/** 消息正文（text 消息）：标题、类型的中文、时间、（unsaved 时）「记录暂未保存」、链接。只用这几样，不碰会话内容 */
+/** 窗口的发送额度用完时追加的一句：只有这几个字，不碰会话内容（审查之后改的第 1 条） */
+export const QUOTA_EXHAUSTED_MARK = '这个窗口的发送额度已用完，没法再主动发消息';
+
+/**
+ * 消息正文（text 消息）：标题、类型的中文、时间、（window_closing 且额度用完时）额度用完那一句、（unsaved 时）「记录暂未保存」、
+ * 链接。只用这几样，不碰会话内容
+ */
 export function noticeText(n: HandoffNotice, now = Date.now()): string {
   const lines = [handoffNoticeTitle(n), HANDOFF_NOTICE_TEXT[n.kind], `${TIME_LABEL[n.kind] ?? '转人工'}时间：${absoluteTime(n.at, now)}`];
+  if (n.kind === 'window_closing' && n.quotaExhausted) lines.push(QUOTA_EXHAUSTED_MARK);
   if (n.unsaved) lines.push(`${UNSAVED_MARK}：库暂时写不进去，工作台可能打不开，恢复之后不会再提醒这一条`);
   lines.push(`打开工作台：${n.link}`);
   return lines.join('\n');

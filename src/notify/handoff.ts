@@ -5,8 +5,10 @@
 // 执行体（db 存储，任务表的认领者调；发送失败抛出，认领者按 max_attempts 4 重试，用完记 failed）：
 //   started            立即：还是这一次转人工、没人接手（升级的紧急情况有人接手也发）就发；unsaved 通知已经发过的不补发
 //   unclaimed          10 分钟后：还是这一次转人工、仍没人接手才发，否则 done
-//   window             企微 48 小时窗口剩不到 4 小时、还是这一次转人工、客户最后一句之后没有顾问回复、还能发（剩余条数 > 0）才发；
-//                      窗口随客户说话后移了就改回 pending 顺延到新的「关闭前 4 小时」，有人回了或条数用完就顺延到窗口关闭的时刻再看
+//   window             企微 48 小时窗口剩不到 4 小时、还是这一次转人工、客户最后一句之后没有顾问回复就发（无条件，spec 没有「额度
+//                      用完就不发」的限定：额度用完恰恰是顾问最需要知道「这个通道已经没法主动发消息」的时候，正文多一句，审查
+//                      之后改的第 1 条）；窗口随客户说话后移了就改回 pending 顺延到新的「关闭前 4 小时」，顾问已经回过话就顺延到
+//                      窗口关闭的时刻再看
 //   order_unconfirmed  待确认的订单（第 15 步接上排程）：订单仍是待付款、没确认过才发
 // 「还是这一次转人工」按 payload 的 handoffCount（进入转人工的次数，升级不加）认，旧任务没有它就按 handoffAt 认：交还之后再转人工的
 // 那一次有自己的一组任务，旧的到点不串。
@@ -61,8 +63,9 @@ function noticeFor(
   at: number,
   paidCustomer: boolean,
   unsaved = false,
+  quotaExhausted = false,
 ): HandoffNotice {
-  return { shortId: shortIdOf(sessionId), kind, paidCustomer, at, link: workbenchLink(), unsaved, label: labelOf(channel) };
+  return { shortId: shortIdOf(sessionId), kind, paidCustomer, at, link: workbenchLink(), unsaved, quotaExhausted, label: labelOf(channel) };
 }
 
 const done = (lastError: string | null = null): JobOutcome => ({ status: 'done', lastError });
@@ -112,11 +115,13 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   const w = sendWindow(s.id, now);
   if (w.closesAt === null || now >= w.closesAt) return done('window_closed');
   if (w.closesAt - now > WINDOW_NOTICE_MS) return { status: 'pending', runAt: w.closesAt - WINDOW_NOTICE_MS, lastError: 'window_moved' };
-  if (w.remaining <= 0 || advisorRepliedSinceCustomer(s)) {
-    // 顾问已经回了、或这一轮条数用完了：先不提醒，到窗口关闭的时刻再看（客户再说话窗口就后移，那时重判）
-    return { status: 'pending', runAt: w.closesAt, lastError: w.remaining <= 0 ? 'quota_exhausted' : 'advisor_replied' };
+  if (advisorRepliedSinceCustomer(s)) {
+    // 顾问已经回了：先不提醒，到窗口关闭的时刻再看（客户再说话窗口就后移，那时重判）
+    return { status: 'pending', runAt: w.closesAt, lastError: 'advisor_replied' };
   }
-  return deliver(noticeFor(s.id, s.channel, 'window_closing', w.closesAt, paid));
+  // 条数用完了也照发（审查之后改的第 1 条）：spec 是无条件的「剩不到 4 小时、仍在转人工中时提醒一次」，额度用完恰恰是
+  // 顾问最需要知道「这个通道已经没法主动发消息」的时候；正文多一句，不额外顺延
+  return deliver(noticeFor(s.id, s.channel, 'window_closing', w.closesAt, paid, false, w.remaining <= 0));
 }
 
 // ---------------- 库写不进去时的 unsaved 通知 ----------------
