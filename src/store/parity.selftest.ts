@@ -1,7 +1,8 @@
 // 两种会话存储的等价套件（docs/architecture/02-conversations-workbench/spec.md「测试与 CI」「消息只追加」，验收 2、7；plan 第 7 步）。
 // 同一组场景分别跑在文件存储与 PG 存储上，比较每一轮的回复、发给企微的消息、会话投影与订单，并断言 PG 里确实有这些会话、
 // 库里的消息与内存一致。比较之前只做两件事：时间戳的取值换成占位（键照留），随机的订单号按出现顺序换成编号；别的字段原样比。
-// 场景：E5 生成中接手；模型返回之后、推送之前接手（strandedReply 的 await 里，第 13 步起经接手代次不发）；生成中付款；重置；
+// 场景：E5 生成中接手；模型返回之后、推送之前接手（strandedReply 的 await 里，第 13 步起经接手代次不发；同一个窗口换旧 /handoff
+// 接管不加代次，第 13 步审查之后补的那组，靠 handedOver 挡住）；生成中付款；重置；
 // 裁剪（引擎与企微适配器两处）；企微重放（已记下没回复、已回复没发出、后面夹了欢迎语）；跟进（文件存储的扫描器，与 PG 存储下先等记账
 // 提交再推送）；转人工各入口（安全网三类、模型调工具、改行程承诺、回复说了转接、旧 /handoff）；确定性触发与企微重放·情绪（第 11 步）；接手、人工回复与交还（第 13 步）。
 // store 是进程级单例，一个进程只能装一种后端：本文件带上 PARITY_CHILD 再起两次自己（单进程 node --import tsx，spawnSync 带
@@ -300,6 +301,19 @@ function anchors(out: ChildOut): [string, boolean, string][] {
       !said(afs, 'agent').some((c) => c.startsWith('按 4 位给您报好了')) &&
       said(afs, 'system').includes('本轮未发送（顾问已接手）'),
     { notes: af?.notes, handoff: afs?.handoff, sent: af?.sent },
+  );
+  const afl = sc('模型返回后推送前接手（旧 /handoff）');
+  const afls = ses('模型返回后推送前接手（旧 /handoff）', 'wecom:parity-after-legacy');
+  add(
+    '模型返回后推送前接手（旧 /handoff）：这条路径不加接手代次，引擎 push 之前靠 handedOver 挡住，AI 回复不发、不写进会话（审查第 8 条，compat[3]）',
+    afl?.notes.legacyHandoffs === 1 &&
+      afl.notes.armedLeft === false &&
+      afls?.handoff?.kind === 'agent' &&
+      afls.assignee == null &&
+      !afl.sent.some((x) => x.content.startsWith('按 4 位给您报好了')) &&
+      !said(afls, 'agent').some((c) => c.startsWith('按 4 位给您报好了')) &&
+      said(afls, 'system').includes('本轮未发送（顾问已接手）'),
+    { notes: afl?.notes, handoff: afls?.handoff, sent: afl?.sent },
   );
   const tko = sc('接手、人工回复与交还');
   const tks = ses('接手、人工回复与交还', 'wecom:parity-tk');
@@ -843,15 +857,24 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     post(`/api/sessions/${encodeURIComponent(id)}/${op}`, op === 'reply' ? { text: '顾问回复：给您核了一下，这个日期可以' } : undefined);
 
   // ---------------- 「模型返回之后、推送之前」的接手：引擎在模型返回之后调的那次工具一到，排一个 microtask 接手 ----------------
-  // 第 13 步起经接手状态机（共享工作台的 takeover）：接手代次加 1，引擎在 push AI 回复之前比较，这一轮不发
-  let armed: { sid: string; tool: string } | null = null;
+  // 第 13 步起经接手状态机（共享工作台的 takeover）：接手代次加 1，引擎在 push AI 回复之前比较，这一轮不发。
+  // via='legacyHandoff' 改走旧 /handoff（R11：共享工作台以 agent 身份接管，不加接手代次）——审查第 8 条，compat[3]：
+  // 这条路径落在 strandedReply 等出口修补的 await 里时，引擎单靠接手代次比不出来，要同时看 handedOver 才挡得住
+  let armed: { sid: string; tool: string; via?: 'legacyHandoff' } | null = null;
   let takeovers = 0;
+  let legacyHandoffs = 0;
   onToolCall((name, _args, sid, meta) => {
     // 脚本已经用完（模型的最后一步已经返回）、不是预取：这是 strandedReply 等出口修补里的调用
     if (!armed || armed.sid !== sid || armed.tool !== name || meta?.prefetch || script.length) return;
+    const via = armed.via;
     armed = null;
-    takeovers += 1;
-    queueMicrotask(() => void tk.takeover(sid, tk.sharedActor()));
+    if (via === 'legacyHandoff') {
+      legacyHandoffs += 1;
+      queueMicrotask(() => void legacy(sid, 'handoff'));
+    } else {
+      takeovers += 1;
+      queueMicrotask(() => void tk.takeover(sid, tk.sharedActor()));
+    }
   });
 
   // ---------------- 场景框架 ----------------
@@ -1098,6 +1121,29 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     o.note('armedLeft', armed !== null);
     armed = null;
     await wecomSay(o, 'parity-after', '在吗', []);
+  });
+
+  // ---- 同一个窗口，换旧 /handoff 接管（R11：共享工作台以 agent 身份接管，不加接手代次）----
+  // 审查第 8 条（compat[3]）：引擎 push 之前那次比较只看代次时，这条路径落在 strandedReply 的 await 里会照发；
+  // 补上 handedOver 之后两种存储都不该发
+  await scenario('模型返回后推送前接手（旧 /handoff）', ['wecom:parity-after-legacy'], async (o) => {
+    const oct15b = next('10-15');
+    await wecomSay(o, 'parity-after-legacy', '西安那个5天的 10月15号走 就俩大人', [
+      { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-xian', travelers: 2, departDate: oct15b } }] },
+      { content: '西安兵马俑 5 日，10 月 15 日出发，每人 14,080 元，两位 28,160 元。' },
+    ]);
+    armed = { sid: 'wecom:parity-after-legacy', tool: 'create_quote', via: 'legacyHandoff' };
+    await wecomSay(o, 'parity-after-legacy', '哦对了 我爸妈也要跟着去 一共4个人', [
+      {
+        content:
+          '好嘞，4 位一起走更热闹～按 4 人重新报价（4 人及以上每人还能打 95 折）：\n\n西安 兵马俑·大唐不夜城 5 日\n10 月 15 日出发 · 4 位出行\n\n' +
+          '· 每人 13384 元（12800 元基础上最佳季上浮 10%，再享 4 人 95 折）\n· 合计 53536 元\n\n报价为起价，按最终行程微调。',
+      },
+    ]);
+    o.note('legacyHandoffs', legacyHandoffs);
+    o.note('armedLeft', armed !== null);
+    armed = null;
+    await wecomSay(o, 'parity-after-legacy', '在吗', []);
   });
 
   // ======== 3. 生成中付款：阶段停在已付，之后客户再发消息仍是已付 ========
