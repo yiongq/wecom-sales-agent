@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { todayIso } from './env.js';
+import { logError } from './log.js';
 
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
 const FILE = path.join(VAR_DIR, 'usage.json');
@@ -90,7 +91,7 @@ try {
   if (raw?.day === today()) state = { day: raw.day, byModel: raw.byModel ?? {}, bySession: raw.bySession ?? {} };
 } catch (e) {
   if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-    console.error('[usage] usage.json 解析失败，今日用量统计已从 0 重新开始:', e);
+    console.error('[usage] usage.json 解析失败，今日用量统计已从 0 重新开始:', logError(e));
   }
 }
 

@@ -164,6 +164,12 @@ const IMPORT_RULES: ImportRule[] = [
     bad: (i) => under(i.target, 'src/db/'),
   },
   {
+    // 02 spec「模块与依赖方向」：结构化日志只有一个出口（LOG_FORMAT、redact、会话原 id 的兜底都在 src/log.ts）
+    desc: 'pino 只能在 src/log.ts 里 import（import type 除外）',
+    applies: (f) => f !== 'src/log.ts',
+    bad: (i) => i.pkg === 'pino' && !i.typeOnly,
+  },
+  {
     desc: 'src/db/、src/config/、src/cli/ 不 import src/store/（project.ts 除外）',
     applies: (f) => (under(f, 'src/db/') || under(f, 'src/config/') || under(f, 'src/cli/')) && !isSelftest(f),
     bad: (i) => under(i.target, 'src/store/') && i.target !== 'src/store/project.ts',

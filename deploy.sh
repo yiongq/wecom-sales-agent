@@ -167,6 +167,9 @@ if ! ssh "${SERVER}" "set -e; cd ${REMOTE_DIR}
   # cron 跑的备份脚本装在部署目录之外（见 deploy/backup.sh 开头）：用旧版本自己的 deploy.sh 回到 01 之前时，
   # 它的 rsync --delete 会删掉 deploy/，而 var/ 与库仍要每晚备份
   mkdir -p /usr/local/lib/${NAME} && install -m 755 ${REMOTE_DIR}/deploy/backup.sh /usr/local/lib/${NAME}/backup.sh
+  # 每分钟的巡检（重启、健康检查、磁盘、备份是否过期，见 deploy/watch.sh 开头）同样装在部署目录之外；
+  # 部署 02 第 17 步之前的 tag 时没有它，留着上一次装的那份
+  if [ -f ${REMOTE_DIR}/deploy/watch.sh ]; then install -m 755 ${REMOTE_DIR}/deploy/watch.sh /usr/local/lib/${NAME}/watch.sh; fi
   # build 会把 ${NAME} 这个 tag 挪到新镜像上，旧镜像变成无名的 <none>，出事时无从回滚。
   # 先给「正在跑的容器」所用的镜像打 :prev——取容器的镜像而不是 :latest：上次部署若已回滚，
   # :latest 指向的是那个坏镜像，拿它当 :prev 等于把好镜像丢了。

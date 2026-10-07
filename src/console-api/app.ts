@@ -63,6 +63,7 @@ import {
 } from '../config/source.js';
 import { isUniqueViolation, type TenantCtx } from '../db/client.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
+import { requestLogContext } from '../log.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { profile } from '../profile.js';
 import { indexHealth } from '../retrieval.js';
@@ -305,7 +306,8 @@ function mapError(e: unknown): { status: 400 | 404 | 409 | 422 | 429 | 503; body
 
 export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
-  .use('*', securityHeaders, requireDbMode, loadSession, guardWrites)
+  // requestLogContext：req 与 x-request-id（02 spec R24）；挂在 server.ts 下时沿用外层生成的那个
+  .use('*', requestLogContext, securityHeaders, requireDbMode, loadSession, guardWrites)
 
   // ---------------- 登录 ----------------
   .post('/auth/login', zValidator('json', LoginBody, badRequest), async (c) => {

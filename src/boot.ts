@@ -1,9 +1,10 @@
 // 启动顺序（docs/architecture/01-pg-config-console/spec.md 裁决 R18，02 spec「两种会话存储与启动」多一步）：
 // 配置装载成功、会话存储就绪之后才监听端口，监听成功后再依次做数据预检、建检索索引、起任务表（db 存储）或跟进扫描器（文件存储）、
-// 起企微拉取。
+// 起企微拉取、挂上告警的订阅（02 spec R24）。LOG_FORMAT=json 时最先把 console.* 接到 pino。
 // 任何一步装载失败时后面的一个都不调：企微 cursor 不动，客户消息留到下次成功启动再补拉，
 // 而不是被一个读不到配置或会话的进程拉走、答错。
 import { ConfigStartupError } from './config/source.js';
+import { installJsonConsole } from './log.js';
 import { SessionStoreStartupError } from './store/backend.js';
 
 export interface BootDeps {
@@ -28,9 +29,16 @@ export interface BootDeps {
    * 生产是 src/ops/otel.ts 的 startOtelExport（动态 import 导出器、订阅 onTurnEnd）；失败只记日志，照常启动、不导出
    */
   startOtel?(): Promise<void>;
+  /**
+   * 告警（02 spec R24）：起企微之后挂上各处的订阅（模型、企微、租户锁、写库、任务），两种存储都挂。生产是 src/ops/alert.ts 的
+   * startAlerts；推送只在后台，不阻塞启动
+   */
+  startAlerts?(): void;
 }
 
 export async function boot(d: BootDeps): Promise<void> {
+  // LOG_FORMAT=json：console.* 接到 pino（profile-boot 在导入期已接过，这里照 spec 再调一次，接过就什么都不做）
+  installJsonConsole();
   try {
     await d.initConfig();
   } catch (e) {
@@ -62,5 +70,6 @@ export async function boot(d: BootDeps): Promise<void> {
     if (d.storeMode() === 'db') d.startJobs();
     else d.startFollowUpScheduler();
     d.startWecom();
+    d.startAlerts?.();
   });
 }

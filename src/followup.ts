@@ -20,6 +20,7 @@ import { isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
 import { mayHaveDelivered } from './quota/ledger.js';
 import { shortIdOf } from './shared/conversation.js';
+import { convLabel } from './log.js';
 import type { ChatMessage, PushOpts, Session, SalesStage } from './types.js';
 import { profileForPrompt } from './types.js';
 
@@ -221,14 +222,14 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
     try {
       const text = await composeUnlessStopping(s);
       if (text === null || stopping) {
-        console.log(`[followup] 停机中，放弃尚未发出的跟进 ${s.id}（下次启动再追）`);
+        console.log(`[followup] 停机中，放弃尚未发出的跟进 ${convLabel(s.id)}（下次启动再追）`);
         break;
       }
       // 生成话术要几秒到几十秒，这期间客户很可能已经回消息了——那就不是跟进而是打断。
       // 用最新的会话对象重新判一次，避免发出「您之前的顾虑…」跟在客户刚说完的话后面。
       const fresh = getSession(s.id) as SessionWithFollowup | undefined;
       if (!fresh || !shouldFollowUp(fresh, Date.now())) {
-        console.log(`[followup] ${s.id} 在生成话术期间已有新动静，本轮跳过`);
+        console.log(`[followup] ${convLabel(s.id)} 在生成话术期间已有新动静，本轮跳过`);
         continue;
       }
       // 先记账、同步落盘，再推送（at-most-once，见上面「停机」）。
@@ -250,7 +251,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
         ok = await push(s.id, text, { kind: 'followup', message });
       } catch (e) {
         // 推送抛异常：结果不明（可能已经送达）。账不退、pendingAt 留着，按已发处理——宁可漏一条，不能重发
-        console.error(`[followup] 跟进 ${s.id} 推送结果不明，按已发处理、不再重试:`, e instanceof Error ? e.message : e);
+        console.error(`[followup] 跟进 ${convLabel(s.id)} 推送结果不明，按已发处理、不再重试:`, e instanceof Error ? e.message : e);
         continue;
       }
       if (!ok && mayHaveDelivered(s.id, message)) {
@@ -267,7 +268,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
         meta.failures = (meta.failures ?? 0) + 1;
         saveSession(fresh, false);
         console.error(
-          `[followup] 跟进消息未送达 ${s.id}（第 ${meta.failures}/${MAX_PUSH_FAILURES} 次失败${
+          `[followup] 跟进消息未送达 ${convLabel(s.id)}（第 ${meta.failures}/${MAX_PUSH_FAILURES} 次失败${
             meta.failures >= MAX_PUSH_FAILURES ? '，不再重试' : ''
           }）`,
         );
@@ -279,9 +280,9 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
       meta.failures = 0;
       saveSession(fresh, false);
       sent += 1;
-      console.log(`[followup] 已跟进 ${s.id}（阶段=${stage}）：${text.slice(0, 40)}`);
+      console.log(`[followup] 已跟进 ${convLabel(s.id)}（阶段=${stage}）：${text.slice(0, 40)}`);
     } catch (e) {
-      console.error(`[followup] 跟进 ${s.id} 失败:`, e instanceof Error ? e.message : e);
+      console.error(`[followup] 跟进 ${convLabel(s.id)} 失败:`, e instanceof Error ? e.message : e);
     }
   }
   return sent;

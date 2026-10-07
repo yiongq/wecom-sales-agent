@@ -25,6 +25,7 @@ import { insertCatalogVersion, readCatalogVersions, type CatalogVersionRow } fro
 import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
+import { setLogTenant } from '../log.js';
 import { packById } from '../packs/registry.js';
 import { renderSystemPrompt } from '../prompt/system.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
@@ -250,6 +251,26 @@ export function catalogVersioned(): boolean {
 /** 产品库快照变化后回调；retrieval.ts 在加载时注册，用来失效并重建索引 */
 export function onCatalogChanged(cb: (snap: CatalogSnapshot) => void): void {
   catalogListeners.push(cb);
+}
+
+/**
+ * 租户锁的状态变化（02 spec 的 tenant_lock 告警，startAlerts 订阅）：lost 锁连接断开、开始重取；held 重新取得；
+ * taken 重取时发现已在别的进程手里、本进程开始停机
+ */
+export type LockEvent = 'lost' | 'held' | 'taken';
+const lockListeners = new Set<(ev: LockEvent) => void>();
+export function onLockEvent(cb: (ev: LockEvent) => void): () => void {
+  lockListeners.add(cb);
+  return () => lockListeners.delete(cb);
+}
+function lockEvent(ev: LockEvent): void {
+  for (const cb of lockListeners) {
+    try {
+      cb(ev);
+    } catch {
+      /* 订阅者出错不影响锁的处理 */
+    }
+  }
 }
 
 /** 租户锁已被另一个进程拿走（重取得到 held_by_other）。PG 会话存储的 drain 段据此不写库、直接 spill */
@@ -624,6 +645,8 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     lockState = 'held';
     sopStale = false;
     catalogStale = false;
+    // 日志的 tenant（R24）：只在 DB 配置模式下有
+    setLogTenant(d.tenantSlug);
     // 缓存照常装上（对话要用），配置写入暂停、开始重取
     if (lostWhileLoading) onLockLost();
     const { sop } = loaded;
@@ -748,6 +771,7 @@ function onLockLost(): void {
   if (shuttingDown || !loaded) return;
   lockState = 'lost';
   console.error(`[config] 租户锁连接断开：配置写入暂停，对话照常；每 ${reacquireMs / 1000} 秒重取`);
+  lockEvent('lost');
   scheduleReacquire();
 }
 
@@ -768,10 +792,12 @@ async function reacquireOnce(): Promise<void> {
   if (r === 'ok') {
     lockState = 'held';
     console.log('[config] 租户锁已重新取得，配置写入恢复');
+    lockEvent('held');
   } else if (r === 'held_by_other') {
     // 另一个进程已经接管：先跑全部停机钩子（在途的企微回复发完、会话落盘），再退出
     lockTaken = true;
     console.error('[config] 租户锁已被另一个进程拿走，本进程优雅退出');
+    lockEvent('taken');
     cur.deps.gracefulExit(1);
   } else {
     scheduleReacquire();
@@ -889,6 +915,7 @@ export const __configTest = {
     reacquireTimer = null;
     dbInstalled = false;
     loaded = null;
+    setLogTenant('');
     lockState = 'held';
     lockTaken = false;
     sopStale = false;
