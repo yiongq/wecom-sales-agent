@@ -106,7 +106,7 @@
   - 旧接口匿名投影里，交还时那条「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」（spec「后台接口」匿名投影一条；`server.ts` 的 `anonMessage` 留了位置），自测覆盖接手并交还种子会话之后的匿名读。
   - 对应验收 9、10、11 的接口部分，以及不变量 17、20–25、27、28、31、39 的接口部分、41、43–45、47。
 - [x] 14. 外部通知（1.5）：2026-10-03 完成（先于第 13 步，独立 worktree；中途换过一次 agent）。`Notifier` 的企微群机器人实现（开放问题 3，与告警不同群）、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。结构、本步定的、认领分道、自测、变异与门禁见「实施记录 · 第 14 步」。
-- [ ] 15. 收款流程与 SOP 措辞（3.5）：
+- [ ] 15. 收款流程与 SOP 措辞（3.5）：代码部分已完成（2026-10-08，分支 `feat/02-step15-payment`，没 push），真实模型回归待 owner 批准花钱跑（见「Open」），跑完、结果记进「验收记录」后再勾选本步。结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 15 步」。
   - `src/payment/`：`paymentMode`、`confirmOrder`、`markPaidByAdvisor`、`cancelOrder`（坐席只限接手人本人；提交之后才发付款确认）；后台的三个订单接口接上；advisor 模式下 `create_order` 的 `payNote`、`/pay` 页的说明、价格规则护栏的替换句、`repairLinks` / `placeLinks` 的说明句、重发链接、成单安全网、企微支付卡片、跟进 closing 段的确定性文本；online 模式逐字节不变。
   - `data/sop.md` 锁定节的两处改动、`SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 加 `payNote`；契约清单短语一条不删。同一次改动在锁定节里另加一句（R15 精确优先的模型兜底，owner 2026-10-03）：客户说自己或同行的人此刻遇到危险，或明显冲着我们发火时，先安抚再调 `handoff_to_human`（不加延迟、不多调模型；措辞在实施时定，不能让模型在售前的提问上转人工）。记下改前改后的四个哈希（`/healthz` 与 `PREFIX sha256`）。
   - 真实模型回归（花钱，不进 CI）：按 01 交接里的「真实模型对比」跑法，`--cases` 指向仓库外的 realOnly 用例文件，文件、DB 交替各至少 3 遍，记 p90、命中率与通过的用例集合，和改动前比较。用例补几条规则不判、要模型兜的：行程中的紧急（「我妈高原反应很严重」「高反了 头好痛 救命」「护照丢了 明天的飞机怎么办」「到了拉萨头疼得厉害 是不是高反了」）与冲着我们发火（「太失望了，你们就这服务？」「什么狗屁服务」「怎么这么慢啊」），模型应先安抚再调 `handoff_to_human`；再配几条售前的（「高反了怎么办」「我对芒果过敏挺厉害的 泰国水果多不多啊」「三亚太失望了，想去国外」），模型不该转人工。
@@ -1145,13 +1145,48 @@
   - 门禁：收尾合并了 `origin/dev`（PR #85，第 14 步转人工通知与 `.gitleaksignore`）：`deploy/compose.yml`、`plan.md` 两处冲突按两边的意图合并（env 文件说明两条都留、「交接」两份记录都留，不是互相覆盖）；`package.json`、`src/store/parity-clock.ts` 等自动合并无冲突。提交前用本机 `gitleaks` 扫过 `origin/dev..HEAD` 的 12 个提交（含本轮审查修复新造的假密钥/假连接串用例），`no leaks found`，没有命中、`.gitleaksignore` 不用改。合并之后四个门禁与带/不带 `PG_TEST_URL` 的 `pnpm test` 全绿：`price-guard.selftest` 403 项、`notify.selftest` 52 项、`jobs.selftest` 103 项、`quota.selftest` 124 项、两种配置模式 mock eval 19/19；锁定套件 8 个文件与 `origin/dev` 零字节差异，`PREFIX sha256` 不变。
 - 外部拨测（开放问题 14）：本步不做，由 owner 配好国内云厂商账号后补做，停一次 app 验证通知能到，结果记进「验收记录」后再勾选本步第 17 步的复选框。
 
-## 验收记录
+### 第 15 步 · 收款流程与 SOP 措辞（2026-10-08）
 
-（对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
+- 结构：
+  - `src/payment/orders.ts`、`src/payment/mode.ts`：三个订单动作与 `paymentMode` 已在第 13 步做好（后台三个接口也已接上，不是桩），本步只补 advisor 模式对客的那一半。
+  - `src/tools.ts`：`create_order` 的 advisor 分支（新建单、`reused:true` 复用单）都带 `payNote`（新增常量 `ADVISOR_PAY_NOTE`）；online 分支不带，逐字节不变。
+  - `src/price-rules.ts`：`SERVICE_CLAIMS` 的 `replace` 字段类型放宽成 `string | (() => string)`；资金那条的替换句改成 `payRuleReplace()`，advisor 下换成「付款以订单链接和顾问发给您的收款方式为准。」，online 下原样；`PAY_LINK_SAID`（避免同一条回复里说两遍）加了 advisor 那句的识别。
+  - `src/engine.ts`：三处确定性文案按 `paymentMode()` 分支（online 分支逐字节不变）——`resendPayReply`（重发支付链接，未确认价格 vs 已确认价格两种说法）、`strandedReply` 的建单分支、成单安全网的两支（重发现有单 / 新建单，含改单作废旧单那句）。
+  - `src/server.ts`：`/pay/:orderId` 在 advisor 模式注入 `<meta name="payment-mode" content="advisor">`（online 不注入，逐字节不变；`/pay.html?orderId=` 不加服务端路由，改成客户端 JS 在没匹配到 `/pay/:id` 路径时 `location.replace` 跳过去，避免给路由枚举测试新增一条可枚举路由）；旧接口 `POST /api/orders/:id/pay` 补一行审计（`order.mark_paid`，操作者 `sharedActor`）与「等 `flushSession` 落完再 `notifyPaid`」的顺序，响应体形状与两个分支的状态码不变（锁定断言不受影响）。
+  - `public/pay.html`：新增 `#advisorView`（没有付款按钮，按状态显示五句固定文案：「订单已提交...」「价格已确认...」「已收款」「已被替代」「已取消」）；脚本按 `<meta name="payment-mode">` 分支渲染；没有这个 meta（`/pay.html?orderId=` 这条静态入口）时客户端跳到 `/pay/:id`。
+  - `data/sop.md` 锁定节：「各阶段目标」closing 段加一句「工具结果里有 payNote 时，按 payNote 跟客户说怎么付款」；「能力边界」把付款那条改成两种方式都成立的写法（不分 online/advisor，一句话覆盖两种情况，`promptPrefix()` 不因 paymentMode 分支——不变量 19 要求 SOP 本身 prod 与 demo 相同）；「转人工条件」加第 8 条（此刻遇到危险 / 冲我们发火，先安抚再调 `handoff_to_human`）与一句售前反例说明。`src/sop/contract.ts` 的 `SOP_KNOWN_FIELDS` 与 `src/packs/travel/console-pack.ts` 的 `sopFields` 都加 `payNote`；`SOP_CONTRACT` 契约清单一条没删。
+- 本步定的（spec 没写全、按最小改动选的几处）：
+  1. **SOP 的两句改动是「同一句话覆盖两种模式」，不是按 paymentMode 分支的两份文案**：锁定套件 `engine.selftest.ts` 里有「切到 prod 后 `promptPrefix()` 要与 demo 下完全相同」的断言（不变量 19 的字面要求），而 prod 的 `mock_pay` 封顶为关（PROD_CEILING），即 prod 默认就是 advisor 模式；如果 SOP 文本本身按 paymentMode 分支，prod 与 demo 的 system prompt 就会不同，这条断言会变红。改成「付款只认 create_order 返回的订单链接，或顾问在微信里发给您的收款方式」这种两种方式都写在一句里的说法，SOP 本身不分支，只有代码里确定性生成的文案（price-rules 替换句、engine.ts 那三处、create_order 的 payNote）才按 paymentMode 分支——这些都不进 system prompt，不受这条断言管。
+  2. **`/pay.html?orderId=` 不开新的服务端路由，改成客户端跳转**：原计划在 `server.ts` 加一条 `app.get('/pay.html', ...)` 按 query 转发，但 `console.selftest.ts` 的路由枚举测试（「路由枚举：server 与 consoleApi 注册的、白名单以外的路由，prod 下匿名一律 401 或 404」）只过滤 `path.includes('*')` 的通配路由，之前 `/pay.html` 只经 serveStatic 的通配兜底，不会被单独枚举；加一条具体路径的路由会让它第一次被单独枚举到，而它又不在那条测试的 `PUBLIC` 白名单正则里，会被判成「泄露」。改成在 `pay.html` 自己的 `<script>` 里做：路径不是 `/pay/:id` 而 `?orderId=` 有值时 `location.replace('/pay/' + id)`，不碰服务端路由表。代价：微信里分享 `?orderId=` 这条链接，链接预览的标题还是走不到服务端注入（这个问题开工前就存在，不是本步引入的）。
+  3. **企微支付卡片与跟进 closing 模板本步没改**：逐条读过 `src/adapters/wecom.ts` 的卡片标题/摘要（`{routeTitle} · 待支付`、人数/日期/合计价）与 `src/followup.ts` 的 closing 兜底话术（「名额是以付款为准的...」），两处都只陈述订单事实，没有「点击链接付款」这类假定在线支付的说法，advisor 模式下照样成立，不需要改。
+  4. **旧接口 `POST /api/orders/:id/pay` 的「不要求先确认」维持原样、不改成调 `confirmOrder`/`markPaidByAdvisor`**：spec 原文与「实施记录 · 第 1 步」的裁定都说这条路径从模拟支付时代就有、保持原样；锁定的 `server.selftest.ts` 已有一条断言（`payOnce('demo 下 FLAG_MOCK_PAY=off', ...)`）验证了这一点，本步不改这条行为，只加审计与等提交的顺序。
+- 自测（新建 `src/payment/orders.selftest.ts`，28 项，串进 `package.json` 的 `test`）：SOP 三处改动的文本都在、旧句不在；`create_order` 的 `payNote`（online 没有、advisor 新建与复用单都有）；`price-rules.ts` 的替换句两种模式；`resendPayReply` 未确认/已确认价格两种说法；成单安全网新建单与重发现有单两支；`/pay` 页的服务端注入与标题锁定断言、`pay.html` 源码里的客户端跳转与五句状态文案、advisor 视图不含付款按钮；种子保鲜挪 `confirmedAt`；旧接口 advisor 模式不要求先确认、新加的审计调用不出错、源码顺序上 `flushSession` 排在 `notifyPaid` 之前。第 13 步已覆盖的（console-api 三个接口的权限、409/未确认、审计、付款确认时序）在 `console.selftest.ts` 里，本文件不重复。
+- 变异（源码拷进 scratchpad 的隔离副本，只跑 `orders.selftest.ts`，及一个额外跑 `console.selftest.ts` 的样本）：8 个代表性的，全部杀掉——① online 模式也带 `payNote` ② 旧接口 `flushSession` 挪到 `notifyPaid` 之后（这个在本文件原本跑不出可观察差异，文件存储下落库近乎同步；补了一条按源码顺序核的断言，见自测清单最后一条）③ `pay.html` 删掉客户端跳转那一句 ④ SOP 删掉转人工条件第 8 条 ⑤ 价格护栏的替换句去掉 advisor 分支 ⑥ 成单安全网新建单那支去掉 advisor 分支 ⑦ `freshenDemoData` 去掉 `confirmedAt` 跟着挪那一行 ⑧（抽样复核第 13 步的旧防线，不是本步引入的）`confirmOrder` 去掉 `NotHandlingError` 检查，`console.selftest.ts` 里两条既有断言照样杀掉它，确认这条防线没被本步动过。
+- 四个哈希（`/healthz` 的 `promptHash`/`toolsHash`/`prefixHash`/`sopHash`，即 `src/config/hashes.ts` 的 `promptHashes()`）：
+
+  |                                         | 改前（第 1–14、17、18、20.1 步）                                   | 改后（第 15 步）                                                   |
+  | --------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+  | `promptHash`（`PREFIX sha256 system=`） | `6c202d633b603a0b391634bcaf75da9d3ed42c30f848ad092a2467f713d9a423` | `14d53a706d8a2bebdc3ae93cebed59a908818cbcfb539adbe9cb0dc3b88b2f33` |
+  | `toolsHash`（`PREFIX sha256 tools=`）   | `64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` | 不变                                                               |
+  | `prefixHash`                            | `cd3cc7dab87a8fe10df81a84a288c806ae46fc31580351e9a20aae985ae96078` | `a63877e2e3fb8945909b3c7244f972b206adf420eb930105f66271046fa1c1ce` |
+  | `sopHash`（`sha256(data/sop.md)`）      | `396b2514bfbf01d20ec7956e1337da5046ad01f2575af5464d4285e9fce52fb4` | `a5d0a89ddf0e6d60a32bfbd8c44e95ede19cfedf81c39468bd1c4c7b7c5699b3` |
+
+  `prefixHash`/`sopHash` 的「改后」值经 DB 模式门禁跑出来的日志核对过（`[config] DB 模式：... · 前缀 a63877e2e3fb`，与上表 `prefixHash` 的前 12 位一致）。前缀：第 16 步起 `engine.selftest.ts` 打印的 `PREFIX sha256` 要等于本表「改后」那一行，不再是第 1 步的值（本节位于 plan 顶部「前缀」那条引用的落点）。
+
+- 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器 `pgtest-02s15`，`127.0.0.1:55432`，跑完删掉）与不带各跑一遍都全绿；mock eval 两种配置模式都是 19/19（43 项断言），DB 模式会话入库核对 0 处不符、22 个请求前缀哈希核对 0 处不符；`PAYMENT ORDERS SELFTEST` 28 项全通；锁定套件 8 个文件与 `origin/dev` 零字节差异、断言零修改；其余套件条数与 `origin/dev` 相同（`handoff` 3193、`store` 431、`db` 898、`config` 529、`console` 418、`packs` 224 等，`packs` 的 224 项里已经包含 `payNote` 加入 `SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 之后两者键集合仍相同的核对）；console 构建与产物检查全过。收尾前合并 `origin/dev` 一次，没有新提交。
+- 真实模型回归（花钱，不进 CI，本步没有跑，详情见下方「Open」）：realOnly 用例文件已经按 01 的跑法准备好——仓库外、本次 agent 的 scratchpad 里一份 `realOnly-step15.json`，42 条：原 `eval/cases.json` 的 32 条 `realOnly` 一条不少地照抄，加 plan 第 15 步点名的 10 条：4 条行程中的紧急、3 条冲我们发火（`expectTool: "handoff_to_human"`）、3 条售前反例（`denyText` 挡转人工话术）。文件不随分支走，下一个 agent 跑之前要按 plan 第 15 步原文那 10 句重新生成（或请 owner 要回这次的那份）。用 `LLM_MOCK=1` 跑过一遍确认文件能被 `eval/run.ts --cases` 正常加载、42 条全部按 `realOnly` 跳过，没有 JSON/schema 错误。
 
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
+
+- **待 owner 批准花钱跑真实模型回归（第 15 步，2026-10-08）。** 代码与自测已完成（见「实施记录 · 第 15 步」），第 15 步的复选框留着没勾，等这一项跑完、结果记进「验收记录」第 24 条再勾。
+  - 跑法（按 01 交接的「真实模型对比」同一套，「文件 → DB → 文件」交替）：`CONFIG_SOURCE=file tsx eval/run.ts --cases <realOnly 文件>`；DB 模式再加 `CONFIG_TEST_DB=pglite`。
+  - 用例：42 条（原 32 条 `realOnly` + 本步新加的 10 条——见「实施记录 · 第 15 步」），82 轮；文件按「实施记录 · 第 15 步」的说明重新生成（不随分支走）。
+  - 遍数：正式跑 6 遍（文件、DB 各 3 遍）；另建议在改动前的 `origin/dev`（SOP 改动之前）跑 1 遍文件模式、1 遍 DB 模式当基线，和改动后的结果比较通过的用例集合与兜底用例是否命中。
+  - 预计调用次数与费用（量级，按 01 交接记的单价估算，不是精确数）：6 遍 × 82 轮 ≈ 500 次模型调用，基线 2 遍再加 ≈ 160 次，合计约 650–700 次；按 01 跑 32 条 realOnly × 6 遍（约 180 轮）花了约 3.7 元估算，本次量级在 13–15 元左右（人民币），实际费用以当时的模型单价和对冲/自愈次数为准。
+  - 通过条件：两种模式 P90 都不超过 8 秒；兜底用例（4 条紧急 + 3 条冲我们发火）模型都调了 `handoff_to_human`；售前反例（3 条）模型都没转人工；通过的用例集合不少于改动前。
+  - 批准之后交给下一个 agent 跑，结果按验收 24 的格式记进「验收记录」，同时把第 15 步的复选框勾上。
 
 - 第 13 步审查带出的（2026-10-03，不挡第 14 步）：**成员接手时才进入的转人工，会把刚排进去的两个 `handoff_notify`（立即、10 分钟）一并取消**（`src/handoff/takeover.ts` 的 `takeover()`，169–175 行；已在转人工中的会话再被接手不取消，只影响「接手时才进入转人工」这一种）。spec「任务表与跟进」写的是「转人工提交后立即排一个，10 分钟后仍没人接手再排一个」，没有写「接手时进入的转人工不排」这条例外；审查第 3 条（review:spec 原文）指出这是改了 spec 原文写明的行为，按 brief 的规则本该先停下写 Open，不该直接改代码——这里补上。实现者当时的理由（「实施记录 · 第 13 步」本步定的第 3 条）是：这种转人工从「成员接手」这个动作触发，当场就有人在处理，再排一条「等人接手」的通知没有意义。本次复核没有发现这个理由有问题，不改代码，留给 owner 确认：
   - 推荐（保持现状）：成员主动接手而进入的转人工不排 `handoff_notify`；只有「没人接手就自动进入」的转人工（模型调工具、改行程承诺、回复说了转接、确定性触发、紧急情况、旧 `/handoff`）才排这两条通知。
@@ -1349,3 +1384,10 @@
 - 半成品：无。
 - 阻塞：无。中途发现并复现过一个与本步无关的既有问题——`price-guard.selftest.ts` 的 Q1、R4 两条断言用固定出发日期 `2026-10-03`，当天（2026-10-08）已经过去会变红，干净的 `origin/dev` 上同样复现——正准备写「Open」时，协调者告知 dev 已合进 PR #84（`test:locked` + `src/store/parity-clock.ts`，钉固定时钟跑锁定套件），合并之后这两条断言恢复全过，不再需要写「Open」。外部拨测仍待 owner 配好国内云厂商账号后补做（开放问题 14），结果记进「验收记录」后再勾选第 17 步的复选框。
 - 下一步：主线继续后续步骤；第 17 步审查回来的四条（`deploy/watch.sh` 的磁盘检查只读第 2 行、`src/log.ts` 的 `REDACT_PATHS` 深度不够、`BEARER` 大小写与转义分隔符、兜底不认连接串与 Cookie 头）已修，见「实施记录 · 第 17 步」「审查之后改的」；第 14 步合并进来的 `src/notify/notifier.ts` 与本步 `src/ops/alert.ts` 各自的「POST 一条 text 消息、5 秒超时、看 errcode」仍是两份，留给以后谁先碰这两个文件时合成一个函数。
+
+### 交接（2026-10-08，第 15 步）
+
+- 已完成：第 15 步代码部分（分支 `feat/02-step15-payment`，没 push；开工时 dev 含第 1–14、17、18、20.1 步）。`src/payment/` 的三个订单动作与 `paymentMode` 在第 13 步就有，本步补的是 advisor 模式的对客文案（`create_order` 的 `payNote`、价格护栏替换句、`resendPayReply`/成单安全网两支的确定性文案、`/pay/:orderId` 的服务端注入与 `pay.html` 的 advisor 视图）与 `data/sop.md` 锁定节的三处改动（能力边界的收款句、closing 段 payNote 一句、转人工条件第 8 条的模型兜底与售前反例说明）。结构、本步定的四条取舍、自测、变异、四个哈希见「实施记录 · 第 15 步」。README 没动（按惯例记进第 28 步）。锁定套件零修改，`PREFIX sha256` 按本步改变（见「实施记录 · 第 15 步」的四个哈希表），这是全程唯一一次有意改 SOP。
+- 半成品：无。
+- 阻塞：真实模型回归没有跑，待 owner 批准（见「Open」）。批准之后由下一个 agent 跑，按验收 24 记「验收记录」，再把第 15 步复选框勾上。
+- 下一步：第 16 步「隐私说明、敏感信息同意、保留期、行权删除」。先读「实施记录 · 第 13 步」「第 14 步」里给第 16 步的注意（`erase_conversation` 要连带删任务、`sensitiveCategoriesOf`/`consentWithdrawalOf` 已在 `src/handoff/triggers.ts`、`logQuote()` 第 1 步盘点的日志位置要逐个改）；本步新增的 `data/sop.md` 第 8 条转人工规则与第 16 步「敏感信息同意」不冲突（第 8 条管的是此刻的人身危险与冲我们发火，第 16 步管的是敏感信息披露），两条都生效、互不覆盖。
