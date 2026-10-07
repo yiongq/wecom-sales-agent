@@ -25,7 +25,7 @@ const CHILD = process.env.NOTIFY_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const CLOCK_MODULE = fileURLToPath(new URL('../store/parity-clock.ts', import.meta.url));
 /** webhook 地址里的 key：等同密钥，日志、last_error、消息里都不能出现 */
-const SECRET = 'NOTIFYSECRETKEY0042';
+const SECRET = 'NOTIFYSECRETKEY0042'; // gitleaks:allow 自测造的假 key，见 .gitleaksignore
 
 let pass = 0;
 const fails: string[] = [];

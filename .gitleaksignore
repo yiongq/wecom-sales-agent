@@ -1,7 +1,7 @@
 # gitleaks 误报（00 spec「密钥扫描」：误报写进这里，每条带理由）。
 
 # 02 第 14 步：src/notify/notify.selftest.ts 第 28 行的 SECRET 是自测造的假 webhook key（'NOTIFYSECRETKEY0042'），
-# 用来断言日志、last_error 与消息里都不出现 webhook 地址里的 key；不是真密钥，没有对应的机器人。三条是同一行在三个提交里。
+# 用来断言日志、last_error 与消息里都不出现 webhook 地址里的 key；不是真密钥，没有对应的机器人。三条是同一行在三个提交里；之后那一行带了行内的 gitleaks:allow（PR 的 CI 扫 GitHub 生成的合并提交，它的 SHA 每次推送都变，按指纹忽略盖不住）。
 03e0d995ded0c0ad6821d5d828d820c1bdaddcb8:src/notify/notify.selftest.ts:generic-api-key:28
 2fb85b7b923798716d873938045b02b330a8f39c:src/notify/notify.selftest.ts:generic-api-key:28
 dfbf3a3b021a5ab4adb76597a1e965963785315a:src/notify/notify.selftest.ts:generic-api-key:28
