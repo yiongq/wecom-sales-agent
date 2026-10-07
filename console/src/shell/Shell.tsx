@@ -22,10 +22,12 @@ import { SessionExpiredDialog } from '../SessionExpiredDialog.js';
 import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
 import { logout, toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
 import { AboutDialog } from './AboutDialog.js';
+import { useWaitingCount } from './Bell.js';
 import { CommandPalette, type PaletteAction } from './CommandPalette.js';
 import { focusMain, isMac, useDocumentTitle, useViewport } from './hooks.js';
 import { IconButton } from './IconButton.js';
 import { navIcon } from './icons.js';
+import { startLiveEvents } from './live.js';
 import {
   buildNav,
   collapsedByDefault,
@@ -34,8 +36,10 @@ import {
   selectedNavKey,
   type ShellViewer,
   sidebarMode,
+  tabTitlePrefix,
   workbenchHref,
 } from './model.js';
+import { notifyHandoff } from './notifications.js';
 import { shellViewerOf } from './PageHeader.js';
 import { isPaletteShortcut, paletteShortcut, type StaticRow } from './search.js';
 import { Sidebar, TenantRow } from './Sidebar.js';
@@ -146,6 +150,29 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       }),
     [router],
   );
+
+  // 事件流（02 spec「通知」）：只给成员连，接上之后断线超过 30 秒退回轮询、重连立刻停（shell/live.ts）；
+  // handoff 事件已授权就弹浏览器通知，点击聚焦窗口并打开 J 页。pack、qc、navigate 的引用基本不变，这个效果
+  // 实际上只在登录状态变化时重新接一次
+  const member = sv.kind === 'member';
+  useEffect(() => {
+    if (!member) return;
+    return startLiveEvents({
+      qc,
+      onNotify: (data) => notifyHandoff(data, pack, (id) => void navigate({ to: '/conversations/$id', params: { id } })),
+    });
+  }, [member, qc, pack, navigate]);
+
+  // 标签页标题前缀「(N) 」（spec「通知」、不变量 45）：N 只数等人接手（human），与铃铛、侧栏软徽标同一次 counts 响应。
+  // 没有依赖数组，故意在每次提交之后都跑：页面自己的 useDocumentTitle 是更深的子组件，同一次提交里先跑完
+  // （React 的 effect 按子先父后的顺序触发），这里拿到的 document.title 已经是新页面的裸标题，剥掉上一次
+  // 套的前缀再重套一遍就不会越套越长
+  const { count: waitingForTitle } = useWaitingCount(member);
+  useEffect(() => {
+    if (!member) return;
+    const next = `${tabTitlePrefix(waitingForTitle)}${document.title.replace(/^\(\d+\) /, '')}`;
+    if (next !== document.title) document.title = next;
+  });
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);

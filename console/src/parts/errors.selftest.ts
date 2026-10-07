@@ -45,6 +45,8 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['invalid_sop', 422, '无法保存这份话术：格式不对', '撤回刚才的改动再试', 'danger', 'banner'],
   ['locked_section', 422, '固定规则节不能改', '撤回这一节的改动', 'danger', 'banner'],
   ['not_found', 404, '没有这项内容：可能已被删除或地址写错了', '回到列表', 'neutral', 'whole'],
+  // 02 spec「后台接口」新错误码，第 19 步先接住 J 页占位用到的这一个（其余随第 20 步再加，见 plan 第 13 步「注意」）
+  ['conversation_not_found', 404, '这个会话已经不在了', '回到列表', 'neutral', 'whole'],
   ['conflict', 409, '刚才有人同时在改', '刷新后重来', 'danger', 'banner'],
   ['bad_request', 400, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],
   ['unsupported_media_type', 415, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],

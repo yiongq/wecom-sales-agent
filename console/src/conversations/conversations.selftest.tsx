@@ -1,17 +1,22 @@
-// 会话列表的自测（console UX spec「逐页设计 · 会话列表（I 页）」、验收 6、20，不变量 17、18，设计系统 §10.0、§10.2 I 页，plan 第 13 步）。
-// 数据照设计系统 §10.0 的 13 个会话（时刻 2026-09-26 周六 14:30，Asia/Shanghai）。行业包是本文件里手写的夹具（旅游式、家装式各一份）：
+// 会话列表的自测（02 spec「后台页面 · 会话列表（I 页）」、验收 6、10、20，不变量 17、18、45，设计系统 §10.0、§10.2 I 页，
+// plan 第 13、19 步）。数据照设计系统 §10.0 的 13 个会话（时刻 2026-09-26 周六 14:30，Asia/Shanghai，handoff 全是 null——
+// 这是 02 之前的老场景，验收 6 要求照旧能跑通）。行业包是本文件里手写的夹具（旅游式、家装式各一份）：
 // console 里只有渲染器自测能 import 注册表和假包（scripts/check-boundaries.ts）。
-// 1. 纯逻辑（model.ts、conversations-search.ts）：地址参数的取舍（不合规的丢掉、键总是写出来）；页签的顺序、名字与计数；
-//    换页签、点阶段条、清除阶段、翻页之后的地址；列表接口的查询（order=waiting_first、每页 20 条、offset 按页码）；
-//    每一行写什么（渠道加叫法、短码、状态、等人接手的阶段写「—」、最后动静的相对时间与悬停的绝对时间、工作台链接）；
-// 2. 在 DOM 里挂载（happy-dom）：真的 ConversationsPage 加照服务端规则算的假接口。页签与阶段条的数取同一次 counts（只请求一次）；
-//    页签是按钮、键盘移焦点，阶段条和表格只在一块面板里（换页签、点阶段不重挂，焦点与表格视图留着，清掉筛选后焦点回到那一行）；
-//    表格的顺序、每格的字、两处「打开工作台」的链接与新标签；点一行（不在链接上）新标签打开工作台；点页签、阶段条、筛选条
-//    改地址并按新地址请求；翻页与越界页码；空、页签无结果、阶段无结果；列表或计数 500 只坏用它的那一块；坐席；匿名不发请求；
-//    换一个行业包，阶段名、客户叫法跟着换；两个查询按外壳的节奏轮询；
-// 3. public/admin.html 的 #s=<id> 深链（验收 20）：页面脚本在 happy-dom 里原样跑，假的后台接口。没登录、列表里没有这个会话时
-//    弹登录框，登录后选中它、hash 还在；演示会话免登录直接选中；换选中项时 hash 跟着走，回到首页时清掉；hashchange 也跟着选；
-//    写坏的 hash 不报错；已登录而列表里没有时不弹登录框。
+// 1. 纯逻辑（model.ts、conversations-search.ts）：地址参数的取舍（不合规的丢掉、键总是写出来）；页签的顺序、名字与计数，
+//    「顾问处理中」只在有这种会话或地址选了它时出现；换页签、点阶段条、清除阶段、翻页之后的地址；列表接口的查询
+//    （order=waiting_first、每页 20 条、offset 按页码）；每一行写什么（渠道加叫法、短码、状态、needSummary、等人接手的
+//    阶段列写原因／没有原因写「—」、最后动静列是等待时长（≥10 分钟 danger）或相对时间、工作台链接是 J 页路径）；
+// 2. 在 DOM 里挂载（happy-dom）：真的 ConversationsPage 加照服务端规则算的假接口。页签与阶段条的数取同一次 counts（只请求
+//    一次），另取等人接手首页给页头主按钮；页签是按钮、键盘移焦点，阶段条和表格只在一块面板里（换页签、点阶段不重挂，
+//    焦点与表格视图留着，清掉筛选后焦点回到那一行）；表格的顺序、每格的字、两处「打开工作台」在当前标签打开 J 页
+//    （不新开标签）；点一行（不在链接上）同样在当前标签打开；页头主按钮选中第一个等人接手的会话；点页签、阶段条、
+//    筛选条改地址并按新地址请求；翻页与越界页码；空、页签无结果、阶段无结果；列表或计数 500 只坏用它的那一块；坐席；
+//    匿名不发请求；换一个行业包，阶段名、客户叫法跟着换；两个查询按外壳的节奏轮询（counts 走事件流，这里没挂事件流
+//    就不轮询，真的退回/停轮询规则见 shell/shell.selftest.ts 的 live 部分）；行有 needSummary 与 handoff 原因时画出来的样子。
+// 3. public/admin.html 的 #s=<id> 深链（验收 20，01 时代留下的旧入口，`admin.html` 本身的改动是第 23 步）：页面脚本在
+//    happy-dom 里原样跑，假的后台接口。没登录、列表里没有这个会话时弹登录框，登录后选中它、hash 还在；演示会话免登录
+//    直接选中；换选中项时 hash 跟着走，回到首页时清掉；hashchange 也跟着选；写坏的 hash 不报错；已登录而列表里没有时
+//    不弹登录框。
 // 用法：npx tsx --tsconfig console/tsconfig.json console/src/conversations/conversations.selftest.tsx
 process.env.TZ = 'Asia/Shanghai';
 
@@ -28,6 +33,7 @@ import { conversationState } from '../../../src/shared/conversation.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { conversationsSearch } from '../conversations-search.js';
 import type { Viewer } from '../shell/boot.js';
+import { workbenchPath } from '../shell/model.js';
 import { VIEWER_KEY } from '../viewer.js';
 import { ConversationsPage } from './ConversationsPage.js';
 import {
@@ -173,7 +179,7 @@ const COUNTS: ConversationCounts = {
 {
   eq(
     '页签：全部 / 等人接手 / AI接待中 / 已成交，数都取 counts；只有等人接手用软徽标',
-    tabs(COUNTS).map((t) => [t.key, t.label, t.count, t.soft]),
+    tabs(COUNTS, 'all').map((t) => [t.key, t.label, t.count, t.soft]),
     [
       ['all', '全部', 13, false],
       ['human', '等人接手', 2, true],
@@ -183,10 +189,27 @@ const COUNTS: ConversationCounts = {
   );
   eq(
     '页签：counts 还没回来时只写名字',
-    tabs(undefined).map((t) => t.count),
+    tabs(undefined, 'all').map((t) => t.count),
     [null, null, null, null],
   );
-  check('页签：没有「顾问处理中」（02 之前）', !tabs(COUNTS).some((t) => /顾问/.test(t.label)));
+  // 「顾问处理中」页签（02 第 19 步）：没有这种会话、地址也没选它时不出现；有会话（byState.assigned > 0）或
+  // 地址选中了它（哪怕 counts 还没回来，或这一刻恰好是 0）都要出现，不做成灰的
+  check('页签：没有顾问处理中的会话时不出现', !tabs(COUNTS, 'all').some((t) => t.key === 'assigned'));
+  check('页签：counts 还没回来、地址也没选它时不出现', !tabs(undefined, 'all').some((t) => t.key === 'assigned'));
+  const withAssigned: ConversationCounts = { ...COUNTS, byState: { ...COUNTS.byState, assigned: 1 } };
+  eq(
+    '页签：有顾问处理中的会话时出现在等人接手之后、AI接待中之前',
+    tabs(withAssigned, 'all').map((t) => t.key),
+    ['all', 'human', 'assigned', 'ai', 'paid'],
+  );
+  check(
+    '页签：地址选了它、这一刻是 0 也出现',
+    tabs(COUNTS, 'assigned').some((t) => t.key === 'assigned'),
+  );
+  check(
+    '页签：地址选了它、counts 还没回来也出现',
+    tabs(undefined, 'assigned').some((t) => t.key === 'assigned'),
+  );
   eq('选中的页签：没有 state 是全部', [activeTab({}), activeTab({ state: 'paid', stage: 'quote' })], ['all', 'paid']);
   eq('换页签：只留状态，阶段与页码清掉', [tabSearch('all'), tabSearch('human')], [{}, { state: 'human' }]);
 }
@@ -239,7 +262,8 @@ const COUNTS: ConversationCounts = {
     at: SCENE[12]!.updatedAt,
     when: '8分钟前',
     whenFull: '9月26日 14:22',
-    href: '/admin.html#s=wecom%3Acust_F01',
+    waitDanger: false,
+    href: '/conversations/wecom%3Acust_F01',
   });
   const view = (short: string) =>
     rowView(
@@ -268,8 +292,26 @@ const COUNTS: ConversationCounts = {
   const paidAfterHandoff = rowView({ ...SCENE[1]!, handedOver: true }, TRAVEL, NOW);
   eq('行：转人工以后成交的，算已成交、阶段照写', [paidAfterHandoff.state, paidAfterHandoff.stage], ['paid', '已支付']);
   // 阶段不是 handoff 的等人接手：阶段也写「—」；阶段停在 handoff 而没转人工（老数据）同样写「—」，页面上不出现「转人工」
-  eq('行：等人接手的阶段总写「—」', rowView(conv('X01', 'quote', true, 1, '2026-09-26T14:00:00'), TRAVEL, NOW).stage, '—');
+  eq('行：等人接手没有原因（旧数据）时写「—」', rowView(conv('X01', 'quote', true, 1, '2026-09-26T14:00:00'), TRAVEL, NOW).stage, '—');
   eq('行：handoff 阶段不写原码', rowView(conv('X02', 'handoff', false, 1, '2026-09-26T14:00:00'), TRAVEL, NOW).stage, '—');
+  // 02 第 19 步：等人接手的行有 handoff 记录时，阶段列写原因、最后动静列写等待时长（从 handoff.at 算，不是 updatedAt），
+  // 标题加 needSummary；≥10 分钟 danger，否则不是
+  {
+    const withHandoff = (short: string, waitMin: number, reason: string): ConversationRow => ({
+      ...conv(short, 'quote', true, 4, '2026-09-26T13:00:00'),
+      needSummary: '贵州带爸妈4人',
+      handoff: { kind: 'request', at: new Date(NOW - waitMin * 60_000).toISOString(), reason },
+    });
+    const danger = rowView(withHandoff('Y01', 12, '客户要找顾问'), TRAVEL, NOW);
+    const warn = rowView(withHandoff('Y02', 3, '客户要投诉'), TRAVEL, NOW);
+    eq(
+      '行：有原因时阶段列写原因，标题带 needSummary',
+      [danger.label, danger.stage],
+      [['企微客户', 'Y01', '贵州带爸妈4人'], '客户要找顾问'],
+    );
+    eq('行：等待 ≥10 分钟 danger，否则不是', [danger.waitDanger, warn.waitDanger], [true, false]);
+    eq('行：最后动静列是等待时长（从 handoff.at 算，不是 updatedAt）', [danger.when, warn.when], ['12分钟前', '3分钟前']);
+  }
   eq(
     '行：超过 30 天写日期，跨年加年份',
     [
@@ -298,7 +340,7 @@ const COUNTS: ConversationCounts = {
       ['human', '—'],
     ],
   );
-  eq('行：读屏念的名字', rowAria(f01), '企微客户 F01，等人接手，在工作台打开（新标签页）');
+  eq('行：读屏念的名字', rowAria(f01), '企微客户 F01，等人接手，打开工作台');
   eq('行：网页渠道不写渠道名（sim- 会话本来就不列出）', rowView({ ...SCENE[0]!, channel: 'simulator' }, TRAVEL, NOW).label[0], '网页客户');
 }
 
@@ -390,6 +432,8 @@ async function mount(viewer: Viewer, search = '') {
         validateSearch: conversationsSearch,
         component: ConversationsPage,
       }),
+      // J 页本身是第 20.2 步；这里只接一个最小的桩，验证点一行、「打开工作台」在当前标签导航到了它（不新开标签）
+      createRoute({ getParentRoute: () => root, path: '/conversations/$id', component: () => null }),
     ]),
     basepath: '/console',
     history: createMemoryHistory({ initialEntries: [`/console/conversations${search}`] }),
@@ -443,17 +487,18 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   server = { conversations: SCENE };
   requests = [];
   const m = await mount(member('owner'));
-  eq('请求：counts 只取一次（页签与阶段条同源），列表带 order=waiting_first', convRequests(), [
+  eq('请求：counts 只取一次（页签与阶段条同源），另取等人接手的首页（页头主按钮用），列表带 order=waiting_first', convRequests(), [
     'GET /api/console/conversations/counts',
+    'GET /api/console/conversations?state=human',
     'GET /api/console/conversations?limit=20&offset=0&order=waiting_first',
   ]);
   eq('标签页标题', document.title, '会话 · 云途定制旅行');
-  eq('页头：标题与状态句', [m.texts('h1'), m.texts('.page-status')], [['会话'], ['企业微信里的客户会话·接手和回复目前在工作台里完成']]);
-  const primary = m.$('.page-actions a')[0];
+  eq('页头：标题与状态句', [m.texts('h1'), m.texts('.page-status')], [['会话'], ['企业微信里的客户会话·在工作台里接手和回复']]);
+  const primary = m.$('.page-actions button')[0];
   eq(
-    '页头：主按钮「打开工作台」新标签打开 /admin.html',
-    [primary?.textContent?.trim(), primary?.getAttribute('href'), primary?.getAttribute('target'), primary?.getAttribute('rel')],
-    ['打开工作台', '/admin.html', '_blank', 'noopener noreferrer'],
+    '页头：主按钮「打开工作台」不是 blocked（有等人接手的会话）',
+    [primary?.textContent?.trim(), primary?.classList.contains('primary-blocked')],
+    ['打开工作台', false],
   );
   eq('页签：四个，数取 counts，选中「全部」', m.tabs(), [
     ['全部13', 'true'],
@@ -521,53 +566,53 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   eq('表格：最后动静悬停看绝对时间', m.attrs('.cv-when', 'title').slice(0, 2), ['9月26日 14:22', '9月26日 14:04']);
   const firstLinks = m.$('.cv-conv-link');
   eq(
-    '表格：首列是真正的链接，新标签打开工作台并选中该会话',
-    [
-      firstLinks[0]?.getAttribute('href'),
-      firstLinks[0]?.getAttribute('target'),
-      firstLinks[0]?.getAttribute('rel'),
-      firstLinks[0]?.getAttribute('aria-label'),
-    ],
-    ['/admin.html#s=wecom%3Acust_F01', '_blank', 'noopener noreferrer', '企微客户 F01，等人接手，在工作台打开（新标签页）'],
+    '表格：首列是真正的链接，在当前标签打开 J 页（02 第 19 步起，不再新标签打开 admin.html）',
+    [firstLinks[0]?.getAttribute('href'), firstLinks[0]?.getAttribute('target'), firstLinks[0]?.getAttribute('aria-label')],
+    [`/console${workbenchPath('wecom:cust_F01')}`, null, '企微客户 F01，等人接手，打开工作台'],
   );
   const ops = m.$('.cv-open');
   eq(
-    '表格：「打开工作台」同一个地址、新标签',
+    '表格：「打开工作台」同一个地址，当前标签',
     [ops.length, ops[1]?.getAttribute('href'), ops[1]?.getAttribute('target'), ops[1]?.getAttribute('aria-label')],
-    [13, '/admin.html#s=wecom%3Acust_A01', '_blank', '打开工作台，企微客户 A01（新标签页）'],
+    [13, `/console${workbenchPath('wecom:cust_A01')}`, null, '打开工作台，企微客户 A01'],
   );
   eq('表格：名字写明排序规则（等人接手的在前，最后动静那一列的倒序在其下）', m.attrs('.cv-table table', 'aria-label'), [
     '会话，共13个，等人接手的排在最前',
   ]);
   check('表格：没有分页器（13 条只有一页）', m.$('.ant-pagination').length === 0);
+  // 「顾问处理中」「等了」「转人工」在这套老的 13 会话场景（handoff 全是 null）里不会出现，因为这几行没有
+  // 原因数据可写；仍在禁用词清单上的四个（02 spec R12 之外的叫法）继续查（见 shell/errors.selftest.ts 的四态断言）
   check(
-    '今天不画：没有「顾问处理中」「等了」「转人工」',
-    !/顾问处理中|等了|转人工|待人工|已转人工/.test(m.box.textContent ?? ''),
+    '禁用词：没有「待人工」「已转人工」「待接管」「需要介入」',
+    !/待人工|已转人工|待接管|需要介入/.test(m.box.textContent ?? ''),
     m.box.textContent ?? '',
   );
   check('没有红色：没有 danger 的 Alert 与状态', m.$('.ant-alert-error, .status-danger').length === 0);
 
-  // 点一行（不在链接上）：新标签打开工作台；点在链接上交给链接自己，不另开一个
-  opened = [];
+  // 点一行（不在链接上）：在当前标签打开 J 页；点在链接上交给链接自己，不另开一个
   await m.click(m.$('.cv-table tbody tr.cv-row')[1]?.querySelectorAll('td')[2]);
-  eq('点一行：新标签打开工作台并选中该会话', opened, [['/admin.html#s=wecom%3Acust_A01', '_blank', 'noopener,noreferrer']]);
-  opened = [];
+  eq('点一行：在当前标签打开 J 页并选中该会话', m.url(), '/conversations/wecom%3Acust_A01');
+  await act(async () => void (await m.router.navigate({ to: '/conversations' })));
+  await settle(m.qc);
   const link = m.$('.cv-conv-link')[2]!;
-  link.addEventListener('click', (e) => e.preventDefault(), { once: true });
   await m.click(link);
-  eq('点首列的链接：不再经 window.open 另开一个', opened, []);
+  eq('点首列的链接：同一处导航（不是另开一个标签）', m.url(), '/conversations/wecom%3Acust_B01');
+  await act(async () => void (await m.router.navigate({ to: '/conversations' })));
+  await settle(m.qc);
 
-  // 两个查询与外壳同一个节奏轮询（spec「外壳 · 计数刷新」：页面可见时每 30 秒，隐藏时停）
+  // counts、人接手首页都断线超过 30 秒退回轮询、重连立刻停（shell/live.ts）；列表固定 30 秒、后台不轮询。
+  // 这里没有挂 Shell/Frame，事件流从没接上过（live.ts 的模块状态是初始值），所以 counts、human 这两个暂时不轮询
+  // （不是「停了」，是「还没确认要退回」）；真的退回/停轮询的规则由 shell/shell.selftest.ts 的 live 部分测
   const opts = (key: string) => {
     const q = m.qc.getQueryCache().findAll({ queryKey: ['conversations', key] })[0];
     const o = q?.observers[0]?.options as { refetchInterval?: unknown; refetchIntervalInBackground?: unknown } | undefined;
     return [o?.refetchInterval, o?.refetchIntervalInBackground];
   };
   eq(
-    '轮询：counts 与列表都是 30 秒、后台不轮询',
+    '轮询：列表固定 30 秒、后台不轮询；counts 走事件流，这次挂载没有事件流就不轮询',
     [opts('counts'), opts('list')],
     [
-      [30_000, false],
+      [false, false],
       [30_000, false],
     ],
   );
@@ -598,7 +643,37 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   eq('点阶段条：state、stage 进到请求里', convRequests(), [
     'GET /api/console/conversations?limit=20&offset=0&order=waiting_first&state=ai&stage=quote',
   ]);
+
+  // 页头主按钮「打开工作台」：选中第一个等人接手的会话（F01，排序同表格），在当前标签打开 J 页
+  await act(async () => void (await m.router.navigate({ to: '/conversations' })));
+  await settle(m.qc);
+  await m.click(m.$('.page-actions button')[0]);
+  eq('页头主按钮：打开 F01 的 J 页', m.url(), '/conversations/wecom%3Acust_F01');
   await m.unmount();
+}
+
+// 2.1b 行有 needSummary 与 handoff 原因时画出来什么样（02 第 19 步）
+{
+  const withHandoff = (short: string, waitMin: number, reason: string): ConversationRow => ({
+    ...conv(short, 'quote', true, 4, '2026-09-26T13:00:00'),
+    needSummary: '贵州带爸妈4人',
+    handoff: { kind: 'request', at: new Date(NOW - waitMin * 60_000).toISOString(), reason },
+  });
+  server = { conversations: [withHandoff('Y01', 12, '客户要找顾问'), conv('Y02', 'quote', false, 2, '2026-09-26T13:50:00')] };
+  const m = await mount(member('owner'));
+  eq('行：标题带 needSummary（企微客户 · Y01 · 贵州带爸妈4人）', m.rows()[0]?.[0], '企微客户·Y01·贵州带爸妈4人');
+  eq('行：阶段列写原因，不是「—」', m.rows()[0]?.[2], '客户要找顾问');
+  eq('行：等待 12 分钟，最后动静列用 danger 字', [m.rows()[0]?.[4], m.$('.cv-when.is-danger').length], ['12分钟前', 1]);
+  eq('行：AI接待中的那一行不受影响（阶段照写，最后动静是 updatedAt）', m.rows()[1], [
+    '企微客户·Y02',
+    'AI接待中',
+    '报价',
+    '2',
+    '40分钟前',
+    '打开工作台',
+  ]);
+  await m.unmount();
+  server = { conversations: SCENE };
 }
 
 // 2.2 从总览的阶段条跳过来：?state=ai&stage=quote（验收 10）
@@ -607,6 +682,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   const m = await mount(member('owner'), '?state=ai&stage=quote');
   eq('筛选：请求', convRequests(), [
     'GET /api/console/conversations/counts',
+    'GET /api/console/conversations?state=human',
     'GET /api/console/conversations?limit=20&offset=0&order=waiting_first&state=ai&stage=quote',
   ]);
   eq(
@@ -873,7 +949,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
 {
   server = { conversations: SCENE };
   const m = await mount(member('agent'));
-  eq('坐席：列表与主按钮', [m.rows().length, m.texts('.page-actions a'), m.$('.readonly-pill').length], [13, ['打开工作台'], 1]);
+  eq('坐席：列表与主按钮', [m.rows().length, m.texts('.page-actions button'), m.$('.readonly-pill').length], [13, ['打开工作台'], 1]);
   await m.unmount();
 }
 
@@ -883,7 +959,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   const m = await mount({ kind: 'anon', pack: TRAVEL });
   eq(
     '匿名：一句说明，没有页签、表格和主按钮，不发请求',
-    [m.texts('.state-empty-title'), m.$('.cv-tabs').length, m.$('.page-actions a').length, convRequests()],
+    [m.texts('.state-empty-title'), m.$('.cv-tabs').length, m.$('.page-actions button').length, convRequests()],
     [['登录后才能看会话'], 0, 0, []],
   );
   eq(
@@ -909,7 +985,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   eq(
     '家装包：区块头与状态句用包里的叫法',
     [m.texts('h2'), m.texts('.page-status')],
-    [['业主停在哪一步'], ['企业微信里的业主会话·接手和回复目前在工作台里完成']],
+    [['业主停在哪一步'], ['企业微信里的业主会话·在工作台里接手和回复']],
   );
   eq(
     '家装包：页签的已成交数停在「已付定金」的会话（含转过人工的）',

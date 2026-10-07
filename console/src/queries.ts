@@ -33,6 +33,25 @@ export const waitingConversationsQuery = queryOptions({
   queryFn: () => unwrap(api.conversations.$get({ query: { state: 'human' } })),
 });
 
+/**
+ * 「已成交客户要人工」（02 spec「通知」「后台页面 · 外壳」，开放问题 12 选 A）：铃铛弹层等人接手之后另起一组，
+ * 只在有时出现，不计入徽标。状态仍是 paid，所以单独一个 group 查询，不能从 counts.byState 推出来
+ */
+export const paidNeedsHumanQuery = queryOptions({
+  queryKey: ['conversations', 'paidNeedsHuman'] as const,
+  queryFn: () => unwrap(api.conversations.$get({ query: { group: 'paid_needs_human' } })),
+});
+
+/**
+ * J 页占位（第 19 步先接路由，完整工作台是第 20.2 步）：GET /conversations/:id（ConversationDetail）。
+ * 键接在列表后面，和列表、计数不是同一个查询，但 counts/human 事件到来时也该让它重取（手动筛选 queryKey 前缀即可）
+ */
+export const conversationDetailQuery = (id: string) =>
+  queryOptions({
+    queryKey: ['conversations', 'one', id] as const,
+    queryFn: () => unwrap(api.conversations[':id'].$get({ param: { id } })),
+  });
+
 /** ⌘K 只搜这一页（spec：`GET /conversations?limit=100&order=waiting_first`，按短码匹配） */
 export const RECENT_CONVERSATIONS = 100;
 export const recentConversationsQuery = queryOptions({

@@ -1,0 +1,33 @@
+/*
+ * 会话工作台（J 页）占位（02 第 19 步先接路由，完整三栏工作台是第 20.2 步）。颜色只取 brand.css 的变量，
+ * 样式故意从简：这一版会被第 20.2 步整个替掉，不值得照design-system 重做一遍
+ */
+.wb-placeholder-note {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.wb-card {
+  margin: 0 0 16px;
+  padding: 16px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.wb-card-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wb-card p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}

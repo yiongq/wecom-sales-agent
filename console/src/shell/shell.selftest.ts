@@ -26,6 +26,8 @@ import { VIEWER_KEY } from '../viewer.js';
 import { Bell } from './Bell.js';
 import { resolveBoot, type Outcome, type Viewer } from './boot.js';
 import { ENTITY_ICON_NAMES } from './icons.js';
+import { __liveTest, type EventSourceLike, GRACE_MS, INITIAL_LIVE, onClose, onGraceExpired, onOpen, startLiveEvents } from './live.js';
+import { notificationPermission, notifyHandoff, requestNotificationPermission } from './notifications.js';
 import {
   avatarIndex,
   badgeText,
@@ -39,8 +41,10 @@ import {
   selectedNavKey,
   type ShellViewer,
   sidebarMode,
+  tabTitlePrefix,
   viewportTier,
   workbenchHref,
+  workbenchPath,
 } from './model.js';
 import { PageHeader } from './PageHeader.js';
 import {
@@ -335,15 +339,45 @@ eq(
 );
 eq('轮询：可见时每 30 秒，隐藏时停', POLL, { refetchInterval: 30_000, refetchIntervalInBackground: false });
 {
-  // 参数写对了还不够，要真的挂在铃铛与软徽标的两个查询上：画一次 Bell，看查询缓存里这两个查询建起来时带的选项
+  // 事件流接上之后（spec「通知」）：这三个查询不再固定 30 秒轮询，连着（或还在断线的 30 秒宽限内）不轮询，
+  // 断线满 30 秒才退回、重连立刻停（shell/live.ts）。画一次 Bell，看查询缓存里这几个查询建起来时带的选项；
+  // 这里没有调 startLiveEvents，live 的模块状态是初始值（没连、没到退回轮询的点），所以是 false，不是 30 秒
+  __liveTest.reset();
   const qc = new QueryClient();
   renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Bell, { pack: PACK, placement: 'rightTop' })));
   const opts = (key: readonly string[]) => {
     const o = qc.getQueryCache().find({ queryKey: [...key], exact: true })?.options as Record<string, unknown> | undefined;
     return o ? { refetchInterval: o.refetchInterval, refetchIntervalInBackground: o.refetchIntervalInBackground } : null;
   };
-  eq('轮询：铃铛与软徽标的计数查询按 30 秒轮询、隐藏时停', opts(['conversations', 'counts']), POLL);
-  eq('轮询：铃铛的等人接手列表按 30 秒轮询、隐藏时停', opts(['conversations', 'human']), POLL);
+  const DISCONNECTED = { refetchInterval: false, refetchIntervalInBackground: false };
+  eq('轮询：铃铛与软徽标的计数查询——事件流还没确认断线时不轮询', opts(['conversations', 'counts']), DISCONNECTED);
+  eq('轮询：铃铛的等人接手列表——同上', opts(['conversations', 'human']), DISCONNECTED);
+  eq('轮询：铃铛的「已成交客户要人工」列表——同上', opts(['conversations', 'paidNeedsHuman']), DISCONNECTED);
+  // 退回轮询之后变成 30 秒：useLivePollInterval 本身是 `state.polling ? pollMs : false` 这一句，
+  // state.polling 从 false 变 true 的那条规则已经在下面的纯函数（onGraceExpired）与 startLiveEvents 接线里测过；
+  // renderToStaticMarkup 对 useSyncExternalStore 一律走 getServerSnapshot（同 useViewport 在 SSR 下的写法），
+  // 改模块状态在这种渲染方式下看不出来，这里不重复造一套真实 DOM 挂载
+  __liveTest.reset();
+}
+{
+  // 徽标与标签页标题前缀只数 human，不把 assigned、已成交客户要人工也算进去（不变量 45）：
+  // counts 里 assigned 有数、paidNeedsHuman 也有会话时，铃铛的徽标只显示 human 那个数
+  const qc = new QueryClient();
+  qc.setQueryData(['conversations', 'counts'], {
+    total: 10,
+    byState: { ai: 3, human: 2, assigned: 5, paid: 0 },
+    aiByStage: {},
+    updatedToday: 0,
+  });
+  qc.setQueryData(['conversations', 'paidNeedsHuman'], { items: [row('wecom:cust_Z1'), row('wecom:cust_Z2'), row('wecom:cust_Z3')] });
+  const html = renderToStaticMarkup(
+    createElement(QueryClientProvider, { client: qc }, createElement(Bell, { pack: PACK, placement: 'rightTop' })),
+  );
+  check(
+    '徽标：只数 human（2），不把 assigned（5）与已成交客户要人工（3）也算进去',
+    html.includes('>2<') && !html.includes('>7<') && !html.includes('>5<'),
+    html.match(/badge-solid[^>]*>(\d+)</)?.[1],
+  );
 }
 
 // ---------------- 5. ⌘K ----------------
@@ -696,6 +730,176 @@ for (const r of ROLES) {
     ['/console/catalog/new', null],
   ];
   for (const [path, want] of cases) eq(`选中项：${path}`, selectedNavKey(path, nav), want);
+}
+
+// ---------------- 7. 事件流（shell/live.ts）与桌面提醒（notifications.ts，02 spec「通知」） ----------------
+
+eq(
+  '标签页标题前缀：N 为 0、没取到、负数、非数都没有前缀；N>0 写「(N) 」（不变量 45）',
+  [0, undefined, -1, Number.NaN, 1, 23].map(tabTitlePrefix),
+  ['', '', '', '', '(1) ', '(23) '],
+);
+eq('J 页路径：/conversations/$id，$id 经 encodeURIComponent', workbenchPath('wecom:cust F01'), '/conversations/wecom%3Acust%20F01');
+
+eq('live：初始状态没连、不轮询', INITIAL_LIVE, { connected: false, polling: false });
+eq('live：连上立刻停轮询', onOpen(), { connected: true, polling: false });
+eq(
+  'live：断线只改连接状态，轮询状态不变（由计时器到期才决定）',
+  [onClose({ connected: true, polling: false }), onClose({ connected: true, polling: true })],
+  [
+    { connected: false, polling: false },
+    { connected: false, polling: true },
+  ],
+);
+eq(
+  'live：断线满宽限退回轮询；已经重连上的这一条不生效',
+  [onGraceExpired({ connected: false, polling: false }), onGraceExpired({ connected: true, polling: false })],
+  [
+    { connected: false, polling: true },
+    { connected: true, polling: false },
+  ],
+);
+eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_000);
+
+{
+  // startLiveEvents 的接线：假 EventSource（EventTarget 子类），手动派发 open / error / 命名事件，看模块状态与副作用。
+  // graceMs 给很小的数（20ms），不用真的等 30 秒
+  class FakeSource extends EventTarget implements EventSourceLike {
+    closed = false;
+    close(): void {
+      this.closed = true;
+    }
+  }
+  const sources: FakeSource[] = [];
+  const createEventSource = (url: string): EventSourceLike => {
+    check('live：接的地址是 /api/console/events', url === '/api/console/events', url);
+    const s = new FakeSource();
+    sources.push(s);
+    return s;
+  };
+  const send = (s: FakeSource, type: string, data?: unknown): void => {
+    const ev = Object.assign(new Event(type), { data: JSON.stringify(data ?? {}) });
+    s.dispatchEvent(ev);
+  };
+
+  const qc = new QueryClient();
+  const notified: unknown[] = [];
+  const stop = startLiveEvents({ qc, onNotify: (d) => notified.push(d), graceMs: 20, createEventSource });
+  const s = sources[0]!;
+  check('live：一上来还没连，不轮询（还在宽限内）', !__liveTest.get().connected && !__liveTest.get().polling);
+
+  send(s, 'open');
+  check('live：open 事件之后连上、不轮询', __liveTest.get().connected && !__liveTest.get().polling);
+
+  send(s, 'error');
+  check('live：error 事件之后断线，轮询状态还没变（没到宽限）', !__liveTest.get().connected && !__liveTest.get().polling);
+  await new Promise((r) => setTimeout(r, 60));
+  check('live：断线满宽限（20ms）退回轮询', !__liveTest.get().connected && __liveTest.get().polling);
+
+  send(s, 'open');
+  check('live：重连立刻停轮询', __liveTest.get().connected && !__liveTest.get().polling);
+
+  // counts：直接写进 React Query 缓存，不用等 refetch
+  const COUNTS_SAMPLE = { total: 1, byState: { ai: 0, human: 1, assigned: 0, paid: 0 }, aiByStage: {}, updatedToday: 1 };
+  send(s, 'counts', COUNTS_SAMPLE);
+  eq('live：counts 事件直接写进 React Query 缓存', qc.getQueryData(['conversations', 'counts']), COUNTS_SAMPLE);
+
+  // 其余具名事件：让 conversations 开头的查询失效（铃铛的等人接手列表、I 页的列表都跟着重取）
+  qc.setQueryData(['conversations', 'human'], { items: [], total: 0 });
+  const invalidated = () => qc.getQueryState(['conversations', 'human'])?.isInvalidated === true;
+  check('live：handoff 事件之前，human 查询不是 invalidated', !invalidated());
+  send(s, 'handoff', { id: 'wecom:cust_X01', kind: 'request', at: new Date().toISOString(), escalated: false, paidCustomer: false });
+  check('live：handoff 事件让 conversations 开头的查询失效', invalidated());
+  eq('live：handoff 事件转给 onNotify（标题、授权、点击打开 J 页由调用方决定，这个模块只转发）', notified.length, 1);
+
+  qc.setQueryData(['conversations', 'human'], { items: [], total: 0 });
+  send(s, 'resync');
+  check('live：resync 事件同样整体重取', invalidated());
+
+  // auth：关闭连接、与退出登录同一套——离开成员身份、清掉除 viewer 外的查询缓存
+  qc.setQueryData(VIEWER_KEY, { kind: 'member' });
+  qc.setQueryData(['sop'], { x: 1 });
+  send(s, 'auth');
+  check('live：auth 事件关闭连接', s.closed);
+  check('live：auth 事件清掉除 viewer 外的查询（回登录页靠 viewer 重取判定）', qc.getQueryData(['sop']) === undefined);
+
+  stop();
+  __liveTest.reset();
+}
+
+{
+  // 桌面提醒（notifications.ts）：没有 Notification API 时算 unsupported；授权只在点了才申请
+  const realNotification = (globalThis as { Notification?: unknown }).Notification;
+  delete (globalThis as { Notification?: unknown }).Notification;
+  eq('通知：没有 Notification API 时是 unsupported', notificationPermission(), 'unsupported');
+  eq('通知：不支持时申请也只回 unsupported，不报错', await requestNotificationPermission(), 'unsupported');
+  check(
+    '通知：不支持时 notifyHandoff 什么都不做',
+    notifyHandoff({ id: 'x', kind: 'request', at: '', escalated: false, paidCustomer: false }, PACK, () => undefined) === null,
+  );
+
+  // 假的 Notification：记下构造参数与 permission、申请授权被调了几次，模拟已授权、已拒绝两种
+  class FakeNotification extends EventTarget {
+    static permission: NotificationPermission = 'default';
+    static requestCount = 0;
+    static requestPermission = async (): Promise<NotificationPermission> => {
+      FakeNotification.requestCount += 1;
+      return FakeNotification.permission;
+    };
+    title: string;
+    options: NotificationOptions | undefined;
+    constructor(title: string, options?: NotificationOptions) {
+      super();
+      this.title = title;
+      this.options = options;
+    }
+    close(): void {}
+  }
+  (globalThis as { Notification?: unknown }).Notification = FakeNotification;
+
+  // 铃铛弹层只在用户点「开启桌面提醒」时才申请授权（spec「通知」）：光画出铃铛（哪怕弹层开着、permission 还是
+  // default）不该申请；画 Bell 只测初始渲染，真的点击在 happy-dom 的 conversations/conversations.selftest.tsx
+  // 已经间接盖住铃铛同一套交互模式，这里单独确认「不画就不申请」这条底线
+  {
+    const qc = new QueryClient();
+    FakeNotification.requestCount = 0;
+    renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Bell, { pack: PACK, placement: 'rightTop' })));
+    eq('通知：画出铃铛不会自动申请授权，只有点「开启桌面提醒」才申请', FakeNotification.requestCount, 0);
+  }
+
+  FakeNotification.permission = 'denied';
+  check(
+    '通知：被拒绝时 notifyHandoff 什么都不做',
+    notifyHandoff({ id: 'x', kind: 'request', at: '', escalated: false, paidCustomer: false }, PACK, () => undefined) === null,
+  );
+
+  FakeNotification.permission = 'granted';
+  let openedId: string | null = null;
+  const n = notifyHandoff(
+    { id: 'wecom:cust_7F3A', kind: 'complaint', at: '', escalated: false, paidCustomer: false },
+    PACK,
+    (id) => (openedId = id),
+  ) as unknown as FakeNotification;
+  eq(
+    '通知：标题是「渠道+客户 · 短码 等人接手」，正文是类型的中文，tag 是 handoff:<id>，不含客户原话',
+    [n.title, n.options?.body, n.options?.tag],
+    ['企微客户 · 7F3A 等人接手', '客户要投诉', 'handoff:wecom:cust_7F3A'],
+  );
+  n.dispatchEvent(new Event('click'));
+  eq('通知：点击打开对应会话的 J 页', openedId, 'wecom:cust_7F3A');
+
+  FakeNotification.permission = 'granted';
+  eq(
+    '通知：紧急情况与已成交客户要人工的标题写法',
+    [
+      notifyHandoff({ id: 'wecom:cust_A1', kind: 'emergency', at: '', escalated: true, paidCustomer: false }, PACK, () => undefined),
+      notifyHandoff({ id: 'wecom:cust_A2', kind: 'request', at: '', escalated: false, paidCustomer: true }, PACK, () => undefined),
+    ].map((x) => (x as unknown as FakeNotification).title),
+    ['紧急 · 企微客户 · A1', '已成交客户要人工 · 企微客户 · A2'],
+  );
+
+  if (realNotification === undefined) delete (globalThis as { Notification?: unknown }).Notification;
+  else (globalThis as { Notification?: unknown }).Notification = realNotification;
 }
 
 if (fails.length) {
