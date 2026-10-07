@@ -1996,7 +1996,12 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
   check('人工回复：只读成员 → ForbiddenError', thrown === 'ForbiddenError');
   thrown = '';
   await tk.reply(s5.id, B, '   ', 'c4').catch((e: unknown) => (thrown = (e as Error).constructor.name));
-  check('人工回复：正文只有空白 → 拒绝、不改', thrown === 'RangeError' && sent.length === 1);
+  // 审查第 3 条（authz[3]、spec[2]）：清洗之后为空原来抛 RangeError，两条路径都回 500；现在抛命名错误，映射成 400
+  check('人工回复：正文只有空白 → 拒绝、不改', thrown === 'EmptyReplyError' && sent.length === 1);
+  thrown = '';
+  // 审查第 3、10 条（spec[2]、compat[0]）：清洗之后仍超过 2000 字不能悄悄截断照发，要抛命名错误、不改、不发
+  await tk.reply(s5.id, B, '字'.repeat(2001), 'c4b').catch((e: unknown) => (thrown = (e as Error).constructor.name));
+  check('人工回复：清洗之后仍超过 2000 字 → 拒绝、不改、不截断照发', thrown === 'ReplyTooLongError' && sent.length === 1);
   failNext = true;
   const r2 = await tk.reply(s5.id, B, '这条发不出去', 'c5');
   check(

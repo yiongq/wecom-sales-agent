@@ -263,6 +263,18 @@ export function storeLagging(sessionId: string): boolean {
   const h = b.health();
   return h.lagMs > 5000 || h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
 }
+
+/**
+ * 这个会话等提交（flushSession）失败之后，还会不会再提交（审查第 4、5 条，concurrency[0][1]）：已冲突（优雅停机，没落库的
+ * 转去 spill）或这个会话因数据类错误停写（poisoned）就不会再提交；与 storeLagging 不同之处是不看 lagMs——
+ * 只是还没到 5 秒、或刚好卡在重试退避里，仍可能提交，不算「不会再提交」。
+ * 等提交之后的分支（人工回复、付款确认）据此区分「真超时，照发，persisted:false」与「不会再提交，不发，503」
+ */
+export function storeUnrecoverable(sessionId: string): boolean {
+  const b = backendFor(sessionId);
+  const h = b.health();
+  return h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
+}
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);

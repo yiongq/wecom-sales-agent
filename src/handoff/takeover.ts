@@ -19,6 +19,7 @@ import {
   seqOf,
   storeLagging,
   StoreLaggingError,
+  storeUnrecoverable,
   type AuditActor,
 } from '../store.js';
 import { handoffNotifyOps } from '../jobs/notify.js';
@@ -53,6 +54,8 @@ export const isReleaseNote = (m: Pick<ChatMessage, 'role' | 'content'>): boolean
 
 /** 人工回复没送达时记的 system（与 02 之前的旧 /reply 相同） */
 export const REPLY_FAILED_NOTE = '⚠️ 上一条人工回复未能发送到客户（企微发送失败：可能是 48h 会话窗口已关闭或企微配置问题）';
+/** 等提交时发现不会再提交（poisoned 或冲突）时记的 system：没发给客户，内容还留在内存里（停机时进 spill，修好原因后重启回放） */
+export const REPLY_UNRECOVERABLE_NOTE = '⚠️ 上一条人工回复未能发送到客户（写库失败，请联系技术确认原因后重试）';
 
 const HANDLERS: ReadonlySet<Actor['role']> = new Set(['owner', 'admin', 'supervisor', 'agent', 'shared']);
 const SUPERVISORS: ReadonlySet<Actor['role']> = new Set(['owner', 'admin', 'supervisor']);
@@ -96,6 +99,18 @@ export class ForbiddenError extends Error {
 export class ConsentDeclinedError extends Error {
   constructor() {
     super('客户没有同意处理敏感信息，不能交给 AI');
+  }
+}
+/** 清洗（trim、去 NUL）之后正文为空 → 400 bad_request（审查第 3 条：之前抛 RangeError，两条路径都回 500） */
+export class EmptyReplyError extends Error {
+  constructor() {
+    super('人工回复不能为空');
+  }
+}
+/** 清洗之后仍超过 2000 字 → 400 bad_request（审查第 3 条，与旧 /reply 悄悄截断的那条一起修：不能截断照发） */
+export class ReplyTooLongError extends Error {
+  constructor() {
+    super('人工回复过长（≤2000 字）');
   }
 }
 
@@ -283,8 +298,11 @@ function replySync(sessionId: string, actor: Actor, text: string, clientId: stri
   if (!HANDLERS.has(actor.role)) throw new ForbiddenError();
   const cur = assigneeOf(s);
   if (cur && !isMine(cur, actor)) throw new AssignedToOtherError(cur.name);
-  const content = cleanText(text.trim(), 2000).trim();
-  if (!content) throw new RangeError('人工回复不能为空');
+  // 先清洗（去 NUL、trim）再量，不先按 2000 截断：截断之后还非空就照发等于悄悄截了客户收不到的那一半（审查第 3、10 条）
+  const cleaned = cleanText(text.trim()).trim();
+  if (!cleaned) throw new EmptyReplyError();
+  if (cleanText(cleaned, 2000) !== cleaned) throw new ReplyTooLongError();
+  const content = cleaned;
   if (storeLagging(s.id)) throw new StoreLaggingError(s.id);
   const message: ChatMessage = {
     role: 'agent',
@@ -310,13 +328,35 @@ function replySync(sessionId: string, actor: Actor, text: string, clientId: stri
   return result;
 }
 
-async function deliver(sessionId: string, message: ChatMessage, releaseHold: () => void): Promise<ReplyResult> {
-  const seq = seqOf(message) ?? 0;
-  let persisted = true;
+/**
+ * 等这个会话当前的改动提交（审查第 4、5 条，concurrency[0][1]）：真超时（仍可能提交）返回 persisted:false，调用方照发；
+ * 等提交时发现不会再提交（已冲突或这个会话 poisoned）抛 StoreLaggingError，调用方不发、回 503 store_lagging——
+ * 不能在「客户收到了、库里没有」和「等满 5 秒也没见底」之间，把「不会再提交」也当成后一种
+ */
+export async function awaitCommit(sessionId: string): Promise<{ persisted: boolean }> {
   try {
     await flushSession(sessionId, { timeoutMs: 5000 });
+    return { persisted: true };
   } catch {
-    persisted = false;
+    if (storeUnrecoverable(sessionId)) throw new StoreLaggingError(sessionId);
+    return { persisted: false };
+  }
+}
+
+async function deliver(sessionId: string, message: ChatMessage, releaseHold: () => void): Promise<ReplyResult> {
+  const seq = seqOf(message) ?? 0;
+  let persisted: boolean;
+  try {
+    ({ persisted } = await awaitCommit(sessionId));
+  } catch (e) {
+    // 不会再提交：不发，记一条没发出去的说明（内容还留在内存里，停机时进 spill，修好原因后重启回放）
+    releaseHold();
+    const s = getSession(sessionId);
+    if (s) {
+      s.messages.push({ role: 'system', content: REPLY_UNRECOVERABLE_NOTE, at: Date.now() });
+      saveSession(s, false);
+    }
+    throw e;
   }
   let sent = false;
   try {

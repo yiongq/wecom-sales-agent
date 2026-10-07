@@ -19,11 +19,13 @@ import { HANDOFF_REASON } from './handoff/record.js';
 import {
   AssignedToOtherError,
   ConsentDeclinedError,
+  EmptyReplyError,
   isReleaseNote,
   NotHandlingError,
   release,
   releaseNote,
   reply,
+  ReplyTooLongError,
   SendWindowError,
   setReplyTransport,
   sharedActor,
@@ -501,6 +503,9 @@ function legacyRefusal(c: Context, e: unknown): Response | null {
   // 企微发送窗口（R18）：剩 0 条或窗口已过，什么都不改（第 12 步的形状）
   if (e instanceof SendWindowError) return c.json({ ok: false, error: e.message, reason: e.reason, closesAt: e.closesAt }, 409);
   if (e instanceof StoreLaggingError) return c.json({ ok: false, error: '写库跟不上，稍后再试', code: 'store_lagging' }, 503);
+  // 清洗之后为空（只含 NUL 的正文）或仍超过 2000 字：照 01 的 400 写法（{ error }），不是服务端异常（审查第 3、10 条）
+  if (e instanceof EmptyReplyError) return c.json({ error: 'text 不能为空' }, 400);
+  if (e instanceof ReplyTooLongError) return c.json({ error: '回复过长（≤2000 字）' }, 400);
   return null;
 }
 
@@ -513,12 +518,15 @@ app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, as
   if (!s) return c.json({ error: 'session not found' }, 404);
   try {
     release(s.id, sharedActor(auditIp(c)));
-    await flushSession(s.id, { timeoutMs: 5000 });
   } catch (e) {
     const refused = legacyRefusal(c, e);
     if (refused) return refused;
     throw e;
   }
+  // 交还已经在内存生效：admin.html 不许改（R11），它把非 2xx 一律显示成「交还失败、仍处于人工接管状态」，
+  // 还不清 S.taken[id]——可改动其实已经生效，AI 已经恢复应答，页面却一直显示错的。等提交只是让库尽快跟上，
+  // 超时、poisoned、冲突都不改这次交还本身是不是生效了，不能让这里的等待把 200 变成 503（审查第 9 条，compat[2]）
+  await flushSession(s.id, { timeoutMs: 5000 }).catch(() => {});
   return c.json(getSession(s.id) ?? s);
 });
 
@@ -844,7 +852,8 @@ app.use('/*', serveStatic({ root: './public' }));
 // 会直接冒成 500 纯文本——压测实测约 3% 的请求命中，而这正是公开演示链接被点的那条路径。
 // 企微渠道早有 catch（adapters/wecom.ts），网页端一直漏着。
 app.onError((err, c) => {
-  console.error(`[server] 未捕获异常 ${c.req.method} ${c.req.path}:`, err instanceof Error ? err.message : err);
+  // 日志不打会话原 id（不变量 48）：路由模板（如 /api/sessions/:id/reply），不是实际路径（含 external_userid）
+  console.error(`[server] 未捕获异常 ${c.req.method} ${c.req.routePath}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
   if (c.req.path === '/api/chat') {
     return c.json({ reply: { text: '抱歉，我这边卡了一下，麻烦您再发一次～', stage: 'discovery' } }, 200);

@@ -19,6 +19,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
+import type { Actor } from '../handoff/takeover.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 
 /** 第 6 步导入导出夹具里的真实会话 id（子进程入口在下面就要用，所以放在最前面） */
@@ -3182,6 +3183,92 @@ async function childPg(ck: Ck): Promise<void> {
       '/healthz：db 存储、有 poisoned 时 ok 为 false，poisoned 只给个数、不带会话 id',
       hz.ok === false && hz.store.mode === 'db' && hz.store.poisoned === 3 && !JSON.stringify(hz).includes('wmCorrupt'),
       JSON.stringify(hz.store),
+    );
+  }
+
+  // ---- 审查第 4、5 条（concurrency[0][1]）：等提交时发现这次改动不会再提交（poisoned），人工回复、确认收款都不照发，
+  // 抛 StoreLaggingError（调用方据此回 503），不是「超时也照发」那一支 ----
+  {
+    const tk = await import('../handoff/takeover.js');
+    const orders = await import('../payment/orders.js');
+    const pushed: string[] = [];
+    tk.setReplyTransport(async (_sid, text) => {
+      pushed.push(text);
+      return true;
+    });
+
+    // 人工回复：会话本身没问题，但接手（reply 里没有接手人时先 takeover）与推消息都会触发落库；
+    // 落库前先把窗口弄坏（splice 之后的 saveSession 会撞上 WindowCorruptError），让「这次改动」本身不会再提交
+    const rp = store.getOrCreateSession('wecom:wmPoisonReply', 'simulator');
+    say(rp, 'customer', '1');
+    say(rp, 'agent', '2');
+    say(rp, 'customer', '3');
+    await store.flushSession(rp.id);
+    rp.messages.splice(1, 1); // 删中间一条留出缺口（同「WindowCorruptError」那组的手法）：下一次 assignSeqs 严格模式会撞上它
+    let replyErr: unknown = null;
+    try {
+      await tk.reply(rp.id, tk.sharedActor(), '这条回复不该发给客户', randomUUID());
+    } catch (e) {
+      replyErr = e;
+    }
+    ck(
+      'poisoned：人工回复在等提交时发现这次改动不会再提交，不发、抛 StoreLaggingError（审查第 4 条，concurrency[0]）',
+      replyErr instanceof store.StoreLaggingError && pushed.length === 0 && poisoned(rp.id),
+      String(replyErr),
+    );
+
+    // 确认收款：先正常建一张单、落库成功，再把金额改成违反 CHECK 的负数，让「确认收款」这次改动自己把会话写坏
+    pushed.length = 0;
+    const payS = store.getOrCreateSession('wecom:wmPoisonPay', 'simulator');
+    say(payS, 'customer', '订个团');
+    await store.flushSession(payS.id);
+    const payOrder = store.createOrder({
+      sessionId: payS.id,
+      routeId: 'r-yunnan-mid',
+      routeTitle: '云南',
+      travelers: 2,
+      departDate: '2026-11-01',
+      totalPrice: 16800,
+    });
+    await store.flushSession(payS.id);
+    payOrder.totalPrice = -1; // 下一次落库（确认收款那一次）会违反 orders_total_price_check
+    const supActor: Actor = { userId: 'wmPoisonPaySup', name: '测试主管', role: 'supervisor', ip: null };
+    let payErr: unknown = null;
+    try {
+      await orders.markPaidByAdvisor(payOrder.id, supActor);
+    } catch (e) {
+      payErr = e;
+    }
+    ck(
+      'poisoned：确认收款在等提交时发现这次改动不会再提交，付款确认不发、抛 StoreLaggingError（审查第 5 条，concurrency[1]）',
+      payErr instanceof store.StoreLaggingError && pushed.length === 0 && poisoned(payS.id),
+      String(payErr),
+    );
+
+    // 重复确认收款（幂等分支）：订单已是 paid 时也要等提交，不能不等就说成功（之前的缺陷：直接 persisted:true）
+    const idemS = store.getOrCreateSession('wecom:wmPoisonPayIdem', 'simulator');
+    say(idemS, 'customer', '订个团');
+    await store.flushSession(idemS.id);
+    const idemOrder = store.createOrder({
+      sessionId: idemS.id,
+      routeId: 'r-yunnan-mid',
+      routeTitle: '云南',
+      travelers: 2,
+      departDate: '2026-11-01',
+      totalPrice: 16800,
+    });
+    idemOrder.status = 'paid'; // 直接摆成已付：走幂等分支
+    idemOrder.totalPrice = -1; // 这个会话还没落过库，第一次落库（幂等分支的 awaitCommit 触发）就违反 CHECK
+    let idemErr: unknown = null;
+    try {
+      await orders.markPaidByAdvisor(idemOrder.id, supActor);
+    } catch (e) {
+      idemErr = e;
+    }
+    ck(
+      '重复确认收款（已是 paid）也等提交，不会在改动还没提交时就说成功（审查第 5 条，concurrency[1]）',
+      idemErr instanceof store.StoreLaggingError,
+      String(idemErr),
     );
   }
 
