@@ -3,6 +3,7 @@
 // db 存储下它只管 demo 类会话及其订单（R6），由 owns / ownsOrder 过滤。
 import fs from 'node:fs';
 import path from 'node:path';
+import { logError } from '../log.js';
 import type { Order, Session } from '../types.js';
 import { StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
 import { deliverCommitted, type DomainEvent } from './events.js';
@@ -62,9 +63,9 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
       const backup = `${file}.corrupt-${Date.now()}`;
       try {
         fs.renameSync(file, backup);
-        console.error(`[store] ${path.basename(file)} 解析失败，已备份到 ${backup}:`, e);
+        console.error(`[store] ${path.basename(file)} 解析失败，已备份到 ${backup}:`, logError(e));
       } catch {
-        console.error(`[store] ${path.basename(file)} 解析失败且无法备份:`, e);
+        console.error(`[store] ${path.basename(file)} 解析失败且无法备份:`, logError(e));
       }
     }
   }

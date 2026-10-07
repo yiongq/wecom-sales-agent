@@ -15,6 +15,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installJsonConsole } from '../src/log.js';
+
+// LOG_FORMAT=json（02 spec R24）：这个回放器不经 server.ts / profile-boot.ts 启动，没有它 console.* 不会被接到 pino；
+// 没设时什么都不做。放在这里好让「LOG_FORMAT=json 跑一遍 mock eval、扫描输出」这个门禁检查生效
+installJsonConsole();
 
 // 评测数据必须写进临时目录：store.ts 在模块加载时就取 VAR_DIR，静态 import 会先于
 // 这行赋值执行——所以引擎相关模块一律动态 import（与 src/engine.selftest.ts 同一套做法）。

@@ -251,6 +251,8 @@ export interface PgStoreStats {
   /** 启动时回放的 spill 会话数（应用的，与认出已经在库里而跳过的） */
   replayed: number;
   replaySkipped: number;
+  /** 启动时回放失败（或读不出来）、改名 .failed 的 spill 文件数（store 告警，R24） */
+  replayFailedFiles: number;
 }
 
 export interface PgBackend extends StoreBackend {
@@ -294,7 +296,10 @@ export interface PgBackend extends StoreBackend {
    * 已经是 failed 为 null）；这次没写（同上三种情况、库报错，记一行）不是 ok，调用方再试一次
    */
   markOutboundFailed(channelMsgid: string, failType: number): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
-  /** 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；不归 PG 后端管的为 null */
+  /**
+   * 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；还没建写队列的先生成好，建写队列时
+   * 用它（日志的 conv 在第一次 saveSession 之前就要，R24）。只由 store.conversationRef 为内存里的真实会话调
+   */
   refOf(sessionId: string): string | null;
   /** 这个会话因数据类错误停写了（poisoned）：人工回复、订单动作在改动之前就 503（第 13 步） */
   isPoisoned(sessionId: string): boolean;
@@ -571,30 +576,39 @@ const fsLabel = (e: unknown): string => {
  * 读不出来或结构不对（version、sessions）的文件同样改名 .failed。文件系统出错与其余意外错误以 spill_conflict 拒绝启动，
  * detail 只写文件名与错误码。返回回放与跳过的会话数
  */
-async function replaySpills(d: PgBackendDeps): Promise<{ applied: number; skipped: number }> {
+async function replaySpills(d: PgBackendDeps): Promise<Replayed> {
   let names: string[];
   try {
     names = fs.readdirSync(d.varDir).filter((f) => SPILL_FILE_RE.test(f));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0 };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0, failedFiles: 0 };
     throw new SessionStoreStartupError('spill_conflict', `读不了数据目录里的 spill 文件（${fsLabel(e)}）`);
   }
   let applied = 0;
   let skipped = 0;
+  let failedFiles = 0;
   for (const name of names.toSorted()) {
     try {
       const r = await replayFile(d, name);
       applied += r.applied;
       skipped += r.skipped;
+      failedFiles += r.failedFiles;
     } catch (e) {
       if (e instanceof SessionStoreStartupError) throw e;
       throw new SessionStoreStartupError('spill_conflict', `${name}：${fsLabel(e)}`);
     }
   }
-  return { applied, skipped };
+  return { applied, skipped, failedFiles };
 }
 
-async function replayFile(d: PgBackendDeps, name: string): Promise<{ applied: number; skipped: number }> {
+/** 回放 spill 的结果：应用、跳过的会话数，改名 .failed 的文件数 */
+interface Replayed {
+  applied: number;
+  skipped: number;
+  failedFiles: number;
+}
+
+async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
   const file = path.join(d.varDir, name);
   const raw = fs.readFileSync(file, 'utf8');
   let doc: SpillDoc | null = null;
@@ -609,7 +623,7 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<{ applied: nu
     console.error(
       `[store] spill 文件 ${name} 读不出来（不是 JSON，或 version、sessions 对不上），已改名 .failed，从库里的状态起；需要人工处理`,
     );
-    return { applied: 0, skipped: 0 };
+    return { applied: 0, skipped: 0, failedFiles: 1 };
   }
   if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
   let applied = 0;
@@ -641,7 +655,7 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<{ applied: nu
         `已回放：${done.join('、') || '无'}；失败：${failed.join('、')}`,
     );
   } else fs.unlinkSync(file);
-  return { applied, skipped };
+  return { applied, skipped, failedFiles: failed.length ? 1 : 0 };
 }
 
 // ---------------- 后端 ----------------
@@ -657,9 +671,11 @@ export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
   return createBackend(d, pre, replay);
 }
 
-function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: number; skipped: number }): PgBackend {
+function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBackend {
   const ctx = systemCtx(d.tenantId);
   const entries = new Map<string, Entry>();
+  /** refOf 先生成好、还没建写队列的新会话的 ref（建写队列时取走） */
+  const preRefs = new Map<string, string>();
   /** 收养了、还没随会话在库里提交过一次的孤儿订单 id：提交之前仍归文件后端（orders.json 照写），提交之后 ordersTaken */
   const adopted = new Set<string>();
   /** 本进程记了作废的订单 id：作废的订单不再进写队列，upsert 不会把 voided_at 写回 NULL */
@@ -678,6 +694,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
     foreign: 0,
     replayed: replay.applied,
     replaySkipped: replay.skipped,
+    replayFailedFiles: replay.failedFiles,
   };
 
   const emptyTelemetry = (): Required<TelemetryRows> => ({ traces: [], guards: [], outbound: [] });
@@ -723,7 +740,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
   function entryOf(s: Session): Entry {
     let e = entries.get(s.id);
     if (!e) {
-      e = newEntry(s, randomUUID(), false, 0, new Set());
+      e = newEntry(s, preRefs.get(s.id) ?? randomUUID(), false, 0, new Set());
+      preRefs.delete(s.id);
       for (const m of Array.isArray(s.messages) ? s.messages : []) if (m && seqOf(m) !== undefined) e.pending.push(m);
       // 孤儿订单（所属会话不在内存里，留在 orders.json）在同 id 的会话又建出来时转归 PG（plan 第 2 步）：
       // 随它的第一次落库写进库；提交之前仍归文件后端，提交之后才让 orders.json 去掉它
@@ -1226,7 +1244,17 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: { applied: numb
         return { ok: false };
       }
     },
-    refOf: (sessionId) => entries.get(sessionId)?.ref ?? null,
+    // 还没建写队列的新会话（第一轮在第一次 saveSession 之前就要打日志）先生成好 ref，建写队列时用它：日志的 conv 从第一行起就是同一个
+    refOf: (sessionId) => {
+      const e = entries.get(sessionId);
+      if (e) return e.ref;
+      let ref = preRefs.get(sessionId);
+      if (!ref) {
+        ref = randomUUID();
+        preRefs.set(sessionId, ref);
+      }
+      return ref;
+    },
     isPoisoned: (sessionId) => entries.get(sessionId)?.poisoned != null,
     jobsTx(fn) {
       if (conflict) return Promise.reject(new JobsTxRefused('conflict'));

@@ -31,6 +31,7 @@ import { handleMessage, inboundText, replyMessageOf } from '../engine.js';
 import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
 import { onSendFail, recordSend, replyDelivered, type SendResult } from '../quota/ledger.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
+import { convLabel, logError, withConversationLog } from '../log.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
 import { routeForProposal } from '../tools.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
@@ -73,6 +74,26 @@ let cachedToken = '';
 let tokenExpireAt = 0; // 毫秒时间戳
 let tokenInflight: Promise<string> | null = null; // 并发去重：过期瞬间多路径只发一次 gettoken
 
+/**
+ * 取 access_token 失败（02 spec 的 wecom_send 告警：取不到就立即告警，startAlerts 订阅）。收发都要它，sync_msg 拉不到消息时
+ * 账本里什么都没有，所以挂在这里而不是账本上。只交企微的错误码（没有就是错误名），不交地址与密钥
+ */
+const tokenErrorListeners = new Set<(code: string) => void>();
+export function onTokenError(cb: (code: string) => void): () => void {
+  tokenErrorListeners.add(cb);
+  return () => tokenErrorListeners.delete(cb);
+}
+function tokenFailed(e: unknown): void {
+  const code = e instanceof Error ? (/errcode=(-?\d+)/.exec(e.message)?.[1] ?? e.name) : 'unknown';
+  for (const cb of tokenErrorListeners) {
+    try {
+      cb(code);
+    } catch {
+      /* 订阅者出错不影响收发 */
+    }
+  }
+}
+
 async function getAccessToken(cfg: WecomConfig, force = false): Promise<string> {
   if (!force && cachedToken && Date.now() < tokenExpireAt) return cachedToken;
   tokenInflight ??= (async () => {
@@ -87,6 +108,9 @@ async function getAccessToken(cfg: WecomConfig, force = false): Promise<string> 
       // 官方 7200s，提前 300s 刷新，避开边界失效
       tokenExpireAt = Date.now() + ((data.expires_in ?? 7200) - 300) * 1000;
       return cachedToken;
+    } catch (e) {
+      tokenFailed(e);
+      throw e;
     } finally {
       tokenInflight = null;
     }
@@ -200,9 +224,9 @@ async function loadState(): Promise<void> {
       const backup = `${STATE_FILE}.corrupt-${Date.now()}`;
       try {
         await rename(STATE_FILE, backup);
-        console.error(`[wecom] ⚠️⚠️ ${path.basename(STATE_FILE)} 解析失败，已备份到 ${backup}:`, e);
+        console.error(`[wecom] ⚠️⚠️ ${path.basename(STATE_FILE)} 解析失败，已备份到 ${backup}:`, logError(e));
       } catch {
-        console.error(`[wecom] ⚠️⚠️ ${path.basename(STATE_FILE)} 解析失败且无法备份:`, e);
+        console.error(`[wecom] ⚠️⚠️ ${path.basename(STATE_FILE)} 解析失败且无法备份:`, logError(e));
       }
       cursor = '';
       handled.clear();
@@ -917,7 +941,11 @@ function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
  * 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放。
  * 返回 'deferred'：停机的 normal 段已截止、回复没开始发，这条留在在途表里，重启后重放（情况 4 原样补发、情况 3 重跑）
  */
-async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = false): Promise<'deferred' | void> {
+function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = false): Promise<'deferred' | void> {
+  // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
+  return withConversationLog(SESSION_PREFIX + msg.external_userid, () => handleCustomerMessageInner(cfg, msg, replay));
+}
+async function handleCustomerMessageInner(cfg: WecomConfig, msg: KfMessage, replay: boolean): Promise<'deferred' | void> {
   const sessionId = SESSION_PREFIX + msg.external_userid;
   if (msg.msgtype !== 'text' || !msg.text?.content) {
     // 小红书来的客户第一条常是笔记截图、行程截图或语音。一句「只能处理文字」是把
@@ -1051,7 +1079,7 @@ async function handleCustomerMessage(cfg: WecomConfig, msg: KfMessage, replay = 
       }
       // 发送失败不能静默：会话里已经存了这条 agent 回复，后台看着像"已跟进"，
       // 实际客户什么都没收到（48h 会话窗口关闭、企微限流等），顾问会以为已经聊过了
-      console.error(`[wecom] ⚠️ 回复未送达客户（阶段=${reply.stage}）:`, sessionId);
+      console.error(`[wecom] ⚠️ 回复未送达客户（阶段=${reply.stage}）:`, convLabel(sessionId));
       if (s) {
         s.messages.push({
           role: 'system',
@@ -1207,7 +1235,7 @@ async function replayInflight(cfg: WecomConfig): Promise<void> {
     if ((head && p.tries >= MAX_REPLAY) || tooOld) {
       inflight.delete(id);
       const why = tooOld ? '已超过 48h 发送窗口' : `已重放 ${p.tries} 次仍未处理完`;
-      console.error(`[wecom] ⚠️ 放弃一条未处理完的客户消息（${why}）:`, SESSION_PREFIX + p.msg.external_userid);
+      console.error(`[wecom] ⚠️ 放弃一条未处理完的客户消息（${why}）:`, convLabel(SESSION_PREFIX + p.msg.external_userid));
       // 放弃必须让顾问看见：会话最后一条是客户说的，自动跟进不会去追，不标出来就没人知道要回
       const s = getSession(SESSION_PREFIX + p.msg.external_userid);
       if (s) {
@@ -1330,7 +1358,7 @@ export const wecomAdapter: ChannelAdapter = {
     const cfg = readConfig();
     if (!cfg) {
       // 历史 wecom 会话存在但企微 env 未配（如换服务器漏配）：必须出声，否则回复凭空消失
-      console.error('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', sessionId);
+      console.error('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', convLabel(sessionId));
       return false;
     }
     if (!sessionId.startsWith(SESSION_PREFIX)) return false;

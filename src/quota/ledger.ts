@@ -224,6 +224,30 @@ onSessionSaved(() => {
   for (const msg of awaitingSeq.keys()) if (seqOf(msg) !== undefined) setImmediate(() => releaseAwaiting(msg, false));
 });
 
+/**
+ * 一个分段最后的结果（settle 收到的那一个，只报一次）：02 spec 的 wecom_send 告警挂在这里（rejected 或 unknown 算最终发送失败）。
+ * 只交结果、错误码与 kind，不交会话与正文
+ */
+export interface SendSettled {
+  result: SendResult;
+  errcode: number | null;
+  kind: OutboundKind;
+}
+const settledListeners = new Set<(s: SendSettled) => void>();
+export function onSendSettled(cb: (s: SendSettled) => void): () => void {
+  settledListeners.add(cb);
+  return () => settledListeners.delete(cb);
+}
+function notifySettled(s: SendSettled): void {
+  for (const cb of settledListeners) {
+    try {
+      cb(s);
+    } catch {
+      /* 订阅者出错不影响记账 */
+    }
+  }
+}
+
 /** 一个分段的记账口子：sendText / sendRich / 欢迎语 / 菜单的每个分段调一次 recordSend，发完调一次 settle（或 discard） */
 export interface SendHandle {
   /** 随 send_msg 下发的 msgid：32 个十六进制字符；同一分段的重试沿用它 */
@@ -281,6 +305,7 @@ export function recordSend(sessionId: string, kind: OutboundKind, message: ChatM
         r.errcode = null;
       } else if (r.status === 'unknown' && result === 'unknown') r.errcode = errcode ?? null;
       persist(r);
+      notifySettled({ result, errcode: errcode ?? null, kind });
     },
     discard() {
       if (done) return;

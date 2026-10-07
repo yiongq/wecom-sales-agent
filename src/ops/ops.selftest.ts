@@ -7,6 +7,11 @@
 // 假 OTLP/HTTP 接收端收到的 span 名字、父子关系、起止时刻与属性逐项对，默认没有原文与 external_userid，OTEL_CAPTURE_CONTENT=1
 // 时才有；没有 ref 的会话用不会撞的匿名引用；出错的模型调用、执行时抛错的工具与出错的轮次带 error.type；导出端点挂掉时对话照常、
 // 只记日志；停机时 flush，端点不通时按 drain 段的截止时刻放弃。另有 check-boundaries 新加的三条规则。
+// 日志（第 17 步）：子进程在 prod profile、LOG_FORMAT=json 下跑一组含价格护栏命中与转人工的对话和几个请求，标准输出每行都是
+// JSON、带 time / level / msg，请求里的 req 与响应头 x-request-id 相同，轮次里带 tenant / conv（会话的 ref）/ turn，搜不到客户原话、
+// 会话原 id 与凭据（兜底与 redact）；进程内另测 logQuote、convLabel、没设 LOG_FORMAT 时什么都不接。
+// 告警（第 17 步）：本机假 webhook 上 app 侧五个键的触发、30 分钟去重、恢复、条件变重、限流、超时与失败不抛不阻塞、没配地址只
+// warn、内容格式与禁止项；deploy/watch.sh 与 backup.sh 用 PATH 里的假 docker、curl、df、age 以子进程跑。
 // 用法：npx tsx src/ops/ops.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawn, spawnSync } from 'node:child_process';
@@ -38,6 +43,12 @@ for (const k of [
   'LLM_MODEL_CHEAP',
   'EMBED_MODEL',
   'LLM_SLOW_TURN_MS',
+  // 第 17 步：本机 .env 里的日志格式、告警地址与企微回调口令同样进不来（不会往真的群里推）
+  'LOG_FORMAT',
+  'ALERT_WEBHOOK_URL',
+  'INSTANCE_LABEL',
+  'WECOM_CALLBACK_TOKEN',
+  'WECOM_CALLBACK_AES_KEY',
 ]) {
   if (!CHILD || !k.startsWith('OTEL_')) process.env[k] = '';
 }
@@ -120,6 +131,121 @@ if (CHILD === 'no-otel') {
   // 写进管道是异步的：等写完再退出，不然长的一行会被截断
   process.stdout.write(`OPS_CHILD ${JSON.stringify(out)}\n`, () => process.exit(0));
   await new Promise(() => {});
+}
+
+// 日志子进程与父进程共用：客户的 external_userid、两句原话（任何一行日志里都不许出现）、模型那句带编价的回复
+const LOG_EXT = 'wmJsonLogPriv01';
+const LOG_SAID = '想去云南玩七月份，我叫王小明电话一三八一二三四五六七八';
+const LOG_SAID2 = '我要转人工，找真人顾问聊聊吧';
+const LOG_RAW = '云南这边有丽江大理·洱海古城 6 日，每人 16,800 元起。当地包车一天只要 1,234 元。您几位出行呢？';
+
+// ================ 子进程：prod profile、LOG_FORMAT=json 下的日志（不变量 48、验收 34 的日志部分） ================
+if (CHILD === 'json-logs') {
+  process.env.LOG_FORMAT = 'json';
+  process.env.DEPLOY_PROFILE = 'prod';
+  process.env.ADMIN_PASS = 'ops-json-admin';
+  process.env.CONFIG_SOURCE = 'file';
+  // 假模型：按脚本回话（与父进程的同一个写法）
+  const steps: { content?: string; toolCalls?: { name: string; args: Record<string, unknown> }[] }[] = [];
+  let n = 0;
+  const llm = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      if (req.url?.endsWith('/embeddings')) {
+        const input = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input?: string[] }).input ?? [];
+        res.end(JSON.stringify({ data: input.map((_, i) => ({ embedding: [1, i % 3, 2] })), usage: { prompt_tokens: 3 } }));
+        return;
+      }
+      const step = steps.shift();
+      n += 1;
+      const message = step?.toolCalls
+        ? {
+            role: 'assistant',
+            content: null,
+            tool_calls: step.toolCalls.map((c, i) => ({
+              id: `call_${n}_${i}`,
+              type: 'function',
+              function: { name: c.name, arguments: JSON.stringify(c.args) },
+            })),
+          }
+        : { role: 'assistant', content: step?.content ?? '好的～' };
+      res.end(
+        JSON.stringify({
+          choices: [{ message, finish_reason: step?.toolCalls ? 'tool_calls' : 'stop' }],
+          usage: { prompt_tokens: 900, completion_tokens: 30 },
+        }),
+      );
+    });
+  });
+  await new Promise<void>((r) => llm.listen(0, '127.0.0.1', r));
+  const llmUrl = `http://127.0.0.1:${(llm.address() as AddressInfo).port}`;
+  Object.assign(process.env, {
+    LLM_MOCK: '0',
+    LLM_PROVIDER: '',
+    LLM_BASE_URL: llmUrl,
+    LLM_API_KEY: 'selftest-fake-key',
+    LLM_MODEL: 'glm-5.3-flashx',
+    EMBED_BASE_URL: llmUrl,
+    EMBED_API_KEY: 'selftest-fake-key',
+    LLM_HEDGE_MODEL: '',
+    LLM_MAX_RETRY: '0',
+  });
+  // 导入 server.ts：profile-boot 在导入期就把 console.* 接到 pino（[profile] 那一行也是 JSON）
+  const { app } = await import('../server.js');
+  const { log, withLogContext } = await import('../log.js');
+  const store = await import('../store.js');
+  const recorder = await import('../trace/recorder.js');
+  const testing = await import('../db/testing.js');
+  const { handleMessage } = await import('../engine.js');
+  const t = await testing.openTestDb();
+  await testing.installSeededConfig(t);
+  const fx = await testing.installPgSessionStore(t, { varDir: VAR_DIR });
+  await store.initSessionStore(fx.deps);
+  const turns: string[] = [];
+  recorder.onTurnEnd((f) => turns.push(f.turn.turnId));
+  const sid = `wecom:${LOG_EXT}`;
+  steps.push({ toolCalls: [{ name: 'search_routes', args: { destination: '云南' } }] }, { content: LOG_RAW });
+  const r1 = await handleMessage(sid, LOG_SAID, 'wecom');
+  const r2 = await handleMessage(sid, LOG_SAID2, 'wecom');
+  await store.flushSession(sid);
+  // 请求：server.ts 的中间件（企微回调没配，记一行 error）与 console 子应用（登录失败，记一行 warn）
+  const cb = await app.request('/wecom/callback', { method: 'POST', body: 'x', headers: { 'content-length': '1' } });
+  const loginBody = JSON.stringify({ email: 'nobody@ops.example.com', password: 'wrong-password-1' });
+  const login = await app.request('/api/console/auth/login', {
+    method: 'POST',
+    body: loginBody,
+    headers: {
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(loginBody)),
+      'x-forwarded-for': '203.0.113.7',
+    },
+  });
+  // 兜底：形如会话原 id 的串、请求路径里编码过的、带凭据的地址与 Bearer
+  console.log('兜底：wecom:wmFallbackRaw01 sim-0123456789abcdef01234567 /api/sessions/wecom%3AwmFallbackRaw02/reply');
+  console.warn('凭据：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRETKEY99 Authorization: Bearer tok123secret');
+  log.info('redact', {
+    authorization: 'Bearer AUTHSECRET1',
+    cookie: 'sid=COOKIESECRET1',
+    nested: { webhookUrl: 'https://h.example/?key=HOOKSECRET1', headers: { 'set-cookie': 'SETCOOKIESECRET1' } },
+    keep: 'visible-field',
+  });
+  withLogContext({ req: 'manual-req-1' }, () => log.warn('手动上下文'));
+  const out = {
+    cb: cb.headers.get('x-request-id'),
+    cbStatus: cb.status,
+    login: login.headers.get('x-request-id'),
+    loginStatus: login.status,
+    ref: store.conversationRef(sid),
+    turns,
+    handoff: !!r2.handoff || r2.stage === 'handoff',
+    priceDropped: !r1.text.includes('1,234') && r1.text.includes('16,800'),
+    stepsLeft: steps.length,
+  };
+  console.log(`OPS_JSON_RESULT ${JSON.stringify(out)}`);
+  await t.close().catch(() => undefined);
+  process.exit(0);
 }
 
 let pass = 0;
@@ -220,6 +346,10 @@ function spansReceived(): Got[] {
   put('src/otel/db.ts', "import { withTenant } from '../db/client.js';\nexport const W = withTenant;\n");
   put('src/otel/db-type.ts', "import type { Tx } from '../db/client.js';\nexport type T = Tx;\n");
   put('src/db/client.ts', 'export const withTenant = 1;\nexport type Tx = number;\n');
+  // 第 17 步：pino 只在 src/log.ts 里 import
+  put('src/log.ts', "import pino from 'pino';\nexport const L = pino;\n");
+  put('src/h.ts', "import pino from 'pino';\nexport const H = pino;\n");
+  put('src/i.ts', "import type { Logger } from 'pino';\nexport type I = Logger;\n");
   const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(repoRoot, 'scripts', 'check-boundaries.ts'), dir], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -240,6 +370,11 @@ function spansReceived(): Got[] {
     '边界 lint：src/otel/ 不 import src/db/（import type 也不行）',
     hit('src/otel/db.ts:1') && hit('src/otel/db-type.ts:1'),
     run.stderr,
+  );
+  check(
+    '边界 lint：pino 只能在 src/log.ts 里 import（import type 不拦）',
+    hit('src/h.ts:1') && !hit('src/log.ts:1') && !hit('src/i.ts:1'),
+    run.stderr.slice(0, 800),
   );
 }
 
@@ -307,6 +442,171 @@ function spansReceived(): Got[] {
     '没设端点：接收端一条 trace 都没收到（只有对照那次 GET）',
     receiver.bodies.length === 0 && receiver.paths.every((p) => p === 'GET /control'),
     json(receiver.paths),
+  );
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** 异步起子进程（本进程里的假服务要能应答它），超时就杀掉 */
+function spawnAsync(
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (b: Buffer) => (stdout += b.toString('utf8')));
+    child.stderr.on('data', (b: Buffer) => (stderr += b.toString('utf8')));
+    const timer = setTimeout(() => child.kill('SIGKILL'), opts.timeoutMs ?? 120_000);
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+// ================ 日志：prod profile、LOG_FORMAT=json（子进程，不变量 48、验收 34 的日志部分） ================
+{
+  const run = await spawnAsync(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, 'ops.selftest.ts')], {
+    cwd: repoRoot,
+    env: { ...process.env, OPS_SELFTEST_CHILD: 'json-logs', VAR_DIR: varParent, LOG_FORMAT: '' },
+  });
+  const lines = run.stdout.split('\n').filter((l) => l.trim() !== '');
+  const docs: Record<string, unknown>[] = [];
+  const bad: string[] = [];
+  for (const l of lines) {
+    try {
+      const d = JSON.parse(l) as unknown;
+      if (d && typeof d === 'object' && !Array.isArray(d)) docs.push(d as Record<string, unknown>);
+      else bad.push(l);
+    } catch {
+      bad.push(l);
+    }
+  }
+  const msgOf = (d: Record<string, unknown>): string => (typeof d.msg === 'string' ? d.msg : '');
+  const resultDoc = docs.find((d) => msgOf(d).startsWith('OPS_JSON_RESULT '));
+  const res = resultDoc
+    ? (JSON.parse(msgOf(resultDoc).slice('OPS_JSON_RESULT '.length)) as {
+        cb: string | null;
+        cbStatus: number;
+        login: string | null;
+        loginStatus: number;
+        ref: string | null;
+        turns: string[];
+        handoff: boolean;
+        priceDropped: boolean;
+        stepsLeft: number;
+      })
+    : null;
+  check('日志子进程：跑完、交回结果', run.status === 0 && !!res, `${run.status} ${run.stderr.slice(-800)} ${run.stdout.slice(-400)}`);
+  check(
+    '前提：一组对话里价格护栏删了一句、第二句转了人工，模型脚本恰好用完',
+    !!res && res.priceDropped && res.handoff && res.stepsLeft === 0,
+    json(res),
+  );
+  check(
+    '不变量 48：LOG_FORMAT=json 时标准输出每一行都能解析成一个 JSON 对象',
+    lines.length > 10 && bad.length === 0,
+    `${lines.length} 行，解析不了的：${json(bad.slice(0, 3))}`,
+  );
+  check(
+    '每行都带 time（ISO）、level（名字）、msg（字符串），不带 pid 与主机名',
+    docs.every(
+      (d) =>
+        typeof d.time === 'string' &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(d.time) &&
+        ['info', 'warn', 'error'].includes(String(d.level)) &&
+        typeof d.msg === 'string' &&
+        !('pid' in d) &&
+        !('hostname' in d),
+    ),
+    json(docs.find((d) => typeof d.time !== 'string' || typeof d.msg !== 'string')),
+  );
+  check(
+    '导入期的日志（[profile] 那一行）也是 JSON：profile-boot 在导入期就把 console.* 接过去了',
+    docs.some((d) => msgOf(d).startsWith('[profile] prod · ') && d.level === 'info'),
+    json(docs.slice(0, 2)),
+  );
+  const cbLine = docs.find((d) => msgOf(d).startsWith('[wecom] 收到回调但'));
+  const loginLine = docs.find((d) => msgOf(d).startsWith('[auth] 登录失败'));
+  check(
+    '请求里的行带 req，与响应头 x-request-id 相同（server.ts 的中间件）',
+    !!res && !!res.cb && /^[0-9a-f]{16}$/.test(res.cb) && cbLine?.req === res.cb && cbLine.level === 'error',
+    json({ header: res?.cb, line: cbLine }),
+  );
+  check(
+    'console 子应用挂在 server.ts 下：沿用外层的 req，日志行与响应头相同，两个请求的 req 不同',
+    !!res && !!res.login && res.loginStatus === 401 && loginLine?.req === res.login && res.login !== res.cb && loginLine.level === 'warn',
+    json({ header: res?.login, line: loginLine }),
+  );
+  check(
+    '请求之外的行不带 req',
+    docs.filter((d) => msgOf(d).startsWith('[profile]') || msgOf(d).startsWith('兜底')).every((d) => !('req' in d)),
+  );
+  const turnLines = docs.filter((d) => 'turn' in d);
+  check(
+    '轮次里的行带 tenant（slug）、conv（会话的 ref）、turn（这一轮 trace 的 id）',
+    !!res &&
+      !!res.ref &&
+      res.turns.length === 2 &&
+      turnLines.length >= 3 &&
+      turnLines.every((d) => d.tenant === 'demo' && d.conv === res.ref && res.turns.includes(String(d.turn))),
+    json({ ref: res?.ref, turns: res?.turns, lines: turnLines.slice(0, 4) }),
+  );
+  check(
+    '价格护栏删句那一行在它那一轮的上下文里（第一轮）；转人工那一轮（确定性路径）不打日志',
+    turnLines.some((d) => msgOf(d).includes('拦截无出处的报价') && d.turn === res?.turns[0]),
+    json(turnLines.map((d) => msgOf(d).slice(0, 40))),
+  );
+  check(
+    'conv 不是会话原 id：日志里的会话都是 ref（db 存储的真实会话），行里写会话的地方同样（prod 下 convLabel）',
+    docs.every((d) => !('conv' in d) || d.conv === res?.ref) && docs.some((d) => msgOf(d).includes(`（会话 ${res?.ref}`)),
+    json(
+      docs
+        .filter((d) => msgOf(d).includes('会话'))
+        .map(msgOf)
+        .slice(0, 4),
+    ),
+  );
+  const all = run.stdout + run.stderr;
+  check(
+    '不变量 48：整个输出里搜不到客户原话、external_userid 与会话原 id（prod profile）',
+    !all.includes(LOG_SAID) &&
+      !all.includes(LOG_SAID2) &&
+      !all.includes('王小明') &&
+      !all.includes(LOG_EXT) &&
+      !/wecom(?::|%3[Aa])[A-Za-z0-9_-]/.test(all) &&
+      !/\bsim-[A-Za-z0-9_-]/.test(all),
+    [LOG_SAID, LOG_EXT, 'wecom:', 'sim-'].filter((x) => all.includes(x)).join(' / '),
+  );
+  const fallback = docs.find((d) => msgOf(d).startsWith('兜底：'));
+  check(
+    'JSON 输出的兜底：形如会话原 id 的串（含编码过的 wecom%3A）换成短码',
+    msgOf(fallback ?? {}) === '兜底：AW01 4567 /api/sessions/AW02/reply',
+    msgOf(fallback ?? {}),
+  );
+  const secrets = ['SECRETKEY99', 'tok123secret', 'AUTHSECRET1', 'COOKIESECRET1', 'HOOKSECRET1', 'SETCOOKIESECRET1'];
+  const redacted = docs.find((d) => msgOf(d) === 'redact');
+  check(
+    'redact：authorization、cookie、set-cookie、webhook 地址一类字段在顶层与下面几层都盖住，别的字段照写',
+    !!redacted &&
+      redacted.authorization === '[已遮盖]' &&
+      redacted.cookie === '[已遮盖]' &&
+      json(redacted.nested) === json({ webhookUrl: '[已遮盖]', headers: { 'set-cookie': '[已遮盖]' } }) &&
+      redacted.keep === 'visible-field',
+    json(redacted),
+  );
+  check(
+    '兜底：msg 里带凭据的查询参数与 Bearer 也盖掉；整个输出里一个密钥都搜不到',
+    secrets.every((s) => !all.includes(s)) &&
+      docs.some((d) => msgOf(d).includes('send?key=[已遮盖]') && msgOf(d).includes('Bearer [已遮盖]')),
+    secrets.filter((s) => all.includes(s)).join(' / '),
+  );
+  check(
+    'withLogContext 手动给的 req 照写',
+    docs.some((d) => msgOf(d) === '手动上下文' && d.req === 'manual-req-1' && d.level === 'warn'),
   );
 }
 
@@ -393,7 +693,9 @@ const otelLoaded = (): number =>
 const t = await openTestDb();
 await t.pg.exec('RESET ROLE');
 await t.pg.query(`insert into tenants (slug, name, pack_id) values ('demo', 'demo', 'travel'), ('other', 'other', 'travel')`);
-await installSeededConfig(t, { deps: { lock: async () => fakeLock() } });
+// 锁留着：告警的自测要让它断开、重新取得、被别的进程拿走（第 17 步）
+let theLock: ReturnType<typeof fakeLock> | null = null;
+await installSeededConfig(t, { deps: { lock: async () => (theLock = fakeLock()) } });
 const su = <R = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<R[]> =>
   t.pg.transaction(async (tx) => {
     await tx.exec('SET LOCAL ROLE NONE');
@@ -1315,6 +1617,1202 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   );
 }
 
+// ================ 日志：JSON 兜底的字段级 redact 与连接串/Cookie（scrubLine，审查第 2–4 条） ================
+const logMod = await import('../log.js');
+{
+  const { scrubLine } = logMod.__logTest;
+  for (const [depth, obj] of [
+    [4, { a: { b: { c: { password: 'DEPTH4LEAK' } } } }],
+    [6, { a: { b: { c: { d: { e: { secret: 'DEPTH6LEAK' } } } } } }],
+  ] as const) {
+    const line = JSON.stringify(obj);
+    const out = scrubLine(line);
+    check(
+      `不变量 32/48：第 ${depth} 层嵌套的敏感字段原样写进 JSON 行时，scrubLine 这道兜底不看深度也能盖住（pino 的 redact 只接 0–2 层）`,
+      !out.includes('DEPTH') && JSON.parse(out) !== undefined,
+      out,
+    );
+  }
+  check(
+    'scrubLine：字段名大小写不同、字段在数组里一样盖住',
+    !scrubLine(JSON.stringify({ list: [{ Token: 'ARRLEAK1' }, { ACCESSTOKEN: 'ARRLEAK2' }] })).includes('ARRLEAK'),
+  );
+  check(
+    'scrubLine：没命中的字段原样保留（不误伤）',
+    scrubLine(JSON.stringify({ a: { b: { c: { keep: 'visible-deep' } } } })).includes('visible-deep'),
+  );
+  // Bearer：大小写不分，分隔符允许真实空白或 JSON 转义之后的 \t、\n 两个字符（审查第 3 条）
+  check(
+    'scrubLine：Bearer 大小写不分（bearer、BEARER 都盖住）',
+    !scrubLine('bearer BEARLEAK1').includes('BEARLEAK1') && !scrubLine('BEARER BEARLEAK2').includes('BEARLEAK2'),
+  );
+  check(
+    'scrubLine：JSON 转义之后的 \\t、\\n 分隔同样认得出（不是真实空白，是反斜杠加字母两个字符）',
+    !scrubLine('Authorization: Bearer\\tBEARLEAK3').includes('BEARLEAK3') &&
+      !scrubLine('Authorization: Bearer\\nBEARLEAK4').includes('BEARLEAK4'),
+  );
+  // 连接串与自由文本的 Cookie 头（审查第 4 条）
+  check(
+    'scrubLine：scheme://user:password@host 连接串的密码段盖掉，user 与 host 都留着',
+    (() => {
+      const out = scrubLine('postgres://agent_app:My$ecretPW1@10.0.0.5:5432/agent');
+      return !out.includes('My$ecretPW1') && out.includes('agent_app') && out.includes('10.0.0.5:5432/agent');
+    })(),
+  );
+  check(
+    'scrubLine：自由文本里的 Cookie 头（不是 JSON 字段）一样盖住，不误伤正文别的字段',
+    (() => {
+      const out = scrubLine(JSON.stringify({ msg: 'Cookie: session=COOKIELEAK1; other=1', keep: 'visible-field' }));
+      return !out.includes('COOKIELEAK1') && out.includes('visible-field');
+    })(),
+  );
+}
+
+const { __profileTest } = await import('../profile.js');
+const { app: serverApp } = await import('../server.js');
+{
+  const before = [console.log, console.info, console.warn, console.error];
+  check(
+    '没设 LOG_FORMAT：installJsonConsole 什么都不接、返回 false，console.* 还是原来那几个函数（纯文本逐字节不变）',
+    logMod.installJsonConsole() === false && [console.log, console.info, console.warn, console.error].every((f, i) => f === before[i]),
+  );
+  const got: string[] = [];
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  console.log = (...a: unknown[]) => void got.push(`log:${a.map(String).join(' ')}`);
+  console.warn = (...a: unknown[]) => void got.push(`warn:${a.map(String).join(' ')}`);
+  console.error = (...a: unknown[]) => void got.push(`error:${a.map(String).join(' ')}`);
+  try {
+    logMod.log.info('甲', { authorization: 'Bearer X1', keep: 1 });
+    logMod.log.warn('乙');
+    logMod.log.error('丙', { nested: { Cookie: 'c' } });
+  } finally {
+    Object.assign(console, orig);
+  }
+  check(
+    'log.* 没设 LOG_FORMAT：经 console 打纯文本（info→log），附带字段里的凭据照样盖掉',
+    json(got) === json(['log:甲 {"authorization":"[已遮盖]","keep":1}', 'warn:乙', 'error:丙 {"nested":{"Cookie":"[已遮盖]"}}']),
+    json(got),
+  );
+
+  const realSid = `wecom:${EXT}`; // OpenTelemetry 那几轮建的 db 存储真实会话，有 ref
+  const ref = store.conversationRef(realSid);
+  const sim = 'sim-0123456789abcdef01234567';
+  const err = new Error('x');
+  let snippet: unknown = null;
+  try {
+    JSON.parse('[{"id":"wecom:wmLeak77"}, 客户说的话]');
+  } catch (e) {
+    snippet = e;
+  }
+  let positioned: unknown = null;
+  try {
+    JSON.parse('{"a":"客户原话" y}');
+  } catch (e) {
+    positioned = e;
+  }
+  check(
+    'demo profile（自测）：logQuote、convLabel、convLabelsIn 原样，logError 交回原对象（锁定套件断言的原 id 照旧）',
+    logMod.logQuote('你好😀') === '你好😀' &&
+      logMod.convLabel(realSid) === realSid &&
+      logMod.convLabelsIn(`/api/sessions/${encodeURIComponent(realSid)}`) === `/api/sessions/${encodeURIComponent(realSid)}` &&
+      logMod.logError(err) === err,
+  );
+  __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+  try {
+    check(
+      'prod：logQuote 返回「«N字»」，N 按字符数（emoji 算一个）',
+      logMod.logQuote('你好😀') === '«3字»' && logMod.logQuote('') === '«0字»',
+    );
+    check(
+      'prod：convLabel 对 db 存储的真实会话是 ref；文件存储与 demo 类会话、不在内存里的是短码',
+      !!ref &&
+        logMod.convLabel(realSid) === ref &&
+        logMod.convLabel(sim) === '4567' &&
+        logMod.convLabel('wecom:cust_A01') === 'A01' &&
+        logMod.convLabel('wecom:wmNotInMemory99') === 'RY99',
+      `${ref} ${logMod.convLabel(realSid)}`,
+    );
+    check(
+      'prod：请求路径里的会话原 id（编码过的 wecom%3A 也算）换成 ref 或短码',
+      logMod.convLabelsIn(`/api/sessions/${encodeURIComponent(realSid)}/reply`) === `/api/sessions/${ref}/reply` &&
+        logMod.convLabelsIn(`/x/${sim}/y`) === '/x/4567/y',
+    );
+    check(
+      'prod：logError 只留错误名与位置，JSON.parse 消息里带出的原文片段不打',
+      logMod.logError(snippet) === 'SyntaxError' &&
+        logMod.logError(positioned) === 'SyntaxError（位置 12）' &&
+        String(snippet).includes('客户说的话'),
+      `${String(logMod.logError(snippet))} / ${String(logMod.logError(positioned))}`,
+    );
+  } finally {
+    __profileTest.reset();
+  }
+
+  // pino 的 mixin：外面什么都不带；请求里带 req；包在会话里带 tenant 与 conv；轮次里再带 turn，轮次的标注不漏到外面的请求
+  const outLines: string[] = [];
+  const jl = logMod.__logTest.createJsonLogger({ write: (s: string) => void outLines.push(s) });
+  jl.info('外面');
+  logMod.withLogContext({ req: 'req-a' }, () => {
+    jl.info('请求里');
+    logMod.withConversationLog(realSid, () => jl.info('会话里'));
+  });
+  const from = finished.length;
+  await logMod.withLogContext({ req: 'req-b' }, async () => {
+    await recorder.withTurnScope(async () => {
+      jl.info('轮次开始之前');
+      recorder.startTurn(realSid, '在吗');
+      jl.info('轮次里');
+      recorder.endTurn('deterministic', '在的', 'greeting', 'greeting');
+    });
+    jl.info('轮次之后');
+  });
+  const turnId = finished.slice(from).find((f) => f.turn.conversationId === realSid)?.turn.turnId;
+  const by = Object.fromEntries(
+    outLines.map((l) => JSON.parse(l) as Record<string, unknown>).map((d) => [String(d.msg), d] as const),
+  ) as Record<string, Record<string, unknown>>;
+  const fields = (k: string): string => json(Object.keys(by[k] ?? {}).filter((x) => !['level', 'time', 'msg'].includes(x)));
+  check(
+    'mixin：外面不带；请求里只带 req；会话里带 req、tenant、conv（ref）；轮次里带 req、tenant、conv、turn',
+    fields('外面') === '[]' &&
+      fields('请求里') === '["req"]' &&
+      by['会话里']?.req === 'req-a' &&
+      by['会话里']?.tenant === 'demo' &&
+      by['会话里']?.conv === ref &&
+      !('turn' in (by['会话里'] ?? {})) &&
+      by['轮次里']?.req === 'req-b' &&
+      by['轮次里']?.tenant === 'demo' &&
+      by['轮次里']?.conv === ref &&
+      !!turnId &&
+      by['轮次里']?.turn === turnId,
+    json(by),
+  );
+  check(
+    '轮次开始之前不带 turn；轮次结束、回到请求里之后也不带（轮次另开一层上下文）',
+    fields('轮次开始之前') === '["req"]' && fields('轮次之后') === '["req"]',
+    `${fields('轮次开始之前')} ${fields('轮次之后')}`,
+  );
+
+  // x-request-id：server.ts 与 console 子应用的中间件
+  const h1 = await serverApp.request('/healthz');
+  const h2 = await serverApp.request('/healthz');
+  const idRe = /^[0-9a-f]{16}$/;
+  check(
+    '/healthz 的响应带 x-request-id（16 个十六进制字符），两个请求不同',
+    idRe.test(h1.headers.get('x-request-id') ?? '') && h1.headers.get('x-request-id') !== h2.headers.get('x-request-id'),
+    `${h1.headers.get('x-request-id')} ${h2.headers.get('x-request-id')}`,
+  );
+  const big = await serverApp.request('/api/chat', { method: 'POST', body: 'x', headers: { 'content-length': String(64 << 20) } });
+  check('请求体超限的 413 也带 x-request-id（中间件排在最前）', big.status === 413 && idRe.test(big.headers.get('x-request-id') ?? ''));
+  const me = await serverApp.request('/api/console/me');
+  check(
+    'console 子应用挂在 server.ts 下：只有一个 x-request-id（里层沿用外层的，不叠两个）',
+    me.status === 401 && idRe.test(me.headers.get('x-request-id') ?? ''),
+    String(me.headers.get('x-request-id')),
+  );
+  const direct = await consoleApi.request('/api/console/me');
+  check('console 子应用单独用：自己的中间件同样生成 x-request-id', idRe.test(direct.headers.get('x-request-id') ?? ''));
+  let seen: Record<string, string> = {};
+  const origErr = console.error;
+  console.error = () => {
+    seen = logMod.__logTest.contextFields();
+  };
+  let cb: Response;
+  try {
+    cb = await serverApp.request('/wecom/callback', { method: 'POST', body: 'x', headers: { 'content-length': '1' } });
+  } finally {
+    console.error = origErr;
+  }
+  check(
+    '请求里打日志的那一刻，上下文里的 req 就是这个响应的 x-request-id',
+    !!seen.req && seen.req === cb.headers.get('x-request-id'),
+    `${seen.req} ${cb.headers.get('x-request-id')}`,
+  );
+}
+
+// ================ 告警：app 侧五个键（本机假 webhook） ================
+const alertMod = await import('./alert.js');
+const wecom = await import('../adapters/wecom.js');
+const ledger = await import('../quota/ledger.js');
+const runner = await import('../jobs/runner.js');
+const { __configTest, configHealth } = await import('../config/source.js');
+const { enqueueJob } = await import('../db/repo/jobs.js');
+// 假 webhook：ok 照收；hang 收下不回；s500 回 500；errcode 回企微的错误码；收到的都记下（含失败的那几次）
+const hook = { bodies: [] as string[], hits: 0, mode: 'ok' as 'ok' | 'hang' | 's500' | 'errcode', urls: [] as string[] };
+const hookSrv = http.createServer((req, res) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (c: Buffer) => chunks.push(c));
+  req.on('end', () => {
+    hook.hits += 1;
+    hook.urls.push(req.url ?? '');
+    if (hook.mode === 'hang') return;
+    res.setHeader('content-type', 'application/json');
+    if (hook.mode === 's500') {
+      res.statusCode = 500;
+      res.end('{}');
+      return;
+    }
+    if (hook.mode === 'errcode') {
+      res.end(json({ errcode: 93000, errmsg: 'invalid webhook url' }));
+      return;
+    }
+    hook.bodies.push(Buffer.concat(chunks).toString('utf8'));
+    res.end(json({ errcode: 0, errmsg: 'ok' }));
+  });
+});
+await new Promise<void>((r) => hookSrv.listen(0, '127.0.0.1', r));
+const hookBase = `http://127.0.0.1:${(hookSrv.address() as AddressInfo).port}`;
+const HOOK_KEY = 'HOOKKEY77';
+const hookUrl = `${hookBase}/cgi-bin/webhook/send?key=${HOOK_KEY}`;
+/** 收到的告警正文（text 消息的 content） */
+const contents = (): string[] =>
+  hook.bodies.map((b) => {
+    const d = JSON.parse(b) as { msgtype?: string; text?: { content?: string } };
+    return d.msgtype === 'text' ? String(d.text?.content) : `不是 text 消息：${b}`;
+  });
+/** 告警这一段里打的日志：推送失败、没配地址都只记日志，里面不许有地址 */
+const alertLogs: string[] = [];
+const captureAlertLogs = <T>(fn: () => Promise<T>): Promise<T> => {
+  const o = { log: console.log, warn: console.warn, error: console.error };
+  const grab = (...a: unknown[]): void => void alertLogs.push(a.map(String).join(' '));
+  console.warn = grab;
+  console.error = grab;
+  return fn().finally(() => Object.assign(console, o));
+};
+let alertNow = Date.UTC(2026, 9, 3, 4, 0, 0);
+const A = alertMod.__alertTest;
+const defaults = A.timings();
+check(
+  '告警的推送参数照 spec：5 秒超时、至多重试 2 次、同一键 30 分钟去重',
+  defaults.timeoutMs === 5000 && defaults.retries === 2 && defaults.dedupeMs === 30 * 60_000,
+  json(defaults),
+);
+process.env.INSTANCE_LABEL = 'selftest';
+process.env.ALERT_WEBHOOK_URL = '';
+alertMod.startAlerts();
+alertMod.startAlerts(); // 调两次只挂一份订阅
+A.stopTimer();
+A.setClock(() => alertNow);
+A.setTimings({ retryDelaysMs: [20, 20] });
+A.reset();
+const stampRe = /^\[selftest\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+const ALERT_SAID = '我电话一三九零零零零一一一一，叫李四';
+
+await captureAlertLogs(async () => {
+  // ---------------- 没配地址：只写一行 warn，什么都不发 ----------------
+  {
+    const n0 = alertLogs.length;
+    const r = alertMod.alert('jobs', '没配地址的一条');
+    await A.settle();
+    const lines = alertLogs.slice(n0);
+    check(
+      '没配 ALERT_WEBHOOK_URL：alert() 不抛、只写一行 warn（带告警正文），webhook 一次都没收到',
+      r === undefined &&
+        lines.length === 1 &&
+        lines[0]!.startsWith('[alert] 没配 ALERT_WEBHOOK_URL') &&
+        lines[0]!.includes('没配地址的一条') &&
+        hook.hits === 0,
+      json(lines),
+    );
+    A.reset();
+  }
+  process.env.ALERT_WEBHOOK_URL = hookUrl;
+
+  // ---------------- model_errors：连续 5 次失败、30 分钟去重、持续 30 分钟再发、连续 10 次成功恢复 ----------------
+  {
+    const ok = (sid: string, i: number) => say(sid, `好的第 ${i} 句`, [{ content: '好的～还有什么想了解的随时说。' }]);
+    const bad = (sid: string, i: number) => say(sid, `${ALERT_SAID}，第 ${i} 句`, [{ status: 503 }]);
+    const sid = 'wecom:wmAlertModel01';
+    for (let i = 1; i <= 4; i++) await bad(sid, i);
+    await A.settle();
+    check('model_errors：连续 4 次失败不报', hook.bodies.length === 0, json(contents()));
+    await bad(sid, 5);
+    await A.settle();
+    check(
+      'model_errors：连续 5 次模型调用失败收到一条（失败类别、实例名、时间）',
+      hook.bodies.length === 1 &&
+        contents()[0]!.startsWith('[selftest] AI 模型调用连续 5 次失败（http_5xx） · ') &&
+        stampRe.test(contents()[0]!),
+      json(contents()),
+    );
+    alertNow += 10 * 60_000;
+    for (let i = 6; i <= 10; i++) await bad(sid, i);
+    await A.settle();
+    check('不变量 50：30 分钟内再 5 次失败，不再收到', hook.bodies.length === 1, json(contents()));
+    alertNow += 21 * 60_000;
+    await bad(sid, 11);
+    await A.settle();
+    check(
+      '条件持续超过 30 分钟：再失败一次又收到一条（连续 11 次）',
+      hook.bodies.length === 2 && contents()[1]!.startsWith('[selftest] AI 模型调用连续 11 次失败'),
+      json(contents()),
+    );
+    for (let i = 1; i <= 9; i++) await ok(sid, i);
+    await A.settle();
+    check('连续 9 次成功还不算恢复', hook.bodies.length === 2, json(contents()));
+    await ok(sid, 10);
+    await A.settle();
+    check(
+      '连续 10 次成功：收到一条「已恢复」',
+      hook.bodies.length === 3 && contents()[2]!.startsWith('[selftest] 已恢复：AI 模型调用连续 10 次成功 · '),
+      json(contents()),
+    );
+    for (let i = 12; i <= 16; i++) await bad(sid, i);
+    await A.settle();
+    check(
+      '恢复之后又连续 5 次失败：是新的一次，马上收到',
+      hook.bodies.length === 4 && contents()[3]!.startsWith('[selftest] AI 模型调用连续 5 次失败'),
+      json(contents()),
+    );
+    for (let i = 11; i <= 20; i++) await ok(sid, i);
+    await A.settle();
+    check(
+      '再连续 10 次成功：又一条「已恢复」',
+      hook.bodies.length === 5 && contents()[4]!.includes('已恢复：AI 模型调用'),
+      json(contents()),
+    );
+  }
+
+  // ---------------- model_errors：最近 50 轮里 AI 出错率超过 20%（没有连续 5 次） ----------------
+  {
+    A.reset();
+    const n0 = hook.bodies.length;
+    const turn = (i: number, fail: boolean) =>
+      say(`wecom:wmAlertRate${Math.floor(i / 10)}`, `第 ${i} 轮`, fail ? [{ status: 503 }] : [{ content: '好的～' }]);
+    for (let i = 0; i < 50; i++) await turn(i, i % 5 === 0); // 10 / 50 = 20%
+    await A.settle();
+    check('最近 50 轮里出错率正好 20%：不报（要超过 20%）', hook.bodies.length === n0, json(contents().slice(n0)));
+    A.reset();
+    for (let i = 0; i < 49; i++) await turn(i, i % 4 === 0); // 第 49 轮时 13 / 49
+    await A.settle();
+    check('不满 50 轮不按出错率报', hook.bodies.length === n0, json(contents().slice(n0)));
+    await turn(49, false);
+    await A.settle();
+    check(
+      '满 50 轮、13 轮出错（26%）：收到一条',
+      hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 最近 50 轮里 13 轮 AI 出错（26%） · '),
+      json(contents().slice(n0)),
+    );
+  }
+
+  // ---------------- wecom_send：取不到 access_token 立即、10 分钟内 3 个分段最终失败、10 分钟没有失败恢复 ----------------
+  {
+    A.reset();
+    const n0 = hook.bodies.length;
+    const realFetch = globalThis.fetch;
+    const wx = { tokenFails: true, sendErr: 40096 as number };
+    const wxRes = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.hostname !== 'qyapi.weixin.qq.com') return realFetch(input, init);
+      const ep = url.pathname.replace(/^\/cgi-bin\//, '');
+      if (ep === 'gettoken')
+        return wxRes(wx.tokenFails ? { errcode: 40013, errmsg: 'selftest' } : { errcode: 0, access_token: 'tok', expires_in: 7200 });
+      if (ep === 'kf/send_msg') return wxRes(wx.sendErr ? { errcode: wx.sendErr, errmsg: 'selftest' } : { errcode: 0 });
+      return wxRes({ errcode: 40001, errmsg: `selftest: ${ep}` });
+    }) as typeof fetch;
+    Object.assign(process.env, { WECOM_CORP_ID: 'selftest-corp', WECOM_APP_SECRET: 'selftest-secret', WECOM_KF_OPEN_KFID: 'selftest-kf' });
+    const push = (sid: string) => wecom.wecomAdapter.push(sid, '您好，这是一条测试消息', { kind: 'notice' });
+    try {
+      await push('wecom:wmAlertSend01');
+      await A.settle();
+      check(
+        'wecom_send：取不到 access_token 立即收到一条（企微错误码，不带地址与密钥）',
+        hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 取不到企微 access_token（40013），收发消息都停了 · '),
+        json(contents().slice(n0)),
+      );
+      wx.tokenFails = false;
+      alertNow += 9 * 60_000;
+      A.tick();
+      await A.settle();
+      check('没有失败才 9 分钟：不恢复', hook.bodies.length === n0 + 1);
+      alertNow += 60_000;
+      A.tick();
+      await A.settle();
+      check(
+        '10 分钟没有失败：收到「已恢复」',
+        hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.startsWith('[selftest] 已恢复：企微发送 10 分钟没有失败 · '),
+        json(contents().slice(n0)),
+      );
+      // 三次失败隔得开（0、11、22 分钟）：任何 10 分钟里都不满 3 个
+      for (const gap of [0, 11, 11]) {
+        alertNow += gap * 60_000;
+        await push('wecom:wmAlertSend02');
+      }
+      wx.sendErr = 0;
+      await push('wecom:wmAlertSend02'); // 送达的不算
+      wx.sendErr = 40096;
+      await A.settle();
+      check('3 个分段失败但隔得开（任何 10 分钟里不满 3 个）：不报', hook.bodies.length === n0 + 2, json(contents().slice(n0)));
+      alertNow += 60_000;
+      await push('wecom:wmAlertSend02');
+      // 账本上结果不明（超时、网络异常）的一段同样算最终失败
+      const h = ledger.recordSend('wecom:wmAlertSend03', 'notice', null);
+      h.attempt();
+      h.settle('unknown');
+      await A.settle();
+      check(
+        '10 分钟内 3 个分段最终失败（rejected 2、unknown 1）：收到一条，带错误码',
+        hook.bodies.length === n0 + 3 &&
+          contents()[n0 + 2]!.startsWith('[selftest] 企微发送 10 分钟内 3 个分段最终失败（rejected 2、unknown 1，错误码 40096） · '),
+        json(contents().slice(n0)),
+      );
+      alertNow += 10 * 60_000;
+      A.tick();
+      await A.settle();
+      check(
+        '之后 10 分钟没有失败：恢复',
+        hook.bodies.length === n0 + 4 && contents()[n0 + 3]!.includes('已恢复：企微发送'),
+        json(contents().slice(n0)),
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      Object.assign(process.env, { WECOM_CORP_ID: '', WECOM_APP_SECRET: '', WECOM_KF_OPEN_KFID: '' });
+    }
+  }
+
+  // ---------------- tenant_lock：锁进入 lost、重新拿到 ----------------
+  {
+    A.reset();
+    const n0 = hook.bodies.length;
+    __configTest.setTimings({ reacquireMs: 20 });
+    const lock = theLock as ReturnType<typeof fakeLock> | null;
+    check('前提：配置源的租户锁拿到了', !!lock && configHealth().lock === 'held');
+    lock!.next = 'unreachable';
+    lock!.lose();
+    await sleep(120);
+    await A.settle();
+    check(
+      'tenant_lock：锁进入 lost 收到一条；重取连不上的那几次不再发',
+      configHealth().lock === 'lost' &&
+        hook.bodies.length === n0 + 1 &&
+        contents()[n0]!.startsWith('[selftest] 租户锁连接断开：配置写入暂停、对话照常，正在重取 · '),
+      json(contents().slice(n0)),
+    );
+    lock!.next = 'ok';
+    await sleep(120);
+    await A.settle();
+    check(
+      '锁重新拿到：收到「已恢复」',
+      configHealth().lock === 'held' && hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.includes('已恢复：租户锁重新取得'),
+      json(contents().slice(n0)),
+    );
+  }
+
+  // ---------------- store：积压、poisoned、丢遥测行、回放失败、冲突（读法换成假的；积压要 60 秒才造得出来） ----------------
+  {
+    A.reset();
+    const n0 = hook.bodies.length;
+    const base = {
+      mode: 'db' as const,
+      conversations: 3,
+      dirty: 0,
+      lagMs: 0,
+      lastError: null as string | null,
+      conflict: false,
+      poisoned: [] as string[],
+    };
+    let h = { ...base };
+    let c = { telemetryDropped: 0, replayFailedFiles: 0 };
+    A.setProbe({ health: () => h, counters: () => c });
+    try {
+      h = { ...base, dirty: 2, lagMs: 60_000 };
+      A.tick();
+      await A.settle();
+      check('store：积压正好 60 秒不报（要超过）', hook.bodies.length === n0);
+      h = { ...base, dirty: 2, lagMs: 61_000 };
+      A.tick();
+      A.tick();
+      await A.settle();
+      check(
+        'store：积压超过 60 秒收到一条（只有秒数与会话个数），持续时不重发',
+        hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 写库积压 61 秒（2 个会话有没落库的改动） · '),
+        json(contents().slice(n0)),
+      );
+      h = { ...base, dirty: 1, lagMs: 5_001 };
+      A.tick();
+      await A.settle();
+      check('积压回到 5 秒多一点：还不算恢复', hook.bodies.length === n0 + 1);
+      h = { ...base, lagMs: 5_000 };
+      A.tick();
+      await A.settle();
+      check(
+        '积压回到 5 秒以内：收到「已恢复」',
+        hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.includes('已恢复：写库积压回到 5 秒以内'),
+        json(contents().slice(n0)),
+      );
+      h = { ...base, poisoned: ['AB12'], lastError: 'window_corrupt · AB12' };
+      A.tick();
+      A.tick();
+      await A.settle();
+      check(
+        '会话 poisoned（WindowCorruptError）：收到一条，带短码与错误码；同一个会话不重复报',
+        hook.bodies.length === n0 + 3 &&
+          contents()[n0 + 2]!.startsWith('[selftest] 会话 AB12 停止落库（poisoned，window_corrupt · AB12），内存照旧服务客户 · '),
+        json(contents().slice(n0)),
+      );
+      alertNow += 31 * 60_000;
+      h = { ...base, poisoned: ['AB12'], lagMs: 70_000, dirty: 1, lastError: 'window_corrupt · AB12' };
+      A.tick();
+      h = { ...base, poisoned: ['AB12'], lastError: 'window_corrupt · AB12' };
+      A.tick();
+      await A.settle();
+      check(
+        '还有 poisoned 的会话时积压回落不发「已恢复」',
+        hook.bodies.length === n0 + 4 && !contents()[n0 + 3]!.includes('已恢复'),
+        json(contents().slice(n0)),
+      );
+      A.reset();
+      h = { ...base };
+      c = { telemetryDropped: 5, replayFailedFiles: 0 };
+      A.tick();
+      await A.settle();
+      check('丢遥测行的计数：第一次读到的是基线，不报', hook.bodies.length === n0 + 4, json(contents().slice(n0)));
+      alertNow += 5 * 60_000;
+      c = { telemetryDropped: 6, replayFailedFiles: 0 };
+      A.tick();
+      alertNow += 3 * 60_000;
+      c = { telemetryDropped: 7, replayFailedFiles: 1 };
+      A.tick();
+      await A.settle();
+      check(
+        '10 分钟内存档点里丢了遥测行：收到一条（批数）；同一键 30 分钟内的下一条（又丢了、spill 回放失败）不再发',
+        hook.bodies.length === n0 + 5 &&
+          contents()[n0 + 4]!.startsWith('[selftest] 最近 10 分钟有 1 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃 · '),
+        json(contents().slice(n0)),
+      );
+      alertNow += 31 * 60_000;
+      c = { telemetryDropped: 9, replayFailedFiles: 1 };
+      A.tick();
+      await A.settle();
+      check(
+        '过了 30 分钟又丢：再收到一条，批数只算最近 10 分钟里的',
+        hook.bodies.length === n0 + 6 && contents()[n0 + 5]!.startsWith('[selftest] 最近 10 分钟有 2 批遥测行'),
+        json(contents().slice(n0)),
+      );
+      A.reset();
+      c = { telemetryDropped: 2, replayFailedFiles: 1 };
+      A.tick();
+      await A.settle();
+      check(
+        '启动时 spill 回放失败、改名 .failed：收到一条',
+        hook.bodies.length === n0 + 7 && contents()[n0 + 6]!.startsWith('[selftest] 启动时 1 个 spill 文件回放失败'),
+        json(contents().slice(n0)),
+      );
+      A.reset();
+      c = { telemetryDropped: 0, replayFailedFiles: 0 };
+      h = { ...base, conflict: true };
+      A.tick();
+      await A.settle();
+      check(
+        '健康里 conflict 为 true：收到 store_conflict',
+        hook.bodies.length === n0 + 8 && contents()[n0 + 7]!.includes('store_conflict'),
+      );
+      A.reset();
+      h = { ...base };
+      store.__storeTest.emitIncident({ kind: 'conflict', detail: '会话 CD34' });
+      await A.settle();
+      check(
+        'store_conflict 的事故（落库撞上另一写者）：立刻收到一条，带短码',
+        hook.bodies.length === n0 + 9 &&
+          contents()[n0 + 8]!.startsWith('[selftest] store_conflict：落库撞上另一写者（会话 CD34），本进程优雅停机'),
+        json(contents().slice(n0)),
+      );
+    } finally {
+      A.setProbe(null);
+    }
+  }
+
+  // ---------------- store：真的丢遥测行、真的 poisoned（读法是真的 storeHealth 与计数） ----------------
+  {
+    A.reset();
+    const n0 = hook.bodies.length;
+    A.tick(); // 记下现在的计数
+    await su(`alter table turn_traces add constraint ops_alert_no_replied check (outcome <> 'replied') not valid`);
+    try {
+      await say('wecom:wmAlertDrop01', '你好', [{ content: '您好～想去哪儿玩呢？' }]);
+    } finally {
+      await su('alter table turn_traces drop constraint ops_alert_no_replied');
+    }
+    A.tick();
+    await A.settle();
+    check(
+      '真的写不进 trace（存档点里丢掉）：巡检读到计数涨了，收到一条',
+      hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 最近 10 分钟有 1 批遥测行'),
+      json(contents().slice(n0)),
+    );
+    A.reset();
+    const sid = 'wecom:wmAlertPoison01';
+    await say(sid, '你好', [{ content: '您好～' }]);
+    await say(sid, '想去云南', [{ content: '云南不错～几位出行？' }]);
+    const s = store.getSession(sid)!;
+    s.messages.splice(1, 1);
+    s.messages.push({ role: 'agent', content: '补一句', at: Date.now() });
+    store.saveSession(s);
+    A.tick();
+    await A.settle();
+    const code = shortIdOf(sid);
+    check(
+      '真的 WindowCorruptError：会话 poisoned，巡检收到一条（短码与 window_corrupt），没有会话原 id',
+      store.storeHealth().poisoned.includes(code) &&
+        hook.bodies.length === n0 + 2 &&
+        contents()[n0 + 1]!.includes(`会话 ${code} 停止落库（poisoned，window_corrupt · ${code}）`),
+      json(contents().slice(n0)),
+    );
+  }
+
+  // ---------------- jobs：handoff_notify 用完重试记 failed、启动归位记 failed；没有恢复 ----------------
+  {
+    A.reset();
+    const n0 = hook.bodies.length;
+    const prev = runner.__jobsTest.setHandler('handoff_notify', async () => {
+      throw new TypeError('selftest：通知发不出去');
+    });
+    try {
+      for (const key of ['ops-alert-notify-1', 'ops-alert-notify-2']) {
+        await store.withJobsTx((tx) =>
+          enqueueJob(tx, {
+            kind: 'handoff_notify',
+            dedupeKey: key,
+            runAt: new Date(Date.now() - 1000),
+            payload: { sessionId: 'wecom:wmAlertJob1' },
+            maxAttempts: 1,
+          }),
+        );
+      }
+      runner.__jobsTest.reset();
+      await runner.runJobsOnce(Date.now() + 1000);
+      await A.settle();
+      check(
+        'jobs：handoff_notify 用完重试记 failed 收到一条（种类与错误名）；同一拍的第二个 30 分钟内不再发',
+        hook.bodies.length === n0 + 1 &&
+          contents()[n0]!.startsWith('[selftest] 任务 handoff_notify 用完重试次数，记 failed（TypeError） · '),
+        json(contents().slice(n0)),
+      );
+    } finally {
+      runner.__jobsTest.setHandler('handoff_notify', prev);
+    }
+    // 上一个进程留下的 running，再加 1 次就到 max_attempts：启动归位记 failed
+    await su(
+      `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, attempts, max_attempts, payload, claimed_at)
+       values ($1, 'retention_purge', 'ops-alert-recover', now(), 'running', 2, 3, '{}', now())`,
+      [DEMO],
+    );
+    alertNow += 31 * 60_000;
+    runner.__jobsTest.reset();
+    await runner.runJobsOnce(Date.now() + 1000);
+    await A.settle();
+    check(
+      '启动归位时 retention_purge 用完重试记 failed：过了 30 分钟，收到一条（个数）',
+      hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.startsWith('[selftest] 启动归位：1 个任务用完重试次数，记 failed · '),
+      json(contents().slice(n0)),
+    );
+  }
+
+  // ---------------- 推送：失败只记日志不抛、重试 2 次、超时、不阻塞；限流 ----------------
+  {
+    A.reset();
+    const u0 = unhandled;
+    for (const [mode, want] of [
+      ['s500', 'HTTP 500'],
+      ['errcode', 'errcode 93000'],
+    ] as const) {
+      hook.mode = mode;
+      const h0 = hook.hits;
+      const n0 = alertLogs.length;
+      alertMod.alert('jobs', `推送失败的一条（${mode}）`, { escalate: true });
+      await A.settle();
+      const lines = alertLogs.slice(n0);
+      check(
+        `webhook ${want}：一共发 3 次（至多重试 2 次），之后只记一行错误，不带地址与 key`,
+        hook.hits - h0 === 3 &&
+          lines.length === 1 &&
+          lines[0]!.startsWith(`[alert] 告警没推出去（重试 2 次仍失败：${want}）`) &&
+          !lines[0]!.includes(HOOK_KEY) &&
+          !lines[0]!.includes('127.0.0.1'),
+        `${hook.hits - h0} ${json(lines)}`,
+      );
+    }
+    hook.mode = 'hang';
+    A.setTimings({ timeoutMs: 400 });
+    const h0 = hook.hits;
+    const n0 = alertLogs.length;
+    const t0 = performance.now();
+    const ret = alertMod.alert('jobs', '推送挂住的一条', { escalate: true });
+    const syncMs = performance.now() - t0;
+    check('不变量 50：alert() 同步返回，不等推送（webhook 挂住）', ret === undefined && syncMs < 50 && A.inflight() === 1, `${syncMs}ms`);
+    const tTurn = performance.now();
+    const r = await say('wecom:wmAlertBusy01', '你好', [{ content: '您好～' }]);
+    const turnMs = performance.now() - tTurn;
+    const busy = await serverApp.request('/healthz');
+    const stillHanging = A.inflight();
+    check(
+      '不变量 50：推送挂住时一轮对话与请求照常、不等它（之后推送还挂着）',
+      r.turn.outcome === 'replied' && busy.status === 200 && (stillHanging === 1 || turnMs < 1000),
+      `${Math.round(turnMs)}ms ${stillHanging}`,
+    );
+    await A.settle();
+    const lines = alertLogs.slice(n0);
+    check(
+      '超时：每次按超时放弃，一共 3 次，只记一行 TimeoutError，不带地址',
+      hook.hits - h0 === 3 && lines.length === 1 && lines[0]!.includes('TimeoutError') && !lines[0]!.includes('127.0.0.1'),
+      `${hook.hits - h0} ${json(lines)}`,
+    );
+    hook.mode = 'ok';
+    A.setTimings({ timeoutMs: 5000 });
+    // 连不上：开一个端口再关掉
+    const refused = await new Promise<string>((resolve) => {
+      const s = http.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const { port } = s.address() as AddressInfo;
+        s.close(() => resolve(`http://127.0.0.1:${port}/cgi-bin/webhook/send?key=${HOOK_KEY}`));
+      });
+    });
+    process.env.ALERT_WEBHOOK_URL = refused;
+    const n1 = alertLogs.length;
+    alertMod.alert('jobs', '连不上的一条', { escalate: true });
+    await A.settle();
+    const refusedLines = alertLogs.slice(n1);
+    check(
+      '连不上：只记一行（错误名与 errno 码），不带地址与端口',
+      refusedLines.length === 1 &&
+        refusedLines[0]!.includes('ECONNREFUSED') &&
+        !refusedLines[0]!.includes(HOOK_KEY) &&
+        !refusedLines[0]!.includes('127.0.0.1'),
+      json(refusedLines),
+    );
+    process.env.ALERT_WEBHOOK_URL = hookUrl;
+    check('推送失败、超时、连不上：没有未处理的 rejection', unhandled === u0, String(unhandled - u0));
+
+    // 限流：一分钟至多 10 条，多出来的只记一行（一分钟至多一行）
+    A.reset();
+    const b0 = hook.bodies.length;
+    const n2 = alertLogs.length;
+    for (let i = 1; i <= 12; i++) alertMod.alert('tenant_lock', `限流第 ${i} 条`, { escalate: true });
+    await A.settle();
+    check(
+      '限流：一分钟里 12 条只推了 10 条，多出来的只记一行',
+      hook.bodies.length === b0 + 10 && alertLogs.slice(n2).filter((l) => l.startsWith('[alert] 一分钟内已推了 10 条告警')).length === 1,
+      `${hook.bodies.length - b0} ${json(alertLogs.slice(n2))}`,
+    );
+    alertNow += 61_000;
+    alertMod.alert('tenant_lock', '限流过后', { escalate: true });
+    await A.settle();
+    check('过了一分钟照常推', hook.bodies.length === b0 + 11 && contents().at(-1)!.includes('限流过后'));
+
+    // 正文的兜底：调用方误把会话原 id 或地址写进去，推出去的是短码、地址整段去掉
+    A.reset();
+    alertMod.alert('jobs', '会话 wecom:wmLeakAlert42 出错，见 https://example.com/x?key=abc');
+    await A.settle();
+    check(
+      '告警正文的兜底：会话原 id 换成短码、地址整段去掉',
+      contents().at(-1)!.startsWith('[selftest] 会话 RT42 出错，见 [地址已略] · '),
+      contents().at(-1),
+    );
+    process.env.INSTANCE_LABEL = '';
+    A.reset();
+    alertMod.alert('jobs', '没设实例名');
+    await A.settle();
+    check('没设 INSTANCE_LABEL：实例名是 wecom-sales-agent', contents().at(-1)!.startsWith('[wecom-sales-agent] 没设实例名 · '));
+    process.env.INSTANCE_LABEL = 'selftest';
+  }
+});
+
+// ================ 部署脚本：deploy/watch.sh 与 backup.sh 的告警（PATH 里的假 docker、curl、df、age） ================
+const wtmp = fs.mkdtempSync(path.join(VAR_DIR, 'watch-'));
+const wbin = path.join(wtmp, 'bin');
+const wfake = path.join(wtmp, 'fake');
+fs.mkdirSync(wbin);
+fs.mkdirSync(wfake);
+const realCurl = (process.env.PATH ?? '')
+  .split(path.delimiter)
+  .map((d) => path.join(d, 'curl'))
+  .find((p) => {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+check('前提：本机有 curl（假 curl 把 /healthz 以外的请求交给它）', !!realCurl);
+const fakeCmd = (name: string, lines: string[]): void =>
+  fs.writeFileSync(path.join(wbin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
+fakeCmd('docker', [
+  'case "$*" in',
+  '  *RestartCount*) cat "$FAKE_DIR/restart" 2>/dev/null || exit 1 ;;',
+  '  *"volume inspect"*) echo "$FAKE_DIR/volume" ;;',
+  '  *pg_dumpall*) echo "-- globals" ;;',
+  '  *pg_dump*) if [ -n "${FAKE_DUMP_FAIL:-}" ]; then exit 3; fi; echo dump ;;',
+  '  *"pg_restore --list"*) cat >/dev/null; for t in ${FAKE_TOC:-memberships sop_versions catalog_items audit_log conversations messages orders}; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
+  '  *psql*) echo "2|43|conversations messages orders" ;;',
+  '  *) exit 97 ;;',
+  'esac',
+]);
+// /healthz 的回包在 $FAKE_DIR/health（down 时像连不上那样以 7 退出）；别的请求（推 webhook）交给真的 curl
+fakeCmd('curl', [
+  'for a in "$@"; do',
+  '  case "$a" in',
+  '    */healthz) h="$(cat "$FAKE_DIR/health")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
+  '  esac',
+  'done',
+  'exec "$REAL_CURL" "$@"',
+]);
+// df -P <挂载点>：根分区与数据卷各自的使用率。$FAKE_DIR/df_wrap 存在时模拟设备名过长（overlay2/LVM/NFS 长挂载）、
+// df -P 把设备名单独占一行、数据挪到下一行且少一列的情况（审查第 1 条）
+fakeCmd('df', [
+  'p="${@: -1}"',
+  'if [ "$p" = / ]; then pct="$(cat "$FAKE_DIR/df_root")"; else pct="$(cat "$FAKE_DIR/df_volume")"; fi',
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"',
+  'if [ -f "$FAKE_DIR/df_wrap" ]; then',
+  '  echo "/dev/mapper/a-device-name-so-long-that-df--P-wraps-it-onto-its-own-line"',
+  '  echo "1000 500 500 ${pct}% $p"',
+  'else',
+  '  echo "/dev/fake 1000 500 500 ${pct}% $p"',
+  'fi',
+]);
+fakeCmd('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
+const setFake = (k: string, v: string): void => fs.writeFileSync(path.join(wfake, k), v);
+const srv = path.join(wtmp, 'srv');
+const bk = path.join(wtmp, 'bk');
+fs.mkdirSync(path.join(srv, 'var'), { recursive: true });
+fs.writeFileSync(path.join(srv, '.env'), 'DEPLOY_PROFILE=demo\n');
+fs.writeFileSync(path.join(srv, 'var', 'sessions.json'), '[]');
+fs.writeFileSync(
+  path.join(srv, '.env.backup'),
+  ['BACKUP_AGE_RECIPIENTS=age1test', `BACKUP_DIR=${bk}`, 'COMPOSE_PROJECT=opswatch', ''].join('\n'),
+);
+const WATCH_KEY = 'WATCHKEY55';
+const watchHook = `${hookBase}/cgi-bin/webhook/send?key=${WATCH_KEY}`;
+const writeOps = (lines: string[]): void =>
+  fs.writeFileSync(
+    path.join(srv, '.env.ops'),
+    [...lines, 'INSTANCE_LABEL=selftest-host', 'HOST_PORT=3999', `WATCH_STATE=${path.join(wtmp, 'state', 'watch.state')}`, ''].join('\n'),
+  );
+writeOps([`ALERT_WEBHOOK_URL=${watchHook}`]);
+const scriptEnv = Object.fromEntries(
+  Object.entries(process.env).filter(
+    (e): e is [string, string] =>
+      e[1] !== undefined &&
+      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|DISK_PATHS)$/.test(e[0]),
+  ),
+);
+Object.assign(scriptEnv, { PATH: `${wbin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_DIR: wfake, REAL_CURL: realCurl ?? 'curl' });
+const scriptOut: string[] = [];
+const runWatch = async (now: number, extra: Record<string, string> = {}): Promise<{ status: number | null; out: string }> => {
+  const r = await spawnAsync('bash', [path.join(repoRoot, 'deploy', 'watch.sh'), srv], {
+    cwd: wtmp,
+    env: { ...scriptEnv, WATCH_NOW: String(now), ...extra },
+    timeoutMs: 60_000,
+  });
+  scriptOut.push(r.stdout + r.stderr);
+  return { status: r.status, out: r.stdout + r.stderr };
+};
+const runBackup = async (extra: Record<string, string> = {}): Promise<{ status: number | null; out: string }> => {
+  const r = await spawnAsync('bash', [path.join(repoRoot, 'deploy', 'backup.sh'), srv], {
+    cwd: wtmp,
+    env: { ...scriptEnv, ...extra },
+    timeoutMs: 60_000,
+  });
+  scriptOut.push(r.stdout + r.stderr);
+  return { status: r.status, out: r.stdout + r.stderr };
+};
+const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+{
+  const deploySrc = fs.readFileSync(path.join(repoRoot, 'deploy.sh'), 'utf8');
+  const installed = /install -m 755 \$\{REMOTE_DIR\}\/deploy\/watch\.sh (\/\S+)\/\$\{NAME\}\/watch\.sh/.exec(deploySrc)?.[1];
+  const cronLine = /^# +\* \* \* \* \* +bash (\S+) \/opt\/wecom-sales-agent /m.exec(
+    fs.readFileSync(path.join(repoRoot, 'deploy', 'watch.sh'), 'utf8'),
+  )?.[1];
+  check(
+    'deploy.sh 每次部署把 watch.sh 装到部署目录之外（有才装，部署更早的 tag 不失败），正是 cron 那一行跑的路径',
+    installed !== undefined &&
+      cronLine === `${installed}/wecom-sales-agent/watch.sh` &&
+      /if \[ -f \$\{REMOTE_DIR\}\/deploy\/watch\.sh \]; then install/.test(deploySrc),
+    `${installed} / ${cronLine}`,
+  );
+
+  const T0 = Math.floor(Date.UTC(2026, 9, 3, 2, 0, 0) / 1000);
+  let now = T0;
+  const b0 = hook.bodies.length;
+  const fresh = (): string[] => contents().slice(b0);
+  fs.mkdirSync(path.join(bk, 'opswatch'), { recursive: true });
+  const stampAt = (s: number): void => fs.writeFileSync(path.join(bk, 'opswatch', 'last-success'), `${s}\n`);
+  stampAt(T0 - 3600);
+  setFake('restart', '3');
+  setFake('health', '{"ok":true,"revision":"v1"}');
+  setFake('df_root', '50');
+  setFake('df_volume', '40');
+  const first = await runWatch(now);
+  check('watch.sh：一切正常时什么都不推、不打', first.status === 0 && fresh().length === 0 && first.out === '', first.out);
+
+  // 重启：10 分钟内增加 2 次以上；持续时去重；30 分钟没有重启恢复
+  setFake('restart', '4');
+  await runWatch((now += 60));
+  check('watch.sh：10 分钟内重启 1 次不报', fresh().length === 0, json(fresh()));
+  setFake('restart', '5');
+  await runWatch((now += 60));
+  setFake('restart', '6');
+  await runWatch((now += 60));
+  check(
+    'watch.sh：RestartCount 10 分钟内增加 2 次收到一条，再增加时 30 分钟内不重发',
+    fresh().length === 1 && fresh()[0]!.startsWith('[selftest-host] app 容器 10 分钟内重启了 2 次 · ') && hostStampRe.test(fresh()[0]!),
+    json(fresh()),
+  );
+  await runWatch(now + 29 * 60);
+  check('watch.sh：没有重启才 29 分钟，不恢复', fresh().length === 1, json(fresh()));
+  await runWatch((now += 30 * 60));
+  check(
+    'watch.sh：30 分钟没有重启，收到「已恢复」',
+    fresh().length === 2 && fresh()[1]!.includes('已恢复：app 容器 30 分钟没有重启'),
+    json(fresh()),
+  );
+  setFake('restart', '0');
+  await runWatch((now += 60));
+  setFake('restart', '1');
+  await runWatch((now += 60));
+  check('watch.sh：容器重建（计数变小）之后从头数，重建本身不算重启', fresh().length === 2, json(fresh()));
+
+  // 健康检查：连续 3 分钟失败（连不上或 ok 为 false）；连续 3 分钟正常恢复
+  setFake('health', 'down');
+  await runWatch((now += 60));
+  await runWatch((now += 60));
+  check('watch.sh：健康检查失败 2 分钟不报', fresh().length === 2, json(fresh()));
+  await runWatch((now += 60));
+  await runWatch((now += 60));
+  check(
+    'watch.sh：/healthz 连续 3 分钟连不上收到一条，第 4 分钟不重发',
+    fresh().length === 3 && fresh()[2]!.startsWith('[selftest-host] 健康检查连续 3 分钟失败（连不上或 HTTP 出错，curl 退出码 7） · '),
+    json(fresh()),
+  );
+  setFake('health', '{"ok":true}');
+  await runWatch((now += 60));
+  await runWatch((now += 60));
+  check('watch.sh：正常 2 分钟不算恢复', fresh().length === 3);
+  await runWatch((now += 60));
+  check(
+    'watch.sh：连续 3 分钟正常，收到「已恢复」',
+    fresh().length === 4 && fresh()[3]!.includes('已恢复：健康检查连续 3 分钟正常'),
+    json(fresh()),
+  );
+  setFake('health', '{"ok":false,"revision":"v1"}');
+  for (let i = 0; i < 3; i++) await runWatch((now += 60));
+  check(
+    'watch.sh：ok 为 false 连续 3 分钟同样收到一条',
+    fresh().length === 5 && fresh()[4]!.includes('健康检查连续 3 分钟失败（ok 为 false）'),
+    json(fresh()),
+  );
+  setFake('health', '{"ok":true}');
+  for (let i = 0; i < 3; i++) await runWatch((now += 60));
+  check('watch.sh：又恢复', fresh().length === 6 && fresh()[5]!.includes('已恢复：健康检查'));
+
+  // 磁盘：≥ 85% 一条、≥ 95% 再发一次、回到 80% 以下恢复
+  setFake('df_root', '86');
+  await runWatch((now += 60));
+  setFake('df_root', '90');
+  await runWatch((now += 60));
+  check(
+    'watch.sh：根分区 86% 收到一条，涨到 90% 不重发',
+    fresh().length === 7 && fresh()[6]!.startsWith('[selftest-host] 磁盘使用率 86%（根分区） · '),
+    json(fresh()),
+  );
+  setFake('df_volume', '96');
+  await runWatch((now += 60));
+  setFake('df_volume', '97');
+  await runWatch((now += 60));
+  check(
+    'watch.sh：数据卷到 96% 再发一次（不受 30 分钟去重），之后不重发',
+    fresh().length === 8 && fresh()[7]!.startsWith('[selftest-host] 磁盘使用率 96%（数据库数据卷） · '),
+    json(fresh()),
+  );
+  setFake('df_root', '82');
+  setFake('df_volume', '82');
+  await runWatch((now += 60));
+  check('watch.sh：回到 82% 还不算恢复（要 80% 以下）', fresh().length === 8);
+  setFake('df_root', '50');
+  setFake('df_volume', '79');
+  await runWatch((now += 60));
+  check(
+    'watch.sh：回到 80% 以下，收到「已恢复」',
+    fresh().length === 9 && fresh()[8]!.includes('已恢复：磁盘使用率回到 80% 以下（79%）'),
+    json(fresh()),
+  );
+
+  // 备份：上次成功早于 26 小时；条件持续时每 30 分钟至多一次；有了新的成功恢复
+  stampAt(now - 27 * 3600);
+  await runWatch((now += 60));
+  await runWatch((now += 60));
+  check(
+    'watch.sh：上次成功的备份早于 26 小时收到一条，下一分钟不重发',
+    fresh().length === 10 && fresh()[9]!.startsWith('[selftest-host] 上次成功的备份是 27 小时前（超过 26 小时） · '),
+    json(fresh()),
+  );
+  await runWatch((now += 31 * 60));
+  check('watch.sh：条件持续 30 分钟以上，再发一次', fresh().length === 11 && fresh()[10]!.includes('超过 26 小时'), json(fresh()));
+  stampAt(now - 600);
+  await runWatch((now += 60));
+  check(
+    'watch.sh：有了新的成功，收到「已恢复」',
+    fresh().length === 12 && fresh()[11]!.includes('已恢复：备份成功（0 小时前）'),
+    json(fresh()),
+  );
+  fs.rmSync(path.join(bk, 'opswatch', 'last-success'));
+  await runWatch((now += 60));
+  check(
+    'watch.sh：没有成功记录也没有日期目录：收到「没有找到成功的备份」',
+    fresh().length === 13 && fresh()[12]!.includes('没有找到成功的备份'),
+    json(fresh()),
+  );
+  fs.mkdirSync(path.join(bk, 'opswatch', '2026-10-02'));
+  await runWatch(Math.floor(Date.now() / 1000) + 60);
+  check(
+    'watch.sh：还没有成功记录时按最新的日期目录算（这一版的 backup.sh 还没跑过）',
+    fresh().length === 14 && fresh()[13]!.includes('已恢复：备份成功'),
+    json(fresh()),
+  );
+  const off = await runWatch(now + 40 * 3600, { WATCH_BACKUP: '0' });
+  check('watch.sh：WATCH_BACKUP=0 不查备份', fresh().length === 14 && off.status === 0, json(fresh()));
+
+  // 没配地址：只写 stderr，不推
+  writeOps([]);
+  const h0 = hook.hits;
+  setFake('health', 'down');
+  for (let i = 0; i < 3; i++) await runWatch((now += 60));
+  const noUrl = scriptOut.at(-1) ?? '';
+  check(
+    'watch.sh：没配 ALERT_WEBHOOK_URL 只写一行 stderr（带告警正文），不推',
+    hook.hits === h0 && noUrl.includes('watch: ⚠️ 没配 ALERT_WEBHOOK_URL') && noUrl.includes('健康检查连续 3 分钟失败'),
+    noUrl,
+  );
+  writeOps([`ALERT_WEBHOOK_URL=${watchHook}`]);
+  setFake('health', '{"ok":true}');
+  const state = fs.readFileSync(path.join(wtmp, 'state', 'watch.state'), 'utf8');
+  check(
+    'watch.sh：去重状态是一个小文件，只有名字与数字',
+    state.split('\n').every((l) => l === '' || /^[a-z0-9_]+=[0-9 :]*$/.test(l)) && state.includes('a_health_active=1'),
+    state,
+  );
+
+  // backup.sh：中途失败（trap 在非零退出时）推一条、写失败标记；下一次成功记下时刻并推「已恢复」
+  const day = (await spawnAsync('date', ['+%F'], { cwd: wtmp, env: scriptEnv })).stdout.trim();
+  const fb0 = hook.bodies.length;
+  const failed = await runBackup({ FAKE_TOC: 'memberships sop_versions catalog_items audit_log messages orders' });
+  check(
+    'backup.sh：校验那一步失败，退出码照旧是 1，推一条（哪一步、退出码），写下失败标记',
+    failed.status === 1 &&
+      contents().length === fb0 + 1 &&
+      contents()[fb0]!.startsWith('[selftest-host] 备份失败（校验这一步，退出码 1），这次的备份不可用 · ') &&
+      hostStampRe.test(contents()[fb0]!) &&
+      fs.existsSync(path.join(bk, 'opswatch', 'last-failure')),
+    `${failed.status} ${json(contents().slice(fb0))} ${failed.out.slice(-300)}`,
+  );
+  const failed2 = await runBackup({ FAKE_DUMP_FAIL: '1' });
+  check(
+    'backup.sh：导出那一步失败（docker 退出码 3）同样推一条，退出码照旧',
+    failed2.status === 3 && contents().length === fb0 + 2 && contents()[fb0 + 1]!.includes('备份失败（导出这一步，退出码 3）'),
+    `${failed2.status} ${json(contents().slice(fb0))}`,
+  );
+  const before = Math.floor(Date.now() / 1000);
+  const ok1 = await runBackup();
+  const stamp = Number(fs.readFileSync(path.join(bk, 'opswatch', 'last-success'), 'utf8').trim());
+  check(
+    'backup.sh：成功时写下 last-success（现在的秒数）、去掉失败标记，推一条「已恢复」',
+    ok1.status === 0 &&
+      stamp >= before - 1 &&
+      stamp <= Math.floor(Date.now() / 1000) + 1 &&
+      !fs.existsSync(path.join(bk, 'opswatch', 'last-failure')) &&
+      contents().length === fb0 + 3 &&
+      contents()[fb0 + 2]!.startsWith('[selftest-host] 已恢复：备份成功 · ') &&
+      fs.existsSync(path.join(bk, 'opswatch', day, 'agent.dump.age')),
+    `${ok1.status} ${ok1.out.slice(-300)} ${json(contents().slice(fb0))}`,
+  );
+  const ok2 = await runBackup();
+  check('backup.sh：上一次就成功的，这次成功不再推', ok2.status === 0 && contents().length === fb0 + 3);
+  const latest = Number(fs.readFileSync(path.join(bk, 'opswatch', 'last-success'), 'utf8').trim());
+  const watched = await runWatch(latest + 27 * 3600);
+  check(
+    'watch.sh 读的正是 backup.sh 写的 last-success：过了 27 小时报备份过期',
+    watched.status === 0 && contents().at(-1)!.includes('上次成功的备份是 27 小时前'),
+    json(contents().slice(-2)),
+  );
+  // 推不出去、没配地址：退出码不变，只写 stderr，不带地址
+  writeOps([`ALERT_WEBHOOK_URL=http://127.0.0.1:9/cgi-bin/webhook/send?key=${WATCH_KEY}`]);
+  const down = await runBackup({ FAKE_DUMP_FAIL: '1' });
+  check(
+    'backup.sh：告警推不出去时退出码照旧，只写一行 stderr，不带地址与 key',
+    down.status === 3 && down.out.includes('backup: ⚠️ 告警没推出去（curl 退出码') && !down.out.includes(WATCH_KEY),
+    down.out.slice(-400),
+  );
+  writeOps([]);
+  const none = await runBackup({ FAKE_DUMP_FAIL: '1' });
+  check(
+    'backup.sh：没配 ALERT_WEBHOOK_URL 时只写 stderr，退出码照旧',
+    none.status === 3 && none.out.includes('backup: ⚠️ 没配 ALERT_WEBHOOK_URL') && none.out.includes('备份失败（导出这一步'),
+    none.out.slice(-400),
+  );
+  writeOps([`ALERT_WEBHOOK_URL=${watchHook}`]);
+
+  // 磁盘：df -P 的设备名过长时单独占一行、百分比那行少一列（审查第 1 条）：仍要从里面读出使用率，不能静默不报。
+  // 按内容找而不是按下标数：这里的 now 是整段测试共用的模拟时钟，跑到这一步时可能同时越过备份去重的边界触发别的告警
+  setFake('df_wrap', '1');
+  setFake('df_root', '92');
+  const wrapBefore = fresh().length;
+  await runWatch((now += 60));
+  check(
+    'watch.sh：df -P 输出里设备名单独占一行（overlay2/LVM/NFS 长挂载）、数据行少一列时仍读得到使用率，92% 照样告警',
+    fresh()
+      .slice(wrapBefore)
+      .some((m) => m.includes('磁盘使用率 92%（根分区）')),
+    json(fresh().slice(wrapBefore)),
+  );
+  fs.rmSync(path.join(wfake, 'df_wrap'));
+  setFake('df_root', '50');
+  const recoverBefore = fresh().length;
+  await runWatch((now += 60));
+  check(
+    'watch.sh：回到 50%，收到「已恢复」',
+    fresh()
+      .slice(recoverBefore)
+      .some((m) => m.includes('已恢复：磁盘使用率回到 80% 以下')),
+    json(fresh().slice(recoverBefore)),
+  );
+
+  check(
+    'watch.sh 与 backup.sh 的输出里一次都没有 webhook 的 key 与地址',
+    scriptOut.every((o) => !o.includes(WATCH_KEY) && !o.includes(hookBase)),
+    scriptOut.find((o) => o.includes(WATCH_KEY)),
+  );
+}
+
+// ---------------- 告警正文：只有计数、短码、错误码 ----------------
+{
+  const all = contents();
+  const leaks = all.filter(
+    (c) =>
+      c.includes(ALERT_SAID) ||
+      c.includes('李四') ||
+      /wm[A-Z][A-Za-z0-9]{4,}/.test(c) ||
+      c.includes('wecom:') ||
+      c.includes('sim-') ||
+      c.includes(HOOK_KEY) ||
+      c.includes(WATCH_KEY) ||
+      /https?:\/\//.test(c) ||
+      c.includes('127.0.0.1'),
+  );
+  check(
+    '不变量 32：收到的每条告警都是「[实例名] 中文说明 · 时间」，没有客户原话、external_userid、会话原 id、地址与密钥',
+    all.length > 40 &&
+      leaks.length === 0 &&
+      all.every((c) => stampRe.test(c) || hostStampRe.test(c) || c.startsWith('[wecom-sales-agent] ')),
+    json(leaks.length ? leaks : all.filter((c) => !stampRe.test(c) && !hostStampRe.test(c)).slice(0, 3)),
+  );
+  check(
+    '告警地址只在 env 里：webhook 收到的请求都打到配置的那个路径，告警这一段的日志里没有地址与 key',
+    hook.urls.every((u) => u === `/cgi-bin/webhook/send?key=${HOOK_KEY}` || u === `/cgi-bin/webhook/send?key=${WATCH_KEY}`) &&
+      alertLogs.every((l) => !l.includes(HOOK_KEY) && !l.includes('127.0.0.1')),
+    json(hook.urls.slice(0, 3)),
+  );
+}
+
 // ---------------- 停机：drain 段 flush ----------------
 {
   const sid = 'wecom:wmOtelShutdown';
@@ -1382,9 +2880,44 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   receiver.mode = 'ok';
 }
 
+// ================ 告警：租户锁被别的进程拿走、停机写 spill（会让本进程不再写库，放在最后） ================
+{
+  A.reset();
+  hook.mode = 'ok';
+  const n0 = hook.bodies.length;
+  const lock = theLock as ReturnType<typeof fakeLock> | null;
+  lock!.next = 'held_by_other';
+  lock!.lose();
+  await sleep(150);
+  await A.settle();
+  check(
+    'tenant_lock：锁进入 lost 一条；确认被别的进程持有、开始停机时再发一条（不受 30 分钟去重）',
+    contents().length === n0 + 2 &&
+      contents()[n0]!.includes('租户锁连接断开') &&
+      contents()[n0 + 1]!.startsWith('[selftest] 租户锁已被另一个进程持有，本进程开始停机 · '),
+    json(contents().slice(n0)),
+  );
+  // 锁在别人手里：drain 段不写库，没落库的真实会话（含前面 poisoned 的那个）退出时写进 spill。告警在 drain 段末尾发出，
+  // late 段等在途的推送推完再结束
+  check('前提：还有没落库的真实会话（前面 poisoned 的那个）', store.storeHealth().dirty > 0, json(store.storeHealth()));
+  const h0 = hook.hits;
+  const ok = await store.runShutdownHooks(8000);
+  const spill = contents().slice(n0 + 2);
+  check(
+    'store：停机写了 spill 收到一条（会话个数）；停机钩子返回之前就推到了（late 段等在途的推送）',
+    ok &&
+      hook.hits > h0 &&
+      spill.length === 1 &&
+      /^\[selftest\] 停机时 \d+ 个会话没落库，退出时写进 spill 文件（下次启动先回放） · /.test(spill[0]!),
+    json(spill),
+  );
+}
+
 check('全程没有未处理的 rejection', unhandled === 0, String(unhandled));
 otlp.close();
 fakeLlm.close();
+hookSrv.closeAllConnections();
+hookSrv.close();
 await t.close().catch(() => undefined);
 if (fails.length) {
   console.error(`OPS SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);
@@ -1392,6 +2925,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `OPS SELFTEST PASS: ${pass} 项断言全通（边界 lint / 没设端点不加载、不连接 / 运行数字逐字段、时区、保留期截断、60 秒缓存、文件存储 503、角色 403、参数 / OpenTelemetry 的 span 树与属性、provider、默认无原文、capture、出错与工具失败、匿名引用、端点挂掉、停机 flush 与按时放弃）`,
+  `OPS SELFTEST PASS: ${pass} 项断言全通（边界 lint / 没设端点不加载、不连接 / 运行数字逐字段、时区、保留期截断、60 秒缓存、文件存储 503、角色 403、参数 / OpenTelemetry 的 span 树与属性、provider、默认无原文、capture、出错与工具失败、匿名引用、端点挂掉、停机 flush 与按时放弃 / 日志：JSON 行与字段、req 与 x-request-id、轮次的 tenant·conv·turn、没有原话与会话原 id、兜底与 redact、纯文本不变 / 告警：五个键的触发与恢复、30 分钟去重、条件变重、限流、超时与失败不抛不阻塞、没配地址只 warn、正文禁止项 / watch.sh 与 backup.sh）`,
 );
 process.exit(0);

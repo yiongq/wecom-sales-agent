@@ -1,7 +1,12 @@
 // 只有副作用：解析部署 profile，用一行日志打出 profile 名和 00 的六个开关的生效值（之后加的开关见 server.ts 的 logStartup）。
 // server.ts 在 import './env.js' 之后紧接着 import 它：store.ts 在模块加载时就会读 profile()（保鲜），
 // 配置错了要在这里先打一行原因再退出，而不是在 import 链里抛出异常栈。启动失败会被部署的健康检查拦下并回滚。
+import { installJsonConsole } from './log.js';
 import { BASELINE_FLAG_NAMES, profile, ProfileConfigError } from './profile.js';
+
+// LOG_FORMAT=json（02 spec R24）：导入期的日志（下面这一行、各模块加载时打的）也要是 JSON 行，所以在这里就把 console.* 接到 pino；
+// boot() 照 spec 再调一次。没设时什么都不做
+installJsonConsole();
 
 try {
   const p = profile();
