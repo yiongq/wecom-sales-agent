@@ -312,6 +312,7 @@ export const travel: IndustryPack = {
       maxBudgetPerPerson: '每人预算上限',
       maxNightlyPrice: '每晚预算上限',
       overBudget: '超出预算',
+      payNote: '付款说明',
       payUrl: '付款链接',
       priceFrom: '起价',
       routeId: '线路编号',

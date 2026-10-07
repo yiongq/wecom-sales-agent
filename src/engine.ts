@@ -34,6 +34,7 @@ import {
 import { BUDGET_LIFTED, dropUnbackedClaims, liftsBudget } from './price-rules.js';
 import { numEnv, todayIso } from './env.js';
 import { profile } from './profile.js';
+import { paymentMode } from './payment/mode.js';
 import { renderSystemPrompt } from './prompt/system.js';
 import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from './config/source.js';
 import { promptHashes } from './config/hashes.js';
@@ -444,7 +445,12 @@ function resendPayReply(session: Session, text: string): string | undefined {
   // 得是在说付款：点名了支付/付款/订单，或只说「链接」「卡片」而最近发出去的站内链接就是支付链接
   if (!/支付|付款|付钱|交钱|收银|订单/.test(text) && !(/链接|卡片/.test(text) && lastSiteLinkIsPay(session))) return undefined;
   console.warn(`[engine] 客户要重发支付链接，引擎直接重发待付款订单 ${o.id}（会话 ${convLabel(session.id)}）：${text}`);
-  return `好的，支付链接给您重新发一次：\n/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
+  const orderLine = `/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
+  // advisor 模式：这条链接不能点开就付，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
+  if (paymentMode() === 'advisor') {
+    return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : '顾问会在微信里跟您核对价格并发收款方式。'}`;
+  }
+  return `好的，支付链接给您重新发一次：\n${orderLine}`;
 }
 /** 最近一条带站内链接的回复里，最后那条是支付链接（不是方案书） */
 function lastSiteLinkIsPay(session: Session): boolean {
@@ -1296,7 +1302,15 @@ async function strandedReply(ctx: LinkRepairCtx): Promise<string> {
     .filter((c) => c.name === 'create_order')
     .map((c) => toolJson(c.result))
     .find((o): o is Record<string, unknown> => !!o && !Array.isArray(o) && typeof o.payUrl === 'string');
-  if (order) return `订单已生成，总价 ${yuan(Number(order.total))}。\n请点此完成支付：${String(order.payUrl)}\n名额以付款为准～`;
+  if (order) {
+    const payUrl = String(order.payUrl);
+    // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
+    const how =
+      paymentMode() === 'advisor'
+        ? `订单链接：${payUrl}\n顾问会在微信里跟您核对价格并发收款方式，不用点链接付款。`
+        : `请点此完成支付：${payUrl}\n名额以付款为准～`;
+    return `订单已生成，总价 ${yuan(Number(order.total))}。\n${how}`;
+  }
 
   // ② 三样齐全：按客户最新说的实报。日期只用 groundToolArgs 补得上的：客户说的具体日子、节假日，或只说到月份（按那个月的季节价）；
   // 过去的日子、说不出是哪个月的不报——不带日期报出来是标准价，旺季里就是报低了
@@ -3906,10 +3920,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (existing) {
       session.stage = 'closing';
       const before = visible;
-      visible =
-        `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、` +
-        `${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n` +
-        `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
+      // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
+      const how =
+        paymentMode() === 'advisor'
+          ? `订单链接：/pay/${existing.id}\n顾问会在微信里跟您核对价格并发收款方式，想改人数或日期的话跟我说一声，我重新为您安排～`
+          : `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
+      visible = `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n${how}`;
       noteGuard('order_net', before, visible, 'replace');
     } else {
       const departDate = wantDate;
@@ -3950,15 +3966,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
                 ? `\n（之前报的是 ${yuan(quote.total)}，按 ${cardDate(departDate)}出发重新核算：${res.note ?? '按这条线的季节定价'}）`
                 : '';
             const old = res.supersededOrderId ? getOrder(res.supersededOrderId) : undefined;
+            const advisor = paymentMode() === 'advisor';
+            // advisor 模式：旧单作废后不说「按这张付款」，这条链接不是点开就能付的（02 spec「收款流程」）；online 模式原样不变
             const replaced = old
-              ? `\n之前那张 ${old.travelers} 位、${cardDate(old.departDate)}出发的订单已作废，旧链接失效，按这张付款就行。`
+              ? `\n之前那张 ${old.travelers} 位、${cardDate(old.departDate)}出发的订单已作废，旧链接失效，${advisor ? '按这张的订单链接来。' : '按这张付款就行。'}`
               : '';
             // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
+            const how = advisor
+              ? `订单链接：${res.payUrl}\n顾问会在微信里跟您核对价格并发收款方式，不用点链接付款。`
+              : `请点此完成支付：${res.payUrl}\n名额以付款为准，付款后顾问会与您确认行程细节～`;
             const before = visible;
-            visible =
-              `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、` +
-              `${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n请点此完成支付：${res.payUrl}\n` +
-              '名额以付款为准，付款后顾问会与您确认行程细节～';
+            visible = `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n${how}`;
             noteGuard('order_net', before, visible, 'replace');
           }
         } catch (e) {
