@@ -1252,7 +1252,7 @@
 
 ### 交接（2026-10-08，第 17 步）
 
-- 已完成：第 17 步代码部分（接手上一个额度用完被打断的 agent；分支 `feat/02-step17-logs-alerts`，没 push）。已有的 5 个提交（依赖、`src/log.ts`、`src/ops/alert.ts`、`deploy/watch.sh`+`backup.sh`、`ops.selftest.ts` 的日志与告警部分）核过与原 brief 一致，没有重做；接手补的几处见「实施记录 · 第 17 步」本步定的：33 处原 id 清单最后两处（`engine.ts` 直传 `shortIdOf` 改成 `convLabel`）、`eval/run.ts` 补 `installJsonConsole()`（原来 `LOG_FORMAT=json` 对它没有效果）、合并 `origin/dev` 两次（先是含第 11 步四轮的 22 个提交，`trace/recorder.ts` 一处冲突已按两边意图解决；再是协调者提示的 PR #84「锁定套件钉固定时钟」，自动合并无冲突）。另做了自测结果核对、12 个代表性变异（隔离副本）、本节与「实施记录 · 第 17 步」。
+- 已完成：第 17 步代码部分（接手上一个额度用完被打断的 agent；分支 `feat/02-step17-logs-alerts`，PR #86）。已有的 5 个提交（依赖、`src/log.ts`、`src/ops/alert.ts`、`deploy/watch.sh`+`backup.sh`、`ops.selftest.ts` 的日志与告警部分）核过与原 brief 一致，没有重做；接手补的几处见「实施记录 · 第 17 步」本步定的：33 处原 id 清单最后两处（`engine.ts` 直传 `shortIdOf` 改成 `convLabel`）、`eval/run.ts` 补 `installJsonConsole()`（原来 `LOG_FORMAT=json` 对它没有效果）、合并 `origin/dev` 两次（先是含第 11 步四轮的 22 个提交，`trace/recorder.ts` 一处冲突已按两边意图解决；再是协调者提示的 PR #84「锁定套件钉固定时钟」，自动合并无冲突）。另做了自测结果核对、12 个代表性变异（隔离副本）、本节与「实施记录 · 第 17 步」。
 - 门禁：四个门禁全绿；`pnpm test`（原样，没有绕过任何断言）带 `PG_TEST_URL`（`pgtest-02s17c`，`127.0.0.1:55442`）与不带各跑一遍，exit code 0，`price-guard.selftest` 403 项全过（见下面「阻塞」）；另外单独跑了 `LOG_FORMAT=json` 的 mock eval（文件、DB 两种配置），标准输出每行能解析成 JSON、搜不到会话原 id；锁定套件 8 个文件与 `origin/dev` 零字节差异，`PREFIX sha256` 不变。README 没动。
 - 半成品：无。
 - 阻塞：无。中途发现并复现过一个与本步无关的既有问题——`price-guard.selftest.ts` 的 Q1、R4 两条断言用固定出发日期 `2026-10-03`，当天（2026-10-08）已经过去会变红，干净的 `origin/dev` 上同样复现——正准备写「Open」时，协调者告知 dev 已合进 PR #84（`test:locked` + `src/store/parity-clock.ts`，钉固定时钟跑锁定套件），合并之后这两条断言恢复全过，不再需要写「Open」。外部拨测仍待 owner 配好国内云厂商账号后补做（开放问题 14），结果记进「验收记录」后再勾选第 17 步的复选框。
