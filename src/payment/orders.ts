@@ -6,6 +6,7 @@
 import { notifyPaid } from '../engine.js';
 import {
   type Actor,
+  awaitCommit,
   ForbiddenError,
   handlesConversations,
   isAssignee,
@@ -15,17 +16,7 @@ import {
 } from '../handoff/takeover.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { cleanText } from '../shared/text.js';
-import {
-  flushSession,
-  getOrder,
-  getSession,
-  markOrderPaid,
-  queueAudit,
-  saveOrder,
-  saveSession,
-  storeLagging,
-  StoreLaggingError,
-} from '../store.js';
+import { getOrder, getSession, markOrderPaid, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
 import type { Order, OrderStatus } from '../types.js';
 import { paymentMode } from './mode.js';
 
@@ -93,25 +84,23 @@ export function cancelOrder(orderId: string, actor: Actor, reason: string): Orde
 }
 
 /**
- * 确认收款：advisor 模式要求已确认价格（OrderStateError('unconfirmed')）；已付的单幂等（不改、不再通知）。
- * 调 markOrderPaid（记 handoffBeforePaid）、记操作者与审计，await flushSession（≤5 秒）之后才 notifyPaid 并经渠道发付款确认
- * （等满 5 秒没提交也照发，persisted 为 false，调用方据此回 503 store_lagging）。spec 的签名返回 Order，这里多带 persisted
+ * 确认收款：advisor 模式要求已确认价格（OrderStateError('unconfirmed')）；已付的单幂等（不改、不再通知，但同样等提交，
+ * 不能在上一次的改动还没提交时就说「已确认」——审查第 5 条，concurrency[1]）。
+ * 调 markOrderPaid（记 handoffBeforePaid）、记操作者与审计，等提交（≤5 秒）之后才 notifyPaid 并经渠道发付款确认
+ * （真超时也照发，persisted 为 false，调用方据此回 503 store_lagging；poisoned 或冲突时不会再提交，不发，直接 503）。
+ * spec 的签名返回 Order，这里多带 persisted
  */
 export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<{ order: Order; persisted: boolean }> {
   const o = orderFor(orderId, actor);
-  if (o.status === 'paid') return { order: o, persisted: true };
+  if (o.status === 'paid') return { order: o, persisted: (await awaitCommit(o.sessionId)).persisted };
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (paymentMode() === 'advisor' && o.confirmedAt == null) throw new OrderStateError('unconfirmed');
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.paidMarkedBy = who(actor);
   markOrderPaid(o.id);
   audit(o, actor, { action: 'order.mark_paid', diff: { totalPrice: o.totalPrice } });
-  let persisted = true;
-  try {
-    await flushSession(o.sessionId, { timeoutMs: 5000 });
-  } catch {
-    persisted = false;
-  }
+  // 不会再提交（poisoned 或冲突）时 awaitCommit 直接抛 StoreLaggingError：不发付款确认，调用方回 503（不变量 20）
+  const { persisted } = await awaitCommit(o.sessionId);
   // 付款确认在提交之后才写进会话、发给客户（不变量 20）
   const notice = await notifyPaid(o.id);
   if (notice) {
