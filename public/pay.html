@@ -299,6 +299,23 @@
       </div>
 
       <div class="err" id="errView">订单不存在或已失效</div>
+
+      <!-- advisor 模式（02 spec「收款流程」）：顾问在微信里核对价格、发收款方式，这里不给付款按钮，只按订单状态说明进度 -->
+      <div id="advisorView" style="display:none">
+        <div class="card">
+          <div class="merchant">云途定制旅行</div>
+          <div class="amount"><span class="cny">¥</span><span class="num" id="aAmount">--</span></div>
+          <div class="rows">
+            <div class="krow"><span class="k">商品</span><span class="v" id="aRouteTitle">--</span></div>
+            <div class="krow"><span class="k">出行人数</span><span class="v" id="aTravelers">--</span></div>
+            <div class="krow"><span class="k">出发日期</span><span class="v" id="aDepartDate">--</span></div>
+            <div class="krow"><span class="k">订单号</span><span class="v" id="aOrderId" style="color:#aaa;font-size:12.5px">--</span></div>
+          </div>
+        </div>
+        <div class="paybar">
+          <div class="secure" id="advisorStatus" style="font-size:14px;color:var(--text);margin-top:0">--</div>
+        </div>
+      </div>
     </div>
 
     <div class="foot">演示环境·模拟支付</div>
@@ -309,9 +326,16 @@
 
 <script>
 (() => {
-  // /pay/:orderId 路径优先，?orderId= 兜底
+  // /pay/:orderId 路径优先，?orderId= 兜底跳到 /pay/:orderId（02 spec「收款流程」：收款方式只经 /pay/:orderId
+  // 的服务端注入知道，这条静态入口没有 orderId 对不上就注入不到，统一跳过去再走一遍）
   const m = location.pathname.match(/^\/pay\/([A-Za-z0-9_-]+)/);
+  if (!m) {
+    const qid = new URLSearchParams(location.search).get('orderId');
+    if (qid) { location.replace('/pay/' + encodeURIComponent(qid)); return; }
+  }
   const orderId = (m && m[1]) || new URLSearchParams(location.search).get('orderId');
+  // 服务端注入（见上面的注释）；没注入（order 不存在、或走的是没有 orderId 的 /pay.html）时按 online 走老路
+  const paymentMode = document.querySelector('meta[name="payment-mode"]')?.content === 'advisor' ? 'advisor' : 'online';
 
   const $ = (id) => document.getElementById(id);
   const fmt = (n) => Number(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -337,6 +361,24 @@
     $('payView').style.display = view === 'pay' ? 'block' : 'none';
     $('successView').style.display = view === 'success' ? 'block' : 'none';
     $('errView').style.display = view === 'err' ? 'block' : 'none';
+    $('advisorView').style.display = view === 'advisor' ? 'block' : 'none';
+  }
+
+  // advisor 模式：没有付款按钮，按订单状态写死的那句话（02 spec「收款流程」，逐字不改）
+  function advisorStatusText(o) {
+    if (o.status === 'paid') return '已收款';
+    if (o.status === 'superseded') return '已被替代';
+    if (o.status === 'cancelled') return '已取消';
+    return o.confirmed ? '价格已确认 · 请按顾问在微信里发的方式付款' : '订单已提交 · 顾问会在微信里跟您核对价格，并发来收款方式';
+  }
+  function renderAdvisor() {
+    $('aAmount').textContent = fmt(order.totalPrice);
+    $('aRouteTitle').textContent = order.routeTitle;
+    $('aTravelers').textContent = order.travelers + ' 人';
+    $('aDepartDate').textContent = order.departDate || '待定';
+    $('aOrderId').textContent = order.id;
+    $('advisorStatus').textContent = advisorStatusText(order);
+    show('advisor');
   }
 
   // 订单支付倒计时（纯展示，走到 0 停）
@@ -417,6 +459,7 @@
       const res = await fetch('/api/orders/' + encodeURIComponent(orderId));
       if (!res.ok) return show('err');
       order = await res.json();
+      if (paymentMode === 'advisor') return renderAdvisor();
       if (order.status === 'paid') return renderSuccess();
       if (order.status === 'cancelled') return show('err');
       // 改单后被新订单替代的旧单：不给付款按钮，告诉客户去用新链接（服务端的付款接口同样拒绝）

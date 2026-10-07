@@ -40,6 +40,7 @@ import {
   listSessions,
   markOrderPaid,
   onShutdown,
+  queueAudit,
   saveSession,
   sessionStoreMode,
   storeEvents,
@@ -47,6 +48,7 @@ import {
   StoreLaggingError,
   varDir,
 } from './store.js';
+import { shortIdOf } from './shared/conversation.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
 import { activeModels, CHEAP_TIER_MODELS, llmCfg, llmStats } from './llm.js';
 import { budgetStatus } from './budget.js';
@@ -61,6 +63,7 @@ import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
+import { paymentMode } from './payment/mode.js';
 import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
 import { boot } from './boot.js';
 import { startOtelExport } from './ops/otel.js';
@@ -608,6 +611,19 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   }
   if (order.status !== 'paid') {
     markOrderPaid(id);
+    // 共享工作台的操作记一行审计（02 spec「收款流程」）：这条旧路径不要求先经 confirmOrder 确认价格
+    // （advisor 模式下也一样，与三个新接口那条规则不同——这条路径从模拟支付时代就有，保持原样）
+    const payActor = sharedActor(auditIp(c));
+    const payAuditActor = { kind: 'user' as const, userId: payActor.userId, name: payActor.name, ip: payActor.ip ?? null };
+    const payAuditEntry = {
+      action: 'order.mark_paid',
+      targetType: 'order',
+      targetId: order.id,
+      diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
+    };
+    queueAudit(order.sessionId, payAuditActor, payAuditEntry);
+    // 付款确认同样在提交之后才对客户发（不变量 20）；等满 5 秒也照发，和 markPaidByAdvisor 一致
+    await flushSession(order.sessionId, { timeoutMs: 5000 }).catch(() => {});
     // 引擎生成跟进话术并更新会话，服务端只负责经渠道推给客户
     const followUp = await notifyPaid(id);
     if (followUp) {
@@ -648,6 +664,10 @@ app.get('/pay/:orderId', async (c) => {
   const o = getOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
+  // advisor 模式：页面不经 R22 白名单知道收款方式长什么样（里面没有这个字段），只能靠这条路由服务端注入一个标记，
+  // 页面 JS 据它决定要不要渲染付款按钮（spec「收款流程」；/pay.html?orderId= 这条静态入口注入不到，在客户端跳到这条路由）。
+  // online 模式什么都不加，页面逐字节不变
+  const modeTag = paymentMode() === 'advisor' ? '\n<meta name="payment-mode" content="advisor">' : '';
   // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
   if (o.status === 'superseded') {
     const t = `${o.routeTitle} · 订单已被替代`;
@@ -656,7 +676,7 @@ app.get('/pay/:orderId', async (c) => {
       withHead(
         html,
         `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
-          `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`,
+          `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">${modeTag}`,
       ),
     );
   }
@@ -675,7 +695,7 @@ app.get('/pay/:orderId', async (c) => {
       `<title>${esc(title)}</title>\n` +
         `<meta name="description" content="${esc(desc)}">\n` +
         `<meta property="og:title" content="${esc(title)}">\n` +
-        `<meta property="og:description" content="${esc(desc)}">`,
+        `<meta property="og:description" content="${esc(desc)}">${modeTag}`,
     ),
   );
 });
