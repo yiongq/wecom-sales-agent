@@ -118,7 +118,7 @@
   - `logQuote()`：第 1 步盘点出的日志位置逐个改经它；compose 的 app 服务配日志轮转。
   - 新建 `src/privacy/privacy.selftest.ts`；保留期、清理竞争与行权删除的场景写进 `store.selftest.ts`（真实 PG）。
   - 对应验收 25、26、27，以及不变量 6、40、41、42。
-- [ ] 17. 可观测性：结构化日志与告警（3）：
+- [ ] 17. 可观测性：结构化日志与告警（3）：代码部分已完成（2026-10-08，分支 `feat/02-step17-logs-alerts`；上一个实现 agent 额度用完后接续完成），结构、依赖版本、本步定的取舍、自测、变异与门禁结果见「实施记录 · 第 17 步」。外部拨测由 owner 配好国内云厂商账号后，停一次 app 验证通知能到、把结果记进「验收记录」，再勾选本步（开放问题 14）。
   - `src/log.ts`（`pino` 钉精确版本）：`LOG_FORMAT=json` 时输出 JSON、`boot()` 把 `console.*` 接过去；请求中间件生成 `req` 与 `x-request-id`；轮次里的 `tenant`、`conv`（`ref` 或短码）、`turn`；`redact` 盖住凭据字段。
   - `src/ops/alert.ts` 与 `startAlerts()`：spec「告警」表里 app 侧的五个键，去重、限流、恢复消息、推送失败不抛。
   - `deploy/watch.sh`（重启次数、健康检查、磁盘、备份是否超过 26 小时没成功）与 `deploy/backup.sh` 的失败告警；`ALERT_WEBHOOK_URL`、`INSTANCE_LABEL`、`LOG_FORMAT` 进 `.env.example` 与 compose 的说明；cron 的配置写进部署文档（路径另记）。
@@ -1018,6 +1018,24 @@
   - 浏览器：Chromium 151（Playwright 1.62），仓库外的走查后台同上，DPR 2，浅色、深色各一轮、各从新库开始：每轮 105 项（原来 48 项的内容加审查之后的 29 项）都通过。焦点框在用户菜单、外观子菜单、条目详情「更多」、话术页「更多」与列表筛选上四边完整（框的条带与裁切区求交，看得见的比例都是 1），对比度浅色 5.21 / 4.79、深色 4.44 / 3.88，都过 3:1。同一个脚本对审查之前的构建跑，审查列的几处都复现。
   - 门禁：四个门禁全绿；`pnpm test` 不带 `PG_TEST_URL` 跑一遍（本步不碰服务端），PASS 行 64，mock eval 19/19（文件与 DB 两种配置模式），`check-fonts`、`check-console-src`、`check-console-dist` 照过；`src/` 零改动，锁定套件 8 个文件与 README 零改动，`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变。首屏 JS 326,653 / 420,000 B（审查之前 326,483），换页最多 169,686 / 250,000 B。开工时合并 `origin/dev` 没有新提交（已是最新），收尾时再取一次仍没有。
 
+### 第 17 步 · 可观测性：结构化日志与告警（2026-10-08）
+
+- 背景：另开一条线，与第 10–14 步并行；本步开工时上一个实现 agent 的额度用完被打断，留下 5 个提交（`feat/02-step17-logs-alerts`：依赖、`src/log.ts`、`src/ops/alert.ts`、`deploy/watch.sh`+`backup.sh`、`ops.selftest.ts` 的日志与告警部分）。接手核过与原 brief 一致之后补齐自测、变异、门禁与本节记录，不重做已提交的部分。
+- 依赖：`pino` 10.3.1（钉精确版本，进 `dependencies`：生产镜像要能用）。
+- 结构：
+  - `src/log.ts`：`log`（info/warn/error）经 `LOG_FORMAT=json` 时走 `pino`（同步写 fd 1），未设时照旧经 `console.*`（纯文本逐字节不变）；`logQuote`（prod 返回「«N 字»」，demo 原样）；`convCode`/`convLabel`——`convCode` 不看 profile，db 存储的真实会话用会话行的 `ref`，其余退回短码；`convLabel` 按 profile（prod 用 `convCode`，demo 原样，与 `logQuote` 同一口径）；`withLogContext`/`withConversationLog`/`noteTurnLog` 维护 `AsyncLocalStorage` 里的 `req`/`tenant`/`conv`/`turn`；`scrubConvIds`（正则认 `wecom:`、`sim-` 两种现有 id 形状）在 `LOG_FORMAT=json` 的 pino `hooks.streamWrite`（`scrubLine`）里当兜底，纯文本模式不经过它；`REDACT_PATHS`（pino `redact`）与 `textFields`（纯文本模式的字段级 redact）盖凭据字段；`requestLogContext`（Hono 中间件）生成 `req`、写 `x-request-id` 响应头，`server.ts` 与 console 子应用（`console-api/app.ts`）各挂一次，里层沿用外层；`installJsonConsole()` 幂等，`profile-boot.ts`（导入期）与 `boot()` 各调一次。
+  - `src/ops/alert.ts`：`AlertKey` 五个键（`model_errors`/`wecom_send`/`tenant_lock`/`store`/`jobs`），`alert(key, text, { resolved?, escalate? })` 同步返回、30 分钟去重、`escalate` 跳过去重、总限流每分钟 10 条；推送 5 秒超时、至多重试 2 次、失败只记日志不抛不阻塞；没配 `ALERT_WEBHOOK_URL` 只写一行 warn；`startAlerts()` 订阅 `onTurnEnd`（模型连续失败/出错率）、`onSendSettled`（企微发送账本的 `rejected`/`unknown`，挂在 `src/quota/ledger.ts` 的 `settle`，不在 `wecom.ts`）、`onTokenError`、`onLockEvent`、`onStoreIncident`（含 `storeHealth().lagMs`、`storeCounters().telemetryDropped`）、`onJobFailed`；停机时等在途推送到 `late` 段截止时刻。
+  - `deploy/watch.sh`（新建，宿主机 cron 每分钟跑）：重启次数（10 分钟内 ≥2 次）、`/healthz` 连续 3 分钟失败、磁盘 ≥85%/≥95%、备份上次成功是否超过 26 小时，去重状态存本地小文件，先读 `.env.backup` 再读 `.env.ops`。`deploy/backup.sh` 补 `trap` 在非零退出时推告警、成功时写 `last-success`（供 `watch.sh` 查）。`deploy.sh` 补装 `watch.sh` 到 `/usr/local/lib/<name>/`（没有就不装，不挡更早 tag 的部署）。`ALERT_WEBHOOK_URL`、`INSTANCE_LABEL`、`LOG_FORMAT` 进 `.env.example` 与 `deploy/compose.yml` 的说明；cron 配置路径与主机不进仓库。
+  - `src/ops/ops.selftest.ts` 加日志与告警部分（接在停机段之前）。
+- 本步定的（接手时核对、补齐的几处）：
+  1. **`wecom_send` 挂在发送账本，不挂在 `wecom.ts`**：`src/quota/ledger.ts` 的 `onSendSettled` 订阅口子已就位（`rejected`/`unknown` 算最终失败），`wecom.ts:724` 只有一句注释指向这里，没有重复挂载；与续写брief的更正一致。
+  2. **33 处原 id 清单补齐最后两处**：接手时发现 `engine.ts` 仍有两处（跟进拒绝「客户拒绝跟进」、跟进话术「无出处的金额」）直传 `shortIdOf(session.id)`（不看 profile），是清单里原有、但上一轮没转完的两处；改成 `convLabel(session.id)`，与其余全部调用点一致，顺带去掉用不到的 `shortIdOf` import。`shortIdOf` 本身也不泄露原 id（只是不按 profile 切换demo的原样展示），不算违反不变量 48，但与本步「同一口径」的设计不一致，照样补齐。
+  3. **`eval/run.ts` 补 `installJsonConsole()`**：这个回放器不经 `server.ts`/`profile-boot.ts` 启动，原来设 `LOG_FORMAT=json` 对它完全没有效果（标准输出仍是纯文本、带原始会话 id）。补一行调用之后，`LOG_FORMAT=json` 下跑 mock eval 的输出每行能解析成 JSON；文件模式的 `sim-` 前缀经兜底换成短码，db 模式的 `conv` 结构化字段（不看 profile）永远是 `ref`。`eval/run.ts` 固定钉在 demo profile（`selftest-env.js`），demo 下 `msg` 正文仍可能原样带会话标识（与 `logQuote`/`convLabel` 同一口径，不变量 48 原文只管 prod profile，demo 演示优先是既定设计，见项目备忘）；db 模式用的合成前缀 `eval:`（仅测试工具自造，生产只有 `wecom:`、`sim-` 两种形状）不在兜底正则覆盖范围内，不算不变量 48 的缺口，只是测试夹具本身的 id 形状。
+- 自测（`src/ops/ops.selftest.ts`）：370 项（不带 PG）/ 373 项（带 PG），比第 18 步基线（111/114）多出约 259/259 项：JSON 行可解析、字段齐全（`time`/`level`/`msg`）；请求里的 `req` 与响应头 `x-request-id` 一致（`server.ts` 与 console 子应用各自、嵌套时只生成一个）；轮次里的 `tenant`/`conv`/`turn`，`conv` 不是会话原 id；prod profile 跑一组含价格护栏命中与转人工的对话，整段输出搜不到客户原话与会话原 id；JSON 兜底（正则认 `wecom:`/`sim-`，纯文本模式不触发）；`redact`（顶层/嵌套/大小写）；纯文本模式没设 `LOG_FORMAT` 时逐字节不变（`installJsonConsole()` 返回 false、不接 `console.*`）。告警：五个键各自的触发与恢复条件（逐条照 spec 表）、30 分钟去重、`escalate` 跳过去重、总限流、推送超时与失败不抛不阻塞（`alert()` 同步返回，不等推送）、没配地址只 warn、正文只有计数/短码/错误码（搜不到客户原话、`external_userid`、地址与密钥）。`watch.sh`/`backup.sh` 用 `PATH` 里的假 `docker`/`curl`/`df` 子进程跑，覆盖四类触发恢复与各自去重。
+- 变异（源码拷进 scratchpad 的隔离副本，只跑 `ops.selftest.ts`）：12 个代表性的，全部杀掉，没有存活：①去重窗口清零（`DEDUPE_MS=0`）②`resolved` 分支直接返回、不发「已恢复」③`send()` 去掉内层 `try/catch`（超时/连不上直接抛出）④`alert()` 改成同步 `await` 推送（阻塞调用方，不变量 50）⑤`safeText` 不脱敏（原话/原 id/地址直通）⑥`requestLogContext` 的响应头与上下文用不同 id⑦`noteTurnLog` 不写 `turn`⑧`convCode` 直接返回原 id⑨兜底正则改成永不匹配⑩`REDACT_KEYS` 删掉小写 `authorization`⑪`watch.sh` 的 `alert()` 去掉去重判断⑫`backup.sh` 失败分支去掉 `notify` 调用。
+- 门禁：format/lint/typecheck 全绿。`pnpm test` 的完整链路（跳过下面「Open」里记录的、与本步无关的 `price-guard.selftest.ts` 两条断言）带 `PG_TEST_URL`（本机 `pgtest-02s17c`，`127.0.0.1:55442`）与不带各跑一遍，exit code 0，两种配置模式 mock eval 19/19、console 构建与产物检查全过，其余套件数目与 origin/dev 相同（`handoff` 3165、`db` 898、`config` 529 等）。另外单独跑了 `LOG_FORMAT=json` 的 mock eval（文件、DB 两种配置各一遍），标准输出每行解析成 JSON、搜不到会话原 id（DB 模式的合成前缀 `eval:` 见上面第 3 条）。锁定套件 8 个文件（`engine`/`dejargon`/`engine-holiday`/`price-guard`/`llm`/`server`/`wecom` 的 `.selftest.ts`、`eval/cases.json`）与 `origin/dev` 零字节差异；`PREFIX sha256 system=6c202d633b603a0b391634bcaf75da9d3ed42c30f848ad092a2467f713d9a423 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 不变。收尾合并了 `origin/dev`（含第 11 步四轮，22 个提交）：`src/trace/recorder.ts` 一处冲突（`Holder` 初始化同时要第 11 步的 `signals: null` 与本步的日志上下文包装），两边都留；合并之后四个门禁与带/不带 PG 的 `pnpm test` 都按上面重跑过一遍。
+- 外部拨测（开放问题 14）：本步不做，由 owner 配好国内云厂商账号后补做，停一次 app 验证通知能到，结果记进「验收记录」后再勾选本步第 17 步的复选框。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -1026,6 +1044,7 @@
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
 
+- **第 17 步带出（2026-10-08，与本步无关的既有问题，不挡第 17 步）：`price-guard.selftest.ts` 两条断言用固定出发日期，今天已经过了。** `Q1 旺季上浮的差额（4 位总价多 6,004、每人多 1,501）放行`、`R4 出发月恰好在最佳季的「国庆档期价格上浮 10%」不删` 都用 `departDate: '2026-10-03'` 造夹具；今天是 2026-10-08，这个日期已经过去，`create_quote`/`createQuote` 的「过去日期」校验把它当错误参数拒绝（见 `src/tools.ts`），断言预期的报价总额、护栏放行结果都算不出来，两条变红。用干净的 `origin/dev` checkout 单独复现同样的两条失败，与本步（或任何其他正在并行的分支）的改动无关——本步没有触碰 `price-guard.ts`/`price-guard.selftest.ts`，不是锁定断言被改。这是测试夹具用绝对日期、会随真实时间推移过期的通病（本仓库另有「出发日期基于今天推算」的既有写法，这两条没照它写）；往后每天都会有更多这类固定日期陆续过期。请 owner 定：改成相对「今天」计算的出发日期（挑一个未来固定偏移量，如「N 天后」），还是接受这类用例需要随时间推移人工续期。
 - **已定 · 第 11 步带出的（2026-10-03）：交互失败按 spec 的阈值会让锁定的 V4 变红（owner 2026-10-03 选 B）。** 落在：`src/handoff/triggers.ts` 的 `isQuestion` 与 `repeatedQuestion`（这句在问才比相似度，阈值照 spec）；`src/engine.ts` 删掉开关 `failureHandoff`，交互失败到阈值照 spec 转人工；spec 顶部 2026-10-03 的 `Revisions:` 与「确定性转人工触发」里 `TurnSignals.repeatedQuestion` 的注释；在问的判法与锁定原话里的命中数见「实施记录 · 第 11 步」第 9 条。原文如下： `src/engine.selftest.ts:4275–4288`（V4，flow-07）在同一个会话里先说「想带孩子去海边玩 有推荐吗」，再连说三遍「两位 12号」，每遍换一句模型回复，断言问句原样发出（`r.text.includes(ask)`）。第 2、3 遍与上一条完全相同，`repeatedQuestion` 为真，两轮都算失败；照 R15「连续 2 轮失败就转人工」，第三遍那一轮的回复被换成「好的，马上为您转接资深顾问，请稍候～」，断言变红。把转人工这一步改成只打日志、跑完整的 `pnpm test`：整套锁定套件与两种 mock eval 里到阈值的只有这一轮。照 plan 第 11 步没改阈值、没改断言：信号、窗口与 trace 照记，转人工这一步写好了、由 `src/engine.ts` 的 `failureHandoff.enabled` 关着（自测打开它测转人工本身，见「实施记录 · 第 11 步」）。两个办法都只会比现在少触发，锁定套件照旧全绿：
   - A（plan 第 11 步点名的）**阈值改 3**：「最后 3 轮都失败，或最近 6 轮里 3 轮失败」。V4 只有两轮失败，不转。代价：空回复、检索无结果连着两轮也要等第三轮才转。要改 R15 与 `failureThresholdReached` 的注释。
   - B（推荐）**`repeatedQuestion` 只认在问的话**：这句里有问法的小句（问号，吗呢么嘛结尾，怎么、多少、几、哪、能不能……）才比相似度，阈值不动。R15 写的本来就是「客户重复提问」，`TurnSignals` 的注释只定义了相似度；「两位 12号」是回答，不算。代价：客户重复陈述需求（「我说了两个人」）不算失败（同一轮落到空回复、检索无结果的照样算）。要在 spec `TurnSignals.repeatedQuestion` 的注释里补半句。
@@ -1177,3 +1196,11 @@
 - 半成品：无。
 - 阻塞：无。「Open」里第 11 步带出的照旧要 owner 定或确认：`consentWithdrawalOf` 的礼貌问法（第 16 步接进引擎之前定）、Jaccard 长句边界（低优先级）、验收 17 的新句子复测（第 28 步）；都不挡第 13 步。
 - 下一步：本分支开 PR 进 dev；之后照「交接（2026-10-03，第 12 步）」做第 13 步「接手状态机与后台接口」，先读「实施记录 · 第 12 步」与「实施记录 · 第 11 步」各自的「注意（第 13 步）」（交还只清三样、两个窗口只有重置清；情绪窗口含人工接待期间的消息）。第 15 步改 SOP 时照第 15 步那一条加兜底的一句，并照 spec 验收 24 跑兜底用例、记进「验收记录」。
+
+### 交接（2026-10-08，第 17 步）
+
+- 已完成：第 17 步代码部分（接手上一个额度用完被打断的 agent；分支 `feat/02-step17-logs-alerts`，没 push）。已有的 5 个提交（依赖、`src/log.ts`、`src/ops/alert.ts`、`deploy/watch.sh`+`backup.sh`、`ops.selftest.ts` 的日志与告警部分）核过与原 brief 一致，没有重做；接手补的三处见「实施记录 · 第 17 步」本步定的：33 处原 id 清单最后两处（`engine.ts` 直传 `shortIdOf` 改成 `convLabel`）、`eval/run.ts` 补 `installJsonConsole()`（原来 `LOG_FORMAT=json` 对它没有效果）、合并 `origin/dev`（含第 11 步四轮、22 个提交，`trace/recorder.ts` 一处冲突已按两边意图解决）。另做了自测结果核对、12 个代表性变异（隔离副本）、本节与「实施记录 · 第 17 步」。
+- 门禁：四个门禁全绿；`pnpm test` 的完整链路（跳过下面「阻塞」里记的、与本步无关的 `price-guard.selftest.ts` 两条断言）带 `PG_TEST_URL`（`pgtest-02s17c`，`127.0.0.1:55442`）与不带各跑一遍，exit code 0；另外单独跑了 `LOG_FORMAT=json` 的 mock eval（文件、DB 两种配置），标准输出每行能解析成 JSON、搜不到会话原 id；锁定套件 8 个文件与 `origin/dev` 零字节差异，`PREFIX sha256` 不变。README 没动。
+- 半成品：无。
+- 阻塞：无（第 17 步本身）。带出「Open」一条：`price-guard.selftest.ts` 两条断言用固定出发日期 `2026-10-03`，今天（2026-10-08）已经过去，`create_quote` 的「过去日期」校验把它当错误参数拒绝；用干净的 `origin/dev` 单独复现同样失败，与本步或其他正在并行的分支无关，本步没有改这个文件。不挡第 17 步收尾，但会一直在场上变红，建议尽快请 owner 定改法（相对日期夹具，还是接受人工续期）。外部拨测仍待 owner 配好国内云厂商账号后补做（开放问题 14），结果记进「验收记录」后再勾选第 17 步的复选框。
+- 下一步：主线继续后续步骤；真要发版前先处理上面的 `price-guard.selftest.ts` 日期问题（否则 `pnpm test` 会在未来某天开始报红，容易被误判成那一次改动的回归）。
