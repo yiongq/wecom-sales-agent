@@ -1,6 +1,8 @@
 // 任务表（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」，R17、不变量 38）：只在 db 存储下有。
 // 排程：与会话有关的（跟进、转人工通知，payload 必带 sessionId）随这个会话的下一次落库提交（store 的 queueJobs），其余单独一个事务。
 // 认领：每 5 秒一批，status='pending' AND run_at <= now ORDER BY run_at LIMIT 10 FOR UPDATE SKIP LOCKED，改成 running 并提交，再逐个执行。
+// 认领分两条道（02 plan 第 14 步）：转人工通知与清理一条、跟进一条，各认领各的一批、各自串行、各自「上一批没跑完不叠一批」：
+// 早上 9 点积压的跟进（每条要生成话术，模型超时 45 秒起）不挡同时到点的转人工通知。
 // 执行体出错（还没到 sending）按 max_attempts 重试；跟进的 sending 与之后的状态由执行体经会话写队列改（记账与 sending 同一次提交）。
 // 启动：先把上一个进程留下的 running、sending 归位（running 的跟进回 pending、sending 的跟进记 abandoned 不重发、其余 running 回 pending
 // 且 attempts + 1，到 max_attempts 记 failed），再开始认领。停机 normal 段：不再认领，把还没进 sending 的 running 跟进改回 pending。
@@ -20,8 +22,8 @@ import {
   type JobStatus,
 } from '../db/repo/jobs.js';
 import { onShutdown, queueJobs, sessionStoreMode, withJobsTx, type JobOp } from '../store.js';
+import { installUnsavedNotices, runHandoffNotifyJob } from '../notify/handoff.js';
 import { followupJobs, type PushFn } from './followup.js';
-import { runHandoffNotifyJob } from './notify.js';
 import { retentionPurgeSpec, runRetentionPurgeJob } from './purge.js';
 
 export type { JobKind, JobRow, JobStatus };
@@ -49,6 +51,15 @@ export type JobHandler = (job: JobRow, now: number, ctx: JobCtx) => Promise<JobO
 
 const TICK_MS = 5_000;
 const BATCH = 10;
+/** 认领的两条道：每条道每拍认领自己那几类的一批，串行执行；一条道上一批没跑完，另一条道照常认领 */
+interface Lane {
+  name: string;
+  kinds: readonly JobKind[];
+}
+const LANES: readonly Lane[] = [
+  { name: 'notify', kinds: ['handoff_notify', 'retention_purge'] },
+  { name: 'followup', kinds: ['followup'] },
+];
 /** 执行体出错（推送之前）的重试退避：1、5、15 分钟，之后每 15 分钟 */
 const RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000];
 /** retention_purge 的排程多久补一次（启动时一次，之后每小时；执行完也排下一天的） */
@@ -101,7 +112,7 @@ const errName = (e: unknown): string => {
 
 const handlers: Record<JobKind, JobHandler> = {
   followup: (job, now, ctx) => followupJobs.run(job, now, ctx),
-  handoff_notify: (job) => runHandoffNotifyJob(job),
+  handoff_notify: (job, now) => runHandoffNotifyJob(job, now),
   retention_purge: (job, now) => runRetentionPurgeJob(job, now),
 };
 
@@ -114,8 +125,11 @@ const mine = new Map<string, { job: JobRow; phase: Phase }>();
 let started = false;
 let stopping = false;
 let recovered = false;
+/** 启动归位只做一次：两条道同一拍开始时共用这一次 */
+let recovering: Promise<boolean> | null = null;
 let timer: NodeJS.Timeout | null = null;
-let tickTask: Promise<number> | null = null;
+/** 每条道正在跑的那一批 */
+const laneTasks = new Map<string, Promise<number>>();
 let lastPurgeEnsure = 0;
 let lastClaimLog = 0;
 
@@ -270,17 +284,28 @@ async function ensurePurge(now: number): Promise<void> {
   }
 }
 
-async function tickOnce(now: number): Promise<number> {
+/** 每一拍认领之前做一次：查租户锁、启动归位（只做一次）、补写上一拍没写进去的结果、补排清理。返回这一拍能不能认领 */
+async function prelude(now: number): Promise<boolean> {
   if (!lockHeld()) {
     logThrottled('[jobs] 租户锁不在本进程手里，不认领、不执行（重新取到锁之后照常）');
-    return 0;
+    return false;
   }
-  if (!recovered && !(await recover())) return 0;
+  if (!recovered) {
+    recovering ??= recover().finally(() => {
+      recovering = null;
+    });
+    if (!(await recovering)) return false;
+  }
   await retryUnsettled();
   await ensurePurge(now);
+  return true;
+}
+
+/** 一条道认领一批（只认领这条道的几类）并逐个执行 */
+async function tickLane(lane: Lane, now: number): Promise<number> {
   let claimed: JobRow[];
   try {
-    claimed = await withJobsTx((tx) => claimDueJobs(tx, new Date(now), BATCH));
+    claimed = await withJobsTx((tx) => claimDueJobs(tx, new Date(now), BATCH, lane.kinds));
   } catch (e) {
     logThrottled(`[jobs] 认领失败（${errName(e)}），5 秒后再试`);
     return 0;
@@ -300,14 +325,28 @@ async function tickOnce(now: number): Promise<number> {
   return claimed.length;
 }
 
-/** 认领并执行一批（定时器每 5 秒调一次；自测直接调，now 可以给一个将来的时刻）。上一批没跑完就不叠一批 */
+/**
+ * 认领并执行一批（定时器每 5 秒调一次；自测直接调，now 可以给一个将来的时刻）：两条道各一批，返回两条道认领的总数。
+ * 一条道上一批没跑完就不给它叠一批，另一条道照常
+ */
 export function runJobsOnce(now = Date.now()): Promise<number> {
-  if (stopping || tickTask || sessionStoreMode() !== 'db') return Promise.resolve(0);
-  const task = tickOnce(now).finally(() => {
-    if (tickTask === task) tickTask = null;
+  if (stopping || sessionStoreMode() !== 'db') return Promise.resolve(0);
+  const idle = LANES.filter((lane) => !laneTasks.has(lane.name));
+  if (!idle.length) return Promise.resolve(0);
+  const ready = prelude(now).catch((e: unknown) => {
+    logThrottled(`[jobs] 认领之前的准备出错（${errName(e)}），5 秒后再试`);
+    return false;
   });
-  tickTask = task;
-  return task;
+  const runs = idle.map((lane) => {
+    const task = ready
+      .then((ok) => (ok ? tickLane(lane, now) : 0))
+      .finally(() => {
+        if (laneTasks.get(lane.name) === task) laneTasks.delete(lane.name);
+      });
+    laneTasks.set(lane.name, task);
+    return task;
+  });
+  return Promise.all(runs).then((ns) => ns.reduce((a, b) => a + b, 0));
 }
 
 /**
@@ -337,7 +376,7 @@ async function stopJobs(): Promise<void> {
       console.error(`[jobs] 停机时跟进没能改回 pending（${errName(e)}），下次启动归位`);
     }
   }
-  await tickTask?.catch(() => undefined);
+  await Promise.all([...laneTasks.values()].map((t) => t.catch(() => undefined)));
 }
 
 /**
@@ -352,6 +391,7 @@ export function startJobs(push: PushFn): void {
   if (started) return;
   started = true;
   followupJobs.install(push);
+  installUnsavedNotices();
   onShutdown(stopJobs);
   console.log(`[jobs] 任务表已启动：每 ${TICK_MS / 1000} 秒认领一批（跟进${process.env.FOLLOWUP_ENABLED === '1' ? '已启用' : '未启用'}）`);
   void runJobsOnce();
@@ -366,6 +406,7 @@ export const __jobsTest = {
     if (started) return;
     started = true;
     followupJobs.install(push);
+    installUnsavedNotices();
     onShutdown(stopJobs);
   },
   stop: stopJobs,
@@ -373,7 +414,8 @@ export const __jobsTest = {
   reset(): void {
     stopping = false;
     recovered = false;
-    tickTask = null;
+    recovering = null;
+    laneTasks.clear();
     lastPurgeEnsure = 0;
     mine.clear();
     unsettled.clear();

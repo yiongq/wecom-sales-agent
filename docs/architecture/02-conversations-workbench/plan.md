@@ -105,7 +105,7 @@
   - 开放问题 12（A）在接口上的部分（`paidNeedsHuman` 的数据）一起做。
   - 旧接口匿名投影里，交还时那条「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」（spec「后台接口」匿名投影一条；`server.ts` 的 `anonMessage` 留了位置），自测覆盖接手并交还种子会话之后的匿名读。
   - 对应验收 9、10、11 的接口部分，以及不变量 17、20–25、27、28、31、39 的接口部分、41、43–45、47。
-- [ ] 14. 外部通知（1.5）：`Notifier` 的企微群机器人实现（开放问题 3，与告警不同群）、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。
+- [x] 14. 外部通知（1.5）：2026-10-03 完成（先于第 13 步，独立 worktree；中途换过一次 agent）。`Notifier` 的企微群机器人实现（开放问题 3，与告警不同群）、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。结构、本步定的、认领分道、自测、变异与门禁见「实施记录 · 第 14 步」。
 - [ ] 15. 收款流程与 SOP 措辞（3.5）：
   - `src/payment/`：`paymentMode`、`confirmOrder`、`markPaidByAdvisor`、`cancelOrder`（坐席只限接手人本人；提交之后才发付款确认）；后台的三个订单接口接上；advisor 模式下 `create_order` 的 `payNote`、`/pay` 页的说明、价格规则护栏的替换句、`repairLinks` / `placeLinks` 的说明句、重发链接、成单安全网、企微支付卡片、跟进 closing 段的确定性文本；online 模式逐字节不变。
   - `data/sop.md` 锁定节的两处改动、`SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 加 `payNote`；契约清单短语一条不删。同一次改动在锁定节里另加一句（R15 精确优先的模型兜底，owner 2026-10-03）：客户说自己或同行的人此刻遇到危险，或明显冲着我们发火时，先安抚再调 `handoff_to_human`（不加延迟、不多调模型；措辞在实施时定，不能让模型在售前的提问上转人工）。记下改前改后的四个哈希（`/healthz` 与 `PREFIX sha256`）。
@@ -954,6 +954,36 @@
   - 计数：`quota.selftest` 96 / 99 → 121 / 124（不带 / 带 PG），`handoff.selftest` 109 → 110，`db.selftest` 499 / 896 → 501 / 898；其余不变（`store.selftest` 403 / 426、等价套件 928、`jobs.selftest` 95 / 100、`trace.selftest` 176），`pnpm test` 的 PASS 行仍是 65。
   - 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器，`127.0.0.1:55434`）与不带各跑一遍都全绿，mock eval 19/19（文件与 DB 两种配置模式）；锁定套件 8 个文件的 sha256 与第 1 步相同，断言零修改，`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变；README 没动。
 
+### 第 14 步 · 外部通知（2026-10-03）
+
+- 独立 worktree（分支 `feat/02-step14-notify`，没 push），先于第 13 步；开工时 dev 含第 1–12、18、20.1 步（第 13 步还在自己的分支上，没合 dev；第 17 步同样没合）。中途换过一次 agent（额度打断），接手时已有的五个提交照旧，只补了门禁、字体子集与本节记录。
+- 结构：
+  - `src/notify/notifier.ts`：`Notifier` 接口与 `webhookNotifier(url)`（企微群机器人，POST 一条 `text` 消息，5 秒超时，HTTP 2xx 且 `errcode` 为 0 才算发出；失败抛 `NotifySendError(code)`，`code` 只是 `http_<状态>`、`errcode_<码>`、`timeout` 或网络错误名，不带地址）；`notifier()` 按 `NOTIFY_WEBHOOK_URL`（每次现读）选通道，没配只 warn 一行、记 `done`、不算失败；`noticeText`／`handoffNoticeTitle`／`HANDOFF_NOTICE_TEXT`（后两个在 `src/shared/conversation.ts`，与第 19 步的浏览器通知共用写法）拼标题与正文：标题「{会话标签} · {短码}」，紧急与已成交客户的标记在前，正文是类型的中文、时间、（`unsaved` 时）「记录暂未保存」、工作台链接（`PUBLIC_BASE_URL + /console/conversations?state=human`，不带会话 id）。
+  - `src/jobs/notify.ts`：`handoffNotifyOps`（随 `enterHandoff` 落库提交排 `started`/`unclaimed`/`window` 三个任务，升级只排 `started`）、`orderUnconfirmedNotifyOps`（第 15 步接的入口）、`cancelHandoffNotifyOps`（重置取消），`HandoffNotifyPayload` 加 `kind`、`handoffCount`、`unsavedSent`（都是第 14 步起才有，旧任务没有时按 `handoffAt` 兼容认）。
+  - `src/notify/handoff.ts`：`runHandoffNotifyJob` 执行体（四种 reason：`started` 立即、`unclaimed` 10 分钟仍没人接手、`window` 企微窗口剩不到 4 小时到点重判、`order_unconfirmed` 待确认的订单）；`inSameHandoff` 认「还是不是这一次转人工」；库写不进去时的 `unsaved` 通知（`noteUnsaved`/`fireUnsaved`/`noteCommitted`，订阅 `src/store/events.ts` 新加的 `onHandoffUnsaved`）。
+  - `src/store/events.ts` 新增 `onHandoffUnsaved`/`deliverHandoffUnsaved`；`src/store/pg-backend.ts` 在 `poison()`、重试失败、以及新转人工排在一次提交不了的落库后面这三处都调 `deliverHandoffUnsaved`，另加 `patchQueuedJob`（给还没提交的 `enqueue` 改 payload，`unsaved` 通知发出之后给立即那个任务标 `unsavedSent`）。
+  - `src/jobs/runner.ts` 认领分两条道（`LANES`：`notify`「handoff_notify、retention_purge」与 `followup`），各认领各的一批、各自串行、互不挡道；`claimDueJobs` 多 `kinds` 参数（按 kind 过滤）。
+  - `src/handoff/record.ts` 的 `enterHandoff` 在排 `handoffNotifyOps` 时多传 `kind`、`handoffCount`、`windowClosesAt`（企微会话才算 `sendWindow` 的 `closesAt`）。
+  - `.env.example`、`deploy/compose.yml`：`NOTIFY_WEBHOOK_URL` 的说明（与 `ALERT_WEBHOOK_URL` 不是同一个群；等同密钥，日志里不出现）。
+- 本步定的（spec 没写细，按最小、最贴原文的做法）：
+  1. **「还是不是这一次转人工」按 `handoffCount` 认**：`enterHandoff` 升级不加计数，进入时才加；旧任务（没有 `handoffCount` 字段）按 `handoffAt` 兼容。交还之后再转人工是新的一组键，旧的到点看出不是同一次、记 `done`。
+  2. **`unclaimed`/`window` 到点都重判会话现状**，不是「排的时候对就一直对」：`unclaimed` 看 `assignee` 有没有人；`window` 看 `sendWindow` 现在的 `closesAt`（客户每句话都会把窗口后移，到点时发现还没到关闭前 4 小时就把任务改回 `pending`、顺延到新的时刻）。
+  3. **认领分道按 kind，不按「转人工」与「跟进」语义分**：`retention_purge` 和 `handoff_notify` 分到同一条道（都是轻量、不调模型），`followup` 单独一条道（要生成话术、调模型，耗时）。自测证明早上 9 点积压 20 条跟进（每条模拟 2 秒生成）时，同时到点的转人工通知在 3 秒内发出。
+  4. **`unsaved` 的键是「会话 id + 转人工（或升级）的时刻」**，不是任务 id：同一次转人工只发一次（内存 `Map` 记 `sending`/`sent`），`emergency` 立即发、其余等失败持续 30 秒（期间提交成功就取消，不发）；发出之后给立即的那个 `handoff_notify` 任务标 `unsavedSent`（`patchQueuedJob`，经停机 spill、重启回放也认得），任务执行到它时看见 `unsavedSent` 就不补发；`unsaved` 这条自己发送失败就按 `[5s, 30s, 120s]` 退避重试三次，仍不成就忘掉、提交之后由任务照常提醒（不无限重试、不挡下一次转人工）。
+  5. **`order_unconfirmed`（第 15 步没合并）**：排程函数 `orderUnconfirmedNotifyOps` 与执行体分支都先写好（看订单还在不在待付款、确认过没有），第 15 步在 `create_order` 的 advisor 分支里调它；本步自测用 `getOrder`/`getSession` 直接造数据覆盖执行体，不经真实下单流程。
+  6. **消息体的字段只取「类型、短码、时间、链接」四样**：`HandoffNotice` 比 spec 接口多一个 `label`（会话标签的前半截，拼标题要用，spec 没列但不算客户信息）；没有 `reason`、`quote`，调用方（`noticeFor`）也不从 `Session.handoff` 上取这些字段拼进去。
+  7. **`window` 的发送额度用完也照发**（审查带出，见下面「审查之后改的」）：`HandoffNotice` 多一个 `quotaExhausted?: boolean`，正文多一句 `QUOTA_EXHAUSTED_MARK`（只有这几个字，不碰会话内容），`advisor_replied` 那一支保持顺延到窗口关闭的时刻不变。
+- 自测：新建 `src/notify/notify.selftest.ts`（串进 `test`，父进程测纯函数，子进程 `NOTIFY_CHILD` 单进程 `node --import tsx` 起一次，内置假的企微群机器人与假模型）：标题与正文、排程（三个任务的 `runAt`、payload）；`started` 立即发，内容里没有客户原话、`external_userid`、会话原 id；已成交客户与紧急情况在标题上标出来；`unclaimed` 有人接手不发、没人接手发；交还之后再转人工，旧的一组任务到点不串；窗口剩不到 4 小时（发、窗口后移顺延、顾问回过顺延、关了 `done`）；待确认的订单；发送失败按 `max_attempts` 重试到 `failed`（HTTP 500、errcode、超时、连不上四种）；没配 URL 只 warn 不算失败；分道认领（9 点积压 20 条跟进场景）；`unsaved` 的全部时机（紧急立即、其余等够、期间提交不发、同一次只发一次、提交后不补发、发不出去照常提醒、会话停写也发）；不变量 32 与脱敏（消息、日志、`last_error` 里都没有客户原话、`external_userid`、会话原 id、webhook 地址）。`jobs.selftest.ts` 的转人工通知组改成三个任务（立即、10 分钟、窗口）。
+- 变异（源码拷进 scratchpad 的隔离副本 `s14/mutate/`，逐个打、跑 `notify.selftest.ts`、还原）：收尾时补做的一轮，brief 点名的 10 个全部杀掉——消息带原话（`noticeFor` 的 `label` 塞进 `handoff.quote`）、链接带会话 id、`unclaimed` 有人接手仍发、交还后串了旧 `handoffAt`（`inSameHandoff` 永真）、失败不抛不重试（`webhookNotifier` 吞掉非 2xx）、没配 URL 当失败（直接 `throw`）、不分道（`LANES` 合一）、`unsaved` 立即发非紧急（去掉 30 秒延迟）、提交成功后又补发（`noteCommitted` 不取消等待）、日志打出 URL（`NotifySendError` 的 code 里塞 url）。10 个全部被现有断言接住，没有补新断言；mutate 完逐文件 diff 原 worktree 确认已还原干净。
+- 审查之后改的（2026-10-03，审查者已复现 1 条，另 1 条留作参考未复现）：
+  1. **major · `window` 分支额度用完就不发，从头到尾发不出「窗口剩不到 4 小时」**：原实现把 `w.remaining <= 0` 与 `advisorRepliedSinceCustomer(s)` 合并成一个条件，两种情况都顺延到 `closesAt` 再看，而顺延到 `closesAt` 时窗口已经关了，只会 `done('window_closed')`，额度用完这一路从没真正发送过。spec「任务表与跟进」与 R13 是无条件的「剩不到 4 小时、仍在转人工中时提醒一次」，没有「额度用完就不发」的限定；额度用完恰恰是顾问最需要知道「这个企微通道已经没法主动发消息、得换电话」的时候。改法：拆开两种情况——`advisorRepliedSinceCustomer` 保持原来的顺延；`w.remaining <= 0` 改成照发，`HandoffNotice` 加 `quotaExhausted`，正文多一句 `QUOTA_EXHAUSTED_MARK`「这个窗口的发送额度已用完，没法再主动发消息」（`src/notify/notifier.ts`、`src/notify/handoff.ts`）。补用例（`notify.selftest.ts` 的「窗口」组）：用 `recordSend(...).settle('accepted')` 占满 5 条额度的会话到点照发、正文带这句、`done`；到窗口关闭的时刻再认领一次确认不会重发（只发一次）。`notify.selftest` 49 → 52 项。
+  2. **留作参考、未复现，不改代码**：`src/store/pg-backend.ts` 的 `failed()` 在 `kind === 'conflict'`（另一个写者冲突）分支直接 `return`，不调 `deliverHandoffUnsaved`——这一路排在冲突会话上的转人工不会立即经 `unsaved` 通知报出去，要等优雅停机写进 spill、重启回放提交之后才由 `handoff_notify` 任务照常提醒，比 `kind === 'data'`（poison）与重试失败这两路慢。`store_conflict` 本身极少见（另一个进程在同一个会话上写，多半是部署时新旧进程重叠的那一下），而且 `onConflict` 已经触发优雅停机、停机很快会把 spill 写出，这段时间差目前认为可接受，不单独处理；只在这里记一句供后续复核。
+- 门禁：
+  - 四个门禁在 `feat/02-step14-notify` 上全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器，`127.0.0.1:55435`，命名 `pgtest-02s14c`：55432/55434 段给了别的步骤历史记录、55442 当时在给并行的第 17 步用）与不带各跑一遍，`notify.selftest` 49 → 52 项（审查之后那一条）两边相同（它只用 PGlite，不看 `PG_TEST_URL`）；`jobs.selftest` 95/100 → 98/103（多了窗口那个任务与分道两组真实 PG 用例）；其余套件计数不变。锁定套件 8 个文件与 origin/dev 逐字节相同（`git diff` 零行），`PREFIX sha256 system=6c202d63… tools=64c16fc8…` 不变。
+  - 收尾时发现 `pnpm test` 的字体检查（`check-fonts`）报缺字：`src/shared/conversation.ts` 新增的通知文案（「投诉」「遇」「紧」「况」……等字）没进 `noto-sans-sc-ui.woff2` 的 UI 优先片；用本机 `node_modules/.cache/console-fonts/` 的缓存源字体（不用联网）、在 scratchpad 建的一次性 venv 装 `fonttools`+`brotli`，`FONTTOOLS_PYTHON=<venv> pnpm exec tsx scripts/fonts/build.ts` 重切子集，`check-fonts` 转绿；改动只有 `console/src/fonts/{fonts.css,manifest.json,noto-sans-sc-ui.woff2}`，单独一个提交。
+  - 收尾时 `pnpm test` 曾在 `price-guard.selftest.ts` 上失败（锁定套件，两条场景断言随真实系统时钟推进到 2026-10-08 变成过去的日期而改判），复核在干净的 `origin/dev` 上单独跑同一文件同样失败，与本步无关：绕开它单独跑完 00–40 步全绿。合并 `origin/dev`（PR #84，`test` 的锁定部分换成 `test:locked`，在 `PARITY_CLOCK_MS` 钉死的 2026-10-02 12:00 上跑）之后这条已经修好，不用再绕开：下面是合并、补审查那条之后的最终一遍。
+  - 合并 `origin/dev`（PR #84 的 `fix/02-locked-suite-clock`）之后，`package.json` 的 `test` 冲突按 dev 的 `pnpm -s test:locked && …` 开头、把 `notify.selftest.ts` 放回 `jobs.selftest.ts` 之后解决；四个门禁重跑一遍（带 `PG_TEST_URL` 与不带各一遍），`pnpm test` 作为一条链整条跑完、不再绕开：`price-guard.selftest` 403 项全绿（两边相同），`jobs.selftest` 98/103（与合并前相同），`notify.selftest` 52 项两边相同，`db.selftest` 501/898，`quota.selftest` 121/124，mock eval 19/19（文件与 DB 两种配置），console 构建与 `check-console-dist` 都过；锁定套件 8 个文件与 origin/dev 逐字节相同，`PREFIX sha256` 不变；README 没动。
+
 ### 第 18 步 · 运行数字与 OpenTelemetry（2026-10-03）
 
 - 顺序调整：第 17 步（日志与告警）还没做，本步先做（另开一条线，与第 10–13 步并行）。`src/ops/ops.selftest.ts` 由本步新建，只有运行数字与 OpenTelemetry 两部分；第 17 步往里加日志与告警的部分（含 `watch.sh`、`backup.sh` 的子进程用例），套件已经串在 `test` 里（`trace.selftest` 之后）。
@@ -1178,3 +1208,19 @@
 - 半成品：无。
 - 阻塞：无。「Open」里第 11 步带出的照旧要 owner 定或确认：`consentWithdrawalOf` 的礼貌问法（第 16 步接进引擎之前定）、Jaccard 长句边界（低优先级）、验收 17 的新句子复测（第 28 步）；都不挡第 13 步。
 - 下一步：本分支开 PR 进 dev；之后照「交接（2026-10-03，第 12 步）」做第 13 步「接手状态机与后台接口」，先读「实施记录 · 第 12 步」与「实施记录 · 第 11 步」各自的「注意（第 13 步）」（交还只清三样、两个窗口只有重置清；情绪窗口含人工接待期间的消息）。第 15 步改 SOP 时照第 15 步那一条加兜底的一句，并照 spec 验收 24 跑兜底用例、记进「验收记录」。
+
+### 交接（2026-10-03，第 14 步）
+
+- 已完成：第 14 步（独立 worktree，分支 `feat/02-step14-notify`，没 push；先于第 13 步，开工时 dev 含第 1–12、18、20.1 步）。中途换过一次 agent（额度打断）：接手时五个功能提交已完成（`Notifier` 企微群机器人、落库失败的 `unsaved` 通知、`handoff_notify` 执行体与认领分道、自测、env/compose 说明），接手 agent 补的是门禁、变异与本节记录，功能代码没再改。结构、本步定的六条、自测、变异、门禁见「实施记录 · 第 14 步」。
+- 门禁：见「实施记录 · 第 14 步」。四个门禁在本分支全绿；`pnpm test` 带 `PG_TEST_URL`（本机一次性容器 `127.0.0.1:55435`）与不带各绕开 price-guard 单独跑一遍，41 步里除 price-guard 全部 `OK`；锁定套件 8 个文件与 origin/dev 逐字节相同，`PREFIX sha256` 不变。收尾顺带修了字体子集缺字（`console/src/fonts/*`，单独一个提交），不算本步功能改动。
+- 半成品：无。
+- 阻塞：无。带出一条不挡后续步骤、不是本步引入的发现：`price-guard.selftest.ts`（锁定套件）在真实系统时钟过了 2026-10-08 之后两条断言失败（场景用例钉死的出发日期变成了过去），复核在干净的 `origin/dev` 单独跑同一文件同样失败，与本步无关；锁定套件不许改断言，没有处理，只记在「实施记录 · 第 14 步」门禁那段，`pnpm test` 作为一条链会在这一步停住，验证本步及之后的套件要绕开它单独跑。
+- 下一步：主线照旧是第 13 步「接手状态机与后台接口」（在另一个 worktree 进行中）；第 13 步合进 dev 之后做第 15 步「收款流程与 SOP 措辞」，先读「实施记录 · 第 14 步」里 `order_unconfirmed` 的注意（排程入口 `orderUnconfirmedNotifyOps` 与执行体分支已写好，在 `create_order` 的 advisor 分支里调）。第 17 步（告警）合并 dev 之后，可以把 `src/notify/notifier.ts` 与 `src/ops/alert.ts` 里各自的「POST 一条 text 消息、5 秒超时、看 errcode」合成一个函数（两处都留了这句注释）。
+
+### 交接（2026-10-03，第 14 步审查）
+
+- 已完成：第 14 步的审查回来，major 一条（审查者已复现）：`window` 分支额度用完就不发，从头到尾发不出「窗口剩不到 4 小时」（spec 是无条件的，没有「额度用完就不发」的限定）；改法与补的用例见「实施记录 · 第 14 步」「审查之后改的」第 1 条，`notify.selftest` 49 → 52 项。另一条（`pg-backend.ts` 的 `failed()` 在 `conflict` 分支不报 `unsaved`）审查者留作参考、没复现，按说明判断可接受，只记一句，没改代码。同时合并了 `origin/dev`（PR #84，锁定套件改用 `test:locked` 跑在固定钟 2026-10-02 12:00 上），`package.json` 的 `test` 冲突照 dev 的 `test:locked` 开头解决、`notify.selftest.ts` 放回原位；上一轮记在「实施记录 · 第 14 步」门禁段里的 `price-guard` 真实时钟漂移问题已由这次合并修好，不再是遗留项。
+- 门禁：合并之后四个门禁重跑一遍（带 `PG_TEST_URL` 与不带各一遍），`pnpm test` 整条链全绿、不用再绕开：`price-guard.selftest` 403 项、`jobs.selftest` 98/103、`notify.selftest` 52 项、`db.selftest` 501/898、`quota.selftest` 121/124、mock eval 19/19；锁定套件 8 个文件与 origin/dev 逐字节相同，`PREFIX sha256` 不变；README 没动。
+- 半成品：无。
+- 阻塞：无。`pg-backend.ts` 的 `conflict` 分支那条留作后续复核，不挡后续步骤。
+- 下一步：照上一条交接，主线是第 13 步，之后第 15 步接 `order_unconfirmed` 的排程。

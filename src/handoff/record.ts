@@ -7,6 +7,7 @@ import { packById } from '../packs/registry.js';
 import { terminalStages } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { handoffNotifyOps } from '../jobs/notify.js';
+import { sendWindow } from '../quota/ledger.js';
 import { emitAfterCommit, queueJobs } from '../store.js';
 import type { HandoffKind, HandoffRecord, SalesStage, Session } from '../types.js';
 import type { EmergencyKind } from './triggers.js';
@@ -96,6 +97,15 @@ export function enterHandoff(session: Session, record: HandoffRecord, prevStage:
     escalated,
     paidCustomer: terminal,
   });
-  // 转人工通知（02 spec「任务表与跟进」）：立即一个、10 分钟仍没人接手再一个，随这次转人工的落库提交（db 存储的真实会话；其余丢弃）
-  queueJobs(session.id, handoffNotifyOps(session.id, record.at, { escalated }));
+  // 转人工通知（02 spec「任务表与跟进」）：立即一个、10 分钟仍没人接手再一个，企微会话另排窗口剩不到 4 小时的那一个（到点重判），
+  // 随这次转人工的落库提交（db 存储的真实会话；其余丢弃）
+  queueJobs(
+    session.id,
+    handoffNotifyOps(session.id, record.at, {
+      escalated,
+      kind: record.kind,
+      handoffCount: session.handoffCount,
+      windowClosesAt: !escalated && session.channel === 'wecom' ? sendWindow(session.id, record.at).closesAt : null,
+    }),
+  );
 }
