@@ -1,5 +1,5 @@
 // 消息（02 spec「消息只追加」「identity map 与写入」）：只有批量插入与按窗口读。agent_app 对这张表没有 UPDATE、DELETE
-import { and, asc, eq, gte, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNotNull, lt, sql } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { conversations, messages } from '../schema.js';
 
@@ -78,6 +78,38 @@ export async function readMessagesFrom(tx: Tx, conversationId: string, fromSeq: 
     .from(messages)
     .where(and(eq(messages.conversationId, conversationId), gte(messages.seq, fromSeq)))
     .orderBy(asc(messages.seq));
+}
+
+/**
+ * 后台「看更早的消息」（02 第 13 步，GET /conversations/:id/messages）：seq < beforeSeq 的最近 limit 条，按 seq 升序返回；
+ * 多取一条判断再往前还有没有
+ */
+export async function readMessagesBefore(
+  tx: Tx,
+  conversationId: string,
+  beforeSeq: number,
+  limit: number,
+): Promise<{ rows: MessageRow[]; hasEarlier: boolean }> {
+  const rows = await tx
+    .select({
+      conversationId: messages.conversationId,
+      seq: messages.seq,
+      role: messages.role,
+      author: messages.author,
+      authorUserId: messages.authorUserId,
+      authorName: messages.authorName,
+      content: messages.content,
+      at: messages.at,
+      sentAt: messages.sentAt,
+      msgid: messages.msgid,
+      turnId: messages.turnId,
+      extra: messages.extra,
+    })
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversationId), lt(messages.seq, beforeSeq)))
+    .orderBy(desc(messages.seq))
+    .limit(limit + 1);
+  return { rows: rows.slice(0, limit).toReversed(), hasEarlier: rows.length > limit };
 }
 
 /** 预载与导出：这批会话 seq >= window_start_seq 的消息，按会话、seq 排序 */

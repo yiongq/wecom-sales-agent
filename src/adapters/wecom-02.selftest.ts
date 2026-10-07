@@ -26,6 +26,7 @@ process.env.PUBLIC_BASE_URL = ''; // 不走链接卡片
 
 const { __test, syncFromCallback } = await import('./wecom.js');
 const { getSession, getOrCreateSession, saveSession } = await import('../store.js');
+const tk = await import('../handoff/takeover.js');
 // store 与适配器的 exit 钩子先写盘，清理排在它们之后（exit 监听按注册顺序执行）
 process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 
@@ -49,6 +50,8 @@ interface FakeMsg {
 }
 const serverLog: FakeMsg[] = [];
 const sent: { to: string; content: string }[] = [];
+/** 审查第 7 条的探针：send_msg 第一次打到这个 uid 时触发一次接手，模拟退避重试期间被 HTTP 接手 */
+let takeoverOnSend: { uid: string; fired: boolean } | null = null;
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
   const ep = new URL(String(input)).pathname.replace(/^\/cgi-bin\//, '');
   const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
@@ -60,7 +63,15 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
     return res({ errcode: 0, next_cursor: `0:${from + list.length}`, has_more: 0, msg_list: list });
   }
   if (ep === 'kf/send_msg') {
-    sent.push({ to: String(body.touser), content: String(body.text?.content ?? body.link?.url ?? '') });
+    const to = String(body.touser);
+    // 审查第 7 条（concurrency[3]）：send_msg 第一次回限流错误（逼出退避重试），退避期间模拟顾问接手（HTTP 发起、
+    // 真实的网络等待能插进来，不止 microtask 的那一段）。第二次尝试之前 stillCurrent 应该拦住，不照发
+    if (takeoverOnSend && takeoverOnSend.uid === to && !takeoverOnSend.fired) {
+      takeoverOnSend.fired = true;
+      tk.takeover(`wecom:${to}`, tk.sharedActor());
+      return res({ errcode: 45009, errmsg: 'selftest: 限流重试' });
+    }
+    sent.push({ to, content: String(body.text?.content ?? body.link?.url ?? '') });
     return res({ errcode: 0 });
   }
   if (ep === 'kf/customer/batchget') return res({ errcode: 0, customer_list: [] });
@@ -196,6 +207,33 @@ for (const k of ['log', 'warn', 'error'] as const) {
   );
 }
 
+// ---------------- 审查第 7 条（concurrency[3]）：sendText 退避重试期间被接手，不补发剩下的分段 ----------------
+// 只在 sendRich 之前比一次接手代次挡不住这个窗口：send_msg 第一次回限流，退避等待时模拟 HTTP 发起的接手，
+// 第二次尝试之前 stillCurrent() 应该拦住，不照发；会话记一条「本轮未发送（顾问已接手）」
+{
+  await restart();
+  const uid = 'u02-takenover';
+  takeoverOnSend = { uid, fired: false };
+  const m = customerMsg(uid, '你好，想去云南看看');
+  serverLog.push(m);
+  void syncFromCallback('tok02-takenover');
+  await waitFor(() => takeoverOnSend?.fired === true);
+  await idle();
+  const msgs = msgsOf(uid);
+  check(
+    '退避重试期间被接手：第一次限流之后不再重试，客户什么都没收到',
+    sentTo(uid).length === 0,
+    json({ sent: sentTo(uid), msgs: msgs.map((x) => [x.role, x.content]) }),
+  );
+  check(
+    '退避重试期间被接手：会话记一条「本轮未发送（顾问已接手）」，不是通用的发送失败说明',
+    msgs.some((x) => x.role === 'system' && x.content === tk.TAKEN_OVER_NOTE) &&
+      !msgs.some((x) => x.role === 'system' && x.content.includes('企微发送失败')),
+    json(msgs.map((x) => [x.role, x.content])),
+  );
+  takeoverOnSend = null;
+}
+
 Object.assign(console, origConsole);
 if (fails.length) {
   console.error('---- 场景日志（最近 40 行）----');
@@ -204,5 +242,7 @@ if (fails.length) {
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`WECOM-02 SELFTEST PASS: ${pass} 项断言全通（文本消息的 msgid 与 sentAt / 非文本占位的 sentAt / 重放按 msgid 对齐）`);
+console.log(
+  `WECOM-02 SELFTEST PASS: ${pass} 项断言全通（文本消息的 msgid 与 sentAt / 非文本占位的 sentAt / 重放按 msgid 对齐 / 退避重试期间被接手不补发）`,
+);
 process.exit(0);

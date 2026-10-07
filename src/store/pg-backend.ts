@@ -301,6 +301,8 @@ export interface PgBackend extends StoreBackend {
    * 用它（日志的 conv 在第一次 saveSession 之前就要，R24）。只由 store.conversationRef 为内存里的真实会话调
    */
   refOf(sessionId: string): string | null;
+  /** 这个会话因数据类错误停写了（poisoned）：人工回复、订单动作在改动之前就 503（第 13 步） */
+  isPoisoned(sessionId: string): boolean;
   /**
    * 任务表的单独短事务（认领、改状态、启动与停机时的归位、与会话无关的排程；02 spec「任务表与跟进」）：不经会话写队列，
    * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
@@ -1253,6 +1255,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       }
       return ref;
     },
+    isPoisoned: (sessionId) => entries.get(sessionId)?.poisoned != null,
     jobsTx(fn) {
       if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
       if (closed) return Promise.reject(new JobsTxRefused('closed'));

@@ -348,6 +348,7 @@ async function harness() {
   const wecom = await import('../adapters/wecom.js');
   const ledger = await import('./ledger.js');
   const { __takeoverTest } = await import('../handoff/takeover.js');
+  const { onTurnEnd } = await import('../trace/recorder.js');
 
   let seq = 0;
   const customerMsg = (uid: string, content: string, opts: { msgid?: string; ageMs?: number; msgtype?: string } = {}): FakeMsg => {
@@ -432,6 +433,7 @@ async function harness() {
     wecom,
     ledger,
     __takeoverTest,
+    onTurnEnd,
     customerMsg,
     failEvent,
     enterEvent,
@@ -979,11 +981,19 @@ async function fileSuite(h: Harness): Promise<void> {
       ['wmQc5b', '回复结果不明（unknown）'],
       ['wmQc5c', '会话已转人工、还没回复'],
       ['wmQc5d', '之后客户又说过话'],
+      // 第 13 步：上一个进程里顾问接手了，适配器因为接手代次没发那条 AI 回复；重启之后不当成「没送出」补发
+      ['wmQc5e', '回复没送出、但顾问已接手'],
     ];
     for (const [uid, label] of variants) {
       const sid = `wecom:${uid}`;
       const m = h.customerMsg(uid, '西藏几月去合适');
-      if (uid === 'wmQc5a' || uid === 'wmQc5b') {
+      if (uid === 'wmQc5e') {
+        const { s } = seedSession(h, sid, { msgid: m.msgid, reply: '西藏 5–10 月最合适～' });
+        s.handedOver = true;
+        s.assignee = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000a1', name: '小林', at: Date.now() };
+        s.messages.push({ role: 'system', content: '本轮未发送（顾问已接手）', at: Date.now() });
+        h.store.saveSession(s);
+      } else if (uid === 'wmQc5a' || uid === 'wmQc5b') {
         const { reply } = seedSession(h, sid, { msgid: m.msgid, reply: '西藏 5–10 月最合适～' });
         if (uid === 'wmQc5b') h.plan.set(uid, ['lost', 'lost', 'lost']);
         await push(sid, reply!.content, { kind: 'ai', message: reply! });
@@ -1034,6 +1044,28 @@ async function fileSuite(h: Harness): Promise<void> {
     h.serverLog.push(h.customerMsg(uid, '两个人'));
     await h.sync();
     check('接手代次不再变：下一句照常回复', h.reqTo(uid).length === 1);
+  }
+  // 第 13 步起引擎在写进回复之前已经比过一次（上面那组由引擎兜住）。代次在引擎写完回复之后、适配器 sendRich 之前才变：
+  // 适配器那一次比较兜住，回复已在会话里，不发，后面记一条说明
+  {
+    const uid = 'wmQtake2';
+    const sid = `wecom:${uid}`;
+    const off = h.onTurnEnd((f) => {
+      if (f.turn.conversationId === sid) queueMicrotask(() => h.__takeoverTest.bump(sid));
+    });
+    h.script.push({ content: '西安这条线很经典～您几位出行？' });
+    h.serverLog.push(h.customerMsg(uid, '想去西安'));
+    await h.sync();
+    off();
+    const msgs = h.msgsOf(sid);
+    check(
+      '接手代次在引擎写完回复之后才变：适配器在 sendRich 之前再比一次，不发，记「本轮未发送（顾问已接手）」',
+      h.reqTo(uid).length === 0 &&
+        msgs.some((x) => x.role === 'agent' && x.content.includes('西安这条线')) &&
+        msgs.at(-1)?.role === 'system' &&
+        msgs.at(-1)?.content === '本轮未发送（顾问已接手）',
+      json({ sent: h.reqTo(uid), last: msgs.slice(-2) }),
+    );
   }
 
   // ---------------- 文件存储的扫描器：跟进的分段只超时 → 客户只收到一次、账不退、之后不再发这一阶段 ----------------

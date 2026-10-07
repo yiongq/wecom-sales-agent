@@ -4,7 +4,7 @@
 import type { AuditGroup } from '../../src/shared/ui-labels.js';
 
 /** 类别的取值；AuditGroup 加减一种时这里不跟着改，typecheck 就失败 */
-const GROUP: Readonly<Record<AuditGroup, true>> = { sop: true, catalog: true, account: true, platform: true };
+const GROUP: Readonly<Record<AuditGroup, true>> = { sop: true, catalog: true, conversation: true, account: true, platform: true };
 
 export interface AuditSearch {
   /** 分段控件选的类别；「全部」不写 */

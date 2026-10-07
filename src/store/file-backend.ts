@@ -19,7 +19,7 @@ export interface FileBackendDeps {
   ownsOrder(o: Order): boolean;
   /** 真实会话（不是 demo 类）：health().conversations 只数它们 */
   isReal(sessionId: string): boolean;
-  /** 每次去抖落盘之后调（不论成败）：storeEvents 的 'change'，/api/admin/stream 据此推送 */
+  /** 每次落盘成功之后调：storeEvents 的 'change'，/api/admin/stream 据此推送（02 第 13 步：提交后发，失败不发，不变量 10） */
   afterPersist(): void;
 }
 
@@ -119,8 +119,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
     if (saveTimer) return;
     saveTimer = setTimeout(() => {
       saveTimer = null;
-      persistNow();
-      d.afterPersist(); // 每次落盘（约 200ms 去抖后）通知一次
+      if (persistNow()) d.afterPersist(); // 每次落盘成功（约 200ms 去抖后）通知一次；失败不通知，留到下一次成功
     }, 200);
   }
 
@@ -193,10 +192,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
       });
     },
     drain() {
-      if (cancelTimer() || dirty.size) {
-        persistNow();
-        d.afterPersist();
-      }
+      if ((cancelTimer() || dirty.size) && persistNow()) d.afterPersist();
       return Promise.resolve({ undrained: [...dirty.keys()] });
     },
     // 退出兜底：防抖窗口内（或上次落盘失败后）的未落盘变更在进程结束前同步写出
@@ -207,8 +203,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
     },
     flushNow() {
       cancelTimer();
-      persistNow();
-      d.afterPersist();
+      if (persistNow()) d.afterPersist();
     },
     health(): StoreHealth {
       let oldest = Infinity;

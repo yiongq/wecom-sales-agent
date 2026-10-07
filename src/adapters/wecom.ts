@@ -27,7 +27,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ChannelAdapter, ChatMessage, OutboundKind, PushOpts } from '../types.js';
 import { handleMessage, inboundText, replyMessageOf } from '../engine.js';
-import { takeoverGen } from '../handoff/takeover.js';
+// 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明，与引擎同一句（不变量 28 的适配器部分）
+import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
 import { onSendFail, recordSend, replyDelivered, type SendResult } from '../quota/ledger.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logError, withConversationLog } from '../log.js';
@@ -326,6 +327,12 @@ interface KfMessage {
 interface SendCtx {
   kind: OutboundKind;
   message: ChatMessage | null;
+  /**
+   * 这一轮 AI 回复还算不算数（审查第 7 条，concurrency[3]）：只有 kind='ai' 的客户对话主链路才带它。
+   * sendRich 调 uploadThumb 之后、sendText 每段第一次 send_msg 之前、每次重试之前都再调一次——
+   * uploadThumb 的网络请求、send_msg 的退避重试都是真实的 I/O 等待，HTTP 发起的接手能插进来，不是只有 microtask 的那一段
+   */
+  stillCurrent?: () => boolean;
 }
 
 // 停机：normal 段的截止时刻（drainForShutdown 拿到）。过了它不再开始新的 send_msg：drain 段之后账本行已无处可写，
@@ -665,6 +672,8 @@ async function sendRich(cfg: WecomConfig, uid: string, body: string, ctx: SendCt
   // 此前先发了改过的正文才去传缩略图，缩略图一失败（接口报错、之后 60 秒冷却期内每一张都算），
   // 客户读到「见下方卡片」，下方却是一条纯文本链接。拿不到缩略图就原样发正文，链接留在原处
   const thumb = await uploadThumb(cfg).catch(() => null);
+  // 缩略图上传是真实网络请求（2 天内第一张最长等 20 秒）：这期间被接手，还没发出任何一段就整条不发
+  if (ctx.stillCurrent && !ctx.stillCurrent()) return false;
   if (!thumb) return sendText(cfg, uid, advisor(body), ctx);
   const prose = stripLink(body, card.raw);
   // 只有卡片、没有正文的人工回复：前缀加在卡片标题上（客户仍看得出是顾问发的，也不多发一条）
@@ -673,7 +682,10 @@ async function sendRich(cfg: WecomConfig, uid: string, body: string, ctx: SendCt
   if (await sendLinkCard(cfg, uid, card, thumb, ctx.message)) return textOk;
   // 缩略图就绪、卡片本身却发送失败（接口报错、网络异常，少见）：正文已按「见下方卡片」发出，收不回来了。
   // 把链接补发在正文下方——「下方」来的是一条带标题的链接而不是卡片，措辞差一点，但链接一定送达
-  return (await sendText(cfg, uid, `${card.title}\n${card.url}`, { kind: 'card', message: ctx.message })) && textOk;
+  return (
+    (await sendText(cfg, uid, `${card.title}\n${card.url}`, { kind: 'card', message: ctx.message, stillCurrent: ctx.stillCurrent })) &&
+    textOk
+  );
 }
 
 /**
@@ -685,13 +697,26 @@ async function sendRich(cfg: WecomConfig, uid: string, body: string, ctx: SendCt
  */
 async function sendText(cfg: WecomConfig, externalUserId: string, text: string, ctx: SendCtx): Promise<boolean> {
   let allOk = true;
+  let anyAccepted = false;
   for (const chunk of splitForWecom(text)) {
+    // 被接手（审查第 7 条，concurrency[3]）：还没发出过任何一段就整条不发；已经发出过的不再补发剩下的分段，
+    // 但剩下的没发出去，不能算 allOk（调用方据此与接手代次再核一次，写 TAKEN_OVER_NOTE 而不是通用的发送失败说明）
+    if (ctx.stillCurrent && !ctx.stillCurrent()) {
+      if (!anyAccepted) return false;
+      allOk = false;
+      break;
+    }
     const entry = recordSend(SESSION_PREFIX + externalUserId, ctx.kind, ctx.message);
     let lastErr = '';
     let outcome: SendResult | null = null;
     let errcode: number | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 800 * attempt));
+      // 退避重试不再继续：接手可能恰好发生在上一次尝试与这一次之间
+      if (ctx.stillCurrent && !ctx.stillCurrent()) break;
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 800 * attempt));
+        if (ctx.stillCurrent && !ctx.stillCurrent()) break;
+      }
       entry.attempt();
       try {
         const data = await callApi<{ errcode?: number; errmsg?: string }>(cfg, 'kf/send_msg', {
@@ -704,6 +729,7 @@ async function sendText(cfg: WecomConfig, externalUserId: string, text: string, 
         if (!data.errcode) {
           lastErr = '';
           outcome = 'accepted';
+          anyAccepted = true;
           break;
         }
         lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
@@ -726,6 +752,9 @@ async function sendText(cfg: WecomConfig, externalUserId: string, text: string, 
     else entry.settle(outcome, outcome === 'accepted' ? undefined : errcode);
     if (lastErr) {
       console.error(`[wecom] send_msg 最终失败（已重试）: ${lastErr}`);
+      allOk = false;
+    } else if (outcome === null && ctx.stillCurrent && !ctx.stillCurrent()) {
+      // 这一段在重试之间被接手拦下（没有报错，所以 lastErr 是空的）：同样不算 allOk
       allOk = false;
     }
   }
@@ -882,8 +911,14 @@ function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
   if (!s) return { kind: 'fresh' };
   const talk = s.messages.filter((m) => m.role !== 'system' && !(m.role === 'agent' && WELCOME_TEXTS.has(m.content)));
   const isAiReply = (m: ChatMessage | undefined): m is ChatMessage => m?.role === 'agent' && (m.author === undefined || m.author === 'ai');
+  // 情况 4 的补发不看转人工（安全网那一轮的回复照样补发），但顾问已经接手的不补：接手代次只在进程内，上一个进程里适配器因为接手
+  // 没发的那条，重启之后会被当成「没送出」再发一遍（02 第 13 步，不变量 28）
   const sentOrSkip = (reply: ChatMessage): Dedupe =>
-    replyDelivered(sessionId, reply) ? { kind: 'skip', why: '回复已送出' } : { kind: 'resend', message: reply };
+    replyDelivered(sessionId, reply)
+      ? { kind: 'skip', why: '回复已送出' }
+      : s.handedOver && s.assignee
+        ? { kind: 'skip', why: '顾问已接手' }
+        : { kind: 'resend', message: reply };
   const at = talk.findIndex((m) => m.role === 'customer' && m.msgid === msg.msgid);
   if (at < 0) {
     if (recentMsgids(sessionId).has(msg.msgid)) return { kind: 'skip', why: '已不在会话窗口里' };
@@ -901,9 +936,6 @@ function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
   if (!reply) return s.handedOver ? { kind: 'skip', why: '会话已转人工' } : { kind: 'recorded' };
   return sentOrSkip(reply);
 }
-
-/** 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明（不变量 28 的适配器部分；代次第 13 步才有生产者） */
-const TAKEN_OVER_NOTE = '本轮未发送（顾问已接手）';
 
 /**
  * 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放。
@@ -1026,13 +1058,28 @@ async function handleCustomerMessageInner(cfg: WecomConfig, msg: KfMessage, repl
       }
       return;
     }
-    // 走 sendRich 而不是 sendText：方案书/支付链接要发成原生卡片，客户转发出去才是一张卡
-    const sent = await sendRich(cfg, msg.external_userid, formatForWecom(cfg, reply.text), { kind: 'ai', message: reply.message });
+    // 走 sendRich 而不是 sendText：方案书/支付链接要发成原生卡片，客户转发出去才是一张卡。
+    // stillCurrent 覆盖 sendRich 内部的 await（uploadThumb、send_msg 的退避重试）：这些是真实的网络等待，
+    // HTTP 发起的接手插得进来，不能只在调 sendRich 之前比一次代次（审查第 7 条，concurrency[3]）
+    const sent = await sendRich(cfg, msg.external_userid, formatForWecom(cfg, reply.text), {
+      kind: 'ai',
+      message: reply.message,
+      stillCurrent: () => takeoverGen(sessionId) === gen,
+    });
     if (!sent) {
+      const s = getSession(sessionId);
+      if (takeoverGen(sessionId) !== gen) {
+        // 没发完全是因为中途被接手，不是发送失败：记「本轮未发送」而不是通用的发送失败说明
+        console.log('[wecom] 发送期间顾问接手，本轮 AI 回复剩下的部分不发');
+        if (s) {
+          s.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
+          saveSession(s, false);
+        }
+        return;
+      }
       // 发送失败不能静默：会话里已经存了这条 agent 回复，后台看着像"已跟进"，
       // 实际客户什么都没收到（48h 会话窗口关闭、企微限流等），顾问会以为已经聊过了
       console.error(`[wecom] ⚠️ 回复未送达客户（阶段=${reply.stage}）:`, convLabel(sessionId));
-      const s = getSession(sessionId);
       if (s) {
         s.messages.push({
           role: 'system',

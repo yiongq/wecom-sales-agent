@@ -38,6 +38,7 @@ import { renderSystemPrompt } from './prompt/system.js';
 import { ConfigNotReadyError, configMode, currentSop, pinCatalogForTurn } from './config/source.js';
 import { promptHashes } from './config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
+import { TAKEN_OVER_NOTE, takeoverGen } from './handoff/takeover.js';
 import {
   emergencyOf,
   FAILURE_WINDOW,
@@ -3461,6 +3462,15 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (msg) replyMessages.set(r, msg);
     return r;
   };
+  // 接手代次（02 spec「接手、人工回复与交还」、不变量 28）：这一轮开始时记下，模型返回之后与 AI 回复 push 进会话之前各同步比一次，
+  // 变了（这一轮里有人接手，含接手之后又交还）就不发，记一条「本轮未发送（顾问已接手）」
+  const turnGen = takeoverGen(sessionId);
+  const takenOver = (): boolean => takeoverGen(sessionId) !== turnGen;
+  const unsentTakenOver = (): AgentReply => {
+    session.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
+    saveSession(session);
+    return done('silent', { text: '', stage: session.stage, ...(session.handedOver ? { handoff: true } : {}), silent: true });
+  };
 
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
   // 这是演示项目，拿手机微信反复走流程是主要用法（2026-09 曾限定为仅网页，被要求改回）。
@@ -3815,6 +3825,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 模型没给出可用文本、落到兜底话术：交互失败的信号之一（R15 的 emptyModelReply）
   const emptyModelReply = !usable;
   let visible = usable || fallbackReply(session.stage);
+  // 生成期间有人接手（接手代次变了）：模型自己调了转人工也不发，客户停在哪一步就还是哪一步（不变量 28）
+  if (takenOver()) return unsentTakenOver();
   if (session.handedOver) {
     if (!isTerminalStage(session.stage)) session.stage = 'handoff'; // 工具触发的转人工优先；终态保留（R9）
     // 不是模型自己转的，就是生成期间顾问在后台接管了（/handoff 改的是同一个 session 对象，
@@ -3822,11 +3834,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 这时 AI 的回复不能再发：客户会同时收到顾问和 AI 两套说法（报价、日期、承诺可能互相矛盾）。
     // 接管前阶段也不按本轮工具补推：这轮什么都没到客户手里（引擎预取的线路他同样没看到），
     // 客户停在哪一步就还是哪一步
-    if (!calls.some((c) => c.name === 'handoff_to_human')) {
-      session.messages.push({ role: 'system', content: '顾问已接管会话，AI 本轮生成的回复未发送', at: Date.now() });
-      saveSession(session);
-      return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
-    }
+    if (!calls.some((c) => c.name === 'handoff_to_human')) return unsentTakenOver();
     // 模型自己转的人工：接管前记下的是本轮开始时的阶段；这轮若已查线路/报价（回复会发出去），
     // 按工具调用补推一次，交还 AI 时才不倒退
     if (session.stageBeforeHandoff) session.stageBeforeHandoff = deriveStage(session.stageBeforeHandoff, calls);
@@ -4079,6 +4087,11 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       });
     }
   }
+  // 这轮自己要不要转人工，到这里已经定了（工具调用、空头承诺、回复里说了转接，都在这之前判完）。
+  // 之后到 push 之前还有几道护栏（身份、注入、价格）要走，没有新的 await，不会再新增自己决定的转人工。
+  // 旧 /handoff 不加接手代次（R11：共享工作台以 agent 身份接管，比代次比不出来）：从这里往后，handedOver
+  // 从假变真只可能是外部动作（审查第 8 条，compat[3]），push 之前要据此补上去，不能只看代次
+  const handedOverSelfDecided = session.handedOver;
   // 下面几道护栏命中时通常把整条换成兜底话术，但兜底话术都在追问线路/人数/预算——
   // 这一轮已经转人工、AI 之后不再应答，追问只会让客户白等。所以改行程转人工时，
   // 护栏命中就整段丢掉模型原文，只发转人工说明。
@@ -4208,6 +4221,12 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   const beforeSuffix = visible;
   visible = restoreProposalSuffixes(visible, calls);
   noteGuard('proposal_suffix', beforeSuffix, visible, 'patch');
+
+  // 模型返回之后还有几次 await（strandedReply、deterministicRecommend、repairLinks）：这期间有人接手，AI 回复就不写进会话、不发（不变量 28）。
+  // 除了接手代次也看 handedOver：旧 /handoff 不加代次，但只有从 handedOverSelfDecided 的假变真才算外部接管——
+  // 这轮自己决定要转人工（工具调用、空头承诺、回复里说了转接）时 handedOver 在那时已经是真，不能把自己这轮的决定当成被接管（审查第 8 条）。
+  // 从这里到写进会话都是同步的；放在交互失败的判定之前，没发出去的这一轮不记失败信号、不因失败转人工
+  if (takenOver() || (session.handedOver && !handedOverSelfDecided)) return unsentTakenOver();
 
   // 交互失败（02 spec「确定性转人工触发」、R15、不变量 30）：出口护栏都跑完之后判。这一轮已经转了人工的（模型调了工具、
   // 改行程承诺、回复里说了转接）不再算一轮。达到阈值（最近 6 轮里最后 2 轮都失败或其中 3 轮失败）时这一轮的回复换成

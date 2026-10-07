@@ -18,6 +18,7 @@ import {
   shouldFollowUp,
   type SessionWithFollowup,
 } from '../followup.js';
+import { takeoverGen } from '../handoff/takeover.js';
 import { followupWindowAllows, holdSend, mayHaveDelivered } from '../quota/ledger.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { flushSession, getSession, jobOpApplied, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
@@ -197,6 +198,9 @@ async function sendAfterLedger(a: {
   push: PushFn;
 }): Promise<JobOutcome> {
   const { job, ctx, fresh, sid, text, message, release, clock } = a;
+  // 这次发送开始时的接手代次（审查第 6 条，concurrency[2]）：记账、等提交要经一次 await，这段时间里会话可能被接手；
+  // 推送前再比一次，变了就不推——不然刚接手、客户紧接着就收到一条 AI 跟进，违背不变量 28
+  const gen0 = takeoverGen(sid);
   // 记账并把任务改成 sending，同一段同步代码里排进同一次落库；提交之后才推送（最多发一次）
   const meta = (fresh.followup ??= {});
   const stage = fresh.stage;
@@ -220,6 +224,12 @@ async function sendAfterLedger(a: {
     // running → sending 提交了却没改中：这一行已不在本次认领手里（租户锁丢失期间另一个进程启动归位、重新认领过它，由那边发）。
     // 不推送；已提交的账不退（多记一次是安全的一侧，宁可漏一条），任务状态以库里的为准
     console.error(`[followup] 跟进 ${short(sid)} 的任务已不在本次认领手里（sending 没改中），不推送`);
+    return { status: 'handled' };
+  }
+  if (takeoverGen(sid) !== gen0 || fresh.handedOver) {
+    // 记账、等提交期间被接手（或已转人工）：不推送，账不退（已提交，多记一次是安全的一侧）、不重排，任务记 abandoned
+    console.error(`[followup] 跟进 ${short(sid)} 推送前发现已被接手，不推送`);
+    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'taken_over' })]);
     return { status: 'handled' };
   }
   let ok: boolean;

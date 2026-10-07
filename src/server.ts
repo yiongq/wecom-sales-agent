@@ -7,15 +7,31 @@ import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时�
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { readFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
+import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
-import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
+import { HANDOFF_REASON } from './handoff/record.js';
 import {
+  AssignedToOtherError,
+  ConsentDeclinedError,
+  EmptyReplyError,
+  isReleaseNote,
+  NotHandlingError,
+  release,
+  releaseNote,
+  reply,
+  ReplyTooLongError,
+  SendWindowError,
+  setReplyTransport,
+  sharedActor,
+} from './handoff/takeover.js';
+import {
+  flushSession,
   getOrder,
   getSession,
   gracefulExit,
@@ -28,6 +44,7 @@ import {
   sessionStoreMode,
   storeEvents,
   storeHealth,
+  StoreLaggingError,
   varDir,
 } from './store.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
@@ -40,7 +57,6 @@ import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
-import { holdSend, humanReplyVerdict } from './quota/ledger.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
@@ -83,6 +99,9 @@ function adapterFor(channel: string): ChannelAdapter {
     },
   };
 }
+
+// 人工回复（src/handoff/takeover.ts 的 reply，后台接口与旧 /reply 共用）经会话的渠道发出
+setReplyTransport((sessionId, text, opts) => adapterFor(getSession(sessionId)?.channel ?? '').push(sessionId, text, opts));
 
 // ---------------- 管理面鉴权 ----------------
 // 分两层，而不是一个「读写一起开关」的总闸：
@@ -173,18 +192,20 @@ const legacyWrites: MiddlewareHandler = async (c, next) => (profile().flags.lega
 
 // ---------------- 匿名可读的投影（02 spec「后台接口」、不变量 44） ----------------
 // 匿名可读的旧接口（会话列表、单会话、订单列表的匿名分支）不带成员身份：接手人与消息作者去掉 user id、姓名一律写「顾问」，
-// 订单去掉确认人、标记已付的人与取消原因。只拷贝，不改 identity map 里的活对象。
+// 订单去掉确认人、标记已付的人与取消原因，交还时按固定模板记的「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」。
+// 只拷贝，不改 identity map 里的活对象。
 // 带 ADMIN_PASS 的请求照旧返回原对象；「带凭据」只认 isAdminReq（Basic），不认 console 的登录 cookie
 const ANON_MEMBER_NAME = '顾问';
 type AnonMessage = Omit<ChatMessage, 'authorId'>;
 type AnonSession = Omit<Session, 'assignee' | 'messages'> & { assignee?: Omit<Assignee, 'userId'> | null; messages: AnonMessage[] };
 type AnonOrder = Omit<Order, 'confirmedBy' | 'paidMarkedBy' | 'cancelReason'>;
 
-/** 按消息逐条投影（第 13 步在这里加交还消息的改写规则） */
+/** 按消息逐条投影：去掉操作者 id、作者姓名写「顾问」，交还消息里的姓名同样换成「顾问」（02 spec「后台接口」匿名投影、不变量 44） */
 function anonMessage(m: ChatMessage): AnonMessage {
   const out: ChatMessage = { ...m };
   delete out.authorId;
   if (out.authorName !== undefined) out.authorName = ANON_MEMBER_NAME;
+  if (isReleaseNote(out)) out.content = releaseNote(ANON_MEMBER_NAME);
   return out;
 }
 
@@ -471,33 +492,46 @@ app.post('/api/sessions/:id/handoff', legacyWrites, sameOriginOnly, adminAuth, (
   return c.json(s);
 });
 
+/** 旧写接口的审计地址：库里的 ip 列是 inet，拿不到合法地址就记 null */
+function auditIp(c: Context): string | null {
+  const k = clientKey(c).replace(/%.*$/, '');
+  return isIP(k) ? k : null;
+}
+
+/** 旧写接口改调接手状态机（R11）：操作者是共享工作台，状态机的拒绝照旧回 { error }（admin.html 只看状态码） */
+function legacyRefusal(c: Context, e: unknown): Response | null {
+  if (e instanceof NotHandlingError || e instanceof AssignedToOtherError) {
+    return c.json({ ok: false, error: e.message, code: e instanceof NotHandlingError ? 'not_assignee' : 'assigned_to_other' }, 409);
+  }
+  if (e instanceof ConsentDeclinedError) return c.json({ ok: false, error: e.message, code: 'consent_declined' }, 409);
+  // 企微发送窗口（R18）：剩 0 条或窗口已过，什么都不改（第 12 步的形状）
+  if (e instanceof SendWindowError) return c.json({ ok: false, error: e.message, reason: e.reason, closesAt: e.closesAt }, 409);
+  if (e instanceof StoreLaggingError) return c.json({ ok: false, error: '写库跟不上，稍后再试', code: 'store_lagging' }, 503);
+  // 清洗之后为空（只含 NUL 的正文）或仍超过 2000 字：照 01 的 400 写法（{ error }），不是服务端异常（审查第 3、10 条）
+  if (e instanceof EmptyReplyError) return c.json({ error: 'text 不能为空' }, 400);
+  if (e instanceof ReplyTooLongError) return c.json({ error: '回复过长（≤2000 字）' }, 400);
+  return null;
+}
+
 // 接管的反向操作：把会话交还 AI 继续自动应答。没有它，误接管（或正则误伤转人工）
 // 的客户就永久沉默——AI 不理、人工忘了跟，线索静默流失。
-app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, (c) => {
+// 02 起按交还处理（src/handoff/takeover.ts 的 release）：成员接手中的会话返回 409，客户不同意处理敏感信息的同样 409；
+// 改动提交之后才返回（等满 5 秒没提交回 503，改动已在内存生效）
+app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  s.handedOver = false;
-  // 交还清掉转人工记录与接手人（R9）；firstHandoffAt、handoffCount 不清。完整的交还状态机在 02 第 13 步
-  delete s.handoff;
-  delete s.assignee;
-  // 只在原阶段是 handoff（被转人工"吸"走）时才还原——否则会把 closing 的客户
-  // 拉回 quote，成交概率、漏斗计数跟着倒退，且已落盘不可逆。
-  if (s.stage === 'handoff') {
-    // 优先用接管前记下的真实阶段。反推只是没有该记录时的兜底：它对「阶段已推进、
-    // 但推进过程不由本系统记录」的会话必然失真（种子演示会话 stage=quote 却无
-    // lastQuote，反推会一路掉到 discovery——现场演一次接管就把客户打回问需）。
-    // 「已付」照旧按订单读：旧数据里有「stage=handoff 而订单已付」的会话（种子 A01）；写入的是行业包的终态
-    const paid = s.orderIds.map((id) => getOrder(id)).some((o) => o?.status === 'paid');
-    const done = terminalStageKey();
-    const inferred = paid ? done : s.orderIds.length ? 'closing' : s.lastQuote ? 'quote' : 'discovery';
-    // 已支付是既成事实，优先级高于记录值（接管期间完成支付的情况）
-    s.stage = paid ? done : (s.stageBeforeHandoff ?? inferred);
-    delete s.stageBeforeHandoff;
+  try {
+    release(s.id, sharedActor(auditIp(c)));
+  } catch (e) {
+    const refused = legacyRefusal(c, e);
+    if (refused) return refused;
+    throw e;
   }
-  s.messages.push({ role: 'system', content: '顾问已将会话交还 AI，自动应答恢复', at: Date.now() });
-  s.updatedAt = Date.now();
-  saveSession(s);
-  return c.json(s);
+  // 交还已经在内存生效：admin.html 不许改（R11），它把非 2xx 一律显示成「交还失败、仍处于人工接管状态」，
+  // 还不清 S.taken[id]——可改动其实已经生效，AI 已经恢复应答，页面却一直显示错的。等提交只是让库尽快跟上，
+  // 超时、poisoned、冲突都不改这次交还本身是不是生效了，不能让这里的等待把 200 变成 503（审查第 9 条，compat[2]）
+  await flushSession(s.id, { timeoutMs: 5000 }).catch(() => {});
+  return c.json(getSession(s.id) ?? s);
 });
 
 // AI 代拟回复（起草可直接发给客户的下一条消息，供后台「填入回复框」）。
@@ -512,42 +546,25 @@ app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   }
 });
 
+// 02 起改调接手状态机的 reply（R11「共享工作台」）：没人接手时以共享工作台接手后回复，成员接手中 409、不发、会话不变；
+// 企微渠道先查发送账本（剩 0 条或窗口已过 409、写明原因，第 12 步）；改动提交之后才发；写库积压时 503、什么都不改。
+// 每个请求一个 clientId（旧工作台没有重试语义）。响应形状照旧（{ ok }）
 app.post('/api/sessions/:id/reply', legacyWrites, sameOriginOnly, adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   const body = await c.req.json<{ text?: unknown }>().catch(() => null);
   const text = typeof body?.text === 'string' ? body.text.trim() : '';
   if (!text) return c.json({ error: 'text 不能为空' }, 400);
-  const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
-  // 企微渠道先查发送账本（R18、不变量 34）：剩 0 条或窗口已过就拒绝并写明原因，什么都不改。放行就在同一段同步代码里占一个名额
-  // （并发的另一条看得到它，剩 1 条时只放一条；推送的第一个分段接过这一行），推送结束后没用上的撤掉。
-  // 第 13 步改调 reply() 之后由它抛 SendWindowError
-  let release = (): void => {};
-  if (s.channel === 'wecom') {
-    const verdict = humanReplyVerdict(s.id, Date.now());
-    if (!verdict.ok) return c.json({ ok: false, error: verdict.message, reason: verdict.reason, closesAt: verdict.closesAt }, 409);
-    release = holdSend(s.id, 'human', message);
-  }
-  s.messages.push(message);
-  s.updatedAt = Date.now();
-  saveSession(s);
-  // 人工回复：发送账本记 human，客户侧正文前加「【顾问】」（适配器加，会话里存原文）
-  let sent: boolean;
+  let r: Awaited<ReturnType<typeof reply>>;
   try {
-    sent = await adapterFor(s.channel).push(s.id, text, { kind: 'human', message });
-  } finally {
-    release();
+    r = await reply(s.id, sharedActor(auditIp(c)), text, randomUUID());
+  } catch (e) {
+    const refused = legacyRefusal(c, e);
+    if (refused) return refused;
+    throw e;
   }
-  if (!sent) {
-    // 发送失败必须让操作者知道：否则后台显示"已回复"、客户实际什么都没收到
-    s.messages.push({
-      role: 'system',
-      content: '⚠️ 上一条人工回复未能发送到客户（企微发送失败：可能是 48h 会话窗口已关闭或企微配置问题）',
-      at: Date.now(),
-    });
-    saveSession(s);
-    return c.json({ ok: false, error: '发送失败：消息未送达客户（已在会话中标记）' });
-  }
+  // 发送失败时 reply() 已在会话里记了一条「未能发送」
+  if (!r.sent) return c.json({ ok: false, error: '发送失败：消息未送达客户（已在会话中标记）' });
   return c.json({ ok: true });
 });
 
@@ -839,6 +856,7 @@ app.use('/*', serveStatic({ root: './public' }));
 // 会直接冒成 500 纯文本——压测实测约 3% 的请求命中，而这正是公开演示链接被点的那条路径。
 // 企微渠道早有 catch（adapters/wecom.ts），网页端一直漏着。
 app.onError((err, c) => {
+  // 日志不打会话原 id（不变量 48）：convLabelsIn 把实际路径（含 external_userid）里形如会话原 id 的串换成短码
   console.error(`[server] 未捕获异常 ${c.req.method} ${convLabelsIn(c.req.path)}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
   if (c.req.path === '/api/chat') {
