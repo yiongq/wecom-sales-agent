@@ -66,7 +66,13 @@ const PACK_FIXTURES = 'src/shared/pack-fixtures/';
 const OTEL_DIR = 'src/otel/';
 const OTEL_PKG = /^@opentelemetry\//;
 /** 02 的纯函数模块（还没建的照样登记，建出来就管） */
-const PURE_STORE = ['src/store/project.ts', 'src/store/seq.ts', 'src/handoff/triggers.ts', 'src/jobs/optout.ts'];
+const PURE_STORE = [
+  'src/store/project.ts',
+  'src/store/seq.ts',
+  'src/handoff/triggers.ts',
+  'src/handoff/triggers.corpus.ts',
+  'src/jobs/optout.ts',
+];
 
 const IMPORT_RULES: ImportRule[] = [
   {
