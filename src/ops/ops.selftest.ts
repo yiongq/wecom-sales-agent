@@ -1617,8 +1617,57 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   );
 }
 
-// ================ 日志：进程内（自测没设 LOG_FORMAT，纯文本） ================
+// ================ 日志：JSON 兜底的字段级 redact 与连接串/Cookie（scrubLine，审查第 2–4 条） ================
 const logMod = await import('../log.js');
+{
+  const { scrubLine } = logMod.__logTest;
+  for (const [depth, obj] of [
+    [4, { a: { b: { c: { password: 'DEPTH4LEAK' } } } }],
+    [6, { a: { b: { c: { d: { e: { secret: 'DEPTH6LEAK' } } } } } }],
+  ] as const) {
+    const line = JSON.stringify(obj);
+    const out = scrubLine(line);
+    check(
+      `不变量 32/48：第 ${depth} 层嵌套的敏感字段原样写进 JSON 行时，scrubLine 这道兜底不看深度也能盖住（pino 的 redact 只接 0–2 层）`,
+      !out.includes('DEPTH') && JSON.parse(out) !== undefined,
+      out,
+    );
+  }
+  check(
+    'scrubLine：字段名大小写不同、字段在数组里一样盖住',
+    !scrubLine(JSON.stringify({ list: [{ Token: 'ARRLEAK1' }, { ACCESSTOKEN: 'ARRLEAK2' }] })).includes('ARRLEAK'),
+  );
+  check(
+    'scrubLine：没命中的字段原样保留（不误伤）',
+    scrubLine(JSON.stringify({ a: { b: { c: { keep: 'visible-deep' } } } })).includes('visible-deep'),
+  );
+  // Bearer：大小写不分，分隔符允许真实空白或 JSON 转义之后的 \t、\n 两个字符（审查第 3 条）
+  check(
+    'scrubLine：Bearer 大小写不分（bearer、BEARER 都盖住）',
+    !scrubLine('bearer BEARLEAK1').includes('BEARLEAK1') && !scrubLine('BEARER BEARLEAK2').includes('BEARLEAK2'),
+  );
+  check(
+    'scrubLine：JSON 转义之后的 \\t、\\n 分隔同样认得出（不是真实空白，是反斜杠加字母两个字符）',
+    !scrubLine('Authorization: Bearer\\tBEARLEAK3').includes('BEARLEAK3') &&
+      !scrubLine('Authorization: Bearer\\nBEARLEAK4').includes('BEARLEAK4'),
+  );
+  // 连接串与自由文本的 Cookie 头（审查第 4 条）
+  check(
+    'scrubLine：scheme://user:password@host 连接串的密码段盖掉，user 与 host 都留着',
+    (() => {
+      const out = scrubLine('postgres://agent_app:My$ecretPW1@10.0.0.5:5432/agent');
+      return !out.includes('My$ecretPW1') && out.includes('agent_app') && out.includes('10.0.0.5:5432/agent');
+    })(),
+  );
+  check(
+    'scrubLine：自由文本里的 Cookie 头（不是 JSON 字段）一样盖住，不误伤正文别的字段',
+    (() => {
+      const out = scrubLine(JSON.stringify({ msg: 'Cookie: session=COOKIELEAK1; other=1', keep: 'visible-field' }));
+      return !out.includes('COOKIELEAK1') && out.includes('visible-field');
+    })(),
+  );
+}
+
 const { __profileTest } = await import('../profile.js');
 const { app: serverApp } = await import('../server.js');
 {
@@ -2408,12 +2457,18 @@ fakeCmd('curl', [
   'done',
   'exec "$REAL_CURL" "$@"',
 ]);
-// df -P <挂载点>：根分区与数据卷各自的使用率
+// df -P <挂载点>：根分区与数据卷各自的使用率。$FAKE_DIR/df_wrap 存在时模拟设备名过长（overlay2/LVM/NFS 长挂载）、
+// df -P 把设备名单独占一行、数据挪到下一行且少一列的情况（审查第 1 条）
 fakeCmd('df', [
   'p="${@: -1}"',
   'if [ "$p" = / ]; then pct="$(cat "$FAKE_DIR/df_root")"; else pct="$(cat "$FAKE_DIR/df_volume")"; fi',
   'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"',
-  'echo "/dev/fake 1000 500 500 ${pct}% $p"',
+  'if [ -f "$FAKE_DIR/df_wrap" ]; then',
+  '  echo "/dev/mapper/a-device-name-so-long-that-df--P-wraps-it-onto-its-own-line"',
+  '  echo "1000 500 500 ${pct}% $p"',
+  'else',
+  '  echo "/dev/fake 1000 500 500 ${pct}% $p"',
+  'fi',
 ]);
 fakeCmd('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
 const setFake = (k: string, v: string): void => fs.writeFileSync(path.join(wfake, k), v);
@@ -2695,6 +2750,32 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
     none.out.slice(-400),
   );
   writeOps([`ALERT_WEBHOOK_URL=${watchHook}`]);
+
+  // 磁盘：df -P 的设备名过长时单独占一行、百分比那行少一列（审查第 1 条）：仍要从里面读出使用率，不能静默不报。
+  // 按内容找而不是按下标数：这里的 now 是整段测试共用的模拟时钟，跑到这一步时可能同时越过备份去重的边界触发别的告警
+  setFake('df_wrap', '1');
+  setFake('df_root', '92');
+  const wrapBefore = fresh().length;
+  await runWatch((now += 60));
+  check(
+    'watch.sh：df -P 输出里设备名单独占一行（overlay2/LVM/NFS 长挂载）、数据行少一列时仍读得到使用率，92% 照样告警',
+    fresh()
+      .slice(wrapBefore)
+      .some((m) => m.includes('磁盘使用率 92%（根分区）')),
+    json(fresh().slice(wrapBefore)),
+  );
+  fs.rmSync(path.join(wfake, 'df_wrap'));
+  setFake('df_root', '50');
+  const recoverBefore = fresh().length;
+  await runWatch((now += 60));
+  check(
+    'watch.sh：回到 50%，收到「已恢复」',
+    fresh()
+      .slice(recoverBefore)
+      .some((m) => m.includes('已恢复：磁盘使用率回到 80% 以下')),
+    json(fresh().slice(recoverBefore)),
+  );
+
   check(
     'watch.sh 与 backup.sh 的输出里一次都没有 webhook 的 key 与地址',
     scriptOut.every((o) => !o.includes(WATCH_KEY) && !o.includes(hookBase)),

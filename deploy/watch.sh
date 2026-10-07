@@ -159,7 +159,9 @@ fi
 vol="$(docker volume inspect -f '{{.Mountpoint}}' "${PROJECT}_db-data" 2>/dev/null)"
 max=-1 which=''
 for p in / ${vol:+"$vol"} ${DISK_PATHS:-}; do
-  pct="$(df -P "$p" 2>/dev/null | awk 'NR==2 { sub("%", "", $5); print $5 }')"
+  # 设备名过长时（overlay2、LVM、NFS 长挂载）df -P 会把它单独占一行，数据挪到下一行、少了设备名那一列：
+  # 一条路径只有一个条目，数据永远是最后一行；Capacity 永远是倒数第二列（正常行多一列设备名，自然往后挪一位）
+  pct="$(df -P "$p" 2>/dev/null | awk 'END { v = $(NF - 1); sub("%", "", v); print v }')"
   [[ "$pct" =~ ^[0-9]+$ ]] || continue
   if ((pct > max)); then
     max=$pct

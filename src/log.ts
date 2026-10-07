@@ -93,14 +93,14 @@ export function convLabelsIn(text: string): string {
 }
 
 const CENSOR = '[已遮盖]';
-// 带凭据的查询参数（webhook 的 key、企微的 access_token / corpsecret）与 Authorization 的 Bearer
+// 带凭据的查询参数（webhook 的 key、企微的 access_token / corpsecret）与 Authorization 的 Bearer（大小写不分；
+// 分隔符允许真实空白或 JSON 转义之后的 \t、\n 两个字符——审查第 3 条）
 const SECRET_PARAM = /([?&](?:key|access_token|corpsecret|secret|token|password)=)[^&\s"'\\]+/gi;
-const BEARER = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/g;
-
-/** JSON 行写出之前的兜底：会话原 id 换成 ref 或短码，凭据盖掉。只在 LOG_FORMAT=json 时用，纯文本一个字节不动 */
-function scrubLine(line: string): string {
-  return scrubConvIds(line).replace(SECRET_PARAM, `$1${CENSOR}`).replace(BEARER, `$1${CENSOR}`);
-}
+const BEARER = /\b(Bearer(?:\s|\\[tn])+)[A-Za-z0-9._~+/=-]+/gi;
+// scheme://user:password@host 这类连接串（数据库、消息队列常见）：盖掉 user 与 host 之间的密码段（审查第 4 条）
+const CONN_PASSWORD = /(:\/\/[^:/\s@"]+:)[^@\s"]+(@)/g;
+// 自由文本里的 Cookie 请求头（不是 JSON 字段，是「Cookie: a=1; b=2」这种整段）：盖到这个 JSON 字符串片段结束为止（审查第 4 条）
+const COOKIE_HEADER = /(\bCookie:\s*)[^"\\\r\n]*/gi;
 
 /** pino 的 redact：凭据字段在顶层、往下一层、往下两层都盖住（字段名不分大小写的写法各列一个） */
 const REDACT_KEYS = [
@@ -129,6 +129,21 @@ const REDACT_PATHS = REDACT_KEYS.flatMap((k) => {
   return [p, `*${dot}${p}`, `*.*${dot}${p}`];
 });
 const REDACT_SET = new Set(REDACT_KEYS.map((k) => k.toLowerCase()));
+// JSON 输出的兜底（审查第 2 条）：pino 的 redact 只接深度 0–2（见上面 REDACT_PATHS），再深一层就原样输出——这里不看深度，
+// 直接在序列化之后的文本里找形如 "password":"…" 的片段（字段名同一张表，大小写不分），把值整段盖掉
+const REDACT_KEY_ALT = [...REDACT_SET].map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+const REDACT_JSON_FIELD = new RegExp(`"(${REDACT_KEY_ALT})"\\s*:\\s*"(?:[^"\\\\]|\\\\.)*"`, 'gi');
+
+/** JSON 行写出之前的兜底：会话原 id 换成 ref 或短码，凭据（查询参数、Bearer、连接串密码、Cookie 头、任意深度的敏感字段）
+ * 都盖掉。只在 LOG_FORMAT=json 时用，纯文本一个字节不动 */
+function scrubLine(line: string): string {
+  return scrubConvIds(line)
+    .replace(SECRET_PARAM, `$1${CENSOR}`)
+    .replace(BEARER, `$1${CENSOR}`)
+    .replace(CONN_PASSWORD, `$1${CENSOR}$2`)
+    .replace(COOKIE_HEADER, `$1${CENSOR}`)
+    .replace(REDACT_JSON_FIELD, (_m, key: string) => `"${key}":"${CENSOR}"`);
+}
 
 /** mixin：请求里带 req；有会话的（轮次里，或包在 withConversationLog 里）带 tenant、conv，轮次里再带 turn */
 function contextFields(): Record<string, string> {
