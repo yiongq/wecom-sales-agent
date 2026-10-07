@@ -29,6 +29,7 @@
 #                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）。
 #                 告警（02 spec R24）：ALERT_WEBHOOK_URL（告警群机器人，等同密钥，日志与告警内容里都不出现它）、INSTANCE_LABEL
 #                 （告警里的实例名，不写域名与 IP）。日志格式 LOG_FORMAT 不写在这里，由下面 app 服务的 environment 设成 json
+#                 转人工通知（02 spec「通知」）：NOTIFY_WEBHOOK_URL（转人工通知群的机器人，与告警不是同一个群；等同密钥，日志里不出现它）
 #   .env.ops      不给任何服务：宿主机上 deploy/watch.sh（cron 每分钟）与 backup.sh 读的运维 env 文件，ALERT_WEBHOOK_URL、
 #                 INSTANCE_LABEL 等，见 deploy/watch.sh 开头
 # 口令进连接串时，URL 保留字符（@ : / ? # %）要百分号编码；生成时只用字母数字最省事。
