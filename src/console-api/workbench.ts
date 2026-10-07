@@ -43,8 +43,8 @@ function lastCustomerAt(s: Session): string | null {
   return null;
 }
 
-/** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像 */
-export const conversationRow = (s: Session, vocab: NeedVocabulary): ConversationRow => ({
+/** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像。viewer 的转人工原因也要打码（不变量 47） */
+export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationRow => ({
   id: s.id,
   channel: s.channel,
   stage: s.stage,
@@ -53,7 +53,9 @@ export const conversationRow = (s: Session, vocab: NeedVocabulary): Conversation
   updatedAt: iso(s.updatedAt),
   needSummary: needSummary(s.profile, vocab),
   assignee: s.assignee ? { userId: s.assignee.userId, name: s.assignee.name } : null,
-  handoff: s.handoff ? { kind: s.handoff.kind, at: iso(s.handoff.at), reason: s.handoff.reason } : null,
+  handoff: s.handoff
+    ? { kind: s.handoff.kind, at: iso(s.handoff.at), reason: viewer ? maskNumbers(s.handoff.reason) : s.handoff.reason }
+    : null,
   lastCustomerAt: lastCustomerAt(s),
 });
 
@@ -196,7 +198,7 @@ export function conversationDetail(
   const declined = consentDeclined(s);
   const q = s.lastQuote;
   return {
-    row: conversationRow(s, vocab),
+    row: conversationRow(s, vocab, viewer),
     messages,
     hasEarlier: withTurns && windowStartOf(s) > 1,
     handoffCard: s.handoff

@@ -3610,6 +3610,28 @@ async function workbenchSuite(): Promise<void> {
           return Date.now() - t0 < 500;
         })(),
     );
+    // 审查第 2 条（authz[2]、spec[0]）：护照、通行证等字母开头的证件号，紧挨字母或分隔不规整的手机号
+    check(
+      '打码：护照号（1–2 字母 + 7–9 位数字）只留后 4 位数字',
+      maskNumbers('护照号E12345678') === '护照号E****5678' && maskNumbers('护照 EA1234567') === '护照 EA***4567',
+    );
+    check('打码：港澳通行证同样按证件号规则打码', maskNumbers('港澳通行证C12345678') === '港澳通行证C****5678');
+    check(
+      '打码：手机号前面紧挨字母（vx/wx 代指微信）照样打码，后面紧挨字母或数字的不算',
+      maskNumbers('wx13812345678') === 'wx*******5678' &&
+        maskNumbers('加我vx13812345678') === '加我vx*******5678' &&
+        maskNumbers('ord_13812345678abc').includes('13812345678'), // 后面紧挨字母：订单号，不是手机号，不打码
+    );
+    check(
+      '打码：点号或两个空格分隔的手机号也打码，只留后 4 位',
+      maskNumbers('138.1234.5678') === '***.****.5678' && maskNumbers('138  1234  5678') === '***  ****  5678',
+    );
+    check(
+      '打码：日期、订单号、金额不能被误打码（配反例）',
+      maskNumbers('2026-10-12 出发两位') === '2026-10-12 出发两位' &&
+        maskNumbers('订单 ord_e8a7aafbdd9632e75725f076') === '订单 ord_e8a7aafbdd9632e75725f076' &&
+        maskNumbers('每人 28800 元，总价 57600 元') === '每人 28800 元，总价 57600 元',
+    );
     // handoff_note：以「AI 已转人工」开头的 system 消息在 MessageView 里标出来；顾问消息带姓名
     s7.messages.push({ role: 'system', content: 'AI 已转人工：客户要找顾问', at: Date.now() });
     store.saveSession(s7);
@@ -3617,6 +3639,28 @@ async function workbenchSuite(): Promise<void> {
     check(
       '详情：「AI 已转人工」的 system 消息 kind=handoff_note',
       d2.messages.at(-1)?.kind === 'handoff_note' && d2.messages[0]!.kind === 'message',
+    );
+  }
+
+  // ---- viewer 打码：row.handoff.reason 也要打码，不止交接卡（审查第 1 条，authz[0]、spec[1] 同一件事） ----
+  {
+    const S8 = 'wecom:wb13-mask-row';
+    const s8 = mk(S8, { customer: '你好' });
+    enterHandoff(s8, { kind: 'model', at: Date.now(), reason: '客户要求回电13812345678' });
+    store.saveSession(s8);
+    const listAsViewer = (await call('GET', '/conversations?limit=100', { as: vw })).body as { items: ConversationRow[] };
+    const rowV = listAsViewer.items.find((r) => r.id === S8);
+    const detailAsViewer = (await call('GET', `/conversations/${enc(S8)}`, { as: vw })).body as ConversationDetail;
+    const detailAsOwner = (await call('GET', `/conversations/${enc(S8)}`, O)).body as ConversationDetail;
+    check(
+      'viewer 打码：GET /conversations 列表行、详情里的 row.handoff.reason、交接卡的 reason 三处都打码（之前只打了交接卡）',
+      !JSON.stringify(listAsViewer).includes('13812345678') &&
+        !JSON.stringify(detailAsViewer).includes('13812345678') &&
+        rowV?.handoff?.reason === '客户要求回电*******5678' &&
+        detailAsViewer.row.handoff?.reason === '客户要求回电*******5678' &&
+        detailAsViewer.handoffCard?.reason === '客户要求回电*******5678' &&
+        detailAsOwner.row.handoff?.reason === '客户要求回电13812345678',
+      JSON.stringify({ rowV: rowV?.handoff, detailRow: detailAsViewer.row.handoff, card: detailAsViewer.handoffCard }),
     );
   }
 
@@ -3860,8 +3904,9 @@ async function workbenchSuite(): Promise<void> {
   {
     __eventsTest.reset();
     check(
-      '事件流：默认每 20 秒心跳、每 60 秒复核登录、计数去抖 300ms',
-      JSON.stringify(eventTiming()) === JSON.stringify({ heartbeatMs: 20_000, recheckMs: 60_000, countsDebounceMs: 300 }),
+      '事件流：默认每 20 秒心跳、每 50 秒复核登录（留查库余量，保证 spec 的「60 秒内关闭」不被卡到 60 秒加一次查库）、计数去抖 300ms',
+      JSON.stringify(eventTiming()) === JSON.stringify({ heartbeatMs: 20_000, recheckMs: 50_000, countsDebounceMs: 300 }) &&
+        eventTiming().recheckMs < 60_000,
     );
     __eventsTest.setTiming({ heartbeatMs: 80, recheckMs: 150, countsDebounceMs: 30 });
     interface Ev {

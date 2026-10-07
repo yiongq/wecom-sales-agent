@@ -79,10 +79,12 @@ import {
   AssignedToOtherError,
   ConsentDeclinedError,
   ConversationNotFoundError,
+  EmptyReplyError,
   ForbiddenError,
   NotHandlingError,
   release,
   reply,
+  ReplyTooLongError,
   SendWindowError,
   takeover,
 } from '../handoff/takeover.js';
@@ -346,6 +348,9 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
     return { status: 409, body: { error: 'assigned_to_other', detail: e.message, assigneeName: e.assigneeName } };
   if (e instanceof NotHandlingError) return { status: 409, body: { error: 'not_assignee', detail: e.message } };
   if (e instanceof ConsentDeclinedError) return { status: 409, body: { error: 'consent_declined', detail: e.message } };
+  // 清洗之后为空或仍超过 2000 字：请求不合规，400，不是服务端异常（审查第 3、10 条）
+  if (e instanceof EmptyReplyError || e instanceof ReplyTooLongError)
+    return { status: 400, body: { error: 'bad_request', detail: e.message } };
   if (e instanceof SendWindowError) {
     const error = e.reason === 'window_closed' ? 'send_window_closed' : 'send_quota_exhausted';
     return { status: 409, body: { error, detail: e.message, closesAt: e.closesAt, remaining: e.remaining } };
@@ -576,7 +581,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,
-      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, vocab)),
+      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, vocab, c.var.user!.role === 'viewer')),
     };
     return c.json(page, 200);
   })
@@ -821,7 +826,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
 
   // ---------------- 事件流（02 spec「通知」，SSE） ----------------
   // 成员才能连（viewer 也行），匿名 401。只带 id、状态、类型、seq 与时间。连上时先补 Last-Event-ID 之后的（接不上就 resync），
-  // 没带 Last-Event-ID 的先收一条当前的 counts；之后每 20 秒一行注释心跳，每 60 秒复核登录，失效就发 auth 并关闭
+  // 没带 Last-Event-ID 的先收一条当前的 counts；之后每 20 秒一行注释心跳，每 50 秒复核登录（留查库余量，保证 60 秒内关闭），失效就发 auth 并关闭
   .get('/events', canSeeCustomers, (c) => {
     ensureEventHub(() => conversationCounts(clock()));
     const token = c.var.token!;
@@ -915,7 +920,8 @@ export const consoleApi = new Hono<ConsoleEnv>()
   .onError((e, c) => {
     const mapped = mapError(e);
     if (mapped) return c.json(mapped.body, mapped.status);
-    console.error(`[console-api] 未捕获异常 ${c.req.method} ${c.req.path}:`, e instanceof Error ? e.message : e);
+    // 日志不打会话原 id（不变量 48）：路由模板（如 /conversations/:id/reply），不是实际路径（含 external_userid）
+    console.error(`[console-api] 未捕获异常 ${c.req.method} ${c.req.routePath}:`, e instanceof Error ? e.message : e);
     const body: ApiError = { error: 'internal', detail: '服务暂时不可用，请稍后重试' };
     return c.json(body, 500);
   });

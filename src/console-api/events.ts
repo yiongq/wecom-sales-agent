@@ -2,8 +2,9 @@
 // 来源只有 store 的 onCommitted：领域事件在包含那次改动的落库（落盘）提交之后才到这里（不变量 10）。
 // 事件只带 id、状态、类型、seq 与时间，不带消息正文、客户原话和画像；sim- 访客会话的不发（console 不列也不开它们）。
 // id 是「启动标识-序号」，最近 500 条留在环形缓冲里：重连带的 Last-Event-ID 不是本次启动的、或比缓冲还旧，先发 resync。
-// counts 在提交后去抖 300ms 推一次完整的 ConversationCounts。连接每 20 秒一行注释心跳，每 60 秒用 auth_session_touch 复核一次登录，
-// 失效（过期、被移出、停用）就发 auth 并关闭。第一个连接到来时才订阅（文件配置模式不用它，也不该在导入期碰配置）
+// counts 在提交后去抖 300ms 推一次完整的 ConversationCounts。连接每 20 秒一行注释心跳，每 50 秒用 auth_session_touch 复核一次登录
+// （spec 写的是「60 秒」；正好卡在整 60 秒复核、下一次还要等查库，最坏会晚于 60 秒才关——留 10 秒余量，确保「60 秒内」是真的不超，
+// 审查第 11 条，spec[4]），失效（过期、被移出、停用）就发 auth 并关闭。第一个连接到来时才订阅（文件配置模式不用它，也不该在导入期碰配置）
 import { randomBytes } from 'node:crypto';
 import type { ConsoleEventMap, ConsoleEventName } from '../shared/console-api.js';
 import { onCommitted, type DomainEvent } from '../store.js';
@@ -23,7 +24,7 @@ const ring: Buffered[] = [];
 let last = 0;
 const listeners = new Set<(b: Buffered) => void>();
 
-let timing = { heartbeatMs: 20_000, recheckMs: 60_000, countsDebounceMs: 300 };
+let timing = { heartbeatMs: 20_000, recheckMs: 50_000, countsDebounceMs: 300 };
 let countsOf: (() => ConsoleEventMap['counts']) | null = null;
 let countsTimer: NodeJS.Timeout | null = null;
 let unsubscribe: (() => void) | null = null;
@@ -126,7 +127,7 @@ export const __eventsTest = {
     timing = { ...timing, ...t };
   },
   reset(): void {
-    timing = { heartbeatMs: 20_000, recheckMs: 60_000, countsDebounceMs: 300 };
+    timing = { heartbeatMs: 20_000, recheckMs: 50_000, countsDebounceMs: 300 };
   },
   boot: BOOT,
   ringSize: (): number => ring.length,
