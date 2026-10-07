@@ -295,7 +295,8 @@ async function parentMain(): Promise<never> {
   console.log(
     `JOBS SELFTEST PASS: ${pass} 项断言全通（拒绝识别 / 排程与取消 / 开关关时不排 / 到点发出过护栏 / 记账与 sending 先提交 / 明确失败退账重试 / ` +
       `结果不明按已发 / 别发了之后不再排 / 夜间顺延 / 启动归位 / 停机改回 pending / 转人工通知与清理的排程 / sending 前后崩溃 / ` +
-      `重试用完不再排 / 额度不够不调模型 / 锁不在手里不认领 / 结果补写 / 跟进话术的链接与联系承诺 / 重置取消通知 / 紧急情况的通知与升级 / 两个窗口落库 / 文件存储下要成交的话不算拒绝` +
+      `重试用完不再排 / 额度不够不调模型 / 锁不在手里不认领 / 结果补写 / 跟进话术的链接与联系承诺 / 重置取消通知 / 紧急情况的通知与升级 / 两个窗口落库 / 文件存储下要成交的话不算拒绝 / ` +
+      `记账等提交期间被接手不推送、任务记 abandoned` +
       `${realPgRan ? ' / 真实 PG：两个认领者不重复认领、认领令牌' : '；真实 PG 部分未跑'}）`,
   );
   process.exit(0);
@@ -780,6 +781,42 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     await runner.runJobsOnce(Date.now() + 2 * H);
     check('同一阶段只跟一次：之后不再推', pushedTo(C).length === 1);
     await retire(C);
+  }
+
+  // ---- 审查第 6 条（concurrency[2]）：记账、等提交期间被接手，推送前再比一次代次，不推送、任务记 abandoned ----
+  {
+    const tk = await import('../handoff/takeover.js');
+    const TK2 = 'wecom:wmJobsTakeover';
+    silent(TK2, 'quote', 3 * H);
+    await flush(TK2);
+    const job2 = (await jobsFor(TK2))[0]!;
+    script.push({ content: '这条线现在每人 9,999 元，名额不多了，要不要我帮您定下来？' });
+    // sendAfterLedger 记账那一刻（saveWith → saveSession）与它 await flushSession 之间没有别的 await：
+    // 挂一个 onSessionSaved 钩子，在同一段同步代码里接手，比等 phase 轮询（PGlite 几乎是瞬时的，轮询十有八九扑空）稳
+    let tko: ReturnType<typeof tk.takeover> | undefined;
+    const off = store.onSessionSaved((s) => {
+      if (s.id !== TK2 || tko) return;
+      off();
+      tko = tk.takeover(TK2, tk.sharedActor());
+    });
+    await runner.runJobsOnce();
+    off();
+    await flush(TK2);
+    const s2 = store.getSession(TK2) as Session & { followup?: { count?: number; pendingAt?: number } };
+    const [after2] = await jobsOf(`id = $1`, [job2.id]);
+    check(
+      '记账、等提交期间被接手：推送前再比一次代次，这次不推、客户什么都没收到',
+      tko?.changed === true && !pushedTo(TK2).length,
+      json({ tko, pushed: pushedTo(TK2) }),
+    );
+    check(
+      '记账、等提交期间被接手：任务记 abandoned（不是 done/failed），账已提交的不退（count 仍是 1）',
+      after2?.status === 'abandoned' && after2.finished && after2.lastError === 'taken_over' && s2.followup?.count === 1,
+      json({ after: after2, followup: s2.followup }),
+    );
+    await runner.runJobsOnce(Date.now() + 2 * H);
+    check('记账、等提交期间被接手：不重排，之后也不会补发', !pushedTo(TK2).length);
+    await retire(TK2);
   }
 
   // ---- 明确失败：退账、failed、失败计数加 1，按扫描器的节奏再排；到 MAX_PUSH_FAILURES 不再排 ----
