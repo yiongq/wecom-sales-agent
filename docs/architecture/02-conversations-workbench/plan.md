@@ -142,7 +142,7 @@
   - 对应验收 11、13、14 的界面部分，以及 20 的界面部分。
 - [ ] 21. 前端：总览 A2 与运行数字格（2）：等人接手与已成交客户要人工的行、「接手」、待付款行（「等你确认价格」等第 15 步合并）、排序、「本月成交额」格与权限、四个运行数字格与权限。console 自测用 02 种子场景断言顺序与金额。对应验收 16 与 34 的界面部分。
 - [ ] 22. 快捷回复：行业包默认模板与管理抽屉（1，可砍）：行业包配置加默认模板；空表首次读取时写入；J 页右栏的插入与 480 抽屉（新建、编辑、上移下移、归档，正文不许 markdown）。对应验收 33 的快捷回复部分。
-- [ ] 23. `admin.html` 两处（0.5）：列表 401 时弹登录框（在 `load()` 之外判断，`server.selftest.ts` 抽取的 `load()` 与 `sigOf()` 源码不变）；db 配置模式下顶部提示链到 J 页。对应验收 29 的这一句。
+- [x] 23. `admin.html` 两处（0.5）：列表 401 时弹登录框（在 `load()` 之外判断，`server.selftest.ts` 抽取的 `load()` 与 `sigOf()` 源码不变）；db 配置模式下顶部提示链到 J 页。对应验收 29 的这一句。2026-10-08 完成（分支 `feat/02-step23-admin-html`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 23 步」。
 - [ ] 24. 02 走查种子与走查（1）：`scripts/seed-demo.py` 加 `--scenario console-ux-02`（设计系统 §10.0 第 5 条：14 个会话、A01 由小林接手、F01 的原因、三张订单）；7F3A 不走种子，由走查脚本经假企微接口和脚本化的 mock LLM 真跑出来（要有一轮价格护栏删句，才有 trace 与改写对照）。Playwright 浅色、深色各走一遍，截图存到 `walkthrough/`，含只用键盘的交还。对应验收 33。
 - [ ] 25. 压测（1.5）：`scripts/load/run.ts` 按 spec「压测」一节（含 5,000 × 300 的预载）；本机真实 Postgres、db 存储；结果与数字记进「验收记录」。对应验收 30。
 - [ ] 26. 部署与演练（2）：
@@ -1340,6 +1340,34 @@ date`，origin/dev 这段时间没有新提交）。
     - 售前反例逐条（6 遍里「没转人工」判对几遍，`denyTool` 直接看工具调用）：`s15-presale-01-altitude-question`（高反了怎么办）、`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 **6/6**——`s15-presale-01` 上一轮的 4/6 是测试判定的假阳性（模型反问句里带「如果…马上为您转接」被正则误认成转人工），换成看工具调用之后，这条也是真的零误转人工，不是靠放宽判定蒙过去的。
     - 结论：6 条兜底用例里 6 条转正或保持满分，只有 `s15-anger-03-slow`（单独一句「怎么这么慢啊」、没有任何上下文）仍是 0/6，没有达到「每条 6 遍里至少 5 遍」。推测原因：这句本身比「什么破服务」「你们这么慢是不是没人管」更孤立——没有「服务」「没人管」这类明确指向我们的词，模型更容易读成「这个流程/加载慢」之类的中性吐槛，倾向于先安抚或反问而不是直接转人工。按 brief 的要求，命中率没有整体达标就不自己再改再跑（每轮都花钱），第 15 步复选框不勾，把这条单独列出来请 owner 定：① 接受现状——「嫌慢」单独一句不转人工，靠客户后续说得更具体（如「这么慢是不是没人管」）或靠第 2 条「投诉、表达强烈不满」兜底，直接勾第 15 步；② 再给第 8 条补一条更贴近「怎么这么慢啊」原句的例句（如「怎么这么慢啊」本身，或「这都等了半天了」），接受再跑一轮回归的花费（参考这次 759 次、¥14.17）。
 
+### 第 23 步 · `admin.html` 两处（2026-10-08）
+
+- 只改两个文件：`public/admin.html`、`src/config/config.selftest.ts`；`load()` 与 `sigOf()` 一字未改（`server.selftest.ts` 抽取它们俩跑的那组断言零修改，照过）。另两条并行线（第 16 步隐私与保留期、第 20.2 步 J 页）当时都没有新提交并进 `origin/dev`（`git fetch` 后 `git merge origin/dev` 两次都是 `Already up to date`），收尾没有要合并的东西。
+- 结构：
+  - `api()`（统一出口，不是 `load()`）的 `fetch(url, o)` 后面接一个 `.then(r => {...})`：只认 `url === '/api/sessions'`（`load()` 发起的那一个列表请求，`/api/orders`、`/api/usage` 等不归这里管）且 `r.status === 401`；新变量 `let listAuthHandled = false` 保证一个页面生命周期只自动反应一次——已登录（`AUTH.on`）时当会话失效处理（`onAuthLost()`），未登录时唤起登录框（`openLogin()`）。
+  - 顶部提示（`#opsHint`，静态 HTML 里默认 `hidden`）：`let dbConfigMode` + `function updateOpsHint()` 两段新代码，判断信号用已有的、不用登录就能读的 `/healthz` 的 `config.mode`（`configMode()`/`CONFIG_SOURCE`，不是会话存储 `SESSION_STORE`/`store.mode`）——后台配置在库里就提示去 J 页，与会话是不是也落在库里无关；文件配置模式（demo）下这条逐字节不加载任何提示；链接在 `render()` 里随 `S.selected` 更新（`render()` 本身不是锁定函数，可以改），没有选中会话链到 `/console/conversations`，选中了带 `encodeURIComponent` 过的 id 链到 `/console/conversations/<id>`。
+  - CSS 只加了 `.opsHint` 这一类，复用现有的设计变量（`--accent-soft`/`--accent-line`/`--accent-tx`），不加新令牌。
+- 本步定的（spec 没写细）：
+  1. **「db 配置模式」取的是 `CONFIG_SOURCE`（`/healthz` 的 `config.mode`），不是会话存储 `SESSION_STORE`（`store.mode`）**：第一版按会话存储判断过（owner 审查之后改掉），理由是「J 页要有真实会话才有意义」；但 spec 原文「db 配置模式下顶部加一条提示」说的是后台配置，不是会话存储，而且线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file`（第 27 步才切会话存储）这一种组合——文件会话存储下 J 页的列表、详情、接手与回复一样能用（只是 trace 类接口 503），按会话存储判断会让这条提示在切换会话存储之前永远不出现，不是 spec 要的「有后台的地方就提示」。改成 `config.mode === 'db'`，变量名也从 `dbSessionStore` 改成 `dbConfigMode`，与会话存储是 file 还是 db 无关。
+  2. **只弹一次，不是「弹层开着就不重复弹」**：原计划按「`loginMask.hidden` 当时是不是 true」判断是否重复，第一次全跑通之后用 `pnpm test` 揪出了 `console/src/conversations/conversations.selftest.tsx` 里早就钉住的一条断言——「深链：关掉登录框后，下一次取列表不再弹」（该文件第 16 行注释写明「`admin.html` 本身的改动是第 23 步」，原样跑 `admin.html` 的页面脚本在 happy-dom 里，不是只抽 `load()`/`sigOf()`）：人关掉登录框之后，`setInterval(load, 30000)` 的下一轮轮询照样 401，若按「弹层此刻是关的」重新弹出，就会把人关掉的登录框立刻又弹回来。改成一次性标记（`listAuthHandled`，用法仿照已有的 `deepLink` 一次性核对）之后两边都通过，细节见下「注意」。
+  3. **列表 401 的判断范围只到 `/api/sessions`**：brief 原文「列表请求（`load()` 发起的那一个）」是单数，`/api/orders`、`/api/usage`、`/api/insights`、`/api/sessions/:id/suggestion` 等现有的 401 各自已经在各自调用处处理（`onAuthLost()` 或静默），不归这条新逻辑管，没有扩大范围。
+- 自测（全部加进非锁定的 `src/config/config.selftest.ts`，照它现有的 vm 跑页面脚本的写法——`cut()` 按起止字符串原样截取 `admin.html` 的一段源码，`vm.runInNewContext` 跑，用注入的假 `fetch`/`openLogin`/`onAuthLost`/`document` 核对；529 → 539 项）：
+  - `load()`、`sigOf()` 的源码与 `origin/dev` 用同一对正则逐字节比对（找不到 `origin/dev` 时跳过、不让自测因离线环境而炸，行为仍由锁定的 `server.selftest.ts` 兜底）。
+  - 列表 401 自动弹登录框：未登录 401 弹一次、非 401 不弹、别的接口 401 不归这里管、同一上下文连续两次 401 只弹第一次（哪怕中途把 `loginMask.hidden` 重新设成 `true` 模拟人关掉）、已登录仍 401 走 `onAuthLost` 不是 `openLogin`。每个场景用一个全新的 `vm` 上下文（`listAuthHandled` 从未弹过的状态开始），只有「连续两次」这一条故意复用同一个上下文。
+  - 顶部提示：文件配置模式（`config.mode=file`）不出现（先把 `hidden` 设成 `false` 模拟「正显示」，再走一遍文件配置模式的取数，确认被收回去——不然这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断」这种变异）；db 配置模式出现且链到 `/console/conversations`，`store.mode` 是 file 还是 db 不影响判断（线上 demo 现在就是 `config.mode=db`、`store.mode=file` 这一种组合）；选中会话时链接带上 `encodeURIComponent` 过的 id。
+- 变异（3 个，在 scratchpad 里的隔离副本里打，原地跑完就整个删掉）：
+  1. `api()` 整段 401 处理去掉（退回 `return fetch(url, o);`）——`config.selftest.ts` 3 条新断言变红。
+  2. 去掉「只弹一次」的 `listAuthHandled` 守卫（401 就弹，不管弹过没有）——`config.selftest.ts` 的「连续两次只弹第一次」那条、以及 `console/src/conversations/conversations.selftest.tsx` 的「深链：关掉登录框后，下一次取列表不再弹」都变红（这条也是先错后对的那条真实教训，见上「本步定的」第 2 条）。
+  3. 顶部提示去掉 `if (!dbConfigMode)` 的收回判断（文件配置模式也一直显示）——`config.selftest.ts` 的「文件配置模式下顶部提示不出现」变红。
+  4. 单独改 `load()`（把 `locked = r => r.status===401||r.status===503` 改成只认 503）——锁定的 `server.selftest.ts` 当场报「401 不把页面弄坏」那条变红，证实「不改 `load()`/`sigOf()`」这条红线本身就有现成的锁定断言兜底。
+- 门禁：四个门禁全绿，PG 用本机一次性 `pgtest-02s23` 容器（端口 55436，`pgvector/pgvector:pg17`，跑完已停）。`pnpm test` 不带/带 `PG_TEST_URL` 都是 `EXIT=0`；PASS 行不带 PG 时 config 539、console 420、conversations 143、其余与第 19 步后相同；带 PG 时 store 431（真实 PG 部分）、其余与不带 PG 时的 config/console/conversations 相同（这几个套件不读 `PG_TEST_URL`）。mock eval 两种配置模式都是 19/19（43 项断言）。锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 为空，`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`（与「实施记录 · 第 15 步」最终那一列相同，不变）。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 的两道黑名单扫描，`gitleaks stdin` 对 `git diff origin/dev...HEAD` 的输出没有发现泄露。
+- 注意（给以后改 `admin.html` 登录/弹层逻辑的步骤）：`console/src/conversations/conversations.selftest.tsx` 第 3 节原样跑 `admin.html` 的整段页面脚本（happy-dom + 假 `fetch`），覆盖面比 `server.selftest.ts` 只抽 `load()`/`sigOf()` 宽得多，牵涉登录框、深链、`modeBtn`、`#s=` hash 的任何改动都应该先跑一遍这个文件（`npx tsx --tsconfig console/tsconfig.json console/src/conversations/conversations.selftest.tsx`），本步就是靠它抓到「只弹一次」这条本来会被漏掉的回归。
+- 审查之后改的（2026-10-08；owner 核过 diff 之后指出一处）：
+  1. **顶部提示判断条件改用 `config.mode`，不是 `store.mode`**（major）：第一版判断信号用了会话存储模式（`/healthz` 的 `store.mode`），理由是「J 页要有真实会话才有意义」；owner 指出 spec 原文「db 配置模式下顶部加一条提示」说的是后台配置（`CONFIG_SOURCE`），不是会话存储（`SESSION_STORE`），而线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file`（第 27 步才切会话存储）这一种组合——文件会话存储下 J 页的列表、详情、接手与回复一样能用，按会话存储判断会让这条提示在切换会话存储之前永远不出现。改成 `d.config.mode === 'db'`，变量名 `dbSessionStore` → `dbConfigMode`，与会话存储是 file 还是 db 无关；`load()`/`sigOf()`、`api()` 的 401 处理（本步另一半）都没有再动。
+  - 自测：`config.selftest.ts` 的两条顶部提示断言改成直接核对「不论会话存储（`store.mode`）是什么，只看 `config.mode`」——mock 的 `/healthz` 响应同时带 `config.mode` 与 `store.mode` 两个字段，专门造了一条 `config.mode=db`、`store.mode=file`（线上 demo 现在的真实组合）来确认不被会话存储拖累；总数仍是 539（改的是已有两条断言的内容，不是新增）。`conversations.selftest.tsx`（143 项）不碰这部分，照旧全过。
+  - 变异：把条件改回 `d.store.mode === 'db'`（在隔离副本里打，跑完即删）——`config.selftest.ts` 新断言当场报「db 配置模式下顶部提示出现」那条变红（`hidden=true`），复现的正是 owner 报的问题（`config.mode=db`、`store.mode=file` 时提示消失）；撤回后恢复绿。
+  - 门禁：四个门禁重跑（`pnpm test` 不带 `PG_TEST_URL`，只改了页面脚本与自测，没碰服务端或 PG 相关代码）全绿，`EXIT=0`；config 539、conversations 143，`PREFIX sha256` 与改之前相同（`system=dd2c10ee… tools=64c16fc8…`）；收尾前 `git fetch -q origin && git merge origin/dev`，两次都是 `Already up to date`；锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 仍为空；本机绝对路径、长 `wm` 会话 id 两道黑名单扫描与 `gitleaks stdin` 对本次 diff 均为空/无发现。
+
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
@@ -1569,3 +1597,12 @@ date`，origin/dev 这段时间没有新提交）。
 - 半成品：无。右栏「快捷回复」只做了「读 + 点一条插进输入框」，管理（新建、编辑、上移下移、归档、480 宽抽屉）是第 22 步；「取消订单」没有嵌在「更多」里，直接是订单卡上的按钮（本步定的第 6 条，记在「实施记录 · 第 20.2 步」，不算半成品，是读了 spec 字面要求之后判断值不值得单独做一层菜单后定的）。
 - 阻塞：无。浏览器实测做到了（本机没有真实企微凭据，覆盖了 `src/handoff/takeover.ts` 的 `setReplyTransport`，改成恒成功，不影响被测的前端行为），但只覆盖了 brief 点名的那条路径（接手、回复、交还、交接卡、改写展开、显示AI步骤、键盘交还），没有跑 I 页四个页签、铃铛、A2、快捷回复管理那一整条（spec 验收 33 的完整走查），也没有跑 axe 或把截图存进仓库——那是第 24 步「02 走查种子与走查」的范围，这一步按 brief 的范围走到此为止。
 - 下一步：第 21 步「前端：总览 A2 与运行数字格」——J 页右栏订单卡的接口与权限（`can.confirmOrder`/`can.markPaid`）已经在第 13、15 步接好，A2「等你确认价格」那一行可以直接读同一套；J 页列表的分组/等待时长规则（`console/src/conversations/workbench.ts` 的 `wbRow`/`WAIT_DANGER_MS`）与 A2「等人接手」「已成交客户要人工」两行的排序规则是同一条（没人接手在前、金额高在前、沉默久在前），A2 可以直接抄一份而不是另起一套。之后是第 22 步「快捷回复：行业包默认模板与管理抽屉」，J 页右栏的插入点（`QuickRepliesCard`）已经在，第 22 步只用加「管理」入口打开抽屉，不用改 J 页其余代码。
+
+### 交接（2026-10-08，第 23 步）
+
+- 已完成：第 23 步「`admin.html` 两处」（分支 `feat/02-step23-admin-html`，没 push；另开一条线，与第 16、20.2 步并行，收尾时两次 `git merge origin/dev` 都是 `Already up to date`）。列表（`/api/sessions`）返回 401 时在 `api()`（统一出口）里自动弹一次登录框，不改 `load()`/`sigOf()` 一个字节；db 配置模式（`/healthz` 的 `config.mode`，即 `CONFIG_SOURCE`，与会话存储 `SESSION_STORE`/`store.mode` 无关）下页头加一条「成员请到后台的会话工作台处理」的提示，链到 J 页（`/console/conversations`，选中会话时带 `encodeURIComponent` 过的 id），文件配置模式下这条逐字节不出现。结构、取舍、自测、变异与门禁见「实施记录 · 第 23 步」及其「审查之后改的」。
+- 过程中的两处教训（留给以后改 `admin.html` 的步骤）：
+  1. 第一版按「登录框当时开没开」判断要不要重复弹，`pnpm test` 跑出 `console/src/conversations/conversations.selftest.tsx` 里一条早就写好的回归断言（「深链：关掉登录框后，下一次取列表不再弹」，该文件注释已经点名是第 23 步的改动）——人关掉登录框之后，30 秒轮询的下一次 401 不该把它又弹回来。改成一次性标记（`listAuthHandled`，一个页面生命周期只自动反应一次，仿照已有的 `deepLink` 核对）之后两边都通过。这个文件原样跑 `admin.html` 整段页面脚本（happy-dom），比锁定的 `server.selftest.ts`（只抽 `load()`/`sigOf()`）看得更宽，改登录/弹层相关逻辑时应该先跑它。
+  2. 顶部提示第一版按会话存储（`store.mode`）判断，owner 审查时指出 spec 说的是配置模式（`config.mode`/`CONFIG_SOURCE`）；线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file` 的组合（第 27 步才切会话存储），按会话存储判断会让提示在那之前永远不出现。改成 `config.mode === 'db'`，变量名 `dbSessionStore` → `dbConfigMode`。见「实施记录 · 第 23 步」的「审查之后改的」。
+- 阻塞：无。
+- 下一步：主线照旧，第 23 步之后是第 24 步（02 走查种子与走查）。⌘K「会话」组与 A2 仍在用 `admin.html`（`workbenchHref`），本步没有改，留给第 21 步。

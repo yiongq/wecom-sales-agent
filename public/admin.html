@@ -51,6 +51,12 @@
   @keyframes bounceDot { 0%,80%,100%{transform:translateY(0); opacity:.35;} 40%{transform:translateY(-4px); opacity:1;} }
 
   .app { height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  /* db 存储下这里只是旧工作台，成员该去 J 页；文件存储（demo）下这条永远 hidden，页面逐字节不变（02 第 23 步） */
+  .opsHint { flex:none; display:flex; align-items:center; justify-content:center; gap:6px; padding:7px 16px;
+             font-size:12px; color:var(--text2); background:var(--accent-soft); border-bottom:1px solid var(--accent-line); }
+  .opsHint[hidden] { display:none; }
+  .opsHint a { color:var(--accent-tx); font-weight:600; text-decoration:none; border-bottom:1px solid var(--accent-line); }
+  .opsHint a:hover { border-bottom-color:var(--accent-tx); }
   header { flex:none; height:54px; display:flex; align-items:center; gap:18px; padding:0 16px; border-bottom:1px solid var(--border); background:var(--panel); }
   /* 演示模式徽标 + 登录框。页面本身免密可看，凭据只用来换「真实客户会话 + 写权限」。 */
   .mode { flex:none; display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px;
@@ -305,6 +311,7 @@
 </head>
 <body>
 <div class="app">
+  <div class="opsHint" id="opsHint" hidden>成员请到后台的 <a id="opsHintLink" href="/console/conversations">会话工作台</a> 处理</div>
   <header>
     <div class="brand" id="home" style="cursor:pointer" title="回到概览"><div class="mark">云</div><div class="name">云途 · 销售作战室</div></div>
     <div class="grow"></div>
@@ -368,13 +375,23 @@ function ownSimSession() {
   } catch (_) { return ''; }
 }
 
-/** 后台请求统一入口：登录后自动带 Authorization。401 不静默吞，调用方据此唤起登录框。 */
+/** 后台请求统一入口：登录后自动带 Authorization。401 不静默吞，调用方据此唤起登录框。
+ * 会话列表（load() 发起的那一个）401 时在这里自动弹一次登录框——不用等人想起来点「登录」；只弹一次：
+ * 人关掉之后，哪怕后面每 30 秒的轮询照样 401，也不再反复打扰——要登录随时能点顶栏的「登录」
+ * （02 第 23 步，判断写在 load() 之外，不靠弹层当时开没开）。 */
+let listAuthHandled = false;
 function api(url, opts) {
   const o = Object.assign({}, opts);
   o.headers = Object.assign({}, o.headers);
   if (AUTH.on) o.headers['authorization'] = 'Basic ' + AUTH.token;
   else { const sim = ownSimSession(); if (sim) o.headers['x-sim-session'] = sim; }
-  return fetch(url, o);
+  return fetch(url, o).then(r => {
+    if (url === '/api/sessions' && r.status === 401 && !listAuthHandled) {
+      listAuthHandled = true;
+      if (AUTH.on) onAuthLost(); else openLogin();
+    }
+    return r;
+  });
 }
 
 const loginMask = document.getElementById('loginMask');
@@ -477,6 +494,24 @@ const alpha = (v, a) => 'color-mix(in srgb, var(' + v + ') ' + a + '%, transpare
 let S = { sessions:[], orders:[], selected:null, query:'', range:'今日', tab:'全部', drafts:{}, taken:{}, aiInsights:null, sugText:{}, insAt:0, usage:null, routeMeta:{}, mview:'dash' };
 const draftOf = id => (id && S.drafts[id]) || '';
 const setDraft = (id, v) => { if (id) S.drafts[id] = v; };
+
+// ---------------- 顶部提示：db 配置模式下指去 J 页（02 第 23 步）----------------
+// 判断用 /healthz 的 config.mode（CONFIG_SOURCE，不是会话存储 SESSION_STORE/store.mode）——
+// 后台（console）只要配置源在库里就有，与会话是不是也落在库里无关；这个信号本来就不需要登录、不额外泄露信息，不新开接口。
+// 文件配置模式（demo）下 dbConfigMode 永远是 false、#opsHint 永远 hidden，页面逐字节不变；
+// 这整块独立于 load()/sigOf()，不进 S、不进 sigOf() 比对的字段。
+let dbConfigMode = false;
+function updateOpsHint() {
+  const el = document.getElementById('opsHint');
+  if (!el) return;
+  if (!dbConfigMode) { el.hidden = true; return; }
+  const link = document.getElementById('opsHintLink');
+  if (link) link.href = S.selected ? '/console/conversations/' + encodeURIComponent(S.selected) : '/console/conversations';
+  el.hidden = false;
+}
+fetch('/healthz').then(r => r.ok ? r.json() : null).then(d => {
+  if (d && d.config && d.config.mode === 'db') { dbConfigMode = true; updateOpsHint(); }
+}).catch(() => {});
 
 // ---------------- 深链 #s=<id> ----------------
 // 后台（/console）的会话列表、铃铛和搜索用新标签打开 /admin.html#s=<id>（docs/features/console-ux/spec.md「会话列表」）：
@@ -587,6 +622,7 @@ function scoreNote(stage) { return ({
 let lastRendered = '\u0000';
 function render() {
   syncHash();
+  updateOpsHint(); // 选中会话可能变了，链接要跟着带上新的 id
   // 全量重绘会踩三个坑：把正在往上翻聊天记录的人拽回底部、打断正在输入的回复、
   // 丢掉光标位置。重绘前先记住这三样，重绘后原样恢复。
   const oldBox = document.querySelector('.msgs');
