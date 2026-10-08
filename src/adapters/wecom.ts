@@ -27,11 +27,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ChannelAdapter, ChatMessage, OutboundKind, PushOpts } from '../types.js';
 import { handleMessage, inboundText, replyMessageOf } from '../engine.js';
+import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
 // 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明，与引擎同一句（不变量 28 的适配器部分）
 import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
+import type { SensitiveCategory } from '../handoff/triggers.js';
+import { currentPrivacyNotice, privacyLink } from '../privacy/privacy.js';
 import { onSendFail, recordSend, replyDelivered, type SendResult } from '../quota/ledger.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
-import { convLabel, logError, withConversationLog } from '../log.js';
+import { convLabel, logError, logQuote, withConversationLog } from '../log.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
 import { routeForProposal } from '../tools.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
@@ -313,7 +316,9 @@ interface KfMessage {
   send_time: number;
   origin: number; // 3=客户发来，4=系统，5=客服人员/接口发出
   msgtype: string;
-  text?: { content: string };
+  // menu_id：客户点了 msgmenu 的某个按钮时企微发来的是一条普通文本消息，按钮 id 在这里（02 第 16 步，官方文档「接收消息」
+  // developer.work.weixin.qq.com/document/path/94670；consentMenuButtonId 编码的 category:decision），不是单独的事件类型
+  text?: { content: string; menu_id?: string };
   event?: {
     event_type?: string; // 如 enter_session（客户进入会话）、msg_send_fail（消息发送失败）
     welcome_code?: string; // 进入会话事件专用，20s 内单次有效，用于 send_msg_on_event 发欢迎语
@@ -362,6 +367,21 @@ const LEGACY_WELCOME_TEXTS = [
   '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n想继续看线路、调整行程，或者换个方向看看，直接说就行～',
 ];
 const WELCOME_TEXTS = new Set([WELCOME_TEXT, WELCOME_BACK_TEXT, ...LEGACY_WELCOME_TEXTS]);
+
+/**
+ * 发布过隐私说明时，欢迎语末尾加一行链接（02 spec「隐私说明…」，不变量 40）；没发布时原样返回——与开工时逐字节相同，
+ * demo（文件配置模式）下 currentPrivacyNotice() 恒为 null，这个函数恒等于 identity
+ */
+function withPrivacyLink(base: string): string {
+  const link = privacyLink();
+  return link ? `${base}\n隐私说明：${link}` : base;
+}
+/** 发给模型的历史要把欢迎语过滤掉：base 版本（没发布隐私说明）与带链接版本（发布过）都认 */
+function isWelcomeText(content: string): boolean {
+  if (WELCOME_TEXTS.has(content)) return true;
+  for (const base of WELCOME_TEXTS) if (content.startsWith(`${base}\n隐私说明：`)) return true;
+  return false;
+}
 
 // 补发欢迎的去重窗口。只用来吸收「同一次进入触发多个 enter_session」这类抖动，
 // 不该拦住客户主动的再次扫码——原本设成 30 分钟，结果是第一次扫有招呼语、
@@ -762,6 +782,56 @@ async function sendText(cfg: WecomConfig, externalUserId: string, text: string, 
 }
 
 /**
+ * 发同意菜单（02 第 16 步，R23）：msgtype=msgmenu，head_content 是问句正文，两个按钮「同意」「不同意」，
+ * id 按 consentMenuButtonId 编码 category:decision，企微回传的 msgmenu_click 事件据它认出点的是哪个类别、哪个决定。
+ * 退避重试与账本记账同 sendText，只是单条、不分段（问句远小于 2048 字节上限）
+ */
+async function sendMenu(cfg: WecomConfig, externalUserId: string, headContent: string, category: SensitiveCategory): Promise<boolean> {
+  const entry = recordSend(SESSION_PREFIX + externalUserId, 'menu', null);
+  let outcome: SendResult | null = null;
+  let errcode: number | undefined;
+  let lastErr = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 800 * attempt));
+    entry.attempt();
+    try {
+      const data = await callApi<{ errcode?: number; errmsg?: string }>(cfg, 'kf/send_msg', {
+        touser: externalUserId,
+        open_kfid: cfg.openKfId,
+        msgid: entry.msgid,
+        msgtype: 'msgmenu',
+        msgmenu: {
+          head_content: headContent,
+          list: [
+            { type: 'click', click: { id: consentMenuButtonId(category, 'granted'), content: '同意' } },
+            { type: 'click', click: { id: consentMenuButtonId(category, 'declined'), content: '不同意' } },
+          ],
+        },
+      });
+      if (!data.errcode) {
+        outcome = 'accepted';
+        lastErr = '';
+        break;
+      }
+      lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+      errcode = data.errcode;
+      if (outcome !== 'unknown') outcome = 'rejected';
+      if (data.errcode !== 45009 && data.errcode !== -1) break;
+    } catch (e) {
+      lastErr = String(e);
+      if (!(e instanceof TokenError)) {
+        outcome = 'unknown';
+        entry.unknown();
+      }
+    }
+  }
+  if (outcome === null) entry.discard();
+  else entry.settle(outcome, outcome === 'accepted' ? undefined : errcode);
+  if (lastErr) console.error(`[wecom] 同意菜单 send_msg 最终失败（已重试）: ${lastErr}`);
+  return outcome === 'accepted';
+}
+
+/**
  * 客户进入会话、尚未发消息时（send_msg 的 48h 窗口未开），用事件的 welcome_code
  * 经 send_msg_on_event 发欢迎语。code 20 秒内单次有效，须尽快调用。
  */
@@ -769,7 +839,7 @@ async function sendWelcomeOnEvent(cfg: WecomConfig, code: string): Promise<void>
   const data = await callApi<{ errcode?: number; errmsg?: string }>(cfg, 'kf/send_msg_on_event', {
     code,
     msgtype: 'text',
-    text: { content: WELCOME_TEXT },
+    text: { content: withPrivacyLink(WELCOME_TEXT) },
   });
   if (data.errcode) {
     console.error(`[wecom] send_msg_on_event 失败: errcode=${data.errcode} ${data.errmsg ?? ''}`);
@@ -849,6 +919,43 @@ function isSendFail(msg: KfMessage): boolean {
   return msg.origin === 4 && msg.msgtype === 'event' && msg.event?.event_type === 'msg_send_fail';
 }
 
+/**
+ * 客户点了同意菜单（02 第 16 步，R23）：企微发来的是一条普通文本消息，按钮 id 在 text.menu_id（官方文档「接收消息」，
+ * 没有单独的 msgmenu_click 事件——此前按事件类型判是按文档标题猜的，没有真实测试号核对，这次照原文改正）
+ */
+function isMenuClick(msg: KfMessage): boolean {
+  return msg.msgtype === 'text' && msg.text?.menu_id != null;
+}
+
+/**
+ * 客户点了同意菜单：按 text.menu_id 解析出类别与决定，记一条同意记录（已经有结论的类别忽略，防止旧菜单被重复点）。
+ * 「不同意」转人工且发一句确认（kind='notice'，不占 AI 回复的身份）；「同意」不转人工、不用额外回一句。
+ * 这条点击消息本身不是客户话语，不进会话记录、不进引擎——menu_id 已经是结构化的决定，没有要模型理解的内容；
+ * 只有「不同意」时才追加一条 agent 消息（下面的确认回复），客户这次点击在会话里的留痕就是那条确认回复本身（最小做法）。
+ * 没有会话（客户只点过菜单、从没发过消息，几乎不会发生）时什么都不做
+ */
+async function handleMenuClick(cfg: WecomConfig, msg: KfMessage): Promise<void> {
+  const notice = currentPrivacyNotice();
+  if (!notice) return;
+  const parsed = parseConsentMenuId(msg.text?.menu_id);
+  if (!parsed) return;
+  const uid = msg.external_userid;
+  const s = uid ? getSession(SESSION_PREFIX + uid) : undefined;
+  if (!s) return;
+  const evidence = msg.text?.content || msg.text?.menu_id || '';
+  const applied = applyConsentDecision(s, parsed.category, parsed.decision, evidence, notice.version);
+  if (!applied) return;
+  saveSession(s);
+  if (parsed.decision !== 'declined') return;
+  const ok = await sendText(cfg, uid!, CONSENT_DECLINED_REPLY, { kind: 'notice', message: null });
+  if (ok) {
+    s.messages.push({ role: 'agent', content: CONSENT_DECLINED_REPLY, at: Date.now() });
+    saveSession(s);
+  } else {
+    console.warn(`[wecom] 不同意的确认没送达（会话 ${convLabel(s.id)}）`);
+  }
+}
+
 /** 客户进入会话事件：发欢迎语（本账号 API 托管，微信自带欢迎语不生效）。调用方已去重 */
 async function handleEnterSession(cfg: WecomConfig, msg: KfMessage): Promise<void> {
   if (!msg.event) return;
@@ -870,7 +977,7 @@ async function handleEnterSession(cfg: WecomConfig, msg: KfMessage): Promise<voi
       if (Date.now() - last > WELCOME_DEDUPE_MS) {
         welcomeBackAt.set(uid, Date.now());
         const sess = getSession(SESSION_PREFIX + uid);
-        const text = sess?.messages?.length ? WELCOME_BACK_TEXT : WELCOME_TEXT;
+        const text = withPrivacyLink(sess?.messages?.length ? WELCOME_BACK_TEXT : WELCOME_TEXT);
         // 账本里记 welcome、message_seq 为空（spec）；还没有会话时这一行单独一个短事务（db 存储）
         const ok = await sendText(cfg, uid, text, { kind: 'welcome', message: null });
         console.log(`[wecom] enter_session 无 welcome_code，已补发欢迎（send_msg，${ok ? '成功' : '失败'}）`);
@@ -909,7 +1016,7 @@ type Dedupe = { kind: 'fresh' } | { kind: 'recorded' } | { kind: 'resend'; messa
 function dedupeFor(sessionId: string, msg: KfMessage, replay: boolean): Dedupe {
   const s = getSession(sessionId);
   if (!s) return { kind: 'fresh' };
-  const talk = s.messages.filter((m) => m.role !== 'system' && !(m.role === 'agent' && WELCOME_TEXTS.has(m.content)));
+  const talk = s.messages.filter((m) => m.role !== 'system' && !(m.role === 'agent' && isWelcomeText(m.content)));
   const isAiReply = (m: ChatMessage | undefined): m is ChatMessage => m?.role === 'agent' && (m.author === undefined || m.author === 'ai');
   // 情况 4 的补发不看转人工（安全网那一轮的回复照样补发），但顾问已经接手的不补：接手代次只在进程内，上一个进程里适配器因为接手
   // 没发的那条，重启之后会被当成「没送出」再发一遍（02 第 13 步，不变量 28）
@@ -1016,7 +1123,7 @@ async function handleCustomerMessageInner(cfg: WecomConfig, msg: KfMessage, repl
     });
   }
   const t0 = Date.now();
-  console.log(`[wecom] ${replay ? '重放' : '收到'}客户消息: "${msg.text.content.slice(0, 40)}"`);
+  console.log(`[wecom] ${replay ? '重放' : '收到'}客户消息: "${logQuote(msg.text.content)}"`);
   // 不发「稍等」占位：几秒延迟本就像真人顾问在查资料，逐条占位反而更显机械。
   try {
     const dedupe = dedupeFor(sessionId, msg, replay);
@@ -1191,6 +1298,15 @@ async function drainMessages(cfg: WecomConfig, syncToken?: string): Promise<void
       // 不进在途表：它不是客户消息，放进去会被当成非文本客户消息、给客户发一条引导
       if (isSendFail(msg)) {
         if (markHandled(msg.msgid) && msg.event?.fail_msgid) onSendFail(msg.event.fail_msgid, Number(msg.event.fail_type ?? 0));
+        continue;
+      }
+      // 同意菜单的点击（02 第 16 步）：普通文本消息但带 menu_id，不当成客户话语处理、不进在途表
+      // （丢了至多少记一次同意，不影响对话主链路）
+      if (isMenuClick(msg)) {
+        if (markHandled(msg.msgid)) {
+          const uid = msg.external_userid || msg.msgid;
+          enqueueForUser(uid, () => handleMenuClick(cfg, msg));
+        }
         continue;
       }
       const welcome = isEnterSession(msg);
@@ -1368,6 +1484,8 @@ export const wecomAdapter: ChannelAdapter = {
       return false;
     }
     const uid = sessionId.slice(SESSION_PREFIX.length);
+    // 同意菜单（02 第 16 步）：原生 msgmenu，带「同意」「不同意」两个按钮；没有 category 时退化成普通文本（不该发生）
+    if (opts?.kind === 'menu' && opts.category) return sendMenu(cfg, uid, formatForWecom(cfg, text), opts.category);
     return sendRich(cfg, uid, formatForWecom(cfg, text), { kind: opts?.kind ?? 'notice', message: opts?.message ?? null });
   },
 };

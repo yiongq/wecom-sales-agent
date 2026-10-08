@@ -34,6 +34,11 @@ export interface BootDeps {
    * startAlerts；推送只在后台，不阻塞启动
    */
   startAlerts?(): void;
+  /**
+   * 隐私说明（02 spec「隐私说明…」，R23）：initConfig 成功之后读进内存、起 60 秒后台轮询；文件配置模式什么都不做。
+   * 失败只记日志（先当没发布过），不影响启动
+   */
+  startPrivacy?(): Promise<void>;
 }
 
 export async function boot(d: BootDeps): Promise<void> {
@@ -47,6 +52,8 @@ export async function boot(d: BootDeps): Promise<void> {
     d.exit(1);
     return;
   }
+  // 隐私说明不影响启动：读不到就先当没发布过，60 秒后台轮询会再试
+  await d.startPrivacy?.();
   try {
     await d.initSessionStore();
   } catch (e) {

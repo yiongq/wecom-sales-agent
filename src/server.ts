@@ -67,6 +67,7 @@ import { profile } from './profile.js';
 import { paymentMode } from './payment/mode.js';
 import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
 import { boot } from './boot.js';
+import { currentPrivacyNotice, escapeHtml, initPrivacy, startPrivacyPoll } from './privacy/privacy.js';
 import { startOtelExport } from './ops/otel.js';
 import {
   catalogVersioned,
@@ -865,6 +866,19 @@ app.get('/kf-qr.png', async (c) => {
   }
 });
 
+// 隐私说明（02 spec「隐私说明、敏感信息同意、保留期与行权」，R23）：公开、匿名可读，纯文本从内存取（不查库，不变量 9）。
+// 没发布过（文件配置模式、db 模式但这个租户还没发布过）404；no-store：重新发布之后立刻看得到新版本，不被缓存挡住
+app.get('/privacy', (c) => {
+  const notice = currentPrivacyNotice();
+  if (!notice) return c.notFound();
+  c.header('Cache-Control', 'no-store');
+  return c.html(
+    `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<title>隐私说明</title></head><body><pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit;line-height:1.6">` +
+      `${escapeHtml(notice.body)}</pre></body></html>`,
+  );
+});
+
 // 后台接口与后台前端（01 spec「后台 API 与页面」「构建与部署」）：都注册在 serveStatic 兜底之前。
 // 子应用自己兜住没匹配上的 /api/console/*（JSON，不是 index.html）；/console/* 的 SPA 回退只管 /console 下面
 app.route('/', consoleApi);
@@ -992,5 +1006,10 @@ if (!SELFTEST) {
     startOtel: startOtelExport,
     // 告警（02 spec R24）：起企微之后挂上各处的订阅，推送只在后台
     startAlerts,
+    // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
+    startPrivacy: async () => {
+      await initPrivacy();
+      startPrivacyPoll();
+    },
   });
 }
