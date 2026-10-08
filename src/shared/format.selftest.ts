@@ -22,6 +22,7 @@ import {
   monthRangeText,
   monthSegments,
   parseMonthRange,
+  percent,
   quantity,
   relativeTime,
   weekday,
@@ -59,6 +60,8 @@ eq('金额：行业包的单位', [money(13800, '元/人'), money(1280, '元/㎡
 eq('金额：写不出来', money(Number.NaN), '—');
 eq('带单位的整数', [quantity(8, '天'), quantity(4700, '米'), quantity(60, '㎡')], ['8天', '4,700米', '60㎡']);
 check('金额：不出现「¥」和空格', ![money(42800), money(13800, '元/人')].some((s) => /[¥\s]/.test(s)));
+eq('百分比：四舍五入成整数', [percent(0.12), percent(0.125), percent(0), percent(1)], ['12%', '13%', '0%', '100%']);
+eq('百分比：写不出来', [percent(Number.NaN), percent(Number.POSITIVE_INFINITY)], ['—', '—']);
 
 // ---------------- 2. 时间 ----------------
 

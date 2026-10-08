@@ -3,6 +3,7 @@
 // 行业相关的词（实体名、字段名、阶段名、客户的叫法）不在这里，都来自行业包（src/shared/pack.ts）。
 // 这里的字符串会显示在后台上，也是 UI 优先片的用字来源（scripts/fonts/ui-text.ts）：改了文案要重跑 scripts/fonts/build.ts。
 import type { ApiError, Role, ViolationCode } from './console-api.js';
+import { QUOTA_EXHAUSTED_TEXT, WINDOW_CLOSED_TEXT } from './conversation-types.js';
 import type { IndustryPack } from './pack.js';
 
 // ---------------- 角色 ----------------
@@ -99,12 +100,12 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'order.confirm': { label: '确认价格', group: 'conversation', icon: 'badge-check' },
   'order.mark_paid': { label: '确认收款', group: 'conversation', icon: 'banknote' },
   'order.cancel': { label: '取消订单', group: 'conversation', icon: 'circle-x' },
-  // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。界面上的叫法「快捷回复」用到的字还不在 UI 优先片里，
-  // 第 22 步画管理抽屉时重切字体再改；这里先写「常用回复」
-  'quick_reply.create': { label: '新建常用回复', group: 'conversation', icon: 'message-square-plus' },
-  'quick_reply.update': { label: '修改常用回复', group: 'conversation', icon: 'square-pen' },
-  'quick_reply.archive': { label: '收起常用回复', group: 'conversation', icon: 'archive' },
-  'quick_reply.move': { label: '移动常用回复', group: 'conversation', icon: 'arrow-up-down' },
+  // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。第 13 步先写「常用回复」（那时「快捷」两字
+  // 还不在 UI 优先片里）；J 页右栏卡片标题（第 20.2 步）已经用上「快捷回复」，字已经在优先片里了，这里改回 spec 原词
+  'quick_reply.create': { label: '新建快捷回复', group: 'conversation', icon: 'message-square-plus' },
+  'quick_reply.update': { label: '修改快捷回复', group: 'conversation', icon: 'square-pen' },
+  'quick_reply.archive': { label: '收起快捷回复', group: 'conversation', icon: 'archive' },
+  'quick_reply.move': { label: '移动快捷回复', group: 'conversation', icon: 'arrow-up-down' },
   // 02 spec「隐私说明、敏感信息同意、保留期与行权」（第 16 步）：发布说明、设保留期是平台命令行；行权删除与保留期清理
   // 不存会话 id（只有条数），归「平台与配置」。「隐私」的「私」不在 UI 优先片里，这几条的字都是已在片里的
   'privacy.publish': { label: '发布须知', group: 'platform', icon: 'shield-check' },
@@ -229,6 +230,27 @@ export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
   not_found: { title: '没有这项内容：可能已被删除或地址写错了', next: '回到列表', place: 'whole', tone: 'neutral', action: 'back' },
   /** 02 spec「后台页面」J 页：会话过了保留期、被删除或不是本租户的（第 19 步，占位的 J 页先接住这一个错误码） */
   conversation_not_found: { title: '这个会话已经不在了', next: '回到列表', place: 'whole', tone: 'neutral', action: 'back' },
+  // 02 第 20.2 步新增（J 页：接手、交还、人工回复、订单动作）。assigneeName／closesAt／remaining／status 取自
+  // ApiError 的同名字段（服务端 mapError 填的），不是服务端的 detail（不变量 8）
+  assigned_to_other: {
+    title: (b) => `${b.assigneeName ?? '别人'}正在处理这个会话`,
+    next: null,
+    place: 'inline',
+    tone: 'neutral',
+  },
+  not_assignee: { title: '只有接手人本人能做这件事', next: null, place: 'inline', tone: 'caution' },
+  consent_declined: { title: '客户没有同意，不能交给AI', next: null, place: 'inline', tone: 'neutral' },
+  // 字面直接引用 src/quota/ledger.ts 给顾问看的同一句话（经 conversation-types.ts 转手），不手写一份措辞不同的文案
+  send_window_closed: { title: WINDOW_CLOSED_TEXT, next: null, place: 'inline', tone: 'caution' },
+  send_quota_exhausted: { title: QUOTA_EXHAUSTED_TEXT, next: null, place: 'inline', tone: 'caution' },
+  order_state: {
+    title: (b) => (b.status === 'unconfirmed' ? '还没确认价格，不能确认收款' : '这个操作对当前订单状态不适用'),
+    next: null,
+    place: 'inline',
+    tone: 'caution',
+  },
+  store_file_mode: { title: '这项内容只在数据库模式下可用', next: null, place: 'inline', tone: 'neutral' },
+  store_lagging: { title: '已生效，记录稍后保存', next: null, place: 'inline', tone: 'neutral' },
   conflict: { title: '刚才有人同时在改', next: '刷新后重来', place: 'banner', tone: 'danger', action: 'refresh' },
   bad_request: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },
   unsupported_media_type: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },

@@ -45,8 +45,19 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['invalid_sop', 422, '无法保存这份话术：格式不对', '撤回刚才的改动再试', 'danger', 'banner'],
   ['locked_section', 422, '固定规则节不能改', '撤回这一节的改动', 'danger', 'banner'],
   ['not_found', 404, '没有这项内容：可能已被删除或地址写错了', '回到列表', 'neutral', 'whole'],
-  // 02 spec「后台接口」新错误码，第 19 步先接住 J 页占位用到的这一个（其余随第 20 步再加，见 plan 第 13 步「注意」）
+  // 02 spec「后台接口」新错误码，第 19 步先接住 J 页占位用到的这一个
   ['conversation_not_found', 404, '这个会话已经不在了', '回到列表', 'neutral', 'whole'],
+  // 02 第 20.2 步加的其余几个（接手、交还、人工回复、订单动作；assignedName／status 没传时按兜底文案算）
+  ['assigned_to_other', 409, '别人正在处理这个会话', null, 'neutral', 'inline'],
+  ['not_assignee', 409, '只有接手人本人能做这件事', null, 'caution', 'inline'],
+  ['consent_declined', 409, '客户没有同意，不能交给AI', null, 'neutral', 'inline'],
+  // 这两句字面抄 src/quota/ledger.ts 的 WINDOW_CLOSED_TEXT / QUOTA_EXHAUSTED_TEXT（经 conversation-types.ts），
+  // 与顾问在别处（消息下的送达说明、后台日志）看到的是同一句话，不是这里另写的
+  ['send_window_closed', 409, '客户超过 48 小时没说话，这条发不出去了', null, 'caution', 'inline'],
+  ['send_quota_exhausted', 409, '这一轮已经发满 5 条，等客户回复后才能再发', null, 'caution', 'inline'],
+  ['order_state', 409, '这个操作对当前订单状态不适用', null, 'caution', 'inline'],
+  ['store_file_mode', 503, '这项内容只在数据库模式下可用', null, 'neutral', 'inline'],
+  ['store_lagging', 503, '已生效，记录稍后保存', null, 'neutral', 'inline'],
   ['conflict', 409, '刚才有人同时在改', '刷新后重来', 'danger', 'banner'],
   ['bad_request', 400, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],
   ['unsupported_media_type', 415, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],

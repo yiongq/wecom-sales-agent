@@ -58,3 +58,18 @@ export interface SendWindow {
   /** max(0, 5 - used)；窗口已过为 0 */
   remaining: number;
 }
+
+// ---------------- 发送窗口与送达状态的固定文案（02 第 20.2 步挪到这里） ----------------
+// 原在 src/quota/ledger.ts（窗口关着、条数用完时给顾问看的说明，与 msg_send_fail 的 4、6 同一句）；J 页的消息也要显示同一句
+// 说明（MessageView.delivery），而 console/src 只能 import src/shared/（scripts/check-boundaries.ts），
+// 这几句纯文案挪到这里、ledger.ts 改为从这里 import 再原样 re-export，两边读的是同一份常量，不会各写一遍走样
+
+export const WINDOW_CLOSED_TEXT = '客户超过 48 小时没说话，这条发不出去了';
+export const QUOTA_EXHAUSTED_TEXT = '这一轮已经发满 5 条，等客户回复后才能再发';
+
+/** msg_send_fail 给会话加的说明（spec 原文：4 窗口过了、6 发满 5 条、其余带原因码） */
+export function sendFailText(failType: number): string {
+  if (failType === 4) return WINDOW_CLOSED_TEXT;
+  if (failType === 6) return QUOTA_EXHAUSTED_TEXT;
+  return `这条没送达（原因码 ${failType}）`;
+}

@@ -1,5 +1,6 @@
 // 快捷回复（02 spec「后台接口」、plan 第 22 步）：增改、归档、上下移；不删，归档后不再列出
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import type { QuickReplyDefault } from '../../shared/quick-reply-defaults.js';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { quickReplies } from '../schema.js';
 
@@ -29,9 +30,42 @@ export async function listQuickReplies(tx: Tx): Promise<QuickReplyRow[]> {
   return tx.select(columns).from(quickReplies).where(live).orderBy(asc(quickReplies.ord), asc(quickReplies.id));
 }
 
-/** 新建，排在最后 */
+/** 这个租户是不是一条快捷回复都没有过（含归档的，不止没归档的）：判断「空表」用（RLS 已经按租户过滤） */
+export async function anyQuickReplyRow(tx: Tx): Promise<boolean> {
+  const [row] = await tx
+    .select({ one: sql<number>`1` })
+    .from(quickReplies)
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * 这个租户的快捷回复写锁（事务级 advisory 锁，按租户区分，到提交自动放）：会按 max(ord) 分配新序号的两处写
+ * （首次写默认模板、新建）都要先抢它——不然两个各自的事务并发读到同一个 max(ord)，插出的新行就会撞号
+ * （第 22 步审查 major 第 1 条：5 个独立连接并发新建，没锁时全是 ord=0）
+ */
+async function lockQuickRepliesForWrite(tx: Tx): Promise<void> {
+  const { tenantId } = currentTenantCtx();
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`qr-write:${tenantId}`}, 0))`);
+}
+
+/**
+ * 新租户首次读到空表时，按行业包默认模板写入（没有默认模板时什么都不做）；只写一次：并发的几次首次读都会调它，
+ * 先抢写锁，拿到以后再确认一遍真的还是空表才插——抢不到锁的等到拿到时表已经不空，原样返回，不会插出两份。
+ * 调用方要用一条新的、可写的事务（listQuickReplies 的只读事务插不了）
+ */
+export async function ensureDefaultQuickReplies(tx: Tx, defaults: readonly QuickReplyDefault[]): Promise<void> {
+  if (defaults.length === 0) return;
+  const { tenantId } = currentTenantCtx();
+  await lockQuickRepliesForWrite(tx);
+  if (await anyQuickReplyRow(tx)) return;
+  await tx.insert(quickReplies).values(defaults.map((d, i) => ({ tenantId, ord: i, title: d.title, body: d.body, updatedByName: null })));
+}
+
+/** 新建，排在最后；先抢写锁再读 max(ord)，并发新建不会撞号 */
 export async function createQuickReply(tx: Tx, q: { title: string; body: string; byName: string | null }): Promise<QuickReplyRow> {
   const { tenantId } = currentTenantCtx();
+  await lockQuickRepliesForWrite(tx);
   const [max] = await tx.select({ n: sql<number>`coalesce(max(${quickReplies.ord}), -1)::int` }).from(quickReplies);
   const [row] = await tx
     .insert(quickReplies)

@@ -1,31 +1,39 @@
-// 总览（spec「逐页设计 · 总览（A 页）」，设计系统 §5.10、§5.11、§6.7、§10.2 A 页）：回答两个问题，现在要处理什么，业务怎么样。
-// 从上到下：需要你处理 → 系统状态 → 业务数 → 最近变更 / 客户停在哪一步。
-// - 只调现有接口和 spec 新增的两个只读接口；各块自己加载、自己出错，一块失败只有这一块写「没取到 · 重试」，其余照常。
+// 总览（spec「逐页设计 · 总览（A 页）」与 02 spec「后台页面 · 总览 A2」「可观测性与告警 · 运行数字」，
+// 设计系统 §5.10、§5.11、§6.7、§10.2 A 页与「02 后端到位后 · A2」）：回答两个问题，现在要处理什么，业务怎么样。
+// 从上到下：需要你处理（含 A2 的等人接手/已成交客户要人工/待付款 + 本月成交额）→ 运行数字 → 系统状态 → 业务数 →
+// 最近变更 / 客户停在哪一步。
+// - 只调现有接口和 spec 新增的只读接口；各块自己加载、自己出错，一块失败只有这一块写「没取到 · 重试」，其余照常。
 //   会话计数、各实体列表与外壳（侧栏徽标、铃铛、条目数）共用同一份缓存，页面可见时一起每 30 秒刷新；等人接手取的是
 //   最后动静最早的一页（与铃铛的首页不同），「需要你处理」与「等人接手」格共用它。
-// - 谁看得到什么：等人接手、系统状态、业务数、客户停在哪一步给成员；话术草稿、待上架与最近变更只给所有者、管理员
-//   （没有「最近变更」时右栏挪到左栏的位置，宽度不变）；demo 匿名只有页头下的横幅和「在售」一格。
-// - 界面不认行业：实体、阶段、话术节、叫法都取自行业包（model.ts）。A2（02 之后的等待时长、接手、待付款）不在这一步
-import { type UseQueryResult, useQueries, useQuery } from '@tanstack/react-query';
-import { Link } from '@tanstack/react-router';
-import { Alert } from 'antd';
-import { ArrowUpRight, ChevronRight, CircleAlert, CircleCheck, SquareTerminal } from 'lucide-react';
+// - 谁看得到什么：等人接手、已成交客户要人工、待付款、系统状态、业务数、客户停在哪一步给成员；话术草稿、待上架、
+//   最近变更、本月成交额、运行数字只给所有者、管理员（canEdit 同一条件，没有「最近变更」时右栏挪到左栏的位置，
+//   宽度不变）；运行数字文件存储下整块不画（503 store_file_mode）；demo 匿名只有页头下的横幅和「在售」一格。
+// - 「接手」按钮只给能处理会话的角色画（CAN_HANDLE_ROLES，与 J 页同一套）；viewer 看得到行但没有按钮。
+// - 界面不认行业：实体、阶段、话术节、叫法都取自行业包（model.ts）。
+import { type UseQueryResult, useMutation, useQueries, useQuery } from '@tanstack/react-query';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { Alert, Button } from 'antd';
+import { ArrowUpRight, ChevronRight, CircleAlert, CircleCheck, Clock, SquareTerminal, X } from 'lucide-react';
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { CatalogItem, ConversationRow, Status as SystemStatus } from '../../../src/shared/console-api.js';
+import { shortIdOf } from '../../../src/shared/conversation.js';
 import { dateWithWeekday, digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
-import { catalogKind } from '../api.js';
+import { api, catalogKind, HttpError, unwrap } from '../api.js';
+import { CAN_HANDLE_ROLES } from '../conversations/workbench.js';
+import { errorLine } from '../parts/ErrorAlert.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
 import { TechDetails } from '../parts/TechDetails.js';
-import { catalogListQuery, conversationCountsQuery } from '../queries.js';
+import { catalogListQuery, conversationCountsQuery, paidNeedsHumanQuery } from '../queries.js';
 import { useChangeFlash } from '../shell/hooks.js';
 import { Icon, navIcon } from '../shell/icons.js';
-import { avatarIndex, firstChar, packEntities, POLL, workbenchHref } from '../shell/model.js';
+import { avatarIndex, firstChar, packEntities, POLL } from '../shell/model.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { cjk, Sep } from '../typography.js';
 import { canEdit, usePack, useViewer } from '../viewer.js';
 import {
+  attentionTodos,
   catalogCounts,
   catalogTodos,
   type EntityList,
@@ -33,7 +41,10 @@ import {
   itemTitle,
   type Kpi,
   memberKpis,
+  metricsKpis,
+  monthlyRevenueKpi,
   type Segment,
+  type StaticKpi,
   sopTodo,
   stageRows,
   systemView,
@@ -42,9 +53,18 @@ import {
   todoCount,
   todoOrder,
   type TodoRow,
-  waitingTodos,
 } from './model.js';
-import { draftCheckQuery, latestPaidQuery, oldestWaitingQuery, recentAuditQuery, sopQuery, statusQuery } from './queries.js';
+import {
+  draftCheckQuery,
+  latestPaidQuery,
+  metricsQuery,
+  oldestWaitingQuery,
+  ordersSummaryQuery,
+  pendingOrdersQuery,
+  recentAuditQuery,
+  sopQuery,
+  statusQuery,
+} from './queries.js';
 
 type AnyQuery = Pick<UseQueryResult<unknown>, 'isPending' | 'isError' | 'error' | 'refetch'>;
 
@@ -104,14 +124,17 @@ function ConversationsLink({ children, state }: { children: string; state?: 'ai'
   );
 }
 
-/** 上下文或明细的几段，用 Sep 隔开；tone 为 danger 的那段用 danger 字，前面加 circle-alert */
+/**
+ * 上下文或明细的几段，用 Sep 隔开；tone 为 danger/warning 的那段用对应的字色，前面加图标（默认 circle-alert，
+ * A2 的等待时长用 clock——设计系统 A2：「都带钟表图标」）
+ */
 function Segments({ segments }: { segments: readonly Segment[] }) {
   return segments.map((s, i) => (
     <Fragment key={i}>
       {i > 0 && <Sep />}
-      {s.tone === 'danger' ? (
-        <span className="ov-danger">
-          <Icon of={CircleAlert} size={14} />
+      {s.tone ? (
+        <span className={s.tone === 'danger' ? 'ov-danger' : 'ov-warning'}>
+          <Icon of={s.icon === 'clock' ? Clock : CircleAlert} size={14} />
           {cjk(s.text)}
         </span>
       ) : (
@@ -123,9 +146,9 @@ function Segments({ segments }: { segments: readonly Segment[] }) {
 
 // ---------------- ① 需要你处理 ----------------
 
-function TodoLine({ row }: { row: TodoRow }) {
-  const external = row.target.kind === 'workbench';
-  const body = (
+/** 待办行共用的内容（图标、类型、标题与上下文）；操作一侧由调用方给（链接行用幽灵箭头，接手行是真的按钮） */
+function TodoBody({ row, action }: { row: TodoRow; action: ReactNode }) {
+  return (
     <>
       <span className="ov-todo-icon" aria-hidden="true">
         <Icon of={navIcon(row.icon)} />
@@ -139,20 +162,27 @@ function TodoLine({ row }: { row: TodoRow }) {
           </span>
         )}
       </span>
-      <span className="ov-todo-action">
-        {row.action}
-        <Icon of={external ? ArrowUpRight : ChevronRight} size={14} />
-      </span>
+      {action}
     </>
   );
+}
+
+/** 幽灵小按钮的操作（§5.1）：站内跳转用 chevron-right，没有「新标签打开」的情况了（原来的 admin.html 入口已经改走路由） */
+const GhostAction = ({ text }: { text: string }) => (
+  <span className="ov-todo-action">
+    {text}
+    <Icon of={ChevronRight} size={14} />
+  </span>
+);
+
+/**
+ * 整行是链接的待办：话术草稿、待上架、待付款（「打开会话」）、等人接手列不全时的「还有N个」。target 不是 takeover——
+ * 那一种由 TakeoverTodoLine 处理，TodoRowView 已经分好
+ */
+function TodoLine({ row }: { row: TodoRow }) {
+  const body = <TodoBody row={row} action={<GhostAction text={row.action} />} />;
   const t = row.target;
-  if (t.kind === 'workbench') {
-    return (
-      <a className="ov-todo" href={t.href} target="_blank" rel="noopener noreferrer">
-        {body}
-      </a>
-    );
-  }
+  if (t.kind === 'takeover') return null;
   if (t.kind === 'sop') {
     return (
       <Link to="/sop" className="ov-todo">
@@ -163,6 +193,13 @@ function TodoLine({ row }: { row: TodoRow }) {
   if (t.kind === 'conversations') {
     return (
       <Link to="/conversations" search={{ state: t.state }} className="ov-todo">
+        {body}
+      </Link>
+    );
+  }
+  if (t.kind === 'open') {
+    return (
+      <Link to="/conversations/$id" params={{ id: t.id }} className="ov-todo">
         {body}
       </Link>
     );
@@ -179,6 +216,105 @@ function TodoLine({ row }: { row: TodoRow }) {
     <Link to="/catalog/$kind" params={{ kind: catalogKind(t.entity) }} search={{ status: 'draft' }} className="ov-todo">
       {body}
     </Link>
+  );
+}
+
+/** 服务端错误就地显示（WorkbenchPage.tsx 同名私有组件的同一份写法：标题 · 下一步，没有对应回调时只写标题） */
+function InlineError({ error }: { error: unknown }) {
+  if (error === null || error === undefined) return null;
+  const { text } = errorLine(error, {});
+  return <p className="ov-todo-error">{text}</p>;
+}
+
+/**
+ * 等人接手、已成交客户要人工：次要小按钮「接手」（设计系统 A2），不是整行链接——点击真的调用接手接口，
+ * 成功后才打开 J 页；409（如 assigned_to_other）就地说明，不丢弹窗（brief「范围」：接手 409 时就地说明）。
+ * 只给能处理会话的角色画按钮（CAN_HANDLE_ROLES 同一套权限，J 页也是这样判断要不要画「接手会话」）；
+ * viewer 看得到这一行，但没有按钮——403 真发生不了，不用等服务端拒绝才知道。
+ * 接手的请求与它的错误状态提到 TodoBlock 一级（见那边的注释）：两个成员停在同一行时，A 接手成功、B 这边的事件流
+ * 几十毫秒内就会让列表重取、这一行从 DOM 里卸载，B 随后收到的 409 不能跟着这一行一起消失（审查 major）
+ */
+function TakeoverTodoLine({
+  row,
+  canHandle,
+  pending,
+  error,
+  onTakeover,
+}: {
+  row: TodoRow;
+  canHandle: boolean;
+  pending: boolean;
+  error: unknown;
+  onTakeover(id: string): void;
+}) {
+  if (row.target.kind !== 'takeover') return null;
+  const id = row.target.id;
+  return (
+    <>
+      <div className="ov-todo ov-todo-static">
+        <TodoBody
+          row={row}
+          action={
+            canHandle ? (
+              <span className="ov-todo-action-btn">
+                <Button size="small" onClick={() => onTakeover(id)} loading={pending}>
+                  {row.action}
+                </Button>
+              </span>
+            ) : null
+          }
+        />
+      </div>
+      <InlineError error={error} />
+    </>
+  );
+}
+
+/** 一行待办：接手行用 TakeoverTodoLine（真按钮，状态从 TodoBlock 传下来），其余整行是链接 */
+function TodoRowView({
+  row,
+  canHandle,
+  pendingId,
+  takeoverErrors,
+  onTakeover,
+}: {
+  row: TodoRow;
+  canHandle: boolean;
+  pendingId: string | null;
+  takeoverErrors: Readonly<Record<string, unknown>>;
+  onTakeover(id: string): void;
+}) {
+  if (row.target.kind === 'takeover') {
+    const id = row.target.id;
+    return (
+      <TakeoverTodoLine
+        row={row}
+        canHandle={canHandle}
+        pending={pendingId === id}
+        error={Object.hasOwn(takeoverErrors, id) ? takeoverErrors[id] : null}
+        onTakeover={onTakeover}
+      />
+    );
+  }
+  return <TodoLine row={row} />;
+}
+
+/** 接手的就地说明过了这么久自动清掉（没清掉之前点「关掉」也能清，见 TakeoverErrorBanner） */
+const TAKEOVER_ERROR_TTL_MS = 6000;
+
+/**
+ * 接手请求结束时这一行已经不在列表里了：说明跟着行一起消失就没地方看了，挪到「需要你处理」区块顶部，写上会话短码
+ * 分辨是哪一条（审查 major：行可能已经被别的成员接手走、从列表里刷掉）。几秒后自动清掉，也能手动关掉
+ */
+function TakeoverErrorBanner({ id, error, onDismiss }: { id: string; error: unknown; onDismiss(): void }) {
+  const { text } = errorLine(error, {});
+  return (
+    <p className="ov-todos-banner-item" role="alert">
+      {cjk(`${shortIdOf(id)}：${text}`)}
+      <button type="button" className="ov-todos-banner-close" onClick={onDismiss} aria-label="关掉这条说明">
+        <Icon of={X} size={14} />
+      </button>
+    </p>
   );
 }
 
@@ -203,16 +339,58 @@ function TodoSkeleton({ rows = 3 }: { rows?: number }) {
 /** 待办迟迟不落定时，下面的块最多等这么久就显示（见 OverviewPage） */
 export const TODO_WAIT_MS = 1000;
 
-function TodoBlock({ pack, editor, now, onSettled }: { pack: IndustryPack; editor: boolean; now: number; onSettled(): void }) {
+function TodoBlock({
+  pack,
+  editor,
+  canHandle,
+  now,
+  onSettled,
+}: {
+  pack: IndustryPack;
+  editor: boolean;
+  canHandle: boolean;
+  now: number;
+  onSettled(): void;
+}) {
+  const navigate = useNavigate();
+  // 接手的请求与错误状态提到这一级（不是每行自己的 useMutation）：行可能在请求结束之前就被事件流触发的重取刷掉
+  // （另一个成员先接手成功），这时错误要挪到区块顶部显示，不能跟着卸载的行一起消失（见上面 TakeoverErrorBanner 的注释）
+  const [takeoverErrors, setTakeoverErrors] = useState<Record<string, unknown>>({});
+  const clearTakeoverError = useCallback((id: string) => {
+    setTakeoverErrors((m) => {
+      if (!Object.hasOwn(m, id)) return m;
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
+  }, []);
+  const takeover = useMutation({
+    mutationFn: (id: string) => unwrap(api.conversations[':id'].takeover.$post({ param: { id }, json: {} })),
+    onSuccess: (_data, id) => {
+      clearTakeoverError(id);
+      void navigate({ to: '/conversations/$id', params: { id } });
+    },
+    onError: (error, id) => {
+      setTakeoverErrors((m) => ({ ...m, [id]: error }));
+      setTimeout(() => clearTakeoverError(id), TAKEOVER_ERROR_TTL_MS);
+    },
+  });
+  const onTakeover = useCallback((id: string) => takeover.mutate(id), [takeover]);
+  const pendingId = takeover.isPending ? takeover.variables : null;
+
   const waiting = useQuery({ ...oldestWaitingQuery, ...POLL });
+  const paidNeedsHuman = useQuery({ ...paidNeedsHumanQuery, ...POLL });
+  const pendingOrders = useQuery({ ...pendingOrdersQuery, ...POLL });
   const sop = useQuery({ ...sopQuery, enabled: editor });
   const overview = sop.data && 'spec' in sop.data ? sop.data : null;
   const draft = overview?.draft ?? null;
   const check = useQuery({ ...draftCheckQuery(draft?.id ?? '', draft?.rev ?? 0), enabled: editor && draft !== null });
   const { lists, loaded } = useEntityLists(pack, editor);
-  // 有几行在等人接手、话术、各实体列表回来以后就定了；发布前检查要等话术回来才发，它只往话术那一行里补字，不加行
-  const counted = sourcesState([waiting, ...(editor ? [sop, ...lists] : [])]);
-  const { loading, error, retry } = sourcesState([waiting, ...(editor ? [sop, ...(draft ? [check] : []), ...lists] : [])]);
+  // 有几行在等人接手、已成交客户要人工、待付款、话术、各实体列表回来以后就定了；发布前检查要等话术回来才发，
+  // 它只往话术那一行里补字，不加行
+  const base = [waiting, paidNeedsHuman, pendingOrders];
+  const counted = sourcesState([...base, ...(editor ? [sop, ...lists] : [])]);
+  const { loading, error, retry } = sourcesState([...base, ...(editor ? [sop, ...(draft ? [check] : []), ...lists] : [])]);
   const known = !counted.loading && counted.error === null;
   // 行数定了（或整块落定、出错）在画出来之前告诉页面，下面的块这一帧出现；还在等检查的话，骨架按真实的行数画，检查回来不挪位
   useLayoutEffect(() => {
@@ -220,44 +398,94 @@ function TodoBlock({ pack, editor, now, onSettled }: { pack: IndustryPack; edito
   }, [known, loading, onSettled]);
 
   const rows = todoOrder(
-    waitingTodos(waiting.data?.items ?? [], pack, now, workbenchHref, waiting.data?.total),
+    attentionTodos(
+      waiting.data?.items ?? [],
+      paidNeedsHuman.data?.items ?? [],
+      pendingOrders.data?.items ?? [],
+      pendingOrders.data?.paymentMode ?? 'online',
+      pack,
+      now,
+      waiting.data?.total,
+    ),
     editor && overview ? sopTodo(overview, check.data, pack) : null,
     editor ? catalogTodos(loaded, now) : [],
   );
+  // 还在列表里的接手行 id：不在其中的错误（行已经被重取刷掉）挪到区块顶部显示，见 TakeoverErrorBanner
+  const presentTakeoverIds = new Set(rows.flatMap((r) => (r.target.kind === 'takeover' ? [r.target.id] : [])));
+  const orphanedErrors = Object.entries(takeoverErrors).filter(([id]) => !presentTakeoverIds.has(id));
   return (
     <section className="ov-block" aria-labelledby="ov-todos">
-      <BlockHead
-        id="ov-todos"
-        title="需要你处理"
-        count={loading ? null : `${todoCount(rows)}项`}
-        link={<ConversationsLink>全部会话</ConversationsLink>}
-      />
-      {loading ? (
-        <TodoSkeleton rows={known ? Math.max(rows.length, 1) : undefined} />
-      ) : (
-        <>
-          {error !== null && <StateView error={error} onRetry={retry} />}
-          {rows.length > 0 ? (
-            <ul className="ov-todos">
-              {rows.map((row) => (
-                <li key={row.key}>
-                  <TodoLine row={row} />
-                </li>
+      <div className="ov-todos-row">
+        <div className="ov-todos-col">
+          <BlockHead
+            id="ov-todos"
+            title="需要你处理"
+            count={loading ? null : `${todoCount(rows)}项`}
+            link={<ConversationsLink>全部会话</ConversationsLink>}
+          />
+          {orphanedErrors.length > 0 && (
+            <div className="ov-todos-banner">
+              {orphanedErrors.map(([id, err]) => (
+                <TakeoverErrorBanner key={id} id={id} error={err} onDismiss={() => clearTakeoverError(id)} />
               ))}
-            </ul>
-          ) : (
-            error === null && (
-              <EmptyBlock
-                title="没有要处理的事"
-                description={
-                  editor ? '有等人接手的会话、没发布的话术草稿或待上架的草稿时，会列在这里。' : '有等人接手的会话时，会列在这里。'
-                }
-              />
-            )
+            </div>
           )}
-        </>
-      )}
+          {loading ? (
+            <TodoSkeleton rows={known ? Math.max(rows.length, 1) : undefined} />
+          ) : (
+            <>
+              {error !== null && <StateView error={error} onRetry={retry} />}
+              {rows.length > 0 ? (
+                <ul className="ov-todos">
+                  {rows.map((row) => (
+                    <li key={row.key}>
+                      <TodoRowView
+                        row={row}
+                        canHandle={canHandle}
+                        pendingId={pendingId}
+                        takeoverErrors={takeoverErrors}
+                        onTakeover={onTakeover}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                error === null && (
+                  <EmptyBlock
+                    title="没有要处理的事"
+                    description={
+                      editor
+                        ? '有等人接手的会话、已成交客户要人工、待付款的订单、没发布的话术草稿或待上架的草稿时，会列在这里。'
+                        : '有等人接手的会话、已成交客户要人工或待付款的订单时，会列在这里。'
+                    }
+                  />
+                )
+              )}
+            </>
+          )}
+        </div>
+        {editor && <MonthlyRevenueTile />}
+      </div>
     </section>
+  );
+}
+
+/** 「本月成交额（元）」KPI 格（02 spec「总览 A2」）：只给所有者、管理员，自己的加载/出错状态，不挡「需要你处理」落定 */
+function MonthlyRevenueTile() {
+  const q = useQuery({ ...ordersSummaryQuery, ...POLL });
+  return (
+    <div className="ov-todos-kpi">
+      {q.isError ? (
+        <StateView error={q.error} onRetry={() => void q.refetch()} />
+      ) : !q.data ? (
+        <div className="ov-kpi ov-kpi-skeleton state-skeleton" role="status" aria-label="正在载入">
+          <span className="skeleton-bar" />
+          <span className="skeleton-bar" />
+        </div>
+      ) : (
+        <StaticKpiTile kpi={monthlyRevenueKpi(q.data)} />
+      )}
+    </div>
   );
 }
 
@@ -365,6 +593,48 @@ function KpiGrid({ kpis }: { kpis: readonly Kpi[] }) {
         <KpiTile key={k.key} kpi={k} />
       ))}
     </div>
+  );
+}
+
+/**
+ * 不点了去哪里的 KPI 格（02 spec：A2「本月成交额」与「可观测性与告警 · 运行数字」都没给「点了去」）：同一套视觉
+ * （§5.10），少了链接的悬停箭头。没有数据的格写「—」（StaticKpi.value 已经是格式化好的字符串）
+ */
+function StaticKpiTile({ kpi }: { kpi: StaticKpi }) {
+  return (
+    <div className="ov-kpi ov-kpi-static">
+      <span className="ov-kpi-label">{kpi.label}</span>
+      <span className="ov-kpi-value">{kpi.value}</span>
+      <span className="ov-kpi-caption">{cjk(kpi.caption)}</span>
+      {kpi.breakdown && <span className="ov-kpi-detail">{cjk(kpi.breakdown)}</span>}
+    </div>
+  );
+}
+
+/**
+ * 运行数字四格（02 spec「可观测性与告警 · 运行数字」）：只给所有者、管理员（editor，与 canSeeMoney 同一条件），
+ * 文件存储下 /metrics 回 503 store_file_mode，这时整块不画（不是写「没取到」）；其余出错就地重试；加载用格子骨架；
+ * 403（坐席等）本来就不该发这个请求，enabled 已经按 editor 挡住
+ */
+function MetricsBlock({ editor }: { editor: boolean }) {
+  const q = useQuery({ ...metricsQuery, ...SHARED, enabled: editor });
+  if (!editor) return null;
+  const fileMode = q.error instanceof HttpError && q.error.body.error === 'store_file_mode';
+  if (fileMode) return null;
+  return (
+    <section className="ov-block ov-kpi-block ov-metrics-block" aria-label="运行数字">
+      {q.isError ? (
+        <StateView error={q.error} onRetry={() => void q.refetch()} />
+      ) : !q.data ? (
+        <KpiSkeleton n={4} />
+      ) : (
+        <div className="ov-kpis">
+          {metricsKpis(q.data).map((k) => (
+            <StaticKpiTile key={k.key} kpi={k} />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -579,11 +849,13 @@ export function OverviewPage() {
     );
   }
   const editor = canEdit(viewer);
+  const canHandle = CAN_HANDLE_ROLES.has(viewer.me.role);
   return (
     <>
       {/* 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔 */}
       <PageHeader title="总览" status={<span>{cjk([viewer.me.tenantName, date])}</span>} />
-      <TodoBlock pack={pack} editor={editor} now={now} onSettled={showBelow} />
+      <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} onSettled={showBelow} />
+      <MetricsBlock editor={editor} />
       <div className={below ? 'ov-below' : 'ov-below is-waiting'}>
         <SystemBlock pack={pack} />
         <MemberKpis pack={pack} editor={editor} now={now} />

@@ -12,7 +12,7 @@ import type { ConversationCounts, ConversationDetail, ConversationRow, MessageVi
 import { conversationState, needParts, needSummary, paidNeedsHuman, type NeedVocabulary } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { cleanText } from '../shared/text.js';
-import { getOrder, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
+import { getOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
 import type { ChatMessage, MessageAuthor, Order, Session } from '../types.js';
 import { maskNumbers } from './mask.js';
 
@@ -43,6 +43,15 @@ function lastCustomerAt(s: Session): string | null {
   return null;
 }
 
+/**
+ * 排序用的金额（02 第 21 步新增，02 spec「总览 A2」）：这个会话待付款订单的总价，没有就用最近报价的总价，都没有为 null。
+ * 不对客、不进任何正文，只给 A2「需要你处理」按「金额高的在前」排序用
+ */
+function conversationAmount(s: Session): number | null {
+  const pending = s.orderIds.map((id) => getOrder(id)).find((o): o is Order => !!o && o.status === 'pending_payment');
+  return pending ? pending.totalPrice : (s.lastQuote?.total ?? null);
+}
+
 /** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像。viewer 的转人工原因也要打码（不变量 47） */
 export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationRow => ({
   id: s.id,
@@ -57,6 +66,7 @@ export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boole
     ? { kind: s.handoff.kind, at: iso(s.handoff.at), reason: viewer ? maskNumbers(s.handoff.reason) : s.handoff.reason }
     : null,
   lastCustomerAt: lastCustomerAt(s),
+  amount: conversationAmount(s),
 });
 
 /** 01 的顺序：(updatedAt desc, id) */
@@ -148,6 +158,16 @@ export const windowTurnIds = (s: Session): string[] =>
     return t ? [t] : [];
   });
 
+/**
+ * 订单所属会话的最小投影（A2「待付款」行用）：会话被清除（第 16 步之后才会出现）时为 null。不带短码——
+ * console 一侧 conversationLabel(row, pack) 已经会从 id 现算 shortIdOf，这里重复发一遍只是多一个字段
+ */
+function orderConversation(o: Order): OrderView['conversation'] {
+  const s = getSession(o.sessionId);
+  if (!s) return null;
+  return { id: s.id, channel: s.channel, needSummary: needSummary(s.profile, needVocabulary()) };
+}
+
 export function orderView(o: Order): OrderView {
   return {
     id: o.id,
@@ -160,6 +180,7 @@ export function orderView(o: Order): OrderView {
     paidAt: o.paidAt != null ? iso(o.paidAt) : null,
     confirmed: o.confirmedAt != null ? { at: iso(o.confirmedAt), by: o.confirmedBy?.name ?? '' } : null,
     handoffBeforePaid: o.handoffBeforePaid ?? null,
+    conversation: orderConversation(o),
   };
 }
 
