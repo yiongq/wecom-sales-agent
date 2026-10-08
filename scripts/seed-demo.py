@@ -2,7 +2,7 @@
 """生成一批干净逼真的样例会话/订单，供 demo 后台展示（漏斗+KPI 有意义的数字）。
 输出 /tmp/seed_sessions.json 和 /tmp/seed_orders.json。
 
-两个参数都可以不带，不带时输出与原来相同：
+两个参数都可以不带，默认场景的转人工会话带原因与客户原话，供后台显示交接卡：
   --scenario console-ux  后台 UX 走查用的场景（docs/features/console-ux/spec.md 验收 4「走查种子与时钟」、
                          design-system.md §10.0 的会话表）：同样 13 个会话，A01 改成转人工，
                          各会话的最后动静按那张表相对 --now 定位，「昨天21:40」这类按 --now 所在时区的日历日算
@@ -120,6 +120,15 @@ S.append(sess("wecom:cust_F01", "handoff", {"nickname": "刘倩", "destinationIn
     [("customer", "这个太贵了，我要投诉"),
      ("agent", "非常抱歉给您带来不好的体验 我马上为您转接资深顾问处理～")],
     handed=True, age_h=2))
+
+if args.scenario == "default":
+    s = S[-1]
+    s["handoff"] = {
+        "kind": "complaint",
+        "at": s["messages"][-1]["at"],
+        "reason": "客户投诉价格太贵",
+        "quote": "这个太贵了，我要投诉",
+    }
 
 
 def at_day(days_before, hh, mm):
