@@ -2893,11 +2893,82 @@ check(
   fs.rmSync(dist, { recursive: true, force: true });
 }
 
+// ---------------- 快捷回复正文的 markdown 检测（纯函数，第 22 步审查 minor 第 3 条）----------------
+{
+  const { hasMarkdown } = await import('../shared/console-api.js');
+  const bad: [string, string][] = [
+    ['**加粗**不行', '**加粗**'],
+    ['__加粗__不行', '__加粗__'],
+    ['*斜体*不行', '单星*斜体*'],
+    ['_斜体_不行', '单下划线_斜体_'],
+    ['这是`代码`不行', '`代码`'],
+    ['~~删除线~~不行', '~~删除线~~'],
+    ['# 标题不行', '行首 # 标题'],
+    ['- 列表项不行', '行首 - 列表'],
+    ['> 引用不行', '行首 > 引用'],
+    ['---', '独占一行 ---'],
+    ['___', '独占一行 ___'],
+    ['[链接](https://a.com)不行', '[链接](地址)'],
+  ];
+  check(
+    '快捷回复：hasMarkdown 拦住各种写法',
+    bad.every(([s]) => hasMarkdown(s)),
+    bad.filter(([s]) => !hasMarkdown(s)).join(','),
+  );
+  const ok = [
+    '单价*数量=总价，一共2*3=6元', // 两处乘号，配不成对
+    '方案_v2.docx 请查收', // 单个下划线的文件名
+    'v1_2.docx 请查收', // 数字_数字的版本号
+    '价格是100*2=200元', // 单个乘号
+    '正常的句子，没有任何符号',
+    '您好呀，方便告诉我您的预算吗？',
+  ];
+  check(
+    '快捷回复：hasMarkdown 不误拦中文里常见的单个星号 / 乘号 / 下划线文件名',
+    ok.every((s) => !hasMarkdown(s)),
+    ok.filter((s) => hasMarkdown(s)).join(','),
+  );
+}
+
 // ---------------- 02 第 13 步：接手状态机与后台接口（02 spec「后台接口」「接手、人工回复与交还」「通知」） ----------------
 // 这一段跑在文件存储上（selftest-env 钉住）；db 存储才有的（更早的消息、trace、写库积压）在末尾的子进程里
 await workbenchSuite();
 
 // 命名错误映射：23505（写函数都先转成命名错误，接口上走不到，这里直接看映射）
+let realPgRan = false;
+// ---------------- 第 22 步审查 major 第 1 条：真实 PG 上多条独立连接并发新建快捷回复，ord 不许撞号 ----------------
+// 上面 workbenchSuite() 用的 t.db 只有一条连接（PGlite 或 openTestDb() 的 PG_TEST_URL 路径都一样），5 个「并发」请求
+// 其实全部串行过这一条连接，测不出真竞态；这里另开一个真实的临时库，5 条各自独立的物理连接（max:1）才测得出
+if (process.env.PG_TEST_URL) {
+  const { createRealPgFixture } = await import('../db/testing.js');
+  const { openDb, withTenant } = await import('../db/client.js');
+  const { createQuickReply, listQuickReplies } = await import('../db/repo/quick-replies.js');
+  const fx = await createRealPgFixture(process.env.PG_TEST_URL);
+  try {
+    const ctx = { tenantId: fx.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+    const conns = await Promise.all(Array.from({ length: 5 }, () => openDb(fx.urls.app, { max: 1 })));
+    const created = await Promise.all(
+      conns.map((c, i) => withTenant(c.db, ctx, (tx) => createQuickReply(tx, { title: `并发${i}`, body: `正文${i}`, byName: null }))),
+    );
+    const ords = created.map((r) => r.ord).toSorted((a, b) => a - b);
+    check(
+      '快捷回复：真实 PG 上 5 个独立连接并发新建，ord 互不相同、是 0..4 的连续段（第 22 步审查 major 第 1 条）',
+      JSON.stringify(ords) === JSON.stringify([0, 1, 2, 3, 4]),
+      JSON.stringify(created.map((r) => r.ord)),
+    );
+    const list = await withTenant(conns[0]!.db, ctx, (tx) => listQuickReplies(tx));
+    check(
+      '快捷回复：并发新建之后列表也是这 5 条，按 ord 升序、没有重复',
+      list.length === 5 && JSON.stringify(list.map((r) => r.ord)) === JSON.stringify([0, 1, 2, 3, 4]),
+      JSON.stringify(list.map((r) => ({ ord: r.ord, title: r.title }))),
+    );
+    await Promise.all(conns.map((c) => c.close()));
+    realPgRan = true;
+  } finally {
+    await fx.drop();
+  }
+}
+
 check(
   '错误映射：23505（经 drizzle 包在 cause 里）→ 409',
   __consoleTest.mapError(new Error('insert failed', { cause: Object.assign(new Error('duplicate key'), { code: '23505' }) }))?.status ===
@@ -4567,6 +4638,7 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、冲突合并的 rebaseOnto、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、冲突合并的 rebaseOnto、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩` +
+    `${realPgRan ? ' / 真实 PG：快捷回复并发新建' : '；真实 PG 部分未跑'}）`,
 );
 process.exit(0);

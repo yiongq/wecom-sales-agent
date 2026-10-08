@@ -1115,6 +1115,20 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
     (server.quickReplies ?? []).map((r) => r.title).join(',') === '问日期,问人数,问预算',
     JSON.stringify(server.quickReplies),
   );
+  check(
+    '新建保存成功之后，焦点落回「新建」按钮，不会掉到 body（第 22 步审查 minor 第 2 条）',
+    document.activeElement === btnByText('新建'),
+  );
+
+  // 新建点「取消」：什么都不建，焦点同样回到「新建」按钮
+  await m.click(btnByText('新建'));
+  await typeInput(titleInput(), '半路放弃', m.qc);
+  await m.click(btnByText('取消'));
+  check(
+    '新建点「取消」：没有新建，焦点回到「新建」按钮',
+    (server.quickReplies ?? []).length === 3 && document.activeElement === btnByText('新建'),
+    JSON.stringify(server.quickReplies),
+  );
 
   // 编辑：改标题，正文不动
   await m.click(actionIn('问人数', '编辑'));
@@ -1126,6 +1140,7 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
       (server.quickReplies ?? []).find((r) => r.title === '问出行人数')?.body === '这次几位出行？',
     JSON.stringify(server.quickReplies),
   );
+  check('编辑保存成功之后，焦点也落回「新建」按钮', document.activeElement === btnByText('新建'));
 
   // 上移下移：把「问出行人数」移到最前
   await m.click(actionIn('问出行人数', '上移'));
@@ -1133,15 +1148,20 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   await m.click(actionIn('问出行人数', '下移'));
   check('下移：挪回原位', (server.quickReplies ?? []).map((r) => r.title).join(',') === '问日期,问出行人数,问预算');
 
-  // 归档：先取消（留着，不动），再确认（归档后不出现在列表、也不出现在插入列表里）
-  await m.click(actionIn('问出行人数', '归档'));
+  // 归档：先取消（留着，不动），焦点还给触发它的那个归档图标按钮；再确认（归档后不出现在列表、也不出现在插入列表里），
+  // 这一行已经被移掉，焦点落到「新建」按钮
+  const archiveBtnOf = (title: string): HTMLElement | null | undefined => actionIn(title, '归档');
+  await m.click(archiveBtnOf('问出行人数'));
   check(
     '归档确认框：标题点名了这一条',
     m.texts('.ant-modal-title').some((t) => t.includes('问出行人数')),
   );
   await m.click(btnByText('留着'));
-  check('归档：点「留着」不动，还是三条', (server.quickReplies ?? []).length === 3);
-  await m.click(actionIn('问出行人数', '归档'));
+  check(
+    '归档点「留着」：不动，还是三条，焦点还给那一行的「归档」按钮（第 22 步审查 minor 第 2 条）',
+    (server.quickReplies ?? []).length === 3 && document.activeElement === archiveBtnOf('问出行人数'),
+  );
+  await m.click(archiveBtnOf('问出行人数'));
   await m.click(btnByText('归档'));
   check(
     '归档：确认之后列表里没有了',
@@ -1149,6 +1169,7 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
     JSON.stringify(server.quickReplies),
   );
   check('归档：插入列表（卡片，抽屉底下）里也没有了', !m.texts('.wb-quick-btn').includes('问出行人数'), m.texts('.wb-quick-btn').join(','));
+  check('归档确认之后那一行已经没了，焦点落到「新建」按钮（第 22 步审查 minor 第 2 条）', document.activeElement === btnByText('新建'));
 
   // Esc 关闭，焦点回到「管理」按钮（同既有的「更多」约定）
   const drawerBody = m.$('.wb-qr-scroll')[0];

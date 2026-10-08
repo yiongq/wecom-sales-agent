@@ -74,6 +74,17 @@ type View = { kind: 'list' } | { kind: 'create' } | { kind: 'edit'; item: QuickR
 function QuickRepliesDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [view, setView] = useState<View>({ kind: 'list' });
   const [archiving, setArchiving] = useState<QuickReply | null>(null);
+  // 回到列表时（新建/编辑取消或保存成功）焦点落回「新建」按钮，不然表单一卸下焦点就掉到 <body>（第 22 步审查 minor 第 2 条）。
+  // 只在抽屉还开着时接管：抽屉整个关闭也会把 view 复位成 list，那种情况焦点该还给卡片上的「管理」按钮（见 QuickRepliesCard）
+  const newBtnRef = useRef<HTMLButtonElement>(null);
+  const prevViewKind = useRef<View['kind']>('list');
+  useEffect(() => {
+    if (open && prevViewKind.current !== 'list' && view.kind === 'list') newBtnRef.current?.focus();
+    prevViewKind.current = view.kind;
+  }, [open, view.kind]);
+  // 归档确认框点「归档」之后那一行被移除，没法把焦点还给已经卸下的触发按钮，落到「新建」按钮；点「留着」什么都没变，
+  // 焦点原样还给触发它的那个归档图标按钮（自己记，不靠 ConfirmDanger 的 focusTriggerAfterClose——它分不清这两种结局）
+  const archiveTriggerRef = useRef<HTMLElement | null>(null);
   const qc = useQueryClient();
   const q = useQuery({ queryKey: QUICK_REPLIES_KEY, queryFn: () => unwrap(api['quick-replies'].$get()), enabled: open });
   const items: readonly QuickReply[] = q.data?.items ?? [];
@@ -126,7 +137,7 @@ function QuickRepliesDrawer({ open, onClose }: { open: boolean; onClose: () => v
         {view.kind === 'list' ? (
           <>
             <div className="wb-qr-toolbar">
-              <PrimaryButton size="small" onClick={() => setView({ kind: 'create' })}>
+              <PrimaryButton ref={newBtnRef} size="small" onClick={() => setView({ kind: 'create' })}>
                 新建
               </PrimaryButton>
             </div>
@@ -160,7 +171,15 @@ function QuickRepliesDrawer({ open, onClose }: { open: boolean; onClose: () => v
                         onClick={() => move.mutate({ id: r.id, direction: 'down' })}
                       />
                       <IconButton icon={SquarePen} label="编辑" size={28} onClick={() => setView({ kind: 'edit', item: r })} />
-                      <IconButton icon={Archive} label="归档" size={28} onClick={() => setArchiving(r)} />
+                      <IconButton
+                        icon={Archive}
+                        label="归档"
+                        size={28}
+                        onClick={(e) => {
+                          archiveTriggerRef.current = e.currentTarget;
+                          setArchiving(r);
+                        }}
+                      />
                     </div>
                   </li>
                 ))}
@@ -185,11 +204,15 @@ function QuickRepliesDrawer({ open, onClose }: { open: boolean; onClose: () => v
         confirmText="归档"
         cancelText="留着"
         focusTriggerAfterClose={false}
-        onCancel={() => setArchiving(null)}
+        onCancel={() => {
+          setArchiving(null);
+          archiveTriggerRef.current?.focus();
+        }}
         onConfirm={async () => {
           const id = archiving!.id;
           setArchiving(null);
           await archive.mutateAsync(id);
+          newBtnRef.current?.focus();
         }}
       >
         归档之后不会再出现在插入列表里，这里也没有「取消归档」。
