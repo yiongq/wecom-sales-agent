@@ -3748,7 +3748,7 @@ async function workbenchSuite(): Promise<void> {
         all.status === 200 &&
         all.body.total === store.listOrders().length &&
         JSON.stringify(Object.keys((all.body.items as Body[])[0]!)) ===
-          '["id","routeTitle","travelers","departDate","totalPrice","status","createdAt","paidAt","confirmed","handoffBeforePaid"]',
+          '["id","routeTitle","travelers","departDate","totalPrice","status","createdAt","paidAt","confirmed","handoffBeforePaid","conversation"]',
       `${asAgent.status} ${pending.status} ${all.text.slice(0, 200)}`,
     );
     const notMine = keep(await call('POST', `/orders/${o1.id}/confirm`, { as: ag2 }));

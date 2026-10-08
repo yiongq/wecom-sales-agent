@@ -12,7 +12,7 @@ import type { ConversationCounts, ConversationDetail, ConversationRow, MessageVi
 import { conversationState, needParts, needSummary, paidNeedsHuman, type NeedVocabulary } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { cleanText } from '../shared/text.js';
-import { getOrder, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
+import { getOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
 import type { ChatMessage, MessageAuthor, Order, Session } from '../types.js';
 import { maskNumbers } from './mask.js';
 
@@ -148,6 +148,16 @@ export const windowTurnIds = (s: Session): string[] =>
     return t ? [t] : [];
   });
 
+/**
+ * 订单所属会话的最小投影（A2「待付款」行用）：会话被清除（第 16 步之后才会出现）时为 null。不带短码——
+ * console 一侧 conversationLabel(row, pack) 已经会从 id 现算 shortIdOf，这里重复发一遍只是多一个字段
+ */
+function orderConversation(o: Order): OrderView['conversation'] {
+  const s = getSession(o.sessionId);
+  if (!s) return null;
+  return { id: s.id, channel: s.channel, needSummary: needSummary(s.profile, needVocabulary()) };
+}
+
 export function orderView(o: Order): OrderView {
   return {
     id: o.id,
@@ -160,6 +170,7 @@ export function orderView(o: Order): OrderView {
     paidAt: o.paidAt != null ? iso(o.paidAt) : null,
     confirmed: o.confirmedAt != null ? { at: iso(o.confirmedAt), by: o.confirmedBy?.name ?? '' } : null,
     handoffBeforePaid: o.handoffBeforePaid ?? null,
+    conversation: orderConversation(o),
   };
 }
 

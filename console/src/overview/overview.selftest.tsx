@@ -30,6 +30,9 @@ import type {
   ConversationRow,
   DraftCheck,
   Me,
+  MetricsView,
+  OrderSummary,
+  OrderView,
   Role,
   SopOverview,
   Status,
@@ -38,16 +41,19 @@ import { auditRuns } from '../../../src/shared/audit-text.js';
 import { relativeTime } from '../../../src/shared/format.js';
 import type { EntityType, FieldDef, FieldType, IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
-import { workbenchHref } from '../shell/model.js';
 import { catalogListQuery, conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
 import { VIEWER_KEY } from '../viewer.js';
 import {
   catalogCounts,
   catalogTodos,
   enoughAudit,
+  handoffTodos,
   inSaleKpi,
   issueText,
   memberKpis,
+  metricsKpis,
+  monthlyRevenueKpi,
+  pendingOrderTodos,
   sopProblemText,
   sopTodo,
   stageRows,
@@ -56,7 +62,7 @@ import {
   todoCount,
   todoOrder,
   updatedWhen,
-  waitingTodos,
+  waitDurationText,
 } from './model.js';
 import { OverviewPage, TODO_WAIT_MS } from './OverviewPage.js';
 
@@ -140,24 +146,89 @@ const TRAVEL: IndustryPack = {
   nav: { catalogGroup: '产品库', entities: ['route', 'hotel'] },
 };
 
-const conv = (short: string, stage: string, handedOver: boolean, messageCount: number, updatedAt: string): ConversationRow => ({
+const conv = (
+  short: string,
+  stage: string,
+  handedOver: boolean,
+  messageCount: number,
+  updatedAt: string,
+  handoff: ConversationRow['handoff'] = null,
+  needSummary: string | null = null,
+): ConversationRow => ({
   id: `wecom:cust_${short}`,
   channel: 'wecom',
   stage,
   handedOver,
   messageCount,
   updatedAt,
-  needSummary: null,
+  needSummary,
   assignee: null,
-  handoff: null,
+  handoff,
   lastCustomerAt: null,
 });
-/** 接口的 ?state=human 按最后动静倒序：F01（8分钟前）在 A01（26分钟前）前面 */
+/** 接口的 ?state=human 按最后动静倒序：F01（8分钟前）在 A01（26分钟前）前面。handoff.at 是转人工时刻（A2 的等待时长按它算） */
 const WAITING = [
-  conv('F01', 'handoff', true, 2, new Date(NOW - 8 * MIN).toISOString()),
-  conv('A01', 'handoff', true, 7, new Date(NOW - 26 * MIN).toISOString()),
+  conv('F01', 'handoff', true, 2, new Date(NOW - 8 * MIN).toISOString(), {
+    kind: 'complaint',
+    at: new Date(NOW - 8 * MIN).toISOString(),
+    reason: '客户投诉价格太贵',
+  }),
+  conv(
+    'A01',
+    'handoff',
+    true,
+    7,
+    new Date(NOW - 26 * MIN).toISOString(),
+    { kind: 'request', at: new Date(NOW - 26 * MIN).toISOString(), reason: '客户要找顾问' },
+    '贵州带爸妈4人',
+  ),
 ];
+/** 02 场景的紧急会话（设计系统「02 后端到位后 · A2」样张第 1 行）：等了 12 分钟，但紧急一律排最前 */
+const EMERGENCY = conv('7F3A', 'handoff', true, 3, new Date(NOW - 12 * MIN).toISOString(), {
+  kind: 'emergency',
+  at: new Date(NOW - 12 * MIN).toISOString(),
+  reason: '客户要把6天压缩到4天，现成线路没有',
+});
+/** 「已成交客户要人工」：终态、handedOver、没有接手人（paidNeedsHuman） */
+const PAID_NEEDS_HUMAN = conv('P01', 'paid', true, 4, new Date(NOW - 40 * MIN).toISOString(), {
+  kind: 'complaint',
+  at: new Date(NOW - 40 * MIN).toISOString(),
+  reason: '已付款客户要退款',
+});
 const A02 = conv('A02', 'paid', false, 5, at('2026-09-24T17:20:00'));
+
+/** 待付款订单夹具（02 spec「后台页面 · 总览 A2」、「收款流程」） */
+const order = (
+  id: string,
+  totalPrice: number,
+  createdAt: string,
+  confirmed: boolean,
+  conversation: { id: string; channel: string; needSummary: string | null } | null,
+): OrderView => ({
+  id,
+  routeTitle: '巴厘岛经典5日',
+  travelers: 2,
+  departDate: '2026-11-08',
+  totalPrice,
+  status: 'pending_payment',
+  createdAt,
+  paidAt: null,
+  confirmed: confirmed ? { at: createdAt, by: '小林' } : null,
+  handoffBeforePaid: null,
+  conversation,
+});
+const PENDING_B01 = order('o-b01', 85_600, new Date(NOW - 2 * 60 * MIN).toISOString(), false, {
+  id: 'wecom:cust_B01',
+  channel: 'wecom',
+  needSummary: '巴厘岛2人',
+});
+const PENDING_HIGH = order('o-high', 120_000, new Date(NOW - 30 * MIN).toISOString(), true, {
+  id: 'wecom:cust_H01',
+  channel: 'wecom',
+  needSummary: null,
+});
+/** 会话已被清除（第 16 步之后才会出现）：conversation 为 null，这一行跳过不画 */
+const PENDING_NO_CONV = order('o-gone', 50_000, new Date(NOW - 10 * MIN).toISOString(), false, null);
 const COUNTS: ConversationCounts = {
   total: 13,
   byState: { ai: 10, human: 2, assigned: 0, paid: 1 },
@@ -302,35 +373,139 @@ const AUDIT: AuditEntryView[] = [
 
 // ---------------- 1. 纯逻辑 ----------------
 
-const waiting = waitingTodos(WAITING, TRAVEL, NOW, workbenchHref);
 eq(
-  '等人接手：最后动静早的在前（A01 26分钟前在 F01 8分钟前前面）',
-  waiting.map((r) => r.title),
+  '等待时长写法：分钟、小时、天',
+  [waitDurationText(30_000), waitDurationText(8 * MIN), waitDurationText(65 * MIN), waitDurationText(26 * 60 * MIN)],
+  ['不到1分钟', '8分钟', '1小时', '1天'],
+);
+
+// 「等人接手」「已成交客户要人工」合并排序（02 spec「后台页面 · 总览 A2」）：紧急一律最前，其余按等待时长倒序
+const handoff = handoffTodos([EMERGENCY, ...WAITING], [PAID_NEEDS_HUMAN], TRAVEL, NOW);
+eq(
+  '紧急（7F3A）最前，其余按等待时长倒序：已成交客户要人工P01(40分) > A01(26分) > F01(8分)',
+  handoff.map((r) => r.key),
+  ['conv:wecom:cust_7F3A', 'conv:wecom:cust_P01', 'conv:wecom:cust_A01', 'conv:wecom:cust_F01'],
+);
+eq(
+  '类型：等人接手用状态胶囊，已成交客户要人工写死文字（Status 组件没有这个状态值）',
+  handoff.map((r) => r.type),
+  [{ status: 'human' }, { text: '已成交客户要人工' }, { status: 'human' }, { status: 'human' }],
+);
+eq(
+  '标题：needSummary 有就加第三段（A01 带「贵州带爸妈4人」，其余没有）',
+  handoff.map((r) => r.title),
   [
-    ['企微客户', 'A01'],
+    ['企微客户', '7F3A'],
+    ['企微客户', 'P01'],
+    ['企微客户', 'A01', '贵州带爸妈4人'],
     ['企微客户', 'F01'],
   ],
 );
 eq(
-  '等人接手：上下文只写渠道、消息条数、最后动静',
-  waiting.map((r) => r.context.map((s) => s.text)),
+  '上下文：原因取 handoff.reason，等待时长 10 分钟以上 danger、否则 warning，都带钟表图标',
+  handoff.map((r) => r.context),
   [
-    ['企业微信', '7条消息', '最后动静26分钟前'],
-    ['企业微信', '2条消息', '最后动静8分钟前'],
+    [{ text: '原因：客户要把6天压缩到4天，现成线路没有' }, { text: '等了12分钟', tone: 'danger', icon: 'clock' }],
+    [{ text: '原因：已付款客户要退款' }, { text: '等了40分钟', tone: 'danger', icon: 'clock' }],
+    [{ text: '原因：客户要找顾问' }, { text: '等了26分钟', tone: 'danger', icon: 'clock' }],
+    [{ text: '原因：客户投诉价格太贵' }, { text: '等了8分钟', tone: 'warning', icon: 'clock' }],
   ],
 );
-eq('等人接手：新标签打开工作台', waiting[0]?.target, { kind: 'workbench', href: '/admin.html#s=wecom%3Acust_A01' });
-eq('认不出的渠道不写原码', waitingTodos([{ ...WAITING[0]!, channel: 'fax' }], TRAVEL, NOW, workbenchHref)[0]?.context.length, 2);
+eq(
+  '操作：次要按钮「接手」，target 是 takeover 到这个会话',
+  handoff.map((r) => [r.action, r.target]),
+  [
+    ['接手', { kind: 'takeover', id: 'wecom:cust_7F3A' }],
+    ['接手', { kind: 'takeover', id: 'wecom:cust_P01' }],
+    ['接手', { kind: 'takeover', id: 'wecom:cust_A01' }],
+    ['接手', { kind: 'takeover', id: 'wecom:cust_F01' }],
+  ],
+);
 {
   // 那一页只列了等得最久的 2 个，另有 5 个：写成一行链到会话列表，算 5 项
-  const more = waitingTodos(WAITING, TRAVEL, NOW, workbenchHref, 7);
+  const more = handoffTodos(WAITING, [], TRAVEL, NOW, 7);
   eq(
     '等人接手没列全：末尾一行「还有N个」，链到等人接手页签',
-    more.slice(2).map((r) => [r.title, r.context, r.action, r.target, r.count]),
+    more.slice(-1).map((r) => [r.title, r.context, r.action, r.target, r.count]),
     [['还有5个等人接手的会话', [{ text: '这里只列最后动静最早的2个' }], '查看全部', { kind: 'conversations', state: 'human' }, 5]],
   );
-  eq('等人接手没列全：计数算上没列的', [todoCount(more), todoCount(waiting)], [7, 2]);
+  eq('等人接手没列全：计数算上没列的', [todoCount(more), todoCount(handoff)], [7, 4]);
 }
+
+// 「待付款」（02 spec「后台页面 · 总览 A2」）：金额高的在前，会话已清除（conversation 为 null）的跳过
+const payment = pendingOrderTodos([PENDING_B01, PENDING_HIGH, PENDING_NO_CONV], 'advisor', TRAVEL, NOW);
+eq(
+  '待付款：按金额高的在前；会话已清除的订单不列',
+  payment.map((r) => r.key),
+  ['order:o-high', 'order:o-b01'],
+);
+eq(
+  '待付款：标题用会话的渠道与短码，needSummary 有就加第三段',
+  payment.map((r) => r.title),
+  [
+    ['企微客户', 'H01'],
+    ['企微客户', 'B01', '巴厘岛2人'],
+  ],
+);
+eq('待付款：已确认价格的写金额与下单多久未付（30分钟）', payment[0]?.context, [{ text: '120,000元' }, { text: '下单30分钟未付' }]);
+eq('待付款：advisor 模式下未确认价格的写「等你确认价格」（spec 字面例句：下单2小时未付）', payment[1]?.context, [
+  { text: '85,600元' },
+  { text: '等你确认价格' },
+]);
+eq(
+  '待付款：操作是幽灵「打开会话」',
+  payment.map((r) => [r.action, r.target]),
+  [
+    ['打开会话', { kind: 'open', id: 'wecom:cust_H01' }],
+    ['打开会话', { kind: 'open', id: 'wecom:cust_B01' }],
+  ],
+);
+eq(
+  'online 模式下不写「等你确认价格」，哪怕没确认：待付款那一段按真的下单时长（spec 字面例句）',
+  pendingOrderTodos([PENDING_B01], 'online', TRAVEL, NOW)[0]?.context[1],
+  { text: '下单2小时未付' },
+);
+
+// 「本月成交额」「运行数字」KPI 格（都不是链接）
+const SUMMARY: OrderSummary = { month: '2026-09', paidTotal: 207_440, paidCount: 2, pendingTotal: 85_600, pendingCount: 1 };
+eq('本月成交额：数字不带单位（标签已经写了「元」），明细写另有待付', monthlyRevenueKpi(SUMMARY), {
+  key: 'monthlyRevenue',
+  label: '本月成交额（元）',
+  value: '207,440',
+  caption: ['本月已付款订单的总额'],
+  breakdown: ['另有待付85,600元'],
+});
+eq('本月成交额：没有待付款时不写明细', monthlyRevenueKpi({ ...SUMMARY, pendingCount: 0 }).breakdown, null);
+const METRICS: MetricsView = {
+  days: 7,
+  turns: 120,
+  replyP90Ms: 2345,
+  handoffRate: 0.12,
+  aiErrorRate: 0.03,
+  costTodayYuan: 18.62,
+  costRangeYuan: 96.4,
+};
+eq(
+  '运行数字：回复用时按秒取整、比例写成百分数、费用两位小数',
+  metricsKpis(METRICS).map((k) => [k.label, k.value]),
+  [
+    ['回复用时（秒）', '2'],
+    ['转人工率', '12%'],
+    ['AI出错率', '3%'],
+    ['今天的AI费用（元）', '18.62'],
+  ],
+);
+eq(
+  '运行数字：口径写近N天',
+  metricsKpis(METRICS).map((k) => k.caption),
+  [['近7天，90%的回复在这之内'], ['近7天有转人工的会话占比'], ['近7天出错的轮次占比'], ['今天的模型调用花费']],
+);
+eq('运行数字：费用的明细写近N天共多少元', metricsKpis(METRICS)[3]?.breakdown, ['近7天共96.40元']);
+eq(
+  '运行数字：没有数据写「—」',
+  metricsKpis({ ...METRICS, replyP90Ms: null, handoffRate: null, aiErrorRate: null }).map((k) => k.value),
+  ['—', '—', '—', '18.62'],
+);
 
 const sop = sopTodo(SOP, CHECK, TRAVEL);
 eq('话术草稿：改了哪几节、各差多少字', sop?.title, '改了2节：话术原则（+44字）、异议处理（+9字）');
@@ -452,15 +627,16 @@ eq(
     ['昨天21:40', '9月24日 10:05'],
   );
 }
+const handoffPlain = handoffTodos(WAITING, [], TRAVEL, NOW);
 eq(
-  '需要你处理的顺序（验收 10）：A01、F01、话术草稿、线路草稿、6条酒店草稿',
-  todoOrder(waiting, sop, catalog).map((r) => r.key),
-  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'sop', 'catalog:route:r-guizhou-5d', 'catalog:hotel'],
+  '需要你处理的顺序（验收 16）：等人接手、待付款、话术草稿、线路草稿、6条酒店草稿',
+  todoOrder(handoffPlain, payment, sop, catalog).map((r) => r.key),
+  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'order:o-high', 'order:o-b01', 'sop', 'catalog:route:r-guizhou-5d', 'catalog:hotel'],
 );
 eq(
-  '「还有N个等人接手」排在等人接手的后面、话术草稿前面',
-  todoOrder(waitingTodos(WAITING, TRAVEL, NOW, workbenchHref, 3), sop, []).map((r) => r.key),
-  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'conv:more', 'sop'],
+  '「还有N个等人接手」排在等人接手的后面、待付款与话术草稿前面',
+  todoOrder(handoffTodos(WAITING, [], TRAVEL, NOW, 3), payment, sop, []).map((r) => r.key),
+  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'conv:more', 'order:o-high', 'order:o-b01', 'sop'],
 );
 
 // 系统状态
@@ -719,17 +895,33 @@ interface Server {
   latestPaid?: ConversationRow;
   /** 每次请求等人接手的会话之前调用：用来模拟两次请求之间有人转人工 */
   onWaiting?: () => void;
+  /** 「已成交客户要人工」（?group=paid_needs_human），默认空 */
+  paidNeedsHuman?: ConversationRow[];
+  /** 待付款订单（?status=pending_payment），默认空 */
+  pendingOrders?: OrderView[];
+  /** /orders 的 paymentMode（A2「等你确认价格」），默认 advisor */
+  paymentMode?: 'online' | 'advisor';
+  /** /orders/summary，默认 207,440 已付、85,600 待付（02 场景数） */
+  ordersSummary?: OrderSummary;
+  /** /metrics：undefined 时回 503 store_file_mode（文件存储），'fail' 回 500，否则回这个 MetricsView */
+  metrics?: MetricsView | 'fail';
+  /** 接手接口：:id 不在这个集合里就回 409 assigned_to_other（默认谁都能接手） */
+  takeoverTaken?: Set<string>;
 }
 let server: Server = { pack: TRAVEL, lists: {} };
 let requests: string[] = [];
 const json = (status: number, b: unknown): Response =>
   new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
 
+const DEFAULT_SUMMARY: OrderSummary = { month: '2026-09', paidTotal: 207_440, paidCount: 2, pendingTotal: 85_600, pendingCount: 1 };
+
 function respond(method: string, url: URL): Response {
   const p = url.pathname.replace(/^\/api\/console/, '');
   const q = url.searchParams;
   if (server.fail?.test(`${method} ${p}`)) return json(500, { error: 'internal', detail: '故意的' });
   if (method === 'GET' && p === '/conversations/counts') return json(200, server.counts ?? COUNTS);
+  if (method === 'GET' && p === '/conversations' && q.get('group') === 'paid_needs_human')
+    return json(200, { items: server.paidNeedsHuman ?? [], total: (server.paidNeedsHuman ?? []).length });
   if (method === 'GET' && p === '/conversations' && q.get('state') === 'human') {
     // 照接口：按 (updatedAt 倒序, id) 排，再 offset 分页；不给 limit 时一页 20 个
     server.onWaiting?.();
@@ -743,6 +935,22 @@ function respond(method: string, url: URL): Response {
   if (method === 'GET' && p === '/conversations' && q.get('state') === 'paid')
     return json(200, { items: [server.latestPaid ?? A02], total: 1 });
   if (method === 'GET' && p === '/conversations') return json(200, { items: [], total: 0 });
+  if (method === 'POST' && /^\/conversations\/[^/]+\/takeover$/.test(p)) {
+    const id = decodeURIComponent(p.split('/')[2]!);
+    if (server.takeoverTaken?.has(id)) return json(409, { error: 'assigned_to_other', assigneeName: '小林' });
+    return json(200, { ok: true });
+  }
+  if (method === 'GET' && p === '/orders') {
+    const status = q.get('status');
+    const all = (server.pendingOrders ?? []).filter((o) => !status || o.status === status);
+    return json(200, { items: all, total: all.length, paymentMode: server.paymentMode ?? 'advisor' });
+  }
+  if (method === 'GET' && p === '/orders/summary') return json(200, server.ordersSummary ?? DEFAULT_SUMMARY);
+  if (method === 'GET' && p === '/metrics') {
+    if (server.metrics === undefined) return json(503, { error: 'store_file_mode', detail: '文件存储下没有运行数字' });
+    if (server.metrics === 'fail') return json(500, { error: 'internal', detail: '故意的' });
+    return json(200, server.metrics);
+  }
   if (method === 'GET' && p === '/sop') return json(200, SOP);
   if (method === 'POST' && p === '/sop/draft/check') return json(200, CHECK);
   if (method === 'GET' && p === '/status') return json(200, STATUS);
@@ -784,11 +992,13 @@ const blockOf = (e: HTMLElement): string =>
     ? '最近变更'
     : e.closest('.ov-stages-block')
       ? '阶段'
-      : e.closest('.ov-kpi-block')
-        ? '业务数'
-        : e.closest('.ov-system')
-          ? '系统状态'
-          : '需要你处理';
+      : e.closest('.ov-metrics-block')
+        ? '运行数字'
+        : e.closest('.ov-kpi-block')
+          ? '业务数'
+          : e.closest('.ov-system')
+            ? '系统状态'
+            : '需要你处理';
 
 // 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览记三份：首帧（请求都还没回来，
 // 各块画着骨架）、载完、卸载前。每份是文字、标签页标题（页头写的「总览 · 租户名」），以及 title、aria-label、placeholder
@@ -807,6 +1017,17 @@ function seen(box: HTMLElement): void {
   for (const s of box.querySelectorAll<HTMLElement>('.state-skeleton')) loadingSeen.add(blockOf(s));
 }
 
+/** 等所有在飞的请求都回来（React Query 的 isFetching 回到 0），接手按钮点击之后的刷新、跳转也靠它结清 */
+async function settle(qc: QueryClient): Promise<void> {
+  for (let i = 0; i < 40; i += 1) {
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 0));
+      await win.happyDOM.waitUntilComplete();
+    });
+    if (i > 3 && qc.isFetching() === 0) break;
+  }
+}
+
 /** 挂上真的 OverviewPage：路由只有它和几个空页（链接要能算出地址），查询缓存里放好来者；等请求都回来 */
 async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -823,6 +1044,7 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
       page('/catalog/$kind'),
       page('/catalog/$kind/$code'),
       page('/catalog/new/$kind'),
+      page('/conversations/$id'),
     ]),
     basepath: '/console',
     history: createMemoryHistory({ initialEntries: ['/console/'] }),
@@ -838,20 +1060,25 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
     r.render(createElement(QueryClientProvider, { client: qc }, createElement(RouterProvider, { router: router as never }))),
   );
   seen(box);
-  for (let i = 0; i < 40; i += 1) {
-    await act(async () => {
-      await new Promise((res) => setTimeout(res, 0));
-      await win.happyDOM.waitUntilComplete();
-    });
-    if (i > 3 && qc.isFetching() === 0) break;
-  }
+  await settle(qc);
   seen(box);
   const $ = (sel: string): HTMLElement[] => [...box.querySelectorAll<HTMLElement>(sel)];
   return {
     box,
     $,
+    qc,
+    router,
     texts: (sel: string): string[] => $(sel).map((e) => (e.textContent ?? '').trim()),
     hrefs: (sel: string): string[] => $(sel).map((e) => e.getAttribute('href') ?? ''),
+    /** 当前地址（路由里的，不带 basepath /console） */
+    url: (): string => router.state.location.href,
+    async click(el: Element | undefined) {
+      if (!el) throw new Error('要点的元素不在页面上');
+      await act(async () => {
+        (el as HTMLElement).click();
+      });
+      await settle(qc);
+    },
     async unmount() {
       seen(box);
       await act(async () => r.unmount());
@@ -864,48 +1091,99 @@ async function mountOverview(viewer: Viewer, prefill: (qc: QueryClient) => void 
 const SCENE = { route: ROUTES, hotel: HOTELS };
 const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(role), pack });
 
-// 2.1 所有者：五块都在，内容与设计系统 A 页一致
+// 2.1 所有者：七块都在（含 A2 的本月成交额与运行数字），内容与设计系统 A2 一致
 {
-  server = { pack: TRAVEL, lists: SCENE };
+  server = {
+    pack: TRAVEL,
+    lists: SCENE,
+    paidNeedsHuman: [PAID_NEEDS_HUMAN],
+    pendingOrders: [PENDING_B01],
+    paymentMode: 'advisor',
+    ordersSummary: DEFAULT_SUMMARY,
+    metrics: METRICS,
+  };
   requests = [];
   const m = await mountOverview(member('owner'));
   eq('所有者：区块顺序', m.texts('h2'), ['需要你处理', '最近变更', '客户停在哪一步']);
   eq('所有者：标签页标题', document.title, '总览 · 云途定制旅行');
   eq('所有者：页头状态句是租户名与日期', m.texts('.page-status'), ['云途定制旅行·9月26日 周六']);
-  eq('需要你处理：5项', m.texts('.ov-count')[0], '5项');
-  eq('需要你处理：顺序（验收 10）', m.texts('.ov-todo-title'), [
-    '企微客户·A01',
+  eq('需要你处理：7项（等人接手2 + 已成交客户要人工1 + 待付款1 + 话术草稿1 + 待上架2）', m.texts('.ov-count')[0], '7项');
+  eq('需要你处理：顺序（验收 16）：已成交客户要人工（等得最久）> 等人接手 > 待付款 > 话术草稿 > 待上架', m.texts('.ov-todo-title'), [
+    '企微客户·P01',
+    '企微客户·A01·贵州带爸妈4人',
     '企微客户·F01',
+    '企微客户·B01·巴厘岛2人',
     '改了2节：话术原则（+44字）、异议处理（+9字）',
     '线路草稿「贵州 小七孔·西江千户苗寨 5 日」',
     '6条酒店草稿',
   ]);
-  eq('需要你处理：上下文', m.texts('.ov-todo-context'), [
-    '企业微信·7条消息·最后动静26分钟前',
-    '企业微信·2条消息·最后动静8分钟前',
+  eq('需要你处理：上下文（原因、等待时长/下单多久未付；advisor 未确认写「等你确认价格」）', m.texts('.ov-todo-context'), [
+    '原因：已付款客户要退款·等了40分钟',
+    '原因：客户要找顾问·等了26分钟',
+    '原因：客户投诉价格太贵·等了8分钟',
+    '85,600元·等你确认价格',
     '1个问题：话术原则里有个工具名写错了·发布前检查6/7通过',
     '小林更新于13:40·必须项7/7已过·建议1条没做：体力强度没填（不拦上架）',
     '小林更新于11:20·青城山六善酒店、成都锦江宾馆、大研安缦等6条',
   ]);
-  eq('需要你处理：danger 只有话术问题那一段', m.texts('.ov-danger'), ['1个问题：话术原则里有个工具名写错了']);
-  eq('需要你处理：等人接手画状态胶囊', m.$('.ov-todo .status-human').length, 2);
-  // 待上架：1 条草稿到这一条的详情，多条到这个实体列表的草稿页签
-  eq('需要你处理：整行是链接', m.hrefs('a.ov-todo'), [
-    '/admin.html#s=wecom%3Acust_A01',
-    '/admin.html#s=wecom%3Acust_F01',
+  eq(
+    '需要你处理：danger 是等了10分钟以上与话术问题，warning 是等了不到10分钟',
+    [m.texts('.ov-danger'), m.texts('.ov-warning')],
+    [['等了40分钟', '等了26分钟', '1个问题：话术原则里有个工具名写错了'], ['等了8分钟']],
+  );
+  eq('需要你处理：等待时长都带钟表图标（3 段等待时长 + 1 段话术问题，各带各的图标）', m.$('.ov-danger svg, .ov-warning svg').length, 4);
+  eq('需要你处理：等人接手画状态胶囊，已成交客户要人工与待付款写死文字', m.$('.ov-todo .status-human').length, 2);
+  eq('需要你处理：类型文字（等人接手是 Status 胶囊的文字，其余是写死的 13/500 text-3）', m.texts('.ov-todo-type'), [
+    '已成交客户要人工',
+    '等人接手',
+    '等人接手',
+    '待付款',
+    '话术草稿',
+    '待上架',
+    '待上架',
+  ]);
+  // 等人接手、已成交客户要人工是真按钮（接手），不是链接；待付款、话术草稿、待上架仍是整行链接
+  eq('需要你处理：接手行用真按钮，不是链接', m.$('.ov-todo-static button').length, 3);
+  eq('需要你处理：待付款、话术草稿、待上架整行是链接（02 起不再新标签打开 admin.html）', m.hrefs('a.ov-todo'), [
+    '/console/conversations/wecom%3Acust_B01',
     '/console/sop',
     '/console/catalog/route/r-guizhou-5d',
     '/console/catalog/hotel?status=draft',
   ]);
-  eq(
-    '需要你处理：工作台在新标签打开',
-    m.$('a.ov-todo').map((a) => a.getAttribute('target')),
-    ['_blank', '_blank', null, null, null],
+  check(
+    '需要你处理：整行链接都在当前标签（没有 target=_blank）',
+    m.$('a.ov-todo').every((a) => a.getAttribute('target') === null),
   );
-  eq('需要你处理：操作', m.texts('.ov-todo-action'), ['打开工作台', '打开工作台', '继续编辑', '去上架', '逐条检查']);
+  eq('需要你处理：操作（接手行不走这个幽灵小按钮，见下面的真按钮断言）', m.texts('.ov-todo-action'), [
+    '打开会话',
+    '继续编辑',
+    '去上架',
+    '逐条检查',
+  ]);
+  // antd 的 Button 给 2 个汉字的文字自动插入一个空格（视觉用），textContent 里也有，去掉再比
+  eq(
+    '需要你处理：接手按钮的文字',
+    m.$('.ov-todo-static button').map((b) => (b.textContent ?? '').replace(/ /g, '')),
+    ['接手', '接手', '接手'],
+  );
+  eq('本月成交额：数字与明细（宽于 1280 时在「需要你处理」右侧）', m.texts('.ov-todos-kpi .ov-kpi-value'), ['207,440']);
+  eq('本月成交额：口径与明细', m.texts('.ov-todos-kpi .ov-kpi-caption, .ov-todos-kpi .ov-kpi-detail'), [
+    '本月已付款订单的总额',
+    '另有待付85,600元',
+  ]);
+  check('本月成交额：静态格不是链接（spec 没给「点了去」）', m.$('.ov-todos-kpi a').length === 0);
+  eq('运行数字：四格的名称与数字', m.texts('.ov-metrics-block .ov-kpi-label'), [
+    '回复用时（秒）',
+    '转人工率',
+    'AI出错率',
+    '今天的AI费用（元）',
+  ]);
+  eq('运行数字：数字', m.texts('.ov-metrics-block .ov-kpi-value'), ['2', '12%', '3%', '18.62']);
+  eq('运行数字：明细（文案不出现模型名）', m.texts('.ov-metrics-block .ov-kpi-detail'), ['近7天共96.40元']);
+  check('运行数字：文案不出现模型名', !/gpt|glm|claude|qwen/i.test(m.$('.ov-metrics-block')[0]?.textContent ?? ''));
   eq('系统状态：一切正常', m.texts('.ov-system-line'), ['一切正常·线上话术v2·产品库改动已生效']);
-  eq('业务数：数字', m.texts('.ov-kpi-value'), ['13', '2', '1', '43']);
-  eq('业务数：明细', m.texts('.ov-kpi-detail'), [
+  eq('业务数：数字', m.texts('.ov-kpi-block:not(.ov-metrics-block) .ov-kpi-value'), ['13', '2', '1', '43']);
+  eq('业务数：明细', m.texts('.ov-kpi-block:not(.ov-metrics-block) .ov-kpi-detail'), [
     '今天有新动静的6个',
     '最后动静：26分钟前、8分钟前',
     '企微客户·A02·9月24日',
@@ -968,7 +1246,8 @@ async function failing(fail: RegExp) {
     // 自测没套 ThemeProvider，antd 会在两个汉字的按钮中间插空格
     retry: errs.map((a) => [...a.querySelectorAll('button')].some((b) => (b.textContent ?? '').replace(/\s/g, '') === '重试')),
     todos: m.$('.ov-todo-title').length,
-    kpis: m.$('.ov-kpi-value').length,
+    // 「本月成交额」是「需要你处理」旁边的格（.ov-todos-kpi），不在业务数的 .ov-kpi-block 里，这里只数业务数的 4 格
+    kpis: m.$('.ov-kpi-block .ov-kpi-value').length,
     stages: m.$('.ov-stage').length,
     timeline: m.$('.ov-tl-text').length,
     system: m.texts('.ov-system-line').join(''),
@@ -1110,10 +1389,11 @@ async function failing(fail: RegExp) {
   requests = [];
   const m = await mountOverview(member('agent'));
   eq('坐席：区块', m.texts('h2'), ['需要你处理', '客户停在哪一步']);
-  eq('坐席：待办只有等人接手', m.texts('.ov-todo-title'), ['企微客户·A01', '企微客户·F01']);
+  eq('坐席：待办只有等人接手', m.texts('.ov-todo-title'), ['企微客户·A01·贵州带爸妈4人', '企微客户·F01']);
   eq('坐席：2项', m.texts('.ov-count')[0], '2项');
   check('坐席：底部只剩一栏', m.$('.ov-bottom.is-single').length === 1 && m.$('.ov-recent').length === 0);
-  eq('坐席：业务数四格都在', m.$('.ov-kpi').length, 4);
+  eq('坐席：业务数四格都在，没有本月成交额与运行数字（只给所有者、管理员）', m.$('.ov-kpi').length, 4);
+  eq('坐席：能处理会话，等人接手行有真按钮「接手」', m.$('.ov-todo-static button').length, 2);
   const sent = requests.filter((r) => /\/sop|\/audit/.test(r));
   eq('坐席：不取话术、检查、审计', sent, []);
   check('坐席：页头有「只读」胶囊', m.$('.readonly-pill').length === 1);
@@ -1151,14 +1431,14 @@ async function failing(fail: RegExp) {
   const o = await mountOverview(member('owner'));
   eq(
     '在售数为 0：所有者的在售格链到新建第一个实体',
-    [o.texts('.ov-kpi-value')[3], o.texts('.ov-kpi-create'), o.hrefs('a.ov-kpi')[3]],
+    [o.texts('.ov-kpi-block .ov-kpi-value')[3], o.texts('.ov-kpi-create'), o.hrefs('a.ov-kpi')[3]],
     ['0', ['新建线路'], '/console/catalog/new/route'],
   );
   await o.unmount();
   const a = await mountOverview(member('agent'));
   eq(
     '在售数为 0：坐席的在售格链到列表，没有新建',
-    [a.texts('.ov-kpi-value')[3], a.texts('.ov-kpi-create'), a.hrefs('a.ov-kpi')[3]],
+    [a.texts('.ov-kpi-block .ov-kpi-value')[3], a.texts('.ov-kpi-create'), a.hrefs('a.ov-kpi')[3]],
     ['0', [], '/console/catalog/route'],
   );
   await a.unmount();
@@ -1196,7 +1476,7 @@ async function failing(fail: RegExp) {
     requests.filter((r) => /\/catalog\/|\/conversations\/counts|state=human/.test(r)),
     ['GET /api/console/conversations?state=human&limit=100'],
   );
-  eq('用的是缓存里的数', [m.texts('.ov-kpi-value'), m.texts('.ov-todo-title').length], [['13', '2', '1', '43'], 5]);
+  eq('用的是缓存里的数', [m.texts('.ov-kpi-block .ov-kpi-value'), m.texts('.ov-todo-title').length], [['13', '2', '1', '43'], 5]);
   await m.unmount();
 }
 
@@ -1222,7 +1502,7 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
     ['企微客户·W025', '企微客户·F01', 27, 30],
   );
   const oldest = [25, 24, 23].map((i) => relativeTime(many[i + 1]!.updatedAt, NOW));
-  eq('等人接手 27 个：「等人接手」格写最早的三个', m.texts('.ov-kpi-detail')[1], `最后动静：${oldest.join('、')}等27个`);
+  eq('等人接手 27 个：「等人接手」格写最早的三个', m.texts('.ov-kpi-block .ov-kpi-detail')[1], `最后动静：${oldest.join('、')}等27个`);
   eq('等人接手 27 个：一页取完，带上 limit', humanRequests(), ['GET /api/console/conversations?state=human&limit=100']);
   await m.unmount();
 }
@@ -1307,16 +1587,17 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
   requests = [];
   const m = await mountOverview(member('owner', HOME));
   eq('别的行业包：待上架', m.texts('.ov-todo-title').slice(3), ['装修套餐草稿「暖木 · 两居全包经典版」']);
-  eq('别的行业包：待上架链到这个包的实体与编号', m.hrefs('a.ov-todo').slice(3), ['/console/catalog/package/p-1']);
+  // a.ov-todo 只有真正的链接行：等人接手两行现在是真按钮（div.ov-todo-static），不是链接，所以这里只有 sop、catalog 两个
+  eq('别的行业包：待上架链到这个包的实体与编号', m.hrefs('a.ov-todo').slice(1), ['/console/catalog/package/p-1']);
   eq(
     '别的行业包：在售格',
-    [m.texts('.ov-kpi-label')[3], m.texts('.ov-kpi-caption')[3], m.texts('.ov-kpi-detail')[3]],
+    [m.texts('.ov-kpi-block .ov-kpi-label')[3], m.texts('.ov-kpi-block .ov-kpi-caption')[3], m.texts('.ov-kpi-block .ov-kpi-detail')[3]],
     ['在售方案', '装修套餐1·主材1，销售助手只推荐这些', '另有草稿1条：装修套餐1'],
   );
   // 已成交按行业包的终态判定：家装包的终态「已付定金」就是口径（key 不是 paid）
   eq(
     '别的行业包：已成交格的口径写终态「已付定金」，明细是停在那里的会话',
-    [m.texts('.ov-kpi-label')[2], m.texts('.ov-kpi-caption')[2], m.texts('.ov-kpi-detail')[2]],
+    [m.texts('.ov-kpi-block .ov-kpi-label')[2], m.texts('.ov-kpi-block .ov-kpi-caption')[2], m.texts('.ov-kpi-block .ov-kpi-detail')[2]],
     ['已成交', '阶段到了「已付定金」的会话', '企微业主·H03·9月25日'],
   );
   eq('别的行业包：阶段条', m.texts('.ov-stage-label'), ['咨询', '量房', '方案', '其他']);
@@ -1332,6 +1613,102 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
 // 2.7 从阶段条、业务数跳到会话列表之后，地址里的 state、stage 进到接口查询、页签与阶段条的选中：
 // 随第 13 步挪到会话列表自己的自测（console/src/conversations/conversations.selftest.tsx）
 
+// 2.9 权限矩阵（02 spec「后台接口」权限表、本步验收 16）：本月成交额、运行数字只给所有者、管理员（canSeeMoney 同一条件）；
+// 「接手」按钮只给能处理会话的角色（owner/admin/supervisor/agent，CAN_HANDLE_ROLES），viewer 看得到行但没有按钮
+{
+  server = {
+    pack: TRAVEL,
+    lists: SCENE,
+    paidNeedsHuman: [],
+    pendingOrders: [PENDING_B01],
+    paymentMode: 'advisor',
+    metrics: METRICS,
+  };
+  for (const role of ['owner', 'admin'] as const) {
+    const m = await mountOverview(member(role));
+    check(
+      `${role}：看得到本月成交额与运行数字`,
+      m.$('.ov-todos-kpi .ov-kpi-value').length === 1 && m.$('.ov-metrics-block').length === 1,
+      `${role}: kpi=${m.$('.ov-todos-kpi .ov-kpi-value').length} metrics=${m.$('.ov-metrics-block').length}`,
+    );
+    eq(`${role}：等人接手行有真按钮「接手」`, m.$('.ov-todo-static button').length, WAITING.length);
+    await m.unmount();
+  }
+  for (const role of ['supervisor', 'agent', 'viewer'] as const) {
+    const m = await mountOverview(member(role));
+    check(
+      `${role}：看不到本月成交额与运行数字`,
+      m.$('.ov-todos-kpi').length === 0 && m.$('.ov-metrics-block').length === 0,
+      `${role}: kpi=${m.$('.ov-todos-kpi').length} metrics=${m.$('.ov-metrics-block').length}`,
+    );
+    await m.unmount();
+  }
+  // supervisor、agent 能处理会话：等人接手行有真按钮；viewer 不能：待办行还在，但没有按钮（403 真发生不了，不用等服务端拒绝）
+  const sup = await mountOverview(member('supervisor'));
+  eq('supervisor：有接手按钮', sup.$('.ov-todo-static button').length, WAITING.length);
+  await sup.unmount();
+  const v = await mountOverview(member('viewer'));
+  eq(
+    'viewer：等人接手行还在、原因与等待时长照写，但没有接手按钮',
+    [v.texts('.ov-todo-title').length > 0, v.$('.ov-todo-static button').length],
+    [true, 0],
+  );
+  await v.unmount();
+}
+
+// 2.9b 运行数字的三态（02 spec「可观测性与告警」）：文件存储（/metrics 503 store_file_mode）整块不画，不是写「没取到」；
+// 别的出错就地重试；骨架在数据回来之前
+{
+  // 文件存储：server.metrics 不给，mock 的 /metrics 回 503 store_file_mode
+  server = { pack: TRAVEL, lists: SCENE };
+  const m = await mountOverview(member('owner'));
+  check('文件存储：运行数字整块不画（不是「没取到」）', m.$('.ov-metrics-block').length === 0 && !m.box.textContent?.includes('没取到'));
+  await m.unmount();
+
+  // 别的出错（500）：就地写「没取到 · 重试」，点重试重新发请求
+  server = { pack: TRAVEL, lists: SCENE, metrics: 'fail' };
+  requests = [];
+  const e = await mountOverview(member('owner'));
+  const errBlock = e.$('.ov-metrics-block');
+  check(
+    '运行数字出错：就地写「没取到」加重试，不影响其余块',
+    errBlock.length === 1 && (errBlock[0]?.textContent ?? '').includes('没取到') && !e.box.textContent?.includes('小林处理中'),
+  );
+  server.metrics = METRICS;
+  const retryBtn = [...e.$('.ov-metrics-block button')].find((b) => (b.textContent ?? '').replace(/ /g, '') === '重试');
+  await e.click(retryBtn);
+  eq('运行数字出错：重试之后显示真实数字', e.texts('.ov-metrics-block .ov-kpi-value'), ['2', '12%', '3%', '18.62']);
+  check('运行数字出错：确实重新发了一次 /metrics', requests.filter((r) => r.startsWith('GET /api/console/metrics')).length >= 2);
+  await e.unmount();
+}
+
+// 2.10 接手：成功后打开 J 页；409（assigned_to_other）就地说明，不丢弹窗、不跳转（brief「范围」）
+{
+  server = { pack: TRAVEL, lists: SCENE, takeoverTaken: new Set(['wecom:cust_A01']) };
+  const m = await mountOverview(member('owner'));
+  const buttons = m.$('.ov-todo-static button');
+  // 行的顺序是等得最久的在前：A01（26分钟）排在 F01（8分钟）前面
+  eq('接手行的顺序：A01 在前', m.texts('.ov-todo-title').slice(0, 2), ['企微客户·A01·贵州带爸妈4人', '企微客户·F01']);
+  await m.click(buttons[0]);
+  eq(
+    '接手 409（别人正在处理）：就地说明，不导航离开',
+    [m.texts('.ov-todo-error'), m.url().startsWith('/conversations/')],
+    [['小林正在处理这个会话'], false],
+  );
+  await m.click(buttons[1]);
+  eq('接手成功：打开这个会话的 J 页', m.url(), '/conversations/wecom%3Acust_F01');
+  await m.unmount();
+}
+{
+  // 接手之后另一行的 409 不该互相污染（各自一个 useMutation）
+  server = { pack: TRAVEL, lists: SCENE, takeoverTaken: new Set() };
+  const m = await mountOverview(member('supervisor'));
+  const buttons = m.$('.ov-todo-static button');
+  await m.click(buttons[0]);
+  eq('接手成功（没有人占着）：打开 J 页', m.url(), '/conversations/wecom%3Acust_A01');
+  await m.unmount();
+}
+
 // 2.8 验收 6 的禁用词：上面挂过的每一份总览（所有者、管理员、坐席、匿名，各块出错、扣住请求的先后，另一个行业包）
 check(
   '禁用词（验收 6）：每次挂载都扫了首帧、载完与卸载前三份',
@@ -1339,9 +1716,9 @@ check(
   `挂载 ${mounts} 次，扫了 ${rendered.length} 份`,
 );
 eq(
-  '禁用词（验收 6）：五块画骨架（载入中）时都扫到了',
+  '禁用词（验收 6）：六块画骨架（载入中）时都扫到了（02 新增运行数字）',
   [...loadingSeen].sort(),
-  ['需要你处理', '系统状态', '业务数', '最近变更', '阶段'].sort(),
+  ['需要你处理', '系统状态', '业务数', '运行数字', '最近变更', '阶段'].sort(),
 );
 for (const w of BANNED) {
   const hit = rendered.find((t) => t.includes(w));

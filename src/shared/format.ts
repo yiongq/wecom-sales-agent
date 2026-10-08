@@ -19,6 +19,9 @@ export const money = (n: number, unit = '元'): string => (Number.isFinite(n) ? 
 /** 带单位的整数：「8天」「4,700米」 */
 export const quantity = (n: number, unit: string): string => (Number.isFinite(n) ? `${digits(n)}${unit}` : '—');
 
+/** 0–1 的比例写成百分数整数：「12%」。不是有限数时写「—」（02 spec「运行数字」：转人工率、AI出错率） */
+export const percent = (n: number): string => (Number.isFinite(n) ? `${digits(Math.round(n * 100))}%` : '—');
+
 // ---------------- 时间 ----------------
 
 /** 接口给的 ISO 串、毫秒数或 Date */
