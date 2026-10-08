@@ -89,10 +89,13 @@ export function selectedNavKey(pathname: string, groups: readonly NavGroup[]): s
   return best;
 }
 
-/** 进入这些页面时侧栏默认收起为 56（spec「外壳 · 收起」；会话工作台随第 18 步加上） */
+/**
+ * 进入这些页面时侧栏默认收起为 56（spec「外壳 · 收起」）：销售话术页；会话工作台（J 页，02 第 20.2 步，设计系统
+ * §10.1：J 页「收起 56」，I 页本身「展开，会话」不收起）。$id 经 encodeURIComponent，不含斜杠，所以一段就够
+ */
 export const collapsedByDefault = (pathname: string): boolean => {
   const here = stripBase(pathname);
-  return here === '/sop' || here.startsWith('/sop/');
+  return here === '/sop' || here.startsWith('/sop/') || /^\/conversations\/[^/]+$/.test(here);
 };
 
 /** 搜索触发器里的占位：「搜索线路、酒店、会话…」；匿名没有会话 */

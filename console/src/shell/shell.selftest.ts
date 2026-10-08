@@ -333,9 +333,17 @@ eq(
   ['expanded', 'collapsed', 'collapsed', 'hidden', 'hidden'],
 );
 eq(
-  '进入销售话术页默认收起',
-  ['/console/sop', '/sop', '/console/catalog/route', '/console/sopx', '/console/conversations'].map(collapsedByDefault),
-  [true, true, false, false, false],
+  '进入销售话术页、会话工作台默认收起；I 页本身不收起',
+  [
+    '/console/sop',
+    '/sop',
+    '/console/catalog/route',
+    '/console/sopx',
+    '/console/conversations',
+    '/console/conversations/wecom:cust_F01',
+    '/conversations/sim-abc',
+  ].map(collapsedByDefault),
+  [true, true, false, false, false, true, true],
 );
 eq('轮询：可见时每 30 秒，隐藏时停', POLL, { refetchInterval: 30_000, refetchIntervalInBackground: false });
 {
