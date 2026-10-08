@@ -1184,7 +1184,7 @@
 4. **major · 第 8 条的例句都带时态词，可能漏掉「我妈高原反应很严重」这类没有「现在/在」的说法**：把「遇到危险」改写成「此刻遇到需要立刻处理的紧急情况（身体不适或受伤、证件丢了、被困或走散）」，补一条不带时态词的例句（「我妈高原反应很严重」），售前反例（「高反了怎么办」「会不会高反」）照旧保留在反例说明里，不受影响。
 5. **minor · `handoffReply()` 转人工安全网在 advisor 模式下仍说「付款卡片仍然有效」**：按 `paymentMode()` 分支，advisor 下改成「之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式」；online 不分渠道的原逐字节不变（企微仍是「付款卡片仍然有效」，网页仍是「付款链接仍然有效」）。
 
-`orders.selftest.ts` 28 → 32 项（SOP 两条新断言、`handoffReply` 的 online/advisor 两条）；新增 `legacy-pay-poisoned.selftest.ts` 2 项；`jobs.selftest.ts` 101 → 103（不带 PG）/ 108（带 PG，另加 5 项真实 PG 用例，与本次审查无关，是并行步骤带来的）。变异（隔离副本，`src/store`/`drizzle` 等辅助目录照抄过去跑）：5 个代表性的全部杀掉——① 去掉 `queueJobs` 调用 ② 旧接口恢复 `.catch(() => {})` 吞错误 ③ SOP 去掉「嫌贵还价」那句 ④ SOP 第 8 条恢复带时态词的旧写法 ⑤ `handoffReply` 去掉 advisor 分支。`git fetch -q origin && git merge origin/dev` 没有新提交；四个门禁与带/不带 `PG_TEST_URL` 的 `pnpm test` 重跑全绿（见上面「门禁」）；本机 `gitleaks` 扫过 `origin/dev..HEAD` 全部提交，`no leaks found`；`git diff origin/dev -U0 | grep -nE '^\+.*(/Users/|/private/tmp)'` 为空。
+`orders.selftest.ts` 28 → 32 项（SOP 两条新断言、`handoffReply` 的 online/advisor 两条）；新增 `legacy-pay-poisoned.selftest.ts` 2 项；`jobs.selftest.ts` 101 → 103（不带 PG）/ 108（带 PG，另加 5 项真实 PG 用例，与本次审查无关，是并行步骤带来的）。变异（隔离副本，`src/store`/`drizzle` 等辅助目录照抄过去跑）：5 个代表性的全部杀掉——① 去掉 `queueJobs` 调用 ② 旧接口恢复 `.catch(() => {})` 吞错误 ③ SOP 去掉「嫌贵还价」那句 ④ SOP 第 8 条恢复带时态词的旧写法 ⑤ `handoffReply` 去掉 advisor 分支。合并 `origin/dev` 没有新提交；四个门禁与带/不带 `PG_TEST_URL` 的 `pnpm test` 重跑全绿（见上面「门禁」）；本机 `gitleaks` 扫过 `origin/dev..HEAD` 全部提交，没有命中；本机绝对路径的边界检查也是空结果。
 
 ## Open
 
