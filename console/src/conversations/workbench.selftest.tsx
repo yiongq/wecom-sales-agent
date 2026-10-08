@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
+import { hasMarkdown, QUICK_REPLY_MARKDOWN_MSG } from '../../../src/shared/console-api.js';
 import type {
   ConversationCounts,
   ConversationDetail,
@@ -322,6 +323,8 @@ interface MockServer {
   messagesBefore?: MessagesPage;
   turnDiff?: Record<string, TurnDiffView>;
   quickReplies?: QuickReply[];
+  /** 下一个快捷回复的 id 序号（POST /quick-replies 用），默认从 1 开始 */
+  qrSeq?: number;
   /** 下一次 POST /reply 返回的结果；取走以后恢复默认成功 */
   replyNext?: { status: number; body: unknown };
   takeoverNext?: { status: number; body: unknown };
@@ -394,6 +397,45 @@ function respond(method: string, url: URL, bodyText: string): Response {
     return json(200, { sent: true, seq, persisted });
   }
   if (p === '/quick-replies' && method === 'GET') return json(200, { items: server.quickReplies ?? [] });
+  if (p === '/quick-replies' && method === 'POST') {
+    const b = JSON.parse(bodyText) as { title: string; body: string };
+    if (hasMarkdown(b.body)) return json(400, { error: 'bad_request', issues: [{ path: 'body', message: QUICK_REPLY_MARKDOWN_MSG }] });
+    const list = server.quickReplies ?? [];
+    const seq = server.qrSeq ?? 1;
+    server.qrSeq = seq + 1;
+    const row: QuickReply = { id: `qr${seq}`, ord: list.length, title: b.title, body: b.body };
+    server.quickReplies = [...list, row];
+    return json(200, row);
+  }
+  const qrMatch = /^\/quick-replies\/([^/]+)(\/.*)?$/.exec(p);
+  if (qrMatch && method === 'PATCH') {
+    const list = server.quickReplies ?? [];
+    const cur = list.find((r) => r.id === qrMatch[1]);
+    if (!cur) return json(404, { error: 'not_found' });
+    const patch = JSON.parse(bodyText) as { title?: string; body?: string };
+    if (patch.body !== undefined && hasMarkdown(patch.body))
+      return json(400, { error: 'bad_request', issues: [{ path: 'body', message: QUICK_REPLY_MARKDOWN_MSG }] });
+    const next = { ...cur, ...patch };
+    server.quickReplies = list.map((r) => (r.id === cur.id ? next : r));
+    return json(200, next);
+  }
+  if (qrMatch?.[2] === '/archive' && method === 'POST') {
+    const list = server.quickReplies ?? [];
+    if (!list.some((r) => r.id === qrMatch[1])) return json(404, { error: 'not_found' });
+    server.quickReplies = list.filter((r) => r.id !== qrMatch[1]);
+    return json(200, { ok: true });
+  }
+  if (qrMatch?.[2] === '/move' && method === 'POST') {
+    const list = [...(server.quickReplies ?? [])];
+    const i = list.findIndex((r) => r.id === qrMatch[1]);
+    if (i < 0) return json(404, { error: 'not_found' });
+    const { direction } = JSON.parse(bodyText) as { direction: 'up' | 'down' };
+    const j = direction === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= list.length) return json(200, { ok: true, moved: false });
+    [list[i], list[j]] = [list[j]!, list[i]!];
+    server.quickReplies = list.map((r, idx) => ({ ...r, ord: idx }));
+    return json(200, { ok: true, moved: true });
+  }
   return json(404, { error: 'not_found' });
 }
 
@@ -999,6 +1041,142 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   check('更多：Esc 关上，焦点回到按钮', active() === btn);
   eq('更多：aria-expanded 回到 false', btn.getAttribute('aria-expanded'), 'false');
   await act(async () => void (await new Promise((r) => setTimeout(r, 200))));
+  await m.unmount();
+}
+
+// 2.15 快捷回复管理抽屉（02 spec「快捷回复管理」，plan 第 22 步）：只读角色没有「管理」入口；新建、编辑、上移下移、
+// 归档（ConfirmDanger）、正文带 markdown 前端就拦住（不提交）；归档之后插入列表（卡片）里也没有了；
+// Esc 关闭、焦点回到「管理」按钮
+{
+  const typeInput = async (el: HTMLInputElement | HTMLTextAreaElement | null | undefined, value: string, qc: QueryClient) => {
+    if (!el) throw new Error('输入框不在页面上');
+    await act(async () => {
+      const proto = el instanceof win.HTMLTextAreaElement ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')!.set!;
+      setter.call(el, value);
+      el.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+    });
+    await settle(qc);
+  };
+  server = {
+    cur: detail({
+      can: { takeover: false, reply: false, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: false },
+    }),
+    quickReplies: [
+      { id: 'a', ord: 0, title: '问日期', body: '您大概什么时候出发呢？' },
+      { id: 'b', ord: 1, title: '问人数', body: '这次几位出行？' },
+    ],
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  // 只读角色（canManage=false）：没有「管理」入口，但插入列表（点一条插进输入框）照常
+  const viewerM = await mount(member('viewer'));
+  check('快捷回复：viewer 没有「管理」按钮', !viewerM.texts('button').some((t) => t === '管理'));
+  check('快捷回复：viewer 照样能看到插入列表', viewerM.texts('.wb-quick-btn').sort().join(',') === ['问人数', '问日期'].sort().join(','));
+  await viewerM.unmount();
+
+  // antd 的 Button：实心/描边变体里纯两个汉字的文字会被自动插进一个可见空格（isTwoCNChar，「新建」会显示成「新 建」），
+  // text/link 变体不会。按钮文字都按去掉全部空白之后比较，不只 trim()（同已有的「发送」按钮那个找法）
+  const btnByText = (text: string): HTMLElement | undefined => m.$('button').find((b) => b.textContent?.replace(/\s+/g, '') === text);
+  const m = await mount(member('owner'));
+  const manageBtn = btnByText('管理')!;
+  check('快捷回复：owner 有「管理」按钮', !!manageBtn);
+  await m.click(manageBtn);
+  const rowByTitle = (title: string): HTMLElement | undefined =>
+    m.$('.wb-qr-row').find((li) => m.text(li.querySelector('.wb-qr-row-title')) === title);
+  const actionIn = (title: string, label: string): HTMLElement | null | undefined =>
+    rowByTitle(title)?.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+  check(
+    '抽屉：打开后列出两条，标题与正文摘要都对',
+    !!rowByTitle('问日期') &&
+      m.text(rowByTitle('问日期')!.querySelector('.wb-qr-row-body')) === '您大概什么时候出发呢？' &&
+      !!rowByTitle('问人数'),
+  );
+
+  // 新建：正文带 markdown 先被前端拦住，不提交（server.quickReplies 不变）；改成正常正文才成功
+  await m.click(btnByText('新建'));
+  const titleInput = () => m.$('.wb-qr-field input')[0] as HTMLInputElement | undefined;
+  const bodyInput = () => m.$('.wb-qr-field textarea')[0] as HTMLTextAreaElement | undefined;
+  await typeInput(titleInput(), '问预算', m.qc);
+  await typeInput(bodyInput(), '**预算大概多少呢？**', m.qc);
+  await m.click(btnByText('保存'));
+  check(
+    '新建：正文带 markdown 前端就拦住，没有发往服务端（还是两条）',
+    (server.quickReplies ?? []).length === 2,
+    JSON.stringify(server.quickReplies),
+  );
+  check(
+    '新建：markdown 的说明就地显示',
+    m.texts('.wb-qr-help.is-error').some((t) => t === QUICK_REPLY_MARKDOWN_MSG),
+  );
+  await typeInput(bodyInput(), '大概的预算是多少呢？', m.qc);
+  await m.click(btnByText('保存'));
+  check(
+    '新建：改成没有 markdown 的正文，保存成功、回到列表、排在最后',
+    (server.quickReplies ?? []).map((r) => r.title).join(',') === '问日期,问人数,问预算',
+    JSON.stringify(server.quickReplies),
+  );
+  check(
+    '新建保存成功之后，焦点落回「新建」按钮，不会掉到 body（第 22 步审查 minor 第 2 条）',
+    document.activeElement === btnByText('新建'),
+  );
+
+  // 新建点「取消」：什么都不建，焦点同样回到「新建」按钮
+  await m.click(btnByText('新建'));
+  await typeInput(titleInput(), '半路放弃', m.qc);
+  await m.click(btnByText('取消'));
+  check(
+    '新建点「取消」：没有新建，焦点回到「新建」按钮',
+    (server.quickReplies ?? []).length === 3 && document.activeElement === btnByText('新建'),
+    JSON.stringify(server.quickReplies),
+  );
+
+  // 编辑：改标题，正文不动
+  await m.click(actionIn('问人数', '编辑'));
+  await typeInput(titleInput(), '问出行人数', m.qc);
+  await m.click(btnByText('保存'));
+  check(
+    '编辑：改了标题，正文不变，列表里原位置替换',
+    (server.quickReplies ?? []).map((r) => r.title).join(',') === '问日期,问出行人数,问预算' &&
+      (server.quickReplies ?? []).find((r) => r.title === '问出行人数')?.body === '这次几位出行？',
+    JSON.stringify(server.quickReplies),
+  );
+  check('编辑保存成功之后，焦点也落回「新建」按钮', document.activeElement === btnByText('新建'));
+
+  // 上移下移：把「问出行人数」移到最前
+  await m.click(actionIn('问出行人数', '上移'));
+  check('上移：排到了最前', (server.quickReplies ?? []).map((r) => r.title).join(',') === '问出行人数,问日期,问预算');
+  await m.click(actionIn('问出行人数', '下移'));
+  check('下移：挪回原位', (server.quickReplies ?? []).map((r) => r.title).join(',') === '问日期,问出行人数,问预算');
+
+  // 归档：先取消（留着，不动），焦点还给触发它的那个归档图标按钮；再确认（归档后不出现在列表、也不出现在插入列表里），
+  // 这一行已经被移掉，焦点落到「新建」按钮
+  const archiveBtnOf = (title: string): HTMLElement | null | undefined => actionIn(title, '归档');
+  await m.click(archiveBtnOf('问出行人数'));
+  check(
+    '归档确认框：标题点名了这一条',
+    m.texts('.ant-modal-title').some((t) => t.includes('问出行人数')),
+  );
+  await m.click(btnByText('留着'));
+  check(
+    '归档点「留着」：不动，还是三条，焦点还给那一行的「归档」按钮（第 22 步审查 minor 第 2 条）',
+    (server.quickReplies ?? []).length === 3 && document.activeElement === archiveBtnOf('问出行人数'),
+  );
+  await m.click(archiveBtnOf('问出行人数'));
+  await m.click(btnByText('归档'));
+  check(
+    '归档：确认之后列表里没有了',
+    !(server.quickReplies ?? []).some((r) => r.title === '问出行人数'),
+    JSON.stringify(server.quickReplies),
+  );
+  check('归档：插入列表（卡片，抽屉底下）里也没有了', !m.texts('.wb-quick-btn').includes('问出行人数'), m.texts('.wb-quick-btn').join(','));
+  check('归档确认之后那一行已经没了，焦点落到「新建」按钮（第 22 步审查 minor 第 2 条）', document.activeElement === btnByText('新建'));
+
+  // Esc 关闭，焦点回到「管理」按钮（同既有的「更多」约定）
+  const drawerBody = m.$('.wb-qr-scroll')[0];
+  await m.key(drawerBody, 'Escape');
+  await new Promise((r) => setTimeout(r, 250));
+  check('抽屉：Esc 关闭，焦点回到「管理」按钮', document.activeElement === manageBtn);
   await m.unmount();
 }
 

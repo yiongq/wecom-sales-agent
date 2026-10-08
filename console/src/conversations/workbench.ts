@@ -232,6 +232,14 @@ export { shortIdOf };
  * 真正的权限判断在 ConversationDetail.can（服务端算好）*/
 export const CAN_HANDLE_ROLES: ReadonlySet<Role> = new Set(['owner', 'admin', 'supervisor', 'agent']);
 
+/** 能管理快捷回复的角色（与权限表、服务端 canManageReplies 同一组，02 spec「快捷回复管理」）：只给 UI 决定要不要画
+ * 「管理」入口、抽屉里的新建/编辑/上移下移/归档；真正的权限判断仍在服务端（坐席带角色点了也只会收到 403） */
+export const CAN_MANAGE_REPLIES_ROLES: ReadonlySet<Role> = new Set(['owner', 'admin', 'supervisor']);
+
+/** 快捷回复的查询键：按租户、不按会话（同一份列表，哪个会话的工作台打开都一样），卡片与管理抽屉共用，
+ * 互相增改之后 invalidate 这一个键就够 */
+export const QUICK_REPLIES_KEY = ['quick-replies'] as const;
+
 // ---------------- 右栏：需求 ----------------
 
 /**

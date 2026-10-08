@@ -100,12 +100,12 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'order.confirm': { label: '确认价格', group: 'conversation', icon: 'badge-check' },
   'order.mark_paid': { label: '确认收款', group: 'conversation', icon: 'banknote' },
   'order.cancel': { label: '取消订单', group: 'conversation', icon: 'circle-x' },
-  // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。界面上的叫法「快捷回复」用到的字还不在 UI 优先片里，
-  // 第 22 步画管理抽屉时重切字体再改；这里先写「常用回复」
-  'quick_reply.create': { label: '新建常用回复', group: 'conversation', icon: 'message-square-plus' },
-  'quick_reply.update': { label: '修改常用回复', group: 'conversation', icon: 'square-pen' },
-  'quick_reply.archive': { label: '收起常用回复', group: 'conversation', icon: 'archive' },
-  'quick_reply.move': { label: '移动常用回复', group: 'conversation', icon: 'arrow-up-down' },
+  // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。第 13 步先写「常用回复」（那时「快捷」两字
+  // 还不在 UI 优先片里）；J 页右栏卡片标题（第 20.2 步）已经用上「快捷回复」，字已经在优先片里了，这里改回 spec 原词
+  'quick_reply.create': { label: '新建快捷回复', group: 'conversation', icon: 'message-square-plus' },
+  'quick_reply.update': { label: '修改快捷回复', group: 'conversation', icon: 'square-pen' },
+  'quick_reply.archive': { label: '收起快捷回复', group: 'conversation', icon: 'archive' },
+  'quick_reply.move': { label: '移动快捷回复', group: 'conversation', icon: 'arrow-up-down' },
   // spec 列的另外四个（privacy.publish、platform.tenant_retention、platform.erase、system.purge）随第 16 步的生产者一起加：
   // 这张表只收有人写的动作（console.selftest 逐个核对）
 };

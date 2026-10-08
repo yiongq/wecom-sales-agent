@@ -12,7 +12,6 @@ import type {
   ConversationDetail,
   MessageView,
   OrderView,
-  QuickReply,
   Role,
   TurnDiffView,
   TurnStepsView,
@@ -38,9 +37,11 @@ import { shellViewerOf } from '../shell/PageHeader.js';
 import { cjk } from '../typography.js';
 import { usePack, useViewer } from '../viewer.js';
 import { stageLabel } from './model.js';
+import { QuickRepliesCard } from './QuickReplies.js';
 import {
   advisorLabel,
   CAN_HANDLE_ROLES,
+  CAN_MANAGE_REPLIES_ROLES,
   deliveryNote,
   guardLine,
   handoffCardHead,
@@ -692,32 +693,6 @@ function TraceTab({ id, turnId }: { id: string; turnId: string | null }) {
   );
 }
 
-function QuickRepliesCard({ id, onInsert }: { id: string; onInsert: (body: string) => void }) {
-  const q = useQuery({
-    queryKey: [...CONV_PREFIX, 'quickReplies', id] as const,
-    queryFn: () => unwrap(api['quick-replies'].$get()),
-  });
-  const items: readonly QuickReply[] = q.data?.items ?? [];
-  return (
-    <div className="wb-card">
-      <h3 className="wb-card-title">快捷回复</h3>
-      {items.length === 0 ? (
-        <p className="wb-side-empty">还没有快捷回复</p>
-      ) : (
-        <ul className="wb-quick-list">
-          {items.map((r) => (
-            <li key={r.id}>
-              <button type="button" className="wb-quick-btn" onClick={() => onInsert(r.body)}>
-                {cjk(r.title)}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
 // ---------------- 对话栏 + 右栏：整合 ----------------
 
 function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId: string | null; role: Role; displayName: string } }) {
@@ -980,7 +955,10 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
                 <p>{`由谁处理：${detail.handoffCard.assigneeName ?? '还没人接手'}`}</p>
               </div>
             )}
-            <QuickRepliesCard id={id} onInsert={(body) => setReplyText((t) => (t ? `${t}\n${body}` : body))} />
+            <QuickRepliesCard
+              onInsert={(body) => setReplyText((t) => (t ? `${t}\n${body}` : body))}
+              canManage={CAN_MANAGE_REPLIES_ROLES.has(me.role)}
+            />
           </>
         )}
       </div>

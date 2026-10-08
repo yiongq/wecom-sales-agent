@@ -141,7 +141,7 @@
   - [x] 20.2 照 spec「后台页面」与设计系统 J 页：三栏、分组列表、对话头与「更多」、五种消息呈现与 `handoff_note` 时间线、改写对照、「显示AI步骤」、交接卡、输入框与发送窗口（含 `persisted: false`）、右栏卡片与订单动作（订单相关部分等第 15 步合并，之前接桩）、「AI为什么这么回」、不同意时「交还AI」不可用、viewer 的打码正文、加载 / 空 / 出错。console 自测覆盖交接卡措辞、接手前输入框禁用、409 与 503 的说明、发送窗口为 0 时禁用、键盘打开「更多」（4）。2026-10-08 完成（分支 `feat/02-step20-2-workbench`，没 push；与第 15、16 步另开两条线并行），结构、本步定的十条取舍、console 自测、浏览器实测、变异与门禁结果见「实施记录 · 第 20.2 步」。
   - 对应验收 11、13、14 的界面部分，以及 20 的界面部分。
 - [x] 21. 前端：总览 A2 与运行数字格（2）：等人接手与已成交客户要人工的行、「接手」、待付款行（「等你确认价格」等第 15 步合并）、排序、「本月成交额」格与权限、四个运行数字格与权限。console 自测用 02 种子场景断言顺序与金额。对应验收 16 与 34 的界面部分。2026-10-08 完成（分支 `feat/02-step21-overview-a2`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 21 步」。
-- [ ] 22. 快捷回复：行业包默认模板与管理抽屉（1，可砍）：行业包配置加默认模板；空表首次读取时写入；J 页右栏的插入与 480 抽屉（新建、编辑、上移下移、归档，正文不许 markdown）。对应验收 33 的快捷回复部分。
+- [x] 22. 快捷回复：行业包默认模板与管理抽屉（1，可砍）：2026-10-08 完成，结构、默认模板原文、取舍、自测、变异与门禁见「实施记录 · 第 22 步」。
 - [x] 23. `admin.html` 两处（0.5）：列表 401 时弹登录框（在 `load()` 之外判断，`server.selftest.ts` 抽取的 `load()` 与 `sigOf()` 源码不变）；db 配置模式下顶部提示链到 J 页。对应验收 29 的这一句。2026-10-08 完成（分支 `feat/02-step23-admin-html`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 23 步」。
 - [ ] 24. 02 走查种子与走查（1）：`scripts/seed-demo.py` 加 `--scenario console-ux-02`（设计系统 §10.0 第 5 条：14 个会话、A01 由小林接手、F01 的原因、三张订单）；7F3A 不走种子，由走查脚本经假企微接口和脚本化的 mock LLM 真跑出来（要有一轮价格护栏删句，才有 trace 与改写对照）。Playwright 浅色、深色各走一遍，截图存到 `walkthrough/`，含只用键盘的交还。对应验收 33。
 - [ ] 25. 压测（1.5）：`scripts/load/run.ts` 按 spec「压测」一节（含 5,000 × 300 的预载）；本机真实 Postgres、db 存储；结果与数字记进「验收记录」。对应验收 30。
@@ -1368,6 +1368,46 @@ date`，origin/dev 这段时间没有新提交）。
   - 变异：把条件改回 `d.store.mode === 'db'`（在隔离副本里打，跑完即删）——`config.selftest.ts` 新断言当场报「db 配置模式下顶部提示出现」那条变红（`hidden=true`），复现的正是 owner 报的问题（`config.mode=db`、`store.mode=file` 时提示消失）；撤回后恢复绿。
   - 门禁：四个门禁重跑（`pnpm test` 不带 `PG_TEST_URL`，只改了页面脚本与自测，没碰服务端或 PG 相关代码）全绿，`EXIT=0`；config 539、conversations 143，`PREFIX sha256` 与改之前相同（`system=dd2c10ee… tools=64c16fc8…`）；收尾前 `git fetch -q origin && git merge origin/dev`，两次都是 `Already up to date`；锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 仍为空；本机绝对路径、长 `wm` 会话 id 两道黑名单扫描与 `gitleaks stdin` 对本次 diff 均为空/无发现。
 
+### 第 22 步 · 快捷回复：行业包默认模板与管理抽屉（2026-10-08）
+
+- 「工作量与砍法」第一级第 1 条点名的降级条件（「第 22 个工程日结束时第 7 步还没勾」）没有触发——第 7 步 2026-10-03 就勾了，远早于第 22 个工程日——所以本步按 spec 原文的完整版做：抽屉里新建、编辑、上移下移、归档都是真接口（不是降级版的「只读默认模板、改模板走 platform 命令行」）。
+- 结构：
+  - 行业包默认模板不进 `console-pack.ts`：新文件 `src/shared/quick-reply-defaults.ts`（只有 `QuickReplyDefault` 类型）与 `src/packs/travel/quick-reply-defaults.ts`（旅游包取值），`src/packs/registry.ts` 加 `defaultQuickRepliesOf(packId)`（查不到的包返回空数组，对应 spec「行业包没有就为空」）。这些文字特意不进 `scripts/fonts/ui-text.ts` 的扫描——它只认 `console-pack.ts` 这一个文件名；默认模板的正文是客户会在微信里看到的动态内容（顾问点一条插进输入框），与 SOP、产品库数据同样处理，不是「界面配置」，不该占 UI 优先片的码位。
+  - `src/db/repo/quick-replies.ts` 加 `anyQuickReplyRow`（这个租户是不是一条快捷回复都没有过，含归档的）与 `ensureDefaultQuickReplies`（抢租户级 advisory 锁 `qr-seed:<tenantId>`、拿到锁后再确认一遍还是空表才插默认模板，没有默认模板什么都不做）。`GET /quick-replies`（`src/console-api/app.ts`）先在只读事务里用 `anyQuickReplyRow` 做一次快速判断：大多数读（已经写过默认模板）只有这一次只读查询；真的空表时才换一条可写事务调 `ensureDefaultQuickReplies`，再重读一遍列表。
+  - 正文不许 markdown：`src/shared/console-api.ts` 加 `hasMarkdown`（**加粗**、行首 #标题、行首 -/\* 列表、[链接](地址)）与 `QUICK_REPLY_MARKDOWN_MSG`，挂在 `QuickReplyBody.body` 字段级的 `.refine()`（不是对象级 `.refine()`，否则 `QuickReplyBody.partial()`——PATCH 用——会因为 `.refine()` 包了一层 `ZodEffects` 而没有 `.partial()` 方法）。前后端共用同一份：服务端 zValidator 400、console 表单提交前也用它查一遍，省一次往返。
+  - 前端：`console/src/conversations/QuickReplies.tsx`（新文件，从 `WorkbenchPage.tsx` 搬出原来的 `QuickRepliesCard`）——卡片加「管理」按钮（`canManage` 由 `CAN_MANAGE_REPLIES_ROLES`——owner/admin/supervisor，照服务端 `canManageReplies`——算）打开 480 宽抽屉（`size={480}`，照设计系统 §5.13 M 号）；抽屉内部 `list`/`create`/`edit` 三态，列表每行上移/下移/编辑/归档四个 `IconButton`，归档用 `ConfirmDanger`（标题点名这一条「归档「X」？」，照 §5.14「写出对象」的约定；正文说明归档后不会再出现在插入列表、这里也没有「取消归档」——没有反悔的 UI，用词要对得上）。查询键 `QUICK_REPLIES_KEY = ['quick-replies']`（不按会话 id：快捷回复是租户级的，原来 `QuickRepliesCard` 按 `[...CONV_PREFIX, 'quickReplies', id]` 缓存是个小 bug，顺手归位）。
+  - 抽屉关闭后焦点回到「管理」按钮：没有依赖 antd Drawer 的 `afterOpenChange`（动画完成才触发，试过在 happy-dom 自测里不可靠，焦点一直不回去）；改用一个 plain `useEffect` 盯着 `drawerOpen` 这个 boolean，`wasOpen` ref 防止初次挂载时误抢焦点——同 `console/src/pages/SopPage.tsx` 发布抽屉的既有做法（那边注释写明「不等收起动画」）。
+  - CSS 全部加在 `console/src/conversations/workbench.css`（`.wb-qr-*`、`.wb-card-head`），结构照抄 `.sop-drawer`（头 56、体 4 24 24 自己滚动）但另起一套类名（480 宽，不是 420/640），没加新设计令牌，表单间距（标签到控件 6、控件到帮助 6、字段之间 20）照通用部件那张表。
+  - `AUDIT_ACTIONS`：第 13 步因为「快捷」两字当时不在 UI 优先片里，先写了「常用回复」；J 页右栏卡片标题（第 20.2 步）已经用上「快捷回复」，字已经在优先片里了，这里改回 spec 的原词（`src/shared/ui-labels.ts`、`src/shared/audit-text.ts`、`src/shared/audit-text.selftest.ts` 各四处）。
+- 默认模板原文（旅游包，6 条，正文不含 markdown、不含价格与承诺性的说法）：
+  1. 开场问候 —— 您好呀，我是云途定制旅行的顾问，看到您在了解旅行计划～方便先说说大概想去哪、和谁一起出行吗？
+  2. 问出行日期 —— 为了帮您核对行程安排，能说一下大概的出发日期吗？确定的日子或大概月份都可以，我来帮您看看合适的安排。
+  3. 问同行人数 —— 方便告诉我这次一共几位出行、有没有老人或小朋友同行吗？这样我才能帮您挑到更合适的线路。
+  4. 收到稍等 —— 您的需求我已经记下来了，正在帮您核对细节，马上给您回复，麻烦您稍等一下～
+  5. 致歉久等 —— 不好意思让您等久了，刚才在确认行程细节，现在继续为您安排。
+  6. 结束致谢 —— 谢谢您的耐心，有任何问题随时找我，祝您出行顺利！
+- 本步定的（spec 没写细）：
+  1. **默认模板文字不进 `console-pack.ts`**：见上「结构」第一条，理由是避免把动态业务内容（客户会看到的话术）算进 UI 优先片。
+  2. **「空表」看的是有没有一条历史记录，不是有没有「没归档的」一条**：都归档过之后表不再是空的，不会把默认模板再写回来（否则「清空快捷回复列表」在界面上做不到——归档之后插入列表为空就该一直为空，直到有人新建）。
+  3. **归档没有确认之外的额外门槛，但要 `ConfirmDanger`**：spec 没写要不要二次确认；归档是单向操作（没有 `/unarchive` 接口），参照设计系统「用于丢弃草稿、放弃没保存的改动这类撤销不了的事」与本 spec 里「取消订单」同样用 `ConfirmDanger` 的先例，加了确认。
+  4. **查询键改成租户级**：见上「结构」第四条，顺手修正（不算本步范围外的改动，`QuickRepliesCard` 整个文件都是本步动的）。
+- 自测：
+  - `src/console-api/console.selftest.ts`（`workbenchSuite()` 顶部新增一段，必须排在这个函数、也排在模块顶层任何别的 `/quick-replies` 调用之前——这个进程全程只服务 `demo` 一个租户，`session.login`/`resolveSession` 都按 `configRuntime().tenantId` 查，建别的租户登录不进去，`demo` 的 `quick_replies` 这时一行都还没有，是整个测试文件唯一能测到「真首次读」的窗口）：旅游包默认模板 4–6 条、没登记的包没有默认模板（`defaultQuickRepliesOf('no-such-pack-22')`）、`demo` 租户这时确实一行都没有、5 个并发 `GET` 都看到同一份默认模板、库里恰好是默认模板的条数（不是 5 份）、再读一次不会再插一遍。原来的 CRUD 块（主管/所有者能建、坐席 403、归档、改标题/下移等）改成先读一遍记基线标题、后面的断言只看基线之后新增/挪动的部分——不然权限矩阵那段在它之前已经替 `demo` 做过一次首次读（触发了默认模板写入），原来写死的 `'["问日期","问人数"]'` 这类断言会被默认模板的 6 条顶到前面而假红。另加两处 markdown 400（新建、改正文）。426 项（上一步 420）。
+  - `console/src/conversations/workbench.selftest.tsx` 新增 2.15 节（95 项，含前面既有的）：viewer 没有「管理」按钮但照常能插入；新建正文带 markdown 被前端拦住不提交，改好了再保存成功、排最后；编辑改标题正文不动；上移下移；归档前「留着」不动、确认后列表与插入列表（卡片）都没有了；Esc 关闭、焦点回到「管理」按钮。mock 服务端（`respond()`）补了 POST/PATCH/archive/move 四个 handler，直接复用真实的 `hasMarkdown`。踩的坑：antd Button 对纯两个汉字的实心/描边按钮会自动插一个可见空格（「新建」→「新 建」，text/link 变体不会），按钮文字查找一律用 `.replace(/\s+/g,'')` 不只 `.trim()`（同既有的「发送」按钮找法）。
+- 变异（4 个，做完都撤回确认复绿）：
+  1. `ensureDefaultQuickReplies` 去掉 advisory 锁——`console.selftest.ts` 用默认的 `openTestDb()`（单连接，PGlite 或 PG_TEST_URL 都一样）跑不出竞态，5 个「并发」请求其实全部串行过这一个连接；另写了一支隔离脚本（`createRealPgFixture` + 5 个各自独立的 `openDb(..., {max:1})` 连接，真的 5 条物理连接）直接并发调 `ensureDefaultQuickReplies`：去掉锁时插出 15 行（5×3，5 个连接各插了一份默认模板），恢复锁后稳定是 3 行。
+  2. `hasMarkdown` 永远返回 `false`（正文带 markdown 也放行）——`console.selftest.ts` 4 项断言变红（新建、改正文两处的 400 检查，以及被影响的后续列表断言）。
+  3. `listQuickReplies` 去掉 `where(live)`（归档之后还列出来）——`console.selftest.ts`「归档之后不再列出」那条变红。
+  4. `QuickRepliesCard` 的焦点回归 `useEffect` 去掉 `manageBtnRef.current?.focus()` 这一行——`workbench.selftest.tsx`「抽屉：Esc 关闭，焦点回到「管理」按钮」变红（95 → 94 通过）。
+- 字体：新字「归」「插」（归档、插入列表）不在 UI 优先片里，本机没有系统级 fonttools，装了一次性的 Python venv（`pip install fonttools brotli`）跑 `scripts/fonts/build.ts`——不用联网，`node_modules/.cache/console-fonts/` 里已经有前几步缓存下来的源字体。650 个汉字、833 个码位，`noto-sans-sc-ui.woff2` 173,344 B；按惯例字体产物单独一次提交（见下「提交」）。
+- 门禁（第一轮，审查之前）：`format:check`、`lint`、`typecheck` 全绿。`pnpm test` 不带与带 `PG_TEST_URL=postgres://postgres:pw@127.0.0.1:55443/postgres`（本机一次性 `pgvector/pgvector:pg17` 容器 `pgtest-02s22`，跑完已删）都 `EXIT=0`；console 426（两种配置相同，`/quick-replies` 只要求 DB 配置模式，两种会话存储下都走同一张表）、workbench 95、conversations 143（未改动）。`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 不变（与第 23 步相同）；锁定套件 8 个文件零修改。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 两道黑名单扫描；`gitleaks stdin` 对该 diff 无发现。收尾 `git fetch -q origin`：`origin/dev` 没有新提交，不需要合并。
+- 审查之后改的（真实 PG 并发 + 真实浏览器走查带回四条，都在 `feat/02-step22-quick-replies` 上续改，没开新分支）：
+  1. **major · `createQuickReply` 并发新建时 `ord` 撞号**：审查者用 5 个各自独立的物理连接并发新建，读 `max(ord)` 没上锁，5 条全插成 `ord=0`。`src/db/repo/quick-replies.ts` 把 `ensureDefaultQuickReplies` 原来内联的 `pg_advisory_xact_lock` 抽成 `lockQuickRepliesForWrite(tx)`（锁名从 `qr-seed:<tenantId>` 改成 `qr-write:<tenantId>`，覆盖「按 max(ord) 分配新序号」的全部写——不只是首次写默认模板），`createQuickReply` 也先抢它再读 max。`moveQuickReply`（已经靠 `.for('update')` 锁住它读到的那些行）、`archiveQuickReply`、`updateQuickReply` 不分配新 `ord`，没有改。补的真实 PG 用例：`console.selftest.ts` 新增一段只在 `PG_TEST_URL` 设了才跑的块（`createRealPgFixture` 建一次性真实库 + 5 个各自独立的 `openDb(url, {max:1})` 连接，绕开 `workbenchSuite()` 用的那一条共享连接，真的测得出竞态），5 个连接并发 `createQuickReply`，断言 `ord` 是 `[0,1,2,3,4]`（互不相同、连续）；没锁时复现出 `[0,0,0,0,0]`（撤回锁、跑一遍、确认变红，见下「变异」新增第 5 条）。console 自测 426 → 430（+4：2 条并发新建、2 条下面第 3 条的 `hasMarkdown` 单测）；PASS 摘要句尾按 `quota.selftest.ts` 的既有写法加 `realPgRan` 开关（`/ 真实 PG：快捷回复并发新建` 或 `；真实 PG 部分未跑`）。
+  2. **minor · 抽屉里切换状态之后焦点掉到 `<body>`**：原来只在「抽屉整体关闭」这一种情形还了焦点（`QuickRepliesCard` 的 `useEffect`），新建/编辑切回列表、归档确认框的两个分支都没管，触发元素一卸就掉到 body。`console/src/conversations/QuickReplies.tsx` 加两处：① `QuickRepliesDrawer` 内部另一个 `useEffect`（`newBtnRef` + `prevViewKind` 守卫，只在 `open` 为真、且 `view.kind` 从非 `list` 变回 `list` 时才接管——与 `QuickRepliesCard` 那个「抽屉整体关闭」的效果用同一条 `open` 判断分流，不会抢着还焦点），新建取消、编辑取消、新建/编辑保存成功都落回「新建」按钮；② 归档确认框不再用 `ConfirmDanger` 自带的 `focusTriggerAfterClose`（它分不清「留着」和「归档」两种结局——后者那一行已经卸下，默认行为会去 `.focus()` 一个已经不在 DOM 里的节点，什么都不发生，焦点仍然掉在 body），改成自己记：点哪个「归档」图标按钮就把它存进 `archiveTriggerRef`，「留着」时还给它，「归档」确认之后那一行没了、落到「新建」按钮。`workbench.selftest.tsx` 补 4 条焦点断言（新建保存成功、新建点取消、编辑保存成功、归档「留着」还给原按钮、归档确认落到「新建」——最后两条算进同一个 `check()`）；95 → 99 项。
+  3. **minor · markdown 判定漏了几类**：`src/shared/console-api.ts` 的 `MARKDOWN_RE` 原来只拦 `**粗体**`、标题、列表、链接，没拦 `*斜体*`、`_斜体_`、`__粗体__`、`` `代码` ``、`>引用`、`~~删除线~~`、独占一行的 `---`/`___`/`***`。补全后把检测拆成 `MARKDOWN_BLOCK_RE`（成对符号必须贴着内容、不是 `**`/`__` 的一部分；独占一行的分隔线按 `^\s{0,3}(-{3,}|_{3,}|\*{3,})\s*$`）加一个专门处理单星/单下划线的分支：先把「数字\*数字」「数字_数字」这类明显是乘号或版本号/文件名的配对去掉（`stripDigitFlankedOperators`），剩下的字符串里仍配得成对才算——不然像「单价\*数量=总价，一共2\*3=6元」这种一句里两处乘号会被误配成一对斜体。反例（中文里正常出现的单个星号／乘号、下划线文件名、连续两次乘法 `2*3*4=24` 都不该拦，正例覆盖七种写法）进了 `console.selftest.ts` 一段独立的纯函数块（不碰 DB/HTTP），428 → 430 两项都算在第 1 条一并提的计数里（上面已经写了 430）。
+  4. **minor · 「- 」开头的行报错文案堆了一串符号示例**：保持拦（与出口护栏 `stripMarkdown` 同一个口径：客户不该在企业微信里看到列表符号），`QUICK_REPLY_MARKDOWN_MSG` 从「正文不能用Markdown格式（\*\*加粗\*\*、# 标题、- 列表、[链接](地址)这类写法）」改成「正文不能用Markdown格式，分点请用「·」或直接换行」——直接给替代写法，不堆砌符号清单。
+  - 门禁（第二轮，审查之后，同一个分支续改）：`format:check`、`lint`、`typecheck` 全绿；`pnpm test` 不带与带 `PG_TEST_URL`（同上，容器复用同一个名字和端口）都 `EXIT=0`；console 430（两边相同，新加的真实 PG 并发块只在带 `PG_TEST_URL` 时跑、摘要句尾相应换一句）、workbench 99、conversations 143（未改动）。`PREFIX sha256` 与第一轮相同，不变；锁定套件 8 个文件零修改。本机绝对路径、长 `wm` 会话 id 两道黑名单扫描与 `gitleaks stdin`（对 `git diff origin/dev` 的输出）均无发现。做了 5 个代表性变异（上面 4 个 + 这次审查第 1 条新增的「去掉 `createQuickReply` 的锁」），全部确认变红后撤回复绿。`git fetch -q origin`：仍没有新提交，不需要合并。
+
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
@@ -1644,3 +1684,11 @@ date`，origin/dev 这段时间没有新提交）。
 - 半成品：无。浏览器实测没做到，但按 coordinator 的安排不用补——第一轮时本机的 chrome-devtools MCP 连接失败，没有现成的 Playwright 依赖；第二轮 coordinator 已经安排了另一个审查 agent 用本机缓存的 Playwright 1.64 + Chromium 做了真实走查，带回了上面第二轮那条 major。用 `overview.selftest.tsx` 的真实 DOM 断言（happy-dom）覆盖了所有者/管理员/主管/坐席/只读五种身份、权限矩阵、三态、排序（含金额相同按沉默时长、没有金额排最后）、接手的成功/409（含行被刷掉之后的 409）路径，没有走 1440/1279/375 三个宽度下的真实渲染截图，也没有测深色主题、没有跑 axe，留给第 24 步「02 走查种子与走查」。
 - 阻塞：无。
 - 下一步：主线照旧是第 22 步「快捷回复：行业包默认模板与管理抽屉」（已在另一条线并行，会改 J 页右栏与行业包配置，不碰总览）；之后是第 24 步「02 走查种子与走查」，先读本节与「实施记录 · 第 21 步」——A2 的 1440/1279/375 三个宽度、浅色深色、`check-console-src.ts` 已经核过一遍（接手按钮、待付款行、`amount` 字段都没有写死行业包词，没有碰 `handedOver`/`stage==='paid'`），走查脚本可以直接复用 `scripts/seed-demo.py` 现有的 02 场景种子（7F3A、F01、A01、B01 待付款）而不用另造，但种子数据现在要给至少一个会话配上报价或订单金额才能看出金额排序生效。
+- 合进 dev 时（第 22 步先合）：`src/console-api/app.ts` 两边新加的 import 都留；三个字体文件两边各自重切过，按合并后的界面文字重跑 `scripts/fonts/build.ts`（652 个汉字、835 个码位），`check-fonts` 通过。
+
+### 交接（2026-10-08，第 22 步）
+
+- 已完成：第 22 步「快捷回复：行业包默认模板与管理抽屉」（分支 `feat/02-step22-quick-replies`，没 push；开工时另两条线——第 21 步前端 A2、第 16 步隐私与保留期——都在各自分支上没合并进 `origin/dev`，本步没有碰 `console/src/overview/` 或隐私/保留期相关文件）。行业包配置加默认模板（新文件，不进 `console-pack.ts`，理由见「实施记录 · 第 22 步」）；空表首次读取时写入、advisory 锁保证只写一次；J 页右栏「管理」打开 480 宽抽屉，新建/编辑/上移下移/归档都是真接口，正文不许 markdown（前后端同一份 `hasMarkdown`，保存时校验）；`AUDIT_ACTIONS` 的「常用回复」改回「快捷回复」。结构、默认模板原文、四条取舍、自测、四个变异与门禁结果见「实施记录 · 第 22 步」。审查（真实 PG 并发 + 真实浏览器）回来四条已在同一分支改完：`createQuickReply` 并发新建撞 `ord`（补了写锁与真实多连接的并发用例）、抽屉切状态/归档确认之后焦点掉到 body、markdown 判定漏了单星/单下划线/代码/引用/删除线/分隔线、报错文案改成直接给替代写法；见「实施记录 · 第 22 步」的「审查之后改的」。
+- 半成品：无。
+- 阻塞：无。
+- 下一步：等第 16、21 步各自合并进 `origin/dev` 之后，这里按「交接（2026-10-08，第 23 步）」接着走——第 24 步「02 走查种子与走查」要等第 16、19、20、21、22、23 步都合了才能走完整条验收 33；在那之前谁有空就接 21（前端 A2）或 16（隐私与保留期）里还没合并的那条线，不必等本步。

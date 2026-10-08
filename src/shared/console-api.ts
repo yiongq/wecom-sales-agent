@@ -143,7 +143,37 @@ export const OrdersQuery = z.object({
   status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']).optional(),
   limit: intParam(100).optional(),
 });
-export const QuickReplyBody = z.strictObject({ title: str.min(1).max(20), body: str.min(1).max(500) });
+/**
+ * 正文不许 markdown（02 spec「快捷回复管理」，plan 第 22 步；第 22 步审查 minor 第 3 条补全）：**加粗**、__加粗__、
+ * 单星/单下划线*斜体*、_斜体_、`代码`、~~删除线~~、行首 #标题、行首 -/* 列表、行首 > 引用、独占一行的 ---/___/***
+ * 分隔线、[文字](地址) 链接。覆盖面同 src/engine.ts 的 stripMarkdown（对话出口护栏），这里不剥它、直接拒绝；
+ * 前后端都用这一份（console 表单提交前先查一遍）。
+ */
+const MARKDOWN_BLOCK_RE =
+  /\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|~~[^~\n]+~~|^\s{0,3}#{1,6}\s|^\s*[-*]\s|^\s{0,3}>\s|^\s{0,3}(?:-{3,}|_{3,}|\*{3,})\s*$|\[[^\]]*\]\([^)]*\)/mu;
+/**
+ * 单星 / 单下划线的一对，必须紧贴内容（两侧都不是空白）才算，且不是 ** / __ 的一部分。先把「数字*数字」「数字_数字」
+ * 这类配对去掉（常见的乘号「2*3=6」、版本号或文件名「v1_2.docx」），剩下的字符串里仍配得成对才算——不然中文句子里
+ * 随手写两个算式（「单价*数量=总价，一共2*3=6元」）会被两处乘号的星号误配成一对斜体（第 22 步审查 minor 第 3 条）
+ */
+const stripDigitFlankedOperators = (s: string): string => s.replace(/(\d)([*_])(?=\d)/g, '$1\u0000');
+const SINGLE_STAR_RE = /(?<!\*)\*(?!\s)[^*\n]+?(?<!\s)\*(?!\*)/;
+const SINGLE_UNDERSCORE_RE = /(?<!_)_(?!\s)[^_\n]+?(?<!\s)_(?!_)/;
+export const hasMarkdown = (s: string): boolean => {
+  if (MARKDOWN_BLOCK_RE.test(s)) return true;
+  const sanitized = stripDigitFlankedOperators(s);
+  return SINGLE_STAR_RE.test(sanitized) || SINGLE_UNDERSCORE_RE.test(sanitized);
+};
+// 「- 」列表照样拦（与 AI 回复去 markdown 的口径一致），但文案直接给替代写法，不堆砌一串符号示例
+// （第 22 步审查 minor 第 4 条）
+export const QUICK_REPLY_MARKDOWN_MSG = '正文不能用Markdown格式，分点请用「·」或直接换行';
+export const QuickReplyBody = z.strictObject({
+  title: str.min(1).max(20),
+  body: str
+    .min(1)
+    .max(500)
+    .refine((v) => !hasMarkdown(v), QUICK_REPLY_MARKDOWN_MSG),
+});
 export const MoveBody = z.strictObject({ direction: z.enum(['up', 'down']) });
 
 // ---------------- 领域类型 ----------------

@@ -512,6 +512,123 @@
   color: var(--text-2);
 }
 
+/* 卡片标题一行带右侧操作（「快捷回复」卡的「管理」）：标题不再自带下边距，由这一行统一留 */
+.wb-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.wb-card-head .wb-card-title {
+  margin: 0;
+}
+
+/*
+ * ---------------- 快捷回复管理抽屉（设计系统 §5.13 M 480） ----------------
+ * 头 56，内边距 0 16 0 24，标题 16/24/600；头下没有分隔线，内容滚动以后才出现 --divider。
+ * 体内边距 4 24 24，自己滚动。底（ConfirmDanger 走 antd Modal，不在这个抽屉的 footer 里，这里没有固定底栏）
+ */
+.wb-qr-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+  box-shadow: var(--shadow-modal);
+}
+.wb-qr-drawer .ant-drawer-header {
+  min-height: 56px;
+  padding: 0 16px 0 24px;
+  border-bottom: 0;
+}
+.wb-qr-drawer .ant-drawer-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.wb-qr-drawer .ant-drawer-body {
+  padding: 0;
+}
+.wb-qr-scroll {
+  padding: 4px 24px 24px;
+  overflow: auto;
+}
+.wb-qr-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.wb-qr-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wb-qr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--divider);
+}
+.wb-qr-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.wb-qr-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.wb-qr-row-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.wb-qr-row-body {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.wb-qr-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+/* 表单（§4 通用部件的表单间距：标签到控件 6，控件到帮助 6，字段之间 20） */
+.wb-qr-field {
+  margin-bottom: 20px;
+}
+.wb-qr-field:last-child {
+  margin-bottom: 0;
+}
+.wb-qr-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.wb-qr-help {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.wb-qr-help.is-error {
+  color: var(--danger);
+}
+.wb-qr-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
 /* <1280（侧栏收成图标栏或隐藏）：三栏放不下，落成单栏竖排，列表与右栏限高自己滚（同 detail.css 的副栏窄屏处理） */
 @media (max-width: 1279px) {
   .wb-root {

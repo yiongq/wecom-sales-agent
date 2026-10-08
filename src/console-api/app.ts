@@ -67,8 +67,10 @@ import { writeAudit } from '../db/repo/audit.js';
 import { readMessagesBefore } from '../db/repo/messages.js';
 import { readOutboundForSeqs, type OutboundSendRow } from '../db/repo/outbound.js';
 import {
+  anyQuickReplyRow,
   archiveQuickReply,
   createQuickReply,
+  ensureDefaultQuickReplies,
   listQuickReplies,
   moveQuickReply,
   updateQuickReply,
@@ -91,6 +93,7 @@ import {
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
 import { readMetricsView } from '../ops/metrics.js';
+import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
 import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
 import { profile } from '../profile.js';
@@ -769,9 +772,16 @@ export const consoleApi = new Hono<ConsoleEnv>()
     return c.json(body, 200);
   })
 
-  // ---------------- 快捷回复（02 spec「后台接口」；默认模板与管理抽屉在第 22 步） ----------------
+  // ---------------- 快捷回复（02 spec「后台接口」「快捷回复管理」，plan 第 22 步） ----------------
   // 只要求 DB 配置模式，两种会话存储下都可用。写入与审计在同一个事务里
   .get('/quick-replies', canSeeCustomers, async (c) => {
+    // 快速路径：绝大多数读不需要写——先在只读事务里看一眼表是不是真的空（含归档的，不止没归档的）
+    const empty = await readTx(c, (tx) => anyQuickReplyRow(tx).then((any) => !any));
+    if (empty) {
+      // 新租户首次读到空表：按行业包默认模板写入，只写一次（ensureDefaultQuickReplies 抢租户级 advisory 锁、
+      // 拿到锁后再确认一遍还是空表才插；并发的几次首次读互相等锁，只有一个真的插）。没配模板的包什么都不写
+      await withTenant(configRuntime().db, ctxOf(c), (tx) => ensureDefaultQuickReplies(tx, defaultQuickRepliesOf(currentTenant().pack.id)));
+    }
     const rows = await readTx(c, (tx) => listQuickReplies(tx));
     return c.json({ items: rows.map(quickReplyView) }, 200);
   })
