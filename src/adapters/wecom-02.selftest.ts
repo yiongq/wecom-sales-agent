@@ -24,9 +24,14 @@ process.env.WECOM_APP_SECRET = 'selftest-secret';
 process.env.WECOM_KF_OPEN_KFID = 'selftest-kf';
 process.env.PUBLIC_BASE_URL = ''; // 不走链接卡片
 
-const { __test, syncFromCallback } = await import('./wecom.js');
+const { __test, syncFromCallback, wecomAdapter } = await import('./wecom.js');
 const { getSession, getOrCreateSession, saveSession } = await import('../store.js');
 const tk = await import('../handoff/takeover.js');
+const { __privacyTest } = await import('../privacy/privacy.js');
+const { consentMenuButtonId, CONSENT_DECLINED_REPLY } = await import('../handoff/consent.js');
+// 同意菜单经 engine.ts 的 pushToChannel（跨渠道的通用出口，与 notifyPaid、跟进同一条路），不是 wecom 适配器内部直接
+// sendRich 的那条主链路：这里手动接上，server.ts 平时按会话渠道选适配器，这个文件只用 wecom
+tk.setReplyTransport((sessionId, text, opts) => wecomAdapter.push(sessionId, text, opts));
 // store 与适配器的 exit 钩子先写盘，清理排在它们之后（exit 监听按注册顺序执行）
 process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 
@@ -46,10 +51,14 @@ interface FakeMsg {
   send_time: number;
   origin: number;
   msgtype: string;
-  text?: { content: string };
+  text?: { content: string; menu_id?: string };
+  event?: { event_type: string; welcome_code?: string; external_userid?: string; id?: string };
 }
 const serverLog: FakeMsg[] = [];
 const sent: { to: string; content: string }[] = [];
+/** msgmenu 的发送（02 第 16 步）：head_content 与两个按钮的 id、文案 */
+const menusSent: { to: string; headContent: string; list: { id: string; content: string }[] }[] = [];
+const eventsSent: { to: string; content: string }[] = [];
 /** 审查第 7 条的探针：send_msg 第一次打到这个 uid 时触发一次接手，模拟退避重试期间被 HTTP 接手 */
 let takeoverOnSend: { uid: string; fired: boolean } | null = null;
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -71,7 +80,19 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
       tk.takeover(`wecom:${to}`, tk.sharedActor());
       return res({ errcode: 45009, errmsg: 'selftest: 限流重试' });
     }
+    if (body.msgtype === 'msgmenu') {
+      menusSent.push({
+        to,
+        headContent: String(body.msgmenu?.head_content ?? ''),
+        list: (body.msgmenu?.list ?? []).map((x: any) => ({ id: String(x.click?.id ?? ''), content: String(x.click?.content ?? '') })),
+      });
+      return res({ errcode: 0 });
+    }
     sent.push({ to, content: String(body.text?.content ?? body.link?.url ?? '') });
+    return res({ errcode: 0 });
+  }
+  if (ep === 'kf/send_msg_on_event') {
+    eventsSent.push({ to: `code:${body.code}`, content: String(body.text?.content ?? '') });
     return res({ errcode: 0 });
   }
   if (ep === 'kf/customer/batchget') return res({ errcode: 0, customer_list: [] });
@@ -89,6 +110,35 @@ function customerMsg(uid: string, content: string, ageMs = 0, msgtype = 'text'):
     origin: 3,
     msgtype,
     ...(msgtype === 'text' ? { text: { content } } : {}),
+  };
+}
+/** 客户进入会话事件：welcome_code 走 send_msg_on_event（02 第 16 步：欢迎语按发布与否加隐私说明链接） */
+function enterEvent(uid: string, welcomeCode: string): FakeMsg {
+  seq += 1;
+  return {
+    msgid: `evt02-${seq}`,
+    open_kfid: 'selftest-kf',
+    external_userid: uid,
+    send_time: Math.floor(Date.now() / 1000),
+    origin: 4,
+    msgtype: 'event',
+    event: { event_type: 'enter_session', welcome_code: welcomeCode, external_userid: uid },
+  };
+}
+/**
+ * 客户点了同意菜单的某个按钮（02 第 16 步，R23）：企微发来的是一条普通文本消息，按钮 id 在 text.menu_id
+ * （官方文档「接收消息」，没有单独的 msgmenu_click 事件；content 是按钮文案，不用来判断，只有 menu_id 解码）
+ */
+function menuClickEvent(uid: string, buttonId: string, content = '同意'): FakeMsg {
+  seq += 1;
+  return {
+    msgid: `click02-${seq}`,
+    open_kfid: 'selftest-kf',
+    external_userid: uid,
+    send_time: Math.floor(Date.now() / 1000),
+    origin: 3,
+    msgtype: 'text',
+    text: { content, menu_id: buttonId },
   };
 }
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -234,6 +284,97 @@ for (const k of ['log', 'warn', 'error'] as const) {
   takeoverOnSend = null;
 }
 
+// ---------------- 隐私说明：欢迎语按发布与否加链接（02 第 16 步，不变量 40）----------------
+{
+  await restart();
+  __privacyTest.set({ version: 1, body: 'x' });
+  const uid = 'u02-welcome-pub';
+  void syncFromCallback('tok02-welcome-pub');
+  serverLog.push(enterEvent(uid, `code-${uid}`));
+  void syncFromCallback('tok02-welcome-pub');
+  await waitFor(() => eventsSent.some((e) => e.to === `code:code-${uid}`));
+  const e1 = eventsSent.find((e) => e.to === `code:code-${uid}`);
+  check(
+    '发布过隐私说明：首次欢迎语末尾带「隐私说明：」一行',
+    e1 !== undefined && e1.content.includes('\n隐私说明：') && e1.content.endsWith('/privacy'),
+    json(e1),
+  );
+  __privacyTest.reset();
+  const uid2 = 'u02-welcome-nopub';
+  serverLog.push(enterEvent(uid2, `code-${uid2}`));
+  void syncFromCallback('tok02-welcome-nopub');
+  await waitFor(() => eventsSent.some((e) => e.to === `code:code-${uid2}`));
+  const e2 = eventsSent.find((e) => e.to === `code:code-${uid2}`);
+  check('没发布隐私说明：欢迎语不带链接（与开工时逐字节相同）', e2 !== undefined && !e2.content.includes('隐私说明'), json(e2));
+}
+
+// ---------------- 同意菜单：发布过隐私说明时触发，原生 msgmenu 带两个按钮（02 第 16 步，R23）----------------
+{
+  await restart();
+  __privacyTest.set({ version: 2, body: 'x' });
+  const uid = 'u02-consent-ask';
+  // 不带转人工触发词：避免这句自己先把会话转了人工，干扰下面「点不同意才转人工」的断言
+  const m = customerMsg(uid, '我妈有高血压，想去云南');
+  serverLog.push(m);
+  void syncFromCallback('tok02-consent-ask');
+  await waitFor(() => menusSent.some((x) => x.to === uid));
+  const menu = menusSent.find((x) => x.to === uid);
+  const wantIds = [consentMenuButtonId('health', 'granted'), consentMenuButtonId('health', 'declined')];
+  check(
+    '同意菜单：head_content 提到健康信息与可撤回，两个按钮 id 按 category:decision 编码',
+    menu !== undefined &&
+      menu.headContent.includes('健康情况') &&
+      menu.headContent.includes('可以随时撤回') &&
+      menu.list.map((x) => x.id).join() === wantIds.join() &&
+      menu.list.map((x) => x.content).join() === '同意,不同意',
+    json(menu),
+  );
+  check('同意菜单：session.consent.health 记为 asked', getSession(`wecom:${uid}`)?.consent?.health === 'asked');
+
+  // ---- 点「不同意」：转人工（kind=consent），回一句确认（不占「【顾问】」身份，经普通 send_msg） ----
+  serverLog.push(menuClickEvent(uid, consentMenuButtonId('health', 'declined'), '不同意'));
+  void syncFromCallback('tok02-consent-decline');
+  await waitFor(() => sentTo(uid).some((x) => x.content === CONSENT_DECLINED_REPLY));
+  const sDeclined = getSession(`wecom:${uid}`)!;
+  check(
+    '点「不同意」：记 declined、转人工 kind=consent、回一句确认',
+    sDeclined.consent?.health === 'declined' &&
+      sDeclined.handedOver === true &&
+      sDeclined.handoff?.kind === 'consent' &&
+      sentTo(uid).some((x) => x.content === CONSENT_DECLINED_REPLY),
+    json({ consent: sDeclined.consent, handoff: sDeclined.handoff, sent: sentTo(uid) }),
+  );
+
+  // ---- 另一个会话点「同意」：不转人工、不额外回复 ----
+  const uid2 = 'u02-consent-grant';
+  serverLog.push(customerMsg(uid2, '孩子才8岁，想去云南'));
+  void syncFromCallback('tok02-consent-grant-1');
+  await waitFor(() => menusSent.some((x) => x.to === uid2));
+  serverLog.push(menuClickEvent(uid2, consentMenuButtonId('minor', 'granted')));
+  void syncFromCallback('tok02-consent-grant-2');
+  await waitFor(() => getSession(`wecom:${uid2}`)?.consent?.minor === 'granted');
+  const sGranted = getSession(`wecom:${uid2}`)!;
+  check(
+    '点「同意」：记 granted，不转人工、不发确认语',
+    sGranted.consent?.minor === 'granted' && !sGranted.handedOver && !sentTo(uid2).some((x) => x.content === CONSENT_DECLINED_REPLY),
+    json({ consent: sGranted.consent, handedOver: sGranted.handedOver, sent: sentTo(uid2) }),
+  );
+
+  // ---- 不同意 → 同意：客户回去点同一张旧菜单的「同意」，解除锁定（02 第 16 步审查：此前永久锁死）----
+  // 点击消息是普通文本（msgtype='text'，按钮 id 在 text.menu_id），不是单独的 msgmenu_click 事件——
+  // 这个场景同时核两件事：① 真实格式下点击能被正确识别、不落进引擎当聊天 ② declined → granted 放行
+  serverLog.push(menuClickEvent(uid, consentMenuButtonId('health', 'granted')));
+  void syncFromCallback('tok02-consent-undo');
+  await waitFor(() => getSession(`wecom:${uid}`)?.consent?.health === 'granted');
+  const sUndone = getSession(`wecom:${uid}`)!;
+  check(
+    '不同意 → 同意：真实点击格式（text.menu_id）被识别，declined → granted 放行，点击消息本身没进会话的客户话语',
+    sUndone.consent?.health === 'granted' && !sUndone.messages.some((x) => x.role === 'customer' && x.content === '同意'),
+    json({ consent: sUndone.consent, messages: sUndone.messages.map((x) => ({ role: x.role, content: x.content })) }),
+  );
+  __privacyTest.reset();
+}
+
 Object.assign(console, origConsole);
 if (fails.length) {
   console.error('---- 场景日志（最近 40 行）----');
@@ -243,6 +384,7 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `WECOM-02 SELFTEST PASS: ${pass} 项断言全通（文本消息的 msgid 与 sentAt / 非文本占位的 sentAt / 重放按 msgid 对齐 / 退避重试期间被接手不补发）`,
+  `WECOM-02 SELFTEST PASS: ${pass} 项断言全通（文本消息的 msgid 与 sentAt / 非文本占位的 sentAt / 重放按 msgid 对齐 / 退避重试期间被接手不补发 / ` +
+    `欢迎语按隐私说明发布与否加链接 / 同意菜单的原生 msgmenu 与按钮 id / 点同意与不同意的记账、转人工与确认回复）`,
 );
 process.exit(0);

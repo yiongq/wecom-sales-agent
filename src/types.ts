@@ -155,6 +155,8 @@ export interface Session {
   followupOptOut?: { at: number; quote: string };
   /** 敏感信息的同意状态（R23，02 第 16 步） */
   consent?: Partial<Record<SensitiveCategory, 'asked' | 'granted' | 'declined' | 'withdrawn'>>;
+  /** 每个类别已经问过几次（至多两次，R23，02 第 16 步）：纯内存计数，不落库 */
+  consentAskCount?: Partial<Record<SensitiveCategory, number>>;
 }
 
 export interface Order {
@@ -213,4 +215,7 @@ export interface PushOpts {
   kind: OutboundKind;
   /** 对应的会话消息；送达之后才写进会话的（跟进）也先把对象带上，写进会话时用同一个对象 */
   message?: ChatMessage;
+  /** kind='menu' 时这条企微菜单问的是哪个敏感信息类别（R23，02 第 16 步）：wecom 适配器据此拼 menu 的按钮 id；
+   *  其余渠道忽略，只发 text 当普通文本 */
+  category?: SensitiveCategory;
 }

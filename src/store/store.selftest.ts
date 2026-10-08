@@ -1087,7 +1087,7 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `STORE SELFTEST PASS: ${pass} 项断言全通（seq 的严格与宽松模式 / 投影往返 / 文件后端读 JSON、flushSession 等落盘、事件在落盘之后、落盘失败不发事件 / 标记文件 / SESSION_STORE 校验 / boot 的失败分支 / 三段停机的顺序与时限 / SIGTERM / 导入期与模式无关 / healthz / PGlite：预载往返与校验、写队列、冻结、窗口推进、重置作废、事件在提交后、COMMIT 断线、poisoned、存档点、chat() 与 withTenant、一轮不查库、孤儿订单、spill 回放、drain、重启与崩溃 / 导入导出：往返、重复导入、补完改写、内容不同、持锁、--keep、spill、导出 → 文件存储 → --resync → db 存储${realPgRan ? ' / 真实 PG：第二个进程、另一写者、COMMIT 之后回包丢掉、两个命令行的退出码' : '；真实 PG 部分未跑'}）`,
+  `STORE SELFTEST PASS: ${pass} 项断言全通（seq 的严格与宽松模式 / 投影往返 / 文件后端读 JSON、flushSession 等落盘、事件在落盘之后、落盘失败不发事件 / 标记文件 / SESSION_STORE 校验 / boot 的失败分支 / 三段停机的顺序与时限 / SIGTERM / 导入期与模式无关 / healthz / PGlite：预载往返与校验、写队列、冻结、窗口推进、重置作废、事件在提交后、COMMIT 断线、poisoned、存档点、chat() 与 withTenant、一轮不查库、孤儿订单、spill 回放、drain、重启与崩溃 / 导入导出：往返、重复导入、补完改写、内容不同、持锁、--keep、spill、导出 → 文件存储 → --resync → db 存储${realPgRan ? ' / 真实 PG：第二个进程、另一写者、COMMIT 之后回包丢掉、两个命令行的退出码、保留期清理（过期各清一个·候选跳过·墓碑·trace 与任务清理·审计）、行权删除（取锁·spill·会话与订单的最终状态·审计）' : '；真实 PG 部分未跑'}）`,
 );
 process.exit(0);
 
@@ -1134,7 +1134,7 @@ function memDump(store: StoreMod): { sessions: Session[]; orders: Order[] } {
     .toSorted((a, b) => a.id.localeCompare(b.id));
   const orders = store
     .listOrders()
-    .filter((o) => !store.isDemoClassId(o.sessionId))
+    .filter((o) => !store.isDemoClassId(o.sessionId!))
     .toSorted((a, b) => a.id.localeCompare(b.id));
   return JSON.parse(JSON.stringify({ sessions, orders })) as { sessions: Session[]; orders: Order[] };
 }
@@ -1513,7 +1513,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       JSON.stringify(odata.map((r) => r.id)),
     );
     const demoSessions = fx6.sessions.filter((s) => !fx6.real.includes(s.id));
-    const keptOrders = fx6.orders.filter((o) => !fx6.real.includes(o.sessionId));
+    const keptOrders = fx6.orders.filter((o) => !fx6.real.includes(o.sessionId!));
     const rewritten = files(v);
     ck(
       'import：JSON 改写成只剩 demo 类会话与 demo 类、孤儿订单（与文件后端同一种写法，种子里的 NUL 原样留着）',
@@ -1847,7 +1847,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
     );
     res.data.exported = {
       sessions: sj.filter((s) => !isDemoClassId(s.id)).toSorted((a, b) => a.id.localeCompare(b.id)),
-      orders: oj.filter((o) => !isDemoClassId(o.sessionId)).toSorted((a, b) => a.id.localeCompare(b.id)),
+      orders: oj.filter((o) => !isDemoClassId(o.sessionId!)).toSorted((a, b) => a.id.localeCompare(b.id)),
     };
     // 导出结果再交给 import-sessions：--resync 什么都不追加；不带 --resync 是逐个一致（dry-run 都不动库与文件）
     const exported = files(v);
@@ -2170,7 +2170,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
         .map((s) => normalizeForStore(s))
         .toSorted((a, b) => a.id.localeCompare(b.id)),
       orders: fx6.orders
-        .filter((o) => !isDemoClassId(o.sessionId))
+        .filter((o) => !isDemoClassId(o.sessionId!))
         .map((o) => normalizeForStore(o))
         .toSorted((a, b) => a.id.localeCompare(b.id)),
     };
@@ -4066,6 +4066,191 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     };
     await flaky.close();
   }
+  if (scenario === 'retention') {
+    // 保留期清理（02 spec「隐私说明…」，验收 25，不变量 6）：租户的保留期（线索 7 天、客户 30 天、trace 7 天）与
+    // lead2 的过期 trace、一个早该结束的任务，由父进程在起子进程之前经 fxr.query 直接写库（本模块不 import drizzle-orm，
+    // scripts/check-boundaries.ts 只许 src/db/ 里 import 它；db/repo/traces.ts 的 insertTurnTraces 之外的都走父进程的原生连接）。
+    // 五个会话：lead1（8 天前，该清）、lead2（6 天前，留着）、cust1（已付、8 天前：过了线索的 7 天但没过客户的 30 天，不该清）、
+    // cust2（已付、31 天前，该清，订单保留、sessionId 去掉）、race（最初也是 8 天前的候选，但清理前一刻客户又说了一句，
+    // 内存里的 updatedAt 立刻变成「现在」——不该清，改动本身照常落库，顺带验一次这一刻 pendingWrite 的同步信号）
+    const main = await openDb(APP);
+    await store.initSessionStore({ db: main.db, tenantId, tenantSlug: 'demo', varDir });
+    const DAY = 86_400_000;
+    const now = Date.now();
+    const mk = (tag: string, daysAgo: number): Session => {
+      const s = store.getOrCreateSession(`wecom:wmRet${tag}`, 'wecom');
+      say(s, 'customer', `会话 ${tag}`);
+      s.updatedAt = now - daysAgo * DAY;
+      store.saveSession(s, false);
+      return s;
+    };
+    const lead1 = mk('L1', 8);
+    const lead2 = mk('L2', 6);
+    const cust1 = mk('C1', 8);
+    const cust2 = mk('C2', 31);
+    const race = mk('Race', 8);
+    // sqlRace（8 天前，也该清）：不像 race 那样提前变脏——这个会话在 purgeOnce 开始时是干净的，候选分页里按候选预过滤
+    // 都会放行，holdForPurge 真的拿到持有；等真正在调清除 SQL（purgeHoldHook，见下）才同步触发一笔新消息，模拟
+    // 「清除 SQL 正在执行时同一会话来了新消息」（02 第 16 步审查第二轮）：核的是这笔写不撞上 StoreConflictError、
+    // 清理让路、写照常落库，不是靠真实网络延迟赌时序
+    const sqlRace = mk('SqlRace', 8);
+    // lead2（活到最后）顺带验一次敏感信息同意真的记进了 consents 表（变异测试发现的缺口：文件存储下的单测看不到 DB 落库）
+    const consent = await import('../handoff/consent.js');
+    consent.noteSensitiveMentions(lead2, ['health'], 1, '测试证据：我妈有高血压');
+    for (const s of [lead1, lead2, cust1, cust2, race, sqlRace]) await store.flushSession(s.id);
+    // lead1（被清的那个）顺带给它造一条发送账本行与一条待办任务：purge_conversation 的 SQL 函数本身已经会删这两类
+    // （第 4 步），但 store.selftest 走的是 purge.ts 的整条调用路径，之前这个夹具里从没出现过这两类行，调用参数传错了
+    // 也测不出来——补上，让这条调用路径也真的核到（02 审查第 16 步「删除与保留期」minor 第 3 条）
+    const { insertOutboundSends } = await import('../db/repo/outbound.js');
+    const { enqueueJob } = await import('../db/repo/jobs.js');
+    await withTenant(main.db, ctx, async (tx) => {
+      await insertOutboundSends(tx, [
+        {
+          conversationId: lead1.id,
+          channelMsgid: 'ret-fix-01',
+          messageSeq: null,
+          kind: 'welcome',
+          sentAt: new Date(now - 8 * DAY),
+          status: 'accepted',
+          errcode: null,
+          failType: null,
+        },
+      ]);
+      await enqueueJob(tx, {
+        kind: 'followup',
+        dedupeKey: `followup:ret-fix:${lead1.id}`,
+        runAt: new Date(now),
+        payload: { sessionId: lead1.id },
+        maxAttempts: 3,
+      });
+    });
+    const payOrder = (s: Session) => {
+      const o = store.createOrder({
+        sessionId: s.id,
+        routeId: 'r-demo',
+        routeTitle: '演示线路',
+        travelers: 2,
+        departDate: '2027-01-01',
+        totalPrice: 9900,
+      });
+      s.orderIds = [...s.orderIds, o.id];
+      store.saveSession(s, false);
+      store.markOrderPaid(o.id);
+      return o;
+    };
+    const cust1Order = payOrder(cust1);
+    const cust2Order = payOrder(cust2);
+    for (const s of [cust1, cust2]) await store.flushSession(s.id);
+    // lead2 的一条过期 trace（没有走真实轮次，startedAt 手动钉在 8 天前；用 db/repo 的 insertTurnTraces，不碰 drizzle-orm）
+    const { insertTurnTraces } = await import('../db/repo/traces.js');
+    await withTenant(main.db, ctx, (tx) =>
+      insertTurnTraces(tx, [
+        {
+          id: randomUUID(),
+          conversationId: lead2.id,
+          startedAt: new Date(now - 8 * DAY),
+          durationMs: 100,
+          outcome: 'replied',
+          sopVersion: null,
+          prefixHash: '0'.repeat(64),
+          catalogVersions: {},
+          stageBefore: null,
+          stageAfter: null,
+          draft: null,
+          finalText: null,
+          calls: [],
+          llm: [],
+          signals: null,
+        },
+      ]),
+    );
+    // race：push 一条新消息、touch=true（默认）：内存里的 updatedAt 立刻变成「现在」，清理那一刻用这份更新的内存状态
+    // 判断还在保留期内而跳过（真实 PG 的网络延迟下，不能靠「故意不 flush」去赌跟 purgeOnce 抢时间——两边都是异步落库，
+    // 谁先落完不确定；改用 updatedAt 本身的新旧，这是唯一不依赖时序的判法）。另外直接验一次 pendingWrite 的同步信号本身：
+    // push 之后、还没来得及落库的这一刻，pendingWrite 必须已经是 true（不依赖时序，发生在同一段同步代码里）
+    race.messages.push({ role: 'customer', content: '清理前一刻又说了一句', at: now });
+    store.saveSession(race);
+    const pendingRightAfterSave = store.pendingWrite(race.id);
+    const purge = await import('../jobs/purge.js');
+    // 「返回 true 就在同一个 tick 里移出内存」（spec「任务表与跟进」）：不能只看「最后不在内存里」——那样把 forgetSession
+    // 延到下一拍（比如包一层 setTimeout）也测不出来。做法：purgeConversation 的 SQL 一 resolve 就标一下（purgeTickHook）、
+    // 顺手排一个微任务检查点；forgetSession 真的调用时（forgetSessionProbe）看这个检查点有没有先跑过——没跨过一次微任务
+    // 检查点，就证明中间没有 await（JS 单线程的语言语义保证，不是猜时序）
+    let microtaskSeen = false;
+    let forgetGapSeen = false;
+    let forgetCount = 0;
+    purge.setPurgeTickHook(() => {
+      microtaskSeen = false;
+      queueMicrotask(() => {
+        microtaskSeen = true;
+      });
+    });
+    store.__storeTest.setForgetSessionProbe(() => {
+      forgetCount += 1;
+      if (microtaskSeen) forgetGapSeen = true;
+    });
+    // 「清除 SQL 正在执行时同一会话来了新消息」（02 第 16 步审查第二轮）：holdForPurge 真的挂起 sqlRace 的写队列之后
+    // （purgeHoldHook，在调 purge_conversation 这次 SQL 之前同步触发），这一刻同步 push 一条消息再 saveSession——
+    // kick 被 purgeHeld 挡住，这笔改动只会标脏、排着，不会立即落库；purge_conversation 的事务提交之前会核到这个会话
+    // 被改动了（stillClean() 为 false）而回滚、让路，hold.release() 发现脏了补一次 kick，写才真正落库
+    const sqlRaceNote = '清除 SQL 执行期间插进来的一句';
+    let pendingDuringHold = false;
+    purge.setPurgeHoldHook(async (sid) => {
+      if (sid !== sqlRace.id) return;
+      sqlRace.messages.push({ role: 'customer', content: sqlRaceNote, at: Date.now() });
+      store.saveSession(sqlRace);
+      // 真实延迟（远大于本机 PG 的往返），核的是「持有期间 kick 按兵不动」，不是「这次写最终会不会落库」：
+      // 去掉 purgeHeld 这道拦截（变异「去掉持有」）时，kick 不受挡地会在这段延迟里真的把这次改动落库，
+      // pendingWrite 在延迟之后就会变 false——不用去赌真实网络延迟下两笔事务谁先抢到行锁，直接核「有没有被挡住」这件事本身
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      pendingDuringHold = store.pendingWrite(sqlRace.id);
+    });
+    let purgeThrew: string | null = null;
+    let r1: Awaited<ReturnType<typeof purge.purgeOnce>>;
+    try {
+      r1 = await purge.purgeOnce(now);
+    } catch (e) {
+      purgeThrew = e instanceof Error ? e.name : String(e);
+      r1 = { conversations: 0, traces: 0, jobs: 0, skipped: 0, preFiltered: 0 };
+    }
+    purge.setPurgeTickHook(null);
+    purge.setPurgeHoldHook(null);
+    store.__storeTest.setForgetSessionProbe(null);
+    // 补上 hold.release() 之后被 purgeHeld 挡住的那次落库（不依赖时序：flushSession 等的是「这个会话不再脏」，
+    // release() 发现脏了已经同步调过 kick，这里只是等它跑完）
+    await store.flushSession(sqlRace.id);
+    // race 这次没被清：改动照常落库（不是被 tombstone 挡住，是从没被清过）
+    await store.flushSession(race.id);
+    // 两个真的被清的会话：旧对象上再 saveSession 不报错、不落库（tombstone）；identity map 里也没了
+    lead1.messages.push({ role: 'system', content: 'ghost write after purge', at: now });
+    store.saveSession(lead1, false);
+    const stillInMemory = { lead1: store.getSession(lead1.id) !== undefined, cust2: store.getSession(cust2.id) !== undefined };
+    // cust2 的订单一并从内存订单表摘掉（forgetSession，Order.sessionId 仍要求是 string、不改成可选）：库里那一行仍保留
+    // （上面已经核过 session_id 置空），但后台 /orders、成交额 KPI 是从 identity map 算的（listOrders/getOrder），
+    // 清理之后自然看不到这张单——与种子/访客会话清理同一种做法，不是遗漏
+    const cust2OrderGoneFromMemory = store.getOrder(cust2Order.id) === undefined;
+    const cust1OrderStillInMemory = store.getOrder(cust1Order.id) !== undefined;
+    res.data.retention = {
+      result: r1,
+      lead1Id: lead1.id,
+      lead2Id: lead2.id,
+      cust1Id: cust1.id,
+      cust2Id: cust2.id,
+      raceId: race.id,
+      stillInMemory,
+      cust1OrderId: cust1Order.id,
+      cust2OrderId: cust2Order.id,
+      pendingRightAfterSave,
+      cust2OrderGoneFromMemory,
+      cust1OrderStillInMemory,
+      forgetCount,
+      forgetGapSeen,
+      sqlRaceId: sqlRace.id,
+      purgeThrew,
+      pendingDuringHold,
+    };
+    await main.close();
+  }
 }
 
 // ---------------- 父进程：起子进程、收结果 ----------------
@@ -4484,7 +4669,7 @@ async function pgSuites(): Promise<void> {
       'demo5',
       ['fresh'],
       fx6.sessions.filter((x) => !fx6.real.includes(x.id)),
-      fx6.orders.filter((o) => !fx6.real.includes(o.sessionId)),
+      fx6.orders.filter((o) => !fx6.real.includes(o.sessionId!)),
     );
   }
 
@@ -4658,6 +4843,281 @@ async function pgSuites(): Promise<void> {
         dn.dirty === 0,
       JSON.stringify(dn) + rn.out.slice(-300),
     );
+
+    // ---- 保留期清理（02 第 16 步，验收 25，不变量 6）----
+    // 子进程只建会话、订单与清理本身；租户的保留期与一个早该结束的任务由父进程经 fxr（超级用户原生连接）先写好——
+    // 本模块不 import drizzle-orm（scripts/check-boundaries.ts 只许 src/db/ 里 import 它），父进程这条路已有、不受这条限制
+    await fxr.query(`update tenants set retention_lead_days=7, retention_customer_days=30, retention_trace_days=7 where slug='demo'`);
+    const oldJobKey = `followup:old:${randomUUID()}`;
+    await fxr.query(
+      `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, max_attempts, payload, finished_at)
+       values ((select id from tenants where slug='demo'), 'followup', $1, now() - interval '31 days', 'done', 3, '{}'::json, now() - interval '31 days')`,
+      [oldJobKey],
+    );
+    const rr = runStoreChild('rpg', rpgEnv(freshVarDir('rpg-retention', [], []), 'retention'), 60_000);
+    const ret = merge('真实 PG 保留期清理', rr).retention as
+      | {
+          result: { conversations: number; traces: number; jobs: number; skipped: number; preFiltered: number };
+          lead1Id: string;
+          lead2Id: string;
+          cust1Id: string;
+          cust2Id: string;
+          raceId: string;
+          stillInMemory: { lead1: boolean; cust2: boolean };
+          cust1OrderId: string;
+          cust2OrderId: string;
+          pendingRightAfterSave: boolean;
+          cust2OrderGoneFromMemory: boolean;
+          cust1OrderStillInMemory: boolean;
+          forgetCount: number;
+          forgetGapSeen: boolean;
+          sqlRaceId: string;
+          purgeThrew: string | null;
+          pendingDuringHold: boolean;
+        }
+      | undefined;
+    check(
+      // race 的新 updatedAt 多半已经落库（真实 PG 上落库很快），下次候选分页可能已经不选它、不计进 skipped——
+      // 只要求候选里没过期的 cust1 被跳过（至少 1 条），race「没被清」用下面 survivingConvIds 单独核实，不靠这个数。
+      // cust1 是「写队列上没动静，但内存里按客户保留期还没到期」，必须在调 purge_conversation 之前被 preFiltered 挡下来——
+      // 去掉这道预检（变异测试带出的区分）时，SQL 函数自己的乐观并发与保留期重判仍然会把它判成 false，一样计进 skipped，
+      // 不摘内存也不少删会话，conversations/skipped 这两个数分不出「没调 SQL」与「调了但 SQL 说不行」，唯独 preFiltered 能分出来
+      '保留期清理：过期的线索（lead1）与过期的客户（cust2）各清一个，候选里没过期的（cust1）在调 SQL 之前被挡下',
+      rr.status === 0 && ret?.result.conversations === 2 && (ret.result.skipped ?? 0) >= 1 && (ret.result.preFiltered ?? 0) >= 1,
+      JSON.stringify(ret?.result) + rr.out.slice(-300),
+    );
+    check(
+      '保留期清理：race 刚 push 完消息、还没来得及落库的那一刻，pendingWrite 的同步信号已经是 true',
+      ret?.pendingRightAfterSave === true,
+      JSON.stringify(ret?.pendingRightAfterSave),
+    );
+    check(
+      '保留期清理：被清的会话同一个 tick 移出内存（墓碑），旧对象再 saveSession 不报错、不是「还在内存里」',
+      ret?.stillInMemory.lead1 === false && ret?.stillInMemory.cust2 === false,
+      JSON.stringify(ret?.stillInMemory),
+    );
+    check(
+      // forgetGapSeen 的健康值是 false：每次 forgetSession 真的调用时，purgeTickHook 排的那个 queueMicrotask 检查点
+      // 都还没跑过——只有 forgetSession 与 purgeConversation 的 SQL 调用之间没有任何别的 await（同一个 tick）才成立
+      // （JS 单线程的语言语义，不是猜时序）。把 purge.ts 的 `forgetSession(cand.id)` 包一层 setTimeout(…, 0) 延到下
+      // 一个宏任务：宏任务排在微任务之后，由此 forgetSession 真正执行时检查点早已跑过，forgetGapSeen 变 true，断言变红
+      '保留期清理：forgetSession 两次都真的调用了（清了几个会话调几次），且每次都在同一个 tick 里调用（没有跨 await 的空隙）',
+      ret?.forgetCount === 2 && ret?.forgetGapSeen === false,
+      JSON.stringify({ forgetCount: ret?.forgetCount, forgetGapSeen: ret?.forgetGapSeen }),
+    );
+    check(
+      '保留期清理：cust2 的订单一并从内存订单表摘掉（后台 /orders、成交额 KPI 从 identity map 算，清理之后看不到这张单，' +
+        '库里那一行仍保留，上面已核过 session_id 置空）；没被清的 cust1 的订单仍在内存里',
+      ret?.cust2OrderGoneFromMemory === true && ret?.cust1OrderStillInMemory === true,
+      JSON.stringify({ cust2OrderGoneFromMemory: ret?.cust2OrderGoneFromMemory, cust1OrderStillInMemory: ret?.cust1OrderStillInMemory }),
+    );
+    check(
+      '保留期清理：清除的 SQL 正在执行时同一会话来了新消息（02 第 16 步审查第二轮）——holdForPurge 的持有挡下这笔' +
+        '并发写，不抛 StoreConflictError、不进优雅停机',
+      ret?.purgeThrew === null,
+      JSON.stringify(ret?.purgeThrew),
+    );
+    check(
+      // 这条核的是「持有」本身生效：拿到 hold 之后 kick 按兵不动，即便给了 300ms 真实延迟（远大于本机 PG 往返）也没有
+      // 偷偷落库。去掉 purgeHeld 这道拦截（变异「去掉持有」）会让这条变红——kick 不受挡，这段延迟里就把改动落库了
+      '保留期清理：持有期间（给了 300ms 真实延迟）这次改动仍然排在写队列上，没有被偷偷 kick 掉',
+      ret?.pendingDuringHold === true,
+      JSON.stringify(ret?.pendingDuringHold),
+    );
+    if (ret) {
+      const convs = await fxr.query<{ id: string }>(
+        `select c.id from conversations c join tenants t on t.id=c.tenant_id where t.slug='demo' and c.id = any($1)`,
+        [[ret.lead1Id, ret.lead2Id, ret.cust1Id, ret.cust2Id, ret.raceId, ret.sqlRaceId]],
+      );
+      check(
+        '保留期清理：没过期的线索（lead2，6 天）、没过客户保留期的 cust1（8 天，但有已付订单）、正在落库的 race 与' +
+          'sqlRace（清除 SQL 执行期间来了新消息，让路）都还在；过期的 lead1、cust2 没了',
+        convs
+          .map((r) => r.id)
+          .toSorted()
+          .join() === [ret.lead2Id, ret.cust1Id, ret.raceId, ret.sqlRaceId].toSorted().join(),
+        JSON.stringify(convs.map((r) => r.id)),
+      );
+      const [raceMsgs] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from messages m join tenants t on t.id=m.tenant_id where t.slug='demo' and m.conversation_id = $1`,
+        [ret.raceId],
+      );
+      check('保留期清理：跳过的 race 不受影响，清理那一刻没落库的改动之后照常落库', raceMsgs?.n === 2, JSON.stringify(raceMsgs));
+      const [sqlRaceMsgs] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from messages m join tenants t on t.id=m.tenant_id where t.slug='demo' and m.conversation_id = $1`,
+        [ret.sqlRaceId],
+      );
+      check(
+        '保留期清理：清除 SQL 执行期间插进来的那句新消息（hold.release() 发现脏了补的那次 kick）真的落库了，不是被丢掉',
+        sqlRaceMsgs?.n === 2,
+        JSON.stringify(sqlRaceMsgs),
+      );
+      const [lead1Outbound] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from outbound_sends s join tenants t on t.id=s.tenant_id where t.slug='demo' and s.conversation_id = $1`,
+        [ret.lead1Id],
+      );
+      const [lead1Jobs] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from jobs j join tenants t on t.id=j.tenant_id where t.slug='demo' and j.payload->>'sessionId' = $1`,
+        [ret.lead1Id],
+      );
+      check(
+        '保留期清理：被清的 lead1 的发送账本行与待办任务（purge.ts 整条调用路径，不是只调 SQL 函数）都一并删掉了',
+        lead1Outbound?.n === 0 && lead1Jobs?.n === 0,
+        JSON.stringify({ lead1Outbound, lead1Jobs }),
+      );
+      const orderRows = await fxr.query<{ id: string; session_id: string | null; data: Record<string, unknown> }>(
+        `select o.id, o.session_id, o.data from orders o join tenants t on t.id=o.tenant_id where t.slug='demo' and o.id = any($1)`,
+        [[ret.cust1OrderId, ret.cust2OrderId]],
+      );
+      const cust1Row = orderRows.find((o) => o.id === ret.cust1OrderId);
+      const cust2Row = orderRows.find((o) => o.id === ret.cust2OrderId);
+      check(
+        '保留期清理：没被清的 cust1 的订单仍挂着 session_id；被清的 cust2 的订单保留、session_id 置空、data 里没有 sessionId',
+        cust1Row?.session_id === ret.cust1Id &&
+          cust2Row?.session_id === null &&
+          cust2Row !== undefined &&
+          !Object.hasOwn(cust2Row.data, 'sessionId'),
+        JSON.stringify({ cust1Row, cust2Row }),
+      );
+      const [traceCountLead2] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from turn_traces tt join tenants t on t.id=tt.tenant_id where t.slug='demo' and tt.conversation_id = $1`,
+        [ret.lead2Id],
+      );
+      check(
+        '保留期清理：lead2 没被清，但它那条过期（8 天前）的 trace 被 purge_expired_traces 删了',
+        traceCountLead2?.n === 0,
+        JSON.stringify(traceCountLead2),
+      );
+      const [consentRow] = await fxr.query<{ category: string; decision: string }>(
+        `select cs.category, cs.decision from consents cs join tenants t on t.id=cs.tenant_id where t.slug='demo' and cs.conversation_id = $1`,
+        [ret.lead2Id],
+      );
+      check(
+        '同意记录真的落库（02 第 16 步，R23）：noteSensitiveMentions 记的一条 health/asked 在 consents 表里',
+        consentRow?.category === 'health' && consentRow.decision === 'asked',
+        JSON.stringify(consentRow),
+      );
+      const [oldJobCount] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from jobs j join tenants t on t.id=j.tenant_id where t.slug='demo' and j.dedupe_key = $1`,
+        [oldJobKey],
+      );
+      check('保留期清理：早该结束的任务被 purge_finished_jobs 删了', oldJobCount?.n === 0, JSON.stringify(oldJobCount));
+      const [purgeAudit] = await fxr.query<{ diff: Record<string, unknown> }>(
+        `select a.diff from audit_log a join tenants t on t.id=a.tenant_id where t.slug='demo' and a.action='system.purge' order by a.id desc limit 1`,
+      );
+      check(
+        'system.purge 审计只有条数（会话数为 2），没有会话 id',
+        purgeAudit?.diff !== undefined &&
+          (purgeAudit.diff as { conversations: number }).conversations === 2 &&
+          !JSON.stringify(purgeAudit.diff).includes(ret.lead1Id) &&
+          !JSON.stringify(purgeAudit.diff).includes(ret.cust2Id),
+        JSON.stringify(purgeAudit),
+      );
+    }
+
+    // ---- 行权删除（02 第 16 步 erase-conversation，验收 27）----
+    {
+      const eraseVar = freshVarDir('rpg-erase', [], []);
+      const erase = (args: string[]) =>
+        spawnSync(process.execPath, ['--import', 'tsx', path.join(repo, 'src', 'cli', 'erase-conversation.ts'), ...args], {
+          cwd: repo,
+          env: { ...base, DATABASE_PLATFORM_URL: fxr.urls.platform, VAR_DIR: eraseVar },
+          encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+        });
+      // 应用在跑时：拒绝、退出码 3
+      const p2 = await portOf();
+      const srvE = spawn(process.execPath, ['--import', 'tsx', serverTs], { cwd: repo, env: serverEnv(eraseVar, p2) });
+      let outE = '';
+      srvE.stdout.on('data', (c: Buffer) => (outE += c.toString()));
+      srvE.stderr.on('data', (c: Buffer) => (outE += c.toString()));
+      cleanup.push(() => srvE.kill('SIGKILL'));
+      for (let i = 0; i < 300 && !outE.includes('[server] 已启动'); i++) await sleep(100);
+      const whileRunning = erase(['--tenant', 'demo', '--id', 'wecom:wmEraseLive', '--reason', '自测']);
+      check(
+        '行权删除：应用在跑时取不到租户锁，退出码 3',
+        whileRunning.status === 3,
+        `${whileRunning.status} ${whileRunning.stdout}${whileRunning.stderr}`.slice(-300),
+      );
+      srvE.kill('SIGTERM');
+      await Promise.race([new Promise((r) => srvE.on('exit', r)), sleep(15_000)]);
+
+      // 应用停了，但 var/ 里有没回放的 spill：拒绝（退出码 1），什么都没动
+      const spillFile = path.join(eraseVar, `store-spill-${randomUUID()}.json`);
+      fs.writeFileSync(spillFile, '{}');
+      const whileSpill = erase(['--tenant', 'demo', '--id', 'wecom:wmEraseLive', '--reason', '自测']);
+      check(
+        '行权删除：有没回放的 spill 文件时拒绝，退出码 1',
+        whileSpill.status === 1 && `${whileSpill.stdout}${whileSpill.stderr}`.includes('spill'),
+        `${whileSpill.status} ${whileSpill.stdout}${whileSpill.stderr}`.slice(-300),
+      );
+      fs.unlinkSync(spillFile);
+
+      // 应用停了、没有 spill：对一个保留期内、有已付订单的会话执行——删除会话、消息、trace、同意记录、发送账本，订单保留、session_id 置空。
+      // 直接用 fxr 的超级用户连接造数据，不必经过真的 server 进程
+      const eraseSid = 'wecom:wmErase1';
+      await fxr.query(
+        `insert into conversations (tenant_id, id, channel, stage, handed_over, last_seq, window_start_seq, state, created_at, updated_at)
+         values ((select id from tenants where slug='demo'), $1, 'wecom', 'quote', false, 1, 1, $2::json, now(), now())`,
+        [eraseSid, JSON.stringify({ id: eraseSid, stage: 'quote' })],
+      );
+      await fxr.query(
+        `insert into messages (tenant_id, conversation_id, seq, role, content, at)
+         values ((select id from tenants where slug='demo'), $1, 1, 'customer', '你好', now())`,
+        [eraseSid],
+      );
+      await fxr.query(
+        `insert into consents (tenant_id, conversation_id, category, decision, notice_version, at)
+         values ((select id from tenants where slug='demo'), $1, 'health', 'granted', 1, now())`,
+        [eraseSid],
+      );
+      const eraseOrderId = `ord_erasetest${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+      const [eraseOrder] = await fxr.query<{ id: string }>(
+        `insert into orders (tenant_id, id, session_id, route_id, status, total_price, created_at, paid_at, data)
+         values ((select id from tenants where slug='demo'), $1, $2, 'r-demo', 'paid', 9900, now(), now(), $3::json) returning id`,
+        [eraseOrderId, eraseSid, JSON.stringify({ id: eraseOrderId, sessionId: eraseSid })],
+      );
+      const erased = erase(['--tenant', 'demo', '--id', eraseSid, '--reason', '客户要求删除（自测）']);
+      check('行权删除：应用停了之后执行，退出码 0', erased.status === 0, `${erased.status} ${erased.stdout}${erased.stderr}`.slice(-400));
+      const [convAfter] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from conversations c join tenants t on t.id=c.tenant_id where t.slug='demo' and c.id = $1`,
+        [eraseSid],
+      );
+      const [orderAfter] = await fxr.query<{ session_id: string | null; data: Record<string, unknown> }>(
+        `select o.session_id, o.data from orders o join tenants t on t.id=o.tenant_id where t.slug='demo' and o.id = $1`,
+        [eraseOrder!.id],
+      );
+      const [auditAfter] = await fxr.query<{ diff: Record<string, unknown> }>(
+        `select diff from audit_log a join tenants t on t.id=a.tenant_id where t.slug='demo' and a.action='platform.erase' order by a.id desc limit 1`,
+      );
+      check(
+        '行权删除：会话、消息、trace、同意记录都没了；订单保留、session_id 置空、data 去掉 sessionId；platform.erase 审计只有条数与原因',
+        convAfter?.n === 0 &&
+          orderAfter?.session_id === null &&
+          orderAfter !== undefined &&
+          !Object.hasOwn(orderAfter.data, 'sessionId') &&
+          auditAfter?.diff !== undefined &&
+          (auditAfter.diff as { conversations: number }).conversations === 1 &&
+          (auditAfter.diff as { reason: string }).reason === '客户要求删除（自测）',
+        JSON.stringify({ convAfter, orderAfter, auditAfter }),
+      );
+
+      // 会话本来就不在：各类 0 条，审计仍照写（留下有过这次请求的记录），退出码 0（02 第 16 步审查 minor 第 4 条，之前没有自动化用例）
+      const missingSid = 'wecom:wmEraseMiss1';
+      const erasedMissing = erase(['--tenant', 'demo', '--id', missingSid, '--reason', '查无此人（自测）']);
+      const [auditMissing] = await fxr.query<{ diff: Record<string, unknown> }>(
+        `select diff from audit_log a join tenants t on t.id=a.tenant_id where t.slug='demo' and a.action='platform.erase' order by a.id desc limit 1`,
+      );
+      check(
+        '行权删除：会话本来就不在——退出码仍是 0（信息提示，不算错误），各类条数都是 0，审计照写这次请求',
+        erasedMissing.status === 0 &&
+          (auditMissing?.diff as { conversations: number } | undefined)?.conversations === 0 &&
+          (auditMissing?.diff as { messages: number } | undefined)?.messages === 0 &&
+          (auditMissing?.diff as { reason: string } | undefined)?.reason === '查无此人（自测）',
+        `${erasedMissing.status} ${erasedMissing.stdout}${erasedMissing.stderr}`.slice(-400) + JSON.stringify(auditMissing),
+      );
+    }
 
     // ---- 导入导出（plan 第 6 步，验收 3）：两个命令行以子进程执行、断言退出码；持锁的是真的 server.ts（db 存储） ----
     await fxr.query(`insert into tenants (slug, name, pack_id) values ('xfer', 'xfer', 'travel')`);

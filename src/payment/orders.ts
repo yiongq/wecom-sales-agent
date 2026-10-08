@@ -54,7 +54,7 @@ function audit(o: Order, actor: Actor, entry: { action: string; diff: Record<str
   queueAudit(
     o.sessionId,
     { kind: 'user', userId: actor.userId, name: actor.name, ip: actor.ip ?? null },
-    { action: entry.action, targetType: 'order', targetId: o.id, diff: { shortId: shortIdOf(o.sessionId ?? ''), ...entry.diff } },
+    { action: entry.action, targetType: 'order', targetId: o.id, diff: { shortId: shortIdOf(o.sessionId), ...entry.diff } },
   );
 }
 

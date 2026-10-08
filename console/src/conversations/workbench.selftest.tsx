@@ -9,6 +9,7 @@
 process.env.TZ = 'Asia/Shanghai';
 
 import '../overview/selftest-env.js';
+import fs from 'node:fs';
 import { win } from '../fields/selftest-dom.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
@@ -1178,6 +1179,28 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   await new Promise((r) => setTimeout(r, 250));
   check('抽屉：Esc 关闭，焦点回到「管理」按钮', document.activeElement === manageBtn);
   await m.unmount();
+}
+
+// 2.16 输入框字数不压在「发送」按钮上（第 24 步走查截图带出的问题）：antd 的 showCount 字数（.ant-input-data-count）
+// 用 position: absolute、bottom 取负的一个字高渲染在文本域边框之外；实测（Playwright 量真实页面）14px 字号、
+// 22px 行高时是 bottom: -22px，往下占 22px。.wb-replybox-foot 原来只留 8px 的 margin-top，字数的「0」会压在
+//「发送」按钮上。happy-dom 不排版，量不出真实像素重叠（getBoundingClientRect 全是 0），这里改读 workbench.css
+// 源码核对间距够不够盖住这 22px，不够就说明又改回去了（同 overview.selftest.tsx 2.2b、sop.selftest.tsx 读 CSS 源码核对间距的写法）
+{
+  const css = fs.readFileSync(new URL('./workbench.css', import.meta.url), 'utf8');
+  const rule = (sel: string): string =>
+    new RegExp(`(?<!,\\n)^${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`, 'm').exec(css)?.[1] ?? '';
+  const px = (sel: string, prop: string): number | null => {
+    const v = new RegExp(`(?:^|[;\\s])${prop}:\\s*(\\d+)px;`).exec(rule(sel))?.[1];
+    return v === undefined ? null : Number(v);
+  };
+  const ANTD_COUNT_OVERLAP_PX = 22;
+  const marginTop = px('.wb-replybox-foot', 'margin-top');
+  check(
+    'workbench.css：.wb-replybox-foot 的 margin-top 盖住 antd 字数占的 22px，不会压在「发送」按钮上',
+    marginTop !== null && marginTop >= ANTD_COUNT_OVERLAP_PX,
+    `margin-top=${marginTop}`,
+  );
 }
 
 Date.now = realNow;

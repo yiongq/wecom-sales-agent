@@ -194,6 +194,13 @@ interface Entry {
   inflight: Snap | null;
   /** 已经排了一个 microtask 去起落库：同一段同步代码里的改动合进同一个快照 */
   kickQueued: boolean;
+  /**
+   * 保留期清理正在为这个会话执行清除 SQL（第 16 步审查第二轮，spec「保留期」「逐个在它的写队列上处理」）：持有期间
+   * change() 照常标脏、排着，但 kick 不起新的落库——否则清除 SQL 执行期间（它本身是一次 await）来一条新消息，
+   * 两笔事务会在数据库行锁上抢跑，输的一方可能是清除赢了之后这笔写发现行不在了，抛 StoreConflictError 优雅停机。
+   * 持有者（purge.ts 的 holdForPurge）负责在清除成功之前同步核一次 gen 没变、失败或释放时如果变脏了手动补一次 kick
+   */
+  purgeHeld: boolean;
   attempts: number;
   timer: NodeJS.Timeout | null;
   /** 数据类错误停写的原因（SQLSTATE 与约束名、window_corrupt、projection） */
@@ -255,6 +262,14 @@ export interface PgStoreStats {
   replayFailedFiles: number;
 }
 
+/** holdForPurge 的持有句柄（第 16 步审查第二轮）：见 PgBackend.holdForPurge 的文档注释 */
+export interface PurgeHold {
+  /** 持有期间这个会话有没有被改动（change() 的 gen 有没有变）；清除 SQL 的事务提交之前据此决定提交还是让路回滚 */
+  stillClean(): boolean;
+  /** 释放持有：持有期间变脏了就补一次 kick（否则这次改动会一直排在写队列上、直到下一次不相关的改动才被捎带落库） */
+  release(): void;
+}
+
 export interface PgBackend extends StoreBackend {
   /** 把预载的会话与订单放进 identity map（initSessionStore 在全部校验通过之后同步调） */
   install(): void;
@@ -303,6 +318,20 @@ export interface PgBackend extends StoreBackend {
   refOf(sessionId: string): string | null;
   /** 这个会话因数据类错误停写了（poisoned）：人工回复、订单动作在改动之前就 503（第 13 步） */
   isPoisoned(sessionId: string): boolean;
+  /** 这个会话有没有未落库的改动，或正在落库（第 16 步：保留期清理据此跳过有动静的会话） */
+  hasPendingWrite(sessionId: string): boolean;
+  /**
+   * 保留期清理删除会话之后，把它从写队列的簿记里摘掉（第 16 步）：entries 里的那一项连同预生成的 ref 一起删。
+   * store.ts 的 forgetSession 同一个 tick 里再把它从 identity map 移出；客户用同一个 id 再来时，schedule() 建全新的 entry
+   */
+  forget(sessionId: string): void;
+  /**
+   * 清除 SQL 执行期间把这个会话的写队列挂起（第 16 步审查第二轮，spec「保留期」「逐个在它的写队列上处理」）：这个会话
+   * 没有未落库的改动、没有在途落库、没有 poisoned 时返回一个持有句柄，否则返回 null（调用方当「有动静」跳过这个候选，
+   * 与 hasPendingWrite 同一套判断，原子地做在一次调用里，不留 TOCTOU 的缝）。持有期间 change() 照常标脏、kick 按兵不动；
+   * 内存里没有这个会话（这个进程从没建过写队列）时返回一个恒为「干净」的空句柄，不持有什么、release 什么都不做。
+   */
+  holdForPurge(sessionId: string): PurgeHold | null;
   /**
    * 任务表的单独短事务（认领、改状态、启动与停机时的归位、与会话无关的排程；02 spec「任务表与跟进」）：不经会话写队列，
    * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
@@ -718,6 +747,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     sinceNext: null,
     inflight: null,
     kickQueued: false,
+    purgeHeld: false,
     attempts: 0,
     timer: null,
     poisoned: null,
@@ -846,7 +876,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
    * 租户锁在别的进程手里（held_by_other）时不起落库：改动留给 exit 时的 spill，免得把新的持锁进程也撞成 store_conflict
    */
   function kick(e: Entry): void {
-    if (closed || conflict || e.poisoned || e.inflight || !isDirty(e) || !d.writable()) return;
+    if (closed || conflict || e.poisoned || e.inflight || e.purgeHeld || !isDirty(e) || !d.writable()) return;
     detached(() => {
       let snap: Snap;
       try {
@@ -1256,6 +1286,39 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return ref;
     },
     isPoisoned: (sessionId) => entries.get(sessionId)?.poisoned != null,
+    hasPendingWrite: (sessionId) => {
+      const e = entries.get(sessionId);
+      return !!e && (isDirty(e) || e.inflight !== null);
+    },
+    forget: (sessionId) => {
+      const e = entries.get(sessionId);
+      // 极窄的残留窗口（第 16 步审查第二轮，holdForPurge 的 stillClean 已经在提交之前核过一次干净）：清除事务已经提交、
+      // forgetSession 这一刻之间真的又来一笔写（COMMIT 的网络往返那一瞬），这个 entry 会带着没提交的改动被摘掉——
+      // spec 墓碑设计认可的结果（不静默吞到查不出来），记一行日志
+      if (e && isDirty(e)) console.warn(`[store] 会话 ${short(sessionId)} 刚被保留期清理删除，一笔极窄窗口里赶上的改动一并丢弃`);
+      entries.delete(sessionId);
+      preRefs.delete(sessionId);
+    },
+    holdForPurge: (sessionId) => {
+      const e = entries.get(sessionId);
+      // 这个进程从没给这个会话建过写队列（预载批次之外、从没收过它的消息）：没有并发写的风险，当恒为干净处理
+      if (!e) return { stillClean: () => true, release: () => {} };
+      // 与 hasPendingWrite 同一套判断，原子地在拿到持有的这一刻做：poisoned 的也当有动静（内存状态不可信，不该顺手清掉）
+      if (e.poisoned || isDirty(e) || e.inflight !== null) return null;
+      e.purgeHeld = true;
+      const genAtHold = e.gen;
+      let released = false;
+      return {
+        stillClean: () => e.gen === genAtHold,
+        release: () => {
+          if (released) return;
+          released = true;
+          e.purgeHeld = false;
+          // 持有期间来过改动（gen 变了）：kick 当时被 purgeHeld 挡住了，补一次，不然要等下一次不相关的改动才会被捎带落库
+          if (isDirty(e)) kick(e);
+        },
+      };
+    },
     jobsTx(fn) {
       if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
       if (closed) return Promise.reject(new JobsTxRefused('closed'));

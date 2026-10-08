@@ -27,6 +27,7 @@ export const HANDOFF_REASON = {
   emergency: '客户遇到紧急情况',
   failure: '客户的问题 AI 几轮都没答上',
   sentiment: '客户情绪不满',
+  consent: '客户不同意处理敏感个人信息',
 } as const satisfies Partial<Record<HandoffKind, string>>;
 
 /** 紧急情况的类型写进原因，顾问一眼看出是哪一类（R15） */
@@ -92,6 +93,18 @@ export function enterHandoff(
     session.handoff = record;
     escalated = true;
   } else {
+    // 已经转人工、这次不是 emergency：不覆盖现有的转人工记录（02 spec「转人工记录与四种状态」只许 emergency 覆盖）。
+    // 但 consent（点「不同意」、撤回同意或删除）是客户的行权请求，不能被这条「已转人工就不再记」的沉默规则原样吞掉——
+    // 后台只看原来的理由会漏掉它。不改 session.handoff，留一条 system 消息（随调用方接下来的 saveSession 一起落库，
+    // 跟其余消息一样进 message.appended/conversation.changed，J 页时间线能看到），再排一次立即的转人工通知
+    // （escalated:true 只排 started 那一个，不碰已有的 10 分钟/窗口排程；dedupeKey 按这次的 at 算，不会跟原通知撞）
+    if (record.kind === 'consent') {
+      session.messages.push({ role: 'system', content: `客户提出行权请求（${record.reason}），需要顾问处理`, at: record.at });
+      queueJobs(
+        session.id,
+        handoffNotifyOps(session.id, record.at, { escalated: true, kind: 'consent', handoffCount: session.handoffCount }),
+      );
+    }
     return;
   }
   emitAfterCommit(session.id, {

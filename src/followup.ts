@@ -20,7 +20,7 @@ import { isTerminalStage } from './handoff/record.js';
 import { cleanText } from './shared/text.js';
 import { mayHaveDelivered } from './quota/ledger.js';
 import { shortIdOf } from './shared/conversation.js';
-import { convLabel } from './log.js';
+import { convLabel, logQuote } from './log.js';
 import type { ChatMessage, PushOpts, Session, SalesStage } from './types.js';
 import { profileForPrompt } from './types.js';
 
@@ -280,7 +280,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
       meta.failures = 0;
       saveSession(fresh, false);
       sent += 1;
-      console.log(`[followup] 已跟进 ${convLabel(s.id)}（阶段=${stage}）：${text.slice(0, 40)}`);
+      console.log(`[followup] 已跟进 ${convLabel(s.id)}（阶段=${stage}）：${logQuote(text)}`);
     } catch (e) {
       console.error(`[followup] 跟进 ${convLabel(s.id)} 失败:`, e instanceof Error ? e.message : e);
     }

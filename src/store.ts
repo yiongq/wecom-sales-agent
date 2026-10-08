@@ -14,7 +14,7 @@ import { configMode, configRuntime, tenantLockTaken } from './config/source.js';
 import { withTenant, type Db, type Tx } from './db/client.js';
 import { writeAuditAs, type AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
-import { setConvRefResolver } from './log.js';
+import { convLabel, setConvRefResolver } from './log.js';
 import { profile } from './profile.js';
 import { shortIdOf } from './shared/conversation.js';
 import { gracefulExit, onShutdown } from './shutdown.js';
@@ -35,6 +35,7 @@ import {
   type JobOp,
   type PgBackend,
   type PgStoreStats,
+  type PurgeHold,
   type TelemetryRows,
 } from './store/pg-backend.js';
 // isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
@@ -98,6 +99,8 @@ export function varDir(): string {
 
 const sessions = new Map<string, Session>();
 const orders = new Map<string, Order>();
+/** 被保留期清理或行权删除移出内存的会话对象（第 16 步）：拿着旧对象的 saveSession 记一行日志、不执行 */
+const tombstoned = new WeakSet<Session>();
 
 /** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
 let pgBackend: PgBackend | null = null;
@@ -301,6 +304,41 @@ export function storeUnrecoverable(sessionId: string): boolean {
   const h = b.health();
   return h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
 }
+/**
+ * 这个会话有没有未落库的改动，或正在落库（第 16 步保留期清理据此跳过有动静的会话：库里读到的候选可能已经过期）。
+ * 文件存储、demo 类、内存里没有这个会话恒为 false
+ */
+export function pendingWrite(sessionId: string): boolean {
+  return pgFor(sessionId)?.hasPendingWrite(sessionId) ?? false;
+}
+/**
+ * 保留期清理专用（第 16 步审查第二轮，spec「保留期」「逐个在它的写队列上处理」）：挂起这个会话的写队列、
+ * 原子地核过没有动静（与 pendingWrite 同一套判断，但不留 TOCTOU 的缝——判断与挂起是一次调用）。
+ * 返回 null 时调用方当「有动静」跳过这个候选；拿到句柄之后见 `PurgeHold` 的文档注释。文件存储、demo 类恒为一个空句柄
+ */
+export function holdForPurge(sessionId: string): PurgeHold | null {
+  return pgFor(sessionId)?.holdForPurge(sessionId) ?? { stillClean: () => true, release: () => {} };
+}
+/**
+ * 保留期清理成功删除一个会话之后，同一个 tick 把它从 identity map 与 PG 后端的写队列簿记里摘掉（第 16 步，`pg-backend` 的
+ * `forget(id)`）：否则这个会话的下一次落库会发现行不在了，按 `StoreConflictError` 处理、整个进程优雅停机。
+ * 旧的 Session 对象进墓碑：之后拿着它的 `saveSession` 只记一行日志，不执行；客户再来时 `getSession` 建的是新对象。
+ * 它名下的订单（`Order.sessionId` 一直要求是 string，不改成可选）也一并从内存订单表摘掉——库里那一行按 spec 保留
+ * （清除函数把 session_id 置空、保留订单行作成交记录），但内存里不留一个 sessionId 已经找不到会话的订单；
+ * 后台 `/orders`、成交额 KPI 都是从 identity map 算的，清理之后自然看不到这张单了（与种子/访客会话清理同一种做法）
+ */
+export function forgetSession(sessionId: string): void {
+  const s = sessions.get(sessionId);
+  if (s) {
+    tombstoned.add(s);
+    for (const oid of s.orderIds ?? []) orders.delete(oid);
+  }
+  sessions.delete(sessionId);
+  pgFor(sessionId)?.forget(sessionId);
+  forgetSessionProbe?.(sessionId);
+}
+/** 仅供自测：forgetSession 每次真的摘掉一个会话时同步调一次，见 __storeTest.setForgetSessionProbe */
+let forgetSessionProbe: ((sessionId: string) => void) | null = null;
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);
@@ -548,6 +586,11 @@ export function listSessions(): Session[] {
  * 否则后台「N 小时未回应」失真、介入队列会漏掉真正该救的客户。
  */
 export function saveSession(s: Session, touch = true): void {
+  // 这个对象已经被保留期清理或行权删除摘掉（第 16 步）：库里那一行已经没了，不能再落库；日志一行、什么都不改
+  if (tombstoned.has(s)) {
+    console.log(`[store] 会话已被清理，忽略这次落库（会话 ${convLabel(s.id)}）`);
+    return;
+  }
   const b = backendFor(s.id);
   // db 存储下 identity map 里的对象是唯一的（不变量 3）：同 id 的另一个对象，PG 后端记一行日志、不落库，也不换掉 map 里的
   if (b === pgBackend && !pgBackend.accepts(s)) return;
@@ -702,5 +745,16 @@ export const __storeTest = {
   /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
   emitIncident(i: StoreIncident): void {
     incident(i);
+  },
+  /**
+   * 仅供自测（第 16 步）：核保留期清理「返回 true 就在同一个 tick 里移出内存」（spec「任务表与跟进」）——
+   * 不能只看「最后不在内存里」，那样把 forgetSession 延到下一拍（比如包一层 setTimeout）也测不出来，这个窗口里
+   * 真有新消息撞上来，要么被墓碑静默吞掉，要么撞到行不存在走 StoreConflictError 优雅停机。做法：调用方在真正调用
+   * purgeOnce 之前也排一个 setTimeout(…, 0)，两边都往同一个数组里记一笔；JS 单线程下，只要 forgetSession 与它的
+   * 调用方之间没有别的 await，这次记录必定先于任何宏任务（哪怕调用方自己的 setTimeout 排得更早）——这不是猜时序，
+   * 是单线程事件循环的语言语义保证
+   */
+  setForgetSessionProbe(fn: ((sessionId: string) => void) | null): void {
+    forgetSessionProbe = fn;
   },
 };

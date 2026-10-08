@@ -387,7 +387,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 8px;
+  /* antd 的 showCount 字数（.ant-input-data-count）用 position:absolute、bottom 取负的一个字高（14px 字号、22px 行高时
+     是 -22px），落在输入框边框之外、往下占掉 22px；这一行原来只留 8px 间距，字数的「0」会压在这一行上、和「发送」
+     按钮的边框重叠。其它用到同一个 showCount 写法的地方（如产品库的长文本字段）下面本来就有更多空间，没露出这个问题。
+     这里按 22px 字数高度留够间距，再加 2px 不贴边 */
+  margin-top: 24px;
 }
 .wb-replybox-hint {
   font-size: 13px;

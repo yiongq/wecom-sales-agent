@@ -15,6 +15,12 @@
 #   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
 #   docker compose -f deploy/compose.yml run --rm -v /root/sessions-keep-<日期>:/keep app \
 #     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]     # export-sessions 再加 --var /app/var
+# 隐私说明、保留期、行权删除（02 spec「隐私说明、敏感信息同意、保留期与行权」）：
+#   docker compose -f deploy/compose.yml run --rm -v /root/privacy-notice.md:/notice:ro platform \
+#     node --import tsx src/cli/privacy-publish.ts --tenant <slug> --file /notice
+#   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/tenant-retention.ts --tenant <slug> [--lead <天>] [--customer <天>] [--trace <天>]
+#   docker compose stop app   # 行权删除要取租户锁，先停应用
+#   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
 # deploy.sh 的 rsync 保护规则（P /.env*）都已覆盖这个命名，.dockerignore 也排除了它们。
@@ -97,6 +103,12 @@ services:
       - ../var:/app/var
     # 大于停机钩子等在途企微回复的 8 秒：SIGTERM 之后先发完、落盘再退
     stop_grace_period: 10s
+    # LOG_FORMAT=json 之后每天的日志量可观；轮转封顶（02 spec「保留期清理」），不靠宿主机另装 logrotate
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '5'
     depends_on:
       db:
         condition: service_healthy

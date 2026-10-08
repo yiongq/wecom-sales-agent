@@ -24,7 +24,7 @@ import {
 import { onShutdown, queueJobs, sessionStoreMode, withJobsTx, type JobOp } from '../store.js';
 import { installUnsavedNotices, runHandoffNotifyJob } from '../notify/handoff.js';
 import { followupJobs, type PushFn } from './followup.js';
-import { retentionPurgeSpec, runRetentionPurgeJob } from './purge.js';
+import { retentionPurgeSpec, runRetentionPurgeJob, setRunningJobChecker } from './purge.js';
 
 export type { JobKind, JobRow, JobStatus };
 
@@ -72,6 +72,14 @@ export function sessionIdOf(payload: unknown): string | null {
   const v = payload && typeof payload === 'object' ? (payload as { sessionId?: unknown }).sessionId : undefined;
   return typeof v === 'string' && v ? v : null;
 }
+
+/** 这个会话有没有本进程正在处理（认领中、还没写下结果）的任务（第 16 步：保留期清理据此跳过有任务在跑的会话） */
+export function hasRunningJob(sessionId: string): boolean {
+  for (const { job } of mine.values()) if (sessionIdOf(job.payload) === sessionId) return true;
+  return false;
+}
+// purge.ts 不能直接 import 本模块（本模块已经 import 了 purge.ts）：经注入打破循环
+setRunningJobChecker(hasRunningJob);
 
 export const enqueueOp = (spec: JobSpec): JobOp => ({ op: 'enqueue', ...spec });
 
@@ -455,5 +463,15 @@ export const __jobsTest = {
     const prev = handlers[kind];
     handlers[kind] = fn;
     return prev;
+  },
+  /**
+   * 仅供自测：直接造一条「本进程认领中」的记录，不经真实认领（第 16 步：保留期清理据 hasRunningJob 跳过有任务在跑的会话，
+   * 这条跳过条件原来零覆盖——真实认领要起完整的 runner、等它恰好卡在处理中间，时序不可控，直接插进 mine 更可靠）
+   */
+  markRunningForTest(sessionId: string, jobId = `test-running-${sessionId}`): void {
+    mine.set(jobId, { job: { id: jobId, payload: { sessionId } } as JobRow, phase: 'claimed' });
+  },
+  clearRunningForTest(jobId: string): void {
+    mine.delete(jobId);
   },
 };
