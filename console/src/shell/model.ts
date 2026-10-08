@@ -140,9 +140,25 @@ export function conversationLabel(row: Pick<ConversationRow, 'id' | 'channel'>, 
 }
 
 /**
- * 工作台里打开这个会话：admin.html 启动时读 #s=<id> 选中它，登录框走完后仍然选中（spec「会话列表」，plan 第 13 步）
+ * 工作台里打开这个会话：admin.html 启动时读 #s=<id> 选中它，登录框走完后仍然选中（spec「会话列表」，plan 第 13 步）。
+ * 02 第 19 步起，I 页与铃铛改为在当前标签打开 J 页（workbenchPath）；这一个只给还没改的入口（⌘K「会话」组、
+ * A2「需要你处理」，留到第 21 步）用，第 23 步之前 admin.html 还在
  */
 export const workbenchHref = (id: string): string => `/admin.html#s=${encodeURIComponent(id)}`;
+
+/**
+ * 会话工作台（J 页）的路由路径：/conversations/$id，$id 经 encodeURIComponent（02 spec「后台页面」）。
+ * 与 TanStack Router 的 `Link to="/conversations/$id" params={{ id }}` 编码规则相同，这里只给非 Link 的地方
+ * （铃铛弹层按钮的 href、读屏判断）用；真正的导航走 Link／useNavigate，支持 Ctrl/Cmd 点开新标签
+ */
+export const workbenchPath = (id: string): string => `/conversations/${encodeURIComponent(id)}`;
+
+/**
+ * 标签页标题前缀「(N) 」（spec「通知」、不变量 45）：N 是等人接手数，只数 human；N 为 0 或还没取到时没有前缀
+ */
+export function tabTitlePrefix(n: number | undefined): string {
+  return n !== undefined && Number.isFinite(n) && n > 0 ? `(${Math.floor(n)}) ` : '';
+}
 
 // ---------------- 视口 ----------------
 

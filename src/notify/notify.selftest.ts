@@ -977,6 +977,7 @@ async function childSuite(rig: Rig): Promise<void> {
       at: X.handoff!.at + 1,
       escalated: true,
       paidCustomer: false,
+      assigned: false,
     };
     deliverHandoffUnsaved([ev, ev]);
     deliverHandoffUnsaved([ev]);

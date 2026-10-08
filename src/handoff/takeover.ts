@@ -180,7 +180,14 @@ export function takeover(sessionId: string, actor: Actor, opts: { force?: boolea
   if (cur && !SUPERVISORS.has(actor.role)) throw new ForbiddenError();
   const now = Date.now();
   if (!s.handedOver) {
-    enterHandoff(s, { kind: 'agent', at: now, reason: actor.role === 'shared' ? HANDOFF_REASON.agent : MEMBER_TAKEOVER_REASON });
+    // assigned: true——紧接着第 192 行就要把 s.assignee 赋值，不是「共享工作台转人工」那种没有接手人的入口；
+    // 02 第 19 步审查第 2 条：前端收到 assigned 为真的 handoff.started 不弹浏览器通知（顾问自己点的接手，没必要提醒自己）
+    enterHandoff(
+      s,
+      { kind: 'agent', at: now, reason: actor.role === 'shared' ? HANDOFF_REASON.agent : MEMBER_TAKEOVER_REASON },
+      undefined,
+      { assigned: true },
+    );
     // 接手时才进入的转人工当场就有人处理：enterHandoff 刚排的两个转人工通知（立即、10 分钟没人接手）一并取消，随同一次落库提交
     queueJobs(
       s.id,
