@@ -102,7 +102,15 @@ async function inAdvisor<T>(fn: () => Promise<T> | T): Promise<T> {
   check('SOP：转人工条件加了「此刻遇到紧急情况 / 冲我们发火」先安抚再转人工那条', sop.includes('先安抚一句，立刻调用 handoff_to_human'));
   check(
     'SOP：第 8 条的例句不带时态词也要算（审查第 4 条），紧急情况写成具体类别',
-    sop.includes('我妈高原反应很严重') && sop.includes('身体不适或受伤、证件丢了、被困或走散'),
+    sop.includes('我妈高原反应很严重') && sop.includes('身体不适或受伤、被困或走散'),
+  );
+  check(
+    'SOP：第 8 条证件丢了配具体例句（step15b 措辞补例句）',
+    sop.includes('护照丢了，明天就要上飞机') && sop.includes('证件被偷了，人在机场'),
+  );
+  check(
+    'SOP：第 8 条冲我们发火配具体例句（step15b 措辞补例句）',
+    sop.includes('什么破服务') && sop.includes('你们这么慢是不是没人管') && sop.includes('太失望了，你们就这服务？'),
   );
   check(
     'SOP：售前反例说明也写了（避免模型在问诊类问题、吐槛目的地上转人工）',
