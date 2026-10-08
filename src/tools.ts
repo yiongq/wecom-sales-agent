@@ -12,9 +12,10 @@ import { deepFreeze } from './shared/freeze.js';
 import { catalogItemAt, catalogVersionKey, configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
-import { createOrder, getOrder, saveSession, supersedeOrder } from './store.js';
+import { createOrder, getOrder, queueJobs, saveSession, supersedeOrder } from './store.js';
 import { todayIso } from './env.js';
 import { paymentMode } from './payment/mode.js';
+import { orderUnconfirmedNotifyOps } from './jobs/notify.js';
 
 // 工具定义是纯数据，搬到 tool-defs.ts：配置层要用它算 tools_hash、核对 SOP 点名的工具，又不能 import 本模块（本模块加载时就读 var/）
 export { toolDefs, type ToolDef } from './tool-defs.js';
@@ -1264,6 +1265,9 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
       session.orderIds.push(order.id);
       rememberSeenRoutes(session, [args.routeId]);
       session.lastQuote = undefined; // 已成单即清除，防安全网对同一报价重复建单
+      // advisor 模式：建单后排一次「待确认的订单」提醒（02 spec「收款流程」），随这次落库提交；
+      // 执行体（src/notify/handoff.ts）到点时看订单还在不在待付款、确认过没有，确认过就不发
+      if (paymentMode() === 'advisor') queueJobs(session.id, orderUnconfirmedNotifyOps(session.id, order.id, Date.now()));
       saveSession(session);
       // payUrl 为相对路径，渠道层负责拼 PUBLIC_BASE_URL。note 是这张单的定价说明（旺季 / 95 折），差价要讲原因时用它
       return JSON.stringify({

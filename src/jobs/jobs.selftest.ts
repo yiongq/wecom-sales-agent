@@ -1374,6 +1374,41 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     check('两种存储共用的资格判断：有 followupOptOut 就不跟进', !followup.shouldFollowUp(optedOut, Date.now()));
     await retire(L);
   }
+
+  // ---- advisor 模式建单排一次「待确认的订单」提醒；确认价格之后到点不发（02 spec「收款流程」，第 15 步审查带出） ----
+  {
+    const { executeTool, loadRoutes } = await import('../tools.js');
+    const { confirmOrder } = await import('../payment/orders.js');
+    const { __profileTest } = await import('../profile.js');
+    const route = loadRoutes().find((r) => r.itinerary?.length)!;
+    const O = 'wecom:wmJobsOrderUnconfirmed';
+    const s = store.getOrCreateSession(O, 'wecom');
+    const departDate = new Date(Date.now() + 200 * 24 * 3_600_000).toISOString().slice(0, 10);
+    __profileTest.use({ DEPLOY_PROFILE: 'demo', FLAG_MOCK_PAY: 'off' });
+    try {
+      await executeTool('create_order', { routeId: route.id, travelers: 2, departDate }, s);
+      await flush(O);
+      const orderId = store.getSession(O)!.orderIds[0]!;
+      const before = await jobsFor(O, 'handoff_notify');
+      check(
+        'advisor 建单：排了一条 order_unconfirmed 的 handoff_notify，还没到点就待在 pending',
+        before.length === 1 && before[0]!.payload.reason === 'order_unconfirmed' && before[0]!.payload.orderId === orderId,
+        json(before),
+      );
+      confirmOrder(orderId, { userId: null, name: '测试', role: 'owner' });
+      await flush(O);
+      await runner.runJobsOnce(before[0]!.runAt);
+      const after = await jobsFor(O, 'handoff_notify');
+      check(
+        '确认价格之后到点执行：done、lastError=order_settled（没有真的去发通知）',
+        after.length === 1 && after[0]!.status === 'done' && after[0]!.lastError === 'order_settled',
+        json(after),
+      );
+    } finally {
+      __profileTest.reset();
+    }
+    await retire(O);
+  }
 }
 
 // ---------------- 文件存储：经 mock 引擎的拒绝识别与扫描器 ----------------
