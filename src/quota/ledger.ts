@@ -11,7 +11,13 @@
 // 本机收到它的时刻），账本行记本机时刻、按最后一次尝试的时刻计数：两个钟不一致、重试晚于客户新消息时都只会多算。
 // 开放问题 8 实测之后只改这里的常量与适配器。
 import { randomBytes } from 'node:crypto';
-import type { OutboundKind, SendWindow } from '../shared/conversation-types.js';
+import {
+  type OutboundKind,
+  QUOTA_EXHAUSTED_TEXT,
+  type SendWindow,
+  sendFailText,
+  WINDOW_CLOSED_TEXT,
+} from '../shared/conversation-types.js';
 import {
   emitAfterCommit,
   flushSession,
@@ -367,9 +373,9 @@ export function followupWindowAllows(sessionId: string, now: number): boolean {
   return w.closesAt !== null && w.remaining >= FOLLOWUP_MIN_REMAINING && w.closesAt - now >= FOLLOWUP_MIN_LEFT_MS;
 }
 
-/** 窗口关着、条数用完时给顾问看的说明（与 msg_send_fail 的 4、6 同一句） */
-export const WINDOW_CLOSED_TEXT = '客户超过 48 小时没说话，这条发不出去了';
-export const QUOTA_EXHAUSTED_TEXT = '这一轮已经发满 5 条，等客户回复后才能再发';
+// 窗口关着、条数用完时给顾问看的说明（与 msg_send_fail 的 4、6 同一句）：挪到 src/shared/conversation-types.ts，
+// 这里原样 re-export，公开名字不变（见该文件顶部「发送窗口与送达状态的固定文案」）
+export { QUOTA_EXHAUSTED_TEXT, WINDOW_CLOSED_TEXT };
 
 export type HumanReplyVerdict =
   | { ok: true; window: SendWindow }
@@ -428,12 +434,7 @@ export function deliveryOf(sessionId: string, message: ChatMessage): { status: D
   return { status: worst.status, failType: worst.status === 'failed' ? worst.failType : null };
 }
 
-/** msg_send_fail 给会话加的说明（spec 原文：4 窗口过了、6 发满 5 条、其余带原因码） */
-export function sendFailText(failType: number): string {
-  if (failType === 4) return WINDOW_CLOSED_TEXT;
-  if (failType === 6) return QUOTA_EXHAUSTED_TEXT;
-  return `这条没送达（原因码 ${failType}）`;
-}
+export { sendFailText };
 
 /** 会话追加说明、发 send.failed 事件（第 13 步的 SSE 接上之前经 onCommitted 这个现有出口），随会话的下一次落库提交 */
 function explain(sessionId: string, failType: number): void {
