@@ -18,6 +18,7 @@ import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from
 import { HANDOFF_REASON } from './handoff/record.js';
 import {
   AssignedToOtherError,
+  awaitCommit,
   ConsentDeclinedError,
   EmptyReplyError,
   isReleaseNote,
@@ -622,8 +623,15 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
     };
     queueAudit(order.sessionId, payAuditActor, payAuditEntry);
-    // 付款确认同样在提交之后才对客户发（不变量 20）；等满 5 秒也照发，和 markPaidByAdvisor 一致
-    await flushSession(order.sessionId, { timeoutMs: 5000 }).catch(() => {});
+    // 付款确认同样在提交之后才对客户发（不变量 20）：真超时（仍可能提交）照发；poisoned / 冲突（不会再提交）
+    // 不调 notifyPaid、回 503，和 markPaidByAdvisor 的 awaitCommit 同一套（第 15 步审查第 2 条）
+    try {
+      await awaitCommit(order.sessionId);
+    } catch (e) {
+      const refused = legacyRefusal(c, e);
+      if (refused) return refused;
+      throw e;
+    }
     // 引擎生成跟进话术并更新会话，服务端只负责经渠道推给客户
     const followUp = await notifyPaid(id);
     if (followUp) {
