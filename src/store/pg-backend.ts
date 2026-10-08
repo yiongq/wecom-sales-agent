@@ -303,6 +303,13 @@ export interface PgBackend extends StoreBackend {
   refOf(sessionId: string): string | null;
   /** 这个会话因数据类错误停写了（poisoned）：人工回复、订单动作在改动之前就 503（第 13 步） */
   isPoisoned(sessionId: string): boolean;
+  /** 这个会话有没有未落库的改动，或正在落库（第 16 步：保留期清理据此跳过有动静的会话） */
+  hasPendingWrite(sessionId: string): boolean;
+  /**
+   * 保留期清理删除会话之后，把它从写队列的簿记里摘掉（第 16 步）：entries 里的那一项连同预生成的 ref 一起删。
+   * store.ts 的 forgetSession 同一个 tick 里再把它从 identity map 移出；客户用同一个 id 再来时，schedule() 建全新的 entry
+   */
+  forget(sessionId: string): void;
   /**
    * 任务表的单独短事务（认领、改状态、启动与停机时的归位、与会话无关的排程；02 spec「任务表与跟进」）：不经会话写队列，
    * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
@@ -461,7 +468,7 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
           if (rows.length < PRELOAD_BATCH) break;
         }
         const json: string[] = [];
-        for (const [id, o] of d.orders) if (typeof id === 'string' && out.seqs.has(o.sessionId)) json.push(id);
+        for (const [id, o] of d.orders) if (typeof id === 'string' && o.sessionId !== undefined && out.seqs.has(o.sessionId)) json.push(id);
         if (json.length) {
           const inDb = new Set(await readOrderIdsIn(tx, json));
           for (const id of json) (inDb.has(id) ? out.jsonInDb : out.jsonAdopt).push(id);
@@ -1074,13 +1081,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const taken = new Set<string>();
       for (const id of pre.jsonInDb) {
         const o = d.orders.get(id);
-        if (o) taken.add(o.sessionId);
+        if (o?.sessionId !== undefined) taken.add(o.sessionId);
         d.orders.delete(id);
       }
       for (const o of pre.orders) d.orders.set(o.id, o);
       for (const id of pre.jsonAdopt) {
         const o = d.orders.get(id);
-        const e = o ? entries.get(o.sessionId) : undefined;
+        const e = o?.sessionId !== undefined ? entries.get(o.sessionId) : undefined;
         if (!o || !e) continue;
         adopt(e, o);
         change(e);
@@ -1119,13 +1126,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     },
     scheduleOrder(orderId) {
       const o = d.orders.get(orderId);
-      const e = o ? entryById(o.sessionId) : null;
+      const e = o?.sessionId !== undefined ? entryById(o.sessionId) : null;
       if (!o || !e || voidedIds.has(orderId)) return;
       e.orderIds.add(orderId);
       change(e);
     },
     voidOrder(o, reason) {
-      const e = entryById(o.sessionId);
+      const e = o.sessionId !== undefined ? entryById(o.sessionId) : null;
       if (!e) return;
       e.orderIds.delete(o.id);
       voidedIds.add(o.id);
@@ -1256,6 +1263,14 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return ref;
     },
     isPoisoned: (sessionId) => entries.get(sessionId)?.poisoned != null,
+    hasPendingWrite: (sessionId) => {
+      const e = entries.get(sessionId);
+      return !!e && (isDirty(e) || e.inflight !== null);
+    },
+    forget: (sessionId) => {
+      entries.delete(sessionId);
+      preRefs.delete(sessionId);
+    },
     jobsTx(fn) {
       if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
       if (closed) return Promise.reject(new JobsTxRefused('closed'));

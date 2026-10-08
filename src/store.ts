@@ -14,7 +14,7 @@ import { configMode, configRuntime, tenantLockTaken } from './config/source.js';
 import { withTenant, type Db, type Tx } from './db/client.js';
 import { writeAuditAs, type AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
-import { setConvRefResolver } from './log.js';
+import { convLabel, setConvRefResolver } from './log.js';
 import { profile } from './profile.js';
 import { shortIdOf } from './shared/conversation.js';
 import { gracefulExit, onShutdown } from './shutdown.js';
@@ -98,6 +98,8 @@ export function varDir(): string {
 
 const sessions = new Map<string, Session>();
 const orders = new Map<string, Order>();
+/** 被保留期清理或行权删除移出内存的会话对象（第 16 步）：拿着旧对象的 saveSession 记一行日志、不执行 */
+const tombstoned = new WeakSet<Session>();
 
 /** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
 let pgBackend: PgBackend | null = null;
@@ -108,8 +110,11 @@ const fileBackend = createFileBackend({
   orders,
   owns: (id) => !pgBackend || isDemoClassId(id),
   // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
-  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
-  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id),
+  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它。
+  // 第 16 步：保留期清理或行权删除之后 sessionId 没了（订单一直是真实会话的，PG 后端一直管着），文件后端永不收养它
+  ownsOrder: (o) =>
+    o.sessionId !== undefined &&
+    (!pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id)),
   isReal: (id) => !isDemoClassId(id),
   afterPersist: () => storeEvents.emit('change'),
 });
@@ -301,6 +306,24 @@ export function storeUnrecoverable(sessionId: string): boolean {
   const h = b.health();
   return h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
 }
+/**
+ * 这个会话有没有未落库的改动，或正在落库（第 16 步保留期清理据此跳过有动静的会话：库里读到的候选可能已经过期）。
+ * 文件存储、demo 类、内存里没有这个会话恒为 false
+ */
+export function pendingWrite(sessionId: string): boolean {
+  return pgFor(sessionId)?.hasPendingWrite(sessionId) ?? false;
+}
+/**
+ * 保留期清理成功删除一个会话之后，同一个 tick 把它从 identity map 与 PG 后端的写队列簿记里摘掉（第 16 步，`pg-backend` 的
+ * `forget(id)`）：否则这个会话的下一次落库会发现行不在了，按 `StoreConflictError` 处理、整个进程优雅停机。
+ * 旧的 Session 对象进墓碑：之后拿着它的 `saveSession` 只记一行日志，不执行；客户再来时 `getSession` 建的是新对象
+ */
+export function forgetSession(sessionId: string): void {
+  const s = sessions.get(sessionId);
+  if (s) tombstoned.add(s);
+  sessions.delete(sessionId);
+  pgFor(sessionId)?.forget(sessionId);
+}
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);
@@ -430,7 +453,7 @@ export function freshenDemoData(): void {
     if (s.assignee) s.assignee.at += delta;
   }
   for (const o of orders.values()) {
-    if (DEMO_SESSION_RE.test(o.sessionId)) {
+    if (o.sessionId !== undefined && DEMO_SESSION_RE.test(o.sessionId)) {
       o.createdAt += delta;
       if (o.paidAt) o.paidAt += delta;
       // 02 第 13 步起后台能确认种子订单的价格：确认时刻同样跟着挪
@@ -548,6 +571,11 @@ export function listSessions(): Session[] {
  * 否则后台「N 小时未回应」失真、介入队列会漏掉真正该救的客户。
  */
 export function saveSession(s: Session, touch = true): void {
+  // 这个对象已经被保留期清理或行权删除摘掉（第 16 步）：库里那一行已经没了，不能再落库；日志一行、什么都不改
+  if (tombstoned.has(s)) {
+    console.log(`[store] 会话已被清理，忽略这次落库（会话 ${convLabel(s.id)}）`);
+    return;
+  }
   const b = backendFor(s.id);
   // db 存储下 identity map 里的对象是唯一的（不变量 3）：同 id 的另一个对象，PG 后端记一行日志、不落库，也不换掉 map 里的
   if (b === pgBackend && !pgBackend.accepts(s)) return;
@@ -595,8 +623,9 @@ function emitSaved(s: Session, unseq: readonly ChatMessage[]): void {
   emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
 }
 
-/** 订单改动的提交后事件（后台事件流的 order） */
+/** 订单改动的提交后事件（后台事件流的 order）：会话已被清除或删除（第 16 步之后才会出现）时没有订阅者，不发 */
 function emitOrder(o: Order): void {
+  if (o.sessionId === undefined) return;
   emitAfterCommit(o.sessionId, {
     type: 'order.changed',
     id: o.sessionId,
@@ -606,13 +635,16 @@ function emitOrder(o: Order): void {
   });
 }
 
+/** 这个订单所属会话的 PG 后端，没有 sessionId（第 16 步：已被清除或删除）时为 null */
+const pgForOrder = (o: Order): PgBackend | null => (o.sessionId === undefined ? null : pgFor(o.sessionId));
+
 /**
  * 不经 createOrder / markOrderPaid / supersedeOrder 的订单改动（02 第 13 步，后台的确认价格、确认收款、取消订单，src/payment/orders.ts）：
  * 排进订单所属会话的下一次落库，提交后发 order.changed
  */
 export function saveOrder(o: Order): void {
   if (orders.get(o.id) !== o) return;
-  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(o.id);
+  (pgForOrder(o) ?? fileBackend).scheduleOrder(o.id);
   emitOrder(o);
 }
 
@@ -627,7 +659,7 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   orders.set(order.id, order);
-  (pgFor(order.sessionId) ?? fileBackend).scheduleOrder(order.id);
+  (pgForOrder(order) ?? fileBackend).scheduleOrder(order.id);
   emitOrder(order);
   return order;
 }
@@ -646,9 +678,9 @@ export function markOrderPaid(id: string): Order | undefined {
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
-    const s = sessions.get(o.sessionId);
+    const s = o.sessionId === undefined ? undefined : sessions.get(o.sessionId);
     o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
-    (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+    (pgForOrder(o) ?? fileBackend).scheduleOrder(id);
     emitOrder(o);
   }
   return o;
@@ -660,7 +692,7 @@ export function supersedeOrder(id: string, byId: string): boolean {
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+  (pgForOrder(o) ?? fileBackend).scheduleOrder(id);
   emitOrder(o);
   return true;
 }
