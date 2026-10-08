@@ -495,21 +495,22 @@ let S = { sessions:[], orders:[], selected:null, query:'', range:'今日', tab:'
 const draftOf = id => (id && S.drafts[id]) || '';
 const setDraft = (id, v) => { if (id) S.drafts[id] = v; };
 
-// ---------------- 顶部提示：db 存储下指去 J 页（02 第 23 步）----------------
-// 判断用 /healthz 的 store.mode——它本来就不需要登录、不额外泄露信息，不新开接口。
-// 文件存储（demo）下 dbSessionStore 永远是 false、#opsHint 永远 hidden，页面逐字节不变；
+// ---------------- 顶部提示：db 配置模式下指去 J 页（02 第 23 步）----------------
+// 判断用 /healthz 的 config.mode（CONFIG_SOURCE，不是会话存储 SESSION_STORE/store.mode）——
+// 后台（console）只要配置源在库里就有，与会话是不是也落在库里无关；这个信号本来就不需要登录、不额外泄露信息，不新开接口。
+// 文件配置模式（demo）下 dbConfigMode 永远是 false、#opsHint 永远 hidden，页面逐字节不变；
 // 这整块独立于 load()/sigOf()，不进 S、不进 sigOf() 比对的字段。
-let dbSessionStore = false;
+let dbConfigMode = false;
 function updateOpsHint() {
   const el = document.getElementById('opsHint');
   if (!el) return;
-  if (!dbSessionStore) { el.hidden = true; return; }
+  if (!dbConfigMode) { el.hidden = true; return; }
   const link = document.getElementById('opsHintLink');
   if (link) link.href = S.selected ? '/console/conversations/' + encodeURIComponent(S.selected) : '/console/conversations';
   el.hidden = false;
 }
 fetch('/healthz').then(r => r.ok ? r.json() : null).then(d => {
-  if (d && d.store && d.store.mode === 'db') { dbSessionStore = true; updateOpsHint(); }
+  if (d && d.config && d.config.mode === 'db') { dbConfigMode = true; updateOpsHint(); }
 }).catch(() => {});
 
 // ---------------- 深链 #s=<id> ----------------

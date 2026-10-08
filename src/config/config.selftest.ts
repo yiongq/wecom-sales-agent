@@ -3730,7 +3730,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
 }
 
-// ---------------- 旧后台 admin.html：列表 401 自动弹登录框 + db 存储下顶部提示去 J 页（02 第 23 步）----------------
+// ---------------- 旧后台 admin.html：列表 401 自动弹登录框 + db 配置模式下顶部提示去 J 页（02 第 23 步）----------------
 // load() 与 sigOf() 一个字节不改：401 判断放在 api()（统一出口），顶部提示是一段独立逻辑；都在 load()/sigOf() 之外，
 // 原样从页面抽出来在 vm 里跑（跟上面「方案书卡片按版本」那段同一个办法）。
 {
@@ -3861,12 +3861,18 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     }
   }
 
-  // db 存储下顶部提示链到 J 页；文件存储下永远不出现（判断用 /healthz 的 store.mode，不新开接口）
+  // db 配置模式下顶部提示链到 J 页；文件配置模式下永远不出现（判断用 /healthz 的 config.mode，即 CONFIG_SOURCE，
+  // 不是会话存储 SESSION_STORE/store.mode——线上 demo 现在正是 CONFIG_SOURCE=db、SESSION_STORE=file 这一种组合，
+  // 后台配置在库里就该有这条提示，与会话是不是也落在库里无关；不新开接口）
   {
-    const declSrc = cut(admin, 'let dbSessionStore = false;', '\n}\n');
+    const declSrc = cut(admin, 'let dbConfigMode = false;', '\n}\n');
     const fetchSrc = cut(admin, "fetch('/healthz')", '}).catch(() => {});');
     let selected: string | null = null;
-    let fetchResult: { ok: boolean; json: () => Promise<unknown> } = { ok: true, json: async () => ({ store: { mode: 'file' } }) };
+    const healthz = (configMode: string, storeMode: string): { ok: boolean; json: () => Promise<unknown> } => ({
+      ok: true,
+      json: async () => ({ config: { mode: configMode }, store: { mode: storeMode } }),
+    });
+    let fetchResult = healthz('file', 'file');
     const opsHint: { hidden: boolean } = { hidden: true };
     const opsHintLink: { href: string } = { href: '' };
     // vm.runInContext() 之后读 opsHint.hidden：用函数包一层，躲开 TS 对「字面量赋值后又原样比较」的收窄
@@ -3882,22 +3888,23 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       fetch: (_u: string) => Promise.resolve(fetchResult),
     };
     vm.createContext(sandbox);
-    vm.runInContext(declSrc, sandbox); // 声明一次 dbSessionStore / updateOpsHint；后面只重跑取数的那条语句，不重新声明
+    vm.runInContext(declSrc, sandbox); // 声明一次 dbConfigMode / updateOpsHint；后面只重跑取数的那条语句，不重新声明
 
-    // 文件存储：healthz 回 file 时 fetch 链里压根不碰 updateOpsHint（跟真实 render() 的调用点分开）；
+    // 文件配置模式：healthz 回 file 时 fetch 链里压根不碰 updateOpsHint（跟真实 render() 的调用点分开）；
     // 这里学 render() 的样子显式再调一次 updateOpsHint()，先把提示条设成「正显示」，看它是不是被按文件模式收回去——
-    // 不这样的话，「不出现」这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断 dbSessionStore」这种变异
+    // 不这样的话，「不出现」这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断 dbConfigMode」这种变异
     opsHint.hidden = false;
     vm.runInContext(fetchSrc, sandbox);
     await new Promise((r) => setTimeout(r, 5));
     vm.runInContext('updateOpsHint();', sandbox);
-    check('admin.html：文件存储（/healthz 的 store.mode=file）下顶部提示不出现', hiddenNow() === true, `hidden=${hiddenNow()}`);
+    check('admin.html：文件配置模式（/healthz 的 config.mode=file）下顶部提示不出现', hiddenNow() === true, `hidden=${hiddenNow()}`);
 
-    fetchResult = { ok: true, json: async () => ({ store: { mode: 'db' } }) };
+    // 线上 demo 现在的真实组合：CONFIG_SOURCE=db、SESSION_STORE=file——提示该出现，不该被会话存储拖累
+    fetchResult = healthz('db', 'file');
     vm.runInContext(fetchSrc, sandbox);
     await new Promise((r) => setTimeout(r, 5));
     check(
-      'admin.html：db 存储下顶部提示出现，链到 J 页列表',
+      'admin.html：db 配置模式下顶部提示出现，链到 J 页列表（不论会话存储是不是也在库里）',
       hiddenNow() === false && opsHintLink.href === '/console/conversations',
       `hidden=${hiddenNow()} href=${opsHintLink.href}`,
     );
