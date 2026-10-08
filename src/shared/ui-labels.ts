@@ -105,8 +105,12 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'quick_reply.update': { label: '修改常用回复', group: 'conversation', icon: 'square-pen' },
   'quick_reply.archive': { label: '收起常用回复', group: 'conversation', icon: 'archive' },
   'quick_reply.move': { label: '移动常用回复', group: 'conversation', icon: 'arrow-up-down' },
-  // spec 列的另外四个（privacy.publish、platform.tenant_retention、platform.erase、system.purge）随第 16 步的生产者一起加：
-  // 这张表只收有人写的动作（console.selftest 逐个核对）
+  // 02 spec「隐私说明、敏感信息同意、保留期与行权」（第 16 步）：发布说明、设保留期是平台命令行；行权删除与保留期清理
+  // 不存会话 id（只有条数），归「平台与配置」。「隐私」的「私」不在 UI 优先片里，这几条的字都是已在片里的
+  'privacy.publish': { label: '发布须知', group: 'platform', icon: 'shield-check' },
+  'platform.tenant_retention': { label: '设置保留期', group: 'platform', icon: 'calendar-clock' },
+  'platform.erase': { label: '删除会话', group: 'platform', icon: 'eraser' },
+  'system.purge': { label: '保留期清理', group: 'platform', icon: 'trash' },
 };
 
 /** 这个动作的定义；表里没有（以后新增的动作）时是 null。只认自有属性，toString 这类原型上的名字查不到 */

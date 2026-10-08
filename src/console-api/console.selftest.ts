@@ -2463,11 +2463,16 @@ check(
     }
   };
   scan(srcRoot);
+  // platform.erase 由 erase_conversation() 这个 SECURITY DEFINER 的 SQL 函数直接 INSERT audit_log（02 第 4 步的迁移），
+  // 不经 TS 的 writeAudit/queueAudit，静态扫描看不到源头；手动列出这一个例外，连同它一起核对
+  const SQL_WRITTEN_ACTIONS = ['platform.erase'];
   const known = Object.keys(AUDIT_ACTIONS);
   check(
-    'AUDIT_ACTIONS 与 src/ 里 writeAudit 写的动作逐个相同（不多不少）',
-    written.size >= 17 && [...written].toSorted().join() === known.toSorted().join(),
-    `写的有、表里没有：${[...written].filter((a) => !known.includes(a)).join(',')}；表里有、没人写：${known.filter((a) => !written.has(a)).join(',')}`,
+    'AUDIT_ACTIONS 与 src/ 里 writeAudit 写的动作逐个相同（不多不少，platform.erase 由 SQL 函数直接写，另计）',
+    written.size >= 17 &&
+      [...written, ...SQL_WRITTEN_ACTIONS].toSorted().join() === known.toSorted().join() &&
+      SQL_WRITTEN_ACTIONS.every((a) => !written.has(a)),
+    `写的有、表里没有：${[...written].filter((a) => !known.includes(a)).join(',')}；表里有、没人写：${known.filter((a) => !written.has(a) && !SQL_WRITTEN_ACTIONS.includes(a)).join(',')}`,
   );
   // 审计页「全部」不显示登录记录时的请求，与全部记录里去掉登录、退出的逐条相同
   const noLogin = await walk(`&actions=${auditActionsParam('all', false)}`, 100);
@@ -3226,6 +3231,7 @@ async function workbenchSuite(): Promise<void> {
         /^GET \/proposal\//,
         /^(GET|POST) \/wecom\/callback$/,
         /^GET \/kf-qr\.png$/,
+        /^GET \/privacy$/,
         /^GET \/console/,
         /^POST \/api\/console\/auth\/login$/,
       ];
@@ -3262,6 +3268,29 @@ async function workbenchSuite(): Promise<void> {
       if (savedPass === undefined) delete process.env.ADMIN_PASS;
       else process.env.ADMIN_PASS = savedPass;
     }
+  }
+
+  // ---- GET /privacy：公开、匿名可读，没发布过 404，发布过显示纯文本正文、转义、no-store（02 第 16 步，不变量 40）----
+  {
+    // 不经 keep()：/privacy 不是 /api/console，不该被下面「安全头覆盖率」那条聚合断言要求带 CSP
+    const { __privacyTest } = await import('../privacy/privacy.js');
+    __privacyTest.reset();
+    const r404 = await app.request('/privacy');
+    const body404 = await r404.text();
+    check('GET /privacy：没发布过 404', r404.status === 404, `${r404.status} ${body404.slice(0, 80)}`);
+    __privacyTest.set({ version: 7, body: '处理者：云途\n保存期限：730 天\n<script>alert(1)</script>' });
+    const r200 = await app.request('/privacy');
+    const body200 = await r200.text();
+    check(
+      'GET /privacy：发布过 200，正文转义、no-store，含版本号的内容原样可见',
+      r200.status === 200 &&
+        r200.headers.get('cache-control') === 'no-store' &&
+        body200.includes('保存期限：730 天') &&
+        body200.includes('&lt;script&gt;') &&
+        !body200.includes('<script>alert'),
+      `${r200.status} ${body200}`,
+    );
+    __privacyTest.reset();
   }
 
   // ---- 接手：成为接手人、别人接手中 409、坐席带 force 403、主管改派、代次 ----
