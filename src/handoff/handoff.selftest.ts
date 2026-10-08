@@ -238,11 +238,12 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
 
 // ---------------- 3. 五条入口都带记录（R9、不变量 24） ----------------
 {
-  // 固定原因是给顾问看的一句话：不用会话状态以外的叫法（设计系统 §11），都不超过记录的 120 字
+  // 固定原因是给顾问看的一句话：不用会话状态以外的叫法（设计系统 §11），都不超过记录的 120 字。
+  // 第 16 步加了 consent（客户不同意处理敏感个人信息，R23）：11 条
   const reasons = Object.values(HANDOFF_REASON);
   check(
     '固定原因：没有「待人工」「已转人工」「待接管」「需要介入」，都 ≤120 字',
-    reasons.length === 10 && reasons.every((r) => r.length > 0 && !/待人工|已转人工|待接管|需要介入/.test(r) && [...r].length <= 120),
+    reasons.length === 11 && reasons.every((r) => r.length > 0 && !/待人工|已转人工|待接管|需要介入/.test(r) && [...r].length <= 120),
     json(HANDOFF_REASON),
   );
   check('固定原因：agent 是「共享工作台转人工」', HANDOFF_REASON.agent === '共享工作台转人工');

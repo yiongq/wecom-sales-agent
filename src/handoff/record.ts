@@ -27,6 +27,7 @@ export const HANDOFF_REASON = {
   emergency: '客户遇到紧急情况',
   failure: '客户的问题 AI 几轮都没答上',
   sentiment: '客户情绪不满',
+  consent: '客户不同意处理敏感个人信息',
 } as const satisfies Partial<Record<HandoffKind, string>>;
 
 /** 紧急情况的类型写进原因，顾问一眼看出是哪一类（R15） */

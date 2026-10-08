@@ -40,20 +40,34 @@ import { promptHashes } from './config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage } from './handoff/record.js';
 import { TAKEN_OVER_NOTE, takeoverGen } from './handoff/takeover.js';
 import {
+  consentWithdrawalOf,
   emergencyOf,
   FAILURE_WINDOW,
   failureThresholdReached,
   negativeLevel,
   pushWindow,
   repeatedQuestion,
+  sensitiveCategoriesOf,
   SENTIMENT_WINDOW,
   sentimentThresholdReached,
   turnFailed,
+  type SensitiveCategory,
   type TurnSignals,
 } from './handoff/triggers.js';
+import {
+  awaitingConsent,
+  CONSENT_WITHDRAWAL_REASON,
+  CONSENT_WITHDRAWN_REPLY,
+  consentMenuText,
+  noteSensitiveMentions,
+  sensitiveContextNote,
+  withdrawConsent,
+} from './handoff/consent.js';
+import { currentPrivacyNotice } from './privacy/privacy.js';
+import { pushToChannel } from './handoff/takeover.js';
 import { cleanText } from './shared/text.js';
 import { stripAdvisorPrefix, withAdvisorPrefix } from './shared/conversation.js';
-import { convLabel } from './log.js';
+import { convLabel, logQuote } from './log.js';
 import { followupOptOutOf } from './jobs/optout.js';
 import { cancelHandoffNotifyOps } from './jobs/notify.js';
 import {
@@ -443,7 +457,7 @@ function resendPayReply(session: Session, text: string): string | undefined {
   if (!o) return undefined;
   // 得是在说付款：点名了支付/付款/订单，或只说「链接」「卡片」而最近发出去的站内链接就是支付链接
   if (!/支付|付款|付钱|交钱|收银|订单/.test(text) && !(/链接|卡片/.test(text) && lastSiteLinkIsPay(session))) return undefined;
-  console.warn(`[engine] 客户要重发支付链接，引擎直接重发待付款订单 ${o.id}（会话 ${convLabel(session.id)}）：${text}`);
+  console.warn(`[engine] 客户要重发支付链接，引擎直接重发待付款订单 ${o.id}（会话 ${convLabel(session.id)}）：${logQuote(text)}`);
   return `好的，支付链接给您重新发一次：\n/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
 }
 /** 最近一条带站内链接的回复里，最后那条是支付链接（不是方案书） */
@@ -1127,7 +1141,7 @@ function dropPostHandoffPromises(text: string): string {
     .join('');
   const out = tidyLinkText(kept);
   if (out === text.trim()) return text;
-  console.warn(`[engine] 转人工后删掉兑现不了的许诺：${text.slice(0, 80)}`);
+  console.warn(`[engine] 转人工后删掉兑现不了的许诺：${logQuote(text)}`);
   return /顾问/.test(out) ? out : `${out ? out + '\n' : ''}资深顾问会尽快与您联系，请稍候～`;
 }
 
@@ -1612,7 +1626,7 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
     // 模型真拿到了链接却一个字没提（「已为您锁定名额～」），链接照样补在末尾
     if (!holes() && insertAt < 0 && !fromCalls.length) continue;
     console.warn(
-      `[engine] ⚠️ 回复承诺了${kind === 'pay' ? '支付' : '方案书'}链接但正文无有效链接，已修补（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`,
+      `[engine] ⚠️ 回复承诺了${kind === 'pay' ? '支付' : '方案书'}链接但正文无有效链接，已修补（会话 ${convLabel(session.id)}）：${logQuote(visible)}`,
     );
 
     let links = fromCalls;
@@ -1621,7 +1635,7 @@ async function repairLinks(visible: string, ctx: LinkRepairCtx): Promise<string>
       // 说的是另一张单：待付款的这张是客户本人的，补进去就成了「闺蜜那单的支付链接」（C06）。
       // 删掉承诺和「订好啦」这类没发生的事，问合成一单还是请顾问单独下；已转人工就只删不问
       if (pending && talksOtherOrder(text, visible)) {
-        console.warn(`[engine] 回复在说另一张单，不拿本人订单补支付链接（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
+        console.warn(`[engine] 回复在说另一张单，不拿本人订单补支付链接（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
         const rest = splitSentences(dropLinkPromise(out, kind, hole))
           .filter((s) => !ORDER_DONE_CLAIM.test(s))
           .join('')
@@ -3245,8 +3259,8 @@ function groundToolArgs(
             `「先按 ${n} 位报的；如果是 ${n} 位大人再带小朋友，告诉我孩子几岁，我按实际人数重算」。只顺带说这一句，不要另起一轮追问。`;
     }
   }
-  if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${convLabel(session.id)}）：${fixed.join('；')}`);
-  if (error) console.warn(`[engine] ${name} 未执行（会话 ${convLabel(session.id)}）：${error.slice(0, 60)}`);
+  if (fixed.length) console.warn(`[engine] ${name} 参数按客户原话核正（会话 ${convLabel(session.id)}）：${logQuote(fixed.join('；'))}`);
+  if (error) console.warn(`[engine] ${name} 未执行（会话 ${convLabel(session.id)}）：${logQuote(error)}`);
   return { args: out, notes, error };
 }
 
@@ -3442,13 +3456,51 @@ export function replyMessageOf(r: AgentReply): ChatMessage | undefined {
  * 没有人工消息的会话一个字节都不变；contextNote 在 system prompt 之外（独立的 system 消息），前缀哈希不受影响
  */
 const ADVISOR_NOTE = '历史里标【顾问】的话是人工顾问说的，不是你说的；顾问答应过的事以顾问为准，不要改口，也不要在自己的回复里写【顾问】。';
+/** 敏感信息的两个类别（R23，02 第 16 步）：contextNote 的提醒、同意菜单的触发按这个顺序检查 */
+const SENSITIVE_CATEGORIES: readonly SensitiveCategory[] = ['health', 'minor'];
+
+/**
+ * 敏感信息同意（R23，02 第 16 步）：客户这句话里第一次／第二次出现某个还没有结论的类别，本轮回复之后追加一条企微菜单消息
+ * （写进会话、经渠道发送，message_seq 为空）。没有发布隐私说明时 currentPrivacyNotice() 为 null，什么都不做（demo 恒为 null，
+ * 不变量 40）。送达才记进会话——跟欢迎语同一个口径，没送达的话不该在后台显得「AI 已经问过」
+ */
+async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
+  const notice = currentPrivacyNotice();
+  if (!notice) return;
+  const categories = sensitiveCategoriesOf(text);
+  if (!categories.length) return;
+  const session = getSession(sessionId);
+  if (!session) return;
+  const toAsk = noteSensitiveMentions(session, categories, notice.version, cleanText(text, 200));
+  if (!toAsk.length) return;
+  saveSession(session);
+  for (const category of toAsk) {
+    const content = consentMenuText(category);
+    const ok = await pushToChannel(sessionId, content, { kind: 'menu', category });
+    if (ok) {
+      session.messages.push({ role: 'agent', content, at: Date.now() });
+      saveSession(session);
+    } else {
+      console.warn(`[engine] 同意菜单没送达（会话 ${convLabel(sessionId)}，类别 ${category}）`);
+    }
+  }
+}
 
 /**
  * 对外入口：同会话串行，跨会话并发。一轮的正文包在 pinCatalogForTurn 里（02 R14、不变量 36）：轮到它真正开始时记下产品库快照，
- * 这一轮的工具、链接上的 ?v= 与护栏都看这一代，中途有人改价也不混用。文件模式下什么都不做
+ * 这一轮的工具、链接上的 ?v= 与护栏都看这一代，中途有人改价也不混用。文件模式下什么都不做。
+ * 同意菜单在同一段串行链里、这一轮的回复之后处理（R23）：失败只打日志，不影响这一轮已经算出的回复
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  return serialize(sessionId, () => pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts))));
+  return serialize(sessionId, async () => {
+    const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
+    try {
+      await maybeAskConsent(sessionId, text);
+    } catch (e) {
+      console.error(`[engine] 同意菜单处理异常（会话 ${convLabel(sessionId)}）:`, e instanceof Error ? e.message : e);
+    }
+    return reply;
+  });
 }
 
 async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
@@ -3577,6 +3629,25 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     }
   }
 
+  // 撤回同意与删除请求（R23，02 第 16 步）：客户命中 consentWithdrawalOf，本轮不调模型，固定回复，转人工（kind='consent'）。
+  // 只在发布过隐私说明时判（没发布就没有同意记录可撤回，demo 永远不会走到这里，不变量 40）；已经转人工（无论什么原因）
+  // 也照样回这一句、记录撤回——这是客户的行权请求，不该被「已转人工静默」吞掉
+  if (currentPrivacyNotice() && consentWithdrawalOf(text)) {
+    withdrawConsent(session, cleanText(text, 200), currentPrivacyNotice()!.version);
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind: 'consent',
+      at: Date.now(),
+      reason: CONSENT_WITHDRAWAL_REASON,
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
+    const msg: ChatMessage = { role: 'agent', content: CONSENT_WITHDRAWN_REPLY, at: Date.now() };
+    session.messages.push(msg);
+    saveSession(session);
+    return done('handoff', { text: CONSENT_WITHDRAWN_REPLY, stage: session.stage, handoff: true }, msg);
+  }
+
   // 已转人工：AI 彻底沉默，只记录客户消息（供后台人工查看），不再自动回复。
   // 转人工的那一句确认在触发时已发过，之后重复「已转人工」既烦又不专业。
   // 阶段停在终态（已成交客户要人工，R9）的不改回 handoff：成交统计不变
@@ -3700,9 +3771,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 客户没坚持库外目的地就转人工：驳回，让模型接着答（见 unwarrantedHandoff）
     if (name === 'handoff_to_human' && unwarrantedHandoff(session, text, String(modelArgs.reason ?? ''))) {
       handoffDeclined = true;
-      console.warn(
-        `[engine] 驳回转人工：客户没坚持原目的地（会话 ${convLabel(session.id)}）：${String(modelArgs.reason ?? '').slice(0, 60)}`,
-      );
+      console.warn(`[engine] 驳回转人工：客户没坚持原目的地（会话 ${convLabel(session.id)}）：${logQuote(String(modelArgs.reason ?? ''))}`);
       return Promise.resolve(JSON.stringify({ error: HANDOFF_DECLINED }));
     }
     const call: ToolCall = { name, args };
@@ -3754,6 +3823,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     quoteTimingNote(session, text),
     headcountAskNote(session, text),
     advisorInWindow ? ADVISOR_NOTE : '',
+    // 问过还没有结论的敏感信息类别（R23）：提示模型别在回复里主动提它，没问过或已有结论的会话一个字节都不变
+    ...SENSITIVE_CATEGORIES.filter((c) => awaitingConsent(session, c)).map(sensitiveContextNote),
   ]
     .filter(Boolean)
     .join('\n');
@@ -3864,7 +3935,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 此前安全网只看这一句，照 3 人的报价建了单，把客户本人那张 2 人的待付款单作废了
   const friendsOwn = wantsOrder ? otherPartyPending(session, session.lastQuote!.routeId, session.lastQuote!.travelers) : undefined;
   if (friendsOwn) {
-    console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${convLabel(session.id)}）：${text}`);
+    console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${convLabel(session.id)}）：${logQuote(text)}`);
     const rest = splitSentences(visible)
       .filter((s) => !ORDER_DONE_CLAIM.test(s))
       .join('')
@@ -4012,7 +4083,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   visible = neutralizeStandardDays(visible, session, calls);
   // 承诺改行程：系统真的做不到，转人工是对的（真人顾问能重排）
   if (CUSTOM_PROMISE.test(visible)) {
-    console.error(`[engine] ⚠️ 拦截空头承诺·承诺重排行程（会话 ${convLabel(session.id)}）：${visible.slice(0, 80)}`);
+    console.error(`[engine] ⚠️ 拦截空头承诺·承诺重排行程（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
     // 只摘掉许下空头承诺的那几句，其余照常发给客户。客户常在同一条消息里问两件事
     // （「能改成 5 天吗」+「能保证看到极光吗」），整条替换会把第二个问题的回答一起吞掉，
     // 客户看到的是答非所问。转人工仍然立刻执行——系统确实改不了行程，这条不能松。
@@ -4052,14 +4123,14 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (handoffDeclined || unwarrantedHandoff(session, text, visible)) {
       const kept = dropTransferClaims(visible);
       if (kept !== visible)
-        console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
+        console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
       visible = kept || fallbackReply(session.stage);
       noteGuard('handoff_claims', beforeClaims, visible, 'drop_sentence');
     } else if (!isHandoffIntent(text) && !WANTS_PERSON.test(text) && !DEMANDS_EXCEPTION.test(text)) {
       // 客户没要找人，只是问了件要顾问确认的事（专票、资质…），模型顺口说了「我帮您转接」。
       // 真转过去 AI 就此沉默，客户接着问资金、问电话都没人回（guard-13 实测）——演示当场卡住。
       // 所以摘掉转接的话、改成「记下了，请顾问确认」，后台记一条待跟进，AI 照常接着聊。
-      console.warn(`[engine] 回复说了转接但客户没要找人，改为记下待顾问确认（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
+      console.warn(`[engine] 回复说了转接但客户没要找人，改为记下待顾问确认（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
       const kept = dropTransferClaims(visible);
       visible = /顾问[^。！？\n]{0,12}(?:确认|核实|跟您|联系)/.test(kept)
         ? kept
@@ -4071,7 +4142,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
         at: Date.now(),
       });
     } else {
-      console.warn(`[engine] 回复说了转接却没调 handoff_to_human，按转人工处理（会话 ${convLabel(session.id)}）：${visible.slice(0, 60)}`);
+      console.warn(`[engine] 回复说了转接却没调 handoff_to_human，按转人工处理（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
       const note = departNoteForHandoff(session);
       enterHandoff(session, {
         kind: 'claimed',
@@ -4106,7 +4177,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 注入劫持安全网：输入像注入，且回复已经不在聊旅行了（没有任何业务词）或夹带了被劫持的
   // 输出，说明模型被带跑了——直接换成顾问口吻的拒绝。模型干净地拒绝时两条都不命中，不受影响。
   if (visible && INJECTION_INTENT.test(text) && (!ON_TOPIC.test(visible) || hasHijackResidue(visible, text))) {
-    console.error(`[engine] ⚠️ 拦截注入劫持（会话 ${convLabel(session.id)}）：输入=${text.slice(0, 60)} 输出=${visible.slice(0, 60)}`);
+    console.error(`[engine] ⚠️ 拦截注入劫持（会话 ${convLabel(session.id)}）：输入=${logQuote(text)} 输出=${logQuote(visible)}`);
     const before = visible;
     replaceVisible(INJECTION_REPLY);
     noteGuard('injection', before, visible, 'replace');
@@ -4124,7 +4195,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     if (dests.length) {
       const rec = await deterministicRecommend(dests[0], session);
       if (rec) {
-        console.error(`[engine] ⚠️ 拦截百科式回答（会话 ${convLabel(session.id)}，目的地 ${dests[0]}）：${visible.slice(0, 60)}`);
+        console.error(`[engine] ⚠️ 拦截百科式回答（会话 ${convLabel(session.id)}，目的地 ${dests[0]}）：${logQuote(visible)}`);
         visible = rec;
         session.stage = deriveStage(session.stage, [{ name: 'search_routes', args: { destination: dests[0] } }]);
         session.profile.destinationInterest = dests[0];
@@ -4142,9 +4213,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 人数按客户原话认一份交给规则词守卫：还没报价时它自己认不出几位，「两位一共 3 万」没法折成每人去核「在预算内」
   const claims = dropUnbackedClaims(visible, session, calls, { travelers: travelersKnown(session, saidAll) });
   if (claims.dropped.length) {
-    console.error(
-      `[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${convLabel(session.id)}）：${claims.dropped.join(' | ').slice(0, 160)}`,
-    );
+    console.error(`[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${convLabel(session.id)}）：${logQuote(claims.dropped.join(' | '))}`);
   }
   if (claims.text !== visible) {
     const before = visible;
@@ -4160,7 +4229,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   if (unbacked.length) {
     console.error(
       `[engine] ⚠️ 拦截无出处的报价 ${unbacked.map((h) => h.value).join(', ')}（会话 ${convLabel(session.id)}）：`,
-      visible.slice(0, 120),
+      logQuote(visible),
     );
     const before = visible;
     visible = rewriteUnbackedPrices(visible, unbacked, { session, text, calls, customHandoff: !!customHandoff });
@@ -4170,7 +4239,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
 
   // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
   if (strandedAfterDrop(beforeGuards, visible)) {
-    console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${convLabel(session.id)}）：${visible.slice(0, 80)}`);
+    console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
     const before = visible;
     visible = customHandoff ? '' : session.handedOver ? HANDED_OVER_FALLBACK : await strandedReply({ session, text, calls, runTool });
     noteGuard('stranded', before, visible, 'replace');
@@ -4424,7 +4493,7 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
  */
 export async function notifyPaid(orderId: string): Promise<{ sessionId: string; text: string; message: ChatMessage } | null> {
   const order = getOrder(orderId);
-  if (!order) return null;
+  if (!order?.sessionId) return null;
   const session = getSession(order.sessionId);
   if (!session) return null;
   const text = cleanText(
