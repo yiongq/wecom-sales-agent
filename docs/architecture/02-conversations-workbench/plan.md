@@ -113,7 +113,7 @@
   - advisor 模式下收款方式只经 `/pay/:orderId` 的服务端注入，`/pay.html?orderId=` 跳到 `/pay/:orderId`（spec「收款流程」、验收 23）。
   - 自测：prod profile 的整条链路（`payNote`、页面说明、替换句、匿名 404、未确认 409、非接手人坐席 409、审计两行、付款确认在提交之后）；demo profile 与开工时相同。
   - 对应验收 23、24，以及不变量 19、20 的付款部分、39。
-- [ ] 16. 隐私说明、敏感信息同意、保留期、行权删除（4）：开放问题 2、7 已定：保留期用迁移的默认值（即裁决值），同意流程照 spec；PIA 要求改同意细节时另行修订 spec。
+- [x] 16. 隐私说明、敏感信息同意、保留期、行权删除（4）：2026-10-08 完成（分支 `feat/02-step16-privacy`，没 push）。开放问题 2、7 已定：保留期用迁移的默认值（即裁决值），同意流程照 spec；PIA 要求改同意细节时另行修订 spec。结构、本步定的取舍、自测、变异、门禁见「实施记录 · 第 16 步」。
   - `privacy-publish`、`tenant-retention`、`erase-conversation` 三个 platform 命令行；隐私说明读进内存与 60 秒轮询；`GET /privacy`；欢迎语按发布与否加链接；同意菜单（用途、影响、可撤回、链接）、`menu_id` 回调记录、再问一次、不同意转人工（`kind='consent'`）且不能交还、撤回同意。
   - `retention_purge` 任务的执行体（跳过有动静的会话、带预期值调清除函数、同一个 tick 移出内存并记墓碑、`purge_expired_traces`、`purge_finished_jobs`、`system.purge` 审计）。
   - `logQuote()`：第 1 步盘点出的日志位置逐个改经它；compose 的 app 服务配日志轮转。
@@ -1196,6 +1196,19 @@
 - 真实模型回归（owner 已批准）：跑法、数字见「验收记录」第 24 条最后一条子项；结论是 7 条兜底用例里 6 条转正或保持满分，`s15-anger-03-slow`（「怎么这么慢啊」）仍是 0/6，owner 同日定接受现状，第 15 步已勾（见「Open」）。
 - 门禁：四个门禁全绿；`pnpm test` 不带 `PG_TEST_URL` 一遍全绿（本次只改 SOP 与一份非锁定自测，没碰服务端代码，带 PG 的那一遍不重复跑）；`PAYMENT ORDERS SELFTEST` 32 → 34 项；锁定套件 8 个文件零字节差异、断言零修改。
 
+### 第 16 步 · 隐私说明、敏感信息同意、保留期、行权删除（2026-10-08）
+
+- 结构：`src/privacy/privacy.ts`（db 模式下把最新发布的隐私说明读进内存、60 秒后台轮询刷新；`GET /privacy` 原样返回正文；`privacyLink()` 没发布过时返回 `null`）；`src/handoff/consent.ts`（同意状态的记账与文案——菜单问句、`sensitiveContextNote`、撤回/不同意的固定回复、`menu_id` 编解码、`noteSensitiveMentions`/`applyConsentDecision`/`withdrawConsent` 三个状态转换；识别本身用第 11 步已有的 `sensitiveCategoriesOf`/`consentWithdrawalOf`，本步只接上调用）；`src/engine.ts` 新增一条确定性分支（撤回同意／删除请求命中时不调模型，固定回复＋转人工）与新类别首次出现时的 `maybeAskConsent`；`src/adapters/wecom.ts` 的企微 `msgmenu` 发送与 `msgmenu_click` 回调（自定义的两按钮线格式，没有真实企微测试号，按文档自行设计）；`src/jobs/purge.ts` 的 `retention_purge` 执行体（分页读候选、三种预过滤——写队列有动静／内存更新且仍在保留期内／有任务在跑——跳过，其余带候选读到的 `lastSeq`/`updatedAt` 当预期值调 `purge_conversation`，成功同一个 tick `forgetSession`，最后 `purge_expired_traces`/`purge_finished_jobs`/`system.purge` 审计）；`src/db/repo/retention.ts`（清除/保留期函数的 SQL 包装）；三个新 platform 命令行 `privacy-publish`/`tenant-retention`/`erase-conversation`；`src/store.ts` 加 `tombstoned`（`WeakSet`，清除之后挡迟到的写）、`pendingWrite`/`forgetSession`。`Order.sessionId` 改成可选（清除函数连同 DB 里 `data` 的 `sessionId` 键一起删），级联改了订单相关的约 15 个文件的类型收尾（`src/payment/orders.ts` 的 `sessionLagging`/`sessionCommit`、`src/store.ts` 的 `pgForOrder` 等）。
+- 本步定的取舍：
+  1. **「不同意」确认回复的措辞**：spec 只说「回一句确认」没给原文，选最贴近字面意思的 `好的，这类信息我们不会收集或使用，马上为您转接人工顾问处理。`。
+  2. **企微菜单线格式自行设计**：没有真实企微测试号验证 `msgmenu`/`msgmenu_click` 的实际行为，按官方文档字段设计请求体与回调解析，`menu_id` 编码成 `category:decision` 字符串，两边各自编解码。
+  3. **`preFiltered` 计数器**：变异测试带出——SQL 函数 `purge_conversation` 自己的乐观并发与保留期重判，使得即便去掉 `purge.ts` 的预过滤分支，大多数场景功能上也不出错（SQL 会自己拒绝）；但停了这道预过滤，生产上会更容易撞见「清理与写入抢跑」触发的优雅停机，不是纯粹的性能优化。加这个独立计数器是为了让测试能区分「预过滤生效」与「SQL 事后拒绝」两条不同的路径，防止测试只靠 `skipped` 总数掩盖预过滤被误删的回归。
+  4. **`runRetentionPurgeJob` 清理用真实时钟、不用排程传入的 `now`**：排程判断到点用的 `now` 测试会传模拟的未来值（用于快进排程），但 SQL 清理函数要求 `p_now` 与库的真实时钟相差不超过 5 分钟，传模拟未来值进去只会被拒绝；`enqueueNext` 仍按 `max(now, job.runAt)` 算，排哪一天不受影响。
+  5. **`console.selftest.ts` 的审计动作扫描例外**：`platform.erase` 的审计行是 `erase_conversation` SQL 函数内部直接写的（第 4 步就有），对基于 TS 源码正则扫描的检查不可见，加一个文档化的 `SQL_WRITTEN_ACTIONS` 例外列表，不是放宽检查本身。
+- 自测：新建 `src/privacy/privacy.selftest.ts`（37 项，文件模式、不连 PG：隐私说明的内存读取与 `escapeHtml`、同意菜单文案与按钮 id、问一次/再问一次/问两次不再问、同意与不同意的记账与转人工/交还被拒、撤回同意的记账与固定回复、撤回同意接进引擎、没发布隐私说明时不触发）；`src/adapters/wecom-02.selftest.ts` 加两块（企微原生 `msgmenu`/`msgmenu_click`、欢迎语按发布与否加链接，最终 14 项）；`src/handoff/handoff.selftest.ts` 的 `reasons.length` 10→11（新增 `consent` 原因）；`src/store/store.selftest.ts` 的真实 PG 场景新增 `retention`（跳过有动静的会话、清掉过期的、`consents` 表落库核对）与行权删除（spill 文件拒绝、成功删除）两组，最终 445 项。
+- 变异（源码拷进 scratchpad 隔离副本，按场景只跑相关最小套件）：代表性几个全部杀掉，其中两个最初是存活（测试覆盖缺口，已修）——① 同意菜单不经账本（去掉 `noteSensitiveMentions` 里的 `queueConsents` 调用）：最初存活，因为没有测试校验 `consents` 表真的落库，补了上面提到的真实 PG 断言之后再杀；② 清理不跳过有动静的会话（预过滤条件整体 `if (false)`）：最初存活，因为 SQL 函数自己的重判兜底让受影响的两个会话仍被算作「跳过」，加 `preFiltered` 计数器区分两条路径之后再杀；③ 墓碑不挡迟到写（去掉 `tombstoned` 检查）：杀掉。「清除后不同 tick 摘内存」与「清除漏删发送账本或任务」两个未机械切换：前者与 `queueMicrotask` 自动落盘的时序强相关，手动制造的竞争对真实网络延迟下的 PG 不可靠（与 store.selftest.ts 竞争场景设计时遇到的同一类问题），后者主要是第 4 步 SQL 层逻辑、这一步只是调用方，优先级较低；两者的清理函数本身（`purge_conversation`/`eraseConversation`）已在第 4 步变异测试覆盖过。
+- 门禁：四个门禁全绿；合并 `origin/dev`（第 15 步 PR #89、措辞收尾 PR #90 都已在内）之后 `package.json` 的 `test` 脚本与 `src/engine.ts` 的重发支付链接函数两处冲突，按两边意图合并（测试脚本串上双方新增的自测文件；重发支付链接保留第 15 步的 advisor/online 分支＋本步的 `logQuote()`）；合并带出一处类型收尾（`server.ts` 旧 `/api/orders/:id/pay` 接口的 `queueAudit`/`awaitCommit` 调用在 `Order.sessionId` 可选之后需要判空，按 `src/payment/orders.ts` 已有的 `sessionLagging`/`sessionCommit` 同一种写法处理）。合并后 `engine.selftest.ts` 打印的 `PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 与「实施记录 · 第 15 步」哈希表最终那一列核对一致，本步没有再改 SOP 或提示词。`pnpm test` 带 `PG_TEST_URL`（本机一次性容器 `pgtest-02s16`，`127.0.0.1:55433`，收尾已删）与不带各跑一遍，都全绿：`STORE SELFTEST` 408/445、`JOBS SELFTEST` 103/108、`DB SELFTEST` 501/898、`PRIVACY SELFTEST` 37、`WECOM-02 SELFTEST` 14，其余套件条数与合并后的 `origin/dev` 相同；两种 mock eval 配置都是 19/19（43 项断言）；`pnpm --filter console build` 与 `check-console-dist` 全过。锁定套件 8 个文件断言零修改。`git diff origin/dev -U0 | grep -oE 'wm[A-Za-z0-9_]{14,}'` 为空、仓库文件里没有本机绝对路径；`gitleaks`（`--log-opts="-m origin/dev..HEAD"`）扫描 8 个提交，no leaks found。README 没动。
+
 ### 第 19 步 · 前端：外壳实时与 I 页（2026-10-08）
 
 - 本步只改 console 前端：接的全是第 13 步已经做好的接口（`/api/console/events`、`?group=paid_needs_human`、`GET /conversations/:id`），没有碰服务端代码；门禁的 `pnpm test` 只跑了不带 `PG_TEST_URL` 的一遍。与第 15 步（收款流程，改 `src/payment/`、`console-api/app.ts` 订单接口、`data/sop.md`）另开一条线并行，收尾前 `git fetch && git merge origin/dev` 一次（`Already up to date`，两条线此刻没有冲突，`origin/dev` 还停在 `514b60f`）。
@@ -1530,3 +1543,10 @@ date`，origin/dev 这段时间没有新提交）。
 - 半成品：J 页只是占位（最小概要视图），完整三栏工作台（接手、回复、交接卡、订单与付款、快捷回复、「AI为什么这么回」）留给第 20.2 步；`WorkbenchPage.tsx`、`workbench.css` 会被整个替掉。
 - 阻塞：无。浏览器实测没做到（本机没有现成的 DB 存储开发环境可登录成员账号，chrome-devtools 的共享浏览器实例当时被另一个并行会话占用），用 `conversations.selftest.tsx`、`shell.selftest.ts` 的真实 DOM 断言顶上，细节见「实施记录 · 第 19 步」倒数第二条。
 - 下一步：第 20.2 步「前端：J 页」先读本节与「实施记录 · 第 19 步」——J 页路由、`GET /conversations/:id` 的读法、「打开工作台」从哪些入口进来（I 页行/按钮、铃铛两组、页头主按钮）都已经接好，第 20.2 步整个替换 `WorkbenchPage.tsx` 的内容即可，不用改路由注册；I 页头主按钮「没有等人接手的会话」时的 `blocked` 态，等 J 页有了无选中的空态可以去掉。第 21 步（总览 A2）与 ⌘K「会话」组仍在用 `admin.html`（`workbenchHref`），没有改。
+
+### 交接（2026-10-08，第 16 步）
+
+- 已完成：第 16 步「隐私说明、敏感信息同意、保留期、行权删除」（分支 `feat/02-step16-privacy`，没 push；开工时 dev 含第 1–14、17、18、19、20.1 步）。隐私说明发布与轮询、`GET /privacy`、欢迎语按发布与否加链接；企微同意菜单与撤回同意的确定性引擎分支；三个新 platform 命令行；`retention_purge` 执行体；`Order.sessionId` 改可选并完成级联类型收尾；19 个日志位置改经 `logQuote()`；compose 日志轮转。结构、本步定的五条取舍、自测、变异（含两个测试覆盖缺口的发现与修复）、门禁见「实施记录 · 第 16 步」。收尾合并 `origin/dev`（含第 15 步 PR #89、措辞收尾 PR #90），两处冲突已解；`PREFIX sha256` 核对与「实施记录 · 第 15 步」哈希表最终列一致，本步没有再改 SOP 或提示词。README 没动。
+- 半成品：无。
+- 阻塞：无。变异测试清单里「清除后不同 tick 摘内存」「清除漏删发送账本或任务」两项没有机械切换验证，理由见「实施记录 · 第 16 步」门禁前一段倒数第二条（前者与 `queueMicrotask` 自动落盘的时序强相关、人为制造的竞争在真实网络延迟下的 PG 不可靠；后者是第 4 步 SQL 层逻辑，这一步只是调用方，且已在第 4 步变异覆盖过）；不挡本步验收，留给以后谁再碰这两处时留意。
+- 下一步：第 17、18、19、20.1 步均已完成，dev 上下一个未完成的是第 20.2 步「前端：J 页」（另一条线，已有 agent 在做）与第 21 步「总览 A2」；两者都依赖第 15 步（已合并）。第 16 步与它们之间没有直接依赖，合并顺序不受影响。
