@@ -2893,11 +2893,82 @@ check(
   fs.rmSync(dist, { recursive: true, force: true });
 }
 
+// ---------------- 快捷回复正文的 markdown 检测（纯函数，第 22 步审查 minor 第 3 条）----------------
+{
+  const { hasMarkdown } = await import('../shared/console-api.js');
+  const bad: [string, string][] = [
+    ['**加粗**不行', '**加粗**'],
+    ['__加粗__不行', '__加粗__'],
+    ['*斜体*不行', '单星*斜体*'],
+    ['_斜体_不行', '单下划线_斜体_'],
+    ['这是`代码`不行', '`代码`'],
+    ['~~删除线~~不行', '~~删除线~~'],
+    ['# 标题不行', '行首 # 标题'],
+    ['- 列表项不行', '行首 - 列表'],
+    ['> 引用不行', '行首 > 引用'],
+    ['---', '独占一行 ---'],
+    ['___', '独占一行 ___'],
+    ['[链接](https://a.com)不行', '[链接](地址)'],
+  ];
+  check(
+    '快捷回复：hasMarkdown 拦住各种写法',
+    bad.every(([s]) => hasMarkdown(s)),
+    bad.filter(([s]) => !hasMarkdown(s)).join(','),
+  );
+  const ok = [
+    '单价*数量=总价，一共2*3=6元', // 两处乘号，配不成对
+    '方案_v2.docx 请查收', // 单个下划线的文件名
+    'v1_2.docx 请查收', // 数字_数字的版本号
+    '价格是100*2=200元', // 单个乘号
+    '正常的句子，没有任何符号',
+    '您好呀，方便告诉我您的预算吗？',
+  ];
+  check(
+    '快捷回复：hasMarkdown 不误拦中文里常见的单个星号 / 乘号 / 下划线文件名',
+    ok.every((s) => !hasMarkdown(s)),
+    ok.filter((s) => hasMarkdown(s)).join(','),
+  );
+}
+
 // ---------------- 02 第 13 步：接手状态机与后台接口（02 spec「后台接口」「接手、人工回复与交还」「通知」） ----------------
 // 这一段跑在文件存储上（selftest-env 钉住）；db 存储才有的（更早的消息、trace、写库积压）在末尾的子进程里
 await workbenchSuite();
 
 // 命名错误映射：23505（写函数都先转成命名错误，接口上走不到，这里直接看映射）
+let realPgRan = false;
+// ---------------- 第 22 步审查 major 第 1 条：真实 PG 上多条独立连接并发新建快捷回复，ord 不许撞号 ----------------
+// 上面 workbenchSuite() 用的 t.db 只有一条连接（PGlite 或 openTestDb() 的 PG_TEST_URL 路径都一样），5 个「并发」请求
+// 其实全部串行过这一条连接，测不出真竞态；这里另开一个真实的临时库，5 条各自独立的物理连接（max:1）才测得出
+if (process.env.PG_TEST_URL) {
+  const { createRealPgFixture } = await import('../db/testing.js');
+  const { openDb, withTenant } = await import('../db/client.js');
+  const { createQuickReply, listQuickReplies } = await import('../db/repo/quick-replies.js');
+  const fx = await createRealPgFixture(process.env.PG_TEST_URL);
+  try {
+    const ctx = { tenantId: fx.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+    const conns = await Promise.all(Array.from({ length: 5 }, () => openDb(fx.urls.app, { max: 1 })));
+    const created = await Promise.all(
+      conns.map((c, i) => withTenant(c.db, ctx, (tx) => createQuickReply(tx, { title: `并发${i}`, body: `正文${i}`, byName: null }))),
+    );
+    const ords = created.map((r) => r.ord).toSorted((a, b) => a - b);
+    check(
+      '快捷回复：真实 PG 上 5 个独立连接并发新建，ord 互不相同、是 0..4 的连续段（第 22 步审查 major 第 1 条）',
+      JSON.stringify(ords) === JSON.stringify([0, 1, 2, 3, 4]),
+      JSON.stringify(created.map((r) => r.ord)),
+    );
+    const list = await withTenant(conns[0]!.db, ctx, (tx) => listQuickReplies(tx));
+    check(
+      '快捷回复：并发新建之后列表也是这 5 条，按 ord 升序、没有重复',
+      list.length === 5 && JSON.stringify(list.map((r) => r.ord)) === JSON.stringify([0, 1, 2, 3, 4]),
+      JSON.stringify(list.map((r) => ({ ord: r.ord, title: r.title }))),
+    );
+    await Promise.all(conns.map((c) => c.close()));
+    realPgRan = true;
+  } finally {
+    await fx.drop();
+  }
+}
+
 check(
   '错误映射：23505（经 drizzle 包在 cause 里）→ 409',
   __consoleTest.mapError(new Error('insert failed', { cause: Object.assign(new Error('duplicate key'), { code: '23505' }) }))?.status ===
@@ -3025,6 +3096,44 @@ async function workbenchSuite(): Promise<void> {
   const { conversationState, shortIdOf } = await import('../shared/conversation.js');
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const pack = cfg.currentTenant().pack;
+
+  // ---- 快捷回复：新租户首次读到空表时按行业包默认模板写入，只写一次（并发读不重复写）；行业包没有模板时为空 ----
+  // （第 22 步）。这个进程只服务 demo 这一个租户（session.login/resolveSession 都按 configRuntime().tenantId 查，
+  // 建别的租户登不进去——同「成员」一节 otherTenant 的注释），demo 的 quick_replies 这时还一行都没有，
+  // 是它唯一能测「首次读」的机会：这段必须排在本函数最先、也排在模块顶层任何别的 /quick-replies 调用之前
+  {
+    const { defaultQuickRepliesOf } = await import('../packs/registry.js');
+    const defaults = defaultQuickRepliesOf('travel');
+    check('快捷回复：旅游包配了默认模板（4–6条）', defaults.length >= 4 && defaults.length <= 6, String(defaults.length));
+    check('快捷回复：没登记的包没有默认模板', defaultQuickRepliesOf('no-such-pack-22').length === 0);
+    const demoTenantId = cfg.configRuntime().tenantId;
+    const emptyBefore = await asSuper(
+      async () =>
+        (await t.pg.query<{ n: string }>(`select count(*)::text as n from quick_replies where tenant_id = $1`, [demoTenantId])).rows[0]!.n,
+    );
+    check('快捷回复：demo 租户这时一行都还没有（后面测的才是真的「首次读」）', emptyBefore === '0', emptyBefore);
+    const titlesOf = (r: Res): unknown[] => (r.body.items as Body[]).map((x) => x.title);
+    // 5 个并发的「首次读」：都抢 ensureDefaultQuickReplies 的租户级 advisory 锁，只有先拿到的那个插，其余拿到锁时
+    // 表已经不空，原样跳过——结果应该是都看到同一份默认模板，库里也只有这一份，不是 5 份
+    const parallel = await Promise.all(Array.from({ length: 5 }, () => call('GET', '/quick-replies', { as: owner })));
+    check(
+      '快捷回复：新租户首次读到空表时按行业包默认模板写入；并发的几次首次读互相等锁，只有一个真的插',
+      parallel.every((r) => r.status === 200) &&
+        parallel.every((r) => JSON.stringify(titlesOf(r)) === JSON.stringify(defaults.map((d) => d.title))),
+      parallel.map((r) => `${r.status} ${r.text}`).join(' | '),
+    );
+    const rowCount = await asSuper(
+      async () =>
+        (await t.pg.query<{ n: string }>(`select count(*)::text as n from quick_replies where tenant_id = $1`, [demoTenantId])).rows[0]!.n,
+    );
+    check('快捷回复：没有插出两份（库里恰好是默认模板的条数）', rowCount === String(defaults.length), rowCount);
+    const again = await call('GET', '/quick-replies', { as: owner });
+    check(
+      '快捷回复：再读一次还是同一份默认模板（不会再插一遍）',
+      JSON.stringify(titlesOf(again)) === JSON.stringify(defaults.map((d) => d.title)),
+      again.text,
+    );
+  }
 
   // ---- 成员：主管、两个坐席；所有者、管理员、只读用前面登录好的 ----
   const SUP = { email: 'sup13@example.com', password: 'sup13-password-1', name: '主管丁' };
@@ -3851,44 +3960,55 @@ async function workbenchSuite(): Promise<void> {
     );
   }
 
-  // ---- 快捷回复：读给所有成员，管理给主管以上；写入与审计同一事务 ----
+  // ---- 快捷回复：读给所有成员，管理给主管以上；写入与审计同一事务；正文不许 markdown（保存时校验） ----
   {
+    // 上面的权限矩阵已经对 demo 租户的 /quick-replies 发过 GET（触发了默认模板的首次写入），这里先读一遍记下基线，
+    // 后面只断言基线之后新增/挪动的部分，不依赖默认模板有几条（这条就是「行业包默认模板」与「CRUD」两段交接的地方）
+    const before = await call('GET', '/quick-replies', { as: vw });
+    const baseTitles = (before.body.items as Body[]).map((x) => x.title);
     const created = await call('POST', '/quick-replies', { as: sup, json: { title: '问日期', body: '您大概什么时候出发呢？' } });
     const second = await call('POST', '/quick-replies', { as: O.as, json: { title: '问人数', body: '这次几位出行？' } });
+    const badCreate = await call('POST', '/quick-replies', { as: sup, json: { title: '坏正文', body: '**加粗**不行' } });
     check(
-      '快捷回复：主管、所有者能建；坐席 403',
+      '快捷回复：主管、所有者能建；坐席 403；正文带 markdown 400',
       created.status === 200 &&
         second.status === 200 &&
-        (await call('POST', '/quick-replies', { as: ag1, json: { title: 'x', body: 'y' } })).status === 403,
+        (await call('POST', '/quick-replies', { as: ag1, json: { title: 'x', body: 'y' } })).status === 403 &&
+        badCreate.status === 400,
+      badCreate.text,
     );
     const id = String(created.body.id);
     const list = await call('GET', '/quick-replies', { as: vw });
     check(
-      '快捷回复：只读成员也能读，按 ord 排',
-      list.status === 200 && JSON.stringify((list.body.items as Body[]).map((x) => x.title)) === '["问日期","问人数"]',
+      '快捷回复：只读成员也能读，按 ord 排（新建的排在默认模板之后）',
+      list.status === 200 &&
+        JSON.stringify((list.body.items as Body[]).map((x) => x.title)) === JSON.stringify([...baseTitles, '问日期', '问人数']),
       list.text,
     );
+    const badPatch = await call('PATCH', `/quick-replies/${id}`, { as: sup, json: { body: '# 标题也不行' } });
     const patched = await call('PATCH', `/quick-replies/${id}`, { as: sup, json: { body: '您打算哪天出发？' } });
     const moved = await call('POST', `/quick-replies/${id}/move`, { as: sup, json: { direction: 'down' } });
     const list2 = await call('GET', '/quick-replies', { as: ag1 });
     check(
-      '快捷回复：改正文（标题不动）、下移',
-      patched.status === 200 &&
+      '快捷回复：改正文（标题不动）、下移；改成 markdown 400（原文不变）',
+      badPatch.status === 400 &&
+        patched.status === 200 &&
         patched.body.title === '问日期' &&
         patched.body.body === '您打算哪天出发？' &&
         moved.status === 200 &&
         moved.body.moved === true &&
-        JSON.stringify((list2.body.items as Body[]).map((x) => x.title)) === '["问人数","问日期"]',
-      `${patched.text} ${list2.text}`,
+        JSON.stringify((list2.body.items as Body[]).map((x) => x.title)) === JSON.stringify([...baseTitles, '问人数', '问日期']),
+      `${badPatch.text} ${patched.text} ${list2.text}`,
     );
     const archived = await call('POST', `/quick-replies/${id}/archive`, { as: sup });
     const list3 = await call('GET', '/quick-replies', { as: ag1 });
     check(
-      '快捷回复：归档之后不再列出，再归档 404；标题超长 400',
+      '快捷回复：归档之后不再列出（插入列表里也没有了），再归档 404；标题超长 400',
       archived.status === 200 &&
-        !(list3.body.items as Body[]).some((x) => x.id === id) &&
+        JSON.stringify((list3.body.items as Body[]).map((x) => x.title)) === JSON.stringify([...baseTitles, '问人数']) &&
         (await call('POST', `/quick-replies/${id}/archive`, { as: sup })).status === 404 &&
         (await call('POST', '/quick-replies', { as: sup, json: { title: 'x'.repeat(21), body: 'y' } })).status === 400,
+      list3.text,
     );
     const au = await call('GET', '/audit?actions=quick_reply.create,quick_reply.update,quick_reply.move,quick_reply.archive', O);
     check(
@@ -4518,6 +4638,7 @@ if (fails.length) {
 }
 console.log(
   `CONSOLE SELFTEST PASS: ${pass} 项断言全通（口令哈希与并发上限 / 平台账号命令行 / 登录与会话 / 空闲与绝对过期 / 三路限流与防探测 / 口令升级 / 吊销会话 / prod 下后台 SSE 要求会话 / ` +
-    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、冲突合并的 rebaseOnto、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩）`,
+    `HTTP：cookie 与 CSRF、权限矩阵、发布回滚与审计、rebase 冲突、冲突合并的 rebaseOnto、契约闸、产品库锁定字段与补丁、匿名投影与 prod 401、锁丢失、文件模式、安全头、会话只读列表、会话状态与计数、/me 的租户名与 /pack、CSV 导入、审计按一组动作过滤、/console 托管、静态资源的缓存与压缩` +
+    `${realPgRan ? ' / 真实 PG：快捷回复并发新建' : '；真实 PG 部分未跑'}）`,
 );
 process.exit(0);
