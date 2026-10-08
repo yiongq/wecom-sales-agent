@@ -110,11 +110,8 @@ const fileBackend = createFileBackend({
   orders,
   owns: (id) => !pgBackend || isDemoClassId(id),
   // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
-  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它。
-  // 第 16 步：保留期清理或行权删除之后 sessionId 没了（订单一直是真实会话的，PG 后端一直管着），文件后端永不收养它
-  ownsOrder: (o) =>
-    o.sessionId !== undefined &&
-    (!pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id)),
+  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
+  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id),
   isReal: (id) => !isDemoClassId(id),
   afterPersist: () => storeEvents.emit('change'),
 });
@@ -316,14 +313,23 @@ export function pendingWrite(sessionId: string): boolean {
 /**
  * 保留期清理成功删除一个会话之后，同一个 tick 把它从 identity map 与 PG 后端的写队列簿记里摘掉（第 16 步，`pg-backend` 的
  * `forget(id)`）：否则这个会话的下一次落库会发现行不在了，按 `StoreConflictError` 处理、整个进程优雅停机。
- * 旧的 Session 对象进墓碑：之后拿着它的 `saveSession` 只记一行日志，不执行；客户再来时 `getSession` 建的是新对象
+ * 旧的 Session 对象进墓碑：之后拿着它的 `saveSession` 只记一行日志，不执行；客户再来时 `getSession` 建的是新对象。
+ * 它名下的订单（`Order.sessionId` 一直要求是 string，不改成可选）也一并从内存订单表摘掉——库里那一行按 spec 保留
+ * （清除函数把 session_id 置空、保留订单行作成交记录），但内存里不留一个 sessionId 已经找不到会话的订单；
+ * 后台 `/orders`、成交额 KPI 都是从 identity map 算的，清理之后自然看不到这张单了（与种子/访客会话清理同一种做法）
  */
 export function forgetSession(sessionId: string): void {
   const s = sessions.get(sessionId);
-  if (s) tombstoned.add(s);
+  if (s) {
+    tombstoned.add(s);
+    for (const oid of s.orderIds ?? []) orders.delete(oid);
+  }
   sessions.delete(sessionId);
   pgFor(sessionId)?.forget(sessionId);
+  forgetSessionProbe?.(sessionId);
 }
+/** 仅供自测：forgetSession 每次真的摘掉一个会话时同步调一次，见 __storeTest.setForgetSessionProbe */
+let forgetSessionProbe: ((sessionId: string) => void) | null = null;
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);
@@ -453,7 +459,7 @@ export function freshenDemoData(): void {
     if (s.assignee) s.assignee.at += delta;
   }
   for (const o of orders.values()) {
-    if (o.sessionId !== undefined && DEMO_SESSION_RE.test(o.sessionId)) {
+    if (DEMO_SESSION_RE.test(o.sessionId)) {
       o.createdAt += delta;
       if (o.paidAt) o.paidAt += delta;
       // 02 第 13 步起后台能确认种子订单的价格：确认时刻同样跟着挪
@@ -623,9 +629,8 @@ function emitSaved(s: Session, unseq: readonly ChatMessage[]): void {
   emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
 }
 
-/** 订单改动的提交后事件（后台事件流的 order）：会话已被清除或删除（第 16 步之后才会出现）时没有订阅者，不发 */
+/** 订单改动的提交后事件（后台事件流的 order） */
 function emitOrder(o: Order): void {
-  if (o.sessionId === undefined) return;
   emitAfterCommit(o.sessionId, {
     type: 'order.changed',
     id: o.sessionId,
@@ -635,16 +640,13 @@ function emitOrder(o: Order): void {
   });
 }
 
-/** 这个订单所属会话的 PG 后端，没有 sessionId（第 16 步：已被清除或删除）时为 null */
-const pgForOrder = (o: Order): PgBackend | null => (o.sessionId === undefined ? null : pgFor(o.sessionId));
-
 /**
  * 不经 createOrder / markOrderPaid / supersedeOrder 的订单改动（02 第 13 步，后台的确认价格、确认收款、取消订单，src/payment/orders.ts）：
  * 排进订单所属会话的下一次落库，提交后发 order.changed
  */
 export function saveOrder(o: Order): void {
   if (orders.get(o.id) !== o) return;
-  (pgForOrder(o) ?? fileBackend).scheduleOrder(o.id);
+  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(o.id);
   emitOrder(o);
 }
 
@@ -659,7 +661,7 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   orders.set(order.id, order);
-  (pgForOrder(order) ?? fileBackend).scheduleOrder(order.id);
+  (pgFor(order.sessionId) ?? fileBackend).scheduleOrder(order.id);
   emitOrder(order);
   return order;
 }
@@ -678,9 +680,9 @@ export function markOrderPaid(id: string): Order | undefined {
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
-    const s = o.sessionId === undefined ? undefined : sessions.get(o.sessionId);
+    const s = sessions.get(o.sessionId);
     o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
-    (pgForOrder(o) ?? fileBackend).scheduleOrder(id);
+    (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
     emitOrder(o);
   }
   return o;
@@ -692,7 +694,7 @@ export function supersedeOrder(id: string, byId: string): boolean {
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  (pgForOrder(o) ?? fileBackend).scheduleOrder(id);
+  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
   emitOrder(o);
   return true;
 }
@@ -734,5 +736,16 @@ export const __storeTest = {
   /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
   emitIncident(i: StoreIncident): void {
     incident(i);
+  },
+  /**
+   * 仅供自测（第 16 步）：核保留期清理「返回 true 就在同一个 tick 里移出内存」（spec「任务表与跟进」）——
+   * 不能只看「最后不在内存里」，那样把 forgetSession 延到下一拍（比如包一层 setTimeout）也测不出来，这个窗口里
+   * 真有新消息撞上来，要么被墓碑静默吞掉，要么撞到行不存在走 StoreConflictError 优雅停机。做法：调用方在真正调用
+   * purgeOnce 之前也排一个 setTimeout(…, 0)，两边都往同一个数组里记一笔；JS 单线程下，只要 forgetSession 与它的
+   * 调用方之间没有别的 await，这次记录必定先于任何宏任务（哪怕调用方自己的 setTimeout 排得更早）——这不是猜时序，
+   * 是单线程事件循环的语言语义保证
+   */
+  setForgetSessionProbe(fn: ((sessionId: string) => void) | null): void {
+    forgetSessionProbe = fn;
   },
 };

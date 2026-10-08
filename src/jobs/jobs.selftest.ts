@@ -496,7 +496,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
   const { fakeDbError } = await import('../db/testing.js');
   const { configHealth, __configTest } = await import('../config/source.js');
   const { guardOutbound, handleMessage } = await import('../engine.js');
-  const { nextPurgeAt, retentionPurgeSpec, runRetentionPurgeJob } = await import('./purge.js');
+  const { nextPurgeAt, purgeOnce, retentionPurgeSpec, runRetentionPurgeJob } = await import('./purge.js');
   const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('./notify.js');
   const { sendWindow } = await import('../quota/ledger.js');
   const { push, pushes, behave } = makePush();
@@ -539,6 +539,35 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
       purged.status === 'done' && next2?.runAt === at(2, 3, 30) && next2.dedupeKey === retentionPurgeSpec(tomorrow330 + 1000).dedupeKey,
       json(purged),
     );
+    // 清理的跳过条件「有任务在跑」（第 16 步，purge.ts 的 runningJobChecker）：这个库之前是空的，这条从没真的被走过。
+    // 用一个真的过期候选（超过默认 180 天的线索保留期，不用改租户设置）+ runner.__jobsTest.markRunningForTest 模拟
+    // 「本进程正在处理这个会话的任务」，不用真起一整条认领流程去赌时序（时序不可控）
+    const runningSid = 'wecom:wmJobsRun1';
+    const DAY = 86_400_000;
+    {
+      const rs = store.getOrCreateSession(runningSid, 'wecom');
+      rs.messages.push({ role: 'customer', content: '一句话', at: Date.now() - 200 * DAY });
+      rs.updatedAt = Date.now() - 200 * DAY;
+      store.saveSession(rs, false);
+      await flush(runningSid);
+    }
+    runner.__jobsTest.markRunningForTest(runningSid);
+    const rSkipped = await purgeOnce(Date.now());
+    const [stillThere] = await su<{ n: number }>(`select count(*)::int as n from conversations where id = $1`, [runningSid]);
+    check(
+      '清理：有任务在跑（本进程认领中）的会话被预过滤挡下，不调清除函数，候选还在库里',
+      (rSkipped.preFiltered ?? 0) >= 1 && stillThere?.n === 1,
+      json({ result: rSkipped, stillThere }),
+    );
+    runner.__jobsTest.clearRunningForTest(`test-running-${runningSid}`);
+    const rCleaned = await purgeOnce(Date.now());
+    const [goneNow] = await su<{ n: number }>(`select count(*)::int as n from conversations where id = $1`, [runningSid]);
+    check(
+      '清理：任务跑完之后（没再标「跑着」），同一个会话下一次清理照常清掉，跳过不是永久的',
+      rCleaned.conversations >= 1 && goneNow?.n === 0,
+      json({ result: rCleaned, goneNow }),
+    );
+
     const ops = handoffNotifyOps('wecom:wmX', 1000, { escalated: false });
     const up = handoffNotifyOps('wecom:wmX', 2000, { escalated: true });
     check(

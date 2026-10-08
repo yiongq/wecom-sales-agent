@@ -31,6 +31,11 @@ let runningJobChecker: (sessionId: string) => boolean = () => false;
 export function setRunningJobChecker(fn: (sessionId: string) => boolean): void {
   runningJobChecker = fn;
 }
+/** 仅供自测：见下面 purgeTickHook 调用点的注释 */
+let purgeTickHook: (() => void) | null = null;
+export function setPurgeTickHook(fn: (() => void) | null): void {
+  purgeTickHook = fn;
+}
 
 /** 本地日期 YYYY-MM-DD */
 function localDate(t: number): string {
@@ -104,6 +109,9 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
         console.error(`[jobs] retention_purge 清理一个会话失败（继续下一个）:`, e instanceof Error ? e.name : e);
         continue;
       }
+      // 仅供自测（第 16 步）：SQL 一resolve 就标一下，forgetSession（下一行，没有别的 await）是不是真的在同一个 tick 里调用，
+      // 不用猜时序——核法见 store.ts 的 forgetSessionProbe 与 __storeTest.setForgetSessionProbe 的注释
+      purgeTickHook?.();
       if (ok) {
         forgetSession(cand.id);
         conversationsPurged += 1;

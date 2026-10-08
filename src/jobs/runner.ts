@@ -464,4 +464,14 @@ export const __jobsTest = {
     handlers[kind] = fn;
     return prev;
   },
+  /**
+   * 仅供自测：直接造一条「本进程认领中」的记录，不经真实认领（第 16 步：保留期清理据 hasRunningJob 跳过有任务在跑的会话，
+   * 这条跳过条件原来零覆盖——真实认领要起完整的 runner、等它恰好卡在处理中间，时序不可控，直接插进 mine 更可靠）
+   */
+  markRunningForTest(sessionId: string, jobId = `test-running-${sessionId}`): void {
+    mine.set(jobId, { job: { id: jobId, payload: { sessionId } } as JobRow, phase: 'claimed' });
+  },
+  clearRunningForTest(jobId: string): void {
+    mine.delete(jobId);
+  },
 };

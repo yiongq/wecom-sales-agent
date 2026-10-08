@@ -4093,6 +4093,32 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     const consent = await import('../handoff/consent.js');
     consent.noteSensitiveMentions(lead2, ['health'], 1, '测试证据：我妈有高血压');
     for (const s of [lead1, lead2, cust1, cust2, race]) await store.flushSession(s.id);
+    // lead1（被清的那个）顺带给它造一条发送账本行与一条待办任务：purge_conversation 的 SQL 函数本身已经会删这两类
+    // （第 4 步），但 store.selftest 走的是 purge.ts 的整条调用路径，之前这个夹具里从没出现过这两类行，调用参数传错了
+    // 也测不出来——补上，让这条调用路径也真的核到（02 审查第 16 步「删除与保留期」minor 第 3 条）
+    const { insertOutboundSends } = await import('../db/repo/outbound.js');
+    const { enqueueJob } = await import('../db/repo/jobs.js');
+    await withTenant(main.db, ctx, async (tx) => {
+      await insertOutboundSends(tx, [
+        {
+          conversationId: lead1.id,
+          channelMsgid: 'ret-fix-01',
+          messageSeq: null,
+          kind: 'welcome',
+          sentAt: new Date(now - 8 * DAY),
+          status: 'accepted',
+          errcode: null,
+          failType: null,
+        },
+      ]);
+      await enqueueJob(tx, {
+        kind: 'followup',
+        dedupeKey: `followup:ret-fix:${lead1.id}`,
+        runAt: new Date(now),
+        payload: { sessionId: lead1.id },
+        maxAttempts: 3,
+      });
+    });
     const payOrder = (s: Session) => {
       const o = store.createOrder({
         sessionId: s.id,
@@ -4141,13 +4167,37 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     store.saveSession(race);
     const pendingRightAfterSave = store.pendingWrite(race.id);
     const purge = await import('../jobs/purge.js');
+    // 「返回 true 就在同一个 tick 里移出内存」（spec「任务表与跟进」）：不能只看「最后不在内存里」——那样把 forgetSession
+    // 延到下一拍（比如包一层 setTimeout）也测不出来。做法：purgeConversation 的 SQL 一 resolve 就标一下（purgeTickHook）、
+    // 顺手排一个微任务检查点；forgetSession 真的调用时（forgetSessionProbe）看这个检查点有没有先跑过——没跨过一次微任务
+    // 检查点，就证明中间没有 await（JS 单线程的语言语义保证，不是猜时序）
+    let microtaskSeen = false;
+    let forgetGapSeen = false;
+    let forgetCount = 0;
+    purge.setPurgeTickHook(() => {
+      microtaskSeen = false;
+      queueMicrotask(() => {
+        microtaskSeen = true;
+      });
+    });
+    store.__storeTest.setForgetSessionProbe(() => {
+      forgetCount += 1;
+      if (microtaskSeen) forgetGapSeen = true;
+    });
     const r1 = await purge.purgeOnce(now);
+    purge.setPurgeTickHook(null);
+    store.__storeTest.setForgetSessionProbe(null);
     // race 这次没被清：改动照常落库（不是被 tombstone 挡住，是从没被清过）
     await store.flushSession(race.id);
     // 两个真的被清的会话：旧对象上再 saveSession 不报错、不落库（tombstone）；identity map 里也没了
     lead1.messages.push({ role: 'system', content: 'ghost write after purge', at: now });
     store.saveSession(lead1, false);
     const stillInMemory = { lead1: store.getSession(lead1.id) !== undefined, cust2: store.getSession(cust2.id) !== undefined };
+    // cust2 的订单一并从内存订单表摘掉（forgetSession，Order.sessionId 仍要求是 string、不改成可选）：库里那一行仍保留
+    // （上面已经核过 session_id 置空），但后台 /orders、成交额 KPI 是从 identity map 算的（listOrders/getOrder），
+    // 清理之后自然看不到这张单——与种子/访客会话清理同一种做法，不是遗漏
+    const cust2OrderGoneFromMemory = store.getOrder(cust2Order.id) === undefined;
+    const cust1OrderStillInMemory = store.getOrder(cust1Order.id) !== undefined;
     res.data.retention = {
       result: r1,
       lead1Id: lead1.id,
@@ -4159,6 +4209,10 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
       cust1OrderId: cust1Order.id,
       cust2OrderId: cust2Order.id,
       pendingRightAfterSave,
+      cust2OrderGoneFromMemory,
+      cust1OrderStillInMemory,
+      forgetCount,
+      forgetGapSeen,
     };
     await main.close();
   }
@@ -4778,6 +4832,10 @@ async function pgSuites(): Promise<void> {
           cust1OrderId: string;
           cust2OrderId: string;
           pendingRightAfterSave: boolean;
+          cust2OrderGoneFromMemory: boolean;
+          cust1OrderStillInMemory: boolean;
+          forgetCount: number;
+          forgetGapSeen: boolean;
         }
       | undefined;
     check(
@@ -4800,6 +4858,21 @@ async function pgSuites(): Promise<void> {
       ret?.stillInMemory.lead1 === false && ret?.stillInMemory.cust2 === false,
       JSON.stringify(ret?.stillInMemory),
     );
+    check(
+      // forgetGapSeen 的健康值是 false：每次 forgetSession 真的调用时，purgeTickHook 排的那个 queueMicrotask 检查点
+      // 都还没跑过——只有 forgetSession 与 purgeConversation 的 SQL 调用之间没有任何别的 await（同一个 tick）才成立
+      // （JS 单线程的语言语义，不是猜时序）。把 purge.ts 的 `forgetSession(cand.id)` 包一层 setTimeout(…, 0) 延到下
+      // 一个宏任务：宏任务排在微任务之后，由此 forgetSession 真正执行时检查点早已跑过，forgetGapSeen 变 true，断言变红
+      '保留期清理：forgetSession 两次都真的调用了（清了几个会话调几次），且每次都在同一个 tick 里调用（没有跨 await 的空隙）',
+      ret?.forgetCount === 2 && ret?.forgetGapSeen === false,
+      JSON.stringify({ forgetCount: ret?.forgetCount, forgetGapSeen: ret?.forgetGapSeen }),
+    );
+    check(
+      '保留期清理：cust2 的订单一并从内存订单表摘掉（后台 /orders、成交额 KPI 从 identity map 算，清理之后看不到这张单，' +
+        '库里那一行仍保留，上面已核过 session_id 置空）；没被清的 cust1 的订单仍在内存里',
+      ret?.cust2OrderGoneFromMemory === true && ret?.cust1OrderStillInMemory === true,
+      JSON.stringify({ cust2OrderGoneFromMemory: ret?.cust2OrderGoneFromMemory, cust1OrderStillInMemory: ret?.cust1OrderStillInMemory }),
+    );
     if (ret) {
       const convs = await fxr.query<{ id: string }>(
         `select c.id from conversations c join tenants t on t.id=c.tenant_id where t.slug='demo' and c.id = any($1)`,
@@ -4818,6 +4891,19 @@ async function pgSuites(): Promise<void> {
         [ret.raceId],
       );
       check('保留期清理：跳过的 race 不受影响，清理那一刻没落库的改动之后照常落库', raceMsgs?.n === 2, JSON.stringify(raceMsgs));
+      const [lead1Outbound] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from outbound_sends s join tenants t on t.id=s.tenant_id where t.slug='demo' and s.conversation_id = $1`,
+        [ret.lead1Id],
+      );
+      const [lead1Jobs] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from jobs j join tenants t on t.id=j.tenant_id where t.slug='demo' and j.payload->>'sessionId' = $1`,
+        [ret.lead1Id],
+      );
+      check(
+        '保留期清理：被清的 lead1 的发送账本行与待办任务（purge.ts 整条调用路径，不是只调 SQL 函数）都一并删掉了',
+        lead1Outbound?.n === 0 && lead1Jobs?.n === 0,
+        JSON.stringify({ lead1Outbound, lead1Jobs }),
+      );
       const orderRows = await fxr.query<{ id: string; session_id: string | null; data: Record<string, unknown> }>(
         `select o.id, o.session_id, o.data from orders o join tenants t on t.id=o.tenant_id where t.slug='demo' and o.id = any($1)`,
         [[ret.cust1OrderId, ret.cust2OrderId]],
@@ -4954,6 +5040,21 @@ async function pgSuites(): Promise<void> {
           (auditAfter.diff as { conversations: number }).conversations === 1 &&
           (auditAfter.diff as { reason: string }).reason === '客户要求删除（自测）',
         JSON.stringify({ convAfter, orderAfter, auditAfter }),
+      );
+
+      // 会话本来就不在：各类 0 条，审计仍照写（留下有过这次请求的记录），退出码 0（02 第 16 步审查 minor 第 4 条，之前没有自动化用例）
+      const missingSid = 'wecom:wmEraseMiss1';
+      const erasedMissing = erase(['--tenant', 'demo', '--id', missingSid, '--reason', '查无此人（自测）']);
+      const [auditMissing] = await fxr.query<{ diff: Record<string, unknown> }>(
+        `select diff from audit_log a join tenants t on t.id=a.tenant_id where t.slug='demo' and a.action='platform.erase' order by a.id desc limit 1`,
+      );
+      check(
+        '行权删除：会话本来就不在——退出码仍是 0（信息提示，不算错误），各类条数都是 0，审计照写这次请求',
+        erasedMissing.status === 0 &&
+          (auditMissing?.diff as { conversations: number } | undefined)?.conversations === 0 &&
+          (auditMissing?.diff as { messages: number } | undefined)?.messages === 0 &&
+          (auditMissing?.diff as { reason: string } | undefined)?.reason === '查无此人（自测）',
+        `${erasedMissing.status} ${erasedMissing.stdout}${erasedMissing.stderr}`.slice(-400) + JSON.stringify(auditMissing),
       );
     }
 
