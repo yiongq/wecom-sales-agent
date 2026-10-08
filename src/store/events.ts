@@ -6,7 +6,16 @@ import type { HandoffKind, MessageAuthor, OrderStatus } from '../shared/conversa
 export type DomainEvent =
   | { type: 'conversation.changed'; id: string }
   | { type: 'message.appended'; id: string; seq: number; author: MessageAuthor }
-  | { type: 'handoff.started'; id: string; kind: HandoffKind; at: number; escalated: boolean; paidCustomer: boolean }
+  | {
+      type: 'handoff.started';
+      id: string;
+      kind: HandoffKind;
+      at: number;
+      escalated: boolean;
+      paidCustomer: boolean;
+      /** 发出时是否已有接手人（02 第 19 步审查）：true 只在 takeover() 当场接手触发的那一次，前端不弹浏览器通知 */
+      assigned: boolean;
+    }
   | { type: 'conversation.assigned'; id: string; assigneeName: string }
   | { type: 'conversation.released'; id: string }
   | { type: 'order.changed'; id: string; orderId: string; status: OrderStatus; confirmed: boolean }

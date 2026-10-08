@@ -131,7 +131,7 @@
   - `src/otel/export.ts`（`@opentelemetry/*` 钉精确版本，只经动态 `import()`）：`startOtel`、`exportTurn`、属性按 spec，属性名按当时的 GenAI 语义约定与 Langfuse 文档核对、版本写进注释；`OTEL_CAPTURE_CONTENT`；`OTEL_*` 进 `.env.example`。
   - `ops.selftest.ts` 的运行数字（PGlite）与 OpenTelemetry 部分（没配端点时没加载、进程内假 OTLP 接收端收到的 span 与属性、默认没有原文）。
   - 对应验收 34 的其余部分，以及不变量 49。
-- [ ] 19. 前端：外壳实时与 I 页（2.5）：
+- [x] 19. 前端：外壳实时与 I 页（2.5）：2026-10-08 完成（分支 `feat/02-step19-shell-realtime`，另开一条线与第 15 步并行），结构、本步定的取舍、J 页占位的做法、自测、变异与门禁结果见「实施记录 · 第 19 步」。
   - console 订阅 `/events`，断开退回 30 秒轮询，收到 `auth` 回登录页；铃铛弹层的原因与等待时长、「已成交客户要人工」一组、「开启桌面提醒」、浏览器通知；标签页标题前缀；I 页的第四个页签、行的新字段、点行进 J 页、状态句与主按钮。
   - 非锁定自测里禁止「顾问处理中」与「今天不画」的断言（`errors.selftest.ts`、`overview.selftest.tsx`、`conversations.selftest.tsx`）改成按四态断言，PR 里写明理由。
   - console 自测：四态与计数同源、标题前缀只数 `human`、禁用词扫描、13 个种子的 UX 验收 6 照旧。
@@ -1188,6 +1188,87 @@
 
 - 真实模型回归（owner 已批准，2026-10-08 跑完）：跑法、数字与逐条命中率见下面「验收记录」第 24 条。
 
+### 第 19 步 · 前端：外壳实时与 I 页（2026-10-08）
+
+- 本步只改 console 前端：接的全是第 13 步已经做好的接口（`/api/console/events`、`?group=paid_needs_human`、`GET /conversations/:id`），没有碰服务端代码；门禁的 `pnpm test` 只跑了不带 `PG_TEST_URL` 的一遍。与第 15 步（收款流程，改 `src/payment/`、`console-api/app.ts` 订单接口、`data/sop.md`）另开一条线并行，收尾前 `git fetch && git merge origin/dev` 一次（`Already up to date`，两条线此刻没有冲突，`origin/dev` 还停在 `514b60f`）。
+- 结构：
+  - `console/src/shell/live.ts`（新建）：事件流的连接状态机（`LiveState = { connected, polling }`）与纯函数 `onOpen`/`onClose`/`onGraceExpired`；`startLiveEvents(deps)` 接 `EventSource`（真的全局 `EventSource` 或自测传的假 `EventSourceLike`），`counts` 事件直写 React Query 缓存，`handoff`/`conversation`/`message`/`order`/`send_failed`/`resync` 让 `['conversations', …]` 开头的查询整体失效重取，`handoff` 另转给 `onNotify`；`auth` 事件关闭连接、与「退出登录」同一套清缓存（回登录页靠 viewer 重取判定，不是自己跳转）；`useLivePollInterval(pollMs)` 给 Bell、I 页的三个计数/列表查询用。
+  - `console/src/shell/notifications.ts`（新建）：`notificationPermission()`、`requestNotificationPermission()`（只给点击回调用）、`notifyHandoff()`（标题复用 `src/shared/conversation.ts` 的 `handoffNoticeTitle`/`HANDOFF_NOTICE_TEXT`，与外部通道同一份文案）。
+  - `console/src/shell/Bell.tsx`：弹层每行加原因与等待时长（`handoff.reason` + `relativeTime(handoff.at)`）；等人接手之后多一组「已成交客户要人工」（`?group=paid_needs_human`，只在非空时出现，不计入徽标）；底部多「开启桌面提醒」（三态：按钮 / 已开启的说明 / 被拒绝的说明）；「打开工作台」改为 `navigate` 到 `/conversations/$id`，不再新标签打开 `admin.html`。
+  - `console/src/shell/Shell.tsx`：`Frame` 里为 member 接 `startLiveEvents`（`onNotify` 里调 `notifyHandoff` 并把「打开 J 页」的回调传进去）；标签页标题前缀「(N) 」在一个无依赖数组的 `useEffect` 里套，每次提交后剥掉上一次套的 `(N) ` 前缀再重套一遍（页面自己的 `useDocumentTitle` 是更深的子组件、先于这里提交），不改共用的 `useDocumentTitle`（它被几乎每个页面的自测直接调用，改了会牵连一大片与本步无关的页面）。
+  - `console/src/shell/model.ts`：加 `workbenchPath(id)`（`/conversations/${encodeURIComponent(id)}`）、`tabTitlePrefix(n)`；`workbenchHref`（admin.html）留给还没改的入口（⌘K「会话」组、A2，第 21、23 步）。
+  - `console/src/conversations/model.ts`：`tabs(counts, selected)` 多一个参数，`assigned` 页签只在「有这种会话或地址选了它」时出现；`rowView` 的 `label` 带 `needSummary`、`stage` 对等人接手的行写 `handoff.reason`（没有原因的旧数据仍写「—」）、`when`/`waitDanger` 对等人接手的行算等待时长（≥10 分钟 danger，照抄 J 页列表同一条规则）、`href` 换成 `workbenchPath`。
+  - `console/src/conversations/ConversationsPage.tsx`：状态句改「企业微信里的客户会话 · 在工作台里接手和回复」；页头主按钮、表格首列与「打开工作台」都改成 `Link`/`navigate` 到 J 页（当前标签）；多取一次 `?state=human` 给页头主按钮用（选中第一个等人接手的会话）。
+  - `console/src/conversations/WorkbenchPage.tsx`、`workbench.css`、`console/src/pages/conversations-id.lazy.tsx`（新建）：J 页占位（见下「本步定的」第 2 条），路由 `/conversations/$id` 加进 `router.tsx`。
+  - `console/src/parts/parts.css`：`.status-assigned .status-dot { background: var(--info-dot); }`（design-system §5.6 的「顾问处理中」默认形态）。
+  - `src/shared/ui-labels.ts`：`ERROR_COPY` 加 `conversation_not_found`（J 页占位的 404 用）。
+  - `console/src/fonts/`：重切子集补了「桌」（「开启桌面提醒」「桌面提醒已开启」是 spec 原文，没法换词），本机没装 `fonttools`/`brotli`，在 scratchpad 建了个一次性 venv 装的，用完删了。
+- 本步定的（spec 没写细，按最小、最贴原文的做法）：
+  1. **I 页「打开工作台」在没有等人接手的会话时怎么办**：spec 原文「选中第一个等人接手的会话，没有就不选」没说清「不选」时按钮该做什么——J 页今天还没有「不选中任何会话」的入口（三栏的空态是第 20.2 步才画）。按钮在这种情况下用 `PrimaryButton` 的 `blocked`（`aria-disabled`，保留焦点，`title` 说明「没有等人接手的会话」），不是真的 `disabled`：等 J 页真的有了无选中的空态，这里直接去掉 `blocked` 就能跳进去，不用改别的。
+  2. **J 页本身是第 20.2 步，本步先接路由**：`WorkbenchPage.tsx` 读 `GET /conversations/:id`（第 13 步已有），画一个最小概要（标题、状态、消息条数、转人工摘要、需求），一行说明「完整的会话工作台……还没上线」；三态照 `StateView`：加载气泡骨架、出错就地重试、`conversation_not_found` 写「这个会话已经不在了」+ 返回列表；非成员仍是「登录后才能看会话」。第 20.2 步会整个替掉这个文件，样式故意从简（独立的 `workbench.css`，没按 design-system 重做）。
+  3. **浏览器通知的渠道短名**：`ConsoleEventMap['handoff']` 事件没带 `channel`（sim- 访客会话的事件本来就不发，现在能收到的只有企微），`notifyHandoff` 固定按 `wecom` 拼标题前半截，和用 `row.channel` 的 `conversationLabel` 不是同一个取法，这是事件 payload 的形状决定的，不是漏改。
+  4. **铃铛弹层行的兜底**：`row.handoff` 按不变量 24 对等人接手、已成交客户要人工这两组一定有值，`Bell.tsx` 仍写了 `row.handoff ? … : 旧的「有新动静」写法` 这条兜底，防的是夹具或未来数据没带 `handoff` 的情况，不依赖它也能退化成旧行为。
+  5. **轮询与 SSE 共存的粒度**：`POLL`（30 秒/隐藏时停）这个常量本身没动——它还给好几处页面用 `setInterval` 算「现在」的时钟（`ConversationsPage`、`OverviewPage`、`AuditPage` 的 `useNow`），改了类型会牵连这几个无关页面。新的「连上不轮询、断线满 30 秒退回、重连立刻停」只加在 `useLivePollInterval` 这一层，只套在 Bell 与 I 页的 `counts`/`human`/`paidNeedsHuman` 三个查询上；`list`（表格数据）仍是固定 30 秒轮询，SSE 来的事件用 `invalidateQueries` 让它提前重取，两条路不冲突。
+  6. **SSE 断线/连不上的统一处理**：`startLiveEvents` 把「`new EventSource()` 抛错」（没有这个全局、CSP 拦住等）当成断线的一种，直接走 30 秒宽限计时器那条路、不让它把 `<Frame>` 摔崩（`login.selftest.tsx` 用 happy-dom 挂真的 `<Shell>`，happy-dom 没有全局 `EventSource`，第一次跑全套门禁时就是在这里炸的，补的这条顺手把这种环境也接住了）。
+- 改了的非锁定断言（理由都是本步按 spec 改的行为，在 spec「测试与 CI」允许的范围内）：
+  - `console/src/parts/errors.selftest.ts`：`conversation_not_found` 补进 `SPEC`/`ERROR_COPY` 的逐条比对（之前只有 `errors.selftest.ts` 自己在第 1 步就把「四种叫法」改完了，本步没有再碰这一条）。
+  - `console/src/conversations/conversations.selftest.tsx`：`tabs()` 的新参数、13 个种子场景（§10.0 老场景、`handoff` 全是 `null`）下首列、「打开工作台」从 `/admin.html#s=<id>`（新标签）换成 `/console/conversations/<id>`（当前标签）；「今天不画『顾问处理中』『等了』『转人工』」这条改成只断言仍被禁用的四个词（「待人工」「已转人工」「待接管」「需要介入」），因为现在的 UI 在有数据时会真的画出「顾问处理中」「原因」「等待时长」这类字（只是这套老场景没有这些数据，所以这个夹具下照样看不到它们，断言的理由变了但结论不变）。
+  - `console/src/overview/overview.selftest.tsx`：`BANNED` 列表没删「顾问处理中」，但注释改写明白——不是因为它整站不该出现，是因为 A2（本步没改，留给第 21 步）今天的数据源里没有一行会落到 `assigned` 状态，这一页此刻确实不该出现这个词；真正的「四态都允许」的断言在 `errors.selftest.ts`。
+- 新自测与扩的自测：
+  - `console/src/shell/shell.selftest.ts`（143 → 173 项）：新增「7. 事件流与桌面提醒」一段——`live.ts` 的三个纯函数（`onOpen`/`onClose`/`onGraceExpired`）、`startLiveEvents` 接一个假 `EventSource`（`EventTarget` 子类）验证开 / 断 / 宽限到期退回轮询 / 重连立刻停、`counts` 事件直写缓存、其余具名事件让 `conversations` 开头的查询失效、`auth` 关连接并清缓存；`notifications.ts` 的 unsupported/denied/granted 三态、标题三种写法（等人接手 / 紧急 / 已成交客户要人工）、正文不含客户原话、点击回调；铃铛的轮询选项（事件流还没确认断线时不轮询，不是固定 30 秒）；徽标只数 `human`、不把 `assigned` 或已成交客户要人工也算进去；画出铃铛不会自动申请桌面提醒授权；`tabTitlePrefix`、`workbenchPath` 两个纯函数。
+  - `console/src/conversations/conversations.selftest.tsx`（131 → 143 项）：`tabs()` 的新参数（有/无 `assigned` 会话、地址选中它两种情况都测）；有 `needSummary` 与 `handoff` 的行（标题带第三段、阶段列写原因、≥10 分钟 danger）；点一行、「打开工作台」、页头主按钮都改成断言 `router` 的地址变成了 `/conversations/<id>`（不再断言 `window.open`）。
+  - 没新建自测文件，没改 `package.json` 的 `test` 链（避免和并行的第 15 步在这个文件上冲突）。
+- 变异（隔离副本，`git worktree add --detach` 到 scratchpad，逐个打、跑对应套件、核过失败的正是对应那条新断言、再撤回；用完删了 worktree）：brief 点名的 8 个全部杀掉——标题前缀/徽标算上 `assigned`（`useWaitingCount` 把 `assigned` 加进 `count`）、已成交客户要人工计入徽标（把 `paidNeedsHuman.data.items.length` 加进徽标）、`onGraceExpired` 不退回轮询、`onOpen` 不停轮询、`auth` 事件不清缓存（不回登录页）、页面一加载就申请通知授权（`useState` 初始化里误用 `requestNotificationPermission`）、`notifyHandoff` 正文拼了 `data.id`（模拟带原话类的信息泄露）、`tabs()` 的 `showAssigned` 恒为 `true`（16 条断言当场报出）。每个都先确认在当时的分支上会通过（没打之前），打完确认变红，再撤回确认恢复绿。
+- 门禁：`format:check`、`lint`（含 `check-console-src.ts`，补了两处新字符串的空格/行业包词撞字问题）、`typecheck`（根与 `console` 两个 tsconfig）、`pnpm test`（不带 `PG_TEST_URL`，本步没改服务端代码）全绿；console 首屏 JS 329,538 / 420,000 B，换页最多 169,717 / 250,000 B（`sop.lazy`），都没涨过预算（新路由 `conversations-id.lazy` 独立分包 2.33 KB，没有进首屏）。锁定套件没碰。
+- 浏览器实测：首次提交时没有验到（原因见下方「审查之后改的」之前的版本：chrome-devtools MCP 的共享浏览器实例被另一个
+  并行会话占着）。审查回来之后补验了 SSE 断线退回轮询这一条（真实 Chromium + PGlite 本机后台，见上「审查之后改的」），
+  其余仍没验到：真实浏览器下深色/浅色主题的视觉效果、键盘走一遍 Bell 弹层与 I 页、「已成交客户要人工」组与「开启桌面
+  提醒」三态的真实交互、重连成功后真的停轮询（这条的状态机单测与断线退回轮询用同一套机制，复验时没有单独再花时间
+  把服务器重新启起来验一遍，风险判断为低）。
+- 界面改动 BEFORE / AFTER：
+  - 铃铛弹层：BEFORE 每行只有「企微客户 · F01」「8分钟前有新动静」、「打开工作台」新标签开 `admin.html#s=<id>`、没有「已成交客户要人工」组、没有桌面提醒入口。AFTER 每行第二行变成「{原因} · {等待时长}」；等人接手列表下面多一组「已成交客户要人工」（只在有时出现）；「打开工作台」在当前标签打开 J 页；底部多一行「开启桌面提醒」（或已开启/被拒绝的说明）。
+  - I 页：BEFORE 页签固定「全部/等人接手/AI接待中/已成交」四个、状态句「……接手和回复目前在工作台里完成」、首列和「打开工作台」新标签开 `admin.html`、等人接手的行阶段列写「—」、最后动静列是 `updatedAt`。AFTER 有顾问处理中的会话（或地址选中它）时多一个「顾问处理中」页签；状态句改「……在工作台里接手和回复」；首列标题带 `needSummary`（如「贵州带爸妈4人」）；等人接手的行阶段列写转人工原因、最后动静列写等待时长（≥10 分钟变红）；点一行/「打开工作台」/页头主按钮都在当前标签打开 J 页（不再新标签）。
+  - J 页：BEFORE 不存在（点进去是 404）。AFTER `/conversations/$id` 能打开，显示会话标题、状态胶囊、消息条数、转人工摘要（原因、接手人）与需求要素，提示「完整的会话工作台……还没上线」；三态照 `StateView`。
+- 取舍与偏离：见上「本步定的」六条；与 spec 或锁定断言没有冲突的地方，没有写「Open」。
+- 审查之后改的（2026-10-08，真实 Chromium + PGlite 本机后台复验）：
+  1. **修了 · SSE 断线超过 30 秒不会退回轮询（blocker）**：`armGrace()` 原来每次 `error` 都 `clearTimeout` 重排，真实浏览器的
+     `EventSource` 断线后约每 3 秒自动重连一次、每次失败都触发 `error`，30 秒倒计时永远被拨回起点，`onGraceExpired` 永远不触发。
+     改法：已经在倒计时就不重排（`if (timer) return;`），只有 `open`（`clearGrace()`）或这次宽限本身到期才清掉 `timer`。
+     补了模拟「每 20ms 一次 error、连续 7 次（140ms，超过 100ms 的宽限）」的用例，先确认在改之前会把这条新断言打红，改完变绿。
+  2. **顺手改了 · 退回轮询那一刻不补一次重取，实际要等宽限 + 一整个轮询间隔（约 60 秒）才发出第一次轮询请求**：
+     真实浏览器复验第 1 条时发现的——react-query 的 `refetchInterval` 是从「现在」起才等一整个间隔，`polling` 刚从 false
+     变 true 那一刻不会立刻重取。改法：`armGrace` 的回调里，`next.polling && !before.polling` 时顺手调一次
+     `invalidateConversations(qc)`，不用等 `refetchInterval` 的第一个整间隔。补了对应用例（宽限到期那一刻查询被标成
+     invalidated）。这条不是审查原文点名的，是复验过程中带出来的，一并记在这里。
+  3. **修了 · `handoff.started` 事件没分「发出时是否已有接手人」（minor，审查第 2 条）**：顾问自己点「接手」后，开着
+     桌面提醒会收到一条关于自己这次操作的通知。改法：`src/store/events.ts` 的 `handoff.started` 多一个布尔
+     `assigned`；`src/handoff/record.ts` 的 `enterHandoff` 加第 4 个可选参数 `opts.assigned`，默认取
+     `session.assignee != null`（升级分支——已经 handedOver 再遇紧急情况——这一刻 `session.assignee` 就是真实情况；
+     首次进入分支 `enterHandoff` 自己刚把它清成 `null`，调用方如果紧接着要赋值就传 `{ assigned: true }` 覆盖）；
+     `src/handoff/takeover.ts` 的 `takeover()` 传 `{ assigned: true }`（紧接着就要把 `s.assignee` 赋值，不是「共享
+     工作台转人工」那种没有接手人的入口）；`src/console-api/events.ts`、`src/shared/console-api.ts` 跟着把这个字段
+     透传到 SSE 的 `handoff` 帧。前端 `live.ts` 的 `on('handoff', …)` 对 `assigned` 为真的那一条只转发
+     `invalidateConversations`（铃铛与计数照旧更新），不转给 `onNotify`（不弹浏览器通知）。补了 `console.selftest.ts`
+     一条（顾问接手触发的事件带 `assigned:true`；`toHuman()` 没人接手的那条是 `assigned:false`，用 SSE 续传标记
+     精确定位新事件，不是只看「event: handoff」这几个字再次出现——第一版用这个字符串匹配，因为 raw 缓冲里早就有过
+     同样的字样，等不到新内容就提前判定超时，改成等这个会话 id 本身出现）与 `shell.selftest.ts` 两条（`assigned`
+     为真仍让查询失效、但不转给 `onNotify`）；`src/notify/notify.selftest.ts` 里原来漏了这个新必填字段的三处夹具
+     补上 `assigned: false`（不影响那条测试本身的断言）。
+  4. **修了 · `.bell-notify-btn` 没有 `:focus-visible` 样式（minor，审查第 3 条）**：照同文件 `.icon-btn` 的写法补
+     `outline: 2px solid var(--focus); outline-offset: 2px;`。
+  - 浏览器复验（真实 Chromium + PGlite，见下「浏览器实测」）：第 1 条用真实服务器（`@hono/node-server` 的
+    `serve()`，装配同 `console.selftest.ts` 的 `dbStoreChild()`）+ 真实 Chromium（Playwright）复现——改之前，杀掉后台
+    后连续 22 次 `/events` 重连（每 3003ms 一次）、65 秒内 `polling` 一直是 `false`，与审查描述的「持续 70 秒只看到
+    `/events` 每 3 秒重试」一致；改之后，`polling` 在断线满 30 秒时变 `true`，加了第 2 条的立即重取之后，真的
+    `counts` 轮询请求在断线后约 32 秒出现（之前约 62 秒）。复验脚本在 scratchpad（不进仓库），用完已关掉浏览器、
+    服务器与临时目录。
+  - 门禁：`format:check`、`lint`、`typecheck`（根与 `console`）、`pnpm test` 带 `PG_TEST_URL`（`pgtest-02s19`，
+    `127.0.0.1:55442`，一次性容器，跑完删了）与不带各一遍，全绿（本步改了服务端的 `handoff.started` 形状，两遍都跑）。
+    断言数：`shell.selftest.ts` 173 → 178，`console.selftest.ts` 418 → 420，`handoff.selftest.ts`、
+    `conversations.selftest.tsx` 不变（3193、143）；锁定套件零修改，`PREFIX sha256` 不变。首屏 JS 329,571 /
+    420,000 B（字段加大几字节，预算照过）。收尾前 `git fetch -q origin && git merge origin/dev`（`Already up to
+date`，origin/dev 这段时间没有新提交）。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -1416,3 +1497,10 @@
 - 半成品：无。
 - 阻塞：真实模型回归已跑完（owner 已批准，991 次调用、¥18.62），但「冲我们发火」三条兜底用例与「护照丢了」那条命中率偏低，数字与两条改法建议记在「验收记录」第 24 条、「Open」里请 owner 选一条路。第 15 步复选框留着没勾，等 owner 这条定下来再勾（选①直接勾，选②交下一个 agent 改 SOP 再跑一遍确认）。
 - 下一步：owner 定第 24 条那一处之后，第 15 步勾上（或交下一个 agent 按建议改 SOP、重跑确认）；再做第 16 步「隐私说明、敏感信息同意、保留期、行权删除」。先读「实施记录 · 第 13 步」「第 14 步」里给第 16 步的注意（`erase_conversation` 要连带删任务、`sensitiveCategoriesOf`/`consentWithdrawalOf` 已在 `src/handoff/triggers.ts`、`logQuote()` 第 1 步盘点的日志位置要逐个改）；本步新增的 `data/sop.md` 第 8 条转人工规则与第 16 步「敏感信息同意」不冲突（第 8 条管的是此刻的人身危险与冲我们发火，第 16 步管的是敏感信息披露），两条都生效、互不覆盖。
+
+### 交接（2026-10-08，第 19 步）
+
+- 已完成：第 19 步「前端：外壳实时与 I 页」（分支 `feat/02-step19-shell-realtime`，没 push；与第 15 步另开一条线并行）。事件流（`shell/live.ts`：接 `/api/console/events`，断线满 30 秒退回轮询、重连立刻停、`counts` 直写缓存、其余事件让相关查询失效、`auth` 回登录页）、桌面提醒（`shell/notifications.ts`，授权只在点击时申请）、铃铛弹层（原因与等待时长、「已成交客户要人工」组、「开启桌面提醒」、浏览器通知）、标签页标题前缀、I 页（`assigned` 页签条件出现、`needSummary`、原因/等待时长列、当前标签打开 J 页）、J 页占位路由（`/conversations/$id`）。结构、本步定的六条取舍、改了的非锁定断言、自测、变异与门禁见「实施记录 · 第 19 步」。README、`public/admin.html` 没动，锁定套件零修改。
+- 半成品：J 页只是占位（最小概要视图），完整三栏工作台（接手、回复、交接卡、订单与付款、快捷回复、「AI为什么这么回」）留给第 20.2 步；`WorkbenchPage.tsx`、`workbench.css` 会被整个替掉。
+- 阻塞：无。浏览器实测没做到（本机没有现成的 DB 存储开发环境可登录成员账号，chrome-devtools 的共享浏览器实例当时被另一个并行会话占用），用 `conversations.selftest.tsx`、`shell.selftest.ts` 的真实 DOM 断言顶上，细节见「实施记录 · 第 19 步」倒数第二条。
+- 下一步：第 20.2 步「前端：J 页」先读本节与「实施记录 · 第 19 步」——J 页路由、`GET /conversations/:id` 的读法、「打开工作台」从哪些入口进来（I 页行/按钮、铃铛两组、页头主按钮）都已经接好，第 20.2 步整个替换 `WorkbenchPage.tsx` 的内容即可，不用改路由注册；I 页头主按钮「没有等人接手的会话」时的 `blocked` 态，等 J 页有了无选中的空态可以去掉。第 21 步（总览 A2）与 ⌘K「会话」组仍在用 `admin.html`（`workbenchHref`），没有改。

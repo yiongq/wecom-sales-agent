@@ -223,6 +223,8 @@ export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
   invalid_sop: { title: '无法保存这份话术：格式不对', next: '撤回刚才的改动再试', place: 'banner', tone: 'danger' },
   locked_section: { title: '固定规则节不能改', next: '撤回这一节的改动', place: 'banner', tone: 'danger' },
   not_found: { title: '没有这项内容：可能已被删除或地址写错了', next: '回到列表', place: 'whole', tone: 'neutral', action: 'back' },
+  /** 02 spec「后台页面」J 页：会话过了保留期、被删除或不是本租户的（第 19 步，占位的 J 页先接住这一个错误码） */
+  conversation_not_found: { title: '这个会话已经不在了', next: '回到列表', place: 'whole', tone: 'neutral', action: 'back' },
   conflict: { title: '刚才有人同时在改', next: '刷新后重来', place: 'banner', tone: 'danger', action: 'refresh' },
   bad_request: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },
   unsupported_media_type: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },

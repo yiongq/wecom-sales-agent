@@ -792,7 +792,10 @@ const blockOf = (e: HTMLElement): string =>
 
 // 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览记三份：首帧（请求都还没回来，
 // 各块画着骨架）、载完、卸载前。每份是文字、标签页标题（页头写的「总览 · 租户名」），以及 title、aria-label、placeholder
-// 这些读屏与悬停读得到的属性；另记下哪些块被扫到时画着骨架。最后（2.8）一起扫
+// 这些读屏与悬停读得到的属性；另记下哪些块被扫到时画着骨架。最后（2.8）一起扫。
+// 「顾问处理中」仍在这张表里：不是因为它整站不该出现（02 第 19 步起 I 页、铃铛已经会画它），是因为 A2「需要你处理」
+// 本步没改（留给第 21 步），今天的数据源（等人接手、已成交客户要人工、待付款）里没有一行会落到 assigned 状态，
+// 这一页此刻确实不该出现这个词；真正的四态断言在 console/src/parts/errors.selftest.ts（STATUS_LABEL 四态逐一核对）
 const BANNED = ['顾问处理中', '待人工', '已转人工', '待接管', '需要介入'];
 const SPOKEN_ATTRS = ['title', 'aria-label', 'aria-description', 'placeholder', 'alt'];
 const rendered: string[] = [];
