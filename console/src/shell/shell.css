@@ -666,6 +666,10 @@ a.nav-item:hover {
 .bell-notify-btn:hover {
   text-decoration: underline;
 }
+.bell-notify-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 
 /* ---------------- 页头（§4.3）与匿名横幅（§5.12） ---------------- */
 /*

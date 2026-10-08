@@ -107,9 +107,22 @@ export function startLiveEvents(deps: LiveDeps): () => void {
   const graceMs = deps.graceMs ?? GRACE_MS;
   const create = deps.createEventSource ?? defaultCreate;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // 已经在倒计时就不要重排：真实浏览器的 EventSource 断线后约每 3 秒自动重连一次，每次失败都触发 error，
+  // 如果每次都重排计时器，30 秒倒计时永远被拨回起点，onGraceExpired 永远不触发（审查第 1 条，blocker）。
+  // 只有 open（clearGrace）或这次宽限本身到期，才清掉 timer；下一次断线才重新起一个干净的 30 秒
   const armGrace = (): void => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => setLiveState(onGraceExpired(getSnapshot())), graceMs);
+    if (timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      const before = getSnapshot();
+      const next = onGraceExpired(before);
+      setLiveState(next);
+      // 刚从「还在宽限内」变成「退回轮询」：react-query 的 refetchInterval 是从现在起等一整个间隔才发下一次，
+      // 不补一次的话实际要到宽限 + 30 秒（约 60 秒）才真的发出第一次轮询请求，不只是宽限那 30 秒
+      // （真实 Chromium 复验带出的细节，连同审查第 1 条一起改；这里只在真的从 false 变 true 那一刻补一次，
+      // 之后每次断线的 error 重新 armGrace 不会反复触发）
+      if (next.polling && !before.polling) invalidateConversations(qc);
+    }, graceMs);
   };
   const clearGrace = (): void => {
     if (timer) {
@@ -155,7 +168,9 @@ export function startLiveEvents(deps: LiveDeps): () => void {
   on('counts', (data) => qc.setQueryData(conversationCountsQuery.queryKey, data));
   on('handoff', (data) => {
     invalidateConversations(deps.qc);
-    deps.onNotify(data);
+    // assigned 为真：这一次转人工发出时已经有接手人（顾问自己点「接手」触发的那一次），不弹浏览器通知，
+    // 铃铛与计数照旧靠上面的 invalidateConversations 更新（02 第 19 步审查第 2 条）
+    if (!data.assigned) deps.onNotify(data);
   });
   on('conversation', () => invalidateConversations(deps.qc));
   on('message', () => invalidateConversations(deps.qc));

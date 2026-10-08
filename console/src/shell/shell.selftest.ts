@@ -793,8 +793,15 @@ eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_
 
   send(s, 'error');
   check('live：error 事件之后断线，轮询状态还没变（没到宽限）', !__liveTest.get().connected && !__liveTest.get().polling);
+  // 真实 Chromium 复验带出的细节：react-query 的 refetchInterval 从「现在」起才等一整个间隔，刚退回轮询那一刻
+  // 不补一次的话，第一次真的轮询请求要等到宽限之后再等一整个 30 秒（约 60 秒），不是宽限那 30 秒
+  qc.setQueryData(['conversations', 'human'], { items: [], total: 0 });
   await new Promise((r) => setTimeout(r, 60));
   check('live：断线满宽限（20ms）退回轮询', !__liveTest.get().connected && __liveTest.get().polling);
+  check(
+    'live：刚退回轮询那一刻顺手补一次重取，不用等 refetchInterval 的第一个整间隔',
+    qc.getQueryState(['conversations', 'human'])?.isInvalidated === true,
+  );
 
   send(s, 'open');
   check('live：重连立刻停轮询', __liveTest.get().connected && !__liveTest.get().polling);
@@ -808,9 +815,29 @@ eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_
   qc.setQueryData(['conversations', 'human'], { items: [], total: 0 });
   const invalidated = () => qc.getQueryState(['conversations', 'human'])?.isInvalidated === true;
   check('live：handoff 事件之前，human 查询不是 invalidated', !invalidated());
-  send(s, 'handoff', { id: 'wecom:cust_X01', kind: 'request', at: new Date().toISOString(), escalated: false, paidCustomer: false });
+  send(s, 'handoff', {
+    id: 'wecom:cust_X01',
+    kind: 'request',
+    at: new Date().toISOString(),
+    escalated: false,
+    paidCustomer: false,
+    assigned: false,
+  });
   check('live：handoff 事件让 conversations 开头的查询失效', invalidated());
-  eq('live：handoff 事件转给 onNotify（标题、授权、点击打开 J 页由调用方决定，这个模块只转发）', notified.length, 1);
+  eq('live：handoff 事件（assigned 为假）转给 onNotify（标题、授权、点击打开 J 页由调用方决定，这个模块只转发）', notified.length, 1);
+
+  // 审查第 2 条（minor）：assigned 为真（顾问自己点「接手」触发的那一次）不弹浏览器通知，铃铛与计数照旧更新
+  qc.setQueryData(['conversations', 'human'], { items: [], total: 0 });
+  send(s, 'handoff', {
+    id: 'wecom:cust_X02',
+    kind: 'agent',
+    at: new Date().toISOString(),
+    escalated: false,
+    paidCustomer: false,
+    assigned: true,
+  });
+  check('live：assigned 为真时仍让查询失效（铃铛与计数照旧更新）', invalidated());
+  eq('live：assigned 为真时不转给 onNotify（不弹浏览器通知）', notified.length, 1);
 
   qc.setQueryData(['conversations', 'human'], { items: [], total: 0 });
   send(s, 'resync');
@@ -828,6 +855,38 @@ eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_
 }
 
 {
+  // 审查第 1 条（blocker，真实 Chromium 复现）：真实浏览器的 EventSource 断线后约每 3 秒自动重连一次，每次失败
+  // 都触发 error；如果每次都重排宽限计时器，30 秒倒计时永远被拨回起点，onGraceExpired 永远不触发——持续 70 秒
+  // 只看到 /events 每 3 秒重试，counts 与列表从没退回轮询。这里按比例缩小：graceMs 100ms，每 20ms 发一次 error，
+  // 连续 7 次（140ms，超过宽限），断言宽限到点仍退回轮询，不是被一直拨回起点
+  class FakeSource2 extends EventTarget implements EventSourceLike {
+    closed = false;
+    close(): void {
+      this.closed = true;
+    }
+  }
+  let src2: FakeSource2 | null = null;
+  const createEventSource2 = (_url: string): EventSourceLike => {
+    src2 = new FakeSource2();
+    return src2;
+  };
+  const qc2 = new QueryClient();
+  const stop2 = startLiveEvents({ qc: qc2, onNotify: () => undefined, graceMs: 100, createEventSource: createEventSource2 });
+  for (let i = 0; i < 7; i += 1) {
+    src2!.dispatchEvent(new Event('error'));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  check(
+    'live：连续多次 error（模拟真实重连节奏）不会把宽限拨回起点，到点仍退回轮询',
+    !__liveTest.get().connected && __liveTest.get().polling,
+  );
+  src2!.dispatchEvent(new Event('open'));
+  check('live：退回轮询之后重连，立刻停轮询', __liveTest.get().connected && !__liveTest.get().polling);
+  stop2();
+  __liveTest.reset();
+}
+
+{
   // 桌面提醒（notifications.ts）：没有 Notification API 时算 unsupported；授权只在点了才申请
   const realNotification = (globalThis as { Notification?: unknown }).Notification;
   delete (globalThis as { Notification?: unknown }).Notification;
@@ -835,7 +894,8 @@ eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_
   eq('通知：不支持时申请也只回 unsupported，不报错', await requestNotificationPermission(), 'unsupported');
   check(
     '通知：不支持时 notifyHandoff 什么都不做',
-    notifyHandoff({ id: 'x', kind: 'request', at: '', escalated: false, paidCustomer: false }, PACK, () => undefined) === null,
+    notifyHandoff({ id: 'x', kind: 'request', at: '', escalated: false, paidCustomer: false, assigned: false }, PACK, () => undefined) ===
+      null,
   );
 
   // 假的 Notification：记下构造参数与 permission、申请授权被调了几次，模拟已授权、已拒绝两种
@@ -870,13 +930,14 @@ eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_
   FakeNotification.permission = 'denied';
   check(
     '通知：被拒绝时 notifyHandoff 什么都不做',
-    notifyHandoff({ id: 'x', kind: 'request', at: '', escalated: false, paidCustomer: false }, PACK, () => undefined) === null,
+    notifyHandoff({ id: 'x', kind: 'request', at: '', escalated: false, paidCustomer: false, assigned: false }, PACK, () => undefined) ===
+      null,
   );
 
   FakeNotification.permission = 'granted';
   let openedId: string | null = null;
   const n = notifyHandoff(
-    { id: 'wecom:cust_7F3A', kind: 'complaint', at: '', escalated: false, paidCustomer: false },
+    { id: 'wecom:cust_7F3A', kind: 'complaint', at: '', escalated: false, paidCustomer: false, assigned: false },
     PACK,
     (id) => (openedId = id),
   ) as unknown as FakeNotification;
@@ -892,8 +953,16 @@ eq('live：断线超过 30 秒退回轮询（spec「通知」）', GRACE_MS, 30_
   eq(
     '通知：紧急情况与已成交客户要人工的标题写法',
     [
-      notifyHandoff({ id: 'wecom:cust_A1', kind: 'emergency', at: '', escalated: true, paidCustomer: false }, PACK, () => undefined),
-      notifyHandoff({ id: 'wecom:cust_A2', kind: 'request', at: '', escalated: false, paidCustomer: true }, PACK, () => undefined),
+      notifyHandoff(
+        { id: 'wecom:cust_A1', kind: 'emergency', at: '', escalated: true, paidCustomer: false, assigned: false },
+        PACK,
+        () => undefined,
+      ),
+      notifyHandoff(
+        { id: 'wecom:cust_A2', kind: 'request', at: '', escalated: false, paidCustomer: true, assigned: false },
+        PACK,
+        () => undefined,
+      ),
     ].map((x) => (x as unknown as FakeNotification).title),
     ['紧急 · 企微客户 · A1', '已成交客户要人工 · 企微客户 · A2'],
   );
