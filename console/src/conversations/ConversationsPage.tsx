@@ -1,14 +1,15 @@
-// 会话列表（spec「逐页设计 · 会话列表（I 页）」，设计系统 §4.4、§5.5、§5.6、§6.7、§10.2 I 页）。
-// 从上到下：页头（「打开工作台」新标签打开 admin.html）→ 页签（全部 / 等人接手 / AI接待中 / 已成交）→「客户停在哪一步」
-// 的阶段条 → 表格。页签与阶段条的数取同一次 GET /conversations/counts（与侧栏软徽标、铃铛共用缓存，页面可见时每 30 秒刷新），
-// 表格取 GET /conversations?order=waiting_first（服务端排好、先过滤再分页，每页 20 条）。
+// 会话列表（02 spec「后台页面 · 会话列表（I 页）」，设计系统 §4.4、§5.5、§5.6、§6.7、§10.2 I 页）。
+// 从上到下：页头（「打开工作台」在当前标签打开 J 页，选中第一个等人接手的会话）→ 页签（全部 / 等人接手 / 顾问处理中〔有
+// 这种会话或地址选了它才出现〕/ AI接待中 / 已成交）→「客户停在哪一步」的阶段条 → 表格。
+// 页签与阶段条的数取同一次 GET /conversations/counts（与侧栏软徽标、铃铛共用缓存，断线超过 30 秒退回轮询、
+// 重连立刻停，见 shell/live.ts），表格取 GET /conversations?order=waiting_first（服务端排好、先过滤再分页，每页 20 条）。
 // 选中的页签（state）、阶段筛选（stage）、页码（page）都写在地址里（conversations-search.ts），刷新、后退、分享都能还原。
-// 点一行或「打开工作台」：新标签打开 /admin.html#s=<id>，工作台读 hash 选中这个会话（public/admin.html）。
+// 点一行或「打开工作台」：在当前标签打开 /conversations/$id（J 页，02 第 19 步起；admin.html 的新标签打开已取代）。
 // 界面不认行业：阶段名和顺序、客户的叫法都取自行业包；会话状态只经 conversationState 判定（model.ts）。
 // 匿名没有入口（01）：直接打开这个地址时不发请求，只写一句说明
 import { type UseQueryResult, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
-import { Button, Table } from 'antd';
+import { Table } from 'antd';
 import { ArrowUpRight, ChevronDown, ChevronRight, MessagesSquare, X } from 'lucide-react';
 import { type KeyboardEvent, type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import type { ConversationCounts } from '../../../src/shared/console-api.js';
@@ -19,9 +20,10 @@ import type { ConversationsSearch } from '../conversations-search.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
-import { conversationCountsQuery } from '../queries.js';
+import { conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
 import { useViewport } from '../shell/hooks.js';
 import { Icon } from '../shell/icons.js';
+import { useLivePollInterval } from '../shell/live.js';
 import { badgeText, POLL } from '../shell/model.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { cjk } from '../typography.js';
@@ -53,13 +55,14 @@ import { stageRows } from './stages.js';
  */
 const EXACT = { exact: true, includeSearch: true } as const;
 
-/** 工作台（旧的 admin.html，用 ADMIN_PASS 的独立登录；02 之后由 J 页取代） */
-const WORKBENCH = '/admin.html';
-
 /**
  * 与外壳共用的计数：外壳启动时刚取过，30 秒内的直接用（匿名不会到这里，但成员也不必白取一次），之后照常与外壳一起轮询
+ * （断线超过 30 秒退回，重连立刻停，见 shell/live.ts）
  */
-const SHARED = { ...POLL, staleTime: POLL.refetchInterval } as const;
+function useSharedPoll() {
+  const interval = useLivePollInterval(POLL.refetchInterval);
+  return { refetchInterval: interval, refetchIntervalInBackground: false, staleTime: POLL.refetchInterval } as const;
+}
 
 /** 相对时间（「8分钟前」）按它算：打开时取一次，之后与计数轮询同一个节奏每 30 秒更新 */
 function useNow(): number {
@@ -71,21 +74,27 @@ function useNow(): number {
   return now;
 }
 
-function Header({ pack, member }: { pack: IndustryPack; member: boolean }) {
+/**
+ * 页头主按钮「打开工作台」：在当前标签打开 J 页，选中第一个等人接手的会话（02 spec「后台页面」I 页）。
+ * firstWaitingId 是 undefined（还没取到）或 null（没有等人接手的会话）时按钮写成 blocked：J 页今天还没有「不选中
+ * 任何会话」的入口（第 20.2 步才画三栏），没有等人接手的会话时就没有地方可去，这是第 19 步的最小取舍（见 plan 实施记录）
+ */
+function Header({ pack, member, firstWaitingId }: { pack: IndustryPack; member: boolean; firstWaitingId: string | null | undefined }) {
+  const navigate = useNavigate();
   return (
     <PageHeader
       title="会话"
       // 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔
-      status={<span>{cjk([`企业微信里的${pack.vocabulary.customer}会话`, '接手和回复目前在工作台里完成'])}</span>}
+      status={<span>{cjk([`企业微信里的${pack.vocabulary.customer}会话`, '在工作台里接手和回复'])}</span>}
       actions={
         member && (
           <PrimaryButton
-            href={WORKBENCH}
-            target="_blank"
-            rel="noopener noreferrer"
+            blocked={!firstWaitingId}
+            onClick={firstWaitingId ? () => void navigate({ to: '/conversations/$id', params: { id: firstWaitingId } }) : undefined}
             icon={<Icon of={ArrowUpRight} />}
             iconPlacement="end"
-            aria-label="打开工作台（新标签页）"
+            aria-label={firstWaitingId ? '打开工作台' : '打开工作台（没有等人接手的会话）'}
+            title={firstWaitingId ? undefined : '没有等人接手的会话'}
           >
             打开工作台
           </PrimaryButton>
@@ -272,11 +281,11 @@ function StageBlock({
 
 // ---------------- 表格 ----------------
 
-/** 点一行（不是点在链接上、也不是在选字）：新标签打开工作台 */
-function openRow(e: MouseEvent, href: string): void {
+/** 点一行（不是点在链接上、也不是在选字）：在当前标签打开 J 页（02 第 19 步起，admin.html 的新标签打开已取代） */
+function openRow(e: MouseEvent, id: string, navigate: ReturnType<typeof useNavigate>): void {
   if (e.target instanceof Element && e.target.closest('a, button')) return;
   if ((window.getSelection?.()?.toString() ?? '') !== '') return;
-  window.open(href, '_blank', 'noopener,noreferrer');
+  void navigate({ to: '/conversations/$id', params: { id } });
 }
 
 /** 首列宽：设计宽度下 300；<992 横滚时首列固定，300 会占满整个视口，收成放得下「企微客户 · F01」的宽度 */
@@ -295,7 +304,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
       // 窄屏在自己的容器里横滚，首列固定（spec「可访问性与响应式」375 宽）。翻页时 antd 默认把表格的滚动容器动画滚回顶上，
       // 这个容器只横滚、没有什么可滚的，动画白跑（它按 Date.now 算时长，时钟钉住时停不下来），关掉
       scroll={{ x: 960, scrollToFirstRowOnChange: false }}
-      onRow={(r) => ({ onClick: (e) => openRow(e, r.href), className: 'cv-row' })}
+      onRow={(r) => ({ onClick: (e) => openRow(e, r.id, navigate), className: 'cv-row' })}
       pagination={
         total > PAGE_SIZE && {
           current: pageOf(search),
@@ -315,9 +324,9 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
           render: (_, r) => (
             <span className="cv-conv">
               <Icon of={MessagesSquare} className="cv-conv-icon" />
-              <a className="cv-conv-link" href={r.href} target="_blank" rel="noopener noreferrer" aria-label={rowAria(r)}>
+              <Link to="/conversations/$id" params={{ id: r.id }} className="cv-conv-link" aria-label={rowAria(r)}>
                 {cjk(r.label)}
-              </a>
+              </Link>
             </span>
           ),
         },
@@ -332,7 +341,8 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
         {
           key: 'when',
           // 排序是固定的：等人接手的在前，其余按最后动静倒序（服务端排好）；表头只标明，不能点。
-          // 「等人接手的在前」这一层写在表格的名字里（tableAria），aria-sort 标的是其下的这一层（设计系统 I 页）
+          // 「等人接手的在前」这一层写在表格的名字里（tableAria），aria-sort 标的是其下的这一层（设计系统 I 页）。
+          // 等人接手的行写等待时长，≥10 分钟 danger（02 第 19 步，与 J 页列表同一条规则）
           title: (
             <span className="cv-sorted">
               最后动静
@@ -342,7 +352,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
           width: 160,
           onHeaderCell: () => ({ 'aria-sort': 'descending' }),
           render: (_, r) => (
-            <time className="cv-when" dateTime={r.at} title={r.whenFull}>
+            <time className={r.waitDanger ? 'cv-when is-danger' : 'cv-when'} dateTime={r.at} title={r.whenFull}>
               {r.when}
             </time>
           ),
@@ -354,19 +364,10 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
           align: 'right',
           className: 'cv-op-cell',
           render: (_, r) => (
-            <Button
-              type="text"
-              size="small"
-              className="cv-open"
-              href={r.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              icon={<Icon of={ArrowUpRight} size={14} />}
-              iconPlacement="end"
-              aria-label={openAria(r)}
-            >
+            <Link to="/conversations/$id" params={{ id: r.id }} className="cv-open" aria-label={openAria(r)}>
               打开工作台
-            </Button>
+              <Icon of={ArrowUpRight} size={14} />
+            </Link>
           ),
         },
       ]}
@@ -378,7 +379,11 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
   const search = useSearch({ from: '/conversations' });
   const navigate = useNavigate();
   const now = useNow();
-  const counts = useQuery({ ...conversationCountsQuery, ...SHARED });
+  const sharedPoll = useSharedPoll();
+  const counts = useQuery({ ...conversationCountsQuery, ...sharedPoll });
+  // 页头「打开工作台」选第一个等人接手的会话：与铃铛共用这一个查询（同一次响应）
+  const waiting = useQuery({ ...waitingConversationsQuery, ...sharedPoll });
+  const firstWaitingId = waiting.data ? (waiting.data.items[0]?.id ?? null) : undefined;
   const params = listQuery(search);
   const list = useQuery({
     queryKey: ['conversations', 'list', params] as const,
@@ -421,7 +426,7 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
   if (data && data.total === 0 && !filtered) {
     return (
       <>
-        <Header pack={pack} member />
+        <Header pack={pack} member firstWaitingId={firstWaitingId} />
         <EmptyBlock
           level={2}
           icon={<Icon of={MessagesSquare} size={20} />}
@@ -435,9 +440,9 @@ function MemberConversations({ pack }: { pack: IndustryPack }) {
   const rows = data ? data.items.map((r) => rowView(r, pack, now)) : [];
   return (
     <>
-      <Header pack={pack} member />
+      <Header pack={pack} member firstWaitingId={firstWaitingId} />
       <StateTabs
-        items={tabs(counts.data)}
+        items={tabs(counts.data, active)}
         active={active}
         onSelect={(key) => void navigate({ to: '/conversations', search: tabSearch(key) })}
       />
@@ -493,7 +498,7 @@ export function ConversationsPage() {
   if (viewer?.kind === 'member') return <MemberConversations pack={pack} />;
   return (
     <>
-      <Header pack={pack} member={false} />
+      <Header pack={pack} member={false} firstWaitingId={null} />
       <EmptyBlock
         level={2}
         icon={<Icon of={MessagesSquare} size={20} />}

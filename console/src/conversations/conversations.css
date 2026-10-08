@@ -374,19 +374,35 @@ a.cv-stage.is-selected:hover {
 .cv-table .ant-table-tbody > tr > td.cv-op-cell {
   padding-block: 7.5px;
 }
-.cv-table .cv-open.ant-btn {
+/* .cv-open 现在是 Link（02 第 19 步起在当前标签打开 J 页，不再是新标签的 antd Button），自己补上幽灵小按钮的外观 */
+.cv-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 28px;
   padding: 0 8px 0 10px;
   gap: 6px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  line-height: 20px;
   font-weight: 500;
   color: var(--text-2);
 }
-.cv-table .cv-open.ant-btn:hover {
+.cv-open:hover {
   background: var(--hover);
   color: var(--text);
 }
+.cv-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .cv-open svg {
   color: var(--text-3);
+}
+
+/* 等人接手的「最后动静」列写等待时长，≥10 分钟 danger（02 第 19 步，与 J 页列表同一条规则） */
+.cv-when.is-danger {
+  color: var(--danger);
 }
 
 /* 分页器（§5.5）：只在多于一页时出现；左侧 13 text-3「共21条」，页码在右 */

@@ -12,8 +12,10 @@ import { deepFreeze } from './shared/freeze.js';
 import { catalogItemAt, catalogVersionKey, configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
-import { createOrder, getOrder, saveSession, supersedeOrder } from './store.js';
+import { createOrder, getOrder, queueJobs, saveSession, supersedeOrder } from './store.js';
 import { todayIso } from './env.js';
+import { paymentMode } from './payment/mode.js';
+import { orderUnconfirmedNotifyOps } from './jobs/notify.js';
 
 // 工具定义是纯数据，搬到 tool-defs.ts：配置层要用它算 tools_hash、核对 SOP 点名的工具，又不能 import 本模块（本模块加载时就读 var/）
 export { toolDefs, type ToolDef } from './tool-defs.js';
@@ -1027,6 +1029,12 @@ function rememberQuoteHistory(session: Session): void {
   session.quoteHistory = [...(session.quoteHistory ?? []), entry].slice(-12);
 }
 
+/**
+ * advisor 模式下 create_order 结果多带的字段（02 spec「收款流程」）：模型照它跟客户说怎么付，
+ * 不能说成点链接付款——价格由顾问在微信里核对、收款方式也是顾问另发的。online 模式没有这个字段，逐字节不变
+ */
+const ADVISOR_PAY_NOTE = '这是订单确认链接：顾问会在微信里跟客户核对价格并发收款方式，不要说点链接付款。';
+
 /** 解析出行人数：接受数字或纯数字字符串，其余（"两"、"2位"…）判非法 */
 function parseTravelers(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN;
@@ -1233,6 +1241,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
           note:
             `这是本会话已有的那张订单（${dup.travelers} 位 / ${dup.departDate} 出发），不是新建的。` +
             '不要说成刚下了一单，更不要说成是给别人的订单；客户要给别人另订一份，这张单替代不了，先问清是合并成一单还是请顾问单独下。',
+          ...(paymentMode() === 'advisor' ? { payNote: ADVISOR_PAY_NOTE } : {}),
         });
       }
       const quote = createQuote({ routeId: args.routeId, travelers, departDate: args.departDate });
@@ -1256,6 +1265,9 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
       session.orderIds.push(order.id);
       rememberSeenRoutes(session, [args.routeId]);
       session.lastQuote = undefined; // 已成单即清除，防安全网对同一报价重复建单
+      // advisor 模式：建单后排一次「待确认的订单」提醒（02 spec「收款流程」），随这次落库提交；
+      // 执行体（src/notify/handoff.ts）到点时看订单还在不在待付款、确认过没有，确认过就不发
+      if (paymentMode() === 'advisor') queueJobs(session.id, orderUnconfirmedNotifyOps(session.id, order.id, Date.now()));
       saveSession(session);
       // payUrl 为相对路径，渠道层负责拼 PUBLIC_BASE_URL。note 是这张单的定价说明（旺季 / 95 折），差价要讲原因时用它
       return JSON.stringify({
@@ -1271,6 +1283,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
                 '客户之前那张同线路的待付款订单已作废，旧支付链接已失效。照实告诉客户「之前那张单已作废、旧链接失效，按这张新的付款」，只发这次的新链接。',
             }
           : {}),
+        ...(paymentMode() === 'advisor' ? { payNote: ADVISOR_PAY_NOTE } : {}),
       });
     }
     case 'handoff_to_human': {

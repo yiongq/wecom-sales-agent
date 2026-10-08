@@ -8,7 +8,7 @@
 - 先读：`AGENTS.md`；本目录 `spec.md` 全文；01 spec 的「两种模式与启动装载」「withTenant」「迁移纪律」「RLS、授权与认证函数」「测试与 CI」；后台 UX spec 的「外壳」「总览」「会话列表」「会话工作台」「依赖 02 的后端」；`docs/features/console-ux/design-system.md` 的 §5.6、§6.7、§10.0 与 A2、I、J 三页。然后 `git log -5`，再读本文件的「交接记录」与「Open」。
 - **锁定套件**（断言一条不许改）：`src/engine.selftest.ts`、`src/dejargon.selftest.ts`、`src/engine-holiday.selftest.ts`、`src/price-guard.selftest.ts`、`src/llm.selftest.ts`、`src/server.selftest.ts`、`src/adapters/wecom.selftest.ts`，以及 `eval/cases.json`。任何一步让它们变红，都先找自己的改动；确认是 spec 与锁定断言冲突时，停下写进「Open」，不改断言。要改的非锁定断言只限 spec「测试与 CI」最后一条列的那些，PR 里写明理由。
 - 锁定套件的时钟（2026-10-08 加）：`price-guard.selftest.ts` 的 Q1、R4 写死了 2026-10-03 出发，过了那天在真实时钟下变红（干净的 dev 上也是），锁定断言不能改；`package.json` 的 `test:locked` 让七个锁定套件经 `src/store/parity-clock.ts` 跑在 2026-10-02 12:00 +08:00 上，断言与锁定文件零改动，sha256 照旧。以后改锁定套件的跑法也只动 `test:locked`。
-- 前缀：除第 15 步的 SOP 改动外，每一步结束时 `engine.selftest.ts` 打印的 `PREFIX sha256` 都要等于第 1 步记下的值；第 15 步之后等于第 15 步记下的新值。
+- 前缀：除第 15 步的 SOP 改动（含收尾的措辞补例句小 PR）外，每一步结束时 `engine.selftest.ts` 打印的 `PREFIX sha256` 都要等于第 1 步记下的值；第 15 步之后等于「实施记录 · 第 15 步」哈希表最终那一列（`promptHash=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60`）。
 - spec 的 14 个开放问题 owner 已在 2026-10-02 全部定下（答复见本文件「Open」），不阻塞任何步骤；各步照 spec 里写定的结论做。
 - 原地变异测试在隔离副本里跑（Stop 钩子会对工作区跑门禁）；复现卡死的脚本用单进程加超时，收尾查 `ps`，不留孤儿进程。
 
@@ -106,7 +106,7 @@
   - 旧接口匿名投影里，交还时那条「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」（spec「后台接口」匿名投影一条；`server.ts` 的 `anonMessage` 留了位置），自测覆盖接手并交还种子会话之后的匿名读。
   - 对应验收 9、10、11 的接口部分，以及不变量 17、20–25、27、28、31、39 的接口部分、41、43–45、47。
 - [x] 14. 外部通知（1.5）：2026-10-03 完成（先于第 13 步，独立 worktree；中途换过一次 agent）。`Notifier` 的企微群机器人实现（开放问题 3，与告警不同群）、`handoff_notify` 任务的执行体（立即、10 分钟仍没人接手、窗口剩不到 4 小时、advisor 模式下待确认的订单、已成交客户要人工）；带转人工的落库失败时的 `unsaved` 通知；`NOTIFY_WEBHOOK_URL` 进 `.env.example` 与 compose 的 app 服务说明，日志脱敏。自测用假的 webhook 服务断言内容里没有客户原话和 `external_userid`。对应验收 15 的外部通道部分，以及不变量 10 的例外、32。结构、本步定的、认领分道、自测、变异与门禁见「实施记录 · 第 14 步」。
-- [ ] 15. 收款流程与 SOP 措辞（3.5）：
+- [x] 15. 收款流程与 SOP 措辞（3.5）：代码、五条审查修复与自测都已完成（2026-10-08，分支 `feat/02-step15-payment`，已合并 dev）；措辞收尾小 PR（`fix/02-step15-sop-fallback`，同日）给第 8 条「冲我们发火」「证件丢了」补了具体例句并重跑真实模型回归，7 条兜底用例里 6 条转正，只剩「怎么这么慢啊」一条仍是 0/6，没达到「每条至少 5/6」；owner 同日定接受现状（单独一句「怎么这么慢啊」算轻度不耐烦，不算明显冲我们发火，留给 AI 接着答），本步勾上。结构、本步定的取舍、自测、变异、门禁与真实模型回归的数字见「实施记录 · 第 15 步」「验收记录」第 24 条。
   - `src/payment/`：`paymentMode`、`confirmOrder`、`markPaidByAdvisor`、`cancelOrder`（坐席只限接手人本人；提交之后才发付款确认）；后台的三个订单接口接上；advisor 模式下 `create_order` 的 `payNote`、`/pay` 页的说明、价格规则护栏的替换句、`repairLinks` / `placeLinks` 的说明句、重发链接、成单安全网、企微支付卡片、跟进 closing 段的确定性文本；online 模式逐字节不变。
   - `data/sop.md` 锁定节的两处改动、`SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 加 `payNote`；契约清单短语一条不删。同一次改动在锁定节里另加一句（R15 精确优先的模型兜底，owner 2026-10-03）：客户说自己或同行的人此刻遇到危险，或明显冲着我们发火时，先安抚再调 `handoff_to_human`（不加延迟、不多调模型；措辞在实施时定，不能让模型在售前的提问上转人工）。记下改前改后的四个哈希（`/healthz` 与 `PREFIX sha256`）。
   - 真实模型回归（花钱，不进 CI）：按 01 交接里的「真实模型对比」跑法，`--cases` 指向仓库外的 realOnly 用例文件，文件、DB 交替各至少 3 遍，记 p90、命中率与通过的用例集合，和改动前比较。用例补几条规则不判、要模型兜的：行程中的紧急（「我妈高原反应很严重」「高反了 头好痛 救命」「护照丢了 明天的飞机怎么办」「到了拉萨头疼得厉害 是不是高反了」）与冲着我们发火（「太失望了，你们就这服务？」「什么狗屁服务」「怎么这么慢啊」），模型应先安抚再调 `handoff_to_human`；再配几条售前的（「高反了怎么办」「我对芒果过敏挺厉害的 泰国水果多不多啊」「三亚太失望了，想去国外」），模型不该转人工。
@@ -131,7 +131,7 @@
   - `src/otel/export.ts`（`@opentelemetry/*` 钉精确版本，只经动态 `import()`）：`startOtel`、`exportTurn`、属性按 spec，属性名按当时的 GenAI 语义约定与 Langfuse 文档核对、版本写进注释；`OTEL_CAPTURE_CONTENT`；`OTEL_*` 进 `.env.example`。
   - `ops.selftest.ts` 的运行数字（PGlite）与 OpenTelemetry 部分（没配端点时没加载、进程内假 OTLP 接收端收到的 span 与属性、默认没有原文）。
   - 对应验收 34 的其余部分，以及不变量 49。
-- [ ] 19. 前端：外壳实时与 I 页（2.5）：
+- [x] 19. 前端：外壳实时与 I 页（2.5）：2026-10-08 完成（分支 `feat/02-step19-shell-realtime`，另开一条线与第 15 步并行），结构、本步定的取舍、J 页占位的做法、自测、变异与门禁结果见「实施记录 · 第 19 步」。
   - console 订阅 `/events`，断开退回 30 秒轮询，收到 `auth` 回登录页；铃铛弹层的原因与等待时长、「已成交客户要人工」一组、「开启桌面提醒」、浏览器通知；标签页标题前缀；I 页的第四个页签、行的新字段、点行进 J 页、状态句与主按钮。
   - 非锁定自测里禁止「顾问处理中」与「今天不画」的断言（`errors.selftest.ts`、`overview.selftest.tsx`、`conversations.selftest.tsx`）改成按四态断言，PR 里写明理由。
   - console 自测：四态与计数同源、标题前缀只数 `human`、禁用词扫描、13 个种子的 UX 验收 6 照旧。
@@ -1145,13 +1145,180 @@
   - 门禁：收尾合并了 `origin/dev`（PR #85，第 14 步转人工通知与 `.gitleaksignore`）：`deploy/compose.yml`、`plan.md` 两处冲突按两边的意图合并（env 文件说明两条都留、「交接」两份记录都留，不是互相覆盖）；`package.json`、`src/store/parity-clock.ts` 等自动合并无冲突。提交前用本机 `gitleaks` 扫过 `origin/dev..HEAD` 的 12 个提交（含本轮审查修复新造的假密钥/假连接串用例），`no leaks found`，没有命中、`.gitleaksignore` 不用改。合并之后四个门禁与带/不带 `PG_TEST_URL` 的 `pnpm test` 全绿：`price-guard.selftest` 403 项、`notify.selftest` 52 项、`jobs.selftest` 103 项、`quota.selftest` 124 项、两种配置模式 mock eval 19/19；锁定套件 8 个文件与 `origin/dev` 零字节差异，`PREFIX sha256` 不变。
 - 外部拨测（开放问题 14）：本步不做，由 owner 配好国内云厂商账号后补做，停一次 app 验证通知能到，结果记进「验收记录」后再勾选本步第 17 步的复选框。
 
+### 第 15 步 · 收款流程与 SOP 措辞（2026-10-08）
+
+- 结构：
+  - `src/payment/orders.ts`、`src/payment/mode.ts`：三个订单动作与 `paymentMode` 已在第 13 步做好（后台三个接口也已接上，不是桩），本步只补 advisor 模式对客的那一半。
+  - `src/tools.ts`：`create_order` 的 advisor 分支（新建单、`reused:true` 复用单）都带 `payNote`（新增常量 `ADVISOR_PAY_NOTE`）；online 分支不带，逐字节不变。
+  - `src/price-rules.ts`：`SERVICE_CLAIMS` 的 `replace` 字段类型放宽成 `string | (() => string)`；资金那条的替换句改成 `payRuleReplace()`，advisor 下换成「付款以订单链接和顾问发给您的收款方式为准。」，online 下原样；`PAY_LINK_SAID`（避免同一条回复里说两遍）加了 advisor 那句的识别。
+  - `src/engine.ts`：三处确定性文案按 `paymentMode()` 分支（online 分支逐字节不变）——`resendPayReply`（重发支付链接，未确认价格 vs 已确认价格两种说法）、`strandedReply` 的建单分支、成单安全网的两支（重发现有单 / 新建单，含改单作废旧单那句）。
+  - `src/server.ts`：`/pay/:orderId` 在 advisor 模式注入 `<meta name="payment-mode" content="advisor">`（online 不注入，逐字节不变；`/pay.html?orderId=` 不加服务端路由，改成客户端 JS 在没匹配到 `/pay/:id` 路径时 `location.replace` 跳过去，避免给路由枚举测试新增一条可枚举路由）；旧接口 `POST /api/orders/:id/pay` 补一行审计（`order.mark_paid`，操作者 `sharedActor`）与「等 `flushSession` 落完再 `notifyPaid`」的顺序，响应体形状与两个分支的状态码不变（锁定断言不受影响）。
+  - `public/pay.html`：新增 `#advisorView`（没有付款按钮，按状态显示五句固定文案：「订单已提交...」「价格已确认...」「已收款」「已被替代」「已取消」）；脚本按 `<meta name="payment-mode">` 分支渲染；没有这个 meta（`/pay.html?orderId=` 这条静态入口）时客户端跳到 `/pay/:id`。
+  - `data/sop.md` 锁定节：「各阶段目标」closing 段加一句「工具结果里有 payNote 时，按 payNote 跟客户说怎么付款」；「能力边界」把付款那条改成两种方式都成立的写法（不分 online/advisor，一句话覆盖两种情况，`promptPrefix()` 不因 paymentMode 分支——不变量 19 要求 SOP 本身 prod 与 demo 相同）；「转人工条件」加第 8 条（此刻遇到危险 / 冲我们发火，先安抚再调 `handoff_to_human`）与一句售前反例说明。`src/sop/contract.ts` 的 `SOP_KNOWN_FIELDS` 与 `src/packs/travel/console-pack.ts` 的 `sopFields` 都加 `payNote`；`SOP_CONTRACT` 契约清单一条没删。
+- 本步定的（spec 没写全、按最小改动选的几处）：
+  1. **SOP 的两句改动是「同一句话覆盖两种模式」，不是按 paymentMode 分支的两份文案**：锁定套件 `engine.selftest.ts` 里有「切到 prod 后 `promptPrefix()` 要与 demo 下完全相同」的断言（不变量 19 的字面要求），而 prod 的 `mock_pay` 封顶为关（PROD_CEILING），即 prod 默认就是 advisor 模式；如果 SOP 文本本身按 paymentMode 分支，prod 与 demo 的 system prompt 就会不同，这条断言会变红。改成「付款只认 create_order 返回的订单链接，或顾问在微信里发给您的收款方式」这种两种方式都写在一句里的说法，SOP 本身不分支，只有代码里确定性生成的文案（price-rules 替换句、engine.ts 那三处、create_order 的 payNote）才按 paymentMode 分支——这些都不进 system prompt，不受这条断言管。
+  2. **`/pay.html?orderId=` 不开新的服务端路由，改成客户端跳转**：原计划在 `server.ts` 加一条 `app.get('/pay.html', ...)` 按 query 转发，但 `console.selftest.ts` 的路由枚举测试（「路由枚举：server 与 consoleApi 注册的、白名单以外的路由，prod 下匿名一律 401 或 404」）只过滤 `path.includes('*')` 的通配路由，之前 `/pay.html` 只经 serveStatic 的通配兜底，不会被单独枚举；加一条具体路径的路由会让它第一次被单独枚举到，而它又不在那条测试的 `PUBLIC` 白名单正则里，会被判成「泄露」。改成在 `pay.html` 自己的 `<script>` 里做：路径不是 `/pay/:id` 而 `?orderId=` 有值时 `location.replace('/pay/' + id)`，不碰服务端路由表。代价：微信里分享 `?orderId=` 这条链接，链接预览的标题还是走不到服务端注入（这个问题开工前就存在，不是本步引入的）。
+  3. **企微支付卡片与跟进 closing 模板本步没改**：逐条读过 `src/adapters/wecom.ts` 的卡片标题/摘要（`{routeTitle} · 待支付`、人数/日期/合计价）与 `src/followup.ts` 的 closing 兜底话术（「名额是以付款为准的...」），两处都只陈述订单事实，没有「点击链接付款」这类假定在线支付的说法，advisor 模式下照样成立，不需要改。
+  4. **旧接口 `POST /api/orders/:id/pay` 的「不要求先确认」维持原样、不改成调 `confirmOrder`/`markPaidByAdvisor`**：spec 原文与「实施记录 · 第 1 步」的裁定都说这条路径从模拟支付时代就有、保持原样；锁定的 `server.selftest.ts` 已有一条断言（`payOnce('demo 下 FLAG_MOCK_PAY=off', ...)`）验证了这一点，本步不改这条行为，只加审计与等提交的顺序。
+- 自测（新建 `src/payment/orders.selftest.ts`，28 项，串进 `package.json` 的 `test`）：SOP 三处改动的文本都在、旧句不在；`create_order` 的 `payNote`（online 没有、advisor 新建与复用单都有）；`price-rules.ts` 的替换句两种模式；`resendPayReply` 未确认/已确认价格两种说法；成单安全网新建单与重发现有单两支；`/pay` 页的服务端注入与标题锁定断言、`pay.html` 源码里的客户端跳转与五句状态文案、advisor 视图不含付款按钮；种子保鲜挪 `confirmedAt`；旧接口 advisor 模式不要求先确认、新加的审计调用不出错、源码顺序上 `flushSession` 排在 `notifyPaid` 之前。第 13 步已覆盖的（console-api 三个接口的权限、409/未确认、审计、付款确认时序）在 `console.selftest.ts` 里，本文件不重复。
+- 变异（源码拷进 scratchpad 的隔离副本，只跑 `orders.selftest.ts`，及一个额外跑 `console.selftest.ts` 的样本）：8 个代表性的，全部杀掉——① online 模式也带 `payNote` ② 旧接口 `flushSession` 挪到 `notifyPaid` 之后（这个在本文件原本跑不出可观察差异，文件存储下落库近乎同步；补了一条按源码顺序核的断言，见自测清单最后一条）③ `pay.html` 删掉客户端跳转那一句 ④ SOP 删掉转人工条件第 8 条 ⑤ 价格护栏的替换句去掉 advisor 分支 ⑥ 成单安全网新建单那支去掉 advisor 分支 ⑦ `freshenDemoData` 去掉 `confirmedAt` 跟着挪那一行 ⑧（抽样复核第 13 步的旧防线，不是本步引入的）`confirmOrder` 去掉 `NotHandlingError` 检查，`console.selftest.ts` 里两条既有断言照样杀掉它，确认这条防线没被本步动过。
+- 四个哈希（`/healthz` 的 `promptHash`/`toolsHash`/`prefixHash`/`sopHash`，即 `src/config/hashes.ts` 的 `promptHashes()`）：
+
+  |                                         | 改前（第 1–14、17、18、20.1 步）                                   | 改后（第 15 步，含审查之后改的）                                   | 改后（措辞补例句之后，`fix/02-step15-sop-fallback`）               |
+  | --------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+  | `promptHash`（`PREFIX sha256 system=`） | `6c202d633b603a0b391634bcaf75da9d3ed42c30f848ad092a2467f713d9a423` | `0bf2b8737e0af44cf6eb41353b941a32921f08c9193673470da263019ce5c6d9` | `dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60` |
+  | `toolsHash`（`PREFIX sha256 tools=`）   | `64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` | 不变                                                               | 不变                                                               |
+  | `prefixHash`                            | `cd3cc7dab87a8fe10df81a84a288c806ae46fc31580351e9a20aae985ae96078` | `3ee398f576761d3fc93f89137cc7f321a6c82905cb68468e100dbf049929a3bd` | `3ac7e7b915121bbc2c4ef26d56afaf582f7cb24b1d1f9561d0fa4f982ddb6fc1` |
+  | `sopHash`（`sha256(data/sop.md)`）      | `396b2514bfbf01d20ec7956e1337da5046ad01f2575af5464d4285e9fce52fb4` | `022b626ef0b19d03ea720228282b015f2706edae82e29ece947880532f7e932a` | `55e5caa59580868f7e4a7cc43156d949f0d2d398f1c890a6be6512d5756e6b35` |
+
+  审查之前的中间值（system `14d53a70…`、prefix `a63877e2…`、sop `a5d0a89d…`）已被审查第 3、4 条的 SOP 改动覆盖，不再出现在任何分支上，不单独记。措辞补例句（第 8 条「冲我们发火」「证件丢了」各补具体例句，`fix/02-step15-sop-fallback`，收尾小 PR）只改 `promptHash`/`prefixHash`/`sopHash`，`toolsHash` 不变；前缀：这之后 `engine.selftest.ts` 打印的 `PREFIX sha256` 要等于本表最右列，不再是中间那一列（本节位于 plan 顶部「前缀」那条引用的落点）。
+
+- 门禁：四个门禁全绿；`pnpm test` 带 `PG_TEST_URL`（本机 `pgvector/pgvector:pg17` 一次性容器 `pgtest-02s15`，`127.0.0.1:55432`，跑完删掉）与不带各跑一遍都全绿；mock eval 两种配置模式都是 19/19（43 项断言），DB 模式会话入库核对 0 处不符、22 个请求前缀哈希核对 0 处不符；`PAYMENT ORDERS SELFTEST` 32 项、新建的 `LEGACY PAY POISONED SELFTEST` 2 项全通；`JOBS SELFTEST` 103 → 108 项（advisor 建单排 order_unconfirmed 的集成用例，带 PG 时多 5 项真实 PG 用例）；锁定套件 8 个文件与 `origin/dev` 零字节差异、断言零修改；其余套件条数与 `origin/dev` 相同（`handoff` 3193、`store` 431、`db` 898、`config` 529、`console` 418、`packs` 224 等，`packs` 的 224 项里已经包含 `payNote` 加入 `SOP_KNOWN_FIELDS` 与旅游包 `sopFields` 之后两者键集合仍相同的核对）；console 构建与产物检查全过。收尾合并 `origin/dev` 一次，没有新提交。
+- 真实模型回归（花钱，不进 CI；owner 已批准，跑完由下一条「审查之后改的」记录或紧接着的小节补上）：realOnly 用例文件按 01 的跑法准备——仓库外、本次 agent 的 scratchpad 里一份 `realOnly-step15.json`，42 条：原 `eval/cases.json` 的 32 条 `realOnly` 一条不少地照抄，加 plan 第 15 步点名的 10 条：4 条行程中的紧急、3 条冲我们发火（`expectTool: "handoff_to_human"`）、3 条售前反例（`denyText` 挡转人工话术）。
+
+### 审查之后改的（2026-10-08，五条都由审查者复现或核实过）
+
+1. **major · advisor 建单没有排「待确认订单」的 handoff_notify**：`src/jobs/notify.ts` 的 `orderUnconfirmedNotifyOps` 与 `src/notify/handoff.ts` 的执行体第 15 步开工时就有（第 14 步留的桩），但 `create_order` 的 advisor 分支一直没有真调它，全仓库没有真实调用点。补上 `if (paymentMode() === 'advisor') queueJobs(session.id, orderUnconfirmedNotifyOps(session.id, order.id, Date.now()));`；`src/jobs/jobs.selftest.ts` 的 PGlite 主子进程加一组集成用例：advisor 建单之后任务表里有一条 `order_unconfirmed`（`payload.orderId` 对得上）、确认价格之后到点执行 `done`、`lastError=order_settled`（不会真的去发通知）。debug 过程中顺带发现自己这条新用例的一个 bug：confirmOrder 的测试 actor 给了假的 `userId: 'u-owner'`（不是合法 UUID），写审计时报 `invalid input syntax for type uuid`、把会话写成 poisoned——改成 `userId: null`（共享工作台同一种写法）即可，与本条修复本身无关。
+2. **major · 旧接口 `POST /api/orders/:id/pay` 对 poisoned 会话照发付款确认**：原来的 `flushSession(...).catch(() => {})` 不区分「真超时（仍可能提交）」与「poisoned/冲突（不会再提交）」。改用 `awaitCommit`（与 `markPaidByAdvisor` 同一个函数）：超时照旧放行；poisoned/冲突时 `awaitCommit` 抛 `StoreLaggingError`，经既有的 `legacyRefusal` 转成 503 `store_lagging`，不再往下调 `notifyPaid`。新建 `src/payment/legacy-pay-poisoned.selftest.ts`：要真的把一个会话写成 poisoned 得装 PG 会话存储（PGlite）并注入一次数据类错误（`fakeDbError('23514')`），这与 `orders.selftest.ts` 的纯文件存储场景放在一起跑会相互污染（装上 PG 会话存储之后，进程里所有真实会话都会走 PG 这条路，之前混着跑时让后面几个会话的 trace/护栏事件写入报了同样的错误码而被丢弃，虽不算测试失败但污染了日志、也可能掩盖真正的问题），所以单独成一个干净进程，串进 `test`。
+3. **major · SOP 转人工第 8 条可能把价格类强烈抱怨当成冲我们发火**：在第 8 条反例那句里加一句「嫌贵、还价、觉得不划算（哪怕说「这价格太离谱了」）是在还价，按「异议处理」那节走」。
+4. **major · 第 8 条的例句都带时态词，可能漏掉「我妈高原反应很严重」这类没有「现在/在」的说法**：把「遇到危险」改写成「此刻遇到需要立刻处理的紧急情况（身体不适或受伤、证件丢了、被困或走散）」，补一条不带时态词的例句（「我妈高原反应很严重」），售前反例（「高反了怎么办」「会不会高反」）照旧保留在反例说明里，不受影响。
+5. **minor · `handoffReply()` 转人工安全网在 advisor 模式下仍说「付款卡片仍然有效」**：按 `paymentMode()` 分支，advisor 下改成「之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式」；online 不分渠道的原逐字节不变（企微仍是「付款卡片仍然有效」，网页仍是「付款链接仍然有效」）。
+
+`orders.selftest.ts` 28 → 32 项（SOP 两条新断言、`handoffReply` 的 online/advisor 两条）；新增 `legacy-pay-poisoned.selftest.ts` 2 项；`jobs.selftest.ts` 101 → 103（不带 PG）/ 108（带 PG，另加 5 项真实 PG 用例，与本次审查无关，是并行步骤带来的）。变异（隔离副本，`src/store`/`drizzle` 等辅助目录照抄过去跑）：5 个代表性的全部杀掉——① 去掉 `queueJobs` 调用 ② 旧接口恢复 `.catch(() => {})` 吞错误 ③ SOP 去掉「嫌贵还价」那句 ④ SOP 第 8 条恢复带时态词的旧写法 ⑤ `handoffReply` 去掉 advisor 分支。合并 `origin/dev` 没有新提交；四个门禁与带/不带 `PG_TEST_URL` 的 `pnpm test` 重跑全绿（见上面「门禁」）；本机 `gitleaks` 扫过 `origin/dev..HEAD` 全部提交，没有命中；本机绝对路径的边界检查也是空结果。
+
+- 真实模型回归（owner 已批准，2026-10-08 跑完）：跑法、数字与逐条命中率见下面「验收记录」第 24 条。
+
+### 第 15 步收尾 · 措辞补例句（`fix/02-step15-sop-fallback`，2026-10-08）
+
+- 背景：第 15 步主分支已合并 dev；owner 在「Open」定的收尾动作——按高反那组已验证有效的写法，给第 8 条「冲我们发火」「证件丢了」各补具体例句，并修掉回归用例判定里的一个假阳性，再跑一轮真实模型回归。
+- 结构：`data/sop.md` 转人工条件第 8 条——原句把「证件丢了」留在抽象词里、冲我们发火没有例句；改成证件丢了单独配两句（「护照丢了，明天就要上飞机」「证件被偷了，人在机场」）、发火配三句（「什么破服务」「你们这么慢是不是没人管」「太失望了，你们就这服务？」），身体不适/被困走散那组原有的三句例句不动，反例说明一句不动。`src/payment/orders.selftest.ts`：原来钉死「身体不适或受伤、证件丢了、被困或走散」那句的断言随措辞改动跟着改（28 → 32 → 34 项：新增两条分别钉证件丢了、冲我们发火的具体例句）。
+- 回归用例的判定（不进仓库，只在 scratchpad）：`eval/run.ts` 的 `denyText` 是拿正则扫模型回复文本，上一轮 `s15-presale-01` 的 4/6（而不是 6/6）就是它把模型反问句里「如果现在不舒服我马上为您转接」这种有条件的话也认成了转人工用语。没有改仓库里的 `eval/run.ts`/`eval/cases.json`（锁定套件之一，断言不能动），改法是在 scratchpad 建一份隔离副本（`s15b/run.mts`，逐行照抄 `eval/run.ts`，只加一个 `denyTool` 字段：判「没转人工」直接看 `toolCalls` 有没有 `handoff_to_human`，不经文本正则）与对应用例文件（`s15b/realOnly-step15b.json`，照抄 `s15/realOnly-step15.json` 的 42 条，把 3 条售前反例的判定字段从 `denyText` 换成 `denyTool`）。
+- 真实模型回归（owner 已批准）：跑法、数字见「验收记录」第 24 条最后一条子项；结论是 7 条兜底用例里 6 条转正或保持满分，`s15-anger-03-slow`（「怎么这么慢啊」）仍是 0/6，owner 同日定接受现状，第 15 步已勾（见「Open」）。
+- 门禁：四个门禁全绿；`pnpm test` 不带 `PG_TEST_URL` 一遍全绿（本次只改 SOP 与一份非锁定自测，没碰服务端代码，带 PG 的那一遍不重复跑）；`PAYMENT ORDERS SELFTEST` 32 → 34 项；锁定套件 8 个文件零字节差异、断言零修改。
+
+### 第 19 步 · 前端：外壳实时与 I 页（2026-10-08）
+
+- 本步只改 console 前端：接的全是第 13 步已经做好的接口（`/api/console/events`、`?group=paid_needs_human`、`GET /conversations/:id`），没有碰服务端代码；门禁的 `pnpm test` 只跑了不带 `PG_TEST_URL` 的一遍。与第 15 步（收款流程，改 `src/payment/`、`console-api/app.ts` 订单接口、`data/sop.md`）另开一条线并行，收尾前 `git fetch && git merge origin/dev` 一次（`Already up to date`，两条线此刻没有冲突，`origin/dev` 还停在 `514b60f`）。
+- 结构：
+  - `console/src/shell/live.ts`（新建）：事件流的连接状态机（`LiveState = { connected, polling }`）与纯函数 `onOpen`/`onClose`/`onGraceExpired`；`startLiveEvents(deps)` 接 `EventSource`（真的全局 `EventSource` 或自测传的假 `EventSourceLike`），`counts` 事件直写 React Query 缓存，`handoff`/`conversation`/`message`/`order`/`send_failed`/`resync` 让 `['conversations', …]` 开头的查询整体失效重取，`handoff` 另转给 `onNotify`；`auth` 事件关闭连接、与「退出登录」同一套清缓存（回登录页靠 viewer 重取判定，不是自己跳转）；`useLivePollInterval(pollMs)` 给 Bell、I 页的三个计数/列表查询用。
+  - `console/src/shell/notifications.ts`（新建）：`notificationPermission()`、`requestNotificationPermission()`（只给点击回调用）、`notifyHandoff()`（标题复用 `src/shared/conversation.ts` 的 `handoffNoticeTitle`/`HANDOFF_NOTICE_TEXT`，与外部通道同一份文案）。
+  - `console/src/shell/Bell.tsx`：弹层每行加原因与等待时长（`handoff.reason` + `relativeTime(handoff.at)`）；等人接手之后多一组「已成交客户要人工」（`?group=paid_needs_human`，只在非空时出现，不计入徽标）；底部多「开启桌面提醒」（三态：按钮 / 已开启的说明 / 被拒绝的说明）；「打开工作台」改为 `navigate` 到 `/conversations/$id`，不再新标签打开 `admin.html`。
+  - `console/src/shell/Shell.tsx`：`Frame` 里为 member 接 `startLiveEvents`（`onNotify` 里调 `notifyHandoff` 并把「打开 J 页」的回调传进去）；标签页标题前缀「(N) 」在一个无依赖数组的 `useEffect` 里套，每次提交后剥掉上一次套的 `(N) ` 前缀再重套一遍（页面自己的 `useDocumentTitle` 是更深的子组件、先于这里提交），不改共用的 `useDocumentTitle`（它被几乎每个页面的自测直接调用，改了会牵连一大片与本步无关的页面）。
+  - `console/src/shell/model.ts`：加 `workbenchPath(id)`（`/conversations/${encodeURIComponent(id)}`）、`tabTitlePrefix(n)`；`workbenchHref`（admin.html）留给还没改的入口（⌘K「会话」组、A2，第 21、23 步）。
+  - `console/src/conversations/model.ts`：`tabs(counts, selected)` 多一个参数，`assigned` 页签只在「有这种会话或地址选了它」时出现；`rowView` 的 `label` 带 `needSummary`、`stage` 对等人接手的行写 `handoff.reason`（没有原因的旧数据仍写「—」）、`when`/`waitDanger` 对等人接手的行算等待时长（≥10 分钟 danger，照抄 J 页列表同一条规则）、`href` 换成 `workbenchPath`。
+  - `console/src/conversations/ConversationsPage.tsx`：状态句改「企业微信里的客户会话 · 在工作台里接手和回复」；页头主按钮、表格首列与「打开工作台」都改成 `Link`/`navigate` 到 J 页（当前标签）；多取一次 `?state=human` 给页头主按钮用（选中第一个等人接手的会话）。
+  - `console/src/conversations/WorkbenchPage.tsx`、`workbench.css`、`console/src/pages/conversations-id.lazy.tsx`（新建）：J 页占位（见下「本步定的」第 2 条），路由 `/conversations/$id` 加进 `router.tsx`。
+  - `console/src/parts/parts.css`：`.status-assigned .status-dot { background: var(--info-dot); }`（design-system §5.6 的「顾问处理中」默认形态）。
+  - `src/shared/ui-labels.ts`：`ERROR_COPY` 加 `conversation_not_found`（J 页占位的 404 用）。
+  - `console/src/fonts/`：重切子集补了「桌」（「开启桌面提醒」「桌面提醒已开启」是 spec 原文，没法换词），本机没装 `fonttools`/`brotli`，在 scratchpad 建了个一次性 venv 装的，用完删了。
+- 本步定的（spec 没写细，按最小、最贴原文的做法）：
+  1. **I 页「打开工作台」在没有等人接手的会话时怎么办**：spec 原文「选中第一个等人接手的会话，没有就不选」没说清「不选」时按钮该做什么——J 页今天还没有「不选中任何会话」的入口（三栏的空态是第 20.2 步才画）。按钮在这种情况下用 `PrimaryButton` 的 `blocked`（`aria-disabled`，保留焦点，`title` 说明「没有等人接手的会话」），不是真的 `disabled`：等 J 页真的有了无选中的空态，这里直接去掉 `blocked` 就能跳进去，不用改别的。
+  2. **J 页本身是第 20.2 步，本步先接路由**：`WorkbenchPage.tsx` 读 `GET /conversations/:id`（第 13 步已有），画一个最小概要（标题、状态、消息条数、转人工摘要、需求），一行说明「完整的会话工作台……还没上线」；三态照 `StateView`：加载气泡骨架、出错就地重试、`conversation_not_found` 写「这个会话已经不在了」+ 返回列表；非成员仍是「登录后才能看会话」。第 20.2 步会整个替掉这个文件，样式故意从简（独立的 `workbench.css`，没按 design-system 重做）。
+  3. **浏览器通知的渠道短名**：`ConsoleEventMap['handoff']` 事件没带 `channel`（sim- 访客会话的事件本来就不发，现在能收到的只有企微），`notifyHandoff` 固定按 `wecom` 拼标题前半截，和用 `row.channel` 的 `conversationLabel` 不是同一个取法，这是事件 payload 的形状决定的，不是漏改。
+  4. **铃铛弹层行的兜底**：`row.handoff` 按不变量 24 对等人接手、已成交客户要人工这两组一定有值，`Bell.tsx` 仍写了 `row.handoff ? … : 旧的「有新动静」写法` 这条兜底，防的是夹具或未来数据没带 `handoff` 的情况，不依赖它也能退化成旧行为。
+  5. **轮询与 SSE 共存的粒度**：`POLL`（30 秒/隐藏时停）这个常量本身没动——它还给好几处页面用 `setInterval` 算「现在」的时钟（`ConversationsPage`、`OverviewPage`、`AuditPage` 的 `useNow`），改了类型会牵连这几个无关页面。新的「连上不轮询、断线满 30 秒退回、重连立刻停」只加在 `useLivePollInterval` 这一层，只套在 Bell 与 I 页的 `counts`/`human`/`paidNeedsHuman` 三个查询上；`list`（表格数据）仍是固定 30 秒轮询，SSE 来的事件用 `invalidateQueries` 让它提前重取，两条路不冲突。
+  6. **SSE 断线/连不上的统一处理**：`startLiveEvents` 把「`new EventSource()` 抛错」（没有这个全局、CSP 拦住等）当成断线的一种，直接走 30 秒宽限计时器那条路、不让它把 `<Frame>` 摔崩（`login.selftest.tsx` 用 happy-dom 挂真的 `<Shell>`，happy-dom 没有全局 `EventSource`，第一次跑全套门禁时就是在这里炸的，补的这条顺手把这种环境也接住了）。
+- 改了的非锁定断言（理由都是本步按 spec 改的行为，在 spec「测试与 CI」允许的范围内）：
+  - `console/src/parts/errors.selftest.ts`：`conversation_not_found` 补进 `SPEC`/`ERROR_COPY` 的逐条比对（之前只有 `errors.selftest.ts` 自己在第 1 步就把「四种叫法」改完了，本步没有再碰这一条）。
+  - `console/src/conversations/conversations.selftest.tsx`：`tabs()` 的新参数、13 个种子场景（§10.0 老场景、`handoff` 全是 `null`）下首列、「打开工作台」从 `/admin.html#s=<id>`（新标签）换成 `/console/conversations/<id>`（当前标签）；「今天不画『顾问处理中』『等了』『转人工』」这条改成只断言仍被禁用的四个词（「待人工」「已转人工」「待接管」「需要介入」），因为现在的 UI 在有数据时会真的画出「顾问处理中」「原因」「等待时长」这类字（只是这套老场景没有这些数据，所以这个夹具下照样看不到它们，断言的理由变了但结论不变）。
+  - `console/src/overview/overview.selftest.tsx`：`BANNED` 列表没删「顾问处理中」，但注释改写明白——不是因为它整站不该出现，是因为 A2（本步没改，留给第 21 步）今天的数据源里没有一行会落到 `assigned` 状态，这一页此刻确实不该出现这个词；真正的「四态都允许」的断言在 `errors.selftest.ts`。
+- 新自测与扩的自测：
+  - `console/src/shell/shell.selftest.ts`（143 → 173 项）：新增「7. 事件流与桌面提醒」一段——`live.ts` 的三个纯函数（`onOpen`/`onClose`/`onGraceExpired`）、`startLiveEvents` 接一个假 `EventSource`（`EventTarget` 子类）验证开 / 断 / 宽限到期退回轮询 / 重连立刻停、`counts` 事件直写缓存、其余具名事件让 `conversations` 开头的查询失效、`auth` 关连接并清缓存；`notifications.ts` 的 unsupported/denied/granted 三态、标题三种写法（等人接手 / 紧急 / 已成交客户要人工）、正文不含客户原话、点击回调；铃铛的轮询选项（事件流还没确认断线时不轮询，不是固定 30 秒）；徽标只数 `human`、不把 `assigned` 或已成交客户要人工也算进去；画出铃铛不会自动申请桌面提醒授权；`tabTitlePrefix`、`workbenchPath` 两个纯函数。
+  - `console/src/conversations/conversations.selftest.tsx`（131 → 143 项）：`tabs()` 的新参数（有/无 `assigned` 会话、地址选中它两种情况都测）；有 `needSummary` 与 `handoff` 的行（标题带第三段、阶段列写原因、≥10 分钟 danger）；点一行、「打开工作台」、页头主按钮都改成断言 `router` 的地址变成了 `/conversations/<id>`（不再断言 `window.open`）。
+  - 没新建自测文件，没改 `package.json` 的 `test` 链（避免和并行的第 15 步在这个文件上冲突）。
+- 变异（隔离副本，`git worktree add --detach` 到 scratchpad，逐个打、跑对应套件、核过失败的正是对应那条新断言、再撤回；用完删了 worktree）：brief 点名的 8 个全部杀掉——标题前缀/徽标算上 `assigned`（`useWaitingCount` 把 `assigned` 加进 `count`）、已成交客户要人工计入徽标（把 `paidNeedsHuman.data.items.length` 加进徽标）、`onGraceExpired` 不退回轮询、`onOpen` 不停轮询、`auth` 事件不清缓存（不回登录页）、页面一加载就申请通知授权（`useState` 初始化里误用 `requestNotificationPermission`）、`notifyHandoff` 正文拼了 `data.id`（模拟带原话类的信息泄露）、`tabs()` 的 `showAssigned` 恒为 `true`（16 条断言当场报出）。每个都先确认在当时的分支上会通过（没打之前），打完确认变红，再撤回确认恢复绿。
+- 门禁：`format:check`、`lint`（含 `check-console-src.ts`，补了两处新字符串的空格/行业包词撞字问题）、`typecheck`（根与 `console` 两个 tsconfig）、`pnpm test`（不带 `PG_TEST_URL`，本步没改服务端代码）全绿；console 首屏 JS 329,538 / 420,000 B，换页最多 169,717 / 250,000 B（`sop.lazy`），都没涨过预算（新路由 `conversations-id.lazy` 独立分包 2.33 KB，没有进首屏）。锁定套件没碰。
+- 浏览器实测：首次提交时没有验到（原因见下方「审查之后改的」之前的版本：chrome-devtools MCP 的共享浏览器实例被另一个
+  并行会话占着）。审查回来之后补验了 SSE 断线退回轮询这一条（真实 Chromium + PGlite 本机后台，见上「审查之后改的」），
+  其余仍没验到：真实浏览器下深色/浅色主题的视觉效果、键盘走一遍 Bell 弹层与 I 页、「已成交客户要人工」组与「开启桌面
+  提醒」三态的真实交互、重连成功后真的停轮询（这条的状态机单测与断线退回轮询用同一套机制，复验时没有单独再花时间
+  把服务器重新启起来验一遍，风险判断为低）。
+- 界面改动 BEFORE / AFTER：
+  - 铃铛弹层：BEFORE 每行只有「企微客户 · F01」「8分钟前有新动静」、「打开工作台」新标签开 `admin.html#s=<id>`、没有「已成交客户要人工」组、没有桌面提醒入口。AFTER 每行第二行变成「{原因} · {等待时长}」；等人接手列表下面多一组「已成交客户要人工」（只在有时出现）；「打开工作台」在当前标签打开 J 页；底部多一行「开启桌面提醒」（或已开启/被拒绝的说明）。
+  - I 页：BEFORE 页签固定「全部/等人接手/AI接待中/已成交」四个、状态句「……接手和回复目前在工作台里完成」、首列和「打开工作台」新标签开 `admin.html`、等人接手的行阶段列写「—」、最后动静列是 `updatedAt`。AFTER 有顾问处理中的会话（或地址选中它）时多一个「顾问处理中」页签；状态句改「……在工作台里接手和回复」；首列标题带 `needSummary`（如「贵州带爸妈4人」）；等人接手的行阶段列写转人工原因、最后动静列写等待时长（≥10 分钟变红）；点一行/「打开工作台」/页头主按钮都在当前标签打开 J 页（不再新标签）。
+  - J 页：BEFORE 不存在（点进去是 404）。AFTER `/conversations/$id` 能打开，显示会话标题、状态胶囊、消息条数、转人工摘要（原因、接手人）与需求要素，提示「完整的会话工作台……还没上线」；三态照 `StateView`。
+- 取舍与偏离：见上「本步定的」六条；与 spec 或锁定断言没有冲突的地方，没有写「Open」。
+- 审查之后改的（2026-10-08，真实 Chromium + PGlite 本机后台复验）：
+  1. **修了 · SSE 断线超过 30 秒不会退回轮询（blocker）**：`armGrace()` 原来每次 `error` 都 `clearTimeout` 重排，真实浏览器的
+     `EventSource` 断线后约每 3 秒自动重连一次、每次失败都触发 `error`，30 秒倒计时永远被拨回起点，`onGraceExpired` 永远不触发。
+     改法：已经在倒计时就不重排（`if (timer) return;`），只有 `open`（`clearGrace()`）或这次宽限本身到期才清掉 `timer`。
+     补了模拟「每 20ms 一次 error、连续 7 次（140ms，超过 100ms 的宽限）」的用例，先确认在改之前会把这条新断言打红，改完变绿。
+  2. **顺手改了 · 退回轮询那一刻不补一次重取，实际要等宽限 + 一整个轮询间隔（约 60 秒）才发出第一次轮询请求**：
+     真实浏览器复验第 1 条时发现的——react-query 的 `refetchInterval` 是从「现在」起才等一整个间隔，`polling` 刚从 false
+     变 true 那一刻不会立刻重取。改法：`armGrace` 的回调里，`next.polling && !before.polling` 时顺手调一次
+     `invalidateConversations(qc)`，不用等 `refetchInterval` 的第一个整间隔。补了对应用例（宽限到期那一刻查询被标成
+     invalidated）。这条不是审查原文点名的，是复验过程中带出来的，一并记在这里。
+  3. **修了 · `handoff.started` 事件没分「发出时是否已有接手人」（minor，审查第 2 条）**：顾问自己点「接手」后，开着
+     桌面提醒会收到一条关于自己这次操作的通知。改法：`src/store/events.ts` 的 `handoff.started` 多一个布尔
+     `assigned`；`src/handoff/record.ts` 的 `enterHandoff` 加第 4 个可选参数 `opts.assigned`，默认取
+     `session.assignee != null`（升级分支——已经 handedOver 再遇紧急情况——这一刻 `session.assignee` 就是真实情况；
+     首次进入分支 `enterHandoff` 自己刚把它清成 `null`，调用方如果紧接着要赋值就传 `{ assigned: true }` 覆盖）；
+     `src/handoff/takeover.ts` 的 `takeover()` 传 `{ assigned: true }`（紧接着就要把 `s.assignee` 赋值，不是「共享
+     工作台转人工」那种没有接手人的入口）；`src/console-api/events.ts`、`src/shared/console-api.ts` 跟着把这个字段
+     透传到 SSE 的 `handoff` 帧。前端 `live.ts` 的 `on('handoff', …)` 对 `assigned` 为真的那一条只转发
+     `invalidateConversations`（铃铛与计数照旧更新），不转给 `onNotify`（不弹浏览器通知）。补了 `console.selftest.ts`
+     一条（顾问接手触发的事件带 `assigned:true`；`toHuman()` 没人接手的那条是 `assigned:false`，用 SSE 续传标记
+     精确定位新事件，不是只看「event: handoff」这几个字再次出现——第一版用这个字符串匹配，因为 raw 缓冲里早就有过
+     同样的字样，等不到新内容就提前判定超时，改成等这个会话 id 本身出现）与 `shell.selftest.ts` 两条（`assigned`
+     为真仍让查询失效、但不转给 `onNotify`）；`src/notify/notify.selftest.ts` 里原来漏了这个新必填字段的三处夹具
+     补上 `assigned: false`（不影响那条测试本身的断言）。
+  4. **修了 · `.bell-notify-btn` 没有 `:focus-visible` 样式（minor，审查第 3 条）**：照同文件 `.icon-btn` 的写法补
+     `outline: 2px solid var(--focus); outline-offset: 2px;`。
+  - 浏览器复验（真实 Chromium + PGlite，见下「浏览器实测」）：第 1 条用真实服务器（`@hono/node-server` 的
+    `serve()`，装配同 `console.selftest.ts` 的 `dbStoreChild()`）+ 真实 Chromium（Playwright）复现——改之前，杀掉后台
+    后连续 22 次 `/events` 重连（每 3003ms 一次）、65 秒内 `polling` 一直是 `false`，与审查描述的「持续 70 秒只看到
+    `/events` 每 3 秒重试」一致；改之后，`polling` 在断线满 30 秒时变 `true`，加了第 2 条的立即重取之后，真的
+    `counts` 轮询请求在断线后约 32 秒出现（之前约 62 秒）。复验脚本在 scratchpad（不进仓库），用完已关掉浏览器、
+    服务器与临时目录。
+  - 门禁：`format:check`、`lint`、`typecheck`（根与 `console`）、`pnpm test` 带 `PG_TEST_URL`（`pgtest-02s19`，
+    `127.0.0.1:55442`，一次性容器，跑完删了）与不带各一遍，全绿（本步改了服务端的 `handoff.started` 形状，两遍都跑）。
+    断言数：`shell.selftest.ts` 173 → 178，`console.selftest.ts` 418 → 420，`handoff.selftest.ts`、
+    `conversations.selftest.tsx` 不变（3193、143）；锁定套件零修改，`PREFIX sha256` 不变。首屏 JS 329,571 /
+    420,000 B（字段加大几字节，预算照过）。收尾前 `git fetch -q origin && git merge origin/dev`（`Already up to
+date`，origin/dev 这段时间没有新提交）。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
 
+- 24 · **通过（owner 2026-10-08 定：「嫌慢」那条不设要求，见最后一条子项与「Open」）**。以下第一段是第 15 步主分支（`feat/02-step15-payment`）当时的跑法与数字，留作历史；收尾小 PR（`fix/02-step15-sop-fallback`）复测的数字在最后一条子项「措辞补例句之后的复测」。自动部分：DB 模式门禁里 22 个请求的前缀哈希与 `/healthz` 核对 0 处不符（见「实施记录 · 第 15 步」门禁）。手动部分（owner 已批准，2026-10-08）：按「文件 → DB → 文件」交替跑了 6 遍（文件、DB 各 3 遍），另在改动前的 `origin/dev`（`git archive` 出的隔离副本，不是 git worktree）跑了 1 遍文件 + 1 遍 DB 当基线，合计 8 遍、991 次模型调用、花费 ¥18.62（主模型，未开对冲）。密钥只在跑命令的 shell 里从主仓库 `.env` 现读，没有复制进 worktree，没有写进任何文件或日志。
+  - P90：8 遍全部在 4,144–4,945ms 之间，两种模式都远不超过 8 秒。
+  - 整体通过的用例集合：基线文件 31/42、DB 26/42；改动后文件 35/35/34、DB 35/35/34——都不少于基线（几条波动的是既有的、与本步无关的模型行为类用例，如 `flow-07-kid-headcount`）。
+  - 兜底用例逐条命中率（改动后 6 遍里命中几遍 / 基线 2 遍里命中几遍）：
+    - `s15-emergency-01-altitude-mother`（我妈高原反应很严重）6/6（基线 0/2）
+    - `s15-emergency-02-altitude-help`（高反头痛救命）6/6（基线 0/2）
+    - `s15-emergency-04-lhasa-altitude`（到了拉萨头疼是不是高反）6/6（基线 0/2）
+    - `s15-emergency-03-passport-lost`（护照丢了明天的飞机）2/6（基线 0/2）——偏弱
+    - `s15-anger-02-curse`（骂服务）2/6（基线 0/2）——偏弱
+    - `s15-anger-01-disappointed-service`（嫌服务差）、`s15-anger-03-slow`（嫌慢）0/6（基线各 0/2）——没起作用
+  - 售前反例逐条（6 遍里「没转人工」判对几遍）：`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 6/6；`s15-presale-01-altitude-question`（光一句「高反了怎么办」、没有上下文）4/6，另外 2 遍模型没有直接转人工，是先反问「您是现在不舒服，还是问以后」，反问句里带了「如果现在不舒服我马上为您转接」这种有条件的话，被 `denyText` 的正则认成了转人工用语——这两遍严格说不算真的误转人工，是测试用例的正则认不出「有条件」。
+  - 结论与建议（不是本步自己改 SOP 重跑，留给 owner 定）：「此刻遇到紧急情况」那半句对高原反应类的识别已经稳定（3/4 场景 100%），但「冲我们发火」那半句对冷启动的纯抱怨句（没有订单、没有上下文，只一句「什么服务」「这么慢」）基本不生效，模型倾向于当成需要先安抚、问清楚的普通不满（这和第 2 条「投诉、表达强烈不满」本来就该转人工有重叠，可能是模型在两条之间没有明确选中任何一条）；建议在第 8 条里把发火的例句也写成具体短语（像紧急情况那样列 2–3 句示例，而不是只给抽象描述），或者把「证件丢了」单独配一条像「护照/证件丢了，马上要赶飞机」这样的具体例句，复用紧急情况那组例句已经验证有效的写法。`s15-presale-01` 这条测试用例本身的歧义（孤零零一句「高反了怎么办」）是否要收紧（比如改成更明确的「以前听说去西藏会不会高反」），或者接受模型反问是合理行为、把 `denyText` 改成只认不带「如果」「要是」的无条件转人工句，也请 owner 一并定。
+
+  - **措辞补例句之后的复测（`fix/02-step15-sop-fallback`，2026-10-08，owner 已批准）**：按建议给第 8 条「冲我们发火」「证件丢了」各补了具体例句（原文见「实施记录 · 第 15 步」四个哈希表上方的 SOP 改动，或直接读 `data/sop.md` 转人工条件第 8 条）；回归用例的判定同时改掉了上一轮 `s15-presale-01` 那个假阳性——改用 `denyTool`（直接看这一轮有没有调 `handoff_to_human`），不再用 `denyText` 正则扫回复文本，判定脚本与用例文件都留在 scratchpad（`s15b/run.mts`、`s15b/realOnly-step15b.json`），不进仓库。按「文件 → DB → 文件」交替跑了 6 遍（文件、DB 各 3 遍），基线沿用上一轮的数字（不再重跑），合计 759 次模型调用、花费 ¥14.17（主模型，未开对冲；另有一次只跑 10 条兜底用例的小额预跑 17 次调用 ¥0.37，验证判定脚本本身跑得通，算在同一笔开销里，总计 776 次、¥14.55）。密钥只在跑命令的 shell 里从主仓库 `.env` 现读，没有复制进 worktree，没有写进任何文件或日志。
+    - P90：6 遍在 5,148–6,025ms 之间，两种模式都远不超过 8 秒（比上一轮略高但同一量级，波动属于正常范围）。
+    - 整体通过的用例集合：文件 35/39/36、DB 38/37/36（42 条里）——都不少于上一轮基线（文件 31、DB 26）；非 `s15-*` 的波动（`detail-02-no-guess`、`flow-07-kid-headcount`、`guard-13-no-service-promise` 等）与上一轮点名的一样，是既有的、与本步无关的模型行为类用例，不是这次 SOP 改动带来的新问题。
+    - 兜底用例逐条命中率（6 遍里命中几遍 / 上一轮 6 遍里命中几遍）：
+      - `s15-emergency-01-altitude-mother`（我妈高原反应很严重）6/6（上一轮 6/6，不变）
+      - `s15-emergency-02-altitude-help`（高反头痛救命）6/6（上一轮 6/6，不变）
+      - `s15-emergency-04-lhasa-altitude`（到了拉萨头疼是不是高反）6/6（上一轮 6/6，不变）
+      - `s15-emergency-03-passport-lost`（护照丢了明天的飞机）**6/6（上一轮 2/6）**——补了「护照丢了，明天就要上飞机」「证件被偷了，人在机场」两句具体例句之后转正
+      - `s15-anger-02-curse`（骂服务）**6/6（上一轮 2/6）**——转正
+      - `s15-anger-01-disappointed-service`（嫌服务差）**6/6（上一轮 0/6）**——转正
+      - `s15-anger-03-slow`（怎么这么慢啊）**0/6（上一轮 0/6）**——仍未起作用，唯一一条没达标
+    - 售前反例逐条（6 遍里「没转人工」判对几遍，`denyTool` 直接看工具调用）：`s15-presale-01-altitude-question`（高反了怎么办）、`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 **6/6**——`s15-presale-01` 上一轮的 4/6 是测试判定的假阳性（模型反问句里带「如果…马上为您转接」被正则误认成转人工），换成看工具调用之后，这条也是真的零误转人工，不是靠放宽判定蒙过去的。
+    - 结论：6 条兜底用例里 6 条转正或保持满分，只有 `s15-anger-03-slow`（单独一句「怎么这么慢啊」、没有任何上下文）仍是 0/6，没有达到「每条 6 遍里至少 5 遍」。推测原因：这句本身比「什么破服务」「你们这么慢是不是没人管」更孤立——没有「服务」「没人管」这类明确指向我们的词，模型更容易读成「这个流程/加载慢」之类的中性吐槛，倾向于先安抚或反问而不是直接转人工。按 brief 的要求，命中率没有整体达标就不自己再改再跑（每轮都花钱），第 15 步复选框不勾，把这条单独列出来请 owner 定：① 接受现状——「嫌慢」单独一句不转人工，靠客户后续说得更具体（如「这么慢是不是没人管」）或靠第 2 条「投诉、表达强烈不满」兜底，直接勾第 15 步；② 再给第 8 条补一条更贴近「怎么这么慢啊」原句的例句（如「怎么这么慢啊」本身，或「这都等了半天了」），接受再跑一轮回归的花费（参考这次 759 次、¥14.17）。
+
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
+
+- 已定 · **真实模型回归已跑完（第 15 步，2026-10-08），结果部分未达标。** owner 同日选：先合并当前版本（每一类都不比改动前差、售前没有真误转人工）；另开一个小 PR 照高反那组的写法给「冲我们发火」「证件丢了」各补 2–3 句具体例句，并把回归用例里「有条件的转人工」（「如果现在不舒服我马上为您转接」）改成不算转人工，再跑一轮真实模型回归；第 15 步等那一轮通过后再勾。 代码、五条审查修复、自测都已完成（见「实施记录 · 第 15 步」「审查之后改的」），P90、整体通过的用例集合都达标，但兜底用例里「冲我们发火」那三条（嫌服务差、骂服务、嫌慢）与「护照丢了」那条命中率偏低（2/6、0/6、0/6、2/6，6 遍里），数字、每条的命中率与两条改法建议都记在「验收记录」第 24 条。
+  - 原来请 owner 选的两条路：① 认可当前措辞、放宽验收第 24 条；② 改措辞再跑一遍（参考这次 991 次调用、¥18.62）。owner 选了 ② 的变体：先合并、措辞单独一个 PR。
+
+- 已定之后的收尾（`fix/02-step15-sop-fallback`，2026-10-08）：按上面定的做了——第 8 条「冲我们发火」「证件丢了」各补了具体例句，回归用例的判定也换成直接看 `handoff_to_human` 有没有被调（不再用正则扫文本，修掉了上一轮 `s15-presale-01` 的假阳性）。复测结果：7 条兜底用例里 6 条转正或保持 6/6（护照丢了、骂服务、嫌服务差都从偏低转成满分），**只有 `s15-anger-03-slow`（孤零零一句「怎么这么慢啊」）仍是 0/6**，没有达到「每条至少 5/6」。数字见「验收记录」第 24 条最后一条子项。按 brief 的规则，命中率没有整体达标就不自己再改再跑，**第 15 步复选框继续留着没勾**，请 owner 在下面两条里选一条：
+  - **已定（owner 2026-10-08 选 ①）**：单独一句「怎么这么慢啊」算轻度不耐烦，不算明显冲我们发火，模型道歉并接着回答是合理行为，符合精确优先（宁可留给 AI，也不要客户一催就被转走）；`s15-anger-03-slow` 从「必须转人工」改成不设要求，验收 24 按其余 6 条兜底用例与 3 条售前反例判通过，第 15 步已勾。不再加例句、不再花钱重跑。
+  - ① 接受现状：「怎么这么慢啊」这种孤立、没点名「服务」的嫌慢句不转人工（靠客户后续说得更具体、或靠第 2 条「投诉、表达强烈不满」兜底），直接勾第 15 步；
+  - ② 再给第 8 条补一条更贴近原句的例句（如直接收录「怎么这么慢啊」「这都等了半天了」），接受再跑一轮回归的花费（参考这次 759 次调用、¥14.17）。
 
 - 第 13 步审查带出的（2026-10-03，不挡第 14 步）：**成员接手时才进入的转人工，会把刚排进去的两个 `handoff_notify`（立即、10 分钟）一并取消**（`src/handoff/takeover.ts` 的 `takeover()`，169–175 行；已在转人工中的会话再被接手不取消，只影响「接手时才进入转人工」这一种）。spec「任务表与跟进」写的是「转人工提交后立即排一个，10 分钟后仍没人接手再排一个」，没有写「接手时进入的转人工不排」这条例外；审查第 3 条（review:spec 原文）指出这是改了 spec 原文写明的行为，按 brief 的规则本该先停下写 Open，不该直接改代码——这里补上。实现者当时的理由（「实施记录 · 第 13 步」本步定的第 3 条）是：这种转人工从「成员接手」这个动作触发，当场就有人在处理，再排一条「等人接手」的通知没有意义。本次复核没有发现这个理由有问题，不改代码，留给 owner 确认：
   - 推荐（保持现状）：成员主动接手而进入的转人工不排 `handoff_notify`；只有「没人接手就自动进入」的转人工（模型调工具、改行程承诺、回复说了转接、确定性触发、紧急情况、旧 `/handoff`）才排这两条通知。
@@ -1349,3 +1516,17 @@
 - 半成品：无。
 - 阻塞：无。中途发现并复现过一个与本步无关的既有问题——`price-guard.selftest.ts` 的 Q1、R4 两条断言用固定出发日期 `2026-10-03`，当天（2026-10-08）已经过去会变红，干净的 `origin/dev` 上同样复现——正准备写「Open」时，协调者告知 dev 已合进 PR #84（`test:locked` + `src/store/parity-clock.ts`，钉固定时钟跑锁定套件），合并之后这两条断言恢复全过，不再需要写「Open」。外部拨测仍待 owner 配好国内云厂商账号后补做（开放问题 14），结果记进「验收记录」后再勾选第 17 步的复选框。
 - 下一步：主线继续后续步骤；第 17 步审查回来的四条（`deploy/watch.sh` 的磁盘检查只读第 2 行、`src/log.ts` 的 `REDACT_PATHS` 深度不够、`BEARER` 大小写与转义分隔符、兜底不认连接串与 Cookie 头）已修，见「实施记录 · 第 17 步」「审查之后改的」；第 14 步合并进来的 `src/notify/notifier.ts` 与本步 `src/ops/alert.ts` 各自的「POST 一条 text 消息、5 秒超时、看 errcode」仍是两份，留给以后谁先碰这两个文件时合成一个函数。
+
+### 交接（2026-10-08，第 15 步）
+
+- 已完成：第 15 步代码部分（分支 `feat/02-step15-payment`，没 push；开工时 dev 含第 1–14、17、18、20.1 步）。`src/payment/` 的三个订单动作与 `paymentMode` 在第 13 步就有，本步补的是 advisor 模式的对客文案（`create_order` 的 `payNote`、价格护栏替换句、`resendPayReply`/成单安全网两支的确定性文案、`/pay/:orderId` 的服务端注入与 `pay.html` 的 advisor 视图）与 `data/sop.md` 锁定节的三处改动（能力边界的收款句、closing 段 payNote 一句、转人工条件第 8 条的模型兜底与售前反例说明）。结构、本步定的四条取舍、自测、变异、四个哈希见「实施记录 · 第 15 步」。README 没动（按惯例记进第 28 步）。锁定套件零修改，`PREFIX sha256` 按本步改变（见「实施记录 · 第 15 步」的四个哈希表），这是全程唯一一次有意改 SOP。审查回来五条（1 排 order_unconfirmed 的 handoff_notify 没接真实调用点、2 旧付款接口对 poisoned 会话照发确认、3 第 8 条漏判价格类抱怨、4 第 8 条例句都带时态词、5 `handoffReply` 的 advisor 措辞）都已修，见「实施记录 · 第 15 步」「审查之后改的」；修完合并 `origin/dev`（没有新提交）、四个门禁与带/不带 PG 的 `pnpm test` 重跑全绿、`gitleaks` 与本机路径扫描都干净。
+- 半成品：无。
+- 阻塞：真实模型回归已跑完（owner 已批准，991 次调用、¥18.62），但「冲我们发火」三条兜底用例与「护照丢了」那条命中率偏低，数字与两条改法建议记在「验收记录」第 24 条、「Open」里请 owner 选一条路。第 15 步复选框留着没勾，等 owner 这条定下来再勾（选①直接勾，选②交下一个 agent 改 SOP 再跑一遍确认）。
+- 下一步：owner 定第 24 条那一处之后，第 15 步勾上（或交下一个 agent 按建议改 SOP、重跑确认）；再做第 16 步「隐私说明、敏感信息同意、保留期、行权删除」。先读「实施记录 · 第 13 步」「第 14 步」里给第 16 步的注意（`erase_conversation` 要连带删任务、`sensitiveCategoriesOf`/`consentWithdrawalOf` 已在 `src/handoff/triggers.ts`、`logQuote()` 第 1 步盘点的日志位置要逐个改）；本步新增的 `data/sop.md` 第 8 条转人工规则与第 16 步「敏感信息同意」不冲突（第 8 条管的是此刻的人身危险与冲我们发火，第 16 步管的是敏感信息披露），两条都生效、互不覆盖。
+
+### 交接（2026-10-08，第 19 步）
+
+- 已完成：第 19 步「前端：外壳实时与 I 页」（分支 `feat/02-step19-shell-realtime`，没 push；与第 15 步另开一条线并行）。事件流（`shell/live.ts`：接 `/api/console/events`，断线满 30 秒退回轮询、重连立刻停、`counts` 直写缓存、其余事件让相关查询失效、`auth` 回登录页）、桌面提醒（`shell/notifications.ts`，授权只在点击时申请）、铃铛弹层（原因与等待时长、「已成交客户要人工」组、「开启桌面提醒」、浏览器通知）、标签页标题前缀、I 页（`assigned` 页签条件出现、`needSummary`、原因/等待时长列、当前标签打开 J 页）、J 页占位路由（`/conversations/$id`）。结构、本步定的六条取舍、改了的非锁定断言、自测、变异与门禁见「实施记录 · 第 19 步」。README、`public/admin.html` 没动，锁定套件零修改。
+- 半成品：J 页只是占位（最小概要视图），完整三栏工作台（接手、回复、交接卡、订单与付款、快捷回复、「AI为什么这么回」）留给第 20.2 步；`WorkbenchPage.tsx`、`workbench.css` 会被整个替掉。
+- 阻塞：无。浏览器实测没做到（本机没有现成的 DB 存储开发环境可登录成员账号，chrome-devtools 的共享浏览器实例当时被另一个并行会话占用），用 `conversations.selftest.tsx`、`shell.selftest.ts` 的真实 DOM 断言顶上，细节见「实施记录 · 第 19 步」倒数第二条。
+- 下一步：第 20.2 步「前端：J 页」先读本节与「实施记录 · 第 19 步」——J 页路由、`GET /conversations/:id` 的读法、「打开工作台」从哪些入口进来（I 页行/按钮、铃铛两组、页头主按钮）都已经接好，第 20.2 步整个替换 `WorkbenchPage.tsx` 的内容即可，不用改路由注册；I 页头主按钮「没有等人接手的会话」时的 `blocked` 态，等 J 页有了无选中的空态可以去掉。第 21 步（总览 A2）与 ⌘K「会话」组仍在用 `admin.html`（`workbenchHref`），没有改。

@@ -65,6 +65,10 @@ const catalogNew = createRoute({ getParentRoute: () => root, path: '/catalog/new
 const conversations = createRoute({ getParentRoute: () => root, path: '/conversations', validateSearch: conversationsSearch }).lazy(() =>
   import('./pages/conversations.lazy.js').then((m) => m.Route),
 );
+// 会话工作台（J 页，02 第 19 步起；占位版，三栏工作台是第 20.2 步）：$id 经 encodeURIComponent（spec「后台页面」）
+const conversationWorkbench = createRoute({ getParentRoute: () => root, path: '/conversations/$id' }).lazy(() =>
+  import('./pages/conversations-id.lazy.js').then((m) => m.Route),
+);
 // 审计日志的类别与「显示登录记录」写进地址（audit-search.ts）
 const audit = createRoute({ getParentRoute: () => root, path: '/audit', validateSearch: auditSearch }).lazy(() =>
   import('./pages/audit.lazy.js').then((m) => m.Route),
@@ -94,7 +98,7 @@ const specimen = SPECIMEN
   : [];
 
 export const router = createRouter({
-  routeTree: root.addChildren([index, sop, catalog, catalogItem, catalogNew, conversations, audit, ...specimen]),
+  routeTree: root.addChildren([index, sop, catalog, catalogItem, catalogNew, conversations, conversationWorkbench, audit, ...specimen]),
   basepath: '/console',
   defaultPendingComponent: PagePending,
   defaultPendingMs: 0,

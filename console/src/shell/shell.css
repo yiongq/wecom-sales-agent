@@ -639,6 +639,37 @@ a.nav-item:hover {
   font-size: 14px;
   line-height: 22px;
 }
+/* 「已成交客户要人工」组标题（02 spec「通知」「外壳」）：13/500 text-3，与区块头同一个字号 */
+.bell-group-title {
+  margin: 4px 0 0;
+  padding: 8px 12px 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+/* 「开启桌面提醒」：说明与按钮同一行高度，13 text-2；按钮形态同文字链接，被拒绝后只剩说明 */
+.bell-notify {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.bell-notify-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+.bell-notify-btn:hover {
+  text-decoration: underline;
+}
+.bell-notify-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 
 /* ---------------- 页头（§4.3）与匿名横幅（§5.12） ---------------- */
 /*
