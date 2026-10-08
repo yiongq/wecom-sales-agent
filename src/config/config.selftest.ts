@@ -3730,6 +3730,188 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
 }
 
+// ---------------- 旧后台 admin.html：列表 401 自动弹登录框 + db 存储下顶部提示去 J 页（02 第 23 步）----------------
+// load() 与 sigOf() 一个字节不改：401 判断放在 api()（统一出口），顶部提示是一段独立逻辑；都在 load()/sigOf() 之外，
+// 原样从页面抽出来在 vm 里跑（跟上面「方案书卡片按版本」那段同一个办法）。
+{
+  const vm = await import('node:vm');
+  const { execFileSync } = await import('node:child_process');
+  const admin = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+  const cut = (src: string, start: string, end: string): string => {
+    const a = src.indexOf(start);
+    const b = a < 0 ? -1 : src.indexOf(end, a + start.length);
+    if (b < 0) throw new Error(`admin.html 里找不到「${start}」`);
+    return src.slice(a, b + end.length);
+  };
+
+  // load()、sigOf() 的源码与 origin/dev 逐字节相同——本步唯一不许碰的两个函数；锁定的 server.selftest 另外照过它们的行为
+  {
+    const extractFns = (s: string) => ({
+      load: /async function load\(\) \{[\s\S]*?\n\}/.exec(s)?.[0] ?? null,
+      sig: /function sigOf\(\) \{[\s\S]*?\n\}/.exec(s)?.[0] ?? null,
+    });
+    let devSrc: string | null = null;
+    try {
+      devSrc = execFileSync('git', ['show', 'origin/dev:public/admin.html'], { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    } catch {
+      /* 找不到 origin/dev（离线、浅克隆）时跳过逐字节比对，不让自测因网络环境而炸 */
+    }
+    if (devSrc) {
+      const mine = extractFns(admin);
+      const dev = extractFns(devSrc);
+      check('admin.html：load() 源码与 origin/dev 逐字节相同', !!mine.load && mine.load === dev.load);
+      check('admin.html：sigOf() 源码与 origin/dev 逐字节相同', !!mine.sig && mine.sig === dev.sig);
+    }
+  }
+
+  // 列表 401 自动弹登录框：判断在 api()（统一出口），只认 load() 发起的那一个列表请求（/api/sessions），且只弹一次——
+  // 这条「只弹一次」是 console/src/conversations/conversations.selftest.tsx 第 3 节（深链，01 时代留下的旧入口）早就
+  // 钉住的契约：人关掉登录框之后，哪怕 setInterval(load, 30000) 继续每 30 秒 401，也不能反复打扰，否则那边的
+  // 「深链：关掉登录框后，下一次取列表不再弹」会变红。每个场景都在一个全新的 vm 上下文里跑，
+  // 这样 let listAuthHandled 每次都从没弹过的初始状态开始，除了「同一上下文连续两次 401」这一条故意复用
+  {
+    const apiSrc = cut(admin, 'let listAuthHandled = false;', '\n}\n');
+    const freshApi = (): {
+      api: (url: string, opts?: Record<string, unknown>) => Promise<{ status: number }>;
+      AUTH: { on: boolean };
+      loginMask: { hidden: boolean };
+      openLoginCalls: () => number;
+      authLostCalls: () => number;
+      setStatus: (s: number) => void;
+    } => {
+      let openLoginCalls = 0;
+      let authLostCalls = 0;
+      let fetchStatus = 200;
+      const AUTH = { on: false };
+      const loginMask = { hidden: true };
+      const { api } = vm.runInNewContext([apiSrc, '({ api });'].join('\n'), {
+        AUTH,
+        loginMask,
+        ownSimSession: () => '',
+        openLogin: () => {
+          openLoginCalls++;
+        },
+        onAuthLost: () => {
+          authLostCalls++;
+        },
+        fetch: (_u: string) => Promise.resolve({ status: fetchStatus }),
+      }) as { api: (url: string, opts?: Record<string, unknown>) => Promise<{ status: number }> };
+      return {
+        api,
+        AUTH,
+        loginMask,
+        openLoginCalls: () => openLoginCalls,
+        authLostCalls: () => authLostCalls,
+        setStatus: (s: number) => {
+          fetchStatus = s;
+        },
+      };
+    };
+
+    {
+      const t1 = freshApi();
+      t1.setStatus(401);
+      await t1.api('/api/sessions');
+      check(
+        'admin.html：列表 401（未登录）自动弹登录框',
+        t1.openLoginCalls() === 1 && t1.authLostCalls() === 0,
+        `${t1.openLoginCalls()}/${t1.authLostCalls()}`,
+      );
+    }
+
+    {
+      const t2 = freshApi();
+      t2.setStatus(200);
+      await t2.api('/api/sessions');
+      check('admin.html：列表非 401 不弹登录框', t2.openLoginCalls() === 0 && t2.authLostCalls() === 0);
+    }
+
+    {
+      const t3 = freshApi();
+      t3.setStatus(401);
+      await t3.api('/api/orders');
+      check('admin.html：别的接口 401 不归这里管，只认 load() 发起的那一个列表请求', t3.openLoginCalls() === 0 && t3.authLostCalls() === 0);
+    }
+
+    {
+      // 同一个页面生命周期里连续两次列表 401（模拟「弹出后人关掉、下一轮 30 秒轮询又 401」）：
+      // 不管登录框此刻是开是关，只弹第一次——这正是真实场景里会把「深链」那条自测带红的分支
+      const t4 = freshApi();
+      t4.setStatus(401);
+      await t4.api('/api/sessions');
+      t4.loginMask.hidden = true; // 人关掉了登录框
+      await t4.api('/api/sessions'); // 下一轮轮询，依然没登录、依然 401
+      check(
+        'admin.html：同一页面里列表连续 401，只弹第一次，关掉之后不再因为轮询重新弹出',
+        t4.openLoginCalls() === 1 && t4.authLostCalls() === 0,
+        `${t4.openLoginCalls()}/${t4.authLostCalls()}`,
+      );
+    }
+
+    {
+      const t5 = freshApi();
+      t5.AUTH.on = true;
+      t5.setStatus(401);
+      await t5.api('/api/sessions');
+      check(
+        'admin.html：已登录但列表仍 401（会话失效）走 onAuthLost，不是 openLogin',
+        t5.authLostCalls() === 1 && t5.openLoginCalls() === 0,
+        `${t5.openLoginCalls()}/${t5.authLostCalls()}`,
+      );
+    }
+  }
+
+  // db 存储下顶部提示链到 J 页；文件存储下永远不出现（判断用 /healthz 的 store.mode，不新开接口）
+  {
+    const declSrc = cut(admin, 'let dbSessionStore = false;', '\n}\n');
+    const fetchSrc = cut(admin, "fetch('/healthz')", '}).catch(() => {});');
+    let selected: string | null = null;
+    let fetchResult: { ok: boolean; json: () => Promise<unknown> } = { ok: true, json: async () => ({ store: { mode: 'file' } }) };
+    const opsHint: { hidden: boolean } = { hidden: true };
+    const opsHintLink: { href: string } = { href: '' };
+    // vm.runInContext() 之后读 opsHint.hidden：用函数包一层，躲开 TS 对「字面量赋值后又原样比较」的收窄
+    // （它看不出 vm 代码会改这个属性，会把 hidden 收窄成赋值时的那个字面量类型）
+    const hiddenNow = (): boolean => opsHint.hidden;
+    const sandbox = {
+      S: {
+        get selected() {
+          return selected;
+        },
+      },
+      document: { getElementById: (id: string) => (id === 'opsHint' ? opsHint : id === 'opsHintLink' ? opsHintLink : null) },
+      fetch: (_u: string) => Promise.resolve(fetchResult),
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(declSrc, sandbox); // 声明一次 dbSessionStore / updateOpsHint；后面只重跑取数的那条语句，不重新声明
+
+    // 文件存储：healthz 回 file 时 fetch 链里压根不碰 updateOpsHint（跟真实 render() 的调用点分开）；
+    // 这里学 render() 的样子显式再调一次 updateOpsHint()，先把提示条设成「正显示」，看它是不是被按文件模式收回去——
+    // 不这样的话，「不出现」这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断 dbSessionStore」这种变异
+    opsHint.hidden = false;
+    vm.runInContext(fetchSrc, sandbox);
+    await new Promise((r) => setTimeout(r, 5));
+    vm.runInContext('updateOpsHint();', sandbox);
+    check('admin.html：文件存储（/healthz 的 store.mode=file）下顶部提示不出现', hiddenNow() === true, `hidden=${hiddenNow()}`);
+
+    fetchResult = { ok: true, json: async () => ({ store: { mode: 'db' } }) };
+    vm.runInContext(fetchSrc, sandbox);
+    await new Promise((r) => setTimeout(r, 5));
+    check(
+      'admin.html：db 存储下顶部提示出现，链到 J 页列表',
+      hiddenNow() === false && opsHintLink.href === '/console/conversations',
+      `hidden=${hiddenNow()} href=${opsHintLink.href}`,
+    );
+
+    selected = 'wm-abc123';
+    vm.runInContext('updateOpsHint();', sandbox);
+    check(
+      'admin.html：选中会话时提示链到该会话（encodeURIComponent 过的 id）',
+      opsHintLink.href === '/console/conversations/' + encodeURIComponent('wm-abc123'),
+      opsHintLink.href,
+    );
+  }
+}
+
 await t.close();
 
 if (fails.length) {
