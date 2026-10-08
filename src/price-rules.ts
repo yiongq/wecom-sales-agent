@@ -17,6 +17,7 @@ import { LOWLAND_MAX_ALTITUDE, loadRoutes, mentionsPlace, peakMonths } from './t
 import { getOrder } from './store.js';
 import type { Route, Session } from './types.js';
 import { ConfigNotReadyError } from './config/source.js';
+import { paymentMode } from './payment/mode.js';
 
 // ---------------- 客户说过的预算 ----------------
 
@@ -379,9 +380,16 @@ function fundDeferred(s: string): boolean {
     return FUND_DEFER.test(clause) || FUND_TOPIC.test(s.slice(end));
   });
 }
-/** 同一条回复别处已经说了「付款只走官方支付链接」：资金那条只删不补，不然这句在客户眼前出现两遍 */
-const PAY_LINK_SAID = /官方[^。！？!?\n]{0,8}支付链接|只走[^。！？!?\n]{0,12}支付链接/;
-const SERVICE_CLAIMS: { re: RegExp; skip: RegExp | ((s: string) => boolean); replace: string; already?: RegExp }[] = [
+/**
+ * advisor 模式下不说「官方支付链接」（点链接就能付），同一意思换成「订单链接和顾问发给您的收款方式」
+ * （02 spec「收款流程」）；demo（online）下不变——锁定的 price-guard.selftest.ts 测的就是这句，不受影响
+ */
+function payRuleReplace(): string {
+  return paymentMode() === 'advisor' ? '付款以订单链接和顾问发给您的收款方式为准。' : '付款只走我们发给您的官方支付链接。';
+}
+/** 同一条回复别处已经说了付款规矩（官方支付链接，或 advisor 的订单链接+收款方式）：资金那条只删不补，不然这句在客户眼前出现两遍 */
+const PAY_LINK_SAID = /官方[^。！？!?\n]{0,8}支付链接|只走[^。！？!?\n]{0,12}支付链接|订单链接[^。！？!?\n]{0,12}收款方式/;
+const SERVICE_CLAIMS: { re: RegExp; skip: RegExp | ((s: string) => boolean); replace: string | (() => string); already?: RegExp }[] = [
   // 只管专票（增值税专用发票 / 公司抬头）：实测答应的是「支持开公司抬头的增值税专用发票」。
   // 「合同发票齐全」这类泛泛的说法交给 SOP，硬换成一句专票的话反倒答非所问
   {
@@ -395,7 +403,7 @@ const SERVICE_CLAIMS: { re: RegExp; skip: RegExp | ((s: string) => boolean); rep
     skip: (s) =>
       /(?:不用|无需|不需要|不走|没有|不是|不要)[^。！？!?\n，,]{0,4}(?:对公|第三方)|先看(?:看|一下)?(?:方案|行程)/.test(s) ||
       fundDeferred(s),
-    replace: '付款只走我们发给您的官方支付链接。',
+    replace: payRuleReplace,
     already: PAY_LINK_SAID,
   },
   {
@@ -802,11 +810,13 @@ function dropClaimsIn(text: string, ctx: ClaimCtx): { text: string; dropped: str
     }
     const svc = SERVICE_CLAIMS.find((c) => c.re.test(s) && !(typeof c.skip === 'function' ? c.skip(s) : c.skip.test(s)));
     if (svc) {
+      // replace 按当时的 paymentMode 现算（资金那条在 advisor 下换成另一句，见 payRuleReplace）
+      const replaceText = typeof svc.replace === 'function' ? svc.replace() : svc.replace;
       // 换上去的话回复里已经有了（别处说过，或前面一句刚换过）：只删不补
       const rest = text.slice(0, u.start) + text.slice(u.end);
-      const dup = replaced.has(svc.replace) || !!svc.already?.test(rest);
-      replaced.add(svc.replace);
-      cut(dup ? undefined : svc.replace);
+      const dup = replaced.has(replaceText) || !!svc.already?.test(rest);
+      replaced.add(replaceText);
+      cut(dup ? undefined : replaceText);
     }
   }
   if (clauseCuts.length) {
