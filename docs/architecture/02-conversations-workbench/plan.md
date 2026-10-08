@@ -144,7 +144,7 @@
 - [x] 22. 快捷回复：行业包默认模板与管理抽屉（1，可砍）：2026-10-08 完成，结构、默认模板原文、取舍、自测、变异与门禁见「实施记录 · 第 22 步」。
 - [x] 23. `admin.html` 两处（0.5）：列表 401 时弹登录框（在 `load()` 之外判断，`server.selftest.ts` 抽取的 `load()` 与 `sigOf()` 源码不变）；db 配置模式下顶部提示链到 J 页。对应验收 29 的这一句。2026-10-08 完成（分支 `feat/02-step23-admin-html`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 23 步」。
 - [x] 24. 02 走查种子与走查（1）：`scripts/seed-demo.py` 加 `--scenario console-ux-02`（设计系统 §10.0 第 5 条：14 个会话、A01 由小林接手、F01 的原因、三张订单）；7F3A 不走种子，由走查脚本经假企微接口和脚本化的 mock LLM 真跑出来（要有一轮价格护栏删句，才有 trace 与改写对照）。Playwright 浅色、深色各走一遍，截图存到 `walkthrough/`，含只用键盘的交还。对应验收 33。2026-10-08 完成，走查全部通过（32 张截图、axe 13 次扫描 0 处违规），结构、种子的两处额外补充（已成交客户要人工、紧急）、走查中发现并修掉的一处真实界面问题（J 页输入框字数压在「发送」按钮上）与三处环境问题见「实施记录 · 第 24 步」，结果见「验收记录」第 33 条。
-- [ ] 25. 压测（1.5）：`scripts/load/run.ts` 按 spec「压测」一节（含 5,000 × 300 的预载）；本机真实 Postgres、db 存储；结果与数字记进「验收记录」。对应验收 30。
+- [x] 25. 压测（1.5）：`scripts/load/run.ts` 按 spec「压测」一节（含 5,000 × 300 的预载）；本机真实 Postgres、db 存储；结果与数字记进「验收记录」。对应验收 30。2026-10-08 完成，全部通过条件达标，结构、本步定的取舍与门禁结果见「实施记录 · 第 25 步」，数字见「验收记录」第 30 条。
 - [ ] 26. 部署与演练（2）：
   - `deploy/backup.sh` 先打包 `var/` 再 `pg_dump`；`deploy.sh` 的回滚检查（第 6、8 步）在本机实测，含健康检查失败后的自动回滚与两个 02 镜像之间的回滚。
   - 在本机 compose 上按 spec「切换步骤」完整走一遍：以文件存储部署 → 停 app → 导入（`--keep`）→ db 存储起 → 回退（导出、去掉开关）→ 文件存储下聊几轮 → `--resync` 切回；然后做一次含会话的备份恢复演练，备份时让一轮在途，恢复后让假企微接口重放最近的消息，确认那位客户恰好收到一次回复、已回复的不重复。演练结论用来验证开放问题 5 的裁决（留在 04）；复现了重复或丢失就写进「Open」并告诉 owner。
@@ -1388,6 +1388,19 @@ date`，origin/dev 这段时间没有新提交）。
 
   走查中另发现并修了三处走查脚本/环境本身的问题（esbuild 的 `__name` 辅助函数、headless 下 Notification 权限、demo 类会话跨进程持久化导致的测试卫生问题），都不是产品代码问题，详见「实施记录 · 第 24 步」。
 
+- 30 · **通过**。2026-10-08，`scripts/load/run.ts`，本机真实 Postgres（一次性容器，Apple M5 × 10 核）、db 存储、假企微接口与假模型（一个 `globalThis.fetch` 覆盖，照 `wecom.selftest.ts` 的写法）。按 spec「压测」一节的四个场景（50×10、429 风暴、5,000×300 预载、三者之外单独一个最小子进程量预载耗时）跑完，通过条件逐条：
+  - 每条客户消息恰有一次回复或一条记录在案的兜底：**通过**，50 个客户 × 10 轮 + 风暴后复测 1 轮，逐客户逐轮核对 0 处异常（已转人工客户之后的静默都对应 `handedOver=true`，是预期内的兜底，不是丢消息）。
+  - 每个（客户、轮次）至多一次 send_msg 组：**通过**，0 次重复。
+  - 库里的消息数等于内存：**通过**，场景跑完先 `flushSession` 全部会话、走完三段停机钩子（释放租户锁，不退出进程），另起一个独立子进程重新从库预载同一个租户，两条路径都是 100 个真实会话（50 个本次场景造的 + 50 个本机此前验证 `import-sessions` 流程时留下的、同一个租户里的旧测试会话，一并计入）、2,073 条消息，逐数相同。
+  - 转人工事件从提交到 SSE 送达 p99 ≤ 1 秒：**通过**，p99 = 2ms（40 个样本：5 次转人工 × 20 条 SSE 连接里各自收到的那些；「提交」时刻用脚本自己在同进程里挂一个只读的 `addListener` 旁听，几乎零延迟地拿到 `publish()` 的瞬间，真实 HTTP 客户端收到 SSE 帧的时刻减它）。
+  - 落库延迟 p99 ≤ 500ms：**通过**，p99 = 78ms（1,074 个样本，旁听 `onSessionSaved`「排进写队列」与 `onCommitted` 的 `conversation.changed`「提交」配对取时间差）。
+  - 事件循环延迟 p99 ≤ 200ms：**通过**，p99 = 3ms（8,529 个样本，每 50ms 一次 `setTimeout` 实测延迟，覆盖全程含风暴期间）。
+  - 结束时常驻内存比开始时增长不超过 20%：**通过**，常驻内存从 165.6MB 到 136.7MB（**下降** 17.5%，脚本带 `--expose-gc`、场景开始与结束各手动 GC 一次再量）。
+  - 风暴期间进程不崩，风暴之后 1 分钟内回到正常延迟：**通过**，进程全程存活；中间 60 秒让 30% 的模型请求返回 429（实测全程 565 次模型调用里 39 次收到 429，命中率换算到风暴窗口本身接近设定的 30%，日志里能看到 `llm-gate` 的退避重试，如「第 1 次重试，等待 639ms（上次状态 429）」）；基线（第 0 轮，50 个客户同时冷启动，本身就是 `LLM_MAX_INFLIGHT=8` 排队下的满载延迟）P50 = 15,573ms，风暴结束满 60 秒之后单独复测一轮（45 个未转人工的客户同时发消息）P50 = 18,454ms，判定口径是「不超过基线 + 10 秒」——两次都是同样规模的满载排队，这条看的是风暴有没有留下排队本身解释不了的额外衰退，没有。**本次没有单独打开 `LLM_HEDGE_MODEL`**（生产默认关闭）：按生产当前的默认配置跑，只验证了 `llm-gate` 的并发闸与退避重试，没有另外验证对冲路径，这是本步"选最小、最贴 spec 字面"的取舍（spec 的通过条件只列了「不崩」与「1 分钟内回到正常延迟」两条，没有单独要求对冲必须被触发）。
+  - 预载不被语句超时打断，耗时 ≤ 30 秒：**通过**，5,000 个会话、每个 300 条消息（1,500,000 条），以 `agent_app` 的默认连接启动（没有手动放宽任何超时，`longRunning` 事务按生产代码自带的 60 秒改写生效），独立测了两次：3,573ms 与 8,579ms，都远低于 30 秒上限。
+  - 另外看了一眼 plan 第 5 步带出的注意（`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引）：本次压测场景里假模型不调 `create_order`，orders、consents 两张表基本是空的，没有删除/清除场景（不在本步四个场景之内），测不出这两个索引在大数据量下的实际影响，仍然维持现状、没有加迁移——这条留给以后真有删除场景的压测或第 16 步保留期清理单独核实。
+  - 细节、取舍与门禁见「实施记录 · 第 25 步」。
+
 ### 第 23 步 · `admin.html` 两处（2026-10-08）
 
 - 只改两个文件：`public/admin.html`、`src/config/config.selftest.ts`；`load()` 与 `sigOf()` 一字未改（`server.selftest.ts` 抽取它们俩跑的那组断言零修改，照过）。另两条并行线（第 16 步隐私与保留期、第 20.2 步 J 页）当时都没有新提交并进 `origin/dev`（`git fetch` 后 `git merge origin/dev` 两次都是 `Already up to date`），收尾没有要合并的东西。
@@ -1523,6 +1536,29 @@ date`，origin/dev 这段时间没有新提交）。
 - 第 4 步审查带出的两处（都已按下面做了，owner 不同意可以改回）：
   - 已定 · **清除与删除连带删会话的任务（按验收 27 扩了删除范围）**。spec 写的是「删除范围与清除函数相同」，不变量 42 的表清单里也没有 `jobs`；但跟进的 `dedupe_key` 是 `followup:<会话>:<阶段>`，会话 id 就是 `wecom:<external_userid>`，验收 27 要求删除之后「库里搜不到它的 external_userid」，结束的任务还要再留 30 天，不删就过不了这条。现在的做法：约定与会话有关的任务 `payload` 必带 `sessionId`，`purge_conversation`、`erase_conversation` 一并删 `payload->>'sessionId' = p_id` 的任务（任何状态），`erase_conversation` 的返回值与审计多一项 `jobs`。owner 要改回原文的范围，就把这两条 DELETE 去掉、把验收 27 的「库里」收窄成不变量 42 的那几张表；或者改成不删、把任务的 `dedupe_key` 与 `payload` 改用不含会话 id 的引用。请 owner 把定下的写法补进 spec「数据库 · 清除与删除函数」与不变量 42。
   - 已定 · **`orders` 触发器多管了 `session_id`**。spec「数据库 · 触发器」只写了 `paid_at` 写一次；`agent_app` 对 `orders` 是整表 UPDATE，把已付订单的 `session_id` 置空或改挂，会话就按线索的保留期被提前清除，与 R20、不变量 6 矛盾。现在 `session_id` 非空之后只有 `agent_owner`（清除与删除函数、外键动作）能改，理由与验证见「实施记录 · 第 4 步」的「审查之后改的」第 1 条。请 owner 把这一句补进 spec 的触发器那一段。
+
+### 第 25 步 · 压测（2026-10-08）
+
+- **新文件只有 `scripts/load/`**（6 个，不进 `pnpm test`）：`run.ts`（主流程）、`fake-upstream.ts`（假企微 + 假模型，整体覆盖 `globalThis.fetch`，不起真实 HTTP server）、`console-client.ts`（脚本自己拿真实 HTTP 打本机 `server.ts` 的 console 登录 / SSE / 接手 / 回复）、`metrics.ts`（事件循环延迟采样、落库延迟旁听、百分位）、`gen-preload-fixtures.ts`（生成 5,000×300 的 `sessions.json`/`orders.json`）、`preload-timer.ts`（只做 `initConfigFromEnv` + `initSessionStore`、量「预载耗时」的独立子进程）。没有改任何产品代码。
+- **基础设施全部走生产命令行、幂等**：一次性容器 `pgload-02s25`（`pgvector/pgvector:pg17`，`127.0.0.1:55437`）；角色与库用 `deploy/db-init/roles.sql`（docker exec psql，已存在就跳过）；迁移用 `src/db/migrate.ts`；两个租户（`loadtest` 聊天场景、`loadtest-preload` 专门给 5,000×300 预载，分开是为了不让「预载耗时」被聊天场景自己造的会话稀释或反过来拖慢聊天场景的启动）用 `src/cli/tenant-create.ts`；配置用 `src/cli/import-config.ts`；三个后台账号（owner、agent1、agent2，两个 agent 给「顾问接手」用）用 `src/cli/user-create.ts`；5,000×300 的预载数据用 `src/cli/import-sessions.ts`（与真实上线切换同一条命令，批量写入＋读回比对在同一个长事务里，production 代码自带）。这几步全部「已存在/已一致就跳过」，脚本本身从检查容器是否在跑开始，第一次跑会自己从零建好；重跑只需要几秒钟。
+- **假企微 + 假模型用同一个 `globalThis.fetch` 覆盖**（照 `src/adapters/wecom.selftest.ts` 的写法，按 hostname 分流，不是起两个真实 HTTP server）：
+  - `qyapi.weixin.qq.com` → 假企微（`gettoken`/`kf/sync_msg`/`kf/send_msg`/`kf/send_msg_on_event`/`media/upload`/`kf/customer/batchget`），`sync_msg` 按简单的数字 cursor 分页，不需要「cursor 作废」那类场景。
+  - 选定的假模型主机名（`llm.fake.invalid`，不解析真实 DNS）→ `chat/completions` 按 2–8 秒均匀分布延迟应答（纯文本回复，不带 `tool_calls`：压测要的是负载特征，不是销售话术的语义正确性，模型侧的行为正确性已经由 eval 和其余自测覆盖）；风暴窗口内 30% 概率直接应答 429；`embeddings` 立即应答（不计入 2–8 秒分布，只用于启动时建语义索引）。
+  - `127.0.0.1`/`localhost` → 原样转给真的 `fetch`（脚本自己拿 HTTP 打本机起的 `server.ts`：console 登录、SSE、接手、人工回复，这是本机环回，不是外部服务）。
+  - 其余一律抛错——双重保险，真的连上外部网络会直接报错而不是悄悄发出去。
+  - 第一次跑漏了 `127.0.0.1` 这条分支：脚本自己调 `fetch` 登录 console 时也被这个覆盖接住，报「未预期的请求」，补上这条分支后正常。
+- **预载耗时单独量，不跟聊天场景共用进程**：`store.ts`、`src/config/source.ts` 的装载函数只能调一次（没有「卸载再重新装一次」的接口），`preload-timer.ts` 是一个干净的子进程，只做 `initConfigFromEnv`（db 配置模式）→ `configRuntime()` 取 `{db, tenantId, deps}` → 掐表 `initSessionStore(...)` → 打一行 JSON（`preloadMs`、`realSessions`、`messages`）就退出，不起 HTTP、不碰企微/模型。两次独立测得 3,573ms 与 8,579ms（后一次是冷启动，前一次是同一批数据热身之后再测，都远低于 30 秒）。
+- **压测场景（50×10）的设计**：50 个客户 id 用短名 `wmlc0`…`wmlc49`（会话 id `wecom:wmlc<i>`，落在「wm 之后十几个字符以内」的要求内）；每轮一句通用问需话术（10 句话术轮换）；前 5 个客户在第 2 轮（0 起）改发语料库里验证过的确定性紧急触发句「证件好像丢了」（`src/handoff/triggers.corpus.ts` 里的正例），走「这一轮不调模型」的确定性转人工路径；这 5 个里前 2 个由两个真实顾问账号（`agent1`/`agent2`）各自 `takeover` + `reply` 一句人工话术。20 条 console SSE 连接按 3 个账号轮流分布，全程保持打开（本身就是「20 个成员同时在线」这一条负载）。429 风暴在第 2 轮（0 起）跑完后触发，持续 60 秒；跑满 10 轮之后，等到风暴结束满 60 秒，再单独补一轮（45 个未转人工客户同时发消息）专门量「有没有回到正常延迟」。
+- **三类延迟都是外部旁听，没有改一行产品代码**：
+  - 转人工「提交到 SSE 送达」：脚本在同一个进程里对 `src/console-api/events.ts` 的 `addListener` 挂一个只读监听，`publish()` 调用它的那一刻（几乎就是提交那一刻，`relay` 是 `onCommitted` 的同步订阅者）记一个时间戳，按会话 id 存进 Map；真实 HTTP SSE 客户端收到对应事件帧的时刻减这个时间戳。
+  - 落库延迟：`src/store.ts` 导出的 `onSessionSaved`（改动同步排进写队列那一刻）与 `onCommitted` 的 `conversation.changed`（提交之后）各自按会话 id 开一个队列，一次提交覆盖了自上次提交以来「最早的一次排队」，两者相减。
+  - 事件循环延迟：每 50ms 排一个 `setTimeout`，比较实际触发时刻与预期时刻。
+  - 常驻内存：`NODE_OPTIONS=--expose-gc` 跑脚本，场景开始（启动完成后）与结束（跑完全部轮次、停机钩子跑完、独立核对子进程起之前）各手动 `global.gc()` 一次再读 `process.memoryUsage().rss`。
+- **「库里的消息数等于内存」的核对方式**：场景跑完先对 50 个会话逐个 `flushSession`，再直接调 `runShutdownHooks()`（**不**发 `SIGTERM`、**不**退出进程——发信号会让 `gracefulExit` 异步调 `process.exit()`，而我们还要在同一个进程里做收尾统计；`runShutdownHooks()` 本身就是停机钩子的执行者，跑完即释放租户锁、关连接池、停企微拉取，不附带退出）；主进程继续活着写结果，另起一个独立子进程（还是用 `preload-timer.ts`）重新从库预载同一个租户，比对两条独立路径算出的「真实会话数、消息数」。两边都是 100 个真实会话、2,073 条消息（50 个本次造的 `wmlc*` + 50 个本机此前手工验证 `import-sessions` 全量批量写入流程时留下的旧测试会话，同一个租户里，无害，一并计入）。
+- **429 风暴期间不单独验证对冲**：生产默认不开 `LLM_HEDGE_MODEL`，脚本按生产默认配置跑，只验证了 `llm-gate` 的并发闸（`LLM_MAX_INFLIGHT=8`）与退避重试（日志里能看到「第 1 次重试，等待 639ms（上次状态 429）」），没有另外打开对冲。spec「压测」通过条件只列了「风暴期间进程不崩」「风暴之后 1 分钟内回到正常延迟」两条，没有单独要求对冲必须被触发，这是本步「选最小、最贴 spec 字面」的取舍。
+- **plan 第 5 步带出的注意**（`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引）：看了一眼，本次压测场景里假模型不调 `create_order`，两张表基本是空的；本步的四个场景都不含删除/清除，测不出这两个索引在大数据量删除下的实际影响，维持现状、没有加迁移，留给以后真有删除场景的压测或第 16 步保留期清理单独核实。
+- **踩的两个坑**：① 租户名字段不一致——`tenant-create` 对「同名已存在但字段不同」报错退出，本机此前手工探路建过 `loadtest` 租户、名字写的是「压测租户」，脚本第一版传的是「压测聊天租户」，对不上；改成跟手工建的那次一致。② 账号口令——`user-create` 对已存在的邮箱「只加成员关系，不碰口令」，本机手工探路时这几个账号已经用 `LoadTest123!` 建过，脚本第一版另起了一个新口令常量，登录全部 401；改成同一个值。两处都不是产品代码问题，是脚本自己的状态管理没跟手工探路的历史对齐，复测之后不会再出现（脚本本身是幂等的）。
+- **门禁**：`format:check`、`lint`、`typecheck` 全绿；`pnpm test` 不带与带 `PG_TEST_URL=postgres://postgres:pgload@127.0.0.1:55437/postgres`（压测用的同一个一次性容器，跑完一并删除）都 `EXIT=0`；锁定套件 8 个文件零修改，`PREFIX sha256` 与第 1 步相同。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 两道黑名单扫描；`gitleaks stdin` 对该 diff 无发现。收尾 `git fetch -q origin && git merge origin/dev`：带回了第 24 步合并进 dev 的改动（`console/src/conversations/workbench.css`、`workbench.selftest.tsx`、`scripts/seed-demo.py`、plan.md 本身与走查截图），没有冲突，门禁合并后重跑过一遍。
 
 ## 交接记录
 
@@ -1769,3 +1805,10 @@ date`，origin/dev 这段时间没有新提交）。
 - 半成品：无。
 - 阻塞：无。
 - 下一步：对照 spec 当前全部验收标准逐条验证（第 28 步）；之后是第 25 步「压测」与第 26 步「部署与演练」。
+
+### 交接（2026-10-08，第 25 步）
+
+- 已完成：第 25 步「压测」（在独立 worktree 做的，没开分支以外的改动；开工时 dev 含第 1–24 步，收尾前合并了第 24 步合入 dev 带来的改动，没有冲突）。新增 `scripts/load/`（`run.ts`、`fake-upstream.ts`、`console-client.ts`、`metrics.ts`、`gen-preload-fixtures.ts`、`preload-timer.ts`），没有改任何产品代码。按 spec「压测」一节在本机真实 Postgres（一次性容器）上跑完 50×10 的聊天场景（含 5 次转人工、2 次顾问接手回复、20 条 console SSE 连接）、429 风暴（60 秒、30%）、5,000×300 的预载计时，全部 8 条通过条件都达标（详见「验收记录」第 30 条与「实施记录 · 第 25 步」），plan 第 25 步复选框已勾。
+- 半成品：无。
+- 阻塞：无。看了一眼 plan 第 5 步带出的 `orders`/`consents` 索引问题，这次场景数据量不够（两张表基本是空的、本步不含删除场景），测不出来，留给以后有删除场景的压测或第 16 步保留期清理单独核实，没有挂新的 Open。
+- 下一步：第 26 步「部署与演练」（`deploy/backup.sh`、`deploy.sh` 回滚检查的本机实测，完整走一遍切换步骤与备份恢复演练，装 `watch.sh` 的 cron 把告警端到端走一遍）；本步起的压测容器已删，不影响第 26 步另起自己的容器。
