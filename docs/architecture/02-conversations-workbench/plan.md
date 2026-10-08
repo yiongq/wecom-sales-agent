@@ -145,7 +145,7 @@
 - [x] 23. `admin.html` 两处（0.5）：列表 401 时弹登录框（在 `load()` 之外判断，`server.selftest.ts` 抽取的 `load()` 与 `sigOf()` 源码不变）；db 配置模式下顶部提示链到 J 页。对应验收 29 的这一句。2026-10-08 完成（分支 `feat/02-step23-admin-html`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 23 步」。
 - [x] 24. 02 走查种子与走查（1）：`scripts/seed-demo.py` 加 `--scenario console-ux-02`（设计系统 §10.0 第 5 条：14 个会话、A01 由小林接手、F01 的原因、三张订单）；7F3A 不走种子，由走查脚本经假企微接口和脚本化的 mock LLM 真跑出来（要有一轮价格护栏删句，才有 trace 与改写对照）。Playwright 浅色、深色各走一遍，截图存到 `walkthrough/`，含只用键盘的交还。对应验收 33。2026-10-08 完成，走查全部通过（32 张截图、axe 13 次扫描 0 处违规），结构、种子的两处额外补充（已成交客户要人工、紧急）、走查中发现并修掉的一处真实界面问题（J 页输入框字数压在「发送」按钮上）与三处环境问题见「实施记录 · 第 24 步」，结果见「验收记录」第 33 条。
 - [x] 25. 压测（1.5）：`scripts/load/run.ts` 按 spec「压测」一节（含 5,000 × 300 的预载）；本机真实 Postgres、db 存储；结果与数字记进「验收记录」。对应验收 30。2026-10-08 完成，全部通过条件达标，结构、本步定的取舍与门禁结果见「实施记录 · 第 25 步」，数字见「验收记录」第 30 条。
-- [ ] 26. 部署与演练（2）：
+- [x] 26. 部署与演练（2）：2026-10-08 本机 compose 演练过一遍，切换步骤、回滚检查（含健康检查失败后的自动回滚）、`backup.sh`/`watch.sh` 都通过；备份恢复演练复现了开放问题 5 说的重复回复（备份恰好落在「回复已送出、账本行还没落库」的不到 2 秒窗口时补发一次），owner 2026-10-09 定照原裁决办（见「Open」第 26 步那条与「上线清单」最后一条），本步勾上。告警用的是本机假 webhook，真实企微测试群机器人的端到端等 owner 给测试群地址后补（与第 17 步的外部拨测一起）。细节见「实施记录 · 第 26 步」「验收记录」第 31、32 条。
   - `deploy/backup.sh` 先打包 `var/` 再 `pg_dump`；`deploy.sh` 的回滚检查（第 6、8 步）在本机实测，含健康检查失败后的自动回滚与两个 02 镜像之间的回滚。
   - 在本机 compose 上按 spec「切换步骤」完整走一遍：以文件存储部署 → 停 app → 导入（`--keep`）→ db 存储起 → 回退（导出、去掉开关）→ 文件存储下聊几轮 → `--resync` 切回；然后做一次含会话的备份恢复演练，备份时让一轮在途，恢复后让假企微接口重放最近的消息，确认那位客户恰好收到一次回复、已回复的不重复。演练结论用来验证开放问题 5 的裁决（留在 04）；复现了重复或丢失就写进「Open」并告诉 owner。
   - 本机装上 `watch.sh` 的 cron，用一个测试群机器人把告警端到端走一遍。
@@ -194,7 +194,7 @@
 - [ ] 测试客服账号上实测企微额度与接口行为（开放问题 8），结论记进本文件
 - [ ] 真实模型回归作为上线前的固定步骤跑过一次（开放问题 10），结果记在私有笔记
 - [ ] 告警群与转人工通知群已建好，外部拨测已配（开放问题 14）
-- [ ] 开放问题 5 的恢复演练没有复现重复回复或丢消息（第 26 步）
+- [ ] 接第一个真实租户之前，另写 spec 把 `channel_inbox`（cursor、已处理集合、在途表搬进 PG，与客户消息同一事务）从 04 提前做完：第 26 步的恢复演练复现了重复回复（开放问题 5 的裁决：复现了就在接第一个真实租户之前另写 spec 提前做；owner 2026-10-09 确认照此办）
 
 ## 实施记录
 
@@ -1502,6 +1502,29 @@ date`，origin/dev 这段时间没有新提交）。
 - 走查脚本本身放在仓库外（scratchpad，随会话清理），仓库里只进 `scripts/seed-demo.py` 的改动、`console/src/conversations/workbench.css` 与 `workbench.selftest.tsx` 的改动、32 张截图与本节记录。
 - 门禁：四个门禁全绿；`pnpm test` 不带与带 `PG_TEST_URL`（本机一次性 `pgvector/pgvector:pg17` 容器 `pgwalk-02s24`，端口 55444，走查也用的这一个库，跑完已 `docker stop && docker rm`）都 `EXIT=0`；`workbench.selftest.tsx` 新增 1 条断言，100 条全部通过（两种配置相同，新断言是纯 CSS 源码读取，不碰 PG）；`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 不变；锁定套件 8 个文件与 `README.md` 对 `origin/dev`（含第 16 步合并之后的最新 `origin/dev`）的 `git diff` 为空。收尾前 `git fetch -q origin && git merge origin/dev`，带来第 16 步「隐私说明、敏感信息同意、保留期、行权删除」，`plan.md` 末尾两条「交接」各自追加、没有实质冲突；合并之后在本 worktree 用同一个一次性容器从零重新建租户、种子、跑了一遍完整走查与四个门禁，结果不变（见上「走查」与本条）。
 
+### 第 26 步 · 部署与演练（2026-10-08）
+
+- 本步不改产品代码（除本节记录外），只在本机 compose 上把 `deploy/deploy.sh`、`deploy/rollback-guard.sh`、`deploy/backup.sh`、`deploy/watch.sh` 与 spec「导入、导出与切换」的切换步骤真跑一遍。`deploy.sh` 按 ssh 远程部署设计，本机没有、也不开本机 sshd：改用一个丢弃 host 参数、把剩下的命令在本机当前 shell 跑的假 `ssh`（`RSYNC_RSH` 也指到它，rsync 的远程端本来就能在本机跑），`deploy.sh`/`rollback-guard.sh` 本身一行没改。远程脚本里两处要 root 权限、本机账号做不到的操作（`chown -R 1000:1000`、把 `watch.sh`/`backup.sh` 装到 `/usr/local/lib/<项目名>`）在假 `ssh` 里分别改送一次性 root 容器、改送 scratch 下的同构目录，只影响本机演练。独立 compose 项目名（`wecom-drill` 起手、`wecom-rb` 专测自动回滚）、独立数据卷与端口，没碰本机别的容器。
+
+- **切换步骤（spec 原文 1–5）全部真走了一遍**：① `bash deploy.sh <tag>`（真实 `git archive`、真实四个门禁、真实 `rsync`、真实 `docker build`/`migrate`/换容器）部署 02 的镜像，`SESSION_STORE` 不设：`/healthz` 的 `store.mode=file`，四个哈希 `promptHash=dd2c10ee4d42 toolsHash=64c16fc8f464 prefixHash=3ac7e7b91512 sopHash=55e5caa59580`（与第 15 步「实施记录」记的 `promptHash=dd2c10ee4d42…` 一致）。② `docker compose stop app` → `import-sessions --keep <keep目录>`：2 个真实会话、4 条消息、1 张订单，规范化 0 条，写了标记文件，原件进 `--keep`。③ `.env` 加 `SESSION_STORE=db`（配合 `import-config` 一起把 `CONFIG_SOURCE` 也设成 `db`）、`up -d app`：`store.mode=db`，四个哈希不变；登录 console（`user-create` 建的 owner 账号）查 `/api/console/status` 的 `conversations=2`，`GET /conversations/:id` 打开其中一个看到完整消息。④ 回退：`stop app` → `export-sessions --var /app/var`（删标记、合并回 JSON）→ 去掉 `SESSION_STORE=db`（留着 `CONFIG_SOURCE=db`）→ `up -d app`：`store.mode=file`；在这个状态下给一个会话的 `var/sessions.json` 直接追加 2 条消息，模拟"文件存储下聊了几轮"（偏离见下）。⑤ `import-sessions --resync` → 改回 `SESSION_STORE=db` → `up -d app`：打印"1 个会话追加了 2 条"，db 存储下该会话变成 4 条消息，`conversations` 仍是 2，四个哈希全程没变过。每步都是人工逐条执行、核对输出，没有脚本化无人值守串联；单次切换（`stop`→改配置→`up`，不含人工看输出的间隔）落在命令本身执行耗时的 15–20 秒量级，主要是 compose 健康检查轮询，线上脚本串联时预期接近这个下限。
+
+- **`deploy.sh` 回滚检查三类风险 + 两类放行，全部用真实 docker 验证**：本机真构建了一个 02 之前的镜像（`demo-v2` 标签，没有 `src/store/pg-backend.ts`，是 `deploy.sh` 自己要求的最早可部署版本）与两个 02 之后的镜像。对真的跑着的 drill 集群依次验证：有标记文件 + `.env` 为 `SESSION_STORE=db`、目标 02 之前 → 拒绝（3），打印的步骤带真实项目名、端口、从标记文件取的租户；在 console 上真把一条线路的 `priceFrom` 改价（`PATCH /api/console/catalog/route/...`，触发 02「报价快照」的条目版本），`/healthz` 的 `catalogVersioned` 变 `true` 后目标 02 之前 → 拒绝（4，三条风险全点名，不打印回文件存储那段，与 spec 一致）；目标换 02 之后的镜像 → 照常（0）。另在一个没有任何运行实例的隔离目录上测了"看不出来"分支（`/healthz`、库都连不上）→ 按有风险处理（4），与脚本自身的保守设计一致。**健康检查失败后的自动回滚**：用 `git commit-tree`/`update-ref` 等纯 plumbing 操作（没进任何 worktree 工作区）造了一个只把 `Dockerfile` 最后的 `CMD` 换成立刻 `process.exit(1)` 的提交与本地 tag（演练完已 `git tag -d`/`git branch -D` 删掉，没推送），四个门禁照样全绿（门禁不跑容器）；先部署一个好 tag 建好 `:current`，再部署这个坏 tag：换容器之后 10 次健康检查轮询全失败，脚本打印"容器可能起来即崩"，`guard_rollback "${NAME}:prev"`（`:prev` 是刚才的好镜像，02 之后，照常放行）→ 重新 `up -d --no-deps` 回 `:prev` → 健康检查通过、`revision` 变回好 tag，整条 `deploy.sh` 仍以退出码 1 收尾（"这次部署本身是失败的"，脚本原文如此）。
+
+- **`deploy/backup.sh` 实测一次备份产物完整**：本机真实 `agent_owner`/`agent_app` 角色、真实 `pg_dump -Fc` + `pg_dumpall --globals-only`、真实 `age` 加密（一次性生成的演练密钥对，只在 scratchpad）、真实 `var/` 打包；脚本自己的校验步骤（`pg_restore --list` 核对 RLS 表的 TABLE DATA、`sop_versions`/`catalog_items` 非空）真的跑通。
+
+- **验收 31 的含会话备份恢复演练**：本机起一个纯 node 写的"假企微接口"（自签证书 https，只在 scratchpad，不进仓库，`NODE_TLS_REJECT_UNAUTHORIZED=0` 跳过校验），接 `gettoken`/`kf/sync_msg`/`kf/send_msg` 等几个接口，三个客户（A、B、C）经它真走了一遍"客户发消息 → 引擎 → 企微发送"的完整链路（`LLM_MOCK=1`）。给客户 B 的第一次 `send_msg` 人为挂 15 秒延迟（模拟"发送中"），延迟期间跑 `backup.sh`：`var/` 快照里 B 的消息还在在途表（`wecom-cursor.json` 的 `pending`），`pg_dump` 快照里 B 的回复**正文**已经写进 `messages`（`handleMessage` 落库早于网络调用那一步），但发送账本（`outbound_sends`）**还没有这一行**（账本行按「分到 seq 再落库，上限 2 秒」批量写，备份跑得比它快）。恢复到一个独立的新集群（复用同一个 02 镜像，独立数据卷）：`/healthz` 的四个哈希、`store.mode=db`、`catalogVersioned`（改价之后备份，恢复后仍 `true`）都与原集群一致；恢复时刻 `conversations=4`、`messages=10`、`orders=1`，与源库逐项相同；随机抽 3 个会话（A、C、以及切换步骤导入的 `wmDrillA`）的消息逐字节与原库相同。客户 A（备份时已完整收到回复、账本已落库）：恢复重启后应用没有补发，发送记录全程只有 1 条——「已回复过的消息不重复回复」成立。客户 B（备份正卡在账本还没落库那一刻）：重启日志打「重放上次停机时未处理完的 1 条客户消息」→「这句的回复已生成、没有送出，原样重发（不再跑模型）」，真的又发了一次（新 `msgid`，不是原 `msgid` 的重试）。**这正是本文件此前「上线清单」最后一条、R7 开放问题 5 裁决原文已经预判的那条窄窗口风险（"账本行在落库之后才有，备份恰好落在回复已送出、账本行还没落库的那一刻时会补发一次，与崩溃丢失自上次成功提交以来的改动同一口径"）——演练把它真实复现了一次，不是新发现**：客户 B 在这次演练里从企微的角度收到了两条内容相同的回复，不是「恰好一次」。另起一个没有人为延迟的客户 C 单独验证：没有在途消息时备份恢复之间没有多余重放。见「Open」。
+
+- **`watch.sh` 的四类告警，三类真实复现、一类受本机环境限制**（本机假 webhook，纯 http，记收到的内容）：健康检查——`stop app` 后连续 3 次（`WATCH_NOW` 模拟相邻分钟）收到「健康检查连续 3 分钟失败」，`up -d app` 恢复后连续 3 次收到「已恢复」；磁盘——`hdiutil` 起一个 64MB 本机 ramdisk 当 `DISK_PATHS` 额外挂载点，写到 90% 收到「磁盘使用率 90%」，清空回 3% 收到「已恢复：磁盘使用率回到 80% 以下」；备份——把真实 `backup.sh` 写的 `last-success` 配合 `WATCH_NOW` 推到 27 小时前收到「上次成功的备份是 27 小时前」，重新跑一次 `backup.sh` 后收到「已恢复：备份成功」；重启风暴——`docker kill` 容器两次想触发 `unless-stopped` 的自动重启好推高 `RestartCount`，但本机 colima 的 docker 在容器被 kill 之后没有自动重启（`Restarting=false`，要手动 `docker start`），这一类没能用真实崩溃复现，不是产品问题（这段逻辑已经被 `ops.selftest.ts` 的假 docker 覆盖得很细：10 分钟内重启 2 次、30 分钟没重启、容器重建不算），记在这里供参考。另外发现一处无害的 stderr 噪音：colima 的 docker 卷挂载点只在 VM 内部存在，本机 `df` 查不到，脚本的磁盘检查 `awk` 在空输出上报 `trying to access out of range field -1`；`[[ "$pct" =~ ^[0-9]+$ ]] || continue` 照常跳过这条，不影响告警判断与退出码，只在"从非 Linux 宿主直接跑这个脚本"时出现（线上是真实 Linux 服务器不会碰到），没有改脚本。
+
+- **偏离**（spec「切换步骤」原文第 4 步用"文件存储下聊几轮（假企微接口或网页模拟器）"验证 `--resync`；本步在这一处改成直接追加 `var/sessions.json`）：网页模拟器的会话 id 是 `sim-` 前缀、属于 demo 类，永远不会被 `import-sessions` 当真实会话（`isDemoClassId`），没法用来延续一个已导入的真实会话；要在文件模式下"继续聊"同一个真实客户只能走真企微或假企微接口。`--resync` 的合并/推进/作废逻辑本身已经被 `store.selftest.ts` 的 xfer 子进程链用更丰富的夹具覆盖得很细，这一步只是要在"本机真实 compose、真实 CLI"的链路上把它跑一遍，直接在文件存储下手工追加两条消息（内容与落盘形状与真实聊天产物相同）达到同样的验证目的；备份恢复那一步的"聊几轮"则确实接了假企微接口（见上）。
+
+- 演练用的两个 git 对象（一个"02 之前镜像没有新代码"的对照 tag `demo-v2`、一个"健康检查失败"的临时 tag/分支）与全部 `.env*`、假企微/假 webhook 脚本、自签证书、age 密钥对都只在本机 scratchpad 或演练完即删的临时 tag/分支，没有进任何提交、没有推送；本机 compose 的项目、数据卷、镜像、网络在演练结束后已全部 `down -v`/`rmi`/`network rm` 清理，`docker ps -a` 核对过干净。
+
+- 门禁：四个门禁全绿（本步没碰产品代码，只改了本文件与 `docs/architecture/02-conversations-workbench/plan.md`）；`pnpm test` 不带与带 `PG_TEST_URL`（本机一次性 `pgvector/pgvector:pg17` 容器，端口 55445，跑完已停删）都全绿，PASS 行数与第 24 步相同（没加新自测）；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 不变。
+
+- 31 · **未通过（在途客户恰好一次那一句），按开放问题 5 的裁决处理（owner 2026-10-09 确认）**：02 接受这个窄窗口，接第一个真实租户之前另写 spec 把 `channel_inbox` 提前（「上线清单」最后一条）；其余各句通过。恢复到新集群：`/healthz` 四个哈希、`store.mode`、`catalogVersioned` 与原集群一致；`conversations=4`、`messages=10`、`orders=1` 与源库逐项相同；随机抽的 3 个会话消息逐字节相同；没有在途的客户（A、C）重启后不补发、不丢；唯一一个备份时恰好卡在"账本行还没落库"（< 2 秒窗口）那一刻的在途客户（B）重启后收到了两条内容相同的回复，不是「恰好一次」。
+- 32 · **本机部分通过**（线上切换是第 27 步，由 owner 执行）。切换步骤 1–5 全部走通：四个哈希全程不变、db 存储下 `conversations` 与导入数持平、console 能打开导入的会话、`--resync` 把回退期间追加的消息正确合并回库；停机时长（人工逐条执行、非脚本串联）落在 15–20 秒量级。回滚检查：有标记文件、`.env` 为 `SESSION_STORE=db`、`catalogVersioned=true` 三类风险单独与叠加都正确拒绝并打印步骤，两个 02 镜像之间与「看不出来」时的默认从严都正确；健康检查失败后的自动回滚全链路（真实换容器失败 → 自动调用回滚检查 → 回退到 `:prev` → 健康检查通过）真实复现一次。细节见「实施记录 · 第 26 步」。
+
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题的答复也记在这里）
@@ -1555,6 +1578,7 @@ date`，origin/dev 这段时间没有新提交）。
 - 第 4 步审查带出的两处（都已按下面做了，owner 不同意可以改回）：
   - 已定 · **清除与删除连带删会话的任务（按验收 27 扩了删除范围）**。spec 写的是「删除范围与清除函数相同」，不变量 42 的表清单里也没有 `jobs`；但跟进的 `dedupe_key` 是 `followup:<会话>:<阶段>`，会话 id 就是 `wecom:<external_userid>`，验收 27 要求删除之后「库里搜不到它的 external_userid」，结束的任务还要再留 30 天，不删就过不了这条。现在的做法：约定与会话有关的任务 `payload` 必带 `sessionId`，`purge_conversation`、`erase_conversation` 一并删 `payload->>'sessionId' = p_id` 的任务（任何状态），`erase_conversation` 的返回值与审计多一项 `jobs`。owner 要改回原文的范围，就把这两条 DELETE 去掉、把验收 27 的「库里」收窄成不变量 42 的那几张表；或者改成不删、把任务的 `dedupe_key` 与 `payload` 改用不含会话 id 的引用。请 owner 把定下的写法补进 spec「数据库 · 清除与删除函数」与不变量 42。
   - 已定 · **`orders` 触发器多管了 `session_id`**。spec「数据库 · 触发器」只写了 `paid_at` 写一次；`agent_app` 对 `orders` 是整表 UPDATE，把已付订单的 `session_id` 置空或改挂，会话就按线索的保留期被提前清除，与 R20、不变量 6 矛盾。现在 `session_id` 非空之后只有 `agent_owner`（清除与删除函数、外键动作）能改，理由与验证见「实施记录 · 第 4 步」的「审查之后改的」第 1 条。请 owner 把这一句补进 spec 的触发器那一段。
+- 第 26 步带出（2026-10-08；owner 2026-10-09 已定，见末句）：**恢复演练复现了重复回复**。细节、复现步骤、数字见「实施记录 · 第 26 步」「验收记录」第 31 条。这个窗口在「实施记录 · 第 12 步」的「注意（第 26 步）」里已经写过（账本行在落库之后才有，备份恰好落在「回复已送出、账本行还没落库」的那一刻时会补发一次）；本步第一次真实跑出来：窗口 < 2 秒（账本写入的上限），命中时客户收到两条内容相同的文字回复（多占一次企微 48 小时 / 5 条的发送额度，不是错误信息、不是资金类错误），没命中这个窗口的客户（A、C）不受影响。开放问题 5 的裁决（owner 2026-10-02）写着「演练里复现了重复回复或丢消息，就在接第一个真实租户之前另写 spec 提前做」。**已定（owner 2026-10-09）：照原裁决办**——02 接受这个窄窗口（demo 没有真实租户，后果只是多发一条相同的话），验收 31 记「未通过、按开放问题 5 的裁决处理」；「上线清单」加阻塞项：接第一个真实租户之前另写 spec 把 `channel_inbox` 提前。不收紧账本落库的 2 秒上限（只降概率、不治本），不在 02 里提前做。
 
 ### 第 25 步 · 压测（2026-10-08）
 
@@ -1834,3 +1858,10 @@ date`，origin/dev 这段时间没有新提交）。
 - 半成品：无。
 - 阻塞：无。看了一眼 plan 第 5 步带出的 `orders`/`consents` 索引问题，两组场景数据量都不够（两张表基本是空的、本步不含删除场景），测不出来，留给以后有删除场景的压测或第 16 步保留期清理单独核实，没有挂新的 Open。
 - 下一步：第 26 步「部署与演练」（`deploy/backup.sh`、`deploy.sh` 回滚检查的本机实测，完整走一遍切换步骤与备份恢复演练，装 `watch.sh` 的 cron 把告警端到端走一遍）；本步起的压测容器（初测与两组复测各自的）都已删，不影响第 26 步另起自己的容器。
+
+### 交接（2026-10-08，第 26 步）
+
+- 已完成：第 26 步「部署与演练」的本机部分（分支 `feat/02-step26-deploy-drill`，没 push；开工时 dev 含第 1–24 步）。本机 compose 真跑了一遍切换步骤（文件 → db → 回退 → `--resync` 回 db）、`deploy.sh` 回滚检查三类风险 + 两类放行 + 健康检查失败后的自动回滚、`backup.sh`、`watch.sh` 四类告警里的三类（健康检查、磁盘、备份过期；重启风暴受本机 colima 限制没能用真实崩溃复现）。细节、数字、哈希见「实施记录 · 第 26 步」，结果见「验收记录」第 31、32 条。
+- 半成品：无（本步没有要继续写的代码；本步没改产品代码，只改了 `plan.md`）。
+- 阻塞：无。验收 31 的备份恢复演练复现了重复回复（不到 2 秒的窗口），owner 2026-10-09 定照开放问题 5 的原裁决办：02 接受，接第一个真实租户之前另写 spec 把 `channel_inbox` 提前（「上线清单」最后一条）。
+- 下一步：第 26 步已勾。真实企微测试群机器人的告警端到端等 owner 给测试群地址后补；第 27 步「demo 线上切换」由 owner 在线上执行。
