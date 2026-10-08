@@ -528,12 +528,14 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
       spec.kind === 'retention_purge' && spec.dedupeKey === `retention_purge:${ymd}` && runner.sessionIdOf(spec.payload) === null,
       json(spec),
     );
-    // 清理的执行体（第 16 步之前）：标 done，并在同一个事务里排下一天的（每小时的补排之外的那一条链）
+    // 清理的执行体（第 16 步）：真的跑一次（这个库里没有候选、没有过期 trace/任务），标 done，并在同一个事务里排下一天的
+    // （每小时的补排之外的那一条链）。now 传真实时钟：SQL 函数要求 p_now 与库的时钟相差不超过 5 分钟，job.runAt 仍是「计划」的
+    // 那个未来时刻（tomorrow330），enqueueNext 据 max(now, job.runAt) 算，还是会排到后天 3:30
     const tomorrow330 = at(1, 3, 30);
-    const purged = await runRetentionPurgeJob({ dedupeKey: spec.dedupeKey, runAt: new Date(tomorrow330) } as JobRow, tomorrow330 + 1000);
+    const purged = await runRetentionPurgeJob({ dedupeKey: spec.dedupeKey, runAt: new Date(tomorrow330) } as JobRow, Date.now());
     const next2 = purged.status === 'done' ? purged.enqueueNext?.[0] : undefined;
     check(
-      '清理：到点的执行体标 done，带上下一天 3:30 的那一个',
+      '清理：到点的执行体真的跑一次、标 done，带上下一天 3:30 的那一个',
       purged.status === 'done' && next2?.runAt === at(2, 3, 30) && next2.dedupeKey === retentionPurgeSpec(tomorrow330 + 1000).dedupeKey,
       json(purged),
     );
