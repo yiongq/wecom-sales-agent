@@ -622,13 +622,14 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       action: 'order.mark_paid',
       targetType: 'order',
       targetId: order.id,
-      diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
+      diff: { shortId: shortIdOf(order.sessionId ?? ''), totalPrice: order.totalPrice },
     };
-    queueAudit(order.sessionId, payAuditActor, payAuditEntry);
+    // 会话已被清除或删除（第 16 步之后才会出现）：queueAudit 传空串会落到独立短事务那条路，awaitCommit 当作已提交
+    queueAudit(order.sessionId ?? '', payAuditActor, payAuditEntry);
     // 付款确认同样在提交之后才对客户发（不变量 20）：真超时（仍可能提交）照发；poisoned / 冲突（不会再提交）
     // 不调 notifyPaid、回 503，和 markPaidByAdvisor 的 awaitCommit 同一套（第 15 步审查第 2 条）
     try {
-      await awaitCommit(order.sessionId);
+      if (order.sessionId !== undefined) await awaitCommit(order.sessionId);
     } catch (e) {
       const refused = legacyRefusal(c, e);
       if (refused) return refused;
