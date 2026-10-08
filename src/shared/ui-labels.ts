@@ -225,6 +225,26 @@ export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
   not_found: { title: '没有这项内容：可能已被删除或地址写错了', next: '回到列表', place: 'whole', tone: 'neutral', action: 'back' },
   /** 02 spec「后台页面」J 页：会话过了保留期、被删除或不是本租户的（第 19 步，占位的 J 页先接住这一个错误码） */
   conversation_not_found: { title: '这个会话已经不在了', next: '回到列表', place: 'whole', tone: 'neutral', action: 'back' },
+  // 02 第 20.2 步新增（J 页：接手、交还、人工回复、订单动作）。assigneeName／closesAt／remaining／status 取自
+  // ApiError 的同名字段（服务端 mapError 填的），不是服务端的 detail（不变量 8）
+  assigned_to_other: {
+    title: (b) => `${b.assigneeName ?? '别人'}正在处理这个会话`,
+    next: null,
+    place: 'inline',
+    tone: 'neutral',
+  },
+  not_assignee: { title: '只有接手人本人能做这件事', next: null, place: 'inline', tone: 'caution' },
+  consent_declined: { title: '客户没有同意，不能交给AI', next: null, place: 'inline', tone: 'neutral' },
+  send_window_closed: { title: '企微超过48小时没有新消息，这条发不出去了', next: null, place: 'inline', tone: 'caution' },
+  send_quota_exhausted: { title: '这一轮已经发满5条，等客户回复后才能再发', next: null, place: 'inline', tone: 'caution' },
+  order_state: {
+    title: (b) => (b.status === 'unconfirmed' ? '还没确认价格，不能确认收款' : '这个操作对当前订单状态不适用'),
+    next: null,
+    place: 'inline',
+    tone: 'caution',
+  },
+  store_file_mode: { title: '这项内容只在数据库模式下可用', next: null, place: 'inline', tone: 'neutral' },
+  store_lagging: { title: '已生效，记录稍后保存', next: null, place: 'inline', tone: 'neutral' },
   conflict: { title: '刚才有人同时在改', next: '刷新后重来', place: 'banner', tone: 'danger', action: 'refresh' },
   bad_request: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },
   unsupported_media_type: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },
