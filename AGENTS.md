@@ -36,6 +36,19 @@ wecom-sales-agent is an AI sales agent for WeCom Customer Service (微信客服)
 - Tests are regression protection, not scaffolding. Commit only durable tests for user-visible behavior, documented contracts, persistence/migration, concurrency, recovery and security boundaries.
 - Prefer the smallest correct change; add no abstraction or dependency without a real need.
 
+## Checks every change must pass before a PR
+
+These came out of phase 02; CI enforces most of them, so catch them locally first.
+
+- Locked suites stay byte-identical: `src/engine.selftest.ts`, `src/dejargon.selftest.ts`, `src/engine-holiday.selftest.ts`, `src/price-guard.selftest.ts`, `src/llm.selftest.ts`, `src/server.selftest.ts`, `src/adapters/wecom.selftest.ts` and `eval/cases.json`. Never edit them, not even to satisfy the type checker; change your code instead. `pnpm -s test:locked` runs them on a fixed clock (some cases hard-code dates).
+- Never write a local absolute path (`/Users/…`, `/private/tmp/…`, a worktree path) into any repo file, plan and handoff notes included: CI's public-boundary blacklist rejects the PR, and force-pushing a rewrite still leaves the old commits visible in the PR. Check with `git diff origin/dev -U0 | grep -nE '^\+.*(/Users/|/private/tmp)'`.
+- Fake WeCom ids in tests stay short (`wm` plus at most 13 characters); longer ones match the blacklist. Check with `git diff origin/dev -U0 | grep -oE 'wm[A-Za-z0-9_]{14,}'`.
+- Scan the whole PR range with gitleaks before opening a PR: `gitleaks git --redact --log-opts="-m origin/dev..HEAD" .` (CI also scans GitHub's merge commit). A fake test secret gets an inline `// gitleaks:allow` plus a fingerprint with a reason in `.gitleaksignore`.
+- Real-Postgres tests: set `PG_TEST_URL` to a disposable `pgvector/pgvector:pg17` container started for the run, and remove it afterwards. Never touch other containers on the machine.
+- Run mutation tests in an isolated copy of the repo, never in place: hooks run the gates on the working tree.
+- Wrap anything that can hang in a timeout (macOS has no `timeout`: `perl -e 'alarm N; exec @ARGV' …`), and leave no background processes, browsers or containers behind.
+- Production servers are off limits unless the owner asks for that specific operation in the current session.
+
 ## Working with more than one agent
 
 Any two sessions forget each other — a different agent, or the same agent in a new window — so everything that matters lives in files:
