@@ -316,14 +316,15 @@ interface KfMessage {
   send_time: number;
   origin: number; // 3=客户发来，4=系统，5=客服人员/接口发出
   msgtype: string;
-  text?: { content: string };
+  // menu_id：客户点了 msgmenu 的某个按钮时企微发来的是一条普通文本消息，按钮 id 在这里（02 第 16 步，官方文档「接收消息」
+  // developer.work.weixin.qq.com/document/path/94670；consentMenuButtonId 编码的 category:decision），不是单独的事件类型
+  text?: { content: string; menu_id?: string };
   event?: {
     event_type?: string; // 如 enter_session（客户进入会话）、msg_send_fail（消息发送失败）
     welcome_code?: string; // 进入会话事件专用，20s 内单次有效，用于 send_msg_on_event 发欢迎语
     external_userid?: string;
     fail_msgid?: string; // msg_send_fail 专用：发送失败的那条的 msgid（我们随 send_msg 下发的）
     fail_type?: number; // msg_send_fail 专用：4 超过 48 小时、6 超过 5 条，其余见企微文档
-    id?: string; // msgmenu_click 专用：点击的按钮 id（02 第 16 步，consentMenuButtonId 编码的 category:decision）
   };
 }
 
@@ -918,25 +919,31 @@ function isSendFail(msg: KfMessage): boolean {
   return msg.origin === 4 && msg.msgtype === 'event' && msg.event?.event_type === 'msg_send_fail';
 }
 
-/** 客户点了同意菜单（02 第 16 步，R23）：企微的 msgmenu_click 事件，event.id 是 consentMenuButtonId 编码的 category:decision */
+/**
+ * 客户点了同意菜单（02 第 16 步，R23）：企微发来的是一条普通文本消息，按钮 id 在 text.menu_id（官方文档「接收消息」，
+ * 没有单独的 msgmenu_click 事件——此前按事件类型判是按文档标题猜的，没有真实测试号核对，这次照原文改正）
+ */
 function isMenuClick(msg: KfMessage): boolean {
-  return msg.msgtype === 'event' && msg.event?.event_type === 'msgmenu_click';
+  return msg.msgtype === 'text' && msg.text?.menu_id != null;
 }
 
 /**
- * 客户点了同意菜单：按 event.id 解析出类别与决定，记一条同意记录（已经有结论的类别忽略，防止旧菜单被重复点）。
+ * 客户点了同意菜单：按 text.menu_id 解析出类别与决定，记一条同意记录（已经有结论的类别忽略，防止旧菜单被重复点）。
  * 「不同意」转人工且发一句确认（kind='notice'，不占 AI 回复的身份）；「同意」不转人工、不用额外回一句。
+ * 这条点击消息本身不是客户话语，不进会话记录、不进引擎——menu_id 已经是结构化的决定，没有要模型理解的内容；
+ * 只有「不同意」时才追加一条 agent 消息（下面的确认回复），客户这次点击在会话里的留痕就是那条确认回复本身（最小做法）。
  * 没有会话（客户只点过菜单、从没发过消息，几乎不会发生）时什么都不做
  */
 async function handleMenuClick(cfg: WecomConfig, msg: KfMessage): Promise<void> {
   const notice = currentPrivacyNotice();
   if (!notice) return;
-  const parsed = parseConsentMenuId(msg.event?.id);
+  const parsed = parseConsentMenuId(msg.text?.menu_id);
   if (!parsed) return;
-  const uid = msg.event?.external_userid || msg.external_userid;
+  const uid = msg.external_userid;
   const s = uid ? getSession(SESSION_PREFIX + uid) : undefined;
   if (!s) return;
-  const applied = applyConsentDecision(s, parsed.category, parsed.decision, msg.event?.id ?? '', notice.version);
+  const evidence = msg.text?.content || msg.text?.menu_id || '';
+  const applied = applyConsentDecision(s, parsed.category, parsed.decision, evidence, notice.version);
   if (!applied) return;
   saveSession(s);
   if (parsed.decision !== 'declined') return;
@@ -1293,10 +1300,11 @@ async function drainMessages(cfg: WecomConfig, syncToken?: string): Promise<void
         if (markHandled(msg.msgid) && msg.event?.fail_msgid) onSendFail(msg.event.fail_msgid, Number(msg.event.fail_type ?? 0));
         continue;
       }
-      // 同意菜单的点击（02 第 16 步）：不是客户消息，不进在途表（丢了至多少记一次同意，不影响对话主链路）
+      // 同意菜单的点击（02 第 16 步）：普通文本消息但带 menu_id，不当成客户话语处理、不进在途表
+      // （丢了至多少记一次同意，不影响对话主链路）
       if (isMenuClick(msg)) {
         if (markHandled(msg.msgid)) {
-          const uid = msg.event?.external_userid || msg.external_userid || msg.msgid;
+          const uid = msg.external_userid || msg.msgid;
           enqueueForUser(uid, () => handleMenuClick(cfg, msg));
         }
         continue;

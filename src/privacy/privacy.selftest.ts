@@ -131,7 +131,9 @@ const sid = (tag: string): string => `wecom:wmP${tag}${(seq++).toString(36)}`;
 }
 
 // ---------------------------------------------------------------------------------------------
-// 4. applyConsentDecision：granted 不转人工；declined 转人工（kind=consent）且不能交还；重复点击忽略
+// 4. applyConsentDecision：granted 不转人工；declined 转人工（kind=consent）且不能交还；
+//    declined 不是终态——客户点旧菜单的「同意」能解除（spec「不同意……之后客户点了『同意』才解除」）；
+//    granted/withdrawn 是终态；同一个决定重复点当空操作
 // ---------------------------------------------------------------------------------------------
 {
   const s = getOrCreateSession(sid('dec'), 'wecom');
@@ -149,13 +151,26 @@ const sid = (tag: string): string => `wecom:wmP${tag}${(seq++).toString(36)}`;
   }
   check('release()（交还 AI）在 consent 被拒时抛 ConsentDeclinedError', threw instanceof ConsentDeclinedError);
 
-  // 同一个类别再点一次（旧菜单的重复点击）：忽略，不重复记、不重复 enterHandoff
+  // 同一个类别再点「不同意」（旧菜单的重复点击）：忽略，不重复记、不重复 enterHandoff
   const genBefore = s.handoff?.at;
-  const appliedAgain = applyConsentDecision(s, 'minor', 'granted', 'late-click', 2);
+  const appliedSame = applyConsentDecision(s, 'minor', 'declined', 'late-click-same', 2);
   check(
-    '已经有结论的类别再点（旧菜单重复点击）：忽略，结论不变',
-    appliedAgain === false && s.consent.minor === 'declined' && s.handoff?.at === genBefore,
+    '同一个决定重复点（旧菜单重复点「不同意」）：忽略，结论不变、不重复转人工',
+    appliedSame === false && s.consent.minor === 'declined' && s.handoff?.at === genBefore,
   );
+
+  // 客户之后回去点同一张旧菜单的「同意」：declined → granted 放行，解除锁定（02 第 16 步审查：此前永久锁死在
+  // declined，这里是修复点）；企微的菜单消息留在聊天记录里、按钮本身不会失效，不用重发一条新菜单（最小做法，见
+  // consent.ts 的文档注释与 plan「Open」）
+  const appliedGrant = applyConsentDecision(s, 'minor', 'granted', 'late-click-granted', 2);
+  check('不同意 → 同意：declined → granted 放行', appliedGrant === true && s.consent.minor === 'granted');
+  check('不同意 → 同意之后：consentDeclined 为 false，能正常交还', !consentDeclined(s));
+  release(s.id, sharedActor());
+  check('不同意 → 同意之后：release() 不再抛 ConsentDeclinedError，真的交还了', s.handedOver === false);
+
+  // granted 是终态：再点不同意、再点同意都不改
+  const appliedBack = applyConsentDecision(s, 'minor', 'declined', 'too-late', 2);
+  check('granted 是终态：之后再点「不同意」不改', appliedBack === false && s.consent.minor === 'granted');
 }
 {
   const s = getOrCreateSession(sid('grant'), 'wecom');
@@ -163,6 +178,13 @@ const sid = (tag: string): string => `wecom:wmP${tag}${(seq++).toString(36)}`;
   applyConsentDecision(s, 'health', 'granted', 'health:granted', 3);
   check('点「同意」：consent 记 granted，不转人工', s.consent.health === 'granted' && !s.handedOver);
   check('点「同意」之后：consentDeclined 为 false，能正常交还', !consentDeclined(s));
+}
+{
+  // withdrawn 是终态：之后客户又点菜单（旧菜单还留着）也改不了，只能靠真人判断是否需要别的补救措施
+  const s = getOrCreateSession(sid('wd-terminal'), 'wecom');
+  s.consent = { health: 'withdrawn' };
+  const applied = applyConsentDecision(s, 'health', 'granted', 'too-late', 5);
+  check('withdrawn 是终态：之后点「同意」不改', applied === false && s.consent.health === 'withdrawn');
 }
 
 // ---------------------------------------------------------------------------------------------

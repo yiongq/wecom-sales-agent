@@ -86,8 +86,13 @@ export function awaitingConsent(session: Session, category: SensitiveCategory): 
 }
 
 /**
- * 客户点了企微菜单：记一条同意记录（已经有结论的类别忽略，防止旧菜单被重复点击改写结论）。
- * 「不同意」转人工（kind='consent'）且不能交还 AI（ConsentDeclinedError 已按 consent 的取值判）；「同意」不转人工。
+ * 客户点了企微菜单：记一条同意记录。「不同意」转人工（kind='consent'）且不能交还 AI（ConsentDeclinedError 已按
+ * consent 的取值判，见 takeover.ts 的 consentDeclined）；「同意」不转人工。
+ * 「不同意」不是终态（spec「不同意……这个会话不能再交还 AI……之后客户点了『同意』才解除」）：declined → granted 放行，
+ * 解除之后 consentDeclined 对这个类别不再成立，交还就不再被挡。granted、withdrawn 是终态，改不了；同一个决定重复点
+ * （declined→declined、granted→granted）当空操作，不重复记、不重复转人工。
+ * 「怎么再给客户第二次点『同意』的机会」spec 没写清——企微的菜单消息一直留在聊天记录里、按钮本身不会失效，
+ * 客户随时能回去点旧菜单的「同意」；选这个最小做法（不用再发一条新菜单），已写进 plan「Open」请 owner 确认。
  * 调用方（wecom.ts）负责把「不同意」的确认回复发给客户、写进会话
  */
 export function applyConsentDecision(
@@ -98,7 +103,7 @@ export function applyConsentDecision(
   noticeVersion: number,
 ): boolean {
   const decided = session.consent?.[category];
-  if (decided === 'granted' || decided === 'declined' || decided === 'withdrawn') return false;
+  if (decided === 'granted' || decided === 'withdrawn' || decided === decision) return false;
   session.consent = { ...session.consent, [category]: decision };
   queueConsents(session.id, [{ category, decision, noticeVersion, evidence, at: Date.now() }]);
   if (decision === 'declined') {

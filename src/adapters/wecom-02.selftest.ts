@@ -51,7 +51,7 @@ interface FakeMsg {
   send_time: number;
   origin: number;
   msgtype: string;
-  text?: { content: string };
+  text?: { content: string; menu_id?: string };
   event?: { event_type: string; welcome_code?: string; external_userid?: string; id?: string };
 }
 const serverLog: FakeMsg[] = [];
@@ -125,8 +125,11 @@ function enterEvent(uid: string, welcomeCode: string): FakeMsg {
     event: { event_type: 'enter_session', welcome_code: welcomeCode, external_userid: uid },
   };
 }
-/** 客户点了同意菜单的某个按钮（02 第 16 步，R23） */
-function menuClickEvent(uid: string, buttonId: string): FakeMsg {
+/**
+ * 客户点了同意菜单的某个按钮（02 第 16 步，R23）：企微发来的是一条普通文本消息，按钮 id 在 text.menu_id
+ * （官方文档「接收消息」，没有单独的 msgmenu_click 事件；content 是按钮文案，不用来判断，只有 menu_id 解码）
+ */
+function menuClickEvent(uid: string, buttonId: string, content = '同意'): FakeMsg {
   seq += 1;
   return {
     msgid: `click02-${seq}`,
@@ -134,8 +137,8 @@ function menuClickEvent(uid: string, buttonId: string): FakeMsg {
     external_userid: uid,
     send_time: Math.floor(Date.now() / 1000),
     origin: 3,
-    msgtype: 'event',
-    event: { event_type: 'msgmenu_click', id: buttonId, external_userid: uid },
+    msgtype: 'text',
+    text: { content, menu_id: buttonId },
   };
 }
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -329,7 +332,7 @@ for (const k of ['log', 'warn', 'error'] as const) {
   check('同意菜单：session.consent.health 记为 asked', getSession(`wecom:${uid}`)?.consent?.health === 'asked');
 
   // ---- 点「不同意」：转人工（kind=consent），回一句确认（不占「【顾问】」身份，经普通 send_msg） ----
-  serverLog.push(menuClickEvent(uid, consentMenuButtonId('health', 'declined')));
+  serverLog.push(menuClickEvent(uid, consentMenuButtonId('health', 'declined'), '不同意'));
   void syncFromCallback('tok02-consent-decline');
   await waitFor(() => sentTo(uid).some((x) => x.content === CONSENT_DECLINED_REPLY));
   const sDeclined = getSession(`wecom:${uid}`)!;
@@ -355,6 +358,19 @@ for (const k of ['log', 'warn', 'error'] as const) {
     '点「同意」：记 granted，不转人工、不发确认语',
     sGranted.consent?.minor === 'granted' && !sGranted.handedOver && !sentTo(uid2).some((x) => x.content === CONSENT_DECLINED_REPLY),
     json({ consent: sGranted.consent, handedOver: sGranted.handedOver, sent: sentTo(uid2) }),
+  );
+
+  // ---- 不同意 → 同意：客户回去点同一张旧菜单的「同意」，解除锁定（02 第 16 步审查：此前永久锁死）----
+  // 点击消息是普通文本（msgtype='text'，按钮 id 在 text.menu_id），不是单独的 msgmenu_click 事件——
+  // 这个场景同时核两件事：① 真实格式下点击能被正确识别、不落进引擎当聊天 ② declined → granted 放行
+  serverLog.push(menuClickEvent(uid, consentMenuButtonId('health', 'granted')));
+  void syncFromCallback('tok02-consent-undo');
+  await waitFor(() => getSession(`wecom:${uid}`)?.consent?.health === 'granted');
+  const sUndone = getSession(`wecom:${uid}`)!;
+  check(
+    '不同意 → 同意：真实点击格式（text.menu_id）被识别，declined → granted 放行，点击消息本身没进会话的客户话语',
+    sUndone.consent?.health === 'granted' && !sUndone.messages.some((x) => x.role === 'customer' && x.content === '同意'),
+    json({ consent: sUndone.consent, messages: sUndone.messages.map((x) => ({ role: x.role, content: x.content })) }),
   );
   __privacyTest.reset();
 }

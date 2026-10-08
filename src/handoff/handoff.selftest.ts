@@ -498,6 +498,35 @@ const legacy = (id: string, op: 'handoff' | 'resume' | 'reply', headers: Record<
       json(ev),
     );
   }
+
+  // consent：已在转人工中（别的原因）时客户再要求行权（撤回同意、点不同意），不覆盖原记录（spec 只许 emergency 覆盖），
+  // 但不能被静默吞掉——留一条 system 消息（后台/J页时间线能看到），02 第 16 步审查第 3 条
+  {
+    const sid = newSid('CONSENT-AFTER-HANDOFF');
+    await say(sid, '转人工');
+    const first = sess(sid).handoff;
+    const firstCount = sess(sid).handoffCount;
+    const msgCountBefore = sess(sid).messages.length;
+    enterHandoff(sess(sid), { kind: 'consent', at: Date.now() + 1, reason: '客户要求撤回同意或删除信息' });
+    store.saveSession(sess(sid));
+    const s = sess(sid);
+    check(
+      'consent：已在转人工中（非 emergency 原因）时不覆盖原记录、不加计数',
+      s.handoff?.kind === first?.kind && s.handoff?.reason === first?.reason && s.handoffCount === firstCount,
+      json(s.handoff),
+    );
+    check(
+      'consent：行权请求留一条 system 消息，带着原因，不是被静默吞掉',
+      s.messages.length === msgCountBefore + 1 &&
+        s.messages.at(-1)?.role === 'system' &&
+        (s.messages.at(-1)?.content.includes('客户要求撤回同意或删除信息') ?? false),
+      json(s.messages.at(-1)),
+    );
+    // 再来一次（客户又说了一遍）：再留一条，不因为「已经记过」就不再提示
+    enterHandoff(sess(sid), { kind: 'consent', at: Date.now() + 2, reason: '客户要求撤回同意或删除信息' });
+    store.saveSession(sess(sid));
+    check('consent：客户重复提出，每次都留痕，不因为上次已经记过就吞掉', sess(sid).messages.length === msgCountBefore + 2);
+  }
 }
 
 // ---------------- 4. 终态会话转人工（R9、开放问题 12 的 A、不变量 27）与 handoffBeforePaid（不变量 26） ----------------
