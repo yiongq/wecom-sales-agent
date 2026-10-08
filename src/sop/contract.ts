@@ -82,6 +82,7 @@ export const SOP_KNOWN_FIELDS: readonly string[] = Object.freeze([
   'maxBudgetPerPerson',
   'maxNightlyPrice',
   'overBudget',
+  'payNote',
   'payUrl',
   'priceFrom',
   'routeId',
