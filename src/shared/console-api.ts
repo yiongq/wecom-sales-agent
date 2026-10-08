@@ -143,7 +143,20 @@ export const OrdersQuery = z.object({
   status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']).optional(),
   limit: intParam(100).optional(),
 });
-export const QuickReplyBody = z.strictObject({ title: str.min(1).max(20), body: str.min(1).max(500) });
+/**
+ * 正文不许 markdown（02 spec「快捷回复管理」，plan 第 22 步）：**加粗**、行首 #标题、行首 -/* 列表符号、[文字](地址) 链接。
+ * 覆盖面同 src/engine.ts 的 stripMarkdown（对话出口护栏），这里不剥它、直接拒绝；前后端都用这一份（console 表单提交前先查一遍）
+ */
+const MARKDOWN_RE = /\*\*[^*]+\*\*|^\s{0,3}#{1,6}\s|^\s*[-*]\s|\[[^\]]*\]\([^)]*\)/mu;
+export const hasMarkdown = (s: string): boolean => MARKDOWN_RE.test(s);
+export const QUICK_REPLY_MARKDOWN_MSG = '正文不能用Markdown格式（**加粗**、# 标题、- 列表、[链接](地址)这类写法）';
+export const QuickReplyBody = z.strictObject({
+  title: str.min(1).max(20),
+  body: str
+    .min(1)
+    .max(500)
+    .refine((v) => !hasMarkdown(v), QUICK_REPLY_MARKDOWN_MSG),
+});
 export const MoveBody = z.strictObject({ direction: z.enum(['up', 'down']) });
 
 // ---------------- 领域类型 ----------------

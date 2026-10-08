@@ -3026,6 +3026,44 @@ async function workbenchSuite(): Promise<void> {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const pack = cfg.currentTenant().pack;
 
+  // ---- 快捷回复：新租户首次读到空表时按行业包默认模板写入，只写一次（并发读不重复写）；行业包没有模板时为空 ----
+  // （第 22 步）。这个进程只服务 demo 这一个租户（session.login/resolveSession 都按 configRuntime().tenantId 查，
+  // 建别的租户登不进去——同「成员」一节 otherTenant 的注释），demo 的 quick_replies 这时还一行都没有，
+  // 是它唯一能测「首次读」的机会：这段必须排在本函数最先、也排在模块顶层任何别的 /quick-replies 调用之前
+  {
+    const { defaultQuickRepliesOf } = await import('../packs/registry.js');
+    const defaults = defaultQuickRepliesOf('travel');
+    check('快捷回复：旅游包配了默认模板（4–6条）', defaults.length >= 4 && defaults.length <= 6, String(defaults.length));
+    check('快捷回复：没登记的包没有默认模板', defaultQuickRepliesOf('no-such-pack-22').length === 0);
+    const demoTenantId = cfg.configRuntime().tenantId;
+    const emptyBefore = await asSuper(
+      async () =>
+        (await t.pg.query<{ n: string }>(`select count(*)::text as n from quick_replies where tenant_id = $1`, [demoTenantId])).rows[0]!.n,
+    );
+    check('快捷回复：demo 租户这时一行都还没有（后面测的才是真的「首次读」）', emptyBefore === '0', emptyBefore);
+    const titlesOf = (r: Res): unknown[] => (r.body.items as Body[]).map((x) => x.title);
+    // 5 个并发的「首次读」：都抢 ensureDefaultQuickReplies 的租户级 advisory 锁，只有先拿到的那个插，其余拿到锁时
+    // 表已经不空，原样跳过——结果应该是都看到同一份默认模板，库里也只有这一份，不是 5 份
+    const parallel = await Promise.all(Array.from({ length: 5 }, () => call('GET', '/quick-replies', { as: owner })));
+    check(
+      '快捷回复：新租户首次读到空表时按行业包默认模板写入；并发的几次首次读互相等锁，只有一个真的插',
+      parallel.every((r) => r.status === 200) &&
+        parallel.every((r) => JSON.stringify(titlesOf(r)) === JSON.stringify(defaults.map((d) => d.title))),
+      parallel.map((r) => `${r.status} ${r.text}`).join(' | '),
+    );
+    const rowCount = await asSuper(
+      async () =>
+        (await t.pg.query<{ n: string }>(`select count(*)::text as n from quick_replies where tenant_id = $1`, [demoTenantId])).rows[0]!.n,
+    );
+    check('快捷回复：没有插出两份（库里恰好是默认模板的条数）', rowCount === String(defaults.length), rowCount);
+    const again = await call('GET', '/quick-replies', { as: owner });
+    check(
+      '快捷回复：再读一次还是同一份默认模板（不会再插一遍）',
+      JSON.stringify(titlesOf(again)) === JSON.stringify(defaults.map((d) => d.title)),
+      again.text,
+    );
+  }
+
   // ---- 成员：主管、两个坐席；所有者、管理员、只读用前面登录好的 ----
   const SUP = { email: 'sup13@example.com', password: 'sup13-password-1', name: '主管丁' };
   const VW = { email: 'vw13@example.com', password: 'vw13-password-1', name: '只读戊' };
@@ -3851,44 +3889,55 @@ async function workbenchSuite(): Promise<void> {
     );
   }
 
-  // ---- 快捷回复：读给所有成员，管理给主管以上；写入与审计同一事务 ----
+  // ---- 快捷回复：读给所有成员，管理给主管以上；写入与审计同一事务；正文不许 markdown（保存时校验） ----
   {
+    // 上面的权限矩阵已经对 demo 租户的 /quick-replies 发过 GET（触发了默认模板的首次写入），这里先读一遍记下基线，
+    // 后面只断言基线之后新增/挪动的部分，不依赖默认模板有几条（这条就是「行业包默认模板」与「CRUD」两段交接的地方）
+    const before = await call('GET', '/quick-replies', { as: vw });
+    const baseTitles = (before.body.items as Body[]).map((x) => x.title);
     const created = await call('POST', '/quick-replies', { as: sup, json: { title: '问日期', body: '您大概什么时候出发呢？' } });
     const second = await call('POST', '/quick-replies', { as: O.as, json: { title: '问人数', body: '这次几位出行？' } });
+    const badCreate = await call('POST', '/quick-replies', { as: sup, json: { title: '坏正文', body: '**加粗**不行' } });
     check(
-      '快捷回复：主管、所有者能建；坐席 403',
+      '快捷回复：主管、所有者能建；坐席 403；正文带 markdown 400',
       created.status === 200 &&
         second.status === 200 &&
-        (await call('POST', '/quick-replies', { as: ag1, json: { title: 'x', body: 'y' } })).status === 403,
+        (await call('POST', '/quick-replies', { as: ag1, json: { title: 'x', body: 'y' } })).status === 403 &&
+        badCreate.status === 400,
+      badCreate.text,
     );
     const id = String(created.body.id);
     const list = await call('GET', '/quick-replies', { as: vw });
     check(
-      '快捷回复：只读成员也能读，按 ord 排',
-      list.status === 200 && JSON.stringify((list.body.items as Body[]).map((x) => x.title)) === '["问日期","问人数"]',
+      '快捷回复：只读成员也能读，按 ord 排（新建的排在默认模板之后）',
+      list.status === 200 &&
+        JSON.stringify((list.body.items as Body[]).map((x) => x.title)) === JSON.stringify([...baseTitles, '问日期', '问人数']),
       list.text,
     );
+    const badPatch = await call('PATCH', `/quick-replies/${id}`, { as: sup, json: { body: '# 标题也不行' } });
     const patched = await call('PATCH', `/quick-replies/${id}`, { as: sup, json: { body: '您打算哪天出发？' } });
     const moved = await call('POST', `/quick-replies/${id}/move`, { as: sup, json: { direction: 'down' } });
     const list2 = await call('GET', '/quick-replies', { as: ag1 });
     check(
-      '快捷回复：改正文（标题不动）、下移',
-      patched.status === 200 &&
+      '快捷回复：改正文（标题不动）、下移；改成 markdown 400（原文不变）',
+      badPatch.status === 400 &&
+        patched.status === 200 &&
         patched.body.title === '问日期' &&
         patched.body.body === '您打算哪天出发？' &&
         moved.status === 200 &&
         moved.body.moved === true &&
-        JSON.stringify((list2.body.items as Body[]).map((x) => x.title)) === '["问人数","问日期"]',
-      `${patched.text} ${list2.text}`,
+        JSON.stringify((list2.body.items as Body[]).map((x) => x.title)) === JSON.stringify([...baseTitles, '问人数', '问日期']),
+      `${badPatch.text} ${patched.text} ${list2.text}`,
     );
     const archived = await call('POST', `/quick-replies/${id}/archive`, { as: sup });
     const list3 = await call('GET', '/quick-replies', { as: ag1 });
     check(
-      '快捷回复：归档之后不再列出，再归档 404；标题超长 400',
+      '快捷回复：归档之后不再列出（插入列表里也没有了），再归档 404；标题超长 400',
       archived.status === 200 &&
-        !(list3.body.items as Body[]).some((x) => x.id === id) &&
+        JSON.stringify((list3.body.items as Body[]).map((x) => x.title)) === JSON.stringify([...baseTitles, '问人数']) &&
         (await call('POST', `/quick-replies/${id}/archive`, { as: sup })).status === 404 &&
         (await call('POST', '/quick-replies', { as: sup, json: { title: 'x'.repeat(21), body: 'y' } })).status === 400,
+      list3.text,
     );
     const au = await call('GET', '/audit?actions=quick_reply.create,quick_reply.update,quick_reply.move,quick_reply.archive', O);
     check(

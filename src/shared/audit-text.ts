@@ -273,13 +273,13 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       return { parts: [plain('取消了'), ...conv(diff), plain('的订单')], ...(reason ? { summary: `原因：${reason}` } : {}) };
     }
     case 'quick_reply.create':
-      return { parts: [plain('新建了常用回复'), ...replyTitle(diff)] };
+      return { parts: [plain('新建了快捷回复'), ...replyTitle(diff)] };
     case 'quick_reply.update':
-      return { parts: [plain('修改了常用回复'), ...replyTitle(diff)] };
+      return { parts: [plain('修改了快捷回复'), ...replyTitle(diff)] };
     case 'quick_reply.archive':
-      return { parts: [plain('收起了常用回复'), ...replyTitle(diff)] };
+      return { parts: [plain('收起了快捷回复'), ...replyTitle(diff)] };
     case 'quick_reply.move':
-      return { parts: [plain(diff.direction === 'down' ? '下移了常用回复' : '上移了常用回复'), ...replyTitle(diff)] };
+      return { parts: [plain(diff.direction === 'down' ? '下移了快捷回复' : '上移了快捷回复'), ...replyTitle(diff)] };
     default:
       return { parts: [plain('执行了一项操作')] };
   }
