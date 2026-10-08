@@ -1177,12 +1177,54 @@
   - 没新建自测文件，没改 `package.json` 的 `test` 链（避免和并行的第 15 步在这个文件上冲突）。
 - 变异（隔离副本，`git worktree add --detach` 到 scratchpad，逐个打、跑对应套件、核过失败的正是对应那条新断言、再撤回；用完删了 worktree）：brief 点名的 8 个全部杀掉——标题前缀/徽标算上 `assigned`（`useWaitingCount` 把 `assigned` 加进 `count`）、已成交客户要人工计入徽标（把 `paidNeedsHuman.data.items.length` 加进徽标）、`onGraceExpired` 不退回轮询、`onOpen` 不停轮询、`auth` 事件不清缓存（不回登录页）、页面一加载就申请通知授权（`useState` 初始化里误用 `requestNotificationPermission`）、`notifyHandoff` 正文拼了 `data.id`（模拟带原话类的信息泄露）、`tabs()` 的 `showAssigned` 恒为 `true`（16 条断言当场报出）。每个都先确认在当时的分支上会通过（没打之前），打完确认变红，再撤回确认恢复绿。
 - 门禁：`format:check`、`lint`（含 `check-console-src.ts`，补了两处新字符串的空格/行业包词撞字问题）、`typecheck`（根与 `console` 两个 tsconfig）、`pnpm test`（不带 `PG_TEST_URL`，本步没改服务端代码）全绿；console 首屏 JS 329,538 / 420,000 B，换页最多 169,717 / 250,000 B（`sop.lazy`），都没涨过预算（新路由 `conversations-id.lazy` 独立分包 2.33 KB，没有进首屏）。锁定套件没碰。
-- 浏览器实测：没有验到。给 DB 存储下 member 登录需要先建租户、跑迁移、`user-create` 建账号，本机没有现成的开发用 Postgres；本来想用 chrome-devtools MCP 对 demo/文件模式跑一遍，起了本机 `tsx src/server.ts`（`CONFIG_SOURCE=file`、`LLM_MOCK=1`）确认 `/healthz` 200，但共享的 chrome 实例当时被另一个并行会话占着（`--isolated` 用不了），为避免干扰对方就没有继续，验完立即停掉了本机的 server。本步的界面结果靠 `conversations.selftest.tsx`、`shell.selftest.ts` 的真实 DOM 挂载断言（class、aria-label、href、文字内容逐一核对）顶上，没验到的是：真实浏览器下深色/浅色主题的视觉效果、键盘走一遍 Bell 弹层与 I 页、实际 SSE 连接在真浏览器网络面板里的行为。
+- 浏览器实测：首次提交时没有验到（原因见下方「审查之后改的」之前的版本：chrome-devtools MCP 的共享浏览器实例被另一个
+  并行会话占着）。审查回来之后补验了 SSE 断线退回轮询这一条（真实 Chromium + PGlite 本机后台，见上「审查之后改的」），
+  其余仍没验到：真实浏览器下深色/浅色主题的视觉效果、键盘走一遍 Bell 弹层与 I 页、「已成交客户要人工」组与「开启桌面
+  提醒」三态的真实交互、重连成功后真的停轮询（这条的状态机单测与断线退回轮询用同一套机制，复验时没有单独再花时间
+  把服务器重新启起来验一遍，风险判断为低）。
 - 界面改动 BEFORE / AFTER：
   - 铃铛弹层：BEFORE 每行只有「企微客户 · F01」「8分钟前有新动静」、「打开工作台」新标签开 `admin.html#s=<id>`、没有「已成交客户要人工」组、没有桌面提醒入口。AFTER 每行第二行变成「{原因} · {等待时长}」；等人接手列表下面多一组「已成交客户要人工」（只在有时出现）；「打开工作台」在当前标签打开 J 页；底部多一行「开启桌面提醒」（或已开启/被拒绝的说明）。
   - I 页：BEFORE 页签固定「全部/等人接手/AI接待中/已成交」四个、状态句「……接手和回复目前在工作台里完成」、首列和「打开工作台」新标签开 `admin.html`、等人接手的行阶段列写「—」、最后动静列是 `updatedAt`。AFTER 有顾问处理中的会话（或地址选中它）时多一个「顾问处理中」页签；状态句改「……在工作台里接手和回复」；首列标题带 `needSummary`（如「贵州带爸妈4人」）；等人接手的行阶段列写转人工原因、最后动静列写等待时长（≥10 分钟变红）；点一行/「打开工作台」/页头主按钮都在当前标签打开 J 页（不再新标签）。
   - J 页：BEFORE 不存在（点进去是 404）。AFTER `/conversations/$id` 能打开，显示会话标题、状态胶囊、消息条数、转人工摘要（原因、接手人）与需求要素，提示「完整的会话工作台……还没上线」；三态照 `StateView`。
 - 取舍与偏离：见上「本步定的」六条；与 spec 或锁定断言没有冲突的地方，没有写「Open」。
+- 审查之后改的（2026-10-08，真实 Chromium + PGlite 本机后台复验）：
+  1. **修了 · SSE 断线超过 30 秒不会退回轮询（blocker）**：`armGrace()` 原来每次 `error` 都 `clearTimeout` 重排，真实浏览器的
+     `EventSource` 断线后约每 3 秒自动重连一次、每次失败都触发 `error`，30 秒倒计时永远被拨回起点，`onGraceExpired` 永远不触发。
+     改法：已经在倒计时就不重排（`if (timer) return;`），只有 `open`（`clearGrace()`）或这次宽限本身到期才清掉 `timer`。
+     补了模拟「每 20ms 一次 error、连续 7 次（140ms，超过 100ms 的宽限）」的用例，先确认在改之前会把这条新断言打红，改完变绿。
+  2. **顺手改了 · 退回轮询那一刻不补一次重取，实际要等宽限 + 一整个轮询间隔（约 60 秒）才发出第一次轮询请求**：
+     真实浏览器复验第 1 条时发现的——react-query 的 `refetchInterval` 是从「现在」起才等一整个间隔，`polling` 刚从 false
+     变 true 那一刻不会立刻重取。改法：`armGrace` 的回调里，`next.polling && !before.polling` 时顺手调一次
+     `invalidateConversations(qc)`，不用等 `refetchInterval` 的第一个整间隔。补了对应用例（宽限到期那一刻查询被标成
+     invalidated）。这条不是审查原文点名的，是复验过程中带出来的，一并记在这里。
+  3. **修了 · `handoff.started` 事件没分「发出时是否已有接手人」（minor，审查第 2 条）**：顾问自己点「接手」后，开着
+     桌面提醒会收到一条关于自己这次操作的通知。改法：`src/store/events.ts` 的 `handoff.started` 多一个布尔
+     `assigned`；`src/handoff/record.ts` 的 `enterHandoff` 加第 4 个可选参数 `opts.assigned`，默认取
+     `session.assignee != null`（升级分支——已经 handedOver 再遇紧急情况——这一刻 `session.assignee` 就是真实情况；
+     首次进入分支 `enterHandoff` 自己刚把它清成 `null`，调用方如果紧接着要赋值就传 `{ assigned: true }` 覆盖）；
+     `src/handoff/takeover.ts` 的 `takeover()` 传 `{ assigned: true }`（紧接着就要把 `s.assignee` 赋值，不是「共享
+     工作台转人工」那种没有接手人的入口）；`src/console-api/events.ts`、`src/shared/console-api.ts` 跟着把这个字段
+     透传到 SSE 的 `handoff` 帧。前端 `live.ts` 的 `on('handoff', …)` 对 `assigned` 为真的那一条只转发
+     `invalidateConversations`（铃铛与计数照旧更新），不转给 `onNotify`（不弹浏览器通知）。补了 `console.selftest.ts`
+     一条（顾问接手触发的事件带 `assigned:true`；`toHuman()` 没人接手的那条是 `assigned:false`，用 SSE 续传标记
+     精确定位新事件，不是只看「event: handoff」这几个字再次出现——第一版用这个字符串匹配，因为 raw 缓冲里早就有过
+     同样的字样，等不到新内容就提前判定超时，改成等这个会话 id 本身出现）与 `shell.selftest.ts` 两条（`assigned`
+     为真仍让查询失效、但不转给 `onNotify`）；`src/notify/notify.selftest.ts` 里原来漏了这个新必填字段的三处夹具
+     补上 `assigned: false`（不影响那条测试本身的断言）。
+  4. **修了 · `.bell-notify-btn` 没有 `:focus-visible` 样式（minor，审查第 3 条）**：照同文件 `.icon-btn` 的写法补
+     `outline: 2px solid var(--focus); outline-offset: 2px;`。
+  - 浏览器复验（真实 Chromium + PGlite，见下「浏览器实测」）：第 1 条用真实服务器（`@hono/node-server` 的
+    `serve()`，装配同 `console.selftest.ts` 的 `dbStoreChild()`）+ 真实 Chromium（Playwright）复现——改之前，杀掉后台
+    后连续 22 次 `/events` 重连（每 3003ms 一次）、65 秒内 `polling` 一直是 `false`，与审查描述的「持续 70 秒只看到
+    `/events` 每 3 秒重试」一致；改之后，`polling` 在断线满 30 秒时变 `true`，加了第 2 条的立即重取之后，真的
+    `counts` 轮询请求在断线后约 32 秒出现（之前约 62 秒）。复验脚本在 scratchpad（不进仓库），用完已关掉浏览器、
+    服务器与临时目录。
+  - 门禁：`format:check`、`lint`、`typecheck`（根与 `console`）、`pnpm test` 带 `PG_TEST_URL`（`pgtest-02s19`，
+    `127.0.0.1:55442`，一次性容器，跑完删了）与不带各一遍，全绿（本步改了服务端的 `handoff.started` 形状，两遍都跑）。
+    断言数：`shell.selftest.ts` 173 → 178，`console.selftest.ts` 418 → 420，`handoff.selftest.ts`、
+    `conversations.selftest.tsx` 不变（3193、143）；锁定套件零修改，`PREFIX sha256` 不变。首屏 JS 329,571 /
+    420,000 B（字段加大几字节，预算照过）。收尾前 `git fetch -q origin && git merge origin/dev`（`Already up to
+date`，origin/dev 这段时间没有新提交）。
 
 ## 验收记录
 
