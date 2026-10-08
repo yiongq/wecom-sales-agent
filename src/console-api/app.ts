@@ -285,9 +285,7 @@ function listedSessionOf(id: string): Session {
 }
 
 /** 写接口在内存改动之后等这个会话的改动提交（≤5 秒），超时 503 store_lagging（改动已在内存生效，稍后落库） */
-// 会话已被清除或删除（第 16 步之后才会出现）：没有写队列可言，当作已经「提交」过
-const committed = (sessionId: string | undefined): Promise<void> =>
-  sessionId === undefined ? Promise.resolve() : flushSession(sessionId, { timeoutMs: 5000 });
+const committed = (sessionId: string): Promise<void> => flushSession(sessionId, { timeoutMs: 5000 });
 
 /** console 读库的那几处（trace 类、快捷回复）：本租户、当前成员 */
 const readTx = <T>(c: Context<ConsoleEnv>, fn: (tx: Tx) => Promise<T>): Promise<T> =>
@@ -759,7 +757,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
   .post('/orders/:id/mark-paid', canHandle, async (c) => {
     const { order, persisted } = await markPaidByAdvisor(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
-    if (!persisted) throw new StoreLaggingError(order.sessionId ?? '');
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
     const body: OrderView = orderView(order);
     return c.json(body, 200);
   })

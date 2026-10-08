@@ -835,13 +835,13 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
     for (const m of s.messages) m.at = T;
   }
   for (const o of listOrders()) {
-    o.createdAt = (getSession(o.sessionId!)?.updatedAt ?? T) - 30 * 60_000;
+    o.createdAt = (getSession(o.sessionId)?.updatedAt ?? T) - 30 * 60_000;
     if (o.paidAt !== undefined) o.paidAt = o.createdAt + 10 * 60_000;
   }
   const sStamps = (s: Session) => [s.createdAt, s.updatedAt, ...s.messages.map((m) => m.at)];
   const oStamps = (o: Order) => [o.createdAt, o.paidAt ?? 0];
-  const seedOrders = listOrders().filter((o) => isSeed(o.sessionId!));
-  const otherOrders = listOrders().filter((o) => !isSeed(o.sessionId!));
+  const seedOrders = listOrders().filter((o) => isSeed(o.sessionId));
+  const otherOrders = listOrders().filter((o) => !isSeed(o.sessionId));
   const snap = (ss: Session[], os: Order[]) => [...ss.map(sStamps), ...os.map(oStamps)];
   const seedBefore = snap(seeds, seedOrders);
   const otherBefore = JSON.stringify(snap(others, otherOrders));

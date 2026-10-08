@@ -160,7 +160,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
     },
     scheduleOrder(orderId) {
       const o = d.orders.get(orderId);
-      if (o?.sessionId !== undefined) markDirty(o.sessionId);
+      if (o) markDirty(o.sessionId);
       schedulePersist();
     },
     markChanged(ids) {

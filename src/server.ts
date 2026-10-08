@@ -581,8 +581,7 @@ app.get('/api/orders', anonReadable, (c) => {
   const all = listOrders();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
-  // 会话已被清除或删除（第 16 步之后才会出现）：没有会话可对照，匿名看不到（最保守的默认）
-  return c.json(all.filter((o) => o.sessionId !== undefined && visible(o.sessionId)).map(anonOrder));
+  return c.json(all.filter((o) => visible(o.sessionId)).map(anonOrder));
 });
 
 // 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
@@ -622,14 +621,13 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       action: 'order.mark_paid',
       targetType: 'order',
       targetId: order.id,
-      diff: { shortId: shortIdOf(order.sessionId ?? ''), totalPrice: order.totalPrice },
+      diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
     };
-    // 会话已被清除或删除（第 16 步之后才会出现）：queueAudit 传空串会落到独立短事务那条路，awaitCommit 当作已提交
-    queueAudit(order.sessionId ?? '', payAuditActor, payAuditEntry);
+    queueAudit(order.sessionId, payAuditActor, payAuditEntry);
     // 付款确认同样在提交之后才对客户发（不变量 20）：真超时（仍可能提交）照发；poisoned / 冲突（不会再提交）
     // 不调 notifyPaid、回 503，和 markPaidByAdvisor 的 awaitCommit 同一套（第 15 步审查第 2 条）
     try {
-      if (order.sessionId !== undefined) await awaitCommit(order.sessionId);
+      await awaitCommit(order.sessionId);
     } catch (e) {
       const refused = legacyRefusal(c, e);
       if (refused) return refused;

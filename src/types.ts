@@ -161,8 +161,7 @@ export interface Session {
 
 export interface Order {
   id: string;
-  /** 会话被清除或删除（R23）之后去掉（不是 null）：清除函数连同 DB 里 data 的 sessionId 键一起删，搜不到客户标识 */
-  sessionId?: string;
+  sessionId: string;
   routeId: string;
   routeTitle: string;
   travelers: number;

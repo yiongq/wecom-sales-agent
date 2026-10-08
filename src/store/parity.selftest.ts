@@ -1066,9 +1066,9 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     // 订单号是随机的：按会话、创建先后与内容排（父进程再把订单号换成编号）
     so.orders = store
       .listOrders()
-      .filter((x) => ids.includes(x.sessionId!))
+      .filter((x) => ids.includes(x.sessionId))
       .toSorted(
-        (a, b) => ids.indexOf(a.sessionId!) - ids.indexOf(b.sessionId!) || a.createdAt - b.createdAt || a.routeId.localeCompare(b.routeId),
+        (a, b) => ids.indexOf(a.sessionId) - ids.indexOf(b.sessionId) || a.createdAt - b.createdAt || a.routeId.localeCompare(b.routeId),
       )
       .map((x) => normalizeForStore(x));
     out.scenarios.push(so);

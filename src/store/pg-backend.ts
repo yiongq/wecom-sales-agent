@@ -468,7 +468,7 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
           if (rows.length < PRELOAD_BATCH) break;
         }
         const json: string[] = [];
-        for (const [id, o] of d.orders) if (typeof id === 'string' && o.sessionId !== undefined && out.seqs.has(o.sessionId)) json.push(id);
+        for (const [id, o] of d.orders) if (typeof id === 'string' && out.seqs.has(o.sessionId)) json.push(id);
         if (json.length) {
           const inDb = new Set(await readOrderIdsIn(tx, json));
           for (const id of json) (inDb.has(id) ? out.jsonInDb : out.jsonAdopt).push(id);
@@ -1081,13 +1081,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const taken = new Set<string>();
       for (const id of pre.jsonInDb) {
         const o = d.orders.get(id);
-        if (o?.sessionId !== undefined) taken.add(o.sessionId);
+        if (o) taken.add(o.sessionId);
         d.orders.delete(id);
       }
       for (const o of pre.orders) d.orders.set(o.id, o);
       for (const id of pre.jsonAdopt) {
         const o = d.orders.get(id);
-        const e = o?.sessionId !== undefined ? entries.get(o.sessionId) : undefined;
+        const e = o ? entries.get(o.sessionId) : undefined;
         if (!o || !e) continue;
         adopt(e, o);
         change(e);
@@ -1126,13 +1126,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     },
     scheduleOrder(orderId) {
       const o = d.orders.get(orderId);
-      const e = o?.sessionId !== undefined ? entryById(o.sessionId) : null;
+      const e = o ? entryById(o.sessionId) : null;
       if (!o || !e || voidedIds.has(orderId)) return;
       e.orderIds.add(orderId);
       change(e);
     },
     voidOrder(o, reason) {
-      const e = o.sessionId !== undefined ? entryById(o.sessionId) : null;
+      const e = entryById(o.sessionId);
       if (!e) return;
       e.orderIds.delete(o.id);
       voidedIds.add(o.id);

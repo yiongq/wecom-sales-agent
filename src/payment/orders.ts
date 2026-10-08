@@ -37,11 +37,6 @@ export class OrderNotFoundError extends Error {
 const SEED_SESSION_RE = /^wecom:cust_/;
 const PAY_NOTICE_FAILED = '⚠️ 上一条付款确认未能发送到客户（推送失败：可能是 48h 会话窗口已关闭或渠道配置问题），请另行告知客户已收到付款';
 
-/** 会话已被清除或删除（第 16 步之后才会出现）：没有写队列可言，当作不积压、已经「提交」过 */
-const sessionLagging = (sessionId: string | undefined): boolean => sessionId !== undefined && storeLagging(sessionId);
-const sessionCommit = (sessionId: string | undefined): Promise<{ persisted: boolean }> =>
-  sessionId === undefined ? Promise.resolve({ persisted: true }) : awaitCommit(sessionId);
-
 function orderFor(orderId: string, actor: Actor): Order {
   if (!handlesConversations(actor.role)) throw new ForbiddenError();
   const o = getOrder(orderId);
@@ -56,11 +51,10 @@ const who = (a: Actor) => ({ userId: a.userId, name: a.name });
 
 /** 订单类审计（spec「后台接口」）：target 是订单号，diff 带所属会话的短码 */
 function audit(o: Order, actor: Actor, entry: { action: string; diff: Record<string, unknown> }): void {
-  // 会话已被清除或删除：没有东西可挂，queueAudit 传空串会落到独立短事务那条路（pgFor('') 恒为 null）
   queueAudit(
-    o.sessionId ?? '',
+    o.sessionId,
     { kind: 'user', userId: actor.userId, name: actor.name, ip: actor.ip ?? null },
-    { action: entry.action, targetType: 'order', targetId: o.id, diff: { shortId: shortIdOf(o.sessionId ?? ''), ...entry.diff } },
+    { action: entry.action, targetType: 'order', targetId: o.id, diff: { shortId: shortIdOf(o.sessionId), ...entry.diff } },
   );
 }
 
@@ -69,7 +63,7 @@ export function confirmOrder(orderId: string, actor: Actor): Order {
   const o = orderFor(orderId, actor);
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (o.confirmedAt != null) return o;
-  if (sessionLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId!);
+  if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.confirmedAt = Date.now();
   o.confirmedBy = who(actor);
   audit(o, actor, { action: 'order.confirm', diff: { totalPrice: o.totalPrice } });
@@ -81,7 +75,7 @@ export function confirmOrder(orderId: string, actor: Actor): Order {
 export function cancelOrder(orderId: string, actor: Actor, reason: string): Order {
   const o = orderFor(orderId, actor);
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
-  if (sessionLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId!);
+  if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.status = 'cancelled';
   o.cancelReason = cleanText(reason.trim(), 200);
   audit(o, actor, { action: 'order.cancel', diff: { reason: o.cancelReason } });
@@ -98,15 +92,15 @@ export function cancelOrder(orderId: string, actor: Actor, reason: string): Orde
  */
 export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<{ order: Order; persisted: boolean }> {
   const o = orderFor(orderId, actor);
-  if (o.status === 'paid') return { order: o, persisted: (await sessionCommit(o.sessionId)).persisted };
+  if (o.status === 'paid') return { order: o, persisted: (await awaitCommit(o.sessionId)).persisted };
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (paymentMode() === 'advisor' && o.confirmedAt == null) throw new OrderStateError('unconfirmed');
-  if (sessionLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId!);
+  if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.paidMarkedBy = who(actor);
   markOrderPaid(o.id);
   audit(o, actor, { action: 'order.mark_paid', diff: { totalPrice: o.totalPrice } });
   // 不会再提交（poisoned 或冲突）时 awaitCommit 直接抛 StoreLaggingError：不发付款确认，调用方回 503（不变量 20）
-  const { persisted } = await sessionCommit(o.sessionId);
+  const { persisted } = await awaitCommit(o.sessionId);
   // 付款确认在提交之后才写进会话、发给客户（不变量 20）
   const notice = await notifyPaid(o.id);
   if (notice) {
