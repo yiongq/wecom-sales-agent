@@ -235,6 +235,39 @@ a.ov-todo:hover .ov-todo-action {
   line-height: 20px;
   color: var(--danger);
 }
+/* 接手出错时行已经被重取刷掉：说明挪到区块顶部（§5.12 Alert 的 danger 底色），带会话短码分辨是哪一条，几秒后自动清掉 */
+.ov-todos-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ov-todos-banner-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.ov-todos-banner-close {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: var(--r-sm);
+  color: currentColor;
+}
+.ov-todos-banner-close:hover {
+  background: var(--hover);
+}
 
 /* ---------------- ② 系统状态（§5.11）：一行 22 高，16 circle-check（--success）加 14 text「一切正常」，其余 text-2 ---------------- */
 .ov-system {

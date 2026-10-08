@@ -43,6 +43,15 @@ function lastCustomerAt(s: Session): string | null {
   return null;
 }
 
+/**
+ * 排序用的金额（02 第 21 步新增，02 spec「总览 A2」）：这个会话待付款订单的总价，没有就用最近报价的总价，都没有为 null。
+ * 不对客、不进任何正文，只给 A2「需要你处理」按「金额高的在前」排序用
+ */
+function conversationAmount(s: Session): number | null {
+  const pending = s.orderIds.map((id) => getOrder(id)).find((o): o is Order => !!o && o.status === 'pending_payment');
+  return pending ? pending.totalPrice : (s.lastQuote?.total ?? null);
+}
+
 /** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像。viewer 的转人工原因也要打码（不变量 47） */
 export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationRow => ({
   id: s.id,
@@ -57,6 +66,7 @@ export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boole
     ? { kind: s.handoff.kind, at: iso(s.handoff.at), reason: viewer ? maskNumbers(s.handoff.reason) : s.handoff.reason }
     : null,
   lastCustomerAt: lastCustomerAt(s),
+  amount: conversationAmount(s),
 });
 
 /** 01 的顺序：(updatedAt desc, id) */

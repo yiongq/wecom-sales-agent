@@ -125,6 +125,7 @@ const conv = (short: string, stage: string, handedOver: boolean, messageCount: n
   assignee: null,
   handoff: null,
   lastCustomerAt: null,
+  amount: null,
 });
 /** seed-demo.py --scenario console-ux --now 2026-09-26T14:30+08:00 的 13 个会话（顺序打乱，由假接口排） */
 const SCENE: ConversationRow[] = [

@@ -135,66 +135,72 @@ const waitSegment = (waitMs: number): Segment => ({
   icon: 'clock',
 });
 
+/** 合并排序用的一行：TodoRow（渲染要的）加排序键（紧急、金额、沉默时长），排序键不进 TodoRow——渲染不需要知道这些 */
+interface AttentionEntry {
+  row: TodoRow;
+  emergency: boolean;
+  amount: number | null;
+  silenceMs: number;
+}
+
 /**
- * 「等人接手」与「已成交客户要人工」合并排序（02 spec「后台页面 · 总览 A2」，开放问题 12 选 A）：紧急情况一律最前
- * （`handoff.kind==='emergency'`），其余按等待时长（从 `handoff.at` 算）倒序，即等得越久越靠前——与 Bell、J 页同一份数据，
- * 顺序这里重新算，不沿用接口按最后动静给的顺序。
- * spec 字面上还有「金额高的在前」，但这两组行本身没有订单，要按「最近报价总价」排就要给每个会话多取一次详情，
- * N+1 请求换一行排序细节不值得；plan「工作量与砍法」第一级已经把这条认作可以退到「按等待时长排」的最小做法，这里照它定。
- * waiting 是等人接手里最后动静最早的一页（oldestWaitingQuery），waitingTotal 是等人接手的总数：没列出的在最后补一行
- * 「还有N个」（同原 A 页的 waitingTodos）；paidNeedsHuman 很少，不分页
+ * 「需要你处理」等人接手 + 已成交客户要人工 + 待付款的合并排序（02 spec「后台页面 · 总览 A2」字面：
+ * 「没人接手的在前，金额高的在前（待付款订单或最近报价的总价），沉默久的在前」，紧急情况一律最前）：
+ * 1. 紧急（`handoff.kind==='emergency'`）一律最前；
+ * 2. 没人接手的在前：三组行在这个列表里都是「没人接手」的提醒——等人接手、已成交客户要人工定义上没有接手人；
+ *    待付款提醒的是钱没收到，不是这个会话有没有被接手，这里不为了判它再给 `OrderView` 加一个「会话有没有接手人」的字段
+ *    （coordinator 的范围只要求加金额），所以这一条在三组之间不产生区分，真正分高低的是第 3、4 条；
+ * 3. 金额高的在前：等人接手/已成交客户要人工用 `ConversationRow.amount`（这个会话待付款订单的总价，没有就用最近报价的
+ *    总价，都没有为 null），待付款用 `OrderView.totalPrice`；没有金额的排在有金额的后面；
+ * 4. 沉默久的在前：等人接手/已成交客户要人工按 `handoff.at` 算的等待时长，待付款按下单时间，都是「多久以前」倒序（越久越前）。
  */
-export function handoffTodos(
-  waiting: readonly ConversationRow[],
-  paidNeedsHuman: readonly ConversationRow[],
-  pack: IndustryPack,
-  now: number,
-  waitingTotal = waiting.length,
-): TodoRow[] {
-  const entries = [...waiting.map((row) => ({ row, paid: false })), ...paidNeedsHuman.map((row) => ({ row, paid: true }))];
-  entries.sort((a, b) => {
-    const ea = a.row.handoff?.kind === 'emergency' ? 0 : 1;
-    const eb = b.row.handoff?.kind === 'emergency' ? 0 : 1;
-    if (ea !== eb) return ea - eb;
-    const ta = Date.parse(a.row.handoff?.at ?? a.row.updatedAt);
-    const tb = Date.parse(b.row.handoff?.at ?? b.row.updatedAt);
-    if (ta !== tb) return ta - tb; // 早的（等得越久）在前
-    return a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0;
-  });
-  const rows = entries.map(({ row, paid }): TodoRow => {
-    const at = row.handoff?.at ?? row.updatedAt;
-    return {
+const byAttention = (a: AttentionEntry, b: AttentionEntry): number => {
+  const ea = a.emergency ? 0 : 1;
+  const eb = b.emergency ? 0 : 1;
+  if (ea !== eb) return ea - eb;
+  const amtA = a.amount ?? Number.NEGATIVE_INFINITY;
+  const amtB = b.amount ?? Number.NEGATIVE_INFINITY;
+  if (amtA !== amtB) return amtB - amtA;
+  if (a.silenceMs !== b.silenceMs) return b.silenceMs - a.silenceMs;
+  return a.row.key < b.row.key ? -1 : a.row.key > b.row.key ? 1 : 0;
+};
+
+/** 等人接手 / 已成交客户要人工一行：原因、等待时长（danger/warning，钟表图标）、次要小按钮「接手」 */
+function handoffEntry(row: ConversationRow, paid: boolean, pack: IndustryPack, now: number): AttentionEntry {
+  const at = row.handoff?.at ?? row.updatedAt;
+  const silenceMs = now - Date.parse(at);
+  return {
+    row: {
       key: `conv:${row.id}`,
       icon: { page: 'conversations' },
       type: paid ? { text: '已成交客户要人工' } : { status: 'human' },
       title: row.needSummary ? [...conversationLabel(row, pack), row.needSummary] : conversationLabel(row, pack),
-      context: [{ text: `原因：${row.handoff?.reason ?? '—'}` }, waitSegment(now - Date.parse(at))],
+      context: [{ text: `原因：${row.handoff?.reason ?? '—'}` }, waitSegment(silenceMs)],
       action: '接手',
-      target: { kind: 'takeover' as const, id: row.id },
-    };
-  });
-  const hidden = waitingTotal - waiting.length;
-  return hidden > 0 ? [...rows, moreWaitingTodo(hidden, waiting.length)] : rows;
+      target: { kind: 'takeover', id: row.id },
+    },
+    emergency: row.handoff?.kind === 'emergency',
+    amount: row.amount,
+    silenceMs,
+  };
 }
 
 /**
- * 「待付款」行（02 spec「后台页面 · 总览 A2」）：pending_payment 且未作废的订单，按金额高的在前、沉默久（下单越早）的
- * 在前排序。订单所属会话已被清除（conversation 为 null，第 16 步之后才会出现）的行跳过——没有会话 id 就打不开，
- * 按 plan「spec 写得不够、自己定」的原则，这种极少见的边界情况直接不列，比列一行打不开的链接更贴原文的「打开会话」语义。
- * advisor 模式下还没确认价格的订单写「等你确认价格」，否则写「下单N未付」
+ * 待付款一行：金额、下单多久未付（advisor 模式下还没确认价格的写「等你确认价格」），幽灵「打开会话」。
+ * 订单所属会话已被清除（conversation 为 null，第 16 步之后才会出现）的跳过——没有会话 id 就打不开，按「spec 写得不够、
+ * 自己定」的原则，这种极少见的边界情况直接不列，比列一行打不开的链接更贴原文的「打开会话」语义，调用方先过滤掉
  */
-export function pendingOrderTodos(orders: readonly OrderView[], paymentMode: PaymentMode, pack: IndustryPack, now: number): TodoRow[] {
-  const withConversation = orders.filter((o): o is OrderView & { conversation: NonNullable<OrderView['conversation']> } =>
-    Boolean(o.conversation),
-  );
-  const sorted = [...withConversation].sort(
-    (a, b) => b.totalPrice - a.totalPrice || Date.parse(a.createdAt) - Date.parse(b.createdAt) || (a.id < b.id ? -1 : 1),
-  );
-  return sorted.map((o): TodoRow => {
-    const unconfirmed = paymentMode === 'advisor' && o.confirmed === null;
-    const conv = o.conversation;
-    const label = conversationLabel(conv, pack);
-    return {
+function paymentEntry(
+  o: OrderView & { conversation: NonNullable<OrderView['conversation']> },
+  paymentMode: PaymentMode,
+  pack: IndustryPack,
+  now: number,
+): AttentionEntry {
+  const unconfirmed = paymentMode === 'advisor' && o.confirmed === null;
+  const conv = o.conversation;
+  const label = conversationLabel(conv, pack);
+  return {
+    row: {
       key: `order:${o.id}`,
       icon: { page: 'conversations' },
       type: { text: '待付款' },
@@ -204,9 +210,40 @@ export function pendingOrderTodos(orders: readonly OrderView[], paymentMode: Pay
         { text: unconfirmed ? '等你确认价格' : `下单${waitDurationText(now - Date.parse(o.createdAt))}未付` },
       ],
       action: '打开会话',
-      target: { kind: 'open' as const, id: conv.id },
-    };
-  });
+      target: { kind: 'open', id: conv.id },
+    },
+    emergency: false,
+    amount: o.totalPrice,
+    silenceMs: now - Date.parse(o.createdAt),
+  };
+}
+
+/**
+ * 「需要你处理」的等人接手 + 已成交客户要人工 + 待付款，一起按 `byAttention` 排好（见其注释的 spec 字面四条）。
+ * waiting 是等人接手里最后动静最早的一页（oldestWaitingQuery），waitingTotal 是等人接手的总数：没列出的在最后补一行
+ * 「还有N个」（同原 A 页的 waitingTodos），这一行不参与排序，固定排在最后；paidNeedsHuman、pendingOrders 都很少，不分页
+ */
+export function attentionTodos(
+  waiting: readonly ConversationRow[],
+  paidNeedsHuman: readonly ConversationRow[],
+  pendingOrders: readonly OrderView[],
+  paymentMode: PaymentMode,
+  pack: IndustryPack,
+  now: number,
+  waitingTotal = waiting.length,
+): TodoRow[] {
+  const withConversation = pendingOrders.filter((o): o is OrderView & { conversation: NonNullable<OrderView['conversation']> } =>
+    Boolean(o.conversation),
+  );
+  const entries = [
+    ...waiting.map((row) => handoffEntry(row, false, pack, now)),
+    ...paidNeedsHuman.map((row) => handoffEntry(row, true, pack, now)),
+    ...withConversation.map((o) => paymentEntry(o, paymentMode, pack, now)),
+  ];
+  entries.sort(byAttention);
+  const rows = entries.map((e) => e.row);
+  const hidden = waitingTotal - waiting.length;
+  return hidden > 0 ? [...rows, moreWaitingTodo(hidden, waiting.length)] : rows;
 }
 
 /** 话术节的中文名：行业包 sopSections 的 heading，前言写「前言」；包里没有这一节时用接口节表的标题 */
@@ -348,15 +385,14 @@ export function catalogTodos(lists: readonly EntityList[], now: number): TodoRow
 }
 
 /**
- * 「需要你处理」的顺序（02 spec「后台页面 · 总览 A2」）：等人接手与已成交客户要人工（handoffTodos 已按紧急、等待时长排好）
- * 在前，接着是待付款（pendingOrderTodos 已按金额、下单时间排好），然后是话术草稿，最后是待上架（按更新时间倒序）
+ * 「需要你处理」的顺序（02 spec「后台页面 · 总览 A2」）：`attention`（等人接手 + 已成交客户要人工 + 待付款，
+ * `attentionTodos` 已按紧急、金额、沉默时长排好）在前，然后是话术草稿，最后是待上架（按更新时间倒序）
  */
-export const todoOrder = (
-  handoff: readonly TodoRow[],
-  pendingOrders: readonly TodoRow[],
-  sop: TodoRow | null,
-  catalog: readonly TodoRow[],
-): TodoRow[] => [...handoff, ...pendingOrders, ...(sop ? [sop] : []), ...catalog];
+export const todoOrder = (attention: readonly TodoRow[], sop: TodoRow | null, catalog: readonly TodoRow[]): TodoRow[] => [
+  ...attention,
+  ...(sop ? [sop] : []),
+  ...catalog,
+];
 
 // ---------------- A2：本月成交额、运行数字（都不是链接，不用 Kpi/KpiTarget 那一套） ----------------
 

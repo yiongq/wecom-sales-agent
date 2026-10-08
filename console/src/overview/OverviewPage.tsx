@@ -13,9 +13,10 @@
 import { type UseQueryResult, useMutation, useQueries, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { Alert, Button } from 'antd';
-import { ArrowUpRight, ChevronRight, CircleAlert, CircleCheck, Clock, SquareTerminal } from 'lucide-react';
+import { ArrowUpRight, ChevronRight, CircleAlert, CircleCheck, Clock, SquareTerminal, X } from 'lucide-react';
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { CatalogItem, ConversationRow, Status as SystemStatus } from '../../../src/shared/console-api.js';
+import { shortIdOf } from '../../../src/shared/conversation.js';
 import { dateWithWeekday, digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, catalogKind, HttpError, unwrap } from '../api.js';
@@ -32,17 +33,16 @@ import { PageHeader } from '../shell/PageHeader.js';
 import { cjk, Sep } from '../typography.js';
 import { canEdit, usePack, useViewer } from '../viewer.js';
 import {
+  attentionTodos,
   catalogCounts,
   catalogTodos,
   type EntityList,
-  handoffTodos,
   inSaleKpi,
   itemTitle,
   type Kpi,
   memberKpis,
   metricsKpis,
   monthlyRevenueKpi,
-  pendingOrderTodos,
   type Segment,
   type StaticKpi,
   sopTodo,
@@ -230,16 +230,25 @@ function InlineError({ error }: { error: unknown }) {
  * 等人接手、已成交客户要人工：次要小按钮「接手」（设计系统 A2），不是整行链接——点击真的调用接手接口，
  * 成功后才打开 J 页；409（如 assigned_to_other）就地说明，不丢弹窗（brief「范围」：接手 409 时就地说明）。
  * 只给能处理会话的角色画按钮（CAN_HANDLE_ROLES 同一套权限，J 页也是这样判断要不要画「接手会话」）；
- * viewer 看得到这一行，但没有按钮——403 真发生不了，不用等服务端拒绝才知道
+ * viewer 看得到这一行，但没有按钮——403 真发生不了，不用等服务端拒绝才知道。
+ * 接手的请求与它的错误状态提到 TodoBlock 一级（见那边的注释）：两个成员停在同一行时，A 接手成功、B 这边的事件流
+ * 几十毫秒内就会让列表重取、这一行从 DOM 里卸载，B 随后收到的 409 不能跟着这一行一起消失（审查 major）
  */
-function TakeoverTodoLine({ row, canHandle }: { row: TodoRow; canHandle: boolean }) {
-  const navigate = useNavigate();
-  const id = row.target.kind === 'takeover' ? row.target.id : '';
-  const takeover = useMutation({
-    mutationFn: () => unwrap(api.conversations[':id'].takeover.$post({ param: { id }, json: {} })),
-    onSuccess: () => void navigate({ to: '/conversations/$id', params: { id } }),
-  });
+function TakeoverTodoLine({
+  row,
+  canHandle,
+  pending,
+  error,
+  onTakeover,
+}: {
+  row: TodoRow;
+  canHandle: boolean;
+  pending: boolean;
+  error: unknown;
+  onTakeover(id: string): void;
+}) {
   if (row.target.kind !== 'takeover') return null;
+  const id = row.target.id;
   return (
     <>
       <div className="ov-todo ov-todo-static">
@@ -248,7 +257,7 @@ function TakeoverTodoLine({ row, canHandle }: { row: TodoRow; canHandle: boolean
           action={
             canHandle ? (
               <span className="ov-todo-action-btn">
-                <Button size="small" onClick={() => takeover.mutate()} loading={takeover.isPending}>
+                <Button size="small" onClick={() => onTakeover(id)} loading={pending}>
                   {row.action}
                 </Button>
               </span>
@@ -256,15 +265,57 @@ function TakeoverTodoLine({ row, canHandle }: { row: TodoRow; canHandle: boolean
           }
         />
       </div>
-      <InlineError error={takeover.error} />
+      <InlineError error={error} />
     </>
   );
 }
 
-/** 一行待办：接手行用 TakeoverTodoLine（真按钮），其余整行是链接 */
-function TodoRowView({ row, canHandle }: { row: TodoRow; canHandle: boolean }) {
-  if (row.target.kind === 'takeover') return <TakeoverTodoLine row={row} canHandle={canHandle} />;
+/** 一行待办：接手行用 TakeoverTodoLine（真按钮，状态从 TodoBlock 传下来），其余整行是链接 */
+function TodoRowView({
+  row,
+  canHandle,
+  pendingId,
+  takeoverErrors,
+  onTakeover,
+}: {
+  row: TodoRow;
+  canHandle: boolean;
+  pendingId: string | null;
+  takeoverErrors: Readonly<Record<string, unknown>>;
+  onTakeover(id: string): void;
+}) {
+  if (row.target.kind === 'takeover') {
+    const id = row.target.id;
+    return (
+      <TakeoverTodoLine
+        row={row}
+        canHandle={canHandle}
+        pending={pendingId === id}
+        error={Object.hasOwn(takeoverErrors, id) ? takeoverErrors[id] : null}
+        onTakeover={onTakeover}
+      />
+    );
+  }
   return <TodoLine row={row} />;
+}
+
+/** 接手的就地说明过了这么久自动清掉（没清掉之前点「关掉」也能清，见 TakeoverErrorBanner） */
+const TAKEOVER_ERROR_TTL_MS = 6000;
+
+/**
+ * 接手请求结束时这一行已经不在列表里了：说明跟着行一起消失就没地方看了，挪到「需要你处理」区块顶部，写上会话短码
+ * 分辨是哪一条（审查 major：行可能已经被别的成员接手走、从列表里刷掉）。几秒后自动清掉，也能手动关掉
+ */
+function TakeoverErrorBanner({ id, error, onDismiss }: { id: string; error: unknown; onDismiss(): void }) {
+  const { text } = errorLine(error, {});
+  return (
+    <p className="ov-todos-banner-item" role="alert">
+      {cjk(`${shortIdOf(id)}：${text}`)}
+      <button type="button" className="ov-todos-banner-close" onClick={onDismiss} aria-label="关掉这条说明">
+        <Icon of={X} size={14} />
+      </button>
+    </p>
+  );
 }
 
 /** 待办的骨架：行数知道了就画这么多行（每行与真实的行一样高，窄屏也是），不知道时画 3 行 */
@@ -301,6 +352,32 @@ function TodoBlock({
   now: number;
   onSettled(): void;
 }) {
+  const navigate = useNavigate();
+  // 接手的请求与错误状态提到这一级（不是每行自己的 useMutation）：行可能在请求结束之前就被事件流触发的重取刷掉
+  // （另一个成员先接手成功），这时错误要挪到区块顶部显示，不能跟着卸载的行一起消失（见上面 TakeoverErrorBanner 的注释）
+  const [takeoverErrors, setTakeoverErrors] = useState<Record<string, unknown>>({});
+  const clearTakeoverError = useCallback((id: string) => {
+    setTakeoverErrors((m) => {
+      if (!Object.hasOwn(m, id)) return m;
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
+  }, []);
+  const takeover = useMutation({
+    mutationFn: (id: string) => unwrap(api.conversations[':id'].takeover.$post({ param: { id }, json: {} })),
+    onSuccess: (_data, id) => {
+      clearTakeoverError(id);
+      void navigate({ to: '/conversations/$id', params: { id } });
+    },
+    onError: (error, id) => {
+      setTakeoverErrors((m) => ({ ...m, [id]: error }));
+      setTimeout(() => clearTakeoverError(id), TAKEOVER_ERROR_TTL_MS);
+    },
+  });
+  const onTakeover = useCallback((id: string) => takeover.mutate(id), [takeover]);
+  const pendingId = takeover.isPending ? takeover.variables : null;
+
   const waiting = useQuery({ ...oldestWaitingQuery, ...POLL });
   const paidNeedsHuman = useQuery({ ...paidNeedsHumanQuery, ...POLL });
   const pendingOrders = useQuery({ ...pendingOrdersQuery, ...POLL });
@@ -321,11 +398,21 @@ function TodoBlock({
   }, [known, loading, onSettled]);
 
   const rows = todoOrder(
-    handoffTodos(waiting.data?.items ?? [], paidNeedsHuman.data?.items ?? [], pack, now, waiting.data?.total),
-    pendingOrderTodos(pendingOrders.data?.items ?? [], pendingOrders.data?.paymentMode ?? 'online', pack, now),
+    attentionTodos(
+      waiting.data?.items ?? [],
+      paidNeedsHuman.data?.items ?? [],
+      pendingOrders.data?.items ?? [],
+      pendingOrders.data?.paymentMode ?? 'online',
+      pack,
+      now,
+      waiting.data?.total,
+    ),
     editor && overview ? sopTodo(overview, check.data, pack) : null,
     editor ? catalogTodos(loaded, now) : [],
   );
+  // 还在列表里的接手行 id：不在其中的错误（行已经被重取刷掉）挪到区块顶部显示，见 TakeoverErrorBanner
+  const presentTakeoverIds = new Set(rows.flatMap((r) => (r.target.kind === 'takeover' ? [r.target.id] : [])));
+  const orphanedErrors = Object.entries(takeoverErrors).filter(([id]) => !presentTakeoverIds.has(id));
   return (
     <section className="ov-block" aria-labelledby="ov-todos">
       <div className="ov-todos-row">
@@ -336,6 +423,13 @@ function TodoBlock({
             count={loading ? null : `${todoCount(rows)}项`}
             link={<ConversationsLink>全部会话</ConversationsLink>}
           />
+          {orphanedErrors.length > 0 && (
+            <div className="ov-todos-banner">
+              {orphanedErrors.map(([id, err]) => (
+                <TakeoverErrorBanner key={id} id={id} error={err} onDismiss={() => clearTakeoverError(id)} />
+              ))}
+            </div>
+          )}
           {loading ? (
             <TodoSkeleton rows={known ? Math.max(rows.length, 1) : undefined} />
           ) : (
@@ -345,7 +439,13 @@ function TodoBlock({
                 <ul className="ov-todos">
                   {rows.map((row) => (
                     <li key={row.key}>
-                      <TodoRowView row={row} canHandle={canHandle} />
+                      <TodoRowView
+                        row={row}
+                        canHandle={canHandle}
+                        pendingId={pendingId}
+                        takeoverErrors={takeoverErrors}
+                        onTakeover={onTakeover}
+                      />
                     </li>
                   ))}
                 </ul>

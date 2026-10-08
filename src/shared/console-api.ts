@@ -328,6 +328,12 @@ export interface ConversationRow {
   handoff: { kind: HandoffKind; at: string; reason: string } | null;
   /** 客户最后一条消息的时间：企微 send_time，没有就用处理时刻 */
   lastCustomerAt: string | null;
+  /**
+   * 排序用的金额（02 第 21 步新增，02 spec「后台页面 · 总览 A2」）：这个会话待付款订单的总价，没有就用最近报价的总价，
+   * 都没有为 null。不是对客文案、不进任何页面的正文——A2「等人接手」「已成交客户要人工」两行本来就不显示金额，这个字段
+   * 只给「金额高的在前」排序用；哪个角色都收到真值，排序对所有角色一致，角色能不能在界面上看到钱是另一件事（见 OrderView）
+   */
+  amount: number | null;
 }
 
 export interface ConversationPage {

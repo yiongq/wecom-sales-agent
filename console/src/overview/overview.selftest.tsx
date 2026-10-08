@@ -44,16 +44,15 @@ import type { Viewer } from '../shell/boot.js';
 import { catalogListQuery, conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
 import { VIEWER_KEY } from '../viewer.js';
 import {
+  attentionTodos,
   catalogCounts,
   catalogTodos,
   enoughAudit,
-  handoffTodos,
   inSaleKpi,
   issueText,
   memberKpis,
   metricsKpis,
   monthlyRevenueKpi,
-  pendingOrderTodos,
   sopProblemText,
   sopTodo,
   stageRows,
@@ -154,6 +153,7 @@ const conv = (
   updatedAt: string,
   handoff: ConversationRow['handoff'] = null,
   needSummary: string | null = null,
+  amount: number | null = null,
 ): ConversationRow => ({
   id: `wecom:cust_${short}`,
   channel: 'wecom',
@@ -161,12 +161,14 @@ const conv = (
   handedOver,
   messageCount,
   updatedAt,
+  amount,
   needSummary,
   assignee: null,
   handoff,
   lastCustomerAt: null,
 });
 /** 接口的 ?state=human 按最后动静倒序：F01（8分钟前）在 A01（26分钟前）前面。handoff.at 是转人工时刻（A2 的等待时长按它算） */
+/** F01、A01 都没有报价（amount null），这组夹具专管「没有金额时按沉默时长排」与别处大量复用它的下标断言不受金额排序影响 */
 const WAITING = [
   conv('F01', 'handoff', true, 2, new Date(NOW - 8 * MIN).toISOString(), {
     kind: 'complaint',
@@ -183,12 +185,6 @@ const WAITING = [
     '贵州带爸妈4人',
   ),
 ];
-/** 02 场景的紧急会话（设计系统「02 后端到位后 · A2」样张第 1 行）：等了 12 分钟，但紧急一律排最前 */
-const EMERGENCY = conv('7F3A', 'handoff', true, 3, new Date(NOW - 12 * MIN).toISOString(), {
-  kind: 'emergency',
-  at: new Date(NOW - 12 * MIN).toISOString(),
-  reason: '客户要把6天压缩到4天，现成线路没有',
-});
 /** 「已成交客户要人工」：终态、handedOver、没有接手人（paidNeedsHuman） */
 const PAID_NEEDS_HUMAN = conv('P01', 'paid', true, 4, new Date(NOW - 40 * MIN).toISOString(), {
   kind: 'complaint',
@@ -227,8 +223,6 @@ const PENDING_HIGH = order('o-high', 120_000, new Date(NOW - 30 * MIN).toISOStri
   channel: 'wecom',
   needSummary: null,
 });
-/** 会话已被清除（第 16 步之后才会出现）：conversation 为 null，这一行跳过不画 */
-const PENDING_NO_CONV = order('o-gone', 50_000, new Date(NOW - 10 * MIN).toISOString(), false, null);
 const COUNTS: ConversationCounts = {
   total: 13,
   byState: { ai: 10, human: 2, assigned: 0, paid: 1 },
@@ -379,92 +373,132 @@ eq(
   ['不到1分钟', '8分钟', '1小时', '1天'],
 );
 
-// 「等人接手」「已成交客户要人工」合并排序（02 spec「后台页面 · 总览 A2」）：紧急一律最前，其余按等待时长倒序
-const handoff = handoffTodos([EMERGENCY, ...WAITING], [PAID_NEEDS_HUMAN], TRAVEL, NOW);
+// 「需要你处理」的等人接手 + 已成交客户要人工 + 待付款，一起按 spec 字面排序（02 spec「总览 A2」）：
+// 紧急一律最前；其余没人接手的在前（这三组行都算「没人接手」，不区分）、金额高的在前（没有金额排最后）、沉默久的在前。
+// 这组断言用自己的一套夹具（Z 开头），不动 WAITING/EMERGENCY/PAID_NEEDS_HUMAN/PENDING_*（后面大量 DOM 挂载测试复用
+// 那几个夹具，金额从 null 改成有值会牵连一大片跟排序无关的断言，没必要）
+{
+  const zEmergency = conv('ZEG', 'handoff', true, 1, new Date(NOW - 12 * MIN).toISOString(), {
+    kind: 'emergency',
+    at: new Date(NOW - 12 * MIN).toISOString(),
+    reason: '客户要把6天压缩到4天，现成线路没有',
+  });
+  const zPaidNeedsHuman = conv(
+    'ZP1',
+    'paid',
+    true,
+    1,
+    new Date(NOW - 40 * MIN).toISOString(),
+    { kind: 'complaint', at: new Date(NOW - 40 * MIN).toISOString(), reason: '已付款客户要退款' },
+    null,
+    150_000,
+  );
+  const zWaitingHasAmount = conv(
+    'ZF1',
+    'handoff',
+    true,
+    1,
+    new Date(NOW - 8 * MIN).toISOString(),
+    { kind: 'complaint', at: new Date(NOW - 8 * MIN).toISOString(), reason: '客户投诉价格太贵' },
+    null,
+    60_000,
+  );
+  const zWaitingNoAmount = conv(
+    'ZA1',
+    'handoff',
+    true,
+    1,
+    new Date(NOW - 26 * MIN).toISOString(),
+    { kind: 'request', at: new Date(NOW - 26 * MIN).toISOString(), reason: '客户要找顾问' },
+    '贵州带爸妈4人',
+  );
+  const zOrderEarlierTie = order('z-b01', 85_600, new Date(NOW - 2 * 60 * MIN).toISOString(), false, {
+    id: 'wecom:cust_ZB1',
+    channel: 'wecom',
+    needSummary: '巴厘岛2人',
+  });
+  const zOrderLaterTie = order('z-h01', 85_600, new Date(NOW - 30 * MIN).toISOString(), true, {
+    id: 'wecom:cust_ZH1',
+    channel: 'wecom',
+    needSummary: null,
+  });
+  const zOrderNoConv = order('z-gone', 50_000, new Date(NOW - 10 * MIN).toISOString(), false, null);
+  const attention = attentionTodos(
+    [zEmergency, zWaitingHasAmount, zWaitingNoAmount],
+    [zPaidNeedsHuman],
+    [zOrderEarlierTie, zOrderLaterTie, zOrderNoConv],
+    'advisor',
+    TRAVEL,
+    NOW,
+  );
+  eq(
+    '顺序：紧急最前 → 金额高在前（150,000 > 85,600=85,600 > 60,000 > null）→ 金额相同按沉默久的在前（z-b01 120分钟 > z-h01 30分钟）',
+    attention.map((r) => r.key),
+    ['conv:wecom:cust_ZEG', 'conv:wecom:cust_ZP1', 'order:z-b01', 'order:z-h01', 'conv:wecom:cust_ZF1', 'conv:wecom:cust_ZA1'],
+  );
+  eq(
+    '类型：等人接手用状态胶囊，已成交客户要人工与待付款写死文字（Status 组件没有这两个状态值）',
+    attention.map((r) => r.type),
+    [{ status: 'human' }, { text: '已成交客户要人工' }, { text: '待付款' }, { text: '待付款' }, { status: 'human' }, { status: 'human' }],
+  );
+  eq(
+    '标题：needSummary 有就加第三段（ZA1、z-b01 带，其余没有）',
+    attention.map((r) => r.title),
+    [
+      ['企微客户', 'ZEG'],
+      ['企微客户', 'ZP1'],
+      ['企微客户', 'ZB1', '巴厘岛2人'],
+      ['企微客户', 'ZH1'],
+      ['企微客户', 'ZF1'],
+      ['企微客户', 'ZA1', '贵州带爸妈4人'],
+    ],
+  );
+  eq(
+    '上下文：等人接手/已成交客户要人工写原因与等待时长（10分钟以上 danger、否则 warning，都带钟表图标）；待付款写金额与下单多久未付，advisor 未确认写「等你确认价格」',
+    attention.map((r) => r.context),
+    [
+      [{ text: '原因：客户要把6天压缩到4天，现成线路没有' }, { text: '等了12分钟', tone: 'danger', icon: 'clock' }],
+      [{ text: '原因：已付款客户要退款' }, { text: '等了40分钟', tone: 'danger', icon: 'clock' }],
+      [{ text: '85,600元' }, { text: '等你确认价格' }],
+      [{ text: '85,600元' }, { text: '下单30分钟未付' }],
+      [{ text: '原因：客户投诉价格太贵' }, { text: '等了8分钟', tone: 'warning', icon: 'clock' }],
+      [{ text: '原因：客户要找顾问' }, { text: '等了26分钟', tone: 'danger', icon: 'clock' }],
+    ],
+  );
+  eq(
+    '操作：等人接手/已成交客户要人工是次要按钮「接手」（target 是 takeover），待付款是幽灵「打开会话」（target 是 open）',
+    attention.map((r) => [r.action, r.target]),
+    [
+      ['接手', { kind: 'takeover', id: 'wecom:cust_ZEG' }],
+      ['接手', { kind: 'takeover', id: 'wecom:cust_ZP1' }],
+      ['打开会话', { kind: 'open', id: 'wecom:cust_ZB1' }],
+      ['打开会话', { kind: 'open', id: 'wecom:cust_ZH1' }],
+      ['接手', { kind: 'takeover', id: 'wecom:cust_ZF1' }],
+      ['接手', { kind: 'takeover', id: 'wecom:cust_ZA1' }],
+    ],
+  );
+  eq(
+    '待付款：会话已被清除（conversation 为 null）的订单不列',
+    attention.some((r) => r.key === 'order:z-gone'),
+    false,
+  );
+  eq('需要你处理计数：6 行各算 1 项', todoCount(attention), 6);
+}
 eq(
-  '紧急（7F3A）最前，其余按等待时长倒序：已成交客户要人工P01(40分) > A01(26分) > F01(8分)',
-  handoff.map((r) => r.key),
-  ['conv:wecom:cust_7F3A', 'conv:wecom:cust_P01', 'conv:wecom:cust_A01', 'conv:wecom:cust_F01'],
-);
-eq(
-  '类型：等人接手用状态胶囊，已成交客户要人工写死文字（Status 组件没有这个状态值）',
-  handoff.map((r) => r.type),
-  [{ status: 'human' }, { text: '已成交客户要人工' }, { status: 'human' }, { status: 'human' }],
-);
-eq(
-  '标题：needSummary 有就加第三段（A01 带「贵州带爸妈4人」，其余没有）',
-  handoff.map((r) => r.title),
-  [
-    ['企微客户', '7F3A'],
-    ['企微客户', 'P01'],
-    ['企微客户', 'A01', '贵州带爸妈4人'],
-    ['企微客户', 'F01'],
-  ],
-);
-eq(
-  '上下文：原因取 handoff.reason，等待时长 10 分钟以上 danger、否则 warning，都带钟表图标',
-  handoff.map((r) => r.context),
-  [
-    [{ text: '原因：客户要把6天压缩到4天，现成线路没有' }, { text: '等了12分钟', tone: 'danger', icon: 'clock' }],
-    [{ text: '原因：已付款客户要退款' }, { text: '等了40分钟', tone: 'danger', icon: 'clock' }],
-    [{ text: '原因：客户要找顾问' }, { text: '等了26分钟', tone: 'danger', icon: 'clock' }],
-    [{ text: '原因：客户投诉价格太贵' }, { text: '等了8分钟', tone: 'warning', icon: 'clock' }],
-  ],
-);
-eq(
-  '操作：次要按钮「接手」，target 是 takeover 到这个会话',
-  handoff.map((r) => [r.action, r.target]),
-  [
-    ['接手', { kind: 'takeover', id: 'wecom:cust_7F3A' }],
-    ['接手', { kind: 'takeover', id: 'wecom:cust_P01' }],
-    ['接手', { kind: 'takeover', id: 'wecom:cust_A01' }],
-    ['接手', { kind: 'takeover', id: 'wecom:cust_F01' }],
-  ],
+  'online 模式下不写「等你确认价格」，哪怕没确认：待付款那一段按真的下单时长（spec 字面例句：下单2小时未付）',
+  attentionTodos([], [], [PENDING_B01], 'online', TRAVEL, NOW)[0]?.context[1],
+  { text: '下单2小时未付' },
 );
 {
-  // 那一页只列了等得最久的 2 个，另有 5 个：写成一行链到会话列表，算 5 项
-  const more = handoffTodos(WAITING, [], TRAVEL, NOW, 7);
+  // 那一页只列了等得最久的 2 个（WAITING，都没有金额），另有 5 个：写成一行链到会话列表，算 5 项，不参与排序、固定排在最后
+  const more = attentionTodos(WAITING, [], [], 'advisor', TRAVEL, NOW, 7);
   eq(
     '等人接手没列全：末尾一行「还有N个」，链到等人接手页签',
     more.slice(-1).map((r) => [r.title, r.context, r.action, r.target, r.count]),
     [['还有5个等人接手的会话', [{ text: '这里只列最后动静最早的2个' }], '查看全部', { kind: 'conversations', state: 'human' }, 5]],
   );
-  eq('等人接手没列全：计数算上没列的', [todoCount(more), todoCount(handoff)], [7, 4]);
+  eq('等人接手没列全：计数算上没列的', todoCount(more), 7);
 }
-
-// 「待付款」（02 spec「后台页面 · 总览 A2」）：金额高的在前，会话已清除（conversation 为 null）的跳过
-const payment = pendingOrderTodos([PENDING_B01, PENDING_HIGH, PENDING_NO_CONV], 'advisor', TRAVEL, NOW);
-eq(
-  '待付款：按金额高的在前；会话已清除的订单不列',
-  payment.map((r) => r.key),
-  ['order:o-high', 'order:o-b01'],
-);
-eq(
-  '待付款：标题用会话的渠道与短码，needSummary 有就加第三段',
-  payment.map((r) => r.title),
-  [
-    ['企微客户', 'H01'],
-    ['企微客户', 'B01', '巴厘岛2人'],
-  ],
-);
-eq('待付款：已确认价格的写金额与下单多久未付（30分钟）', payment[0]?.context, [{ text: '120,000元' }, { text: '下单30分钟未付' }]);
-eq('待付款：advisor 模式下未确认价格的写「等你确认价格」（spec 字面例句：下单2小时未付）', payment[1]?.context, [
-  { text: '85,600元' },
-  { text: '等你确认价格' },
-]);
-eq(
-  '待付款：操作是幽灵「打开会话」',
-  payment.map((r) => [r.action, r.target]),
-  [
-    ['打开会话', { kind: 'open', id: 'wecom:cust_H01' }],
-    ['打开会话', { kind: 'open', id: 'wecom:cust_B01' }],
-  ],
-);
-eq(
-  'online 模式下不写「等你确认价格」，哪怕没确认：待付款那一段按真的下单时长（spec 字面例句）',
-  pendingOrderTodos([PENDING_B01], 'online', TRAVEL, NOW)[0]?.context[1],
-  { text: '下单2小时未付' },
-);
 
 // 「本月成交额」「运行数字」KPI 格（都不是链接）
 const SUMMARY: OrderSummary = { month: '2026-09', paidTotal: 207_440, paidCount: 2, pendingTotal: 85_600, pendingCount: 1 };
@@ -627,16 +661,18 @@ eq(
     ['昨天21:40', '9月24日 10:05'],
   );
 }
-const handoffPlain = handoffTodos(WAITING, [], TRAVEL, NOW);
+// WAITING（F01、A01）都没有报价（amount null）；PENDING_HIGH（120,000）> PENDING_B01（85,600）> 两个等人接手（null，
+// 并列时按沉默久的在前：A01 26分钟 > F01 8分钟）
+const plain = attentionTodos(WAITING, [], [PENDING_B01, PENDING_HIGH], 'advisor', TRAVEL, NOW);
 eq(
-  '需要你处理的顺序（验收 16）：等人接手、待付款、话术草稿、线路草稿、6条酒店草稿',
-  todoOrder(handoffPlain, payment, sop, catalog).map((r) => r.key),
-  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'order:o-high', 'order:o-b01', 'sop', 'catalog:route:r-guizhou-5d', 'catalog:hotel'],
+  '需要你处理的顺序（验收 16）：按金额（HIGH 120,000 > B01 85,600 > 两个等人接手 null，null 按沉默久的在前）、话术草稿、线路草稿、6条酒店草稿',
+  todoOrder(plain, sop, catalog).map((r) => r.key),
+  ['order:o-high', 'order:o-b01', 'conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'sop', 'catalog:route:r-guizhou-5d', 'catalog:hotel'],
 );
 eq(
-  '「还有N个等人接手」排在等人接手的后面、待付款与话术草稿前面',
-  todoOrder(handoffTodos(WAITING, [], TRAVEL, NOW, 3), payment, sop, []).map((r) => r.key),
-  ['conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'conv:more', 'order:o-high', 'order:o-b01', 'sop'],
+  '「还有N个等人接手」排进没有金额的那一段末尾（沉默时长排在最后，因为它不比任何具体会话更急），话术草稿前面',
+  todoOrder(attentionTodos(WAITING, [], [PENDING_B01, PENDING_HIGH], 'advisor', TRAVEL, NOW, 3), sop, []).map((r) => r.key),
+  ['order:o-high', 'order:o-b01', 'conv:wecom:cust_A01', 'conv:wecom:cust_F01', 'conv:more', 'sop'],
 );
 
 // 系统状态
@@ -1108,20 +1144,24 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
   eq('所有者：标签页标题', document.title, '总览 · 云途定制旅行');
   eq('所有者：页头状态句是租户名与日期', m.texts('.page-status'), ['云途定制旅行·9月26日 周六']);
   eq('需要你处理：7项（等人接手2 + 已成交客户要人工1 + 待付款1 + 话术草稿1 + 待上架2）', m.texts('.ov-count')[0], '7项');
-  eq('需要你处理：顺序（验收 16）：已成交客户要人工（等得最久）> 等人接手 > 待付款 > 话术草稿 > 待上架', m.texts('.ov-todo-title'), [
-    '企微客户·P01',
-    '企微客户·A01·贵州带爸妈4人',
-    '企微客户·F01',
-    '企微客户·B01·巴厘岛2人',
-    '改了2节：话术原则（+44字）、异议处理（+9字）',
-    '线路草稿「贵州 小七孔·西江千户苗寨 5 日」',
-    '6条酒店草稿',
-  ]);
+  eq(
+    '需要你处理：顺序（验收 16）：按金额（待付款 85,600 > 其余没有报价的 null）、没有报价的按沉默久在前（已成交客户要人工40分 > 等人接手26分 > 等人接手8分）、话术草稿、待上架',
+    m.texts('.ov-todo-title'),
+    [
+      '企微客户·B01·巴厘岛2人',
+      '企微客户·P01',
+      '企微客户·A01·贵州带爸妈4人',
+      '企微客户·F01',
+      '改了2节：话术原则（+44字）、异议处理（+9字）',
+      '线路草稿「贵州 小七孔·西江千户苗寨 5 日」',
+      '6条酒店草稿',
+    ],
+  );
   eq('需要你处理：上下文（原因、等待时长/下单多久未付；advisor 未确认写「等你确认价格」）', m.texts('.ov-todo-context'), [
+    '85,600元·等你确认价格',
     '原因：已付款客户要退款·等了40分钟',
     '原因：客户要找顾问·等了26分钟',
     '原因：客户投诉价格太贵·等了8分钟',
-    '85,600元·等你确认价格',
     '1个问题：话术原则里有个工具名写错了·发布前检查6/7通过',
     '小林更新于13:40·必须项7/7已过·建议1条没做：体力强度没填（不拦上架）',
     '小林更新于11:20·青城山六善酒店、成都锦江宾馆、大研安缦等6条',
@@ -1134,10 +1174,10 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
   eq('需要你处理：等待时长都带钟表图标（3 段等待时长 + 1 段话术问题，各带各的图标）', m.$('.ov-danger svg, .ov-warning svg').length, 4);
   eq('需要你处理：等人接手画状态胶囊，已成交客户要人工与待付款写死文字', m.$('.ov-todo .status-human').length, 2);
   eq('需要你处理：类型文字（等人接手是 Status 胶囊的文字，其余是写死的 13/500 text-3）', m.texts('.ov-todo-type'), [
+    '待付款',
     '已成交客户要人工',
     '等人接手',
     '等人接手',
-    '待付款',
     '话术草稿',
     '待上架',
     '待上架',
@@ -1700,12 +1740,37 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
   await m.unmount();
 }
 {
-  // 接手之后另一行的 409 不该互相污染（各自一个 useMutation）
+  // 接手之后另一行的 409 不该互相污染（接手提到了 TodoBlock 一级，但按 id 分开记错误，不是只有一份全局状态）
   server = { pack: TRAVEL, lists: SCENE, takeoverTaken: new Set() };
   const m = await mountOverview(member('supervisor'));
   const buttons = m.$('.ov-todo-static button');
   await m.click(buttons[0]);
   eq('接手成功（没有人占着）：打开 J 页', m.url(), '/conversations/wecom%3Acust_A01');
+  await m.unmount();
+}
+
+// 2.10b 审查 major：请求还在飞的时候，这一行被事件流触发的重取刷掉（另一个成员先接手走了），随后到的 409
+// 要挪到区块顶部显示，不能跟着卸载的行一起消失（overview.selftest 本来没有 SSE，这里直接调 qc.invalidateQueries
+// 模拟 shell/live.ts 的 invalidateConversations 在同一时刻做的事）
+{
+  server = { pack: TRAVEL, lists: SCENE, hold: /^POST \/conversations\/[^/]+\/takeover$/ };
+  const m = await mountOverview(member('owner'));
+  const titleOf = (): string[] => m.texts('.ov-todo-title');
+  const a01Index = titleOf().findIndex((t) => t.includes('A01'));
+  check('A01 这一行在，先点它的接手（请求被扣住，还没回来）', a01Index >= 0);
+  await m.click(m.$('.ov-todo-static button')[a01Index]);
+  // 这期间事件流让列表重取：A01 被另一个成员接手走了，服务端的等人接手列表里已经没有它，随后那一下会是 409
+  server.waiting = WAITING.filter((w) => w.id !== 'wecom:cust_A01');
+  server.takeoverTaken = new Set(['wecom:cust_A01']);
+  await act(async () => void (await m.qc.invalidateQueries({ queryKey: ['conversations'] })));
+  await settle(m.qc);
+  check('A01 这一行已经被刷掉（不是还在、只是还没显示）', !titleOf().some((t) => t.includes('A01')));
+  releaseHeld();
+  await settle(m.qc);
+  eq('行已经不在了：409 的就地说明挪到区块顶部，带会话短码，不是静默丢掉', m.texts('.ov-todos-banner-item'), ['A01：小林正在处理这个会话']);
+  check('说明带「关掉」按钮', m.$('.ov-todos-banner-close').length === 1);
+  await m.click(m.$('.ov-todos-banner-close')[0]);
+  eq('点「关掉」之后说明消失', m.texts('.ov-todos-banner-item'), []);
   await m.unmount();
 }
 
