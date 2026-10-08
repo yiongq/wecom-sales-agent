@@ -4089,10 +4089,15 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     const cust1 = mk('C1', 8);
     const cust2 = mk('C2', 31);
     const race = mk('Race', 8);
+    // sqlRace（8 天前，也该清）：不像 race 那样提前变脏——这个会话在 purgeOnce 开始时是干净的，候选分页里按候选预过滤
+    // 都会放行，holdForPurge 真的拿到持有；等真正在调清除 SQL（purgeHoldHook，见下）才同步触发一笔新消息，模拟
+    // 「清除 SQL 正在执行时同一会话来了新消息」（02 第 16 步审查第二轮）：核的是这笔写不撞上 StoreConflictError、
+    // 清理让路、写照常落库，不是靠真实网络延迟赌时序
+    const sqlRace = mk('SqlRace', 8);
     // lead2（活到最后）顺带验一次敏感信息同意真的记进了 consents 表（变异测试发现的缺口：文件存储下的单测看不到 DB 落库）
     const consent = await import('../handoff/consent.js');
     consent.noteSensitiveMentions(lead2, ['health'], 1, '测试证据：我妈有高血压');
-    for (const s of [lead1, lead2, cust1, cust2, race]) await store.flushSession(s.id);
+    for (const s of [lead1, lead2, cust1, cust2, race, sqlRace]) await store.flushSession(s.id);
     // lead1（被清的那个）顺带给它造一条发送账本行与一条待办任务：purge_conversation 的 SQL 函数本身已经会删这两类
     // （第 4 步），但 store.selftest 走的是 purge.ts 的整条调用路径，之前这个夹具里从没出现过这两类行，调用参数传错了
     // 也测不出来——补上，让这条调用路径也真的核到（02 审查第 16 步「删除与保留期」minor 第 3 条）
@@ -4184,9 +4189,36 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
       forgetCount += 1;
       if (microtaskSeen) forgetGapSeen = true;
     });
-    const r1 = await purge.purgeOnce(now);
+    // 「清除 SQL 正在执行时同一会话来了新消息」（02 第 16 步审查第二轮）：holdForPurge 真的挂起 sqlRace 的写队列之后
+    // （purgeHoldHook，在调 purge_conversation 这次 SQL 之前同步触发），这一刻同步 push 一条消息再 saveSession——
+    // kick 被 purgeHeld 挡住，这笔改动只会标脏、排着，不会立即落库；purge_conversation 的事务提交之前会核到这个会话
+    // 被改动了（stillClean() 为 false）而回滚、让路，hold.release() 发现脏了补一次 kick，写才真正落库
+    const sqlRaceNote = '清除 SQL 执行期间插进来的一句';
+    let pendingDuringHold = false;
+    purge.setPurgeHoldHook(async (sid) => {
+      if (sid !== sqlRace.id) return;
+      sqlRace.messages.push({ role: 'customer', content: sqlRaceNote, at: Date.now() });
+      store.saveSession(sqlRace);
+      // 真实延迟（远大于本机 PG 的往返），核的是「持有期间 kick 按兵不动」，不是「这次写最终会不会落库」：
+      // 去掉 purgeHeld 这道拦截（变异「去掉持有」）时，kick 不受挡地会在这段延迟里真的把这次改动落库，
+      // pendingWrite 在延迟之后就会变 false——不用去赌真实网络延迟下两笔事务谁先抢到行锁，直接核「有没有被挡住」这件事本身
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      pendingDuringHold = store.pendingWrite(sqlRace.id);
+    });
+    let purgeThrew: string | null = null;
+    let r1: Awaited<ReturnType<typeof purge.purgeOnce>>;
+    try {
+      r1 = await purge.purgeOnce(now);
+    } catch (e) {
+      purgeThrew = e instanceof Error ? e.name : String(e);
+      r1 = { conversations: 0, traces: 0, jobs: 0, skipped: 0, preFiltered: 0 };
+    }
     purge.setPurgeTickHook(null);
+    purge.setPurgeHoldHook(null);
     store.__storeTest.setForgetSessionProbe(null);
+    // 补上 hold.release() 之后被 purgeHeld 挡住的那次落库（不依赖时序：flushSession 等的是「这个会话不再脏」，
+    // release() 发现脏了已经同步调过 kick，这里只是等它跑完）
+    await store.flushSession(sqlRace.id);
     // race 这次没被清：改动照常落库（不是被 tombstone 挡住，是从没被清过）
     await store.flushSession(race.id);
     // 两个真的被清的会话：旧对象上再 saveSession 不报错、不落库（tombstone）；identity map 里也没了
@@ -4213,6 +4245,9 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
       cust1OrderStillInMemory,
       forgetCount,
       forgetGapSeen,
+      sqlRaceId: sqlRace.id,
+      purgeThrew,
+      pendingDuringHold,
     };
     await main.close();
   }
@@ -4836,6 +4871,9 @@ async function pgSuites(): Promise<void> {
           cust1OrderStillInMemory: boolean;
           forgetCount: number;
           forgetGapSeen: boolean;
+          sqlRaceId: string;
+          purgeThrew: string | null;
+          pendingDuringHold: boolean;
         }
       | undefined;
     check(
@@ -4873,17 +4911,31 @@ async function pgSuites(): Promise<void> {
       ret?.cust2OrderGoneFromMemory === true && ret?.cust1OrderStillInMemory === true,
       JSON.stringify({ cust2OrderGoneFromMemory: ret?.cust2OrderGoneFromMemory, cust1OrderStillInMemory: ret?.cust1OrderStillInMemory }),
     );
+    check(
+      '保留期清理：清除的 SQL 正在执行时同一会话来了新消息（02 第 16 步审查第二轮）——holdForPurge 的持有挡下这笔' +
+        '并发写，不抛 StoreConflictError、不进优雅停机',
+      ret?.purgeThrew === null,
+      JSON.stringify(ret?.purgeThrew),
+    );
+    check(
+      // 这条核的是「持有」本身生效：拿到 hold 之后 kick 按兵不动，即便给了 300ms 真实延迟（远大于本机 PG 往返）也没有
+      // 偷偷落库。去掉 purgeHeld 这道拦截（变异「去掉持有」）会让这条变红——kick 不受挡，这段延迟里就把改动落库了
+      '保留期清理：持有期间（给了 300ms 真实延迟）这次改动仍然排在写队列上，没有被偷偷 kick 掉',
+      ret?.pendingDuringHold === true,
+      JSON.stringify(ret?.pendingDuringHold),
+    );
     if (ret) {
       const convs = await fxr.query<{ id: string }>(
         `select c.id from conversations c join tenants t on t.id=c.tenant_id where t.slug='demo' and c.id = any($1)`,
-        [[ret.lead1Id, ret.lead2Id, ret.cust1Id, ret.cust2Id, ret.raceId]],
+        [[ret.lead1Id, ret.lead2Id, ret.cust1Id, ret.cust2Id, ret.raceId, ret.sqlRaceId]],
       );
       check(
-        '保留期清理：没过期的线索（lead2，6 天）、没过客户保留期的 cust1（8 天，但有已付订单）、正在落库的 race 都还在；过期的 lead1、cust2 没了',
+        '保留期清理：没过期的线索（lead2，6 天）、没过客户保留期的 cust1（8 天，但有已付订单）、正在落库的 race 与' +
+          'sqlRace（清除 SQL 执行期间来了新消息，让路）都还在；过期的 lead1、cust2 没了',
         convs
           .map((r) => r.id)
           .toSorted()
-          .join() === [ret.lead2Id, ret.cust1Id, ret.raceId].toSorted().join(),
+          .join() === [ret.lead2Id, ret.cust1Id, ret.raceId, ret.sqlRaceId].toSorted().join(),
         JSON.stringify(convs.map((r) => r.id)),
       );
       const [raceMsgs] = await fxr.query<{ n: number }>(
@@ -4891,6 +4943,15 @@ async function pgSuites(): Promise<void> {
         [ret.raceId],
       );
       check('保留期清理：跳过的 race 不受影响，清理那一刻没落库的改动之后照常落库', raceMsgs?.n === 2, JSON.stringify(raceMsgs));
+      const [sqlRaceMsgs] = await fxr.query<{ n: number }>(
+        `select count(*)::int as n from messages m join tenants t on t.id=m.tenant_id where t.slug='demo' and m.conversation_id = $1`,
+        [ret.sqlRaceId],
+      );
+      check(
+        '保留期清理：清除 SQL 执行期间插进来的那句新消息（hold.release() 发现脏了补的那次 kick）真的落库了，不是被丢掉',
+        sqlRaceMsgs?.n === 2,
+        JSON.stringify(sqlRaceMsgs),
+      );
       const [lead1Outbound] = await fxr.query<{ n: number }>(
         `select count(*)::int as n from outbound_sends s join tenants t on t.id=s.tenant_id where t.slug='demo' and s.conversation_id = $1`,
         [ret.lead1Id],

@@ -35,6 +35,7 @@ import {
   type JobOp,
   type PgBackend,
   type PgStoreStats,
+  type PurgeHold,
   type TelemetryRows,
 } from './store/pg-backend.js';
 // isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
@@ -309,6 +310,14 @@ export function storeUnrecoverable(sessionId: string): boolean {
  */
 export function pendingWrite(sessionId: string): boolean {
   return pgFor(sessionId)?.hasPendingWrite(sessionId) ?? false;
+}
+/**
+ * 保留期清理专用（第 16 步审查第二轮，spec「保留期」「逐个在它的写队列上处理」）：挂起这个会话的写队列、
+ * 原子地核过没有动静（与 pendingWrite 同一套判断，但不留 TOCTOU 的缝——判断与挂起是一次调用）。
+ * 返回 null 时调用方当「有动静」跳过这个候选；拿到句柄之后见 `PurgeHold` 的文档注释。文件存储、demo 类恒为一个空句柄
+ */
+export function holdForPurge(sessionId: string): PurgeHold | null {
+  return pgFor(sessionId)?.holdForPurge(sessionId) ?? { stillClean: () => true, release: () => {} };
 }
 /**
  * 保留期清理成功删除一个会话之后，同一个 tick 把它从 identity map 与 PG 后端的写队列簿记里摘掉（第 16 步，`pg-backend` 的

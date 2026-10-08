@@ -1,12 +1,18 @@
 // retention_purge 任务（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」「隐私说明、敏感信息同意、保留期与行权」，
 // R20、R23）：每天 3:30（服务器本地时间）一个，dedupe_key 是 retention_purge:<日期>。排程：startJobs 之后第一批认领之前排下一个
 // 3:30 的，之后每小时补排一次（已有就什么都不做），执行完同一个事务里排下一天的（第 10 步已做）。
-// 执行体（第 16 步）：列出候选会话（库里 updated_at 早于「两个保留期取较短的那个」的，保守候选集，精确判断交给 purge_conversation
-// 内部按租户设置与 paid_at 再核一次）；逐个按写队列上的动静跳过——内存里有未落库的改动或正在落库（store.pendingWrite）、
-// 内存里的 updatedAt 比我们读到的候选更新且仍在保留期内、这个会话有任务在跑（hasRunningJob，经 setRunningJobChecker 从
-// jobs/runner.ts 注入，避免两个模块互相 import）；否则带着候选读到的 lastSeq/updatedAt 当「预期值」调 purge_conversation，
-// 成功就同一个 tick 调 store.forgetSession 摘掉内存。最后 purge_expired_traces、purge_finished_jobs，写一行 system.purge 审计
-// （diff 只有各类条数）。不属于某个会话的候选分页、trace／任务清理与审计都走 withJobsTx（与会话写队列无关的独立短事务）。
+// 执行体（第 16 步，审查第二轮改过清除 SQL 期间的写队列处理）：列出候选会话（库里 updated_at 早于「两个保留期取较短的那个」
+// 的，保守候选集，精确判断交给 purge_conversation 内部按租户设置与 paid_at 再核一次）；逐个先按两条与写队列无关的信号跳过
+// ——内存里的 updatedAt 比我们读到的候选更新且仍在保留期内、这个会话有任务在跑（hasRunningJob，经 setRunningJobChecker 从
+// jobs/runner.ts 注入，避免两个模块互相 import）；再尝试 store.holdForPurge 挂起这个会话的写队列（没有动静才能拿到持有，
+// 原子地做在一次调用里，不像之前的 pendingWrite 那样留一段「检查完→真正调 SQL」之间的缝）——拿不到就算跳过。
+// 持有期间带着候选读到的 lastSeq/updatedAt 当「预期值」调 purge_conversation：清除 SQL 一旦真的要删（返回 true），
+// 提交之前再同步核一次持有期间有没有被改动（stillClean）；变了就 spec「逐个在它的写队列上处理」要求的「让路」——抛
+// PurgeRaceSkip 让这笔事务回滚，这个候选算跳过，写照常补上落库（hold.release() 发现脏了会补一次 kick）。
+// 没变就让事务提交，成功就同一个 tick 调 store.forgetSession 摘掉内存（墓碑照旧；只剩「提交之后、forgetSession 之前」那一瞬
+// 真的来一笔新写的极窄窗口会被墓碑悄悄吞掉并记一行日志，这是 spec 墓碑设计认可的结果，见「实施记录 · 第 16 步」）。
+// 最后 purge_expired_traces、purge_finished_jobs，写一行 system.purge 审计（diff 只有各类条数）。不属于某个会话的候选分页、
+// trace／任务清理与审计都走 withJobsTx（与会话写队列无关的独立短事务）。
 import { writeAudit } from '../db/repo/audit.js';
 import type { JobRow } from '../db/repo/jobs.js';
 import {
@@ -17,8 +23,11 @@ import {
   readRetentionSettings,
   type RetentionSettings,
 } from '../db/repo/retention.js';
-import { forgetSession, getOrder, getSession, pendingWrite, withJobsTx } from '../store.js';
+import { forgetSession, getOrder, getSession, holdForPurge, withJobsTx } from '../store.js';
 import type { JobOutcome, JobSpec } from './runner.js';
+
+/** 持有期间这个会话被改动了：清除事务按这个信号回滚、让这次写赢（不是真的错误，只是「这一轮清不掉」的信号） */
+class PurgeRaceSkip extends Error {}
 
 export const RETENTION_PURGE_HOUR = 3;
 export const RETENTION_PURGE_MINUTE = 30;
@@ -35,6 +44,16 @@ export function setRunningJobChecker(fn: (sessionId: string) => boolean): void {
 let purgeTickHook: (() => void) | null = null;
 export function setPurgeTickHook(fn: (() => void) | null): void {
   purgeTickHook = fn;
+}
+/**
+ * 仅供自测（第 16 步审查第二轮）：拿到持有之后、真正调清除 SQL 之前调一次，带着这个候选的 id，purgeOnce 等它。
+ * 用来确定性地模拟「清除 SQL 正在执行时同一会话来了新消息」——这一刻持有已经挂起了写队列，测试在这里触发 saveSession
+ * 不会立即落库（kick 被 purgeHeld 挡住）；钩子可以是 async 的，借一段真实延迟核一次 pendingWrite 仍是 true
+ * （「去掉持有」这个变异会让 kick 不受拦截地真的去抢落库，本机真实 PG 的往返远小于这段延迟，核得出变红）
+ */
+let purgeHoldHook: ((sessionId: string) => void | Promise<void>) | null = null;
+export function setPurgeHoldHook(fn: ((sessionId: string) => void | Promise<void>) | null): void {
+  purgeHoldHook = fn;
 }
 
 /** 本地日期 YYYY-MM-DD */
@@ -97,25 +116,47 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
     if (!page.length) break;
     afterId = page[page.length - 1]!.id;
     for (const cand of page) {
-      if (pendingWrite(cand.id) || stillWithinRetentionInMemory(cand.id, now, settings) || runningJobChecker(cand.id)) {
+      if (stillWithinRetentionInMemory(cand.id, now, settings) || runningJobChecker(cand.id)) {
         skipped += 1;
         preFiltered += 1;
         continue;
       }
+      // 原子地挂起写队列：拿不到（有未落库的改动、在途落库或 poisoned）当「有动静」跳过，不留「检查完 → 真正调 SQL」之间的缝
+      const hold = holdForPurge(cand.id);
+      if (!hold) {
+        skipped += 1;
+        preFiltered += 1;
+        continue;
+      }
+      // 仅供自测：持有已经挂起了这个会话的写队列（kick 被 purgeHeld 挡住），这一刻触发的 saveSession 不会立即落库
+      if (purgeHoldHook) await purgeHoldHook(cand.id);
       let ok: boolean;
       try {
-        ok = await withJobsTx((tx) => purgeConversation(tx, cand.id, new Date(now), cand.lastSeq, cand.updatedAt));
+        ok = await withJobsTx(async (tx) => {
+          const deleted = await purgeConversation(tx, cand.id, new Date(now), cand.lastSeq, cand.updatedAt);
+          // 提交之前再同步核一次：持有期间这个会话被改动了（清除 SQL 的 await 期间来了一笔写）就让路——
+          // 抛出去让这笔事务回滚，不提交删除，spec「逐个在它的写队列上处理」要求的结果是清理让步、写照常落库
+          if (deleted && !hold.stillClean()) throw new PurgeRaceSkip();
+          return deleted;
+        });
       } catch (e) {
-        console.error(`[jobs] retention_purge 清理一个会话失败（继续下一个）:`, e instanceof Error ? e.name : e);
+        if (!(e instanceof PurgeRaceSkip)) {
+          console.error(`[jobs] retention_purge 清理一个会话失败（继续下一个）:`, e instanceof Error ? e.name : e);
+        }
+        hold.release();
+        if (e instanceof PurgeRaceSkip) skipped += 1;
         continue;
       }
       // 仅供自测（第 16 步）：SQL 一resolve 就标一下，forgetSession（下一行，没有别的 await）是不是真的在同一个 tick 里调用，
       // 不用猜时序——核法见 store.ts 的 forgetSessionProbe 与 __storeTest.setForgetSessionProbe 的注释
       purgeTickHook?.();
       if (ok) {
+        // 不调 hold.release()：entry 已经随 forgetSession 从写队列的簿记里摘掉，没有什么可释放的——提交与这里之间
+        // 极窄窗口里真的又来一笔写，会带着没提交的改动被 forget() 一并丢弃并记一行日志（见 pg-backend.ts 的注释）
         forgetSession(cand.id);
         conversationsPurged += 1;
       } else {
+        hold.release();
         skipped += 1;
       }
     }
