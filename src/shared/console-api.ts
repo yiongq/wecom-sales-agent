@@ -549,7 +549,8 @@ export interface QuickReply {
  */
 export interface ConsoleEventMap {
   counts: ConversationCounts;
-  handoff: { id: string; kind: HandoffKind; at: string; escalated: boolean; paidCustomer: boolean };
+  /** assigned：发出时是否已有接手人（02 第 19 步审查）；前端对 true 的这一条不弹浏览器通知，铃铛与计数照旧更新 */
+  handoff: { id: string; kind: HandoffKind; at: string; escalated: boolean; paidCustomer: boolean; assigned: boolean };
   conversation: { id: string; change: 'changed' | 'assigned' | 'released'; assigneeName: string | null };
   message: { id: string; seq: number; author: MessageAuthor };
   order: { id: string; orderId: string; status: OrderStatus; confirmed: boolean };

@@ -67,6 +67,7 @@ function relay(ev: DomainEvent): void {
         at: new Date(ev.at).toISOString(),
         escalated: ev.escalated,
         paidCustomer: ev.paidCustomer,
+        assigned: ev.assigned,
       });
       break;
     case 'conversation.changed':

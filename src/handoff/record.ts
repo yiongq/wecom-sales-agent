@@ -72,7 +72,12 @@ export function terminalStageKey(): SalesStage {
  * 每次进入或升级都 emitAfterCommit({ type: 'handoff.started', … })，事件随这个会话的下一次落盘（落库）发出；
  * db 存储下同时排 handoff_notify 任务（src/jobs/notify.ts），随同一次落库提交
  */
-export function enterHandoff(session: Session, record: HandoffRecord, prevStage: SalesStage = session.stage): void {
+export function enterHandoff(
+  session: Session,
+  record: HandoffRecord,
+  prevStage: SalesStage = session.stage,
+  opts: { assigned?: boolean } = {},
+): void {
   const terminal = isTerminalStage(session.stage);
   if (session.stage !== 'handoff' && prevStage !== 'handoff') session.stageBeforeHandoff = prevStage;
   if (!terminal) session.stage = 'handoff';
@@ -96,6 +101,10 @@ export function enterHandoff(session: Session, record: HandoffRecord, prevStage:
     at: record.at,
     escalated,
     paidCustomer: terminal,
+    // 发出时是否已有接手人（02 第 19 步审查第 2 条）：升级分支（已 handedOver 再遇紧急情况）这一刻 session.assignee
+    // 就是真实情况；首次进入分支 enterHandoff 自己刚把它清成 null（见上面 82 行），调用方（takeover()）如果紧接着
+    // 就要赋接手人，传 { assigned: true } 覆盖，不然会照实报 false
+    assigned: opts.assigned ?? session.assignee != null,
   });
   // 转人工通知（02 spec「任务表与跟进」）：立即一个、10 分钟仍没人接手再一个，企微会话另排窗口剩不到 4 小时的那一个（到点重判），
   // 随这次转人工的落库提交（db 存储的真实会话；其余丢弃）

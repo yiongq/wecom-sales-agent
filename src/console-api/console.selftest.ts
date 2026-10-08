@@ -4052,6 +4052,26 @@ async function workbenchSuite(): Promise<void> {
       __eventsTest.ringSize() === 500 && stale.events()[0]?.event === 'resync',
     );
     void stale.close();
+    // 审查第 2 条（02 第 19 步，minor）：顾问点「接手」触发的 handoff.started 带 assigned:true（已有接手人），
+    // 前端据此不弹浏览器通知；toHuman() 那条没人接手，assigned 是 false
+    const TK = 'wecom:wb13-tk-assigned';
+    store.getOrCreateSession(TK, 'simulator');
+    const beforeTk = es.events().length;
+    const tkRes = await call('POST', `/conversations/${encodeURIComponent(TK)}/takeover`, { as: ag1, json: {} });
+    check('接手：200', tkRes.status === 200, JSON.stringify(tkRes.body));
+    // raw 缓冲里早就有过「event: handoff」这几个字（toHuman 那条），只等它不够，要等含这个会话 id 的新内容
+    await es.pump((r) => r.includes(TK), 1000);
+    const tkHandoff = es
+      .events()
+      .slice(beforeTk)
+      .find((e) => e.event === 'handoff' && (JSON.parse(e.data ?? '{}') as Body).id === TK);
+    check(
+      '事件流：顾问接手触发的 handoff.started 带 assigned:true；toHuman（没人接手）的那条是 assigned:false',
+      !!tkHandoff &&
+        (JSON.parse(tkHandoff.data ?? '{}') as Body).assigned === true &&
+        (JSON.parse(handoff!.data ?? '{}') as Body).assigned === false,
+      `${JSON.stringify(tkHandoff)} / ${JSON.stringify(handoff)}`,
+    );
     void es.close();
     // 登录失效（删掉 auth_session）：下一次复核时发 auth 并关闭
     const viewerStream = await open(vw);
