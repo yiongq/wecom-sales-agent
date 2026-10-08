@@ -581,7 +581,8 @@ function ReplyBox({
       />
       <div className="wb-replybox-foot">
         <span className="wb-replybox-hint">
-          {sendWindow && !sendWindow.canSend ? (
+          {/* 接手之前（!canReply）不显示发送窗口这一行：那是接手之后才有意义的说明，接手之前的禁用原因是占位文字 */}
+          {!canReply ? null : sendWindow && !sendWindow.canSend ? (
             <span className="wb-send-reason">{sendWindow.reason}</span>
           ) : sendWindow?.text ? (
             cjk(sendWindow.text)
@@ -719,7 +720,7 @@ function QuickRepliesCard({ id, onInsert }: { id: string; onInsert: (body: strin
 
 // ---------------- 对话栏 + 右栏：整合 ----------------
 
-function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { role: Role; displayName: string } }) {
+function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId: string | null; role: Role; displayName: string } }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const viewer = useViewer().data;
@@ -823,6 +824,11 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { role: 
   }
   const detail = q.data;
   const hasEarlier = earlierHasMore ?? detail.hasEarlier;
+  // 输入框只在「这个会话现在的接手人就是我」时可用（spec「J 页」：接手之前禁用，接手后可用）。detail.can.reply
+  // 由服务端算，handles && (!cur || mine)——没有接手人时也是 true（reply() 支持隐式接手，后端行为没错），但界面
+  // 不能靠它判断「是不是已经点过接手会话」，要另外比「当前接手人」与登录成员是不是同一个人（审查 major 第 1 条）
+  const mine = detail.row.assignee != null && detail.row.assignee.userId === me.userId;
+  const canReply = detail.can.reply && mine;
 
   const onLoadEarlier = (): void => {
     const first = combined[0];
@@ -881,7 +887,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { role: 
         />
         {detail.handoffCard && <HandoffCard handoffCard={detail.handoffCard} pack={pack} />}
         <ReplyBox
-          canReply={detail.can.reply}
+          canReply={canReply}
           sendWindow={sendWindowView(detail.sendWindow, now)}
           text={replyText}
           onChangeText={(t) => {
@@ -1004,7 +1010,9 @@ function MemberWorkbench({ pack }: { pack: IndustryPack }) {
   const { id } = useParams({ from: '/conversations/$id' });
   const viewer = useViewer().data;
   const me =
-    viewer?.kind === 'member' ? { role: viewer.me.role, displayName: viewer.me.displayName } : { role: 'viewer' as Role, displayName: '' };
+    viewer?.kind === 'member'
+      ? { userId: viewer.me.userId, role: viewer.me.role, displayName: viewer.me.displayName }
+      : { userId: null, role: 'viewer' as Role, displayName: '' };
   return (
     <div className="wb-root">
       <WbListColumn pack={pack} selectedId={id} />

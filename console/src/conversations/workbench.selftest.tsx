@@ -536,19 +536,48 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   await m.unmount();
 }
 
-// 2.2 接手前输入框禁用
+// 2.2 输入框只在「接手人是我」时可用（审查 major 第 1 条：服务端 can.reply = handles && (!cur || mine)，
+// 没人接手时也是 true——这是 reply() 允许隐式接手的真实行为，界面不能直接拿它当「是否已经点过接手会话」。
+// 四种服务端真会给出的形状都断言一次：等人接手没人认领、AI 接待中、别人接手、我接手）
 {
-  server = {
-    cur: detail({
-      can: { takeover: true, reply: false, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: false },
-    }),
-    seenClientIds: [],
-    extraMessages: [],
-  };
-  const m = await mount(member('agent'));
-  const box = m.$('textarea')[0] as HTMLTextAreaElement | undefined;
-  eq('接手前：输入框禁用、占位提示', [box?.disabled, box?.placeholder], [true, '接管后在此回复，客户在企业微信中看到']);
-  await m.unmount();
+  const cases: Array<[string, Partial<ConversationRow>, ConversationDetail['can'], boolean]> = [
+    [
+      '等人接手、没人认领',
+      { handedOver: true, assignee: null, handoff: { kind: 'request', at: atIso('2026-09-26T14:00:00'), reason: '客户要找顾问' } },
+      { takeover: true, reply: true, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: false },
+      false,
+    ],
+    [
+      'AI 接待中',
+      { handedOver: false, assignee: null },
+      { takeover: true, reply: true, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: false },
+      false,
+    ],
+    [
+      '别人接手（小林，不是我）',
+      { handedOver: true, assignee: { userId: 'u2', name: '小林' } },
+      { takeover: false, reply: false, release: false, reassign: true, confirmOrder: false, markPaid: false, traces: false },
+      false,
+    ],
+    [
+      '我接手（userId 与登录成员一致）',
+      { handedOver: true, assignee: { userId: 'u1', name: '老板' } },
+      { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: true, traces: false },
+      true,
+    ],
+  ];
+  for (const [label, rowOver, can, shouldEnable] of cases) {
+    server = { cur: detail({ row: row(rowOver), can }), seenClientIds: [], extraMessages: [] };
+    const m = await mount(member('owner')); // userId 'u1'，同「我接手」那一条的 assignee.userId
+    const box = m.$('textarea')[0] as HTMLTextAreaElement | undefined;
+    if (shouldEnable) {
+      // 可用时 placeholder 没传，DOM 的 .placeholder 属性（不是 attribute）取不到值时固定是空字符串，不是 undefined
+      eq(`输入框可用（${label}）`, [box?.disabled, box?.placeholder], [false, '']);
+    } else {
+      eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接管后在此回复，客户在企业微信中看到']);
+    }
+    await m.unmount();
+  }
 }
 
 // 2.3 交接卡措辞：五种情形
@@ -845,16 +874,19 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
 }
 
 // 2.11 发送窗口为 0 时禁用，且写明原因（不用等 409）；409 send_quota_exhausted 的说明
+// 接手人是我（userId 'u1'，同 member() 给的登录成员）：canReply 才会是 true，disabled 完全由发送窗口决定，
+// 这条断言才真的测到「窗口剩 0 条」这件事，不是被「还没接手」盖过去
 {
   server = {
     cur: detail({
-      can: { takeover: false, reply: true, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: false },
+      row: row({ handedOver: true, assignee: { userId: 'u1', name: '老板' } }),
+      can: { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: false, traces: false },
       sendWindow: { lastCustomerAt: NOW, closesAt: NOW + 3_600_000, used: 5, remaining: 0 },
     }),
     seenClientIds: [],
     extraMessages: [],
   };
-  const m = await mount(member('agent'));
+  const m = await mount(member('owner'));
   const box = m.$('textarea')[0] as HTMLTextAreaElement | undefined;
   eq('发送窗口剩 0 条：输入框禁用', box?.disabled, true);
   check(
@@ -884,17 +916,18 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   await m.unmount();
 }
 
-// 2.13 persisted: false 的说明、clientId 重试沿用
+// 2.13 persisted: false 的说明、clientId 重试沿用（接手人是我，canReply 才会是 true）
 {
   server = {
     cur: detail({
-      can: { takeover: false, reply: true, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: false },
+      row: row({ handedOver: true, assignee: { userId: 'u1', name: '老板' } }),
+      can: { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: false, traces: false },
       sendWindow: { lastCustomerAt: NOW, closesAt: NOW + 3_600_000, used: 0, remaining: 5 },
     }),
     seenClientIds: [],
     extraMessages: [],
   };
-  const m = await mount(member('agent'));
+  const m = await mount(member('owner'));
   const box = m.$('textarea')[0] as HTMLTextAreaElement;
   await m.type(box, '稍后保存的一条回复');
   // 第一次：服务端故意先拒（503），文字与 clientId 都留着可以重试
