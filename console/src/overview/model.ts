@@ -11,12 +11,16 @@ import type {
   ConversationCounts,
   ConversationRow,
   DraftCheck,
+  MetricsView,
+  OrderSummary,
+  OrderView,
   SopOverview,
   Status,
   ViolationCode,
 } from '../../../src/shared/console-api.js';
 import { auditRuns, describeAudit, type AuditLookups, type AuditPart } from '../../../src/shared/audit-text.js';
-import { absoluteTime, clockTime, dateText, dayKey, dayTime, relativeTime } from '../../../src/shared/format.js';
+import type { PaymentMode } from '../../../src/shared/conversation-types.js';
+import { absoluteTime, clockTime, dateText, dayKey, dayTime, digits, money, percent, relativeTime } from '../../../src/shared/format.js';
 import { terminalStages } from '../../../src/shared/conversation.js';
 import { checkItem, type CheckIssue, type EntityType, type IndustryPack, valueAt } from '../../../src/shared/pack.js';
 import { sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
@@ -25,15 +29,15 @@ import { conversationLabel } from '../shell/model.js';
 
 // ---------------- 共用 ----------------
 
-/** 上下文或明细里的一段；各段之间用 Sep 隔开。tone 为 danger 的那段用 danger 字，前面加 circle-alert（设计系统 §5.11） */
+/**
+ * 上下文或明细里的一段；各段之间用 Sep 隔开。tone 为 danger 的那段用 danger 字，前面加 circle-alert（设计系统 §5.11）；
+ * A2 的等待时长另有 warning 字与钟表图标（设计系统「02 后端到位后 · A2」：「都带钟表图标」，icon 覆盖默认的 circle-alert）
+ */
 export interface Segment {
   text: string;
-  tone?: 'danger';
+  tone?: 'danger' | 'warning';
+  icon?: 'clock';
 }
-
-/** 会话的渠道：待办行的上下文写它；认不出的渠道不写（不把原码显示出来） */
-const CHANNEL_LABEL: Readonly<Record<string, string>> = { wecom: '企业微信', simulator: '网页' };
-export const channelLabel = (channel: string): string | null => (Object.hasOwn(CHANNEL_LABEL, channel) ? CHANNEL_LABEL[channel]! : null);
 
 const byTime = (a: { updatedAt: string }, b: { updatedAt: string }): number => Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
 
@@ -66,13 +70,15 @@ export function itemTitle(entity: EntityType, item: Pick<CatalogItem, 'code' | '
 // ---------------- 需要你处理 ----------------
 
 export type TodoTarget =
-  /** 新标签打开工作台（admin.html） */
-  | { kind: 'workbench'; href: string }
   | { kind: 'sop' }
   /** 会话列表的等人接手页签（「还有N个等人接手的会话」） */
   | { kind: 'conversations'; state: 'human' }
   /** 待上架：1 条草稿时是这一条的详情（/catalog/$kind/$code），多条时是这个实体列表的草稿页签 */
-  | { kind: 'catalog'; entity: string; code?: string };
+  | { kind: 'catalog'; entity: string; code?: string }
+  /** A2「等人接手」「已成交客户要人工」：次要小按钮「接手」，成功后打开 J 页（02 spec「后台页面 · 总览 A2」） */
+  | { kind: 'takeover'; id: string }
+  /** A2「待付款」：幽灵「打开会话」，不接手，只是打开 J 页 */
+  | { kind: 'open'; id: string };
 
 export interface TodoRow {
   key: string;
@@ -93,53 +99,151 @@ export interface TodoRow {
 export const todoCount = (rows: readonly TodoRow[]): number => rows.reduce((n, r) => n + (r.count ?? 1), 0);
 
 /**
- * 等人接手的会话：最后动静早的在前（设计系统 §10.0 修正 1：A01 26分钟前排在 F01 8分钟前前面）。
- * 上下文只写接口里有的：渠道、消息条数、「最后动静26分钟前」；今天没有转人工时间，不写「等了多久」。
- * rows 是最后动静最早的一页（oldestWaitingQuery），total 是等人接手的总数：没列出的写成一行「还有N个等人接手的会话」，
- * 链到会话列表，不悄悄漏掉
+ * 等人接手的会话里最后动静最早的一页没列全时，没列出的写成一行「还有N个等人接手的会话」，链到会话列表，不悄悄漏掉。
+ * A2 只会在等人接手的总数超过一页（oldestWaitingQuery 的 WAITING_PAGE）时用到；按惯例排在这一组的最后
  */
-export function waitingTodos(
-  rows: readonly ConversationRow[],
+function moreWaitingTodo(hidden: number, listed: number): TodoRow {
+  return {
+    key: 'conv:more',
+    icon: { page: 'conversations' },
+    type: { status: 'human' },
+    title: `还有${hidden}个等人接手的会话`,
+    context: [{ text: `这里只列最后动静最早的${listed}个` }],
+    action: '查看全部',
+    target: { kind: 'conversations', state: 'human' },
+    count: hidden,
+  };
+}
+
+/** 等人接手达到这么久用 danger 字，否则 warning，都带钟表图标（02 spec「后台页面 · 总览 A2」，与 J 页列表同一条规则） */
+export const WAIT_DANGER_MS = 10 * 60_000;
+
+/** 等待时长写成「12分钟」「2小时」「3天」，给「等了…」「下单…未付」这类前缀用；不到 1 分钟写「不到1分钟」 */
+export function waitDurationText(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return '不到1分钟';
+  if (minutes < 60) return `${minutes}分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时`;
+  return `${Math.floor(hours / 24)}天`;
+}
+
+/** 等待时长这一段：danger/warning 字，前置钟表图标（设计系统 A2：「都带钟表图标」） */
+const waitSegment = (waitMs: number): Segment => ({
+  text: `等了${waitDurationText(waitMs)}`,
+  tone: waitMs >= WAIT_DANGER_MS ? 'danger' : 'warning',
+  icon: 'clock',
+});
+
+/** 合并排序用的一行：TodoRow（渲染要的）加排序键（紧急、金额、沉默时长），排序键不进 TodoRow——渲染不需要知道这些 */
+interface AttentionEntry {
+  row: TodoRow;
+  emergency: boolean;
+  amount: number | null;
+  silenceMs: number;
+}
+
+/**
+ * 「需要你处理」等人接手 + 已成交客户要人工 + 待付款的合并排序（02 spec「后台页面 · 总览 A2」字面：
+ * 「没人接手的在前，金额高的在前（待付款订单或最近报价的总价），沉默久的在前」，紧急情况一律最前）：
+ * 1. 紧急（`handoff.kind==='emergency'`）一律最前；
+ * 2. 没人接手的在前：三组行在这个列表里都是「没人接手」的提醒——等人接手、已成交客户要人工定义上没有接手人；
+ *    待付款提醒的是钱没收到，不是这个会话有没有被接手，这里不为了判它再给 `OrderView` 加一个「会话有没有接手人」的字段
+ *    （coordinator 的范围只要求加金额），所以这一条在三组之间不产生区分，真正分高低的是第 3、4 条；
+ * 3. 金额高的在前：等人接手/已成交客户要人工用 `ConversationRow.amount`（这个会话待付款订单的总价，没有就用最近报价的
+ *    总价，都没有为 null），待付款用 `OrderView.totalPrice`；没有金额的排在有金额的后面；
+ * 4. 沉默久的在前：等人接手/已成交客户要人工按 `handoff.at` 算的等待时长，待付款按下单时间，都是「多久以前」倒序（越久越前）。
+ */
+const byAttention = (a: AttentionEntry, b: AttentionEntry): number => {
+  const ea = a.emergency ? 0 : 1;
+  const eb = b.emergency ? 0 : 1;
+  if (ea !== eb) return ea - eb;
+  const amtA = a.amount ?? Number.NEGATIVE_INFINITY;
+  const amtB = b.amount ?? Number.NEGATIVE_INFINITY;
+  if (amtA !== amtB) return amtB - amtA;
+  if (a.silenceMs !== b.silenceMs) return b.silenceMs - a.silenceMs;
+  return a.row.key < b.row.key ? -1 : a.row.key > b.row.key ? 1 : 0;
+};
+
+/** 等人接手 / 已成交客户要人工一行：原因、等待时长（danger/warning，钟表图标）、次要小按钮「接手」 */
+function handoffEntry(row: ConversationRow, paid: boolean, pack: IndustryPack, now: number): AttentionEntry {
+  const at = row.handoff?.at ?? row.updatedAt;
+  const silenceMs = now - Date.parse(at);
+  return {
+    row: {
+      key: `conv:${row.id}`,
+      icon: { page: 'conversations' },
+      type: paid ? { text: '已成交客户要人工' } : { status: 'human' },
+      title: row.needSummary ? [...conversationLabel(row, pack), row.needSummary] : conversationLabel(row, pack),
+      context: [{ text: `原因：${row.handoff?.reason ?? '—'}` }, waitSegment(silenceMs)],
+      action: '接手',
+      target: { kind: 'takeover', id: row.id },
+    },
+    emergency: row.handoff?.kind === 'emergency',
+    amount: row.amount,
+    silenceMs,
+  };
+}
+
+/**
+ * 待付款一行：金额、下单多久未付（advisor 模式下还没确认价格的写「等你确认价格」），幽灵「打开会话」。
+ * 订单所属会话已被清除（conversation 为 null，第 16 步之后才会出现）的跳过——没有会话 id 就打不开，按「spec 写得不够、
+ * 自己定」的原则，这种极少见的边界情况直接不列，比列一行打不开的链接更贴原文的「打开会话」语义，调用方先过滤掉
+ */
+function paymentEntry(
+  o: OrderView & { conversation: NonNullable<OrderView['conversation']> },
+  paymentMode: PaymentMode,
   pack: IndustryPack,
   now: number,
-  workbench: (id: string) => string,
-  total = rows.length,
+): AttentionEntry {
+  const unconfirmed = paymentMode === 'advisor' && o.confirmed === null;
+  const conv = o.conversation;
+  const label = conversationLabel(conv, pack);
+  return {
+    row: {
+      key: `order:${o.id}`,
+      icon: { page: 'conversations' },
+      type: { text: '待付款' },
+      title: conv.needSummary ? [...label, conv.needSummary] : label,
+      context: [
+        { text: money(o.totalPrice) },
+        { text: unconfirmed ? '等你确认价格' : `下单${waitDurationText(now - Date.parse(o.createdAt))}未付` },
+      ],
+      action: '打开会话',
+      target: { kind: 'open', id: conv.id },
+    },
+    emergency: false,
+    amount: o.totalPrice,
+    silenceMs: now - Date.parse(o.createdAt),
+  };
+}
+
+/**
+ * 「需要你处理」的等人接手 + 已成交客户要人工 + 待付款，一起按 `byAttention` 排好（见其注释的 spec 字面四条）。
+ * waiting 是等人接手里最后动静最早的一页（oldestWaitingQuery），waitingTotal 是等人接手的总数：没列出的在最后补一行
+ * 「还有N个」（同原 A 页的 waitingTodos），这一行不参与排序，固定排在最后；paidNeedsHuman、pendingOrders 都很少，不分页
+ */
+export function attentionTodos(
+  waiting: readonly ConversationRow[],
+  paidNeedsHuman: readonly ConversationRow[],
+  pendingOrders: readonly OrderView[],
+  paymentMode: PaymentMode,
+  pack: IndustryPack,
+  now: number,
+  waitingTotal = waiting.length,
 ): TodoRow[] {
-  const hidden = total - rows.length;
-  const more: TodoRow[] =
-    hidden > 0
-      ? [
-          {
-            key: 'conv:more',
-            icon: { page: 'conversations' },
-            type: { status: 'human' },
-            title: `还有${hidden}个等人接手的会话`,
-            context: [{ text: `这里只列最后动静最早的${rows.length}个` }],
-            action: '查看全部',
-            target: { kind: 'conversations', state: 'human' },
-            count: hidden,
-          },
-        ]
-      : [];
-  const listed: TodoRow[] = [...rows]
-    .sort((a, b) => byTime(a, b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .map((row) => {
-      const channel = channelLabel(row.channel);
-      return {
-        key: `conv:${row.id}`,
-        icon: { page: 'conversations' },
-        type: { status: 'human' },
-        title: conversationLabel(row, pack),
-        context: [
-          ...(channel ? [{ text: channel }] : []),
-          { text: `${row.messageCount}条消息` },
-          { text: `最后动静${relativeTime(row.updatedAt, now)}` },
-        ],
-        action: '打开工作台',
-        target: { kind: 'workbench', href: workbench(row.id) },
-      };
-    });
-  return [...listed, ...more];
+  const withConversation = pendingOrders.filter((o): o is OrderView & { conversation: NonNullable<OrderView['conversation']> } =>
+    Boolean(o.conversation),
+  );
+  const entries = [
+    ...waiting.map((row) => handoffEntry(row, false, pack, now)),
+    ...paidNeedsHuman.map((row) => handoffEntry(row, true, pack, now)),
+    ...withConversation.map((o) => paymentEntry(o, paymentMode, pack, now)),
+  ];
+  entries.sort(byAttention);
+  const rows = entries.map((e) => e.row);
+  const hidden = waitingTotal - waiting.length;
+  return hidden > 0 ? [...rows, moreWaitingTodo(hidden, waiting.length)] : rows;
 }
 
 /** 话术节的中文名：行业包 sopSections 的 heading，前言写「前言」；包里没有这一节时用接口节表的标题 */
@@ -280,12 +384,82 @@ export function catalogTodos(lists: readonly EntityList[], now: number): TodoRow
   return rows.sort((a, b) => b.at - a.at).map(({ at: _at, ...row }) => row);
 }
 
-/** 「需要你处理」的顺序：等人接手的在前（最后动静早的在前），接着是话术草稿，然后是待上架（按更新时间倒序） */
-export const todoOrder = (waiting: readonly TodoRow[], sop: TodoRow | null, catalog: readonly TodoRow[]): TodoRow[] => [
-  ...waiting,
+/**
+ * 「需要你处理」的顺序（02 spec「后台页面 · 总览 A2」）：`attention`（等人接手 + 已成交客户要人工 + 待付款，
+ * `attentionTodos` 已按紧急、金额、沉默时长排好）在前，然后是话术草稿，最后是待上架（按更新时间倒序）
+ */
+export const todoOrder = (attention: readonly TodoRow[], sop: TodoRow | null, catalog: readonly TodoRow[]): TodoRow[] => [
+  ...attention,
   ...(sop ? [sop] : []),
   ...catalog,
 ];
+
+// ---------------- A2：本月成交额、运行数字（都不是链接，不用 Kpi/KpiTarget 那一套） ----------------
+
+/** 「本月成交额」与运行数字的四个格：都不点了去哪里（spec 没给「点了去」），数字已经格式化成字符串，没有数据时是「—」 */
+export interface StaticKpi {
+  key: string;
+  label: string;
+  value: string;
+  /** 口径：一句话；数组时各段用 Sep 隔开 */
+  caption: readonly string[];
+  /** 明细行：没有时不画 */
+  breakdown: readonly string[] | null;
+}
+
+/**
+ * 「本月成交额（元）」KPI 格（02 spec「后台页面 · 总览 A2」）：只给所有者、管理员。口径固定写死（接口按自然月、
+ * 未作废的已付订单算好，这里不重算）；待付款为 0 时不写明细（没有「另有待付0元」这种句子）
+ */
+export function monthlyRevenueKpi(summary: OrderSummary): StaticKpi {
+  return {
+    key: 'monthlyRevenue',
+    label: '本月成交额（元）',
+    value: digits(summary.paidTotal),
+    caption: ['本月已付款订单的总额'],
+    breakdown: summary.pendingCount > 0 ? [`另有待付${money(summary.pendingTotal)}`] : null,
+  };
+}
+
+/**
+ * 运行数字的四个格（02 spec「可观测性与告警 · 运行数字」）：只给所有者、管理员，文件存储下由调用方整块不画（见
+ * OverviewPage 对 503 store_file_mode 的处理，这里的纯函数不知道存储模式）。回复用时换算成秒（接口给的是毫秒）；
+ * 转人工率、AI出错率是 0–1 的比例；费用的口径与明细 spec 只给了「今天的AI费用」这一项，caption 是这里自己定的最小说法，
+ * 字面上没有要求也不冲突，照「自己定、写进实施记录」的原则处理
+ */
+export function metricsKpis(m: MetricsView): StaticKpi[] {
+  const days = `近${m.days}天`;
+  return [
+    {
+      key: 'replyP90',
+      label: '回复用时（秒）',
+      value: m.replyP90Ms == null ? '—' : digits(Math.round(m.replyP90Ms / 1000)),
+      caption: [`${days}，90%的回复在这之内`],
+      breakdown: null,
+    },
+    {
+      key: 'handoffRate',
+      label: '转人工率',
+      value: percent(m.handoffRate ?? Number.NaN),
+      caption: [`${days}有转人工的会话占比`],
+      breakdown: null,
+    },
+    {
+      key: 'aiErrorRate',
+      label: 'AI出错率',
+      value: percent(m.aiErrorRate ?? Number.NaN),
+      caption: [`${days}出错的轮次占比`],
+      breakdown: null,
+    },
+    {
+      key: 'costToday',
+      label: '今天的AI费用（元）',
+      value: m.costTodayYuan.toFixed(2),
+      caption: ['今天的模型调用花费'],
+      breakdown: [`${days}共${m.costRangeYuan.toFixed(2)}元`],
+    },
+  ];
+}
 
 // ---------------- 系统状态 ----------------
 

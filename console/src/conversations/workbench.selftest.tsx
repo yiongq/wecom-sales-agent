@@ -97,6 +97,7 @@ const row = (over: Partial<ConversationRow> = {}): ConversationRow => ({
   assignee: null,
   handoff: null,
   lastCustomerAt: null,
+  amount: null,
   ...over,
 });
 

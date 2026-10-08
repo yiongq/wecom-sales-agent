@@ -59,6 +59,14 @@
   margin-right: 4px;
   vertical-align: -2px;
 }
+/* A2 的等待时长：不到 10 分钟用 warning 字，同一套写法（02 spec「总览 A2」） */
+.ov-warning {
+  color: var(--warning-icon);
+}
+.ov-warning svg {
+  margin-right: 4px;
+  vertical-align: -2px;
+}
 
 /* 「需要你处理」下面的各块（OverviewPage）：不占一层盒子；首次加载待办落定之前不显示，免得待办一到把它们推下去（验收 23 的 CLS） */
 .ov-below {
@@ -178,6 +186,87 @@ a.ov-todo:hover .ov-todo-action {
 }
 .ov-todo-skeleton .ov-todo-main > .skeleton-bar:last-child {
   margin-block: 4px;
+}
+
+/*
+ * A2：「需要你处理」旁边的「本月成交额」KPI 格（02 spec「总览 A2」），只给所有者、管理员。宽于 1280 时并排，
+ * 列表自适应、格宽 273、间隔 40；窄于 1280 时格落到列表下方，整宽（设计系统：「本月成交额」格放在需要你处理右侧，
+ * 窄于 1280 时落到列表下方）
+ */
+.ov-todos-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 40px;
+}
+.ov-todos-col {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ov-todos-kpi {
+  flex: 0 0 273px;
+  min-width: 0;
+}
+.ov-todos-kpi .ov-kpi {
+  width: 100%;
+}
+@media (max-width: 1279px) {
+  .ov-todos-row {
+    flex-direction: column;
+  }
+  .ov-todos-kpi {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+}
+
+/* 等人接手、已成交客户要人工：真按钮的行，不是链接（02 spec：操作换成次要小按钮「接手」）。布局与 a.ov-todo 相同，
+   只是标签不同，不触发链接的悬停/聚焦样式 */
+.ov-todo-static {
+  color: var(--text);
+}
+/* 按钮在第 4 列：列宽 auto，按钮本身的尺寸说话，不用额外撑宽 */
+.ov-todo-action-btn {
+  display: inline-flex;
+}
+/* 接手 409（如「别人正在处理」）就地说明，紧贴在这一行下面；缩进对齐内容列（图标 28 + 列间距 16 − 行内缩进差一点，取整 44） */
+.ov-todo-error {
+  margin: 0 0 8px 44px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+/* 接手出错时行已经被重取刷掉：说明挪到区块顶部（§5.12 Alert 的 danger 底色），带会话短码分辨是哪一条，几秒后自动清掉 */
+.ov-todos-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ov-todos-banner-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--danger-bg);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.ov-todos-banner-close {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: var(--r-sm);
+  color: currentColor;
+}
+.ov-todos-banner-close:hover {
+  background: var(--hover);
 }
 
 /* ---------------- ② 系统状态（§5.11）：一行 22 高，16 circle-check（--success）加 14 text「一切正常」，其余 text-2 ---------------- */
@@ -477,6 +566,14 @@ a.ov-stage:hover {
   }
   .ov-todo-action {
     display: none;
+  }
+  /* 接手行不能靠「整行可点」：按钮是唯一的操作，窄屏下挪到对象与上下文下面单独一行，不能跟着隐藏 */
+  .ov-todo-static {
+    grid-template-areas: 'icon type' 'icon main' 'icon action';
+  }
+  .ov-todo-action-btn {
+    grid-area: action;
+    margin-top: 4px;
   }
   .ov-tl-row {
     grid-template-columns: 72px 24px minmax(0, 1fr);

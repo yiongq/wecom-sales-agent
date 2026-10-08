@@ -94,6 +94,7 @@ import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
+import { paymentMode } from '../payment/mode.js';
 import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
 import { profile } from '../profile.js';
 import { indexHealth } from '../retrieval.js';
@@ -725,7 +726,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return fail(c, 403, { error: 'forbidden', detail: '只有所有者和管理员能看全部订单，其余只能看待付款的' });
     }
     const all = listOrders().filter((o) => !status || o.status === status);
-    const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length };
+    const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length, paymentMode: paymentMode() };
     return c.json(body, 200);
   })
   // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的

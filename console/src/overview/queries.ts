@@ -60,6 +60,24 @@ export const latestPaidQuery = queryOptions({
   queryFn: () => unwrap(api.conversations.$get({ query: { state: 'paid', limit: '1' } })),
 });
 
+/** A2「待付款」行：pending_payment 且未作废的订单。所有角色都能读（权限表「订单列表」一行），paymentMode 判断要不要写「等你确认价格」 */
+export const pendingOrdersQuery = queryOptions({
+  queryKey: ['orders', 'pending'] as const,
+  queryFn: () => unwrap(api.orders.$get({ query: { status: 'pending_payment', limit: '100' } })),
+});
+
+/** A2「本月成交额」KPI 格：只给所有者、管理员（canSeeMoney），查询本身按角色门禁，不该请求的地方不 enable 它 */
+export const ordersSummaryQuery = queryOptions({
+  queryKey: ['orders', 'summary'] as const,
+  queryFn: () => unwrap(api.orders.summary.$get()),
+});
+
+/** 运行数字（02 spec「可观测性与告警」）：只给所有者、管理员，只在 db 存储下有（文件存储 503 store_file_mode，调用方据此整块不画） */
+export const metricsQuery = queryOptions({
+  queryKey: ['metrics'] as const,
+  queryFn: () => unwrap(api.metrics.$get({ query: {} })),
+});
+
 /** 每页取多少条审计、最多翻几页（一次 CSV 导入至多 200 行，合成一句也要取得完） */
 const AUDIT_PAGE = 50;
 const AUDIT_MAX_PAGES = 10;

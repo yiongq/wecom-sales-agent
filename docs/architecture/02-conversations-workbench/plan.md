@@ -140,7 +140,7 @@
   - [x] 20.1 先修后台 UX plan「Open」第 1 条：`popupRegion` 包的下拉菜单键盘打不开（照列表筛选的写法，确认点弹层空白处不抢输入框焦点）；话术页、条目详情的「更多」一起受益（0.5）。2026-10-03 做完（PR #82，分支 `fix/02-step20-1-popup-keyboard`），见「实施记录 · 第 20.1 步」。同日审查之后改了四处（菜单项焦点框偏移 −2 不再被裁、鼠标把焦点带进弹层以后 Esc 照样回按钮且子菜单的 Esc 只关子菜单、鼠标点开后 Shift+Tab 关上往前走、没有草稿时第一下 Tab 不被吞），补了对应自测与 Chromium 检查，见该节「审查之后改的」；后台 UX plan「Open」的「菜单项的焦点框」随之关掉。
   - [x] 20.2 照 spec「后台页面」与设计系统 J 页：三栏、分组列表、对话头与「更多」、五种消息呈现与 `handoff_note` 时间线、改写对照、「显示AI步骤」、交接卡、输入框与发送窗口（含 `persisted: false`）、右栏卡片与订单动作（订单相关部分等第 15 步合并，之前接桩）、「AI为什么这么回」、不同意时「交还AI」不可用、viewer 的打码正文、加载 / 空 / 出错。console 自测覆盖交接卡措辞、接手前输入框禁用、409 与 503 的说明、发送窗口为 0 时禁用、键盘打开「更多」（4）。2026-10-08 完成（分支 `feat/02-step20-2-workbench`，没 push；与第 15、16 步另开两条线并行），结构、本步定的十条取舍、console 自测、浏览器实测、变异与门禁结果见「实施记录 · 第 20.2 步」。
   - 对应验收 11、13、14 的界面部分，以及 20 的界面部分。
-- [ ] 21. 前端：总览 A2 与运行数字格（2）：等人接手与已成交客户要人工的行、「接手」、待付款行（「等你确认价格」等第 15 步合并）、排序、「本月成交额」格与权限、四个运行数字格与权限。console 自测用 02 种子场景断言顺序与金额。对应验收 16 与 34 的界面部分。
+- [x] 21. 前端：总览 A2 与运行数字格（2）：等人接手与已成交客户要人工的行、「接手」、待付款行（「等你确认价格」等第 15 步合并）、排序、「本月成交额」格与权限、四个运行数字格与权限。console 自测用 02 种子场景断言顺序与金额。对应验收 16 与 34 的界面部分。2026-10-08 完成（分支 `feat/02-step21-overview-a2`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 21 步」。
 - [x] 22. 快捷回复：行业包默认模板与管理抽屉（1，可砍）：2026-10-08 完成，结构、默认模板原文、取舍、自测、变异与门禁见「实施记录 · 第 22 步」。
 - [x] 23. `admin.html` 两处（0.5）：列表 401 时弹登录框（在 `load()` 之外判断，`server.selftest.ts` 抽取的 `load()` 与 `sigOf()` 源码不变）；db 配置模式下顶部提示链到 J 页。对应验收 29 的这一句。2026-10-08 完成（分支 `feat/02-step23-admin-html`，没 push），结构、本步定的取舍、自测、变异与门禁见「实施记录 · 第 23 步」。
 - [ ] 24. 02 走查种子与走查（1）：`scripts/seed-demo.py` 加 `--scenario console-ux-02`（设计系统 §10.0 第 5 条：14 个会话、A01 由小林接手、F01 的原因、三张订单）；7F3A 不走种子，由走查脚本经假企微接口和脚本化的 mock LLM 真跑出来（要有一轮价格护栏删句，才有 trace 与改写对照）。Playwright 浅色、深色各走一遍，截图存到 `walkthrough/`，含只用键盘的交还。对应验收 33。
@@ -1646,6 +1646,45 @@ date`，origin/dev 这段时间没有新提交）。
   2. 顶部提示第一版按会话存储（`store.mode`）判断，owner 审查时指出 spec 说的是配置模式（`config.mode`/`CONFIG_SOURCE`）；线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file` 的组合（第 27 步才切会话存储），按会话存储判断会让提示在那之前永远不出现。改成 `config.mode === 'db'`，变量名 `dbSessionStore` → `dbConfigMode`。见「实施记录 · 第 23 步」的「审查之后改的」。
 - 阻塞：无。
 - 下一步：主线照旧，第 23 步之后是第 24 步（02 走查种子与走查）。⌘K「会话」组与 A2 仍在用 `admin.html`（`workbenchHref`），本步没有改，留给第 21 步。
+
+### 实施记录 · 第 21 步
+
+- **A2「需要你处理」**：`console/src/overview/model.ts` 加 `handoffTodos`（合并「等人接手」`?state=human` 与「已成交客户要人工」`?group=paid_needs_human`，紧急一律最前，其余按 `handoff.at` 倒序即等得越久越靠前；行写原因与等待时长，≥10 分钟 danger、否则 warning，都带钟表图标，操作是真的次要小按钮「接手」，成功才打开 J 页）与 `pendingOrderTodos`（`?status=pending_payment` 且 `conversation` 不为空的订单，按金额高、下单早排序；advisor 模式且未确认写「等你确认价格」，否则写「下单N未付」，操作是幽灵「打开会话」）。原来的 `waitingTodos`（admin.html 新标签）整个删掉，`todoOrder` 签名改成 `(handoff, pendingOrders, sop, catalog)`。
+- **「金额高的在前」按 spec 字面做（2026-10-08 审查之后改正）**：第一版图省事套用了 plan「工作量与砍法」第一级第 3 条的退路（等人接手按等待时长、待付款按下单时间，两组首尾相接不交叉排）；owner 审查指出那一条是进度落后时才启用的砍法，砍之前要在 spec 顶部加 `Revisions:` 由 owner 决定，不是已经认可的做法——改正为真的按 spec 字面「没人接手的在前，金额高的在前（待付款订单或最近报价的总价），沉默久的在前」，紧急一律最前，等人接手、已成交客户要人工、待付款三组一起排，不再分两段拼接。
+  - 不为排序多发 N+1 请求：`ConversationRow` 加一个只给排序用的 `amount: number | null` 字段（`src/console-api/workbench.ts` 的 `conversationAmount`：这个会话待付款订单的总价，没有就用最近报价的总价，都没有为 null），服务端算好随 `/conversations`、`/conversations/counts` 等已有接口一起发，不用再查一次详情。
+  - 「没人接手的在前」：等人接手、已成交客户要人工、待付款这三组行在 A2 的语境里都算「没人接手」的提醒（前两组定义上没有接手人；待付款提醒的是钱没收到，不是这个会话有没有被接手，没有为了判它再给 `OrderView` 加「会话有没有接手人」的字段——coordinator 的范围只要求加金额），这一条在三组之间不产生区分，真正分高低的是金额与沉默时长。
+  - `console/src/overview/model.ts` 把原来分开的 `handoffTodos`/`pendingOrderTodos`（各自排序后再拼接）合并成一个 `attentionTodos`（内部 `byAttention` 比较器：紧急 → 金额高在前，没有金额排最后 → 沉默久在前），`todoOrder` 的签名跟着从 4 个参数收成 3 个（`attention, sop, catalog`）。
+  - `amount` 对所有角色给真值（agent、viewer 也一样），排序对所有角色一致；A2「等人接手」「已成交客户要人工」两行本来就不显示金额（design-system 样张没画），这是前端的展示选择，不是接口按角色打码——接口侧不因为角色隐藏这个数。
+  - `ConversationRow.amount` 是必填字段（不是可选），`console/src/conversations/conversations.selftest.tsx`、`workbench.selftest.tsx`、`shell/shell.selftest.ts` 里各自构造 `ConversationRow` 的夹具工厂补了这个字段（默认 null），这几个文件本身与排序无关，断言没动。
+- **OrderView 新增 `conversation: { id, channel, needSummary } | null`**（`src/console-api/workbench.ts` 的 `orderConversation`，按 `order.sessionId` 现查 `getSession`）：A2「待付款」行要会话的短码（`shortIdOf` 在 console 一侧用 `conversationLabel` 现算，不重复发）与 `needSummary` 才能拼出标题「企微客户 · B01 · 巴厘岛2人」。会话被清除（订单不再指向内存里的会话，第 16 步之后才会出现）时为 `null`，这一行直接跳过——没有会话 id 就打不开，比列一行点不开的链接更贴「打开会话」的字面意思。
+- **OrderPage 新增顶层 `paymentMode`**（`src/console-api/app.ts` 的 `/orders` handler）：「等你确认价格」要知道全租户的收款方式，但这是个全局开关不是订单字段；放在 `/orders`（权限表「订单列表」对所有角色开放，坐席、viewer 也只能看待付款）而不是 `/orders/summary`（只给所有者、管理员），因为待付款行本身对所有能处理会话的角色可见。
+- **本月成交额、运行数字都不是链接**：design-system A2 的 KPI 格样张只给了口径、数字、明细，没给「点了去」（不同于 A 页业务数 4 格每格都有「点了去」列）；新增 `StaticKpi`/`StaticKpiTile`，复用 `.ov-kpi` 的视觉但不套 `<a>`、没有悬停箭头。
+- **运行数字 4 格口径**：`回复用时（秒）`=`Math.round(replyP90Ms/1000)`；`转人工率`/`AI出错率`=`percent()`（新加的 `src/shared/format.ts` 工具，0–1 比例取整百分数，仿 `money`/`quantity` 的「写不出来则「—」」写法）；`今天的AI费用（元）`=`costTodayYuan.toFixed(2)`（不接千分位，demo 规模的费用数字不会到千元，接了反而要再处理小数位与分隔符的组合，权衡后从简）。spec 字面只给了费用格的明细（「近7天共…元」），没给它的口径一行；四格按视觉规范都要有口径，这里自己定了一句「今天的模型调用花费」，与明细不重复、不提模型名。
+- **`<Button size="small">接手</Button>` 的空格**：antd 6 对恰好 2 个汉字、没有图标的按钮默认插入一个可见空格（`接 手`），项目没有关掉 `autoInsertSpaceInButton`，`重试`（`sop.selftest.tsx` 的 `label()`）已经遇到并绕过。接手按钮沿用同一个绕法（比较前去空格），不改全局配置，不新增 ConfigProvider 覆盖。
+- **窄屏（<600px）**：接手行不能靠「整行可点」隐藏操作（只有按钮本身触发动作），`.ov-todo-static` 单独给了一个三行的 `grid-template-areas`（图标 / 类型 / 对象上下文 / 操作各占一行），按钮挪到内容下面，不跟着 `.ov-todo-action` 一起在 599px 以下消失。
+- **字体子集**：新文案（「已成交客户要人工」已有字、「等你确认价格」里的「率」「占」「花」等字缺失）触发 `check-fonts` 报缺字，`FONTTOOLS_PYTHON=<临时装的 venv> pnpm exec tsx scripts/fonts/build.ts` 重切，`console/src/fonts/{fonts.css,manifest.json,noto-sans-sc-ui.woff2}` 单独一个提交（随第 14、19 步的做法）。
+- **console 自测**（`console/src/overview/overview.selftest.tsx`，187 条）：纯逻辑覆盖 `attentionTodos`（紧急最前、金额高在前、没有金额排最后、金额相同按沉默久在前，等人接手/已成交客户要人工/待付款三组一起排）、`waitDurationText`/`monthlyRevenueKpi`/`metricsKpis` 的文案、「—」兜底；DOM 挂载覆盖所有者看到完整 7 行 A2（含本月成交额、运行数字，待付款因为有金额排到最前）、权限矩阵（owner/admin 看得到本月成交额与运行数字，supervisor/agent/viewer 看不到；owner/admin/supervisor/agent 有「接手」按钮，viewer 没有）、运行数字三态（文件存储 503 整块不画、出错就地重试、骨架）、接手成功后导航到 J 页、接手 409（`assigned_to_other`）就地说明不导航。原有 A 页测试里涉及「等人接手」`.ov-kpi-value`/`a.ov-todo` 的下标断言，因为接手行从链接换成了按钮、KPI 多了一格，逐处改成按 `.ov-kpi-block`/`.ov-todos-kpi` 限定作用域；排序改成按金额之后，2.1 所有者测试里的顺序与上下文断言按新顺序改写，都不是行为本身出的问题。另给 `console.selftest.ts` 补了 3 条：`ConversationRow` 的键数（10→11）、`amount` 的取值（订单优先于报价，都没有为 null）、对所有角色一致（坐席也拿到真值）。
+- **代表性变异**（隔离在同一 worktree，验证后立即回退，门禁与自测重跑过确认恢复绿）：
+  - `console/src/overview/model.ts`：紧急不在最前（短路判断）、金额排序被关掉、没有金额排在最前（符号取反）、沉默时长排序反了——4 处都让 `attentionTodos` 的顺序断言变红；
+  - `src/console-api/workbench.ts`：`conversationAmount` 报价优先于待付款订单（取反优先级）——让 `console.selftest.ts` 新加的两条变红；
+  - 另外重跑了上一轮（本月成交额/运行数字权限、文件存储整块不画、advisor 未确认文案）4 处变异，仍然全部变红——这几处的产品代码本次没改，重跑是确认改排序没有连带影响它们。
+  - 全部回退后 `overview.selftest.tsx` 187 条、`console.selftest.ts` 423 条恢复全绿。
+- **接手 409 跟着行一起消失（2026-10-08 审查 major，真实 Chromium + 本机后台测出来的）**：原来 `TakeoverTodoLine` 每行自己一个 `useMutation`，两个成员停在同一行时，A 接手成功、B 的事件流（`shell/live.ts` 的 `invalidateConversations`，几十毫秒内）让列表重取、这一行从 B 的 DOM 卸载，B 随后收到的 409（`assigned_to_other`）更新的是一个已经卸载的组件的状态，页面上什么都不显示——不是闪一下，是压根没地方画。`overview.selftest` 原来的 mock 没接 SSE，测不到这个时序。
+  - 改法：接手的 `useMutation` 与错误状态从每行提到 `TodoBlock` 一级（`takeoverErrors: Record<string, unknown>`，键是会话 id），`onTakeover(id)`/`pendingId`/`takeoverErrors` 作为 props 往下传给 `TodoRowView`/`TakeoverTodoLine`；`TodoBlock` 按当前 `rows` 算出还在列表里的接手行 id 集合，错误如果对应的行还在，照旧在行内显示（`InlineError`）；行已经不在了，就在区块头下面显示一条 `TakeoverErrorBanner`（`「{会话短码}：{原来那句错误文案}」`，如「A01：小林正在处理这个会话」），`role="alert"`，带「关掉」按钮，`TAKEOVER_ERROR_TTL_MS=6000` 毫秒后也自动清掉。没有用全局 toast（设计系统的就地说明优先于 toast）。
+  - 一个 `useMutation` 服务所有行：用 `takeover.variables === id` 判断某一行是不是正在等这次请求的回包（`pendingId`），不是给每行单独建一个 hook 实例；多个行的错误各自用 `id` 做键存在 map 里，互不覆盖（补的自测「接手之后另一行的 409 不该互相污染」仍然通过）。
+  - 补的自测（`overview.selftest.tsx` 2.10b）：`server.hold` 扣住接手请求，点了按钮之后手动 `qc.invalidateQueries({queryKey:['conversations']})`（模拟 `invalidateConversations` 在同一时刻做的事）把这一行刷掉，断言行确实不在了；`releaseHeld()` 放出 409 之后断言区块顶部出现「A01：小林正在处理这个会话」，点「关掉」之后消失。故意把 `orphanedErrors` 改成恒为 `[]` 复现过一次原来的 bug（断言找不到按钮直接抛错，确认这条自测真的在测这件事），改回来之后 192 条全绿。
+- **门禁**：`pnpm format:check`/`pnpm lint`/`pnpm typecheck` 全绿；`pnpm test` 不带 PG 与带真实 PG（`pgtest-02s21`，`127.0.0.1:55442`，收尾已 `docker rm`）各跑三遍（金额排序改动、409 说明改动前后各一遍），exit code 0；`check-fonts`、`check-console-dist`（首屏 JS 335,839 / 420,000 B，含总览分片）随 `pnpm test` 跑过；锁定套件（`src/engine.selftest.ts` 等 8 个文件）零修改，没有改 `README.md`。
+- **BEFORE / AFTER**（PR 说明用）：BEFORE——总览「需要你处理」只有等人接手（整行链到 `admin.html` 新标签）与话术/待上架草稿，没有已成交客户要人工、待付款、本月成交额、运行数字。AFTER——等人接手与已成交客户要人工合并一组、按紧急与等待时长排序，行尾是真的「接手」按钮（成功打开 J 页，409 就地说明）；新增「待付款」行（金额、下单多久未付或「等你确认价格」）；「需要你处理」右侧（≥1280px）或下方（<1280px）新增「本月成交额」格；再下面新增一行四格「运行数字」（回复用时、转人工率、AI出错率、今天的AI费用），后两块只给所有者、管理员，文件存储下运行数字整块不画。
+
+### 交接（2026-10-08，第 21 步）
+
+- 已完成：第 21 步「前端：总览 A2 与运行数字格」（分支 `feat/02-step21-overview-a2`，没 push；开工时 dev 含第 1–20 步，第 16 步与第 22 步在另两条线并行，本步没碰它们的文件）。A2「需要你处理」的等人接手/已成交客户要人工/待付款按 spec 字面的排序一起排（紧急最前、金额高在前、沉默久在前，`attentionTodos`）、真的「接手」按钮、待付款（`等你确认价格`/`下单N未付`）、本月成交额 KPI 格（只给所有者、管理员，宽于 1280 并排、窄于 1280 落到列表下方）、运行数字四格（只给所有者、管理员，文件存储整块不画，三态）。为此给 `OrderView` 加了 `conversation` 投影、`OrderPage` 加了顶层 `paymentMode`、`ConversationRow` 加了排序用的 `amount`、`src/shared/format.ts` 加了 `percent()`。接手的 `useMutation` 与错误状态从每行提到 `TodoBlock` 一级，行被事件流刷掉之后 409 挪到区块顶部的 `TakeoverErrorBanner` 显示，不跟着卸载的行一起消失。本步经 coordinator 两轮审查修正（见下两条）。结构、本步定的 14 条取舍、console 自测（`overview.selftest.tsx` 192 条、`console.selftest.ts` 新增 3 条）、10 个代表性变异、门禁结果见「实施记录 · 第 21 步」。
+- 2026-10-08 审查修正第一轮：排序第一版套用了 plan「工作量与砍法」第一级第 3 条的退路（等人接手按等待时长、待付款按下单时间，没按金额排），coordinator 指出那条砍法要先在 spec 顶部加 `Revisions:` 由 owner 决定，不是已认可的做法；改为照 spec 字面实现金额排序（服务端加 `amount` 字段、不为排序多发 N+1 请求）。
+- 2026-10-08 审查修正第二轮：真实 Chromium 走查带出一条 major——两个成员停在同一行，A 接手成功、B 的事件流几十毫秒内让列表重取、这一行从 B 的页面卸载，B 随后收到的 409 无处显示（不是闪一下，是压根没画）；改成接手请求与错误状态在 `TodoBlock` 一级管理，行不在了就在区块顶部显示就地说明（带会话短码、能关掉、几秒后自动清掉）。两轮都见「实施记录 · 第 21 步」。
+- 半成品：无。浏览器实测没做到，但按 coordinator 的安排不用补——第一轮时本机的 chrome-devtools MCP 连接失败，没有现成的 Playwright 依赖；第二轮 coordinator 已经安排了另一个审查 agent 用本机缓存的 Playwright 1.64 + Chromium 做了真实走查，带回了上面第二轮那条 major。用 `overview.selftest.tsx` 的真实 DOM 断言（happy-dom）覆盖了所有者/管理员/主管/坐席/只读五种身份、权限矩阵、三态、排序（含金额相同按沉默时长、没有金额排最后）、接手的成功/409（含行被刷掉之后的 409）路径，没有走 1440/1279/375 三个宽度下的真实渲染截图，也没有测深色主题、没有跑 axe，留给第 24 步「02 走查种子与走查」。
+- 阻塞：无。
+- 下一步：主线照旧是第 22 步「快捷回复：行业包默认模板与管理抽屉」（已在另一条线并行，会改 J 页右栏与行业包配置，不碰总览）；之后是第 24 步「02 走查种子与走查」，先读本节与「实施记录 · 第 21 步」——A2 的 1440/1279/375 三个宽度、浅色深色、`check-console-src.ts` 已经核过一遍（接手按钮、待付款行、`amount` 字段都没有写死行业包词，没有碰 `handedOver`/`stage==='paid'`），走查脚本可以直接复用 `scripts/seed-demo.py` 现有的 02 场景种子（7F3A、F01、A01、B01 待付款）而不用另造，但种子数据现在要给至少一个会话配上报价或订单金额才能看出金额排序生效。
+- 合进 dev 时（第 22 步先合）：`src/console-api/app.ts` 两边新加的 import 都留；三个字体文件两边各自重切过，按合并后的界面文字重跑 `scripts/fonts/build.ts`（652 个汉字、835 个码位），`check-fonts` 通过。
 
 ### 交接（2026-10-08，第 22 步）
 

@@ -358,6 +358,12 @@ export interface ConversationRow {
   handoff: { kind: HandoffKind; at: string; reason: string } | null;
   /** 客户最后一条消息的时间：企微 send_time，没有就用处理时刻 */
   lastCustomerAt: string | null;
+  /**
+   * 排序用的金额（02 第 21 步新增，02 spec「后台页面 · 总览 A2」）：这个会话待付款订单的总价，没有就用最近报价的总价，
+   * 都没有为 null。不是对客文案、不进任何页面的正文——A2「等人接手」「已成交客户要人工」两行本来就不显示金额，这个字段
+   * 只给「金额高的在前」排序用；哪个角色都收到真值，排序对所有角色一致，角色能不能在界面上看到钱是另一件事（见 OrderView）
+   */
+  amount: number | null;
 }
 
 export interface ConversationPage {
@@ -451,6 +457,11 @@ export interface OrderView {
   confirmed: { at: string; by: string } | null;
   /** 标记已付时会话是否曾经转过人工（R9）；没付或旧数据为 null */
   handoffBeforePaid: boolean | null;
+  /**
+   * 所属会话的最小投影（02 第 21 步新增，A2「待付款」行用：标题、「打开会话」的去向）；会话已被清除（订单不再指向
+   * 内存里的会话，第 16 步之后才会出现）时为 null，这种订单的行不画
+   */
+  conversation: { id: string; channel: string; needSummary: string | null } | null;
 }
 
 /** GET /conversations/:id：J 页一次取全 */
@@ -553,6 +564,11 @@ export interface OrderPage {
   items: OrderView[];
   /** 过滤之后的条数 */
   total: number;
+  /**
+   * 收款方式（02 第 21 步新增）：A2「待付款」行据它判断要不要写「等你确认价格」。全租户同一个值，不是按订单的字段，
+   * 放在这里是因为这个接口对所有角色都开放（/orders/summary 只有所有者、管理员），advisor 未确认的文案要让坐席也看到
+   */
+  paymentMode: PaymentMode;
 }
 
 /** GET /orders/summary：本月（服务器时区的自然月）的成交额与待付款 */

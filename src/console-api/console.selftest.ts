@@ -1682,15 +1682,16 @@ check(
     top.text.slice(0, 200),
   );
   const c = (top.body.items as Body[])[0]!;
-  // 02 加了 needSummary、assignee、handoff、lastCustomerAt 四个键（02 spec「后台接口」）
+  // 02 加了 needSummary、assignee、handoff、lastCustomerAt 四个键；02 第 21 步再加 amount（A2「需要你处理」排序用）
   check(
-    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt、needSummary、assignee、handoff、lastCustomerAt',
+    '会话列表：每条只有 id、channel、stage、handedOver、messageCount、updatedAt、needSummary、assignee、handoff、lastCustomerAt、amount',
     JSON.stringify(Object.keys(c)) ===
-      '["id","channel","stage","handedOver","messageCount","updatedAt","needSummary","assignee","handoff","lastCustomerAt"]' &&
+      '["id","channel","stage","handedOver","messageCount","updatedAt","needSummary","assignee","handoff","lastCustomerAt","amount"]' &&
       c.handedOver === true &&
       c.stage === 'handoff' &&
       c.messageCount === 3 &&
-      c.updatedAt === new Date(T + 5000).toISOString(),
+      c.updatedAt === new Date(T + 5000).toISOString() &&
+      c.amount === null,
     JSON.stringify(c),
   );
   check('会话列表：不带消息正文和客户画像', !top.text.includes('不该出现的正文') && !top.text.includes('不该出现的画像'));
@@ -1762,6 +1763,35 @@ check(
     '会话列表：转人工记录的原话与出行时间备注不进列表',
     !assigned.text.includes('不该出现的原话') && !assigned.text.includes('不该出现的备注'),
   );
+
+  // 02 第 21 步：amount（A2「需要你处理」排序用）——没有待付款订单时取最近报价总价，有订单时取订单总价；
+  // 对所有角色给真值（排序要一致），A2 要不要把它画成文字是前端的事，不是这里打码
+  const E = 'wecom:conv-e';
+  seed(E, 'wecom', T + 8000, (sess) => {
+    sess.lastQuote = { routeId: 'r-1', routeTitle: '测试线路', travelers: 2, total: 12_000 };
+  });
+  const eRow = ((await call('GET', '/conversations?limit=1', O)).body.items as Body[])[0];
+  check('会话列表：amount 没有待付款订单时取最近报价总价', eRow?.id === E && eRow?.amount === 12_000, JSON.stringify(eRow));
+  const eOrder = store.createOrder({
+    sessionId: E,
+    routeId: 'r-1',
+    routeTitle: '测试线路',
+    travelers: 2,
+    departDate: '2030-03-01',
+    totalPrice: 30_000,
+  });
+  const eSess = store.getSession(E)!;
+  eSess.orderIds.push(eOrder.id);
+  store.saveSession(eSess, false);
+  const eRow2 = ((await call('GET', '/conversations?limit=1', O)).body.items as Body[])[0];
+  check('会话列表：有待付款订单时 amount 取订单总价，不取最近报价总价', eRow2?.id === E && eRow2?.amount === 30_000, JSON.stringify(eRow2));
+  const eRowAsAgent = ((await call('GET', '/conversations?limit=1', { as: agent })).body.items as Body[])[0];
+  check(
+    '会话列表：amount 对所有角色一致（坐席也收到真值，排序对齐；A2 不显示它是前端的事，不是接口按角色打码）',
+    eRowAsAgent?.id === E && eRowAsAgent?.amount === 30_000,
+    JSON.stringify(eRowAsAgent),
+  );
+
   // 下一段按 ai / human / paid 三态逐条核对：把接手人摘掉，它回到等人接手
   const dSess = store.getSession(D)!;
   delete dSess.assignee;
@@ -1838,9 +1868,9 @@ check(
       !per.human.rows.some((r) => r.id === 'wecom:cust_P02') &&
       per.human.rows.some((r) => r.id === 'wecom:cust_H01'),
   );
-  const leakedKeys = all.rows.filter((r) => ['profile', 'nickname', 'messages'].some((k) => k in r) || Object.keys(r).length !== 10);
+  const leakedKeys = all.rows.filter((r) => ['profile', 'nickname', 'messages'].some((k) => k in r) || Object.keys(r).length !== 11);
   check(
-    '会话列表：ConversationRow 的键里没有 profile、nickname、messages，只有 10 个投影字段（02 加了 4 个）',
+    '会话列表：ConversationRow 的键里没有 profile、nickname、messages，只有 11 个投影字段（02 加了 4 个、第 21 步再加 amount）',
     all.rows.length > 0 && leakedKeys.length === 0,
     leakedKeys.map((r) => Object.keys(r).join('|')).join(' '),
   );
@@ -3857,7 +3887,7 @@ async function workbenchSuite(): Promise<void> {
         all.status === 200 &&
         all.body.total === store.listOrders().length &&
         JSON.stringify(Object.keys((all.body.items as Body[])[0]!)) ===
-          '["id","routeTitle","travelers","departDate","totalPrice","status","createdAt","paidAt","confirmed","handoffBeforePaid"]',
+          '["id","routeTitle","travelers","departDate","totalPrice","status","createdAt","paidAt","confirmed","handoffBeforePaid","conversation"]',
       `${asAgent.status} ${pending.status} ${all.text.slice(0, 200)}`,
     );
     const notMine = keep(await call('POST', `/orders/${o1.id}/confirm`, { as: ag2 }));
