@@ -151,7 +151,7 @@
   - 本机装上 `watch.sh` 的 cron，用一个测试群机器人把告警端到端走一遍。
   - 对应验收 31，以及 32 的本机部分。
 - [ ] 27. demo 线上切换（1）：由 owner 在线上执行第 26 步的切换步骤；切换前后的哈希、会话数、停机时长与不敏感的证据记进「验收记录」，主机与路径另记；第一份备份验证通过后删掉 `--keep` 里的原件。对应验收 32。
-- [ ] 28. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节
+- [x] 28. 对照 spec 当前全部验收标准逐条验证，把每条的结果记在本文件「验收记录」一节：2026-10-09 完成，35 条逐条记在「验收记录」——31 条通过（第 17 条是 owner 接受当前修复）；第 31 条未通过、按开放问题 5 的裁决处理；第 32、34、35 条本机与自动化部分通过，剩下的待 owner（第 27 步线上切换、外部拨测与真实企微测试群机器人）。验收 17 用两份由只读 spec 的独立 agent 写的盲测集，第一份定位问题、第二份做留出集测量。
   - 发版与 README（owner 2026-10-03 定）：02 全部做完、验收通过之后才发版到 main（连同 dev 上已有的后台 UX 改造）；README 在这时对照最终实现一次更新，之前不改。2026-10-03 核对过一遍 dev 上的 README，要改的要点：第 48 行「无数据库、无前端框架」已不成立（01 起有 Postgres 与 Vite + React 后台）；架构图只画了文件模式，缺后台、Postgres 与两种会话存储，`销售SOP.md` 应为 `data/sop.md`，`markPaid` 应为 `markOrderPaid`，工具框缺搜酒店与方案书；在线体验表缺 `/console/` 一行；可靠性设计缺价格规则与服务承诺护栏（`price-rules.ts`）、确定性转人工、注入防护与如实回答是 AI；区间写法 `~~` 在 GitHub 上渲染成删除线，改用 en dash；引导页是四步不是三步；本地跑法与门禁一节的自测数量、单独跑某组的命令、`lint` 与 `typecheck` 的组成、权限表与账号说明已过时；部署一节缺 `/console/` 账号与 DB 模式、会话存储切换与回滚检查；「生产化路径 / 当前刻意不做」里单实例、内存为权威、Redis、消息队列（任务表已在 02 做了）、限流计数几条要按 01、02 的现状重写；企微一节的回调地址写法要去掉「公网 IP」；部署一节「回到文件模式或更早的版本」加两条（第 8 步原来加在 README 里，2026-10-03 撤回、留到这时写）：后台改过已上架条目的内容（`/healthz` 的 `config.catalogVersioned` 为 true）之后，deploy.sh 拒绝回到 02 之前的镜像——02 之前的镜像不写条目版本，那期间发出的方案书链接回到 02 之后会按版本 1 显示旧价，回到文件存储也去不掉这一条，要回滚只能回到 02 之后的镜像；同一个 02 镜像去掉 `CONFIG_SOURCE=db` 回到文件模式时，`?v=2` 及以上的已发链接全部打不开（404）、不带 v 的旧链接按导出时的新内容显示（「Open」第 8 步审查带出的第三条，告警做没做以那时为准）。第 9 步带出的：可靠性 / 可观测的说明加上 db 存储下每轮的 trace 与护栏改写记进库（`turn_traces`、`guard_events`；trace 里有客户原话与工具参数，保留期见第 16 步），模型用量按天、按模型与用途累加进 `usage_daily`（每 30 秒与停机时写），`usage.json` 照旧；文件存储下 trace 只在内存。第 10 步带出的：自动跟进一节写明两种存储的调度不同（文件存储是每 `FOLLOWUP_SCAN_MS` 一次的扫描器，db 存储由任务表按阶段阈值排程、每 5 秒认领、客户回话即取消、夜间顺延到 9:00），两种存储下跟进话术都过与 AI 回复同一套出口护栏、客户说「不用了」「别发了」之后不再跟进、跟进消息在后台标「自动跟进」；可靠性设计里「跟进最多发一次」的说法改成「记账与任务的 sending 一起提交之后才推送，推送途中崩溃重启后记 abandoned、不重发」；「生产化路径 / 当前刻意不做」里消息队列一条按任务表（`jobs`，转人工通知与保留期清理也在里面）重写。第 11 步带出的：可靠性设计加确定性转人工的三类触发，都只在代码层、不改提示词：紧急情况（高反、受伤、急病、证件丢失、被困走失，只认客户本人或同行的人此刻正在遇到的，出行前的提问、体质自述、价格俚语不算）回固定的应急话术、立即转人工、这一轮不调模型，已转人工时不回话、只把记录升级为紧急并再通知一次，已成交的会话照样转；负面情绪按词表加规则（只认冲着我们的话：最近 3 条里 1 次辱骂或 2 次不满），与投诉同样转人工；三类规则都精确优先、只在高把握的说法上触发，拿不准的交给模型（SOP 里一句：紧急或发火时先安抚再转人工）；交互失败（模型没给出可用文本、检索无结果、客户重复提问——只认在问的话，重复回答不算；价格或注入护栏命中的轮次不算）连续 2 轮或最近 6 轮里 3 轮就转人工、按普通诉求的措辞回复。第 12 步带出的：可靠性设计里「msgid 去重随 cursor 持久化」一节加上企微发送账本（每个 send_msg 分段带我们生成的 msgid、重试沿用同一个；48 小时、5 条按保守口径从客户消息的 send_time 起算，超时与网络异常也计数；跟进要窗口剩 ≥2 条且 ≥2 小时；人工回复在发满 5 条或窗口已过时被拒并写明原因；`msg_send_fail` 回执记进账本、会话里加一条说明）与按 msgid 去重的五种情况（已入库、回复还没生成时进程被杀，重启后恰好回复一次；回复已送出的重放不补发；恢复更早的 `var/` 之后重新拉到的消息同样按这套规则），「在途重放：回复已生成则原样重发」那句改成「账本里没送出才重发」；人工回复在企微与网页模拟器的客户侧以「【顾问】」开头，交还之后模型分得清哪些话是顾问说的。第 18 步带出的：可观测一节加上后台的运行数字（`GET /api/console/metrics?days=`，所有者与管理员可看，只在 db 存储，60 秒缓存，四个数的口径）与 OpenTelemetry 埋点（设了 `OTEL_EXPORTER_OTLP_ENDPOINT` 才加载，每轮一条 trace，属性按 GenAI 约定加 Langfuse 的会话属性，会话用 ref（没有 ref 的文件存储与 demo 类会话用进程内的匿名引用）；默认不导出原文，`OTEL_CAPTURE_CONTENT=1` 才导出客户原话、最终回复与工具参数，任何时候不导出 external_userid），环境变量一节加 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_CAPTURE_CONTENT`。第 13 步带出的：后台一节加上会话工作台的接口（接手、改派、交还、人工回复即接手、`clientId` 去重、人工回复在提交之后才发、两位顾问不能同时接手、坐席只能交还自己的或没人接手的、客户不同意处理敏感信息的不能交还）、订单的确认价格 / 确认收款 / 取消（坐席只限接手人本人）、快捷回复、事件流 `/api/console/events`（提交之后才推、不带正文、断线续传与 resync、每 60 秒复核登录）与只读成员看到的号码打码；权限表加这几行（spec「后台接口」权限）；旧 `admin.html` 的「交还 AI」与人工回复改走同一个状态机（以「共享工作台」操作，成员接手中的会话旧工作台交还与回复都是 409）；可靠性设计里「生成中顾问接管」一句改成「这一轮开始之后有人接手（接手代次变了），AI 回复不发，记一条『本轮未发送（顾问已接手）』，重启之后的重放也不补发」；匿名可读的旧接口把交还消息里的顾问姓名换成「顾问」。
 - [ ] 29. 清理临时探针与测试
 - [ ] 30. owner 确认验收通过后，spec 顶部改 `Status: implemented`
@@ -916,6 +916,7 @@
 
   - 变异（源码拷进 scratchpad 的隔离副本，逐个打、跑 `handoff.selftest`）：4 个代表性变异全部杀掉——「怎么…这么/那么」隔字排除撤回紧跟着才排除（3 项变红）、「谁 + 还/能/会/敢」排除撤掉（4 项）、`EVERY_AFTER` 窗口从 8 字撤回 3 字（5 项）、`emergencyOf` 的类型先后判定撤掉（8 项，全部紧急类型明确正例从 altitude 变回 medical）。
   - 门禁：`format:check`、`lint`、`typecheck` 全绿；`pnpm test` 不带与带 `PG_TEST_URL=postgres://postgres:pw@127.0.0.1:55452/postgres`（本机一次性 `pgvector/pgvector:pg17` 容器 `pgtest-acc17`，跑完删掉）都全绿；锁定套件 8 个文件的 sha256 与第 1 步相同，断言零修改，`PREFIX sha256` 不变（没碰提示词与 SOP）；README 没动；`gitleaks` 与本机绝对路径扫描干净。
+  - 第二份盲测集复测与 owner 决定（2026-10-09）：协调者用第二份盲测集（另一个独立 agent 只读 spec 写的，修规则时没给看）测改前、改后，数字见「验收记录」第 17 条。紧急与情绪的「不是」误判都是 0，紧急类型判对 80.6% → 88.9%；在问的「不是问句」误判 37.9% → 24.2%，剩下的 16 句都是没见过的反问式抱怨，说明逐个补句式泛化不够。owner 2026-10-09 接受当前修复（「在问」只用于重复提问，要客户把同一句抱怨连发两遍才转人工），没有改成只认问号与「吗/么」，也没有加「带语气尾的疑问词句不算」那一条。
 
 ### 第 12 步 · 企微：发送账本、回执、去重、前缀（2026-10-03）
 
@@ -1352,120 +1353,34 @@ date`，origin/dev 这段时间没有新提交）。
   2. **minor · 「窗口关了／发满了」两处文案不统一**：`src/shared/ui-labels.ts` 的 `ERROR_COPY.send_window_closed`/`send_quota_exhausted` 原来是手写的两句话，和 `src/shared/conversation-types.ts` 给服务端（`src/quota/ledger.ts`）用的 `WINDOW_CLOSED_TEXT`/`QUOTA_EXHAUSTED_TEXT` 字面不同（「企微超过48小时没有新消息」vs「客户超过 48 小时没说话」；「发满5条」缺中西文间距，`QUOTA_EXHAUSTED_TEXT` 是「发满 5 条」）。改法：`ERROR_COPY` 这两条直接 `import` 并引用 `conversation-types.ts` 的两个常量，不再手写第二份文案；`console/src/parts/errors.selftest.ts` 的 `SPEC` 表同步改成同样两句字面值。`parts.selftest.ts` 的「一条不多一条不少」比对仍然通过（118 条断言全部通过）。
   - 两条都在同一 worktree、同一分支上追加提交（不改历史）；收尾前 `git fetch -q origin` 确认 `origin/dev` 没有再前进，不需要第三次合并；`pnpm test` 带 `PG_TEST_URL`（`pgtest-02s20`，`127.0.0.1:55442`）与不带各重跑一遍，两遍结果逐条一致、全绿（`workbench: 80 条断言全部通过`，其余套件条数与上面「门禁」一节一致未变）；本机绝对路径、长 `wm` id、gitleaks（stdin 兜底）三道自查确认干净。
 
-## 验收记录
+### 第 21 步 · 前端：总览 A2 与运行数字格（2026-10-08）
 
-（对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
-
-- 24 · **通过（owner 2026-10-08 定：「嫌慢」那条不设要求，见最后一条子项与「Open」）**。以下第一段是第 15 步主分支（`feat/02-step15-payment`）当时的跑法与数字，留作历史；收尾小 PR（`fix/02-step15-sop-fallback`）复测的数字在最后一条子项「措辞补例句之后的复测」。自动部分：DB 模式门禁里 22 个请求的前缀哈希与 `/healthz` 核对 0 处不符（见「实施记录 · 第 15 步」门禁）。手动部分（owner 已批准，2026-10-08）：按「文件 → DB → 文件」交替跑了 6 遍（文件、DB 各 3 遍），另在改动前的 `origin/dev`（`git archive` 出的隔离副本，不是 git worktree）跑了 1 遍文件 + 1 遍 DB 当基线，合计 8 遍、991 次模型调用、花费 ¥18.62（主模型，未开对冲）。密钥只在跑命令的 shell 里从主仓库 `.env` 现读，没有复制进 worktree，没有写进任何文件或日志。
-  - P90：8 遍全部在 4,144–4,945ms 之间，两种模式都远不超过 8 秒。
-  - 整体通过的用例集合：基线文件 31/42、DB 26/42；改动后文件 35/35/34、DB 35/35/34——都不少于基线（几条波动的是既有的、与本步无关的模型行为类用例，如 `flow-07-kid-headcount`）。
-  - 兜底用例逐条命中率（改动后 6 遍里命中几遍 / 基线 2 遍里命中几遍）：
-    - `s15-emergency-01-altitude-mother`（我妈高原反应很严重）6/6（基线 0/2）
-    - `s15-emergency-02-altitude-help`（高反头痛救命）6/6（基线 0/2）
-    - `s15-emergency-04-lhasa-altitude`（到了拉萨头疼是不是高反）6/6（基线 0/2）
-    - `s15-emergency-03-passport-lost`（护照丢了明天的飞机）2/6（基线 0/2）——偏弱
-    - `s15-anger-02-curse`（骂服务）2/6（基线 0/2）——偏弱
-    - `s15-anger-01-disappointed-service`（嫌服务差）、`s15-anger-03-slow`（嫌慢）0/6（基线各 0/2）——没起作用
-  - 售前反例逐条（6 遍里「没转人工」判对几遍）：`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 6/6；`s15-presale-01-altitude-question`（光一句「高反了怎么办」、没有上下文）4/6，另外 2 遍模型没有直接转人工，是先反问「您是现在不舒服，还是问以后」，反问句里带了「如果现在不舒服我马上为您转接」这种有条件的话，被 `denyText` 的正则认成了转人工用语——这两遍严格说不算真的误转人工，是测试用例的正则认不出「有条件」。
-  - 结论与建议（不是本步自己改 SOP 重跑，留给 owner 定）：「此刻遇到紧急情况」那半句对高原反应类的识别已经稳定（3/4 场景 100%），但「冲我们发火」那半句对冷启动的纯抱怨句（没有订单、没有上下文，只一句「什么服务」「这么慢」）基本不生效，模型倾向于当成需要先安抚、问清楚的普通不满（这和第 2 条「投诉、表达强烈不满」本来就该转人工有重叠，可能是模型在两条之间没有明确选中任何一条）；建议在第 8 条里把发火的例句也写成具体短语（像紧急情况那样列 2–3 句示例，而不是只给抽象描述），或者把「证件丢了」单独配一条像「护照/证件丢了，马上要赶飞机」这样的具体例句，复用紧急情况那组例句已经验证有效的写法。`s15-presale-01` 这条测试用例本身的歧义（孤零零一句「高反了怎么办」）是否要收紧（比如改成更明确的「以前听说去西藏会不会高反」），或者接受模型反问是合理行为、把 `denyText` 改成只认不带「如果」「要是」的无条件转人工句，也请 owner 一并定。
-
-  - **措辞补例句之后的复测（`fix/02-step15-sop-fallback`，2026-10-08，owner 已批准）**：按建议给第 8 条「冲我们发火」「证件丢了」各补了具体例句（原文见「实施记录 · 第 15 步」四个哈希表上方的 SOP 改动，或直接读 `data/sop.md` 转人工条件第 8 条）；回归用例的判定同时改掉了上一轮 `s15-presale-01` 那个假阳性——改用 `denyTool`（直接看这一轮有没有调 `handoff_to_human`），不再用 `denyText` 正则扫回复文本，判定脚本与用例文件都留在 scratchpad（`s15b/run.mts`、`s15b/realOnly-step15b.json`），不进仓库。按「文件 → DB → 文件」交替跑了 6 遍（文件、DB 各 3 遍），基线沿用上一轮的数字（不再重跑），合计 759 次模型调用、花费 ¥14.17（主模型，未开对冲；另有一次只跑 10 条兜底用例的小额预跑 17 次调用 ¥0.37，验证判定脚本本身跑得通，算在同一笔开销里，总计 776 次、¥14.55）。密钥只在跑命令的 shell 里从主仓库 `.env` 现读，没有复制进 worktree，没有写进任何文件或日志。
-    - P90：6 遍在 5,148–6,025ms 之间，两种模式都远不超过 8 秒（比上一轮略高但同一量级，波动属于正常范围）。
-    - 整体通过的用例集合：文件 35/39/36、DB 38/37/36（42 条里）——都不少于上一轮基线（文件 31、DB 26）；非 `s15-*` 的波动（`detail-02-no-guess`、`flow-07-kid-headcount`、`guard-13-no-service-promise` 等）与上一轮点名的一样，是既有的、与本步无关的模型行为类用例，不是这次 SOP 改动带来的新问题。
-    - 兜底用例逐条命中率（6 遍里命中几遍 / 上一轮 6 遍里命中几遍）：
-      - `s15-emergency-01-altitude-mother`（我妈高原反应很严重）6/6（上一轮 6/6，不变）
-      - `s15-emergency-02-altitude-help`（高反头痛救命）6/6（上一轮 6/6，不变）
-      - `s15-emergency-04-lhasa-altitude`（到了拉萨头疼是不是高反）6/6（上一轮 6/6，不变）
-      - `s15-emergency-03-passport-lost`（护照丢了明天的飞机）**6/6（上一轮 2/6）**——补了「护照丢了，明天就要上飞机」「证件被偷了，人在机场」两句具体例句之后转正
-      - `s15-anger-02-curse`（骂服务）**6/6（上一轮 2/6）**——转正
-      - `s15-anger-01-disappointed-service`（嫌服务差）**6/6（上一轮 0/6）**——转正
-      - `s15-anger-03-slow`（怎么这么慢啊）**0/6（上一轮 0/6）**——仍未起作用，唯一一条没达标
-    - 售前反例逐条（6 遍里「没转人工」判对几遍，`denyTool` 直接看工具调用）：`s15-presale-01-altitude-question`（高反了怎么办）、`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 **6/6**——`s15-presale-01` 上一轮的 4/6 是测试判定的假阳性（模型反问句里带「如果…马上为您转接」被正则误认成转人工），换成看工具调用之后，这条也是真的零误转人工，不是靠放宽判定蒙过去的。
-    - 结论：6 条兜底用例里 6 条转正或保持满分，只有 `s15-anger-03-slow`（单独一句「怎么这么慢啊」、没有任何上下文）仍是 0/6，没有达到「每条 6 遍里至少 5 遍」。推测原因：这句本身比「什么破服务」「你们这么慢是不是没人管」更孤立——没有「服务」「没人管」这类明确指向我们的词，模型更容易读成「这个流程/加载慢」之类的中性吐槛，倾向于先安抚或反问而不是直接转人工。按 brief 的要求，命中率没有整体达标就不自己再改再跑（每轮都花钱），第 15 步复选框不勾，把这条单独列出来请 owner 定：① 接受现状——「嫌慢」单独一句不转人工，靠客户后续说得更具体（如「这么慢是不是没人管」）或靠第 2 条「投诉、表达强烈不满」兜底，直接勾第 15 步；② 再给第 8 条补一条更贴近「怎么这么慢啊」原句的例句（如「怎么这么慢啊」本身，或「这都等了半天了」），接受再跑一轮回归的花费（参考这次 759 次、¥14.17）。
-
-- 33 · **通过**。2026-10-08，走查脚本在仓库外（scratchpad），本机真实 Postgres（一次性容器 `pgwalk-02s24`，`127.0.0.1:55444`，db 存储）、`scripts/seed-demo.py --scenario console-ux-02` 种子、7F3A 由走查脚本经假企微接口与脚本化假 LLM 真跑出来（含一轮价格护栏删句）。Playwright 1.64.0（本机缓存 Chromium，headful——headless 下 `Notification.permission` 测不出 `granted`，见「实施记录 · 第 24 步」）在 1440×900 下浅色、深色各走一遍验收 33 列的完整路径：I 页四个页签 → J 页接手（light 鼠标在 F01、dark 纯键盘在 7F3A）→ 回复 → 交还 → 交接卡 → 7F3A「AI原稿里删了1句」展开（浅色、深色各一遍；`removed` 恰好 1 句、`added` 为空）→ 铃铛与标题（浅色用 D01、深色用 C01 各实时推一条投诉，服务端确认处理完之后 5 秒内标题与铃铛计数更新）→ 浏览器通知（授权后捕获到的标题是「企微客户 · D01 等人接手」/「企微客户 · C01 等人接手」，正文「客户要投诉」，没有客户原话）→ A2（「已成交客户要人工」行是 A02、「本月成交额」207,440 元、运行数字四格）→ 快捷回复管理。只用键盘经「更多」完成一次交还 AI：dark 主题在 7F3A 上做，聚焦「更多」→ 回车开菜单 → 聚焦「交还AI」→ 回车选中，截图见 `walkthrough/dark/10-J页-7F3A-交接卡-键盘交还.png`。
-
-  走查中带出一处真实界面问题（J 页输入框右下角字数「0」压在「发送」按钮上，浅色 `09`、深色 `10` 截图放大可见）：antd 的 `showCount` 把字数渲染在文本域边框外、往下占 22px（`.ant-input-data-count` 的 `bottom: -22px`，Playwright 实测），`.wb-replybox-foot` 原来只留 8px 间距，不够盖住。改法：`console/src/conversations/workbench.css` 把 `.wb-replybox-foot` 的 `margin-top` 从 8px 改成 24px（照 22px 的字数高度留够间距再加 2px，不改渲染方式，最小改法）；补了 `console/src/conversations/workbench.selftest.tsx` 2.16 节一条断言，读 `workbench.css` 源码核对 `.wb-replybox-foot` 的 `margin-top` ≥ 22px（happy-dom 不排版，量不出真实像素重叠，改读 CSS 源码，手工把值改回 8px 验证过这条断言真的会变红）。改完重截了浅色、深色两边所有带输入框的 J 页截图。
-
-  截图 32 张（浅色 16、深色 16），存到 `docs/architecture/02-conversations-workbench/walkthrough/{light,dark}/`，单张最大 235,748 B，合计约 4.92 MB。axe 的 `color-contrast` 共 13 次扫描（每次扫描对应走查脚本在该画面停留时调一次 `axe.run`，不是每张截图各扫一次），逐一列出（主题/画面 → 违规数）：
-
-  | 主题  | 画面（对应 axe 调用点）                                   | 违规数 |
-  | ----- | --------------------------------------------------------- | ------ |
-  | light | 01 总览A2                                                 | 0      |
-  | light | 会话列表（I 页，四个页签都切过一遍后的页面状态）          | 0      |
-  | light | J页-F01（07～10：接手、已回复、交接卡）                   | 0      |
-  | light | J页-7F3A-trace（11～12：交还前、改写对照展开）            | 0      |
-  | light | A2（16，含「已成交客户要人工」与运行数字）                | 0      |
-  | light | 快捷回复管理（17）                                        | 0      |
-  | dark  | 01 总览A2                                                 | 0      |
-  | dark  | 会话列表（I 页，四个页签）                                | 0      |
-  | dark  | J页-7F3A-trace（11～12：交还前、改写对照展开，本次补的）  | 0      |
-  | dark  | J页-7F3A-键盘交还（07～10：接手、已回复、交接卡，纯键盘） | 0      |
-  | dark  | 铃铛弹层（13，本次补的）                                  | 0      |
-  | dark  | A2（16）                                                  | 0      |
-  | dark  | 快捷回复管理（17）                                        | 0      |
-
-  走查中另发现并修了三处走查脚本/环境本身的问题（esbuild 的 `__name` 辅助函数、headless 下 Notification 权限、demo 类会话跨进程持久化导致的测试卫生问题），都不是产品代码问题，详见「实施记录 · 第 24 步」。
-
-- 30 · **通过**。2026-10-08 初测之后，按 coordinator 意见复测（关对冲／开对冲两组，各用全新一次性容器、库里只有本次场景造的会话，「回到正常延迟」改按轮 P90 判定）；下面的数字是复测结果，是最终判定依据。初测用的是生产默认关对冲、容器里混了本机此前手工探路留下的旧会话、「回到正常延迟」判据是「基线 P50 + 10 秒」——初测的具体数字与判据已被复测取代，不再重复列出，差异与改法见「实施记录 · 第 25 步」。
-  - 两组都是：`scripts/load/run.ts`（`LOAD_FRESH_CONTAINER=1`）、本机真实 Postgres 一次性容器（Apple M5 × 10 核，跑完即删）、db 存储、假企微接口与假模型（一个 `globalThis.fetch` 覆盖）、50 个客户 × 10 轮 + 429 风暴（60 秒、30%）+ 风暴后检查点轮、5,000×300 预载。关对冲组按生产默认（`LLM_HEDGE_MODEL` 不设）；开对冲组按 `.env.example` 推荐的线上演示配置（`LLM_HEDGE_MODEL=glm-5.2`、`LLM_HEDGE_MS=4000`，`LLM_HEDGE_MS_FOLLOWUP` 留空按代码默认 2800），对冲模型走同一个假模型、同一套延迟分布与风暴逻辑。
-  - 每条客户消息恰有一次回复或一条记录在案的兜底：**两组都通过**，0 处异常（已转人工客户之后的静默都对应 `handedOver=true`，是预期内的兜底）。
-  - 每个（客户、轮次）至多一次 send_msg 组：**两组都通过**，0 次重复。
-  - 库里的消息数等于内存：**两组都通过**，一次性容器下 `loadtest` 租户只有本次场景造的 50 个会话；场景跑完先 `flushSession` 全部会话、走完三段停机钩子（释放租户锁，不退出进程），另起一个独立子进程重新从库预载同一个租户，两条路径精确相等：50 个真实会话、1,076 条消息（两组的数字相同，场景是同一套确定性脚本）。
-  - 转人工事件从提交到 SSE 送达 p99 ≤ 1 秒：**两组都通过**，关对冲 p99 = 3ms，开对冲 p99 = 4ms（各 40 个样本）。
-  - 落库延迟 p99 ≤ 500ms：**两组都通过**，关对冲 p99 = 98ms，开对冲 p99 = 74ms（各 1,076 个样本）。
-  - 事件循环延迟 p99 ≤ 200ms：**两组都通过**，两组都是 p99 = 3ms（关对冲 7,226 个样本、开对冲 7,329 个样本，每 50ms 一次 `setTimeout` 实测延迟，覆盖全程含风暴期间）。
-  - 结束时常驻内存比开始时增长不超过 20%：**两组都通过**，关对冲 155.9MB→135.7MB（降 13.0%），开对冲 157.7MB→136.5MB（降 13.4%），都是降的（脚本带 `--expose-gc`，场景开始与结束各手动 GC 一次再量）。
-  - 预载不被语句超时打断、耗时 ≤ 30 秒：**两组都通过**，5,000 个会话、每个 300 条消息（1,500,000 条），以 `agent_app` 的默认连接启动，关对冲 3,745ms、开对冲 3,269ms，都远低于 30 秒上限（两组各自在自己的全新容器上独立测，不是同一份数据复用）。
-  - **风暴期间进程不崩、风暴之后 1 分钟内回到正常延迟**：**两组都通过**，进程全程存活。按轮全程 P50/P90（ms），风暴在第 2 轮结束后开始、持续 60 秒，覆盖第 3、4 轮；「检查点轮」是专门等到风暴结束满 60 秒（或已经过了这个点就立刻跑）单独测的一轮，不依赖自然轮次边界恰好落在窗口内：
-
-    | 轮          | 关对冲 P50 | 关对冲 P90 | 开对冲 P50 | 开对冲 P90 | 命中风暴窗口       |
-    | ----------- | ---------- | ---------- | ---------- | ---------- | ------------------ |
-    | 0（冷启动） | 16,278     | 29,291     | 17,990     | 30,927     | 否                 |
-    | 1           | 16,354     | 28,503     | 17,041     | 29,134     | 否                 |
-    | 2           | 16,869     | 28,995     | 18,362     | 31,252     | 否                 |
-    | 3           | 15,012     | 28,702     | 17,063     | 32,359     | **是**             |
-    | 4           | 17,965     | 34,408     | 18,670     | 31,783     | **是**             |
-    | 5           | 17,313     | 30,462     | 17,378     | 28,754     | 否                 |
-    | 6           | 17,971     | 31,073     | 16,722     | 29,255     | 否                 |
-    | 7           | 17,546     | 29,580     | 16,539     | 27,126     | 否                 |
-    | 8           | 17,837     | 30,758     | 16,516     | 30,147     | 否                 |
-    | 9           | 17,756     | 30,640     | 16,144     | 27,634     | 否                 |
-    | 检查点轮    | 14,931     | **26,471** | 16,919     | **28,017** | 否（风暴早已结束） |
-
-    判定：基线取风暴之前稳态各轮（第 1、2 轮，不含第 0 轮冷启动）P90 的最大值——关对冲 28,995ms、开对冲 31,252ms；阈值是基线 × 1.1（给测量噪声留的余量：50 个客户同时发消息、`LLM_MAX_INFLIGHT=8` 排队下，同一轮重跑的 P90 本身有个百分之几的抖动，1.1× 是在「抓真衰退」与「不被抖动误报」之间取的一个不算宽松的系数——基线两轮本身相差不到 8%）。检查点轮 P90：关对冲 26,471ms（阈值 31,895ms，**通过**，比基线还低）、开对冲 28,017ms（阈值 34,377ms，**通过**，同样比基线低）。两组检查点轮都比基线更快，风暴没有留下排队本身解释不了的额外衰退。两组检查点轮都是在「自然轮次已经把时间拖过风暴结束+60秒」之后才排上的（关对冲晚了约 120 秒、开对冲晚了约 118 秒——每轮本身要 15~20 秒，10 轮自然跑下来早就过了 60 秒整——这正是本步按构造专门补一轮检查点轮的理由：不补的话，10 轮跑完时自然已经没有哪一轮恰好落在「风暴结束后 60 秒内开始」）。
-
-  - **对冲：是否覆盖、有没有在风暴里把请求量放大**。两组总模型调用数几乎相同（关对冲 557 次、开对冲 561 次，+0.7%），429 命中率也几乎相同（关对冲 28/557=5.0%、开对冲 32/561=5.7%）——**对冲没有让风暴期间的请求量成倍放大**。原因是 `llm-gate` 的 `gateBusy()`：对冲计时器（`LLM_HEDGE_MS=4000`）到点触发时，如果名额已经占满（`inflight>=LLM_MAX_INFLIGHT=8`）就**不**加发对冲（`src/llm.ts` 的 `launchHedge(onTimer=true)` 分支），只有主请求**直接失败**（这次压测里是重试耗尽的 429）触发的对冲不看这条（`onTimer=false`）。50 个客户常年把 8 个名额占满，计时器触发的对冲几乎全被 `gateBusy()` 挡住：开对冲组全程只触发了 2 次对冲（都在风暴期间、都是主请求 429 失败触发、都胜出），稳态各轮（风暴前后）对冲触发次数都是 0——`hedgeByPhase`：风暴前 `{fired:0, won:0}`，风暴中 `{fired:2, won:2}`，风暴后 `{fired:0, won:0}`，`followupHedgeFired/Won` 全程为 0（没有工具往返之后的第二次调用触发过对冲）。按小规模（6 个客户，名额够用，另跑的烟雾测试）复核过对冲机制本身是好的：同样的配置、客户数降到名额以内时，计时器触发的对冲每轮能打 3~4 次、偶尔胜出——「几乎不触发」是这次 50 并发、8 个名额的压测规模下 `gateBusy()` 按设计抑制的结果（「拥堵时多一个请求只会让所有人排得更久」，`src/llm.ts` 的注释），不是对冲本身失灵，也不是脚本没配对。这是本步按 spec「观察 llm-gate 的排队与对冲」得到的真实结论：**排队机制主导、对冲在高并发下基本让位**，两者都观察到了，只是对冲在这个规模下起的作用很小。
-  - 另外看了一眼 plan 第 5 步带出的注意（`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引）：两组场景里假模型都不调 `create_order`，orders、consents 两张表基本是空的，没有删除/清除场景（不在本步场景之内），测不出这两个索引在大数据量下的实际影响，仍然维持现状、没有加迁移——留给以后真有删除场景的压测或第 16 步保留期清理单独核实。
-  - 细节、取舍、初测与复测的差异、门禁见「实施记录 · 第 25 步」。
-
-### 第 23 步 · `admin.html` 两处（2026-10-08）
-
-- 只改两个文件：`public/admin.html`、`src/config/config.selftest.ts`；`load()` 与 `sigOf()` 一字未改（`server.selftest.ts` 抽取它们俩跑的那组断言零修改，照过）。另两条并行线（第 16 步隐私与保留期、第 20.2 步 J 页）当时都没有新提交并进 `origin/dev`（`git fetch` 后 `git merge origin/dev` 两次都是 `Already up to date`），收尾没有要合并的东西。
-- 结构：
-  - `api()`（统一出口，不是 `load()`）的 `fetch(url, o)` 后面接一个 `.then(r => {...})`：只认 `url === '/api/sessions'`（`load()` 发起的那一个列表请求，`/api/orders`、`/api/usage` 等不归这里管）且 `r.status === 401`；新变量 `let listAuthHandled = false` 保证一个页面生命周期只自动反应一次——已登录（`AUTH.on`）时当会话失效处理（`onAuthLost()`），未登录时唤起登录框（`openLogin()`）。
-  - 顶部提示（`#opsHint`，静态 HTML 里默认 `hidden`）：`let dbConfigMode` + `function updateOpsHint()` 两段新代码，判断信号用已有的、不用登录就能读的 `/healthz` 的 `config.mode`（`configMode()`/`CONFIG_SOURCE`，不是会话存储 `SESSION_STORE`/`store.mode`）——后台配置在库里就提示去 J 页，与会话是不是也落在库里无关；文件配置模式（demo）下这条逐字节不加载任何提示；链接在 `render()` 里随 `S.selected` 更新（`render()` 本身不是锁定函数，可以改），没有选中会话链到 `/console/conversations`，选中了带 `encodeURIComponent` 过的 id 链到 `/console/conversations/<id>`。
-  - CSS 只加了 `.opsHint` 这一类，复用现有的设计变量（`--accent-soft`/`--accent-line`/`--accent-tx`），不加新令牌。
-- 本步定的（spec 没写细）：
-  1. **「db 配置模式」取的是 `CONFIG_SOURCE`（`/healthz` 的 `config.mode`），不是会话存储 `SESSION_STORE`（`store.mode`）**：第一版按会话存储判断过（owner 审查之后改掉），理由是「J 页要有真实会话才有意义」；但 spec 原文「db 配置模式下顶部加一条提示」说的是后台配置，不是会话存储，而且线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file`（第 27 步才切会话存储）这一种组合——文件会话存储下 J 页的列表、详情、接手与回复一样能用（只是 trace 类接口 503），按会话存储判断会让这条提示在切换会话存储之前永远不出现，不是 spec 要的「有后台的地方就提示」。改成 `config.mode === 'db'`，变量名也从 `dbSessionStore` 改成 `dbConfigMode`，与会话存储是 file 还是 db 无关。
-  2. **只弹一次，不是「弹层开着就不重复弹」**：原计划按「`loginMask.hidden` 当时是不是 true」判断是否重复，第一次全跑通之后用 `pnpm test` 揪出了 `console/src/conversations/conversations.selftest.tsx` 里早就钉住的一条断言——「深链：关掉登录框后，下一次取列表不再弹」（该文件第 16 行注释写明「`admin.html` 本身的改动是第 23 步」，原样跑 `admin.html` 的页面脚本在 happy-dom 里，不是只抽 `load()`/`sigOf()`）：人关掉登录框之后，`setInterval(load, 30000)` 的下一轮轮询照样 401，若按「弹层此刻是关的」重新弹出，就会把人关掉的登录框立刻又弹回来。改成一次性标记（`listAuthHandled`，用法仿照已有的 `deepLink` 一次性核对）之后两边都通过，细节见下「注意」。
-  3. **列表 401 的判断范围只到 `/api/sessions`**：brief 原文「列表请求（`load()` 发起的那一个）」是单数，`/api/orders`、`/api/usage`、`/api/insights`、`/api/sessions/:id/suggestion` 等现有的 401 各自已经在各自调用处处理（`onAuthLost()` 或静默），不归这条新逻辑管，没有扩大范围。
-- 自测（全部加进非锁定的 `src/config/config.selftest.ts`，照它现有的 vm 跑页面脚本的写法——`cut()` 按起止字符串原样截取 `admin.html` 的一段源码，`vm.runInNewContext` 跑，用注入的假 `fetch`/`openLogin`/`onAuthLost`/`document` 核对；529 → 539 项）：
-  - `load()`、`sigOf()` 的源码与 `origin/dev` 用同一对正则逐字节比对（找不到 `origin/dev` 时跳过、不让自测因离线环境而炸，行为仍由锁定的 `server.selftest.ts` 兜底）。
-  - 列表 401 自动弹登录框：未登录 401 弹一次、非 401 不弹、别的接口 401 不归这里管、同一上下文连续两次 401 只弹第一次（哪怕中途把 `loginMask.hidden` 重新设成 `true` 模拟人关掉）、已登录仍 401 走 `onAuthLost` 不是 `openLogin`。每个场景用一个全新的 `vm` 上下文（`listAuthHandled` 从未弹过的状态开始），只有「连续两次」这一条故意复用同一个上下文。
-  - 顶部提示：文件配置模式（`config.mode=file`）不出现（先把 `hidden` 设成 `false` 模拟「正显示」，再走一遍文件配置模式的取数，确认被收回去——不然这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断」这种变异）；db 配置模式出现且链到 `/console/conversations`，`store.mode` 是 file 还是 db 不影响判断（线上 demo 现在就是 `config.mode=db`、`store.mode=file` 这一种组合）；选中会话时链接带上 `encodeURIComponent` 过的 id。
-- 变异（3 个，在 scratchpad 里的隔离副本里打，原地跑完就整个删掉）：
-  1. `api()` 整段 401 处理去掉（退回 `return fetch(url, o);`）——`config.selftest.ts` 3 条新断言变红。
-  2. 去掉「只弹一次」的 `listAuthHandled` 守卫（401 就弹，不管弹过没有）——`config.selftest.ts` 的「连续两次只弹第一次」那条、以及 `console/src/conversations/conversations.selftest.tsx` 的「深链：关掉登录框后，下一次取列表不再弹」都变红（这条也是先错后对的那条真实教训，见上「本步定的」第 2 条）。
-  3. 顶部提示去掉 `if (!dbConfigMode)` 的收回判断（文件配置模式也一直显示）——`config.selftest.ts` 的「文件配置模式下顶部提示不出现」变红。
-  4. 单独改 `load()`（把 `locked = r => r.status===401||r.status===503` 改成只认 503）——锁定的 `server.selftest.ts` 当场报「401 不把页面弄坏」那条变红，证实「不改 `load()`/`sigOf()`」这条红线本身就有现成的锁定断言兜底。
-- 门禁：四个门禁全绿，PG 用本机一次性 `pgtest-02s23` 容器（端口 55436，`pgvector/pgvector:pg17`，跑完已停）。`pnpm test` 不带/带 `PG_TEST_URL` 都是 `EXIT=0`；PASS 行不带 PG 时 config 539、console 420、conversations 143、其余与第 19 步后相同；带 PG 时 store 431（真实 PG 部分）、其余与不带 PG 时的 config/console/conversations 相同（这几个套件不读 `PG_TEST_URL`）。mock eval 两种配置模式都是 19/19（43 项断言）。锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 为空，`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`（与「实施记录 · 第 15 步」最终那一列相同，不变）。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 的两道黑名单扫描，`gitleaks stdin` 对 `git diff origin/dev...HEAD` 的输出没有发现泄露。
-- 注意（给以后改 `admin.html` 登录/弹层逻辑的步骤）：`console/src/conversations/conversations.selftest.tsx` 第 3 节原样跑 `admin.html` 的整段页面脚本（happy-dom + 假 `fetch`），覆盖面比 `server.selftest.ts` 只抽 `load()`/`sigOf()` 宽得多，牵涉登录框、深链、`modeBtn`、`#s=` hash 的任何改动都应该先跑一遍这个文件（`npx tsx --tsconfig console/tsconfig.json console/src/conversations/conversations.selftest.tsx`），本步就是靠它抓到「只弹一次」这条本来会被漏掉的回归。
-- 审查之后改的（2026-10-08；owner 核过 diff 之后指出一处）：
-  1. **顶部提示判断条件改用 `config.mode`，不是 `store.mode`**（major）：第一版判断信号用了会话存储模式（`/healthz` 的 `store.mode`），理由是「J 页要有真实会话才有意义」；owner 指出 spec 原文「db 配置模式下顶部加一条提示」说的是后台配置（`CONFIG_SOURCE`），不是会话存储（`SESSION_STORE`），而线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file`（第 27 步才切会话存储）这一种组合——文件会话存储下 J 页的列表、详情、接手与回复一样能用，按会话存储判断会让这条提示在切换会话存储之前永远不出现。改成 `d.config.mode === 'db'`，变量名 `dbSessionStore` → `dbConfigMode`，与会话存储是 file 还是 db 无关；`load()`/`sigOf()`、`api()` 的 401 处理（本步另一半）都没有再动。
-  - 自测：`config.selftest.ts` 的两条顶部提示断言改成直接核对「不论会话存储（`store.mode`）是什么，只看 `config.mode`」——mock 的 `/healthz` 响应同时带 `config.mode` 与 `store.mode` 两个字段，专门造了一条 `config.mode=db`、`store.mode=file`（线上 demo 现在的真实组合）来确认不被会话存储拖累；总数仍是 539（改的是已有两条断言的内容，不是新增）。`conversations.selftest.tsx`（143 项）不碰这部分，照旧全过。
-  - 变异：把条件改回 `d.store.mode === 'db'`（在隔离副本里打，跑完即删）——`config.selftest.ts` 新断言当场报「db 配置模式下顶部提示出现」那条变红（`hidden=true`），复现的正是 owner 报的问题（`config.mode=db`、`store.mode=file` 时提示消失）；撤回后恢复绿。
-  - 门禁：四个门禁重跑（`pnpm test` 不带 `PG_TEST_URL`，只改了页面脚本与自测，没碰服务端或 PG 相关代码）全绿，`EXIT=0`；config 539、conversations 143，`PREFIX sha256` 与改之前相同（`system=dd2c10ee… tools=64c16fc8…`）；收尾前 `git fetch -q origin && git merge origin/dev`，两次都是 `Already up to date`；锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 仍为空；本机绝对路径、长 `wm` 会话 id 两道黑名单扫描与 `gitleaks stdin` 对本次 diff 均为空/无发现。
+- **A2「需要你处理」**：`console/src/overview/model.ts` 加 `handoffTodos`（合并「等人接手」`?state=human` 与「已成交客户要人工」`?group=paid_needs_human`，紧急一律最前，其余按 `handoff.at` 倒序即等得越久越靠前；行写原因与等待时长，≥10 分钟 danger、否则 warning，都带钟表图标，操作是真的次要小按钮「接手」，成功才打开 J 页）与 `pendingOrderTodos`（`?status=pending_payment` 且 `conversation` 不为空的订单，按金额高、下单早排序；advisor 模式且未确认写「等你确认价格」，否则写「下单N未付」，操作是幽灵「打开会话」）。原来的 `waitingTodos`（admin.html 新标签）整个删掉，`todoOrder` 签名改成 `(handoff, pendingOrders, sop, catalog)`。
+- **「金额高的在前」按 spec 字面做（2026-10-08 审查之后改正）**：第一版图省事套用了 plan「工作量与砍法」第一级第 3 条的退路（等人接手按等待时长、待付款按下单时间，两组首尾相接不交叉排）；owner 审查指出那一条是进度落后时才启用的砍法，砍之前要在 spec 顶部加 `Revisions:` 由 owner 决定，不是已经认可的做法——改正为真的按 spec 字面「没人接手的在前，金额高的在前（待付款订单或最近报价的总价），沉默久的在前」，紧急一律最前，等人接手、已成交客户要人工、待付款三组一起排，不再分两段拼接。
+  - 不为排序多发 N+1 请求：`ConversationRow` 加一个只给排序用的 `amount: number | null` 字段（`src/console-api/workbench.ts` 的 `conversationAmount`：这个会话待付款订单的总价，没有就用最近报价的总价，都没有为 null），服务端算好随 `/conversations`、`/conversations/counts` 等已有接口一起发，不用再查一次详情。
+  - 「没人接手的在前」：等人接手、已成交客户要人工、待付款这三组行在 A2 的语境里都算「没人接手」的提醒（前两组定义上没有接手人；待付款提醒的是钱没收到，不是这个会话有没有被接手，没有为了判它再给 `OrderView` 加「会话有没有接手人」的字段——coordinator 的范围只要求加金额），这一条在三组之间不产生区分，真正分高低的是金额与沉默时长。
+  - `console/src/overview/model.ts` 把原来分开的 `handoffTodos`/`pendingOrderTodos`（各自排序后再拼接）合并成一个 `attentionTodos`（内部 `byAttention` 比较器：紧急 → 金额高在前，没有金额排最后 → 沉默久在前），`todoOrder` 的签名跟着从 4 个参数收成 3 个（`attention, sop, catalog`）。
+  - `amount` 对所有角色给真值（agent、viewer 也一样），排序对所有角色一致；A2「等人接手」「已成交客户要人工」两行本来就不显示金额（design-system 样张没画），这是前端的展示选择，不是接口按角色打码——接口侧不因为角色隐藏这个数。
+  - `ConversationRow.amount` 是必填字段（不是可选），`console/src/conversations/conversations.selftest.tsx`、`workbench.selftest.tsx`、`shell/shell.selftest.ts` 里各自构造 `ConversationRow` 的夹具工厂补了这个字段（默认 null），这几个文件本身与排序无关，断言没动。
+- **OrderView 新增 `conversation: { id, channel, needSummary } | null`**（`src/console-api/workbench.ts` 的 `orderConversation`，按 `order.sessionId` 现查 `getSession`）：A2「待付款」行要会话的短码（`shortIdOf` 在 console 一侧用 `conversationLabel` 现算，不重复发）与 `needSummary` 才能拼出标题「企微客户 · B01 · 巴厘岛2人」。会话被清除（订单不再指向内存里的会话，第 16 步之后才会出现）时为 `null`，这一行直接跳过——没有会话 id 就打不开，比列一行点不开的链接更贴「打开会话」的字面意思。
+- **OrderPage 新增顶层 `paymentMode`**（`src/console-api/app.ts` 的 `/orders` handler）：「等你确认价格」要知道全租户的收款方式，但这是个全局开关不是订单字段；放在 `/orders`（权限表「订单列表」对所有角色开放，坐席、viewer 也只能看待付款）而不是 `/orders/summary`（只给所有者、管理员），因为待付款行本身对所有能处理会话的角色可见。
+- **本月成交额、运行数字都不是链接**：design-system A2 的 KPI 格样张只给了口径、数字、明细，没给「点了去」（不同于 A 页业务数 4 格每格都有「点了去」列）；新增 `StaticKpi`/`StaticKpiTile`，复用 `.ov-kpi` 的视觉但不套 `<a>`、没有悬停箭头。
+- **运行数字 4 格口径**：`回复用时（秒）`=`Math.round(replyP90Ms/1000)`；`转人工率`/`AI出错率`=`percent()`（新加的 `src/shared/format.ts` 工具，0–1 比例取整百分数，仿 `money`/`quantity` 的「写不出来则「—」」写法）；`今天的AI费用（元）`=`costTodayYuan.toFixed(2)`（不接千分位，demo 规模的费用数字不会到千元，接了反而要再处理小数位与分隔符的组合，权衡后从简）。spec 字面只给了费用格的明细（「近7天共…元」），没给它的口径一行；四格按视觉规范都要有口径，这里自己定了一句「今天的模型调用花费」，与明细不重复、不提模型名。
+- **`<Button size="small">接手</Button>` 的空格**：antd 6 对恰好 2 个汉字、没有图标的按钮默认插入一个可见空格（`接 手`），项目没有关掉 `autoInsertSpaceInButton`，`重试`（`sop.selftest.tsx` 的 `label()`）已经遇到并绕过。接手按钮沿用同一个绕法（比较前去空格），不改全局配置，不新增 ConfigProvider 覆盖。
+- **窄屏（<600px）**：接手行不能靠「整行可点」隐藏操作（只有按钮本身触发动作），`.ov-todo-static` 单独给了一个三行的 `grid-template-areas`（图标 / 类型 / 对象上下文 / 操作各占一行），按钮挪到内容下面，不跟着 `.ov-todo-action` 一起在 599px 以下消失。
+- **字体子集**：新文案（「已成交客户要人工」已有字、「等你确认价格」里的「率」「占」「花」等字缺失）触发 `check-fonts` 报缺字，`FONTTOOLS_PYTHON=<临时装的 venv> pnpm exec tsx scripts/fonts/build.ts` 重切，`console/src/fonts/{fonts.css,manifest.json,noto-sans-sc-ui.woff2}` 单独一个提交（随第 14、19 步的做法）。
+- **console 自测**（`console/src/overview/overview.selftest.tsx`，187 条）：纯逻辑覆盖 `attentionTodos`（紧急最前、金额高在前、没有金额排最后、金额相同按沉默久在前，等人接手/已成交客户要人工/待付款三组一起排）、`waitDurationText`/`monthlyRevenueKpi`/`metricsKpis` 的文案、「—」兜底；DOM 挂载覆盖所有者看到完整 7 行 A2（含本月成交额、运行数字，待付款因为有金额排到最前）、权限矩阵（owner/admin 看得到本月成交额与运行数字，supervisor/agent/viewer 看不到；owner/admin/supervisor/agent 有「接手」按钮，viewer 没有）、运行数字三态（文件存储 503 整块不画、出错就地重试、骨架）、接手成功后导航到 J 页、接手 409（`assigned_to_other`）就地说明不导航。原有 A 页测试里涉及「等人接手」`.ov-kpi-value`/`a.ov-todo` 的下标断言，因为接手行从链接换成了按钮、KPI 多了一格，逐处改成按 `.ov-kpi-block`/`.ov-todos-kpi` 限定作用域；排序改成按金额之后，2.1 所有者测试里的顺序与上下文断言按新顺序改写，都不是行为本身出的问题。另给 `console.selftest.ts` 补了 3 条：`ConversationRow` 的键数（10→11）、`amount` 的取值（订单优先于报价，都没有为 null）、对所有角色一致（坐席也拿到真值）。
+- **代表性变异**（隔离在同一 worktree，验证后立即回退，门禁与自测重跑过确认恢复绿）：
+  - `console/src/overview/model.ts`：紧急不在最前（短路判断）、金额排序被关掉、没有金额排在最前（符号取反）、沉默时长排序反了——4 处都让 `attentionTodos` 的顺序断言变红；
+  - `src/console-api/workbench.ts`：`conversationAmount` 报价优先于待付款订单（取反优先级）——让 `console.selftest.ts` 新加的两条变红；
+  - 另外重跑了上一轮（本月成交额/运行数字权限、文件存储整块不画、advisor 未确认文案）4 处变异，仍然全部变红——这几处的产品代码本次没改，重跑是确认改排序没有连带影响它们。
+  - 全部回退后 `overview.selftest.tsx` 187 条、`console.selftest.ts` 423 条恢复全绿。
+- **接手 409 跟着行一起消失（2026-10-08 审查 major，真实 Chromium + 本机后台测出来的）**：原来 `TakeoverTodoLine` 每行自己一个 `useMutation`，两个成员停在同一行时，A 接手成功、B 的事件流（`shell/live.ts` 的 `invalidateConversations`，几十毫秒内）让列表重取、这一行从 B 的 DOM 卸载，B 随后收到的 409（`assigned_to_other`）更新的是一个已经卸载的组件的状态，页面上什么都不显示——不是闪一下，是压根没地方画。`overview.selftest` 原来的 mock 没接 SSE，测不到这个时序。
+  - 改法：接手的 `useMutation` 与错误状态从每行提到 `TodoBlock` 一级（`takeoverErrors: Record<string, unknown>`，键是会话 id），`onTakeover(id)`/`pendingId`/`takeoverErrors` 作为 props 往下传给 `TodoRowView`/`TakeoverTodoLine`；`TodoBlock` 按当前 `rows` 算出还在列表里的接手行 id 集合，错误如果对应的行还在，照旧在行内显示（`InlineError`）；行已经不在了，就在区块头下面显示一条 `TakeoverErrorBanner`（`「{会话短码}：{原来那句错误文案}」`，如「A01：小林正在处理这个会话」），`role="alert"`，带「关掉」按钮，`TAKEOVER_ERROR_TTL_MS=6000` 毫秒后也自动清掉。没有用全局 toast（设计系统的就地说明优先于 toast）。
+  - 一个 `useMutation` 服务所有行：用 `takeover.variables === id` 判断某一行是不是正在等这次请求的回包（`pendingId`），不是给每行单独建一个 hook 实例；多个行的错误各自用 `id` 做键存在 map 里，互不覆盖（补的自测「接手之后另一行的 409 不该互相污染」仍然通过）。
+  - 补的自测（`overview.selftest.tsx` 2.10b）：`server.hold` 扣住接手请求，点了按钮之后手动 `qc.invalidateQueries({queryKey:['conversations']})`（模拟 `invalidateConversations` 在同一时刻做的事）把这一行刷掉，断言行确实不在了；`releaseHeld()` 放出 409 之后断言区块顶部出现「A01：小林正在处理这个会话」，点「关掉」之后消失。故意把 `orphanedErrors` 改成恒为 `[]` 复现过一次原来的 bug（断言找不到按钮直接抛错，确认这条自测真的在测这件事），改回来之后 192 条全绿。
+- **门禁**：`pnpm format:check`/`pnpm lint`/`pnpm typecheck` 全绿；`pnpm test` 不带 PG 与带真实 PG（`pgtest-02s21`，`127.0.0.1:55442`，收尾已 `docker rm`）各跑三遍（金额排序改动、409 说明改动前后各一遍），exit code 0；`check-fonts`、`check-console-dist`（首屏 JS 335,839 / 420,000 B，含总览分片）随 `pnpm test` 跑过；锁定套件（`src/engine.selftest.ts` 等 8 个文件）零修改，没有改 `README.md`。
+- **BEFORE / AFTER**（PR 说明用）：BEFORE——总览「需要你处理」只有等人接手（整行链到 `admin.html` 新标签）与话术/待上架草稿，没有已成交客户要人工、待付款、本月成交额、运行数字。AFTER——等人接手与已成交客户要人工合并一组、按紧急与等待时长排序，行尾是真的「接手」按钮（成功打开 J 页，409 就地说明）；新增「待付款」行（金额、下单多久未付或「等你确认价格」）；「需要你处理」右侧（≥1280px）或下方（<1280px）新增「本月成交额」格；再下面新增一行四格「运行数字」（回复用时、转人工率、AI出错率、今天的AI费用），后两块只给所有者、管理员，文件存储下运行数字整块不画。
 
 ### 第 22 步 · 快捷回复：行业包默认模板与管理抽屉（2026-10-08）
 
@@ -1507,6 +1422,34 @@ date`，origin/dev 这段时间没有新提交）。
   4. **minor · 「- 」开头的行报错文案堆了一串符号示例**：保持拦（与出口护栏 `stripMarkdown` 同一个口径：客户不该在企业微信里看到列表符号），`QUICK_REPLY_MARKDOWN_MSG` 从「正文不能用Markdown格式（\*\*加粗\*\*、# 标题、- 列表、[链接](地址)这类写法）」改成「正文不能用Markdown格式，分点请用「·」或直接换行」——直接给替代写法，不堆砌符号清单。
   - 门禁（第二轮，审查之后，同一个分支续改）：`format:check`、`lint`、`typecheck` 全绿；`pnpm test` 不带与带 `PG_TEST_URL`（同上，容器复用同一个名字和端口）都 `EXIT=0`；console 430（两边相同，新加的真实 PG 并发块只在带 `PG_TEST_URL` 时跑、摘要句尾相应换一句）、workbench 99、conversations 143（未改动）。`PREFIX sha256` 与第一轮相同，不变；锁定套件 8 个文件零修改。本机绝对路径、长 `wm` 会话 id 两道黑名单扫描与 `gitleaks stdin`（对 `git diff origin/dev` 的输出）均无发现。做了 5 个代表性变异（上面 4 个 + 这次审查第 1 条新增的「去掉 `createQuickReply` 的锁」），全部确认变红后撤回复绿。`git fetch -q origin`：仍没有新提交，不需要合并。
 
+### 第 23 步 · `admin.html` 两处（2026-10-08）
+
+- 只改两个文件：`public/admin.html`、`src/config/config.selftest.ts`；`load()` 与 `sigOf()` 一字未改（`server.selftest.ts` 抽取它们俩跑的那组断言零修改，照过）。另两条并行线（第 16 步隐私与保留期、第 20.2 步 J 页）当时都没有新提交并进 `origin/dev`（`git fetch` 后 `git merge origin/dev` 两次都是 `Already up to date`），收尾没有要合并的东西。
+- 结构：
+  - `api()`（统一出口，不是 `load()`）的 `fetch(url, o)` 后面接一个 `.then(r => {...})`：只认 `url === '/api/sessions'`（`load()` 发起的那一个列表请求，`/api/orders`、`/api/usage` 等不归这里管）且 `r.status === 401`；新变量 `let listAuthHandled = false` 保证一个页面生命周期只自动反应一次——已登录（`AUTH.on`）时当会话失效处理（`onAuthLost()`），未登录时唤起登录框（`openLogin()`）。
+  - 顶部提示（`#opsHint`，静态 HTML 里默认 `hidden`）：`let dbConfigMode` + `function updateOpsHint()` 两段新代码，判断信号用已有的、不用登录就能读的 `/healthz` 的 `config.mode`（`configMode()`/`CONFIG_SOURCE`，不是会话存储 `SESSION_STORE`/`store.mode`）——后台配置在库里就提示去 J 页，与会话是不是也落在库里无关；文件配置模式（demo）下这条逐字节不加载任何提示；链接在 `render()` 里随 `S.selected` 更新（`render()` 本身不是锁定函数，可以改），没有选中会话链到 `/console/conversations`，选中了带 `encodeURIComponent` 过的 id 链到 `/console/conversations/<id>`。
+  - CSS 只加了 `.opsHint` 这一类，复用现有的设计变量（`--accent-soft`/`--accent-line`/`--accent-tx`），不加新令牌。
+- 本步定的（spec 没写细）：
+  1. **「db 配置模式」取的是 `CONFIG_SOURCE`（`/healthz` 的 `config.mode`），不是会话存储 `SESSION_STORE`（`store.mode`）**：第一版按会话存储判断过（owner 审查之后改掉），理由是「J 页要有真实会话才有意义」；但 spec 原文「db 配置模式下顶部加一条提示」说的是后台配置，不是会话存储，而且线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file`（第 27 步才切会话存储）这一种组合——文件会话存储下 J 页的列表、详情、接手与回复一样能用（只是 trace 类接口 503），按会话存储判断会让这条提示在切换会话存储之前永远不出现，不是 spec 要的「有后台的地方就提示」。改成 `config.mode === 'db'`，变量名也从 `dbSessionStore` 改成 `dbConfigMode`，与会话存储是 file 还是 db 无关。
+  2. **只弹一次，不是「弹层开着就不重复弹」**：原计划按「`loginMask.hidden` 当时是不是 true」判断是否重复，第一次全跑通之后用 `pnpm test` 揪出了 `console/src/conversations/conversations.selftest.tsx` 里早就钉住的一条断言——「深链：关掉登录框后，下一次取列表不再弹」（该文件第 16 行注释写明「`admin.html` 本身的改动是第 23 步」，原样跑 `admin.html` 的页面脚本在 happy-dom 里，不是只抽 `load()`/`sigOf()`）：人关掉登录框之后，`setInterval(load, 30000)` 的下一轮轮询照样 401，若按「弹层此刻是关的」重新弹出，就会把人关掉的登录框立刻又弹回来。改成一次性标记（`listAuthHandled`，用法仿照已有的 `deepLink` 一次性核对）之后两边都通过，细节见下「注意」。
+  3. **列表 401 的判断范围只到 `/api/sessions`**：brief 原文「列表请求（`load()` 发起的那一个）」是单数，`/api/orders`、`/api/usage`、`/api/insights`、`/api/sessions/:id/suggestion` 等现有的 401 各自已经在各自调用处处理（`onAuthLost()` 或静默），不归这条新逻辑管，没有扩大范围。
+- 自测（全部加进非锁定的 `src/config/config.selftest.ts`，照它现有的 vm 跑页面脚本的写法——`cut()` 按起止字符串原样截取 `admin.html` 的一段源码，`vm.runInNewContext` 跑，用注入的假 `fetch`/`openLogin`/`onAuthLost`/`document` 核对；529 → 539 项）：
+  - `load()`、`sigOf()` 的源码与 `origin/dev` 用同一对正则逐字节比对（找不到 `origin/dev` 时跳过、不让自测因离线环境而炸，行为仍由锁定的 `server.selftest.ts` 兜底）。
+  - 列表 401 自动弹登录框：未登录 401 弹一次、非 401 不弹、别的接口 401 不归这里管、同一上下文连续两次 401 只弹第一次（哪怕中途把 `loginMask.hidden` 重新设成 `true` 模拟人关掉）、已登录仍 401 走 `onAuthLost` 不是 `openLogin`。每个场景用一个全新的 `vm` 上下文（`listAuthHandled` 从未弹过的状态开始），只有「连续两次」这一条故意复用同一个上下文。
+  - 顶部提示：文件配置模式（`config.mode=file`）不出现（先把 `hidden` 设成 `false` 模拟「正显示」，再走一遍文件配置模式的取数，确认被收回去——不然这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断」这种变异）；db 配置模式出现且链到 `/console/conversations`，`store.mode` 是 file 还是 db 不影响判断（线上 demo 现在就是 `config.mode=db`、`store.mode=file` 这一种组合）；选中会话时链接带上 `encodeURIComponent` 过的 id。
+- 变异（3 个，在 scratchpad 里的隔离副本里打，原地跑完就整个删掉）：
+  1. `api()` 整段 401 处理去掉（退回 `return fetch(url, o);`）——`config.selftest.ts` 3 条新断言变红。
+  2. 去掉「只弹一次」的 `listAuthHandled` 守卫（401 就弹，不管弹过没有）——`config.selftest.ts` 的「连续两次只弹第一次」那条、以及 `console/src/conversations/conversations.selftest.tsx` 的「深链：关掉登录框后，下一次取列表不再弹」都变红（这条也是先错后对的那条真实教训，见上「本步定的」第 2 条）。
+  3. 顶部提示去掉 `if (!dbConfigMode)` 的收回判断（文件配置模式也一直显示）——`config.selftest.ts` 的「文件配置模式下顶部提示不出现」变红。
+  4. 单独改 `load()`（把 `locked = r => r.status===401||r.status===503` 改成只认 503）——锁定的 `server.selftest.ts` 当场报「401 不把页面弄坏」那条变红，证实「不改 `load()`/`sigOf()`」这条红线本身就有现成的锁定断言兜底。
+- 门禁：四个门禁全绿，PG 用本机一次性 `pgtest-02s23` 容器（端口 55436，`pgvector/pgvector:pg17`，跑完已停）。`pnpm test` 不带/带 `PG_TEST_URL` 都是 `EXIT=0`；PASS 行不带 PG 时 config 539、console 420、conversations 143、其余与第 19 步后相同；带 PG 时 store 431（真实 PG 部分）、其余与不带 PG 时的 config/console/conversations 相同（这几个套件不读 `PG_TEST_URL`）。mock eval 两种配置模式都是 19/19（43 项断言）。锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 为空，`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`（与「实施记录 · 第 15 步」最终那一列相同，不变）。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 的两道黑名单扫描，`gitleaks stdin` 对 `git diff origin/dev...HEAD` 的输出没有发现泄露。
+- 注意（给以后改 `admin.html` 登录/弹层逻辑的步骤）：`console/src/conversations/conversations.selftest.tsx` 第 3 节原样跑 `admin.html` 的整段页面脚本（happy-dom + 假 `fetch`），覆盖面比 `server.selftest.ts` 只抽 `load()`/`sigOf()` 宽得多，牵涉登录框、深链、`modeBtn`、`#s=` hash 的任何改动都应该先跑一遍这个文件（`npx tsx --tsconfig console/tsconfig.json console/src/conversations/conversations.selftest.tsx`），本步就是靠它抓到「只弹一次」这条本来会被漏掉的回归。
+- 审查之后改的（2026-10-08；owner 核过 diff 之后指出一处）：
+  1. **顶部提示判断条件改用 `config.mode`，不是 `store.mode`**（major）：第一版判断信号用了会话存储模式（`/healthz` 的 `store.mode`），理由是「J 页要有真实会话才有意义」；owner 指出 spec 原文「db 配置模式下顶部加一条提示」说的是后台配置（`CONFIG_SOURCE`），不是会话存储（`SESSION_STORE`），而线上 demo 现在正是 `CONFIG_SOURCE=db`、`SESSION_STORE=file`（第 27 步才切会话存储）这一种组合——文件会话存储下 J 页的列表、详情、接手与回复一样能用，按会话存储判断会让这条提示在切换会话存储之前永远不出现。改成 `d.config.mode === 'db'`，变量名 `dbSessionStore` → `dbConfigMode`，与会话存储是 file 还是 db 无关；`load()`/`sigOf()`、`api()` 的 401 处理（本步另一半）都没有再动。
+  - 自测：`config.selftest.ts` 的两条顶部提示断言改成直接核对「不论会话存储（`store.mode`）是什么，只看 `config.mode`」——mock 的 `/healthz` 响应同时带 `config.mode` 与 `store.mode` 两个字段，专门造了一条 `config.mode=db`、`store.mode=file`（线上 demo 现在的真实组合）来确认不被会话存储拖累；总数仍是 539（改的是已有两条断言的内容，不是新增）。`conversations.selftest.tsx`（143 项）不碰这部分，照旧全过。
+  - 变异：把条件改回 `d.store.mode === 'db'`（在隔离副本里打，跑完即删）——`config.selftest.ts` 新断言当场报「db 配置模式下顶部提示出现」那条变红（`hidden=true`），复现的正是 owner 报的问题（`config.mode=db`、`store.mode=file` 时提示消失）；撤回后恢复绿。
+  - 门禁：四个门禁重跑（`pnpm test` 不带 `PG_TEST_URL`，只改了页面脚本与自测，没碰服务端或 PG 相关代码）全绿，`EXIT=0`；config 539、conversations 143，`PREFIX sha256` 与改之前相同（`system=dd2c10ee… tools=64c16fc8…`）；收尾前 `git fetch -q origin && git merge origin/dev`，两次都是 `Already up to date`；锁定套件 8 个文件与 `README.md` 对 `origin/dev` 的 `git diff` 仍为空；本机绝对路径、长 `wm` 会话 id 两道黑名单扫描与 `gitleaks stdin` 对本次 diff 均为空/无发现。
+
 ### 第 24 步 · 02 走查种子与走查（2026-10-08）
 
 - **种子**：`scripts/seed-demo.py` 加 `--scenario console-ux-02`，复用 `console-ux` 场景的 13 个会话与时间定位，另加两处 02 专属改动：A01 的 `assignee`/`handoff`（`kind=agent`，顾问处理中、接手人小林；`assignee.userId` 用占位短名，仓库里的最终版本已改成走查临时创建的真实账号 id，state JSONB 没有外键约束，不影响展示）、F01 补 `handoff.reason`「客户投诉价格太贵」。范围另要求种子里「含一条已成交客户要人工与一条紧急」——design-system §10.0 的基础 13 个会话表里没有这两种，不是漏看，是 02 这一步专门加的：改 A02（已成交）追加一条客户消息并置 `handedOver=true`（R9 `paidNeedsHuman`：终态 + `handedOver` + 没有接手人，`stage` 仍是 `paid`，不进「等人接手」页签，只在 A2「需要你处理」与铃铛弹层单列一组）；改 D02（原本是「推荐」阶段的 AI 接待会话）整条改写成 `emergency` 转人工。两处都在种子脚本里用注释写明是 02 走查专门加的、偏离基础 13 条表的地方。三张订单沿用已有的 A01/A02 已付、B01 待付款；advisor 收款方式（走查时 `FLAG_MOCK_PAY=off`）下 B01 没有 `confirmedAt`，A2 显示「等你确认价格」，满足「含 advisor 模式下一张未确认的待付款」。
@@ -1520,6 +1463,32 @@ date`，origin/dev 这段时间没有新提交）。
   4. 文件存储的 demo 类会话（D01、F01 等）状态会持久化进 `var/sessions.json`，跨进程重启不会自动回到种子初始值；中途反复试跑时漏了在每次重跑前重新生成一遍种子，导致 D01 已经处于 handoff 状态、新客户消息只追加消息不改变会话状态、SSE 不发新的 `handoff` 事件、浏览器通知自然测不到——不是产品问题，是走查脚本的测试卫生没做好，最终版本固定「每次真正验证前先重新生成种子覆盖 `var/`」。
 - 走查脚本本身放在仓库外（scratchpad，随会话清理），仓库里只进 `scripts/seed-demo.py` 的改动、`console/src/conversations/workbench.css` 与 `workbench.selftest.tsx` 的改动、32 张截图与本节记录。
 - 门禁：四个门禁全绿；`pnpm test` 不带与带 `PG_TEST_URL`（本机一次性 `pgvector/pgvector:pg17` 容器 `pgwalk-02s24`，端口 55444，走查也用的这一个库，跑完已 `docker stop && docker rm`）都 `EXIT=0`；`workbench.selftest.tsx` 新增 1 条断言，100 条全部通过（两种配置相同，新断言是纯 CSS 源码读取，不碰 PG）；`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 不变；锁定套件 8 个文件与 `README.md` 对 `origin/dev`（含第 16 步合并之后的最新 `origin/dev`）的 `git diff` 为空。收尾前 `git fetch -q origin && git merge origin/dev`，带来第 16 步「隐私说明、敏感信息同意、保留期、行权删除」，`plan.md` 末尾两条「交接」各自追加、没有实质冲突；合并之后在本 worktree 用同一个一次性容器从零重新建租户、种子、跑了一遍完整走查与四个门禁，结果不变（见上「走查」与本条）。
+
+### 第 25 步 · 压测（2026-10-08）
+
+- **新文件只有 `scripts/load/`**（6 个，不进 `pnpm test`）：`run.ts`（主流程）、`fake-upstream.ts`（假企微 + 假模型，整体覆盖 `globalThis.fetch`，不起真实 HTTP server）、`console-client.ts`（脚本自己拿真实 HTTP 打本机 `server.ts` 的 console 登录 / SSE / 接手 / 回复）、`metrics.ts`（事件循环延迟采样、落库延迟旁听、百分位）、`gen-preload-fixtures.ts`（生成 5,000×300 的 `sessions.json`/`orders.json`）、`preload-timer.ts`（只做 `initConfigFromEnv` + `initSessionStore`、量「预载耗时」的独立子进程）。没有改任何产品代码。
+- **基础设施全部走生产命令行、幂等**：一次性容器 `pgload-02s25`（`pgvector/pgvector:pg17`，`127.0.0.1:55437`）；角色与库用 `deploy/db-init/roles.sql`（docker exec psql，已存在就跳过）；迁移用 `src/db/migrate.ts`；两个租户（`loadtest` 聊天场景、`loadtest-preload` 专门给 5,000×300 预载，分开是为了不让「预载耗时」被聊天场景自己造的会话稀释或反过来拖慢聊天场景的启动）用 `src/cli/tenant-create.ts`；配置用 `src/cli/import-config.ts`；三个后台账号（owner、agent1、agent2，两个 agent 给「顾问接手」用）用 `src/cli/user-create.ts`；5,000×300 的预载数据用 `src/cli/import-sessions.ts`（与真实上线切换同一条命令，批量写入＋读回比对在同一个长事务里，production 代码自带）。这几步全部「已存在/已一致就跳过」，脚本本身从检查容器是否在跑开始，第一次跑会自己从零建好；重跑只需要几秒钟。
+- **假企微 + 假模型用同一个 `globalThis.fetch` 覆盖**（照 `src/adapters/wecom.selftest.ts` 的写法，按 hostname 分流，不是起两个真实 HTTP server）：
+  - `qyapi.weixin.qq.com` → 假企微（`gettoken`/`kf/sync_msg`/`kf/send_msg`/`kf/send_msg_on_event`/`media/upload`/`kf/customer/batchget`），`sync_msg` 按简单的数字 cursor 分页，不需要「cursor 作废」那类场景。
+  - 选定的假模型主机名（`llm.fake.invalid`，不解析真实 DNS）→ `chat/completions` 按 2–8 秒均匀分布延迟应答（纯文本回复，不带 `tool_calls`：压测要的是负载特征，不是销售话术的语义正确性，模型侧的行为正确性已经由 eval 和其余自测覆盖）；风暴窗口内 30% 概率直接应答 429；`embeddings` 立即应答（不计入 2–8 秒分布，只用于启动时建语义索引）。
+  - `127.0.0.1`/`localhost` → 原样转给真的 `fetch`（脚本自己拿 HTTP 打本机起的 `server.ts`：console 登录、SSE、接手、人工回复，这是本机环回，不是外部服务）。
+  - 其余一律抛错——双重保险，真的连上外部网络会直接报错而不是悄悄发出去。
+  - 第一次跑漏了 `127.0.0.1` 这条分支：脚本自己调 `fetch` 登录 console 时也被这个覆盖接住，报「未预期的请求」，补上这条分支后正常。
+- **预载耗时单独量，不跟聊天场景共用进程**：`store.ts`、`src/config/source.ts` 的装载函数只能调一次（没有「卸载再重新装一次」的接口），`preload-timer.ts` 是一个干净的子进程，只做 `initConfigFromEnv`（db 配置模式）→ `configRuntime()` 取 `{db, tenantId, deps}` → 掐表 `initSessionStore(...)` → 打一行 JSON（`preloadMs`、`realSessions`、`messages`）就退出，不起 HTTP、不碰企微/模型。初测两次独立测得 3,573ms 与 8,579ms；复测（两组各自全新容器）又测了两次：关对冲 3,745ms、开对冲 3,269ms。四次都远低于 30 秒上限。
+- **压测场景（50×10）的设计**：50 个客户 id 用短名 `wmlc0`…`wmlc49`（会话 id `wecom:wmlc<i>`，落在「wm 之后十几个字符以内」的要求内）；每轮一句通用问需话术（10 句话术轮换）；前 5 个客户在第 2 轮（0 起）改发语料库里验证过的确定性紧急触发句「证件好像丢了」（`src/handoff/triggers.corpus.ts` 里的正例），走「这一轮不调模型」的确定性转人工路径；这 5 个里前 2 个由两个真实顾问账号（`agent1`/`agent2`）各自 `takeover` + `reply` 一句人工话术。20 条 console SSE 连接按 3 个账号轮流分布，全程保持打开（本身就是「20 个成员同时在线」这一条负载）。429 风暴在第 2 轮（0 起）跑完后触发，持续 60 秒。
+- **复测时改的「检查点轮」设计**（原来是「等够 60 秒就跑一轮，量 P50」）：10 轮自然跑下来，每轮本身要十几到几十秒，累计早就把「风暴结束后 60 秒」这个窗口甩在后面了（实测甩开 118~120 秒）——10 轮里没有哪一轮的起点恰好落在这个窗口内，不能直接拿自然轮次的边界去判定。改成：10 轮跑完之后，显式等到 `max(现在, 风暴结束时刻 + 60000)`（已经过了就立刻跑），单独排一轮（45 个未转人工客户），这一轮按构造就是「风暴结束后 60 秒内开始的那一轮」，不依赖自然节奏凑巧对上；量的也从 P50 改成 P90（第三条要求）。全程每一轮（含检查点轮）都记 `{startedAt, endedAt, p50, p90, overlapsStorm, 这一轮的模型调用与对冲增量}`，`overlapsStorm` 按时间窗直接判（这一轮的 `[startedAt, endedAt]` 跟 `[风暴开始, 风暴结束]` 有没有交集），不是猜的。
+- **三类延迟都是外部旁听，没有改一行产品代码**：
+  - 转人工「提交到 SSE 送达」：脚本在同一个进程里对 `src/console-api/events.ts` 的 `addListener` 挂一个只读监听，`publish()` 调用它的那一刻（几乎就是提交那一刻，`relay` 是 `onCommitted` 的同步订阅者）记一个时间戳，按会话 id 存进 Map；真实 HTTP SSE 客户端收到对应事件帧的时刻减这个时间戳。
+  - 落库延迟：`src/store.ts` 导出的 `onSessionSaved`（改动同步排进写队列那一刻）与 `onCommitted` 的 `conversation.changed`（提交之后）各自按会话 id 开一个队列，一次提交覆盖了自上次提交以来「最早的一次排队」，两者相减。
+  - 事件循环延迟：每 50ms 排一个 `setTimeout`，比较实际触发时刻与预期时刻。
+  - 常驻内存：`NODE_OPTIONS=--expose-gc` 跑脚本，场景开始（启动完成后）与结束（跑完全部轮次、停机钩子跑完、独立核对子进程起之前）各手动 `global.gc()` 一次再读 `process.memoryUsage().rss`。
+- **「库里的消息数等于内存」的核对方式**：场景跑完先对 50 个会话逐个 `flushSession`，再直接调 `runShutdownHooks()`（**不**发 `SIGTERM`、**不**退出进程——发信号会让 `gracefulExit` 异步调 `process.exit()`，而我们还要在同一个进程里做收尾统计；`runShutdownHooks()` 本身就是停机钩子的执行者，跑完即释放租户锁、关连接池、停企微拉取，不附带退出）；主进程继续活着写结果，另起一个独立子进程（还是用 `preload-timer.ts`）重新从库预载同一个租户，比对两条独立路径算出的「真实会话数、消息数」。初测时容器是复用的（本机手工探路留了 50 个旧测试会话在 `loadtest` 租户里），两边都是 100 个真实会话、2,073 条消息，核对的是「数量相同」（`>=` 口径）；复测改成每组全新容器（`LOAD_FRESH_CONTAINER=1`），租户里只有本次场景造的会话，两边精确相等（50 个、1,076 条），核对也从「至少有」收紧成「恰好等于」。
+- **对冲：按 coordinator 意见补测**。初测按生产默认（`LLM_HEDGE_MODEL` 不设）跑，只验证了 `llm-gate` 的并发闸与退避重试，没有另外打开对冲——spec「压测」通过条件字面只列了「风暴期间进程不崩」「风暴之后 1 分钟内回到正常延迟」两条，没有单独要求对冲必须被触发，当时判断这是「选最小、最贴 spec 字面」的取舍；coordinator 指出 spec 原文是「观察 llm-gate 的排队与对冲」、`.env.example` 的线上演示配置本身就开着对冲，理应覆盖。复测按 `.env.example` 配置（`LLM_HEDGE_MODEL=glm-5.2`、`LLM_HEDGE_MS=4000`）跑了一组：对冲模型请求跟主模型请求打到同一个假模型地址（`fake-upstream.ts` 按 hostname 分流、不看 `model` 字段），不用另外写假服务代码。结果（细节见「验收记录」第 30 条）：50 并发、`LLM_MAX_INFLIGHT=8` 的名额几乎常年占满，`src/llm.ts` 的 `gateBusy()` 按设计挡掉了计时器触发的对冲（只有主请求直接失败——这次是 429 重试耗尽——触发的对冲不看这条），全程对冲只触发 2 次、都在风暴期间、都胜出；另在 6 个客户的小规模烟雾测试里确认过对冲机制本身没问题（名额够用时每轮能打 3~4 次）。两组总模型调用数几乎相同（557 对 561），风暴没有因为对冲被放大。这是观察到的真实结论，不是脚本没配对，判定条件没有放宽。
+- **两组对比要求「全新容器」之后，顺带把「库里的消息数等于内存」的核对口径从「至少有」收紧成「恰好等于」**（见上一条）。
+- **「回到正常延迟」的判据收紧**：初测是「基线 P50（第 0 轮）+ 10 秒」，coordinator 指出这个口径太宽（放得过 60% 以上的退化）且基线不该用冷启动轮。复测改成：按轮记 P50 与 P90；基线取风暴之前稳态各轮（不含第 0 轮冷启动）P90 的最大值；判定是专门补的「检查点轮」（见上一条「检查点轮设计」）P90 不超过基线 × 1.1。两组复测都通过，且检查点轮 P90 都低于基线（不是堪堪卡过线），细节见「验收记录」第 30 条的按轮表。
+- **plan 第 5 步带出的注意**（`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引）：看了一眼，两组场景里假模型都不调 `create_order`，两张表基本是空的；本步的场景都不含删除/清除，测不出这两个索引在大数据量删除下的实际影响，维持现状、没有加迁移，留给以后真有删除场景的压测或第 16 步保留期清理单独核实。
+- **初测踩的两个坑**（复测时已经跟手工探路的历史对齐，不会再出现）：① 租户名字段不一致——`tenant-create` 对「同名已存在但字段不同」报错退出，本机此前手工探路建过 `loadtest` 租户、名字写的是「压测租户」，脚本第一版传的是「压测聊天租户」，对不上；改成跟手工建的那次一致。② 账号口令——`user-create` 对已存在的邮箱「只加成员关系，不碰口令」，本机手工探路时这几个账号已经用 `LoadTest123!` 建过，脚本第一版另起了一个新口令常量，登录全部 401；改成同一个值。两处都不是产品代码问题。
+- **门禁**：`format:check`、`lint`、`typecheck` 全绿（复测改完 `run.ts` 之后重跑过）；`pnpm test` 不带与带 `PG_TEST_URL`（压测用的一次性容器，跑完即删，两组各自独立）都 `EXIT=0`；锁定套件 8 个文件零修改，`PREFIX sha256` 与第 1 步相同。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 两道黑名单扫描；`gitleaks stdin` 对该 diff 无发现。收尾 `git fetch -q origin`：复测时 `origin/dev` 没有新提交，不需要再合并（初测收尾时合并过一次第 24 步，见上）。
 
 ### 第 26 步 · 部署与演练（2026-10-08）
 
@@ -1541,8 +1510,157 @@ date`，origin/dev 这段时间没有新提交）。
 
 - 门禁：四个门禁全绿（本步没碰产品代码，只改了本文件与 `docs/architecture/02-conversations-workbench/plan.md`）；`pnpm test` 不带与带 `PG_TEST_URL`（本机一次性 `pgvector/pgvector:pg17` 容器，端口 55445，跑完已停删）都全绿，PASS 行数与第 24 步相同（没加新自测）；锁定套件 8 个文件的 sha256 与第 1 步相同，`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1` 不变。
 
+## 验收记录
+
+（对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
+
+- 1 · **通过**。锁定清单 8 个文件的 `shasum -a 256` 与 plan「实施记录 · 第 1 步」记的基准逐字节相同（diff 为空）。`pnpm test`：本次带 `PG_TEST_URL` 跑了一遍全绿，`PREFIX sha256` 与 plan 记录一致（`system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`，第 15 步 SOP 改动之后的值）。`.env` 场景：`src/selftest-env.ts` 开头固定 `process.env.SESSION_STORE = 'file'`（第一行 import，早于任何自测代码），本机 `.env` 不管写什么都会被这一行覆盖，六组自测与两次 `eval/run.ts` 全部经它起步，经代码路径确认「`.env` 写 `SESSION_STORE=db`/`CONFIG_SOURCE=db`/`DATABASE_URL` 时 `pnpm test` 结果不变」对自动化套件恒成立；非自测路径（`server.ts` 真正读 `.env`）由 db 存储场景单独验证（见本条与第 3/8 条的真实 PG 部分），未发现两者有耦合。
+- 2 · **通过**。`pnpm test` 的 `STORE SELFTEST PASS` 输出里：「两种会话存储等价（12 组场景、1381 项：回复、发出的消息、会话投影、订单逐项相同，PG 里有这些会话且与内存一致；比较器探了 717 种字段形状都比得出来、116 处时间戳被抹掉）」——对应 `src/store/parity.selftest.ts`，逐句覆盖「每个场景在文件存储与 PG 存储上的回复文本、会话投影（去掉 seq 与时间戳）、订单都相同，PG 里确实有这些会话」。`eval/run.ts` 两遍（`CONFIG_SOURCE=file` 与 `CONFIG_SOURCE=file CONFIG_TEST_DB=pglite`）的输出：文件模式「19/19 用例通过」，DB 模式同样「19/19 用例通过」，用例集合相同（都是「检索 4/4、护栏 9/9、话术 3/3、健壮性 3/3」）；DB 模式额外打印「DB 模式：19 个用例的会话入库核对，0 处与内存不符」，对应「DB 模式 mock eval（`eval:` 会话）通过的用例集合与文件模式相同，跑完后库里有每个用例的会话，库里的消息与内存一致」。
+- 3 · **通过**。`STORE SELFTEST PASS` 的「导入导出：往返、重复导入、补完改写、内容不同、持锁、`--keep`、spill、导出 → 文件存储 → `--resync` → db 存储」与「真实 PG：第二个进程、另一写者、COMMIT 之后回包丢掉、两个命令行的退出码」两段，对应 `src/store/store.selftest.ts` 里用含真实会话、种子、访客、孤儿订单、`followup`/`quoteHistory`/昵称、NUL 与孤立代理项的夹具做的往返、退出码 0/2/3、导出→聊→`--resync`→db 存储、`real_in_json`/`sessions_in_db` 两种拒绝、没标记时 export 的一致/过时判定、库里已有会话补写标记等场景；真实 PG 部分「以子进程执行两个命令行并断言退出码」覆盖「真实 Postgres 上以子进程执行一遍」。本次真实 PG 跑全绿。
+- 4 · **通过**。`STORE SELFTEST PASS` 的「落盘的 PGlite 上一串『启动』（十个子进程交接同一个库）：20 轮后 SIGTERM（drain 排空，重启后 identity map 经 JSON 规范化后 `deepStrictEqual`）→ mock LLM 延迟 6 秒的一轮中间 SIGTERM（normal 段等这一轮，重启后客户消息与回复都在）→ drain 段 PG 不可写写出 spill（三个会话、订单、审计）→ 重启回放、库与停机前的内存一致、spill 删掉 → 『已提交到第几条』改错一格 `spill_conflict` → 改回照常 → SIGKILL 模拟崩溃（没有 spill，重启后只少最后一次没提交的落库）」逐句对应验收 4 的四个场景（20 轮 SIGTERM、6 秒延迟的一轮中 SIGTERM、drain 段 PG 不可写写 spill 与错误 seq 被拒、模拟崩溃只少最后一次未提交）。本次真实 PG 跑全绿。
+- 5 · **通过**。`DB SELFTEST PASS`（898 项）里「真实 PG：... 02 新表权限与隔离、消息只追加、清除与删除函数」与 `STORE SELFTEST PASS` 的「真实 PG：... 保留期清理（过期各清一个 · 候选跳过 · 墓碑 · trace 与任务清理 · 审计）、行权删除（取锁 · spill · 会话与订单的最终状态 · 审计）」覆盖本条全部句子，逐句核对源码：
+  - `src/db/db.selftest.ts:526` `把 updated_at 改成 2000 年被挡回原值`、`:536` `agent_app 能把已付订单改成取消，paid_at 不动`、`:538` `已付订单改成取消之后仍按客户算，返回 false`，与「先把 updated_at 改成 2000 年...或把已付订单改成取消，再调清除函数，仍返回 false」逐字对应。
+  - `messages_author_human_check` 等 CHECK、`agent_app` 对 `messages` 的 UPDATE/DELETE/TRUNCATE 报 permission denied、`purge_conversation` 对没到期会话返回 false 且库不变、改 `paid_at` 报错、把已付订单的 `session_id` 置空或改挂报错（新加的 `orders_guard` 触发器）、传 10 分钟之后的 `p_now` 报错、不在 `withTenant` 里调用报错，均在 `db.selftest.ts` 的「清除与删除函数」与「schemaChecks」段落里有对应断言（变异测试阶段全部杀掉，见 plan「实施记录 · 第 4 步」）。
+  - db 存储下改写一条已落库消息的 `content` 抛 `TypeError`、从会话中间删一条消息后 `saveSession` 会话标成 poisoned、重置之后库里旧消息仍在、窗口推进、订单作废、内存与 E6/E6p 一致，对应 `store.selftest.ts` 的「冻结」「数据类错误 poisoned」「引擎重置」几段（PGlite 部分）。本次真实 PG 跑全绿。
+- 6 · **通过**。源码核对（不只信 plan 描述）：`src/store/store.selftest.ts:2829` `写队列：同一段同步代码里的十次 saveSession 合进一次落库（起落库推迟到 microtask）`、`:2843` `写队列：库里的消息顺序与内存相同`——与「同一会话连续十次 `saveSession`，库里的消息顺序与内存相同」逐字对应；`:3340` `chat()：在 withTenant 回调里调用即断言失败（不变量 9）`、`:3352` `在 withTenant 回调里 saveSession 照常落库：排出的落库不继承那个上下文，一次就成（不是靠重试）`，与「在 `withTenant` 回调里调 `chat()` 断言失败，在 `withTenant` 回调里 `saveSession` 照常落库」逐字对应；`:3026` 附近「事件只在提交后；提交失败时不发，恢复后补上」段落对应最后一句。本次真实 PG 跑全绿（`STORE SELFTEST PASS` 452 项）。
+- 7 · **通过**。文件存储下的并发场景由 `src/handoff/handoff.selftest.ts` 覆盖（`HANDOFF SELFTEST PASS` 3196 项里的「接手状态机：并发接手、改派、交还、人工回复与 clientId、接手代次、旧接口改调」），PG 存储部分由同一套接手代次（`takeoverGen`）机制保证并经 `console.selftest.ts` 的并发接手用例（真实 HTTP 并发请求）验证；「模型返回之后、推送之前接手（在 `strandedReply` 的 await 里接手）」这一具体时序点，plan「实施记录 · 第 7 步」第 3 条记录了实现做法（`onToolCall` 观测者排 microtask，接手代次兜住），`handoff.selftest.ts` 与 `wecom-02.selftest.ts`（退避重试期间被接手不补发）覆盖其效果。本次另在真实 db 存储、真实 server 进程上做了独立复核（见下）：
+  - 两个真实顾问账号（`ag1`/`ag2`）对同一会话 `wecom:cust_D01` 并发 `POST /api/console/conversations/:id/takeover`：结果恰好一次 200、一次 409，409 响应体为 `{"error":"assigned_to_other","detail":"小林正在处理这个会话","assigneeName":"小林"}`——与「生成途中顾问在 console 接手：本轮 AI 回复不发出」同属接手代次机制的直接验证（接手动作本身恰好一次成功是生成期间接手不重复发送的前提）。
+  - `生成中客户付款：阶段停在已付，之后客户再发消息仍是已付` 由 `handoff.selftest.ts`「终态会话转人工」与 `engine.selftest.ts` 的付款相关锁定断言共同覆盖（锁定断言零修改、本次跑全绿）。
+- 8 · **通过**。`STORE SELFTEST PASS` 的「真实 PG：... 第二个进程、另一写者、COMMIT 之后回包丢掉」：第二个进程连同一个库拒绝启动（`lock_held`）、人为推进 `last_seq` 后触发 `store_conflict` 优雅停机、`openFlakyDb` 模拟 COMMIT 之后回包丢失时重试认出已提交、不停机、不重复插入，逐句对应验收 8 原文。本次真实 PG 跑全绿。
+- 9 · **通过**。`CONSOLE SELFTEST PASS`（435 项）「HTTP：... 权限矩阵、... prod 下后台 SSE 要求会话」与 `SERVER SELFTEST PASS`（269 项）「... 管理写接口与 LLM 读端点的鉴权」覆盖本条。源码核对：
+  - `src/console-api/console.selftest.ts:3226` 起「路由枚举：consoleApi 注册的每个路由都在 01 的清单或本步的矩阵里」、`:3401` 「路由枚举：server 与 consoleApi 注册的、白名单以外的路由，prod 下匿名一律 401 或 404」，与「枚举全部注册路由，白名单以外的匿名请求都是 401 或 404」逐字对应。
+  - `:4086` 「事件流：默认每 20 秒心跳、每 50 秒复核登录（留查库余量，保证 spec 的『60 秒内关闭』不被卡到 60 秒加一次查库）」、`:4266` `closed && doomed.events().some((e) => e.event === 'auth')`，与「删掉一个成员的 auth_session，他的事件流在 60 秒内收到 auth 并关闭」逐字对应；`src/console-api/app.ts:842` 注释与实现一致。
+  - 白名单路由逐条匿名可访问、`/api/orders/:id` 与 `POST /api/orders/:id/pay` 两分支 `order` 键集合恰为白名单、`/privacy` 匿名 200/404、旧 handoff/resume/reply 404、带凭据标记已付照旧 200、成员接手种子会话后匿名读无成员 uuid 与姓名，均在同一套件覆盖（plan「实施记录 · 第 3、13 步」记录了逐项断言）。本次真实 PG 跑全绿。
+- 10 · **通过**。四态一致的数据与接口部分由 `CONSOLE SELFTEST PASS`（`byState.assigned` 等）与 `HANDOFF SELFTEST PASS`（并发接手恰一个成功）覆盖；界面部分由 `console/src/conversations/*.selftest.tsx`（`conversations` 143 项、`workbench` 100 项、`overview` 192 项全绿）与第 24 步走查（plan「验收记录」第 33 条，截图在 `walkthrough/`）覆盖「接手一个等人接手的会话：从铃铛弹层与 A2『需要你处理』里消失，侧栏与铃铛的徽标减 1，列表与 J 页分组里显示为『顾问处理中』，会话页出现『顾问处理中』页签，`byState.assigned` 加 1、四项之和仍等于 total，另一位顾问看到『小林处理中』、『接手会话』不可用并写明原因」等句。
+  本次用 Playwright 在真实 db 存储、真实 server 进程上补了第 24 步没覆盖的两句：
+  - **两个浏览器同时点『接手会话』恰有一个成功、另一个看到 409 的说明**：两个真实顾问账号（ag1=小林、ag2=小王）对同一会话 `wecom:cust_D01` 并发调用接口，恰好一次 200、一次 409 `assigned_to_other`（含 `assigneeName`）；另用 `wecom:cust_D03` 复现「ag2 打开会话后，会话被 ag1 抢先接手」的场景，ag2 的真实浏览器页面（经 SSE 实时同步）就地显示「小林处理中」「小林接手 · 19:41」「由谁处理：小林」，截图 `shot-d02-after.png`。
+  - **用后台 UX 验收 4 的 13 个种子会话重跑 UX 验收 6**：`scripts/seed-demo.py --scenario console-ux` 生成的 13 个种子（F01、A01 两个等人接手，counts.byState.human=2）起 db 存储服务，用 `ADMIN_PASS` 走旧 `/api/sessions/:id/handoff` 把 B01 转人工，200；3 秒后 `GET /api/console/conversations/counts` 显示 `byState.human=3`、四项之和仍 13；刷新会话列表与总览页，侧栏软徽标、铃铛徽标、总览『需要你处理』都显示新的 B01『等人接手』行（原因『共享工作台转人工』），B01 自己的行标成『等人接手』而不是『顾问处理中』（旧 admin.html 的转人工不会被误判成新的第四态），页面上没有出现『顾问处理中』这个词套在 B01 身上；截图 `shot-ux6-overview.png`。
+- 11 · **通过**。`HANDOFF SELFTEST PASS` 的「接手状态机：... 人工回复与 clientId」与 `console/src/conversations/workbench.selftest.tsx`（100 项，含「2.8 409 assigned_to_other」「2.9 409 not_assignee」「2.10 409 consent_declined」「2.11 发送窗口为 0 时禁用」）覆盖「在没人接手的会话上直接回复：调用者成为接手人...在别人接手中的会话上回复：409、客户没收到、会话没变；写库积压时回复 503...旧接口 `/api/sessions/:id/reply` 走同一套规则」各句；`console.selftest.ts` 的「人工回复」段落覆盖「让落库暂停 3 秒，假企微接口在落库提交之后才收到这条」（plan「实施记录 · 第 13 步」记录了这组用例）。本次真实 PG 跑全绿。
+- 12 · **通过**。`HANDOFF SELFTEST PASS`（102 项里的核心部分）覆盖「转人工 → 接手 → 交还 → 再转人工：`firstHandoffAt` 是第一次的时间，`handoffCount` 为 2」「交还后客户付款，订单的 `handoffBeforePaid` 为 true」「重置一个已接手的会话后再触发转人工：状态是等人接手，不是顾问处理中」。`src/console-api/console.selftest.ts:1866` `会话 state：付款以后又转人工的算已成交；等人接手的包括 stage 不是 handoff 的` 对应「已付的会话里客户说『我要退款』：阶段仍是『已支付』、状态仍是已成交、徽标不变，会话出现在铃铛弹层与 A2 的『已成交客户要人工』里...有人接手后它从那一组消失」（开放问题 12 的 A 裁决）。本次真实 PG 跑全绿。
+- 13 · **通过**。交接卡措辞由 `console/src/conversations/workbench.selftest.tsx`（step 20.2，100 项含「交接卡措辞（各种 kind 与有无接手人）」）与 `src/shared/audit-text.selftest.ts`（58 项，禁用词扫描）覆盖五种入口（要人工/投诉/模型转人工/改行程承诺/顾问主动接手）各自的原因、客户原话、识别出的日期、停在哪个阶段、措辞「AI交给人工 · hh:mm」/「小林接手 · hh:mm」；`console.selftest.ts` 的「会话只读列表」段落断言 `handoff` 字段恰为 `{kind, at, reason}`。第 24 步走查（验收记录第 33 条）截图 `walkthrough/{light,dark}/...交接卡...png` 另有视觉核对，本次复用其截图结论。本次我自己在新环境里也实测出一张真实交接卡（见第 10 条截图里「小林接手 · 19:41，原因：顾问主动接手，停在：推荐」），文案与规则一致。
+- 14 · **通过**。`console/src/conversations/workbench.selftest.tsx`（100 项）覆盖「接手前输入框禁用、409 与 503 的说明、发送窗口为 0 时禁用」等交互细节；`workbench.css` 的 `.wb-list{width:320px}`、`.wb-row-link{flex-direction:column}`、`.wb-row-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}` 定义与「每行的标题占满第一行、状态在第二行」一致（标题行、`.wb-row-sub` 状态/时间行是两个独立的 flex 子项）。
+  本次对「320 宽下『企微客户 · 7F3A · 贵州带爸妈4人』不被截断」做了实测澄清：这句说的是**工作台（J 页）左栏固定 320px 宽的列表**（`WorkbenchPage.tsx` 注释「三栏：列表 320、对话自适应、客户与交接 360」），不是把整个浏览器窗口缩到 320px——我一开始按后者测（`/console/conversations` 的 antd 数据表在 320px 视口下确实用了省略号，但设计系统 `references.md:139` 明确「320px 宽下可以重排，数据表本身豁免」，这张表本来就不在本条验收范围内）。改在正常桌面视口下量 J 页左栏真实渲染的 13 行标题：用 Canvas `measureText` 按该元素的真实计算字体（`500 14px Geist, "Noto Sans SC", system-ui, sans-serif`）量各行标题的自然像素宽度，与 `.wb-row-title` 的 `clientWidth`（288px，320 减左右内边距与图标位）比较，13 行里最长的「企微客户·C02·北欧极光2人」自然宽度 169px，其余 82–165px，全部不超过 288px，没有一行被截断；截图 `shot-wb-list.png` 目测确认每行标题都完整显示在第一行。等人接手的行写原因和等待时长、≥10 分钟用 danger 由 `workbench.selftest.tsx` 覆盖（CSS `.wb-row-time.is-danger`）。
+- 15 · **通过**。`NOTIFY SELFTEST PASS`（52 项，`src/notify/notify.selftest.ts`）覆盖「立即发且内容不含原话与客户标识」「窗口剩不到 4 小时」「unsaved：紧急立即、... 发不出去照常提醒」，对应「转人工通知群的机器人收到一条不含客户原话和 `external_userid` 的消息；10 分钟没人接手再收到一条」「让 PG 不可写后客户说『我在山上头很疼喘不上气』：外部通道立即收到一条标『记录暂未保存』的紧急通知，PG 恢复后不再重发」。`console/src/shell/shell.selftest.ts`（178 项）覆盖「5 秒内铃铛徽标加 1、标签页标题出现『(N) 』」「授权了浏览器通知时弹出一条，正文没有客户原话」「断开 SSE 后 30 秒内由轮询补上」（第 24 步走查第 33 条也有浏览器通知的实测截图，捕获到的标题「企微客户 · D01 等人接手」、正文「客户要投诉」，没有客户原话）。本次真实 PG 跑全绿。
+- 16 · **通过**。`console/src/overview/overview.selftest.tsx`（192 项）与 plan「实施记录 · 第 21 步」覆盖「『本月成交额』等于当月已付且未作废订单的金额之和（种子场景 207,440）」「明细『另有待付 85,600 元』」「『需要你处理』的顺序照设计系统 A2」「坐席看不到本月成交额，请求 `/orders?status=paid` 得到 403」；本次在真实服务上实测总览页（见第 10 条截图 `shot-ux6-overview.png`）确认「本月成交额 207,440」「另有待付 85,600 元」与种子场景数字一致。本次真实 PG 跑全绿。
+- 17 · **通过（owner 2026-10-09 定：「在问」的「不是问句」误判没到 2% 以内，接受当前修复）**。自动化：`HANDOFF SELFTEST PASS`（3216 项）的标注语料与端到端几组覆盖「命中的句子确定性转人工、类型对；出行前的提问、否定、转述、价格护栏命中的轮次都不触发；紧急情况那一轮没有模型请求；已转人工的会话里客户说紧急情况，不回话、记录升级、再通知一次」。留出集测量：第 28 步先后由两个只读 spec 与 `data/sop.md`、没看过规则与语料的独立 agent 各写一份盲测集（集子在仓库外，不进库）。
+  - 第一份（386 句）测出两处规则问题（「在问」把反问与任指当成在问 9/42、紧急高反判成 medical 6/32），据此改了规则（分支 `fix/02-acc17-triggers`，见「实施记录 · 第 11 步」的「验收 17 盲测之后」）；它已经用来定位问题，改后的数字只算回归。
+  - 第二份（433 句，修规则的 agent 没看过）是本条的留出集测量，改前是 dev 上的规则、改后是本次修复：
+
+    | 表   | 指标                            | 改前                           | 改后                           |
+    | ---- | ------------------------------- | ------------------------------ | ------------------------------ |
+    | 紧急 | 售前与一般咨询误判              | 0/40 = 0.0%                    | 0/40 = 0.0%                    |
+    | 紧急 | 全部「不是」误判                | 0/80 = 0.0%                    | 0/80 = 0.0%                    |
+    | 紧急 | 明确正例召回（命中里类型判对）  | 36/57 = 63.2%（29/36 = 80.6%） | 36/57 = 63.2%（32/36 = 88.9%） |
+    | 紧急 | 全部正例召回                    | 36/99 = 36.4%                  | 36/99 = 36.4%                  |
+    | 情绪 | none 里误判                     | 0/44 = 0.0%                    | 0/44 = 0.0%                    |
+    | 情绪 | strong 判 2 / 判 ≥1；weak 判 ≥1 | 25/40、27/40；15/40            | 不变                           |
+    | 在问 | 「不是问句」误判                | 25/66 = 37.9%                  | 16/66 = 24.2%                  |
+    | 在问 | 真在问的召回                    | 61/64 = 95.3%                  | 61/64 = 95.3%                  |
+
+  - 判定：紧急与情绪的「不是」误判都是 0（精确优先的硬指标）；召回如实记录，漏判由主模型兜（第 15 步 SOP 第 8 条）。「在问」剩下的 16 句误判全是反问式抱怨（「这都/这叫/这算什么X啊」「谁家……」「谁规定……」「怎么又/老……呢」），逐个补句式追不上。它只用于「重复提问」：要这句被判成在问、又与前 2 条客户消息之一几乎相同（字二元组 Jaccard ≥ 0.8）、而且连续两轮或 6 轮里 3 轮都这样才转人工，实际等于客户把同一句抱怨连发两遍，这时转人工不算坏结果。owner 2026-10-09 据此接受当前修复，没有选另外两种口径（只认问号与「吗/么」：误判 0/66、召回 29/64，且与 spec 写的「疑问词也算」冲突；带语气尾的疑问词句不算：误判 2/66、召回 56/64，是看过本集之后才想到的，要再写一份盲测集确认）。类型判错剩 4 句：3 句高反的地名不在词表里（稻城亚丁、垭口），1 句被困判成受伤，都照样转人工。
+- 18 · **通过**。`src/quota/quota.selftest.ts`（带 `PG_TEST_URL`）127 项断言全通，含：人工回复发满 5 条、第 6 条被拒并写明「这一轮已经发满 5 条」；分段先超时再成功的账本合并成一行、同一 msgid 计 1 条；只超时记 `unknown` 并计入额度；`msg_send_fail`（`fail_type` 4）落盘之后发 `send.failed` 事件、对应消息按三种说明标记没送达；剩 1 条时跟进不发；去重五种情况各一个用例（含「客户这句已入库、回复还没生成时进程被杀」重启后恰好收到一次回复、「回复已送出」的重放不补发）；真实 PG 下欢迎语与回执的短事务。`send.failed`/`send_failed` 事件在 `src/console-api/console.selftest.ts` 的 SSE 事件测试里也核过（见 20/34 的证据）。
+- 19 · **通过**。`src/config/config.selftest.ts` 539 项断言全通，「条目版本」一组逐句对应：改之前发出的方案书链接按改前内容渲染（不带 `v` 按版本 1）；之后新出的链接带 `?v=2`、按新价；`?v=3`、`?v=4` 这类不存在的版本号返回 404 且期间没有数据库查询；已有订单记的版本不随后续改价变化；改价发生在一轮中间时，当轮的工具结果与护栏看到同一代快照（「按轮固定」一组）；改 `title` 仍是 `CatalogLockedFieldError`（422），不产生新版本；删掉一个 active 条目的全部版本行模拟 01 镜像期间上架、重启后补写版本 1，链接照常打开。
+- 20 · **通过**。backend：`src/trace/trace.selftest.ts` 177 项全通，含「价格护栏删句的 trace 与 price 事件」，trace 行的 `catalog_versions` 字段核对过（改过的条目记版本 2，没改的记当轮版本；没有工具调用的轮次为空对象）。权限与界面：`src/console-api/console.selftest.ts`（435 项，含真实 PG）「trace 原文：所有者拿到原稿、耗时、模型、前缀与条目版本；坐席 403」与「文件存储：trace 原文对只读成员仍是 403」；前端 `console/src/conversations/workbench.selftest.tsx`（100 项）「护栏改写：删了 N 句」渲染成「AI原稿里删了1句 · 展开」、「viewer：没有「AI为什么这么回」页签」。展开态的真实截图另见「验收记录」第 33 条（走查里实际展开过一次，`removed` 恰好 1 句）。
+- 21 · **通过**。`src/trace/trace.selftest.ts`「验收 21」一节：mock 对话、跟进（`followup`）、洞察（`insight`）、检索向量化（`embedding`）、建议（`suggestion`）、草稿（`draft`）六种用途都记到 `usage_daily`；逐（模型、用途）核对调用数、token 数、金额与 `recordUsage` 收到的合计相同；另测了 30 秒内不重复累加、写失败时日志打 SQLSTATE 不打原文、drain 段写一次。
+- 22 · **通过**。`src/jobs/jobs.selftest.ts`（带 `PG_TEST_URL`）110 项全通：AI 回复后排出跟进任务、客户回话后取消；到点发出的跟进过了价格护栏（编造金额的话术，发出文本里没有它）；进入 `sending` 之前模拟崩溃重启后照常发一次，进入 `sending` 之后模拟崩溃重启后不重发、记 `abandoned`；客户说「别发了」之后不再排；`FOLLOWUP_ENABLED` 未设时不排任何任务；真实 PG 下两个认领者不重复认领。文件存储下锁定的 F1 断言随 `pnpm -s test:locked` 一并跑过（`PASS F1 生成话术途中停机立即放弃，不推送`、`PASS F1 先记账再推送：推送超过停机宽限期也不会重发，推送失败退账`），零修改。
+- 23 · **通过**。`src/payment/orders.selftest.ts` 34 项（`payNote`、价格护栏的 advisor 写法替换句、`/pay` 页按状态写说明且标题不变、旧接口）；`src/payment/legacy-pay-poisoned.selftest.ts` 2 项（poisoned 会话旧接口 503）；`src/console-api/console.selftest.ts`（435 项）「确认价格：不是接手人的坐席 → 409 not_assignee」「确认收款（advisor 模式）：没确认价格 → 409 order_state」「确认价格、确认收款、取消订单各一行审计」「订单的键集合」「handoffBeforePaid」；锁定 `src/server.selftest.ts`（随 `pnpm -s test:locked`）「mock_pay 关：匿名付款返回 404，订单仍是待支付」「带凭据但跨站返回 403」。demo profile 这条链路与开工时相同：等价套件（`src/store/parity.selftest.ts`，1381 项）证明两种存储模式下包括支付链路的投影、订单逐项相同。
+- 24 · **通过（owner 2026-10-08 定：「嫌慢」那条不设要求，见最后一条子项与「Open」）**。以下第一段是第 15 步主分支（`feat/02-step15-payment`）当时的跑法与数字，留作历史；收尾小 PR（`fix/02-step15-sop-fallback`）复测的数字在最后一条子项「措辞补例句之后的复测」。自动部分：DB 模式门禁里 22 个请求的前缀哈希与 `/healthz` 核对 0 处不符（见「实施记录 · 第 15 步」门禁）。手动部分（owner 已批准，2026-10-08）：按「文件 → DB → 文件」交替跑了 6 遍（文件、DB 各 3 遍），另在改动前的 `origin/dev`（`git archive` 出的隔离副本，不是 git worktree）跑了 1 遍文件 + 1 遍 DB 当基线，合计 8 遍、991 次模型调用、花费 ¥18.62（主模型，未开对冲）。密钥只在跑命令的 shell 里从主仓库 `.env` 现读，没有复制进 worktree，没有写进任何文件或日志。
+  - P90：8 遍全部在 4,144–4,945ms 之间，两种模式都远不超过 8 秒。
+  - 整体通过的用例集合：基线文件 31/42、DB 26/42；改动后文件 35/35/34、DB 35/35/34——都不少于基线（几条波动的是既有的、与本步无关的模型行为类用例，如 `flow-07-kid-headcount`）。
+  - 兜底用例逐条命中率（改动后 6 遍里命中几遍 / 基线 2 遍里命中几遍）：
+    - `s15-emergency-01-altitude-mother`（我妈高原反应很严重）6/6（基线 0/2）
+    - `s15-emergency-02-altitude-help`（高反头痛救命）6/6（基线 0/2）
+    - `s15-emergency-04-lhasa-altitude`（到了拉萨头疼是不是高反）6/6（基线 0/2）
+    - `s15-emergency-03-passport-lost`（护照丢了明天的飞机）2/6（基线 0/2）——偏弱
+    - `s15-anger-02-curse`（骂服务）2/6（基线 0/2）——偏弱
+    - `s15-anger-01-disappointed-service`（嫌服务差）、`s15-anger-03-slow`（嫌慢）0/6（基线各 0/2）——没起作用
+  - 售前反例逐条（6 遍里「没转人工」判对几遍）：`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 6/6；`s15-presale-01-altitude-question`（光一句「高反了怎么办」、没有上下文）4/6，另外 2 遍模型没有直接转人工，是先反问「您是现在不舒服，还是问以后」，反问句里带了「如果现在不舒服我马上为您转接」这种有条件的话，被 `denyText` 的正则认成了转人工用语——这两遍严格说不算真的误转人工，是测试用例的正则认不出「有条件」。
+  - 结论与建议（不是本步自己改 SOP 重跑，留给 owner 定）：「此刻遇到紧急情况」那半句对高原反应类的识别已经稳定（3/4 场景 100%），但「冲我们发火」那半句对冷启动的纯抱怨句（没有订单、没有上下文，只一句「什么服务」「这么慢」）基本不生效，模型倾向于当成需要先安抚、问清楚的普通不满（这和第 2 条「投诉、表达强烈不满」本来就该转人工有重叠，可能是模型在两条之间没有明确选中任何一条）；建议在第 8 条里把发火的例句也写成具体短语（像紧急情况那样列 2–3 句示例，而不是只给抽象描述），或者把「证件丢了」单独配一条像「护照/证件丢了，马上要赶飞机」这样的具体例句，复用紧急情况那组例句已经验证有效的写法。`s15-presale-01` 这条测试用例本身的歧义（孤零零一句「高反了怎么办」）是否要收紧（比如改成更明确的「以前听说去西藏会不会高反」），或者接受模型反问是合理行为、把 `denyText` 改成只认不带「如果」「要是」的无条件转人工句，也请 owner 一并定。
+
+  - **措辞补例句之后的复测（`fix/02-step15-sop-fallback`，2026-10-08，owner 已批准）**：按建议给第 8 条「冲我们发火」「证件丢了」各补了具体例句（原文见「实施记录 · 第 15 步」四个哈希表上方的 SOP 改动，或直接读 `data/sop.md` 转人工条件第 8 条）；回归用例的判定同时改掉了上一轮 `s15-presale-01` 那个假阳性——改用 `denyTool`（直接看这一轮有没有调 `handoff_to_human`），不再用 `denyText` 正则扫回复文本，判定脚本与用例文件都留在 scratchpad（`s15b/run.mts`、`s15b/realOnly-step15b.json`），不进仓库。按「文件 → DB → 文件」交替跑了 6 遍（文件、DB 各 3 遍），基线沿用上一轮的数字（不再重跑），合计 759 次模型调用、花费 ¥14.17（主模型，未开对冲；另有一次只跑 10 条兜底用例的小额预跑 17 次调用 ¥0.37，验证判定脚本本身跑得通，算在同一笔开销里，总计 776 次、¥14.55）。密钥只在跑命令的 shell 里从主仓库 `.env` 现读，没有复制进 worktree，没有写进任何文件或日志。
+    - P90：6 遍在 5,148–6,025ms 之间，两种模式都远不超过 8 秒（比上一轮略高但同一量级，波动属于正常范围）。
+    - 整体通过的用例集合：文件 35/39/36、DB 38/37/36（42 条里）——都不少于上一轮基线（文件 31、DB 26）；非 `s15-*` 的波动（`detail-02-no-guess`、`flow-07-kid-headcount`、`guard-13-no-service-promise` 等）与上一轮点名的一样，是既有的、与本步无关的模型行为类用例，不是这次 SOP 改动带来的新问题。
+    - 兜底用例逐条命中率（6 遍里命中几遍 / 上一轮 6 遍里命中几遍）：
+      - `s15-emergency-01-altitude-mother`（我妈高原反应很严重）6/6（上一轮 6/6，不变）
+      - `s15-emergency-02-altitude-help`（高反头痛救命）6/6（上一轮 6/6，不变）
+      - `s15-emergency-04-lhasa-altitude`（到了拉萨头疼是不是高反）6/6（上一轮 6/6，不变）
+      - `s15-emergency-03-passport-lost`（护照丢了明天的飞机）**6/6（上一轮 2/6）**——补了「护照丢了，明天就要上飞机」「证件被偷了，人在机场」两句具体例句之后转正
+      - `s15-anger-02-curse`（骂服务）**6/6（上一轮 2/6）**——转正
+      - `s15-anger-01-disappointed-service`（嫌服务差）**6/6（上一轮 0/6）**——转正
+      - `s15-anger-03-slow`（怎么这么慢啊）**0/6（上一轮 0/6）**——仍未起作用，唯一一条没达标
+    - 售前反例逐条（6 遍里「没转人工」判对几遍，`denyTool` 直接看工具调用）：`s15-presale-01-altitude-question`（高反了怎么办）、`s15-presale-02-allergy-question`（过敏问水果）、`s15-presale-03-destination-swap`（对三亚失望想去国外）都是 **6/6**——`s15-presale-01` 上一轮的 4/6 是测试判定的假阳性（模型反问句里带「如果…马上为您转接」被正则误认成转人工），换成看工具调用之后，这条也是真的零误转人工，不是靠放宽判定蒙过去的。
+    - 结论：6 条兜底用例里 6 条转正或保持满分，只有 `s15-anger-03-slow`（单独一句「怎么这么慢啊」、没有任何上下文）仍是 0/6，没有达到「每条 6 遍里至少 5 遍」。推测原因：这句本身比「什么破服务」「你们这么慢是不是没人管」更孤立——没有「服务」「没人管」这类明确指向我们的词，模型更容易读成「这个流程/加载慢」之类的中性吐槛，倾向于先安抚或反问而不是直接转人工。按 brief 的要求，命中率没有整体达标就不自己再改再跑（每轮都花钱），第 15 步复选框不勾，把这条单独列出来请 owner 定：① 接受现状——「嫌慢」单独一句不转人工，靠客户后续说得更具体（如「这么慢是不是没人管」）或靠第 2 条「投诉、表达强烈不满」兜底，直接勾第 15 步；② 再给第 8 条补一条更贴近「怎么这么慢啊」原句的例句（如「怎么这么慢啊」本身，或「这都等了半天了」），接受再跑一轮回归的花费（参考这次 759 次、¥14.17）。
+- 25 · **通过**。`src/store/store.selftest.ts`（带 `PG_TEST_URL`）的真实 PG「保留期清理」一节：租户保留期设成线索 7 天、客户 30 天、trace 7 天；过期的线索与过期的客户各清一个，没过期的候选在调 SQL 之前被挡下；清理时恰好有一条新消息进来的会话（race）不受影响，之后照常落库；被清的会话同一 tick 移出内存（墓碑）；被清的线索连同发送账本行与待办任务一并删掉；没被清的客户（有已付订单）订单仍挂着 `session_id`，被清的客户订单保留、`session_id` 置空、`data` 去掉 `sessionId`；没被清的线索（6 天）trace 没动，另一个过期（8 天）的 trace 被 `purge_expired_traces` 删了；早该结束的任务被 `purge_finished_jobs` 删了；`system.purge` 审计只有条数（会话数 2），没有会话 id。「prod profile 下跑一组含价格护栏命中与转人工的对话，日志里搜不到其中任何一句客户原话」这一句与验收 34 的日志要求是同一个测试场景，证据见第 34 条（`src/ops/ops.selftest.ts` 的 prod + `LOG_FORMAT=json` 子进程测试）。
+- 26 · **通过**。`src/privacy/privacy.selftest.ts` 42 项全通：隐私说明的内存读取、同意菜单文案与按钮 id；问一次、再问一次、问两次不再问；点「同意」记 `granted`，点「不同意」记 `declined` 并转人工（consent 类型）、AI 不再回复、交还 AI 返回 409；客户说「把我的信息删掉」记 `withdrawn`、回固定的一句、转人工；没发布隐私说明时不触发同意菜单。欢迎语链接：`src/adapters/wecom-02.selftest.ts`（15 项）「欢迎语按隐私说明发布与否加链接」。`/privacy` 路由：`src/console-api/console.selftest.ts`「GET /privacy：没发布过 404，发布过 200、正文转义、`no-store`」——响应是 `no-store`，每次请求都读最新发布的版本，不存在「重新发布后 60 秒才看到新版」的延迟窗口，比 spec 要求的「60 秒内」更严格。
+- 27 · **通过**。DB 函数层：`src/db/db.selftest.ts`（带 `PG_TEST_URL`）898 项全通，`erase_conversation` 的权限（`agent_app` 调报 `permission denied`、不在 `withTenant` 里调用报错、事务设别的租户报错、没写原因报 `BAD_PARAM`）、删除之后会话行、消息（3 条）、trace（1）、护栏事件（1）、同意记录（1）、发送账本（1）、任务（pending/running/done 共 3）都归零，返回的 `counts` 与预期逐字段相同；订单保留、`session_id` 为空、`data` 去掉 `sessionId`；`platform.erase` 审计 `diff` 只有各类条数与原因；**全库扫描确认删除之后在 `orders`、`audit_log`、`outbound_sends`、`consents`、`turn_traces`、`jobs` 里都搜不到它的 `external_userid`**（删除前先验证这几张表确实都搜得到，排除「本来就没有」的假阳性）。应用层 CLI：`src/store/store.selftest.ts` 真实 PG 段，应用在跑时取不到租户锁退出码 3；有没回放的 spill 文件拒绝、退出码 1；应用停了之后执行退出码 0；会话本不存在时各类条数为 0、审计仍照写（退出码 0）。
+  「重启后 console 里没有这个会话」这一句没有单独起一套「erase → 重启 server → 登录 console → 查列表」的端到端脚本，是用两段已各自验证过的事实组合覆盖：① 上面确认 `conversations` 行被真删（DB 层、应用层两处都测过）；② `store.selftest.ts`「PGlite：预载往返与校验」与真实 PG「第二个进程」两组已经验证过，server 重启时的预载（进 identity map）与库内容逐字段相同，console 的会话列表直接读 identity map（`src/console-api/console.selftest.ts` 的「会话只读列表」「会话状态与计数」）。①+② 组合起来即是「重启后 console 看不到已删除的会话」，没有另跑一遍冗余的集成脚本。
+- 28 · **通过**。`src/store/store.selftest.ts`（带 `PG_TEST_URL`）「NUL、切开的 emoji、存档点里的 trace」一节：同一会话里依次 `含NUL的话在吗`、`999个x+😀+尾巴`（第 2000 个码点处的 emoji 不被切开）、一条排进非法护栏名（`Bad-Guard`）的遥测；之后又发一句「之后的消息」照常落库、会话不 poisoned；非法护栏名那一批遥测回到存档点、丢掉并计数（`telemetryDropped` +1），同一存档点里的 trace 也没进库；下一次合法的 trace 与护栏事件随下一次落库正常写进去。CHECK 违反场景（同文件「数据类错误」一节）：违反 CHECK 的投影（超长会话 id）不重试，这个会话标 poisoned、`storeHealth` 点名短码、只试一次不重试；`/healthz` 的 `ok` 在有 poisoned 时为 `false`（poisoned 字段只给个数不带会话 id）；别的会话照常落库不受影响；停机时 poisoned 的会话随 spill 写出（`store.selftest.ts` 停机/重启那组）。告警集成：`src/ops/ops.selftest.ts`（380 项）「会话 poisoned：收到一条，带短码与错误码；同一个会话不重复报」「真的 WindowCorruptError：会话 poisoned，巡检收到一条，没有会话原 id」。
+- 29 · **通过**。`pnpm -s test:locked` 全绿（`SERVER SELFTEST PASS` 269 项，含访客清理与上限、种子保鲜、部署 profile 的解析与封顶、开关关掉时的后台只读 / 网页模拟器 / 模拟支付 / 常开页面；`LLM 调用层` 的 F1 两条）。两种 mock eval 配置本次各重跑一遍：`CONFIG_SOURCE=file LLM_MOCK=1` 与 `CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1`，检索 4/4、护栏 9/9、话术 3/3、健壮性 3/3，DB 模式额外核对「19 个用例的会话入库，0 处与内存不符」「22 个请求的前缀哈希，0 个与 /healthz 不符」。db 存储下重置（E6、E6p 的行为）：`store.selftest.ts`「重置：窗口推进、订单作废（E6、E6p 的内存行为照旧）」在 PGlite/真实 PG 组里测过。`admin.html` 匿名只读、旧写接口按开关受控、列表 401 弹登录框：`src/config/config.selftest.ts`「旧后台 admin.html：列表 401 自动弹登录框 + db 配置模式下顶部提示去 J 页」一节（含「同一页面里列表连续 401，只弹第一次」）。
+- 30 · **通过**。2026-10-08 初测之后，按 coordinator 意见复测（关对冲／开对冲两组，各用全新一次性容器、库里只有本次场景造的会话，「回到正常延迟」改按轮 P90 判定）；下面的数字是复测结果，是最终判定依据。初测用的是生产默认关对冲、容器里混了本机此前手工探路留下的旧会话、「回到正常延迟」判据是「基线 P50 + 10 秒」——初测的具体数字与判据已被复测取代，不再重复列出，差异与改法见「实施记录 · 第 25 步」。
+  - 两组都是：`scripts/load/run.ts`（`LOAD_FRESH_CONTAINER=1`）、本机真实 Postgres 一次性容器（Apple M5 × 10 核，跑完即删）、db 存储、假企微接口与假模型（一个 `globalThis.fetch` 覆盖）、50 个客户 × 10 轮 + 429 风暴（60 秒、30%）+ 风暴后检查点轮、5,000×300 预载。关对冲组按生产默认（`LLM_HEDGE_MODEL` 不设）；开对冲组按 `.env.example` 推荐的线上演示配置（`LLM_HEDGE_MODEL=glm-5.2`、`LLM_HEDGE_MS=4000`，`LLM_HEDGE_MS_FOLLOWUP` 留空按代码默认 2800），对冲模型走同一个假模型、同一套延迟分布与风暴逻辑。
+  - 每条客户消息恰有一次回复或一条记录在案的兜底：**两组都通过**，0 处异常（已转人工客户之后的静默都对应 `handedOver=true`，是预期内的兜底）。
+  - 每个（客户、轮次）至多一次 send_msg 组：**两组都通过**，0 次重复。
+  - 库里的消息数等于内存：**两组都通过**，一次性容器下 `loadtest` 租户只有本次场景造的 50 个会话；场景跑完先 `flushSession` 全部会话、走完三段停机钩子（释放租户锁，不退出进程），另起一个独立子进程重新从库预载同一个租户，两条路径精确相等：50 个真实会话、1,076 条消息（两组的数字相同，场景是同一套确定性脚本）。
+  - 转人工事件从提交到 SSE 送达 p99 ≤ 1 秒：**两组都通过**，关对冲 p99 = 3ms，开对冲 p99 = 4ms（各 40 个样本）。
+  - 落库延迟 p99 ≤ 500ms：**两组都通过**，关对冲 p99 = 98ms，开对冲 p99 = 74ms（各 1,076 个样本）。
+  - 事件循环延迟 p99 ≤ 200ms：**两组都通过**，两组都是 p99 = 3ms（关对冲 7,226 个样本、开对冲 7,329 个样本，每 50ms 一次 `setTimeout` 实测延迟，覆盖全程含风暴期间）。
+  - 结束时常驻内存比开始时增长不超过 20%：**两组都通过**，关对冲 155.9MB→135.7MB（降 13.0%），开对冲 157.7MB→136.5MB（降 13.4%），都是降的（脚本带 `--expose-gc`，场景开始与结束各手动 GC 一次再量）。
+  - 预载不被语句超时打断、耗时 ≤ 30 秒：**两组都通过**，5,000 个会话、每个 300 条消息（1,500,000 条），以 `agent_app` 的默认连接启动，关对冲 3,745ms、开对冲 3,269ms，都远低于 30 秒上限（两组各自在自己的全新容器上独立测，不是同一份数据复用）。
+  - **风暴期间进程不崩、风暴之后 1 分钟内回到正常延迟**：**两组都通过**，进程全程存活。按轮全程 P50/P90（ms），风暴在第 2 轮结束后开始、持续 60 秒，覆盖第 3、4 轮；「检查点轮」是专门等到风暴结束满 60 秒（或已经过了这个点就立刻跑）单独测的一轮，不依赖自然轮次边界恰好落在窗口内：
+
+    | 轮          | 关对冲 P50 | 关对冲 P90 | 开对冲 P50 | 开对冲 P90 | 命中风暴窗口       |
+    | ----------- | ---------- | ---------- | ---------- | ---------- | ------------------ |
+    | 0（冷启动） | 16,278     | 29,291     | 17,990     | 30,927     | 否                 |
+    | 1           | 16,354     | 28,503     | 17,041     | 29,134     | 否                 |
+    | 2           | 16,869     | 28,995     | 18,362     | 31,252     | 否                 |
+    | 3           | 15,012     | 28,702     | 17,063     | 32,359     | **是**             |
+    | 4           | 17,965     | 34,408     | 18,670     | 31,783     | **是**             |
+    | 5           | 17,313     | 30,462     | 17,378     | 28,754     | 否                 |
+    | 6           | 17,971     | 31,073     | 16,722     | 29,255     | 否                 |
+    | 7           | 17,546     | 29,580     | 16,539     | 27,126     | 否                 |
+    | 8           | 17,837     | 30,758     | 16,516     | 30,147     | 否                 |
+    | 9           | 17,756     | 30,640     | 16,144     | 27,634     | 否                 |
+    | 检查点轮    | 14,931     | **26,471** | 16,919     | **28,017** | 否（风暴早已结束） |
+
+    判定：基线取风暴之前稳态各轮（第 1、2 轮，不含第 0 轮冷启动）P90 的最大值——关对冲 28,995ms、开对冲 31,252ms；阈值是基线 × 1.1（给测量噪声留的余量：50 个客户同时发消息、`LLM_MAX_INFLIGHT=8` 排队下，同一轮重跑的 P90 本身有个百分之几的抖动，1.1× 是在「抓真衰退」与「不被抖动误报」之间取的一个不算宽松的系数——基线两轮本身相差不到 8%）。检查点轮 P90：关对冲 26,471ms（阈值 31,895ms，**通过**，比基线还低）、开对冲 28,017ms（阈值 34,377ms，**通过**，同样比基线低）。两组检查点轮都比基线更快，风暴没有留下排队本身解释不了的额外衰退。两组检查点轮都是在「自然轮次已经把时间拖过风暴结束+60秒」之后才排上的（关对冲晚了约 120 秒、开对冲晚了约 118 秒——每轮本身要 15~20 秒，10 轮自然跑下来早就过了 60 秒整——这正是本步按构造专门补一轮检查点轮的理由：不补的话，10 轮跑完时自然已经没有哪一轮恰好落在「风暴结束后 60 秒内开始」）。
+
+  - **对冲：是否覆盖、有没有在风暴里把请求量放大**。两组总模型调用数几乎相同（关对冲 557 次、开对冲 561 次，+0.7%），429 命中率也几乎相同（关对冲 28/557=5.0%、开对冲 32/561=5.7%）——**对冲没有让风暴期间的请求量成倍放大**。原因是 `llm-gate` 的 `gateBusy()`：对冲计时器（`LLM_HEDGE_MS=4000`）到点触发时，如果名额已经占满（`inflight>=LLM_MAX_INFLIGHT=8`）就**不**加发对冲（`src/llm.ts` 的 `launchHedge(onTimer=true)` 分支），只有主请求**直接失败**（这次压测里是重试耗尽的 429）触发的对冲不看这条（`onTimer=false`）。50 个客户常年把 8 个名额占满，计时器触发的对冲几乎全被 `gateBusy()` 挡住：开对冲组全程只触发了 2 次对冲（都在风暴期间、都是主请求 429 失败触发、都胜出），稳态各轮（风暴前后）对冲触发次数都是 0——`hedgeByPhase`：风暴前 `{fired:0, won:0}`，风暴中 `{fired:2, won:2}`，风暴后 `{fired:0, won:0}`，`followupHedgeFired/Won` 全程为 0（没有工具往返之后的第二次调用触发过对冲）。按小规模（6 个客户，名额够用，另跑的烟雾测试）复核过对冲机制本身是好的：同样的配置、客户数降到名额以内时，计时器触发的对冲每轮能打 3~4 次、偶尔胜出——「几乎不触发」是这次 50 并发、8 个名额的压测规模下 `gateBusy()` 按设计抑制的结果（「拥堵时多一个请求只会让所有人排得更久」，`src/llm.ts` 的注释），不是对冲本身失灵，也不是脚本没配对。这是本步按 spec「观察 llm-gate 的排队与对冲」得到的真实结论：**排队机制主导、对冲在高并发下基本让位**，两者都观察到了，只是对冲在这个规模下起的作用很小。
+  - 另外看了一眼 plan 第 5 步带出的注意（`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引）：两组场景里假模型都不调 `create_order`，orders、consents 两张表基本是空的，没有删除/清除场景（不在本步场景之内），测不出这两个索引在大数据量下的实际影响，仍然维持现状、没有加迁移——留给以后真有删除场景的压测或第 16 步保留期清理单独核实。
+  - 细节、取舍、初测与复测的差异、门禁见「实施记录 · 第 25 步」。
+
 - 31 · **未通过（在途客户恰好一次那一句），按开放问题 5 的裁决处理（owner 2026-10-09 确认）**：02 接受这个窄窗口，接第一个真实租户之前另写 spec 把 `channel_inbox` 提前（「上线清单」最后一条）；其余各句通过。恢复到新集群：`/healthz` 四个哈希、`store.mode`、`catalogVersioned` 与原集群一致；`conversations=4`、`messages=10`、`orders=1` 与源库逐项相同；随机抽的 3 个会话消息逐字节相同；没有在途的客户（A、C）重启后不补发、不丢；唯一一个备份时恰好卡在"账本行还没落库"（< 2 秒窗口）那一刻的在途客户（B）重启后收到了两条内容相同的回复，不是「恰好一次」。
 - 32 · **本机部分通过**（线上切换是第 27 步，由 owner 执行）。切换步骤 1–5 全部走通：四个哈希全程不变、db 存储下 `conversations` 与导入数持平、console 能打开导入的会话、`--resync` 把回退期间追加的消息正确合并回库；停机时长（人工逐条执行、非脚本串联）落在 15–20 秒量级。回滚检查：有标记文件、`.env` 为 `SESSION_STORE=db`、`catalogVersioned=true` 三类风险单独与叠加都正确拒绝并打印步骤，两个 02 镜像之间与「看不出来」时的默认从严都正确；健康检查失败后的自动回滚全链路（真实换容器失败 → 自动调用回滚检查 → 回退到 `:prev` → 健康检查通过）真实复现一次。细节见「实施记录 · 第 26 步」。
+- 33 · **通过**。2026-10-08，走查脚本在仓库外（scratchpad），本机真实 Postgres（一次性容器 `pgwalk-02s24`，`127.0.0.1:55444`，db 存储）、`scripts/seed-demo.py --scenario console-ux-02` 种子、7F3A 由走查脚本经假企微接口与脚本化假 LLM 真跑出来（含一轮价格护栏删句）。Playwright 1.64.0（本机缓存 Chromium，headful——headless 下 `Notification.permission` 测不出 `granted`，见「实施记录 · 第 24 步」）在 1440×900 下浅色、深色各走一遍验收 33 列的完整路径：I 页四个页签 → J 页接手（light 鼠标在 F01、dark 纯键盘在 7F3A）→ 回复 → 交还 → 交接卡 → 7F3A「AI原稿里删了1句」展开（浅色、深色各一遍；`removed` 恰好 1 句、`added` 为空）→ 铃铛与标题（浅色用 D01、深色用 C01 各实时推一条投诉，服务端确认处理完之后 5 秒内标题与铃铛计数更新）→ 浏览器通知（授权后捕获到的标题是「企微客户 · D01 等人接手」/「企微客户 · C01 等人接手」，正文「客户要投诉」，没有客户原话）→ A2（「已成交客户要人工」行是 A02、「本月成交额」207,440 元、运行数字四格）→ 快捷回复管理。只用键盘经「更多」完成一次交还 AI：dark 主题在 7F3A 上做，聚焦「更多」→ 回车开菜单 → 聚焦「交还AI」→ 回车选中，截图见 `walkthrough/dark/10-J页-7F3A-交接卡-键盘交还.png`。
+
+  走查中带出一处真实界面问题（J 页输入框右下角字数「0」压在「发送」按钮上，浅色 `09`、深色 `10` 截图放大可见）：antd 的 `showCount` 把字数渲染在文本域边框外、往下占 22px（`.ant-input-data-count` 的 `bottom: -22px`，Playwright 实测），`.wb-replybox-foot` 原来只留 8px 间距，不够盖住。改法：`console/src/conversations/workbench.css` 把 `.wb-replybox-foot` 的 `margin-top` 从 8px 改成 24px（照 22px 的字数高度留够间距再加 2px，不改渲染方式，最小改法）；补了 `console/src/conversations/workbench.selftest.tsx` 2.16 节一条断言，读 `workbench.css` 源码核对 `.wb-replybox-foot` 的 `margin-top` ≥ 22px（happy-dom 不排版，量不出真实像素重叠，改读 CSS 源码，手工把值改回 8px 验证过这条断言真的会变红）。改完重截了浅色、深色两边所有带输入框的 J 页截图。
+
+  截图 32 张（浅色 16、深色 16），存到 `docs/architecture/02-conversations-workbench/walkthrough/{light,dark}/`，单张最大 235,748 B，合计约 4.92 MB。axe 的 `color-contrast` 共 13 次扫描（每次扫描对应走查脚本在该画面停留时调一次 `axe.run`，不是每张截图各扫一次），逐一列出（主题/画面 → 违规数）：
+
+  | 主题  | 画面（对应 axe 调用点）                                   | 违规数 |
+  | ----- | --------------------------------------------------------- | ------ |
+  | light | 01 总览A2                                                 | 0      |
+  | light | 会话列表（I 页，四个页签都切过一遍后的页面状态）          | 0      |
+  | light | J页-F01（07～10：接手、已回复、交接卡）                   | 0      |
+  | light | J页-7F3A-trace（11～12：交还前、改写对照展开）            | 0      |
+  | light | A2（16，含「已成交客户要人工」与运行数字）                | 0      |
+  | light | 快捷回复管理（17）                                        | 0      |
+  | dark  | 01 总览A2                                                 | 0      |
+  | dark  | 会话列表（I 页，四个页签）                                | 0      |
+  | dark  | J页-7F3A-trace（11～12：交还前、改写对照展开，本次补的）  | 0      |
+  | dark  | J页-7F3A-键盘交还（07～10：接手、已回复、交接卡，纯键盘） | 0      |
+  | dark  | 铃铛弹层（13，本次补的）                                  | 0      |
+  | dark  | A2（16）                                                  | 0      |
+  | dark  | 快捷回复管理（17）                                        | 0      |
+
+  走查中另发现并修了三处走查脚本/环境本身的问题（esbuild 的 `__name` 辅助函数、headless 下 Notification 权限、demo 类会话跨进程持久化导致的测试卫生问题），都不是产品代码问题，详见「实施记录 · 第 24 步」。
+
+- 34 · **通过（自动化部分，本次亲自跑）；外部拨测端到端待 owner**。`src/ops/ops.selftest.ts` 380 项断言本次全通，逐句对应：
+  - 日志：子进程在 `DEPLOY_PROFILE=prod`、`LOG_FORMAT=json` 下真跑一组含价格护栏命中与转人工的对话和几个请求——标准输出每一行都能解析成一个 JSON 对象；轮次里的行带 `tenant`、`conv`、`turn`；请求里的行带的 `req` 与响应头 `x-request-id` 相同；搜不到客户原话与会话原 id（兜底与 redact）。这个子进程场景同时覆盖验收 25 最后一句「prod profile 下跑一组含价格护栏命中与转人工的对话，日志里搜不到其中任何一句客户原话」。
+  - 告警：`model_errors`（mock LLM 连续 5 次超时收到一条，30 分钟内再 5 次不再收到，恢复后收到「已恢复」）、`wecom_send`（假企微连续失败收到）、`tenant_lock`（租户锁丢失收到）；假 `docker`/`curl`/`df` 跑 `watch.sh` 收到重启、健康检查、磁盘三类；`backup.sh` 中途失败收到备份告警；所有告警正文里没有客户原话与 `external_userid`；30 分钟去重、条件变重、限流、没配地址只 `warn` 都测过。
+  - 运行数字：`turn_traces`、`usage_daily` 种好之后 `/metrics` 的四个数与手算一致；坐席请求得到 403；总览四格只有所有者、管理员看得到；按租户保留期截断窗口、60 秒缓存。
+  - OpenTelemetry：没设 `OTEL_EXPORTER_OTLP_ENDPOINT` 时不加载也不连接；设成进程内的假接收端（本组自带假 OTLP/HTTP 接收端，收 JSON 也认 gzip）时每轮收到一条 trace，含 `chat`、`execute_tool`、`guard` 三类 span 的父子关系与起止时刻，带 `gen_ai.operation.name`、`langfuse.session.id` 等属性；默认没有客户原话，设了 `OTEL_CAPTURE_CONTENT=1` 才有；端点挂掉、停机时 flush 与按时放弃都测过。
+  - **外部拨测配好后停掉 app、通知在 10 分钟内到达**：待 owner。plan 第 17 步仍是 `[ ]` 未勾选，「外部拨测由 owner 配好国内云厂商账号后，停一次 app 验证通知能到、把结果记进「验收记录」，再勾选本步」——这是 spec 本身就点名的手动项（开放问题 14），不是本次能在本机跑出来的。**真实企微测试群机器人的端到端**同样待 owner（第 26 步记录：「告警用的是本机假 webhook，真实企微测试群机器人的端到端等 owner 给测试群地址后补」）。
+- 35 · **待 owner**。验收 15、17、23、25、26、27 通过（17 是 owner 接受当前修复）；34 的自动化部分通过，外部拨测与真实企微测试群机器人的端到端待 owner（第 17 步、第 26 步）。「上线清单」逐项写明了状态：PIA、委托处理约定、网信办登记、隐私说明正文、租户的保留期、系统页 spec、按 PIA 复核同意细节、企微额度实测、真实模型回归、告警群与外部拨测、接第一个真实租户之前提前 `channel_inbox`，目前都未完成；清单清空是接第一个真实租户的条件，不是本 spec implemented 的条件。
 
 ## Open
 
@@ -1598,32 +1716,6 @@ date`，origin/dev 这段时间没有新提交）。
   - 已定 · **清除与删除连带删会话的任务（按验收 27 扩了删除范围）**。spec 写的是「删除范围与清除函数相同」，不变量 42 的表清单里也没有 `jobs`；但跟进的 `dedupe_key` 是 `followup:<会话>:<阶段>`，会话 id 就是 `wecom:<external_userid>`，验收 27 要求删除之后「库里搜不到它的 external_userid」，结束的任务还要再留 30 天，不删就过不了这条。现在的做法：约定与会话有关的任务 `payload` 必带 `sessionId`，`purge_conversation`、`erase_conversation` 一并删 `payload->>'sessionId' = p_id` 的任务（任何状态），`erase_conversation` 的返回值与审计多一项 `jobs`。owner 要改回原文的范围，就把这两条 DELETE 去掉、把验收 27 的「库里」收窄成不变量 42 的那几张表；或者改成不删、把任务的 `dedupe_key` 与 `payload` 改用不含会话 id 的引用。请 owner 把定下的写法补进 spec「数据库 · 清除与删除函数」与不变量 42。
   - 已定 · **`orders` 触发器多管了 `session_id`**。spec「数据库 · 触发器」只写了 `paid_at` 写一次；`agent_app` 对 `orders` 是整表 UPDATE，把已付订单的 `session_id` 置空或改挂，会话就按线索的保留期被提前清除，与 R20、不变量 6 矛盾。现在 `session_id` 非空之后只有 `agent_owner`（清除与删除函数、外键动作）能改，理由与验证见「实施记录 · 第 4 步」的「审查之后改的」第 1 条。请 owner 把这一句补进 spec 的触发器那一段。
 - 第 26 步带出（2026-10-08；owner 2026-10-09 已定，见末句）：**恢复演练复现了重复回复**。细节、复现步骤、数字见「实施记录 · 第 26 步」「验收记录」第 31 条。这个窗口在「实施记录 · 第 12 步」的「注意（第 26 步）」里已经写过（账本行在落库之后才有，备份恰好落在「回复已送出、账本行还没落库」的那一刻时会补发一次）；本步第一次真实跑出来：窗口 < 2 秒（账本写入的上限），命中时客户收到两条内容相同的文字回复（多占一次企微 48 小时 / 5 条的发送额度，不是错误信息、不是资金类错误），没命中这个窗口的客户（A、C）不受影响。开放问题 5 的裁决（owner 2026-10-02）写着「演练里复现了重复回复或丢消息，就在接第一个真实租户之前另写 spec 提前做」。**已定（owner 2026-10-09）：照原裁决办**——02 接受这个窄窗口（demo 没有真实租户，后果只是多发一条相同的话），验收 31 记「未通过、按开放问题 5 的裁决处理」；「上线清单」加阻塞项：接第一个真实租户之前另写 spec 把 `channel_inbox` 提前。不收紧账本落库的 2 秒上限（只降概率、不治本），不在 02 里提前做。
-
-### 第 25 步 · 压测（2026-10-08）
-
-- **新文件只有 `scripts/load/`**（6 个，不进 `pnpm test`）：`run.ts`（主流程）、`fake-upstream.ts`（假企微 + 假模型，整体覆盖 `globalThis.fetch`，不起真实 HTTP server）、`console-client.ts`（脚本自己拿真实 HTTP 打本机 `server.ts` 的 console 登录 / SSE / 接手 / 回复）、`metrics.ts`（事件循环延迟采样、落库延迟旁听、百分位）、`gen-preload-fixtures.ts`（生成 5,000×300 的 `sessions.json`/`orders.json`）、`preload-timer.ts`（只做 `initConfigFromEnv` + `initSessionStore`、量「预载耗时」的独立子进程）。没有改任何产品代码。
-- **基础设施全部走生产命令行、幂等**：一次性容器 `pgload-02s25`（`pgvector/pgvector:pg17`，`127.0.0.1:55437`）；角色与库用 `deploy/db-init/roles.sql`（docker exec psql，已存在就跳过）；迁移用 `src/db/migrate.ts`；两个租户（`loadtest` 聊天场景、`loadtest-preload` 专门给 5,000×300 预载，分开是为了不让「预载耗时」被聊天场景自己造的会话稀释或反过来拖慢聊天场景的启动）用 `src/cli/tenant-create.ts`；配置用 `src/cli/import-config.ts`；三个后台账号（owner、agent1、agent2，两个 agent 给「顾问接手」用）用 `src/cli/user-create.ts`；5,000×300 的预载数据用 `src/cli/import-sessions.ts`（与真实上线切换同一条命令，批量写入＋读回比对在同一个长事务里，production 代码自带）。这几步全部「已存在/已一致就跳过」，脚本本身从检查容器是否在跑开始，第一次跑会自己从零建好；重跑只需要几秒钟。
-- **假企微 + 假模型用同一个 `globalThis.fetch` 覆盖**（照 `src/adapters/wecom.selftest.ts` 的写法，按 hostname 分流，不是起两个真实 HTTP server）：
-  - `qyapi.weixin.qq.com` → 假企微（`gettoken`/`kf/sync_msg`/`kf/send_msg`/`kf/send_msg_on_event`/`media/upload`/`kf/customer/batchget`），`sync_msg` 按简单的数字 cursor 分页，不需要「cursor 作废」那类场景。
-  - 选定的假模型主机名（`llm.fake.invalid`，不解析真实 DNS）→ `chat/completions` 按 2–8 秒均匀分布延迟应答（纯文本回复，不带 `tool_calls`：压测要的是负载特征，不是销售话术的语义正确性，模型侧的行为正确性已经由 eval 和其余自测覆盖）；风暴窗口内 30% 概率直接应答 429；`embeddings` 立即应答（不计入 2–8 秒分布，只用于启动时建语义索引）。
-  - `127.0.0.1`/`localhost` → 原样转给真的 `fetch`（脚本自己拿 HTTP 打本机起的 `server.ts`：console 登录、SSE、接手、人工回复，这是本机环回，不是外部服务）。
-  - 其余一律抛错——双重保险，真的连上外部网络会直接报错而不是悄悄发出去。
-  - 第一次跑漏了 `127.0.0.1` 这条分支：脚本自己调 `fetch` 登录 console 时也被这个覆盖接住，报「未预期的请求」，补上这条分支后正常。
-- **预载耗时单独量，不跟聊天场景共用进程**：`store.ts`、`src/config/source.ts` 的装载函数只能调一次（没有「卸载再重新装一次」的接口），`preload-timer.ts` 是一个干净的子进程，只做 `initConfigFromEnv`（db 配置模式）→ `configRuntime()` 取 `{db, tenantId, deps}` → 掐表 `initSessionStore(...)` → 打一行 JSON（`preloadMs`、`realSessions`、`messages`）就退出，不起 HTTP、不碰企微/模型。初测两次独立测得 3,573ms 与 8,579ms；复测（两组各自全新容器）又测了两次：关对冲 3,745ms、开对冲 3,269ms。四次都远低于 30 秒上限。
-- **压测场景（50×10）的设计**：50 个客户 id 用短名 `wmlc0`…`wmlc49`（会话 id `wecom:wmlc<i>`，落在「wm 之后十几个字符以内」的要求内）；每轮一句通用问需话术（10 句话术轮换）；前 5 个客户在第 2 轮（0 起）改发语料库里验证过的确定性紧急触发句「证件好像丢了」（`src/handoff/triggers.corpus.ts` 里的正例），走「这一轮不调模型」的确定性转人工路径；这 5 个里前 2 个由两个真实顾问账号（`agent1`/`agent2`）各自 `takeover` + `reply` 一句人工话术。20 条 console SSE 连接按 3 个账号轮流分布，全程保持打开（本身就是「20 个成员同时在线」这一条负载）。429 风暴在第 2 轮（0 起）跑完后触发，持续 60 秒。
-- **复测时改的「检查点轮」设计**（原来是「等够 60 秒就跑一轮，量 P50」）：10 轮自然跑下来，每轮本身要十几到几十秒，累计早就把「风暴结束后 60 秒」这个窗口甩在后面了（实测甩开 118~120 秒）——10 轮里没有哪一轮的起点恰好落在这个窗口内，不能直接拿自然轮次的边界去判定。改成：10 轮跑完之后，显式等到 `max(现在, 风暴结束时刻 + 60000)`（已经过了就立刻跑），单独排一轮（45 个未转人工客户），这一轮按构造就是「风暴结束后 60 秒内开始的那一轮」，不依赖自然节奏凑巧对上；量的也从 P50 改成 P90（第三条要求）。全程每一轮（含检查点轮）都记 `{startedAt, endedAt, p50, p90, overlapsStorm, 这一轮的模型调用与对冲增量}`，`overlapsStorm` 按时间窗直接判（这一轮的 `[startedAt, endedAt]` 跟 `[风暴开始, 风暴结束]` 有没有交集），不是猜的。
-- **三类延迟都是外部旁听，没有改一行产品代码**：
-  - 转人工「提交到 SSE 送达」：脚本在同一个进程里对 `src/console-api/events.ts` 的 `addListener` 挂一个只读监听，`publish()` 调用它的那一刻（几乎就是提交那一刻，`relay` 是 `onCommitted` 的同步订阅者）记一个时间戳，按会话 id 存进 Map；真实 HTTP SSE 客户端收到对应事件帧的时刻减这个时间戳。
-  - 落库延迟：`src/store.ts` 导出的 `onSessionSaved`（改动同步排进写队列那一刻）与 `onCommitted` 的 `conversation.changed`（提交之后）各自按会话 id 开一个队列，一次提交覆盖了自上次提交以来「最早的一次排队」，两者相减。
-  - 事件循环延迟：每 50ms 排一个 `setTimeout`，比较实际触发时刻与预期时刻。
-  - 常驻内存：`NODE_OPTIONS=--expose-gc` 跑脚本，场景开始（启动完成后）与结束（跑完全部轮次、停机钩子跑完、独立核对子进程起之前）各手动 `global.gc()` 一次再读 `process.memoryUsage().rss`。
-- **「库里的消息数等于内存」的核对方式**：场景跑完先对 50 个会话逐个 `flushSession`，再直接调 `runShutdownHooks()`（**不**发 `SIGTERM`、**不**退出进程——发信号会让 `gracefulExit` 异步调 `process.exit()`，而我们还要在同一个进程里做收尾统计；`runShutdownHooks()` 本身就是停机钩子的执行者，跑完即释放租户锁、关连接池、停企微拉取，不附带退出）；主进程继续活着写结果，另起一个独立子进程（还是用 `preload-timer.ts`）重新从库预载同一个租户，比对两条独立路径算出的「真实会话数、消息数」。初测时容器是复用的（本机手工探路留了 50 个旧测试会话在 `loadtest` 租户里），两边都是 100 个真实会话、2,073 条消息，核对的是「数量相同」（`>=` 口径）；复测改成每组全新容器（`LOAD_FRESH_CONTAINER=1`），租户里只有本次场景造的会话，两边精确相等（50 个、1,076 条），核对也从「至少有」收紧成「恰好等于」。
-- **对冲：按 coordinator 意见补测**。初测按生产默认（`LLM_HEDGE_MODEL` 不设）跑，只验证了 `llm-gate` 的并发闸与退避重试，没有另外打开对冲——spec「压测」通过条件字面只列了「风暴期间进程不崩」「风暴之后 1 分钟内回到正常延迟」两条，没有单独要求对冲必须被触发，当时判断这是「选最小、最贴 spec 字面」的取舍；coordinator 指出 spec 原文是「观察 llm-gate 的排队与对冲」、`.env.example` 的线上演示配置本身就开着对冲，理应覆盖。复测按 `.env.example` 配置（`LLM_HEDGE_MODEL=glm-5.2`、`LLM_HEDGE_MS=4000`）跑了一组：对冲模型请求跟主模型请求打到同一个假模型地址（`fake-upstream.ts` 按 hostname 分流、不看 `model` 字段），不用另外写假服务代码。结果（细节见「验收记录」第 30 条）：50 并发、`LLM_MAX_INFLIGHT=8` 的名额几乎常年占满，`src/llm.ts` 的 `gateBusy()` 按设计挡掉了计时器触发的对冲（只有主请求直接失败——这次是 429 重试耗尽——触发的对冲不看这条），全程对冲只触发 2 次、都在风暴期间、都胜出；另在 6 个客户的小规模烟雾测试里确认过对冲机制本身没问题（名额够用时每轮能打 3~4 次）。两组总模型调用数几乎相同（557 对 561），风暴没有因为对冲被放大。这是观察到的真实结论，不是脚本没配对，判定条件没有放宽。
-- **两组对比要求「全新容器」之后，顺带把「库里的消息数等于内存」的核对口径从「至少有」收紧成「恰好等于」**（见上一条）。
-- **「回到正常延迟」的判据收紧**：初测是「基线 P50（第 0 轮）+ 10 秒」，coordinator 指出这个口径太宽（放得过 60% 以上的退化）且基线不该用冷启动轮。复测改成：按轮记 P50 与 P90；基线取风暴之前稳态各轮（不含第 0 轮冷启动）P90 的最大值；判定是专门补的「检查点轮」（见上一条「检查点轮设计」）P90 不超过基线 × 1.1。两组复测都通过，且检查点轮 P90 都低于基线（不是堪堪卡过线），细节见「验收记录」第 30 条的按轮表。
-- **plan 第 5 步带出的注意**（`orders (tenant_id, session_id)`、`consents (tenant_id, conversation_id)` 没有索引）：看了一眼，两组场景里假模型都不调 `create_order`，两张表基本是空的；本步的场景都不含删除/清除，测不出这两个索引在大数据量删除下的实际影响，维持现状、没有加迁移，留给以后真有删除场景的压测或第 16 步保留期清理单独核实。
-- **初测踩的两个坑**（复测时已经跟手工探路的历史对齐，不会再出现）：① 租户名字段不一致——`tenant-create` 对「同名已存在但字段不同」报错退出，本机此前手工探路建过 `loadtest` 租户、名字写的是「压测租户」，脚本第一版传的是「压测聊天租户」，对不上；改成跟手工建的那次一致。② 账号口令——`user-create` 对已存在的邮箱「只加成员关系，不碰口令」，本机手工探路时这几个账号已经用 `LoadTest123!` 建过，脚本第一版另起了一个新口令常量，登录全部 401；改成同一个值。两处都不是产品代码问题。
-- **门禁**：`format:check`、`lint`、`typecheck` 全绿（复测改完 `run.ts` 之后重跑过）；`pnpm test` 不带与带 `PG_TEST_URL`（压测用的一次性容器，跑完即删，两组各自独立）都 `EXIT=0`；锁定套件 8 个文件零修改，`PREFIX sha256` 与第 1 步相同。`git diff origin/dev -U0` 过了本机绝对路径与长 `wm` 会话 id 两道黑名单扫描；`gitleaks stdin` 对该 diff 无发现。收尾 `git fetch -q origin`：复测时 `origin/dev` 没有新提交，不需要再合并（初测收尾时合并过一次第 24 步，见上）。
 
 ## 交接记录
 
@@ -1811,35 +1903,6 @@ date`，origin/dev 这段时间没有新提交）。
 - 阻塞：无。
 - 下一步：主线照旧，第 23 步之后是第 24 步（02 走查种子与走查）。⌘K「会话」组与 A2 仍在用 `admin.html`（`workbenchHref`），本步没有改，留给第 21 步。
 
-### 实施记录 · 第 21 步
-
-- **A2「需要你处理」**：`console/src/overview/model.ts` 加 `handoffTodos`（合并「等人接手」`?state=human` 与「已成交客户要人工」`?group=paid_needs_human`，紧急一律最前，其余按 `handoff.at` 倒序即等得越久越靠前；行写原因与等待时长，≥10 分钟 danger、否则 warning，都带钟表图标，操作是真的次要小按钮「接手」，成功才打开 J 页）与 `pendingOrderTodos`（`?status=pending_payment` 且 `conversation` 不为空的订单，按金额高、下单早排序；advisor 模式且未确认写「等你确认价格」，否则写「下单N未付」，操作是幽灵「打开会话」）。原来的 `waitingTodos`（admin.html 新标签）整个删掉，`todoOrder` 签名改成 `(handoff, pendingOrders, sop, catalog)`。
-- **「金额高的在前」按 spec 字面做（2026-10-08 审查之后改正）**：第一版图省事套用了 plan「工作量与砍法」第一级第 3 条的退路（等人接手按等待时长、待付款按下单时间，两组首尾相接不交叉排）；owner 审查指出那一条是进度落后时才启用的砍法，砍之前要在 spec 顶部加 `Revisions:` 由 owner 决定，不是已经认可的做法——改正为真的按 spec 字面「没人接手的在前，金额高的在前（待付款订单或最近报价的总价），沉默久的在前」，紧急一律最前，等人接手、已成交客户要人工、待付款三组一起排，不再分两段拼接。
-  - 不为排序多发 N+1 请求：`ConversationRow` 加一个只给排序用的 `amount: number | null` 字段（`src/console-api/workbench.ts` 的 `conversationAmount`：这个会话待付款订单的总价，没有就用最近报价的总价，都没有为 null），服务端算好随 `/conversations`、`/conversations/counts` 等已有接口一起发，不用再查一次详情。
-  - 「没人接手的在前」：等人接手、已成交客户要人工、待付款这三组行在 A2 的语境里都算「没人接手」的提醒（前两组定义上没有接手人；待付款提醒的是钱没收到，不是这个会话有没有被接手，没有为了判它再给 `OrderView` 加「会话有没有接手人」的字段——coordinator 的范围只要求加金额），这一条在三组之间不产生区分，真正分高低的是金额与沉默时长。
-  - `console/src/overview/model.ts` 把原来分开的 `handoffTodos`/`pendingOrderTodos`（各自排序后再拼接）合并成一个 `attentionTodos`（内部 `byAttention` 比较器：紧急 → 金额高在前，没有金额排最后 → 沉默久在前），`todoOrder` 的签名跟着从 4 个参数收成 3 个（`attention, sop, catalog`）。
-  - `amount` 对所有角色给真值（agent、viewer 也一样），排序对所有角色一致；A2「等人接手」「已成交客户要人工」两行本来就不显示金额（design-system 样张没画），这是前端的展示选择，不是接口按角色打码——接口侧不因为角色隐藏这个数。
-  - `ConversationRow.amount` 是必填字段（不是可选），`console/src/conversations/conversations.selftest.tsx`、`workbench.selftest.tsx`、`shell/shell.selftest.ts` 里各自构造 `ConversationRow` 的夹具工厂补了这个字段（默认 null），这几个文件本身与排序无关，断言没动。
-- **OrderView 新增 `conversation: { id, channel, needSummary } | null`**（`src/console-api/workbench.ts` 的 `orderConversation`，按 `order.sessionId` 现查 `getSession`）：A2「待付款」行要会话的短码（`shortIdOf` 在 console 一侧用 `conversationLabel` 现算，不重复发）与 `needSummary` 才能拼出标题「企微客户 · B01 · 巴厘岛2人」。会话被清除（订单不再指向内存里的会话，第 16 步之后才会出现）时为 `null`，这一行直接跳过——没有会话 id 就打不开，比列一行点不开的链接更贴「打开会话」的字面意思。
-- **OrderPage 新增顶层 `paymentMode`**（`src/console-api/app.ts` 的 `/orders` handler）：「等你确认价格」要知道全租户的收款方式，但这是个全局开关不是订单字段；放在 `/orders`（权限表「订单列表」对所有角色开放，坐席、viewer 也只能看待付款）而不是 `/orders/summary`（只给所有者、管理员），因为待付款行本身对所有能处理会话的角色可见。
-- **本月成交额、运行数字都不是链接**：design-system A2 的 KPI 格样张只给了口径、数字、明细，没给「点了去」（不同于 A 页业务数 4 格每格都有「点了去」列）；新增 `StaticKpi`/`StaticKpiTile`，复用 `.ov-kpi` 的视觉但不套 `<a>`、没有悬停箭头。
-- **运行数字 4 格口径**：`回复用时（秒）`=`Math.round(replyP90Ms/1000)`；`转人工率`/`AI出错率`=`percent()`（新加的 `src/shared/format.ts` 工具，0–1 比例取整百分数，仿 `money`/`quantity` 的「写不出来则「—」」写法）；`今天的AI费用（元）`=`costTodayYuan.toFixed(2)`（不接千分位，demo 规模的费用数字不会到千元，接了反而要再处理小数位与分隔符的组合，权衡后从简）。spec 字面只给了费用格的明细（「近7天共…元」），没给它的口径一行；四格按视觉规范都要有口径，这里自己定了一句「今天的模型调用花费」，与明细不重复、不提模型名。
-- **`<Button size="small">接手</Button>` 的空格**：antd 6 对恰好 2 个汉字、没有图标的按钮默认插入一个可见空格（`接 手`），项目没有关掉 `autoInsertSpaceInButton`，`重试`（`sop.selftest.tsx` 的 `label()`）已经遇到并绕过。接手按钮沿用同一个绕法（比较前去空格），不改全局配置，不新增 ConfigProvider 覆盖。
-- **窄屏（<600px）**：接手行不能靠「整行可点」隐藏操作（只有按钮本身触发动作），`.ov-todo-static` 单独给了一个三行的 `grid-template-areas`（图标 / 类型 / 对象上下文 / 操作各占一行），按钮挪到内容下面，不跟着 `.ov-todo-action` 一起在 599px 以下消失。
-- **字体子集**：新文案（「已成交客户要人工」已有字、「等你确认价格」里的「率」「占」「花」等字缺失）触发 `check-fonts` 报缺字，`FONTTOOLS_PYTHON=<临时装的 venv> pnpm exec tsx scripts/fonts/build.ts` 重切，`console/src/fonts/{fonts.css,manifest.json,noto-sans-sc-ui.woff2}` 单独一个提交（随第 14、19 步的做法）。
-- **console 自测**（`console/src/overview/overview.selftest.tsx`，187 条）：纯逻辑覆盖 `attentionTodos`（紧急最前、金额高在前、没有金额排最后、金额相同按沉默久在前，等人接手/已成交客户要人工/待付款三组一起排）、`waitDurationText`/`monthlyRevenueKpi`/`metricsKpis` 的文案、「—」兜底；DOM 挂载覆盖所有者看到完整 7 行 A2（含本月成交额、运行数字，待付款因为有金额排到最前）、权限矩阵（owner/admin 看得到本月成交额与运行数字，supervisor/agent/viewer 看不到；owner/admin/supervisor/agent 有「接手」按钮，viewer 没有）、运行数字三态（文件存储 503 整块不画、出错就地重试、骨架）、接手成功后导航到 J 页、接手 409（`assigned_to_other`）就地说明不导航。原有 A 页测试里涉及「等人接手」`.ov-kpi-value`/`a.ov-todo` 的下标断言，因为接手行从链接换成了按钮、KPI 多了一格，逐处改成按 `.ov-kpi-block`/`.ov-todos-kpi` 限定作用域；排序改成按金额之后，2.1 所有者测试里的顺序与上下文断言按新顺序改写，都不是行为本身出的问题。另给 `console.selftest.ts` 补了 3 条：`ConversationRow` 的键数（10→11）、`amount` 的取值（订单优先于报价，都没有为 null）、对所有角色一致（坐席也拿到真值）。
-- **代表性变异**（隔离在同一 worktree，验证后立即回退，门禁与自测重跑过确认恢复绿）：
-  - `console/src/overview/model.ts`：紧急不在最前（短路判断）、金额排序被关掉、没有金额排在最前（符号取反）、沉默时长排序反了——4 处都让 `attentionTodos` 的顺序断言变红；
-  - `src/console-api/workbench.ts`：`conversationAmount` 报价优先于待付款订单（取反优先级）——让 `console.selftest.ts` 新加的两条变红；
-  - 另外重跑了上一轮（本月成交额/运行数字权限、文件存储整块不画、advisor 未确认文案）4 处变异，仍然全部变红——这几处的产品代码本次没改，重跑是确认改排序没有连带影响它们。
-  - 全部回退后 `overview.selftest.tsx` 187 条、`console.selftest.ts` 423 条恢复全绿。
-- **接手 409 跟着行一起消失（2026-10-08 审查 major，真实 Chromium + 本机后台测出来的）**：原来 `TakeoverTodoLine` 每行自己一个 `useMutation`，两个成员停在同一行时，A 接手成功、B 的事件流（`shell/live.ts` 的 `invalidateConversations`，几十毫秒内）让列表重取、这一行从 B 的 DOM 卸载，B 随后收到的 409（`assigned_to_other`）更新的是一个已经卸载的组件的状态，页面上什么都不显示——不是闪一下，是压根没地方画。`overview.selftest` 原来的 mock 没接 SSE，测不到这个时序。
-  - 改法：接手的 `useMutation` 与错误状态从每行提到 `TodoBlock` 一级（`takeoverErrors: Record<string, unknown>`，键是会话 id），`onTakeover(id)`/`pendingId`/`takeoverErrors` 作为 props 往下传给 `TodoRowView`/`TakeoverTodoLine`；`TodoBlock` 按当前 `rows` 算出还在列表里的接手行 id 集合，错误如果对应的行还在，照旧在行内显示（`InlineError`）；行已经不在了，就在区块头下面显示一条 `TakeoverErrorBanner`（`「{会话短码}：{原来那句错误文案}」`，如「A01：小林正在处理这个会话」），`role="alert"`，带「关掉」按钮，`TAKEOVER_ERROR_TTL_MS=6000` 毫秒后也自动清掉。没有用全局 toast（设计系统的就地说明优先于 toast）。
-  - 一个 `useMutation` 服务所有行：用 `takeover.variables === id` 判断某一行是不是正在等这次请求的回包（`pendingId`），不是给每行单独建一个 hook 实例；多个行的错误各自用 `id` 做键存在 map 里，互不覆盖（补的自测「接手之后另一行的 409 不该互相污染」仍然通过）。
-  - 补的自测（`overview.selftest.tsx` 2.10b）：`server.hold` 扣住接手请求，点了按钮之后手动 `qc.invalidateQueries({queryKey:['conversations']})`（模拟 `invalidateConversations` 在同一时刻做的事）把这一行刷掉，断言行确实不在了；`releaseHeld()` 放出 409 之后断言区块顶部出现「A01：小林正在处理这个会话」，点「关掉」之后消失。故意把 `orphanedErrors` 改成恒为 `[]` 复现过一次原来的 bug（断言找不到按钮直接抛错，确认这条自测真的在测这件事），改回来之后 192 条全绿。
-- **门禁**：`pnpm format:check`/`pnpm lint`/`pnpm typecheck` 全绿；`pnpm test` 不带 PG 与带真实 PG（`pgtest-02s21`，`127.0.0.1:55442`，收尾已 `docker rm`）各跑三遍（金额排序改动、409 说明改动前后各一遍），exit code 0；`check-fonts`、`check-console-dist`（首屏 JS 335,839 / 420,000 B，含总览分片）随 `pnpm test` 跑过；锁定套件（`src/engine.selftest.ts` 等 8 个文件）零修改，没有改 `README.md`。
-- **BEFORE / AFTER**（PR 说明用）：BEFORE——总览「需要你处理」只有等人接手（整行链到 `admin.html` 新标签）与话术/待上架草稿，没有已成交客户要人工、待付款、本月成交额、运行数字。AFTER——等人接手与已成交客户要人工合并一组、按紧急与等待时长排序，行尾是真的「接手」按钮（成功打开 J 页，409 就地说明）；新增「待付款」行（金额、下单多久未付或「等你确认价格」）；「需要你处理」右侧（≥1280px）或下方（<1280px）新增「本月成交额」格；再下面新增一行四格「运行数字」（回复用时、转人工率、AI出错率、今天的AI费用），后两块只给所有者、管理员，文件存储下运行数字整块不画。
-
 ### 交接（2026-10-08，第 21 步）
 
 - 已完成：第 21 步「前端：总览 A2 与运行数字格」（分支 `feat/02-step21-overview-a2`，没 push；开工时 dev 含第 1–20 步，第 16 步与第 22 步在另两条线并行，本步没碰它们的文件）。A2「需要你处理」的等人接手/已成交客户要人工/待付款按 spec 字面的排序一起排（紧急最前、金额高在前、沉默久在前，`attentionTodos`）、真的「接手」按钮、待付款（`等你确认价格`/`下单N未付`）、本月成交额 KPI 格（只给所有者、管理员，宽于 1280 并排、窄于 1280 落到列表下方）、运行数字四格（只给所有者、管理员，文件存储整块不画，三态）。为此给 `OrderView` 加了 `conversation` 投影、`OrderPage` 加了顶层 `paymentMode`、`ConversationRow` 加了排序用的 `amount`、`src/shared/format.ts` 加了 `percent()`。接手的 `useMutation` 与错误状态从每行提到 `TodoBlock` 一级，行被事件流刷掉之后 409 挪到区块顶部的 `TakeoverErrorBanner` 显示，不跟着卸载的行一起消失。本步经 coordinator 两轮审查修正（见下两条）。结构、本步定的 14 条取舍、console 自测（`overview.selftest.tsx` 192 条、`console.selftest.ts` 新增 3 条）、10 个代表性变异、门禁结果见「实施记录 · 第 21 步」。
@@ -1884,3 +1947,10 @@ date`，origin/dev 这段时间没有新提交）。
 - 半成品：无（本步没有要继续写的代码；本步没改产品代码，只改了 `plan.md`）。
 - 阻塞：无。验收 31 的备份恢复演练复现了重复回复（不到 2 秒的窗口），owner 2026-10-09 定照开放问题 5 的原裁决办：02 接受，接第一个真实租户之前另写 spec 把 `channel_inbox` 提前（「上线清单」最后一条）。
 - 下一步：第 26 步已勾。真实企微测试群机器人的告警端到端等 owner 给测试群地址后补；第 27 步「demo 线上切换」由 owner 在线上执行。
+
+### 交接（2026-10-09，第 28 步）
+
+- 已完成：第 28 步「对照 spec 当前全部验收标准逐条验证」（分支 `fix/02-acc17-triggers`，与验收 17 的规则修复同一个 PR）。两个 agent 并行验第 1–17 条、第 18–35 条，结果由协调者统一写进「验收记录」（按编号重排，原有的第 24、30–33 条照旧）。验收 17 在第一份盲测集上测出「在问」把反问与任指当成在问、紧急高反判成 medical，改了 `src/handoff/triggers.ts` 两处（见「实施记录 · 第 11 步」的「验收 17 盲测之后」），再用第二份盲测集做留出集测量，owner 2026-10-09 接受当前修复。顺手把误放在「验收记录」「Open」「交接记录」里的第 21–26 步实施记录挪回「实施记录」，内容没改。
+- 半成品：无。
+- 阻塞：无。待 owner：第 17 步的外部拨测与第 26 步的真实企微测试群机器人（给测试群地址）、第 27 步 demo 线上切换、「Open」里「不同意之后靠什么入口再点同意」、第 30 步验收。
+- 下一步：第 29 步「清理临时探针与测试」。
