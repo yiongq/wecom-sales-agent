@@ -99,10 +99,18 @@ async function inAdvisor<T>(fn: () => Promise<T> | T): Promise<T> {
   check('SOP：能力边界改成两种方式都成立的写法', sop.includes('付款只认 create_order 返回的订单链接，或顾问在微信里发给您的收款方式'));
   check('SOP：旧的「付款只走官方支付链接」那句已经不在了', !sop.includes('付款只走我们发给您的官方支付链接'));
   check('SOP：closing 段加了「工具结果里有 payNote」那一句', sop.includes('工具结果里有 payNote 时，按 payNote 跟客户说怎么付款'));
-  check('SOP：转人工条件加了「此刻遇到危险 / 冲我们发火」先安抚再转人工那条', sop.includes('先安抚一句，立刻调用 handoff_to_human'));
+  check('SOP：转人工条件加了「此刻遇到紧急情况 / 冲我们发火」先安抚再转人工那条', sop.includes('先安抚一句，立刻调用 handoff_to_human'));
+  check(
+    'SOP：第 8 条的例句不带时态词也要算（审查第 4 条），紧急情况写成具体类别',
+    sop.includes('我妈高原反应很严重') && sop.includes('身体不适或受伤、证件丢了、被困或走散'),
+  );
   check(
     'SOP：售前反例说明也写了（避免模型在问诊类问题、吐槛目的地上转人工）',
     sop.includes('是在问出行前要注意什么，不是说现在出事了') && sop.includes('不是冲我们发火'),
+  );
+  check(
+    'SOP：嫌贵还价不算第 8 条，按异议处理走（审查第 3 条）',
+    sop.includes('嫌贵、还价、觉得不划算（哪怕说「这价格太离谱了」）是在还价，按「异议处理」那节走'),
   );
   check('SOP_KNOWN_FIELDS 加了 payNote', SOP_KNOWN_FIELDS.includes('payNote'));
 }
@@ -198,6 +206,22 @@ await inAdvisor(async () => {
   store.saveSession(store.getSession(sid)!);
   const r2 = await handleMessage(sid, '链接再发我一下', 'wecom');
   check('advisor 模式：已确认价格的订单重发，说法是「请按顾问发的方式付款」', r2.text.includes('请按顾问发的方式付款。'), r2.text);
+});
+
+// ---------------- 4a. 转人工安全网的 handoffReply（engine.ts，不经过模型；第 15 步审查第 5 条） ----------------
+{
+  const { sid } = pendingOrderSession('-handoff-online');
+  const r = await handleMessage(sid, '转人工', 'wecom');
+  check('online 模式：转人工安全网仍说「付款卡片仍然有效」（企微渠道，逐字节不变）', r.text.includes('付款卡片仍然有效'), r.text);
+}
+await inAdvisor(async () => {
+  const { sid } = pendingOrderSession('-handoff-advisor');
+  const r = await handleMessage(sid, '转人工', 'wecom');
+  check(
+    'advisor 模式：转人工安全网说法换成订单链接+顾问核对价格发收款方式，不说付款卡片',
+    r.text.includes('之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式。') && !r.text.includes('付款卡片'),
+    r.text,
+  );
 });
 
 // ---------------- 5. 成单安全网：新建单与复用现有单两支（engine.ts，模型这轮没调 create_order） ----------------
@@ -357,13 +381,13 @@ await inAdvisor(async () => {
 });
 {
   // 付款确认要在提交之后才发（不变量 20）：文件存储下落库近乎同步，等提交和不等之间跑不出可观察的行为差异，
-  // 这里退而求其次按源码顺序核一遍——flushSession 的那一句必须排在 notifyPaid 之前，防一次简单的顺序颠倒
+  // 这里退而求其次按源码顺序核一遍——awaitCommit 的那一句必须排在 notifyPaid 之前，防一次简单的顺序颠倒
   const serverSrc = fs.readFileSync(path.resolve('src/server.ts'), 'utf8');
   const handler = /app\.post\('\/api\/orders\/:id\/pay'[\s\S]*?\n\}\);/.exec(serverSrc)?.[0] ?? '';
-  const flushAt = handler.indexOf('flushSession(order.sessionId');
+  const flushAt = handler.indexOf('awaitCommit(order.sessionId');
   const notifyAt = handler.indexOf('notifyPaid(id)');
   check(
-    '旧接口源码顺序：flushSession 排在 notifyPaid 之前（付款确认在提交之后才发）',
+    '旧接口源码顺序：awaitCommit 排在 notifyPaid 之前（付款确认在提交之后才发）',
     flushAt >= 0 && notifyAt >= 0 && flushAt < notifyAt,
     `flushAt=${flushAt} notifyAt=${notifyAt}`,
   );

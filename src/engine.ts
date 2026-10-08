@@ -2011,7 +2011,11 @@ function handoffReply(session: Session, text: string, kind: 'complaint' | 'refun
   if (kind === 'refund') return `${head}\n${title}这笔订单顾问会一并为您处理。`;
   if (kind === 'complaint') return `${head}\n${title}这笔订单顾问会一并跟进。`;
   if (order.status === 'paid') return `${head}\n您预订的${title}顾问会一并跟进。`;
-  // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的
+  // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的；
+  // advisor 模式下这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」，第 15 步审查第 5 条）
+  if (paymentMode() === 'advisor') {
+    return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式。`;
+  }
   const payEntry = session.channel === 'wecom' ? '付款卡片' : '付款链接';
   return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的${payEntry}仍然有效。`;
 }
