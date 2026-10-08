@@ -51,8 +51,10 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['assigned_to_other', 409, '别人正在处理这个会话', null, 'neutral', 'inline'],
   ['not_assignee', 409, '只有接手人本人能做这件事', null, 'caution', 'inline'],
   ['consent_declined', 409, '客户没有同意，不能交给AI', null, 'neutral', 'inline'],
-  ['send_window_closed', 409, '企微超过48小时没有新消息，这条发不出去了', null, 'caution', 'inline'],
-  ['send_quota_exhausted', 409, '这一轮已经发满5条，等客户回复后才能再发', null, 'caution', 'inline'],
+  // 这两句字面抄 src/quota/ledger.ts 的 WINDOW_CLOSED_TEXT / QUOTA_EXHAUSTED_TEXT（经 conversation-types.ts），
+  // 与顾问在别处（消息下的送达说明、后台日志）看到的是同一句话，不是这里另写的
+  ['send_window_closed', 409, '客户超过 48 小时没说话，这条发不出去了', null, 'caution', 'inline'],
+  ['send_quota_exhausted', 409, '这一轮已经发满 5 条，等客户回复后才能再发', null, 'caution', 'inline'],
   ['order_state', 409, '这个操作对当前订单状态不适用', null, 'caution', 'inline'],
   ['store_file_mode', 503, '这项内容只在数据库模式下可用', null, 'neutral', 'inline'],
   ['store_lagging', 503, '已生效，记录稍后保存', null, 'neutral', 'inline'],

@@ -3,6 +3,7 @@
 // 行业相关的词（实体名、字段名、阶段名、客户的叫法）不在这里，都来自行业包（src/shared/pack.ts）。
 // 这里的字符串会显示在后台上，也是 UI 优先片的用字来源（scripts/fonts/ui-text.ts）：改了文案要重跑 scripts/fonts/build.ts。
 import type { ApiError, Role, ViolationCode } from './console-api.js';
+import { QUOTA_EXHAUSTED_TEXT, WINDOW_CLOSED_TEXT } from './conversation-types.js';
 import type { IndustryPack } from './pack.js';
 
 // ---------------- 角色 ----------------
@@ -235,8 +236,9 @@ export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
   },
   not_assignee: { title: '只有接手人本人能做这件事', next: null, place: 'inline', tone: 'caution' },
   consent_declined: { title: '客户没有同意，不能交给AI', next: null, place: 'inline', tone: 'neutral' },
-  send_window_closed: { title: '企微超过48小时没有新消息，这条发不出去了', next: null, place: 'inline', tone: 'caution' },
-  send_quota_exhausted: { title: '这一轮已经发满5条，等客户回复后才能再发', next: null, place: 'inline', tone: 'caution' },
+  // 字面直接引用 src/quota/ledger.ts 给顾问看的同一句话（经 conversation-types.ts 转手），不手写一份措辞不同的文案
+  send_window_closed: { title: WINDOW_CLOSED_TEXT, next: null, place: 'inline', tone: 'caution' },
+  send_quota_exhausted: { title: QUOTA_EXHAUSTED_TEXT, next: null, place: 'inline', tone: 'caution' },
   order_state: {
     title: (b) => (b.status === 'unconfirmed' ? '还没确认价格，不能确认收款' : '这个操作对当前订单状态不适用'),
     next: null,
