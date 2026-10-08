@@ -685,6 +685,8 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
     extraMessages: [],
   };
   const m = await mount(member('owner'));
+  // 先确认时间线那一行真的画出来了（不是取到空字符串才侥幸不含那两句）
+  eq('handoff_note：恰好画出一行时间线', m.$('.wb-timeline').length, 1);
   const line = m.text(m.$('.wb-timeline')[0]);
   eq(
     'handoff_note：渲染成时间线，不显示原文（没有换行、没有「已转人工」原句）',
@@ -692,6 +694,8 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
     [false, false],
   );
   check('handoff_note：时间线写明时刻与原因', line.includes('14:18') && line.includes('客户要退款'), line);
+  // 全文也不该在别处原样出现（比如被当成普通 system 消息画出来）
+  check('handoff_note：原文不在页面任何地方出现', !m.box.textContent?.includes('客户原话里的出行时间'));
   await m.unmount();
 }
 
