@@ -1381,7 +1381,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
     const { confirmOrder } = await import('../payment/orders.js');
     const { __profileTest } = await import('../profile.js');
     const route = loadRoutes().find((r) => r.itinerary?.length)!;
-    const O = 'wecom:wmJobsOrderUnconfirmed';
+    const O = 'wecom:wmJobsOU1';
     const s = store.getOrCreateSession(O, 'wecom');
     const departDate = new Date(Date.now() + 200 * 24 * 3_600_000).toISOString().slice(0, 10);
     __profileTest.use({ DEPLOY_PROFILE: 'demo', FLAG_MOCK_PAY: 'off' });
