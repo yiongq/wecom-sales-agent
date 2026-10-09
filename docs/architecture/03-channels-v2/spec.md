@@ -5,6 +5,7 @@ Phase: 3 of the roadmap in [master-reference](../master-reference.md)「分阶�
 Depends on: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md)（开工时须已 implemented：PG 会话存储与每会话写队列、spill、发送账本、清除与删除函数、任务表、告警）；[01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、审计）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)
 Amends: 02 的「数据库」（新表 `channel_accounts`、`channel_inbox`；`outbound_sends` 的新列与三个新状态；`conversations.channel_account_id`；授权；清除与删除函数的删除范围加 `channel_inbox`，新函数 `purge_channel_inbox`）、「identity map 与写入 · 停机」（spill 条目多一段渠道行）、02 不变量 42（表清单加 `channel_inbox`）、02 R22（公开路由加企微按账号的回调与网页渠道三组）、「两种会话存储与启动」（`initChannels` 一步、新的启动拒绝原因、`/healthz` 的 `channels`）、02 R24 与「可观测性与告警」（日志脱敏认新的会话 id 形状、新告警键 `channel`、告警带账号 key）；01 的「审计」（新动作）；00 的「部署 profile 与开关」（新开关 `web_channel`，demo 默认开、prod 封顶为关）；后台 UX spec 的渠道中文名（加 `web`→「网页」，`simulator` 改叫「演示」）。只做新增或收紧
 Supersedes in part: [02](../02-conversations-workbench/spec.md) 的 R7「企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解……」那一句与「推迟」格的 `channel_inbox`（04）；「identity map 与写入 · 一次落库」第 6 步把账本行整体写在存档点之内；「企微：发送账本、回执与去重」里「账本行随会话的下一次落库写（存档点之内……）」一句，与「去重与重放对齐」的五种情况；「identity map 与写入 · 停机」里 spill 文件「trace 与账本行不写」中的「账本行不写」（库里账号的出站行要进 spill，R21）。四处都只在企微状态「在库里」时（R1）被取代，文件存储、以及企微状态是「未导入」「已导出」的 db 存储下原文照旧。原因：02 第 26 步的恢复演练复现了重复回复（备份落在「回复已发出、账本行还没落库」那不到 2 秒的窗口里），02 开放问题 5 的裁决是「复现了就在接第一个真实租户之前另写 spec 提前做」，owner 2026-10-09 确认；这几处的机制本身就是那个窗口的来源，改成「先落库、后发送」才能消掉它，见「与 02 及更早 spec 的关系」
+Revisions: 2026-10-09 实现期修订（plan 第 6 步，与实现同一个分支）：一、`initChannels` 在 db 存储、企微状态「未导入」而 `var/` 里有 `channels-in-db.json` 时也以 `channel_state_in_db` 拒绝（原文只写了「已导出」加标记这一种）：标记只在导入之后出现，库说没导入而标记在，说明库与 `var/` 不是同一时刻的（比如库恢复成了导入之前的备份），照常起会按冷启动只认领不回复、丢掉在途消息；文件存储下有恢复哨兵时照「未导入」处理，记一行并删掉（原文没写这一种）。二、`ChannelAccount.inactiveReason` 只表示「这个账号不能启用」，本阶段只有 `web_channel` 关着的网页账号；欢迎语不合格按没设处理、进启动告警，不写进 `inactiveReason`（原接口注释把两者写在一起，写进去会让 `accountByKey` 不返回这个账号、`/w/:key` 404，与 R19「按没设处理」矛盾）。行为、接口与数据形状的其余部分不变
 
 ## 背景与问题
 
@@ -162,7 +163,7 @@ export interface ChannelAccount {
   source: 'env' | 'db';
   wecom: { corpId: string; openKfId: string; idPrefix: string; recordOnlyUntil: number | null; settings: WecomSettings } | null;
   web: WebSettings | null;
-  /** 启动时判定这个账号不能启用的原因（web_channel 开关关着、欢迎语不合格按没设处理之类），给 /status 看；null 表示照常 */
+  /** 启动时判定这个账号不能启用的原因（本阶段只有 web_channel 开关关着的网页账号；欢迎语不合格按没设处理、进启动告警，不算不能启用），给 /status 看；null 表示照常 */
   inactiveReason: string | null;
 }
 export const ENV_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
@@ -209,7 +210,7 @@ export interface ChannelDeps {
 /**
  * boot() 在 initSessionStore 之后、serve 之前调。deps 为 null（文件存储）：var/ 下有 channels-in-db.json 就以 channel_state_in_db
  * reject；否则 WECOM_* 配齐时拼一个 env 账号（状态在文件）。db 存储：读本租户的全部账号，按 R1 判企微状态。
- * 未导入、已导出：已导出而 var/ 下还有标记文件（导出没做完）→ channel_state_in_db；否则照 R1 拼 env 账号，有恢复哨兵就只记一行
+ * 未导入、已导出：var/ 下还有标记文件（已导出：导出没做完；未导入：库是导入之前的、var/ 是导入之后的）→ channel_state_in_db；否则照 R1 拼 env 账号，有恢复哨兵就只记一行
  * 并删掉它（这两种状态下渠道状态在文件里，恢复照 02）。在库里：有 active 的企微账号而没有密钥环 → channel_key_missing；逐个解密
  * active 的，解不开 → channel_decrypt；var/ 下有恢复哨兵而有 active 的企微账号 → channel_restore_pending（没有 active 的：照常起、
  * 不起企微、哨兵留着、日志一行）；var/ 下有 wecom-cursor.json、没有标记文件 → channel_state_in_file；补写标记文件（写不进去只记日志），

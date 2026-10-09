@@ -1,8 +1,10 @@
-// 启动顺序（docs/architecture/01-pg-config-console/spec.md 裁决 R18，02 spec「两种会话存储与启动」多一步）：
-// 配置装载成功、会话存储就绪之后才监听端口，监听成功后再依次做数据预检、建检索索引、起任务表（db 存储）或跟进扫描器（文件存储）、
-// 起企微拉取、挂上告警的订阅（02 spec R24）。LOG_FORMAT=json 时最先把 console.* 接到 pino。
-// 任何一步装载失败时后面的一个都不调：企微 cursor 不动，客户消息留到下次成功启动再补拉，
-// 而不是被一个读不到配置或会话的进程拉走、答错。
+// 启动顺序（docs/architecture/01-pg-config-console/spec.md 裁决 R18，02 spec「两种会话存储与启动」多一步，03 spec「接口与数据流」
+// 的启动顺序再多一步）：配置装载成功、会话存储就绪、渠道账号装载之后才监听端口，监听成功后再依次做数据预检、建检索索引、
+// 起渠道（startChannels，代替 02 的 startWecom）、起任务表（db 存储）或跟进扫描器（文件存储）、挂上告警的订阅（02 spec R24）。
+// LOG_FORMAT=json 时最先把 console.* 接到 pino。
+// 任何一步装载失败时后面的一个都不调：企微 cursor（文件或库里的）不动，客户消息留到下次成功启动再补拉，
+// 而不是被一个读不到配置、会话或渠道账号的进程拉走、答错。
+import { ChannelStartupError } from './channels/startup-error.js';
 import { ConfigStartupError } from './config/source.js';
 import { installJsonConsole } from './log.js';
 import { SessionStoreStartupError } from './store/backend.js';
@@ -12,6 +14,11 @@ export interface BootDeps {
   initConfig(): Promise<void>;
   /** 文件存储：查 var/ 下的标记文件；db 存储：预载 PG 并换上 PG 后端（store.ts 的 initSessionStore） */
   initSessionStore(): Promise<void>;
+  /**
+   * 03：渠道账号装载（src/channels/registry.ts 的 initChannels）。文件存储拼 env 账号；db 存储按库里本租户的企微账号判企微状态（R1），
+   * 六种拒绝以 ChannelStartupError reject
+   */
+  initChannels(): Promise<void>;
   serve(onListening: () => void): void;
   /** 现有的数据文件启动预检 */
   preflight(): void;
@@ -22,7 +29,8 @@ export interface BootDeps {
   startFollowUpScheduler(): void;
   /** db 存储：任务表（认领与执行、跟进的排程与取消），代替 startFollowUpScheduler（02 spec「两种会话存储与启动」） */
   startJobs(): void;
-  startWecom(): void;
+  /** 03：代替 02 的 startWecom——在任务与跟进扫描器之前起渠道（这一步只起 env 账号的企微拉取，库里账号的运行时第 7 步接上） */
+  startChannels(): void;
   exit(code: number): void;
   /**
    * OpenTelemetry（02 spec R24，默认关闭）：只在设了 OTEL_EXPORTER_OTLP_ENDPOINT 时调，在会话存储就绪之后、监听之前。
@@ -30,7 +38,7 @@ export interface BootDeps {
    */
   startOtel?(): Promise<void>;
   /**
-   * 告警（02 spec R24）：起企微之后挂上各处的订阅（模型、企微、租户锁、写库、任务），两种存储都挂。生产是 src/ops/alert.ts 的
+   * 告警（02 spec R24）：起渠道之后挂上各处的订阅（模型、企微、租户锁、写库、任务），两种存储都挂。生产是 src/ops/alert.ts 的
    * startAlerts；推送只在后台，不阻塞启动
    */
   startAlerts?(): void;
@@ -62,6 +70,15 @@ export async function boot(d: BootDeps): Promise<void> {
     d.exit(1);
     return;
   }
+  // 03：spill 的回放在 initSessionStore 里、先于这一步，启动恢复读到的已是回放之后的入站与出站
+  try {
+    await d.initChannels();
+  } catch (e) {
+    if (e instanceof ChannelStartupError) console.error(`[boot] 渠道装载失败，拒绝启动（${e.reason}）：${e.detail}`);
+    else console.error('[boot] 渠道装载失败，拒绝启动：', e);
+    d.exit(1);
+    return;
+  }
   // 没设端点时这里只有一次判断：不加载任何 @opentelemetry/*、启动不多花时间（不变量 49）
   if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() && d.startOtel) {
     try {
@@ -74,9 +91,10 @@ export async function boot(d: BootDeps): Promise<void> {
     d.preflight();
     // buildIndex 内部已兜住异常，这里再补一道 catch：void 掉的 promise 一旦 reject 就是未捕获 rejection，进程直接退出
     d.buildIndex().catch((e) => console.error('[boot] 语义索引构建异常（已降级为关键词匹配）：', e));
+    // 渠道先于任务与跟进扫描器：库里账号的启动恢复做完之前，到期的跟进经 push 排队等它（03 spec「重启、崩溃与恢复」）
+    d.startChannels();
     if (d.storeMode() === 'db') d.startJobs();
     else d.startFollowUpScheduler();
-    d.startWecom();
     d.startAlerts?.();
   });
 }

@@ -57,7 +57,7 @@
   - 自测：开关的解析与 prod 封顶；同一组对话在三种渠道上的 contextNote、工具结果、确定性文本与前缀哈希（验收 15 的自动部分）。
   - 对应验收 15 的自动部分、14 的「`[profile]` 一行不变」；不变量 27、28 的开关部分。依赖：第 1 步。
   - 完成标准：四个门禁全绿；锁定套件 sha256 不变、`PREFIX sha256` 不变（这一步碰引擎，最容易让锁定套件变红，PR 里贴出两项核对）。
-- [ ] 6. 账号装载、企微状态与启动（2，Claude）
+- [x] 6. 账号装载、企微状态与启动（2，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），spec 顶部记了一条实现期 `Revisions:`，见「实施记录 · 第 6 步」。
   - `src/channels/accounts.ts`（读出、解密 `active` 的账号、env 账号的拼法、`accountByKey`、`accountForSession`、`inactiveReason`）、`markers.ts`（标记文件与恢复哨兵）、`registry.ts` 的 `initChannels`：按 R1 判三种企微状态，六个拒绝原因，标记补写，哨兵的去留（R1、R7 的哨兵部分、R8、R19 的欢迎语校验）。
   - `src/boot.ts`：`initSessionStore` 之后加 `initChannels`；监听之后 `startChannels` 先于任务与跟进扫描器（这一步 `startChannels` 只起 env 账号的老路，库里账号的运行时第 7 步接上）。`/healthz` 加 `channels`（`failing`、`stuck` 先恒为 0，第 13 步接实数）；`.env.example` 加 `CHANNEL_SECRETS_KEY`、`FLAG_WEB_CHANNEL` 与网页限流的变量。
   - 自测：三种状态下走哪条路；六个拒绝原因与「不留半装载」；全部停用时照常起、哨兵留着、之后启用再起被拦；欢迎语不合格按没设处理。
@@ -324,6 +324,37 @@
 - 第 9 步：同一次落库里同一入站行的几次状态变化按顺序逐条写；`abandoned` 必须带原因（否则发 SQL 之前就抛错）；别对终态行发不带状态条件的 UPDATE，触发器会报错。
 - 第 12、14 步：`restore-cutoff` 与导出用 `transitionOutbound(…, 'cancelled' | 'unknown', 'recover')`；`--resync`「把没结束行的 `payload`、`attempts` 换成文件里的」还没有对应的仓储函数；导入的 `legacy` 行 `updated_at` 取 `now()`，导入后再留 7 天。
 
+### 第 6 步 · 账号装载、企微状态与启动（2026-10-09）
+
+**结构**
+
+- `src/channels/accounts.ts`：spec 的类型与 `ENV_ACCOUNT_ID`；`envAccountFrom`（`WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_KF_OPEN_KFID` 配齐才有，key 固定 `env`，文件存储下 `tenantId` 是空串）；`accountFromRow`；`readChannelAccounts`、`openAccountSecrets`；导出的欢迎语校验 `checkWelcomeText`；装上的账号表与 `accountByKey`、`accountForSession`。`src/channels/markers.ts`（纯模块）：`channels-in-db.json` 与恢复哨兵 `restored-from-backup.json` 的判断、读、写、删（临时文件改名、文件与目录 fsync，02 的写法）。`src/channels/startup-error.ts`：`ChannelStartupError`（同 02 的 `SessionStoreStartupError`，`boot.ts` 不必为它带上适配器与库），`registry.ts` 再导出。
+- `src/channels/registry.ts`：`initChannels`、`startChannels`、`channelKeyRing`、`channelsHealth`、`channelsMode`、`loadedChannels`、`wecomState`、`channelStartupWarnings`，自测用 `__channelsTest.reset`。db 存储下在一个只读的 repeatable read 快照里读出本租户全部账号，以及启用企微账号没结束的入站与没结果的出站（默认账号连带 `account_id` 为 NULL 的出站行），按 `wecom_kf` 行判 R1 的三种状态。六种拒绝都在「装上」之前判，装上之后才换账号表、切换 env 账号、写删文件、打日志，所以拒绝时不留半装载。每种状态启动时打一行写明是哪一种；在库里时按名字列出被忽略的 `WECOM_*`，不写值。
+- `src/boot.ts`：`initSessionStore` 之后 `initChannels`（`ChannelStartupError` 打印 reason 与 detail、`exit(1)`、后面一个都不调）；`startChannels` 代替 `startWecom`，排在任务与跟进扫描器之前。`src/server.ts`：`/healthz` 加 `channels: { mode, accounts, failing, stuck }`（`accounts` 是启用的账号数，env 与库里、企微与网页都算；`failing`、`stuck` 大于 0 时 `ok=false` 的逻辑已写好，数值第 13 步接）。`src/ops/alert.ts` 加告警键 `channel`，本步只推启动时判出的几条（合成一条）。`.env.example` 加 `CHANNEL_SECRETS_KEY`（只有名字与说明）、`FLAG_WEB_CHANNEL` 与网页限流四个变量（注释里写缺省值）。`src/types.ts` 的 `Session` 加可选字段 `channelAccountId`（只有类型，投影与写入是第 7、17 步）。
+- 欢迎语（R19）：`checkWelcomeText` 要求非空、第一句（按 `[。！？!?\n]` 切）含区分大小写的「AI」、正文有转人工的说法（`/人工(?!智能)|真人/`，「人工智能」不算）。现在的两段常量都过。启动时不合格按没设处理、warn 一行并进 `channel` 告警；企微的两段与网页的 `welcomeText` 都校验。
+
+**本步定的与临时代码**
+
+- spec 实现期修订（顶部 `Revisions:`）：未导入而 `var/` 有标记也以 `channel_state_in_db` 拒绝；文件存储下有哨兵照未导入处理（记一行并删掉）；`inactiveReason` 只表示不能启用（本阶段只有 `web_channel` 关着的网页账号），欢迎语不合格不写进它。
+- db 存储下密钥环格式不对，即使是未导入或已导出也以 `channel_key_invalid` 拒绝；文件存储不解析密钥环。`channel_decrypt` 的 detail 是账号 key、key id 与失败类别（「认证失败」「密钥不存在」），不含密文与明文。
+- `accountForSession`：企微按前缀最长匹配，停用的账号也参与（免得停用账号的会话落到默认账号上），调用方再看是否启用；网页会话没有 `channelAccountId` 时返回 undefined（网页没有默认账号）；env 模式下 `accountByKey` 认 `env` 这个 key。
+- 网页账号 `title` 缺了用账号名，`dailyNewConversations`、`dailyTurns` 不合法时取 500 / 3000。
+- **临时**（第 7 步撤掉）：企微状态在库里时，`src/adapters/wecom.ts` 的 `retireEnvAccount` 让 `readConfig` 一律返回 null（不读 `WECOM_*`、不拉、不写 `wecom-cursor.json`，推送返回 false 并记一行），`/wecom/callback` 的 GET 回 404、POST 回 `success` 不拉，启动日志多一句「库里账号的收发这一版还没接上」。在库里这个状态要到第 14 步的导入之后才会出现，dev 上不受影响。
+
+**自测与门禁**
+
+- `src/channels/channels.selftest.ts` 追加第 6 步一节（PGlite 71 项，有 PG 时 81 项）：三种状态走哪条路；六种拒绝各一例且没有半装载；`channel_decrypt` 的 detail；全部停用照常起、哨兵留着、之后启用一个账号再起被 `channel_restore_pending` 拦住；欢迎语不合格按没设处理；`web_channel` 关着时网页账号的 `inactiveReason`；`accountForSession` 的前缀最长匹配与默认账号；`/healthz` 的 `channels` 只有个数；日志里没有凭据。
+- 改了的非锁定断言：`config.selftest.ts`、`store.selftest.ts` 里 boot 的顺序字符串（spec 规定 `startChannels` 先于任务表与跟进扫描器），`ops.selftest.ts` 的 `BootDeps` 字段名。
+- 四个门禁全绿；带 `PG_TEST_URL` 全绿（CHANNELS 81、DB 1168、STORE 452、QUOTA 127、WECOM-02 15、OPS 472）；锁定的 `wecom.selftest.ts`（461）与 `server.selftest.ts`（269，`[profile]` 一行不变）照过；`PREFIX sha256` 与第 1 步相同，锁定文件未动。一次性 PG 容器已连同数据卷删掉。
+
+**给后面步骤的注意**
+
+- 第 7 步：账号从 `loadedChannels()` 取（`secrets` 是 `Redacted`，`cursor` 是库里那一列）；撤掉上面三处临时代码，接上 `startChannels` 里的 TODO 与 `Session.channelAccountId` 的投影；停用账号的会话 `accountForSession` 返回那个停用账号，推送要据此返回 false；定 `/wecom/callback/env` 认不认 env 账号。
+- 第 10 步：`openInbox`、`openOutbound` 是 `initChannels` 那一刻的快照，只覆盖启用的账号。
+- 第 13 步：`channelsHealth()` 的 `failing`、`stuck` 留了 TODO；`/status` 的 `inactiveReason` 从 `loadedAccounts()` 取（含停用的账号）。
+- 第 15 步：复用 `checkWelcomeText`、`accountFromRow`、`WEB_CHANNEL_OFF_REASON`、`readChannelAccounts`、`openAccountSecrets`，以及 markers 的 `removeRestoreSentinel`、`writeChannelsMarker`、`removeChannelsMarker`。加密的 AAD 里有账号 id，id 必须在插入之前生成：第 2 步的 `insertChannelAccount` 不收 `id`，要给它加一个可选的 `id`（本步自测是用超级用户 SQL 直接插行绕开的）。
+- 第 17 步：`accountByKey(key, 'web')` 只返回启用的网页账号（`active` 且 `web_channel` 开着）；网页会话找账号时要把带 `channelAccountId` 的会话对象传给 `accountForSession`。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -355,3 +386,10 @@
 - 半成品：第 1 批并行在做——第 2 步由 Claude 子 agent 在分支 `feat/03-db` 上做；第 3、4、5 步派给 Codex，分支依次是 `feat/03-secrets`、`feat/03-log-ids`、`feat/03-web-copy`（本机 worktree，还没推送）。各自合并时在本文件勾选、补实施记录。
 - 阻塞：无。
 - 下一步：审查并合并第 1 批；之后第 6 步（Claude）与第 16 步（Codex）。
+
+### 交接（2026-10-09，第 1 批与第 6 步完成时）
+
+- 已完成：第 1–6 步与第 16 步，都已合进 dev（第 6 步随本 PR）。
+- 半成品：无。
+- 阻塞：无。
+- 下一步：第 3 批——第 7 步（按账号拆运行时与回调，Claude）；第 15 步（账号管理命令行）、第 17 步（网页渠道后端）派 Codex 并行。

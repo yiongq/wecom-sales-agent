@@ -63,6 +63,9 @@ export class ChannelSecretError extends Error {
   }
 }
 
+/** 密钥环所在的环境变量名：只在本文件写出（scripts/check-boundaries.ts 守），别处的提示语经它引用、读值一律经 keyRingFromEnv */
+export const CHANNEL_KEY_ENV = 'CHANNEL_SECRETS_KEY';
+
 /** 空值表示未配置；标准 base64 可省略末尾填充，但不接受空白、非法字符或非规范填充位。 */
 export function keyRingFromEnv(env: Readonly<Record<string, string | undefined>>): KeyRing | null {
   const value = env.CHANNEL_SECRETS_KEY;
