@@ -392,7 +392,7 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: 'taken
   1. 引擎返回（回复已写进会话、排着落库）。
   2. 适配器先确定要不要卡片（要的话先取缩略图：传不上去就按 02 的规则整段原文发，所以切分在取缩略图之后），切分段，`planOutbound`，`commitOutbound`（R6）。
   3. 每段：先比停机截止（02），过了就停：这一段与之后的段都不发、留在 `pending`，入站留在 `replied`，重启后补发；再比接手代次，变了就把这一组没发的段 `cancelIntents`（`taken_over`）、按 02 记「本轮未发送」。
-  4. `markSending`；`not_pending` 不发这一段；`absent` 按上面的注释（这一组提交超时过才发）；`db_unavailable` 照发（R6）。返回 `marked` 时**提交回来之后再比一次接手代次与停机截止**（短事务期间可能有人接手或到了截止）：被接手就把这一段迁到 `cancelled`、其余没发的一并取消；过了截止就把这一段迁回 `pending`、其余没发的不动，这一组留给重启后的出站恢复——两种都不发请求。这次比较与发请求之间没有 `await`，接手和截止都插不进来，所以 02「normal 段截止之后不再开始新的 send_msg」照旧成立。迁回 `pending` 的短事务写不成时，这一段留在 `sending`、重启后记 `unknown`（没发过，工作台显示「可能没送达」，告警一条）。
+  4. `markSending`；`not_pending` 不发这一段；`absent` 按上面的注释（这一组提交超时过才继续，否则不发）。凡是要继续发的结果（`marked`、提交超时过的 `absent`、`db_unavailable`），**返回之后、发请求之前都再比一次接手代次与停机截止**（`markSending` 期间可能有人接手或到了截止）：被接手就不发，这一段与其余没发的一并取消；过了截止就不发，其余没发的不动，这一组留给重启后的出站恢复。返回 `marked` 的段库里已是 `sending`，被接手迁到 `cancelled`，过了截止迁回 `pending`；`absent`、`db_unavailable` 的段库里没有 `sending`，取消照 R6 的落库路径写，过了截止什么都不另写。这次比较与发请求之间没有 `await`，接手和截止都插不进来，所以 02「normal 段截止之后不再开始新的 send_msg」对每一种发送结果都成立。迁回 `pending` 的短事务写不成时，这一段留在 `sending`、重启后记 `unknown`（没发过，工作台显示「可能没送达」，告警一条）。
   5. send_msg（同一段的重试沿用 msgid；02 的退避重试里那一行可能先记 `unknown`，见迁移表）→ `settleIntent`。
   6. 全部分段有了结果 → 入站 `done`。
 - 人工回复、跟进、付款确认、同意菜单本来就是「先落库后发送」（02 不变量 20、R17），分段的 `pending` 行加进它们那一次落库，之后同样走第 3–5 步。
@@ -443,7 +443,7 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: 'taken
 | `pending`，`menu`、`welcome`、没有 `inbox_id` 的 `ai`（异常道歉）                                    | `cancelled`：同意菜单按 02「再问一次」的规则下次再问；欢迎语与道歉过时了就不该再发                                                                       |
 | `pending`，`card`                                                                                    | 不会出现：库里账号的卡片段记的是它那一组的 `kind`（「出站」一节）；万一出现按 `cancelled` 处理、记一行日志                                               |
 
-- 停机：normal 段截止之后不再开始新的 send_msg（02 的规则不变；「发一条 AI 回复」第 3 步在 `markSending` 之前比、第 4 步在它提交之后再比一次，截止之后标上的 `sending` 迁回 `pending`），没发的分段留在 `pending`、不取消，重启后按上面的出站恢复表处理；不再需要 02 的「deferred 留在在途表」。
+- 停机：normal 段截止之后不再开始新的 send_msg（02 的规则不变；「发一条 AI 回复」第 3 步在 `markSending` 之前比、第 4 步在它返回之后、发请求之前再比一次，所有要发的结果都比，截止之后标上的 `sending` 迁回 `pending`），没发的分段留在 `pending`、不取消，重启后按上面的出站恢复表处理；不再需要 02 的「deferred 留在在途表」。
 - **恢复截止点**（`channel-account restore-cutoff --tenant <slug> --until <带时区的 ISO 时刻|now>`，要求应用已停）：一个事务里写全部企微账号的 `record_only_until`；把 `sent_at` 不晚于它的 `pending` 出站记 `cancelled`、`sending` 记 `unknown`；把 `run_at` 不晚于它、还在 `pending` 或 `running` 的跟进任务记 `cancelled`（`last_error='restore_cutoff'`；`running` 必须在这里处理，应用启动时 02 的归位会把 `running` 的跟进改回 `pending`、再发一次，`sending` 的照 02 记 `abandoned`、不重发）；打印受影响的入站行、出站行、任务数；删掉恢复哨兵。`--until` 晚于当前时刻 5 分钟、或没带时区，以 1 拒绝。
 - **恢复哨兵**：`backup.sh` 打包 `var/` 时额外放进 `var/restored-from-backup.json`（`{ backupAt }`，只在归档里，线上 `var/` 没有）。恢复手册第 5 步解开 `var/` 之后它就在。企微状态在库里时，它只由 `restore-cutoff` 删掉：其间有 `active` 的企微账号，应用以 `channel_restore_pending` 拒绝启动；全部停用时照常起（不起企微）、哨兵留着，之后启用账号再起时照样被拦住——停用不清掉恢复风险。企微状态是「未导入」「已导出」（渠道状态在文件里，恢复照 02）时只记一行日志并删掉它。崩溃重启没有哨兵，照常按库里的状态恢复。
 - 恢复手册（`deploy/backup.sh` 开头的恢复步骤）在第 5 步解开 `var/` 之后、第 6 步起应用之前加两步：确认 app 的 env 文件里有备份时用到的密钥（按 `secrets_key_id`，已轮换掉的从离线保管处取回）；以 app 身份跑 `restore-cutoff`（取值照开放问题 5 的裁决：旧实例最后一次正常回复的时刻，有告警时从「健康检查失败」「app 反复重启」那一条往前推，拿不准取恢复开始的时刻）。
@@ -731,7 +731,7 @@ demo 与清理：
    - 杀在「请求已到假企微、回包被挂住」：重启后不重发，假企微上恰好一组，库里那一段是 `unknown`，工作台显示「可能没送达」，告警一条。
    - 杀在 `markSending` 提交之后、请求到达假企微之前（假企微延迟接收、请求没进去）：重启后不重发，客户少收这一段，库里是 `unknown`，工作台显示「可能没送达」，告警一条——这是 R5 写明的边界。
    - 子进程里经 `__channelTest` 把 `RESEND_UNKNOWN` 设为真重跑后两种：重启时那一段保持 `sending`、按同一 msgid 补发，假企微按 msgid 去重之后都恰好一组。
-5. **接手与发送的竞态。** 让 `markSending` 的短事务挂住，期间顾问在 console 接手，再放开：这一段迁到 `cancelled`，零发送，会话多一条「本轮未发送」。
+5. **接手与发送的竞态。** 让 `markSending` 的短事务挂住，期间顾问在 console 接手，再放开：这一段迁到 `cancelled`，零发送，会话多一条「本轮未发送」。再挂一次、挂到 `markSending` 判为 `db_unavailable`，期间接手：同样零发送。
 6. **备份恢复不重复**（本机 compose，照 02 第 26 步的演练）。
    - 场景：三个客户 A、B、C 经假企微聊天；客户 E 已排好一条 `run_at` 在备份之后、停机之前的跟进；B 的第一次 send_msg 让假企微收下之后挂住回包 15 秒，期间跑 `backup.sh`；同时顾问给 C 发一条人工回复，让它停在 `pending`；客户 F 的跟进在备份那一刻正好是 `running`（假模型挂住生成）；备份之后 C 再发一句、旧实例回复，E、F 的跟进被旧实例发出；然后停掉旧实例，记下停的时刻 T。
    - 照恢复手册恢复到新集群：不跑 `restore-cutoff` 直接起应用，以 `channel_restore_pending` 拒绝；跑 `restore-cutoff --until T` 之后起应用。
@@ -764,7 +764,7 @@ demo 与清理：
 17. **出站投递状态。** 工作台里：正常发出的回复不显示状态；让假企微挂住回包时显示「发送中」；回执 4 之后显示「没送达」（02 已有）；验收 4 的结果不明显示「可能没送达」；接手打断的那一组显示「未发送」。窗口剩余条数把 `pending`、`sending` 算进已用。迁移表外的写入（对 `failed` 写 `accepted`、对 `cancelled` 写 `pending`）不改库。
 18. **出站恢复。** 重启时库里有每种没结果的出站行（有入站的 `pending`、跟进、通知、人工回复、同意菜单、欢迎语，以及 `sending`）：处理结果与「出站恢复」表一致；恢复做完之前到期的跟进任务等到恢复做完才发。
 19. **清理与删除。** 每日任务之后，8 天前结束的入站行没了、6 天前结束的还在、8 天前收到还没结束的记了 `abandoned` 且 `payload` 为空；`agent_app` 对 `channel_inbox`、`channel_accounts` 的 DELETE 报 permission denied；改 `channel_accounts.open_kfid`、把 `done` 的入站行改回 `received`、把 `updated_at` 往回改都不成；对一个企微会话执行 `erase-conversation` 之后，`channel_inbox` 里搜不到它的 `external_userid`（含 `send_fail` 行），返回值带 `inbox` 条数。
-20. **停机。** 模型在 normal 段截止之后才回包：不开始 send_msg，入站停在 `replied`、分段 `pending`；重启后发一次、msgid 与停机前生成的相同、不调模型。让 `markSending` 的短事务挂住、期间跨过 normal 段截止再放开：这一段迁回 `pending`、假企微上没有请求；重启后按同一 msgid 发一次。
+20. **停机。** 模型在 normal 段截止之后才回包：不开始 send_msg，入站停在 `replied`、分段 `pending`；重启后发一次、msgid 与停机前生成的相同、不调模型。让 `markSending` 的短事务挂住、期间跨过 normal 段截止再放开：这一段迁回 `pending`、假企微上没有请求；重启后按同一 msgid 发一次。挂到判为 `db_unavailable`、期间跨过截止：同样没有请求。
 21. **切换与回滚检查。** 本机演练与线上各按「切换步骤」走一遍：切换前后 `config` 的四个哈希相同；`channels.mode` 从 `env` 变 `db`；停机时长与条数记进 plan。本机演练里：有 `channels-in-db.json` 时 `deploy.sh` 拒绝回滚到 02 的镜像（退出码 5）并打印回退步骤；删掉标记、库里仍有 `active` 的企微账号时照样拒绝；`channel-export` 之后（标记删了、默认账号 `exported`）放行，部署 02 的 tag 成功；两个 03 镜像之间照常回滚。`backup.sh` 先打包 `var/` 再导出（看日志里两步的时间），归档里有哨兵、线上 `var/` 里没有。
 22. **欢迎语按账号。** 不设 `welcomeText` 时新客户收到的欢迎语与开工时逐字节相同；`set --setting welcomeText=…` 设一段第一句不含「AI」的文字，命令行以 1 拒绝、库不变；直接在库里改成不合格的再启动：按没设处理、告警一条；设一段合格的，重启后新客户收到它。`restore-cutoff --until` 写一个明天的时刻或不带时区，以 1 拒绝。
 23. **卡住了能看见。** 让一个会话的处理链卡住 6 分钟：`/healthz` 的 `stuck = 1`、`ok = false`，告警收到一条；`/status` 的 `oldestOpenInboxSec` 超过 300。
@@ -804,7 +804,7 @@ demo 与清理：
 5. **恢复截止点取什么时刻。** 已定（owner 2026-10-09：照推荐）。依据：恢复时宁可漏回（由顾问补）还是宁可重复回。
    - 推荐：取旧实例最后一次正常回复的时刻，有告警时从「健康检查失败」「app 反复重启」那一条往前推；拿不准就取恢复开始的时刻。之前的消息只补记、给顾问看，之后的照常回复。
    - 备选：取备份的时刻（快照之后旧实例回过的消息会再回一遍，但不会漏回）。不设截止点已经不可选：哨兵拦着起不来。
-6. **人工回复在崩溃时还停在 `pending`，重启后怎么办。** 已定（owner 2026-10-09：照推荐）。依据：顾问的预期（点了发送就该发出去）与过时的风险（重启隔了很久、会话已经往下走了、别的顾问已经接手）。库可写时，`pending` 说明这一段的 `sending` 从没提交、请求从没发出，补发不会重复；R6 下 `sending` 没写成就发了的段也停在 `pending`，补发会多一次（目标 1 写明的 R6 例外）。
+6. **人工回复在崩溃时还停在 `pending`，重启后怎么办。** 已定（owner 2026-10-09：照推荐）。依据：顾问的预期（点了发送就该发出去）与过时的风险（重启隔了很久、会话已经往下走了、别的顾问已经接手）。库可写、不在 R6 下时，`pending` 说明请求从没发出（包括停机截止之后从 `sending` 迁回的段），补发不会重复；R6 下 `sending` 没写成就发了的段也停在 `pending`，补发会多一次（目标 1 写明的 R6 例外）。
    - 推荐：这一行建起 10 分钟内、会话的接手人没变，就按同一 msgid 补发；否则记 `cancelled`，工作台这条显示「未发送」，由顾问决定重发。
    - 备选：一律补发（最省事，但可能隔很久冒出一条过时的话）；一律 `cancelled` 并提示顾问（最稳，但正常的几秒重启也要顾问重发一次）。
 7. **「崩溃落在请求途中可能漏发」能不能作为 03 的已知边界翻 ready。** 已定（owner 2026-10-09：接受为已知边界）。依据：这个窗口有多大（一段 send_msg 请求的往返，通常几十到几百毫秒，只在进程被硬杀时命中），与开放问题 4 的实测什么时候能做。
