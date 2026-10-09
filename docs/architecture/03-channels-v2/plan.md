@@ -77,7 +77,7 @@
   - 自测：迁移表的每条路径在内存与库里一致；`markSending` 四种结果；挂住 `markSending` 期间接手、跨过截止（含判为 `db_unavailable` 的那一种）；R6 的两种补写（验收 7 的 A、B，不含杀进程）；工作台的五种显示。
   - 对应验收 5、7（不含杀进程）、17、20；不变量 4、6、7、10。依赖：第 2、7 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍；在隔离副本里做变异（至少：不比第二次接手、`absent` 一律照发、晚到的 `pending` 盖掉结果、结果写进主事务）。
-- [ ] 9. 入站：`channel_inbox` 与状态机（2.5，Claude）
+- [x] 9. 入站：`channel_inbox` 与状态机（2.5，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），spec 顶部记了一条实现期 `Revisions:`，见「实施记录 · 第 9 步」。
   - `src/channels/inbox.ts`：`acceptPage`（与 cursor 同一事务、冷启动）、`load`、`beginAttempt`；出队时的计次、`poison`、`too_old`、恢复截止判定（R2、R3）。
   - `store.queueInboxState` 与 `writeInboxStateNow`；引擎的 `inboxId` 选项，记客户消息的两处都排 `recorded`；适配器的非文本占位、菜单点击、回执、进入会话事件的短路（R3、R21 的入站部分）。
   - 库里账号的企微运行时改用 `channel_inbox`，不再写 `wecom-cursor.json`（不变量 13）。
@@ -462,6 +462,51 @@
 - 第 11 步：poisoned 之后渠道行被丢弃（只计 `channelDropped`），spill 不带渠道行，没有会话的结果短事务只试一次。
 - 第 13 步：告警还不带账号 key；`unsafeSendsIn10m` 已有。
 - 第 14 步：库里账号的行不会出现 `kind = card`。
+
+### 第 9 步 · 入站：`channel_inbox` 与状态机（2026-10-09）
+
+**一条客户文本从拉取到 `done`（库里账号）**
+
+1. `sync_msg` 拉到一页（不开事务；已在停机就不提交这一页）。
+2. 短事务 T1（`acceptPage`）：插入入站行（冲突即跳过，`received`，attempts 0）并推进 `channel_accounts.cursor`，同一个事务；提交之后内存里的 cursor 才推进；失败时不派发、cursor 不动、下一次拉取重来。
+3. 按 `ord` 排进这个会话的处理链（内存）。
+4. 出队依次判：attempts 已到 3 → `abandoned`（`poison`）；`sent_at` 早于 48 小时 → `abandoned`（`too_old`）；不晚于 `record_only_until` → 只补记；其余走 `beginAttempt`（短事务 T2，attempts 加 1）。
+5. `handleMessage(…, { inboxId })`：客户消息、会话行与 `recorded`（`message_seq` 等于这条消息的 seq）在同一次会话落库的主事务里（引擎的重置分支与正常分支都在 `saveSession` 之后的同一段同步代码里排）。
+6. 静默 → 下一次落库记 `done`；有回复 → `planOutbound(inboxId)`：每段的 `pending` 与 `replied` 在同一次落库主事务（`pending` 在前）。
+7. 每段 `markSending` → `send_msg` → 结果走存档点（第 8 步）。
+8. `runGroup` 结束：全部分段有了结果（被接手打断的 `cancelled` 也算）→ `done`；停机截止时还停在 `pending` → 入站留在 `replied`，交给第 10 步；计划校验没过、或处理时抛错（异常兜底，比较的是本轮开始时的接手代次）→ `done`。
+
+其余几种：非文本——占位与 `recorded` 同一次落库，已转人工 → `done`，否则引导提示带 `inboxId` 走 `planOutbound`（同一次落库里先 `recorded` 再 `replied`）。菜单点击——同意记录与 `done` 同一个事务；没有隐私说明、认不出按钮、没有会话、这个类别已有同样结论 → `done`；「不同意」的确认是 notice，不挂入站。进入会话——T1 里直接插成 `done`（冷启动早于截止的插成 `abandoned` / `cold_start`），只有新插入的才发欢迎语。
+
+**结构**
+
+- `src/channels/inbox.ts`（新）：`PgInbox` 接口与 `AccountInbox`（`load`、`acceptPage`、`beginAttempt`）、`inboxKindOf`、`InboxWriteError`（只带错误码）、`InboxRowGone`、`onInboxAbandoned` 事件出口。`src/adapters/wecom.ts`：库里账号自己的拉取（`drainInbox`）、派发（`dispatchInboxRows`）、出队判定（`processInboxRow`）与四种入站；env 路径行为不变。删掉第 7 步的过渡后端 `AccountCursorState`。
+- `src/store/pg-backend.ts`：`Entry` / `Snap` 加 `inbox`，主事务里在出站 `pending` / `cancelled` 之后、存档点之前写入站状态（`applyInboxStates` 按先后逐条按迁移表写）；`queueInbox`（poisoned 时丢弃、计 `inboxDropped`）、`writeInboxNow`、`channelTx`（与 `jobsTx` 同一套拒写规则）；`markOutboundFailed` 可带 `inboxId`，同一个事务里把回执行记 `done`。`src/store.ts`：`queueInboxState`（同步校验；`recorded` 取消息当时的 seq；内存里没有这个会话时改走短事务）、`writeInboxStateNow`（返回 `Promise<boolean>`）、`withChannelTx`。`src/db/repo/channel-inbox.ts` 的 `InboxStateWrite` 只含 JSON 值（第 11 步的 spill 可以直接用）。
+- `src/quota/ledger.ts`：`planOutbound` 在 `pending` 的同一次落库排 `replied`；`cancelInboxIntents`、`onSendFailInbox`。`src/ops/alert.ts`：`channel` 告警加 `poison`、`too_old`（每种原因每个账号 10 分钟至多一条，带条数）。
+
+**本步定的（协调者确认）**
+
+- 发送失败回执（spec 实现期修订，顶部 `Revisions:`）：不进处理链、不计次、不判 `poison` / `too_old`，照 02 马上处理——出站行改 `failed` 与入站行记 `done` 在同一个短事务（重试一次）。否则第 8 步的「重试前看到 `failed` 就停」赶不上：回执排在正在退避的那一句后面，这一段会再发一次。payload 只存 `fail_msgid` 与 `fail_type`；重复的回执不再给会话加说明。
+- 冷启动对四种入站都记 `abandoned`（`cold_start`），照 spec 字面（02 的回执与菜单点击不受冷启动影响；冷启动只在全新账号第一次拉取时发生）。
+- `beginAttempt` 写不进库时这一行在处理链里按 1 / 5 / 30 / 120 秒退避重试、停机时放下，不跳过（跳过会让同一会话后面的话先处理，违反不变量 12）。
+- 处理时抛错按 02 算处理完（道歉 + `done`）；计划校验没过也记 `done`。`poison` / `too_old` 的说明与告警只对客户消息与菜单点击；回执只记 `abandoned` 与一行日志；没有会话的不建会话。
+- `acceptPage`：存不进库的条目（msgid 或 `external_userid` 为空、带 NUL、msgid 超过 128 字节、回执没有 `fail_msgid`）记一行、不写入，免得整页永远提交不了；payload 里的字符串先过 `cleanText`；同一页重复的 msgid 只插一次；没有新行、cursor 也没变时不开事务。
+- 恢复截止点之前的入站只补记、不计次，同一会话一次恢复只加一条说明。第 7 步的启动闸门保持原样（有没结束的入站或出站行就只建运行时、不拉取），`load` 读到没结束的行也会兜底挡住。
+- 顺手：`channels.selftest.ts` 里两处第 7 步之前的过时注释改了措辞；`wecom-03.selftest.ts` 一条非锁定断言从 `account_cursor` 改为 `channel_inbox`。
+
+**自测与变异**
+
+- `src/adapters/wecom-03.selftest.ts` 加 `in`（PGlite）与 `rin`（真实 PG）两个子进程：用超级用户建的 SECURITY DEFINER 测试触发器记每次写入所在事务的 txid（入站行、消息、出站行、同意记录、cursor），并能让「插入入站」或「推进 cursor」在提交前失败。覆盖一页的提交与回滚、`ord` 顺序、状态机每一格、出队计次（第一句处理途中失败：第二句 attempts 1、第一句 2；队尾不被连累）、`poison`、`too_old`、恢复截止点、四种入站、各处「同一事务」。
+- 变异（隔离副本）16 个全部被抓到，含 plan 要求的三个（插入就计次、`recorded` 不和消息同一事务、cursor 先于插入提交），另有派发就计次、`replied` 不和 `pending` 同一次落库、停机截止也记 `done`、内存 cursor 先于提交推进、`poison` 阈值差一、不判恢复截止点、菜单 / 回执的 `done` 拆开、不判 `too_old`、非文本 `recorded` 推到下一拍、去掉同步校验、回执排进处理链、异常兜底用当下的接手代次。
+- 门禁：四个全绿；带 `PG_TEST_URL` 全绿（WECOM-03 217、CHANNELS 106、DB 1168、STORE 452、OUTBOUND 246、QUOTA 127、WECOM-02 15）；`TZ=UTC` 下 wecom-03 PGlite 137 项、真实 PG 217 项都过；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
+
+**给后面步骤的注意**
+
+- 第 10 步：入口是 `startWecomAccount({ pull: false })`（`recovery = 'blocked'`）。恢复流程：先处理 `openOutbound`，再用 `dispatchInboxRows` 按 `ord` 派发没结束的入站，在 `processInboxRow` 里补上 `recorded` / `replied` 两种状态与保底（`received` 那一支已经能用，`__wecomTest.dispatchOpen` 是它的自测版本），最后把 recovery 改成 done 并 `startRuntime`。账本预载的出站行不带 inboxId、payload、segment，`cancelInboxIntents` 看不到它们，要用 `openOutbound`。回执重启后只需重做那个短事务。已知缺口：`acceptPage` 的 COMMIT 回包丢了时，这几行在本进程里不会派发，要等重启恢复。
+- 第 11 步：poisoned 会话的入站状态改走短事务，在 `queueInbox` 的 poisoned 分支接上（可复用 `writeInboxNow`）；spill 条目带 `entry.inbox` 与 `inflight.inbox`。
+- 第 12 步：运行时在 `load` 时读 `record_only_until`，设了要重启才生效（命令本来就要求应用已停）；「N 个会话只补记」那条告警没做，`onInboxAbandoned` 会发 `restore_cutoff` 事件，可以接上。
+- 第 13 步：`poison` / `too_old` 告警已有；`stuck`、`oldestOpenInboxSec` 要查 `channel_inbox`。
+- 第 14 步：导入的 `legacy` 行没有 `conversation_id`，派发时按 msgid 排队；有 `received` 的 `legacy` 行现在会走「不认识的种类 → `done`」，导入时要按 spec 处理在途的那几条。
 
 ## 验收记录
 

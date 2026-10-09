@@ -8,6 +8,7 @@ Supersedes in part: [02](../02-conversations-workbench/spec.md) 的 R7「企微 
 Revisions: 2026-10-09 实现期修订（plan 第 6 步，与实现同一个分支）：一、`initChannels` 在 db 存储、企微状态「未导入」而 `var/` 里有 `channels-in-db.json` 时也以 `channel_state_in_db` 拒绝（原文只写了「已导出」加标记这一种）：标记只在导入之后出现，库说没导入而标记在，说明库与 `var/` 不是同一时刻的（比如库恢复成了导入之前的备份），照常起会按冷启动只认领不回复、丢掉在途消息；文件存储下有恢复哨兵时照「未导入」处理，记一行并删掉（原文没写这一种）。二、`ChannelAccount.inactiveReason` 只表示「这个账号不能启用」，本阶段只有 `web_channel` 关着的网页账号；欢迎语不合格按没设处理、进启动告警，不写进 `inactiveReason`（原接口注释把两者写在一起，写进去会让 `accountByKey` 不返回这个账号、`/w/:key` 404，与 R19「按没设处理」矛盾）。行为、接口与数据形状的其余部分不变
 Revisions: 2026-10-09 实现期修订（plan 第 15 步，与实现同一个分支）：01「审计」新增的渠道动作只登记已有写入代码的四个（`channel.account_create`、`channel.account_update`、`channel.secrets_update`、`channel.rekey`），`channel.import`、`channel.export`、`channel.restore_cutoff` 由第 14、12 步实现时再登记（审计的一致性检查不许登记没有写入方的动作）。动作一多，审计页「全部类别、不显示登录记录」换算出的 `AuditQuery.actions` 超过后台 UX spec 定的 32 个上限，筛不出来；上限改为 64 个（`src/shared/console-api.ts` 的正则），是对该 spec 一处条款的部分取代，见顶部 `Supersedes in part:`。行为、接口与数据形状的其余部分不变
 Revisions: 2026-10-09 实现期修订（plan 第 8 步，与实现同一个分支）：「出站 · 发一条 AI 回复」第 3–5 步的接手代次检查只用于 AI 回复、跟进、同意菜单与欢迎语；人工回复与通知（付款确认、顾问确认收款、不同意之后的确认）只比停机截止、不比接手。原文「人工回复、跟进、付款确认、同意菜单……之后同样走第 3–5 步」按字面会让付款确认因为有人接手而取消、客户付了款收不到确认；接手检查是为了不让 AI 抢顾问的话，本 spec 的出站恢复表对通知本来就不看接手，02 发通知也不看接手。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 9 步，与实现同一个分支）：发送失败回执（`send_fail`）插进 `channel_inbox` 之后不排进会话的处理链、不计次、不判 `poison` / `too_old`，照 02 马上处理（出站行改 `failed` 与入站行记 `done` 在同一个短事务）。原文「新插入的行按会话排进处理链」对回执按字面做，回执会排在正在退避重试的那一句后面，出站重试前的终态检查赶不上，这一段会再发一次（与不变量 5 冲突）。行为、接口与数据形状的其余部分不变
 
 ## 背景与问题
 
