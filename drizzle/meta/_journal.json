@@ -29,6 +29,20 @@
       "when": 1790926689734,
       "tag": "0003_conversations_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791518546001,
+      "tag": "0004_channels",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791518565931,
+      "tag": "0005_channels_rls",
+      "breakpoints": true
     }
   ]
 }

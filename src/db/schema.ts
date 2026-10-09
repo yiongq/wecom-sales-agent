@@ -1,5 +1,6 @@
 // 01 的七张表（docs/architecture/01-pg-config-console/spec.md「数据库 · DDL」），与 02 的十二张表、tenants 的三个保留期列、
-// catalog_items.version（docs/architecture/02-conversations-workbench/spec.md「数据库」与各节的 DDL）。
+// catalog_items.version（docs/architecture/02-conversations-workbench/spec.md「数据库」与各节的 DDL），03 的两张渠道表、
+// outbound_sends 的新列与新状态、conversations.channel_account_id（docs/architecture/03-channels-v2/spec.md「数据库」）。
 // 这里只写表、索引和约束，由 drizzle-kit 生成迁移；RLS、策略、触发器、函数、授权，以及 drizzle 表达不了的约束
 // （orders 那条带列清单的 ON DELETE SET NULL (session_id)）在 custom 迁移里。
 // 列名一律显式写 snake_case，不依赖 casing 推导：迁移 SQL 与 spec 的 DDL 逐列对得上。
@@ -26,6 +27,14 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import {
+  CHANNEL_ACCOUNT_STATUSES,
+  CHANNEL_KINDS,
+  INBOX_ABANDON_REASONS,
+  INBOX_KINDS,
+  INBOX_STATES,
+  OUTBOUND_STATUSES,
+} from '../shared/channel-types.js';
 
 /** drizzle 0.45 没有内置 bytea。node-postgres 读出 Buffer，PGlite 读出 Uint8Array，统一成 Buffer */
 const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
@@ -293,10 +302,17 @@ export const conversations = pgTable(
     createdAt: tstz('created_at').notNull(),
     /** = session.updatedAt；触发器保证只进不退、不晚于 now() + 5 分钟 */
     updatedAt: tstz('updated_at').notNull(),
+    /** 03：会话对象的 channelAccountId 的投影；NULL 表示渠道的默认账号（前缀为 wecom: 的那个，R11） */
+    channelAccountId: uuid('channel_account_id'),
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
     unique('conversations_tenant_id_ref_uq').on(t.tenantId, t.ref),
+    foreignKey({
+      name: 'conversations_channel_account_fk',
+      columns: [t.tenantId, t.channelAccountId],
+      foreignColumns: [channelAccounts.tenantId, channelAccounts.id],
+    }),
     // demo 类会话（sim-、wecom:cust_）永不进库（不变量 11）
     check('conversations_id_check', sql`${t.id} !~ '^(sim-|wecom:cust_)' AND length(${t.id}) BETWEEN 1 AND 200`),
     check('conversations_last_seq_check', sql`${t.lastSeq} >= 0`),
@@ -534,19 +550,44 @@ export const outboundSends = pgTable(
     /** 对应的会话消息；欢迎语、同意菜单为 NULL */
     messageSeq: integer('message_seq'),
     kind: text('kind', { enum: ['ai', 'human', 'followup', 'notice', 'welcome', 'menu', 'card'] }).notNull(),
+    /** pending 时是建这一行的时刻，之后每次尝试往后挪（窗口计数与 purge_expired_traces 按它） */
     sentAt: tstz('sent_at').notNull(),
-    /** rejected：接口明确报错；unknown：超时或网络异常、结果不明（计入额度）；failed：收到 msg_send_fail */
-    status: text('status', { enum: ['accepted', 'rejected', 'unknown', 'failed'] }).notNull(),
+    /**
+     * 02：rejected 接口明确报错；unknown 超时或网络异常、结果不明（计入额度）；failed 收到 msg_send_fail。
+     * 03 加 pending（已落库、还没发）、sending（这一段已开始发）、cancelled（不会再发）；只按迁移表变化（src/channels/transitions.ts）
+     */
+    status: text('status', { enum: OUTBOUND_STATUSES }).notNull(),
     errcode: integer('errcode'),
     failType: integer('fail_type'),
+    /** 03：库里的渠道账号；02 的旧行与 env 账号为 NULL（前缀为 wecom: 的默认账号，ENV_ACCOUNT_ID 永不落库） */
+    accountId: uuid('account_id'),
+    /** 03：回的是哪条入站；人工回复、跟进、通知、同意菜单、欢迎语为 NULL */
+    inboxId: uuid('inbox_id'),
+    /** 03：这一组里的第几段，从 0 起 */
+    segment: smallint('segment').notNull().default(0),
+    attempts: smallint('attempts').notNull().default(0),
+    /** 03：要发的内容，只在 pending、sending 时有值 */
+    payload: json('payload'),
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
     unique('outbound_sends_tenant_id_channel_msgid_uq').on(t.tenantId, t.channelMsgid),
+    foreignKey({
+      name: 'outbound_sends_account_fk',
+      columns: [t.tenantId, t.accountId],
+      foreignColumns: [channelAccounts.tenantId, channelAccounts.id],
+    }),
     check('outbound_sends_channel_msgid_check', sql`octet_length(${t.channelMsgid}) <= 32`),
     check('outbound_sends_kind_check', sql`${t.kind} IN ('ai', 'human', 'followup', 'notice', 'welcome', 'menu', 'card')`),
-    check('outbound_sends_status_check', sql`${t.status} IN ('accepted', 'rejected', 'unknown', 'failed')`),
+    check(
+      'outbound_sends_status_check',
+      sql`${t.status} IN ('pending', 'sending', 'accepted', 'rejected', 'unknown', 'failed', 'cancelled')`,
+    ),
+    check('outbound_sends_payload_check', sql`${t.status} IN ('pending', 'sending') OR ${t.payload} IS NULL`),
     index('outbound_sends_by_conv').on(t.tenantId, t.conversationId, t.sentAt),
+    index('outbound_sends_open')
+      .on(t.tenantId, t.accountId)
+      .where(sql`${t.status} IN ('pending', 'sending')`),
   ],
 );
 
@@ -617,5 +658,115 @@ export const consents = pgTable(
     }).onDelete('cascade'),
     check('consents_category_check', sql`${t.category} IN ('health', 'minor')`),
     check('consents_decision_check', sql`${t.decision} IN ('asked', 'granted', 'declined', 'withdrawn')`),
+  ],
+);
+
+// ---------------- 03：渠道层 v2（spec「数据库」） ----------------
+// 两张新表都带 tenant_id、套 01 的 RLS 模板（custom 迁移）；agent_app 对它们没有 DELETE，入站行只经 purge_channel_inbox 与
+// 02 的清除、删除函数删除；channel_accounts 的列级 UPDATE、两个触发器也在 custom 迁移里
+
+/** 一行一个入口：wecom_kf（一个客服账号）或 web（一个网页入口）。kind、key、id_prefix、corp_id、open_kfid 建好不改（触发器） */
+export const channelAccounts = pgTable(
+  'channel_accounts',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').notNull().defaultRandom(),
+    /** 路由、日志、告警里用 */
+    key: text('key').notNull(),
+    kind: text('kind', { enum: CHANNEL_KINDS }).notNull(),
+    name: text('name').notNull(),
+    status: text('status', { enum: CHANNEL_ACCOUNT_STATUSES }).notNull().default('active'),
+    /** wecom_kf：'wecom:' 或 'wecom:<key>:'（R11） */
+    idPrefix: text('id_prefix'),
+    /** 标识不是密钥，明文存；不进仓库、不进日志 */
+    corpId: text('corp_id'),
+    openKfid: text('open_kfid'),
+    /** nonce(12) ‖ 密文 ‖ tag(16)（R9） */
+    secretsCt: bytea('secrets_ct'),
+    secretsKeyId: text('secrets_key_id'),
+    /** sync_msg 的 cursor；NULL 表示冷启动 */
+    cursor: text('cursor'),
+    cursorAt: tstz('cursor_at'),
+    /** 恢复截止点（R7） */
+    recordOnlyUntil: tstz('record_only_until'),
+    settings: json('settings').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+    /** 触发器在每次 UPDATE 时写 now() */
+    updatedAt: tstz('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    unique('channel_accounts_tenant_id_key_uq').on(t.tenantId, t.key),
+    unique('channel_accounts_tenant_id_id_prefix_uq').on(t.tenantId, t.idPrefix),
+    unique('channel_accounts_tenant_id_open_kfid_uq').on(t.tenantId, t.openKfid),
+    check('channel_accounts_key_check', sql`${t.key} ~ '^[a-z][a-z0-9-]{1,30}$'`),
+    check('channel_accounts_kind_check', sql`${t.kind} IN ('wecom_kf', 'web')`),
+    check('channel_accounts_name_check', sql`length(${t.name}) BETWEEN 1 AND 40`),
+    check('channel_accounts_status_check', sql`${t.status} IN ('active', 'disabled', 'exported')`),
+    check('channel_accounts_settings_check', sql`json_typeof(${t.settings}) = 'object'`),
+    // id_prefix 为 NULL 时 IN 的结果是 NULL、CHECK 会放行：coalesce 成 false，企微账号必须有前缀
+    check(
+      'channel_accounts_wecom_check',
+      sql`${t.kind} <> 'wecom_kf' OR (coalesce(${t.idPrefix} IN ('wecom:', 'wecom:' || ${t.key} || ':'), false) AND ${t.corpId} IS NOT NULL AND ${t.openKfid} IS NOT NULL AND ${t.secretsCt} IS NOT NULL AND ${t.secretsKeyId} IS NOT NULL)`,
+    ),
+    check(
+      'channel_accounts_web_check',
+      sql`${t.kind} <> 'web' OR (${t.idPrefix} IS NULL AND ${t.corpId} IS NULL AND ${t.openKfid} IS NULL AND ${t.secretsCt} IS NULL AND ${t.cursor} IS NULL AND ${t.recordOnlyUntil} IS NULL)`,
+    ),
+  ],
+);
+
+/**
+ * 入站记录（R2、R3）：以（account_id，msgid）去重，ord 定顺序（同一页的 received_at 相同、send_time 只到秒）。
+ * 状态只按迁移表往前走（src/channels/transitions.ts）；done、abandoned 之后不再变（触发器）
+ */
+export const channelInbox = pgTable(
+  'channel_inbox',
+  {
+    tenantId: uuid('tenant_id').notNull(),
+    id: uuid('id').notNull().defaultRandom(),
+    /** 插入顺序：同一页按页内顺序逐行分配 */
+    ord: bigint('ord', { mode: 'number' }).generatedAlwaysAsIdentity(),
+    accountId: uuid('account_id').notNull(),
+    msgid: text('msgid').notNull(),
+    kind: text('kind', { enum: INBOX_KINDS }).notNull(),
+    /** 不建外键：会话可能还没建（同 outbound_sends）；带着 external_userid 的行一律填，清除与行权删除按它删 */
+    conversationId: text('conversation_id'),
+    /** 企微 send_time */
+    sentAt: tstz('sent_at'),
+    receivedAt: tstz('received_at').notNull().defaultNow(),
+    state: text('state', { enum: INBOX_STATES }).notNull(),
+    reason: text('reason', { enum: INBOX_ABANDON_REASONS }),
+    attempts: smallint('attempts').notNull().default(0),
+    messageSeq: integer('message_seq'),
+    /** done、abandoned 时为空 */
+    payload: json('payload'),
+    /** 触发器在每次 UPDATE 时写 now()；清理按它删 */
+    updatedAt: tstz('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    unique('channel_inbox_tenant_id_account_id_msgid_uq').on(t.tenantId, t.accountId, t.msgid),
+    foreignKey({
+      name: 'channel_inbox_account_fk',
+      columns: [t.tenantId, t.accountId],
+      foreignColumns: [channelAccounts.tenantId, channelAccounts.id],
+    }),
+    check('channel_inbox_msgid_check', sql`octet_length(${t.msgid}) BETWEEN 1 AND 128`),
+    check('channel_inbox_kind_check', sql`${t.kind} IN ('message', 'menu_click', 'enter_session', 'send_fail', 'legacy')`),
+    check('channel_inbox_state_check', sql`${t.state} IN ('received', 'recorded', 'replied', 'done', 'abandoned')`),
+    check('channel_inbox_reason_check', sql`${t.reason} IN ('too_old', 'poison', 'cold_start', 'restore_cutoff', 'resync')`),
+    check('channel_inbox_reason_iff_abandoned', sql`(${t.state} = 'abandoned') = (${t.reason} IS NOT NULL)`),
+    check('channel_inbox_payload_check', sql`${t.state} NOT IN ('done', 'abandoned') OR ${t.payload} IS NULL`),
+    check('channel_inbox_conversation_check', sql`${t.kind} = 'legacy' OR ${t.conversationId} IS NOT NULL`),
+    index('channel_inbox_open')
+      .on(t.tenantId, t.accountId, t.ord)
+      .where(sql`${t.state} IN ('received', 'recorded', 'replied')`),
+    index('channel_inbox_by_conv').on(t.tenantId, t.conversationId),
+    index('channel_inbox_finished')
+      .on(t.tenantId, t.updatedAt)
+      .where(sql`${t.state} IN ('done', 'abandoned')`),
   ],
 );

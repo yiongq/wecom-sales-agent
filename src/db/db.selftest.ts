@@ -7,6 +7,9 @@
 // - 真实 Postgres，有 PG_TEST_URL 才跑（CI=true 而没有它时失败）：roles.sql、各角色对各表的权限逐格、RLS 行为、会话级泄漏、
 //   临时表遮蔽、租户锁（验收 12 与验收 7 的权限部分）。PGlite 以超级用户连接，RLS 与授权的结论只从这部分得出（spec R13）。
 //   02：新表逐格权限、没有 DELETE / TRUNCATE、消息只追加、跨租户读写不到、清除与删除函数的授权与行为（02 验收 5，不变量 5、6、11、42）。
+// - 03（渠道层 v2，03 spec「数据库」「测试与 CI」）：PGlite 上迁移从 02 升上来、两张新表与 outbound_sends 新列的 CHECK、ord 递增、
+//   出站与入站迁移表的每一格（允许的改了、表外的没改）、仓储冒烟；两边都跑：两个触发器、purge_channel_inbox、清除与删除连带入站行；
+//   真实 PG：新表逐格授权与列级授权、没有 DELETE / TRUNCATE、租户隔离（03 验收 19，不变量 7、8、21、30）。
 // 用法：npx tsx src/db/db.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import { spawnSync } from 'node:child_process';
@@ -74,7 +77,9 @@ async function why(p: Promise<unknown>): Promise<string> {
     const err = pgErr(e);
     if (!err) return notDb(e);
     if (err.constraint) return err.constraint;
-    if (err.code === '23514' && /^(sop_versions|catalog_items|conversations|orders): /.test(err.message)) return 'trigger';
+    if (err.code === '23514' && /^(sop_versions|catalog_items|conversations|orders|channel_accounts|channel_inbox): /.test(err.message)) {
+      return 'trigger';
+    }
     return `${err.code} ${err.message}`;
   }
 }
@@ -124,9 +129,24 @@ const NEW_TABLES = [
   'privacy_notices',
   'consents',
 ];
-/** 02 的清除与删除函数各自只授权给谁 */
+/** 03 的两张新表（03 spec「数据库」） */
+const CHANNEL_TABLES = ['channel_accounts', 'channel_inbox'];
+/** channel_accounts 上 agent_app 只有这几列的 UPDATE（03 spec 的授权表；kind、key、id_prefix、corp_id、open_kfid 改不了） */
+const CHANNEL_ACCOUNT_UPDATABLE = [
+  'name',
+  'status',
+  'secrets_ct',
+  'secrets_key_id',
+  'cursor',
+  'cursor_at',
+  'record_only_until',
+  'settings',
+  'updated_at',
+];
+/** 02 的清除与删除函数（03 加 purge_channel_inbox）各自只授权给谁 */
 const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   erase_conversation: 'agent_platform',
+  purge_channel_inbox: 'agent_app',
   purge_conversation: 'agent_app',
   purge_expired_traces: 'agent_app',
   purge_finished_jobs: 'agent_app',
@@ -144,13 +164,15 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
   );
   const names = tables.map((r) => r.relname).join(',');
   check(
-    `${label}迁移：01 的七张表加 02 的十二张`,
+    `${label}迁移：01 的七张表加 02 的十二张、03 的两张`,
     names ===
       [
         'audit_log',
         'auth_sessions',
         'catalog_item_versions',
         'catalog_items',
+        'channel_accounts',
+        'channel_inbox',
         'consents',
         'conversations',
         'guard_events',
@@ -203,6 +225,11 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     NEW_TABLES.every((x) => found.includes(x)),
     found.join(','),
   );
+  check(
+    `${label}RLS：03 的两张新表都带 tenant_id`,
+    CHANNEL_TABLES.every((x) => found.includes(x)),
+    found.join(','),
+  );
   for (const rel of found) {
     const flags = tables.find((x) => x.relname === rel);
     const mine = policies.filter((x) => x.relname === rel);
@@ -226,7 +253,8 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     );
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
-  // 只能是 tenants 的三个保留期列，而且只是给 agent_platform 的 UPDATE（02 spec 授权表）
+  // 只能是 tenants 的三个保留期列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
+  // UPDATE，03 spec 授权表）。按 JS 的顺序比，不受库的排序规则影响
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
        from pg_attribute a join pg_class c on c.oid = a.attrelid
@@ -236,10 +264,33 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
       order by 1`,
   );
   check(
-    `${label}授权：带列级授权的只有 tenants 的三个保留期列，只给了 agent_platform 的 UPDATE`,
-    colAcl.map((r) => r.acl).join(',') ===
-      ['retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map((c) => `tenants.${c} agent_platform UPDATE`).join(','),
+    `${label}授权：带列级授权的只有 tenants 的三个保留期列（agent_platform 的 UPDATE）与 channel_accounts 的九列（agent_app 的 UPDATE）`,
+    colAcl
+      .map((r) => r.acl)
+      .toSorted()
+      .join(',') ===
+      [
+        ...['retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map((c) => `tenants.${c} agent_platform UPDATE`),
+        ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
+      ]
+        .toSorted()
+        .join(','),
     colAcl.map((r) => r.acl).join(','),
+  );
+  // 03 的两个触发器：各一个、BEFORE UPDATE、逐行（tgtype = ROW 1 | BEFORE 2 | UPDATE 16）
+  const triggers = await run<{ rel: string; name: string; type: number }>(
+    `select c.relname as rel, t.tgname as name, t.tgtype::int as type from pg_trigger t join pg_class c on c.oid = t.tgrelid
+      where not t.tgisinternal and c.relname = any($1::text[]) order by 1, 2`,
+    [CHANNEL_TABLES],
+  );
+  check(
+    `${label}触发器：channel_accounts、channel_inbox 各一个 BEFORE UPDATE 的逐行触发器`,
+    JSON.stringify(triggers) ===
+      JSON.stringify([
+        { rel: 'channel_accounts', name: 'channel_accounts_guard', type: 19 },
+        { rel: 'channel_inbox', name: 'channel_inbox_guard', type: 19 },
+      ]),
+    JSON.stringify(triggers),
   );
   const fns = await run<{ proname: string; secdef: boolean; acl: string; config: string }>(
     `select proname, prosecdef as secdef, coalesce(proacl::text, '') as acl, coalesce(proconfig::text, '') as config from pg_proc
@@ -248,7 +299,11 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
   const auth = fns.filter((f) => f.proname.startsWith('auth_'));
   check(`${label}认证函数：五个`, auth.length === 5, auth.map((f) => f.proname).join(','));
   const purge = fns.filter((f) => Object.hasOwn(PURGE_FNS, f.proname)).map((f) => f.proname);
-  check(`${label}清除与删除函数：四个`, purge.join(',') === Object.keys(PURGE_FNS).toSorted().join(','), purge.join(','));
+  check(
+    `${label}清除与删除函数：五个（02 的四个加 03 的 purge_channel_inbox）`,
+    purge.toSorted().join(',') === Object.keys(PURGE_FNS).toSorted().join(','),
+    purge.join(','),
+  );
   for (const f of fns) {
     // aclitem 里「=X/」开头（被授权者为空）就是 PUBLIC
     const publicExec = /[{,]=X\//.test(f.acl);
@@ -306,6 +361,31 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     )[0]!.id;
   const P = await tenant('purge-a');
   const Q = await tenant('purge-b');
+  // 03：入站行（channel_inbox）按 conversation_id 随会话一起清除、删除（不变量 30）；每个租户一个默认企微账号
+  const account = async (tenantId: string): Promise<string> =>
+    (
+      await su<{ id: string }>(
+        `insert into channel_accounts (tenant_id, key, kind, name, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id)
+         values ($1, 'kf-main', 'wecom_kf', '主账号', 'wecom:', 'corp-p', 'kf-p', decode(repeat('07', 44), 'hex'), 'k1') returning id`,
+        [tenantId],
+      )
+    )[0]!.id;
+  const accountOf = { [P]: await account(P), [Q]: await account(Q) };
+  /** 一行入站：没结束的带原文（payload 里有 external_userid），结束的 payload 为空 */
+  const inboxRow = (tenantId: string, convId: string, msgid: string, kind = 'message', state = 'received'): Promise<unknown> =>
+    su(
+      `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, payload)
+       values ($1, $2, $3, $4, $5, $6, $7::json)`,
+      [
+        tenantId,
+        accountOf[tenantId],
+        msgid,
+        kind,
+        convId,
+        state,
+        state === 'received' ? JSON.stringify({ msgid, external_userid: convId.replace(/^wecom:/, '') }) : null,
+      ],
+    );
   const DAY = 86_400_000;
   const t0 = Date.now();
   const ago = (days: number): string => new Date(t0 - days * DAY).toISOString();
@@ -384,6 +464,8 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     n(`select count(*)::int as n from jobs where tenant_id = $1 and payload->>'sessionId' = $2`, [tenantId, id]);
   const exists = (tenantId: string, id: string): Promise<number> =>
     n('select count(*)::int as n from conversations where tenant_id = $1 and id = $2', [tenantId, id]);
+  const inboxOf = (tenantId: string, id: string): Promise<number> =>
+    n('select count(*)::int as n from channel_inbox where tenant_id = $1 and conversation_id = $2', [tenantId, id]);
   /** 会话名下还剩的：[会话行, 消息, trace, 这些 trace 的护栏事件, 同意记录, 发送账本] */
   const owned = async (tenantId: string, id: string, traceIds: string[]): Promise<number[]> => [
     await exists(tenantId, id),
@@ -420,11 +502,16 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   await order(P, 'ord_lead_old', 'lead-old', false);
   await sessionJob(P, 'lead-old', 'followup', 'pending');
   await sessionJob(P, 'lead-old', 'handoff_notify', 'done');
+  // 03：没结束的客户消息、结束了的回执与进入会话事件，任何状态都随会话删
+  await inboxRow(P, 'lead-old', 'in-lead-old-1');
+  await inboxRow(P, 'lead-old', 'in-lead-old-2', 'send_fail', 'done');
+  await inboxRow(P, 'lead-old', 'in-lead-old-3', 'enter_session', 'done');
   // 别的租户里同一个 id 的会话，同样到期：清 P 的不能碰到它
   await conv(Q, 'lead-old', 11);
   const qTrace = await trace(Q, 'lead-old', 11);
   await send(Q, 'lead-old', 'm-q-lead-old', 11);
   await sessionJob(Q, 'lead-old', 'followup', 'pending');
+  await inboxRow(Q, 'lead-old', 'in-q-lead-old');
   // 线索、9 天前：没到期（过了 trace 的 7 天，混用了列就会被清掉）。它有 11 天前、8 天前（过了 trace 的 7 天、没过线索的 10 天）、1 天前的三条 trace，一条 11 天前的发送账本
   const leadNew = await conv(P, 'lead-new', 9);
   const leadNewOldTrace = await trace(P, 'lead-new', 11);
@@ -432,6 +519,7 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   const leadNewTrace = await trace(P, 'lead-new', 1);
   await send(P, 'lead-new', 'm-lead-new', 11);
   await sessionJob(P, 'lead-new', 'followup', 'pending');
+  await inboxRow(P, 'lead-new', 'in-lead-new', 'message', 'done');
   // 客户（写过 paid_at）：11 天前按客户保留期没到期；31 天前到期
   const cust11 = await conv(P, 'cust-11', 11);
   await order(P, 'ord_cust_11', 'cust-11', true);
@@ -474,6 +562,7 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     JSON.stringify(await owned(P, 'lead-old', [leadOldTrace])) === '[1,2,1,1,1,1]',
     JSON.stringify(await owned(P, 'lead-old', [leadOldTrace])),
   );
+  check(`${L}清除：预期值不符时入站行也都在`, (await inboxOf(P, 'lead-old')) === 3, String(await inboxOf(P, 'lead-old')));
 
   // ---- 到期 ----
   check(`${L}清除：11 天前的线索到期，返回 true`, (await purge('lead-old', 2, leadOld)) === true);
@@ -501,6 +590,11 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     `${L}清除：别的租户里同 id 的会话、trace、发送账本原样在`,
     JSON.stringify(await owned(Q, 'lead-old', [qTrace])) === '[1,2,1,1,0,1]',
     JSON.stringify(await owned(Q, 'lead-old', [qTrace])),
+  );
+  check(
+    `${L}清除（03）：到期会话的入站行（任何状态）都删了，别的租户同 id 的、没到期会话的都在`,
+    (await inboxOf(P, 'lead-old')) === 0 && (await inboxOf(Q, 'lead-old')) === 1 && (await inboxOf(P, 'lead-new')) === 1,
+    JSON.stringify([await inboxOf(P, 'lead-old'), await inboxOf(Q, 'lead-old'), await inboxOf(P, 'lead-new')]),
   );
   check(
     `${L}清除：payload.sessionId 是它的任务都删了（pending 与已结束的），别的租户同 id 的、别的会话的都在`,
@@ -674,6 +768,9 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   await sessionJob(P, ERASE, 'followup', 'pending');
   await sessionJob(P, ERASE, 'handoff_notify', 'running');
   await sessionJob(P, ERASE, 'handoff_notify', 'done');
+  // 03：一条还没处理完的客户消息（原文里有 external_userid）、一条处理完的发送失败回执（03 验收 19 的「含 send_fail 行」）
+  await inboxRow(P, ERASE, 'in-erase-1');
+  await inboxRow(P, ERASE, 'in-erase-2', 'send_fail', 'done');
   /** 全库每张 public 表逐行转成文本找 external_userid，返回找到它的表 */
   const tablesWith = async (needle: string): Promise<{ tables: string[]; hits: string[] }> => {
     const tables = (
@@ -690,8 +787,8 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   };
   const beforeErase = await tablesWith(EXT);
   check(
-    `${L}删除之前：全库扫描找得到它（会话、消息、trace、同意记录、发送账本、订单、任务）`,
-    beforeErase.hits.join(',') === 'consents,conversations,jobs,messages,orders,outbound_sends,turn_traces',
+    `${L}删除之前：全库扫描找得到它（会话、消息、trace、同意记录、发送账本、订单、任务、入站行）`,
+    beforeErase.hits.toSorted().join(',') === 'channel_inbox,consents,conversations,jobs,messages,orders,outbound_sends,turn_traces',
     beforeErase.hits.join(','),
   );
   const eraseAs = (role: DbRole, txTenant: string | null, reason: string): Promise<unknown> =>
@@ -720,18 +817,25 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     outboundSends: 1,
     orders: 1,
     jobs: 3,
+    inbox: 2,
   };
-  check(`${L}删除：保留期内的会话也删，返回各类条数`, JSON.stringify(counts) === JSON.stringify(wantCounts), JSON.stringify(counts));
+  check(
+    `${L}删除：保留期内的会话也删，返回各类条数（03 加 inbox）`,
+    JSON.stringify(counts) === JSON.stringify(wantCounts),
+    JSON.stringify(counts),
+  );
   check(
     `${L}删除：会话行、消息、trace、护栏事件、同意记录、发送账本、任务（pending、running、done）都没了`,
     JSON.stringify(await owned(P, ERASE, [eraseTrace])) === '[0,0,0,0,0,0]' && (await jobsOf(P, ERASE)) === 0,
   );
+  check(`${L}删除（03）：入站行（含 send_fail）都没了`, (await inboxOf(P, ERASE)) === 0, String(await inboxOf(P, ERASE)));
   // 验收 27：库里搜不到它的 external_userid
   const afterErase = await tablesWith(EXT);
   check(
-    `${L}验收 27：删除之后全库搜不到它的 external_userid（orders、audit_log、outbound_sends、consents、turn_traces、jobs 都在扫描之列）`,
-    ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'jobs'].every((tb) => afterErase.tables.includes(tb)) &&
-      afterErase.hits.length === 0,
+    `${L}验收 27：删除之后全库搜不到它的 external_userid（orders、audit_log、outbound_sends、consents、turn_traces、jobs、channel_inbox 都在扫描之列）`,
+    ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'jobs', 'channel_inbox'].every((tb) =>
+      afterErase.tables.includes(tb),
+    ) && afterErase.hits.length === 0,
     afterErase.hits.join(','),
   );
   const [eraseOrder] = await su<{ session_id: string | null; paid: boolean; data: string }>(
@@ -760,20 +864,204 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     JSON.stringify(audits),
   );
   // 不变量 42：清除或删除之后，本租户的订单、审计、发送账本、同意记录、trace 里都搜不到它的 id（会话 id 里就是 external_userid）；
-  // 任务按验收 27 一并删（payload 带 sessionId 的约定）
+  // 任务按验收 27 一并删（payload 带 sessionId 的约定）；03 的表清单加 channel_inbox（03 不变量 30）
   for (const id of ['lead-old', 'cust-31', ERASE]) {
     const hits = await su<{ t: string; n: number }>(
-      ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'messages', 'conversations', 'jobs']
+      ['orders', 'audit_log', 'outbound_sends', 'consents', 'turn_traces', 'messages', 'conversations', 'jobs', 'channel_inbox']
         .map((tb) => `select '${tb}' as t, count(*)::int as n from ${tb} x where x.tenant_id = $1 and strpos(x::text, $2) > 0`)
         .join(' union all '),
       [P, id],
     );
     check(
       `${L}不变量 42：${id} 被清除或删除之后，本租户的各表里都搜不到它`,
-      hits.length === 8 && hits.every((h) => h.n === 0),
+      hits.length === 9 && hits.every((h) => h.n === 0),
       JSON.stringify(hits.filter((h) => h.n)),
     );
   }
+}
+
+/**
+ * 03 的两个触发器与 purge_channel_inbox（03 验收 19 的库部分，不变量 8、21），PGlite 与真实 PG 各跑一遍。
+ * 触发器以超级用户与 agent_app 各试一遍（触发器对属主、超级用户同样生效）；清理函数的时间按毫秒造，p_now 只能取库的「现在」，
+ * 所以到期的行直接写过去的 updated_at、received_at（插入不经触发器）
+ */
+async function channelChecks(env: PurgeEnv, label: string): Promise<void> {
+  const { su, as } = env;
+  const L = label;
+  const BAD_PARAM = '22023';
+  const DAY = 86_400_000;
+  const ago = (days: number): string => new Date(Date.now() - days * DAY).toISOString();
+  const nowIso = (shiftMs = 0): string => new Date(Date.now() + shiftMs).toISOString();
+  const tenant = async (slug: string): Promise<string> =>
+    (await su<{ id: string }>(`insert into tenants (slug, name, pack_id) values ($1, $1, 'travel') returning id`, [slug]))[0]!.id;
+  const G = await tenant('chan-g');
+  const H = await tenant('chan-h');
+  const account = async (tenantId: string, key: string, prefix: string): Promise<string> =>
+    (
+      await su<{ id: string }>(
+        `insert into channel_accounts (tenant_id, key, kind, name, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id)
+         values ($1, $2, 'wecom_kf', $2, $3, 'corp-g', $4, decode(repeat('07', 44), 'hex'), 'k1') returning id`,
+        [tenantId, key, prefix, `kf-${key}`],
+      )
+    )[0]!.id;
+  const GA = await account(G, 'kf-main', 'wecom:');
+  const HA = await account(H, 'kf-main', 'wecom:');
+
+  // ---- channel_accounts：身份五列建好不改，updated_at 由库写 ----
+  const acctRow = async (): Promise<Record<string, unknown>> =>
+    (
+      await su<Record<string, unknown>>(
+        `select key, kind, id_prefix, corp_id, open_kfid, name, updated_at from channel_accounts where tenant_id = $1 and id = $2`,
+        [G, GA],
+      )
+    )[0]!;
+  const before = await acctRow();
+  for (const [col, value] of [
+    ['key', 'kf-other'],
+    ['kind', 'web'],
+    ['id_prefix', 'wecom:kf-main:'],
+    ['corp_id', 'corp-x'],
+    ['open_kfid', 'kf-x'],
+  ] as const) {
+    const r = await why(su(`update channel_accounts set ${col} = $3 where tenant_id = $1 and id = $2`, [G, GA, value]));
+    check(`${L}触发器（03）：改 channel_accounts.${col} 被拒`, r === 'trigger', r);
+  }
+  const nulled = await why(su(`update channel_accounts set open_kfid = null where tenant_id = $1 and id = $2`, [G, GA]));
+  check(`${L}触发器（03）：把 open_kfid 清空同样被拒`, nulled === 'trigger', nulled);
+  const same = await outcome(su(`update channel_accounts set key = key, open_kfid = open_kfid where tenant_id = $1 and id = $2`, [G, GA]));
+  check(`${L}触发器（03）：写回同一个值不算改`, same === 'ok', same);
+  const rename = await outcome(
+    su(`update channel_accounts set name = '新名字', updated_at = '2000-01-01T00:00:00Z' where tenant_id = $1 and id = $2`, [G, GA]),
+  );
+  const after = await acctRow();
+  check(
+    `${L}触发器（03）：改名照常，身份五列不变，updated_at 被库写成现在（往回写的值不算）`,
+    rename === 'ok' &&
+      after.name === '新名字' &&
+      ['key', 'kind', 'id_prefix', 'corp_id', 'open_kfid'].every((c) => after[c] === before[c]) &&
+      (after.updated_at as Date).getTime() > Date.now() - 60_000,
+    `${rename} ${JSON.stringify(after)}`,
+  );
+  const appRename = await outcome(
+    as('agent_app', G, `update channel_accounts set status = 'disabled', cursor = 'c-1' where id = $1`, [GA]),
+  );
+  check(`${L}触发器（03）：agent_app 停用账号、推进 cursor 照常`, appRename === 'ok', appRename);
+
+  // ---- channel_inbox：终态不回退、payload 不复活、updated_at 改不回去 ----
+  const inbox = async (
+    msgid: string,
+    state: string,
+    over: { reason?: string; updated?: string; received?: string; tenantId?: string } = {},
+  ) =>
+    (
+      await su<{ id: string }>(
+        `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, reason, payload, received_at, updated_at)
+         values ($1, $2, $3, 'message', 'wecom:wmChan1', $4, $5, $6::json, coalesce($7::timestamptz, now()), coalesce($8::timestamptz, now()))
+         returning id`,
+        [
+          over.tenantId ?? G,
+          over.tenantId === H ? HA : GA,
+          msgid,
+          state,
+          over.reason ?? (state === 'abandoned' ? 'poison' : null),
+          ['done', 'abandoned'].includes(state) ? null : JSON.stringify({ msgid, text: '原文' }),
+          over.received ?? null,
+          over.updated ?? null,
+        ],
+      )
+    )[0]!.id;
+  const row = async (id: string): Promise<{ state: string; reason: string | null; payload: unknown; attempts: number; updated_at: Date }> =>
+    (
+      await su<{ state: string; reason: string | null; payload: unknown; attempts: number; updated_at: Date }>(
+        `select state, reason, payload, attempts, updated_at from channel_inbox where id = $1`,
+        [id],
+      )
+    )[0]!;
+  const done = await inbox('trg-done', 'done');
+  const abandoned = await inbox('trg-abandoned', 'abandoned');
+  for (const [what, id, text] of [
+    ['done 改回 received', done, `update channel_inbox set state = 'received' where id = $1`],
+    ['done 写回 payload', done, `update channel_inbox set payload = '{"text":"原文"}' where id = $1`],
+    ['done 只加计次', done, `update channel_inbox set attempts = attempts + 1 where id = $1`],
+    ['abandoned 改成 done', abandoned, `update channel_inbox set state = 'done', reason = null where id = $1`],
+    ['abandoned 往回改 updated_at', abandoned, `update channel_inbox set updated_at = '2000-01-01T00:00:00Z' where id = $1`],
+  ] as const) {
+    const r = await why(su(text, [id]));
+    check(`${L}触发器（03）：${what}被拒`, r === 'trigger', r);
+    const viaApp = await why(as('agent_app', G, text, [id]));
+    check(`${L}触发器（03）：agent_app ${what}同样被拒`, viaApp === 'trigger', viaApp);
+  }
+  check(
+    `${L}触发器（03）：被拒之后终态行原样（state、payload 为空）`,
+    (await row(done)).state === 'done' && (await row(done)).payload === null && (await row(abandoned)).state === 'abandoned',
+  );
+  const open = await inbox('trg-open', 'received');
+  const backdate = await outcome(as('agent_app', G, `update channel_inbox set updated_at = '2000-01-01T00:00:00Z' where id = $1`, [open]));
+  const openRow = await row(open);
+  check(
+    `${L}触发器（03）：没结束的行 agent_app 往回改 updated_at 不报错、被库写成现在`,
+    backdate === 'ok' && openRow.updated_at.getTime() > Date.now() - 60_000,
+    `${backdate} ${openRow.updated_at.toISOString()}`,
+  );
+  const toDone = await outcome(as('agent_app', G, `update channel_inbox set state = 'done', payload = null where id = $1`, [open]));
+  check(`${L}触发器（03）：没结束的行可以结束`, toDone === 'ok' && (await row(open)).state === 'done', toDone);
+
+  // ---- purge_channel_inbox（03 R2、验收 19）----
+  const ids = {
+    doneOld: await inbox('pg-done-8d', 'done', { updated: ago(8), received: ago(9) }),
+    abandonedOld: await inbox('pg-abandoned-8d', 'abandoned', { updated: ago(8), received: ago(9) }),
+    doneRecent: await inbox('pg-done-6d', 'done', { updated: ago(6), received: ago(8) }),
+    receivedOld: await inbox('pg-received-8d', 'received', { received: ago(8) }),
+    recordedOld: await inbox('pg-recorded-8d', 'recorded', { received: ago(8) }),
+    repliedOld: await inbox('pg-replied-8d', 'replied', { received: ago(8) }),
+    receivedRecent: await inbox('pg-received-6d', 'received', { received: ago(6) }),
+    otherTenant: await inbox('pg-h-done-8d', 'done', { updated: ago(8), received: ago(9), tenantId: H }),
+  };
+  const purgeAs = (role: DbRole, txTenant: string | null, pNow: string | null): Promise<{ n: number }[]> =>
+    as<{ n: number }>(role, txTenant, 'select purge_channel_inbox($1, $2::timestamptz) as n', [G, pNow]);
+  check(`${L}清除入站（03）：不在 withTenant 里调用报错`, (await outcome(purgeAs('agent_app', null, nowIso()))) === DENIED);
+  check(`${L}清除入站（03）：事务设的是别的租户时报错`, (await outcome(purgeAs('agent_app', H, nowIso()))) === DENIED);
+  for (const [what, pNow] of [
+    ['差 6 分钟（未来）', nowIso(6 * 60_000)],
+    ['差 6 分钟（过去）', nowIso(-6 * 60_000)],
+    ['为空', null],
+  ] as const) {
+    const r = await outcome(purgeAs('agent_app', G, pNow));
+    check(`${L}清除入站（03）：p_now ${what}报错`, r === BAD_PARAM, r);
+  }
+  check(`${L}清除入站（03）：agent_platform 调用报 permission denied`, (await outcome(purgeAs('agent_platform', G, nowIso()))) === DENIED);
+  const left = async (): Promise<string> =>
+    (
+      await su<{ m: string; s: string; p: boolean }>(
+        `select msgid as m, state as s, payload is null as p from channel_inbox where account_id = any($1::uuid[]) and msgid like 'pg-%'`,
+        [[GA, HA]],
+      )
+    )
+      .map((r) => `${r.m}:${r.s}${r.p ? '' : '+payload'}`)
+      .toSorted()
+      .join(',');
+  check(
+    `${L}清除入站（03）：被拒的几次什么都没动`,
+    (await left()) ===
+      'pg-abandoned-8d:abandoned,pg-done-6d:done,pg-done-8d:done,pg-h-done-8d:done,pg-received-6d:received+payload,pg-received-8d:received+payload,pg-recorded-8d:recorded+payload,pg-replied-8d:replied+payload',
+    await left(),
+  );
+  const purged = await purgeAs('agent_app', G, nowIso());
+  check(`${L}清除入站（03）：返回两类条数之和（删 2 条、记 abandoned 3 条）`, purged[0]?.n === 5, JSON.stringify(purged));
+  check(
+    `${L}清除入站（03）：结束超过 7 天的删了；6 天前结束的、6 天前收到没结束的、别的租户的都在；收到超过 7 天还没结束的记 abandoned、原文清空`,
+    (await left()) ===
+      'pg-done-6d:done,pg-h-done-8d:done,pg-received-6d:received+payload,pg-received-8d:abandoned,pg-recorded-8d:abandoned,pg-replied-8d:abandoned',
+    await left(),
+  );
+  const tooOld = await row(ids.receivedOld);
+  check(
+    `${L}清除入站（03）：超期记 abandoned 的原因是 too_old，updated_at 是现在（再留 7 天）`,
+    tooOld.reason === 'too_old' && tooOld.updated_at.getTime() > Date.now() - 60_000,
+    JSON.stringify(tooOld),
+  );
+  const again = await purgeAs('agent_app', G, nowIso());
+  check(`${L}清除入站（03）：马上再跑一次什么都不动、返回 0`, again[0]?.n === 0, JSON.stringify(again));
 }
 
 // ---------------- 迁移 ----------------
@@ -885,6 +1173,105 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   const [n] = await q2<{ n: number }>('select count(*)::int as n from drizzle.__drizzle_migrations');
   check('回填：分两段跑完，journal 里每一条各应用一次', n?.n === full.entries.length, String(n?.n));
   await pg2.close();
+}
+
+// ---------------- 03：从 02 的库升上来 ----------------
+// 先跑到 02 的最后一个迁移、按 02 的写法造会话与四种结果的发送账本，再跑全部：换 status 的 CHECK、新加的 CHECK 与外键都要让
+// 旧行原样通过（迁移 lint 标注里写的「旧镜像写的值都在新集合里」「新列为空或取默认值」），新列取空或缺省值；
+// 改写之后的清除函数照常删 02 的会话
+{
+  const { PGlite } = await import('@electric-sql/pglite');
+  const { drizzle } = await import('drizzle-orm/pglite');
+  const { migrate } = await import('drizzle-orm/pglite/migrator');
+  const { MIGRATIONS_DIR } = await import('./migrate.js');
+  const pg3 = new PGlite();
+  const dbName = (await pg3.query<{ d: string }>('select current_database() as d')).rows[0]!.d;
+  await pg3.exec(`
+    CREATE ROLE agent_owner    LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+    CREATE ROLE agent_app      LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+    CREATE ROLE agent_platform LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+    ALTER DATABASE "${dbName}" OWNER TO agent_owner;
+  `);
+  const full = JSON.parse(fs.readFileSync(path.join(MIGRATIONS_DIR, 'meta', '_journal.json'), 'utf8')) as {
+    entries: { idx: number; tag: string }[];
+  };
+  const staged = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'migrations-02-'));
+  fs.mkdirSync(path.join(staged, 'meta'));
+  const upto02 = { ...full, entries: full.entries.filter((e) => e.idx <= 3) };
+  check('03 升级：02 的最后一个迁移是 0003_conversations_rls', upto02.entries.at(-1)?.tag === '0003_conversations_rls');
+  fs.writeFileSync(path.join(staged, 'meta', '_journal.json'), JSON.stringify(upto02));
+  for (const e of upto02.entries) fs.copyFileSync(path.join(MIGRATIONS_DIR, `${e.tag}.sql`), path.join(staged, `${e.tag}.sql`));
+  const d3 = drizzle(pg3);
+  const migrateAsOwner = async (folder: string): Promise<void> => {
+    await pg3.exec('SET ROLE agent_owner');
+    try {
+      await migrate(d3, { migrationsFolder: folder });
+    } finally {
+      await pg3.exec('RESET ROLE');
+    }
+  };
+  await migrateAsOwner(staged);
+  const q3 = async <R = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<R[]> =>
+    (await pg3.query<R>(text, params)).rows;
+  const [{ id: Z }] = await q3<{ id: string }>(
+    `insert into tenants (slug, name, pack_id, retention_lead_days) values ('old-z', 'Z', 'travel', 10) returning id`,
+  );
+  const old = new Date(Date.now() - 11 * 86_400_000).toISOString();
+  await q3(
+    `insert into conversations (tenant_id, id, channel, stage, handed_over, state, last_seq, created_at, updated_at)
+     values ($1, 'wecom:wmUp1', 'wecom', 'greeting', false, '{"id":"wecom:wmUp1"}', 0, $2::timestamptz, $2::timestamptz)`,
+    [Z, old],
+  );
+  for (const [msgid, status] of [
+    ['up-acc', 'accepted'],
+    ['up-rej', 'rejected'],
+    ['up-unk', 'unknown'],
+    ['up-fai', 'failed'],
+  ]) {
+    await q3(
+      `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status) values ($1, 'wecom:wmUp1', $2, 'ai', $3::timestamptz, $4)`,
+      [Z, msgid, old, status],
+    );
+  }
+  const upgraded = await outcome(migrateAsOwner(MIGRATIONS_DIR));
+  check('03 升级：02 的库上带着四种状态的发送账本跑 03 的迁移，不报错', upgraded === 'ok', upgraded);
+  const rows = await q3<{ m: string; status: string; a: string | null; i: string | null; seg: number; att: number; p: unknown }>(
+    `select channel_msgid as m, status, account_id as a, inbox_id as i, segment as seg, attempts as att, payload as p
+       from outbound_sends where tenant_id = $1 order by 1`,
+    [Z],
+  );
+  check(
+    '03 升级：旧的账本行原样（状态不变），新列为空或缺省值',
+    JSON.stringify(rows.map((r) => [r.m, r.status, r.a, r.i, r.seg, r.att, r.p])) ===
+      JSON.stringify([
+        ['up-acc', 'accepted', null, null, 0, 0, null],
+        ['up-fai', 'failed', null, null, 0, 0, null],
+        ['up-rej', 'rejected', null, null, 0, 0, null],
+        ['up-unk', 'unknown', null, null, 0, 0, null],
+      ]),
+    JSON.stringify(rows),
+  );
+  const [conv] = await q3<{ a: string | null }>(`select channel_account_id as a from conversations where tenant_id = $1`, [Z]);
+  check('03 升级：已有会话的 channel_account_id 为空（默认账号）', conv !== undefined && conv.a === null, JSON.stringify(conv));
+  // 改写之后的 purge_conversation：签名不变，旧镜像那样调用照常删 02 的会话与它的账本
+  await pg3.exec('SET ROLE agent_app');
+  let purgedOld: boolean | undefined;
+  try {
+    purgedOld = await pg3.transaction(async (tx) => {
+      await tx.query(`select set_config('app.tenant_id', $1, true)`, [Z]);
+      return (await tx.query<{ ok: boolean }>(`select purge_conversation($1, 'wecom:wmUp1', now(), 0, $2::timestamptz) as ok`, [Z, old]))
+        .rows[0]?.ok;
+    });
+  } finally {
+    await pg3.exec('RESET ROLE');
+  }
+  const [leftUp] = await q3<{ n: number }>(`select count(*)::int as n from outbound_sends where tenant_id = $1`, [Z]);
+  check(
+    '03 升级：改写之后的 purge_conversation 以 02 的签名调用照常清除',
+    purgedOld === true && leftUp?.n === 0,
+    JSON.stringify({ purgedOld, leftUp }),
+  );
+  await pg3.close();
 }
 
 // ---------------- 造数据 ----------------
@@ -1617,7 +2004,7 @@ await expectWhy([
   ],
   ['发送账本的 msgid 超过 32 字节（11 个汉字是 33 字节）', () => insSend(A, '汉'.repeat(11)), 'outbound_sends_channel_msgid_check'],
   ['发送账本的种类只有七种', () => insSend(A, 'm-k', { kind: 'sms' }), 'outbound_sends_kind_check'],
-  ['发送账本的状态只有四种', () => insSend(A, 'm-s', { status: 'sent' }), 'outbound_sends_status_check'],
+  ['发送账本的状态只有那几种（02 四种，03 起七种）', () => insSend(A, 'm-s', { status: 'sent' }), 'outbound_sends_status_check'],
   ['32 字节的 msgid', () => insSend(A, 'x'.repeat(32)), 'ok'],
   ['同租户 msgid 重复', () => insSend(A, 'x'.repeat(32)), 'outbound_sends_tenant_id_channel_msgid_uq'],
   ['别的租户同一个 msgid，会话不存在也行（不建外键）', () => insSend(B, 'x'.repeat(32)), 'ok'],
@@ -2487,8 +2874,682 @@ await expectWhy([
   );
 }
 
+// ================ 03：渠道表（约束、ord、迁移表每一格、仓储冒烟；授权以真实 PG 为准） ================
+{
+  const repoAcct = await import('./repo/channel-accounts.js');
+  const repoInbox = await import('./repo/channel-inbox.js');
+  const repoOutbound = await import('./repo/outbound.js');
+  const { OUTBOUND_TRANSITIONS, INBOX_TRANSITIONS } = await import('../channels/transitions.js');
+  const { INBOX_STATES, OUTBOUND_STATUSES } = await import('../shared/channel-types.js');
+  type OutboundStatus = import('../shared/channel-types.js').OutboundStatus;
+  type InboxState = import('../shared/channel-types.js').InboxState;
+  type OutboundWriter = import('../channels/transitions.js').OutboundWriter;
+  /** 被谁拒的逐条比（同 02 的 expectWhy，标签换成 03） */
+  const expectWhy03 = async (cases: [string, () => Promise<unknown>, string][]): Promise<void> => {
+    for (const [what, run, want] of cases) {
+      const got = await why(run());
+      check(`03 约束：${what}${want === 'ok' ? ' 能插入' : ` 被 ${want} 拒`}`, got === want, got);
+    }
+  };
+  interface AcctOver {
+    kind?: string;
+    name?: string;
+    status?: string;
+    idPrefix?: string | null;
+    corpId?: string | null;
+    openKfid?: string | null;
+    secrets?: boolean;
+    keyId?: string | null;
+    cursor?: string | null;
+    until?: string | null;
+    settings?: string;
+  }
+  /** 一个账号（超级用户直接插）：缺省是合法的企微账号，前缀 wecom: */
+  const insAcct = (tenantId: string, key: string, o: AcctOver = {}): Promise<{ id: string }[]> =>
+    q<{ id: string }>(
+      `insert into channel_accounts (tenant_id, key, kind, name, status, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id, cursor, record_only_until, settings)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, case when $9::boolean then decode(repeat('07', 44), 'hex') end, $10, $11, $12::timestamptz, $13::json)
+       returning id`,
+      [
+        tenantId,
+        key,
+        o.kind ?? 'wecom_kf',
+        o.name ?? '客服',
+        o.status ?? 'active',
+        'idPrefix' in o ? o.idPrefix : 'wecom:',
+        'corpId' in o ? o.corpId : 'corp-a',
+        'openKfid' in o ? o.openKfid : `kf-${key}`,
+        o.secrets ?? true,
+        'keyId' in o ? o.keyId : 'k1',
+        o.cursor ?? null,
+        o.until ?? null,
+        o.settings ?? '{}',
+      ],
+    );
+  const webAcct = (tenantId: string, key: string, o: AcctOver = {}): Promise<{ id: string }[]> =>
+    insAcct(tenantId, key, { kind: 'web', idPrefix: null, corpId: null, openKfid: null, secrets: false, keyId: null, ...o });
+
+  // ---- channel_accounts 的 CHECK 与唯一 ----
+  await expectWhy03([
+    ['key 以数字开头', () => insAcct(A, '1kf'), 'channel_accounts_key_check'],
+    ['key 有大写', () => insAcct(A, 'Kf-a'), 'channel_accounts_key_check'],
+    ['key 只有一个字符', () => insAcct(A, 'k'), 'channel_accounts_key_check'],
+    ['key 32 个字符', () => insAcct(A, `k${'a'.repeat(31)}`), 'channel_accounts_key_check'],
+    ['kind 只有两种', () => insAcct(A, 'kf-x', { kind: 'sms' }), 'channel_accounts_kind_check'],
+    ['name 为空', () => insAcct(A, 'kf-x', { name: '' }), 'channel_accounts_name_check'],
+    ['name 41 个字', () => insAcct(A, 'kf-x', { name: '名'.repeat(41) }), 'channel_accounts_name_check'],
+    ['status 只有三种', () => insAcct(A, 'kf-x', { status: 'paused' }), 'channel_accounts_status_check'],
+    ['settings 不是对象', () => insAcct(A, 'kf-x', { settings: '[]' }), 'channel_accounts_settings_check'],
+    // spec 的 DDL 原样写成 id_prefix IN (…) 时，NULL 会让整个 CHECK 得 NULL、被放行
+    ['企微账号没有前缀', () => insAcct(A, 'kf-x', { idPrefix: null }), 'channel_accounts_wecom_check'],
+    ['企微账号的前缀不是 wecom: 或 wecom:<key>:', () => insAcct(A, 'kf-x', { idPrefix: 'wecom:kf-y:' }), 'channel_accounts_wecom_check'],
+    ['企微账号没有 corp_id', () => insAcct(A, 'kf-x', { corpId: null }), 'channel_accounts_wecom_check'],
+    ['企微账号没有 open_kfid', () => insAcct(A, 'kf-x', { openKfid: null }), 'channel_accounts_wecom_check'],
+    ['企微账号没有凭据密文', () => insAcct(A, 'kf-x', { secrets: false }), 'channel_accounts_wecom_check'],
+    ['企微账号没有 secrets_key_id', () => insAcct(A, 'kf-x', { keyId: null }), 'channel_accounts_wecom_check'],
+    ['网页账号带前缀', () => webAcct(A, 'web-x', { idPrefix: 'wecom:' }), 'channel_accounts_web_check'],
+    ['网页账号带 corp_id', () => webAcct(A, 'web-x', { corpId: 'corp-a' }), 'channel_accounts_web_check'],
+    ['网页账号带 open_kfid', () => webAcct(A, 'web-x', { openKfid: 'kf-w' }), 'channel_accounts_web_check'],
+    ['网页账号带凭据密文', () => webAcct(A, 'web-x', { secrets: true }), 'channel_accounts_web_check'],
+    ['网页账号带 cursor', () => webAcct(A, 'web-x', { cursor: 'c-1' }), 'channel_accounts_web_check'],
+    ['网页账号带恢复截止点', () => webAcct(A, 'web-x', { until: iso(Date.now()) }), 'channel_accounts_web_check'],
+    ['租户的第一个企微账号，前缀 wecom:', () => insAcct(A, 'kf-main'), 'ok'],
+    ['第二个企微账号，前缀 wecom:<key>:', () => insAcct(A, 'kf-two', { idPrefix: 'wecom:kf-two:' }), 'ok'],
+    [
+      '同租户 key 重复',
+      () => insAcct(A, 'kf-main', { idPrefix: 'wecom:kf-main:', openKfid: 'kf-other' }),
+      'channel_accounts_tenant_id_key_uq',
+    ],
+    ['同租户前缀重复', () => insAcct(A, 'kf-three'), 'channel_accounts_tenant_id_id_prefix_uq'],
+    [
+      '同租户 open_kfid 重复',
+      () => insAcct(A, 'kf-four', { idPrefix: 'wecom:kf-four:', openKfid: 'kf-kf-main' }),
+      'channel_accounts_tenant_id_open_kfid_uq',
+    ],
+    ['网页账号（前缀为空）', () => webAcct(A, 'web-a'), 'ok'],
+    ['第二个网页账号（前缀同为空，不算重复）', () => webAcct(A, 'web-b'), 'ok'],
+    ['别的租户同一个 key、同一个前缀', () => insAcct(B, 'kf-main'), 'ok'],
+    ['租户不存在', () => insAcct(randomUUID(), 'kf-z'), 'channel_accounts_tenant_id_tenants_id_fk'],
+  ]);
+  const acctId = async (tenantId: string, key: string): Promise<string> =>
+    (await q<{ id: string }>(`select id from channel_accounts where tenant_id = $1 and key = $2`, [tenantId, key]))[0]!.id;
+  const AK = await acctId(A, 'kf-main');
+  const AK2 = await acctId(A, 'kf-two');
+  const BK = await acctId(B, 'kf-main');
+  const [defaults] = await q<{ status: string; settings: string; created: boolean }>(
+    `select status, settings::text as settings, created_at is not null and updated_at is not null as created from channel_accounts where id = $1`,
+    [AK],
+  );
+  check(
+    '03 约束：账号缺省 active、settings 缺省 {}',
+    defaults?.status === 'active' && defaults.settings === '{}' && defaults.created,
+    JSON.stringify(defaults),
+  );
+
+  // ---- channel_inbox 的 CHECK、外键与唯一 ----
+  const insInbox = (
+    tenantId: string,
+    accountId: string,
+    msgid: string,
+    o: { kind?: string; conv?: string | null; state?: string; reason?: string | null; payload?: string | null } = {},
+  ): Promise<unknown> =>
+    q(
+      `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, reason, payload)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::json)`,
+      [
+        tenantId,
+        accountId,
+        msgid,
+        o.kind ?? 'message',
+        'conv' in o ? o.conv : 'wecom:wmIn1',
+        o.state ?? 'received',
+        o.reason ?? null,
+        o.payload ?? null,
+      ],
+    );
+  await expectWhy03([
+    ['入站 msgid 为空', () => insInbox(A, AK, ''), 'channel_inbox_msgid_check'],
+    ['入站 msgid 129 字节（43 个汉字）', () => insInbox(A, AK, '汉'.repeat(43)), 'channel_inbox_msgid_check'],
+    ['入站 msgid 128 字节', () => insInbox(A, AK, 'x'.repeat(128)), 'ok'],
+    ['入站种类只有五种', () => insInbox(A, AK, 'm-kind', { kind: 'image' }), 'channel_inbox_kind_check'],
+    ['入站状态只有五种', () => insInbox(A, AK, 'm-state', { state: 'pending' }), 'channel_inbox_state_check'],
+    ['abandoned 的原因只有五种', () => insInbox(A, AK, 'm-r', { state: 'abandoned', reason: 'oops' }), 'channel_inbox_reason_check'],
+    ['abandoned 没写原因', () => insInbox(A, AK, 'm-r', { state: 'abandoned' }), 'channel_inbox_reason_iff_abandoned'],
+    ['没结束的行带原因', () => insInbox(A, AK, 'm-r', { reason: 'poison' }), 'channel_inbox_reason_iff_abandoned'],
+    ['done 带原文', () => insInbox(A, AK, 'm-p', { state: 'done', payload: '{"text":"x"}' }), 'channel_inbox_payload_check'],
+    [
+      'abandoned 带原文',
+      () => insInbox(A, AK, 'm-p', { state: 'abandoned', reason: 'too_old', payload: '{"text":"x"}' }),
+      'channel_inbox_payload_check',
+    ],
+    ['客户消息没有会话 id', () => insInbox(A, AK, 'm-c', { conv: null }), 'channel_inbox_conversation_check'],
+    ['回执没有会话 id', () => insInbox(A, AK, 'm-c', { kind: 'send_fail', conv: null }), 'channel_inbox_conversation_check'],
+    ['导入的 legacy 行只有 msgid', () => insInbox(A, AK, 'm-legacy', { kind: 'legacy', conv: null, state: 'done' }), 'ok'],
+    ['账号不存在', () => insInbox(A, randomUUID(), 'm-fk'), 'channel_inbox_account_fk'],
+    ['账号在别的租户', () => insInbox(A, BK, 'm-fk'), 'channel_inbox_account_fk'],
+    ['同一账号同一 msgid', () => insInbox(A, AK, 'm-legacy'), 'channel_inbox_tenant_id_account_id_msgid_uq'],
+    ['同一 msgid 在另一个账号', () => insInbox(A, AK2, 'm-legacy'), 'ok'],
+  ]);
+
+  // ---- outbound_sends 的新列与新状态、conversations.channel_account_id ----
+  const insSend03 = (tenantId: string, msgid: string, o: { status?: string; payload?: string | null; accountId?: string | null } = {}) =>
+    q(
+      `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, payload, account_id)
+       values ($1, 'wecom:wmOut1', $2, 'ai', now(), $3, $4::json, $5)`,
+      [tenantId, msgid, o.status ?? 'pending', o.payload ?? null, o.accountId ?? null],
+    );
+  const TEXT = '{"msgtype":"text","text":{"content":"您好"}}';
+  await expectWhy03([
+    ['pending 带要发的内容', () => insSend03(A, 'o3-pending', { payload: TEXT, accountId: AK }), 'ok'],
+    ['sending 带要发的内容', () => insSend03(A, 'o3-sending', { status: 'sending', payload: TEXT, accountId: AK }), 'ok'],
+    ['cancelled、内容为空', () => insSend03(A, 'o3-cancelled', { status: 'cancelled', accountId: AK }), 'ok'],
+    ['accepted 带内容', () => insSend03(A, 'o3-acc', { status: 'accepted', payload: TEXT }), 'outbound_sends_payload_check'],
+    ['cancelled 带内容', () => insSend03(A, 'o3-can', { status: 'cancelled', payload: TEXT }), 'outbound_sends_payload_check'],
+    ['状态 sent 不在七种里', () => insSend03(A, 'o3-sent', { status: 'sent' }), 'outbound_sends_status_check'],
+    ['出站的账号不存在', () => insSend03(A, 'o3-fk', { accountId: randomUUID() }), 'outbound_sends_account_fk'],
+    ['出站的账号在别的租户', () => insSend03(A, 'o3-fk', { accountId: BK }), 'outbound_sends_account_fk'],
+    [
+      '会话的 channel_account_id 不存在',
+      () =>
+        q(
+          `insert into conversations (tenant_id, id, channel, stage, handed_over, state, created_at, updated_at, channel_account_id)
+           values ($1, 'wecom:kf-two:wmCa1', 'wecom', 'greeting', false, '{"id":"wecom:kf-two:wmCa1"}', now(), now(), $2)`,
+          [A, randomUUID()],
+        ),
+      'conversations_channel_account_fk',
+    ],
+    [
+      '会话挂在本租户的第二个企微账号上',
+      () =>
+        q(
+          `insert into conversations (tenant_id, id, channel, stage, handed_over, state, created_at, updated_at, channel_account_id)
+           values ($1, 'wecom:kf-two:wmCa1', 'wecom', 'greeting', false, '{"id":"wecom:kf-two:wmCa1"}', now(), now(), $2)`,
+          [A, AK2],
+        ),
+      'ok',
+    ],
+  ]);
+  // 02 约束那一段用 02 的写法（不带新列）插过一行 32 个 x 的 msgid
+  const [legacyAny] = await q<{ account_id: string | null; inbox_id: string | null; segment: number; attempts: number; payload: unknown }>(
+    `select account_id, inbox_id, segment, attempts, payload from outbound_sends where tenant_id = $1 and channel_msgid = repeat('x', 32)`,
+    [A],
+  );
+  check(
+    '03 约束：02 写法插入的出站行，新列是空或缺省值（account_id、inbox_id、payload 为空，segment、attempts 为 0）',
+    legacyAny?.account_id === null &&
+      legacyAny.inbox_id === null &&
+      legacyAny.segment === 0 &&
+      legacyAny.attempts === 0 &&
+      legacyAny.payload === null,
+    JSON.stringify(legacyAny),
+  );
+
+  // ---- 迁移表本身与 spec 的表格逐格一致（spec「出站：投递状态」、R3）----
+  // 出站：'from>to' → 谁写；from 为空表示库里还没有这一行
+  const OUT_SPEC: Record<string, string> = {
+    '>pending': 'plan',
+    '>accepted': 'settle',
+    '>rejected': 'settle',
+    '>unknown': 'settle',
+    '>failed': 'receipt',
+    'pending>sending': 'mark',
+    'pending>accepted': 'settle',
+    'pending>rejected': 'settle',
+    'pending>unknown': 'settle',
+    'pending>cancelled': 'cancel,recover',
+    'pending>failed': 'receipt',
+    'sending>accepted': 'settle',
+    'sending>rejected': 'settle',
+    'sending>unknown': 'recover,settle',
+    'sending>cancelled': 'cancel',
+    'sending>pending': 'unmark',
+    'sending>failed': 'receipt',
+    'unknown>accepted': 'settle',
+    'unknown>unknown': 'settle',
+    'unknown>failed': 'receipt',
+    'accepted>failed': 'receipt',
+  };
+  const outTable = Object.fromEntries(OUTBOUND_TRANSITIONS.map((t) => [`${t.from ?? ''}>${t.to}`, [...t.by].toSorted().join(',')]));
+  check(
+    '03 迁移表：出站的表与 spec 的表格逐格一致（rejected、failed、cancelled 没有出边）',
+    JSON.stringify(Object.entries(outTable).toSorted()) === JSON.stringify(Object.entries(OUT_SPEC).toSorted()) &&
+      OUTBOUND_TRANSITIONS.length === Object.keys(OUT_SPEC).length,
+    JSON.stringify(outTable),
+  );
+  const IN_SPEC = [
+    '>received',
+    '>done',
+    '>abandoned',
+    'received>recorded',
+    'received>replied',
+    'received>done',
+    'received>abandoned',
+    'recorded>replied',
+    'recorded>done',
+    'recorded>abandoned',
+    'replied>done',
+    'replied>abandoned',
+  ];
+  check(
+    '03 迁移表：入站的表与 R3 一致（只往前走，done、abandoned 没有出边）',
+    JSON.stringify(INBOX_TRANSITIONS.map((t) => `${t.from ?? ''}>${t.to}`).toSorted()) === JSON.stringify(IN_SPEC.toSorted()),
+    JSON.stringify(INBOX_TRANSITIONS),
+  );
+
+  // ---- 出站：短事务（transitionOutbound）的每一格：7 种已有状态 × 7 种目标 × 7 个写入方 ----
+  const WRITERS: OutboundWriter[] = ['plan', 'mark', 'settle', 'cancel', 'unmark', 'recover', 'receipt'];
+  const code = (s: string): string => s.slice(0, 3);
+  const keeps = (s: string): boolean => s === 'pending' || s === 'sending';
+  const T3 = Date.parse('2026-10-09T08:00:00.000Z');
+  const seedOut = async (rows: { msgid: string; status: string }[]): Promise<void> => {
+    for (let i = 0; i < rows.length; i += 200) {
+      const part = rows.slice(i, i + 200);
+      await q(
+        `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, errcode, attempts, payload, account_id)
+         select $1, 'wecom:wmTr', m, 'ai', $2::timestamptz, s, 1, 1, case when s in ('pending', 'sending') then $3::json end, $4
+           from unnest($5::text[], $6::text[]) as u(m, s)`,
+        [A, iso(T3), TEXT, AK, part.map((r) => r.msgid), part.map((r) => r.status)],
+      );
+    }
+  };
+  interface OutState {
+    m: string;
+    status: string;
+    errcode: number | null;
+    attempts: number;
+    payload: unknown;
+    at: number;
+  }
+  const readOut = async (prefix: string): Promise<Map<string, OutState>> =>
+    new Map(
+      (
+        await q<OutState>(
+          `select channel_msgid as m, status, errcode, attempts, payload, (extract(epoch from sent_at) * 1000)::float8 as at
+             from outbound_sends where tenant_id = $1 and channel_msgid like $2`,
+          [A, `${prefix}%`],
+        )
+      ).map((r) => [r.m, r]),
+    );
+  const cells: { msgid: string; from: OutboundStatus; to: OutboundStatus; by: OutboundWriter }[] = [];
+  for (const from of OUTBOUND_STATUSES)
+    for (const to of OUTBOUND_STATUSES) for (const by of WRITERS) cells.push({ msgid: `t:${code(from)}:${code(to)}:${by}`, from, to, by });
+  await seedOut(cells.map((c) => ({ msgid: c.msgid, status: c.from })));
+  const changed = new Map<string, boolean>();
+  for (const c of cells) {
+    const r = await asApp(A, (tx) => repoOutbound.transitionOutbound(tx, c.msgid, c.to, c.by, { errcode: 9 }));
+    changed.set(c.msgid, r !== null);
+  }
+  const outAfter = await readOut('t:');
+  const wrongCells: string[] = [];
+  for (const c of cells) {
+    const allowed = (OUT_SPEC[`${c.from}>${c.to}`] ?? '').split(',').includes(c.by);
+    const row = outAfter.get(c.msgid);
+    const ok = allowed
+      ? changed.get(c.msgid) === true &&
+        row?.status === c.to &&
+        row.errcode === 9 &&
+        (keeps(c.to) ? row.payload !== null : row.payload === null)
+      : changed.get(c.msgid) === false &&
+        row?.status === c.from &&
+        row.errcode === 1 &&
+        (keeps(c.from) ? row.payload !== null : row.payload === null);
+    if (!ok) wrongCells.push(`${c.from}>${c.to} by ${c.by}${allowed ? '（应改）' : '（不应改）'}: ${JSON.stringify(row)}`);
+  }
+  check(
+    `03 迁移表：出站短事务 ${cells.length} 格（7 × 7 × 7 写入方），表里的改了（结果与取消同一条语句把 payload 置空），表外的一个字节没动`,
+    wrongCells.length === 0 && outAfter.size === cells.length,
+    wrongCells.slice(0, 5).join(' | '),
+  );
+  const noRow = await asApp(A, (tx) => repoOutbound.transitionOutbound(tx, 'o3-none', 'accepted', 'settle'));
+  check('03 迁移表：短事务对库里没有的行什么都不插，返回 null', noRow === null && (await readOut('o3-none')).size === 0);
+
+  // ---- 出站：会话落库的 upsert（insertOutboundSends）的每一格：没有这一行 + 7 种已有状态 × 7 种目标 ----
+  const FLUSH: OutboundWriter[] = ['plan', 'settle', 'cancel', 'receipt'];
+  const upCells: { msgid: string; from: OutboundStatus | null; to: OutboundStatus }[] = [];
+  for (const from of [null, ...OUTBOUND_STATUSES])
+    for (const to of OUTBOUND_STATUSES) upCells.push({ msgid: `u:${from ? code(from) : 'new'}:${code(to)}`, from, to });
+  await seedOut(upCells.filter((c) => c.from !== null).map((c) => ({ msgid: c.msgid, status: c.from! })));
+  for (const c of upCells) {
+    await asApp(A, (tx) =>
+      repoOutbound.insertOutboundSends(tx, [
+        {
+          conversationId: 'wecom:wmTr',
+          channelMsgid: c.msgid,
+          messageSeq: null,
+          kind: 'ai',
+          sentAt: new Date(T3 + 1000),
+          status: c.to,
+          errcode: 9,
+          failType: null,
+          accountId: AK,
+          attempts: 3,
+          payload: { msgtype: 'text', text: { content: '新的' } },
+        },
+      ]),
+    );
+  }
+  const upAfter = await readOut('u:');
+  const wrongUp: string[] = [];
+  for (const c of upCells) {
+    const allowed = (OUT_SPEC[`${c.from ?? ''}>${c.to}`] ?? '').split(',').some((w) => FLUSH.includes(w as OutboundWriter));
+    const row = upAfter.get(c.msgid);
+    let ok: boolean;
+    if (c.from === null) {
+      ok = allowed
+        ? row?.status === c.to &&
+          row.errcode === 9 &&
+          row.attempts === 3 &&
+          (c.to === 'pending' ? row.payload !== null : row.payload === null)
+        : row === undefined;
+    } else {
+      ok = allowed
+        ? row?.status === c.to && row.errcode === 9 && row.attempts === 3 && row.at === T3 + 1000 && row.payload === null
+        : row?.status === c.from &&
+          row.errcode === 1 &&
+          row.attempts === 1 &&
+          row.at === T3 &&
+          (keeps(c.from) ? row.payload !== null : row.payload === null);
+    }
+    if (!ok) wrongUp.push(`${c.from ?? '（没有）'}>${c.to}${allowed ? '（应改）' : '（不应改）'}: ${JSON.stringify(row)}`);
+  }
+  check(
+    `03 迁移表：会话落库的 upsert ${upCells.length} 格（没有这一行与 7 种已有状态 × 7 种目标）按 plan/settle/cancel/receipt 的格子写：pending 遇到已有的行不改，sending 只有 markSending 写，终态不回退，cancelled 与 sending 不凭空插入`,
+    wrongUp.length === 0,
+    wrongUp.slice(0, 5).join(' | '),
+  );
+  // 验收 17 的两个例子单列
+  const exA = upAfter.get('u:fai:acc');
+  const exB = upAfter.get('u:can:pen');
+  check(
+    '03 验收 17：对 failed 写 accepted、对 cancelled 写 pending 都不改库',
+    exA?.status === 'failed' && exB?.status === 'cancelled' && exB.payload === null,
+    JSON.stringify({ exA, exB }),
+  );
+
+  // ---- 同一批里同一 msgid 的几次写：按先后逐轮判 ----
+  const w = (msgid: string, status: OutboundStatus, at: number, payload: unknown = null) => ({
+    conversationId: 'wecom:wmTr',
+    channelMsgid: msgid,
+    messageSeq: null,
+    kind: 'ai' as const,
+    sentAt: new Date(at),
+    status,
+    errcode: null,
+    failType: null,
+    accountId: AK,
+    payload,
+  });
+  await asApp(A, (tx) =>
+    repoOutbound.insertOutboundSends(tx, [
+      w('b:pend-cancel', 'pending', T3, { msgtype: 'text' }),
+      w('b:pend-cancel', 'cancelled', T3 + 10),
+      w('b:acc-late-pend', 'accepted', T3),
+      w('b:acc-late-pend', 'pending', T3 + 10, { msgtype: 'text' }),
+      w('b:pend-sending', 'pending', T3, { msgtype: 'text' }),
+      w('b:pend-sending', 'sending', T3 + 10),
+    ]),
+  );
+  const batch = await readOut('b:');
+  check(
+    '03 落库：同一批里先 pending 后 cancelled（R6 下 pending 还没落库就被接手）落成 cancelled、内容为空',
+    batch.get('b:pend-cancel')?.status === 'cancelled' && batch.get('b:pend-cancel')?.payload === null,
+    JSON.stringify(batch.get('b:pend-cancel')),
+  );
+  check(
+    '03 落库：结果先到、晚到的 pending 什么都不改（R6）',
+    batch.get('b:acc-late-pend')?.status === 'accepted' && batch.get('b:acc-late-pend')?.payload === null,
+    JSON.stringify(batch.get('b:acc-late-pend')),
+  );
+  check(
+    '03 落库：会话落库写不出 sending（只有 markSending 写），留在 pending、内容还在',
+    batch.get('b:pend-sending')?.status === 'pending' && batch.get('b:pend-sending')?.payload !== null,
+    JSON.stringify(batch.get('b:pend-sending')),
+  );
+
+  // ---- markSending 的库里那一步、启动时读没结果的行 ----
+  await asApp(A, (tx) =>
+    repoOutbound.insertOutboundSends(tx, [
+      { ...w('ms:1', 'pending', T3, { msgtype: 'text', text: { content: '第一段' } }), inboxId: randomUUID(), segment: 0 },
+      { ...w('ms:2', 'pending', T3, { msgtype: 'text', text: { content: '第二段' } }), segment: 1 },
+      { ...w('ms:3', 'accepted', T3), accountId: AK2 },
+    ]),
+  );
+  const m1 = await asApp(A, (tx) => repoOutbound.markOutboundSending(tx, 'ms:1'));
+  const m1Again = await asApp(A, (tx) => repoOutbound.markOutboundSending(tx, 'ms:1'));
+  const m3 = await asApp(A, (tx) => repoOutbound.markOutboundSending(tx, 'ms:3'));
+  const mNone = await asApp(A, (tx) => repoOutbound.markOutboundSending(tx, 'ms:none'));
+  const ms = await readOut('ms:');
+  check(
+    '03 仓储：markOutboundSending 把 pending 标成 sending（内容留着）；已是 sending、已有结果的返回 not_pending；库里没有的返回 absent',
+    m1 === 'marked' &&
+      m1Again === 'not_pending' &&
+      m3 === 'not_pending' &&
+      mNone === 'absent' &&
+      ms.get('ms:1')?.status === 'sending' &&
+      ms.get('ms:1')?.payload !== null,
+    JSON.stringify({ m1, m1Again, m3, mNone, ms: ms.get('ms:1') }),
+  );
+  const open = await asApp(A, (tx) => repoOutbound.readOpenOutbound(tx, AK));
+  const mine = open.filter((r) => r.channelMsgid.startsWith('ms:'));
+  check(
+    '03 仓储：readOpenOutbound 读出这个账号 pending、sending 的行，带 payload、segment、inbox_id',
+    JSON.stringify(mine.map((r) => [r.channelMsgid, r.status, r.segment, r.inboxId !== null, r.payload !== null])) ===
+      JSON.stringify([
+        ['ms:1', 'sending', 0, true, true],
+        ['ms:2', 'pending', 1, false, true],
+      ]) && open.every((r) => r.status === 'pending' || r.status === 'sending'),
+    JSON.stringify(mine),
+  );
+  const legacyOpen = await asApp(A, (tx) => repoOutbound.readOpenOutbound(tx, null));
+  check(
+    '03 仓储：readOpenOutbound(null) 只读 account_id 为空的行',
+    legacyOpen.every((r) => r.accountId === null),
+    JSON.stringify(legacyOpen),
+  );
+  // 回执（02 第 12 步的 markOutboundFailed）按迁移表：rejected、cancelled 是终态，不再记 failed
+  await asApp(A, (tx) =>
+    repoOutbound.insertOutboundSends(tx, [
+      { ...w('rc:rej', 'rejected', T3), errcode: 95001 },
+      w('rc:pend', 'pending', T3, { msgtype: 'text' }),
+    ]),
+  );
+  const rcRej = await asApp(A, (tx) => repoOutbound.markOutboundFailed(tx, 'rc:rej', 4));
+  const rcPend = await asApp(A, (tx) => repoOutbound.markOutboundFailed(tx, 'rc:pend', 4));
+  const rc = await readOut('rc:');
+  check(
+    '03 仓储：回执按迁移表——pending 记 failed、清内容、返回会话 id；rejected 是终态，返回 null、不改',
+    rcPend === 'wecom:wmTr' &&
+      rc.get('rc:pend')?.status === 'failed' &&
+      rc.get('rc:pend')?.payload === null &&
+      rcRej === null &&
+      rc.get('rc:rej')?.status === 'rejected',
+    JSON.stringify({ rcRej, rcPend, rc: [...rc.values()] }),
+  );
+
+  // ---- 入站：插入、ord 递增、去重 ----
+  const T = Date.parse('2026-10-09T09:00:00.000Z');
+  const msg = (
+    msgid: string,
+    conv: string,
+    state: InboxState = 'received',
+    extra: Partial<import('./repo/channel-inbox.js').NewInboxRow> = {},
+  ) => ({
+    msgid,
+    kind: 'message' as const,
+    conversationId: conv,
+    sentAt: new Date(T),
+    state,
+    payload: { msgid, text: { content: '原文' } },
+    ...extra,
+  });
+  const page1 = await asApp(A, (tx) =>
+    repoInbox.insertInboxRows(tx, AK, [
+      msg('p1-a', 'wecom:wmOrd1'),
+      msg('p1-b', 'wecom:wmOrd2'),
+      msg('p1-c', 'wecom:wmOrd1', 'done', { kind: 'enter_session' }),
+      msg('p1-d', 'wecom:wmOrd2', 'abandoned', { reason: 'cold_start' }),
+      msg('p1-e', 'wecom:wmOrd2', 'recorded'),
+    ]),
+  );
+  check(
+    '03 入站：一页按给定顺序插入、ord 逐行递增；done、abandoned 插入时不留原文；初始状态 recorded 不在迁移表里、不插',
+    JSON.stringify(page1.map((r) => [r.msgid, r.state, r.payload === null, r.reason, r.attempts])) ===
+      JSON.stringify([
+        ['p1-a', 'received', false, null, 0],
+        ['p1-b', 'received', false, null, 0],
+        ['p1-c', 'done', true, null, 0],
+        ['p1-d', 'abandoned', true, 'cold_start', 0],
+      ]) && page1.every((r, i) => i === 0 || r.ord > page1[i - 1]!.ord),
+    JSON.stringify(page1.map((r) => [r.msgid, r.ord, r.state])),
+  );
+  const page2 = await asApp(A, (tx) =>
+    repoInbox.insertInboxRows(tx, AK, [
+      msg('p1-b', 'wecom:wmOrd2'),
+      msg('p2-a', 'wecom:wmOrd1'),
+      msg('p2-a', 'wecom:wmOrd1'),
+      msg('p2-b', 'wecom:wmOrd3'),
+    ]),
+  );
+  const maxOrd1 = Math.max(...page1.map((r) => r.ord));
+  check(
+    '03 入站：下一页里已有的 msgid（含同一页里重复的）冲突即跳过，只返回真正新插入的，ord 接着往上走',
+    JSON.stringify(page2.map((r) => r.msgid)) === JSON.stringify(['p2-a', 'p2-b']) &&
+      page2.every((r) => r.ord > maxOrd1) &&
+      page2[1]!.ord > page2[0]!.ord,
+    JSON.stringify(page2.map((r) => [r.msgid, r.ord])),
+  );
+  const other = await asApp(A, (tx) => repoInbox.insertInboxRows(tx, AK2, [msg('p1-a', 'wecom:kf-two:wmOrd1')]));
+  check('03 入站：同一 msgid 在另一个账号上是另一行', other.length === 1 && other[0]!.accountId === AK2);
+  const mismatch = await outcome(asApp(A, (tx) => repoInbox.insertInboxRows(tx, AK, [msg('p3-a', 'wecom:wmOrd1', 'abandoned')])));
+  check('03 入站：abandoned 没带原因在发 SQL 之前就报错', mismatch.startsWith('非数据库错误'), mismatch);
+  // 约束那一段在同一个账号上留了一行 128 字节 msgid 的 received，它也没结束、ord 最小
+  const openIn = await asApp(A, (tx) => repoInbox.readOpenInbox(tx, AK));
+  check(
+    '03 入站：readOpenInbox 按 ord 读出这个账号没结束的行',
+    JSON.stringify(openIn.map((r) => (r.msgid.length > 8 ? 'x128' : r.msgid))) ===
+      JSON.stringify(['x128', 'p1-a', 'p1-b', 'p2-a', 'p2-b']) && openIn.every((r, i) => i === 0 || r.ord > openIn[i - 1]!.ord),
+    JSON.stringify(openIn.map((r) => [r.msgid, r.ord, r.state])),
+  );
+  const idOf = (msgid: string): string => [...page1, ...page2].find((r) => r.msgid === msgid)!.id;
+  const b1 = await asApp(A, (tx) => repoInbox.bumpInboxAttempts(tx, idOf('p1-a')));
+  const b2 = await asApp(A, (tx) => repoInbox.bumpInboxAttempts(tx, idOf('p1-a')));
+  const bDone = await asApp(A, (tx) => repoInbox.bumpInboxAttempts(tx, idOf('p1-c')));
+  const [p1b] = await q<{ attempts: number }>(`select attempts from channel_inbox where id = $1`, [idOf('p1-b')]);
+  check(
+    '03 入站：出队计次只加这一行（1、2），排在后面的行不动；已结束的行不计、返回 null',
+    b1 === 1 && b2 === 2 && bDone === null && p1b?.attempts === 0,
+    JSON.stringify({ b1, b2, bDone, p1b }),
+  );
+
+  // ---- 入站：状态变化的每一格（5 × 5） ----
+  const inCells: { msgid: string; from: InboxState; to: InboxState }[] = [];
+  for (const from of INBOX_STATES) for (const to of INBOX_STATES) inCells.push({ msgid: `s:${from}:${to}`, from, to });
+  for (const c of inCells) {
+    const fin = c.from === 'done' || c.from === 'abandoned';
+    await q(
+      `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, reason, payload, updated_at)
+       values ($1, $2, $3, 'message', 'wecom:wmSt', $4, $5, $6::json, '2026-10-01T00:00:00Z')`,
+      [A, AK, c.msgid, c.from, c.from === 'abandoned' ? 'poison' : null, fin ? null : '{"text":"原文"}'],
+    );
+  }
+  const ids = new Map(
+    (await q<{ id: string; m: string }>(`select id, msgid as m from channel_inbox where msgid like 's:%'`)).map((r) => [r.m, r.id]),
+  );
+  const inChanged = new Map<string, boolean>();
+  for (const c of inCells) {
+    const r = await asApp(A, (tx) =>
+      repoInbox.setInboxState(tx, ids.get(c.msgid)!, {
+        state: c.to,
+        ...(c.to === 'abandoned' ? { reason: 'too_old' as const } : {}),
+        messageSeq: 7,
+      }),
+    );
+    inChanged.set(c.msgid, r);
+  }
+  const inAfter = new Map(
+    (
+      await q<{ m: string; state: string; reason: string | null; payload: unknown; seq: number | null; old: boolean }>(
+        `select msgid as m, state, reason, payload, message_seq as seq, updated_at = '2026-10-01T00:00:00Z' as old
+           from channel_inbox where msgid like 's:%'`,
+      )
+    ).map((r) => [r.m, r]),
+  );
+  const wrongIn: string[] = [];
+  for (const c of inCells) {
+    const allowed = IN_SPEC.includes(`${c.from}>${c.to}`);
+    const row = inAfter.get(c.msgid);
+    const fin = (s: string): boolean => s === 'done' || s === 'abandoned';
+    const ok = allowed
+      ? inChanged.get(c.msgid) === true &&
+        row?.state === c.to &&
+        row.seq === 7 &&
+        !row.old &&
+        row.reason === (c.to === 'abandoned' ? 'too_old' : null) &&
+        (fin(c.to) ? row.payload === null : row.payload !== null)
+      : inChanged.get(c.msgid) === false &&
+        row?.state === c.from &&
+        row.seq === null &&
+        row.old &&
+        row.reason === (c.from === 'abandoned' ? 'poison' : null);
+    if (!ok) wrongIn.push(`${c.from}>${c.to}${allowed ? '（应改）' : '（不应改）'}: ${JSON.stringify(row)}`);
+  }
+  check(
+    '03 迁移表：入站状态变化 25 格，表里的改了（记 seq、结束时清原文、updated_at 由库写），表外的（回退、终态之后、原地不动）一个字节没动',
+    wrongIn.length === 0,
+    wrongIn.slice(0, 5).join(' | '),
+  );
+  const gone = await asApp(A, (tx) => repoInbox.setInboxState(tx, randomUUID(), { state: 'done' }));
+  check('03 入站：状态变化命中 0 行（行已被清除）当无操作、返回 false', gone === false);
+
+  // ---- 渠道账号的仓储 ----
+  const created = await asApp(A, (tx) =>
+    repoAcct.insertChannelAccount(tx, { key: 'web-demo', kind: 'web', name: '演示网页', settings: { title: '咨询' } }),
+  );
+  const listed = await asApp(A, (tx) => repoAcct.listChannelAccounts(tx));
+  const touched = await asApp(A, (tx) =>
+    repoAcct.updateChannelAccount(tx, AK, { cursor: 'cur-2', cursorAt: new Date(T), status: 'disabled' }),
+  );
+  const noop = await asApp(A, (tx) => repoAcct.updateChannelAccount(tx, AK, {}));
+  const [ak] = await q<{ cursor: string; status: string; at: Date }>(
+    `select cursor, status, cursor_at as at from channel_accounts where id = $1`,
+    [AK],
+  );
+  check(
+    '03 仓储：建账号（缺省 active）、按建立先后列出本租户的账号、改可改的列；空的改动不发 SQL',
+    created.status === 'active' &&
+      created.kind === 'web' &&
+      JSON.stringify(created.settings) === '{"title":"咨询"}' &&
+      listed.every((x) => x.key !== 'kf-main' || x.id === AK) &&
+      listed.some((x) => x.id === created.id) &&
+      !listed.some((x) => x.id === BK) &&
+      touched &&
+      !noop &&
+      ak?.cursor === 'cur-2' &&
+      ak.status === 'disabled' &&
+      ak.at.getTime() === T,
+    JSON.stringify({ created, listed: listed.map((x) => x.key), ak }),
+  );
+}
+
 // ---------------- 02：清除与删除函数（PGlite 上先跑一遍行为；授权以真实 PG 为准） ----------------
 await purgeChecks(
+  {
+    su: q,
+    as: async <R = Record<string, unknown>>(role: DbRole, tenant: string | null, text: string, params: unknown[] = []): Promise<R[]> => {
+      await t.pg.exec(`SET ROLE ${role}`);
+      try {
+        return await t.pg.transaction(async (tx) => {
+          if (tenant) await tx.query(`select set_config('app.tenant_id', $1, true)`, [tenant]);
+          return (await tx.query<R>(text, params)).rows;
+        });
+      } finally {
+        await t.pg.exec('RESET ROLE');
+      }
+    },
+  },
+  '',
+);
+await channelChecks(
   {
     su: q,
     as: async <R = Record<string, unknown>>(role: DbRole, tenant: string | null, text: string, params: unknown[] = []): Promise<R[]> => {
@@ -2544,10 +3605,10 @@ await t.close();
     '  *"image inspect"*) printf "PATH=/usr/local/bin\\nAPP_REVISION=%s\\n" "${FAKE_REVISION:-old-v1}" ;;',
     '  *pg_dumpall*) echo "-- globals" ;;',
     '  *pg_dump*) echo "dump" ;;',
-    // 目录里有哪些表的数据段：缺省是 01 的四张加 02 的会话三张，FAKE_TOC 换掉它
-    '  *"pg_restore --list"*) cat >/dev/null; for t in ${FAKE_TOC:-memberships sop_versions catalog_items audit_log conversations messages orders}; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
-    // 两张配置表的行数，以及库里已有的会话三张表；FAKE_PSQL 换掉它（库停在 01 时第三段为空）
-    '  *psql*) echo "${FAKE_PSQL:-2|43|conversations messages orders}" ;;',
+    // 目录里有哪些表的数据段：缺省是 01 的四张加 02 的会话三张、03 的渠道两张，FAKE_TOC 换掉它
+    '  *"pg_restore --list"*) cat >/dev/null; for t in ${FAKE_TOC:-memberships sop_versions catalog_items audit_log conversations messages orders channel_accounts channel_inbox}; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
+    // 两张配置表的行数，以及库里已有的会话三张表、渠道两张表；FAKE_PSQL 换掉它（库停在 01 时第三段为空）
+    '  *psql*) echo "${FAKE_PSQL:-2|43|conversations messages orders channel_accounts channel_inbox}" ;;',
     '  *) exit 97 ;;',
     'esac',
   ]);
@@ -2728,6 +3789,7 @@ await t.close();
     live.code === 0 && !/conversations|messages|orders/.test(live.out),
     live.out,
   );
+  check('backup.sh（03）：渠道两张表也有数据段时一行告警都没有', live.code === 0 && !live.out.includes('库里还没有'), live.out);
   check(
     'backup.sh：三份密文写在 <BACKUP_DIR>/<项目名>/<日期>，项目目录 0700',
     ['agent.dump.age', 'globals.sql.age', 'var.tar.gz.age'].every((f) => fs.existsSync(path.join(liveDay, f))) &&
@@ -2754,9 +3816,19 @@ await t.close();
     'backup.sh：旁路实例同一天的备份不盖掉线上的',
     liveVar !== undefined && fs.readFileSync(path.join(liveDay, 'var.tar.gz.age')).equals(liveVar),
   );
-  // 02：conversations、messages、orders 任何一张没有数据段，备份不可用
-  for (const missing of ['conversations', 'messages', 'orders']) {
-    env.FAKE_TOC = ['memberships', 'sop_versions', 'catalog_items', 'audit_log', 'conversations', 'messages', 'orders']
+  // 02：conversations、messages、orders 任何一张没有数据段，备份不可用；03 的 channel_accounts、channel_inbox 同样
+  for (const missing of ['conversations', 'messages', 'orders', 'channel_accounts', 'channel_inbox']) {
+    env.FAKE_TOC = [
+      'memberships',
+      'sop_versions',
+      'catalog_items',
+      'audit_log',
+      'conversations',
+      'messages',
+      'orders',
+      'channel_accounts',
+      'channel_inbox',
+    ]
       .filter((x) => x !== missing)
       .join(' ');
     const project = `notoc-${missing}`;
@@ -2788,6 +3860,27 @@ await t.close();
       !fs.existsSync(path.join(bk, 'partial', day, 'agent.dump.age')),
     partial.out,
   );
+  // 03：库停在 02（03 的迁移没跑成）：渠道两张表不存在，告警一行、照常备份，会话三张表照样要有数据段
+  env.FAKE_TOC = 'memberships sop_versions catalog_items audit_log conversations messages orders';
+  env.FAKE_PSQL = '2|43|conversations messages orders';
+  const at02 = backup(deployDir('at02', ['COMPOSE_PROJECT=at02'], 'x'));
+  check(
+    'backup.sh（03）：库里还没有渠道两张表时告警一行、照常备份',
+    at02.code === 0 &&
+      at02.out.split('\n').filter((l) => l.includes('库里还没有 channel_accounts channel_inbox')).length === 1 &&
+      fs.existsSync(path.join(bk, 'at02', day, 'agent.dump.age')),
+    at02.out,
+  );
+  env.FAKE_PSQL = '2|43|conversations messages orders channel_accounts';
+  const chanPartial = backup(deployDir('chan-partial', ['COMPOSE_PROJECT=chan-partial'], 'x'));
+  check(
+    'backup.sh（03）：库里有 channel_accounts 而导出里没有它的数据段，非零退出、不写密文',
+    chanPartial.code === 1 &&
+      chanPartial.out.includes('没有 channel_accounts 的 TABLE DATA') &&
+      !fs.existsSync(path.join(bk, 'chan-partial', day, 'agent.dump.age')),
+    chanPartial.out,
+  );
+  env.FAKE_PSQL = '2|43|conversations';
   env.FAKE_TOC = 'memberships sop_versions catalog_items audit_log conversations';
   const partialOk = backup(deployDir('partial-ok', ['COMPOSE_PROJECT=partial-ok'], 'x'));
   check(
@@ -3519,6 +4612,9 @@ async function realPostgres(superUrl: string): Promise<void> {
       outbound_sends: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       quick_replies: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       privacy_notices: { agent_app: 'SELECT', agent_platform: 'SELECT,INSERT' },
+      // 03 spec「数据库」的授权表：channel_accounts 的 UPDATE 是列级的（下面单独核），表级只有 SELECT、INSERT
+      channel_accounts: { agent_app: 'SELECT,INSERT', agent_platform: '' },
+      channel_inbox: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
     };
     const PRIVS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
     for (const [table, byRole] of Object.entries(EXPECT)) {
@@ -3539,8 +4635,12 @@ async function realPostgres(superUrl: string): Promise<void> {
       '真实 PG：权限期望表覆盖了 02 的十二张新表',
       NEW_TABLES.every((x) => x in EXPECT),
     );
-    // 不变量 5：两个角色对任何新表都没有 DELETE、TRUNCATE（上面逐格已含，这里单列，改了期望表也拦得住）
-    for (const table of NEW_TABLES) {
+    check(
+      '真实 PG：权限期望表覆盖了 03 的两张新表',
+      CHANNEL_TABLES.every((x) => x in EXPECT),
+    );
+    // 不变量 5（03 不变量 21）：两个角色对任何新表都没有 DELETE、TRUNCATE（上面逐格已含，这里单列，改了期望表也拦得住）
+    for (const table of [...NEW_TABLES, ...CHANNEL_TABLES]) {
       const [dt] = await sq<{ d: boolean; t: boolean }>(
         `select bool_or(has_table_privilege(r, $1, 'DELETE')) as d, bool_or(has_table_privilege(r, $1, 'TRUNCATE')) as t
            from unnest(array['agent_app', 'agent_platform']) as r`,
@@ -3566,6 +4666,29 @@ async function realPostgres(superUrl: string): Promise<void> {
         .map((c) => c.col)
         .join(',') === RETENTION.join(',') && colPriv.every((c) => !c.app),
       JSON.stringify(colPriv.filter((c) => c.platform || c.app)),
+    );
+    // 03：channel_accounts 上 agent_app 只能 UPDATE 九列（身份五列、tenant_id、id、created_at 改不了），agent_platform 一列都没有
+    const chanColPriv = await sq<{ col: string; app_update: boolean; app_select: boolean; app_insert: boolean; platform: boolean }>(
+      `select a.attname as col,
+              has_column_privilege('agent_app', 'public.channel_accounts', a.attname, 'UPDATE') as app_update,
+              has_column_privilege('agent_app', 'public.channel_accounts', a.attname, 'SELECT') as app_select,
+              has_column_privilege('agent_app', 'public.channel_accounts', a.attname, 'INSERT') as app_insert,
+              has_column_privilege('agent_platform', 'public.channel_accounts', a.attname, 'SELECT,INSERT,UPDATE,REFERENCES') as platform
+         from pg_attribute a where a.attrelid = 'public.channel_accounts'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
+    );
+    check(
+      '真实 PG：agent_app 对 channel_accounts 只能 UPDATE name、status、凭据密文与 key id、cursor 两列、恢复截止点、settings、updated_at',
+      chanColPriv
+        .filter((c) => c.app_update)
+        .map((c) => c.col)
+        .toSorted()
+        .join(',') === CHANNEL_ACCOUNT_UPDATABLE.toSorted().join(','),
+      JSON.stringify(chanColPriv.filter((c) => c.app_update).map((c) => c.col)),
+    );
+    check(
+      '真实 PG：agent_app 能读、能插 channel_accounts 的每一列，agent_platform 一列都碰不到',
+      chanColPriv.length === 17 && chanColPriv.every((c) => c.app_select && c.app_insert && !c.platform),
+      JSON.stringify(chanColPriv.filter((c) => !c.app_select || !c.app_insert || c.platform)),
     );
     const fnPriv = await sq<{ fn: string; app: boolean; platform: boolean }>(
       `select p.oid::regprocedure::text as fn, has_function_privilege('agent_app', p.oid, 'EXECUTE') as app,
@@ -3691,6 +4814,11 @@ async function realPostgres(superUrl: string): Promise<void> {
       privacy_notices: [`insert into privacy_notices (tenant_id, version, body) values ($1, 1, 'x')`, [A]],
       consents: [
         `insert into consents (tenant_id, conversation_id, category, decision, notice_version, at) values ($1, 'c-rls', 'health', 'asked', 1, now())`,
+        [A],
+      ],
+      channel_accounts: [`insert into channel_accounts (tenant_id, key, kind, name) values ($1, 'web-rls', 'web', '网页')`, [A]],
+      channel_inbox: [
+        `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state) values ($1, gen_random_uuid(), 'm-rls', 'message', 'wecom:wmRls', 'received')`,
         [A],
       ],
     };
@@ -3940,6 +5068,81 @@ async function realPostgres(superUrl: string): Promise<void> {
       '真实 PG：agent_app 改保留期报 permission denied',
       (await denial(app.query('update tenants set retention_lead_days = 30 where id = $1', [C]))) === 'denied',
     );
+    // ---- 03：渠道两张表的租户隔离、没有 DELETE / TRUNCATE、身份列改不了（03 验收 19，不变量 21） ----
+    const chanAcct: Record<string, string> = {};
+    for (const tenant of [A, B]) {
+      const [{ id }] = await sq<{ id: string }>(
+        `insert into channel_accounts (tenant_id, key, kind, name, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id)
+         values ($1, 'kf-iso', 'wecom_kf', '客服', 'wecom:', 'corp-iso', 'kf-iso', decode(repeat('07', 44), 'hex'), 'k1') returning id`,
+        [tenant],
+      );
+      chanAcct[tenant] = id;
+      await sq(
+        `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, payload)
+         values ($1, $2, 'm-iso', 'message', 'wecom:wmIso', 'received', '{"text":"原文"}')`,
+        [tenant, id],
+      );
+    }
+    const seenChan = await asRole<{ t: string; tenant_id: string }>(
+      'agent_app',
+      A,
+      CHANNEL_TABLES.map((tb) => `select '${tb}' as t, tenant_id from ${tb}`).join(' union all '),
+    );
+    check(
+      '真实 PG：租户 A 的事务里，03 的两张新表都只看得到 A 的行',
+      new Set(seenChan.map((r) => r.t)).size === CHANNEL_TABLES.length && seenChan.every((r) => r.tenant_id === A),
+      JSON.stringify(seenChan.filter((r) => r.tenant_id !== A)),
+    );
+    for (const [tb, set] of [
+      ['channel_accounts', `name = name`],
+      ['channel_inbox', `attempts = attempts`],
+    ] as const) {
+      const [u] = await asRole<{ n: number }>(
+        'agent_app',
+        A,
+        `with u as (update ${tb} set ${set} where tenant_id = $1 returning 1) select count(*)::int as n from u`,
+        [B],
+      );
+      check(`真实 PG：租户 A 的事务里 UPDATE B 的 ${tb} 影响 0 行`, u?.n === 0, JSON.stringify(u));
+    }
+    const crossInbox = await denial(
+      asRole(
+        'agent_app',
+        A,
+        `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state) values ($1, $2, 'm-cross', 'message', 'wecom:wmIso', 'received')`,
+        [B, chanAcct[B]],
+      ),
+    );
+    check('真实 PG：租户 A 的事务里写 B 的入站行被 RLS 拒', crossInbox === 'rls', crossInbox);
+    for (const tb of CHANNEL_TABLES) {
+      for (const [what, text] of [
+        ['DELETE', `delete from ${tb}`],
+        ['TRUNCATE', `truncate ${tb}`],
+      ]) {
+        const viaApp = await denial(asRole('agent_app', A, text));
+        check(`真实 PG：agent_app 在本租户的事务里对 ${tb} ${what} 报 permission denied（03 验收 19）`, viaApp === 'denied', viaApp);
+        const viaPlatform = await denial(asRole('agent_platform', A, text));
+        check(`真实 PG：agent_platform 对 ${tb} ${what} 同样报 permission denied`, viaPlatform === 'denied', viaPlatform);
+      }
+    }
+    for (const col of ['key', 'kind', 'id_prefix', 'corp_id', 'open_kfid', 'tenant_id', 'id', 'created_at']) {
+      const r = await denial(asRole('agent_app', A, `update channel_accounts set ${col} = ${col} where id = $1`, [chanAcct[A]]));
+      check(`真实 PG：agent_app 改 channel_accounts.${col}（哪怕写回原值）报 permission denied`, r === 'denied', r);
+    }
+    const allowedCols = await denial(
+      asRole(
+        'agent_app',
+        A,
+        `update channel_accounts set name = '改名', status = 'disabled', cursor = 'c-9', cursor_at = now(), record_only_until = now(),
+           settings = '{"pollIntervalMs":60000}', secrets_ct = secrets_ct, secrets_key_id = 'k2', updated_at = now() where id = $1`,
+        [chanAcct[A]],
+      ),
+    );
+    check('真实 PG：agent_app 改列级授权里的九列照常', allowedCols === 'ok', allowedCols);
+    const [chanLeft] = await sq<{ a: number; i: number }>(
+      `select (select count(*)::int from channel_accounts where key = 'kf-iso') as a, (select count(*)::int from channel_inbox where msgid = 'm-iso') as i`,
+    );
+    check('真实 PG：上面这些之后两个租户的账号与入站行原样在', chanLeft?.a === 2 && chanLeft.i === 2, JSON.stringify(chanLeft));
     // longRunning：只放宽那一个事务，连接归还池子之后回到 agent_app 的 5 秒与 10 秒
     {
       const pool1 = await openDb(APP, { max: 1 });
@@ -3960,6 +5163,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       );
     }
     await purgeChecks({ su: sq, as: asRole }, '真实 PG ');
+    await channelChecks({ su: sq, as: asRole }, '真实 PG ');
 
     // ---- 两条连接并发：清除与落库抢同一个会话行；两个认领抢同一批任务 ----
     {
@@ -4297,5 +5501,5 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `DB SELFTEST PASS: ${pass} 项断言全通（PGlite：迁移两遍 / 表属主与 RLS 开关 / 认证函数授权 / 约束与哈希 CHECK / json 键序 / 版本与条目触发器 / 部分唯一索引 / 复合外键 / withTenant / 认证函数冒烟 / 02 条目版本回填、新表约束与触发器、仓储冒烟、清除与删除函数${realPgRan ? '；真实 PG：roles.sql / 迁移身份 / 权限逐格 / RLS 行为 / 租户隔离 / 会话级泄漏 / 临时表遮蔽 / 租户锁 / 命令行子进程 / node-postgres 下两种模式逐字节等价 / 02 新表权限与隔离、消息只追加、清除与删除函数' : '；真实 PG 部分未跑'}）`,
+  `DB SELFTEST PASS: ${pass} 项断言全通（PGlite：迁移两遍 / 表属主与 RLS 开关 / 认证函数授权 / 约束与哈希 CHECK / json 键序 / 版本与条目触发器 / 部分唯一索引 / 复合外键 / withTenant / 认证函数冒烟 / 02 条目版本回填、新表约束与触发器、仓储冒烟、清除与删除函数 / 03 从 02 升级、渠道表约束、ord、出站与入站迁移表每一格、仓储冒烟、两个触发器、purge_channel_inbox、清除与删除连带入站行${realPgRan ? '；真实 PG：roles.sql / 迁移身份 / 权限逐格 / RLS 行为 / 租户隔离 / 会话级泄漏 / 临时表遮蔽 / 租户锁 / 命令行子进程 / node-postgres 下两种模式逐字节等价 / 02 新表权限与隔离、消息只追加、清除与删除函数 / 03 新表权限逐格与列级授权、隔离、没有 DELETE、两个触发器、purge_channel_inbox' : '；真实 PG 部分未跑'}）`,
 );

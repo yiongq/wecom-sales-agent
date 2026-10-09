@@ -11,11 +11,12 @@
 // PurgeRaceSkip 让这笔事务回滚，这个候选算跳过，写照常补上落库（hold.release() 发现脏了会补一次 kick）。
 // 没变就让事务提交，成功就同一个 tick 调 store.forgetSession 摘掉内存（墓碑照旧；只剩「提交之后、forgetSession 之前」那一瞬
 // 真的来一笔新写的极窄窗口会被墓碑悄悄吞掉并记一行日志，这是 spec 墓碑设计认可的结果，见「实施记录 · 第 16 步」）。
-// 最后 purge_expired_traces、purge_finished_jobs，写一行 system.purge 审计（diff 只有各类条数）。不属于某个会话的候选分页、
+// 最后 purge_expired_traces、purge_finished_jobs、purge_channel_inbox（03 R2：入站行的 7 天），写一行 system.purge 审计（diff 只有各类条数）。不属于某个会话的候选分页、
 // trace／任务清理与审计都走 withJobsTx（与会话写队列无关的独立短事务）。
 import { writeAudit } from '../db/repo/audit.js';
 import type { JobRow } from '../db/repo/jobs.js';
 import {
+  purgeChannelInbox,
   purgeConversation,
   purgeExpiredTraces,
   purgeFinishedJobs,
@@ -101,6 +102,8 @@ export interface PurgeResult {
   /** 其中有动静被挡在 SQL 调用之前的那部分（变异测试带出的区分：这部分没有它，功能上也大体不出错——SQL 自己的
    *  乐观并发与保留期重判兜底——但停了这道口子，生产上的会话会更容易撞见「清理与写入抢跑」触发的优雅停机，不是纯粹的性能优化） */
   preFiltered: number;
+  /** 03：purge_channel_inbox 删掉的与记成 abandoned 的入站行之和 */
+  inbox?: number;
 }
 
 /** 执行一次清理：候选分页、逐个清理、trace 与任务清理、写审计。供执行体与自测共用 */
@@ -164,11 +167,12 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
   }
   const traces = await withJobsTx((tx) => purgeExpiredTraces(tx, new Date(now)));
   const jobsDeleted = await withJobsTx((tx) => purgeFinishedJobs(tx, new Date(now)));
+  const inbox = await withJobsTx((tx) => purgeChannelInbox(tx, new Date(now)));
   // writeAudit 取事务里的 ctx.actor（withJobsTx 内部的 systemCtx：kind='system'、name=null）
   await withJobsTx((tx) =>
-    writeAudit(tx, { action: 'system.purge', diff: { conversations: conversationsPurged, traces, jobs: jobsDeleted } }),
+    writeAudit(tx, { action: 'system.purge', diff: { conversations: conversationsPurged, traces, jobs: jobsDeleted, inbox } }),
   );
-  return { conversations: conversationsPurged, traces, jobs: jobsDeleted, skipped, preFiltered };
+  return { conversations: conversationsPurged, traces, jobs: jobsDeleted, skipped, preFiltered, inbox };
 }
 
 /**
@@ -180,7 +184,7 @@ export async function runRetentionPurgeJob(job: JobRow, now: number): Promise<Jo
   const r = await purgeOnce(Date.now());
   console.log(
     `[jobs] ${job.dedupeKey} 保留期清理完成：清除会话 ${r.conversations} 个（跳过 ${r.skipped} 个）、` +
-      `trace+账本 ${r.traces} 条、过期任务 ${r.jobs} 条`,
+      `trace+账本 ${r.traces} 条、过期任务 ${r.jobs} 条、入站行 ${r.inbox ?? 0} 条`,
   );
   return { status: 'done', enqueueNext: [retentionPurgeSpec(Math.max(now, job.runAt.getTime()) + 1)] };
 }
