@@ -410,7 +410,7 @@ async function harness(m: string) {
   let su: <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<R[]>;
   let closeDb: () => Promise<void>;
   /** 挡住写库（借连接）：gate 设了就先等它，acquire 设了就抛它（第 8 步的验收 5、7、20） */
-  let faults: { gate: Promise<void> | null; acquire: Error | null };
+  let faults: { gate: Promise<void> | null; acquire: Error | null } & Partial<{ releaseOnce: Error | null; skipReleases: number }>;
   const realPg = m === 'rpg' || m === 'rout' || m === 'rin';
   if (realPg) {
     const fx = await testing.createRealPgFixture(process.env.PG_TEST_URL!, { slug: 'wecom03' });
@@ -866,6 +866,9 @@ async function restartSuite(h: Harness): Promise<void> {
     '预载以 channel_account_id 列为准：state 里被拿掉的 b1 会话照样读回账号',
     getSession(`wecom:b1:${UID}`)?.channelAccountId === h.ids.get('b1'),
   );
+  // 等启动的第一次拉取真的发出去了（load 读完库里的 cursor 才拉），再等它跑完：不能只看 idle——load 还在读库时运行时也是空闲的
+  // （CI 机器慢时这条断言曾早于 load 读回 cursor）
+  await waitFor(() => h.fake.syncs.some((s) => s.kfAcct === 'a2'), 20_000);
   await h.idle();
   const a2 = h.wecom.__wecomTest.inspect(h.ids.get('a2')!);
   const firstSync = h.fake.syncs.find((s) => s.kfAcct === 'a2');
@@ -1794,8 +1797,14 @@ function inboxTestSql(): string[] {
     `create or replace function wsa09_fail() returns trigger language plpgsql security definer set search_path = public as $$
      begin
        if TG_TABLE_NAME = 'channel_inbox' then
-         if exists (select 1 from wsa09_flags where k = 'fail_insert') then
-           raise exception 'wsa09: 插入入站失败（自测）';
+         if TG_OP = 'INSERT' then
+           if exists (select 1 from wsa09_flags where k = 'fail_insert') then
+             raise exception 'wsa09: 插入入站失败（自测）';
+           end if;
+         elsif NEW.attempts is distinct from OLD.attempts then
+           if exists (select 1 from wsa09_flags where k = 'fail_attempt:' || NEW.msgid) then
+             raise exception 'wsa09: 计次失败（自测）';
+           end if;
          end if;
        elsif NEW.cursor is distinct from OLD.cursor then
          if exists (select 1 from wsa09_flags where k = 'fail_cursor') then
@@ -1806,6 +1815,28 @@ function inboxTestSql(): string[] {
      end $$`,
     `create trigger wsa09_fail_inbox before insert on channel_inbox for each row execute function wsa09_fail()`,
     `create trigger wsa09_fail_cursor before update on channel_accounts for each row execute function wsa09_fail()`,
+    `create trigger wsa09_fail_attempt before update on channel_inbox for each row execute function wsa09_fail()`,
+    // 把一次会话落库拖长（只在真实 PG 上用得到：PGlite 只有一条连接，事务本来就一个接一个）：这个会话的出站 pending 插入之后、
+    // 入站 replied 之后各睡 4 秒（每条语句都在 agent_app 的 5 秒语句超时之内，一个事务里各只睡一次），pending 已插入、没提交的
+    // 时间就有 8 秒。表分开判：plpgsql 不保证 and 短路
+    `create or replace function wsa09_slow() returns trigger language plpgsql security definer set search_path = public as $$
+     begin
+       if not exists (select 1 from wsa09_flags where k = 'slow:' || NEW.conversation_id) then
+         return null;
+       end if;
+       if TG_TABLE_NAME = 'outbound_sends' then
+         if NEW.status = 'pending' and coalesce(current_setting('wsa09.slept_out', true), '') = '' then
+           perform set_config('wsa09.slept_out', '1', true);
+           perform pg_sleep(4);
+         end if;
+       elsif NEW.state = 'replied' and coalesce(current_setting('wsa09.slept_in', true), '') = '' then
+         perform set_config('wsa09.slept_in', '1', true);
+         perform pg_sleep(4);
+       end if;
+       return null;
+     end $$`,
+    `create trigger wsa09_slow_outbound after insert on outbound_sends for each row execute function wsa09_slow()`,
+    `create trigger wsa09_slow_inbox after update on channel_inbox for each row execute function wsa09_slow()`,
   ];
 }
 
@@ -2547,6 +2578,119 @@ async function inboxSuite(h: Harness): Promise<void> {
     check('同步校验：inboxId 不是 uuid、abandoned 不带原因的不排进落库', h.store.__storeTest.pgQueuedInbox(sid) === q0);
     // 这些行只为测状态机（agent_app 没有 DELETE：以超级用户删掉，免得后面的派发看到）
     await h.su(`delete from channel_inbox where msgid like 'm09sm-%'`);
+  }
+
+  // ---- 第 9 步评审：停机时队头的计次没写进库，同一会话排在后面的不出队（不变量 12），整段留给重启恢复 ----
+  {
+    const uid = 'wm09halt';
+    const sid = sidOf('a1', uid);
+    await putOpen('a1', uid, 'm09halt-1', '你好，想去云南', 0);
+    await putOpen('a1', uid, 'm09halt-2', '两个人，五天', 0);
+    await flag('fail_attempt:m09halt-1', true); // 只让队头的计次失败：队尾要是出队，它的计次能写进去
+    h.wecom.__wecomTest.setStopping(idOf('a1'), true);
+    const from = logBuf.length;
+    await h.wecom.__wecomTest.dispatchOpen(idOf('a1'));
+    await settle();
+    const hd = await inboxByMsgid('m09halt-1');
+    const tl = await inboxByMsgid('m09halt-2');
+    check(
+      '停机中队头的计次没写进库：队头放下，同一会话排在后面的也不出队（都 received、attempts 0），不回复、不记进会话',
+      hd?.state === 'received' &&
+        hd.attempts === 0 &&
+        tl?.state === 'received' &&
+        tl.attempts === 0 &&
+        h.sentTo(uid).length === 0 &&
+        !getSession(sid) &&
+        logsSince(from).some((l) => l.includes('同一会话排在后面的都留给下次启动')),
+      json({ hd, tl, sent: h.sentTo(uid).length }),
+    );
+    await flag('fail_attempt:m09halt-1', false);
+    h.wecom.__wecomTest.setStopping(idOf('a1'), false);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('a1')); // 模拟重启之后按 ord 重新派发
+    await settle();
+    const rows = await inboxOfConv(sid);
+    check(
+      '之后重新派发：按 ord 先队头后队尾，各 attempts 1、done，会话里按顺序各记一次',
+      json(rows.map((r) => [r.msgid, r.attempts, r.state])) ===
+        json([
+          ['m09halt-1', 1, 'done'],
+          ['m09halt-2', 1, 'done'],
+        ]) && json(customerMsgids(sid)) === json(['m09halt-1', 'm09halt-2']),
+      json({ rows, said: customerMsgids(sid) }),
+    );
+  }
+
+  // ---- 第 9 步评审：计次的短事务提交了、回包丢了，重试不会再加一（同一次出队幂等；只有 PGlite 的夹具能造「提交后回包丢失」）----
+  if (h.faults.releaseOnce !== undefined) {
+    const uid = 'wm09ack';
+    const sid = sidOf('a1', uid);
+    await settle();
+    const id = await putOpen('a1', uid, 'm09ack-1', '你好，想去云南', 0);
+    const from = logBuf.length;
+    h.faults.skipReleases = 1; // dispatchOpen 的 load 那一次放过，下一次（计次的短事务）提交之后回包丢失
+    h.faults.releaseOnce = Object.assign(new Error('selftest: 提交之后回包丢了'), { code: '08006' });
+    await h.wecom.__wecomTest.dispatchOpen(idOf('a1'));
+    await waitFor(async () => (await inboxByMsgid('m09ack-1'))?.state === 'done', 15_000);
+    await settle();
+    const r = await inboxByMsgid('m09ack-1');
+    check(
+      '计次提交了而回包丢了：退避重试读回已加的值、不再加（attempts 1，不会提前攒成 poison），这一句照常处理一次',
+      h.faults.releaseOnce === null &&
+        logsSince(from).some((l) => l.includes('一行入站计次没写进库')) &&
+        r?.attempts === 1 &&
+        r.state === 'done' &&
+        json(customerMsgids(sid)) === json(['m09ack-1']) &&
+        (await outOfInbox(id)).length >= 1,
+      json({ r, fault: h.faults.releaseOnce, said: customerMsgids(sid) }),
+    );
+  }
+
+  // ---- 第 9 步评审：回执到的时候那一段的 pending 还在没提交的落库事务里（只在真实 PG 上造得出：PGlite 的事务一个接一个）----
+  if (h.mode === 'rin') {
+    const uid = 'wm09rcp';
+    const sid = sidOf('a2', uid);
+    await talk('a2', uid, '你好');
+    await flag(`slow:${sid}`, true);
+    let failMsgid: string | null = null;
+    const prev = h.fake.beforeSend;
+    h.fake.beforeSend = async (b) => {
+      await prev?.(b);
+      if (b.touser !== uid || failMsgid !== null) return;
+      failMsgid = String(b.msgid);
+      h.emit(acct('a2').kf, {
+        external_userid: uid,
+        origin: 4,
+        msgtype: 'event',
+        event: { event_type: 'msg_send_fail', external_userid: uid, fail_msgid: failMsgid, fail_type: 4 },
+      });
+      void h.wecom.syncAccountFromCallback(idOf('a2'), `rcp-${Date.now()}`);
+      // 回执先处理（内存里这一段先记 failed），这次请求的回包才回来：晚到的结果改不了 failed、也不再补写
+      await waitFor(() => ledger.__ledgerTest.rows(sid).some((x) => x.msgid === failMsgid && x.status === 'failed'), 10_000);
+    };
+    h.say(acct('a2').kf, uid, '想去云南看看');
+    await pull(h, 'a2');
+    await waitFor(
+      async () =>
+        (await h.su(`select 1 from channel_inbox where conversation_id = $1 and kind = 'send_fail' and state = 'done'`, [sid])).length ===
+        1,
+      30_000,
+    );
+    await settle();
+    h.fake.beforeSend = prev;
+    await flag(`slow:${sid}`, false);
+    const [o] = failMsgid ? await h.su<{ status: string }>('select status from outbound_sends where channel_msgid = $1', [failMsgid]) : [];
+    const [rc] = await h.su<{ id: string; state: string }>(
+      `select id::text as id, state from channel_inbox where conversation_id = $1 and kind = 'send_fail'`,
+      [sid],
+    );
+    const log = await txlog();
+    const done = log.find((x) => x.tbl === 'inbox' && x.k === rc?.id && x.k2 === 'done');
+    const failed = log.find((x) => x.tbl === 'outbound' && x.k === failMsgid && x.k2?.startsWith('failed:'));
+    check(
+      '回执遇上没提交的 pending（R6 照发之后）：回执的短事务等它提交、迁到 failed，与回执的 done 同一个事务；库里最终是 failed，不留 pending',
+      !!failMsgid && o?.status === 'failed' && rc?.state === 'done' && !!done && !!failed && done.txid === failed.txid,
+      json({ failMsgid, o, rc, done, failed }),
+    );
   }
 
   // ---- 停机截止之后才回包：分段留在 pending，入站停在 replied（还停在 pending 的不算有结果，留给重启恢复）----
