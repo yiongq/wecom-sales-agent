@@ -121,7 +121,7 @@
   - 自测：`ops.selftest.ts` 用假 `docker`、`psql` 断言几种组合的退出码（标记在、只有 `exported`、有停用的账号、有网页账号、库问不到）。
   - 对应验收 21 的回滚检查部分。依赖：第 2 步。
   - 完成标准：四个门禁全绿。
-- [ ] 17. 网页渠道后端（1.5，可派 Codex，安全相关由 Claude 审）
+- [x] 17. 网页渠道后端（1.5，可派 Codex，安全相关由 Claude 审）：2026-10-09 完成（Codex 实现，Claude 审查加一路只读安全评审，修了三处），见「实施记录 · 第 17 步」。
   - `src/adapters/web.ts`、`src/web/routes.ts`：会话 id 推导、`__Host-wv` cookie 的发放、续期与「结束咨询」、`x-web-chat`、`cid` 去重与重跑、历史投影、SSE 的鉴权、并发上限与空闲关闭、同意菜单、IP 限流与每日上限、开关 `web_channel` 关着时 404；`adapterFor('web')`；公开路由白名单加网页的几条（R14、开放问题 3、8 的裁决）。
   - 自测（`src/web/web.selftest.ts`）：验收 14 的后端部分与 prod profile 部分。
   - 对应验收 14 的后端部分；不变量 23、24、26、28。依赖：第 2、5、6 步。
@@ -393,6 +393,16 @@
 - 新建 `src/adapters/wecom-03.selftest.ts`（串在 `wecom-02` 之后；主进程另起 main、restart、prod、rpg 四个子进程）：假企微服务端两个 corp、同一 corp 两个客服账号；三个账号交错收发（三段会话、每段的 `open_kfid` 与 token 都是所属账号的、三个 cursor 各自推进）；一个账号 `gettoken` 一直失败或被停用，另两个照常；回调各自验签、别的账号 Token 签的不拉、按 `OpenKfId` 分派、空 `receiveid` 不拉、不存在 / 网页 / 停用的 key GET 404 与 POST `success`；prod、`LOG_FORMAT=json` 下非默认账号跑一轮，标准输出里搜不到 `external_userid` 与会话原 id（含 `%3A`）。PGlite 61 项，有 PG 时 65 项（`channel_account_id` 投影的写入与预载）。
 - 变异：在隔离副本里做了 10 个，新自测抓到 9 个；漏掉的「路由查找去掉 isEnabled」行为不变（停用账号本来就不装凭据）。
 - 门禁：四个全绿；带 `PG_TEST_URL` 全绿（WECOM-03 65、CHANNELS 81、DB 1168、STORE 452、QUOTA 127、WECOM-02 15、OPS 472、CONSOLE 435）；锁定的 `wecom.selftest.ts` 461、`server.selftest.ts` 269 照过；`PREFIX sha256` 与第 1 步相同，锁定文件未动。改了的非锁定断言：`console.selftest.ts` 的 `PUBLIC` 白名单企微那一条改成认 `/wecom/callback(/:key)?`。一次性 PG 容器已删。由 Claude 子 agent（Opus）实现，协调者审查。
+
+### 第 17 步 · 网页渠道后端（2026-10-09）
+
+- `src/adapters/web.ts`：`webConversationId`（`web:` + `sha256("<账号 id>:<凭据>")` 前 32 位）；`subscribeWeb` 同步占位判并发（每会话 3 条、每 IP `WEB_SSE_MAX_PER_IP`、全局 `WEB_SSE_MAX_TOTAL`），取消幂等；`webAdapter.push`：人工回复加「【顾问】」，同意菜单发 `menu` 事件（按钮 id 用 `consentMenuButtonId`），客户不在线时正文返回 true（在历史里）、菜单返回 false（引擎按「再问一次」处理）。
+- `src/web/routes.ts`（`src/server.ts` 只挂路由与 `adapterFor('web')`）：`webOnly` 先于一切判开关与账号（`web_channel` 关着、账号不是启用的网页账号一律 404），所有响应 `Cache-Control: no-store`、`nosniff`。`/w/:key` 本步是占位文字（页面是第 18 步）。`POST /messages` 要 `x-web-chat: 1`，按 IP 每分钟限流在解析请求体之前；没有自己会话的请求先过「每 IP 每小时新会话」与账号的每日新会话（同步占位），再**由服务端生成**新凭据——格式正确但不对应任何会话的 cookie 不被采用，防固定凭据。`cid` 去重：已有 AI 回复直接返回，处理中 409，「已记、没回复、没转人工」以 `alreadyRecorded` 重跑。`/history` 只投影本会话的客户与 agent 消息（人工回复带前缀），没有 system、画像、成员、会话 id。`/events` 没有自己的会话 401、超并发 429、HEAD 直接 405（不占名额）、每 15 秒 `ping`、30 分钟没有推送就关、慢客户端积压满就关。`/end` 回过期 cookie、会话不删。cookie `__Host-wv`，32 字节随机数的 base64url，`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age` 30 天，每次发消息续期，同名 cookie 不止一个或格式不对当作没有。
+- 轮次上限（开放问题 3）：调模型前同步预留、按 trace 核实，确定性回复退回预留。当天账号的轮次用完时，没转人工的会话与「因额度转过人工」的会话记下客户的话、不调模型、回固定的一句；转人工只在第一次（`webTurnLimited` 随会话状态落库，一辈子至多一次）；额度恢复后照常调模型；告警每个账号每天一条。超限路径也走引擎的窗口裁剪（抽成导出的 `trimSessionMessages`，引擎里原位置改调它，逻辑不变）。
+- 审查（Claude 审代码，另派一路只读 Codex 做安全评审，两边意见合并后由 Codex 续改一轮）：一、原实现把「因额度转过人工」做成永久降级，额度恢复、顾问交还之后仍只回固定话——改成只在当天额度用完时生效；二、超限路径每条消息都往窗口追加、绕过 400 → 300 的裁剪，持续发能撑大内存（评审 major）——补裁剪；三、`HEAD /events` 被 Hono 当 GET 处理、流不取消，名额要约 4 分钟才释放（评审 minor）——订阅前判方法、回 405。评审看过、判断不是问题的：凭据的随机性与校验、凭据不进 URL / 响应 / 日志、跨账号隔离、两个 POST 的 CSRF 头、限流不能靠丢 cookie 或并发绕过（取 IP 与 `/api/chat` 同一个 `clientKey`）、`cid` 没有双重处理的竞态、SSE 名额在取消 / 断开 / 发送异常时都释放、开关关着时全部 404。
+- 自测追加在 `src/web/web.selftest.ts`：验收 14 的后端部分与 prod profile 部分，加上三处审查意见各自的回归断言；`web:` 会话在 db 存储下落库、不受 `sim-` 访客清理影响，线索保留期 7 天时 8 天前的网页会话被清除（PGlite；真实 PG 由 CI 跑）。改了的非锁定断言：`console.selftest.ts` 的 `PUBLIC` 白名单加网页五条（spec「测试与 CI」列明）。
+- 门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），锁定套件 sha256 与 `PREFIX sha256` 与第 1 步相同，`src/server.selftest.ts` 照过（网页模拟器行为不变）。
+- 给后面步骤：第 18 步把 `/w/:key` 的占位换成页面、CSP 与注入配置，`webOnly` 与安全头已在。`channelAccountId` 由第 7 步投影进 `conversations.channel_account_id`（本步 rebase 在第 7 步之上，网页会话预载时靠它找回账号）。
 
 ## 验收记录
 
