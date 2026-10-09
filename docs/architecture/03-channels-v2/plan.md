@@ -51,7 +51,7 @@
   - 自测：`ops.selftest.ts` 加这几种形状（含编码形式）在 JSON 行、请求路径与告警正文里都被换成 ref 或短码。
   - 对应验收 10 的日志部分；不变量 22。依赖：第 1 步。
   - 完成标准：四个门禁全绿。
-- [ ] 5. 部署开关 `web_channel` 与渠道话术分支（1，可派 Codex）
+- [x] 5. 部署开关 `web_channel` 与渠道话术分支（1，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、小改、补跑门禁），见「实施记录 · 第 5 步」。
   - `src/profile.ts` 加 `web_channel`（`FLAG_WEB_CHANNEL`，demo 缺省开、prod 封顶为关），不进 00 的 `[profile]` 启动行，生效值照 `legacy_admin_writes` 另打一行（R15）。
   - 话术：网页会话的 contextNote 末尾多一句；第 1 步盘点出的确定性文本按会话渠道分两套（`wecom`、`simulator` 逐字节不变）；console 的渠道中文名加 `web`、`simulator` 改「演示」，非锁定的 console 自测按 spec 改（R15）。
   - 自测：开关的解析与 prod 封顶；同一组对话在三种渠道上的 contextNote、工具结果、确定性文本与前缀哈希（验收 15 的自动部分）。
@@ -270,6 +270,16 @@
 - `scripts/check-boundaries.ts`：`secrets.ts`、`markers.ts`、`transitions.ts` 是纯模块（不 import `src/db/`、store、engine、llm、adapters，未建的先登记）；`src/channels/` 不 import engine、llm、tools；`src/db/`、`src/cli/` 不 import `src/channels/registry.ts` 与 adapters；`CHANNEL_SECRETS_KEY` 只出现在 `secrets.ts`（只管代码文件，`.env.example` 与文档不管，自测用字符串拼出这个名字）。`recovery.ts` 的判定部分等第 10 步拆文件后再登记。Codex 在隔离副本里故意违反七组规则，`pnpm lint` 都拦住了。
 - 自测 `src/channels/channels.selftest.ts`（串进 `test`）54 项：密钥环的解析与每种拒绝（错误里没有密钥片段）、往返、改 nonce / 密文 / tag 各一字节、换 AAD、换 key id、旧密钥解、轮换后只剩新钥解不开旧密文、`Redacted` 在 JSON / inspect / 模板 / `String` / `console.log` 里遮盖、错误对象打印不含明文与密文的 base64 / hex / Buffer JSON、六个新字段的日志脱敏。
 - 门禁：四个全绿，`PREFIX sha256` 与第 1 步相同，锁定文件未动。console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑。
+
+### 第 5 步 · 部署开关 `web_channel` 与渠道话术分支（2026-10-09）
+
+- 开关：`src/profile.ts` 加 `web_channel`（`FLAG_WEB_CHANNEL`，demo 缺省开，prod 封顶为关、设 `on` 以 `ProfileConfigError` 拒绝启动），不进 `BASELINE_FLAG_NAMES`；`src/server.ts` 照 `legacy_admin_writes` 另打一行 `[profile] web_channel=on|off`。`PROFILE_ENV_NAMES` 自动带上它，自测与 eval 照常钉住。
+- contextNote：`channel === 'web'` 的会话末尾多一句「客户正在网页上咨询，不在微信里；说到顾问跟进时，请说顾问会在这个页面里回复您，不要说在微信上联系。」（验收 15 手动部分的真实模型记录用的就是这一句）。
+- 确定性文本：第 1 步清单的十处都按会话渠道分两套，`web` 的说法是「在这个页面里」（价格护栏已转人工的兜底是「顾问会在这个页面里回复您」，驳回转接是「会请顾问在这个页面里跟您确认」，`payNote` 是「顾问会在这个页面里跟客户核对价格并发收款方式」，`PHONE_PROMISE` 两条是「在这个页面里」「在这个页面里回复您」）；`wecom`、`simulator` 逐字节不变。`PHONE_PROMISE` 表的每一项直接带两套文字（Claude 审查时改的写法）。
+- 判定正则（本步定的，spec 没写）：网页会话的模型会说「顾问会在这个页面里回复您」，只认微信说法的话「答应联系却没给顾问记待办」「驳回后没摘掉转接承诺」会漏判。所以加了 `WEB_CONTACT_CLAIM`（`CONTACT_CLAIM` 加页面里的「回复您 / 跟您确认 / 与您确认」），只在 `web` 下用：`transferClaim`、`saysTransfer`、`dropTransferClaims`（三个调用点都传会话）、`promisesContact`。转接动作、条件、选项、售后排除与锁定自测用的 `claimsTransfer` 照旧。
+- console 渠道中文名：`src/shared/conversation.ts` 与 `console/src/shell/model.ts` 两张 `CHANNEL_SHORT` 加 `web: '网页'`，`simulator` 改「演示」；`src/notify/handoff.ts` 经同一张表随之变化。改了两条非锁定断言的期望（spec「测试与 CI」列的那一处）：`notify.selftest.ts` 的「网页学员」→「演示学员」，`conversations.selftest.tsx` 的「网页客户」→「演示客户」（测试名同步改）。
+- 自测 `src/web/web.selftest.ts`（串进 `test`，第 17 步接着往里加）：开关的解析与 prod 封顶、`[profile]` 一行不含它；13 组场景 × 三种渠道（建单、重发、补发链接、转人工时订单还在、价格兜底、驳回转接、电话承诺两条等），`wecom`、`simulator` 的 contextNote、工具结果与回复等于从开工提交抄下来的字面量，`web` 的多那一句、没有「微信」；三者的 system、tools 哈希等于第 1 步的值；改过的判定正则每处一条 web 正例与 wecom 对照。
+- 门禁：rebase 到含第 3、4 步的 dev 之后四个全绿，锁定文件 sha256 与第 1 步相同，`PREFIX sha256` 不变。
 
 ## 验收记录
 
