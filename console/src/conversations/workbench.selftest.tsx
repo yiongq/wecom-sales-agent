@@ -223,6 +223,12 @@ const row = (over: Partial<ConversationRow> = {}): ConversationRow => ({
     ],
     ['这条没送达（企微拒收）', '结果不明，可能已经送达', null, null],
   );
+  // 03 第 8 步：先落库后发送的两种新状态（spec「出站：投递状态」的映射表）
+  eq(
+    '送达说明：sending（pending、sending）／cancelled（接手打断等）',
+    [deliveryNote({ status: 'sending', failType: null }), deliveryNote({ status: 'cancelled', failType: null })],
+    ['发送中', '未发送'],
+  );
 }
 
 {
@@ -991,6 +997,45 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   check(
     'persisted:false：消息下写「已发出，记录稍后保存」',
     m.texts('.wb-pending-note').some((t) => t.includes('已发出，记录稍后保存')),
+  );
+  await m.unmount();
+}
+
+// 2.13b 投递状态（03 第 8 步）：「发送中」用灰字（不是出错），「未发送」与没送达一样用警示色
+{
+  const agentMsg = (seq: number, text: string, delivery: ConversationDetail['messages'][number]['delivery']) => ({
+    seq,
+    role: 'agent' as const,
+    author: 'ai' as const,
+    authorName: null,
+    text,
+    kind: 'message' as const,
+    at: atIso('2026-09-26T14:02:00'),
+    turnId: null,
+    guarded: null,
+    delivery,
+  });
+  const base = detail();
+  server = {
+    cur: detail({
+      messages: [
+        ...base.messages,
+        agentMsg(3, '这条还在发', { status: 'sending', failType: null }),
+        agentMsg(4, '这条被接手打断', { status: 'cancelled', failType: null }),
+      ],
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('owner'));
+  check(
+    '投递状态：「发送中」写在灰字的说明里',
+    m.texts('.wb-pending-note').some((t) => t.includes('发送中')),
+  );
+  check('投递状态：「发送中」不用警示色', !m.texts('.wb-delivery-note').some((t) => t.includes('发送中')));
+  check(
+    '投递状态：「未发送」用警示色',
+    m.texts('.wb-delivery-note').some((t) => t.includes('未发送')),
   );
   await m.unmount();
 }
