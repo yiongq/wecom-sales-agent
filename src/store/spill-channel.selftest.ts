@@ -781,6 +781,149 @@ async function suite(mode: string): Promise<void> {
     b.close();
   }
 
+  // ---- 二（再续）：只写了渠道段的回放之后，预载的发送账本与库一致（第 11 步评审：会话部分失败、内容一致而跳过两支都要重新预载） ----
+  {
+    /** 一个会话：客户一句、回复一句，回复的两段 pending 已提交；返回会话、回复与两段 */
+    const seedSession = async (tenantId: string, acc: string, id: string) => {
+      const seed = await open(tenantId, mkdir('pre-seed'));
+      const s = newSession(id);
+      seed.deps.sessions.set(id, s);
+      say(seed.b, s, 'customer', '你好', `${id.slice(-4)}-c`);
+      const rep = say(seed.b, s, 'agent', '您好');
+      const pa = pending(id, newMsgid(), acc, null, seqOf(rep)!, 0, '您好');
+      const pb = pending(id, newMsgid(), acc, null, seqOf(rep)!, 1, '还在吗');
+      seed.b.queueChannel(id, [pa, pb]);
+      await idle(seed.b, id);
+      seed.b.close();
+      return { s, rep, pa, pb };
+    };
+    const spillRow = (r: OutboundWriteRow) => ({ ...r, sentAt: r.sentAt.getTime() });
+    /** 预载的发送账本里这两段的状态（取走一次） */
+    const preloadedPair = (b: Backend, sid: string, ma: string, mb: string): string => {
+      const rows = b.takePreloadedOutbound().get(sid) ?? [];
+      return [ma, mb].map((m) => rows.find((r) => r.channelMsgid === m)?.status ?? '-').join(',');
+    };
+
+    // 一、会话部分回放失败（订单金额为负）、渠道段单独写进去：一段 accepted、一段 cancelled
+    {
+      const tP = await newTenant('sp11p');
+      const acc = await newAccount(tP);
+      const P = 'wecom:wm11pre1';
+      const { s, pa, pb } = await seedSession(tP, acc, P);
+      const extra: ChatMessage = { role: 'system', content: '补的一条', at: Date.now() };
+      const dir = mkdir('pre-a');
+      const file = path.join(dir, 'store-spill-2026-01-01T00-00-00-000Z.json');
+      fs.writeFileSync(
+        file,
+        json({
+          version: 1,
+          tenant: tP,
+          at: Date.now(),
+          sessions: [
+            {
+              id: P,
+              committedSeq: 2,
+              inflight: null,
+              flushId: randomUUID(),
+              lastSeq: 3,
+              windowStartSeq: 1,
+              messages: [{ seq: 3, message: extra }],
+              state: sessionState({ ...s, messages: [] }),
+              lastCustomerAt: lastCustomerAtOf(s.messages),
+              orders: [
+                {
+                  order: {
+                    id: 'ord_bad11p',
+                    sessionId: P,
+                    routeId: 'r-yunnan-mid',
+                    routeTitle: '云南',
+                    travelers: 2,
+                    departDate: '2026-11-01',
+                    totalPrice: -1,
+                    status: 'pending_payment',
+                    createdAt: Date.now(),
+                  },
+                  voided: null,
+                },
+              ],
+              audits: [],
+              jobs: [],
+              consents: [],
+              poisoned: null,
+              channel: {
+                inbox: [],
+                outbound: [spillRow({ ...pb, status: 'cancelled', payload: null }), spillRow(result(pa, 'accepted'))],
+              },
+            },
+          ],
+        }),
+      );
+      const r = await open(tP, dir);
+      const inDb = `${(await outRow(pa.channelMsgid))?.status},${(await outRow(pb.channelMsgid))?.status}`;
+      check(
+        '评审回归：会话部分回放失败、渠道段单独写进去之后，预载的发送账本与库一致（accepted、cancelled，不再是 pending）',
+        r.b.stats().replayed === 0 &&
+          r.b.stats().replayChannelOnly === 1 &&
+          inDb === 'accepted,cancelled' &&
+          preloadedPair(r.b, P, pa.channelMsgid, pb.channelMsgid) === inDb,
+        json({ stats: r.b.stats(), inDb }),
+      );
+      r.b.close();
+    }
+
+    // 二、会话部分已经在库里、消息内容一致（返回 skipped），渠道段照写：一段 accepted、一段 cancelled
+    {
+      const tQ = await newTenant('sp11q');
+      const acc = await newAccount(tQ);
+      const Q = 'wecom:wm11pre2';
+      const { s, rep, pa, pb } = await seedSession(tQ, acc, Q);
+      const dir = mkdir('pre-b');
+      const file = path.join(dir, 'store-spill-2026-01-01T00-00-00-000Z.json');
+      fs.writeFileSync(
+        file,
+        json({
+          version: 1,
+          tenant: tQ,
+          at: Date.now(),
+          sessions: [
+            {
+              id: Q,
+              committedSeq: 1,
+              inflight: null,
+              flushId: randomUUID(),
+              lastSeq: 2,
+              windowStartSeq: 1,
+              messages: [{ seq: 2, message: rep }],
+              state: sessionState({ ...s, messages: [] }),
+              lastCustomerAt: lastCustomerAtOf(s.messages),
+              orders: [],
+              audits: [],
+              jobs: [],
+              consents: [],
+              poisoned: null,
+              channel: {
+                inbox: [],
+                outbound: [spillRow(result(pa, 'accepted')), spillRow({ ...pb, status: 'cancelled', payload: null })],
+              },
+            },
+          ],
+        }),
+      );
+      const r = await open(tQ, dir);
+      const inDb = `${(await outRow(pa.channelMsgid))?.status},${(await outRow(pb.channelMsgid))?.status}`;
+      check(
+        '评审回归：消息内容一致而跳过、渠道段照写之后，预载的发送账本与库一致（accepted、cancelled，不再是 pending）',
+        r.b.stats().replayed === 0 &&
+          r.b.stats().replaySkipped === 1 &&
+          !fs.existsSync(file) &&
+          inDb === 'accepted,cancelled' &&
+          preloadedPair(r.b, Q, pa.channelMsgid, pb.channelMsgid) === inDb,
+        json({ stats: r.b.stats(), inDb }),
+      );
+      r.b.close();
+    }
+  }
+
   // ======== 四、旧版没有渠道段的 spill 照常回放 ========
   {
     const tO = await newTenant('sp11o');

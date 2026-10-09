@@ -755,15 +755,16 @@ const warnResultsDropped = (where: string, id: string, error: unknown): void =>
  * 库里的 flush_id 就是这一条的 → 回放过了，跳过；库里是在途那次的 flush_id 与 last_seq → 在途那次其实提交了，只补它之后的；
  * 库里的 last_seq 等于「已提交到第几条」→ 按一次落库写入；已经等于文件里最后一条的 seq 且内容一致 → 跳过；其余接不上。
  * 03 R21：渠道段与会话部分同一个事务写（照迁移表，表外的写入是无操作）；内容一致而跳过的也照写渠道段（这一条的 flush_id 不在库里，
- * 说不清它们写过没有，重复写无害）
+ * 说不清它们写过没有，重复写无害）。wroteChannel：写过非空的渠道段（预载的发送账本因此过时，要重新预载）
  */
-async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skipped' | 'conflict'> {
+async function replayEntry(tx: Tx, entry: SpillEntry): Promise<{ result: 'applied' | 'skipped' | 'conflict'; wroteChannel: boolean }> {
+  const out = (result: 'applied' | 'skipped' | 'conflict', wroteChannel = false) => ({ result, wroteChannel });
   let row = await lockConversation(tx, entry.id);
   let base: number;
   let side: SpillSideRows;
   let channel: ChannelRows | null;
   for (;;) {
-    if (row && row.flushId === entry.flushId) return row.lastSeq === entry.lastSeq ? 'skipped' : 'conflict';
+    if (row && row.flushId === entry.flushId) return out(row.lastSeq === entry.lastSeq ? 'skipped' : 'conflict');
     channel = replayChannelOf(entry, row);
     if (inflightCommitted(entry, row)) {
       base = entry.inflight!.lastSeq;
@@ -774,20 +775,19 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skip
     } else if (row && row.lastSeq === entry.lastSeq && entry.messages.length) {
       const inDb = await readMessagesFrom(tx, entry.id, entry.messages[0]!.seq);
       const want = entry.messages.map((m) => rowToMessage(messageToRow(m.message, m.seq)));
-      if (!isDeepStrictEqual(inDb.map(rowToMessage), want)) return 'conflict';
-      if (channel) {
-        const w = await writeChannelRows(tx, channel);
-        if (!w.resultsOk) warnResultsDropped('spill 回放', entry.id, w.error);
-      }
-      return 'skipped';
+      if (!isDeepStrictEqual(inDb.map(rowToMessage), want)) return out('conflict');
+      if (!channel || !hasChannelRows(channel)) return out('skipped');
+      const w = await writeChannelRows(tx, channel);
+      if (!w.resultsOk) warnResultsDropped('spill 回放', entry.id, w.error);
+      return out('skipped', true);
     } else {
-      return 'conflict';
+      return out('conflict');
     }
     const ins = { ...conversationValuesFrom(entry.state, entry.lastCustomerAt), ...(entry.ref ? { ref: entry.ref } : {}) };
     if (row || (await insertConversation(tx, ins))) break;
     // 插入撞上别的事务刚提交的同一行（上一个进程还没完成的 COMMIT）：插入等到它提交才返回，这时再锁一次就看得见，按库里的行重新判定
     row = await lockConversation(tx, entry.id);
-    if (!row) return 'conflict';
+    if (!row) return out('conflict');
   }
   const values = conversationValuesFrom(entry.state, entry.lastCustomerAt);
   await insertMessages(
@@ -799,11 +799,10 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skip
   await upsertOrders(tx, entry.orders.map(spillOrderRow));
   await writeSideRows(tx, entry.id, side);
   // 03 R21：渠道段与会话部分同一个事务（与一次落库同一个位置：附带行之后，结果在存档点里）
-  if (channel) {
-    const w = await writeChannelRows(tx, channel);
-    if (!w.resultsOk) warnResultsDropped('spill 回放', entry.id, w.error);
-  }
-  return 'applied';
+  if (!channel || !hasChannelRows(channel)) return out('applied');
+  const w = await writeChannelRows(tx, channel);
+  if (!w.resultsOk) warnResultsDropped('spill 回放', entry.id, w.error);
+  return out('applied', true);
 }
 
 /**
@@ -848,13 +847,15 @@ async function replaySpills(d: PgBackendDeps): Promise<Replayed> {
   try {
     names = fs.readdirSync(d.varDir).filter((f) => SPILL_FILE_RE.test(f));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0 };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT')
+      return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 };
     throw new SessionStoreStartupError('spill_conflict', `读不了数据目录里的 spill 文件（${fsLabel(e)}）`);
   }
   let applied = 0;
   let skipped = 0;
   let failedFiles = 0;
   let channelOnly = 0;
+  let channelWritten = 0;
   for (const name of names.toSorted()) {
     try {
       const r = await replayFile(d, name);
@@ -862,20 +863,25 @@ async function replaySpills(d: PgBackendDeps): Promise<Replayed> {
       skipped += r.skipped;
       failedFiles += r.failedFiles;
       channelOnly += r.channelOnly;
+      channelWritten += r.channelWritten;
     } catch (e) {
       if (e instanceof SessionStoreStartupError) throw e;
       throw new SessionStoreStartupError('spill_conflict', `${name}：${fsLabel(e)}`);
     }
   }
-  return { applied, skipped, failedFiles, channelOnly };
+  return { applied, skipped, failedFiles, channelOnly, channelWritten };
 }
 
-/** 回放 spill 的结果：应用、跳过的会话数，改名 .failed 的文件数，会话部分失败、渠道部分单独写进去的会话数（03） */
+/**
+ * 回放 spill 的结果：应用、跳过的会话数，改名 .failed 的文件数，会话部分失败、渠道部分单独写进去的会话数（03），
+ * 写过非空渠道段的会话数（03：与会话一起写的、内容一致而跳过时写的、单独写的都算；预载的发送账本据此重新读）
+ */
 interface Replayed {
   applied: number;
   skipped: number;
   failedFiles: number;
   channelOnly: number;
+  channelWritten: number;
 }
 
 async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
@@ -893,23 +899,29 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
     console.error(
       `[store] spill 文件 ${name} 读不出来（不是 JSON，或 version、sessions 对不上），已改名 .failed，从库里的状态起；需要人工处理`,
     );
-    return { applied: 0, skipped: 0, failedFiles: 1, channelOnly: 0 };
+    return { applied: 0, skipped: 0, failedFiles: 1, channelOnly: 0, channelWritten: 0 };
   }
   if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
   let applied = 0;
   let skipped = 0;
   let channelOnly = 0;
+  let channelWritten = 0;
   const done: string[] = [];
   const failed: string[] = [];
   for (const entry of doc.sessions) {
     let r: 'applied' | 'skipped' | 'conflict';
     try {
-      r = await detached(() => withTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
+      const res = await detached(() => withTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
+      r = res.result;
+      if (res.wroteChannel) channelWritten++;
     } catch (e) {
       if (classify(e) === 'retry') throw new SessionStoreStartupError('db_unreachable', `回放 ${name} 时连不上库（${errLabel(e)}）`);
       // 03 R21：会话部分写不进去，渠道部分先单独一个事务写进去，再照 02 把文件改名 .failed
       const ch = await replayChannelOnly(d, name, entry);
-      if (ch) channelOnly++;
+      if (ch) {
+        channelOnly++;
+        channelWritten++;
+      }
       failed.push(`${short(entry.id)}（${errLabel(e)}${ch ? '，渠道部分已单独写进去' : ''}）`);
       console.error(`[store] 回放 ${name} 里的会话 ${short(entry.id)} 失败（${errLabel(e)}）${ch ? '，渠道部分已单独写进去' : ''}`);
       continue;
@@ -929,19 +941,21 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
         `已回放：${done.join('、') || '无'}；失败：${failed.join('、')}`,
     );
   } else fs.unlinkSync(file);
-  return { applied, skipped, failedFiles: failed.length ? 1 : 0, channelOnly };
+  return { applied, skipped, failedFiles: failed.length ? 1 : 0, channelOnly, channelWritten };
 }
 
 // ---------------- 后端 ----------------
 
 /**
  * 预载 → 校验 → 回放 spill（回放过就再预载一遍）→ 返回还没装上的后端。不改 identity map：任何一步失败都以
- * SessionStoreStartupError reject，不留半装载状态；全部通过之后由调用方 install()
+ * SessionStoreStartupError reject，不留半装载状态；全部通过之后由调用方 install()。
+ * 03：只写了渠道段的回放（会话部分失败、渠道部分单独写的，内容一致而跳过、渠道段照写的）也改了库：预载的发送账本（出站行的状态）
+ * 已经过时，同样再预载一遍，内存的投递状态与窗口计数才与库一致
  */
 export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
   let pre = await detached(() => preload(d));
   const replay = await replaySpills(d);
-  if (replay.applied) pre = await detached(() => preload(d));
+  if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
   return createBackend(d, pre, replay);
 }
 
