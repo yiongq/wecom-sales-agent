@@ -33,6 +33,8 @@ export interface OpenOutboundFacts {
    * （交还了）、换了人接手都是 false
    */
   humanAssigneeSame: boolean;
+  /** 这一行所属的会话此刻有接手人（转人工且有 assignee） */
+  hasAssignee: boolean;
   now: number;
   resendUnknown: boolean;
   /**
@@ -66,13 +68,21 @@ export type OutboundRecovery =
 
 const cancel = (why: OutboundCancelWhy): OutboundRecovery => ({ do: 'cancel', why });
 
+/** AI 产生的分段种类（不变量 10：有接手人的会话里重启后不补发）；通知与人工回复不在里面。card 只在 02 的旧行上，是 AI 回复的卡片 */
+const AI_KINDS: ReadonlySet<OutboundKind> = new Set<OutboundKind>(['ai', 'followup', 'menu', 'welcome', 'card']);
+
 /**
  * spec「出站恢复」表，自上而下第一行命中的为准。表前多一行（第 9 步评审之后才有的情形，表里没写）：失败回执的入站行停在 received
  * 而指着这一段的，这一段已经失败（不变量 5：failed 永不再发），出站恢复不补发、不取消、不记 unknown，等入站恢复重做回执把它迁到 failed
  */
 export function outboundRecovery(f: OpenOutboundFacts): OutboundRecovery {
   if (f.failReceived) return { do: 'receipt' };
-  if (f.status === 'sending') return f.resendUnknown ? { do: 'resend', alreadySending: true } : { do: 'unknown' };
+  if (f.status === 'sending') {
+    if (!f.resendUnknown) return { do: 'unknown' };
+    // RESEND_UNKNOWN 为真：保持 sending、按同一 msgid 补发；但有接手人的会话里 AI 产生的分段不补发、记 unknown（不变量 10，
+    // 协调者 2026-10-09 裁决）。通知、人工回复照表补发
+    return f.hasAssignee && AI_KINDS.has(f.kind) ? { do: 'unknown' } : { do: 'resend', alreadySending: true };
+  }
   if (f.recordOnlyUntil !== null && f.sentAt <= f.recordOnlyUntil) return cancel('restore_cutoff');
   if (f.inboxId !== null) return f.inboxOpen ? { do: 'inbound' } : cancel('inbox_finished');
   switch (f.kind) {
@@ -97,11 +107,6 @@ export function outboundRecovery(f: OpenOutboundFacts): OutboundRecovery {
       // 不会出现（库里账号的卡片段记它那一组的 kind）；万一出现按 cancelled 处理、调用方记一行日志
       return cancel('card');
   }
-}
-
-/** RESEND_UNKNOWN 为假时，这一批出站里重启就会记 unknown 的段数（启动告警「sending 转 unknown」用） */
-export function unknownOnRestart(rows: readonly { status: string }[], resendUnknown: boolean): number {
-  return resendUnknown ? 0 : rows.filter((r) => r.status === 'sending').length;
 }
 
 // ---------------- 入站恢复表与保底 ----------------

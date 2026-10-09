@@ -345,7 +345,8 @@ export async function initChannels(deps: ChannelDeps | null): Promise<void> {
  * 企微状态在库里时每个启用的库里企微账号起一个运行时（R10），凭据取装载时的那一份，拉取状态在 channel_inbox（第 9 步）。
  * 每个运行时先做启动恢复（R5，第 10 步，src/channels/recovery.ts）：按 initChannels 读到的没结果的出站行与没结束的入站行，先出站、
  * 再入站，做完才开始拉取（同一客户的新消息排在它们后面，不变量 12）；做完之前这个账号的 push 排队等待。重启时会有 sending 转成
- * unknown 的（RESEND_UNKNOWN 为假，R5 的边界），这里先按账号数出来，日志一行、启动告警一条（startAlerts 在它之后才读）
+ * unknown 的（RESEND_UNKNOWN 为假时的 R5 边界；为真时有接手人的会话里 AI 产生的段），这里按出站恢复表先按账号数出来，日志一行、
+ * 启动告警一条（startAlerts 在它之后才读）
  */
 export function startChannels(): void {
   if (!registry) return;
@@ -356,7 +357,7 @@ export function startChannels(): void {
   if (!registry.db) return;
   for (const c of registry.channels.values()) {
     if (c.account.kind !== 'wecom_kf' || c.account.source !== 'db' || !c.secrets) continue;
-    const unknown = unknownAtRestart(c.openOutbound);
+    const unknown = unknownAtRestart(c.openOutbound, c.openInbox, c.account.wecom?.recordOnlyUntil ?? null);
     if (unknown) {
       const why = `企微账号 ${c.account.key} 重启时有 ${unknown} 段停在「发送中」，记 unknown、不补发（可能没送达，工作台已标出，请顾问核对）`;
       console.error(`[channels] ⚠️ ${why}`);

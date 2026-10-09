@@ -17,7 +17,7 @@ import {
   type OutboundIntent,
 } from '../quota/ledger.js';
 import { getSession, seqOf } from '../store.js';
-import { outboundRecovery, RESEND_UNKNOWN, unknownOnRestart } from './recovery-rules.js';
+import { outboundRecovery, RESEND_UNKNOWN, type OpenOutboundFacts } from './recovery-rules.js';
 
 export type { OpenOutboundLike } from '../quota/ledger.js';
 
@@ -28,9 +28,17 @@ export function resendUnknownNow(): boolean {
   return resendUnknown;
 }
 
-/** 这一批出站里重启就会记 unknown 的段数（startChannels 据此加一条启动告警：R5 的边界、「sending 转 unknown」） */
-export function unknownAtRestart(rows: readonly { status: string }[]): number {
-  return unknownOnRestart(rows, resendUnknown);
+/**
+ * 这一批出站里重启就会按出站恢复表记 unknown 的段数（startChannels 据此加一条启动告警：R5 的边界、「sending 转 unknown」）。
+ * 与 recoverOutbound 同一套事实与判定
+ */
+export function unknownAtRestart(
+  rows: readonly OpenOutboundLike[],
+  openInbox: readonly OpenInboxLike[],
+  recordOnlyUntil: number | null,
+): number {
+  const ctx = factsContext(openInbox, recordOnlyUntil);
+  return rows.filter((r) => outboundRecovery(factsOf(r, ctx)).do === 'unknown').length;
 }
 
 // ---------------- 恢复做完之前 push 排队等待 ----------------
@@ -122,6 +130,44 @@ export interface OpenInboxLike {
   payload: unknown;
 }
 
+interface FactsContext {
+  openInboxIds: ReadonlySet<string>;
+  /** 停在 received 的失败回执指着的 msgid */
+  failed: ReadonlySet<string>;
+  recordOnlyUntil: number | null;
+}
+
+function factsContext(openInbox: readonly OpenInboxLike[], recordOnlyUntil: number | null): FactsContext {
+  return {
+    openInboxIds: new Set(openInbox.map((r) => r.id)),
+    failed: new Set(
+      openInbox
+        .filter((r) => r.kind === 'send_fail')
+        .map((r) => (r.payload as { fail_msgid?: unknown } | null)?.fail_msgid)
+        .filter((m): m is string => typeof m === 'string'),
+    ),
+    recordOnlyUntil,
+  };
+}
+
+/** 一行没结果的出站在此刻的事实（会话从内存里读：接手人、人工回复的作者） */
+function factsOf(r: OpenOutboundLike, ctx: FactsContext): OpenOutboundFacts {
+  const s = getSession(r.conversationId);
+  return {
+    status: r.status,
+    kind: r.kind,
+    sentAt: r.sentAt.getTime(),
+    inboxId: r.inboxId,
+    inboxOpen: r.inboxId !== null && ctx.openInboxIds.has(r.inboxId),
+    recordOnlyUntil: ctx.recordOnlyUntil,
+    humanAssigneeSame: humanAssigneeSame(r),
+    hasAssignee: !!(s?.handedOver && s.assignee),
+    now: Date.now(),
+    resendUnknown,
+    failReceived: ctx.failed.has(r.channelMsgid),
+  };
+}
+
 /**
  * 出站恢复表（入站恢复之前，按账号一次扫完，不变量 15：每一行都给出处理）。rows 是 initChannels 读到的这个账号的 pending、sending
  * （按建行时刻、段号），openInbox 是同一个快照里这个账号没结束的入站行（判「入站行还没结束」与「已收到失败回执」）。补发按 rows 的
@@ -134,28 +180,11 @@ export async function recoverOutbound(
 ): Promise<OutboundRecoverySummary> {
   const sum: OutboundRecoverySummary = { unknown: 0, cancelled: 0, resent: 0, inbound: 0, left: 0 };
   if (!rows.length) return sum;
-  const openInboxIds = new Set(openInbox.map((r) => r.id));
-  const failed = new Set(
-    openInbox
-      .filter((r) => r.kind === 'send_fail')
-      .map((r) => (r.payload as { fail_msgid?: unknown } | null)?.fail_msgid)
-      .filter((m): m is string => typeof m === 'string'),
-  );
+  const ctx = factsContext(openInbox, port.recordOnlyUntil);
   const intents = adoptOpenOutbound(port.accountId, rows);
   for (const [i, r] of rows.entries()) {
     const intent = intents[i]!;
-    const action = outboundRecovery({
-      status: r.status,
-      kind: r.kind,
-      sentAt: r.sentAt.getTime(),
-      inboxId: r.inboxId,
-      inboxOpen: r.inboxId !== null && openInboxIds.has(r.inboxId),
-      recordOnlyUntil: port.recordOnlyUntil,
-      humanAssigneeSame: humanAssigneeSame(r),
-      now: Date.now(),
-      resendUnknown,
-      failReceived: failed.has(r.channelMsgid),
-    });
+    const action = outboundRecovery(factsOf(r, ctx));
     if (action.do === 'unknown') {
       recoverAsUnknown(intent);
       sum.unknown += 1;

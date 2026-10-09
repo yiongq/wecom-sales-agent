@@ -27,7 +27,6 @@ import {
   RESEND_UNKNOWN,
   recordedRecovery,
   repliedRecovery,
-  unknownOnRestart,
   type OpenOutboundFacts,
 } from './recovery-rules.js';
 
@@ -92,6 +91,8 @@ const U = {
   i: 'wm10i', // RESEND_UNKNOWN 重跑：请求已到、回包挂住
   j: 'wm10j', // RESEND_UNKNOWN 重跑：markSending 之后请求没到
   k: 'wm10k', // 验收 7 的 B：commitOutbound 超时照发、结果没落库
+  l: 'wm10l', // RESEND_UNKNOWN 重跑：AI 回复的段 sending（请求已到、回包挂住），杀之前顾问接手 → 不补发、记 unknown
+  m: 'wm10m', // RESEND_UNKNOWN 重跑：通知的段 sending，杀之前顾问接手 → 通知照样按同一 msgid 补发
 };
 
 /** k3 → r3 的客户（验收 18：每一种没结果的出站行一个客户） */
@@ -138,6 +139,7 @@ function pureSuite(): void {
     inboxOpen: false,
     recordOnlyUntil: null,
     humanAssigneeSame: true,
+    hasAssignee: false,
     now,
     resendUnknown: false,
     failReceived: false,
@@ -147,7 +149,13 @@ function pureSuite(): void {
   // 表前一行：失败回执停在 received、指着这一段 → 留给回执（任何状态、种类，截止点、入站、RESEND_UNKNOWN 都不看）
   for (const status of ['pending', 'sending'] as const) {
     for (const kind of KINDS) {
-      for (const extra of [{}, { inboxId: 'i1', inboxOpen: true }, { recordOnlyUntil: now }, { resendUnknown: true }]) {
+      for (const extra of [
+        {},
+        { inboxId: 'i1', inboxOpen: true },
+        { recordOnlyUntil: now },
+        { resendUnknown: true },
+        { resendUnknown: true, hasAssignee: true },
+      ]) {
         check(
           `出站表 ${status}/${kind} ${json(extra)} 已收到失败回执：留给回执`,
           show(outboundRecovery({ ...base, ...extra, status, kind, failReceived: true })) === show({ do: 'receipt' }),
@@ -155,16 +163,33 @@ function pureSuite(): void {
       }
     }
   }
-  // sending（任何种类）：RESEND_UNKNOWN 为假 unknown、为真保持 sending 补发（截止点、入站、接手都不看）
+  // sending（任何种类）：RESEND_UNKNOWN 为假 unknown、为真保持 sending 补发（截止点、入站、人工回复的接手人都不看）；
+  // 为真而会话有接手人：AI 产生的（ai、followup、menu、welcome、card）记 unknown、不补发，通知与人工回复照样补发（不变量 10）
+  const AI_MADE = new Set(['ai', 'followup', 'menu', 'welcome', 'card']);
   for (const kind of KINDS) {
-    for (const extra of [{}, { inboxId: 'i1', inboxOpen: true }, { recordOnlyUntil: now }, { humanAssigneeSame: false }]) {
+    for (const extra of [
+      {},
+      { inboxId: 'i1', inboxOpen: true },
+      { recordOnlyUntil: now },
+      { humanAssigneeSame: false },
+      { hasAssignee: true },
+      { hasAssignee: true, inboxId: 'i1', inboxOpen: true },
+    ]) {
       const f = { ...base, ...extra, status: 'sending' as const, kind };
       check(`出站表 sending/${kind} ${json(extra)}：unknown`, show(outboundRecovery(f)) === show({ do: 'unknown' }));
+      const want = f.hasAssignee && AI_MADE.has(kind) ? { do: 'unknown' } : { do: 'resend', alreadySending: true };
       check(
-        `出站表 sending/${kind} ${json(extra)}、RESEND_UNKNOWN：保持 sending 补发`,
-        show(outboundRecovery({ ...f, resendUnknown: true })) === show({ do: 'resend', alreadySending: true }),
+        `出站表 sending/${kind} ${json(extra)}、RESEND_UNKNOWN：${json(want)}`,
+        show(outboundRecovery({ ...f, resendUnknown: true })) === show(want),
       );
     }
+  }
+  // pending 的各行不看会话有没有接手人（人工回复看的是「接手人没变」，见下）
+  for (const kind of KINDS) {
+    check(
+      `出站表 pending/${kind} 的处理不看会话有没有接手人`,
+      show(outboundRecovery({ ...base, kind, hasAssignee: true })) === show(outboundRecovery({ ...base, kind })),
+    );
   }
   // pending，sent_at 不晚于恢复截止点：cancelled（任何种类、有没有入站都先看它；等于截止点也算）
   for (const kind of KINDS) {
@@ -230,12 +255,6 @@ function pureSuite(): void {
       show(outboundRecovery({ ...base, kind, sentAt: now - 30 * 86_400_000 })) === show(EXPECT[kind]),
     );
   }
-  check(
-    '「sending 转 unknown」的计数：只数 sending；RESEND_UNKNOWN 为真时为 0',
-    unknownOnRestart([{ status: 'sending' }, { status: 'pending' }, { status: 'sending' }], false) === 2 &&
-      unknownOnRestart([{ status: 'sending' }], true) === 0 &&
-      unknownOnRestart([], false) === 0,
-  );
 
   // ---- 保底三条（R21）：只对客户消息 ----
   const STATES = ['received', 'recorded', 'replied'] as const;
@@ -1087,6 +1106,28 @@ async function kill2(h: Harness): Promise<void> {
     return oi.length === 1 && oi[0]!.status === 'sending' && oj.length === 1 && oj[0]!.status === 'sending';
   });
   check('（前提）I、J 那一段都是 sending；I 的请求进了假企微、J 的没进', ok && h.sendsTo(U.i).length === 1 && h.sendsTo(U.j).length === 0);
+  // L（AI 回复）与 M（通知）：那一段 sending、请求进了假企微、回包挂住；杀之前顾问接手（接手落库之后再杀）
+  const lHold = h.holdSend(U.l, 'after');
+  h.say('r1', U.l, 'L 想去丽江');
+  h.pull('r1');
+  const mSid = await h.mkSession('r1', U.m);
+  const mHold = h.holdSend(U.m, 'after');
+  void h.wecom.wecomAdapter.push(mSid, '您的订单已付款，我们会尽快为您安排', { kind: 'notice' });
+  await reached('L 的请求到了假企微', lHold);
+  await reached('M 的请求到了假企微', mHold);
+  for (const uid of [U.l, U.m]) {
+    h.tk.takeover(sidOf('r1', uid), h.tk.sharedActor());
+    await h.store.flushSession(sidOf('r1', uid));
+  }
+  const okLm = await waitFor(async () => {
+    const [ol, om] = await Promise.all([h.outOf(sidOf('r1', U.l)), h.outOf(sidOf('r1', U.m))]);
+    const assigned = await h.su<{ id: string }>(
+      `select id from conversations where id = any($1::text[]) and handed_over and assignee_name is not null`,
+      [[sidOf('r1', U.l), sidOf('r1', U.m)]],
+    );
+    return ol.length === 1 && ol[0]!.status === 'sending' && om.length === 1 && om[0]!.status === 'sending' && assigned.length === 2;
+  });
+  check('（前提）L（ai）、M（notice）那一段 sending、请求进了假企微，两个会话的接手已落库', okLm);
 
   // 验收 7 的 B（r3）：入站与计次照常提交、引擎开始生成之后挡住写库；commitOutbound 等满超时照发；结果没落库就杀
   const kHold = h.holdModel('K-r6');
@@ -1139,9 +1180,30 @@ async function restart2(h: Harness): Promise<void> {
       h.llmCalls('J 想去西藏') === 0,
     json({ oj, sent: h.sendsTo(U.j) }),
   );
+  // 有接手人的会话里 AI 产生的 sending 段：不补发、记 unknown（不变量 10）；通知照表补发
+  const ol = await h.outOf(sidOf('r1', U.l));
+  const lMsg = (await h.inboxesOf(sidOf('r1', U.l)))[0]!;
+  const lReply = h.replyAfter(sidOf('r1', U.l), lMsg.msgid);
   check(
-    'RESEND_UNKNOWN 为真：没有「sending 转 unknown」的告警',
-    !h.alertLines().some((l) => l.includes('停在「发送中」')),
+    'RESEND_UNKNOWN 为真 · 有接手人的会话里 AI 回复的 sending 段：不补发（假企微上仍只有杀之前那一次）、记 unknown、工作台「可能没送达」',
+    ol.length === 1 &&
+      ol[0]!.status === 'unknown' &&
+      h.sendsTo(U.l).length === 1 &&
+      h.sendsTo(U.l)[0]!.p === 'k2' &&
+      !!lReply &&
+      h.ledger.deliveryOf(sidOf('r1', U.l), lReply)?.status === 'unknown',
+    json({ ol, sent: h.sendsTo(U.l) }),
+  );
+  const om = await h.outOf(sidOf('r1', U.m));
+  check(
+    'RESEND_UNKNOWN 为真 · 有接手人的会话里通知的 sending 段：照表按同一 msgid 补发（去重之后恰好一组）',
+    om.length === 1 && om[0]!.status === 'accepted' && h.sendsTo(U.m).length === 2 && json(uniq(h.sendsTo(U.m))) === json([om[0]!.msgid]),
+    json({ om, sent: h.sendsTo(U.m) }),
+  );
+  const unknownAlerts = h.alertLines().filter((l) => l.includes('停在「发送中」'));
+  check(
+    'RESEND_UNKNOWN 为真：「sending 转 unknown」的告警只算有接手人的会话里那一段 AI 回复（r1 1 段，r2 没有）',
+    unknownAlerts.length === 1 && unknownAlerts[0]!.includes('企微账号 r1 重启时有 1 段') && !unknownAlerts[0]!.includes('企微账号 r2'),
     json(h.alertLines()),
   );
   // 验收 7 的 B：入站 recorded、引擎重新生成一组再发（多一组、msgid 不同）
