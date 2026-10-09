@@ -192,3 +192,17 @@ export async function cancelPendingJobsOfSession(tx: Tx, kind: JobKind, sessionI
     .returning({ id: jobs.id });
   return out.length;
 }
+
+/**
+ * restore-cutoff（03 R7）：run_at 不晚于截止点、还在 pending 或 running 的跟进记 cancelled（last_error 'restore_cutoff'）。
+ * running 必须在应用启动归位（recoverJobsAtStartup）之前处理：归位会把它改回 pending、再发一次；sending 的不动，照 02 由归位记
+ * abandoned。返回取消的任务与它的会话 id（payload 的 sessionId）
+ */
+export async function cancelFollowupsUntil(tx: Tx, until: Date): Promise<{ id: string; sessionId: string | null }[]> {
+  return rowsOf<{ id: string; sessionId: string | null }>(
+    await tx.execute(sql`
+      update ${jobs} set status = 'cancelled', finished_at = now(), last_error = 'restore_cutoff'
+       where kind = 'followup' and status in ('pending', 'running') and run_at <= ${until.toISOString()}::timestamptz
+      returning id, payload->>'sessionId' as "sessionId"`),
+  );
+}

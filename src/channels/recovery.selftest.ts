@@ -10,6 +10,9 @@
 //              验收 7 的 A、验收 20 的重启部分（截止之后才回包、markSending 挂住跨过截止）
 //     k2 → r2（重启之前经 __channelTest 把 RESEND_UNKNOWN 设为真）：验收 4 后两种重跑、验收 7 的 B
 //     k3 → r3：验收 18 每一种没结果的出站行；恢复做完之前到期的跟进等恢复做完才发；等恢复超过上限的人工回复按没发出去处理
+//     k5 → c5 → r5（03 第 12 步，验收 6 的缩小版）：杀的那一刻当作备份快照、杀的时刻当作 T；父进程往 var/ 放恢复哨兵，c5 起应用被
+//              channel_restore_pending 拦住；父进程以 app 身份跑 restore-cutoff --until T，r5 照常起：截止点之前的入站只补记、不调模型、
+//              不发送，sending 的不补发，人工回复与跟进取消，T 之后的新消息照常回复一次，「只补记」告警按会话数一条
 // 用法：npx tsx src/channels/recovery.selftest.ts（杀进程的部分要 PG_TEST_URL 指向一次性的 pgvector/pgvector:pg17 容器）
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawnSync } from 'node:child_process';
@@ -126,6 +129,18 @@ const V = {
 const A3 = ['wm10s1', 'wm10s2', 'wm10s3'];
 const PZ = 'wm10pz';
 const POISON_NOTE = '⚠️ 客户有一条消息 AI 未能处理（已重放 2 次仍未处理完），请人工回复';
+
+/** k5 → c5 → r5 的客户（03 第 12 步：恢复截止点） */
+const W = {
+  a: 'wm12a', // 备份之前就聊完了：恢复之后不补发
+  b: 'wm12b', // 备份那一刻第一段 sending（请求到了假企微、回包挂住）：restore-cutoff 记 unknown，启动时入站只补记、不补发
+  c: 'wm12c', // 顾问的人工回复 pending：restore-cutoff 记 cancelled；备份之后又说了一句（T 之前）：只补记、不调模型、不回复
+  d: 'wm12d', // T 之后才来的新客户：照常回复一次
+  e: 'wm12e', // 跟进 pending、run_at 在 T 之前：cancelled
+  f: 'wm12f', // 跟进 running：在启动归位之前就 cancelled
+};
+/** 启动时只补记那一步加的说明（spec 原话，src/adapters/wecom.ts 的 RESTORE_CUTOFF_NOTE） */
+const RESTORE_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
 
 /** 毒消息那个客户的入站行：原文 → msgid（payload 在入站行结束之后清空，先按原文找到的记下来） */
 const pzMsgids = new Map<string, string>();
@@ -412,8 +427,47 @@ async function parentMain(): Promise<never> {
       for (const f of r.result.fails) fails.push(`${label}：${f}`);
       if (r.result.fails.length) fails.push(`${label} 的日志：${r.out.slice(-4000)}`);
     };
-    // 每一组前后几个子进程连同一个库；kill 的那一个卡到约好的那一刻自己 SIGKILL，ok 的那一个正常结束
-    const SEQS: { label: string; steps: [string, 'kill' | 'ok'][] }[] = [
+    // 每一组前后几个子进程连同一个库；kill 的那一个卡到约好的那一刻自己 SIGKILL，ok 的那一个正常结束。before 是起这一步之前
+    // 父进程做的事（恢复哨兵、restore-cutoff 命令行）
+    const restoreSteps = (env: { RECOVERY_DIR: string; VAR_DIR: string; RECOVERY_APP_URL: string }): Record<string, () => void> => ({
+      // 恢复手册第 5 步解开 var/ 之后：归档里的哨兵（backup.sh 写的就是这个名字与形状）
+      c5: () => fs.writeFileSync(path.join(env.VAR_DIR, 'restored-from-backup.json'), '{"backupAt":"2026-10-09T00:00:00Z"}\n'),
+      // 恢复手册第 7 步：以 app 身份跑 restore-cutoff，截止点是 k5 记下的「停的时刻」T（+08:00 的写法）
+      r5: () => {
+        const T = Number(fs.readFileSync(path.join(env.RECOVERY_DIR, 't5'), 'utf8'));
+        const until = new Date(T + 8 * 3_600_000).toISOString().replace('Z', '+08:00');
+        const r = spawnSync(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            'src/cli/channel-account.ts',
+            'restore-cutoff',
+            '--tenant',
+            'recov10',
+            '--until',
+            until,
+            '--var',
+            env.VAR_DIR,
+          ],
+          {
+            cwd: process.cwd(),
+            env: { ...process.env, DATABASE_URL: env.RECOVERY_APP_URL, DATABASE_PLATFORM_URL: '' },
+            timeout: 60_000,
+            killSignal: 'SIGKILL',
+            encoding: 'utf8',
+          },
+        );
+        const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+        check('验收 6 · restore-cutoff --until T 以 0 结束、删了恢复哨兵', r.status === 0 && /已删恢复哨兵/.test(out), out.slice(-1500));
+        check(
+          '验收 6 · restore-cutoff：出站 pending 1 段取消、sending 1 段记 unknown，跟进 2 个取消，C、E、F 加说明（B 的留给启动时那一条）',
+          /出站 pending 记 cancelled 1 段、sending 记 unknown 1 段；跟进任务记 cancelled 2 个；3 个会话加了说明/.test(out),
+          out.slice(-1500),
+        );
+      },
+    });
+    const SEQS: { label: string; steps: [string, 'kill' | 'ok'][]; before?: typeof restoreSteps }[] = [
       {
         label: '验收 4 的杀点、验收 7 的 A、验收 20',
         steps: [
@@ -436,6 +490,15 @@ async function parentMain(): Promise<never> {
         ],
       },
       {
+        label: '验收 6 恢复截止点与哨兵',
+        steps: [
+          ['k5', 'kill'],
+          ['c5', 'ok'],
+          ['r5', 'ok'],
+        ],
+        before: restoreSteps,
+      },
+      {
         label: '验收 3 提交之后立刻杀、验收 9 毒消息',
         steps: [
           ['k4', 'kill'],
@@ -446,7 +509,7 @@ async function parentMain(): Promise<never> {
         ],
       },
     ];
-    for (const { label, steps } of SEQS) {
+    for (const { label, steps, before } of SEQS) {
       // 每一组一个一次性库（createRealPgFixture 会改集群级角色的口令：一组用完再建下一组）
       const fx = await testing.createRealPgFixture(url, { slug: 'recov10' });
       const dir = fs.mkdtempSync(path.join(ROOT, `${steps[0]![0]}-`));
@@ -458,7 +521,9 @@ async function parentMain(): Promise<never> {
         VAR_DIR: fs.mkdtempSync(path.join(dir, 'var-')),
       };
       try {
+        const hooks = before?.(env) ?? {};
         for (const [mode, expect] of steps) {
+          hooks[mode]?.();
           const r = runChild(mode, env);
           if (expect === 'kill') {
             check(`${label}：${mode} 走到约好的那一刻之后被 SIGKILL`, r.signal === 'SIGKILL', `status=${r.status} ${r.out.slice(-2000)}`);
@@ -482,7 +547,7 @@ async function parentMain(): Promise<never> {
     `RECOVERY SELFTEST PASS: ${pass} 项断言全通（纯函数 ${purePass} 项：出站恢复表、保底、入站恢复表每一格 / 真实 PG 子进程 SIGKILL：` +
       `模型生成途中、回复落库第一段没开始、两段发完第一段、请求已到回包挂住、markSending 之后请求没到、RESEND_UNKNOWN 为真重跑、` +
       `R6 的 A 与 B、停机截止之后留 pending、每一种没结果的出站行、恢复做完之前跟进与人工回复排队、一页提交之后立刻杀、` +
-      `毒消息第三次重启记 poison）`,
+      `毒消息第三次重启记 poison、恢复哨兵拦住启动与 restore-cutoff 之后只补记不重复）`,
   );
   process.exit(0);
 }
@@ -528,6 +593,12 @@ async function childMain(mode: string): Promise<never> {
     process.kill(process.pid, 'SIGKILL');
   };
   try {
+    if (mode === 'c5') {
+      await refusedBySentinel();
+      flushLogs();
+      save();
+      process.exit(0);
+    }
     const h = await harness(mode);
     if (mode === 'k1') await kill1(h);
     else if (mode === 'r1') await restart1(h);
@@ -536,6 +607,8 @@ async function childMain(mode: string): Promise<never> {
     else if (mode === 'k3') await kill3(h);
     else if (mode === 'r3') await restart3(h);
     else if (mode === 'k4') await kill4(h);
+    else if (mode === 'k5') await kill5(h);
+    else if (mode === 'r5') await restart5(h);
     else if (mode === 'p1') await poison1(h);
     else if (mode === 'p2' || mode === 'p3') await poisonAgain(h, mode === 'p2' ? 2 : 3);
     else if (mode === 'p4') await poison4(h);
@@ -713,14 +786,14 @@ async function harness(mode: string) {
     return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
   }) as typeof fetch;
   let seq = 0;
-  /** 客户在这个客服账号上说一句（进假企微的日志，等拉取） */
-  const say = (key: string, uid: string, content: string): FakeMsg => {
+  /** 客户在这个客服账号上说一句（进假企微的日志，等拉取）；sentAt 给了就是企微的 send_time（毫秒，取整到秒） */
+  const say = (key: string, uid: string, content: string, sentAt = Date.now()): FakeMsg => {
     const kf = acct(key).kf;
     const msg: FakeMsg = {
       msgid: `m10${mode}-${++seq}`,
       open_kfid: kf,
       external_userid: uid,
-      send_time: Math.floor(Date.now() / 1000),
+      send_time: Math.floor(sentAt / 1000),
       origin: 3,
       msgtype: 'text',
       text: { content },
@@ -892,6 +965,7 @@ async function harness(mode: string) {
   return {
     mode,
     fake,
+    alerts,
     say,
     pull,
     store,
@@ -1757,6 +1831,175 @@ async function restart3(h: Harness): Promise<void> {
 }
 
 /** jsonl 文件的行（restart3 里核对先后用） */
+// ======================================================================================
+// k5 → c5 → r5：恢复截止点与哨兵（03 第 12 步，验收 6 的缩小版）
+// ======================================================================================
+
+async function kill5(h: Harness): Promise<void> {
+  h.start();
+  await h.idle();
+  const sid = (uid: string): string => sidOf('r1', uid);
+  // A：备份之前就聊完了
+  const a = h.say('r1', W.a, 'A5 想去云南');
+  h.pull('r1');
+  await waitFor(async () => (await h.inboxOf(a.msgid))?.state === 'done');
+  // B：第一段的请求到了假企微、回包挂住（库里 sending）
+  const bHold = h.holdSend(W.b, 'after');
+  const b = h.say('r1', W.b, 'B5 想去西藏');
+  // C：顾问的人工回复，markSending 之前挂住（库里 pending）；E、F：跟进 pending、running（run_at 都在 T 之前）
+  for (const uid of [W.c, W.e, W.f]) await h.mkSession('r1', uid);
+  const cHold = h.holdMark(sid(W.c));
+  void h.tk.reply(sid(W.c), h.tk.sharedActor(), '好的，我来跟进行程', 'c12-c').catch(() => undefined);
+  const tenant = process.env.RECOVERY_TENANT!;
+  for (const [uid, status, ago] of [
+    [W.e, 'pending', 60_000],
+    [W.f, 'running', 30 * 60_000],
+  ] as const) {
+    await h.su(
+      `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, max_attempts, payload, claimed_at)
+       values ($1, 'followup', $2, $3::timestamptz, $4::text, 3, $5::json, case when $4::text = 'running' then now() end)`,
+      [tenant, `followup:${sid(uid)}`, new Date(Date.now() - ago).toISOString(), status, json({ sessionId: sid(uid) })],
+    );
+  }
+  h.pull('r1');
+  await reached('B 的请求到了假企微', bHold);
+  await reached('C 的人工回复 markSending', cHold);
+  const ok = await waitFor(async () => {
+    const [ob, oc, ib] = await Promise.all([h.outOf(sid(W.b)), h.outOf(sid(W.c)), h.inboxOf(b.msgid)]);
+    return ob.length === 1 && ob[0]!.status === 'sending' && ib?.state === 'replied' && oc.length === 1 && oc[0]!.status === 'pending';
+  });
+  check(
+    '（前提）验收 6：A 聊完；B 的第一段 sending、入站 replied；C 的人工回复 pending；E、F 的跟进 pending、running',
+    ok && h.sendsTo(W.a).length >= 1 && h.sendsTo(W.b).length === 1 && h.sendsTo(W.c).length === 0,
+    json({ b: await h.outOf(sid(W.b)), c: await h.outOf(sid(W.c)), sends: [h.sendsTo(W.a), h.sendsTo(W.b)] }),
+  );
+  // 杀的这一刻当作备份快照，也当作「旧实例停的时刻」T（父进程拿它跑 restore-cutoff）
+  fs.writeFileSync(path.join(process.env.RECOVERY_DIR!, 't5'), String(Date.now()));
+}
+
+/** c5：恢复之后不跑 restore-cutoff 直接起：会话存储照常装上，渠道装载以 channel_restore_pending 拒绝，哨兵留着 */
+async function refusedBySentinel(): Promise<void> {
+  const varDir = process.env.VAR_DIR!;
+  const store = await import('../store.js');
+  const testing = await import('../db/testing.js');
+  const reg = await import('./registry.js');
+  const tenantId = process.env.RECOVERY_TENANT!;
+  const app = await testing.openGatedDb(process.env.RECOVERY_APP_URL!);
+  try {
+    await store.initSessionStore({ db: app.db, tenantId, tenantSlug: 'recov10', varDir });
+    const keyBytes = Buffer.alloc(32, 7);
+    const keyRing = { current: { id: 'k10', key: keyBytes }, all: new Map([['k10', keyBytes]]) };
+    let reason: string | null = null;
+    try {
+      await reg.initChannels({ db: app.db, tenantId, tenantSlug: 'recov10', varDir, keyRing });
+    } catch (e) {
+      reason = e instanceof reg.ChannelStartupError ? e.reason : `抛了别的：${String(e)}`;
+    }
+    check(
+      '验收 6 · 恢复之后不跑 restore-cutoff 直接起：以 channel_restore_pending 拒绝，哨兵留着',
+      reason === 'channel_restore_pending' && fs.existsSync(path.join(varDir, 'restored-from-backup.json')),
+      String(reason),
+    );
+  } finally {
+    await store.drainStore(5000).catch(() => undefined);
+    await app.close();
+  }
+}
+
+async function restart5(h: Harness): Promise<void> {
+  const sid = (uid: string): string => sidOf('r1', uid);
+  const T = Number(fs.readFileSync(path.join(process.env.RECOVERY_DIR!, 't5'), 'utf8'));
+  const sentA = h.sendsTo(W.a).length;
+  const ob0 = await h.outOf(sid(W.b));
+  // C 在备份之后、T 之前又说了一句（假企微里排在库里 cursor 之后，新进程拉得到）；D 是 T 之后来的新客户
+  const c = h.say('r1', W.c, 'C5 备份之后又问了一句', T - 2000);
+  const c2 = h.say('r1', W.c, 'C5 还有一句', T - 1000);
+  const d = h.say('r1', W.d, 'D5 想去桂林');
+  h.start();
+  h.pull('r1');
+  await waitFor(async () => (await h.inboxOf(d.msgid))?.state === 'done');
+  await h.settle();
+  const [ib, ic, ic2] = await Promise.all([h.inboxesOf(sid(W.b)), h.inboxOf(c.msgid), h.inboxOf(c2.msgid)]);
+  const ob = await h.outOf(sid(W.b));
+  check(
+    '验收 6 · B（备份那一刻 sending）：restore-cutoff 记 unknown，重启后不补发、不调模型，入站只补记（abandoned / restore_cutoff）',
+    ob.length === 1 &&
+      ob[0]!.msgid === ob0[0]!.msgid &&
+      ob[0]!.status === 'unknown' &&
+      h.sendsTo(W.b).length === 1 &&
+      h.llmCalls('B5') === 0 &&
+      ib[0]?.state === 'abandoned' &&
+      ib[0]?.reason === 'restore_cutoff',
+    json({ ob, ib, sends: h.sendsTo(W.b), calls: h.llmCalls('B5') }),
+  );
+  const oc = await h.outOf(sid(W.c));
+  const msgsC = await h.su<{ seq: number; role: string; content: string; msgid: string | null }>(
+    'select seq, role, content, msgid from messages where conversation_id = $1 order by seq',
+    [sid(W.c)],
+  );
+  const at = (pred: (m: (typeof msgsC)[number]) => boolean): number => msgsC.findIndex(pred);
+  const cliNote = at((m) => m.role === 'system' && m.content.startsWith('恢复备份之后补记：'));
+  const customer = at((m) => m.msgid === c.msgid);
+  const customer2 = at((m) => m.msgid === c2.msgid);
+  const note = at((m) => m.role === 'system' && m.content === RESTORE_NOTE);
+  check(
+    '验收 6 · C：人工回复 cancelled、没发；备份之后那两句补记进会话（各一次）、带「恢复备份之后补记」的说明（一个会话一条），不调模型、不回复',
+    oc.length === 1 &&
+      oc[0]!.status === 'cancelled' &&
+      h.sendsTo(W.c).length === 0 &&
+      h.llmCalls('C5') === 0 &&
+      ic?.state === 'abandoned' &&
+      ic.reason === 'restore_cutoff' &&
+      ic2?.state === 'abandoned' &&
+      ic2.reason === 'restore_cutoff' &&
+      msgsC.filter((m) => m.msgid === c.msgid).length === 1 &&
+      msgsC.filter((m) => m.msgid === c2.msgid).length === 1 &&
+      msgsC.filter((m) => m.content === RESTORE_NOTE).length === 1 &&
+      cliNote >= 0 &&
+      customer > cliNote &&
+      note > customer &&
+      customer2 > customer &&
+      msgsC.every((m, i) => m.seq === i + 1),
+    json({ oc, ic, ic2, msgsC, sends: h.sendsTo(W.c), calls: h.llmCalls('C5') }),
+  );
+  const jobs = await h.su<{ k: string; status: string; err: string | null }>(
+    `select dedupe_key as k, status, last_error as err from jobs where kind = 'followup' order by dedupe_key`,
+  );
+  check(
+    '验收 6 · E、F 的跟进都是 cancelled（restore_cutoff，F 在启动归位之前），没有发出去',
+    json(jobs) ===
+      json([
+        { k: `followup:${sid(W.e)}`, status: 'cancelled', err: 'restore_cutoff' },
+        { k: `followup:${sid(W.f)}`, status: 'cancelled', err: 'restore_cutoff' },
+      ]) &&
+      h.sendsTo(W.e).length === 0 &&
+      h.sendsTo(W.f).length === 0,
+    json({ jobs, e: h.sendsTo(W.e), f: h.sendsTo(W.f) }),
+  );
+  check(
+    '验收 6 · A 没有补发；T 之后的 D 照常回复一次（模型一次、一组）',
+    h.sendsTo(W.a).length === sentA && h.llmCalls('D5') === 1 && h.sendsTo(W.d).length === 1,
+    json({ a: h.sendsTo(W.a), d: h.sendsTo(W.d), calls: h.llmCalls('D5') }),
+  );
+  const open = await h.su<{ n: string }>(
+    `select (select count(*) from channel_inbox where state in ('received', 'recorded', 'replied'))
+          + (select count(*) from outbound_sends where status in ('pending', 'sending')) as n`,
+  );
+  check('验收 6 · 重启之后没有没结束的入站、没结果的出站（不变量 15）', open[0]?.n === '0', json(open));
+  // 「只补记」告警：最后一个这样的会话之后安静 10 秒由巡检发，这里把钟拨过去手动巡检一次；B、C 两个会话（C 有两句，按会话数算）
+  h.alerts.__alertTest.setClock(() => Date.now() + 60_000);
+  h.alerts.__alertTest.tick();
+  h.alerts.__alertTest.tick();
+  await h.alerts.__alertTest.settle();
+  h.alerts.__alertTest.setClock(null);
+  const cut = h.alertLines().filter((l) => l.includes('恢复截止点之前的客户消息只补记'));
+  check(
+    '验收 6 · 告警一条：恢复截止点让 2 个会话只补记未回复，只有会话数',
+    cut.length === 1 && cut[0]!.includes('2 个会话') && !/wm12|wecom:/.test(cut[0]!),
+    json(h.alertLines()),
+  );
+}
+
 function lines<T>(f: string): T[] {
   return fs.existsSync(f)
     ? fs

@@ -352,3 +352,22 @@ export async function hasPartlyDeliveredOutbound(tx: Tx, accountId: string): Pro
     .limit(1);
   return rows.length !== 0;
 }
+
+/**
+ * restore-cutoff（03 R7）：本租户截止点之前建的、还没结果的出站行（pending、sending），任何账号（含 account_id 为空的旧行），
+ * 按建行时刻、段号排。不读 payload
+ */
+export async function readOpenOutboundUntil(
+  tx: Tx,
+  until: Date,
+): Promise<{ channelMsgid: string; conversationId: string; status: 'pending' | 'sending' }[]> {
+  return (await tx
+    .select({ channelMsgid: outboundSends.channelMsgid, conversationId: outboundSends.conversationId, status: outboundSends.status })
+    .from(outboundSends)
+    .where(and(inArray(outboundSends.status, ['pending', 'sending']), sql`${outboundSends.sentAt} <= ${until.toISOString()}::timestamptz`))
+    .orderBy(outboundSends.sentAt, outboundSends.segment)) as {
+    channelMsgid: string;
+    conversationId: string;
+    status: 'pending' | 'sending';
+  }[];
+}

@@ -3,7 +3,7 @@
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { conversations } from '../schema.js';
-import { readWindowMessages, type MessageRow } from './messages.js';
+import { insertMessages, readWindowMessages, type MessageRow } from './messages.js';
 import { readLiveOrders, type OrderRow } from './orders.js';
 
 /** 由 Session 投影出来、每次落库整行写入的列 */
@@ -148,4 +148,31 @@ export async function updateConversation(tx: Tx, row: ConversationValues, seqs: 
     .where(and(eq(conversations.tenantId, tenantId), eq(conversations.id, id)))
     .returning({ id: conversations.id });
   return out.length === 1;
+}
+
+/**
+ * 命令行给一个会话追加一条 system 说明（03 R7 的 restore-cutoff；应用已停、持租户锁）：锁会话行，消息记在 last_seq + 1，
+ * last_seq 随之加一；updated_at、state、flush_id 不动（说明不延长保留期）。会话行不在（只有出站行的欢迎语之类）返回 false
+ */
+export async function appendSystemNote(tx: Tx, conversationId: string, content: string, at: Date): Promise<boolean> {
+  const cur = await lockConversation(tx, conversationId);
+  if (!cur) return false;
+  const seq = cur.lastSeq + 1;
+  await insertMessages(tx, conversationId, [
+    {
+      seq,
+      role: 'system',
+      author: null,
+      authorUserId: null,
+      authorName: null,
+      content,
+      at,
+      sentAt: null,
+      msgid: null,
+      turnId: null,
+      extra: null,
+    },
+  ]);
+  await tx.update(conversations).set({ lastSeq: seq }).where(eq(conversations.id, conversationId));
+  return true;
 }
