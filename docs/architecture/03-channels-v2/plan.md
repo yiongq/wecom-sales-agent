@@ -46,7 +46,7 @@
   - 自测（`src/channels/channels.selftest.ts`，串进 `test`）：密钥环的解析与拒绝、往返、改一个字节、换 AAD、换 key id、旧密钥解、轮换后新密钥解、`Redacted` 在 `JSON.stringify`、`util.inspect`、模板字符串里都是「[已遮盖]」。
   - 对应验收 11 的加解密部分；不变量 16、17。依赖：第 1 步。
   - 完成标准：四个门禁全绿；纯模块，不碰库与运行时。
-- [ ] 4. 日志脱敏认新的会话 id 形状（0.5，可派 Codex）
+- [x] 4. 日志脱敏认新的会话 id 形状（0.5，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、补跑门禁），见「实施记录 · 第 4 步」。
   - `src/log.ts` 的 `RAW_CONV_ID` 认 `wecom:(<key>:)?<id>`、`web:<id>`、`sim-<id>` 与 `%3A` 编码的形式；`src/server.ts` 的请求路径与 `src/ops/alert.ts` 照旧经 `scrubConvIds`（R22）。
   - 自测：`ops.selftest.ts` 加这几种形状（含编码形式）在 JSON 行、请求路径与告警正文里都被换成 ref 或短码。
   - 对应验收 10 的日志部分；不变量 22。依赖：第 1 步。
@@ -255,6 +255,12 @@
 - 第 8 步：spec「出站 · 发一条 AI 回复」说同意菜单「本来就是先落库后发送」，代码里发送前落库的只是「问过」的同意状态，菜单那条 agent 消息与账本行都在发送成功之后才写（`src/engine.ts:3497–3499`、`src/adapters/wecom.ts:790`）。所以菜单的 `pending` 要加进「问过」那一次落库，不是加进一条已有的消息落库。
 - 第 9 步：spec R2 说入站行留 7 天「与 02 的 7 天 msgid 集合同一口径」；文件路径的 `handled` 是 3 天（:166–168），7 天说的是 02 PG 路径的最近客户 msgid 集合。按 spec 的 7 天做，不影响老路。
 - 盘点 1、3、4、5 由 Codex 只读完成，Claude 抽查了 :166–168、引擎两处 customer 写入、存档点 :926–929 与 spec 第 398 行。
+
+### 第 4 步 · 日志脱敏认新的会话 id 形状（2026-10-09）
+
+- `src/log.ts` 的 `RAW_CONV_ID` 改成认 `wecom:<id>`、`wecom:<key>:<id>`（key 照 R8 的 `^[a-z][a-z0-9-]{1,30}$`）、`web:<32 位小写十六进制>`、`sim-<id>`，每个冒号都可以是 `%3A` / `%3a`（含混合编码）。`web:` 只认恰好 32 位十六进制、后面不接 id 字符，普通文本里的「web: 首页」「web:abc」不动。`scrubConvIds` 把匹配串里所有编码冒号解回 `:` 再交给 `convCode`（按完整会话 id 查 ref，查不到退回短码）。`shortIdOf` 不改：新形状只取最后 4 位字母数字，不含整段 `external_userid`。`src/server.ts` 的请求路径与 `src/ops/alert.ts` 本来就经它，不用改。
+- 自测追加在 `src/ops/ops.selftest.ts`（不改已有断言）：6 个手写 id 展开成 28 种原文与编码组合，在 JSON 日志行（正文与嵌套字段）、prod 下的请求路径、告警正文三处都换成 ref 或短码，整份输出里搜不到原 id、`external_userid`、网页哈希与 `key:id` 残片；demo 下请求路径原样；普通网页文本与长度不对的 id 原样。
+- 门禁：四个全绿，`pnpm test` PASS 70 行，`PREFIX sha256` 与第 1 步相同，锁定文件未动。Codex 沙箱里 `pnpm test` 末尾的 console 构建报 `EPERM`（`console/dist/.vite`），由 Claude 在沙箱外补跑。
 
 ## 验收记录
 
