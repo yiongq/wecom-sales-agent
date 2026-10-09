@@ -3,8 +3,9 @@
 // initChannels 在 initSessionStore 之后、监听之前调一次：判企微状态（文件存储 / 未导入 / 已导出 / 在库里），按状态拼账号、解密、
 // 查标记文件与恢复哨兵，六个拒绝原因以 ChannelStartupError reject。所有检查都在「装上」之前做完：拒绝时注册表与账号表还是空的、
 // 标记没写、哨兵没删、cursor（文件或库里的）不动——库只读、不写，文件只在装上之后才动。
-// startChannels 在监听之后、任务与跟进扫描器之前调：这一步只起 env 账号的 02 老路（startWecom）；库里账号的运行时第 7 步接上。
-import { retireEnvAccount, startWecom } from '../adapters/wecom.js';
+// startChannels 在监听之后、任务与跟进扫描器之前调：env 账号起 02 的老路（startWecom）；企微状态在库里时每个启用的企微账号起一个
+// 按账号的运行时（startWecomAccount，第 7 步），按账号 uuid 登记在适配器里。
+import { startWecom, startWecomAccount, stopWecomAccounts } from '../adapters/wecom.js';
 import { withTenant, type Db } from '../db/client.js';
 import { listChannelAccounts, type ChannelAccountRow } from '../db/repo/channel-accounts.js';
 import { readOpenInbox, type InboxRecord } from '../db/repo/channel-inbox.js';
@@ -77,14 +78,19 @@ interface Registry {
   wecomState: WecomState;
   /** 启用的账号，按账号 uuid */
   channels: ReadonlyMap<string, LoadedChannel>;
-  /** 启动时的告警（只有账号 key 与原因）：网页账号因 web_channel 关着没启用、欢迎语不合格按没设处理 */
-  warnings: readonly string[];
+  /**
+   * 启动时的告警（只有账号 key 与原因）：网页账号因 web_channel 关着没启用、欢迎语不合格按没设处理；startChannels 再加库里账号
+   * 「启动恢复做不了、不拉取」那一条（startAlerts 在它之后才读）
+   */
+  warnings: string[];
+  /** db 存储的库（库里企微账号的运行时写 cursor 用）；文件存储为 null */
+  db: Db | null;
 }
 
 let registry: Registry | null = null;
 
 /** 装载的结果：检查全部通过之后才由 commit 装上；effects 是装上之后才做的文件动作（补写标记、删哨兵），失败只记日志 */
-interface Plan extends Registry {
+interface Plan extends Omit<Registry, 'db'> {
   accounts: ChannelAccount[];
   logs: string[];
   effects: (() => void)[];
@@ -285,11 +291,7 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
       }
     });
   }
-  const logs = [
-    `[channels] 企微状态：在库里（企微账号 ${wecomRows.length} 个，启用 ${active.length} 个），只用库里的账号` +
-      // TODO(03 第 7 步)：库里账号按账号的运行时接上之后去掉后半句
-      (active.length ? '；库里账号的收发这一版还没接上，不起企微' : ''),
-  ];
+  const logs = [`[channels] 企微状态：在库里（企微账号 ${wecomRows.length} 个，启用 ${active.length} 个），只用库里的账号`];
   const ignored = Object.keys(process.env)
     .filter((k) => k.startsWith('WECOM_') && process.env[k])
     .toSorted();
@@ -310,12 +312,13 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
   };
 }
 
-/** 检查全部通过之后才装上：账号表、注册表、env 账号退场与否，再做文件动作、打日志 */
-function commit(plan: Plan): void {
+/**
+ * 检查全部通过之后才装上：账号表、注册表，再做文件动作、打日志。企微状态在库里时装上的账号里有库里的企微账号，适配器据此
+ * 不再走 env 的老路（不读 WECOM_*、不写 var/wecom-cursor.json，不变量 13）
+ */
+function commit(plan: Plan, db: Db | null): void {
   installAccounts(plan.accounts);
-  registry = { mode: plan.mode, wecomState: plan.wecomState, channels: plan.channels, warnings: plan.warnings };
-  // 企微状态在库里：env 的老路整条关掉（不读 WECOM_*、不写 var/wecom-cursor.json，不变量 13）
-  retireEnvAccount(plan.mode === 'db');
+  registry = { mode: plan.mode, wecomState: plan.wecomState, channels: plan.channels, warnings: plan.warnings, db };
   for (const fx of plan.effects) fx();
   for (const line of plan.logs) console.log(line);
   for (const w of plan.warnings) console.warn(`[channels] ⚠️ ${w}`);
@@ -333,12 +336,14 @@ function commit(plan: Plan): void {
 export async function initChannels(deps: ChannelDeps | null): Promise<void> {
   if (registry) throw new Error('initChannels 只能调一次');
   const plan = deps === null ? planFileStore(storeVarDir()) : await planDbStore(deps);
-  commit(plan);
+  commit(plan, deps?.db ?? null);
 }
 
 /**
- * 监听成功之后、任务与跟进扫描器之前调。这一步：env 账号（文件存储、未导入、已导出时 WECOM_* 配齐）起 02 的企微拉取（startWecom）；
- * 企微状态在库里时不起企微
+ * 监听成功之后、任务与跟进扫描器之前调。env 账号（文件存储、未导入、已导出时 WECOM_* 配齐）起 02 的企微拉取（startWecom）；
+ * 企微状态在库里时每个启用的库里企微账号起一个运行时（R10），凭据与 cursor 取装载时的那一份。
+ * 启动恢复（R5）先于拉取：这一版的运行时还不认 channel_inbox 与 03 的出站状态（第 9、10 步），所以账号有没结束的入站行或没结果的
+ * 出站行时只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理），日志一行、启动告警一条；没有这些行时恢复就是做完了
  */
 export function startChannels(): void {
   if (!registry) return;
@@ -346,8 +351,21 @@ export function startChannels(): void {
     if ([...registry.channels.values()].some((c) => c.account.source === 'env')) startWecom();
     return;
   }
-  // TODO(03 第 7 步)：每个启用的库里企微账号起一个 WecomRuntime（按账号 uuid 建键，凭据与 cursor 取 loadedChannels()），先做启动恢复
-  // （第 10 步：出站恢复、再入站恢复，用 openOutbound、openInbox），做完才开始拉取。这一版不起，也不让它们临时走 env 的老路
+  const db = registry.db;
+  if (!db) return;
+  for (const c of registry.channels.values()) {
+    if (c.account.kind !== 'wecom_kf' || c.account.source !== 'db' || !c.secrets) continue;
+    // TODO(03 第 10 步)：先做出站恢复、再做入站恢复（openOutbound、openInbox），做完才开始拉取
+    const open = c.openInbox.length + c.openOutbound.length;
+    if (open) {
+      const why =
+        `企微账号 ${c.account.key} 有没结束的入站 ${c.openInbox.length} 行、没结果的出站 ${c.openOutbound.length} 行，` +
+        '这一版的启动恢复处理不了：不拉取';
+      console.error(`[channels] ⚠️ ${why}`);
+      registry.warnings.push(why);
+    }
+    startWecomAccount({ db, account: c.account, secrets: c.secrets, cursor: c.cursor, pull: open === 0 });
+  }
 }
 
 /** 装上的企微状态；还没装载（自测、eval）时为 null */
@@ -378,11 +396,11 @@ export function channelsHealth(): { mode: 'env' | 'db'; accounts: number; failin
   return { mode: channelsMode(), accounts: loadedAccounts().filter(isEnabled).length, failing: 0, stuck: 0 };
 }
 
-/** 仅供自测：清回还没装载的样子（账号表清空、env 账号回到 02 的老路） */
+/** 仅供自测：清回还没装载的样子（库里账号的运行时停掉、账号表清空，env 账号随之回到 02 的老路） */
 export const __channelsTest = {
   reset(): void {
+    stopWecomAccounts();
     registry = null;
     installAccounts([]);
-    retireEnvAccount(false);
   },
 };
