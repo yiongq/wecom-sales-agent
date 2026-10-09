@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 回滚前检查（02、03 spec「导入、导出与切换」）。在服务器上跑：deploy.sh 部署一个旧 tag、
 # 以及健康检查失败后自动回滚到 :prev 之前，经 ssh 把本脚本交给 bash -s。
+# 本脚本经 bash -s 从标准输入读，所有外部命令必须 </dev/null（管道下游只读管道），不能读走后续脚本。
 # 01 的镜像不认识 SESSION_STORE、不读库里的会话：真实会话在库里时（var/ 里有 sessions-in-db.json，或 .env 里是
 # SESSION_STORE=db）回滚到它，客户历史在应用里全部消失，那期间的新消息也不进库。01 的镜像也不写产品库条目版本：
 # 正在运行的实例有条目版本大于 1（/healthz 的 config.catalogVersioned 为 true）时回滚到它，那期间发出的方案书链接不带 v、
@@ -29,7 +30,7 @@ env_file="$dir/.env"
 # 与 deploy.sh 第 3 步的检查同一种读法（docker --env-file）：行首空白去掉、按第一个 = 分开、同名以最后一行为准
 env_val() {
   [ -f "$2" ] || return 0
-  awk -v k="$1=" '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } index($0, k) == 1 { v = substr($0, length(k) + 1) } END { print v }' "$2"
+  awk -v k="$1=" '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } index($0, k) == 1 { v = substr($0, length(k) + 1) } END { print v }' "$2" </dev/null
 }
 
 # 回滚到 02 之前的镜像有风险的情况，一条一行
@@ -42,17 +43,17 @@ if [ "$(env_val SESSION_STORE "$env_file")" = db ]; then
   risks+=(".env 里是 SESSION_STORE=db：真实会话在库里（db 存储）")
 fi
 # 02 之前的镜像里没有 pg-backend.ts：0 是 02 之后的，1 是 02 之前的，其余是 docker 出错、看不出来
-pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/store/pg-backend.ts'; }
-pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts'; }
+pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/store/pg-backend.ts' </dev/null; }
+pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts' </dev/null; }
 # 直接问库（与 backup.sh 同一种找法：按项目名找 db 服务，在 / 下执行；超级用户不受 RLS 限制）。打印 t / f / none（表不存在）
 db_versioned() {
   local db has
   db=$(env_val AGENT_DB "$dir/.env.db")
   db=${db:-agent}
-  has=$( (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select to_regclass('public.catalog_item_versions') is not null") 2>/dev/null) || return 1
+  has=$( (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select to_regclass('public.catalog_item_versions') is not null" </dev/null) 2>/dev/null) || return 1
   case "$has" in
     f) echo none ;;
-    t) (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from catalog_item_versions where version > 1)") 2>/dev/null ;;
+    t) (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from catalog_item_versions where version > 1)" </dev/null) 2>/dev/null ;;
     *) return 1 ;;
   esac
 }
@@ -62,16 +63,16 @@ db_channels() {
   local db has
   db=$(env_val AGENT_DB "$dir/.env.db")
   db=${db:-agent}
-  has=$( (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select to_regclass('public.channel_accounts') is not null") 2>/dev/null) || return 1
+  has=$( (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select to_regclass('public.channel_accounts') is not null" </dev/null) 2>/dev/null) || return 1
   case "$has" in
     f) echo none ;;
-    t) (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from channel_accounts where (kind = 'wecom_kf' and id_prefix = 'wecom:' and status = 'exported') is not true)") 2>/dev/null ;;
+    t) (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from channel_accounts where (kind = 'wecom_kf' and id_prefix = 'wecom:' and status = 'exported') is not true)" </dev/null) 2>/dev/null ;;
     *) return 1 ;;
   esac
 }
 # 有条目版本大于 1（02「报价快照」）：先问正在运行的实例，看不出来再问库，库也问不到再看正在跑的是不是 02 之前的镜像
 catalog_risk=""
-health=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/healthz" 2>/dev/null)
+health=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/healthz" </dev/null 2>/dev/null)
 case "$health" in
   *'"catalogVersioned":false'*) ;;
   *'"catalogVersioned":true'*) catalog_risk="正在运行的实例 /healthz 的 config.catalogVersioned 为 true：有条目版本大于 1（改过上架条目的价格或内容）" ;;
@@ -81,7 +82,7 @@ case "$health" in
       f | none) ;;
       t) catalog_risk="取不到 127.0.0.1:${port}/healthz 的 config.catalogVersioned，库里的 catalog_item_versions 有版本大于 1 的条目（改过上架条目的价格或内容）" ;;
       *)
-        running=$(docker inspect --format '{{.Image}}' "$project" 2>/dev/null)
+        running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
         if [ -z "$running" ] || [ "$(pre02_image "$running" >/dev/null 2>&1; echo $?)" != 1 ]; then
           catalog_risk="取不到 127.0.0.1:${port}/healthz 的 config.catalogVersioned，也问不到库，看不出有没有条目版本大于 1，按有风险处理"
         fi
@@ -128,7 +129,7 @@ if [ "$is_pre03" = 1 ]; then
       f | none) ;;
       t) channel_risk="库里的 channel_accounts 有不是默认企微账号且 exported 的行：渠道状态在库里（active、disabled、第二个企微账号与网页账号都算）" ;;
       *)
-        running=$(docker inspect --format '{{.Image}}' "$project" 2>/dev/null)
+        running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
         if [ -z "$running" ] || [ "$(pre03_image "$running" >/dev/null 2>&1; echo $?)" != 1 ]; then
           channel_risk="问不到库，看不出渠道状态是否在库里，按有风险处理"
         fi
@@ -141,8 +142,8 @@ fi
 
 # 打印的命令里的租户：标记文件的 tenant，没有就取 .env 的 DEFAULT_TENANT_SLUG；字符集不对（或都没有）就留 <slug> 让人填
 slug=""
-[ -f "$marker" ] && slug=$(sed -n 's/.*"tenant":"\([^"]*\)".*/\1/p' "$marker" | head -n 1)
-[ -z "$slug" ] && [ -f "$channel_marker" ] && slug=$(sed -n 's/.*"tenant":"\([^"]*\)".*/\1/p' "$channel_marker" | head -n 1)
+[ -f "$marker" ] && slug=$(sed -n 's/.*"tenant":"\([^"]*\)".*/\1/p' "$marker" </dev/null | head -n 1)
+[ -z "$slug" ] && [ -f "$channel_marker" ] && slug=$(sed -n 's/.*"tenant":"\([^"]*\)".*/\1/p' "$channel_marker" </dev/null | head -n 1)
 [ -n "$slug" ] || slug=$(env_val DEFAULT_TENANT_SLUG "$env_file")
 [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] || slug='<slug>'
 dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml"
@@ -179,7 +180,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
       if [ "$target" = pre-02 ] || [ "$target" = pre-03 ]; then
         echo "  4. 再部署旧 tag。"
       else
-        rev=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$target" 2>/dev/null | sed -n 's/^APP_REVISION=//p' | head -n 1)
+        rev=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$target" </dev/null 2>/dev/null | sed -n 's/^APP_REVISION=//p' | head -n 1)
         echo "  4. 直接起目标镜像并重打 :current（不跑迁移）："
         echo "     APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} ${project}:current"
         echo "     curl -fsS http://127.0.0.1:${port}/healthz 确认 revision 是 ${rev:-（取不到 ${target} 的 APP_REVISION）}（${target} 的 APP_REVISION）"
@@ -205,7 +206,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     echo "  3. .env 去掉 SESSION_STORE=db，${dc} up -d app，curl -fsS http://127.0.0.1:${port}/healthz 确认 store.mode = file"
     echo "  4. 再部署旧 tag"
   else
-    rev=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$target" 2>/dev/null | sed -n 's/^APP_REVISION=//p' | head -n 1)
+    rev=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$target" </dev/null 2>/dev/null | sed -n 's/^APP_REVISION=//p' | head -n 1)
     echo "  3. .env 去掉 SESSION_STORE=db，直接起目标镜像并重打 :current（不跑迁移）："
     echo "     APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} ${project}:current"
     echo "  4. curl -fsS http://127.0.0.1:${port}/healthz 确认 revision 是 ${rev:-（取不到 ${target} 的 APP_REVISION）}（${target} 的 APP_REVISION）"

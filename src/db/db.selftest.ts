@@ -3584,6 +3584,8 @@ await t.close();
   fake('rsync', ['echo "rsync $*" >> "$FAKE_LOG"', 'exit 97']);
   fake('pnpm', ['echo "pnpm $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_PNPM_OK:-}" ]; then exit 0; fi', 'exit 97']);
   fake('docker', [
+    // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
+    'case "$1" in exec|compose|run|inspect|image) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
     'case "$*" in *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
@@ -3715,6 +3717,31 @@ await t.close();
   }
   const quoted = serverCheck(goodDb, 'DEPLOY_PROFILE="demo"');
   check('第 3 步：DEPLOY_PROFILE 带引号照旧拒绝', quoted.code === 1 && quoted.out.includes('DEPLOY_PROFILE'), quoted.out);
+
+  // CHECK 也从 stdin 读：模拟以后 awk / grep 读取继承的 stdin，尾部哨兵必须仍由 bash 执行。
+  fake('awk', ['cat >/dev/null', 'exec /usr/bin/awk "$@"']);
+  fake('grep', ['cat >/dev/null', 'exec /usr/bin/grep "$@"']);
+  try {
+    fs.writeFileSync(path.join(srv, '.env.db'), `${goodDb.join('\n')}\n`);
+    fs.writeFileSync(path.join(srv, '.env'), 'DEPLOY_PROFILE=demo\n');
+    const stdinCheck = `${checkScript}\nprintf '%s\\n' CHECK_STDIN_COMPLETE\n`;
+    const allowed = run('bash', ['-s', '--', srv, '1'], srv, stdinCheck);
+    check(
+      'CHECK stdin：awk / grep 会读 stdin，合格旁路配置仍执行完全部检查与尾部哨兵 → 0',
+      allowed.code === 0 && allowed.out.includes('CHECK_STDIN_COMPLETE'),
+      `${allowed.code} ${allowed.out}`,
+    );
+    fs.writeFileSync(path.join(srv, '.env'), 'DEPLOY_PROFILE=demo\nWECOM_CORP_ID=test\n');
+    const refused = run('bash', ['-s', '--', srv, '1'], srv, stdinCheck);
+    check(
+      'CHECK stdin：awk / grep 会读 stdin，旁路配置有企微凭据仍拒绝 → 1，不执行尾部哨兵',
+      refused.code === 1 && refused.out.includes('会和线上实例抢同一个客服账号') && !refused.out.includes('CHECK_STDIN_COMPLETE'),
+      `${refused.code} ${refused.out}`,
+    );
+  } finally {
+    fs.rmSync(path.join(bin, 'awk'));
+    fs.rmSync(path.join(bin, 'grep'));
+  }
 
   // compose：env 文件都按 format: raw 读（与 docker --env-file 同一个解析器：$ 不展开、引号和 # 原样），
   // 与第 3 步的检查、第 5 步的试读是同一种读法；应用镜像缺省取 <容器名>:current，手工命令不用带 APP_IMAGE
@@ -4323,6 +4350,26 @@ await t.close();
     '渠道回滚：只有会话风险仍是 3、原回退步骤不变',
     c12.code === 3 && refusedWithSteps(c12.out) && !c12.out.includes('channel-export'),
     c12.out,
+  );
+
+  // 与 ssh bash -s -- <参数> < rollback-guard.sh 相同的 stdin 入口；假 docker 会把继承的输入读到 EOF。
+  const stdinActive = guard('pre-03', false, undefined, null, undefined, { channels: 't' });
+  check(
+    '回滚 stdin：bash -s、无渠道标记、默认企微 active → 5，两次渠道查询都执行，打印导出步骤',
+    stdinActive.code === 5 && stdinActive.channelDocker.length === 2 && channelSteps(stdinActive.out, '<slug>'),
+    `${stdinActive.code} ${stdinActive.out}`,
+  );
+  const stdinVersioned = guard('pre-02', false, undefined, null, null, { db: 't' });
+  check(
+    '回滚 stdin：bash -s、healthz 连不上、条目版本大于 1 → 4，两次条目查询都执行',
+    stdinVersioned.code === 4 && psqlCalls(stdinVersioned).length === 2 && catalogRefused(stdinVersioned.out, '库里的'),
+    `${stdinVersioned.code} ${stdinVersioned.out}`,
+  );
+  const stdinAllowed = guard('pre-02', false, undefined, null, null, { db: 'f', channels: 'f' });
+  check(
+    '回滚 stdin：bash -s、无标记、无高版本、只有默认企微 exported → 0，四次查询都执行完',
+    stdinAllowed.code === 0 && psqlCalls(stdinAllowed).length === 2 && stdinAllowed.channelDocker.length === 2,
+    `${stdinAllowed.code} ${stdinAllowed.out} ${stdinAllowed.docker.join(' / ')} ${stdinAllowed.channelDocker.join(' / ')}`,
   );
 
   // deploy.sh 的两处接线。部署旧 tag：在碰服务器之前（rsync 之前）检查；ssh 换成在本机执行远端命令，门禁一律成功，
