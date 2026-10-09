@@ -93,6 +93,8 @@ const U = {
   k: 'wm10k', // 验收 7 的 B：commitOutbound 超时照发、结果没落库
   l: 'wm10l', // RESEND_UNKNOWN 重跑：AI 回复的段 sending（请求已到、回包挂住），杀之前顾问接手 → 不补发、记 unknown
   m: 'wm10m', // RESEND_UNKNOWN 重跑：通知的段 sending，杀之前顾问接手 → 通知照样按同一 msgid 补发
+  cd: 'wm10cd', // RESEND_UNKNOWN 重跑：卡片 sending、它的补文 pending（卡片结果没落库就杀）→ 补文复用已有那一行，同一正文只有一个 msgid
+  ta: 'wm10ta', // RESEND_UNKNOWN 重跑：AI 回复的段 sending，恢复补发等 token 期间顾问接手 → 不补发、记 unknown
 };
 
 /** k3 → r3 的客户（验收 18：每一种没结果的出站行一个客户） */
@@ -114,6 +116,8 @@ const V = {
   tk: 'wm10tk', // 入站 replied、分段 pending，杀之前顾问接手了 → 名下 pending 的段 cancelled、记「本轮未发送」
   rr: 'wm10rr', // 入站 recorded、会话里这句之后已有 AI 回复（库里没有它的出站行）→ 按那条回复切分段照常发、不调模型
   ro: 'wm10ro', // 入站 received、名下已有 pending 的出站行（保底：按 replied 处理）→ 按同一 msgid 补发、不调模型
+  ht: 'wm10ht', // 人工回复，判定时 10 分钟内，等 markSending 期间过了 10 分钟 → 发请求之前复核不过、cancelled
+  hb: 'wm10hb', // 人工回复，判定时接手人没变，等 markSending 期间交还 AI → 发请求之前复核不过、cancelled
   fu: 'wm10fu', // 恢复做完之前到期的跟进
   p2: 'wm10p2', // 恢复做完之前的人工回复，等过上限
 };
@@ -608,6 +612,14 @@ async function harness(mode: string) {
     /** 下一页非空的 sync_msg 回 has_more=1；紧接着同一账号的下一次 sync_msg（acceptPage 已提交、刚派发）就地硬杀（验收 3） */
     killAfterPage: null as string | null,
     killOnNextSync: null as string | null,
+    /** gettoken 按账号挂住（启动恢复补发之前要取 token：在这里造「等待期间」） */
+    tokenHolds: new Map<string, Hold>(),
+    /** 缩略图上传成功（缺省失败：卡片退回纯文本） */
+    mediaOk: false,
+    /** 发给这些客户的链接卡片一律拒收 */
+    rejectLink: new Set<string>(),
+    /** send_msg 到了、记下之前先等它（看库里的状态、挡住时机） */
+    beforeSend: null as ((body: Record<string, any>) => Promise<void>) | null,
   };
   const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
   const realFetch = globalThis.fetch;
@@ -649,12 +661,17 @@ async function harness(mode: string) {
         (x) => x.corp === url.searchParams.get('corpid') && secretsOf(x).appSecret === url.searchParams.get('corpsecret'),
       );
       if (!a) return res({ errcode: 40013, errmsg: 'selftest: invalid corpid' });
+      const th = fake.tokenHolds.get(a.key);
+      if (th) {
+        th.reached = true;
+        await th.gate;
+      }
       const tok = `t10-${a.key}-${++fake.n}`;
       fake.tokens.set(tok, a.key);
       return res({ errcode: 0, access_token: tok, expires_in: 7200 });
     }
     if (!fake.tokens.has(url.searchParams.get('access_token') ?? '')) return res({ errcode: 40014, errmsg: 'selftest: invalid token' });
-    if (ep === 'media/upload') return res({ errcode: 40004, errmsg: 'selftest' });
+    if (ep === 'media/upload') return res(fake.mediaOk ? { errcode: 0, media_id: 'media10' } : { errcode: 40004, errmsg: 'selftest' });
     if (ep === 'kf/sync_msg') {
       const kf = String(body.open_kfid);
       // 同步地硬杀：这一刻上一页的 acceptPage 已提交、新行刚派发，处理链还没写成任何东西（计次要等一次往返）
@@ -672,6 +689,7 @@ async function harness(mode: string) {
     }
     if (ep === 'kf/send_msg') {
       const to = String(body.touser);
+      if (fake.beforeSend) await fake.beforeSend(body);
       const hold = fake.sendHolds.get(to);
       if (hold?.how === 'before') {
         hold.reached = true;
@@ -687,6 +705,7 @@ async function harness(mode: string) {
         hold.reached = true;
         await hold.gate;
       }
+      if (body.msgtype === 'link' && fake.rejectLink.has(to)) return res({ errcode: 40001, errmsg: 'selftest: 卡片拒收' });
       return res({ errcode: 0, msgid: body.msgid });
     }
     if (ep === 'kf/send_msg_on_event') return res({ errcode: 0 });
@@ -765,6 +784,10 @@ async function harness(mode: string) {
   const tk = await import('../handoff/takeover.js');
   const alerts = await import('../ops/alert.js');
   await import('../server.js'); // 推送通道（人工回复、跟进经 adapterFor 找到企微适配器）与 prepare 的接线
+  if (mode === 'r3') {
+    // 第 10 步评审：人工回复判定时还在 10 分钟内、等 markSending 期间过了 10 分钟（装载之前把建行时刻挪到 9 分 52 秒前）
+    await su(`update outbound_sends set sent_at = now() - interval '9 minutes 52 seconds' where conversation_id = $1`, [sidOf('r1', V.ht)]);
+  }
   await reg.initChannels({ db: app.db, tenantId, tenantSlug: 'recov10', varDir, keyRing });
 
   // ---- markSending 的钩子：按会话（与段号）挂住，或在那一刻挡住写库 ----
@@ -789,6 +812,11 @@ async function harness(mode: string) {
   const holdSend = (uid: string, how: 'before' | 'after'): Hold => {
     const hold = { ...newHold(), how };
     fake.sendHolds.set(uid, hold);
+    return hold;
+  };
+  const holdToken = (key: string): Hold => {
+    const hold = newHold();
+    fake.tokenHolds.set(key, hold);
     return hold;
   };
   const holdModel = (match: string, content?: string): Hold => {
@@ -889,6 +917,7 @@ async function harness(mode: string) {
     holdMark,
     holdSend,
     holdModel,
+    holdToken,
     async close(): Promise<void> {
       await settle();
       ledger.__ledgerTest.setMarkHook(null);
@@ -1217,6 +1246,59 @@ async function kill2(h: Harness): Promise<void> {
   });
   check('（前提）L（ai）、M（notice）那一段 sending、请求进了假企微，两个会话的接手已落库', okLm);
 
+  // 第 10 步评审（AI 段）：TA 那一段 sending、请求在路上没进假企微（r3）
+  const taHold = h.holdSend(U.ta, 'before');
+  h.say('r3', U.ta, 'TA 想去成都');
+  h.pull('r3');
+  await reached('TA 的请求在路上', taHold);
+  // 第 10 步评审（卡片）：正文一段已送达；卡片被拒、它的补文 pending 已由短事务提交、卡片的结果写不进去（测试触发器在存档点里挡掉）时杀
+  process.env.PUBLIC_BASE_URL = 'https://demo.example.com';
+  h.fake.mediaOk = true;
+  h.fake.rejectLink.add(U.cd);
+  const cdSid = await h.mkSession('r1', U.cd);
+  await h.su(
+    `create or replace function wsa10_block_card() returns trigger language plpgsql as $$
+     begin
+       if old.status = 'sending' and new.status = 'rejected' and new.conversation_id = '${cdSid}' then
+         raise exception 'selftest: 卡片的结果写不进去';
+       end if;
+       return new;
+     end $$`,
+  );
+  await h.su(`create trigger wsa10_block_card before update on outbound_sends for each row execute function wsa10_block_card()`);
+  // 卡片的请求到了：先等正文那一段的结果落库（卡片的结果才是单独一次落库，被触发器挡掉的只有它）
+  h.fake.beforeSend = async (b) => {
+    if (b.touser === U.cd && b.msgtype === 'link')
+      await waitFor(async () => (await h.outOf(cdSid)).find((r) => r.segment === 0)?.status === 'accepted');
+  };
+  const cdHold = h.holdMark(cdSid, 2);
+  void h.wecom.wecomAdapter.push(cdSid, '方案书在这儿 /proposal/r-sichuan-lux/2，您看看', { kind: 'notice' });
+  await reached('CD 的补文 markSending', cdHold);
+  const okCd = await waitFor(async () => {
+    const [ot, oc] = await Promise.all([h.outOf(sidOf('r3', U.ta)), h.outOf(cdSid)]);
+    return (
+      ot.length === 1 &&
+      ot[0]!.status === 'sending' &&
+      json(oc.map((r) => [r.segment, r.status])) ===
+        json([
+          [0, 'accepted'],
+          [1, 'sending'],
+          [2, 'pending'],
+        ])
+    );
+  });
+  check(
+    '（前提）TA 那一段 sending；CD：正文 accepted、卡片 sending（结果没落库）、补文 pending',
+    okCd &&
+      h.sendsTo(U.ta).length === 0 &&
+      h
+        .sendsTo(U.cd)
+        .map((x) => x.msgtype)
+        .join() === 'text,link',
+    json({ ta: await h.outOf(sidOf('r3', U.ta)), cd: await h.outOf(cdSid), sends: h.sendsTo(U.cd) }),
+  );
+  h.fake.beforeSend = null;
+
   // 验收 7 的 B（r3）：入站与计次照常提交、引擎开始生成之后挡住写库；commitOutbound 等满超时照发；结果没落库就杀
   const kHold = h.holdModel('K-r6');
   const k = h.say('r3', U.k, 'K-r6 想去新疆');
@@ -1243,10 +1325,49 @@ async function restart2(h: Harness): Promise<void> {
     kIn?.state === 'recorded' && (await h.outOf(sidOf('r3', U.k))).length === 0,
     json({ kIn, out: await h.outOf(sidOf('r3', U.k)) }),
   );
+  const cdSid = sidOf('r1', U.cd);
+  const cdBefore = await h.outOf(cdSid);
+  await h.su('drop trigger if exists wsa10_block_card on outbound_sends');
+  process.env.PUBLIC_BASE_URL = 'https://demo.example.com';
+  h.fake.mediaOk = true;
+  h.fake.rejectLink.add(U.cd);
   // spec：RESEND_UNKNOWN 经适配器的 __channelTest 在子进程里设（不在产品代码里留按环境变量触发的钩子）
   h.wecom.__channelTest.setResendUnknown(true);
+  // TA：恢复补发之前要取 r3 的 token，挂在这里；这期间顾问接手
+  const taTok = h.holdToken('r3');
   h.start();
+  await reached('恢复补发 TA 之前取 r3 的 token', taTok);
+  h.tk.takeover(sidOf('r3', U.ta), h.tk.sharedActor());
+  taTok.release();
   await h.settle();
+  const ota = await h.outOf(sidOf('r3', U.ta));
+  const taMsg = (await h.inboxesOf(sidOf('r3', U.ta)))[0]!;
+  const taReply = h.replyAfter(sidOf('r3', U.ta), taMsg.msgid);
+  check(
+    'RESEND_UNKNOWN 为真 · AI 回复的 sending 段，补发等 token 期间顾问接手：不补发（假企微上一次请求都没有）、记 unknown（不是 cancelled）、工作台「可能没送达」',
+    ota.length === 1 &&
+      ota[0]!.status === 'unknown' &&
+      h.sendsTo(U.ta).length === 0 &&
+      !!taReply &&
+      h.ledger.deliveryOf(sidOf('r3', U.ta), taReply)?.status === 'unknown' &&
+      taMsg.state === 'done',
+    json({ ota, sends: h.sendsTo(U.ta), taMsg }),
+  );
+  const ocd = await h.outOf(cdSid);
+  const cdText = h.sendsTo(U.cd).filter((x) => x.msgtype === 'text');
+  check(
+    'RESEND_UNKNOWN 为真 · 卡片 sending、补文 pending：卡片补发再被拒，补文复用已有那一行（库里仍是 3 行），同一正文只有一个 msgid、只发一次',
+    ocd.length === 3 &&
+      json(ocd.map((r) => [r.segment, r.status])) ===
+        json([
+          [0, 'accepted'],
+          [1, 'rejected'],
+          [2, 'accepted'],
+        ]) &&
+      ocd[2]!.msgid === cdBefore[2]!.msgid &&
+      json(cdText.map((x) => x.msgid)) === json([ocd[0]!.msgid, ocd[2]!.msgid]),
+    json({ ocd, sends: h.sendsTo(U.cd) }),
+  );
   const oi = await h.outOf(sidOf('r1', U.i));
   const oj = await h.outOf(sidOf('r2', U.j));
   const uniq = (xs: SendLine[]): string[] => [...new Set(xs.map((x) => x.msgid))];
@@ -1320,7 +1441,7 @@ async function kill3(h: Harness): Promise<void> {
   h.start();
   await h.idle();
   const sid = (k: string, key = 'r1'): string => sidOf(key, k);
-  for (const uid of [V.n, V.o, V.p, V.q, V.r, V.s, V.t, V.u, V.v, V.z, V.rc]) await h.mkSession('r1', uid);
+  for (const uid of [V.n, V.o, V.p, V.q, V.r, V.s, V.t, V.u, V.v, V.z, V.rc, V.ht, V.hb]) await h.mkSession('r1', uid);
   await h.mkSession('r3', V.w);
   const push = h.wecom.wecomAdapter.push.bind(h.wecom.wecomAdapter);
   const holds: [string, { reached: boolean }][] = [];
@@ -1330,7 +1451,7 @@ async function kill3(h: Harness): Promise<void> {
   hold(V.o);
   const fuMsg: ChatMessage = { role: 'agent', content: '上次聊的行程还在考虑吗？', at: Date.now(), author: 'followup' };
   void push(sid(V.o), fuMsg.content, { kind: 'followup', message: fuMsg });
-  for (const uid of [V.p, V.q, V.r]) {
+  for (const uid of [V.p, V.q, V.r, V.ht, V.hb]) {
     hold(uid);
     void h.tk.reply(sid(uid), h.tk.sharedActor(), `好的，我来跟进（${uid}）`, `c10-${uid}`).catch(() => undefined);
   }
@@ -1480,7 +1601,24 @@ async function restart3(h: Harness): Promise<void> {
   check('（前提）跟进任务已排上', jobs.length === 1 && jobs[0]!.status === 'pending', json(jobs));
   // 恢复挂在 N 的补发上（请求到了假企微、回包挂住），这期间跟进到期、顾问发人工回复
   const nHold = h.holdSend(V.n, 'after');
+  // 第 10 步评审：恢复补发的人工回复挂在 markSending 上（HT：建行 9 分 52 秒前；HB：这期间交还 AI）
+  const htHold = h.holdMark(sid(V.ht));
+  const hbHold = h.holdMark(sid(V.hb));
+  const [htRow] = await h.su<{ sent_at: Date }>(`select sent_at from outbound_sends where conversation_id = $1`, [sid(V.ht)]);
   h.start();
+  // HT 排在 N 前面（建行时刻更早）：判定时还在 10 分钟内，等它过了 10 分钟再放开 markSending
+  await reached('HT 的 markSending（判定时允许补发）', htHold);
+  await waitFor(() => Date.now() - new Date(htRow!.sent_at).getTime() > 10 * 60_000 + 200, 20_000);
+  htHold.release();
+  // HB 与 N 谁先轮到不一定（建行时刻可能落在同一毫秒）：HB 先到就先交还、放开，再等 N
+  let handedBack = false;
+  const handBack = (): void => {
+    h.tk.release(sid(V.hb), h.tk.sharedActor());
+    handedBack = true;
+    hbHold.release();
+  };
+  await waitFor(() => hbHold.reached || nHold.reached, 20_000);
+  if (hbHold.reached) handBack();
   await reached('N 的补发到了假企微（恢复挂在这里）', nHold);
   const waitLines = (): number => logBuf.filter((l) => l.includes('启动恢复还没做完，这次推送排队等待')).length;
   const run = runner.runJobsOnce();
@@ -1503,6 +1641,11 @@ async function restart3(h: Harness): Promise<void> {
     json({ r, last: h.store.getSession(p2Sid)?.messages.at(-1) }),
   );
   nHold.release();
+  // HB：判定时接手人没变，挂在 markSending 上的这期间交还 AI
+  if (!handedBack) {
+    await reached('HB 的 markSending（判定时允许补发）', hbHold);
+    handBack();
+  }
   await run;
   await h.settle();
   const after = Object.fromEntries(
@@ -1521,6 +1664,8 @@ async function restart3(h: Harness): Promise<void> {
   for (const [k, label] of [
     ['q', '超过 10 分钟'],
     ['r', '接手人变了（交还 AI）'],
+    ['ht', '判定时 10 分钟内、等 markSending 期间过了 10 分钟（发请求之前复核）'],
+    ['hb', '判定时接手人没变、等 markSending 期间交还 AI（发请求之前复核）'],
   ] as const) {
     const humanMsg = h.store.getSession(sid(V[k]))?.messages.find((m) => m.author === 'human');
     check(
