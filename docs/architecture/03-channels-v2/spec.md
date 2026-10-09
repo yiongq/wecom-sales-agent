@@ -7,6 +7,7 @@ Amends: 02 的「数据库」（新表 `channel_accounts`、`channel_inbox`；`o
 Supersedes in part: [02](../02-conversations-workbench/spec.md) 的 R7「企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解……」那一句与「推迟」格的 `channel_inbox`（04）；「identity map 与写入 · 一次落库」第 6 步把账本行整体写在存档点之内；「企微：发送账本、回执与去重」里「账本行随会话的下一次落库写（存档点之内……）」一句，与「去重与重放对齐」的五种情况；「identity map 与写入 · 停机」里 spill 文件「trace 与账本行不写」中的「账本行不写」（库里账号的出站行要进 spill，R21）。四处都只在企微状态「在库里」时（R1）被取代，文件存储、以及企微状态是「未导入」「已导出」的 db 存储下原文照旧。原因：02 第 26 步的恢复演练复现了重复回复（备份落在「回复已发出、账本行还没落库」那不到 2 秒的窗口里），02 开放问题 5 的裁决是「复现了就在接第一个真实租户之前另写 spec 提前做」，owner 2026-10-09 确认；这几处的机制本身就是那个窗口的来源，改成「先落库、后发送」才能消掉它，见「与 02 及更早 spec 的关系」。另部分取代 [后台 UX 重做](../../features/console-ux/spec.md)「接口改动」里 `AuditQuery.actions` 的「至多 32 个」：改为至多 64 个（2026-10-09 实现期修订，见下面 `Revisions:` 的 plan 第 15 步一条）
 Revisions: 2026-10-09 实现期修订（plan 第 6 步，与实现同一个分支）：一、`initChannels` 在 db 存储、企微状态「未导入」而 `var/` 里有 `channels-in-db.json` 时也以 `channel_state_in_db` 拒绝（原文只写了「已导出」加标记这一种）：标记只在导入之后出现，库说没导入而标记在，说明库与 `var/` 不是同一时刻的（比如库恢复成了导入之前的备份），照常起会按冷启动只认领不回复、丢掉在途消息；文件存储下有恢复哨兵时照「未导入」处理，记一行并删掉（原文没写这一种）。二、`ChannelAccount.inactiveReason` 只表示「这个账号不能启用」，本阶段只有 `web_channel` 关着的网页账号；欢迎语不合格按没设处理、进启动告警，不写进 `inactiveReason`（原接口注释把两者写在一起，写进去会让 `accountByKey` 不返回这个账号、`/w/:key` 404，与 R19「按没设处理」矛盾）。行为、接口与数据形状的其余部分不变
 Revisions: 2026-10-09 实现期修订（plan 第 15 步，与实现同一个分支）：01「审计」新增的渠道动作只登记已有写入代码的四个（`channel.account_create`、`channel.account_update`、`channel.secrets_update`、`channel.rekey`），`channel.import`、`channel.export`、`channel.restore_cutoff` 由第 14、12 步实现时再登记（审计的一致性检查不许登记没有写入方的动作）。动作一多，审计页「全部类别、不显示登录记录」换算出的 `AuditQuery.actions` 超过后台 UX spec 定的 32 个上限，筛不出来；上限改为 64 个（`src/shared/console-api.ts` 的正则），是对该 spec 一处条款的部分取代，见顶部 `Supersedes in part:`。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 8 步，与实现同一个分支）：「出站 · 发一条 AI 回复」第 3–5 步的接手代次检查只用于 AI 回复、跟进、同意菜单与欢迎语；人工回复与通知（付款确认、顾问确认收款、不同意之后的确认）只比停机截止、不比接手。原文「人工回复、跟进、付款确认、同意菜单……之后同样走第 3–5 步」按字面会让付款确认因为有人接手而取消、客户付了款收不到确认；接手检查是为了不让 AI 抢顾问的话，本 spec 的出站恢复表对通知本来就不看接手，02 发通知也不看接手。行为、接口与数据形状的其余部分不变
 
 ## 背景与问题
 
@@ -397,7 +398,7 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: 'taken
   4. `markSending`；`not_pending` 不发这一段；`absent` 按上面的注释（这一组提交超时过才继续，否则不发）。凡是要继续发的结果（`marked`、提交超时过的 `absent`、`db_unavailable`），**返回之后、发请求之前都再比一次接手代次与停机截止**（`markSending` 期间可能有人接手或到了截止）：被接手就不发，这一段与其余没发的一并取消；过了截止就不发，其余没发的不动，这一组留给重启后的出站恢复。返回 `marked` 的段库里已是 `sending`，被接手迁到 `cancelled`，过了截止迁回 `pending`；`absent`、`db_unavailable` 的段库里没有 `sending`，取消照 R6 的落库路径写，过了截止什么都不另写。这次比较与发请求之间没有 `await`，接手和截止都插不进来，所以 02「normal 段截止之后不再开始新的 send_msg」对每一种发送结果都成立。迁回 `pending` 的短事务写不成时，这一段留在 `sending`、重启后记 `unknown`（没发过，工作台显示「可能没送达」，告警一条）。
   5. send_msg（同一段的重试沿用 msgid；02 的退避重试里那一行可能先记 `unknown`，见迁移表）→ `settleIntent`。
   6. 全部分段有了结果 → 入站 `done`。
-- 人工回复、跟进、付款确认、同意菜单本来就是「先落库后发送」（02 不变量 20、R17），分段的 `pending` 行加进它们那一次落库，之后同样走第 3–5 步。
+- 人工回复、跟进、付款确认、同意菜单本来就是「先落库后发送」（02 不变量 20、R17），分段的 `pending` 行加进它们那一次落库，之后同样走第 3–5 步（人工回复与通知只比停机截止、不比接手代次，见顶部 2026-10-09 第 8 步那条 `Revisions:`）。
 - **运行时才补的段**（卡片发失败之后补的「标题 + 链接」文字）段号取这一组最大段号加 1，单独一个短事务写成 `pending` 之后再走第 4–5 步。
 - **出站行的 `kind`**：库里账号的每一段都记这一组的种类（`ai`、`human`、`followup`、`notice`、`menu`、`welcome`），卡片段也一样，是不是卡片看 `payload.msgtype`；`card` 只出现在 env 账号与 02 留下的旧行上（它们没有 `pending`、`sending`）。恢复表按 `kind` 分支因此覆盖所有段。
 - **窗口计数**（02 R18 的保守口径）：见上表「计入已用条数」。
