@@ -1,6 +1,6 @@
 # 03 · 渠道层 v2
 
-Status: draft
+Status: ready
 Phase: 3 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-09 重排之后的编号）
 Depends on: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md)（开工时须已 implemented：PG 会话存储与每会话写队列、spill、发送账本、清除与删除函数、任务表、告警）；[01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、审计）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)
 Amends: 02 的「数据库」（新表 `channel_accounts`、`channel_inbox`；`outbound_sends` 的新列与三个新状态；`conversations.channel_account_id`；授权；清除与删除函数的删除范围加 `channel_inbox`，新函数 `purge_channel_inbox`）、「identity map 与写入 · 停机」（spill 条目多一段渠道行）、02 不变量 42（表清单加 `channel_inbox`）、02 R22（公开路由加企微按账号的回调与网页渠道三组）、「两种会话存储与启动」（`initChannels` 一步、新的启动拒绝原因、`/healthz` 的 `channels`）、02 R24 与「可观测性与告警」（日志脱敏认新的会话 id 形状、新告警键 `channel`、告警带账号 key）；01 的「审计」（新动作）；00 的「部署 profile 与开关」（新开关 `web_channel`，demo 默认开、prod 封顶为关）；后台 UX spec 的渠道中文名（加 `web`→「网页」，`simulator` 改叫「演示」）。只做新增或收紧
