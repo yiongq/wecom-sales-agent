@@ -500,6 +500,12 @@
 - 变异（隔离副本）16 个全部被抓到，含 plan 要求的三个（插入就计次、`recorded` 不和消息同一事务、cursor 先于插入提交），另有派发就计次、`replied` 不和 `pending` 同一次落库、停机截止也记 `done`、内存 cursor 先于提交推进、`poison` 阈值差一、不判恢复截止点、菜单 / 回执的 `done` 拆开、不判 `too_old`、非文本 `recorded` 推到下一拍、去掉同步校验、回执排进处理链、异常兜底用当下的接手代次。
 - 门禁：四个全绿；带 `PG_TEST_URL` 全绿（WECOM-03 217、CHANNELS 106、DB 1168、STORE 452、OUTBOUND 246、QUOTA 127、WECOM-02 15）；`TZ=UTC` 下 wecom-03 PGlite 137 项、真实 PG 217 项都过；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
 
+**交叉评审与 CI**
+
+- 另派一路只读 Codex 交叉评审，找到 3 处 major（故障注入下的边角路径），由实现的子 agent 修掉、各补一条回归断言（撤回修复时断言失败）：一、出站 `pending` 还没提交时收到失败回执，回执先把入站记 `done`，之后 `pending` 才落库，库里停在 `pending`、内存是 `failed`，重启可能补发已失败的段——本进程计划过的段，回执短事务按迁移表 upsert 整行 `failed`（没有就插入，有 `pending` 就迁），同一事务记回执行 `done`；未提交的 `pending` 会让这次插入等锁，之后晚到的 `pending` 与结果都改不了 `failed`；带入站的回执改成 1、5、30 秒重试三次，都失败时回执行留在 `received` 交给重启恢复。二、停机时队头计次失败被放下，同一会话的队尾照样出队——队头因停机放下时停下这个会话的处理链（`haltedChains`），整段按 `ord` 留给重启恢复。三、计次事务实际提交而回包丢失，重试又加一次——`bumpInboxAttempts` 带出队时读到的 attempts 做条件更新，没改到而库里已更大就读回、不再加。
+- CI 上「重启后 cursor 从库里接着拉」读到空 cursor：`load` 改成异步读库后，读完之前运行时也算空闲，断言比 cursor 读回早——改为先等第一次 `sync_msg` 真的发出、再等空闲。
+- 修后：`TZ=UTC` 加 `PG_TEST_URL` 的 `pnpm test` 全绿（WECOM-03 223、OUTBOUND 246、QUOTA 127、CHANNELS 106、DB 1168、STORE 452），PGlite 下 WECOM-03 140。
+
 **给后面步骤的注意**
 
 - 第 10 步：入口是 `startWecomAccount({ pull: false })`（`recovery = 'blocked'`）。恢复流程：先处理 `openOutbound`，再用 `dispatchInboxRows` 按 `ord` 派发没结束的入站，在 `processInboxRow` 里补上 `recorded` / `replied` 两种状态与保底（`received` 那一支已经能用，`__wecomTest.dispatchOpen` 是它的自测版本），最后把 recovery 改成 done 并 `startRuntime`。账本预载的出站行不带 inboxId、payload、segment，`cancelInboxIntents` 看不到它们，要用 `openOutbound`。回执重启后只需重做那个短事务。已知缺口：`acceptPage` 的 COMMIT 回包丢了时，这几行在本进程里不会派发，要等重启恢复。
