@@ -661,7 +661,7 @@ async function dbScenarios(h: Harness): Promise<void> {
       );
       assert.equal(ch.get(web)!.secrets, null);
       assert.deepEqual(channelsHealth(), { mode: 'db', accounts: 3, failing: 0, stuck: 0 });
-      startChannels(); // 库里账号这一步不起企微：不抛、不拉、不写 var/wecom-cursor.json
+      startChannels(); // 两个企微账号都有没结束的入站与出站行：启动恢复是第 10 步，只建运行时、不拉取，不抛、不写 var/wecom-cursor.json
       assert.ok(!fs.existsSync(wecomMod.__test.STATE_FILE));
       if (h.pglite) await healthzAndCallback();
     },
@@ -813,7 +813,10 @@ async function dbScenarios(h: Harness): Promise<void> {
   });
 }
 
-/** /healthz 的 channels 形状；企微状态在库里时 /wecom/callback 不读 env 的回调凭据（第 7 步之前 GET 404、POST 回 success） */
+/**
+ * /healthz 的 channels 形状；企微状态在库里时 /wecom/callback 不读 env 的回调凭据，只认前缀是 wecom: 的库里账号：
+ * 签名对不上 GET 404、POST 回 success（不拉）
+ */
 async function healthzAndCallback(): Promise<void> {
   process.env.SERVER_SELFTEST = '1';
   const { app } = await import('../server.js');

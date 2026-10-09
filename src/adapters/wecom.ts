@@ -29,20 +29,22 @@
 // - env 账号（文件存储，企微状态「未导入」「已导出」）照 02：凭据每次现读 WECOM_*，状态在 var/wecom-cursor.json，会话前缀 wecom:，
 //   日志前缀 [wecom]；锁定的 __test 指向它。
 // - 企微状态在库里时 env 账号整条不走（不读 WECOM_*、不拉、不写 var/wecom-cursor.json）；库里每个启用的企微账号由 startChannels
-//   经 startWecomAccount 起一个运行时：凭据来自 channel_accounts（解密后是 Redacted），拉取状态是过渡后端（第 9 步换成 channel_inbox），
-//   发送走 03 的「先落库、后发送」（第 8 步，见下文「03 先落库、后发送」一节）。
+//   经 startWecomAccount 起一个运行时：凭据来自 channel_accounts（解密后是 Redacted），拉取状态在 channel_inbox（第 9 步，
+//   src/channels/inbox.ts，见下文「03 入站」一节：cursor 与这一页的入站行同一个事务、入站状态机、出队计次；没有内存里的 handled 与
+//   在途表），发送走 03 的「先落库、后发送」（第 8 步，见下文「03 先落库、后发送」一节）。
 // - 会话 id = 账号前缀 + external_userid（默认账号 wecom:，之后建的 wecom:<key>:）；发往一个会话的消息经 accountForSession 找到账号，
 //   只带那个账号的 open_kfid 与 access_token；停用账号名下的会话推送返回 false。
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ChannelAdapter, ChatMessage, OutboundKind, PreparedPush, PushOpts, Session } from '../types.js';
-import { handleMessage, inboundText, replyMessageOf } from '../engine.js';
+import { handleMessage, inboundText, replyMessageOf, trimSessionMessages } from '../engine.js';
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
 // 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明，与引擎同一句（不变量 28 的适配器部分）
 import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
 import type { SensitiveCategory } from '../handoff/triggers.js';
 import { currentPrivacyNotice, privacyLink } from '../privacy/privacy.js';
 import {
+  cancelInboxIntents,
   cancelIntents,
   commitOutbound,
   markSending,
@@ -51,6 +53,7 @@ import {
   noteUnknown,
   noteUnsafeSend,
   onSendFail,
+  onSendFailInbox,
   OutboundPlanError,
   planOutbound,
   planRuntimeSegment,
@@ -65,7 +68,16 @@ import {
 import { cleanText } from '../shared/text.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logQuote, withConversationLog } from '../log.js';
-import { getOrCreateSession, getOrder, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
+import {
+  getOrCreateSession,
+  getOrder,
+  getSession,
+  onShutdown,
+  queueInboxState,
+  recentMsgids,
+  saveSession,
+  writeInboxStateNow,
+} from '../store.js';
 import { routeForProposal } from '../tools.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
 import {
@@ -77,9 +89,10 @@ import {
   loadedAccounts,
   type ChannelAccount,
 } from '../channels/accounts.js';
+import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
 import { Redacted, type WecomSecrets } from '../channels/secrets.js';
-import type { Db } from '../db/client.js';
-import { AccountCursorState, FileWecomState, markHandled, STATE_FILE, type KfMessage, type WecomStateBackend } from './wecom-state.js';
+import type { InboxAbandonReason } from '../shared/channel-types.js';
+import { FileWecomState, markHandled, STATE_FILE, type KfMessage } from './wecom-state.js';
 
 const API_BASE = 'https://qyapi.weixin.qq.com/cgi-bin';
 
@@ -204,8 +217,11 @@ interface RuntimeSpec {
   config: () => WecomConfig | null;
   welcomeText?: string;
   welcomeBackText?: string;
-  state: WecomStateBackend;
+  state: RuntimeState;
 }
+
+/** 拉取状态：env 账号是 02 的文件后端（cursor 文件、handled、在途表）；库里的账号是 channel_inbox（第 9 步） */
+type RuntimeState = FileWecomState | AccountInbox;
 
 /**
  * 一个企微账号的运行时（03 spec R10）。字段就是 02 的模块级状态，每个账号一份；收发与处理的函数都以它为第一个参数。
@@ -229,8 +245,8 @@ class WecomRuntime {
   readonly welcomeText: string;
   readonly welcomeBackText: string;
   readonly welcomeTexts: ReadonlySet<string>;
-  /** cursor、handled、在途表、冷启动（wecom-state.ts） */
-  readonly state: WecomStateBackend;
+  /** env 账号：cursor、handled、在途表、冷启动（wecom-state.ts）；库里的账号：channel_inbox 与库里的 cursor（channels/inbox.ts） */
+  readonly state: RuntimeState;
 
   // access_token：以 Redacted 存放（R9），过期瞬间多路径只发一次 gettoken
   token: Redacted<string> | null = null;
@@ -266,7 +282,7 @@ class WecomRuntime {
   readyPromise: Promise<void> | null = null;
   /**
    * 启动恢复做没做完（R5、R10）。blocked：库里这个账号有没结束的入站行或没结果的出站行，这一版的启动恢复处理不了（第 10 步接上），
-   * 只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理）；回调与轮询都不拉
+   * 只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理，不变量 12）；回调与轮询都不拉
    */
   recovery: 'done' | 'blocked' = 'done';
 
@@ -891,6 +907,11 @@ interface OutGroup {
   cards: Map<string, { title: string; url: string }>;
   /** 每段的 pending 落没落库（commitOutbound 的结果；运行时补的段各自的）：markSending 返回 absent 时据它判照不照发 */
   commit: Map<string, 'committed' | 'timeout'>;
+  /**
+   * 回的是哪条入站（03 第 9 步）：客户消息的回复、非文本的引导提示。planOutbound 把入站行改 replied（与 pending 同一次落库）；
+   * 这一组全部分段有了结果（cancelled 也算）时记 done，停在 pending 的（停机截止）不记、留给重启恢复。其余各类为 null
+   */
+  inboxId: string | null;
 }
 
 /** 一组发完（或停下）的结果：ok 是每段都送出（卡片发失败而补的文字送出了也算）；stop 是停在哪一步 */
@@ -955,15 +976,16 @@ function planGroup(
   payloads: readonly OutboundPayload[],
   card: { title: string; url: string } | null,
   gen: number,
+  inboxId: string | null = null,
 ): OutGroup {
   const account = accountOf(rt);
   if (!account) throw new OutboundPlanError('运行时的账号不在装上的账号里');
-  const intents = planOutbound(account, { sessionId, hasSession: getSession(sessionId) !== undefined }, kind, message, null, payloads);
+  const intents = planOutbound(account, { sessionId, hasSession: getSession(sessionId) !== undefined }, kind, message, inboxId, payloads);
   const cards = new Map<string, { title: string; url: string }>();
   const link = intents.find((i) => i.payload.msgtype === 'link');
   if (card && link) cards.set(link.msgid, card);
   const checksTakeover = kind !== 'notice' && kind !== 'human';
-  return { rt, cfg, uid: sessionId.slice(rt.prefix.length), sessionId, intents, gen, checksTakeover, cards, commit: new Map() };
+  return { rt, cfg, uid: sessionId.slice(rt.prefix.length), sessionId, intents, gen, checksTakeover, cards, commit: new Map(), inboxId };
 }
 
 /** 这一组没排进发送：日志一行（只有原因），会话加一条说明（告警由账本的 onPlanRejected 推） */
@@ -1112,10 +1134,21 @@ async function sendSegment(
 }
 
 /**
- * 发一组（第 2 步之后的 commitOutbound 与第 3–5 步）：每段先比停机截止（过了就停，这一段与之后的留在 pending，重启后按出站恢复
- * 表处理），再比接手代次（变了就把这一组没发的段 cancelled），再走 sendSegment。卡片发失败补「标题 + 链接」（运行时才补的段）
+ * 发一组（第 2 步之后的 commitOutbound 与第 3–5 步），见 sendGroup。回一条入站的组（inboxId）发完之后：全部分段有了结果
+ * （accepted、rejected、unknown、failed，被接手打断而 cancelled 的也算——那一组不会再发）→ 入站 done；停在停机截止（deferred）的
+ * 不记，分段留在 pending、入站留在 replied，重启后按出站恢复表处理（第 10 步）
  */
 async function runGroup(g: OutGroup): Promise<GroupOutcome> {
+  const out = await sendGroup(g);
+  if (g.inboxId !== null && out.stop !== 'deferred') finishInboxRow(g.sessionId, g.inboxId, 'done');
+  return out;
+}
+
+/**
+ * 每段先比停机截止（过了就停，这一段与之后的留在 pending，重启后按出站恢复表处理），再比接手代次（变了就把这一组没发的段 cancelled），
+ * 再走 sendSegment。卡片发失败补「标题 + 链接」（运行时才补的段）
+ */
+async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
   const committed = await commitOutbound(g.intents);
   for (const i of g.intents) if (!g.commit.has(i.msgid)) g.commit.set(i.msgid, committed);
   const queue = [...g.intents];
@@ -1204,7 +1237,10 @@ async function pushDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, tex
   return out.ok && out.stop === null;
 }
 
-/** 发一组文本（适配器自己发的：引导提示、异常兜底、欢迎语、不同意后的确认），返回结果 */
+/**
+ * 发一组文本（适配器自己发的：引导提示、异常兜底、欢迎语），返回结果。inboxId（引导提示回的那条非文本入站）：排进去的组由 runGroup
+ * 记 done；没过校验、什么都没排的这里记 done（这条入站处理完了，只是提示没发出去）
+ */
 async function sendTextDb(
   rt: WecomRuntime,
   cfg: WecomConfig,
@@ -1213,12 +1249,14 @@ async function sendTextDb(
   kind: OutboundKind,
   message: ChatMessage | null,
   gen = takeoverGen(sessionId),
+  inboxId: string | null = null,
 ): Promise<GroupOutcome> {
   let g: OutGroup;
   try {
-    g = planGroup(rt, cfg, sessionId, kind, message, textPayloads(text), null, gen);
+    g = planGroup(rt, cfg, sessionId, kind, message, textPayloads(text), null, gen, inboxId);
   } catch (e) {
     planFailed(rt, sessionId, e);
+    if (inboxId !== null) finishInboxRow(sessionId, inboxId, 'done');
     return { ok: false, stop: null };
   }
   return runGroup(g);
@@ -1325,7 +1363,7 @@ function isMenuClick(msg: KfMessage): boolean {
  * 「不同意」转人工且发一句确认（kind='notice'，不占 AI 回复的身份）；「同意」不转人工、不用额外回一句。
  * 这条点击消息本身不是客户话语，不进会话记录、不进引擎——menu_id 已经是结构化的决定，没有要模型理解的内容；
  * 只有「不同意」时才追加一条 agent 消息（下面的确认回复），客户这次点击在会话里的留痕就是那条确认回复本身（最小做法）。
- * 没有会话（客户只点过菜单、从没发过消息，几乎不会发生）时什么都不做
+ * 没有会话（客户只点过菜单、从没发过消息，几乎不会发生）时什么都不做。env 账号（02）用；库里的账号见 processMenuRow
  */
 async function handleMenuClick(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage): Promise<void> {
   const notice = currentPrivacyNotice();
@@ -1340,17 +1378,7 @@ async function handleMenuClick(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessag
   if (!applied) return;
   saveSession(s);
   if (parsed.decision !== 'declined') return;
-  let ok: boolean;
-  if (isDbAccount(rt)) {
-    // 03：确认的 pending 与同意记录同一次落库（同一段同步代码里排），提交之后才发
-    let g: OutGroup | null = null;
-    try {
-      g = planGroup(rt, cfg, s.id, 'notice', null, textPayloads(CONSENT_DECLINED_REPLY), null, takeoverGen(s.id));
-    } catch (e) {
-      planFailed(rt, s.id, e);
-    }
-    ok = g ? (await runGroup(g)).ok : false;
-  } else ok = await sendText(rt, cfg, uid!, CONSENT_DECLINED_REPLY, { kind: 'notice', message: null });
+  const ok = await sendText(rt, cfg, uid!, CONSENT_DECLINED_REPLY, { kind: 'notice', message: null });
   if (ok) {
     s.messages.push({ role: 'agent', content: CONSENT_DECLINED_REPLY, at: Date.now() });
     saveSession(s);
@@ -1449,9 +1477,34 @@ function dedupeFor(rt: WecomRuntime, sessionId: string, msg: KfMessage, replay: 
   return sentOrSkip(reply);
 }
 
+// 小红书来的客户第一条常是笔记截图、行程截图或语音。一句「只能处理文字」是把
+// 首响这个唯一能碾压人工的环节浪费掉——收不到内容也要接住话头、把人拉回文字。
+const NON_TEXT_HINT: Record<string, string> = {
+  image: '图我收到了～不过我这边暂时看不了图片内容，您用文字说一下想去哪、几位出行，我马上给您找线路。',
+  voice: '语音我这边暂时听不了，您打几个字给我就行～想去哪儿、几位出行、大概什么时候走？',
+  video: '视频收到啦～您用文字说说想要什么样的行程，我这就帮您安排。',
+  file: '文件我这边暂时打不开，方便的话把关键需求打字发我：目的地、几位、大概日期。',
+  link: '链接收到～您想找类似的行程吗？跟我说下目的地和人数，我帮您对一条。',
+  location: '位置收到～您是想从这边出发，还是想去这附近玩？跟我说下大概日期和人数。',
+};
+const NON_TEXT_HINT_OTHER = '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
+const NON_TEXT_PLACEHOLDER: Record<string, string> = {
+  image: '[图片]',
+  voice: '[语音]',
+  video: '[视频]',
+  file: '[文件]',
+  link: '[链接]',
+  location: '[位置]',
+};
+/** 非文本消息记进会话的占位 */
+const placeholderOf = (msgtype: string): string => NON_TEXT_PLACEHOLDER[msgtype] ?? `[其他消息：${msgtype}]`;
+/** 处理消息抛错时的兜底回复（AI 回复的身份、不挂入站：spec 出站恢复表里「没有 inbox_id 的 ai（异常道歉）」） */
+const SORRY_TEXT = '抱歉，系统开小差了，请稍后再发一次，或直接联系人工顾问。';
+
 /**
- * 处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放。
- * 返回 'deferred'：停机的 normal 段已截止、回复没开始发，这条留在在途表里，重启后重放（情况 4 原样补发、情况 3 重跑）
+ * env 账号（02 的老路）处理一条客户消息（调用方已去重）。replay=true 表示上个进程没处理完、启动时按原文重放。
+ * 返回 'deferred'：停机的 normal 段已截止、回复没开始发，这条留在在途表里，重启后重放（情况 4 原样补发、情况 3 重跑）。
+ * 库里的账号不走这里：入站行的处理见下文「03 入站」一节的 processInboxRow
  */
 function handleCustomerMessage(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = false): Promise<'deferred' | void> {
   // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
@@ -1460,24 +1513,6 @@ function handleCustomerMessage(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessag
 async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay: boolean): Promise<'deferred' | void> {
   const sessionId = rt.prefix + msg.external_userid;
   if (msg.msgtype !== 'text' || !msg.text?.content) {
-    // 小红书来的客户第一条常是笔记截图、行程截图或语音。一句「只能处理文字」是把
-    // 首响这个唯一能碾压人工的环节浪费掉——收不到内容也要接住话头、把人拉回文字。
-    const HINT: Record<string, string> = {
-      image: '图我收到了～不过我这边暂时看不了图片内容，您用文字说一下想去哪、几位出行，我马上给您找线路。',
-      voice: '语音我这边暂时听不了，您打几个字给我就行～想去哪儿、几位出行、大概什么时候走？',
-      video: '视频收到啦～您用文字说说想要什么样的行程，我这就帮您安排。',
-      file: '文件我这边暂时打不开，方便的话把关键需求打字发我：目的地、几位、大概日期。',
-      link: '链接收到～您想找类似的行程吗？跟我说下目的地和人数，我帮您对一条。',
-      location: '位置收到～您是想从这边出发，还是想去这附近玩？跟我说下大概日期和人数。',
-    };
-    const PLACEHOLDER: Record<string, string> = {
-      image: '[图片]',
-      voice: '[语音]',
-      video: '[视频]',
-      file: '[文件]',
-      link: '[链接]',
-      location: '[位置]',
-    };
     // 这一条不经引擎，同样是一轮（02 R16「每处理一条客户消息收集一条轮次记录」）：口径同引擎的确定性路径，
     // 回了固定提示记 deterministic、已转人工不回话记 silent；重放时提示已经发过、什么都不做的不算一轮（同重发已生成的回复）。
     // 只记轮次、关联提示消息的 turnId，客户收到的与会话里记下的都不变
@@ -1491,7 +1526,7 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
       startTurn(sessionId);
       const stageBefore = session.stage;
       if (seen < 0) {
-        const content = PLACEHOLDER[msg.msgtype] ?? `[其他消息：${msg.msgtype}]`;
+        const content = placeholderOf(msg.msgtype);
         session.messages.push({ role: 'customer', content, at: Date.now(), msgid: msg.msgid, sentAt: msg.send_time * 1000 });
         // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
         if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
@@ -1502,28 +1537,17 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
         endTurn('silent', '', stageBefore, session.stage);
         return; // 与文本消息一致：只入库，交给真人
       }
-      const hint = HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
+      const hint = NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER;
       // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
       if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
       // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
       const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
-      let delivered: boolean;
-      if (isDbAccount(rt)) {
-        // 03：先落库再发；停机截止之后不开始发、分段留在 pending（重启后按出站恢复处理），这一轮也那时再记
-        const out = await sendTextDb(rt, cfg, sessionId, hint, 'ai', sent);
-        if (out.stop === 'deferred') {
-          console.log(`${rt.tag} 停机中、发送已截止，引导提示留在 pending（重启后补发）`);
-          return 'deferred';
-        }
-        delivered = out.ok;
-      } else {
-        // 停机的 normal 段已截止：不开始发，留给重启时重放（占位已记下，那时补发提示；这一轮也那时再记）
-        if (sendsClosed(rt)) {
-          console.log(`${rt.tag} 停机中、发送已截止，引导提示留到重启后补发`);
-          return 'deferred';
-        }
-        delivered = await sendText(rt, cfg, msg.external_userid, hint, { kind: 'ai', message: sent });
+      // 停机的 normal 段已截止：不开始发，留给重启时重放（占位已记下，那时补发提示；这一轮也那时再记）
+      if (sendsClosed(rt)) {
+        console.log(`${rt.tag} 停机中、发送已截止，引导提示留到重启后补发`);
+        return 'deferred';
       }
+      const delivered = await sendText(rt, cfg, msg.external_userid, hint, { kind: 'ai', message: sent });
       if (delivered) {
         const s = getSession(sessionId);
         if (s) {
@@ -1570,7 +1594,6 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
       console.log(`${rt.tag} 静默（阶段=${reply.stage}，转人工后不自动回复）`);
       return; // 转人工后 AI 沉默，交给真人
     }
-    if (isDbAccount(rt)) return await replyDb(rt, cfg, sessionId, reply, gen, t0);
     if (sendsClosed(rt)) {
       // 停机的 normal 段已截止（回复在 drain、late 段才生成好）：这时开始发，账本行已无处可写，退出时还没回包的话重启后会再发一遍。
       // 不发，留在在途表里：回复已写进会话，重启后按情况 4 原样补发一次
@@ -1621,16 +1644,16 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
     console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
   } catch (err) {
     console.error(`${rt.tag} 处理消息失败:`, err);
-    const sorry = '抱歉，系统开小差了，请稍后再发一次，或直接联系人工顾问。';
-    if (isDbAccount(rt)) await sendTextDb(rt, cfg, sessionId, sorry, 'ai', null, gen);
-    else await sendText(rt, cfg, msg.external_userid, sorry, { kind: 'ai', message: null });
+    await sendText(rt, cfg, msg.external_userid, SORRY_TEXT, { kind: 'ai', message: null });
   }
 }
 
 /**
  * 库里的企微账号发一条 AI 回复（03 spec「出站 · 发一条 AI 回复」第 2–6 步）：先确定要不要卡片（要的话先取缩略图：传不上去就按 02 的
  * 规则整段原文发，所以切分在取缩略图之后），切分段，planOutbound，commitOutbound，再逐段比截止与接手、markSending、发。
- * 生成期间被接手、停机截止之后才回包的，也先把分段排进库：前者记 cancelled（工作台「未发送」）、后者留在 pending（重启后补发）
+ * 生成期间被接手、停机截止之后才回包的，也先把分段排进库：前者记 cancelled（工作台「未发送」）、后者留在 pending（重启后补发）。
+ * inboxId：这条回复回的入站行。replied 与分段的 pending 同一次落库（planOutbound），全部分段有了结果记 done（runGroup）；
+ * 没过校验、什么都没排的这里记 done
  */
 async function replyDb(
   rt: WecomRuntime,
@@ -1639,6 +1662,7 @@ async function replyDb(
   reply: { text: string; stage: string; message: ChatMessage | null },
   gen: number,
   t0: number,
+  inboxId: string,
 ): Promise<'deferred' | void> {
   const body = formatForWecom(cfg, reply.text);
   const wantsCard = !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
@@ -1646,9 +1670,10 @@ async function replyDb(
   const { payloads, card } = payloadsFor(cfg, body, 'ai', thumb !== null);
   let g: OutGroup;
   try {
-    g = planGroup(rt, cfg, sessionId, 'ai', reply.message, payloads, card, gen);
+    g = planGroup(rt, cfg, sessionId, 'ai', reply.message, payloads, card, gen, inboxId);
   } catch (e) {
     planFailed(rt, sessionId, e);
+    finishInboxRow(sessionId, inboxId, 'done');
     return;
   }
   const out = await runGroup(g);
@@ -1681,6 +1706,338 @@ async function replyDb(
   console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
 }
 
+// ---------------- 03 入站（库里的企微账号） ----------------
+// docs/architecture/03-channels-v2/spec.md「入站：channel_inbox」、R2、R3、R7 的恢复截止、R21，不变量 1、2、3、8、11、12。
+// 一页 → acceptPage（插入与推进 cursor 同一个事务）→ 提交之后，新插入的行按会话排进处理链（同一会话串行、按 ord，跨会话并发）。
+// 出队时依次判：attempts 已到 3 → abandoned（poison）；sent_at 早于 48 小时 → abandoned（too_old）；sent_at 不晚于账号的恢复截止点
+// → 只补记（message、menu_click）；其余先 beginAttempt（加 1 并提交），再按种类处理：
+//   message      文本：handleMessage 带 inboxId，引擎在写进客户消息的那一段同步代码里排 recorded；静默 → done；有回复 → planOutbound
+//                带 inboxId（replied 与 pending 同一次落库），全部分段有了结果 → done（runGroup）。非文本：适配器写占位，占位与 recorded
+//                同一次落库，引导提示同样带 inboxId 走 planOutbound
+//   menu_click   applyConsentDecision 改了会话，同一次落库记 done；已有结论的照 02 忽略，同样记 done
+//   enter_session acceptPage 里直接记 done（只为去重），欢迎语照 02 不排队
+// 发送失败回执（send_fail）照 02 不排进处理链、马上处理：出站行迁 failed 与入站行 done 同一个短事务（onSendFailInbox），会话里的说明
+// 照 02 经会话落库（排在正在退避重试的那一句后面的话，那一段看不到自己已是 failed，第 8 步审查的 maySendAgain 就落空了）
+// 没有会话可挂的状态变化走 writeInboxStateNow（短事务）。启动时有没结束的行，这一版不派发（startChannels 的闸门，第 10 步接上恢复）
+
+/** 出队时 attempts 已到这个数就记 poison：处理过三次都没走完（即第三次重启时停下，与 02 的「重放两次」同一口径） */
+const MAX_INBOX_ATTEMPTS = 3;
+/** beginAttempt 写不进库时这一行在处理链里等着重试（不跳过：同一会话排在它后面的不能先处理，不变量 12）；停机时放下，留给下次启动 */
+const ATTEMPT_RETRY_MS = [1_000, 5_000, 30_000, 120_000];
+/** 恢复截止点之前的消息只补记（R7），会话里加这一句（spec 原话；同一会话一次恢复只加一条） */
+const RESTORE_CUTOFF_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
+
+/** 库里账号的运行时的入站状态 */
+function inboxOf(rt: WecomRuntime): AccountInbox {
+  if (rt.state.kind !== 'channel_inbox') throw new Error(`${rt.tag} 不是库里的账号，没有 channel_inbox`);
+  return rt.state;
+}
+
+/**
+ * 一行入站记 done / abandoned：会话在内存里就随它的下一次落库（主事务，与调用方同一段同步代码里排的会话改动同一次提交）；
+ * 没有会话可挂的单独一个短事务（写不进去只记一行，入站行停在之前的状态、重启时由启动恢复处理）
+ */
+function finishInboxRow(
+  sessionId: string | null,
+  inboxId: string,
+  state: 'done' | 'abandoned',
+  reason?: InboxAbandonReason,
+): Promise<void> {
+  if (sessionId && getSession(sessionId)) {
+    queueInboxState(sessionId, { inboxId, state, ...(reason ? { reason } : {}) });
+    return Promise.resolve();
+  }
+  return writeInboxStateNow({ inboxId, state, ...(reason ? { reason } : {}) }).then((ok) => {
+    if (!ok) console.error(`[wecom] 入站行没记成 ${state}（库写不进去），重启时由启动恢复处理`);
+  });
+}
+
+/**
+ * 派发一批入站行（acceptPage 新插入的，按 ord；第 10 步的启动恢复也从这里派发没结束的行）：进入会话事件（done）照 02 直接发欢迎语、
+ * 不排队；已结束的（冷启动的 abandoned）不派发；发送失败回执照 02 不排队、马上处理（排在这个会话正在处理的那一句后面的话，退避中的
+ * 那一段看不到自己已是 failed，会再发一次请求，不变量 5）；其余按会话排进处理链。page：这一页的原样消息（欢迎语要事件里的
+ * welcome_code，进入会话事件的入站行不存原文）
+ */
+function dispatchInboxRows(rt: WecomRuntime, cfg: WecomConfig, rows: readonly InboxRow[], page?: ReadonlyMap<string, KfMessage>): void {
+  for (const row of rows.toSorted((a, b) => a.ord - b.ord)) {
+    if (row.kind === 'enter_session') {
+      const msg = page?.get(row.msgid);
+      if (row.state === 'done' && msg) dispatchWelcome(rt, cfg, msg);
+      continue;
+    }
+    if (row.state === 'done' || row.state === 'abandoned') continue;
+    if (row.kind === 'send_fail' && row.state === 'received') {
+      const t = processReceiptRow(row).catch((err) => console.error(`${rt.tag} 回执处理异常:`, err));
+      rt.eventTasks.add(t);
+      void t.finally(() => rt.eventTasks.delete(t));
+      continue;
+    }
+    enqueueForUser(rt, row.conversationId ?? row.msgid, () => processInboxRow(rt, cfg, row));
+  }
+}
+
+/** 处理链轮到一行：出队判定、计次，再按种类处理 */
+async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): Promise<void> {
+  const inbox = inboxOf(rt);
+  if (row.attempts >= MAX_INBOX_ATTEMPTS) return abandonInboxRow(rt, row, 'poison');
+  if (row.sentAt !== null && row.sentAt < Date.now() - REPLAY_MAX_AGE_MS) return abandonInboxRow(rt, row, 'too_old');
+  const cutoff = inbox.recordOnlyUntil;
+  if (cutoff !== null && row.sentAt !== null && row.sentAt <= cutoff && (row.kind === 'message' || row.kind === 'menu_click')) {
+    return recordOnlyInboxRow(rt, row, cutoff);
+  }
+  if (row.state !== 'received') {
+    // TODO(03 第 10 步)：recorded、replied 的行按入站恢复表处理（保底、按同一 msgid 补发、以 alreadyRecorded 重跑）。
+    // 这一版的运行时只派发新收的行，启动时有没结束的行就不拉取（startChannels 的闸门），走不到这里
+    console.error(`${rt.tag} ⚠️ 入站行停在 ${row.state}，这一版不处理（启动恢复是第 10 步）`);
+    return;
+  }
+  const attempts = await beginInboxAttempt(rt, inbox, row);
+  if (attempts === null) return;
+  const r: InboxRow = { ...row, attempts };
+  if (r.kind === 'message') return processMessageRow(rt, cfg, r);
+  if (r.kind === 'menu_click') return processMenuRow(rt, cfg, r);
+  console.error(`${rt.tag} ⚠️ 不认识的入站种类 ${r.kind}，记 done`);
+  return finishInboxRow(r.conversationId, r.id, 'done');
+}
+
+/** 出队计次（单独一个短事务，提交之后才处理）。写不进库就在处理链里等着重试；行已结束或已不在库里、停机中放下时返回 null */
+async function beginInboxAttempt(rt: WecomRuntime, inbox: AccountInbox, row: InboxRow): Promise<number | null> {
+  for (let i = 0; ; i++) {
+    try {
+      return await inbox.beginAttempt(row);
+    } catch (e) {
+      if (e instanceof InboxRowGone) {
+        console.warn(`${rt.tag} 一行入站出队时已结束或已被清除，不再处理`);
+        return null;
+      }
+      if (rt.stopping) {
+        console.error(`${rt.tag} 停机中，一行入站计次没写进库：留给下次启动（这一行不处理）`);
+        return null;
+      }
+      const delay = ATTEMPT_RETRY_MS[Math.min(i, ATTEMPT_RETRY_MS.length - 1)]!;
+      const code = (e as { code?: unknown } | null)?.code;
+      console.error(
+        `${rt.tag} 一行入站计次没写进库（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}），${delay / 1000} 秒后再试`,
+      );
+      // 分成一秒一秒等：停机时不必等满整段退避
+      for (let waited = 0; waited < delay && !rt.stopping; waited += 1_000) await new Promise((r) => setTimeout(r, 1_000));
+    }
+  }
+}
+
+/**
+ * poison、too_old：记 abandoned（带原因），名下没发的段取消，会话加一条说明让顾问看见（02 的同一句），告警（channel）。
+ * 说明与告警只对客户的话（消息、菜单点击）；回执不是客户的话，只记 abandoned 与一行日志。没有会话的不建会话，入站行单独一个短事务
+ */
+async function abandonInboxRow(rt: WecomRuntime, row: InboxRow, reason: 'poison' | 'too_old'): Promise<void> {
+  const why = reason === 'poison' ? `已重放 ${row.attempts - 1} 次仍未处理完` : '已超过 48h 发送窗口';
+  const customer = row.kind === 'message' || row.kind === 'menu_click';
+  console.error(
+    `${rt.tag} ⚠️ 放弃一条未处理完的${customer ? '客户消息' : '回执'}（${why}）:`,
+    row.conversationId ? convLabel(row.conversationId) : '?',
+  );
+  const s = row.conversationId ? getSession(row.conversationId) : undefined;
+  cancelInboxIntents(row.id);
+  if (s && customer) {
+    s.messages.push({ role: 'system', content: `⚠️ 客户有一条消息 AI 未能处理（${why}），请人工回复`, at: Date.now() });
+    saveSession(s, false);
+  }
+  // 与上面的说明同一段同步代码：同一次落库
+  const done = finishInboxRow(row.conversationId, row.id, 'abandoned', reason);
+  if (customer) noteInboxAbandoned({ reason, account: rt.key });
+  await done;
+}
+
+/**
+ * 恢复截止点之前的消息（R7、不变量 9）：不调引擎、不发送。客户消息不在会话里时照常写进会话（非文本写占位），追加一条说明（同一会话
+ * 一次恢复只加一条：截止点之后加过就不再加），入站行记 abandoned（restore_cutoff），同一次落库；菜单点击不补记
+ */
+function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Promise<void> {
+  const sessionId = row.conversationId;
+  const msg = row.kind === 'message' ? (row.payload as KfMessage | null) : null;
+  if (sessionId && msg) {
+    const s = accountSession(rt, sessionId);
+    const known = s.messages.some((m) => m.msgid === row.msgid) || recentMsgids(sessionId).has(row.msgid);
+    if (!known) {
+      const content = msg.msgtype === 'text' && msg.text?.content ? inboundText(msg.text.content) : placeholderOf(msg.msgtype);
+      s.messages.push({ role: 'customer', content, at: Date.now(), msgid: row.msgid, ...(row.sentAt ? { sentAt: row.sentAt } : {}) });
+      trimSessionMessages(s);
+    }
+    if (!s.messages.some((m) => m.role === 'system' && m.content === RESTORE_CUTOFF_NOTE && m.at > cutoff)) {
+      s.messages.push({ role: 'system', content: RESTORE_CUTOFF_NOTE, at: Date.now() });
+    }
+    saveSession(s);
+  }
+  console.log(`${rt.tag} 恢复截止点之前的${row.kind === 'message' ? '客户消息只补记' : '菜单点击不补记'}，不回复`);
+  cancelInboxIntents(row.id);
+  const done = finishInboxRow(sessionId, row.id, 'abandoned', 'restore_cutoff');
+  noteInboxAbandoned({ reason: 'restore_cutoff', account: rt.key });
+  return done;
+}
+
+/** 客户消息（文本与非文本） */
+function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): Promise<void> {
+  const msg = row.payload as KfMessage;
+  const sessionId = row.conversationId ?? rt.prefix + msg.external_userid;
+  // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
+  return withConversationLog(sessionId, async () => {
+    if (msg.msgtype !== 'text' || !msg.text?.content) return processNonTextRow(rt, cfg, row, msg, sessionId);
+    const t0 = Date.now();
+    console.log(`${rt.tag} 收到客户消息: "${logQuote(msg.text.content)}"`);
+    // 接手代次在这一轮开始时记下，发之前再比（不变量 28 的适配器部分）；catch 里的兜底道歉也用它（模型等待期间被接手、随后模型
+    // 报错时，拿接手之后的新代次去比会全过，道歉照发给客户——第 8 步审查）
+    const gen = takeoverGen(sessionId);
+    try {
+      // 非默认账号：会话先带着 channelAccountId 建好，引擎拿到的就是它（默认账号由引擎建）
+      if (rt.sessionAccountId) accountSession(rt, sessionId);
+      const r = await handleMessage(sessionId, msg.text.content, 'wecom', {
+        msgid: msg.msgid,
+        sentAt: msg.send_time * 1000,
+        inboxId: row.id,
+      });
+      void enrichCustomerProfile(rt, cfg, msg.external_userid); // 会话已建，异步补昵称回填后台展示
+      if (r.silent || !r.text.trim()) {
+        console.log(`${rt.tag} 静默（阶段=${r.stage}，转人工后不自动回复）`);
+        await finishInboxRow(sessionId, row.id, 'done');
+        return;
+      }
+      const out = await replyDb(rt, cfg, sessionId, { text: r.text, stage: r.stage, message: replyMessageOf(r) ?? null }, gen, t0, row.id);
+      if (out === 'deferred') console.log(`${rt.tag} 入站停在 replied（重启后按出站恢复补发）`);
+    } catch (err) {
+      // 与 02 一样算处理完：回一句道歉（不挂入站），入站记 done
+      console.error(`${rt.tag} 处理消息失败:`, err);
+      await sendTextDb(rt, cfg, sessionId, SORRY_TEXT, 'ai', null, gen);
+      await finishInboxRow(sessionId, row.id, 'done');
+    }
+  });
+}
+
+/**
+ * 非文本消息：适配器自己写占位（不经引擎，同样算一轮），占位与 recorded 同一次落库；已转人工只记不回（done）；否则引导提示带 inboxId
+ * 走 planOutbound（replied 与它的 pending 同一次落库，同一次落库里先 recorded 再 replied）。提示发成功才记进会话（02 的口径）
+ */
+function processNonTextRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, msg: KfMessage, sessionId: string): Promise<void> {
+  return withTurnScope(async () => {
+    const session = accountSession(rt, sessionId);
+    startTurn(sessionId);
+    const stageBefore = session.stage;
+    const placeholder: ChatMessage = {
+      role: 'customer',
+      content: placeholderOf(msg.msgtype),
+      at: Date.now(),
+      msgid: msg.msgid,
+      sentAt: msg.send_time * 1000,
+    };
+    session.messages.push(placeholder);
+    // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
+    trimSessionMessages(session);
+    saveSession(session);
+    queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: placeholder });
+    if (session.handedOver) {
+      console.log(`${rt.tag} 静默（${msg.msgtype} 消息，转人工后不自动回复）`);
+      endTurn('silent', '', stageBefore, session.stage);
+      await finishInboxRow(sessionId, row.id, 'done');
+      return;
+    }
+    const hint = NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER;
+    // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
+    const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
+    const out = await sendTextDb(rt, cfg, sessionId, hint, 'ai', sent, takeoverGen(sessionId), row.id);
+    if (out.stop === 'deferred') {
+      // 停机截止之后不开始发：分段留在 pending、入站留在 replied（重启后按出站恢复补发），这一轮也那时再记
+      console.log(`${rt.tag} 停机中、发送已截止，引导提示留在 pending（重启后补发）`);
+      return;
+    }
+    if (out.ok) {
+      const s = getSession(sessionId);
+      if (s) {
+        sent.at = Date.now();
+        s.messages.push(sent);
+        saveSession(s);
+        // 与写进提示、saveSession 同一段同步代码：排出的那次落库里提示已关联上这一轮
+        endTurn('deterministic', hint, stageBefore, s.stage, sent);
+        return;
+      }
+    }
+    // 没发出去（或会话已不在）：照样是回固定提示的一轮，只是没有记进会话的那条消息可关联
+    endTurn('deterministic', hint, stageBefore, getSession(sessionId)?.stage ?? session.stage);
+  });
+}
+
+/**
+ * 同意菜单的点击（02 第 16 步的规则）：applyConsentDecision 改了会话，同一次落库记 done；没发布隐私说明、认不出按钮、没有会话、
+ * 这个类别已有结论的照 02 忽略，同样记 done。「不同意」的确认（notice，不挂入站）的 pending 与同意记录同一次落库，提交之后才发
+ */
+async function processMenuRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): Promise<void> {
+  const msg = row.payload as KfMessage;
+  const sessionId = row.conversationId ?? rt.prefix + msg.external_userid;
+  const notice = currentPrivacyNotice();
+  const parsed = notice ? parseConsentMenuId(msg.text?.menu_id) : null;
+  const s = getSession(sessionId);
+  if (!notice || !parsed || !s) return finishInboxRow(sessionId, row.id, 'done');
+  const evidence = msg.text?.content || msg.text?.menu_id || '';
+  if (!applyConsentDecision(s, parsed.category, parsed.decision, evidence, notice.version))
+    return finishInboxRow(sessionId, row.id, 'done');
+  saveSession(s);
+  queueInboxState(sessionId, { inboxId: row.id, state: 'done' });
+  if (parsed.decision !== 'declined') return;
+  let g: OutGroup | null = null;
+  try {
+    g = planGroup(rt, cfg, s.id, 'notice', null, textPayloads(CONSENT_DECLINED_REPLY), null, takeoverGen(s.id));
+  } catch (e) {
+    planFailed(rt, s.id, e);
+  }
+  const ok = g ? (await runGroup(g)).ok : false;
+  if (ok) {
+    s.messages.push({ role: 'agent', content: CONSENT_DECLINED_REPLY, at: Date.now() });
+    saveSession(s);
+  } else {
+    console.warn(`${rt.tag} 不同意的确认没送达（会话 ${convLabel(s.id)}）`);
+  }
+}
+
+/**
+ * 发送失败回执：出站行迁 failed 与入站行 done 同一个短事务（账本的 onSendFailInbox），会话里的说明照 02 经会话落库。
+ * 不经处理链、不计次（见 dispatchInboxRows）：一个短事务做完，迁移表让重做无害
+ */
+function processReceiptRow(row: InboxRow): Promise<void> {
+  const p = row.payload as { fail_msgid?: string; fail_type?: number } | null;
+  if (!p?.fail_msgid) return finishInboxRow(row.conversationId, row.id, 'done');
+  return onSendFailInbox(p.fail_msgid, Number(p.fail_type ?? 0), row.id);
+}
+
+/**
+ * 拉取（库里的账号）：has_more 时连续拉到拉空。每一页 acceptPage（插入与推进 cursor 同一个事务），提交之后才派发；拉取途中收到停机
+ * 信号，这一页不提交（cursor 不动、不插入），新进程补拉时再拿到；acceptPage 失败（库写不进去）这一页不派发，下一次拉取重来
+ */
+async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfig, syncToken?: string): Promise<void> {
+  for (;;) {
+    const body: Record<string, unknown> = { open_kfid: cfg.openKfId, limit: 100 };
+    if (inbox.cursor) body.cursor = inbox.cursor;
+    if (syncToken) body.token = syncToken;
+    const data = await callApi<SyncMsgResp>(rt, cfg, 'kf/sync_msg', body);
+    if (data.errcode) {
+      console.error(`${rt.tag} sync_msg 失败: errcode=${data.errcode} ${data.errmsg ?? ''}`);
+      return;
+    }
+    if (rt.stopping) return;
+    const page = data.msg_list ?? [];
+    let rows: InboxRow[];
+    try {
+      rows = await inbox.acceptPage(rt.id, page, data.next_cursor ?? '');
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      console.error(
+        `${rt.tag} ⚠️ 这一页入站没写进库（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}）：` +
+          '不派发、cursor 不动，下一次拉取重来',
+      );
+      return;
+    }
+    dispatchInboxRows(rt, cfg, rows, new Map(page.map((m) => [m.msgid, m])));
+    if (!data.has_more || rt.stopping) return;
+  }
+}
+
 // ---------------- 按客户串行的处理链 ----------------
 // 处理不在同步锁里 await：此前锁一直持有到整批 LLM 回复发完，A 客户一轮 4~10s，
 // 期间 B 的回调只能记 pending，首响被整整推迟 A 的处理时长；新客户的 welcome_code
@@ -1697,21 +2054,34 @@ function enqueueForUser(rt: WecomRuntime, uid: string, task: () => Promise<void>
   });
 }
 
+/** 欢迎语不排队（welcome_code 20 秒就过期），单独跟踪，只为停机时能等它们发完 */
+function dispatchWelcome(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage): void {
+  const t = handleEnterSession(rt, cfg, msg).catch((err) => console.error(`${rt.tag} 欢迎语处理异常:`, err));
+  rt.eventTasks.add(t);
+  void t.finally(() => rt.eventTasks.delete(t));
+}
+
+/** env 账号的拉取状态（02 的文件后端） */
+function fileState(rt: WecomRuntime): FileWecomState {
+  if (rt.state.kind !== 'file') throw new Error(`${rt.tag} 不是 env 账号，没有文件状态`);
+  return rt.state;
+}
+
+/** env 账号（02）：一条认领了的消息派发出去 */
 function dispatch(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = false): void {
   if (isEnterSession(msg)) {
-    const t = handleEnterSession(rt, cfg, msg).catch((err) => console.error(`${rt.tag} 欢迎语处理异常:`, err));
-    rt.eventTasks.add(t);
-    void t.finally(() => rt.eventTasks.delete(t));
+    dispatchWelcome(rt, cfg, msg);
     return;
   }
+  const state = fileState(rt);
   enqueueForUser(rt, msg.external_userid || msg.msgid, async () => {
     let deferred = false;
     try {
       deferred = (await handleCustomerMessage(rt, cfg, msg, replay)) === 'deferred';
     } finally {
       // 回复成功、静默、发送失败、异常兜底都算「处理完」；只有进程死在半路、或停机截止后没开始发的（deferred）才留在在途表里
-      if (!deferred) rt.state.inflight.delete(msg.msgid);
-      rt.state.scheduleSave();
+      if (!deferred) state.inflight.delete(msg.msgid);
+      state.scheduleSave();
     }
   });
 }
@@ -1722,7 +2092,7 @@ function dispatch(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = f
 // 记 pending，本轮拉完立刻补拉。
 
 function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promise<void> {
-  if (rt.stopping) return Promise.resolve();
+  if (rt.stopping || rt.recovery === 'blocked') return Promise.resolve();
   if (rt.syncTask) {
     rt.pendingRequested = true;
     if (syncToken) rt.pendingToken = syncToken;
@@ -1733,7 +2103,8 @@ function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promi
       let token = syncToken;
       do {
         rt.pendingRequested = false;
-        await drainMessages(rt, cfg, token);
+        if (rt.state.kind === 'file') await drainMessages(rt, rt.state, cfg, token);
+        else await drainInbox(rt, rt.state, cfg, token);
         token = rt.pendingToken;
         rt.pendingToken = undefined;
         // 两个标志都在 await 期间由别的调用改（syncOnce 记 pending、停机置 stopping），不是死循环
@@ -1746,8 +2117,8 @@ function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promi
   return rt.syncTask;
 }
 
-async function drainMessages(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promise<void> {
-  const state = rt.state;
+/** env 账号（02）的拉取：认领、在途表、cursor 文件 */
+async function drainMessages(rt: WecomRuntime, state: FileWecomState, cfg: WecomConfig, syncToken?: string): Promise<void> {
   // has_more 时连续拉直到拉空，避免消息积压跨轮询周期
   for (;;) {
     const body: Record<string, unknown> = { open_kfid: cfg.openKfId, limit: 100 };
@@ -1802,8 +2173,8 @@ async function drainMessages(rt: WecomRuntime, cfg: WecomConfig, syncToken?: str
 }
 
 /** 启动时重放上个进程没处理完的客户消息。须在任何新拉取之前派发，同客户的新消息才会排在它后面 */
-async function replayInflight(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
-  const inflight = rt.state.inflight;
+async function replayInflight(rt: WecomRuntime, state: FileWecomState, cfg: WecomConfig): Promise<void> {
+  const inflight = state.inflight;
   // 刚启动就收到停机信号：不重放，原样留在在途表里给下一个进程（重放计数也不加）
   if (!inflight.size || rt.stopping) return;
   const todo: { msg: KfMessage; replay: boolean }[] = [];
@@ -1834,14 +2205,30 @@ async function replayInflight(rt: WecomRuntime, cfg: WecomConfig): Promise<void>
     todo.push({ msg: p.msg, replay: head });
   }
   // 重放计数先落盘再重放：重放本身若把进程带崩，下次启动能看到计数，不会无限循环
-  await rt.state.save();
+  await state.save();
   if (todo.length) console.warn(`${rt.tag} 重放上次停机时未处理完的 ${todo.length} 条客户消息`);
   for (const { msg, replay } of todo) dispatch(rt, cfg, msg, replay);
 }
 
-/** 幂等：加载状态 + 重放在途消息。启动循环与回调都先 await 它，消除「回调早于加载」的竞态 */
+/**
+ * 幂等：加载状态（env 账号再重放在途消息）。启动循环与回调都先 await 它，消除「回调早于加载」的竞态。
+ * 库里的账号：load 读库里的 cursor、恢复截止点与没结束的行；读不到（库不可用）下次再试；有没结束的行时这一版不拉取
+ * （startChannels 的闸门在装载时已经挡过，这里是兜底；启动恢复是第 10 步）
+ */
 function ensureReady(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
-  return (rt.readyPromise ??= rt.state.load().then(() => replayInflight(rt, cfg)));
+  const state = rt.state;
+  if (state.kind === 'file') return (rt.readyPromise ??= state.load().then(() => replayInflight(rt, state, cfg)));
+  return (rt.readyPromise ??= state.load(rt.id).then(
+    ({ open }) => {
+      if (!open.length) return;
+      rt.recovery = 'blocked';
+      console.error(`${rt.tag} ⚠️ 有没结束的入站 ${open.length} 行，这一版的启动恢复处理不了：不拉取`);
+    },
+    (e: unknown) => {
+      rt.readyPromise = null;
+      throw e;
+    },
+  ));
 }
 
 /** 回调带来的 token 立即拉一次（两种账号共用） */
@@ -1898,7 +2285,9 @@ function startRuntime(rt: WecomRuntime): void {
     );
   }
   void (async () => {
-    await ensureReady(rt, cfg);
+    // 库里的账号读不到拉取位置（库不可用）也照样起轮询：每次拉取之前再读（ensureReady 失败时下次重来）
+    if (rt.state.kind === 'file') await ensureReady(rt, cfg);
+    else await ensureReady(rt, cfg).catch(() => console.error(`${rt.tag} 启动时读不到库里的拉取位置，之后每次拉取之前再读`));
     // 主通道是回调驱动（syncFromCallback）。这里只做兜底慢轮询，兜住回调偶发丢失；
     // 间隔取较大值（默认 60s），不带 token 的纯轮询频率太高会 45009。
     const fallbackMs = Math.max(30000, cfg.pollIntervalMs);
@@ -1906,6 +2295,7 @@ function startRuntime(rt: WecomRuntime): void {
     const tick = async (): Promise<void> => {
       rt.pollTimer = null;
       try {
+        if (rt.state.kind !== 'file') await ensureReady(rt, cfg);
         await syncOnce(rt, cfg);
       } catch (err) {
         console.error(`${rt.tag} 兜底轮询异常（下轮重试）:`, err);
@@ -1925,19 +2315,20 @@ export function startWecom(): void {
 
 /** startChannels 交进来的一个库里启用的企微账号 */
 export interface WecomAccountStart {
-  db: Db;
   account: ChannelAccount;
   /** 解密后的凭据（只在内存里，打印是「[已遮盖]」） */
   secrets: Redacted<WecomSecrets>;
-  /** 库里这个账号的 cursor（null 表示冷启动） */
-  cursor: string | null;
-  /** false：启动恢复这一版做不了（有没结束的入站行或没结果的出站行，第 10 步接上），只建运行时、不拉取 */
+  /**
+   * false：启动恢复这一版做不了（有没结束的入站行或没结果的出站行），只建运行时（recovery = 'blocked'）、不拉取。
+   * 给第 10 步：恢复的入口加在这里——先按出站恢复表处理 openOutbound，再把没结束的入站行经 dispatchInboxRows 按 ord 派发
+   * （processInboxRow 补上 recorded、replied 两种状态与保底），然后 recovery 改 done、startRuntime 开始拉新消息
+   */
   pull: boolean;
 }
 
 /**
  * 起一个库里企微账号的运行时（03 spec R10），按账号 uuid 登记。配置来自账号行与解密的凭据，不读 WECOM_*；
- * 拉取状态是过渡后端（cursor 在 channel_accounts.cursor）；发送先落库后发送（第 8 步）
+ * 拉取状态在 channel_inbox（第 9 步：cursor 与入站行同一个事务，load 时读库里的 cursor 与恢复截止点）；发送先落库后发送（第 8 步）
  */
 export function startWecomAccount(s: WecomAccountStart): void {
   const { account } = s;
@@ -1963,7 +2354,7 @@ export function startWecomAccount(s: WecomAccountStart): void {
     }),
     ...(w.settings.welcomeText !== undefined ? { welcomeText: w.settings.welcomeText } : {}),
     ...(w.settings.welcomeBackText !== undefined ? { welcomeBackText: w.settings.welcomeBackText } : {}),
-    state: new AccountCursorState(s.db, account.tenantId, account.id, s.cursor, tag),
+    state: new AccountInbox({ id: account.id, idPrefix: w.idPrefix, tag }),
   });
   runtimes.set(rt.id, rt);
   if (!s.pull) {
@@ -2011,8 +2402,9 @@ async function drainForShutdown(rt: WecomRuntime, ctx?: { deadline: number }): P
   while (rt.userChains.size || rt.eventTasks.size) {
     await Promise.all([...rt.userChains.values(), ...rt.eventTasks]);
   }
-  // 状态从没加载成功过（企微未启用）就不写，免得凭空生成一个空 cursor 的状态文件
-  if (!loaded) return;
+  // 状态从没加载成功过（企微未启用）就不写，免得凭空生成一个空 cursor 的状态文件。库里的账号没有要收尾写的：cursor 与入站行
+  // 每一页都随 acceptPage 的事务提交了，没处理完的行留在 channel_inbox 里给下次启动
+  if (!loaded || rt.state.kind !== 'file') return;
   await rt.state.close();
 }
 /** 每个账号的运行时一起收尾，一个账号出错不耽误别的账号 */
@@ -2020,9 +2412,9 @@ onShutdown(async (ctx) => {
   const results = await Promise.allSettled([...runtimes.values()].map((rt) => drainForShutdown(rt, ctx)));
   for (const r of results) if (r.status === 'rejected') console.error('[wecom] 停机收尾异常:', r.reason);
 });
-/** 进程退出前把每个账号去抖窗口里的状态同步写出去（文件后端；库里账号的过渡后端没有要写的） */
+/** 进程退出前把每个账号去抖窗口里的状态同步写出去（文件后端；库里的账号都在库里，没有要写的） */
 process.on('exit', () => {
-  for (const rt of runtimes.values()) rt.state.flushSync();
+  for (const rt of runtimes.values()) if (rt.state.kind === 'file') rt.state.flushSync();
 });
 
 /**
@@ -2113,7 +2505,8 @@ export const wecomAdapter: ChannelAdapter = {
 /** 模拟「进程退出再启动」：先像 exit 阶段那样把去抖窗口里的状态写出去、等排队的写完，再把运行时内存清回刚启动的样子
  *  （写下来的状态保留，下次拉取时重新加载）。不清 token、缩略图、started、pollTimer 与监听器（02 原样） */
 async function resetRuntime(rt: WecomRuntime): Promise<void> {
-  await rt.state.resetForTest();
+  if (rt.state.kind === 'file') await rt.state.resetForTest();
+  else rt.state.resetForTest();
   rt.readyPromise = null;
   rt.syncTask = null;
   rt.pendingRequested = false;
@@ -2126,11 +2519,13 @@ async function resetRuntime(rt: WecomRuntime): Promise<void> {
 }
 
 function inspectRuntime(rt: WecomRuntime): { cursor: string; coldStart: boolean; handled: string[]; inflight: string[]; busy: boolean } {
+  const file = rt.state.kind === 'file' ? rt.state : null;
   return {
     cursor: rt.state.cursor,
     coldStart: rt.state.coldStartCutoff > 0,
-    handled: [...rt.state.handled.keys()],
-    inflight: [...rt.state.inflight.keys()],
+    // 库里的账号没有内存里的 handled 与在途表（不变量 13；去重在 channel_inbox 上）
+    handled: file ? [...file.handled.keys()] : [],
+    inflight: file ? [...file.inflight.keys()] : [],
     busy: rt.syncTask !== null || rt.userChains.size > 0 || rt.eventTasks.size > 0,
   };
 }
@@ -2151,10 +2546,30 @@ export const __test = {
 
 /** 仅供自测（src/adapters/wecom-03.selftest.ts）：按账号看运行时 */
 export const __wecomTest = {
-  /** 这个账号的运行时（没有为 null）：拉取状态、是否忙、启动恢复、后端种类 */
+  /** 这个账号的运行时（没有为 null）：拉取状态、是否忙、启动恢复、后端种类、恢复截止点 */
   inspect(accountId: string) {
     const rt = runtimes.get(accountId);
-    return rt ? { ...inspectRuntime(rt), recovery: rt.recovery, backend: rt.state.kind, started: rt.started } : null;
+    return rt
+      ? {
+          ...inspectRuntime(rt),
+          recovery: rt.recovery,
+          backend: rt.state.kind,
+          started: rt.started,
+          recordOnlyUntil: rt.state.kind === 'channel_inbox' ? rt.state.recordOnlyUntil : null,
+        }
+      : null;
+  },
+  /**
+   * 第 10 步的启动恢复会做的那一部分（自测用）：重新 load 这个账号（库里的 cursor、恢复截止点、没结束的行），把没结束的行按 ord 派发进
+   * 处理链（这一版只处理 received；出队时照常判 poison、too_old、恢复截止与计次）。返回派发了几行；没有这个账号的运行时为 -1
+   */
+  async dispatchOpen(accountId: string): Promise<number> {
+    const rt = runtimes.get(accountId);
+    const cfg = rt?.config();
+    if (!rt || !cfg || rt.state.kind !== 'channel_inbox') return -1;
+    const { open } = await rt.state.load(rt.id);
+    dispatchInboxRows(rt, cfg, open);
+    return open.length;
   },
   /** 进程里所有运行时都闲下来（没有拉取、处理链与欢迎语） */
   idle(): boolean {

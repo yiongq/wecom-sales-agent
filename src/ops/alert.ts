@@ -13,8 +13,10 @@
 //   jobs          retention_purge、handoff_notify 用完重试记 failed；没有恢复
 //   channel       03 spec「可观测性」：启动装载那一条（网页账号因 web_channel 关着没有启用、欢迎语不合格按没设处理，只有
 //                 账号 key 与原因）；10 分钟内有「没落库就发」（R6，03 第 8 步）、一组出站没过发送前的校验（R21 的同步校验）；
-//                 拉取失败、入站卡住、sending 转 unknown 等由 03 第 13 步接上
+//                 入站行出队时记了 poison、too_old（R3，03 第 9 步）；
+//                 拉取失败、入站卡住、sending 转 unknown、恢复截止点只补记等由 03 第 12、13 步接上
 import { onTokenError } from '../adapters/wecom.js';
+import { onInboxAbandoned, type InboxAbandoned } from '../channels/inbox.js';
 import { channelStartupWarnings } from '../channels/registry.js';
 import { configHealth, onLockEvent, type LockEvent } from '../config/source.js';
 import { onJobFailed, type JobFailure } from '../jobs/runner.js';
@@ -242,6 +244,31 @@ function onRejected(reason: string): void {
   alert('channel', `一组企微出站没过发送前的检查（${safeCodes(reason)}），这一组没发，会话里已加说明`, { escalate: true });
 }
 
+/** 入站 poison、too_old 的告警（03 第 9 步）：每种原因每个账号 10 分钟至多一条，带这段时间里的条数（停机两天之后一次过期一批不刷屏） */
+const INBOX_ALERT_MS = 10 * 60_000;
+const inboxAlerted = new Map<string, { at: number; pending: number }>();
+const INBOX_REASON_TEXT: Partial<Record<InboxAbandoned['reason'], string>> = {
+  poison: '处理了三次都没走完（每次都让处理中断）',
+  too_old: '收到时已超过 48 小时发送窗口',
+};
+
+function onInboxGivenUp(e: InboxAbandoned): void {
+  const why = INBOX_REASON_TEXT[e.reason];
+  if (!why) return; // 恢复截止点的只补记由第 12、13 步按会话数合成一条
+  const k = `${e.reason}:${e.account}`;
+  const t = clock();
+  const st = inboxAlerted.get(k) ?? { at: 0, pending: 0 };
+  st.pending += 1;
+  inboxAlerted.set(k, st);
+  if (st.at && t - st.at < INBOX_ALERT_MS) return;
+  const n = st.pending;
+  st.at = t;
+  st.pending = 0;
+  alert('channel', `企微账号 ${safeCodes(e.account)} 有 ${n} 条客户消息 AI 没有处理（${why}），会话里已加说明，请人工回复`, {
+    escalate: true,
+  });
+}
+
 // ---------------- tenant_lock ----------------
 
 function onLock(ev: LockEvent): void {
@@ -343,6 +370,7 @@ export function startAlerts(): void {
   onSendSettled(onSettled);
   onUnsafeSend(onUnsafe);
   onPlanRejected(onRejected);
+  onInboxAbandoned(onInboxGivenUp);
   onTokenError(onToken);
   onLockEvent(onLock);
   onStoreIncident(onIncident);
@@ -401,6 +429,7 @@ export const __alertTest = {
     wecomFails = [];
     lastWecomFailAt = 0;
     lastUnsafeAlertAt = 0;
+    inboxAlerted.clear();
     lagAlerted = false;
     poisonedSeen = new Set();
     dropSamples = [];

@@ -590,8 +590,8 @@ async function mainSuite(h: Harness): Promise<void> {
   const live = ['a1', 'a2', 'b1'];
   // 启动：三个启用的企微账号各一个运行时（按账号 uuid），停用的、网页的没有；env 账号不走
   check(
-    '启动：三个启用的企微账号各起一个运行时，后端是过渡后端（cursor 在 channel_accounts）',
-    live.every((k) => h.wecom.__wecomTest.inspect(h.ids.get(k)!)?.backend === 'account_cursor') &&
+    '启动：三个启用的企微账号各起一个运行时，拉取状态在 channel_inbox（cursor 在 channel_accounts，随入站行一起提交）',
+    live.every((k) => h.wecom.__wecomTest.inspect(h.ids.get(k)!)?.backend === 'channel_inbox') &&
       h.wecom.__wecomTest.inspect(h.ids.get('d1')!) === null &&
       h.wecom.__wecomTest.inspect(h.ids.get('w1')!) === null,
     json(h.wecom.__wecomTest.ids()),
