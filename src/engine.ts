@@ -3460,6 +3460,11 @@ export function inboundText(text: string): string {
   return cleanText(text, 2000); // 超长输入截断：防恶意长文刷爆 prompt token
 }
 
+export function trimSessionMessages(session: Session): void {
+  // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
+  if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+}
+
 /** handleMessage 的可选参数（02 spec「消息只追加」） */
 export interface HandleOpts {
   /** 渠道消息 id：企微文本消息带上，记在客户消息上，重放时按它对齐 */
@@ -3612,8 +3617,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       ...(opts.msgid ? { msgid: opts.msgid } : {}),
       ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
     });
-    // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
-    if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+    trimSessionMessages(session);
   }
   // 跟进的拒绝识别（02 spec「任务表与跟进」，两种存储都做）：客户说「别发了」这类话就记下，此后这个会话不再跟进。
   // 只记标记，这一轮照常回复；db 存储下排着的跟进随这次落库取消（src/jobs/followup.ts 的落库钩子：客户回话即取消）

@@ -4,7 +4,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { subscribeWeb, webConversationId, type WebEvent } from '../adapters/web.js';
 import { accountByKey, type ChannelAccount } from '../channels/accounts.js';
-import { handleMessage, inboundText } from '../engine.js';
+import { handleMessage, inboundText, trimSessionMessages } from '../engine.js';
 import { numEnv } from '../env.js';
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
 import { enterHandoff } from '../handoff/record.js';
@@ -97,6 +97,7 @@ function limitedReply(s: WebSession, text: string, msgid: string | undefined, re
     enterHandoff(s, { kind: 'request', reason: '网页咨询轮次达到每日上限', at: Date.now() });
   }
   s.messages.push({ role: 'agent', content: TURN_LIMIT_REPLY, at: Date.now() });
+  trimSessionMessages(s);
   saveSession(s);
   return { text: TURN_LIMIT_REPLY };
 }
@@ -164,8 +165,8 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   });
   try {
     const count = daily(account);
-    if (s.webTurnLimited || (!s.handedOver && count.turns >= account.web!.dailyTurns)) {
-      if (!s.webTurnLimited && !count.alerted) {
+    if (count.turns >= account.web!.dailyTurns && (!s.handedOver || s.webTurnLimited)) {
+      if (!count.alerted) {
         count.alerted = true;
         // 已按账号、自然日合并；不被 channel 全局的 30 分钟去重吞掉另一个账号。
         alert('channel', `网页账号 ${account.key} 达到每日咨询轮次上限`, { escalate: true });
@@ -203,6 +204,11 @@ webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
 });
 
 webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
+  // Hono 将 HEAD 分派给 GET 后只移除正文，不取消事件流；在创建订阅前拒绝。
+  if (c.req.raw.method === 'HEAD') {
+    c.header('Allow', 'GET');
+    return c.body(null, 405);
+  }
   const account = accountByKey(c.req.param('key'), 'web')!;
   const s = ownSession(account, visitorToken(c));
   if (!s) return c.json({ error: 'unauthorized' }, 401);

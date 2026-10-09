@@ -656,8 +656,19 @@ try {
     assert.ok(new TextDecoder().decode(ping.value).includes('event: ping'));
     return { res, reader };
   }
+  for (let i = 0; i < 3; i++) {
+    const head = await app.request(`/api/web/${primary.key}/events`, {
+      method: 'HEAD',
+      headers: { cookie: own.cookie, 'x-forwarded-for': nextIp() },
+    });
+    assert.equal(head.status, 405);
+    assert.equal(head.headers.get('allow'), 'GET');
+    assert.equal(head.headers.get('cache-control'), 'no-store');
+    assert.equal(await head.text(), '');
+  }
   const open = [await events(primary, own.cookie), await events(primary, own.cookie), await events(primary, own.cookie)];
   await json((await events(primary, own.cookie)).res, 429);
+  report('连续三次 HEAD 返回空 405/Allow GET，随后三个 GET 均成功、第四个才 429');
   await webAdapter.push(own.s.id, '在线顾问', { kind: 'human' });
   for (const conn of open) assert.ok(new TextDecoder().decode((await conn.reader!.read()).value).includes('【顾问】在线顾问'));
   await open[1]!.reader!.cancel();
@@ -783,7 +794,10 @@ try {
     assert.equal(turnOwn.s.handoff?.kind, 'request');
     assert.equal(modelCalls, beforeCap);
     release(turnOwn.s.id, { role: 'shared', userId: null, name: '顾问', ip: null });
-    await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '又一个问题', cid: 'turn-after' } }));
+    assert.deepEqual(
+      await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '又一个问题', cid: 'turn-after' } })),
+      { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+    );
     assert.equal(turnOwn.s.handoffCount, 1, '顾问交还之后不重复因限额转人工');
     const r2 = await request(turns, 'messages', { body: { text: '第二个访客', cid: 'turn-newer' } });
     credential(r2, turns);
@@ -821,8 +835,61 @@ try {
     const nextDayOwn = credential(turnDay, turns);
     await json(turnDay);
     assert.equal(nextDayOwn.s.handedOver, false, '自然日切换重置轮次上限');
+    const beforeResume = modelCalls;
+    assert.equal(turnOwn.s.handedOver, false, '顾问已交还之前超限的会话');
+    const resumed = await json<ReplyBody>(
+      await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '今天继续咨询', cid: 'turn-resume' } }),
+    );
+    assert.equal(resumed.reply!.text, '您好，您想了解什么行程？');
+    assert.equal(modelCalls, beforeResume + 1, '旧会话额度恢复后正常调模型');
+    assert.equal(turnOwn.s.handoffCount, 1, '持久预算标记仍然保留');
+    warnings.length = 0;
+    console.warn = (...args) => {
+      warnings.push(args.join(' '));
+    };
+    try {
+      for (let i = 0; i < 2; i++)
+        assert.deepEqual(
+          await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '再次超限', cid: `recap-cid-${i}` } })),
+          { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+        );
+      assert.equal(turnOwn.s.handoffCount, 1, '新自然日再次超限也不重复转人工');
+      assert.equal(turnOwn.s.handedOver, false);
+      assert.equal(modelCalls, beforeResume + 1, '再次超限不调模型');
+      assert.equal(warnings.filter((w) => w.includes('web-turn-cap')).length, 1, '已有持久标记仍在新自然日合并一条告警');
+    } finally {
+      console.warn = oldWarn;
+    }
+    report('超限当天固定回复/转一次人工；次日顾问交还后调模型；再次超限不再转人工且每天告警一次');
+
+    const beforeWindow = turnOwn.s.messages.length;
+    const beforeWindowCalls = modelCalls;
+    let appended = 0;
+    for (let i = 0; i < 205; i++) {
+      const length = turnOwn.s.messages.length;
+      assert.deepEqual(
+        await json(
+          await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: `连续超限咨询${i}`, cid: `window-cid-${i}` } }),
+        ),
+        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+      );
+      appended += 2;
+      if (length + 2 > 400) break;
+    }
+    assert.ok(beforeWindow + appended > 400, '不同 cid 的真实超限请求累计超过 400 条消息');
+    assert.equal(turnOwn.s.messages.length, 300, '越过 400 后裁到最近 300 条');
+    assert.equal(modelCalls, beforeWindowCalls);
+    assert.equal(turnOwn.s.handoffCount, 1);
+    await store.flushSession(turnOwn.s.id, { timeoutMs: 20_000 });
+    const persisted = await sqlQuery<{ count: number }>(
+      'select count(*)::int as count from messages where tenant_id=$1 and conversation_id=$2',
+      [deps.tenantId, turnOwn.s.id],
+    );
+    assert.equal(persisted[0]!.count, beforeWindow + appended, '窗口裁剪不删除已落库消息，新增消息全部追加');
+    report('超限路径不同 cid 超过 400 条裁到 300 条，数据库完整追加历史仍在');
   } finally {
     globalThis.Date = DayDate;
+    console.warn = oldWarn;
   }
   report('账号每日新会话与轮次按服务器自然日清零');
 
