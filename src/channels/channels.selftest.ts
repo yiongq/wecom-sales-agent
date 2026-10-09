@@ -1466,6 +1466,734 @@ try {
   }
 }
 
+// ---------------- 03 第 14 步：导入、导出与 resync（子进程，app 身份） ----------------
+{
+  const { holdTenantLock } = await import('../db/client.js');
+  const { AUDIT_ACTIONS } = await import('../shared/ui-labels.js');
+  const { hasChannelsMarker, writeChannelsMarker } = await import('./markers.js');
+  const { spawnSync } = await import('node:child_process');
+  const { pathToFileURL } = await import('node:url');
+  const repo14 = process.cwd();
+  const temp14 = fs.mkdtempSync(path.join(os.tmpdir(), 'channel14-'));
+  const bridge14 = path.join(temp14, 'bridge.mjs');
+  const fault14 = path.join(temp14, 'fault.mjs');
+  fs.writeFileSync(
+    fault14,
+    `
+import fs from 'node:fs';
+const rename = fs.renameSync;
+const unlink = fs.unlinkSync;
+const readdir = fs.readdirSync;
+const mkdir = fs.mkdirSync;
+fs.mkdirSync = (dir, ...args) => {
+  if (process.env.CLI14_NO_WRITES && typeof dir === 'string' && dir.startsWith(process.env.CLI14_NO_WRITES))
+    throw new Error('fake-error-cli14');
+  return mkdir(dir, ...args);
+};
+let reads = 0;
+fs.readdirSync = (dir, ...args) => {
+  if (dir === process.env.CLI14_READDIR) {
+    reads++;
+    const mode = process.env.CLI14_READDIR_MODE;
+    if (mode === 'error' || (mode === 'second-error' && reads === 2))
+      throw Object.assign(new Error('fake-error-cli14'), { code: 'EACCES' });
+    const names = readdir(dir, ...args);
+    // 首次读取只看到 spill 产生前的目录内容；取锁后读取恢复真实结果。
+    if (mode === 'late-spill' && reads === 1) return names.filter(name => !name.startsWith('store-spill-'));
+    return names;
+  }
+  return readdir(dir, ...args);
+};
+fs.renameSync = (src, dest) => { if (dest === process.env.CLI14_FAIL_RENAME) throw new Error('fake-error-cli14'); return rename(src, dest); };
+fs.unlinkSync = file => { if (file === process.env.CLI14_FAIL_UNLINK) throw new Error('fake-error-cli14'); return unlink(file); };
+`,
+  );
+  const disk14 = path.join(temp14, 'pglite');
+  const snap14 = path.join(temp14, 'snapshot.json');
+  const sql14 = {
+    accounts: `select id, key, status, cursor, settings, encode(secrets_ct, 'hex') as ct, updated_at from channel_accounts order by key`,
+    inbox: `select id, msgid, ord, kind, conversation_id, received_at, updated_at, attempts, message_seq, state, reason, payload from channel_inbox order by ord`,
+    outbound: `select channel_msgid, status, payload from outbound_sends order by channel_msgid`,
+    audits: `select action, actor_kind, actor_name, target_id, diff from audit_log order by id`,
+  };
+  type Snapshot14 = {
+    accounts: {
+      id: string;
+      key: string;
+      status: string;
+      cursor: string;
+      settings: Record<string, unknown>;
+      ct: string;
+      updated_at: string;
+    }[];
+    inbox: {
+      id: string;
+      msgid: string;
+      ord: number;
+      kind: string;
+      conversation_id: string | null;
+      received_at: string;
+      updated_at: string;
+      attempts: number;
+      message_seq: number | null;
+      state: string;
+      reason: string | null;
+      payload: unknown;
+    }[];
+    outbound: { channel_msgid: string; status: string; payload: unknown }[];
+    audits: { action: string; actor_kind: string; actor_name: string; target_id: string | null; diff: Record<string, string | number> }[];
+  };
+  const env14 = {
+    ...process.env,
+    DATABASE_URL: '',
+    DATABASE_PLATFORM_URL: '',
+    [envName]: `old:${oldKey.toString('base64')}`,
+    WECOM_CORP_ID: 'fake-corp-cli14',
+    WECOM_KF_OPEN_KFID: 'fake-kf-cli14',
+    WECOM_APP_SECRET: 'fake-app-cli14',
+    WECOM_CALLBACK_TOKEN: 'fake-token-cli14',
+    WECOM_CALLBACK_AES_KEY: 'fake-aes-cli14',
+    WECOM_POLL_INTERVAL_MS: '45000',
+  };
+  const forbidden14 = [
+    env14.WECOM_CORP_ID,
+    env14.WECOM_KF_OPEN_KFID,
+    env14.WECOM_APP_SECRET,
+    env14.WECOM_CALLBACK_TOKEN,
+    env14.WECOM_CALLBACK_AES_KEY,
+    env14[envName]!,
+    'fake-kf-cli15',
+    'fake-error-cli14',
+    'fake-kf-cli14-x',
+  ];
+  let output14 = '';
+  fs.writeFileSync(
+    bridge14,
+    `
+import fs from 'node:fs';
+const { openTestDb, fakeLock } = await import(process.env.CLI14_DB_MODULE);
+const module = await import(process.env.CLI14_MODULE);
+const t = await openTestDb({ dataDir: process.env.CLI14_DISK });
+try {
+  await t.pg.exec('SET ROLE agent_app');
+  const run = process.env.CLI14_COMMAND === 'import' ? module.runChannelImport : module.runChannelExport;
+  const code = await run(process.argv.slice(2), { connect: async () => ({ db: t.db, close: async () => {}, lock: async () => {
+    if (process.env.CLI14_LOCK === 'held') return null;
+    const l = fakeLock();
+    if (process.env.CLI14_LOCK === 'lost') l.onLost = cb => cb();
+    return l;
+  } }) });
+  await t.pg.exec('RESET ROLE');
+  const snapshot = {};
+  for (const [key, sql] of Object.entries(${JSON.stringify(sql14)})) snapshot[key] = (await t.pg.query(sql)).rows;
+  fs.writeFileSync(process.env.CLI14_SNAPSHOT, JSON.stringify(snapshot));
+  await t.close(); process.exit(code);
+} catch { await t.close(); process.exit(90); }
+`,
+  );
+  interface Harness14 {
+    label: string;
+    tenantId: string;
+    query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<R[]>;
+    run(
+      command: 'import' | 'export',
+      args: string[],
+      env: Record<string, string>,
+    ): Promise<{ status: number | null; out: string; snapshot: Snapshot14 }>;
+    block(): Promise<() => Promise<void>>;
+    close(): Promise<void>;
+    connect(): Promise<{ db: Db; close(): Promise<void> }>;
+  }
+  const collect14 = (r: ReturnType<typeof spawnSync>, snapshot: Snapshot14) => {
+    assert.equal(r.signal, null, '渠道迁移子进程超时');
+    assert.notEqual(r.status, 90, 'PGlite 桥接失败');
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    output14 += out;
+    for (const a of snapshot.accounts)
+      if (a.ct) {
+        const ct = Buffer.from(a.ct, 'hex');
+        forbidden14.push(ct.toString('hex'), ct.toString('base64'), JSON.stringify(ct));
+      }
+    return { status: r.status, out, snapshot };
+  };
+  const factories14: (() => Promise<Harness14>)[] = [
+    async () => {
+      const t = await openTestDb({ dataDir: disk14 });
+      await t.pg.query(`insert into tenants (slug, name, pack_id) values ('cli14', 'cli14', 'travel')`);
+      const tenantId = (await t.pg.query<{ id: string }>(`select id from tenants where slug = 'cli14'`)).rows[0]!.id;
+      await t.close();
+      return {
+        label: 'PGlite',
+        tenantId,
+        connect: async () => {
+          const t = await openTestDb({ dataDir: disk14 });
+          await t.pg.exec('SET ROLE agent_app');
+          return t;
+        },
+        query: async <R>(sql: string, params: unknown[] = []) => {
+          const db = await openTestDb({ dataDir: disk14 });
+          try {
+            return (await db.pg.query<R>(sql, params)).rows;
+          } finally {
+            await db.close();
+          }
+        },
+        run: async (command, args, env) => {
+          const r = spawnSync(process.execPath, ['--import', 'tsx', '--import', fault14, bridge14, ...args], {
+            cwd: repo14,
+            encoding: 'utf8',
+            timeout: 60000,
+            killSignal: 'SIGKILL',
+            env: {
+              ...env14,
+              CLI14_MODULE: pathToFileURL(path.join(repo14, 'src', 'cli', `channel-${command}.ts`)).href,
+              CLI14_DB_MODULE: pathToFileURL(path.join(repo14, 'src', 'db', 'testing.ts')).href,
+              CLI14_DISK: disk14,
+              CLI14_COMMAND: command,
+              CLI14_SNAPSHOT: snap14,
+              ...env,
+            },
+          });
+          return collect14(r, JSON.parse(fs.readFileSync(snap14, 'utf8')) as Snapshot14);
+        },
+        block: async () => async () => {},
+        close: async () => {},
+      };
+    },
+  ];
+  if (process.env.PG_TEST_URL)
+    factories14.push(async () => {
+      const fx = await createRealPgFixture(process.env.PG_TEST_URL!, { slug: 'cli14' });
+      return {
+        label: '真实 PG',
+        tenantId: fx.tenantId,
+        connect: () => openDb(fx.urls.app),
+        query: fx.query,
+        close: fx.drop,
+        block: async () => {
+          const l = await holdTenantLock(fx.urls.app, fx.tenantId);
+          assert.ok(l);
+          return () => l.release();
+        },
+        run: async (command, args, env) => {
+          const r = spawnSync(
+            process.execPath,
+            ['--import', 'tsx', '--import', fault14, path.join(repo14, 'src', 'cli', `channel-${command}.ts`), ...args],
+            {
+              cwd: repo14,
+              encoding: 'utf8',
+              timeout: 60000,
+              killSignal: 'SIGKILL',
+              env: { ...env14, DATABASE_URL: fx.urls.app, ...env },
+            },
+          );
+          const s: Record<string, unknown> = {};
+          for (const [key, sql] of Object.entries(sql14)) s[key] = await fx.query(sql);
+          return collect14(r, s as Snapshot14);
+        },
+      };
+    });
+  try {
+    for (const factory of factories14) {
+      const h = await factory();
+      const root = path.join(temp14, `files-${h.label}`);
+      const dir = path.join(root, 'var');
+      const keep = path.join(root, 'keep');
+      fs.mkdirSync(dir, { recursive: true });
+      let state: Snapshot14 = { accounts: [], inbox: [], outbound: [], audits: [] };
+      const at = Date.now();
+      const msg = (id: string, user = 'wm14user') => ({
+        msgid: id,
+        external_userid: user,
+        open_kfid: env14.WECOM_KF_OPEN_KFID,
+        send_time: Math.floor(at / 1000),
+        origin: 3,
+        msgtype: 'text',
+        text: { content: `消息 ${id}` },
+      });
+      const original = {
+        cursor: 'cursor14',
+        handled: Array.from({ length: 200 }, (_, i) => [`in14-${i}`, at - i * 10]),
+        pending: [
+          { msg: msg('in14-198'), tries: 2 },
+          { msg: msg('in14-199'), tries: 0 },
+        ],
+      };
+      const filePath = path.join(dir, WECOM_STATE_FILE);
+      const write = (v: unknown) => fs.writeFileSync(filePath, JSON.stringify(v));
+      const run = async (command: 'import' | 'export', code = 0, flags: string[] = [], env: Record<string, string> = {}) => {
+        const r = await h.run(
+          command,
+          ['--tenant', 'cli14', '--var', dir, '--keep', keep, ...(command === 'import' ? ['--key', 'kf-main'] : []), ...flags],
+          env,
+        );
+        assert.equal(r.status, code, `${h.label} ${command}：${r.out}`);
+        state = r.snapshot;
+        return r;
+      };
+      const snapshotFiles = () => {
+        const files: Record<string, string> = {};
+        const walk = (dir: string) => {
+          for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const p = path.join(dir, entry.name);
+            if (entry.isDirectory()) walk(p);
+            else if (!entry.isSymbolicLink()) files[path.relative(root, p)] = fs.readFileSync(p).toString('base64');
+          }
+        };
+        walk(root);
+        return JSON.stringify(files);
+      };
+      const denied = async (command: 'import' | 'export', code: number, flags: string[] = [], env: Record<string, string> = {}) => {
+        const before = JSON.stringify(state);
+        const files = snapshotFiles();
+        const r = await run(command, code, flags, env);
+        assert.equal(JSON.stringify(state), before, '拒绝/演练不得改数据库');
+        assert.equal(snapshotFiles(), files, '拒绝/演练不得改文件');
+        return r;
+      };
+      const refresh = async () => {
+        const s: Record<string, unknown> = {};
+        for (const [key, sql] of Object.entries(sql14)) s[key] = await h.query(sql);
+        state = s as Snapshot14;
+      };
+      const inbox = (id: string) => state.inbox.find((r) => r.msgid === id)!;
+      const backupFiles = () =>
+        fs.existsSync(keep)
+          ? fs
+              .readdirSync(keep)
+              .map((d) => path.join(keep, d, WECOM_STATE_FILE))
+              .filter((f) => fs.existsSync(f))
+          : [];
+      const L14 = (s: string) => `${h.label} 渠道迁移：${s}`;
+      try {
+        write(original);
+        await acheck(L14('未回放 spill 拒绝导入和 resync：2，库与文件不动；dry-run 仍为 0'), async () => {
+          const name = 'store-spill-2026-10-09T00-00-00-000Z.json';
+          const spill = path.join(dir, name);
+          fs.writeFileSync(spill, JSON.stringify({ channels: '未回放的渠道行' }));
+          try {
+            for (const flags of [[], ['--resync']]) {
+              const r = await denied('import', 2, flags);
+              assert.ok(r.out.includes(name));
+              assert.match(r.out, /含渠道行/);
+              assert.match(r.out, /outbound_sends \/ channel_inbox/);
+              assert.match(r.out, /先以 db 存储起一次应用让它回放/);
+              assert.match(r.out, /正常停机，再跑本命令/);
+            }
+            await denied('import', 0, ['--dry-run']);
+          } finally {
+            fs.unlinkSync(spill);
+          }
+        });
+        await acheck(L14('dry-run 零库写入、零文件变化；坏参数、密钥与 JSON 不回显'), async () => {
+          await denied('import', 0, ['--dry-run']);
+          await denied('import', 1, ['--key', 'INVALID']);
+          await denied('import', 1, ['--unknown', env14.WECOM_APP_SECRET]);
+          await denied('import', 1, [], { [envName]: '' });
+          await denied('import', 1, [], { WECOM_APP_SECRET: '' });
+          await denied('import', 1, ['--keep', path.join(dir, 'inside')]);
+          fs.symlinkSync(dir, path.join(root, 'alias'));
+          await denied('import', 1, ['--keep', path.join(root, 'alias', 'inside')]);
+          fs.writeFileSync(path.join(root, 'unwritable'), 'x');
+          await denied('import', 1, ['--keep', path.join(root, 'unwritable', 'keep')]);
+          write({ ...original, pending: [{ msg: msg('bad'), tries: -1 }] });
+          await denied('import', 1);
+          fs.writeFileSync(filePath, `${env14.WECOM_APP_SECRET} invalid JSON`);
+          await denied('import', 1);
+          write(original);
+        });
+        await acheck(L14('租户锁被占用时导入、导出均为 3；锁丢失回滚'), async () => {
+          const release = await h.block();
+          try {
+            for (const c of ['import', 'export'] as const) await denied(c, 3, [], h.label === 'PGlite' ? { CLI14_LOCK: 'held' } : {});
+          } finally {
+            await release();
+          }
+          if (h.label === 'PGlite') await denied('import', 3, [], { CLI14_LOCK: 'lost' });
+        });
+        await acheck(L14('审计写入失败回滚账号、cursor 和全部入站，错误参数不泄露'), async () => {
+          await h.query(
+            `create function cli14_fail() returns trigger language plpgsql as $$ begin raise exception 'fake-error-cli14'; end $$`,
+          );
+          await h.query(`create trigger cli14_fail before insert on audit_log for each row execute function cli14_fail()`);
+          try {
+            await denied('import', 1);
+          } finally {
+            await h.query('drop trigger cli14_fail on audit_log');
+            await h.query('drop function cli14_fail()');
+          }
+        });
+        await acheck(L14('200 handled + 重叠的 2 pending 只插 200 行；在途先后、队头计次、备份和标记'), async () => {
+          await run('import');
+          assert.equal(state.inbox.length, 200);
+          assert.deepEqual(
+            state.inbox.filter((r) => r.state === 'received').map((r) => [r.msgid, r.attempts]),
+            [
+              ['in14-198', 3],
+              ['in14-199', 0],
+            ],
+          );
+          assert.deepEqual(
+            state.inbox.slice(0, 2).map((r) => r.payload),
+            original.pending.map((e) => e.msg),
+          );
+          assert.equal(state.accounts[0]!.cursor, 'cursor14');
+          assert.deepEqual(state.accounts[0]!.settings, { pollIntervalMs: 45000 });
+          assert.equal(inbox('in14-0').conversation_id, null);
+          assert.equal(new Date(inbox('in14-0').received_at).getTime(), at);
+          assert.ok(new Date(inbox('in14-197').updated_at).getTime() >= at, 'legacy updated_at 是导入时刻');
+          assert.ok(!fs.existsSync(filePath));
+          assert.equal(readChannelsMarker(dir)?.account, 'kf-main');
+          assert.equal(fs.readFileSync(backupFiles()[0]!, 'utf8'), JSON.stringify(original));
+          const ct = state.accounts[0]!.ct;
+          assert.deepEqual(
+            openSecrets(oldRing, { tenantId: h.tenantId, accountId: state.accounts[0]!.id }, Buffer.from(ct, 'hex'), 'old').reveal(),
+            { appSecret: env14.WECOM_APP_SECRET, callbackToken: env14.WECOM_CALLBACK_TOKEN, callbackAesKey: env14.WECOM_CALLBACK_AES_KEY },
+          );
+          await denied('import', 0);
+          await denied('import', 2, ['--resync'], { WECOM_KF_OPEN_KFID: 'fake-kf-cli14-x' });
+        });
+        await acheck(L14('导入产物在 file 存储触发 channel_state_in_db；提交后残留原件可重试补完'), async () => {
+          // 文件存储启动检查不需要数据库；使用本命令真正生成的标记。
+          fs.copyFileSync(path.join(dir, CHANNELS_IN_DB_MARKER), path.join(varRoot, CHANNELS_IN_DB_MARKER));
+          try {
+            assert.equal((await tryInit(null)).err?.reason, 'channel_state_in_db');
+          } finally {
+            fs.unlinkSync(path.join(varRoot, CHANNELS_IN_DB_MARKER));
+          }
+          fs.unlinkSync(path.join(dir, CHANNELS_IN_DB_MARKER));
+          write(original);
+          const t = await h.connect();
+          try {
+            assert.equal(
+              (await tryInit({ db: t.db, tenantId: h.tenantId, tenantSlug: 'cli14', varDir: dir, keyRing: oldRing })).err?.reason,
+              'channel_state_in_file',
+            );
+          } finally {
+            await t.close();
+          }
+          const audits = state.audits.length;
+          const failed = await run('import', 1, [], { CLI14_FAIL_UNLINK: filePath });
+          assert.match(failed.out, /数据库已提交/);
+          assert.ok(fs.existsSync(filePath));
+          assert.ok(hasChannelsMarker(dir));
+          await run('import');
+          assert.equal(state.audits.length, audits);
+          assert.ok(!fs.existsSync(filePath));
+          assert.ok(hasChannelsMarker(dir));
+        });
+        await acheck(L14('未回放 spill 拒绝导出：2，账号、入站、出站、审计与文件不动'), async () => {
+          const name = 'store-spill-2026-10-09T00-00-00-000Z.json';
+          const spill = path.join(dir, name);
+          fs.writeFileSync(spill, JSON.stringify({ channels: '未回放的渠道行' }));
+          try {
+            const r = await denied('export', 2);
+            assert.ok(r.out.includes(name));
+            assert.match(r.out, /含渠道行/);
+            assert.match(r.out, /outbound_sends \/ channel_inbox/);
+            assert.match(r.out, /正常停机，再跑本命令/);
+          } finally {
+            fs.unlinkSync(spill);
+          }
+        });
+        await acheck(L14('未结束的 menu_click / send_fail / enter_session / legacy 全部拒绝导出：2，库与文件不动'), async () => {
+          for (const kind of ['menu_click', 'send_fail', 'enter_session', 'legacy']) {
+            for (const openState of ['received', 'recorded', 'replied']) {
+              await h.query(
+                `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, payload) values ($1, $2, 'review14-event', $3, 'wecom:wm14user', $4, $5)`,
+                [h.tenantId, state.accounts[0]!.id, kind, openState, JSON.stringify(msg('review14-event'))],
+              );
+              await refresh();
+              assert.match(
+                (await denied('export', 2, [], { CLI14_NO_WRITES: root })).out,
+                /先以 03 起一次应用让启动恢复处理完，正常停机，再导出/,
+              );
+              await h.query(`delete from channel_inbox where msgid = 'review14-event'`);
+              await refresh();
+            }
+          }
+        });
+        await acheck(L14('非文本在途名下任何状态的出站均拒绝导出；没有出站的非文本可往返'), async () => {
+          await h.query(
+            `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, message_seq, payload) values ($1, $2, 'review14-image', 'message', 'wecom:wm14user', 'replied', 1, $3)`,
+            [h.tenantId, state.accounts[0]!.id, JSON.stringify({ ...msg('review14-image'), msgtype: 'image', text: undefined })],
+          );
+          await refresh();
+          await h.query(
+            `insert into outbound_sends (tenant_id, account_id, inbox_id, conversation_id, channel_msgid, kind, sent_at, status, message_seq, payload) values ($1, $2, $3, 'wecom:wm14user', 'review14-hint', 'ai', now(), 'sending', null, '{"msgtype":"text","text":{"content":"请发送文字"}}')`,
+            [h.tenantId, state.accounts[0]!.id, inbox('review14-image').id],
+          );
+          for (const status of ['sending', 'pending', 'accepted', 'unknown', 'rejected', 'failed', 'cancelled']) {
+            await h.query(
+              `update outbound_sends set status = $1, payload = case when $1 in ('pending', 'sending') then '{"msgtype":"text","text":{"content":"请发送文字"}}'::jsonb else null end where channel_msgid = 'review14-hint'`,
+              [status],
+            );
+            await refresh();
+            assert.match(
+              (await denied('export', 2, [], { CLI14_NO_WRITES: root })).out,
+              /先以 03 起一次应用让启动恢复处理完，正常停机，再导出/,
+            );
+          }
+          // text 但没有 content 也会进入 02 的非文本处理，不能只比较 msgtype。
+          await h.query(`update channel_inbox set state = 'recorded', payload = $1 where msgid = 'review14-image'`, [
+            JSON.stringify({ ...msg('review14-image'), text: { content: '' } }),
+          ]);
+          await refresh();
+          await denied('export', 2);
+          await h.query(`update channel_inbox set state = 'received', payload = $1 where msgid = 'review14-image'`, [
+            JSON.stringify({ ...msg('review14-image'), msgtype: 'voice', text: undefined }),
+          ]);
+          await refresh();
+          await denied('export', 2);
+          await h.query(`delete from outbound_sends where channel_msgid = 'review14-hint'`);
+          await refresh();
+          await run('export');
+          assert.ok(
+            JSON.parse(fs.readFileSync(filePath, 'utf8')).pending.some((e: { msg: { msgid: string } }) => e.msg.msgid === 'review14-image'),
+          );
+          await run('import', 0, ['--resync']);
+          assert.equal(inbox('review14-image').state, 'received');
+          await h.query(`delete from channel_inbox where msgid = 'review14-image'`);
+          await refresh();
+        });
+        await acheck(L14('spill 目录首查/取锁后读取失败均为 1；取锁前新 spill 为 2；库与文件不动'), async () => {
+          for (const command of ['import', 'export'] as const) {
+            for (const mode of ['error', 'second-error']) {
+              const r = await denied(command, 1, [], { CLI14_READDIR: dir, CLI14_READDIR_MODE: mode });
+              assert.match(r.out, /无法检查数据目录里的 spill 文件/);
+            }
+          }
+          const spill = path.join(dir, 'store-spill-2026-10-09T00-00-00-001Z.json');
+          fs.writeFileSync(spill, JSON.stringify({ channels: '首查之后才出现' }));
+          try {
+            for (const [command, flags] of [
+              ['import', []],
+              ['import', ['--resync']],
+              ['export', []],
+            ] as const) {
+              const r = await denied(command, 2, [...flags], { CLI14_READDIR: dir, CLI14_READDIR_MODE: 'late-spill' });
+              assert.match(r.out, /没回放的 spill 文件/);
+            }
+            await denied('import', 0, ['--dry-run'], { CLI14_READDIR: dir, CLI14_READDIR_MODE: 'error' });
+          } finally {
+            fs.unlinkSync(spill);
+          }
+        });
+        await acheck(L14('五种导出拒绝与处理提示，数据库和文件完全不动'), async () => {
+          await denied('export', 2, [], { WECOM_APP_SECRET: 'fake-error-cli14' });
+          await denied('export', 2, [], { WECOM_CORP_ID: 'fake-error-cli14' });
+          fs.unlinkSync(path.join(dir, CHANNELS_IN_DB_MARKER));
+          write({ ...original, cursor: 'newer14' });
+          assert.match((await denied('export', 2)).out, /resync/);
+          writeChannelsMarker(dir, { tenant: 'cli14', account: 'kf-main', at: new Date().toISOString() });
+          fs.unlinkSync(filePath);
+          await h.query(
+            `insert into channel_accounts (tenant_id, key, kind, name, status) values ($1, 'web14', 'web', '网页', 'disabled')`,
+            [h.tenantId],
+          );
+          await refresh();
+          await denied('export', 2);
+          await h.query(`delete from channel_accounts where key = 'web14'`);
+          await refresh();
+          await h.query(
+            `insert into channel_accounts (tenant_id, key, kind, name, status, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id) select tenant_id, 'kf-two', kind, '次账号', 'disabled', 'wecom:kf-two:', corp_id, 'fake-kf-cli15', secrets_ct, secrets_key_id from channel_accounts`,
+          );
+          await refresh();
+          await denied('export', 2);
+          await h.query(`delete from channel_accounts where key = 'kf-two'`);
+          await refresh();
+          const aid = state.accounts[0]!.id;
+          const iid = inbox('in14-198').id;
+          await h.query(
+            `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, account_id, inbox_id, segment, payload) values ($1, 'wecom:wm14user', 'out14-a', 'ai', now(), 'accepted', $2, $3, 0, null), ($1, 'wecom:wm14user', 'out14-b', 'ai', now(), 'pending', $2, $3, 1, '{"text":"second"}')`,
+            [h.tenantId, aid, iid],
+          );
+          await refresh();
+          for (const status of ['accepted', 'unknown', 'sending']) {
+            await h.query(
+              `update outbound_sends set status = $1, payload = case when $1 = 'sending' then '{"text":"first"}'::jsonb else null end where channel_msgid = 'out14-a'`,
+              [status],
+            );
+            await refresh();
+            assert.match((await denied('export', 2)).out, /启动恢复/);
+          }
+          await h.query(`delete from outbound_sends`);
+          await h.query(
+            `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, account_id, payload) values ($1, 'wecom:wm14user', 'out14-no-inbox', 'notice', now(), 'pending', $2, '{"text":"notice"}')`,
+            [h.tenantId, aid],
+          );
+          await refresh();
+          assert.match((await denied('export', 2)).out, /inbox_id/);
+          await h.query(`delete from outbound_sends`);
+          await refresh();
+        });
+        await acheck(L14('成功导出为 02 格式：sending→unknown、全 pending→cancelled、先备份、exported、删标记、重复为 0'), async () => {
+          const aid = state.accounts[0]!.id;
+          await h.query(
+            `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, account_id, inbox_id, segment, payload) values ($1, 'wecom:wm14user', 'out14-send', 'ai', now(), 'sending', $2, $3, 0, '{"text":"sending"}'), ($1, 'wecom:wm14user', 'out14-p0', 'ai', now(), 'pending', $2, $4, 0, '{"text":"first"}'), ($1, 'wecom:wm14user', 'out14-p1', 'ai', now(), 'pending', $2, $4, 1, '{"text":"second"}')`,
+            [h.tenantId, aid, inbox('in14-198').id, inbox('in14-199').id],
+          );
+          await refresh();
+          fs.writeFileSync(filePath, 'original-to-keep even if invalid JSON');
+          const oldFile = fs.readFileSync(filePath, 'utf8');
+          await run('export');
+          assert.equal(state.accounts[0]!.status, 'exported');
+          assert.ok(!hasChannelsMarker(dir));
+          const out = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          assert.deepEqual(Object.keys(out).sort(), ['cursor', 'handled', 'pending']);
+          assert.equal(out.cursor, original.cursor);
+          assert.equal(out.handled.length, 200);
+          assert.deepEqual(out.pending, original.pending);
+          assert.equal(out.handled.find(([id]: [string, number]) => id === 'in14-0')[1], at);
+          assert.deepEqual(
+            state.outbound.map((r) => [r.status, r.payload]),
+            [
+              ['cancelled', null],
+              ['cancelled', null],
+              ['unknown', null],
+            ],
+          );
+          assert.ok(backupFiles().some((f) => fs.readFileSync(f, 'utf8') === oldFile));
+          await denied('export', 0);
+          assert.match((await denied('import', 2)).out, /resync/);
+          const before = state.inbox.map((r) => [r.msgid, r.state, r.attempts, r.payload, r.ord]);
+          await run('import', 0, ['--resync']);
+          assert.equal(state.accounts[0]!.status, 'active');
+          assert.deepEqual(
+            state.inbox.map((r) => [r.msgid, r.state, r.attempts, r.payload, r.ord]),
+            before,
+            '导入→导出→resync 往返保持在途与去重',
+          );
+        });
+        await acheck(L14('resync 合并 02 新已处理/新在途、终态不动、替换 open payload/attempts、缺失的 abandoned'), async () => {
+          await run('export');
+          await h.query(`update channel_inbox set state = 'done', payload = null where msgid = 'in14-198'`);
+          await refresh();
+          const finished = JSON.stringify(inbox('in14-198'));
+          const next = {
+            cursor: 'cursor14-next',
+            handled: [...original.handled, ['in14-200', at]],
+            pending: [
+              { msg: msg('in14-198'), tries: 99 },
+              { msg: msg('in14-201'), tries: 1 },
+              { msg: msg('in14-202'), tries: 2 },
+            ],
+          };
+          write(next);
+          await denied('import', 0, ['--resync', '--dry-run']);
+          await run('import', 0, ['--resync']);
+          assert.equal(state.accounts[0]!.cursor, next.cursor);
+          assert.equal(state.accounts[0]!.status, 'active');
+          assert.equal(JSON.stringify(inbox('in14-198')), finished);
+          assert.equal(inbox('in14-199').state, 'abandoned');
+          assert.equal(inbox('in14-199').reason, 'resync');
+          assert.equal(inbox('in14-199').payload, null);
+          assert.equal(inbox('in14-200').state, 'done');
+          assert.equal(inbox('in14-201').state, 'received');
+          assert.equal(inbox('in14-201').attempts, 1);
+          assert.equal(inbox('in14-202').attempts, 2); // 终态队头仍占文件中的队头位置
+          const ord = inbox('in14-201').ord;
+          await h.query(`update channel_inbox set state = 'recorded', message_seq = 12 where msgid = 'in14-201'`);
+          await run('export');
+          const changed = {
+            ...next,
+            cursor: 'cursor14-final',
+            handled: [...next.handled, ['in14-203', at]],
+            pending: [{ msg: { ...msg('in14-201'), text: { content: '替换的原文' } }, tries: 2 }],
+          };
+          write(changed);
+          await run('import', 0, ['--resync']);
+          assert.equal(inbox('in14-201').state, 'recorded');
+          assert.equal(inbox('in14-201').ord, ord);
+          assert.equal(inbox('in14-201').message_seq, 12);
+          assert.equal(inbox('in14-201').attempts, 3);
+          assert.deepEqual(inbox('in14-201').payload, changed.pending[0]!.msg);
+          assert.equal(inbox('in14-202').reason, 'resync');
+          assert.equal(inbox('in14-203').state, 'done');
+          assert.equal(inbox('in14-200').state, 'done');
+          assert.equal(state.accounts[0]!.cursor, changed.cursor);
+          assert.ok(hasChannelsMarker(dir));
+          assert.ok(!fs.existsSync(filePath));
+        });
+        await acheck(L14('export 提交后写文件失败：exported 加标记拦启动，保留原件并能原参数补完'), async () => {
+          await h.query(`update channel_inbox set state = 'done', payload = null where state in ('received', 'recorded', 'replied')`);
+          await refresh();
+          const failed = await run('export', 1, [], { CLI14_FAIL_RENAME: filePath });
+          assert.match(failed.out, /数据库已提交/);
+          assert.equal(state.accounts[0]!.status, 'exported');
+          assert.ok(hasChannelsMarker(dir));
+          assert.ok(!fs.existsSync(filePath));
+          const t = await h.connect();
+          try {
+            const r = await tryInit({ db: t.db, tenantId: h.tenantId, tenantSlug: 'cli14', varDir: dir, keyRing: oldRing });
+            assert.equal(r.err?.reason, 'channel_state_in_db');
+          } finally {
+            await t.close();
+          }
+          await run('export');
+          assert.ok(!hasChannelsMarker(dir));
+          assert.ok(fs.existsSync(filePath));
+        });
+        await acheck(L14('导出按 3 天、最新 5000 条取 handled，pending 不受去重 TTL 限制'), async () => {
+          await run('import', 0, ['--resync']);
+          await h.query(
+            `insert into channel_inbox (tenant_id, account_id, msgid, kind, state, received_at) select $1, $2, 'many14-' || n, 'legacy', 'done', now() - n * interval '1 millisecond' from generate_series(1, 5001) n`,
+            [h.tenantId, state.accounts[0]!.id],
+          );
+          await h.query(
+            `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, received_at, attempts, payload) values ($1, $2, 'old14', 'message', 'wecom:wm14old', 'received', now() - interval '4 days', 0, $3::jsonb)`,
+            [h.tenantId, state.accounts[0]!.id, JSON.stringify(msg('old14', 'wm14old'))],
+          );
+          await refresh();
+          await run('export');
+          const out = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          assert.equal(out.handled.length, 5000);
+          assert.equal(out.handled[0][0], 'many14-1');
+          const expected = state.inbox
+            .filter((r) => new Date(r.received_at).getTime() >= Date.now() - 3 * 24 * 3600 * 1000)
+            .toSorted((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime() || b.ord - a.ord)
+            .slice(0, 5000)
+            .map((r) => [r.msgid, new Date(r.received_at).getTime()]);
+          assert.deepEqual(out.handled, expected);
+          assert.ok(!out.handled.some(([id]: [string, number]) => id === 'many14-5001'));
+          assert.ok(!out.handled.some(([id]: [string, number]) => id === 'old14'));
+          assert.equal(out.pending[0].msg.msgid, 'old14');
+          assert.equal(out.pending[0].tries, 0);
+        });
+        check(L14('审计每次只一行 platform，内容只有 key 与条数，两动作中文标签，敏感值扫描零命中'), () => {
+          for (const a of state.audits) {
+            assert.ok(['channel.import', 'channel.export'].includes(a.action));
+            assert.equal(a.actor_kind, 'platform');
+            assert.equal(a.actor_name, a.action.replace('.', '-'));
+            assert.equal(a.target_id, null);
+            for (const [key, value] of Object.entries(a.diff))
+              if (key === 'key') assert.equal(value, 'kf-main');
+              else assert.equal(typeof value, 'number');
+            for (const f of forbidden14) assert.ok(!JSON.stringify(a).includes(f));
+          }
+          for (const action of ['channel.import', 'channel.export']) assert.match(AUDIT_ACTIONS[action]!.label, /\p{Script=Han}/u);
+          for (const f of forbidden14) assert.ok(!output14.includes(f), 'stdout/stderr 泄露敏感值');
+        });
+        await acheck(L14('无原件时导入空 cursor 的默认账号，冷启动；审计仍只一行'), async () => {
+          await h.query(`insert into tenants (slug, name, pack_id) values ('cli14-empty', '空文件', 'travel')`);
+          const emptyVar = path.join(root, 'empty-var');
+          const r = await h.run('import', ['--tenant', 'cli14-empty', '--key', 'empty14', '--keep', keep, '--var', emptyVar], {});
+          assert.equal(r.status, 0, r.out);
+          assert.equal(r.snapshot.accounts.find((a) => a.key === 'empty14')!.cursor, '');
+          assert.equal(r.snapshot.inbox.length, state.inbox.length);
+          assert.equal(r.snapshot.audits.length, state.audits.length + 1);
+          assert.equal(readChannelsMarker(emptyVar)?.account, 'empty14');
+          assert.ok(!fs.existsSync(path.join(emptyVar, WECOM_STATE_FILE)));
+        });
+      } finally {
+        await h.close();
+      }
+    }
+  } finally {
+    fs.rmSync(temp14, { recursive: true, force: true });
+  }
+}
+
 __channelsTest.reset();
 console.log(
   `CHANNELS SELFTEST PASS: ${pass} 项断言全通（密钥环 / AES-256-GCM 与 AAD / 轮换 / Redacted / 异常不泄露 / 日志字段脱敏 / ` +
