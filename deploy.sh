@@ -113,7 +113,7 @@ for f in "$env_file" "$1/.env.db" "$1/.env.migrate"; do
     exit 1
   fi
 done
-env_val() { awk -v k="$1=" '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } index($0, k) == 1 { v = substr($0, length(k) + 1) } END { print v }' "$2"; }
+env_val() { awk -v k="$1=" '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } index($0, k) == 1 { v = substr($0, length(k) + 1) } END { print v }' "$2" </dev/null; }
 val=$(env_val DEPLOY_PROFILE "$env_file")
 case "$val" in
   demo | prod) ;;
@@ -131,7 +131,7 @@ if [ -n "$(env_val POSTGRES_DB "$1/.env.db")" ]; then
   echo "$1/.env.db 不能设 POSTGRES_DB（原因见 deploy/compose.yml 开头）" >&2
   exit 1
 fi
-if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_(CORP_ID|APP_SECRET|KF_OPEN_KFID)=[^[:space:]]' "$env_file"; then
+if [ "$2" = 1 ] && grep -Eq '^[[:space:]]*WECOM_(CORP_ID|APP_SECRET|KF_OPEN_KFID)=[^[:space:]]' "$env_file" </dev/null; then
   echo "旁路实例的 $env_file 配了企微凭据，会和线上实例抢同一个客服账号的消息" >&2
   exit 1
 fi
