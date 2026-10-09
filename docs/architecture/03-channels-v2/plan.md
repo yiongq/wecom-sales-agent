@@ -84,7 +84,7 @@
   - 自测：一页的提交与回滚、`ord` 顺序、状态机每一格、出队计次（队尾不被连累）、四种入站种类的处理。
   - 对应验收 3、9；不变量 1、2、3、8、11、12。依赖：第 8 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍；变异（至少：插入就计次、`recorded` 不和消息同一事务、cursor 先于插入提交）。
-- [ ] 10. 启动恢复与崩溃点（2，Claude）
+- [x] 10. 启动恢复与崩溃点（2，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），spec 顶部记了一条实现期 `Revisions:`，见「实施记录 · 第 10 步」。
   - `src/channels/recovery.ts`：出站恢复表、入站恢复表（按种类与状态）、保底三条、恢复做完之前 `push` 排队等待、`RESEND_UNKNOWN` 常量与 `__channelTest`（R5、R21 的保底）。
   - 停机：截止之后留 `pending`，不再需要 02 的 deferred（spec「重启、崩溃与恢复」）。
   - 自测（真实 PG，子进程 `SIGKILL`，靠假企微、假模型与库连接的阻塞点造时刻）：验收 4 的全部杀点、验收 7 的两种杀进程、验收 18 的每一种出站行、恢复做完之前到期的跟进等待。
@@ -550,6 +550,55 @@
 - 第 10 步：回放在 `initSessionStore` 里、早于 `initChannels`，恢复看到的是回放之后的状态。单独写渠道部分之后、或 poisoned 短事务之后，入站行可能是 `recorded` / `replied` / `done` 而 `message_seq` 在 `messages` 里不存在，出站行的 `message_seq` 也可能指向不存在的消息——保底第三条（用 `payload` 补进会话）必不可少；会话行根本不在库里的 poisoned 会话补进会话时会再次 poisoned，恢复不能因此打转。`recorded` 的短事务早于 `pending` + `replied` 那一个，`recorded` 那次以数据类错误丢掉时会出现「`received` 但名下有出站行」，由保底第二条处理。
 - 第 12 步：`restore-cutoff` 先于应用启动跑，spill 回放在它之后，可能插入 `sent_at` 不晚于截止点的 `pending` 行；出站恢复表「`pending`、`sent_at` 不晚于截止点 → `cancelled`」兜住。
 - 第 14 步：`channel-export` / `channel-import` 在 `var/` 里有 spill 文件时应拒绝（照 02 `erase-conversation` 的做法），否则回放会在导出之后再往 `outbound_sends` / `channel_inbox` 写行。
+
+### 第 10 步 · 启动恢复与崩溃点（2026-10-09）
+
+**结构**
+
+- `src/channels/recovery-rules.ts`（新，纯模块，`check-boundaries` 登记为纯）：出站恢复表、保底三条、入站恢复表（`recorded`、`replied`）、`RESEND_UNKNOWN = false`、人工回复的 10 分钟常量。`src/channels/recovery.ts`：出站恢复的逐行执行（`recoverOutbound`）、`RecoveryGate`（`push` 等恢复）、`RESEND_UNKNOWN` 的生效值与 `__channelTest`（子进程里设）。`src/quota/ledger.ts` 加 `adoptOpenOutbound`（把库里的 `pending`、`sending` 收进内存账本，补上 payload、段号、inbox_id）、`recoverAsUnknown`、`pendingIntentsOfInbox`；`src/db/repo/outbound.ts` 加 `readOutboundOfInboxes`；`src/channels/inbox.ts` 加 `loadForRecovery`（保底要的「名下有没有出站行」与 load 同一个短事务）。
+- 启动顺序（`startChannels` → 适配器的 `runRecovery`）：每个库里启用的企微账号起运行时、`recovery = 'recovering'`、gate 关着 → 出站恢复（`initChannels` 读到的 `openOutbound`，按建行时刻与段号逐行判，补发逐段等完）→ `loadForRecovery` → 没结束的入站按 `ord` 派发进各自会话的处理链 → 派发完就 `recovery = done`、开 gate、开始拉取。读库失败按 1 / 5 / 30 / 120 秒退避，停机时放下；出站恢复中途出错只记日志、入站恢复照做。撤掉了第 7、9 步「有没结束行就不拉取」的闸门。
+
+**出站恢复表**（自上而下第一行命中）
+
+| 出站行                                     | 处理                                                                                                                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 指着它的失败回执还停在 `received`          | 不动，入站恢复重做回执、迁 `failed`                                                                                                                                                               |
+| `sending`                                  | `RESEND_UNKNOWN` 为假：记 `unknown`、不补发、进启动告警；为真：保持 `sending` 按同一 msgid 补发，但会话有接手人时 AI 类段（`ai`、`followup`、`menu`、`welcome`）记 `unknown`、不补发（不变量 10） |
+| `pending`，`sent_at` 不晚于恢复截止点      | `cancelled`                                                                                                                                                                                       |
+| `pending`，有 inbox_id、入站没结束         | 留给入站恢复                                                                                                                                                                                      |
+| `pending`，有 inbox_id、入站已结束或已清理 | `cancelled`                                                                                                                                                                                       |
+| `followup`                                 | `cancelled`                                                                                                                                                                                       |
+| `notice`                                   | 同一 msgid 补发                                                                                                                                                                                   |
+| `human`                                    | 10 分钟内（含正好 10 分钟）且接手人没变才补发，否则 `cancelled`（工作台「未发送」）                                                                                                               |
+| `menu`、`welcome`、没有 inbox_id 的 `ai`   | `cancelled`                                                                                                                                                                                       |
+| `card`（env 账号与 02 的旧行）             | `cancelled`，记一行日志                                                                                                                                                                           |
+
+库里的 payload 不合格时：`pending` 记 `cancelled`，`sending` 记 `unknown`。
+
+**入站恢复**（在 `processInboxRow` 里，出队照常判 halted、poison、too_old、截止点，然后计次）：保底三条（`effectiveInboxState`）——`received` 而名下已有出站行按 `replied`；`received` 而会话里已有这句按 `recorded`（同一次落库补记 `recorded`）；`recorded` 而会话里找不到这句，先用 payload 补进会话再按 `recorded`。`recorded`：这句之后有 AI 回复就按那条回复切分段照常发、不调模型（会话有接手人时排进去随即取消，记「本轮未发送」）；没有回复、已转人工 → `done`；没有回复、没转人工 → 以 `alreadyRecorded` 重跑（非文本只补发引导提示）；这句只在 7 天集合里、已不在会话窗口 → `done`（02 去重情况 2）。`replied`：有接手人就把名下 `pending` 的段 `cancelled`、记「本轮未发送」、`done`；否则同一 msgid 补发，都有结果后 `done`。菜单点击与回执沿用第 9 步的路径，重做幂等。
+
+**`push` 等恢复**：恢复做完之前，库里账号的 `push`（人工回复、跟进、通知）在 gate 上等，至多 30 秒（spec 原值）；超时返回 false，并把已 prepare 的 `pending` 段记 `cancelled`——跟进按「明确失败」处理、人工回复记「未能发送」、工作台「未发送」。回调在恢复期间不拉取，做完后第一拍补拉。
+
+**本步定的（协调者确认，spec 实现期修订，顶部 `Revisions:`）**
+
+- 「恢复做完」取「派发完」，不等入站行处理完：处理链按会话串行，同一客户的新消息照样排在后面（不变量 12）；等处理完的话一次慢的模型调用会卡住整个账号的拉取。
+- 出站恢复表前多一行：指着它的失败回执还停在 `received`（第 9 步评审之后才会出现的情形）时，这一段不补发、交给入站恢复重做回执（守不变量 5）。
+- `recorded`、这句之后已有 AI 回复、会话有接手人：把分段排进去随即取消（不变量 10，与 `replied` 那一行同一口径）。
+- `RESEND_UNKNOWN` 为真时，有接手人的会话里还在 `sending` 的 AI 类段不补发、记 `unknown`（不变量 10）。
+- 「接手人没变」：这条人工消息的 authorId 等于当前接手人的 userId（共享工作台的 null 等于 null，与 `takeover.ts` 的 `isMine` 同一口径）；会话交还了、或找不到这条消息都算变了。
+- 小缺口：恢复补发的非文本引导提示发成功后不补写进会话（02 是发成功后才写）；恢复时卡片发失败补的「标题 + 链接」段号取那一段加 1，极端情况下可能与同组已有段号重复（段号没有唯一约束，不影响正确性）。`sending` 转 `unknown` 的告警并进启动告警（每个账号一句、带段数），没有单独 escalate。
+
+**自测与变异**
+
+- 新套件 `src/channels/recovery.selftest.ts`（串在 `wecom-03` 之后；`src/db/testing.ts` 加 `connectSuperQuery` 给子进程连同一个一次性库）：纯函数的恢复表每一格（352 项），真实 PG 加子进程 SIGKILL（共 426 项）。验收 4 的全部杀点（模型生成途中、回复已落库而第一段没开始、两段发完第一段、请求已到而回包挂住、`markSending` 之后请求没到，以及 `RESEND_UNKNOWN` 为真重跑后两种）、验收 7 的 A 与 B（都至多多一组、各有告警）、验收 18 的每一种出站行与恢复做完之前到期的跟进、验收 20 的重启部分、验收 3 的「一页 3 条提交之后立刻杀」、验收 9 的「毒消息连杀三次：第三次重启时 `poison`、说明与告警各一条、同一客户的第二句 attempts 不被累加」，另加失败回执停在 `received`、接手后的 `replied`、`recorded` 已有回复、`received` 已有出站行、`RESEND_UNKNOWN` 为真加有接手人。重启之后库里没有没结果的出站与没结束的入站（不变量 15）；跑完 `ps` 里没有残留子进程。
+- 变异（隔离副本，真实 PG）20 个全部被抓到，含 plan 要求的三个（`sending` 重启后照发、有接手人仍补发、人工回复不看 10 分钟——规则层与调用处各一个），另有不看接手人、跟进补发、`push` 不等、gate 先开、保底不看出站行、`recorded` 有回复也重调模型、不看失败回执、`sending` 段也 `markSending`、不报 `unknown`、入站已结束照发、不看截止点、不派发入站、`replied` 补发后不记 `done`、出站补发不等完。
+- 门禁：四个全绿；带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RECOVERY 426、WECOM-03 223、CHANNELS 106、QUOTA 127、OUTBOUND 246、DB 1168、STORE 452、JOBS 110、OPS 472、WECOM 461、WECOM-02 15，mock eval 两遍 19/19）；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
+
+**给后面步骤的注意**
+
+- 第 12 步：出站恢复的截止点读 `initChannels` 快照里的 `account.wecom.recordOnlyUntil`，入站读 `load` 的；`restore-cutoff` 用 `transitionOutbound(…, 'recover')`；「N 个会话只补记」的告警还没做。
+- 第 13 步：「`sending` 转 `unknown`」并在启动检查那一条里，正文受 `safeText` 300 字截断，账号多时会截掉，可能要拆成单独一条；`recovery` 状态现在只在 `__wecomTest.inspect` 里看得到，恢复卡住（读库一直失败）时 `/healthz` 的 `stuck` 与 `/status` 要反映出来；`unsafeSendsIn10m`、`staleOutbound` 没动。
+- 第 14 步：`legacy` 行仍走「不认识的种类 → `done`」；导入的在途行按 `received` 进入恢复，保底会查会话里有没有这句、名下有没有出站行；导出前的拒绝判断可以用 `adoptOpenOutbound` 那套数据形状。
 
 ## 验收记录
 
