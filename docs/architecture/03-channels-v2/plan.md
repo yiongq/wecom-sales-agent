@@ -41,7 +41,7 @@
   - 自测：`db.selftest.ts` 的表清单与权限期望表扩到新表；PGlite 上迁移连跑两遍、CHECK、`ord` 递增、迁移表每一格（允许的改了、表外的没改）。真实 PG：新表逐格授权、没有 DELETE / TRUNCATE、两个触发器（不可变列、入站终态不回退、`updated_at` 改不回去）、`purge_channel_inbox` 拒删未到期并把超期未结束的记 `abandoned`、清除与删除连带入站行。
   - 对应验收 19 的库部分、17 的迁移表部分；不变量 7、8、21、30 的库部分。依赖：第 1 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 再跑一遍 `pnpm test` 全绿；`scripts/check-migrations.ts` 通过。
-- [ ] 3. 凭据加密与密钥环（1，可派 Codex）
+- [x] 3. 凭据加密与密钥环（1，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、补跑门禁），见「实施记录 · 第 3 步」。
   - `src/channels/secrets.ts`：`keyRingFromEnv`、`sealSecrets`、`openSecrets`、`Redacted`；`src/log.ts` 的 `REDACT_KEYS` 加 spec「可观测性」列的字段名；`check-boundaries` 加「`CHANNEL_SECRETS_KEY` 只出现在 `secrets.ts`」与 `src/channels/` 纯模块的依赖规则（R9）。
   - 自测（`src/channels/channels.selftest.ts`，串进 `test`）：密钥环的解析与拒绝、往返、改一个字节、换 AAD、换 key id、旧密钥解、轮换后新密钥解、`Redacted` 在 `JSON.stringify`、`util.inspect`、模板字符串里都是「[已遮盖]」。
   - 对应验收 11 的加解密部分；不变量 16、17。依赖：第 1 步。
@@ -261,6 +261,15 @@
 - `src/log.ts` 的 `RAW_CONV_ID` 改成认 `wecom:<id>`、`wecom:<key>:<id>`（key 照 R8 的 `^[a-z][a-z0-9-]{1,30}$`）、`web:<32 位小写十六进制>`、`sim-<id>`，每个冒号都可以是 `%3A` / `%3a`（含混合编码）。`web:` 只认恰好 32 位十六进制、后面不接 id 字符，普通文本里的「web: 首页」「web:abc」不动。`scrubConvIds` 把匹配串里所有编码冒号解回 `:` 再交给 `convCode`（按完整会话 id 查 ref，查不到退回短码）。`shortIdOf` 不改：新形状只取最后 4 位字母数字，不含整段 `external_userid`。`src/server.ts` 的请求路径与 `src/ops/alert.ts` 本来就经它，不用改。
 - 自测追加在 `src/ops/ops.selftest.ts`（不改已有断言）：6 个手写 id 展开成 28 种原文与编码组合，在 JSON 日志行（正文与嵌套字段）、prod 下的请求路径、告警正文三处都换成 ref 或短码，整份输出里搜不到原 id、`external_userid`、网页哈希与 `key:id` 残片；demo 下请求路径原样；普通网页文本与长度不对的 id 原样。
 - 门禁：四个全绿，`pnpm test` PASS 70 行，`PREFIX sha256` 与第 1 步相同，锁定文件未动。Codex 沙箱里 `pnpm test` 末尾的 console 构建报 `EPERM`（`console/dist/.vite`），由 Claude 在沙箱外补跑。
+
+### 第 3 步 · 凭据加密与密钥环（2026-10-09）
+
+- `src/channels/secrets.ts`（只 import `node:crypto`、`node:util`）：`keyRingFromEnv` 解析 `<id>:<base64>`，逗号分隔、第一把是 `current`；拒绝缺冒号、id 不合 `^[A-Za-z0-9_-]{1,32}$`、id 重复、base64 不合法或非规范、长度不是 32 字节，错误只说第几项哪里不对。`sealSecrets` / `openSecrets` 照 R9：AES-256-GCM、12 字节随机 nonce、AAD `channel_accounts:v1:<tenant>:<account>`、`nonce ‖ 密文 ‖ tag`。`Redacted` 的值放在私有字段 `#v`，`toJSON`、`toString`、`Symbol.toPrimitive`、`util.inspect.custom` 都是「[已遮盖]」。
+- 本步定的：`ChannelSecretError` 的 message 是「渠道凭据 `<keyId>`：<失败类别>」（密钥不存在、密文长度不足、认证失败、JSON 无效、凭据字段无效），带 `keyId` 字段，不保留底层异常（`JSON.parse` 的报错可能带明文片段）。spec 说 detail 里要有账号 key：`openSecrets` 拿不到 key，由第 6 步的 `initChannels` 包成 `channel_decrypt` 时拼上。
+- `src/log.ts` 的 `REDACT_KEYS` 加 `appSecret`、`callbackToken`、`callbackAesKey`、`secrets`、`secretsCt`、`secrets_ct`；现有日志里没有叫 `secrets` 的字段。
+- `scripts/check-boundaries.ts`：`secrets.ts`、`markers.ts`、`transitions.ts` 是纯模块（不 import `src/db/`、store、engine、llm、adapters，未建的先登记）；`src/channels/` 不 import engine、llm、tools；`src/db/`、`src/cli/` 不 import `src/channels/registry.ts` 与 adapters；`CHANNEL_SECRETS_KEY` 只出现在 `secrets.ts`（只管代码文件，`.env.example` 与文档不管，自测用字符串拼出这个名字）。`recovery.ts` 的判定部分等第 10 步拆文件后再登记。Codex 在隔离副本里故意违反七组规则，`pnpm lint` 都拦住了。
+- 自测 `src/channels/channels.selftest.ts`（串进 `test`）54 项：密钥环的解析与每种拒绝（错误里没有密钥片段）、往返、改 nonce / 密文 / tag 各一字节、换 AAD、换 key id、旧密钥解、轮换后只剩新钥解不开旧密文、`Redacted` 在 JSON / inspect / 模板 / `String` / `console.log` 里遮盖、错误对象打印不含明文与密文的 base64 / hex / Buffer JSON、六个新字段的日志脱敏。
+- 门禁：四个全绿，`PREFIX sha256` 与第 1 步相同，锁定文件未动。console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑。
 
 ## 验收记录
 
