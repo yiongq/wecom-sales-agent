@@ -1,6 +1,6 @@
-// 审计（spec「审计」）：只追加。租户与操作者从 withTenant 的上下文取，调用方只给动作和内容
-import { and, desc, eq, lt, type SQL } from 'drizzle-orm';
-import { currentTenantCtx, type Tx } from '../client.js';
+// 审计（spec「审计」）：只追加。租户从 withTenant 的上下文取；操作者默认也从上下文取，调用方只给动作和内容
+import { and, desc, eq, lt, sql, type SQL } from 'drizzle-orm';
+import { currentTenantCtx, type TenantCtx, type Tx } from '../client.js';
 import { auditLog } from '../schema.js';
 
 export interface AuditEntry {
@@ -11,7 +11,15 @@ export interface AuditEntry {
 }
 
 export async function writeAudit(tx: Tx, entry: AuditEntry): Promise<void> {
-  const { tenantId, actor } = currentTenantCtx();
+  await writeAuditAs(tx, currentTenantCtx().actor, entry);
+}
+
+/**
+ * 显式给出操作者（02 spec「identity map 与写入」第 5 步）：一次落库合并了几个人的改动，事务的上下文只有一个操作者，
+ * 每行审计要记各自的操作者与 IP。租户仍取事务的上下文
+ */
+export async function writeAuditAs(tx: Tx, actor: TenantCtx['actor'], entry: AuditEntry): Promise<void> {
+  const { tenantId } = currentTenantCtx();
   await tx.insert(auditLog).values({
     tenantId,
     actorUserId: actor.userId,
@@ -36,11 +44,18 @@ export interface AuditRow {
   diff: unknown;
 }
 
-/** 本租户的审计，按 id 倒序（走 audit_log_by_tenant）；beforeId 翻页，action 精确过滤 */
-export async function readAudit(tx: Tx, q: { limit: number; beforeId?: number; action?: string }): Promise<AuditRow[]> {
+/**
+ * 本租户的审计，按 id 倒序（走 audit_log_by_tenant）；beforeId 翻页，action 精确过滤，actions 只留列表里的动作
+ * （一个数组参数 `action = any($1)`，列表多长都是同一条语句）
+ */
+export async function readAudit(
+  tx: Tx,
+  q: { limit: number; beforeId?: number; action?: string; actions?: readonly string[] },
+): Promise<AuditRow[]> {
   const where: SQL[] = [];
   if (q.beforeId !== undefined) where.push(lt(auditLog.id, q.beforeId));
   if (q.action !== undefined) where.push(eq(auditLog.action, q.action));
+  if (q.actions !== undefined) where.push(sql`${auditLog.action} = any(${sql.param([...q.actions])}::text[])`);
   return tx
     .select({
       id: auditLog.id,

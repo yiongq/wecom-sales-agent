@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>后台</title>
+    <!-- 首帧之前设 data-theme 与 data-reduce-motion。CSP 不许内联脚本，所以是 public/ 下的静态文件、同步加载；
+         构建时 vite 按 base 把路径改成 /console/theme-boot.js -->
+    <script src="/theme-boot.js"></script>
   </head>
   <body>
     <div id="root"></div>

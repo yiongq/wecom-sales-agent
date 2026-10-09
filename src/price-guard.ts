@@ -1067,7 +1067,10 @@ export function saidBefore(session: Session, values: number[]): boolean {
 // 出口护栏命中后只删有问题的那几句，其余照发。此前价格护栏一命中就整条换成兜底话术：客户问「马代和巴厘岛哪个好」，
 // 收到「告诉我线路和出行人数」；改期后的报价里编了一句差额，连同新日期、新报价一起没了。
 
-/** 按句读切开（句号问叹号、句末波浪号、换行都算一句的结尾），每段带着自己的结尾符 */
+/**
+ * 按句读切开（句号问叹号、句末波浪号、换行都算一句的结尾），每段带着自己的结尾符。半角「?」后面紧跟「v=数字」的是方案书链接的
+ * 版本后缀（/proposal/…/2?v=2，02「报价快照」），不断句：断在这儿，删句会把「v=2」连着后半句删掉，链接退化成版本 1
+ */
 export function sentenceUnits(text: string): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = [];
   let start = 0;
@@ -1075,7 +1078,7 @@ export function sentenceUnits(text: string): { start: number; end: number }[] {
     const c = text[i];
     let end = -1;
     if (c === '\n') end = i + 1;
-    else if ('。！!？?'.includes(c)) {
+    else if ('。！!？?'.includes(c) && !(c === '?' && /^v=\d/.test(text.slice(i + 1, i + 4)))) {
       end = i + 1;
       while (end < text.length && '。！!？?」”’）)'.includes(text[end])) end += 1;
     } else if (

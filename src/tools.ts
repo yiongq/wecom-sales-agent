@@ -3,18 +3,24 @@
 // 缺失时抛清晰错误；ROUTES_PATH 仅供测试指向 fixture，默认 data/routes.json。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Hotel, Route, SalesSegment, SalesStage, Session } from './types.js';
+import type { HandoffRecord, Hotel, Route, SalesSegment, Session } from './types.js';
 import { SALES_SEGMENTS } from './types.js';
+import { cleanText } from './shared/text.js';
+import { enterHandoff, HANDOFF_REASON } from './handoff/record.js';
 import { peakMonths } from './shared/season.js';
 import { deepFreeze } from './shared/freeze.js';
-import { configMode, currentCatalog } from './config/source.js';
+import { catalogItemAt, catalogVersionKey, configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
 import { budgetVerdict } from './price-rules.js';
-import { createOrder, getOrder, saveSession, supersedeOrder } from './store.js';
+import { createOrder, getOrder, queueJobs, saveSession, supersedeOrder } from './store.js';
 import { todayIso } from './env.js';
+import { paymentMode } from './payment/mode.js';
+import { orderUnconfirmedNotifyOps } from './jobs/notify.js';
 
 // 工具定义是纯数据，搬到 tool-defs.ts：配置层要用它算 tools_hash、核对 SOP 点名的工具，又不能 import 本模块（本模块加载时就读 var/）
 export { toolDefs, type ToolDef } from './tool-defs.js';
+// 进入转人工搬到 handoff/record.ts（02 spec「模块与依赖方向」），这里再导出，原有的 import 不用改
+export { enterHandoff };
 
 function routesPath(): string {
   return process.env.ROUTES_PATH ?? path.join(process.cwd(), 'data', 'routes.json');
@@ -49,6 +55,32 @@ export function loadHotels(): Hotel[] {
   } catch (e) {
     throw new Error(`酒店数据 ${p} 解析失败（JSON 语法错误，请检查最近的手工修改）: ${e instanceof Error ? e.message : e}`, { cause: e });
   }
+}
+
+/**
+ * 线路当前的条目版本（02 spec「报价快照」）：DB 模式取 currentCatalog()（一轮之内是这一轮开始时那一代），文件模式没有版本，恒为 1。
+ * 方案书链接在它大于 1 时带 ?v=，订单记它
+ */
+export function routeVersion(routeId: string): number {
+  if (configMode() !== 'db') return 1;
+  return currentCatalog().versions[catalogVersionKey('route', routeId)] ?? 1;
+}
+
+/** 方案书链接上的 ?v=：版本 1 什么都不加，链接与开工时逐字节相同（不变量 35） */
+export const proposalVersionSuffix = (version: number): string => (version > 1 ? `?v=${version}` : '');
+
+/**
+ * 方案书按哪个版本的线路渲染（/proposal/*、/api/proposal/:routeId、企微卡片）。v 是地址里的原文：不带（undefined）按版本 1；
+ * 不是正整数、大于这条线当前的版本、线路不在产品库里时返回 null（调用方 404）。只读内存，不查库（不变量 35）。
+ * 文件模式没有版本：每条线都只有版本 1，就是文件里现在的样子
+ */
+export function routeForProposal(routeId: string, v: string | undefined): Route | null {
+  if (v !== undefined && !/^[1-9]\d{0,8}$/.test(v)) return null;
+  const n = v === undefined ? 1 : Number(v);
+  const current = loadRoutes().find((r) => r.id === routeId);
+  if (!current || n > routeVersion(routeId)) return null;
+  if (configMode() !== 'db') return current;
+  return (catalogItemAt('route', routeId, n) as Route | null) ?? null;
 }
 
 export function searchHotels(args: { destination?: string; tags?: string[]; maxNightlyPrice?: number }): Hotel[] {
@@ -626,7 +658,7 @@ export async function searchRoutes(args: SearchRoutesArgs, ctx: SearchCtx = {}):
       // 传了 query 的那 1/3 推荐了最接近的芬兰极光——这才是要的口径（sop.md 转人工条件）。
       // 所以没传 query 时拿目的地和客户原话补做一次语义召回，两种传法走同一条路、结果形态一致。
       if (!order && !args.query?.trim() && indexReady()) {
-        const got = await recall([q, ctx.customerText?.slice(0, 200)].filter(Boolean).join('。'));
+        const got = await recall([q, ctx.customerText && cleanText(ctx.customerText, 200)].filter(Boolean).join('。'));
         if (got) ({ order, list } = got);
       }
       // 同类型的现成线路排最前（普吉、斐济 → 巴厘岛、马代、三亚），语义召回的补在后面。召回不可用时同类型的照样给得出
@@ -937,6 +969,11 @@ export interface Quote {
 export function createQuote(args: { routeId: string; travelers: number; departDate?: string }): Quote {
   const route = loadRoutes().find((r) => r.id === args.routeId);
   if (!route) throw new Error(`线路不存在: ${args.routeId}`);
+  return quoteFor(route, args);
+}
+
+/** 同一套规则按给定的线路算：方案书按版本渲染时，线路是那个版本的 payload，规则是代码里现在的（02「报价快照」） */
+export function quoteFor(route: Route, args: { travelers: number; departDate?: string }): Quote {
   const travelers = Math.max(1, Math.floor(args.travelers));
   let perPerson = route.priceFrom;
   const notes: string[] = [];
@@ -992,6 +1029,12 @@ function rememberQuoteHistory(session: Session): void {
   session.quoteHistory = [...(session.quoteHistory ?? []), entry].slice(-12);
 }
 
+/**
+ * advisor 模式下 create_order 结果多带的字段（02 spec「收款流程」）：模型照它跟客户说怎么付，
+ * 不能说成点链接付款——价格由顾问在微信里核对、收款方式也是顾问另发的。online 模式没有这个字段，逐字节不变
+ */
+const ADVISOR_PAY_NOTE = '这是订单确认链接：顾问会在微信里跟客户核对价格并发收款方式，不要说点链接付款。';
+
 /** 解析出行人数：接受数字或纯数字字符串，其余（"两"、"2位"…）判非法 */
 function parseTravelers(v: unknown): number | null {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN;
@@ -1031,18 +1074,6 @@ export const HANDOFF_NOTE =
   '客户要的地方我们没有现成线路时，只说顾问会联系评估，不要替顾问承诺能去、能安排或能定制原目的地（不说「帮您落实冰岛行程」「为您定制冰岛之旅」）。';
 
 /**
- * 进入转人工。引擎的各条转人工路径（明确诉求安全网、改行程护栏）和 handoff_to_human 工具
- * 都必须走这里：此前只有后台「接管」会记 stageBeforeHandoff，引擎触发的转人工（包括正则
- * 误伤）一律不记，顾问点「交还 AI」时只能反推阶段，recommend 的客户被打回 discovery。
- * 已在转人工中就不覆盖——否则记下的会是 handoff 本身，原阶段永久丢失（与 server.ts 的接管同一规则）。
- */
-export function enterHandoff(session: Session, prevStage: SalesStage = session.stage): void {
-  if (session.stage !== 'handoff' && prevStage !== 'handoff') session.stageBeforeHandoff = prevStage;
-  session.handedOver = true;
-  session.stage = 'handoff';
-}
-
-/**
  * 记下这次查到的线路，供下一轮会话状态带给模型（见 Session.lastShownRoutes）。
  * 新查到的排前面、与旧的去重，封顶 5 条；查空了不清——客户看过的线路还在对话里。
  */
@@ -1073,6 +1104,11 @@ export interface ToolHints {
   elder?: boolean;
   /** 客户提过高反、海拔 */
   altitudeWorry?: boolean;
+  /**
+   * handoff_to_human 记进转人工记录的两项，由引擎在调工具之前算好：quote 是本轮客户原话，departNote 是 departNoteForHandoff 的结果。
+   * departNote 也附在后台那条「AI 已转人工」的 system 消息后面，一次写成整条（02 spec「消息只追加」）
+   */
+  handoff?: Pick<HandoffRecord, 'quote' | 'departNote'>;
 }
 
 /**
@@ -1153,8 +1189,12 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
       rememberQuoteHistory(session);
       rememberSeenRoutes(session, [route.id]);
       saveSession(session);
-      // 无状态链接：参数编进 URL，页面按同一套规则重算，不引入新的持久化与清理负担
-      const url = `/proposal/${route.id}/${travelers}` + (args.departDate ? `/${String(args.departDate)}` : '');
+      // 无状态链接：参数编进 URL，页面按同一套规则重算，不引入新的持久化与清理负担。线路改过内容（版本大于 1）时带 ?v=，
+      // 页面按这个版本的内容算，之后再改价也不变（02「报价快照」）；版本 1 的链接与开工时逐字节相同
+      const url =
+        `/proposal/${route.id}/${travelers}` +
+        (args.departDate ? `/${String(args.departDate)}` : '') +
+        proposalVersionSuffix(routeVersion(route.id));
       return JSON.stringify({
         proposalUrl: url,
         routeTitle: route.title,
@@ -1201,6 +1241,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
           note:
             `这是本会话已有的那张订单（${dup.travelers} 位 / ${dup.departDate} 出发），不是新建的。` +
             '不要说成刚下了一单，更不要说成是给别人的订单；客户要给别人另订一份，这张单替代不了，先问清是合并成一单还是请顾问单独下。',
+          ...(paymentMode() === 'advisor' ? { payNote: ADVISOR_PAY_NOTE } : {}),
         });
       }
       const quote = createQuote({ routeId: args.routeId, travelers, departDate: args.departDate });
@@ -1211,6 +1252,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
         travelers: quote.travelers,
         departDate: args.departDate,
         totalPrice: quote.total,
+        // 下单时线路的条目版本：金额与线路名照旧冻结在订单上，版本记下它们出自哪一份（02「报价快照」）
+        catalogVersion: routeVersion(args.routeId),
       });
       // 改单：同一条线换了人数或日期重新下单，旧的待付款单作废。此前 8/8 次改单都留着两张待付款，
       // 模型却对客户说「之前的作废了 / 不用管」，旧链接照样能付。已付款的单绝不动（supersedeOrder 只认待付款）
@@ -1222,6 +1265,9 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
       session.orderIds.push(order.id);
       rememberSeenRoutes(session, [args.routeId]);
       session.lastQuote = undefined; // 已成单即清除，防安全网对同一报价重复建单
+      // advisor 模式：建单后排一次「待确认的订单」提醒（02 spec「收款流程」），随这次落库提交；
+      // 执行体（src/notify/handoff.ts）到点时看订单还在不在待付款、确认过没有，确认过就不发
+      if (paymentMode() === 'advisor') queueJobs(session.id, orderUnconfirmedNotifyOps(session.id, order.id, Date.now()));
       saveSession(session);
       // payUrl 为相对路径，渠道层负责拼 PUBLIC_BASE_URL。note 是这张单的定价说明（旺季 / 95 折），差价要讲原因时用它
       return JSON.stringify({
@@ -1237,16 +1283,29 @@ export async function executeTool(name: string, args: Record<string, unknown>, s
                 '客户之前那张同线路的待付款订单已作废，旧支付链接已失效。照实告诉客户「之前那张单已作废、旧链接失效，按这张新的付款」，只发这次的新链接。',
             }
           : {}),
+        ...(paymentMode() === 'advisor' ? { payNote: ADVISOR_PAY_NOTE } : {}),
       });
     }
     case 'handoff_to_human': {
-      enterHandoff(session);
-      const reason = String(args.reason ?? '')
-        .trim()
-        .slice(0, 200);
+      const said = String(args.reason ?? '').trim();
+      const reason = cleanText(said, 200);
+      const { quote, departNote } = hints.handoff ?? {};
+      enterHandoff(session, {
+        kind: 'model',
+        at: Date.now(),
+        reason: cleanText(said, 120) || HANDOFF_REASON.model,
+        ...(quote ? { quote } : {}),
+        ...(departNote ? { departNote } : {}),
+      });
       // 原因此前只回给了模型，接手的顾问在后台看不到客户要什么（「想去南极，10 月两位」），得从头翻聊天记录。
-      // system 消息只在后台显示，不发给客户、也不进模型历史
-      if (reason) session.messages.push({ role: 'system', content: `AI 已转人工：${reason}`, at: Date.now() });
+      // 客户说出行时间的原话附在后面（见 engine.ts departNoteForHandoff）。system 消息只在后台显示，不发给客户、也不进模型历史
+      if (reason) {
+        session.messages.push({
+          role: 'system',
+          content: `AI 已转人工：${reason}${departNote ? `\n（${departNote}）` : ''}`,
+          at: Date.now(),
+        });
+      }
       saveSession(session);
       return JSON.stringify({ ok: true, reason, note: HANDOFF_NOTE });
     }

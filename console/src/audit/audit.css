@@ -1,0 +1,395 @@
+/*
+ * 审计日志（design-system §5.4 分段控件与开关、§5.5 抽屉里的表格、§5.13 抽屉、§6.5 差异、§6.8 头像、§10.2 K 页）。
+ * 颜色只取 brand.css 的变量。由 pages/audit.lazy.tsx 引入，随审计日志的块下载；组件本身不 import CSS，自测才能在 Node 里直接
+ * import 它们。宽 1440 时：页头到筛选 20，筛选下 24 是时间线（宽 680），组与组之间 20，最后是「加载更早的记录」
+ */
+
+/* ---------------- 筛选：分段控件与开关，间隔 16；放不下时分段控件自己横滚（四周留 4 放焦点框，负外边距抵回） ---------------- */
+.au-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.au-seg-scroll {
+  max-width: calc(100% + 8px);
+  margin: -4px;
+  padding: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.au-seg-scroll::-webkit-scrollbar {
+  display: none;
+}
+.au-login {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ---------------- 时间线：宽 680，按天分组；组标题 13/500 text-2；每条 28 头像 · 句子与摘要 · 13 text-3 的时刻 ---------------- */
+.au-timeline {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  max-width: 680px;
+  margin-top: 24px;
+}
+.au-day-title {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.au-list {
+  margin: 4px -12px 0;
+  padding: 0;
+  list-style: none;
+}
+.au-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.au-row:hover,
+.au-child:hover {
+  background: var(--hover);
+}
+.au-row.is-selected,
+.au-child.is-selected {
+  background: var(--selected);
+}
+/* 条与条之间一条 --divider，左右各缩 12；选中的那条上下都不画（底色已经把它和邻居分开） */
+.au-row + .au-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 12px;
+  left: 12px;
+  height: 1px;
+  background: var(--divider);
+}
+.au-row.is-selected::before,
+.au-row.is-selected + .au-row::before,
+.au-row:hover::before,
+.au-row:hover + .au-row::before {
+  display: none;
+}
+.au-avatar {
+  width: 28px;
+  height: 28px;
+  line-height: 28px;
+}
+/* 命令行这类非人操作者：28 的方块，--r-sm，--subtle 底，16 的 square-terminal（§6.8） */
+.au-bot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+  color: var(--text-2);
+}
+.au-body {
+  min-width: 0;
+  padding-top: 3px;
+}
+/* 句子：14/22 text，操作者与对象 500；一行放不下时省略，全文在详情抽屉里 */
+.au-sentence {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.au-sentence {
+  cursor: pointer;
+}
+.au-sentence strong {
+  font-weight: 500;
+}
+.au-sentence:focus-visible,
+.au-expand:focus-visible,
+.au-link:focus-visible,
+.au-end:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* 下一行：13 text-2 的改动摘要，编号用等宽字 */
+.au-summary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.au-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.au-code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.au-summary .au-code {
+  flex: none;
+  margin-left: 4px;
+}
+/* 「展开6条」：文字按钮，accent-text 500，后接 14 的 chevron-down（展开后朝上） */
+.au-expand {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  font: inherit;
+  font-weight: 500;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.au-expand:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.au-expand-icon.is-open {
+  transform: rotate(180deg);
+}
+.au-time {
+  padding-top: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 展开的逐条：从句子那一栏起，一直排到时刻那一栏，每条的时刻与上面的对齐 */
+.au-children {
+  grid-column: 2 / -1;
+  margin: 6px -8px 0;
+  padding: 0;
+  list-style: none;
+}
+.au-child {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: start;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.au-child .au-time {
+  padding-top: 1px;
+}
+.au-more {
+  align-self: flex-start;
+}
+/* 取到底后焦点会落在这一句上（AuditPage 的「加载更早的记录」）：焦点框只圈住字，不横贯整条时间线 */
+.au-end {
+  align-self: flex-start;
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/* 骨架：与成品同尺寸 */
+.au-avatar-skeleton {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-full);
+}
+.au-skeleton-line {
+  display: flex;
+  align-items: center;
+  height: 22px;
+}
+.au-skeleton-line.is-summary {
+  height: 20px;
+  margin-top: 2px;
+}
+.au-time-skeleton {
+  width: 36px;
+  height: 13px;
+  margin-top: 8px;
+}
+
+/*
+ * 详情抽屉（§5.13 M 480）：头 56，内边距 0 16 0 24，标题 16/24/600，没有分隔线；体内边距 4 24 24。
+ * --raised 底由主题的 colorBgElevated 给（theme/antd.ts），这里不另写
+ */
+.au-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+  box-shadow: var(--shadow-modal);
+}
+.au-drawer .ant-drawer-header {
+  min-height: 56px;
+  padding: 0 16px 0 24px;
+  border-bottom: 0;
+}
+.au-drawer .ant-drawer-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.au-drawer .ant-drawer-body {
+  padding: 4px 24px 24px;
+}
+.au-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.au-detail-sentence {
+  margin: 0;
+  text-wrap: pretty;
+}
+.au-detail-sentence strong {
+  font-weight: 500;
+}
+.au-facts {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  row-gap: 4px;
+  margin: 0;
+}
+.au-facts dt {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.au-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.au-changes-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+}
+/* 抽屉里的表格（§5.5）：表头 32、行 40，不做 −12；字段名一栏 104 宽、text-2 */
+.au-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.au-table thead th {
+  height: 32px;
+  padding: 0 12px;
+  box-shadow: inset 0 -1px 0 var(--border);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+  text-align: left;
+  white-space: nowrap;
+}
+.au-table thead th:first-child {
+  width: 104px;
+  padding-left: 0;
+}
+.au-table tbody th,
+.au-table td {
+  padding: 9px 12px;
+  box-shadow: inset 0 -1px 0 var(--divider);
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.au-table tbody th {
+  padding-left: 0;
+  font-weight: 400;
+  color: var(--text-2);
+}
+/* 行内差异（§6.5）：删去的划线（1.5px，Noto 默认的删除线在 14 号里看不出来）、--subtle 底、text-2；新加的 --success-bg 底。
+   删除不用红色；两种都不只靠颜色：一个有删除线，表格下面一句话说明怎么读 */
+.au-table del {
+  padding: 0 2px;
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+  color: var(--text-2);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+.au-table ins {
+  padding: 0 2px;
+  border-radius: var(--r-xs);
+  background: var(--success-bg);
+  color: var(--text);
+  text-decoration: none;
+}
+.au-notes {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.au-link {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  border-radius: var(--r-xs);
+  font-weight: 500;
+  color: var(--accent-text);
+}
+.au-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.au-tech {
+  padding-top: 16px;
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+.au-tech .tech-details {
+  margin-top: 0;
+}
+
+/* 窄屏：句子换行，不省略（375 宽只放得下十几个字） */
+@media (max-width: 599px) {
+  .au-sentence {
+    white-space: normal;
+  }
+}

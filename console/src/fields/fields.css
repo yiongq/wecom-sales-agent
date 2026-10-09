@@ -1,0 +1,785 @@
+/*
+ * 字段渲染器与表单网格的样式（design-system §5.2、§5.4、§5.8、§6.0–§6.4）。颜色一律取 brand.css 的变量，这里不新增变量。
+ * 渲染器本身不 import CSS（自测在 Node 里直接 import 它们）。产品库页的懒加载模块（pages/catalog.lazy.tsx）引它，
+ * 随产品库的块一起下载，不进入口；走查构建的样张页另引一次。
+ */
+
+/* ---------- 表单网格（§6.0）：两列，列间距 24，字段之间 20，标签在上 ---------- */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.field-grid {
+  display: grid;
+  column-gap: 24px;
+  row-gap: 20px;
+}
+.field-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.field-grid-2 > .field-wide {
+  grid-column: 1 / -1;
+}
+/* 整卡只读、只有短值（§6.4）：短值的列只占自己要的宽度，剩下的平分到 4 列；实在放不下才截断，悬停看全文 */
+.field-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, auto));
+}
+.field-grid-4 .field-label-row,
+.field-grid-4 .field-value {
+  white-space: nowrap;
+}
+.field-grid-4 .field-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 网格按自己的宽度收列：卡片变窄（375 宽的只读页、<1280 的单栏里窗口更窄时）一格放不下时，两列并成一列，4 列退成两列、
+ * 值可以折行。1440 与 1280 宽的详情页主栏都宽于这条线，照常两列、4 列
+ */
+.field-group {
+  container-type: inline-size;
+}
+@container (max-width: 479px) {
+  .field-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .field-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .field-grid-4 .field-label-row,
+  .field-grid-4 .field-value {
+    white-space: normal;
+  }
+}
+
+/* ---------- 一个字段：标签到控件 6，控件到帮助 6 ---------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+.field-label {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* 只读字段的标签 13/500 text-2（§6.4） */
+.field.is-static .field-label {
+  color: var(--text-2);
+}
+.field-label-row .optional-mark {
+  margin-left: -6px;
+}
+.field-lock,
+.field-will-lock {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 20px;
+}
+/*
+ * 改过还没保存（§6.5）：标签后 6 处 6px 的 --accent 圆点，再 4 处 13/500 accent-text「已改」；不画左侧竖条。
+ * 「撤销这处」13 accent-text，平时透明，悬停或焦点在这个字段里时出现；一直可以用 Tab 走到（走到它时它自己就在字段里）。
+ * 点击区域 24 高：上下各 2 的内边距用负外边距抵掉，标签行不变高
+ */
+.field-changed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+.field-changed-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+.field-undo {
+  margin: -2px 0 -2px auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+}
+.field:hover > .field-label-row > .field-undo,
+.field:hover > .field-block-row > .field-undo,
+.field:focus-within > .field-label-row > .field-undo,
+.field:focus-within > .field-block-row > .field-undo {
+  opacity: 1;
+}
+.field-undo:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-undo:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.field-block-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.field-help {
+  max-width: 40em;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 40em;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--danger);
+}
+.field-error svg {
+  flex: none;
+  margin-top: 3px;
+}
+/* 长文本超过 softMax（§5.2、§6 表）：顶替帮助，13 warning，前置 14 triangle-alert；只是提示，不拦 */
+.field-soft {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 40em;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--warning);
+}
+.field-soft svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--warning-icon);
+}
+/* 「复制上一天的当晚住宿」：标签行右侧的文字按钮（§5.1 链接 / 文字按钮），13/500 accent-text；点击区域 24 高 */
+.field-copy {
+  margin: -2px 0 -2px auto;
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--accent-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.field-copy:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-copy:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* 有序子项区块头右侧（§6.3）：条数对不上时 13 warning「还差1天」；条数随天数锁定时 13 text-2「条数随天数锁定，文字可改」，前置锁 */
+.count-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--warning);
+  white-space: nowrap;
+}
+.count-note.is-locked {
+  color: var(--text-2);
+}
+.count-note.is-locked svg {
+  color: var(--text-3);
+}
+.field-undo + .count-note {
+  margin-left: 12px;
+}
+
+/* 只读值（§6.4）：14/22 text，不画输入框、不用禁用样式；顶部留 5，和旁边输入框里的文字对齐 */
+.field-value {
+  min-width: 0;
+  padding-top: 5px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+.field-text {
+  color: var(--text);
+}
+/* 长文本只读：16/28 段落，最宽 40em */
+.field-reading {
+  max-width: 40em;
+  margin: 0;
+  font-size: 16px;
+  line-height: 28px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.field-meta {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.field-meta-14 {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 列表里截成一行的长文本 */
+.field-clip {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * 多选与标签的输入框：antd 只给 4 宽，键盘停在它上面、axe 量的点击目标也是它（点整个框都会聚焦它，但量不出来）。
+ * 至少 24 宽（WCAG 2.5.8，spec「可访问性与响应式 · 点击目标」）
+ */
+.ant-select.ant-select-multiple .ant-select-input {
+  min-width: 24px;
+}
+
+/* 分段控件只占自己的宽度（字段是纵向 flex，默认会被拉满一格） */
+.field > .ant-segmented {
+  align-self: flex-start;
+}
+
+/* ---------- 文本域（§5.2）：内边距 8 10，14/22；高度由渲染器按内容在 3–12 行之间算，不给手动拖；右下角字数 13 text-3 ---------- */
+.field-textarea textarea.ant-input {
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 22px;
+  resize: none;
+}
+.field-textarea .ant-input-data-count {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 超过 softMax：字数变成 warning 色（§5.2） */
+.field-textarea.is-long .ant-input-data-count {
+  color: var(--warning);
+}
+
+/* ---------- 数值：InputNumber 占满一格，后缀单位 14 text-2（§5.2） ---------- */
+.field-number {
+  width: 100%;
+}
+.field-unit {
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+/* ---------- 多选片（§5.4）：高 30，左右 10，片间 6；选中 accent-bg 加 check 与 aria-pressed ---------- */
+.field-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.field-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-btn);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition:
+    background-color 100ms linear,
+    box-shadow 100ms linear,
+    color 100ms linear;
+}
+.field-chip:hover {
+  color: var(--text);
+}
+.field-chip.is-on {
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.field-chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------- Tag（§5.8）：高 22，内边距 0 6，--r-xs，--subtle 底，13/20 text-2，无描边 ---------- */
+.field-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  vertical-align: top;
+}
+.field-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ant-select .field-tag {
+  margin-inline-end: 4px;
+}
+.field-tag-lock {
+  display: inline-flex;
+  color: var(--text-3);
+}
+/*
+ * 删除按钮：12 的 x，点击区域 24（按钮本身 24 见方，负外边距抵回，占位仍是原来的 16 高、14 宽；
+ * 原来用 ::before 扩出点击区域，读屏和 axe 量到的目标只有 16）。焦点框画在里面那 16 见方上
+ */
+.field-tag-close {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px -6px -4px -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.field-tag-close:hover {
+  color: var(--text);
+}
+.field-tag-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -4px;
+}
+.field-more {
+  font-size: 13px;
+  line-height: 22px;
+  color: var(--text-3);
+}
+.field-tag-ref {
+  color: var(--text);
+}
+
+/* ---------- 引用：名称后跟「草稿」；下拉里一项是名称、编号、状态 ---------- */
+.field-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+/* 引用的名称链到那一条的详情：正文色，悬停出下划线，键盘可达（§5.5 首列名称的写法） */
+.field-ref-link {
+  border-radius: var(--r-xs);
+  color: inherit;
+}
+.field-ref-link:hover {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.field-ref-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ref-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ref-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ref-option-code {
+  flex: none;
+  color: var(--text-3);
+}
+/* 草稿状态靠右（G 页） */
+.ref-option > .status {
+  margin-left: auto;
+}
+/* 「本条写过的」一项右边写第一次出现在哪一项：13 text-3 */
+.ref-option-at {
+  flex: none;
+  margin-left: auto;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+/* 引用的下拉至少 384 宽（renderers.tsx 的 REF_POPUP_WIDTH，窄屏跟输入框一样宽），也不超出窗口；组里的项和分组标题一样左边距 8（§5.3），
+   antd 默认把组里的项缩进 24 */
+.ref-popup {
+  max-width: calc(100vw - 16px);
+}
+.ref-popup .ant-select-item-option-grouped {
+  padding-inline-start: 8px;
+}
+/* 联想的分组标题（§5.3）：13/500 text-3，内边距 8 8 4；前面有项时上方一条 1px --divider，上下各 4。
+   不用外边距：下拉是虚拟列表，按元素的高度排，外边距不算在高度里 */
+.ant-select-item.ant-select-item-group {
+  min-height: 0;
+  padding: 8px 8px 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.ant-select-item-option + .ant-select-item-group {
+  padding-top: 17px;
+}
+.ant-select-item-option + .ant-select-item-group::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--divider);
+}
+/* 引用写了库外的文本：控件下方 13 text-3「酒店库里没有这个，按原文保存」（提示，不是错误） */
+.field-free {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/* ---------- MonthStrip（§6.1）：12 格等宽；选中的格连成圆角段，段的首尾格才有圆角 ---------- */
+.field-months {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  vertical-align: middle;
+}
+.field-months-l {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.month-strip {
+  display: inline-grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  flex: none;
+  vertical-align: middle;
+}
+.ms-cell {
+  position: relative;
+}
+/* S 号：宽 96（每月 8），高 6，全圆角，--month-off 底；当前月是一根 2×12 的 text 色竖线，外加 1.5px 的 --panel 镂空 */
+.month-strip-S {
+  width: 96px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--month-off);
+}
+.month-strip-S .ms-cell.on {
+  background: var(--month-on);
+}
+.month-strip-S .ms-cell.start {
+  border-top-left-radius: 3px;
+  border-bottom-left-radius: 3px;
+}
+.month-strip-S .ms-cell.end {
+  border-top-right-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+.month-strip-S .ms-cell.now::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  background: var(--text);
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+/* L 号：每格 28，总宽 336，高 28，--subtle 底，--r-md；格内 13/20 text-3 的月份数字 */
+/* 半格比 336 窄时（1280–1439 宽的只读卡）跟着收窄，每格平分 */
+.month-strip-L {
+  width: 336px;
+  max-width: 100%;
+  height: 28px;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+}
+.month-strip-L .ms-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.month-strip-L.is-year-round .ms-cell {
+  color: var(--text-2);
+}
+.month-strip-L .ms-cell.on {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.month-strip-L .ms-cell.start {
+  border-top-left-radius: var(--r-sm);
+  border-bottom-left-radius: var(--r-sm);
+}
+.month-strip-L .ms-cell.end {
+  border-top-right-radius: var(--r-sm);
+  border-bottom-right-radius: var(--r-sm);
+}
+/* 当前月在数字下方 3 处放一个 4px 的 text 色圆点 */
+.month-strip-L .ms-cell.now::after {
+  content: '';
+  position: absolute;
+  top: 22px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: var(--r-full);
+  background: var(--text);
+}
+
+/* ---------- 有序子项 ---------- */
+/* 单字段：逐条一个输入框，右边上移、下移、删除；不能用的按钮设 aria-disabled，图标降到 40%（§6.3）。
+   只降图标、不降按钮：移动以后焦点可能留在到头的按钮上，整个按钮降透明度会把焦点环一起压到 3:1 以下 */
+.field-list-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 逐条列表的一条：输入框与三个按钮一行，这一条的报错写在下面（第 10.2 步，和字段下方的报错一样隔 6） */
+.field-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-list-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.field-list-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.field-list-edit .icon-btn[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+.field-list-edit .icon-btn[aria-disabled='true'] > svg {
+  opacity: 0.4;
+}
+.field-add {
+  align-self: flex-start;
+}
+.field-list {
+  margin: 0;
+  padding-left: 20px;
+}
+/* 多字段：自成区块，头部 16/24/600「逐日行程 · 5天」 */
+.field-block {
+  gap: 12px;
+}
+.field-block-head {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* 编辑：竖轴与卡片，下面是「添加一{itemNoun}」，和卡片左缘对齐（竖轴 40 加间隔 12），离最后一张卡片 16 */
+.subitems-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.subitems-edit > .field-add {
+  margin-left: 52px;
+}
+/* 每项一张卡片：§5.9 的卡片，内边距 14 16，卡片之间 12 */
+.subitem-card {
+  position: relative;
+  min-width: 0;
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+/* 一项本身的报错（序号不对这类，落不到子字段上）：写在卡片第一行（或卡片顶上）下面 */
+.subitem-card > .field-error {
+  margin-bottom: 8px;
+}
+/* 只读时间轴里写不下节点的序号标签（「节点 3」）：卡片第一行，13/500 text-2 */
+.subitem-label {
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+/* 编辑卡片的第一行：写不下节点的序号标签、「缺：当晚住宿」（13 warning，前置 14 triangle-alert），下面隔 8 是子字段 */
+.subitem-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 22px;
+  margin-bottom: 8px;
+}
+.subitem-head > .subitem-label {
+  margin-bottom: 0;
+}
+.subitem-gap {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--warning);
+}
+.subitem-gap svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--warning-icon);
+}
+/* 右上角「上移」「下移」「删除这{itemNoun}」：28 图标按钮，text-3，间隔 2（§6.3）；不能用的设 aria-disabled，
+   图标降到 40%（按钮本身不降：移动以后焦点留在到头的按钮上，焦点环要保持对比度，同逐条列表） */
+.subitem-tools {
+  position: absolute;
+  top: 11px;
+  right: 12px;
+  display: flex;
+  gap: 2px;
+}
+.subitem-tools > .icon-btn {
+  color: var(--text-3);
+}
+.subitem-tools > .icon-btn:hover {
+  color: var(--text);
+}
+.subitem-tools > .icon-btn[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+.subitem-tools > .icon-btn[aria-disabled='true'] > svg {
+  opacity: 0.4;
+}
+.subitem-tools > .icon-btn[aria-disabled='true']:hover {
+  background: none;
+  color: var(--text-3);
+}
+/* 按钮压在卡片第一行上（88 宽，离右缘 12）：第一行、右上角的文字给它让出 92 */
+.subitem-card.has-tools > .subitem-head,
+.subitem-card.has-tools > .field-error:first-child,
+.subitem-card.has-tools .under-tools > .field-label-row {
+  padding-right: 92px;
+}
+.subitem-card.has-tools .under-tools > .field-label-row {
+  flex-wrap: wrap;
+}
+/* 时间轴（编辑与只读共用）：左侧竖轴宽 40，1px --border 连线，离卡片 12；节点直径 22、13/500，和卡片第一行齐 */
+.subitems-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tl-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  column-gap: 12px;
+}
+.tl-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: -12px;
+  left: 20px;
+  width: 1px;
+  background: var(--border);
+}
+.tl-item:first-child::before {
+  top: 14px;
+}
+.tl-item:last-child::before {
+  bottom: auto;
+  height: 14px;
+}
+.tl-item:only-child::before {
+  display: none;
+}
+/* 节点：直径 22（「D1」正好放下，「D12」撑成胶囊）；全部填好是 --text-2 实心底、--panel 色字；有缺项空心（--panel 底、1.5 的 --control-border 描边、text-2 字）；
+   有报错同样空心，描边和字换成 --danger */
+.tl-node {
+  position: relative;
+  justify-self: center;
+  box-sizing: border-box;
+  min-width: 22px;
+  height: 22px;
+  margin-top: 14px;
+  padding: 0 2px;
+  border-radius: var(--r-full);
+  background: var(--text-2);
+  color: var(--panel);
+  font-size: 13px;
+  line-height: 22px;
+  font-weight: 500;
+  text-align: center;
+}
+.tl-node.is-gap,
+.tl-node.is-error {
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1.5px var(--control-border);
+  color: var(--text-2);
+}
+.tl-node.is-error {
+  box-shadow: inset 0 0 0 1.5px var(--danger);
+  color: var(--danger);
+}

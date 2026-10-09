@@ -11,6 +11,16 @@
 #   install -d -o 1000 -g 1000 /root/export-<日期>
 #   docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app \
 #     node --import tsx src/cli/export-config.ts --tenant <slug> --out /export [--image-sop /export/target-sop.md]
+# 会话在文件与库之间切换（02 spec「导入、导出与切换」）先 stop app；--keep 同样是挂进来的宿主目录，而且不能在 var/ 之内：
+#   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
+#   docker compose -f deploy/compose.yml run --rm -v /root/sessions-keep-<日期>:/keep app \
+#     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]     # export-sessions 再加 --var /app/var
+# 隐私说明、保留期、行权删除（02 spec「隐私说明、敏感信息同意、保留期与行权」）：
+#   docker compose -f deploy/compose.yml run --rm -v /root/privacy-notice.md:/notice:ro platform \
+#     node --import tsx src/cli/privacy-publish.ts --tenant <slug> --file /notice
+#   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/tenant-retention.ts --tenant <slug> [--lead <天>] [--customer <天>] [--trace <天>]
+#   docker compose stop app   # 行权删除要取租户锁，先停应用
+#   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
 # deploy.sh 的 rsync 保护规则（P /.env*）都已覆盖这个命名，.dockerignore 也排除了它们。
@@ -22,7 +32,12 @@
 #   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent
 #   .env          应用自己的 env（LLM key、企微、ADMIN_PASS、DEPLOY_PROFILE……）；DB 模式再加 CONFIG_SOURCE=db、
 #                 DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent、DEFAULT_TENANT_SLUG。不能有 owner、platform
-#                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）
+#                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）。
+#                 告警（02 spec R24）：ALERT_WEBHOOK_URL（告警群机器人，等同密钥，日志与告警内容里都不出现它）、INSTANCE_LABEL
+#                 （告警里的实例名，不写域名与 IP）。日志格式 LOG_FORMAT 不写在这里，由下面 app 服务的 environment 设成 json
+#                 转人工通知（02 spec「通知」）：NOTIFY_WEBHOOK_URL（转人工通知群的机器人，与告警不是同一个群；等同密钥，日志里不出现它）
+#   .env.ops      不给任何服务：宿主机上 deploy/watch.sh（cron 每分钟）与 backup.sh 读的运维 env 文件，ALERT_WEBHOOK_URL、
+#                 INSTANCE_LABEL 等，见 deploy/watch.sh 开头
 # 口令进连接串时，URL 保留字符（@ : / ? # %）要百分号编码；生成时只用字母数字最省事。
 # 轮换口令见 db-init/roles.sh 开头。
 #
@@ -78,6 +93,8 @@ services:
     environment:
       # 端口映射与 HEALTHCHECK 都写死 3200：.env 里误改 PORT 会让容器活着但外部不可达
       PORT: '3200'
+      # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
+      LOG_FORMAT: json
     # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
     ports:
       - '127.0.0.1:${HOST_PORT:-3210}:3200'
@@ -86,6 +103,12 @@ services:
       - ../var:/app/var
     # 大于停机钩子等在途企微回复的 8 秒：SIGTERM 之后先发完、落盘再退
     stop_grace_period: 10s
+    # LOG_FORMAT=json 之后每天的日志量可观；轮转封顶（02 spec「保留期清理」），不靠宿主机另装 logrotate
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '5'
     depends_on:
       db:
         condition: service_healthy

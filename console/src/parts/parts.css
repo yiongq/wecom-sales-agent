@@ -1,0 +1,406 @@
+/*
+ * 通用部件的样式（spec「通用部件」，design-system §4.5、§5.1、§5.6、§5.12–§5.17）。颜色一律取 brand.css 的变量，
+ * 这里不新增变量（theme.selftest.ts 逐个比对 brand.css 与 tokens.ts）
+ */
+
+/* 墨色主按钮的 aria-disabled（§5.1）：外观同禁用，保留焦点，点了由调用方跳到第一个原因 */
+.ant-btn.primary-blocked,
+.ant-btn.primary-blocked:hover,
+.ant-btn.primary-blocked:active {
+  background: var(--subtle) !important;
+  color: var(--text-3) !important;
+  box-shadow: none !important;
+  cursor: not-allowed;
+}
+
+/* ConfirmDanger 的危险按钮（§5.1）：--danger 底、--panel 色字；悬停与按下只降一点不透明度 */
+.ant-btn.danger-solid,
+.ant-btn.danger-solid:hover,
+.ant-btn.danger-solid:active {
+  background: var(--danger) !important;
+  color: var(--panel) !important;
+  box-shadow: none !important;
+}
+.ant-btn.danger-solid:not(:disabled):hover,
+.ant-btn.danger-solid:not(:disabled):active {
+  opacity: 0.9;
+}
+
+/* Status（§5.6）：圆点加文字；只有「等人接手」是带底色的胶囊，只读是中性胶囊 */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.status-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--neutral-dot);
+}
+.status-paid .status-dot,
+.status-active .status-dot,
+.status-live .status-dot {
+  background: var(--success-dot);
+}
+/* 顾问处理中（02 起有数据，§5.6）：默认形态，不加底色，圆点用 --info-dot */
+.status-assigned .status-dot {
+  background: var(--info-dot);
+}
+.status-draft .status-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--neutral-dot);
+}
+.status-human,
+.status-readonly {
+  padding: 0 8px 0 7px;
+  border-radius: var(--r-full);
+}
+.status-human {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.status-human .status-dot {
+  background: var(--warning-icon);
+  /* 第一次出现时闪 3 次后静止（§3）；减少动态效果时 brand.css 把时长归零 */
+  animation: status-blink 1.2s ease-in-out 3;
+}
+.status-readonly {
+  background: var(--neutral-bg);
+}
+@keyframes status-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* 技术详情（spec「通用部件」）：默认折叠，展开 0ms */
+.tech-details {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.tech-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  border-radius: var(--r-xs);
+  cursor: pointer;
+  list-style: none;
+}
+.tech-details > summary::-webkit-details-marker {
+  display: none;
+}
+.tech-details > summary:hover {
+  color: var(--text-2);
+}
+.tech-details > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tech-details-chevron {
+  flex: none;
+}
+.tech-details[open] .tech-details-chevron {
+  transform: rotate(90deg);
+}
+.tech-details-body {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 原文下面的「复制」：文字按钮（§5.1），13 号，高 24 */
+.tech-details-copy {
+  height: 24px;
+  margin-top: 4px;
+  padding: 0 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.tech-details-copy:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.tech-details-copy:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* StateView（§4.5）：骨架与成品同尺寸，静态不闪，300ms 后才看得见（先占位，不跳动） */
+.state-skeleton {
+  visibility: hidden;
+  animation: state-skeleton-show 0s linear 300ms forwards;
+}
+@keyframes state-skeleton-show {
+  to {
+    visibility: visible;
+  }
+}
+.skeleton-rows {
+  display: flex;
+  flex-direction: column;
+}
+.skeleton-row {
+  display: flex;
+  align-items: center;
+}
+.skeleton-bar {
+  height: 14px;
+  border-radius: var(--r-xs);
+  background: var(--subtle);
+}
+/* 整页骨架的页头（PageSkeleton）：与 .page-title 同高、同下距 */
+.skeleton-page-title {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin-bottom: 20px;
+}
+.skeleton-page-title .skeleton-bar {
+  height: 20px;
+}
+.state-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 0;
+  text-align: center;
+}
+.state-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 12px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+  color: var(--text-2);
+  font-size: 20px;
+}
+.state-empty-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.state-empty-desc {
+  max-width: 40em;
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.state-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/*
+ * ActionBar（§5.16）：吸在内容面板底部，不透明，上边一条 --border，无阴影。宽度等于面板：外壳的内容区给出
+ * --panel-px / --panel-pb（shell.css），这里用负外边距抵掉面板内边距；不在外壳里（样张页）时这两个变量没有，照常排
+ */
+.action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 60px;
+  margin: 0 calc(-1 * var(--panel-px, 0px)) calc(-1 * var(--panel-pb, 0px));
+  padding: 0 var(--panel-px, 32px);
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 var(--border);
+  animation: action-bar-in 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+@keyframes action-bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.action-bar-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.action-bar-icon {
+  flex: none;
+  font-size: 16px;
+  color: var(--text-2);
+}
+.action-bar-summary {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+.action-bar-hint {
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.action-bar-side {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+.action-bar-note {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* CheckList（§5.17）：发布前检查与上架前检查共用 */
+.check-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.check-list-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.check-list-summary,
+.check-list-meta {
+  font-size: 13px;
+  line-height: 20px;
+}
+.check-list-summary {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.check-list-meta {
+  color: var(--text-3);
+}
+.check-list-items {
+  margin: 8px -8px 0;
+  padding: 0;
+  list-style: none;
+}
+.check-item {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+button.check-item {
+  cursor: pointer;
+}
+button.check-item:hover {
+  background: var(--hover);
+}
+button.check-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.check-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.check-item-note {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.check-item-fail .check-item-note {
+  color: var(--danger);
+}
+.check-icon {
+  flex: none;
+  font-size: 16px;
+}
+.check-icon-pass {
+  color: var(--success);
+}
+.check-icon-fail {
+  color: var(--danger);
+}
+.check-icon-warn {
+  color: var(--warning-icon);
+}
+.check-icon-pending {
+  color: var(--text-3);
+}
+.check-item-chevron {
+  flex: none;
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+/* ConfirmDanger 的正文（§5.14）：先写后果 */
+.confirm-body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text);
+}
+
+/* 页签（§4.4）：@rc-component/tabs 1.13.0 在键盘聚焦的那个页签里插一个写死英文的 aria-live「Tab 1 of 2」，读屏会念，
+   还拼进页签自己的名字（「Tab 1 of 2编辑」）；没有开关能关，藏掉（display: none 同时移出无障碍树）。
+   全站的页签都走 antd Tabs，放在这里一处管 */
+.ant-tabs-tab-btn > [aria-live] {
+  display: none;
+}
+
+/* 分页器（§5.5）：页码是 28 的幽灵按钮，当前页 --selected 底、text 500（这些在 theme/antd.ts 的 Pagination 令牌）。
+   antd 另给当前页一圈 colorPrimary 的描边，没有令牌能关，这里去掉 */
+.ant-pagination .ant-pagination-item-active,
+.ant-pagination .ant-pagination-item-active:hover {
+  border-color: transparent;
+}

@@ -1,0 +1,329 @@
+// 外壳（spec「逐页设计 · 外壳」，设计系统 §4）：侧栏 240（收起 56）加一块内嵌的内容面板，没有全宽页头。
+// - 启动：并发取 /me 与 /pack，两个都回来才渲染侧栏和路由；没回来时 300ms 后出骨架；出错整页说明（判定在 boot.ts）。
+// - 成员与 demo 匿名进同一个外壳；匿名没有铃铛、会话和审计入口，每页页头下挂横幅（PageHeader）。成员身份下挂就地登录框
+//   （会话过期时弹出，不卸载页面）；viewer 已经有值时，刷新失败也照旧按原来的身份渲染。
+// - 收起是受控的：进入销售话术页时默认收起为 56，换页时回到那一页的默认；视口三档由 useViewport() 判断，
+//   992–1279 固定是图标栏，<992 侧栏隐藏，52 高的顶栏里的菜单按钮打开抽屉。
+// - 每页首个可聚焦元素是「跳到主要内容」；侧栏是 banner 地标（header，导航是里面的 nav），内容面板是 main 地标；
+//   换页以后焦点放到 main（spec「可访问性与响应式」，下面 Frame 里订阅路由的 onRendered）。
+// - 退出没成功（服务端的会话还在）时仍是成员，错误就地显示在内容区顶上
+import { useQueryClient } from '@tanstack/react-query';
+import { Link, Outlet, useNavigate, useRouter, useRouterState } from '@tanstack/react-router';
+import { Drawer } from 'antd';
+import { Info, LogIn, LogOut, Menu, Moon, Sun, SunMoon } from 'lucide-react';
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { IndustryPack } from '../../../src/shared/pack.js';
+import { catalogKind } from '../api.js';
+import { LoginPage } from '../pages/LoginPage.js';
+import { ErrorAlert } from '../parts/ErrorAlert.js';
+import { EmptyBlock, StateView } from '../parts/StateView.js';
+import { ERROR_COPY } from '../parts/errors.js';
+import { SessionExpiredDialog } from '../SessionExpiredDialog.js';
+import { getPrefs, setAppearance, setReduceMotion } from '../theme/prefs.js';
+import { logout, toLogin, useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
+import { AboutDialog } from './AboutDialog.js';
+import { useWaitingCount } from './Bell.js';
+import { CommandPalette, type PaletteAction } from './CommandPalette.js';
+import { focusMain, isMac, useDocumentTitle, useViewport } from './hooks.js';
+import { IconButton } from './IconButton.js';
+import { navIcon } from './icons.js';
+import { startLiveEvents } from './live.js';
+import {
+  buildNav,
+  collapsedByDefault,
+  documentTitle,
+  searchPlaceholder,
+  selectedNavKey,
+  type ShellViewer,
+  sidebarMode,
+  tabTitlePrefix,
+  workbenchHref,
+} from './model.js';
+import { notifyHandoff } from './notifications.js';
+import { shellViewerOf } from './PageHeader.js';
+import { isPaletteShortcut, paletteShortcut, type StaticRow } from './search.js';
+import { Sidebar, TenantRow } from './Sidebar.js';
+
+/**
+ * 整页的说明或出错（启动失败、文件模式）：没有外壳，居中一块。这一块就是 main 地标（没有它，axe 报 region 与
+ * landmark-one-main）；它自己没有标题时（启动出错：Alert 或中性的说明）放一个看不见的 h1「后台」，说明的标题接着排 h2
+ */
+function Whole({ heading, children }: { heading?: string; children: ReactNode }) {
+  useDocumentTitle('后台');
+  return (
+    <main id="main" tabIndex={-1} className="boot-whole">
+      {heading && <h1 className="boot-sr">{heading}</h1>}
+      {children}
+    </main>
+  );
+}
+
+/** 启动时两个请求都没回来：侧栏骨架（租户行、搜索、6 行导航）加面板骨架，延迟 300ms 出现 */
+function BootSkeleton() {
+  useDocumentTitle('后台');
+  return (
+    <div className="shell shell-expanded state-skeleton" role="status" aria-label="正在载入">
+      <div className="sidebar boot-sidebar" aria-hidden="true">
+        <div className="sb-tenant">
+          <span className="skeleton-bar" style={{ width: 120 }} />
+        </div>
+        <div className="sb-search boot-block" />
+        {[72, 56, 64, 48, 60, 52].map((w, i) => (
+          <div key={i} className="nav-item">
+            <span className="skeleton-bar" style={{ width: `${w}%` }} />
+          </div>
+        ))}
+      </div>
+      <div className="shell-panel" aria-hidden="true">
+        <div className="shell-content">
+          <span className="skeleton-bar boot-title" />
+          <span className="skeleton-bar boot-line" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Shell() {
+  const viewer = useViewer();
+  const v = viewer.data;
+  if (v === undefined) {
+    if (viewer.isPending) return <BootSkeleton />;
+    return (
+      <Whole heading="后台">
+        <StateView error={viewer.error} level={2} onRetry={() => void viewer.refetch()} />
+      </Whole>
+    );
+  }
+  if (v.kind === 'disabled') {
+    return (
+      <Whole>
+        <EmptyBlock level={1} title={ERROR_COPY.db_disabled!.title as string} />
+      </Whole>
+    );
+  }
+  if (v.kind === 'login') return <LoginPage demo={v.demo} />;
+  return <Frame viewer={v} />;
+}
+
+type Framed = Extract<Viewer, { kind: 'member' | 'anon' }>;
+
+function Frame({ viewer: v }: { viewer: Framed }) {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const tier = useViewport();
+  const sv = shellViewerOf(v) as ShellViewer;
+  const pack: IndustryPack = v.pack;
+  // v 是查询缓存里的对象，身份不变时引用不变
+  const groups = useMemo(() => buildNav(pack, shellViewerOf(v) as ShellViewer), [pack, v]);
+  const selected = selectedNavKey(path, groups);
+  const placeholder = searchPlaceholder(pack, sv);
+  const mac = isMac();
+  const shortcut = paletteShortcut(mac);
+
+  // 收起：每页有默认（销售话术默认收起）；用户在这一页切过就按切的，换到别的页回到那一页的默认
+  const pageKey = selected ?? path;
+  const [override, setOverride] = useState<{ page: string; collapsed: boolean } | null>(null);
+  const collapsed = override?.page === pageKey ? override.collapsed : collapsedByDefault(path);
+  // <992 的导航抽屉：在哪个地址打开的；换了地址（点了导航）就算关上，Esc、点遮罩关上时是 null
+  const [drawerAt, setDrawerAt] = useState<string | null>(null);
+  const drawerOpen = drawerAt === path;
+  const menuRef = useRef<HTMLButtonElement>(null);
+  // 面板自己滚动（路由的滚动还原只管 window）：换了地址回到顶上
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrolledFor = useRef(path);
+  useEffect(() => {
+    if (scrolledFor.current === path) return;
+    scrolledFor.current = path;
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [path]);
+  const mode = sidebarMode(tier, collapsed);
+  // 换页以后焦点到主要内容（spec「可访问性与响应式 · 焦点」）：点了侧栏、⌘K、页面里的链接，或者后退前进，新的一页画出来以后
+  // 焦点放到 main（读屏从新页面读起，下一个 Tab 是页头的操作），不留在侧栏或消失在 body 上。只换 search（页签、筛选、选中的节）
+  // 不算换页；页面自己在挂载时把焦点放进了 main 里的某处（就地登录、跳到出错的字段）就不动它；第一次打开页面也不动
+  const router = useRouter();
+  useEffect(
+    () =>
+      router.subscribe('onRendered', (e) => {
+        if (e.fromLocation !== undefined && e.pathChanged) focusMain();
+      }),
+    [router],
+  );
+
+  // 事件流（02 spec「通知」）：只给成员连，接上之后断线超过 30 秒退回轮询、重连立刻停（shell/live.ts）；
+  // handoff 事件已授权就弹浏览器通知，点击聚焦窗口并打开 J 页。pack、qc、navigate 的引用基本不变，这个效果
+  // 实际上只在登录状态变化时重新接一次
+  const member = sv.kind === 'member';
+  useEffect(() => {
+    if (!member) return;
+    return startLiveEvents({
+      qc,
+      onNotify: (data) => notifyHandoff(data, pack, (id) => void navigate({ to: '/conversations/$id', params: { id } })),
+    });
+  }, [member, qc, pack, navigate]);
+
+  // 标签页标题前缀「(N) 」（spec「通知」、不变量 45）：N 只数等人接手（human），与铃铛、侧栏软徽标同一次 counts 响应。
+  // 没有依赖数组，故意在每次提交之后都跑：页面自己的 useDocumentTitle 是更深的子组件，同一次提交里先跑完
+  // （React 的 effect 按子先父后的顺序触发），这里拿到的 document.title 已经是新页面的裸标题，剥掉上一次
+  // 套的前缀再重套一遍就不会越套越长
+  const { count: waitingForTitle } = useWaitingCount(member);
+  useEffect(() => {
+    if (!member) return;
+    const next = `${tabTitlePrefix(waitingForTitle)}${document.title.replace(/^\(\d+\) /, '')}`;
+    if (next !== document.title) document.title = next;
+  });
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [logoutError, setLogoutError] = useState<unknown>(null);
+
+  // ⌘K（Mac）/ Ctrl+K（其余平台）打开或关上搜索，在哪里都认（输入框里也认：带修饰键；Mac 的 Ctrl+K 留给文本框删到行尾）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (isPaletteShortcut(e, mac)) {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mac]);
+
+  const login = useCallback(() => qc.setQueryData<Viewer>(VIEWER_KEY, toLogin), [qc]);
+  const signOut = useCallback(async (): Promise<void> => {
+    setLogoutError(null);
+    try {
+      await logout();
+    } catch (e) {
+      setLogoutError(e);
+      return;
+    }
+    // 不能 clear() 再 invalidate：clear 只把查询拿出缓存、不通知还挂着的 observer，invalidate 又找不到它，页面就停在成员视图。
+    // 先拿掉其余查询（草稿、审计这些成员才看得到的），再重置 viewer：外壳转成骨架，重新判断来者（demo 匿名或登录页）
+    qc.removeQueries({ predicate: (q) => q.queryKey[0] !== VIEWER_KEY[0] });
+    await qc.resetQueries({ queryKey: VIEWER_KEY });
+  }, [qc]);
+
+  const skipToMain = (e: MouseEvent<HTMLAnchorElement>): void => {
+    e.preventDefault();
+    document.getElementById('main')?.focus();
+  };
+
+  // ⌘K 的「页面」与「操作」
+  const pages: StaticRow<PaletteAction>[] = groups.flatMap((g) =>
+    g.items.flatMap((item): StaticRow<PaletteAction>[] => {
+      const kind = item.entity === undefined ? null : catalogKind(item.entity);
+      const go = (): void => {
+        if (kind) void navigate({ to: '/catalog/$kind', params: { kind } });
+        else if (item.key === '/conversations') void navigate({ to: '/conversations' });
+        else if (item.key === '/audit') void navigate({ to: '/audit' });
+        else if (item.key === '/') void navigate({ to: '/' });
+        else void navigate({ to: '/sop' });
+      };
+      return [{ key: `page:${item.key}`, label: item.label, hint: g.title ?? undefined, icon: navIcon(item.icon), action: go }];
+    }),
+  );
+  const prefs = getPrefs();
+  const actions: StaticRow<PaletteAction>[] = [
+    { key: 'appearance:light', label: '外观：浅色', icon: Sun, action: () => setAppearance('light') },
+    { key: 'appearance:dark', label: '外观：深色', icon: Moon, action: () => setAppearance('dark') },
+    { key: 'appearance:system', label: '外观：跟随系统', icon: SunMoon, action: () => setAppearance('system') },
+    {
+      key: 'reduce-motion',
+      label: prefs.reduceMotion ? '关闭减少动态效果' : '打开减少动态效果',
+      action: () => setReduceMotion(!getPrefs().reduceMotion),
+    },
+    { key: 'about', label: '关于', icon: Info, action: () => setAboutOpen(true) },
+    sv.kind === 'member'
+      ? { key: 'logout', label: '退出登录', icon: LogOut, action: () => void signOut() }
+      : { key: 'login', label: '登录', icon: LogIn, action: login },
+  ];
+
+  const sidebar = (inDrawer: boolean) => (
+    <Sidebar
+      viewer={sv}
+      pack={pack}
+      groups={groups}
+      selected={selected}
+      collapsed={!inDrawer && mode === 'collapsed'}
+      placeholder={placeholder}
+      shortcut={shortcut}
+      onSearch={() => setSearchOpen(true)}
+      searchOpen={searchOpen}
+      onAbout={() => setAboutOpen(true)}
+      onLogin={login}
+      onSignOut={() => void signOut()}
+      onToggle={!inDrawer && tier === 'wide' ? () => setOverride({ page: pageKey, collapsed: !collapsed }) : undefined}
+      inDrawer={inDrawer}
+    />
+  );
+
+  return (
+    <div className={`shell shell-${mode}`}>
+      <a className="skip-link" href="#main" onClick={skipToMain}>
+        跳到主要内容
+      </a>
+      {mode === 'hidden' ? (
+        <header className="topbar">
+          <IconButton ref={menuRef} icon={Menu} size={32} label="打开导航" placement="bottom" onClick={() => setDrawerAt(path)} />
+          <TenantRow viewer={sv} pack={pack} collapsed={false} bellPlacement="bottomRight" />
+        </header>
+      ) : (
+        sidebar(false)
+      )}
+      <div className="shell-panel">
+        <div className="shell-scroll" ref={scrollRef}>
+          <main id="main" tabIndex={-1} className="shell-content">
+            {sv.kind === 'member' && logoutError !== null && (
+              <div className="shell-alert">
+                <ErrorAlert error={logoutError} title="没退出登录" onRetry={() => void signOut()} />
+              </div>
+            )}
+            <Outlet />
+          </main>
+        </div>
+      </div>
+      {mode === 'hidden' && (
+        <Drawer
+          open={drawerOpen}
+          placement="left"
+          size={240}
+          closable={false}
+          onClose={() => setDrawerAt(null)}
+          // 关上以后焦点去哪由这里定，不用 antd 的还焦点：点了导航关上的（地址换了）不管，换页以后焦点在 main（上面的
+          // onRendered）；Esc、点遮罩关上的（drawerAt 是 null）还给「打开导航」。antd 的还法靠抽屉打开那一刻记下的焦点，
+          // 记的时机取决于 rc-util 的 layout effect，不归这里管
+          focusable={{ focusTriggerAfterClose: false }}
+          afterOpenChange={(open) => {
+            if (!open && drawerAt === null) menuRef.current?.focus();
+          }}
+          aria-label="导航"
+          rootClassName="nav-drawer"
+        >
+          {sidebar(true)}
+        </Drawer>
+      )}
+      <CommandPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        viewer={sv}
+        pack={pack}
+        placeholder={placeholder}
+        pages={pages}
+        actions={actions}
+        // 「各实体」组的一条打开它的详情页（第 10.1 步）
+        openEntity={(kind, code) => void navigate({ to: '/catalog/$kind/$code', params: { kind: catalogKind(kind), code } })}
+        openConversation={(row) => window.open(workbenchHref(row.id), '_blank', 'noopener,noreferrer')}
+      />
+      <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      {sv.kind === 'member' && <SessionExpiredDialog />}
+    </div>
+  );
+}
+
+export function NotFound() {
+  const viewer = shellViewerOf(useViewer().data);
+  useDocumentTitle(viewer ? documentTitle(['没有这个页面'], viewer) : '没有这个页面');
+  return <EmptyBlock level={1} title="没有这个页面" description="地址可能写错了" link={<Link to="/">回到总览</Link>} />;
+}

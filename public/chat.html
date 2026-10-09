@@ -412,7 +412,8 @@
       '<a class="paylink" href="$1" target="_blank">点击支付 → $1</a>');
     // 方案书链接（generate_proposal 产出 /proposal/<线路>/<人数>[/日期]）。此前只认 /pay/，
     // 引导页宣传的「出个详细行程方案」在模拟器里是一串点不动的纯文本
-    html = html.replace(/(?:https?:\/\/[^\s]+)?(\/proposal\/[A-Za-z0-9_-]+(?:\/[\d-]+)*)/g,
+    // 线路改过内容时链接带 ?v=版本（产品库条目版本），连同它一起做成链接，点开的才是发出时的那一版
+    html = html.replace(/(?:https?:\/\/[^\s]+)?(\/proposal\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?)/g,
       '<a class="paylink" href="$1" target="_blank">查看行程方案 → $1</a>');
     return html.replace(/\n/g, '<br>');
   }
@@ -421,7 +422,7 @@
   // extractCard / stripLink）一致：正文里恰好一条站内链接、且是支付链接才出卡片。
   // 卡片上的线路名和金额一律读订单本身（/api/orders/:id），不从正文里抠——此前取正文里
   // 第一个 ¥ 金额，模型按 SOP 先写每人价时，卡片显示的就是每人价，点进支付页却是总价。
-  const SITE_LINK_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*/g;
+  const SITE_LINK_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?/g;
   function payLinkOf(text) {
     const all = text.match(SITE_LINK_RE) || [];
     if (all.length !== 1) return null;
@@ -644,7 +645,9 @@
       const s = await res.json();
       const visible = (s.messages || []).filter((m) => m.role !== 'system');
       if (!visible.length) return welcome();
-      visible.forEach((m) => addMsg(m.role, m.content, m.at, { animate: false }));
+      // 人工回复（author='human'）在客户侧以「【顾问】」开头，与实时推送（simulator 适配器加的）一致；会话里存的是原文
+      const shown = (m) => (m.role === 'agent' && m.author === 'human' && !m.content.startsWith('【顾问】') ? '【顾问】' + m.content : m.content);
+      visible.forEach((m) => addMsg(m.role, shown(m), m.at, { animate: false }));
     } catch { welcome(); }
   }
 

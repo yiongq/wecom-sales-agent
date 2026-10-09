@@ -7,24 +7,49 @@ import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时�
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { readFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
+import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
-import { createQuote, enterHandoff, loadHotels, loadRoutes } from './tools.js';
+import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
+import { HANDOFF_REASON } from './handoff/record.js';
 import {
+  AssignedToOtherError,
+  awaitCommit,
+  ConsentDeclinedError,
+  EmptyReplyError,
+  isReleaseNote,
+  NotHandlingError,
+  release,
+  releaseNote,
+  reply,
+  ReplyTooLongError,
+  SendWindowError,
+  setReplyTransport,
+  sharedActor,
+} from './handoff/takeover.js';
+import {
+  flushSession,
   getOrder,
   getSession,
   gracefulExit,
+  initSessionStore,
   listOrders,
   listSessions,
   markOrderPaid,
   onShutdown,
+  queueAudit,
   saveSession,
+  sessionStoreMode,
   storeEvents,
+  storeHealth,
+  StoreLaggingError,
+  varDir,
 } from './store.js';
+import { shortIdOf } from './shared/conversation.js';
 import { getDraftReply, getInsights, getSuggestion } from './insight.js';
 import { activeModels, CHEAP_TIER_MODELS, llmCfg, llmStats } from './llm.js';
 import { budgetStatus } from './budget.js';
@@ -32,20 +57,37 @@ import { usageToday } from './usage.js';
 import { gateStatus } from './llm-gate.js';
 import { buildIndex } from './retrieval.js';
 import { startFollowUpScheduler } from './followup.js';
+import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
-import type { ChannelAdapter } from './types.js';
+import { paymentMode } from './payment/mode.js';
+import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
 import { boot } from './boot.js';
-import { closeConfig, configHealth, configMode, initConfigFromEnv, markConfigShuttingDown, prefixSummary } from './config/source.js';
+import { currentPrivacyNotice, escapeHtml, initPrivacy, startPrivacyPoll } from './privacy/privacy.js';
+import { startOtelExport } from './ops/otel.js';
+import {
+  catalogVersioned,
+  closeConfig,
+  configHealth,
+  configMode,
+  configRuntime,
+  initConfigFromEnv,
+  markConfigShuttingDown,
+  prefixSummary,
+} from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
+import { convLabel, convLabelsIn, requestLogContext } from './log.js';
+import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
+// 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
+app.use('/*', requestLogContext);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -57,11 +99,14 @@ function adapterFor(channel: string): ChannelAdapter {
   return {
     name: 'unknown',
     push(sessionId) {
-      console.error(`[server] ⚠️ 会话 ${sessionId} 的渠道「${channel}」未知，消息未送达`);
+      console.error(`[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」未知，消息未送达`);
       return Promise.resolve(false);
     },
   };
 }
+
+// 人工回复（src/handoff/takeover.ts 的 reply，后台接口与旧 /reply 共用）经会话的渠道发出
+setReplyTransport((sessionId, text, opts) => adapterFor(getSession(sessionId)?.channel ?? '').push(sessionId, text, opts));
 
 // ---------------- 管理面鉴权 ----------------
 // 分两层，而不是一个「读写一起开关」的总闸：
@@ -144,6 +189,73 @@ async function sessionReadAuth(c: Context, next: Next): Promise<Response | void>
   return adminAuth(c, next);
 }
 
+/**
+ * 旧工作台（admin.html）的三个写接口：转人工、交还、人工回复，归开关 legacy_admin_writes（02 spec R11）。
+ * 关掉（prod）时像不存在一样 404，带不带凭据都一样；旧的带凭据标记已付不归它管（见 payAuth）
+ */
+const legacyWrites: MiddlewareHandler = async (c, next) => (profile().flags.legacy_admin_writes ? next() : c.notFound());
+
+// ---------------- 匿名可读的投影（02 spec「后台接口」、不变量 44） ----------------
+// 匿名可读的旧接口（会话列表、单会话、订单列表的匿名分支）不带成员身份：接手人与消息作者去掉 user id、姓名一律写「顾问」，
+// 订单去掉确认人、标记已付的人与取消原因，交还时按固定模板记的「{姓名}把会话交还 AI」改写成「顾问把会话交还 AI」。
+// 只拷贝，不改 identity map 里的活对象。
+// 带 ADMIN_PASS 的请求照旧返回原对象；「带凭据」只认 isAdminReq（Basic），不认 console 的登录 cookie
+const ANON_MEMBER_NAME = '顾问';
+type AnonMessage = Omit<ChatMessage, 'authorId'>;
+type AnonSession = Omit<Session, 'assignee' | 'messages'> & { assignee?: Omit<Assignee, 'userId'> | null; messages: AnonMessage[] };
+type AnonOrder = Omit<Order, 'confirmedBy' | 'paidMarkedBy' | 'cancelReason'>;
+
+/** 按消息逐条投影：去掉操作者 id、作者姓名写「顾问」，交还消息里的姓名同样换成「顾问」（02 spec「后台接口」匿名投影、不变量 44） */
+function anonMessage(m: ChatMessage): AnonMessage {
+  const out: ChatMessage = { ...m };
+  delete out.authorId;
+  if (out.authorName !== undefined) out.authorName = ANON_MEMBER_NAME;
+  if (isReleaseNote(out)) out.content = releaseNote(ANON_MEMBER_NAME);
+  return out;
+}
+
+function anonSession(s: Session): AnonSession {
+  const { assignee, ...rest } = s;
+  const out: AnonSession = { ...rest, messages: s.messages.map(anonMessage) };
+  if (assignee !== undefined) out.assignee = assignee && { name: ANON_MEMBER_NAME, at: assignee.at };
+  return out;
+}
+
+function anonOrder(o: Order): AnonOrder {
+  const out: Order = { ...o };
+  delete out.confirmedBy;
+  delete out.paidMarkedBy;
+  delete out.cancelReason;
+  return out;
+}
+
+/** /api/orders/:id 与模拟支付的响应体：R22 的白名单（不变量 43），带不带凭据一律投影。pay.html、chat.html 用到的字段都在里面 */
+interface PublicOrder {
+  id: string;
+  routeTitle: string;
+  travelers: number;
+  departDate: string;
+  totalPrice: number;
+  status: OrderStatus;
+  createdAt: number;
+  paidAt: number | null;
+  /** 顾问确认过价格（advisor 收款方式，02 第 15 步）：确认人的姓名不对外 */
+  confirmed: boolean;
+  supersededBy: string | null;
+}
+const publicOrder = (o: Order): PublicOrder => ({
+  id: o.id,
+  routeTitle: o.routeTitle,
+  travelers: o.travelers,
+  departDate: o.departDate,
+  totalPrice: o.totalPrice,
+  status: o.status,
+  createdAt: o.createdAt,
+  paidAt: o.paidAt ?? null,
+  confirmed: o.confirmedAt != null,
+  supersededBy: o.supersededBy ?? null,
+});
+
 // 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
 app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
@@ -170,20 +282,39 @@ function configSummary(): Record<string, unknown> {
   } catch {
     /* 文件模式下 SOP 读不到：启动预检另有告警 */
   }
-  return { mode, ...hashes, lock: health?.lock ?? null, sopStale: health?.sopStale ?? false, catalogStale: health?.catalogStale ?? false };
+  return {
+    mode,
+    ...hashes,
+    lock: health?.lock ?? null,
+    sopStale: health?.sopStale ?? false,
+    catalogStale: health?.catalogStale ?? false,
+    // 有条目版本大于 1（02「报价快照」）：deploy/rollback-guard.sh 据此拒绝回滚到 02 之前的镜像
+    catalogVersioned: catalogVersioned(),
+  };
 }
 
-app.get('/healthz', (c) =>
-  c.json({
-    ok: true,
+/** 写库健康（02 spec「两种会话存储与启动」）：只有个数与毫秒数，不带会话数和任何会话 id */
+function storeSummary(): { mode: string; dirty: number; lagMs: number; conflict: boolean; poisoned: number } {
+  const h = storeHealth();
+  return { mode: h.mode, dirty: h.dirty, lagMs: h.lagMs, conflict: h.conflict, poisoned: h.poisoned.length };
+}
+
+// HTTP 状态照旧 200（deploy.sh 只看 revision）；外部拨测看 ok：写库冲突、有会话停写、积压超过 2 分钟、租户锁不在本进程手里时为 false
+app.get('/healthz', (c) => {
+  const config = configSummary();
+  const store = storeSummary();
+  const ok = !store.conflict && store.poisoned === 0 && store.lagMs <= 120_000 && config.lock !== 'lost';
+  return c.json({
+    ok,
     revision: process.env.APP_REVISION || 'dev',
     models: activeModels(),
     visitorLLM: budgetStatus(),
     llmGate: gateStatus(),
     llm: llmStats(),
-    config: configSummary(),
-  }),
-);
+    config,
+    store,
+  });
+});
 
 // 模型用量与成本（JD 明确要求的「模型调用成本」指标）
 // 用量与成本：聚合数字，不含任何客户信息，演示模式下也放行（这正是要展示的指标之一）
@@ -345,47 +476,67 @@ app.get('/api/sessions', anonReadable, (c) => {
   const all = listSessions();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
-  return c.json(all.filter((s) => visible(s.id)));
+  return c.json(all.filter((s) => visible(s.id)).map(anonSession));
 });
 
 app.get('/api/sessions/:id', sessionReadAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  return c.json(s);
+  return c.json(isAdminReq(c) ? s : anonSession(s));
 });
 
-app.post('/api/sessions/:id/handoff', sameOriginOnly, adminAuth, (c) => {
+app.post('/api/sessions/:id/handoff', legacyWrites, sameOriginOnly, adminAuth, (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  // 与引擎触发的转人工走同一个入口：记下被「吸」走前的阶段（交还时还原用），重复接管不覆盖
-  enterHandoff(s);
+  // 已在转人工中就什么都不改（R11：旧 /handoff 只以 agent 进入转人工，不设接手人）
+  if (s.handedOver) return c.json(s);
+  // 与引擎触发的转人工走同一个入口：记下被「吸」走前的阶段（交还时还原用），带上转人工记录
+  enterHandoff(s, { kind: 'agent', at: Date.now(), reason: HANDOFF_REASON.agent });
   s.updatedAt = Date.now();
   saveSession(s);
   return c.json(s);
 });
+
+/** 旧写接口的审计地址：库里的 ip 列是 inet，拿不到合法地址就记 null */
+function auditIp(c: Context): string | null {
+  const k = clientKey(c).replace(/%.*$/, '');
+  return isIP(k) ? k : null;
+}
+
+/** 旧写接口改调接手状态机（R11）：操作者是共享工作台，状态机的拒绝照旧回 { error }（admin.html 只看状态码） */
+function legacyRefusal(c: Context, e: unknown): Response | null {
+  if (e instanceof NotHandlingError || e instanceof AssignedToOtherError) {
+    return c.json({ ok: false, error: e.message, code: e instanceof NotHandlingError ? 'not_assignee' : 'assigned_to_other' }, 409);
+  }
+  if (e instanceof ConsentDeclinedError) return c.json({ ok: false, error: e.message, code: 'consent_declined' }, 409);
+  // 企微发送窗口（R18）：剩 0 条或窗口已过，什么都不改（第 12 步的形状）
+  if (e instanceof SendWindowError) return c.json({ ok: false, error: e.message, reason: e.reason, closesAt: e.closesAt }, 409);
+  if (e instanceof StoreLaggingError) return c.json({ ok: false, error: '写库跟不上，稍后再试', code: 'store_lagging' }, 503);
+  // 清洗之后为空（只含 NUL 的正文）或仍超过 2000 字：照 01 的 400 写法（{ error }），不是服务端异常（审查第 3、10 条）
+  if (e instanceof EmptyReplyError) return c.json({ error: 'text 不能为空' }, 400);
+  if (e instanceof ReplyTooLongError) return c.json({ error: '回复过长（≤2000 字）' }, 400);
+  return null;
+}
 
 // 接管的反向操作：把会话交还 AI 继续自动应答。没有它，误接管（或正则误伤转人工）
 // 的客户就永久沉默——AI 不理、人工忘了跟，线索静默流失。
-app.post('/api/sessions/:id/resume', sameOriginOnly, adminAuth, (c) => {
+// 02 起按交还处理（src/handoff/takeover.ts 的 release）：成员接手中的会话返回 409，客户不同意处理敏感信息的同样 409；
+// 改动提交之后才返回（等满 5 秒没提交回 503，改动已在内存生效）
+app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
-  s.handedOver = false;
-  // 只在原阶段是 handoff（被转人工"吸"走）时才还原——否则会把 closing 的客户
-  // 拉回 quote，成交概率、漏斗计数跟着倒退，且已落盘不可逆。
-  if (s.stage === 'handoff') {
-    // 优先用接管前记下的真实阶段。反推只是没有该记录时的兜底：它对「阶段已推进、
-    // 但推进过程不由本系统记录」的会话必然失真（种子演示会话 stage=quote 却无
-    // lastQuote，反推会一路掉到 discovery——现场演一次接管就把客户打回问需）。
-    const paid = s.orderIds.map((id) => getOrder(id)).some((o) => o?.status === 'paid');
-    const inferred = paid ? 'paid' : s.orderIds.length ? 'closing' : s.lastQuote ? 'quote' : 'discovery';
-    // 已支付是既成事实，优先级高于记录值（接管期间完成支付的情况）
-    s.stage = paid ? 'paid' : (s.stageBeforeHandoff ?? inferred);
-    delete s.stageBeforeHandoff;
+  try {
+    release(s.id, sharedActor(auditIp(c)));
+  } catch (e) {
+    const refused = legacyRefusal(c, e);
+    if (refused) return refused;
+    throw e;
   }
-  s.messages.push({ role: 'system', content: '顾问已将会话交还 AI，自动应答恢复', at: Date.now() });
-  s.updatedAt = Date.now();
-  saveSession(s);
-  return c.json(s);
+  // 交还已经在内存生效：admin.html 不许改（R11），它把非 2xx 一律显示成「交还失败、仍处于人工接管状态」，
+  // 还不清 S.taken[id]——可改动其实已经生效，AI 已经恢复应答，页面却一直显示错的。等提交只是让库尽快跟上，
+  // 超时、poisoned、冲突都不改这次交还本身是不是生效了，不能让这里的等待把 200 变成 503（审查第 9 条，compat[2]）
+  await flushSession(s.id, { timeoutMs: 5000 }).catch(() => {});
+  return c.json(getSession(s.id) ?? s);
 });
 
 // AI 代拟回复（起草可直接发给客户的下一条消息，供后台「填入回复框」）。
@@ -400,26 +551,25 @@ app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   }
 });
 
-app.post('/api/sessions/:id/reply', sameOriginOnly, adminAuth, async (c) => {
+// 02 起改调接手状态机的 reply（R11「共享工作台」）：没人接手时以共享工作台接手后回复，成员接手中 409、不发、会话不变；
+// 企微渠道先查发送账本（剩 0 条或窗口已过 409、写明原因，第 12 步）；改动提交之后才发；写库积压时 503、什么都不改。
+// 每个请求一个 clientId（旧工作台没有重试语义）。响应形状照旧（{ ok }）
+app.post('/api/sessions/:id/reply', legacyWrites, sameOriginOnly, adminAuth, async (c) => {
   const s = getSession(c.req.param('id') ?? '');
   if (!s) return c.json({ error: 'session not found' }, 404);
   const body = await c.req.json<{ text?: unknown }>().catch(() => null);
   const text = typeof body?.text === 'string' ? body.text.trim() : '';
   if (!text) return c.json({ error: 'text 不能为空' }, 400);
-  s.messages.push({ role: 'agent', content: text, at: Date.now() });
-  s.updatedAt = Date.now();
-  saveSession(s);
-  const sent = await adapterFor(s.channel).push(s.id, text);
-  if (!sent) {
-    // 发送失败必须让操作者知道：否则后台显示"已回复"、客户实际什么都没收到
-    s.messages.push({
-      role: 'system',
-      content: '⚠️ 上一条人工回复未能发送到客户（企微发送失败：可能是 48h 会话窗口已关闭或企微配置问题）',
-      at: Date.now(),
-    });
-    saveSession(s);
-    return c.json({ ok: false, error: '发送失败：消息未送达客户（已在会话中标记）' });
+  let r: Awaited<ReturnType<typeof reply>>;
+  try {
+    r = await reply(s.id, sharedActor(auditIp(c)), text, randomUUID());
+  } catch (e) {
+    const refused = legacyRefusal(c, e);
+    if (refused) return refused;
+    throw e;
   }
+  // 发送失败时 reply() 已在会话里记了一条「未能发送」
+  if (!r.sent) return c.json({ ok: false, error: '发送失败：消息未送达客户（已在会话中标记）' });
   return c.json({ ok: true });
 });
 
@@ -431,14 +581,14 @@ app.get('/api/orders', anonReadable, (c) => {
   const all = listOrders();
   if (isAdminReq(c)) return c.json(all);
   const visible = anonVisible(c);
-  return c.json(all.filter((o) => visible(o.sessionId)));
+  return c.json(all.filter((o) => visible(o.sessionId)).map(anonOrder));
 });
 
-// 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）
+// 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
 app.get('/api/orders/:id', lookupLimit, (c) => {
   const o = getOrder(c.req.param('id'));
   if (!o) return c.json({ error: 'order not found' }, 404);
-  return c.json(o);
+  return c.json(publicOrder(o));
 });
 
 /**
@@ -459,15 +609,38 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   if (!order) return c.json({ error: 'order not found' }, 404);
   // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
   if (order.status === 'superseded' || order.status === 'cancelled') {
-    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order }, 409);
+    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicOrder(order) }, 409);
   }
   if (order.status !== 'paid') {
     markOrderPaid(id);
+    // 共享工作台的操作记一行审计（02 spec「收款流程」）：这条旧路径不要求先经 confirmOrder 确认价格
+    // （advisor 模式下也一样，与三个新接口那条规则不同——这条路径从模拟支付时代就有，保持原样）
+    const payActor = sharedActor(auditIp(c));
+    const payAuditActor = { kind: 'user' as const, userId: payActor.userId, name: payActor.name, ip: payActor.ip ?? null };
+    const payAuditEntry = {
+      action: 'order.mark_paid',
+      targetType: 'order',
+      targetId: order.id,
+      diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
+    };
+    queueAudit(order.sessionId, payAuditActor, payAuditEntry);
+    // 付款确认同样在提交之后才对客户发（不变量 20）：真超时（仍可能提交）照发；poisoned / 冲突（不会再提交）
+    // 不调 notifyPaid、回 503，和 markPaidByAdvisor 的 awaitCommit 同一套（第 15 步审查第 2 条）
+    try {
+      await awaitCommit(order.sessionId);
+    } catch (e) {
+      const refused = legacyRefusal(c, e);
+      if (refused) return refused;
+      throw e;
+    }
     // 引擎生成跟进话术并更新会话，服务端只负责经渠道推给客户
     const followUp = await notifyPaid(id);
     if (followUp) {
       const s = getSession(followUp.sessionId);
-      const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text);
+      const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text, {
+        kind: 'notice',
+        message: followUp.message,
+      });
       // 同 /reply：会话里记着「已收到您的支付」，客户却没收到，得让顾问在后台看见、去另行告知。
       // 种子会话除外：对应的企微客户是编造的，推送必然失败，公开演示每付一次就会多一条失败备注
       if (!sent && s && !SEED_SESSION_RE.test(s.id)) {
@@ -480,7 +653,9 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       }
     }
   }
-  return c.json({ ok: true, order: getOrder(id) });
+  // 响应体同 GET /api/orders/:id 的白名单（plan「Open」第 1 步带出的第二条，按推荐先做）
+  const after = getOrder(id);
+  return c.json({ ok: true, order: after && publicOrder(after) });
 });
 
 /**
@@ -498,6 +673,10 @@ app.get('/pay/:orderId', async (c) => {
   const o = getOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
+  // advisor 模式：页面不经 R22 白名单知道收款方式长什么样（里面没有这个字段），只能靠这条路由服务端注入一个标记，
+  // 页面 JS 据它决定要不要渲染付款按钮（spec「收款流程」；/pay.html?orderId= 这条静态入口注入不到，在客户端跳到这条路由）。
+  // online 模式什么都不加，页面逐字节不变
+  const modeTag = paymentMode() === 'advisor' ? '\n<meta name="payment-mode" content="advisor">' : '';
   // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
   if (o.status === 'superseded') {
     const t = `${o.routeTitle} · 订单已被替代`;
@@ -506,7 +685,7 @@ app.get('/pay/:orderId', async (c) => {
       withHead(
         html,
         `<title>${esc(t)}</title>\n<meta name="description" content="${esc(d)}">\n` +
-          `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">`,
+          `<meta property="og:title" content="${esc(t)}">\n<meta property="og:description" content="${esc(d)}">${modeTag}`,
       ),
     );
   }
@@ -525,7 +704,7 @@ app.get('/pay/:orderId', async (c) => {
       `<title>${esc(title)}</title>\n` +
         `<meta name="description" content="${esc(desc)}">\n` +
         `<meta property="og:title" content="${esc(title)}">\n` +
-        `<meta property="og:description" content="${esc(desc)}">`,
+        `<meta property="og:description" content="${esc(desc)}">${modeTag}`,
     ),
   );
 });
@@ -546,15 +725,17 @@ function isSaneDepartDate(s: string): boolean {
 // ---------------- 行程方案书 ----------------
 // 无状态：参数在 URL 里，页面按与报价工具同一套规则重算，不引入新的持久化与清理负担。
 // 客户拿到的链接长期有效，也不会因为演示数据清理而失效。
+// 带 ?v= 时按产品库条目的那个版本渲染，不带按版本 1（02「报价快照」）：改价之后已发出的链接报价不变。版本只从内存取，
+// v 不是正整数或大于当前版本时 404，不查库（不变量 35）
 app.get('/api/proposal/:routeId', (c) => {
-  const route = loadRoutes().find((r) => r.id === c.req.param('routeId'));
+  const route = routeForProposal(c.req.param('routeId'), c.req.query('v'));
   if (!route?.itinerary?.length) return c.json({ error: 'proposal not available' }, 404);
   const travelers = Math.min(50, Math.max(1, Math.floor(Number(c.req.query('travelers')) || 2)));
   // 这个端点是公开可拼的，不能只靠工具层校验：手拼 2027-02-30 会生成一份写着
   // 不存在日期的正式方案书发出去。日期不合法就当没传，按标准价出方案。
   const raw = c.req.query('departDate');
   const departDate = raw && isSaneDepartDate(raw) ? raw : undefined;
-  const quote = createQuote({ routeId: route.id, travelers, departDate });
+  const quote = quoteFor(route, { travelers, departDate });
   return c.json({ route, travelers, departDate, quote });
 });
 
@@ -566,8 +747,7 @@ app.get('/api/proposal/:routeId', (c) => {
  * 再闪成标题」，很掉价。这里在发出 HTML 前就把真实标题写进去，第一个字节就是对的。
  * 顺带写 og:*，客户在微信里转发方案书时卡片才有线路名和摘要，而不是一条秃链接。
  */
-function renderProposalHtml(html: string, routeId: string, travelers: number): string {
-  const route = loadRoutes().find((r) => r.id === routeId);
+function renderProposalHtml(html: string, route: Route | null, travelers: number): string {
   if (!route) return html;
   const title = `${route.title} · 行程方案书`;
   const desc = `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜${(route.highlights?.[0] ?? '').slice(0, 40)}`;
@@ -595,7 +775,11 @@ async function serveProposal(c: Context): Promise<Response> {
   const routeId = c.req.param('routeId') ?? '';
   // 人数在路径第二段（/proposal/<id>/<人数>[/<日期]），取不到按 2 人
   const travelers = Math.min(50, Math.max(1, Math.floor(Number((c.req.param('rest') ?? '').split('/')[0]) || 2)));
-  return c.html(renderProposalHtml(html, routeId, travelers));
+  // 标题与分享卡片按链接指的版本写（不带 v 是版本 1）。带了 v 却没有这个版本：404，页面照常出它的「方案不存在或已失效」
+  const v = c.req.query('v');
+  const route = routeForProposal(routeId, v);
+  if (v !== undefined && !route) return c.html(html, 404);
+  return c.html(renderProposalHtml(html, route, travelers));
 }
 
 app.get('/proposal/:routeId/:rest{.*}', serveProposal);
@@ -682,6 +866,19 @@ app.get('/kf-qr.png', async (c) => {
   }
 });
 
+// 隐私说明（02 spec「隐私说明、敏感信息同意、保留期与行权」，R23）：公开、匿名可读，纯文本从内存取（不查库，不变量 9）。
+// 没发布过（文件配置模式、db 模式但这个租户还没发布过）404；no-store：重新发布之后立刻看得到新版本，不被缓存挡住
+app.get('/privacy', (c) => {
+  const notice = currentPrivacyNotice();
+  if (!notice) return c.notFound();
+  c.header('Cache-Control', 'no-store');
+  return c.html(
+    `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<title>隐私说明</title></head><body><pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit;line-height:1.6">` +
+      `${escapeHtml(notice.body)}</pre></body></html>`,
+  );
+});
+
 // 后台接口与后台前端（01 spec「后台 API 与页面」「构建与部署」）：都注册在 serveStatic 兜底之前。
 // 子应用自己兜住没匹配上的 /api/console/*（JSON，不是 index.html）；/console/* 的 SPA 回退只管 /console 下面
 app.route('/', consoleApi);
@@ -701,7 +898,8 @@ app.use('/*', serveStatic({ root: './public' }));
 // 会直接冒成 500 纯文本——压测实测约 3% 的请求命中，而这正是公开演示链接被点的那条路径。
 // 企微渠道早有 catch（adapters/wecom.ts），网页端一直漏着。
 app.onError((err, c) => {
-  console.error(`[server] 未捕获异常 ${c.req.method} ${c.req.path}:`, err instanceof Error ? err.message : err);
+  // 日志不打会话原 id（不变量 48）：convLabelsIn 把实际路径（含 external_userid）里形如会话原 id 的串换成短码
+  console.error(`[server] 未捕获异常 ${c.req.method} ${convLabelsIn(c.req.path)}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
   if (c.req.path === '/api/chat') {
     return c.json({ reply: { text: '抱歉，我这边卡了一下，麻烦您再发一次～', stage: 'discovery' } }, 200);
@@ -719,6 +917,8 @@ const port = Number(process.env.PORT) || 3200;
 /** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
 function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
+  // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
+  console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
   // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
   // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
   // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
@@ -762,12 +962,24 @@ function logStartup(listeningPort: number): void {
   }
 }
 
+/** 跟进推给客户的那一下（扫描器与任务表共用）；opts 带 kind='followup' 与要写进会话的那条消息（发送账本用） */
+function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
+  const s = getSession(sessionId);
+  return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
+}
+
 if (!SELFTEST) {
   // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
   onShutdown(markConfigShuttingDown);
   onShutdown(closeConfig, { phase: 'late' });
   await boot({
     initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
+    // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
+    initSessionStore: () => {
+      if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
+      const { db, tenantId, deps } = configRuntime();
+      return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
+    },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {
         logStartup(info.port);
@@ -784,13 +996,20 @@ if (!SELFTEST) {
     },
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
     buildIndex,
-    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）
-    startFollowUpScheduler: () =>
-      startFollowUpScheduler((sessionId, text) => {
-        const s = getSession(sessionId);
-        return adapterFor(s?.channel ?? 'wecom').push(sessionId, text);
-      }),
+    storeMode: sessionStoreMode,
+    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
+    startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
+    startJobs: () => startJobs(pushFollowUp),
     startWecom,
     exit: (code) => process.exit(code),
+    // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
+    startOtel: startOtelExport,
+    // 告警（02 spec R24）：起企微之后挂上各处的订阅，推送只在后台
+    startAlerts,
+    // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
+    startPrivacy: async () => {
+      await initPrivacy();
+      startPrivacyPoll();
+    },
   });
 }

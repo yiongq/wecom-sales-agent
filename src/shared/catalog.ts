@@ -4,12 +4,14 @@
 import { z } from 'zod';
 import { SALES_SEGMENTS, type Hotel, type Route } from './catalog-types.js';
 import { storableText, UNSTORABLE_TEXT } from './console-api.js';
-import { peakMonths } from './season.js';
+import { monthsReadable } from './season.js';
 
 export type CatalogKind = 'route' | 'hotel';
 
-/** 与库里 catalog_items.code 的 CHECK 相同：条目的 id 就是 code */
-const CODE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** 与库里 catalog_items.code 的 CHECK 相同：条目的 id 就是 code。行业包的上架前检查（pack.ts 的 checkItem）按它查 `$code` */
+export const CATALOG_CODE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** 编号的报错：界面上它叫「编号」（行业包的 $code），不写 payload 的键名 id（后台 UX spec 验收 15 第 10 条） */
+const CODE_MESSAGE = '编号只能是小写字母、数字和连字符，以字母或数字开头，最长64位';
 /** 条目里其余的字符串都是它或枚举：NUL 与孤立代理项在这里拦下（库里的 json 存不下），后台新建、补丁、CSV 导入都是 422 点名字段 */
 const text = z.string().min(1, '不能为空').refine(storableText, UNSTORABLE_TEXT);
 const texts = z.array(text);
@@ -26,16 +28,13 @@ const ItineraryDay = z.strictObject({ day: int.positive(), title: text, detail: 
  */
 export const RouteSchema: z.ZodType<Route> = z
   .strictObject({
-    id: z.string().regex(CODE, 'id 只能是小写字母、数字和连字符，以字母或数字开头，最长 64 位'),
+    id: z.string().regex(CATALOG_CODE, CODE_MESSAGE),
     title: text,
     destination: text,
     days: int.positive(),
     priceFrom: int.positive(),
     hotelLevel: text,
-    bestSeason: text.refine(
-      (s) => s.includes('全年') || peakMonths(s).size > 0,
-      '最佳季要写出月份（如「6-9月」「11月-次年4月」）或「全年」',
-    ),
+    bestSeason: text.refine(monthsReadable, '最佳季要写出月份（如「6-9月」「11月-次年4月」）或「全年」'),
     highlights: texts.min(1),
     tags: texts,
     segments: z.array(z.enum(SALES_SEGMENTS as [Route['segments'][number], ...Route['segments']])).min(1),
@@ -49,15 +48,15 @@ export const RouteSchema: z.ZodType<Route> = z
   })
   .superRefine((r, ctx) => {
     if (r.itinerary.length !== r.days) {
-      ctx.addIssue({ code: 'custom', path: ['itinerary'], message: `逐日行程有 ${r.itinerary.length} 天，要和 days（${r.days}）相同` });
+      ctx.addIssue({ code: 'custom', path: ['itinerary'], message: `逐日行程有${r.itinerary.length}天，要和天数（${r.days}）相同` });
     }
     r.itinerary.forEach((d, i) => {
-      if (d.day !== i + 1) ctx.addIssue({ code: 'custom', path: ['itinerary', i, 'day'], message: `第 ${i + 1} 项的 day 应为 ${i + 1}` });
+      if (d.day !== i + 1) ctx.addIssue({ code: 'custom', path: ['itinerary', i, 'day'], message: `第${i + 1}天的天号应为${i + 1}` });
     });
   });
 
 export const HotelSchema: z.ZodType<Hotel> = z.strictObject({
-  id: z.string().regex(CODE, 'id 只能是小写字母、数字和连字符，以字母或数字开头，最长 64 位'),
+  id: z.string().regex(CATALOG_CODE, CODE_MESSAGE),
   name: text,
   destination: text,
   stars: text,
@@ -74,24 +73,23 @@ export const CATALOG_SCHEMAS: Readonly<Record<CatalogKind, z.ZodType<Route> | z.
 
 /** 任何状态下都不可改 */
 export const ALWAYS_LOCKED = ['id'] as const;
-/** active 条目不可改的字段（理由见 spec「各字段为什么锁」）。'tags:国内' 指 tags 里「国内」这一项的有无 */
+/**
+ * active 条目不可改的字段（理由见 01 spec「各字段为什么锁」）。'tags:国内' 指 tags 里「国内」这一项的有无。
+ * 02 有了条目版本（报价快照）之后，计价与条款的五个字段去掉了，见 REPRICE_FIELDS；识别字段照旧锁定（02 spec R14、非目标）
+ */
 export const LOCKED_WHEN_ACTIVE = {
-  route: [
-    'id',
-    'title',
-    'destination',
-    'days',
-    'priceFrom',
-    'bestSeason',
-    'segments',
-    'aliases',
-    'maxAltitude',
-    'overseas',
-    'tags:国内',
-    'inclusions',
-    'exclusions',
-  ],
-  hotel: ['id', 'name', 'destination', 'nightlyFrom'],
+  route: ['id', 'title', 'destination', 'days', 'segments', 'aliases', 'maxAltitude', 'overseas', 'tags:国内'],
+  hotel: ['id', 'name', 'destination'],
+} as const;
+
+/**
+ * 02 开放的计价与条款字段（02 spec「报价快照与产品库字段开放」、01 开放问题 5）：active 条目上能改，改了写一个新的条目版本，
+ * 只影响之后的报价和方案书；已发出的方案书按发出时的版本渲染，订单下单时就冻结了金额。旅游包给这几个字段标了 reprices
+ * （后台保存条据那个标记换说明，经 /pack 下发），packs.selftest 核对两边一致
+ */
+export const REPRICE_FIELDS = {
+  route: ['priceFrom', 'bestSeason', 'inclusions', 'exclusions'],
+  hotel: ['nightlyFrom'],
 } as const;
 
 /** 值相等：对象不看键序，数组看顺序。console 的表单据它判断哪些顶层字段改过 */

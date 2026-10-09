@@ -2,6 +2,9 @@
 // 文件模式（CONFIG_SOURCE 未设、空串或 file）什么都不做，引擎和工具照旧读 data/。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
 // 本模块不 import store / tools / engine：它们反过来 import 这里，快照变化经 onCatalogChanged 回调通知。
+// 02 加了产品库条目版本（02 spec「报价快照与产品库字段开放」）：全部版本启动时读进内存，之后的新版本提交后加进来；
+// 一轮对话之内 currentCatalog() 返回这一轮开始时的那一代快照（pinCatalogForTurn）。
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -18,13 +21,17 @@ import {
 import { writeAudit } from '../db/repo/audit.js';
 import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
 import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
+import { insertCatalogVersion, readCatalogVersions, type CatalogVersionRow } from '../db/repo/catalog-versions.js';
 import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
+import { setLogTenant } from '../log.js';
+import { packById } from '../packs/registry.js';
 import { renderSystemPrompt } from '../prompt/system.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
+import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { toolDefs } from '../tool-defs.js';
@@ -57,7 +64,15 @@ export interface CatalogSnapshot {
   /** 只含 active 条目，各自按 ord 升序，deep-frozen */
   routes: readonly Route[];
   hotels: readonly Hotel[];
+  /**
+   * 每个 active 条目当前的版本（02「报价快照」），键是 catalogVersionKey（'route:r-guizhou'）。与 routes、hotels 是同一代：
+   * 一轮之内工具拿到的报价与链接上的 ?v= 出自同一份。文件模式没有快照，条目一律当版本 1
+   */
+  versions: Readonly<Record<string, number>>;
 }
+
+/** 条目版本的键：与 turn_traces.catalog_versions 同一个写法（02 spec「逐轮 trace」） */
+export const catalogVersionKey = (kind: CatalogRow['kind'], code: string): string => `${kind}:${code}`;
 
 export interface ConfigHealth {
   lock: 'held' | 'lost';
@@ -105,6 +120,7 @@ export type ConfigStartupReason =
   | 'schema_behind'
   | 'tenant_not_found'
   | 'tenant_suspended'
+  | 'pack_unknown'
   | 'lock_held'
   | 'image_sop_invalid'
   | 'no_published_sop'
@@ -138,13 +154,39 @@ async function dbStep<T>(what: string, fn: () => Promise<T>): Promise<T> {
 interface Loaded {
   deps: ConfigDeps;
   tenantId: string;
+  /** 启动时装载的租户行里的名称与行业包：/me 的 tenantName、/pack 用，不查库 */
+  tenantName: string;
+  pack: IndustryPack;
   lock: TenantLock;
   imageSections: readonly SopSection[];
   sop: PublishedSop;
   catalog: CatalogSnapshot;
   /** 快照数组本身不带 ord：另存一份 code → ord，applyCatalogRow 按它插到正确位置 */
   ords: Record<CatalogRow['kind'], Map<string, number>>;
+  /** 全部条目的全部版本（catalogVersionKey → 版本号 → deep-frozen 的 payload）：方案书按 ?v= 渲染时只读这里，不查库 */
+  history: VersionHistory;
 }
+type VersionHistory = Map<string, Map<number, unknown>>;
+
+/** 版本行建成内存里的历史：只追加，同一个版本号只认第一次见到的那份 */
+function historyOf(rows: readonly Pick<CatalogVersionRow, 'kind' | 'code' | 'version' | 'payload'>[]): VersionHistory {
+  const h: VersionHistory = new Map();
+  for (const r of rows) addVersion(h, r.kind, r.code, r.version, r.payload);
+  return h;
+}
+function addVersion(h: VersionHistory, kind: CatalogRow['kind'], code: string, version: number, payload: unknown): void {
+  const key = catalogVersionKey(kind, code);
+  let m = h.get(key);
+  if (!m) h.set(key, (m = new Map()));
+  if (!m.has(version)) m.set(version, deepFreeze(structuredClone(payload)));
+}
+const latestOf = (h: VersionHistory, key: string): number => Math.max(0, ...(h.get(key)?.keys() ?? []));
+/**
+ * 条目的当前版本：行上的 version 与版本历史里最大的那个取大。启动补写不改 catalog_items.version（改了触发器会把「更新于」
+ * 写成启动时刻），补写出的新版本只在历史里，这一列落后；之后的写入照旧按 max(version) + 1 取号、同一条 UPDATE 里改这一列
+ */
+const currentVersionOf = (row: { kind: CatalogRow['kind']; code: string; version: number }, h: VersionHistory): number =>
+  Math.max(row.version, latestOf(h, catalogVersionKey(row.kind, row.code)));
 
 const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
   route: new Map(rows.filter((r) => r.kind === 'route').map((r) => [r.code, r.ord])),
@@ -155,6 +197,8 @@ const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
 let dbInstalled = false;
 let loaded: Loaded | null = null;
 let lockState: 'held' | 'lost' = 'held';
+/** 重取时发现锁已在另一个进程手里（held_by_other）：此后本进程不该再写会话（02 spec「identity map 与写入 · 停机」） */
+let lockTaken = false;
 let sopStale = false;
 let catalogStale = false;
 let shuttingDown = false;
@@ -174,12 +218,64 @@ export function currentSop(): PublishedSop {
 }
 export function currentCatalog(): CatalogSnapshot {
   if (!loaded) throw new ConfigNotReadyError();
-  return loaded.catalog;
+  const pinned = turnPin.getStore();
+  return pinned && pinned.tenantId === loaded.tenantId ? pinned : loaded.catalog;
+}
+
+/** 一轮之内固定的产品库快照（01 裁决 R6 推迟到 02 的那条、02 R14）。只经 pinCatalogForTurn 设置 */
+const turnPin = new AsyncLocalStorage<CatalogSnapshot>();
+
+/**
+ * 记下开始时的 CatalogSnapshot，fn 之内（含它起的异步续体）currentCatalog() 都返回它：一轮里工具结果、链接上的 ?v= 与护栏
+ * 看到的是同一代快照，中途有人改价也不混用（不变量 36）。文件模式（或还没装载完）什么都不做
+ */
+export function pinCatalogForTurn<T>(fn: () => Promise<T>): Promise<T> {
+  if (!loaded) return fn();
+  return turnPin.run(loaded.catalog, fn);
+}
+
+/**
+ * 条目某个版本的 payload（deep-frozen），只读内存（匿名的方案书路由用，不查库，不变量 35）。版本只追加、旧版本永远在，
+ * 所以不看本轮固定的快照。文件模式、没有这条或没有这个版本时返回 null
+ */
+export function catalogItemAt(kind: CatalogRow['kind'], code: string, version: number): unknown {
+  return loaded?.history.get(catalogVersionKey(kind, code))?.get(version) ?? null;
+}
+
+/** 有条目版本大于 1（改过 active 条目的内容）：/healthz 的 config.catalogVersioned，回滚到 02 之前的镜像据此拒绝。文件模式恒为 false */
+export function catalogVersioned(): boolean {
+  if (!loaded) return false;
+  return Object.values(loaded.catalog.versions).some((v) => v > 1);
 }
 
 /** 产品库快照变化后回调；retrieval.ts 在加载时注册，用来失效并重建索引 */
 export function onCatalogChanged(cb: (snap: CatalogSnapshot) => void): void {
   catalogListeners.push(cb);
+}
+
+/**
+ * 租户锁的状态变化（02 spec 的 tenant_lock 告警，startAlerts 订阅）：lost 锁连接断开、开始重取；held 重新取得；
+ * taken 重取时发现已在别的进程手里、本进程开始停机
+ */
+export type LockEvent = 'lost' | 'held' | 'taken';
+const lockListeners = new Set<(ev: LockEvent) => void>();
+export function onLockEvent(cb: (ev: LockEvent) => void): () => void {
+  lockListeners.add(cb);
+  return () => lockListeners.delete(cb);
+}
+function lockEvent(ev: LockEvent): void {
+  for (const cb of lockListeners) {
+    try {
+      cb(ev);
+    } catch {
+      /* 订阅者出错不影响锁的处理 */
+    }
+  }
+}
+
+/** 租户锁已被另一个进程拿走（重取得到 held_by_other）。PG 会话存储的 drain 段据此不写库、直接 spill */
+export function tenantLockTaken(): boolean {
+  return lockTaken;
 }
 
 export function configHealth(): ConfigHealth {
@@ -254,13 +350,24 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
   };
 }
 
-/** 生产入口：先校验 CONFIG_SOURCE（非法值报 env_invalid）；是 db 就构造依赖再装载，否则按文件模式 */
+/** 只回显看起来像个取值的短词：配错位置的整行环境变量里可能带着连接串口令 */
+const shownValue = (name: string, v: string): string => (/^[a-z]{1,16}$/i.test(v) ? `${name}=${v}` : `${name} 的值`);
+
+/**
+ * 生产入口：先校验 CONFIG_SOURCE 与 SESSION_STORE（非法值报 env_invalid）；是 db 就构造依赖再装载，否则按文件模式。
+ * SESSION_STORE（02 spec R1）：未设、空串、file 是文件存储，db 是 PG 会话存储且要求 CONFIG_SOURCE=db，绝不回落
+ */
 export async function initConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: number) => void): Promise<void> {
   const mode = env.CONFIG_SOURCE ?? '';
   if (mode !== '' && mode !== 'file' && mode !== 'db') {
-    // 只回显看起来像个取值的短词：配错位置的整行环境变量里可能带着连接串口令
-    const shown = /^[a-z]{1,16}$/i.test(mode) ? `CONFIG_SOURCE=${mode}` : 'CONFIG_SOURCE 的值';
-    throw startup('env_invalid', `${shown} 不合法，只能是 file 或 db`);
+    throw startup('env_invalid', `${shownValue('CONFIG_SOURCE', mode)} 不合法，只能是 file 或 db`);
+  }
+  const store = env.SESSION_STORE ?? '';
+  if (store !== '' && store !== 'file' && store !== 'db') {
+    throw startup('env_invalid', `${shownValue('SESSION_STORE', store)} 不合法，只能是 file 或 db`);
+  }
+  if (store === 'db' && mode !== 'db') {
+    throw startup('env_invalid', 'SESSION_STORE=db 要求 CONFIG_SOURCE=db（会话存储不会回落到文件）');
   }
   if (mode !== 'db') return initConfig(null);
   return initConfig(await productionConfigDeps(env, gracefulExit));
@@ -279,9 +386,51 @@ function assertIntegrity(row: SopVersionRow): void {
     throw startup('integrity', `已发布版本 v${row.versionNo} 的 sections 与 sop_hash 对不上（有人改过这一行？）`);
 }
 
-function snapshotOf(tenantId: string, rows: readonly CatalogRow[], gen: number): CatalogSnapshot {
+function snapshotOf(tenantId: string, rows: readonly CatalogRow[], gen: number, history: VersionHistory): CatalogSnapshot {
   const of = <T>(kind: CatalogRow['kind']): T[] => rows.filter((r) => r.kind === kind).map((r) => r.payload as T);
-  return deepFreeze({ tenantId, generation: gen, routes: of<Route>('route'), hotels: of<Hotel>('hotel') });
+  const versions: Record<string, number> = {};
+  for (const r of rows) {
+    const key = catalogVersionKey(r.kind, r.code);
+    const v = currentVersionOf(r, history);
+    if (v > 0) versions[key] = v;
+  }
+  return deepFreeze({ tenantId, generation: gen, routes: of<Route>('route'), hotels: of<Hotel>('hotel'), versions });
+}
+
+type VersionWrite = { kind: CatalogRow['kind']; code: string; version: number; payload: Record<string, unknown> };
+
+/**
+ * 启动补写（02 spec「报价快照」）要写的：没有任何版本行的 active 条目（回滚到 01 镜像期间上架的）以当前 payload 写版本 1；
+ * 最新版本的 payload 与条目不同的（01 镜像期间改过）写下一个版本。不动 catalog_items 这一行（见 currentVersionOf）
+ */
+function backfillPlan(items: readonly CatalogRow[], versions: readonly CatalogVersionRow[]): VersionWrite[] {
+  const history = historyOf(versions);
+  const writes: VersionWrite[] = [];
+  for (const it of items) {
+    const key = catalogVersionKey(it.kind, it.code);
+    const latest = latestOf(history, key);
+    if (latest === 0 || JSON.stringify(history.get(key)!.get(latest)) !== JSON.stringify(it.payload)) {
+      writes.push({ kind: it.kind, code: it.code, version: latest + 1, payload: it.payload });
+    }
+  }
+  return writes;
+}
+
+/** 启动补写的写入：一个事务，取配置写锁；每个新版本记 source='backfill' 与一行 catalog.version 审计 */
+async function writeBackfill(d: ConfigDeps, tenantId: string, writes: readonly VersionWrite[]): Promise<void> {
+  await withTenant(d.db, systemCtx(tenantId), async (tx) => {
+    await lockTenantConfig(tx);
+    for (const w of writes) {
+      await insertCatalogVersion(tx, { ...w, source: 'backfill', createdByName: 'system' });
+      await writeAudit(tx, {
+        action: 'catalog.version',
+        targetType: w.kind,
+        targetId: w.code,
+        diff: { version: w.version, source: 'backfill' },
+      });
+    }
+  });
+  console.log(`[config] 条目版本启动补写：${writes.map((w) => `${catalogVersionKey(w.kind, w.code)} v${w.version}`).join('、')}`);
 }
 
 /** 从库里的一行构造缓存用的 PublishedSop：sections 用与镜像合并之后的全部节 */
@@ -404,7 +553,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 
 /**
  * deps 为 null：文件模式，立即返回。否则依次执行，前 8 步只读：
- *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended → 4 取租户锁
+ *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
  *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
@@ -439,6 +588,9 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));
     if (!tenant) throw startup('tenant_not_found', `没有 slug 为「${d.tenantSlug}」的租户`);
     if (tenant.status === 'suspended') throw startup('tenant_suspended', `租户「${d.tenantSlug}」已停用`);
+    // 后台 UX spec「接口改动 · /pack」：包不在注册表里时拒绝启动（tenant-create 已按注册表校验，这里防手改库）
+    const pack = packById(tenant.packId);
+    if (!pack) throw startup('pack_unknown', `租户「${d.tenantSlug}」的行业包「${tenant.packId}」不在注册表里`);
     // 4
     const held = await dbStep('取租户锁', () => d.lock(tenant.id));
     lock = held;
@@ -456,12 +608,14 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     } catch (e) {
       throw startup('image_sop_invalid', `镜像里的 data/sop.md 不合格：${message(e)}`);
     }
-    // 6、7 在同一个只读快照里读，SOP 与产品库是同一时刻的
-    const { row, items } = await dbStep('读已发布 SOP 与产品库', () =>
-      withTenant(d.db, systemCtx(tenant.id), async (tx) => ({ row: await readPublishedSop(tx), items: await readActiveCatalog(tx) }), {
-        isolation: 'repeatable read',
-        readOnly: true,
-      }),
+    // 6、7 在同一个只读快照里读，SOP、产品库与条目版本是同一时刻的
+    const { row, items, versions } = await dbStep('读已发布 SOP 与产品库', () =>
+      withTenant(
+        d.db,
+        systemCtx(tenant.id),
+        async (tx) => ({ row: await readPublishedSop(tx), items: await readActiveCatalog(tx), versions: await readCatalogVersions(tx) }),
+        { isolation: 'repeatable read', readOnly: true },
+      ),
     );
     if (!row) throw startup('no_published_sop', `租户「${d.tenantSlug}」没有已发布的 SOP，先跑 import-config`);
     const rerender = resolvePublished(d, row, imageSections);
@@ -471,19 +625,28 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     logDrift(d, merged, imageSections, items);
     // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
     const current = rerender ? await dbStep('写入 rerender 版本', () => writeRerender(d, tenant.id, row, rerender)) : row;
+    // 9（02）条目版本的启动补写，两种会话存储都做；补写的版本随后与读到的一起进内存
+    const backfill = backfillPlan(items, versions);
+    if (backfill.length) await dbStep('补写条目版本', () => writeBackfill(d, tenant.id, backfill));
+    const history = historyOf([...versions, ...backfill]);
     // 10
     loaded = {
       deps: d,
       tenantId: tenant.id,
+      tenantName: tenant.name,
+      pack,
       lock: held,
       imageSections: deepFreeze(imageSections),
       sop: toPublishedSop(tenant.id, current, merged),
-      catalog: snapshotOf(tenant.id, items, 0),
+      catalog: snapshotOf(tenant.id, items, 0, history),
       ords: ordsOf(items),
+      history,
     };
     lockState = 'held';
     sopStale = false;
     catalogStale = false;
+    // 日志的 tenant（R24）：只在 DB 配置模式下有
+    setLogTenant(d.tenantSlug);
     // 缓存照常装上（对话要用），配置写入暂停、开始重取
     if (lostWhileLoading) onLockLost();
     const { sop } = loaded;
@@ -544,9 +707,15 @@ async function writeRerender(
   return next;
 }
 
+/** 启动时装载的租户名称与行业包（后台 UX spec「接口改动」）：/me 的 tenantName 与 GET /pack 用，不查库 */
+export function currentTenant(): { name: string; pack: IndustryPack } {
+  if (!loaded) throw new ConfigNotReadyError();
+  return { name: loaded.tenantName, pack: loaded.pack };
+}
+
 // ---------------- 给编辑流程用 ----------------
 
-/** 只给 src/config/sop.ts、catalog.ts 用：装载时的库、租户、依赖与镜像节 */
+/** 只给 src/config/sop.ts、catalog.ts 用，以及 boot 给 db 会话存储拼依赖：装载时的库、租户、依赖与镜像节 */
 export function configRuntime(): { db: Db; tenantId: string; deps: ConfigDeps; imageSections: readonly SopSection[] } {
   if (!loaded) throw new ConfigNotReadyError();
   return { db: loaded.deps.db, tenantId: loaded.tenantId, deps: loaded.deps, imageSections: loaded.imageSections };
@@ -567,18 +736,23 @@ export function replacePublishedSop(next: PublishedSop): void {
 
 /**
  * 只给 src/config/catalog.ts 在事务提交之后调用：用 RETURNING 拿回的行在内存里更新快照——替换同 code 的条目，
- * 或按 ord 插入新上架的条目；generation 加 1。单副本、单写者，结果是确定的，不从库里重读。draft 行不进快照
+ * 或按 ord 插入新上架的条目；generation 加 1。单副本、单写者，结果是确定的，不从库里重读。draft 行不进快照。
+ * 行上的 version 是这次写下的（或没变的）条目版本：它的 payload 就是这一行的 payload，没见过就加进版本历史（02「报价快照」）
  */
 export function applyCatalogRow(row: {
   kind: CatalogRow['kind'];
   code: string;
   ord: number;
   status: 'draft' | 'active';
+  version: number;
   payload: unknown;
 }): void {
   const cur = loaded;
   if (!cur || row.status !== 'active') return;
   catalogWrites++;
+  addVersion(cur.history, row.kind, row.code, row.version, row.payload);
+  // 内容没变的写入（原样提交）带回的是这一列上的版本，启动补写之后它可能落后于历史：取大（见 currentVersionOf）
+  const versions = { ...cur.catalog.versions, [catalogVersionKey(row.kind, row.code)]: currentVersionOf(row, cur.history) };
   const key = row.kind === 'route' ? 'routes' : 'hotels';
   const ords = cur.ords[row.kind];
   const idOf = (x: unknown): string => String((x as { id: unknown }).id);
@@ -588,7 +762,7 @@ export function applyCatalogRow(row: {
   items.push({ ord: row.ord, payload: structuredClone(row.payload) });
   ords.set(row.code, row.ord);
   const list = items.toSorted((a, b) => a.ord - b.ord).map((x) => x.payload);
-  setCatalog(cur, { ...cur.catalog, [key]: list, generation: cur.catalog.generation + 1 });
+  setCatalog(cur, { ...cur.catalog, [key]: list, versions, generation: cur.catalog.generation + 1 });
 }
 
 // ---------------- 锁丢失 ----------------
@@ -597,6 +771,7 @@ function onLockLost(): void {
   if (shuttingDown || !loaded) return;
   lockState = 'lost';
   console.error(`[config] 租户锁连接断开：配置写入暂停，对话照常；每 ${reacquireMs / 1000} 秒重取`);
+  lockEvent('lost');
   scheduleReacquire();
 }
 
@@ -617,9 +792,12 @@ async function reacquireOnce(): Promise<void> {
   if (r === 'ok') {
     lockState = 'held';
     console.log('[config] 租户锁已重新取得，配置写入恢复');
+    lockEvent('held');
   } else if (r === 'held_by_other') {
     // 另一个进程已经接管：先跑全部停机钩子（在途的企微回复发完、会话落盘），再退出
+    lockTaken = true;
     console.error('[config] 租户锁已被另一个进程拿走，本进程优雅退出');
+    lockEvent('taken');
     cur.deps.gracefulExit(1);
   } else {
     scheduleReacquire();
@@ -639,10 +817,10 @@ let reloadBackoff = RELOAD_BACKOFF_MS;
  */
 async function reloadOnce(cur: Loaded): Promise<boolean> {
   const writesBefore = catalogWrites;
-  const { row, items } = await withTenant(
+  const { row, items, versions } = await withTenant(
     cur.deps.db,
     systemCtx(cur.tenantId),
-    async (tx) => ({ row: await readPublishedSop(tx), items: await readActiveCatalog(tx) }),
+    async (tx) => ({ row: await readPublishedSop(tx), items: await readActiveCatalog(tx), versions: await readCatalogVersions(tx) }),
     { isolation: 'repeatable read', readOnly: true },
   );
   if (!row) throw new Error('库里没有已发布的 SOP');
@@ -652,11 +830,14 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   // 版本号只增不减（不变式 13）
   if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
   sopStale = false;
-  const next = snapshotOf(cur.tenantId, items, cur.catalog.generation);
+  // 版本只追加：库里读到的并进内存里已有的（内存里有、库里没有的不会出现：只有提交之后才加进内存）
+  for (const v of versions) addVersion(cur.history, v.kind, v.code, v.version, v.payload);
+  const next = snapshotOf(cur.tenantId, items, cur.catalog.generation, cur.history);
   cur.ords = ordsOf(items);
   if (
     JSON.stringify(next.routes) !== JSON.stringify(cur.catalog.routes) ||
-    JSON.stringify(next.hotels) !== JSON.stringify(cur.catalog.hotels)
+    JSON.stringify(next.hotels) !== JSON.stringify(cur.catalog.hotels) ||
+    JSON.stringify(next.versions) !== JSON.stringify(cur.catalog.versions)
   ) {
     setCatalog(cur, { ...next, generation: cur.catalog.generation + 1 });
   }
@@ -734,7 +915,9 @@ export const __configTest = {
     reacquireTimer = null;
     dbInstalled = false;
     loaded = null;
+    setLogTenant('');
     lockState = 'held';
+    lockTaken = false;
     sopStale = false;
     catalogStale = false;
     shuttingDown = false;
@@ -743,6 +926,16 @@ export const __configTest = {
     reacquireMs = 5_000;
     reloadBackoff = RELOAD_BACKOFF_MS;
     // 不清 catalogListeners：它们是各模块加载时登记的（retrieval.ts），模块不会再加载一次
+  },
+  /**
+   * 换掉装载好的行业包，返回原来那份：后台接口按另一个包（家装假包）判定会话状态时用。
+   * 假包不进注册表（不变量 25），租户行里写它的 pack_id 启动不了，只能这样换
+   */
+  swapPack(pack: IndustryPack): IndustryPack {
+    if (!loaded) throw new ConfigNotReadyError();
+    const prev = loaded.pack;
+    loaded.pack = pack;
+    return prev;
   },
   /** 锁重取间隔与重读退避调短，测试不用真等几秒 */
   setTimings(t: { reacquireMs?: number; reloadBackoffMs?: number[] }): void {

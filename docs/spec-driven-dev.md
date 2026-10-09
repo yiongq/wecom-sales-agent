@@ -25,6 +25,8 @@
 - `spec.md` — RFC。只保留有实际信息的段落，从这些里选：背景与问题、目标与非目标、现状与方案、所有权与依赖方向、接口与数据流、不变量与失败行为、兼容与迁移、安全 / 隐私 / 性能约束、**验收标准**、开放问题、被否决的方案。
 - `plan.md` — 有序的实现步骤和它们的完成状态，包括最终审查、验证决定、清理和质量门。**这是唯一的执行跟踪，不建 `tasks.md`。**
 
+需要时可以带配套细则文件，如 `references.md`（出处）、`design-system.md`（视觉与内容细则）。细则只展开 spec 引用到的取值，不记进度、不定行为；和 spec 冲突时以 spec 为准。
+
 复杂 bug 通常只要 `spec.md`（问题、影响、根因、修法、简短清单、验证结果、关联 issue）。
 
 ## spec 怎么写
@@ -51,7 +53,9 @@
 
 不改旧 spec。新建一个 spec 说明改了什么、为什么、旧的哪些部分作废，旧 spec 顶部标 `Status: superseded by <link>`。决策记录只追加不改写，半年后仍能看到「当时为什么那么定、后来为什么推翻」。
 
-例外：spec 还是 `draft` / `ready`、且尚无代码依赖该契约时，可以就地修订，条件是在顶部 `Revisions:` 写清日期、改了什么、旧的是什么、为什么改。一旦 `Status: implemented` 或已有代码依赖，只能新建 spec supersede。
+例外：spec 还是 `draft` / `ready`、且尚无代码依赖该契约时，可以就地修订，条件是在顶部 `Revisions:` 写清日期、改了什么、旧的是什么、为什么改。一旦 `Status: implemented` 或已有代码依赖，只能新建 spec supersede（整份，或下面的部分取代）。
+
+**部分取代**：后来的 spec 只换掉一份 `implemented` spec 的个别条款（某条不变量、某条验收、某节里的一两句）时，不必整份取代。新 spec 顶部写一行 `Supersedes in part:`，点名被取代的条款并说明为什么换；被取代的 spec 顶部加一行 `Superseded in part by: <link> — <条款清单>`，正文一字不改，`Status` 照旧。只新增、不改原有条款的（新接口成员、新枚举值、收紧的选择）不算取代，走 `Amends:` / `Amended by:`。
 
 跨阶段的技术选型另外写 ADR 放 `docs/adr/`。
 

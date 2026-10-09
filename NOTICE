@@ -1,0 +1,115 @@
+wecom-sales-agent
+=================
+
+本仓库自身按 MIT 许可发布（见 LICENSE）。下面列出随仓库或后台构建产物分发的第三方内容，各按自己的许可使用。
+字体与图标的许可原文另随后台构建发布在 /console/licenses/（源文件在 console/public/licenses/）。
+
+1. Geist 1.800 与 Geist Mono 1.701（Vercel）
+   Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git)
+   许可：SIL Open Font License 1.1，全文见本文件末尾；没有保留字体名。
+   来源（google/fonts 的固定提交，sha256 钉在 scripts/fonts/build.ts）：
+     https://raw.githubusercontent.com/google/fonts/9e25e2ba265e5298f70f6182dd4e8a3ebf1b9123/ofl/geist/Geist%5Bwght%5D.ttf
+     https://raw.githubusercontent.com/google/fonts/9e25e2ba265e5298f70f6182dd4e8a3ebf1b9123/ofl/geistmono/GeistMono%5Bwght%5D.ttf
+   仓库里是由 scripts/fonts/build.ts 切出的子集 console/src/fonts/geist-ui.woff2、geist-mono-ui.woff2，
+   沿用原家族名，字体内的版权与许可记录保持原样。
+
+2. 思源黑体 Noto Sans SC 2.004（Adobe、Google）
+   Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'
+   许可：SIL Open Font License 1.1，全文见本文件末尾；保留字体名只有「Source」，本项目不使用这个名字。
+   来源：https://raw.githubusercontent.com/google/fonts/9e25e2ba265e5298f70f6182dd4e8a3ebf1b9123/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf
+   仓库里是由 scripts/fonts/build.ts 切出的子集 console/src/fonts/noto-sans-sc-ui.woff2，沿用原家族名。
+   其余的字来自 npm 依赖 @fontsource-variable/noto-sans-sc 5.3.0（OFL-1.1）的分片，构建时打进产物，不在仓库里。
+
+3. Lucide 图标：经 npm 依赖 lucide-react 1.48.0 引入（console-ux plan 第 2.2 步起，后台外壳的图标），
+   ISC 许可（其中取自 Feather 的图标为 MIT）。许可原文按 lucide 的 tag 1.48.0 放在
+   console/public/licenses/lucide-ISC.txt，与包里的 LICENSE 逐字节相同；换版本时同步换这份原文和它的 sha256。
+
+以下是 SIL Open Font License 1.1 全文（上面两款字体共用）：
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded, 
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.

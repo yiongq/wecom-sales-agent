@@ -1,0 +1,166 @@
+{
+  "materials": [
+    {
+      "id": "m-marcopolo-800",
+      "name": "马可波罗 800×800 抛釉砖",
+      "category": "瓷砖",
+      "brand": "马可波罗",
+      "origin": "广东东莞",
+      "specs": ["800×800"],
+      "priceUnit": "㎡",
+      "unitPrice": 168,
+      "warrantyYears": 5,
+      "ecoGrade": "E0级"
+    },
+    {
+      "id": "m-daziran-3c",
+      "name": "大自然 三层实木复合地板",
+      "category": "地板",
+      "brand": "大自然",
+      "origin": "广东佛山",
+      "specs": ["1210×165×15", "910×125×15"],
+      "priceUnit": "㎡",
+      "unitPrice": 298,
+      "warrantyYears": 10
+    },
+    {
+      "id": "m-oupai-cab",
+      "name": "欧派 整体橱柜",
+      "category": "橱柜",
+      "brand": "欧派",
+      "origin": "广东广州",
+      "specs": [],
+      "priceUnit": "延米",
+      "unitPrice": 2680,
+      "warrantyYears": 5,
+      "ecoGrade": "ENF级"
+    },
+    {
+      "id": "m-jianpai-bath",
+      "name": "箭牌 卫浴套装",
+      "category": "卫浴",
+      "brand": "箭牌",
+      "origin": "广东佛山",
+      "specs": ["坑距305", "坑距400", "坑距350"],
+      "priceUnit": "套",
+      "unitPrice": 5980,
+      "warrantyYears": 3
+    }
+  ],
+  "packages": [
+    {
+      "id": "p-nuanmu-2r",
+      "title": "暖木 · 两居全包经典版",
+      "pricePerSqm": 1280,
+      "minArea": 60,
+      "houseTypes": ["两居", "三居"],
+      "styles": ["原木", "奶油"],
+      "startMonths": "3月-6月、9月-11月",
+      "duration": 75,
+      "demolition": true,
+      "softFurnishing": false,
+      "materials": ["m-marcopolo-800", "m-daziran-3c", "m-oupai-cab", "m-jianpai-bath"],
+      "nodes": [
+        { "name": "拆改", "days": 5, "checkpoints": "拆改完工后按验收单逐项签字" },
+        { "name": "水电", "days": 10, "checkpoints": "水电完工后按验收单逐项签字" },
+        { "name": "泥瓦", "days": 15, "checkpoints": "泥瓦完工后按验收单逐项签字", "materials": ["m-marcopolo-800"] },
+        { "name": "木作", "days": 12, "checkpoints": "木作完工后按验收单逐项签字" },
+        { "name": "油漆", "days": 10, "checkpoints": "油漆完工后按验收单逐项签字" },
+        { "name": "安装", "days": 8, "checkpoints": "安装完工后按验收单逐项签字" },
+        { "name": "保洁验收", "days": 3, "checkpoints": "保洁验收完工后按验收单逐项签字" }
+      ],
+      "highlights": ["原木色全屋定制", "水电终身保修"]
+    },
+    {
+      "id": "p-naiyou-3r",
+      "title": "奶油 · 三居全包进阶版",
+      "pricePerSqm": 1580,
+      "minArea": 90,
+      "houseTypes": ["三居", "四居及以上"],
+      "styles": ["原木", "奶油"],
+      "startMonths": "3月-5月、9月-11月",
+      "duration": 90,
+      "demolition": true,
+      "softFurnishing": true,
+      "materials": ["m-marcopolo-800", "m-daziran-3c", "m-oupai-cab", "m-jianpai-bath"],
+      "nodes": [
+        { "name": "拆改", "days": 5, "checkpoints": "拆改完工后按验收单逐项签字" },
+        { "name": "水电", "days": 10, "checkpoints": "水电完工后按验收单逐项签字" },
+        { "name": "泥瓦", "days": 15, "checkpoints": "泥瓦完工后按验收单逐项签字", "materials": ["m-marcopolo-800"] },
+        { "name": "木作", "days": 12, "checkpoints": "木作完工后按验收单逐项签字" },
+        { "name": "油漆", "days": 10, "checkpoints": "油漆完工后按验收单逐项签字" },
+        { "name": "安装", "days": 8, "checkpoints": "安装完工后按验收单逐项签字" },
+        { "name": "保洁验收", "days": 3, "checkpoints": "保洁验收完工后按验收单逐项签字" }
+      ],
+      "highlights": ["原木色全屋定制", "水电终身保修"]
+    },
+    {
+      "id": "p-xinzhongshi-flat",
+      "title": "新中式 · 大平层定制版",
+      "pricePerSqm": 2680,
+      "minArea": 140,
+      "houseTypes": ["四居及以上", "别墅"],
+      "styles": ["原木", "奶油"],
+      "startMonths": "全年",
+      "duration": 120,
+      "demolition": true,
+      "softFurnishing": true,
+      "materials": ["m-marcopolo-800", "m-daziran-3c", "m-oupai-cab", "m-jianpai-bath"],
+      "nodes": [
+        { "name": "拆改", "days": 5, "checkpoints": "拆改完工后按验收单逐项签字" },
+        { "name": "水电", "days": 10, "checkpoints": "水电完工后按验收单逐项签字" },
+        { "name": "泥瓦", "days": 15, "checkpoints": "泥瓦完工后按验收单逐项签字", "materials": ["m-marcopolo-800"] },
+        { "name": "木作", "days": 12, "checkpoints": "木作完工后按验收单逐项签字" },
+        { "name": "油漆", "days": 10, "checkpoints": "油漆完工后按验收单逐项签字" },
+        { "name": "安装", "days": 8, "checkpoints": "安装完工后按验收单逐项签字" },
+        { "name": "保洁验收", "days": 3, "checkpoints": "保洁验收完工后按验收单逐项签字" }
+      ],
+      "highlights": ["原木色全屋定制", "水电终身保修"]
+    },
+    {
+      "id": "p-jijian-1r",
+      "title": "极简 · 一居焕新版",
+      "pricePerSqm": 980,
+      "minArea": 35,
+      "houseTypes": ["一居"],
+      "styles": ["原木", "奶油"],
+      "startMonths": "全年",
+      "duration": 45,
+      "demolition": false,
+      "softFurnishing": false,
+      "materials": ["m-marcopolo-800", "m-daziran-3c", "m-oupai-cab", "m-jianpai-bath"],
+      "nodes": [
+        { "name": "拆改", "days": 5, "checkpoints": "拆改完工后按验收单逐项签字" },
+        { "name": "水电", "days": 10, "checkpoints": "水电完工后按验收单逐项签字" },
+        { "name": "泥瓦", "days": 15, "checkpoints": "泥瓦完工后按验收单逐项签字", "materials": ["m-marcopolo-800"] },
+        { "name": "木作", "days": 12, "checkpoints": "木作完工后按验收单逐项签字" },
+        { "name": "油漆", "days": 10, "checkpoints": "油漆完工后按验收单逐项签字" },
+        { "name": "安装", "days": 8, "checkpoints": "安装完工后按验收单逐项签字" },
+        { "name": "保洁验收", "days": 3, "checkpoints": "保洁验收完工后按验收单逐项签字" }
+      ],
+      "highlights": ["原木色全屋定制", "水电终身保修"]
+    },
+    {
+      "id": "p-jiufang-part",
+      "title": "旧房翻新 · 局部改造包",
+      "pricePerSqm": 860,
+      "minArea": 20,
+      "houseTypes": ["两居", "三居"],
+      "styles": ["原木", "奶油"],
+      "startMonths": "3月-11月",
+      "duration": 30,
+      "demolition": true,
+      "materials": ["m-marcopolo-800", "m-daziran-3c", "m-oupai-cab", "m-jianpai-bath"],
+      "nodes": [
+        { "name": "拆改", "days": 5, "checkpoints": "拆改完工后按验收单逐项签字" },
+        { "name": "水电", "days": 10, "checkpoints": "水电完工后按验收单逐项签字" },
+        { "name": "泥瓦", "days": 15, "checkpoints": "泥瓦完工后按验收单逐项签字", "materials": ["m-marcopolo-800"] },
+        { "name": "木作", "days": 12, "checkpoints": "木作完工后按验收单逐项签字" },
+        { "name": "油漆", "days": 10, "checkpoints": "油漆完工后按验收单逐项签字" },
+        { "name": "安装", "days": 8, "checkpoints": "安装完工后按验收单逐项签字" },
+        { "name": "保洁验收", "days": 3, "checkpoints": "保洁验收完工后按验收单逐项签字" }
+      ],
+      "highlights": ["原木色全屋定制", "水电终身保修"]
+    }
+  ]
+}

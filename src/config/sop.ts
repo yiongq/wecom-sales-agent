@@ -38,7 +38,7 @@ import { assertConfigWritable, configRuntime, reloadFromDb, replacePublishedSop,
 
 export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
 
-/** 草稿发布时 rebase 撞上了同一节：→ 409，带当前发布版本的可编辑节，界面据此提示 */
+/** 草稿发布时 rebase 撞上了同一节（或合并保存时缺了撞上的节）：→ 409，带当前发布版本的可编辑节，界面据此提示 */
 export class SopConflictError extends Error {
   constructor(
     readonly keys: string[],
@@ -227,11 +227,17 @@ export async function getSopVersion(ctx: TenantCtx, id: string): Promise<SopVers
 
 // ---------------- 草稿 ----------------
 
-/** 没有草稿时，以 basedOn 新建一份（basedOn 必须是当前已发布版本，rev 传 null）；已有草稿时 rev 必须相等。edits 只能点名可编辑节 */
+/**
+ * 没有草稿时，以 basedOn 新建一份（basedOn 必须是当前已发布版本，rev 传 null）；已有草稿时 rev 必须相等。edits 只能点名可编辑节。
+ * rebaseOnto（后台 UX spec「接口改动」，合并冲突用）：只对已有的草稿有效，必须是当前发布版本的 id。草稿按发布时同一个三方 rebase
+ * （基线是草稿的 based_on、上游是当前发布版本）并进上游的改动，撞上的节都要在 edits 里（edits 就是合并的结果），
+ * 存下来的节 = rebase 结果再应用 edits，based_on 换成 rebaseOnto。草稿保存不记审计，这里也不记
+ */
 export async function saveSopDraft(
   ctx: TenantCtx,
-  input: { basedOn: string; rev: number | null; edits: readonly { key: string; body: string }[] },
+  input: { basedOn: string; rev: number | null; edits: readonly { key: string; body: string }[]; rebaseOnto?: string },
 ): Promise<SopVersion> {
+  if (input.rev === null && input.rebaseOnto !== undefined) throw new SopInputError('没有草稿，不需要合并');
   const keys = input.edits.map((e) => e.key);
   for (const key of keys) {
     const spec = TRAVEL_SOP_SECTIONS.find((s) => s.key === key);
@@ -266,6 +272,21 @@ export async function saveSopDraft(
         return toVersion(row);
       }
       if (input.rev === null || draft.rev !== input.rev) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
+      if (input.rebaseOnto !== undefined) {
+        const pub = await readPublishedSop(tx);
+        if (!pub || pub.id !== input.rebaseOnto) throw new SopRevConflictError('线上又有新版本，刷新后重来');
+        const base = draft.basedOn ? await readVersionById(tx, draft.basedOn) : null;
+        const r = rebase(base?.sections ?? pub.sections, pub.sections, draft.sections);
+        // 撞上的节没给合并结果：形状同发布冲突，current 只带缺的这几节的线上正文
+        const missing = r.conflicts.filter((k) => !keys.includes(k));
+        if (missing.length) {
+          const online = editableOf(mergeWithImage(pub.sections, rt.imageSections)).filter((s) => missing.includes(s.key));
+          throw new SopConflictError(missing, online);
+        }
+        const row = await updateDraftSections(tx, draft.id, draft.rev, apply(r.sections), pub.id);
+        if (!row) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
+        return toVersion(row);
+      }
       const row = await updateDraftSections(tx, draft.id, draft.rev, apply(draft.sections));
       if (!row) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
       return toVersion(row);

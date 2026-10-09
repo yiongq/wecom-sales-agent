@@ -1,91 +1,432 @@
-// 内存 Map + JSON 落盘（var/sessions.json、var/orders.json）。
-// 写入防抖 200ms + 原子写（tmp+rename）；进程退出时同步 flush。demo 规模无需数据库。
-// 注意：数据权威在本进程内存，多副本部署会脑裂——本项目按单实例设计。
+// 会话存储门面（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）。
+// 内存里的两张 Map 是本进程的权威，getSession / getOrder / saveSession 都是同步的；持久化交给后端：
+// 文件存储是 var/sessions.json、var/orders.json 的整文件重写（src/store/file-backend.ts）；db 存储（SESSION_STORE=db）
+// 另由 PG 后端管真实会话，demo 类会话仍走文件（R6）。
+// 导入期行为与存储模式无关（R3）：读 JSON、探针、exit 钩子、信号接线（src/shutdown.ts）、保鲜与清理定时器；
+// db 存储另由 boot() 在 initConfig 之后调 initSessionStore。
+// 注意：数据权威在本进程内存，多副本部署会脑裂——本项目按单实例设计（01 的租户锁拒绝第二个进程）。
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
+import { configMode, configRuntime, tenantLockTaken } from './config/source.js';
+import { withTenant, type Db, type Tx } from './db/client.js';
+import { writeAuditAs, type AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
+import { convLabel, setConvRefResolver } from './log.js';
 import { profile } from './profile.js';
-import type { Session, Order } from './types.js';
+import { shortIdOf } from './shared/conversation.js';
+import { gracefulExit, onShutdown } from './shutdown.js';
+import {
+  SessionStoreStartupError,
+  StoreLaggingError,
+  type SessionStoreMode,
+  type StoreBackend,
+  type StoreHealth,
+} from './store/backend.js';
+import { onCommitted, onHandoffUnsaved, type DomainEvent, type HandoffStartedEvent } from './store/events.js';
+import { createFileBackend } from './store/file-backend.js';
+import {
+  JobsTxRefused,
+  openPgBackend,
+  type AuditActor,
+  type ConsentItem,
+  type JobOp,
+  type PgBackend,
+  type PgStoreStats,
+  type PurgeHold,
+  type TelemetryRows,
+} from './store/pg-backend.js';
+// isDemoClassId 与标记文件名在纯模块里：第 6 步的命令行要用，依赖规则不许它们 import store.ts
+import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
+import { linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
+import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
+import type { ChatMessage, MessageAuthor, Session, Order } from './types.js';
+
+export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
+export {
+  JobsTxRefused,
+  SessionStoreStartupError,
+  StoreLaggingError,
+  onCommitted,
+  onHandoffUnsaved,
+  seqOf,
+  noteWindowReset,
+  isDemoClassId,
+  SESSIONS_IN_DB_MARKER,
+  linkTurn,
+  turnIdOf,
+  windowStartOf,
+};
+export type { AuditActor, ConsentItem, DomainEvent, HandoffStartedEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
+/** 一行发送账本（落库的形状）：src/quota 经这里取，不直接 import src/db/** */
+export type OutboundRow = NonNullable<TelemetryRows['outbound']>[number];
+/** 回执改库的结果（markOutboundFailedInDb） */
+export type OutboundFailResult = { ok: true; sessionId: string | null } | { ok: false };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
 export const storeEvents = new EventEmitter();
 storeEvents.setMaxListeners(100);
 
-// VAR_DIR 可用 env 覆盖（selftest 指到临时目录，避免污染真实数据）
-const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
-const SESSIONS_FILE = path.join(VAR_DIR, 'sessions.json');
-const ORDERS_FILE = path.join(VAR_DIR, 'orders.json');
-
-const sessions = new Map<string, Session>();
-const orders = new Map<string, Order>();
-
-// 启动时恢复上次落盘的数据。损坏文件不能静默当空库——那会在下一次落盘时
-// 被空数据覆盖、损失永久化；改名备份留住现场，人工可从备份恢复。
-function loadFile<T>(file: string, target: Map<string, T>): void {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, 'utf8');
-  } catch {
-    return; // 首次运行无文件
-  }
-  try {
-    const arr = JSON.parse(raw) as T[];
-    for (const item of arr) target.set((item as { id: string }).id, item);
-  } catch (e) {
-    const backup = `${file}.corrupt-${Date.now()}`;
+/**
+ * 写库的事故（02 spec「可观测性与告警」的 store 告警，startAlerts 订阅）：conflict 是落库撞上另一写者（随后优雅停机），
+ * spill 是 drain 段结束时还有真实会话没落库、退出时要写进 spill 文件。只带会话短码与个数
+ */
+export type StoreIncident = { kind: 'conflict'; detail: string } | { kind: 'spill'; sessions: number };
+const incidentHooks = new Set<(i: StoreIncident) => void>();
+export function onStoreIncident(cb: (i: StoreIncident) => void): () => void {
+  incidentHooks.add(cb);
+  return () => incidentHooks.delete(cb);
+}
+function incident(i: StoreIncident): void {
+  for (const cb of incidentHooks) {
     try {
-      fs.renameSync(file, backup);
-      console.error(`[store] ${path.basename(file)} 解析失败，已备份到 ${backup}:`, e);
+      cb(i);
     } catch {
-      console.error(`[store] ${path.basename(file)} 解析失败且无法备份:`, e);
+      /* 订阅者出错不影响停机 */
     }
   }
 }
-loadFile<Session>(SESSIONS_FILE, sessions);
-loadFile<Order>(ORDERS_FILE, orders);
 
-// 启动即探测 VAR_DIR 可写性。典型事故：docker 绑定挂载的 var/ 归 root、容器进程是 node(1000)，
-// 落盘全部 EACCES 但服务表面正常——所有会话/订单只活在内存，重启即全丢。必须在启动时就喊出来。
-try {
-  fs.mkdirSync(VAR_DIR, { recursive: true });
-  const probe = path.join(VAR_DIR, '.write-probe');
-  fs.writeFileSync(probe, String(Date.now()));
-  fs.unlinkSync(probe);
-} catch (e) {
-  console.error(
-    `[store] ⚠️⚠️ 数据目录不可写: ${VAR_DIR} —— 会话/订单将只存在内存，进程重启即全部丢失！` +
-      '请修复目录权限（docker 部署：chown -R 1000:1000 该目录）。',
-    e,
+// VAR_DIR 可用 env 覆盖（selftest 指到临时目录，避免污染真实数据）
+const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
+
+/** 数据目录：boot 拼 initSessionStore 的依赖用，与本模块读写的是同一个 */
+export function varDir(): string {
+  return VAR_DIR;
+}
+
+const sessions = new Map<string, Session>();
+const orders = new Map<string, Order>();
+/** 被保留期清理或行权删除移出内存的会话对象（第 16 步）：拿着旧对象的 saveSession 记一行日志、不执行 */
+const tombstoned = new WeakSet<Session>();
+
+/** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
+let pgBackend: PgBackend | null = null;
+
+const fileBackend = createFileBackend({
+  varDir: VAR_DIR,
+  sessions,
+  orders,
+  owns: (id) => !pgBackend || isDemoClassId(id),
+  // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
+  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
+  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id),
+  isReal: (id) => !isDemoClassId(id),
+  afterPersist: () => storeEvents.emit('change'),
+});
+fileBackend.load();
+fileBackend.probe();
+
+/** 这个会话的改动交给哪个后端：db 存储下真实会话走 PG，其余（demo 类、文件存储）走文件 */
+const backendFor = (sessionId: string): StoreBackend => (pgBackend && !isDemoClassId(sessionId) ? pgBackend : fileBackend);
+/** 只管内存里有的会话的 PG 后端：db 存储下的真实会话；孤儿订单（所属会话不在内存里）与 demo 类归文件后端 */
+const pgFor = (sessionId: string): PgBackend | null =>
+  pgBackend && !isDemoClassId(sessionId) && sessions.has(sessionId) ? pgBackend : null;
+
+let changeTimer: NodeJS.Timeout | null = null;
+/**
+ * db 存储下真实会话的提交：旧的 /api/admin/stream 照样收到 storeEvents 的 change（与文件后端一样约 200ms 合并一次），
+ * 只在提交之后（不变量 10）。文件存储下 change 仍由文件后端在每次去抖落盘之后发
+ */
+function committedChange(): void {
+  if (changeTimer) return;
+  changeTimer = setTimeout(() => {
+    changeTimer = null;
+    storeEvents.emit('change');
+  }, 200);
+  changeTimer.unref();
+}
+
+/** 当前装着的会话存储：装上 PG 后端之后是 'db'，否则 'file'。SESSION_STORE 的取值由 01 的 initConfigFromEnv 校验 */
+export function sessionStoreMode(): SessionStoreMode {
+  return pgBackend ? 'db' : 'file';
+}
+
+export interface SessionStoreDeps {
+  db: Db;
+  tenantId: string;
+  /** 补写标记文件时记进 tenant（与 import-sessions 写的同一种内容） */
+  tenantSlug: string;
+  varDir: string;
+}
+
+/**
+ * 导入期已经按文件后端读好 JSON（两种模式相同，R3）。
+ * deps 为 null（文件存储）：var/ 下有标记文件时以 sessions_in_db reject，否则立即 resolve。
+ * deps 不为 null（db 存储）：分批预载真实会话与订单（R2）→ 校验（每个会话的 last_seq 与窗口一致、订单引用的会话都在、
+ * 库里没有 demo 类）→ 回放 spill 文件 → 装上 PG 后端 → 登记 drain 与 late 两段停机钩子。
+ * 预载之前先查 JSON：sessions.json 里有真实会话（不是 demo 类）就以 real_in_json reject、JSON 原样不动（db 存储下 JSON
+ * 只装 demo 类，R6；不拒绝的话，没碰过的真实会话会在下一次 demo 落盘时从 sessions.json 消失，库里也没有）。
+ * 装上之后 var/ 里没有标记文件就补写一份（没经过 import-sessions、直接以 db 存储起的实例）。
+ * 任何一步失败都以 SessionStoreStartupError reject，不留半装载状态，绝不回落到文件存储。
+ */
+export async function initSessionStore(deps: SessionStoreDeps | null): Promise<void> {
+  if (deps === null) {
+    if (fs.existsSync(path.join(VAR_DIR, SESSIONS_IN_DB_MARKER))) {
+      throw new SessionStoreStartupError(
+        'sessions_in_db',
+        `${VAR_DIR} 下有 ${SESSIONS_IN_DB_MARKER}：真实会话在库里，要切回文件存储先跑 export-sessions`,
+      );
+    }
+    return;
+  }
+  // 装过一次再调：会话已经由库管着（只可能是调用方调了两次，自测与 eval 才会碰到）
+  if (pgBackend) throw new SessionStoreStartupError('sessions_in_db', 'PG 会话存储已经装上了，initSessionStore 只能调一次');
+  const real = [...sessions.keys()].filter((id) => !isDemoClassId(id));
+  if (real.length) {
+    const shown = real.slice(0, 5).map((id) => shortIdOf(id) || '?');
+    throw new SessionStoreStartupError(
+      'real_in_json',
+      `sessions.json 里有 ${real.length} 个真实会话（${shown.join('、')}${real.length > shown.length ? ' 等' : ''}）：` +
+        'db 存储下 JSON 只装 demo 类，先跑 import-sessions 把它们导进库',
+    );
+  }
+  const backend = await openPgBackend({
+    ...deps,
+    sessions,
+    orders,
+    onConflict: (detail) => {
+      incident({ kind: 'conflict', detail });
+      gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`);
+    },
+    writable: () => !tenantLockTaken(),
+    afterCommit: committedChange,
+    ordersTaken: (ids) => fileBackend.markChanged(ids),
+  });
+  backend.install();
+  pgBackend = backend;
+  ensureMarker(deps);
+  onShutdown(
+    async ({ deadline }) => {
+      const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
+      const real = undrained.filter((id) => !isDemoClassId(id));
+      if (real.length) {
+        console.error(
+          `[store] drain 段结束时还有 ${real.length} 个会话没落库（${real.map((id) => shortIdOf(id)).join('、')}），退出时写进 spill`,
+        );
+        incident({ kind: 'spill', sessions: real.length });
+      }
+    },
+    { phase: 'drain' },
   );
+  onShutdown(() => backend.close(), { phase: 'late' });
+  // 用量：每 30 秒与 drain 段累加进 usage_daily（spec「逐轮 trace、护栏事件与用量」），不经会话写队列。已冲突、租户锁在别人手里时不写
+  startUsageDaily((deltas) => backend.writeUsage(deltas));
+  onShutdown(() => flushUsageDaily(), { phase: 'drain' });
 }
 
-// 原子写：先写 .tmp 再 rename（同一文件系统内 rename 原子），崩溃不会留半截文件
-function writeAtomic(file: string, data: string): void {
+/**
+ * db 存储装上之后，数据目录里没有标记文件就补写一份（{ tenant, at, sessions: 预载的真实会话数 }，先写临时文件再改名）：
+ * 没经过 import-sessions、一上来就以 db 存储起的实例（新实例、新租户）也有它，之后去掉 SESSION_STORE 时文件存储照样以
+ * sessions_in_db 拒绝（不变量 15），deploy.sh 的回滚前检查也认得出。写不进去只记一行错误、照常启动：db 存储本身是好的，
+ * 回滚前检查另外看 .env 的 SESSION_STORE，下次启动再补
+ */
+function ensureMarker(deps: SessionStoreDeps): void {
+  const file = path.join(deps.varDir, SESSIONS_IN_DB_MARKER);
+  if (fs.existsSync(file)) return;
+  const real = [...sessions.keys()].filter((id) => !isDemoClassId(id)).length;
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, file);
-}
-
-function persistNow(): void {
   try {
-    fs.mkdirSync(VAR_DIR, { recursive: true });
-    writeAtomic(SESSIONS_FILE, JSON.stringify([...sessions.values()], null, 2));
-    writeAtomic(ORDERS_FILE, JSON.stringify([...orders.values()], null, 2));
+    fs.writeFileSync(tmp, `${JSON.stringify({ tenant: deps.tenantSlug, at: new Date().toISOString(), sessions: real })}\n`);
+    fs.renameSync(tmp, file);
   } catch (e) {
-    console.error('[store] 落盘失败:', e);
+    console.error(
+      `[store] ⚠️ 补写 ${SESSIONS_IN_DB_MARKER} 失败（${(e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.name : 'unknown')}）：` +
+        '去掉 SESSION_STORE=db 之前先跑 export-sessions',
+    );
   }
 }
 
-let saveTimer: NodeJS.Timeout | null = null;
-function schedulePersist(): void {
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    persistNow();
-    storeEvents.emit('change'); // 每次落盘（约 200ms 去抖后）通知一次
-  }, 200);
+/** 等这个会话当前的改动落库（db）或落盘（file）。超时以 StoreLaggingError reject，改动仍在写队列里 */
+export function flushSession(id: string, opts?: { timeoutMs?: number }): Promise<void> {
+  return backendFor(id).flush(id, opts);
+}
+
+/** drain 阶段调用：排空所有写队列；超时返回还没落库的会话 id（日志只写短码） */
+export async function drainStore(timeoutMs: number): Promise<{ undrained: string[] }> {
+  const parts = await Promise.all([fileBackend, ...(pgBackend ? [pgBackend] : [])].map((b) => b.drain(timeoutMs)));
+  return { undrained: parts.flatMap((p) => p.undrained) };
+}
+
+/** 改动随这个会话的下一次落库提交；提交后才交给 onCommitted 的订阅者 */
+export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
+  (pgFor(sessionId) ?? fileBackend).emitAfterCommit(sessionId, ev);
+}
+
+// ---------------- 排进「这个会话下一次落库」的附带行 ----------------
+// db 存储的真实会话随它的下一次落库提交（spec「identity map 与写入」第 5、6 步）。demo 类会话的 trace、账本、同意记录只在内存（R6），
+// 文件存储下这几类也只在内存（R16）；审计例外，见 queueAudit。第 5 步只有订单与审计真有生产者，其余的生产者在第 9、10、12、16 步
+
+/**
+ * 一行审计（带操作者与 IP）：db 存储的真实会话随它的下一次落库写；db 存储的 demo 类会话（以及内存里没有的会话）单独一个短事务（R6）。
+ * 文件存储（02 第 13 步定）：DB 配置模式下同样单独一个短事务（与 db 存储的 demo 类同一个做法，只试一次、失败记一行）；
+ * 文件配置模式没有审计表，不写
+ */
+export function queueAudit(sessionId: string, actor: AuditActor, entry: AuditEntry): void {
+  const pg = pgFor(sessionId);
+  if (pg) pg.queueAudit(sessionId, { actor, entry });
+  else if (pgBackend) void pgBackend.writeStandaloneAudit({ actor, entry });
+  else if (configMode() === 'db') void writeFileModeAudit(actor, entry);
+}
+
+/** 文件存储下审计的短事务在空的异步上下文里起：调用方在 withTenant 回调里排审计也不会嵌套（同 PG 后端的写队列） */
+const detachedAudit = AsyncLocalStorage.snapshot();
+async function writeFileModeAudit(actor: AuditActor, entry: AuditEntry): Promise<void> {
+  try {
+    const { db, tenantId } = configRuntime();
+    await detachedAudit(() => withTenant(db, { tenantId, actor }, (tx) => writeAuditAs(tx, actor, entry)));
+  } catch (e) {
+    const code = (e as { code?: unknown }).code;
+    console.error(`[store] 审计没写进去（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}）：${entry.action}`);
+  }
+}
+
+/**
+ * 写库跟不上（02 spec「接手、人工回复与交还」）：这个会话所在的后端积压超过 5 秒、已冲突，或这个会话因数据类错误停写（poisoned）。
+ * 人工回复与订单动作在改动之前查它，是真就 503 store_lagging、什么都不改
+ */
+export function storeLagging(sessionId: string): boolean {
+  const b = backendFor(sessionId);
+  const h = b.health();
+  return h.lagMs > 5000 || h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
+}
+
+/**
+ * 这个会话等提交（flushSession）失败之后，还会不会再提交（审查第 4、5 条，concurrency[0][1]）：已冲突（优雅停机，没落库的
+ * 转去 spill）或这个会话因数据类错误停写（poisoned）就不会再提交；与 storeLagging 不同之处是不看 lagMs——
+ * 只是还没到 5 秒、或刚好卡在重试退避里，仍可能提交，不算「不会再提交」。
+ * 等提交之后的分支（人工回复、付款确认）据此区分「真超时，照发，persisted:false」与「不会再提交，不发，503」
+ */
+export function storeUnrecoverable(sessionId: string): boolean {
+  const b = backendFor(sessionId);
+  const h = b.health();
+  return h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
+}
+/**
+ * 这个会话有没有未落库的改动，或正在落库（第 16 步保留期清理据此跳过有动静的会话：库里读到的候选可能已经过期）。
+ * 文件存储、demo 类、内存里没有这个会话恒为 false
+ */
+export function pendingWrite(sessionId: string): boolean {
+  return pgFor(sessionId)?.hasPendingWrite(sessionId) ?? false;
+}
+/**
+ * 保留期清理专用（第 16 步审查第二轮，spec「保留期」「逐个在它的写队列上处理」）：挂起这个会话的写队列、
+ * 原子地核过没有动静（与 pendingWrite 同一套判断，但不留 TOCTOU 的缝——判断与挂起是一次调用）。
+ * 返回 null 时调用方当「有动静」跳过这个候选；拿到句柄之后见 `PurgeHold` 的文档注释。文件存储、demo 类恒为一个空句柄
+ */
+export function holdForPurge(sessionId: string): PurgeHold | null {
+  return pgFor(sessionId)?.holdForPurge(sessionId) ?? { stillClean: () => true, release: () => {} };
+}
+/**
+ * 保留期清理成功删除一个会话之后，同一个 tick 把它从 identity map 与 PG 后端的写队列簿记里摘掉（第 16 步，`pg-backend` 的
+ * `forget(id)`）：否则这个会话的下一次落库会发现行不在了，按 `StoreConflictError` 处理、整个进程优雅停机。
+ * 旧的 Session 对象进墓碑：之后拿着它的 `saveSession` 只记一行日志，不执行；客户再来时 `getSession` 建的是新对象。
+ * 它名下的订单（`Order.sessionId` 一直要求是 string，不改成可选）也一并从内存订单表摘掉——库里那一行按 spec 保留
+ * （清除函数把 session_id 置空、保留订单行作成交记录），但内存里不留一个 sessionId 已经找不到会话的订单；
+ * 后台 `/orders`、成交额 KPI 都是从 identity map 算的，清理之后自然看不到这张单了（与种子/访客会话清理同一种做法）
+ */
+export function forgetSession(sessionId: string): void {
+  const s = sessions.get(sessionId);
+  if (s) {
+    tombstoned.add(s);
+    for (const oid of s.orderIds ?? []) orders.delete(oid);
+  }
+  sessions.delete(sessionId);
+  pgFor(sessionId)?.forget(sessionId);
+  forgetSessionProbe?.(sessionId);
+}
+/** 仅供自测：forgetSession 每次真的摘掉一个会话时同步调一次，见 __storeTest.setForgetSessionProbe */
+let forgetSessionProbe: ((sessionId: string) => void) | null = null;
+/** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
+export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
+  pgFor(sessionId)?.queueJobs(sessionId, ops);
+}
+/**
+ * 给这个会话还没提交的 enqueue（dedupeKey 相同的）的 payload 并进几个字段，返回改了几个（第 14 步：unsaved 通知发出之后给立即的那个
+ * handoff_notify 标上 unsavedSent，提交或经 spill 回放之后执行到它时不补发）。文件存储与 demo 类恒为 0
+ */
+export function patchQueuedJob(sessionId: string, dedupeKey: string, patch: Record<string, unknown>): number {
+  return pgFor(sessionId)?.patchQueuedJob(sessionId, dedupeKey, patch) ?? 0;
+}
+/**
+ * 经 queueJobs 排的、带 report 的状态变化已随这个会话的落库提交、而且改中了（取走，只报一次）。跟进在 flushSession 之后据它判断
+ * running → sending 是不是本次认领的那一行：没改中（别的认领者归位、重新认领过）就不推送。文件存储与 demo 类恒为 false
+ */
+export function jobOpApplied(sessionId: string, jobId: string): boolean {
+  return pgFor(sessionId)?.jobOpApplied(sessionId, jobId) ?? false;
+}
+/** 同意记录（第 16 步）：同上 */
+export function queueConsents(sessionId: string, items: readonly ConsentItem[]): void {
+  pgFor(sessionId)?.queueConsents(sessionId, items);
+}
+/** trace、护栏事件、账本行（第 9、12 步）：同上，写在存档点里，写失败只丢这几行 */
+export function queueTelemetry(sessionId: string, rows: TelemetryRows): void {
+  pgFor(sessionId)?.queueTelemetry(sessionId, rows);
+}
+/**
+ * 会话行的 ref（随机 uuid，不含客户标识；02 spec「数据库」conversations.ref）：db 存储下的真实会话有，新会话在第一次落库之前也有
+ * （建写队列时生成、插入时写进去）；文件存储与 demo 类会话为 null，调用方退回短码（日志的 conv 同一口径，R24）
+ */
+export function conversationRef(sessionId: string): string | null {
+  return pgFor(sessionId)?.refOf(sessionId) ?? null;
+}
+// 日志的 conv（R24）：db 存储的真实会话写 ref，其余由 log.ts 退回短码
+setConvRefResolver(conversationRef);
+/**
+ * 任务表的单独短事务（第 10 步：认领、改状态、启动与停机时的归位、与会话无关的排程）：只在 db 存储下有，不经会话写队列。
+ * 文件存储下以 JobsTxRefused('closed') reject（文件存储没有任务表，跟进由扫描器驱动）
+ */
+export function withJobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return pgBackend ? pgBackend.jobsTx(fn) : Promise.reject(new JobsTxRefused('closed'));
+}
+
+/** saveSession 之后的订阅者：只为 db 存储的真实会话调（排、取消跟进，src/jobs/followup.ts）。与 saveSession 同一段同步代码，排出的附带行进同一次落库 */
+const saveHooks = new Set<(s: Session) => void>();
+export function onSessionSaved(cb: (s: Session) => void): () => void {
+  saveHooks.add(cb);
+  return () => saveHooks.delete(cb);
+}
+
+/** 企微去重集合（第 12 步用）：db 存储下是预载的最近 7 天带 msgid 的客户消息，加上本进程记下的；文件存储下为空 */
+export function recentMsgids(sessionId: string): ReadonlySet<string> {
+  return pgFor(sessionId)?.recentMsgids(sessionId) ?? new Set();
+}
+
+// ---------------- 发送账本（第 12 步，src/quota/ledger.ts）的入口 ----------------
+// 账本在内存里。db 存储下：真实会话的账本行经 queueTelemetry 随会话的下一次落库写；下面两个是不经会话写队列的短事务。
+// demo 类与文件存储下只在内存
+
+/** 预载的账本行（各会话最后一条客户消息之后的），按会话分组；取走一次。文件存储下为空 */
+export function takePreloadedOutbound(): Map<string, OutboundRow[]> {
+  return pgBackend?.takePreloadedOutbound() ?? new Map();
+}
+/** 还没有会话的账本行（老客户补发的欢迎语）：db 存储下单独一个短事务，失败记一行；文件存储下什么都不做 */
+export function writeStandaloneOutbound(rows: readonly OutboundRow[]): Promise<void> {
+  return pgBackend ? pgBackend.writeStandaloneOutbound(rows) : Promise.resolve();
+}
+/**
+ * msg_send_fail 的状态更新：db 存储下单独一个短事务。写成了是 ok，带那一行的会话 id（没找到、已是 failed 为 null）；没写成（库报错、
+ * 冲突、late 段之后、租户锁在别人手里）不是 ok，调用方据此再试。文件存储下恒为 ok、会话 id 为 null
+ */
+export function markOutboundFailedInDb(channelMsgid: string, failType: number): Promise<OutboundFailResult> {
+  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType) : Promise.resolve({ ok: true, sessionId: null });
+}
+
+/** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
+export function storeHealth(): StoreHealth {
+  return (pgBackend ?? fileBackend).health();
+}
+
+/**
+ * 告警读的两个计数（02 spec 的 store 告警）：丢掉的遥测批次（存档点里写失败的、poisoned 会话丢掉的），启动时回放失败、改名 .failed
+ * 的 spill 文件数。只在 db 存储下有，文件存储下为 null
+ */
+export function storeCounters(): { telemetryDropped: number; replayFailedFiles: number } | null {
+  if (!pgBackend) return null;
+  const s = pgBackend.stats();
+  return { telemetryDropped: s.telemetryDropped, replayFailedFiles: s.replayFailedFiles };
 }
 
 /**
@@ -93,82 +434,14 @@ function schedulePersist(): void {
  * 记账还在去抖窗口里时进程被 SIGKILL / OOM 杀掉，重启后同一条跟进会再发一遍。
  */
 export function flushStoreNow(): void {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-  persistNow();
-  storeEvents.emit('change');
+  fileBackend.flushNow();
 }
 
-// 退出兜底：防抖窗口内的未落盘变更在进程结束前同步写出
+// 退出兜底：没落盘的变更在进程结束前同步写出（文件），没落库的真实会话写进 spill 文件（PG）
 process.on('exit', () => {
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    persistNow();
-  }
+  fileBackend.spillSync();
+  pgBackend?.spillSync();
 });
-
-// ---------------- 优雅停机 ----------------
-// 此前收到 SIGTERM 立刻 process.exit：deploy.sh 给的 `docker stop -t 10` 宽限期一秒都没用上，
-// 正在跑 LLM 的客户消息被拦腰截断——企微那条消息已记为「处理过」，重启后不会再回，客户永远等不到。
-// 现在先跑各模块注册的收尾钩子（企微：停止拉新消息、等进行中的回复发完），再退出。
-type ShutdownHook = () => unknown;
-const shutdownHooks: ShutdownHook[] = [];
-const lateHooks: ShutdownHook[] = [];
-
-/**
- * 注册停机收尾钩子。收到 SIGINT/SIGTERM 时普通钩子并发执行；{ phase: 'late' } 的钩子等普通钩子全部结束后才跑
- * （配置源的连接池与租户锁：在途的回复还要读配置，最后才能关）。总等待有上限（见下）
- */
-export function onShutdown(fn: ShutdownHook, opts: { phase?: 'late' } = {}): void {
-  (opts.phase === 'late' ? lateHooks : shutdownHooks).push(fn);
-}
-
-// 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
-// 连 'exit' 阶段的同步落盘都跑不到。留约 2s 给落盘和进程退出。
-const SHUTDOWN_TIMEOUT_MS = 8000;
-
-/** 跑完全部停机钩子，最多等 timeoutMs。返回 false 表示超时（仍有钩子没结束） */
-export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined;
-  const settle = async (hooks: ShutdownHook[]): Promise<void> => {
-    const rs = await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));
-    for (const r of rs) if (r.status === 'rejected') console.error('[store] 停机钩子异常:', r.reason);
-  };
-  const all = settle(shutdownHooks)
-    .then(() => settle(lateHooks))
-    .then(() => true);
-  const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs);
-  });
-  try {
-    return await Promise.race([all, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-let shuttingDown = false;
-
-/**
- * 优雅退出：跑完全部停机钩子（有上限）再以 code 退出。SIGTERM 走的就是这条路；配置源发现租户锁被别的进程拿走时也调它。
- * 已在退出中时再调直接退出（终端里连按 Ctrl+C 就是想马上退）
- */
-export function gracefulExit(code: number, why = `退出码 ${code}`): void {
-  if (shuttingDown) process.exit(code);
-  shuttingDown = true;
-  console.log(`[store] ${why}，等待进行中的任务收尾（最多 ${SHUTDOWN_TIMEOUT_MS / 1000}s）`);
-  void runShutdownHooks().then((ok) => {
-    if (!ok) console.error('[store] 停机等待超时，强制退出（未完成的企微消息已落盘，重启后补处理）');
-    process.exit(code);
-  });
-}
-
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`));
-}
 
 // ---------------- demo 数据保鲜 ----------------
 // 种子演示会话（id 形如 wecom:cust_B01，真实企微 external_userid 不会长这样）的时间戳
@@ -188,14 +461,21 @@ export function freshenDemoData(): void {
     s.createdAt += delta;
     s.updatedAt += delta;
     for (const m of s.messages ?? []) m.at += delta;
+    // 02 的转人工记录与接手人也是会话上的时刻，不跟着挪的话 handoff.at 会早于触发它的那句、firstHandoffAt 早于 createdAt。
+    // sentAt 只有真实企微消息才带，种子没有
+    if (s.handoff) s.handoff.at += delta;
+    if (s.firstHandoffAt != null) s.firstHandoffAt += delta;
+    if (s.assignee) s.assignee.at += delta;
   }
   for (const o of orders.values()) {
     if (DEMO_SESSION_RE.test(o.sessionId)) {
       o.createdAt += delta;
       if (o.paidAt) o.paidAt += delta;
+      // 02 第 13 步起后台能确认种子订单的价格：确认时刻同样跟着挪
+      if (o.confirmedAt != null) o.confirmedAt += delta;
     }
   }
-  schedulePersist();
+  fileBackend.markChanged(demo.map((s) => s.id));
   console.log(`[store] demo 保鲜：${demo.length} 个演示会话时间前移 ${(delta / 3_600_000).toFixed(1)} 小时`);
 }
 
@@ -235,6 +515,7 @@ function evictExcessVisitorSessions(): void {
     sessions.delete(s.id);
     for (const oid of s.orderIds ?? []) orders.delete(oid);
   }
+  fileBackend.markChanged(victims.map((s) => s.id));
   if (victims.length) {
     console.warn(`[store] 网页访客会话超过上限 ${VISITOR_SESSION_MAX}，已淘汰最旧的 ${victims.length} 个`);
   }
@@ -243,17 +524,18 @@ function evictExcessVisitorSessions(): void {
 export function pruneStaleVisitorData(): void {
   if (!PRUNE_MS) return;
   const cutoff = Date.now() - PRUNE_MS;
-  let n = 0;
+  const gone: string[] = [];
   for (const s of sessions.values()) {
     if (!VISITOR_SESSION_RE.test(s.id) || s.channel !== 'simulator') continue;
     if (s.updatedAt >= cutoff) continue;
     if (hasPaidOrder(s)) continue; // 有成交记录，保留
     sessions.delete(s.id);
     for (const oid of s.orderIds ?? []) orders.delete(oid); // 连同订单一起删，不留孤儿
-    n++;
+    gone.push(s.id);
   }
+  const n = gone.length;
   if (n) {
-    schedulePersist();
+    fileBackend.markChanged(gone);
     console.log(`[store] 已清理 ${n} 个闲置网页访客会话（阈值 ${PRUNE_MS / 3_600_000}h，仅 sim-）`);
   }
 }
@@ -284,7 +566,7 @@ export function getOrCreateSession(id: string, channel: string): Session {
     sessions.set(id, s);
     // 新建访客会话时顺手检查总量，别等到下一次整点清理才发现已经被灌爆
     if (VISITOR_SESSION_RE.test(id) && channel === 'simulator') evictExcessVisitorSessions();
-    schedulePersist();
+    backendFor(id).schedule(s);
   }
   return s;
 }
@@ -298,14 +580,83 @@ export function listSessions(): Session[] {
 }
 
 /**
- * 落盘会话。默认把 updatedAt 刷新为现在——它代表「这条会话最后一次有动静」。
+ * 落盘会话：同步给新消息分配 seq（返回时新消息已有 seq，不变量 8）、标脏并排进这个会话的写队列。
+ * 默认把 updatedAt 刷新为现在——它代表「这条会话最后一次有动静」。
  * touch=false 用于系统主动写入（如自动跟进）：跟进不该把客户的沉默时长清零，
  * 否则后台「N 小时未回应」失真、介入队列会漏掉真正该救的客户。
  */
 export function saveSession(s: Session, touch = true): void {
+  // 这个对象已经被保留期清理或行权删除摘掉（第 16 步）：库里那一行已经没了，不能再落库；日志一行、什么都不改
+  if (tombstoned.has(s)) {
+    console.log(`[store] 会话已被清理，忽略这次落库（会话 ${convLabel(s.id)}）`);
+    return;
+  }
+  const b = backendFor(s.id);
+  // db 存储下 identity map 里的对象是唯一的（不变量 3）：同 id 的另一个对象，PG 后端记一行日志、不落库，也不换掉 map 里的
+  if (b === pgBackend && !pgBackend.accepts(s)) return;
   if (touch) s.updatedAt = Date.now();
   sessions.set(s.id, s);
-  schedulePersist();
+  const unseq = unseqTail(s);
+  b.schedule(s);
+  emitSaved(s, unseq);
+  if (b !== pgBackend) return;
+  for (const cb of saveHooks) {
+    try {
+      cb(s);
+    } catch (e) {
+      console.error('[store] saveSession 的订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+    }
+  }
+}
+
+/** 消息数组尾部还没分配 seq 的消息（这次 saveSession 要分配的那一段）；畸形的旧数据（没有 messages、数组里有 null）跳过 */
+function unseqTail(s: Session): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  if (!Array.isArray(s.messages)) return out;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i];
+    if (typeof m !== 'object' || m === null) continue;
+    if (seqOf(m) !== undefined) break;
+    out.unshift(m);
+  }
+  return out;
+}
+
+/** 事件里的作者：客户、系统原样，agent 消息看 author（缺省是 AI） */
+const authorOf = (m: ChatMessage): MessageAuthor => (m.role === 'agent' ? (m.author ?? 'ai') : m.role);
+
+/**
+ * 每次 saveSession 排两类提交后的领域事件（02 第 13 步，后台的事件流与计数据此推送）：这次分到 seq 的每条消息一个 message.appended，
+ * 会话本身一个 conversation.changed。只有 id、seq 与作者，不带正文（不变量 31）。停写（poisoned）的会话不再提交，不排
+ */
+function emitSaved(s: Session, unseq: readonly ChatMessage[]): void {
+  if (pgBackend?.isPoisoned(s.id)) return;
+  for (const m of unseq) {
+    const seq = seqOf(m);
+    if (seq !== undefined) emitAfterCommit(s.id, { type: 'message.appended', id: s.id, seq, author: authorOf(m) });
+  }
+  emitAfterCommit(s.id, { type: 'conversation.changed', id: s.id });
+}
+
+/** 订单改动的提交后事件（后台事件流的 order） */
+function emitOrder(o: Order): void {
+  emitAfterCommit(o.sessionId, {
+    type: 'order.changed',
+    id: o.sessionId,
+    orderId: o.id,
+    status: o.status,
+    confirmed: o.confirmedAt != null,
+  });
+}
+
+/**
+ * 不经 createOrder / markOrderPaid / supersedeOrder 的订单改动（02 第 13 步，后台的确认价格、确认收款、取消订单，src/payment/orders.ts）：
+ * 排进订单所属会话的下一次落库，提交后发 order.changed
+ */
+export function saveOrder(o: Order): void {
+  if (orders.get(o.id) !== o) return;
+  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(o.id);
+  emitOrder(o);
 }
 
 /** 入参不含 id/createdAt/status，由 store 统一生成 */
@@ -319,7 +670,8 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   orders.set(order.id, order);
-  schedulePersist();
+  (pgFor(order.sessionId) ?? fileBackend).scheduleOrder(order.id);
+  emitOrder(order);
   return order;
 }
 
@@ -328,14 +680,19 @@ export function getOrder(id: string): Order | undefined {
 }
 
 /** 只有待付款的单能付。被新订单替代的旧单（superseded）不能再付：此前 status !== 'paid' 就置为已付，
- *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成 */
+ *  客户点开改单前那条旧链接照样付得了，一趟行程收两笔钱。调用方据返回的 status 判断付没付成。
+ *  付款时记下会话是否曾经转过人工（handoffBeforePaid，R9）：转人工的标记交还时会清，firstHandoffAt 不清。
+ *  02 之前转的人工没有 firstHandoffAt（导入不回填），付款时正在转人工中的也算转过（不变量 26） */
 export function markOrderPaid(id: string): Order | undefined {
   const o = orders.get(id);
   if (!o) return undefined;
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
-    schedulePersist();
+    const s = sessions.get(o.sessionId);
+    o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
+    (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+    emitOrder(o);
   }
   return o;
 }
@@ -346,7 +703,8 @@ export function supersedeOrder(id: string, byId: string): boolean {
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  schedulePersist();
+  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+  emitOrder(o);
   return true;
 }
 
@@ -355,19 +713,48 @@ export function supersedeOrder(id: string, byId: string): boolean {
  * 只清 session.orderIds 是不够的——后台按 orderIds 之外还会用 sessionId 反查订单，
  * 而且 GMV / 成交率是直接扫 orders 算的，留着孤儿订单会让重置后的会话
  * 仍然显示订单、仍然计入经营数据。
+ * db 存储的真实会话：库里不删，记作废（voided_at、void_reason='reset'），内存里照样移出，之后 getOrder 返回 undefined（R5）
  */
 export function deleteOrdersOfSession(sessionId: string): number {
+  const pg = pgFor(sessionId);
   let n = 0;
   for (const [id, o] of orders) {
     if (o.sessionId === sessionId) {
+      pg?.voidOrder(o, 'reset');
       orders.delete(id);
       n += 1;
     }
   }
-  if (n) schedulePersist();
+  if (n && !pg) fileBackend.markChanged([sessionId]);
   return n;
 }
 
 export function listOrders(): Order[] {
   return [...orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
 }
+
+/** 仅供自测：PG 后端的计数（落库次数、认出已提交、慢事务、丢掉的存档点批次等）；文件存储下为 null */
+export const __storeTest = {
+  pgStats(): PgStoreStats | null {
+    return pgBackend?.stats() ?? null;
+  },
+  /** db 存储下这个会话还留在内存里的遥测行数；文件存储下为 0 */
+  pgQueuedTelemetry(sessionId: string): number {
+    return pgBackend?.queuedTelemetry(sessionId) ?? 0;
+  },
+  /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
+  emitIncident(i: StoreIncident): void {
+    incident(i);
+  },
+  /**
+   * 仅供自测（第 16 步）：核保留期清理「返回 true 就在同一个 tick 里移出内存」（spec「任务表与跟进」）——
+   * 不能只看「最后不在内存里」，那样把 forgetSession 延到下一拍（比如包一层 setTimeout）也测不出来，这个窗口里
+   * 真有新消息撞上来，要么被墓碑静默吞掉，要么撞到行不存在走 StoreConflictError 优雅停机。做法：调用方在真正调用
+   * purgeOnce 之前也排一个 setTimeout(…, 0)，两边都往同一个数组里记一笔；JS 单线程下，只要 forgetSession 与它的
+   * 调用方之间没有别的 await，这次记录必定先于任何宏任务（哪怕调用方自己的 setTimeout 排得更早）——这不是猜时序，
+   * 是单线程事件循环的语言语义保证
+   */
+  setForgetSessionProbe(fn: ((sessionId: string) => void) | null): void {
+    forgetSessionProbe = fn;
+  },
+};

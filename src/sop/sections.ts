@@ -2,14 +2,20 @@
 // 纯函数，无 I/O。只认行首的「## 」；字节约定：一节的 text 从标题行开始（前言从文件开头开始），到下一个「## 」行之前为止，
 // 含结尾的换行，所以 joinSop 就是逐节相连，切开再拼回去逐字节相同。
 // 本文件的源码里特殊字符一律写成 \u 转义：编辑器或工具把它们写成原字符时，源码里就混进了本文件要拒绝的东西。
+// sectionBody、editableChars 与 SopStructureError、SopSection、SectionSpec 在 src/shared/sop-sections.ts（console 的额度条也要用），
+// 这里再导出同一份：契约检查的 instanceof 认的是同一个类。normalizeBody 的规范化本身（canonicalBody）也在那里，这里只加编码检查。
+import {
+  canonicalBody,
+  editableChars as editableCharsOf,
+  headingLine,
+  sectionBody,
+  SopStructureError,
+  toLf,
+  type SectionSpec,
+  type SopSection,
+} from '../shared/sop-sections.js';
 
-export interface SectionSpec {
-  key: string;
-  /** 标题行去掉「## 」后的原文，逐字节比较；前言为 null */
-  heading: string | null;
-  /** true：代码依赖它。01 里不可编辑，DB 模式下内容以镜像里的 data/sop.md 为准 */
-  locked: boolean;
-}
+export { sectionBody, SopStructureError, type SectionSpec, type SopSection };
 
 /** 旅行行业包的节表。顺序就是 data/sop.md 里的顺序；锁定节的「代码依赖」见 spec 的节表 */
 export const TRAVEL_SOP_SECTIONS: readonly SectionSpec[] = Object.freeze(
@@ -28,13 +34,6 @@ export const TRAVEL_SOP_SECTIONS: readonly SectionSpec[] = Object.freeze(
   ].map((s) => Object.freeze(s)),
 );
 
-export interface SopSection {
-  key: string;
-  text: string;
-}
-
-/** 标题序列与节表不符；标题后缺空行；正文为空；正文里出现行首「## 」；某节不是规范形 */
-export class SopStructureError extends Error {}
 /** BOM、\r、非 NFC、孤立代理项、\n 与 \t 以外的 C0 控制字符、U+2028 / U+2029 */
 export class SopEncodingError extends Error {}
 
@@ -93,29 +92,12 @@ export function assertSopEncoding(text: string): void {
  * 再补上结尾，非末节补 \n\n，末节补 \n。孤立代理项、控制字符和行分隔符不替换，直接拒绝
  */
 export function normalizeBody(body: string, isLast: boolean): string {
-  const lf = body.replaceAll(BOM, '').replace(/\r\n?/g, '\n');
-  // 先查不能替换的字符：后面的去行尾空白和 trimEnd 会把行尾的 U+2028 当成空白悄悄删掉
-  assertNoIrreparable(lf);
-  const text = lf
-    .normalize('NFC')
-    .replace(/[^\S\n]+$/gm, '')
-    .replace(/^\n+/, '')
-    .trimEnd();
-  const out = text + (isLast ? '\n' : '\n\n');
+  // 先查不能替换的字符：规范化里的去行尾空白和 trimEnd 会把行尾的 U+2028 当成空白悄悄删掉
+  assertNoIrreparable(toLf(body));
+  // 规范化本身在 src/shared/sop-sections.ts：话术页按同一份实时算字数
+  const out = canonicalBody(body, isLast);
   assertSopEncoding(out);
   return out;
-}
-
-function headingLine(spec: SectionSpec): string {
-  return `## ${spec.heading}\n\n`;
-}
-
-/** 正文：标题行及其后一个空行之后的部分；前言的正文就是整段 text */
-export function sectionBody(section: SopSection, spec: SectionSpec): string {
-  if (spec.heading === null) return section.text;
-  const head = headingLine(spec);
-  if (!section.text.startsWith(head)) throw new SopStructureError(`「${spec.key}」节的开头不是「## ${spec.heading}」加一个空行`);
-  return section.text.slice(head.length);
 }
 
 /** 正文不能为空，也不许出现行首「## 」：导出后再导入会多切出一节 */
@@ -203,13 +185,7 @@ export function mergeWithImage(
   });
 }
 
-/** 可编辑节正文的总长度（UTF-16 码元，即 String.length） */
+/** 可编辑节正文的总长度（UTF-16 码元，即 String.length）；节表默认是旅游包的，现有调用处不用改 */
 export function editableChars(sections: readonly SopSection[], spec: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS): number {
-  let n = 0;
-  for (const s of spec) {
-    if (s.locked) continue;
-    const section = sections.find((x) => x.key === s.key);
-    if (section) n += sectionBody(section, s).length;
-  }
-  return n;
+  return editableCharsOf(sections, spec);
 }

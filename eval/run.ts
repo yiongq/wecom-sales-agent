@@ -15,6 +15,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installJsonConsole } from '../src/log.js';
+
+// LOG_FORMAT=json（02 spec R24）：这个回放器不经 server.ts / profile-boot.ts 启动，没有它 console.* 不会被接到 pino；
+// 没设时什么都不做。放在这里好让「LOG_FORMAT=json 跑一遍 mock eval、扫描输出」这个门禁检查生效
+installJsonConsole();
 
 // 评测数据必须写进临时目录：store.ts 在模块加载时就取 VAR_DIR，静态 import 会先于
 // 这行赋值执行——所以引擎相关模块一律动态 import（与 src/engine.selftest.ts 同一套做法）。
@@ -23,13 +28,21 @@ import { fileURLToPath } from 'node:url';
 process.env.VAR_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-eval-'));
 
 // DB 模式的 mock eval（01 spec「测试与 CI」）：把 data/ 导入 PGlite 并装成配置源，同一批用例再跑一遍。
-// 必须放在 VAR_DIR 之后：store.ts 在加载时就读它。每个请求发出的 system 与 tools 的哈希都要等于 /healthz 报的（验收 21）
+// 必须放在 VAR_DIR 之后：store.ts 在加载时就读它。每个请求发出的 system 与 tools 的哈希都要等于 /healthz 报的（验收 21）。
+// 02 起同一个 PGlite 上另装 PG 会话存储（02 spec「测试与 CI」、验收 2）：会话 id 换成非 demo 类的 eval:，真进库；
+// 跑完核对库里有每个用例的会话、库里的消息与内存一致（见文件末尾的 checkStoredSessions）
+let dbStore: { t: import('../src/db/testing.js').TestDb; tenantId: string } | null = null;
 if (process.env.CONFIG_TEST_DB === 'pglite') {
-  const { openTestDb, installSeededConfig } = await import('../src/db/testing.js');
+  const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../src/db/testing.js');
   const { observeRequests } = await import('../src/llm.js');
   const { currentSop } = await import('../src/config/source.js');
   const { sha256 } = await import('../src/config/hashes.js');
-  await installSeededConfig(await openTestDb());
+  const { initSessionStore } = await import('../src/store.js');
+  const t = await openTestDb();
+  await installSeededConfig(t);
+  const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR });
+  await initSessionStore(fx.deps);
+  dbStore = { t, tenantId: fx.deps.tenantId };
   let observed = 0;
   let mismatched = 0;
   observeRequests((r) => {
@@ -124,8 +137,11 @@ function check(ok: boolean, c: Case, ti: number, t: Turn, why: string, got: stri
   if (!ok) failures.push({ caseId: c.id, turn: ti + 1, say: t.say, why, got: got.slice(0, 120) });
 }
 
+/** 每个用例的会话 id：文件模式照旧是 demo 类的 sim-eval-（不进库）；DB 模式是非 demo 类的 eval:，进 PG 会话存储 */
+const caseSessions: string[] = [];
 async function runCase(c: Case): Promise<boolean> {
-  const sid = `sim-eval-${c.id}-${Date.now().toString(36)}`;
+  const sid = `${dbStore ? 'eval:' : 'sim-eval-'}${c.id}-${Date.now().toString(36)}`;
+  caseSessions.push(sid);
   let ok = true;
   const before = failures.length;
   for (let i = 0; i < c.turns.length; i++) {
@@ -271,4 +287,51 @@ if (jsonOut) {
   );
   console.log(`\n结果已写入 ${jsonOut}`);
 }
-process.exit(failures.length ? 1 : 0);
+const storeBad = dbStore ? await checkStoredSessions(dbStore) : 0;
+process.exit(failures.length || storeBad ? 1 : 0);
+
+/**
+ * DB 模式跑完：排空写队列，按启动预载的同一条路读回库里的会话，逐个用例核对（02 验收 2）：会话在库里；重建出的窗口与内存经
+ * normalizeForStore 之后 deepStrictEqual；库里的消息 seq 从 1 起连续、条数等于 last_seq；内存里每条消息的 seq 与库里的窗口对得上；
+ * 库里未作废的订单与内存相同；写库没有积压、poisoned 与冲突。返回不符的处数，每处打一行（只有用例 id 与原因，不打原文）
+ */
+async function checkStoredSessions(d: NonNullable<typeof dbStore>): Promise<number> {
+  const { drainStore, storeHealth, getSession, listOrders, seqOf } = await import('../src/store.js');
+  const { normalizeForStore } = await import('../src/store/project.js');
+  const { readStoredConversations } = await import('../src/db/testing.js');
+  const { isDeepStrictEqual } = await import('node:util');
+  const { undrained } = await drainStore(10_000);
+  const stored = await readStoredConversations(d.t, d.tenantId);
+  const bad: string[] = [];
+  for (const sid of caseSessions) {
+    const mem = getSession(sid);
+    const db = stored.get(sid);
+    const memOrders = listOrders()
+      .filter((o) => o.sessionId === sid)
+      .map((o) => normalizeForStore(o))
+      .toSorted((a, b) => a.id.localeCompare(b.id));
+    const why = !mem
+      ? '内存里没有这个会话'
+      : !db
+        ? '库里没有这个会话'
+        : !db.session
+          ? '库里的窗口与 last_seq、window_start_seq 对不上'
+          : !isDeepStrictEqual(db.session, normalizeForStore(mem))
+            ? '库里重建的会话与内存不同'
+            : db.seqs.length !== db.lastSeq || db.seqs.some((q, i) => q !== i + 1)
+              ? `库里的消息 seq 不是 1…${db.lastSeq} 连续（${db.seqs.length} 条）`
+              : mem.messages.some((m, i) => seqOf(m) !== db.windowStartSeq + i)
+                ? '内存里消息的 seq 与库里的窗口对不上'
+                : !isDeepStrictEqual(db.liveOrders, memOrders)
+                  ? '库里的订单与内存不同'
+                  : null;
+    if (why) bad.push(`[${sid.replace(/^eval:/, '').replace(/-[0-9a-z]+$/, '')}] ${why}`);
+  }
+  const h = storeHealth();
+  if (undrained.length) bad.push(`排空之后还有 ${undrained.length} 个会话没落库`);
+  if (h.poisoned.length) bad.push(`写库停在 poisoned：${h.poisoned.join('、')}`);
+  if (h.conflict) bad.push('写库撞上另一写者（store_conflict）');
+  console.log(`DB 模式：${caseSessions.length} 个用例的会话入库核对，${bad.length} 处与内存不符`);
+  for (const b of bad) console.log(`  ✗ ${b}`);
+  return bad.length;
+}

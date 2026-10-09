@@ -19,10 +19,27 @@
   },
   "overrides": [
     {
+      "files": ["console/src/**", "src/shared/**", "src/packs/*/console-pack.ts"],
+      "rules": {
+        "unicorn/no-array-sort": "off",
+        "unicorn/no-array-reverse": "off",
+        "eslint/no-restricted-properties": [
+          "warn",
+          {
+            "property": "toSorted",
+            "message": "console 打包的代码在拷贝上 sort：Vite 默认构建目标含 Firefox 114，没有 ES2023 的 toSorted"
+          },
+          { "property": "toReversed", "message": "console 打包的代码在拷贝上 reverse：Vite 默认构建目标含 Firefox 114，没有 toReversed" },
+          { "property": "toSpliced", "message": "console 打包的代码不用 toSpliced：Vite 默认构建目标含 Firefox 114，没有它" }
+        ]
+      }
+    },
+    {
       "files": ["**/*.selftest.ts", "eval/run.ts"],
       "rules": {
         "unicorn/no-array-sort": "off",
-        "unicorn/no-array-reverse": "off"
+        "unicorn/no-array-reverse": "off",
+        "eslint/no-restricted-properties": "off"
       }
     }
   ],

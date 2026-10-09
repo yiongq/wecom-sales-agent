@@ -1,17 +1,19 @@
 // 一节的前后对比（spec「后台 API 与页面 · SOP」：草稿和已发布版本的逐节 diff 用 @codemirror/merge）。
-// 两侧都只读、自动换行，没改的长段落折叠起来
+// 两侧都只读、自动换行，没改的长段落折叠起来；内置文案（「12行没有改动」）用话术编辑器那一份汉化
 import { MergeView } from '@codemirror/merge';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { Col, Row, Typography } from 'antd';
 import { useEffect, useRef } from 'react';
 import { cspNonce } from './csp.js';
+import { cmPhrases } from './sop/SopEditor.js';
 
 export function SectionDiff(props: { before: string; after: string; beforeLabel: string; afterLabel: string }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const readOnly = [
       ...(cspNonce ? [EditorView.cspNonce.of(cspNonce)] : []),
+      cmPhrases,
       EditorView.lineWrapping,
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
@@ -35,7 +37,7 @@ export function SectionDiff(props: { before: string; after: string; beforeLabel:
           <Typography.Text type="secondary">{props.afterLabel}</Typography.Text>
         </Col>
       </Row>
-      <div ref={host} style={{ border: '1px solid #d9d9d9', borderRadius: 6 }} />
+      <div ref={host} style={{ border: '1px solid var(--border)', borderRadius: 6 }} />
     </div>
   );
 }

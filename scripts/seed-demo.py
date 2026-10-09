@@ -1,8 +1,27 @@
 #!/usr/bin/env python3
 """生成一批干净逼真的样例会话/订单，供 demo 后台展示（漏斗+KPI 有意义的数字）。
-输出 /tmp/seed_sessions.json 和 /tmp/seed_orders.json。"""
-import json, time, sys
-now = int(time.time() * 1000)
+输出 /tmp/seed_sessions.json 和 /tmp/seed_orders.json。
+
+两个参数都可以不带，默认场景的转人工会话带原因与客户原话，供后台显示交接卡：
+  --scenario console-ux  后台 UX 走查用的场景（docs/features/console-ux/spec.md 验收 4「走查种子与时钟」、
+                         design-system.md §10.0 的会话表）：同样 13 个会话，A01 改成转人工，
+                         各会话的最后动静按那张表相对 --now 定位，「昨天21:40」这类按 --now 所在时区的日历日算
+  --scenario console-ux-02  02 spec 验收 33 走查用的场景（design-system.md §10.0 修正 5）：与 console-ux 同样
+                         13 个会话、同样的时间定位，另外 A01 由「等人接手」改成「顾问处理中」（接手人小林），
+                         F01 补一条转人工原因「客户投诉价格太贵」。7F3A（14 个会话里的第 14 个）不在这里，由
+                         走查脚本经假企微接口和脚本化的 mock LLM 真跑出来
+  --now 2026-09-26T14:30+08:00  钉住「现在」（ISO 8601，不带时区按本机时区）；不带时取当前时间"""
+import argparse, json, time, sys
+from datetime import date, datetime, timedelta, time as clock
+
+ap = argparse.ArgumentParser(description="生成 demo 后台的样例会话与订单")
+ap.add_argument("--scenario", choices=["default", "console-ux", "console-ux-02"], default="default", help="场景，默认 default")
+ap.add_argument("--now", help="钉住现在，如 2026-09-26T14:30+08:00")
+args = ap.parse_args()
+now_dt = datetime.fromisoformat(args.now) if args.now else datetime.now()
+if now_dt.tzinfo is None:
+    now_dt = now_dt.astimezone()  # 不带时区的按本机时区；带了的保留，日历日按 --now 自己的时区算
+now = int(now_dt.timestamp() * 1000) if args.now else int(time.time() * 1000)
 H = 3600 * 1000
 
 
@@ -101,6 +120,100 @@ S.append(sess("wecom:cust_F01", "handoff", {"nickname": "刘倩", "destinationIn
     [("customer", "这个太贵了，我要投诉"),
      ("agent", "非常抱歉给您带来不好的体验 我马上为您转接资深顾问处理～")],
     handed=True, age_h=2))
+
+if args.scenario == "default":
+    s = S[-1]
+    s["handoff"] = {
+        "kind": "complaint",
+        "at": s["messages"][-1]["at"],
+        "reason": "客户投诉价格太贵",
+        "quote": "这个太贵了，我要投诉",
+    }
+
+
+def at_day(days_before, hh, mm):
+    """--now 所在时区里、往前数 days_before 个日历日的 hh:mm（毫秒）"""
+    d: date = now_dt.date() - timedelta(days=days_before)
+    return int(datetime.combine(d, clock(hh, mm), tzinfo=now_dt.tzinfo).timestamp() * 1000)
+
+
+def retime(s, updated_at):
+    """把会话挪到最后动静 = updated_at：消息仍是每分钟一条，最后一条之后 1 分钟是 updatedAt（和 sess() 的写法一样）"""
+    created = updated_at - len(s["messages"]) * 60000
+    for i, m in enumerate(s["messages"]):
+        m["at"] = created + i * 60000
+    s["createdAt"], s["updatedAt"] = created, updated_at
+
+
+if args.scenario in ("console-ux", "console-ux-02"):
+    M = 60000
+    # design-system.md §10.0 的会话表：F01、A01 等人接手；B01 到 D01 是今天；D02、D03 昨天；E01–E04 与 A02 前天（9月24日）
+    last = {
+        "wecom:cust_F01": now - 8 * M,
+        "wecom:cust_A01": now - 26 * M,
+        "wecom:cust_B01": now - 1 * H,
+        "wecom:cust_C01": now - 2 * H,
+        "wecom:cust_C02": now - 3 * H,
+        "wecom:cust_D01": now - 5 * H,
+        "wecom:cust_D02": at_day(1, 21, 40),
+        "wecom:cust_D03": at_day(1, 16, 5),
+        "wecom:cust_E01": at_day(2, 19, 25),
+        "wecom:cust_E02": at_day(2, 16, 50),
+        "wecom:cust_E03": at_day(2, 14, 35),
+        "wecom:cust_E04": at_day(2, 12, 10),
+        "wecom:cust_A02": at_day(2, 17, 20),
+    }
+    assert sorted(last) == sorted(s["id"] for s in S), "会话表与默认场景的会话对不上"
+    for s in S:
+        if s["id"] == "wecom:cust_A01":
+            s["stage"], s["handedOver"] = "handoff", True
+            if args.scenario == "console-ux-02":
+                # §10.0 修正 5：A01 是「顾问处理中」，接手人小林（不是「等人接手」）。userId 只是本次走查
+                # 种子用的占位短名，不对应真实账号——assignee 存在于 state JSONB 里，没有外键约束，
+                # 展示（接手人姓名、「交还」按钮因不是本人而禁用）只看 userId 是否非空、是否等于当前登录者
+                s["assignee"] = {"userId": "seed-xiaolin", "name": "小林", "at": last[s["id"]]}
+                s["handoff"] = {"kind": "agent", "at": last[s["id"]], "reason": "顾问在工作台接手"}
+        elif s["id"] == "wecom:cust_F01" and args.scenario == "console-ux-02":
+            # §10.0 修正 5：F01 的转人工原因「客户投诉价格太贵」
+            s["handoff"] = {
+                "kind": "complaint",
+                "at": last[s["id"]],
+                "reason": "客户投诉价格太贵",
+                "quote": "这个太贵了，我要投诉",
+            }
+        elif s["id"] == "wecom:cust_A02" and args.scenario == "console-ux-02":
+            # 验收 33 要求种子里含一条「已成交客户要人工」（R9 paidNeedsHuman：终态 + handedOver + 没有接手人，
+            # stage 仍是 paid，不进「等人接手」页签，只在 A2「需要你处理」与铃铛弹层单列一组）。
+            # design-system §10.0 的基础 13 个会话没有这一条，这是 02 走查专门加的
+            s["messages"] = [*s["messages"], {"role": "customer", "content": "我们这次出发日期想往后挪两天，麻烦帮我转人工改一下", "at": 0}]
+            s["handedOver"] = True
+            s["handoff"] = {
+                "kind": "request",
+                "at": last[s["id"]] + 10 * M,
+                "reason": "已成交客户想改行程，要找顾问",
+                "quote": "我们这次出发日期想往后挪两天，麻烦帮我转人工改一下",
+            }
+        elif s["id"] == "wecom:cust_D02" and args.scenario == "console-ux-02":
+            # 验收 33 要求种子里含一条「紧急」转人工（R15：高把握的紧急情况，立即转人工、这一轮不调模型）。
+            # design-system §10.0 的基础 13 个会话没有这一条，这是 02 走查专门加的；原本 D02 是「推荐」阶段，
+            # 这里改写成客户在行程中遇到紧急情况，stage 改成 handoff、不进漏斗
+            s["stage"], s["handedOver"] = "handoff", True
+            s["messages"] = [
+                {"role": "customer", "content": "我们现在在三亚玩，一个人突然喘不上气，脸都白了，怎么办", "at": 0},
+                {"role": "agent", "content": "情况紧急！我们马上为您转接资深顾问，顾问会立即联系您协助处理，请尽快就近就医～", "at": 0},
+            ]
+            s["handoff"] = {
+                "kind": "emergency",
+                "at": last[s["id"]],
+                "reason": "客户遇到紧急情况",
+                "quote": "我们现在在三亚玩，一个人突然喘不上气，脸都白了，怎么办",
+            }
+        retime(s, last[s["id"]])
+    created = {s["id"]: s["createdAt"] for s in S}
+    for o in O:
+        o["createdAt"] = created[o["sessionId"]]
+        if "paidAt" in o:
+            o["paidAt"] = o["createdAt"] + 8 * M
 
 json.dump(S, open("/tmp/seed_sessions.json", "w"), ensure_ascii=False, indent=2)
 json.dump(O, open("/tmp/seed_orders.json", "w"), ensure_ascii=False, indent=2)

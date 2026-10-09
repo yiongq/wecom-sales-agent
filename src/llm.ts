@@ -1,9 +1,12 @@
 // OpenAI 兼容 chat completions 封装（默认智谱），含多轮工具调用循环。
 // LLM_MOCK=1 走确定性脚本：按用户消息关键词驱动真实工具调用，
 // 离线跑通「问需 → 推荐 → 报价 → 下单」全链路，是集成冒烟的生命线。
+import { inTenantTx } from './db/client.js';
 import type { ToolDef } from './tools.js';
-import { recordUsage } from './usage.js';
+import type { LlmErrorKind } from './trace/recorder.js';
+import { recordUsage, type UsagePurpose } from './usage.js';
 import { gatedFetch, gateBusy } from './llm-gate.js';
+import { convLabel } from './log.js';
 import { numEnv, todayIso } from './env.js';
 
 export interface ChatTurn {
@@ -70,8 +73,8 @@ function cachedTokens(u?: WireUsage): number {
   return u?.prompt_tokens_details?.cached_tokens ?? u?.prompt_cache_hit_tokens ?? 0;
 }
 
-/** 记一次完成的调用。model 必须是**实际答出这次响应**的模型（对冲胜出时不是主模型） */
-function recordCompletion(model: string, u: WireUsage | undefined, sessionId?: string): void {
+/** 记一次完成的调用。model 必须是**实际答出这次响应**的模型（对冲胜出时不是主模型）。purpose 缺省 chat（主对话） */
+function recordCompletion(model: string, u: WireUsage | undefined, sessionId?: string, purpose?: UsagePurpose): void {
   recordUsage(
     model,
     u?.prompt_tokens ?? 0,
@@ -79,6 +82,7 @@ function recordCompletion(model: string, u: WireUsage | undefined, sessionId?: s
     sessionId,
     cachedTokens(u),
     u?.completion_tokens_details?.reasoning_tokens ?? 0,
+    purpose,
   );
 }
 
@@ -98,6 +102,8 @@ export function observeRequests(cb: ((req: ObservedRequest) => void) | null): vo
 
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
 export async function chat(opts: ChatOptions): Promise<string> {
+  // 落库事务的回调里不调模型（02 不变量 9）：在 withTenant 里调到这里，说明有人把模型调用放进了事务，持锁跨过整次生成
+  if (inTenantTx()) throw new Error('chat() 不能在 withTenant 的回调里调用：落库事务里只有 SQL，不调模型（02 不变量 9）');
   // 在 mock 与真实分支之前看：两条路发出去的前缀是同一份
   requestObserver?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
   return process.env.LLM_MOCK === '1' || opts.forceMock ? mockChat(opts) : realChat(opts);
@@ -494,8 +500,9 @@ export function llmStats(): {
  * 无工具的单轮文本补全（后台 AI 洞察 / 下一步建议 / 跟进话术专用，客户不可见）。
  * 走后台模型 llmCfg(true)（LLM_MODEL_CHEAP，不配则跟随主模型）。
  * LLM_MOCK=1 或未配 key 时返回空串，调用方回退到规则版。
+ * opts：用量记在哪个用途（insight、suggestion、draft、followup，进 usage_daily）与哪个会话名下；不给按 chat、不记会话
  */
-export async function completeText(system: string, user: string): Promise<string> {
+export async function completeText(system: string, user: string, opts?: { purpose: UsagePurpose; sessionId?: string }): Promise<string> {
   const { baseUrl, apiKey, model } = llmCfg(true);
   if (process.env.LLM_MOCK === '1' || !apiKey) return '';
   try {
@@ -512,7 +519,7 @@ export async function completeText(system: string, user: string): Promise<string
       },
       llmTimeout,
     );
-    recordCompletion(model, data.usage);
+    recordCompletion(model, data.usage, opts?.sessionId, opts?.purpose);
     return stripLeaked(data.choices?.[0]?.message?.content ?? '');
   } catch (e) {
     // 以前这里静默返回空串：模型被拒（参数错、模型名错）时后台洞察/跟进话术悄悄退回模板，
@@ -668,7 +675,7 @@ async function realChat(opts: ChatOptions): Promise<string> {
       if (hit) {
         stats.toolReused += 1;
         trace.at(-1)?.reused.push(name);
-        console.log(`[llm] 本轮已用相同参数调过 ${name}，直接复用结果（会话 ${opts.sessionId ?? '-'}）`);
+        console.log(`[llm] 本轮已用相同参数调过 ${name}，直接复用结果（会话 ${opts.sessionId == null ? '-' : convLabel(opts.sessionId)}）`);
         return hit;
       }
       const run = opts.executeTool(name, args);
@@ -718,14 +725,47 @@ function callKey(name: string, args: Record<string, unknown>): string {
   return `${name}${canon(args)}`;
 }
 
-/** 本轮每次模型调用的耗时与它要的工具，只在整轮超时时打出来 */
-interface CallTrace {
+/** 本轮每次模型调用的耗时与它要的工具，整轮超时时打出来；也交给 onLlmCall 的订阅者（逐轮 trace，02 spec） */
+export interface CallTrace {
   model: string;
   hedged: boolean;
   ms: number;
   tools: string[];
   toolMs: number;
   reused: string[];
+  /** 这次调用的失败类别，成功为 null（AI 出错率按它算，R24） */
+  error: LlmErrorKind;
+}
+
+const llmCallObservers = new Set<(c: CallTrace) => void>();
+/**
+ * 主对话每次模型调用（含失败的那次）都通知订阅者，在这一轮的异步上下文里同步调用。传的是同一个对象：之后这次调用要的工具、
+ * 工具耗时与复用还会记到它上面，订阅者在轮次结束时再读。用量随后经 usage.ts 的 onUsage 另行送达（先通知这里、再记用量）
+ */
+export function onLlmCall(fn: (c: CallTrace) => void): () => void {
+  llmCallObservers.add(fn);
+  return () => llmCallObservers.delete(fn);
+}
+function notifyLlmCall(c: CallTrace): void {
+  for (const fn of llmCallObservers) {
+    try {
+      fn(c);
+    } catch {
+      /* 观测者出错不影响对话 */
+    }
+  }
+}
+
+/**
+ * 一次模型调用失败的类别（02 spec 的 LlmErrorKind）：超时（含整轮墙钟）、重试后仍 429、5xx 与连不上 / 连接中断（上游不可用）、
+ * 其余（别的 4xx、回包不是 JSON、缺 choices）算回包不可用
+ */
+function llmErrorKind(e: unknown): Exclude<LlmErrorKind, null> {
+  if (e instanceof LlmHttpError) return e.status === 429 ? 'rate_limited' : e.status >= 500 ? 'http_5xx' : 'bad_response';
+  const name = e instanceof Error || (typeof DOMException !== 'undefined' && e instanceof DOMException) ? e.name : '';
+  if (name === 'TimeoutError' || name === 'AbortError') return 'timeout';
+  if (e instanceof SyntaxError) return 'bad_response';
+  return 'http_5xx';
 }
 
 /**
@@ -740,7 +780,7 @@ function logSlowTurn(totalMs: number, trace: CallTrace[], sessionId?: string): v
     const tools = c.tools.length ? ` → ${c.tools.join('+')} ${c.toolMs}ms${c.reused.length ? `（复用 ${c.reused.length} 次）` : ''}` : '';
     return `#${i + 1} ${c.model}${c.hedged ? '（对冲）' : ''} ${c.ms}ms${tools}`;
   });
-  console.warn(`[llm] ⚠️ 本轮工具循环耗时 ${totalMs}ms（会话 ${sessionId ?? '-'}）：${steps.join(' · ')}`);
+  console.warn(`[llm] ⚠️ 本轮工具循环耗时 ${totalMs}ms（会话 ${sessionId == null ? '-' : convLabel(sessionId)}）：${steps.join(' · ')}`);
 }
 
 async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise<string> {
@@ -763,15 +803,27 @@ async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise
     };
     if (!forceText) payload.tools = opts.tools;
     const tCall = Date.now();
-    const { data, model: used } = await requestHedged(ep, model, payload, signal, round);
-    const step: CallTrace = { model: used, hedged: used !== model, ms: Date.now() - tCall, tools: [], toolMs: 0, reused: [] };
+    let res: { data: Completion; model: string };
+    try {
+      res = await requestHedged(ep, model, payload, signal, round);
+    } catch (e) {
+      // 失败的那次也进 trace（AI 出错率，R24）：没有用量，模型记主模型
+      notifyLlmCall({ model, hedged: false, ms: Date.now() - tCall, tools: [], toolMs: 0, reused: [], error: llmErrorKind(e) });
+      throw e;
+    }
+    const { data, model: used } = res;
+    const step: CallTrace = { model: used, hedged: used !== model, ms: Date.now() - tCall, tools: [], toolMs: 0, reused: [], error: null };
     trace.push(step);
+    notifyLlmCall(step);
     // 一轮对话可能有多次 API 往返（工具调用），每次都要计入。
     // 同一轮里的第 2、3 次往返天然共享第 1 次的整个前缀，缓存命中率最高的就是这些。
     recordCompletion(used, data.usage, opts.sessionId);
     const choice = data.choices?.[0];
     const msg = choice?.message;
-    if (!msg) throw new Error(`LLM 返回缺少 choices[0].message（model=${used}）`);
+    if (!msg) {
+      step.error = 'bad_response';
+      throw new Error(`LLM 返回缺少 choices[0].message（model=${used}）`);
+    }
     // 被输出上限截断：客户会收到一条断在半句话的报价消息，而这在日志里毫无痕迹
     if (choice.finish_reason === 'length') {
       console.warn(`[llm] ⚠️ 模型输出被截断（finish_reason=length，model=${used}），客户可能收到半句话`);
@@ -1051,3 +1103,9 @@ async function mockChat(opts: ChatOptions): Promise<string> {
     state('discovery')
   );
 }
+
+/** 仅供自测：模型调用失败的分类（02 spec 的 LlmErrorKind） */
+export const __llmTest = {
+  llmErrorKind,
+  httpError: (status: number): Error => new LlmHttpError(status, 'selftest', ''),
+};

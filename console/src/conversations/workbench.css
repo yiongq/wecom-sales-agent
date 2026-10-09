@@ -1,0 +1,651 @@
+/*
+ * 会话工作台（J 页，02 第 20.2 步，设计系统 §10.2 J 页）。三栏：列表 320、对话自适应、客户与交接 360，
+ * 栏与栏之间 1px --divider；面板内边距清零（覆盖 shell.css 的 --panel-pt/px/pb），三栏各自滚动，不是整页滚动。
+ * 颜色只取 brand.css 的变量，这里不新增变量（theme.selftest.ts 逐个比对）。
+ */
+
+/* 面板本来有内边距（24 32 32），J 页占满整块面板，自己切三栏；:has() 的写法同 sop.css 的「查看改动」整页 */
+.shell-content:has(> .wb-root) {
+  height: 100%;
+  padding: 0;
+  display: flex;
+}
+.wb-root {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+.wb-root-empty {
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+}
+
+/* ---------------- 左栏：列表 320 ---------------- */
+.wb-list {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 320px;
+  min-height: 0;
+  box-shadow: inset -1px 0 0 var(--divider);
+}
+.wb-list-head {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 56px;
+  padding: 0 16px;
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+.wb-list-title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wb-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+.wb-group {
+  padding: 4px 0;
+}
+.wb-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.wb-group-count {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+.wb-group-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wb-row {
+  margin: 0;
+}
+.wb-row-link {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: 64px;
+  padding: 10px 16px;
+  box-sizing: border-box;
+  text-decoration: none;
+  color: inherit;
+}
+.wb-row-link:hover {
+  background: var(--hover);
+}
+.wb-row.is-selected .wb-row-link {
+  background: var(--selected);
+}
+.wb-row-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.wb-row-title {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+}
+.wb-row-ctx {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+.wb-row-time {
+  flex: none;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.wb-row-time.is-warning {
+  color: var(--warning);
+}
+.wb-row-time.is-danger {
+  color: var(--danger);
+}
+
+/* ---------------- 中栏：对话 ---------------- */
+.wb-conv {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  box-shadow: inset -1px 0 0 var(--divider);
+}
+.wb-head {
+  flex: none;
+  padding: 10px 20px;
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+.wb-head-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+.wb-head-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wb-head-wait {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--warning);
+}
+.wb-head-wait.is-danger {
+  color: var(--danger);
+}
+.wb-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.wb-head-note,
+.wb-head-note2 {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+.wb-head-note2 {
+  margin: 6px 0 0;
+}
+.wb-more-btn {
+  flex: none;
+}
+.wb-inline-error {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--danger);
+}
+.wb-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.wb-steps-toggle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  font-size: 13px;
+  color: var(--text-2);
+  box-shadow: inset 0 -1px 0 var(--divider);
+  cursor: pointer;
+}
+
+.wb-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.wb-earlier {
+  display: flex;
+  justify-content: center;
+}
+.wb-steps-line {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+.wb-timeline {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+.wb-system {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+.wb-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wb-msg-customer {
+  align-items: flex-start;
+}
+.wb-msg-agent {
+  align-items: flex-end;
+}
+.wb-bubble {
+  max-width: 560px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 22px;
+}
+.wb-bubble-customer {
+  border-radius: 4px var(--r-lg) var(--r-lg) var(--r-lg);
+  background: var(--subtle);
+  color: var(--text);
+}
+.wb-bubble-ai {
+  border-radius: var(--r-lg) 4px var(--r-lg) var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+}
+.wb-bubble-ai.is-traced {
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 2px var(--focus);
+}
+.wb-bubble-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.wb-bubble-label {
+  margin: 0 0 2px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.wb-bubble-btn {
+  display: block;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: right;
+}
+.wb-guard-toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.wb-guard-diff {
+  margin: 4px 0 0;
+  max-width: 560px;
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+  font-size: 13px;
+  line-height: 20px;
+}
+.wb-guard-diff dt {
+  font-weight: 500;
+  color: var(--text-2);
+  margin-top: 6px;
+}
+.wb-guard-diff dt:first-child {
+  margin-top: 0;
+}
+.wb-guard-diff dd {
+  margin: 0 0 0 0;
+  color: var(--text);
+}
+.wb-delivery-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--danger);
+}
+.wb-pending-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-3);
+}
+
+.wb-handoff-card {
+  flex: none;
+  margin: 0 20px 12px;
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: var(--subtle);
+}
+.wb-handoff-head {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.wb-handoff-head.is-danger {
+  color: var(--danger);
+}
+.wb-handoff-row {
+  margin: 0 0 2px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.wb-handoff-row:last-child {
+  margin-bottom: 0;
+}
+
+.wb-replybox {
+  flex: none;
+  padding: 12px 20px 16px;
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+.wb-replybox-input {
+  width: 100%;
+}
+.wb-replybox-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* antd 的 showCount 字数（.ant-input-data-count）用 position:absolute、bottom 取负的一个字高（14px 字号、22px 行高时
+     是 -22px），落在输入框边框之外、往下占掉 22px；这一行原来只留 8px 间距，字数的「0」会压在这一行上、和「发送」
+     按钮的边框重叠。其它用到同一个 showCount 写法的地方（如产品库的长文本字段）下面本来就有更多空间，没露出这个问题。
+     这里按 22px 字数高度留够间距，再加 2px 不贴边 */
+  margin-top: 24px;
+}
+.wb-replybox-hint {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+.wb-send-reason {
+  color: var(--danger);
+}
+
+/* ---------------- 右栏：客户与交接 360 ---------------- */
+.wb-side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 360px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  gap: 16px;
+}
+.wb-side-tabs {
+  display: flex;
+  gap: 16px;
+  border-bottom: 1px solid var(--divider);
+  margin-bottom: 4px;
+}
+.wb-side-tab {
+  border: none;
+  background: none;
+  padding: 0 0 10px;
+  font-size: 14px;
+  color: var(--text-2);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.wb-side-tab[aria-selected='true'] {
+  color: var(--text);
+  font-weight: 500;
+  border-bottom-color: var(--text);
+}
+.wb-card {
+  padding: 16px 20px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+}
+.wb-card-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.wb-card p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.wb-card p:last-child {
+  margin-bottom: 0;
+}
+.wb-side-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.wb-order {
+  padding: 10px 0;
+  border-top: 1px solid var(--divider);
+}
+.wb-order:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.wb-order-line {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text);
+}
+.wb-order-status {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+}
+.wb-order-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.wb-quick-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wb-quick-btn {
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--subtle);
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text);
+  cursor: pointer;
+}
+.wb-quick-btn:hover {
+  background: var(--hover);
+}
+.wb-trace p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+
+/* 卡片标题一行带右侧操作（「快捷回复」卡的「管理」）：标题不再自带下边距，由这一行统一留 */
+.wb-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.wb-card-head .wb-card-title {
+  margin: 0;
+}
+
+/*
+ * ---------------- 快捷回复管理抽屉（设计系统 §5.13 M 480） ----------------
+ * 头 56，内边距 0 16 0 24，标题 16/24/600；头下没有分隔线，内容滚动以后才出现 --divider。
+ * 体内边距 4 24 24，自己滚动。底（ConfirmDanger 走 antd Modal，不在这个抽屉的 footer 里，这里没有固定底栏）
+ */
+.wb-qr-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+  box-shadow: var(--shadow-modal);
+}
+.wb-qr-drawer .ant-drawer-header {
+  min-height: 56px;
+  padding: 0 16px 0 24px;
+  border-bottom: 0;
+}
+.wb-qr-drawer .ant-drawer-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.wb-qr-drawer .ant-drawer-body {
+  padding: 0;
+}
+.wb-qr-scroll {
+  padding: 4px 24px 24px;
+  overflow: auto;
+}
+.wb-qr-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.wb-qr-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wb-qr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--divider);
+}
+.wb-qr-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.wb-qr-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.wb-qr-row-title {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.wb-qr-row-body {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.wb-qr-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+/* 表单（§4 通用部件的表单间距：标签到控件 6，控件到帮助 6，字段之间 20） */
+.wb-qr-field {
+  margin-bottom: 20px;
+}
+.wb-qr-field:last-child {
+  margin-bottom: 0;
+}
+.wb-qr-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+.wb-qr-help {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.wb-qr-help.is-error {
+  color: var(--danger);
+}
+.wb-qr-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+/* <1280（侧栏收成图标栏或隐藏）：三栏放不下，落成单栏竖排，列表与右栏限高自己滚（同 detail.css 的副栏窄屏处理） */
+@media (max-width: 1279px) {
+  .wb-root {
+    flex-direction: column;
+    height: auto;
+    overflow-y: auto;
+  }
+  .wb-list,
+  .wb-side {
+    width: auto;
+    max-height: 320px;
+  }
+  .wb-conv {
+    min-height: 480px;
+  }
+}

@@ -1,5 +1,6 @@
 // import 边界与字符串禁区（docs/architecture/01-pg-config-console/spec.md「模块与依赖方向」，验收 20）。
 // 挂在 `pnpm lint` 里，规则写成下面两张表，后面的阶段往表里加。
+// 另有后台 UX spec（docs/features/console-ux/spec.md）不变量 11 的第一层：console/src 不 import 行业包与假包（渲染器自测除外）。
 //
 // 查的是工作区里的代码文件：已跟踪的加上没被忽略的新文件（git ls-files -co），新建还没 add 的也要拦。
 // 不在 git 工作区根目录时（deploy.sh 在 git archive 解出的目录里跑门禁），改查目录树，
@@ -25,6 +26,8 @@ interface Imp {
   line: number;
   spec: string;
   typeOnly: boolean;
+  /** 动态 import('x')（运行到才加载）；require('x') 不算 */
+  dynamic: boolean;
   pkg: string | null;
   target: string | null;
 }
@@ -33,7 +36,7 @@ interface ImportRule {
   desc: string;
   /** 这条规则管不管这个文件 */
   applies: (file: string) => boolean;
-  bad: (imp: Imp) => boolean;
+  bad: (imp: Imp, file: string) => boolean;
 }
 
 interface TextRule {
@@ -49,6 +52,27 @@ const CONFIG_LAYER = ['src/config/', 'src/db/', 'src/sop/', 'src/prompt/', 'src/
 
 const under = (p: string | null, dir: string) => p !== null && p.startsWith(dir);
 const isSelftest = (p: string) => p.endsWith('.selftest.ts');
+/** 各种扩展名的自测（console 的渲染器自测是 .tsx） */
+const isAnySelftest = (p: string) => /\.selftest\.[a-z]+$/.test(p);
+/**
+ * 字段渲染器的自测要拿两个行业包的真实配置逐字段渲染（console UX spec「行业包通用架构 · 放在哪里」），所以它是 console/src 里
+ * 唯一可以 import 行业包注册表 src/packs/registry.ts 和假包 src/shared/pack-fixtures/ 的文件。它不在构建入口的依赖图里
+ */
+const PACK_SELFTEST = 'console/src/fields/fields.selftest.tsx';
+const PACK_REGISTRY = 'src/packs/registry.ts';
+const PACKS_DIR = 'src/packs/';
+const PACK_FIXTURES = 'src/shared/pack-fixtures/';
+/** OpenTelemetry 导出（02 spec R24、不变量 49）：没设端点时一个 @opentelemetry/* 都不加载，所以它们只在 src/otel/ 里 import */
+const OTEL_DIR = 'src/otel/';
+const OTEL_PKG = /^@opentelemetry\//;
+/** 02 的纯函数模块（还没建的照样登记，建出来就管） */
+const PURE_STORE = [
+  'src/store/project.ts',
+  'src/store/seq.ts',
+  'src/handoff/triggers.ts',
+  'src/handoff/triggers.corpus.ts',
+  'src/jobs/optout.ts',
+];
 
 const IMPORT_RULES: ImportRule[] = [
   {
@@ -62,13 +86,33 @@ const IMPORT_RULES: ImportRule[] = [
     bad: (i) => (i.pkg !== null ? i.pkg !== 'zod' : !under(i.target, 'src/shared/')),
   },
   {
+    // 行业包由下面单独一条管，这里不重复报
     desc: 'console/src/ 在仓库里只能 import src/shared/，外加用 import type 引 src/console-api/app.ts',
     applies: (f) => under(f, 'console/src/'),
     bad: (i) =>
       i.pkg === null &&
       !under(i.target, 'console/') &&
       !under(i.target, 'src/shared/') &&
+      !under(i.target, PACKS_DIR) &&
       !(i.typeOnly && i.target === 'src/console-api/app.ts'),
+  },
+  // 以下两条是 console UX spec 不变量 11 的第一层：console 只经 /pack 的数据认识行业包，import type 也不行
+  {
+    desc: `不变量 11：console/src/ 不 import 行业包 ${PACKS_DIR}**，只经 /pack 的数据认识行业包（只有渲染器自测 ${PACK_SELFTEST} 能 import 注册表 ${PACK_REGISTRY}）`,
+    applies: (f) => under(f, 'console/src/'),
+    bad: (i, f) => under(i.target, PACKS_DIR) && !(f === PACK_SELFTEST && i.target === PACK_REGISTRY),
+  },
+  {
+    desc: `不变量 11：console/src/ 不 import 假包 ${PACK_FIXTURES}**（只有渲染器自测 ${PACK_SELFTEST} 能）`,
+    applies: (f) => under(f, 'console/src/') && f !== PACK_SELFTEST,
+    bad: (i) => under(i.target, PACK_FIXTURES),
+  },
+  {
+    // console 可以 import src/shared/，假包要是被 src/ 里的非自测代码引用，就能转一手进 console 和它的构建产物（不变量 25）；
+    // 它也不进注册表，服务端同样用不上
+    desc: `假包 ${PACK_FIXTURES}** 只给自测和 scripts/ 下的检查用：src/ 里的非自测代码不能 import 它`,
+    applies: (f) => under(f, 'src/') && !isAnySelftest(f) && !under(f, PACK_FIXTURES),
+    bad: (i) => under(i.target, PACK_FIXTURES),
   },
   {
     desc: 'src/db/testing.ts 只能被 *.selftest.ts 和 eval/run.ts import',
@@ -79,6 +123,56 @@ const IMPORT_RULES: ImportRule[] = [
     desc: 'src/prompt/ 与 src/sop/ 不能 import src/db/ 和 src/config/',
     applies: (f) => under(f, 'src/prompt/') || under(f, 'src/sop/'),
     bad: (i) => under(i.target, 'src/db/') || under(i.target, 'src/config/'),
+  },
+  {
+    // 02 spec「模块与依赖方向」：这几个文件是纯函数，配向量表或往返自测
+    desc: `${PURE_STORE.join('、')} 是纯函数：不 import src/db/、store、engine、tools、llm、adapters`,
+    applies: (f) => PURE_STORE.includes(f),
+    bad: (i) =>
+      under(i.target, 'src/db/') ||
+      under(i.target, 'src/adapters/') ||
+      ['src/store.ts', 'src/engine.ts', 'src/tools.ts', 'src/llm.ts'].includes(i.target ?? ''),
+  },
+  {
+    // 02 spec「逐轮 trace、护栏事件与用量」：trace 与用量经 store 的入口（queueTelemetry、PG 后端的 writeUsage）落库，不直接碰库
+    desc: 'src/trace/ 不 import src/db/（trace 与用量经 store 的入口落库）',
+    applies: (f) => under(f, 'src/trace/') && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/db/'),
+  },
+  {
+    // 02 spec「企微：发送账本、回执与去重」：账本行经会话写队列（queueTelemetry）与 store 的两个短事务入口落库，不直接碰库
+    desc: 'src/quota/ 不 import src/db/（发送账本经 store 的入口落库）',
+    applies: (f) => under(f, 'src/quota/') && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/db/'),
+  },
+  // 以下三条是 02 spec R24、不变量 49：没设 OTEL_EXPORTER_OTLP_ENDPOINT 时进程不加载任何 @opentelemetry/*。
+  // src/otel/ 只由 src/ops/otel.ts 在设了端点时动态 import；import type 编译后就没了，不算
+  {
+    desc: `@opentelemetry/* 只能在 ${OTEL_DIR} 里 import（不变量 49：没设端点时一个都不加载；import type 除外）`,
+    applies: (f) => !under(f, OTEL_DIR),
+    bad: (i) => i.pkg !== null && OTEL_PKG.test(i.pkg) && !i.typeOnly,
+  },
+  {
+    desc: `${OTEL_DIR}** 只能经动态 import() 加载（不变量 49；import type 除外）`,
+    applies: (f) => !under(f, OTEL_DIR),
+    bad: (i) => under(i.target, OTEL_DIR) && !i.typeOnly && !i.dynamic,
+  },
+  {
+    // 02 spec「OpenTelemetry」：导出只经 recorder 的 onTurnEnd 拿那一轮，不碰库
+    desc: `${OTEL_DIR} 不 import src/db/（只经 onTurnEnd 拿数据）`,
+    applies: (f) => under(f, OTEL_DIR),
+    bad: (i) => under(i.target, 'src/db/'),
+  },
+  {
+    // 02 spec「模块与依赖方向」：结构化日志只有一个出口（LOG_FORMAT、redact、会话原 id 的兜底都在 src/log.ts）
+    desc: 'pino 只能在 src/log.ts 里 import（import type 除外）',
+    applies: (f) => f !== 'src/log.ts',
+    bad: (i) => i.pkg === 'pino' && !i.typeOnly,
+  },
+  {
+    desc: 'src/db/、src/config/、src/cli/ 不 import src/store/（project.ts 除外）',
+    applies: (f) => (under(f, 'src/db/') || under(f, 'src/config/') || under(f, 'src/cli/')) && !isSelftest(f),
+    bad: (i) => under(i.target, 'src/store/') && i.target !== 'src/store/project.ts',
   },
   {
     // 自测要动态 import 运行时模块来搭场景，这一条不管 *.selftest.ts（上面几条照管）
@@ -179,10 +273,10 @@ function scriptKind(file: string): ts.ScriptKind {
 function importsOf(file: string, text: string): Imp[] {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind(file));
   const found: Imp[] = [];
-  const add = (lit: ts.Node | undefined, typeOnly: boolean) => {
+  const add = (lit: ts.Node | undefined, typeOnly: boolean, dynamic = false) => {
     if (!lit || !ts.isStringLiteralLike(lit)) return;
     const line = sf.getLineAndCharacterOfPosition(lit.getStart(sf)).line + 1;
-    found.push({ line, spec: lit.text, typeOnly, ...resolve(file, lit.text) });
+    found.push({ line, spec: lit.text, typeOnly, dynamic, ...resolve(file, lit.text) });
   };
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node)) add(node.moduleSpecifier, node.importClause?.isTypeOnly ?? false);
@@ -193,7 +287,7 @@ function importsOf(file: string, text: string): Imp[] {
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
     )
-      add(node.arguments[0], false);
+      add(node.arguments[0], false, node.expression.kind === ts.SyntaxKind.ImportKeyword);
     else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) add(node.argument.literal, true);
     ts.forEachChild(node, visit);
   };
@@ -220,7 +314,7 @@ for (const file of files) {
     const imps = importsOf(file, text);
     importCount += imps.length;
     for (const imp of imps) {
-      for (const r of rules) if (r.bad(imp)) found.push([imp.line, `${r.desc}（'${imp.spec}'）`]);
+      for (const r of rules) if (r.bad(imp, file)) found.push([imp.line, `${r.desc}（'${imp.spec}'）`]);
     }
   }
   for (const r of textRules) {

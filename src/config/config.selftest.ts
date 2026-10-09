@@ -27,8 +27,16 @@ const toolDefsModule = await import('../tool-defs.js');
 const { toolDefs: toolDefsViaTools } = await import('../tools.js');
 const { promptPrefix, __engineTest } = await import('../engine.js');
 const { loadRoutes, loadHotels, searchHotels } = await import('../tools.js');
-const { RouteSchema, HotelSchema, lockedFieldChanges, mergeKeyOrder, applyCatalogPatch, LOCKED_WHEN_ACTIVE, ALWAYS_LOCKED } =
-  await import('../shared/catalog.js');
+const {
+  RouteSchema,
+  HotelSchema,
+  lockedFieldChanges,
+  mergeKeyOrder,
+  applyCatalogPatch,
+  LOCKED_WHEN_ACTIVE,
+  ALWAYS_LOCKED,
+  REPRICE_FIELDS,
+} = await import('../shared/catalog.js');
 const { deepFreeze } = await import('../shared/freeze.js');
 const { sha256 } = await import('./hashes.js');
 type SopSection = import('../sop/sections.js').SopSection;
@@ -259,6 +267,11 @@ const editBody = (key: string, body: (old: string) => string): SopSection[] =>
     codes(lockedVs) === 'locked_changed@price-rules phrase_missing@-',
     codes(lockedVs),
   );
+  // 经 HTTP 时锁定节总从镜像取，locked_changed 只在函数层出得来：它不带 match 这个键只能在这里查
+  check(
+    '契约：locked_changed 不带 match 这个键',
+    lockedVs.some((v) => v.code === 'locked_changed') && lockedVs.filter((v) => v.code === 'locked_changed').every((v) => !('match' in v)),
+  );
   // 代码部署改了锁定节、镜像也跟着变时，只剩 phrase_missing：这正是「要求出现」这一类防的情况
   const missing = contract(lockedEdit, { imageSections: lockedEdit });
   check(
@@ -369,7 +382,8 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     for (const k of drop) delete next[k];
     return lockedFieldChanges('route', status, r, next).join(',');
   };
-  check('锁定：active 改 priceFrom 被点名', changed({ priceFrom: 1 }) === 'priceFrom');
+  // 02 第 8 步：计价与条款的五个字段开放（spec「测试与 CI」允许改的断言：原为 priceFrom 被点名）
+  check('锁定：active 改 priceFrom 不再被点名（02 开放）', changed({ priceFrom: 1 }) === '');
   check('锁定：active 同时改 title 与 days，按锁定表顺序点名', changed({ days: 99, title: '新标题' }) === 'title,days');
   check(
     '锁定：「国内」这一项的有无算锁定字段',
@@ -381,7 +395,11 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     '锁定：aliases 换顺序也算改',
     lockedFieldChanges('route', 'active', multi, { ...multi, aliases: (multi.aliases as string[]).toReversed() }).join(',') === 'aliases',
   );
-  check('锁定：active 删掉 inclusions 算改', changed({}, 'active', ['inclusions']) === 'inclusions');
+  // 02 第 8 步：原为「删掉 inclusions 算改」，inclusions 开放之后删掉它也不算锁定字段的改动；换成仍锁定的可选字段 aliases
+  check(
+    '锁定：active 删掉 inclusions 不算（02 开放），删掉 aliases 算改',
+    changed({}, 'active', ['inclusions']) === '' && changed({}, 'active', ['aliases']) === 'aliases',
+  );
   check(
     '锁定：highlights、itinerary、intensity、hotelLevel 可以改',
     changed({ highlights: ['新亮点'], itinerary: [], intensity: undefined, hotelLevel: '五星' }) === '',
@@ -401,15 +419,19 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
       lockedFieldChanges('route', 'active', { ...r, tags: noDomestic }, { ...r, tags: [...noDomestic, '国内游'] }).length === 0,
   );
   const h = freshHotels()[0]!;
+  // 02 第 8 步：原为「改 nightlyFrom 被点名」，nightlyFrom 开放之后不算；改 name 照旧点名
   check(
-    '锁定：酒店 active 改 nightlyFrom 被点名、改 stars 不算',
-    lockedFieldChanges('hotel', 'active', h, { ...h, nightlyFrom: 1, stars: '奢华' }).join(',') === 'nightlyFrom',
+    '锁定：酒店 active 改 nightlyFrom、stars 都不算（02 开放），改 name 照旧点名',
+    lockedFieldChanges('hotel', 'active', h, { ...h, nightlyFrom: 1, stars: '奢华' }).join(',') === '' &&
+      lockedFieldChanges('hotel', 'active', h, { ...h, name: '新名' }).join(',') === 'name',
   );
+  // 02 第 8 步：锁定表去掉 priceFrom、bestSeason、inclusions、exclusions 与酒店的 nightlyFrom，它们记在 REPRICE_FIELDS
   check(
-    '锁定：锁定表与 spec 一致',
-    LOCKED_WHEN_ACTIVE.route.join(',') ===
-      'id,title,destination,days,priceFrom,bestSeason,segments,aliases,maxAltitude,overseas,tags:国内,inclusions,exclusions' &&
-      LOCKED_WHEN_ACTIVE.hotel.join(',') === 'id,name,destination,nightlyFrom' &&
+    '锁定：锁定表与 spec 一致（02 开放五个计价与条款字段，识别字段照旧）',
+    LOCKED_WHEN_ACTIVE.route.join(',') === 'id,title,destination,days,segments,aliases,maxAltitude,overseas,tags:国内' &&
+      LOCKED_WHEN_ACTIVE.hotel.join(',') === 'id,name,destination' &&
+      REPRICE_FIELDS.route.join(',') === 'priceFrom,bestSeason,inclusions,exclusions' &&
+      REPRICE_FIELDS.hotel.join(',') === 'nightlyFrom' &&
       ALWAYS_LOCKED.join(',') === 'id' &&
       ALWAYS_LOCKED.every(
         (f) => (LOCKED_WHEN_ACTIVE.route as readonly string[]).includes(f) && (LOCKED_WHEN_ACTIVE.hotel as readonly string[]).includes(f),
@@ -703,15 +725,60 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
   put('src/shared/a.jsx', "import pg from 'pg';\nexport const A = () => <div>{String(pg)}</div>;\n");
   put('src/config/b.jsx', `export const guc = '${['app', 'tenant_id'].join('.')}';\n`);
   put('console/src/c.jsx', "import { openDb } from '../../src/db/client.js';\nexport const C = () => <p>{String(openDb)}</p>;\n");
+  // 行业包：console/src 里只有渲染器自测能 import 注册表和假包（console UX spec「行业包通用架构 · 放在哪里」），
+  // 它也不能越过注册表直接 import 某个包；别的 console 文件三样都不能 import
+  const packImports = [
+    "import { packById } from '../../../src/packs/registry.js';",
+    "import { renovation } from '../../../src/shared/pack-fixtures/renovation.js';",
+    "import { travel } from '../../../src/packs/travel/console-pack.js';",
+  ];
+  put('console/src/fields/fields.selftest.tsx', `${packImports.join('\n')}\nexport const P = [packById, renovation, travel];\n`);
+  put('console/src/pages/Other.tsx', `${packImports.join('\n')}\nexport const P = [packById, renovation, travel];\n`);
+  // import type 也算（不变量 11 的第一层）
+  put(
+    'console/src/pages/TypeOnly.ts',
+    "import type { travel } from '../../../src/packs/travel/console-pack.js';\nexport type T = typeof travel;\n",
+  );
+  // 假包经 src/shared 转一手也进得了 console：src/ 里的非自测代码不能 import 它；假包目录自己和自测可以
+  put('src/shared/leak.ts', "import { renovation } from './pack-fixtures/renovation.js';\nexport const L = renovation;\n");
+  put('src/shared/pack-fixtures/extra.ts', "import { renovation } from './renovation.js';\nexport const E = renovation;\n");
+  put('src/shared/leak.selftest.ts', "import { renovation } from './pack-fixtures/renovation.js';\nexport const L = renovation;\n");
   const run = spawnSync(process.execPath, ['--import', 'tsx', path.join(root, 'scripts', 'check-boundaries.ts'), dir], {
     cwd: root,
     encoding: 'utf8',
     timeout: 60_000,
   });
+  const hit = (fileLine: string): boolean => run.stderr.includes(`  ${fileLine}  `);
   check(
     '边界 lint：.jsx 文件里的 import 越界与租户 GUC 名同样被拦，逐个点名文件',
-    run.status === 1 && ['src/shared/a.jsx:1', 'src/config/b.jsx:1', 'console/src/c.jsx:1'].every((f) => run.stderr.includes(f)),
+    run.status === 1 && ['src/shared/a.jsx:1', 'src/config/b.jsx:1', 'console/src/c.jsx:1'].every(hit),
     `${run.status} ${run.stderr.slice(0, 300)}`,
+  );
+  check(
+    '边界 lint：渲染器自测可以 import 注册表和假包，直接 import 旅游包仍被拦',
+    !hit('console/src/fields/fields.selftest.tsx:1') &&
+      !hit('console/src/fields/fields.selftest.tsx:2') &&
+      hit('console/src/fields/fields.selftest.tsx:3'),
+    run.stderr.slice(0, 600),
+  );
+  check(
+    '边界 lint：别的 console 文件 import 注册表、旅游包、假包都被拦',
+    ['console/src/pages/Other.tsx:1', 'console/src/pages/Other.tsx:2', 'console/src/pages/Other.tsx:3'].every(hit),
+    run.stderr.slice(0, 600),
+  );
+  const linesOf = (fileLine: string): string[] => run.stderr.split('\n').filter((l) => l.includes(`  ${fileLine}  `));
+  check(
+    '边界 lint：console 里 import 行业包与假包，各报一次、写明不变量 11',
+    ['console/src/pages/Other.tsx:1', 'console/src/pages/Other.tsx:2', 'console/src/pages/Other.tsx:3'].every(
+      (fl) => linesOf(fl).length === 1 && linesOf(fl)[0]!.includes('不变量 11'),
+    ),
+    run.stderr.slice(0, 900),
+  );
+  check('边界 lint：console 里 import type 行业包也被拦', hit('console/src/pages/TypeOnly.ts:1'), run.stderr.slice(0, 600));
+  check(
+    '边界 lint：src/ 里的非自测代码 import 假包被拦，假包目录自己和自测不拦',
+    hit('src/shared/leak.ts:1') && !hit('src/shared/pack-fixtures/extra.ts:1') && !hit('src/shared/leak.selftest.ts:1'),
+    run.stderr.slice(0, 900),
   );
 }
 
@@ -1106,11 +1173,24 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     cfg.configHealth().lock === 'lost' && thrown(() => cfg.assertConfigWritable()) === 'ConfigLockLostError',
   );
   check('锁：lost 期间对话照常（读缓存）', loadRoutes().length > 0 && cfg.currentSop().versionNo === 1);
+  // 02 spec「两种会话存储与启动」：租户锁不在本进程手里时 /healthz 的 ok 为 false，HTTP 照旧 200（外部拨测看 ok）
+  const { app: healthApp } = await import('../server.js');
+  const healthOf = async (): Promise<{ status: number; ok: boolean }> => {
+    const r = await healthApp.request('/healthz');
+    return { status: r.status, ok: ((await r.json()) as { ok: boolean }).ok };
+  };
+  const lostHealth = await healthOf();
+  check(
+    '/healthz：租户锁 lost 时 ok 为 false，HTTP 照旧 200',
+    lostHealth.status === 200 && lostHealth.ok === false,
+    JSON.stringify(lostHealth),
+  );
   await wait(40);
   check('锁：连不上就一直重取，仍是 lost', lock.reacquired >= 2 && cfg.configHealth().lock === 'lost', String(lock.reacquired));
   lock.next = 'ok';
   await wait(40);
   check('锁：重取成功回到 held', cfg.configHealth().lock === 'held');
+  check('/healthz：锁重新拿到之后 ok 恢复为 true', (await healthOf()).ok === true);
   lock.next = 'held_by_other';
   lock.lose();
   await wait(40);
@@ -1317,13 +1397,16 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     try {
       await boot({
         initConfig: init,
+        initSessionStore: async () => {},
         serve: (onListening) => {
           calls.push('serve');
           onListening();
         },
         preflight: () => void calls.push('preflight'),
         buildIndex: async () => void calls.push('buildIndex'),
+        storeMode: () => 'file',
         startFollowUpScheduler: () => void calls.push('followup'),
+        startJobs: () => void calls.push('jobs'),
         startWecom: () => void calls.push('startWecom'),
         exit: (c) => void exits.push(c),
       });
@@ -1453,9 +1536,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
   await newTenant('no-routes');
   await imp('no-routes');
-  await asSuper(() =>
-    t.pg.query(`delete from catalog_items where kind = 'route' and tenant_id = (select id from tenants where slug = 'no-routes')`),
-  );
+  // 导入时每条写了版本 1（02「报价快照」），条目版本外键指着它们：先删版本行
+  await asSuper(async () => {
+    for (const table of ['catalog_item_versions', 'catalog_items'])
+      await t.pg.query(`delete from ${table} where kind = 'route' and tenant_id = (select id from tenants where slug = 'no-routes')`);
+  });
   await expectFail('没有 active 线路', 'no_active_routes', d({ tenantSlug: 'no-routes' }));
 
   await expectFail('镜像里的 data/sop.md 缺失（空文件）', 'image_sop_invalid', d({ imageSop: '' }));
@@ -2046,10 +2131,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     item0.status === 'active' && JSON.stringify(r0) === JSON.stringify((JSON.parse(routesRaw) as Route[]).find((r) => r.id === CODE)),
   );
 
-  // 锁定字段：逐个改，422 并逐个点名，库和快照都不变
+  // 锁定字段：逐个改，422 并逐个点名，库和快照都不变。02 第 8 步开放的计价与条款字段（priceFrom、bestSeason、inclusions、
+  // exclusions）不在这里了，改成下面「开放的字段」断言能改且产生新版本（spec「测试与 CI」允许改的断言）
   const lockedEdits: [string, Record<string, unknown>][] = [
-    ['priceFrom', { priceFrom: r0.priceFrom + 1 }],
-    ['bestSeason', { bestSeason: '6-9月' }],
     ['segments', { segments: [...r0.segments].toReversed() }],
     ['aliases', { aliases: [...r0.aliases!, '新别名'] }],
     ['maxAltitude', { maxAltitude: r0.maxAltitude! + 1 }],
@@ -2057,8 +2141,6 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     ['destination', { destination: '别处' }],
     ['days', { days: r0.days + 1 }],
     ['title', { title: '新标题' }],
-    ['inclusions', { inclusions: [...r0.inclusions!, '新含'] }],
-    ['exclusions', { exclusions: [...r0.exclusions!, '新不含'] }],
     ['tags:国内', { tags: r0.tags.filter((x) => x !== '国内') }],
   ];
   const beforeDb = await dbPayload(CODE);
@@ -2072,8 +2154,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     );
   }
   check('锁定：被拒之后库和快照都没变', (await dbPayload(CODE)) === beforeDb && snapPayload(CODE) === beforeSnap);
-  const unsetLocked = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set: {}, unset: ['inclusions'] }));
-  check('锁定：unset 锁定字段也拒', unsetLocked.name === 'CatalogLockedFieldError' && unsetLocked.fields?.join(',') === 'inclusions');
+  // 02 第 8 步：原来 unset 的是 inclusions（已开放），换成仍锁定的可选字段 aliases
+  const unsetLocked = await errOf(cat.updateCatalogItem(ctx, 'route', CODE, { rev: item0.rev, set: {}, unset: ['aliases'] }));
+  check('锁定：unset 锁定字段也拒', unsetLocked.name === 'CatalogLockedFieldError' && unsetLocked.fields?.join(',') === 'aliases');
 
   // 改 highlights：200，下一次 get_route_detail 返回新内容；其他条目不变，这一条除 highlights 外的字节也不变
   const proposalQuote = async (): Promise<string> => {
@@ -2184,9 +2267,10 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     (await cat.activateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev })).status === 'active' &&
       cfg.currentCatalog().generation === genBefore + 1,
   );
+  // 02 第 8 步：原为改 priceFrom 被拒，priceFrom 开放之后换成识别字段 title
   check(
     '上架：上架后锁定字段不能再改',
-    (await errOf(cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev, set: { priceFrom: 2 } }))).name ===
+    (await errOf(cat.updateCatalogItem(ctx, 'route', 'r-new-draft', { rev: act.rev, set: { title: '上架后改名' } }))).name ===
       'CatalogLockedFieldError',
   );
   check(
@@ -2473,6 +2557,35 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     shown.innerHTML.includes('<header>') && !shown.innerHTML.includes('<img src=x') && shown.innerHTML.includes('>DNaN<'),
     shown.innerHTML.slice(0, 200),
   );
+  // 方案页脚本把地址里的 v 原样转给接口（02「报价快照」）：正文与报价是脚本取回来的，不转的话 ?v=2 的页面按版本 1 显示旧价
+  const requested = async (loc: { pathname: string; search: string }): Promise<string> => {
+    let url = '';
+    vm.runInNewContext(script, {
+      document: { getElementById: () => ({ innerHTML: '' }), title: '' },
+      location: loc,
+      URLSearchParams,
+      encodeURIComponent,
+      fetch: async (u: string) => {
+        url = u;
+        return { ok: false, json: async () => ({}) };
+      },
+    });
+    // 脚本在第一个 await 之前就调了 fetch：跑完 runInNewContext，url 已经有了
+    await new Promise((r) => setTimeout(r, 1));
+    return url;
+  };
+  const withV = await requested({ pathname: `/proposal/${r0.id}/2`, search: '?v=2' });
+  const dated = await requested({ pathname: `/proposal/${r0.id}/3/2026-11-01`, search: '?v=3' });
+  const noV = await requested({ pathname: `/proposal/${r0.id}/2`, search: '' });
+  check(
+    '方案页脚本：地址带 ?v=2 时请求接口带 v=2（带日期的也带），不带时请求里没有 v',
+    new URL(withV, 'http://x').searchParams.get('v') === '2' &&
+      new URL(dated, 'http://x').searchParams.get('v') === '3' &&
+      new URL(dated, 'http://x').searchParams.get('departDate') === '2026-11-01' &&
+      noV.startsWith(`/api/proposal/${r0.id}?`) &&
+      !new URL(noV, 'http://x').searchParams.has('v'),
+    `${withV} | ${dated} | ${noV}`,
+  );
 }
 
 // ---------------- 检索（第 9 步：验收 11） ----------------
@@ -2681,6 +2794,894 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   }
 }
 
+// ---------------- 条目版本、按版本渲染的方案书、按轮固定快照（02 第 8 步：验收 19，不变量 35–37） ----------------
+{
+  const cat = await import('./catalog.js');
+  const http = await import('node:http');
+  process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
+  const { app } = await import('../server.js');
+  const { onToolCall } = await import('../engine.js');
+  const getJson = async (url: string): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const res = await app.request(url);
+    return { status: res.status, body: res.ok ? ((await res.json()) as Record<string, unknown>) : {} };
+  };
+  const proposalUrlOf = async (routeId: string, extra: Record<string, unknown> = {}): Promise<string> =>
+    String(
+      (JSON.parse(await executeTool('generate_proposal', { routeId, travelers: 2, ...extra }, freshSession())) as { proposalUrl?: string })
+        .proposalUrl,
+    );
+  const quoteAt = async (routeId: string, v?: string): Promise<{ status: number; total?: number; highlights?: string }> => {
+    const r = await getJson(`/api/proposal/${routeId}?travelers=2&departDate=${offDate}${v === undefined ? '' : `&v=${v}`}`);
+    return {
+      status: r.status,
+      total: (r.body.quote as { total?: number } | undefined)?.total,
+      highlights: JSON.stringify((r.body.route as { highlights?: unknown } | undefined)?.highlights),
+    };
+  };
+
+  // 文件模式：没有版本，链接与开工时逐字节相同；?v=1 与不带 v 相同，?v=2 是 404；订单记版本 1
+  cfg.__configTest.reset();
+  {
+    check('版本·文件模式：方案书链接不带 ?v=', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2');
+    check(
+      '版本·文件模式：带日期的链接也不变',
+      (await proposalUrlOf('r-xian', { departDate: offDate })) === `/proposal/r-xian/2/${offDate}`,
+    );
+    const plain = await getJson(`/api/proposal/r-xian?travelers=2`);
+    const v1 = await getJson(`/api/proposal/r-xian?travelers=2&v=1`);
+    check(
+      '版本·文件模式：?v=1 与不带 v 相同，?v=2 → 404',
+      plain.status === 200 &&
+        JSON.stringify(v1.body) === JSON.stringify(plain.body) &&
+        (await getJson(`/api/proposal/r-xian?v=2`)).status === 404,
+    );
+    const s = freshSession();
+    await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s);
+    const { getOrder } = await import('../store.js');
+    check('版本·文件模式：订单记 catalogVersion 1', getOrder(getSession(s.id)!.orderIds[0]!)?.catalogVersion === 1);
+    check(
+      '版本·文件模式：/healthz 的 catalogVersioned 是 false',
+      ((await getJson('/healthz')).body.config as { catalogVersioned?: unknown }).catalogVersioned === false,
+    );
+  }
+
+  // DB 模式：单开一个租户，版本从干净的状态开始
+  await newTenant('vers');
+  check('版本：导入新租户', (await imp('vers')).code === EXIT.ok);
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  const tenantId = cfg.currentCatalog().tenantId;
+  const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营丁', ip: null } };
+  const versionRows = async (
+    code: string,
+    kind = 'route',
+  ): Promise<{ version: number; source: string; by: string | null; payload: string }[]> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ version: number; source: string; by: string | null; payload: string }>(
+            `select version, source, created_by_name as by, payload::text as payload from catalog_item_versions
+              where tenant_id = $1 and kind = $2 and code = $3 order by version`,
+            [tenantId, kind, code],
+          )
+        ).rows,
+    );
+  const itemRow = async (code: string, kind = 'route'): Promise<{ version: number; rev: number; payload: string }> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ version: number; rev: number; payload: string }>(
+            `select version, rev, payload::text as payload from catalog_items where tenant_id = $1 and kind = $2 and code = $3`,
+            [tenantId, kind, code],
+          )
+        ).rows[0]!,
+    );
+  const versionAudits = async (code: string): Promise<{ diff: { version?: number; source?: string }; kind: string }[]> =>
+    asSuper(
+      async () =>
+        (
+          await t.pg.query<{ diff: { version?: number; source?: string }; kind: string }>(
+            `select diff, actor_kind as kind from audit_log where tenant_id = $1 and action = 'catalog.version' and target_id = $2 order by id`,
+            [tenantId, code],
+          )
+        ).rows,
+    );
+  const totalVersions = async (): Promise<number> =>
+    asSuper(
+      async () =>
+        (await t.pg.query<{ n: number }>(`select count(*)::int as n from catalog_item_versions where tenant_id = $1`, [tenantId])).rows[0]!
+          .n,
+    );
+  const healthVersioned = async (): Promise<unknown> =>
+    ((await getJson('/healthz')).body.config as { catalogVersioned?: unknown }).catalogVersioned;
+
+  const items = cfg.currentCatalog().routes.length + cfg.currentCatalog().hotels.length;
+  check('版本：导入时每条 active 条目写了版本 1（source=activate）', (await totalVersions()) === items, String(await totalVersions()));
+  check(
+    '版本：导入之后快照里每条都是版本 1，catalogVersioned 是 false，启动时没有要补写的',
+    Object.keys(cfg.currentCatalog().versions).length === items &&
+      Object.values(cfg.currentCatalog().versions).every((v) => v === 1) &&
+      !cfg.catalogVersioned() &&
+      (await healthVersioned()) === false &&
+      (await versionAudits('r-xian')).length === 0,
+  );
+  const xian0 = (await versionRows('r-xian'))[0];
+  check(
+    '版本：版本 1 的 payload 与条目逐字节相同',
+    xian0?.source === 'activate' && xian0.by === 'import-config' && xian0.payload === (await itemRow('r-xian')).payload,
+  );
+  check('版本：版本 1 的线路，方案书链接与开工时逐字节相同', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2');
+
+  // 改 active 条目的内容（后台，非锁定字段）：同一事务里写版本 2、catalog_items.version 跟着改，rev 只加 1，审计 catalog.version
+  const before = await quoteAt('r-xian');
+  const xian = (await cat.getCatalogItem(ctx, 'route', 'r-xian'))!;
+  const hl = ['版本二的第一条亮点', ...(xian.payload as Route).highlights.slice(1)];
+  const linkV1 = await proposalUrlOf('r-xian');
+  const u = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: xian.rev, set: { highlights: hl } });
+  const rows2 = await versionRows('r-xian');
+  check(
+    '版本：改了 active 条目 → 写版本 2（source=console，记操作者），payload 是改后的',
+    rows2.length === 2 &&
+      rows2[1]!.version === 2 &&
+      rows2[1]!.source === 'console' &&
+      rows2[1]!.by === '运营丁' &&
+      rows2[1]!.payload === (await itemRow('r-xian')).payload,
+    JSON.stringify(rows2.map((r) => [r.version, r.source, r.by])),
+  );
+  check(
+    '版本：catalog_items.version 改成 2，rev 只加 1',
+    (await itemRow('r-xian')).version === 2 && u.rev === xian.rev + 1 && (await itemRow('r-xian')).rev === xian.rev + 1,
+  );
+  const aud = await versionAudits('r-xian');
+  check(
+    '版本：审计 catalog.version 一行（version 2、console）',
+    aud.length === 1 && aud[0]!.diff.version === 2 && aud[0]!.diff.source === 'console' && aud[0]!.kind === 'user',
+    JSON.stringify(aud),
+  );
+  check(
+    '版本：内存里的快照与历史跟着更新，catalogVersioned 变成 true',
+    cfg.currentCatalog().versions['route:r-xian'] === 2 && cfg.catalogVersioned() && (await healthVersioned()) === true,
+  );
+  const same = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: u.rev, set: { highlights: hl } });
+  check(
+    '版本：原样提交回去（内容没变）不产生新版本',
+    (await versionRows('r-xian')).length === 2 && (await itemRow('r-xian')).version === 2 && same.rev === u.rev + 1,
+  );
+
+  // 方案书：之后新出的链接带 ?v=2；改之前发出的（不带 v）按版本 1 渲染；?v=3 还不存在 → 404，期间没有数据库查询
+  const linkV2 = await proposalUrlOf('r-xian');
+  check('版本：之后新出的方案书链接带 ?v=2', linkV1 === '/proposal/r-xian/2' && linkV2 === '/proposal/r-xian/2?v=2', linkV2);
+  const old = await quoteAt('r-xian');
+  const v2 = await quoteAt('r-xian', '2');
+  check(
+    '版本：不带 v 的链接按版本 1（改之前的亮点），?v=2 是改后的；报价相同',
+    old.status === 200 &&
+      old.highlights === before.highlights &&
+      v2.highlights === JSON.stringify(hl) &&
+      old.total === before.total &&
+      v2.total === before.total,
+    `${old.highlights?.slice(0, 30)} / ${v2.highlights?.slice(0, 30)}`,
+  );
+  const q0 = queryCount();
+  const bad: string[] = [];
+  for (const v of ['3', '0', '-1', '01', '1.0', 'abc', '', '99999999999']) {
+    if ((await quoteAt('r-xian', v)).status !== 404) bad.push(`api:${v}`);
+    if ((await app.request(`/proposal/r-xian/2?v=${v}`)).status !== 404) bad.push(`page:${v}`);
+  }
+  check('版本：v 不是正整数或大于当前版本 → 404（接口与页面）', bad.length === 0, bad.join(','));
+  const v1Page = await (await app.request('/proposal/r-xian/2')).text();
+  const v2Page = await (await app.request('/proposal/r-xian/2?v=2')).text();
+  check(
+    '版本：页面的分享卡片按版本写（不带 v 是版本 1 的第一条亮点，?v=2 是新的）',
+    v2Page.includes('版本二的第一条亮点') && !v1Page.includes('版本二的第一条亮点') && v1Page.includes('<title>'),
+  );
+  check('版本：以上匿名请求（含 404）都没有数据库查询', queryCount() === q0, `${q0} → ${queryCount()}`);
+
+  // 草稿的编辑不产生版本；上架写版本 1
+  const draft = await cat.createCatalogItem(ctx, 'route', {
+    ...(JSON.parse(routesRaw) as Record<string, unknown>[])[0]!,
+    id: 'r-vers-draft',
+    title: '版本测试草稿',
+  });
+  const d1 = await cat.updateCatalogItem(ctx, 'route', 'r-vers-draft', {
+    rev: draft.rev,
+    set: { priceFrom: 1000, title: '版本测试草稿二' },
+  });
+  check('版本：草稿的新建与编辑不产生版本', (await versionRows('r-vers-draft')).length === 0);
+  await cat.activateCatalogItem(ctx, 'route', 'r-vers-draft', { rev: d1.rev });
+  const act = await versionRows('r-vers-draft');
+  check(
+    '版本：上架写版本 1（source=activate），审计 catalog.version，进快照的版本是 1',
+    act.length === 1 &&
+      act[0]!.version === 1 &&
+      act[0]!.source === 'activate' &&
+      act[0]!.payload === (await itemRow('r-vers-draft')).payload &&
+      (await versionAudits('r-vers-draft')).map((a) => `${a.diff.version}:${a.diff.source}`).join() === '1:activate' &&
+      cfg.currentCatalog().versions['route:r-vers-draft'] === 1 &&
+      (await proposalUrlOf('r-vers-draft')) === '/proposal/r-vers-draft/2',
+  );
+
+  // 验收 19：给一条 active 线路改 priceFrom（后台）。改之前发出的链接（不带 v、?v=2）报价不变；之后新出的链接带 ?v=3、按新价；
+  // ?v=4 还不存在 → 404，期间没有数据库查询；已有订单金额不变；改 title 仍 422
+  const s1 = freshSession();
+  await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s1);
+  const { getOrder } = await import('../store.js');
+  const order1 = getOrder(getSession(s1.id)!.orderIds[0]!)!;
+  check('版本：订单记下单时线路的版本（2）', order1.catalogVersion === 2 && order1.totalPrice === before.total);
+  const price0 = (cfg.currentCatalog().routes.find((r) => r.id === 'r-xian') as Route).priceFrom;
+  const cur3 = (await cat.getCatalogItem(ctx, 'route', 'r-xian'))!;
+  const priced = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: cur3.rev, set: { priceFrom: price0 + 1000 } });
+  const rows3 = await versionRows('r-xian');
+  check(
+    '改价：后台改 priceFrom → 200，写版本 3（source=console），catalog_items.version 跟着改，审计 catalog.version',
+    (priced.payload as Route).priceFrom === price0 + 1000 &&
+      rows3.length === 3 &&
+      rows3[2]!.source === 'console' &&
+      (await itemRow('r-xian')).version === 3 &&
+      (await versionAudits('r-xian')).map((a) => `${a.diff.version}:${a.diff.source}`).join() === '2:console,3:console',
+  );
+  const q1 = queryCount();
+  const afterPrice = [await quoteAt('r-xian'), await quoteAt('r-xian', '2'), await quoteAt('r-xian', '3'), await quoteAt('r-xian', '4')];
+  check(
+    '改价：改之前发出的链接（不带 v、?v=2）报价不变，?v=3 按新价，?v=4 → 404',
+    afterPrice[0]!.total === before.total &&
+      afterPrice[1]!.total === before.total &&
+      afterPrice[2]!.total === (price0 + 1000) * 2 &&
+      afterPrice[3]!.status === 404,
+    JSON.stringify(afterPrice),
+  );
+  check('改价：这几次匿名请求（含 404）没有数据库查询', queryCount() === q1, `${q1} → ${queryCount()}`);
+  check('改价：已有订单金额不变', getOrder(order1.id)?.totalPrice === before.total && getOrder(order1.id)?.catalogVersion === 2);
+  const s2 = freshSession();
+  await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s2);
+  const order2 = getOrder(getSession(s2.id)!.orderIds[0]!)!;
+  check('改价：之后的新订单按新价、记版本 3', order2.totalPrice === (price0 + 1000) * 2 && order2.catalogVersion === 3);
+  check('改价：之后新出的方案书链接带 ?v=3', (await proposalUrlOf('r-xian')) === '/proposal/r-xian/2?v=3');
+  const titled = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev: priced.rev, set: { title: '西安改名' } }).then(
+    () => null,
+    (e: unknown) => e as { name?: string; fields?: string[] },
+  );
+  check(
+    '改价：改 title 仍是 CatalogLockedFieldError（422），不产生版本',
+    titled?.constructor.name === 'CatalogLockedFieldError' &&
+      titled.fields?.join() === 'title' &&
+      (await versionRows('r-xian')).length === 3,
+  );
+
+  // 开放的其余字段（spec「测试与 CI」允许改的断言：原为逐个 422）：bestSeason、inclusions、exclusions 与酒店的 nightlyFrom 各自能改，
+  // 各写一个新版本；识别字段照旧锁定
+  let rev = priced.rev;
+  const xianNow = priced.payload as Route;
+  for (const [field, value] of [
+    ['bestSeason', '6-9月'],
+    ['inclusions', [...xianNow.inclusions!, '新含的一项']],
+    ['exclusions', [...xianNow.exclusions!, '新不含的一项']],
+  ] as const) {
+    const n = (await versionRows('r-xian')).length;
+    const r = await cat.updateCatalogItem(ctx, 'route', 'r-xian', { rev, set: { [field]: value } });
+    rev = r.rev;
+    check(
+      `开放：active 线路改 ${field} → 200，写版本 ${n + 1}`,
+      (await versionRows('r-xian')).length === n + 1 && cfg.currentCatalog().versions['route:r-xian'] === n + 1,
+    );
+  }
+  const hotelCode = cfg.currentCatalog().hotels[0]!.id;
+  const hotel = (await cat.getCatalogItem(ctx, 'hotel', hotelCode))!;
+  const nightly = (hotel.payload as import('../shared/catalog-types.js').Hotel).nightlyFrom + 100;
+  await cat.updateCatalogItem(ctx, 'hotel', hotelCode, { rev: hotel.rev, set: { nightlyFrom: nightly } });
+  check(
+    '开放：active 酒店改 nightlyFrom → 200，写版本 2，快照里是新价',
+    (await versionRows(hotelCode, 'hotel')).map((r) => `${r.version}:${r.source}`).join() === '1:activate,2:console' &&
+      cfg.currentCatalog().versions[`hotel:${hotelCode}`] === 2 &&
+      loadHotels().find((h) => h.id === hotelCode)?.nightlyFrom === nightly,
+  );
+
+  // catalog-fix（停应用 → 改 → 重启）照旧是识别字段的修正途径，改了同样写新版本（source=fix）
+  const nFix = (await versionRows('r-xian')).length;
+  cfg.__configTest.reset();
+  await cat.fixLockedFields({
+    db: t.db,
+    tenantSlug: 'vers',
+    kind: 'route',
+    code: 'r-xian',
+    set: { aliases: [...(xianNow.aliases ?? []), '古都'] },
+    reason: '补一个客户常说的叫法',
+  });
+  const rowsFix = await versionRows('r-xian');
+  check(
+    'catalog-fix：改识别字段写一个新版本（source=fix），catalog_items.version 跟着改，审计 catalog.version',
+    rowsFix.length === nFix + 1 &&
+      rowsFix.at(-1)!.source === 'fix' &&
+      rowsFix.at(-1)!.by === 'catalog-fix' &&
+      (await itemRow('r-xian')).version === nFix + 1 &&
+      (await versionAudits('r-xian')).at(-1)?.diff.source === 'fix',
+  );
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  check(
+    '版本：重启后全部版本读进内存',
+    cfg.currentCatalog().versions['route:r-xian'] === nFix + 1 &&
+      (await quoteAt('r-xian')).total === before.total &&
+      (await quoteAt('r-xian', '3')).total === (price0 + 1000) * 2 &&
+      (await quoteAt('r-xian', String(nFix + 2))).status === 404,
+  );
+
+  // 启动补写：删掉一个 active 条目的全部版本行（模拟 01 镜像期间上架的，线路与酒店各一条）后重启 → 补写版本 1，链接照常打开；
+  // 直接改条目内容（模拟 01 镜像期间小林改过非锁定字段）后重启 → 补写下一个版本，catalog_items 这一行不动（「更新于」与改它的人
+  // 照旧，catalog_items.version 落后、内存里取大）；再重启什么都不写
+  const hotel01 = cfg.currentCatalog().hotels[1]!.id;
+  cfg.__configTest.reset();
+  await asSuper(async () => {
+    await t.pg.query(`delete from catalog_item_versions where tenant_id = $1 and kind = 'route' and code = 'r-guizhou'`, [tenantId]);
+    await t.pg.query(`delete from catalog_item_versions where tenant_id = $1 and kind = 'hotel' and code = $2`, [tenantId, hotel01]);
+  });
+  const sanya = await itemRow('r-sanya');
+  const sanyaEdited = JSON.stringify({ ...(JSON.parse(sanya.payload) as Record<string, unknown>), highlights: ['01 镜像期间改的亮点'] });
+  await asSuper(() =>
+    t.pg.query(
+      `update catalog_items set payload = $2::json, updated_by_name = '小林' where tenant_id = $1 and kind = 'route' and code = 'r-sanya'`,
+      [tenantId, sanyaEdited],
+    ),
+  );
+  const stamp = async (code: string): Promise<string> =>
+    asSuper(async () =>
+      JSON.stringify(
+        (
+          await t.pg.query(
+            `select rev, version, updated_at::text as at, updated_by_name as by from catalog_items where tenant_id = $1 and kind = 'route' and code = $2`,
+            [tenantId, code],
+          )
+        ).rows[0],
+      ),
+    );
+  const sanyaStamp = await stamp('r-sanya');
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  const gz = await versionRows('r-guizhou');
+  check(
+    '补写：没有版本行的 active 条目写了版本 1（source=backfill，payload 是条目当前的），审计记 system',
+    gz.length === 1 &&
+      gz[0]!.version === 1 &&
+      gz[0]!.source === 'backfill' &&
+      gz[0]!.payload === (await itemRow('r-guizhou')).payload &&
+      (await versionAudits('r-guizhou')).map((a) => `${a.diff.version}:${a.diff.source}:${a.kind}`).join() === '1:backfill:system',
+  );
+  check(
+    '补写：酒店也补（没有版本行的 active 酒店写了版本 1，快照里是 1，审计记 system）',
+    (await versionRows(hotel01, 'hotel')).map((r) => `${r.version}:${r.source}`).join() === '1:backfill' &&
+      cfg.currentCatalog().versions[`hotel:${hotel01}`] === 1 &&
+      (await versionAudits(hotel01)).map((a) => `${a.diff.version}:${a.diff.source}:${a.kind}`).join() === '1:backfill:system',
+  );
+  check(
+    '补写：补了版本 1 的线路，链接照常打开、不带 v',
+    (await quoteAt('r-guizhou')).status === 200 && (await proposalUrlOf('r-guizhou')) === '/proposal/r-guizhou/2',
+  );
+  const sy = await versionRows('r-sanya');
+  check(
+    '补写：内容与最新版本不同的条目写了版本 2（backfill），内存里是版本 2',
+    sy.length === 2 &&
+      sy[1]!.source === 'backfill' &&
+      sy[1]!.payload === (await itemRow('r-sanya')).payload &&
+      cfg.currentCatalog().versions['route:r-sanya'] === 2,
+  );
+  check(
+    '补写：catalog_items 这一行不动（rev、version 列、更新于、改它的人都照旧），后台不会显示成「小林更新于重启时刻」',
+    (await stamp('r-sanya')) === sanyaStamp && JSON.parse(sanyaStamp).by === '小林' && JSON.parse(sanyaStamp).version === 1,
+    `${await stamp('r-sanya')} / ${sanyaStamp}`,
+  );
+  check(
+    '补写：不带 v 的链接仍是 01 镜像期间改之前的那份（版本 1），?v=2 是改后的',
+    (await quoteAt('r-sanya')).highlights !== JSON.stringify(['01 镜像期间改的亮点']) &&
+      (await quoteAt('r-sanya', '2')).highlights === JSON.stringify(['01 镜像期间改的亮点']),
+  );
+  const nBefore = await totalVersions();
+  cfg.__configTest.reset();
+  await cfg.initConfig(testConfigDeps(t, { tenantSlug: 'vers' }));
+  check(
+    '补写：再重启没有要补写的，内存里仍是版本 2（这一列落后也取大）',
+    (await totalVersions()) === nBefore &&
+      (await versionAudits('r-sanya')).length === 1 &&
+      cfg.currentCatalog().versions['route:r-sanya'] === 2,
+  );
+  {
+    // 补写之后原样提交一次（内容没变，带回的是落后的这一列）：内存里的版本不退回 1；再改一次按 max(version) + 1 写版本 3、这一列跟上
+    const it = (await cat.getCatalogItem(ctx, 'route', 'r-sanya'))!;
+    const same = await cat.updateCatalogItem(ctx, 'route', 'r-sanya', {
+      rev: it.rev,
+      set: { highlights: (it.payload as Route).highlights },
+    });
+    const keptV = cfg.currentCatalog().versions['route:r-sanya'];
+    await cat.updateCatalogItem(ctx, 'route', 'r-sanya', { rev: same.rev, set: { highlights: ['补写之后再改'] } });
+    check(
+      '补写：之后原样提交内存仍是版本 2，再改写版本 3、catalog_items.version 跟上',
+      keptV === 2 &&
+        cfg.currentCatalog().versions['route:r-sanya'] === 3 &&
+        (await itemRow('r-sanya')).version === 3 &&
+        (await versionRows('r-sanya')).map((r) => r.version).join() === '1,2,3',
+      `${keptV}`,
+    );
+  }
+
+  // 按轮固定快照：一轮里模型先看了线路，改价在这一轮中间提交，这一轮之后的工具结果、链接与价格护栏仍是开始时那一代
+  {
+    interface Step {
+      content?: string;
+      toolCalls?: { name: string; args: Record<string, unknown> }[];
+      /** 回这一步之前先做的事（在这一轮中间改产品库） */
+      before?: () => Promise<void>;
+    }
+    const script: Step[] = [];
+    const toolResults: string[] = [];
+    const fake = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        void (async () => {
+          res.setHeader('content-type', 'application/json');
+          if (req.url?.endsWith('/embeddings')) {
+            const input = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input: string[] }).input;
+            res.end(JSON.stringify({ data: input.map(() => ({ embedding: [1, 0, 0] })), usage: { prompt_tokens: 0 } }));
+            return;
+          }
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { role: string; content: string | null }[] };
+          const last = body.messages.at(-1);
+          if (last?.role === 'tool') toolResults.push(String(last.content));
+          const step = script.shift();
+          await step?.before?.();
+          const message = step?.toolCalls
+            ? {
+                role: 'assistant',
+                content: null,
+                tool_calls: step.toolCalls.map((c, i) => ({
+                  id: `call_${toolResults.length}_${i}`,
+                  type: 'function',
+                  function: { name: c.name, arguments: JSON.stringify(c.args) },
+                })),
+              }
+            : { role: 'assistant', content: step?.content ?? '（假模型脚本已耗尽）' };
+          res.end(JSON.stringify({ choices: [{ message, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+        })();
+      });
+    });
+    await new Promise<void>((r) => fake.listen(0, '127.0.0.1', () => r()));
+    const keys = ['LLM_MOCK', 'LLM_PROVIDER', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL', 'LLM_HEDGE_MODEL', 'LLM_MAX_RETRY'] as const;
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    Object.assign(process.env, {
+      LLM_MOCK: '0',
+      LLM_PROVIDER: '',
+      LLM_BASE_URL: `http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`,
+      LLM_API_KEY: 'selftest-fake-key',
+      LLM_MODEL: 'selftest-fake',
+      LLM_HEDGE_MODEL: '',
+      LLM_MAX_RETRY: '0',
+    });
+    try {
+      const code = 'r-beijing';
+      const r0 = cfg.currentCatalog().routes.find((r) => r.id === code) as Route;
+      const money = (n: number): string => n.toLocaleString('en-US');
+      const gen0 = cfg.currentCatalog().generation;
+      const seenCalls: string[] = [];
+      const off = onToolCall((name) => void seenCalls.push(name));
+      script.push(
+        { toolCalls: [{ name: 'get_route_detail', args: { routeId: code } }] },
+        {
+          // 模型看完线路、这一轮还没结束：后台在这时改了这条线的价并提交（版本 2）
+          before: async () => {
+            const it = (await cat.getCatalogItem(ctx, 'route', code))!;
+            await cat.updateCatalogItem(ctx, 'route', code, { rev: it.rev, set: { priceFrom: r0.priceFrom + 2000 } });
+          },
+          toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }],
+        },
+        // 模型照这一轮看到的报：每人是开始时的起价，两位合计跟着算
+        { content: `北京这条线每人 ${money(r0.priceFrom)} 元起，两位合计 ${money(r0.priceFrom * 2)} 元，详细方案书给您生成好了：` },
+      );
+      const reply = await handleMessage('wecom:wmCFGPIN0001', '北京那条线出个两个人的方案书', 'wecom');
+      off();
+      const proposal = JSON.parse(toolResults.find((r) => r.includes('proposalUrl')) ?? '{}') as {
+        proposalUrl?: string;
+        perPerson?: number;
+      };
+      check(
+        '按轮固定：脚本恰好用完，这一轮里真的改了版本',
+        script.length === 0 && cfg.currentCatalog().versions[`route:${code}`] === 2 && cfg.currentCatalog().generation > gen0,
+        `${script.length}`,
+      );
+      check(
+        '按轮固定：改动之后这一轮的 generate_proposal 仍按开始时那一代（链接不带 ?v=、报价是开始时的）',
+        proposal.proposalUrl === `/proposal/${code}/2` && proposal.perPerson === r0.priceFrom,
+        JSON.stringify(proposal),
+      );
+      check('按轮固定：回复里的链接也是那一代的', reply.text.includes(`/proposal/${code}/2`) && !reply.text.includes('?v='), reply.text);
+      check(
+        '按轮固定：价格护栏看的也是开始时那一代，照这一轮工具结果报的价原样发出',
+        reply.text.includes(`每人 ${money(r0.priceFrom)} 元起`) && reply.text.includes(`两位合计 ${money(r0.priceFrom * 2)} 元`),
+        reply.text,
+      );
+      check('按轮固定：下一轮新出的链接带 ?v=2', (await proposalUrlOf(code)) === `/proposal/${code}/2?v=2`, seenCalls.join());
+
+      // 链接白名单认 ?v= 后缀，而且要和这次 generate_proposal 给的一样：模型抄丢了后缀（客户点开会是版本 1 的旧价）就换成真链接；
+      // 连域名一起写的剥掉域名、留着后缀
+      const linkTurn = async (sid: string, content: string, routeId = code, ask = '北京那条线出个两个人的方案书'): Promise<string> => {
+        script.push({ toolCalls: [{ name: 'generate_proposal', args: { routeId, travelers: 2 } }] }, { content });
+        const r = await handleMessage(sid, ask, 'wecom');
+        if (script.length) fails.push(`「${content}」这轮没用完脚本`);
+        script.length = 0;
+        return r.text;
+      };
+      const dropped = await linkTurn('wecom:wmCFGPIN0002', `方案书在这：/proposal/${code}/2 您先看看`);
+      check(
+        '链接白名单：模型写的链接丢了 ?v=2 → 换成这次工具给的那条',
+        dropped.includes(`/proposal/${code}/2?v=2`) && !/\/proposal\/r-beijing\/2(?!\?v=2)/.test(dropped),
+        dropped,
+      );
+      const wrong = await linkTurn('wecom:wmCFGPIN0003', `方案书在这：/proposal/${code}/2?v=1 您先看看`);
+      check(
+        '链接白名单：版本后缀写错的（?v=1）同样换成真链接',
+        wrong.includes(`/proposal/${code}/2?v=2`) && !wrong.includes('?v=1'),
+        wrong,
+      );
+      const absolute = await linkTurn('wecom:wmCFGPIN0004', `方案书在这：https://www.yuntu.com/proposal/${code}/2?v=2 您先看看`);
+      check(
+        '链接白名单：完整 URL 剥掉域名，留下 ?v=2',
+        absolute.includes(`/proposal/${code}/2?v=2`) && !absolute.includes('yuntu.com'),
+        absolute,
+      );
+      const kept = await linkTurn('wecom:wmCFGPIN0005', `方案书在这：/proposal/${code}/2?v=2 您先看看`);
+      check('链接白名单：后缀对得上的链接原样留着、只出现一次', kept.split(`/proposal/${code}/2?v=2`).length === 2, kept);
+
+      // ?v= 的半角问号不是句末：链接后面同一行接着会被按句删、截半句的话，链接不会被切成「/2?」（不带 v，点开是版本 1 的旧价）。
+      // 同一句话放在版本 1 的线路（r-guizhou）上对照：护栏连着链接整句删掉的，版本 2 也整句删、不留半截；版本 1 留下链接的，
+      // 版本 2 留下带完整 ?v=2 的链接，企微卡片也按 ?v=2 出
+      const { __test: wecomCard } = await import('../adapters/wecom.js');
+      const LINK = '\u0001';
+      const sameLine: [string, string][] = [
+        ['提议发方案', `详细方案给您：${LINK} 需要的话我也可以把方案书发您`],
+        ['编出来的总价', `方案书：${LINK} 两位总价 88,888 元，您看看～`],
+        ['编出来的每人价', `方案书在这：${LINK} 每人只要 3,000 元，超划算。`],
+        ['转接说法', `方案书：${LINK} 我已为您转接资深顾问，稍后联系您`],
+        ['规则词·名额紧张', `方案书在这：${LINK} 名额紧张，建议尽快下单哦。`],
+        ['规则词·名额紧张（逗号）', `方案书在这：${LINK}，名额紧张，建议尽快下单。`],
+        ['规则词·儿童价', `方案书给您：${LINK} 带小孩还有儿童价优惠。`],
+        ['半句截断', `方案书在这 ${LINK} 您先看看，有问题随时说，`],
+        ['半句截断（规则词）', `方案书在这 ${LINK} 有问题随时说，`],
+      ];
+      const keptLink: string[] = [];
+      for (const [i, [label, content]] of sameLine.entries()) {
+        const out = await linkTurn(`wecom:wmCFGPIN01${String(i).padStart(2, '0')}`, content.replace(LINK, `/proposal/${code}/2?v=2`));
+        const v1 = await linkTurn(
+          `wecom:wmCFGPIN02${String(i).padStart(2, '0')}`,
+          content.replace(LINK, '/proposal/r-guizhou/2'),
+          'r-guizhou',
+          '贵州那条线出个两个人的方案书',
+        );
+        const has = out.includes(`/proposal/${code}/2?v=2`);
+        if (has) keptLink.push(label);
+        const card = wecomCard.extractCard(out, 'https://x.test');
+        check(
+          `?v= 不断句·${label}：没有切成「/2?」的半截链接，与版本 1 同形（留下的话带完整的 ?v=2，企微卡片也带）`,
+          !new RegExp(`/proposal/${code}/2(?!\\?v=2)`).test(out) &&
+            has === v1.includes('/proposal/r-guizhou/2') &&
+            (!has ||
+              (card?.url === `https://x.test/proposal/${code}/2?v=2` &&
+                out.replace(`/proposal/${code}/2?v=2`, LINK) === v1.replace('/proposal/r-guizhou/2', LINK))),
+          `${out} | 版本 1：${v1} | ${JSON.stringify(card)}`,
+        );
+      }
+      // 转人工那一轮（模型同时调了 handoff_to_human）：兑现不了的许诺按句删（dropPostHandoffPromises），同样与版本 1 同形
+      {
+        const handoffTurn = async (sid: string, routeId: string, link: string, ask: string): Promise<string> => {
+          script.push(
+            {
+              toolCalls: [
+                { name: 'generate_proposal', args: { routeId, travelers: 2 } },
+                { name: 'handoff_to_human', args: { reason: '客户想找人细聊行程：目的地见方案，出行时间未知，2 人' } },
+              ],
+            },
+            { content: `方案书：${link} 有问题随时找我。` },
+          );
+          const r = await handleMessage(sid, ask, 'wecom');
+          if (script.length) fails.push(`转人工那一轮（${routeId}）没用完脚本`);
+          script.length = 0;
+          return r.text;
+        };
+        const out = await handoffTurn('wecom:wmCFGPIN0301', code, `/proposal/${code}/2?v=2`, '北京那条线出个两个人的方案书');
+        const v1 = await handoffTurn('wecom:wmCFGPIN0302', 'r-guizhou', '/proposal/r-guizhou/2', '贵州那条线出个两个人的方案书');
+        check(
+          '?v= 不断句·转人工那一轮：没有切成「/2?」的半截链接，与版本 1 同形',
+          !new RegExp(`/proposal/${code}/2(?!\\?v=2)`).test(out) &&
+            out.replace(`/proposal/${code}/2?v=2`, LINK) === v1.replace('/proposal/r-guizhou/2', LINK),
+          `${out} | 版本 1：${v1}`,
+        );
+      }
+      check(
+        '?v= 不断句：链接后面接着的话没被删的三种，链接都带完整的 ?v=2',
+        keptLink.join() === '提议发方案,半句截断,半句截断（规则词）',
+        keptLink.join(),
+      );
+      // 出口最后一道：改写正文的护栏之后，本轮这条线成功调用给的后缀缺了就补回去、悬着的「?」换掉；版本 1、只有出错的调用、
+      // 别的线路、后缀对得上的都原样
+      {
+        const et = __engineTest;
+        const ok = (routeId: string, url: string) => ({
+          name: 'generate_proposal',
+          args: { routeId, travelers: 2 },
+          result: JSON.stringify({ proposalUrl: url }),
+        });
+        const bad = {
+          name: 'generate_proposal',
+          args: { routeId: 'r-x', travelers: '两' },
+          result: JSON.stringify({ error: '人数要是数字' }),
+        };
+        const fix = et.restoreProposalSuffixes;
+        check(
+          '兜底：丢了的后缀补回去、悬着的「?」换掉（带日期的也补），对得上的不动',
+          fix('方案书：/proposal/r-x/2? 您看看', [bad, ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-x/2?v=2 您看看' &&
+            fix('方案书：/proposal/r-x/2? 您看看', [ok('r-x', '/proposal/r-x/2?v=2'), bad]) === '方案书：/proposal/r-x/2?v=2 您看看' &&
+            fix('方案书：/proposal/r-x/2', [ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-x/2?v=2' &&
+            fix('见 /proposal/r-x/3/2026-11-01，', [ok('r-x', '/proposal/r-x/3/2026-11-01?v=4')]) ===
+              '见 /proposal/r-x/3/2026-11-01?v=4，' &&
+            fix('方案书：/proposal/r-x/2?v=2 您看看', [ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-x/2?v=2 您看看',
+        );
+        check(
+          '兜底：版本 1、只有出错的调用、别的线路都原样',
+          fix('方案书：/proposal/r-x/2? 您看看', [ok('r-x', '/proposal/r-x/2')]) === '方案书：/proposal/r-x/2? 您看看' &&
+            fix('方案书：/proposal/r-x/2? 您看看', [bad]) === '方案书：/proposal/r-x/2? 您看看' &&
+            fix('方案书：/proposal/r-y/2? 您看看', [ok('r-x', '/proposal/r-x/2?v=2')]) === '方案书：/proposal/r-y/2? 您看看',
+        );
+      }
+      // 正文里没有 ?v= 时切句与开工时相同（锁定的 price-guard.selftest 另有全套）：「?」照常断句
+      {
+        const { sentenceUnits } = await import('../price-guard.js');
+        const units = (t: string): string[] => sentenceUnits(t).map((u) => t.slice(u.start, u.end));
+        check(
+          '?v= 不断句：只在「?」后面紧跟 v=数字 时不断，别的「?」照常是句末',
+          JSON.stringify(units('好吗?v 不是后缀?v=2 才是')) === JSON.stringify(['好吗?', 'v 不是后缀?v=2 才是']) &&
+            JSON.stringify(units('真的?vip 价')) === JSON.stringify(['真的?', 'vip 价']),
+          JSON.stringify(units('好吗?v 不是后缀?v=2 才是')),
+        );
+      }
+
+      // 同一线路本轮先有一次出错的调用（人数写成「两」，工具让模型改了重试）、再成功拿到 ?v=2：只拿成功那次的后缀核对，
+      // 丢了后缀的链接不能借出错那次的空串过关，要换成工具给的那条（这里连日期一起丢了：出口的补后缀只补后缀、补不回日期）
+      {
+        script.push(
+          {
+            toolCalls: [
+              { name: 'generate_proposal', args: { routeId: code, travelers: '两' } },
+              { name: 'generate_proposal', args: { routeId: code, travelers: 2, departDate: offDate } },
+            ],
+          },
+          { content: `方案书给您：\n/proposal/${code}/2\n您先看看` },
+        );
+        const r = await handleMessage('wecom:wmCFGPIN0006', '北京那条线出个两个人的方案书，1月15号出发', 'wecom');
+        const errored = !(await executeTool('generate_proposal', { routeId: code, travelers: '两' }, freshSession())).includes(
+          'proposalUrl',
+        );
+        check(
+          '链接白名单：先失败一次、再成功拿到 ?v=2，不带 v 的链接换成工具给的那条（带日期与 ?v=2）',
+          script.length === 0 &&
+            errored &&
+            r.text.includes(`/proposal/${code}/2/${offDate}?v=2`) &&
+            !/\/proposal\/r-beijing\/2(?!\/[\d-]+\?v=2)/.test(r.text),
+          r.text,
+        );
+        script.length = 0;
+      }
+
+      // 价格护栏看的是开始时那一代（G1）：这一轮不调带价的工具（护栏只能拿产品库价核对），模型回话之前后台改了价。
+      // 回开始时那一代的价原样发出；反过来回改后的新价（这一轮开始时还不是这个价）被删
+      const priceNow = (): number => (cfg.currentCatalog().routes.find((r) => r.id === code) as Route).priceFrom;
+      const reprice = async (to: number): Promise<void> => {
+        const it = (await cat.getCatalogItem(ctx, 'route', code))!;
+        await cat.updateCatalogItem(ctx, 'route', code, { rev: it.rev, set: { priceFrom: to } });
+      };
+      {
+        const old = priceNow();
+        script.push({ before: () => reprice(old + 3000), content: `北京这条线每人 ${money(old)} 元起，您看看行程合不合适～` });
+        const r = await handleMessage('wecom:wmCFGPIN0007', '北京那条线大概多少钱', 'wecom');
+        check(
+          '按轮固定·价格护栏：这一轮不调带价工具、轮内改了价，回开始时那一代的价原样发出',
+          script.length === 0 && priceNow() === old + 3000 && r.text.includes(`每人 ${money(old)} 元起`),
+          r.text,
+        );
+        script.length = 0;
+      }
+      {
+        const old = priceNow();
+        script.push({ before: () => reprice(old + 3000), content: `北京这条线每人 ${money(old + 3000)} 元起，您看看行程合不合适～` });
+        const r = await handleMessage('wecom:wmCFGPIN0008', '北京那条线大概多少钱', 'wecom');
+        check(
+          '按轮固定·价格护栏：回改后的新价被当成没有出处删掉',
+          script.length === 0 && priceNow() === old + 3000 && !r.text.includes(money(old + 3000)),
+          r.text,
+        );
+        script.length = 0;
+      }
+
+      // 固定包在 serialize 里面（M29）：同一会话两轮排队，第一轮挂在模型那儿时改价；排在后面的第二轮轮到它真正开始时才记快照，
+      // 按新价出、链接带新版本（包在 serialize 外面的话，第二轮记的是排队那一刻的旧价）
+      {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        let entered!: () => void;
+        const inFirst = new Promise<void>((r) => (entered = r));
+        script.push(
+          {
+            before: async () => {
+              entered();
+              await gate;
+            },
+            content: '好的，我先帮您看看～',
+          },
+          { toolCalls: [{ name: 'generate_proposal', args: { routeId: code, travelers: 2 } }] },
+          { content: '方案书给您生成好了：' },
+        );
+        const sid = 'wecom:wmCFGPIN0009';
+        const first = handleMessage(sid, '北京那条线怎么样', 'wecom');
+        await inFirst;
+        const second = handleMessage(sid, '北京那条线出个两个人的方案书', 'wecom');
+        const newPrice = priceNow() + 1000;
+        await reprice(newPrice);
+        const vNew = cfg.currentCatalog().versions[`route:${code}`]!;
+        release();
+        await first;
+        const r2 = await second;
+        const prop2 = JSON.parse(toolResults.filter((x) => x.includes('proposalUrl')).at(-1) ?? '{}') as {
+          proposalUrl?: string;
+          perPerson?: number;
+        };
+        check(
+          '按轮固定：同一会话排在后面的一轮轮到它才记快照——第一轮挂着时改的价，第二轮按新价、链接带新版本',
+          script.length === 0 &&
+            prop2.perPerson === newPrice &&
+            prop2.proposalUrl === `/proposal/${code}/2?v=${vNew}` &&
+            r2.text.includes(`/proposal/${code}/2?v=${vNew}`),
+          `${JSON.stringify(prop2)} | v${vNew} | ${r2.text}`,
+        );
+        script.length = 0;
+      }
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+      fake.close();
+    }
+  }
+
+  // 企微卡片认 ?v=：卡片链接带着后缀、挖掉的原文也带着；不存在的版本不做卡片（原样发纯文本）
+  {
+    const { __test: wecomTest } = await import('../adapters/wecom.js');
+    const BASE = 'https://x.test';
+    const body = `方案书在这：${BASE}/proposal/r-beijing/2?v=2 您先看看`;
+    const card = wecomTest.extractCard(body, BASE);
+    check(
+      '企微卡片：带 ?v=2 的链接做成卡片，卡片链接与挖掉的原文都带后缀，剥完正文不留后缀',
+      card?.url === `${BASE}/proposal/r-beijing/2?v=2` &&
+        card.raw === `${BASE}/proposal/r-beijing/2?v=2` &&
+        !wecomTest.stripLink(body, card.raw).includes('?v='),
+      JSON.stringify(card),
+    );
+    check(
+      '企微卡片：不带 v 的照旧；版本不存在（?v=9）不做卡片',
+      wecomTest.extractCard(`${BASE}/proposal/r-beijing/2`, BASE)?.url === `${BASE}/proposal/r-beijing/2` &&
+        wecomTest.extractCard(`${BASE}/proposal/r-beijing/2?v=9`, BASE) === null,
+    );
+  }
+
+  // 网页模拟器（chat.html）与旧后台（admin.html）的站内链接正则认 ?v= 后缀，点开的才是发出时的那一版；旧后台的方案书卡片按链接上的
+  // 版本取线路（缓存按线路 + 版本），接口 404 时不画卡片、不再请求（与企微 extractCard 同规则）。从页面里抽出这几段原样在 vm 里跑
+  {
+    const vm = await import('node:vm');
+    const pub = (f: string): string => fs.readFileSync(path.join(root, 'public', f), 'utf8');
+    const cut = (src: string, start: string, end: string): string => {
+      const a = src.indexOf(start);
+      const b = a < 0 ? -1 : src.indexOf(end, a + start.length);
+      if (b < 0) throw new Error(`页面里找不到「${start}」`);
+      return src.slice(a, b + end.length);
+    };
+    const text = '方案书在这：/proposal/r-x/2?v=2 您先看看';
+    const chat = pub('chat.html');
+    const chatFns = vm.runInNewContext(
+      [
+        cut(chat, 'const esc = ', ';\n'),
+        cut(chat, 'function tidyBullets(', '\n  }\n'),
+        cut(chat, 'function renderContent(', '\n  }\n'),
+        cut(chat, 'const SITE_LINK_RE = ', ';\n'),
+        '({ renderContent, SITE_LINK_RE })',
+      ].join('\n'),
+    ) as { renderContent: (t: string) => string; SITE_LINK_RE: RegExp };
+    check(
+      '网页模拟器：方案书链接连同 ?v=2 做成链接，站内链接正则把后缀算在同一条里',
+      chatFns.renderContent(text).includes('href="/proposal/r-x/2?v=2"') &&
+        JSON.stringify(text.match(chatFns.SITE_LINK_RE)) === JSON.stringify(['/proposal/r-x/2?v=2']),
+      chatFns.renderContent(text),
+    );
+
+    const admin = pub('admin.html');
+    const fetched: string[] = [];
+    let status = 200;
+    const S = { routeMeta: {} as Record<string, unknown> };
+    let renders = 0;
+    const adminFns = vm.runInNewContext(
+      [
+        cut(admin, 'const esc = ', ';\n'),
+        cut(admin, 'const routeMetaPending = ', '\n}\n'),
+        cut(admin, '  const LINK_RE = ', ';\n'),
+        cut(admin, '  const cardOf = ', '\n  };\n'),
+        cut(admin, '  const linkify = ', "'</a>');\n"),
+        '({ cardOf, linkify })',
+      ].join('\n'),
+      {
+        S,
+        render: () => void renders++,
+        fetch: async (u: string) => {
+          fetched.push(u);
+          return {
+            ok: status === 200,
+            status,
+            json: async () => ({
+              route: { title: `第${new URL(u, 'http://x').searchParams.get('v') ?? '1'}版`, days: 5, hotelLevel: '高端' },
+            }),
+          };
+        },
+        encodeURIComponent,
+        ordLabel: () => '',
+        yuan: (n: number) => String(n),
+      },
+    ) as { cardOf: (t: string) => { href: string; t: string } | null; linkify: (e: string) => string };
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 1));
+    };
+    check('旧后台：站内链接连同 ?v=2 做成链接', adminFns.linkify(text).includes('href="/proposal/r-x/2?v=2"'), adminFns.linkify(text));
+    const first = adminFns.cardOf(text);
+    await settle();
+    const card = adminFns.cardOf(text);
+    check(
+      '旧后台：方案书卡片按链接上的版本取线路（请求带 v=2、缓存按线路 + 版本），卡片链接带后缀',
+      first === null &&
+        fetched.join() === '/api/proposal/r-x?v=2' &&
+        card?.t === '第2版 · 行程方案书' &&
+        card.href === '/proposal/r-x/2?v=2' &&
+        adminFns.cardOf('方案书在这：/proposal/r-x/2 您先看看') === null &&
+        fetched.at(-1) === '/api/proposal/r-x',
+      `${fetched.join()} | ${JSON.stringify(card)}`,
+    );
+    status = 404;
+    adminFns.cardOf('方案书在这：/proposal/r-x/2?v=9 您先看看');
+    await settle();
+    const n = fetched.length;
+    check(
+      '旧后台：版本不存在（接口 404）不画卡片，也不再请求',
+      adminFns.cardOf('方案书在这：/proposal/r-x/2?v=9 您先看看') === null &&
+        fetched.length === n &&
+        fetched.at(-1) === '/api/proposal/r-x?v=9',
+      fetched.join(),
+    );
+  }
+
+  // COMMIT 结果不明时整体重读：库里多出来的版本（提交了、内存还没加进来）也一起读进内存
+  {
+    const it = await itemRow('r-beijing');
+    const next = { ...(JSON.parse(it.payload) as Route), priceFrom: 99800 };
+    await asSuper(async () => {
+      await t.pg.query(
+        `insert into catalog_item_versions (tenant_id, kind, code, version, payload, source) values ($1, 'route', 'r-beijing', $2, $3::json, 'console')`,
+        [tenantId, it.version + 1, JSON.stringify(next)],
+      );
+      await t.pg.query(
+        `update catalog_items set payload = $3::json, version = $2 where tenant_id = $1 and kind = 'route' and code = 'r-beijing'`,
+        [tenantId, it.version + 1, JSON.stringify(next)],
+      );
+    });
+    await cfg.reloadFromDb();
+    check(
+      '重读：库里新提交的版本进了内存，新版本按新价、不带 v 的照旧',
+      cfg.currentCatalog().versions['route:r-beijing'] === it.version + 1 &&
+        (await quoteAt('r-beijing', String(it.version + 1))).total === 99800 * 2 &&
+        (await quoteAt('r-beijing')).total !== 99800 * 2,
+    );
+  }
+  cfg.__configTest.reset();
+}
+
 // ---------------- 部署 profile：配了企微凭据就必须显式设置（00 开放问题 1，2026-09-26 owner 定） ----------------
 {
   const { resolveProfile } = await import('../profile.js');
@@ -2729,6 +3730,195 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
 }
 
+// ---------------- 旧后台 admin.html：列表 401 自动弹登录框 + db 配置模式下顶部提示去 J 页（02 第 23 步）----------------
+// load() 与 sigOf() 一个字节不改：401 判断放在 api()（统一出口），顶部提示是一段独立逻辑；都在 load()/sigOf() 之外，
+// 原样从页面抽出来在 vm 里跑（跟上面「方案书卡片按版本」那段同一个办法）。
+{
+  const vm = await import('node:vm');
+  const { execFileSync } = await import('node:child_process');
+  const admin = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+  const cut = (src: string, start: string, end: string): string => {
+    const a = src.indexOf(start);
+    const b = a < 0 ? -1 : src.indexOf(end, a + start.length);
+    if (b < 0) throw new Error(`admin.html 里找不到「${start}」`);
+    return src.slice(a, b + end.length);
+  };
+
+  // load()、sigOf() 的源码与 origin/dev 逐字节相同——本步唯一不许碰的两个函数；锁定的 server.selftest 另外照过它们的行为
+  {
+    const extractFns = (s: string) => ({
+      load: /async function load\(\) \{[\s\S]*?\n\}/.exec(s)?.[0] ?? null,
+      sig: /function sigOf\(\) \{[\s\S]*?\n\}/.exec(s)?.[0] ?? null,
+    });
+    let devSrc: string | null = null;
+    try {
+      devSrc = execFileSync('git', ['show', 'origin/dev:public/admin.html'], { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    } catch {
+      /* 找不到 origin/dev（离线、浅克隆）时跳过逐字节比对，不让自测因网络环境而炸 */
+    }
+    if (devSrc) {
+      const mine = extractFns(admin);
+      const dev = extractFns(devSrc);
+      check('admin.html：load() 源码与 origin/dev 逐字节相同', !!mine.load && mine.load === dev.load);
+      check('admin.html：sigOf() 源码与 origin/dev 逐字节相同', !!mine.sig && mine.sig === dev.sig);
+    }
+  }
+
+  // 列表 401 自动弹登录框：判断在 api()（统一出口），只认 load() 发起的那一个列表请求（/api/sessions），且只弹一次——
+  // 这条「只弹一次」是 console/src/conversations/conversations.selftest.tsx 第 3 节（深链，01 时代留下的旧入口）早就
+  // 钉住的契约：人关掉登录框之后，哪怕 setInterval(load, 30000) 继续每 30 秒 401，也不能反复打扰，否则那边的
+  // 「深链：关掉登录框后，下一次取列表不再弹」会变红。每个场景都在一个全新的 vm 上下文里跑，
+  // 这样 let listAuthHandled 每次都从没弹过的初始状态开始，除了「同一上下文连续两次 401」这一条故意复用
+  {
+    const apiSrc = cut(admin, 'let listAuthHandled = false;', '\n}\n');
+    const freshApi = (): {
+      api: (url: string, opts?: Record<string, unknown>) => Promise<{ status: number }>;
+      AUTH: { on: boolean };
+      loginMask: { hidden: boolean };
+      openLoginCalls: () => number;
+      authLostCalls: () => number;
+      setStatus: (s: number) => void;
+    } => {
+      let openLoginCalls = 0;
+      let authLostCalls = 0;
+      let fetchStatus = 200;
+      const AUTH = { on: false };
+      const loginMask = { hidden: true };
+      const { api } = vm.runInNewContext([apiSrc, '({ api });'].join('\n'), {
+        AUTH,
+        loginMask,
+        ownSimSession: () => '',
+        openLogin: () => {
+          openLoginCalls++;
+        },
+        onAuthLost: () => {
+          authLostCalls++;
+        },
+        fetch: (_u: string) => Promise.resolve({ status: fetchStatus }),
+      }) as { api: (url: string, opts?: Record<string, unknown>) => Promise<{ status: number }> };
+      return {
+        api,
+        AUTH,
+        loginMask,
+        openLoginCalls: () => openLoginCalls,
+        authLostCalls: () => authLostCalls,
+        setStatus: (s: number) => {
+          fetchStatus = s;
+        },
+      };
+    };
+
+    {
+      const t1 = freshApi();
+      t1.setStatus(401);
+      await t1.api('/api/sessions');
+      check(
+        'admin.html：列表 401（未登录）自动弹登录框',
+        t1.openLoginCalls() === 1 && t1.authLostCalls() === 0,
+        `${t1.openLoginCalls()}/${t1.authLostCalls()}`,
+      );
+    }
+
+    {
+      const t2 = freshApi();
+      t2.setStatus(200);
+      await t2.api('/api/sessions');
+      check('admin.html：列表非 401 不弹登录框', t2.openLoginCalls() === 0 && t2.authLostCalls() === 0);
+    }
+
+    {
+      const t3 = freshApi();
+      t3.setStatus(401);
+      await t3.api('/api/orders');
+      check('admin.html：别的接口 401 不归这里管，只认 load() 发起的那一个列表请求', t3.openLoginCalls() === 0 && t3.authLostCalls() === 0);
+    }
+
+    {
+      // 同一个页面生命周期里连续两次列表 401（模拟「弹出后人关掉、下一轮 30 秒轮询又 401」）：
+      // 不管登录框此刻是开是关，只弹第一次——这正是真实场景里会把「深链」那条自测带红的分支
+      const t4 = freshApi();
+      t4.setStatus(401);
+      await t4.api('/api/sessions');
+      t4.loginMask.hidden = true; // 人关掉了登录框
+      await t4.api('/api/sessions'); // 下一轮轮询，依然没登录、依然 401
+      check(
+        'admin.html：同一页面里列表连续 401，只弹第一次，关掉之后不再因为轮询重新弹出',
+        t4.openLoginCalls() === 1 && t4.authLostCalls() === 0,
+        `${t4.openLoginCalls()}/${t4.authLostCalls()}`,
+      );
+    }
+
+    {
+      const t5 = freshApi();
+      t5.AUTH.on = true;
+      t5.setStatus(401);
+      await t5.api('/api/sessions');
+      check(
+        'admin.html：已登录但列表仍 401（会话失效）走 onAuthLost，不是 openLogin',
+        t5.authLostCalls() === 1 && t5.openLoginCalls() === 0,
+        `${t5.openLoginCalls()}/${t5.authLostCalls()}`,
+      );
+    }
+  }
+
+  // db 配置模式下顶部提示链到 J 页；文件配置模式下永远不出现（判断用 /healthz 的 config.mode，即 CONFIG_SOURCE，
+  // 不是会话存储 SESSION_STORE/store.mode——线上 demo 现在正是 CONFIG_SOURCE=db、SESSION_STORE=file 这一种组合，
+  // 后台配置在库里就该有这条提示，与会话是不是也落在库里无关；不新开接口）
+  {
+    const declSrc = cut(admin, 'let dbConfigMode = false;', '\n}\n');
+    const fetchSrc = cut(admin, "fetch('/healthz')", '}).catch(() => {});');
+    let selected: string | null = null;
+    const healthz = (configMode: string, storeMode: string): { ok: boolean; json: () => Promise<unknown> } => ({
+      ok: true,
+      json: async () => ({ config: { mode: configMode }, store: { mode: storeMode } }),
+    });
+    let fetchResult = healthz('file', 'file');
+    const opsHint: { hidden: boolean } = { hidden: true };
+    const opsHintLink: { href: string } = { href: '' };
+    // vm.runInContext() 之后读 opsHint.hidden：用函数包一层，躲开 TS 对「字面量赋值后又原样比较」的收窄
+    // （它看不出 vm 代码会改这个属性，会把 hidden 收窄成赋值时的那个字面量类型）
+    const hiddenNow = (): boolean => opsHint.hidden;
+    const sandbox = {
+      S: {
+        get selected() {
+          return selected;
+        },
+      },
+      document: { getElementById: (id: string) => (id === 'opsHint' ? opsHint : id === 'opsHintLink' ? opsHintLink : null) },
+      fetch: (_u: string) => Promise.resolve(fetchResult),
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(declSrc, sandbox); // 声明一次 dbConfigMode / updateOpsHint；后面只重跑取数的那条语句，不重新声明
+
+    // 文件配置模式：healthz 回 file 时 fetch 链里压根不碰 updateOpsHint（跟真实 render() 的调用点分开）；
+    // 这里学 render() 的样子显式再调一次 updateOpsHint()，先把提示条设成「正显示」，看它是不是被按文件模式收回去——
+    // 不这样的话，「不出现」这条断言只是在看一个从没被动过的初始值，抓不到「忘了判断 dbConfigMode」这种变异
+    opsHint.hidden = false;
+    vm.runInContext(fetchSrc, sandbox);
+    await new Promise((r) => setTimeout(r, 5));
+    vm.runInContext('updateOpsHint();', sandbox);
+    check('admin.html：文件配置模式（/healthz 的 config.mode=file）下顶部提示不出现', hiddenNow() === true, `hidden=${hiddenNow()}`);
+
+    // 线上 demo 现在的真实组合：CONFIG_SOURCE=db、SESSION_STORE=file——提示该出现，不该被会话存储拖累
+    fetchResult = healthz('db', 'file');
+    vm.runInContext(fetchSrc, sandbox);
+    await new Promise((r) => setTimeout(r, 5));
+    check(
+      'admin.html：db 配置模式下顶部提示出现，链到 J 页列表（不论会话存储是不是也在库里）',
+      hiddenNow() === false && opsHintLink.href === '/console/conversations',
+      `hidden=${hiddenNow()} href=${opsHintLink.href}`,
+    );
+
+    selected = 'wm-abc123';
+    vm.runInContext('updateOpsHint();', sandbox);
+    check(
+      'admin.html：选中会话时提示链到该会话（encodeURIComponent 过的 id）',
+      opsHintLink.href === '/console/conversations/' + encodeURIComponent('wm-abc123'),
+      opsHintLink.href,
+    );
+  }
+}
+
 await t.close();
 
 if (fails.length) {
@@ -2736,6 +3926,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变 / 配了企微凭据必须显式设置 profile）`,
+  `CONFIG SELFTEST PASS: ${pass} 项断言全通（节表与 data/sop.md 往返 / 规范形与 GET→PUT / 编码检查 / 结构 / 合并 / 渲染等价 / 契约的每种 violation / 清单不漂移 / 产品库 schema、锁定字段、键序合并、补丁与表单往返、快照冻结 / DB 模式：两种模式逐字节等价、快照冻结、每轮不查库、/healthz、导入导出、锁状态机与重读、启动顺序与各个失败分支 / SOP 编辑：草稿、检查、发布、回滚、丢弃、rebase、契约闸、启动重渲染 / 产品库编辑：锁定字段、补丁与键序、表单往返、新建与上架、并发、catalog-fix / 检索：上架后恰好重建一次、构建中又上架、失败退避、文件模式不变 / 条目版本：写入与审计、按版本渲染与 404 不查库、订单记版本、启动补写、重读、按轮固定、链接白名单与企微卡片 / 配了企微凭据必须显式设置 profile）`,
 );
 process.exit(0);
