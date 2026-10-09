@@ -550,6 +550,7 @@
 - 第 10 步：回放在 `initSessionStore` 里、早于 `initChannels`，恢复看到的是回放之后的状态。单独写渠道部分之后、或 poisoned 短事务之后，入站行可能是 `recorded` / `replied` / `done` 而 `message_seq` 在 `messages` 里不存在，出站行的 `message_seq` 也可能指向不存在的消息——保底第三条（用 `payload` 补进会话）必不可少；会话行根本不在库里的 poisoned 会话补进会话时会再次 poisoned，恢复不能因此打转。`recorded` 的短事务早于 `pending` + `replied` 那一个，`recorded` 那次以数据类错误丢掉时会出现「`received` 但名下有出站行」，由保底第二条处理。
 - 第 12 步：`restore-cutoff` 先于应用启动跑，spill 回放在它之后，可能插入 `sent_at` 不晚于截止点的 `pending` 行；出站恢复表「`pending`、`sent_at` 不晚于截止点 → `cancelled`」兜住。
 - 第 14 步：`channel-export` / `channel-import` 在 `var/` 里有 spill 文件时应拒绝（照 02 `erase-conversation` 的做法），否则回放会在导出之后再往 `outbound_sends` / `channel_inbox` 写行。
+
 ### 第 14 步 · 导入、导出与 `--resync`（2026-10-09）
 
 - 分工偏离：plan 原写由 Claude 做；当时已有两路 Claude 子 agent 在并行（第 10、11 步），为省 Claude 周额度改派 Codex，协调者审查并另派一路只读交叉评审。
