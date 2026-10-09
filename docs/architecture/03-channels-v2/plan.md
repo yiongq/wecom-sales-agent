@@ -126,7 +126,7 @@
   - 自测（`src/web/web.selftest.ts`）：验收 14 的后端部分与 prod profile 部分。
   - 对应验收 14 的后端部分；不变量 23、24、26、28。依赖：第 2、5、6 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍（网页会话落库与清理）。
-- [ ] 18. 网页页面与 CSP（1，可派 Codex）
+- [x] 18. 网页页面与 CSP（1，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、补跑门禁）；完成标准里的浏览器实测挪到第 20 步，见「实施记录 · 第 18 步」。
   - `public/web.html`、`web.js`、`web.css`（从 `chat.html` 改出来，不碰 `chat.html`）：注入配置的转义、CSP 与安全头、`textContent` 渲染、只认站内链接、同意按钮、「结束咨询」（spec「网页渠道 · 页面安全」）。
   - 自测：页面契约（CSP 全等、没有内联脚本、样式与事件属性、恶意标题被转义、站外链接不可点、不读写 `localStorage` 里的凭据）。
   - 对应验收 14 的页面部分；不变量 25。依赖：第 17 步。
@@ -137,6 +137,7 @@
   - 完成标准：数字（基线与 03）记进「验收记录」第 24 条；脚本不进 `test`。
 - [ ] 20. 部署与演练（1，Claude）
   - 本机 compose 上照 spec「切换步骤」走一遍：以现状部署 → 加密钥 → 停 app → `channel-import --keep` → 起 → 测试消息 → `channel-export` → 部署 02 的镜像（回滚检查放行）→ 文件状态下聊几轮 → `--resync` 切回；回滚检查的几种拒绝；健康检查失败后的自动回滚。
+  - 第 18 步挪过来的浏览器实测：本机浏览器里打开 `/w/<key>`，聊一句、刷新（历史还在）、点「结束咨询」（cookie 清掉、会话还在 console 里），结果记进实施记录。
   - 备份恢复演练照验收 6 的场景（A–F 六个客户、T 时刻、哨兵拦住、`restore-cutoff` 之后起），加不跑 `restore-cutoff` 的对照。
   - 对应验收 6 的本机部分、13 的端到端、16、21 的本机部分。依赖：第 1–18 步。
   - 完成标准：结果写进「实施记录 · 第 20 步」与「验收记录」；演练用的容器、数据卷、镜像、临时 tag 都清掉。
@@ -403,6 +404,16 @@
 - 自测追加在 `src/web/web.selftest.ts`：验收 14 的后端部分与 prod profile 部分，加上三处审查意见各自的回归断言；`web:` 会话在 db 存储下落库、不受 `sim-` 访客清理影响，线索保留期 7 天时 8 天前的网页会话被清除（PGlite；真实 PG 由 CI 跑）。改了的非锁定断言：`console.selftest.ts` 的 `PUBLIC` 白名单加网页五条（spec「测试与 CI」列明）。
 - 门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），锁定套件 sha256 与 `PREFIX sha256` 与第 1 步相同，`src/server.selftest.ts` 照过（网页模拟器行为不变）。
 - 给后面步骤：第 18 步把 `/w/:key` 的占位换成页面、CSP 与注入配置，`webOnly` 与安全头已在。`channelAccountId` 由第 7 步投影进 `conversations.channel_account_id`（本步 rebase 在第 7 步之上，网页会话预载时靠它找回账号）。
+
+### 第 18 步 · 网页页面与 CSP（2026-10-09）
+
+- `public/web.html`、`web.js`、`web.css`（从 `chat.html` 改出来，`chat.html` 逐字节不变）：HTML 里只有两个 `<script>`——`type="application/json"` 的配置块与 `type="module" src="/web.js"`，没有 `<style>`、`style=`、`on*=`；事件一律在 `web.js` 里用监听器挂。标题、欢迎语、消息、按钮一律 `textContent`。
+- `src/web/routes.ts` 的 `GET /w/:key`：注入 `{ key, title, welcome, privacyLink, base }`，JSON 里每个 `<` 输出成 `<`，用函数式替换（标题里的 `$` 不会被当成替换模式）；没设 `welcomeText` 时用 `chat.html` 的开场（第一句带 AI 身份）。`Content-Security-Policy` 恰为 `BASE_CSP` 加 `; style-src 'self'; base-uri 'none'; form-action 'self'`，另有 `no-store`、`nosniff`。
+- 只认站内链接：`web.js` 的纯函数 `splitSiteLinks` 只把 `/pay/<id>`、`/proposal/<…>`（相对路径，或以注入的 `base` 即 `PUBLIC_BASE_URL` 开头、同源、不带账号密码的绝对地址，点击时用相对路径）换成链接；站外域名、伪协议、协议相对、路径穿越、编码路径都照文字显示。
+- 交互：首屏欢迎语与隐私链接；加载时拉 `/history`；发消息带 `x-web-chat: 1` 与 `cid`（`crypto.randomUUID()`，失败重试复用）；SSE 收 `push`（人工回复已带「【顾问】」）与 `menu`（「同意 / 不同意」按钮，点了 `POST { menu }`），断线按 1、2、4、8、16 秒退避重连、封顶 30 秒；「结束咨询」调 `/end` 后清空界面。源码里没有 `localStorage`、`sessionStorage`、`document.cookie`。
+- 自测追加在 `src/web/web.selftest.ts`：CSP 全等与安全头；模板里脚本白名单、属性扫描与运行时注入扫描；恶意标题 `</script><img src=x onerror=alert(1)>` 在配置块里没有裸 `<`、`JSON.parse` 读回原串；`splitSiteLinks` 的站内可点与各种站外不可点；不碰凭据存储；`web_channel` 关着时 404。改了一条第 17 步自己的断言：占位页「没有任何 script」改为「没有可执行的内联脚本」（页面现在有配置块与外部脚本）。
+- 偏离：本步完成标准里的「本机浏览器里实际打开一次 `/w/<key>` 聊一句、刷新、点『结束咨询』」没在本步做——要在本机起整套 db 存储（角色、迁移、租户、网页账号）才打得开，第 20 步的本机 compose 演练本来就起这一整套，挪到那时做，结果记进「实施记录 · 第 20 步」（第 20 步的步骤里已加这一条）。
+- 门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），锁定文件与 `PREFIX sha256` 与第 1 步相同。Codex 实现，Claude 审查（危险写入点、链接白名单、注入替换方式）。
 
 ## 验收记录
 

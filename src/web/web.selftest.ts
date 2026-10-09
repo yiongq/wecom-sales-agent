@@ -541,7 +541,7 @@ try {
   assert.equal(page.status, 200);
   assert.equal(page.headers.get('cache-control'), 'no-store');
   assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
-  assert.ok(!(await page.text()).includes('<script'));
+  assert.ok(!/<script(?![^>]*\b(?:src=|type="application\/json"))[^>]*>/i.test(await page.text()), '页面没有可执行的内联脚本');
   for (const state of ['missing', 'disabled', 'wrong-kind', 'inactive']) {
     const a = await account(`web-${state}`);
     if (state === 'missing') a.key = 'other-key';
@@ -995,3 +995,322 @@ if (!realRun) {
   } else console.log('SKIP web 后端：未设置 PG_TEST_URL，真实 PG 由协调者在一次性测试容器补跑');
 }
 console.log('PASS web.selftest：第 17 步后端验收');
+
+// 03 第 18 步：页面安全与浏览器脚本契约；只用内存 DOM，不监听端口。
+const { CONSOLE_SECURITY_HEADERS } = await import('../shared/security-headers.js');
+const { runInNewContext } = await import('node:vm');
+const { randomUUID } = await import('node:crypto');
+const webHtml = fs.readFileSync('public/web.html', 'utf8');
+const webJs = fs.readFileSync('public/web.js', 'utf8');
+const webCss = fs.readFileSync('public/web.css', 'utf8');
+const { splitSiteLinks } = runInNewContext(`${webJs.replace('export function', 'function')}\n({ splitSiteLinks });`, { URL }) as {
+  splitSiteLinks: (text: string, base?: string) => { text: string; href?: string }[];
+};
+const clickable = (text: string, base?: string): string[] =>
+  Array.from(splitSiteLinks(text, base)).flatMap((p) => (p.href ? [p.href] : []));
+assert.deepEqual(clickable('订单 /pay/order_1，方案 /proposal/route-1/2/2026-12-10?v=3'), [
+  '/pay/order_1',
+  '/proposal/route-1/2/2026-12-10?v=3',
+]);
+assert.deepEqual(clickable('https://example.test/pay/order_1 https://example.test/proposal/r/2'), []);
+assert.deepEqual(clickable('https://example.test/pay/order_1', 'https://example.test'), ['/pay/order_1']);
+assert.deepEqual(clickable('https://example.test/app/proposal/r/2', 'https://example.test/app'), ['/proposal/r/2']);
+for (const attack of [
+  'https://example.test.evil.test/pay/order_1',
+  'https://example.test@evil.test/pay/order_1',
+  '//evil.test/pay/order_1',
+  'javascript:/pay/order_1',
+  'data:text/html,/pay/order_1',
+  'foo/pay/order_1',
+  'evil.test/pay/order_1',
+  '/pay/order_1/../../console',
+  '/proposal/../../console',
+  '/pay/%2e%2e',
+  '/pay/order_1?redirect=//evil.test',
+  '/pay/order_1\\evil',
+  'ftp://example.test/pay/order_1',
+]) {
+  assert.deepEqual(clickable(attack, 'https://example.test'), [], `不允许 ${attack}`);
+  assert.equal(
+    splitSiteLinks(attack, 'https://example.test')
+      .map((p) => p.text)
+      .join(''),
+    attack,
+  );
+}
+for (const text of ['<img src=x onerror=alert(1)> /pay/order_1', '**原文**\n外站 https://evil.test/pay/order_1']) {
+  assert.equal(
+    splitSiteLinks(text)
+      .map((p) => p.text)
+      .join(''),
+    text,
+    '不改写原文，不解析 markdown',
+  );
+}
+assert.ok(!/localStorage|sessionStorage|document\.cookie/.test(webJs), '页面源码不访问凭据存储');
+assert.ok(
+  !/innerHTML|outerHTML|insertAdjacentHTML|\.style\b|setAttribute\(['"](?:style|on\w+)/.test(webJs),
+  '运行时只构造 DOM，不注入 HTML/内联样式/事件属性',
+);
+assert.ok(!/<style\b|\sstyle\s*=|\son\w+\s*=/i.test(webHtml));
+const scripts = [...webHtml.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+assert.equal(scripts.length, 2);
+assert.equal(scripts.filter((s) => /type="application\/json"/.test(s[1]!)).length, 1);
+assert.ok(scripts.every((s) => /type="application\/json"/.test(s[1]!) || (/src="\/web.js"/.test(s[1]!) && !s[2]!.trim())));
+assert.match(webHtml, /<link rel="stylesheet" href="\/web.css">/);
+assert.match(webCss, /white-space: pre-wrap/);
+assert.match(webCss, /prefers-reduced-motion/);
+
+const pageAccount: Account = { ...primary, key: 'web-page', web: { ...primary.web!, title: '</script><img src=x onerror=alert(1)>$&' } };
+const previousBase = process.env.PUBLIC_BASE_URL;
+try {
+  __profileTest.use({ DEPLOY_PROFILE: 'demo' });
+  installAccounts([pageAccount]);
+  process.env.PUBLIC_BASE_URL = 'https://example.test/';
+  __privacyTest.set({ version: 1, body: '测试隐私说明' });
+  const page = await app.request('/w/web-page');
+  assert.equal(page.status, 200);
+  assert.equal(
+    page.headers.get('content-security-policy'),
+    `${CONSOLE_SECURITY_HEADERS['Content-Security-Policy']}; style-src 'self'; base-uri 'none'; form-action 'self'`,
+  );
+  assert.equal(page.headers.get('cache-control'), 'no-store');
+  assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+  const rendered = await page.text();
+  const configBlock = /<script type="application\/json" id="web-config">([\s\S]*?)<\/script>/.exec(rendered)![1]!;
+  assert.ok(!configBlock.includes('<'));
+  assert.ok(configBlock.includes('\\u003c/script>'));
+  const config = JSON.parse(configBlock) as { key: string; title: string; welcome: string; privacyLink: string | null; base: string };
+  assert.equal(config.key, pageAccount.key);
+  assert.equal(config.title, pageAccount.web!.title, '恶意标题与 $& 原样往返，不执行 HTML 或 replace 的替换元字符');
+  assert.equal(config.base, 'https://example.test');
+  assert.equal(config.privacyLink, 'https://example.test/privacy');
+  assert.match(config.welcome.split('\n')[0]!, /AI/);
+  assert.match(config.welcome, /真人/);
+  assert.ok(!rendered.includes(pageAccount.web!.title));
+  pageAccount.web!.welcomeText = '我是 AI 顾问。需要人工请回复「人工」。<img src=x>';
+  const custom = await (await app.request('/w/web-page')).text();
+  assert.equal(JSON.parse(/id="web-config">([\s\S]*?)<\/script>/.exec(custom)![1]!).welcome, pageAccount.web!.welcomeText);
+  __privacyTest.reset();
+  const unpublished = await (await app.request('/w/web-page')).text();
+  assert.equal(JSON.parse(/id="web-config">([\s\S]*?)<\/script>/.exec(unpublished)![1]!).privacyLink, null);
+  for (const flags of [{ DEPLOY_PROFILE: 'demo', FLAG_WEB_CHANNEL: 'off' }, { DEPLOY_PROFILE: 'prod' }]) {
+    __profileTest.use(flags);
+    assert.equal((await app.request('/w/web-page')).status, 404);
+    for (const [asset, mime, source] of [
+      ['web.js', 'javascript', webJs],
+      ['web.css', 'css', webCss],
+    ]) {
+      const res = await app.request(`/${asset}`);
+      assert.equal(res.status, 200, '静态资源不受 webOnly/模拟器开关影响');
+      assert.ok(res.headers.get('content-type')!.includes(mime!));
+      assert.equal(await res.text(), source);
+    }
+    assert.equal((await app.request('/src/web/routes.ts')).status, 404, '静态兜底不暴露源码');
+    assert.equal((await app.request('/AGENTS.md')).status, 404);
+  }
+} finally {
+  if (previousBase === undefined) delete process.env.PUBLIC_BASE_URL;
+  else process.env.PUBLIC_BASE_URL = previousBase;
+  installAccounts([]);
+  __privacyTest.reset();
+  __profileTest.reset();
+}
+console.log('PASS web 页面：无内联、JSON 转义往返、CSP 全等、站内链接、凭据隔离、开关与静态边界');
+
+// 小型 DOM 夹具执行真实脚本，验证页面交互而非重复实现。
+class PageNode {
+  children: PageNode[] = [];
+  parent: PageNode | null = null;
+  className = '';
+  private content = '';
+  hidden = false;
+  disabled = false;
+  value = '';
+  href = '';
+  target = '';
+  rel = '';
+  type = '';
+  scrollTop = 0;
+  scrollHeight = 100;
+  dataset: { q?: string } = {};
+  listeners = new Map<string, ((event: Record<string, unknown>) => unknown)[]>();
+  constructor(readonly tag: string) {}
+  get textContent(): string {
+    return this.content + this.children.map((c) => c.textContent).join('');
+  }
+  set textContent(text: string) {
+    this.content = text;
+    this.replaceChildren();
+  }
+  append(...nodes: PageNode[]): void {
+    for (const n of nodes) {
+      n.parent = this;
+      this.children.push(n);
+    }
+  }
+  replaceChildren(...nodes: PageNode[]): void {
+    for (const n of this.children) n.parent = null;
+    this.children = [];
+    this.append(...nodes);
+  }
+  remove(): void {
+    if (this.parent) this.parent.children = this.parent.children.filter((n) => n !== this);
+    this.parent = null;
+  }
+  setAttribute(): void {}
+  querySelectorAll(tag: string): PageNode[] {
+    return this.children.flatMap((c) => [...(c.tag === tag ? [c] : []), ...c.querySelectorAll(tag)]);
+  }
+  addEventListener(name: string, fn: (event: Record<string, unknown>) => unknown): void {
+    this.listeners.set(name, [...(this.listeners.get(name) ?? []), fn]);
+  }
+  async emit(name: string, event: Record<string, unknown> = {}): Promise<void> {
+    for (const fn of this.listeners.get(name) ?? []) await fn(event);
+  }
+}
+function pageFixture(history: { role: string; text: string; at: number }[] = []) {
+  const nodes = new Map<string, PageNode>();
+  for (const id of ['web-config', 'title', 'msgs', 'input', 'sendBtn', 'endBtn', 'retryBtn', 'chips', 'notice', 'privacy', 'composer'])
+    nodes.set(id, new PageNode('div'));
+  nodes.get('web-config')!.textContent = JSON.stringify({
+    key: 'web-page',
+    title: '<img src=x onerror=alert(1)>',
+    welcome: '我是 AI 顾问。可转真人。',
+    base: 'https://example.test',
+    privacyLink: '/privacy',
+  });
+  const requests: { url: string; init?: RequestInit }[] = [];
+  const results: (Response | Error)[] = [Response.json({ messages: history })];
+  const timers = new Map<number, { callback: () => void; delay: number }>();
+  let timerId = 0;
+  const sources: FakeSource[] = [];
+  class FakeSource extends PageNode {
+    closed = false;
+    constructor(readonly url: string) {
+      super('eventsource');
+      sources.push(this);
+    }
+    close(): void {
+      this.closed = true;
+    }
+  }
+  const win = new PageNode('window');
+  const document = {
+    title: '',
+    getElementById: (id: string) => nodes.get(id),
+    createElement: (tag: string) => new PageNode(tag),
+    createTextNode: (text: string) => {
+      const n = new PageNode('text');
+      n.textContent = text;
+      return n;
+    },
+  };
+  runInNewContext(webJs.replace('export function', 'function'), {
+    document,
+    window: win,
+    URL,
+    Date,
+    AbortSignal,
+    crypto: { randomUUID },
+    EventSource: FakeSource,
+    fetch: async (url: string, init?: RequestInit) => {
+      requests.push({ url, init });
+      const result = results.shift();
+      assert.ok(result, `缺少脚本响应 ${url}`);
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    setTimeout: (callback: () => void, delay: number) => {
+      timers.set(++timerId, { callback, delay });
+      return timerId;
+    },
+    clearTimeout: (id: number) => timers.delete(id),
+  });
+  return { nodes, document, requests, results, sources, timers, win };
+}
+const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+const ui = pageFixture();
+await settle();
+assert.equal(ui.requests[0]!.url, '/api/web/web-page/history');
+assert.equal(ui.document.title, '<img src=x onerror=alert(1)>');
+assert.equal(ui.nodes.get('title')!.textContent, ui.document.title);
+assert.ok(ui.nodes.get('msgs')!.textContent.includes('我是 AI 顾问'));
+assert.equal(ui.nodes.get('privacy')!.href, '/privacy');
+assert.equal(ui.sources.length, 0, '无会话时不反复连接未授权 SSE');
+ui.nodes.get('input')!.value = '<img src=x onerror=alert(1)> https://evil.test/pay/id';
+ui.results.push(new Error('断网'));
+await ui.nodes.get('composer')!.emit('submit', { preventDefault() {} });
+await settle();
+const sent = JSON.parse(ui.requests[1]!.init!.body as string) as { text: string; cid: string };
+assert.match(sent.cid, /^[A-Za-z0-9_-]{8,64}$/);
+assert.equal((ui.requests[1]!.init!.headers as Record<string, string>)['x-web-chat'], '1');
+assert.equal(ui.requests[1]!.init!.credentials, 'same-origin');
+assert.equal(ui.nodes.get('retryBtn')!.hidden, false);
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('img').length, 0);
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').length, 0, '站外链接和客户 HTML 作为文本');
+ui.results.push(Response.json({ reply: { text: '**原文**\n订单 /pay/order_1' } }));
+await ui.nodes.get('retryBtn')!.emit('click');
+await settle();
+assert.equal(ui.requests[2]!.init!.body, ui.requests[1]!.init!.body, '失败重试复用完全相同 cid 和内容');
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a')[0]!.href, '/pay/order_1');
+assert.ok(ui.nodes.get('msgs')!.textContent.includes('**原文**'));
+assert.equal(ui.nodes.get('retryBtn')!.hidden, true);
+const source = ui.sources[0]!;
+assert.equal(source.url, '/api/web/web-page/events');
+await source.emit('push', { data: JSON.stringify({ text: '【顾问】您好' }) });
+assert.ok(ui.nodes.get('msgs')!.textContent.includes('【顾问】您好'));
+await source.emit('menu', {
+  data: JSON.stringify({
+    text: '是否同意？',
+    buttons: [
+      { id: 'health:granted', label: '同意' },
+      { id: 'health:declined', label: '不同意' },
+    ],
+  }),
+});
+const buttons = ui.nodes.get('msgs')!.querySelectorAll('button');
+assert.deepEqual(
+  buttons.map((b) => b.textContent),
+  ['同意', '不同意'],
+);
+ui.results.push(Response.json({ reply: null }));
+await buttons[0]!.emit('click');
+await settle();
+assert.equal(JSON.parse(ui.requests.at(-1)!.init!.body as string).menu, 'health:granted');
+assert.ok(ui.nodes.get('msgs')!.textContent.includes('已记录您的选择'));
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('button').length, 0);
+await source.emit('error');
+for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+  const [id, timer] = [...ui.timers][0]!;
+  assert.equal(timer.delay, delay, '断线指数退避并封顶');
+  ui.timers.delete(id);
+  timer.callback();
+  await ui.sources.at(-1)!.emit('error');
+}
+ui.results.push(Response.json({ ok: true }));
+await ui.nodes.get('endBtn')!.emit('click');
+await settle();
+assert.equal(ui.requests.at(-1)!.url, '/api/web/web-page/end');
+assert.equal(ui.nodes.get('msgs')!.children.length, 0);
+assert.ok(ui.nodes.get('notice')!.textContent.includes('已结束'));
+assert.equal(ui.timers.size, 0);
+assert.ok(ui.sources.every((s) => s.closed));
+ui.nodes.get('input')!.value = '新的咨询';
+ui.results.push(Response.json({ reply: null }));
+await ui.nodes.get('composer')!.emit('submit', { preventDefault() {} });
+await settle();
+assert.notEqual(JSON.parse(ui.requests.at(-1)!.init!.body as string).cid, sent.cid, '新消息生成新 cid');
+await ui.win.emit('pagehide');
+assert.ok(ui.sources.every((s) => s.closed));
+const refreshed = pageFixture([
+  { role: 'customer', text: '先前的问题', at: Date.now() },
+  { role: 'agent', text: '【顾问】历史回复', at: Date.now() },
+]);
+await settle();
+assert.ok(refreshed.nodes.get('msgs')!.textContent.includes('先前的问题'));
+assert.ok(refreshed.nodes.get('msgs')!.textContent.includes('【顾问】历史回复'));
+assert.ok(!refreshed.nodes.get('msgs')!.textContent.includes('我是 AI 顾问'));
+assert.equal(refreshed.sources.length, 1);
+await refreshed.win.emit('pagehide');
+console.log('PASS web 页面：textContent、欢迎语、历史恢复、发消息/cid 重试、SSE 人工/同意菜单、退避、结束与关闭清理');
