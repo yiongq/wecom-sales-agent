@@ -75,7 +75,7 @@ async function parentMain(): Promise<never> {
   check('标题：待确认的订单', handoffNoticeTitle({ ...base, kind: 'order_unconfirmed' }) === '企微客户 · 7F3A 等你确认价格');
   check(
     '会话标签：渠道短名加客户的叫法',
-    channelCustomerLabel('wecom', '客户') === '企微客户' && channelCustomerLabel('simulator', '学员') === '网页学员',
+    channelCustomerLabel('wecom', '客户') === '企微客户' && channelCustomerLabel('simulator', '学员') === '演示学员',
   );
   const forbidden = ['待人工', '已转人工', '待接管', '需要介入'];
   const texts = Object.values(HANDOFF_NOTICE_TEXT);

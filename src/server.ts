@@ -919,6 +919,7 @@ function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
   // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
   console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
+  console.log(`[profile] web_channel=${profile().flags.web_channel ? 'on' : 'off'}`);
   // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
   // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
   // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
