@@ -178,7 +178,10 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
       echo "  4. 目标同时是 02 之前、会话在库里：接着按下面的步骤回到文件存储，再起目标镜像。"
     else
       if [ "$target" = pre-02 ] || [ "$target" = pre-03 ]; then
-        echo "  4. 再部署旧 tag。"
+        # 先用当前镜像把应用起来顶住，部署旧 tag（拉镜像、构建）期间不停机（第 20 步演练停了 7 分钟，owner 10-10 定）
+        echo "  4. 先用当前镜像把应用起来顶住（已导出，照 02 走 .env 的 WECOM_* 与 var/wecom-cursor.json）："
+        echo "     ${dc} up -d app，curl -fsS http://127.0.0.1:${port}/healthz 确认 channels.mode = env"
+        echo "  5. 再部署旧 tag。"
       else
         rev=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$target" </dev/null 2>/dev/null | sed -n 's/^APP_REVISION=//p' | head -n 1)
         echo "  4. 直接起目标镜像并重打 :current（不跑迁移）："

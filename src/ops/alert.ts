@@ -280,7 +280,7 @@ const RESTORE_QUIET_MS = 10_000;
 const restoreCutoff = { conversations: 0, lastAt: 0, sent: false };
 
 function restoreCutoffText(): string {
-  return `恢复截止点之前的客户消息只补记、AI 没有回复：${restoreCutoff.conversations} 个会话，会话里已加说明，请人工确认是否已回复`;
+  return `恢复截止点之前的客户消息只补记、AI 不再回复或补发：${restoreCutoff.conversations} 个会话，会话里已加说明，请人工确认是否已回复、客户是否收到`;
 }
 
 function flushRestoreCutoff(t: number, force: boolean): void {

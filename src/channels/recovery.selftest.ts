@@ -143,6 +143,9 @@ const W = {
 };
 /** 启动时只补记那一步加的说明（spec 原话，src/adapters/wecom.ts 的 RESTORE_CUTOFF_NOTE） */
 const RESTORE_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
+/** 入站行已是 replied 时那一句（第 20 步演练，owner 10-10 定） */
+const RESTORE_REPLIED_NOTE =
+  '恢复备份之后补记：上面 AI 的回复可能没送达客户（备份之后的处理记录已丢失，不会再补发），请人工确认客户是否收到';
 
 /** 毒消息那个客户的入站行：原文 → msgid（payload 在入站行结束之后清空，先按原文找到的记下来） */
 const pzMsgids = new Map<string, string>();
@@ -1970,8 +1973,10 @@ async function restart5(h: Harness): Promise<void> {
   const T = Number(fs.readFileSync(path.join(process.env.RECOVERY_DIR!, 't5'), 'utf8'));
   const sentA = h.sendsTo(W.a).length;
   const ob0 = await h.outOf(sid(W.b));
-  // C 在备份之后、T 之前又说了一句（假企微里排在库里 cursor 之后，新进程拉得到）；D 是 T 之后来的新客户
+  // C 在备份之后、T 之前又说了一句（假企微里排在库里 cursor 之后，新进程拉得到）；B 同样又说了一句（排在它 replied 的那一行后面）；
+  // D 是 T 之后来的新客户
   const c = h.say('r1', W.c, 'C5 备份之后又问了一句', T - 2000);
+  const b2 = h.say('r1', W.b, 'B5 备份之后又问了一句', T - 1500);
   const c2 = h.say('r1', W.c, 'C5 还有一句', T - 1000);
   const d = h.say('r1', W.d, 'D5 想去桂林');
   // 跟进开着、落库钩子装上（G、H 的只补记要经过它；自测自己调 runJobsOnce）
@@ -1991,9 +1996,29 @@ async function restart5(h: Harness): Promise<void> {
       ob[0]!.status === 'unknown' &&
       h.sendsTo(W.b).length === 1 &&
       h.llmCalls('B5') === 0 &&
-      ib[0]?.state === 'abandoned' &&
-      ib[0]?.reason === 'restore_cutoff',
+      ib.length === 2 &&
+      ib.every((r) => r.state === 'abandoned' && r.reason === 'restore_cutoff'),
     json({ ob, ib, sends: h.sendsTo(W.b), calls: h.llmCalls('B5') }),
+  );
+  // 第 20 步演练（owner 10-10 定）：入站行已是 replied 的会话，说明是「回复可能没送达」那句、跟在那条 AI 回复后面；同一会话之后只补记的
+  // 客户消息再加一条原话（每种一条），告警仍按会话数算（见最后一条断言）
+  const msgsB = await h.su<{ role: string; content: string; msgid: string | null }>(
+    'select role, content, msgid from messages where conversation_id = $1 order by seq',
+    [sid(W.b)],
+  );
+  const atB = (pred: (m: (typeof msgsB)[number]) => boolean): number => msgsB.findIndex(pred);
+  const replyB = atB((m) => m.role === 'agent');
+  const repliedNoteB = atB((m) => m.role === 'system' && m.content === RESTORE_REPLIED_NOTE);
+  const customerB2 = atB((m) => m.msgid === b2.msgid);
+  check(
+    '第 20 步 · B：replied 的那一行加「回复可能没送达」的说明（一条、在 AI 回复之后）；之后补记的那一句再加一条原话',
+    replyB >= 0 &&
+      repliedNoteB > replyB &&
+      customerB2 > repliedNoteB &&
+      atB((m) => m.content === RESTORE_NOTE) > customerB2 &&
+      msgsB.filter((m) => m.content === RESTORE_REPLIED_NOTE).length === 1 &&
+      msgsB.filter((m) => m.content === RESTORE_NOTE).length === 1,
+    json(msgsB),
   );
   const oc = await h.outOf(sid(W.c));
   const msgsC = await h.su<{ seq: number; role: string; content: string; msgid: string | null }>(
@@ -2057,6 +2082,15 @@ async function restart5(h: Harness): Promise<void> {
     [sid(W.g), sid(W.h)],
   );
   check('第 12 步评审 · 只补记那一步不排跟进：G、H 都没有新排的跟进任务', openFollowups.length === 0, json(openFollowups));
+  const ghNotes = await h.su<{ content: string }>(
+    `select content from messages where role = 'system' and conversation_id in ($1, $2) order by conversation_id, seq`,
+    [sid(W.g), sid(W.h)],
+  );
+  check(
+    '第 20 步 · G、H（入站 replied）各加一条「回复可能没送达」的说明，没有「AI 没有回复」那句',
+    json(ghNotes) === json([{ content: RESTORE_REPLIED_NOTE }, { content: RESTORE_REPLIED_NOTE }]),
+    json(ghNotes),
+  );
   // 之后的一次普通保存（沉默了 3 小时：最后动静往前拨，与第 10 步的跟进场景同一写法），再让任务表跑一拍
   for (const uid of [W.g, W.h]) {
     const s = h.store.getSession(sid(uid))!;
@@ -2083,7 +2117,8 @@ async function restart5(h: Harness): Promise<void> {
     h.sendsTo(W.h).length === 1,
     json({ sends: h.sendsTo(W.h), jobs: await h.su(`select status from jobs where payload->>'sessionId' = $1`, [sid(W.h)]) }),
   );
-  // 「只补记」告警：最后一个这样的会话之后安静 10 秒由巡检发，这里把钟拨过去手动巡检一次；B、C、G、H 四个会话（C 有两句，按会话数算）
+  // 「只补记」告警：最后一个这样的会话之后安静 10 秒由巡检发，这里把钟拨过去手动巡检一次；B、C、G、H 四个会话（B、C 各有两句、B 有两条
+  // 说明，按会话数算）
   h.alerts.__alertTest.setClock(() => Date.now() + 60_000);
   h.alerts.__alertTest.tick();
   h.alerts.__alertTest.tick();
