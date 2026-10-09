@@ -117,6 +117,8 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   // 使用 UI 优先字体片已有的字；认证信息包含三项凭据，加密设置指数据库加密密钥的轮换。
   'channel.secrets_update': { label: '更新入口认证信息', group: 'platform', icon: 'key-round' },
   'channel.rekey': { label: '轮换入口加密设置', group: 'platform', icon: 'refresh-cw' },
+  'channel.import': { label: '导入入口状态', group: 'platform', icon: 'refresh-cw' },
+  'channel.export': { label: '导出入口状态', group: 'platform', icon: 'refresh-cw' },
 };
 
 /** 这个动作的定义；表里没有（以后新增的动作）时是 null。只认自有属性，toString 这类原型上的名字查不到 */

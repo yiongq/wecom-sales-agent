@@ -180,3 +180,22 @@ export async function readOpenInbox(tx: Tx, accountId: string): Promise<InboxRec
     .orderBy(asc(channelInbox.ord));
   return rows as InboxRecord[];
 }
+
+/** 渠道迁移工具：按 ord 读这个账号的入站（包括只用于去重的 legacy）。 */
+export async function readAccountInbox(tx: Tx, accountId: string): Promise<InboxRecord[]> {
+  return (await tx
+    .select(COLUMNS)
+    .from(channelInbox)
+    .where(eq(channelInbox.accountId, accountId))
+    .orderBy(asc(channelInbox.ord))) as InboxRecord[];
+}
+
+/** --resync 只替换未结束行的原文与计次，保留状态、seq 与 ord；终态的任何 UPDATE 都不发。 */
+export async function resyncInboxPayload(tx: Tx, id: string, payload: unknown, attempts: number): Promise<boolean> {
+  const rows = await tx
+    .update(channelInbox)
+    .set({ payload, attempts })
+    .where(and(eq(channelInbox.id, id), inArray(channelInbox.state, [...INBOX_OPEN_STATES])))
+    .returning({ id: channelInbox.id });
+  return rows.length === 1;
+}

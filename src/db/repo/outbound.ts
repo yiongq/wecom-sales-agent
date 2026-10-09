@@ -309,3 +309,15 @@ export async function readOpenOutbound(tx: Tx, accountId: string | null): Promis
     .orderBy(outboundSends.sentAt, outboundSends.segment);
   return rows as OpenOutboundRow[];
 }
+
+/** 导出前检查部分送达：同一入站有 pending 又有可能已送达的段时，02 无法补完。 */
+export async function hasPartlyDeliveredOutbound(tx: Tx, accountId: string): Promise<boolean> {
+  const rows = await tx
+    .select({ inboxId: outboundSends.inboxId })
+    .from(outboundSends)
+    .where(and(eq(outboundSends.accountId, accountId), sql`${outboundSends.inboxId} is not null`))
+    .groupBy(outboundSends.inboxId)
+    .having(sql`bool_or(${outboundSends.status} = 'pending') and bool_or(${outboundSends.status} in ('accepted', 'unknown', 'sending'))`)
+    .limit(1);
+  return rows.length !== 0;
+}
