@@ -134,6 +134,8 @@ export function inboxRowOf(r: InboxRecord): InboxRow {
 export interface InboxAbandoned {
   reason: InboxAbandonReason;
   account: string;
+  /** restore_cutoff：这一行给会话加了恢复说明（同一会话一次恢复只加一条），告警据此数会话数（03 第 12 步） */
+  noted?: boolean;
 }
 const abandonedListeners = new Set<(e: InboxAbandoned) => void>();
 export function onInboxAbandoned(cb: (e: InboxAbandoned) => void): () => void {

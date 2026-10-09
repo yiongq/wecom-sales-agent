@@ -2091,6 +2091,7 @@ async function abandonInboxRow(rt: WecomRuntime, row: InboxRow, reason: 'poison'
 function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Promise<void> {
   const sessionId = row.conversationId;
   const msg = row.kind === 'message' ? (row.payload as KfMessage | null) : null;
+  let noted = false;
   if (sessionId && msg) {
     const s = accountSession(rt, sessionId);
     const known = s.messages.some((m) => m.msgid === row.msgid) || recentMsgids(sessionId).has(row.msgid);
@@ -2101,13 +2102,14 @@ function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Pr
     }
     if (!s.messages.some((m) => m.role === 'system' && m.content === RESTORE_CUTOFF_NOTE && m.at > cutoff)) {
       s.messages.push({ role: 'system', content: RESTORE_CUTOFF_NOTE, at: Date.now() });
+      noted = true;
     }
     saveSession(s);
   }
   console.log(`${rt.tag} 恢复截止点之前的${row.kind === 'message' ? '客户消息只补记' : '菜单点击不补记'}，不回复`);
   cancelInboxIntents(row.id);
   const done = finishInboxRow(sessionId, row.id, 'abandoned', 'restore_cutoff');
-  noteInboxAbandoned({ reason: 'restore_cutoff', account: rt.key });
+  noteInboxAbandoned({ reason: 'restore_cutoff', account: rt.key, noted });
   return done;
 }
 
