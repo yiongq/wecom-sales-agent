@@ -372,12 +372,15 @@ export interface PgBackend extends StoreBackend {
   /**
    * 收到 msg_send_fail：单独一个短事务按 msgid 记 failed 与 fail_type（不经会话写队列）。写成了是 ok，带那一行的会话 id（找不到、
    * 已经是 failed 为 null）；这次没写（同上三种情况、库报错，记一行）不是 ok，调用方再试一次。
-   * 03：给了 inboxId（库里账号的回执入站行）时同一个短事务把那一行入站记 done（spec「入站」的回执）
+   * 03：给了 inboxId（库里账号的回执入站行）时同一个短事务把那一行入站记 done（spec「入站」的回执）。给了 full（本进程计划过的
+   * 那一整行，状态 failed）时按迁移表 upsert 它（没有就插入，pending、sending、accepted、unknown 迁 failed），会话 id 为 null：
+   * 那一行的 pending 可能还在另一个没提交的落库事务里，UPDATE 看不到它；插入会等那个事务结束再判
    */
   markOutboundFailed(
     channelMsgid: string,
     failType: number,
     inboxId?: string | null,
+    full?: OutboundWriteRow | null,
   ): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
   /**
    * 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；还没建写队列的先生成好，建写队列时
@@ -1477,7 +1480,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         console.error(`[store] 没有会话的发送账本行没写进去（${errLabel(err)}），丢弃 ${rows.length} 行`);
       }
     },
-    async markOutboundFailed(channelMsgid, failType, inboxId) {
+    async markOutboundFailed(channelMsgid, failType, inboxId, full) {
       if (conflict || closed || !d.writable()) {
         console.error(`[store] msg_send_fail 回执这次不写库（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
         return { ok: false };
@@ -1485,7 +1488,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       try {
         const sessionId = await detached(() =>
           withTenant(d.db, ctx, async (tx) => {
-            const sid = await markOutboundFailed(tx, channelMsgid, failType);
+            let sid: string | null = null;
+            if (full) await insertOutboundSends(tx, [full]);
+            else sid = await markOutboundFailed(tx, channelMsgid, failType);
             // 03：回执的入站行与出站行的 failed 同一个短事务记 done
             if (inboxId) await applyInboxStates(tx, [{ inboxId, state: 'done', reason: null, messageSeq: null }]);
             return sid;

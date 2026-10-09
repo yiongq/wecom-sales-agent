@@ -81,6 +81,11 @@ const SEQ_WAIT_MS = 2_000;
 /** msg_send_fail 改库的短事务失败之后，隔多久再试一次（只试一次） */
 const RECEIPT_RETRY_MS = 1_000;
 /**
+ * 03 库里账号的回执（带入站行）：短事务没写成时隔多久再试。它可能要等另一个事务里还没提交的出站行（唯一键上的插入），
+ * 一次至多等到语句超时（5 秒），所以多试几次；都没写成时入站行停在 received，重启时由启动恢复重做
+ */
+const RECEIPT_INBOX_RETRY_MS = [1_000, 5_000, 30_000];
+/**
  * 03 R6：发送前等这一组 pending 提交至多多久（与 02 不变量 20 同一口径，从 planOutbound 那一刻算起）；markSending 的短事务至多等多久，
  * 等不到判 db_unavailable。自测经 __ledgerTest.setWaits 缩短
  */
@@ -975,22 +980,31 @@ function explain(sessionId: string, failType: number): void {
 /**
  * 回执改库（单独一个短事务）。没写成（库报错、冲突、late 段之后、租户锁在别人手里）的进本进程的待补：隔一拍再试一次，仍失败记 error。
  * explainHit：内存里没有这一行，改中了才知道是哪个会话，那时再加说明（重试改中的也加）。
- * inboxId（03 库里账号的回执入站行）：同一个短事务把它记 done；两次都没写成时入站行停在 received，重启时由启动恢复重做（第 10 步）
+ * inboxId（03 库里账号的回执入站行）：同一个短事务把它记 done；几次都没写成时入站行停在 received，重启时由启动恢复重做（第 10 步）。
+ * full（03 本进程计划过的那一段，内存里已是 failed）：短事务里按迁移表写这一整行 failed（没有就插入、pending 等可迁的迁过去），
+ * 而不是只 UPDATE——这一段的 pending 可能还在另一个没提交的落库事务里，UPDATE 看不到它，回执的 done 却会先提交，
+ * 那次落库之后库里留着 pending（第 9 步评审）。插入会等那个事务结束再按迁移表判；之后晚到的 pending、结果都不改 failed
  */
-function markFailedInDb(channelMsgid: string, failType: number, explainHit: boolean, inboxId: string | null = null): Promise<void> {
-  return markOutboundFailedInDb(channelMsgid, failType, inboxId).then(async (r) => {
+async function markFailedInDb(
+  channelMsgid: string,
+  failType: number,
+  explainHit: boolean,
+  inboxId: string | null = null,
+  full: OutboundRow | null = null,
+): Promise<void> {
+  const delays = inboxId === null ? [RECEIPT_RETRY_MS] : RECEIPT_INBOX_RETRY_MS;
+  for (let i = 0; ; i++) {
+    const r = await markOutboundFailedInDb(channelMsgid, failType, inboxId, full);
     if (r.ok) {
       if (explainHit && r.sessionId) explain(r.sessionId, failType);
       return;
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, RECEIPT_RETRY_MS).unref());
-    const again = await markOutboundFailedInDb(channelMsgid, failType, inboxId);
-    if (again.ok) {
-      if (explainHit && again.sessionId) explain(again.sessionId, failType);
-      return;
-    }
-    console.error(`[quota] msg_send_fail 回执改库重试一次仍没写成（fail_type=${failType}），库里那一行没记 failed`);
-  });
+    if (i >= delays.length) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, delays[i]).unref());
+  }
+  console.error(
+    `[quota] msg_send_fail 回执改库重试${delays.length === 1 ? '一' : ` ${delays.length} `}次仍没写成（fail_type=${failType}），库里那一行没记 failed`,
+  );
 }
 
 /**
@@ -1018,6 +1032,7 @@ async function receipt(channelMsgid: string, failType: number, inboxId: string |
   let toDb = false;
   let explainHit = false;
   let waitFor: string | null = null;
+  let full: OutboundRow | null = null;
   if (row) {
     const moves = row.status !== 'failed' && (!row.v2 || canMoveOutbound(row.status, 'failed', ['receipt']));
     if (moves) {
@@ -1034,11 +1049,19 @@ async function receipt(channelMsgid: string, failType: number, inboxId: string |
       // 库里账号的行：对应的消息还没写进会话（跟进、引导提示送达之后才写）时，等它分到 seq 再写一行 failed——库里那一行由回执的短事务
       // 先记了 failed、message_seq 还是 NULL，这一行只把 seq 补上（不是状态变化），工作台按 seq 才查得到这一段的失败
       if (row.v2 && row.message && seqOf(row.message) === undefined && writesToDb(row.sessionId)) awaitSeq(row);
-      if (row.inDb && writesToDb(row.sessionId)) {
+      if (!row.v2 && row.inDb && writesToDb(row.sessionId)) {
         toDb = true;
         // 本进程排进落库的先等这个会话排着的落库提交（免得改在它前面）
         if (row.dbRow !== null) waitFor = row.sessionId;
       }
+    }
+    // 03 库里账号、本进程计划过的段：内存里是 failed（这次改的，或重复的回执）就在回执的短事务里写这一整行 failed（见 markFailedInDb）。
+    // 先等这个会话排着的落库（多半已提交，短事务里的插入就不必等锁）；等不到也照写，插入会等那个事务结束。
+    // 内存里是别的终态（rejected、cancelled：迁移表不许改 failed）的不写出站行，只记入站 done
+    if (row.v2 && writesToDb(row.sessionId) && row.status === 'failed') {
+      toDb = true;
+      full = writeShape(row, 'failed');
+      if (row.dbRow !== null) waitFor = row.sessionId;
     }
   } else if (sessionStoreMode() === 'db') {
     toDb = true;
@@ -1052,7 +1075,7 @@ async function receipt(channelMsgid: string, failType: number, inboxId: string |
     return;
   }
   if (waitFor !== null && getSession(waitFor)) await flushSession(waitFor, { timeoutMs: 5000 }).catch(() => undefined);
-  await markFailedInDb(channelMsgid, failType, explainHit, inboxId);
+  await markFailedInDb(channelMsgid, failType, explainHit, inboxId, full);
 }
 
 /** 仅供自测：账本里的行（按记账顺序）与清空 */

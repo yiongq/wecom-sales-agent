@@ -154,14 +154,21 @@ export async function applyInboxStates(tx: Tx, writes: readonly InboxStateWrite[
   return n;
 }
 
-/** 出队开始处理（R3 的计次）：没结束的行 attempts 加 1，返回加之后的值；行不在或已结束返回 null */
-export async function bumpInboxAttempts(tx: Tx, id: string): Promise<number | null> {
+/**
+ * 出队开始处理（R3 的计次）：没结束的行 attempts 加 1，返回加之后的值；行不在或已结束返回 null。
+ * 给了 expected（出队时读到的 attempts）时只在库里还是这个值时加（同一次出队的计次幂等，第 9 步评审）：没加上而库里已经比它大
+ * （上一次加 1 其实提交了、只是回包丢了，调用方重试到这里）返回库里的值，不再加；行不在、已结束、或库里反而比它小返回 null
+ */
+export async function bumpInboxAttempts(tx: Tx, id: string, expected?: number): Promise<number | null> {
+  const open = and(eq(channelInbox.id, id), inArray(channelInbox.state, [...INBOX_OPEN_STATES]));
   const out = await tx
     .update(channelInbox)
     .set({ attempts: sql`${channelInbox.attempts} + 1` })
-    .where(and(eq(channelInbox.id, id), inArray(channelInbox.state, [...INBOX_OPEN_STATES])))
+    .where(expected === undefined ? open : and(open, eq(channelInbox.attempts, expected)))
     .returning({ attempts: channelInbox.attempts });
-  return out[0]?.attempts ?? null;
+  if (out[0] || expected === undefined) return out[0]?.attempts ?? null;
+  const [cur] = await tx.select({ attempts: channelInbox.attempts }).from(channelInbox).where(open);
+  return cur && cur.attempts > expected ? cur.attempts : null;
 }
 
 /** 启动：这个账号没结束的行（received、recorded、replied），按 ord */

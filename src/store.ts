@@ -461,10 +461,16 @@ export function unmarkOutboundInDb(channelMsgid: string): Promise<boolean> {
 /**
  * msg_send_fail 的状态更新：db 存储下单独一个短事务。写成了是 ok，带那一行的会话 id（没找到、已是 failed 为 null）；没写成（库报错、
  * 冲突、late 段之后、租户锁在别人手里）不是 ok，调用方据此再试。文件存储下恒为 ok、会话 id 为 null。
- * 03：给了 inboxId（库里账号的回执入站行）时同一个短事务把它记 done
+ * 03：给了 inboxId（库里账号的回执入站行）时同一个短事务把它记 done；给了 full（本进程计划过的那一整行，状态 failed）时按迁移表
+ * upsert 这一行，而不是只 UPDATE（会话 id 为 null）
  */
-export function markOutboundFailedInDb(channelMsgid: string, failType: number, inboxId?: string | null): Promise<OutboundFailResult> {
-  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType, inboxId) : Promise.resolve({ ok: true, sessionId: null });
+export function markOutboundFailedInDb(
+  channelMsgid: string,
+  failType: number,
+  inboxId?: string | null,
+  full?: OutboundRow | null,
+): Promise<OutboundFailResult> {
+  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType, inboxId, full) : Promise.resolve({ ok: true, sessionId: null });
 }
 
 // ---------------- 03 入站：channel_inbox 的状态变化（src/channels/inbox.ts 与企微适配器、引擎） ----------------

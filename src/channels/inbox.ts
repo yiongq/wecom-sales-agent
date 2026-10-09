@@ -252,10 +252,14 @@ export class AccountInbox implements PgInbox {
     return inserted.map(inboxRowOf);
   }
 
-  /** 出队开始处理：单独一个短事务 attempts + 1 并提交，返回加之后的值。行已结束或已不在库里抛 InboxRowGone；库不可写时抛 InboxWriteError */
+  /**
+   * 出队开始处理：单独一个短事务 attempts + 1 并提交，返回加之后的值。只在库里还是 row.attempts 时加（幂等：同一次出队的重试不会
+   * 加两次）。行已结束或已不在库里抛 InboxRowGone；库不可写、提交结果不明时抛 InboxWriteError（调用方带同一个 row 重试）
+   */
   async beginAttempt(row: InboxRow): Promise<number> {
     this.own(row.accountId);
-    const n = await inboxTx((tx) => bumpInboxAttempts(tx, row.id));
+    // 以出队时读到的 attempts 为条件（同一次出队重试几次也只加一次：上一次的提交回包丢了，这一次读回已加的值）
+    const n = await inboxTx((tx) => bumpInboxAttempts(tx, row.id, row.attempts));
     if (n === null) throw new InboxRowGone();
     return n;
   }

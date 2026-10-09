@@ -277,6 +277,11 @@ class WecomRuntime {
   // 按客户串行的处理链；欢迎语不排队，单独跟踪，只为停机时能等它们发完
   readonly userChains = new Map<string, Promise<void>>();
   readonly eventTasks = new Set<Promise<void>>();
+  /**
+   * 03 入站：停机时队头那一行放下了（计次没写进库）的会话（处理链的键）。之后轮到这个会话的行一律不出队、整段留给重启恢复，
+   * 不让排在后面的先处理（不变量 12，第 9 步评审）
+   */
+  readonly haltedChains = new Set<string>();
 
   /** 加载状态 + 重放在途消息（幂等）：启动循环与回调都先 await 它，消除「回调早于加载」的竞态 */
   readyPromise: Promise<void> | null = null;
@@ -1772,13 +1777,18 @@ function dispatchInboxRows(rt: WecomRuntime, cfg: WecomConfig, rows: readonly In
       void t.finally(() => rt.eventTasks.delete(t));
       continue;
     }
-    enqueueForUser(rt, row.conversationId ?? row.msgid, () => processInboxRow(rt, cfg, row));
+    enqueueForUser(rt, chainKeyOf(row), () => processInboxRow(rt, cfg, row));
   }
 }
+
+/** 处理链的键：同一会话的入站行排在同一条链上 */
+const chainKeyOf = (row: InboxRow): string => row.conversationId ?? row.msgid;
 
 /** 处理链轮到一行：出队判定、计次，再按种类处理 */
 async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): Promise<void> {
   const inbox = inboxOf(rt);
+  // 停机时这个会话排在前面的那一行放下了：它后面的也都不出队，按 ord 整段留给重启恢复
+  if (rt.haltedChains.has(chainKeyOf(row))) return;
   if (row.attempts >= MAX_INBOX_ATTEMPTS) return abandonInboxRow(rt, row, 'poison');
   if (row.sentAt !== null && row.sentAt < Date.now() - REPLAY_MAX_AGE_MS) return abandonInboxRow(rt, row, 'too_old');
   const cutoff = inbox.recordOnlyUntil;
@@ -1800,7 +1810,11 @@ async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow
   return finishInboxRow(r.conversationId, r.id, 'done');
 }
 
-/** 出队计次（单独一个短事务，提交之后才处理）。写不进库就在处理链里等着重试；行已结束或已不在库里、停机中放下时返回 null */
+/**
+ * 出队计次（单独一个短事务，提交之后才处理）。写不进库、提交结果不明就带同一个 row 在处理链里等着重试（计次以出队时的 attempts
+ * 为条件，重试不会多加）；行已结束或已不在库里返回 null（后面的照常出队）；停机中放下时返回 null，并把这个会话的链停下
+ * （haltedChains：后面的行不出队，整段留给重启恢复）
+ */
 async function beginInboxAttempt(rt: WecomRuntime, inbox: AccountInbox, row: InboxRow): Promise<number | null> {
   for (let i = 0; ; i++) {
     try {
@@ -1811,7 +1825,8 @@ async function beginInboxAttempt(rt: WecomRuntime, inbox: AccountInbox, row: Inb
         return null;
       }
       if (rt.stopping) {
-        console.error(`${rt.tag} 停机中，一行入站计次没写进库：留给下次启动（这一行不处理）`);
+        rt.haltedChains.add(chainKeyOf(row));
+        console.error(`${rt.tag} 停机中，一行入站计次没写进库：这一行与同一会话排在后面的都留给下次启动`);
         return null;
       }
       const delay = ATTEMPT_RETRY_MS[Math.min(i, ATTEMPT_RETRY_MS.length - 1)]!;
@@ -2516,6 +2531,7 @@ async function resetRuntime(rt: WecomRuntime): Promise<void> {
   rt.userChains.clear();
   rt.eventTasks.clear();
   rt.welcomeBackAt.clear();
+  rt.haltedChains.clear();
 }
 
 function inspectRuntime(rt: WecomRuntime): { cursor: string; coldStart: boolean; handled: string[]; inflight: string[]; busy: boolean } {
@@ -2578,6 +2594,16 @@ export const __wecomTest = {
   /** 运行时的账号 uuid（含 env 账号） */
   ids(): string[] {
     return [...runtimes.keys()];
+  },
+  /**
+   * 模拟停机中（drainForShutdown 置的 stopping）：只改这个标志（不截止发送、不收尾）。置回 false 时清掉停机时停下的处理链，
+   * 像新进程那样可以重新派发
+   */
+  setStopping(accountId: string, on: boolean): void {
+    const rt = runtimes.get(accountId);
+    if (!rt) return;
+    rt.stopping = on;
+    if (!on) rt.haltedChains.clear();
   },
   /** 模拟停机的 normal 段截止（drainForShutdown 设的那个时刻）：at 为 null 换回不截止。只改截止，不停拉取 */
   closeSends(accountId: string, at: number | null): void {
