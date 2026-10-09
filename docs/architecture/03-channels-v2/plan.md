@@ -135,7 +135,7 @@
   - `scripts/load/run.ts` 加一组：两个客服账号各 25 个客户、各 10 轮；先在开工提交（02）上跑基线，再在 03 上跑，同一台机器、同一 PG 配置、同一负载与随机种子，各 3 遍取中位数（spec「测试与 CI」的压测）。
   - 对应验收 24。依赖：第 10、14 步。
   - 完成标准：数字（基线与 03）记进「验收记录」第 24 条；脚本不进 `test`。
-- [ ] 20. 部署与演练（1，Claude）
+- [x] 20. 部署与演练（1，Claude）：2026-10-10 在本机 compose 上走完（切换停机约 4 秒、备份恢复两轮加对照、浏览器实测）；演练发现回滚检查经 `deploy.sh` 调用时会误放行（「Open」第 20 步那条），第 21 步之前要先修。见「实施记录 · 第 20 步」。
   - 本机 compose 上照 spec「切换步骤」走一遍：以现状部署 → 加密钥 → 停 app → `channel-import --keep` → 起 → 测试消息 → `channel-export` → 部署 02 的镜像（回滚检查放行）→ 文件状态下聊几轮 → `--resync` 切回；回滚检查的几种拒绝；健康检查失败后的自动回滚。
   - 第 18 步挪过来的浏览器实测：本机浏览器里打开 `/w/<key>`，聊一句、刷新（历史还在）、点「结束咨询」（cookie 清掉、会话还在 console 里），结果记进实施记录。
   - 备份恢复演练照验收 6 的场景（A–F 六个客户、T 时刻、哨兵拦住、`restore-cutoff` 之后起），加不跑 `restore-cutoff` 的对照。
@@ -649,15 +649,96 @@
 - 子 agent 自己脚本的一个问题已在全量之前修掉：基线组按账号数算客户数，第一次只算出 25 个；改成按 03 组的账号数折算、两组都是 50 个之后才跑全量，那一遍作废。
 - 清理：一次性容器、临时 worktree、后台进程都已清掉，本机其他容器没碰；原始结果文件只留在协调者的 scratchpad，不进仓库。门禁：四个全绿（`pnpm test` 在沙箱外跑），只改 `scripts/load/**`，锁定文件与 `PREFIX sha256` 未动。
 
+### 第 20 步 · 部署与演练（2026-10-10）
+
+本步不改产品代码，只在本机 colima 的 docker compose 上把 `deploy.sh`、`deploy/rollback-guard.sh`、`deploy/backup.sh`、恢复手册与 spec「导入、导出与切换」的切换、回退步骤真跑一遍。
+
+**搭法**（照 02 第 26 步，三处不同）
+
+- 照 02：假 `ssh`（丢掉 host，把命令交给本机 bash；`RSYNC_RSH` 也指到它），`deploy.sh` 里真实的 `git archive`、四个门禁、rsync、`docker build`、迁移、换容器；远端两处 root 操作改写（`chown -R 1000:1000` 改送一次性 root 容器，`/usr/local/lib/<项目名>` 改到 scratch 下的同构目录）；只用 `LLM_MOCK=1`。临时 tag 用 `drill03-` 前缀，只在本机、没推送，演练完删掉。
+- 部署目录：colima 只把 home 共享进虚拟机，`deploy/compose.yml` 的 `../var`、`./db-init` 挂载要求部署目录在 home 下，所以部署目录放在 home 下的临时目录（演练完删掉），`.env*` 是指回 scratch 的软链；库口令、渠道密钥、证书、age 密钥对只在 scratch，演练完删掉。
+- 用线上三元组跑 `deploy.sh`（`NAME`、`REMOTE_DIR`、`HOST_PORT` 不设）：它对旁路实例（三元组任一与线上不同）要求 `.env` 里不能有 `WECOM_*`，而切换演练正需要 env 里的企微凭据。假 `ssh` 把 `/opt/wecom-sales-agent` 翻译到 home 下的演练目录；`SERVER` 是一个不可解析的 `.invalid` 名字。compose 项目名因此与线上相同，只在本机（本机原来没有这个项目），演练完连同数据卷、网络、镜像删掉。恢复用的两个新集群另起项目名与端口。
+- 假企微接口是一个 node 容器（自签证书 https，演练 `.env` 设 `NODE_TLS_REJECT_UNAUTHORIZED=0`），以网络别名 `qyapi.weixin.qq.com` 接进演练的 compose 网络；有客户「发消息」时按企微方案真加密、真签名推一个回调，应用照常验签、解密、按回调里的 token 立即拉取；假群机器人 webhook 在同一个容器里。跟进的夜间顺延用 `FOLLOWUP_QUIET_START/END=0` 关掉（演练在半夜）。
+
+**起手**
+
+- 空服务器上第一次部署 02 的 tag（开工提交 `5b697c2`）被回滚检查拒绝（退出码 5，「问不到库，看不出渠道状态是否在库里，按有风险处理」），`deploy.sh` 在第 3 步停、服务器上什么都没动：目标是 03 之前的，db 还没起、也没有在跑的容器。这是脚本有意的从严，只影响「空服务器上部署 03 之前的 tag」，线上不会遇到；先 `compose up -d db` 再部署就过了。
+- 照线上现状搭：`tenant-create`、`user-create`、`import-config`（SOP v1、20 条线路、23 家酒店）、`import-sessions`（0 个真实会话，13 个 demo 种子留在 JSON）、`.env` 设 `CONFIG_SOURCE=db`、`SESSION_STORE=db`；企微是 env 账号与 `var/wecom-cursor.json`。两个客户经假企微聊了 5 轮，各一回、没有重复，`wecom-cursor.json` 有 cursor 与 5 条 handled。`/healthz` 四个哈希 `promptHash=dd2c10ee4d42 toolsHash=64c16fc8f464 prefixHash=3ac7e7b91512 sopHash=55e5caa59580`，下文「四个哈希」都指它们，全程没变过。
+
+**切换步骤 1–4**
+
+- ① `deploy.sh` 部署 03（dev `cb9f64a`），不加 env：`channels = {mode: env, accounts: 1, failing: 0, stuck: 0}`，四个哈希不变，企微照常一句一回（cursor 前进一格）。② `.env` 加 `CHANNEL_SECRETS_KEY=k1:<32 字节>`。
+- ③④ 三条命令串联计时：`stop app` 0.2 秒 → `channel-import --tenant demo --key kf-main --keep <var 之外的目录>` 1.7 秒（打印 `kf-main {"handled":6,"pending":0,"inserted":6,"updated":0,"abandoned":0}`，与文件里的 6 条 handled 相符）→ `up -d app` 1.3 秒 → `/healthz` 报 `mode: db` 1.0 秒，**停机 4.2 秒**（命令串联、不含人工看输出；`compose run` 时 migrate 已是完成态，没有重跑）。
+- 之后 `channels = {mode: db, accounts: 1, failing: 0, stuck: 0}`，四个哈希不变；console `/status` 里 `kf-main` 的 `lastSyncAt` 在起来后 8 秒内；假企微发一句收到一次回复，库里这条入站 `message / done`（attempts 1）、出站 `accepted`（带账号与入站 id）；`var/` 里有 `channels-in-db.json`、没有 `wecom-cursor.json`，原件在 `--keep` 的子目录里。导入后第一次查 `/status` 时 `cursorAgeSec` 是 null（导入只写 `cursor`、不写 `cursor_at`），拉到第一页之后有值。
+
+**回退与切回**
+
+- `stop app` → `channel-export --tenant demo --var /app/var --keep <…>`：打印 `{"handled":10,"pending":0,"unknown":0,"cancelled":0}`；标记没了，`var/wecom-cursor.json`（cursor 与 10 条 handled）回来了，默认账号 `exported`，`.env` 的 `WECOM_*` 还在。
+- 导出之后同一个 03 镜像起来是 `channels.mode = env`（日志「已导出（默认账号 kf-main 是 exported），照 02 走 env 账号与 var/wecom-cursor.json」），一句一回。
+- `deploy.sh` 部署 02 的 tag：放行、部署成功。02 读导出的文件：启动没有重放、没有补发；三个客户聊了 4 轮（含一次建单，正文与卡片两段），各一组、没有重复。
+- `deploy.sh` 部署回 03（`mode = env`）→ 串联计时的 `stop → channel-import --resync → up`：打印 `{"handled":15,"pending":0,"inserted":5,"updated":0,"abandoned":0}`，停机 4.3 秒；库里 cursor 等于文件的；回退期间的 5 条（只在 handled 里）按 `legacy / done` 补进，没有没结束的入站行；起来之后假企微上没有多出任何一条（没有重复回复），再发一句一回。
+- 回退的停机：`deploy.sh` 先跑约 7 分钟门禁才走到回滚检查与换容器。照 spec 原文「`channel-export` → 部署 02 的 tag」的顺序，这 7 分钟以上都是停机；演练里在导出之后先用 03 镜像 `up -d app`（env 状态）顶着，再跑 `deploy.sh`，停机只剩导出与换容器（写进「Open」，请 owner 定要不要写进回退步骤）。
+
+**回滚检查与自动回滚**（真实 docker）
+
+- 有 `channels-in-db.json` 时 `deploy.sh` 部署 02 的 tag：第 3 步拒绝，检查脚本退出码 5，打印 `channel-export` 的四步与「再切回 03」，带项目名、端口与标记里的租户 `demo`；`deploy.sh` 退出码 1，服务器上什么都没动。直接对 02 的镜像跑检查脚本也是 5。
+- **删掉标记、库里 `kf-main` 仍是 `active`：直接跑检查脚本是 5（「库里的 channel_accounts 有不是默认企微账号且 exported 的行」），经 `deploy.sh` 部署 02 的 tag 却没有被拒，02 真的部署上去了。** 原因与复现见「Open」第 20 步那条：`deploy.sh` 把检查脚本经 ssh 交给 `bash -s` 从标准输入读，脚本里问库的 `docker compose exec -T` 把标准输入上剩下的脚本读走了，脚本随即以 0 结束。02 起来是冷启动（`var/` 里没有 cursor 文件）：从头拉，10 分钟以前的 7 条只标记不回，10 分钟以内的一条（03 早已回过）被 02 的 7 天 msgid 集合认出、没有重复回复——碰巧没出事，停机再长一点或消息再近一点就会漏或重。按运维办法恢复：停 app、把 02 写出的 `wecom-cursor.json` 挪出 `var/`、`APP_IMAGE=<:prev，即 03>` `up -d --no-deps app` 并重打 `:current`，回到 `mode = db`，一句一回。
+- `channel-export` 之后：检查脚本对 `pre-03` 与 02 的镜像都是 0（用文件跑；经 `bash -s` 的放行不作数，见上一条），`deploy.sh` 部署 02 成功（「回退与切回」）。
+- 两个 03 镜像之间：检查脚本以 03 镜像为目标，有标记、无标记都是 0。
+- 健康检查失败后的自动回滚：用 plumbing（`commit-tree`，不进工作区）在 03 提交上造了一个 `CMD` 改成立即 `exit 1` 的临时 tag，四个门禁照过。部署：换容器 00:34:25，10 次健康检查到 00:35:10 全失败，打印日志，检查（目标 `:prev`，即 03）放行，00:35:19 `up --no-deps :prev`，健康、`revision` 回到 03，`deploy.sh` 退出码 1，停服约 55 秒。在同样的条件下（app 停着、`/healthz` 不通）回放这次检查：经 `bash -s` 时脚本先问库的条目版本，问完就结束了，没走到判 03 镜像那一步——这次放行碰巧对（用文件跑同一个检查也是 0）；同样条件下以 02 的镜像为目标，标记文件在与不在，经 `bash -s` 都是 0（用文件跑、标记不在时是 5）。
+
+**`backup.sh`**
+
+- 部署装到 scratch 同构目录的那份（与 03 tag 相同），`bash -x` 带毫秒时间：打包 `var/` 00:07:47.493 → 探表 47.516 → `pg_dump` 47.789 → `pg_dumpall` 47.917 → 校验 → age 加密，共 1.5 秒；归档里有 `var/restored-from-backup.json`，线上 `var/` 里没有。
+
+**备份恢复演练（验收 6 本机部分）**
+
+- 准备（两轮相同）：A、B、C、E、F 经假企微聊到报价（都排上了 2 小时后的跟进）；应用停着时把 E、F 会话 `state` 里的 `updatedAt` 往前挪 3 小时再重启（跟进的沉默阈值 2 小时，不挪就得真等）。C 的人工回复「停在 pending」：线上没有办法让一行停在 pending（提交之后紧接着 `markSending`），演练时临时加一个只对 C 的 `human`、`pending` 出站行生效的 BEFORE UPDATE 触发器（返回 NULL），让 `markSending` 得到 `not_pending`、这一段不发；顾问经 console 回复 C（接口回 `{"sent":false,"persisted":true}`，假企微没收到，库里 `human / pending`），随即删掉触发器，备份里只有这一行 pending、没有触发器。
+- 第一轮（00:57）有两处演练脚本的问题，第二轮重做：一是 C 在备份之后才交还 AI，备份里 C 还在顾问名下，对照实验里 AI 本来就不回 C，说明不了问题；二是脚本等 `pg_dump` 连上再放开 F 的会话行锁，dump 不到 1 秒就做完、没等到，锁到 20 秒后才放，F 的跟进等记账提交 5 秒超时、按设计放弃（`abandoned / ledger_not_committed`，旧实例没发）。第一轮其余结果与第二轮一致；它的对照里 E 的跟进被重复发了一次。下面是第二轮。
+- 备份那一刻（脚本化）：C 的人工回复 pending 之后**在备份之前**交还 AI；E 的跟进排到 60 秒后（01:11:06）；B 的下一次 `send_msg` 让假企微收下后挂 12 秒（企微客户端的 `send_msg` 超时是 15 秒，挂满 15 秒会变成超时，比 spec 写的少 3 秒）；B 发一句，01:10:06 请求到假企微、挂住；另一个连接锁住 F 的会话行、把 F 的跟进排到现在，01:10:07.7 被认领成 `running`；`backup.sh` 01:10:07.7 开始，打包 08.088 → `pg_dump` 08.215 → `pg_dumpall` 08.333，退出 0；看到 `pg_dumpall` 就放锁（08.378，锁约 1 秒）。备份里：B 的出站 `sending`、入站 `replied`；C 的人工回复 `pending`、C 不在顾问名下；E 的跟进 `pending`、`run_at` 01:11:06；F 的跟进 `running`；会话 15。
+- 备份之后旧实例：F 的跟进 01:10:08 发出（任务 `done`）；C 再发一句，旧实例回复；E 的跟进 01:11:07 发出（`done`）；01:11:24 停旧实例，T = `2026-10-10T01:11:24+08:00`；之后 D 发一句。
+- 恢复到新集群（新 compose 项目、新库口令、新端口），照手册 1–6：解密、起 db（roles.sh 建角色）、超级用户 `pg_restore --exit-on-error`、迁移（空操作）、解开 `var/`（没有 spill，有哨兵）并 chown、库里账号的 key id `k1` 与 `.env` 的密钥环对上，几步共约 10 秒。
+- 不跑 `restore-cutoff` 直接起：反复重启，日志「渠道装载失败，拒绝启动（channel_restore_pending）：/app/var 里有恢复哨兵…」，假企微上没有任何发送。
+- `restore-cutoff --tenant demo --until 2026-10-10T01:11:24+08:00`：退出 0，打印入站 1 条只补记、出站 `pending → cancelled` 1 段、`sending → unknown` 1 段、跟进任务 `cancelled` 2 个、3 个会话加说明，删了哨兵；审计一行 `channel.restore_cutoff`（`platform`，diff 只有条数、账号 key 与 `until`）。
+- 起：2 秒健康。逐句：B 在假企微上恰好一组（挂住的那一组），新库里那一段 `unknown`（工作台「可能没送达」）、入站 `abandoned / restore_cutoff`；A 没有补发；C 备份之后那句在新库的会话里，后面跟「恢复备份之后补记的客户消息，AI 没有回复…」，没有第二次回复；给 C 的人工回复 `cancelled`（console 接口 `delivery.status = cancelled`，工作台映射成「未发送」）；E、F 的跟进都是 `cancelled / restore_cutoff`，没有第二次跟进；T 之后 D 那句回复一次（新集群唯一一条发送）；`/healthz` 四个哈希与原库相同；会话数 15 与原库相同（加上 D 是 16）。告警 01:12:40 收到「恢复截止点之前的客户消息只补记、AI 没有回复：2 个会话…」，在最后一个只补记的会话之后约 15 秒。起来 1.5 分钟内没有其他发送。
+- 对照：同一份备份恢复到第三个集群，删掉哨兵、不跑 `restore-cutoff`，起：**C 那句被再回一次**；E、F 的跟进各被**再发一次**；B 没有补发（启动恢复把 `sending` 记 `unknown`）；C 的人工回复被启动恢复取消（接手人变了）。D 也被再回一次，那是同一份备份恢复了两次的副作用。这一步不能省。
+- 观察：B 的会话里那条「AI 没有回复」的说明与它前面那条 AI 回复（`unknown`）并存——入站行是 `replied`（回复已生成、可能已发）时，这句措辞不准（写进「Open」）。
+
+**demo 照常（验收 16）**
+
+- 导入账号之后的 db 存储下：网页模拟器聊两句后「重置」→ 阶段回 greeting、只剩一条；企微客户发「重置」→ 一条「好的，我们重新开始…」，阶段回 greeting，库里消息只追加（8 → 10）；模拟器建单、匿名付款 200、订单 paid；`admin.html` 匿名列表只见 13 个种子与自己的 `sim-`，Basic 凭据看到全部；旧写接口匿名 401、Basic 的转人工与交还 200；`chat.html` 有「AI 顾问在线」「我是您的 AI 旅行顾问」；每次启动都打种子保鲜那一行。
+- 访客清理与上限：应用停着时往 `var/sessions.json` 加 1 个 25 小时前的 `sim-` 与 100 个新的，启动打「已清理 1 个闲置网页访客会话（阈值 24h，仅 sim-）」；`VISITOR_SESSION_MAX=100`（代码下限是 100）重启后新建一个访客，打「超过上限 100，已淘汰最旧的 4 个」，`sim-` 从 103 回到 100（之后从 `.env` 删掉这一行）。
+- 建了网页账号、开了一个网页会话之后，`admin.html` 匿名列表里只有种子，没有 `web:` 会话。
+
+**网页渠道浏览器实测（验收 14 第一条，第 18 步挪过来的）**
+
+- `channel-account add-web --tenant demo --key demo --title 演练网页咨询` → 0，重启后 `accounts = 2`。用 Playwright（Chromium）打开 `http://127.0.0.1:<端口>/w/demo`：标题「演练网页咨询」，开场第一句「您好，欢迎来到云途定制旅行，我是您的 AI 旅行顾问 ✨」。发一句收到报价回复；浏览器存下 `__Host-wv`：host-only `127.0.0.1`、`HttpOnly`、`Secure`、`SameSite=Lax`；库里有 `web:` 会话、带网页账号 id。
+- 本机是 http：Chromium 把 `127.0.0.1` 当作可信来源，`Secure` 的 cookie 照存照发，刷新后历史在；Playwright 自己的 HTTP 客户端按严格规则不在 http 上发 `Secure` cookie，用它拉 `/history` 是空的。线上是 https，没有这个问题。
+- 顾问在 console 接手（200）并回复：页面上立即出现「【顾问】…」，第二条从发出到页面可见不超过 0.15 秒；关页再开，两条都在历史里；点「结束咨询」后 `__Host-wv` 没了、页面清空，刷新只剩开场白；console 列表里那个 `web:` 会话还在（4 条消息）。截图在 scratch，没进仓库。
+
+**清理与门禁**
+
+- 三个 compose 项目连同数据卷与网络 `down -v`，演练建的镜像（含 `drill03-` 前缀的与 02 镜像的临时 tag）与一个演练期间留下的无名镜像删掉，假企微容器与镜像删掉，三个临时 tag 删掉，home 下的演练目录删掉，scratch 里的 env、库口令、渠道密钥、age 密钥对、证书、备份与解密出来的 dump 删掉；`docker ps -a`、`docker volume ls`、`docker images`、`docker network ls` 里没有 wecom 或 drill 字样，`git tag -l 'drill03-*'` 为空，`ps` 没有演练留下的进程。docker 的构建缓存与本机别的项目共用，没有清。
+- 门禁：本步只改本文件；开工前在 dev（`cb9f64a`）上 `pnpm test` 全绿（8 分 19 秒，北京时间晚上 11 点半）；演练里 `deploy.sh` 在归档目录里对 03 的 tag 跑了三遍（含造的坏 tag）、对 02 的 tag 跑了五遍四个门禁，全绿；本文件改完 `pnpm test` 退出 0（8 分 16 秒），`PREFIX sha256` 与第 1 步相同、锁定文件 sha256 未变；快进到含第 19 步的 dev（`82499f1`，只多了 `scripts/load/**` 与本文件）之后 `format:check`、`lint`、`typecheck` 全绿。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
 
+- 6 · **通过（本机部分；线上部分是「上线清单」里切换后第一份备份的恢复验证）**。第 20 步第二轮（第一轮的两处脚本问题与重做见「实施记录 · 第 20 步」）：六个客户经假企微真走一遍，备份那一刻 B 的 `send_msg` 挂在假企微上、C 的人工回复 `pending`、E 的跟进排在备份之后、F 的跟进 `running`；恢复到新集群，不跑 `restore-cutoff` 起以 `channel_restore_pending` 拒绝、没有任何发送；跑 `restore-cutoff --until T` 之后起：B 在假企微上恰好一组、A 没补发、C 备份之后那句在新库里带说明且没有第二次回复、C 的人工回复 `cancelled`（工作台「未发送」）、E 与 F 的跟进 `cancelled` 且没有第二次跟进、T 之后 D 那句回复一次、四个哈希与会话数（15）与原库一致、告警在最后一个只补记的会话之后约 15 秒到。对照（同一份备份，删哨兵、不跑 `restore-cutoff`）：C 那句被再回一次，E、F 的跟进各重复一次。偏离：B 挂 12 秒而不是 15 秒（企微客户端 15 秒超时）；C 的 pending 靠一个演练用的临时触发器造出、备份之前已删；E、F 的最后动静在应用停着时往前挪了 3 小时。
+- 13 · **通过（端到端部分）**。导入：打印条数与文件相符，`var/` 里没有 `wecom-cursor.json`、原件在 `--keep`，起来是 `mode = db`、测试消息入站 `done`、出站 `accepted`。导出：打印条数，标记删了、默认账号 `exported`、文件写回；同一个 03 镜像重启是 `mode = env`、照常收发；02 的镜像读导出的文件照常收发，没有重放、重复与漏发的段；文件路径下聊几轮之后 `--resync`：库里 cursor 是文件的，那几轮的消息都是 `done`，起来没有重复回复，之后一句一回。启动拒绝与导出拒绝的各种组合由第 14 步的自测覆盖，本步没有重复。
+- 14 · **通过（第一条，浏览器实测）**。Playwright（Chromium）打开 `/w/demo`：开场第一句带 AI 身份；发一句收到回复，响应带 `__Host-wv`（HttpOnly、Secure、SameSite=Lax），库里有 `web:` 会话；刷新后历史在；顾问在 console 接手并回复，在线的页面不超过 0.15 秒收到「【顾问】…」，关页再开历史里有；「结束咨询」之后 cookie 清掉、会话还在 console 里。本机是 http：Chromium 把 `127.0.0.1` 当可信来源，`Secure` cookie 照存照发（细节见「实施记录 · 第 20 步」）。其余几条由第 17、18 步的自测覆盖。
+- 16 · **通过**。导入账号之后的 db 存储下：模拟器与企微的「重置」生效；种子保鲜每次启动都打一行；`sim-` 访客闲置 24 小时被清、超过上限淘汰最旧的；`admin.html` 匿名只读只见种子与自己的 `sim-`，旧写接口匿名 401、带凭据 200；模拟支付匿名付款成功；`chat.html` 的 AI 标识照旧；建了网页账号与网页会话之后，匿名列表里没有 `web:` 会话。
+- 21 · **未通过（本机部分有一句不成立：删掉标记、库里仍有 `active` 的企微账号时，经 `deploy.sh` 部署 02 的 tag 没有被拒，见「Open」第 20 步）；其余各句通过**。切换前后四个哈希相同，`channels.mode` 从 `env` 变 `db`，停机 4.2 秒（`--resync` 切回 4.3 秒），导入 6 条、切回补 5 条；有 `channels-in-db.json` 时 `deploy.sh` 拒绝部署 02（检查脚本退出码 5）并打印回退步骤；直接跑检查脚本时「删掉标记、库里有 active 账号」是 5；`channel-export` 之后放行、部署 02 成功；两个 03 镜像之间照常回滚（检查脚本 0）；健康检查失败后的自动回滚全链路真实复现一次（这一次的放行碰巧也走了那个缺陷，结论不变）；`backup.sh` 先打包 `var/` 再导出（00:07:47.493 打包、47.789 `pg_dump`），归档里有哨兵、线上 `var/` 里没有。线上部分是第 21 步。
 - 24 · **通过**（2026-10-09，第 19 步）：两个客服账号各 25 个客户、各 10 轮，mock LLM 2–8 秒，真实 PG，不杀进程。正确性：基线与 03 各 3 遍，每遍 50 个客户、500 条客户消息、500 组恰好一次的回复，没有重复的 send_msg 组与 msgid。延迟（客户消息到达假企微 → 第一段 send_msg 到达假企微，毫秒）：基线（开工提交 `5b697c2`，02，env 账号）三遍 p50 / p95 / p99 为 17816 / 32823 / 35394、17812 / 32841 / 35400、17817 / 32851 / 35389，中位数 17816 / 32841 / 35394；03（库里两个账号）三遍为 17697 / 32732 / 35282、17703 / 32734 / 35293、17705 / 32732 / 35285，中位数 17703 / 32732 / 35285。p99 增量 −109 毫秒，满足「不超过 50 毫秒」。
 
 ## Open
 
 （与 spec 的分歧、需要 owner 裁决的事；开放问题 4 的实测结论也记在这里）
+
+- **第 20 步：回滚检查经 `deploy.sh` 调用时，只要问到库就会误放行（产品缺陷，第 21 步之前要修）**。`deploy.sh` 的 `guard_rollback` 是 `ssh "$SERVER" bash -s -- … <deploy/rollback-guard.sh`，脚本从标准输入读；脚本里 `db_channels`、`db_versioned` 两处 `docker compose … exec -T db psql …` 没有重定向标准输入，`docker compose exec` 会把标准输入转给容器，把剩下的脚本读走，bash 再也读不到后面的判断与 `exit`，以 0 结束，什么都不打印。复现（任何能跑 docker 的机器、跑着 03 的集群、库里有 `active` 的企微账号、挪走 `var/channels-in-db.json`）：`bash deploy/rollback-guard.sh <部署目录> pre-03 <项目名> <端口>` 是 5；`bash -s -- <部署目录> pre-03 <项目名> <端口> < deploy/rollback-guard.sh` 是 0、没有输出，`bash -x` 看到 `channel_risk` 赋值之后脚本就结束了。会被误放行的情况：① 标记不在、库里有渠道状态，部署 03 之前的 tag（本步真实复现：02 被部署上去，冷启动、cursor 从头来）；② `/healthz` 不通时（健康检查失败后的自动回滚正是这种情况）先走 `db_versioned`，即使标记在、目标是 02 之前或 03 之前的镜像也放行——自动回滚可能把渠道状态在库里的实例回到 02、把会话在库里的实例回到 01。`db_versioned` 是 02 就有的，02 第 26 步演练没碰到（它的「看不出来」分支是在库连不上时测的，连不上时 `exec` 立刻失败、不读标准输入）。自测没抓到：`src/db/db.selftest.ts` 也是经 `bash -s` 跑，但假 `docker` 不读标准输入。建议的修法（小 PR，由下一个会话做，不在本步改）：检查脚本里所有 `docker compose … exec` 加 `</dev/null`（`-T` 只是不分配 TTY，标准输入照样转进容器），自测的假 `docker` 在 `exec` 时 `cat >/dev/null` 吃掉标准输入，加一条经 `bash -s`、标记不在而库里有 `active` 账号时退出码 5 的断言（撤掉修复时失败）。
+- 第 20 步：回退到 02 的停机。`deploy.sh` 先跑约 7 分钟门禁才到回滚检查与换容器；照 spec「回退到 02 的镜像」原文（`stop app` → `channel-export` → 部署 02 的 tag），这段时间一直停机。演练里导出之后先用 03 镜像 `up -d app`（已导出，按 env 与文件状态收发）顶着，再跑 `deploy.sh`，停机只剩导出与换容器的几秒。是否把「导出之后先 `up -d app`」写进回退步骤（spec 与 `rollback-guard.sh` 打印的步骤），请 owner 定；不改 spec。
+- 第 20 步：恢复截止点之前入站行是 `replied`（回复已生成、可能已发）的会话，启动只补记时加的说明是「恢复备份之后补记的客户消息，AI 没有回复…」，而会话里紧跟着就是那条 AI 回复（`unknown`，「可能没送达」），措辞对这种情况不准。第 12 步记过措辞 owner 可以再改，这里只记现象。
 
 ## 交接记录
 
@@ -696,3 +777,10 @@
 - 半成品：无。
 - 阻塞：无。
 - 下一步：第 20 步本机部署与演练（照 02 第 26 步的搭法：假 ssh 在本机执行 `deploy.sh`、自签证书的假企微、一次性 age 密钥对；切换步骤、回退与 `--resync`、回滚检查几种拒绝、健康检查失败后的自动回滚、验收 6 的备份恢复演练加不跑 `restore-cutoff` 的对照、第 18 步挪过来的浏览器实测；演练完清掉项目、数据卷、镜像与临时 tag）。之后第 21 步线上切换（owner 执行或授权）、第 22 步逐条验收（含验收 15 手动部分的真实模型评测，花钱，owner 同意后跑）、第 23 步清理、第 24 步 owner 确认。
+
+### 交接（2026-10-10，第 20 步完成时）
+
+- 已完成：第 20 步本机演练（本 PR，只改本文件），结果见「实施记录 · 第 20 步」与「验收记录」第 6、13、14、16、21 条。
+- 半成品：无。
+- 阻塞：「Open」第 20 步第一条——回滚检查经 `deploy.sh` 调用时问到库就误放行。第 21 步（线上切换）依赖回滚检查兜底，要先修。
+- 下一步：小 PR 修 `deploy/rollback-guard.sh` 的标准输入并补自测（修法见「Open」）；owner 定「Open」里回退停机那一条；之后第 21 步（owner）、第 22 步。
