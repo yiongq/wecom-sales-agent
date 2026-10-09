@@ -202,7 +202,10 @@ export async function markOutboundSending(tx: Tx, channelMsgid: string): Promise
   return row ? 'not_pending' : 'absent';
 }
 
-/** 后台「看更早的消息」（02 第 13 步）：这个会话里对应这几条消息（message_seq）的账本行，J 页据此写没送达的原因 */
+/**
+ * 后台「看更早的消息」（02 第 13 步）：这个会话里对应这几条消息（message_seq）的账本行，J 页据此写没送达的原因。按消息、段号排：
+ * 同一条消息几段都没送达时，原因码取段号最小的那一段（不排序时取哪一段看库里行的物理顺序，结果不稳定）
+ */
 export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: readonly number[]): Promise<OutboundSendRow[]> {
   if (!seqs.length) return [];
   const rows = await tx
@@ -218,7 +221,8 @@ export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: 
       accountId: outboundSends.accountId,
     })
     .from(outboundSends)
-    .where(and(eq(outboundSends.conversationId, conversationId), sql`${outboundSends.messageSeq} = any(${sql.param([...seqs])}::int[])`));
+    .where(and(eq(outboundSends.conversationId, conversationId), sql`${outboundSends.messageSeq} = any(${sql.param([...seqs])}::int[])`))
+    .orderBy(outboundSends.messageSeq, outboundSends.segment, outboundSends.sentAt);
   return rows as OutboundSendRow[];
 }
 
