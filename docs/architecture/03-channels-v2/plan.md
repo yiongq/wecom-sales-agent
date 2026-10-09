@@ -116,7 +116,7 @@
   - 自测：各子命令的退出码与审计行；输出里没有凭据与 `corp_id`、`open_kfid`。
   - 对应验收 11 的命令行部分、22 的命令行部分。依赖：第 3、6 步。
   - 完成标准：四个门禁全绿。
-- [ ] 16. 回滚检查（0.5，可派 Codex）
+- [x] 16. 回滚检查（0.5，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、补跑门禁），见「实施记录 · 第 16 步」。
   - `deploy/rollback-guard.sh` 加退出码 5 这一类：标记文件、以及标记不在时问库「有没有不是『默认企微账号且 `exported`』的行」（R19）。
   - 自测：`ops.selftest.ts` 用假 `docker`、`psql` 断言几种组合的退出码（标记在、只有 `exported`、有停用的账号、有网页账号、库问不到）。
   - 对应验收 21 的回滚检查部分。依赖：第 2 步。
@@ -280,6 +280,14 @@
 - console 渠道中文名：`src/shared/conversation.ts` 与 `console/src/shell/model.ts` 两张 `CHANNEL_SHORT` 加 `web: '网页'`，`simulator` 改「演示」；`src/notify/handoff.ts` 经同一张表随之变化。改了两条非锁定断言的期望（spec「测试与 CI」列的那一处）：`notify.selftest.ts` 的「网页学员」→「演示学员」，`conversations.selftest.tsx` 的「网页客户」→「演示客户」（测试名同步改）。
 - 自测 `src/web/web.selftest.ts`（串进 `test`，第 17 步接着往里加）：开关的解析与 prod 封顶、`[profile]` 一行不含它；13 组场景 × 三种渠道（建单、重发、补发链接、转人工时订单还在、价格兜底、驳回转接、电话承诺两条等），`wecom`、`simulator` 的 contextNote、工具结果与回复等于从开工提交抄下来的字面量，`web` 的多那一句、没有「微信」；三者的 system、tools 哈希等于第 1 步的值；改过的判定正则每处一条 web 正例与 wecom 对照。
 - 门禁：rebase 到含第 3、4 步的 dev 之后四个全绿，锁定文件 sha256 与第 1 步相同，`PREFIX sha256` 不变。
+
+### 第 16 步 · 回滚检查（2026-10-09）
+
+- `deploy/rollback-guard.sh` 加渠道这一类风险：目标镜像里没有 `src/channels/registry.ts`（`pre03_image`，docker 出错按 03 之前算）、或 `<目标>` 是新的 `pre-03` / 原来的 `pre-02` 时，`var/channels-in-db.json` 在，或标记不在而库里 `channel_accounts` 有任何一行不是「`kind = 'wecom_kf'`、`id_prefix = 'wecom:'`、`status = 'exported'`」（`IS NOT TRUE`，网页账号的 NULL 前缀也算），拒绝，退出码 5。问库照条目版本那一条的写法（超级用户、先 `to_regclass`，表不在就没有这条风险）；库问不到时，正在跑的镜像明确是 03 之前才不算，否则按有风险。
+- 退出码优先级 4 > 5 > 3：条目版本风险照旧只打印「只能回到 02 之后的镜像」；有渠道风险时打印 `channel-export` 的回退步骤（停 app → 用当前镜像跑 `channel-export --tenant <slug> --var /app/var --keep /keep` → 确认标记没了、默认账号 `exported`、`.env` 的 `WECOM_*` 还在 → 部署旧 tag 或直接起目标镜像），目标同时是 02 之前、会话在库里时接着打印 02 的「回到文件存储」步骤；只有会话风险照旧 3。
+- `deploy.sh`：tag 里没有 `pg-backend.ts` 照旧 `pre-02`，有它而没有 `registry.ts` 是 `pre-03`；部署与自动回滚两处的 `case` 都加 `5)` 的提示。
+- 自测在 `src/db/db.selftest.ts` 现有的 rollback-guard 测试台里追加（假 docker 加镜像里有没有 `registry.ts`、渠道问库 t / f / none / down 的开关），覆盖 plan 列的组合与优先级、两段步骤、deploy.sh 选 `pre-02` / `pre-03`。改了一条非锁定断言：自动回滚那段 `case` 的结构正则从 `[34*]` 三个分支放宽到 `[345*]` 四个分支（加 `5)` 是本步的本意，原说明「旧断言一条不改」与之冲突，Claude 答复后由 Codex 续做）。
+- 门禁：四个全绿，`PREFIX sha256` 与第 1 步相同，锁定文件未动。Codex 实现，Claude 审查、补跑门禁。
 
 ## 验收记录
 

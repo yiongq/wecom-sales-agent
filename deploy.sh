@@ -4,6 +4,7 @@
 # 线上跑的每一版都是一个提交过、过了四个门禁的 tag；工作区里未提交的改动永远上不了线。
 # 回到 02 之前的镜像（部署旧 tag、自动回滚到 :prev）之前先过 deploy/rollback-guard.sh：会话在库里时拒绝，先回到文件存储；
 # 改过上架条目的内容时拒绝，只能用 02 之后的镜像。
+# 回到 03 之前的镜像而渠道状态在库里时也拒绝，先用当前镜像 channel-export。
 # 服务器上的 .env*（应用、db、migrate、platform 各一份，见 deploy/compose.yml 开头）与 var/（会话、订单、客服二维码）不受影响：
 # rsync 既不发送也不删除它们，app 容器把 var/ 挂卷进去。数据库在 compose 的数据卷里，部署不碰它。
 #
@@ -77,11 +78,11 @@ echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}$([[
 # 项目名、容器名用 NAME，宿主端口用 HOST_PORT：旁路实例因此有自己的 compose 项目、数据库卷和容器名，碰不到线上。
 # 新版本与回滚只差 APP_IMAGE
 compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
-# 回滚前检查（02 spec「回滚到 02 之前的镜像」）：目标是 02 之前的镜像而真实会话在库里、或改过上架条目的内容时拒绝。
-# 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02（已按 tag 的文件树判定）。
+# 回滚前检查（02、03 spec「导入、导出与切换」）：旧镜像不认识库里的会话、条目版本或渠道状态时拒绝。
+# 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02 / pre-03（已按 tag 文件树判定）。
 # 用的是本地这份脚本：02 之前的 tag 里没有它。项目名与宿主端口传进去：打印的手工命令要带上（旁路实例不能去抢线上的端口）。
-# 拒绝的退出码分两种，下面的提示按它分开写：3 只有会话在库里（先回到文件存储就能回滚，步骤打在上面）；4 有条目版本大于 1
-# 或看不出来（回到文件存储也去不掉，只能用 02 之后的镜像）
+# 拒绝的退出码分三种，下面的提示按它分开写：3 只有会话在库里（先回到文件存储就能回滚，步骤打在上面）；4 有条目版本大于 1
+# 或看不出来（回到文件存储也去不掉，只能用 02 之后的镜像）；5 渠道状态在库里，先 channel-export。
 guard_rollback() { ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$1" "$NAME" "$HOST_PORT" <deploy/rollback-guard.sh; }
 
 # 1) 归档：只取 tag 里提交过的文件。目录权限改成 755：rsync -a 会把源目录的权限带到 REMOTE_DIR 上，mktemp 给的是 700
@@ -138,13 +139,16 @@ CHECK
   echo "错误：服务器 .env 没过检查，中止部署（服务器上什么都没动）。新实例先创建 .env（参考 .env.example，至少配 LLM_API_KEY、ADMIN_PASS 与 DEPLOY_PROFILE），以及 .env.db、.env.migrate（见 deploy/compose.yml 开头）。" >&2
   exit 1
 fi
-# 部署 02 之前的 tag 就是回滚到 02 之前的镜像（tag 里没有 src/store/pg-backend.ts）：有风险时在 rsync 之前拦下
-if ! git cat-file -e "refs/tags/${TAG}:src/store/pg-backend.ts" 2>/dev/null; then
-  guard_rollback pre-02 || {
+# 按 tag 文件树判定旧镜像：没有 pg-backend.ts 是 pre-02；有它、没有 registry.ts 是 pre-03。在 rsync 之前拦下。
+if ! git cat-file -e "refs/tags/${TAG}:src/store/pg-backend.ts" 2>/dev/null || ! git cat-file -e "refs/tags/${TAG}:src/channels/registry.ts" 2>/dev/null; then
+  rollback_target=pre-02
+  if git cat-file -e "refs/tags/${TAG}:src/store/pg-backend.ts" 2>/dev/null; then rollback_target=pre-03; fi
+  guard_rollback "$rollback_target" || {
     case $? in
       3) echo "错误：${TAG} 是 02 之前的版本，拒绝部署（服务器上什么都没动）。会话在库里：按上面的步骤先回到文件存储，再部署它。" >&2 ;;
       4) echo "错误：${TAG} 是 02 之前的版本，拒绝部署（服务器上什么都没动）。改过上架条目的内容（或看不出改没改过）：回到 02 之前的镜像会让已发出的方案书链接显示旧价，只能部署 02 之后的 tag。" >&2 ;;
-      *) echo "错误：${TAG} 是 02 之前的版本，回滚前检查没跑完，拒绝部署（服务器上什么都没动）。" >&2 ;;
+      5) echo "错误：${TAG} 是 03 之前的版本，拒绝部署（服务器上什么都没动）。渠道状态在库里：按上面的步骤先 channel-export，再部署它。" >&2 ;;
+      *) echo "错误：${TAG} 是 03 之前的版本，回滚前检查没跑完，拒绝部署（服务器上什么都没动）。" >&2 ;;
     esac
     exit 1
   }
@@ -243,6 +247,7 @@ guard_rollback "${NAME}:prev" || {
   case $? in
     3) echo "错误：${NAME}:prev 是 02 之前的镜像而会话在库里，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2 ;;
     4) echo "错误：${NAME}:prev 是 02 之前的镜像，而改过上架条目的内容（或看不出改没改过），没有自动回滚，服务当前不可用！回到它会让已发出的方案书链接显示旧价：修好之后部署 02 之后的 tag。" >&2 ;;
+    5) echo "错误：${NAME}:prev 是 03 之前的镜像而渠道状态在库里，没有自动回滚，服务当前不可用！按上面的步骤先 channel-export，再起它。" >&2 ;;
     *) echo "错误：回滚前检查没跑完，没有自动回滚到 ${NAME}:prev，服务当前不可用！" >&2 ;;
   esac
   exit 1

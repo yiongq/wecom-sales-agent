@@ -2524,13 +2524,19 @@ await t.close();
   fake('rsync', ['echo "rsync $*" >> "$FAKE_LOG"', 'exit 97']);
   fake('pnpm', ['echo "pnpm $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_PNPM_OK:-}" ]; then exit 0; fi', 'exit 97']);
   fake('docker', [
-    'echo "docker $PWD|$*" >> "$FAKE_LOG"',
+    // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
+    'case "$*" in *registry.ts*|*channel_accounts*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
+    '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
+    '  *registry.ts*) exit "${FAKE_REGISTRY:-1}" ;;',
     // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）；
     // 正在跑的容器的镜像（docker inspect 回 sha256:running，FAKE_RUNNING 没设时 inspect 失败）用 FAKE_RUNNING
     '  *sha256:running*pg-backend.ts*) exit "${FAKE_RUNNING:-0}" ;;',
     '  *pg-backend.ts*) exit "${FAKE_PG_BACKEND:-0}" ;;',
-    '  *"inspect --format {{.Image}}"*) if [ -n "${FAKE_RUNNING:-}" ]; then echo sha256:running; else exit 1; fi ;;',
+    '  *"inspect --format {{.Image}}"*) if [ -n "${FAKE_RUNNING:-}${FAKE_RUNNING_REGISTRY:-}" ]; then echo sha256:running; else exit 1; fi ;;',
+    // 渠道问库：none 是 03 之前的库；query-down / malformed 验证第二次查询失败或结果异常也走保守处理。
+    '  *to_regclass*channel_accounts*) case "${FAKE_CHANNEL_DB:-none}" in down) exit 1 ;; none) echo f ;; *) echo t ;; esac ;;',
+    '  *"from channel_accounts where"*) case "${FAKE_CHANNEL_DB}" in query-down) exit 1 ;; malformed) echo unexpected ;; *) echo "${FAKE_CHANNEL_DB}" ;; esac ;;',
     // rollback-guard.sh 直接问库有没有条目版本大于 1：FAKE_CATALOG_DB 是 t / f / none（表不存在）/ down（缺省，exec 失败）
     '  *to_regclass*catalog_item_versions*) case "${FAKE_CATALOG_DB:-down}" in down) exit 1 ;; none) echo f ;; *) echo t ;; esac ;;',
     '  *"from catalog_item_versions where version > 1"*) echo "${FAKE_CATALOG_DB}" ;;',
@@ -2831,10 +2837,21 @@ await t.close();
     pgBackend?: number,
     envText: string | null = null,
     health?: string | null,
-    o: { db?: string; running?: number; envDb?: string } = {},
+    o: {
+      db?: string;
+      running?: number;
+      envDb?: string;
+      channels?: string;
+      channelMarker?: boolean;
+      registry?: number;
+      runningRegistry?: number;
+    } = {},
   ) => {
     fs.rmSync(log, { force: true });
     setMarker(marker);
+    const cm = path.join(gsrv, 'var', 'channels-in-db.json');
+    if (o.channelMarker) fs.writeFileSync(cm, '{"tenant":"acme-2"}\n');
+    else fs.rmSync(cm, { force: true });
     setEnvFile(envText);
     if (pgBackend === undefined) delete env.FAKE_PG_BACKEND;
     else env.FAKE_PG_BACKEND = String(pgBackend);
@@ -2842,16 +2859,33 @@ await t.close();
     else if (health !== undefined) env.FAKE_HEALTHZ = health;
     if (o.db !== undefined) env.FAKE_CATALOG_DB = o.db;
     if (o.running !== undefined) env.FAKE_RUNNING = String(o.running);
+    if (o.channels !== undefined) env.FAKE_CHANNEL_DB = o.channels;
+    if (o.registry !== undefined) env.FAKE_REGISTRY = String(o.registry);
+    if (o.runningRegistry !== undefined) env.FAKE_RUNNING_REGISTRY = String(o.runningRegistry);
     if (o.envDb !== undefined) fs.writeFileSync(path.join(gsrv, '.env.db'), o.envDb);
     const r = run('bash', ['-s', '--', gsrv, target, 'side1', '3999'], tmp, guardSrc);
-    for (const k of ['FAKE_PG_BACKEND', 'FAKE_CURL_FAIL', 'FAKE_HEALTHZ', 'FAKE_CATALOG_DB', 'FAKE_RUNNING']) delete env[k];
+    for (const k of [
+      'FAKE_PG_BACKEND',
+      'FAKE_CURL_FAIL',
+      'FAKE_HEALTHZ',
+      'FAKE_CATALOG_DB',
+      'FAKE_RUNNING',
+      'FAKE_CHANNEL_DB',
+      'FAKE_REGISTRY',
+      'FAKE_RUNNING_REGISTRY',
+    ])
+      delete env[k];
     fs.rmSync(path.join(gsrv, '.env.db'), { force: true });
+    fs.rmSync(cm, { force: true });
     setEnvFile(null);
     return {
       ...r,
       docker: calls()
         .split('\n')
         .filter((l) => l.startsWith('docker ')),
+      channelDocker: calls()
+        .split('\n')
+        .filter((l) => l.startsWith('docker03 ')),
       curl: calls()
         .split('\n')
         .filter((l) => l.startsWith('curl ')),
@@ -3047,6 +3081,157 @@ await t.close();
     g16.out,
   );
 
+  // 03 R19：目标不认识渠道状态时，先导出渠道；只有默认企微 exported 可放行。既检查假 docker 的
+  // 退出码与 stderr，也用 PGlite 执行脚本原文里的谓词，防止 NULL 前缀的网页账号被 SQL 三值逻辑漏掉。
+  const channelSteps = (out: string, slug = 'acme-2'): boolean => {
+    const dc = dcOf('side1', '3999');
+    return (
+      out.includes('拒绝回滚') &&
+      out.includes(`1. ${dc} stop app`) &&
+      out.includes(`${dc} run --rm -v /root/channels-keep-<日期>:/keep app`) &&
+      out.includes(`src/cli/channel-export.ts --tenant ${slug} --var /app/var --keep /keep`) &&
+      out.includes('当前 side1:current 镜像里的 channel-export') &&
+      out.includes('var/channels-in-db.json 没了') &&
+      out.includes('默认企微账号（kind = wecom_kf、id_prefix = wecom:）是 exported') &&
+      out.includes('.env 里的 WECOM_* 还在') &&
+      out.includes('只能回到 03 之后的镜像') &&
+      out.indexOf('stop app') < out.indexOf('src/cli/channel-export.ts') &&
+      out.indexOf('src/cli/channel-export.ts') < out.indexOf('var/channels-in-db.json 没了')
+    );
+  };
+  const c1 = guard('pre-03', false, undefined, null, undefined, { channelMarker: true, channels: 'down' });
+  check(
+    '渠道回滚：标记在 → 5，不问库；先用当前镜像导出、确认默认账号 exported、再部署旧 tag',
+    c1.code === 5 && channelSteps(c1.out) && c1.out.includes('4. 再部署旧 tag') && c1.channelDocker.length === 0,
+    `${c1.code} ${c1.out}`,
+  );
+  const channelSql = guardSrc.match(/select exists\(select 1 from channel_accounts where [^"\n]+\)/)?.[0];
+  check('渠道回滚：查询脚本检查所有账号，没有 tenant 或 active 过滤', !!channelSql && !channelSql.includes('tenant_id'), channelSql);
+  const { PGlite } = await import('@electric-sql/pglite');
+  const channelPg = new PGlite();
+  const accountCases: { name: string; rows: [string, string | null, string][]; risk: boolean }[] = [
+    { name: '无账号', rows: [], risk: false },
+    { name: '只有默认企微 exported', rows: [['wecom_kf', 'wecom:', 'exported']], risk: false },
+    { name: '默认企微 active', rows: [['wecom_kf', 'wecom:', 'active']], risk: true },
+    { name: '默认企微 disabled', rows: [['wecom_kf', 'wecom:', 'disabled']], risk: true },
+    { name: '第二个企微 disabled', rows: [['wecom_kf', 'wecom:other:', 'disabled']], risk: true },
+    { name: '第二个企微 exported', rows: [['wecom_kf', 'wecom:other:', 'exported']], risk: true },
+    { name: '网页 active、NULL 前缀', rows: [['web', null, 'active']], risk: true },
+    { name: '网页 disabled、NULL 前缀', rows: [['web', null, 'disabled']], risk: true },
+    { name: '网页 exported、NULL 前缀', rows: [['web', null, 'exported']], risk: true },
+    {
+      name: '默认 exported 与网页 disabled 混合',
+      rows: [
+        ['wecom_kf', 'wecom:', 'exported'],
+        ['web', null, 'disabled'],
+      ],
+      risk: true,
+    },
+  ];
+  try {
+    for (const c of accountCases) {
+      const values = c.rows.length
+        ? 'values ' + c.rows.map((_, i) => `($${i * 3 + 1}::text,$${i * 3 + 2}::text,$${i * 3 + 3}::text)`).join(',')
+        : 'select null::text, null::text, null::text where false';
+      const queried = channelSql
+        ? (
+            await channelPg.query<{ exists: boolean }>(
+              `with channel_accounts(kind,id_prefix,status) as (${values}) ${channelSql}`,
+              c.rows.flat(),
+            )
+          ).rows[0]!.exists
+        : undefined;
+      const c2 = guard('pre-03', false, undefined, 'DEFAULT_TENANT_SLUG=acme-3\n', undefined, {
+        channels: queried ? 't' : 'f',
+        envDb: 'AGENT_DB=agent_side\n',
+      });
+      check(
+        `渠道回滚：${c.name} → ${c.risk ? 5 : 0}（真实 SQL 谓词与假 psql 一致）`,
+        queried === c.risk &&
+          c2.code === (c.risk ? 5 : 0) &&
+          (c.risk ? channelSteps(c2.out, 'acme-3') && c2.out.includes('库里的 channel_accounts') : !c2.out.includes('拒绝回滚')) &&
+          c2.channelDocker.length === 2 &&
+          c2.channelDocker.every((l) => l.startsWith('docker03 /|compose -p side1 exec -T db psql -U postgres -d agent_side -Atc')) &&
+          c2.channelDocker[1]!.endsWith(channelSql ?? 'missing'),
+        `${queried} ${c2.code} ${c2.out} ${c2.channelDocker.join(' / ')}`,
+      );
+    }
+  } finally {
+    await channelPg.close();
+  }
+  const c3 = guard('pre-03', false, undefined, null, undefined, { channels: 'none' });
+  check('渠道回滚：channel_accounts 表不在 → 0，只问 to_regclass', c3.code === 0 && c3.channelDocker.length === 1, c3.out);
+  for (const channels of ['down', 'query-down', 'malformed']) {
+    const c4 = guard('pre-03', false, undefined, 'DEFAULT_TENANT_SLUG=acme-3\n', undefined, { channels, runningRegistry: 0 });
+    check(
+      `渠道回滚：库 ${channels}、正在跑的是 03 之后 → 5，提示确认 db，仍打印导出步骤`,
+      c4.code === 5 && channelSteps(c4.out, 'acme-3') && c4.out.includes('问不到库') && c4.out.includes('docker compose -p side1 ps db'),
+      `${c4.code} ${c4.out}`,
+    );
+    const c5 = guard('pre-03', false, undefined, null, undefined, { channels, runningRegistry: 1 });
+    check(`渠道回滚：库 ${channels}、正在跑的是 03 之前 → 0`, c5.code === 0, `${c5.code} ${c5.out}`);
+  }
+  for (const runningRegistry of [undefined, 125]) {
+    const c6 = guard('pre-03', false, undefined, null, undefined, { channels: 'down', runningRegistry });
+    check(
+      `渠道回滚：库问不到、正在跑的镜像无法确认（${runningRegistry ?? 'inspect 失败'}）→ 5`,
+      c6.code === 5 && c6.out.includes('按有风险处理'),
+      c6.out,
+    );
+  }
+  const c7 = guard('side1:prev', true, 0, null, versioned, { channelMarker: true, registry: 0, channels: 'down' });
+  check(
+    '渠道回滚：目标是 03 之后，即使三个风险都有也放行，不问渠道库',
+    c7.code === 0 && c7.channelDocker.length === 1 && c7.channelDocker[0]!.includes('test -e /app/src/channels/registry.ts'),
+    `${c7.code} ${c7.out}`,
+  );
+  for (const registry of [1, 125]) {
+    const c8 = guard('side1:prev', false, 0, null, undefined, { channelMarker: true, registry });
+    check(
+      `渠道回滚：目标没有 registry 或 docker 出错（${registry}）→ 5，直接起目标并重打 current、检查宿主端口 revision`,
+      c8.code === 5 &&
+        channelSteps(c8.out) &&
+        c8.out.includes('side1:current 已是这次没过健康检查的新镜像') &&
+        c8.out.includes(`APP_IMAGE=side1:prev ${dcOf('side1', '3999')} up -d --no-deps app && docker tag side1:prev side1:current`) &&
+        c8.out.includes('curl -fsS http://127.0.0.1:3999/healthz 确认 revision 是 old-v1') &&
+        !c8.out.includes('再部署旧 tag') &&
+        (registry !== 125 || c8.out.includes('docker 出错')),
+      `${c8.code} ${c8.out}`,
+    );
+  }
+  const c9 = guard('pre-02', true, undefined, null, versioned, { channelMarker: true });
+  check(
+    '渠道回滚：条目版本、会话与渠道同时在 → 4，只打印只能回到 02 之后，不打印任何导出步骤',
+    c9.code === 4 &&
+      catalogRefused(c9.out, 'config.catalogVersioned 为 true') &&
+      c9.out.includes('channels-in-db.json') &&
+      !c9.out.includes('channel-export'),
+    `${c9.code} ${c9.out}`,
+  );
+  const c10 = guard('pre-03', true, undefined, null, versioned, { channelMarker: true });
+  check(
+    '渠道回滚：目标是 02 之后、03 之前，条目版本与会话风险不适用 → 5',
+    c10.code === 5 && channelSteps(c10.out) && !c10.out.includes('export-sessions'),
+    c10.out,
+  );
+  for (const target of ['pre-02', 'side1:prev']) {
+    const c11 = guard(target, true, 1, null, undefined, { channelMarker: true });
+    check(
+      `渠道回滚：${target} 是 02 之前、会话与渠道都在库里 → 5，渠道导出之后接原来的会话导出步骤`,
+      c11.code === 5 &&
+        channelSteps(c11.out) &&
+        (target === 'pre-02' ? refusedWithSteps(c11.out) : refusedAutoSteps(c11.out, target)) &&
+        c11.out.indexOf('src/cli/channel-export.ts') < c11.out.indexOf('src/cli/export-sessions.ts'),
+      `${c11.code} ${c11.out}`,
+    );
+  }
+  const c12 = guard('pre-02', true, undefined, null, undefined, { channels: 'f' });
+  check(
+    '渠道回滚：只有会话风险仍是 3、原回退步骤不变',
+    c12.code === 3 && refusedWithSteps(c12.out) && !c12.out.includes('channel-export'),
+    c12.out,
+  );
+
   // deploy.sh 的两处接线。部署旧 tag：在碰服务器之前（rsync 之前）检查；ssh 换成在本机执行远端命令，门禁一律成功，
   // 「服务器」是临时目录（旁路实例的三个值），rsync 一调用就记下并失败
   fs.mkdirSync(path.join(repo, 'deploy'), { recursive: true });
@@ -3105,6 +3290,51 @@ await t.close();
     d3.code !== 0 && !d3.out.includes('拒绝回滚') && d3.log.includes('rsync ') && !d3.log.includes('bash -s -- ' + dsrv + ' pre-02'),
     `${d3.code} ${d3.out.slice(-400)}`,
   );
+  commitAndTag('v03', ['src/channels/registry.ts']);
+  const deployChannel = (tag: string, channelMarker: boolean, channels = 'none') => {
+    const cm = path.join(dsrv, 'var', 'channels-in-db.json');
+    if (channelMarker) fs.writeFileSync(cm, '{}\n');
+    env.FAKE_CHANNEL_DB = channels;
+    try {
+      return deployTo(tag, false);
+    } finally {
+      fs.rmSync(cm, { force: true });
+      delete env.FAKE_CHANNEL_DB;
+    }
+  };
+  for (const [tag, target] of [
+    ['v02', 'pre-03'],
+    ['new-v1', 'pre-02'],
+  ] as const) {
+    const d5 = deployChannel(tag, true);
+    check(
+      `deploy.sh：${tag} 按 tag 文件树选择 ${target}，渠道标记在 → rsync 前拒绝，打印 5 的部署提示`,
+      d5.code === 1 &&
+        channelSteps(d5.out, '<slug>') &&
+        d5.out.includes('渠道状态在库里：按上面的步骤先 channel-export，再部署它') &&
+        d5.log.includes(`bash -s -- ${dsrv} ${target} side1 3999`) &&
+        !d5.log.includes('rsync '),
+      `${d5.code} ${d5.out}`,
+    );
+  }
+  const d6 = deployChannel('v02', false, 't');
+  check(
+    'deploy.sh：02 tag 没有渠道标记而库里仍有渠道风险，也在 rsync 前拒绝',
+    d6.code === 1 && d6.out.includes('channel-export') && !d6.log.includes('rsync '),
+    d6.out,
+  );
+  const d7 = deployChannel('v02', false, 'f');
+  check(
+    'deploy.sh：channel-export 后默认账号 exported，02 tag 检查放行并走到 rsync',
+    d7.log.includes(`bash -s -- ${dsrv} pre-03`) && d7.log.includes('rsync ') && !d7.out.includes('拒绝回滚'),
+    d7.out,
+  );
+  const d8 = deployChannel('v03', true, 'down');
+  check(
+    'deploy.sh：03 tag 有 registry.ts，不调用旧镜像检查，渠道标记与库故障不拦下部署',
+    d8.log.includes('rsync ') && !d8.log.includes(`bash -s -- ${dsrv} pre-`) && !d8.out.includes('拒绝回滚'),
+    d8.out,
+  );
   // 自动回滚：:prev 在服务器上之后、起 :prev 之前过同一道检查，过不了就停下（不起 :prev）
   const rb = deploySrc.indexOf('[rollback] 回滚到上一个镜像');
   const gp = deploySrc.indexOf('guard_rollback "${NAME}:prev" || {');
@@ -3114,9 +3344,15 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[34*]\) echo "[^\n]*" >&2 ;;\n){3} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345*]\) echo "[^\n]*" >&2 ;;\n){4} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
+  );
+  check(
+    'deploy.sh：自动回滚的 5 分支专用提示指出渠道状态在库里，并要求先 channel-export 再起目标镜像',
+    /^ {4}5\) echo "[^\n]*是 03 之前的镜像而渠道状态在库里[^\n]*没有自动回滚[^\n]*服务当前不可用[^\n]*先 channel-export，再起它[^\n]*" >&2 ;;$/m.test(
+      deploySrc.slice(gp, up),
+    ),
   );
   check(
     'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s（带上项目名与宿主端口）',
