@@ -111,7 +111,7 @@
   - 自测（子进程，PGlite 与真实 PG）：验收 13 的导入、导出、`--resync` 与启动拒绝；两处真实重叠的夹具。
   - 对应验收 13；不变量 13。依赖：第 6、9 步（导出要用第 8 步的出站状态）。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍。
-- [ ] 15. 渠道账号管理命令行（0.5，可派 Codex）
+- [x] 15. 渠道账号管理命令行（0.5，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、补跑门禁），spec 顶部记了一条实现期 `Revisions:` 与一处部分取代，见「实施记录 · 第 15 步」。
   - `channel-account` 的 `list`、`add-wecom`、`add-web`、`set-secrets`、`set`、`rekey`：凭据从无回显输入或 0600 文件读、prod 下 `add-web` 被拒、「已导出」时加账号被拒、欢迎语校验、审计动作与 `actor_kind`（R8、R19、R23）。
   - 自测：各子命令的退出码与审计行；输出里没有凭据与 `corp_id`、`open_kfid`。
   - 对应验收 11 的命令行部分、22 的命令行部分。依赖：第 3、6 步。
@@ -354,6 +354,16 @@
 - 第 13 步：`channelsHealth()` 的 `failing`、`stuck` 留了 TODO；`/status` 的 `inactiveReason` 从 `loadedAccounts()` 取（含停用的账号）。
 - 第 15 步：复用 `checkWelcomeText`、`accountFromRow`、`WEB_CHANNEL_OFF_REASON`、`readChannelAccounts`、`openAccountSecrets`，以及 markers 的 `removeRestoreSentinel`、`writeChannelsMarker`、`removeChannelsMarker`。加密的 AAD 里有账号 id，id 必须在插入之前生成：第 2 步的 `insertChannelAccount` 不收 `id`，要给它加一个可选的 `id`（本步自测是用超级用户 SQL 直接插行绕开的）。
 - 第 17 步：`accountByKey(key, 'web')` 只返回启用的网页账号（`active` 且 `web_channel` 开着）；网页会话找账号时要把带 `channelAccountId` 的会话对象传给 `accountForSession`。
+
+### 第 15 步 · 渠道账号管理命令行（2026-10-09）
+
+- `src/cli/channel-account.ts`：`list`、`add-wecom`、`add-web`、`set-secrets`、`set`、`rekey`，用法 `node --import tsx src/cli/channel-account.ts <子命令> --tenant <slug> …`（照 02 的命令行直接跑 TS，没有 `package.json` 脚本先例，不加）。以 `agent_app` 身份运行、取租户锁，退出码照 02（0 / 1 / 2 / 3）。`restore-cutoff` 留了占位，以 1 退出、提示由第 12 步实现。
+- 凭据只从无回显终端（Node raw 模式，90 秒超时，退出时恢复终端状态）或 `--secrets-file` 读：同一个 fd 上 `fstat` 校验再读（`O_NOFOLLOW`，拒绝符号链接与非普通文件，权限宽于 0600 或大于 64 KiB 以 1 拒绝）。`add-wecom` 读五项，`set-secrets` 读三项。账号 id 在插入之前生成、用作加密的 AAD（`insertChannelAccount` 加了可选 `id`）；第一个企微账号前缀 `wecom:`，之后 `wecom:<key>:`。
+- 拒绝：企微状态「已导出」时加账号 2；`web_channel` 关着时 `add-web` 与启用网页账号 2；欢迎语不过 `checkWelcomeText` 1 且库不变；`set --status exported` 1；`rekey` 有解不开的 2、什么都不动。名称与网页标题沿用账号名称的 1–40 字限制。
+- `list` 每个账号一行 JSON：key、kind、name、status、前缀、`inactiveReason`、「凭据已设置」，没有 `corp_id`、`open_kfid`、密文与 key id。审计 `actor_kind` 记 `platform`、`name` 记 `channel-account`，diff 只有账号 key 与改了哪几项的名字。
+- 本步定的（spec 实现期修订，顶部 `Revisions:`）：`AUDIT_ACTIONS` 只登记有写入代码的四个渠道动作，`channel.import`、`channel.export`、`channel.restore_cutoff` 留给第 14、12 步登记（审计的一致性检查不许登记没有写入方的动作）；后台 UX spec 的 `AuditQuery.actions` 上限从 32 改为 64（四个动作加进来之后，审计页「全部类别、不显示登录记录」超过 32 个），是对该 spec 一处条款的部分取代，两份 spec 顶部各记一行。
+- 自测追加在 `src/channels/channels.selftest.ts`（子进程，PGlite 84 项；有 PG 时 106 项）：各子命令的退出码与拒绝、前缀规则、事务回滚、审计行、`rekey` 之后去掉旧密钥能解；拦截 stdout、stderr 扫凭据明文、密文的 base64 / hex / Buffer JSON、`corp_id`、`open_kfid`，结果为零。改了的非锁定断言：`console.selftest.ts` 的 actions 上限边界（32 / 33 → 64 / 65）、`audit-text.selftest.ts` 的断言名。
+- 门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），`PREFIX sha256` 与第 1 步相同，锁定文件未动。
 
 ## 验收记录
 

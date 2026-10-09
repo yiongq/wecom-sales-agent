@@ -935,6 +935,534 @@ check('凭据不出现在输出：整段 stdout、stderr 里没有凭据明文�
   noSecretIn(captured, '输出');
 });
 
+// ---------------- 03 第 15 步：账号命令行（子进程、app 权限、事务与输出边界） ----------------
+{
+  const { spawnSync } = await import('node:child_process');
+  const { pathToFileURL } = await import('node:url');
+  const { holdTenantLock } = await import('../db/client.js');
+  const { AUDIT_ACTIONS } = await import('../shared/ui-labels.js');
+  const repo = process.cwd();
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channels-cli-'));
+  const cli = path.join(repo, 'src', 'cli', 'channel-account.ts');
+  const disk = path.join(temp, 'db');
+  const snapshotFile = path.join(temp, 'snapshot.json');
+  const bridge = path.join(temp, 'cli.mts');
+  const fake15 = {
+    corpId: 'fake-corp-cli',
+    openKfId: 'fake-kf-main-cli',
+    appSecret: 'fake-cli-app-value',
+    callbackToken: 'fake-cli-token-value',
+    callbackAesKey: 'fake-cli-aes-value',
+  };
+  const replacement15 = {
+    appSecret: 'fake-cli-new-app',
+    callbackToken: 'fake-cli-new-token',
+    callbackAesKey: 'fake-cli-new-aes',
+  };
+  const credentialFile = path.join(temp, 'credentials.json');
+  const secondFile = path.join(temp, 'second.json');
+  const replacementFile = path.join(temp, 'replacement.json');
+  const looseFile = path.join(temp, 'loose.json');
+  const malformedFile = path.join(temp, 'malformed.json');
+  const linkFile = path.join(temp, 'link.json');
+  const writeCredential = (file: string, value: unknown, mode = 0o600) => {
+    fs.writeFileSync(file, JSON.stringify(value), { mode });
+  };
+  writeCredential(credentialFile, fake15);
+  writeCredential(secondFile, { ...fake15, openKfId: 'fake-kf-second-cli' });
+  writeCredential(replacementFile, replacement15);
+  writeCredential(looseFile, fake15, 0o644);
+  fs.writeFileSync(malformedFile, `{"appSecret":"${fake15.appSecret}", invalid`, { mode: 0o600 });
+  fs.symlinkSync(credentialFile, linkFile);
+  const rowSql =
+    "select tenant_id, id, key, kind, name, status, id_prefix, corp_id, open_kfid, encode(secrets_ct, 'hex') as ct, secrets_key_id, settings, updated_at from channel_accounts order by tenant_id, key";
+  const auditSql = 'select tenant_id, action, actor_kind, actor_name, target_type, target_id, diff from audit_log order by id';
+  type CliRow = {
+    tenant_id: string;
+    id: string;
+    key: string;
+    kind: string;
+    name: string;
+    status: string;
+    id_prefix: string | null;
+    corp_id: string | null;
+    open_kfid: string | null;
+    ct: string | null;
+    secrets_key_id: string | null;
+    settings: Record<string, unknown>;
+    updated_at: string;
+  };
+  type CliAudit = {
+    tenant_id: string;
+    action: string;
+    actor_kind: string;
+    actor_name: string;
+    target_type: string;
+    target_id: string | null;
+    diff: { keys: string[]; fields: string[] };
+  };
+  type CliState = { rows: CliRow[]; audits: CliAudit[] };
+  let output15 = '';
+  const ciphertexts15: Buffer[] = [];
+  const allKeys = `new:${newKey.toString('base64')},old:${oldKey.toString('base64')}`;
+  const oldEnv = `old:${oldKey.toString('base64')}`;
+  const newEnv = `new:${newKey.toString('base64')}`;
+  const safe15 = () => {
+    const forbidden = [
+      ...Object.values(fake15),
+      ...Object.values(replacement15),
+      'fake-kf-second-cli',
+      'corp_id',
+      'open_kfid',
+      'access_token',
+      oldEnv,
+      newEnv,
+      ...ciphertexts15.flatMap((ct) => [ct.toString('base64'), ct.toString('hex'), JSON.stringify(ct)]),
+    ];
+    for (const value of forbidden) assert.ok(!output15.includes(value), '命令行输出含凭据、密文或企微标识');
+  };
+  // PGlite 只经自测桥接注入；生产入口没有测试 env 开关。每个命令是独立子进程，真正使用 agent_app 列级权限。
+  fs.writeFileSync(
+    bridge,
+    `
+import fs from 'node:fs';
+const { openTestDb, fakeLock } = await import(process.env.CLI_TEST_DB_MODULE);
+const { runChannelAccount } = await import(process.env.CLI_TEST_MODULE);
+const t = await openTestDb({ dataDir: process.env.CLI_TEST_DISK });
+try {
+  if (process.env.CLI_TEST_PREP) {
+    const { sql, params } = JSON.parse(process.env.CLI_TEST_PREP);
+    await t.pg.query(sql, params);
+  }
+  await t.pg.exec('SET ROLE agent_app');
+  const code = await runChannelAccount(process.argv.slice(2), {
+    connect: async () => ({ db: t.db, close: async () => {},
+      lock: async () => process.env.CLI_TEST_LOCK === 'held' ? null : fakeLock() }),
+  });
+  await t.pg.exec('RESET ROLE');
+  fs.writeFileSync(process.env.CLI_TEST_SNAPSHOT, JSON.stringify({
+    rows: (await t.pg.query(${JSON.stringify(rowSql)})).rows,
+    audits: (await t.pg.query(${JSON.stringify(auditSql)})).rows,
+  }));
+  await t.close();
+  process.exit(code);
+} catch { await t.close(); process.exit(90); }
+`,
+  );
+  interface CliHarness {
+    label: string;
+    tenantId: string;
+    query(sql: string, params?: unknown[]): Promise<unknown>;
+    run(
+      args: string[],
+      env?: Record<string, string>,
+      prep?: { sql: string; params?: unknown[] },
+    ): Promise<{ status: number | null; out: string; state: CliState }>;
+    close(): Promise<void>;
+    blocked(): Promise<() => Promise<void>>;
+  }
+  const baseEnv = {
+    ...process.env,
+    DEPLOY_PROFILE: 'demo',
+    FLAG_WEB_CHANNEL: '',
+    [envName]: oldEnv,
+    DATABASE_URL: '',
+    DATABASE_PLATFORM_URL: '',
+  };
+  function collect(r: ReturnType<typeof spawnSync>, state: CliState) {
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    output15 += out;
+    for (const row of state.rows) if (row.ct) ciphertexts15.push(Buffer.from(row.ct, 'hex'));
+    return { status: r.status, out, state };
+  }
+  const suites: (() => Promise<CliHarness>)[] = [
+    async () => {
+      const t = await openTestDb({ dataDir: disk });
+      await t.pg.query(
+        `insert into tenants (slug, name, pack_id) values ('cli15', 'cli15', 'travel'), ('cli15-other', 'cli15-other', 'travel')`,
+      );
+      const tenantId = (await t.pg.query<{ id: string }>(`select id from tenants where slug = 'cli15'`)).rows[0]!.id;
+      await t.close();
+      return {
+        label: 'PGlite 子进程',
+        tenantId,
+        query: async (sql, params = []) => {
+          const db = await openTestDb({ dataDir: disk });
+          try {
+            return await db.pg.query(sql, params);
+          } finally {
+            await db.close();
+          }
+        },
+        run: async (args, env = {}, prep) => {
+          const r = spawnSync(process.execPath, ['--import', 'tsx', bridge, ...args], {
+            cwd: repo,
+            encoding: 'utf8',
+            timeout: 60000,
+            killSignal: 'SIGKILL',
+            env: {
+              ...baseEnv,
+              CLI_TEST_MODULE: pathToFileURL(cli).href,
+              CLI_TEST_DB_MODULE: pathToFileURL(path.join(repo, 'src', 'db', 'testing.ts')).href,
+              CLI_TEST_DISK: disk,
+              CLI_TEST_SNAPSHOT: snapshotFile,
+              ...(prep ? { CLI_TEST_PREP: JSON.stringify(prep) } : {}),
+              ...env,
+            },
+          });
+          assert.notEqual(r.status, 90, 'PGlite 命令行桥接失败');
+          assert.equal(r.signal, null, '命令行子进程超时');
+          return collect(r, JSON.parse(fs.readFileSync(snapshotFile, 'utf8')) as CliState);
+        },
+        close: async () => {},
+        blocked: async () => async () => {},
+      };
+    },
+  ];
+  if (process.env.PG_TEST_URL)
+    suites.push(async () => {
+      const fx = await createRealPgFixture(process.env.PG_TEST_URL!, { slug: 'cli15' });
+      await fx.query(`insert into tenants (slug, name, pack_id) values ('cli15-other', 'cli15-other', 'travel')`);
+      return {
+        label: '真实 PG 子进程',
+        tenantId: fx.tenantId,
+        query: fx.query,
+        close: fx.drop,
+        run: async (args, env = {}, prep) => {
+          if (prep) await fx.query(prep.sql, prep.params);
+          const r = spawnSync(process.execPath, ['--import', 'tsx', cli, ...args], {
+            cwd: repo,
+            encoding: 'utf8',
+            timeout: 60000,
+            killSignal: 'SIGKILL',
+            env: { ...baseEnv, DATABASE_URL: fx.urls.app, ...env },
+          });
+          assert.equal(r.signal, null, '命令行子进程超时');
+          return collect(r, { rows: await fx.query<CliRow>(rowSql), audits: await fx.query<CliAudit>(auditSql) });
+        },
+        blocked: async () => {
+          const lock = await holdTenantLock(fx.urls.app, fx.tenantId);
+          assert.ok(lock);
+          return () => lock.release();
+        },
+      };
+    });
+  try {
+    for (const suite of suites) {
+      const h = await suite();
+      try {
+        const label = (s: string) => `${h.label}：${s}`;
+        let state: CliState = { rows: [], audits: [] };
+        const run = async (args: string[], code = 0, env: Record<string, string> = {}, prep?: { sql: string; params?: unknown[] }) => {
+          const r = await h.run([...args, '--tenant', 'cli15'], env, prep);
+          assert.equal(r.status, code, `退出码应为 ${code}（${args[0]}）`);
+          state = r.state;
+          return r;
+        };
+        const denied = async (args: string[], code = 1, env: Record<string, string> = {}) => {
+          const before = JSON.stringify(state);
+          const r = await run(args, code, env);
+          assert.equal(JSON.stringify(state), before, '拒绝时账号与审计应保持不变');
+          return r;
+        };
+        const row = (key: string) => state.rows.find((r) => r.tenant_id === h.tenantId && r.key === key)!;
+        const audit = (action: string, key: string, fields?: string[]) => {
+          const a = state.audits.at(-1)!;
+          assert.equal(a.action, action);
+          assert.equal(a.actor_kind, 'platform');
+          assert.equal(a.actor_name, 'channel-account');
+          assert.equal(a.tenant_id, h.tenantId);
+          assert.equal(a.target_id, null);
+          assert.deepEqual(Object.keys(a.diff).sort(), ['fields', 'keys']);
+          assert.deepEqual(a.diff.keys, [key]);
+          if (fields) assert.deepEqual(a.diff.fields, fields);
+        };
+        await acheck(label('list 空租户与 rekey 无操作：0，无写入'), async () => {
+          assert.equal((await run(['list'])).out, '');
+          assert.match((await run(['rekey'])).out, /无操作/);
+          assert.equal(state.rows.length, 0);
+          assert.equal(state.audits.length, 0);
+        });
+        await acheck(label('用法、误传凭据、缺密钥环、非 0600、文件无效、无终端：1 且不写库'), async () => {
+          for (const args of [
+            [],
+            ['unknown'],
+            ['restore-cutoff'],
+            ['list', '--appSecret', fake15.appSecret],
+            ['add-wecom', '--key', 'INVALID', '--name', '客服'],
+            ['add-wecom', '--key', 'main'],
+            ['list', '--corp_id', fake15.corpId],
+            ['list', '--open_kfid', fake15.openKfId],
+          ])
+            await denied(args);
+          const args = ['add-wecom', '--key', 'main', '--name', '客服'];
+          await denied([...args, '--secrets-file', credentialFile], 1, { [envName]: '' });
+          await denied([...args, '--secrets-file', credentialFile], 1, { [envName]: fake15.appSecret });
+          for (const file of [looseFile, malformedFile, linkFile, path.join(temp, 'missing.json'), temp])
+            await denied([...args, '--secrets-file', file]);
+          await denied(args); // stdin 不是终端，拒绝不安全的有回显输入
+        });
+        await acheck(label('拿不到租户锁：全部六种命令以 3 退出且不写库'), async () => {
+          const release = await h.blocked();
+          try {
+            for (const args of [
+              ['list'],
+              ['rekey'],
+              ['add-wecom', '--key', 'main', '--name', '客服', '--secrets-file', credentialFile],
+              ['add-web', '--key', 'site', '--title', '咨询'],
+              ['set-secrets', '--key', 'main', '--secrets-file', replacementFile],
+              ['set', '--key', 'main', '--status', 'disabled'],
+            ]) {
+              await denied(args, 3, h.label.startsWith('PGlite') ? { CLI_TEST_LOCK: 'held' } : {});
+            }
+          } finally {
+            await release();
+          }
+        });
+        await acheck(label('add-wecom 两个账号：0，AAD 可解，默认与次账号前缀，创建审计'), async () => {
+          await run(['add-wecom', '--key', 'main', '--name', '主客服', '--secrets-file', credentialFile]);
+          assert.equal(row('main').id_prefix, 'wecom:');
+          const r = row('main');
+          assert.deepEqual(
+            openSecrets(oldRing, { tenantId: h.tenantId, accountId: r.id }, Buffer.from(r.ct!, 'hex'), r.secrets_key_id!).reveal(),
+            {
+              appSecret: fake15.appSecret,
+              callbackToken: fake15.callbackToken,
+              callbackAesKey: fake15.callbackAesKey,
+            },
+          );
+          audit('channel.account_create', 'main');
+          await run(['add-wecom', '--key', 'second', '--name', '次客服', '--secrets-file', secondFile]);
+          assert.equal(row('second').id_prefix, 'wecom:second:');
+          audit('channel.account_create', 'second');
+          await denied(['add-wecom', '--key', 'main', '--name', '重复', '--secrets-file', credentialFile], 2);
+          await denied(['add-wecom', '--key', 'duplicate', '--name', '重复', '--secrets-file', credentialFile], 2);
+        });
+        await acheck(label('add-web 标题校验、默认设置、list 白名单；prod 创建与启用拒绝 2'), async () => {
+          for (const title of ['', '   ', '文'.repeat(41)]) await denied(['add-web', '--key', 'site', '--title', title]);
+          await denied(['add-web', '--key', 'site', '--title', '咨询'], 2, { DEPLOY_PROFILE: 'prod' });
+          await denied(['add-web', '--key', 'site', '--title', '咨询'], 2, { FLAG_WEB_CHANNEL: 'off' });
+          await run(['add-web', '--key', 'site', '--title', '咨询']);
+          assert.deepEqual(row('site').settings, { title: '咨询', dailyNewConversations: 500, dailyTurns: 3000 });
+          audit('channel.account_create', 'site');
+          const list = await run(['list'], 0, { DEPLOY_PROFILE: 'prod' });
+          const visible = list.out
+            .trim()
+            .split('\n')
+            .map((l) => JSON.parse(l.replace(/^\[channel-account\] /, '')));
+          assert.equal(visible.length, 3);
+          for (const v of visible)
+            assert.deepEqual(Object.keys(v).sort(), ['inactiveReason', 'key', 'kind', 'name', 'prefix', 'status', '凭据已设置'].sort());
+          assert.equal(visible.find((v) => v.key === 'site').inactiveReason, WEB_CHANNEL_OFF_REASON);
+          assert.equal(visible.find((v) => v.key === 'main')['凭据已设置'], '是');
+          assert.equal(visible.find((v) => v.key === 'site')['凭据已设置'], '否');
+          await run(['set', '--key', 'site', '--status', 'disabled']);
+          audit('channel.account_update', 'site', ['status']);
+          await denied(['set', '--key', 'site', '--status', 'active', '--name', '不能修改'], 2, {
+            DEPLOY_PROFILE: 'prod',
+          });
+          await denied(['set', '--key', 'site', '--status', 'active'], 2, { FLAG_WEB_CHANNEL: 'off' });
+        });
+        await acheck(label('set 全部设置、有效欢迎语、合并保留设置、审计不含值与无操作 0'), async () => {
+          const welcome = '我是 AI 助手。回复人工转真人。';
+          await run([
+            'set',
+            '--key',
+            'main',
+            '--name',
+            '客服改名',
+            '--status',
+            'disabled',
+            '--setting',
+            'pollIntervalMs=45000',
+            '--setting',
+            `welcomeText=${welcome}`,
+            '--setting',
+            `welcomeBackText=${welcome}`,
+          ]);
+          assert.equal(row('main').name, '客服改名');
+          assert.equal(row('main').status, 'disabled');
+          assert.deepEqual(row('main').settings, { pollIntervalMs: 45000, welcomeText: welcome, welcomeBackText: welcome });
+          audit('channel.account_update', 'main', ['name', 'status', 'pollIntervalMs', 'welcomeText', 'welcomeBackText']);
+          const count = state.audits.length;
+          assert.match((await run(['set', '--key', 'main', '--name', '客服改名'])).out, /无操作/);
+          assert.match((await run(['set', '--key', 'main'])).out, /无操作/);
+          assert.equal(state.audits.length, count);
+          await run([
+            'set',
+            '--key',
+            'site',
+            '--status',
+            'active',
+            '--setting',
+            'title=网页咨询',
+            '--setting',
+            'dailyNewConversations=12',
+            '--setting',
+            'dailyTurns=34',
+            '--setting',
+            `welcomeText=${welcome}`,
+          ]);
+          assert.deepEqual(row('site').settings, { title: '网页咨询', dailyNewConversations: 12, dailyTurns: 34, welcomeText: welcome });
+          audit('channel.account_update', 'site', ['status', 'title', 'dailyNewConversations', 'dailyTurns', 'welcomeText']);
+          await run(['set', '--key', 'site', '--setting', 'dailyTurns=35']);
+          assert.equal(row('site').settings.title, '网页咨询');
+          assert.equal(row('site').settings.dailyNewConversations, 12);
+        });
+        await acheck(label('set 无效欢迎语、exported、错误设置与缺账号：1/2，整库及审计不变'), async () => {
+          for (const key of ['main', 'site'])
+            for (const text of ['', '普通欢迎语。回复人工。', 'AI 助手。欢迎。']) {
+              await denied(['set', '--key', key, '--name', '不可写入', '--setting', `welcomeText=${text}`]);
+            }
+          await denied(['set', '--key', 'main', '--setting', 'welcomeBackText=普通问候。转人工']);
+          await denied(['set', '--key', 'main', '--status', 'exported']);
+          await denied(['set', '--key', 'main', '--status', 'unknown']);
+          for (const setting of [
+            'pollIntervalMs=29999',
+            'pollIntervalMs=0',
+            'pollIntervalMs=1.5',
+            'pollIntervalMs=NaN',
+            'corpId=blocked',
+            'title=blocked',
+            '__proto__=blocked',
+            'no-equals',
+          ]) {
+            await denied(['set', '--key', 'main', '--setting', setting]);
+          }
+          for (const setting of [
+            'title= ',
+            `title=${'文'.repeat(41)}`,
+            'dailyTurns=0',
+            'dailyNewConversations=-1',
+            'dailyTurns=9007199254740992',
+            'welcomeBackText=AI。转人工',
+          ])
+            await denied(['set', '--key', 'site', '--setting', setting]);
+          await denied(['set', '--key', 'main', '--setting', 'pollIntervalMs=30000', '--setting', 'pollIntervalMs=60000']);
+          await denied(['set', '--key', 'missing', '--status', 'disabled'], 2);
+          await denied(['set-secrets', '--key', 'missing', '--secrets-file', replacementFile], 2);
+          await denied(['set-secrets', '--key', 'site', '--secrets-file', replacementFile]);
+        });
+        await acheck(label('set-secrets：0、可解、不改标识、三项审计；缺钥/错误文件 1'), async () => {
+          await denied(['set-secrets', '--key', 'main', '--secrets-file', replacementFile], 1, { [envName]: '' });
+          await denied(['set-secrets', '--key', 'main', '--secrets-file', looseFile]);
+          await denied(['set-secrets', '--key', 'main', '--secrets-file', credentialFile]);
+          await run(['set-secrets', '--key', 'main', '--secrets-file', replacementFile]);
+          const r = row('main');
+          assert.deepEqual(
+            openSecrets(oldRing, { tenantId: h.tenantId, accountId: r.id }, Buffer.from(r.ct!, 'hex'), r.secrets_key_id!).reveal(),
+            replacement15,
+          );
+          assert.equal(r.corp_id, fake15.corpId);
+          assert.equal(r.open_kfid, fake15.openKfId);
+          audit('channel.secrets_update', 'main', ['appSecret', 'callbackToken', 'callbackAesKey']);
+        });
+        await acheck(label('rekey：缺密钥 1/旧钥不全 2，坏行阻止全部写入；轮换后去旧钥可解'), async () => {
+          await denied(['rekey'], 1, { [envName]: '' });
+          await denied(['rekey'], 2, { [envName]: newEnv });
+          const second = row('second');
+          const oldCt = second.ct!;
+          await h.query("update channel_accounts set secrets_ct = decode($1, 'hex') where tenant_id = $2 and id = $3", [
+            '01'.repeat(32),
+            h.tenantId,
+            second.id,
+          ]);
+          await run(['list']);
+          await denied(['rekey'], 2, { [envName]: allKeys });
+          await h.query("update channel_accounts set secrets_ct = decode($1, 'hex') where tenant_id = $2 and id = $3", [
+            oldCt,
+            h.tenantId,
+            second.id,
+          ]);
+          await run(['rekey'], 0, { [envName]: allKeys });
+          for (const r of state.rows.filter((r) => r.ct)) {
+            assert.equal(r.secrets_key_id, 'new');
+            assert.ok(
+              openSecrets(newRing, { tenantId: h.tenantId, accountId: r.id }, Buffer.from(r.ct!, 'hex'), r.secrets_key_id!).reveal()
+                .appSecret,
+            );
+          }
+          const a = state.audits.at(-1)!;
+          assert.equal(a.action, 'channel.rekey');
+          assert.equal(a.actor_kind, 'platform');
+          assert.equal(a.actor_name, 'channel-account');
+          assert.deepEqual(a.diff.keys.sort(), ['main', 'second']);
+          assert.deepEqual(a.diff.fields, ['secretsCt', 'secretsKeyId']);
+          assert.equal(row('site').ct, null);
+        });
+        await acheck(label('企微全部 exported 时两个 add 都是 2，提示 resync；不改库'), async () => {
+          await h.query("update channel_accounts set status = 'exported' where tenant_id = $1 and kind = 'wecom_kf'", [h.tenantId]);
+          await run(['list']);
+          for (const args of [
+            ['add-wecom', '--key', 'third', '--name', '客服', '--secrets-file', secondFile],
+            ['add-web', '--key', 'site2', '--title', '咨询'],
+          ]) {
+            assert.match((await denied(args, 2)).out, /channel-import --resync/);
+          }
+        });
+        await acheck(label('事务写入异常 1 不泄露参数；读不到其他租户的账号与审计'), async () => {
+          // 注入数据库异常，把敏感形态塞进 ERROR，CLI 必须只打印固定安全报错，账号和审计回滚。
+          await h.query(
+            `create function cli15_audit_fail() returns trigger language plpgsql as $$ begin raise exception '%', '${fake15.appSecret} ${fake15.corpId} ${row('main').ct}'; end $$`,
+          );
+          await h.query('create trigger cli15_audit_fail before insert on audit_log for each row execute function cli15_audit_fail()');
+          try {
+            await denied(['set', '--key', 'main', '--name', '应回滚']);
+          } finally {
+            await h.query('drop trigger cli15_audit_fail on audit_log');
+            await h.query('drop function cli15_audit_fail()');
+          }
+          const r = await h.run(['list', '--tenant', 'cli15-other']);
+          assert.equal(r.status, 0);
+          assert.equal(r.out, '');
+          assert.equal(state.rows.filter((r) => r.tenant_id !== h.tenantId).length, 0);
+          assert.equal(state.audits.filter((r) => r.tenant_id !== h.tenantId).length, 0);
+          const before = JSON.stringify(state);
+          assert.equal((await h.run(['list', '--tenant', 'missing'])).status, 1);
+          assert.equal(JSON.stringify(state), before);
+        });
+        check(label('写操作每次只一行审计，内容只含账号 key 和字段名字，四个动作都有中文标签'), () => {
+          assert.equal(state.audits.length, 9);
+          const allowed = new Set([
+            'key',
+            'kind',
+            'name',
+            'status',
+            'idPrefix',
+            'corpId',
+            'openKfId',
+            'appSecret',
+            'callbackToken',
+            'callbackAesKey',
+            'title',
+            'dailyNewConversations',
+            'dailyTurns',
+            'pollIntervalMs',
+            'welcomeText',
+            'welcomeBackText',
+            'secretsCt',
+            'secretsKeyId',
+          ]);
+          for (const a of state.audits) {
+            assert.deepEqual(Object.keys(a.diff).sort(), ['fields', 'keys']);
+            assert.ok(a.diff.keys.every((k) => ['main', 'second', 'site'].includes(k)));
+            assert.ok(a.diff.fields.every((f) => allowed.has(f)));
+            assert.equal(a.actor_kind, 'platform');
+            assert.equal(a.actor_name, 'channel-account');
+          }
+          for (const action of ['account_create', 'account_update', 'secrets_update', 'rekey'])
+            assert.match(AUDIT_ACTIONS[`channel.${action}`]!.label, /\p{Script=Han}/u);
+        });
+      } finally {
+        await h.close();
+      }
+    }
+    check('CLI stdout/stderr 凭据扫描为零：明文、密文 base64/hex/Buffer JSON、企微标识与 access_token', safe15);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 __channelsTest.reset();
 console.log(
   `CHANNELS SELFTEST PASS: ${pass} 项断言全通（密钥环 / AES-256-GCM 与 AAD / 轮换 / Redacted / 异常不泄露 / 日志字段脱敏 / ` +
