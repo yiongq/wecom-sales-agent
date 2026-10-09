@@ -64,7 +64,7 @@ main(async () => {
       console.log(
         `[erase-conversation] 完成：conversations=${counts.conversations} messages=${counts.messages} traces=${counts.traces} ` +
           `guardEvents=${counts.guardEvents} consents=${counts.consents} outboundSends=${counts.outboundSends} ` +
-          `orders=${counts.orders} jobs=${counts.jobs}`,
+          `orders=${counts.orders} jobs=${counts.jobs} inbox=${counts.inbox}`,
       );
       if (counts.conversations === 0) {
         console.log(`[erase-conversation] 这个会话本来就不在（conversations=0），审计已记下这次请求`);

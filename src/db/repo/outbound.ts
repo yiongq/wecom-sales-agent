@@ -1,10 +1,25 @@
-// 企微发送账本（02 spec「企微：发送账本、回执与去重」）：账本在内存里，落库时写行；收到 msg_send_fail 按 msgid 改状态
-import { and, eq, gte, ne, sql } from 'drizzle-orm';
+// 企微发送账本（02 spec「企微：发送账本、回执与去重」；03 spec「出站：投递状态」、R4、不变量 7）。
+// 02：账本在内存里，落库时写行；收到 msg_send_fail 按 msgid 改状态。03：库里的账号先落 pending 再发，每段先标 sending。
+// 所有写入（会话落库的 upsert、各个短事务）都按 src/channels/transitions.ts 的迁移表生成同一种 WHERE：表外的写入什么都不改、
+// 不报错，晚到的写入盖不回终态。env 账号与 02 留下的行照 02 只写四种结果，它们的每一种变化都在表里
+import { and, eq, gte, inArray, sql, type SQL } from 'drizzle-orm';
+import {
+  canMoveOutbound,
+  OUTBOUND_KEEPS_PAYLOAD,
+  OUTBOUND_TRANSITIONS,
+  outboundFromStates,
+  type OutboundWriter,
+} from '../../channels/transitions.js';
+import type { OutboundStatus } from '../../shared/channel-types.js';
 import type { OutboundKind } from '../../shared/conversation-types.js';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { conversations, messages, outboundSends } from '../schema.js';
 
-export type OutboundStatus = 'accepted' | 'rejected' | 'unknown' | 'failed';
+/**
+ * 02 的四种结果：env 账号与 02 留下的行只有它们。02 的两个读接口（预载、后台「看更早的消息」）照 02 的形状返回；
+ * 库里账号的 pending、sending、cancelled 由第 8 步接进读接口与工作台时再扩
+ */
+export type LegacyOutboundStatus = 'accepted' | 'rejected' | 'unknown' | 'failed';
 
 export interface OutboundSendRow {
   conversationId: string;
@@ -14,44 +29,178 @@ export interface OutboundSendRow {
   messageSeq: number | null;
   kind: OutboundKind;
   sentAt: Date;
-  status: OutboundStatus;
+  status: LegacyOutboundStatus;
   errcode: number | null;
   failType: number | null;
 }
 
+/** 写入的一行：02 的列加 03 的几列。03 的列不给就是 02 的写法（account_id、inbox_id、payload 为空，segment、attempts 为 0） */
+export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status'> {
+  status: OutboundStatus;
+  accountId?: string | null;
+  inboxId?: string | null;
+  segment?: number;
+  attempts?: number;
+  /** 只在 pending 时写进去；别的状态一律写空（CHECK 与不变量 7） */
+  payload?: unknown;
+}
+
+/** 库里没结果的一行（pending、sending）：启动恢复用，带 02 的预载不读的几列 */
+export interface OpenOutboundRow extends Omit<OutboundSendRow, 'status'> {
+  status: 'pending' | 'sending';
+  accountId: string | null;
+  inboxId: string | null;
+  segment: number;
+  attempts: number;
+  payload: unknown;
+}
+
 /**
- * 写账本行。同一个 msgid 再写一次是同一分段的后续（第 12 步：超时那一刻先记 unknown，之后重试成功升 accepted、最后一次尝试的时刻
- * 往后挪；或收到回执记 failed）：按 (tenant_id, channel_msgid) upsert，仍是一行（不变量 33）。只认三种变化：unknown 升 accepted、
- * unknown 刷新（errcode、sent_at）、还不是 failed 的记 failed；其余（比如已 failed 的又来一个 unknown）不动。sent_at 只往后挪。
- * 同一批里同一 msgid 只留最后一行（ON CONFLICT 不能在一条语句里改同一行两次）
+ * 经会话落库写的几类（R21：主事务里的 pending 插入与 cancelled、存档点里的结果；没有会话时、poisoned 之后的短事务与 spill 回放
+ * 也走同一个函数）。不含 mark、unmark、recover：sending 只由 markSending 的短事务写，迁回 pending、恢复与导出各有自己的语句
  */
-export async function insertOutboundSends(tx: Tx, rows: readonly OutboundSendRow[]): Promise<void> {
+export const FLUSH_WRITERS: readonly OutboundWriter[] = ['plan', 'settle', 'cancel', 'receipt'];
+
+/** 迁移表里的状态作为绑定参数进 SQL（显式标成 text，PGlite 与 node-postgres 推断一致） */
+const lit = (s: string): SQL => sql`${s}::text`;
+const litList = (xs: readonly string[]): SQL =>
+  sql.join(
+    xs.map((x) => lit(x)),
+    sql`, `,
+  );
+
+/** 已有的行 → excluded 的那一格在不在 writers 的迁移表里：(status, excluded.status) in ((from, to), …) */
+function conflictWhere(writers: readonly OutboundWriter[]): SQL {
+  const pairs = OUTBOUND_TRANSITIONS.filter((t) => t.from !== null && t.by.some((w) => writers.includes(w)));
+  if (!pairs.length) return sql`false`;
+  return sql`(${outboundSends.status}, excluded.status) in (${sql.join(
+    pairs.map((t) => sql`(${lit(t.from!)}, ${lit(t.to)})`),
+    sql`, `,
+  )})`;
+}
+
+/** 迁到 to 之前库里这一行必须是哪几种；只能插入、或根本不在表里时返回 null（这条 UPDATE 不用发） */
+function fromWhere(to: OutboundStatus, writers: readonly OutboundWriter[]): SQL | null {
+  const from = outboundFromStates(to, writers).filter((f): f is OutboundStatus => f !== null);
+  return from.length ? sql`${outboundSends.status} in (${litList(from)})` : null;
+}
+
+const keepsPayload = (s: OutboundStatus): boolean => OUTBOUND_KEEPS_PAYLOAD.includes(s);
+
+/**
+ * 写账本行（会话落库与没有会话时的短事务）。同一个 msgid 再写一次是同一分段的后续（02：超时那一刻先记 unknown，之后重试成功升
+ * accepted、最后一次尝试的时刻往后挪，或收到回执记 failed；03：pending 之后的结果、取消）：按 (tenant_id, channel_msgid) upsert，
+ * 仍是一行（02 不变量 33）。库里已有的行只按迁移表（FLUSH_WRITERS 的格子）变，表外的什么都不改：pending 遇到已有的行不改、
+ * 终态不回退。没有这一行时只插入表里允许直接插入的状态（pending、三种结果、failed）；cancelled、sending 只能改已有的行。
+ * sent_at、attempts 只往大里改。同一批里同一 msgid 的几次写按先后分轮写（一条 ON CONFLICT 不能改同一行两次），每一次都按迁移表判
+ */
+export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRow[]): Promise<void> {
   if (!rows.length) return;
   const { tenantId } = currentTenantCtx();
-  const last = new Map<string, OutboundSendRow>();
+  const rounds: OutboundWriteRow[][] = [];
+  const seen = new Map<string, number>();
   for (const r of rows) {
-    last.delete(r.channelMsgid);
-    last.set(r.channelMsgid, r);
+    const k = seen.get(r.channelMsgid) ?? 0;
+    seen.set(r.channelMsgid, k + 1);
+    (rounds[k] ??= []).push(r);
   }
-  await tx
-    .insert(outboundSends)
-    .values([...last.values()].map((r) => ({ tenantId, ...r })))
-    .onConflictDoUpdate({
-      target: [outboundSends.tenantId, outboundSends.channelMsgid],
-      set: {
-        status: sql`excluded.status`,
-        errcode: sql`excluded.errcode`,
-        failType: sql`excluded.fail_type`,
-        sentAt: sql`greatest(${outboundSends.sentAt}, excluded.sent_at)`,
-      },
-      setWhere: sql`${outboundSends.status} <> 'failed' and (excluded.status = 'failed' or (${outboundSends.status} = 'unknown' and excluded.status in ('unknown', 'accepted')))`,
-    });
+  for (const round of rounds) {
+    const inserts = round.filter((r) => canMoveOutbound(null, r.status, FLUSH_WRITERS));
+    if (inserts.length) {
+      await tx
+        .insert(outboundSends)
+        .values(
+          inserts.map((r) => ({
+            tenantId,
+            conversationId: r.conversationId,
+            channelMsgid: r.channelMsgid,
+            messageSeq: r.messageSeq,
+            kind: r.kind,
+            sentAt: r.sentAt,
+            status: r.status,
+            errcode: r.errcode,
+            failType: r.failType,
+            accountId: r.accountId ?? null,
+            inboxId: r.inboxId ?? null,
+            segment: r.segment ?? 0,
+            attempts: r.attempts ?? 0,
+            payload: keepsPayload(r.status) ? (r.payload ?? null) : null,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [outboundSends.tenantId, outboundSends.channelMsgid],
+          set: {
+            status: sql`excluded.status`,
+            errcode: sql`excluded.errcode`,
+            failType: sql`excluded.fail_type`,
+            sentAt: sql`greatest(${outboundSends.sentAt}, excluded.sent_at)`,
+            attempts: sql`greatest(${outboundSends.attempts}, excluded.attempts)`,
+            payload: sql`case when excluded.status in (${litList(OUTBOUND_KEEPS_PAYLOAD)}) then ${outboundSends.payload} else null end`,
+          },
+          setWhere: conflictWhere(FLUSH_WRITERS),
+        });
+    }
+    for (const r of round) {
+      if (inserts.includes(r)) continue;
+      await transitionOutbound(tx, r.channelMsgid, r.status, FLUSH_WRITERS, {
+        errcode: r.errcode,
+        failType: r.failType,
+        sentAt: r.sentAt,
+        attempts: r.attempts,
+      });
+    }
+  }
+}
+
+/**
+ * 按 msgid 把一行迁到 to（短事务里用：markSending、迁回 pending、取消、恢复、导出、回执）。只在库里这一行的状态是 by 这几个写入方
+ * 在迁移表里允许的出发状态时才改；表外的、行不在的都什么都不改，返回 null。改中了返回那一行的会话 id。
+ * 迁到不留 payload 的状态时同一条语句把 payload 置空；errcode、failType 给了才写；sentAt、attempts 只往大里改
+ */
+export async function transitionOutbound(
+  tx: Tx,
+  channelMsgid: string,
+  to: OutboundStatus,
+  by: OutboundWriter | readonly OutboundWriter[],
+  fields: { errcode?: number | null; failType?: number | null; sentAt?: Date; attempts?: number } = {},
+): Promise<string | null> {
+  const where = fromWhere(to, typeof by === 'string' ? [by] : by);
+  if (!where) return null;
+  const out = await tx
+    .update(outboundSends)
+    .set({
+      status: to,
+      ...(keepsPayload(to) ? {} : { payload: null }),
+      ...(fields.errcode !== undefined ? { errcode: fields.errcode } : {}),
+      ...(fields.failType !== undefined ? { failType: fields.failType } : {}),
+      ...(fields.sentAt !== undefined
+        ? { sentAt: sql`greatest(${outboundSends.sentAt}, ${fields.sentAt.toISOString()}::timestamptz)` }
+        : {}),
+      ...(fields.attempts !== undefined ? { attempts: sql`greatest(${outboundSends.attempts}, ${fields.attempts})` } : {}),
+    })
+    .where(and(eq(outboundSends.channelMsgid, channelMsgid), where))
+    .returning({ conversationId: outboundSends.conversationId });
+  return out[0]?.conversationId ?? null;
+}
+
+/**
+ * markSending 的库里那一步（R4）：pending → sending。没改中时同一事务再看这一行在不在：not_pending（在、已不是 pending：
+ * 被取消、已有结果）不发；absent（库里没有这一行）由调用方按这一组的 commitOutbound 结果判。库不可用由调用方的 catch 判
+ */
+export async function markOutboundSending(tx: Tx, channelMsgid: string): Promise<'marked' | 'not_pending' | 'absent'> {
+  if ((await transitionOutbound(tx, channelMsgid, 'sending', 'mark')) !== null) return 'marked';
+  const [row] = await tx
+    .select({ status: outboundSends.status })
+    .from(outboundSends)
+    .where(eq(outboundSends.channelMsgid, channelMsgid))
+    .limit(1);
+  return row ? 'not_pending' : 'absent';
 }
 
 /** 后台「看更早的消息」（02 第 13 步）：这个会话里对应这几条消息（message_seq）的账本行，J 页据此写没送达的原因 */
 export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: readonly number[]): Promise<OutboundSendRow[]> {
   if (!seqs.length) return [];
-  return tx
+  const rows = await tx
     .select({
       conversationId: outboundSends.conversationId,
       channelMsgid: outboundSends.channelMsgid,
@@ -64,38 +213,31 @@ export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: 
     })
     .from(outboundSends)
     .where(and(eq(outboundSends.conversationId, conversationId), sql`${outboundSends.messageSeq} = any(${sql.param([...seqs])}::int[])`));
+  // 02 的形状：库里账号的 03 状态由第 8 步接进来（见 LegacyOutboundStatus）
+  return rows as OutboundSendRow[];
 }
 
-/** 按 msgid 改状态（回执）；errcode、failType 不给就不动。返回是否找到了这一行 */
+/**
+ * 按 msgid 改状态，只走迁移表里的格子（不指定写入方时表里任何写入方的格子都算）；errcode、failType 不给就不动。
+ * 返回是否改到了这一行
+ */
 export async function setOutboundStatus(
   tx: Tx,
   channelMsgid: string,
   status: OutboundStatus,
-  opts: { errcode?: number | null; failType?: number | null } = {},
+  opts: { errcode?: number | null; failType?: number | null; by?: readonly OutboundWriter[] } = {},
 ): Promise<boolean> {
-  const out = await tx
-    .update(outboundSends)
-    .set({
-      status,
-      ...(opts.errcode !== undefined ? { errcode: opts.errcode } : {}),
-      ...(opts.failType !== undefined ? { failType: opts.failType } : {}),
-    })
-    .where(eq(outboundSends.channelMsgid, channelMsgid))
-    .returning({ id: outboundSends.id });
-  return out.length === 1;
+  const by = opts.by ?? [...new Set(OUTBOUND_TRANSITIONS.flatMap((t) => t.by))];
+  return (await transitionOutbound(tx, channelMsgid, status, by, { errcode: opts.errcode, failType: opts.failType })) !== null;
 }
 
 /**
- * 收到 msg_send_fail（第 12 步）：按 msgid 把还不是 failed 的那一行记 failed 与 fail_type。返回那一行的会话 id；
- * 找不到、或已经记过 failed（回执重复）返回 null，调用方据此不重复给会话加说明
+ * 收到 msg_send_fail（02 第 12 步）：按迁移表把那一行记 failed 与 fail_type（pending、sending、accepted、unknown 才改；
+ * failed 之后任何写入都不改它）。返回那一行的会话 id；找不到、或表外（已是 failed、rejected、cancelled）返回 null，
+ * 调用方据此不重复给会话加说明
  */
 export async function markOutboundFailed(tx: Tx, channelMsgid: string, failType: number): Promise<string | null> {
-  const out = await tx
-    .update(outboundSends)
-    .set({ status: 'failed', failType })
-    .where(and(eq(outboundSends.channelMsgid, channelMsgid), ne(outboundSends.status, 'failed')))
-    .returning({ conversationId: outboundSends.conversationId });
-  return out[0]?.conversationId ?? null;
+  return transitionOutbound(tx, channelMsgid, 'failed', 'receipt', { failType });
 }
 
 /**
@@ -106,7 +248,7 @@ export async function markOutboundFailed(tx: Tx, channelMsgid: string, failType:
 export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: readonly string[]): Promise<OutboundSendRow[]> {
   if (!conversationIds.length) return [];
   const lastCustomerLocalAt = sql`select ${messages.at} from ${messages} where ${messages.tenantId} = ${outboundSends.tenantId} and ${messages.conversationId} = ${outboundSends.conversationId} and ${messages.role} = 'customer' order by ${messages.seq} desc limit 1`;
-  return tx
+  const rows = await tx
     .select({
       conversationId: outboundSends.conversationId,
       channelMsgid: outboundSends.channelMsgid,
@@ -127,4 +269,38 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
       ),
     )
     .orderBy(outboundSends.conversationId, outboundSends.sentAt);
+  // 02 的形状：库里账号的 03 状态由第 8 步接进来（见 LegacyOutboundStatus）
+  return rows as OutboundSendRow[];
+}
+
+/**
+ * 启动恢复（03「重启、崩溃与恢复」）：这个账号没结果的出站行（pending、sending），带 payload、segment、inbox_id；
+ * 按建这一行的时刻、段号排。accountId 为 null 时读 02 的默认账号的行（account_id 为空）
+ */
+export async function readOpenOutbound(tx: Tx, accountId: string | null): Promise<OpenOutboundRow[]> {
+  const rows = await tx
+    .select({
+      conversationId: outboundSends.conversationId,
+      channelMsgid: outboundSends.channelMsgid,
+      messageSeq: outboundSends.messageSeq,
+      kind: outboundSends.kind,
+      sentAt: outboundSends.sentAt,
+      status: outboundSends.status,
+      errcode: outboundSends.errcode,
+      failType: outboundSends.failType,
+      accountId: outboundSends.accountId,
+      inboxId: outboundSends.inboxId,
+      segment: outboundSends.segment,
+      attempts: outboundSends.attempts,
+      payload: outboundSends.payload,
+    })
+    .from(outboundSends)
+    .where(
+      and(
+        accountId === null ? sql`${outboundSends.accountId} is null` : eq(outboundSends.accountId, accountId),
+        inArray(outboundSends.status, ['pending', 'sending']),
+      ),
+    )
+    .orderBy(outboundSends.sentAt, outboundSends.segment);
+  return rows as OpenOutboundRow[];
 }

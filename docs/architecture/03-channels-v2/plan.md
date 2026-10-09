@@ -34,7 +34,7 @@
     - 02 的 `src/store/pg-backend.ts` 一次落库的步骤、存档点、spill 条目的结构（第 8、11 步用）。
   - 文档收尾：02 spec 顶部加 `Superseded in part by:`（列本 spec 顶部 `Supersedes in part:` 的四处）与 `Amended by:`；00、01、后台 UX spec 顶部各加 `Amended by:`（00：部署开关 `web_channel`）。02 plan「上线清单」最后一条（`channel_inbox` 提前）写明「由 03 spec 做，03 implemented 之后勾」。
   - 完成标准：四个门禁全绿；只改文档。
-- [ ] 2. 迁移、RLS、授权与仓储（2，Claude）
+- [x] 2. 迁移、RLS、授权与仓储（2，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），见「实施记录 · 第 2 步」。
   - `src/db/schema.ts`：`channel_accounts`、`channel_inbox`（含 `ord` 自增列）、`outbound_sends` 的新列与新状态、`conversations.channel_account_id`；custom 迁移写 RLS 模板、授权与列级授权、两个触发器、`purge_channel_inbox`，改写 02 的 `purge_conversation`、`erase_conversation`（删除范围加 `channel_inbox`、`erase` 的返回值加 `inbox`），三处迁移 lint 标注照 spec「数据库」（R2、R4、R8）。
   - `src/channels/transitions.ts`：出站与入站的状态迁移表（纯数据）；`src/db/repo/channel-accounts.ts`、`channel-inbox.ts`，`outbound.ts` 的 upsert 与各短事务改成同一个迁移表 WHERE（R4）。
   - `deploy/backup.sh` 的 TABLE DATA 校验加两张表（表存在时才要求）。
@@ -288,6 +288,41 @@
 - `deploy.sh`：tag 里没有 `pg-backend.ts` 照旧 `pre-02`，有它而没有 `registry.ts` 是 `pre-03`；部署与自动回滚两处的 `case` 都加 `5)` 的提示。
 - 自测在 `src/db/db.selftest.ts` 现有的 rollback-guard 测试台里追加（假 docker 加镜像里有没有 `registry.ts`、渠道问库 t / f / none / down 的开关），覆盖 plan 列的组合与优先级、两段步骤、deploy.sh 选 `pre-02` / `pre-03`。改了一条非锁定断言：自动回滚那段 `case` 的结构正则从 `[34*]` 三个分支放宽到 `[345*]` 四个分支（加 `5)` 是本步的本意，原说明「旧断言一条不改」与之冲突，Claude 答复后由 Codex 续做）。
 - 门禁：四个全绿，`PREFIX sha256` 与第 1 步相同，锁定文件未动。Codex 实现，Claude 审查、补跑门禁。
+
+### 第 2 步 · 迁移、RLS、授权与仓储（2026-10-09）
+
+**结构**
+
+- 迁移：`drizzle/0004_channels.sql`（drizzle-kit 生成的 DDL：`channel_accounts`、`channel_inbox`（`ord` 是 identity 列）、`outbound_sends` 的五个新列与七种状态、payload CHECK、账号外键与 `outbound_sends_open` 索引、`conversations.channel_account_id`）；`drizzle/0005_channels_rls.sql`（custom：两张表套 01 的 RLS 模板，两个 BEFORE UPDATE 触发器，`purge_channel_inbox`，`CREATE OR REPLACE` 改写 02 的 `purge_conversation`、`erase_conversation`，授权与列级授权）。
+- 授权：`channel_accounts` 给 `agent_app` SELECT、INSERT 与 spec 列的 9 列列级 UPDATE；`channel_inbox` 给 SELECT、INSERT、UPDATE；`agent_platform` 对两张表没有权限；所有角色都没有 DELETE、TRUNCATE。`purge_channel_inbox` 只授权给 `agent_app`。
+- 触发器（报 `check_violation`，报错不带列值）：`channel_accounts_guard` 拦 `key`、`kind`、`id_prefix`、`corp_id`、`open_kfid` 的修改并写 `updated_at`；`channel_inbox_guard` 对已是 `done`、`abandoned` 的行任何 UPDATE 都报错，否则写 `updated_at`。
+- `purge_channel_inbox(p_tenant, p_now)`：照 02 的写法（SECURITY DEFINER、租户与 `p_now` ±5 分钟校验），先删结束超过 7 天的行，再把收到超过 7 天还没结束的记 `abandoned`（`too_old`）、清空 `payload`，返回两类条数之和。`purge_conversation`、`erase_conversation` 与 0003 逐行比过，只多删 `channel_inbox` 里这个会话的行（`send_fail` 行也必须带 `conversation_id`，CHECK 管着）；`erase` 的返回值与审计 diff 多一项 `inbox`。
+- `src/shared/channel-types.ts`：spec 的六个共享类型（由 `as const` 数组推出）。`src/channels/transitions.ts`（纯数据，只 import `src/shared/`）：出站表每格 `{ from, to, by: 写入方[] }`，写入方七个（`plan`、`mark`、`settle`、`cancel`、`unmark`、`recover`、`receipt`），`from` 为 null 表示插入；入站表只往前走、任一步可到 `abandoned`、终态没有出边。
+- 仓储：`src/db/repo/outbound.ts` 的落库 upsert 只用 `plan`、`settle`、`cancel`、`receipt` 四个写入方的格子，`ON CONFLICT … WHERE (status, excluded.status) IN (…)`；只插入允许直接插入的状态，`sending`、`cancelled` 只改已有行；同一批同一 msgid 的几次写按先后分轮判断；迁出 `pending` / `sending` 时同一条语句把 `payload` 置空。短事务 `transitionOutbound(tx, msgid, to, by)` 生成 `WHERE status IN (…)`，没有可出发的状态就不发 SQL；`markOutboundSending` 返回 `marked`、`not_pending`、`absent`。新增 `src/db/repo/channel-accounts.ts`（列出、新建、只改列级授权那几列）、`src/db/repo/channel-inbox.ts`（`insertInboxRows` 冲突即跳过、按 `ord` 返回，`setInboxState` 按迁移表，`bumpInboxAttempts`，`readOpenInbox`）。状态值都是绑定参数。
+- 每日 `retention_purge`（`src/jobs/purge.ts`）多调一次 `purge_channel_inbox`；`erase-conversation` 的输出多一项 `inbox=`。`deploy/backup.sh` 的 TABLE DATA 校验在库里有这两张表时也要求它们（缺表只告警一行）。
+
+**本步定的与偏离 spec 的地方**
+
+- `channel_accounts_wecom_check` 写成 `coalesce(id_prefix IN (…), false)`：照 spec 原样，`id_prefix` 为 NULL 时 CHECK 得 NULL 会被放行。
+- 重新加回的 `outbound_sends` status CHECK 也命中迁移 lint 的 `add-check`，标注写的是「放宽 status 的取值，旧镜像写的值都在新集合里」。
+- 入站终态行的任何 UPDATE 都报错，写回原值也不行（对「任何改动」的严格读法）。`updated_at` 的触发器照 spec 只管 UPDATE；仓储从不写这一列。
+- `purge_channel_inbox` 接进每日任务放在本步做（spec 写了由这个任务调用，plan 没有哪一步写这件事；协调者确认）。
+- 02 老路上一处行为变了：对 `rejected` 的行收到回执，02 会改成 `failed`，03 的迁移表把 `rejected` 定为终态，现在是无操作。企微不会对自己拒收的消息发失败回执，实际碰不到，协调者确认接受。
+- 子 agent 原先在入站表里多加了 `received → replied` 一格（非文本占位与引导提示同一次落库），spec 没有这一格，按 spec 删掉：同一次落库里先 `recorded` 再 `replied`，由第 9 步按顺序逐条写。
+
+**自测**
+
+- `src/db/db.selftest.ts` 有意改的非锁定断言（spec「测试与 CI」允许的表清单与权限期望表，以及 03 Amends 02 不变量 42 与 erase 返回值带出的几处）：表清单 +2；清除函数清单四个改五个；列级 ACL 期望 +9 列、改成按 JS 顺序比；权限期望表、DELETE / TRUNCATE 循环、RLS 插入表；`purgeChecks` 里 erase 的期望条数加 `inbox`、全库扫描与「不变量 42」的表清单加 `channel_inbox`；一条 02 断言的标签从「只有四种」改成「02 四种，03 起七种」（断言本身没改）；假 docker 的缺省输出加两张新表。
+- 新增：从 02 的库升级上来、迁移连跑两遍、CHECK、`ord` 递增、出站短事务 343 格、upsert 56 格、入站 25 格（都对照 spec 原表的独立字面量，表外的是无操作）、两个触发器与 `purge_channel_inbox` 在 PGlite 与真实 PG 各一遍、真实 PG 上逐格授权、列级授权、隔离、没有 DELETE。
+- 与第 16 步合在一起时撞了一处：第 16 步的假 docker 把命令里带 `channel_accounts` 的调用都当成回滚检查的查询（另记一类日志、回假结果），本步 `backup.sh` 的探测查询也带这个表名，被截走，「按项目名找 db」那条断言少数一次调用。假 docker 改成只认回滚检查独有的 `public.channel_accounts` 与 `from channel_accounts where`。
+- 结果：四个门禁全绿（rebase 到含第 3、4、5、16 步的 dev 之后重跑）；带 `PG_TEST_URL` 的 `pnpm test` 全绿（DB SELFTEST 1133 项，STORE 452、JOBS 110、QUOTA 127、WECOM-02 15，DB 模式 19 个用例「0 处与内存不符」）；`wecom-02.selftest.ts`、`quota.selftest.ts` 断言不改照过；`PREFIX sha256` 与第 1 步相同，锁定文件未动。一次性 PG 容器与它的匿名卷已删。由 Claude 子 agent（Opus）实现，协调者审查。
+
+**给后面步骤的注意**
+
+- 第 6 步：`listChannelAccounts` 返回任何状态的账号，行里带 `secrets_ct`，不要整行打印；`readOpenInbox`、`readOpenOutbound(accountId | null)` 已可用。
+- 第 8 步：落库用 `insertOutboundSends`，标 `sending` 用 `markOutboundSending`，截止后迁回 `pending` 用 `transitionOutbound(…, 'pending', 'unmark')`，标了 `sending` 又被接手用 `'cancelled', 'cancel'`；同一批里先 `pending` 后 `cancelled` 能正确落成 `cancelled`。`readOutboundForSeqs`、`readOutboundAfterLastCustomer` 仍按 02 的四种状态转型、也不按 `account_id` 过滤，工作台映射时要放宽。
+- 第 9 步：同一次落库里同一入站行的几次状态变化按顺序逐条写；`abandoned` 必须带原因（否则发 SQL 之前就抛错）；别对终态行发不带状态条件的 UPDATE，触发器会报错。
+- 第 12、14 步：`restore-cutoff` 与导出用 `transitionOutbound(…, 'cancelled' | 'unknown', 'recover')`；`--resync`「把没结束行的 `payload`、`attempts` 换成文件里的」还没有对应的仓储函数；导入的 `legacy` 行 `updated_at` 取 `now()`，导入后再留 7 天。
 
 ## 验收记录
 

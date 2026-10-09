@@ -8,9 +8,10 @@
 #
 # 1. 以超级用户在 db 容器里经本地 socket 导出：pg_dump -Fc，外加 pg_dumpall --globals-only --no-role-passwords。
 #    主机上不存超级用户口令。不用任何受 RLS 约束的角色导出，也不加 --enable-row-security：没设租户时它会静默导出 0 行。
-# 2. 校验：pg_restore --list 里 01 的四张 RLS 表都有 TABLE DATA；02 的 conversations、messages、orders 在库里存在时
-#    也要有（行数可以为 0：文件存储下库里没有会话）。这三张表不存在时只告警一行、备份照做：deploy.sh 先装新版本脚本、
-#    后跑迁移，构建或迁移失败时库停在 01，不能因此每晚的备份整份不出。表在不在是导出之前查的。
+# 2. 校验：pg_restore --list 里 01 的四张 RLS 表都有 TABLE DATA；02 的 conversations、messages、orders 与 03 的
+#    channel_accounts、channel_inbox 在库里存在时也要有（行数可以为 0：文件存储下库里没有会话，企微状态没导入时没有渠道行）。
+#    这几张表不存在时只告警一行、备份照做：deploy.sh 先装新版本脚本、后跑迁移，构建或迁移失败时库停在上一阶段，不能因此
+#    每晚的备份整份不出。表在不在是导出之前查的。
 #    sop_versions、catalog_items 的行数为 0 就非零退出并告警。
 # 3. var/（会话、订单、企微 cursor、客服二维码）打成 tar。
 # 4. 两份都在离开本机前用 age 公钥加密，私钥不放在服务器上；明文只在 0700 的临时目录里短暂存在。
@@ -124,8 +125,9 @@ mkdir -p "$DEST"
 chmod 700 "$ROOT" "$DEST"
 
 STEP='导出'
-# 1) 导出。先查两张配置表的行数，以及 02 的会话三张表里库里已有的（空格分开）：在导出之前查，导出之后才建的表这次不要求
-probe="$(dc exec -T db psql -U postgres -d "$DB" -Atc "select (select count(*) from sop_versions), (select count(*) from catalog_items), (select coalesce(string_agg(t, ' ' order by o), '') from unnest(array['conversations', 'messages', 'orders']) with ordinality as u(t, o) where to_regclass('public.' || t) is not null)")"
+# 1) 导出。先查两张配置表的行数，以及 02 的会话三张表、03 的渠道两张表里库里已有的（空格分开）：在导出之前查，导出之后才建的表
+#    这次不要求
+probe="$(dc exec -T db psql -U postgres -d "$DB" -Atc "select (select count(*) from sop_versions), (select count(*) from catalog_items), (select coalesce(string_agg(t, ' ' order by o), '') from unnest(array['conversations', 'messages', 'orders', 'channel_accounts', 'channel_inbox']) with ordinality as u(t, o) where to_regclass('public.' || t) is not null)")"
 IFS='|' read -r sop_rows catalog_rows session_tables <<<"$probe"
 dc exec -T db pg_dump -U postgres -Fc "$DB" >"$TMP/agent.dump"
 dc exec -T db pg_dumpall -U postgres --globals-only --no-role-passwords >"$TMP/globals.sql"
@@ -134,11 +136,11 @@ STEP='校验'
 # 2) 校验：这几张 RLS 表都有数据段（空表也有）；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
 required=(memberships sop_versions catalog_items audit_log)
 absent=()
-for t in conversations messages orders; do
+for t in conversations messages orders channel_accounts channel_inbox; do
   if [[ " ${session_tables:-} " == *" ${t} "* ]]; then required+=("$t"); else absent+=("$t"); fi
 done
 if ((${#absent[@]})); then
-  alarm "库里还没有 ${absent[*]}（02 的迁移没跑成？），这次不查它们的数据段，备份照做"
+  alarm "库里还没有 ${absent[*]}（02 或 03 的迁移没跑成？），这次不查它们的数据段，备份照做"
 fi
 toc="$(dc exec -T db pg_restore --list <"$TMP/agent.dump")"
 for t in "${required[@]}"; do
