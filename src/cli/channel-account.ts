@@ -4,8 +4,8 @@
 // 凭据只从 0600 文件或无回显终端读取，不接受凭据参数。退出码：0 成功/无操作，1 用法/读写错误，2 数据不一致，3 租户锁被占。
 // 03 第 12 步：restore-cutoff --tenant <slug> --until <带时区的 ISO 时刻|now> [--var <var 目录>]，从备份恢复之后、起应用之前跑
 // （R7、spec「重启、崩溃与恢复 · 恢复截止点」、不变量 9、14）：一个事务里写全部企微账号的 record_only_until、截止点之前建的出站
-// pending 记 cancelled、sending 记 unknown、run_at 不晚于它的 pending 与 running 跟进记 cancelled、涉及的会话各加一条说明、审计一行；
-// 提交之后删恢复哨兵。var/ 里有没回放的 spill 以 2 拒绝。
+// pending 记 cancelled、sending 记 unknown、run_at 不晚于它的 pending 与 running 跟进记 cancelled（那一阶段记成已跟过）、涉及的会话
+// 各加一条说明、审计一行；提交之后删恢复哨兵。企微状态未导入、已导出时无操作；在库里而 var/ 里有没回放的 spill 以 2 拒绝。
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +26,7 @@ import { holdTenantLock, openDb, withTenant, type Db, type TenantLock, type Tx }
 import { writeAudit, type AuditEntry } from '../db/repo/audit.js';
 import { insertChannelAccount, listChannelAccounts, updateChannelAccount, type ChannelAccountPatch } from '../db/repo/channel-accounts.js';
 import { readOpenInboxUntil } from '../db/repo/channel-inbox.js';
-import { appendSystemNote } from '../db/repo/conversations.js';
+import { appendSystemNote, markFollowupStages } from '../db/repo/conversations.js';
 import { cancelFollowupsUntil } from '../db/repo/jobs.js';
 import { readOpenOutboundUntil, transitionOutbound } from '../db/repo/outbound.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
@@ -293,7 +293,10 @@ function settingsPatch(kind: string, entries: string[]): Record<string, unknown>
 export const RESTORE_CUTOFF_CLI_NOTE =
   '恢复备份之后补记：备份之后的处理记录已丢失，恢复截止点之前没发完的回复与到点的跟进已取消、不会再发，请人工确认是否已回复';
 
-/** var/ 里没回放的 spill（上次 db 存储停机时没落库的改动，含渠道行）：回放在 restore-cutoff 之后会接不上命令行加的说明 */
+/**
+ * var/ 里没回放的 spill（上次 db 存储停机时没落库的改动，含渠道行）：回放在 restore-cutoff 之后会接不上命令行加的说明。只在企微状态
+ * 在库里时、持锁之后、改任何东西之前查（未导入、已导出时命令本来就无操作）
+ */
 function checkSpill(varDir: string): void {
   let names: string[];
   try {
@@ -304,8 +307,8 @@ function checkSpill(varDir: string): void {
   }
   if (names.some((name) => SPILL_FILE_RE.test(name)))
     fail(
-      '数据目录里有没回放的 spill 文件：先以 db 存储起一次应用让它回放（回放在恢复哨兵的检查之前，回放完应用会以 ' +
-        'channel_restore_pending 停下，这是预期的），再跑本命令；什么都没动',
+      '数据目录里有没回放的 spill 文件：先以 db 存储起一次应用让它回放（回放在恢复哨兵的检查之前：有启用的企微账号时回放完应用会以 ' +
+        'channel_restore_pending 停下，这是预期的；企微账号全部停用时应用照常起来，回放完正常停机），再跑本命令；什么都没动',
       2,
     );
 }
@@ -330,9 +333,11 @@ type CutoffResult = { state: 'not_in_db' } | { state: 'noop' | 'done'; counts: C
  * restore-cutoff 的事务（R7、不变量 9）。企微状态不在库里（未导入、已导出）时什么都不改、返回 not_in_db：渠道状态在文件里，恢复照 02，
  * 哨兵由应用启动时删。在库里时全部企微账号（含停用）都写截止点：停用的之后启用也照样只补记。同一个截止点重跑什么都不改，返回 noop
  */
-async function restoreCutoffTx(tx: Tx, until: Date, checkLock: () => void): Promise<CutoffResult> {
+async function restoreCutoffTx(tx: Tx, until: Date, varDir: string, checkLock: () => void): Promise<CutoffResult> {
   const wecom = (await listChannelAccounts(tx)).filter((r) => r.kind === 'wecom_kf');
   if (!wecom.length || wecom.every((r) => r.status === 'exported')) return { state: 'not_in_db' };
+  // 在库里：持锁之后、改任何东西之前查 spill（以 2 拒绝时事务回滚，本来也还什么都没写）
+  checkSpill(varDir);
   let moved = 0;
   for (const r of wecom) {
     if (r.recordOnlyUntil?.getTime() === until.getTime()) continue;
@@ -352,7 +357,14 @@ async function restoreCutoffTx(tx: Tx, until: Date, checkLock: () => void): Prom
     touched.add(o.conversationId);
   }
   const jobs = await cancelFollowupsUntil(tx, until);
-  for (const j of jobs) if (j.sessionId) touched.add(j.sessionId);
+  // 取消的那一阶段记成已跟过（第 12 步评审）：旧实例在备份之后多半已经发过；不记的话启动后哪次落库都会为同一阶段再排一条、再发一次
+  const stages = new Map<string, string[]>();
+  for (const j of jobs) {
+    if (!j.sessionId) continue;
+    touched.add(j.sessionId);
+    if (j.stage) stages.set(j.sessionId, [...(stages.get(j.sessionId) ?? []), j.stage]);
+  }
+  for (const [id, list] of [...stages].toSorted(([a], [b]) => a.localeCompare(b))) await markFollowupStages(tx, id, list);
   const at = new Date();
   let notes = 0;
   for (const id of [...touched].toSorted()) {
@@ -379,7 +391,7 @@ async function restoreCutoff(db: Db, tenantId: string, until: Date, varDir: stri
   const result = await withTenant(
     db,
     { tenantId, actor: { kind: 'platform', userId: null, name: 'channel-account', ip: null } },
-    (tx) => restoreCutoffTx(tx, until, checkLock),
+    (tx) => restoreCutoffTx(tx, until, varDir, checkLock),
     { longRunning: true },
   );
   if (result.state === 'not_in_db') {
@@ -420,7 +432,6 @@ export interface ChannelAccountDeps {
 export async function runChannelAccount(argv: string[], deps: ChannelAccountDeps): Promise<number> {
   try {
     const a = parse(argv);
-    if (a.command === 'restore-cutoff') checkSpill(a.varDir);
     const conn = await deps.connect();
     try {
       const tenant = await findTenantBySlug(conn.db, a.tenant);
@@ -432,11 +443,7 @@ export async function runChannelAccount(argv: string[], deps: ChannelAccountDeps
         lock.onLost(() => {
           lost = true;
         });
-        if (a.command === 'restore-cutoff') {
-          // 取锁之前到现在应用可能起过一次、回放过（或又写出了）spill：持锁之后再查一次
-          checkSpill(a.varDir);
-          return await restoreCutoff(conn.db, tenant.id, a.until!, a.varDir, () => lost);
-        }
+        if (a.command === 'restore-cutoff') return await restoreCutoff(conn.db, tenant.id, a.until!, a.varDir, () => lost);
         const webChannel = profile().flags.web_channel;
         const lines = await withTenant(
           conn.db,

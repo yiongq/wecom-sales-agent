@@ -120,7 +120,7 @@ interface Snapshot {
   outbound: { t: string; msgid: string; status: string; payload: boolean }[] | null;
   jobs: { t: string; key: string; status: string; err: string | null; fin: boolean }[] | null;
   messages: { c: string; seq: number; role: string; content: string }[] | null;
-  conversations: { c: string; last: number; win: number; upd: string; flush: string | null }[] | null;
+  conversations: { c: string; last: number; win: number; upd: string; flush: string | null; state: string }[] | null;
   inbox: { msgid: string; state: string; attempts: number }[] | null;
   audit:
     | { t: string; action: string; kind: string; name: string; type: string; target: string | null; diff: Record<string, unknown> }[]
@@ -131,7 +131,7 @@ const SNAPSHOT_SQL = `select json_build_object(
   'outbound', (select json_agg(json_build_object('t', tenant_id, 'msgid', channel_msgid, 'status', status, 'payload', payload is not null) order by channel_msgid) from outbound_sends),
   'jobs', (select json_agg(json_build_object('t', tenant_id, 'key', dedupe_key, 'status', status, 'err', last_error, 'fin', finished_at is not null) order by dedupe_key) from jobs),
   'messages', (select json_agg(json_build_object('c', conversation_id, 'seq', seq, 'role', role, 'content', content) order by conversation_id, seq) from messages),
-  'conversations', (select json_agg(json_build_object('c', id, 'last', last_seq, 'win', window_start_seq, 'upd', updated_at, 'flush', flush_id) order by id) from conversations),
+  'conversations', (select json_agg(json_build_object('c', id, 'last', last_seq, 'win', window_start_seq, 'upd', updated_at, 'flush', flush_id, 'state', state::text) order by id) from conversations),
   'inbox', (select json_agg(json_build_object('msgid', msgid, 'state', state, 'attempts', attempts) order by msgid) from channel_inbox),
   'audit', (select json_agg(json_build_object('t', tenant_id, 'action', action, 'kind', actor_kind, 'name', actor_name, 'type', target_type, 'target', target_id, 'diff', diff) order by id) from audit_log)
 ) as s`;
@@ -253,11 +253,18 @@ async function addWecom(s: Suite, tenantId: string, key: string, prefix: string,
   return id;
 }
 /** 一个会话，n 条消息（客户、AI 交替） */
-async function addConversation(s: Suite, tenantId: string, id: string, n: number, updatedAt: Date): Promise<void> {
+async function addConversation(
+  s: Suite,
+  tenantId: string,
+  id: string,
+  n: number,
+  updatedAt: Date,
+  state: Record<string, unknown> = {},
+): Promise<void> {
   await s.su(
     `insert into conversations (tenant_id, id, channel, stage, handed_over, state, created_at, updated_at, last_seq, window_start_seq)
      values ($1, $2, 'wecom', 'greeting', false, $5::json, $3, $3, $4, 1)`,
-    [tenantId, id, updatedAt.toISOString(), n, JSON.stringify({ id })],
+    [tenantId, id, updatedAt.toISOString(), n, JSON.stringify({ id, ...state })],
   );
   for (let seq = 1; seq <= n; seq++) {
     await s.su(`insert into messages (tenant_id, conversation_id, seq, role, author, content, at) values ($1, $2, $3, $4, $5, $6, $7)`, [
@@ -320,7 +327,7 @@ async function addInbox(
 async function addJob(
   s: Suite,
   tenantId: string,
-  o: { key: string; kind?: string; status: string; at: number; conv: string },
+  o: { key: string; kind?: string; status: string; at: number; conv: string; stage?: string },
 ): Promise<void> {
   const done = ['done', 'failed', 'cancelled', 'abandoned'].includes(o.status);
   await s.su(
@@ -332,7 +339,7 @@ async function addJob(
       o.key,
       new Date(o.at).toISOString(),
       o.status,
-      JSON.stringify({ sessionId: o.conv }),
+      JSON.stringify({ sessionId: o.conv, ...(o.stage ? { stage: o.stage } : {}) }),
       o.status === 'pending' ? null : new Date(o.at + MIN).toISOString(),
       done ? new Date(o.at + 2 * MIN).toISOString() : null,
     ],
@@ -382,10 +389,11 @@ async function cliScenarios(s: Suite): Promise<void> {
     [C2, 1],
     [C3, 1],
     [C4, 1],
-    [C5, 3],
-    [C6, 1],
   ] as const)
     await addConversation(s, tid, id, len, upd);
+  // C5：原来就在 recommend 阶段追过一次（state 里别的键与键序不该变）；C6：截止点之后的跟进不动，记账也不动
+  await addConversation(s, tid, C5, 3, upd, { stage: 'quote', followup: { count: 1, stages: ['recommend'], lastAt: 1 }, tail: 'x' });
+  await addConversation(s, tid, C6, 1, upd, { stage: 'quote' });
   await addOutbound(s, tid, { msgid: 'o12c1p', conv: C1, status: 'pending', kind: 'human', at: U - 10 * MIN, account: main });
   await addOutbound(s, tid, { msgid: 'o12c1s', conv: C1, status: 'sending', kind: 'ai', at: U - 5 * MIN, account: main });
   await addOutbound(s, tid, { msgid: 'o12c1n', conv: C1, status: 'pending', kind: 'notice', at: U - 15 * MIN, account: null });
@@ -403,10 +411,10 @@ async function cliScenarios(s: Suite): Promise<void> {
   await addInbox(s, tid, { msgid: 'i12done', account: main, kind: 'message', conv: C2, state: 'done', at: U - 50 * MIN });
   await addInbox(s, tid, { msgid: 'i12late', account: main, kind: 'message', conv: C2, state: 'received', at: U + 5 * MIN });
   await addInbox(s, tid, { msgid: 'i12fail', account: main, kind: 'send_fail', conv: C1, state: 'received', at: U - 2 * MIN });
-  await addJob(s, tid, { key: 'j12c4', status: 'pending', at: U - MIN, conv: C4 });
-  await addJob(s, tid, { key: 'j12c5', status: 'running', at: U - 30 * MIN, conv: C5 });
-  await addJob(s, tid, { key: 'j12c6late', status: 'pending', at: U + 10 * MIN, conv: C6 });
-  await addJob(s, tid, { key: 'j12c6send', status: 'sending', at: U - 10 * MIN, conv: C6 });
+  await addJob(s, tid, { key: 'j12c4', status: 'pending', at: U - MIN, conv: C4, stage: 'quote' });
+  await addJob(s, tid, { key: 'j12c5', status: 'running', at: U - 30 * MIN, conv: C5, stage: 'quote' });
+  await addJob(s, tid, { key: 'j12c6late', status: 'pending', at: U + 10 * MIN, conv: C6, stage: 'quote' });
+  await addJob(s, tid, { key: 'j12c6send', status: 'sending', at: U - 10 * MIN, conv: C6, stage: 'closing' });
   await addJob(s, tid, { key: 'j12c6done', status: 'done', at: U - 2 * H, conv: C6 });
   await addJob(s, tid, { key: 'j12c6hn', kind: 'handoff_notify', status: 'pending', at: U - 10 * MIN, conv: C6 });
   // ---- 别的租户：同样有截止点之前的 pending、跟进，不受影响 ----
@@ -480,7 +488,7 @@ async function cliScenarios(s: Suite): Promise<void> {
   await check(label('var/ 里有没回放的 spill：2，什么都不动'), async () => {
     const spill = path.join(varDir, 'store-spill-2026-10-09T00-00-00-000Z.json');
     fs.writeFileSync(spill, '{}');
-    assert.match(await run(args(untilArg), 2), /spill/);
+    assert.match(await run(args(untilArg), 2), /spill[\s\S]*有启用的企微账号时[\s\S]*全部停用时应用照常起来/);
     fs.rmSync(spill);
     await unchanged('spill');
   });
@@ -560,10 +568,21 @@ async function cliScenarios(s: Suite): Promise<void> {
         const b = before.conversations!.find((x) => x.c === c.c)!;
         const bumped = [C1, C4, C5].includes(c.c) ? 1 : 0;
         assert.deepEqual([c.last, c.win, c.upd, c.flush], [b.last + bumped, b.win, b.upd, b.flush], c.c);
+        if (![C4, C5].includes(c.c)) assert.equal(c.state, b.state, `${c.c} 的 state 不动`);
       }
       assert.match(RESTORE_CUTOFF_CLI_NOTE, /^恢复备份之后补记/);
     },
   );
+  await check(label('被取消的跟进那一阶段记进会话的跟进记账（stages 加上、count 加一），state 别的键与键序不变'), async () => {
+    const state = (c: string, snap: Snapshot) => snap.conversations!.find((x) => x.c === c)!.state;
+    const parsed = (c: string, snap: Snapshot) => JSON.parse(state(c, snap)) as Record<string, unknown>;
+    assert.deepEqual(parsed(C4, after).followup, { stages: ['quote'], count: 1 });
+    assert.deepEqual(parsed(C5, after).followup, { count: 2, stages: ['recommend', 'quote'], lastAt: 1 });
+    assert.deepEqual(Object.keys(parsed(C5, after)), Object.keys(parsed(C5, before)), 'C5 的键序不变');
+    assert.deepEqual(Object.keys(parsed(C5, after).followup as object), ['count', 'stages', 'lastAt'], 'followup 里的键序不变');
+    assert.equal(parsed(C5, after).tail, 'x');
+    assert.equal(state(C6, after), state(C6, before), '截止点之后的跟进、sending 的跟进：记账不动');
+  });
   await check(label('审计一行 channel.restore_cutoff：命令行身份，只有账号 key、截止点与条数'), async () => {
     const added = after.audit!.slice(before.audit?.length ?? 0);
     assert.equal(added.length, 1);
@@ -596,11 +615,13 @@ async function cliScenarios(s: Suite): Promise<void> {
     assert.match(out, /无操作/);
     assert.match(out, /没有恢复哨兵/);
   });
-  await check(label('企微状态未导入、已导出：0，什么都不改，哨兵留给应用启动时删'), async () => {
+  await check(label('企微状态未导入、已导出（var/ 里有 spill 也一样）：0，什么都不改，哨兵留给应用启动时删'), async () => {
     for (const slug of ['rc12-none', 'rc12-exp']) {
       const dir = path.join(root, `var-${slug}-${s.label.length}`);
       fs.mkdirSync(dir);
       fs.writeFileSync(path.join(dir, RESTORE_SENTINEL), '{}');
+      // 有没回放的 spill 也一样：先判企微状态，未导入、已导出直接无操作，不以 2 拒绝（第 12 步评审）
+      fs.writeFileSync(path.join(dir, 'store-spill-2026-10-09T00-00-00-000Z.json'), '{}');
       const out = await run(['restore-cutoff', '--tenant', slug, '--until', 'now', '--var', dir], 0);
       assert.match(out, /无操作：企微状态未导入或已导出/);
       assert.ok(fs.existsSync(path.join(dir, RESTORE_SENTINEL)), '哨兵留着');

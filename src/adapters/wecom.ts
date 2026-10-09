@@ -42,6 +42,7 @@ import { handleMessage, inboundText, replyMessageOf, trimSessionMessages } from 
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
 // 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明，与引擎同一句（不变量 28 的适配器部分）
 import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
+import { saveSessionSkippingFollowup } from '../jobs/followup.js';
 import type { SensitiveCategory } from '../handoff/triggers.js';
 import { currentPrivacyNotice, privacyLink } from '../privacy/privacy.js';
 import {
@@ -1825,6 +1826,8 @@ const MAX_INBOX_ATTEMPTS = 3;
 const ATTEMPT_RETRY_MS = [1_000, 5_000, 30_000, 120_000];
 /** 恢复截止点之前的消息只补记（R7），会话里加这一句（spec 原话；同一会话一次恢复只加一条） */
 const RESTORE_CUTOFF_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
+/** 这条说明记下是哪个截止点加的（进 messages.extra、原样往返）：「一次恢复只加一条」按它认，不按写入时间——截止点可以比现在晚几分钟 */
+type RestoreNote = ChatMessage & { restoreCutoff?: number };
 
 /** 库里账号的运行时的入站状态 */
 function inboxOf(rt: WecomRuntime): AccountInbox {
@@ -2086,7 +2089,7 @@ async function abandonInboxRow(rt: WecomRuntime, row: InboxRow, reason: 'poison'
 
 /**
  * 恢复截止点之前的消息（R7、不变量 9）：不调引擎、不发送。客户消息不在会话里时照常写进会话（非文本写占位），追加一条说明（同一会话
- * 一次恢复只加一条：截止点之后加过就不再加），入站行记 abandoned（restore_cutoff），同一次落库；菜单点击不补记
+ * 一次恢复只加一条：按说明上记的截止点认），入站行记 abandoned（restore_cutoff），同一次落库；菜单点击不补记。这次保存不排跟进
  */
 function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Promise<void> {
   const sessionId = row.conversationId;
@@ -2100,11 +2103,12 @@ function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Pr
       s.messages.push({ role: 'customer', content, at: Date.now(), msgid: row.msgid, ...(row.sentAt ? { sentAt: row.sentAt } : {}) });
       trimSessionMessages(s);
     }
-    if (!s.messages.some((m) => m.role === 'system' && m.content === RESTORE_CUTOFF_NOTE && m.at > cutoff)) {
-      s.messages.push({ role: 'system', content: RESTORE_CUTOFF_NOTE, at: Date.now() });
+    if (!s.messages.some((m) => m.role === 'system' && m.content === RESTORE_CUTOFF_NOTE && (m as RestoreNote).restoreCutoff === cutoff)) {
+      s.messages.push({ role: 'system', content: RESTORE_CUTOFF_NOTE, at: Date.now(), restoreCutoff: cutoff } as RestoreNote);
       noted = true;
     }
-    saveSession(s);
+    // 只补记不排跟进：备份之后旧实例可能已经发过这一阶段的跟进（第 12 步评审）
+    saveSessionSkippingFollowup(s);
   }
   console.log(`${rt.tag} 恢复截止点之前的${row.kind === 'message' ? '客户消息只补记' : '菜单点击不补记'}，不回复`);
   cancelInboxIntents(row.id);

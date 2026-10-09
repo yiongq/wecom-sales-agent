@@ -1918,7 +1918,7 @@ async function inboxSuite(h: Harness): Promise<void> {
     );
     return r!.id;
   };
-  const abandoned: { reason: string; account: string }[] = [];
+  const abandoned: { reason: string; account: string; noted?: boolean }[] = [];
   onInboxAbandoned((e) => void abandoned.push(e));
   const alertLines = (from: number): string[] => logsSince(from).filter((l) => l.includes('[alert]') && l.includes('AI 没有处理'));
 
@@ -2283,6 +2283,37 @@ async function inboxSuite(h: Harness): Promise<void> {
     await h.su('update channel_accounts set record_only_until = null where id = $1', [idOf('b1')]);
     await h.wecom.__wecomTest.dispatchOpen(idOf('b1'));
     __privacyTest.reset();
+  }
+
+  // ---- 恢复截止点比现在晚几分钟（--until 允许 5 分钟钟差；第 12 步评审）：同一会话两句只补记，说明只加一条、告警只计一个会话 ----
+  {
+    const uid = 'wm12fut';
+    const sid = sidOf('b1', uid);
+    const cutoff = Date.now() + 4 * 60_000;
+    await h.su('update channel_accounts set record_only_until = $1 where id = $2', [new Date(cutoff), idOf('b1')]);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('b1'));
+    const a0 = abandoned.length;
+    const f1 = h.say(acct('b1').kf, uid, '截止点之前的第一句');
+    const f2 = h.say(acct('b1').kf, uid, '截止点之前的第二句');
+    await pull(h, 'b1');
+    await settle();
+    const rows = await Promise.all([f1, f2].map((m) => inboxByMsgid(m.msgid)));
+    const notes = (getSession(sid)?.messages ?? []).filter(
+      (m) => m.role === 'system' && m.content.startsWith('恢复备份之后补记的客户消息'),
+    );
+    const ev = abandoned.slice(a0).filter((e) => e.reason === 'restore_cutoff');
+    check(
+      '恢复截止点比现在晚：两句都只补记（restore_cutoff），说明只加一条（按截止点认，不按写入时间），只有一次事件带 noted',
+      rows.every((r) => r?.state === 'abandoned' && r.reason === 'restore_cutoff') &&
+        notes.length === 1 &&
+        (notes[0] as { restoreCutoff?: number }).restoreCutoff === cutoff &&
+        ev.length === 2 &&
+        ev.filter((e) => e.noted).length === 1 &&
+        h.sentTo(uid).length === 0,
+      json({ rows, notes, ev, sent: h.sentTo(uid).length }),
+    );
+    await h.su('update channel_accounts set record_only_until = null where id = $1', [idOf('b1')]);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('b1'));
   }
 
   // ---- 四种入站：非文本（占位与 recorded 同一次落库，引导提示同样走 planOutbound：先 recorded 再 replied）----

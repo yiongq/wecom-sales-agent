@@ -138,6 +138,8 @@ const W = {
   d: 'wm12d', // T 之后才来的新客户：照常回复一次
   e: 'wm12e', // 跟进 pending、run_at 在 T 之前：cancelled
   f: 'wm12f', // 跟进 running：在启动归位之前就 cancelled
+  g: 'wm12g', // 报价之后符合跟进资格、回复那一段 sending、入站 replied；报价跟进已到点（备份之后旧实例发过）→ 之后不再为这一阶段跟进
+  h: 'wm12h', // 同上但没排过跟进：只补记那一步不排；之后普通的保存照常排、到点照常发一次
 };
 /** 启动时只补记那一步加的说明（spec 原话，src/adapters/wecom.ts 的 RESTORE_CUTOFF_NOTE） */
 const RESTORE_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
@@ -461,8 +463,8 @@ async function parentMain(): Promise<never> {
         const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
         check('验收 6 · restore-cutoff --until T 以 0 结束、删了恢复哨兵', r.status === 0 && /已删恢复哨兵/.test(out), out.slice(-1500));
         check(
-          '验收 6 · restore-cutoff：出站 pending 1 段取消、sending 1 段记 unknown，跟进 2 个取消，C、E、F 加说明（B 的留给启动时那一条）',
-          /出站 pending 记 cancelled 1 段、sending 记 unknown 1 段；跟进任务记 cancelled 2 个；3 个会话加了说明/.test(out),
+          '验收 6 · restore-cutoff：出站 pending 1 段取消、sending 3 段（B、G、H）记 unknown，跟进 3 个取消，C、E、F 加说明（B、G、H 的留给启动时那一条）',
+          /出站 pending 记 cancelled 1 段、sending 记 unknown 3 段；跟进任务记 cancelled 3 个；3 个会话加了说明/.test(out),
           out.slice(-1500),
         );
       },
@@ -1861,6 +1863,61 @@ async function kill5(h: Harness): Promise<void> {
       [tenant, `followup:${sid(uid)}`, new Date(Date.now() - ago).toISOString(), status, json({ sessionId: sid(uid) })],
     );
   }
+  // G、H（第 12 步评审）：报价之后符合跟进资格（最后一条是 AI 回复）、回复那一段 sending、入站 replied。G 的报价跟进已到点（备份之后
+  // 旧实例发过），H 没排过跟进。会话经存储落库（这个进程没开跟进，不会自动排），入站、出站、任务行直接写
+  for (const [uid, withJob] of [
+    [W.g, true],
+    [W.h, false],
+  ] as const) {
+    const s = h.store.getOrCreateSession(sid(uid), 'wecom');
+    s.stage = 'quote';
+    const msgid = `m12k5-${uid}`;
+    const reply = '这条线每人 19,800 元起，您几位出行？';
+    s.messages.push(
+      { role: 'customer', content: '这条线多少钱', at: Date.now() - 60_000, msgid, sentAt: Date.now() - 60_000 },
+      { role: 'agent', content: reply, at: Date.now() - 50_000 },
+    );
+    h.store.saveSession(s);
+    await h.store.flushSession(sid(uid));
+    const seqs = await h.su<{ seq: number; role: string }>('select seq, role from messages where conversation_id = $1 order by seq', [
+      sid(uid),
+    ]);
+    const kf = { msgid, open_kfid: acct('r1').kf, external_userid: uid, send_time: Math.floor(Date.now() / 1000) - 60 };
+    const [inRow] = await h.su<{ id: string }>(
+      `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, attempts, message_seq, payload)
+       values ($1, $2, $3, 'message', $4, $7, 'replied', 1, $5, $6::json) returning id::text as id`,
+      [
+        tenant,
+        h.ids.get('r1'),
+        msgid,
+        sid(uid),
+        seqs.find((x) => x.role === 'customer')!.seq,
+        json({ ...kf, origin: 3, msgtype: 'text', text: { content: '这条线多少钱' } }),
+        new Date(Date.now() - 60_000),
+      ],
+    );
+    await h.su(
+      `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, message_seq, kind, sent_at, status, account_id, inbox_id, segment, payload)
+       values ($1, $2, $3, $4, 'ai', $8, 'sending', $5, $6, 0, $7::json)`,
+      [
+        tenant,
+        sid(uid),
+        randomBytes(16).toString('hex'),
+        seqs.find((x) => x.role === 'agent')!.seq,
+        h.ids.get('r1'),
+        inRow!.id,
+        json({ msgtype: 'text', text: { content: reply } }),
+        new Date(), // 时刻都用本机钟（T 也是本机钟；库容器的钟可能差几秒）
+      ],
+    );
+    if (withJob) {
+      await h.su(
+        `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, max_attempts, payload)
+         values ($1, 'followup', $2, $4, 'pending', 3, $3::json)`,
+        [tenant, `followup:${sid(uid)}:quote`, json({ sessionId: sid(uid), stage: 'quote' }), new Date(Date.now() - 60_000)],
+      );
+    }
+  }
   h.pull('r1');
   await reached('B 的请求到了假企微', bHold);
   await reached('C 的人工回复 markSending', cHold);
@@ -1915,6 +1972,10 @@ async function restart5(h: Harness): Promise<void> {
   const c = h.say('r1', W.c, 'C5 备份之后又问了一句', T - 2000);
   const c2 = h.say('r1', W.c, 'C5 还有一句', T - 1000);
   const d = h.say('r1', W.d, 'D5 想去桂林');
+  // 跟进开着、落库钩子装上（G、H 的只补记要经过它；自测自己调 runJobsOnce）
+  process.env.FOLLOWUP_ENABLED = '1';
+  const runner = await import('../jobs/runner.js');
+  runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
   h.start();
   h.pull('r1');
   await waitFor(async () => (await h.inboxOf(d.msgid))?.state === 'done');
@@ -1963,7 +2024,8 @@ async function restart5(h: Harness): Promise<void> {
     json({ oc, ic, ic2, msgsC, sends: h.sendsTo(W.c), calls: h.llmCalls('C5') }),
   );
   const jobs = await h.su<{ k: string; status: string; err: string | null }>(
-    `select dedupe_key as k, status, last_error as err from jobs where kind = 'followup' order by dedupe_key`,
+    `select dedupe_key as k, status, last_error as err from jobs where kind = 'followup' and dedupe_key in ($1, $2) order by dedupe_key`,
+    [`followup:${sid(W.e)}`, `followup:${sid(W.f)}`],
   );
   check(
     '验收 6 · E、F 的跟进都是 cancelled（restore_cutoff，F 在启动归位之前），没有发出去',
@@ -1986,7 +2048,40 @@ async function restart5(h: Harness): Promise<void> {
           + (select count(*) from outbound_sends where status in ('pending', 'sending')) as n`,
   );
   check('验收 6 · 重启之后没有没结束的入站、没结果的出站（不变量 15）', open[0]?.n === '0', json(open));
-  // 「只补记」告警：最后一个这样的会话之后安静 10 秒由巡检发，这里把钟拨过去手动巡检一次；B、C 两个会话（C 有两句，按会话数算）
+  // 第 12 步评审：G 的报价跟进被恢复截止点取消（旧实例在备份之后发过），只补记那一步与之后普通的保存都不能再为这一阶段排一条、再发一次；
+  // H 没排过跟进，只补记那一步不排，之后普通的保存照常排、到点照常发（跟进没被整个关掉）
+  const openFollowups = await h.su<{ k: string }>(
+    `select dedupe_key as k from jobs where kind = 'followup' and status = 'pending' and payload->>'sessionId' in ($1, $2)`,
+    [sid(W.g), sid(W.h)],
+  );
+  check('第 12 步评审 · 只补记那一步不排跟进：G、H 都没有新排的跟进任务', openFollowups.length === 0, json(openFollowups));
+  // 之后的一次普通保存（沉默了 3 小时：最后动静往前拨，与第 10 步的跟进场景同一写法），再让任务表跑一拍
+  for (const uid of [W.g, W.h]) {
+    const s = h.store.getSession(sid(uid))!;
+    s.updatedAt = Date.now() - 3 * 3_600_000;
+    h.store.saveSession(s, false);
+    await h.store.flushSession(sid(uid));
+  }
+  await runner.runJobsOnce();
+  await h.settle();
+  const gJobs = await h.su<{ status: string; err: string | null }>(
+    `select status, last_error as err from jobs where kind = 'followup' and payload->>'sessionId' = $1`,
+    [sid(W.g)],
+  );
+  const gFollowup = (h.store.getSession(sid(W.g)) as { followup?: { stages?: string[] } } | undefined)?.followup;
+  check(
+    '第 12 步评审 · G：被恢复截止点取消的报价跟进记成已跟过，之后普通的保存也不再为这一阶段排，没有第二次跟进',
+    h.sendsTo(W.g).length === 0 &&
+      json(gJobs) === json([{ status: 'cancelled', err: 'restore_cutoff' }]) &&
+      !!gFollowup?.stages?.includes('quote'),
+    json({ gJobs, gFollowup, sends: h.sendsTo(W.g) }),
+  );
+  check(
+    '第 12 步评审 · H：之后普通的保存照常排跟进、到点发一次',
+    h.sendsTo(W.h).length === 1,
+    json({ sends: h.sendsTo(W.h), jobs: await h.su(`select status from jobs where payload->>'sessionId' = $1`, [sid(W.h)]) }),
+  );
+  // 「只补记」告警：最后一个这样的会话之后安静 10 秒由巡检发，这里把钟拨过去手动巡检一次；B、C、G、H 四个会话（C 有两句，按会话数算）
   h.alerts.__alertTest.setClock(() => Date.now() + 60_000);
   h.alerts.__alertTest.tick();
   h.alerts.__alertTest.tick();
@@ -1994,8 +2089,8 @@ async function restart5(h: Harness): Promise<void> {
   h.alerts.__alertTest.setClock(null);
   const cut = h.alertLines().filter((l) => l.includes('恢复截止点之前的客户消息只补记'));
   check(
-    '验收 6 · 告警一条：恢复截止点让 2 个会话只补记未回复，只有会话数',
-    cut.length === 1 && cut[0]!.includes('2 个会话') && !/wm12|wecom:/.test(cut[0]!),
+    '验收 6 · 告警一条：恢复截止点让 4 个会话只补记未回复，只有会话数',
+    cut.length === 1 && cut[0]!.includes('4 个会话') && !/wm12|wecom:/.test(cut[0]!),
     json(h.alertLines()),
   );
 }
