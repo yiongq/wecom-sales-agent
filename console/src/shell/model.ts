@@ -134,7 +134,7 @@ export function avatarIndex(name: string): number {
 // ---------------- 会话 ----------------
 
 /** 渠道的短名：会话标签「企微客户 · F01」的前半截，后接行业包里客户的叫法 */
-const CHANNEL_SHORT: Readonly<Record<string, string>> = { wecom: '企微', simulator: '网页' };
+const CHANNEL_SHORT: Readonly<Record<string, string>> = { wecom: '企微', simulator: '演示', web: '网页' };
 
 /** 会话标签的两段：「企微客户」与短码（spec「接口改动」：由 channel 和 shortIdOf 拼，不另加字段），中间用 Sep 隔开 */
 export function conversationLabel(row: Pick<ConversationRow, 'id' | 'channel'>, pack: IndustryPack): [string, string] {

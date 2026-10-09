@@ -143,7 +143,7 @@ export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = 
 };
 
 /** 渠道的短名（与 console 外壳的会话标签同一张表）：会话标签「企微客户」的前半截 */
-const CHANNEL_SHORT: Readonly<Record<string, string>> = { wecom: '企微', simulator: '网页' };
+const CHANNEL_SHORT: Readonly<Record<string, string>> = { wecom: '企微', simulator: '演示', web: '网页' };
 
 /** 会话标签的前半截：渠道短名加行业包里客户的叫法，如「企微客户」 */
 export function channelCustomerLabel(channel: string, customer: string): string {

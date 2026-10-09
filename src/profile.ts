@@ -13,6 +13,7 @@ export interface DeployFlags {
   visitor_simulator: boolean; // 网页模拟器：匿名访客聊天、SSE 与 sim- 会话直读
   mock_pay: boolean; // 不带管理凭据也能调用的模拟支付
   ai_disclosure: 'always'; // AI 显式标识。00 只有这一个取值
+  web_channel: boolean; // 正式网页渠道（03 R15）：demo 默认开，prod 封顶为关
   legacy_admin_writes: boolean; // 旧工作台的转人工、交还、人工回复三个写接口（02 spec R11）；旧的带凭据标记已付不归它管
 }
 
@@ -31,6 +32,7 @@ export const DEMO_DEFAULTS: Readonly<DeployFlags> = Object.freeze({
   mock_pay: true,
   ai_disclosure: 'always',
   legacy_admin_writes: true,
+  web_channel: true,
 });
 
 /** prod 下每个开关最宽能取到的值；prod 的默认值就是它 */
@@ -42,6 +44,7 @@ export const PROD_CEILING: Readonly<DeployFlags> = Object.freeze({
   mock_pay: false,
   ai_disclosure: 'always',
   legacy_admin_writes: false,
+  web_channel: false,
 });
 
 /**
@@ -65,6 +68,7 @@ const FLAG_ENV: Readonly<Record<BoolFlag, string>> = Object.freeze({
   visitor_simulator: 'FLAG_VISITOR_SIMULATOR',
   mock_pay: 'FLAG_MOCK_PAY',
   legacy_admin_writes: 'FLAG_LEGACY_ADMIN_WRITES',
+  web_channel: 'FLAG_WEB_CHANNEL',
 });
 const BOOL_FLAGS = Object.keys(FLAG_ENV) as BoolFlag[];
 
