@@ -106,7 +106,7 @@
   - 自测：`ops.selftest.ts` 加各条告警的触发与内容里没有凭据、`external_userid`。
   - 对应验收 23、10 的告警部分。依赖：第 6–10 步。
   - 完成标准：四个门禁全绿。
-- [ ] 14. 导入、导出与 `--resync`（1.5，Claude）
+- [x] 14. 导入、导出与 `--resync`（1.5，Claude）：2026-10-09 完成（为省 Claude 额度改派 Codex 实现，协调者审查加一路交叉评审），spec 顶部记了一条实现期 `Revisions:`，见「实施记录 · 第 14 步」。
   - `src/cli/channel-import.ts`（合并 `handled` 与 `pending`、在途优先、队头计次、`--keep`、标记与删原件的顺序）、`channel-export.ts`（拒绝的几种、写回 02 格式、出站转换、默认账号改 `exported`）、`--resync`（R13）。
   - 自测（子进程，PGlite 与真实 PG）：验收 13 的导入、导出、`--resync` 与启动拒绝；两处真实重叠的夹具。
   - 对应验收 13；不变量 13。依赖：第 6、9 步（导出要用第 8 步的出站状态）。
@@ -605,6 +605,18 @@
 - 第 12 步：出站恢复的截止点读 `initChannels` 快照里的 `account.wecom.recordOnlyUntil`，入站读 `load` 的；`restore-cutoff` 用 `transitionOutbound(…, 'recover')`；「N 个会话只补记」的告警还没做。
 - 第 13 步：「`sending` 转 `unknown`」并在启动检查那一条里，正文受 `safeText` 300 字截断，账号多时会截掉，可能要拆成单独一条；`recovery` 状态现在只在 `__wecomTest.inspect` 里看得到，恢复卡住（读库一直失败）时 `/healthz` 的 `stuck` 与 `/status` 要反映出来；`unsafeSendsIn10m`、`staleOutbound` 没动。
 - 第 14 步：`legacy` 行仍走「不认识的种类 → `done`」；导入的在途行按 `received` 进入恢复，保底会查会话里有没有这句、名下有没有出站行；导出前的拒绝判断可以用 `adoptOpenOutbound` 那套数据形状。
+
+### 第 14 步 · 导入、导出与 `--resync`（2026-10-09）
+
+- 分工偏离：plan 原写由 Claude 做；当时已有两路 Claude 子 agent 在并行（第 10、11 步），为省 Claude 周额度改派 Codex，协调者审查并另派一路只读交叉评审。
+- 文件：`src/cli/channel-import.ts`、`src/cli/channel-export.ts`（命令入口）与 `src/cli/channel-transfer.ts`（校验、事务、合并、审计、文件操作）；`src/db/repo/channel-inbox.ts` 加账号入站读取与没结束行的 payload / attempts 替换；`src/db/repo/outbound.ts` 加部分送达的检查；`AUDIT_ACTIONS` 登记 `channel.import`、`channel.export`。都以 `agent_app` 身份、取租户锁，开事务之前先验 `--keep` 在 `var/` 之外且可写。
+- 首次导入：一个事务里建加密账号、写 cursor、`handled` 与 `pending` 按 msgid 合并且在途优先、按客户队头计次（第一条 `tries + 1`、其余 `tries`）、按在途表顺序插使 `ord` 递增、只在 `handled` 里的插 `legacy` / `done`、审计一行只有条数 → 提交 → 原文件原样备份进 `--keep`（每次一个独立子目录）→ 写标记 → 删原文件并 fsync 目录。提交后文件阶段失败时提示「数据库已提交」，用原参数重跑能补完。省略 `--name` 时用账号 key。
+- `--resync`：一个事务里换 cursor、补插在途与只在 `handled` 里的、替换没结束行的 payload 与 attempts（已有的状态、seq、`ord` 保留，终态不动）、库里没结束而文件里没有的记 `abandoned`（`resync`）、默认账号回到 `active`、审计 → 提交 → 备份 → 写标记 → 删原文件。
+- 导出：事务里先做全部拒绝检查、构造 02 格式（`handled` 是默认账号 3 天内最新 5000 条，`pending` 是没结束的 `message` 行按 `ord`、`tries = max(attempts − 1, 0)`）→ `var/` 里已有同名文件先备份进 `--keep` → 同一事务 `sending → unknown`、整条还是 `pending` 的段 `→ cancelled`（迁移表，写入方 `recover`）、默认账号 `exported`、审计 → 提交 → 原子写状态文件并 fsync → 删标记。已导出过（`exported`、无标记、文件在）当无操作返回 0，不覆盖 02 运行期间的新文件。
+- 退出码：0 成功、重复执行无操作、补完文件阶段或 `--dry-run`；1 参数、必需配置、JSON、路径或读写错误（含 `--keep` 在 `var/` 内或不可写、spill 目录读不了）；2 状态对不上（需要 `--resync`、账号 / 标记 / env 标识不一致、导出的七种拒绝、有没回放的 spill）；3 租户锁被占或丢失。
+- spec 实现期修订（顶部 `Revisions:`）：导出多拒绝两种（默认账号有没结束的非 `message` 入站；没结束的非文本消息名下已有出站行），导入导出在有 spill 时拒绝且取锁后复查。
+- 交叉评审：另派一路只读 Codex 评审找到 3 处 major（导出漏掉没处理完的菜单点击与回执；非文本消息的引导提示可能已发、02 重放会再发；spill 检查读目录出错被吞、取锁前的间隙也没复查），即上面那条修订，由 Codex 续改、各补回归断言（撤回修复时失败）。实现第一轮之后另按第 11 步的提醒补了「有 spill 就拒绝」。
+- 自测追加在 `src/channels/channels.selftest.ts`（子进程，PGlite；有 `PG_TEST_URL` 时另跑真实 PG）：验收 13 的导入、导出、`--resync` 与 `--dry-run`，往返一致性，各种拒绝的零变更断言，启动侧的两种拒绝能被本步写出的文件与标记触发，凭据与标识扫描为零。门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑，`TZ=UTC`）；锁定文件与 `PREFIX sha256` 与第 1 步相同。
 
 ## 验收记录
 
