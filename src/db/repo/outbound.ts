@@ -310,6 +310,17 @@ export async function readOpenOutbound(tx: Tx, accountId: string | null): Promis
   return rows as OpenOutboundRow[];
 }
 
+/** 非文本重放不查出站账本；只要名下存在任何出站，导出就无法保证不会重复发送。 */
+export async function hasOutboundForInboxIds(tx: Tx, accountId: string, inboxIds: string[]): Promise<boolean> {
+  if (!inboxIds.length) return false;
+  const rows = await tx
+    .select({ inboxId: outboundSends.inboxId })
+    .from(outboundSends)
+    .where(and(eq(outboundSends.accountId, accountId), sql`${outboundSends.inboxId} = any(${sql.param(inboxIds)}::uuid[])`))
+    .limit(1);
+  return rows.length !== 0;
+}
+
 /** 导出前检查部分送达：同一入站有 pending 又有可能已送达的段时，02 无法补完。 */
 export async function hasPartlyDeliveredOutbound(tx: Tx, accountId: string): Promise<boolean> {
   const rows = await tx

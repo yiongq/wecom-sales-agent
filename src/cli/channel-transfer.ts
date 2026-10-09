@@ -26,7 +26,7 @@ import {
   type InboxRecord,
   type NewInboxRow,
 } from '../db/repo/channel-inbox.js';
-import { hasPartlyDeliveredOutbound, readOpenOutbound, transitionOutbound } from '../db/repo/outbound.js';
+import { hasOutboundForInboxIds, hasPartlyDeliveredOutbound, readOpenOutbound, transitionOutbound } from '../db/repo/outbound.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import { SPILL_FILE_RE } from '../store/project.js';
 
@@ -191,8 +191,9 @@ function checkSpill(varDir: string): void {
   let names: string[];
   try {
     names = fs.readdirSync(varDir);
-  } catch {
-    return;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+    fail('无法检查数据目录里的 spill 文件：修复目录读取权限后重试；什么都没动');
   }
   const spills = names.filter((name) => SPILL_FILE_RE.test(name));
   if (spills.length) {
@@ -331,9 +332,12 @@ export async function runChannelTransfer(command: 'import' | 'export', argv: str
         const checkLock = () => {
           if (lost) fail('lock_held：租户锁已断开，停机后重试', 3);
         };
-        // 探测发生在 withTenant 开事务前；临时探测文件不含原文。
-        cleanKeep = writableDir(a.keep);
-        cleanVar = writableDir(a.varDir);
+        if (!a.dryRun) checkSpill(a.varDir);
+        // 导出须先检查全部拒绝条件，连目录探测也不能提前写。
+        if (command === 'import') {
+          cleanKeep = writableDir(a.keep);
+          cleanVar = writableDir(a.varDir);
+        }
         const ring = ringRequired();
         const credentials = envCredentials();
         const filePresent = hasWecomStateFile(a.varDir);
@@ -370,8 +374,23 @@ export async function runChannelTransfer(command: 'import' | 'export', argv: str
               )
                 fail('env 的 WECOM_* 凭据与默认账号不一致：恢复匹配的 env 再重试；什么都没动', 2);
               if (marker && marker.account !== account!.key) fail('标记账号不一致：核对数据目录；什么都没动', 2);
-              if (account!.status === 'exported' && !marked && filePresent) return { noop: true, key: account!.key, counts: {} };
               const rows = await readAccountInbox(tx, account!.id);
+              const open = rows.filter(isOpen);
+              if (open.some((r) => r.kind !== 'message'))
+                fail('有尚未处理完的非 message 入站：先以 03 起一次应用让启动恢复处理完，正常停机，再导出；什么都没动', 2);
+              const nonText = open.filter((r) => {
+                const msg = r.payload as { msgtype?: unknown; text?: { content?: unknown } } | null;
+                return msg?.msgtype !== 'text' || !msg.text?.content;
+              });
+              if (
+                await hasOutboundForInboxIds(
+                  tx,
+                  account!.id,
+                  nonText.map((r) => r.id),
+                )
+              )
+                fail('有非文本在途消息已生成出站：先以 03 起一次应用让启动恢复处理完，正常停机，再导出；什么都没动', 2);
+              if (account!.status === 'exported' && !marked && filePresent) return { noop: true, key: account!.key, counts: {} };
               const output = exportFile(account!, rows);
               if (!marked && !sameFile(readFileState(a.varDir), output))
                 fail('无标记且文件与库不一致：切回库请用 channel-import --resync；什么都没动', 2);
@@ -381,6 +400,8 @@ export async function runChannelTransfer(command: 'import' | 'export', argv: str
               if (outbound.some((r) => r.status === 'pending' && !r.inboxId))
                 fail('有无 inbox_id 的 pending 出站：以 03 起一次应用让启动恢复发完，正常停机后再导出；什么都没动', 2);
               // 所有拒绝已检查；覆盖旧文件前先保留原件，数据库失败也不会覆盖 var/。
+              cleanKeep = writableDir(a.keep);
+              cleanVar = writableDir(a.varDir);
               backup(a, command);
               checkLock();
               writeAttempted = true;

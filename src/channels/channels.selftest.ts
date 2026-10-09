@@ -1483,6 +1483,27 @@ try {
 import fs from 'node:fs';
 const rename = fs.renameSync;
 const unlink = fs.unlinkSync;
+const readdir = fs.readdirSync;
+const mkdir = fs.mkdirSync;
+fs.mkdirSync = (dir, ...args) => {
+  if (process.env.CLI14_NO_WRITES && typeof dir === 'string' && dir.startsWith(process.env.CLI14_NO_WRITES))
+    throw new Error('fake-error-cli14');
+  return mkdir(dir, ...args);
+};
+let reads = 0;
+fs.readdirSync = (dir, ...args) => {
+  if (dir === process.env.CLI14_READDIR) {
+    reads++;
+    const mode = process.env.CLI14_READDIR_MODE;
+    if (mode === 'error' || (mode === 'second-error' && reads === 2))
+      throw Object.assign(new Error('fake-error-cli14'), { code: 'EACCES' });
+    const names = readdir(dir, ...args);
+    // 首次读取只看到 spill 产生前的目录内容；取锁后读取恢复真实结果。
+    if (mode === 'late-spill' && reads === 1) return names.filter(name => !name.startsWith('store-spill-'));
+    return names;
+  }
+  return readdir(dir, ...args);
+};
 fs.renameSync = (src, dest) => { if (dest === process.env.CLI14_FAIL_RENAME) throw new Error('fake-error-cli14'); return rename(src, dest); };
 fs.unlinkSync = file => { if (file === process.env.CLI14_FAIL_UNLINK) throw new Error('fake-error-cli14'); return unlink(file); };
 `,
@@ -1871,6 +1892,89 @@ try {
             assert.match(r.out, /含渠道行/);
             assert.match(r.out, /outbound_sends \/ channel_inbox/);
             assert.match(r.out, /正常停机，再跑本命令/);
+          } finally {
+            fs.unlinkSync(spill);
+          }
+        });
+        await acheck(L14('未结束的 menu_click / send_fail / enter_session / legacy 全部拒绝导出：2，库与文件不动'), async () => {
+          for (const kind of ['menu_click', 'send_fail', 'enter_session', 'legacy']) {
+            for (const openState of ['received', 'recorded', 'replied']) {
+              await h.query(
+                `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, payload) values ($1, $2, 'review14-event', $3, 'wecom:wm14user', $4, $5)`,
+                [h.tenantId, state.accounts[0]!.id, kind, openState, JSON.stringify(msg('review14-event'))],
+              );
+              await refresh();
+              assert.match(
+                (await denied('export', 2, [], { CLI14_NO_WRITES: root })).out,
+                /先以 03 起一次应用让启动恢复处理完，正常停机，再导出/,
+              );
+              await h.query(`delete from channel_inbox where msgid = 'review14-event'`);
+              await refresh();
+            }
+          }
+        });
+        await acheck(L14('非文本在途名下任何状态的出站均拒绝导出；没有出站的非文本可往返'), async () => {
+          await h.query(
+            `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, message_seq, payload) values ($1, $2, 'review14-image', 'message', 'wecom:wm14user', 'replied', 1, $3)`,
+            [h.tenantId, state.accounts[0]!.id, JSON.stringify({ ...msg('review14-image'), msgtype: 'image', text: undefined })],
+          );
+          await refresh();
+          await h.query(
+            `insert into outbound_sends (tenant_id, account_id, inbox_id, conversation_id, channel_msgid, kind, sent_at, status, message_seq, payload) values ($1, $2, $3, 'wecom:wm14user', 'review14-hint', 'ai', now(), 'sending', null, '{"msgtype":"text","text":{"content":"请发送文字"}}')`,
+            [h.tenantId, state.accounts[0]!.id, inbox('review14-image').id],
+          );
+          for (const status of ['sending', 'pending', 'accepted', 'unknown', 'rejected', 'failed', 'cancelled']) {
+            await h.query(
+              `update outbound_sends set status = $1, payload = case when $1 in ('pending', 'sending') then '{"msgtype":"text","text":{"content":"请发送文字"}}'::jsonb else null end where channel_msgid = 'review14-hint'`,
+              [status],
+            );
+            await refresh();
+            assert.match(
+              (await denied('export', 2, [], { CLI14_NO_WRITES: root })).out,
+              /先以 03 起一次应用让启动恢复处理完，正常停机，再导出/,
+            );
+          }
+          // text 但没有 content 也会进入 02 的非文本处理，不能只比较 msgtype。
+          await h.query(`update channel_inbox set state = 'recorded', payload = $1 where msgid = 'review14-image'`, [
+            JSON.stringify({ ...msg('review14-image'), text: { content: '' } }),
+          ]);
+          await refresh();
+          await denied('export', 2);
+          await h.query(`update channel_inbox set state = 'received', payload = $1 where msgid = 'review14-image'`, [
+            JSON.stringify({ ...msg('review14-image'), msgtype: 'voice', text: undefined }),
+          ]);
+          await refresh();
+          await denied('export', 2);
+          await h.query(`delete from outbound_sends where channel_msgid = 'review14-hint'`);
+          await refresh();
+          await run('export');
+          assert.ok(
+            JSON.parse(fs.readFileSync(filePath, 'utf8')).pending.some((e: { msg: { msgid: string } }) => e.msg.msgid === 'review14-image'),
+          );
+          await run('import', 0, ['--resync']);
+          assert.equal(inbox('review14-image').state, 'received');
+          await h.query(`delete from channel_inbox where msgid = 'review14-image'`);
+          await refresh();
+        });
+        await acheck(L14('spill 目录首查/取锁后读取失败均为 1；取锁前新 spill 为 2；库与文件不动'), async () => {
+          for (const command of ['import', 'export'] as const) {
+            for (const mode of ['error', 'second-error']) {
+              const r = await denied(command, 1, [], { CLI14_READDIR: dir, CLI14_READDIR_MODE: mode });
+              assert.match(r.out, /无法检查数据目录里的 spill 文件/);
+            }
+          }
+          const spill = path.join(dir, 'store-spill-2026-10-09T00-00-00-001Z.json');
+          fs.writeFileSync(spill, JSON.stringify({ channels: '首查之后才出现' }));
+          try {
+            for (const [command, flags] of [
+              ['import', []],
+              ['import', ['--resync']],
+              ['export', []],
+            ] as const) {
+              const r = await denied(command, 2, [...flags], { CLI14_READDIR: dir, CLI14_READDIR_MODE: 'late-spill' });
+              assert.match(r.out, /没回放的 spill 文件/);
+            }
+            await denied('import', 0, ['--dry-run'], { CLI14_READDIR: dir, CLI14_READDIR_MODE: 'error' });
           } finally {
             fs.unlinkSync(spill);
           }
