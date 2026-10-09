@@ -156,14 +156,15 @@ export function handoffNoteLine(text: string, at: string): readonly string[] {
 export const advisorLabel = (name: string | null): string => `顾问 · ${name ?? '—'}`;
 
 /**
- * 消息下写的投递状态（02 spec「后台页面」；03 spec「出站：投递状态」的映射表）：正常发出不写；unknown（可能没送达）、rejected
- * （没送达）是前端的固定说明，failed 复用 sendFailText（都是 02 已有的）；03 多「发送中」与「未发送」（接手打断等，不会再发）
+ * 消息下写的投递状态（02 spec「后台页面」；03 spec「出站：投递状态」的映射表与验收 17）：正常发出不写；unknown 写映射表的
+ * 「可能没送达」（02 原是「结果不明，可能已经送达」，03 照映射表改）；rejected（没送达）是前端的固定说明，failed 复用 sendFailText；
+ * 03 多「发送中」与「未发送」（接手打断等，不会再发）
  */
 export function deliveryNote(d: MessageView['delivery']): string | null {
   if (!d) return null;
   if (d.status === 'failed') return d.failType != null ? sendFailText(d.failType) : '这条没送达';
   if (d.status === 'rejected') return '这条没送达（企微拒收）';
-  if (d.status === 'unknown') return '结果不明，可能已经送达';
+  if (d.status === 'unknown') return '可能没送达';
   if (d.status === 'sending') return '发送中';
   if (d.status === 'cancelled') return '未发送';
   return null;

@@ -221,7 +221,8 @@ const row = (over: Partial<ConversationRow> = {}): ConversationRow => ({
       deliveryNote({ status: 'accepted', failType: null }),
       deliveryNote(null),
     ],
-    ['这条没送达（企微拒收）', '结果不明，可能已经送达', null, null],
+    // unknown：03 spec「出站：投递状态」的映射表与验收 17 写的是「可能没送达」（02 原是「结果不明，可能已经送达」）
+    ['这条没送达（企微拒收）', '可能没送达', null, null],
   );
   // 03 第 8 步：先落库后发送的两种新状态（spec「出站：投递状态」的映射表）
   eq(
