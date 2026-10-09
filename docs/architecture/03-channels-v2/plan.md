@@ -70,7 +70,7 @@
   - 自测（新建 `src/adapters/wecom-03.selftest.ts`，假企微服务端支持两个 corp、同一 corp 两个客服账号）：三个账号交错、token 失败与停用互不影响、回调各自验签与分派、空 `receiveid`。这一步库里账号的状态后端还接在 02 的发送路径上（第 8、9 步换）。
   - 对应验收 10（日志部分在第 4 步）、12；不变量 18、19、20。依赖：第 6 步。
   - 完成标准：四个门禁全绿，锁定的 `wecom.selftest.ts` 照过；带 `PG_TEST_URL` 跑一遍。
-- [ ] 8. 出站：先落库后发送（2.5，Claude）
+- [x] 8. 出站：先落库后发送（2.5，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），spec 顶部记了一条实现期 `Revisions:`，见「实施记录 · 第 8 步」。
   - `src/quota/ledger.ts`：`planOutbound`（同步校验）、`commitOutbound`、`markSending` 的四种结果、`settleIntent`、`cancelIntents`；内存账本按账号种类映射状态，env 账号照 02 不改名（R4）。
   - 发送顺序照 spec「出站 · 发一条 AI 回复」第 1–6 步：缩略图之后切分、提交、`markSending` 前后都比接手与截止、`sending → cancelled`、`sending → pending`；人工回复、跟进、通知、同意菜单的 `pending` 加进它们那一次落库；运行时才补的段（R4、R6）。
   - PG 后端：出站 `pending` 与 `cancelled` 写进主事务，结果留在存档点（R21 的出站部分）；出站行的 `kind` 记组的种类；工作台的投递状态按 spec 的映射表（R4）。
@@ -414,6 +414,54 @@
 - 自测追加在 `src/web/web.selftest.ts`：CSP 全等与安全头；模板里脚本白名单、属性扫描与运行时注入扫描；恶意标题 `</script><img src=x onerror=alert(1)>` 在配置块里没有裸 `<`、`JSON.parse` 读回原串；`splitSiteLinks` 的站内可点与各种站外不可点；不碰凭据存储；`web_channel` 关着时 404。改了一条第 17 步自己的断言：占位页「没有任何 script」改为「没有可执行的内联脚本」（页面现在有配置块与外部脚本）。
 - 偏离：本步完成标准里的「本机浏览器里实际打开一次 `/w/<key>` 聊一句、刷新、点『结束咨询』」没在本步做——要在本机起整套 db 存储（角色、迁移、租户、网页账号）才打得开，第 20 步的本机 compose 演练本来就起这一整套，挪到那时做，结果记进「实施记录 · 第 20 步」（第 20 步的步骤里已加这一条）。
 - 门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），锁定文件与 `PREFIX sha256` 与第 1 步相同。Codex 实现，Claude 审查（危险写入点、链接白名单、注入替换方式）。
+
+### 第 8 步 · 出站：先落库后发送（2026-10-09）
+
+**一条 AI 回复的顺序（库里账号）**
+
+1. 引擎写回复并 `saveSession`（照 02）。
+2. 适配器：有单条站内链接先取缩略图，再切分 → `planOutbound`：每段一行 `pending`（带 `payload`，`kind` 是这一组的种类，`account_id` 是账号 uuid），排进会话下一次落库的**主事务**（`src/store/pg-backend.ts` 新加的主事务出站队列，写在消息、会话、订单等之后、存档点之前；提交后回调 `outboundCommitted`）。
+3. `commitOutbound`：等主事务提交，从 plan 那一刻起至多 5 秒。
+4. 每段：先比停机截止（过了就停，这一段与之后的留在 `pending`）；再比接手代次（变了就 `cancelIntents`，`cancelled` 进下一次落库的主事务，会话记「本轮未发送」）。
+5. 取 token（卡片段再取缩略图），然后 `markSending`：单独短事务，至多 5 秒，返回 `marked`、`not_pending`、`absent`、`db_unavailable`。
+6. 返回之后同步再比一次接手与截止：`marked` 又被接手 → `sending → cancelled`（主事务）；又过了截止 → `sending → pending`（短事务）；都没变 → 不经过任何 `await` 直接发请求。
+7. 重试沿用 msgid；超时那一刻 `noteUnknown`；最后 `settleIntent`，结果（`accepted`、`rejected`、`unknown`、attempts、errcode、`payload` 置空）走**存档点**；没有会话的走短事务。「全部有结果 → 入站 `done`」留给第 9 步。
+
+其余几类的 `pending` 落在：人工回复与这条人工消息（以及接手、审计）同一次落库；跟进与记账、任务 `running → sending` 同一次；付款确认与这条确认消息同一次；同意菜单与「问过」那一行同意记录同一次（第 1 步盘点的注意）；不同意之后的确认与 `declined` 那一行同一次；欢迎语有会话的单独一次落库、没有会话的走短事务（`conversation_id` 填将要用的会话 id）；卡片发失败补的段走短事务，段号取这一组最大段号加 1。「同一次落库」在自测里用 xmin 相同断言。env 账号的老路一行没改，内存账本照 02 不改名（`quota.selftest.ts`、`wecom-02.selftest.ts` 断言不改照过）。
+
+**R6 与工作台**
+
+- 照发的情形：`commitOutbound` 超时；`markSending` 返回 `db_unavailable`（库报错、超时、已冲突、停机、租户锁在别人手里）；返回 `absent` 而这一组提交超时过。`absent` 但 `pending` 提交过：不发、记一行错误。决定照发的那一刻计数，`channel` 告警 10 分钟内至多一条（带 `escalate`，免得被启动告警的 30 分钟去重压掉）；`unsafeSendsIn10m()` 留给第 13 步的 `/status`。补写：结果跟着会话落库一起重试；`pending → 结果`、结果行先到时直接插入、晚到的 `pending` 什么都不改，三种都有测试。
+- 工作台（`src/shared/conversation-types.ts` 的 `deliveryOfSegments`，内存与库两条路共用）：有段 `pending` / `sending` 显示「发送中」（env 账号还在发的也算），否则按 failed > rejected > unknown > cancelled > accepted 取最重的：accepted 不显示，unknown「可能没送达」，rejected / failed「没送达」，cancelled「未发送」。窗口剩余条数把 `pending`、`sending` 算进已用。`readOutboundForSeqs`、`readOutboundAfterLastCustomer` 放宽到七种状态并带 `account_id`。
+
+**本步定的**
+
+- 跨模块「加进它们那一次落库」的做法：`ChannelAdapter` 加 `prepare` / `release`（`PreparedPush` 句柄），`src/handoff/takeover.ts` 加 prepare 通道；人工回复在同一段同步代码里 prepare，`notifyPaid` 先 prepare 再 push，同意菜单在「问过」那次 `saveSession` 之后 prepare，跟进在 `saveWith(sending)` 之后 prepare、三条放弃的路径 release。网页渠道没有账本，prepare / release 对 `web` 是无操作。
+- 接手检查（spec 实现期修订，顶部 `Revisions:`）：通知（`notice`）与人工回复（`human`）只比停机截止、不比接手代次；AI 回复、跟进、同意菜单、欢迎语照旧比接手。
+- 卡片：prepare 是同步的，只能看缩略图在不在冷却期；发送时缩略图还是拿不到，卡片段记 `rejected`（attempts 0），再补「标题 + 链接」。取 token 失败这一段记 `rejected`（attempts 0），不进 `wecom_send` 计数（02 是直接丢掉这一行；库里先有 `pending`，必须给它一个结果）。
+- `cancelIntents` 多一个原因 `aborted`（跟进放弃、人工回复写库不会再提交、`absent` 但提交过），原因只进日志。
+- 5 秒从 plan 那一刻算，人工回复、跟进不叠两个 5 秒；`markSending` 上限也是 5 秒。生成期间被接手、截止之后才回包的也先落 `pending`：前者随后记 `cancelled`（「未发送」），后者留在 `pending`（02 在这两种情况下不记行）。「部分发出、其余取消」也显示「未发送」（不变量 6）。校验没过时会话加一条说明并推告警；一组段数上限 32000（`segment` 是 smallint）。
+- `unknown` 的工作台文案从 02 的「结果不明，可能已经送达」改成 spec 映射表的「可能没送达」（验收 17），console 自测里对应的一条断言随之改。
+
+**自测与变异**
+
+- 结果：四个门禁全绿；带 `PG_TEST_URL` 全绿（WECOM-03 133、OUTBOUND 236、QUOTA 127、WECOM-02 15、CHANNELS 106、STORE 452、JOBS 110、DB 1168、CONSOLE 435、OPS 472）；网页自测照过（网页渠道 prepare 返回 null、release 无操作、push 照常，有断言）；锁定文件与 `PREFIX sha256` 与第 1 步相同。一次性 PG 容器已连卷删。由 Claude 子 agent（Opus）实现，协调者审查。接手按种类那条另有断言：prepare 之后有人接手，付款确认与人工回复照发、跟进照旧取消（隔离副本里把它改回恒比接手，两条新断言都失败）。
+
+- 新套件 `src/quota/outbound.selftest.ts`（账本与落库层，PGlite 122 项，有 PG 时共 236 项，串在 `quota.selftest` 之后）；`src/adapters/wecom-03.selftest.ts` 加 `out` / `rout` 两个子进程测适配器的完整顺序（框架可挡借连接、在请求到达时查库、挂住回包）；`src/db/testing.ts` 加 `openGatedDb`（真实 PG 上挡借连接）；console 自测加 6 项（「发送中」「未发送」）。
+- 变异（隔离副本）10 个全部被抓到：不比第二次接手、`absent` 一律照发、晚到的 `pending` 盖掉结果、结果写进主事务（plan 要求的四个），加上 pending / cancelled 写进存档点、跳过 `markSending`、截止之后不迁回 `pending`、内存账本不看迁移表、放弃之后 UPDATE 不回滚（PGlite 上存活，补了一条只在真实 PG 跑的行锁测试之后抓到）、人工回复的 prepare 推迟。
+
+**交叉评审与 CI**
+
+- 另派一路只读 Codex 交叉评审，找到 3 处 major，都带复现，由实现的子 agent 修掉、各补一条回归断言（撤回修复时断言失败）：一、退避重试期间收到失败回执、这一段已是 `failed`，重试前只比接手与截止，仍再发一次（违反不变量 5）——`ledger.ts` 加 `maySendAgain`，退避结束、重取 token、强刷 token 之后再请求之前都同步检查，终态就停；二、回执先于消息追加时，`message_seq` 补写被终态条件挡住，工作台按 seq 查不到这段失败——upsert 把「补 seq」与状态迁移分开判（状态、结果、`payload` 只在迁移表允许时改，`message_seq` 只能从 NULL 补成值），账本在回执早于结果、消息还没分到 seq 时等分到 seq 再写一行，迁移表一格没放宽；三、模型等待期间顾问接手、随后模型报错，异常兜底重新读了接手后的代次，「系统开小差」照发——本轮代次在 try 之前取、显式传给兜底。
+- CI（UTC）上跟进相关的两条断言没触发：08 点落在跟进的夜间时段（22–9 点）被顺延。PGlite 子进程改为预加载 parity-clock、从当天本地 12:00 起走，真实 PG 子进程用 `FOLLOWUP_QUIET_START/END=0` 关掉夜间时段；在本机用 `TZ=UTC` 复现并确认修好。修后两轮 `pnpm test`（`TZ=UTC`，带与不带 `PG_TEST_URL`）全绿。
+
+**给后面步骤的注意**
+
+- 第 9 步：`planOutbound` 已收 `inboxId` 并写 `inbox_id`，适配器现在都传 null，入站 `replied` 还没写，要在 `planOutbound` 的同一次落库加上；`runGroup` 结束处补「全部有结果 → `done`」（`cancelled` 算不算结果 spec 没写，到时定）；入站 `abandoned` 时调 `cancelIntents(…, 'inbox_abandoned')`。
+- 第 10 步：预载的 `pending` / `sending` 会进内存账本、显示「发送中」并计数，但还没有接口把它们变回可发的 intent；第 10 步之前正常停机过了截止或崩溃都会留下这类行，第 7 步的闸门会让这个账号重启后不拉取（库里账号要第 14 步导入之后才有）。人工回复的「10 分钟」可以用 `sent_at`（建 `pending` 的时刻）。
+- 第 11 步：poisoned 之后渠道行被丢弃（只计 `channelDropped`），spill 不带渠道行，没有会话的结果短事务只试一次。
+- 第 13 步：告警还不带账号 key；`unsafeSendsIn10m` 已有。
+- 第 14 步：库里账号的行不会出现 `kind = card`。
 
 ## 验收记录
 

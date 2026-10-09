@@ -16,11 +16,9 @@ import { currentTenantCtx, type Tx } from '../client.js';
 import { conversations, messages, outboundSends } from '../schema.js';
 
 /**
- * 02 的四种结果：env 账号与 02 留下的行只有它们。02 的两个读接口（预载、后台「看更早的消息」）照 02 的形状返回；
- * 库里账号的 pending、sending、cancelled 由第 8 步接进读接口与工作台时再扩
+ * 读出的一行（预载、后台「看更早的消息」）。env 账号与 02 留下的行只有四种结果、account_id 为空；库里账号的行（第 8 步起）
+ * 带账号 uuid，状态是 03 的七种之一（内存账本据 accountId 认出是哪种账号的行，03 spec「出站：投递状态」的映射表）
  */
-export type LegacyOutboundStatus = 'accepted' | 'rejected' | 'unknown' | 'failed';
-
 export interface OutboundSendRow {
   conversationId: string;
   /** 我们生成、随 send_msg 下发；同一分段重试沿用 */
@@ -29,13 +27,15 @@ export interface OutboundSendRow {
   messageSeq: number | null;
   kind: OutboundKind;
   sentAt: Date;
-  status: LegacyOutboundStatus;
+  status: OutboundStatus;
   errcode: number | null;
   failType: number | null;
+  /** 库里的企微账号；02 的行与 env 账号为 null */
+  accountId: string | null;
 }
 
 /** 写入的一行：02 的列加 03 的几列。03 的列不给就是 02 的写法（account_id、inbox_id、payload 为空，segment、attempts 为 0） */
-export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status'> {
+export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status' | 'accountId'> {
   status: OutboundStatus;
   accountId?: string | null;
   inboxId?: string | null;
@@ -48,7 +48,6 @@ export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status'> {
 /** 库里没结果的一行（pending、sending）：启动恢复用，带 02 的预载不读的几列 */
 export interface OpenOutboundRow extends Omit<OutboundSendRow, 'status'> {
   status: 'pending' | 'sending';
-  accountId: string | null;
   inboxId: string | null;
   segment: number;
   attempts: number;
@@ -90,8 +89,8 @@ const keepsPayload = (s: OutboundStatus): boolean => OUTBOUND_KEEPS_PAYLOAD.incl
 /**
  * 写账本行（会话落库与没有会话时的短事务）。同一个 msgid 再写一次是同一分段的后续（02：超时那一刻先记 unknown，之后重试成功升
  * accepted、最后一次尝试的时刻往后挪，或收到回执记 failed；03：pending 之后的结果、取消）：按 (tenant_id, channel_msgid) upsert，
- * 仍是一行（02 不变量 33）。库里已有的行只按迁移表（FLUSH_WRITERS 的格子）变，表外的什么都不改：pending 遇到已有的行不改、
- * 终态不回退。没有这一行时只插入表里允许直接插入的状态（pending、三种结果、failed）；cancelled、sending 只能改已有的行。
+ * 仍是一行（02 不变量 33）。库里已有的行只按迁移表（FLUSH_WRITERS 的格子）变，表外的不改状态与结果：pending 遇到已有的行不改、
+ * 终态不回退；唯一的例外是 message_seq 从 NULL 补成值（不算状态变化，终态行也补）。没有这一行时只插入表里允许直接插入的状态（pending、三种结果、failed）；cancelled、sending 只能改已有的行。
  * sent_at、attempts 只往大里改。同一批里同一 msgid 的几次写按先后分轮写（一条 ON CONFLICT 不能改同一行两次），每一次都按迁移表判
  */
 export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRow[]): Promise<void> {
@@ -104,6 +103,8 @@ export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRo
     seen.set(r.channelMsgid, k + 1);
     (rounds[k] ??= []).push(r);
   }
+  // 已有的行 → excluded 的那一格在不在迁移表里（只有在表里时状态与结果才改）
+  const moved = conflictWhere(FLUSH_WRITERS);
   for (const round of rounds) {
     const inserts = round.filter((r) => canMoveOutbound(null, r.status, FLUSH_WRITERS));
     if (inserts.length) {
@@ -129,15 +130,19 @@ export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRo
         )
         .onConflictDoUpdate({
           target: [outboundSends.tenantId, outboundSends.channelMsgid],
+          // 两件事分开判：状态迁移只按迁移表（moved）；message_seq 只从 NULL 补成值（03：pending 落库时对应的消息可能还没写进会话——
+          // 跟进、引导提示送达之后才写——结果行带上 seq 时补上）。补 seq 不是状态变化：终态行（如回执先到记了 failed）也补，但状态、
+          // 结果、payload 都不动，已有的 seq 不改。所以迁移表一格都没放宽（不变量 7）
           set: {
-            status: sql`excluded.status`,
-            errcode: sql`excluded.errcode`,
-            failType: sql`excluded.fail_type`,
-            sentAt: sql`greatest(${outboundSends.sentAt}, excluded.sent_at)`,
-            attempts: sql`greatest(${outboundSends.attempts}, excluded.attempts)`,
-            payload: sql`case when excluded.status in (${litList(OUTBOUND_KEEPS_PAYLOAD)}) then ${outboundSends.payload} else null end`,
+            status: sql`case when ${moved} then excluded.status else ${outboundSends.status} end`,
+            errcode: sql`case when ${moved} then excluded.errcode else ${outboundSends.errcode} end`,
+            failType: sql`case when ${moved} then excluded.fail_type else ${outboundSends.failType} end`,
+            sentAt: sql`case when ${moved} then greatest(${outboundSends.sentAt}, excluded.sent_at) else ${outboundSends.sentAt} end`,
+            attempts: sql`case when ${moved} then greatest(${outboundSends.attempts}, excluded.attempts) else ${outboundSends.attempts} end`,
+            messageSeq: sql`coalesce(${outboundSends.messageSeq}, excluded.message_seq)`,
+            payload: sql`case when ${moved} then (case when excluded.status in (${litList(OUTBOUND_KEEPS_PAYLOAD)}) then ${outboundSends.payload} else null end) else ${outboundSends.payload} end`,
           },
-          setWhere: conflictWhere(FLUSH_WRITERS),
+          setWhere: sql`(${moved}) or (${outboundSends.messageSeq} is null and excluded.message_seq is not null)`,
         });
     }
     for (const r of round) {
@@ -210,10 +215,10 @@ export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: 
       status: outboundSends.status,
       errcode: outboundSends.errcode,
       failType: outboundSends.failType,
+      accountId: outboundSends.accountId,
     })
     .from(outboundSends)
     .where(and(eq(outboundSends.conversationId, conversationId), sql`${outboundSends.messageSeq} = any(${sql.param([...seqs])}::int[])`));
-  // 02 的形状：库里账号的 03 状态由第 8 步接进来（见 LegacyOutboundStatus）
   return rows as OutboundSendRow[];
 }
 
@@ -258,6 +263,7 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
       status: outboundSends.status,
       errcode: outboundSends.errcode,
       failType: outboundSends.failType,
+      accountId: outboundSends.accountId,
     })
     .from(outboundSends)
     .innerJoin(conversations, and(eq(conversations.tenantId, outboundSends.tenantId), eq(conversations.id, outboundSends.conversationId)))
@@ -268,8 +274,7 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
         sql`${conversations.lastCustomerAt} is not null`,
       ),
     )
-    .orderBy(outboundSends.conversationId, outboundSends.sentAt);
-  // 02 的形状：库里账号的 03 状态由第 8 步接进来（见 LegacyOutboundStatus）
+    .orderBy(outboundSends.conversationId, outboundSends.sentAt, outboundSends.segment);
   return rows as OutboundSendRow[];
 }
 

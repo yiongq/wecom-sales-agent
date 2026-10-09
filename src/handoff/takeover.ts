@@ -23,7 +23,7 @@ import {
   type AuditActor,
 } from '../store.js';
 import { handoffNotifyOps } from '../jobs/notify.js';
-import type { ChatMessage, PushOpts, Session } from '../types.js';
+import type { ChatMessage, PreparedPush, PushOpts, Session } from '../types.js';
 import { enterHandoff, HANDOFF_REASON, terminalStageKey } from './record.js';
 
 /** 操作者：console 成员（role 是成员角色），或 ADMIN_PASS 旧接口的共享工作台（role 'shared'，userId 为 null，权限同坐席） */
@@ -268,6 +268,37 @@ export async function pushToChannel(sessionId: string, text: string, opts: PushO
   }
 }
 
+/** 03 先落库后发送的 prepare / release（server.ts 按会话的渠道接上适配器的那两个；没接上时什么都不做，push 照 02） */
+interface Preparer {
+  prepare(sessionId: string, text: string, opts: PushOpts): PreparedPush | null;
+  release(prepared: PreparedPush, reason: 'taken_over' | 'aborted'): void;
+}
+let preparer: Preparer = { prepare: () => null, release: () => {} };
+export function setPrepareTransport(p: Preparer): void {
+  preparer = p;
+}
+/**
+ * 人工回复、跟进、通知、同意菜单在把消息（或「问过」、记账）写进会话的同一段同步代码里调：库里的企微账号这时把分段的 pending
+ * 排进同一次落库（03 spec「出站：投递状态」），返回的句柄随后交给 push（opts.prepared）。别的渠道、env 账号返回 null。抛错当没有
+ */
+export function prepareChannel(sessionId: string, text: string, opts: PushOpts): PreparedPush | null {
+  try {
+    return preparer.prepare(sessionId, text, opts);
+  } catch (e) {
+    console.error(`[takeover] 出站分段没排进落库（会话 ${shortIdOf(sessionId) || '?'}，${e instanceof Error ? e.name : 'unknown'}）`);
+    return null;
+  }
+}
+/** 拿了句柄、决定不发了：这一组没发的段记 cancelled（null 什么都不做） */
+export function releasePrepared(prepared: PreparedPush | null | undefined, reason: 'taken_over' | 'aborted'): void {
+  if (!prepared) return;
+  try {
+    preparer.release(prepared, reason);
+  } catch {
+    /* 取消失败只影响工作台显示，重启后出站恢复照样处理 */
+  }
+}
+
 /** clientId 去重：10 分钟内同一会话、同一 clientId 的重复提交返回第一次的结果，不重发 */
 const CLIENT_ID_TTL_MS = 10 * 60_000;
 const recent = new Map<string, { at: number; result: Promise<ReplyResult> }>();
@@ -329,7 +360,9 @@ function replySync(sessionId: string, actor: Actor, text: string, clientId: stri
   if (!cur) takeover(s.id, actor);
   s.messages.push(message);
   saveSession(s);
-  const result = deliver(s.id, message, releaseHold);
+  // 03：库里的企微账号把分段的 pending 排进这条消息的同一次落库（同一段同步代码里），提交之后才发
+  const prepared = prepareChannel(s.id, content, { kind: 'human', message });
+  const result = deliver(s.id, message, releaseHold, prepared);
   recent.set(key, { at: now, result });
   result.catch(() => recent.delete(key));
   return result;
@@ -350,13 +383,19 @@ export async function awaitCommit(sessionId: string): Promise<{ persisted: boole
   }
 }
 
-async function deliver(sessionId: string, message: ChatMessage, releaseHold: () => void): Promise<ReplyResult> {
+async function deliver(
+  sessionId: string,
+  message: ChatMessage,
+  releaseHold: () => void,
+  prepared: PreparedPush | null,
+): Promise<ReplyResult> {
   const seq = seqOf(message) ?? 0;
   let persisted: boolean;
   try {
     ({ persisted } = await awaitCommit(sessionId));
   } catch (e) {
     // 不会再提交：不发，记一条没发出去的说明（内容还留在内存里，停机时进 spill，修好原因后重启回放）
+    releasePrepared(prepared, 'aborted');
     releaseHold();
     const s = getSession(sessionId);
     if (s) {
@@ -367,7 +406,7 @@ async function deliver(sessionId: string, message: ChatMessage, releaseHold: () 
   }
   let sent = false;
   try {
-    sent = await pushToChannel(sessionId, message.content, { kind: 'human', message });
+    sent = await pushToChannel(sessionId, message.content, { kind: 'human', message, prepared });
   } finally {
     releaseHold();
   }

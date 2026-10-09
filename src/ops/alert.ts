@@ -11,14 +11,15 @@
 //   store         store_conflict、会话 poisoned（含 WindowCorruptError）、lagMs 超过 60 秒、停机写了 spill、10 分钟内丢了遥测行、
 //                 启动时 spill 回放失败；lagMs 回到 5 秒以内恢复
 //   jobs          retention_purge、handoff_notify 用完重试记 failed；没有恢复
-//   channel       03 spec「可观测性」：本步只有启动装载那一条（网页账号因 web_channel 关着没有启用、欢迎语不合格按没设处理，只有
-//                 账号 key 与原因）；拉取失败、入站卡住、没落库就发、sending 转 unknown 等由 03 第 13 步接上
+//   channel       03 spec「可观测性」：启动装载那一条（网页账号因 web_channel 关着没有启用、欢迎语不合格按没设处理，只有
+//                 账号 key 与原因）；10 分钟内有「没落库就发」（R6，03 第 8 步）、一组出站没过发送前的校验（R21 的同步校验）；
+//                 拉取失败、入站卡住、sending 转 unknown 等由 03 第 13 步接上
 import { onTokenError } from '../adapters/wecom.js';
 import { channelStartupWarnings } from '../channels/registry.js';
 import { configHealth, onLockEvent, type LockEvent } from '../config/source.js';
 import { onJobFailed, type JobFailure } from '../jobs/runner.js';
 import { scrubConvIds } from '../log.js';
-import { onSendSettled, type SendSettled } from '../quota/ledger.js';
+import { onPlanRejected, onSendSettled, onUnsafeSend, type SendSettled } from '../quota/ledger.js';
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
@@ -220,6 +221,27 @@ function onToken(code: string): void {
   alert('wecom_send', `取不到企微 access_token（${codeOf(code)}），收发消息都停了`);
 }
 
+// ---------------- channel（03 第 8 步：没落库就发、出站没过校验） ----------------
+
+/** 「没落库就发」的告警至多 10 分钟一条（channel 键与启动装载那一条共用，那一条的 30 分钟去重不该把它压掉，所以这里自己限频） */
+const UNSAFE_ALERT_MS = 10 * 60_000;
+let lastUnsafeAlertAt = 0;
+
+function onUnsafe(countIn10m: number): void {
+  const t = clock();
+  if (lastUnsafeAlertAt && t - lastUnsafeAlertAt < UNSAFE_ALERT_MS) return;
+  lastUnsafeAlertAt = t;
+  alert(
+    'channel',
+    `最近 10 分钟有 ${countIn10m} 段企微消息在发送状态没落库时照发（库写不进去，R6）：这期间进程崩溃的话这几段可能再发一次`,
+    { escalate: true },
+  );
+}
+
+function onRejected(reason: string): void {
+  alert('channel', `一组企微出站没过发送前的检查（${safeCodes(reason)}），这一组没发，会话里已加说明`, { escalate: true });
+}
+
 // ---------------- tenant_lock ----------------
 
 function onLock(ev: LockEvent): void {
@@ -319,6 +341,8 @@ export function startAlerts(): void {
   started = true;
   onTurnEnd(onTurn);
   onSendSettled(onSettled);
+  onUnsafeSend(onUnsafe);
+  onPlanRejected(onRejected);
   onTokenError(onToken);
   onLockEvent(onLock);
   onStoreIncident(onIncident);
@@ -376,6 +400,7 @@ export const __alertTest = {
     recentTurns = [];
     wecomFails = [];
     lastWecomFailAt = 0;
+    lastUnsafeAlertAt = 0;
     lagAlerted = false;
     poisonedSeen = new Set();
     dropSamples = [];

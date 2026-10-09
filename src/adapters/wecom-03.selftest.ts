@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ChatMessage } from '../types.js';
 
 const CHILD = process.env.WECOM03_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
@@ -85,9 +86,14 @@ async function parentMain(): Promise<never> {
   const ROOT = fs.mkdtempSync(path.join(varParent, 'wecom-03-selftest-'));
   process.on('exit', () => fs.rmSync(ROOT, { recursive: true, force: true }));
 
+  // 出站的 PGlite 子进程预加载等价套件的钟，从当天本地 12:00 起走：跟进的夜间时段（22–9 点，本地时间）不受在几点、在哪个时区跑
+  // 的影响（jobs、quota 自测的做法）；真实 PG 子进程用真钟（库的 now() 拨不动），改用 FOLLOWUP_QUIET_START/END=0 关掉夜间时段
+  const NOON = new Date().setHours(12, 0, 0, 0);
+  const CLOCK_MODULE = fileURLToPath(new URL('../store/parity-clock.ts', import.meta.url));
   const runChild = (
     mode: string,
     env: Record<string, string>,
+    clockMs: number | null = null,
   ): {
     status: number | null;
     signal: NodeJS.Signals | null;
@@ -96,9 +102,17 @@ async function parentMain(): Promise<never> {
     result: { pass: number; fails: string[] } | null;
   } => {
     const resultFile = path.join(ROOT, `${mode}-${Date.now()}.json`);
-    const r = spawnSync(process.execPath, ['--import', 'tsx', SELF], {
+    const args = ['--import', 'tsx', ...(clockMs === null ? [] : ['--import', CLOCK_MODULE]), SELF];
+    const r = spawnSync(process.execPath, args, {
       cwd: process.cwd(),
-      env: { ...process.env, WECOM03_CHILD: mode, WECOM03_RESULT: resultFile, CONFIG_SOURCE: 'file', ...env },
+      env: {
+        ...process.env,
+        WECOM03_CHILD: mode,
+        WECOM03_RESULT: resultFile,
+        CONFIG_SOURCE: 'file',
+        ...(clockMs === null ? {} : { PARITY_CLOCK_MS: String(clockMs) }),
+        ...env,
+      },
       timeout: 240_000,
       killSignal: 'SIGKILL',
       encoding: 'utf8',
@@ -155,10 +169,16 @@ async function parentMain(): Promise<never> {
       out.includes('acct=a2') && !out.includes(secretsOf(acct('a2')).appSecret) && !out.includes(secretsOf(acct('a2')).callbackToken),
     );
   }
+  // 03 第 8 步：出站先落库后发送（适配器的整条顺序）
+  merge('出站 PGlite', runChild('out', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'out-')) }, NOON));
   let realPg = false;
   if (process.env.PG_TEST_URL) {
     realPg = true;
     merge('真实 PG', runChild('rpg', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rpg-')) }));
+    merge(
+      '出站 真实 PG',
+      runChild('rout', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rout-')), FOLLOWUP_QUIET_START: '0', FOLLOWUP_QUIET_END: '0' }),
+    );
   } else if (process.env.CI === 'true') {
     fails.push('CI 下必须设 PG_TEST_URL：按账号的 cursor 与 channel_account_id 要以 agent_app 身份在真实 Postgres 上写一遍');
   }
@@ -171,7 +191,8 @@ async function parentMain(): Promise<never> {
   console.log(
     `WECOM-03 SELFTEST PASS: ${pass} 项断言全通（三个账号交错收发、会话 id 按账号前缀、open_kfid 与 token 按账号、cursor 各自进库 / ` +
       `一个账号取不到 token 或停用不影响别的 / 回调按账号验签、OpenKfId 分派、receiveid 校验、不存在与网页与停用的 key / ` +
-      `channel_account_id 的投影与预载 / 重启接着库里的 cursor / prod JSON 日志里没有 external_userid${realPg ? ' / 真实 PG' : '；真实 PG 部分未跑'}）`,
+      `channel_account_id 的投影与预载 / 重启接着库里的 cursor / prod JSON 日志里没有 external_userid / ` +
+      `出站先落库后发送：每段发请求之前已是 sending、各类出站的 pending 在它们那一次落库、接手与停机截止、R6、工作台${realPg ? ' / 真实 PG' : '；真实 PG 部分未跑'}）`,
   );
   process.exit(0);
 }
@@ -187,7 +208,8 @@ interface FakeMsg {
   send_time: number;
   origin: number;
   msgtype: string;
-  text?: { content: string };
+  text?: { content: string; menu_id?: string };
+  event?: { event_type: string; external_userid?: string; welcome_code?: string; fail_msgid?: string; fail_type?: number };
 }
 interface SendRec {
   /** access_token 是哪个账号的（null：不认识的 token） */
@@ -197,6 +219,7 @@ interface SendRec {
   to: string;
   msgid: string;
   content: string;
+  msgtype?: string;
 }
 interface SyncRec {
   tokenAcct: string | null;
@@ -225,6 +248,7 @@ async function childMain(mode: string): Promise<never> {
     else if (mode === 'restart') await restartSuite(h);
     else if (mode === 'prod') await prodSuite(h);
     else if (mode === 'rpg') await realPgSuite(h);
+    else if (mode === 'out' || mode === 'rout') await outboundSuite(h);
     else fails.push(`不认识的子进程 ${mode}`);
     await h.close();
   } catch (e) {
@@ -274,6 +298,14 @@ async function harness(m: string) {
     /** 用这个账号的 token 调接口一律回 42001（逼它重取 token） */
     expired: new Set<string>(),
     n: 0,
+    /** 缩略图上传成功（默认失败：卡片退回纯文本） */
+    mediaOk: false,
+    /** send_msg 到了、回包之前（第 8 步：看这时库里这一段是什么状态、挂住回包） */
+    beforeSend: null as ((body: Record<string, any>) => Promise<void>) | null,
+    /** send_msg 的结果：network 当网络异常抛出；返回对象当回包；null 照常 accepted */
+    sendResult: null as ((body: Record<string, any>) => 'network' | Record<string, unknown> | null) | null,
+    /** 假模型（只在自测把 LLM_BASE_URL 指到 llm.selftest.invalid 时用到）：请求到了先调它，然后回 400 */
+    onLlm: null as (() => void) | null,
   };
   const stateFile = path.join(varDir, 'fake-wecom-logs.json');
   if (m === 'restart' && fs.existsSync(stateFile)) {
@@ -283,6 +315,10 @@ async function harness(m: string) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname === 'llm.selftest.invalid') {
+      fake.onLlm?.();
+      return new Response(JSON.stringify({ error: { message: 'selftest: 假模型报错' } }), { status: 400 });
+    }
     if (url.hostname !== 'qyapi.weixin.qq.com') return realFetch(input, init);
     const ep = url.pathname.replace(/^\/cgi-bin\//, '');
     if (ep === 'gettoken') {
@@ -297,7 +333,7 @@ async function harness(m: string) {
     }
     const tokenAcct = fake.tokens.get(url.searchParams.get('access_token') ?? '') ?? null;
     if (tokenAcct && fake.expired.has(tokenAcct)) return res({ errcode: 42001, errmsg: 'selftest: token expired' });
-    if (ep === 'media/upload') return res({ errcode: 40004, errmsg: 'selftest' });
+    if (ep === 'media/upload') return res(fake.mediaOk ? { errcode: 0, media_id: 'media03' } : { errcode: 40004, errmsg: 'selftest' });
     const body = (typeof init?.body === 'string' ? JSON.parse(init.body) : {}) as Record<string, any>;
     const kfAcct = ACCTS.find((x) => x.kf === body.open_kfid)?.key ?? null;
     if (ep === 'kf/sync_msg') {
@@ -317,15 +353,19 @@ async function harness(m: string) {
         to: String(body.touser),
         msgid: String(body.msgid ?? ''),
         content: String(body.text?.content ?? body.link?.url ?? body.msgmenu?.head_content ?? ''),
+        msgtype: String(body.msgtype ?? ''),
       });
-      return res({ errcode: 0, msgid: body.msgid });
+      if (fake.beforeSend) await fake.beforeSend(body);
+      const r = fake.sendResult?.(body) ?? null;
+      if (r === 'network') throw new TypeError('fetch failed');
+      return res(r ?? { errcode: 0, msgid: body.msgid });
     }
     if (ep === 'kf/send_msg_on_event') return res({ errcode: 0 });
     if (ep === 'kf/customer/batchget') return res({ errcode: 0, customer_list: [] });
     return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
   }) as typeof fetch;
   let seq = 0;
-  const tag = m === 'restart' ? 'r' : m === 'prod' ? 'p' : m === 'rpg' ? 'g' : 'm';
+  const tag = m === 'restart' ? 'r' : m === 'prod' ? 'p' : m === 'rpg' ? 'g' : m === 'out' ? 'o' : m === 'rout' ? 'q' : 'm';
   /** 客户在这个客服账号上发了一句（进假企微的日志，等拉取） */
   const say = (kf: string, uid: string, content: string): FakeMsg => {
     const msg: FakeMsg = {
@@ -342,19 +382,31 @@ async function harness(m: string) {
     fake.logs.set(kf, list);
     return msg;
   };
+  /** 进假企微日志的任意一条（事件、菜单点击、回执） */
+  const emit = (kf: string, partial: Omit<FakeMsg, 'msgid' | 'open_kfid' | 'send_time'>): FakeMsg => {
+    const msg: FakeMsg = { msgid: `m03${tag}-${++seq}`, open_kfid: kf, send_time: Math.floor(Date.now() / 1000), ...partial };
+    const list = fake.logs.get(kf) ?? [];
+    list.push(msg);
+    fake.logs.set(kf, list);
+    return msg;
+  };
 
   // ---- 库、会话存储 ----
   const store = await import('../store.js');
-  const { openDb, withTenant } = await import('../db/client.js');
+  const { withTenant } = await import('../db/client.js');
   const testing = await import('../db/testing.js');
   let db: import('../db/client.js').Db;
   let tenantId: string;
   let su: <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<R[]>;
   let closeDb: () => Promise<void>;
-  if (m === 'rpg') {
+  /** 挡住写库（借连接）：gate 设了就先等它，acquire 设了就抛它（第 8 步的验收 5、7、20） */
+  let faults: { gate: Promise<void> | null; acquire: Error | null };
+  const realPg = m === 'rpg' || m === 'rout';
+  if (realPg) {
     const fx = await testing.createRealPgFixture(process.env.PG_TEST_URL!, { slug: 'wecom03' });
-    const app = await openDb(fx.urls.app);
+    const app = await testing.openGatedDb(fx.urls.app);
     db = app.db;
+    faults = app.faults;
     tenantId = fx.tenantId;
     su = fx.query;
     await store.initSessionStore({ db, tenantId, tenantSlug: 'wecom03', varDir });
@@ -363,9 +415,10 @@ async function harness(m: string) {
       await fx.drop();
     };
   } else {
-    const t = await testing.openTestDb(m === 'prod' ? {} : { dataDir: process.env.WECOM03_DATA_DIR! });
+    const t = await testing.openTestDb(m === 'prod' || m === 'out' ? {} : { dataDir: process.env.WECOM03_DATA_DIR! });
     const fx = await testing.installPgSessionStore(t, { varDir, slug: 'demo' });
     db = t.db;
+    faults = fx.faults;
     tenantId = fx.deps.tenantId;
     su = <R>(text: string, params: unknown[] = []): Promise<R[]> =>
       t.pg.transaction(async (tx) => {
@@ -411,7 +464,7 @@ async function harness(m: string) {
   const { computeSignature } = await import('../wecom-crypto.js');
   const tokenErrors: [string, string][] = [];
   wecom.onTokenError((code, account) => void tokenErrors.push([code, account]));
-  await reg.initChannels({ db, tenantId, tenantSlug: m === 'rpg' ? 'wecom03' : 'demo', varDir, keyRing });
+  await reg.initChannels({ db, tenantId, tenantSlug: realPg ? 'wecom03' : 'demo', varDir, keyRing });
   reg.startChannels();
   const { app } = await import('../server.js');
 
@@ -494,6 +547,7 @@ async function harness(m: string) {
     varDir,
     fake,
     say,
+    emit,
     store,
     reg,
     wecom,
@@ -510,6 +564,7 @@ async function harness(m: string) {
     projection,
     tokenErrors,
     withTenant,
+    faults,
     saveFakeLogs: (): void => fs.writeFileSync(stateFile, JSON.stringify([...fake.logs])),
     async close(): Promise<void> {
       await idle();
@@ -889,4 +944,797 @@ async function realPgSuite(h: Harness): Promise<void> {
     '真实 PG：按预载的读法重建，channelAccountId 以列为准（state 里拿掉了也读回），默认账号的没有',
     byId.get(s2)?.channelAccountId === h.ids.get('a2') && !!byId.get(s1) && byId.get(s1)?.channelAccountId === undefined,
   );
+}
+
+// ======================================================================================
+// out / rout：出站先落库、后发送（03 第 8 步；spec「出站：投递状态」，R4、R6、R21，不变量 4、6、7、10，验收 5、7 的 A/B、17、20）
+// 假企微在请求到达时查库：那一段是什么状态；靠挡住借连接（faults.gate）与账本的两个自测钩子造时刻。杀进程的部分在第 10 步
+// ======================================================================================
+
+async function outboundSuite(h: Harness): Promise<void> {
+  const ledger = await import('../quota/ledger.js');
+  const tk = await import('../handoff/takeover.js');
+  const engine = await import('../engine.js');
+  const { __privacyTest } = await import('../privacy/privacy.js');
+  const { CONSENT_DECLINED_REPLY } = await import('../handoff/consent.js');
+  const { getSession } = h.store;
+  const seqOf = h.store.seqOf;
+  ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
+  const idOf = (k: string): string => h.ids.get(k)!;
+  const sidOf = (k: string, uid: string): string => acct(k).prefix + uid;
+  interface Row {
+    msgid: string;
+    status: string;
+    nopay: boolean;
+    kind: string;
+    account_id: string | null;
+    segment: number;
+    attempts: number;
+    message_seq: number | null;
+    xmin: string;
+  }
+  const COLS = `channel_msgid as msgid, status, payload is null as nopay, kind, account_id::text as account_id, segment, attempts,
+                message_seq, xmin::text as xmin`;
+  const rowsOf = (sid: string): Promise<Row[]> =>
+    h.su<Row>(`select ${COLS} from outbound_sends where conversation_id = $1 order by sent_at, segment`, [sid]);
+  const rowOf = async (msgid: string): Promise<Row | null> =>
+    (await h.su<Row>(`select ${COLS} from outbound_sends where channel_msgid = $1`, [msgid]))[0] ?? null;
+  const settle = async (): Promise<void> => {
+    await h.idle();
+    for (let i = 0; i < 3; i++) {
+      await sleep(20);
+      await h.store.drainStore(5000);
+    }
+  };
+  /** 客户在这个账号上说一句，拉一次，等处理链跑完 */
+  const talk = async (k: string, uid: string, text: string): Promise<void> => {
+    h.say(acct(k).kf, uid, text);
+    await pull(h, k);
+  };
+  const lastAi = (sid: string): ChatMessage | undefined =>
+    getSession(sid)
+      ?.messages.filter((m) => m.role === 'agent' && (m.author === undefined || m.author === 'ai'))
+      .at(-1);
+  /** 请求到达假企微的那一刻，库里这一段是什么状态（不变量 4） */
+  const statusAtSend = new Map<string, string | null>();
+  h.fake.beforeSend = async (body) => {
+    statusAtSend.set(String(body.msgid), (await rowOf(String(body.msgid)))?.status ?? null);
+  };
+  /** 一个先落库的种类在 markSending 之前，记下它的 pending 行与 sql 给的那一行各自的 xmin（同一个事务提交的话相同） */
+  const captureAtMark = (sid: string, kind: string, otherSql: string): { out?: string; other?: string; done: Promise<void> } => {
+    const cap: { out?: string; other?: string; done: Promise<void> } = { done: Promise.resolve() };
+    let resolve!: () => void;
+    cap.done = new Promise((r) => (resolve = r));
+    ledger.__ledgerTest.setMarkHook(async (intent) => {
+      if (intent.sessionId !== sid || intent.kind !== kind || cap.out !== undefined) return;
+      cap.out = (await rowOf(intent.msgid))?.xmin ?? 'none';
+      cap.other = (await h.su<{ xmin: string }>(otherSql, [sid, intent.message ? seqOf(intent.message) : null]))[0]?.xmin ?? 'none';
+      resolve();
+    });
+    return cap;
+  };
+
+  // ---- 一条 AI 回复：每段请求到达假企微时库里已是 sending；结果 accepted、payload 已空、kind ai、account_id 是账号 uuid ----
+  {
+    const uid = 'wm08ok';
+    const sid = sidOf('a2', uid);
+    await talk('a2', uid, '你好，想去云南');
+    await settle();
+    const sent = h.sentTo(uid, 'a2');
+    const rows = await rowsOf(sid);
+    const reply = lastAi(sid)!;
+    check(
+      'AI 回复：每段请求到达假企微时，库里这一段已是 sending（不变量 4）',
+      sent.length > 0 && sent.every((x) => statusAtSend.get(x.msgid) === 'sending'),
+      json(sent.map((x) => statusAtSend.get(x.msgid))),
+    );
+    check(
+      'AI 回复：出站行与发出的分段一一对应（同一 msgid）、kind ai、accepted、payload 已空、account_id 是 a2 的、attempts 1、message_seq 对上回复、段号从 0 连着',
+      rows.length === sent.length &&
+        rows.every(
+          (r, i) =>
+            r.msgid === sent[i]!.msgid &&
+            r.kind === 'ai' &&
+            r.status === 'accepted' &&
+            r.nopay &&
+            r.account_id === idOf('a2') &&
+            r.attempts === 1 &&
+            r.message_seq === seqOf(reply) &&
+            r.segment === i,
+        ),
+      json(rows),
+    );
+    check('工作台：正常发出的回复 accepted（不显示）', ledger.deliveryOf(sid, reply)?.status === 'accepted');
+  }
+
+  // ---- 卡片：正文一段 + 卡片一段（kind 记组的种类）；卡片被拒补「标题 + 链接」（运行时才补的段，段号接在这一组之后） ----
+  {
+    process.env.PUBLIC_BASE_URL = 'https://demo.example.com';
+    h.fake.mediaOk = true;
+    const uid = 'wm08card';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const text = '方案书在这儿 /proposal/r-sichuan-lux/2，您看看';
+    const n0 = h.sentTo(uid).length;
+    h.fake.sendResult = (b) => (b.msgtype === 'link' && b.touser === uid ? { errcode: 40001, errmsg: 'selftest: 卡片拒收' } : null);
+    const ok = await h.wecom.wecomAdapter.push(sid, text, { kind: 'human' });
+    h.fake.sendResult = null;
+    await settle();
+    const sent = h.sentTo(uid).slice(n0);
+    const rows = (await rowsOf(sid)).filter((r) => r.kind === 'human');
+    check(
+      '卡片被拒：正文、卡片、补的「标题 + 链接」三段；都记 human（不是 card）；段号 0、1、2；accepted、rejected、accepted；补的那段发之前也已是 sending',
+      ok &&
+        sent.map((x) => x.msgtype).join() === 'text,link,text' &&
+        sent[0]!.content.startsWith('【顾问】') &&
+        sent[2]!.content.includes('https://demo.example.com/proposal/r-sichuan-lux/2') &&
+        rows.length === 3 &&
+        rows.map((r) => r.segment).join() === '0,1,2' &&
+        rows.map((r) => r.status).join() === 'accepted,rejected,accepted' &&
+        statusAtSend.get(sent[2]!.msgid) === 'sending',
+      json({ ok, sent: sent.map((x) => [x.msgtype, x.content.slice(0, 30)]), rows: rows.map((r) => [r.segment, r.status, r.kind]) }),
+    );
+    const n1 = h.sentTo(uid).length;
+    const ok2 = await h.wecom.wecomAdapter.push(sid, text, { kind: 'human' });
+    await settle();
+    const rows2 = (await rowsOf(sid)).filter((r) => r.kind === 'human').slice(3);
+    check(
+      '卡片正常：正文 + 卡片两段都 accepted，卡片段同样记 human',
+      ok2 &&
+        h
+          .sentTo(uid)
+          .slice(n1)
+          .map((x) => x.msgtype)
+          .join() === 'text,link' &&
+        rows2.map((r) => r.status).join() === 'accepted,accepted',
+      json(rows2),
+    );
+    process.env.PUBLIC_BASE_URL = '';
+    h.fake.mediaOk = false;
+  }
+
+  // ---- 人工回复：分段的 pending 与这条人工回复同一次落库 ----
+  {
+    const uid = 'wm08hum';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const cap = captureAtMark(sid, 'human', 'select xmin::text as xmin from messages where conversation_id = $1 and seq = $2');
+    const r = await tk.reply(sid, tk.sharedActor(), '好的，我来跟进', `c08-${Date.now()}`);
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    check(
+      '人工回复：分段的 pending 与这条人工回复同一个事务提交（xmin 相同），之后才发',
+      r.sent && !!cap.out && cap.out !== 'none' && cap.out === cap.other && h.sentTo(uid).at(-1)?.content === '【顾问】好的，我来跟进',
+      json({ r, cap }),
+    );
+    check(
+      '人工回复：出站行 kind human、accepted',
+      (await rowsOf(sid)).filter((x) => x.kind === 'human').every((x) => x.status === 'accepted'),
+    );
+  }
+
+  // ---- 付款确认（通知）：pending 与这条确认同一次落库 ----
+  {
+    const uid = 'wm08pay';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const o = h.store.createOrder({
+      sessionId: sid,
+      routeId: 'r-sichuan-lux',
+      routeTitle: '川西',
+      travelers: 2,
+      departDate: '2026-12-01',
+      totalPrice: 20000,
+    });
+    getSession(sid)!.orderIds.push(o.id);
+    h.store.saveSession(getSession(sid)!);
+    h.store.markOrderPaid(o.id);
+    await settle();
+    const cap = captureAtMark(sid, 'notice', 'select xmin::text as xmin from messages where conversation_id = $1 and seq = $2');
+    const notice = await engine.notifyPaid(o.id);
+    const ok = await tk.pushToChannel(sid, notice!.text, { kind: 'notice', message: notice!.message, prepared: notice!.prepared });
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    check(
+      '付款确认：prepare 拿到句柄，pending 与这条确认同一个事务提交（xmin 相同），之后才发',
+      ok && notice?.prepared != null && !!cap.out && cap.out !== 'none' && cap.out === cap.other,
+      json({ ok, cap }),
+    );
+    check(
+      '付款确认：出站行 kind notice、accepted',
+      (await rowsOf(sid)).some((x) => x.kind === 'notice' && x.status === 'accepted'),
+    );
+  }
+
+  // ---- 同意菜单：pending 加进「问过」那一次落库；不同意之后的确认（通知）加进同意记录那一次落库 ----
+  {
+    __privacyTest.set({ version: 1, body: 'x' });
+    const uid = 'wm08menu';
+    const sid = sidOf('a1', uid);
+    const cap = captureAtMark(
+      sid,
+      'menu',
+      `select xmin::text as xmin from consents where conversation_id = $1 and decision = 'asked' and $2::int is null order by at desc limit 1`,
+    );
+    await talk('a1', uid, '我妈有高血压，能去西藏吗');
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    const menus = h.sentTo(uid).filter((x) => x.msgtype === 'msgmenu');
+    const menuRows = (await rowsOf(sid)).filter((x) => x.kind === 'menu');
+    check(
+      '同意菜单：pending 与「问过」的同意记录同一个事务提交（xmin 相同），菜单发出、出站行 kind menu accepted',
+      menus.length === 1 &&
+        menuRows.length === 1 &&
+        menuRows[0]!.status === 'accepted' &&
+        !!cap.out &&
+        cap.out !== 'none' &&
+        cap.out === cap.other,
+      json({ menus: menus.length, menuRows, cap }),
+    );
+    const cap2 = captureAtMark(
+      sid,
+      'notice',
+      `select xmin::text as xmin from consents where conversation_id = $1 and decision = 'declined' and $2::int is null order by at desc limit 1`,
+    );
+    h.emit(acct('a1').kf, { external_userid: uid, origin: 3, msgtype: 'text', text: { content: '不同意', menu_id: 'health:declined' } });
+    await pull(h, 'a1');
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    check(
+      '不同意之后的确认：pending 与「不同意」的同意记录同一个事务提交（xmin 相同），确认发出、kind notice',
+      h.sentTo(uid).at(-1)?.content === CONSENT_DECLINED_REPLY && !!cap2.out && cap2.out !== 'none' && cap2.out === cap2.other,
+      json(cap2),
+    );
+    __privacyTest.reset();
+  }
+
+  // ---- 老客户欢迎语：有会话的随会话落库；还没有会话的单独一个短事务（conversation_id 是将要用的会话 id） ----
+  {
+    const uid = 'wm08wel';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'enter_session', external_userid: uid },
+    });
+    await pull(h, 'a1');
+    await settle();
+    const w = (await rowsOf(sid)).filter((x) => x.kind === 'welcome');
+    check(
+      '欢迎语（有会话）：一行 welcome、accepted、发之前已是 sending',
+      w.length === 1 && w[0]!.status === 'accepted' && statusAtSend.get(w[0]!.msgid) === 'sending',
+      json(w),
+    );
+    const uid2 = 'wm08wel2';
+    h.emit(acct('a1').kf, {
+      external_userid: uid2,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'enter_session', external_userid: uid2 },
+    });
+    await pull(h, 'a1');
+    await settle();
+    await waitFor(async () => (await rowsOf(sidOf('a1', uid2)))[0]?.status === 'accepted', 3000);
+    const w2 = await rowsOf(sidOf('a1', uid2));
+    check(
+      '欢迎语（还没有会话）：单独短事务写进库，conversation_id 是将要用的会话 id、welcome、accepted，发之前已是 sending；没有凭空建会话',
+      w2.length === 1 &&
+        w2[0]!.kind === 'welcome' &&
+        w2[0]!.status === 'accepted' &&
+        statusAtSend.get(w2[0]!.msgid) === 'sending' &&
+        !getSession(sidOf('a1', uid2)),
+      json(w2),
+    );
+  }
+
+  // ---- 跟进：pending 与记账、任务改 sending 同一次落库 ----
+  {
+    process.env.FOLLOWUP_ENABLED = '1';
+    const runner = await import('../jobs/runner.js');
+    runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
+    await runner.runJobsOnce();
+    const uid = 'wm08fu';
+    const sid = sidOf('a1', uid);
+    const H = 3_600_000;
+    const s = h.store.getOrCreateSession(sid, 'wecom');
+    s.stage = 'quote';
+    s.messages.push(
+      {
+        role: 'customer',
+        content: '这条线多少钱',
+        at: Date.now() - 3 * H - 60_000,
+        msgid: 'q-wm08fu',
+        sentAt: Date.now() - 3 * H - 60_000,
+      },
+      { role: 'agent', content: '这条线每人 19,800 元起，您几位出行？', at: Date.now() - 3 * H },
+    );
+    s.updatedAt = Date.now() - 3 * H;
+    h.store.saveSession(s, false);
+    await h.store.flushSession(sid);
+    const cap = captureAtMark(
+      sid,
+      'followup',
+      `select xmin::text as xmin from jobs where kind = 'followup' and payload->>'sessionId' = $1 and $2::int is null order by created_at desc limit 1`,
+    );
+    await runner.runJobsOnce();
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    await sleep(2200); // 跟进送达之后才写进会话：结果等它分到 seq 再写（02 的 2 秒上限）
+    await settle();
+    const fu = (await rowsOf(sid)).filter((x) => x.kind === 'followup');
+    const fuMsg = getSession(sid)?.messages.find((m) => m.author === 'followup');
+    check(
+      '跟进：pending 与记账、任务改 sending 同一个事务提交（xmin 与任务行相同），之后才发；结果 accepted、message_seq 对上写进会话的那条',
+      !!cap.out &&
+        cap.out !== 'none' &&
+        cap.out === cap.other &&
+        fu.length >= 1 &&
+        fu.every((x) => x.status === 'accepted') &&
+        !!fuMsg &&
+        fu[0]!.message_seq === seqOf(fuMsg),
+      json({ cap, fu, fuSeq: fuMsg ? seqOf(fuMsg) : null }),
+    );
+    process.env.FOLLOWUP_ENABLED = '';
+  }
+
+  // ---- 接手检查按种类（协调者裁决）：prepare 到发送之间有人接手，付款确认与人工回复照发；跟进照旧取消（AI 回复见下面的验收 5） ----
+  {
+    // 付款确认：notifyPaid 里 prepare，之后、push 之前接手代次变了
+    const uid = 'wm08tkn';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const o = h.store.createOrder({
+      sessionId: sid,
+      routeId: 'r-sichuan-lux',
+      routeTitle: '川西',
+      travelers: 2,
+      departDate: '2026-12-01',
+      totalPrice: 20000,
+    });
+    getSession(sid)!.orderIds.push(o.id);
+    h.store.saveSession(getSession(sid)!);
+    h.store.markOrderPaid(o.id);
+    await settle();
+    const n0 = h.sentTo(uid).length;
+    const notice = await engine.notifyPaid(o.id);
+    tk.__takeoverTest.bump(sid); // prepare 之后、发送之前有人接手
+    const ok = await tk.pushToChannel(sid, notice!.text, { kind: 'notice', message: notice!.message, prepared: notice!.prepared });
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'notice');
+    check(
+      '接手不拦通知：prepare 之后有人接手，付款确认照发、出站行 accepted、没有 cancelled',
+      ok && h.sentTo(uid).length > n0 && rows.length > 0 && rows.every((x) => x.status === 'accepted'),
+      json({ ok, rows }),
+    );
+  }
+  {
+    // 人工回复：reply 里 prepare，之后、push 之前接手代次又变了（改派）
+    const uid = 'wm08tkh';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const n0 = h.sentTo(uid).length;
+    const pending = tk.reply(sid, tk.sharedActor(), '我来跟进这单', `c08tk-${Date.now()}`);
+    tk.__takeoverTest.bump(sid);
+    const r = await pending;
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'human');
+    check(
+      '接手不拦人工回复：prepare 之后接手代次变了，人工回复照发、出站行 accepted',
+      r.sent &&
+        h.sentTo(uid).length === n0 + 1 &&
+        h.sentTo(uid).at(-1)?.content === '【顾问】我来跟进这单' &&
+        rows.every((x) => x.status === 'accepted'),
+      json({ r, rows }),
+    );
+  }
+  {
+    // 跟进：执行体自己比过接手之后、markSending 期间有人接手 → 这一组 cancelled、零发送
+    process.env.FOLLOWUP_ENABLED = '1';
+    const runner = await import('../jobs/runner.js');
+    const uid = 'wm08tkf';
+    const sid = sidOf('a1', uid);
+    const H = 3_600_000;
+    const s = h.store.getOrCreateSession(sid, 'wecom');
+    s.stage = 'quote';
+    s.messages.push(
+      {
+        role: 'customer',
+        content: '这条线多少钱',
+        at: Date.now() - 3 * H - 60_000,
+        msgid: 'q-wm08tkf',
+        sentAt: Date.now() - 3 * H - 60_000,
+      },
+      { role: 'agent', content: '这条线每人 19,800 元起，您几位出行？', at: Date.now() - 3 * H },
+    );
+    s.updatedAt = Date.now() - 3 * H;
+    h.store.saveSession(s, false);
+    await h.store.flushSession(sid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || intent.kind !== 'followup' || fired) return;
+      fired = true;
+      tk.__takeoverTest.bump(sid);
+    });
+    await runner.runJobsOnce();
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'followup');
+    check(
+      '接手照旧拦跟进：markSending 期间接手代次变了，零发送、这一组 cancelled',
+      fired && h.sentTo(uid).length === 0 && rows.length > 0 && rows.every((x) => x.status === 'cancelled'),
+      json({ fired, sent: h.sentTo(uid).length, rows }),
+    );
+    process.env.FOLLOWUP_ENABLED = '';
+  }
+  {
+    // 网页渠道（第 17 步）：没有发送账本，prepare 无操作（null）、release(null) 无操作，push 照常写进历史
+    const sid = 'web:0123456789abcdef0123456789abcdef';
+    h.store.getOrCreateSession(sid, 'web');
+    const prepared = tk.prepareChannel(sid, '付款已确认', { kind: 'notice' });
+    tk.releasePrepared(prepared, 'aborted');
+    const ok = await tk.pushToChannel(sid, '付款已确认', { kind: 'notice', prepared });
+    check(
+      '网页渠道：prepare 返回 null、release 无操作、push 照常（没有出站行）',
+      prepared === null && ok && (await rowsOf(sid)).length === 0,
+      json({ prepared, ok }),
+    );
+  }
+
+  // ---- 验收 5：markSending 挂住期间顾问接手（marked 与 db_unavailable 两种）：零发送、cancelled、会话多一条「本轮未发送」 ----
+  for (const [label, holdMs, uid] of [
+    ['marked', 150, 'wm08tka'],
+    ['db_unavailable', 1300, 'wm08tkb'],
+  ] as const) {
+    const sid = sidOf('a1', uid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || fired) return;
+      fired = true;
+      let open!: () => void;
+      h.faults.gate = new Promise<void>((r) => (open = r));
+      tk.takeover(sid, tk.sharedActor()); // 挂住期间顾问在后台接手
+      setTimeout(() => {
+        h.faults.gate = null;
+        open();
+      }, holdMs);
+    });
+    await talk('a1', uid, '你好，想去云南');
+    ledger.__ledgerTest.setMarkHook(null);
+    await sleep(holdMs);
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'ai');
+    const reply = lastAi(sid);
+    check(
+      `接手竞态（markSending ${label}）：零发送、这一组都 cancelled（payload 已空）、会话多一条「本轮未发送」、工作台「未发送」`,
+      fired &&
+        h.sentTo(uid).length === 0 &&
+        rows.length > 0 &&
+        rows.every((x) => x.status === 'cancelled' && x.nopay) &&
+        !!getSession(sid)?.messages.some((m) => m.role === 'system' && m.content === tk.TAKEN_OVER_NOTE) &&
+        !!reply &&
+        ledger.deliveryOf(sid, reply)?.status === 'cancelled',
+      json({ fired, sent: h.sentTo(uid).length, rows: rows.map((x) => x.status) }),
+    );
+  }
+
+  // ---- 验收 20：停机截止 ----
+  {
+    const uid = 'wm08dl';
+    const sid = sidOf('a1', uid);
+    h.wecom.__wecomTest.closeSends(idOf('a1'), Date.now());
+    await talk('a1', uid, '你好，想去云南');
+    await settle();
+    h.wecom.__wecomTest.closeSends(idOf('a1'), null);
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'ai');
+    check(
+      '停机截止之后才回包：不开始 send_msg，分段留在 pending（payload 在，重启后按同一 msgid 补发，第 10 步）',
+      h.sentTo(uid).length === 0 && rows.length > 0 && rows.every((x) => x.status === 'pending' && !x.nopay),
+      json(rows),
+    );
+  }
+  for (const [label, holdMs, uid] of [
+    ['marked', 150, 'wm08dla'],
+    ['db_unavailable', 1300, 'wm08dlb'],
+  ] as const) {
+    const sid = sidOf('a1', uid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || fired) return;
+      fired = true;
+      let open!: () => void;
+      h.faults.gate = new Promise<void>((r) => (open = r));
+      h.wecom.__wecomTest.closeSends(idOf('a1'), Date.now()); // 挂住期间跨过 normal 段截止
+      setTimeout(() => {
+        h.faults.gate = null;
+        open();
+      }, holdMs);
+    });
+    await talk('a1', uid, '你好，想去云南');
+    ledger.__ledgerTest.setMarkHook(null);
+    await sleep(holdMs);
+    await settle();
+    h.wecom.__wecomTest.closeSends(idOf('a1'), null);
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'ai');
+    check(
+      `markSending ${label} 期间跨过停机截止：假企微上没有请求，库里${label === 'marked' ? '迁回' : '仍是'} pending`,
+      fired && h.sentTo(uid).length === 0 && rows.length > 0 && rows.every((x) => x.status === 'pending' && !x.nopay),
+      json(rows),
+    );
+  }
+
+  // ---- 验收 7 的 A：pending 已提交、markSending 判 db_unavailable：照发、计数；放开之后结果直接从 pending 迁 ----
+  {
+    const uid = 'wm08r6a';
+    const sid = sidOf('a1', uid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || fired) return;
+      fired = true;
+      let open!: () => void;
+      h.faults.gate = new Promise<void>((r) => (open = r));
+      setTimeout(() => {
+        h.faults.gate = null;
+        open();
+      }, 1300);
+    });
+    const u0 = ledger.unsafeSendsIn10m();
+    await talk('a1', uid, '你好，想去云南');
+    ledger.__ledgerTest.setMarkHook(null);
+    const sent = h.sentTo(uid);
+    check(
+      'R6 A：db_unavailable 照发——请求到达时库里还是 pending，「没落库就发」计数',
+      sent.length > 0 && statusAtSend.get(sent[0]!.msgid) === 'pending' && ledger.unsafeSendsIn10m() > u0,
+      json({ at: sent.map((x) => statusAtSend.get(x.msgid)), u: ledger.unsafeSendsIn10m() - u0 }),
+    );
+    await sleep(1300);
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'ai');
+    check(
+      'R6 A：放开之后这一组从 pending 直接迁到 accepted',
+      rows.length === sent.length && rows.every((x) => x.status === 'accepted'),
+      json(rows),
+    );
+  }
+
+  // ---- 验收 7 的 B：生成完时已经挡住，commitOutbound 超时；markSending absent 照发；放开之后先插 pending、再迁 accepted ----
+  {
+    const uid = 'wm08r6b';
+    const sid = sidOf('a1', uid);
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    let planned = false;
+    let marked = false;
+    ledger.__ledgerTest.setPlanHook((intents) => {
+      if (intents[0]?.sessionId !== sid || planned) return;
+      planned = true;
+      h.faults.gate = gate; // 这一组的 pending 那次落库借不到连接
+    });
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || marked) return;
+      marked = true;
+      h.faults.gate = null; // 库恢复了，挡着的那次落库还没进去
+    });
+    const u0 = ledger.unsafeSendsIn10m();
+    await talk('a1', uid, '你好，想去云南');
+    ledger.__ledgerTest.setPlanHook(null);
+    ledger.__ledgerTest.setMarkHook(null);
+    const sent = h.sentTo(uid);
+    check(
+      'R6 B：commitOutbound 超时、markSending absent 照发——请求到达时库里还没有这一行，「没落库就发」计数',
+      planned && marked && sent.length > 0 && sent.every((x) => statusAtSend.get(x.msgid) === null) && ledger.unsafeSendsIn10m() > u0,
+      json({ at: sent.map((x) => statusAtSend.get(x.msgid)) }),
+    );
+    open();
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'ai');
+    check(
+      'R6 B：放开之后先插 pending、再迁 accepted（与发出的分段同一 msgid）',
+      rows.length === sent.length && rows.every((x, i) => x.status === 'accepted' && x.msgid === sent[i]!.msgid),
+      json(rows),
+    );
+  }
+
+  // ---- markSending 返回 absent、而这一组的 pending 提交过（行又没了：只会是被清除）：不发、记一行错误 ----
+  {
+    const uid = 'wm08gone';
+    const sid = sidOf('a1', uid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook(async (intent) => {
+      if (intent.sessionId !== sid || fired) return;
+      fired = true;
+      // agent_app 没有 DELETE：以超级用户删掉这一组的行，模拟提交之后被清除
+      await h.su('delete from outbound_sends where conversation_id = $1', [sid]);
+    });
+    const from = logBuf.length;
+    const u0 = ledger.unsafeSendsIn10m();
+    await talk('a1', uid, '你好，想去云南');
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    check(
+      'absent 而 pending 提交过：不发（不按 R6 照发、不计数）、记一行错误',
+      fired &&
+        h.sentTo(uid).length === 0 &&
+        ledger.unsafeSendsIn10m() === u0 &&
+        logsSince(from).some((l) => l.includes('提交过又不在库里')),
+      json({ sent: h.sentTo(uid).length, logs: logsSince(from).filter((l) => l.includes('不在库里')) }),
+    );
+  }
+
+  // ---- 退避期间收到失败回执：这一段已是 failed，重试不再发（不变量 5：failed 永不再发） ----
+  {
+    const uid = 'wm08rcv';
+    let first: string | null = null;
+    h.fake.sendResult = (b) => {
+      if (b.touser !== uid) return null;
+      if (first === null) {
+        first = String(b.msgid);
+        // 首次请求网络异常（记 unknown、进退避）；退避期间企微发来这一段的 msg_send_fail
+        setTimeout(() => {
+          h.emit(acct('a2').kf, {
+            external_userid: uid,
+            origin: 4,
+            msgtype: 'event',
+            event: { event_type: 'msg_send_fail', fail_msgid: first!, fail_type: 4 },
+          });
+          void h.wecom.syncAccountFromCallback(idOf('a2'), `poll-rcv-${Date.now()}`);
+        }, 100);
+        return 'network';
+      }
+      return null;
+    };
+    await talk('a2', uid, '你好，想去云南');
+    await sleep(1000);
+    await settle();
+    h.fake.sendResult = null;
+    const reqs = first ? h.fake.sends.filter((x) => x.msgid === first).length : -1;
+    check(
+      '退避期间收到失败回执：同一段只发过一次请求（重试前看到 failed 就停），库里这一段 failed',
+      first !== null && reqs === 1 && (await rowOf(first))?.status === 'failed',
+      json({ reqs, row: first ? await rowOf(first) : null }),
+    );
+  }
+
+  // ---- 模型等待期间顾问接手、随后模型报错：兜底道歉拿本轮开始时的代次比，不发、这一组 cancelled ----
+  {
+    const uid = 'wm08exc';
+    const sid = sidOf('a1', uid);
+    const saved = Object.fromEntries(
+      [
+        'LLM_MOCK',
+        'LLM_PROVIDER',
+        'LLM_BASE_URL',
+        'LLM_API_KEY',
+        'LLM_MODEL',
+        'LLM_MODEL_CHEAP',
+        'LLM_HEDGE_MODEL',
+        'EMBED_BASE_URL',
+        'EMBED_API_KEY',
+      ].map((k) => [k, process.env[k]]),
+    );
+    // 假模型：主机名不可解析（.invalid），请求全被假 fetch 接住，绝不会打到真实模型
+    Object.assign(process.env, {
+      LLM_MOCK: '0',
+      LLM_PROVIDER: '',
+      LLM_BASE_URL: 'https://llm.selftest.invalid/v1',
+      LLM_API_KEY: 'selftest-fake-key',
+      LLM_MODEL: 'selftest-fake',
+      LLM_MODEL_CHEAP: 'selftest-fake',
+      LLM_HEDGE_MODEL: '',
+      EMBED_BASE_URL: 'https://llm.selftest.invalid/v1',
+      EMBED_API_KEY: 'selftest-fake-key',
+    });
+    const { llmCfg } = await import('../llm.js');
+    let calls = 0;
+    h.fake.onLlm = () => {
+      calls += 1;
+      // 模型还在生成：顾问在后台接手
+      if (calls === 1) tk.takeover(sid, tk.sharedActor());
+    };
+    const from = logBuf.length;
+    if (llmCfg().baseUrl.startsWith('https://llm.selftest.invalid')) await talk('a1', uid, '你好，想去云南');
+    h.fake.onLlm = null;
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await settle();
+    const rows = await rowsOf(sid);
+    check(
+      '模型报错前已被接手：走了异常兜底，兜底道歉不发（零请求），这一组 cancelled',
+      calls > 0 &&
+        logsSince(from).some((l) => l.includes('处理消息失败')) &&
+        h.sentTo(uid).length === 0 &&
+        rows.length > 0 &&
+        rows.every((x) => x.status === 'cancelled' && x.kind === 'ai'),
+      json({ calls, sent: h.sentTo(uid).map((x) => x.content), rows: rows.map((x) => x.status) }),
+    );
+  }
+
+  // ---- 工作台：回包挂住「发送中」、回执 4「没送达」、超时「可能没送达」（「未发送」见接手竞态） ----
+  {
+    const uid = 'wm08wb';
+    const sid = sidOf('a2', uid);
+    let release!: () => void;
+    const hang = new Promise<void>((r) => (release = r));
+    let hung = false;
+    const prev = h.fake.beforeSend;
+    h.fake.beforeSend = async (body) => {
+      await prev?.(body);
+      if (body.touser === uid && !hung) {
+        hung = true;
+        await hang;
+      }
+    };
+    h.say(acct('a2').kf, uid, '你好，想去云南');
+    void h.wecom.syncAccountFromCallback(idOf('a2'), `poll-wb-${Date.now()}`);
+    await waitFor(() => hung, 10_000);
+    const reply = lastAi(sid)!;
+    check(
+      '工作台：假企微挂住回包时显示「发送中」',
+      ledger.deliveryOf(sid, reply)?.status === 'sending',
+      json(ledger.deliveryOf(sid, reply)),
+    );
+    release();
+    await settle();
+    h.fake.beforeSend = prev;
+    check('工作台：回包之后 accepted（不显示）', ledger.deliveryOf(sid, reply)?.status === 'accepted');
+    const failMsgid = h.sentTo(uid).at(-1)!.msgid;
+    h.emit(acct('a2').kf, {
+      external_userid: uid,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'msg_send_fail', fail_msgid: failMsgid, fail_type: 4 },
+    });
+    await pull(h, 'a2');
+    await settle();
+    await waitFor(async () => (await rowOf(failMsgid))?.status === 'failed', 3000);
+    check(
+      '工作台：回执 4 之后「没送达」（带原因码），库里那一段 failed',
+      json(ledger.deliveryOf(sid, reply)) === json({ status: 'failed', failType: 4 }) && (await rowOf(failMsgid))?.status === 'failed',
+    );
+    const uid2 = 'wm08unk';
+    const sid2 = sidOf('a2', uid2);
+    h.fake.sendResult = (b) => (b.touser === uid2 ? 'network' : null);
+    await talk('a2', uid2, '你好，想去云南');
+    h.fake.sendResult = null;
+    await settle();
+    const r2 = await rowsOf(sid2);
+    check(
+      '工作台：超时与网络异常 →「可能没送达」，库里 unknown、同一 msgid 重试了 3 次',
+      ledger.deliveryOf(sid2, lastAi(sid2)!)?.status === 'unknown' &&
+        r2.length > 0 &&
+        r2.every((x) => x.status === 'unknown' && x.attempts === 3),
+      json(r2),
+    );
+  }
+
+  // ---- 同步校验没过：这一组什么都没排、不发，会话加一条说明 ----
+  {
+    const uid = 'wm08bad';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const n0 = h.sentTo(uid).length;
+    const r0 = (await rowsOf(sid)).length;
+    const ok = await h.wecom.wecomAdapter.push(sid, `a${String.fromCharCode(0)}b`, { kind: 'notice' });
+    await settle();
+    check(
+      '校验没过（正文带 NUL）：不发、不落任何出站行，会话加一条说明',
+      !ok &&
+        h.sentTo(uid).length === n0 &&
+        (await rowsOf(sid)).length === r0 &&
+        !!getSession(sid)?.messages.some((m) => m.role === 'system' && m.content.includes('没有排进发送')),
+    );
+  }
+
+  h.fake.beforeSend = null;
+  ledger.__ledgerTest.setWaits(null);
 }

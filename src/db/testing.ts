@@ -337,6 +337,34 @@ export async function openFlakyDb(
   };
 }
 
+/**
+ * 真实 Postgres 上带「挡住借连接」的连接池（03 第 8 步：验收 5、7、20 要在真实 PG 上挡住写库）：faults.gate 设了就先等它再借连接
+ * （与 installPgSessionStore 的 gate 同一个语义：借连接那一刻看 faults.gate，之后再改它只影响之后的借连接）；faults.acquire 设了就抛它
+ */
+export async function openGatedDb(url: string): Promise<{ db: Db; close(): Promise<void>; faults: Pick<StoreFaults, 'gate' | 'acquire'> }> {
+  assertPgUrl(url);
+  const pool = new pg.Pool({ connectionString: url, max: 5 });
+  pool.on('error', () => {});
+  pool.on('connect', (c) => c.on('error', () => {}));
+  const faults: Pick<StoreFaults, 'gate' | 'acquire'> = { gate: null, acquire: null };
+  const db: Db = drizzleNodePg(pool, { schema, logger: countingLogger });
+  const perClient = new WeakMap<pg.PoolClient, Db>();
+  registerDriver(db, {
+    async acquire() {
+      if (faults.gate) await faults.gate;
+      if (faults.acquire) throw faults.acquire;
+      const client = await pool.connect();
+      let conn = perClient.get(client);
+      if (!conn) {
+        conn = drizzleNodePg(client, { schema, logger: countingLogger });
+        perClient.set(client, conn);
+      }
+      return { db: conn, release: async (destroy) => client.release(destroy) };
+    },
+  });
+  return { db, close: () => pool.end(), faults };
+}
+
 // ---------------- 真实 Postgres 上的一次性库（给 src/ 下别的套件用：它们不能 import pg） ----------------
 
 export interface RealPgFixture {

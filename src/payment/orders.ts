@@ -104,7 +104,7 @@ export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<
   // 付款确认在提交之后才写进会话、发给客户（不变量 20）
   const notice = await notifyPaid(o.id);
   if (notice) {
-    const sent = await pushToChannel(notice.sessionId, notice.text, { kind: 'notice', message: notice.message });
+    const sent = await pushToChannel(notice.sessionId, notice.text, { kind: 'notice', message: notice.message, prepared: notice.prepared });
     const s = getSession(notice.sessionId);
     if (!sent && s && !SEED_SESSION_RE.test(s.id)) {
       s.messages.push({ role: 'system', content: PAY_NOTICE_FAILED, at: Date.now() });
