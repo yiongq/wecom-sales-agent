@@ -59,6 +59,8 @@ import { buildIndex } from './retrieval.js';
 import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
+import { webAdapter } from './adapters/web.js';
+import { webRoutes } from './web/routes.js';
 import { syncFromCallback, wecomAdapter } from './adapters/wecom.js';
 import { accountCallbackGet, accountCallbackPost } from './adapters/wecom-callback.js';
 import { channelKeyRing, channelsHealth, channelsMode, initChannels, startChannels } from './channels/registry.js';
@@ -98,6 +100,7 @@ app.use('/*', requestLogContext);
 function adapterFor(channel: string): ChannelAdapter {
   if (channel === 'wecom') return wecomAdapter;
   if (channel === 'simulator') return simulatorAdapter;
+  if (channel === 'web') return webAdapter;
   return {
     name: 'unknown',
     push(sessionId) {
@@ -393,6 +396,8 @@ function extractTag(xml: string, tag: string): string | undefined {
   }
   return inner;
 }
+
+app.route('/', webRoutes);
 
 app.post('/api/chat', simulatorOnly, async (c) => {
   if (chatRateLimited(clientKey(c))) return c.json({ error: '发送太频繁了，请稍后再试' }, 429);

@@ -19,3 +19,10 @@ export type InboxAbandonReason = (typeof INBOX_ABANDON_REASONS)[number];
 
 export const OUTBOUND_STATUSES = ['pending', 'sending', 'accepted', 'rejected', 'unknown', 'failed', 'cancelled'] as const;
 export type OutboundStatus = (typeof OUTBOUND_STATUSES)[number];
+
+/** 正式网页渠道的客户侧历史投影，不携带会话与成员标识。 */
+export interface WebMessage {
+  role: 'customer' | 'agent';
+  text: string;
+  at: number;
+}

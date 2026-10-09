@@ -393,3 +393,605 @@ try {
   __profileTest.reset();
   fs.rmSync(varDir, { recursive: true, force: true });
 }
+
+// 第 17 步：后端验收。前面的第 5 步保持原样；真实 PG 另起进程，避免换掉已装上的会话后端。
+fs.mkdirSync(varDir, { recursive: true });
+process.env.SERVER_SELFTEST = '1';
+process.env.WEB_RATE_PER_MIN = '20';
+process.env.WEB_NEW_PER_IP_HOUR = '10';
+process.env.WEB_SSE_MAX_PER_IP = '10';
+process.env.WEB_SSE_MAX_TOTAL = '2000';
+process.env.ALERT_WEBHOOK_URL = '';
+process.env.NOTIFY_WEBHOOK_URL = '';
+for (const s of store.listSessions()) if (!store.isDemoClassId(s.id)) store.forgetSession(s.id);
+const { openTestDb, installPgSessionStore, createRealPgFixture, testConfigDeps } = await import('../db/testing.js');
+const { importConfig } = await import('../config/transfer.js');
+const { initConfig, closeConfig, __configTest } = await import('../config/source.js');
+const { openDb } = await import('../db/client.js');
+const { installAccounts } = await import('../channels/accounts.js');
+const { webAdapter, webConversationId, subscribeWeb } = await import('../adapters/web.js');
+const { __privacyTest } = await import('../privacy/privacy.js');
+const { __logTest } = await import('../log.js');
+const { execFileSync } = await import('node:child_process');
+const realRun = process.env.WEB_BACKEND_REAL_PG === '1';
+if (realRun) globalThis.Date = Object.getPrototypeOf(Date) as DateConstructor;
+const pgTest = realRun ? await createRealPgFixture(process.env.PG_TEST_URL!) : null;
+const t = realRun ? null : await openTestDb();
+const realDb = pgTest ? await openDb(pgTest.urls.app) : null;
+const fx = t ? await installPgSessionStore(t, { varDir }) : null;
+const deps = fx?.deps ?? { db: realDb!.db, tenantId: pgTest!.tenantId, tenantSlug: 'demo', varDir };
+const configDeps = testConfigDeps({ db: deps.db });
+const imported = await importConfig({
+  db: deps.db,
+  tenantSlug: 'demo',
+  dataDir: path.resolve('data'),
+  imageSop: configDeps.imageSop,
+  lock: configDeps.lock,
+});
+assert.equal(imported.code, 0, '后端夹具使用完整 DB 配置，确定性路径的 trace 也带前缀哈希');
+await initConfig(configDeps);
+await store.initSessionStore(deps);
+const sqlQuery = async <R>(sql: string, params: unknown[] = []): Promise<R[]> => {
+  if (pgTest) return pgTest.query<R>(sql, params);
+  return t!.pg.transaction(async (tx) => {
+    await tx.exec('SET LOCAL ROLE NONE');
+    return (await tx.query<R>(sql, params)).rows;
+  });
+};
+const { app } = await import('../server.js');
+const { __webTest } = await import('./routes.js');
+const { enterHandoff } = await import('../handoff/record.js');
+const { release } = await import('../handoff/takeover.js');
+type Account = import('../channels/accounts.js').ChannelAccount;
+const accounts: Account[] = [];
+async function account(key: string, settings: Partial<NonNullable<Account['web']>> = {}): Promise<Account> {
+  const a: Account = {
+    id: `00000000-0000-4000-8000-${String(accounts.length + 1).padStart(12, '0')}`,
+    tenantId: deps.tenantId,
+    key,
+    kind: 'web',
+    name: '网页测试',
+    status: 'active',
+    source: 'db',
+    wecom: null,
+    inactiveReason: null,
+    web: { title: '网页测试', dailyNewConversations: 500, dailyTurns: 3000, ...settings },
+  };
+  // 账号也写入测试库，合并第 7 步的 channel_account_id 外键投影后夹具仍成立。
+  await sqlQuery('insert into channel_accounts (id, tenant_id, key, kind, name, status, settings) values ($1,$2,$3,$4,$5,$6,$7)', [
+    a.id,
+    a.tenantId,
+    a.key,
+    a.kind,
+    a.name,
+    a.status,
+    JSON.stringify(a.web),
+  ]);
+  accounts.push(a);
+  installAccounts(accounts);
+  return a;
+}
+const primary = await account('web-test');
+const secrets = new Set<string>();
+const sessionIds = new Set<string>();
+let ipSeq = 0;
+const nextIp = (): string => `198.51.${Math.floor(++ipSeq / 200)}.${(ipSeq % 200) + 1}`;
+const liveBodies: ReadableStream<Uint8Array>[] = [];
+type ReplyBody = { reply: { text: string } | null };
+async function request(
+  a: Account,
+  endpoint: string,
+  opts: { body?: unknown; cookie?: string; ip?: string; chatHeader?: boolean } = {},
+): Promise<Response> {
+  const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+  return app.request(`/api/web/${a.key}/${endpoint}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: {
+      'x-forwarded-for': opts.ip ?? nextIp(),
+      ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) }),
+      ...(opts.cookie ? { cookie: opts.cookie } : {}),
+      ...(opts.chatHeader === false ? {} : { 'x-web-chat': '1' }),
+    },
+    body,
+  });
+}
+async function json<R>(res: Response, status = 200): Promise<R> {
+  assert.equal(res.status, status);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  const raw = await res.text();
+  for (const secret of [...secrets, ...sessionIds]) assert.ok(!raw.includes(secret), '响应没有访客凭据或会话 id');
+  if (status === 404) return null as R;
+  return JSON.parse(raw) as R;
+}
+function credential(res: Response, a: Account): { cookie: string; token: string; s: Session } {
+  const header = res.headers.get('set-cookie')!;
+  assert.ok(header, '接受消息下发 cookie');
+  for (const attr of ['HttpOnly', 'Secure', 'SameSite=Lax', 'Path=/', 'Max-Age=2592000']) assert.ok(header.includes(attr), attr);
+  const cookie = header.split(';')[0]!;
+  const token = cookie.split('=')[1]!;
+  assert.equal(Buffer.from(token, 'base64url').length, 32, '32 字节凭据');
+  const id = webConversationId(a.id, token);
+  secrets.add(token);
+  sessionIds.add(id);
+  const s = store.getSession(id)!;
+  assert.equal(s.channel, 'web');
+  assert.equal(s.channelAccountId, a.id);
+  assert.ok(/^web:[0-9a-f]{32}$/.test(id));
+  assert.equal(store.isDemoClassId(id), false, 'web 不是 demo 类');
+  return { cookie, token, s };
+}
+let modelCalls = 0;
+let modelGate: Promise<void> | null = null;
+let modelStarted: (() => void) | null = null;
+globalThis.fetch = async (input) => {
+  assert.ok(String(input).startsWith('http://127.0.0.1/web-selftest/'), '只使用本地假模型');
+  modelCalls++;
+  modelStarted?.();
+  if (modelGate) await modelGate;
+  return Response.json({
+    choices: [{ message: { role: 'assistant', content: '您好，您想了解什么行程？' } }],
+    usage: { prompt_tokens: 1, completion_tokens: 1 },
+  });
+};
+const report = (name: string): void => console.log(`PASS web 后端：${name}`);
+try {
+  __profileTest.use({ DEPLOY_PROFILE: 'demo' });
+  const page = await app.request(`/w/${primary.key}`);
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get('cache-control'), 'no-store');
+  assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+  assert.ok(!(await page.text()).includes('<script'));
+  for (const state of ['missing', 'disabled', 'wrong-kind', 'inactive']) {
+    const a = await account(`web-${state}`);
+    if (state === 'missing') a.key = 'other-key';
+    if (state === 'disabled') a.status = 'disabled';
+    if (state === 'wrong-kind') a.kind = 'wecom_kf';
+    if (state === 'inactive') a.inactiveReason = '未启用';
+    for (const endpoint of ['history', 'events', 'messages', 'end']) {
+      const res = await app.request(`/api/web/web-${state}/${endpoint}`, {
+        method: ['messages', 'end'].includes(endpoint) ? 'POST' : 'GET',
+      });
+      assert.equal(res.status, 404);
+    }
+    assert.equal((await app.request(`/w/web-${state}`)).status, 404);
+  }
+  report('入口与全部接口只认启用的 web 账号，占位没有脚本');
+  assert.deepEqual(await json(await request(primary, 'history')), { messages: [] });
+  await json(await request(primary, 'events'), 401);
+  const forged = `__Host-wv=${Buffer.alloc(32, 17).toString('base64url')}`;
+  await json(await request(primary, 'events', { cookie: forged }), 401);
+  assert.deepEqual(await json(await request(primary, 'history', { cookie: forged })), { messages: [] });
+  for (const endpoint of ['messages', 'end'])
+    await json(await request(primary, endpoint, { body: { text: '你好' }, chatHeader: false }), 403);
+  for (const body of [
+    { text: '' },
+    { text: 'x'.repeat(1001) },
+    { text: 5 },
+    { text: '你好', cid: 'short' },
+    { text: '你好', menu: 'health:granted' },
+    { text: '你好', sessionId: 'web:fake' },
+  ]) {
+    const res = await request(primary, 'messages', { body });
+    assert.equal(res.headers.get('set-cookie'), null);
+    await json(res, 400);
+  }
+  report('无凭据与伪造凭据不能读取或订阅，POST 必须带 x-web-chat，输入校验');
+
+  const first = await request(primary, 'messages', { body: { text: '你好', cid: 'first-cid' } });
+  const own = credential(first, primary);
+  const firstReply = await json<ReplyBody>(first);
+  const beforeDuplicate = modelCalls;
+  const duplicate = await request(primary, 'messages', { cookie: own.cookie, body: { text: '不同文本', cid: 'first-cid' } });
+  assert.deepEqual(await json(duplicate), firstReply);
+  assert.ok(duplicate.headers.get('set-cookie')!.includes('Max-Age=2592000'), '已有 cookie 滑动续期');
+  assert.equal(duplicate.headers.get('set-cookie')!.split(';')[0], own.cookie);
+  assert.equal(modelCalls, beforeDuplicate);
+  assert.equal(own.s.messages.filter((m) => m.msgid === 'first-cid').length, 1);
+  report('cookie 属性、32 字节、滑动续期，cid 重复返回原回复且只记一条');
+
+  const unissued = await request(primary, 'messages', { cookie: forged, body: { text: '你好' } });
+  const rotated = credential(unissued, primary);
+  await json(unissued);
+  assert.notEqual(rotated.cookie, forged, '格式正确但未签发的凭据重新随机生成，防固定凭据');
+
+  own.s.messages.push({ role: 'customer', content: '请问在吗', at: Date.now(), msgid: 'crash-cid' });
+  store.saveSession(own.s);
+  assert.ok(
+    (await json<ReplyBody>(await request(primary, 'messages', { cookie: own.cookie, body: { text: '请问在吗', cid: 'crash-cid' } }))).reply,
+  );
+  assert.equal(own.s.messages.filter((m) => m.msgid === 'crash-cid').length, 1, 'alreadyRecorded 不重复记录');
+  let unblock!: () => void;
+  modelGate = new Promise((r) => {
+    unblock = r;
+  });
+  const started = new Promise<void>((r) => {
+    modelStarted = r;
+  });
+  const pending = request(primary, 'messages', { cookie: own.cookie, body: { text: '签证如何办理', cid: 'pending-cid' } });
+  await started;
+  assert.deepEqual(
+    await json(await request(primary, 'messages', { cookie: own.cookie, body: { text: '签证如何办理', cid: 'pending-cid' } }), 409),
+    { error: 'in_progress' },
+  );
+  unblock();
+  modelGate = null;
+  modelStarted = null;
+  await json(await pending);
+  assert.equal(own.s.messages.filter((m) => m.msgid === 'pending-cid').length, 1);
+  report('处理中 409，崩溃留下的已记录消息通过 alreadyRecorded 恢复');
+
+  own.s.profile.notes = ['不可公开的画像'];
+  own.s.messages.push(
+    { role: 'system', content: '不应公开的系统消息', at: Date.now() },
+    { role: 'agent', content: '顾问回复', at: Date.now(), author: 'human', authorId: 'member-test', authorName: '真实姓名' },
+  );
+  store.saveSession(own.s);
+  const history = await json<{ messages: import('../shared/channel-types.js').WebMessage[] }>(
+    await request(primary, 'history', { cookie: own.cookie }),
+  );
+  assert.ok(history.messages.some((m) => m.text === '【顾问】顾问回复'));
+  assert.ok(history.messages.every((m) => ['customer', 'agent'].includes(m.role) && Object.keys(m).sort().join() === 'at,role,text'));
+  assert.ok(!JSON.stringify(history).match(/不可公开|不应公开|真实姓名|member-test/));
+  const other = await account('web-other');
+  assert.notEqual(webConversationId(other.id, own.token), own.s.id, '哈希绑定账号');
+  assert.deepEqual(await json(await request(other, 'history', { cookie: own.cookie })), { messages: [] });
+  await json(await request(other, 'events', { cookie: own.cookie }), 401);
+  const anon = await app.request('/api/sessions');
+  assert.ok(!(await anon.text()).includes(own.s.id), '匿名 admin 列表没有 web 会话');
+  report('历史仅有 role/text/at，人工前缀，无 system/画像/成员；账号隔离与匿名列表');
+
+  async function events(
+    a: Account,
+    cookie: string,
+    ip = nextIp(),
+  ): Promise<{ res: Response; reader?: ReadableStreamDefaultReader<Uint8Array> }> {
+    const res = await request(a, 'events', { cookie, ip });
+    if (res.status !== 200) return { res };
+    assert.equal(res.headers.get('content-type'), 'text/event-stream');
+    const body = res.body!;
+    liveBodies.push(body);
+    const reader = body.getReader();
+    const ping = await reader.read();
+    assert.ok(new TextDecoder().decode(ping.value).includes('event: ping'));
+    return { res, reader };
+  }
+  for (let i = 0; i < 3; i++) {
+    const head = await app.request(`/api/web/${primary.key}/events`, {
+      method: 'HEAD',
+      headers: { cookie: own.cookie, 'x-forwarded-for': nextIp() },
+    });
+    assert.equal(head.status, 405);
+    assert.equal(head.headers.get('allow'), 'GET');
+    assert.equal(head.headers.get('cache-control'), 'no-store');
+    assert.equal(await head.text(), '');
+  }
+  const open = [await events(primary, own.cookie), await events(primary, own.cookie), await events(primary, own.cookie)];
+  await json((await events(primary, own.cookie)).res, 429);
+  report('连续三次 HEAD 返回空 405/Allow GET，随后三个 GET 均成功、第四个才 429');
+  await webAdapter.push(own.s.id, '在线顾问', { kind: 'human' });
+  for (const conn of open) assert.ok(new TextDecoder().decode((await conn.reader!.read()).value).includes('【顾问】在线顾问'));
+  await open[1]!.reader!.cancel();
+  await open[2]!.reader!.cancel();
+  __privacyTest.set({ version: 1, body: '测试隐私说明' });
+  await json(await request(primary, 'messages', { cookie: own.cookie, body: { text: '我妈有高血压', cid: 'consent-cid' } }));
+  const menuRaw = new TextDecoder().decode((await open[0]!.reader!.read()).value);
+  assert.ok(menuRaw.includes('event: menu') && menuRaw.includes('health:granted') && menuRaw.includes('不同意'));
+  for (const secret of [...secrets, ...sessionIds]) assert.ok(!menuRaw.includes(secret));
+  assert.equal(own.s.consent?.health, 'asked');
+  const beforeClick = modelCalls;
+  await json(await request(primary, 'messages', { cookie: own.cookie, body: { menu: 'health:granted', cid: 'menu-cid-1' } }));
+  assert.equal(own.s.consent?.health, 'granted');
+  assert.equal(modelCalls, beforeClick);
+  await json(await request(primary, 'messages', { cookie: own.cookie, body: { menu: 'health:granted:fake' } }), 400);
+  __webTest.tickStreams(Date.now() + 15_000);
+  assert.ok(new TextDecoder().decode((await open[0]!.reader!.read()).value).includes('event: ping'));
+  __webTest.tickStreams(Date.now() + 30 * 60_000 + 1);
+  assert.equal((await open[0]!.reader!.read()).done, true, 'ping 不续空闲期，30 分钟关闭');
+  assert.equal(await webAdapter.push(own.s.id, '离线正文'), true);
+  assert.equal(await webAdapter.push(own.s.id, '离线菜单', { kind: 'menu', category: 'minor' }), false);
+  const offlineRes = await request(primary, 'messages', { body: { text: '我妈有高血压' } });
+  const offline = credential(offlineRes, primary);
+  await json(offlineRes);
+  assert.equal(offline.s.consentAskCount?.health, 1);
+  await json(await request(primary, 'messages', { cookie: offline.cookie, body: { text: '我妈有高血压' } }));
+  assert.equal(offline.s.consentAskCount?.health, 2, '离线菜单仍走第二次询问规则');
+  await json(await request(primary, 'messages', { cookie: offline.cookie, body: { text: '我妈有高血压' } }));
+  assert.equal(offline.s.consentAskCount?.health, 2, '最多问两次');
+  assert.ok(!offline.s.messages.some((m) => m.content.includes('可以吗？隐私说明')), '离线菜单不假记已送达');
+  report('SSE 会话第 4 条 429、多连接人工推送、15 秒 ping/30 分钟空闲关闭、同意菜单与 granted、离线菜单 false');
+
+  const ipConnections: Awaited<ReturnType<typeof events>>[] = [];
+  const sharedIp = nextIp();
+  for (let i = 0; i < 4; i++) {
+    const res = await request(primary, 'messages', { body: { text: '你好', cid: `ip-cid-0${i}` } });
+    const cred = credential(res, primary);
+    await json(res);
+    for (let n = 0; n < (i === 3 ? 1 : 3); n++) ipConnections.push(await events(primary, cred.cookie, sharedIp));
+    if (i === 3) await json((await events(primary, cred.cookie, sharedIp)).res, 429);
+  }
+  for (const conn of ipConnections) await conn.reader!.cancel();
+  process.env.WEB_SSE_MAX_TOTAL = '1';
+  const globalConnection = await events(primary, own.cookie);
+  await json((await events(primary, own.cookie)).res, 429);
+  await globalConnection.reader!.cancel();
+  process.env.WEB_SSE_MAX_TOTAL = '2000';
+  const failing = subscribeWeb(own.s.id, nextIp(), () => {
+    throw new Error('断开');
+  });
+  assert.equal(typeof failing, 'function');
+  const delivered: unknown[] = [];
+  const good = subscribeWeb(own.s.id, nextIp(), (ev) => {
+    delivered.push(ev);
+  });
+  await webAdapter.push(own.s.id, '仍送达');
+  assert.equal(delivered.length, 1, '坏连接不影响其他连接');
+  if (typeof failing === 'function') {
+    failing();
+    failing();
+  }
+  if (typeof good === 'function') good();
+  report('同 IP 第 11 条 429、全局上限，取消与异常释放配额');
+
+  const rateIp = nextIp();
+  for (let i = 0; i < 20; i++)
+    await json(await request(primary, 'messages', { ip: rateIp, cookie: own.cookie, body: { text: '你好', cid: 'first-cid' } }));
+  const rateCalls = modelCalls;
+  const rateResponse = await request(primary, 'messages', { ip: rateIp, cookie: own.cookie, body: { text: '你好' } });
+  assert.equal(rateResponse.headers.get('set-cookie'), null);
+  await json(rateResponse, 429);
+  assert.equal(modelCalls, rateCalls);
+  const newIp = nextIp();
+  for (let i = 0; i < 10; i++) {
+    const r = await request(primary, 'messages', { ip: newIp, body: { text: '你好' } });
+    credential(r, primary);
+    await json(r);
+  }
+  const countBeforeIp = store.listSessions().length;
+  const ipLimited = await request(primary, 'messages', { ip: newIp, body: { text: '你好' } });
+  assert.equal(ipLimited.headers.get('set-cookie'), null);
+  await json(ipLimited, 429);
+  assert.equal(store.listSessions().length, countBeforeIp);
+  const capped = await account('web-new-cap', { dailyNewConversations: 1 });
+  const allowed = await request(capped, 'messages', { cookie: '__Host-wv=invalid', body: { text: '你好' } });
+  const capOwn = credential(allowed, capped);
+  await json(allowed);
+  assert.notEqual(capOwn.cookie, '__Host-wv=invalid');
+  const countBefore = store.listSessions().length;
+  const dailyDenied = await request(capped, 'messages', { body: { text: '你好' } });
+  assert.equal(dailyDenied.headers.get('set-cookie'), null);
+  await json(dailyDenied, 429);
+  assert.equal(store.listSessions().length, countBefore);
+  report('IP 分钟限流、新会话 IP 小时/账号每日上限；429 无 cookie、无会话、无模型调用');
+
+  const turns = await account('web-turn-cap', { dailyTurns: 1 });
+  const beforeReset = modelCalls;
+  const resetResponse = await request(turns, 'messages', { body: { text: '重置', cid: 'reset-cid' } });
+  const resetOwn = credential(resetResponse, turns);
+  assert.ok((await json<ReplyBody>(resetResponse)).reply!.text.includes('重新开始'));
+  assert.equal(modelCalls, beforeReset, 'demo 重置不调模型');
+  const afterReset = await request(turns, 'messages', { cookie: resetOwn.cookie, body: { text: '你好', cid: 'after-reset' } });
+  assert.ok((await json<ReplyBody>(afterReset)).reply);
+  assert.equal(modelCalls, beforeReset + 1, '确定性回复退回预留，不消耗模型轮次上限');
+  // 下一段用同一账号的新访客，轮次已经被 after-reset 用完。
+  turns.web!.dailyTurns = 2;
+  const r = await request(turns, 'messages', { body: { text: '你好', cid: 'turn-first' } });
+  const turnOwn = credential(r, turns);
+  await json(r);
+  const beforeCap = modelCalls;
+  const warnings: string[] = [];
+  const oldWarn = console.warn;
+  console.warn = (...args) => {
+    warnings.push(args.join(' '));
+  };
+  try {
+    for (let i = 0; i < 2; i++)
+      assert.deepEqual(
+        await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: `还有问题${i}`, cid: `turn-cap-${i}` } })),
+        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+      );
+    assert.equal(turnOwn.s.handoffCount, 1);
+    assert.equal(turnOwn.s.handoff?.kind, 'request');
+    assert.equal(modelCalls, beforeCap);
+    release(turnOwn.s.id, { role: 'shared', userId: null, name: '顾问', ip: null });
+    assert.deepEqual(
+      await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '又一个问题', cid: 'turn-after' } })),
+      { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+    );
+    assert.equal(turnOwn.s.handoffCount, 1, '顾问交还之后不重复因限额转人工');
+    const r2 = await request(turns, 'messages', { body: { text: '第二个访客', cid: 'turn-newer' } });
+    credential(r2, turns);
+    await json(r2);
+    assert.equal(warnings.filter((w) => w.includes('web-turn-cap')).length, 1, '每账号每天一条 channel 告警');
+    assert.equal(modelCalls, beforeCap);
+  } finally {
+    console.warn = oldWarn;
+  }
+  assert.equal(turnOwn.s.messages.filter((m) => m.role === 'customer').length, 4, '超限客户消息照记');
+  const human = await account('web-human');
+  const hr = await request(human, 'messages', { body: { text: '你好' } });
+  const humanOwn = credential(hr, human);
+  await json(hr);
+  enterHandoff(humanOwn.s, { kind: 'request', reason: '测试转人工', at: Date.now() });
+  store.saveSession(humanOwn.s);
+  assert.deepEqual(
+    await json(await request(human, 'messages', { cookie: humanOwn.cookie, body: { text: '顾问在吗', cid: 'human-cid' } })),
+    { reply: null },
+  );
+  assert.equal(humanOwn.s.messages.filter((m) => m.msgid === 'human-cid').length, 1);
+  report('每日轮次超限固定回复/客户话留存/至多一次 request/不调模型/账号每日告警；普通转人工 reply null');
+
+  const DayDate = Date;
+  globalThis.Date = class extends DayDate {
+    constructor(value?: string | number) {
+      super(value ?? DayDate.now() + 86_400_000);
+    }
+  } as DateConstructor;
+  try {
+    const newDay = await request(capped, 'messages', { body: { text: '新一天咨询' } });
+    credential(newDay, capped);
+    await json(newDay);
+    const turnDay = await request(turns, 'messages', { body: { text: '新一天的问题' } });
+    const nextDayOwn = credential(turnDay, turns);
+    await json(turnDay);
+    assert.equal(nextDayOwn.s.handedOver, false, '自然日切换重置轮次上限');
+    const beforeResume = modelCalls;
+    assert.equal(turnOwn.s.handedOver, false, '顾问已交还之前超限的会话');
+    const resumed = await json<ReplyBody>(
+      await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '今天继续咨询', cid: 'turn-resume' } }),
+    );
+    assert.equal(resumed.reply!.text, '您好，您想了解什么行程？');
+    assert.equal(modelCalls, beforeResume + 1, '旧会话额度恢复后正常调模型');
+    assert.equal(turnOwn.s.handoffCount, 1, '持久预算标记仍然保留');
+    warnings.length = 0;
+    console.warn = (...args) => {
+      warnings.push(args.join(' '));
+    };
+    try {
+      for (let i = 0; i < 2; i++)
+        assert.deepEqual(
+          await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '再次超限', cid: `recap-cid-${i}` } })),
+          { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+        );
+      assert.equal(turnOwn.s.handoffCount, 1, '新自然日再次超限也不重复转人工');
+      assert.equal(turnOwn.s.handedOver, false);
+      assert.equal(modelCalls, beforeResume + 1, '再次超限不调模型');
+      assert.equal(warnings.filter((w) => w.includes('web-turn-cap')).length, 1, '已有持久标记仍在新自然日合并一条告警');
+    } finally {
+      console.warn = oldWarn;
+    }
+    report('超限当天固定回复/转一次人工；次日顾问交还后调模型；再次超限不再转人工且每天告警一次');
+
+    const beforeWindow = turnOwn.s.messages.length;
+    const beforeWindowCalls = modelCalls;
+    let appended = 0;
+    for (let i = 0; i < 205; i++) {
+      const length = turnOwn.s.messages.length;
+      assert.deepEqual(
+        await json(
+          await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: `连续超限咨询${i}`, cid: `window-cid-${i}` } }),
+        ),
+        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+      );
+      appended += 2;
+      if (length + 2 > 400) break;
+    }
+    assert.ok(beforeWindow + appended > 400, '不同 cid 的真实超限请求累计超过 400 条消息');
+    assert.equal(turnOwn.s.messages.length, 300, '越过 400 后裁到最近 300 条');
+    assert.equal(modelCalls, beforeWindowCalls);
+    assert.equal(turnOwn.s.handoffCount, 1);
+    await store.flushSession(turnOwn.s.id, { timeoutMs: 20_000 });
+    const persisted = await sqlQuery<{ count: number }>(
+      'select count(*)::int as count from messages where tenant_id=$1 and conversation_id=$2',
+      [deps.tenantId, turnOwn.s.id],
+    );
+    assert.equal(persisted[0]!.count, beforeWindow + appended, '窗口裁剪不删除已落库消息，新增消息全部追加');
+    report('超限路径不同 cid 超过 400 条裁到 300 条，数据库完整追加历史仍在');
+  } finally {
+    globalThis.Date = DayDate;
+    console.warn = oldWarn;
+  }
+  report('账号每日新会话与轮次按服务器自然日清零');
+
+  const end = await request(primary, 'end', { cookie: own.cookie, body: {} });
+  assert.ok(end.headers.get('set-cookie')!.startsWith('__Host-wv=; Max-Age=0;'));
+  await json(end);
+  assert.equal(store.getSession(own.s.id), own.s);
+  assert.deepEqual(await json(await request(primary, 'history')), { messages: [] });
+  const newAfterEnd = await request(primary, 'messages', { body: { text: '你好' } });
+  const afterEnd = credential(newAfterEnd, primary);
+  await json(newAfterEnd);
+  assert.notEqual(afterEnd.s.id, own.s.id);
+  const logLines: string[] = [];
+  const logger = __logTest.createJsonLogger({
+    write: (line) => {
+      logLines.push(line);
+    },
+  });
+  logger.info(
+    { cookie: own.cookie, headers: { 'set-cookie': first.headers.get('set-cookie'), cookie: own.cookie }, token: own.token },
+    `会话 ${own.s.id}`,
+  );
+  assert.ok(!logLines.join('').includes(own.token) && !logLines.join('').includes(own.s.id), 'pino 遮盖 cookie/set-cookie/token 与 web id');
+  assert.ok(__logTest.REDACT_PATHS.includes('cookie') && __logTest.REDACT_PATHS.some((p) => p.includes('set-cookie')));
+  report('end 清 cookie 不删会话；响应与 pino 日志无凭据、无会话原 id');
+
+  for (const flags of [{ DEPLOY_PROFILE: 'prod' }, { DEPLOY_PROFILE: 'demo', FLAG_WEB_CHANNEL: 'off' }]) {
+    __profileTest.use(flags);
+    assert.equal((await app.request(`/w/${primary.key}`)).status, 404);
+    for (const endpoint of ['history', 'events', 'messages', 'end']) {
+      const res = await request(primary, endpoint, {
+        cookie: own.cookie,
+        ...(['messages', 'end'].includes(endpoint) ? { body: { text: '你好' } } : {}),
+      });
+      await json(res, 404);
+    }
+    if (flags.DEPLOY_PROFILE === 'prod') assert.equal((await app.request('/chat.html')).status, 404);
+  }
+  __profileTest.use({ DEPLOY_PROFILE: 'demo' });
+  report('prod 与 demo 关闭 web_channel 时全部网页路由 404，prod chat.html 仍为 404');
+
+  const stale = store.getOrCreateSession(webConversationId(primary.id, Buffer.alloc(32, 33).toString('base64url')), 'web');
+  stale.channelAccountId = primary.id;
+  stale.messages.push({ role: 'customer', content: '过期咨询', at: Date.now() - 8 * 86_400_000 });
+  stale.createdAt = stale.updatedAt = Date.now() - 8 * 86_400_000;
+  store.saveSession(stale, false);
+  const visitor = store.getOrCreateSession('sim-webbackend-stale', 'simulator');
+  visitor.updatedAt = Date.now() - 8 * 86_400_000;
+  store.saveSession(visitor, false);
+  store.pruneStaleVisitorData();
+  assert.equal(store.getSession(visitor.id), undefined);
+  assert.equal(store.getSession(stale.id), stale, 'sim 访客清理不碰 web');
+  const drained = await store.drainStore(20_000);
+  assert.deepEqual(drained.undrained, []);
+  const stored = await sqlQuery<{ id: string; channel: string; state: Record<string, unknown> }>(
+    'select id, channel, state from conversations where tenant_id=$1',
+    [deps.tenantId],
+  );
+  assert.ok(
+    stored.some((s) => s.id === own.s.id && s.channel === 'web' && s.state.channelAccountId === primary.id),
+    '网页会话落库且账号在 state',
+  );
+  assert.ok(!stored.some((s) => s.id.startsWith('sim-')), 'sim 不落库');
+  assert.ok(
+    stored.some((s) => s.id === turnOwn.s.id && s.state.webTurnLimited === true),
+    '预算已触发状态持久化',
+  );
+  await sqlQuery('update tenants set retention_lead_days=7 where id=$1', [deps.tenantId]);
+  const { purgeOnce } = await import('../jobs/purge.js');
+  const purged = await purgeOnce(Date.now());
+  assert.equal(purged.conversations, 1);
+  assert.equal(store.getSession(stale.id), undefined);
+  assert.ok(!(await sqlQuery<{ id: string }>('select id from conversations where id=$1', [stale.id])).length);
+  assert.ok((await sqlQuery<{ id: string }>('select id from conversations where id=$1', [own.s.id])).length);
+  report(`${realRun ? '真实 PG' : 'PGlite'}：落库、账号 state、预算状态持久化、不受 sim 清理、7 天保留期清除 8 天前会话`);
+} finally {
+  for (const body of liveBodies) {
+    if (!body.locked) await body.cancel().catch(() => {});
+  }
+  __webTest.tickStreams(Date.now() + 31 * 60_000);
+  await store.drainStore(20_000);
+  __privacyTest.reset();
+  installAccounts([]);
+  __profileTest.reset();
+  globalThis.fetch = originalFetch;
+  await closeConfig();
+  __configTest.reset();
+  await realDb?.close();
+  await pgTest?.drop();
+  await t?.close();
+  fs.rmSync(varDir, { recursive: true, force: true });
+}
+if (!realRun) {
+  if (process.env.PG_TEST_URL) {
+    const output = execFileSync(process.execPath, ['--import', 'tsx', 'src/web/web.selftest.ts'], {
+      env: { ...process.env, WEB_BACKEND_REAL_PG: '1' },
+      timeout: 120_000,
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    assert.ok(output.includes('PASS web 后端：真实 PG'));
+    console.log(output);
+  } else console.log('SKIP web 后端：未设置 PG_TEST_URL，真实 PG 由协调者在一次性测试容器补跑');
+}
+console.log('PASS web.selftest：第 17 步后端验收');
