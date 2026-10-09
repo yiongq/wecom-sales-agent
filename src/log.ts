@@ -4,7 +4,7 @@
 // LOG_FORMAT 没设：什么都不接，console 照旧打纯文本，一个字节都不变（自测与本机开发）。
 // 日志里不出现会话原 id（里面是 external_userid）：会话写成 conv（db 存储的真实会话是会话行的 ref，其余是短码）；打会话的
 // 日志行经 convLabel（prod 写 ref 或短码，demo 原样，与 logQuote 同一口径）。JSON 输出另有一道兜底：形如会话原 id 的串
-// （wecom: 开头、sim- 开头）换成 ref 或短码，带凭据的查询参数与 Bearer 盖掉，以后新加的日志行漏了也出不去。
+// （wecom:、web:、sim- 开头）换成 ref 或短码，带凭据的查询参数与 Bearer 盖掉，以后新加的日志行漏了也出不去。
 // pino 只在这里 import（check-boundaries 管着）。本模块不 import 业务模块：store 与配置源在加载时把会话 ref 与租户交进来。
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
@@ -79,12 +79,13 @@ export function logError(e: unknown): unknown {
   return pos ? `${e.name}（位置 ${pos}）` : e.name;
 }
 
-// wecom:<external_userid>（含请求路径里编码过的 wecom%3A）与 sim-<访客 id>：现有的两种会话原 id 形状
-const RAW_CONV_ID = /\b(?:wecom(?::|%3[Aa])[A-Za-z0-9_-]+|sim-[A-Za-z0-9_-]+)/g;
+// 企微可带账号 key；每个冒号独立允许 URL 编码。web id 只认完整的 32 位小写十六进制，不截取更长 id 的前缀。
+const RAW_CONV_ID =
+  /\b(?:wecom(?::|%3[Aa])(?:[a-z][a-z0-9-]{1,30}(?::|%3[Aa]))?[A-Za-z0-9_-]+|web(?::|%3[Aa])[0-9a-f]{32}(?![A-Za-z0-9_-])|sim-[A-Za-z0-9_-]+)/g;
 
 /** 文本里形如会话原 id 的串换成 convCode（JSON 输出的兜底与 prod 下的请求路径都用它） */
 export function scrubConvIds(text: string): string {
-  return text.replace(RAW_CONV_ID, (m) => convCode(m.replace(/^wecom%3[Aa]/, 'wecom:')));
+  return text.replace(RAW_CONV_ID, (m) => convCode(m.replace(/%3[Aa]/g, ':')));
 }
 
 /** 文本里的会话原 id：prod 下换成 ref 或短码，demo 下原样（请求路径之类整段打出来的地方用） */

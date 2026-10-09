@@ -22,6 +22,27 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
 
+// 03 R22：手写 id，不依赖后续步骤的渠道产生方；带 key 的 id 穷举两处冒号的原文、大小写编码与混合编码。
+const channelIds = [
+  { id: 'wecom:wmKeyed0001', code: '0001' },
+  { id: 'wecom:shop-b:wmKeyed0001', code: 'conv-keyed-ref' },
+  { id: 'wecom:shop-c:wmKeyed0001', code: '0001' },
+  { id: 'web:0123456789abcdef0123456789abcdef', code: 'conv-web-ref' },
+  { id: 'web:abcdef0123456789abcdef0123456789', code: '6789' },
+  { id: 'sim-0123456789abcdef01234567', code: '4567' },
+];
+const channelRefs = new Map(channelIds.filter(({ code }) => code.startsWith('conv-')).map(({ id, code }) => [id, code]));
+const channelIdCases = channelIds.flatMap(({ id, code }) => {
+  let variants = [id.split(':')[0]!];
+  for (const part of id.split(':').slice(1)) {
+    variants = variants.flatMap((prefix) => [':', '%3A', '%3a'].map((colon) => `${prefix}${colon}${part}`));
+  }
+  return variants.map((raw) => ({ id, raw, code }));
+});
+const channelIdsHidden = (text: string): boolean =>
+  channelIdCases.every(({ id, raw }) => !text.includes(raw) && !text.includes(id.slice(id.lastIndexOf(':') + 1)));
+const ordinaryWebText = `web: 首页 web:abc web:${'f'.repeat(31)} web:${'f'.repeat(33)}`;
+
 // 服务器时区：上海。下面的「现在」取 UTC 17:30，上海已是第二天 01:30，「今天」按 UTC 算就差一天
 process.env.TZ = 'Asia/Shanghai';
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
@@ -224,6 +245,17 @@ if (CHILD === 'json-logs') {
   });
   // 兜底：形如会话原 id 的串、请求路径里编码过的、带凭据的地址与 Bearer
   console.log('兜底：wecom:wmFallbackRaw01 sim-0123456789abcdef01234567 /api/sessions/wecom%3AwmFallbackRaw02/reply');
+  const { setConvRefResolver } = await import('../log.js');
+  setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
+  try {
+    for (const [i, { raw }] of channelIdCases.entries()) {
+      console.log(`渠道 id 兜底 ${i}：${raw}`);
+      log.info(`渠道 id 字段 ${i}`, { nested: { conversation: raw } });
+    }
+    console.log(`普通网页文本：${ordinaryWebText}`);
+  } finally {
+    setConvRefResolver(store.conversationRef);
+  }
   console.warn('凭据：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRETKEY99 Authorization: Bearer tok123secret');
   log.info('redact', {
     authorization: 'Bearer AUTHSECRET1',
@@ -607,6 +639,20 @@ function spawnAsync(
   check(
     'withLogContext 手动给的 req 照写',
     docs.some((d) => msgOf(d) === '手动上下文' && d.req === 'manual-req-1' && d.level === 'warn'),
+  );
+  for (const [i, { raw, code }] of channelIdCases.entries()) {
+    const line = docs.find((d) => msgOf(d).startsWith(`渠道 id 兜底 ${i}：`));
+    const field = docs.find((d) => msgOf(d) === `渠道 id 字段 ${i}`);
+    check(
+      `03 R22 JSON 兜底：${raw} 的正文与嵌套字段换成 ${code}`,
+      msgOf(line ?? {}) === `渠道 id 兜底 ${i}：${code}` && json(field?.nested) === json({ conversation: code }),
+      json({ line, field }),
+    );
+  }
+  check('03 R22 JSON：整份输出没有原 id、external_userid、web hash 与 key:id 残片', channelIdsHidden(all));
+  check(
+    '03 R22 JSON：普通 web 文本与长度不对的 id 原样保留',
+    docs.some((d) => msgOf(d) === `普通网页文本：${ordinaryWebText}`),
   );
 }
 
@@ -1672,6 +1718,24 @@ const logMod = await import('../log.js');
 const { __profileTest } = await import('../profile.js');
 const { app: serverApp } = await import('../server.js');
 {
+  check(
+    '03 R22 demo：所有新旧 id 与编码组合的请求路径原样保留',
+    channelIdCases.every(({ raw }) => logMod.convLabelsIn(`/api/sessions/${raw}/reply`) === `/api/sessions/${raw}/reply`),
+  );
+  logMod.setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
+  __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+  try {
+    for (const { raw, code } of channelIdCases) {
+      const out = logMod.convLabelsIn(`/api/sessions/${raw}/reply`);
+      check(`03 R22 prod 请求路径：${raw} 换成 ${code}`, out === `/api/sessions/${code}/reply` && channelIdsHidden(out), out);
+    }
+    check('03 R22 prod 请求路径：普通 web 文本与长度不对的 id 原样保留', logMod.convLabelsIn(ordinaryWebText) === ordinaryWebText);
+  } finally {
+    __profileTest.reset();
+    logMod.setConvRefResolver(store.conversationRef);
+  }
+}
+{
   const before = [console.log, console.info, console.warn, console.error];
   check(
     '没设 LOG_FORMAT：installJsonConsole 什么都不接、返回 false，console.* 还是原来那几个函数（纯文本逐字节不变）',
@@ -2409,6 +2473,34 @@ await captureAlertLogs(async () => {
       contents().at(-1)!.startsWith('[selftest] 会话 RT42 出错，见 [地址已略] · '),
       contents().at(-1),
     );
+    logMod.setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
+    __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+    try {
+      for (const { raw, code } of channelIdCases) {
+        A.reset();
+        const before = hook.bodies.length;
+        alertMod.alert('jobs', `会话 ${raw} 出错`);
+        await A.settle();
+        const out = contents().at(-1)!;
+        check(
+          `03 R22 告警正文：${raw} 换成 ${code}`,
+          hook.bodies.length === before + 1 && out.startsWith(`[selftest] 会话 ${code} 出错 · `) && channelIdsHidden(hook.bodies.at(-1)!),
+          out,
+        );
+      }
+      A.reset();
+      const before = hook.bodies.length;
+      alertMod.alert('jobs', ordinaryWebText);
+      await A.settle();
+      check(
+        '03 R22 告警正文：普通 web 文本与长度不对的 id 原样保留',
+        hook.bodies.length === before + 1 && contents().at(-1)!.startsWith(`[selftest] ${ordinaryWebText} · `),
+        contents().at(-1),
+      );
+    } finally {
+      __profileTest.reset();
+      logMod.setConvRefResolver(store.conversationRef);
+    }
     process.env.INSTANCE_LABEL = '';
     A.reset();
     alertMod.alert('jobs', '没设实例名');
