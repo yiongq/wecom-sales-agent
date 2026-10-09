@@ -115,6 +115,7 @@ if (CHILD === 'no-otel') {
   await boot({
     initConfig: async () => void calls.push('config'),
     initSessionStore: async () => void calls.push('store'),
+    initChannels: async () => {},
     serve: (onListening) => {
       calls.push('serve');
       onListening();
@@ -125,7 +126,7 @@ if (CHILD === 'no-otel') {
     storeMode: () => 'file',
     startFollowUpScheduler: () => {},
     startJobs: () => {},
-    startWecom: () => void calls.push('wecom'),
+    startChannels: () => void calls.push('wecom'),
     exit: (c) => void calls.push(`exit ${c}`),
     startOtel: async () => {
       called = true;
@@ -1186,6 +1187,7 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
     await boot({
       initConfig: async () => void calls.push('config'),
       initSessionStore: async () => void calls.push('store'),
+      initChannels: async () => {},
       serve: (onListening) => {
         calls.push('serve');
         onListening();
@@ -1196,7 +1198,7 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
       storeMode: () => 'file',
       startFollowUpScheduler: () => {},
       startJobs: () => {},
-      startWecom: () => void calls.push('wecom'),
+      startChannels: () => void calls.push('wecom'),
       exit: (c) => void calls.push(`exit ${c}`),
       startOtel: async () => {
         calls.push('otel');

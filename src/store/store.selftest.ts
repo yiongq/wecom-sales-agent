@@ -661,6 +661,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
           calls.push('store');
           await init.store?.();
         },
+        initChannels: async () => {},
         serve: (onListening) => {
           calls.push('serve');
           onListening();
@@ -670,7 +671,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
         storeMode: () => init.mode ?? 'file',
         startFollowUpScheduler: () => void calls.push('followup'),
         startJobs: () => void calls.push('jobs'),
-        startWecom: () => void calls.push('startWecom'),
+        startChannels: () => void calls.push('startChannels'),
         exit: (c) => void exits.push(c),
       });
     } finally {
@@ -680,14 +681,14 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   };
   const ok = await run({});
   check(
-    'boot：配置 → 会话存储 → 监听 → 预检、索引、跟进、企微',
-    ok.calls === 'config,store,serve,preflight,buildIndex,followup,startWecom' && ok.exits === '',
+    'boot：配置 → 会话存储 → 监听 → 预检、索引、渠道（03：先于跟进）、跟进',
+    ok.calls === 'config,store,serve,preflight,buildIndex,startChannels,followup' && ok.exits === '',
     ok.calls,
   );
   const dbOk = await run({ mode: 'db' });
   check(
     'boot：db 存储下监听之后起任务表（startJobs）代替跟进扫描器',
-    dbOk.calls === 'config,store,serve,preflight,buildIndex,jobs,startWecom' && dbOk.exits === '',
+    dbOk.calls === 'config,store,serve,preflight,buildIndex,startChannels,jobs' && dbOk.exits === '',
     dbOk.calls,
   );
   const refused = await run({

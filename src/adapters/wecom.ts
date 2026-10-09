@@ -52,8 +52,17 @@ interface WecomConfig {
   publicBaseUrl: string;
 }
 
+// 03 spec R1、不变量 13：企微状态在库里时 env 账号退场（src/channels/registry.ts 的 initChannels 装好时调）。之后 readConfig 一律
+// 返回 null：不再读 WECOM_*，轮询、回调拉取、推送都不走 env 的老路，进程也就不写 var/wecom-cursor.json。
+// TODO(03 第 7 步)：库里账号按账号的 WecomRuntime 接上之后，这里的 env 老路只留给 env 账号
+let envRetired = false;
+export function retireEnvAccount(retired: boolean): void {
+  envRetired = retired;
+}
+
 /** 每次现读 env（而非模块加载时快照），保证 server 先加载 .env 也能生效 */
 function readConfig(): WecomConfig | null {
+  if (envRetired) return null;
   const corpId = process.env.WECOM_CORP_ID;
   const secret = process.env.WECOM_APP_SECRET;
   const openKfId = process.env.WECOM_KF_OPEN_KFID;
@@ -1474,7 +1483,8 @@ export const wecomAdapter: ChannelAdapter = {
     const cfg = readConfig();
     if (!cfg) {
       // 历史 wecom 会话存在但企微 env 未配（如换服务器漏配）：必须出声，否则回复凭空消失
-      console.error('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', convLabel(sessionId));
+      if (envRetired) console.error('[wecom] ⚠️ 企微状态在库里，库里账号的收发还没接上，消息未送达:', convLabel(sessionId));
+      else console.error('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', convLabel(sessionId));
       return false;
     }
     if (!sessionId.startsWith(SESSION_PREFIX)) return false;

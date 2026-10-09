@@ -11,7 +11,10 @@
 //   store         store_conflict、会话 poisoned（含 WindowCorruptError）、lagMs 超过 60 秒、停机写了 spill、10 分钟内丢了遥测行、
 //                 启动时 spill 回放失败；lagMs 回到 5 秒以内恢复
 //   jobs          retention_purge、handoff_notify 用完重试记 failed；没有恢复
+//   channel       03 spec「可观测性」：本步只有启动装载那一条（网页账号因 web_channel 关着没有启用、欢迎语不合格按没设处理，只有
+//                 账号 key 与原因）；拉取失败、入站卡住、没落库就发、sending 转 unknown 等由 03 第 13 步接上
 import { onTokenError } from '../adapters/wecom.js';
+import { channelStartupWarnings } from '../channels/registry.js';
 import { configHealth, onLockEvent, type LockEvent } from '../config/source.js';
 import { onJobFailed, type JobFailure } from '../jobs/runner.js';
 import { scrubConvIds } from '../log.js';
@@ -19,7 +22,7 @@ import { onSendSettled, type SendSettled } from '../quota/ledger.js';
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
-export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs';
+export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs' | 'channel';
 
 export interface AlertOpts {
   /** 发一条「已恢复」：这个键没在告警中时什么都不发 */
@@ -330,6 +333,9 @@ export function startAlerts(): void {
   );
   // 启动之前就成立的：锁在装载途中就断了；回放失败的 spill 在第一次巡检里报
   if (configHealth().lock === 'lost') onLock('lost');
+  // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
+  const channelWarnings = channelStartupWarnings();
+  if (channelWarnings.length) alert('channel', `渠道账号启动检查：${channelWarnings.join('；')}`);
   tick();
   timer = setInterval(tick, TICK_MS);
   timer.unref();

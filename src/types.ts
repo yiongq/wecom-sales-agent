@@ -157,6 +157,11 @@ export interface Session {
   consent?: Partial<Record<SensitiveCategory, 'asked' | 'granted' | 'declined' | 'withdrawn'>>;
   /** 每个类别已经问过几次（至多两次，R23，02 第 16 步）：纯内存计数，不落库 */
   consentAskCount?: Partial<Record<SensitiveCategory, number>>;
+  /**
+   * 会话所属的渠道账号 uuid（03 spec R11）：非默认企微账号与网页会话写，默认企微账号的旧会话不补写（没有就是渠道的默认账号）。
+   * accountForSession 读它；conversations.channel_account_id 的投影与写入在 03 第 7、17 步接上
+   */
+  channelAccountId?: string;
 }
 
 export interface Order {

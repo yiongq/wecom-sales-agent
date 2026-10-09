@@ -59,7 +59,8 @@ import { buildIndex } from './retrieval.js';
 import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
-import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
+import { syncFromCallback, wecomAdapter } from './adapters/wecom.js';
+import { channelKeyRing, channelsHealth, channelsMode, initChannels, startChannels } from './channels/registry.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
@@ -299,11 +300,20 @@ function storeSummary(): { mode: string; dirty: number; lagMs: number; conflict:
   return { mode: h.mode, dirty: h.dirty, lagMs: h.lagMs, conflict: h.conflict, poisoned: h.poisoned.length };
 }
 
-// HTTP 状态照旧 200（deploy.sh 只看 revision）；外部拨测看 ok：写库冲突、有会话停写、积压超过 2 分钟、租户锁不在本进程手里时为 false
+// HTTP 状态照旧 200（deploy.sh 只看 revision）；外部拨测看 ok：写库冲突、有会话停写、积压超过 2 分钟、租户锁不在本进程手里、
+// 有启用的企微账号持续拉取失败或入站卡住（03 spec：channels.failing、stuck，第 13 步接实数）时为 false
 app.get('/healthz', (c) => {
   const config = configSummary();
   const store = storeSummary();
-  const ok = !store.conflict && store.poisoned === 0 && store.lagMs <= 120_000 && config.lock !== 'lost';
+  // 03：只有个数（mode、accounts、failing、stuck），不带账号 key 与任何标识
+  const channels = channelsHealth();
+  const ok =
+    !store.conflict &&
+    store.poisoned === 0 &&
+    store.lagMs <= 120_000 &&
+    config.lock !== 'lost' &&
+    channels.failing === 0 &&
+    channels.stuck === 0;
   return c.json({
     ok,
     revision: process.env.APP_REVISION || 'dev',
@@ -313,6 +323,7 @@ app.get('/healthz', (c) => {
     llm: llmStats(),
     config,
     store,
+    channels,
   });
 });
 
@@ -796,7 +807,12 @@ function receiveIdOk(receiveId: string): boolean {
   return !corpId || !receiveId || receiveId === corpId;
 }
 
+// 03 spec R1、R12、不变量 13：企微状态在库里时不读 env 的回调凭据。TODO(03 第 7 步)：/wecom/callback 与 /wecom/callback/:key
+// 按账号验签、分派；在那之前 GET 当作不存在（404），POST 照样回 success（企微会重推）、只记一行、不拉
+const callbackInDb = (): boolean => channelsMode() === 'db';
+
 app.get('/wecom/callback', (c) => {
+  if (callbackInDb()) return c.text('not found', 404);
   const token = process.env.WECOM_CALLBACK_TOKEN;
   const aesKey = process.env.WECOM_CALLBACK_AES_KEY;
   if (!token || !aesKey) return c.text('wecom callback not configured', 501);
@@ -817,6 +833,10 @@ app.get('/wecom/callback', (c) => {
 // kf 事件回调：企微 POST 加密的 kf_msg_or_event 事件 → 解密取 Token → 用它拉消息。
 // 必须尽快回 success（拉取异步做），否则企微超时重推。
 app.post('/wecom/callback', async (c) => {
+  if (callbackInDb()) {
+    console.error('[wecom] 收到回调：企微状态在库里，按账号的回调路由还没接上，这次不拉');
+    return c.text('success');
+  }
   const token = process.env.WECOM_CALLBACK_TOKEN;
   const aesKey = process.env.WECOM_CALLBACK_AES_KEY;
   // 下面三条都必须回 success（否则企微会重推），但**绝不能连日志都不打**：
@@ -981,6 +1001,12 @@ if (!SELFTEST) {
       const { db, tenantId, deps } = configRuntime();
       return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
     },
+    // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
+    initChannels: () => {
+      if (process.env.SESSION_STORE !== 'db') return initChannels(null);
+      const { db, tenantId, deps } = configRuntime();
+      return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
+    },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {
         logStartup(info.port);
@@ -1001,11 +1027,11 @@ if (!SELFTEST) {
     // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
     startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
     startJobs: () => startJobs(pushFollowUp),
-    startWecom,
+    startChannels,
     exit: (code) => process.exit(code),
     // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
     startOtel: startOtelExport,
-    // 告警（02 spec R24）：起企微之后挂上各处的订阅，推送只在后台
+    // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
     startAlerts,
     // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
     startPrivacy: async () => {

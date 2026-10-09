@@ -1398,6 +1398,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       await boot({
         initConfig: init,
         initSessionStore: async () => {},
+        initChannels: async () => {},
         serve: (onListening) => {
           calls.push('serve');
           onListening();
@@ -1407,7 +1408,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
         storeMode: () => 'file',
         startFollowUpScheduler: () => void calls.push('followup'),
         startJobs: () => void calls.push('jobs'),
-        startWecom: () => void calls.push('startWecom'),
+        startChannels: () => void calls.push('startChannels'),
         exit: (c) => void exits.push(c),
       });
     } finally {
@@ -1418,15 +1419,15 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   };
   const ok = await bootWith(() => cfg.initConfig(testConfigDeps(t)));
   check(
-    'boot：装载成功后才监听，监听后依次预检、索引、跟进、企微',
-    ok.calls === 'serve,preflight,buildIndex,followup,startWecom' && ok.exits === '',
+    'boot：装载成功后才监听，监听后依次预检、索引、渠道（03：先于跟进）、跟进',
+    ok.calls === 'serve,preflight,buildIndex,startChannels,followup' && ok.exits === '',
     ok.calls,
   );
 
   const expectFail = async (name: string, reason: string, init: () => Promise<void>, alsoIn?: string): Promise<void> => {
     const r = await bootWith(init);
     check(
-      `boot：${name} → 以 ${reason} 拒绝启动，serve 与 startWecom 都没调`,
+      `boot：${name} → 以 ${reason} 拒绝启动，serve 与 startChannels 都没调`,
       r.exits === '1' && r.calls === '' && r.log.includes(`（${reason}）`) && (!alsoIn || r.log.includes(alsoIn)),
       `${r.exits} ${r.calls} ${r.log.slice(0, 160)}`,
     );
