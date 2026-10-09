@@ -3,7 +3,7 @@
 // 就是 closing），可靠且反映真实行为；画像同理从工具参数沉淀。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentReply, ChatMessage, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
+import type { AgentReply, ChatMessage, CustomerProfile, Order, PreparedPush, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
 import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, queueJobs, saveSession } from './store.js';
 import {
@@ -65,7 +65,7 @@ import {
   withdrawConsent,
 } from './handoff/consent.js';
 import { currentPrivacyNotice } from './privacy/privacy.js';
-import { pushToChannel } from './handoff/takeover.js';
+import { prepareChannel, pushToChannel } from './handoff/takeover.js';
 import { cleanText } from './shared/text.js';
 import { stripAdvisorPrefix, withAdvisorPrefix } from './shared/conversation.js';
 import { convLabel, logQuote } from './log.js';
@@ -3506,9 +3506,11 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
   const toAsk = noteSensitiveMentions(session, categories, notice.version, cleanText(text, 200));
   if (!toAsk.length) return;
   saveSession(session);
-  for (const category of toAsk) {
+  // 03：库里的企微账号把每张菜单的 pending 排进「问过」的同一次落库（同一段同步代码里），逐张 push 时交回去
+  const prepared = toAsk.map((category) => prepareChannel(sessionId, consentMenuText(category), { kind: 'menu', category }));
+  for (const [i, category] of toAsk.entries()) {
     const content = consentMenuText(category);
-    const ok = await pushToChannel(sessionId, content, { kind: 'menu', category });
+    const ok = await pushToChannel(sessionId, content, { kind: 'menu', category, prepared: prepared[i] ?? null });
     if (ok) {
       session.messages.push({ role: 'agent', content, at: Date.now() });
       saveSession(session);
@@ -4529,7 +4531,9 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
  * 支付成功后的主动跟进：写入会话并置 stage=paid，推送由调用方经 adapter 完成。
  * message 是写进会话的那条（推送时交给发送账本，02 第 12 步）
  */
-export async function notifyPaid(orderId: string): Promise<{ sessionId: string; text: string; message: ChatMessage } | null> {
+export async function notifyPaid(
+  orderId: string,
+): Promise<{ sessionId: string; text: string; message: ChatMessage; prepared: PreparedPush | null } | null> {
   const order = getOrder(orderId);
   if (!order?.sessionId) return null;
   const session = getSession(order.sessionId);
@@ -4543,7 +4547,9 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
   session.messages.push(message);
   saveSession(session);
-  return { sessionId: session.id, text, message };
+  // 03：库里的企微账号把付款确认的分段 pending 排进这条消息的同一次落库（同一段同步代码里），调用方 push 时交回去
+  const prepared = prepareChannel(session.id, text, { kind: 'notice', message });
+  return { sessionId: session.id, text, message, prepared };
 }
 
 /** 仅供自测：确定性转人工触发（handoff.selftest.ts）。应急话术给断言比对 */

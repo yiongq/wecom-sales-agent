@@ -30,19 +30,38 @@
 //   日志前缀 [wecom]；锁定的 __test 指向它。
 // - 企微状态在库里时 env 账号整条不走（不读 WECOM_*、不拉、不写 var/wecom-cursor.json）；库里每个启用的企微账号由 startChannels
 //   经 startWecomAccount 起一个运行时：凭据来自 channel_accounts（解密后是 Redacted），拉取状态是过渡后端（第 9 步换成 channel_inbox），
-//   发送仍走 02 的账本（第 8 步换成先落库后发送）。
+//   发送走 03 的「先落库、后发送」（第 8 步，见下文「03 先落库、后发送」一节）。
 // - 会话 id = 账号前缀 + external_userid（默认账号 wecom:，之后建的 wecom:<key>:）；发往一个会话的消息经 accountForSession 找到账号，
 //   只带那个账号的 open_kfid 与 access_token；停用账号名下的会话推送返回 false。
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ChannelAdapter, ChatMessage, OutboundKind, PushOpts, Session } from '../types.js';
+import type { ChannelAdapter, ChatMessage, OutboundKind, PreparedPush, PushOpts, Session } from '../types.js';
 import { handleMessage, inboundText, replyMessageOf } from '../engine.js';
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
 // 接手代次变了（这一轮开始之后顾问接手）：AI 回复不发，记一条说明，与引擎同一句（不变量 28 的适配器部分）
 import { TAKEN_OVER_NOTE, takeoverGen } from '../handoff/takeover.js';
 import type { SensitiveCategory } from '../handoff/triggers.js';
 import { currentPrivacyNotice, privacyLink } from '../privacy/privacy.js';
-import { onSendFail, recordSend, replyDelivered, type SendResult } from '../quota/ledger.js';
+import {
+  cancelIntents,
+  commitOutbound,
+  markSending,
+  noteAttempt,
+  noteUnknown,
+  noteUnsafeSend,
+  onSendFail,
+  OutboundPlanError,
+  planOutbound,
+  planRuntimeSegment,
+  recordSend,
+  replyDelivered,
+  settleIntent,
+  unmarkSending,
+  type OutboundIntent,
+  type OutboundPayload,
+  type SendResult,
+} from '../quota/ledger.js';
+import { cleanText } from '../shared/text.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logQuote, withConversationLog } from '../log.js';
 import { getOrCreateSession, getOrder, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
@@ -840,6 +859,361 @@ async function sendMenu(
   return outcome === 'accepted';
 }
 
+// ---------------- 03 先落库、后发送（库里的企微账号） ----------------
+// docs/architecture/03-channels-v2/spec.md「出站：投递状态」、R4、R6、R21，不变量 4、6、7、10。env 账号照 02 走上面的 sendRich /
+// sendText / sendMenu（锁定的 wecom.selftest.ts 与 02 的自测守它们）；库里的企微账号的每一类出站都走这里：
+//   切分段 → planOutbound（每段一行 pending，排进会话的落库）→ commitOutbound（至多 5 秒）→ 每段：比停机截止、比接手代次 →
+//   取 access_token（卡片再取缩略图）→ markSending → 再比一次接手代次与停机截止 → send_msg（这次比较与发请求之间没有 await）→
+//   settleIntent。卡片发失败补的「标题 + 链接」是运行时才补的段（planRuntimeSegment）。
+// 人工回复、跟进、通知、同意菜单经 prepare 在写会话的同一段同步代码里先排 pending，push 时只做后半段
+
+/** 库里的企微账号走 03 的发送；env 账号照 02 */
+const isDbAccount = (rt: WecomRuntime): boolean => rt !== envRuntime;
+
+/** 一组分段与发它要的：运行时、这一组开始时的接手代次、卡片原样的标题与地址、每段的 pending 落没落库 */
+interface OutGroup {
+  rt: WecomRuntime;
+  cfg: WecomConfig;
+  uid: string;
+  sessionId: string;
+  intents: OutboundIntent[];
+  /** 第 3、4 步比的接手代次：AI 回复是这一轮开始时的（02 的写法），先落库的几类是 prepare 那一刻的 */
+  gen: number;
+  /** 卡片段的 msgid → 原样的标题与地址（卡片发失败补「标题 + 链接」用，02 的写法） */
+  cards: Map<string, { title: string; url: string }>;
+  /** 每段的 pending 落没落库（commitOutbound 的结果；运行时补的段各自的）：markSending 返回 absent 时据它判照不照发 */
+  commit: Map<string, 'committed' | 'timeout'>;
+}
+
+/** 一组发完（或停下）的结果：ok 是每段都送出（卡片发失败而补的文字送出了也算）；stop 是停在哪一步 */
+interface GroupOutcome {
+  ok: boolean;
+  stop: 'taken_over' | 'deferred' | null;
+}
+
+/** planOutbound 的校验没过：这一组什么都没排，按发送失败处理（会话加说明；告警经账本的 onPlanRejected） */
+const PLAN_FAILED_NOTE = '⚠️ 一条要发给客户的消息没有排进发送（没过发送前的检查），客户没有收到，请人工跟进';
+
+const textPayloads = (text: string): OutboundPayload[] =>
+  splitForWecom(text).map((content): OutboundPayload => ({ msgtype: 'text', text: { content } }));
+
+/** 同意菜单（02 第 16 步）：问句正文与「同意」「不同意」两个按钮，按钮 id 按 consentMenuButtonId 编码 */
+const menuPayload = (headContent: string, category: SensitiveCategory): OutboundPayload => ({
+  msgtype: 'msgmenu',
+  msgmenu: {
+    head_content: headContent,
+    list: [
+      { type: 'click', click: { id: consentMenuButtonId(category, 'granted'), content: '同意' } },
+      { type: 'click', click: { id: consentMenuButtonId(category, 'declined'), content: '不同意' } },
+    ],
+  },
+});
+
+/**
+ * 一条回复的分段（02 sendRich 的切法）：human 的客户侧正文加「【顾问】」；有单条站内链接、而且 withCard（缩略图拿得到）时是
+ * 去掉链接的正文分段加一张卡片（kind 是这一组的种类，是不是卡片看 payload.msgtype），否则整段原文分段
+ */
+function payloadsFor(
+  cfg: WecomConfig,
+  body: string,
+  kind: OutboundKind,
+  withCard: boolean,
+): { payloads: OutboundPayload[]; card: { title: string; url: string } | null } {
+  const advisor = kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
+  const card = withCard && cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
+  if (!card) return { payloads: textPayloads(advisor(body)), card: null };
+  const prose = stripLink(body, card.raw);
+  // 只有卡片、没有正文的人工回复：前缀加在卡片标题上（客户仍看得出是顾问发的，也不多发一条）
+  if (!prose && kind === 'human') card.title = withAdvisorPrefix(card.title);
+  const link: OutboundPayload = {
+    msgtype: 'link',
+    link: { title: cleanText(card.title, 128), desc: cleanText(card.desc, 512), url: card.url },
+  };
+  return { payloads: [...(prose ? textPayloads(advisor(prose)) : []), link], card: { title: card.title, url: card.url } };
+}
+
+/** 运行时的账号对象（planOutbound 要它校验会话与账号一致） */
+const accountOf = (rt: WecomRuntime): ChannelAccount | undefined => loadedAccounts().find((a) => a.id === rt.id);
+
+/**
+ * planOutbound：每段一行 pending，排进这个会话的落库（没有会话的单独短事务）。校验没过抛 OutboundPlanError，调用方按发送失败处理
+ */
+function planGroup(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  sessionId: string,
+  kind: OutboundKind,
+  message: ChatMessage | null,
+  payloads: readonly OutboundPayload[],
+  card: { title: string; url: string } | null,
+  gen: number,
+): OutGroup {
+  const account = accountOf(rt);
+  if (!account) throw new OutboundPlanError('运行时的账号不在装上的账号里');
+  const intents = planOutbound(account, { sessionId, hasSession: getSession(sessionId) !== undefined }, kind, message, null, payloads);
+  const cards = new Map<string, { title: string; url: string }>();
+  const link = intents.find((i) => i.payload.msgtype === 'link');
+  if (card && link) cards.set(link.msgid, card);
+  return { rt, cfg, uid: sessionId.slice(rt.prefix.length), sessionId, intents, gen, cards, commit: new Map() };
+}
+
+/** 这一组没排进发送：日志一行（只有原因），会话加一条说明（告警由账本的 onPlanRejected 推） */
+function planFailed(rt: WecomRuntime, sessionId: string, e: unknown): void {
+  console.error(
+    `${rt.tag} ⚠️ 一组出站没排进发送（${e instanceof OutboundPlanError ? e.reason : e instanceof Error ? e.name : 'unknown'}）:`,
+    convLabel(sessionId),
+  );
+  const s = getSession(sessionId);
+  if (s) {
+    s.messages.push({ role: 'system', content: PLAN_FAILED_NOTE, at: Date.now() });
+    saveSession(s, false);
+  }
+}
+
+/** send_msg 的请求体：payload 原样加收件人、客服账号与 msgid；卡片补上发送时现取的缩略图 */
+function sendBody(g: OutGroup, intent: OutboundIntent, thumb: string | null): Record<string, unknown> {
+  const p = intent.payload;
+  const base = { touser: g.uid, open_kfid: g.cfg.openKfId, msgid: intent.msgid };
+  if (p.msgtype === 'link') return { ...base, msgtype: 'link', link: { ...p.link, thumb_media_id: thumb } };
+  return { ...base, ...p };
+}
+
+/** 发一次 send_msg：调用时同步发起请求（之前不 await 任何东西，第 4 步「比较与发请求之间没有 await」） */
+function postSendMsg(token: string, body: Record<string, unknown>): Promise<{ errcode?: number; errmsg?: string }> {
+  return fetch(`${API_BASE}/kf/send_msg?access_token=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  }).then((res) => res.json() as Promise<{ errcode?: number; errmsg?: string }>);
+}
+
+/** 这一组还算不算数：接手代次没变 */
+const stillCurrent = (g: OutGroup): boolean => takeoverGen(g.sessionId) === g.gen;
+
+/**
+ * 一段的第 4–5 步。返回：accepted；failed（rejected 或 unknown）；skipped（not_pending，或 absent 而 pending 提交过）；
+ * taken_over（这一段与 rest 已取消）；deferred（过了停机截止，这一段与 rest 留在 pending）
+ */
+async function sendSegment(
+  g: OutGroup,
+  intent: OutboundIntent,
+  rest: readonly OutboundIntent[],
+): Promise<'accepted' | 'failed' | 'skipped' | 'taken_over' | 'deferred'> {
+  const { rt, cfg } = g;
+  const isLink = intent.payload.msgtype === 'link';
+  // 发之前要等的（access_token、卡片的缩略图）先等完：markSending 之后到发请求之间不再等别的
+  let token: string;
+  try {
+    token = await tokenOrThrow(rt, cfg);
+  } catch (e) {
+    // 请求根本没发出去：这一段明确没送达（rejected、不计条数；没发过请求，不进 wecom_send 的计数，token 另有告警）
+    console.error(`${rt.tag} send_msg 没发出去（${e instanceof Error ? e.message : 'unknown'}）`);
+    settleIntent(intent, 'rejected', { attempts: 0 });
+    return 'failed';
+  }
+  let thumb: string | null = null;
+  if (isLink) {
+    thumb = await uploadThumb(rt, cfg).catch(() => null);
+    if (!thumb) {
+      // 缩略图这时拿不到（先落库的几类在切分时只看了冷却期）：卡片发不了，按卡片发失败处理（调用方补「标题 + 链接」）
+      console.error(`${rt.tag} 链接卡片的缩略图拿不到，退回纯文本`);
+      settleIntent(intent, 'rejected', { attempts: 0 });
+      return 'failed';
+    }
+  }
+  // 4 markSending
+  const mark = await markSending(intent);
+  if (mark === 'not_pending') return 'skipped';
+  if (mark === 'absent' && g.commit.get(intent.msgid) !== 'timeout') {
+    // pending 提交过、行又没了：只会是被清除（保留期清理、行权删除）。不发
+    console.error(`${rt.tag} ⚠️ 出站行提交过又不在库里了（会话被清除？），这一段不发`);
+    cancelIntents([intent], 'aborted');
+    return 'skipped';
+  }
+  // 4 返回之后、发请求之前再比一次接手代次与停机截止（markSending 期间可能有人接手或到了截止）
+  if (!stillCurrent(g)) {
+    cancelIntents([intent, ...rest], 'taken_over');
+    return 'taken_over';
+  }
+  if (sendsClosed(rt)) {
+    if (mark === 'marked') await unmarkSending(intent);
+    return 'deferred';
+  }
+  // R6：这一段的 sending 没在发请求之前提交（pending 等不到提交、库不可用），照发、计数
+  if (mark !== 'marked') noteUnsafeSend();
+  // 5 send_msg：同一段的重试沿用 msgid；文本与菜单照 02 退避重试（45009、-1、网络异常），卡片不重试
+  const body = sendBody(g, intent, thumb);
+  let outcome: SendResult | null = null;
+  let errcode: number | undefined;
+  let lastErr = '';
+  let attempts = 0;
+  for (let attempt = 0; attempt < (isLink ? 1 : 3); attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 800 * attempt));
+      // 退避期间被接手、过了截止：不再开始新的请求（02 的规则），这一段的结果以已有的为准
+      if (!stillCurrent(g) || sendsClosed(rt)) break;
+      try {
+        token = await tokenOrThrow(rt, cfg);
+      } catch {
+        break;
+      }
+      if (!stillCurrent(g) || sendsClosed(rt)) break;
+    }
+    noteAttempt(intent);
+    attempts++;
+    try {
+      let data = await postSendMsg(token, body);
+      if (data.errcode === 42001 || data.errcode === 40014) {
+        // token 过期：强刷一次、同一 msgid 再发（02 callApi 的规则）。强刷是真实的网络等待，之后再比一次
+        lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+        errcode = data.errcode;
+        if (outcome !== 'unknown') outcome = 'rejected';
+        try {
+          token = await tokenOrThrow(rt, cfg, true);
+        } catch {
+          break;
+        }
+        if (!stillCurrent(g) || sendsClosed(rt)) break;
+        noteAttempt(intent);
+        attempts++;
+        data = await postSendMsg(token, body);
+      }
+      if (!data.errcode) {
+        outcome = 'accepted';
+        lastErr = '';
+        break;
+      }
+      lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+      errcode = data.errcode;
+      if (outcome !== 'unknown') outcome = 'rejected';
+      if (data.errcode !== 45009 && data.errcode !== -1) break;
+    } catch (e) {
+      // 超时与网络异常：请求可能已经到了企微，结果不明（计入额度）；立刻记 unknown 排进落库，不等重试跑完（02）
+      lastErr = e instanceof Error ? e.name : 'unknown';
+      outcome = 'unknown';
+      noteUnknown(intent);
+    }
+  }
+  const result: SendResult = outcome ?? 'rejected';
+  settleIntent(intent, result, { ...(result === 'accepted' ? {} : errcode !== undefined ? { errcode } : {}), attempts });
+  if (lastErr) console.error(`${rt.tag} send_msg 最终失败（${isLink ? '链接卡片' : '已重试'}）: ${lastErr}`);
+  return result === 'accepted' ? 'accepted' : 'failed';
+}
+
+/**
+ * 发一组（第 2 步之后的 commitOutbound 与第 3–5 步）：每段先比停机截止（过了就停，这一段与之后的留在 pending，重启后按出站恢复
+ * 表处理），再比接手代次（变了就把这一组没发的段 cancelled），再走 sendSegment。卡片发失败补「标题 + 链接」（运行时才补的段）
+ */
+async function runGroup(g: OutGroup): Promise<GroupOutcome> {
+  const committed = await commitOutbound(g.intents);
+  for (const i of g.intents) if (!g.commit.has(i.msgid)) g.commit.set(i.msgid, committed);
+  const queue = [...g.intents];
+  let ok = true;
+  for (let n = 0; n < queue.length; n++) {
+    const intent = queue[n]!;
+    // 3 停机截止：这一段与之后的段都不发、留在 pending（不取消）
+    if (sendsClosed(g.rt)) return { ok: false, stop: 'deferred' };
+    // 3 接手代次：这一组没发的段 cancelled
+    if (!stillCurrent(g)) {
+      cancelIntents(queue.slice(n), 'taken_over');
+      return { ok: false, stop: 'taken_over' };
+    }
+    const r = await sendSegment(g, intent, queue.slice(n + 1));
+    if (r === 'taken_over' || r === 'deferred') return { ok: false, stop: r };
+    if (r === 'accepted') continue;
+    const card = intent.payload.msgtype === 'link' ? g.cards.get(intent.msgid) : undefined;
+    if (r === 'failed' && card) {
+      // 卡片发失败：正文已按「见下方卡片」发出，收不回来了。把链接补发在正文下方（02 的做法）：运行时才补的段，段号接在这一组之后，
+      // 单独一个短事务写成 pending 之后照样走第 4–5 步；补的这几段送出了，这一组就算送出
+      for (const chunk of splitForWecom(`${card.title}\n${card.url}`)) {
+        try {
+          const extra = await planRuntimeSegment(queue, { msgtype: 'text', text: { content: chunk } });
+          g.commit.set(extra.intent.msgid, extra.commit);
+          queue.push(extra.intent);
+        } catch (e) {
+          planFailed(g.rt, g.sessionId, e);
+          ok = false;
+        }
+      }
+      continue;
+    }
+    ok = false;
+  }
+  return { ok, stop: null };
+}
+
+/** 先落库的几类（prepare 排的）与 push 自己排的：句柄 → 那一组（null：没排进去，push 直接返回 false） */
+const preparedGroups = new WeakMap<PreparedPush, OutGroup | null>();
+
+/**
+ * 切一组的分段：同意菜单是一张 msgmenu；其余照 02 sendRich（withCard：缩略图拿不拿得到）。body 已经过 formatForWecom
+ */
+function payloadsOf(
+  cfg: WecomConfig,
+  body: string,
+  opts: PushOpts | undefined,
+  withCard: boolean,
+): { payloads: OutboundPayload[]; card: { title: string; url: string } | null } {
+  if (opts?.kind === 'menu' && opts.category) return { payloads: [menuPayload(body, opts.category)], card: null };
+  return payloadsFor(cfg, body, opts?.kind ?? 'notice', withCard);
+}
+
+/**
+ * prepare（同步，写会话的同一段同步代码里）：分段的 pending 排进这个会话的同一次落库。卡片要不要只能看缩略图在不在冷却期
+ * （取缩略图要等网络）：不在冷却期就按卡片切，发送时缩略图还是拿不到再补「标题 + 链接」
+ */
+function prepareDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: string, opts: PushOpts): PreparedPush {
+  const handle: PreparedPush = { sessionId, kind: opts.kind };
+  const { payloads, card } = payloadsOf(cfg, formatForWecom(cfg, text), opts, Date.now() >= rt.thumbFailUntil);
+  try {
+    preparedGroups.set(handle, planGroup(rt, cfg, sessionId, opts.kind, opts.message ?? null, payloads, card, takeoverGen(sessionId)));
+  } catch (e) {
+    planFailed(rt, sessionId, e);
+    preparedGroups.set(handle, null);
+  }
+  return handle;
+}
+
+/** push（库里的企微账号）：给了 prepare 的句柄就发那一组；否则先取缩略图、切分、排 pending（第 2 步），再发 */
+async function pushDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: string, opts: PushOpts | undefined): Promise<boolean> {
+  const kind = opts?.kind ?? 'notice';
+  const body = formatForWecom(cfg, text);
+  const wantsCard = kind !== 'menu' && !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
+  const thumb = wantsCard ? await uploadThumb(rt, cfg).catch(() => null) : null;
+  const { payloads, card } = payloadsOf(cfg, body, opts, thumb !== null);
+  let g: OutGroup;
+  try {
+    g = planGroup(rt, cfg, sessionId, kind, opts?.message ?? null, payloads, card, takeoverGen(sessionId));
+  } catch (e) {
+    planFailed(rt, sessionId, e);
+    return false;
+  }
+  const out = await runGroup(g);
+  if (out.stop === 'deferred') console.error(`${rt.tag} 停机中、发送已截止，这次推送留在 pending（重启后按出站恢复处理）`);
+  return out.ok && out.stop === null;
+}
+
+/** 发一组文本（适配器自己发的：引导提示、异常兜底、欢迎语、不同意后的确认），返回结果 */
+async function sendTextDb(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  sessionId: string,
+  text: string,
+  kind: OutboundKind,
+  message: ChatMessage | null,
+  gen = takeoverGen(sessionId),
+): Promise<GroupOutcome> {
+  let g: OutGroup;
+  try {
+    g = planGroup(rt, cfg, sessionId, kind, message, textPayloads(text), null, gen);
+  } catch (e) {
+    planFailed(rt, sessionId, e);
+    return { ok: false, stop: null };
+  }
+  return runGroup(g);
+}
+
 /**
  * 客户进入会话、尚未发消息时（send_msg 的 48h 窗口未开），用事件的 welcome_code
  * 经 send_msg_on_event 发欢迎语。code 20 秒内单次有效，须尽快调用。
@@ -956,7 +1330,17 @@ async function handleMenuClick(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessag
   if (!applied) return;
   saveSession(s);
   if (parsed.decision !== 'declined') return;
-  const ok = await sendText(rt, cfg, uid!, CONSENT_DECLINED_REPLY, { kind: 'notice', message: null });
+  let ok: boolean;
+  if (isDbAccount(rt)) {
+    // 03：确认的 pending 与同意记录同一次落库（同一段同步代码里排），提交之后才发
+    let g: OutGroup | null = null;
+    try {
+      g = planGroup(rt, cfg, s.id, 'notice', null, textPayloads(CONSENT_DECLINED_REPLY), null, takeoverGen(s.id));
+    } catch (e) {
+      planFailed(rt, s.id, e);
+    }
+    ok = g ? (await runGroup(g)).ok : false;
+  } else ok = await sendText(rt, cfg, uid!, CONSENT_DECLINED_REPLY, { kind: 'notice', message: null });
   if (ok) {
     s.messages.push({ role: 'agent', content: CONSENT_DECLINED_REPLY, at: Date.now() });
     saveSession(s);
@@ -988,7 +1372,9 @@ async function handleEnterSession(rt: WecomRuntime, cfg: WecomConfig, msg: KfMes
         const sess = getSession(rt.prefix + uid);
         const text = withPrivacyLink(sess?.messages?.length ? rt.welcomeBackText : rt.welcomeText);
         // 账本里记 welcome、message_seq 为空（spec）；还没有会话时这一行单独一个短事务（db 存储）
-        const ok = await sendText(rt, cfg, uid, text, { kind: 'welcome', message: null });
+        const ok = isDbAccount(rt)
+          ? (await sendTextDb(rt, cfg, rt.prefix + uid, text, 'welcome', null)).ok
+          : await sendText(rt, cfg, uid, text, { kind: 'welcome', message: null });
         console.log(`${rt.tag} enter_session 无 welcome_code，已补发欢迎（send_msg，${ok ? '成功' : '失败'}）`);
         // 记进会话：否则后台看不到 AI 对客户说过的开场白，顾问介入时不知道客户收到过什么。
         // 只写已存在的会话，不新建——避免只扫码没说话的人也计进「会话数」KPI
@@ -1109,14 +1495,26 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
       const hint = HINT[msg.msgtype] ?? '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
       // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
       if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
-      // 停机的 normal 段已截止：不开始发，留给重启时重放（占位已记下，那时补发提示；这一轮也那时再记）
-      if (sendsClosed(rt)) {
-        console.log(`${rt.tag} 停机中、发送已截止，引导提示留到重启后补发`);
-        return 'deferred';
-      }
       // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
       const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
-      if (await sendText(rt, cfg, msg.external_userid, hint, { kind: 'ai', message: sent })) {
+      let delivered: boolean;
+      if (isDbAccount(rt)) {
+        // 03：先落库再发；停机截止之后不开始发、分段留在 pending（重启后按出站恢复处理），这一轮也那时再记
+        const out = await sendTextDb(rt, cfg, sessionId, hint, 'ai', sent);
+        if (out.stop === 'deferred') {
+          console.log(`${rt.tag} 停机中、发送已截止，引导提示留在 pending（重启后补发）`);
+          return 'deferred';
+        }
+        delivered = out.ok;
+      } else {
+        // 停机的 normal 段已截止：不开始发，留给重启时重放（占位已记下，那时补发提示；这一轮也那时再记）
+        if (sendsClosed(rt)) {
+          console.log(`${rt.tag} 停机中、发送已截止，引导提示留到重启后补发`);
+          return 'deferred';
+        }
+        delivered = await sendText(rt, cfg, msg.external_userid, hint, { kind: 'ai', message: sent });
+      }
+      if (delivered) {
         const s = getSession(sessionId);
         if (s) {
           sent.at = Date.now();
@@ -1161,6 +1559,7 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
       console.log(`${rt.tag} 静默（阶段=${reply.stage}，转人工后不自动回复）`);
       return; // 转人工后 AI 沉默，交给真人
     }
+    if (isDbAccount(rt)) return await replyDb(rt, cfg, sessionId, reply, gen, t0);
     if (sendsClosed(rt)) {
       // 停机的 normal 段已截止（回复在 drain、late 段才生成好）：这时开始发，账本行已无处可写，退出时还没回包的话重启后会再发一遍。
       // 不发，留在在途表里：回复已写进会话，重启后按情况 4 原样补发一次
@@ -1211,11 +1610,64 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
     console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
   } catch (err) {
     console.error(`${rt.tag} 处理消息失败:`, err);
-    await sendText(rt, cfg, msg.external_userid, '抱歉，系统开小差了，请稍后再发一次，或直接联系人工顾问。', {
-      kind: 'ai',
-      message: null,
-    });
+    const sorry = '抱歉，系统开小差了，请稍后再发一次，或直接联系人工顾问。';
+    if (isDbAccount(rt)) await sendTextDb(rt, cfg, sessionId, sorry, 'ai', null);
+    else await sendText(rt, cfg, msg.external_userid, sorry, { kind: 'ai', message: null });
   }
+}
+
+/**
+ * 库里的企微账号发一条 AI 回复（03 spec「出站 · 发一条 AI 回复」第 2–6 步）：先确定要不要卡片（要的话先取缩略图：传不上去就按 02 的
+ * 规则整段原文发，所以切分在取缩略图之后），切分段，planOutbound，commitOutbound，再逐段比截止与接手、markSending、发。
+ * 生成期间被接手、停机截止之后才回包的，也先把分段排进库：前者记 cancelled（工作台「未发送」）、后者留在 pending（重启后补发）
+ */
+async function replyDb(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  sessionId: string,
+  reply: { text: string; stage: string; message: ChatMessage | null },
+  gen: number,
+  t0: number,
+): Promise<'deferred' | void> {
+  const body = formatForWecom(cfg, reply.text);
+  const wantsCard = !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
+  const thumb = wantsCard ? await uploadThumb(rt, cfg).catch(() => null) : null;
+  const { payloads, card } = payloadsFor(cfg, body, 'ai', thumb !== null);
+  let g: OutGroup;
+  try {
+    g = planGroup(rt, cfg, sessionId, 'ai', reply.message, payloads, card, gen);
+  } catch (e) {
+    planFailed(rt, sessionId, e);
+    return;
+  }
+  const out = await runGroup(g);
+  if (out.stop === 'deferred') {
+    console.log(`${rt.tag} 停机中、发送已截止，回复的分段留在 pending（重启后按同一 msgid 补发）`);
+    return 'deferred';
+  }
+  const s = getSession(sessionId);
+  if (out.stop === 'taken_over') {
+    // 没发完是因为被接手，不是发送失败：记「本轮未发送」（没发的分段已记 cancelled）
+    console.log(`${rt.tag} 顾问已接手，本轮 AI 回复没发的分段不发`);
+    if (s) {
+      s.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
+      saveSession(s, false);
+    }
+    return;
+  }
+  if (!out.ok) {
+    console.error(`${rt.tag} ⚠️ 回复未送达客户（阶段=${reply.stage}）:`, convLabel(sessionId));
+    if (s) {
+      s.messages.push({
+        role: 'system',
+        content: '⚠️ 上一条 AI 回复未能发送到客户（企微发送失败：可能是 48h 会话窗口已关闭或企微配置问题）',
+        at: Date.now(),
+      });
+      saveSession(s, false);
+    }
+    return;
+  }
+  console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
 }
 
 // ---------------- 按客户串行的处理链 ----------------
@@ -1474,7 +1926,7 @@ export interface WecomAccountStart {
 
 /**
  * 起一个库里企微账号的运行时（03 spec R10），按账号 uuid 登记。配置来自账号行与解密的凭据，不读 WECOM_*；
- * 拉取状态是过渡后端（cursor 在 channel_accounts.cursor）；发送走 02 的账本
+ * 拉取状态是过渡后端（cursor 在 channel_accounts.cursor）；发送先落库后发送（第 8 步）
  */
 export function startWecomAccount(s: WecomAccountStart): void {
   const { account } = s;
@@ -1566,12 +2018,16 @@ process.on('exit', () => {
  * 发往一个企微会话的推送走哪个账号：企微状态在库里时经 accountForSession（前缀最长匹配，停用账号的会话不会落到默认账号上），
  * 账号停用、没有运行时都返回 null（推送记一行、返回 false，人工回复照 02 记「未能发送」）；其余照 02 走 env 账号
  */
-function pushRoute(sessionId: string): { rt: WecomRuntime; cfg: WecomConfig } | null {
+function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: WecomConfig } | null {
+  // quiet：prepare 先问一次，找不到时不记日志（随后的 push 会再问一次、照常记）
+  const err = (...args: unknown[]): void => {
+    if (!quiet) console.error(...args);
+  };
   if (!wecomInDb()) {
     const cfg = envRuntime.config();
     if (!cfg) {
       // 历史 wecom 会话存在但企微 env 未配（如换服务器漏配）：必须出声，否则回复凭空消失
-      console.error('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', convLabel(sessionId));
+      err('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', convLabel(sessionId));
       return null;
     }
     if (!sessionId.startsWith(envRuntime.prefix)) return null;
@@ -1579,18 +2035,18 @@ function pushRoute(sessionId: string): { rt: WecomRuntime; cfg: WecomConfig } | 
   }
   const account = accountForSession(sessionId, getSession(sessionId));
   if (account?.kind !== 'wecom_kf') {
-    console.error('[wecom] ⚠️ 会话找不到所属的企微账号，消息未送达:', convLabel(sessionId));
+    err('[wecom] ⚠️ 会话找不到所属的企微账号，消息未送达:', convLabel(sessionId));
     return null;
   }
   const tag = accountTag(account.key);
   if (!isEnabled(account)) {
-    console.error(`${tag} ⚠️ 账号已停用，发往它名下会话的消息未送达:`, convLabel(sessionId));
+    err(`${tag} ⚠️ 账号已停用，发往它名下会话的消息未送达:`, convLabel(sessionId));
     return null;
   }
   const rt = runtimes.get(account.id);
   const cfg = rt?.config();
   if (!rt || !cfg) {
-    console.error(`${tag} ⚠️ 账号的运行时没有起来，消息未送达:`, convLabel(sessionId));
+    err(`${tag} ⚠️ 账号的运行时没有起来，消息未送达:`, convLabel(sessionId));
     return null;
   }
   return { rt, cfg };
@@ -1598,11 +2054,25 @@ function pushRoute(sessionId: string): { rt: WecomRuntime; cfg: WecomConfig } | 
 
 export const wecomAdapter: ChannelAdapter = {
   name: 'wecom',
-  /** opts 不给时按 notice 记账（付款确认等）；人工回复（kind='human'）的客户侧正文前加「【顾问】」（不变量 18） */
+  /**
+   * opts 不给时按 notice 记账（付款确认等）；人工回复（kind='human'）的客户侧正文前加「【顾问】」（不变量 18）。
+   * 库里的企微账号走 03 的先落库后发送：给了 prepare 的句柄就发那一组，否则在这里切分、排 pending、等提交再发
+   */
   async push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
+    if (opts?.prepared) {
+      const g = preparedGroups.get(opts.prepared);
+      if (g !== undefined) {
+        preparedGroups.delete(opts.prepared);
+        if (!g) return false;
+        const out = await runGroup(g);
+        if (out.stop === 'deferred') console.error(`${g.rt.tag} 停机中、发送已截止，这次推送留在 pending（重启后按出站恢复处理）`);
+        return out.ok && out.stop === null;
+      }
+    }
     const route = pushRoute(sessionId);
     if (!route) return false;
     const { rt, cfg } = route;
+    if (isDbAccount(rt)) return pushDb(rt, cfg, sessionId, text, opts);
     if (sendsClosed(rt)) {
       // 停机的 normal 段已截止：不再开始新的 send_msg（账本行已无处可写），按没发出去返回（跟进退账、之后再排）
       console.error(`${rt.tag} 停机中、发送已截止，这次推送不发`);
@@ -1612,6 +2082,18 @@ export const wecomAdapter: ChannelAdapter = {
     // 同意菜单（02 第 16 步）：原生 msgmenu，带「同意」「不同意」两个按钮；没有 category 时退化成普通文本（不该发生）
     if (opts?.kind === 'menu' && opts.category) return sendMenu(rt, cfg, uid, formatForWecom(cfg, text), opts.category);
     return sendRich(rt, cfg, uid, formatForWecom(cfg, text), { kind: opts?.kind ?? 'notice', message: opts?.message ?? null });
+  },
+  /** 03：库里的企微账号把分段的 pending 排进调用方这一次落库（同步）；env 账号与找不到账号的返回 null（push 照 02 或照常报错） */
+  prepare(sessionId: string, text: string, opts: PushOpts): PreparedPush | null {
+    const route = pushRoute(sessionId, true);
+    if (!route || !isDbAccount(route.rt)) return null;
+    return prepareDb(route.rt, route.cfg, sessionId, text, opts);
+  },
+  /** 拿了句柄、不发了：这一组没发的段记 cancelled */
+  release(prepared: PreparedPush, reason: 'taken_over' | 'aborted'): void {
+    const g = preparedGroups.get(prepared);
+    preparedGroups.delete(prepared);
+    if (g) cancelIntents(g.intents, reason);
   },
 };
 
@@ -1670,5 +2152,10 @@ export const __wecomTest = {
   /** 运行时的账号 uuid（含 env 账号） */
   ids(): string[] {
     return [...runtimes.keys()];
+  },
+  /** 模拟停机的 normal 段截止（drainForShutdown 设的那个时刻）：at 为 null 换回不截止。只改截止，不停拉取 */
+  closeSends(accountId: string, at: number | null): void {
+    const rt = runtimes.get(accountId);
+    if (rt) rt.sendsClosedAt = at ?? Number.POSITIVE_INFINITY;
   },
 };

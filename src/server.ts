@@ -28,6 +28,7 @@ import {
   reply,
   ReplyTooLongError,
   SendWindowError,
+  setPrepareTransport,
   setReplyTransport,
   sharedActor,
 } from './handoff/takeover.js';
@@ -112,6 +113,11 @@ function adapterFor(channel: string): ChannelAdapter {
 
 // 人工回复（src/handoff/takeover.ts 的 reply，后台接口与旧 /reply 共用）经会话的渠道发出
 setReplyTransport((sessionId, text, opts) => adapterFor(getSession(sessionId)?.channel ?? '').push(sessionId, text, opts));
+// 03 先落库后发送：人工回复、跟进、付款确认、同意菜单在写会话的同一段同步代码里先 prepare（库里的企微账号把 pending 排进同一次落库）
+setPrepareTransport({
+  prepare: (sessionId, text, opts) => adapterFor(getSession(sessionId)?.channel ?? '').prepare?.(sessionId, text, opts) ?? null,
+  release: (prepared, reason) => adapterFor(getSession(prepared.sessionId)?.channel ?? '').release?.(prepared, reason),
+});
 
 // ---------------- 管理面鉴权 ----------------
 // 分两层，而不是一个「读写一起开关」的总闸：
@@ -657,6 +663,7 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text, {
         kind: 'notice',
         message: followUp.message,
+        prepared: followUp.prepared,
       });
       // 同 /reply：会话里记着「已收到您的支付」，客户却没收到，得让顾问在后台看见、去另行告知。
       // 种子会话除外：对应的企微客户是编造的，推送必然失败，公开演示每付一次就会多一条失败备注

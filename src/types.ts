@@ -213,6 +213,21 @@ export interface ChannelAdapter {
    * opts 不给时 kind 按 'notice' 记（付款确认等服务端推送）；kind='human' 时客户侧正文前加「【顾问】」
    */
   push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean>;
+  /**
+   * 03「先落库后发送」（docs/architecture/03-channels-v2/spec.md「出站：投递状态」）：人工回复、跟进、通知、同意菜单在把消息（或
+   * 「问过」、记账）写进会话的那一段同步代码里调。库里的企微账号在这里切好分段、每段一行 pending 排进这个会话的同一次落库，
+   * 返回的句柄交给随后的 push（opts.prepared），push 等提交、标 sending 再发；env 账号与别的渠道没有这一步（返回 null，push 照 02）。
+   * 拿到句柄就要么 push、要么 release，不然这几段一直是 pending（重启后按出站恢复表处理）
+   */
+  prepare?(sessionId: string, text: string, opts: PushOpts): PreparedPush | null;
+  /** 拿了 prepare 的句柄、决定不发了（跟进记账没提交上、接手等）：这一组没发的段记 cancelled */
+  release?(prepared: PreparedPush, reason: 'taken_over' | 'aborted'): void;
+}
+
+/** prepare 的句柄：只有会话 id 与种类，别的由适配器自己记着 */
+export interface PreparedPush {
+  readonly sessionId: string;
+  readonly kind: OutboundKind;
 }
 
 /** push 的可选参数（02 spec「企微：发送账本、回执与去重」）：发送账本记哪一类、对应会话里的哪条消息（经 seq 关联） */
@@ -223,4 +238,6 @@ export interface PushOpts {
   /** kind='menu' 时这条企微菜单问的是哪个敏感信息类别（R23，02 第 16 步）：wecom 适配器据此拼 menu 的按钮 id；
    *  其余渠道忽略，只发 text 当普通文本 */
   category?: SensitiveCategory;
+  /** 03：同一组之前经 prepare 排进落库的那几段（给了就发它们，不再另切另排） */
+  prepared?: PreparedPush | null;
 }
