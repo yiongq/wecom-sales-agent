@@ -307,6 +307,7 @@ const CHECK: DraftCheck = {
 };
 
 const STATUS: Status = {
+  channels: [],
   mode: 'db',
   tenantSlug: 'yuntu',
   sop: {

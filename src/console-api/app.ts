@@ -4,6 +4,7 @@
 // prod（anon_readonly_admin 关）下匿名除了登录处处 401，靠的就是每个路由都挂了权限、兜底在 prod 下也是 401。
 // 匿名（demo）只拿投影，出自进程内缓存与快照、不查库，并挂查询限流。命名错误在 onError 里统一映射成 { error, … }。
 import { isIP } from 'node:net';
+import { channelStatuses, refreshChannelObservability } from '../channels/registry.js';
 import { zValidator } from '@hono/zod-validator';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
@@ -421,7 +422,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
 
   // ---------------- 状态 ----------------
-  .get('/status', canRead, (c) => {
+  .get('/status', canRead, async (c) => {
     if (!c.var.user) {
       const anon: AnonStatus = { mode: 'db' };
       return c.json(anon, 200);
@@ -429,7 +430,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const sop = currentSop();
     const h = configHealth();
     const store = storeHealth();
+    await refreshChannelObservability();
     const body: Status = {
+      channels: channelStatuses(),
       mode: 'db',
       tenantSlug: configRuntime().deps.tenantSlug,
       sop: {
