@@ -24,7 +24,7 @@
 
 ## 步骤
 
-- [ ] 1. 开工核对（0.5，Claude）
+- [x] 1. 开工核对（0.5，Claude）：2026-10-09 完成，基准、盘点与给后面步骤的注意见「实施记录 · 第 1 步」；只改文档。
   - 逐条核对「开工条件」；记下开工提交的 sha、锁定套件 8 个文件的 sha256、四个门禁的结果与 `PREFIX sha256` 的两个值。验收 1 以它们为基准。
   - 只读盘点，结果写进「实施记录 · 第 1 步」，后面的步骤照着改：
     - `src/adapters/wecom.ts` 的模块级状态（token、cursor、handled、在途表、同步互斥、轮询、欢迎语去重、缩略图缓存）逐个列出，标明搬进 `WecomRuntime` 的哪一部分（第 7 步用）；
@@ -210,6 +210,52 @@
 
 （各步完成时按步骤追加：结构、本步定的、偏离、自测与变异结果、给后面步骤的注意。）
 
+### 第 1 步 · 开工核对（2026-10-09）
+
+**基准**
+
+- 开工条件逐条核对通过：main 上有发版 tag `demo-v3`（合并 PR #108），02 spec `Status: implemented`、02 plan 第 30 步已勾；本 spec `Status: ready`；线上 demo 以 `SESSION_STORE=db`、`CONFIG_SOURCE=db` 运行（02 第 27 步，2026-10-09）；开放问题 1–3、5–8 已定。
+- 开工提交 `5b697c2de2d237950358e4395388186f541da64b`（dev，合并 PR #109）。
+- 锁定文件 sha256（验收 1 的基准，与 02 开工时相同）：
+
+  ```
+  c71a4966983925bc422a55240b289675584485693a49d6410f5e5d5a2555a6e3  src/engine.selftest.ts
+  166c124e28cec35a9b8b0e306bbda653e653ee5795fd186388185812e32a3941  src/dejargon.selftest.ts
+  351fd745fcb65ed6f87605fe3deb4a60841598e983b44a6d91c9493571ff9cb8  src/engine-holiday.selftest.ts
+  d3f11083704b51fc13bc6be93933a094c2e0abd0310da6f87021e3df4a8d92a1  src/price-guard.selftest.ts
+  4a577bb23225aa54881c783ffe7bd41b1e115179a2f8b62044af21b70b07dc04  src/llm.selftest.ts
+  f371ea7e93fd75bd0c3054b36276cb55476672b3462576edf8dfc3fd6c5f9f61  src/server.selftest.ts
+  d37341de95e87956b643dfd6ef5aee28011e39a7ce5391148e0157f9800c7882  src/adapters/wecom.selftest.ts
+  aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.json
+  ```
+
+- 四个门禁在开工提交上全绿：`pnpm test` 退出码 0、PASS 行 70，mock eval 两遍各 19/19（跳过 32 条要真实模型的）。`PREFIX sha256 system=dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`（与 02 第 15 步之后的值相同）：第 2–20 步每步结束时都要等于它。
+
+**文档收尾**
+
+- 02 spec 顶部加 `Superseded in part by:`（本 spec 顶部 `Supersedes in part:` 的四处）与 `Amended by:`；00、01、后台 UX spec 顶部各加 `Amended by:`（00：开关 `web_channel`；01：审计的新动作；UX：渠道中文名）。02 plan「上线清单」最后一条写明由本 spec 做、本 spec implemented 之后勾。
+
+**盘点（行号以开工提交为准）**
+
+1. `src/adapters/wecom.ts` 的模块级状态 → `WecomRuntime`（第 7 步）：
+   - token：`cachedToken`、`tokenExpireAt`、`tokenInflight`（:76–78）。`tokenErrorListeners`（:84）留在进程级（告警订阅出口），回调要多带账号 key。
+   - 状态后端（file 后端照留，库里账号换成 `channel_inbox` 与账号行的 cursor）：`cursor`（:165）、`handled`（:167，TTL 3 天、上限 5000）、`inflight`（:187）、`coldStartCutoff`（:199）、`saveChain`（:259）、`stateSaveTimer`（:282）。
+   - 停机截止：`sendsClosedAt`（:345）、`stopping`（:1254）。同步互斥：`syncTask`、`pendingRequested`、`pendingToken`（:1250–1252）。处理链：`userChains`（:1213）、`eventTasks`（:1215）。恢复标志：`readyPromise`（:1372，现在表示「重放已派发」，不表示处理完）。轮询：`started`、`pollTimer`（:1400–1401）。欢迎语去重：`welcomeBackAt`（:390），窗口 `WELCOME_DEDUPE_MS`（:389，加载时读 env）。缩略图缓存：`thumbCache`、`thumbInflight`、`thumbFailUntil`（:444–448）。
+   - 留进程级、不搬：`LEGACY_WELCOME_TEXTS`、`WELCOME_TEXTS`（静态）、各个匹配正则、`wecomAdapter` 门面与 `__test`（门面内部按会话路由到运行时，`__test` 指向 env 账号）。
+   - 配置：`readConfig` 每次现读 `WECOM_CORP_ID`、`WECOM_APP_SECRET`、`WECOM_KF_OPEN_KFID`、`WECOM_POLL_INTERVAL_MS`、`PUBLIC_BASE_URL`（调用方 `isWecomEnabled`、`syncFromCallback`、`startWecom`、`push`）；`VAR_DIR`、`STATE_FILE`（:43、:56）归 env 账号的 file 后端。**适配器外**还有三处读企微 env：`src/server.ts:795`（`receiveid` 校验读 `WECOM_CORP_ID`）、`:800`、`:820`（回调读 `WECOM_CALLBACK_TOKEN`、`WECOM_CALLBACK_AES_KEY`），第 7 步改成按账号。
+   - 退出钩子 `process.on('exit', flushStateSync)`（:308）与 `onShutdown(drainForShutdown)`（:1468）只管一套状态，拆开后要覆盖每个账号。
+   - 锁定 `__test` 的出口：`STATE_FILE`、`resetForTest`（:1495；清 cursor、handled、inflight、冷启动、ready、同步互斥、停机、处理链、`welcomeBackAt`，**不清** token、缩略图、`started`、`pollTimer`、监听器，不删文件）、`inspectForTest`（:1517）、`splitForWecom`、`extractCard`、`stripLink`、`wechatify`、`WELCOME_BACK_TEXT`、`LEGACY_WELCOME_TEXTS`。
+2. 「微信」话术（第 5 步）：要按渠道分的是 `src/engine.ts` 七处——:465 `resendPayReply`、:1250 价格护栏已转人工的兜底、:1324 `strandedReply`、:2031 `handoffReply`、:4001 与 :4051 成单安全网（已有订单、新建订单）、:4159 驳回转接的「会请顾问在微信上跟您确认」；`src/tools.ts:1036` `ADVISOR_PAY_NOTE`（工具结果，写给模型）；`src/price-rules.ts:423–425` `PHONE_PROMISE` 两条替换。spec 清单之外、判断为不改的：`src/prompt/system.ts:22,30`（前缀，spec 写明不动）；`src/llm.ts:871`（工具调用兜底的「用中文微信语气回复」，是文体，`llm.ts` 归锁定的 `llm.selftest.ts` 管）；`src/insight.ts:160`（给顾问起草，顾问发前会看）；`src/followup.ts:129`（跟进只追企微）；`src/engine.ts:4371`（给顾问的待办正文）；`src/sop/contract.ts:52`（SOP 契约）。另外 `src/engine.ts` :1874–1969、:4142、:4367、:4485 一带识别「顾问会在微信上联系您」的判定正则，网页会话里模型会说网页的说法，第 5 步要看漏判的后果（只在 `web` 下放宽）。
+3. 出站调用点（第 8 步）：AI 回复 `src/adapters/wecom.ts:1171`（含 02 情况 4 的原样重发）、非文本引导 :1110 与异常兜底 :1203（都记 `ai`）；人工回复 `src/handoff/takeover.ts:370`（`human`）；跟进 `src/followup.ts:251`（文件）与 `src/jobs/followup.ts:237`（任务表），都是 `followup`；通知 `src/server.ts:640` 付款确认、`src/payment/orders.ts:107` 顾问确认收款、`src/adapters/wecom.ts:950` 不同意后的确认，都是 `notice`；同意菜单 `src/engine.ts:3497` → `src/adapters/wecom.ts:1488` `sendMenu`（`menu` 带 category）；老客户欢迎语 :982（`welcome`，无会话时独立短事务）。卡片段 :702、:706 记 `card`（spec 定库里账号改记组的种类）。`send_msg_on_event` 的欢迎语（:839、:970）不走发送账本。转发通道：`src/server.ts:109` `setReplyTransport`、:968 `pushFollowUp`、`src/handoff/takeover.ts:265` `pushToChannel`。`push` 的实现：wecom（:1473，默认 `notice`）、simulator（`src/adapters/simulator.ts:28`，不记账）、未知渠道兜底（`src/server.ts:101`，返回 false）。
+4. 客户消息写进会话（第 9 步）：引擎只有两处，都在 `handleMessageInner`——重置分支 `src/engine.ts:3554`（要求 `opts.msgid && !opts.alreadyRecorded`）与正常分支 :3599（`!opts.alreadyRecorded`，有 msgid 才带）。适配器自己写的：非文本占位 `src/adapters/wecom.ts:1090`（customer，带入站 msgid）与随后的引导 :1114（agent）；菜单点击 :952 只写同意记录与不同意时的 agent 确认，点击本身不写消息；发送失败回执 :1300 → `src/quota/ledger.ts:443` 写 system 说明；进入会话 :987 只写欢迎语（agent），事件本身不写；接手说明 :1163、:1182，发送失败说明 :1191，在途放弃说明 :1358（都是 system）。
+5. 02 PG 后端一次落库（第 8、11 步）：`takeSnapshot`（`src/store/pg-backend.ts:833`）→ `runFlush`（:944，`withTenant` 主事务）→ `writeSnap`（:896）：锁会话行、`flushId` 对齐判 `AlreadyCommitted` → 消息（:916）→ 会话投影（:918）→ 订单、审计、任务、同意（:921 → :517）→ `SAVEPOINT telemetry` 里 trace、护栏事件、`outbound_sends`（:926–929，失败整批丢弃、计数）→ `afterCommit`（:967）。`usage_daily` 不在会话落库里（:1223 独立短事务）。poisoned 判定在 :350、:816、:885、:1006；poisoned 之后新来的 telemetry（含账本）直接丢弃（:1210），没有渠道行的短事务路径。spill：外壳 `{ version: 1, tenant, at, sessions }`（:138），条目字段见 :104–127（没有 trace、账本、渠道段），写出 `spillEntryOf`、`spillSync`（:1058、:1370），回放 `replaySpills` → `replayFile` → `replayEntry`（:608、:665、:558），回放没有 telemetry 存档点。账本行的写法：`recordSend` → `queueTelemetry` → 存档点里 `insertOutboundSends`；没有会话的欢迎语走 `writeStandaloneOutbound`（:1250）；回执走 `markOutboundFailed` 短事务（:1264）。
+
+**给后面步骤的注意**
+
+- 第 8 步：spec「出站 · 发一条 AI 回复」说同意菜单「本来就是先落库后发送」，代码里发送前落库的只是「问过」的同意状态，菜单那条 agent 消息与账本行都在发送成功之后才写（`src/engine.ts:3497–3499`、`src/adapters/wecom.ts:790`）。所以菜单的 `pending` 要加进「问过」那一次落库，不是加进一条已有的消息落库。
+- 第 9 步：spec R2 说入站行留 7 天「与 02 的 7 天 msgid 集合同一口径」；文件路径的 `handled` 是 3 天（:166–168），7 天说的是 02 PG 路径的最近客户 msgid 集合。按 spec 的 7 天做，不影响老路。
+- 盘点 1、3、4、5 由 Codex 只读完成，Claude 抽查了 :166–168、引擎两处 customer 写入、存档点 :926–929 与 spec 第 398 行。
+
 ## 验收记录
 
 （对照验收标准逐条验证时填写：编号 · 通过 / 未通过 · 证据）
@@ -234,3 +280,10 @@
 - 半成品：无，还没写任何代码。
 - 阻塞：「开工条件」第 1 条——02 还没发版到 main。
 - 下一步：02 发版之后，新会话从第 1 步「开工核对」开始；第 1 批里第 3、4、5 步可以与第 2 步同时派给 Codex。
+
+### 交接（2026-10-09，第 1 步完成时）
+
+- 已完成：第 1 步（本 PR）。
+- 半成品：第 1 批并行在做——第 2 步由 Claude 子 agent 在分支 `feat/03-db` 上做；第 3、4、5 步派给 Codex，分支依次是 `feat/03-secrets`、`feat/03-log-ids`、`feat/03-web-copy`（本机 worktree，还没推送）。各自合并时在本文件勾选、补实施记录。
+- 阻塞：无。
+- 下一步：审查并合并第 1 批；之后第 6 步（Claude）与第 16 步（Codex）。
