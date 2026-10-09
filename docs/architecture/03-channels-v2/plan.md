@@ -101,7 +101,7 @@
   - 自测：`restore-cutoff` 的每一类改动与退出码（子进程）；`backup.sh` 用假 `docker` 断言顺序与哨兵只在归档里。
   - 对应验收 6 的命令行与哨兵部分、21 的 `backup.sh` 部分；不变量 9、14。依赖：第 6、10 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍。
-- [ ] 13. 可观测性（0.5，可派 Codex）
+- [x] 13. 可观测性（0.5，可派 Codex）：2026-10-09 完成（Codex 实现，Claude 审查、改一处、补跑门禁），见「实施记录 · 第 13 步」。
   - `/healthz` 的 `failing`、`stuck` 接实数；console `/status` 的每账号字段；告警键 `channel` 的各条与 `wecom_send` 带账号 key（spec「可观测性」）。
   - 自测：`ops.selftest.ts` 加各条告警的触发与内容里没有凭据、`external_userid`。
   - 对应验收 23、10 的告警部分。依赖：第 6–10 步。
@@ -617,6 +617,16 @@
 - spec 实现期修订（顶部 `Revisions:`）：导出多拒绝两种（默认账号有没结束的非 `message` 入站；没结束的非文本消息名下已有出站行），导入导出在有 spill 时拒绝且取锁后复查。
 - 交叉评审：另派一路只读 Codex 评审找到 3 处 major（导出漏掉没处理完的菜单点击与回执；非文本消息的引导提示可能已发、02 重放会再发；spill 检查读目录出错被吞、取锁前的间隙也没复查），即上面那条修订，由 Codex 续改、各补回归断言（撤回修复时失败）。实现第一轮之后另按第 11 步的提醒补了「有 spill 就拒绝」。
 - 自测追加在 `src/channels/channels.selftest.ts`（子进程，PGlite；有 `PG_TEST_URL` 时另跑真实 PG）：验收 13 的导入、导出、`--resync` 与 `--dry-run`，往返一致性，各种拒绝的零变更断言，启动侧的两种拒绝能被本步写出的文件与标记触发，凭据与标识扫描为零。门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑，`TZ=UTC`）；锁定文件与 `PREFIX sha256` 与第 1 步相同。
+
+### 第 13 步 · 可观测性（2026-10-09）
+
+- `/healthz` 的 `channels`：`failing` 是启用企微账号里拉取或取 token 失败持续至少 10 分钟的个数（成功一次就清掉计时）；`stuck` 是启动超过 1 分钟之后、有没结束的入站行超过 5 分钟或启动恢复持续超过 5 分钟的账号数（同一账号只计一次）。任一大于 0 时 `ok = false`；只有个数。
+- `/healthz` 不碰库（Claude 审查时改的）：Codex 的第一版每次请求都 `await` 一次库查询，库慢或连不上时 `/healthz` 跟着卡，deploy.sh 的健康检查与外部拨测会被拖住。改成渠道启动后立即刷新一次统计、之后每 30 秒后台刷新（定时器 `unref`，停机清除），每次查询至多等 5 秒，失败或超时保留上一次的值、迟到的结果不覆盖、不叠加查询；统计太旧也不会把 `stuck` 清零；成员的 `/status` 同样有界等待。
+- console `/status` 给成员多带每个账号的 11 个字段：`key`、`kind`、`status`、`inactiveReason` 取装载结果；`lastSyncAt`、`lastErrorCode` 取运行时（恢复中、没有别的错误时是 `recovering`）；`openInbox`、`oldestOpenInboxSec`、`staleOutbound`（`pending` / `sending` 超过 2 分钟）、`unknownSends24h` 查库；`cursorAgeSec` 取 `cursor_at`。按租户、按账号读，`account_id` 为空的旧出站归默认账号。匿名响应不带这些。
+- 告警（键 `channel`，正文只有账号 key、计数与错误码）：拉取失败（10 分钟条件，每账号 30 分钟去重，恢复发一条）；卡住（同上）；重启时 `sending` 转 `unknown` 从启动检查那一条拆出来、按账号单独发；网页账号因 `web_channel` 关着未启用沿用启动检查。`wecom_send` 正文带账号 key。原有 R6、`poison` / `too_old` 的频率规则与全局限流照旧。
+- 日志：轮次与拉取的 JSON 日志行多带 `acct`；企微接口异常收敛为安全错误码，不记请求地址。
+- 自测追加在 `src/ops/ops.selftest.ts`（只追加）：可控时钟下卡住 6 分钟（`stuck = 1`、`ok = false`、告警一条、`oldestOpenInboxSec > 300`，验收 23）、单账号 `gettoken` 一直失败（告警一条、`failing = 1`、另一账号不受影响，验收 10 的告警部分）、恢复与去重、计数、成员鉴权、各条告警里没有凭据与客户标识、库挂住时 `/healthz` 100 毫秒内返回且没借连接、统计过旧保留旧值。`recovery.selftest.ts` 的重启告警断言随按账号单独发送调整，`overview.selftest.tsx` 的状态样例补 `channels` 字段。
+- 门禁：四个全绿（`TZ=UTC`，console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），锁定文件与 `PREFIX sha256` 与第 1 步相同。
 
 ## 验收记录
 

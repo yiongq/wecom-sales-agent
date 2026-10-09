@@ -1149,13 +1149,13 @@ async function restart1(h: Harness): Promise<void> {
       eMsg.state === 'done',
     json({ oe, sent: h.sendsTo(U.e), delivery: eReply ? h.ledger.deliveryOf(sidOf('r2', U.e), eReply) : null }),
   );
-  const unknownAlerts = h.alertLines().filter((l) => l.includes('停在「发送中」'));
+  const unknownAlerts = h.alertLines().filter((l) => l.includes('sending 转 unknown'));
   check(
-    '验收 4 · sending 转 unknown 的告警：一条，按账号写明段数（r1、r2 各 1），没有 external_userid',
-    unknownAlerts.length === 1 &&
-      unknownAlerts[0]!.includes('企微账号 r1 重启时有 1 段') &&
-      unknownAlerts[0]!.includes('企微账号 r2 重启时有 1 段') &&
-      !/wm10/.test(unknownAlerts[0]!),
+    '验收 4 · sending 转 unknown 的告警：每账号单独一条（r1、r2 各 1 段），没有 external_userid',
+    unknownAlerts.length === 2 &&
+      unknownAlerts.some((l) => l.includes('企微账号 r1 重启时 1 段 sending 转 unknown')) &&
+      unknownAlerts.some((l) => l.includes('企微账号 r2 重启时 1 段 sending 转 unknown')) &&
+      !unknownAlerts.some((l) => /wm10/.test(l)),
     json(h.alertLines()),
   );
   // 验收 20：截止之后留在 pending 的，重启后发一次、同一 msgid、不调模型
@@ -1409,10 +1409,12 @@ async function restart2(h: Harness): Promise<void> {
     om.length === 1 && om[0]!.status === 'accepted' && h.sendsTo(U.m).length === 2 && json(uniq(h.sendsTo(U.m))) === json([om[0]!.msgid]),
     json({ om, sent: h.sendsTo(U.m) }),
   );
-  const unknownAlerts = h.alertLines().filter((l) => l.includes('停在「发送中」'));
+  const unknownAlerts = h.alertLines().filter((l) => l.includes('sending 转 unknown'));
   check(
     'RESEND_UNKNOWN 为真：「sending 转 unknown」的告警只算有接手人的会话里那一段 AI 回复（r1 1 段，r2 没有）',
-    unknownAlerts.length === 1 && unknownAlerts[0]!.includes('企微账号 r1 重启时有 1 段') && !unknownAlerts[0]!.includes('企微账号 r2'),
+    unknownAlerts.length === 1 &&
+      unknownAlerts[0]!.includes('企微账号 r1 重启时 1 段 sending 转 unknown') &&
+      !unknownAlerts[0]!.includes('企微账号 r2'),
     json(h.alertLines()),
   );
   // 验收 7 的 B：入站 recorded、引擎重新生成一组再发（多一组、msgid 不同）
@@ -1697,7 +1699,7 @@ async function restart3(h: Harness): Promise<void> {
     st('v') === 'unknown' &&
       h.sendsTo(V.v).length === 1 &&
       h.sendsTo(V.v)[0]!.p === 'k3' &&
-      h.alertLines().filter((l) => l.includes('企微账号 r1 重启时有 1 段停在「发送中」')).length === 1,
+      h.alertLines().filter((l) => l.includes('企微账号 r1 重启时 1 段 sending 转 unknown')).length === 1,
     json({ v: after.v, s: h.sendsTo(V.v), alerts: h.alertLines() }),
   );
   const tkIn = (await h.inboxesOf(sid(V.tk)))[0];
