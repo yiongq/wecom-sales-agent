@@ -865,7 +865,8 @@ async function sendMenu(
 //   切分段 → planOutbound（每段一行 pending，排进会话的落库）→ commitOutbound（至多 5 秒）→ 每段：比停机截止、比接手代次 →
 //   取 access_token（卡片再取缩略图）→ markSending → 再比一次接手代次与停机截止 → send_msg（这次比较与发请求之间没有 await）→
 //   settleIntent。卡片发失败补的「标题 + 链接」是运行时才补的段（planRuntimeSegment）。
-// 人工回复、跟进、通知、同意菜单经 prepare 在写会话的同一段同步代码里先排 pending，push 时只做后半段
+// 人工回复、跟进、通知、同意菜单经 prepare 在写会话的同一段同步代码里先排 pending，push 时只做后半段。
+// 接手代次只对 AI 回复、跟进、同意菜单、欢迎语比；通知与人工回复只比停机截止（见 OutGroup.checksTakeover）
 
 /** 库里的企微账号走 03 的发送；env 账号照 02 */
 const isDbAccount = (rt: WecomRuntime): boolean => rt !== envRuntime;
@@ -879,6 +880,12 @@ interface OutGroup {
   intents: OutboundIntent[];
   /** 第 3、4 步比的接手代次：AI 回复是这一轮开始时的（02 的写法），先落库的几类是 prepare 那一刻的 */
   gen: number;
+  /**
+   * 这一组比不比接手代次：AI 回复、跟进、同意菜单、欢迎语比（不让 AI 抢顾问的话，不变量 28）；通知（付款确认、顾问确认收款、
+   * 不同意之后的确认）与人工回复不比、只比停机截止（协调者 2026-10-09 裁决：出站恢复表对通知本来就不看接手直接补发，02 发通知也
+   * 不看接手；照字面比的话客户付了款却收不到确认）
+   */
+  checksTakeover: boolean;
   /** 卡片段的 msgid → 原样的标题与地址（卡片发失败补「标题 + 链接」用，02 的写法） */
   cards: Map<string, { title: string; url: string }>;
   /** 每段的 pending 落没落库（commitOutbound 的结果；运行时补的段各自的）：markSending 返回 absent 时据它判照不照发 */
@@ -954,7 +961,8 @@ function planGroup(
   const cards = new Map<string, { title: string; url: string }>();
   const link = intents.find((i) => i.payload.msgtype === 'link');
   if (card && link) cards.set(link.msgid, card);
-  return { rt, cfg, uid: sessionId.slice(rt.prefix.length), sessionId, intents, gen, cards, commit: new Map() };
+  const checksTakeover = kind !== 'notice' && kind !== 'human';
+  return { rt, cfg, uid: sessionId.slice(rt.prefix.length), sessionId, intents, gen, checksTakeover, cards, commit: new Map() };
 }
 
 /** 这一组没排进发送：日志一行（只有原因），会话加一条说明（告警由账本的 onPlanRejected 推） */
@@ -988,8 +996,8 @@ function postSendMsg(token: string, body: Record<string, unknown>): Promise<{ er
   }).then((res) => res.json() as Promise<{ errcode?: number; errmsg?: string }>);
 }
 
-/** 这一组还算不算数：接手代次没变 */
-const stillCurrent = (g: OutGroup): boolean => takeoverGen(g.sessionId) === g.gen;
+/** 这一组还算不算数：接手代次没变（通知与人工回复不比接手，恒为真，见 OutGroup.checksTakeover） */
+const stillCurrent = (g: OutGroup): boolean => !g.checksTakeover || takeoverGen(g.sessionId) === g.gen;
 
 /**
  * 一段的第 4–5 步。返回：accepted；failed（rejected 或 unknown）；skipped（not_pending，或 absent 而 pending 提交过）；

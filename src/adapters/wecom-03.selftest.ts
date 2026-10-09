@@ -1261,6 +1261,111 @@ async function outboundSuite(h: Harness): Promise<void> {
     process.env.FOLLOWUP_ENABLED = '';
   }
 
+  // ---- 接手检查按种类（协调者裁决）：prepare 到发送之间有人接手，付款确认与人工回复照发；跟进照旧取消（AI 回复见下面的验收 5） ----
+  {
+    // 付款确认：notifyPaid 里 prepare，之后、push 之前接手代次变了
+    const uid = 'wm08tkn';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const o = h.store.createOrder({
+      sessionId: sid,
+      routeId: 'r-sichuan-lux',
+      routeTitle: '川西',
+      travelers: 2,
+      departDate: '2026-12-01',
+      totalPrice: 20000,
+    });
+    getSession(sid)!.orderIds.push(o.id);
+    h.store.saveSession(getSession(sid)!);
+    h.store.markOrderPaid(o.id);
+    await settle();
+    const n0 = h.sentTo(uid).length;
+    const notice = await engine.notifyPaid(o.id);
+    tk.__takeoverTest.bump(sid); // prepare 之后、发送之前有人接手
+    const ok = await tk.pushToChannel(sid, notice!.text, { kind: 'notice', message: notice!.message, prepared: notice!.prepared });
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'notice');
+    check(
+      '接手不拦通知：prepare 之后有人接手，付款确认照发、出站行 accepted、没有 cancelled',
+      ok && h.sentTo(uid).length > n0 && rows.length > 0 && rows.every((x) => x.status === 'accepted'),
+      json({ ok, rows }),
+    );
+  }
+  {
+    // 人工回复：reply 里 prepare，之后、push 之前接手代次又变了（改派）
+    const uid = 'wm08tkh';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    await settle();
+    const n0 = h.sentTo(uid).length;
+    const pending = tk.reply(sid, tk.sharedActor(), '我来跟进这单', `c08tk-${Date.now()}`);
+    tk.__takeoverTest.bump(sid);
+    const r = await pending;
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'human');
+    check(
+      '接手不拦人工回复：prepare 之后接手代次变了，人工回复照发、出站行 accepted',
+      r.sent &&
+        h.sentTo(uid).length === n0 + 1 &&
+        h.sentTo(uid).at(-1)?.content === '【顾问】我来跟进这单' &&
+        rows.every((x) => x.status === 'accepted'),
+      json({ r, rows }),
+    );
+  }
+  {
+    // 跟进：执行体自己比过接手之后、markSending 期间有人接手 → 这一组 cancelled、零发送
+    process.env.FOLLOWUP_ENABLED = '1';
+    const runner = await import('../jobs/runner.js');
+    const uid = 'wm08tkf';
+    const sid = sidOf('a1', uid);
+    const H = 3_600_000;
+    const s = h.store.getOrCreateSession(sid, 'wecom');
+    s.stage = 'quote';
+    s.messages.push(
+      {
+        role: 'customer',
+        content: '这条线多少钱',
+        at: Date.now() - 3 * H - 60_000,
+        msgid: 'q-wm08tkf',
+        sentAt: Date.now() - 3 * H - 60_000,
+      },
+      { role: 'agent', content: '这条线每人 19,800 元起，您几位出行？', at: Date.now() - 3 * H },
+    );
+    s.updatedAt = Date.now() - 3 * H;
+    h.store.saveSession(s, false);
+    await h.store.flushSession(sid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || intent.kind !== 'followup' || fired) return;
+      fired = true;
+      tk.__takeoverTest.bump(sid);
+    });
+    await runner.runJobsOnce();
+    ledger.__ledgerTest.setMarkHook(null);
+    await settle();
+    const rows = (await rowsOf(sid)).filter((x) => x.kind === 'followup');
+    check(
+      '接手照旧拦跟进：markSending 期间接手代次变了，零发送、这一组 cancelled',
+      fired && h.sentTo(uid).length === 0 && rows.length > 0 && rows.every((x) => x.status === 'cancelled'),
+      json({ fired, sent: h.sentTo(uid).length, rows }),
+    );
+    process.env.FOLLOWUP_ENABLED = '';
+  }
+  {
+    // 网页渠道（第 17 步）：没有发送账本，prepare 无操作（null）、release(null) 无操作，push 照常写进历史
+    const sid = 'web:0123456789abcdef0123456789abcdef';
+    h.store.getOrCreateSession(sid, 'web');
+    const prepared = tk.prepareChannel(sid, '付款已确认', { kind: 'notice' });
+    tk.releasePrepared(prepared, 'aborted');
+    const ok = await tk.pushToChannel(sid, '付款已确认', { kind: 'notice', prepared });
+    check(
+      '网页渠道：prepare 返回 null、release 无操作、push 照常（没有出站行）',
+      prepared === null && ok && (await rowsOf(sid)).length === 0,
+      json({ prepared, ok }),
+    );
+  }
+
   // ---- 验收 5：markSending 挂住期间顾问接手（marked 与 db_unavailable 两种）：零发送、cancelled、会话多一条「本轮未发送」 ----
   for (const [label, holdMs, uid] of [
     ['marked', 150, 'wm08tka'],
