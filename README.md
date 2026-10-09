@@ -1,75 +1,123 @@
-# wecom-sales-agent
+# wecom-sales-agent · 企业微信 AI 销售助手
 
-企业微信 AI 旅游销售 Agent demo：高端定制旅行社把小红书引流来的客户接进企微后，由 AI 全链路接待——聊需求 → 推线路 → 报价 → 生成订单 → 支付 → 主动跟进，风险场景自动转人工，销售可在工作台随时接管。
+通用的企业微信 AI 销售助手，面向多行业、多租户演进：AI 接待客户、了解需求、检索产品、报价建单、主动跟进，顾问通过成员工作台接手、回复与确认收款。定制游是第一个参考行业包，后续方向包括家装、电商售后；当前只登记了旅游包，每个应用实例服务一个租户。
 
-> **演示项目**。对外品牌「云途定制旅行」为虚构，`data/` 下的线路、酒店、价格与服务描述均为编造的演示数据，不构成任何真实报价（见 [data/README.md](data/README.md)）。支付走页面 mock，非真实微信支付。
+> **演示项目**。演示租户「演示旅行社」、对外品牌「云途定制旅行」为虚构；`data/` 下的线路、酒店、价格与服务描述均为编造的演示数据，不构成真实报价（见 [data/README.md](data/README.md)）。在线体验以旅游为例，支付走页面 mock，非真实微信支付。
 
 ## 在线体验
 
 **<https://travel.yiongspace.com>**
 
-| 入口                                                       | 说明                                                                                                                                           |
-| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**引导页**](https://travel.yiongspace.com/guide.html)     | 从这里开始，三步走完客户视角与销售视角                                                                                                         |
-| [**网页模拟器**](https://travel.yiongspace.com/chat.html)  | 复刻企微聊天界面，直接跟 AI 顾问聊——问需、推荐、报价、下单、支付全链路可走通                                                                   |
-| [**销售工作台**](https://travel.yiongspace.com/admin.html) | **免密可看**。阶段判断、客户画像、成交漏斗、模型成本一览；点「接管会话」会要求登录（演示模式下只显示演示数据，真实客户会话不会出现在响应体里） |
+| 入口                                                               | 说明                                                                                                                           |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| [**引导页**](https://travel.yiongspace.com/guide.html)             | 四步走完客户视角、销售视角、工作原理与演示说明                                                                                 |
+| [**网页模拟器**](https://travel.yiongspace.com/chat.html)          | 用旅游行业包体验问需、推荐、报价、下单与模拟支付                                                                               |
+| [**销售作战室**](https://travel.yiongspace.com/admin.html)         | **免登录展示**：实时看演示种子和同一浏览器里自己刚聊的会话，其他访客与真实企微客户不会出现在匿名响应体里；写操作另需旧管理凭据 |
+| [**成员工作台（需登录）**](https://travel.yiongspace.com/console/) | 顾问处理客户会话的后台：接手、回复、交还 AI、确认价格与收款；使用成员账号，与作战室的登录独立                                  |
 
-演示环境配了每日 LLM 调用上限，超额后网页端自动降级为离线脚本回复——流程照样走得完，只是话术固定。
+演示环境配了每日 LLM 调用上限，超额后网页端自动降级为离线脚本回复——流程照样走得完，只是话术固定。线上 demo 已切到数据库会话存储；种子与网页访客仍留在 JSON。
 
 ## 架构
 
-```
-  客户侧                          服务端（Hono / Node 22 / TypeScript）
-┌─────────────┐   HTTP/SSE   ┌──────────────────┐
-│ chat.html   │◄────────────►│ adapters/        │
-│ (企微风格   │              │  simulator  ─────┤
-│  网页模拟器)│              │  wecom (微信客服  │      ┌────────────┐
-└─────────────┘              │  kf 回调驱动,可选)│─────►│ engine     │
-┌─────────────┐    SSE 实时  ├──────────────────┤      │ (SOP 注入 + │
-│ admin.html  │◄────────────►│ server.ts        │      │  阶段/画像  │
-│ (销售工作台:│              │  /api/chat       │      │  状态机)    │
-│  接管+回复) │              │  /api/sessions   │      └─────┬──────┘
-└─────────────┘              │  /api/orders     │            │ function calling
-┌─────────────┐              │  /pay/:orderId   │      ┌─────▼──────┐
-│ pay.html    │──POST pay───►│                  │      │ tools      │
-│ (mock 收银台)│             └────────┬─────────┘      │ 搜线路/详情 │
-└─────────────┘   支付成功 → markPaid │                │ 报价/下单/  │
-                  → notifyPaid ───────┘                │ 转人工     │
-                  → adapter.push 跟进消息              └─────┬──────┘
-                                                      ┌─────▼──────┐
-                                                      │ data/ + var/│
-                                                      │ 20条线路JSON│
-                                                      │ 23家酒店JSON│
-                                                      │ 销售SOP.md  │
-                                                      │ 会话/订单落盘│
-                                                      └────────────┘
+```text
+客户触点                       Hono / Node 22 / TypeScript
+chat.html ── simulator ──┐
+微信客服 ── wecom ───────┴─ engine ── tools
+ (回调 + sync_msg)             │        ├ 搜线路 / 搜酒店 / 详情
+                               │        ├ 报价 / 建单 / 方案书
+                               │        └ 转人工
+                               └ 出口护栏 / 转人工 / 阶段与画像
+
+admin.html ── HTTP/SSE ── server.ts ───── store / engine
+/console/ ── HTTP/SSE ── console-api ─── 接手 / 回复 / 收款 / 配置
+ (Vite + React 成员后台)
+pay.html ── mock 支付 ── markOrderPaid → notifyPaid → adapter.push
+
+配置源 CONFIG_SOURCE                     会话存储 SESSION_STORE
+file：data/sop.md、产品 JSON               file：var/ 会话与订单 JSON
+db：Postgres 的 SOP / 产品库版本            db：真实会话、追加消息、订单 → Postgres
+    启动装载，每轮固定产品库快照                 种子与网页访客 → var/ JSON
+                                              trace / 护栏事件 / 用量 / jobs → Postgres
 ```
 
-LLM 走 OpenAI 兼容协议（默认智谱 GLM），无数据库、无前端框架，`tsx` 直跑。企微通道为**回调驱动**：客户消息触发企微 POST kf 事件 → 解密取 token → `sync_msg` 拉取（实时、不受纯轮询限频），另有 30s 兜底轮询。
+服务端由 `tsx` 直接运行。配置源与会话存储分别选择；`SESSION_STORE=db` 要求 `CONFIG_SOURCE=db`，反过来不要求。数据库租户数据受 FORCE RLS 隔离，登录表按 ADR-001 的例外处理；当前仍是单实例、单租户运行，数据库会话启动时预载到 identity map，经每会话写队列提交，消息只追加。
+
+企微通道是**回调驱动**：客户消息触发 kf 事件 → 解密取 token → `sync_msg` 拉取；兜底轮询间隔由 `WECOM_POLL_INTERVAL_MS` 控制。网页模拟器与企微共用引擎、SOP 和产品库。
 
 ## 可靠性设计（防幻觉 / 风险拦截）
 
-销售 Agent 最怕编价格、编订单、编支付链接。本项目把关键交易动作从「模型自由发挥」收敛为「引擎确定性执行」：
+价格、订单、支付链接与转人工由确定性代码兜底：
 
-- **价格只出自工具**：报价走 `create_quote`，规则（旺季 +10%、4 人 95 折）写死在代码里，模型不参与算钱。
-- **成单安全网**：检测到明确购买意图 + 已报价线路 + 可解析出发日期时，**引擎直接调 `create_order` 并改写回复**，用真实 `payUrl` 兜底——不赌模型是否老实调工具。
-- **最后防线**：客服回复里的 URL 一律先剥成相对路径（模型连域名一起编的实测发生过），再按白名单放行——
-  只留本会话真实订单的 `/pay/<订单号>`，以及本轮真调过 `generate_proposal` 且线路 id 对得上的
-  `/proposal/<线路id>/<人数>[/日期]`（人数与日期段不校验，方案页按同一套规则重算），其余全部抹除。
-- **价格出口校验**：回复里的金额必须能追溯到写死的定价规则、本会话工具结果或客户自己说过的数字，
-  「¥12,800」「人均 1.3 万」「人均一万二千八」几种写法都查（中文数字只在金额语境里认，海拔、天数、
-  地名不误伤）；追不到出处就换成核价话术，绝不发出去。断言见
-  `src/price-guard.selftest.ts`。
-- **阶段/画像从工具调用推导**：销售阶段看模型这轮实际调了哪些工具（调 `create_order` 即 closing），不靠模型自 report，可靠且反映真实行为。
-- **日期以客户原话为准**：模型给的年份常错，引擎优先解析客户说的「X 月 Y 号」按未来最近年份取值。
+- **金额与承诺有出处**：`create_quote` 按产品库与固定规则算价（最佳季月份上浮 10%、4 人及以上 95 折）；`src/price-guard.ts` 校验金额出处，`src/price-rules.ts` 拦儿童价、虚假比价、超预算却说在预算内，以及无依据的服务承诺。
+- **成单与收款**：明确购买意图、已报价线路、可解析出发日期满足时，引擎可直接建单；同条件待付款订单复用。demo 出模拟支付链接；prod 由顾问先确认价格、发送收款方式、确认收款，模型不能承诺已锁名额、已预订或到账。顾问不在后台改订单金额，金额不对就取消重建。
+- **链接白名单与报价快照**：只放行本会话订单的 `/pay/<订单号>` 和本轮确实生成的 `/proposal/<线路id>/<人数>[/日期]`（可带 `?v=`）。DB 配置模式按产品条目版本渲染，改价不改变已发方案书；人数与日期仍按相同规则计算。已上架条目可编辑 `priceFrom`、`bestSeason`、`inclusions`、`exclusions`、酒店的 `nightlyFrom`，修改会写新版本；名称、目的地等识别字段仍锁定。
+- **阶段、画像与日期**：阶段看实际工具调用；日期以客户原话为准，过去的日期要求客户确认。模型自报阶段或擅自改出行时间不作依据。
+- **注入与身份**：输入注入、脱离业务的百科回答有出口安全网；客户问是不是 AI 时如实承认，并可转真人。SOP、固定要求与工具定义在同一 SOP 版本内保持字节一致，逐轮状态独立传入。
+- **顾问接手优先**：一轮开始后接手代次变了，AI 回复不发，记「本轮未发送（顾问已接手）」，重启重放也不补发。企微与模拟器的人工回复以「【顾问】」开头，交还后模型能区分人工与 AI 消息。
+
+### 确定性转人工
+
+除了客户明确要真人、投诉等入口，代码还识别三类触发，精确优先、只在高把握时触发，拿不准的交给模型：
+
+- **紧急情况**：客户本人或同行者此刻的高反、受伤急病、证件丢失、被困走失，直接回固定应急话术并转人工，本轮不调模型。出行前提问、体质自述、价格俚语不算；已转人工时只升级紧急记录、再通知一次，已成交会话也能转人工。
+- **负面情绪**：只认冲着服务方的话，最近 3 条客户消息里 1 次辱骂或 2 次不满触发，按投诉处理。
+- **交互失败**：无可用模型文本、检索无结果、客户重复提问，连续 2 轮或最近 6 轮中 3 轮触发，按普通诉求回复。重复回答、价格或注入护栏命中的轮次不算。
+
+每次转人工记录类型、原因、时间、原话与日期线索；已成交客户再要人工仍保留成交状态，在后台单列提示。
+
+### 企微去重、发送账本与恢复
+
+`var/wecom-cursor.json` 持久化 cursor、已处理集合与在途消息；DB 存储下消息按 `msgid` 去重，新拉取与启动重放采用同一套五分支：新消息正常处理；只在 7 天集合里则跳过；已记录但未生成回复且未转人工则重跑、不重复追加客户消息；回复已生成且账本没有成功或结果未知的分段才原样重发；已送出、可能已送出或已转人工则跳过。恢复更早的 `var/` 后重新拉到的消息也走这些规则。
+
+每个 `send_msg` 分段生成自己的 `msgid`，重试沿用；发送账本按客户消息的 `send_time` 保守计算 48 小时、5 条额度，超时与网络异常也计数。自动跟进要求窗口至少剩 2 小时、2 条额度；人工回复超窗口或额度耗尽时拒绝并显示原因。`msg_send_fail` 回执写入账本，并在会话里留说明。
+
+**恢复边界**：cursor / 在途表仍在 JSON，与数据库发送账本没有同一事务。02 的备份恢复演练复现了账本未落库的窄窗口可能重复回复；不能宣称跨备份恢复恰好一次。接第一个真实租户前须按 [02 上线清单](docs/architecture/02-conversations-workbench/plan.md#上线清单接第一个真实租户之前) 提前完成 `channel_inbox`。
+
+## 自动跟进
+
+默认关闭，设 `FOLLOWUP_ENABLED=1` 开启，只跟进真实企微会话。两种存储共用资格判断、话术与 AI 回复的出口护栏；客户说「不用了」「别发了」后不再跟进，后台消息标「自动跟进」。
+
+- 文件存储：每 `FOLLOWUP_SCAN_MS` 扫描一次（默认 15 分钟）。
+- DB 存储：`jobs` 按阶段沉默阈值排程，每 5 秒认领，客户回话即取消；夜间默认顺延到次日 9:00，可用 `FOLLOWUP_QUIET_START` / `FOLLOWUP_QUIET_END` 调整。
+
+DB 跟进记账与任务的 `sending` 同一事务提交后才推送。推送途中崩溃，重启记 `abandoned`、不重发；发送结果未知也按可能已发处理，明确失败才按规则退账重试。任务表同时承载转人工通知与保留期清理。
+
+## 可观测性与隐私
+
+DB 存储下，真实会话每轮 trace 与护栏改写落到 `turn_traces`、`guard_events`；trace 含客户原话、模型原稿与工具参数，仅所有者、管理员可读完整内容。模型用量按租户、天、模型、用途累加到 `usage_daily`，每 30 秒及停机时写入；`var/usage.json` 照旧。文件存储与 demo 类会话的 trace 只在内存，不持久化。
+
+所有者、管理员可读 `GET /api/console/metrics?days=<天数>`（只在 DB 会话存储，缓存 60 秒），总览显示：
+
+| 运行数字     | 口径                                             |
+| ------------ | ------------------------------------------------ |
+| 回复延迟 P90 | 窗口内 `outcome=replied` 的整轮耗时 90 分位      |
+| 转人工率     | 有转人工轮次的会话 / 有轮次的会话                |
+| AI 出错率    | 模型调用出错或 `outcome=error` 的轮次 / 全部轮次 |
+| 模型费用     | `usage_daily` 的今日费用；同时显示窗口累计费用   |
+
+窗口按服务器时区的自然日计算，并截到租户 trace 保留期。结构化日志用 `LOG_FORMAT=json`，请求带 `req`、轮次带 `tenant` / `conv` / `turn`，prod 不记客户原话与原始会话标识；Compose 已启用 JSON 与日志轮转。
+
+应用关键故障通过 `ALERT_WEBHOOK_URL` 推企微告警群；转人工通知用独立的 `NOTIFY_WEBHOOK_URL`。宿主机 [deploy/watch.sh](deploy/watch.sh) 巡检重启、健康、磁盘、备份，配置在服务器 `.env.ops`，需另装每分钟 cron。线上 demo 已验过停机告警：腾讯云云拨测试用版与主机巡检均在 3 分钟内送达企微群；长期外部拨测用 UptimeRobot，每 5 分钟检测、邮件通知，只判 HTTP 200，未校验响应正文 `ok`。
+
+OpenTelemetry 默认关闭；设 `OTEL_EXPORTER_OTLP_ENDPOINT` 才加载导出器，每轮一条 trace，属性按 GenAI 约定加 Langfuse 会话属性。会话用数据库 `ref`，文件存储与 demo 类会话用进程内匿名引用；任何时候不导出真实企微用户标识。`OTEL_EXPORTER_OTLP_HEADERS` 用于鉴权，只存服务器 env；默认不导出原文，`OTEL_CAPTURE_CONTENT=1` 才导出客户原话、最终回复、工具参数，工具结果始终不导出。02 只做埋点，Langfuse 接收端尚未部署。
+
+OTel 环境变量（完整配置见 `.env.example`）：
+
+| 变量                          | 用途                                                |
+| ----------------------------- | --------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP 根端点，设了才启用；导出器补 `/v1/traces` |
+| `OTEL_EXPORTER_OTLP_HEADERS`  | 导出鉴权头，按密钥管理                              |
+| `OTEL_CAPTURE_CONTENT`        | 仅值为 `1` 时导出原文，开启前配置接收端权限与保留期 |
+
+DB 模式可发布 `/privacy` 隐私说明，记录敏感信息同意与撤回；不同意或撤回后转人工，未重新同意不能交还 AI。保留期按租户配置，默认未成交会话 180 天、客户会话 730 天、trace 90 天；过期清理经受控函数执行。平台按个人请求删除需先停 app，订单保留但断开客户关联，备份副本随备份保留期滚掉。详细前置条件见 02 plan「上线清单」，相关私有内容另记。
 
 ## 模型选型与路由
 
-默认 `glm-5.3-flashx`，对冲兜底 `glm-5.2`。这个结论**改过三次，三次都是评测推翻直觉**，过程比结论有用。
+默认对话模型 `glm-5.3-flashx`；示例 env 配了 `glm-5.2` 对冲兜底，代码在未设 `LLM_HEDGE_MODEL` 时不开对冲。这个结论**改过三次，三次都是评测推翻直觉**，过程比结论有用。下面保留历史实测记录，表中的用例数、延迟与费用按当时运行口径，不代表当前回归集规模。
 
 ### 第一次：推翻「客服快聊，瓶颈在延迟」
 
-最初选的是轻量档 `glm-4.5-air`，理由是 air 单轮 1.2~~1.4s、旗舰要 3.8~~6.5s。
+最初选的是轻量档 `glm-4.5-air`，理由是 air 单轮 1.2–1.4s、旗舰要 3.8–6.5s。
 后来把评测体系跑成 A/B 才发现选错了：**air 几乎不查产品库**——48 次里只调了 2 次工具，
 客户说「想去四川」，它回一句「您几位出行呀」，一条线路都不摆。这正是 SOP 里被标注
 「最重要的一条」的规则（能查就别空聊）。护栏两边都全过、都没编造金额（那是代码在挡，
@@ -97,7 +145,7 @@ LLM 走 OpenAI 兼容协议（默认智谱 GLM），无数据库、无前端框�
 这次是 **17 秒**，不是同一个量级。**原则要连着当时的量级一起记，否则下次会被自己的原则带偏。**
 
 **真正该修的不是选型，是 5.2 那 14/48 轮根本没调工具**。原计划用 `tool_choice` 强制查库，
-但智谱的 `tool_choice` 只支持 `auto`，强制不了。现在改成**引擎预取**（`engine.ts` 的 `planPrefetch`）：
+但智谱的 `tool_choice` 只支持 `auto`，强制不了。现在改成**引擎预取**（`src/engine.ts` 的 `planPrefetch`）：
 客户点了一个新目的地，引擎在调模型之前先替它查一次库，结果以「模型已调过 `search_routes`」的形式
 交给模型。查不查库不再取决于模型自己想不想得起来，这类轮次也从两次串行往返变成一次——第三次选型能成立，靠的就是这一点。判错的代价只是一次本地
 JSON 查询，所以条件宁紧勿松：只在问需/推荐阶段、点了新目的地、且没有否定语气时才预取。
@@ -107,7 +155,7 @@ JSON 查询，所以条件宁紧勿松：只在问需/推荐阶段、点了新�
 两条方法论上的坑，都是这次踩出来的：
 
 - **判据词不能出现在 SOP 里。** 第一版判「摆出了线路」看的是回复里有没有产品库的专有名词，
-  但 `sop.md` 的话术示例里就写着「稻城亚丁」——模型不查库、只回一句「四川好地方！九寨沟、
+  但 `data/sop.md` 的话术示例里就写着「稻城亚丁」——模型不查库、只回一句「四川好地方！九寨沟、
   稻城亚丁…您几位出行？」也被判成命中，而这恰恰是本指标要抓的空手反问。
   修正后 `glm-5.2` 从 44/48 掉到 36/48。**判据只能用「不查产品库就说不出来」的信息。**
 - **延迟要按「真干活的轮次」切，否则越偷懒的模型看起来越快。** 不调工具的轮次少一次 API 往返，
@@ -125,7 +173,7 @@ JSON 查询，所以条件宁紧勿松：只在问需/推荐阶段、点了新�
 | 每千轮成本               | ¥20       | ¥2.4            | ¥6.4             | ¥23       |
 
 效果全面更好、最便宜的只要 1/8，但全部被 8 秒线否掉。慢的原因不在思考本身——
-3 个都是强制思考模型，压到 `low` 档后 48 轮合计才 135 个思考 token——而在**每次 API 往返固定多 2~3 秒**，
+3 个都是强制思考模型，压到 `low` 档后 48 轮合计才 135 个思考 token——而在**每次 API 往返固定多 2–3 秒**，
 旧写法一轮两三次往返，叠起来就过线。所以没在模型上找解，而是减少往返：引擎预取把首轮压成一次往返，
 跨轮记住线路让报价轮不必重查库。改完同机同时段复测：
 
@@ -135,25 +183,25 @@ JSON 查询，所以条件宁紧勿松：只在问需/推荐阶段、点了新�
 | 首轮 P50 / P90                          | 4077 / 5401ms    | **2753 / 5080ms**   | 2770 / 5002ms                   |
 | 超 8 秒的轮次（首轮）                   | 4.2%（最坏 25s） | **0%**（最坏 6.3s） | 0%                              |
 | 回归（当时的回归集：23 用例 / 54 断言） | 23/23            | 23/23               | 23/23（多轮 P90 3.9s）          |
-| 每千轮成本                              | ¥16.4            | **¥4.8**            | ¥5~11（含被取消的对冲请求估算） |
+| 每千轮成本                              | ¥16.4            | **¥4.8**            | ¥5–11（含被取消的对冲请求估算） |
 
 两条教训：
 
-- **选型表要连着当时的调用形态一起记。** flashx 被否不是因为它慢，是「每次往返 +2~3 秒」乘上
+- **选型表要连着当时的调用形态一起记。** flashx 被否不是因为它慢，是「每次往返 +2–3 秒」乘上
   「每轮两三次往返」；预取把乘数砍掉，结论就反过来了。反过来也成立：哪天把预取删了，就得换回 glm-5.2。
 - **便宜模型更容易被注入带跑，护栏要按新模型的坏法补。** flashx 20 次里有 7 次先吐出被劫持的「5050」、
   再接一句拒绝语；拒绝语里有「旅行」「顾问」，旧的注入安全网只看有没有业务词，整条放行。
   现在输入像注入时，回复里有不含汉字的行、开头夹着非中文、或出现客户原话里没有的数字，都整条换掉（复测 0/20）。
 
-对冲（`LLM_HEDGE_MODEL`）是保险不是提速：glm-5.2 自己一次请求就要 4~~5 秒，救不回 8 秒以内，
-只把 flashx 偶发的 10 秒以上离群请求、或直接报错的那一轮兜到 8~~9.5 秒。实测 13~15% 的请求会加发，
+对冲（`LLM_HEDGE_MODEL`）是保险不是提速：glm-5.2 自己一次请求就要 4–5 秒，救不回 8 秒以内，
+只把 flashx 偶发的 10 秒以上离群请求、或直接报错的那一轮兜到 8–9.5 秒。实测 13–15% 的请求会加发，
 这次一次也没抢过 flashx。
 
 **这就是为什么要有回归评测：三次选型直觉都是错的，三次都是评测纠回来的。**
 
 尾延迟多半是**往返次数 × 单次慢请求**叠出来的，不是某一次请求慢到离谱。2026-09-25 逐次计时（44 轮 69 次调用，
-未开对冲）：flashx 约四成请求落在 3.3~~4.8 秒一档，34 个 token 的工具调用也一样慢，是上游抖动，与输出长短、
-思考 token 无关；超 8 秒的 3 轮都是两次调用都落进这一档（8.3~~9.0 秒）。对冲模型自己要 4 秒上下，
+未开对冲）：flashx 约四成请求落在 3.3–4.8 秒一档，34 个 token 的工具调用也一样慢，是上游抖动，与输出长短、
+思考 token 无关；超 8 秒的 3 轮都是两次调用都落进这一档（8.3–9.0 秒）。对冲模型自己要 4 秒上下，
 这一档它抢不过，所以真正压尾巴的还是减少往返（预取）。对冲这边做了两处小调整：工具往返之后的调用用单独的阈值
 `LLM_HEDGE_MS_FOLLOWUP`（默认 2800），第二次调用卡住时早 1.2 秒对冲，代价见 `.env.example`；同一轮里参数完全相同的
 `search_routes` / `get_route_detail`（含预取过的）直接复用结果。整轮超过 `LLM_SLOW_TURN_MS`（默认 8000）时日志打两行：
@@ -162,7 +210,7 @@ JSON 查询，所以条件宁紧勿松：只在问需/推荐阶段、点了新�
 
 转人工那一轮没有改成模板回复省一次调用：场景测试里 14 次模型转人工，这一轮最慢 7.8 秒、没有一次超 8 秒，
 而模型写的那句话 13 次带着具体内容（顾问要评估什么、客户已经说过的人数日期、对客户顾虑的回应），
-换成固定话术省下的 1~2 秒不值这些。
+换成固定话术省下的 1–2 秒不值这些。以上是当时模型触发转人工的测量；02 新增的确定性紧急转人工直接回固定话术、不调模型。
 
 后台自用路径（AI 洞察 / 成交概率 / 下一步建议 / 沉默跟进话术）默认跟随主模型，flashx 单次约 ¥0.001，
 不必再降档；主模型换回旗舰时可设 `LLM_MODEL_CHEAP=glm-4.7-flashx` 单独省钱（单次约 ¥0.0027 → ¥0.00015）。
@@ -179,28 +227,27 @@ glm-5.3 系列是强制思考模型，发 disabled 会 400，改发 enabled 并�
 | 模型                     | P50 / P90                 | 说明                                                                            |
 | ------------------------ | ------------------------- | ------------------------------------------------------------------------------- |
 | `glm-5.3-flashx`（默认） | 2753 / 5080ms             | 带预取：摆线路 48/48，回归 23/23，超 8s 0%，每千轮 ¥4.8；强制思考，靠预取才过线 |
-| `glm-5.2`（对冲兜底）    | 4077 / 5401ms             | 带预取：摆线路 48/48，回归 23/23，超 8s 4.2%（上游偶发 13~25s），每千轮 ¥16.4   |
+| `glm-5.2`（对冲兜底）    | 4077 / 5401ms             | 带预取：摆线路 48/48，回归 23/23，超 8s 4.2%（上游偶发 13–25s），每千轮 ¥16.4   |
 | `glm-4.6`                | 5780 / 9758ms             | 摆线路 48/48、成本低 46%，但 17% 的轮次超 8 秒                                  |
 | `glm-4.7`                | 11s                       | 摆线路 44/48，延迟高一倍，排除                                                  |
 | `glm-4.5-air`            | 1701ms                    | 48 次只调 2 次工具；仅适合后台自用路径                                          |
 | `glm-5.3-flash`          | 11096 / 13236ms（旧代码） | 摆线路 41/48、每千轮 ¥2.4，但 73% 的轮次超 8 秒；带预取后未复测                 |
 | `glm-5.3`                | 5892 / 8909ms（旧代码）   | 摆线路 43/48，17% 超 8 秒，且比 5.2 还贵（每轮往返更多）                        |
 | `glm-5`                  | 4357 / 5283ms（旧代码）   | 摆线路 32/48、回归 19/20、价格是 5.2 的一半；旧型号，第三方平台已在下线         |
-| `deepseek-v4-flash`      | 1.8~3.3s                  | 通，但被问身份时会否认自己是 AI                                                 |
+| `deepseek-v4-flash`      | 1.8–3.3s                  | 通，但被问身份时会否认自己是 AI                                                 |
 
 想自己复跑或加新模型：
 
 ```bash
-npx tsx eval/ab-models.ts --dry                    # 先看要发多少次请求、粗估花多少钱
-npx tsx eval/ab-models.ts --models glm-5,glm-5.1   # 横评指定模型（默认强制关闭对冲）
-npx tsx eval/ab-models.ts --models glm-5.3-flashx --hedge glm-5.2 --hedge-ms 4000   # 带对冲横评
-ZHIPU_MODEL=glm-5 npx tsx eval/run.ts              # 横评过关的再跑完整回归，两步都要
+pnpm exec tsx eval/ab-models.ts --dry                    # 先看要发多少次请求、粗估花多少钱
+pnpm exec tsx eval/ab-models.ts --models glm-5.3-flashx,glm-5.2   # 横评指定模型（默认强制关闭对冲）
+pnpm exec tsx eval/ab-models.ts --models glm-5.3-flashx --hedge glm-5.2 --hedge-ms 4000   # 带对冲横评
+LLM_PROVIDER=zhipu ZHIPU_MODEL=glm-5.3-flashx pnpm exec tsx eval/run.ts              # 横评过关的再跑完整回归，两步都要
 ```
 
-横评只测一条指标，**过了横评不等于能换**——护栏、话术、日期解析、注入拦截那些断言（现在是 51 条用例、147 项断言，
-其中 32 条用例只在真实模型下跑）得另外跑 `eval/run.ts` 才算数。脚本还单列「模型自己做对」与「护栏兜底救回来」两列：
+横评只测一条指标，**过了横评不等于能换**——护栏、话术、日期解析、注入拦截等完整回归还得跑 `eval/run.ts`。用例与断言数量以当前脚本输出为准。脚本还单列「模型自己做对」与「护栏兜底救回来」两列：
 端到端命中率会被百科护栏（`deterministicRecommend`）拉高，混在一起看会让弱模型
-显得和旗舰一样好，换上去才在护栏覆盖不到的场景翻车。两个脚本都不进 CI：每跑一次都是真钱。
+显得和旗舰一样好，换上去才在护栏覆盖不到的场景翻车。真实模型横评与回归会花费模型调用费用，不进 CI；CI 运行 `eval/run.ts` 的 mock 分支。
 
 ## 成本优化：前缀缓存
 
@@ -226,14 +273,14 @@ ZHIPU_MODEL=glm-5 npx tsx eval/run.ts              # 横评过关的再跑完整
 - **system 只放逐字不变的 SOP 与硬性要求，每轮会变的会话状态（今天日期、阶段、画像、最近线路与报价）
   单独成一条 system 消息，插在最新一条客户消息之前。** 请求顺序是 tools → system → 历史 → 会话状态 → 本轮客户消息。
   最早的顺序是 SOP → 会话状态 → 硬性要求，公共前缀在「销售阶段:」那一行就断了；后来挪到 system 末尾，
-  又变成状态一变整段历史就吃不到缓存。`engine.selftest.ts` 断言 system 在整段对话里逐字节不变。
+  又变成状态一变整段历史就吃不到缓存。`src/engine.selftest.ts` 断言 system 在整段对话里逐字节不变。
 - **历史窗口按块推进，不要改回 `slice(-30)`。** 逐条滑动时，会话超过 30 轮以后每轮的
   历史开头都往后挪一条，1000+ token 的历史每轮全价重算——而长会话恰恰是最贵的那些。
-  按 10 条一块推进后块内前缀稳定，代价只是窗口长度在 30~39 之间浮动。
+  按 10 条一块推进后块内前缀稳定，代价只是窗口长度在 30–39 之间浮动。
   断言在 `src/engine.selftest.ts`（90 轮内起点只许移动 9 次）。
 
 命中率是这套排序唯一的验收指标，两处可以看到：后台「今日模型成本」卡片的副标题，
-以及 `npx tsx eval/run.ts` 的输出。**命中率长期为 0 而调用量不小，就是前缀又被什么东西截断了**
+以及 `pnpm exec tsx eval/run.ts` 的输出。**命中率长期为 0 而调用量不小，就是前缀又被什么东西截断了**
 ——这种退化不报错、只多花钱，没有这个数字永远发现不了。
 
 成本核算按各模型的官方缓存价逐个计价（`src/usage.ts` 的 `PRICE`，含 glm-4.7 / 4.5-air 的输出阶梯价）。
@@ -241,63 +288,89 @@ ZHIPU_MODEL=glm-5 npx tsx eval/run.ts              # 横评过关的再跑完整
 （智谱 `prompt_tokens_details.cached_tokens`、DeepSeek `prompt_cache_hit_tokens`），
 `src/llm.ts` 的 `cachedTokens()` 两个都读。强制思考模型的思考 token 另记在用量的 `reasoningTokens` 里。
 
-## 本地跑法
+## 本地跑法与门禁
+
+使用 Node 22、pnpm 10（精确版本见 `package.json` 的 `packageManager`）。
 
 ```bash
-pnpm install           # 同时装上 git hook（lefthook：提交前跑 format / lint / typecheck，提交信息查格式）
+pnpm install           # 安装依赖和 lefthook；提交前检查格式、lint、类型，提交信息检查 Conventional Commits 与 AI co-author
 
-# 离线冒烟（不调真实 LLM，确定性脚本走通全链路）
-LLM_MOCK=1 pnpm start
+# 离线冒烟（不调真实 LLM，文件配置与文件会话存储）
+DEPLOY_PROFILE=demo CONFIG_SOURCE=file SESSION_STORE=file LLM_MOCK=1 pnpm start
 
 # 真实 LLM
-cp .env.example .env   # 填 LLM_API_KEY；.env 会在启动时自动加载
+cp .env.example .env   # 填模型凭据；启动时自动加载，不提交此文件
 pnpm start
 
-# 四个门禁（git hook、CI、部署都只调这四个名字）
+# 四个门禁（git hook、CI、部署使用同一接口）
 pnpm format:check      # oxfmt
-pnpm lint              # oxlint，加公开边界检查（路径黑名单 + 内容黑名单）
-pnpm typecheck         # tsc --noEmit
-pnpm test              # 六组自测，再跑 mock 模式的回归评测；都写临时目录，不污染 var/
+pnpm lint              # oxlint + 公开边界、模块边界、迁移、后台源码检查
+pnpm typecheck         # 服务端与 console 两份 tsc --noEmit
+pnpm test              # 锁定套件、其余服务端/后台自测、两种存储 mock eval、字体与后台构建产物检查
+
+# 单独跑全部锁定套件：使用固定时钟，避免硬编码出发日期过期
+pnpm -s test:locked
+# 单独跑某个锁定套件时沿用 package.json 的时钟与 import
+CONFIG_SOURCE=file PARITY_CLOCK_MS=1790913600000 pnpm exec tsx --import ./src/store/parity-clock.ts src/engine.selftest.ts
 ```
 
-`pnpm test` 依次跑 `src/` 下的六组 `*.selftest.ts`（引擎、企微收发、话术夹带英文与空头承诺、价格出口护栏、LLM 调用层、管理面接口），
-最后跑 `LLM_MOCK=1 eval/run.ts`：`eval/cases.json` 共 51 条用例、147 项断言，mock 模式跑其中不依赖真实模型的 19 条。
-单独跑某一组：`npx tsx src/engine.selftest.ts`。
+`pnpm test` 不要求外部 Postgres：数据库相关自测使用 PGlite，mock eval 覆盖文件与 DB 存储，准确用例数以运行输出为准。要验证真实 PostgreSQL 权限与恢复，按 [CONTRIBUTING.md](CONTRIBUTING.md) 给一次性测试集群设置 `PG_TEST_URL`，跑完移除；不要指向已有数据库。真实模型回归另跑 `eval/run.ts`，会产生费用。
 
-打开 http://localhost:3200/chat.html 当客户聊天，http://localhost:3200/admin.html 看销售工作台（阶段进度、客户画像、订单、人工接管）。回复里的 `/pay/xxx` 链接点开即 mock 收银台。
+启动后用本机 3200 端口打开 `/guide.html` 或 `/chat.html` 聊天，`/admin.html` 实时看作战室；回复中的 `/pay/<订单号>` 是 mock 收银台。成员后台需 DB 配置、账号与 HTTPS；本地开发另运行 `pnpm --filter console dev`（Vite HTTPS 开发服务，代理本机 3200 端口 API），构建用 `pnpm --filter console build`。配置与账号初始化见下节部署；`CONFIG_SOURCE=file` 时不能使用成员后台 API。
 
-**部署 profile**：`DEPLOY_PROFILE=demo|prod`（不设按 demo；配了企微凭据却没设就拒绝启动，要接真实客户的实例不能靠缺省值）。几样演示行为（「重置」口令、后台免密只读、种子数据保鲜、网页模拟器、不带凭据也能点的模拟支付）只在 demo 下开着；prod 下全部关掉，想用 `FLAG_*=on` 打开会拒绝启动，而且必须配 `ADMIN_PASS`。启动日志的 `[profile]` 一行列出实际生效的值，单个开关见 `.env.example`。
+**部署 profile**：`DEPLOY_PROFILE=demo|prod`，不设按 demo，但配企微凭据却未显式设置就拒绝启动。重置口令、匿名只读作战室、种子保鲜、访客裁剪、网页模拟器与匿名 mock 支付保留在 demo；prod 关闭演示开关，不能用 `FLAG_*=on` 绕过，且必须配 `ADMIN_PASS`。开关与其含义见 [.env.example](.env.example)。
 
-**管理面鉴权**：分两层，而不是一个「读写一起开关」的总闸。
+## 后台、账号与权限
 
-|                                  | demo 未登录                                                                                                                          | prod 未登录           | 登录后               |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------- | -------------------- |
-| 打开 `admin.html`                | ✅ 直接可看                                                                                                                          | ✅ 页面能开，列表为空 | ✅                   |
-| 会话 / 订单列表                  | 只返回 `wecom:cust_*` 种子会话，外加访客本人在网页里聊的会话（凭同一浏览器里的会话 id，走 `x-sim-session` 头）；其他访客的对话看不到 | ❌ 401                | 全部，含真实企微客户 |
-| 用量与成本（`/api/usage`）       | ✅ 只有聚合数字，不含会话 id 与原文                                                                                                  | ❌ 401                | ✅                   |
-| 接管 / 代发消息 / 交还 / AI 代拟 | ❌ 401                                                                                                                               | ❌ 401                | ✅                   |
+`/admin.html` 是演示作战室，`/console/` 是顾问处理客户会话的成员工作台，两套鉴权独立：
 
-关键在于**过滤发生在服务端**：未登录时真实客户会话根本不进响应体，而不是前端拿到全量再隐藏。写操作没有任何环境变量能放行——配置写错的最坏结果是「后台不可用」，而不是「全网可写」。
+| 旧作战室 / 旧接口       | demo 匿名                                                            | prod 匿名          | `ADMIN_PASS` 登录后                                |
+| ----------------------- | -------------------------------------------------------------------- | ------------------ | -------------------------------------------------- |
+| 打开 `/admin.html`      | 可看                                                                 | 页面可开，列表为空 | 可看                                               |
+| 会话、订单列表          | 种子与访客本人（浏览器凭据通过 `x-sim-session`）；其他客户不进响应体 | 401                | 全量                                               |
+| `/api/usage`            | 聚合数字，不含会话 ID 与原文                                         | 401                | 可读                                               |
+| 接管、人工回复、交还 AI | 401                                                                  | 401                | demo 可写；prod 的旧 handoff / resume / reply 禁用 |
+| AI 代拟                 | 401                                                                  | 401                | 旧接口保留，未引入成员工作台                       |
 
-登录用页面内自建的输入框（点「接管」或「登录」时弹出），凭据存 `sessionStorage`，关标签页即失效。用户名 `ADMIN_USER`（默认 `admin`），密码 `ADMIN_PASS`；demo 下**不配 `ADMIN_PASS` 时写操作返回 503**，读仍是演示模式，所以克隆下来零配置也能把工作台看完整（prod 下不配则拒绝启动）。
+旧登录使用 `ADMIN_USER`（默认 `admin`）和 `ADMIN_PASS`，凭据存 `sessionStorage`。demo 不配密码时写操作返回 503；prod 不配则拒绝启动。旧「交还 AI」与回复共用成员工作台的状态机，以「共享工作台」操作；成员已接手时返回 409。匿名投影去掉成员身份，顾问姓名与交还消息均显示「顾问」。
+
+成员工作台用邮箱、密码登录，服务端数据库会话 + HttpOnly / Secure cookie，空闲 12 小时、绝对 7 天过期，写操作有 CSRF 检查。账号由平台命令行创建，没有默认公开账号。会话列表四态：AI 接待、等人接手、顾问处理中、已成交；不列网页访客，种子会话可看、可操作。
+
+工作台会话动作在 `/api/console/conversations/:id` 下：`POST /takeover`（主管及以上可带 `force` 改派）、`POST /release`、`POST /reply`。支持接手、改派、交还、人工回复即接手；两名顾问不能同时接手。回复以 `clientId` 去重，先等提交再发送（等提交超时但仍可落库时也发送，并如实返回 `store_lagging`；poisoned / 冲突时拒发）。订单在 `/api/console/orders/:id` 下支持 `POST /confirm`、`POST /mark-paid`、`POST /cancel`，每步审计；`/api/console/quick-replies` 由成员读取、主管及以上管理。
+
+事件流 `/api/console/events` 在提交后推送，不带消息正文；支持断线续传与 `resync`，按当前实现每 50 秒复核登录（在 60 秒验收上限内）。后台铃铛、标题与获授权的浏览器通知提示转人工；页面没开时可用企微群机器人通知。
+
+| 成员操作                                 | owner / admin | supervisor | agent        | viewer                                        |
+| ---------------------------------------- | ------------- | ---------- | ------------ | --------------------------------------------- |
+| 会话、旧消息、工具步骤、改写对照、事件流 | 可读          | 可读       | 可读         | 可读；正文中手机、证件、银行卡号码仅留后 4 位 |
+| 完整 trace、运行数字、本月成交额         | 可读          | 禁止       | 禁止         | 禁止                                          |
+| 接手无人接手的会话、人工回复             | 可操作        | 可操作     | 可操作       | 禁止                                          |
+| 强制接手（改派）、交还他人会话           | 可操作        | 可操作     | 禁止         | 禁止                                          |
+| 交还自己或无人接手的会话                 | 可操作        | 可操作     | 可操作       | 禁止                                          |
+| 确认价格、确认收款、取消订单             | 可操作        | 可操作     | 仅接手人本人 | 禁止                                          |
+| 订单列表                                 | 全部状态      | 仅待付款   | 仅待付款     | 仅待付款                                      |
+| 快捷回复：读 / 管理                      | 可 / 可       | 可 / 可    | 可 / 禁止    | 可 / 禁止                                     |
+| SOP、产品库编辑与审计                    | 可操作        | 禁止       | 禁止         | 禁止                                          |
+
+会话与事件流在 demo 也要求成员登录；文件会话存储没有更早消息、持久化 trace、运行数字接口。客户拒绝或撤回敏感信息处理同意的会话，在重新同意前不能交还 AI，所有角色都受此限制。
 
 ## 部署（按 git tag，rsync + Docker Compose + Caddy）
 
 **首次部署前置条件**（换新服务器时逐项确认）：
 
-1. 服务器已装 Docker（带 Compose 插件，2.30 及以上：compose 文件用 `env_file` 的 `format: raw`），且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或以 `SERVER=root@your-host bash deploy.sh <tag>` 传入；**未设置时脚本直接中止**，没有内置默认值。
+1. 服务器已装 Docker（带 Compose 插件，2.30 及以上：compose 文件用 `env_file` 的 `format: raw`），且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或通过 `SERVER` 环境变量传入；**未设置时脚本直接中止**，没有内置默认值。
 2. 服务器上创建 `/opt/wecom-sales-agent/.env`（参考 `.env.example`）：至少填 `LLM_API_KEY`、`ADMIN_PASS`、`PUBLIC_BASE_URL`（发给微信客户的支付链接靠它拼完整 URL），并**显式写明 `DEPLOY_PROFILE=demo` 或 `DEPLOY_PROFILE=prod`**（不带引号）。deploy.sh 在同步之前检查它，缺 `.env` 或没写明 profile 会直接中止，不会打掉在跑的旧容器。
 3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。这几个文件都按 `docker run --env-file` 的规则读：值是 `=` 后面的整行，引号、`$`、`#` 都原样进容器，所以不要加引号和行尾注释。deploy.sh 也会查 `.env.db` 里四个口令都有、没有 `POSTGRES_DB`。
-4. HTTPS 用 Caddy 反代（把域名换成自己的）：`your-domain.com { reverse_proxy 127.0.0.1:3210 }`，SSE 默认透传；云防火墙放行 80/443。
+4. HTTPS 用 Caddy 反代到宿主机 3210 端口（Compose 仅绑定本机回环地址），SSE 透传；云防火墙放行 80/443。站点地址仅在服务器配置，不写入仓库。
 
 之后每次发布：给要上线的提交打 tag，再按 tag 部署。
 
 ```bash
 git tag demo-v1.2          # 打在要上线的那个提交上
-bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
+bash deploy.sh demo-v1.2   # SERVER 由已忽略的 .deploy.env 或环境变量提供
 ```
 
-它只收本地已有的 tag，分支名和提交号都不收，所以线上跑的每一版都提交过、也过了四个门禁，工作区里没提交的改动上不了线。换成 compose 之前的 tag（里面没有 `deploy/compose.yml`）也不收，见下面「回到文件模式或更早的版本」。流程（见 [deploy.sh](deploy.sh)）：
+以下部署流程默认在服务器部署目录操作，省略 `-f` 的流程描述由 `deploy.sh` 提供实际 Compose 参数。它只收本地已有的 tag，分支名和提交号都不收，所以线上跑的每一版都提交过、也过了四个门禁，工作区里没提交的改动上不了线。换成 compose 之前的 tag（里面没有 `deploy/compose.yml`）也不收，见下面「回到文件模式或更早的版本」。流程（见 [deploy.sh](deploy.sh)）：
 
 1. `git archive <tag>` 解到临时目录，在那里 `pnpm install` 并跑四个门禁，任何一个不过就中止，服务器上什么都不动（本机要有 pnpm）。
 2. 检查服务器 `.env`（只读），不过就中止。
@@ -305,113 +378,100 @@ bash deploy.sh demo-v1.2   # 或 SERVER=root@your-host bash deploy.sh demo-v1.2
 4. 把备份脚本装到部署目录之外（`/usr/local/lib/wecom-sales-agent/backup.sh`），给正在跑的容器所用镜像打 `:prev`，再 `docker build`（把 tag 写进镜像，后台前端 `console/` 也在这一步构建），并用新镜像试读一遍 `.env`。这几步失败就中止，旧容器照常跑。
 5. 跑迁移（`docker compose run --rm migrate`，顺带拉起数据库）。失败就中止，旧容器照常跑，库没有变化。
 6. `docker compose up -d app` 换容器（宿主 `3210` → 容器 `3200`，挂 `var/` 卷并自动校正属主，参数都在 compose 的 `app` 服务里），给新镜像打 `:current`，然后做健康检查：`/healthz` 的 `revision` 必须等于这个 tag。第一次换成 compose 时，原来 `docker run` 起的同名容器会先按同样的方式停掉。
-7. 换容器或健康检查失败时，打印容器日志，自动用 `:prev` 回滚（`up -d --no-deps app`，不跑迁移：迁移只增不删），`:current` 改指 `:prev`，并以非零退出。回滚后 `/healthz` 报的是上一版的 tag。
+7. 换容器或健康检查失败时，打印容器日志，先过回滚风险检查，允许时自动用 `:prev` 回滚（`up -d --no-deps app`，不跑迁移：迁移只增不删），`:current` 改指 `:prev`，并以非零退出。回滚后 `/healthz` 报的是上一版的 tag。
 
 `:current` 总是 app 容器在用的镜像，compose 文件不给 `APP_IMAGE` 时就用它，所以下面这些手工的 `docker compose` 命令不用带 `APP_IMAGE`。别手写 `:latest`：自动回滚之后它指向的是那个没起来的坏镜像。
 
-换容器按 SIGTERM、宽限 10 秒而不是强杀：进程先等进行中的企微回复发完再落盘退出（最多 8 秒，`store.ts` 的停机钩子）。万一等不完，已认领但没处理完的客户消息连原文记在 `var/wecom-cursor.json` 的在途表里，新容器启动后先重放它们再拉新消息，所以发布和重启不丢消息。
+换容器按 SIGTERM，Compose 宽限 10 秒；`src/shutdown.ts` 分 normal / drain / late 三段，先等在途处理，再排空写队列，最后释放资源。DB 落库来不及时写 spill，启动回放；企微在途消息仍记在 `var/wecom-cursor.json`，先重放再拉新消息，是否补发按发送账本判断。恢复边界见上文，不把 JSON 与数据库当成原子快照。
 
 演练回滚可以在同一台服务器上起一个旁路实例：`NAME`、`REMOTE_DIR`、`HOST_PORT` 三个环境变量同时换成和线上不同的值（只换一两个会被拒绝，免得打到线上），它的 `.env` 不能配企微凭据，否则会和线上实例抢同一个客服账号的消息。
 
 - **密钥**：`LLM_API_KEY`、`WECOM_*` 全在服务器 `.env`，不在仓库、脚本不碰。
-- **数据**：`var/`（会话/订单/企微 cursor/客服二维码）挂卷持久化，重建容器不丢；rsync 既不同步也不删除它。
-- **鉴权**：demo 实例的后台是演示模式（免密只读、仅演示数据），写操作要 `ADMIN_PASS`（见上节）。改了服务器 `.env` 要 `docker compose -f deploy/compose.yml up -d app`（或重新部署）重建容器才生效：env 只在创建容器时读一次，`docker restart` 读不到新值。
-- **后台**：`/console/`（数据库模式下可用）。账号用平台命令行建：`docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant <slug> --email … --name … --role owner --password-stdin`。
+- **数据**：DB 模式下真实会话、消息、订单在数据库卷；`var/` 保留种子、访客、企微 cursor、spill、用量与客服二维码。文件存储下会话与订单也在 `var/`；rsync 既不同步也不删除它。
+- **鉴权**：demo 作战室匿名只读，旧写接口要 `ADMIN_PASS`；成员工作台使用独立账号与角色权限（见上节）。改了服务器 `.env` 要 `docker compose -f deploy/compose.yml up -d app`（或重新部署）重建容器才生效：env 只在创建容器时读一次，`docker restart` 读不到新值。
+- **后台**：`/console/` 要求 `CONFIG_SOURCE=db`，并配置 `DATABASE_URL`、`DEFAULT_TENANT_SLUG`。平台凭据仅给 `platform` 服务；初始化命令见下，账号口令从 stdin 输入，勿写入命令历史。
 - **备份**：宿主机 cron 每晚跑部署时装好的那一份 [deploy/backup.sh](deploy/backup.sh)：`15 3 * * * bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1`。导出数据库并校验、打包 `var/`，用 age 公钥加密后按日期存 7 天，配了异地目标再复制一份存 30 天。配置写在 `.env.backup`，恢复步骤写在脚本开头。装在部署目录之外，是为了回到旧版本时 cron 照样能跑。
 
-**回到文件模式或更早的版本**（01 spec「导入、导出与回滚」的第 3 种回滚）：
+**首次启用 DB 配置与成员后台**：先停 app、运行迁移，平台建租户，应用身份导入配置，平台建所有者账号（示例占位值请替换）。应用 `.env` 中配置前述 DB 变量；账号创建不等于导入会话。
 
-- 会话在库里时（`.env` 有 `SESSION_STORE=db`，`var/` 里有 `sessions-in-db.json`），先用 02 的镜像回到文件存储：`docker compose -f deploy/compose.yml stop app`，跑 `src/cli/export-sessions.ts`（用法见 [deploy/compose.yml](deploy/compose.yml) 开头），去掉 `SESSION_STORE=db` 再起。不做这一步，deploy.sh 拒绝部署 02 之前的 tag，也不会自动回滚到 02 之前的 `:prev`（[deploy/rollback-guard.sh](deploy/rollback-guard.sh)）。
+```bash
+docker compose -f deploy/compose.yml stop app
+docker compose -f deploy/compose.yml run --rm migrate
+docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/tenant-create.ts --slug '<租户slug>' --name '演示旅行社' --pack travel
+docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/import-config.ts --tenant '<租户slug>'
+docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant '<租户slug>' --email '<成员邮箱>' --name '<成员姓名>' --role owner --password-stdin
+docker compose -f deploy/compose.yml up -d app
+```
+
+**切换会话存储**（始终用 02 镜像）：
+
+1. 先在 `SESSION_STORE=file` 部署，确认 `/healthz` 正常，记录 `promptHash`、`toolsHash`、`prefixHash`、`sopHash` 与会话数，备份数据库及 `var/`。
+2. 停 app，准备部署目录、`var/` 之外且属主为容器 node 用户的宿主目录，挂成 `/keep`，运行导入：
+
+   ```bash
+   docker compose -f deploy/compose.yml stop app
+   docker compose -f deploy/compose.yml run --rm -v '<宿主保留目录>:/keep' app node --import tsx src/cli/import-sessions.ts --tenant '<租户slug>' --keep /keep --var /app/var
+   ```
+
+3. 导入成功后在服务器 `.env` 写 `SESSION_STORE=db`，`docker compose -f deploy/compose.yml up -d app`；确认 `/healthz` 的 `store.mode=db`、四个哈希不变、会话数与导入一致，成员工作台能打开导入的会话。种子、访客仍在 JSON。
+4. 若需回退，停 app、用 `src/cli/export-sessions.ts` 导出（参数与挂载同上），去掉 `SESSION_STORE=db` 再起，确认 `store.mode=file`。回退期间聊过的新消息再次切库时用 `import-sessions --resync` 合并。
+5. 切换后第一份每晚备份完成恢复验证，才删除 `--keep` 原件。
+
+**回到文件模式或更早的版本**（配置源与会话存储是两件事）：
+
+- **先查条目版本**：后台修改已上架条目后（`/healthz` 的 `config.catalogVersioned=true`），`deploy.sh` 拒绝回到 02 之前的镜像。旧镜像不写条目版本，那期间发出的方案书回到 02 后会按版本 1 显示旧价；回到文件存储也去不掉风险，只能回滚到 02 之后的镜像。检查适用于手工部署与自动回滚，健康或数据库状态看不清时从严拒绝。
+- **文件配置的链接损失**：同一 02 镜像去掉 `CONFIG_SOURCE=db` 后，已发 `?v=2` 及以上的方案书全部 404，不带 `v` 的旧链接按导出时的新内容显示，不能保持历史报价；仅把 `SESSION_STORE` 改为 file、仍保留 DB 配置则不改变条目版本。当前没有对此类配置切换的专门启动告警，操作前须人工核对。
+- 会话在库里时（`.env` 为 `SESSION_STORE=db` 或 `var/` 有 `sessions-in-db.json`），先用 02 的镜像回到文件存储：`docker compose -f deploy/compose.yml stop app`，跑 `src/cli/export-sessions.ts`（用法见 [deploy/compose.yml](deploy/compose.yml) 开头），去掉 `SESSION_STORE=db` 再起。不做这一步，deploy.sh 拒绝部署 02 之前的 tag，也不会自动回滚到 02 之前的 `:prev`（[deploy/rollback-guard.sh](deploy/rollback-guard.sh)）。
 - 先导出后台改过的内容。导出要写进挂进容器的宿主目录，写在容器里的文件会随 `--rm` 删掉：`install -d -o 1000 -g 1000 /root/export-<日期>`，再 `docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app node --import tsx src/cli/export-config.ts --tenant <slug> --out /export`。回到旧 tag 时把那一版的 `data/sop.md` 先放进这个目录（例如 `target-sop.md`），加 `--image-sop /export/target-sop.md`。
-- 把三个文件拷进要部署的那条线的 `data/`，两个 JSON 用 `oxfmt` 格式化，提交、打 tag；`.env` 去掉 `CONFIG_SOURCE=db`，再部署这个 tag。
+- 把三个文件拷进要部署的那条线的 `data/`，两个 JSON 用 `pnpm exec oxfmt --write data/routes.json data/hotels.json` 格式化，提交、打 tag；`.env` 去掉 `CONFIG_SOURCE=db`，再部署这个 tag。
 - 那条线是换成 compose 之前的版本时，deploy.sh 不收它的 tag（否则会先把服务器上的 `deploy/` 同步删掉，到迁移那一步才失败）：在那个 tag 的 worktree 里跑它自己的 `deploy.sh`，它用 `docker run` 换掉 compose 起的同名容器。之后再部署新的 tag，换容器那一步会接管这个容器。
 - 旧 deploy.sh 的 rsync 也带 `--delete`，跑之前先看它保护哪些文件。demo-v1.1 及以后的线保护全部 `.env*`（`git show <tag>:deploy.sh | grep -F 'P /.env*'` 有输出）。demo-v1 和从它切出的线只保护名为 `.env` 的那一个，会删掉 `.env.db`、`.env.migrate`、`.env.platform`、`.env.backup`：之后每晚的备份停在「缺 BACKUP_AGE_RECIPIENTS」（只记在日志里），再部署新 tag 也会在检查服务器 `.env` 那一步中止。用这种线，先把这几个文件（有几个拷几个）拷到部署目录之外，跑完立刻拷回。
 - 两种线都会删掉服务器上的 `deploy/`。db 容器照常在跑，cron 跑的是部署目录之外那份备份脚本，暂时都不受影响；但 db 容器一旦重启（宿主机重启、升级 Docker）就起不来，因为它挂载的 `deploy/db-init/roles.sh` 没了，之后每晚的备份在导出那一步失败，`var/` 也不再打包。所以跑完旧 deploy.sh 立刻只把这个目录放回去：`git archive <刚才在跑的 compose 版 tag> deploy/db-init | ssh <服务器> tar -x -C /opt/wecom-sales-agent`。别把整个 `deploy/` 放回去：`deploy/compose.yml` 不在，手工的 compose 命令就会直接报错，而不会把 `:current` 的新镜像换回来。
 
-多副本部署会脑裂（内存为权威），本项目按单实例设计。
+数据库存储并不代表可以多副本：identity map、串行锁与若干限流计数仍在进程内；DB 配置的租户锁会拒绝第二个进程，当前必须单实例运行。
 
 ## demo 话术示例
 
-> 客户：你好
-> AI：您好呀～我是云途定制旅行的旅行顾问 😊 咱们做高端定制游，这次想去哪个方向玩，大概几位出行呢？
-> 客户：想去马尔代夫蜜月
-> AI：马尔代夫选得好呀 ✨《马尔代夫 Soneva Jani 蜜月 6 日》每人 ¥52,800 起——水上别墅 4 晚、卧室天窗观星、私属滑梯直入泻湖。方便告诉我几位出行、预算大概多少吗？
-> 客户：两个人，预算每人3万
-> AI：好嘞，给您报个准价 💰 每人 ¥52,800，2 位总价 ¥105,600。觉得合适回复「就订这个」我直接帮您下单～
-> 客户：就订这个
-> AI：收到！已锁定名额 🎉 请点击链接完成支付：/pay/ord_xxxx
-> （支付成功后 AI 主动跟进）已收到您的支付 🎉 行程已确认预订，专属顾问稍后与您对接细节～
+旅游行业包的模拟流程：客户说「想去云南，两个人」→ AI 检索并推荐产品库中的演示线路 → 客户确认日期与人数后按规则报价 → 明确购买时生成订单与方案书 → 点击 `/pay/<订单号>` 模拟支付 → 后台显示已成交。模型生成的话术会变化，价格、订单与链接由工具和护栏校验。
 
-全程阶段流转 greeting → discovery → recommend → quote → closing → paid，admin 页可实时看到。
+客户说「找真人」或投诉时转人工，顾问可在成员工作台接手；匿名访客仍可在作战室实时查看自己刚聊的会话。
 
 ## 接入真实企业微信
 
 demo 用的通道是企业微信「微信客服」（kf），调研结论：
 
-- **微信客服 kf 通道**：微信用户扫码即可发起会话，不需要加企业成员好友；API 侧无认证硬门槛（自建应用绑定微信客服即可调用）；未验证企业有约 100 累计接待用户的上限，验证后放开；消息获取用 `sync_msg` 拉取——本项目主通道是**回调驱动**（收到回调事件立即带 token 拉取，不限频），另有 30-60s 兜底慢轮询兜住回调偶发丢失；`adapters/wecom.ts` 文件头注释有完整接入步骤，配齐 `.env` 里三个 `WECOM_*` 变量即自动启用，不配则只跑模拟器。
-- **客户加好友 1v1**：只做会话存档 + AI 辅助——AI 起草回复、由销售本人点发送，不做 AI 顶着销售个人身份自动聊。拿消息需要企业认证 + 付费开通会话存档，demo 不覆盖。**全自动接待只走微信客服。**
+- **微信客服 kf 通道**：微信用户扫码即可发起会话，不需要加企业成员好友；通过绑定的应用调用 API；消息获取用 `sync_msg` 拉取——本项目主通道是**回调驱动**（收到回调事件立即带 token 拉取，不限频），另有 `WECOM_POLL_INTERVAL_MS` 控制的兜底轮询；`src/adapters/wecom.ts` 文件头注释有接入步骤，配齐 `.env.example` 的企微凭据与回调配置并显式设 profile 后启用，不配则只跑模拟器。
+- **客户加好友 1v1**：后续只考虑会话存档 + AI 辅助——AI 起草回复、由销售本人点发送，不做 AI 顶着销售个人身份自动聊。会话存档接入不在当前实现范围。**全自动接待只走微信客服。**
 
-### 后台配置实录（2026-07 实操验证）
+### 接入顺序
 
 管理后台的配置项之间有一条隐藏的依赖链，顺序错了会白跑：
 
-1. 免费注册企业微信（个人主体即可，微信扫码，无营业执照）。注册即有微信客服 + 默认客服账号，页面明示「未认证累计仅可接待 100 位客户」。
+1. 准备企业微信客服账号，接入资格与业务前置事项另记。
 2. 应用管理 → 创建自建应用，记下 AgentId，Secret 点「查看」获取。
 3. **依赖链**：微信客服绑定「可调用接口的应用」→ 要求应用已配「企业可信 IP」→ 配可信 IP 要求先通过「接收消息服务器 URL」验证（或备案可信域名）。所以必须先部署本服务，让 `/wecom/callback` 在线（`src/wecom-crypto.ts` 实现了握手的验签解密），再按 回调 URL → 可信 IP → 绑定应用+客服账号 的顺序走完。
-4. open_kfid 不用调 API：微信客服 → 接入场景 → 在微信内其他场景接入 → 客服链接 `https://work.weixin.qq.com/kfid/<open_kfid>`，链接给客户扫，kfid 填 `.env`。
-5. 想让 `guide.html` 显示扫码入口，把那张客服二维码保存为 `var/kf-qr.png`（`var/` 已 gitignore）。**二维码不入库**：它编码的就是 open_kfid，等同凭据——谁扫到都能直接消耗未认证主体那 100 个不可回收的接待名额，还会烧掉真实 LLM 预算。没放图时 `guide.html` 自动只显示网页模拟器入口，克隆下来零配置也能把流程走完。
-6. 回调 URL 可以直接用 `http://<公网IP>:<端口>/wecom/callback`，未认证企业不要求备案域名。
+4. 微信客服 → 接入场景 → 在微信内其他场景接入，取得客服链接与标识；客服标识填服务器 env，链接、真实标识与二维码不入库。
+5. 想让 `guide.html` 显示扫码入口，把那张客服二维码保存为 `var/kf-qr.png`（`var/` 已 gitignore）。**二维码不入库**：它编码的就是 open_kfid，等同凭据——谁扫到都能消耗真实客服接待额度与 LLM 预算。没放图时 `guide.html` 自动只显示网页模拟器入口，克隆下来零配置也能把流程走完。
+6. 回调 URL 填你的公开 HTTPS 服务地址加 `/wecom/callback`，与服务器 env 中的回调配置一致；真实服务地址不入库。
 
-## mock 支付说明
+## mock 支付与顾问收款
 
-支付用页面 mock（POST `/api/orders/:id/pay`）而非真实微信支付：个人主体拿不到商户号，且微信支付 v3 没有公开沙箱环境。生产路径是：企业主体申请商户号 → 下单时调统一下单生成 JSAPI/Native 支付参数 → 支付回调里做现在 `markOrderPaid + notifyPaid` 干的事，闭环逻辑已就位，只需替换支付发起与回调验签两处。
+演示支付为 `POST /api/orders/:id/pay`，不会扣款，不是微信支付接入。demo 的 `mock_pay` 开启时客户可点；prod 切为 advisor 模式，站内 `/pay/` 只说明由顾问核价与提供收款方式，不展示付款按钮。
 
-这个 mock 接口只在 demo 下人人可点；`DEPLOY_PROFILE=prod` 下不带管理凭据的请求返回 404（像接口不存在），带凭据的算顾问手工确认收款，供验收和预演用。prod 实例在真实收款流程做好之前不对真实客户开放。
+prod 的旧 pay 接口匿名返回 404，带旧管理凭据仅供兼容与预演手工标记；日常收款用成员工作台的确认价格、确认收款与取消接口，并留审计。`markOrderPaid` 记录付款及付款前是否转过人工，`notifyPaid` 在提交后通知；尚未确认的订单不能通过成员接口确认收款。真实微信支付需要另行实现支付发起与回调验签，当前没有接入。
 
-## 生产化路径（当前刻意不做的，及触发条件）
+## 生产化路径（当前实现与后续边界）
 
-> 产品化的路线已经定下来，以 [docs/architecture/master-reference.md](docs/architecture/master-reference.md) 为准（总参考）：阶段 01 上 PostgreSQL、把配置和 SOP 移进数据库；多副本与跨进程共享状态按信号再定。下面是 demo 阶段写下的判断依据，保留作参考；其中「现在不上数据库」一条已被阶段 01 取代。
+路线以 [架构总参考](docs/architecture/master-reference.md) 与 [02 上线清单](docs/architecture/02-conversations-workbench/plan.md#上线清单接第一个真实租户之前) 为准。01 已引入 Postgres 配置、SOP 版本与成员后台，02 已实现数据库会话、追加消息、发送账本、持久任务与顾问收款；不能再以「无数据库、定期全量 JSON」描述所有运行模式。
 
-这套 demo 按**单实例**设计：数据在进程内存的 Map 里，定期整体 dump 成 JSON。
-下面这些是真实上量时必须换掉的，但现在换属于过度设计——记录判断依据，便于后续按需推进。
+| 状态或能力                   | 当前实现                                                                              | 后续边界                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 会话、消息、订单             | DB 存储落 Postgres，启动预载 identity map；文件模式与 demo 类仍用 JSON                | 多副本需 fence、会话锁与 identity map 协调（05）                    |
+| 配置与租户                   | 按租户隔离、单实例加载一个租户，当前只有旅游包                                        | 同部署多租户、按渠道账号拆实例（04）                                |
+| 聊天、查询、登录、预算限流   | 有进程内限额与有界计数，部分预算状态本地持久化                                        | 多副本前必须统一跨进程计数；当前未用 Redis                          |
+| 同会话串行与租户锁           | 引擎进程内串行，DB 配置租户锁阻止第二个进程                                           | 分布式会话互斥与选主（05）                                          |
+| 企微 cursor / 在途表 / 去重  | JSON cursor 与在途表，DB 消息与 7 天 msgid 集合辅助去重，发送账本在库                 | 备份恢复原子边界仍待 `channel_inbox`，接真实租户前完成              |
+| 跟进、转人工通知、保留期清理 | DB 模式由 `jobs` 驱动、认领与重试；文件模式跟进保留扫描器                             | 不需要为已实现的延迟任务再引入 BullMQ；任务量与运维需求变化时再评估 |
+| 部署与观测                   | 单实例 Compose、健康检查与受限回滚、加密备份、主机巡检、外部拨测、运行数字及可选 OTel | 未部署 Langfuse，无多副本滚动更新                                   |
 
-**当前所有状态都在一个 Node 进程内：**
-
-| 内存对象                                                  | 装什么           | 真实场景该放哪          |
-| --------------------------------------------------------- | ---------------- | ----------------------- |
-| `store.sessions` / `orders`                               | 会话、消息、订单 | PostgreSQL              |
-| `server` 的 `makeLimiter` 计数（聊天 / 按 ID 查询各一份） | 每 IP 限流计数   | Redis `INCR` + `EXPIRE` |
-| `budget.state`                                            | 日预算计数       | Redis `INCR`            |
-| `engine.sessionChain`                                     | 同会话串行锁     | Redis `SETNX` + TTL     |
-| `wecom.handled`                                           | msgid 去重集     | Redis Set + TTL         |
-
-### 为什么现在不换
-
-**瓶颈不在自己，在模型 API。** 按 1000 客户/天 × 20 轮估算约 2 万次调用/天，
-平均 0.23 QPS、峰值个位数，单进程等 I/O 绰绰有余；加机器不会让模型更快。
-
-### 各自解决什么，什么时候必须上
-
-**PostgreSQL** — `persistNow()` 是把全部会话序列化后整体重写文件。
-实测平均 1KB/会话，1 万会话就是每次有人说话都重写 10MB。
-数据库改的是「只动这一行」，另外带来事务（下单三步要么全成要么全不成）
-和查询能力（「报价后沉默超 2 小时的会话」现在只能全量读进内存遍历）。
-**触发条件**：会话量上千，或需要按条件检索历史。
-
-**Redis** — 注意这里用它不是做缓存，是做**跨进程共享状态**。
-起两个副本时，两边各有一份 `budget.state`，各自记「今天用了 300 次」，
-实际 600 次却都以为没超 500——闸门失效。限流与会话锁同理。
-**触发条件**：一旦要多副本，这是前置条件。
-
-**消息队列（BullMQ 等）** — 两个用途。
-① 可靠性：进程重启不再丢消息（在途表落盘 + 启动重放，见上面「部署」），但这只是「重启后再来一次」：
-没有按退避重试，同一条最多重放 2 次、超过 48 小时就放弃并在会话里留一条提醒顾问跟进的备注。
-队列能保证「收下就一定处理，失败重试，最终失败进死信队列」。
-② 延迟任务：`followup.ts` 现在是每 15 分钟全表扫描找沉默会话，
-队列的做法是报价当下就塞一个「延迟 2 小时」的任务，到点自己弹出，不用扫表。
-**触发条件**：消息丢失不可接受，或定时任务从全表扫描变成瓶颈。
-
-**多副本 / 编排** — 价值主要不在性能，在运维：滚动更新不中断（当前 deploy.sh
-是先删旧容器再起新的，中间有数秒空窗）、故障自愈、跨可用区。
-**触发条件**：先完成上面的状态外置，否则直接脑裂（见 `store.ts` 顶部注释）。
-单服务用 `--restart unless-stopped` + 反代即可，多服务编排才需要 K8s。
+Postgres 已提供持久化、事务与权限边界，但不能替代仍在内存的并发协调。只有需要多副本时才评估 Redis 等跨进程状态设施；当前不引入它。市场、定价、客户与主体相关事项另记，不在公共仓库中展开。
