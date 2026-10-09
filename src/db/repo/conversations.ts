@@ -23,6 +23,8 @@ export interface ConversationValues {
   createdAt: Date;
   /** = session.updatedAt；库里只进不退（触发器） */
   updatedAt: Date;
+  /** 03 R11：session.channelAccountId 的投影，NULL 是渠道的默认账号。不给时插入写 NULL、更新不动这一列 */
+  channelAccountId?: string | null;
 }
 
 /** seq 与落库的簿记列 */
@@ -55,6 +57,7 @@ const rowColumns = {
   flushId: conversations.flushId,
   createdAt: conversations.createdAt,
   updatedAt: conversations.updatedAt,
+  channelAccountId: conversations.channelAccountId,
 };
 
 /** 预载与导出：按 id 分批，afterId（不含）之后的 limit 个；第一批传 null。走主键，批与批之间不重不漏 */
