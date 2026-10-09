@@ -541,6 +541,10 @@
 - 变异（隔离副本）13 个全部被抓到，含 plan 要求的四个（渠道段不进 spill、回放时与会话分两个事务、poisoned 之后渠道行仍丢弃、旧版 spill 回放报错），另有会话失败时渠道部分不单独写、短事务不等在途落库、`pending` 与 `replied` 分两个短事务（第一轮存活，测试改成先等 `recorded` 落库再回复后抓到）、短事务写不进去就丢、提交后不报 `outboundCommitted`、回放不沿用 flush_id 判定、spill 不带 poisoned 队列、poisoned 之后结果仍丢、spill 不带在途快照的渠道行。
 - 门禁：四个全绿；带 `PG_TEST_URL` 全绿（STORE 452、SPILL-CHANNEL 110、OUTBOUND 246、WECOM-03 223、DB 1168、QUOTA 127、WECOM-02 15、CHANNELS 106、JOBS 110、OPS 472、CONSOLE 435）；`TZ=UTC` 加 PG 也过；`store.selftest.ts` 断言未改照过；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
 
+**交叉评审**
+
+- 另派一路只读 Codex 交叉评审，找到 1 处 major：会话部分回放失败、渠道段单独写进去时，以及「内容一致而跳过」那一支照写渠道段时，库已改而内存账本的预载没重新读（预载在回放之前、只有 `applied` 非零才重读），工作台一直「发送中」、已取消的段还占发送额度。修法：回放结果多报「这一条写过非空渠道段」（`channelWritten`），`applied || channelWritten` 就重新预载；补两条回归断言（两个租户各回放一次，每一支都必须自己触发重读）。修后带 `PG_TEST_URL` 与 `TZ=UTC` 全绿（SPILL-CHANNEL 114）。
+
 **给后面步骤的注意**
 
 - 第 10 步：回放在 `initSessionStore` 里、早于 `initChannels`，恢复看到的是回放之后的状态。单独写渠道部分之后、或 poisoned 短事务之后，入站行可能是 `recorded` / `replied` / `done` 而 `message_seq` 在 `messages` 里不存在，出站行的 `message_seq` 也可能指向不存在的消息——保底第三条（用 `payload` 补进会话）必不可少；会话行根本不在库里的 poisoned 会话补进会话时会再次 poisoned，恢复不能因此打转。`recorded` 的短事务早于 `pending` + `replied` 那一个，`recorded` 那次以数据类错误丢掉时会出现「`received` 但名下有出站行」，由保底第二条处理。
