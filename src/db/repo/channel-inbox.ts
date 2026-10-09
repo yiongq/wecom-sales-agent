@@ -200,6 +200,23 @@ export async function resyncInboxPayload(tx: Tx, id: string, payload: unknown, a
   return rows.length === 1;
 }
 
+/**
+ * restore-cutoff（03 R7）：本租户没结束、`sent_at` 不晚于截止点的客户消息与菜单点击（启动时只补记、不回复的那几条），
+ * 只要种类与会话 id。不读 payload
+ */
+export async function readOpenInboxUntil(tx: Tx, until: Date): Promise<{ kind: InboxKind; conversationId: string | null }[]> {
+  return (await tx
+    .select({ kind: channelInbox.kind, conversationId: channelInbox.conversationId })
+    .from(channelInbox)
+    .where(
+      and(
+        inArray(channelInbox.state, [...INBOX_OPEN_STATES]),
+        inArray(channelInbox.kind, ['message', 'menu_click']),
+        sql`${channelInbox.sentAt} <= ${until.toISOString()}::timestamptz`,
+      ),
+    )) as { kind: InboxKind; conversationId: string | null }[];
+}
+
 /** 每账号未结束入站的计数与最早收到时刻；不读取 payload 或会话标识。 */
 export async function readInboxStats(tx: Tx): Promise<{ accountId: string; openInbox: number; oldestAt: Date | null }[]> {
   return tx

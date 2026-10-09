@@ -95,7 +95,7 @@
   - 自测：验收 8 的三个场景（spill 回放、poisoned 之后 `SIGKILL`、旧版 spill）。
   - 对应验收 8；不变量 3 的 poisoned 例外。依赖：第 8、9 步（与第 10 步可以并行，见下文）。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍。
-- [ ] 12. 恢复截止点、哨兵与备份顺序（1，Claude）
+- [x] 12. 恢复截止点、哨兵与备份顺序（1，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），spec 顶部记了一条实现期 `Revisions:`，见「实施记录 · 第 12 步」。
   - `channel-account restore-cutoff`：截止点、出站 `pending` / `sending`、`pending` 与 `running` 的跟进任务、删哨兵、`--until` 的校验（R7）。
   - `deploy/backup.sh`：改回先打包 `var/` 再 `pg_dump`，打包时放进哨兵；开头的恢复步骤加两步（R7、R19）；`ops.selftest.ts` 里步骤顺序的断言照 spec 改。
   - 自测：`restore-cutoff` 的每一类改动与退出码（子进程）；`backup.sh` 用假 `docker` 断言顺序与哨兵只在归档里。
@@ -617,6 +617,18 @@
 - spec 实现期修订（顶部 `Revisions:`）：导出多拒绝两种（默认账号有没结束的非 `message` 入站；没结束的非文本消息名下已有出站行），导入导出在有 spill 时拒绝且取锁后复查。
 - 交叉评审：另派一路只读 Codex 评审找到 3 处 major（导出漏掉没处理完的菜单点击与回执；非文本消息的引导提示可能已发、02 重放会再发；spill 检查读目录出错被吞、取锁前的间隙也没复查），即上面那条修订，由 Codex 续改、各补回归断言（撤回修复时失败）。实现第一轮之后另按第 11 步的提醒补了「有 spill 就拒绝」。
 - 自测追加在 `src/channels/channels.selftest.ts`（子进程，PGlite；有 `PG_TEST_URL` 时另跑真实 PG）：验收 13 的导入、导出、`--resync` 与 `--dry-run`，往返一致性，各种拒绝的零变更断言，启动侧的两种拒绝能被本步写出的文件与标记触发，凭据与标识扫描为零。门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑，`TZ=UTC`）；锁定文件与 `PREFIX sha256` 与第 1 步相同。
+
+### 第 12 步 · 恢复截止点、哨兵与备份顺序（2026-10-09）
+
+- `channel-account restore-cutoff --tenant <slug> --until <带时区的 ISO 时刻|now> [--var <dir>]`（`src/cli/channel-account.ts`，`agent_app` 身份、取租户锁）一个事务里：给本租户全部企微账号写 `record_only_until`（停用的也写，网页账号不写，与已有值相同就不改）；截止点之前建的出站 `pending → cancelled`、`sending → unknown`（本租户任何账号，含 `account_id` 为空的旧行，迁移表、写入方 `recover`，payload 置空）；`run_at` 不晚于截止点、还在 `pending` 或 `running` 的跟进任务 `→ cancelled`（`last_error = 'restore_cutoff'`；`sending` 的跟进与别的任务种类不动——`running` 的在应用启动归位之前就处理掉，免得 02 的归位把它改回 `pending` 再发）；涉及出站或跟进的会话加一条 system 说明（写在 `last_seq + 1`、`last_seq` 加一，state 与 `flush_id` 不动；截止点之前还有没结束客户消息的会话、库里没有会话行的不加）；审计一行 `channel.restore_cutoff`（`actor_kind = platform`，diff 只有账号 key、`until` 与各类条数）。提交之后删恢复哨兵，删不掉以 1 退出并提示「数据库已提交，手动删，别用 now 重跑」。入站行一行不改，交给启动时的只补记。同一截止点重跑什么都不改、不记审计。仓储新加 `readOpenInboxUntil`、`readOpenOutboundUntil`、`cancelFollowupsUntil`、`appendSystemNote`。
+- 退出码：0 成功或无操作（同一截止点重跑；企微状态未导入或已导出）；1 用法错误、租户不存在、`--until` 不合格、事务失败回滚；2 有没回放的 spill；3 租户锁被占。
+- 「N 个会话只补记」的告警：只补记那一步加说明时事件带 `noted`，`src/ops/alert.ts` 按会话数合并，安静 10 秒之后由巡检发一条，一个进程只发一次，停机时还没发的补发。
+- `deploy/backup.sh`：新顺序是打包 `var/` → 查表 → `pg_dump` 与 `pg_dumpall` → 校验 → 加密 → 异地（02 R7 原本写的顺序，env 账号的 cursor 仍在 `var/`，恢复出的 cursor 要比库旧）。哨兵 `var/restored-from-backup.json`（`{"backupAt": <UTC>}`）在临时目录里摆好、`tar -C` 加进同一个归档，线上 `var/` 不碰；线上没有 `var/` 时归档里只有哨兵。脚本开头的恢复手册加了第 6、7 两步（确认 `CHANNEL_SECRETS_KEY` 含备份时用的那把，附查 key id 的命令；以 app 身份跑 `restore-cutoff`，截止点取旧实例最后一次正常回复的时刻，拿不准取恢复开始的时刻、写 `now`，宁可漏回不重复回）。
+- spec 实现期修订（顶部 `Revisions:`）：有 spill 拒绝；未导入或已导出时无操作；`--until` 留 5 分钟钟差；告警在启动时合并；命令行那条说明的措辞。措辞是给顾问看的 system 说明，owner 可以再改。
+- 自测：新套件 `src/channels/restore-cutoff.selftest.ts`（子进程，PGlite 与真实 PG）覆盖每一类改动与退出码、哨兵被删而标记不动、审计与告警只有条数、`--until` 的各种拒绝且什么都不动、持锁 3；`recovery.selftest.ts` 加 k5 → c5 → r5 一组端到端（截止点之前的入站只补记、不调模型、不发送）；`ops.selftest.ts` 的 backup.sh 测试台加 5 条（假 docker 记下 `pg_dump` 调用并在线上 `var/` 写文件、假 tar 记调用顺序：先打包后导出，哨兵在归档里、线上 `var/` 里没有）——原来没有断言备份步骤顺序的断言，是新加，不是改。
+- 变异（隔离副本）19 个抓到 18 个；存活的「去掉持锁后那次 spill 检查」有取锁前那次兜着，两处都去掉就被抓到。门禁：四个全绿；带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RESTORE-CUTOFF 37、RECOVERY 444、OPS 477、CHANNELS 140、WECOM-03 223、DB 1168、STORE 452）；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
+- 交叉评审：另派一路只读 Codex 评审找到 1 处 major、2 处 minor，由实现的子 agent 修掉、各补回归断言（撤回修复时失败）。major：被取消的跟进在启动只补记时触发排程，同一阶段重新入队，约两小时后再发一次——`restore-cutoff` 在同一事务把被取消的阶段记进会话 `state.followup`（`markFollowupStages`，只改 state 这一列），只补记那一步改用 `saveSessionSkippingFollowup`；`recovery.selftest` 的 r5 加两个客户对照（被取消的那个之后一条跟进都没收到，没排过的那个照常发一次）。minor：截止点比现在晚几分钟时「一次恢复只加一条说明」的去重失效——说明上记下截止点（`messages.extra.restoreCutoff`），按它去重；未导入或已导出时有 spill 先被拒绝、走不到无操作——改为先判企微状态，在库里时才在持锁的事务里查 spill。修后带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RESTORE-CUTOFF 39、RECOVERY 447）。
+- 给第 20 步（本机演练）：截止点 T 带 `+08:00` 写，拿不准用 `now` 但必须在起应用之前跑；解开归档后 `chown -R 1000:1000 var`，app 身份才能删哨兵；归档里有 spill 时先起一次应用让它回放（会以 `channel_restore_pending` 停下，预期内），再跑命令；告警在最后一个只补记的会话之后约 10–15 秒到；对照实验（删哨兵、不跑命令）时 C 那句会被再回一次。
 
 ### 第 13 步 · 可观测性（2026-10-09）
 

@@ -3,7 +3,7 @@
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { conversations } from '../schema.js';
-import { readWindowMessages, type MessageRow } from './messages.js';
+import { insertMessages, readWindowMessages, type MessageRow } from './messages.js';
 import { readLiveOrders, type OrderRow } from './orders.js';
 
 /** 由 Session 投影出来、每次落库整行写入的列 */
@@ -148,4 +148,57 @@ export async function updateConversation(tx: Tx, row: ConversationValues, seqs: 
     .where(and(eq(conversations.tenantId, tenantId), eq(conversations.id, id)))
     .returning({ id: conversations.id });
   return out.length === 1;
+}
+
+/**
+ * restore-cutoff（03 R7，第 12 步评审）：被恢复截止点取消的跟进阶段记进会话的跟进记账（state.followup 的 stages 加这一阶段、count 加一，
+ * 与执行体发出一条跟进时的记法相同）——旧实例在备份之后多半已经发过它，恢复出的会话不知道；不记的话之后哪次落库都会为同一阶段再排一条。
+ * 只改 state 这一列（别的键与键序原样），updated_at、last_seq、flush_id 不动。会话行不在返回 false；阶段都已记过返回 true、什么都不写
+ */
+export async function markFollowupStages(tx: Tx, conversationId: string, stages: readonly string[]): Promise<boolean> {
+  const [row] = await tx
+    .select({ state: conversations.state })
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .for('update');
+  if (!row) return false;
+  const state = row.state as Record<string, unknown> & { followup?: { stages?: unknown; count?: unknown } };
+  const meta = state.followup && typeof state.followup === 'object' ? { ...state.followup } : {};
+  const had = Array.isArray(meta.stages) ? (meta.stages as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  const added = [...new Set(stages)].filter((st) => !had.includes(st));
+  if (!added.length) return true;
+  meta.stages = [...had, ...added];
+  meta.count = (typeof meta.count === 'number' ? meta.count : 0) + added.length;
+  await tx
+    .update(conversations)
+    .set({ state: { ...state, followup: meta } })
+    .where(eq(conversations.id, conversationId));
+  return true;
+}
+
+/**
+ * 命令行给一个会话追加一条 system 说明（03 R7 的 restore-cutoff；应用已停、持租户锁）：锁会话行，消息记在 last_seq + 1，
+ * last_seq 随之加一；updated_at、state、flush_id 不动（说明不延长保留期）。会话行不在（只有出站行的欢迎语之类）返回 false
+ */
+export async function appendSystemNote(tx: Tx, conversationId: string, content: string, at: Date): Promise<boolean> {
+  const cur = await lockConversation(tx, conversationId);
+  if (!cur) return false;
+  const seq = cur.lastSeq + 1;
+  await insertMessages(tx, conversationId, [
+    {
+      seq,
+      role: 'system',
+      author: null,
+      authorUserId: null,
+      authorName: null,
+      content,
+      at,
+      sentAt: null,
+      msgid: null,
+      turnId: null,
+      extra: null,
+    },
+  ]);
+  await tx.update(conversations).set({ lastSeq: seq }).where(eq(conversations.id, conversationId));
+  return true;
 }

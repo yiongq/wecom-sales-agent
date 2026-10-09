@@ -104,6 +104,20 @@ function planOps(s: SessionWithFollowup): JobOp[] {
   return [...(k ? [cancelOp(k.key)] : []), enqueueOp(s.id, due.stage, runAt)];
 }
 
+/**
+ * 保存会话但不据这次保存排、取消跟进（03 第 12 步：恢复截止点之前的消息只补记时调。旧实例在备份之后可能已经发过这一阶段的跟进，
+ * 恢复出的会话不知道；被 restore-cutoff 取消的那一阶段另在会话的 followup 记账里记成已跟过）。到点的任务照常在活对象上重判
+ */
+export function saveSessionSkippingFollowup(s: Session, touch = true): void {
+  const prev = selfSaving;
+  selfSaving = s.id;
+  try {
+    saveSession(s, touch);
+  } finally {
+    selfSaving = prev;
+  }
+}
+
 /** 执行体的 saveSession：账与任务状态在同一段同步代码里排进这个会话的下一次落库 */
 function saveWith(s: Session, ops: JobOp[]): void {
   selfSaving = s.id;

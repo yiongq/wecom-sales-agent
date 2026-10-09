@@ -119,6 +119,8 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'channel.rekey': { label: '轮换入口加密设置', group: 'platform', icon: 'refresh-cw' },
   'channel.import': { label: '导入入口状态', group: 'platform', icon: 'refresh-cw' },
   'channel.export': { label: '导出入口状态', group: 'platform', icon: 'refresh-cw' },
+  // 03 第 12 步 restore-cutoff：从备份恢复之后设截止点、取消截止点之前没发的（「截止」两字不在 UI 优先片里）
+  'channel.restore_cutoff': { label: '备份恢复处理', group: 'platform', icon: 'history' },
 };
 
 /** 这个动作的定义；表里没有（以后新增的动作）时是 null。只认自有属性，toString 这类原型上的名字查不到 */

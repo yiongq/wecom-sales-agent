@@ -14,7 +14,8 @@
 //   channel       03 spec「可观测性」：启动装载那一条（网页账号因 web_channel 关着没有启用、欢迎语不合格按没设处理，只有
 //                 账号 key 与原因）；10 分钟内有「没落库就发」（R6，03 第 8 步）、一组出站没过发送前的校验（R21 的同步校验）；
 //                 入站行出队时记了 poison、too_old（R3，03 第 9 步）；
-//                 拉取失败、入站卡住、sending 转 unknown、恢复截止点只补记等由 03 第 12、13 步接上
+//                 恢复截止点让 N 个会话只补记未回复（03 第 12 步：启动后按会话数合成一条，一次）；
+//                 拉取失败、入站卡住、sending 转 unknown 等由 03 第 13 步接上
 import { onTokenError } from '../adapters/wecom.js';
 import { onInboxAbandoned, type InboxAbandoned } from '../channels/inbox.js';
 import { channelStartupWarnings, channelRestartUnknown, channelConditions, refreshChannelObservability } from '../channels/registry.js';
@@ -271,9 +272,33 @@ const INBOX_REASON_TEXT: Partial<Record<InboxAbandoned['reason'], string>> = {
   too_old: '收到时已超过 48 小时发送窗口',
 };
 
+/**
+ * 恢复截止点（03 第 12 步，spec「可观测性」）：启动恢复与之后的拉取里，截止点之前的客户消息只补记、不回复。按会话数（加了说明的会话，
+ * 一个会话一次恢复只加一条）合成一条：最后一个这样的会话之后安静 10 秒、由巡检发；进程里只发一次，停机时还没发的在停机时发
+ */
+const RESTORE_QUIET_MS = 10_000;
+const restoreCutoff = { conversations: 0, lastAt: 0, sent: false };
+
+function restoreCutoffText(): string {
+  return `恢复截止点之前的客户消息只补记、AI 没有回复：${restoreCutoff.conversations} 个会话，会话里已加说明，请人工确认是否已回复`;
+}
+
+function flushRestoreCutoff(t: number, force: boolean): void {
+  if (restoreCutoff.sent || !restoreCutoff.conversations || (!force && t - restoreCutoff.lastAt < RESTORE_QUIET_MS)) return;
+  restoreCutoff.sent = true;
+  alert('channel', restoreCutoffText(), { escalate: true });
+}
+
 function onInboxGivenUp(e: InboxAbandoned): void {
+  if (e.reason === 'restore_cutoff') {
+    if (e.noted && !restoreCutoff.sent) {
+      restoreCutoff.conversations += 1;
+      restoreCutoff.lastAt = clock();
+    }
+    return;
+  }
   const why = INBOX_REASON_TEXT[e.reason];
-  if (!why) return; // 恢复截止点的只补记由第 12、13 步按会话数合成一条
+  if (!why) return;
   const k = `${e.reason}:${e.account}`;
   const t = clock();
   const st = inboxAlerted.get(k) ?? { at: 0, pending: 0 };
@@ -396,6 +421,7 @@ function tick(): void {
   try {
     const t = clock();
     checkStore(t);
+    flushRestoreCutoff(t, false);
     for (const [account, st] of wecomAccounts) {
       if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
         st.lastFailAt = 0;
@@ -431,6 +457,7 @@ export function startAlerts(): void {
   // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
   onShutdown(
     async ({ deadline }) => {
+      flushRestoreCutoff(clock(), true);
       if (!inflight.size) return;
       await Promise.race([Promise.allSettled(inflight), sleep(Math.max(0, deadline - Date.now()))]);
     },
@@ -482,6 +509,7 @@ export const __alertTest = {
     wecomAccounts.clear();
     lastUnsafeAlertAt = 0;
     inboxAlerted.clear();
+    Object.assign(restoreCutoff, { conversations: 0, lastAt: 0, sent: false });
     lagAlerted = false;
     poisonedSeen = new Set();
     dropSamples = [];
