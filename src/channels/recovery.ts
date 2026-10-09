@@ -8,7 +8,6 @@
 //   3. 做完之后 RecoveryGate 打开：这之前这个账号的 push（人工回复、跟进、通知）排队等待，至多 30 秒（spec），超时返回 false
 // 判定都是 recovery-rules.ts 的纯函数；这里只收集事实、调账本与适配器交进来的发送口子（RecoveryPort）。RESEND_UNKNOWN 的生效值与
 // 自测出口 __channelTest 在这里（适配器原样再导出：spec「RESEND_UNKNOWN 经适配器的 __channelTest 在子进程里设」），不读环境变量
-import { readOutboundOfInboxes } from '../db/repo/outbound.js';
 import {
   adoptOpenOutbound,
   cancelIntents,
@@ -17,7 +16,7 @@ import {
   type OpenOutboundLike,
   type OutboundIntent,
 } from '../quota/ledger.js';
-import { getSession, seqOf, withChannelTx } from '../store.js';
+import { getSession, seqOf } from '../store.js';
 import { outboundRecovery, RESEND_UNKNOWN, unknownOnRestart } from './recovery-rules.js';
 
 export type { OpenOutboundLike } from '../quota/ledger.js';
@@ -97,7 +96,7 @@ export interface OutboundRecoverySummary {
   unknown: number;
   cancelled: number;
   resent: number;
-  /** 留给入站恢复的（有 inbox_id、入站行还没结束） */
+  /** 留给入站恢复的（有 inbox_id、入站行还没结束；或已收到失败回执、回执还没处理完） */
   inbound: number;
   /** 停机了、没开始补发的（留在库里原样，下次启动再按表处理） */
   left: number;
@@ -116,17 +115,32 @@ function humanAssigneeSame(r: OpenOutboundLike): boolean {
   return !!msg && msg.author === 'human' && assignee !== null && assignee.userId === (msg.authorId ?? null);
 }
 
+/** initChannels 读到的一行没结束的入站（出站恢复只看它的 id、种类与回执的 fail_msgid） */
+export interface OpenInboxLike {
+  id: string;
+  kind: string;
+  payload: unknown;
+}
+
 /**
  * 出站恢复表（入站恢复之前，按账号一次扫完，不变量 15：每一行都给出处理）。rows 是 initChannels 读到的这个账号的 pending、sending
- * （按建行时刻、段号），openInboxIds 是同一个快照里这个账号没结束的入站行。补发按 rows 的顺序一段一段等完
+ * （按建行时刻、段号），openInbox 是同一个快照里这个账号没结束的入站行（判「入站行还没结束」与「已收到失败回执」）。补发按 rows 的
+ * 顺序一段一段等完
  */
 export async function recoverOutbound(
   port: RecoveryPort,
   rows: readonly OpenOutboundLike[],
-  openInboxIds: ReadonlySet<string>,
+  openInbox: readonly OpenInboxLike[],
 ): Promise<OutboundRecoverySummary> {
   const sum: OutboundRecoverySummary = { unknown: 0, cancelled: 0, resent: 0, inbound: 0, left: 0 };
   if (!rows.length) return sum;
+  const openInboxIds = new Set(openInbox.map((r) => r.id));
+  const failed = new Set(
+    openInbox
+      .filter((r) => r.kind === 'send_fail')
+      .map((r) => (r.payload as { fail_msgid?: unknown } | null)?.fail_msgid)
+      .filter((m): m is string => typeof m === 'string'),
+  );
   const intents = adoptOpenOutbound(port.accountId, rows);
   for (const [i, r] of rows.entries()) {
     const intent = intents[i]!;
@@ -140,13 +154,14 @@ export async function recoverOutbound(
       humanAssigneeSame: humanAssigneeSame(r),
       now: Date.now(),
       resendUnknown,
+      failReceived: failed.has(r.channelMsgid),
     });
     if (action.do === 'unknown') {
       recoverAsUnknown(intent);
       sum.unknown += 1;
       continue;
     }
-    if (action.do === 'inbound') {
+    if (action.do === 'inbound' || action.do === 'receipt') {
       sum.inbound += 1;
       continue;
     }
@@ -185,16 +200,12 @@ export async function recoverOutbound(
 
 // ---------------- 入站恢复要的库里的事实 ----------------
 
-/** 入站恢复（保底）要的：这几条入站名下有出站行的（任何状态） */
+/**
+ * 入站恢复（保底）要的：这几条没结束的入站名下有出站行的（任何状态）。与拉取位置、没结束的行在同一个短事务里读
+ * （src/channels/inbox.ts 的 loadForRecovery）
+ */
 export interface InboundRecoveryCtx {
   withOutbound: ReadonlySet<string>;
-}
-
-/** 一个短事务读这几条入站名下的出站行（保底「名下已有出站行的，按 replied 处理」）。库不可用时 reject，调用方再试 */
-export async function inboundContext(inboxIds: readonly string[]): Promise<InboundRecoveryCtx> {
-  if (!inboxIds.length) return { withOutbound: new Set() };
-  const rows = await withChannelTx((tx) => readOutboundOfInboxes(tx, inboxIds));
-  return { withOutbound: new Set(rows.map((r) => r.inboxId)) };
 }
 
 // ---------------- 自测出口 ----------------

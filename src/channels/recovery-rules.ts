@@ -35,6 +35,10 @@ export interface OpenOutboundFacts {
   humanAssigneeSame: boolean;
   now: number;
   resendUnknown: boolean;
+  /**
+   * 这个账号有一条还没处理完的失败回执（send_fail 的入站行停在 received，回执的短事务没写成，第 9 步）指着这一段：它已经失败了
+   */
+  failReceived: boolean;
 }
 
 /** 出站恢复表一行的处理，按 spec 的行名 */
@@ -56,12 +60,18 @@ export type OutboundRecovery =
   | { do: 'resend'; alreadySending: boolean }
   | { do: 'cancel'; why: OutboundCancelWhy }
   /** 有 inbox_id、入站行还没结束：不在这里发，留给入站恢复（出队时照常计次、判过期与截止，再按 replied 一行处理） */
-  | { do: 'inbound' };
+  | { do: 'inbound' }
+  /** 已收到失败回执、回执还没处理完：不补发、不改，留给入站恢复重做回执的短事务（迁到 failed） */
+  | { do: 'receipt' };
 
 const cancel = (why: OutboundCancelWhy): OutboundRecovery => ({ do: 'cancel', why });
 
-/** spec「出站恢复」表，自上而下第一行命中的为准 */
+/**
+ * spec「出站恢复」表，自上而下第一行命中的为准。表前多一行（第 9 步评审之后才有的情形，表里没写）：失败回执的入站行停在 received
+ * 而指着这一段的，这一段已经失败（不变量 5：failed 永不再发），出站恢复不补发、不取消、不记 unknown，等入站恢复重做回执把它迁到 failed
+ */
 export function outboundRecovery(f: OpenOutboundFacts): OutboundRecovery {
+  if (f.failReceived) return { do: 'receipt' };
   if (f.status === 'sending') return f.resendUnknown ? { do: 'resend', alreadySending: true } : { do: 'unknown' };
   if (f.recordOnlyUntil !== null && f.sentAt <= f.recordOnlyUntil) return cancel('restore_cutoff');
   if (f.inboxId !== null) return f.inboxOpen ? { do: 'inbound' } : cancel('inbox_finished');

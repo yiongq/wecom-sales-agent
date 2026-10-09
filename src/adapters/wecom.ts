@@ -93,10 +93,10 @@ import {
 } from '../channels/accounts.js';
 import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
 import {
-  inboundContext,
   RecoveryGate,
   recoverOutbound,
   type InboundRecoveryCtx,
+  type OpenInboxLike,
   type OpenOutboundLike,
   type RecoveryPort,
 } from '../channels/recovery.js';
@@ -2527,7 +2527,7 @@ export interface WecomAccountStart {
   /** 解密后的凭据（只在内存里，打印是「[已遮盖]」） */
   secrets: Redacted<WecomSecrets>;
   /** initChannels 那一刻读到的这个账号没结束的入站行与没结果的出站行（启动恢复按它们做，spec「重启、崩溃与恢复」） */
-  open: { inbox: readonly { id: string }[]; outbound: readonly OpenOutboundLike[] };
+  open: { inbox: readonly OpenInboxLike[]; outbound: readonly OpenOutboundLike[] };
 }
 
 /** 启动恢复读库（load、入站名下的出站行）失败时的退避：与出队计次同一套，停机时放下 */
@@ -2566,19 +2566,16 @@ async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccou
     stopping: () => rt.stopping,
   };
   try {
-    await recoverOutbound(port, start.open.outbound, new Set(start.open.inbox.map((r) => r.id)));
+    await recoverOutbound(port, start.open.outbound, start.open.inbox);
   } catch (err) {
     // 出站恢复中途出错：没处理到的行留在库里原样（下次启动再按表处理），入站恢复与拉取照常，不让这个账号停在这里
     console.error(`${rt.tag} ⚠️ 启动恢复（出站）中途出错，没处理到的行留到下次启动:`, err);
   }
-  const loaded = await retryUntilStopped(rt, '读入站', async () => {
-    const { open } = await inboxOf(rt).load(rt.id);
-    return { open, ctx: await inboundContext(open.map((r) => r.id)) };
-  });
+  const loaded = await retryUntilStopped(rt, '读入站', () => inboxOf(rt).loadForRecovery(rt.id));
   if (!loaded || rt.stopping) return;
   rt.readyPromise = Promise.resolve();
   if (loaded.open.length) console.log(`${rt.tag} 启动恢复（入站）：${loaded.open.length} 行没结束，按 ord 派发进各自会话的处理链`);
-  dispatchInboxRows(rt, cfg, loaded.open, undefined, loaded.ctx);
+  dispatchInboxRows(rt, cfg, loaded.open, undefined, { withOutbound: loaded.withOutbound });
   rt.recovery = 'done';
   rt.gate.open();
   startRuntime(rt);
@@ -2847,8 +2844,8 @@ export const __wecomTest = {
     const rt = runtimes.get(accountId);
     const cfg = rt?.config();
     if (!rt || !cfg || rt.state.kind !== 'channel_inbox') return -1;
-    const { open } = await rt.state.load(rt.id);
-    dispatchInboxRows(rt, cfg, open, undefined, await inboundContext(open.map((r) => r.id)));
+    const { open, withOutbound } = await rt.state.loadForRecovery(rt.id);
+    dispatchInboxRows(rt, cfg, open, undefined, { withOutbound });
     return open.length;
   },
   /** 进程里所有运行时都闲下来（没有拉取、处理链与欢迎语） */

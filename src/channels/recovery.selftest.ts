@@ -109,6 +109,7 @@ const V = {
   x: 'wm10x', // pending、有 inbox_id、入站已结束 → cancelled
   y: 'wm10y', // pending、有 inbox_id、入站没结束 → 入站恢复补发
   z: 'wm10z', // kind=card 的 pending（不该有）→ cancelled、记一行
+  rc: 'wm10rc', // notice、pending，另有一条指着它的失败回执停在 received（第 9 步：回执的短事务没写成）→ 不补发、回执重做后 failed
   fu: 'wm10fu', // 恢复做完之前到期的跟进
   p2: 'wm10p2', // 恢复做完之前的人工回复，等过上限
 };
@@ -136,9 +137,21 @@ function pureSuite(): void {
     humanAssigneeSame: true,
     now,
     resendUnknown: false,
+    failReceived: false,
   };
   const KINDS = ['ai', 'human', 'followup', 'notice', 'menu', 'welcome', 'card'] as const;
   const show = (r: unknown): string => json(r);
+  // 表前一行：失败回执停在 received、指着这一段 → 留给回执（任何状态、种类，截止点、入站、RESEND_UNKNOWN 都不看）
+  for (const status of ['pending', 'sending'] as const) {
+    for (const kind of KINDS) {
+      for (const extra of [{}, { inboxId: 'i1', inboxOpen: true }, { recordOnlyUntil: now }, { resendUnknown: true }]) {
+        check(
+          `出站表 ${status}/${kind} ${json(extra)} 已收到失败回执：留给回执`,
+          show(outboundRecovery({ ...base, ...extra, status, kind, failReceived: true })) === show({ do: 'receipt' }),
+        );
+      }
+    }
+  }
   // sending（任何种类）：RESEND_UNKNOWN 为假 unknown、为真保持 sending 补发（截止点、入站、接手都不看）
   for (const kind of KINDS) {
     for (const extra of [{}, { inboxId: 'i1', inboxOpen: true }, { recordOnlyUntil: now }, { humanAssigneeSame: false }]) {
@@ -1154,7 +1167,7 @@ async function kill3(h: Harness): Promise<void> {
   h.start();
   await h.idle();
   const sid = (k: string, key = 'r1'): string => sidOf(key, k);
-  for (const uid of [V.n, V.o, V.p, V.q, V.r, V.s, V.t, V.u, V.v, V.z]) await h.mkSession('r1', uid);
+  for (const uid of [V.n, V.o, V.p, V.q, V.r, V.s, V.t, V.u, V.v, V.z, V.rc]) await h.mkSession('r1', uid);
   await h.mkSession('r3', V.w);
   const push = h.wecom.wecomAdapter.push.bind(h.wecom.wecomAdapter);
   const holds: [string, { reached: boolean }][] = [];
@@ -1178,6 +1191,8 @@ async function kill3(h: Harness): Promise<void> {
   void push(sid(V.v), '顾问已确认收款，订单生效', { kind: 'notice' });
   hold(V.w, 'r3');
   void push(sid(V.w, 'r3'), '您的订单已付款', { kind: 'notice' });
+  hold(V.rc);
+  void push(sid(V.rc), '您的订单已付款', { kind: 'notice' });
   hold(V.x);
   const xm = h.say('r1', V.x, 'X 想去海南');
   hold(V.y);
@@ -1192,6 +1207,12 @@ async function kill3(h: Harness): Promise<void> {
   await h.su(`update channel_accounts set record_only_until = now() where id = $1`, [h.ids.get('r3')]);
   await waitFor(async () => (await h.inboxOf(xm.msgid))?.state === 'replied');
   await h.su(`update channel_inbox set state = 'done', payload = null where msgid = $1`, [xm.msgid]);
+  const [rcRow] = await h.outOf(sid(V.rc));
+  await h.su(
+    `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $1, 'm10k3-rcpt', 'send_fail', $2, now(), 'received', $3::json)`,
+    [h.ids.get('r1'), sid(V.rc), json({ fail_msgid: rcRow?.msgid, fail_type: 4 })],
+  );
   await h.su(
     `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, account_id, segment, payload)
      values ((select tenant_id from channel_accounts where id = $1), $2, $3, 'card', now(), 'pending', $1, 0, $4::json)`,
@@ -1328,6 +1349,12 @@ async function restart3(h: Harness): Promise<void> {
       h.sendsTo(V.v)[0]!.p === 'k3' &&
       h.alertLines().filter((l) => l.includes('企微账号 r1 重启时有 1 段停在「发送中」')).length === 1,
     json({ v: after.v, s: h.sendsTo(V.v), alerts: h.alertLines() }),
+  );
+  const rcpt = await h.inboxOf('m10k3-rcpt');
+  check(
+    '失败回执停在 received、指着一段 pending：出站恢复不补发，入站恢复重做回执短事务，那一段 failed、回执行 done',
+    st('rc') === 'failed' && h.sendsTo(V.rc).length === 0 && rcpt?.state === 'done',
+    json({ rc: after.rc, rcpt, s: h.sendsTo(V.rc) }),
   );
   check(
     '验收 18 · 有入站的 pending（入站没结束）：入站恢复按同一 msgid 补发一次，入站 done',
