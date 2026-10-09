@@ -17,7 +17,7 @@ import {
   type OutboundIntent,
 } from '../quota/ledger.js';
 import { getSession, seqOf } from '../store.js';
-import { outboundRecovery, RESEND_UNKNOWN, type OpenOutboundFacts } from './recovery-rules.js';
+import { HUMAN_RESEND_WINDOW_MS, outboundRecovery, RESEND_UNKNOWN, type OpenOutboundFacts } from './recovery-rules.js';
 
 export type { OpenOutboundLike } from '../quota/ledger.js';
 
@@ -92,10 +92,11 @@ export interface RecoveryPort {
   /** 账号的恢复截止点（R7，毫秒；没有为 null） */
   recordOnlyUntil: number | null;
   /**
-   * 补发一段（同一 msgid、同一内容）：走「发一条 AI 回复」第 3–5 步——先比停机截止（人工回复与通知不比接手），再 markSending、
-   * 提交之后才发；alreadySending（RESEND_UNKNOWN 为真时的 sending 段）直接走第 5 步
+   * 补发一段（同一 msgid、同一内容）：走「发一条 AI 回复」第 3–5 步——先比停机截止与接手（人工回复与通知不比接手），再 markSending、
+   * 提交之后才发；alreadySending（RESEND_UNKNOWN 为真时的 sending 段）不再 markSending，AI 产生的照样比接手（以判定这一刻的代次为准）。
+   * stillEligible：人工回复每次真正发请求之前的资格复核（不符合就不发、记 cancelled）
    */
-  resend(intent: OutboundIntent, alreadySending: boolean): Promise<void>;
+  resend(intent: OutboundIntent, alreadySending: boolean, stillEligible?: () => boolean): Promise<void>;
   /** 停机中：不再开始补发 */
   stopping(): boolean;
 }
@@ -121,6 +122,11 @@ function humanAssigneeSame(r: OpenOutboundLike): boolean {
   const msg = s.messages.find((m) => seqOf(m) === r.messageSeq);
   const assignee = s.handedOver ? (s.assignee ?? null) : null;
   return !!msg && msg.author === 'human' && assignee !== null && assignee.userId === (msg.authorId ?? null);
+}
+
+/** 恢复补发的人工回复此刻仍有资格：建这一行起仍在 10 分钟内，会话的接手人仍是这条回复的作者 */
+function humanStillEligible(r: OpenOutboundLike): boolean {
+  return Date.now() - r.sentAt.getTime() <= HUMAN_RESEND_WINDOW_MS && humanAssigneeSame(r);
 }
 
 /** initChannels 读到的一行没结束的入站（出站恢复只看它的 id、种类与回执的 fail_msgid） */
@@ -217,7 +223,9 @@ export async function recoverOutbound(
       }
       continue;
     }
-    await port.resend(intent, action.alreadySending);
+    // 人工回复：判定时有资格，等 token、markSending 期间会话可能被交还或改派、10 分钟也可能过了——真正发请求之前再复核（开放问题 6）
+    const human = r.kind === 'human' && !action.alreadySending;
+    await port.resend(intent, action.alreadySending, human ? () => humanStillEligible(r) : undefined);
     sum.resent += 1;
   }
   console.log(

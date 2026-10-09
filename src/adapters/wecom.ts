@@ -34,6 +34,7 @@
 //   在途表），发送走 03 的「先落库、后发送」（第 8 步，见下文「03 先落库、后发送」一节）。
 // - 会话 id = 账号前缀 + external_userid（默认账号 wecom:，之后建的 wecom:<key>:）；发往一个会话的消息经 accountForSession 找到账号，
 //   只带那个账号的 open_kfid 与 access_token；停用账号名下的会话推送返回 false。
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ChannelAdapter, ChatMessage, OutboundKind, PreparedPush, PushOpts, Session } from '../types.js';
@@ -60,6 +61,7 @@ import {
   planOutbound,
   planRuntimeSegment,
   recordSend,
+  recoverAsUnknown,
   replyDelivered,
   settleIntent,
   unmarkSending,
@@ -938,6 +940,11 @@ interface OutGroup {
    * 过了停机截止就不发、留在 sending（下次启动再按表处理）
    */
   alreadySending?: ReadonlySet<string>;
+  /**
+   * 启动恢复补发的人工回复（开放问题 6）：每次真正发请求之前再复核一次资格（建这一行起仍在 10 分钟内、会话的接手人仍是作者），
+   * 不符合就不发、记 cancelled。等 token、markSending 都要时间，会话可能在这期间被交还或改派。普通的人工发送没有它（第 8 步：不比接手）
+   */
+  stillEligible?: () => boolean;
 }
 
 /** 一组发完（或停下）的结果：ok 是每段都送出（卡片发失败而补的文字送出了也算）；stop 是停在哪一步 */
@@ -1045,8 +1052,30 @@ function postSendMsg(token: string, body: Record<string, unknown>): Promise<{ er
   }).then((res) => res.json() as Promise<{ errcode?: number; errmsg?: string }>);
 }
 
-/** 这一组还算不算数：接手代次没变（通知与人工回复不比接手，恒为真，见 OutGroup.checksTakeover） */
-const stillCurrent = (g: OutGroup): boolean => !g.checksTakeover || takeoverGen(g.sessionId) === g.gen;
+/**
+ * 这一组还算不算数：接手代次没变（通知与人工回复不比接手，见 OutGroup.checksTakeover），而且恢复补发的人工回复仍有资格
+ * （OutGroup.stillEligible）
+ */
+const stillCurrent = (g: OutGroup): boolean =>
+  (!g.checksTakeover || takeoverGen(g.sessionId) === g.gen) && (!g.stillEligible || g.stillEligible());
+
+/**
+ * 这一组不再算数（被接手，或恢复补发的人工回复不再有资格）：没发的段不发。启动恢复补发的历史 sending 段（alreadySending）可能在
+ * 上一个进程里发出去过，记 unknown（工作台「可能没送达」）；其余记 cancelled（本进程标了 sending、还没发请求的也是）
+ */
+function dropRest(g: OutGroup, intents: readonly OutboundIntent[]): void {
+  const sent = intents.filter((i) => g.alreadySending?.has(i.msgid));
+  for (const i of sent) recoverAsUnknown(i);
+  if (sent.length) console.log(`${g.rt.tag} 补发之前会话被接手：${sent.length} 段停在发送中的不补发，记 unknown`);
+  cancelIntents(
+    intents.filter((i) => !sent.includes(i)),
+    g.stillEligible && !g.stillEligible() ? 'restore' : 'taken_over',
+  );
+}
+
+/** 卡片发失败补的「标题 + 链接」的 msgid：由卡片段的 msgid 定死（第几块），重启后再补同一块还是这一行，库里认得出这一组已经有补文了 */
+const fallbackMsgid = (cardMsgid: string, chunk: number): string =>
+  createHash('sha256').update(`card-fallback:${cardMsgid}:${chunk}`).digest('hex').slice(0, 32);
 
 /**
  * 一段的第 4–5 步。返回：accepted；failed（rejected 或 unknown）；skipped（not_pending，或 absent 而 pending 提交过）；
@@ -1091,7 +1120,7 @@ async function sendSegment(
   }
   // 4 返回之后、发请求之前再比一次接手代次与停机截止（markSending 期间可能有人接手或到了截止）
   if (!stillCurrent(g)) {
-    cancelIntents([intent, ...rest], 'taken_over');
+    dropRest(g, [intent, ...rest]);
     return 'taken_over';
   }
   if (sendsClosed(rt)) {
@@ -1186,7 +1215,7 @@ async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
     if (sendsClosed(g.rt)) return { ok: false, stop: 'deferred' };
     // 3 接手代次：这一组没发的段 cancelled
     if (!stillCurrent(g)) {
-      cancelIntents(queue.slice(n), 'taken_over');
+      dropRest(g, queue.slice(n));
       return { ok: false, stop: 'taken_over' };
     }
     const r = await sendSegment(g, intent, queue.slice(n + 1));
@@ -1195,10 +1224,13 @@ async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
     const card = intent.payload.msgtype === 'link' ? g.cards.get(intent.msgid) : undefined;
     if (r === 'failed' && card) {
       // 卡片发失败：正文已按「见下方卡片」发出，收不回来了。把链接补发在正文下方（02 的做法）：运行时才补的段，段号接在这一组之后，
-      // 单独一个短事务写成 pending 之后照样走第 4–5 步；补的这几段送出了，这一组就算送出
-      for (const chunk of splitForWecom(`${card.title}\n${card.url}`)) {
+      // 单独一个短事务写成 pending 之后照样走第 4–5 步；补的这几段送出了，这一组就算送出。补文的 msgid 由卡片段定死：启动恢复再补
+      // 同一张卡片时还是那几行（已经有的、已有结果的都认得出，不会换个 msgid 再发一遍）
+      for (const [k, chunk] of splitForWecom(`${card.title}\n${card.url}`).entries()) {
         try {
-          const extra = await planRuntimeSegment(queue, { msgtype: 'text', text: { content: chunk } });
+          const extra = await planRuntimeSegment(queue, { msgtype: 'text', text: { content: chunk } }, fallbackMsgid(intent.msgid, k));
+          // null：这一块补文已经有结果（启动恢复之前就发过）；队列里已经有这一行（同一组里排着）的不再排一遍
+          if (!extra || queue.some((q) => q.msgid === extra.intent.msgid)) continue;
           g.commit.set(extra.intent.msgid, extra.commit);
           queue.push(extra.intent);
         } catch (e) {
@@ -1215,13 +1247,15 @@ async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
 
 /**
  * 启动恢复补发的一组（同一会话、同一类，按段号）：库里已有的行（pending 已提交），卡片段的标题与地址从 payload 取（卡片发失败照样补
- * 「标题 + 链接」）。接手代次取此刻的；通知与人工回复不比接手；alreadySending（RESEND_UNKNOWN 为真时的 sending 段）直接发、不比接手
+ * 「标题 + 链接」，补文复用这一组已有的那几行）。接手代次取此刻的（恢复判定的那一刻，调用方判定之后同一段同步代码里建组）；通知与
+ * 人工回复不比接手。alreadySending（RESEND_UNKNOWN 为真时的 sending 段）只是不再 markSending：AI 产生的照样比接手，等待期间被接手
+ * 记 unknown、不补发。stillEligible：恢复补发的人工回复每次发请求之前的资格复核
  */
 function groupOfIntents(
   rt: WecomRuntime,
   cfg: WecomConfig,
   intents: readonly OutboundIntent[],
-  o: { inboxId: string | null; alreadySending?: boolean },
+  o: { inboxId: string | null; alreadySending?: boolean; stillEligible?: () => boolean },
 ): OutGroup {
   const first = intents[0]!;
   const sessionId = first.sessionId;
@@ -1234,11 +1268,12 @@ function groupOfIntents(
     sessionId,
     intents: [...intents],
     gen: takeoverGen(sessionId),
-    checksTakeover: !o.alreadySending && first.kind !== 'notice' && first.kind !== 'human',
+    checksTakeover: first.kind !== 'notice' && first.kind !== 'human',
     cards,
     commit: new Map(intents.map((i) => [i.msgid, 'committed' as const])),
     inboxId: o.inboxId,
     ...(o.alreadySending ? { alreadySending: new Set(intents.map((i) => i.msgid)) } : {}),
+    ...(o.stillEligible ? { stillEligible: o.stillEligible } : {}),
   };
 }
 
@@ -2559,8 +2594,10 @@ async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccou
     accountId: rt.id,
     tag: rt.tag,
     recordOnlyUntil: start.account.wecom?.recordOnlyUntil ?? null,
-    resend: async (intent, alreadySending) => {
-      const out = await sendGroup(groupOfIntents(rt, cfg, [intent], { inboxId: null, alreadySending }));
+    resend: async (intent, alreadySending, stillEligible) => {
+      const out = await sendGroup(
+        groupOfIntents(rt, cfg, [intent], { inboxId: null, alreadySending, ...(stillEligible ? { stillEligible } : {}) }),
+      );
       if (out.stop === 'deferred') console.log(`${rt.tag} 停机中、发送已截止，恢复要补发的一段留在库里（下次启动再按出站恢复表处理）`);
     },
     stopping: () => rt.stopping,

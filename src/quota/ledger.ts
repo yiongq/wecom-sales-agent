@@ -169,6 +169,11 @@ interface Row {
   commit: 'committed' | 'failed' | null;
   /** 等这一行 pending 提交的 */
   commitWaiters: (() => void)[];
+  /**
+   * 03：按定死的 msgid 新建的运行时补段（卡片发失败的补文），内存里原来没有这一行：库里可能早有同一 msgid 的行（已有结果、没预载进来），
+   * markSending 回 not_pending 时从账本摘掉，不留一行假的「发送中」
+   */
+  probe: boolean;
 }
 
 const bySession = new Map<string, Row[]>();
@@ -224,6 +229,7 @@ function newRow(sessionId: string, kind: OutboundKind, message: ChatMessage | nu
     attempts: 0,
     commit: null,
     commitWaiters: [],
+    probe: false,
   };
 }
 
@@ -640,21 +646,33 @@ export function planOutbound(
 /**
  * 运行时才补的段（卡片发失败之后补的「标题 + 链接」文字）：段号取这一组最大段号加 1，同一组的种类、消息、入站与账号，
  * 单独一个短事务写成 pending（至多等 5 秒）之后再走 markSending 与发送。返回这一段与它的 pending 落没落库（timeout 时照 R6 处理）。
- * 校验同 planOutbound，不过就抛 OutboundPlanError
+ * 校验同 planOutbound，不过就抛 OutboundPlanError。
+ * msgid：调用方按卡片段定死的 msgid（启动恢复再补同一张卡片时是同一行）。账本里已有这一行：还没结果的复用它（不另建一行），已有结果的
+ * 返回 null（这一块补文已经发过或不会再发，不用再发）；账本里没有：按它新建，pending 插入遇到库里已有的行什么都不改（迁移表），
+ * 之后 markSending 回 not_pending 就不发
  */
 export async function planRuntimeSegment(
   group: readonly OutboundIntent[],
   payload: OutboundPayload,
-): Promise<{ intent: OutboundIntent; commit: 'committed' | 'timeout' }> {
+  msgid?: string,
+): Promise<{ intent: OutboundIntent; commit: 'committed' | 'timeout' } | null> {
   const first = group[0];
   const base = first ? byMsgid.get(first.msgid) : undefined;
   if (!first || !base?.v2) throw planRejected('运行时补的段找不到它那一组');
   if (group.length >= 32_767) throw planRejected('一组的段号用完了');
   const bad = payloadProblem(payload);
   if (bad) throw planRejected(bad);
+  if (msgid !== undefined && !MSGID_RE.test(msgid)) throw planRejected('运行时补的段 msgid 不对');
+  const known = msgid === undefined ? undefined : byMsgid.get(msgid);
+  if (known?.v2) {
+    if (known.status !== 'pending' && known.status !== 'sending') return null;
+    known.payload ??= payload;
+    return { intent: intentOf(known), commit: known.commit === 'committed' ? 'committed' : 'timeout' };
+  }
   const now = Date.now();
   const row = newRow(first.sessionId, first.kind, first.message, now);
   Object.assign(row, {
+    ...(msgid === undefined ? {} : { msgid, probe: true }),
     v2: true,
     accountId: first.accountId,
     inboxId: first.inboxId,
@@ -739,6 +757,11 @@ export async function markSending(intent: OutboundIntent): Promise<MarkSendingRe
   }
   const r = await markOutboundSendingInDb(intent.msgid, waits.markMs);
   if (r === 'marked' && canMoveOutbound(row.status, 'sending', ['mark'])) row.status = 'sending';
+  // 按定死的 msgid 新建的补段，库里早有同一 msgid 的行、已有结果：这一块补文已经发过（或不会再发），从账本摘掉，以库里的为准
+  if (r === 'not_pending' && row.probe && row.status === 'pending') {
+    finishRow(row);
+    remove(row);
+  }
   return r;
 }
 
