@@ -4221,8 +4221,15 @@ await t.close();
   };
   const c1 = guard('pre-03', false, undefined, null, undefined, { channelMarker: true, channels: 'down' });
   check(
-    '渠道回滚：标记在 → 5，不问库；先用当前镜像导出、确认默认账号 exported、再部署旧 tag',
-    c1.code === 5 && channelSteps(c1.out) && c1.out.includes('4. 再部署旧 tag') && c1.channelDocker.length === 0,
+    '渠道回滚：标记在 → 5，不问库；先用当前镜像导出、确认默认账号 exported、用当前镜像起来顶住（mode = env），再部署旧 tag',
+    c1.code === 5 &&
+      channelSteps(c1.out) &&
+      c1.out.includes(`4. 先用当前镜像把应用起来顶住`) &&
+      c1.out.includes(`${dcOf('side1', '3999')} up -d app，curl -fsS http://127.0.0.1:3999/healthz 确认 channels.mode = env`) &&
+      c1.out.includes('5. 再部署旧 tag') &&
+      c1.out.indexOf('.env 里的 WECOM_* 还在') < c1.out.indexOf('4. 先用当前镜像') &&
+      c1.out.indexOf('channels.mode = env') < c1.out.indexOf('5. 再部署旧 tag') &&
+      c1.channelDocker.length === 0,
     `${c1.code} ${c1.out}`,
   );
   const channelSql = guardSrc.match(/select exists\(select 1 from channel_accounts where [^"\n]+\)/)?.[0];

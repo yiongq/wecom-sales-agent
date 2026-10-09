@@ -1860,8 +1860,11 @@ function afterAiGroup(rt: WecomRuntime, sessionId: string, out: GroupOutcome, st
 const MAX_INBOX_ATTEMPTS = 3;
 /** beginAttempt 写不进库时这一行在处理链里等着重试（不跳过：同一会话排在它后面的不能先处理，不变量 12）；停机时放下，留给下次启动 */
 const ATTEMPT_RETRY_MS = [1_000, 5_000, 30_000, 120_000];
-/** 恢复截止点之前的消息只补记（R7），会话里加这一句（spec 原话；同一会话一次恢复只加一条） */
+/** 恢复截止点之前的消息只补记（R7），会话里加这一句（spec 原话；同一会话一次恢复每种说明只加一条） */
 const RESTORE_CUTOFF_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
+/** 入站行已是 replied（回复已生成、可能已发）时换这一句：上面那条 AI 回复不再补发，可能没送达（第 20 步演练，owner 10-10 定） */
+const RESTORE_CUTOFF_REPLIED_NOTE =
+  '恢复备份之后补记：上面 AI 的回复可能没送达客户（备份之后的处理记录已丢失，不会再补发），请人工确认客户是否收到';
 /** 这条说明记下是哪个截止点加的（进 messages.extra、原样往返）：「一次恢复只加一条」按它认，不按写入时间——截止点可以比现在晚几分钟 */
 type RestoreNote = ChatMessage & { restoreCutoff?: number };
 
@@ -2124,8 +2127,9 @@ async function abandonInboxRow(rt: WecomRuntime, row: InboxRow, reason: 'poison'
 }
 
 /**
- * 恢复截止点之前的消息（R7、不变量 9）：不调引擎、不发送。客户消息不在会话里时照常写进会话（非文本写占位），追加一条说明（同一会话
- * 一次恢复只加一条：按说明上记的截止点认），入站行记 abandoned（restore_cutoff），同一次落库；菜单点击不补记。这次保存不排跟进
+ * 恢复截止点之前的消息（R7、不变量 9）：不调引擎、不发送。客户消息不在会话里时照常写进会话（非文本写占位），追加一条说明（入站行已是
+ * replied 的用「回复可能没送达」那句；同一会话一次恢复每种说明只加一条：按说明上记的截止点认，告警只数头一条），入站行记 abandoned
+ * （restore_cutoff），同一次落库；菜单点击不补记。这次保存不排跟进
  */
 function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Promise<void> {
   const sessionId = row.conversationId;
@@ -2139,9 +2143,11 @@ function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Pr
       s.messages.push({ role: 'customer', content, at: Date.now(), msgid: row.msgid, ...(row.sentAt ? { sentAt: row.sentAt } : {}) });
       trimSessionMessages(s);
     }
-    if (!s.messages.some((m) => m.role === 'system' && m.content === RESTORE_CUTOFF_NOTE && (m as RestoreNote).restoreCutoff === cutoff)) {
-      s.messages.push({ role: 'system', content: RESTORE_CUTOFF_NOTE, at: Date.now(), restoreCutoff: cutoff } as RestoreNote);
-      noted = true;
+    const note = row.state === 'replied' ? RESTORE_CUTOFF_REPLIED_NOTE : RESTORE_CUTOFF_NOTE;
+    const notes = s.messages.filter((m) => m.role === 'system' && (m as RestoreNote).restoreCutoff === cutoff);
+    if (!notes.some((m) => m.content === note)) {
+      s.messages.push({ role: 'system', content: note, at: Date.now(), restoreCutoff: cutoff } as RestoreNote);
+      noted = notes.length === 0;
     }
     // 只补记不排跟进：备份之后旧实例可能已经发过这一阶段的跟进（第 12 步评审）
     saveSessionSkippingFollowup(s);
