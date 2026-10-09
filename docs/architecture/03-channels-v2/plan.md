@@ -63,7 +63,7 @@
   - 自测：三种状态下走哪条路；六个拒绝原因与「不留半装载」；全部停用时照常起、哨兵留着、之后启用再起被拦；欢迎语不合格按没设处理。
   - 对应验收 2、11 的启动拒绝部分、13 的启动拒绝部分、22 的启动部分；不变量 13、14。依赖：第 2、3、5 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍；文件存储与「未导入」下 `wecom.selftest.ts`、`wecom-02.selftest.ts`、`quota.selftest.ts` 照过。
-- [ ] 7. 按账号拆开的企微运行时与回调路由（2，Claude）
+- [x] 7. 按账号拆开的企微运行时与回调路由（2，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），库里账号用的是过渡状态后端（第 9 步换），见「实施记录 · 第 7 步」。
   - `WecomRuntime`：第 1 步列的模块级状态搬进按账号的运行时，注册表按账号 uuid 建键；文件状态层（cursor 文件、handled、在途表、02 的五种情况）挪进 file 后端、行为不变，锁定的 `__test` 照旧作用于 env 账号（R10）。
   - 会话 id 按账号前缀拼、出站按 `accountForSession` 找账号；`conversations.channel_account_id` 的投影（R11）。
   - 回调：`/wecom/callback/:key` 与 `/wecom/callback`，按账号验签、`receiveid` 校验、`OpenKfId` 分派；公开路由白名单加这一条（R12）。
@@ -364,6 +364,35 @@
 - 本步定的（spec 实现期修订，顶部 `Revisions:`）：`AUDIT_ACTIONS` 只登记有写入代码的四个渠道动作，`channel.import`、`channel.export`、`channel.restore_cutoff` 留给第 14、12 步登记（审计的一致性检查不许登记没有写入方的动作）；后台 UX spec 的 `AuditQuery.actions` 上限从 32 改为 64（四个动作加进来之后，审计页「全部类别、不显示登录记录」超过 32 个），是对该 spec 一处条款的部分取代，两份 spec 顶部各记一行。
 - 自测追加在 `src/channels/channels.selftest.ts`（子进程，PGlite 84 项；有 PG 时 106 项）：各子命令的退出码与拒绝、前缀规则、事务回滚、审计行、`rekey` 之后去掉旧密钥能解；拦截 stdout、stderr 扫凭据明文、密文的 base64 / hex / Buffer JSON、`corp_id`、`open_kfid`，结果为零。改了的非锁定断言：`console.selftest.ts` 的 actions 上限边界（32 / 33 → 64 / 65）、`audit-text.selftest.ts` 的断言名。
 - 门禁：四个全绿（console 构建在 Codex 沙箱里 `EPERM`，由 Claude 在沙箱外补跑），`PREFIX sha256` 与第 1 步相同，锁定文件未动。
+
+### 第 7 步 · 按账号拆开的企微运行时与回调路由（2026-10-09）
+
+**结构**
+
+- `src/adapters/wecom.ts` 改成按账号的 `WecomRuntime` 加注册表（按账号 uuid 建键，env 账号在模块加载时登记在 `ENV_ACCOUNT_ID` 下）。每个运行时自己持有：配置的取法、access_token（`Redacted<string>`）与并发去重、缩略图缓存、欢迎语去重表与账号自己的欢迎语、停机截止与 stopping、同步互斥与补拉标志、处理链与 eventTasks、加载与重放、启动恢复状态（`done` / `blocked`）、轮询定时器、会话前缀、日志前缀。留在进程级的只有 `tokenErrorListeners`（回调改成 `(code, accountKey)`）；`onShutdown` 一个钩子收尾所有运行时，exit 钩子逐个 `flushSync`。锁定 `__test`（`resetForTest`、`inspectForTest`、`STATE_FILE`）作用于 env 运行时，清除范围与 02 相同，锁定的 `wecom.selftest.ts` 照过。
+- 状态后端接口 `src/adapters/wecom-state.ts`：`FileWecomState`（env 账号，02 的 cursor 文件、handled、在途表、冷启动逐字照搬；重放与 02 的五种去重情况仍在 `wecom.ts`，两种后端共用）；`AccountCursorState`（库里账号的**过渡**后端，第 9 步整个换掉）：每拉一页先推进 cursor，再经 `withTenant(account.tenantId)` 写本账号行的 `channel_accounts.cursor`、`cursor_at`，写完才派发（写库排成链，值没变不发 UPDATE）；handled 与在途表只在内存里。不写 `wecom-cursor.json`、不读 `WECOM_*`（不变量 13）。
+- 会话 id 取账号的 `idPrefix`；非默认账号的会话由适配器在调引擎之前建好并带上 `channelAccountId`，默认账号与 env 账号照 02 由引擎建。出站按 `accountForSession` 选账号，停用账号的会话推送返回 false。`conversations.channel_account_id` 的投影接上（`src/store/project.ts` 的 `rowToSession` 以列为准，`src/db/repo/conversations.ts` 预载读它）。库里账号的 `pollIntervalMs` 与欢迎语取账号设置，`PUBLIC_BASE_URL` 仍读 env（不是凭据）。
+- 回调 `src/adapters/wecom-callback.ts`：`/wecom/callback/:key` 只认库里启用、凭据已装上的 `wecom_kf` 账号，用它的 Token 与 AESKey 验签解密，`receiveid` 为空或不等于 `corp_id` 不拉；明文里有 `OpenKfId` 就找同一 corp、启用、已装载的企微账号去拉（找不到只记一行），没有就按路由的账号拉，拉的时候带回调明文里的 Token。不带 key 的 `/wecom/callback`：企微状态在库里时给前缀是 `wecom:` 的账号，其余照 02 读 env（501 / 400 / 403 与锁定的 W1 照旧）。POST 一律回 `success`、记一行。`src/server.ts` 只动了回调那一块；撤掉了第 6 步的 `retireEnvAccount`、`callbackInDb` 与启动日志里那句临时说明，`startChannels` 给每个启用的库里企微账号起运行时。
+
+**本步定的（协调者确认）**
+
+- 库里账号的 GET 校验失败（参数不全、验签失败、解密失败、`receiveid` 不对）一律 404，与「不存在的 key」分不出来，不给逐个试 key 的人留信号；原因写进日志。env 账号照 02。
+- `/wecom/callback/env` 不认 env 账号（404）：env 账号的线上地址就是不带 key 的那个，导入后 key 会变，再给一个 `/env` 地址会让企微后台配的地址失效。
+- 启动恢复闸门：有没结束的入站行或没结果的出站行的库里账号只建运行时、不拉取（回调与轮询都不拉），记一行错误并追加一条启动告警（`channel`），等第 10 步的恢复。库里账号要到第 14 步导入之后才会真正出现，这个过渡不影响 dev 与线上。
+- 库里账号的日志前缀是 `[wecom acct=<key>]`（不带冒号，免得被会话 id 脱敏当成 id）；结构化的 `acct` 字段留给第 13 步。新日志里来自请求的签名与时间戳只照抄形状合规的部分，防注入换行。
+
+**已知缺口（后面的步骤补）**
+
+- 第 8 步：库里账号的发送仍走 02 的账本（`account_id` 为空、没有 `pending` / `payload`、卡片记 `card`）。
+- 第 9 步：过渡后端在「cursor 已推进、消息没处理完」时退出，这几条重启后不会再拉到；handled 不持久，cursor 写库失败时靠 02 的五种去重兜底；冷启动截止只在没有 cursor 时生效。`channels.selftest.ts` 里「第 7 步之前 GET 404、POST 回 success」「库里账号这一步不起企微」两处注释已过时（断言仍成立），第 9 步顺手改措辞。
+- 第 10 步：被闸门挡住的账号靠真正的恢复接上（`startChannels` 留了 TODO）；恢复做完之前 `push` 还没有排队等待。
+- 第 13 步：`/healthz` 的 `failing`、`stuck` 仍是 0；`wecom_send` 告警正文还没带账号 key。
+
+**自测与门禁**
+
+- 新建 `src/adapters/wecom-03.selftest.ts`（串在 `wecom-02` 之后；主进程另起 main、restart、prod、rpg 四个子进程）：假企微服务端两个 corp、同一 corp 两个客服账号；三个账号交错收发（三段会话、每段的 `open_kfid` 与 token 都是所属账号的、三个 cursor 各自推进）；一个账号 `gettoken` 一直失败或被停用，另两个照常；回调各自验签、别的账号 Token 签的不拉、按 `OpenKfId` 分派、空 `receiveid` 不拉、不存在 / 网页 / 停用的 key GET 404 与 POST `success`；prod、`LOG_FORMAT=json` 下非默认账号跑一轮，标准输出里搜不到 `external_userid` 与会话原 id（含 `%3A`）。PGlite 61 项，有 PG 时 65 项（`channel_account_id` 投影的写入与预载）。
+- 变异：在隔离副本里做了 10 个，新自测抓到 9 个；漏掉的「路由查找去掉 isEnabled」行为不变（停用账号本来就不装凭据）。
+- 门禁：四个全绿；带 `PG_TEST_URL` 全绿（WECOM-03 65、CHANNELS 81、DB 1168、STORE 452、QUOTA 127、WECOM-02 15、OPS 472、CONSOLE 435）；锁定的 `wecom.selftest.ts` 461、`server.selftest.ts` 269 照过；`PREFIX sha256` 与第 1 步相同，锁定文件未动。改了的非锁定断言：`console.selftest.ts` 的 `PUBLIC` 白名单企微那一条改成认 `/wecom/callback(/:key)?`。一次性 PG 容器已删。由 Claude 子 agent（Opus）实现，协调者审查。
 
 ## 验收记录
 

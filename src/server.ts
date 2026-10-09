@@ -60,6 +60,7 @@ import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { syncFromCallback, wecomAdapter } from './adapters/wecom.js';
+import { accountCallbackGet, accountCallbackPost } from './adapters/wecom-callback.js';
 import { channelKeyRing, channelsHealth, channelsMode, initChannels, startChannels } from './channels/registry.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
@@ -807,12 +808,23 @@ function receiveIdOk(receiveId: string): boolean {
   return !corpId || !receiveId || receiveId === corpId;
 }
 
-// 03 spec R1、R12、不变量 13：企微状态在库里时不读 env 的回调凭据。TODO(03 第 7 步)：/wecom/callback 与 /wecom/callback/:key
-// 按账号验签、分派；在那之前 GET 当作不存在（404），POST 照样回 success（企微会重推）、只记一行、不拉
-const callbackInDb = (): boolean => channelsMode() === 'db';
+// 03 spec R1、R12、不变量 13、20：企微状态在库里时不读 env 的回调凭据。/wecom/callback/:key 只认库里启用的企微账号，不带 key 的
+// 留给前缀是 wecom: 的那个库里账号；按账号验签、解密、receiveid 与 OpenKfId 分派都在 adapters/wecom-callback.ts。
+// 文件存储与企微状态「未导入」「已导出」时 /wecom/callback 是 env 账号，下面照 02 原样
+app.get('/wecom/callback/:key', (c) => {
+  const r = accountCallbackGet(c.req.param('key'), c.req.query());
+  return c.text(r.text, r.status);
+});
+app.post('/wecom/callback/:key', async (c) => {
+  accountCallbackPost(c.req.param('key'), c.req.query(), extractTag(await c.req.text(), 'Encrypt'), extractTag);
+  return c.text('success');
+});
 
 app.get('/wecom/callback', (c) => {
-  if (callbackInDb()) return c.text('not found', 404);
+  if (channelsMode() === 'db') {
+    const r = accountCallbackGet(null, c.req.query());
+    return c.text(r.text, r.status);
+  }
   const token = process.env.WECOM_CALLBACK_TOKEN;
   const aesKey = process.env.WECOM_CALLBACK_AES_KEY;
   if (!token || !aesKey) return c.text('wecom callback not configured', 501);
@@ -833,8 +845,8 @@ app.get('/wecom/callback', (c) => {
 // kf 事件回调：企微 POST 加密的 kf_msg_or_event 事件 → 解密取 Token → 用它拉消息。
 // 必须尽快回 success（拉取异步做），否则企微超时重推。
 app.post('/wecom/callback', async (c) => {
-  if (callbackInDb()) {
-    console.error('[wecom] 收到回调：企微状态在库里，按账号的回调路由还没接上，这次不拉');
+  if (channelsMode() === 'db') {
+    accountCallbackPost(null, c.req.query(), extractTag(await c.req.text(), 'Encrypt'), extractTag);
     return c.text('success');
   }
   const token = process.env.WECOM_CALLBACK_TOKEN;
