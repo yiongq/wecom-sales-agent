@@ -5,7 +5,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentReply, ChatMessage, CustomerProfile, Order, PreparedPush, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
-import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, queueJobs, saveSession } from './store.js';
+import {
+  deleteOrdersOfSession,
+  getOrCreateSession,
+  getOrder,
+  getSession,
+  noteWindowReset,
+  queueInboxState,
+  queueJobs,
+  saveSession,
+} from './store.js';
 import {
   enterHandoff,
   executeTool,
@@ -3473,6 +3482,12 @@ export interface HandleOpts {
   sentAt?: number;
   /** 这句客户原话已经记在会话末尾（企微重放：上次停在「已记下、回复还没生成」），引擎不再 push 一遍 */
   alreadyRecorded?: boolean;
+  /**
+   * 03（spec「入站：channel_inbox」、R3、不变量 3）：这句来自库里企微账号的哪一行入站（channel_inbox.id）。引擎把客户消息写进会话的
+   * 两处（重置口令分支与正常分支）都在那一段同步代码里、saveSession 之后排 recorded（message_seq 取这条消息分到的 seq），
+   * 与这条消息同一次落库提交。alreadyRecorded 时不排（这句上次已经记过）
+   */
+  inboxId?: string;
 }
 
 /** 这一轮写进会话的那条回复消息（02 第 12 步：渠道发送时交给发送账本，账本行据它取 seq）。不往 AgentReply 上加字段 */
@@ -3567,14 +3582,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 企微的口令带 msgid：先把这句记下、分到 seq（db 存储下随这次落库进库，在重置之后的窗口之外），msgid 就进了 7 天集合，
     // 重放或重新拉到这条时按去重情况 2 跳过，不再重置一遍（02 第 12 步审查 once[5]）。窗口里照旧只留重置回复；文件存储下什么都不变
     if (opts.msgid && !opts.alreadyRecorded) {
-      session.messages.push({
+      const customerMsg: ChatMessage = {
         role: 'customer',
         content: text,
         at: Date.now(),
         msgid: opts.msgid,
         ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
-      });
+      };
+      session.messages.push(customerMsg);
       saveSession(session);
+      // 03：入站行记 recorded，与这句同一次落库（saveSession 刚给它分了 seq）
+      if (opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
     }
     session.stage = 'greeting';
     session.profile = {};
@@ -3611,14 +3629,16 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
 
   // 企微重放时这句可能已经记在会话末尾（见 HandleOpts.alreadyRecorded）：不再记一遍，也不删了重记（消息只追加）
+  let customerMsg: ChatMessage | null = null;
   if (!opts.alreadyRecorded) {
-    session.messages.push({
+    customerMsg = {
       role: 'customer',
       content: text,
       at: Date.now(),
       ...(opts.msgid ? { msgid: opts.msgid } : {}),
       ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
-    });
+    };
+    session.messages.push(customerMsg);
     trimSessionMessages(session);
   }
   // 跟进的拒绝识别（02 spec「任务表与跟进」，两种存储都做）：客户说「别发了」这类话就记下，此后这个会话不再跟进。
@@ -3637,6 +3657,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 「客户刚说了什么 + AI 正在生成回复」。此前要等整轮跑完（4~10 秒）才落盘，
   // 后台看起来像卡住了——延迟其实来自这里，不是 SSE。
   saveSession(session);
+  // 03：入站行记 recorded，与这句同一次落库（与上面 push 是同一段同步代码，saveSession 刚给它分了 seq）
+  if (customerMsg && opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
 
   // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
   // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个

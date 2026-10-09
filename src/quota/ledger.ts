@@ -22,6 +22,9 @@
 //   结果（accepted、rejected、unknown、attempts、errcode，payload 置空）随会话的下一次落库写进存档点；cancelled 写进主事务；
 //     sending、迁回 pending、没有会话可挂的、运行时才补的段各是一个短事务。
 //   R6：pending 等不到提交（至多 5 秒）、markSending 库不可用时调用方照发，每次「没落库就发」经 noteUnsafeSend 计数、告警（channel）
+//   入站（03 第 9 步，spec「入站：channel_inbox」、R3、R21）：planOutbound 的 inboxId 不为空时，同一次落库（pending 排进的那一次）
+//     把入站行改 replied；入站行记 abandoned 时 cancelInboxIntents 取消它名下没发的段；库里账号的回执经 onSendFailInbox，
+//     出站行的 failed 与回执入站行的 done 同一个短事务
 import { randomBytes } from 'node:crypto';
 import { accountForSession, type ChannelAccount } from '../channels/accounts.js';
 import { canMoveOutbound } from '../channels/transitions.js';
@@ -45,6 +48,7 @@ import {
   markOutboundSendingInDb,
   onOutboundCommitted,
   onSessionSaved,
+  queueInboxState,
   queueOutboundRows,
   queueTelemetry,
   saveSession,
@@ -52,6 +56,7 @@ import {
   sessionStoreMode,
   takePreloadedOutbound,
   unmarkOutboundInDb,
+  writeInboxStateNow,
   writeOutboundNow,
   writeStandaloneOutbound,
   type MarkSendingResult,
@@ -75,6 +80,11 @@ const KEEP_MS = 7 * 86_400_000;
 const SEQ_WAIT_MS = 2_000;
 /** msg_send_fail 改库的短事务失败之后，隔多久再试一次（只试一次） */
 const RECEIPT_RETRY_MS = 1_000;
+/**
+ * 03 库里账号的回执（带入站行）：短事务没写成时隔多久再试。它可能要等另一个事务里还没提交的出站行（唯一键上的插入），
+ * 一次至多等到语句超时（5 秒），所以多试几次；都没写成时入站行停在 received，重启时由启动恢复重做
+ */
+const RECEIPT_INBOX_RETRY_MS = [1_000, 5_000, 30_000];
 /**
  * 03 R6：发送前等这一组 pending 提交至多多久（与 02 不变量 20 同一口径，从 planOutbound 那一刻算起）；markSending 的短事务至多等多久，
  * 等不到判 db_unavailable。自测经 __ledgerTest.setWaits 缩短
@@ -104,7 +114,7 @@ export interface OutboundIntent {
   /** 会话 id；老客户欢迎语还没有会话时是将要用的那个 id（前缀 + external_userid，02 的写法），所以 outbound_sends.conversation_id 照旧非空 */
   readonly sessionId: string;
   readonly hasSession: boolean;
-  /** 回的是哪条入站；人工回复、跟进、通知、同意菜单、欢迎语为 null（第 9 步接上入站行之前一律为 null） */
+  /** 回的是哪条入站（客户消息的回复、非文本的引导提示）；人工回复、跟进、通知、同意菜单、欢迎语、异常道歉为 null */
   readonly inboxId: string | null;
   readonly kind: OutboundKind;
   /** 这一组里的第几段，从 0 起；运行时才补的段接在这一组最大段号之后 */
@@ -496,6 +506,8 @@ function planProblem(
   const owner = accountForSession(target.sessionId, getSession(target.sessionId));
   if (owner?.id !== account.id) return '会话不属于这个账号';
   if (inboxId !== null && !UUID_RE.test(inboxId)) return 'inboxId 不是 uuid';
+  // 回复一条入站的组：replied 随 pending 排进这个会话的同一次落库，所以会话必须在内存里（入站的客户消息已经写进了它）
+  if (inboxId !== null && !(target.hasSession && getSession(target.sessionId))) return '回复入站的一组没有会话可挂';
   // outbound_sends.segment 是 smallint（运行时补的段还要再加 1）
   if (payloads.length > SEGMENT_MAX) return `一组超过 ${SEGMENT_MAX} 段`;
   for (const p of payloads) {
@@ -574,7 +586,7 @@ function writePending(rows: readonly Row[], hasSession: boolean): void {
  * 一组分段切好之后同步调：校验（kind、账号存在且与会话一致、inboxId、每段 payload 的形状、已过 cleanText、序列化后 ≤16 KB），
  * 不过就抛 OutboundPlanError、什么都不排（调用方按这一组发送失败处理）；过了就生成 msgid、记进内存账本（pending，计入已用条数）、
  * 排进这个会话的落库（主事务；没有会话的单独一个短事务）。02 的 holdSend 预占的那一行由第一段接过来（同一 msgid）。
- * inboxId 不为空时同一次落库把入站行改成 replied——第 9 步接上（这一版只把 inbox_id 记在出站行上）
+ * inboxId 不为空时同一次落库把入站行改成 replied（不变量 3：回复的出站 pending 写进库的那次提交，入站行同时是 replied）
  */
 export function planOutbound(
   account: ChannelAccount,
@@ -618,6 +630,8 @@ export function planOutbound(
   });
   if (message) armSeqTimer(message);
   writePending(rows, target.hasSession && getSession(sessionId) !== undefined);
+  // 与上面的 pending 同一段同步代码排进同一个会话：同一次落库、同一个主事务（排在 pending 之后，按排进来的先后逐条写）
+  if (inboxId !== null && writesToDb(sessionId)) queueInboxState(sessionId, { inboxId, state: 'replied' });
   const intents = rows.map(intentOf);
   planHook?.(intents);
   return intents;
@@ -824,6 +838,15 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: Cancel
   if (n) console.log(`[quota] 取消 ${n} 段出站（${reason}），不会再发`);
 }
 
+/**
+ * 入站行记了 abandoned（毒消息、过期、恢复截止）：它名下本进程排过、还没结果的段一律取消（spec「出站」cancelIntents 的
+ * inbox_abandoned）。cancelled 与 abandoned 排进同一个会话、同一段同步代码时就是同一次落库
+ */
+export function cancelInboxIntents(inboxId: string): void {
+  const rows = [...byMsgid.values()].filter((r) => r.v2 && r.inboxId === inboxId && (r.status === 'pending' || r.status === 'sending'));
+  if (rows.length) cancelIntents(rows.map(intentOf), 'inbox_abandoned');
+}
+
 // ---------------- 03 R6：没落库就发 ----------------
 
 let unsafeAt: number[] = [];
@@ -956,20 +979,32 @@ function explain(sessionId: string, failType: number): void {
 
 /**
  * 回执改库（单独一个短事务）。没写成（库报错、冲突、late 段之后、租户锁在别人手里）的进本进程的待补：隔一拍再试一次，仍失败记 error。
- * explainHit：内存里没有这一行，改中了才知道是哪个会话，那时再加说明（重试改中的也加）
+ * explainHit：内存里没有这一行，改中了才知道是哪个会话，那时再加说明（重试改中的也加）。
+ * inboxId（03 库里账号的回执入站行）：同一个短事务把它记 done；几次都没写成时入站行停在 received，重启时由启动恢复重做（第 10 步）。
+ * full（03 本进程计划过的那一段，内存里已是 failed）：短事务里按迁移表写这一整行 failed（没有就插入、pending 等可迁的迁过去），
+ * 而不是只 UPDATE——这一段的 pending 可能还在另一个没提交的落库事务里，UPDATE 看不到它，回执的 done 却会先提交，
+ * 那次落库之后库里留着 pending（第 9 步评审）。插入会等那个事务结束再按迁移表判；之后晚到的 pending、结果都不改 failed
  */
-function markFailedInDb(channelMsgid: string, failType: number, explainHit: boolean, retried = false): void {
-  void markOutboundFailedInDb(channelMsgid, failType).then((r) => {
+async function markFailedInDb(
+  channelMsgid: string,
+  failType: number,
+  explainHit: boolean,
+  inboxId: string | null = null,
+  full: OutboundRow | null = null,
+): Promise<void> {
+  const delays = inboxId === null ? [RECEIPT_RETRY_MS] : RECEIPT_INBOX_RETRY_MS;
+  for (let i = 0; ; i++) {
+    const r = await markOutboundFailedInDb(channelMsgid, failType, inboxId, full);
     if (r.ok) {
       if (explainHit && r.sessionId) explain(r.sessionId, failType);
       return;
     }
-    if (!retried) {
-      setTimeout(() => markFailedInDb(channelMsgid, failType, explainHit, true), RECEIPT_RETRY_MS).unref();
-      return;
-    }
-    console.error(`[quota] msg_send_fail 回执改库重试一次仍没写成（fail_type=${failType}），库里那一行没记 failed`);
-  });
+    if (i >= delays.length) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, delays[i]).unref());
+  }
+  console.error(
+    `[quota] msg_send_fail 回执改库重试${delays.length === 1 ? '一' : ` ${delays.length} `}次仍没写成（fail_type=${failType}），库里那一行没记 failed`,
+  );
 }
 
 /**
@@ -979,36 +1014,68 @@ function markFailedInDb(channelMsgid: string, failType: number, explainHit: bool
  * 按 msgid 直接改库，改中了再给那个会话加说明。库里账号的行按迁移表：rejected、cancelled 收到回执不改（库里同样不改）
  */
 export function onSendFail(channelMsgid: string, failType: number): void {
+  void receipt(channelMsgid, failType, null);
+}
+
+/**
+ * 03 库里账号的回执（spec「入站」的 send_fail）：同 onSendFail，另外把回执的入站行记 done——出站行的 failed 与它同一个短事务
+ * （库里那一行不用改时这个短事务只记 done，迁移表让重复的回执无害）。重复的回执不再加说明（02 规则）。写完（或重试一次仍失败）才返回，
+ * 处理链据此保序
+ */
+export function onSendFailInbox(channelMsgid: string, failType: number, inboxId: string): Promise<void> {
+  return receipt(channelMsgid, failType, inboxId);
+}
+
+async function receipt(channelMsgid: string, failType: number, inboxId: string | null): Promise<void> {
   ensureLoaded();
   const row = byMsgid.get(channelMsgid);
+  let toDb = false;
+  let explainHit = false;
+  let waitFor: string | null = null;
+  let full: OutboundRow | null = null;
   if (row) {
-    if (row.status === 'failed') return;
-    if (row.v2 && !canMoveOutbound(row.status, 'failed', ['receipt'])) return;
-    row.status = 'failed';
-    row.failType = failType;
-    if (row.v2) finishRow(row);
-    if (row.dbRow) {
-      // 回执先于这一行落库（R6）：内存里排着的那一行直接改成 failed，落库时就插成 failed（迁移表的「没有这一行 → failed」）
-      row.dbRow.status = 'failed';
-      row.dbRow.failType = failType;
-      if (row.v2) row.dbRow.payload = null;
+    const moves = row.status !== 'failed' && (!row.v2 || canMoveOutbound(row.status, 'failed', ['receipt']));
+    if (moves) {
+      row.status = 'failed';
+      row.failType = failType;
+      if (row.v2) finishRow(row);
+      if (row.dbRow) {
+        // 回执先于这一行落库（R6）：内存里排着的那一行直接改成 failed，落库时就插成 failed（迁移表的「没有这一行 → failed」）
+        row.dbRow.status = 'failed';
+        row.dbRow.failType = failType;
+        if (row.v2) row.dbRow.payload = null;
+      }
+      explain(row.sessionId, failType);
+      // 库里账号的行：对应的消息还没写进会话（跟进、引导提示送达之后才写）时，等它分到 seq 再写一行 failed——库里那一行由回执的短事务
+      // 先记了 failed、message_seq 还是 NULL，这一行只把 seq 补上（不是状态变化），工作台按 seq 才查得到这一段的失败
+      if (row.v2 && row.message && seqOf(row.message) === undefined && writesToDb(row.sessionId)) awaitSeq(row);
+      if (!row.v2 && row.inDb && writesToDb(row.sessionId)) {
+        toDb = true;
+        // 本进程排进落库的先等这个会话排着的落库提交（免得改在它前面）
+        if (row.dbRow !== null) waitFor = row.sessionId;
+      }
     }
-    explain(row.sessionId, failType);
-    // 库里账号的行：对应的消息还没写进会话（跟进、引导提示送达之后才写）时，等它分到 seq 再写一行 failed——库里那一行由回执的短事务
-    // 先记了 failed、message_seq 还是 NULL，这一行只把 seq 补上（不是状态变化），工作台按 seq 才查得到这一段的失败
-    if (row.v2 && row.message && seqOf(row.message) === undefined && writesToDb(row.sessionId)) awaitSeq(row);
-    if (row.inDb && writesToDb(row.sessionId)) {
-      const sid = row.sessionId;
-      const queued = row.dbRow !== null;
-      void (async () => {
-        if (queued && getSession(sid)) await flushSession(sid, { timeoutMs: 5000 }).catch(() => undefined);
-        markFailedInDb(channelMsgid, failType, false);
-      })();
+    // 03 库里账号、本进程计划过的段：内存里是 failed（这次改的，或重复的回执）就在回执的短事务里写这一整行 failed（见 markFailedInDb）。
+    // 先等这个会话排着的落库（多半已提交，短事务里的插入就不必等锁）；等不到也照写，插入会等那个事务结束。
+    // 内存里是别的终态（rejected、cancelled：迁移表不许改 failed）的不写出站行，只记入站 done
+    if (row.v2 && writesToDb(row.sessionId) && row.status === 'failed') {
+      toDb = true;
+      full = writeShape(row, 'failed');
+      if (row.dbRow !== null) waitFor = row.sessionId;
+    }
+  } else if (sessionStoreMode() === 'db') {
+    toDb = true;
+    explainHit = true;
+  }
+  if (!toDb) {
+    // 库里那一行不用改（已是 failed、终态、还在等 seq 没排进落库、只在内存里）：库里账号的回执入站行照样单独记 done
+    if (inboxId !== null && !(await writeInboxStateNow({ inboxId, state: 'done' }))) {
+      console.error('[quota] 回执的入站行没记成 done（库写不进去），重启时由启动恢复重做');
     }
     return;
   }
-  if (sessionStoreMode() !== 'db') return;
-  markFailedInDb(channelMsgid, failType, true);
+  if (waitFor !== null && getSession(waitFor)) await flushSession(waitFor, { timeoutMs: 5000 }).catch(() => undefined);
+  await markFailedInDb(channelMsgid, failType, explainHit, inboxId, full);
 }
 
 /** 仅供自测：账本里的行（按记账顺序）与清空 */

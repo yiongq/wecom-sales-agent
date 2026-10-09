@@ -1,5 +1,5 @@
-// 入站记录（docs/architecture/03-channels-v2/spec.md「入站：channel_inbox」、R2、R3、不变量 2、8）：本步只有基本读写，
-// acceptPage、load、beginAttempt 与随会话落库的状态变化在 src/channels/inbox.ts 与 store（第 9 步）。
+// 入站记录（docs/architecture/03-channels-v2/spec.md「入站：channel_inbox」、R2、R3、不变量 2、8）：基本读写。
+// acceptPage、load、beginAttempt 在 src/channels/inbox.ts，随会话落库的状态变化经 store 的 queueInboxState（第 9 步）。
 // 状态只按 src/channels/transitions.ts 的迁移表往前走：库里这一行不是允许的出发状态（已结束、被清除、表外）时 UPDATE 命中 0 行，
 // 当无操作；done、abandoned 的行另有触发器拦着。payload 是客户原文，调用方不打印
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
@@ -125,14 +125,50 @@ export async function setInboxState(
   return out.length === 1;
 }
 
-/** 出队开始处理（R3 的计次）：没结束的行 attempts 加 1，返回加之后的值；行不在或已结束返回 null */
-export async function bumpInboxAttempts(tx: Tx, id: string): Promise<number | null> {
+/**
+ * 随会话落库（或单独短事务）写的一次入站状态变化（R3、R21）：会话写队列、spill（第 11 步）与短事务都用这一个形状，只有 JSON 能装的值
+ */
+export interface InboxStateWrite {
+  inboxId: string;
+  state: InboxState;
+  /** 只跟着 abandoned */
+  reason: InboxAbandonReason | null;
+  /** recorded 时是这条客户消息分到的 seq；不写这一列为 null */
+  messageSeq: number | null;
+}
+
+/**
+ * 按给定顺序逐条写几次入站状态变化（同一行在同一批里的几次变化按先后各写一次：先 recorded 再 replied）。
+ * 每条只按迁移表改（库里不是允许的出发状态就是无操作，会话与它的入站行被清除了也是无操作）；返回改中了几条
+ */
+export async function applyInboxStates(tx: Tx, writes: readonly InboxStateWrite[]): Promise<number> {
+  let n = 0;
+  for (const w of writes) {
+    const ok = await setInboxState(tx, w.inboxId, {
+      state: w.state,
+      ...(w.reason !== null ? { reason: w.reason } : {}),
+      ...(w.messageSeq !== null ? { messageSeq: w.messageSeq } : {}),
+    });
+    if (ok) n += 1;
+  }
+  return n;
+}
+
+/**
+ * 出队开始处理（R3 的计次）：没结束的行 attempts 加 1，返回加之后的值；行不在或已结束返回 null。
+ * 给了 expected（出队时读到的 attempts）时只在库里还是这个值时加（同一次出队的计次幂等，第 9 步评审）：没加上而库里已经比它大
+ * （上一次加 1 其实提交了、只是回包丢了，调用方重试到这里）返回库里的值，不再加；行不在、已结束、或库里反而比它小返回 null
+ */
+export async function bumpInboxAttempts(tx: Tx, id: string, expected?: number): Promise<number | null> {
+  const open = and(eq(channelInbox.id, id), inArray(channelInbox.state, [...INBOX_OPEN_STATES]));
   const out = await tx
     .update(channelInbox)
     .set({ attempts: sql`${channelInbox.attempts} + 1` })
-    .where(and(eq(channelInbox.id, id), inArray(channelInbox.state, [...INBOX_OPEN_STATES])))
+    .where(expected === undefined ? open : and(open, eq(channelInbox.attempts, expected)))
     .returning({ attempts: channelInbox.attempts });
-  return out[0]?.attempts ?? null;
+  if (out[0] || expected === undefined) return out[0]?.attempts ?? null;
+  const [cur] = await tx.select({ attempts: channelInbox.attempts }).from(channelInbox).where(open);
+  return cur && cur.attempts > expected ? cur.attempts : null;
 }
 
 /** 启动：这个账号没结束的行（received、recorded、replied），按 ord */

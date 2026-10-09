@@ -70,6 +70,15 @@ export async function listChannelAccounts(tx: Tx): Promise<ChannelAccountRow[]> 
   return tx.select(COLUMNS).from(channelAccounts).orderBy(asc(channelAccounts.createdAt), asc(channelAccounts.key));
 }
 
+/** 一个账号的拉取位置（入站 load，03 第 9 步）：cursor 与恢复截止点；没有这一行为 null。不读密文 */
+export async function readAccountCursor(tx: Tx, id: string): Promise<{ cursor: string | null; recordOnlyUntil: Date | null } | null> {
+  const [row] = await tx
+    .select({ cursor: channelAccounts.cursor, recordOnlyUntil: channelAccounts.recordOnlyUntil })
+    .from(channelAccounts)
+    .where(eq(channelAccounts.id, id));
+  return row ?? null;
+}
+
 /** 新建一个账号，返回整行 */
 export async function insertChannelAccount(tx: Tx, a: NewChannelAccount): Promise<ChannelAccountRow> {
   const { tenantId } = currentTenantCtx();

@@ -1,18 +1,11 @@
-// 企微的拉取状态（docs/architecture/03-channels-v2/spec.md R1、R10、不变量 13）：cursor、已认领的 msgid（handled）、在途表、冷启动截止。
-// 按账号一个后端，WecomRuntime（src/adapters/wecom.ts）按账号的来源选：
-//   FileWecomState      env 账号（文件存储，企微状态「未导入」「已导出」）：var/wecom-cursor.json。02 的文件状态层原样挪过来，
-//                       行为逐字节不变（锁定的 wecom.selftest.ts、02 的 wecom-02.selftest.ts 与 quota.selftest.ts 守它）。
-//   AccountCursorState  库里的企微账号，第 7 步的过渡后端：cursor 写这个账号自己那一行的 channel_accounts.cursor（列级授权允许），
-//                       handled 与在途表只在内存里；不写 var/wecom-cursor.json（不变量 13），几个账号的状态也不混在一起。
-//                       第 9 步换成 channel_inbox（与 cursor 同一事务插入、入站状态机）时整个替换掉这个类。
-//                       已知缺口（第 9 步补上）：cursor 推进之后、消息处理完之前进程退出，这几条重启后不会再被拉到，也没有在途表可重放，
-//                       客户等不到回复；cursor 写库失败时下次从旧 cursor 重拉，handled 已经没了，靠 02 按 msgid 的五种情况去重。
-//                       库里的账号要到第 14 步的导入之后才会出现，第 9 步之前只在自测里有。
+// 企微 env 账号的拉取状态（docs/architecture/03-channels-v2/spec.md R1、R10、不变量 13）：cursor、已认领的 msgid（handled）、在途表、
+// 冷启动截止，都在 var/wecom-cursor.json（FileWecomState）。env 账号是文件存储、企微状态「未导入」「已导出」时的那一个账号：
+// 02 的文件状态层原样挪过来，行为逐字节不变（锁定的 wecom.selftest.ts、02 的 wecom-02.selftest.ts 与 quota.selftest.ts 守它）。
+// 库里的企微账号不用这里：拉取状态在 channel_inbox（src/channels/inbox.ts 的 AccountInbox，第 9 步），没有内存里的 handled 与在途表，
+// 不写 var/wecom-cursor.json。KfMessage 两种账号共用
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import { withTenant, type Db } from '../db/client.js';
-import { updateChannelAccount } from '../db/repo/channel-accounts.js';
 import { logError } from '../log.js';
 
 const VAR_DIR = process.env.VAR_DIR ?? path.resolve('var');
@@ -65,9 +58,9 @@ export interface PendingEntry {
 // 也兜住「刚好在重启空档里发来」的新消息。
 const COLD_START_GRACE_MS = 10 * 60 * 1000;
 
-/** 一个账号的拉取状态。运行时只经这几个方法读写，换后端（第 9 步的 channel_inbox）不动收发与处理链 */
+/** env 账号的拉取状态（02 的文件后端）。运行时只经这几个方法读写 */
 export interface WecomStateBackend {
-  readonly kind: 'file' | 'account_cursor';
+  readonly kind: 'file';
   cursor: string;
   /** 非 0 表示本进程是冷启动，send_time 早于它的消息不回复 */
   coldStartCutoff: number;
@@ -222,83 +215,6 @@ export class FileWecomState implements WecomStateBackend {
       this.stateSaveTimer = null;
       void this.save();
     }
-    await this.saveChain;
-    this.cursor = '';
-    this.handled.clear();
-    this.inflight.clear();
-    this.coldStartCutoff = 0;
-  }
-}
-
-// ---------------- 库里的账号：第 7 步的过渡后端（第 9 步换成 channel_inbox） ----------------
-
-const SYSTEM_ACTOR = { kind: 'system' as const, userId: null, name: null, ip: null };
-
-export class AccountCursorState implements WecomStateBackend {
-  readonly kind = 'account_cursor' as const;
-  cursor = '';
-  coldStartCutoff = 0;
-  readonly handled = new Map<string, number>();
-  readonly inflight = new Map<string, PendingEntry>();
-  private saveChain: Promise<void> = Promise.resolve();
-  /** 库里这个账号的 cursor：启动时是 initChannels 那一刻读出的，之后是最近一次写进库的（没变就不再发 UPDATE） */
-  private savedCursor: string;
-
-  /**
-   * @param initialCursor initChannels 那一刻读出的 channel_accounts.cursor（null 表示冷启动）
-   * @param log 日志前缀（带账号 key，不带 corp_id、open_kfid）
-   */
-  constructor(
-    private readonly db: Db,
-    private readonly tenantId: string,
-    private readonly accountId: string,
-    initialCursor: string | null,
-    private readonly log: string,
-  ) {
-    this.savedCursor = initialCursor ?? '';
-  }
-
-  async load(): Promise<void> {
-    this.cursor = this.savedCursor;
-    if (!this.cursor) {
-      this.coldStartCutoff = Date.now() - COLD_START_GRACE_MS;
-      console.warn(
-        `${this.log} 无可用 cursor（库里这个账号还没拉过），冷启动：` +
-          `${new Date(this.coldStartCutoff).toLocaleString('zh-CN')} 之前的消息只标记已处理、不回复`,
-      );
-    }
-  }
-
-  /** cursor 写进这个账号自己那一行（withTenant(account.tenantId)，R20）；按先后排成一条链，旧的写不会盖掉新的 */
-  save(): Promise<void> {
-    capHandled(this.handled);
-    this.saveChain = this.saveChain.then(async () => {
-      const cursor = this.cursor;
-      if (!cursor || cursor === this.savedCursor) return;
-      try {
-        await withTenant(this.db, { tenantId: this.tenantId, actor: SYSTEM_ACTOR }, (tx) =>
-          updateChannelAccount(tx, this.accountId, { cursor, cursorAt: new Date() }),
-        );
-        this.savedCursor = cursor;
-      } catch (err) {
-        // 不带 SQL 参数（参数里有 cursor）：只记错误名与 SQLSTATE
-        const code = (err as { code?: string } | null)?.code;
-        console.error(`${this.log} cursor 写库失败（${code ?? (err instanceof Error ? err.name : 'unknown')}），下一页再写`);
-      }
-    });
-    return this.saveChain;
-  }
-
-  /** handled 与在途表不落库（过渡后端只在内存里），cursor 已在 save 里写过 */
-  scheduleSave(): void {}
-
-  flushSync(): void {}
-
-  async close(): Promise<void> {
-    await this.save();
-  }
-
-  async resetForTest(): Promise<void> {
     await this.saveChain;
     this.cursor = '';
     this.handled.clear();

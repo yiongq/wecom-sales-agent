@@ -12,10 +12,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
 import { configMode, configRuntime, tenantLockTaken } from './config/source.js';
 import { withTenant, type Db, type Tx } from './db/client.js';
+import type { InboxStateWrite } from './db/repo/channel-inbox.js';
 import { writeAuditAs, type AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
 import { convLabel, setConvRefResolver } from './log.js';
 import { profile } from './profile.js';
+import { INBOX_ABANDON_REASONS, type InboxAbandonReason } from './shared/channel-types.js';
 import { shortIdOf } from './shared/conversation.js';
 import { gracefulExit, onShutdown } from './shutdown.js';
 import {
@@ -458,10 +460,93 @@ export function unmarkOutboundInDb(channelMsgid: string): Promise<boolean> {
 
 /**
  * msg_send_fail 的状态更新：db 存储下单独一个短事务。写成了是 ok，带那一行的会话 id（没找到、已是 failed 为 null）；没写成（库报错、
- * 冲突、late 段之后、租户锁在别人手里）不是 ok，调用方据此再试。文件存储下恒为 ok、会话 id 为 null
+ * 冲突、late 段之后、租户锁在别人手里）不是 ok，调用方据此再试。文件存储下恒为 ok、会话 id 为 null。
+ * 03：给了 inboxId（库里账号的回执入站行）时同一个短事务把它记 done；给了 full（本进程计划过的那一整行，状态 failed）时按迁移表
+ * upsert 这一行，而不是只 UPDATE（会话 id 为 null）
  */
-export function markOutboundFailedInDb(channelMsgid: string, failType: number): Promise<OutboundFailResult> {
-  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType) : Promise.resolve({ ok: true, sessionId: null });
+export function markOutboundFailedInDb(
+  channelMsgid: string,
+  failType: number,
+  inboxId?: string | null,
+  full?: OutboundRow | null,
+): Promise<OutboundFailResult> {
+  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType, inboxId, full) : Promise.resolve({ ok: true, sessionId: null });
+}
+
+// ---------------- 03 入站：channel_inbox 的状态变化（src/channels/inbox.ts 与企微适配器、引擎） ----------------
+// docs/architecture/03-channels-v2/spec.md「入站：channel_inbox」、R3、R21，不变量 3、8。只在 db 存储下有；文件存储下这几个入口什么都不做
+
+/** 一次入站状态变化（spec 的 queueInboxState 参数）。recorded 带上这条客户消息（取它分到的 seq） */
+export interface InboxChange {
+  inboxId: string;
+  state: 'recorded' | 'replied' | 'done' | 'abandoned';
+  message?: ChatMessage;
+  reason?: InboxAbandonReason;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const INBOX_CHANGE_STATES: ReadonlySet<string> = new Set(['recorded', 'replied', 'done', 'abandoned']);
+
+/**
+ * 排进落库之前的同步校验（R21：会撞约束的在这里拦下，不进事务、不让会话 poisoned）：inboxId 是 uuid、状态是这四种之一、
+ * reason 只跟着 abandoned 且是认得的原因。过了返回要写的那一行；没过记一行错误、返回 null（这次变化不写，入站行停在之前的状态，
+ * 重启时由启动恢复处理）。recorded 的 message_seq 取这条消息此刻分到的 seq（调用方在 saveSession 之后同一段同步代码里排）
+ */
+function inboxWriteOf(change: InboxChange): InboxStateWrite | null {
+  const reason = change.reason ?? null;
+  const bad = !UUID_RE.test(change.inboxId)
+    ? 'inboxId 不是 uuid'
+    : !INBOX_CHANGE_STATES.has(change.state)
+      ? `状态 ${String(change.state)} 不能随落库写`
+      : (change.state === 'abandoned') !== (reason !== null)
+        ? 'reason 只跟着 abandoned'
+        : reason !== null && !INBOX_ABANDON_REASONS.includes(reason)
+          ? `不认识的 reason ${String(reason)}`
+          : null;
+  if (bad) {
+    console.error(`[store] ⚠️ 一次入站状态变化没过校验（${bad}），这次不写`);
+    return null;
+  }
+  const seq = change.message ? seqOf(change.message) : undefined;
+  if (change.message && seq === undefined)
+    console.error('[store] ⚠️ recorded 的客户消息还没分到 seq（应在 saveSession 之后排），message_seq 记空');
+  return { inboxId: change.inboxId, state: change.state, reason, messageSeq: seq ?? null };
+}
+
+/**
+ * 入站状态变化随这个会话的下一次落库写进主事务（不在存档点里，R21）：recorded 与这条客户消息同一次提交、message_seq 是它分到的 seq
+ * （不变量 3）；replied 与回复的出站 pending 同一次提交；done、abandoned 与引起它的会话改动同一次提交。同一次落库里同一行的几次变化
+ * 按排进来的先后逐条写。db 存储下内存里没有这个会话（已被清除、demo 类）时改走单独短事务（迁移表让它对已清除的行是无操作）。
+ * 会话已 poisoned：这一版丢掉、计数（pg 后端的 inboxDropped），第 11 步改成单独短事务——接在 pg 后端 queueInbox 的 poisoned 分支上，
+ * InboxStateWrite 只有 JSON 能装的值，spill 的渠道段直接用它
+ */
+export function queueInboxState(sessionId: string, change: InboxChange): void {
+  const w = inboxWriteOf(change);
+  if (!w || !pgBackend) return;
+  const pg = pgFor(sessionId);
+  if (pg?.queueInbox(sessionId, [w])) return;
+  void pgBackend.writeInboxNow([w]);
+}
+
+/**
+ * 没有会话可挂的入站状态变化（回执、没建出会话的毒消息、过期的消息）：单独一个短事务。写成了 true；文件存储与没过校验的 false
+ */
+export function writeInboxStateNow(change: {
+  inboxId: string;
+  state: 'done' | 'abandoned';
+  reason?: InboxAbandonReason;
+}): Promise<boolean> {
+  const w = inboxWriteOf(change);
+  if (!w || !pgBackend) return Promise.resolve(false);
+  return pgBackend.writeInboxNow([w]);
+}
+
+/**
+ * 03 入站的单独短事务（src/channels/inbox.ts 的 acceptPage、beginAttempt、load）：不经会话写队列。已冲突、late 段之后、租户锁在别人手里
+ * 时以 JobsTxRefused reject；文件存储下以 JobsTxRefused('closed') reject（文件存储没有 channel_inbox）
+ */
+export function withChannelTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return pgBackend ? pgBackend.channelTx(fn) : Promise.reject(new JobsTxRefused('closed'));
 }
 
 /** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
@@ -795,6 +880,10 @@ export const __storeTest = {
   /** db 存储下这个会话还留在内存里的主事务出站行数（03）；文件存储下为 0 */
   pgQueuedChannel(sessionId: string): number {
     return pgBackend?.queuedChannel(sessionId) ?? 0;
+  },
+  /** db 存储下这个会话还留在内存里的主事务入站状态变化数（03 第 9 步）；文件存储下为 0 */
+  pgQueuedInbox(sessionId: string): number {
+    return pgBackend?.queuedInbox(sessionId) ?? 0;
   },
   /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
   emitIncident(i: StoreIncident): void {

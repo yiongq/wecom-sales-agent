@@ -4,7 +4,7 @@
 // 查标记文件与恢复哨兵，六个拒绝原因以 ChannelStartupError reject。所有检查都在「装上」之前做完：拒绝时注册表与账号表还是空的、
 // 标记没写、哨兵没删、cursor（文件或库里的）不动——库只读、不写，文件只在装上之后才动。
 // startChannels 在监听之后、任务与跟进扫描器之前调：env 账号起 02 的老路（startWecom）；企微状态在库里时每个启用的企微账号起一个
-// 按账号的运行时（startWecomAccount，第 7 步），按账号 uuid 登记在适配器里。
+// 按账号的运行时（startWecomAccount，第 7 步；拉取状态在 channel_inbox，第 9 步），按账号 uuid 登记在适配器里。
 import { startWecom, startWecomAccount, stopWecomAccounts } from '../adapters/wecom.js';
 import { withTenant, type Db } from '../db/client.js';
 import { listChannelAccounts, type ChannelAccountRow } from '../db/repo/channel-accounts.js';
@@ -83,7 +83,7 @@ interface Registry {
    * 「启动恢复做不了、不拉取」那一条（startAlerts 在它之后才读）
    */
   warnings: string[];
-  /** db 存储的库（库里企微账号的运行时写 cursor 用）；文件存储为 null */
+  /** db 存储的库；文件存储为 null（库里企微账号的 cursor 与入站行经会话存储的短事务写，第 9 步） */
   db: Db | null;
 }
 
@@ -341,9 +341,10 @@ export async function initChannels(deps: ChannelDeps | null): Promise<void> {
 
 /**
  * 监听成功之后、任务与跟进扫描器之前调。env 账号（文件存储、未导入、已导出时 WECOM_* 配齐）起 02 的企微拉取（startWecom）；
- * 企微状态在库里时每个启用的库里企微账号起一个运行时（R10），凭据与 cursor 取装载时的那一份。
- * 启动恢复（R5）先于拉取：这一版的运行时还不认 channel_inbox 与 03 的出站状态（第 9、10 步），所以账号有没结束的入站行或没结果的
- * 出站行时只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理），日志一行、启动告警一条；没有这些行时恢复就是做完了
+ * 企微状态在库里时每个启用的库里企微账号起一个运行时（R10），凭据取装载时的那一份，拉取状态在 channel_inbox（第 9 步）。
+ * 启动恢复（R5）先于拉取：运行时只处理新收的入站行（第 9 步），按状态补处理没结束的入站行与没结果的出站行是第 10 步，所以账号有
+ * 这些行时只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理，不变量 12），日志一行、启动告警一条；没有这些行时
+ * 恢复就是做完了。第 10 步在这里接上恢复（适配器 startWecomAccount 的 pull 注释写了入口）
  */
 export function startChannels(): void {
   if (!registry) return;
@@ -351,8 +352,7 @@ export function startChannels(): void {
     if ([...registry.channels.values()].some((c) => c.account.source === 'env')) startWecom();
     return;
   }
-  const db = registry.db;
-  if (!db) return;
+  if (!registry.db) return;
   for (const c of registry.channels.values()) {
     if (c.account.kind !== 'wecom_kf' || c.account.source !== 'db' || !c.secrets) continue;
     // TODO(03 第 10 步)：先做出站恢复、再做入站恢复（openOutbound、openInbox），做完才开始拉取
@@ -364,7 +364,7 @@ export function startChannels(): void {
       console.error(`[channels] ⚠️ ${why}`);
       registry.warnings.push(why);
     }
-    startWecomAccount({ db, account: c.account, secrets: c.secrets, cursor: c.cursor, pull: open === 0 });
+    startWecomAccount({ account: c.account, secrets: c.secrets, pull: open === 0 });
   }
 }
 
