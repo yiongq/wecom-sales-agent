@@ -27,6 +27,8 @@ export interface ChannelAccountRow {
 }
 
 export interface NewChannelAccount {
+  /** 凭据的 AAD 绑定账号 id：命令行在加密之前生成；不传时仍用数据库默认值 */
+  id?: string;
   key: string;
   kind: ChannelKind;
   name: string;
@@ -75,6 +77,7 @@ export async function insertChannelAccount(tx: Tx, a: NewChannelAccount): Promis
     .insert(channelAccounts)
     .values({
       tenantId,
+      ...(a.id !== undefined ? { id: a.id } : {}),
       key: a.key,
       kind: a.kind,
       name: a.name,

@@ -116,10 +116,10 @@ export const AuditQuery = z
     /** 上一页最后一行的 id */
     before: intParam(Number.MAX_SAFE_INTEGER).optional(),
     action: str.min(1).max(64).optional(),
-    /** 逗号分隔的 action 列表，至多 32 个，只返回其中的动作（后台 UX spec 增补；审计页的类别与「显示登录记录」换算成它） */
+    /** 逗号分隔的 action 列表，至多 64 个，只返回其中的动作（后台 UX spec 增补；审计页的类别与「显示登录记录」换算成它） */
     actions: z
       .string()
-      .regex(/^[a-z_.]{1,64}(,[a-z_.]{1,64}){0,31}$/)
+      .regex(/^[a-z_.]{1,64}(,[a-z_.]{1,64}){0,63}$/)
       .optional(),
   })
   .refine((q) => !(q.action && q.actions), { message: 'action 与 actions 只能给一个' });

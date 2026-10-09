@@ -585,7 +585,7 @@ eq(
 eq('actions：销售话术', auditActionsParam('sop', false), 'sop.publish,sop.rollback,sop.discard,sop.rerender');
 const combos = groups.flatMap((g) => [true, false].map((l) => auditActionsParam(g, l)));
 check(
-  'actions：每种组合都过得了 AuditQuery（至多 32 个），且每个都在 AUDIT_ACTIONS 里',
+  'actions：每种组合都过得了 AuditQuery（至多 64 个），且每个都在 AUDIT_ACTIONS 里',
   combos.every((c) => parsed(c).success && (c === undefined || c.split(',').every((a) => auditAction(a) !== null))),
 );
 eq('动作表：原型上的名字查不到', [auditAction('toString'), auditAction('__proto__'), auditAction('constructor')], [null, null, null]);

@@ -2464,7 +2464,7 @@ check(
     ['大写', '/audit?actions=SOP.publish'],
     ['空的一项', '/audit?actions=sop.publish,'],
     ['空串', '/audit?actions='],
-    ['33 个', `/audit?actions=${Array.from({ length: 33 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`],
+    ['65 个', `/audit?actions=${Array.from({ length: 65 }, (_, i) => `a.b${'_'.repeat(i % 62)}`).join(',')}`],
     ['一项超过 64 个字符', `/audit?actions=${'a'.repeat(65)}`],
   ] as const;
   const wrong: string[] = [];
@@ -2472,9 +2472,9 @@ check(
     const r = keep(await call('GET', url, O));
     if (!(r.status === 400 && r.body.error === 'bad_request')) wrong.push(`${name}: ${r.status} ${r.text.slice(0, 80)}`);
   }
-  check('AuditQuery.actions：同时给 action 与 actions、格式不对、超过 32 个 → 400 bad_request', wrong.length === 0, wrong.join(' | '));
-  const most = await call('GET', `/audit?limit=1&actions=${Array.from({ length: 32 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`, O);
-  check('AuditQuery.actions：32 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
+  check('AuditQuery.actions：同时给 action 与 actions、格式不对、超过 64 个 → 400 bad_request', wrong.length === 0, wrong.join(' | '));
+  const most = await call('GET', `/audit?limit=1&actions=${Array.from({ length: 64 }, (_, i) => `a.b${'_'.repeat(i % 62)}`).join(',')}`, O);
+  check('AuditQuery.actions：64 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
 
   // AUDIT_ACTIONS 就是系统写审计的全部动作：src/ 下 writeAudit、queueAudit 写的 action 字面量与它逐个相同，新加一种动作要同时给它中文
   const { AUDIT_ACTIONS, auditActionsParam } = await import('../shared/ui-labels.js');

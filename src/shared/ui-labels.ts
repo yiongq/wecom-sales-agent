@@ -112,6 +112,11 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'platform.tenant_retention': { label: '设置保留期', group: 'platform', icon: 'calendar-clock' },
   'platform.erase': { label: '删除会话', group: 'platform', icon: 'eraser' },
   'system.purge': { label: '保留期清理', group: 'platform', icon: 'trash' },
+  'channel.account_create': { label: '新建入口账号', group: 'platform', icon: 'plus' },
+  'channel.account_update': { label: '修改入口账号', group: 'platform', icon: 'pencil-line' },
+  // 使用 UI 优先字体片已有的字；认证信息包含三项凭据，加密设置指数据库加密密钥的轮换。
+  'channel.secrets_update': { label: '更新入口认证信息', group: 'platform', icon: 'key-round' },
+  'channel.rekey': { label: '轮换入口加密设置', group: 'platform', icon: 'refresh-cw' },
 };
 
 /** 这个动作的定义；表里没有（以后新增的动作）时是 null。只认自有属性，toString 这类原型上的名字查不到 */
