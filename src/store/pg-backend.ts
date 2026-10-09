@@ -1,6 +1,8 @@
 // PG 会话后端（docs/architecture/02-conversations-workbench/spec.md「identity map 与写入」，R2、R4、R7）：
 // 分批预载、每会话写队列与合并、一次落库的七步、进快照即冻结、失败两类与 poisoned、撞上另一写者即优雅停机、
 // drain 段排空、exit 时的 spill 与启动时的回放。
+// 03 R21（docs/architecture/03-channels-v2/spec.md「渠道行与会话落库」）：渠道行写在主事务（结果在存档点）、随会话进 spill、回放时与会话
+// 同一个事务（会话部分失败时渠道部分单独一个）；会话 poisoned 之后它的渠道行改走单独短事务。
 // 内存里的两张 Map（store.ts 持有）是本进程的权威，PG 是持久副本；只管真实会话，demo 类仍归文件后端（R6）。
 // 经 src/db/repo/** 与 client.ts 的 withTenant 访问库（pg、drizzle-orm 只在 src/db/**）。
 // 落库事务的回调里只有 SQL：不调模型、不发企微、不等别的会话（不变量 9）。
@@ -133,14 +135,34 @@ interface SpillSideRows {
   jobs: JobOp[];
   consents: ConsentItem[];
 }
-/** spill 文件里的一个会话（spec「停机」）：已提交到第几条、没提交的消息连同 seq、会话投影、排着的订单与附带行；trace 与账本行不写 */
+/** spill 里的一行出站（03 R21）：OutboundWriteRow 的 sent_at 存成毫秒，回放时还原 */
+type SpillOutboundRow = Omit<OutboundWriteRow, 'sentAt'> & { sentAt: number };
+/**
+ * spill 条目的渠道段（03 spec「渠道行与会话落库（R21）」）：还没提交的主事务渠道行（入站状态变化、出站 pending 与 cancelled）与库里账号的
+ * 出站结果行，按排进来的先后。trace、护栏事件与 env 账号（02）的账本行照旧不写。
+ * 版本标记在条目上：第 11 步起写出的条目（与它的 inflight）总带这一段，哪怕是空的；没有这一段的是旧版，按空处理。外壳的 version 仍是 1——
+ * 改外壳会让旧版本的进程把整个文件当读不出改名 .failed，连会话部分一起丢（02 的自测也把 version 2 当作不认识的版本）
+ */
+interface SpillChannel {
+  inbox: InboxStateWrite[];
+  outbound: SpillOutboundRow[];
+}
+/**
+ * spill 文件里的一个会话（spec「停机」）：已提交到第几条、没提交的消息连同 seq、会话投影、排着的订单与附带行、渠道段（03）；
+ * trace 与 env 账号的账本行不写
+ */
 interface SpillEntry extends SpillSideRows {
   id: string;
   /** 会话行的 ref（第 18 步起写；之前的 spill 没有，回放时由库生成）：还没插进库的新会话回放时用它，日志与 OpenTelemetry 里的引用前后一致 */
   ref?: string;
   committedSeq: number;
-  /** 在途（或等着重试）的那次落库：提交没得到确认。回放时库里的 flush_id 是它，说明它其实提交了，只补它之后的 */
-  inflight: (SpillSideRows & { flushId: string; lastSeq: number }) | null;
+  /**
+   * 在途（或等着重试）的那次落库：提交没得到确认。回放时库里的 flush_id 是它，说明它其实提交了，只补它之后的。
+   * channel：这次落库里的渠道行（03；旧版没有）
+   */
+  inflight: (SpillSideRows & { flushId: string; lastSeq: number; channel?: SpillChannel }) | null;
+  /** 排着的渠道行（03，见 SpillChannel；旧版没有）：会话 poisoned 之后还没写进去的短事务渠道行也在这里 */
+  channel?: SpillChannel;
   /** 回放这一条用的 flush_id：回放提交之后、删掉 spill 文件之前崩溃，再回放时据此认出已经回放过 */
   flushId: string;
   lastSeq: number;
@@ -183,7 +205,30 @@ interface Snap {
   events: DomainEvent[];
   /** 这次落库里改中了的 report 状态变化（任务 id）：提交之后才交给 jobOpApplied */
   applied: string[];
+  /** 以数据类错误失败、不会再试（会话 poisoned）：它的渠道行已移进 Entry.pc，poisoned 之后的短事务不再等它 */
+  dead: boolean;
 }
+
+/** 一批渠道行（03 R21）：主事务的出站（pending、cancelled）、入站状态变化、库里账号的出站结果，各自按排进来的先后 */
+interface ChannelRows {
+  outbound: OutboundWriteRow[];
+  inbox: InboxStateWrite[];
+  results: OutboundWriteRow[];
+}
+const emptyChannelRows = (): ChannelRows => ({ outbound: [], inbox: [], results: [] });
+const hasChannelRows = (r: ChannelRows): boolean => !!(r.outbound.length || r.inbox.length || r.results.length);
+/** 两批渠道行按先后接起来（a 在前） */
+const concatChannelRows = (a: ChannelRows, b: ChannelRows): ChannelRows => ({
+  outbound: [...a.outbound, ...b.outbound],
+  inbox: [...a.inbox, ...b.inbox],
+  results: [...a.results, ...b.results],
+});
+/** 库里账号的出站行（带账号 uuid）。env 账号与 02 的账本行没有：它们照 02 不进 spill、poisoned 之后丢弃 */
+const isDbAccountRow = (r: OutboundWriteRow): boolean => typeof r.accountId === 'string' && r.accountId !== '';
+/** R21 里写在事务本身的两种出站（pending 的插入与 cancelled）；其余（accepted、rejected、unknown、failed）是结果，写在存档点里 */
+const MAIN_TX_OUTBOUND: ReadonlySet<string> = new Set(['pending', 'cancelled']);
+/** poisoned 会话的渠道行短事务写不进去时，过这么久再试（03 spec「渠道行与会话落库」） */
+const POISONED_CHANNEL_RETRY_MS = 1_000;
 
 interface Waiter {
   gen: number;
@@ -235,6 +280,21 @@ interface Entry {
   channel: OutboundWriteRow[];
   /** 排着的主事务入站状态变化（03 R21），见 Snap.inbox */
   inbox: InboxStateWrite[];
+  /**
+   * 03 R21：会话 poisoned 之后的渠道行（标上时排着的、失败的那次落库里的、之后再来的），等单独短事务写；写不进去留在这里、1 秒后再试，
+   * 停机时进 spill。在途（或等着重试）的那次落库还活着时不写，等它有了结果：它的渠道行更早
+   */
+  pc: ChannelRows;
+  /** 正在写的那一批 pc（短事务在途）；spill 也带上，迁移表让重复写无害 */
+  pcRun: { rows: ChannelRows; done: Promise<void> } | null;
+  pcTimer: NodeJS.Timeout | null;
+  /**
+   * 已经排了一个 microtask 去起 pc 的短事务：同一段同步代码里排进来的渠道行（planOutbound 的 pending 与 replied）进同一个短事务，
+   * 与会话落库的「同一次提交」同一个口径（启动恢复认「recorded 就一段都没发过」靠它）
+   */
+  pcKickQueued: boolean;
+  /** 上一次 pc 的短事务没写成：记过一行，之后的失败不再每秒刷一行，写成时记一行 */
+  pcFailing: boolean;
   events: DomainEvent[];
   waiters: Set<Waiter>;
   /** 企微去重集合：预载的最近 7 天，加上本进程分配过 seq 的客户消息 */
@@ -276,19 +336,19 @@ export interface PgStoreStats {
   slowTx: number;
   /**
    * 丢掉的 trace / 护栏事件 / 账本批次：存档点里写失败的；以数据类错误失败的那次落库快照里的；会话 poisoned 时排着的
-   * 与之后再来的（poisoned 会话不再落库，spill 也不带它们）
+   * 与之后再来的（poisoned 会话不再落库，spill 也不带它们）。03：库里账号的出站结果不在此列（随会话进 spill，poisoned 之后走短事务），
+   * 只有它们在存档点里写失败时才算一批
    */
   telemetryDropped: number;
   /** saveSession 收到与 identity map 里不同的同 id 对象、拒绝落库的次数 */
   foreign: number;
   /**
-   * 03：再也写不进库的主事务出站行（pending、cancelled）的批数：会话 poisoned 时排着的与之后再来的、以数据类错误失败的那次落库里的。
-   * 第 11 步改成 poisoned 之后走单独短事务、进 spill 之前，这些行只在内存账本里
+   * 03：再也写不进库的出站行（pending、cancelled 与库里账号的结果）的批数：会话 poisoned 之后，单独短事务以数据类错误失败的那一批
+   * （第 11 步起 poisoned 不再直接丢；连接类失败留在内存里再试、停机时进 spill，不算）。这些行只在内存账本里
    */
   channelDropped: number;
   /**
-   * 03：再也写不进库的主事务入站状态变化的批数（同上两种来源）。第 11 步改成 poisoned 之后走单独短事务、进 spill 之前，这些变化丢了，
-   * 入站行停在之前的状态，重启时由启动恢复的保底处理（第 10 步）
+   * 03：再也写不进库的入站状态变化的批数（同上）。入站行停在之前的状态，重启时由启动恢复的保底处理（第 10 步）
    */
   inboxDropped: number;
   /** 启动时回放的 spill 会话数（应用的，与认出已经在库里而跳过的） */
@@ -296,6 +356,8 @@ export interface PgStoreStats {
   replaySkipped: number;
   /** 启动时回放失败（或读不出来）、改名 .failed 的 spill 文件数（store 告警，R24） */
   replayFailedFiles: number;
+  /** 03 R21：会话部分回放失败、渠道部分单独一个事务写进去了的 spill 会话数 */
+  replayChannelOnly: number;
 }
 
 /** holdForPurge 的持有句柄（第 16 步审查第二轮）：见 PgBackend.holdForPurge 的文档注释 */
@@ -329,12 +391,13 @@ export interface PgBackend extends StoreBackend {
   queueTelemetry(sessionId: string, rows: TelemetryRows): void;
   /**
    * 03 R21：库里账号的出站 pending 插入与 cancelled，随这个会话的下一次落库写进主事务（第 5 步之后、存档点之前）。
-   * 写队列里没有这个会话（内存里没有）返回 false，调用方改走单独短事务
+   * 写队列里没有这个会话（内存里没有）返回 false，调用方改走单独短事务。会话已 poisoned：改走单独短事务（写不进去 1 秒后再试、
+   * 停机时进 spill），提交之后同样经 outboundCommitted 报回
    */
   queueChannel(sessionId: string, rows: readonly OutboundWriteRow[]): boolean;
   /**
    * 03 R21：入站状态变化（recorded、replied、done、abandoned）随这个会话的下一次落库写进主事务，排在出站行之后、按排进来的先后逐条写。
-   * 写队列里没有这个会话（内存里没有）返回 false，调用方改走单独短事务。会话已 poisoned：这一版丢掉、计数（第 11 步改成单独短事务）
+   * 写队列里没有这个会话（内存里没有）返回 false，调用方改走单独短事务。会话已 poisoned：同 queueChannel，改走单独短事务
    */
   queueInbox(sessionId: string, writes: readonly InboxStateWrite[]): boolean;
   /**
@@ -418,9 +481,9 @@ export interface PgBackend extends StoreBackend {
   stats(): PgStoreStats;
   /** 这个会话还留在内存里的遥测行数（排着的加在途快照里的，自测用） */
   queuedTelemetry(sessionId: string): number;
-  /** 这个会话还留在内存里的主事务出站行数（排着的加在途快照里的，自测用） */
+  /** 这个会话还留在内存里的主事务出站行数（排着的加在途快照里的，poisoned 之后等短事务的也算；自测用） */
   queuedChannel(sessionId: string): number;
-  /** 这个会话还留在内存里的主事务入站状态变化数（排着的加在途快照里的，自测用） */
+  /** 这个会话还留在内存里的主事务入站状态变化数（同上；自测用） */
   queuedInbox(sessionId: string): number;
 }
 
@@ -633,18 +696,77 @@ async function writeSideRows(tx: Tx, sessionId: string, side: SpillSideRows): Pr
 const spillOrderRow = (o: SpillOrder): OrderRowShape => orderToRow(o.order as unknown as Order, o.voided ?? undefined);
 
 /**
+ * 一批渠道行按会话一次落库里的位置写（03 R21）：出站 pending 与 cancelled、入站状态变化在事务本身，库里账号的出站结果在存档点里
+ * （写不进去只丢结果，不连累同一个事务里的别的写入）。都只按迁移表改，表外的写入是无操作——重复写、晚到的写无害。
+ * poisoned 之后的短事务与 spill 回放（与会话同一个事务，或会话部分失败时单独一个）都用它；正常的会话落库在 writeSnap 里按同一个顺序写
+ */
+async function writeChannelRows(tx: Tx, rows: ChannelRows): Promise<{ resultsOk: true } | { resultsOk: false; error: unknown }> {
+  await insertOutboundSends(tx, rows.outbound);
+  await applyInboxStates(tx, rows.inbox);
+  if (!rows.results.length) return { resultsOk: true };
+  const r = await trySavepoint(tx, 'channel_results', () => insertOutboundSends(tx, rows.results));
+  return r.ok ? { resultsOk: true } : { resultsOk: false, error: r.error };
+}
+
+/** 内存里的渠道行写进 spill：出站 sent_at 存毫秒，主事务的几行在前、结果在后（回放时按状态再分开） */
+function spillChannelOf(...parts: ChannelRows[]): SpillChannel {
+  const toSpill = (r: OutboundWriteRow): SpillOutboundRow => ({ ...r, sentAt: r.sentAt.getTime() });
+  return {
+    inbox: parts.flatMap((p) => p.inbox),
+    outbound: [...parts.flatMap((p) => p.outbound), ...parts.flatMap((p) => p.results)].map(toSpill),
+  };
+}
+
+/** spill 的渠道段读回内存的形状（旧版没有这一段，按空处理）：pending、cancelled 回到事务本身，其余是结果 */
+function channelRowsOf(...chs: (SpillChannel | undefined)[]): ChannelRows {
+  const out = emptyChannelRows();
+  for (const ch of chs) {
+    if (!ch || typeof ch !== 'object') continue;
+    if (Array.isArray(ch.inbox)) out.inbox.push(...ch.inbox);
+    if (!Array.isArray(ch.outbound)) continue;
+    for (const r of ch.outbound) {
+      const row: OutboundWriteRow = { ...r, sentAt: new Date(r.sentAt) };
+      (MAIN_TX_OUTBOUND.has(r.status) ? out.outbound : out.results).push(row);
+    }
+  }
+  return out;
+}
+
+/** 在途那次落库其实提交了（库里的 flush_id 与 last_seq 是它的）：它的附带行与渠道行不再写 */
+const inflightCommitted = (entry: SpillEntry, row: ConversationSeqs | null): boolean =>
+  !!entry.inflight && !!row && row.flushId === entry.inflight.flushId && row.lastSeq === entry.inflight.lastSeq;
+
+/**
+ * 回放这一条要写的渠道行，沿用条目的 flush_id 判定（03 spec「spill」）：库里的 flush_id 是这一条的 → 回放过了（渠道行与会话同一个
+ * 事务写过），null；在途那次其实提交了 → 只写排着的；其余在途那次的与排着的都写（在途的在前）
+ */
+function replayChannelOf(entry: SpillEntry, row: ConversationSeqs | null): ChannelRows | null {
+  if (row && row.flushId === entry.flushId) return null;
+  return channelRowsOf(inflightCommitted(entry, row) ? undefined : entry.inflight?.channel, entry.channel);
+}
+
+const warnResultsDropped = (where: string, id: string, error: unknown): void =>
+  console.warn(
+    `[store] ${where}：会话 ${short(id)} 的出站结果行写入失败（${errLabel(error)}），已丢弃这几行（重启时那一段按 sending 处理）`,
+  );
+
+/**
  * 回放 spill 里的一个会话（spec「spill 回放」）：
  * 库里的 flush_id 就是这一条的 → 回放过了，跳过；库里是在途那次的 flush_id 与 last_seq → 在途那次其实提交了，只补它之后的；
- * 库里的 last_seq 等于「已提交到第几条」→ 按一次落库写入；已经等于文件里最后一条的 seq 且内容一致 → 跳过；其余接不上
+ * 库里的 last_seq 等于「已提交到第几条」→ 按一次落库写入；已经等于文件里最后一条的 seq 且内容一致 → 跳过；其余接不上。
+ * 03 R21：渠道段与会话部分同一个事务写（照迁移表，表外的写入是无操作）；内容一致而跳过的也照写渠道段（这一条的 flush_id 不在库里，
+ * 说不清它们写过没有，重复写无害）
  */
 async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skipped' | 'conflict'> {
   let row = await lockConversation(tx, entry.id);
   let base: number;
   let side: SpillSideRows;
+  let channel: ChannelRows | null;
   for (;;) {
     if (row && row.flushId === entry.flushId) return row.lastSeq === entry.lastSeq ? 'skipped' : 'conflict';
-    if (entry.inflight && row && row.flushId === entry.inflight.flushId && row.lastSeq === entry.inflight.lastSeq) {
-      base = entry.inflight.lastSeq;
+    channel = replayChannelOf(entry, row);
+    if (inflightCommitted(entry, row)) {
+      base = entry.inflight!.lastSeq;
       side = rowSide(entry);
     } else if ((row?.lastSeq ?? 0) === entry.committedSeq && (row !== null || entry.committedSeq === 0)) {
       base = entry.committedSeq;
@@ -652,7 +774,12 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skip
     } else if (row && row.lastSeq === entry.lastSeq && entry.messages.length) {
       const inDb = await readMessagesFrom(tx, entry.id, entry.messages[0]!.seq);
       const want = entry.messages.map((m) => rowToMessage(messageToRow(m.message, m.seq)));
-      return isDeepStrictEqual(inDb.map(rowToMessage), want) ? 'skipped' : 'conflict';
+      if (!isDeepStrictEqual(inDb.map(rowToMessage), want)) return 'conflict';
+      if (channel) {
+        const w = await writeChannelRows(tx, channel);
+        if (!w.resultsOk) warnResultsDropped('spill 回放', entry.id, w.error);
+      }
+      return 'skipped';
     } else {
       return 'conflict';
     }
@@ -671,7 +798,35 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<'applied' | 'skip
   await updateConversation(tx, values, { lastSeq: entry.lastSeq, windowStartSeq: entry.windowStartSeq, flushId: entry.flushId });
   await upsertOrders(tx, entry.orders.map(spillOrderRow));
   await writeSideRows(tx, entry.id, side);
+  // 03 R21：渠道段与会话部分同一个事务（与一次落库同一个位置：附带行之后，结果在存档点里）
+  if (channel) {
+    const w = await writeChannelRows(tx, channel);
+    if (!w.resultsOk) warnResultsDropped('spill 回放', entry.id, w.error);
+  }
   return 'applied';
+}
+
+/**
+ * 03 R21：会话部分回放失败（数据类错误，文件随后改名 .failed）之前，渠道部分单独一个事务写进去——入站与出站的状态照样准确，
+ * 重启之后不会把已回复的当成没处理过再答一遍（会话里缺的那句由启动恢复的保底用 payload 补）。同样沿用 flush_id 判定。
+ * 写进去了返回 true；连不上库以 db_unreachable 拒绝启动（文件留着，下次再来）；数据类错误记一行、返回 false
+ */
+async function replayChannelOnly(d: PgBackendDeps, name: string, entry: SpillEntry): Promise<boolean> {
+  try {
+    return await detached(() =>
+      withTenant(d.db, systemCtx(d.tenantId), async (tx) => {
+        const rows = replayChannelOf(entry, await lockConversation(tx, entry.id));
+        if (!rows || !hasChannelRows(rows)) return false;
+        const w = await writeChannelRows(tx, rows);
+        if (!w.resultsOk) warnResultsDropped('spill 回放（渠道部分）', entry.id, w.error);
+        return true;
+      }),
+    );
+  } catch (e) {
+    if (classify(e) === 'retry') throw new SessionStoreStartupError('db_unreachable', `回放 ${name} 时连不上库（${errLabel(e)}）`);
+    console.error(`[store] 回放 ${name} 里的会话 ${short(entry.id)}：渠道部分单独写也失败了（${errLabel(e)}）`);
+    return false;
+  }
 }
 
 /** 文件系统错误与其余意外错误的标签：只有错误名与 errno 码，不带路径与 message */
@@ -682,8 +837,9 @@ const fsLabel = (e: unknown): string => {
 };
 
 /**
- * 按时间顺序回放 var/ 下的 spill 文件。接不上以 spill_conflict 拒绝启动（文件留着）；某条回放仍然失败（数据类错误）就把
- * 文件改名 .failed、记一行（点名已回放与失败的会话，要人工处理），从库里的状态起；全部成功就删掉文件。
+ * 按时间顺序回放 var/ 下的 spill 文件。接不上以 spill_conflict 拒绝启动（文件留着）；某条回放仍然失败（数据类错误）就先把它的
+ * 渠道段单独一个事务写进去（03 R21），再把文件改名 .failed、记一行（点名已回放与失败的会话，要人工处理），从库里的状态起；
+ * 全部成功就删掉文件。没有渠道段的旧版条目照常回放。
  * 读不出来或结构不对（version、sessions）的文件同样改名 .failed。文件系统出错与其余意外错误以 spill_conflict 拒绝启动，
  * detail 只写文件名与错误码。返回回放与跳过的会话数
  */
@@ -692,31 +848,34 @@ async function replaySpills(d: PgBackendDeps): Promise<Replayed> {
   try {
     names = fs.readdirSync(d.varDir).filter((f) => SPILL_FILE_RE.test(f));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0, failedFiles: 0 };
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0 };
     throw new SessionStoreStartupError('spill_conflict', `读不了数据目录里的 spill 文件（${fsLabel(e)}）`);
   }
   let applied = 0;
   let skipped = 0;
   let failedFiles = 0;
+  let channelOnly = 0;
   for (const name of names.toSorted()) {
     try {
       const r = await replayFile(d, name);
       applied += r.applied;
       skipped += r.skipped;
       failedFiles += r.failedFiles;
+      channelOnly += r.channelOnly;
     } catch (e) {
       if (e instanceof SessionStoreStartupError) throw e;
       throw new SessionStoreStartupError('spill_conflict', `${name}：${fsLabel(e)}`);
     }
   }
-  return { applied, skipped, failedFiles };
+  return { applied, skipped, failedFiles, channelOnly };
 }
 
-/** 回放 spill 的结果：应用、跳过的会话数，改名 .failed 的文件数 */
+/** 回放 spill 的结果：应用、跳过的会话数，改名 .failed 的文件数，会话部分失败、渠道部分单独写进去的会话数（03） */
 interface Replayed {
   applied: number;
   skipped: number;
   failedFiles: number;
+  channelOnly: number;
 }
 
 async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
@@ -734,11 +893,12 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
     console.error(
       `[store] spill 文件 ${name} 读不出来（不是 JSON，或 version、sessions 对不上），已改名 .failed，从库里的状态起；需要人工处理`,
     );
-    return { applied: 0, skipped: 0, failedFiles: 1 };
+    return { applied: 0, skipped: 0, failedFiles: 1, channelOnly: 0 };
   }
   if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
   let applied = 0;
   let skipped = 0;
+  let channelOnly = 0;
   const done: string[] = [];
   const failed: string[] = [];
   for (const entry of doc.sessions) {
@@ -747,8 +907,11 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
       r = await detached(() => withTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
     } catch (e) {
       if (classify(e) === 'retry') throw new SessionStoreStartupError('db_unreachable', `回放 ${name} 时连不上库（${errLabel(e)}）`);
-      failed.push(`${short(entry.id)}（${errLabel(e)}）`);
-      console.error(`[store] 回放 ${name} 里的会话 ${short(entry.id)} 失败（${errLabel(e)}）`);
+      // 03 R21：会话部分写不进去，渠道部分先单独一个事务写进去，再照 02 把文件改名 .failed
+      const ch = await replayChannelOnly(d, name, entry);
+      if (ch) channelOnly++;
+      failed.push(`${short(entry.id)}（${errLabel(e)}${ch ? '，渠道部分已单独写进去' : ''}）`);
+      console.error(`[store] 回放 ${name} 里的会话 ${short(entry.id)} 失败（${errLabel(e)}）${ch ? '，渠道部分已单独写进去' : ''}`);
       continue;
     }
     if (r === 'conflict') {
@@ -766,7 +929,7 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
         `已回放：${done.join('、') || '无'}；失败：${failed.join('、')}`,
     );
   } else fs.unlinkSync(file);
-  return { applied, skipped, failedFiles: failed.length ? 1 : 0 };
+  return { applied, skipped, failedFiles: failed.length ? 1 : 0, channelOnly };
 }
 
 // ---------------- 后端 ----------------
@@ -808,6 +971,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     replayed: replay.applied,
     replaySkipped: replay.skipped,
     replayFailedFiles: replay.failedFiles,
+    replayChannelOnly: replay.channelOnly,
   };
 
   const emptyTelemetry = (): Required<TelemetryRows> => ({ traces: [], guards: [], outbound: [] });
@@ -819,24 +983,47 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     holder.telemetry = emptyTelemetry();
   };
   /**
-   * 再也写不进库的主事务出站行（03）：丢掉、计数、记一行。内存账本里照旧有它们（工作台、窗口计数照常），库里没有：
-   * 之后的 markSending 得到 absent，按「提交超时过」的那一组照发（R6）。第 11 步改成 poisoned 之后走单独短事务
+   * 再也写不进库的一批渠道行（03，poisoned 之后的短事务以数据类错误失败）：丢掉、计数、记一行。出站行在内存账本里照旧有（工作台、
+   * 窗口计数照常），库里没有：之后的 markSending 得到 absent，按「提交超时过」的那一组照发（R6）。入站行停在之前的状态，重启时由
+   * 启动恢复的保底处理（第 10 步）
    */
-  const dropChannel = (holder: { channel: OutboundWriteRow[] }, id: string): void => {
-    if (!holder.channel.length) return;
-    stats.channelDropped++;
-    console.error(
-      `[store] 会话 ${short(id)} 的 ${holder.channel.length} 行出站（pending / cancelled）写不进库了，已丢弃（只在内存账本里）`,
-    );
+  const dropChannelRows = (rows: ChannelRows, id: string, why: string): void => {
+    const out = rows.outbound.length + rows.results.length;
+    if (out) {
+      stats.channelDropped++;
+      console.error(`[store] 会话 ${short(id)} 的 ${out} 行出站写不进库了（${why}），已丢弃（只在内存账本里）`);
+    }
+    if (rows.inbox.length) {
+      stats.inboxDropped++;
+      console.error(`[store] 会话 ${short(id)} 的 ${rows.inbox.length} 次入站状态变化写不进库了（${why}），已丢弃（入站行停在之前的状态）`);
+    }
+  };
+  /**
+   * 从排着的（或一个快照里的）附带行里取出渠道行：主事务的出站与入站整批取走，遥测里只取库里账号的出站结果（trace、护栏事件、
+   * env 账号的账本行留在原处，照 02 丢弃或写进存档点）
+   */
+  const takeChannelRows = (holder: {
+    channel: OutboundWriteRow[];
+    inbox: InboxStateWrite[];
+    telemetry: Required<TelemetryRows>;
+  }): ChannelRows => {
+    const rows: ChannelRows = { outbound: holder.channel, inbox: holder.inbox, results: holder.telemetry.outbound.filter(isDbAccountRow) };
     holder.channel = [];
-  };
-  /** 再也写不进库的主事务入站状态变化（03）：丢掉、计数、记一行。入站行停在之前的状态，重启时由启动恢复的保底处理（第 10 步） */
-  const dropInbox = (holder: { inbox: InboxStateWrite[] }, id: string): void => {
-    if (!holder.inbox.length) return;
-    stats.inboxDropped++;
-    console.error(`[store] 会话 ${short(id)} 的 ${holder.inbox.length} 次入站状态变化写不进库了，已丢弃（入站行停在之前的状态）`);
     holder.inbox = [];
+    if (rows.results.length)
+      holder.telemetry = { ...holder.telemetry, outbound: holder.telemetry.outbound.filter((r) => !isDbAccountRow(r)) };
+    return rows;
   };
+  /** 读出渠道行（spill 用）：不从原处取走、不改原来的数组 */
+  const liveChannelRows = (holder: {
+    channel: OutboundWriteRow[];
+    inbox: InboxStateWrite[];
+    telemetry: Required<TelemetryRows>;
+  }): ChannelRows => ({
+    outbound: holder.channel,
+    inbox: holder.inbox,
+    results: holder.telemetry.outbound.filter(isDbAccountRow),
+  });
   const newEntry = (s: Session, ref: string, inDb: boolean, committedSeq: number, msgids: Set<string>): Entry => ({
     id: s.id,
     ref,
@@ -862,6 +1049,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     telemetry: emptyTelemetry(),
     channel: [],
     inbox: [],
+    pc: emptyChannelRows(),
+    pcRun: null,
+    pcTimer: null,
+    pcKickQueued: false,
+    pcFailing: false,
     events: [],
     waiters: new Set(),
     msgids,
@@ -922,15 +1114,102 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     if (e.poisoned) return;
     e.poisoned = label;
     lastError = `${label} · ${short(e.id)}`;
-    // 此后不再起落库：排着的遥测行再也写不进库，现在就丢掉、计数，不留在内存里；之后来的在 queueTelemetry 丢。
-    // 在途的那次落库不动（window_corrupt 时它照常跑完，提交了就照样写进去；它以数据类错误失败时在 failed 里丢）
+    // 此后不再起落库。排着的渠道行（03 R21）改走单独短事务（pc），渠道状态照样准确；其余遥测行再也写不进库，现在就丢掉、计数，
+    // 不留在内存里；之后来的在 queueTelemetry 分开处理。
+    // 在途的那次落库不动（window_corrupt 时它照常跑完，提交了就照样写进去；它以数据类错误失败时在 failed 里把渠道行移进 pc）
+    appendPoisoned(e, takeChannelRows(e), 'back');
     dropTelemetry(e);
-    dropChannel(e, e.id);
-    dropInbox(e, e.id);
     console.error(`[store] 会话 ${short(e.id)} 停止落库（${label}）：内存照旧服务客户，停机时写进 spill；修好原因后重启回放`);
     rejectWaiters(e);
     // 排着的转人工再也提交不了：交给外部通道的 unsaved 通知（02 spec「通知」）。在途的那次照常跑完，失败时在 failed 里报
     deliverHandoffUnsaved(e.events);
+    kickPoisoned(e);
+  }
+
+  // ---------------- poisoned 之后的渠道行（03 R21）：单独短事务 ----------------
+
+  /** 一批渠道行排进 pc：快照里的（更早）放在前面，之后来的放在后面；排完试着写 */
+  function appendPoisoned(e: Entry, rows: ChannelRows, at: 'front' | 'back'): void {
+    if (!hasChannelRows(rows)) return;
+    e.pc = at === 'front' ? concatChannelRows(rows, e.pc) : concatChannelRows(e.pc, rows);
+    kickPoisoned(e);
+  }
+
+  /** 起 pc 的短事务推迟到 microtask：同一段同步代码里排进来的渠道行合进同一个短事务 */
+  function kickPoisoned(e: Entry): void {
+    if (e.pcKickQueued) return;
+    e.pcKickQueued = true;
+    queueMicrotask(() => {
+      e.pcKickQueued = false;
+      pumpPoisoned(e);
+    });
+  }
+
+  /**
+   * poisoned 会话的 pc 起一个短事务（同一会话至多一个在途，按先后整批写）。不起的几种：已停机、已冲突（留给 exit 时的 spill）；
+   * 在途（或等着重试）的那次落库还活着（它的渠道行更早，先写后来的会让迁移表把更早的那次当成表外丢掉，等它在 afterCommit 或 failed 里有了结果）；
+   * 正在等 1 秒后再试
+   */
+  function pumpPoisoned(e: Entry): void {
+    if (!e.poisoned || e.pcRun || e.pcTimer || !hasChannelRows(e.pc)) return;
+    if (closed || conflict) return;
+    if (e.inflight && !e.inflight.dead) return;
+    const rows = e.pc;
+    e.pc = emptyChannelRows();
+    let finish!: () => void;
+    e.pcRun = { rows, done: new Promise<void>((r) => (finish = r)) };
+    detached(() => void runPoisoned(e, rows).finally(finish));
+  }
+
+  async function runPoisoned(e: Entry, rows: ChannelRows): Promise<void> {
+    const r = await nowTx((tx) => writeChannelRows(tx, rows));
+    e.pcRun = null;
+    if (r.ok) {
+      if (e.pcFailing) {
+        e.pcFailing = false;
+        console.warn(`[store] 会话 ${short(e.id)}（poisoned）的渠道行又写得进库了`);
+      }
+      if (!r.value.resultsOk) {
+        stats.telemetryDropped++;
+        warnResultsDropped('poisoned 之后的短事务', e.id, r.value.error);
+      }
+      // 主事务的那几行提交了：发送账本据此知道 pending 落库了（与会话落库的 afterCommit 同一个出口）
+      if (rows.outbound.length) d.outboundCommitted?.(rows.outbound);
+      pumpPoisoned(e);
+      return;
+    }
+    if ('error' in r && classify(r.error) === 'data') {
+      // 重来一遍还是一样（只剩代码缺陷一种来源，R21 的同步校验）：这一批丢掉、计数，后面的照写
+      dropChannelRows(rows, e.id, errLabel(r.error));
+      pumpPoisoned(e);
+      return;
+    }
+    // 连接类失败，或这次不写（已冲突、已停机、租户锁在别人手里）：放回队头留在内存里，1 秒后再试；停机、冲突之后不再试，exit 时进 spill
+    e.pc = concatChannelRows(rows, e.pc);
+    if (!e.pcFailing) {
+      e.pcFailing = true;
+      const why = 'error' in r ? errLabel(r.error) : r.refused;
+      console.error(`[store] 会话 ${short(e.id)}（poisoned）的渠道行短事务没写进去（${why}），留在内存里每秒再试，停机时写进 spill`);
+    }
+    if (closed || conflict) return;
+    e.pcTimer = setTimeout(() => {
+      e.pcTimer = null;
+      pumpPoisoned(e);
+    }, POISONED_CHANNEL_RETRY_MS);
+    e.pcTimer.unref();
+  }
+
+  /** 不经会话写队列的单独短事务，不抛：已冲突、late 段之后、租户锁在别人手里时不写（refused），库报错带上错误 */
+  async function nowTx<T>(
+    fn: (tx: Tx) => Promise<T>,
+  ): Promise<{ ok: true; value: T } | { ok: false; refused: JobsTxRefused['code'] } | { ok: false; error: unknown }> {
+    const refused = conflict ? 'conflict' : closed ? 'closed' : !d.writable() ? 'held_by_other' : null;
+    if (refused) return { ok: false, refused };
+    try {
+      return { ok: true, value: await detached(() => withTenant(d.db, ctx, fn)) };
+    } catch (error) {
+      return { ok: false, error };
+    }
   }
 
   /**
@@ -968,6 +1247,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       inbox: e.inbox,
       events: e.events,
       applied: [],
+      dead: false,
     };
     e.orderIds = new Set();
     e.voids = new Map();
@@ -1105,6 +1385,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       }
     }
     kick(e);
+    // 在途期间因为 window_corrupt 标了 poisoned：它之后的渠道行一直在等这次落库，现在可以走短事务了
+    if (e.poisoned) kickPoisoned(e);
   }
 
   function failed(e: Entry, snap: Snap, err: unknown): void {
@@ -1122,13 +1404,15 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return;
     }
     if (kind === 'data') {
-      // 这次落库不会再试：快照里的遥测行与主事务出站行（spill 不带）一并丢掉、计数
+      // 这次落库不会再试：快照里的渠道行（03 R21）移进 pc 的队头（比排着的都早），改走单独短事务；其余遥测行（spill 不带）丢掉、计数
+      snap.dead = true;
+      appendPoisoned(e, takeChannelRows(snap), 'front');
       dropTelemetry(snap);
-      dropChannel(snap, e.id);
-      dropInbox(snap, e.id);
       // 快照里的转人工提交不了（排在它后面的由 poison 报）：交给外部通道的 unsaved 通知（02 spec「通知」）
       deliverHandoffUnsaved(snap.events);
       poison(e, label);
+      // 已经因为 window_corrupt 标过 poisoned（poison 直接返回）时，pc 一直在等这次落库的结果：现在可以写了
+      kickPoisoned(e);
       return;
     }
     // 这次与排在它后面的转人工还没提交：交给外部通道的 unsaved 通知（emergency 立即，其余失败持续 30 秒后；每次失败都报，订阅者去重）
@@ -1174,7 +1458,24 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     });
   }
 
-  /** spill 里的一个会话：消息、投影、订单都存 normalizeForStore 之后的原始对象，不在这里投影（回放时才投影） */
+  /** drain 用：等这个会话 poisoned 之后在途的那一次渠道行短事务，或者到 deadline（写不进去时它自己排 1 秒后再试，不等） */
+  function pcSettled(e: Entry, deadline: number): Promise<void> {
+    if (!e.pcRun) return Promise.resolve();
+    let timer: NodeJS.Timeout | null = null;
+    return Promise.race([
+      e.pcRun.done,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+      }),
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  /**
+   * spill 里的一个会话：消息、投影、订单都存 normalizeForStore 之后的原始对象，不在这里投影（回放时才投影）；
+   * 渠道段（03 R21）存还没提交的渠道行
+   */
   function spillEntryOf(e: Entry): SpillEntry {
     const s = e.session;
     const inf = e.inflight;
@@ -1196,7 +1497,19 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       id: e.id,
       ref: e.ref,
       committedSeq: e.committedSeq,
-      inflight: inf ? { flushId: inf.flushId, lastSeq: inf.lastSeq, audits: inf.audits, jobs: inf.jobs, consents: inf.consents } : null,
+      inflight: inf
+        ? {
+            flushId: inf.flushId,
+            lastSeq: inf.lastSeq,
+            audits: inf.audits,
+            jobs: inf.jobs,
+            consents: inf.consents,
+            // 03 R21：这次落库里的渠道行（以数据类错误失败的那次已把它们移进 pc，这里是空的）
+            channel: spillChannelOf(liveChannelRows(inf)),
+          }
+        : null,
+      // 03 R21：poisoned 之后等短事务的（在途的那一批在前）与排着的；trace 与 env 账号的账本行不写
+      channel: spillChannelOf(e.pcRun?.rows ?? emptyChannelRows(), e.pc, liveChannelRows(e)),
       flushId: randomUUID(),
       lastSeq: lastSeqOf(s),
       windowStartSeq: windowStartOf(s),
@@ -1338,9 +1651,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     queueTelemetry(sessionId, rows) {
       const e = entryById(sessionId);
       if (!e || !hasTelemetry(rows)) return;
-      // poisoned 的会话不再落库：收下就只进不出，直接丢掉、计数
+      // poisoned 的会话不再落库：库里账号的出站结果改走单独短事务（03 R21）；trace、护栏事件与 env 账号的账本行收下就只进不出，
+      // 直接丢掉、计数（02）
       if (e.poisoned) {
-        stats.telemetryDropped++;
+        const out = rows.outbound ?? [];
+        appendPoisoned(e, { outbound: [], inbox: [], results: out.filter(isDbAccountRow) }, 'back');
+        if (rows.traces?.length || rows.guards?.length || out.some((r) => !isDbAccountRow(r))) stats.telemetryDropped++;
         return;
       }
       e.telemetry.traces.push(...(rows.traces ?? []));
@@ -1352,9 +1668,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const e = entryById(sessionId);
       if (!e) return false;
       if (!rows.length) return true;
-      // poisoned 的会话不再落库：丢掉、计数（第 11 步改成单独短事务）
+      // poisoned 的会话不再落库：改走单独短事务（03 R21），提交之后经 outboundCommitted 报回
       if (e.poisoned) {
-        dropChannel({ channel: [...rows] }, e.id);
+        appendPoisoned(e, { outbound: [...rows], inbox: [], results: [] }, 'back');
         return true;
       }
       e.channel.push(...rows);
@@ -1365,9 +1681,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const e = entryById(sessionId);
       if (!e) return false;
       if (!writes.length) return true;
-      // poisoned 的会话不再落库：丢掉、计数（第 11 步改成单独短事务）
+      // poisoned 的会话不再落库：改走单独短事务（03 R21）
       if (e.poisoned) {
-        dropInbox({ inbox: [...writes] }, e.id);
+        appendPoisoned(e, { outbound: [], inbox: [...writes], results: [] }, 'back');
         return true;
       }
       e.inbox.push(...writes);
@@ -1376,31 +1692,21 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     },
     async writeInboxNow(writes) {
       if (!writes.length) return true;
-      if (conflict || closed || !d.writable()) {
-        console.error(`[store] 入站状态的短事务这次不写（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
-        return false;
-      }
-      try {
-        await detached(() => withTenant(d.db, ctx, (tx) => applyInboxStates(tx, writes)));
-        return true;
-      } catch (err) {
-        console.error(`[store] 入站状态的短事务没写进去（${errLabel(err)}）`);
-        return false;
-      }
+      const r = await nowTx((tx) => applyInboxStates(tx, writes));
+      if (r.ok) return true;
+      console.error(
+        'refused' in r ? `[store] 入站状态的短事务这次不写（${r.refused}）` : `[store] 入站状态的短事务没写进去（${errLabel(r.error)}）`,
+      );
+      return false;
     },
     async writeOutboundNow(rows) {
       if (!rows.length) return true;
-      if (conflict || closed || !d.writable()) {
-        console.error(`[store] 出站行的短事务这次不写（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
-        return false;
-      }
-      try {
-        await detached(() => withTenant(d.db, ctx, (tx) => insertOutboundSends(tx, rows)));
-        return true;
-      } catch (err) {
-        console.error(`[store] 出站行的短事务没写进去（${errLabel(err)}）`);
-        return false;
-      }
+      const r = await nowTx((tx) => insertOutboundSends(tx, rows));
+      if (r.ok) return true;
+      console.error(
+        'refused' in r ? `[store] 出站行的短事务这次不写（${r.refused}）` : `[store] 出站行的短事务没写进去（${errLabel(r.error)}）`,
+      );
+      return false;
     },
     async markOutboundSending(channelMsgid, timeoutMs) {
       if (conflict || closed || !d.writable()) return 'db_unavailable';
@@ -1578,7 +1884,14 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       // 已冲突或租户锁在别人手里：不写库，全部留给 exit 时的 spill
       if (!conflict && d.writable()) {
         for (const e of entries.values()) {
-          if (e.poisoned || !isDirty(e)) continue;
+          if (e.poisoned) {
+            // 03 R21：poisoned 会话等着 1 秒后再试的渠道行，现在就试一次
+            if (e.pcTimer) clearTimeout(e.pcTimer);
+            e.pcTimer = null;
+            pumpPoisoned(e);
+            continue;
+          }
+          if (!isDirty(e)) continue;
           if (e.timer && e.inflight) {
             // 退避中的重试不等了，现在就试一次
             clearTimeout(e.timer);
@@ -1587,13 +1900,14 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
             detached(() => void runFlush(e, snap));
           } else kick(e);
         }
-        await Promise.all([...entries.values()].map((e) => settled(e, deadline)));
+        await Promise.all([...entries.values()].map((e) => Promise.all([settled(e, deadline), pcSettled(e, deadline)])));
       }
       return { undrained: [...entries.values()].filter(isDirty).map((e) => e.id) };
     },
     spillSync() {
       try {
-        const dirty = [...entries.values()].filter(isDirty);
+        // poisoned 的会话总是脏的；渠道行还没写完的也一并写出（防御）
+        const dirty = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null);
         if (!dirty.length) return 0;
         const out: SpillEntry[] = [];
         for (const e of dirty) {
@@ -1644,6 +1958,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       for (const e of entries.values()) {
         if (e.timer) clearTimeout(e.timer);
         e.timer = null;
+        if (e.pcTimer) clearTimeout(e.pcTimer);
+        e.pcTimer = null;
       }
     },
     stats: () => ({ ...stats }),
@@ -1654,11 +1970,14 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     },
     queuedChannel(sessionId) {
       const e = entries.get(sessionId);
-      return e ? e.channel.length + (e.inflight ? e.inflight.channel.length : 0) : 0;
+      if (!e) return 0;
+      const pc = e.pc.outbound.length + e.pc.results.length + (e.pcRun ? e.pcRun.rows.outbound.length + e.pcRun.rows.results.length : 0);
+      return e.channel.length + (e.inflight ? e.inflight.channel.length : 0) + pc;
     },
     queuedInbox(sessionId) {
       const e = entries.get(sessionId);
-      return e ? e.inbox.length + (e.inflight ? e.inflight.inbox.length : 0) : 0;
+      if (!e) return 0;
+      return e.inbox.length + (e.inflight ? e.inflight.inbox.length : 0) + e.pc.inbox.length + (e.pcRun ? e.pcRun.rows.inbox.length : 0);
     },
   };
 }
