@@ -11,6 +11,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { pgErrorOf, trySavepoint, withTenant, type Db, type TenantCtx, type Tx } from '../db/client.js';
 import { writeAuditAs, type AuditEntry } from '../db/repo/audit.js';
+import { applyInboxStates, type InboxStateWrite } from '../db/repo/channel-inbox.js';
 import { appendConsents, type ConsentRow } from '../db/repo/consents.js';
 import {
   insertConversation,
@@ -177,6 +178,8 @@ interface Snap {
   telemetry: Required<TelemetryRows>;
   /** 03 R21：主事务里写的出站行（库里账号的 pending 插入与 cancelled），在第 5 步之后、存档点之前 */
   channel: OutboundWriteRow[];
+  /** 03 R21：主事务里写的入站状态变化（recorded、replied、done、abandoned），在出站行之后、存档点之前，按排进来的先后逐条写 */
+  inbox: InboxStateWrite[];
   events: DomainEvent[];
   /** 这次落库里改中了的 report 状态变化（任务 id）：提交之后才交给 jobOpApplied */
   applied: string[];
@@ -230,6 +233,8 @@ interface Entry {
   telemetry: Required<TelemetryRows>;
   /** 排着的主事务出站行（03 R21），见 Snap.channel */
   channel: OutboundWriteRow[];
+  /** 排着的主事务入站状态变化（03 R21），见 Snap.inbox */
+  inbox: InboxStateWrite[];
   events: DomainEvent[];
   waiters: Set<Waiter>;
   /** 企微去重集合：预载的最近 7 天，加上本进程分配过 seq 的客户消息 */
@@ -281,6 +286,11 @@ export interface PgStoreStats {
    * 第 11 步改成 poisoned 之后走单独短事务、进 spill 之前，这些行只在内存账本里
    */
   channelDropped: number;
+  /**
+   * 03：再也写不进库的主事务入站状态变化的批数（同上两种来源）。第 11 步改成 poisoned 之后走单独短事务、进 spill 之前，这些变化丢了，
+   * 入站行停在之前的状态，重启时由启动恢复的保底处理（第 10 步）
+   */
+  inboxDropped: number;
   /** 启动时回放的 spill 会话数（应用的，与认出已经在库里而跳过的） */
   replayed: number;
   replaySkipped: number;
@@ -323,6 +333,16 @@ export interface PgBackend extends StoreBackend {
    */
   queueChannel(sessionId: string, rows: readonly OutboundWriteRow[]): boolean;
   /**
+   * 03 R21：入站状态变化（recorded、replied、done、abandoned）随这个会话的下一次落库写进主事务，排在出站行之后、按排进来的先后逐条写。
+   * 写队列里没有这个会话（内存里没有）返回 false，调用方改走单独短事务。会话已 poisoned：这一版丢掉、计数（第 11 步改成单独短事务）
+   */
+  queueInbox(sessionId: string, writes: readonly InboxStateWrite[]): boolean;
+  /**
+   * 03：没有会话可挂的入站状态变化（回执、没建出会话的毒消息）：单独一个短事务，按迁移表逐条写。写成了 true；
+   * 已冲突、late 段之后、租户锁在别人手里、库报错时 false（记一行，只有错误码）
+   */
+  writeInboxNow(writes: readonly InboxStateWrite[]): Promise<boolean>;
+  /**
    * 03：没有会话可挂的出站行（还没有会话的欢迎语、运行时才补的段、没有会话时的结果与取消）：单独一个短事务，按迁移表写。
    * 写成了 true；已冲突、late 段之后、租户锁在别人手里、库报错时 false（记一行，只有错误码）
    */
@@ -351,9 +371,14 @@ export interface PgBackend extends StoreBackend {
   writeStandaloneOutbound(rows: readonly OutboundWriteRow[]): Promise<void>;
   /**
    * 收到 msg_send_fail：单独一个短事务按 msgid 记 failed 与 fail_type（不经会话写队列）。写成了是 ok，带那一行的会话 id（找不到、
-   * 已经是 failed 为 null）；这次没写（同上三种情况、库报错，记一行）不是 ok，调用方再试一次
+   * 已经是 failed 为 null）；这次没写（同上三种情况、库报错，记一行）不是 ok，调用方再试一次。
+   * 03：给了 inboxId（库里账号的回执入站行）时同一个短事务把那一行入站记 done（spec「入站」的回执）
    */
-  markOutboundFailed(channelMsgid: string, failType: number): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
+  markOutboundFailed(
+    channelMsgid: string,
+    failType: number,
+    inboxId?: string | null,
+  ): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
   /**
    * 会话行的 ref（不含客户标识）：预载的与本进程建过写队列的会话都有，新会话还没提交过也有；还没建写队列的先生成好，建写队列时
    * 用它（日志的 conv 在第一次 saveSession 之前就要，R24）。只由 store.conversationRef 为内存里的真实会话调
@@ -380,6 +405,11 @@ export interface PgBackend extends StoreBackend {
    * 同落库一样在模块加载时取的空异步上下文里起。已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
    */
   jobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  /**
+   * 03 入站的单独短事务（acceptPage、beginAttempt、load，src/channels/inbox.ts）：同 jobsTx，不经会话写队列、在空的异步上下文里起；
+   * 已冲突、late 段之后、租户锁在别人手里时不写，以 JobsTxRefused reject
+   */
+  channelTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
   /** late 段：此后不再发起落库，退避中的重试也停掉；没落库的留给 exit 时的 spill */
   close(): void;
   stats(): PgStoreStats;
@@ -387,6 +417,8 @@ export interface PgBackend extends StoreBackend {
   queuedTelemetry(sessionId: string): number;
   /** 这个会话还留在内存里的主事务出站行数（排着的加在途快照里的，自测用） */
   queuedChannel(sessionId: string): number;
+  /** 这个会话还留在内存里的主事务入站状态变化数（排着的加在途快照里的，自测用） */
+  queuedInbox(sessionId: string): number;
 }
 
 const systemCtx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } });
@@ -769,6 +801,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     telemetryDropped: 0,
     foreign: 0,
     channelDropped: 0,
+    inboxDropped: 0,
     replayed: replay.applied,
     replaySkipped: replay.skipped,
     replayFailedFiles: replay.failedFiles,
@@ -794,6 +827,13 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     );
     holder.channel = [];
   };
+  /** 再也写不进库的主事务入站状态变化（03）：丢掉、计数、记一行。入站行停在之前的状态，重启时由启动恢复的保底处理（第 10 步） */
+  const dropInbox = (holder: { inbox: InboxStateWrite[] }, id: string): void => {
+    if (!holder.inbox.length) return;
+    stats.inboxDropped++;
+    console.error(`[store] 会话 ${short(id)} 的 ${holder.inbox.length} 次入站状态变化写不进库了，已丢弃（入站行停在之前的状态）`);
+    holder.inbox = [];
+  };
   const newEntry = (s: Session, ref: string, inDb: boolean, committedSeq: number, msgids: Set<string>): Entry => ({
     id: s.id,
     ref,
@@ -818,6 +858,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     consents: [],
     telemetry: emptyTelemetry(),
     channel: [],
+    inbox: [],
     events: [],
     waiters: new Set(),
     msgids,
@@ -882,6 +923,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     // 在途的那次落库不动（window_corrupt 时它照常跑完，提交了就照样写进去；它以数据类错误失败时在 failed 里丢）
     dropTelemetry(e);
     dropChannel(e, e.id);
+    dropInbox(e, e.id);
     console.error(`[store] 会话 ${short(e.id)} 停止落库（${label}）：内存照旧服务客户，停机时写进 spill；修好原因后重启回放`);
     rejectWaiters(e);
     // 排着的转人工再也提交不了：交给外部通道的 unsaved 通知（02 spec「通知」）。在途的那次照常跑完，失败时在 failed 里报
@@ -920,6 +962,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       consents: e.consents,
       telemetry: e.telemetry,
       channel: e.channel,
+      inbox: e.inbox,
       events: e.events,
       applied: [],
     };
@@ -930,6 +973,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     e.consents = [];
     e.telemetry = emptyTelemetry();
     e.channel = [];
+    e.inbox = [];
     e.events = [];
     e.sinceNext = null;
     return snap;
@@ -987,6 +1031,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     // 5½（03 R21）库里账号的出站 pending 插入与 cancelled 写进主事务：丢了就会「已回复、没有分段」而悄悄漏回复。
     // 写失败与别的主事务写入一样按 SQLSTATE 分类（planOutbound 的同步校验让数据类失败只剩代码缺陷一种来源）
     await insertOutboundSends(tx, snap.channel);
+    // 5¾（03 R21）入站状态变化写进主事务：recorded 与这条客户消息同一次提交（不变量 3），replied 与回复的 pending 同一次提交。
+    // 按排进来的先后逐条写（非文本消息先 recorded 再 replied），只按迁移表改，命中 0 行（已结束、被清除）当无操作
+    await applyInboxStates(tx, snap.inbox);
     // 6 存档点里写 trace、护栏事件、账本行（02）与出站结果（03）：出错只丢这几行，会话照常提交
     const t = snap.telemetry;
     if (t.traces.length || t.guards.length || t.outbound.length) {
@@ -1075,6 +1122,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       // 这次落库不会再试：快照里的遥测行与主事务出站行（spill 不带）一并丢掉、计数
       dropTelemetry(snap);
       dropChannel(snap, e.id);
+      dropInbox(snap, e.id);
       // 快照里的转人工提交不了（排在它后面的由 poison 报）：交给外部通道的 unsaved 通知（02 spec「通知」）
       deliverHandoffUnsaved(snap.events);
       poison(e, label);
@@ -1158,6 +1206,14 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       consents: e.consents,
       poisoned: e.poisoned,
     };
+  }
+
+  /** 不经会话写队列的短事务（任务表、03 入站）：已冲突、late 段之后、租户锁在别人手里时不写 */
+  function shortTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+    if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
+    if (closed) return Promise.reject(new JobsTxRefused('closed'));
+    if (!d.writable()) return Promise.reject(new JobsTxRefused('held_by_other'));
+    return detached(() => withTenant(d.db, ctx, fn));
   }
 
   return {
@@ -1302,6 +1358,33 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       change(e);
       return true;
     },
+    queueInbox(sessionId, writes) {
+      const e = entryById(sessionId);
+      if (!e) return false;
+      if (!writes.length) return true;
+      // poisoned 的会话不再落库：丢掉、计数（第 11 步改成单独短事务）
+      if (e.poisoned) {
+        dropInbox({ inbox: [...writes] }, e.id);
+        return true;
+      }
+      e.inbox.push(...writes);
+      change(e);
+      return true;
+    },
+    async writeInboxNow(writes) {
+      if (!writes.length) return true;
+      if (conflict || closed || !d.writable()) {
+        console.error(`[store] 入站状态的短事务这次不写（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
+        return false;
+      }
+      try {
+        await detached(() => withTenant(d.db, ctx, (tx) => applyInboxStates(tx, writes)));
+        return true;
+      } catch (err) {
+        console.error(`[store] 入站状态的短事务没写进去（${errLabel(err)}）`);
+        return false;
+      }
+    },
     async writeOutboundNow(rows) {
       if (!rows.length) return true;
       if (conflict || closed || !d.writable()) {
@@ -1394,13 +1477,20 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         console.error(`[store] 没有会话的发送账本行没写进去（${errLabel(err)}），丢弃 ${rows.length} 行`);
       }
     },
-    async markOutboundFailed(channelMsgid, failType) {
+    async markOutboundFailed(channelMsgid, failType, inboxId) {
       if (conflict || closed || !d.writable()) {
         console.error(`[store] msg_send_fail 回执这次不写库（${conflict ? 'conflict' : closed ? 'closed' : 'held_by_other'}）`);
         return { ok: false };
       }
       try {
-        const sessionId = await detached(() => withTenant(d.db, ctx, (tx) => markOutboundFailed(tx, channelMsgid, failType)));
+        const sessionId = await detached(() =>
+          withTenant(d.db, ctx, async (tx) => {
+            const sid = await markOutboundFailed(tx, channelMsgid, failType);
+            // 03：回执的入站行与出站行的 failed 同一个短事务记 done
+            if (inboxId) await applyInboxStates(tx, [{ inboxId, state: 'done', reason: null, messageSeq: null }]);
+            return sid;
+          }),
+        );
         return { ok: true, sessionId };
       } catch (err) {
         console.error(`[store] msg_send_fail 回执没写进库（${errLabel(err)}）`);
@@ -1452,12 +1542,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         },
       };
     },
-    jobsTx(fn) {
-      if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
-      if (closed) return Promise.reject(new JobsTxRefused('closed'));
-      if (!d.writable()) return Promise.reject(new JobsTxRefused('held_by_other'));
-      return detached(() => withTenant(d.db, ctx, fn));
-    },
+    jobsTx: shortTx,
+    channelTx: shortTx,
     flush(sessionId, opts = {}) {
       const e = entries.get(sessionId);
       if (!e || !isDirty(e)) return Promise.resolve();
@@ -1564,6 +1650,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     queuedChannel(sessionId) {
       const e = entries.get(sessionId);
       return e ? e.channel.length + (e.inflight ? e.inflight.channel.length : 0) : 0;
+    },
+    queuedInbox(sessionId) {
+      const e = entries.get(sessionId);
+      return e ? e.inbox.length + (e.inflight ? e.inflight.inbox.length : 0) : 0;
     },
   };
 }
