@@ -32,6 +32,7 @@ import {
   WECOM_STATE_FILE,
   writeChannelsMarker,
 } from './markers.js';
+import { unknownAtRestart } from './recovery.js';
 import {
   CHANNEL_KEY_ENV,
   ChannelKeyError,
@@ -79,8 +80,8 @@ interface Registry {
   /** 启用的账号，按账号 uuid */
   channels: ReadonlyMap<string, LoadedChannel>;
   /**
-   * 启动时的告警（只有账号 key 与原因）：网页账号因 web_channel 关着没启用、欢迎语不合格按没设处理；startChannels 再加库里账号
-   * 「启动恢复做不了、不拉取」那一条（startAlerts 在它之后才读）
+   * 启动时的告警（只有账号 key、计数与原因）：网页账号因 web_channel 关着没启用、欢迎语不合格按没设处理；startChannels 再加库里账号
+   * 「重启时 sending 转 unknown」那一条（startAlerts 在它之后才读）
    */
   warnings: string[];
   /** db 存储的库；文件存储为 null（库里企微账号的 cursor 与入站行经会话存储的短事务写，第 9 步） */
@@ -342,9 +343,10 @@ export async function initChannels(deps: ChannelDeps | null): Promise<void> {
 /**
  * 监听成功之后、任务与跟进扫描器之前调。env 账号（文件存储、未导入、已导出时 WECOM_* 配齐）起 02 的企微拉取（startWecom）；
  * 企微状态在库里时每个启用的库里企微账号起一个运行时（R10），凭据取装载时的那一份，拉取状态在 channel_inbox（第 9 步）。
- * 启动恢复（R5）先于拉取：运行时只处理新收的入站行（第 9 步），按状态补处理没结束的入站行与没结果的出站行是第 10 步，所以账号有
- * 这些行时只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理，不变量 12），日志一行、启动告警一条；没有这些行时
- * 恢复就是做完了。第 10 步在这里接上恢复（适配器 startWecomAccount 的 pull 注释写了入口）
+ * 每个运行时先做启动恢复（R5，第 10 步，src/channels/recovery.ts）：按 initChannels 读到的没结果的出站行与没结束的入站行，先出站、
+ * 再入站，做完才开始拉取（同一客户的新消息排在它们后面，不变量 12）；做完之前这个账号的 push 排队等待。重启时会有 sending 转成
+ * unknown 的（RESEND_UNKNOWN 为假时的 R5 边界；为真时有接手人的会话里 AI 产生的段），这里按出站恢复表先按账号数出来，日志一行、
+ * 启动告警一条（startAlerts 在它之后才读）
  */
 export function startChannels(): void {
   if (!registry) return;
@@ -355,16 +357,13 @@ export function startChannels(): void {
   if (!registry.db) return;
   for (const c of registry.channels.values()) {
     if (c.account.kind !== 'wecom_kf' || c.account.source !== 'db' || !c.secrets) continue;
-    // TODO(03 第 10 步)：先做出站恢复、再做入站恢复（openOutbound、openInbox），做完才开始拉取
-    const open = c.openInbox.length + c.openOutbound.length;
-    if (open) {
-      const why =
-        `企微账号 ${c.account.key} 有没结束的入站 ${c.openInbox.length} 行、没结果的出站 ${c.openOutbound.length} 行，` +
-        '这一版的启动恢复处理不了：不拉取';
+    const unknown = unknownAtRestart(c.openOutbound, c.openInbox, c.account.wecom?.recordOnlyUntil ?? null);
+    if (unknown) {
+      const why = `企微账号 ${c.account.key} 重启时有 ${unknown} 段停在「发送中」，记 unknown、不补发（可能没送达，工作台已标出，请顾问核对）`;
       console.error(`[channels] ⚠️ ${why}`);
       registry.warnings.push(why);
     }
-    startWecomAccount({ account: c.account, secrets: c.secrets, pull: open === 0 });
+    startWecomAccount({ account: c.account, secrets: c.secrets, open: { inbox: c.openInbox, outbound: c.openOutbound } });
   }
 }
 

@@ -34,6 +34,7 @@
 //   在途表），发送走 03 的「先落库、后发送」（第 8 步，见下文「03 先落库、后发送」一节）。
 // - 会话 id = 账号前缀 + external_userid（默认账号 wecom:，之后建的 wecom:<key>:）；发往一个会话的消息经 accountForSession 找到账号，
 //   只带那个账号的 open_kfid 与 access_token；停用账号名下的会话推送返回 false。
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ChannelAdapter, ChatMessage, OutboundKind, PreparedPush, PushOpts, Session } from '../types.js';
@@ -55,9 +56,12 @@ import {
   onSendFail,
   onSendFailInbox,
   OutboundPlanError,
+  payloadProblem,
+  pendingIntentsOfInbox,
   planOutbound,
   planRuntimeSegment,
   recordSend,
+  recoverAsUnknown,
   replyDelivered,
   settleIntent,
   unmarkSending,
@@ -90,6 +94,15 @@ import {
   type ChannelAccount,
 } from '../channels/accounts.js';
 import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
+import {
+  RecoveryGate,
+  recoverOutbound,
+  type InboundRecoveryCtx,
+  type OpenInboxLike,
+  type OpenOutboundLike,
+  type RecoveryPort,
+} from '../channels/recovery.js';
+import { aiReplyAfter, effectiveInboxState, recordedRecovery, repliedRecovery } from '../channels/recovery-rules.js';
 import { Redacted, type WecomSecrets } from '../channels/secrets.js';
 import type { InboxAbandonReason } from '../shared/channel-types.js';
 import { FileWecomState, markHandled, STATE_FILE, type KfMessage } from './wecom-state.js';
@@ -286,10 +299,13 @@ class WecomRuntime {
   /** 加载状态 + 重放在途消息（幂等）：启动循环与回调都先 await 它，消除「回调早于加载」的竞态 */
   readyPromise: Promise<void> | null = null;
   /**
-   * 启动恢复做没做完（R5、R10）。blocked：库里这个账号有没结束的入站行或没结果的出站行，这一版的启动恢复处理不了（第 10 步接上），
-   * 只建运行时、不拉取（先拉新消息会让同一客户的新消息先于旧的处理，不变量 12）；回调与轮询都不拉
+   * 启动恢复做没做完（R5、R10；src/channels/recovery.ts）。recovering：库里的账号起来之后先按出站恢复表、入站恢复表处理没结果的出站行
+   * 与没结束的入站行，这期间不拉取（回调与轮询都不拉：先拉新消息会让同一客户的新消息先于旧的处理，不变量 12），push 在 gate 上排队等待。
+   * env 账号没有启动恢复（照 02 的在途重放），恒为 done
    */
-  recovery: 'done' | 'blocked' = 'done';
+  recovery: 'recovering' | 'done';
+  /** 恢复做完之前 push（人工回复、跟进、通知）在这里等，至多 30 秒 */
+  readonly gate: RecoveryGate;
 
   // 兜底轮询
   started = false;
@@ -310,6 +326,8 @@ class WecomRuntime {
         ? WELCOME_TEXTS
         : new Set([...WELCOME_TEXTS, this.welcomeText, this.welcomeBackText]);
     this.state = spec.state;
+    this.recovery = spec.state.kind === 'file' ? 'done' : 'recovering';
+    this.gate = new RecoveryGate(this.recovery === 'done');
   }
 }
 
@@ -917,6 +935,16 @@ interface OutGroup {
    * 这一组全部分段有了结果（cancelled 也算）时记 done，停在 pending 的（停机截止）不记、留给重启恢复。其余各类为 null
    */
   inboxId: string | null;
+  /**
+   * 启动恢复（RESEND_UNKNOWN 为真）补发的 sending 段：库里已是 sending，不再 markSending，直接发（spec「直接走第 5 步」）；
+   * 过了停机截止就不发、留在 sending（下次启动再按表处理）
+   */
+  alreadySending?: ReadonlySet<string>;
+  /**
+   * 启动恢复补发的人工回复（开放问题 6）：每次真正发请求之前再复核一次资格（建这一行起仍在 10 分钟内、会话的接手人仍是作者），
+   * 不符合就不发、记 cancelled。等 token、markSending 都要时间，会话可能在这期间被交还或改派。普通的人工发送没有它（第 8 步：不比接手）
+   */
+  stillEligible?: () => boolean;
 }
 
 /** 一组发完（或停下）的结果：ok 是每段都送出（卡片发失败而补的文字送出了也算）；stop 是停在哪一步 */
@@ -1024,8 +1052,30 @@ function postSendMsg(token: string, body: Record<string, unknown>): Promise<{ er
   }).then((res) => res.json() as Promise<{ errcode?: number; errmsg?: string }>);
 }
 
-/** 这一组还算不算数：接手代次没变（通知与人工回复不比接手，恒为真，见 OutGroup.checksTakeover） */
-const stillCurrent = (g: OutGroup): boolean => !g.checksTakeover || takeoverGen(g.sessionId) === g.gen;
+/**
+ * 这一组还算不算数：接手代次没变（通知与人工回复不比接手，见 OutGroup.checksTakeover），而且恢复补发的人工回复仍有资格
+ * （OutGroup.stillEligible）
+ */
+const stillCurrent = (g: OutGroup): boolean =>
+  (!g.checksTakeover || takeoverGen(g.sessionId) === g.gen) && (!g.stillEligible || g.stillEligible());
+
+/**
+ * 这一组不再算数（被接手，或恢复补发的人工回复不再有资格）：没发的段不发。启动恢复补发的历史 sending 段（alreadySending）可能在
+ * 上一个进程里发出去过，记 unknown（工作台「可能没送达」）；其余记 cancelled（本进程标了 sending、还没发请求的也是）
+ */
+function dropRest(g: OutGroup, intents: readonly OutboundIntent[]): void {
+  const sent = intents.filter((i) => g.alreadySending?.has(i.msgid));
+  for (const i of sent) recoverAsUnknown(i);
+  if (sent.length) console.log(`${g.rt.tag} 补发之前会话被接手：${sent.length} 段停在发送中的不补发，记 unknown`);
+  cancelIntents(
+    intents.filter((i) => !sent.includes(i)),
+    g.stillEligible && !g.stillEligible() ? 'restore' : 'taken_over',
+  );
+}
+
+/** 卡片发失败补的「标题 + 链接」的 msgid：由卡片段的 msgid 定死（第几块），重启后再补同一块还是这一行，库里认得出这一组已经有补文了 */
+const fallbackMsgid = (cardMsgid: string, chunk: number): string =>
+  createHash('sha256').update(`card-fallback:${cardMsgid}:${chunk}`).digest('hex').slice(0, 32);
 
 /**
  * 一段的第 4–5 步。返回：accepted；failed（rejected 或 unknown）；skipped（not_pending，或 absent 而 pending 提交过）；
@@ -1058,8 +1108,9 @@ async function sendSegment(
       return 'failed';
     }
   }
-  // 4 markSending
-  const mark = await markSending(intent);
+  // 4 markSending（启动恢复补发的 sending 段已是 sending，直接发）
+  const already = g.alreadySending?.has(intent.msgid) ?? false;
+  const mark = already ? 'marked' : await markSending(intent);
   if (mark === 'not_pending') return 'skipped';
   if (mark === 'absent' && g.commit.get(intent.msgid) !== 'timeout') {
     // pending 提交过、行又没了：只会是被清除（保留期清理、行权删除）。不发
@@ -1069,11 +1120,11 @@ async function sendSegment(
   }
   // 4 返回之后、发请求之前再比一次接手代次与停机截止（markSending 期间可能有人接手或到了截止）
   if (!stillCurrent(g)) {
-    cancelIntents([intent, ...rest], 'taken_over');
+    dropRest(g, [intent, ...rest]);
     return 'taken_over';
   }
   if (sendsClosed(rt)) {
-    if (mark === 'marked') await unmarkSending(intent);
+    if (mark === 'marked' && !already) await unmarkSending(intent);
     return 'deferred';
   }
   // R6：这一段的 sending 没在发请求之前提交（pending 等不到提交、库不可用），照发、计数
@@ -1164,7 +1215,7 @@ async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
     if (sendsClosed(g.rt)) return { ok: false, stop: 'deferred' };
     // 3 接手代次：这一组没发的段 cancelled
     if (!stillCurrent(g)) {
-      cancelIntents(queue.slice(n), 'taken_over');
+      dropRest(g, queue.slice(n));
       return { ok: false, stop: 'taken_over' };
     }
     const r = await sendSegment(g, intent, queue.slice(n + 1));
@@ -1173,10 +1224,13 @@ async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
     const card = intent.payload.msgtype === 'link' ? g.cards.get(intent.msgid) : undefined;
     if (r === 'failed' && card) {
       // 卡片发失败：正文已按「见下方卡片」发出，收不回来了。把链接补发在正文下方（02 的做法）：运行时才补的段，段号接在这一组之后，
-      // 单独一个短事务写成 pending 之后照样走第 4–5 步；补的这几段送出了，这一组就算送出
-      for (const chunk of splitForWecom(`${card.title}\n${card.url}`)) {
+      // 单独一个短事务写成 pending 之后照样走第 4–5 步；补的这几段送出了，这一组就算送出。补文的 msgid 由卡片段定死：启动恢复再补
+      // 同一张卡片时还是那几行（已经有的、已有结果的都认得出，不会换个 msgid 再发一遍）
+      for (const [k, chunk] of splitForWecom(`${card.title}\n${card.url}`).entries()) {
         try {
-          const extra = await planRuntimeSegment(queue, { msgtype: 'text', text: { content: chunk } });
+          const extra = await planRuntimeSegment(queue, { msgtype: 'text', text: { content: chunk } }, fallbackMsgid(intent.msgid, k));
+          // null：这一块补文已经有结果（启动恢复之前就发过）；队列里已经有这一行（同一组里排着）的不再排一遍
+          if (!extra || queue.some((q) => q.msgid === extra.intent.msgid)) continue;
           g.commit.set(extra.intent.msgid, extra.commit);
           queue.push(extra.intent);
         } catch (e) {
@@ -1189,6 +1243,38 @@ async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
     ok = false;
   }
   return { ok, stop: null };
+}
+
+/**
+ * 启动恢复补发的一组（同一会话、同一类，按段号）：库里已有的行（pending 已提交），卡片段的标题与地址从 payload 取（卡片发失败照样补
+ * 「标题 + 链接」，补文复用这一组已有的那几行）。接手代次取此刻的（恢复判定的那一刻，调用方判定之后同一段同步代码里建组）；通知与
+ * 人工回复不比接手。alreadySending（RESEND_UNKNOWN 为真时的 sending 段）只是不再 markSending：AI 产生的照样比接手，等待期间被接手
+ * 记 unknown、不补发。stillEligible：恢复补发的人工回复每次发请求之前的资格复核
+ */
+function groupOfIntents(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  intents: readonly OutboundIntent[],
+  o: { inboxId: string | null; alreadySending?: boolean; stillEligible?: () => boolean },
+): OutGroup {
+  const first = intents[0]!;
+  const sessionId = first.sessionId;
+  const cards = new Map<string, { title: string; url: string }>();
+  for (const i of intents) if (i.payload.msgtype === 'link') cards.set(i.msgid, { title: i.payload.link.title, url: i.payload.link.url });
+  return {
+    rt,
+    cfg,
+    uid: sessionId.slice(rt.prefix.length),
+    sessionId,
+    intents: [...intents],
+    gen: takeoverGen(sessionId),
+    checksTakeover: first.kind !== 'notice' && first.kind !== 'human',
+    cards,
+    commit: new Map(intents.map((i) => [i.msgid, 'committed' as const])),
+    inboxId: o.inboxId,
+    ...(o.alreadySending ? { alreadySending: new Set(intents.map((i) => i.msgid)) } : {}),
+    ...(o.stillEligible ? { stillEligible: o.stillEligible } : {}),
+  };
 }
 
 /** 先落库的几类（prepare 排的）与 push 自己排的：句柄 → 那一组（null：没排进去，push 直接返回 false） */
@@ -1681,7 +1767,14 @@ async function replyDb(
     finishInboxRow(sessionId, inboxId, 'done');
     return;
   }
-  const out = await runGroup(g);
+  return afterAiGroup(rt, sessionId, await runGroup(g), reply.stage, t0);
+}
+
+/**
+ * 一组 AI 回复发完（或停下）之后（replyDb 与启动恢复补发 replied 的分段共用）：停机截止留在 pending（重启后按同一 msgid 补发）；
+ * 被接手记「本轮未发送」（没发的分段已记 cancelled）；没送达记一条说明
+ */
+function afterAiGroup(rt: WecomRuntime, sessionId: string, out: GroupOutcome, stage: string, t0: number): 'deferred' | void {
   if (out.stop === 'deferred') {
     console.log(`${rt.tag} 停机中、发送已截止，回复的分段留在 pending（重启后按同一 msgid 补发）`);
     return 'deferred';
@@ -1697,7 +1790,7 @@ async function replyDb(
     return;
   }
   if (!out.ok) {
-    console.error(`${rt.tag} ⚠️ 回复未送达客户（阶段=${reply.stage}）:`, convLabel(sessionId));
+    console.error(`${rt.tag} ⚠️ 回复未送达客户（阶段=${stage}）:`, convLabel(sessionId));
     if (s) {
       s.messages.push({
         role: 'system',
@@ -1708,7 +1801,7 @@ async function replyDb(
     }
     return;
   }
-  console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
+  console.log(`${rt.tag} 已回复（阶段=${stage}，耗时 ${Date.now() - t0}ms）`);
 }
 
 // ---------------- 03 入站（库里的企微账号） ----------------
@@ -1723,7 +1816,8 @@ async function replyDb(
 //   enter_session acceptPage 里直接记 done（只为去重），欢迎语照 02 不排队
 // 发送失败回执（send_fail）照 02 不排进处理链、马上处理：出站行迁 failed 与入站行 done 同一个短事务（onSendFailInbox），会话里的说明
 // 照 02 经会话落库（排在正在退避重试的那一句后面的话，那一段看不到自己已是 failed，第 8 步审查的 maySendAgain 就落空了）
-// 没有会话可挂的状态变化走 writeInboxStateNow（短事务）。启动时有没结束的行，这一版不派发（startChannels 的闸门，第 10 步接上恢复）
+// 没有会话可挂的状态变化走 writeInboxStateNow（短事务）。启动时没结束的行由启动恢复（runRecovery，第 10 步）按 ord 派发进同一条
+// 处理链：出队时同样计次、判过期与截止，再按入站恢复表处理 recorded、replied 与保底（processOpenMessageRow）
 
 /** 出队时 attempts 已到这个数就记 poison：处理过三次都没走完（即第三次重启时停下，与 02 的「重放两次」同一口径） */
 const MAX_INBOX_ATTEMPTS = 3;
@@ -1763,7 +1857,13 @@ function finishInboxRow(
  * 那一段看不到自己已是 failed，会再发一次请求，不变量 5）；其余按会话排进处理链。page：这一页的原样消息（欢迎语要事件里的
  * welcome_code，进入会话事件的入站行不存原文）
  */
-function dispatchInboxRows(rt: WecomRuntime, cfg: WecomConfig, rows: readonly InboxRow[], page?: ReadonlyMap<string, KfMessage>): void {
+function dispatchInboxRows(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  rows: readonly InboxRow[],
+  page?: ReadonlyMap<string, KfMessage>,
+  rec: InboundRecoveryCtx | null = null,
+): void {
   for (const row of rows.toSorted((a, b) => a.ord - b.ord)) {
     if (row.kind === 'enter_session') {
       const msg = page?.get(row.msgid);
@@ -1777,15 +1877,18 @@ function dispatchInboxRows(rt: WecomRuntime, cfg: WecomConfig, rows: readonly In
       void t.finally(() => rt.eventTasks.delete(t));
       continue;
     }
-    enqueueForUser(rt, chainKeyOf(row), () => processInboxRow(rt, cfg, row));
+    enqueueForUser(rt, chainKeyOf(row), () => processInboxRow(rt, cfg, row, rec));
   }
 }
 
 /** 处理链的键：同一会话的入站行排在同一条链上 */
 const chainKeyOf = (row: InboxRow): string => row.conversationId ?? row.msgid;
 
-/** 处理链轮到一行：出队判定、计次，再按种类处理 */
-async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): Promise<void> {
+/**
+ * 处理链轮到一行：出队判定、计次，再按种类与状态处理。rec 不为空的是启动恢复派发的没结束的行（spec 入站恢复表，含 recorded、replied
+ * 与保底）；为空的是这个进程新收的（received）。replied 的行（只补发分段、不调模型）同样计次，一组分段反复把进程带崩也会停下来
+ */
+async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, rec: InboundRecoveryCtx | null = null): Promise<void> {
   const inbox = inboxOf(rt);
   // 停机时这个会话排在前面的那一行放下了：它后面的也都不出队，按 ord 整段留给重启恢复
   if (rt.haltedChains.has(chainKeyOf(row))) return;
@@ -1795,19 +1898,137 @@ async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow
   if (cutoff !== null && row.sentAt !== null && row.sentAt <= cutoff && (row.kind === 'message' || row.kind === 'menu_click')) {
     return recordOnlyInboxRow(rt, row, cutoff);
   }
-  if (row.state !== 'received') {
-    // TODO(03 第 10 步)：recorded、replied 的行按入站恢复表处理（保底、按同一 msgid 补发、以 alreadyRecorded 重跑）。
-    // 这一版的运行时只派发新收的行，启动时有没结束的行就不拉取（startChannels 的闸门），走不到这里
-    console.error(`${rt.tag} ⚠️ 入站行停在 ${row.state}，这一版不处理（启动恢复是第 10 步）`);
-    return;
-  }
   const attempts = await beginInboxAttempt(rt, inbox, row);
   if (attempts === null) return;
   const r: InboxRow = { ...row, attempts };
-  if (r.kind === 'message') return processMessageRow(rt, cfg, r);
+  if (r.kind === 'message') return processOpenMessageRow(rt, cfg, r, rec);
   if (r.kind === 'menu_click') return processMenuRow(rt, cfg, r);
   console.error(`${rt.tag} ⚠️ 不认识的入站种类 ${r.kind}，记 done`);
   return finishInboxRow(r.conversationId, r.id, 'done');
+}
+
+/**
+ * 一条客户消息按入站恢复表处理（spec「重启、崩溃与恢复」）：先过保底（R21：received 而名下已有出站行的按 replied、会话里已有这句的按
+ * recorded；recorded 而会话里找不到这句的先用 payload 补进会话），再按状态——received 照新消息处理；recorded 按「这句之后有没有
+ * AI 回复」切分段照常发、done 或以 alreadyRecorded 重跑；replied 按同一 msgid 补发名下 pending 的段（有接手人就取消）
+ */
+function processOpenMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, rec: InboundRecoveryCtx | null): Promise<void> {
+  if (row.state === 'received' && rec === null) return processMessageRow(rt, cfg, row);
+  const msg = row.payload as KfMessage | null;
+  const sessionId = row.conversationId ?? (msg?.external_userid ? rt.prefix + msg.external_userid : null);
+  if (!msg || !sessionId) {
+    console.error(`${rt.tag} ⚠️ 一行没结束的入站没有原文或会话（${row.state}），记 done`);
+    return finishInboxRow(row.conversationId, row.id, 'done');
+  }
+  const s = getSession(sessionId);
+  const at = s ? s.messages.findIndex((m) => m.role === 'customer' && m.msgid === row.msgid) : -1;
+  const eff = effectiveInboxState({
+    kind: row.kind,
+    state: row.state as 'received' | 'recorded' | 'replied',
+    inSession: at >= 0,
+    known: recentMsgids(sessionId).has(row.msgid),
+    hasOutbound: rec ? rec.withOutbound.has(row.id) : pendingIntentsOfInbox(row.id).length > 0,
+  });
+  if (eff.state === 'received') return processMessageRow(rt, cfg, row);
+  if (eff.state === 'replied') return resumeRepliedRow(rt, cfg, row, sessionId);
+  return resumeRecordedRow(rt, cfg, row, msg, sessionId, { restore: eff.restore, upgrade: row.state === 'received' });
+}
+
+/**
+ * recorded（含保底按 recorded 处理的 received）：restore 时先用 payload 把这句补进会话（会话部分没写进库：R6、poisoned、spill 回放失败）；
+ * upgrade（入站行还是 received、会话里已有这句）时随这次落库把入站行记 recorded（之后的 replied 才接得上迁移表）
+ */
+function resumeRecordedRow(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  row: InboxRow,
+  msg: KfMessage,
+  sessionId: string,
+  o: { restore: boolean; upgrade: boolean },
+): Promise<void> {
+  return withConversationLog(sessionId, async () => {
+    const isText = msg.msgtype === 'text' && !!msg.text?.content;
+    if (o.restore) {
+      const s = accountSession(rt, sessionId);
+      const content = isText ? inboundText(msg.text!.content) : placeholderOf(msg.msgtype);
+      s.messages.push({ role: 'customer', content, at: Date.now(), msgid: row.msgid, ...(row.sentAt ? { sentAt: row.sentAt } : {}) });
+      trimSessionMessages(s);
+      saveSession(s);
+      console.warn(`${rt.tag} 启动恢复：入站行已是 recorded、会话里却没有这句（会话部分没写进库），用原文补进会话`);
+    }
+    const s = getSession(sessionId);
+    const at = s ? s.messages.findIndex((m) => m.role === 'customer' && m.msgid === row.msgid) : -1;
+    if (o.upgrade && s && at >= 0) queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: s.messages[at]! });
+    const reply = s && at >= 0 ? aiReplyAfter(s.messages, at, (c) => isWelcomeText(rt, c)) : -1;
+    const action = recordedRecovery({
+      inWindow: at >= 0,
+      aiReplyAfter: reply >= 0,
+      handedOver: !!s?.handedOver,
+      hasAssignee: !!(s?.handedOver && s.assignee),
+    });
+    if (action.do === 'done') {
+      console.log(
+        `${rt.tag} 启动恢复：这句${action.why === 'handed_over' ? '已转人工、没有 AI 回复' : '已不在会话窗口里（被重置或裁剪）'}，记 done`,
+      );
+      return finishInboxRow(sessionId, row.id, 'done');
+    }
+    if (action.do === 'rerun') {
+      console.log(`${rt.tag} 启动恢复：这句已记下、回复还没生成，以 alreadyRecorded 重跑`);
+      return isText ? processMessageRow(rt, cfg, row, true) : processNonTextRow(rt, cfg, row, msg, sessionId, true);
+    }
+    const m = s!.messages[reply]!;
+    if (action.do === 'cancel_reply') {
+      // 不变量 10：有接手人的会话里不补发 AI 回复的分段。排进去随即取消（与 replied 一行同一口径，工作台这条回复「未发送」）
+      console.log(`${rt.tag} 启动恢复：这句的回复已生成、会话已有人接手，AI 回复不发`);
+      const { payloads } = payloadsFor(cfg, formatForWecom(cfg, m.content), 'ai', false);
+      try {
+        cancelIntents(planGroup(rt, cfg, sessionId, 'ai', m, payloads, null, takeoverGen(sessionId), row.id).intents, 'taken_over');
+      } catch (e) {
+        planFailed(rt, sessionId, e);
+      }
+      s!.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
+      saveSession(s!, false);
+      return finishInboxRow(sessionId, row.id, 'done');
+    }
+    // 这条回复没进过 replied，说明一段都没发过：按它切分段、planOutbound、照常发，不调模型
+    console.log(`${rt.tag} 启动恢复：这句的回复已生成、一段都没发过，照常发（不调模型）`);
+    await replyDb(rt, cfg, sessionId, { text: m.content, stage: s!.stage, message: m }, takeoverGen(sessionId), Date.now(), row.id);
+  });
+}
+
+/**
+ * replied（含保底按 replied 处理的 received）：会话有接手人 → 名下 pending 的段 cancelled、记「本轮未发送」；否则按同一 msgid、同一内容
+ * 发名下 pending 的段，不调模型；都有结果之后 done（停机截止停下的不记，留在 replied）
+ */
+function resumeRepliedRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, sessionId: string): Promise<void> {
+  return withConversationLog(sessionId, async () => {
+    const s = getSession(sessionId);
+    const pending = pendingIntentsOfInbox(row.id);
+    const action = repliedRecovery({ hasAssignee: !!(s?.handedOver && s.assignee), pending: pending.length });
+    if (action.do === 'done') {
+      console.log(`${rt.tag} 启动恢复：这句的回复已经都有结果，记 done`);
+      return finishInboxRow(sessionId, row.id, 'done');
+    }
+    if (action.do === 'cancel_pending') {
+      console.log(`${rt.tag} 启动恢复：会话已有人接手，这句的回复没发的 ${pending.length} 段不发`);
+      cancelIntents(pending, 'taken_over');
+      if (s) {
+        s.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
+        saveSession(s, false);
+      }
+      return finishInboxRow(sessionId, row.id, 'done');
+    }
+    const bad = pending.filter((i) => payloadProblem(i.payload) !== null);
+    if (bad.length) {
+      console.error(`${rt.tag} ⚠️ 启动恢复：${bad.length} 段出站的 payload 不合格，不补发、记 cancelled`);
+      cancelIntents(bad, 'restore');
+    }
+    const todo = pending.filter((i) => !bad.includes(i));
+    if (!todo.length) return finishInboxRow(sessionId, row.id, 'done');
+    console.log(`${rt.tag} 启动恢复：这句的回复有 ${todo.length} 段没发，按同一 msgid 补发（不调模型）`);
+    const t0 = Date.now();
+    afterAiGroup(rt, sessionId, await runGroup(groupOfIntents(rt, cfg, todo, { inboxId: row.id })), s?.stage ?? '?', t0);
+  });
 }
 
 /**
@@ -1890,15 +2111,15 @@ function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Pr
   return done;
 }
 
-/** 客户消息（文本与非文本） */
-function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): Promise<void> {
+/** 客户消息（文本与非文本）。alreadyRecorded：启动恢复时这句已经记进会话、回复还没生成（入站恢复表的 recorded），不再记一遍 */
+function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, alreadyRecorded = false): Promise<void> {
   const msg = row.payload as KfMessage;
   const sessionId = row.conversationId ?? rt.prefix + msg.external_userid;
   // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
   return withConversationLog(sessionId, async () => {
-    if (msg.msgtype !== 'text' || !msg.text?.content) return processNonTextRow(rt, cfg, row, msg, sessionId);
+    if (msg.msgtype !== 'text' || !msg.text?.content) return processNonTextRow(rt, cfg, row, msg, sessionId, alreadyRecorded);
     const t0 = Date.now();
-    console.log(`${rt.tag} 收到客户消息: "${logQuote(msg.text.content)}"`);
+    console.log(`${rt.tag} ${alreadyRecorded ? '重跑' : '收到'}客户消息: "${logQuote(msg.text.content)}"`);
     // 接手代次在这一轮开始时记下，发之前再比（不变量 28 的适配器部分）；catch 里的兜底道歉也用它（模型等待期间被接手、随后模型
     // 报错时，拿接手之后的新代次去比会全过，道歉照发给客户——第 8 步审查）
     const gen = takeoverGen(sessionId);
@@ -1909,6 +2130,7 @@ function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): P
         msgid: msg.msgid,
         sentAt: msg.send_time * 1000,
         inboxId: row.id,
+        ...(alreadyRecorded ? { alreadyRecorded: true } : {}),
       });
       void enrichCustomerProfile(rt, cfg, msg.external_userid); // 会话已建，异步补昵称回填后台展示
       if (r.silent || !r.text.trim()) {
@@ -1931,23 +2153,32 @@ function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow): P
  * 非文本消息：适配器自己写占位（不经引擎，同样算一轮），占位与 recorded 同一次落库；已转人工只记不回（done）；否则引导提示带 inboxId
  * 走 planOutbound（replied 与它的 pending 同一次落库，同一次落库里先 recorded 再 replied）。提示发成功才记进会话（02 的口径）
  */
-function processNonTextRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, msg: KfMessage, sessionId: string): Promise<void> {
+function processNonTextRow(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  row: InboxRow,
+  msg: KfMessage,
+  sessionId: string,
+  alreadyRecorded = false,
+): Promise<void> {
   return withTurnScope(async () => {
     const session = accountSession(rt, sessionId);
     startTurn(sessionId);
     const stageBefore = session.stage;
-    const placeholder: ChatMessage = {
-      role: 'customer',
-      content: placeholderOf(msg.msgtype),
-      at: Date.now(),
-      msgid: msg.msgid,
-      sentAt: msg.send_time * 1000,
-    };
-    session.messages.push(placeholder);
-    // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
-    trimSessionMessages(session);
-    saveSession(session);
-    queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: placeholder });
+    if (!alreadyRecorded) {
+      const placeholder: ChatMessage = {
+        role: 'customer',
+        content: placeholderOf(msg.msgtype),
+        at: Date.now(),
+        msgid: msg.msgid,
+        sentAt: msg.send_time * 1000,
+      };
+      session.messages.push(placeholder);
+      // 与引擎同一道封顶：这条路不经引擎，转人工后只发图片的客户也不能让会话无限膨胀
+      trimSessionMessages(session);
+      saveSession(session);
+      queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: placeholder });
+    }
     if (session.handedOver) {
       console.log(`${rt.tag} 静默（${msg.msgtype} 消息，转人工后不自动回复）`);
       endTurn('silent', '', stageBefore, session.stage);
@@ -2107,7 +2338,7 @@ function dispatch(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = f
 // 记 pending，本轮拉完立刻补拉。
 
 function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promise<void> {
-  if (rt.stopping || rt.recovery === 'blocked') return Promise.resolve();
+  if (rt.stopping || rt.recovery !== 'done') return Promise.resolve();
   if (rt.syncTask) {
     rt.pendingRequested = true;
     if (syncToken) rt.pendingToken = syncToken;
@@ -2227,18 +2458,14 @@ async function replayInflight(rt: WecomRuntime, state: FileWecomState, cfg: Weco
 
 /**
  * 幂等：加载状态（env 账号再重放在途消息）。启动循环与回调都先 await 它，消除「回调早于加载」的竞态。
- * 库里的账号：load 读库里的 cursor、恢复截止点与没结束的行；读不到（库不可用）下次再试；有没结束的行时这一版不拉取
- * （startChannels 的闸门在装载时已经挡过，这里是兜底；启动恢复是第 10 步）
+ * 库里的账号：启动恢复（runRecovery）已经 load 过（库里的 cursor、恢复截止点，没结束的行已派发），这里是它之后读不到时的兜底；
+ * 读不到（库不可用）下次再试
  */
 function ensureReady(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
   const state = rt.state;
   if (state.kind === 'file') return (rt.readyPromise ??= state.load().then(() => replayInflight(rt, state, cfg)));
   return (rt.readyPromise ??= state.load(rt.id).then(
-    ({ open }) => {
-      if (!open.length) return;
-      rt.recovery = 'blocked';
-      console.error(`${rt.tag} ⚠️ 有没结束的入站 ${open.length} 行，这一版的启动恢复处理不了：不拉取`);
-    },
+    () => undefined,
     (e: unknown) => {
       rt.readyPromise = null;
       throw e;
@@ -2253,8 +2480,9 @@ async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: s
     console.log(`${rt.tag} 停机中，回调不再拉取（新进程启动后补拉）`);
     return;
   }
-  if (rt.recovery === 'blocked') {
-    console.error(`${rt.tag} 启动恢复没做完（有没结束的入站或没结果的出站行），回调不拉取`);
+  if (rt.recovery !== 'done') {
+    // 回调照样回 success：消息还在 cursor 之后，恢复做完开始拉取时第一拍就补拉（startRuntime）
+    console.log(`${rt.tag} 启动恢复还没做完，回调这次不拉取（做完之后补拉）`);
     return;
   }
   try {
@@ -2333,17 +2561,67 @@ export interface WecomAccountStart {
   account: ChannelAccount;
   /** 解密后的凭据（只在内存里，打印是「[已遮盖]」） */
   secrets: Redacted<WecomSecrets>;
-  /**
-   * false：启动恢复这一版做不了（有没结束的入站行或没结果的出站行），只建运行时（recovery = 'blocked'）、不拉取。
-   * 给第 10 步：恢复的入口加在这里——先按出站恢复表处理 openOutbound，再把没结束的入站行经 dispatchInboxRows 按 ord 派发
-   * （processInboxRow 补上 recorded、replied 两种状态与保底），然后 recovery 改 done、startRuntime 开始拉新消息
-   */
-  pull: boolean;
+  /** initChannels 那一刻读到的这个账号没结束的入站行与没结果的出站行（启动恢复按它们做，spec「重启、崩溃与恢复」） */
+  open: { inbox: readonly OpenInboxLike[]; outbound: readonly OpenOutboundLike[] };
+}
+
+/** 启动恢复读库（load、入站名下的出站行）失败时的退避：与出队计次同一套，停机时放下 */
+async function retryUntilStopped<T>(rt: WecomRuntime, what: string, fn: () => Promise<T>): Promise<T | null> {
+  for (let i = 0; ; i++) {
+    if (rt.stopping) return null;
+    try {
+      return await fn();
+    } catch (e) {
+      const delay = ATTEMPT_RETRY_MS[Math.min(i, ATTEMPT_RETRY_MS.length - 1)]!;
+      const code = (e as { code?: unknown } | null)?.code;
+      console.error(
+        `${rt.tag} ⚠️ 启动恢复${what}没读成（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}），` +
+          `${delay / 1000} 秒后再试（这之前不拉取）`,
+      );
+      for (let waited = 0; waited < delay && !rt.stopping; waited += 1_000) await new Promise((r) => setTimeout(r, 1_000));
+    }
+  }
+}
+
+/**
+ * 启动恢复（03 spec「重启、崩溃与恢复」，src/channels/recovery.ts）：先按出站恢复表处理 initChannels 读到的没结果的出站行（补发一段一段
+ * 等完），再读这个账号的拉取位置与没结束的入站行（load）、按 ord 派发进各自会话的处理链（入站恢复表在 processInboxRow 里，出队时照常
+ * 计次、判过期与截止）。派发完就算做完：recovery 改 done、gate 打开（排队的 push 放行）、开始拉取（同一客户的新消息排在恢复的行后面）。
+ * 停机了就停下：没做完，不拉取
+ */
+async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccountStart): Promise<void> {
+  const port: RecoveryPort = {
+    accountId: rt.id,
+    tag: rt.tag,
+    recordOnlyUntil: start.account.wecom?.recordOnlyUntil ?? null,
+    resend: async (intent, alreadySending, stillEligible) => {
+      const out = await sendGroup(
+        groupOfIntents(rt, cfg, [intent], { inboxId: null, alreadySending, ...(stillEligible ? { stillEligible } : {}) }),
+      );
+      if (out.stop === 'deferred') console.log(`${rt.tag} 停机中、发送已截止，恢复要补发的一段留在库里（下次启动再按出站恢复表处理）`);
+    },
+    stopping: () => rt.stopping,
+  };
+  try {
+    await recoverOutbound(port, start.open.outbound, start.open.inbox);
+  } catch (err) {
+    // 出站恢复中途出错：没处理到的行留在库里原样（下次启动再按表处理），入站恢复与拉取照常，不让这个账号停在这里
+    console.error(`${rt.tag} ⚠️ 启动恢复（出站）中途出错，没处理到的行留到下次启动:`, err);
+  }
+  const loaded = await retryUntilStopped(rt, '读入站', () => inboxOf(rt).loadForRecovery(rt.id));
+  if (!loaded || rt.stopping) return;
+  rt.readyPromise = Promise.resolve();
+  if (loaded.open.length) console.log(`${rt.tag} 启动恢复（入站）：${loaded.open.length} 行没结束，按 ord 派发进各自会话的处理链`);
+  dispatchInboxRows(rt, cfg, loaded.open, undefined, { withOutbound: loaded.withOutbound });
+  rt.recovery = 'done';
+  rt.gate.open();
+  startRuntime(rt);
 }
 
 /**
  * 起一个库里企微账号的运行时（03 spec R10），按账号 uuid 登记。配置来自账号行与解密的凭据，不读 WECOM_*；
- * 拉取状态在 channel_inbox（第 9 步：cursor 与入站行同一个事务，load 时读库里的 cursor 与恢复截止点）；发送先落库后发送（第 8 步）
+ * 拉取状态在 channel_inbox（第 9 步：cursor 与入站行同一个事务，load 时读库里的 cursor 与恢复截止点）；发送先落库后发送（第 8 步）。
+ * 先做启动恢复（第 10 步，runRecovery），做完才开始拉取；恢复做完之前这个账号的 push 排队等待（至多 30 秒）
  */
 export function startWecomAccount(s: WecomAccountStart): void {
   const { account } = s;
@@ -2372,11 +2650,11 @@ export function startWecomAccount(s: WecomAccountStart): void {
     state: new AccountInbox({ id: account.id, idPrefix: w.idPrefix, tag }),
   });
   runtimes.set(rt.id, rt);
-  if (!s.pull) {
-    rt.recovery = 'blocked';
-    return;
-  }
-  startRuntime(rt);
+  const cfg = rt.config()!;
+  // 恢复与它补发的那几段按 eventTasks 跟踪：停机时等它（它自己看 stopping 停下），自测的 idle 也等它
+  const task = runRecovery(rt, cfg, s).catch((err) => console.error(`${rt.tag} 启动恢复异常（不拉取，重启之后再按表处理）:`, err));
+  rt.eventTasks.add(task);
+  void task.finally(() => rt.eventTasks.delete(task));
 }
 
 /** 停掉并注销库里账号的运行时（自测的 __channelsTest.reset 用）：不再拉取、轮询定时器清掉；env 账号不动 */
@@ -2470,6 +2748,18 @@ function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: W
   return { rt, cfg };
 }
 
+/**
+ * 库里账号的启动恢复做完之前，push（人工回复、跟进、通知）排队等待，至多 30 秒（spec「重启、崩溃与恢复」）：做完了 true；
+ * 超时 false（调用方按没发出去处理：跟进按 02 的明确失败、人工回复记「未能发送」）
+ */
+async function recovered(rt: WecomRuntime): Promise<boolean> {
+  if (rt.gate.isOpen) return true;
+  console.log(`${rt.tag} 启动恢复还没做完，这次推送排队等待`);
+  if (await rt.gate.wait()) return true;
+  console.error(`${rt.tag} ⚠️ 启动恢复在等待上限之内没做完，这次推送不发（按没发出去处理）`);
+  return false;
+}
+
 export const wecomAdapter: ChannelAdapter = {
   name: 'wecom',
   /**
@@ -2482,6 +2772,11 @@ export const wecomAdapter: ChannelAdapter = {
       if (g !== undefined) {
         preparedGroups.delete(opts.prepared);
         if (!g) return false;
+        if (!(await recovered(g.rt))) {
+          // 已排进库的 pending 取消（工作台「未发送」；跟进据此按明确失败处理，不当成结果不明）
+          cancelIntents(g.intents, 'aborted');
+          return false;
+        }
         const out = await runGroup(g);
         if (out.stop === 'deferred') console.error(`${g.rt.tag} 停机中、发送已截止，这次推送留在 pending（重启后按出站恢复处理）`);
         return out.ok && out.stop === null;
@@ -2490,7 +2785,7 @@ export const wecomAdapter: ChannelAdapter = {
     const route = pushRoute(sessionId);
     if (!route) return false;
     const { rt, cfg } = route;
-    if (isDbAccount(rt)) return pushDb(rt, cfg, sessionId, text, opts);
+    if (isDbAccount(rt)) return (await recovered(rt)) && pushDb(rt, cfg, sessionId, text, opts);
     if (sendsClosed(rt)) {
       // 停机的 normal 段已截止：不再开始新的 send_msg（账本行已无处可写），按没发出去返回（跟进退账、之后再排）
       console.error(`${rt.tag} 停机中、发送已截止，这次推送不发`);
@@ -2560,6 +2855,9 @@ export const __test = {
   LEGACY_WELCOME_TEXTS,
 };
 
+/** 仅供自测：RESEND_UNKNOWN 与 push 等恢复的上限（spec「RESEND_UNKNOWN 经适配器的 __channelTest 在子进程里设」；实现在 recovery.ts） */
+export { __channelTest } from '../channels/recovery.js';
+
 /** 仅供自测（src/adapters/wecom-03.selftest.ts）：按账号看运行时 */
 export const __wecomTest = {
   /** 这个账号的运行时（没有为 null）：拉取状态、是否忙、启动恢复、后端种类、恢复截止点 */
@@ -2576,15 +2874,15 @@ export const __wecomTest = {
       : null;
   },
   /**
-   * 第 10 步的启动恢复会做的那一部分（自测用）：重新 load 这个账号（库里的 cursor、恢复截止点、没结束的行），把没结束的行按 ord 派发进
-   * 处理链（这一版只处理 received；出队时照常判 poison、too_old、恢复截止与计次）。返回派发了几行；没有这个账号的运行时为 -1
+   * 启动恢复的入站那一半（自测用）：重新 load 这个账号（库里的 cursor、恢复截止点、没结束的行），把没结束的行按 ord 派发进处理链
+   * （出队时照常判 poison、too_old、恢复截止与计次，再按入站恢复表处理）。返回派发了几行；没有这个账号的运行时为 -1
    */
   async dispatchOpen(accountId: string): Promise<number> {
     const rt = runtimes.get(accountId);
     const cfg = rt?.config();
     if (!rt || !cfg || rt.state.kind !== 'channel_inbox') return -1;
-    const { open } = await rt.state.load(rt.id);
-    dispatchInboxRows(rt, cfg, open);
+    const { open, withOutbound } = await rt.state.loadForRecovery(rt.id);
+    dispatchInboxRows(rt, cfg, open, undefined, { withOutbound });
     return open.length;
   },
   /** 进程里所有运行时都闲下来（没有拉取、处理链与欢迎语） */

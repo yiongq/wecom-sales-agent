@@ -661,7 +661,7 @@ async function dbScenarios(h: Harness): Promise<void> {
       );
       assert.equal(ch.get(web)!.secrets, null);
       assert.deepEqual(channelsHealth(), { mode: 'db', accounts: 3, failing: 0, stuck: 0 });
-      startChannels(); // 两个企微账号都有没结束的入站与出站行：启动恢复是第 10 步，只建运行时、不拉取，不抛、不写 var/wecom-cursor.json
+      startChannels(); // 两个企微账号都有没结束的入站与出站行：起运行时、先做启动恢复（这里没装会话存储，读不到入站、不拉取），不抛、不写 var/wecom-cursor.json
       assert.ok(!fs.existsSync(wecomMod.__test.STATE_FILE));
       if (h.pglite) await healthzAndCallback();
     },

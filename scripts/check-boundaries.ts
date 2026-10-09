@@ -73,8 +73,13 @@ const PURE_STORE = [
   'src/handoff/triggers.corpus.ts',
   'src/jobs/optout.ts',
 ];
-/** 03 的纯模块：未建的先登记；recovery.ts 的判定部分由第 10 步拆文件后再登记。 */
-const PURE_CHANNELS = ['src/channels/secrets.ts', 'src/channels/markers.ts', 'src/channels/transitions.ts'];
+/** 03 的纯模块：recovery.ts 的判定部分拆在 recovery-rules.ts（第 10 步） */
+const PURE_CHANNELS = [
+  'src/channels/secrets.ts',
+  'src/channels/markers.ts',
+  'src/channels/transitions.ts',
+  'src/channels/recovery-rules.ts',
+];
 
 const IMPORT_RULES: ImportRule[] = [
   {

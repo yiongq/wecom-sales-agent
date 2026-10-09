@@ -13,6 +13,7 @@ import type { KfMessage } from '../adapters/wecom-state.js';
 import { pgErrorOf, type Tx } from '../db/client.js';
 import { readAccountCursor, updateChannelAccount } from '../db/repo/channel-accounts.js';
 import { bumpInboxAttempts, insertInboxRows, readOpenInbox, type InboxRecord, type NewInboxRow } from '../db/repo/channel-inbox.js';
+import { readOutboundOfInboxes } from '../db/repo/outbound.js';
 import type { InboxAbandonReason, InboxKind, InboxState } from '../shared/channel-types.js';
 import { cleanText } from '../shared/text.js';
 import { withChannelTx } from '../store.js';
@@ -179,11 +180,42 @@ export class AccountInbox implements PgInbox {
   }
 
   async load(accountId: string): Promise<{ cursor: string; recordOnlyUntil: number | null; open: InboxRow[] }> {
+    const { cursor, recordOnlyUntil, open } = await this.loadOpen(accountId, false);
+    return { cursor, recordOnlyUntil, open };
+  }
+
+  /**
+   * 启动恢复（03 第 10 步）的 load：同一个短事务里再读这些没结束的入站名下有没有出站行（任何状态），给保底「received 而名下已有出站行的
+   * 按 replied 处理」用（R21）。withOutbound 是名下有出站行的入站行 id
+   */
+  loadForRecovery(
+    accountId: string,
+  ): Promise<{ cursor: string; recordOnlyUntil: number | null; open: InboxRow[]; withOutbound: ReadonlySet<string> }> {
+    return this.loadOpen(accountId, true);
+  }
+
+  private async loadOpen(
+    accountId: string,
+    outbound: boolean,
+  ): Promise<{ cursor: string; recordOnlyUntil: number | null; open: InboxRow[]; withOutbound: ReadonlySet<string> }> {
     this.own(accountId);
-    const { acct, open } = await inboxTx(async (tx) => ({
-      acct: await readAccountCursor(tx, accountId),
-      open: await readOpenInbox(tx, accountId),
-    }));
+    const { acct, open, withOutbound } = await inboxTx(async (tx) => {
+      const rows = await readOpenInbox(tx, accountId);
+      return {
+        acct: await readAccountCursor(tx, accountId),
+        open: rows,
+        withOutbound: new Set(
+          outbound && rows.length
+            ? (
+                await readOutboundOfInboxes(
+                  tx,
+                  rows.map((r) => r.id),
+                )
+              ).map((r) => r.inboxId)
+            : [],
+        ),
+      };
+    });
     this.cursor = acct?.cursor ?? '';
     this.recordOnlyUntil = acct?.recordOnlyUntil ? acct.recordOnlyUntil.getTime() : null;
     if (!this.cursor) {
@@ -193,7 +225,7 @@ export class AccountInbox implements PgInbox {
           `${new Date(this.coldStartCutoff).toLocaleString('zh-CN')} 之前的消息只记下、不回复`,
       );
     }
-    return { cursor: this.cursor, recordOnlyUntil: this.recordOnlyUntil, open: open.map(inboxRowOf) };
+    return { cursor: this.cursor, recordOnlyUntil: this.recordOnlyUntil, open: open.map(inboxRowOf), withOutbound };
   }
 
   /**
