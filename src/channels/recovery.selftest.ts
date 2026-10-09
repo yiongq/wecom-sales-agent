@@ -118,6 +118,17 @@ const V = {
   p2: 'wm10p2', // 恢复做完之前的人工回复，等过上限
 };
 
+/** k4 → p1…p4 的客户（验收 3：一页 3 条；验收 9：毒消息与排在它后面的第二句） */
+const A3 = ['wm10s1', 'wm10s2', 'wm10s3'];
+const PZ = 'wm10pz';
+const POISON_NOTE = '⚠️ 客户有一条消息 AI 未能处理（已重放 2 次仍未处理完），请人工回复';
+
+/** 毒消息那个客户的入站行：原文 → msgid（payload 在入站行结束之后清空，先按原文找到的记下来） */
+const pzMsgids = new Map<string, string>();
+
+/** 子进程：先把结果写下来，再像被 OOM、kill -9 那样硬杀自己（childMain 装上；假企微、假模型在约好的那一刻调它） */
+let die: (() => void) | null = null;
+
 if (CHILD) await childMain(CHILD);
 else await parentMain();
 
@@ -397,15 +408,44 @@ async function parentMain(): Promise<never> {
       for (const f of r.result.fails) fails.push(`${label}：${f}`);
       if (r.result.fails.length) fails.push(`${label} 的日志：${r.out.slice(-4000)}`);
     };
-    const PAIRS: [string, string, string][] = [
-      ['k1', 'r1', '验收 4 的杀点、验收 7 的 A、验收 20'],
-      ['k2', 'r2', 'RESEND_UNKNOWN 为真、验收 7 的 B'],
-      ['k3', 'r3', '验收 18 每一种出站行、跟进等恢复'],
+    // 每一组前后几个子进程连同一个库；kill 的那一个卡到约好的那一刻自己 SIGKILL，ok 的那一个正常结束
+    const SEQS: { label: string; steps: [string, 'kill' | 'ok'][] }[] = [
+      {
+        label: '验收 4 的杀点、验收 7 的 A、验收 20',
+        steps: [
+          ['k1', 'kill'],
+          ['r1', 'ok'],
+        ],
+      },
+      {
+        label: 'RESEND_UNKNOWN 为真、验收 7 的 B',
+        steps: [
+          ['k2', 'kill'],
+          ['r2', 'ok'],
+        ],
+      },
+      {
+        label: '验收 18 每一种出站行、跟进等恢复',
+        steps: [
+          ['k3', 'kill'],
+          ['r3', 'ok'],
+        ],
+      },
+      {
+        label: '验收 3 提交之后立刻杀、验收 9 毒消息',
+        steps: [
+          ['k4', 'kill'],
+          ['p1', 'kill'],
+          ['p2', 'kill'],
+          ['p3', 'kill'],
+          ['p4', 'ok'],
+        ],
+      },
     ];
-    for (const [kill, restart, label] of PAIRS) {
-      // 每一对一个一次性库（createRealPgFixture 会改集群级角色的口令：一对用完再建下一对）
+    for (const { label, steps } of SEQS) {
+      // 每一组一个一次性库（createRealPgFixture 会改集群级角色的口令：一组用完再建下一组）
       const fx = await testing.createRealPgFixture(url, { slug: 'recov10' });
-      const dir = fs.mkdtempSync(path.join(ROOT, `${kill}-`));
+      const dir = fs.mkdtempSync(path.join(ROOT, `${steps[0]![0]}-`));
       const env = {
         RECOVERY_APP_URL: fx.urls.app,
         RECOVERY_SUPER_URL: fx.urls.super,
@@ -414,12 +454,15 @@ async function parentMain(): Promise<never> {
         VAR_DIR: fs.mkdtempSync(path.join(dir, 'var-')),
       };
       try {
-        const k = runChild(kill, env);
-        check(`${label}：${kill} 卡到要杀的那一刻之后自己 SIGKILL`, k.signal === 'SIGKILL', `status=${k.status} ${k.out.slice(-2000)}`);
-        merge(`${label}（${kill}）`, k);
-        const r = runChild(restart, env);
-        check(`${label}：${restart} 重启之后正常结束`, r.status === 0, `status=${r.status} signal=${r.signal} ${r.out.slice(-2000)}`);
-        merge(`${label}（${restart}）`, r);
+        for (const [mode, expect] of steps) {
+          const r = runChild(mode, env);
+          if (expect === 'kill') {
+            check(`${label}：${mode} 走到约好的那一刻之后被 SIGKILL`, r.signal === 'SIGKILL', `status=${r.status} ${r.out.slice(-2000)}`);
+          } else {
+            check(`${label}：${mode} 重启之后正常结束`, r.status === 0, `status=${r.status} signal=${r.signal} ${r.out.slice(-2000)}`);
+          }
+          merge(`${label}（${mode}）`, r);
+        }
       } finally {
         await fx.drop();
       }
@@ -434,7 +477,8 @@ async function parentMain(): Promise<never> {
   console.log(
     `RECOVERY SELFTEST PASS: ${pass} 项断言全通（纯函数 ${purePass} 项：出站恢复表、保底、入站恢复表每一格 / 真实 PG 子进程 SIGKILL：` +
       `模型生成途中、回复落库第一段没开始、两段发完第一段、请求已到回包挂住、markSending 之后请求没到、RESEND_UNKNOWN 为真重跑、` +
-      `R6 的 A 与 B、停机截止之后留 pending、每一种没结果的出站行、恢复做完之前跟进与人工回复排队）`,
+      `R6 的 A 与 B、停机截止之后留 pending、每一种没结果的出站行、恢复做完之前跟进与人工回复排队、一页提交之后立刻杀、` +
+      `毒消息第三次重启记 poison）`,
   );
   process.exit(0);
 }
@@ -474,6 +518,11 @@ async function childMain(mode: string): Promise<never> {
     Object.assign(console, orig);
     if (fails.length) for (const l of logBuf.slice(-150)) console.error(`  ${l}`);
   };
+  die = (): void => {
+    flushLogs();
+    save();
+    process.kill(process.pid, 'SIGKILL');
+  };
   try {
     const h = await harness(mode);
     if (mode === 'k1') await kill1(h);
@@ -482,7 +531,12 @@ async function childMain(mode: string): Promise<never> {
     else if (mode === 'r2') await restart2(h);
     else if (mode === 'k3') await kill3(h);
     else if (mode === 'r3') await restart3(h);
+    else if (mode === 'k4') await kill4(h);
+    else if (mode === 'p1') await poison1(h);
+    else if (mode === 'p2' || mode === 'p3') await poisonAgain(h, mode === 'p2' ? 2 : 3);
+    else if (mode === 'p4') await poison4(h);
     else fails.push(`不认识的子进程 ${mode}`);
+    if (mode === 'p1' || mode === 'p2' || mode === 'p3') fails.push(`${mode}：毒消息没有让进程崩溃`);
     if (mode.startsWith('k')) {
       // 卡在要杀的那一刻：先把结果写下来，再像被 OOM、kill -9 那样硬杀（没有停机钩子、没有 spill）
       flushLogs();
@@ -550,7 +604,10 @@ async function harness(mode: string) {
     /** send_msg 按收件人挂住：before 请求没进去就挂住（不记下）；after 记下之后挂住回包 */
     sendHolds: new Map<string, Hold & { how: 'before' | 'after' }>(),
     /** 假模型：客户这句里含 match 的那一轮回 content；有 hold 的先挂住 */
-    model: [] as { match: string; content?: string; hold?: Hold }[],
+    model: [] as { match: string; content?: string; hold?: Hold; die?: () => Promise<void> }[],
+    /** 下一页非空的 sync_msg 回 has_more=1；紧接着同一账号的下一次 sync_msg（acceptPage 已提交、刚派发）就地硬杀（验收 3） */
+    killAfterPage: null as string | null,
+    killOnNextSync: null as string | null,
   };
   const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
   const realFetch = globalThis.fetch;
@@ -566,6 +623,12 @@ async function harness(mode: string) {
       const text = typeof user?.content === 'string' ? user.content : json(user?.content ?? '');
       append(files.llm, { user: text.slice(0, 120) });
       const step = fake.model.find((s) => text.includes(s.match));
+      if (step?.die) {
+        // 毒消息（验收 9）：处理到调模型这一步就把进程带崩（先做完要在死之前看的断言）
+        await step.die();
+        die?.();
+        await sleep(10_000);
+      }
       if (step?.hold) {
         step.hold.reached = true;
         await step.hold.gate;
@@ -594,11 +657,18 @@ async function harness(mode: string) {
     if (ep === 'media/upload') return res({ errcode: 40004, errmsg: 'selftest' });
     if (ep === 'kf/sync_msg') {
       const kf = String(body.open_kfid);
+      // 同步地硬杀：这一刻上一页的 acceptPage 已提交、新行刚派发，处理链还没写成任何东西（计次要等一次往返）
+      if (fake.killOnNextSync === kf) die?.();
       const log = fake.logs.get(kf) ?? [];
       const [k, i] = String(body.cursor ?? '').split(':');
       const from = k === kf ? Number(i) || 0 : 0;
       const list = log.slice(from);
-      return res({ errcode: 0, next_cursor: `${kf}:${from + list.length}`, has_more: 0, msg_list: list });
+      const more = list.length > 0 && fake.killAfterPage === kf;
+      if (more) {
+        fake.killAfterPage = null;
+        fake.killOnNextSync = kf;
+      }
+      return res({ errcode: 0, next_cursor: `${kf}:${from + list.length}`, has_more: more ? 1 : 0, msg_list: list });
     }
     if (ep === 'kf/send_msg') {
       const to = String(body.touser);
@@ -666,8 +736,26 @@ async function harness(mode: string) {
       );
     }
   } else {
-    for (const r of await su<{ id: string; key: string }>('select id, key from channel_accounts where tenant_id = $1', [tenantId])) {
+    for (const r of await su<{ id: string; key: string; cursor: string | null }>(
+      'select id, key, cursor from channel_accounts where tenant_id = $1',
+      [tenantId],
+    )) {
       ids.set(r.key, r.id);
+      // 假企微的日志只在进程里：重启的子进程先垫到库里的 cursor 那一位，之后客户说的话接在后面（垫的这几条永远拉不到）
+      const kf = acct(r.key).kf;
+      const n = r.cursor?.startsWith(`${kf}:`) ? Number(r.cursor.slice(kf.length + 1)) || 0 : 0;
+      fake.logs.set(
+        kf,
+        Array.from({ length: n }, (_, i) => ({
+          msgid: `pad-${r.key}-${i}`,
+          open_kfid: kf,
+          external_userid: 'wm10pad',
+          send_time: 0,
+          origin: 3,
+          msgtype: 'text',
+          text: { content: 'pad' },
+        })),
+      );
     }
   }
 
@@ -1532,4 +1620,169 @@ function lines<T>(f: string): T[] {
         .filter(Boolean)
         .map((l) => JSON.parse(l) as T)
     : [];
+}
+
+// ======================================================================================
+// k4 → p1 → p2 → p3 → p4：验收 3（一页提交之后立刻杀）、验收 9（每次处理都让进程崩溃的毒消息）
+// ======================================================================================
+
+async function kill4(h: Harness): Promise<void> {
+  h.start();
+  await h.idle();
+  // 验收 3（r2）：假企微一页 3 条；acceptPage 提交之后、这一页回 has_more，紧接着的下一次 sync_msg 就地硬杀
+  for (const [i, uid] of A3.entries()) h.say('r2', uid, `S${i + 1} 想去云南看看`);
+  h.fake.killAfterPage = acct('r2').kf;
+  h.pull('r2');
+  await sleep(30_000);
+  fails.push('k4：acceptPage 提交之后没有被杀');
+}
+
+async function poison1(h: Harness): Promise<void> {
+  // 验收 3：重启之前库里是这一页的 3 行（received、attempts 0），cursor 已随它们推进
+  const rows = await Promise.all(A3.map(async (uid) => (await h.inboxesOf(sidOf('r2', uid)))[0]));
+  const [cur] = await h.su<{ cursor: string | null }>('select cursor from channel_accounts where key = $1', ['r2']);
+  check(
+    '验收 3 · acceptPage 提交之后立刻 SIGKILL：库里有这 3 行（received、attempts 0），cursor 已推进到这一页之后，还没有出站行',
+    rows.every((r) => r?.state === 'received' && r.attempts === 0) &&
+      cur?.cursor === `${acct('r2').kf}:3` &&
+      (await Promise.all(A3.map((uid) => h.outOf(sidOf('r2', uid))))).every((o) => o.length === 0),
+    json({ rows, cur }),
+  );
+  h.start();
+  await h.settle();
+  const after = await Promise.all(
+    A3.map(async (uid) => ({ inbox: (await h.inboxesOf(sidOf('r2', uid)))[0], out: await h.outOf(sidOf('r2', uid)) })),
+  );
+  check(
+    '验收 3 · 重启后这 3 条各回复一次：入站 done、attempts 1，每个客户在假企微上恰好一组、每段一次，各调一次模型',
+    after.every(
+      (x, i) =>
+        x.inbox?.state === 'done' &&
+        x.inbox.attempts === 1 &&
+        x.out.length >= 1 &&
+        x.out.every((o) => o.status === 'accepted') &&
+        json(h.sendsTo(A3[i]!).map((s) => s.msgid)) === json(x.out.map((o) => o.msgid)) &&
+        h.llmCalls(`S${i + 1} 想去云南`) === 1,
+    ),
+    json({ after, sends: A3.map((u) => h.sendsTo(u).length) }),
+  );
+  // 验收 9（r1）：客户先正常聊一句（会话建好），再在一页里发毒消息与第二句；毒消息处理到调模型就把进程带崩（第 1 次）
+  h.say('r1', PZ, 'PZ0 你好');
+  h.pull('r1');
+  await h.settle();
+  check('（前提）验收 9：客户先正常聊了一句，有回复', h.sendsTo(PZ).length >= 1 && !!h.store.getSession(sidOf('r1', PZ)));
+  h.fake.model.push({ match: 'POISON', die: async () => {} });
+  h.say('r1', PZ, 'POISON 每次都让进程崩溃的一句');
+  h.say('r1', PZ, 'PZ2 两个人五天');
+  h.pull('r1');
+  await sleep(30_000);
+}
+
+/** 毒消息、第 n 次处理（重启之后由启动恢复派发）：计次 n 之后调模型、进程又崩；排在后面的第二句一直没出队 */
+async function poisonAgain(h: Harness, n: number): Promise<void> {
+  const [p, q] = await Promise.all([inboxOfText(h, 'POISON'), inboxOfText(h, 'PZ2 两个人')]);
+  check(
+    `验收 9 · 第 ${n - 1} 次重启之前：毒消息 attempts ${n - 1}、第二句 attempts 0、received（不受连累）`,
+    p?.attempts === n - 1 && q?.attempts === 0 && q.state === 'received',
+    json({ p, q }),
+  );
+  h.fake.model.push({
+    match: 'POISON',
+    die: async () => {
+      const [p2, q2] = await Promise.all([inboxOfText(h, 'POISON'), inboxOfText(h, 'PZ2 两个人')]);
+      check(
+        `验收 9 · 第 ${n - 1} 次重启：毒消息出队、计次到 ${n} 之后再把进程带崩；第二句还没出队（attempts 0）`,
+        p2?.attempts === n && q2?.attempts === 0,
+        json({ p2, q2 }),
+      );
+    },
+  });
+  h.start();
+  await sleep(30_000);
+}
+
+async function poison4(h: Harness): Promise<void> {
+  const [p0, q0] = await Promise.all([inboxOfText(h, 'POISON'), inboxOfText(h, 'PZ2 两个人')]);
+  check('（前提）验收 9 · 第三次重启之前：毒消息 attempts 3、第二句 0', p0?.attempts === 3 && q0?.attempts === 0, json({ p0, q0 }));
+  h.start();
+  await h.settle();
+  const sid = sidOf('r1', PZ);
+  const [p, q] = await Promise.all([inboxOfText(h, 'POISON', true), inboxOfText(h, 'PZ2 两个人', true)]);
+  const notes = (h.store.getSession(sid)?.messages ?? []).filter((m) => m.role === 'system' && m.content === POISON_NOTE);
+  check(
+    '验收 9 · 第三次重启：毒消息出队时 attempts 已是 3 → abandoned（poison）、payload 已空，不再调模型；会话里多一条说明',
+    p?.state === 'abandoned' && p.reason === 'poison' && p.attempts === 3 && p.nopay && h.llmCalls('POISON') === 0 && notes.length === 1,
+    json({ p, notes: notes.length, calls: h.llmCalls('POISON') }),
+  );
+  const alerts = h.alertLines().filter((l) => l.includes('处理了三次都没走完'));
+  check(
+    '验收 9 · 告警一条：账号 key 与条数，没有 external_userid',
+    alerts.length === 1 && alerts[0]!.includes('企微账号 r1 有 1 条客户消息') && !alerts[0]!.includes(PZ),
+    json(h.alertLines()),
+  );
+  const qOut = await h.su<{ msgid: string; status: string }>(
+    'select channel_msgid as msgid, status from outbound_sends where inbox_id = $1',
+    [q!.id],
+  );
+  check(
+    '验收 9 · 排在它后面、同一客户的第二句不受连累：attempts 1、done、回复一组（调一次模型）',
+    q?.state === 'done' &&
+      q.attempts === 1 &&
+      qOut.length >= 1 &&
+      qOut.every((o) => o.status === 'accepted') &&
+      h.llmCalls('PZ2 两个人') === 1,
+    json({ q, qOut }),
+  );
+  // 之后的消息照常处理
+  h.say('r1', PZ, 'PZ3 之后再问一句');
+  h.pull('r1');
+  await h.settle();
+  const r = await inboxOfText(h, 'PZ3 之后再问', true);
+  const rOut = r ? await h.su<{ status: string }>('select status from outbound_sends where inbox_id = $1', [r.id]) : [];
+  check(
+    '验收 9 · 之后的消息照常处理：done、attempts 1、回复一组；毒消息从头到尾没有回复（假企微上这个客户只有 PZ0、PZ2、PZ3 三组）',
+    r?.state === 'done' &&
+      r.attempts === 1 &&
+      rOut.length >= 1 &&
+      rOut.every((o) => o.status === 'accepted') &&
+      h.sendsTo(PZ).length ===
+        (await h.su<{ n: string }>(`select count(*)::text as n from outbound_sends where conversation_id = $1`, [sid])).map((x) =>
+          Number(x.n),
+        )[0],
+    json({ r, rOut, sends: h.sendsTo(PZ).length }),
+  );
+}
+
+/** 毒消息那个客户的入站行（按原文找：入站行 payload 在结束之后清空，结束的按 msgid 找回） */
+async function inboxOfText(
+  h: Harness,
+  text: string,
+  withPayloadGone = false,
+): Promise<{ id: string; msgid: string; state: string; attempts: number; reason: string | null; nopay: boolean } | null> {
+  const known = pzMsgids.get(text);
+  const rows = await h.su<{
+    id: string;
+    msgid: string;
+    state: string;
+    attempts: number;
+    reason: string | null;
+    nopay: boolean;
+    said: string | null;
+  }>(
+    `select id::text as id, msgid, state, attempts, reason, payload is null as nopay, payload->'text'->>'content' as said
+       from channel_inbox where conversation_id = $1 order by ord`,
+    [sidOf('r1', PZ)],
+  );
+  const row = rows.find((r) => (known ? r.msgid === known : (r.said ?? '').includes(text)));
+  if (row && !known) pzMsgids.set(text, row.msgid);
+  if (!row && withPayloadGone) {
+    // 结束之后 payload 清空：按会话里记下的客户消息原文找 msgid
+    const [m] = await h.su<{ msgid: string }>(
+      `select msgid from messages where conversation_id = $1 and role = 'customer' and content like $2 order by seq limit 1`,
+      [sidOf('r1', PZ), `%${text}%`],
+    );
+    const hit = m ? rows.find((r) => r.msgid === m.msgid) : undefined;
+    if (hit) return hit;
+  }
+  return row ?? null;
 }
