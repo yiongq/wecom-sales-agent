@@ -450,6 +450,11 @@
 - 新套件 `src/quota/outbound.selftest.ts`（账本与落库层，PGlite 122 项，有 PG 时共 236 项，串在 `quota.selftest` 之后）；`src/adapters/wecom-03.selftest.ts` 加 `out` / `rout` 两个子进程测适配器的完整顺序（框架可挡借连接、在请求到达时查库、挂住回包）；`src/db/testing.ts` 加 `openGatedDb`（真实 PG 上挡借连接）；console 自测加 6 项（「发送中」「未发送」）。
 - 变异（隔离副本）10 个全部被抓到：不比第二次接手、`absent` 一律照发、晚到的 `pending` 盖掉结果、结果写进主事务（plan 要求的四个），加上 pending / cancelled 写进存档点、跳过 `markSending`、截止之后不迁回 `pending`、内存账本不看迁移表、放弃之后 UPDATE 不回滚（PGlite 上存活，补了一条只在真实 PG 跑的行锁测试之后抓到）、人工回复的 prepare 推迟。
 
+**交叉评审与 CI**
+
+- 另派一路只读 Codex 交叉评审，找到 3 处 major，都带复现，由实现的子 agent 修掉、各补一条回归断言（撤回修复时断言失败）：一、退避重试期间收到失败回执、这一段已是 `failed`，重试前只比接手与截止，仍再发一次（违反不变量 5）——`ledger.ts` 加 `maySendAgain`，退避结束、重取 token、强刷 token 之后再请求之前都同步检查，终态就停；二、回执先于消息追加时，`message_seq` 补写被终态条件挡住，工作台按 seq 查不到这段失败——upsert 把「补 seq」与状态迁移分开判（状态、结果、`payload` 只在迁移表允许时改，`message_seq` 只能从 NULL 补成值），账本在回执早于结果、消息还没分到 seq 时等分到 seq 再写一行，迁移表一格没放宽；三、模型等待期间顾问接手、随后模型报错，异常兜底重新读了接手后的代次，「系统开小差」照发——本轮代次在 try 之前取、显式传给兜底。
+- CI（UTC）上跟进相关的两条断言没触发：08 点落在跟进的夜间时段（22–9 点）被顺延。PGlite 子进程改为预加载 parity-clock、从当天本地 12:00 起走，真实 PG 子进程用 `FOLLOWUP_QUIET_START/END=0` 关掉夜间时段；在本机用 `TZ=UTC` 复现并确认修好。修后两轮 `pnpm test`（`TZ=UTC`，带与不带 `PG_TEST_URL`）全绿。
+
 **给后面步骤的注意**
 
 - 第 9 步：`planOutbound` 已收 `inboxId` 并写 `inbox_id`，适配器现在都传 null，入站 `replied` 还没写，要在 `planOutbound` 的同一次落库加上；`runGroup` 结束处补「全部有结果 → `done`」（`cancelled` 算不算结果 spec 没写，到时定）；入站 `abandoned` 时调 `cancelIntents(…, 'inbox_abandoned')`。
