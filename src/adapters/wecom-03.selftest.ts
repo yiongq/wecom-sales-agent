@@ -14,6 +14,9 @@
 //   prod（prod profile、LOG_FORMAT=json）：非默认账号跑一轮（回调、回复、人工回复、停用账号的推送），父进程扫标准输出：
 //         没有 external_userid，也没有会话原 id 与它的 %3A 编码形式（不变量 22）。
 //   rpg（PG_TEST_URL 设了才跑）：真实 Postgres 上以 agent_app 写 cursor 与 channel_account_id，按预载的读法重建以列为准。
+//   out / rout：第 8 步的出站先落库、后发送（见 outboundSuite）。
+//   in / rin（03 第 9 步）：入站 channel_inbox 与状态机（见 inboxSuite）：一页的提交与回滚、ord、事务边界（测试触发器记 txid）、
+//         状态机每一格、出队计次、poison、too_old、冷启动、恢复截止点只补记、四种入站。rin 在真实 PG 上跑同一套。
 // 用法：npx tsx src/adapters/wecom-03.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
 import { spawnSync } from 'node:child_process';
@@ -171,6 +174,8 @@ async function parentMain(): Promise<never> {
   }
   // 03 第 8 步：出站先落库后发送（适配器的整条顺序）
   merge('出站 PGlite', runChild('out', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'out-')) }, NOON));
+  // 03 第 9 步：入站 channel_inbox 与状态机（不跑跟进，不依赖钟点与时区，用真钟）
+  merge('入站 PGlite', runChild('in', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'in-')) }));
   let realPg = false;
   if (process.env.PG_TEST_URL) {
     realPg = true;
@@ -179,6 +184,7 @@ async function parentMain(): Promise<never> {
       '出站 真实 PG',
       runChild('rout', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rout-')), FOLLOWUP_QUIET_START: '0', FOLLOWUP_QUIET_END: '0' }),
     );
+    merge('入站 真实 PG', runChild('rin', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rin-')) }));
   } else if (process.env.CI === 'true') {
     fails.push('CI 下必须设 PG_TEST_URL：按账号的 cursor 与 channel_account_id 要以 agent_app 身份在真实 Postgres 上写一遍');
   }
@@ -192,7 +198,9 @@ async function parentMain(): Promise<never> {
     `WECOM-03 SELFTEST PASS: ${pass} 项断言全通（三个账号交错收发、会话 id 按账号前缀、open_kfid 与 token 按账号、cursor 各自进库 / ` +
       `一个账号取不到 token 或停用不影响别的 / 回调按账号验签、OpenKfId 分派、receiveid 校验、不存在与网页与停用的 key / ` +
       `channel_account_id 的投影与预载 / 重启接着库里的 cursor / prod JSON 日志里没有 external_userid / ` +
-      `出站先落库后发送：每段发请求之前已是 sending、各类出站的 pending 在它们那一次落库、接手与停机截止、R6、工作台${realPg ? ' / 真实 PG' : '；真实 PG 部分未跑'}）`,
+      `出站先落库后发送：每段发请求之前已是 sending、各类出站的 pending 在它们那一次落库、接手与停机截止、R6、工作台 / ` +
+      `入站：一页与 cursor 同一事务的提交与回滚、ord、recorded 与消息同一事务、replied 与 pending 同一事务、状态机每一格、出队计次、` +
+      `poison、too_old、冷启动、恢复截止点只补记、四种入站${realPg ? ' / 真实 PG' : '；真实 PG 部分未跑'}）`,
   );
   process.exit(0);
 }
@@ -249,6 +257,7 @@ async function childMain(mode: string): Promise<never> {
     else if (mode === 'prod') await prodSuite(h);
     else if (mode === 'rpg') await realPgSuite(h);
     else if (mode === 'out' || mode === 'rout') await outboundSuite(h);
+    else if (mode === 'in' || mode === 'rin') await inboxSuite(h);
     else fails.push(`不认识的子进程 ${mode}`);
     await h.close();
   } catch (e) {
@@ -365,7 +374,8 @@ async function harness(m: string) {
     return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
   }) as typeof fetch;
   let seq = 0;
-  const tag = m === 'restart' ? 'r' : m === 'prod' ? 'p' : m === 'rpg' ? 'g' : m === 'out' ? 'o' : m === 'rout' ? 'q' : 'm';
+  const TAGS: Record<string, string> = { restart: 'r', prod: 'p', rpg: 'g', out: 'o', rout: 'q', in: 'i', rin: 'j' };
+  const tag = TAGS[m] ?? 'm';
   /** 客户在这个客服账号上发了一句（进假企微的日志，等拉取） */
   const say = (kf: string, uid: string, content: string): FakeMsg => {
     const msg: FakeMsg = {
@@ -382,8 +392,8 @@ async function harness(m: string) {
     fake.logs.set(kf, list);
     return msg;
   };
-  /** 进假企微日志的任意一条（事件、菜单点击、回执） */
-  const emit = (kf: string, partial: Omit<FakeMsg, 'msgid' | 'open_kfid' | 'send_time'>): FakeMsg => {
+  /** 进假企微日志的任意一条（事件、菜单点击、回执）；send_time 不给就是现在（秒） */
+  const emit = (kf: string, partial: Omit<FakeMsg, 'msgid' | 'open_kfid' | 'send_time'> & { send_time?: number }): FakeMsg => {
     const msg: FakeMsg = { msgid: `m03${tag}-${++seq}`, open_kfid: kf, send_time: Math.floor(Date.now() / 1000), ...partial };
     const list = fake.logs.get(kf) ?? [];
     list.push(msg);
@@ -401,7 +411,7 @@ async function harness(m: string) {
   let closeDb: () => Promise<void>;
   /** 挡住写库（借连接）：gate 设了就先等它，acquire 设了就抛它（第 8 步的验收 5、7、20） */
   let faults: { gate: Promise<void> | null; acquire: Error | null };
-  const realPg = m === 'rpg' || m === 'rout';
+  const realPg = m === 'rpg' || m === 'rout' || m === 'rin';
   if (realPg) {
     const fx = await testing.createRealPgFixture(process.env.PG_TEST_URL!, { slug: 'wecom03' });
     const app = await testing.openGatedDb(fx.urls.app);
@@ -415,7 +425,7 @@ async function harness(m: string) {
       await fx.drop();
     };
   } else {
-    const t = await testing.openTestDb(m === 'prod' || m === 'out' ? {} : { dataDir: process.env.WECOM03_DATA_DIR! });
+    const t = await testing.openTestDb(m === 'prod' || m === 'out' || m === 'in' ? {} : { dataDir: process.env.WECOM03_DATA_DIR! });
     const fx = await testing.installPgSessionStore(t, { varDir, slug: 'demo' });
     db = t.db;
     faults = fx.faults;
@@ -457,6 +467,11 @@ async function harness(m: string) {
       web,
       JSON.stringify({ title: '网页咨询' }),
     ]);
+  }
+  if (m === 'in' || m === 'rin') {
+    // 第 9 步：b1 启动时已经拉过（库里有 cursor，不是冷启动：过期的消息出队时才判 too_old）；a1、a2 是冷启动
+    await su(`update channel_accounts set cursor = 'kf03b1:0' where tenant_id = $1 and key = 'b1'`, [tenantId]);
+    for (const sql of inboxTestSql()) await su(sql);
   }
 
   const reg = await import('../channels/registry.js');
@@ -1736,5 +1751,825 @@ async function outboundSuite(h: Harness): Promise<void> {
   }
 
   h.fake.beforeSend = null;
+  ledger.__ledgerTest.setWaits(null);
+}
+
+// ======================================================================================
+// in / rin：入站 channel_inbox 与状态机（03 第 9 步；spec「入站：channel_inbox」，R2、R3、R7 的恢复截止、R21，不变量 1、2、3、8、11、12，
+// 验收 3、9 不含杀进程的部分）。事务边界靠测试触发器看：wsa09_txlog 记每次写入所在事务的 txid（入站行、消息、出站行、同意记录、cursor），
+// wsa09_flags 让插入入站或推进 cursor 在提交之前失败。触发器函数以超级用户 SECURITY DEFINER 建，agent_app 写业务表时顺带记下。
+// 杀进程的部分（提交之后立刻 SIGKILL、毒消息把进程带崩三次）在第 10 步；这里「重启之后的派发」用 __wecomTest.dispatchOpen 模拟
+// （重新 load、把没结束的行按 ord 派发，即第 10 步对 received 行要做的那一部分）
+// ======================================================================================
+
+/** 测试触发器（函数声明：文件开头的顶层 await 先于这里的 const 初始化就要用到） */
+function inboxTestSql(): string[] {
+  return [
+    `create table if not exists wsa09_txlog (n bigserial primary key, tbl text not null, k text, k2 text, seq int, txid bigint not null)`,
+    `create table if not exists wsa09_flags (k text primary key)`,
+    `create or replace function wsa09_log() returns trigger language plpgsql security definer set search_path = public as $$
+   begin
+     if TG_TABLE_NAME = 'channel_inbox' then
+       insert into wsa09_txlog (tbl, k, k2, seq, txid) values ('inbox', NEW.id::text, NEW.state, NEW.message_seq, txid_current());
+     elsif TG_TABLE_NAME = 'messages' then
+       insert into wsa09_txlog (tbl, k, k2, seq, txid) values ('message', NEW.msgid, NEW.conversation_id, NEW.seq, txid_current());
+     elsif TG_TABLE_NAME = 'outbound_sends' then
+       insert into wsa09_txlog (tbl, k, k2, seq, txid)
+         values ('outbound', NEW.channel_msgid, NEW.status || ':' || coalesce(NEW.inbox_id::text, ''), NEW.message_seq, txid_current());
+     elsif TG_TABLE_NAME = 'consents' then
+       insert into wsa09_txlog (tbl, k, k2, seq, txid) values ('consent', NEW.conversation_id, NEW.decision, null, txid_current());
+     elsif TG_TABLE_NAME = 'channel_accounts' then
+       if NEW.cursor is distinct from OLD.cursor then
+         insert into wsa09_txlog (tbl, k, k2, seq, txid) values ('cursor', NEW.key, NEW.cursor, null, txid_current());
+       end if;
+     end if;
+     return null;
+   end $$`,
+    `create trigger wsa09_log_inbox after insert or update on channel_inbox for each row execute function wsa09_log()`,
+    `create trigger wsa09_log_messages after insert on messages for each row execute function wsa09_log()`,
+    `create trigger wsa09_log_outbound after insert or update on outbound_sends for each row execute function wsa09_log()`,
+    `create trigger wsa09_log_consents after insert on consents for each row execute function wsa09_log()`,
+    `create trigger wsa09_log_cursor after update on channel_accounts for each row execute function wsa09_log()`,
+    // 条件分开写：plpgsql 不保证 and 短路，channel_inbox 的行上引用 NEW.cursor 会报 42703
+    `create or replace function wsa09_fail() returns trigger language plpgsql security definer set search_path = public as $$
+     begin
+       if TG_TABLE_NAME = 'channel_inbox' then
+         if exists (select 1 from wsa09_flags where k = 'fail_insert') then
+           raise exception 'wsa09: 插入入站失败（自测）';
+         end if;
+       elsif NEW.cursor is distinct from OLD.cursor then
+         if exists (select 1 from wsa09_flags where k = 'fail_cursor') then
+           raise exception 'wsa09: 推进 cursor 失败（自测）';
+         end if;
+       end if;
+       return NEW;
+     end $$`,
+    `create trigger wsa09_fail_inbox before insert on channel_inbox for each row execute function wsa09_fail()`,
+    `create trigger wsa09_fail_cursor before update on channel_accounts for each row execute function wsa09_fail()`,
+  ];
+}
+
+async function inboxSuite(h: Harness): Promise<void> {
+  const ledger = await import('../quota/ledger.js');
+  const tk = await import('../handoff/takeover.js');
+  const { __privacyTest } = await import('../privacy/privacy.js');
+  const { CONSENT_DECLINED_REPLY } = await import('../handoff/consent.js');
+  const { onInboxAbandoned } = await import('../channels/inbox.js');
+  const { startAlerts } = await import('../ops/alert.js');
+  startAlerts(); // 告警没配地址时只写一行日志，从日志里看 channel 那一条
+  ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
+  const { getSession } = h.store;
+  const seqOf = h.store.seqOf;
+  const idOf = (k: string): string => h.ids.get(k)!;
+  const sidOf = (k: string, uid: string): string => acct(k).prefix + uid;
+  interface InRow {
+    id: string;
+    ord: string;
+    msgid: string;
+    kind: string;
+    state: string;
+    reason: string | null;
+    attempts: number;
+    message_seq: number | null;
+    nopay: boolean;
+  }
+  const IN_COLS = 'id::text as id, ord::text as ord, msgid, kind, state, reason, attempts, message_seq, payload is null as nopay';
+  const inboxOfConv = (sid: string): Promise<InRow[]> =>
+    h.su<InRow>(`select ${IN_COLS} from channel_inbox where conversation_id = $1 order by ord`, [sid]);
+  const inboxByMsgid = async (msgid: string): Promise<InRow | null> =>
+    (await h.su<InRow>(`select ${IN_COLS} from channel_inbox where msgid = $1`, [msgid]))[0] ?? null;
+  interface TxRec {
+    n: string;
+    tbl: string;
+    k: string | null;
+    k2: string | null;
+    seq: number | null;
+    txid: string;
+  }
+  const txlog = (): Promise<TxRec[]> =>
+    h.su<TxRec>('select n::text as n, tbl, k, k2, seq, txid::text as txid from wsa09_txlog order by wsa09_txlog.n');
+  const flag = async (k: string, on: boolean): Promise<void> => {
+    if (on) await h.su('insert into wsa09_flags (k) values ($1) on conflict do nothing', [k]);
+    else await h.su('delete from wsa09_flags where k = $1', [k]);
+  };
+  const outOfInbox = (inboxId: string): Promise<{ msgid: string; status: string }[]> =>
+    h.su(`select channel_msgid as msgid, status from outbound_sends where inbox_id = $1 order by segment`, [inboxId]);
+  const settle = async (): Promise<void> => {
+    await h.idle();
+    for (let i = 0; i < 3; i++) {
+      await sleep(20);
+      await h.store.drainStore(5000);
+    }
+  };
+  const talk = async (k: string, uid: string, text: string): Promise<FakeMsg> => {
+    const m = h.say(acct(k).kf, uid, text);
+    await pull(h, k);
+    await settle();
+    return m;
+  };
+  const customerMsgids = (sid: string): string[] =>
+    (getSession(sid)?.messages ?? []).filter((m) => m.role === 'customer').map((m) => m.msgid ?? '');
+  /** 直接往库里放一行没结束的入站（模拟上一个进程留下的），payload 是企微原样的文本消息 */
+  const putOpen = async (k: string, uid: string, msgid: string, text: string, attempts: number, sentAt = Date.now()): Promise<string> => {
+    const payload: FakeMsg = {
+      msgid,
+      open_kfid: acct(k).kf,
+      external_userid: uid,
+      send_time: Math.floor(sentAt / 1000),
+      origin: 3,
+      msgtype: 'text',
+      text: { content: text },
+    };
+    const [r] = await h.su<{ id: string }>(
+      `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, attempts, payload)
+       values ($1, $2, $3, 'message', $4, $5, 'received', $6, $7::json) returning id::text as id`,
+      [h.tenantId, idOf(k), msgid, sidOf(k, uid), new Date(sentAt), attempts, JSON.stringify(payload)],
+    );
+    return r!.id;
+  };
+  const abandoned: { reason: string; account: string }[] = [];
+  onInboxAbandoned((e) => void abandoned.push(e));
+  const alertLines = (from: number): string[] => logsSince(from).filter((l) => l.includes('[alert]') && l.includes('AI 没有处理'));
+
+  await waitFor(() => ['a1', 'a2', 'b1'].every((k) => h.fake.syncs.some((s) => s.kfAcct === k)));
+  await settle();
+  check(
+    '库里的账号：拉取状态在 channel_inbox，没有内存里的 handled 与在途表；a1 是冷启动，b1 接着库里的 cursor',
+    ['a1', 'a2', 'b1'].every((k) => {
+      const i = h.wecom.__wecomTest.inspect(idOf(k));
+      return i?.backend === 'channel_inbox' && i.handled.length === 0 && i.inflight.length === 0;
+    }) &&
+      h.wecom.__wecomTest.inspect(idOf('a1'))?.coldStart === true &&
+      h.wecom.__wecomTest.inspect(idOf('b1'))?.coldStart === false,
+    json(['a1', 'b1'].map((k) => h.wecom.__wecomTest.inspect(idOf(k)))),
+  );
+
+  // ---- 验收 3：一页的提交与回滚（事务在提交之前失败：插入入站失败、推进 cursor 失败两种）、ord、cursor 与入站同一事务 ----
+  const page: FakeMsg[] = [];
+  {
+    const uid = 'wm09page';
+    const sid = sidOf('a2', uid);
+    page.push(h.say(acct('a2').kf, uid, '你好'), h.say(acct('a2').kf, uid, '想去云南'), h.say(acct('a2').kf, uid, '两个人'));
+    const ids = page.map((m) => m.msgid);
+    const c0 = (await h.cursors()).a2;
+    for (const f of ['fail_insert', 'fail_cursor']) {
+      await flag(f, true);
+      const from = logBuf.length;
+      await pull(h, 'a2');
+      await flag(f, false);
+      const [cnt] = await h.su<{ n: number }>('select count(*)::int as n from channel_inbox where msgid = any($1)', [ids]);
+      check(
+        `一页的事务在提交之前失败（${f === 'fail_insert' ? '插入入站' : '推进 cursor'}）：cursor 不变、channel_inbox 里没有这 3 行、没有派发`,
+        (await h.cursors()).a2 === c0 &&
+          h.wecom.__wecomTest.inspect(idOf('a2'))?.cursor === c0 &&
+          cnt!.n === 0 &&
+          h.sentTo(uid).length === 0 &&
+          !getSession(sid) &&
+          logsSince(from).some((l) => l.includes('这一页入站没写进库')),
+        json({ c0, cursor: (await h.cursors()).a2, cnt, sent: h.sentTo(uid).length }),
+      );
+    }
+    await pull(h, 'a2');
+    await settle();
+    const rows = await inboxOfConv(sid);
+    check(
+      '下一次拉取拿到同样 3 条、各处理一次：3 行 message、done、attempts 1、payload 已空；会话里这 3 句各记一次',
+      rows.length === 3 &&
+        rows.every((r) => r.kind === 'message' && r.state === 'done' && r.attempts === 1 && r.nopay && r.reason === null) &&
+        json(customerMsgids(sid)) === json(ids),
+      json({ rows, said: customerMsgids(sid) }),
+    );
+    check(
+      'ord 按页内顺序递增（同一页的 received_at 相同、send_time 只到秒，排先后靠它）',
+      json(rows.map((r) => r.msgid)) === json(ids) && rows.every((r, i) => i === 0 || BigInt(r.ord) > BigInt(rows[i - 1]!.ord)),
+      json(rows.map((r) => [r.msgid, r.ord])),
+    );
+    const outs = await Promise.all(rows.map((r) => outOfInbox(r.id)));
+    check(
+      '每一句各回复一组（出站行挂着这条入站、都 accepted），假企微上的分段恰好是这几组',
+      outs.every((o) => o.length >= 1 && o.every((x) => x.status === 'accepted')) &&
+        h.sentTo(uid).length === outs.flat().length &&
+        h.sentTo(uid).every((x) => outs.flat().some((o) => o.msgid === x.msgid)),
+      json({ outs, sent: h.sentTo(uid).map((x) => x.msgid) }),
+    );
+    const log = await txlog();
+    const ins = rows.map((r) => log.find((x) => x.tbl === 'inbox' && x.k === r.id && x.k2 === 'received'));
+    const cur = log.filter((x) => x.tbl === 'cursor' && x.k === 'a2' && x.k2 === `${acct('a2').kf}:3`);
+    check(
+      '这一页的 3 行入站与 cursor 推进是同一个事务（不变量 1）',
+      ins.every((x) => !!x) && cur.length === 1 && ins.every((x) => x!.txid === cur[0]!.txid),
+      json({ ins, cur }),
+    );
+    for (const [i, r] of rows.entries()) {
+      const msg = log.find((x) => x.tbl === 'message' && x.k === r.msgid);
+      const rec = log.find((x) => x.tbl === 'inbox' && x.k === r.id && x.k2 === 'recorded');
+      const rep = log.find((x) => x.tbl === 'inbox' && x.k === r.id && x.k2 === 'replied');
+      const pend = log.filter((x) => x.tbl === 'outbound' && x.k2 === `pending:${r.id}`);
+      check(
+        `第 ${i + 1} 句：recorded 与这条客户消息同一个事务、message_seq 是它的 seq；replied 与回复的 pending 同一个事务（不变量 3）`,
+        !!msg &&
+          !!rec &&
+          rec.txid === msg.txid &&
+          rec.seq === msg.seq &&
+          r.message_seq === msg.seq &&
+          !!rep &&
+          pend.length >= 1 &&
+          pend.every((p) => p.txid === rep.txid) &&
+          BigInt(rec.n) < BigInt(rep.n),
+        json({ msg, rec, rep, pend }),
+      );
+    }
+    // 同一个 msgid 又出现在后面一页（企微重推、cursor 重拉）：冲突即跳过，不派发、会话里不记第二遍（不变量 2）
+    const n0 = h.sentTo(uid).length;
+    h.fake.logs.get(acct('a2').kf)!.push(page[1]!);
+    await pull(h, 'a2');
+    await settle();
+    const [dup] = await h.su<{ n: number }>('select count(*)::int as n from channel_inbox where msgid = $1', [page[1]!.msgid]);
+    check(
+      '同一个 msgid 再拉到一次：channel_inbox 里仍只有一行、不再处理（会话里不记第二遍、不再回复）',
+      dup!.n === 1 && json(customerMsgids(sid)) === json(ids) && h.sentTo(uid).length === n0,
+      json({ dup, said: customerMsgids(sid), sent: h.sentTo(uid).length - n0 }),
+    );
+  }
+
+  // ---- 出队计次：同一客户一页两句，第一句处理途中第二句还排在后面（不计次）；之后各 1 ----
+  {
+    const uid = 'wm09cnt';
+    const sid = sidOf('a1', uid);
+    let release!: () => void;
+    const hang = new Promise<void>((r) => (release = r));
+    let hung = false;
+    const prev = h.fake.beforeSend;
+    h.fake.beforeSend = async (b) => {
+      await prev?.(b);
+      if (b.touser === uid && !hung) {
+        hung = true;
+        await hang;
+      }
+    };
+    const m1 = h.say(acct('a1').kf, uid, '你好');
+    const m2 = h.say(acct('a1').kf, uid, '想去西藏');
+    void h.wecom.syncAccountFromCallback(idOf('a1'), `cnt-${Date.now()}`);
+    await waitFor(() => hung, 10_000);
+    const r1 = await inboxByMsgid(m1.msgid);
+    const r2 = await inboxByMsgid(m2.msgid);
+    check(
+      '第一句处理途中（回复挂在发送上）：第一句已出队、attempts 1、replied；第二句排在后面从没开始处理：attempts 0、received（不变量 11）',
+      hung && r1?.attempts === 1 && r1.state === 'replied' && r2?.attempts === 0 && r2.state === 'received',
+      json({ r1, r2 }),
+    );
+    release();
+    await settle();
+    h.fake.beforeSend = prev;
+    const rows = await inboxOfConv(sid);
+    const sent = h.sentTo(uid);
+    const out1 = await outOfInbox(r1!.id);
+    const out2 = await outOfInbox(r2!.id);
+    check(
+      '第一句处理完才轮到第二句：两句各 attempts 1、done；回复按顺序发出（第一句那组在前）',
+      rows.length === 2 &&
+        rows.every((r) => r.attempts === 1 && r.state === 'done') &&
+        out1.length >= 1 &&
+        out2.length >= 1 &&
+        sent.findIndex((x) => x.msgid === out1[0]!.msgid) < sent.findIndex((x) => x.msgid === out2[0]!.msgid) &&
+        json(customerMsgids(sid)) === json([m1.msgid, m2.msgid]),
+      json({ rows, out1, out2, sent: sent.map((x) => x.msgid) }),
+    );
+  }
+  {
+    // 模拟重启之后的派发：上一个进程停在第一句（已计过 1 次）、第二句从没开始（0 次）。按 ord 重新派发：第一句 2、第二句 1，各回复一次
+    const uid = 'wm09rst';
+    const sid = sidOf('a1', uid);
+    const head = await putOpen('a1', uid, 'm09rst-1', '你好，想去云南', 1);
+    const tail = await putOpen('a1', uid, 'm09rst-2', '两个人，五天', 0);
+    const n = await h.wecom.__wecomTest.dispatchOpen(idOf('a1'));
+    await settle();
+    const rows = await inboxOfConv(sid);
+    const outH = await outOfInbox(head);
+    const outT = await outOfInbox(tail);
+    check(
+      '重新派发没结束的行（第 10 步对 received 行的做法）：按 ord，第一句 attempts 2、第二句 1，都 done、各回复一组，会话里按顺序各记一次',
+      n === 2 &&
+        json(rows.map((r) => [r.msgid, r.attempts, r.state])) ===
+          json([
+            ['m09rst-1', 2, 'done'],
+            ['m09rst-2', 1, 'done'],
+          ]) &&
+        outH.length >= 1 &&
+        outT.length >= 1 &&
+        json(customerMsgids(sid)) === json(['m09rst-1', 'm09rst-2']),
+      json({ n, rows, outH, outT, said: customerMsgids(sid) }),
+    );
+  }
+
+  // ---- 验收 9：毒消息（出队时 attempts 已到 3）：abandoned（poison）、会话加说明、告警；排在它后面的第二句不受连累 ----
+  {
+    const uid = 'wm09poi';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '你好');
+    const n0 = h.sentTo(uid).length;
+    const from = logBuf.length;
+    const a0 = abandoned.length;
+    const poison = await putOpen('a1', uid, 'm09poi-1', '每次都把进程带崩的一句', 3);
+    const next = await putOpen('a1', uid, 'm09poi-2', '想去西藏', 0);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('a1'));
+    await settle();
+    const p = await inboxByMsgid('m09poi-1');
+    const q = await inboxByMsgid('m09poi-2');
+    const note = getSession(sid)?.messages.find((m) => m.role === 'system' && m.content.includes('AI 未能处理'));
+    check(
+      'poison：出队时 attempts 已是 3 → abandoned（poison）、payload 已空、不再计次；不调模型、不发送、这句不记进会话',
+      p?.state === 'abandoned' &&
+        p.reason === 'poison' &&
+        p.nopay &&
+        p.attempts === 3 &&
+        (await outOfInbox(poison)).length === 0 &&
+        !customerMsgids(sid).includes('m09poi-1'),
+      json(p),
+    );
+    check(
+      'poison：会话多一条说明（02 的同一句），与 abandoned 同一次落库',
+      note?.content === '⚠️ 客户有一条消息 AI 未能处理（已重放 2 次仍未处理完），请人工回复' &&
+        (await (async () => {
+          const log = await txlog();
+          const ab = log.find((x) => x.tbl === 'inbox' && x.k === poison && x.k2 === 'abandoned');
+          const nm = log.find((x) => x.tbl === 'message' && x.k2 === sid && x.seq === seqOf(note));
+          return !!ab && !!nm && ab.txid === nm.txid;
+        })()),
+      json(note),
+    );
+    check(
+      'poison：告警（channel）一条，只有账号 key 与原因',
+      abandoned.slice(a0).some((e) => e.reason === 'poison' && e.account === 'a1') &&
+        alertLines(from).some((l) => l.includes('企微账号 a1 有 1 条客户消息 AI 没有处理（处理了三次都没走完') && !l.includes(uid)),
+      json(alertLines(from)),
+    );
+    check(
+      'poison：排在它后面、同一客户的第二句不受连累：attempts 1、done、回复一组、记进会话',
+      q?.state === 'done' &&
+        q.attempts === 1 &&
+        (await outOfInbox(next)).length >= 1 &&
+        h.sentTo(uid).length > n0 &&
+        customerMsgids(sid).includes('m09poi-2'),
+      json(q),
+    );
+    // 没建出会话的毒消息：入站行单独一个短事务记 abandoned，不为它建会话
+    const lone = await putOpen('a1', 'wm09poi2', 'm09poi-3', '你好', 3);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('a1'));
+    await settle();
+    const l = await inboxByMsgid('m09poi-3');
+    check(
+      'poison、没有会话：入站行单独记 abandoned（poison），不建会话、不发送',
+      l?.state === 'abandoned' && l.reason === 'poison' && !getSession(sidOf('a1', 'wm09poi2')) && (await outOfInbox(lone)).length === 0,
+      json(l),
+    );
+  }
+
+  // ---- 验收 9：sent_at 早于 48 小时（b1 不是冷启动）：出队时 abandoned（too_old），不调模型、不计次；会话加说明、告警 ----
+  {
+    const uid = 'wm09old';
+    const sid = sidOf('b1', uid);
+    await talk('b1', uid, '你好');
+    const n0 = h.sentTo(uid).length;
+    const from = logBuf.length;
+    const old = h.emit(acct('b1').kf, {
+      external_userid: uid,
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '两天前的一句' },
+      send_time: Math.floor((Date.now() - 49 * 3_600_000) / 1000),
+    });
+    const fresh = h.emit(acct('b1').kf, {
+      external_userid: 'wm09old2',
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '两天前的一句' },
+      send_time: Math.floor((Date.now() - 49 * 3_600_000) / 1000),
+    });
+    await pull(h, 'b1');
+    await settle();
+    const r = await inboxByMsgid(old.msgid);
+    const r2 = await inboxByMsgid(fresh.msgid);
+    check(
+      'too_old：插入时 received，出队时 abandoned（too_old）、attempts 0、payload 已空；不调模型、不发送、这句不记进会话',
+      r?.state === 'abandoned' &&
+        r.reason === 'too_old' &&
+        r.attempts === 0 &&
+        r.nopay &&
+        h.sentTo(uid).length === n0 &&
+        !customerMsgids(sid).includes(old.msgid) &&
+        getSession(sid)!.messages.at(-1)?.content === '⚠️ 客户有一条消息 AI 未能处理（已超过 48h 发送窗口），请人工回复',
+      json({ r, last: getSession(sid)?.messages.at(-1) }),
+    );
+    check(
+      'too_old：告警一条；没有会话的那一句单独记 abandoned、不建会话',
+      alertLines(from).some((l) => l.includes('企微账号 b1') && l.includes('已超过 48 小时')) &&
+        r2?.state === 'abandoned' &&
+        r2.reason === 'too_old' &&
+        !getSession(sidOf('b1', 'wm09old2')),
+      json({ alerts: alertLines(from), r2 }),
+    );
+  }
+
+  // ---- 冷启动（a1 启动时库里没有 cursor）：启动前 10 分钟之前的直接记 abandoned（cold_start），不派发 ----
+  {
+    const uid = 'wm09cold';
+    const m = h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '一小时前的一句' },
+      send_time: Math.floor((Date.now() - 3_600_000) / 1000),
+    });
+    await pull(h, 'a1');
+    await settle();
+    const r = await inboxByMsgid(m.msgid);
+    check(
+      '冷启动：早于截止的插成 abandoned（cold_start）、payload 空、attempts 0；不派发、不建会话、不发送',
+      r?.state === 'abandoned' &&
+        r.reason === 'cold_start' &&
+        r.nopay &&
+        r.attempts === 0 &&
+        !getSession(sidOf('a1', uid)) &&
+        h.sentTo(uid).length === 0,
+      json(r),
+    );
+  }
+
+  // ---- 恢复截止点（R7、不变量 9）：sent_at 不晚于 record_only_until 的只补记、不调模型、不发送；之后的照常 ----
+  {
+    __privacyTest.set({ version: 1, body: 'x' });
+    const uid = 'wm09ro';
+    const sid = sidOf('b1', uid);
+    const cutoff = Date.now() - 3_600_000;
+    await h.su('update channel_accounts set record_only_until = $1 where id = $2', [new Date(cutoff), idOf('b1')]);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('b1')); // 重新 load：读到恢复截止点（第 12 步的命令要求应用已停，这里直接重读）
+    const before = Math.floor((cutoff - 3_600_000) / 1000);
+    const t1 = h.emit(acct('b1').kf, {
+      external_userid: uid,
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '备份之后说的一句' },
+      send_time: before,
+    });
+    const t2 = h.emit(acct('b1').kf, { external_userid: uid, origin: 3, msgtype: 'image', send_time: before });
+    const t3 = h.emit(acct('b1').kf, {
+      external_userid: uid,
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '不同意', menu_id: 'health:declined' },
+      send_time: before,
+    });
+    const t4 = h.say(acct('b1').kf, uid, '现在再问一句');
+    await pull(h, 'b1');
+    await settle();
+    const rows = await Promise.all([t1, t2, t3, t4].map((m) => inboxByMsgid(m.msgid)));
+    const s = getSession(sid);
+    const notes = (s?.messages ?? []).filter((m) => m.role === 'system' && m.content.startsWith('恢复备份之后补记的客户消息'));
+    check(
+      `恢复截止点之前的三条（文本、图片、菜单点击）：abandoned（restore_cutoff）、attempts 0、payload 空、没有出站行${h.wecom.__wecomTest.inspect(idOf('b1'))?.recordOnlyUntil === cutoff ? '' : '（恢复截止点没读到）'}`,
+      rows.slice(0, 3).every((r) => r?.state === 'abandoned' && r.reason === 'restore_cutoff' && r.attempts === 0 && r.nopay) &&
+        (await Promise.all(rows.slice(0, 3).map((r) => outOfInbox(r!.id)))).every((o) => o.length === 0),
+      json(rows),
+    );
+    check(
+      '恢复截止点：文本与图片照常写进会话（图片是占位），菜单点击不补记、同意记录不变；会话只加一条说明（spec 原话）',
+      !!s &&
+        s.messages.some((m) => m.msgid === t1.msgid && m.content === '备份之后说的一句') &&
+        s.messages.some((m) => m.msgid === t2.msgid && m.content === '[图片]') &&
+        !s.messages.some((m) => m.msgid === t3.msgid) &&
+        notes.length === 1 &&
+        notes[0]!.content === '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复' &&
+        (await h.su(`select 1 from consents where conversation_id = $1 and decision = 'declined'`, [sid])).length === 0,
+      json(s?.messages.map((m) => [m.role, m.content.slice(0, 20)])),
+    );
+    const o4 = await outOfInbox(rows[3]!.id);
+    check(
+      '恢复截止点之后的那一句照常处理：done、attempts 1、回复一组（假企微上只有这一组）',
+      rows[3]?.state === 'done' && rows[3].attempts === 1 && o4.length >= 1 && h.sentTo(uid).length === o4.length,
+      json({ r: rows[3], o4, sent: h.sentTo(uid).length }),
+    );
+    await h.su('update channel_accounts set record_only_until = null where id = $1', [idOf('b1')]);
+    await h.wecom.__wecomTest.dispatchOpen(idOf('b1'));
+    __privacyTest.reset();
+  }
+
+  // ---- 四种入站：非文本（占位与 recorded 同一次落库，引导提示同样走 planOutbound：先 recorded 再 replied）----
+  let hintMsgid = '';
+  {
+    const uid = 'wm09img';
+    const sid = sidOf('a1', uid);
+    const m = h.emit(acct('a1').kf, { external_userid: uid, origin: 3, msgtype: 'image' });
+    await pull(h, 'a1');
+    await settle();
+    const r = await inboxByMsgid(m.msgid);
+    const ph = getSession(sid)?.messages.find((x) => x.msgid === m.msgid);
+    const log = await txlog();
+    const rec = log.find((x) => x.tbl === 'inbox' && x.k === r?.id && x.k2 === 'recorded');
+    const rep = log.find((x) => x.tbl === 'inbox' && x.k === r?.id && x.k2 === 'replied');
+    const msg = log.find((x) => x.tbl === 'message' && x.k === m.msgid);
+    const pend = log.filter((x) => x.tbl === 'outbound' && x.k2 === `pending:${r?.id}`);
+    const out = await outOfInbox(r!.id);
+    hintMsgid = out[0]?.msgid ?? '';
+    check(
+      '非文本：占位记进会话、入站 done、attempts 1；引导提示发出一组（挂着这条入站）',
+      r?.state === 'done' && r.attempts === 1 && ph?.content === '[图片]' && out.length === 1 && h.sentTo(uid).length === 1,
+      json({ r, ph, out }),
+    );
+    check(
+      '非文本：占位、recorded（message_seq 是占位的 seq）、引导提示的 pending、replied 都在同一个事务里，先 recorded 再 replied',
+      !!rec &&
+        !!rep &&
+        !!msg &&
+        rec.txid === msg.txid &&
+        rec.seq === seqOf(ph!) &&
+        rep.txid === rec.txid &&
+        pend.length === 1 &&
+        pend[0]!.txid === rec.txid &&
+        BigInt(rec.n) < BigInt(rep.n),
+      json({ rec, rep, msg, pend }),
+    );
+    // 已转人工：只记占位、不回（done）
+    const uid2 = 'wm09imgh';
+    const sid2 = sidOf('a1', uid2);
+    await talk('a1', uid2, '你好');
+    tk.takeover(sid2, tk.sharedActor());
+    const n0 = h.sentTo(uid2).length;
+    const m2 = h.emit(acct('a1').kf, { external_userid: uid2, origin: 3, msgtype: 'voice' });
+    await pull(h, 'a1');
+    await settle();
+    const r2 = await inboxByMsgid(m2.msgid);
+    check(
+      '非文本、已转人工：占位记进会话、不回（静默）、入站 done',
+      r2?.state === 'done' &&
+        h.sentTo(uid2).length === n0 &&
+        !!getSession(sid2)?.messages.some((x) => x.msgid === m2.msgid && x.content === '[语音]'),
+      json(r2),
+    );
+  }
+
+  // ---- 四种入站：菜单点击（applyConsentDecision 改了会话，同一次落库记 done）；已有结论的点击照 02 忽略、同样 done ----
+  {
+    __privacyTest.set({ version: 1, body: 'x' });
+    const uid = 'wm09menu';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '我妈有高血压，能去西藏吗');
+    const n0 = h.sentTo(uid).length;
+    const c1 = h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '不同意', menu_id: 'health:declined' },
+    });
+    await pull(h, 'a1');
+    await settle();
+    const r = await inboxByMsgid(c1.msgid);
+    const log = await txlog();
+    const done = log.find((x) => x.tbl === 'inbox' && x.k === r?.id && x.k2 === 'done');
+    const consent = log.find((x) => x.tbl === 'consent' && x.k === sid && x.k2 === 'declined');
+    check(
+      '菜单点击（不同意）：同意记录与入站 done 同一个事务；确认发出（通知，不挂入站）；点击本身不记进会话',
+      r?.kind === 'menu_click' &&
+        r.state === 'done' &&
+        r.attempts === 1 &&
+        !!done &&
+        !!consent &&
+        done.txid === consent.txid &&
+        h.sentTo(uid).at(-1)?.content === CONSENT_DECLINED_REPLY &&
+        (await outOfInbox(r.id)).length === 0 &&
+        !customerMsgids(sid).includes(c1.msgid),
+      json({ r, done, consent, sent: h.sentTo(uid).length - n0 }),
+    );
+    const n1 = h.sentTo(uid).length;
+    const c2 = h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 3,
+      msgtype: 'text',
+      text: { content: '不同意', menu_id: 'health:declined' },
+    });
+    await pull(h, 'a1');
+    await settle();
+    const r2 = await inboxByMsgid(c2.msgid);
+    check(
+      '菜单点击（旧菜单再点一次同一个决定，这个类别已有这个结论）：照 02 忽略，入站同样 done，不发、不多记同意记录',
+      r2?.state === 'done' &&
+        h.sentTo(uid).length === n1 &&
+        (await h.su(`select 1 from consents where conversation_id = $1 and decision = 'declined'`, [sid])).length === 1,
+      json(r2),
+    );
+    __privacyTest.reset();
+  }
+
+  // ---- 四种入站：发送失败回执（出站 failed 与入站 done 同一个短事务；重复的回执不再加说明）----
+  {
+    const uid = 'wm09img';
+    const sid = sidOf('a1', uid);
+    const notes0 = (getSession(sid)?.messages ?? []).filter((m) => m.role === 'system').length;
+    const f1 = h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'msg_send_fail', external_userid: uid, fail_msgid: hintMsgid, fail_type: 4 },
+    });
+    await pull(h, 'a1');
+    await settle();
+    const r = await inboxByMsgid(f1.msgid);
+    const log = await txlog();
+    const done = log.find((x) => x.tbl === 'inbox' && x.k === r?.id && x.k2 === 'done');
+    const failed = log.find((x) => x.tbl === 'outbound' && x.k === hintMsgid && x.k2?.startsWith('failed:'));
+    const [orow] = await h.su<{ status: string }>('select status from outbound_sends where channel_msgid = $1', [hintMsgid]);
+    check(
+      '回执：入站 send_fail（conversation_id 是会话、payload 只有 fail_msgid 与 fail_type）→ done；出站那一段 failed；两者同一个短事务',
+      !!hintMsgid &&
+        r?.kind === 'send_fail' &&
+        r.state === 'done' &&
+        orow?.status === 'failed' &&
+        !!done &&
+        !!failed &&
+        done.txid === failed.txid,
+      json({ r, done, failed, orow }),
+    );
+    const f2 = h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'msg_send_fail', external_userid: uid, fail_msgid: hintMsgid, fail_type: 4 },
+    });
+    await pull(h, 'a1');
+    await settle();
+    const r2 = await inboxByMsgid(f2.msgid);
+    const notes = (getSession(sid)?.messages ?? []).filter((m) => m.role === 'system').length;
+    check(
+      '重复的回执（另一个 msgid、同一个 fail_msgid）：入站 done，会话里只多了第一次的那一条说明',
+      r2?.state === 'done' && notes === notes0 + 1,
+      json({ r2, notes, notes0 }),
+    );
+  }
+
+  // ---- 四种入站：进入会话事件（acceptPage 里直接记 done，只为去重；欢迎语照 02）----
+  {
+    const uid = 'wm09ent';
+    await talk('a1', uid, '你好');
+    const n0 = h.sentTo(uid).length;
+    const ev = h.emit(acct('a1').kf, {
+      external_userid: uid,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'enter_session', external_userid: uid },
+    });
+    await pull(h, 'a1');
+    await settle();
+    const r = await inboxByMsgid(ev.msgid);
+    const log = await txlog();
+    check(
+      '进入会话：插入时就是 done（attempts 0、payload 空、没经过 received），老客户的欢迎语照 02 发出',
+      r?.kind === 'enter_session' &&
+        r.state === 'done' &&
+        r.attempts === 0 &&
+        r.nopay &&
+        log
+          .filter((x) => x.tbl === 'inbox' && x.k === r.id)
+          .map((x) => x.k2)
+          .join() === 'done' &&
+        h.sentTo(uid).length === n0 + 1,
+      json(r),
+    );
+  }
+
+  // ---- 静默（转人工之后）→ done；生成之后被接手打断（cancelled 也算有结果）→ done ----
+  {
+    const uid = 'wm09sil';
+    const sid = sidOf('a1', uid);
+    await talk('a1', uid, '我要人工');
+    const n0 = h.sentTo(uid).length;
+    const m = await talk('a1', uid, '在吗');
+    const r = await inboxByMsgid(m.msgid);
+    check(
+      '转人工之后的消息：引擎静默，入站 done（记了 recorded，没有出站行），不发',
+      r?.state === 'done' &&
+        h.sentTo(uid).length === n0 &&
+        (await outOfInbox(r.id)).length === 0 &&
+        (await txlog()).some((x) => x.tbl === 'inbox' && x.k === r.id && x.k2 === 'recorded') &&
+        customerMsgids(sid).includes(m.msgid),
+      json(r),
+    );
+  }
+  {
+    const uid = 'wm09tk';
+    const sid = sidOf('a1', uid);
+    let fired = false;
+    ledger.__ledgerTest.setMarkHook((intent) => {
+      if (intent.sessionId !== sid || fired) return;
+      fired = true;
+      tk.takeover(sid, tk.sharedActor()); // markSending 期间顾问接手
+    });
+    const m = await talk('a1', uid, '你好，想去云南');
+    ledger.__ledgerTest.setMarkHook(null);
+    const r = await inboxByMsgid(m.msgid);
+    const out = await outOfInbox(r!.id);
+    check(
+      '被接手打断：这一组 cancelled、零发送，入站 done（cancelled 也算有结果，那一组不会再发）',
+      fired && h.sentTo(uid).length === 0 && out.length > 0 && out.every((x) => x.status === 'cancelled') && r?.state === 'done',
+      json({ fired, out, r }),
+    );
+  }
+
+  // ---- 状态机每一格（经会话落库的主事务与单独短事务两条路；表内的改了、表外的没改，终态行不报错、不让会话 poisoned）----
+  {
+    const uid = 'wm09sm';
+    const sid = sidOf('b1', uid);
+    const s = h.store.getOrCreateSession(sid, 'wecom');
+    h.store.saveSession(s);
+    await h.store.flushSession(sid);
+    const FROM = ['received', 'recorded', 'replied', 'done', 'abandoned'] as const;
+    const TO = ['recorded', 'replied', 'done', 'abandoned'] as const;
+    // spec R3 的状态机，独立写一遍（不从 transitions.ts 取）：received → recorded → replied → done，任一步可到 abandoned；
+    // 没有 received → replied 的直通格；同一状态不算迁移；done、abandoned 是终态
+    const ALLOWED = new Set([
+      'received>recorded',
+      'received>done',
+      'received>abandoned',
+      'recorded>replied',
+      'recorded>done',
+      'recorded>abandoned',
+      'replied>done',
+      'replied>abandoned',
+    ]);
+    let k = 0;
+    const put = async (from: string): Promise<string> => {
+      k += 1;
+      const [r] = await h.su<{ id: string }>(
+        `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, reason, payload)
+         values ($1, $2, $3, 'message', $4, $5, $6, $7::json) returning id::text as id`,
+        [
+          h.tenantId,
+          idOf('b1'),
+          `m09sm-${k}`,
+          sid,
+          from,
+          from === 'abandoned' ? 'too_old' : null,
+          from === 'done' || from === 'abandoned' ? null : '{}',
+        ],
+      );
+      return r!.id;
+    };
+    const bad: string[] = [];
+    for (const from of FROM) {
+      for (const to of TO) {
+        const want = ALLOWED.has(`${from}>${to}`) ? to : from;
+        const viaQueue = await put(from);
+        h.store.queueInboxState(sid, { inboxId: viaQueue, state: to, ...(to === 'abandoned' ? { reason: 'poison' as const } : {}) });
+        await h.store.flushSession(sid);
+        const [q] = await h.su<{ state: string; reason: string | null }>('select state, reason from channel_inbox where id = $1', [
+          viaQueue,
+        ]);
+        if (q?.state !== want) bad.push(`落库 ${from}→${to}：${q?.state}`);
+        if (to === 'done' || to === 'abandoned') {
+          const viaNow = await put(from);
+          const ok = await h.store.writeInboxStateNow({
+            inboxId: viaNow,
+            state: to,
+            ...(to === 'abandoned' ? { reason: 'poison' as const } : {}),
+          });
+          const [n] = await h.su<{ state: string }>('select state from channel_inbox where id = $1', [viaNow]);
+          if (!ok || n?.state !== want) bad.push(`短事务 ${from}→${to}：${ok} ${n?.state}`);
+        }
+      }
+    }
+    check(
+      '入站状态机每一格（20 格经会话落库、10 格经短事务）：表内的改了、表外的没改；会话没有因为对终态行的写入 poisoned',
+      bad.length === 0 && !h.store.storeHealth().poisoned.length && !h.store.storeLagging(sid),
+      json(bad),
+    );
+    const q0 = h.store.__storeTest.pgQueuedInbox(sid);
+    h.store.queueInboxState(sid, { inboxId: 'not-a-uuid', state: 'done' });
+    h.store.queueInboxState(sid, { inboxId: randomUUID(), state: 'abandoned' });
+    check('同步校验：inboxId 不是 uuid、abandoned 不带原因的不排进落库', h.store.__storeTest.pgQueuedInbox(sid) === q0);
+    // 这些行只为测状态机（agent_app 没有 DELETE：以超级用户删掉，免得后面的派发看到）
+    await h.su(`delete from channel_inbox where msgid like 'm09sm-%'`);
+  }
+
+  // ---- 停机截止之后才回包：分段留在 pending，入站停在 replied（还停在 pending 的不算有结果，留给重启恢复）----
+  {
+    const uid = 'wm09dl';
+    h.wecom.__wecomTest.closeSends(idOf('a1'), Date.now());
+    const m = await talk('a1', uid, '你好，想去云南');
+    h.wecom.__wecomTest.closeSends(idOf('a1'), null);
+    const r = await inboxByMsgid(m.msgid);
+    const out = await outOfInbox(r!.id);
+    check(
+      '停机截止之后：不开始 send_msg，分段 pending、入站停在 replied（重启后按出站恢复补发，第 10 步）',
+      h.sentTo(uid).length === 0 &&
+        out.length > 0 &&
+        out.every((x) => x.status === 'pending') &&
+        r?.state === 'replied' &&
+        r.attempts === 1,
+      json({ r, out }),
+    );
+  }
+  check(
+    '库里的账号不写 var/wecom-cursor.json（不变量 13）',
+    !fs.existsSync(path.join(h.varDir, 'wecom-cursor.json')) && !fs.existsSync(h.wecom.__test.STATE_FILE),
+  );
   ledger.__ledgerTest.setWaits(null);
 }
