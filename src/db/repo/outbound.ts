@@ -279,6 +279,22 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
 }
 
 /**
+ * 启动恢复的保底（03「渠道行与会话落库（R21）」：received 的行名下已有出站行的按 replied 处理）：这几条入站名下的出站行，
+ * 任何状态，只要 inbox_id 与状态
+ */
+export async function readOutboundOfInboxes(
+  tx: Tx,
+  inboxIds: readonly string[],
+): Promise<{ inboxId: string; channelMsgid: string; status: OutboundStatus }[]> {
+  if (!inboxIds.length) return [];
+  const rows = await tx
+    .select({ inboxId: outboundSends.inboxId, channelMsgid: outboundSends.channelMsgid, status: outboundSends.status })
+    .from(outboundSends)
+    .where(inArray(outboundSends.inboxId, [...inboxIds]));
+  return rows as { inboxId: string; channelMsgid: string; status: OutboundStatus }[];
+}
+
+/**
  * 启动恢复（03「重启、崩溃与恢复」）：这个账号没结果的出站行（pending、sending），带 payload、segment、inbox_id；
  * 按建这一行的时刻、段号排。accountId 为 null 时读 02 的默认账号的行（account_id 为空）
  */

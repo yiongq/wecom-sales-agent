@@ -470,8 +470,8 @@ const MSGID_RE = /^[0-9a-f]{32}$/;
 /** 一段字符串是不是已经过了 cleanText（不含 NUL、没有孤立代理）且非空 */
 const cleanNonEmpty = (v: unknown): boolean => typeof v === 'string' && v.length > 0 && cleanText(v) === v;
 
-/** 一段 payload 的问题（没有为 null）：形状、字符串已清洗、序列化之后 ≤16 KB */
-function payloadProblem(p: OutboundPayload): string | null {
+/** 一段 payload 的问题（没有为 null）：形状、字符串已清洗、序列化之后 ≤16 KB。启动恢复补发库里读出的 payload 之前也查它 */
+export function payloadProblem(p: OutboundPayload): string | null {
   if (!p || typeof p !== 'object') return 'payload 不是对象';
   if (p.msgtype === 'text') {
     if (!cleanNonEmpty(p.text?.content)) return 'text.content 为空或没清洗';
@@ -845,6 +845,79 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: Cancel
 export function cancelInboxIntents(inboxId: string): void {
   const rows = [...byMsgid.values()].filter((r) => r.v2 && r.inboxId === inboxId && (r.status === 'pending' || r.status === 'sending'));
   if (rows.length) cancelIntents(rows.map(intentOf), 'inbox_abandoned');
+}
+
+// ---------------- 03 启动恢复（src/channels/recovery.ts） ----------------
+
+/**
+ * 库里没结果的一行出站（pending、sending），带 02 预载不读的几列：src/db/repo/outbound.ts 的 OpenOutboundRow 的形状
+ * （src/quota/ 不 import src/db/，这里按结构写一份）
+ */
+export interface OpenOutboundLike {
+  conversationId: string;
+  channelMsgid: string;
+  messageSeq: number | null;
+  kind: OutboundKind;
+  sentAt: Date;
+  status: 'pending' | 'sending';
+  accountId: string | null;
+  inboxId: string | null;
+  segment: number;
+  attempts: number;
+  payload: unknown;
+}
+
+/**
+ * 启动恢复：把一个账号库里没结果的出站行收进内存账本，返回它们的 intent（顺序同 rows）。预载已经读进来的同一 msgid（各会话最后一条
+ * 客户消息之后的）补上 payload、段号、入站与账号；没读进来的（更早的）新建一行。状态以库里的为准（pending、sending，都在库里、
+ * commit 已提交），计入已用条数、工作台「发送中」，之后按出站恢复表补发、取消或记 unknown。account_id 为空的 02 旧行记在这个账号下
+ * （只在内存里，库里那一列不改）
+ */
+export function adoptOpenOutbound(accountId: string, rows: readonly OpenOutboundLike[]): OutboundIntent[] {
+  ensureLoaded();
+  return rows.map((r) => {
+    let row = byMsgid.get(r.channelMsgid);
+    if (!row) {
+      row = { ...newRow(r.conversationId, r.kind, null, r.sentAt.getTime()), msgid: r.channelMsgid };
+      add(row);
+    }
+    Object.assign(row, {
+      kind: r.kind,
+      seq: r.messageSeq,
+      status: r.status,
+      inFlight: true,
+      inDb: true,
+      v2: true,
+      accountId: r.accountId ?? accountId,
+      inboxId: r.inboxId,
+      segment: r.segment,
+      payload: r.payload as OutboundPayload | null,
+      attempts: r.attempts,
+      commit: 'committed',
+      commitWaiters: [],
+    });
+    return intentOf(row);
+  });
+}
+
+/**
+ * 启动恢复（RESEND_UNKNOWN 为假）：重启时还是 sending 的段记 unknown、不补发（迁移表的 recover；R5 的边界）。随会话的下一次落库
+ * 写进存档点（与别的结果同一类：丢了下次启动再记一遍），没有会话的单独短事务。工作台随之「可能没送达」
+ */
+export function recoverAsUnknown(intent: OutboundIntent): void {
+  const row = byMsgid.get(intent.msgid);
+  if (!row?.v2 || !canMoveOutbound(row.status, 'unknown', ['recover'])) return;
+  row.status = 'unknown';
+  finishRow(row);
+  persistResult(row);
+}
+
+/** 入站恢复（replied 一行）：这条入站名下还在 pending 的段，按段号（启动恢复收进来的，与本进程排过、还没发的） */
+export function pendingIntentsOfInbox(inboxId: string): OutboundIntent[] {
+  return [...byMsgid.values()]
+    .filter((r) => r.v2 && r.inboxId === inboxId && r.status === 'pending')
+    .toSorted((a, b) => a.segment - b.segment)
+    .map(intentOf);
 }
 
 // ---------------- 03 R6：没落库就发 ----------------
