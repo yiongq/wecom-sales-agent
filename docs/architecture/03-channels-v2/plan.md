@@ -627,6 +627,7 @@
 - spec 实现期修订（顶部 `Revisions:`）：有 spill 拒绝；未导入或已导出时无操作；`--until` 留 5 分钟钟差；告警在启动时合并；命令行那条说明的措辞。措辞是给顾问看的 system 说明，owner 可以再改。
 - 自测：新套件 `src/channels/restore-cutoff.selftest.ts`（子进程，PGlite 与真实 PG）覆盖每一类改动与退出码、哨兵被删而标记不动、审计与告警只有条数、`--until` 的各种拒绝且什么都不动、持锁 3；`recovery.selftest.ts` 加 k5 → c5 → r5 一组端到端（截止点之前的入站只补记、不调模型、不发送）；`ops.selftest.ts` 的 backup.sh 测试台加 5 条（假 docker 记下 `pg_dump` 调用并在线上 `var/` 写文件、假 tar 记调用顺序：先打包后导出，哨兵在归档里、线上 `var/` 里没有）——原来没有断言备份步骤顺序的断言，是新加，不是改。
 - 变异（隔离副本）19 个抓到 18 个；存活的「去掉持锁后那次 spill 检查」有取锁前那次兜着，两处都去掉就被抓到。门禁：四个全绿；带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RESTORE-CUTOFF 37、RECOVERY 444、OPS 477、CHANNELS 140、WECOM-03 223、DB 1168、STORE 452）；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
+- 交叉评审：另派一路只读 Codex 评审找到 1 处 major、2 处 minor，由实现的子 agent 修掉、各补回归断言（撤回修复时失败）。major：被取消的跟进在启动只补记时触发排程，同一阶段重新入队，约两小时后再发一次——`restore-cutoff` 在同一事务把被取消的阶段记进会话 `state.followup`（`markFollowupStages`，只改 state 这一列），只补记那一步改用 `saveSessionSkippingFollowup`；`recovery.selftest` 的 r5 加两个客户对照（被取消的那个之后一条跟进都没收到，没排过的那个照常发一次）。minor：截止点比现在晚几分钟时「一次恢复只加一条说明」的去重失效——说明上记下截止点（`messages.extra.restoreCutoff`），按它去重；未导入或已导出时有 spill 先被拒绝、走不到无操作——改为先判企微状态，在库里时才在持锁的事务里查 spill。修后带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RESTORE-CUTOFF 39、RECOVERY 447）。
 - 给第 20 步（本机演练）：截止点 T 带 `+08:00` 写，拿不准用 `now` 但必须在起应用之前跑；解开归档后 `chown -R 1000:1000 var`，app 身份才能删哨兵；归档里有 spill 时先起一次应用让它回放（会以 `channel_restore_pending` 停下，预期内），再跑命令；告警在最后一个只补记的会话之后约 10–15 秒到；对照实验（删哨兵、不跑命令）时 C 那句会被再回一次。
 
 ## 验收记录
