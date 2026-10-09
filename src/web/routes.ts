@@ -1,5 +1,6 @@
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { subscribeWeb, webConversationId, type WebEvent } from '../adapters/web.js';
@@ -11,10 +12,11 @@ import { enterHandoff } from '../handoff/record.js';
 import { clientKey, lookupLimit, makeLimiter } from '../http-guards.js';
 import { log } from '../log.js';
 import { alert } from '../ops/alert.js';
-import { currentPrivacyNotice } from '../privacy/privacy.js';
+import { currentPrivacyNotice, privacyLink } from '../privacy/privacy.js';
 import { profile } from '../profile.js';
 import type { WebMessage } from '../shared/channel-types.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
+import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { getOrCreateSession, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
 import { onTurnEnd } from '../trace/recorder.js';
 import type { Session } from '../types.js';
@@ -112,7 +114,24 @@ const webOnly = async (c: Context, next: () => Promise<void>): Promise<Response 
 };
 webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
-webRoutes.get('/w/:key', (c) => c.text('网页咨询页面准备中'));
+webRoutes.get('/w/:key', async (c) => {
+  const account = accountByKey(c.req.param('key'), 'web')!;
+  const config = JSON.stringify({
+    key: account.key,
+    title: account.web!.title,
+    welcome:
+      account.web!.welcomeText ??
+      '您好，欢迎来到云途定制旅行，我是您的 AI 旅行顾问 ✨\n想去川西藏地、云南雪山，还是新疆看看？和我聊聊您的想法吧～\n需要真人服务时，回复「人工」即可转真人顾问。',
+    privacyLink: privacyLink(),
+    base: (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, ''),
+  }).replaceAll('<', '\\u003c');
+  c.header(
+    'Content-Security-Policy',
+    `${CONSOLE_SECURITY_HEADERS['Content-Security-Policy']}; style-src 'self'; base-uri 'none'; form-action 'self'`,
+  );
+  const html = await readFile('public/web.html', 'utf8');
+  return c.html(html.replace('__WEB_CONFIG__', () => config));
+});
 
 webRoutes.post('/api/web/:key/messages', async (c) => {
   if (c.req.header('x-web-chat') !== '1') return c.json({ error: 'forbidden' }, 403);
