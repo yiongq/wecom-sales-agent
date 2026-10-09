@@ -73,8 +73,29 @@ const PURE_STORE = [
   'src/handoff/triggers.corpus.ts',
   'src/jobs/optout.ts',
 ];
+/** 03 的纯模块：未建的先登记；recovery.ts 的判定部分由第 10 步拆文件后再登记。 */
+const PURE_CHANNELS = ['src/channels/secrets.ts', 'src/channels/markers.ts', 'src/channels/transitions.ts'];
 
 const IMPORT_RULES: ImportRule[] = [
+  {
+    desc: `${PURE_CHANNELS.join('、')} 是纯模块：不 import src/db/、store、engine、llm、adapters`,
+    applies: (f) => PURE_CHANNELS.includes(f),
+    bad: (i) =>
+      under(i.target, 'src/db/') ||
+      under(i.target, 'src/store/') ||
+      under(i.target, 'src/adapters/') ||
+      ['src/store.ts', 'src/engine.ts', 'src/llm.ts'].includes(i.target ?? ''),
+  },
+  {
+    desc: 'src/channels/ 不 import engine、llm、tools',
+    applies: (f) => under(f, 'src/channels/'),
+    bad: (i) => ['src/engine.ts', 'src/llm.ts', 'src/tools.ts'].includes(i.target ?? ''),
+  },
+  {
+    desc: 'src/db/、src/cli/ 不 import src/channels/registry.ts 与 adapters',
+    applies: (f) => under(f, 'src/db/') || under(f, 'src/cli/'),
+    bad: (i) => i.target === 'src/channels/registry.ts' || under(i.target, 'src/adapters/'),
+  },
   {
     desc: 'pg / drizzle-orm / @electric-sql/pglite 只能在 src/db/ 里 import',
     applies: (f) => !under(f, 'src/db/'),
@@ -185,8 +206,16 @@ const IMPORT_RULES: ImportRule[] = [
 // 规则说明里的两个禁词拆开拼，免得本文件自己命中
 const GUC = ['app', 'tenant_id'].join('.');
 const SQL_RAW = ['sql', 'raw'].join('.');
+const CHANNEL_KEY_ENV = ['CHANNEL', 'SECRETS', 'KEY'].join('_');
 
 const TEXT_RULES: TextRule[] = [
+  {
+    desc: `${CHANNEL_KEY_ENV} 只能出现在 src/channels/secrets.ts`,
+    // 只管代码：.env.example 与文档不受此规则约束；自测用字符串拼接构造名称。
+    files: (f) => CODE_EXT.test(f),
+    allowed: (f) => f === 'src/channels/secrets.ts',
+    re: new RegExp(CHANNEL_KEY_ENV, 'g'),
+  },
   {
     desc: `租户 GUC 名 ${GUC} 只能出现在 src/db/client.ts 和迁移 SQL 里`,
     files: (f) => CODE_EXT.test(f) || f.endsWith('.sql'),
