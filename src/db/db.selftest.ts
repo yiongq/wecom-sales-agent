@@ -3585,7 +3585,8 @@ await t.close();
   fake('pnpm', ['echo "pnpm $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_PNPM_OK:-}" ]; then exit 0; fi', 'exit 97']);
   fake('docker', [
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
-    'case "$*" in *registry.ts*|*channel_accounts*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
+    'case "$*" in *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
     '  *registry.ts*) exit "${FAKE_REGISTRY:-1}" ;;',
@@ -3595,7 +3596,7 @@ await t.close();
     '  *pg-backend.ts*) exit "${FAKE_PG_BACKEND:-0}" ;;',
     '  *"inspect --format {{.Image}}"*) if [ -n "${FAKE_RUNNING:-}${FAKE_RUNNING_REGISTRY:-}" ]; then echo sha256:running; else exit 1; fi ;;',
     // 渠道问库：none 是 03 之前的库；query-down / malformed 验证第二次查询失败或结果异常也走保守处理。
-    '  *to_regclass*channel_accounts*) case "${FAKE_CHANNEL_DB:-none}" in down) exit 1 ;; none) echo f ;; *) echo t ;; esac ;;',
+    '  *to_regclass*public.channel_accounts*) case "${FAKE_CHANNEL_DB:-none}" in down) exit 1 ;; none) echo f ;; *) echo t ;; esac ;;',
     '  *"from channel_accounts where"*) case "${FAKE_CHANNEL_DB}" in query-down) exit 1 ;; malformed) echo unexpected ;; *) echo "${FAKE_CHANNEL_DB}" ;; esac ;;',
     // rollback-guard.sh 直接问库有没有条目版本大于 1：FAKE_CATALOG_DB 是 t / f / none（表不存在）/ down（缺省，exec 失败）
     '  *to_regclass*catalog_item_versions*) case "${FAKE_CATALOG_DB:-down}" in down) exit 1 ;; none) echo f ;; *) echo t ;; esac ;;',
