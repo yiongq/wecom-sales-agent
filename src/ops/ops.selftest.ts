@@ -1477,7 +1477,8 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   const c = u?.turn.calls[0];
   check(
     'recorder：执行时抛错的工具调用记下真实耗时、执行时的参数与只在内存的失败标记，没有结果',
-    !!c && c.ms >= 40 && c.failed === true && c.resultBytes === 0 && c.resultHead === '' && json(c.args) === json(args),
+    // 定时器按单调时钟走，用 Date.now() 量可能少 1 毫秒（CI 上见过 39），留一点余量
+    !!c && c.ms >= 35 && c.failed === true && c.resultBytes === 0 && c.resultHead === '' && json(c.args) === json(args),
     json(c),
   );
   // 这一轮已经经 onTurnEnd 交给导出器了（startOtelExport 订阅的），这里只 flush
