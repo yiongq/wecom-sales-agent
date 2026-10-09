@@ -430,10 +430,11 @@ export function writeStandaloneOutbound(rows: readonly OutboundRow[]): Promise<v
 }
 // ---------------- 03 先落库后发送（src/quota/ledger.ts 的 planOutbound 等）的入口 ----------------
 // 库里企微账号的出站：pending 插入与 cancelled 随会话的下一次落库写进主事务（R21），结果写在存档点里（queueTelemetry）；
-// 标 sending、迁回 pending、没有会话可挂的几行各是一个短事务。只在 db 存储下有，文件存储下这几个入口什么都不做
+// 标 sending、迁回 pending、没有会话可挂的几行各是一个短事务；会话 poisoned 之后它的出站行（含结果）也改走单独短事务，
+// 还没提交的随会话进 spill 的渠道段（第 11 步）。只在 db 存储下有，文件存储下这几个入口什么都不做
 
 const outboundCommitHooks = new Set<(rows: readonly OutboundRow[]) => void>();
-/** 主事务里的出站行随会话提交之后调（行对象就是 queueOutboundRows 交进来的那几个） */
+/** 主事务里的出站行随会话提交之后调（poisoned 之后的短事务提交了也调；行对象就是 queueOutboundRows 交进来的那几个） */
 export function onOutboundCommitted(cb: (rows: readonly OutboundRow[]) => void): () => void {
   outboundCommitHooks.add(cb);
   return () => outboundCommitHooks.delete(cb);
@@ -517,8 +518,8 @@ function inboxWriteOf(change: InboxChange): InboxStateWrite | null {
  * 入站状态变化随这个会话的下一次落库写进主事务（不在存档点里，R21）：recorded 与这条客户消息同一次提交、message_seq 是它分到的 seq
  * （不变量 3）；replied 与回复的出站 pending 同一次提交；done、abandoned 与引起它的会话改动同一次提交。同一次落库里同一行的几次变化
  * 按排进来的先后逐条写。db 存储下内存里没有这个会话（已被清除、demo 类）时改走单独短事务（迁移表让它对已清除的行是无操作）。
- * 会话已 poisoned：这一版丢掉、计数（pg 后端的 inboxDropped），第 11 步改成单独短事务——接在 pg 后端 queueInbox 的 poisoned 分支上，
- * InboxStateWrite 只有 JSON 能装的值，spill 的渠道段直接用它
+ * 会话已 poisoned：pg 后端改走单独短事务（R21，写不进去留在内存里 1 秒后再试、停机时进 spill）；还没提交的随会话进 spill 的渠道段
+ * （InboxStateWrite 只有 JSON 能装的值）
  */
 export function queueInboxState(sessionId: string, change: InboxChange): void {
   const w = inboxWriteOf(change);

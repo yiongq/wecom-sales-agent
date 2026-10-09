@@ -90,7 +90,7 @@
   - 自测（真实 PG，子进程 `SIGKILL`，靠假企微、假模型与库连接的阻塞点造时刻）：验收 4 的全部杀点、验收 7 的两种杀进程、验收 18 的每一种出站行、恢复做完之前到期的跟进等待。
   - 对应验收 4、7（杀进程部分）、18、20 的重启部分；不变量 5、15。依赖：第 8、9 步。
   - 完成标准：四个门禁全绿；带 `PG_TEST_URL` 跑一遍；跑完 `ps` 里没有子进程残留；变异（至少：`sending` 重启后照发、有接手人仍补发、人工回复不看 10 分钟）。
-- [ ] 11. spill 与 poisoned 会话的渠道行（1，Claude）
+- [x] 11. spill 与 poisoned 会话的渠道行（1，Claude）：2026-10-09 完成（Claude 子 agent 实现，协调者审查），见「实施记录 · 第 11 步」。
   - spill 条目加渠道段、回放与会话同一事务、会话部分失败时渠道部分单独写、旧版 spill 兼容；poisoned 会话的渠道行改走短事务（R21）。
   - 自测：验收 8 的三个场景（spill 回放、poisoned 之后 `SIGKILL`、旧版 spill）。
   - 对应验收 8；不变量 3 的 poisoned 例外。依赖：第 8、9 步（与第 10 步可以并行，见下文）。
@@ -513,6 +513,43 @@
 - 第 12 步：运行时在 `load` 时读 `record_only_until`，设了要重启才生效（命令本来就要求应用已停）；「N 个会话只补记」那条告警没做，`onInboxAbandoned` 会发 `restore_cutoff` 事件，可以接上。
 - 第 13 步：`poison` / `too_old` 告警已有；`stuck`、`oldestOpenInboxSec` 要查 `channel_inbox`。
 - 第 14 步：导入的 `legacy` 行没有 `conversation_id`，派发时按 msgid 排队；有 `received` 的 `legacy` 行现在会走「不认识的种类 → `done`」，导入时要按 spec 处理在途的那几条。
+
+### 第 11 步 · spill 与 poisoned 会话的渠道行（2026-10-09）
+
+**spill 新格式**
+
+- 外壳仍是 `version: 1`，版本标记放在条目上：第 11 步写出的条目与它的 `inflight` 总带 `channel: { inbox: InboxStateWrite[]; outbound: SpillOutboundRow[] }`（空的也带），没有这一段的就是旧版、按空处理。不升外壳版本是被逼的：锁定之外的 `store.selftest.ts` 断言「version 2 是不认识的版本 → 改名 `.failed`」，旧进程读到 version 2 也会把整个文件连会话部分一起丢掉。
+- `SpillOutboundRow` 就是 `OutboundWriteRow`（`sentAt` 存毫秒）；主事务的行（`pending`、`cancelled`）在前，库里账号的结果在后。`inflight.channel` 是在途快照里的渠道行与结果，`channel` 是 poisoned 之后等短事务的（在途那一批在前）加上排着的。trace、护栏事件、env 账号（02）的账本行照旧不写。
+
+**事务边界**
+
+- 写出：时机不变（exit 钩子里的 `spillSync`），条目的选取是「脏的」或「poisoned 队列里还有行」。
+- 回放成功时：渠道段与会话部分在同一个 `withTenant` 事务里，位置在附带行之后——出站主事务行 → 入站状态 → 结果（结果放在存档点 `channel_results` 里，坏的结果行不连累会话）。flush_id 判定沿用 02：库里的 flush_id 是这一条的就跳过（渠道段已随会话写过）；在途那次其实提交了就只写排着的；其余在途的和排着的都写、在途的在前；「内容一致而跳过」那一支也照写渠道段（重复写无害，迁移表兜住）。
+- 会话部分回放失败（数据类错误）：先用 `replayChannelOnly` 单独开一个事务，锁会话行、套同一套 flush_id 判定、写渠道部分，再照 02 把文件改名 `.failed`；这个事务遇到连接类错误以 `db_unreachable` 拒绝启动、文件留着。
+- poisoned 之后：每个会话一个短事务队列、每批一个短事务、同一时间至多一个在途（`nowTx`，`writeInboxNow` / `writeOutboundNow` 改用它）。来源：标 poisoned 时排着的行、以数据类错误失败的那次快照里的行（放队头）、之后的 `queueChannel` / `queueInbox`、`queueTelemetry` 里库里账号的结果。起短事务推迟一个 microtask，同一段同步代码排进来的行进同一个事务（`planOutbound` 的 `pending` 与 `replied` 同一次提交）；在途或等着重试的那次落库还活着时短事务先等它（不让后来的 `replied` 先到、被迁移表当成表外丢掉）；提交后经 `outboundCommitted` 报回，`commitOutbound`、`markSending` 照常。连接类失败或这次不写：放回队头、每秒再试（日志每次失败一行），停机或冲突之后不再试、exit 时进 spill，drain 段立刻再试一次。
+
+**本步定的（协调者确认）**
+
+- poisoned 短事务遇到数据类错误就丢掉这一批，计 `channelDropped` / `inboxDropped`、记一行日志，不每秒重试（重试也写不进去）；会话本身照 02 有 poisoned 告警。spec 写的「写不进去时留在内存、1 秒后再试」只用在连接类错误与「这次不写」上。
+- 失败的那次快照里、以及标 poisoned 时排着的渠道行也走短事务（spec 只写了「它之后」的，不这样这些行会丢）。
+- 已知边界：spill 里有一行坏的主事务渠道行时整条会话回放失败，与实时落库的语义一致（同一事务会把会话标 poisoned）；R21 的同步校验让这种情况只剩代码缺陷一种来源。
+- 顺带的口径变化：poisoned 时一批只含库里账号结果的遥测不再计 `telemetryDropped`；`queuedChannel` / `queuedInbox` 把 poisoned 队列也算进去。
+
+**自测与变异**
+
+- 新套件 `src/store/spill-channel.selftest.ts`（串在 `store.selftest.ts` 之后；PGlite 55 项，带 PG 共 110 项，真实 PG 上「库连接断开」是真断开）：验收 8 的 spill 回放（入站行已提交、会话落库失败、停机写出 spill、恢复后回放：渠道行在、状态对上、客户消息只记一次）、poisoned 之后两句的渠道行经短事务落库、旧版 spill 照常回放，另加会话部分回放失败时渠道部分单独写。「poisoned 之后 SIGKILL、重启后由 `payload` 补记、不再回复」那一半交给第 10 步的恢复自测。
+- 变异（隔离副本）13 个全部被抓到，含 plan 要求的四个（渠道段不进 spill、回放时与会话分两个事务、poisoned 之后渠道行仍丢弃、旧版 spill 回放报错），另有会话失败时渠道部分不单独写、短事务不等在途落库、`pending` 与 `replied` 分两个短事务（第一轮存活，测试改成先等 `recorded` 落库再回复后抓到）、短事务写不进去就丢、提交后不报 `outboundCommitted`、回放不沿用 flush_id 判定、spill 不带 poisoned 队列、poisoned 之后结果仍丢、spill 不带在途快照的渠道行。
+- 门禁：四个全绿；带 `PG_TEST_URL` 全绿（STORE 452、SPILL-CHANNEL 110、OUTBOUND 246、WECOM-03 223、DB 1168、QUOTA 127、WECOM-02 15、CHANNELS 106、JOBS 110、OPS 472、CONSOLE 435）；`TZ=UTC` 加 PG 也过；`store.selftest.ts` 断言未改照过；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
+
+**交叉评审**
+
+- 另派一路只读 Codex 交叉评审，找到 1 处 major：会话部分回放失败、渠道段单独写进去时，以及「内容一致而跳过」那一支照写渠道段时，库已改而内存账本的预载没重新读（预载在回放之前、只有 `applied` 非零才重读），工作台一直「发送中」、已取消的段还占发送额度。修法：回放结果多报「这一条写过非空渠道段」（`channelWritten`），`applied || channelWritten` 就重新预载；补两条回归断言（两个租户各回放一次，每一支都必须自己触发重读）。修后带 `PG_TEST_URL` 与 `TZ=UTC` 全绿（SPILL-CHANNEL 114）。
+
+**给后面步骤的注意**
+
+- 第 10 步：回放在 `initSessionStore` 里、早于 `initChannels`，恢复看到的是回放之后的状态。单独写渠道部分之后、或 poisoned 短事务之后，入站行可能是 `recorded` / `replied` / `done` 而 `message_seq` 在 `messages` 里不存在，出站行的 `message_seq` 也可能指向不存在的消息——保底第三条（用 `payload` 补进会话）必不可少；会话行根本不在库里的 poisoned 会话补进会话时会再次 poisoned，恢复不能因此打转。`recorded` 的短事务早于 `pending` + `replied` 那一个，`recorded` 那次以数据类错误丢掉时会出现「`received` 但名下有出站行」，由保底第二条处理。
+- 第 12 步：`restore-cutoff` 先于应用启动跑，spill 回放在它之后，可能插入 `sent_at` 不晚于截止点的 `pending` 行；出站恢复表「`pending`、`sent_at` 不晚于截止点 → `cancelled`」兜住。
+- 第 14 步：`channel-export` / `channel-import` 在 `var/` 里有 spill 文件时应拒绝（照 02 `erase-conversation` 的做法），否则回放会在导出之后再往 `outbound_sends` / `channel_inbox` 写行。
 
 ## 验收记录
 
