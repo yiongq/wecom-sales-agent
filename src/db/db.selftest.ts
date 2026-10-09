@@ -3121,7 +3121,6 @@ await expectWhy([
     '>done',
     '>abandoned',
     'received>recorded',
-    'received>replied',
     'received>done',
     'received>abandoned',
     'recorded>replied',

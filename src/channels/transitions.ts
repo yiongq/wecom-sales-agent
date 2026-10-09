@@ -78,9 +78,9 @@ export const INBOX_TRANSITIONS: readonly InboxTransition[] = [
   { from: null, to: 'done' },
   // acceptPage 冷启动时早于截止的（cold_start）
   { from: null, to: 'abandoned' },
+  // 非文本消息：占位与 recorded 同一次落库，引导提示走 planOutbound 再到 replied；两次变化在同一次落库里时
+  // 先 recorded 再 replied，按顺序逐条写（没有 received → replied 的直通格）
   { from: 'received', to: 'recorded' },
-  // 非文本消息：占位（recorded）与引导提示的分段（replied）在同一次落库里
-  { from: 'received', to: 'replied' },
   // 菜单点击、回执的短路；启动保底把 received 按 recorded、replied 处理完之后
   { from: 'received', to: 'done' },
   { from: 'received', to: 'abandoned' },
