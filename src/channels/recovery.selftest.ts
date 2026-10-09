@@ -110,6 +110,9 @@ const V = {
   y: 'wm10y', // pending、有 inbox_id、入站没结束 → 入站恢复补发
   z: 'wm10z', // kind=card 的 pending（不该有）→ cancelled、记一行
   rc: 'wm10rc', // notice、pending，另有一条指着它的失败回执停在 received（第 9 步：回执的短事务没写成）→ 不补发、回执重做后 failed
+  tk: 'wm10tk', // 入站 replied、分段 pending，杀之前顾问接手了 → 名下 pending 的段 cancelled、记「本轮未发送」
+  rr: 'wm10rr', // 入站 recorded、会话里这句之后已有 AI 回复（库里没有它的出站行）→ 按那条回复切分段照常发、不调模型
+  ro: 'wm10ro', // 入站 received、名下已有 pending 的出站行（保底：按 replied 处理）→ 按同一 msgid 补发、不调模型
   fu: 'wm10fu', // 恢复做完之前到期的跟进
   p2: 'wm10p2', // 恢复做完之前的人工回复，等过上限
 };
@@ -1193,6 +1196,8 @@ async function kill3(h: Harness): Promise<void> {
   void push(sid(V.w, 'r3'), '您的订单已付款', { kind: 'notice' });
   hold(V.rc);
   void push(sid(V.rc), '您的订单已付款', { kind: 'notice' });
+  hold(V.tk);
+  h.say('r1', V.tk, 'TK 想去黄山');
   hold(V.x);
   const xm = h.say('r1', V.x, 'X 想去海南');
   hold(V.y);
@@ -1200,6 +1205,56 @@ async function kill3(h: Harness): Promise<void> {
   h.pull('r1');
   for (const [uid, x] of holds) await reached(`${uid} 的 markSending`, x);
   await reached('V 的请求到了假企微', vHold);
+  // TK：回复的分段落库之后、发出之前顾问接手（接手落库之后再杀）
+  h.tk.takeover(sid(V.tk), h.tk.sharedActor());
+  await h.store.flushSession(sid(V.tk));
+  // RR、RO：直接造库里的状态（会话部分与入站行、出站行不同步的两种：R6、poisoned 之后的渠道短事务、spill 回放失败会留下）
+  const crafted = async (uid: string, said: string, reply: string): Promise<{ msgid: string; customerSeq: number; replySeq: number }> => {
+    const msgid = `m10k3-${uid}`;
+    const s = h.store.getOrCreateSession(sid(uid), 'wecom');
+    s.messages.push({ role: 'customer', content: said, at: Date.now(), msgid, sentAt: Date.now() });
+    s.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    h.store.saveSession(s);
+    await h.store.flushSession(sid(uid));
+    const seqs = await h.su<{ seq: number; role: string }>('select seq, role from messages where conversation_id = $1 order by seq', [
+      sid(uid),
+    ]);
+    return { msgid, customerSeq: seqs.find((x) => x.role === 'customer')!.seq, replySeq: seqs.find((x) => x.role === 'agent')!.seq };
+  };
+  const kfMsg = (uid: string, msgid: string, content: string): string =>
+    json({
+      msgid,
+      open_kfid: acct('r1').kf,
+      external_userid: uid,
+      send_time: Math.floor(Date.now() / 1000),
+      origin: 3,
+      msgtype: 'text',
+      text: { content },
+    });
+  const rr = await crafted(V.rr, 'RR 想去敦煌', '敦煌 4–10 月最合适～您几位出行？');
+  await h.su(
+    `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, attempts, message_seq, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $1, $2, 'message', $3, now(), 'recorded', 1, $4, $5::json)`,
+    [h.ids.get('r1'), rr.msgid, sid(V.rr), rr.customerSeq, kfMsg(V.rr, rr.msgid, 'RR 想去敦煌')],
+  );
+  const ro = await crafted(V.ro, 'RO 想去青海', '青海湖 7 月油菜花最好看～您几位出行？');
+  const [roIn] = await h.su<{ id: string }>(
+    `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $1, $2, 'message', $3, now(), 'received', $4::json) returning id::text as id`,
+    [h.ids.get('r1'), ro.msgid, sid(V.ro), kfMsg(V.ro, ro.msgid, 'RO 想去青海')],
+  );
+  await h.su(
+    `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, message_seq, kind, sent_at, status, account_id, inbox_id, segment, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $2, $3, $4, 'ai', now(), 'pending', $1, $5, 0, $6::json)`,
+    [
+      h.ids.get('r1'),
+      sid(V.ro),
+      randomBytes(16).toString('hex'),
+      ro.replySeq,
+      roIn!.id,
+      json({ msgtype: 'text', text: { content: '青海湖 7 月油菜花最好看～您几位出行？' } }),
+    ],
+  );
   // Q：建行时刻挪到 11 分钟前；R：交还 AI（接手人变了）；W：r3 的恢复截止点设在它之后；X：入站已结束；Z：一行 kind=card 的 pending
   await h.su(`update outbound_sends set sent_at = sent_at - interval '11 minutes' where conversation_id = $1`, [sid(V.q)]);
   h.tk.release(sid(V.r), h.tk.sharedActor());
@@ -1349,6 +1404,37 @@ async function restart3(h: Harness): Promise<void> {
       h.sendsTo(V.v)[0]!.p === 'k3' &&
       h.alertLines().filter((l) => l.includes('企微账号 r1 重启时有 1 段停在「发送中」')).length === 1,
     json({ v: after.v, s: h.sendsTo(V.v), alerts: h.alertLines() }),
+  );
+  const tkIn = (await h.inboxesOf(sid(V.tk)))[0];
+  check(
+    '入站 replied、杀之前顾问接手：名下 pending 的段 cancelled、不发，会话记「本轮未发送」，入站 done（不变量 10）',
+    after.tk!.length >= 1 &&
+      st('tk')
+        .split(',')
+        .every((x) => x === 'cancelled') &&
+      h.sendsTo(V.tk).length === 0 &&
+      tkIn?.state === 'done' &&
+      !!h.store.getSession(sid(V.tk))?.messages.some((m) => m.role === 'system' && m.content === h.tk.TAKEN_OVER_NOTE),
+    json({ tk: after.tk, tkIn, sends: h.sendsTo(V.tk) }),
+  );
+  const rrIn = await h.inboxOf('m10k3-wm10rr');
+  check(
+    '入站 recorded、会话里这句之后已有 AI 回复：按那条回复切分段照常发一组、不调模型，入站 done',
+    after.rr!.length >= 1 &&
+      st('rr')
+        .split(',')
+        .every((x) => x === 'accepted') &&
+      h.sendsTo(V.rr).length === after.rr!.length &&
+      h.sendsTo(V.rr)[0]!.content.startsWith('敦煌 4–10 月最合适') &&
+      h.llmCalls('RR 想去敦煌') === 0 &&
+      rrIn?.state === 'done',
+    json({ rr: after.rr, rrIn, sends: h.sendsTo(V.rr) }),
+  );
+  const roIn = await h.inboxOf('m10k3-wm10ro');
+  check(
+    '保底：入站 received 而名下已有 pending 的出站行，按 replied 处理：按同一 msgid 补发、不调模型，入站 done',
+    st('ro') === 'accepted' && once('ro') && h.llmCalls('RO 想去青海') === 0 && roIn?.state === 'done',
+    json({ ro: after.ro, roIn, sends: h.sendsTo(V.ro) }),
   );
   const rcpt = await h.inboxOf('m10k3-rcpt');
   check(
