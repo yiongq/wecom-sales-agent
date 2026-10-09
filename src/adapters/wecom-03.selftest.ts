@@ -86,9 +86,14 @@ async function parentMain(): Promise<never> {
   const ROOT = fs.mkdtempSync(path.join(varParent, 'wecom-03-selftest-'));
   process.on('exit', () => fs.rmSync(ROOT, { recursive: true, force: true }));
 
+  // 出站的 PGlite 子进程预加载等价套件的钟，从当天本地 12:00 起走：跟进的夜间时段（22–9 点，本地时间）不受在几点、在哪个时区跑
+  // 的影响（jobs、quota 自测的做法）；真实 PG 子进程用真钟（库的 now() 拨不动），改用 FOLLOWUP_QUIET_START/END=0 关掉夜间时段
+  const NOON = new Date().setHours(12, 0, 0, 0);
+  const CLOCK_MODULE = fileURLToPath(new URL('../store/parity-clock.ts', import.meta.url));
   const runChild = (
     mode: string,
     env: Record<string, string>,
+    clockMs: number | null = null,
   ): {
     status: number | null;
     signal: NodeJS.Signals | null;
@@ -97,9 +102,17 @@ async function parentMain(): Promise<never> {
     result: { pass: number; fails: string[] } | null;
   } => {
     const resultFile = path.join(ROOT, `${mode}-${Date.now()}.json`);
-    const r = spawnSync(process.execPath, ['--import', 'tsx', SELF], {
+    const args = ['--import', 'tsx', ...(clockMs === null ? [] : ['--import', CLOCK_MODULE]), SELF];
+    const r = spawnSync(process.execPath, args, {
       cwd: process.cwd(),
-      env: { ...process.env, WECOM03_CHILD: mode, WECOM03_RESULT: resultFile, CONFIG_SOURCE: 'file', ...env },
+      env: {
+        ...process.env,
+        WECOM03_CHILD: mode,
+        WECOM03_RESULT: resultFile,
+        CONFIG_SOURCE: 'file',
+        ...(clockMs === null ? {} : { PARITY_CLOCK_MS: String(clockMs) }),
+        ...env,
+      },
       timeout: 240_000,
       killSignal: 'SIGKILL',
       encoding: 'utf8',
@@ -157,12 +170,15 @@ async function parentMain(): Promise<never> {
     );
   }
   // 03 第 8 步：出站先落库后发送（适配器的整条顺序）
-  merge('出站 PGlite', runChild('out', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'out-')) }));
+  merge('出站 PGlite', runChild('out', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'out-')) }, NOON));
   let realPg = false;
   if (process.env.PG_TEST_URL) {
     realPg = true;
     merge('真实 PG', runChild('rpg', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rpg-')) }));
-    merge('出站 真实 PG', runChild('rout', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rout-')) }));
+    merge(
+      '出站 真实 PG',
+      runChild('rout', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'rout-')), FOLLOWUP_QUIET_START: '0', FOLLOWUP_QUIET_END: '0' }),
+    );
   } else if (process.env.CI === 'true') {
     fails.push('CI 下必须设 PG_TEST_URL：按账号的 cursor 与 channel_account_id 要以 agent_app 身份在真实 Postgres 上写一遍');
   }
