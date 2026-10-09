@@ -1,6 +1,6 @@
 # 02 · 会话入库 + 坐席工作台
 
-Status: ready
+Status: implemented
 Phase: 2 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」
 Depends on: [01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（implemented：`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、`CONFIG_SOURCE`、后台子应用与鉴权）；[后台 UX 重做](../../features/console-ux/spec.md)（implemented：设计系统、`conversationState`、counts、外壳与铃铛，以及「依赖 02 的后端」移交清单）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)、[ADR-002](../../adr/adr-002-console-vite-react.md)、[ADR-004](../../adr/adr-004-pack-field-rendering.md)
 Amends: 01 的「两种模式与启动装载」（`SESSION_STORE` 的校验、条目版本的启动补写、`/healthz` 的新字段）、「数据库」（新表、`tenants` 三个保留期列、`catalog_items.version`）、「withTenant」（新选项 `longRunning`、`inTenantTx()`）、「产品库 · 编辑规则」（按 01 裁决 R8 与开放问题 5 的推迟条款，`LOCKED_WHEN_ACTIVE` 去掉五个计价与条款字段）、「审计」（新动作、`writeAuditAs`）、「后台 API 与页面」（新接口）；后台 UX spec 的「接口改动」（`CONVERSATION_STATES` 加 `assigned`、`ConversationRow` 新字段、`ConversationCounts.byState` 新键、`AUDIT_ACTIONS` 新动作）。只做新增，或执行 01、UX spec 自己写明「由 02 定 / 02 之后」的条款；改写已实现条款的几处不走 Amends，见下一行
