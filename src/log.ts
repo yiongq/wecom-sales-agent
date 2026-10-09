@@ -16,6 +16,7 @@ import { shortIdOf } from './shared/conversation.js';
 
 /** 请求与轮次的上下文（AsyncLocalStorage）：pino 的 mixin 从这里取字段 */
 export interface LogContext {
+  acct: string;
   req: string;
   tenant: string;
   conv: string;
@@ -157,6 +158,7 @@ function contextFields(): Record<string, string> {
   const c = ctxStore.getStore();
   if (!c) return {};
   const out: Record<string, string> = {};
+  if (c.acct) out.acct = c.acct;
   if (c.req) out.req = c.req;
   const conv = c.conv ?? (c.conversationId ? convCode(c.conversationId) : undefined);
   if (conv !== undefined || c.turn) {

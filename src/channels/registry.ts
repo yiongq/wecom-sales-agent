@@ -5,13 +5,15 @@
 // 标记没写、哨兵没删、cursor（文件或库里的）不动——库只读、不写，文件只在装上之后才动。
 // startChannels 在监听之后、任务与跟进扫描器之前调：env 账号起 02 的老路（startWecom）；企微状态在库里时每个启用的企微账号起一个
 // 按账号的运行时（startWecomAccount，第 7 步；拉取状态在 channel_inbox，第 9 步），按账号 uuid 登记在适配器里。
-import { startWecom, startWecomAccount, stopWecomAccounts } from '../adapters/wecom.js';
+import { startWecom, startWecomAccount, stopWecomAccounts, wecomObservability } from '../adapters/wecom.js';
 import { withTenant, type Db } from '../db/client.js';
-import { listChannelAccounts, type ChannelAccountRow } from '../db/repo/channel-accounts.js';
-import { readOpenInbox, type InboxRecord } from '../db/repo/channel-inbox.js';
-import { readOpenOutbound, type OpenOutboundRow } from '../db/repo/outbound.js';
+import { listChannelAccounts, readAccountCursorTimes, type ChannelAccountRow } from '../db/repo/channel-accounts.js';
+import { readOpenInbox, readInboxStats, type InboxRecord } from '../db/repo/channel-inbox.js';
+import { readOpenOutbound, readOutboundStats, type OpenOutboundRow } from '../db/repo/outbound.js';
+import type { ChannelStatus } from '../shared/console-api.js';
 import { profile } from '../profile.js';
 import { varDir as storeVarDir } from '../store.js';
+import { onShutdown } from '../shutdown.js';
 import {
   accountFromRow,
   DEFAULT_WECOM_PREFIX,
@@ -80,8 +82,8 @@ interface Registry {
   /** 启用的账号，按账号 uuid */
   channels: ReadonlyMap<string, LoadedChannel>;
   /**
-   * 启动时的告警（只有账号 key、计数与原因）：网页账号因 web_channel 关着没启用、欢迎语不合格按没设处理；startChannels 再加库里账号
-   * 「重启时 sending 转 unknown」那一条（startAlerts 在它之后才读）
+   * 启动时的告警（只有账号 key 与原因）：网页账号因 web_channel 关着没启用、欢迎语不合格按没设处理。
+   * 「重启时 sending 转 unknown」另存，startAlerts 按账号分别推送。
    */
   warnings: string[];
   /** db 存储的库；文件存储为 null（库里企微账号的 cursor 与入站行经会话存储的短事务写，第 9 步） */
@@ -89,6 +91,38 @@ interface Registry {
 }
 
 let registry: Registry | null = null;
+let startedAt = Date.now();
+let observationClock = (): number => Date.now();
+let restartUnknown: { key: string; count: number }[] = [];
+interface DbObservation {
+  openInbox: number;
+  oldestAt: number | null;
+  staleOutbound: number;
+  cursorAt: number | null;
+  unknownSends24h: number;
+}
+const observations = new Map<string, DbObservation>();
+let refreshing: Promise<void> | null = null;
+let pendingRead: { expired: boolean } | null = null;
+let statsTimer: ReturnType<typeof setInterval> | null = null;
+let statsRefreshMs = 30_000;
+let statsTimeoutMs = 5_000;
+let lastStatsAt: number | null = null;
+
+function stopStatsRefresh(): void {
+  if (statsTimer) clearInterval(statsTimer);
+  statsTimer = null;
+  if (pendingRead) pendingRead.expired = true;
+}
+
+function startStatsRefresh(): void {
+  if (!registry?.db || statsTimer) return;
+  void refreshChannelObservability();
+  statsTimer = setInterval(() => void refreshChannelObservability(), statsRefreshMs);
+  statsTimer.unref();
+}
+
+onShutdown(stopStatsRefresh);
 
 /** 装载的结果：检查全部通过之后才由 commit 装上；effects 是装上之后才做的文件动作（补写标记、删哨兵），失败只记日志 */
 interface Plan extends Omit<Registry, 'db'> {
@@ -319,6 +353,19 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
  */
 function commit(plan: Plan, db: Db | null): void {
   installAccounts(plan.accounts);
+  startedAt = observationClock();
+  lastStatsAt = null;
+  observations.clear();
+  for (const c of plan.channels.values()) {
+    observations.set(c.account.id, {
+      openInbox: c.openInbox.length,
+      oldestAt: c.openInbox.length ? Math.min(...c.openInbox.map((i) => i.receivedAt.getTime())) : null,
+      staleOutbound: 0,
+      cursorAt: null,
+      unknownSends24h: 0,
+    });
+  }
+  restartUnknown = [];
   registry = { mode: plan.mode, wecomState: plan.wecomState, channels: plan.channels, warnings: plan.warnings, db };
   for (const fx of plan.effects) fx();
   for (const line of plan.logs) console.log(line);
@@ -346,12 +393,13 @@ export async function initChannels(deps: ChannelDeps | null): Promise<void> {
  * 每个运行时先做启动恢复（R5，第 10 步，src/channels/recovery.ts）：按 initChannels 读到的没结果的出站行与没结束的入站行，先出站、
  * 再入站，做完才开始拉取（同一客户的新消息排在它们后面，不变量 12）；做完之前这个账号的 push 排队等待。重启时会有 sending 转成
  * unknown 的（RESEND_UNKNOWN 为假时的 R5 边界；为真时有接手人的会话里 AI 产生的段），这里按出站恢复表先按账号数出来，日志一行、
- * 启动告警一条（startAlerts 在它之后才读）
+ * 按账号的独立告警（startAlerts 在它之后才读）
  */
 export function startChannels(): void {
   if (!registry) return;
   if (registry.mode === 'env') {
     if ([...registry.channels.values()].some((c) => c.account.source === 'env')) startWecom();
+    startStatsRefresh();
     return;
   }
   if (!registry.db) return;
@@ -361,10 +409,11 @@ export function startChannels(): void {
     if (unknown) {
       const why = `企微账号 ${c.account.key} 重启时有 ${unknown} 段停在「发送中」，记 unknown、不补发（可能没送达，工作台已标出，请顾问核对）`;
       console.error(`[channels] ⚠️ ${why}`);
-      registry.warnings.push(why);
+      restartUnknown.push({ key: c.account.key, count: unknown });
     }
     startWecomAccount({ account: c.account, secrets: c.secrets, open: { inbox: c.openInbox, outbound: c.openOutbound } });
   }
+  startStatsRefresh();
 }
 
 /** 装上的企微状态；还没装载（自测、eval）时为 null */
@@ -387,18 +436,161 @@ export function channelStartupWarnings(): readonly string[] {
   return registry?.warnings ?? [];
 }
 
-/**
- * /healthz 的 channels：只有个数，不带 key 与任何标识。accounts 是启用的账号数（env 账号与库里的，企微与网页都算）。
- * TODO(03 第 13 步)：failing（连续 10 分钟拉取失败或取不到 token 的启用企微账号数）、stuck（有入站行没结束超过 5 分钟的账号数）接实数
- */
+/** 重启的 sending → unknown 单独推送，免得挤进启动检查后被截断。 */
+export function channelRestartUnknown(): readonly { key: string; count: number }[] {
+  return restartUnknown;
+}
+
+/** 后台巡检与成员状态共用只读刷新；整个读取最多等 5 秒，失败或超时保留旧快照。 */
+export function refreshChannelObservability(): Promise<void> {
+  if (refreshing) return refreshing;
+  // Promise 超时不能取消正在借连接或运行的 SQL；它结束之前不叠加查询，迟到的结果不覆盖快照。
+  if (pendingRead) return Promise.resolve();
+  const r = registry;
+  if (!r?.db) return Promise.resolve();
+  const accounts = loadedAccounts();
+  if (!accounts.length) return Promise.resolve();
+  const now = observationClock();
+  const tenantId = accounts[0]!.tenantId;
+  const defaultId = accounts.find((a) => a.wecom?.idPrefix === DEFAULT_WECOM_PREFIX)?.id ?? null;
+  const read = { expired: false };
+  pendingRead = read;
+  const query = withTenant(
+    r.db,
+    { tenantId, actor: SYSTEM_ACTOR },
+    async (tx) => {
+      if (read.expired) return null;
+      const inbox = await readInboxStats(tx);
+      if (read.expired) return null;
+      const outbound = await readOutboundStats(tx, now, defaultId);
+      if (read.expired) return null;
+      const cursors = await readAccountCursorTimes(tx);
+      return { inbox, outbound, cursors };
+    },
+    { readOnly: true, isolation: 'repeatable read' },
+  )
+    .then((snapshot) => {
+      if (!snapshot || read.expired || registry !== r) return;
+      const { inbox, outbound, cursors } = snapshot;
+      for (const a of accounts) {
+        const i = inbox.find((x) => x.accountId === a.id);
+        const o = outbound.find((x) => x.accountId === a.id);
+        observations.set(a.id, {
+          openInbox: i?.openInbox ?? 0,
+          oldestAt: i?.oldestAt?.getTime() ?? null,
+          staleOutbound: o?.staleOutbound ?? 0,
+          unknownSends24h: o?.unknownSends24h ?? 0,
+          cursorAt: cursors.find((x) => x.id === a.id)?.cursorAt?.getTime() ?? null,
+        });
+      }
+      lastStatsAt = observationClock();
+    })
+    .catch(() => {
+      // 不把数据库错误正文（可能含凭据与地址）交进响应；恢复卡住仍由运行时判定。
+    })
+    .finally(() => {
+      if (pendingRead === read) pendingRead = null;
+    });
+  let timeout!: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<void>((resolve) => {
+    timeout = setTimeout(() => {
+      read.expired = true;
+      resolve();
+    }, statsTimeoutMs);
+    timeout.unref();
+  });
+  const bounded = Promise.race([query, deadline]).finally(() => {
+    clearTimeout(timeout);
+    if (refreshing === bounded) refreshing = null;
+  });
+  refreshing = bounded;
+  return refreshing;
+}
+
+/** 只交账号 key、计数、时刻与错误码；不交账号 uuid、cursor、企微标识与凭据。 */
+export function channelStatuses(now = observationClock()): ChannelStatus[] {
+  return loadedAccounts().map((a) => {
+    const rt = a.kind === 'wecom_kf' && isEnabled(a) ? wecomObservability(a.id) : null;
+    const db = observations.get(a.id);
+    const age = (at: number | null | undefined): number | null => (at == null ? null : Math.max(0, (now - at) / 1000));
+    return {
+      key: a.key,
+      kind: a.kind,
+      status: a.status,
+      inactiveReason: a.inactiveReason,
+      lastSyncAt: rt?.lastSyncAt == null ? null : new Date(rt.lastSyncAt).toISOString(),
+      lastErrorCode: rt?.lastErrorCode ?? null,
+      openInbox: db?.openInbox ?? 0,
+      oldestOpenInboxSec: age(db?.oldestAt) ?? 0,
+      staleOutbound: db?.staleOutbound ?? 0,
+      cursorAgeSec: age(db?.cursorAt),
+      unknownSends24h: db?.unknownSends24h ?? 0,
+    };
+  });
+}
+
+/** 给巡检的只读判定；一个账号即使同时入站与恢复卡住，也只算一次。 */
+export function channelConditions(now = observationClock()) {
+  return loadedAccounts()
+    .filter(isEnabled)
+    .map((a) => {
+      const rt = a.kind === 'wecom_kf' ? wecomObservability(a.id) : null;
+      const db = observations.get(a.id);
+      const graceOver = now - (rt?.startedAt ?? startedAt) > 60_000;
+      return {
+        key: a.key,
+        failing: rt?.failingSince != null && now - rt.failingSince >= 600_000,
+        stuck:
+          graceOver && ((db?.oldestAt != null && now - db.oldestAt > 300_000) || (rt?.recovering === true && now - rt.startedAt > 300_000)),
+        openInbox: db?.openInbox ?? 0,
+        errorCode: rt?.lastErrorCode ?? null,
+      };
+    });
+}
+
+/** /healthz 只读最近快照与实时运行状态，过期统计不清零，不带账号 key。 */
 export function channelsHealth(): { mode: 'env' | 'db'; accounts: number; failing: number; stuck: number } {
-  return { mode: channelsMode(), accounts: loadedAccounts().filter(isEnabled).length, failing: 0, stuck: 0 };
+  const states = channelConditions();
+  return {
+    mode: channelsMode(),
+    accounts: states.length,
+    failing: states.filter((s) => s.failing).length,
+    stuck: states.filter((s) => s.stuck).length,
+  };
 }
 
 /** 仅供自测：清回还没装载的样子（库里账号的运行时停掉、账号表清空，env 账号随之回到 02 的老路） */
 export const __channelsTest = {
+  setStatsTiming(refreshMs = 30_000, timeoutMs = 5_000): void {
+    const running = statsTimer !== null;
+    stopStatsRefresh();
+    statsRefreshMs = refreshMs;
+    statsTimeoutMs = timeoutMs;
+    if (running) startStatsRefresh();
+  },
+  stats(): { ageSec: number | null; running: boolean; referenced: boolean; reading: boolean } {
+    return {
+      ageSec: lastStatsAt === null ? null : Math.max(0, (observationClock() - lastStatsAt) / 1000),
+      running: statsTimer !== null,
+      referenced: statsTimer?.hasRef() ?? false,
+      reading: pendingRead !== null,
+    };
+  },
+  stopStatsRefresh,
+  startStatsRefresh,
+  setObservationClock(fn: (() => number) | null): void {
+    observationClock = fn ?? (() => Date.now());
+  },
   reset(): void {
+    stopStatsRefresh();
+    refreshing = null;
+    pendingRead = null;
+    lastStatsAt = null;
+    statsRefreshMs = 30_000;
+    statsTimeoutMs = 5_000;
     stopWecomAccounts();
+    observations.clear();
+    restartUnknown = [];
     registry = null;
     installAccounts([]);
   },

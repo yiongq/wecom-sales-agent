@@ -358,6 +358,7 @@ onSessionSaved(() => {
  * 只交结果、错误码与 kind，不交会话与正文
  */
 export interface SendSettled {
+  account: string;
   result: SendResult;
   errcode: number | null;
   kind: OutboundKind;
@@ -435,7 +436,7 @@ export function recordSend(sessionId: string, kind: OutboundKind, message: ChatM
         r.errcode = null;
       } else if (r.status === 'unknown' && result === 'unknown') r.errcode = errcode ?? null;
       persist(r);
-      notifySettled({ result, errcode: errcode ?? null, kind });
+      notifySettled({ result, errcode: errcode ?? null, kind, account: accountForSession(sessionId)?.key ?? 'env' });
     },
     discard() {
       if (done) return;
@@ -837,7 +838,8 @@ export function settleIntent(intent: OutboundIntent, result: SendResult, detail:
   finishRow(row);
   if (moved) persistResult(row);
   // 一次请求都没发出去的（取 token 失败、卡片的缩略图拿不到）不进 wecom_send 的计数：那是 send_msg 的失败告警
-  if (detail.attempts > 0) notifySettled({ result, errcode: detail.errcode ?? null, kind: row.kind });
+  if (detail.attempts > 0)
+    notifySettled({ result, errcode: detail.errcode ?? null, kind: row.kind, account: accountForSession(row.sessionId)?.key ?? 'env' });
 }
 
 /**

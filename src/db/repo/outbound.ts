@@ -371,3 +371,26 @@ export async function readOpenOutboundUntil(
     status: 'pending' | 'sending';
   }[];
 }
+
+/** 按最后一次尝试时刻统计；NULL 账号归默认账号，RLS 限在当前租户。 */
+export async function readOutboundStats(
+  tx: Tx,
+  now: number,
+  defaultAccountId: string | null,
+): Promise<
+  {
+    accountId: string | null;
+    staleOutbound: number;
+    unknownSends24h: number;
+  }[]
+> {
+  const acct = sql<string | null>`coalesce(${outboundSends.accountId}, ${defaultAccountId}::uuid)`;
+  return tx
+    .select({
+      accountId: acct,
+      staleOutbound: sql<number>`count(*) filter (where ${outboundSends.status} in ('pending', 'sending') and ${outboundSends.sentAt} < ${new Date(now - 120_000).toISOString()}::timestamptz)::int`,
+      unknownSends24h: sql<number>`count(*) filter (where ${outboundSends.status} = 'unknown' and ${outboundSends.sentAt} >= ${new Date(now - 86_400_000).toISOString()}::timestamptz and ${outboundSends.sentAt} <= ${new Date(now).toISOString()}::timestamptz)::int`,
+    })
+    .from(outboundSends)
+    .groupBy(sql`1`);
+}

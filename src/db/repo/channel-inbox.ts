@@ -216,3 +216,16 @@ export async function readOpenInboxUntil(tx: Tx, until: Date): Promise<{ kind: I
       ),
     )) as { kind: InboxKind; conversationId: string | null }[];
 }
+
+/** 每账号未结束入站的计数与最早收到时刻；不读取 payload 或会话标识。 */
+export async function readInboxStats(tx: Tx): Promise<{ accountId: string; openInbox: number; oldestAt: Date | null }[]> {
+  return tx
+    .select({
+      accountId: channelInbox.accountId,
+      openInbox: sql<number>`count(*)::int`,
+      oldestAt: sql<Date | null>`min(${channelInbox.receivedAt})`.mapWith(channelInbox.receivedAt),
+    })
+    .from(channelInbox)
+    .where(inArray(channelInbox.state, [...INBOX_OPEN_STATES]))
+    .groupBy(channelInbox.accountId);
+}

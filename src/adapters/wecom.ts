@@ -72,7 +72,7 @@ import {
 } from '../quota/ledger.js';
 import { cleanText } from '../shared/text.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
-import { convLabel, logQuote, withConversationLog } from '../log.js';
+import { convLabel, logQuote, withConversationLog, withLogContext } from '../log.js';
 import {
   getOrCreateSession,
   getOrder,
@@ -163,7 +163,9 @@ export function onTokenError(cb: (code: string, account: string) => void): () =>
   return () => tokenErrorListeners.delete(cb);
 }
 function tokenFailed(rt: WecomRuntime, e: unknown): void {
-  const code = e instanceof Error ? (/errcode=(-?\d+)/.exec(e.message)?.[1] ?? e.name) : 'unknown';
+  const code = apiErrorCode(e);
+  rt.tokenFailureAt ??= observationClock();
+  rt.lastErrorCode = code;
   for (const cb of tokenErrorListeners) {
     try {
       cb(code, rt.key);
@@ -241,7 +243,17 @@ type RuntimeState = FileWecomState | AccountInbox;
  * 一个企微账号的运行时（03 spec R10）。字段就是 02 的模块级状态，每个账号一份；收发与处理的函数都以它为第一个参数。
  * 按账号 uuid 登记在 runtimes 里（R20：没有别的模块级单例，进程级的只有 tokenErrorListeners 这个订阅出口）
  */
+let observationClock = (): number => Date.now();
+/** 接口错误只留下 errcode 或错误名；不取 message（可能带 token 地址）。 */
+const apiErrorCode = (e: unknown): string =>
+  e instanceof Error ? (/errcode=(-?\d+)/.exec(e.message)?.[1] ?? e.name.replace(/[^\w.-]/g, '').slice(0, 40)) : 'unknown';
+
 class WecomRuntime {
+  readonly observationStartedAt = observationClock();
+  lastSyncAt: number | null = null;
+  lastErrorCode: string | null = null;
+  pullFailureAt: number | null = null;
+  tokenFailureAt: number | null = null;
   /** 账号 uuid（env 账号是 ENV_ACCOUNT_ID） */
   readonly id: string;
   /** 账号 key（env 账号是 'env'）：告警与日志里用 */
@@ -362,6 +374,28 @@ function accountSession(rt: WecomRuntime, sessionId: string): Session {
   return s;
 }
 
+function withAccountConversationLog<T>(rt: WecomRuntime, sessionId: string, fn: () => T): T {
+  return withLogContext({ acct: rt.key }, () => withConversationLog(sessionId, fn));
+}
+function notePullSuccess(rt: WecomRuntime): void {
+  rt.lastSyncAt = observationClock();
+  rt.pullFailureAt = null;
+  if (rt.tokenFailureAt === null) rt.lastErrorCode = null;
+}
+/** 只读运行时观测值，不暴露 token、cursor 与会话。 */
+export function wecomObservability(accountId: string) {
+  const rt = runtimes.get(accountId);
+  if (!rt) return null;
+  const failures = [rt.pullFailureAt, rt.tokenFailureAt].filter((v): v is number => v !== null);
+  return {
+    startedAt: rt.observationStartedAt,
+    lastSyncAt: rt.lastSyncAt,
+    lastErrorCode: rt.lastErrorCode ?? (rt.recovery === 'recovering' ? 'recovering' : null),
+    failingSince: failures.length ? Math.min(...failures) : null,
+    recovering: rt.recovery !== 'done',
+  };
+}
+
 // ---------------- access_token ----------------
 
 async function getAccessToken(rt: WecomRuntime, cfg: WecomConfig, force = false): Promise<string> {
@@ -372,9 +406,11 @@ async function getAccessToken(rt: WecomRuntime, cfg: WecomConfig, force = false)
       const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
       const data = (await res.json()) as { errcode?: number; errmsg?: string; access_token?: string; expires_in?: number };
       if (data.errcode || !data.access_token) {
-        throw new Error(`gettoken 失败: errcode=${data.errcode} ${data.errmsg ?? ''}`);
+        throw new Error(`gettoken 失败: errcode=${data.errcode ?? 0}`);
       }
       rt.token = new Redacted(data.access_token);
+      rt.tokenFailureAt = null;
+      if (rt.pullFailureAt === null) rt.lastErrorCode = null;
       // 官方 7200s，提前 300s 刷新，避开边界失效
       rt.tokenExpireAt = Date.now() + ((data.expires_in ?? 7200) - 300) * 1000;
       return data.access_token;
@@ -395,7 +431,7 @@ async function getAccessToken(rt: WecomRuntime, cfg: WecomConfig, force = false)
 class TokenError extends Error {
   override readonly name = 'TokenError';
   constructor(cause: unknown) {
-    super(`取 access_token 失败（${cause instanceof Error ? cause.message : String(cause)}）`, { cause });
+    super(`取 access_token 失败（errcode=${apiErrorCode(cause)}）`, { cause });
   }
 }
 
@@ -527,7 +563,7 @@ async function uploadThumb(rt: WecomRuntime, cfg: WecomConfig): Promise<string |
       });
       const d = (await res.json()) as { errcode?: number; errmsg?: string; media_id?: string };
       if (d.errcode || !d.media_id) {
-        console.error(`${rt.tag} 缩略图上传失败，链接将以纯文本发送:`, d.errcode, d.errmsg);
+        console.error(`${rt.tag} 缩略图上传失败，链接将以纯文本发送:`, d.errcode);
         rt.thumbFailUntil = Date.now() + THUMB_FAIL_COOLDOWN;
         return null;
       }
@@ -535,7 +571,7 @@ async function uploadThumb(rt: WecomRuntime, cfg: WecomConfig): Promise<string |
       console.log(`${rt.tag} 链接卡片缩略图已上传`);
       return d.media_id;
     } catch (e) {
-      console.error(`${rt.tag} 缩略图上传异常:`, e instanceof Error ? e.message : e);
+      console.error(`${rt.tag} 缩略图上传异常:`, apiErrorCode(e));
       rt.thumbFailUntil = Date.now() + THUMB_FAIL_COOLDOWN;
       return null;
     } finally {
@@ -616,7 +652,7 @@ async function sendLinkCard(
     });
     if (data.errcode) {
       entry.settle('rejected', data.errcode);
-      console.error(`${rt.tag} 链接卡片发送失败(errcode=${data.errcode} ${data.errmsg ?? ''})，退回纯文本`);
+      console.error(`${rt.tag} 链接卡片发送失败(errcode=${data.errcode})，退回纯文本`);
       return false;
     }
     entry.settle('accepted');
@@ -624,7 +660,7 @@ async function sendLinkCard(
   } catch (e) {
     if (e instanceof TokenError) entry.discard();
     else entry.settle('unknown');
-    console.error(`${rt.tag} 链接卡片发送异常，退回纯文本:`, e instanceof Error ? e.message : e);
+    console.error(`${rt.tag} 链接卡片发送异常，退回纯文本:`, apiErrorCode(e));
     return false;
   }
 }
@@ -815,13 +851,13 @@ async function sendText(rt: WecomRuntime, cfg: WecomConfig, externalUserId: stri
           anyAccepted = true;
           break;
         }
-        lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+        lastErr = `errcode=${data.errcode}`;
         errcode = data.errcode;
         if (outcome !== 'unknown') outcome = 'rejected';
         // 45009=接口限流、-1=系统繁忙 值得重试；其余（参数错/无权限）重试无意义
         if (data.errcode !== 45009 && data.errcode !== -1) break;
       } catch (e) {
-        lastErr = String(e); // 网络异常/超时，重试
+        lastErr = apiErrorCode(e); // 网络异常/超时，重试
         // 超时与网络异常：请求可能已经到了企微、消息可能已经送达，结果不明（计入额度）；取 token 失败是根本没发。
         // 立刻记 unknown 并排进落库，不等重试跑完：重试途中进程被杀或停机，重启后情况 4 看到 unknown 就不再重发
         if (!(e instanceof TokenError)) {
@@ -882,12 +918,12 @@ async function sendMenu(
         lastErr = '';
         break;
       }
-      lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+      lastErr = `errcode=${data.errcode}`;
       errcode = data.errcode;
       if (outcome !== 'unknown') outcome = 'rejected';
       if (data.errcode !== 45009 && data.errcode !== -1) break;
     } catch (e) {
-      lastErr = String(e);
+      lastErr = apiErrorCode(e);
       if (!(e instanceof TokenError)) {
         outcome = 'unknown';
         entry.unknown();
@@ -1095,7 +1131,7 @@ async function sendSegment(
     token = await tokenOrThrow(rt, cfg);
   } catch (e) {
     // 请求根本没发出去：这一段明确没送达（rejected、不计条数；没发过请求，不进 wecom_send 的计数，token 另有告警）
-    console.error(`${rt.tag} send_msg 没发出去（${e instanceof Error ? e.message : 'unknown'}）`);
+    console.error(`${rt.tag} send_msg 没发出去（${apiErrorCode(e)}）`);
     settleIntent(intent, 'rejected', { attempts: 0 });
     return 'failed';
   }
@@ -1155,7 +1191,7 @@ async function sendSegment(
       let data = await postSendMsg(token, body);
       if (data.errcode === 42001 || data.errcode === 40014) {
         // token 过期：强刷一次、同一 msgid 再发（02 callApi 的规则）。强刷是真实的网络等待，之后再比一次
-        lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+        lastErr = `errcode=${data.errcode}`;
         errcode = data.errcode;
         if (outcome !== 'unknown') outcome = 'rejected';
         try {
@@ -1173,7 +1209,7 @@ async function sendSegment(
         lastErr = '';
         break;
       }
-      lastErr = `errcode=${data.errcode} ${data.errmsg ?? ''}`;
+      lastErr = `errcode=${data.errcode}`;
       errcode = data.errcode;
       if (outcome !== 'unknown') outcome = 'rejected';
       if (data.errcode !== 45009 && data.errcode !== -1) break;
@@ -1365,7 +1401,7 @@ async function sendWelcomeOnEvent(rt: WecomRuntime, cfg: WecomConfig, code: stri
     text: { content: withPrivacyLink(rt.welcomeText) },
   });
   if (data.errcode) {
-    console.error(`${rt.tag} send_msg_on_event 失败: errcode=${data.errcode} ${data.errmsg ?? ''}`);
+    console.error(`${rt.tag} send_msg_on_event 失败: errcode=${data.errcode}`);
   }
 }
 
@@ -1600,7 +1636,7 @@ const SORRY_TEXT = '抱歉，系统开小差了，请稍后再发一次，或直
  */
 function handleCustomerMessage(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = false): Promise<'deferred' | void> {
   // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
-  return withConversationLog(rt.prefix + msg.external_userid, () => handleCustomerMessageInner(rt, cfg, msg, replay));
+  return withAccountConversationLog(rt, rt.prefix + msg.external_userid, () => handleCustomerMessageInner(rt, cfg, msg, replay));
 }
 async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay: boolean): Promise<'deferred' | void> {
   const sessionId = rt.prefix + msg.external_userid;
@@ -1735,7 +1771,7 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
     }
     console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
   } catch (err) {
-    console.error(`${rt.tag} 处理消息失败:`, err);
+    console.error(`${rt.tag} 处理消息失败:`, apiErrorCode(err));
     await sendText(rt, cfg, msg.external_userid, SORRY_TEXT, { kind: 'ai', message: null });
   }
 }
@@ -1875,7 +1911,7 @@ function dispatchInboxRows(
     }
     if (row.state === 'done' || row.state === 'abandoned') continue;
     if (row.kind === 'send_fail' && row.state === 'received') {
-      const t = processReceiptRow(row).catch((err) => console.error(`${rt.tag} 回执处理异常:`, err));
+      const t = processReceiptRow(row).catch((err) => console.error(`${rt.tag} 回执处理异常:`, apiErrorCode(err)));
       rt.eventTasks.add(t);
       void t.finally(() => rt.eventTasks.delete(t));
       continue;
@@ -1949,7 +1985,7 @@ function resumeRecordedRow(
   sessionId: string,
   o: { restore: boolean; upgrade: boolean },
 ): Promise<void> {
-  return withConversationLog(sessionId, async () => {
+  return withAccountConversationLog(rt, sessionId, async () => {
     const isText = msg.msgtype === 'text' && !!msg.text?.content;
     if (o.restore) {
       const s = accountSession(rt, sessionId);
@@ -2004,7 +2040,7 @@ function resumeRecordedRow(
  * 发名下 pending 的段，不调模型；都有结果之后 done（停机截止停下的不记，留在 replied）
  */
 function resumeRepliedRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, sessionId: string): Promise<void> {
-  return withConversationLog(sessionId, async () => {
+  return withAccountConversationLog(rt, sessionId, async () => {
     const s = getSession(sessionId);
     const pending = pendingIntentsOfInbox(row.id);
     const action = repliedRecovery({ hasAssignee: !!(s?.handedOver && s.assignee), pending: pending.length });
@@ -2122,7 +2158,7 @@ function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, al
   const msg = row.payload as KfMessage;
   const sessionId = row.conversationId ?? rt.prefix + msg.external_userid;
   // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
-  return withConversationLog(sessionId, async () => {
+  return withAccountConversationLog(rt, sessionId, async () => {
     if (msg.msgtype !== 'text' || !msg.text?.content) return processNonTextRow(rt, cfg, row, msg, sessionId, alreadyRecorded);
     const t0 = Date.now();
     console.log(`${rt.tag} ${alreadyRecorded ? '重跑' : '收到'}客户消息: "${logQuote(msg.text.content)}"`);
@@ -2148,7 +2184,7 @@ function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, al
       if (out === 'deferred') console.log(`${rt.tag} 入站停在 replied（重启后按出站恢复补发）`);
     } catch (err) {
       // 与 02 一样算处理完：回一句道歉（不挂入站），入站记 done
-      console.error(`${rt.tag} 处理消息失败:`, err);
+      console.error(`${rt.tag} 处理消息失败:`, apiErrorCode(err));
       await sendTextDb(rt, cfg, sessionId, SORRY_TEXT, 'ai', null, gen);
       await finishInboxRow(sessionId, row.id, 'done');
     }
@@ -2269,7 +2305,9 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
     if (syncToken) body.token = syncToken;
     const data = await callApi<SyncMsgResp>(rt, cfg, 'kf/sync_msg', body);
     if (data.errcode) {
-      console.error(`${rt.tag} sync_msg 失败: errcode=${data.errcode} ${data.errmsg ?? ''}`);
+      rt.pullFailureAt ??= observationClock();
+      rt.lastErrorCode = String(data.errcode);
+      console.error(`${rt.tag} kf/sync_msg 失败: errcode=${data.errcode}`);
       return;
     }
     if (rt.stopping) return;
@@ -2278,6 +2316,8 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
     try {
       rows = await inbox.acceptPage(rt.id, page, data.next_cursor ?? '');
     } catch (e) {
+      rt.pullFailureAt ??= observationClock();
+      rt.lastErrorCode = apiErrorCode(e);
       const code = (e as { code?: unknown } | null)?.code;
       console.error(
         `${rt.tag} ⚠️ 这一页入站没写进库（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}）：` +
@@ -2285,6 +2325,7 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
       );
       return;
     }
+    notePullSuccess(rt);
     dispatchInboxRows(rt, cfg, rows, new Map(page.map((m) => [m.msgid, m])));
     if (!data.has_more || rt.stopping) return;
   }
@@ -2299,7 +2340,7 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
 
 function enqueueForUser(rt: WecomRuntime, uid: string, task: () => Promise<void>): void {
   const prev = rt.userChains.get(uid) ?? Promise.resolve();
-  const next = prev.then(task).catch((err) => console.error(`${rt.tag} 单条消息处理异常（继续后续消息）:`, err));
+  const next = prev.then(task).catch((err) => console.error(`${rt.tag} 单条消息处理异常（继续后续消息）:`, apiErrorCode(err)));
   rt.userChains.set(uid, next);
   void next.finally(() => {
     if (rt.userChains.get(uid) === next) rt.userChains.delete(uid);
@@ -2308,7 +2349,7 @@ function enqueueForUser(rt: WecomRuntime, uid: string, task: () => Promise<void>
 
 /** 欢迎语不排队（welcome_code 20 秒就过期），单独跟踪，只为停机时能等它们发完 */
 function dispatchWelcome(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage): void {
-  const t = handleEnterSession(rt, cfg, msg).catch((err) => console.error(`${rt.tag} 欢迎语处理异常:`, err));
+  const t = handleEnterSession(rt, cfg, msg).catch((err) => console.error(`${rt.tag} 欢迎语处理异常:`, apiErrorCode(err)));
   rt.eventTasks.add(t);
   void t.finally(() => rt.eventTasks.delete(t));
 }
@@ -2350,7 +2391,7 @@ function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promi
     if (syncToken) rt.pendingToken = syncToken;
     return Promise.resolve();
   }
-  rt.syncTask = (async () => {
+  rt.syncTask = withLogContext({ acct: rt.key }, async () => {
     try {
       let token = syncToken;
       do {
@@ -2362,10 +2403,14 @@ function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promi
         // 两个标志都在 await 期间由别的调用改（syncOnce 记 pending、停机置 stopping），不是死循环
         // oxlint-disable-next-line no-unmodified-loop-condition
       } while (rt.pendingRequested && !rt.stopping);
+    } catch (e) {
+      rt.pullFailureAt ??= observationClock();
+      rt.lastErrorCode = apiErrorCode(e);
+      throw e;
     } finally {
       rt.syncTask = null;
     }
-  })();
+  });
   return rt.syncTask;
 }
 
@@ -2378,11 +2423,14 @@ async function drainMessages(rt: WecomRuntime, state: FileWecomState, cfg: Wecom
     if (syncToken) body.token = syncToken;
     const data = await callApi<SyncMsgResp>(rt, cfg, 'kf/sync_msg', body);
     if (data.errcode) {
-      console.error(`${rt.tag} sync_msg 失败: errcode=${data.errcode} ${data.errmsg ?? ''}`);
+      rt.pullFailureAt ??= observationClock();
+      rt.lastErrorCode = String(data.errcode);
+      console.error(`${rt.tag} kf/sync_msg 失败: errcode=${data.errcode}`);
       return;
     }
     // 拉取途中收到停机信号：这一页不认领（cursor 不推进、不标记），新进程启动补拉时会再拿到
     if (rt.stopping) return;
+    notePullSuccess(rt);
     const accepted: KfMessage[] = [];
     let skippedOld = 0;
     for (const msg of data.msg_list ?? []) {
@@ -2481,22 +2529,24 @@ function ensureReady(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
 
 /** 回调带来的 token 立即拉一次（两种账号共用） */
 async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: string): Promise<void> {
-  if (rt.stopping) {
-    // 回调照样回 success（server.ts），只是不拉：消息还在 cursor 之后，新进程启动补拉时会拿到
-    console.log(`${rt.tag} 停机中，回调不再拉取（新进程启动后补拉）`);
-    return;
-  }
-  if (rt.recovery !== 'done') {
-    // 回调照样回 success：消息还在 cursor 之后，恢复做完开始拉取时第一拍就补拉（startRuntime）
-    console.log(`${rt.tag} 启动恢复还没做完，回调这次不拉取（做完之后补拉）`);
-    return;
-  }
-  try {
-    await ensureReady(rt, cfg);
-    await syncOnce(rt, cfg, syncToken);
-  } catch (err) {
-    console.error(`${rt.tag} 回调拉取异常:`, err); // server.ts 是 void 调用，漏到外面就是未捕获 rejection
-  }
+  return withLogContext({ acct: rt.key }, async () => {
+    if (rt.stopping) {
+      // 回调照样回 success（server.ts），只是不拉：消息还在 cursor 之后，新进程启动补拉时会拿到
+      console.log(`${rt.tag} 停机中，回调不再拉取（新进程启动后补拉）`);
+      return;
+    }
+    if (rt.recovery !== 'done') {
+      // 回调照样回 success：消息还在 cursor 之后，恢复做完开始拉取时第一拍就补拉（startRuntime）
+      console.log(`${rt.tag} 启动恢复还没做完，回调这次不拉取（做完之后补拉）`);
+      return;
+    }
+    try {
+      await ensureReady(rt, cfg);
+      await syncOnce(rt, cfg, syncToken);
+    } catch (err) {
+      console.error(`${rt.tag} kf/sync_msg 异常: errcode=${apiErrorCode(err)}`); // server.ts 是 void 调用，漏到外面就是未捕获 rejection
+    }
+  });
 }
 
 /**
@@ -2533,7 +2583,7 @@ function startRuntime(rt: WecomRuntime): void {
         '成单流程会断在付款一步！请在 env 配置公网地址（如 https://travel.example.com）。',
     );
   }
-  void (async () => {
+  void withLogContext({ acct: rt.key }, async () => {
     // 库里的账号读不到拉取位置（库不可用）也照样起轮询：每次拉取之前再读（ensureReady 失败时下次重来）
     if (rt.state.kind === 'file') await ensureReady(rt, cfg);
     else await ensureReady(rt, cfg).catch(() => console.error(`${rt.tag} 启动时读不到库里的拉取位置，之后每次拉取之前再读`));
@@ -2547,14 +2597,16 @@ function startRuntime(rt: WecomRuntime): void {
         if (rt.state.kind !== 'file') await ensureReady(rt, cfg);
         await syncOnce(rt, cfg);
       } catch (err) {
-        console.error(`${rt.tag} 兜底轮询异常（下轮重试）:`, err);
+        console.error(`${rt.tag} kf/sync_msg 异常（下轮重试）: errcode=${apiErrorCode(err)}`);
       }
       if (!rt.stopping) rt.pollTimer = setTimeout(() => void tick(), fallbackMs);
     };
     // 启动先补拉一次，不等第一个轮询周期：上个进程停机收尾时回调只回了 success 没拉，
     // 重启空档里的回调也可能已经丢了，这些消息都还在 cursor 之后
     void tick();
-  })().catch((err) => console.error(`${rt.tag} 启动失败，仅靠回调拉取:`, err));
+  }).catch((err) =>
+    withLogContext({ acct: rt.key }, () => console.error(`${rt.tag} 启动失败，仅靠回调拉取: errcode=${apiErrorCode(err)}`)),
+  );
 }
 
 /** env 账号：未配齐 env 时静默不启动；配齐则起轮询循环（不阻塞调用方） */
@@ -2612,7 +2664,7 @@ async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccou
     await recoverOutbound(port, start.open.outbound, start.open.inbox);
   } catch (err) {
     // 出站恢复中途出错：没处理到的行留在库里原样（下次启动再按表处理），入站恢复与拉取照常，不让这个账号停在这里
-    console.error(`${rt.tag} ⚠️ 启动恢复（出站）中途出错，没处理到的行留到下次启动:`, err);
+    console.error(`${rt.tag} ⚠️ 启动恢复（出站）中途出错，没处理到的行留到下次启动:`, apiErrorCode(err));
   }
   const loaded = await retryUntilStopped(rt, '读入站', () => inboxOf(rt).loadForRecovery(rt.id));
   if (!loaded || rt.stopping) return;
@@ -2658,7 +2710,9 @@ export function startWecomAccount(s: WecomAccountStart): void {
   runtimes.set(rt.id, rt);
   const cfg = rt.config()!;
   // 恢复与它补发的那几段按 eventTasks 跟踪：停机时等它（它自己看 stopping 停下），自测的 idle 也等它
-  const task = runRecovery(rt, cfg, s).catch((err) => console.error(`${rt.tag} 启动恢复异常（不拉取，重启之后再按表处理）:`, err));
+  const task = withLogContext({ acct: rt.key }, () => runRecovery(rt, cfg, s)).catch((err) =>
+    console.error(`${rt.tag} 启动恢复异常（不拉取，重启之后再按表处理）:`, apiErrorCode(err)),
+  );
   rt.eventTasks.add(task);
   void task.finally(() => rt.eventTasks.delete(task));
 }
@@ -2709,7 +2763,7 @@ async function drainForShutdown(rt: WecomRuntime, ctx?: { deadline: number }): P
 /** 每个账号的运行时一起收尾，一个账号出错不耽误别的账号 */
 onShutdown(async (ctx) => {
   const results = await Promise.allSettled([...runtimes.values()].map((rt) => drainForShutdown(rt, ctx)));
-  for (const r of results) if (r.status === 'rejected') console.error('[wecom] 停机收尾异常:', r.reason);
+  for (const r of results) if (r.status === 'rejected') console.error('[wecom] 停机收尾异常:', apiErrorCode(r.reason));
 });
 /** 进程退出前把每个账号去抖窗口里的状态同步写出去（文件后端；库里的账号都在库里，没有要写的） */
 process.on('exit', () => {
@@ -2866,6 +2920,9 @@ export { __channelTest } from '../channels/recovery.js';
 
 /** 仅供自测（src/adapters/wecom-03.selftest.ts）：按账号看运行时 */
 export const __wecomTest = {
+  setObservationClock(fn: (() => number) | null): void {
+    observationClock = fn ?? (() => Date.now());
+  },
   /** 这个账号的运行时（没有为 null）：拉取状态、是否忙、启动恢复、后端种类、恢复截止点 */
   inspect(accountId: string) {
     const rt = runtimes.get(accountId);

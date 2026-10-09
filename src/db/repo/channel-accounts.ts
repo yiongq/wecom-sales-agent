@@ -110,3 +110,8 @@ export async function updateChannelAccount(tx: Tx, id: string, patch: ChannelAcc
   const out = await tx.update(channelAccounts).set(set).where(eq(channelAccounts.id, id)).returning({ id: channelAccounts.id });
   return out.length === 1;
 }
+
+/** 状态页只读 cursor_at，不读凭据或企微标识。 */
+export async function readAccountCursorTimes(tx: Tx): Promise<{ id: string; cursorAt: Date | null }[]> {
+  return tx.select({ id: channelAccounts.id, cursorAt: channelAccounts.cursorAt }).from(channelAccounts);
+}

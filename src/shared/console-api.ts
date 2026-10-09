@@ -3,6 +3,7 @@
 // Hono RPC 据此推出前端 hc 客户端的类型：这里改一个字段名，服务端和 console/src 的使用处都会在 typecheck 报错。
 // 配置层的领域类型（SopVersion、CatalogItem、ContractViolation）也定义在这里，src/config 与 src/sop 再导出，只此一份。
 import { z } from 'zod';
+import type { ChannelKind, ChannelAccountStatus } from './channel-types.js';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
 import type { DeliveryView, HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
@@ -290,7 +291,22 @@ export interface AnonStatus {
   mode: 'db';
 }
 
+export interface ChannelStatus {
+  key: string;
+  kind: ChannelKind;
+  status: ChannelAccountStatus;
+  inactiveReason: string | null;
+  lastSyncAt: string | null;
+  lastErrorCode: string | null;
+  openInbox: number;
+  oldestOpenInboxSec: number;
+  staleOutbound: number;
+  cursorAgeSec: number | null;
+  unknownSends24h: number;
+}
+
 export interface Status {
+  channels: ChannelStatus[];
   mode: 'db';
   tenantSlug: string;
   sop: {
