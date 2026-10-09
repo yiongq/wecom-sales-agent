@@ -288,6 +288,8 @@ async function harness(m: string) {
     beforeSend: null as ((body: Record<string, any>) => Promise<void>) | null,
     /** send_msg 的结果：network 当网络异常抛出；返回对象当回包；null 照常 accepted */
     sendResult: null as ((body: Record<string, any>) => 'network' | Record<string, unknown> | null) | null,
+    /** 假模型（只在自测把 LLM_BASE_URL 指到 llm.selftest.invalid 时用到）：请求到了先调它，然后回 400 */
+    onLlm: null as (() => void) | null,
   };
   const stateFile = path.join(varDir, 'fake-wecom-logs.json');
   if (m === 'restart' && fs.existsSync(stateFile)) {
@@ -297,6 +299,10 @@ async function harness(m: string) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname === 'llm.selftest.invalid') {
+      fake.onLlm?.();
+      return new Response(JSON.stringify({ error: { message: 'selftest: 假模型报错' } }), { status: 400 });
+    }
     if (url.hostname !== 'qyapi.weixin.qq.com') return realFetch(input, init);
     const ep = url.pathname.replace(/^\/cgi-bin\//, '');
     if (ep === 'gettoken') {
@@ -1543,6 +1549,96 @@ async function outboundSuite(h: Harness): Promise<void> {
         ledger.unsafeSendsIn10m() === u0 &&
         logsSince(from).some((l) => l.includes('提交过又不在库里')),
       json({ sent: h.sentTo(uid).length, logs: logsSince(from).filter((l) => l.includes('不在库里')) }),
+    );
+  }
+
+  // ---- 退避期间收到失败回执：这一段已是 failed，重试不再发（不变量 5：failed 永不再发） ----
+  {
+    const uid = 'wm08rcv';
+    let first: string | null = null;
+    h.fake.sendResult = (b) => {
+      if (b.touser !== uid) return null;
+      if (first === null) {
+        first = String(b.msgid);
+        // 首次请求网络异常（记 unknown、进退避）；退避期间企微发来这一段的 msg_send_fail
+        setTimeout(() => {
+          h.emit(acct('a2').kf, {
+            external_userid: uid,
+            origin: 4,
+            msgtype: 'event',
+            event: { event_type: 'msg_send_fail', fail_msgid: first!, fail_type: 4 },
+          });
+          void h.wecom.syncAccountFromCallback(idOf('a2'), `poll-rcv-${Date.now()}`);
+        }, 100);
+        return 'network';
+      }
+      return null;
+    };
+    await talk('a2', uid, '你好，想去云南');
+    await sleep(1000);
+    await settle();
+    h.fake.sendResult = null;
+    const reqs = first ? h.fake.sends.filter((x) => x.msgid === first).length : -1;
+    check(
+      '退避期间收到失败回执：同一段只发过一次请求（重试前看到 failed 就停），库里这一段 failed',
+      first !== null && reqs === 1 && (await rowOf(first))?.status === 'failed',
+      json({ reqs, row: first ? await rowOf(first) : null }),
+    );
+  }
+
+  // ---- 模型等待期间顾问接手、随后模型报错：兜底道歉拿本轮开始时的代次比，不发、这一组 cancelled ----
+  {
+    const uid = 'wm08exc';
+    const sid = sidOf('a1', uid);
+    const saved = Object.fromEntries(
+      [
+        'LLM_MOCK',
+        'LLM_PROVIDER',
+        'LLM_BASE_URL',
+        'LLM_API_KEY',
+        'LLM_MODEL',
+        'LLM_MODEL_CHEAP',
+        'LLM_HEDGE_MODEL',
+        'EMBED_BASE_URL',
+        'EMBED_API_KEY',
+      ].map((k) => [k, process.env[k]]),
+    );
+    // 假模型：主机名不可解析（.invalid），请求全被假 fetch 接住，绝不会打到真实模型
+    Object.assign(process.env, {
+      LLM_MOCK: '0',
+      LLM_PROVIDER: '',
+      LLM_BASE_URL: 'https://llm.selftest.invalid/v1',
+      LLM_API_KEY: 'selftest-fake-key',
+      LLM_MODEL: 'selftest-fake',
+      LLM_MODEL_CHEAP: 'selftest-fake',
+      LLM_HEDGE_MODEL: '',
+      EMBED_BASE_URL: 'https://llm.selftest.invalid/v1',
+      EMBED_API_KEY: 'selftest-fake-key',
+    });
+    const { llmCfg } = await import('../llm.js');
+    let calls = 0;
+    h.fake.onLlm = () => {
+      calls += 1;
+      // 模型还在生成：顾问在后台接手
+      if (calls === 1) tk.takeover(sid, tk.sharedActor());
+    };
+    const from = logBuf.length;
+    if (llmCfg().baseUrl.startsWith('https://llm.selftest.invalid')) await talk('a1', uid, '你好，想去云南');
+    h.fake.onLlm = null;
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await settle();
+    const rows = await rowsOf(sid);
+    check(
+      '模型报错前已被接手：走了异常兜底，兜底道歉不发（零请求），这一组 cancelled',
+      calls > 0 &&
+        logsSince(from).some((l) => l.includes('处理消息失败')) &&
+        h.sentTo(uid).length === 0 &&
+        rows.length > 0 &&
+        rows.every((x) => x.status === 'cancelled' && x.kind === 'ai'),
+      json({ calls, sent: h.sentTo(uid).map((x) => x.content), rows: rows.map((x) => x.status) }),
     );
   }
 

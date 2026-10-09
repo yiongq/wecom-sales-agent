@@ -46,6 +46,7 @@ import {
   cancelIntents,
   commitOutbound,
   markSending,
+  maySendAgain,
   noteAttempt,
   noteUnknown,
   noteUnsafeSend,
@@ -1059,14 +1060,15 @@ async function sendSegment(
   for (let attempt = 0; attempt < (isLink ? 1 : 3); attempt++) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, 800 * attempt));
-      // 退避期间被接手、过了截止：不再开始新的请求（02 的规则），这一段的结果以已有的为准
-      if (!stillCurrent(g) || sendsClosed(rt)) break;
+      // 退避期间被接手、过了截止，或这一段已是终态（退避期间收到失败回执记了 failed 等，不变量 5）：不再开始新的请求，
+      // 这一段的结果以已有的为准。比较与发请求之间没有 await
+      if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
       try {
         token = await tokenOrThrow(rt, cfg);
       } catch {
         break;
       }
-      if (!stillCurrent(g) || sendsClosed(rt)) break;
+      if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
     }
     noteAttempt(intent);
     attempts++;
@@ -1082,7 +1084,7 @@ async function sendSegment(
         } catch {
           break;
         }
-        if (!stillCurrent(g) || sendsClosed(rt)) break;
+        if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
         noteAttempt(intent);
         attempts++;
         data = await postSendMsg(token, body);
@@ -1540,6 +1542,9 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
   const t0 = Date.now();
   console.log(`${rt.tag} ${replay ? '重放' : '收到'}客户消息: "${logQuote(msg.text.content)}"`);
   // 不发「稍等」占位：几秒延迟本就像真人顾问在查资料，逐条占位反而更显机械。
+  // 接手代次在这一轮开始时记下，调 sendRich 之前再比一次（不变量 28 的适配器部分）；留到 catch 里的兜底道歉也用它：
+  // 模型等待期间顾问接手、随后模型报错时，兜底不能拿接手之后的新代次去比（那样比较全过，「系统开小差」照发给客户）
+  const gen = takeoverGen(sessionId);
   try {
     const dedupe = dedupeFor(rt, sessionId, msg, replay);
     if (dedupe.kind === 'skip') {
@@ -1547,8 +1552,6 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
       return;
     }
     if (dedupe.kind === 'resend') console.log(`${rt.tag} 这句的回复已生成、没有送出，原样重发（不再跑模型）`);
-    // 接手代次在这一轮开始时记下，调 sendRich 之前再比一次（不变量 28 的适配器部分）
-    const gen = takeoverGen(sessionId);
     let reply: { text: string; stage: string; silent?: boolean; message: ChatMessage | null };
     if (dedupe.kind === 'resend') {
       reply = { text: dedupe.message.content, stage: getSession(sessionId)?.stage ?? 'discovery', message: dedupe.message };
@@ -1619,7 +1622,7 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
   } catch (err) {
     console.error(`${rt.tag} 处理消息失败:`, err);
     const sorry = '抱歉，系统开小差了，请稍后再发一次，或直接联系人工顾问。';
-    if (isDbAccount(rt)) await sendTextDb(rt, cfg, sessionId, sorry, 'ai', null);
+    if (isDbAccount(rt)) await sendTextDb(rt, cfg, sessionId, sorry, 'ai', null, gen);
     else await sendText(rt, cfg, msg.external_userid, sorry, { kind: 'ai', message: null });
   }
 }

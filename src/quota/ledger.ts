@@ -741,6 +741,18 @@ export async function unmarkSending(intent: OutboundIntent): Promise<boolean> {
   return ok;
 }
 
+/** 不会再发的状态：同一进程里的重试遇到它就停（不变量 5：accepted、rejected、failed、cancelled 永不再发） */
+const NO_MORE_SENDS: ReadonlySet<Status> = new Set<Status>(['accepted', 'rejected', 'failed', 'cancelled']);
+
+/**
+ * 这一段还能不能再发一次请求（同一进程里的重试、强刷 token 之后的再次请求之前同步调）：内存账本里已是终态（退避期间收到
+ * msg_send_fail 记了 failed、被取消等）就不能。unknown、sending、pending 可以（unknown 只在同一进程里那一段的重试中再发）
+ */
+export function maySendAgain(intent: OutboundIntent): boolean {
+  const row = byMsgid.get(intent.msgid);
+  return !!row && !NO_MORE_SENDS.has(row.status);
+}
+
 /** 一次尝试发出之前调（第一次也调）：记下这次尝试的时刻（窗口按最后一次尝试计数）与次数 */
 export function noteAttempt(intent: OutboundIntent): void {
   const row = byMsgid.get(intent.msgid);
@@ -982,6 +994,9 @@ export function onSendFail(channelMsgid: string, failType: number): void {
       if (row.v2) row.dbRow.payload = null;
     }
     explain(row.sessionId, failType);
+    // 库里账号的行：对应的消息还没写进会话（跟进、引导提示送达之后才写）时，等它分到 seq 再写一行 failed——库里那一行由回执的短事务
+    // 先记了 failed、message_seq 还是 NULL，这一行只把 seq 补上（不是状态变化），工作台按 seq 才查得到这一段的失败
+    if (row.v2 && row.message && seqOf(row.message) === undefined && writesToDb(row.sessionId)) awaitSeq(row);
     if (row.inDb && writesToDb(row.sessionId)) {
       const sid = row.sessionId;
       const queued = row.dbRow !== null;

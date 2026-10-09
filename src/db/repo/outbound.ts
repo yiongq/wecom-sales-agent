@@ -89,8 +89,8 @@ const keepsPayload = (s: OutboundStatus): boolean => OUTBOUND_KEEPS_PAYLOAD.incl
 /**
  * 写账本行（会话落库与没有会话时的短事务）。同一个 msgid 再写一次是同一分段的后续（02：超时那一刻先记 unknown，之后重试成功升
  * accepted、最后一次尝试的时刻往后挪，或收到回执记 failed；03：pending 之后的结果、取消）：按 (tenant_id, channel_msgid) upsert，
- * 仍是一行（02 不变量 33）。库里已有的行只按迁移表（FLUSH_WRITERS 的格子）变，表外的什么都不改：pending 遇到已有的行不改、
- * 终态不回退。没有这一行时只插入表里允许直接插入的状态（pending、三种结果、failed）；cancelled、sending 只能改已有的行。
+ * 仍是一行（02 不变量 33）。库里已有的行只按迁移表（FLUSH_WRITERS 的格子）变，表外的不改状态与结果：pending 遇到已有的行不改、
+ * 终态不回退；唯一的例外是 message_seq 从 NULL 补成值（不算状态变化，终态行也补）。没有这一行时只插入表里允许直接插入的状态（pending、三种结果、failed）；cancelled、sending 只能改已有的行。
  * sent_at、attempts 只往大里改。同一批里同一 msgid 的几次写按先后分轮写（一条 ON CONFLICT 不能改同一行两次），每一次都按迁移表判
  */
 export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRow[]): Promise<void> {
@@ -103,6 +103,8 @@ export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRo
     seen.set(r.channelMsgid, k + 1);
     (rounds[k] ??= []).push(r);
   }
+  // 已有的行 → excluded 的那一格在不在迁移表里（只有在表里时状态与结果才改）
+  const moved = conflictWhere(FLUSH_WRITERS);
   for (const round of rounds) {
     const inserts = round.filter((r) => canMoveOutbound(null, r.status, FLUSH_WRITERS));
     if (inserts.length) {
@@ -128,17 +130,19 @@ export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRo
         )
         .onConflictDoUpdate({
           target: [outboundSends.tenantId, outboundSends.channelMsgid],
+          // 两件事分开判：状态迁移只按迁移表（moved）；message_seq 只从 NULL 补成值（03：pending 落库时对应的消息可能还没写进会话——
+          // 跟进、引导提示送达之后才写——结果行带上 seq 时补上）。补 seq 不是状态变化：终态行（如回执先到记了 failed）也补，但状态、
+          // 结果、payload 都不动，已有的 seq 不改。所以迁移表一格都没放宽（不变量 7）
           set: {
-            status: sql`excluded.status`,
-            errcode: sql`excluded.errcode`,
-            failType: sql`excluded.fail_type`,
-            sentAt: sql`greatest(${outboundSends.sentAt}, excluded.sent_at)`,
-            attempts: sql`greatest(${outboundSends.attempts}, excluded.attempts)`,
-            // 03：pending 落库时对应的消息可能还没写进会话（跟进、引导提示送达之后才写），结果行带上 seq 时补上；已有的不改
+            status: sql`case when ${moved} then excluded.status else ${outboundSends.status} end`,
+            errcode: sql`case when ${moved} then excluded.errcode else ${outboundSends.errcode} end`,
+            failType: sql`case when ${moved} then excluded.fail_type else ${outboundSends.failType} end`,
+            sentAt: sql`case when ${moved} then greatest(${outboundSends.sentAt}, excluded.sent_at) else ${outboundSends.sentAt} end`,
+            attempts: sql`case when ${moved} then greatest(${outboundSends.attempts}, excluded.attempts) else ${outboundSends.attempts} end`,
             messageSeq: sql`coalesce(${outboundSends.messageSeq}, excluded.message_seq)`,
-            payload: sql`case when excluded.status in (${litList(OUTBOUND_KEEPS_PAYLOAD)}) then ${outboundSends.payload} else null end`,
+            payload: sql`case when ${moved} then (case when excluded.status in (${litList(OUTBOUND_KEEPS_PAYLOAD)}) then ${outboundSends.payload} else null end) else ${outboundSends.payload} end`,
           },
-          setWhere: conflictWhere(FLUSH_WRITERS),
+          setWhere: sql`(${moved}) or (${outboundSends.messageSeq} is null and excluded.message_seq is not null)`,
         });
     }
     for (const r of round) {

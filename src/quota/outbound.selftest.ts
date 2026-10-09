@@ -549,6 +549,77 @@ async function suite(mode: string, logs: string[]): Promise<void> {
     await agree('回执先到：之后的结果写入不改它', i!.msgid, 'failed');
   }
 
+  // ======== 回执先于消息追加：跟进的 pending 落库时 message_seq 为空，回执先把库里那一行记 failed，消息追加之后 seq 照样补上 ========
+  {
+    const { deliveryOfSegments } = await import('../shared/conversation-types.js');
+    const { readOutboundForSeqs } = await import('../db/repo/outbound.js');
+    const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+    const { sid, s } = newSession();
+    await settle();
+    // 跟进：送达之后才写进会话，所以这条消息这时还没有 seq
+    const fu: ChatMessage = { role: 'agent', content: '跟进一下', at: Date.now(), author: 'followup' };
+    const [a, b] = ledger.planOutbound(A1, target(sid), 'followup', fu, null, [T('跟进第一段'), T('跟进第二段')]);
+    await ledger.commitOutbound([a!, b!]);
+    check('回执先到：pending 落库时 message_seq 为空', (await dbRow(a!.msgid))?.message_seq === null);
+    await ledger.markSending(a!);
+    await ledger.markSending(b!);
+    ledger.settleIntent(a!, 'accepted', { attempts: 1 }); // 第一段有了结果（等消息分到 seq 再写）
+    ledger.onSendFail(a!.msgid, 4); // 第一段的失败回执先到（审查的场景）
+    ledger.onSendFail(b!.msgid, 6); // 第二段的回执更早：结果还没出来就到了
+    ledger.settleIntent(b!, 'accepted', { attempts: 1 }); // 之后的结果不改 failed
+    await waitFor(async () => (await dbRow(a!.msgid))?.status === 'failed' && (await dbRow(b!.msgid))?.status === 'failed', 3000);
+    check(
+      '回执先到：库里两段先记 failed、message_seq 还是空的',
+      (await dbRow(a!.msgid))?.message_seq === null && (await dbRow(b!.msgid))?.message_seq === null,
+    );
+    fu.at = Date.now();
+    s.messages.push(fu); // 跟进推送返回之后才追加进会话
+    store.saveSession(s, false);
+    await sleep(50);
+    await settle();
+    const ra = await dbRow(a!.msgid);
+    const rb = await dbRow(b!.msgid);
+    check(
+      '回执先于消息追加：两段都停在 failed，message_seq 补上了（补 seq 不是状态变化，failed 也补）',
+      ra?.status === 'failed' &&
+        rb?.status === 'failed' &&
+        ra.message_seq === seqOf(fu) &&
+        rb.message_seq === seqOf(fu) &&
+        seqOf(fu) !== undefined,
+      json({ ra, rb, seq: seqOf(fu) }),
+    );
+    const rows = await withTenant(db, ctx, (tx) => readOutboundForSeqs(tx, sid, [seqOf(fu)!]));
+    check(
+      '回执先于消息追加：工作台按 seq 读库查得到这条跟进的失败（带原因码）',
+      json(deliveryOfSegments(rows)) === json({ status: 'failed', failType: 4 }),
+      json(rows.map((r) => [r.status, r.failType])),
+    );
+    // 只许 NULL → 值：已有的 seq 不改，状态与结果也不动（迁移表没有放宽）
+    const { insertOutboundSends } = await import('../db/repo/outbound.js');
+    await withTenant(db, ctx, (tx) =>
+      insertOutboundSends(tx, [
+        {
+          conversationId: sid,
+          channelMsgid: a!.msgid,
+          messageSeq: 9999,
+          kind: 'followup',
+          sentAt: new Date(),
+          status: 'accepted',
+          errcode: 1,
+          failType: null,
+          accountId: A1.id,
+          attempts: 9,
+        },
+      ]),
+    );
+    const ra2 = await dbRow(a!.msgid);
+    check(
+      '补 seq 不放宽迁移表：对 failed 写 accepted 带别的 seq——状态、attempts、seq 都不变',
+      ra2?.status === 'failed' && ra2.message_seq === seqOf(fu) && ra2.attempts === ra?.attempts,
+      json(ra2),
+    );
+  }
+
   // ======== R21：结果写在存档点（写不进去只丢结果，会话照常提交、不 poisoned）；pending、cancelled 写在主事务 ========
   {
     const pg = () => store.__storeTest.pgStats()!;
