@@ -6,15 +6,18 @@
 # deploy/，而库和 var/ 仍要每晚备份。同样的原因，脚本不读 deploy/compose.yml，按 compose 项目名找 db 容器。
 # 不给参数时取脚本所在仓库的根目录（在仓库里直接 bash deploy/backup.sh）。
 #
-# 1. 以超级用户在 db 容器里经本地 socket 导出：pg_dump -Fc，外加 pg_dumpall --globals-only --no-role-passwords。
+# 1. 先把 var/（会话、订单、企微 cursor、客服二维码）打成 tar，再导出库（02 R7，03 R19 改回这个顺序）：env 账号的企微 cursor 仍在
+#    var/ 里，恢复出的 cursor 要比库旧、不能比库新（旧了只是重拉、按 msgid 去重；新了会跳过库里没有的消息）。归档里另放一个恢复哨兵
+#    var/restored-from-backup.json（{ backupAt }，03 R7）：只在归档里，线上 var/ 里没有；恢复解开之后它就在，企微状态在库里时只有
+#    channel-account restore-cutoff 删它，没删之前有启用的企微账号应用就拒绝启动（下面恢复步骤的第 7 步）。
+# 2. 以超级用户在 db 容器里经本地 socket 导出：pg_dump -Fc，外加 pg_dumpall --globals-only --no-role-passwords。
 #    主机上不存超级用户口令。不用任何受 RLS 约束的角色导出，也不加 --enable-row-security：没设租户时它会静默导出 0 行。
-# 2. 校验：pg_restore --list 里 01 的四张 RLS 表都有 TABLE DATA；02 的 conversations、messages、orders 与 03 的
+# 3. 校验：pg_restore --list 里 01 的四张 RLS 表都有 TABLE DATA；02 的 conversations、messages、orders 与 03 的
 #    channel_accounts、channel_inbox 在库里存在时也要有（行数可以为 0：文件存储下库里没有会话，企微状态没导入时没有渠道行）。
 #    这几张表不存在时只告警一行、备份照做：deploy.sh 先装新版本脚本、后跑迁移，构建或迁移失败时库停在上一阶段，不能因此
 #    每晚的备份整份不出。表在不在是导出之前查的。
 #    sop_versions、catalog_items 的行数为 0 就非零退出并告警。
-# 3. var/（会话、订单、企微 cursor、客服二维码）打成 tar。
-# 4. 两份都在离开本机前用 age 公钥加密，私钥不放在服务器上；明文只在 0700 的临时目录里短暂存在。
+# 4. 三份都在离开本机前用 age 公钥加密，私钥不放在服务器上；明文只在 0700 的临时目录里短暂存在。
 #    本地按日期建目录（0700），保留 7 天。
 # 5. 异地副本经 rclone 复制到 BACKUP_OFFSITE，保留 30 天。没配异地目标时每次都在 stderr 告警，本地备份照常。
 # 6. 告警（02 spec「可观测性与告警」、R24）：任何一步失败（trap 在非零退出时）推一条到企微群机器人，只带失败在哪一步与退出码；
@@ -39,8 +42,17 @@
 #   3) 以超级用户恢复，不加 --no-owner，属主保持 agent_owner：
 #        docker compose -f deploy/compose.yml exec -T db pg_restore -U postgres -d agent --exit-on-error < agent.dump
 #   4) 以 agent_owner 跑一次迁移（应为空操作）：docker compose -f deploy/compose.yml run --rm migrate
-#   5) 解开 var/：tar -xzf var.tar.gz，并 chown -R 1000:1000 var
-#   6) 应用以 DB 模式启动（docker compose -f deploy/compose.yml up -d app），核对 /healthz 的 config
+#   5) 解开 var/：tar -xzf var.tar.gz，并 chown -R 1000:1000 var（里面有恢复哨兵 restored-from-backup.json，第 7 步删它）
+#   6) 确认 app 的 env 文件里的 CHANNEL_SECRETS_KEY 有备份时加密渠道凭据用的那把：库里每个账号的 key id
+#        docker compose -f deploy/compose.yml exec -T db psql -U postgres -d agent -Atc "select key, secrets_key_id from channel_accounts"
+#      都要在 CHANNEL_SECRETS_KEY 里（<id>:<密钥>，逗号隔开）；已轮换掉的从离线保管处取回。库里没有渠道账号就跳过这一步
+#   7) 以 app 身份设恢复截止点（03 R7）：截止点之前的客户消息只补记进会话、不调模型、不回复，之前建的没发完的回复与到点的跟进取消，
+#      涉及的会话加一条说明，最后删掉恢复哨兵：
+#        docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/channel-account.ts restore-cutoff --tenant <slug> --until <时刻>
+#      <时刻> 带时区（如 2026-10-09T03:00:00+08:00）：取旧实例最后一次正常回复的时刻，有告警时从「健康检查失败」「app 反复重启」
+#      那一条往前推；拿不准就取恢复开始的时刻（写 now）。宁可漏回（顾问补）不重复回。不跑这一步，有启用的企微账号时应用以
+#      channel_restore_pending 拒绝启动；企微状态没导入或已导出时命令什么都不做，哨兵由应用启动时删掉
+#   8) 应用以 DB 模式启动（docker compose -f deploy/compose.yml up -d app），核对 /healthz 的 config
 set -euo pipefail
 umask 077
 
@@ -124,8 +136,21 @@ TMP="$(mktemp -d)"
 mkdir -p "$DEST"
 chmod 700 "$ROOT" "$DEST"
 
+STEP='打包 var/'
+# 1) 先打包 var/、再导出库（见开头）。哨兵在临时目录里摆成 var/restored-from-backup.json、用 -C 加进同一个归档，线上 var/ 不碰；
+#    线上 var/ 里本来就有哨兵（恢复之后企微账号全部停用、哨兵留着）时归档里有两条同名的，解开时后面这条盖掉前面的
+SENTINEL='restored-from-backup.json'
+mkdir -p "$TMP/sentinel/var"
+printf '{"backupAt":"%s"}\n' "$(date -u +%FT%TZ)" >"$TMP/sentinel/var/${SENTINEL}"
+if [[ -d var ]]; then
+  tar -czf "$TMP/var.tar.gz" var -C "$TMP/sentinel" "var/${SENTINEL}"
+else
+  alarm "部署目录里没有 var/，这次没备份会话与订单（归档里只有恢复哨兵）"
+  tar -czf "$TMP/var.tar.gz" -C "$TMP/sentinel" "var/${SENTINEL}"
+fi
+
 STEP='导出'
-# 1) 导出。先查两张配置表的行数，以及 02 的会话三张表、03 的渠道两张表里库里已有的（空格分开）：在导出之前查，导出之后才建的表
+# 2) 导出。先查两张配置表的行数，以及 02 的会话三张表、03 的渠道两张表里库里已有的（空格分开）：在导出之前查，导出之后才建的表
 #    这次不要求
 probe="$(dc exec -T db psql -U postgres -d "$DB" -Atc "select (select count(*) from sop_versions), (select count(*) from catalog_items), (select coalesce(string_agg(t, ' ' order by o), '') from unnest(array['conversations', 'messages', 'orders', 'channel_accounts', 'channel_inbox']) with ordinality as u(t, o) where to_regclass('public.' || t) is not null)")"
 IFS='|' read -r sop_rows catalog_rows session_tables <<<"$probe"
@@ -133,7 +158,7 @@ dc exec -T db pg_dump -U postgres -Fc "$DB" >"$TMP/agent.dump"
 dc exec -T db pg_dumpall -U postgres --globals-only --no-role-passwords >"$TMP/globals.sql"
 
 STEP='校验'
-# 2) 校验：这几张 RLS 表都有数据段（空表也有）；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
+# 3) 校验：这几张 RLS 表都有数据段（空表也有）；两张配置表不能是空的（受 RLS 约束的角色没设租户时导出来就是 0 行）
 required=(memberships sop_versions catalog_items audit_log)
 absent=()
 for t in conversations messages orders channel_accounts channel_inbox; do
@@ -152,14 +177,6 @@ done
 if [[ "${sop_rows:-0}" == 0 || "${catalog_rows:-0}" == 0 ]]; then
   alarm "sop_versions ${sop_rows:-?} 行、catalog_items ${catalog_rows:-?} 行：有一张是空的，备份不可用"
   exit 1
-fi
-
-STEP='打包 var/'
-# 3) var/
-if [[ -d var ]]; then
-  tar -czf "$TMP/var.tar.gz" var
-else
-  alarm "部署目录里没有 var/，这次没备份会话与订单"
 fi
 
 STEP='加密'

@@ -2537,7 +2537,8 @@ fakeCmd('docker', [
   '  *RestartCount*) cat "$FAKE_DIR/restart" 2>/dev/null || exit 1 ;;',
   '  *"volume inspect"*) echo "$FAKE_DIR/volume" ;;',
   '  *pg_dumpall*) echo "-- globals" ;;',
-  '  *pg_dump*) if [ -n "${FAKE_DUMP_FAIL:-}" ]; then exit 3; fi; echo dump ;;',
+  // 03 第 12 步：pg_dump 记进调用顺序（FAKE_CALLS），并在线上 var/ 里写一个文件（FAKE_DUMP_TOUCH）：先打包 var/ 的话归档里没有它
+  '  *pg_dump*) if [ -n "${FAKE_DUMP_FAIL:-}" ]; then exit 3; fi; if [ -n "${FAKE_CALLS:-}" ]; then echo pg_dump >> "$FAKE_CALLS"; fi; if [ -n "${FAKE_DUMP_TOUCH:-}" ]; then echo late > "$FAKE_DUMP_TOUCH"; fi; echo dump ;;',
   '  *"pg_restore --list"*) cat >/dev/null; for t in ${FAKE_TOC:-memberships sop_versions catalog_items audit_log conversations messages orders}; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
   '  *psql*) echo "2|43|conversations messages orders" ;;',
   '  *) exit 97 ;;',
@@ -2566,6 +2567,9 @@ fakeCmd('df', [
   'fi',
 ]);
 fakeCmd('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
+// 03 第 12 步：tar 记进同一份调用顺序，再交给真的 tar（看 backup.sh 先打包 var/、后 pg_dump）
+const realTar = ['/usr/bin/tar', '/bin/tar'].find((p) => fs.existsSync(p)) ?? 'tar';
+fakeCmd('tar', ['if [ -n "${FAKE_CALLS:-}" ]; then echo "tar $1" >> "$FAKE_CALLS"; fi', `exec ${realTar} "$@"`]);
 const setFake = (k: string, v: string): void => fs.writeFileSync(path.join(wfake, k), v);
 const srv = path.join(wtmp, 'srv');
 const bk = path.join(wtmp, 'bk');
@@ -2829,6 +2833,69 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
     watched.status === 0 && contents().at(-1)!.includes('上次成功的备份是 27 小时前'),
     json(contents().slice(-2)),
   );
+  // 03 第 12 步（spec R7、R19、验收 21 的 backup.sh 部分；「测试与 CI」允许改的 backup.sh 步骤顺序）：先打包 var/、再 pg_dump，
+  // 归档里有恢复哨兵、线上 var/ 里没有。pg_dump 时往线上 var/ 写一个文件：先打包的话归档里没有它
+  {
+    const { RESTORE_SENTINEL } = await import('../channels/markers.js');
+    const { CHANNEL_KEY_ENV } = await import('../channels/secrets.js');
+    const callsFile = path.join(wtmp, 'backup-calls.log');
+    const touched = path.join(srv, 'var', 'written-during-dump.json');
+    fs.rmSync(callsFile, { force: true });
+    const t0 = Date.now();
+    const pushed = contents().length;
+    const ordered = await runBackup({ FAKE_CALLS: callsFile, FAKE_DUMP_TOUCH: touched });
+    const calls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').trim().split('\n') : [];
+    const tarAt = calls.indexOf('tar -czf');
+    check(
+      'backup.sh（03）：先打包 var/、再 pg_dump（调用顺序），成功且这次不推告警',
+      ordered.status === 0 && tarAt >= 0 && calls.indexOf('pg_dump') > tarAt && contents().length === pushed,
+      `${ordered.status} ${json(calls)} ${ordered.out.slice(-300)}`,
+    );
+    const archive = path.join(bk, 'opswatch', day, 'var.tar.gz.age');
+    const listed = (await spawnAsync(realTar, ['-tzf', archive], { cwd: wtmp, env: scriptEnv })).stdout.split('\n').filter(Boolean);
+    check(
+      'backup.sh（03）：归档里是打包那一刻的 var/：有原来的文件，没有 pg_dump 时才写进线上 var/ 的文件',
+      listed.includes('var/sessions.json') && !listed.some((f) => f.endsWith('written-during-dump.json')) && fs.existsSync(touched),
+      json(listed),
+    );
+    const sentinel = await spawnAsync(realTar, ['-xzOf', archive, `var/${RESTORE_SENTINEL}`], { cwd: wtmp, env: scriptEnv });
+    let backupAt = NaN;
+    try {
+      const v = JSON.parse(sentinel.stdout) as { backupAt?: unknown };
+      if (Object.keys(v).join() === 'backupAt' && typeof v.backupAt === 'string' && v.backupAt.endsWith('Z'))
+        backupAt = Date.parse(v.backupAt);
+    } catch {
+      backupAt = NaN;
+    }
+    check(
+      'backup.sh（03）：归档里有恢复哨兵 var/restored-from-backup.json（名字与 markers.ts 一致，内容只有 backupAt，是这次打包的时刻）',
+      sentinel.status === 0 && backupAt >= Math.floor(t0 / 1000) * 1000 && backupAt <= Date.now(),
+      `${sentinel.status} ${sentinel.stdout} ${sentinel.stderr}`,
+    );
+    check(
+      'backup.sh（03）：线上 var/ 里没有恢复哨兵',
+      !fs.existsSync(path.join(srv, 'var', RESTORE_SENTINEL)),
+      fs.readdirSync(path.join(srv, 'var')).join(','),
+    );
+    // 恢复手册（脚本开头）：解开 var/ 之后、起应用之前加两步——确认密钥、跑 restore-cutoff，并写明截止点怎么取（开放问题 5）
+    const manual = fs.readFileSync(path.join(repoRoot, 'deploy', 'backup.sh'), 'utf8').split('\nset -euo pipefail')[0]!;
+    const stepAt = (n: number, re: RegExp): number => {
+      const m = new RegExp(`^#   ${n}\\) (.*)$`, 'm').exec(manual);
+      return m && re.test(manual.slice(m.index, m.index + 900)) ? m.index : -1;
+    };
+    const steps = [
+      stepAt(5, /解开 var\//),
+      stepAt(6, new RegExp(`${CHANNEL_KEY_ENV}[\\s\\S]*secrets_key_id[\\s\\S]*离线保管`)),
+      stepAt(7, /restore-cutoff --tenant <slug> --until <时刻>[\s\S]*最后一次正常回复[\s\S]*恢复开始的时刻/),
+      stepAt(8, /启动/),
+    ];
+    check(
+      'backup.sh（03）：恢复手册第 5 步解开 var/ 之后、起应用之前多两步：确认渠道密钥是同一把，跑 restore-cutoff（截止点怎么取）',
+      steps.every((at, i) => at >= 0 && (i === 0 || at > steps[i - 1]!)),
+      json(steps),
+    );
+    fs.rmSync(touched, { force: true });
+  }
   // 推不出去、没配地址：退出码不变，只写 stderr，不带地址
   writeOps([`ALERT_WEBHOOK_URL=http://127.0.0.1:9/cgi-bin/webhook/send?key=${WATCH_KEY}`]);
   const down = await runBackup({ FAKE_DUMP_FAIL: '1' });
