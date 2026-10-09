@@ -365,6 +365,29 @@ export async function openGatedDb(url: string): Promise<{ db: Db; close(): Promi
   return { db, close: () => pool.end(), faults };
 }
 
+/**
+ * 以超级用户连上一个已有的库、发 SQL（03 第 10 步：杀进程的自测由父进程建一次性库，前后几个子进程各自连上同一个库查与造数据；
+ * 子进程不能再调 createRealPgFixture——它会改集群级角色的口令、另建一个库）
+ */
+export async function connectSuperQuery(
+  url: string,
+): Promise<{ query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<R[]>; close(): Promise<void> }> {
+  assertPgUrl(url);
+  const c = new pg.Client({ connectionString: url });
+  c.on('error', () => {});
+  await c.connect();
+  // 一条连接上排着发（调用方会并发查，pg 不许同一个 client 叠着 query）
+  let chain: Promise<unknown> = Promise.resolve();
+  return {
+    query<R>(text: string, params: unknown[] = []): Promise<R[]> {
+      const run = chain.then(() => c.query(text, params));
+      chain = run.catch(() => undefined);
+      return run.then((r) => r.rows as R[]);
+    },
+    close: () => chain.then(() => c.end()),
+  };
+}
+
 // ---------------- 真实 Postgres 上的一次性库（给 src/ 下别的套件用：它们不能 import pg） ----------------
 
 export interface RealPgFixture {
