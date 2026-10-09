@@ -3368,7 +3368,7 @@ async function workbenchSuite(): Promise<void> {
         /^GET \/pay\/:orderId$/,
         /^GET \/api\/proposal\/:routeId$/,
         /^GET \/proposal\//,
-        /^(GET|POST) \/wecom\/callback$/,
+        /^(GET|POST) \/wecom\/callback(\/:key)?$/,
         /^GET \/kf-qr\.png$/,
         /^GET \/privacy$/,
         /^GET \/console/,
