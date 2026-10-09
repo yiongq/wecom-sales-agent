@@ -594,6 +594,12 @@
 - 变异（隔离副本，真实 PG）20 个全部被抓到，含 plan 要求的三个（`sending` 重启后照发、有接手人仍补发、人工回复不看 10 分钟——规则层与调用处各一个），另有不看接手人、跟进补发、`push` 不等、gate 先开、保底不看出站行、`recorded` 有回复也重调模型、不看失败回执、`sending` 段也 `markSending`、不报 `unknown`、入站已结束照发、不看截止点、不派发入站、`replied` 补发后不记 `done`、出站补发不等完。
 - 门禁：四个全绿；带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RECOVERY 426、WECOM-03 223、CHANNELS 106、QUOTA 127、OUTBOUND 246、DB 1168、STORE 452、JOBS 110、OPS 472、WECOM 461、WECOM-02 15，mock eval 两遍 19/19）；锁定文件与 `PREFIX sha256` 与第 1 步相同。由 Claude 子 agent（Opus）实现，协调者审查。
 
+**交叉评审**
+
+- 另派一路只读 Codex 交叉评审，找到 3 处 major，由实现的子 agent 修掉、各补回归断言（撤回修复时失败）：一、恢复补发卡片又失败时新建了一段降级补文（新 msgid），原有的补文也照发——补文的 msgid 改由卡片段的 msgid 加块号算出（`fallbackMsgid`），`planRuntimeSegment` 按它复用已有行、已有结果就不再发；二、`alreadySending` 让补发的 AI 段不再比接手，恢复期间才有的接手挡不住发送——它只用来跳过 `markSending`，AI 段照常比接手（代次取恢复判定那一刻），接手时历史 `sending` 段记 `unknown`、其余 `cancelled`；三、恢复补发的人工回复只在判定时查一次接手人，等 token 或 `markSending` 期间被交还、改派或过了 10 分钟仍会发——加 `stillEligible`，每次真正发请求前复核（10 分钟内且接手人仍是作者），不符合就 `cancelled`；普通人工发送照第 8 步不比接手。第三处在缺省配置下就会发生，前两处只在 `RESEND_UNKNOWN` 为真时。
+- 顺带修了第 8 步的一处：`readOutboundForSeqs` 没有 ORDER BY，同一条消息两段都 `failed` 时原因码取决于库返回的行序，`outbound.selftest` 偶发失败；加了按消息 seq、段号排序。
+- 修后带 `PG_TEST_URL` 且 `TZ=UTC` 全绿（RECOVERY 431）。rebase 到含第 11 步的 dev 之后由 CI 再验。
+
 **给后面步骤的注意**
 
 - 第 12 步：出站恢复的截止点读 `initChannels` 快照里的 `account.wecom.recordOnlyUntil`，入站读 `load` 的；`restore-cutoff` 用 `transitionOutbound(…, 'recover')`；「N 个会话只补记」的告警还没做。
