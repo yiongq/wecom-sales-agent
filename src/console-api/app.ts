@@ -150,6 +150,7 @@ import {
   type TurnTraceView,
 } from '../shared/console-api.js';
 import { conversationState } from '../shared/conversation.js';
+import { deliveryOfSegments } from '../shared/conversation-types.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
@@ -295,12 +296,9 @@ const committed = (sessionId: string): Promise<void> => flushSession(sessionId, 
 const readTx = <T>(c: Context<ConsoleEnv>, fn: (tx: Tx) => Promise<T>): Promise<T> =>
   withTenant(configRuntime().db, ctxOf(c), fn, { readOnly: true });
 
-/** 账本行里对应这条消息的状态，几段取最重的（同 src/quota/ledger.ts 的 deliveryOf；更早的消息读库里的行） */
-const RANK = { accepted: 0, unknown: 1, rejected: 2, failed: 3 } as const;
+/** 账本行里对应这条消息的投递状态（同 src/quota/ledger.ts 的 deliveryOf，同一张映射表；更早的消息读库里的行） */
 function deliveryFromRows(rows: readonly OutboundSendRow[], seq: number): MessageView['delivery'] {
-  let worst: OutboundSendRow | null = null;
-  for (const r of rows) if (r.messageSeq === seq && (!worst || RANK[r.status] > RANK[worst.status])) worst = r;
-  return worst ? { status: worst.status, failType: worst.status === 'failed' ? worst.failType : null } : null;
+  return deliveryOfSegments(rows.filter((r) => r.messageSeq === seq));
 }
 
 const quickReplyView = (r: QuickReplyRow): QuickReply => ({ id: r.id, ord: r.ord, title: r.title, body: r.body });

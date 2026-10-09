@@ -16,11 +16,9 @@ import { currentTenantCtx, type Tx } from '../client.js';
 import { conversations, messages, outboundSends } from '../schema.js';
 
 /**
- * 02 的四种结果：env 账号与 02 留下的行只有它们。02 的两个读接口（预载、后台「看更早的消息」）照 02 的形状返回；
- * 库里账号的 pending、sending、cancelled 由第 8 步接进读接口与工作台时再扩
+ * 读出的一行（预载、后台「看更早的消息」）。env 账号与 02 留下的行只有四种结果、account_id 为空；库里账号的行（第 8 步起）
+ * 带账号 uuid，状态是 03 的七种之一（内存账本据 accountId 认出是哪种账号的行，03 spec「出站：投递状态」的映射表）
  */
-export type LegacyOutboundStatus = 'accepted' | 'rejected' | 'unknown' | 'failed';
-
 export interface OutboundSendRow {
   conversationId: string;
   /** 我们生成、随 send_msg 下发；同一分段重试沿用 */
@@ -29,13 +27,15 @@ export interface OutboundSendRow {
   messageSeq: number | null;
   kind: OutboundKind;
   sentAt: Date;
-  status: LegacyOutboundStatus;
+  status: OutboundStatus;
   errcode: number | null;
   failType: number | null;
+  /** 库里的企微账号；02 的行与 env 账号为 null */
+  accountId: string | null;
 }
 
 /** 写入的一行：02 的列加 03 的几列。03 的列不给就是 02 的写法（account_id、inbox_id、payload 为空，segment、attempts 为 0） */
-export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status'> {
+export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status' | 'accountId'> {
   status: OutboundStatus;
   accountId?: string | null;
   inboxId?: string | null;
@@ -48,7 +48,6 @@ export interface OutboundWriteRow extends Omit<OutboundSendRow, 'status'> {
 /** 库里没结果的一行（pending、sending）：启动恢复用，带 02 的预载不读的几列 */
 export interface OpenOutboundRow extends Omit<OutboundSendRow, 'status'> {
   status: 'pending' | 'sending';
-  accountId: string | null;
   inboxId: string | null;
   segment: number;
   attempts: number;
@@ -135,6 +134,8 @@ export async function insertOutboundSends(tx: Tx, rows: readonly OutboundWriteRo
             failType: sql`excluded.fail_type`,
             sentAt: sql`greatest(${outboundSends.sentAt}, excluded.sent_at)`,
             attempts: sql`greatest(${outboundSends.attempts}, excluded.attempts)`,
+            // 03：pending 落库时对应的消息可能还没写进会话（跟进、引导提示送达之后才写），结果行带上 seq 时补上；已有的不改
+            messageSeq: sql`coalesce(${outboundSends.messageSeq}, excluded.message_seq)`,
             payload: sql`case when excluded.status in (${litList(OUTBOUND_KEEPS_PAYLOAD)}) then ${outboundSends.payload} else null end`,
           },
           setWhere: conflictWhere(FLUSH_WRITERS),
@@ -210,10 +211,10 @@ export async function readOutboundForSeqs(tx: Tx, conversationId: string, seqs: 
       status: outboundSends.status,
       errcode: outboundSends.errcode,
       failType: outboundSends.failType,
+      accountId: outboundSends.accountId,
     })
     .from(outboundSends)
     .where(and(eq(outboundSends.conversationId, conversationId), sql`${outboundSends.messageSeq} = any(${sql.param([...seqs])}::int[])`));
-  // 02 的形状：库里账号的 03 状态由第 8 步接进来（见 LegacyOutboundStatus）
   return rows as OutboundSendRow[];
 }
 
@@ -258,6 +259,7 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
       status: outboundSends.status,
       errcode: outboundSends.errcode,
       failType: outboundSends.failType,
+      accountId: outboundSends.accountId,
     })
     .from(outboundSends)
     .innerJoin(conversations, and(eq(conversations.tenantId, outboundSends.tenantId), eq(conversations.id, outboundSends.conversationId)))
@@ -268,8 +270,7 @@ export async function readOutboundAfterLastCustomer(tx: Tx, conversationIds: rea
         sql`${conversations.lastCustomerAt} is not null`,
       ),
     )
-    .orderBy(outboundSends.conversationId, outboundSends.sentAt);
-  // 02 的形状：库里账号的 03 状态由第 8 步接进来（见 LegacyOutboundStatus）
+    .orderBy(outboundSends.conversationId, outboundSends.sentAt, outboundSends.segment);
   return rows as OutboundSendRow[];
 }
 

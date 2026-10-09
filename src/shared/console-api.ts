@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
-import type { HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
+import type { DeliveryView, HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
@@ -439,8 +439,11 @@ export interface MessageView {
   turnId: string | null;
   /** 护栏改过这条 AI 回复：删了几句、补了几处（相对模型原稿的净差）；展开时读 /conversations/:id/turns/:turnId/diff */
   guarded: { removed: number; added: number } | null;
-  /** 发送账本里这条消息的状态（企微）：failed 时带原因码；账本里没有这条时为 null */
-  delivery: { status: 'accepted' | 'rejected' | 'unknown' | 'failed'; failType: number | null } | null;
+  /**
+   * 发送账本里这条消息的投递状态（企微）：几段取 deliveryOfSegments 的那一种，failed 时带原因码；账本里没有这条时为 null。
+   * 03 起多 sending（发送中）与 cancelled（未发送）
+   */
+  delivery: DeliveryView | null;
 }
 
 /** J 页右栏与对话里的订单（ConversationDetail.orders、GET /orders） */

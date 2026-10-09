@@ -47,6 +47,44 @@ export type PaymentMode = 'online' | 'advisor';
 /** 出站消息的类别，记进发送账本（spec「企微：发送账本、回执与去重」） */
 export type OutboundKind = 'ai' | 'human' | 'followup' | 'notice' | 'welcome' | 'menu' | 'card';
 
+/**
+ * 工作台上一条消息的投递状态（02 第 13 步的 MessageView.delivery；03 spec「出站：投递状态」的映射表）：
+ * sending 发送中（还有分段 pending、sending，或 env 账号还在发）；accepted 正常发出，不显示；unknown 可能没送达；
+ * rejected、failed 没送达（02 已有）；cancelled 未发送（接手打断、所属入站放弃等）
+ */
+export type DeliveryStatus = 'sending' | 'accepted' | 'unknown' | 'rejected' | 'failed' | 'cancelled';
+export interface DeliveryView {
+  status: DeliveryStatus;
+  /** failed 时的原因码（msg_send_fail 的 fail_type），其余为 null */
+  failType: number | null;
+}
+
+/** 有分段还在发时一律「发送中」；都有了结果取最重的：failed > rejected > unknown > cancelled > accepted */
+const DELIVERY_RANK: Readonly<Record<Exclude<DeliveryStatus, 'sending'>, number>> = {
+  accepted: 0,
+  cancelled: 1,
+  unknown: 2,
+  rejected: 3,
+  failed: 4,
+};
+
+/**
+ * 一条消息名下各分段（账本行：内存里的，或库里 outbound_sends 的）的状态 → 工作台显示的那一种。分段的状态是库里的七种
+ * （env 账号内存里的 pending 表示还在发，与库里账号的 sending 同样显示「发送中」）。没有分段为 null。
+ * 03 spec 写的是「全是 cancelled 显示未发送」；一组只发出一部分、其余被取消的，按不变量 6（没送达的段要有状态）同样显示 cancelled
+ */
+export function deliveryOfSegments(segments: readonly { status: string; failType: number | null }[]): DeliveryView | null {
+  let worst: { status: Exclude<DeliveryStatus, 'sending'>; failType: number | null } | null = null;
+  for (const seg of segments) {
+    if (seg.status === 'pending' || seg.status === 'sending') return { status: 'sending', failType: null };
+    if (!(seg.status in DELIVERY_RANK)) continue;
+    const st = seg.status as Exclude<DeliveryStatus, 'sending'>;
+    if (!worst || DELIVERY_RANK[st] > DELIVERY_RANK[worst.status]) worst = { status: st, failType: seg.failType };
+  }
+  if (!worst) return null;
+  return { status: worst.status, failType: worst.status === 'failed' ? worst.failType : null };
+}
+
 /** 企微 48 小时、5 条的发送窗口 */
 export interface SendWindow {
   /** 客户最后一条消息的 sentAt（企微 send_time），没有就用 at */

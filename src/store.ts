@@ -33,6 +33,7 @@ import {
   type AuditActor,
   type ConsentItem,
   type JobOp,
+  type MarkSendingResult,
   type PgBackend,
   type PgStoreStats,
   type PurgeHold,
@@ -59,8 +60,18 @@ export {
   turnIdOf,
   windowStartOf,
 };
-export type { AuditActor, ConsentItem, DomainEvent, HandoffStartedEvent, JobOp, SessionStoreMode, StoreHealth, TelemetryRows };
-/** 一行发送账本（落库的形状）：src/quota 经这里取，不直接 import src/db/** */
+export type {
+  AuditActor,
+  ConsentItem,
+  DomainEvent,
+  HandoffStartedEvent,
+  JobOp,
+  MarkSendingResult,
+  SessionStoreMode,
+  StoreHealth,
+  TelemetryRows,
+};
+/** 一行发送账本（落库的形状，02 的列加 03 的几列）：src/quota 经这里取，不直接 import src/db/** */
 export type OutboundRow = NonNullable<TelemetryRows['outbound']>[number];
 /** 回执改库的结果（markOutboundFailedInDb） */
 export type OutboundFailResult = { ok: true; sessionId: string | null } | { ok: false };
@@ -194,6 +205,15 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
     ordersTaken: (ids) => fileBackend.markChanged(ids),
+    outboundCommitted: (rows) => {
+      for (const cb of outboundCommitHooks) {
+        try {
+          cb(rows);
+        } catch (e) {
+          console.error('[store] 出站行提交的订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+        }
+      }
+    },
   });
   backend.install();
   pgBackend = backend;
@@ -406,6 +426,36 @@ export function takePreloadedOutbound(): Map<string, OutboundRow[]> {
 export function writeStandaloneOutbound(rows: readonly OutboundRow[]): Promise<void> {
   return pgBackend ? pgBackend.writeStandaloneOutbound(rows) : Promise.resolve();
 }
+// ---------------- 03 先落库后发送（src/quota/ledger.ts 的 planOutbound 等）的入口 ----------------
+// 库里企微账号的出站：pending 插入与 cancelled 随会话的下一次落库写进主事务（R21），结果写在存档点里（queueTelemetry）；
+// 标 sending、迁回 pending、没有会话可挂的几行各是一个短事务。只在 db 存储下有，文件存储下这几个入口什么都不做
+
+const outboundCommitHooks = new Set<(rows: readonly OutboundRow[]) => void>();
+/** 主事务里的出站行随会话提交之后调（行对象就是 queueOutboundRows 交进来的那几个） */
+export function onOutboundCommitted(cb: (rows: readonly OutboundRow[]) => void): () => void {
+  outboundCommitHooks.add(cb);
+  return () => outboundCommitHooks.delete(cb);
+}
+/**
+ * 出站 pending 插入与 cancelled 排进这个会话的下一次落库（主事务）。db 存储的真实会话、内存里有这个会话时返回 true；
+ * 否则 false（调用方改走 writeOutboundNow）
+ */
+export function queueOutboundRows(sessionId: string, rows: readonly OutboundRow[]): boolean {
+  return pgFor(sessionId)?.queueChannel(sessionId, rows) ?? false;
+}
+/** 没有会话可挂的出站行：单独一个短事务，写成了 true。文件存储下 false */
+export function writeOutboundNow(rows: readonly OutboundRow[]): Promise<boolean> {
+  return pgBackend ? pgBackend.writeOutboundNow(rows) : Promise.resolve(false);
+}
+/** markSending 的库里那一步（单独一个短事务，至多等 timeoutMs）。文件存储下 db_unavailable（调用方不该走到这里） */
+export function markOutboundSendingInDb(channelMsgid: string, timeoutMs: number): Promise<MarkSendingResult> {
+  return pgBackend ? pgBackend.markOutboundSending(channelMsgid, timeoutMs) : Promise.resolve('db_unavailable');
+}
+/** sending 迁回 pending（停机截止之后、还没发请求的那一段）：单独一个短事务，写成了 true */
+export function unmarkOutboundInDb(channelMsgid: string): Promise<boolean> {
+  return pgBackend ? pgBackend.unmarkOutbound(channelMsgid) : Promise.resolve(false);
+}
+
 /**
  * msg_send_fail 的状态更新：db 存储下单独一个短事务。写成了是 ok，带那一行的会话 id（没找到、已是 failed 为 null）；没写成（库报错、
  * 冲突、late 段之后、租户锁在别人手里）不是 ok，调用方据此再试。文件存储下恒为 ok、会话 id 为 null
@@ -741,6 +791,10 @@ export const __storeTest = {
   /** db 存储下这个会话还留在内存里的遥测行数；文件存储下为 0 */
   pgQueuedTelemetry(sessionId: string): number {
     return pgBackend?.queuedTelemetry(sessionId) ?? 0;
+  },
+  /** db 存储下这个会话还留在内存里的主事务出站行数（03）；文件存储下为 0 */
+  pgQueuedChannel(sessionId: string): number {
+    return pgBackend?.queuedChannel(sessionId) ?? 0;
   },
   /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
   emitIncident(i: StoreIncident): void {
