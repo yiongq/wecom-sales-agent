@@ -86,16 +86,14 @@ export interface GuardStep<Context extends GuardContext = GuardContext> {
   run(ctx: Context): Promise<StepVerdict> | StepVerdict;
 }
 
-/** R15：最终文本的站内链接部件；第 21 步接渠道出口。 */
-export interface MessagePart {
-  kind: 'link';
-  linkKind: 'order' | 'proposal' | 'site';
-  url: string;
-}
+/** R15：最终文本的站内链接部件，只用于渠道投影，不写入 ChatMessage。 */
+export type { MessagePart } from '../shared/channel-types.js';
 
 export interface ChannelCaps {
   markdown: false;
 }
+
+export { partsOf } from './message-parts.js';
 
 /**
  * spec 尚未定义这些引用类型的字段与副作用方法签名。
