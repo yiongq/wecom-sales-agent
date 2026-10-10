@@ -253,8 +253,8 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     );
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
-  // 只能是 tenants 的三个保留期列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
-  // UPDATE，03 spec 授权表）。按 JS 的顺序比，不受库的排序规则影响
+  // 只能是 tenants 的三个保留期列与品牌列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
+  // UPDATE，03 spec 授权表），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
        from pg_attribute a join pg_class c on c.oid = a.attrelid
@@ -264,14 +264,18 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
       order by 1`,
   );
   check(
-    `${label}授权：带列级授权的只有 tenants 的三个保留期列（agent_platform 的 UPDATE）与 channel_accounts 的九列（agent_app 的 UPDATE）`,
+    `${label}授权：列级授权仅为 tenants 保留期/品牌 UPDATE、channel_accounts 九列 UPDATE 与 guard_verdicts SELECT/INSERT`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
       .join(',') ===
       [
-        ...['retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map((c) => `tenants.${c} agent_platform UPDATE`),
+        ...['brand', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map(
+          (c) => `tenants.${c} agent_platform UPDATE`,
+        ),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
+        'turn_traces.guard_verdicts agent_app INSERT',
+        'turn_traces.guard_verdicts agent_app SELECT',
       ]
         .toSorted()
         .join(','),
@@ -3583,13 +3587,17 @@ await t.close();
   fake('ssh', ['echo "ssh $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_SSH_LOCAL:-}" ]; then shift; exec bash -c "$*"; fi', 'exit 97']);
   fake('rsync', ['echo "rsync $*" >> "$FAKE_LOG"', 'exit 97']);
   fake('pnpm', ['echo "pnpm $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_PNPM_OK:-}" ]; then exit 0; fi', 'exit 97']);
+  // 本机没有 coreutils；真正的限时终止与 SQL 超时由 rollback-guard.selftest.ts 验证。
+  fake('timeout', ['[ "$1" = --kill-after=2s ] && [ "$2" = 8s ] || exit 99', 'shift 2', 'exec "$@"']);
   fake('docker', [
     // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
     'case "$1" in exec|compose|run|inspect|image) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
+    '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
+    '  *pack-api.ts*) exit 1 ;;',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
     '  *registry.ts*) exit "${FAKE_REGISTRY:-1}" ;;',
     // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）；
@@ -4110,7 +4118,7 @@ await t.close();
   const versioned = '{"ok":true,"config":{"mode":"db","catalogVersioned":true},"store":{"mode":"file"}}';
   const catalogRefused = (out: string, why: string): boolean =>
     out.includes('拒绝回滚') && out.includes(why) && out.includes('要回滚只能回到 02 之后的镜像') && !out.includes('export-sessions');
-  const psqlCalls = (g: { docker: string[] }): string[] => g.docker.filter((l) => l.includes('exec -T db psql'));
+  const psqlCalls = (g: { docker: string[] }): string[] => g.docker.filter((l) => l.includes(' db psql -U postgres'));
   check(
     '回滚前检查：问的是本机宿主端口上的 /healthz；/healthz 说了 false 就不问库',
     g1.curl.length === 1 && g1.curl[0]!.includes('http://127.0.0.1:3999/healthz') && psqlCalls(g1).length === 0,
@@ -4137,7 +4145,11 @@ await t.close();
       '问的是这个项目的 db 服务、按 .env.db 的库名（缺省 agent），在 / 下执行',
     g13.code === 0 &&
       psqlCalls(g13).length === 2 &&
-      psqlCalls(g13).every((l) => l.startsWith('docker /|compose -p side1 exec -T db psql -U postgres -d agent -Atc')) &&
+      psqlCalls(g13).every((l) =>
+        l.startsWith(
+          'docker /|compose -p side1 exec -T -e PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000 db psql -U postgres -d agent -v ON_ERROR_STOP=1 -Atc',
+        ),
+      ) &&
       psqlCalls(g13)[1]!.includes('select exists(select 1 from catalog_item_versions where version > 1)'),
     `${g13.code} ${g13.out} ${g13.docker.join(' / ')}`,
   );
@@ -4278,7 +4290,11 @@ await t.close();
           c2.code === (c.risk ? 5 : 0) &&
           (c.risk ? channelSteps(c2.out, 'acme-3') && c2.out.includes('库里的 channel_accounts') : !c2.out.includes('拒绝回滚')) &&
           c2.channelDocker.length === 2 &&
-          c2.channelDocker.every((l) => l.startsWith('docker03 /|compose -p side1 exec -T db psql -U postgres -d agent_side -Atc')) &&
+          c2.channelDocker.every((l) =>
+            l.startsWith(
+              'docker03 /|compose -p side1 exec -T -e PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000 db psql -U postgres -d agent_side -v ON_ERROR_STOP=1 -Atc',
+            ),
+          ) &&
           c2.channelDocker[1]!.endsWith(channelSql ?? 'missing'),
         `${queried} ${c2.code} ${c2.out} ${c2.channelDocker.join(' / ')}`,
       );
@@ -4437,7 +4453,7 @@ await t.close();
     d3.code !== 0 && !d3.out.includes('拒绝回滚') && d3.log.includes('rsync ') && !d3.log.includes('bash -s -- ' + dsrv + ' pre-02'),
     `${d3.code} ${d3.out.slice(-400)}`,
   );
-  commitAndTag('v03', ['src/channels/registry.ts']);
+  commitAndTag('v04', ['src/channels/registry.ts', 'src/core/pack-api.ts']);
   const deployChannel = (tag: string, channelMarker: boolean, channels = 'none') => {
     const cm = path.join(dsrv, 'var', 'channels-in-db.json');
     if (channelMarker) fs.writeFileSync(cm, '{}\n');
@@ -4476,9 +4492,9 @@ await t.close();
     d7.log.includes(`bash -s -- ${dsrv} pre-03`) && d7.log.includes('rsync ') && !d7.out.includes('拒绝回滚'),
     d7.out,
   );
-  const d8 = deployChannel('v03', true, 'down');
+  const d8 = deployChannel('v04', true, 'down');
   check(
-    'deploy.sh：03 tag 有 registry.ts，不调用旧镜像检查，渠道标记与库故障不拦下部署',
+    'deploy.sh：04 tag 有 pack-api.ts，不调用旧镜像检查，渠道标记与库故障不拦下部署',
     d8.log.includes('rsync ') && !d8.log.includes(`bash -s -- ${dsrv} pre-`) && !d8.out.includes('拒绝回滚'),
     d8.out,
   );
@@ -4491,7 +4507,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345*]\) echo "[^\n]*" >&2 ;;\n){4} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[3456*]\) echo "[^\n]*" >&2 ;;\n){5} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );
@@ -4706,19 +4722,33 @@ async function realPostgres(superUrl: string): Promise<void> {
         JSON.stringify(dt),
       );
     }
+    const [verdictPriv] = await sq<{ app_read: boolean; app_insert: boolean; app_update: boolean; platform: boolean }>(
+      `select has_column_privilege('agent_app', 'public.turn_traces', 'guard_verdicts', 'SELECT') as app_read,
+              has_column_privilege('agent_app', 'public.turn_traces', 'guard_verdicts', 'INSERT') as app_insert,
+              has_column_privilege('agent_app', 'public.turn_traces', 'guard_verdicts', 'UPDATE') as app_update,
+              has_column_privilege('agent_platform', 'public.turn_traces', 'guard_verdicts', 'SELECT,INSERT,UPDATE,REFERENCES') as platform`,
+    );
+    check(
+      '真实 PG：guard_verdicts 只允许 agent_app SELECT、INSERT，不能 UPDATE，agent_platform 无列权限',
+      verdictPriv?.app_read === true &&
+        verdictPriv.app_insert === true &&
+        verdictPriv.app_update === false &&
+        verdictPriv.platform === false,
+      JSON.stringify(verdictPriv),
+    );
     // tenants 的三个保留期列：agent_platform 列级 UPDATE，agent_app 一列都不能改
-    const RETENTION = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days'];
+    const UPDATABLE = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days', 'brand'];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(
       `select a.attname as col, has_column_privilege('agent_platform', 'public.tenants', a.attname, 'UPDATE') as platform,
               has_column_privilege('agent_app', 'public.tenants', a.attname, 'UPDATE') as app
          from pg_attribute a where a.attrelid = 'public.tenants'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
     );
     check(
-      '真实 PG：agent_platform 只能 UPDATE tenants 的三个保留期列，agent_app 一列都不能',
+      '真实 PG：agent_platform 只能 UPDATE tenants 的三个保留期列与品牌列，agent_app 一列都不能',
       colPriv
         .filter((c) => c.platform)
         .map((c) => c.col)
-        .join(',') === RETENTION.join(',') && colPriv.every((c) => !c.app),
+        .join(',') === UPDATABLE.join(',') && colPriv.every((c) => !c.app),
       JSON.stringify(colPriv.filter((c) => c.platform || c.app)),
     );
     // 03：channel_accounts 上 agent_app 只能 UPDATE 九列（身份五列、tenant_id、id、created_at 改不了），agent_platform 一列都没有
@@ -5414,15 +5444,24 @@ async function realPostgres(superUrl: string): Promise<void> {
       });
       return { code: r.status, out: `${r.stdout}${r.stderr}` };
     };
-    const create = cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM });
+    const create = cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], {
+      DATABASE_PLATFORM_URL: PLATFORM,
+      DEPLOY_PROFILE: 'demo',
+    });
     check('真实 PG：tenant-create 以 platform 身份建租户，退出码 0', create.code === 0, create.out.slice(0, 200));
     check(
       '真实 PG：同样的参数再跑一次仍是 0',
-      cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 0,
+      cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], {
+        DATABASE_PLATFORM_URL: PLATFORM,
+        DEPLOY_PROFILE: 'demo',
+      }).code === 0,
     );
     check(
       '真实 PG：同名租户字段不同 → 退出码 2',
-      cli('tenant-create.ts', ['--slug', 'demo', '--name', '别的名字', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 2,
+      cli('tenant-create.ts', ['--slug', 'demo', '--name', '别的名字', '--pack', 'travel'], {
+        DATABASE_PLATFORM_URL: PLATFORM,
+        DEPLOY_PROFILE: 'demo',
+      }).code === 2,
     );
     const secret = 'cli-password-from-stdin';
     const made = cli(

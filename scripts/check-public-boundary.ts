@@ -16,7 +16,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 
 /** src/packs/ 下允许公开的行业包。新增公开包要改这里，并在 PR 里说明（ADR-003 决策 4） */
-const PUBLIC_PACKS = new Set(['travel', 'ecommerce-aftersales']);
+// __fixture 是 04 R16 的测试假包（只在 PACK_FIXTURES=1 时登记），内容公开
+const PUBLIC_PACKS = new Set(['travel', 'ecommerce-aftersales', '__fixture']);
 
 /** 目录（子模块）以 / 结尾 */
 function pathViolation(p: string): boolean {

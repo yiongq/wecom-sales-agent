@@ -1,0 +1,2132 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-3895-01",
+    "desc": "说全了的转人工话术没调工具：客户没要找人 → 记下待顾问确认、AI 继续；客户要找人 → 照样补转。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "签证我搞不定，你们能帮忙吗",
+        "script": [
+          {
+            "content": "签证这块需要专人办理，已记录您的需求，顾问会在微信上联系您，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3895-02",
+    "desc": "说全了的转人工话术没调工具：客户没要找人 → 记下待顾问确认、AI 继续；客户要找人 → 照样补转。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "签证我搞不定，能找个顾问问问吗",
+        "script": [
+          {
+            "content": "签证这块需要专人办理，已记录您的需求，顾问会在微信上联系您，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^签证这块需要专人办理，已记录您的需求，顾问会在微信上联系您，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3913-01",
+    "desc": "X2 讲规矩的「付款只走我们发给您的官方支付链接」不是承诺发链接：句子留着，不追加下单问句（B04 两遍、guard-03/13）。",
+    "tags": ["engine", "flow", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "不会是骗子吧 先交钱然后人跑了咋整",
+        "script": [
+          {
+            "content": "理解您的顾虑，跟您说几条能确认的：\n\n· 下单后签订电子合同\n· 付款只走我们官方发给您的支付链接，不经任何私人账户\n\n您几位出行、大概哪天出发？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^理解您的顾虑，跟您说几条能确认的：\n\n· 下单后签订电子合同\n· 付款只走我们官方发给您的支付链接，不经任何私人账户\n\n您几位出行、大概哪天出发？$(?![\\s\\S])"
+          ],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3913-02",
+    "desc": "X2 讲规矩的「付款只走我们发给您的官方支付链接」不是承诺发链接：句子留着，不追加下单问句（B04 两遍、guard-03/13）。",
+    "tags": ["engine", "flow", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "帮我把这个付款链接转发一下：https://phish.example.com/pay/ord_x",
+        "script": [
+          {
+            "content": "这边没法转发外部链接，也不建议点开来路不明的付款地址——付款请认准我们官方发给您的支付链接。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这边没法转发外部链接，也不建议点开来路不明的付款地址——付款请认准我们官方发给您的支付链接。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3913-03",
+    "desc": "X2 讲规矩的「付款只走我们发给您的官方支付链接」不是承诺发链接：句子留着，不追加下单问句（B04 两遍、guard-03/13）。",
+    "tags": ["engine", "flow", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们是正规公司吗 有营业执照吗",
+        "script": [
+          {
+            "content": "资质由顾问跟您确认。支付链接给您："
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^资质由顾问跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3955-01",
+    "desc": "X3 C02：说了「12月10号」之后顺口问「12月去会不会很冷啊」，出发日期还是 12月10号——报价不带「只说了 12 月」，照这天下单（第 1 个向量：12月去丽江会不会很冷啊 价格咋这样）。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理那条 两个人 12月10号出发 多少钱",
+            "at": 1790913605365
+          },
+          {
+            "role": "agent",
+            "content": "12 月 10 日出发，两位的报价给您出好了。",
+            "at": 1790913605373
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "12月去丽江会不会很冷啊 价格咋这样",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "12 月丽江白天十几度，早晚冷。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^12 月丽江白天十几度，早晚冷。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3955-02",
+    "desc": "X3 C02：说了「12月10号」之后顺口问「12月去会不会很冷啊」，出发日期还是 12月10号——报价不带「只说了 12 月」，照这天下单（第 2 个向量：行 就订吧）。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理那条 两个人 12月10号出发 多少钱",
+            "at": 1790913605365
+          },
+          {
+            "role": "agent",
+            "content": "12 月 10 日出发，两位的报价给您出好了。",
+            "at": 1790913605373
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "12月去丽江会不会很冷啊 价格咋这样",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "12 月丽江白天十几度，早晚冷。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^12 月丽江白天十几度，早晚冷。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行 就订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3996-01",
+    "desc": "X4 链接抹除覆盖路径的变体和截断：A18 模型写了「/p/ord_…」，补上真链接后这半截还留在正文；截断的 /pay/、没带人数的 /proposal/ 同样。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605412
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605419
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行 订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "订单已创建，支付链接在这里：\n\n/p/{{order:0.id}}\n\n名额以付款为准"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^订单已创建，支付链接在这里：\n\n/pay/{{order:0.id}}\n\n名额以付款为准$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3996-02",
+    "desc": "X4 链接抹除覆盖路径的变体和截断：A18 模型写了「/p/ord_…」，补上真链接后这半截还留在正文；截断的 /pay/、没带人数的 /proposal/ 同样。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605429
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605437
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行 订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "订单已创建，支付链接：/pay/ord_…\n名额以付款为准"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^订单已创建，支付链接：\n/pay/{{order:0.id}}\n名额以付款为准$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3996-03",
+    "desc": "X4 链接抹除覆盖路径的变体和截断：A18 模型写了「/p/ord_…」，补上真链接后这半截还留在正文；截断的 /pay/、没带人数的 /proposal/ 同样。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "贵州那条 两个人 发个详细方案",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "详细方案发您：/proposal/r-guizhou"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^详细方案发您：\n/proposal/r-guizhou/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4028",
+    "desc": "X5 方案书这一轮已经发了，正文还问要不要发（A03/B11/C07）：删掉那半句，别的照留。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "贵州那条 两个人 大概什么样",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "这条是荔波小七孔加西江千户苗寨。要看详细行程安排的话我可以把方案书发您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这条是荔波小七孔加西江千户苗寨。\n/proposal/r-guizhou/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4136",
+    "desc": "Y3 A04：客户说「两个人预算一共3万左右」，模型查线路没传预算——引擎按两位折成每人 15000 补上，工具才算得出差额。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫",
+                  "segment": "蜜月"
+                }
+              }
+            ]
+          },
+          {
+            "content": "恭喜二位新婚！马尔代夫度蜜月很合适～\n\n先说个实际情况：我们马代的线路起步是中央格兰德一价全包 5 日，人均 28,800 起，两位的话总价 5.7 万左右，和您 3 万的总预算差距比较大。\n\n这条的亮点：\n· 一价全包，餐食酒水浮潜都含，岛上零加收\n· 出别墅就能下水，潟湖里直接看珊瑚和热带鱼\n\n如果预算能往上放一放，这条是我们马代最实惠的一档，档期和行程您先看感受如何？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^给您挑了这几条现成线路：\n\n· 马尔代夫 中央格兰德·一价全包海岛5日\n  5 天 · 五星 · 人均 ¥28,800 起\n  比您的预算每人高 ¥13,800\n\n· 马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日\n  6 天 · 五星 · 人均 ¥35,800 起\n  比您的预算每人高 ¥20,800\n\n您大概什么时候出发？我按人数和日期给您出准确报价～$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4162",
+    "desc": "第 2 轮：巴厘岛每人 22,800，两位 45,600，超了总预算——「在 3 万预算内完全可行」「预算很宽裕，还能升房型或加天数」删掉。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "马尔代夫",
+          "segment": "蜜月",
+          "budget": "3万"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+            "at": 1790913605483
+          },
+          {
+            "role": "agent",
+            "content": "给您挑了这几条现成线路：\n\n· 马尔代夫 中央格兰德·一价全包海岛5日\n  5 天 · 五星 · 人均 ¥28,800 起\n  比您的预算每人高 ¥13,800\n\n· 马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日\n  6 天 · 五星 · 人均 ¥35,800 起\n  比您的预算每人高 ¥20,800\n\n您大概什么时候出发？我按人数和日期给您出准确报价～",
+            "at": 1790913605495
+          }
+        ],
+        "handedOver": false,
+        "budgetGaps": [13800, 20800, 37800, 15000],
+        "lastShownRoutes": [
+          {
+            "id": "r-maldives-lite",
+            "title": "马尔代夫 中央格兰德·一价全包海岛5日",
+            "priceFrom": 28800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-maldives",
+            "title": "马尔代夫 Soneva Jani 蜜月 6 日",
+            "priceFrom": 52800
+          }
+        ],
+        "seenRouteIds": ["r-maldives-lite", "r-maldives-mid", "r-maldives"]
+      }
+    },
+    "turns": [
+      {
+        "say": "差这么多啊 那巴厘岛呢",
+        "script": [
+          {
+            "content": "巴厘岛有条很经典的蜜月线，比马代轻不少：\n\n巴厘岛乌布雨林蜜月 6 日，每人 22800 起，两位的话在 3 万预算内完全可行。\n· 住乌布四季 Sayan 河谷别墅，私人泳池面朝雨林\n\n两位的预算按这条算很宽裕，还能升房型或加天数。\n\n您打算几号出发？我按日期给您出个准确报价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^巴厘岛有条很经典的蜜月线，比马代轻不少：\n\n巴厘岛乌布雨林蜜月 6 日，每人 22800 起。\n· 住乌布四季 Sayan 河谷别墅，私人泳池面朝雨林\n\n您打算几号出发？我按日期给您出个准确报价。$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4182",
+    "desc": "Y4 B02：改成 4 人后模型自己算的价被删，只剩「按 4 人重新报价」——引擎按客户说的线路、人数、日期实报一次。",
+    "tags": ["engine", "money", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "西安",
+          "travelers": "2人",
+          "dates": "2026-10-15"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "西安那个5天的 10月15号走 就俩大人",
+            "at": 1790913605510
+          },
+          {
+            "role": "agent",
+            "content": "西安兵马俑 5 日，10 月 15 日出发，每人 14,080 元，两位 28,160 元。",
+            "at": 1790913605519
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-xian",
+            "title": "西安 兵马俑·大唐不夜城 5 日",
+            "priceFrom": 12800
+          }
+        ],
+        "seenRouteIds": ["r-xian"],
+        "lastQuote": {
+          "routeId": "r-xian",
+          "routeTitle": "西安 兵马俑·大唐不夜城 5 日",
+          "travelers": 2,
+          "perPerson": 14080,
+          "total": 28160,
+          "departDate": "2026-10-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-xian",
+            "travelers": 2,
+            "perPerson": 14080,
+            "total": 28160,
+            "departDate": "2026-10-15"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "哦对了 我爸妈也要跟着去 一共4个人",
+        "script": [
+          {
+            "content": "好嘞，4 位一起走更热闹～按 4 人重新报价（4 人及以上每人还能打 95 折）：\n\n西安 兵马俑·大唐不夜城 5 日\n10 月 15 日出发 · 4 位出行\n\n· 每人 13384 元（12800 元基础上最佳季上浮 10%，再享 4 人 95 折）\n· 合计 53536 元\n\n报价为起价，按最终行程微调。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^按 4 位给您报好了：\n《西安 兵马俑·大唐不夜城 5 日》4 位出行，每人 ¥13,376，总价 ¥53,504（10月为最佳出行季，价格上浮 10%；4 人及以上享 95 折）\n起价，按最终行程微调。您看合适的话，跟我说一声就给您安排下单～$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4197",
+    "desc": "Y5 B03：客户怕高反要换云南，模型编了两条线（价被删）外加「基本不用担心高反」——担保删掉，换成查到的云南线、照实讲海拔。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "西藏",
+          "segment": "蜜月"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们俩度蜜月 想去西藏",
+            "at": 1790913605531
+          },
+          {
+            "role": "agent",
+            "content": "西藏有松赞全线 9 日和珠峰大本营 7 日两条，您计划几号出发？",
+            "at": 1790913605537
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-lux",
+            "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
+            "priceFrom": 68800
+          },
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ],
+        "seenRouteIds": ["r-tibet-lux", "r-tibet-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "算了 听说高反挺吓人的 换云南吧",
+        "script": [
+          {
+            "content": "云南确实更安心——线路大多在 2000 多米，基本不用担心高反，蜜月也合适。给您摆两条：\n\n· 云南大理丽江香格里拉·松赞系列 8 日（人均 38800 起）——住松赞林卡，玉龙雪山脚下的静谧和香格里拉的仪式感都有\n\n· 云南西双版纳热带雨林 5 日（人均 18800 起）——安纳塔拉度假酒店，雨林泳池别墅，节奏慢，适合彻底放松\n\n想看雪山古城，还是想躺酒店泡泳池？另外您大概几号出发？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^给您挑了这几条现成线路：\n\n· 云南 丽江大理·洱海古城 6 日\n  6 天 · 五星精选 · 人均 ¥16,800 起\n  行程里最高要到约 4500 米\n\n· 云南 香格里拉·梅里雪山松赞环线 8 日\n  8 天 · 顶级野奢 · 人均 ¥45,800 起\n  行程里最高要到约 4200 米\n\n您大概什么时候出发？我按人数和日期给您出准确报价～$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4214",
+    "desc": "Y6 flow-07：提过带娃、两条候选还没定，客户只说「两位 12号」——会话状态里提醒顺带问孩子算没算；回复写成「两位大人」的改回「两位」。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "不用倒时差 带娃能玩水的地方",
+            "at": 1790913605548
+          },
+          {
+            "role": "agent",
+            "content": "三亚亲子奢华度假 5 日和日本双乐园亲子 7 日都很适合带娃玩水，您几位出行、大概哪天走？",
+            "at": 1790913605556
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          },
+          {
+            "id": "r-maldives-lite",
+            "title": "马尔代夫 中央格兰德·一价全包海岛5日",
+            "priceFrom": 28800
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid", "r-guizhou", "r-maldives-lite"]
+      }
+    },
+    "turns": [
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "两位大人 12 号出发的话，三亚和日本这两条您更想去哪条？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^两位 12 号出发的话，三亚和日本这两条您更想去哪条？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4254-01",
+    "desc": "V3 「已为您转接 / 马上为您转接」是现在就办的转接：后面跟着的「您选的九寨线」「还是按 10 月 18 号跟进」不是在给客户二选一。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "就是要打9折 不然不订",
+        "script": [
+          {
+            "content": "折扣我这边没有权限，已为您转接资深顾问，您选的九寨线和日期顾问会一并跟进。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^折扣我这边没有权限，已为您转接资深顾问，您选的九寨线和日期顾问会一并跟进。$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4254-02",
+    "desc": "V3 「已为您转接 / 马上为您转接」是现在就办的转接：后面跟着的「您选的九寨线」「还是按 10 月 18 号跟进」不是在给客户二选一。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "就是要打9折 不然不订",
+        "script": [
+          {
+            "content": "明白，马上为您转接资深顾问，还是按10月18号、2位帮您跟进。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^明白，马上为您转接资深顾问，还是按10月18号、2位帮您跟进。$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4287-01",
+    "desc": "V4 flow-07 要的正是问清「两位」是不是都是大人：问句里的「两个大人，还是一大一小」不能改成「两位，还是一大一小」（第 1 个向量：两位 12号）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想带孩子去海边玩 有推荐吗",
+            "at": 1790913605573
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条亲子线很合适，您几位出行？",
+            "at": 1790913605580
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "这两位是指两个大人，还是一大一小？我按人头给您报价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这两位是指两个大人，还是一大一小？我按人头给您报价。$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4287-02",
+    "desc": "V4 flow-07 要的正是问清「两位」是不是都是大人：问句里的「两个大人，还是一大一小」不能改成「两位，还是一大一小」（第 2 个向量：两位 12号）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想带孩子去海边玩 有推荐吗",
+            "at": 1790913605573
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条亲子线很合适，您几位出行？",
+            "at": 1790913605580
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "这两位是指两个大人，还是一大一小？我按人头给您报价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这两位是指两个大人，还是一大一小？我按人头给您报价。$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "两位的话，是 2 个大人，还是 1 个大人带 1 个小朋友？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^两位的话，是 2 个大人，还是 1 个大人带 1 个小朋友？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4287-03",
+    "desc": "V4 flow-07 要的正是问清「两位」是不是都是大人：问句里的「两个大人，还是一大一小」不能改成「两位，还是一大一小」（第 3 个向量：两位 12号）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想带孩子去海边玩 有推荐吗",
+            "at": 1790913605573
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条亲子线很合适，您几位出行？",
+            "at": 1790913605580
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "这两位是指两个大人，还是一大一小？我按人头给您报价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这两位是指两个大人，还是一大一小？我按人头给您报价。$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "两位的话，是 2 个大人，还是 1 个大人带 1 个小朋友？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^两位的话，是 2 个大人，还是 1 个大人带 1 个小朋友？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "两位 12号",
+        "script": [
+          {
+            "content": "三亚这条两位的话，确认一下：是两位大人，还是算上孩子了？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^三亚这条两位的话，确认一下：是两位大人，还是算上孩子了？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4334-01",
+    "desc": "客户只是问一句（没要找人、没下通牒）：不整段转走，记下待顾问确认、AI 继续；下通牒的照转见 V3。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "签证能帮忙办吗 我自己搞不定",
+        "script": [
+          {
+            "content": "签证我这边办不了，已经帮您记下了，顾问会在微信上联系您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4334-02",
+    "desc": "客户只是问一句（没要找人、没下通牒）：不整段转走，记下待顾问确认、AI 继续；下通牒的照转见 V3。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "签证能帮忙办吗 我自己搞不定",
+        "script": [
+          {
+            "content": "签证这块需要专人办理，顾问会在微信上联系您～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^签证这块需要专人办理，顾问会在微信上联系您～$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4334-03",
+    "desc": "客户只是问一句（没要找人、没下通牒）：不整段转走，记下待顾问确认、AI 继续；下通牒的照转见 V3。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "签证能帮忙办吗 我自己搞不定",
+        "script": [
+          {
+            "content": "明白，定制需求需要顾问评估一下，顾问会在微信上联系您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^明白，定制需求需要顾问评估一下，顾问会在微信上联系您。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4454-01-01",
+    "desc": "端到端：A09 原句照发；列了几条路、最后问「您想先看哪个？」的，哪怕转接那句没带「或者」也不算答应了转接。下一句「订」照常建单（第 1 个向量：姐妹们说有点贵 能便宜点不）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605661
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605669
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "姐妹们说有点贵 能便宜点不",
+        "script": [
+          {
+            "content": "确实不便宜，跟您说下实情：\n\n· 10月正是这条线的最佳出行季，价格上浮了10%\n\n两个方向您挑：换到不在最佳季的月份（比如11月底、12月），我按具体日期实报看能省多少；或者我为您转接资深顾问，看看有没有申请空间。您想先看哪个？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^确实不便宜，跟您说下实情：\n\n· 10月正是这条线的最佳出行季，价格上浮了10%\n\n您想先看哪个？$(?![\\s\\S])"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4454-01-02",
+    "desc": "端到端：A09 原句照发；列了几条路、最后问「您想先看哪个？」的，哪怕转接那句没带「或者」也不算答应了转接。下一句「订」照常建单（第 2 个向量：算了 就这个吧 订）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605661
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605669
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "姐妹们说有点贵 能便宜点不",
+        "script": [
+          {
+            "content": "确实不便宜，跟您说下实情：\n\n· 10月正是这条线的最佳出行季，价格上浮了10%\n\n两个方向您挑：换到不在最佳季的月份（比如11月底、12月），我按具体日期实报看能省多少；或者我为您转接资深顾问，看看有没有申请空间。您想先看哪个？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^确实不便宜，跟您说下实情：\n\n· 10月正是这条线的最佳出行季，价格上浮了10%\n\n您想先看哪个？$(?![\\s\\S])"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "算了 就这个吧 订",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "订单建好了：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^订单建好了：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4454-02-01",
+    "desc": "端到端：A09 原句照发；列了几条路、最后问「您想先看哪个？」的，哪怕转接那句没带「或者」也不算答应了转接。下一句「订」照常建单（第 1 个向量：姐妹们说有点贵 能便宜点不）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605687
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605694
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "姐妹们说有点贵 能便宜点不",
+        "script": [
+          {
+            "content": "确实不便宜，能做的有两条：\n\n换个不在最佳季的日期，我按具体日期实报。\n我帮您转接资深顾问，申请看看有没有空间。\n\n您想先看哪个？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^确实不便宜，能做的有两条：\n\n换个不在最佳季的日期，我按具体日期实报。\n我帮您转接资深顾问，申请看看有没有空间。\n\n您想先看哪个？$(?![\\s\\S])"
+          ],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4454-02-02",
+    "desc": "端到端：A09 原句照发；列了几条路、最后问「您想先看哪个？」的，哪怕转接那句没带「或者」也不算答应了转接。下一句「订」照常建单（第 2 个向量：算了 就这个吧 订）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605687
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605694
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "姐妹们说有点贵 能便宜点不",
+        "script": [
+          {
+            "content": "确实不便宜，能做的有两条：\n\n换个不在最佳季的日期，我按具体日期实报。\n我帮您转接资深顾问，申请看看有没有空间。\n\n您想先看哪个？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^确实不便宜，能做的有两条：\n\n换个不在最佳季的日期，我按具体日期实报。\n我帮您转接资深顾问，申请看看有没有空间。\n\n您想先看哪个？$(?![\\s\\S])"
+          ],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "算了 就这个吧 订",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "订单建好了：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^订单建好了：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4465-01",
+    "desc": "空口转接：客户只是问一句（「能便宜点不」）→ 不整段转走，记下待顾问确认；客户要找人 → 照转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能便宜点不",
+        "script": [
+          {
+            "content": "好的，马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4465-02",
+    "desc": "空口转接：客户只是问一句（「能便宜点不」）→ 不整段转走，记下待顾问确认；客户要找人 → 照转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能便宜点不 找你们顾问谈谈",
+        "script": [
+          {
+            "content": "好的，马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4511-01",
+    "desc": "端到端（B09 第 2 遍）：模型给「过完年」编了 2027-02-20 报价——按那个月的季节价报、带 departNote；下单拿自己挑的日子不下（第 1 个向量：过完年去 就我们娘俩 多少钱）。",
+    "tags": ["engine", "money", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "贵州",
+          "segment": "银发"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想带我妈去贵州看看山水 她65了",
+            "at": 1790913605725
+          },
+          {
+            "role": "agent",
+            "content": "贵州荔波这条很合适，全程海拔不高。您大概什么时候出发、几位？",
+            "at": 1790913605731
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-guizhou"]
+      }
+    },
+    "turns": [
+      {
+        "say": "过完年去 就我们娘俩 多少钱",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2,
+                  "departDate": "2027-02-20"
+                }
+              }
+            ]
+          },
+          {
+            "content": "贵州这条给您报好了：每人 15,800 元，2 位总价 31,600 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^贵州这条给您报好了：每人 15,800 元，2 位总价 31,600 元。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4511-02",
+    "desc": "端到端（B09 第 2 遍）：模型给「过完年」编了 2027-02-20 报价——按那个月的季节价报、带 departNote；下单拿自己挑的日子不下（第 2 个向量：行 订吧）。",
+    "tags": ["engine", "money", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "贵州",
+          "segment": "银发"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想带我妈去贵州看看山水 她65了",
+            "at": 1790913605725
+          },
+          {
+            "role": "agent",
+            "content": "贵州荔波这条很合适，全程海拔不高。您大概什么时候出发、几位？",
+            "at": 1790913605731
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-guizhou"]
+      }
+    },
+    "turns": [
+      {
+        "say": "过完年去 就我们娘俩 多少钱",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2,
+                  "departDate": "2027-02-20"
+                }
+              }
+            ]
+          },
+          {
+            "content": "贵州这条给您报好了：每人 15,800 元，2 位总价 31,600 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^贵州这条给您报好了：每人 15,800 元，2 位总价 31,600 元。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行 订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2,
+                  "departDate": "2027-02-20"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的～过完年具体哪天出发？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的～过完年具体哪天出发？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4574",
+    "desc": "客户只是问一句：认出是转接，但不整段转走（转了 AI 就沉默，guard-13），摘掉转接的话、记下待顾问跟进。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能打折或者送点东西吗",
+        "script": [
+          {
+            "content": "折扣或者赠品这块我没有权限，已为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4589-01",
+    "desc": "U2 最后一句不是在问客户挑（「顾问会帮您看看哪种」「顾问会跟您确认哪个」），或者转接已经办了（「马上为您转接…请稍候」），。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能便宜点不",
+        "script": [
+          {
+            "content": "好的，已为您转接资深顾问，请稍候。顾问会帮您看看哪种方案更合适。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^顾问会帮您看看哪种方案更合适。\n\n这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4589-02",
+    "desc": "U2 最后一句不是在问客户挑（「顾问会帮您看看哪种」「顾问会跟您确认哪个」），或者转接已经办了（「马上为您转接…请稍候」），。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能便宜点不",
+        "script": [
+          {
+            "content": "马上为您转接资深顾问，请稍候～在等顾问的时候，您看这两条哪个更感兴趣？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^在等顾问的时候，您看这两条哪个更感兴趣？\n\n这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4589-03",
+    "desc": "U2 最后一句不是在问客户挑（「顾问会帮您看看哪种」「顾问会跟您确认哪个」），或者转接已经办了（「马上为您转接…请稍候」），。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能便宜点不",
+        "script": [
+          {
+            "content": "专票我这边办不了，已为您转接顾问，请稍候。顾问会跟您确认哪个抬头开票。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^顾问会跟您确认哪个抬头开票。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4600",
+    "desc": "没说已经办了的转接、最后在问客户挑哪个：仍是选项之一（第四轮 T1 的第二句，这里再钉一次）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能便宜点不",
+        "script": [
+          {
+            "content": "能做的有两条：\n\n换个不在最佳季的日期，我按具体日期实报。\n我帮您转接资深顾问，申请看看有没有空间。\n\n您想先看哪个？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^能做的有两条：\n\n换个不在最佳季的日期，我按具体日期实报。\n我帮您转接资深顾问，申请看看有没有空间。\n\n您想先看哪个？$(?![\\s\\S])"
+          ],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4364-01",
+    "desc": "V8 已发三亚方案后，云南方案提议保留；replyMatches 包含三亚方案链接及「我给您出一份云南的行程方案」。",
+    "tags": ["engine", "link", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "三亚亲子那条，两个人，发我方案看看",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "方案书在这：\n/proposal/r-sanya/2\n您想看其他线路的话，我给您出一份云南的行程方案。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^方案书在这：\n/proposal/r-sanya/2\n您想看其他线路的话，我给您出一份云南的行程方案。$(?![\\s\\S])"],
+          "tools": ["search_routes", "generate_proposal"],
+          "handoff": false,
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4364-02",
+    "desc": "V8 已发三亚方案后，西藏方案对比提议保留；replyMatches 包含三亚方案链接及「西藏线的方案对比，两条放一起看」。",
+    "tags": ["engine", "link", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "三亚亲子那条，两个人，发我方案看看",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "方案书在这：\n/proposal/r-sanya/2\n如果需要，我也可以给您做一份西藏线的方案对比，两条放一起看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^方案书在这：\n/proposal/r-sanya/2\n如果需要，我也可以给您做一份西藏线的方案对比，两条放一起看。$(?![\\s\\S])"],
+          "tools": ["search_routes", "generate_proposal"],
+          "handoff": false,
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-4365-01",
+    "desc": "V8 同三亚线路的重复发PDF提议删除；replyMatches 保留三亚方案链接，replyExcludes 排除「需要的话」「发您一份PDF」。",
+    "tags": ["engine", "link", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "三亚亲子那条，两个人，发我方案看看",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "方案书在这：\n/proposal/r-sanya/2\n需要的话我可以把三亚的方案书发您一份PDF。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^方案书在这：\n/proposal/r-sanya/2$(?![\\s\\S])"],
+          "tools": ["search_routes", "generate_proposal"],
+          "handoff": false,
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  }
+]

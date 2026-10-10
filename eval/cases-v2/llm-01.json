@@ -1,0 +1,104 @@
+[
+  {
+    "version": 2,
+    "id": "travel-llm-314",
+    "desc": "文本型工具调用执行后只把四川线路正文发给客户",
+    "tags": ["llm", "tool", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去四川",
+        "script": [
+          {
+            "content": "<tool_call>search_routes<arg_key>destination</arg_key><arg_value>四川</arg_value></tool_call>"
+          },
+          {
+            "content": "稻城亚丁这条很适合您～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^稻城亚丁这条很适合您～$"],
+          "replyExcludes": ["<tool_call>"],
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "stage": "recommend",
+          "silent": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-llm-332",
+    "desc": "五轮工具响应后第六轮返回最终正文",
+    "tags": ["llm", "tool", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去四川",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {}
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {}
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {}
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {}
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {}
+              }
+            ]
+          },
+          {
+            "content": "据已有结果回复"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^据已有结果回复$"],
+          "tools": ["search_routes", "search_routes"],
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "stage": "recommend",
+          "silent": false
+        }
+      }
+    ]
+  }
+]

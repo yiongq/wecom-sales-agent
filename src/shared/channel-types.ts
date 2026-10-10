@@ -20,9 +20,17 @@ export type InboxAbandonReason = (typeof INBOX_ABANDON_REASONS)[number];
 export const OUTBOUND_STATUSES = ['pending', 'sending', 'accepted', 'rejected', 'unknown', 'failed', 'cancelled'] as const;
 export type OutboundStatus = (typeof OUTBOUND_STATUSES)[number];
 
+/** R15：网页出口的最终文本链接投影；经 core/pack-api 向行业包公开。 */
+export interface MessagePart {
+  kind: 'link';
+  linkKind: 'order' | 'proposal' | 'site';
+  url: string;
+}
+
 /** 正式网页渠道的客户侧历史投影，不携带会话与成员标识。 */
 export interface WebMessage {
   role: 'customer' | 'agent';
   text: string;
   at: number;
+  parts: MessagePart[];
 }

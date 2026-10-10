@@ -32,6 +32,8 @@ interface Step {
   status?: number;
   /** 原样作为回包（模拟回包不可用） */
   raw?: unknown;
+  /** 在模型回包前触发生成中的外部接管。 */
+  beforeReply?: () => void;
 }
 const script: Step[] = [];
 /** 假服务发出去的每一份 chat 用量（按到达顺序），与 trace 里的 llm 逐项对 */
@@ -54,6 +56,7 @@ const fake = http.createServer((req, res) => {
       return;
     }
     const step = script.shift();
+    step?.beforeReply?.();
     if (step?.status) {
       res.statusCode = step.status;
       res.end(JSON.stringify({ error: { code: String(step.status), message: '假服务模拟的失败' } }));
@@ -106,10 +109,43 @@ process.env.LLM_MAX_RETRY = '0';
 let pass = 0;
 const fails: string[] = [];
 function check(name: string, cond: boolean, detail = ''): void {
-  if (cond) pass += 1;
-  else fails.push(`${name}${detail ? `：${detail}` : ''}`);
+  if (cond) {
+    pass += 1;
+    if (name.startsWith('04 abort ')) console.log(`✓ ${name}`);
+  } else fails.push(`${name}${detail ? `：${detail}` : ''}`);
 }
 const json = (v: unknown): string => JSON.stringify(v);
+// 04 开工表的 28 个执行位置；中止时只允许这个序列的前缀。
+const replyStepIds = [
+  'pre_clean',
+  'takeover_check:pre',
+  'stage_advance',
+  'other_order',
+  'order_net',
+  'link_whitelist',
+  'markdown',
+  'repair_links:mark',
+  'dejargon',
+  'custom_promise-a',
+  'repair_links:fill',
+  'handoff_claims',
+  'injection',
+  'encyclopedia',
+  'unbacked_claims',
+  'price',
+  'stranded',
+  'adults',
+  'dangling',
+  'advisor_prefix',
+  'identity',
+  'custom_promise-b',
+  'post_handoff',
+  'proposal_suffix',
+  'takeover_check:post',
+  'turn_failure',
+  'final_clean',
+  'system_note',
+];
 async function waitFor(cond: () => boolean, ms = 5000): Promise<boolean> {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
@@ -129,7 +165,8 @@ const traceRepo = await import('../db/repo/traces.js');
 const { readMetrics } = await import('../db/repo/metrics.js');
 const config = await import('../config/source.js');
 const cat = await import('../config/catalog.js');
-const { handleMessage } = await import('../engine.js');
+const { handleMessage, onToolCall } = await import('../engine.js');
+const { __takeoverTest } = await import('../handoff/takeover.js');
 const { getInsights, getSuggestion, getDraftReply } = await import('../insight.js');
 const { deferQuiet } = await import('../followup.js');
 const jobs = await import('../jobs/runner.js');
@@ -249,6 +286,18 @@ async function say(
   }
   await store.flushSession(sid).catch(() => undefined);
   const got = finished.slice(from).filter((f) => f.turn.conversationId === sid);
+  for (const f of got) {
+    const verdicts = f.turn.guardVerdicts;
+    check(
+      '04：每轮完整裁决为 null 或按序的一份，步骤不能重复',
+      verdicts === null ||
+        (Array.isArray(verdicts) &&
+          verdicts.length > 0 &&
+          json(verdicts.map((v) => v.id)) === json(replyStepIds.slice(0, verdicts.length)) &&
+          (verdicts.length === replyStepIds.length || verdicts.at(-1)?.action === 'abort')),
+      json(verdicts),
+    );
+  }
   check(
     `${sid}「${text}」：这一轮恰好一条 trace，模型脚本恰好用完`,
     got.length === 1 && script.length === 0,
@@ -281,6 +330,48 @@ async function say(
   check('文件存储下回复照样经 WeakMap 关联 turnId', store.turnIdOf(store.getSession(sid)!.messages.at(-1)!) === turn.turn.turnId);
 }
 
+// 两次接管检查的真实中止：只记执行前缀，不再写 AI 消息。
+for (const position of ['pre', 'post'] as const) {
+  const sid = `wecom:cust_Abort${position}`;
+  let intercepted = false;
+  const intercept = () => {
+    intercepted = true;
+    __takeoverTest.bump(sid);
+  };
+  const off = onToolCall((name, _args, id) => {
+    if (position === 'post' && id === sid && name === 'generate_proposal') intercept();
+  });
+  try {
+    const { reply, turn } = await say(
+      sid,
+      '你好',
+      position === 'pre'
+        ? [{ content: '您好，想去哪儿玩？', beforeReply: intercept }]
+        : [
+            { toolCalls: [{ name: 'create_quote', args: { routeId: 'r-yunnan-mid', travelers: 2 } }] },
+            { content: '完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～' },
+          ],
+    );
+    const verdicts = turn.turn.guardVerdicts ?? [];
+    const abortId = `takeover_check:${position}`;
+    const expected = replyStepIds.slice(0, replyStepIds.indexOf(abortId) + 1);
+    check(
+      `04 abort ${position}：接管中止那轮以 abort 结尾`,
+      intercepted && json(verdicts.at(-1)) === json({ id: abortId, action: 'abort' }),
+      json(verdicts),
+    );
+    check(`04 abort ${position}：之后的步骤不出现`, json(verdicts.map((v) => v.id)) === json(expected), json(verdicts));
+    check(
+      `04 abort ${position}：这一轮静默且不写 AI 消息`,
+      (reply as { silent?: boolean }).silent === true &&
+        turn.outcome === 'silent' &&
+        !store.getSession(sid)!.messages.some((m) => m.role === 'agent'),
+    );
+  } finally {
+    off();
+  }
+}
+
 // ---------------- 装上 DB 配置与 db 会话存储 ----------------
 const t = await openTestDb();
 await installSeededConfig(t, { deps: { lock: async () => fakeLock() } });
@@ -311,6 +402,7 @@ const traceRows = (sid: string) =>
     llm: Record<string, unknown>[];
     duration_ms: number;
     signals: Record<string, unknown> | null;
+    guard_verdicts: import('../core/pack-api.js').GuardVerdict[] | null;
   }>('select * from turn_traces where conversation_id = $1 order by started_at, id', [sid]);
 const guardRows = (turnId: string) =>
   su<{ ord: number; guard: string; action: string; removed: string[]; added: string[] }>(
@@ -354,6 +446,11 @@ const YUNNAN = 'r-yunnan-mid';
   const [row, ...more] = await traceRows(sid);
   check('库里有这一轮的 trace（只一条）', !!row && !more.length && row.id === turn.turn.turnId, json(row?.id));
   if (row) {
+    check('04：每轮恰好一行 trace，guard_verdicts 与 FinishedTurn 完全一致', json(row.guard_verdicts) === json(turn.turn.guardVerdicts));
+    check(
+      '04：完整裁决含 28 个步骤与放行，旧 guard_events 仍只记一次文字改写',
+      row.guard_verdicts?.length === 28 && row.guard_verdicts.some((v) => v.action === 'pass') && turn.turn.guards.length === 1,
+    );
     check('trace：outcome=replied，阶段前后', row.outcome === 'replied' && row.stage_before === 'greeting' && !!row.stage_after, json(row));
     check(
       'trace：catalog_versions 带这一轮工具结果里的条目与版本（改过的那条是 2）',

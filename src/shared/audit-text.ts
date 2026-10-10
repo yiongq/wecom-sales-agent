@@ -222,6 +222,10 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       return { parts: [plain('退出了登录')] };
     case 'config.import':
       return { parts: [plain('导入了初始配置')] };
+    case 'tenant.brand_set':
+      return { parts: [plain('设置了待生效企业信息配置')] };
+    case 'tenant.brand_clear':
+      return { parts: [plain('清除了待生效企业信息配置')] };
     case 'platform.tenant_create':
       return { parts: [plain('建了租户')] };
     case 'platform.user_create': {

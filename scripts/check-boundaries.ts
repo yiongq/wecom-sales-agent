@@ -61,6 +61,19 @@ const isAnySelftest = (p: string) => /\.selftest\.[a-z]+$/.test(p);
 const PACK_SELFTEST = 'console/src/fields/fields.selftest.tsx';
 const PACK_REGISTRY = 'src/packs/registry.ts';
 const PACKS_DIR = 'src/packs/';
+const CORE_DIR = 'src/core/';
+const PACK_API = 'src/core/pack-api.ts';
+/** 04 R1：永久保留的旧入口；核心也不能经这些门面绕回行业实现。 */
+const FACADES = new Set([
+  'src/engine.ts',
+  'src/tools.ts',
+  'src/price-guard.ts',
+  'src/price-rules.ts',
+  'src/followup.ts',
+  'src/retrieval.ts',
+  'src/llm.ts',
+  'src/insight.ts',
+]);
 const PACK_FIXTURES = 'src/shared/pack-fixtures/';
 /** OpenTelemetry 导出（02 spec R24、不变量 49）：没设端点时一个 @opentelemetry/* 都不加载，所以它们只在 src/otel/ 里 import */
 const OTEL_DIR = 'src/otel/';
@@ -82,6 +95,22 @@ const PURE_CHANNELS = [
 ];
 
 const IMPORT_RULES: ImportRule[] = [
+  {
+    desc: '04 R2：src/core/ 不 import src/packs/',
+    applies: (f) => under(f, CORE_DIR),
+    bad: (i) => under(i.target, PACKS_DIR),
+  },
+  {
+    desc: '04 R2：src/core/ 不 import R1 门面路径',
+    applies: (f) => under(f, CORE_DIR),
+    bad: (i) => FACADES.has(i.target ?? ''),
+  },
+  {
+    desc: '04 R2：src/packs/ 的跨层 import 只经 src/core/pack-api.ts（自测的 shared/pack-fixtures 除外）',
+    applies: (f) => under(f, PACKS_DIR),
+    bad: (i, f) =>
+      i.pkg === null && i.target !== PACK_API && !under(i.target, PACKS_DIR) && !(isAnySelftest(f) && under(i.target, PACK_FIXTURES)),
+  },
   {
     desc: `${PURE_CHANNELS.join('、')} 是纯模块：不 import src/db/、store、engine、llm、adapters`,
     applies: (f) => PURE_CHANNELS.includes(f),

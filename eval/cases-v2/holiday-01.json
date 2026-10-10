@@ -1,0 +1,4049 @@
+[
+  {
+    "version": 2,
+    "id": "travel-holiday-01",
+    "desc": "国庆第二天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-02",
+    "desc": "国庆第三天、说的就是今天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-03T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-03",
+    "desc": "国庆最后一天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-07T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月7号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-07"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-07"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-07",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-04",
+    "desc": "国庆最后一天、节后出发：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-07T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月9号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-09"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-09"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-09",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-05",
+    "desc": "十一期间：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "十一期间人多不多",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-05",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-06",
+    "desc": "国庆中说的明年那天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "明年10月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-10-05",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-07",
+    "desc": "国庆中连着问了两句：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "明年10月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "明年国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-10-05",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-08",
+    "desc": "国庆中说的 11 月：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "11月3号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-11-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-11-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-09",
+    "desc": "国庆中问明年国庆：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "明年国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-10",
+    "desc": "国庆中问今年国庆：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "今年国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-11",
+    "desc": "国庆中问 2026 年国庆：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "2026年国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-12",
+    "desc": "国庆放完第二天：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-08T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月9号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-09"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-09"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-13",
+    "desc": "国庆放完、说的明年那天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-08T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "明年10月3号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-14",
+    "desc": "五一第三天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-05-03T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "5月4号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-05-04"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "五一期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-05-04"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-05-04",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-15",
+    "desc": "五一最后一天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-05-05T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "5月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-05-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "劳动节期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-05-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-05-05",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-16",
+    "desc": "五一放完：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-05-06T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "5月8号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-05-08"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "五一期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-05-08"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-17",
+    "desc": "春节初三：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-02-08T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月10号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-02-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-02-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-02-10",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-18",
+    "desc": "春节初七：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-02-12T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月12号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-02-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-02-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-02-12",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-19",
+    "desc": "春节放完：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-02-13T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月15号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-02-15"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-02-15"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-20",
+    "desc": "跨月春节的最后一天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-02-01T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月2号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-02"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "今年春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-02"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-02",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-21",
+    "desc": "跨月春节的初一：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-26T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月1号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-01",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-22",
+    "desc": "跨月春节、1 月里问：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月1号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "今年春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-01",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-23",
+    "desc": "跨月春节、1 月里问、没说哪年：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月1号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-01",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-24",
+    "desc": "表里最后一次春节、没说哪年：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "1月30号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-01-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-01-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-01-30",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-25",
+    "desc": "表里最后一次春节的最后一天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-02-01T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月2号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-02"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-02"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-02",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-26",
+    "desc": "表里最后一次端午：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-05-29T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "5月30号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-05-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "端午期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-05-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-05-30",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-27",
+    "desc": "表里最后一次中秋：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-10-04T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "中秋期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-10-05",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-28",
+    "desc": "表里最后一次春节放完：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-02-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-29",
+    "desc": "元旦第三天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-01-03T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "1月3号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-01-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "元旦期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-01-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-01-03",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-30",
+    "desc": "元旦放完：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-01-04T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "1月5号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-01-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "元旦期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-01-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-31",
+    "desc": "端午第三天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-06-11T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "6月12号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-06-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "端午期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-06-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2027-06-12",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-32",
+    "desc": "端午放完：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2027-06-12T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "6月15号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-06-15"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "端午期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-06-15"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-33",
+    "desc": "中秋第三天：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-09-27T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "9月27号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-09-27"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "中秋期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-09-27"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-09-27",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-34",
+    "desc": "中秋放完：节日问句后追问具体日期且不建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-09-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "9月29号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-09-29"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "中秋期间人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-09-29"
+                }
+              }
+            ]
+          },
+          {
+            "content": "请问您具体几号出发？"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["几号", "^请问您具体几号出发？$"],
+          "handoff": false,
+          "stage": "quote",
+          "silent": false,
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-35",
+    "desc": "只说月份的问句：节日问句后按客户明确日期下单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-01-05T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月10号出发，两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-02-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "2月冷不冷",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-02-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-02-10",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-183-model",
+    "desc": "2026-10-02 报价后问节日，模型按 2026-10-03 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "stage": "closing",
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-183-net",
+    "desc": "2026-10-02 报价后问节日，安全网按 2026-10-03 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "stage": "closing",
+          "replyMatches": [
+            "/pay/{{order:0.id}}",
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、10月3日出发，总价 ¥36,960。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$"
+          ],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-184-model",
+    "desc": "2026-10-03 报价后问节日，模型按 2026-10-03 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-03T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "stage": "closing",
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-184-net",
+    "desc": "2026-10-03 报价后问节日，安全网按 2026-10-03 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2026-10-03T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "国庆期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "status": "pending_payment",
+              "totalPrice": 36960
+            }
+          },
+          "stage": "closing",
+          "replyMatches": [
+            "/pay/{{order:0.id}}",
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、10月3日出发，总价 ¥36,960。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$"
+          ],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-186-model",
+    "desc": "2028-01-28 报价后问节日，模型按 2028-01-30 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "1月30号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-01-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-01-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-01-30",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "stage": "closing",
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-186-net",
+    "desc": "2028-01-28 报价后问节日，安全网按 2028-01-30 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "1月30号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-01-30"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-01-30",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "stage": "closing",
+          "replyMatches": [
+            "/pay/{{order:0.id}}",
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、1月30日出发，总价 ¥33,600。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$"
+          ],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-187-model",
+    "desc": "2028-01-28 报价后问节日，模型按 2028-02-01 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月1号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "今年春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-01",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "stage": "closing",
+          "replyMatches": ["/pay/{{order:0.id}}", "^好的\n/pay/{{order:0.id}}$"],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-holiday-talk-187-net",
+    "desc": "2028-01-28 报价后问节日，安全网按 2028-02-01 建单",
+    "tags": ["holiday", "flow", "tool"],
+    "fixtures": {
+      "now": "2028-01-28T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "2月1号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-02-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^丽江大理这条报价给您出好了。$"],
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "今年春节期间景区人多吗",
+        "script": [
+          {
+            "content": "假期人会多一些，这条线会错峰安排。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^假期人会多一些，这条线会错峰安排。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": []
+        }
+      },
+      {
+        "say": "行，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "travelers": 2,
+              "departDate": "2028-02-01",
+              "status": "pending_payment",
+              "totalPrice": 33600
+            }
+          },
+          "stage": "closing",
+          "replyMatches": [
+            "/pay/{{order:0.id}}",
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、2月1日出发，总价 ¥33,600。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$"
+          ],
+          "handoff": false,
+          "silent": false,
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  }
+]

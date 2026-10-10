@@ -2187,7 +2187,7 @@ check(
       cwd: fileURLToPath(new URL('../..', import.meta.url)),
       encoding: 'utf8',
       timeout: 60_000,
-      env: { ...process.env, DATABASE_PLATFORM_URL: '' },
+      env: { ...process.env, DATABASE_PLATFORM_URL: '', DEPLOY_PROFILE: 'demo' },
     });
   const unknownPack = cli('renovation');
   const knownPack = cli('travel');

@@ -1,11 +1,14 @@
 // 正式网页渠道：凭据只在 HTTP 层，适配器只认推导出的会话 id。
 import { createHash } from 'node:crypto';
+import { partsOf, type ChannelCaps, type MessagePart } from '../core/pack-api.js';
 import { numEnv } from '../env.js';
 import { consentMenuButtonId } from '../handoff/consent.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import type { ChannelAdapter } from '../types.js';
 
-export type WebEvent = { type: 'push'; text: string } | { type: 'menu'; text: string; buttons: { id: string; label: string }[] };
+export type WebEvent =
+  | { type: 'push'; text: string; parts: MessagePart[] }
+  | { type: 'menu'; text: string; parts: MessagePart[]; buttons: { id: string; label: string }[] };
 
 type Client = { send: (ev: WebEvent) => void; remove: () => void };
 const clients = new Map<string, Set<Client>>();
@@ -44,22 +47,25 @@ export function subscribeWeb(sessionId: string, clientKey: string, send: (ev: We
   return remove;
 }
 
-export const webAdapter: ChannelAdapter = {
+export const webAdapter: ChannelAdapter & { readonly caps: Readonly<ChannelCaps> } = {
   name: 'web',
+  caps: Object.freeze({ markdown: false }),
   async push(sessionId, text, opts): Promise<boolean> {
     const set = clients.get(sessionId);
     const menu = opts?.kind === 'menu';
     if (menu && !opts.category) return false;
+    const body = opts?.kind === 'human' ? withAdvisorPrefix(text) : text;
     const event: WebEvent = menu
       ? {
           type: 'menu',
           text,
+          parts: partsOf(text),
           buttons: [
             { id: consentMenuButtonId(opts!.category!, 'granted'), label: '同意' },
             { id: consentMenuButtonId(opts!.category!, 'declined'), label: '不同意' },
           ],
         }
-      : { type: 'push', text: opts?.kind === 'human' ? withAdvisorPrefix(text) : text };
+      : { type: 'push', text: body, parts: partsOf(body) };
     let delivered = false;
     for (const client of set ?? []) {
       try {

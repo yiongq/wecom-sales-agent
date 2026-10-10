@@ -1,0 +1,2902 @@
+[
+  {
+    "version": 2,
+    "id": "travel-price-397-05",
+    "desc": "保留有出处的金额或非金额数字：南极暂时没有现成线路，最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去南极",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去南极",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "南极暂时没有现成线路，最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "南极暂时没有现成线路，最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起",
+            "^南极暂时没有现成线路，最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起$"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes", "search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-397-06",
+    "desc": "保留有出处的金额或非金额数字：松赞那条线人均 ¥68,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去南极",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "松赞那条线人均 ¥68,800 起"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["松赞那条线人均 ¥68,800 起", "^松赞那条线人均 ¥68,800 起$"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-422-01",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均起价 68888 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均起价 68888 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["68888"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-422-02",
+    "desc": "拦截无出处或成交语境不合法的金额：起价 68888，含机酒",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "起价 68888，含机酒"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["68888"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-422-03",
+    "desc": "拦截无出处或成交语境不合法的金额：每人团费 68888",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人团费 68888"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["68888"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-428-01",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均 ¥68,800",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均 ¥68,800"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["¥68,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-428-03",
+    "desc": "保留有出处的金额或非金额数字：这条线人均 ¥68,800",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "get_route_detail",
+                "args": {
+                  "routeId": "r-tibet-lux"
+                }
+              }
+            ]
+          },
+          {
+            "content": "这条线人均 ¥68,800"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条线人均 ¥68,800", "^这条线人均 ¥68,800$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["get_route_detail"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-428-04",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均 ¥68,800",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "这条线人均 ¥68,800"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["¥68,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-428-05",
+    "desc": "保留有出处的金额或非金额数字：这条线人均 ¥68,800",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-tibet-lux",
+          "routeTitle": "西藏 拉萨林芝纳木错·松赞全线 9 日",
+          "travelers": 2
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均 ¥68,800"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条线人均 ¥68,800", "^这条线人均 ¥68,800$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-428-06",
+    "desc": "保留有出处的金额或非金额数字：那条人均 ¥68,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "agent",
+            "content": "西藏这边推荐拉萨林芝纳木错·松赞全线 9 日",
+            "at": 0
+          },
+          {
+            "role": "customer",
+            "content": "那条多少钱",
+            "at": 1
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "那条人均 ¥68,800 起"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["那条人均 ¥68,800 起", "^那条人均 ¥68,800 起$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-464-01",
+    "desc": "保留有出处的金额或非金额数字：西安那条每人 12,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "西安那条每人 12,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["西安那条每人 12,800 元", "^西安那条每人 12,800 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-464-02",
+    "desc": "拦截无出处或成交语境不合法的金额：西藏线人均 68,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "西藏线人均 68,800 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["68,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-467-01",
+    "desc": "拦截无出处或成交语境不合法的金额：南极冰川极光雪山深度线，人均 46,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "南极冰川极光雪山深度线，人均 46,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["46,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-482-01",
+    "desc": "保留有出处的金额或非金额数字：这条线在人均 7 万左右这个档",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线在人均 7 万左右这个档"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条线在人均 7 万左右这个档", "^这条线在人均 7 万左右这个档$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-482-02",
+    "desc": "保留有出处的金额或非金额数字：另一条人均四万多",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "另一条人均四万多"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["另一条人均四万多", "^另一条人均四万多$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-482-03",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均 6.9 万",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均 6.9 万"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6\\.9 万"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-492-01",
+    "desc": "保留有出处的金额或非金额数字：新疆伊犁·独库公路越野摄影 9 日，起价每人 19800 元，比您说的 1 万 1 超了不少。 一是预算能往上提一点就按这条走；二…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "新疆玩一周左右，每人一万一以内",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-xinjiang",
+            "title": "新疆伊犁·独库公路越野摄影 9 日",
+            "priceFrom": 19800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "新疆玩一周左右，每人一万一以内",
+        "script": [
+          {
+            "content": "新疆伊犁·独库公路越野摄影 9 日，起价每人 19800 元，比您说的 1 万 1 超了不少。\n一是预算能往上提一点就按这条走；二是我帮您找更实惠的。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "新疆伊犁·独库公路越野摄影 9 日，起价每人 19800 元，比您说的 1 万 1 超了不少。\n一是预算能往上提一点就按这条走；二是我帮您找更实惠的。",
+            "^新疆伊犁·独库公路越野摄影 9 日，起价每人 19800 元，比您说的 1 万 1 超了不少。\n一是预算能往上提一点就按这条走；二是我帮您找更实惠的。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-511-01",
+    "desc": "保留有出处的金额或非金额数字：新疆一周左右，这个预算我这边有一条很对路的线，但先跟您说清楚价格情况：  新疆伊犁·独库公路越野摄影 9 日 · 起价每人 198…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "新疆玩一周左右，每人一万五以内",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-xinjiang",
+            "title": "新疆伊犁·独库公路越野摄影 9 日",
+            "priceFrom": 19800
+          }
+        ],
+        "budgetGaps": [4800]
+      }
+    },
+    "turns": [
+      {
+        "say": "新疆玩一周左右，每人一万五以内",
+        "script": [
+          {
+            "content": "新疆一周左右，这个预算我这边有一条很对路的线，但先跟您说清楚价格情况：\n\n新疆伊犁·独库公路越野摄影 9 日\n· 起价每人 19800 元，比您说的 1 万 5 超了约 32%（每人多 4800）\n· 全程陆巡车队+专业摄影领队，独库公路全线穿越\n\n两个方向您看哪个更合适：一是预算能往上提一点就按这条走；二是我帮您找天数更短、酒店档位更实惠的版本，把价格拉回 1 万 5 以内。您倾向哪个？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "新疆一周左右，这个预算我这边有一条很对路的线，但先跟您说清楚价格情况：\n\n新疆伊犁·独库公路越野摄影 9 日\n· 起价每人 19800 元，比您说的 1 万 5 超了约 32%（每人多 4800）\n· 全程陆巡车队\\+专业摄影领队，独库公路全线穿越\n\n两个方向您看哪个更合适：一是预算能往上提一点就按这条走；二是我帮您找天数更短、酒店档位更实惠的版本，把价格拉回 1 万 5 以内。您倾向哪个？",
+            "^新疆一周左右，这个预算我这边有一条很对路的线，但先跟您说清楚价格情况：\n\n新疆伊犁·独库公路越野摄影 9 日\n· 起价每人 19800 元，比您说的 1 万 5 超了约 32%（每人多 4800）\n· 全程陆巡车队\\+专业摄影领队，独库公路全线穿越\n\n两个方向您看哪个更合适：一是预算能往上提一点就按这条走；二是我帮您找天数更短、酒店档位更实惠的版本，把价格拉回 1 万 5 以内。您倾向哪个？$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-519-01",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按这条走，每人 6,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "别家6800，你给我6800我立刻订",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "别家6800，你给我6800我立刻订",
+        "script": [
+          {
+            "content": "好的，就按这条走，每人 6,800 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-519-02",
+    "desc": "拦截无出处或成交语境不合法的金额：行，就按这个方案，每人 6,800 元，我把链接发您",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "6800 我就订",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "6800 我就订",
+        "script": [
+          {
+            "content": "行，就按这个方案，每人 6,800 元，我把链接发您"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-519-03",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按这个来，每人 6,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "别家同样线路只要 6800元",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "好的，就按这个来，每人 6,800 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-536-01",
+    "desc": "保留有出处的金额或非金额数字：这个价真做不了。两位如果预算定在一万一，我帮您看看贵州方向。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "便宜点，11111 卖不卖",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          },
+          {
+            "id": "r-tibet-lux",
+            "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
+            "priceFrom": 68800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "便宜点，11111 卖不卖",
+        "script": [
+          {
+            "content": "这个价真做不了。两位如果预算定在一万一，我帮您看看贵州方向。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "这个价真做不了。两位如果预算定在一万一，我帮您看看贵州方向。",
+            "^这个价真做不了。两位如果预算定在一万一，我帮您看看贵州方向。$"
+          ],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-536-02",
+    "desc": "保留有出处的金额或非金额数字：两位如果预算定在一万九，我帮您看看贵州方向。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "便宜点，19999 卖不卖",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          },
+          {
+            "id": "r-tibet-lux",
+            "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
+            "priceFrom": 68800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "便宜点，19999 卖不卖",
+        "script": [
+          {
+            "content": "两位如果预算定在一万九，我帮您看看贵州方向。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["两位如果预算定在一万九，我帮您看看贵州方向。", "^两位如果预算定在一万九，我帮您看看贵州方向。$"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-547-01",
+    "desc": "拦截无出处或成交语境不合法的金额：我们这条每人 13,000 元左右",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "携程上 12999",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-xian",
+            "title": "西安 兵马俑·大唐不夜城 5 日",
+            "priceFrom": 12800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "携程上 12999",
+        "script": [
+          {
+            "content": "我们这条每人 13,000 元左右"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["13,000 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-560-01",
+    "desc": "保留有出处的金额或非金额数字：西藏 9 日那条人均 68,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "agent",
+            "content": "西藏两条：\n· 西藏 9 日奢华线，人均 68,800 起\n· 西藏 7 日经典线，人均 26,800 起",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          },
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          },
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "西藏 9 日那条人均 68,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["西藏 9 日那条人均 68,800 元", "^西藏 9 日那条人均 68,800 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-560-02",
+    "desc": "保留有出处的金额或非金额数字：大理丽江那条人均 16,800",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "agent",
+            "content": "云南推荐大理丽江 6 日，人均 16,800 起",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          },
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          },
+          {
+            "id": "r-tibet-lux",
+            "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
+            "priceFrom": 68800
+          },
+          {
+            "id": "r-xian",
+            "title": "西安 兵马俑·大唐不夜城 5 日",
+            "priceFrom": 12800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "大理丽江那条人均 16,800"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["大理丽江那条人均 16,800", "^大理丽江那条人均 16,800$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-560-03",
+    "desc": "保留有出处的金额或非金额数字：顾问说的那条南北疆纵贯线人均 52,800",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "agent",
+            "content": "您好我是顾问小王，给您推荐南北疆纵贯 10 日：喀什、帕米尔、禾木、喀纳斯，人均 52,800",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "顾问说的那条南北疆纵贯线人均 52,800"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["顾问说的那条南北疆纵贯线人均 52,800", "^顾问说的那条南北疆纵贯线人均 52,800$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-560-04",
+    "desc": "保留有出处的金额或非金额数字：日本那条人均 32,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-maldives-lite",
+            "title": "马尔代夫 中央格兰德·一价全包海岛5日",
+            "priceFrom": 28800
+          },
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          },
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          }
+        ],
+        "seenRouteIds": ["r-japan"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "日本那条人均 32,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["日本那条人均 32,800 元", "^日本那条人均 32,800 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-600-01",
+    "desc": "依次查询日本、马尔代夫、巴厘岛、三亚和北欧极光后仍能复述日本报价。",
+    "tags": ["price", "guard", "money", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "想了解日本线路",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "日本"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已查询线路。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "replyMatches": ["^已查询线路。$"],
+          "stage": "recommend",
+          "silent": false,
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "想了解马尔代夫线路",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已查询线路。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "replyMatches": ["^已查询线路。$"],
+          "stage": "recommend",
+          "silent": false,
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "想了解巴厘岛线路",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已查询线路。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "replyMatches": ["^已查询线路。$"],
+          "stage": "recommend",
+          "silent": false,
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "想了解三亚线路",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "三亚"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已查询线路。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "replyMatches": ["^已查询线路。$"],
+          "stage": "recommend",
+          "silent": false,
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "想了解北欧极光线路",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "北欧极光"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已查询线路。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 0
+          },
+          "handoff": false,
+          "replyMatches": ["^已查询线路。$"],
+          "stage": "recommend",
+          "silent": false,
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "日本那条人均 32,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["日本那条人均 32,800 元", "^日本那条人均 32,800 元$"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-611-01",
+    "desc": "拦截无出处或成交语境不合法的金额：南极入门线人均 28,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我在北京，想去南极",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "我在北京，想去南极",
+        "script": [
+          {
+            "content": "南极入门线人均 28,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["28,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-611-02",
+    "desc": "拦截无出处或成交语境不合法的金额：这条入门线人均 28,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我在北京。想去南极",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "我在北京。想去南极",
+        "script": [
+          {
+            "content": "这条入门线人均 28,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["28,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-611-03",
+    "desc": "保留有出处的金额或非金额数字：这条人均 28,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去北京看看",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去北京看看",
+        "script": [
+          {
+            "content": "这条人均 28,800 起"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条人均 28,800 起", "^这条人均 28,800 起$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-611-04",
+    "desc": "拦截无出处或成交语境不合法的金额：我们可以做一条对标松赞品质的南极线，人均 68,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去南极",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去南极",
+        "script": [
+          {
+            "content": "我们可以做一条对标松赞品质的南极线，人均 68,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["68,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-611-05",
+    "desc": "拦截无出处或成交语境不合法的金额：南极线可以对标松赞品质。人均 68,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去南极",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去南极",
+        "script": [
+          {
+            "content": "南极线可以对标松赞品质。人均 68,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["68,800"],
+          "replyMatches": ["^南极线可以对标松赞品质。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-611-06",
+    "desc": "拦截无出处或成交语境不合法的金额：埃及金字塔线跟西安兵马俑一样是历史人文，人均 12,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去埃及",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去埃及",
+        "script": [
+          {
+            "content": "埃及金字塔线跟西安兵马俑一样是历史人文，人均 12,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["12,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-641-01",
+    "desc": "拦截无出处或成交语境不合法的金额：马丘比丘深度线人均 46,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去马丘比丘",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马丘比丘"
+                }
+              }
+            ]
+          },
+          {
+            "content": "马丘比丘深度线人均 46,800 起"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["46,800"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-641-02",
+    "desc": "保留有出处的金额或非金额数字：马丘比丘暂时没有现成线路。 最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "想去马丘比丘",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马丘比丘"
+                }
+              }
+            ]
+          },
+          {
+            "content": "马丘比丘暂时没有现成线路。\n最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "马丘比丘暂时没有现成线路。\n最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起",
+            "^马丘比丘暂时没有现成线路。\n最接近的是北欧芬兰极光玻璃屋 8 日，人均 46,800 起$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-01",
+    "desc": "保留有出处的金额或非金额数字：每人 15800 元，总价 47400 元。  比元旦出发省了 4740 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-07-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          },
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-07-01"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人 15800 元，总价 47400 元。\n\n比元旦出发省了 4740 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "每人 15800 元，总价 47400 元。\n\n比元旦出发省了 4740 元。",
+            "^每人 15800 元，总价 47400 元。\n\n比元旦出发省了 4740 元。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-02",
+    "desc": "保留有出处的金额或非金额数字：比元旦出发一家三口能省将近 4700 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-07-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          },
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-07-01"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比元旦出发一家三口能省将近 4700 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["比元旦出发一家三口能省将近 4700 元。", "^比元旦出发一家三口能省将近 4700 元。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-03",
+    "desc": "保留有出处的金额或非金额数字：每人比元旦出发省 1,580 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-07-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          },
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-07-01"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人比元旦出发省 1,580 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["每人比元旦出发省 1,580 元", "^每人比元旦出发省 1,580 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-04",
+    "desc": "保留有出处的金额或非金额数字：比元旦出发能省四千七左右",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-07-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          },
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-07-01"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比元旦出发能省四千七左右"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["比元旦出发能省四千七左右", "^比元旦出发能省四千七左右$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-05",
+    "desc": "拦截无出处或成交语境不合法的金额：比元旦出发省了 5,200 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-07-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          },
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-07-01"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比元旦出发省了 5,200 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["5,200 元"],
+          "replyMatches": [
+            "^这条线的正式报价：\n《三亚亲子奢华度假 5 日》3 位出行，每人 ¥15,800，总价 ¥47,400（起价，按最终行程微调）。\n想调人数、日期或换一档线路，直接跟我说～$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-06",
+    "desc": "拦截无出处或成交语境不合法的金额：这条每人 14,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-07-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          },
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-07-01"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条每人 14,800 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["14,800 元"],
+          "replyMatches": [
+            "^这条线的正式报价：\n《三亚亲子奢华度假 5 日》3 位出行，每人 ¥15,800，总价 ¥47,400（起价，按最终行程微调）。\n想调人数、日期或换一档线路，直接跟我说～$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-660-07",
+    "desc": "保留有出处的金额或非金额数字：· 每人 19800 元，两人共 39600 元 · 比 7 月旺季省下 3960 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-xinjiang",
+          "routeTitle": "新疆伊犁·独库公路越野摄影 9 日",
+          "travelers": 2,
+          "perPerson": 19800,
+          "total": 39600,
+          "departDate": "2027-10-08"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-xinjiang",
+            "travelers": 2,
+            "perPerson": 21780,
+            "total": 43560,
+            "departDate": "2027-07-12"
+          },
+          {
+            "routeId": "r-xinjiang",
+            "travelers": 2,
+            "perPerson": 19800,
+            "total": 39600,
+            "departDate": "2027-10-08"
+          }
+        ],
+        "seenRouteIds": ["r-xinjiang"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "· 每人 19800 元，两人共 39600 元\n· 比 7 月旺季省下 3960 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "· 每人 19800 元，两人共 39600 元\n· 比 7 月旺季省下 3960 元",
+            "^· 每人 19800 元，两人共 39600 元\n· 比 7 月旺季省下 3960 元$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-677-01",
+    "desc": "保留有出处的金额或非金额数字：比之前那单便宜 3,960 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "closing",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-xinjiang",
+          "routeTitle": "新疆伊犁·独库公路越野摄影 9 日",
+          "travelers": 2,
+          "perPerson": 19800,
+          "total": 39600,
+          "departDate": "2027-10-08"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-xinjiang",
+            "travelers": 2,
+            "perPerson": 19800,
+            "total": 39600,
+            "departDate": "2027-10-08"
+          }
+        ],
+        "seenRouteIds": ["r-xinjiang"]
+      },
+      "orders": [
+        {
+          "status": "pending_payment",
+          "travelers": 2,
+          "departDate": "2027-07-12",
+          "routeId": "r-xinjiang"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比之前那单便宜 3,960 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["比之前那单便宜 3,960 元", "^比之前那单便宜 3,960 元$"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-xinjiang",
+              "travelers": 2,
+              "departDate": "2027-07-12",
+              "status": "pending_payment",
+              "totalPrice": 43560
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-681-01",
+    "desc": "保留有出处的金额或非金额数字：10 月旺季比平时 4 位一共多 6,004 元，每人多 1,501 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 4,
+          "perPerson": 16511,
+          "total": 66044,
+          "departDate": "2026-10-03"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 4,
+            "perPerson": 16511,
+            "total": 66044,
+            "departDate": "2026-10-03"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月旺季比平时 4 位一共多 6,004 元，每人多 1,501 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "10 月旺季比平时 4 位一共多 6,004 元，每人多 1,501 元",
+            "^10 月旺季比平时 4 位一共多 6,004 元，每人多 1,501 元$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-681-02",
+    "desc": "保留有出处的金额或非金额数字：马尔代夫：一岛一酒店，私密性天花板。现在做的是 11 月到次年 4 月的旺季线路，人均 2.88 万到 5.28 万三档。 巴厘岛…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-maldives-lite",
+            "title": "马尔代夫 中央格兰德·一价全包海岛5日",
+            "priceFrom": 28800
+          },
+          {
+            "id": "r-maldives",
+            "title": "马尔代夫 Soneva Jani 蜜月 6 日",
+            "priceFrom": 52800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "马尔代夫：一岛一酒店，私密性天花板。现在做的是 11 月到次年 4 月的旺季线路，人均 2.88 万到 5.28 万三档。\n巴厘岛：体验更丰富，人均 2.28 万起。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "马尔代夫：一岛一酒店，私密性天花板。现在做的是 11 月到次年 4 月的旺季线路，人均 2\\.88 万到 5\\.28 万三档。\n巴厘岛：体验更丰富，人均 2\\.28 万起。",
+            "^马尔代夫：一岛一酒店，私密性天花板。现在做的是 11 月到次年 4 月的旺季线路，人均 2\\.88 万到 5\\.28 万三档。\n巴厘岛：体验更丰富，人均 2\\.28 万起。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-710-01",
+    "desc": "按句删除并保留其余内容：每人 15,800 元，3 人总价 47,400 元。  比 11 月出发省了 5,200 元。这是起价，最终按行程微调。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400
+        },
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人 15,800 元，3 人总价 47,400 元。\n\n比 11 月出发省了 5,200 元。这是起价，最终按行程微调。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "每人 15,800 元，3 人总价 47,400 元。\n\n这是起价，最终按行程微调。",
+            "^每人 15,800 元，3 人总价 47,400 元。\n\n这是起价，最终按行程微调。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-710-02",
+    "desc": "按句删除并保留其余内容：按 10 月 8 日出发重新算好了：  · 每人 19800 元 · 比 7 月旺季省下 3960 元 · 为起价  您看行吗？",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastQuote": {
+          "routeId": "r-xinjiang",
+          "routeTitle": "新疆伊犁·独库公路越野摄影 9 日",
+          "travelers": 1,
+          "perPerson": 19800,
+          "total": 19800
+        },
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "按 10 月 8 日出发重新算好了：\n\n· 每人 19800 元\n· 比 7 月旺季省下 3960 元\n· 为起价\n\n您看行吗？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "按 10 月 8 日出发重新算好了：\n\n· 每人 19800 元\n· 为起价\n\n您看行吗？",
+            "^按 10 月 8 日出发重新算好了：\n\n· 每人 19800 元\n· 为起价\n\n您看行吗？$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-710-03",
+    "desc": "按句删除并保留其余内容：南极没有现成线路。我们有一条南极概念的替代线路：  · 南极深度体验线，人均起价 68800 起  您几位出行？",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400
+        },
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "南极没有现成线路。我们有一条南极概念的替代线路：\n\n· 南极深度体验线，人均起价 68800 起\n\n您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["南极没有现成线路。\n\n您几位出行？", "^南极没有现成线路。\n\n您几位出行？$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-710-04",
+    "desc": "按句删除并保留其余内容：报价如下： · 每人 15800 元 · 比元旦省 5,200 元 您看呢？",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400
+        },
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "报价如下：\n· 每人 15800 元\n· 比元旦省 5,200 元\n您看呢？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["报价如下：\n· 每人 15800 元\n您看呢？", "^报价如下：\n· 每人 15800 元\n您看呢？$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-710-05",
+    "desc": "按句删除并保留其余内容：每人 15,800 元。比 11 月省 5,200 元 这是起价",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400
+        },
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人 15,800 元。比 11 月省 5,200 元\n这是起价"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["每人 15,800 元。\n这是起价", "^每人 15,800 元。\n这是起价$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-01",
+    "desc": "删除不实规则或替换服务承诺：小朋友如果按儿童价算还能更划算一些。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "小朋友如果按儿童价算还能更划算一些。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["小朋友如果按儿童价算还能更划算一些。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-02",
+    "desc": "删除不实规则或替换服务承诺：12月中前是平日价，圣诞节到元旦是旺季价。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "12月中前是平日价，圣诞节到元旦是旺季价。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["12月中前是平日价，圣诞节到元旦是旺季价。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-03",
+    "desc": "删除不实规则或替换服务承诺：孩子几岁按几岁收费我也会帮您核清楚。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "孩子几岁按几岁收费我也会帮您核清楚。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["孩子几岁按几岁收费我也会帮您核清楚。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-04",
+    "desc": "删除不实规则或替换服务承诺：如果不到占床年龄我可以帮您看下儿童价。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "如果不到占床年龄我可以帮您看下儿童价。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["如果不到占床年龄我可以帮您看下儿童价。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-05",
+    "desc": "删除不实规则或替换服务承诺：现在下单有早鸟优惠。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "现在下单有早鸟优惠。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["现在下单有早鸟优惠。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-06",
+    "desc": "删除不实规则或替换服务承诺：孩子的费用会低一些。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "孩子的费用会低一些。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["孩子的费用会低一些。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-07",
+    "desc": "保留如实规则和条件句：孩子和大人同价，我们没有单独的儿童价，按一位出行算。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "孩子和大人同价，我们没有单独的儿童价，按一位出行算。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "孩子和大人同价，我们没有单独的儿童价，按一位出行算。",
+            "^孩子和大人同价，我们没有单独的儿童价，按一位出行算。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-781-08",
+    "desc": "保留如实规则和条件句：我们不区分平日价和节假日价，只看出发月份。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我们不区分平日价和节假日价，只看出发月份。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们不区分平日价和节假日价，只看出发月份。", "^我们不区分平日价和节假日价，只看出发月份。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  }
+]

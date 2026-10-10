@@ -330,6 +330,7 @@ export interface Status {
 }
 
 export interface SopOverview {
+  preambleWarning?: boolean;
   published: SopVersion;
   /** stale：basedOn 已不是当前发布版本 */
   draft: (SopVersion & { stale: boolean }) | null;
@@ -339,6 +340,7 @@ export interface SopOverview {
 
 /** 匿名（demo）投影：只有已发布版本的节、版本号、发布时间和 promptHash 前 12 位 */
 export interface AnonSopOverview {
+  preambleWarning?: boolean;
   published: { versionNo: number; publishedAt: string; promptHash: string; sections: readonly SopSectionText[] };
 }
 

@@ -2,7 +2,7 @@
 // 这些是客户会在微信里看到的动态内容（顾问点一条插进输入框），不是界面配置——同 data/sop.md、产品库数据一样处理，
 // 不进 UI 优先片扫描（scripts/fonts/ui-text.ts 只扫 console-pack.ts 这一个文件名，这里特意另起文件名避开）。
 // 正文不含 markdown（QuickReplyBody 校验过），不写价格或承诺性的说法——价格由产品库与护栏算，这里只给话术骨架。
-import type { QuickReplyDefault } from '../../shared/quick-reply-defaults.js';
+import type { QuickReplyDefault } from '../../core/pack-api.js';
 
 export const travelQuickReplyDefaults: readonly QuickReplyDefault[] = [
   { title: '开场问候', body: '您好呀，我是云途定制旅行的顾问，看到您在了解旅行计划～方便先说说大概想去哪、和谁一起出行吗？' },

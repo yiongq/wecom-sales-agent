@@ -409,6 +409,7 @@ const { importConfig } = await import('../config/transfer.js');
 const { initConfig, closeConfig, __configTest } = await import('../config/source.js');
 const { openDb } = await import('../db/client.js');
 const { installAccounts } = await import('../channels/accounts.js');
+const { partsOf } = await import('../core/pack-api.js');
 const { webAdapter, webConversationId, subscribeWeb } = await import('../adapters/web.js');
 const { __privacyTest } = await import('../privacy/privacy.js');
 const { __logTest } = await import('../log.js');
@@ -477,7 +478,8 @@ const sessionIds = new Set<string>();
 let ipSeq = 0;
 const nextIp = (): string => `198.51.${Math.floor(++ipSeq / 200)}.${(ipSeq % 200) + 1}`;
 const liveBodies: ReadableStream<Uint8Array>[] = [];
-type ReplyBody = { reply: { text: string } | null };
+type MessagePart = import('../core/pack-api.js').MessagePart;
+type ReplyBody = { reply: { text: string; parts: MessagePart[] } | null };
 async function request(
   a: Account,
   endpoint: string,
@@ -524,13 +526,29 @@ function credential(res: Response, a: Account): { cookie: string; token: string;
 let modelCalls = 0;
 let modelGate: Promise<void> | null = null;
 let modelStarted: (() => void) | null = null;
-globalThis.fetch = async (input) => {
+globalThis.fetch = async (input, init) => {
   assert.ok(String(input).startsWith('http://127.0.0.1/web-selftest/'), '只使用本地假模型');
+  if (String(input).endsWith('/embeddings')) {
+    const body = JSON.parse(String(init?.body)) as { input: string[] };
+    return Response.json({ data: body.input.map(() => ({ embedding: [1, 0, 0] })) });
+  }
   modelCalls++;
   modelStarted?.();
   if (modelGate) await modelGate;
+  const step = script.shift();
+  const message = step?.toolCalls
+    ? {
+        role: 'assistant',
+        content: null,
+        tool_calls: step.toolCalls.map((c, i) => ({
+          id: `call_${i}`,
+          type: 'function',
+          function: { name: c.name, arguments: JSON.stringify(c.args) },
+        })),
+      }
+    : { role: 'assistant', content: step?.content ?? '您好，您想了解什么行程？' };
   return Response.json({
-    choices: [{ message: { role: 'assistant', content: '您好，您想了解什么行程？' } }],
+    choices: [{ message }],
     usage: { prompt_tokens: 1, completion_tokens: 1 },
   });
 };
@@ -631,7 +649,7 @@ try {
     await request(primary, 'history', { cookie: own.cookie }),
   );
   assert.ok(history.messages.some((m) => m.text === '【顾问】顾问回复'));
-  assert.ok(history.messages.every((m) => ['customer', 'agent'].includes(m.role) && Object.keys(m).sort().join() === 'at,role,text'));
+  assert.ok(history.messages.every((m) => ['customer', 'agent'].includes(m.role) && Object.keys(m).sort().join() === 'at,parts,role,text'));
   assert.ok(!JSON.stringify(history).match(/不可公开|不应公开|真实姓名|member-test/));
   const other = await account('web-other');
   assert.notEqual(webConversationId(other.id, own.token), own.s.id, '哈希绑定账号');
@@ -639,7 +657,7 @@ try {
   await json(await request(other, 'events', { cookie: own.cookie }), 401);
   const anon = await app.request('/api/sessions');
   assert.ok(!(await anon.text()).includes(own.s.id), '匿名 admin 列表没有 web 会话');
-  report('历史仅有 role/text/at，人工前缀，无 system/画像/成员；账号隔离与匿名列表');
+  report('历史仅有 role/text/at/parts，人工前缀，无 system/画像/成员；账号隔离与匿名列表');
 
   async function events(
     a: Account,
@@ -656,6 +674,100 @@ try {
     assert.ok(new TextDecoder().decode(ping.value).includes('event: ping'));
     return { res, reader };
   }
+  // 04 R15：用真实网页 HTTP、工具修补、出口删句与推送路径核最终文本投影。
+  const partAccount = await account('web-parts');
+  const hello = await request(partAccount, 'messages', { body: { text: '你好' } });
+  const partOwn = credential(hello, partAccount);
+  await json(hello);
+  primeQuote(partOwn.s);
+  primeOrder(partOwn.s);
+  const orderUrl = `/pay/${partOwn.s.orderIds[0]}`;
+  const proposalUrl = '/proposal/r-yunnan-mid/2/2026-12-10';
+  const proposalStep: Step = {
+    toolCalls: [{ name: 'generate_proposal', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: '2026-12-10' } }],
+  };
+  script.push(proposalStep, { content: `订单链接：${orderUrl}。\n方案书：/proposal/missing/2。` });
+  const two = await json<ReplyBody>(
+    await request(partAccount, 'messages', {
+      cookie: partOwn.cookie,
+      body: { text: '请发我已有订单和行程方案书', cid: 'parts-two' },
+    }),
+  );
+  assert.equal(script.length, 0);
+  assert.ok(two.reply?.text.includes(proposalUrl), 'repair_links 补入本轮工具给出的真链接');
+  const twoParts: MessagePart[] = [
+    { kind: 'link', linkKind: 'order', url: orderUrl },
+    { kind: 'link', linkKind: 'proposal', url: proposalUrl },
+  ];
+  assert.deepEqual(two.reply!.parts, twoParts, 'AI 回复的两张卡片来自修补后的最终文本');
+  const retryCalls = modelCalls;
+  assert.deepEqual(
+    await json(
+      await request(partAccount, 'messages', {
+        cookie: partOwn.cookie,
+        body: { text: '不同正文', cid: 'parts-two' },
+      }),
+    ),
+    two,
+  );
+  assert.equal(modelCalls, retryCalls, '同 cid 重试不调模型，卡片完全相同');
+  const partHistory = await json<{ messages: import('../shared/channel-types.js').WebMessage[] }>(
+    await request(partAccount, 'history', { cookie: partOwn.cookie }),
+  );
+  assert.deepEqual(partHistory.messages.at(-1)!.parts, twoParts, '刷新历史的两张卡片相同');
+  script.push(proposalStep, { content: `订单链接：${orderUrl}。\n儿童半价方案 ${proposalUrl}。\n您可以先看看订单详情。` });
+  const dropped = await json<ReplyBody>(
+    await request(partAccount, 'messages', {
+      cookie: partOwn.cookie,
+      body: { text: '请再核对订单和方案', cid: 'parts-drop' },
+    }),
+  );
+  assert.equal(script.length, 0);
+  assert.ok(!dropped.reply!.text.includes(proposalUrl), 'unbacked_claims 在链接修补之后删掉带链接的虚假规则句');
+  assert.deepEqual(dropped.reply!.parts, [twoParts[0]], '后续删句后不遗留方案书部件');
+  report('消息部件：AI 两卡、repair_links 补链、后续删句、HTTP/同 cid 重试/刷新历史一致');
+
+  const partStream = await events(partAccount, partOwn.cookie);
+  const readPartEvent = async (): Promise<{ text: string; parts: MessagePart[] }> => {
+    const raw = new TextDecoder().decode((await partStream.reader!.read()).value);
+    assert.ok(raw.startsWith('event: push\n'));
+    return JSON.parse(/^data: (.+)$/m.exec(raw)![1]!);
+  };
+  const { reply: advisorReply, sharedActor } = await import('../handoff/takeover.js');
+  const actor = sharedActor();
+  const advisorText = `\0请看 ${orderUrl} 和 ${proposalUrl}，外站 https://evil.test/pay/nope`;
+  assert.equal((await advisorReply(partOwn.s.id, actor, advisorText, 'parts-advisor')).sent, true);
+  const humanEvent = await readPartEvent();
+  assert.equal(humanEvent.text, `【顾问】${advisorText.slice(1)}`, '顾问先 cleanText、再加前缀、最后算部件');
+  assert.deepEqual(humanEvent.parts, twoParts, '顾问回复两卡，站外链接没有部件');
+  const silent = await json<ReplyBody>(
+    await request(partAccount, 'messages', {
+      cookie: partOwn.cookie,
+      body: { text: '顾问您好', cid: 'parts-silent' },
+    }),
+  );
+  assert.deepEqual(silent, { reply: null }, '已接手静默一轮没有部件');
+  const { confirmOrder, markPaidByAdvisor } = await import('../payment/orders.js');
+  confirmOrder(partOwn.s.orderIds[0]!, actor);
+  await markPaidByAdvisor(partOwn.s.orderIds[0]!, actor);
+  const noticeEvent = await readPartEvent();
+  assert.ok(noticeEvent.text.startsWith('已收到您的支付'));
+  assert.deepEqual(noticeEvent.parts, [], '现有付款通知没有链接，仍带空部件');
+  assert.equal(webAdapter.caps.markdown, false);
+  await webAdapter.push(partOwn.s.id, `通知 ${orderUrl}`, { kind: 'notice' });
+  assert.deepEqual((await readPartEvent()).parts, [twoParts[0]], '带链接的通知同样从最终正文生成部件');
+  await partStream.reader!.cancel();
+  const pushedHistory = await json<{ messages: import('../shared/channel-types.js').WebMessage[] }>(
+    await request(partAccount, 'history', { cookie: partOwn.cookie }),
+  );
+  assert.ok(pushedHistory.messages.some((m) => m.text === humanEvent.text && JSON.stringify(m.parts) === JSON.stringify(humanEvent.parts)));
+  assert.ok(pushedHistory.messages.some((m) => m.text === noticeEvent.text && m.parts.length === 0));
+  assert.ok(
+    partOwn.s.messages.every((m) => !('parts' in m)),
+    'ChatMessage 始终没有部件字段',
+  );
+  report('消息部件：顾问 cleanText/两卡、付款通知/空部件、通知链接、SSE/历史一致、静默、markdown false');
+
   for (let i = 0; i < 3; i++) {
     const head = await app.request(`/api/web/${primary.key}/events`, {
       method: 'HEAD',
@@ -676,6 +788,8 @@ try {
   __privacyTest.set({ version: 1, body: '测试隐私说明' });
   await json(await request(primary, 'messages', { cookie: own.cookie, body: { text: '我妈有高血压', cid: 'consent-cid' } }));
   const menuRaw = new TextDecoder().decode((await open[0]!.reader!.read()).value);
+  const menuData = JSON.parse(/^data: (.+)$/m.exec(menuRaw)![1]!) as { text: string; parts: MessagePart[] };
+  assert.deepEqual(menuData.parts, partsOf(menuData.text), '同意菜单同样从最终文本生成部件');
   assert.ok(menuRaw.includes('event: menu') && menuRaw.includes('health:granted') && menuRaw.includes('不同意'));
   for (const secret of [...secrets, ...sessionIds]) assert.ok(!menuRaw.includes(secret));
   assert.equal(own.s.consent?.health, 'asked');
@@ -788,7 +902,7 @@ try {
     for (let i = 0; i < 2; i++)
       assert.deepEqual(
         await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: `还有问题${i}`, cid: `turn-cap-${i}` } })),
-        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您', parts: [] } },
       );
     assert.equal(turnOwn.s.handoffCount, 1);
     assert.equal(turnOwn.s.handoff?.kind, 'request');
@@ -796,7 +910,7 @@ try {
     release(turnOwn.s.id, { role: 'shared', userId: null, name: '顾问', ip: null });
     assert.deepEqual(
       await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '又一个问题', cid: 'turn-after' } })),
-      { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+      { reply: { text: '现在咨询的人有点多，顾问会在这里回复您', parts: [] } },
     );
     assert.equal(turnOwn.s.handoffCount, 1, '顾问交还之后不重复因限额转人工');
     const r2 = await request(turns, 'messages', { body: { text: '第二个访客', cid: 'turn-newer' } });
@@ -851,7 +965,7 @@ try {
       for (let i = 0; i < 2; i++)
         assert.deepEqual(
           await json(await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: '再次超限', cid: `recap-cid-${i}` } })),
-          { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+          { reply: { text: '现在咨询的人有点多，顾问会在这里回复您', parts: [] } },
         );
       assert.equal(turnOwn.s.handoffCount, 1, '新自然日再次超限也不重复转人工');
       assert.equal(turnOwn.s.handedOver, false);
@@ -871,7 +985,7 @@ try {
         await json(
           await request(turns, 'messages', { cookie: turnOwn.cookie, body: { text: `连续超限咨询${i}`, cid: `window-cid-${i}` } }),
         ),
-        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您' } },
+        { reply: { text: '现在咨询的人有点多，顾问会在这里回复您', parts: [] } },
       );
       appended += 2;
       if (length + 2 > 400) break;
@@ -966,6 +1080,32 @@ try {
   });
   const drained = await store.drainStore(20_000);
   assert.deepEqual(drained.undrained, []);
+  const { openPgBackend } = await import('../store/pg-backend.js');
+  const recoveredSessions = new Map<string, Session>();
+  const recovered = await openPgBackend({
+    ...deps,
+    sessions: recoveredSessions,
+    orders: new Map(),
+    writable: () => true,
+    onConflict: () => assert.fail('只读恢复不应有写冲突'),
+  });
+  try {
+    recovered.install();
+    const loaded = recoveredSessions.get(partOwn.s.id)!;
+    assert.ok(loaded && loaded !== partOwn.s, '新后端从数据库预载，不复用会话对象');
+    const restored = loaded.messages.find((m) => m.content === two.reply!.text)!;
+    assert.deepEqual(partsOf(restored.content), twoParts, '重启预载后的 AI 两卡相同');
+    const advisor = loaded.messages.find((m) => m.author === 'human')!;
+    assert.deepEqual(partsOf(advisor.content), humanEvent.parts, '重启后顾问链接部件相同');
+    assert.ok(
+      loaded.messages.every((m) => !('parts' in m)),
+      '数据库恢复不带部件，只按文本现算',
+    );
+    assert.ok(!JSON.stringify(loaded).includes('"parts"'));
+  } finally {
+    recovered.close();
+  }
+  report('消息部件：新 PG 后端预载后 AI/顾问卡片一致，部件不落库');
   const stored = await sqlQuery<{ id: string; channel: string; state: Record<string, unknown> }>(
     'select id, channel, state from conversations where tenant_id=$1',
     [deps.tenantId],
@@ -1065,50 +1205,41 @@ const { randomUUID } = await import('node:crypto');
 const webHtml = fs.readFileSync('public/web.html', 'utf8');
 const webJs = fs.readFileSync('public/web.js', 'utf8');
 const webCss = fs.readFileSync('public/web.css', 'utf8');
-const { splitSiteLinks } = runInNewContext(`${webJs.replace('export function', 'function')}\n({ splitSiteLinks });`, { URL }) as {
-  splitSiteLinks: (text: string, base?: string) => { text: string; href?: string }[];
-};
-const clickable = (text: string, base?: string): string[] =>
-  Array.from(splitSiteLinks(text, base)).flatMap((p) => (p.href ? [p.href] : []));
-assert.deepEqual(clickable('订单 /pay/order_1，方案 /proposal/route-1/2/2026-12-10?v=3'), [
-  '/pay/order_1',
-  '/proposal/route-1/2/2026-12-10?v=3',
+const clickable = (text: string, base = ''): string[] => partsOf(text, base).map((p) => p.url);
+assert.deepEqual(partsOf('订单 /pay/order_1，方案 /proposal/route-1/2/2026-12-10?v=3', ''), [
+  { kind: 'link', linkKind: 'order', url: '/pay/order_1' },
+  { kind: 'link', linkKind: 'proposal', url: '/proposal/route-1/2/2026-12-10?v=3' },
 ]);
+assert.deepEqual(partsOf('/privacy', ''), [{ kind: 'link', linkKind: 'site', url: '/privacy' }]);
+assert.deepEqual(partsOf('', ''), [], '静默文本没有部件');
 assert.deepEqual(clickable('https://example.test/pay/order_1 https://example.test/proposal/r/2'), []);
-assert.deepEqual(clickable('https://example.test/pay/order_1', 'https://example.test'), ['/pay/order_1']);
-assert.deepEqual(clickable('https://example.test/app/proposal/r/2', 'https://example.test/app'), ['/proposal/r/2']);
+assert.deepEqual(clickable('https://example.test/pay/order_1', 'https://example.test/'), ['https://example.test/pay/order_1']);
+assert.deepEqual(clickable('https://example.test/app/proposal/r/2', 'https://example.test/app'), ['https://example.test/app/proposal/r/2']);
 for (const attack of [
   'https://example.test.evil.test/pay/order_1',
   'https://example.test@evil.test/pay/order_1',
+  'https://example.test/../pay/order_1',
+  'https://example.test:444/pay/order_1',
   '//evil.test/pay/order_1',
+  '//example.test/pay/order_1',
   'javascript:/pay/order_1',
   'data:text/html,/pay/order_1',
   'foo/pay/order_1',
   'evil.test/pay/order_1',
+  'name@/pay/order_1',
   '/pay/order_1/../../console',
   '/proposal/../../console',
   '/pay/%2e%2e',
   '/pay/order_1?redirect=//evil.test',
   '/pay/order_1\\evil',
   'ftp://example.test/pay/order_1',
-]) {
+  '/console',
+  '/privacy?redirect=//evil.test',
+])
   assert.deepEqual(clickable(attack, 'https://example.test'), [], `不允许 ${attack}`);
-  assert.equal(
-    splitSiteLinks(attack, 'https://example.test')
-      .map((p) => p.text)
-      .join(''),
-    attack,
-  );
-}
-for (const text of ['<img src=x onerror=alert(1)> /pay/order_1', '**原文**\n外站 https://evil.test/pay/order_1']) {
-  assert.equal(
-    splitSiteLinks(text)
-      .map((p) => p.text)
-      .join(''),
-    text,
-    '不改写原文，不解析 markdown',
-  );
-}
+assert.deepEqual(clickable('<img src=x onerror=alert(1)> /pay/order_1'), ['/pay/order_1']);
+assert.deepEqual(clickable('**原文**\n外站 https://evil.test/pay/order_1'), []);
+console.log('PASS 消息部件：站内白名单、完整 URL、版本后缀、站外/伪协议/编码/穿越拒绝、静默');
 assert.ok(!/localStorage|sessionStorage|document\.cookie/.test(webJs), '页面源码不访问凭据存储');
 assert.ok(
   !/innerHTML|outerHTML|insertAdjacentHTML|\.style\b|setAttribute\(['"](?:style|on\w+)/.test(webJs),
@@ -1142,10 +1273,18 @@ try {
   const configBlock = /<script type="application\/json" id="web-config">([\s\S]*?)<\/script>/.exec(rendered)![1]!;
   assert.ok(!configBlock.includes('<'));
   assert.ok(configBlock.includes('\\u003c/script>'));
-  const config = JSON.parse(configBlock) as { key: string; title: string; welcome: string; privacyLink: string | null; base: string };
+  const config = JSON.parse(configBlock) as {
+    key: string;
+    title: string;
+    welcome: string;
+    privacyLink: string | null;
+    caps: import('../core/pack-api.js').ChannelCaps;
+    welcomeParts: MessagePart[];
+  };
   assert.equal(config.key, pageAccount.key);
   assert.equal(config.title, pageAccount.web!.title, '恶意标题与 $& 原样往返，不执行 HTML 或 replace 的替换元字符');
-  assert.equal(config.base, 'https://example.test');
+  assert.deepEqual(config.caps, { markdown: false });
+  assert.deepEqual(config.welcomeParts, []);
   assert.equal(config.privacyLink, 'https://example.test/privacy');
   assert.match(config.welcome.split('\n')[0]!, /AI/);
   assert.match(config.welcome, /真人/);
@@ -1231,7 +1370,7 @@ class PageNode {
     for (const fn of this.listeners.get(name) ?? []) await fn(event);
   }
 }
-function pageFixture(history: { role: string; text: string; at: number }[] = []) {
+function pageFixture(history: { role: string; text: string; at: number; parts?: MessagePart[] }[] = []) {
   const nodes = new Map<string, PageNode>();
   for (const id of ['web-config', 'title', 'msgs', 'input', 'sendBtn', 'endBtn', 'retryBtn', 'chips', 'notice', 'privacy', 'composer'])
     nodes.set(id, new PageNode('div'));
@@ -1239,7 +1378,8 @@ function pageFixture(history: { role: string; text: string; at: number }[] = [])
     key: 'web-page',
     title: '<img src=x onerror=alert(1)>',
     welcome: '我是 AI 顾问。可转真人。',
-    base: 'https://example.test',
+    caps: { markdown: false },
+    welcomeParts: [],
     privacyLink: '/privacy',
   });
   const requests: { url: string; init?: RequestInit }[] = [];
@@ -1300,7 +1440,7 @@ assert.equal(ui.nodes.get('title')!.textContent, ui.document.title);
 assert.ok(ui.nodes.get('msgs')!.textContent.includes('我是 AI 顾问'));
 assert.equal(ui.nodes.get('privacy')!.href, '/privacy');
 assert.equal(ui.sources.length, 0, '无会话时不反复连接未授权 SSE');
-ui.nodes.get('input')!.value = '<img src=x onerror=alert(1)> https://evil.test/pay/id';
+ui.nodes.get('input')!.value = '<img src=x onerror=alert(1)> https://evil.test/pay/id /pay/customer_link';
 ui.results.push(new Error('断网'));
 await ui.nodes.get('composer')!.emit('submit', { preventDefault() {} });
 await settle();
@@ -1310,18 +1450,31 @@ assert.equal((ui.requests[1]!.init!.headers as Record<string, string>)['x-web-ch
 assert.equal(ui.requests[1]!.init!.credentials, 'same-origin');
 assert.equal(ui.nodes.get('retryBtn')!.hidden, false);
 assert.equal(ui.nodes.get('msgs')!.querySelectorAll('img').length, 0);
-assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').length, 0, '站外链接和客户 HTML 作为文本');
-ui.results.push(Response.json({ reply: { text: '**原文**\n订单 /pay/order_1' } }));
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').length, 0, '站外链接、客户 HTML 和未给部件的站内路径都作为文本');
+ui.results.push(
+  Response.json({ reply: { text: '**原文**\n订单 /pay/order_1，方案 /proposal/r/2', parts: partsOf('/pay/order_1 /proposal/r/2') } }),
+);
 await ui.nodes.get('retryBtn')!.emit('click');
 await settle();
 assert.equal(ui.requests[2]!.init!.body, ui.requests[1]!.init!.body, '失败重试复用完全相同 cid 和内容');
 assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a')[0]!.href, '/pay/order_1');
+assert.deepEqual(
+  ui.nodes
+    .get('msgs')!
+    .querySelectorAll('a')
+    .map((a) => a.href),
+  ['/pay/order_1', '/proposal/r/2'],
+  'HTTP 两个部件渲染两张卡片',
+);
 assert.ok(ui.nodes.get('msgs')!.textContent.includes('**原文**'));
 assert.equal(ui.nodes.get('retryBtn')!.hidden, true);
 const source = ui.sources[0]!;
 assert.equal(source.url, '/api/web/web-page/events');
-await source.emit('push', { data: JSON.stringify({ text: '【顾问】您好' }) });
+await source.emit('push', { data: JSON.stringify({ text: '【顾问】您好 /pay/advisor', parts: partsOf('/pay/advisor') }) });
 assert.ok(ui.nodes.get('msgs')!.textContent.includes('【顾问】您好'));
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').at(-1)!.href, '/pay/advisor', 'SSE 顾问部件渲染卡片');
+await source.emit('push', { data: JSON.stringify({ text: '纯文本 /pay/unlisted 和 https://evil.test/pay/id', parts: [] }) });
+assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').length, 3, '服务端没有给部件时浏览器不从正文找链接');
 await source.emit('menu', {
   data: JSON.stringify({
     text: '是否同意？',
@@ -1367,12 +1520,20 @@ await ui.win.emit('pagehide');
 assert.ok(ui.sources.every((s) => s.closed));
 const refreshed = pageFixture([
   { role: 'customer', text: '先前的问题', at: Date.now() },
-  { role: 'agent', text: '【顾问】历史回复', at: Date.now() },
+  { role: 'agent', text: '【顾问】历史回复 /pay/order_1 /proposal/r/2', at: Date.now(), parts: partsOf('/pay/order_1 /proposal/r/2') },
 ]);
 await settle();
 assert.ok(refreshed.nodes.get('msgs')!.textContent.includes('先前的问题'));
 assert.ok(refreshed.nodes.get('msgs')!.textContent.includes('【顾问】历史回复'));
 assert.ok(!refreshed.nodes.get('msgs')!.textContent.includes('我是 AI 顾问'));
 assert.equal(refreshed.sources.length, 1);
+assert.deepEqual(
+  refreshed.nodes
+    .get('msgs')!
+    .querySelectorAll('a')
+    .map((a) => a.href),
+  ['/pay/order_1', '/proposal/r/2'],
+  '刷新恢复两张相同卡片',
+);
 await refreshed.win.emit('pagehide');
 console.log('PASS web 页面：textContent、欢迎语、历史恢复、发消息/cid 重试、SSE 人工/同意菜单、退避、结束与关闭清理');

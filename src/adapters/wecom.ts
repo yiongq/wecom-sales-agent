@@ -1,3 +1,5 @@
+import { currentPack } from '../config/source.js';
+import { brandTexts } from '../core/brand.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
 //
 // 接入步骤（真实联调时按此走）：
@@ -268,9 +270,24 @@ class WecomRuntime {
   readonly tag: string;
   /** 每次现取：env 账号现读 WECOM_*（企微状态在库里时为 null）；库里的账号是那一行加解密后的凭据 */
   readonly config: () => WecomConfig | null;
-  readonly welcomeText: string;
-  readonly welcomeBackText: string;
-  readonly welcomeTexts: ReadonlySet<string>;
+  private readonly customWelcomeText: string | undefined;
+  private readonly customWelcomeBackText: string | undefined;
+  private readonly issuedWelcomeTexts = new Set<string>();
+  get welcomeText(): string {
+    const binding = currentPack();
+    const text = this.customWelcomeText ?? brandTexts(binding.runtime, binding.brand).welcomeText;
+    this.issuedWelcomeTexts.add(text);
+    return text;
+  }
+  get welcomeBackText(): string {
+    const binding = currentPack();
+    const text = this.customWelcomeBackText ?? brandTexts(binding.runtime, binding.brand).welcomeBackText;
+    this.issuedWelcomeTexts.add(text);
+    return text;
+  }
+  get welcomeTexts(): ReadonlySet<string> {
+    return new Set([...WELCOME_TEXTS, ...this.issuedWelcomeTexts, this.welcomeText, this.welcomeBackText]);
+  }
   /** env 账号：cursor、handled、在途表、冷启动（wecom-state.ts）；库里的账号：channel_inbox 与库里的 cursor（channels/inbox.ts） */
   readonly state: RuntimeState;
 
@@ -332,12 +349,8 @@ class WecomRuntime {
     this.sessionAccountId = spec.sessionAccountId;
     this.tag = spec.tag;
     this.config = spec.config;
-    this.welcomeText = spec.welcomeText ?? WELCOME_TEXT;
-    this.welcomeBackText = spec.welcomeBackText ?? WELCOME_BACK_TEXT;
-    this.welcomeTexts =
-      spec.welcomeText === undefined && spec.welcomeBackText === undefined
-        ? WELCOME_TEXTS
-        : new Set([...WELCOME_TEXTS, this.welcomeText, this.welcomeBackText]);
+    this.customWelcomeText = spec.welcomeText;
+    this.customWelcomeBackText = spec.welcomeBackText;
     this.state = spec.state;
     this.recovery = spec.state.kind === 'file' ? 'done' : 'recovering';
     this.gate = new RecoveryGate(this.recovery === 'done');

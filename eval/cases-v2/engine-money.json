@@ -1,0 +1,1721 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-2770-01",
+    "desc": "V1 两次真实报价之差（B11：元旦 3 位 52,140 → 暑假 47,400，差 4,740）照发。此前护栏只认最近一次报价，（第 1 个向量：要是暑假去呢 多少）。",
+    "tags": ["engine", "money", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "三亚",
+          "travelers": "3人",
+          "dates": "2027-01-01",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚亲子那条 两大一小 3个人 元旦出发 多少钱",
+            "at": 1790913603645
+          },
+          {
+            "role": "agent",
+            "content": "三亚亲子奢华度假 5 日，元旦出发：\n· 每人 17,380 元\n· 3 位总价 52,140 元\n起价，按最终行程微调。",
+            "at": 1790913603655
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 17380,
+          "total": 52140,
+          "departDate": "2027-01-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "要是暑假去呢 多少",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 3,
+                  "departDate": "2027-07-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "暑假出发是标准价，报价如下：\n\n· 三亚亲子奢华度假 5 日\n· 出发日期：2027年7月1日\n· 每人 15800 元\n· 总价 47400 元\n\n比元旦出发省了 4740 元。如果时间灵活，暑假性价比更高～您倾向哪个时间？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^暑假出发是标准价，报价如下：\n\n· 三亚亲子奢华度假 5 日\n· 出发日期：2027年7月1日\n· 每人 15800 元\n· 总价 47400 元\n\n比元旦出发省了 4740 元。如果时间灵活，暑假性价比更高～您倾向哪个时间？$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2770-02",
+    "desc": "V1 两次真实报价之差（B11：元旦 3 位 52,140 → 暑假 47,400，差 4,740）照发。此前护栏只认最近一次报价，（第 2 个向量：暑假能便宜多少）。",
+    "tags": ["engine", "money", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "三亚",
+          "travelers": "3人",
+          "dates": "2027-01-01",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚亲子那条 两大一小 3个人 元旦出发 多少钱",
+            "at": 1790913603645
+          },
+          {
+            "role": "agent",
+            "content": "三亚亲子奢华度假 5 日，元旦出发：\n· 每人 17,380 元\n· 3 位总价 52,140 元\n起价，按最终行程微调。",
+            "at": 1790913603655
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 17380,
+          "total": 52140,
+          "departDate": "2027-01-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2027-01-01"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "要是暑假去呢 多少",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 3,
+                  "departDate": "2027-07-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "暑假出发是标准价，报价如下：\n\n· 三亚亲子奢华度假 5 日\n· 出发日期：2027年7月1日\n· 每人 15800 元\n· 总价 47400 元\n\n比元旦出发省了 4740 元。如果时间灵活，暑假性价比更高～您倾向哪个时间？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^暑假出发是标准价，报价如下：\n\n· 三亚亲子奢华度假 5 日\n· 出发日期：2027年7月1日\n· 每人 15800 元\n· 总价 47400 元\n\n比元旦出发省了 4740 元。如果时间灵活，暑假性价比更高～您倾向哪个时间？$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "暑假能便宜多少",
+        "script": [
+          {
+            "content": "比元旦出发一家三口能省将近 4700 元。暑假具体哪周定了告诉我，我按日期给您出准确版。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^比元旦出发一家三口能省将近 4700 元。暑假具体哪周定了告诉我，我按日期给您出准确版。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2790",
+    "desc": "V2 编的数只删它所在那一句，其余照发；这个错价从没发给过客户，不说「刚才说得不准」，兜底话术也不提「系统」。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "三亚",
+          "travelers": "3人",
+          "dates": "2026-11-15",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚亲子那条 两大一小 3个人 11月15号出发 多少钱",
+            "at": 1790913603681
+          },
+          {
+            "role": "agent",
+            "content": "11 月 15 日出发：每人 17,380 元，3 位总价 52,140 元（起价，按最终行程微调）。",
+            "at": 1790913603691
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 17380,
+          "total": 52140,
+          "departDate": "2026-11-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 17380,
+            "total": 52140,
+            "departDate": "2026-11-15"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "算了孩子期中要考试 改到明年4月5号吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 3,
+                  "departDate": "2027-04-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "改到 4 月 5 日出发，价格反而更划算了：\n\n三亚亲子奢华度假 5 日，2027 年 4 月 5 日出发\n每人 15,800 元\n3 人总价 47,400 元\n\n比 11 月出发省了 5,200 元。这是起价，最终按行程微调。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^改到 4 月 5 日出发，价格反而更划算了：\n\n三亚亲子奢华度假 5 日，2027 年 4 月 5 日出发\n每人 15,800 元\n3 人总价 47,400 元\n\n这是起价，最终按行程微调。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2801",
+    "desc": "编的差额和真报价写在同一句、报价那句被连带删了：就在那个位置补上工具算的价。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "新疆伊犁那条 两个人 明年10月8号出发 多少钱",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-xinjiang",
+                  "travelers": 2,
+                  "departDate": "2027-10-08"
+                }
+              }
+            ]
+          },
+          {
+            "content": "按 10 月 8 日出发算好了：每人 19800 元，两人共 39600 元，比 7 月旺季省下 3,000 元。\n您看这个日期可以吗？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^《新疆伊犁·独库公路越野摄影 9 日》2 位出行，每人 ¥19,800，总价 ¥39,600（起价，按最终行程微调）。\n您看这个日期可以吗？$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2808",
+    "desc": "整条都是编的价、这轮又没报价：兜底不提「系统」。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "西藏每人多少钱",
+        "script": [
+          {
+            "content": "西藏这条每人大约 29,000 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2818",
+    "desc": "V3 这个错价之前真发给过客户（顾问手写 / 护栏上线前），才说「刚才的价格说得不准」并报工具算的价。",
+    "tags": ["engine", "money", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人 12月10号出发 报个价",
+            "at": 1790913603722
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913603730
+          },
+          {
+            "role": "agent",
+            "content": "更正一下，这条每人 13,800 元。",
+            "at": 1790913603730
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "到底多少",
+        "script": [
+          {
+            "content": "这条每人 13,800 元，两位 27,600 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^不好意思，刚才的价格说得不准，以这次核准的为准：\n《云南 丽江大理·洱海古城 6 日》2 位出行，每人 ¥16,800，总价 ¥33,600（起价，按最终行程微调）。\n想调人数、日期或换一档线路，直接跟我说～$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2839",
+    "desc": "V4 A03：「人均 2.88 万到 5.28 万三档」的「三」是档数，此前读成 55,800 整条换成「告诉我线路和出行人数」。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "准备蜜月 马尔代夫和巴厘岛纠结死了 哪个好啊",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "get_route_detail",
+                "args": {
+                  "routeId": "r-maldives-lite"
+                }
+              },
+              {
+                "name": "get_route_detail",
+                "args": {
+                  "routeId": "r-maldives"
+                }
+              },
+              {
+                "name": "get_route_detail",
+                "args": {
+                  "routeId": "r-bali"
+                }
+              }
+            ]
+          },
+          {
+            "content": "蜜月恭喜您呀 两个地方风格很不一样：\n\n马尔代夫：一岛一酒店，私密性天花板。现在做的是 11 月到次年 4 月的旺季线路，人均 2.88 万到 5.28 万三档。\n巴厘岛：体验更丰富，雨林、梯田、悬崖、SPA 都有，人均 2.28 万起。\n\n你们大概几号出发、几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^蜜月恭喜您呀 两个地方风格很不一样：\n\n马尔代夫：一岛一酒店，私密性天花板。现在做的是 11 月到次年 4 月的旺季线路，人均 2\\.88 万到 5\\.28 万三档。\n巴厘岛：体验更丰富，雨林、梯田、悬崖、SPA 都有，人均 2\\.28 万起。\n\n你们大概几号出发、几位出行？$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "search_routes", "get_route_detail", "get_route_detail", "get_route_detail"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2854-01",
+    "desc": "V5 自编价格规则：儿童价、编造稀缺删掉那一句，报价照发；如实说「没有儿童价」不删（第 1 个向量：10月3号出发，4个人报个价吧）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚亲子那条 我和老公带俩娃 大的7岁小的4岁",
+            "at": 1790913603751
+          },
+          {
+            "role": "agent",
+            "content": "带俩娃去三亚正合适，水世界够孩子玩一整天。您计划几号出发？",
+            "at": 1790913603757
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，4个人报个价吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 4,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "按 4 位、10 月 3 日出发给您报好了：\n每人 16,511 元\n4 位总价 66,044 元\n10 月是最佳出行季上浮 10%，4 人及以上享 95 折。\n小朋友如果按儿童价算还能更划算一些。\n国庆档期酒店和游艇都紧俏，确定的话建议尽早锁定名额～\n这是起价，按最终行程微调。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^按 4 位、10 月 3 日出发给您报好了：\n每人 16,511 元\n4 位总价 66,044 元\n10 月是最佳出行季上浮 10%，4 人及以上享 95 折。\n\n这是起价，按最终行程微调。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2854-02",
+    "desc": "V5 自编价格规则：儿童价、编造稀缺删掉那一句，报价照发；如实说「没有儿童价」不删（第 2 个向量：孩子有优惠吗）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚亲子那条 我和老公带俩娃 大的7岁小的4岁",
+            "at": 1790913603751
+          },
+          {
+            "role": "agent",
+            "content": "带俩娃去三亚正合适，水世界够孩子玩一整天。您计划几号出发？",
+            "at": 1790913603757
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "10月3号出发，4个人报个价吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 4,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "按 4 位、10 月 3 日出发给您报好了：\n每人 16,511 元\n4 位总价 66,044 元\n10 月是最佳出行季上浮 10%，4 人及以上享 95 折。\n小朋友如果按儿童价算还能更划算一些。\n国庆档期酒店和游艇都紧俏，确定的话建议尽早锁定名额～\n这是起价，按最终行程微调。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^按 4 位、10 月 3 日出发给您报好了：\n每人 16,511 元\n4 位总价 66,044 元\n10 月是最佳出行季上浮 10%，4 人及以上享 95 折。\n\n这是起价，按最终行程微调。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "孩子有优惠吗",
+        "script": [
+          {
+            "content": "孩子和大人同价，我们没有单独的儿童价，按一位出行算。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^孩子和大人同价，我们没有单独的儿童价，按一位出行算。$(?![\\s\\S])"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2875-01",
+    "desc": "V6 比价只认季节规则：对得上的保留（4 月不在三亚的最佳季、11 月在），编的理由（避开节日高峰）和对不上的比价删掉（第 1 个向量：改到明年4月5号呢）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "三亚",
+          "travelers": "2人",
+          "dates": "2026-11-15"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚那条 2个人 11月15号出发 多少钱",
+            "at": 1790913603779
+          },
+          {
+            "role": "agent",
+            "content": "11 月 15 日出发，每人 17,380 元，2 位总价 34,760 元。",
+            "at": 1790913603788
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 2,
+          "perPerson": 17380,
+          "total": 34760,
+          "departDate": "2026-11-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 2,
+            "perPerson": 17380,
+            "total": 34760,
+            "departDate": "2026-11-15"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "改到明年4月5号呢",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2,
+                  "departDate": "2027-04-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "4 月 5 日出发，每人 15,800 元，2 位总价 31,600 元。\n比 11 月还便宜些，4 月天气也好。\n价格便宜是因为 4 月 5 日避开了节日出行高峰。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^4 月 5 日出发，每人 15,800 元，2 位总价 31,600 元。\n比 11 月还便宜些，4 月天气也好。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2875-02",
+    "desc": "V6 比价只认季节规则：对得上的保留（4 月不在三亚的最佳季、11 月在），编的理由（避开节日高峰）和对不上的比价删掉（第 2 个向量：那10月20号呢）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "三亚",
+          "travelers": "2人",
+          "dates": "2026-11-15"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "三亚那条 2个人 11月15号出发 多少钱",
+            "at": 1790913603779
+          },
+          {
+            "role": "agent",
+            "content": "11 月 15 日出发，每人 17,380 元，2 位总价 34,760 元。",
+            "at": 1790913603788
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 2,
+          "perPerson": 17380,
+          "total": 34760,
+          "departDate": "2026-11-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 2,
+            "perPerson": 17380,
+            "total": 34760,
+            "departDate": "2026-11-15"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "改到明年4月5号呢",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2,
+                  "departDate": "2027-04-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "4 月 5 日出发，每人 15,800 元，2 位总价 31,600 元。\n比 11 月还便宜些，4 月天气也好。\n价格便宜是因为 4 月 5 日避开了节日出行高峰。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^4 月 5 日出发，每人 15,800 元，2 位总价 31,600 元。\n比 11 月还便宜些，4 月天气也好。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "那10月20号呢",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2,
+                  "departDate": "2026-10-20"
+                }
+              }
+            ]
+          },
+          {
+            "content": "10 月 20 日出发，每人 17,380 元，2 位总价 34,760 元。\n十一之后人少一大截，价格也比国庆便宜。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^10 月 20 日出发，每人 17,380 元，2 位总价 34,760 元。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2891-01-01",
+    "desc": "V7 预算判断只认工具：超了还说「在您预算内」删掉；create_quote 结果带 withinBudget 与差额（第 1 个向量：ok 12月5号 2 pax 就中央格兰德那条）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "马尔代夫"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "hi 想找个honeymoon的trip，budget大概per person 3w，想去马尔代夫",
+            "at": 1790913603811
+          },
+          {
+            "role": "agent",
+            "content": "马尔代夫蜜月我们有几条线，您计划几号出发、几位？",
+            "at": 1790913603816
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-maldives-lite",
+            "title": "马尔代夫 中央格兰德·一价全包海岛5日",
+            "priceFrom": 28800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-maldives",
+            "title": "马尔代夫 Soneva Jani 蜜月 6 日",
+            "priceFrom": 52800
+          }
+        ],
+        "seenRouteIds": ["r-maldives-lite", "r-maldives-mid", "r-maldives"]
+      }
+    },
+    "turns": [
+      {
+        "say": "ok 12月5号 2 pax 就中央格兰德那条",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2,
+                  "departDate": "2026-12-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "12 月 5 日出发，每人 31,680 元，2 位总价 63,360 元。\n这个价格在您 3 万预算内。\n您看日期合适吗？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^12 月 5 日出发，每人 31,680 元，2 位总价 63,360 元。\n\n您看日期合适吗？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2891-01-02",
+    "desc": "V7 预算判断只认工具：超了还说「在您预算内」删掉；create_quote 结果带 withinBudget 与差额（第 2 个向量：超多少）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "马尔代夫"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "hi 想找个honeymoon的trip，budget大概per person 3w，想去马尔代夫",
+            "at": 1790913603811
+          },
+          {
+            "role": "agent",
+            "content": "马尔代夫蜜月我们有几条线，您计划几号出发、几位？",
+            "at": 1790913603816
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-maldives-lite",
+            "title": "马尔代夫 中央格兰德·一价全包海岛5日",
+            "priceFrom": 28800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-maldives",
+            "title": "马尔代夫 Soneva Jani 蜜月 6 日",
+            "priceFrom": 52800
+          }
+        ],
+        "seenRouteIds": ["r-maldives-lite", "r-maldives-mid", "r-maldives"]
+      }
+    },
+    "turns": [
+      {
+        "say": "ok 12月5号 2 pax 就中央格兰德那条",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2,
+                  "departDate": "2026-12-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "12 月 5 日出发，每人 31,680 元，2 位总价 63,360 元。\n这个价格在您 3 万预算内。\n您看日期合适吗？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^12 月 5 日出发，每人 31,680 元，2 位总价 63,360 元。\n\n您看日期合适吗？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "超多少",
+        "script": [
+          {
+            "content": "每人比您的预算多 1,680 元，多出来的是 12 月最佳季的上浮。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^每人比您的预算多 1,680 元，多出来的是 12 月最佳季的上浮。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2891-02",
+    "desc": "V7 预算判断只认工具：超了还说「在您预算内」删掉；create_quote 结果带 withinBudget 与差额。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "四川",
+          "segment": "银发",
+          "budget": "每人3万"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "带爸妈去四川 每人3万以内都行 住好点",
+            "at": 1790913603836
+          },
+          {
+            "role": "agent",
+            "content": "四川这边九寨黄龙这条长辈也合适。您几位、几号出发？",
+            "at": 1790913603842
+          }
+        ],
+        "handedOver": false,
+        "budgetGaps": [30000],
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "成都九寨那个 我们3个人 10月15号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sichuan-mid",
+                  "travelers": 3,
+                  "departDate": "2026-10-15"
+                }
+              }
+            ]
+          },
+          {
+            "content": "成都九寨这条正好在您预算内，给您按 3 位、10 月 15 日出发报了价：\n每人 21,780 元\n3 人总价 65,340 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^成都九寨这条正好在您预算内，给您按 3 位、10 月 15 日出发报了价：\n每人 21,780 元\n3 人总价 65,340 元$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2912",
+    "desc": "客户没说过预算，却说「在您预算内」：删掉。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "贵州那条 两个人 10月8号出发 多少钱",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2,
+                  "departDate": "2026-10-08"
+                }
+              }
+            ]
+          },
+          {
+            "content": "10 月 8 日出发，每人 17,380 元，2 位总价 34,760 元。\n刚好在您预算内。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^10 月 8 日出发，每人 17,380 元，2 位总价 34,760 元。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2918-01",
+    "desc": "V8 做不到的服务不承诺：专票、资金监管、机票代订一律改成由顾问确认；企微拿不到手机号，「电话联系」改成微信。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "对了 能开公司抬头的增值税专票吗 财务要的",
+        "script": [
+          {
+            "content": "可以的，我们支持开公司抬头的增值税专用发票。行程这边您还有想了解的吗？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^发票（含专票）怎么开，由顾问跟您确认。行程这边您还有想了解的吗？$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2918-02",
+    "desc": "V8 做不到的服务不承诺：专票、资金监管、机票代订一律改成由顾问确认；企微拿不到手机号，「电话联系」改成微信。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "先交钱然后人跑了咋整",
+        "script": [
+          {
+            "content": "您的顾虑很正常，说几点实在的：\n· 下单走我们官方支付链接，资金有第三方监管，不是转私人账户\n· 出团前签正式电子旅游合同，行程、酒店、金额、退改条款都写明\n您看还有什么想确认的？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^您的顾虑很正常，说几点实在的：\n· 付款只走我们发给您的官方支付链接。\n· 出团前签正式电子旅游合同，行程、酒店、金额、退改条款都写明\n您看还有什么想确认的？$(?![\\s\\S])"
+          ],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2918-03",
+    "desc": "V8 做不到的服务不承诺：专票、资金监管、机票代订一律改成由顾问确认；企微拿不到手机号，「电话联系」改成微信。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "三亚亲子那条 你们有没有电话啊 打字太麻烦了",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户想电话沟通三亚亲子线"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，已经为您转接资深顾问啦，他会尽快电话联系您～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，已经为您转接资深顾问啦，他会尽快在微信上联系您～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2918-04",
+    "desc": "V8 做不到的服务不承诺：专票、资金监管、机票代订一律改成由顾问确认；企微拿不到手机号，「电话联系」改成微信。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "瑞士那条费用含机票吗",
+        "script": [
+          {
+            "content": "这条费用不含国际机票和签证。\n机票我可以帮您询价一起订，7 月是旺季建议早点定。\n需要我把含机票的完整报价算一份吗？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这条费用不含国际机票和签证。\n机票代订的事由顾问跟您确认。$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "get_route_detail"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2992-01",
+    "desc": "R1：还价不是下单（B01）。客户在砍价、模型在拒绝，安全网都不兜；真兜的时候不说「锁定名额」、日期写中文、差价讲清原因。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913603891
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913603899
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "给个实在价 1万5一个人，我今天就定",
+        "script": [
+          {
+            "content": "1 万 5 这个价我真批不下来，这条每人 16,800 已经是实价了。您看要不要换一条入门一点的线？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^1 万 5 这个价我真批不下来，这条每人 16,800 已经是实价了。您看要不要换一条入门一点的线？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2992-02",
+    "desc": "R1：还价不是下单（B01）。客户在砍价、模型在拒绝，安全网都不兜；真兜的时候不说「锁定名额」、日期写中文、差价讲清原因。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913603904
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913603912
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "便宜点我就定",
+        "script": [
+          {
+            "content": "这条已经很实在了～主要贵在五星酒店和私导。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这条已经很实在了～主要贵在五星酒店和私导。$(?![\\s\\S])"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2992-03",
+    "desc": "R1：还价不是下单（B01）。客户在砍价、模型在拒绝，安全网都不兜；真兜的时候不说「锁定名额」、日期写中文、差价讲清原因。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913603918
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913603927
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "今天就定，能优惠吗",
+        "script": [
+          {
+            "content": "优惠这块我这边申请不下来，价格以报价为准～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^优惠这块我这边申请不下来，价格以报价为准～$(?![\\s\\S])"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2992-04",
+    "desc": "R1：还价不是下单（B01）。客户在砍价、模型在拒绝，安全网都不兜；真兜的时候不说「锁定名额」、日期写中文、差价讲清原因。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913603934
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913603942
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，就定了",
+        "script": [
+          {
+            "content": "这个价我这边真没法再降了，您再考虑下～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个价我这边真没法再降了，您再考虑下～$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2992-05",
+    "desc": "R1：还价不是下单（B01）。客户在砍价、模型在拒绝，安全网都不兜；真兜的时候不说「锁定名额」、日期写中文、差价讲清原因。",
+    "tags": ["engine", "money", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913603948
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913603956
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "就订这个，10月3号出发",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、10月3日出发，总价 ¥36,960。\n（之前报的是 ¥33,600，按 10月3日出发重新核算：10月为最佳出行季，价格上浮 10%）\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "totalPrice": 36960,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3021",
+    "desc": "报价没发到客户眼前（模型没转述价格）：不提「之前报的」（C07）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913603966
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价出来了，您看看。",
+            "at": 1790913603974
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "就订这个，10月3号出发",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、10月3日出发，总价 ¥36,960。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "totalPrice": 36960,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3024-01",
+    "desc": "停在半句上的回复截到上一个完整句（B01 第 4 轮「可以直接说：」）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "还有别的建议吗",
+        "script": [
+          {
+            "content": "这条线挺适合您的。您要是想定，可以直接说："
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这条线挺适合您的。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,1065 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-164",
+    "desc": "问需→推荐→报价→下单全流程。",
+    "tags": ["engine", "money", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你好",
+        "script": [
+          {
+            "content": "您好呀～我是云途定制旅行的旅行顾问 😊 咱们做高端定制游，先了解下您的想法：这次想去哪个方向玩，大概几位出行呢？\n<state>{\"stage\":\"discovery\",\"profile\":{}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^您好呀～我是云途定制旅行的旅行顾问 😊 咱们做高端定制游，先了解下您的想法：这次想去哪个方向玩，大概几位出行呢？$(?![\\s\\S])"
+          ],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "想去马尔代夫蜜月",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "content": "马尔代夫选得好呀 ✨ 给您挑了这些：\n《马尔代夫 中央格兰德·一价全包海岛5日》5 天，五星，每人 ¥28,800 起，亮点：中央格兰德海岛度假村一价全包，餐食酒水与浮潜零加收、24小时管家安排帆船、皮划艇与日落巡航\n《马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日》6 天，五星，每人 ¥35,800 起，亮点：入住喜来登满月岛度假村水上别墅，推窗即见印度洋日出、芙花芬四季海洋研究中心，随海洋生物学家夜潜近观蝠鲼\n方便告诉我几位出行、预算大概多少吗？我好给您出个准确报价～\n<state>{\"stage\":\"recommend\",\"profile\":{\"destinationInterest\":\"马尔代夫\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^马尔代夫选得好呀 ✨ 给您挑了这些：\n《马尔代夫 中央格兰德·一价全包海岛5日》5 天，五星，每人 ¥28,800 起，亮点：中央格兰德海岛度假村一价全包，餐食酒水与浮潜零加收、24小时管家安排帆船、皮划艇与日落巡航\n《马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日》6 天，五星，每人 ¥35,800 起，亮点：入住喜来登满月岛度假村水上别墅，推窗即见印度洋日出、芙花芬四季海洋研究中心，随海洋生物学家夜潜近观蝠鲼\n方便告诉我几位出行、预算大概多少吗？我好给您出个准确报价～$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "search_routes"]
+        }
+      },
+      {
+        "say": "两个人，预算每人3万",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "好嘞，给您报个准价 💰\n《马尔代夫 中央格兰德·一价全包海岛5日》每人 ¥28,800，2 位总价 ¥57,600（当前为标准价）。\n含全程住宿、行程内体验和专属管家服务。觉得合适的话，回复「就订这个」我直接帮您下单～\n<state>{\"stage\":\"quote\",\"profile\":{\"travelers\":\"2人\",\"budget\":\"每人3万\",\"destinationInterest\":\"马尔代夫\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好嘞，给您报个准价 💰\n《马尔代夫 中央格兰德·一价全包海岛5日》每人 ¥28,800，2 位总价 ¥57,600（当前为标准价）。\n含全程住宿、行程内体验和专属管家服务。觉得合适的话，回复「就订这个」我直接帮您下单～$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2,
+                  "departDate": "2026-11-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "收到！已为您锁定《马尔代夫 中央格兰德·一价全包海岛5日》的名额 🎉\n2 位出行，2026-11-01 出发，总价 ¥63,360。\n请点击链接完成支付：/pay/{{order:0.id}}\n支付后我会第一时间为您确认行程～\n<state>{\"stage\":\"closing\",\"profile\":{\"dates\":\"2026-11-01\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^收到！已为您锁定《马尔代夫 中央格兰德·一价全包海岛5日》的名额 🎉\n2 位出行，2026-11-01 出发，总价 ¥63,360。\n请点击链接完成支付：/pay/{{order:0.id}}\n支付后我会第一时间为您确认行程～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-maldives-lite",
+              "routeTitle": "马尔代夫 中央格兰德·一价全包海岛5日",
+              "travelers": 2,
+              "departDate": "2026-11-01",
+              "totalPrice": 63360,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["search_routes", "create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-184",
+    "desc": "相同参数重复下单复用原单。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你好",
+        "script": [
+          {
+            "content": "您好呀～我是云途定制旅行的旅行顾问 😊 咱们做高端定制游，先了解下您的想法：这次想去哪个方向玩，大概几位出行呢？\n<state>{\"stage\":\"discovery\",\"profile\":{}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^您好呀～我是云途定制旅行的旅行顾问 😊 咱们做高端定制游，先了解下您的想法：这次想去哪个方向玩，大概几位出行呢？$(?![\\s\\S])"
+          ],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "想去马尔代夫蜜月",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "content": "马尔代夫选得好呀 ✨ 给您挑了这些：\n《马尔代夫 中央格兰德·一价全包海岛5日》5 天，五星，每人 ¥28,800 起，亮点：中央格兰德海岛度假村一价全包，餐食酒水与浮潜零加收、24小时管家安排帆船、皮划艇与日落巡航\n《马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日》6 天，五星，每人 ¥35,800 起，亮点：入住喜来登满月岛度假村水上别墅，推窗即见印度洋日出、芙花芬四季海洋研究中心，随海洋生物学家夜潜近观蝠鲼\n方便告诉我几位出行、预算大概多少吗？我好给您出个准确报价～\n<state>{\"stage\":\"recommend\",\"profile\":{\"destinationInterest\":\"马尔代夫\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^马尔代夫选得好呀 ✨ 给您挑了这些：\n《马尔代夫 中央格兰德·一价全包海岛5日》5 天，五星，每人 ¥28,800 起，亮点：中央格兰德海岛度假村一价全包，餐食酒水与浮潜零加收、24小时管家安排帆船、皮划艇与日落巡航\n《马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日》6 天，五星，每人 ¥35,800 起，亮点：入住喜来登满月岛度假村水上别墅，推窗即见印度洋日出、芙花芬四季海洋研究中心，随海洋生物学家夜潜近观蝠鲼\n方便告诉我几位出行、预算大概多少吗？我好给您出个准确报价～$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "search_routes"]
+        }
+      },
+      {
+        "say": "两个人，预算每人3万",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "好嘞，给您报个准价 💰\n《马尔代夫 中央格兰德·一价全包海岛5日》每人 ¥28,800，2 位总价 ¥57,600（当前为标准价）。\n含全程住宿、行程内体验和专属管家服务。觉得合适的话，回复「就订这个」我直接帮您下单～\n<state>{\"stage\":\"quote\",\"profile\":{\"travelers\":\"2人\",\"budget\":\"每人3万\",\"destinationInterest\":\"马尔代夫\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好嘞，给您报个准价 💰\n《马尔代夫 中央格兰德·一价全包海岛5日》每人 ¥28,800，2 位总价 ¥57,600（当前为标准价）。\n含全程住宿、行程内体验和专属管家服务。觉得合适的话，回复「就订这个」我直接帮您下单～$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2,
+                  "departDate": "2026-11-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "收到！已为您锁定《马尔代夫 中央格兰德·一价全包海岛5日》的名额 🎉\n2 位出行，2026-11-01 出发，总价 ¥63,360。\n请点击链接完成支付：/pay/{{order:0.id}}\n支付后我会第一时间为您确认行程～\n<state>{\"stage\":\"closing\",\"profile\":{\"dates\":\"2026-11-01\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^收到！已为您锁定《马尔代夫 中央格兰德·一价全包海岛5日》的名额 🎉\n2 位出行，2026-11-01 出发，总价 ¥63,360。\n请点击链接完成支付：/pay/{{order:0.id}}\n支付后我会第一时间为您确认行程～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-maldives-lite",
+              "routeTitle": "马尔代夫 中央格兰德·一价全包海岛5日",
+              "travelers": 2,
+              "departDate": "2026-11-01",
+              "totalPrice": 63360,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["search_routes", "create_order"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-maldives-lite",
+                  "travelers": 2,
+                  "departDate": "2026-11-01"
+                }
+              }
+            ]
+          },
+          {
+            "content": "收到！已为您锁定《马尔代夫 中央格兰德·一价全包海岛5日》的名额 🎉\n2 位出行，2026-11-01 出发，总价 ¥63,360。\n请点击链接完成支付：/pay/{{order:0.id}}\n支付后我会第一时间为您确认行程～\n<state>{\"stage\":\"closing\",\"profile\":{\"dates\":\"2026-11-01\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^收到！已为您锁定《马尔代夫 中央格兰德·一价全包海岛5日》的名额 🎉\n2 位出行，2026-11-01 出发，总价 ¥63,360。\n请点击链接完成支付：/pay/{{order:0.id}}\n支付后我会第一时间为您确认行程～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-maldives-lite",
+              "routeTitle": "马尔代夫 中央格兰德·一价全包海岛5日",
+              "travelers": 2,
+              "departDate": "2026-11-01",
+              "totalPrice": 63360,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["search_routes", "create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-196",
+    "desc": "转人工后下一句静默。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "转人工，我要投诉",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "在吗",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": true,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-210",
+    "desc": "引擎预取：客户首轮点了目的地，不管模型查不查，调模型之前引擎已经替它查过一次库。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去贵州，两个人",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "贵州"
+                }
+              }
+            ]
+          },
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "好嘞，给您报个准价 💰\n《贵州 荔波小七孔·西江千户苗寨 6 日》每人 ¥15,800，2 位总价 ¥31,600（当前为标准价）。\n含全程住宿、行程内体验和专属管家服务。觉得合适的话，回复「就订这个」我直接帮您下单～\n<state>{\"stage\":\"quote\",\"profile\":{\"travelers\":\"2人\",\"destinationInterest\":\"贵州\"}}</state>"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好嘞，给您报个准价 💰\n《贵州 荔波小七孔·西江千户苗寨 6 日》每人 ¥15,800，2 位总价 ¥31,600（当前为标准价）。\n含全程住宿、行程内体验和专属管家服务。觉得合适的话，回复「就订这个」我直接帮您下单～$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-627-01",
+    "desc": "「6 天版」指的是给客户看过的 6 天现成线路，不是改行程承诺，不能把准备成交的客户转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "云南"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "云南玩3天，有合适的吗",
+            "at": 1790913600614
+          },
+          {
+            "role": "agent",
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？",
+            "at": 1790913600647
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid", "r-yunnan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "那6天的也行，两个人多少钱",
+        "script": [
+          {
+            "content": "好的，6 天版给您报价如下：每人 16,800 元起。您大概几号出发？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，6 天这条给您报价如下：每人 16,800 元起。您大概几号出发？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-627-02",
+    "desc": "「6 天版」指的是给客户看过的 6 天现成线路，不是改行程承诺，不能把准备成交的客户转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "云南"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "云南有什么线",
+            "at": 1790913600656
+          },
+          {
+            "role": "agent",
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？",
+            "at": 1790913600668
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid", "r-yunnan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "能改成4天吗",
+        "script": [
+          {
+            "content": "可以的，给您出个 4 天版，每人大约 12,000 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 4 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-643",
+    "desc": "E1：改行程护栏按句保留后，留下的模型原文照样要过价格护栏。",
+    "tags": ["engine", "money", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "这条能改成5天吗？另外能保证看到极光吗",
+        "script": [
+          {
+            "content": "可以的，我按5天帮您重排行程。\n那样的话每人大约 13,800 元。\n极光要看天气，一般冬季晴夜机会更大。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^极光要看天气，一般冬季晴夜机会更大。\n\n这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 5 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-655",
+    "desc": "没有编价时，另一个问题的回答照常保留；转人工话术里的天数取客户要的目标天数。",
+    "tags": ["engine", "money", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "8天能改成5天吗？能保证看到极光吗",
+        "script": [
+          {
+            "content": "好的，我按5天帮您重排行程。\n极光要看天气，一般冬季晴夜机会更大。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^极光要看天气，一般冬季晴夜机会更大。\n\n这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 5 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-666-01",
+    "desc": "E2：编出来的逐日行程、跨问号的承诺，都不能在「按句保留」里漏过去。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "8天太长了，能改成5天吗",
+        "script": [
+          {
+            "content": "没问题，给您出一个5天版。\nD1 抵达丽江，入住古城\nD2 玉龙雪山\nD3 大理洱海\nD4 双廊骑行\nD5 返程"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 5 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-666-02",
+    "desc": "E2：编出来的逐日行程、跨问号的承诺，都不能在「按句保留」里漏过去。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能改成5天吗",
+        "script": [
+          {
+            "content": "您想改成5天？好的我帮您重排，明细稍后发您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^您想改成5天？\n\n这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 5 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-678-01-01",
+    "desc": "E7：引擎触发的各条转人工路径都要记下接管前阶段，交还 AI 时才不倒退（第 1 个向量：想去云南看看）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去云南看看",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "云南"
+                }
+              }
+            ]
+          },
+          {
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^云南这边有丽江大理和香格里拉两条线，您几位出行？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-678-01-02",
+    "desc": "E7：引擎触发的各条转人工路径都要记下接管前阶段，交还 AI 时才不倒退（第 2 个向量：我要投诉）。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去云南看看",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "云南"
+                }
+              }
+            ]
+          },
+          {
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^云南这边有丽江大理和香格里拉两条线，您几位出行？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "我要投诉",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-678-02",
+    "desc": "E7：引擎触发的各条转人工路径都要记下接管前阶段，交还 AI 时才不倒退。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "云南"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去云南看看",
+            "at": 1790913600713
+          },
+          {
+            "role": "agent",
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？",
+            "at": 1790913600721
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid", "r-yunnan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "想换几个景点",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户要换景点"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-712",
+    "desc": "E8：打消疑虑的提问不是投诉，不能道歉并永久转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们靠谱吗，不会是骗人的吧",
+        "script": [
+          {
+            "content": "放心，我们是正规旅行社，合同发票齐全～您想去哪儿玩？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^放心，我们是正规旅行社，合同发票齐全～您想去哪儿玩？$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-771-01",
+    "desc": "E6：重置口令在企微与网页都生效（演示项目要用手机微信反复走流程）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "handoff",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我要投诉",
+            "at": 1790913601566
+          },
+          {
+            "role": "agent",
+            "content": "非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～",
+            "at": 1790913601566
+          }
+        ],
+        "handedOver": true,
+        "stageBeforeHandoff": "quote",
+        "assignee": null,
+        "handoff": {
+          "kind": "complaint",
+          "at": 1790913601566,
+          "reason": "客户投诉",
+          "quote": "我要投诉"
+        },
+        "firstHandoffAt": 1790913601566,
+        "handoffCount": 1,
+        "seenRouteIds": ["r-sanya"]
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "重置",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^好的，我们重新开始～这次想去哪儿玩呢？😊$(?![\\s\\S])"],
+          "stage": "greeting",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-771-02",
+    "desc": "E6：重置口令在企微与网页都生效（演示项目要用手机微信反复走流程）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "handoff",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我要投诉",
+            "at": 1790913601567
+          },
+          {
+            "role": "agent",
+            "content": "非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～",
+            "at": 1790913601567
+          }
+        ],
+        "handedOver": true,
+        "stageBeforeHandoff": "greeting",
+        "assignee": null,
+        "handoff": {
+          "kind": "complaint",
+          "at": 1790913601567,
+          "reason": "客户投诉",
+          "quote": "我要投诉"
+        },
+        "firstHandoffAt": 1790913601567,
+        "handoffCount": 1
+      }
+    },
+    "turns": [
+      {
+        "say": "重新开始",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^好的，我们重新开始～这次想去哪儿玩呢？😊$(?![\\s\\S])"],
+          "stage": "greeting",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-820",
+    "desc": "demo 下重置照旧删掉已付订单（E6 只测了待付款单）。",
+    "tags": ["engine", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "云南"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去云南看看",
+            "at": 1790913601567
+          },
+          {
+            "role": "agent",
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？",
+            "at": 1790913601574
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid", "r-yunnan-lux"]
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "重置",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^好的，我们重新开始～这次想去哪儿玩呢？😊$(?![\\s\\S])"],
+          "stage": "greeting",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  }
+]

@@ -2579,9 +2579,22 @@ fakeCmd('df', [
   'fi',
 ]);
 fakeCmd('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
-// 03 第 12 步：tar 记进同一份调用顺序，再交给真的 tar（看 backup.sh 先打包 var/、后 pg_dump）
+// tar 记进同一份调用顺序，再交给真的 tar；可模拟 GNU 标识与归档完成后的退出码序列。
 const realTar = ['/usr/bin/tar', '/bin/tar'].find((p) => fs.existsSync(p)) ?? 'tar';
-fakeCmd('tar', ['if [ -n "${FAKE_CALLS:-}" ]; then echo "tar $1" >> "$FAKE_CALLS"; fi', `exec ${realTar} "$@"`]);
+fakeCmd('tar', [
+  'if [ "$1" = --version ]; then',
+  '  if [ "${FAKE_TAR_GNU:-}" = 1 ]; then echo "tar (GNU tar) 1.34"; else echo "bsdtar 3.5.3"; fi',
+  '  exit 0',
+  'fi',
+  'if [ -n "${FAKE_CALLS:-}" ]; then echo "tar $1" >> "$FAKE_CALLS"; fi',
+  `${realTar} "$@" || exit $?`,
+  'if [ -n "${FAKE_TAR_RC_SEQ:-}" ]; then',
+  '  n="$(cat "$FAKE_DIR/tar-count" 2>/dev/null || echo 0)"',
+  '  n=$((n + 1)); echo "$n" > "$FAKE_DIR/tar-count"',
+  '  IFS=, read -r -a codes <<< "$FAKE_TAR_RC_SEQ"',
+  '  exit "${codes[n - 1]:-0}"',
+  'fi',
+]);
 const setFake = (k: string, v: string): void => fs.writeFileSync(path.join(wfake, k), v);
 const srv = path.join(wtmp, 'srv');
 const bk = path.join(wtmp, 'bk');
@@ -2619,6 +2632,7 @@ const runWatch = async (now: number, extra: Record<string, string> = {}): Promis
   return { status: r.status, out: r.stdout + r.stderr };
 };
 const runBackup = async (extra: Record<string, string> = {}): Promise<{ status: number | null; out: string }> => {
+  fs.rmSync(path.join(wfake, 'tar-count'), { force: true });
   const r = await spawnAsync('bash', [path.join(repoRoot, 'deploy', 'backup.sh'), srv], {
     cwd: wtmp,
     env: { ...scriptEnv, ...extra },
@@ -2907,6 +2921,45 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
       json(steps),
     );
     fs.rmSync(touched, { force: true });
+  }
+  // GNU tar 读取变化文件的退出码 1：最多三次；其他失败保留 trap 的告警、标记与退出码。
+  {
+    const warning = 'var/ 打包时有文件在变（GNU tar 退出码 1，已重试 2 次），归档已照常生成';
+    for (const scenario of [
+      { gnu: '1', seq: '1,0', status: 0, attempts: 2, warn: false },
+      { gnu: '1', seq: '1,1,1', status: 0, attempts: 3, warn: true },
+      { gnu: '1', seq: '2', status: 2, attempts: 1, warn: false },
+      { gnu: '0', seq: '1', status: 1, attempts: 1, warn: false },
+    ]) {
+      const pushed = contents().length;
+      const lastSuccess = fs.readFileSync(path.join(bk, 'opswatch', 'last-success'), 'utf8');
+      const result = await runBackup({ FAKE_TAR_GNU: scenario.gnu, FAKE_TAR_RC_SEQ: scenario.seq });
+      const attempts = Number(fs.readFileSync(path.join(wfake, 'tar-count'), 'utf8').trim());
+      const failed = fs.existsSync(path.join(bk, 'opswatch', 'last-failure'));
+      let outcome: boolean;
+      if (scenario.status === 0) {
+        const archive = path.join(bk, 'opswatch', day, 'var.tar.gz.age');
+        const listed = await spawnAsync(realTar, ['-tzf', archive], { cwd: wtmp, env: scriptEnv, timeoutMs: 60_000 });
+        outcome =
+          !failed &&
+          contents().length === pushed &&
+          listed.status === 0 &&
+          listed.stdout.includes('var/sessions.json') &&
+          listed.stdout.includes('var/restored-from-backup.json');
+      } else {
+        outcome =
+          failed &&
+          fs.readFileSync(path.join(bk, 'opswatch', 'last-success'), 'utf8') === lastSuccess &&
+          contents().length === pushed + 1 &&
+          contents()[pushed]!.startsWith(`[selftest-host] 备份失败（打包 var/这一步，退出码 ${scenario.status}），这次的备份不可用 · `) &&
+          hostStampRe.test(contents()[pushed]!);
+      }
+      check(
+        `backup.sh：${scenario.gnu === '1' ? 'GNU' : '非 GNU'} tar ${scenario.seq} → 退出码 ${scenario.status}，打包 ${scenario.attempts} 次${scenario.warn ? '，告警后保留归档' : ''}`,
+        result.status === scenario.status && attempts === scenario.attempts && result.out.includes(warning) === scenario.warn && outcome,
+        `${result.status} ${attempts} ${result.out.slice(-500)} ${json(contents().slice(pushed))}`,
+      );
+    }
   }
   // 推不出去、没配地址：退出码不变，只写 stderr，不带地址
   writeOps([`ALERT_WEBHOOK_URL=http://127.0.0.1:9/cgi-bin/webhook/send?key=${WATCH_KEY}`]);

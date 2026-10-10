@@ -17,22 +17,8 @@ import {
 
 export { sectionBody, SopStructureError, type SectionSpec, type SopSection };
 
-/** 旅行行业包的节表。顺序就是 data/sop.md 里的顺序；锁定节的「代码依赖」见 spec 的节表 */
-export const TRAVEL_SOP_SECTIONS: readonly SectionSpec[] = Object.freeze(
-  [
-    { key: 'preamble', heading: null, locked: false },
-    { key: 'stages', heading: '各阶段目标', locked: true },
-    { key: 'orders', heading: '订单：改单、给别人再订、重发链接', locked: true },
-    { key: 'tone', heading: '话术原则', locked: false },
-    { key: 'quote-discipline', heading: '报价纪律（硬性）', locked: true },
-    { key: 'price-rules', heading: '定价规则（只有这两条，硬性）', locked: true },
-    { key: 'objections', heading: '异议处理', locked: false },
-    { key: 'capabilities', heading: '能力边界（硬性，先看这条）', locked: true },
-    { key: 'no-destinations', heading: '我们没有的目的地（如南极、冰岛）', locked: true },
-    { key: 'handoff', heading: '转人工条件（满足任一立即调用 handoff_to_human）', locked: true },
-    { key: 'wechat-style', heading: '微信语气规范', locked: false },
-  ].map((s) => Object.freeze(s)),
-);
+import { TRAVEL_SOP_SECTIONS } from '../packs/travel/sop.js';
+export { TRAVEL_SOP_SECTIONS };
 
 /** BOM、\r、非 NFC、孤立代理项、\n 与 \t 以外的 C0 控制字符、U+2028 / U+2029 */
 export class SopEncodingError extends Error {}

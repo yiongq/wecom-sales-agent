@@ -80,6 +80,11 @@ const WECOM_CREDENTIAL_ENV: readonly string[] = ['WECOM_CORP_ID', 'WECOM_APP_SEC
 
 export class ProfileConfigError extends Error {}
 
+/** 平台创建旧版租户必须显式选择 demo，不能依赖 resolveProfile 的缺省值。 */
+export function isExplicitDemoProfile(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  return env.DEPLOY_PROFILE === 'demo';
+}
+
 /**
  * 从环境变量解析。空串一律当未设置。
  * 遇到非法值、prod 下越过封顶、DEMO_FRESHEN=0 与 FLAG_SEED_FRESHEN=on 同时出现、配了企微凭据却没设 DEPLOY_PROFILE，抛 ProfileConfigError。

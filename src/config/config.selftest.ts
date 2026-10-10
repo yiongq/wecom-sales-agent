@@ -21,7 +21,8 @@ process.env.CONFIG_SOURCE = 'file';
 const root = path.join(import.meta.dirname, '..', '..');
 const { TRAVEL_SOP_SECTIONS, splitSop, joinSop, sectionBody, withBody, normalizeBody, mergeWithImage, editableChars, assertSopEncoding } =
   await import('../sop/sections.js');
-const { SOP_CONTRACT, SOP_KNOWN_FIELDS, KNOWN_FIELD_SOURCES, BUDGET_RATIO, checkSopContract } = await import('../sop/contract.js');
+const { SOP_CONTRACT, SOP_KNOWN_FIELDS, BUDGET_RATIO, checkSopContract } = await import('../sop/contract.js');
+const { knownFields } = await import('../packs/travel/sop.js');
 const { renderSystemPrompt } = await import('../prompt/system.js');
 const toolDefsModule = await import('../tool-defs.js');
 const { toolDefs: toolDefsViaTools } = await import('../tools.js');
@@ -700,7 +701,7 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
 
   // SOP_KNOWN_FIELDS 的每一项都要以标识符（或字符串字面量）的形式出现在产出工具字段的源文件里；注释里提到不算
   const tokens = new Set<string>();
-  for (const f of KNOWN_FIELD_SOURCES) {
+  for (const f of knownFields.sourceFiles) {
     const src = ts.createSourceFile(f, fs.readFileSync(path.join(root, f), 'utf8'), ts.ScriptTarget.Latest, true);
     const walk = (n: ts.Node): void => {
       if (ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) tokens.add(n.text);
@@ -708,8 +709,8 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
     };
     walk(src);
   }
-  const absent = SOP_KNOWN_FIELDS.filter((f) => !tokens.has(f));
-  check('漂移：SOP_KNOWN_FIELDS 都以标识符出现在 KNOWN_FIELD_SOURCES 里', absent.length === 0, absent.join(','));
+  const absent = knownFields.names.filter((f) => !tokens.has(f));
+  check('漂移：SOP_KNOWN_FIELDS 都以标识符出现在 knownFields.sourceFiles 里', absent.length === 0, absent.join(','));
   check('漂移：SOP 点名的工具都是现有的工具', contract(image).filter((v) => v.code === 'unknown_tool').length === 0);
 }
 
