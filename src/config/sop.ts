@@ -33,8 +33,10 @@ import {
   type SopSection,
 } from '../sop/sections.js';
 import type { SopVersion } from '../shared/console-api.js';
-import { promptHashes, renderInputsFor, type PromptHashes } from './hashes.js';
+import { promptHashes, publishedBrand, renderInputsFor, type PromptHashes } from './hashes.js';
 import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
+
+import { preambleWarning, tenantImage } from './brand.js';
 
 export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
 
@@ -126,27 +128,48 @@ interface Evaluated {
   violations: ContractViolation[];
 }
 
-/** 与镜像合并、渲染、契约检查。预算基线是该租户导入版本的可编辑节总长 */
+/** 原有 120% 预算不变；系统托管前言的渲染差额单独加减，不乘预算倍数、不累加。 */
+function budgetFor(
+  rt: ReturnType<typeof configRuntime>,
+  sections: readonly SopSection[],
+  imported: SopVersionRow | null,
+  fallback: readonly SopSection[],
+): { baseline: number; adjustment: number; limit: number } {
+  const baseline = editableChars(imported?.sections ?? fallback);
+  let adjustment = 0;
+  if (imported && rt.deps.runtime && !preambleWarning(sections, rt.imageSections)) {
+    const originalImage = tenantImage(rt.deps.runtime, rt.legacyImageSop, publishedBrand(imported.renderInputs).brand);
+    const preamble = rt.deps.runtime.sopSections.filter((s) => s.key === 'preamble' && !s.locked);
+    adjustment = editableChars(rt.imageSections, preamble) - editableChars(originalImage, preamble);
+  }
+  return { baseline, adjustment, limit: Math.floor(baseline * BUDGET_RATIO) + adjustment };
+}
+
+/** 与镜像合并、渲染、契约检查；与概览使用同一份预算计算。 */
 async function evaluate(tx: Tx, rt: ReturnType<typeof configRuntime>, sections: readonly SopSection[]): Promise<Evaluated> {
   const merged = mergeWithImage(sections, rt.imageSections);
   const sop = joinSop(merged);
   const rendered = rt.deps.render(sop);
   const imported = await readImportVersion(tx);
-  const baseline = imported ? editableChars(imported.sections) : editableChars(merged);
+  const budget = budgetFor(rt, merged, imported, merged);
   const violations = checkSopContract({
     sections: merged,
     imageSections: rt.imageSections,
     rendered,
     toolNames: rt.deps.toolNames,
     knownFields: rt.deps.knownFields,
-    baselineEditableChars: baseline,
+    baselineEditableChars: budget.baseline,
+    systemEditableAdjustment: budget.adjustment,
+    rules: rt.deps.runtime?.contractRules(currentSop().brand ? { brand: currentSop().brand! } : 'legacy'),
+    brand: currentSop().brand,
+    hardRequirements: rt.deps.render(''),
   });
   return {
     merged,
     rendered,
     hashes: promptHashes(rendered, rt.deps.toolsJson, sop),
     chars: editableChars(merged),
-    limit: Math.floor(baseline * BUDGET_RATIO),
+    limit: budget.limit,
     violations,
   };
 }
@@ -186,6 +209,7 @@ export async function getSopOverview(ctx: TenantCtx): Promise<{
   draft: (SopVersion & { stale: boolean }) | null;
   spec: readonly SectionSpec[];
   budget: { chars: number; limit: number };
+  preambleWarning?: boolean;
 }> {
   const rt = runtimeFor(ctx);
   return withTenant(
@@ -197,12 +221,14 @@ export async function getSopOverview(ctx: TenantCtx): Promise<{
       const draft = await readDraft(tx);
       const imported = await readImportVersion(tx);
       const current = draft ?? pub;
-      const baseline = imported ? editableChars(imported.sections) : editableChars(pub.sections);
+      const merged = mergeWithImage(current.sections, rt.imageSections);
+      const budget = budgetFor(rt, merged, imported, pub.sections);
       return {
+        ...(preambleWarning(current.sections, rt.imageSections) ? { preambleWarning: true } : {}),
         published: toVersion(pub),
         draft: draft ? { ...toVersion(draft), stale: draft.basedOn !== pub.id } : null,
         spec: TRAVEL_SOP_SECTIONS,
-        budget: { chars: editableChars(mergeWithImage(current.sections, rt.imageSections)), limit: Math.floor(baseline * BUDGET_RATIO) },
+        budget: { chars: editableChars(merged), limit: budget.limit },
       };
     },
     { readOnly: true },

@@ -9,6 +9,7 @@ import { startFakeModel } from './fake-model.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Order } from '../../src/types.js';
+import { installBrand, brandCase } from './brand.js';
 import { observeTurn, type TurnObservation } from './snapshot.js';
 
 export interface WorkerDb {
@@ -39,6 +40,7 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
   const guardSkipped = 0;
   const turns: unknown[] = [];
   const observations: TurnObservation[] = [];
+  let restoreBrand = () => {};
   let off = () => {};
   let offTool = () => {};
   let db: WorkerDb | undefined;
@@ -66,13 +68,14 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
       HOTELS_PATH: process.env.HOTELS_PATH || path.resolve('data/hotels.json'),
       PUBLIC_BASE_URL: '',
     });
-    if (c.brand) throw new Error(`brand: 夹具 ${c.brand} 尚未注册（第 3 / 19 步）`);
+    if (c.brand) c = brandCase(c, c.brand);
     const store = await import('../../src/store.js');
     loadedStore = store;
     if (process.env.CONFIG_TEST_DB === 'pglite') {
       db = runtime?.db ?? (await prepareDb(varDir));
       if (runtime) runtime.db = db;
     }
+    restoreBrand = installBrand(c.brand, varDir);
     const { handleMessage, onToolCall } = await import('../../src/engine.js');
     if (runtime && !runtime.used) await loadResetModules();
     const { onTurnEnd } = await import('../../src/trace/recorder.js');
@@ -181,6 +184,7 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
         failures.push(`[${c.id}] ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    restoreBrand();
     off();
     offTool();
     await fake.close();

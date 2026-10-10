@@ -648,6 +648,8 @@ export interface BrandPageSlot {
 }
 
 export interface BrandTemplates extends BrandTexts {
+  hardRequirements: string;
+  lockedSectionTemplates: Readonly<Record<string, string>>;
   preamble: string;
   pages: Partial<Record<BrandPage, readonly BrandPageSlot[]>>;
 }

@@ -7,12 +7,15 @@ import { writeAudit } from '../db/repo/audit.js';
 import { countCatalogItems, insertActiveItems, readActiveCatalog, type CatalogKind } from '../db/repo/catalog.js';
 import { insertCatalogVersion } from '../db/repo/catalog-versions.js';
 import { countSopVersions, insertPublishedSop, readPublishedSop } from '../db/repo/sop.js';
-import { findTenantBySlug } from '../db/repo/tenants.js';
+import { findTenantBySlug, readBrand } from '../db/repo/tenants.js';
 import { renderSystemPrompt } from '../prompt/system.js';
 import { HotelSchema, RouteSchema } from '../shared/catalog.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { toolDefs } from '../tool-defs.js';
+import { runtimeById } from '../packs/registry.js';
+import { packSources } from './source.js';
+import { tenantImage, tenantRenderer, switchPreamble } from './brand.js';
 import { promptHashes, renderInputsFor, type PromptHashes } from './hashes.js';
 
 export const EXIT = { ok: 0, error: 1, inconsistent: 2, locked: 3 } as const;
@@ -87,9 +90,13 @@ export interface ImportOptions {
  * 之后的修改走后台，这里不覆盖任何东西
  */
 export async function importConfig(o: ImportOptions): Promise<TransferResult> {
-  const code = o.code ?? imageCode();
+  let code = o.code ?? imageCode();
   const tenant = await findTenantBySlug(o.db, o.tenantSlug);
   if (!tenant) return fail(`tenant_not_found：没有 slug 为「${o.tenantSlug}」的租户，先跑 tenant-create`);
+  const runtime = runtimeById(tenant.packId, packSources());
+  if (!runtime) return fail('pack_unknown：没有行业包运行时');
+  const brand = (await readBrand(o.db, tenant.id)) ?? null;
+  if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
   // DB 模式的应用在跑时持着锁：拿不到就别动库
   const lock = await o.lock(tenant.id);
   if (!lock) return { code: EXIT.locked, message: `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用正以 DB 模式运行？）` };
@@ -99,7 +106,7 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
     let hotels: Record<string, unknown>[];
     let imageSections: SopSection[];
     try {
-      imageSections = splitSop(o.imageSop);
+      imageSections = tenantImage(runtime, o.imageSop, brand);
       sections = splitSop(decodeSopFile(fs.readFileSync(path.join(o.dataDir, 'sop.md'))));
       routes = readItems(o.dataDir, 'routes.json', 'route');
       hotels = readItems(o.dataDir, 'hotels.json', 'hotel');
@@ -107,10 +114,14 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       return fail(`文件不合格：${message(e)}`);
     }
     const changed = TRAVEL_SOP_SECTIONS.filter(
-      (s) => s.locked && sections.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text,
+      (s) =>
+        s.locked &&
+        sections.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text &&
+        sections.find((x) => x.key === s.key)?.text !== splitSop(o.imageSop).find((x) => x.key === s.key)?.text,
     );
     if (changed.length) return fail(`locked_changed：sop.md 的锁定节与镜像不一致：${changed.map((s) => s.heading).join('、')}`);
-    const merged = mergeWithImage(sections, imageSections);
+    const stored = brand ? switchPreamble(sections, splitSop(o.imageSop), imageSections) : sections;
+    const merged = mergeWithImage(stored, imageSections);
     const sopText = joinSop(merged);
     const rendered = code.render(sopText);
     // 预算基线就是它自己：导入不会 over_budget
@@ -121,6 +132,9 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       toolNames: code.toolNames,
       knownFields: code.knownFields,
       baselineEditableChars: editableChars(merged),
+      rules: runtime.contractRules(brand ? { brand } : 'legacy'),
+      brand,
+      hardRequirements: code.render(''),
     });
     if (violations.length)
       return fail(`contract_failed：${violations.map((v) => `${v.code}${v.sectionKey ? `@${v.sectionKey}` : ''} ${v.detail}`).join('；')}`);
@@ -139,7 +153,7 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
           basedOn: null,
           renderedPrompt: rendered,
           ...hashes,
-          renderInputs: renderInputsFor(code.render, o.imageSop, code.toolsJson),
+          renderInputs: renderInputsFor(code.render, joinSop(imageSections), code.toolsJson, runtime.sopSections, brand),
           changeNote: '首次导入',
           createdBy: null,
           createdByName: 'import-config',

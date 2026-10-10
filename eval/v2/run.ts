@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { brandCase } from './brand.js';
 import { validateCases, type CaseV2 } from './schema.js';
 import { compareCaseSnapshot, createSnapshot, readBaseline, serializeSnapshot, type TurnObservation } from './snapshot.js';
 
@@ -188,6 +189,12 @@ export async function runCasesV2(
 
 export async function runV2(cases: CaseV2[]): Promise<boolean> {
   const started = performance.now();
+  const brandIndex = process.argv.indexOf('--brand');
+  if (brandIndex > 0) {
+    const name = process.argv[brandIndex + 1];
+    if (!name || name.startsWith('--')) throw new Error('--brand 需要夹具名');
+    cases = cases.map((c) => brandCase(c, name));
+  }
   const writeIndex = process.argv.indexOf('--v2-snapshot-write');
   const writeTarget = writeIndex > 0 ? process.argv[writeIndex + 1] : undefined;
   if (writeIndex > 0 && (!writeTarget || writeTarget.startsWith('--'))) {
@@ -196,7 +203,10 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
   }
   let baseline: ReturnType<typeof readBaseline>;
   try {
-    baseline = writeTarget ? undefined : readBaseline();
+    // demo 快照记的是旧版模式的客户文字；换了品牌夹具文字本来就不同，只比用例自己的断言
+    const branded = brandIndex > 0 && process.env.EVAL_V2_BASELINE === undefined;
+    if (branded) console.log('v2：带 --brand 运行，跳过 demo 快照比对（只检查用例断言）');
+    baseline = writeTarget || branded ? undefined : readBaseline();
   } catch (e) {
     console.error(`v2 快照读取失败：${e instanceof Error ? e.message : String(e)}`);
     return false;
