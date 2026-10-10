@@ -168,7 +168,13 @@ export async function engineRuntime(
           body: JSON.stringify({
             model: customerCfg.model,
             stream: false,
-            max_tokens: 512,
+            // 智谱 glm-5.3 强制思考、默认最高档：不压档时思考吃光上限，JSON 被截断（第 5 步实测）
+            max_tokens: 2048,
+            ...(customerCfg.baseUrl.includes('bigmodel')
+              ? /^glm-5\.3/i.test(customerCfg.model)
+                ? { thinking: { type: 'enabled' }, reasoning_effort: 'low' }
+                : { thinking: { type: 'disabled' } }
+              : {}),
             messages: [
               {
                 role: 'system',

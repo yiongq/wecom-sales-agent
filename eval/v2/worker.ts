@@ -9,6 +9,7 @@ import { startFakeModel } from './fake-model.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Order } from '../../src/types.js';
+import { observeTurn, type TurnObservation } from './snapshot.js';
 
 export interface WorkerDb {
   close(): Promise<void>;
@@ -37,6 +38,7 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
   let checks = 0;
   let guardSkipped = 0;
   const turns: unknown[] = [];
+  const observations: TurnObservation[] = [];
   let off = () => {};
   let offTool = () => {};
   let db: WorkerDb | undefined;
@@ -123,6 +125,8 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
       const reply = await handleMessage(sid, t.say, 'simulator');
       const finished = observedTurn();
       fake.finish();
+      if (!finished) throw new Error(`第${i + 1}轮缺少 onTurnEnd 观测`);
+      observations.push(observeTurn(reply, session.handedOver, orders(), finished));
       const expect = resolveValues(t.expect, values) as typeof t.expect;
       for (const key of ['replyMatches', 'replyExcludes'] as const) {
         expect[key] = t.expect[key]?.map((pattern) => resolvePattern(pattern, values));
@@ -182,7 +186,7 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
     if (!runtime) await db?.close();
   }
   failures.push(...fake.errors);
-  return { id: c.id, pass: failures.length === 0, checks, guardSkipped, failures, turns };
+  return { id: c.id, pass: failures.length === 0, checks, guardSkipped, failures, turns, observations };
 }
 
 export async function runWorker(prepareDb: PrepareDb): Promise<never> {
