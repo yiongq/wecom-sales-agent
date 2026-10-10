@@ -39,8 +39,8 @@ const bodies: Record<string, string> = {
     timer = null;
     await chain;
     acc.clear(); lastDay = ''; __usageDailyTest.rearm(30000);`,
-  'retrieval.ts': '__retrievalTest.reset();',
-  'followup.ts': '__followupTest.resetForTest();',
+  'core/retrieval.ts': '__retrievalTest.reset();',
+  'core/followup.ts': '__followupTest.resetForTest();',
   'notify/handoff.ts': '__handoffNotifyTest.reset();',
   'jobs/runner.ts': '__jobsTest.reset();',
   'handoff/takeover.ts': 'gens.clear(); __takeoverTest.resetRecent();',

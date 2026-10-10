@@ -1,15 +1,9 @@
+import './core/engine/sources.js';
 // 04 R1：旧工具入口仅接线与适配；旅游实现进包，执行注册与钩子进 core。
 import { createToolRegistry } from './core/tools/registry.js';
 import type { Session, ToolHints, ToolSpec } from './core/pack-api.js';
-import { createTravelTools } from './packs/travel/tools/index.js';
-import { catalogItemAt, catalogVersionKey, configMode, currentCatalog } from './config/source.js';
-import { indexReady, semanticRecall } from './retrieval.js';
-import { budgetVerdict } from './price-rules.js';
-import { createOrder, getOrder, queueJobs, saveSession, supersedeOrder } from './store.js';
-import { todayIso } from './env.js';
-import { paymentMode } from './payment/mode.js';
-import { orderUnconfirmedNotifyOps } from './jobs/notify.js';
-import { enterHandoff, HANDOFF_REASON } from './handoff/record.js';
+import { legacyTravelRuntime } from './config/source.js';
+import { enterHandoff } from './handoff/record.js';
 
 export { toolDefs, type ToolDef } from './tool-defs.js';
 export { enterHandoff };
@@ -24,25 +18,7 @@ export {
 } from './packs/travel/tools/catalog.js';
 export type { ToolHints } from './core/pack-api.js';
 
-const travelTools = createTravelTools({
-  modelHandoffReason: HANDOFF_REASON.model,
-  catalogItemAt,
-  catalogVersionKey,
-  configMode,
-  currentCatalog,
-  indexReady,
-  semanticRecall,
-  budgetVerdict: (...args) => budgetVerdict(...args),
-  createOrder,
-  getOrder,
-  queueJobs,
-  saveSession,
-  supersedeOrder,
-  todayIso,
-  paymentMode,
-  orderUnconfirmedNotifyOps,
-  enterHandoff,
-});
+const travelTools = legacyTravelRuntime().catalog;
 const registry = createToolRegistry(travelTools.tools);
 
 /** 模型门面只读取同一份声明，不重新装配工具或执行它们。 */

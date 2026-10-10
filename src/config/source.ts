@@ -1,9 +1,10 @@
 // 配置源（docs/architecture/01-pg-config-console/spec.md「两种模式与启动装载」）。
 // 文件模式（CONFIG_SOURCE 未设、空串或 file）什么都不做，引擎和工具照旧读 data/。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
-// 本模块不 import store / tools / engine：它们反过来 import 这里，快照变化经 onCatalogChanged 回调通知。
+// 本模块不加载存储与发送能力：启动时按 pack_id 绑定包，运行时能力经延后调用的函数注入。
 // 02 加了产品库条目版本（02 spec「报价快照与产品库字段开放」）：全部版本启动时读进内存，之后的新版本提交后加进来；
 // 一轮对话之内 currentCatalog() 返回这一轮开始时的那一代快照（pinCatalogForTurn）。
+import { HANDOFF_REASON } from '../handoff/reasons.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,15 +27,16 @@ import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, t
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
 import { setLogTenant } from '../log.js';
-import { packById } from '../packs/registry.js';
-import { renderSystemPrompt } from '../prompt/system.js';
+import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
+import { renderSystemPrompt } from '../core/prompt.js';
+import { packPipelines } from '../core/engine/pipelines.js';
+import { bindPack, boundPack, type PackBinding, type PackSources } from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
-import { toolDefs } from '../tool-defs.js';
 import { promptHashes, renderInputsFor, sha256 } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -82,6 +84,8 @@ export interface ConfigHealth {
 
 /** 装载所需的全部外部依赖。生产由 productionConfigDeps 构造；自测逐项替换 */
 export interface ConfigDeps {
+  /** 生产组合根按实际 pack_id 的定义渲染；自测显式注入的渲染依赖照旧。 */
+  usePackRuntime?: boolean;
   db: Db;
   tenantSlug: string;
   /** null = 锁在别人手里 */
@@ -337,15 +341,16 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
     throw startup('db_unreachable', `${redactUrl(url)}：${message(e)}`);
   }
   return {
+    usePackRuntime: true,
     db: opened.db,
     closeDb: opened.close,
     tenantSlug,
     lock: (tenantId) => holdTenantLock(url, tenantId),
     imageSop,
-    toolsJson: JSON.stringify(toolDefs),
-    toolNames: toolDefs.map((t) => t.function.name),
+    toolsJson: JSON.stringify(currentPack().runtime.tools.map((t) => t.def)),
+    toolNames: currentPack().runtime.tools.map((t) => t.def.function.name),
     knownFields: SOP_KNOWN_FIELDS,
-    render: renderSystemPrompt,
+    render: (sop) => renderSystemPrompt(sop, currentPack().runtime.legacy.hardRequirements),
     gracefulExit,
   };
 }
@@ -558,8 +563,12 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
  */
-export async function initConfig(d: ConfigDeps | null): Promise<void> {
-  if (!d) return;
+export async function initConfig(deps: ConfigDeps | null): Promise<void> {
+  if (!deps) {
+    installPack('travel');
+    return;
+  }
+  let d = deps;
   if (loaded) throw new Error('配置源已经装载过');
   dbInstalled = true;
   let lock: TenantLock | null = null;
@@ -591,6 +600,18 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
     // 后台 UX spec「接口改动 · /pack」：包不在注册表里时拒绝启动（tenant-create 已按注册表校验，这里防手改库）
     const pack = packById(tenant.packId);
     if (!pack) throw startup('pack_unknown', `租户「${d.tenantSlug}」的行业包「${tenant.packId}」不在注册表里`);
+    const runtime = runtimeById(tenant.packId, packSources());
+    if (!runtime) throw startup('pack_unknown', `行业包 ${tenant.packId} 没有运行时`);
+    packPipelines(runtime);
+    if (d.usePackRuntime) {
+      d = {
+        ...d,
+        toolsJson: JSON.stringify(runtime.tools.map((t) => t.def)),
+        toolNames: runtime.tools.map((t) => t.def.function.name),
+        knownFields: runtime.knownFields.names,
+        render: (sop) => renderSystemPrompt(sop, runtime.legacy.hardRequirements),
+      };
+    }
     // 4
     const held = await dbStep('取租户锁', () => d.lock(tenant.id));
     lock = held;
@@ -642,6 +663,7 @@ export async function initConfig(d: ConfigDeps | null): Promise<void> {
       ords: ordsOf(items),
       history,
     };
+    bindPack(runtime, null);
     lockState = 'held';
     sopStale = false;
     catalogStale = false;
@@ -915,6 +937,7 @@ export const __configTest = {
     reacquireTimer = null;
     dbInstalled = false;
     loaded = null;
+    installPack('travel');
     setLogTenant('');
     lockState = 'held';
     lockTaken = false;
@@ -958,4 +981,55 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
   }
   const f = file();
   return { sopVersion: null, ...promptHashes(f.system, f.tools, f.sop) };
+}
+
+/** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
+export function currentPack(): PackBinding {
+  return boundPack() ?? installPack('travel');
+}
+
+function installPack(id: string): PackBinding {
+  const runtime = runtimeById(id, packSources());
+  if (!runtime) throw new Error(`行业包 ${id} 没有运行时`);
+  bindPack(runtime, null);
+  return boundPack()!;
+}
+
+/** R1：旧入口补旅游能力，运行时业务仍在包内。 */
+export function legacyTravelRuntime(): ReturnType<typeof travelRuntime> {
+  return travelRuntime(packSources());
+}
+
+// 配置层不加载存储、接管与发送账本：能力在运行时模块初始化完成后安装。
+// 包工厂只捕获这些延后调用的函数，不在装载期读取存储，因此 CLI 也能校验并绑定运行时。
+let runtimeSources: PackSources | null = null;
+export function installRuntimeSources(sources: PackSources): void {
+  runtimeSources = sources;
+}
+function liveSources(): PackSources {
+  if (!runtimeSources) throw new Error('运行时能力尚未初始化');
+  return runtimeSources;
+}
+function packSources(): PackSources {
+  return {
+    configMode,
+    currentCatalog,
+    catalogVersionKey,
+    catalogItemAt,
+    isConfigNotReadyError: (error) => error instanceof ConfigNotReadyError,
+    modelHandoffReason: HANDOFF_REASON.model,
+    handoffReasons: HANDOFF_REASON,
+    indexReady: (...args) => liveSources().indexReady(...args),
+    semanticRecall: (...args) => liveSources().semanticRecall(...args),
+    createOrder: (...args) => liveSources().createOrder(...args),
+    getOrder: (...args) => liveSources().getOrder(...args),
+    queueJobs: (...args) => liveSources().queueJobs(...args),
+    saveSession: (...args) => liveSources().saveSession(...args),
+    supersedeOrder: (...args) => liveSources().supersedeOrder(...args),
+    todayIso: (...args) => liveSources().todayIso(...args),
+    paymentMode: (...args) => liveSources().paymentMode(...args),
+    orderUnconfirmedNotifyOps: (...args) => liveSources().orderUnconfirmedNotifyOps(...args),
+    enterHandoff: (...args) => liveSources().enterHandoff(...args),
+    isTerminalStage: (...args) => liveSources().isTerminalStage(...args),
+  };
 }

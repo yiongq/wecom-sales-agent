@@ -2,15 +2,8 @@
 import type { GuardStep, ReplyGuardContext, StepVerdict } from '../pack-api.js';
 import { cleanText } from '../../shared/text.js';
 import { stripAdvisorPrefix } from '../../shared/conversation.js';
-import {
-  FAILURE_WINDOW,
-  failureThresholdReached,
-  pushWindow,
-  repeatedQuestion,
-  turnFailed,
-  type TurnSignals,
-} from '../../handoff/triggers.js';
-import { retrievalEmpty, stripMarkdown, trimDangling } from './text.js';
+import { FAILURE_WINDOW, failureThresholdReached, pushWindow, turnFailed, type TurnSignals } from '../../handoff/trigger-rules.js';
+import { stripMarkdown, trimDangling } from './text.js';
 import { replyStep } from './reply-step.js';
 
 function dropAdvisorPrefix(ctx: ReplyGuardContext): void {
@@ -23,7 +16,9 @@ function dropAdvisorPrefix(ctx: ReplyGuardContext): void {
 
 export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<Context>[] {
   return [
-    replyStep('pre_clean', '', [], ['emptyModelReply'], (ctx) => {
+    replyStep('pre_clean', '', [], ['emptyModelReply', 'guardHit', 'handedOverSelfDecided'], (ctx) => {
+      ctx.turn.flags.guardHit = null;
+      ctx.turn.flags.handedOverSelfDecided = false;
       const usable = ctx.raw
         .replace(/<state>[\s\S]*?<\/state>/g, '')
         .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
@@ -37,7 +32,7 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       if (ctx.takenOver()) return { action: 'abort' };
       if (ctx.session.handedOver) {
         if (!ctx.isTerminalStage(ctx.session.stage)) ctx.session.stage = 'handoff';
-        if (!ctx.toolSources.some((c) => c.name === 'handoff_to_human')) return { action: 'abort' };
+        if (!ctx.modelRequestedHandoff()) return { action: 'abort' };
       }
       return { action: 'pass' };
     }),
@@ -45,25 +40,27 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       const { session, toolSources: calls, inputText: text, stageAtStart } = ctx;
       if (session.handedOver) {
         if (session.stageBeforeHandoff)
-          session.stageBeforeHandoff = ctx.advanceStage(
-            { ...session, stage: session.stageBeforeHandoff },
-            { calls, terminal: ctx.isTerminalStage(session.stageBeforeHandoff) },
-          );
+          session.stageBeforeHandoff =
+            ctx.advanceStage(
+              { ...session, stage: session.stageBeforeHandoff },
+              { calls, terminal: ctx.isTerminalStage(session.stageBeforeHandoff) },
+            ) ?? session.stageBeforeHandoff;
       } else {
         const derived = ctx.advanceStage(
           { ...session, stage: stageAtStart },
           { calls, terminal: ctx.isTerminalStage(stageAtStart), customerText: text },
         );
-        session.stage = ctx.isTerminalStage(session.stage) && !ctx.isTerminalStage(stageAtStart) ? session.stage : derived;
+        session.stage =
+          ctx.isTerminalStage(session.stage) && !ctx.isTerminalStage(stageAtStart) ? session.stage : (derived ?? stageAtStart);
         session.profile = ctx.extractProfile(session, calls, text);
       }
     }),
-    replyStep('markdown', 'link_whitelist', [], [], (ctx) => {
+    replyStep('markdown', 'stage_advance', [], [], (ctx) => {
       const before = ctx.text;
       ctx.text = stripMarkdown(ctx.text);
       ctx.recordGuard('markdown', before, ctx.text, 'strip');
     }),
-    replyStep('dangling', 'adults', [], [], (ctx) => {
+    replyStep('dangling', 'markdown', [], [], (ctx) => {
       const before = ctx.text;
       ctx.text = trimDangling(ctx.text);
       ctx.recordGuard('dangling', before, ctx.text, 'strip');
@@ -74,7 +71,7 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       ctx.text = ctx.answerIdentity(ctx.inputText, ctx.text);
       ctx.recordGuard('identity', before, ctx.text, 'append');
     }),
-    replyStep('takeover_check:post', 'proposal_suffix', ['handedOverSelfDecided'], [], (ctx): StepVerdict =>
+    replyStep('takeover_check:post', 'identity', ['handedOverSelfDecided'], [], (ctx): StepVerdict =>
       ctx.takenOver() || (ctx.session.handedOver && !ctx.turn.flags.handedOverSelfDecided) ? { action: 'abort' } : { action: 'pass' },
     ),
     replyStep('turn_failure', 'takeover_check:post', ['emptyModelReply', 'guardHit'], [], (ctx) => {
@@ -83,8 +80,8 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
       const signals: TurnSignals = {
         emptyModelReply: ctx.turn.flags.emptyModelReply,
-        noRetrievalResult: retrievalEmpty(calls),
-        repeatedQuestion: repeatedQuestion(text, said.slice(0, -1)),
+        noRetrievalResult: ctx.retrievalEmpty(calls),
+        repeatedQuestion: ctx.repeatedQuestion(text, said.slice(0, -1)),
         guardHit: ctx.turn.flags.guardHit,
       };
       ctx.recordSignals(signals);

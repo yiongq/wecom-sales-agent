@@ -1,14 +1,12 @@
 // 04 R9：跟进独立的 11 步；同名护栏只删句，不使用主回复的副作用实现。
-import { cleanText, convLabel, type GuardContext, type GuardStep, type StepVerdict } from '../../core/pack-api.js';
+import { cleanText, convLabel, type FollowupGuardContext, type GuardStep, type StepVerdict } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE } from './itinerary.js';
 import type { TravelReplyHelpers } from './reply-helpers.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { TravelPriceGuard } from './price-guard.js';
 import type { createTravelPriceRules } from './price-rules.js';
 
-export interface FollowupGuardContext extends GuardContext {
-  recordGuard(guard: string, before: string, after: string, action: 'strip' | 'replace' | 'drop_sentence'): void;
-}
+export type { FollowupGuardContext } from '../../core/pack-api.js';
 
 export interface TravelFollowupStepSources {
   helpers: Pick<
