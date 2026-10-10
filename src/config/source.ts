@@ -1,5 +1,5 @@
 // 配置源（docs/architecture/01-pg-config-console/spec.md「两种模式与启动装载」）。
-// 文件模式（CONFIG_SOURCE 未设、空串或 file）什么都不做，引擎和工具照旧读 data/。
+// 文件模式（CONFIG_SOURCE 未设、空串或 file）读有效 SOP_PATH 同目录品牌，引擎和工具照旧读文件。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
 // 本模块不加载存储与发送能力：启动时按 pack_id 绑定包，运行时能力经延后调用的函数注入。
 // 02 加了产品库条目版本（02 spec「报价快照与产品库字段开放」）：全部版本启动时读进内存，之后的新版本提交后加进来；
@@ -30,13 +30,13 @@ import { setLogTenant } from '../log.js';
 import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
 import { renderSystemPrompt } from '../core/prompt.js';
 import { packPipelines } from '../core/engine/pipelines.js';
-import { bindPack, boundPack, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
+import { bindPack, boundPack, BrandProfileSchema, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
-import { decodeSopFile, joinSop, mergeWithImage, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
+import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand } from './hashes.js';
 
@@ -580,7 +580,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 }
 
 /**
- * deps 为 null：文件模式，立即返回。否则依次执行，前 8 步只读：
+ * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读：
  *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
  *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
@@ -588,7 +588,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
  */
 export async function initConfig(deps: ConfigDeps | null): Promise<void> {
   if (!deps) {
-    installPack('travel');
+    installPack('travel', readFileBrand());
     return;
   }
   let d = deps;
@@ -1029,14 +1029,35 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
 
 /** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
 export function currentPack(): PackBinding {
-  const binding = boundPack() ?? installPack('travel');
+  const binding = boundPack() ?? installPack('travel', configMode() === 'file' ? readFileBrand() : null);
   return loaded ? { ...binding, brand: loaded.sop.brand } : binding;
 }
 
-function installPack(id: string): PackBinding {
+/** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */
+export function fileSopPath(): string {
+  return process.env.SOP_PATH ?? path.join(process.cwd(), 'data', 'sop.md');
+}
+
+function readFileBrand(): BrandProfile | null {
+  const file = path.join(path.dirname(fileSopPath()), 'brand.json');
+  if (!fs.existsSync(file)) return null;
+  // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验、把损坏的品牌渲染进锁定节
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file));
+  return BrandProfileSchema.parse(JSON.parse(text));
+}
+
+/** 文件模式保留可编辑节，只把锁定节与硬性要求按装载的品牌渲染；旧版原文不经过切分。 */
+export function renderFileSop(sop: string): string {
+  const { runtime, brand } = currentPack();
+  if (brand === null) return renderSystemPrompt(sop, runtime.legacy.hardRequirements);
+  const image = tenantImage(runtime, sop, brand);
+  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(splitSop(sop, runtime.sopSections), image)));
+}
+
+function installPack(id: string, brand: BrandProfile | null = null): PackBinding {
   const runtime = runtimeById(id, packSources());
   if (!runtime) throw new Error(`行业包 ${id} 没有运行时`);
-  bindPack(runtime, null);
+  bindPack(runtime, brand);
   return boundPack()!;
 }
 
