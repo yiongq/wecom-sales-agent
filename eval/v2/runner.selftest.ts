@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runCaseV2, runCasesV2, V2Worker, loadCases, type CaseResult } from './run.js';
+import { runCaseV2, runCasesV2, runV2, V2Worker, loadCases, type CaseResult } from './run.js';
 import { validateCase, type CaseV2 } from './schema.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import { startFakeModel } from './fake-model.js';
 import { resetCaseState, resetModuleNames } from './isolation.js';
+import { compareCaseSnapshot, createSnapshot, observeTurn, readBaseline, serializeSnapshot } from './snapshot.js';
+import type { FinishedTurn } from '../../src/trace/recorder.js';
+import type { Order } from '../../src/types.js';
 
 // 临时目录断言只检查本次自测，允许独立评测同时运行。
 const selftestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-v2-selftest-'));
@@ -205,6 +208,134 @@ function comparable(result: CaseResult) {
 }
 
 const all = loadCases(path.resolve('eval/cases-v2'));
+const snapshotStarted = performance.now();
+let snapshotResults: CaseResult[] = [];
+await test('快照稳定：同一组真实引擎 case 两遍逐字节相同，case/键排序且保留护栏与订单', async () => {
+  const previous = process.env.CONFIG_TEST_DB;
+  process.env.CONFIG_TEST_DB = '';
+  const worker = new V2Worker();
+  try {
+    const cases = [base, all.find((c) => c.id === 'travel-engine-1693-02')!];
+    const first: CaseResult[] = [];
+    const second: CaseResult[] = [];
+    for (const c of cases) first.push(await worker.run(c));
+    for (const c of cases) second.push(await worker.run(c));
+    for (const r of [...first, ...second]) assert.equal(r.pass, true, r.failures.join('\n'));
+    assert.equal(await serializeSnapshot(createSnapshot(first)), await serializeSnapshot(createSnapshot(second.reverse())));
+    assert.ok(first[1].observations![1].guard_events.length > 0);
+    assert.equal(first[1].observations![1].orders.last!.travelers, 2);
+    assert.match(first[1].observations![1].text, /ord_NORMALIZED/);
+    snapshotResults = first;
+  } finally {
+    await worker.close();
+    if (previous === undefined) delete process.env.CONFIG_TEST_DB;
+    else process.env.CONFIG_TEST_DB = previous;
+  }
+});
+await test('快照抓住一个字、额外工具、缺少护栏、订单人数的变化，错误定位到对应字段', () => {
+  const original = structuredClone(snapshotResults[1]);
+  original.observations![1].text = '前'.repeat(45) + '原';
+  const expected = createSnapshot([original]).cases[0];
+  for (const [field, change] of [
+    ['text', (r: CaseResult) => (r.observations![1].text = '前'.repeat(45) + '改')],
+    ['tools.length', (r: CaseResult) => r.observations![1].tools.push('create_quote')],
+    ['guard_events.length', (r: CaseResult) => r.observations![1].guard_events.pop()],
+    ['orders.last.travelers', (r: CaseResult) => (r.observations![1].orders.last!.travelers = 3)],
+  ] as const) {
+    const changed = structuredClone(original);
+    change(changed);
+    const errors = compareCaseSnapshot(changed, expected);
+    assert.equal(errors.length, 1, errors.join('\n'));
+    assert.ok(errors[0].includes(`[${original.id}] 第2轮 snapshot.${field}:`), errors[0]);
+    if (field === 'text') {
+      assert.ok(errors[0].includes(changed.observations![1].text));
+      assert.ok(errors[0].includes(expected.turns[1].text.head));
+      assert.ok(errors[0].includes(expected.turns[1].text.sha256));
+    }
+  }
+  const changedGuard = structuredClone(original);
+  changedGuard.observations![1].guard_events[0].removed[0] += '改';
+  assert.match(compareCaseSnapshot(changedGuard, expected).join('\n'), /snapshot\.guard_events\.0\.removed\.0/);
+  assert.match(compareCaseSnapshot(original).join('\n'), /snapshot\.case/);
+});
+await test('归一只处理已知运行量；业务日期、金额、条目 id 与重复护栏摘要保持可比', () => {
+  const order = {
+    id: 'ord_0123456789abcdef01234567',
+    sessionId: 'eval:test',
+    createdAt: 1790913600123,
+    routeId: 'r-yunnan',
+    routeTitle: '云南',
+    travelers: 2,
+    departDate: '2026-12-10',
+    totalPrice: 12345,
+    status: 'pending_payment',
+    catalogVersion: 1,
+  } as Order;
+  const finished = {
+    turn: {
+      conversationId: order.sessionId,
+      turnId: 'random-turn',
+      startedAt: order.createdAt,
+      calls: [{ name: 'search_routes' }],
+      guards: [{ guard: 'order_net', action: 'replace', removed: ['旧', '旧'], added: [order.id], at: order.createdAt }],
+    },
+  } as FinishedTurn;
+  const text = `${order.id} /proposal/r/2?v=8 ${order.sessionId} random-turn ${order.createdAt} ${new Date(order.createdAt).toISOString()} 2026-12-10 12345 r-yunnan`;
+  const observation = observeTurn({ text, stage: 'closing' }, true, [order], finished);
+  assert.equal(
+    observation.text,
+    'ord_NORMALIZED /proposal/r/2 SESSION_NORMALIZED TURN_NORMALIZED TIME_NORMALIZED TIME_NORMALIZED 2026-12-10 12345 r-yunnan',
+  );
+  assert.deepEqual(observation.orders.last, {
+    routeId: 'r-yunnan',
+    routeTitle: '云南',
+    travelers: 2,
+    departDate: '2026-12-10',
+    totalPrice: 12345,
+    status: 'pending_payment',
+  });
+  assert.deepEqual(observation.guard_events, [{ guard: 'order_net', action: 'replace', removed: ['旧', '旧'], added: ['ord_NORMALIZED'] }]);
+});
+await test('运行入口支持自定义基线、差异判失败、off 跳过比对，失败时不覆盖快照', async () => {
+  const previous = process.env.EVAL_V2_BASELINE;
+  const previousDb = process.env.CONFIG_TEST_DB;
+  const previousArgv = process.argv;
+  const log = console.log;
+  const output: string[] = [];
+  const target = path.join(selftestDir, 'snapshot.json');
+  const content = await serializeSnapshot(createSnapshot(snapshotResults));
+  fs.writeFileSync(target, content);
+  process.env.CONFIG_TEST_DB = '';
+  process.argv = [process.execPath, 'eval/run.ts', '--cases-v2', 'selftest'];
+  console.log = (...args: unknown[]) => output.push(args.join(' '));
+  try {
+    process.env.EVAL_V2_BASELINE = target;
+    const c = structuredClone(base);
+    c.turns[0].script = [{ content: '您好，请问想去哪里玩呀？' }];
+    assert.equal(await runV2([c]), false);
+    assert.match(output.join('\n'), /v2-selftest.*第1轮 snapshot\.text:/);
+    output.length = 0;
+    process.env.EVAL_V2_BASELINE = 'off';
+    assert.equal(readBaseline(), undefined);
+    assert.equal(await runV2([c]), true);
+    assert.ok(!output.join('\n').includes('快照比对'));
+    process.argv.push('--v2-snapshot-write', target);
+    c.turns[0].script = [];
+    assert.equal(await runV2([c]), false);
+    assert.equal(fs.readFileSync(target, 'utf8'), content);
+    c.turns[0].script = base.turns[0].script;
+    assert.equal(await runV2([c]), true);
+    assert.equal(fs.readFileSync(target, 'utf8'), await serializeSnapshot(createSnapshot([snapshotResults[0]])));
+  } finally {
+    process.argv = previousArgv;
+    console.log = log;
+    if (previous === undefined) delete process.env.EVAL_V2_BASELINE;
+    else process.env.EVAL_V2_BASELINE = previous;
+    if (previousDb === undefined) delete process.env.CONFIG_TEST_DB;
+    else process.env.CONFIG_TEST_DB = previousDb;
+  }
+});
+console.log(`v2 快照新增自测耗时：${((performance.now() - snapshotStarted) / 1000).toFixed(2)}s`);
 // 每个来源文件取前两条，再补重置、订单全流程及相隔较远的节假日。
 const fullSample = fs
   .readdirSync('eval/cases-v2')

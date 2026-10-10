@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateCases, type CaseV2 } from './schema.js';
+import { compareCaseSnapshot, createSnapshot, readBaseline, serializeSnapshot, type TurnObservation } from './snapshot.js';
 
 export interface CaseResult {
   id: string;
@@ -12,6 +13,7 @@ export interface CaseResult {
   guardSkipped: number;
   failures: string[];
   turns?: unknown[];
+  observations?: TurnObservation[];
 }
 
 export function loadCases(target: string, optional = false): CaseV2[] {
@@ -185,6 +187,22 @@ export async function runCasesV2(
 }
 
 export async function runV2(cases: CaseV2[]): Promise<boolean> {
+  const started = performance.now();
+  const writeIndex = process.argv.indexOf('--v2-snapshot-write');
+  const writeTarget = writeIndex > 0 ? process.argv[writeIndex + 1] : undefined;
+  if (writeIndex > 0 && (!writeTarget || writeTarget.startsWith('--'))) {
+    console.error('v2: --v2-snapshot-write 需要文件路径');
+    return false;
+  }
+  let baseline: ReturnType<typeof readBaseline>;
+  try {
+    baseline = writeTarget ? undefined : readBaseline();
+  } catch (e) {
+    console.error(`v2 快照读取失败：${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+  const baselineCases = new Map(baseline?.cases.map((c) => [c.id, c]));
+  let differences = 0;
   const tagIndex = process.argv.indexOf('--tags');
   const selected = tagIndex > 0 ? cases.filter((c) => c.tags.includes(process.argv[tagIndex + 1])) : cases;
   const skipped = selected.filter((c) => c.realOnly).length;
@@ -195,6 +213,12 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
     {
       isolate: process.argv.includes('--v2-isolate'),
       onResult(result, index) {
+        if (baseline) {
+          const diff = compareCaseSnapshot(result, baselineCases.get(result.id));
+          differences += diff.length;
+          result.failures.push(...diff);
+          if (diff.length) result.pass = false;
+        }
         buffered.set(index, result);
         while (buffered.has(printed)) {
           const r = buffered.get(printed)!;
@@ -205,11 +229,35 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
       },
     },
   );
+  // 默认完整回归也检查基线里是否有被删掉的 case；显式文件/标签选择允许只比子集。
+  const subset = tagIndex > 0 || process.argv.includes('--cases') || process.argv.includes('--cases-v2');
+  if (baseline && !subset) {
+    const ids = new Set(selected.map((c) => c.id));
+    for (const c of baseline.cases) {
+      if (ids.has(c.id)) continue;
+      differences++;
+      console.log(`  ✗ [${c.id}] 第0轮 snapshot.case: 快照 ${JSON.stringify(c.id)}；当前 缺少 case`);
+    }
+  }
   console.log(
     `v2 回归评测：${results.filter((r) => r.pass).length}/${results.length} 用例通过 · 跳过 ${skipped} 条 realOnly · ` +
       `${results.reduce((n, r) => n + r.checks, 0)} 项断言 · guardVerdicts 跳过 ${results.reduce((n, r) => n + r.guardSkipped, 0)} 项（待第 16 步）`,
   );
+  if (baseline) console.log(`v2 快照比对：${results.length} 条 case · ${differences} 处差异`);
+  let ok = results.every((r) => r.pass) && differences === 0;
+  if (writeTarget && ok) {
+    try {
+      const content = await serializeSnapshot(createSnapshot(results));
+      fs.mkdirSync(path.dirname(writeTarget), { recursive: true });
+      fs.writeFileSync(writeTarget, content);
+      console.log(`v2 快照已写入 ${writeTarget} · ${Buffer.byteLength(content)} 字节`);
+    } catch (e) {
+      console.error(`v2 快照写入失败：${e instanceof Error ? e.message : String(e)}`);
+      ok = false;
+    }
+  }
+  console.log(`v2 总耗时：${((performance.now() - started) / 1000).toFixed(2)}s`);
   const jsonIndex = process.argv.indexOf('--json');
   if (jsonIndex > 0) fs.writeFileSync(`${process.argv[jsonIndex + 1]}.v2.json`, JSON.stringify(results, null, 2));
-  return results.every((r) => r.pass);
+  return ok;
 }
