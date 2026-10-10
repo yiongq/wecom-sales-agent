@@ -1,3 +1,4 @@
+import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
 import fs from 'node:fs';
@@ -300,6 +301,7 @@ interface TurnState {
 function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts): TurnState {
   const binding = currentPack();
   const { runtime } = binding;
+  const texts = brandTexts(runtime, binding.brand);
   text = inboundText(text);
   const session = getOrCreateSession(sessionId, channel);
   // 逐轮 trace（02 spec）：确定性路径也记。每个出口经 done 结束这一轮，与写进回复、saveSession 在同一段同步代码里
@@ -329,7 +331,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
     binding,
     runtime,
     triggers: createHandoffTriggers(runtime.vocab.handoff),
-    answerIdentity: (text, reply) => coreAnswerIdentity(text, reply, runtime.legacy.identityAnswer),
+    answerIdentity: (text, reply) => coreAnswerIdentity(text, reply, texts.identityAnswer),
     done,
     takenOver,
     unsentTakenOver,
@@ -610,6 +612,8 @@ function modelHistory(state: TurnState) {
 async function callModel(state: TurnState, turnContext: TurnContext, runTool: ReturnType<typeof turnTools>['runTool']) {
   const { sessionId, channel, session, runtime, text } = state;
   const { history, advisorInWindow } = modelHistory(state);
+  // 与 beginTurn 的品牌捕获之间没有 await；预取期间发布新版也不会混用。
+  const turn = turnPrefix();
   // 公开链接会被陌生人（和脚本）随便点，网页访客的真实 LLM 轮次有日预算上限。
   // 超额后降级到离线脚本回复——演示流程照样走得完，只是话术固定；
   // 企微渠道是真实客户，永远不降级。
@@ -640,11 +644,11 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   const prefetch: PrefetchedCall[] = prefetched?.calls ?? [];
   const prefetchTimes = prefetched?.timings ?? [];
   const modelStart = Date.now();
-  const turn = turnPrefix();
   notePrefix(turn.sopVersion, turn.prefixHash());
   const raw = await chat(
     {
       system: turn.system,
+      brand: state.binding.brand,
       contextNote,
       prefetch,
       messages: history,

@@ -1,5 +1,5 @@
 import type { ToolDef } from '../../tool-defs.js';
-import type { ToolSpec } from '../pack-api.js';
+import type { BrandProfile, ToolSpec } from '../pack-api.js';
 
 export interface ChatTurn {
   role: 'user' | 'assistant';
@@ -16,6 +16,8 @@ export interface PrefetchedCall {
 
 export interface ChatOptions {
   system: string;
+  /** 本轮已发布版本的品牌快照，仅供包 mock 使用，不额外进入 wire。 */
+  brand?: BrandProfile | null;
   messages: ChatTurn[];
   tools: ToolDef[];
   /** 本轮强制走离线脚本（日预算耗尽时的降级，见 budget.ts） */

@@ -4,6 +4,8 @@
 // demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
+import { currentPack } from './config/source.js';
+import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { readFile } from 'node:fs/promises';
@@ -692,7 +694,8 @@ function withHead(html: string, head: string): string {
 
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {
-  const html = await readFile(path.resolve('public/pay.html'), 'utf8');
+  const binding = currentPack();
+  const html = renderBrandPage(await readFile(path.resolve('public/pay.html'), 'utf8'), 'pay', binding.runtime, binding.brand);
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题
   const o = getOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
@@ -795,7 +798,8 @@ function renderProposalHtml(html: string, route: Route | null, travelers: number
 }
 
 async function serveProposal(c: Context): Promise<Response> {
-  const html = await readFile(path.resolve('public/proposal.html'), 'utf8');
+  const binding = currentPack();
+  const html = renderBrandPage(await readFile(path.resolve('public/proposal.html'), 'utf8'), 'proposal', binding.runtime, binding.brand);
   const routeId = c.req.param('routeId') ?? '';
   // 人数在路径第二段（/proposal/<id>/<人数>[/<日期]），取不到按 2 人
   const travelers = Math.min(50, Math.max(1, Math.floor(Number((c.req.param('rest') ?? '').split('/')[0]) || 2)));
@@ -936,6 +940,15 @@ app.route('/', consolePages);
 // /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这两个文件名。
 const SIMULATOR_PAGE_RE = /\/(?:chat|guide)\.html$/i;
 app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATOR_PAGE_RE.test(c.req.path) ? next() : c.notFound()));
+// 原始文件保持旧版字节；含品牌的静态入口也经过同一已发布快照。
+app.use('/*', async (c, next) => {
+  const page = /^\/(pay|proposal|chat)\.html$/i.exec(c.req.path)?.[1]?.toLowerCase() as 'pay' | 'proposal' | 'chat' | undefined;
+  if (!page || !['GET', 'HEAD'].includes(c.req.method)) return next();
+  const binding = currentPack();
+  if (binding.brand === null) return next();
+  const html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
+  return c.html(renderBrandPage(html, page, binding.runtime, binding.brand));
+});
 app.use('/*', serveStatic({ root: './public' }));
 
 // 全局兜底：此前 /api/chat 没有任何 catch，上游 LLM 抖动（超时/5xx/返回缺 choices）

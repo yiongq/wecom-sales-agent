@@ -539,11 +539,11 @@ export interface ProfileExtractionSources {
 export { partsOf } from './message-parts.js';
 
 /**
- * 第 18 步收口实际工具、主回复与跟进 context；品牌模板仍由第 20 步填实。
+ * 第 18 步收口实际工具、主回复与跟进 context；第 20 步补齐客户出口品牌模板。
  */
 export interface PackRuntimeTypes {
   LegacyTexts: LegacyTexts;
-  BrandTemplates: unknown;
+  BrandTemplates: BrandTemplates;
   ToolContext: TurnToolContext;
   TurnOutcome: StageTurnOutcome;
   TurnContext: TurnContext;
@@ -626,10 +626,35 @@ export interface EnginePackHooks {
   paidText(order: Order): string;
 }
 
-/** 品牌模板由第 20 步填实；本步只消费已存在的旧版文字。 */
-export interface LegacyTexts {
-  hardRequirements: string;
+/** 客户出口；模板用 {BrandProfile 字段名}，不做递归替换。 */
+export interface BrandTexts {
   identityAnswer: string;
+  offTopicReply: string;
+  welcomeText: string;
+  welcomeBackText: string;
+  webWelcome: string;
+  mockOpening: string;
+  quickReplies: readonly import('../shared/quick-reply-defaults.js').QuickReplyDefault[];
+}
+
+export type BrandPage = 'pay' | 'proposal' | 'chat' | 'web';
+export interface BrandPageSlot {
+  /** 页面中的完整原文片段；一次匹配，避免品牌值再次成为替换目标。 */
+  legacy: string;
+  template: string;
+  context: 'html-text' | 'html-attribute' | 'js-string' | 'js-template' | 'json';
+  /** JS 字面量最终写入 innerHTML 时，先按内层 HTML 上下文转义品牌值。 */
+  htmlContext?: 'text' | 'attribute';
+}
+
+export interface BrandTemplates extends BrandTexts {
+  preamble: string;
+  pages: Partial<Record<BrandPage, readonly BrandPageSlot[]>>;
+}
+
+/** 旧版文字保持原始字节；硬性要求与锁定节的模板发布由第 22 步接通。 */
+export interface LegacyTexts extends BrandTexts {
+  hardRequirements: string;
   resetReply: string;
   resetDisabledReply: string;
   handoffFallback: string;
@@ -649,3 +674,5 @@ export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
 export { dejargon } from './guards/dejargon.js';
 export { stripMarkdown, trimDangling } from './guards/text.js';
 export { stripAdvisorPrefix } from '../shared/conversation.js';
+
+export { brandTexts, renderBrandTemplate, renderBrandPage } from './brand.js';

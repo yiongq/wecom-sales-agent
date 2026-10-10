@@ -28,7 +28,9 @@ import { insightPrompts } from './insight.js';
 import { retrievalText } from './retrieval.js';
 import { retrievalEmpty } from './retrieval-empty.js';
 import { travelMock } from './mock.js';
-import { hardRequirements } from './legacy.js';
+import * as legacy from './legacy.js';
+import { travelTemplates } from './templates.js';
+import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -69,13 +71,14 @@ export function createTravelRuntime(sources: PackSources) {
       identityLine: helpers.IDENTITY_ANSWER.replace(/～$/, ''),
     },
     legacy: {
-      hardRequirements,
+      ...legacy,
+      quickReplies: travelQuickReplyDefaults,
       identityAnswer: helpers.IDENTITY_ANSWER,
       resetReply: '好的，我们重新开始～这次想去哪儿玩呢？😊',
       resetDisabledReply: '想换方向或改订单，直接告诉我新的需求就行～',
       handoffFallback: helpers.HANDED_OVER_FALLBACK,
     },
-    templates: undefined,
+    templates: travelTemplates,
     sopSections: [...TRAVEL_SOP_SECTIONS],
     contractRules: () => [...SOP_CONTRACT],
     knownFields,

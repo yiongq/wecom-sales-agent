@@ -166,6 +166,9 @@ export interface RenderInputs {
   imageSopHash: string;
   sectionTableHash: string;
   toolsHash: string;
+  /** 04 R6：旧发布行可缺省（等同旧版）；新行总是写完整快照。 */
+  brand?: BrandProfile | null;
+  brandHash?: string;
 }
 
 export const sopVersions = pgTable(
