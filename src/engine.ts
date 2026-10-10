@@ -43,7 +43,7 @@ import {
   visitedDestinations,
   type ToolHints,
 } from './tools.js';
-import { chat, type PrefetchedCall } from './llm.js';
+import { chat, reuseToolResult, type PrefetchedCall } from './llm.js';
 import { tryReserveVisitorLLM } from './budget.js';
 import {
   dropSentences,
@@ -3500,24 +3500,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     forceMock: degraded,
     sessionId,
     executeTool: (name, args) => runTool(name, args),
-    // 复用了之前同参数的 search_routes（见 llm.ts onReuse）：把那次的线路重新记成「最近查到的」，和模型最后看的那次对得上
-    onReuse: (name, _args, result) => {
-      if (name !== 'search_routes') return;
-      try {
-        const rows: unknown = JSON.parse(result);
-        if (Array.isArray(rows)) {
-          rememberShownRoutes(
-            session,
-            rows.filter(
-              (r): r is { id: string; title: string; priceFrom: number } =>
-                !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string',
-            ),
-          );
-        }
-      } catch {
-        /* 结果不是 JSON（工具报错），没什么可记的 */
-      }
-    },
+    // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
+    onReuse: (name, _args, result) => reuseToolResult(name, result, session),
   });
   // 额度已在调用前占掉（tryReserveVisitorLLM），失败也不退还：token 是真花出去了
   const modelMs = Date.now() - modelStart;

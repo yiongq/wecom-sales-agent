@@ -1,6 +1,6 @@
 // 04 R1：旧工具入口仅接线与适配；旅游实现进包，执行注册与钩子进 core。
 import { createToolRegistry } from './core/tools/registry.js';
-import type { Session, ToolHints } from './core/pack-api.js';
+import type { Session, ToolHints, ToolSpec } from './core/pack-api.js';
 import { createTravelTools } from './packs/travel/tools/index.js';
 import { catalogItemAt, catalogVersionKey, configMode, currentCatalog } from './config/source.js';
 import { indexReady, semanticRecall } from './retrieval.js';
@@ -44,6 +44,11 @@ const travelTools = createTravelTools({
   enterHandoff,
 });
 const registry = createToolRegistry(travelTools.tools);
+
+/** 模型门面只读取同一份声明，不重新装配工具或执行它们。 */
+export function getToolSpec(name: string): ToolSpec | undefined {
+  return registry.get(name);
+}
 
 export function loadRoutes(...args: Parameters<typeof travelTools.loadRoutes>): ReturnType<typeof travelTools.loadRoutes> {
   return travelTools.loadRoutes(...args);

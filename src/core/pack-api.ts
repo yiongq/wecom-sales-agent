@@ -189,6 +189,11 @@ export interface ToolSpec<Context = ToolContext> {
   execute(args: unknown, ctx: Context): Promise<ToolResult>;
 }
 
+// 04 第 11 步：模型输入与离线策略，旅游解析留在包内。
+export { todayIso } from '../env.js';
+export type { ChatTurn, PrefetchedCall, ChatOptions, MockPolicy, LlmRuntime } from './llm/types.js';
+import type { MockPolicy } from './llm/types.js';
+
 export type StepVerdict =
   | { action: 'pass' }
   | { action: 'drop_sentence' | 'replace' | 'patch' | 'append' | 'strip'; text: string; removed?: string[]; added?: string[] }
@@ -257,7 +262,7 @@ export interface PackRuntimeTypes {
   PackThresholds: unknown;
   FollowupTemplates: unknown;
   InsightPrompts: unknown;
-  MockPolicy: unknown;
+  MockPolicy: MockPolicy;
 }
 
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
