@@ -1,4 +1,4 @@
-// 旅游出口词表的原样副本；第 17–18 步迁移引擎执行器时替换 engine.ts 内的词表。
+// 旅游出口词表；引擎执行器与包运行时取同一份内容。
 import type { DejargonVocab } from '../../core/pack-api.js';
 
 // 中文话术里夹带英文商务词（「我按日期帮您确认 availability」）——一眼就不专业，

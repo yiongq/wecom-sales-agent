@@ -194,6 +194,45 @@ export { todayIso } from '../env.js';
 export type { ChatTurn, PrefetchedCall, ChatOptions, MockPolicy, LlmRuntime } from './llm/types.js';
 import type { MockPolicy } from './llm/types.js';
 
+// 04 第 13 步：包只补行业 context、预取与确定性回复；历史与落盘由核心掌管。
+export { convLabel, logQuote } from '../log.js';
+
+export interface TurnContext {
+  session: Session;
+  text: string;
+  /** 经本轮注册表执行预取，并返回实际执行的参数与完整结果。 */
+  callTool(name: string, args: Record<string, unknown>): Promise<import('./llm/types.js').PrefetchedCall>;
+}
+
+export interface PrefetchResult {
+  calls: import('./llm/types.js').PrefetchedCall[];
+  timings: string[];
+}
+
+/** 核心继续负责身份补句、清理、消息追加、保存与结束 trace。 */
+export interface DeterministicReply {
+  text: string;
+}
+
+export interface TurnToolContext extends ToolContext {
+  text: string;
+  args: Record<string, unknown>;
+  notes: Record<string, string>;
+  handoffDeclined: boolean;
+}
+
+export interface TravelTurnSources extends Pick<
+  PriceGuardSources,
+  'loadRoutes' | 'getOrder' | 'mentionsPlace' | 'isOriginMention' | 'offCatalogPlaces'
+> {
+  searchRoutes(args: { destination: string }): Promise<Pick<Route, 'id' | 'title' | 'days' | 'hotelLevel' | 'priceFrom' | 'highlights'>[]>;
+  rememberShownRoutes(session: Session, routes: { id: string; title: string; priceFrom: number }[]): void;
+  visitedDestinations(texts: string[], routes?: Route[]): string[];
+  paymentMode(): PaymentMode;
+  spokenMoney(text: string): ReturnType<typeof import('./parse/money.js').spokenMoney>;
+  liftsBudget(text: string): boolean;
+}
+
 // 04 第 14 步：辅助模块的数据契约；执行与缓存暂留旧路径。
 export interface FollowupTemplates {
   idleMinutes: Partial<Record<SalesStage, number>>;
@@ -426,9 +465,9 @@ export interface PackRuntimeTypes {
   BrandTemplates: unknown;
   ToolContext: ToolContext;
   TurnOutcome: StageTurnOutcome;
-  TurnContext: unknown;
-  PrefetchResult: unknown;
-  DeterministicReply: unknown;
+  TurnContext: TurnContext;
+  PrefetchResult: PrefetchResult;
+  DeterministicReply: DeterministicReply;
   GuardContext: GuardContext;
   HandoffVocab: HandoffVocab;
   DejargonVocab: DejargonVocab;
