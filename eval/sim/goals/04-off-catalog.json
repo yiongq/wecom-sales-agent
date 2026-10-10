@@ -1,0 +1,27 @@
+{
+  "id": "travel-off-catalog",
+  "persona": "你是云途定制的客户，两人想在 2027-03-10 去南极，问产品库有没有现成线路。只咨询现成产品，不坚持定制、不要求人工、不购买。对方说明有没有现成线路后结束。",
+  "allowedTools": ["search_routes", "get_route_detail"],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "没有|暂无|未收录|库里|现成",
+      "scope": "any"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "南极.{0,20}(?:每人|报价|日游|天游)",
+      "scope": "all"
+    }
+  ],
+  "maxTurns": 12,
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"]
+}

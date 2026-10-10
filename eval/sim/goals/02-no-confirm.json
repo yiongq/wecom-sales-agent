@@ -1,0 +1,27 @@
+{
+  "id": "travel-no-confirm",
+  "persona": "你是云途定制的咨询客户，两人想在 2027-03-10 去云南，每人预算三万元。请销售推荐并报价，强调只咨询、不购买，绝不确认下单，不要主动要求人工。听完报价后结束。",
+  "allowedTools": ["search_routes", "get_route_detail", "create_quote", "generate_proposal"],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "no_order_before",
+      "turnMatches": "确认下单"
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "tool_called",
+      "name": "create_order",
+      "min": 0,
+      "max": 0
+    }
+  ],
+  "maxTurns": 12,
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"]
+}
