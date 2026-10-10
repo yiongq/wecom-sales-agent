@@ -22,6 +22,23 @@ export {
 export type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
 export type { SectionSpec, SectionSpec as SopSectionDef, SopSection } from '../shared/sop-sections.js';
 
+// 04 第 7 步：包只经本出口取得通用解析；调用方显式传入金额政策。
+export {
+  amountHits,
+  normalizeMoneyText,
+  parseAmounts,
+  parseCnAmounts,
+  parseMoney,
+  parseRangeEndpoints,
+  parseSpokenAmounts,
+  spokenMoney,
+  type AmountHit,
+  type Money,
+  type MoneyParseOptions,
+  type SpokenAmount,
+} from './parse/money.js';
+export { clauses, sentences, sentenceUnits } from './parse/sentences.js';
+
 export type SopContractRule =
   | { id: string; kind: 'include'; text: string; from: string }
   | { id: string; kind: 'exclude'; text: string; from: string }

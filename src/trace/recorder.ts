@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { catalogVersionKey, configMode, currentCatalog, currentSop } from '../config/source.js';
 import { onLlmCall, type CallTrace } from '../llm.js';
 import { noteTurnLog, withLogContext } from '../log.js';
-import { sentenceUnits } from '../price-guard.js';
+import { sentenceUnits } from '../core/parse/sentences.js';
 import { cleanText } from '../shared/text.js';
 import { getSession, isDemoClassId, linkTurn, queueTelemetry, sessionStoreMode, type TelemetryRows } from '../store.js';
 import { normalizeForStore } from '../store/project.js';
@@ -189,7 +189,7 @@ export function noteDraft(raw: string): void {
 // 链接空位记号（engine.ts 的 HOLE，U+0001–U+0003）只在出口内部流转、发出前抹掉，按句对比时不算
 const HOLE_MARKS = new RegExp(`[${String.fromCharCode(1)}-${String.fromCharCode(3)}]`, 'g');
 
-/** 按句切开（与按句删的护栏同一套边界：price-guard 的 sentenceUnits），每句去掉首尾空白、空句不要 */
+/** 按句切开（与按句删的护栏同一套边界：core 的 sentenceUnits），每句去掉首尾空白、空句不要 */
 function sentencesOf(text: string): string[] {
   const t = text.replace(HOLE_MARKS, '');
   return sentenceUnits(t)
