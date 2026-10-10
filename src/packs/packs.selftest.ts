@@ -25,7 +25,7 @@ import {
   type ItemCheck,
 } from '../core/pack-api.js';
 import { SOP_KNOWN_FIELDS, TRAVEL_SOP_SECTIONS } from './travel/sop.js';
-import { toolDefs } from '../core/pack-api.js';
+import { toolDefs } from './travel/tool-defs.js';
 import type { SalesStage } from '../core/pack-api.js';
 import { PACK_IDS, packById } from './registry.js';
 

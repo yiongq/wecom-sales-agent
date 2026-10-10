@@ -1,5 +1,6 @@
 // 七个旅游工具。顺序与原 toolDefs 相同；本步声明缓存/重试政策，模型客户端第 11 步再读取。
-import { toolDefs, isValidIsoDate, cleanText, type ToolSpec, type TravelToolSources } from '../../../core/pack-api.js';
+import { isValidIsoDate, cleanText, type ToolSpec, type TravelToolSources } from '../../../core/pack-api.js';
+import { toolDefs } from '../tool-defs.js';
 import { createTravelCatalog, HANDOFF_NOTE, proposalVersionSuffix, type SearchRoutesArgs } from './catalog.js';
 
 export function createTravelTools(sources: TravelToolSources) {

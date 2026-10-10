@@ -1,7 +1,8 @@
+import { toolDefs } from '../tool-defs.js';
 // 工具声明与依赖注入契约；现有锁定套件继续覆盖七工具的客户行为与金额校验。
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { toolDefs, type Order, type Route, type Session, type ToolContext, type TravelToolSources } from '../../../core/pack-api.js';
+import { type Order, type Route, type Session, type ToolContext, type TravelToolSources } from '../../../core/pack-api.js';
 import { createTravelTools } from './index.js';
 
 const route: Route = {

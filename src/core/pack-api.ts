@@ -1,3 +1,4 @@
+import { packPipelines } from './engine/pipelines.js';
 // 04 R2、R3：行业包取得核心能力的唯一出口；这里不装载行业包，也不引旧门面。
 import type { SectionSpec } from '../shared/sop-sections.js';
 import type { CustomerProfile, HandoffRecord, Hotel, Order, Route, SalesStage, Session } from '../types.js';
@@ -8,7 +9,7 @@ import type { CatalogItem } from '../shared/console-api.js';
 import { z } from 'zod';
 
 export type { CustomerProfile, SalesStage, Session, Order, AgentReply, Route, Hotel } from '../types.js';
-export { toolDefs, type ToolDef } from '../tool-defs.js';
+export type { ToolDef } from '../tool-defs.js';
 export { deepFreeze } from '../shared/freeze.js';
 export { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../shared/catalog.js';
 export { UNSTORABLE_TEXT, type CatalogItem } from '../shared/console-api.js';
@@ -266,6 +267,8 @@ export interface InsightPrompts {
   reach: Record<string, number>;
   funnelNames: readonly string[];
   draftFallback: Record<string, string>;
+  draftFallbackStage: SalesStage;
+  stuckStages: readonly SalesStage[];
 }
 
 export interface DejargonVocab {
@@ -452,7 +455,7 @@ export interface GuardContext<T extends GuardContextTypes = GuardContextTypes> {
   orderSources: T['orderSources'];
   brand: BrandProfile | null;
   thresholds: T['thresholds'];
-  /** 绑定本轮会话，经确定性的 create_order 工具建单或复用；不直接写订单表。 */
+  /** 绑定本轮会话，经包声明的确定性建单工具建单或复用；不直接写订单表。 */
   createOrder(args: Record<string, unknown>): Promise<ToolResult>;
   /** 绑定本轮会话，保留现有转人工记录的形状与语义。 */
   enterHandoff(record: HandoffRecord): void;
@@ -489,6 +492,9 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
   takenOver(): boolean;
   isTerminalStage(stage: SalesStage): boolean;
   advanceStage(session: Session, turn: StageTurnOutcome): SalesStage;
+  modelRequestedHandoff(): boolean;
+  retrievalEmpty(calls: readonly GuardToolSource[]): boolean;
+  repeatedQuestion(text: string, previous: readonly string[]): boolean;
   extractProfile(session: Session, calls: GuardToolSource[], text: string): CustomerProfile;
   fallbackReply(stage: SalesStage): string;
   answerIdentity(text: string, reply: string): string;
@@ -533,21 +539,20 @@ export interface ProfileExtractionSources {
 export { partsOf } from './message-parts.js';
 
 /**
- * spec 尚未定义其余引用类型的字段与副作用方法签名。
- * 保留类型参数，不用伪业务实现或任意字段表补齐；装载前需确认具体契约。
+ * 第 18 步收口实际工具、主回复与跟进 context；品牌模板仍由第 20 步填实。
  */
 export interface PackRuntimeTypes {
-  LegacyTexts: unknown;
+  LegacyTexts: LegacyTexts;
   BrandTemplates: unknown;
-  ToolContext: ToolContext;
+  ToolContext: TurnToolContext;
   TurnOutcome: StageTurnOutcome;
   TurnContext: TurnContext;
   PrefetchResult: PrefetchResult;
   DeterministicReply: DeterministicReply;
-  GuardContext: GuardContext;
+  GuardContext: ReplyGuardContext;
   HandoffVocab: HandoffVocab;
   DejargonVocab: DejargonVocab;
-  PackThresholds: unknown;
+  PackThresholds: object;
   FollowupTemplates: FollowupTemplates;
   InsightPrompts: InsightPrompts;
   MockPolicy: MockPolicy;
@@ -565,16 +570,21 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   tools: ToolSpec<T['ToolContext']>[];
   beforeTool?(name: string, args: unknown, ctx: T['ToolContext']): { args: unknown } | { reject: string };
   afterTool?(name: string, result: ToolResult, ctx: T['ToolContext']): void;
-  extractProfile(text: string, session: Session): Partial<CustomerProfile>;
+  extractProfile(text: string, session: Session, calls?: readonly TurnToolCall[]): Partial<CustomerProfile>;
   advanceStage(session: Session, turn: T['TurnOutcome']): SalesStage | null;
   prefetch?(ctx: T['TurnContext']): Promise<T['PrefetchResult'] | null>;
   contextNote(ctx: T['TurnContext']): string[];
   preModel?(ctx: T['TurnContext']): T['DeterministicReply'] | null;
   replySteps: GuardStep<T['GuardContext']>[];
-  followupSteps: GuardStep<T['GuardContext']>[];
+  /** 行业步骤的结束位置，用于把后续核心步骤接回原顺序。 */
+  replyAnchors?: Readonly<Record<string, string>>;
+  followupSteps: GuardStep<FollowupGuardContext>[];
+  engineHooks: EnginePackHooks;
   vocab: { handoff: T['HandoffVocab']; dejargon: T['DejargonVocab'] };
   thresholds: T['PackThresholds'];
   retrievalText(item: CatalogItem): string;
+  retrievalItems(): CatalogItem[];
+  retrievalCacheFile: string;
   followupTemplates: T['FollowupTemplates'];
   insightPrompts: T['InsightPrompts'];
   mock: T['MockPolicy'];
@@ -582,17 +592,60 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {
   runtime: PackRuntime<T>;
+  pipelines: ReturnType<typeof packPipelines>;
   /** null 是旧版模式；defaultBrand 不替代旧版模式。 */
   brand: BrandProfile | null;
 }
 
 let binding: PackBinding | null = null;
 
-/** 第 18 步由配置组合根注入；当前生产路径不调用。 */
+/** R2：由配置组合根注入；null 品牌保留旧版模式。 */
 export function bindPack<T extends PackRuntimeTypes>(runtime: PackRuntime<T>, brand: BrandProfile | null): void {
-  binding = { runtime, brand };
+  const pipelines = packPipelines(runtime);
+  binding = { runtime, brand, pipelines };
 }
 
 export function boundPack(): PackBinding | null {
   return binding;
 }
+
+/** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
+export interface EnginePackHooks {
+  isComplaint(text: string): boolean;
+  isHandoffIntent(text: string): boolean;
+  safetyNetKind(session: Session, text: string): 'complaint' | 'refund' | 'request';
+  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string;
+  departNoteForHandoff(session: Session): string | undefined;
+  fallbackReply(stage: SalesStage): string;
+  hintsFor(name: string, ctx: TurnToolContext): ToolHints;
+  withNotes(result: ToolResult, notes: Record<string, string>): ToolResult;
+  modelRequestedHandoff(calls: readonly TurnToolCall[]): boolean;
+  retrievalEmpty(calls: readonly TurnToolCall[]): boolean;
+  createOrderTool: string | null;
+  resetSession(session: Session): void;
+  paidText(order: Order): string;
+}
+
+/** 品牌模板由第 20 步填实；本步只消费已存在的旧版文字。 */
+export interface LegacyTexts {
+  hardRequirements: string;
+  identityAnswer: string;
+  resetReply: string;
+  resetDisabledReply: string;
+  handoffFallback: string;
+}
+
+export interface FollowupGuardContext extends GuardContext {
+  recordGuard(guard: string, before: string, after: string, action: 'strip' | 'replace' | 'drop_sentence'): void;
+}
+
+/** 包工厂的存储、配置与检索能力，组合根提供，包不引用运行时模块。 */
+export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
+  isConfigNotReadyError(error: unknown): boolean;
+  isTerminalStage(stage: SalesStage): boolean;
+  handoffReasons: typeof import('../handoff/record.js').HANDOFF_REASON;
+}
+
+export { dejargon } from './guards/dejargon.js';
+export { stripMarkdown, trimDangling } from './guards/text.js';
+export { stripAdvisorPrefix } from '../shared/conversation.js';

@@ -24,6 +24,8 @@ const DRAFT_FALLBACK: Record<string, string> = {
 };
 
 export const insightPrompts: InsightPrompts = {
+  draftFallbackStage: 'discovery',
+  stuckStages: ['quote', 'closing'],
   insights:
     '你是高端定制旅行社的销售运营分析师。根据给定的实时销售数据，输出恰好 3 条中文洞察，每条是一句完整通顺的话（20–50 字），先点结论再给一句可执行建议，数字要写完整、不要省略或截断。聚焦：漏斗最大流失点、转人工/高价值线索、报价促成催单机会。只输出 3 行，每行一条，不要编号、不要引号、不要 markdown。',
   suggestion:
