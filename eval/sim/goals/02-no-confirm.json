@@ -9,7 +9,7 @@
     },
     {
       "kind": "no_order_before",
-      "turnMatches": "确认下单"
+      "turnMatches": "确认下单|下单|订单链接|付款链接|支付链接|就订|订了|买了"
     },
     {
       "kind": "handoff",

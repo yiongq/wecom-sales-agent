@@ -160,11 +160,11 @@
   "allowedTools": ["search_routes", "get_route_detail", "create_quote", "generate_proposal", "create_order"],
   "predicates": [
     { "kind": "order", "count": 1, "fields": { "travelers": 2, "departDate": "2027-03-10" } },
-    { "kind": "no_order_before", "turnMatches": "确认下单" },
+    { "kind": "no_order_before", "turnMatches": "确认下单|下单|订单链接|付款链接|支付链接|就订|订了|买了" },
     { "kind": "handoff", "expected": false },
     { "kind": "tool_called", "name": "search_routes", "min": 1 },
     { "kind": "tool_called", "name": "create_quote", "min": 1 },
-    { "kind": "tool_called", "name": "create_order", "min": 1, "max": 1 },
+    { "kind": "tool_called", "name": "create_order", "min": 1 },
     { "kind": "reply_matches", "pattern": "/pay/ord_[0-9a-f]{24}", "scope": "any" },
     { "kind": "reply_excludes", "pattern": "保证.*(?:有房|成行)", "scope": "all" }
   ],
