@@ -1,4 +1,4 @@
-// 租户（spec「数据库」）：tenants 不带 RLS，agent_app 只读，agent_platform 能新建。不经 withTenant
+// 租户（spec「数据库」）：tenants 不带 RLS，agent_app 只读，agent_platform 能新建；需要原子审计时由调用方传入事务。
 import { eq } from 'drizzle-orm';
 import type { BrandProfile } from '../../core/pack-api.js';
 import type { Db, Tx } from '../client.js';
@@ -14,7 +14,7 @@ export interface TenantRow {
   status: 'trial' | 'active' | 'suspended';
 }
 
-export async function findTenantBySlug(db: Db, slug: string): Promise<TenantRow | null> {
+export async function findTenantBySlug(db: Db | Tx, slug: string): Promise<TenantRow | null> {
   const [row] = await db
     .select({
       id: tenants.id,
@@ -31,8 +31,8 @@ export async function findTenantBySlug(db: Db, slug: string): Promise<TenantRow 
 }
 
 export async function insertTenant(
-  db: Db,
-  t: { slug: string; name: string; packId: string; locale: string; region: string; brand?: BrandProfile | null },
+  db: Db | Tx,
+  t: { id?: string; slug: string; name: string; packId: string; locale: string; region: string; brand?: BrandProfile | null },
 ): Promise<TenantRow> {
   const [row] = await db.insert(tenants).values(t).returning();
   return row!;

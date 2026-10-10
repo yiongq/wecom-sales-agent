@@ -5416,15 +5416,24 @@ async function realPostgres(superUrl: string): Promise<void> {
       });
       return { code: r.status, out: `${r.stdout}${r.stderr}` };
     };
-    const create = cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM });
+    const create = cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], {
+      DATABASE_PLATFORM_URL: PLATFORM,
+      DEPLOY_PROFILE: 'demo',
+    });
     check('真实 PG：tenant-create 以 platform 身份建租户，退出码 0', create.code === 0, create.out.slice(0, 200));
     check(
       '真实 PG：同样的参数再跑一次仍是 0',
-      cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 0,
+      cli('tenant-create.ts', ['--slug', 'demo', '--name', 'Demo', '--pack', 'travel'], {
+        DATABASE_PLATFORM_URL: PLATFORM,
+        DEPLOY_PROFILE: 'demo',
+      }).code === 0,
     );
     check(
       '真实 PG：同名租户字段不同 → 退出码 2',
-      cli('tenant-create.ts', ['--slug', 'demo', '--name', '别的名字', '--pack', 'travel'], { DATABASE_PLATFORM_URL: PLATFORM }).code === 2,
+      cli('tenant-create.ts', ['--slug', 'demo', '--name', '别的名字', '--pack', 'travel'], {
+        DATABASE_PLATFORM_URL: PLATFORM,
+        DEPLOY_PROFILE: 'demo',
+      }).code === 2,
     );
     const secret = 'cli-password-from-stdin';
     const made = cli(

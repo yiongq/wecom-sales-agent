@@ -3,6 +3,7 @@
 // 退出码：0 已建好，或同名租户已存在且字段相同；2 同名租户已存在但字段不同；1 其他错误
 // --pack 的可选值读行业包注册表（后台 UX spec「行业包通用架构 · 放在哪里」）：加包不用改命令行
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { BRAND_FIELDS, type BrandProfile } from '../core/pack-api.js';
@@ -10,7 +11,7 @@ import { withTenant, type Db } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { findTenantBySlug, insertTenant, readBrand } from '../db/repo/tenants.js';
 import { PACK_IDS } from '../packs/registry.js';
-import { resolveProfile } from '../profile.js';
+import { isExplicitDemoProfile } from '../profile.js';
 import { readBrandFile } from './brand-file.js';
 import { dbFromEnv, main } from './common.js';
 
@@ -39,8 +40,8 @@ export async function runTenantCreate(argv: string[], deps: { connect(): Promise
     console.error(`缺少 --slug / --name / --pack；用法：${USAGE}`);
     return 1;
   }
-  if (resolveProfile(process.env).name === 'prod' && !a['brand-file']) {
-    console.error('prod 下 tenant-create 必须提供 --brand-file');
+  if (!a['brand-file'] && !isExplicitDemoProfile()) {
+    console.error('tenant-create 必须提供 --brand-file；demo 实例在 `.env.platform` 里设 `DEPLOY_PROFILE=demo` 才可省略');
     return 1;
   }
   let brand: BrandProfile | null = null;
@@ -67,30 +68,37 @@ export async function runTenantCreate(argv: string[], deps: { connect(): Promise
   try {
     const { db, close } = await deps.connect();
     try {
-      const existing = await findTenantBySlug(db, want.slug);
-      if (existing) {
-        const same =
-          existing.name === want.name &&
-          existing.packId === want.packId &&
-          existing.locale === want.locale &&
-          existing.region === want.region &&
-          isDeepStrictEqual(await readBrand(db, existing.id), want.brand);
-        (same ? console.log : console.error)(
-          `[tenant-create] 租户 ${want.slug} 已存在${same ? '，字段相同' : '，但字段不同，没有改动'}（id ${existing.id}）`,
-        );
-        return same ? 0 : 2;
-      }
-      const t = await insertTenant(db, want);
-      await withTenant(db, { tenantId: t.id, actor: { kind: 'platform', userId: null, name: 'tenant-create', ip: null } }, (tx) =>
-        writeAudit(tx, {
-          action: 'platform.tenant_create',
-          targetType: 'tenant',
-          targetId: t.id,
-          diff: { slug: t.slug, name: t.name, packId: t.packId, ...(brand ? { brandFields: [...BRAND_FIELDS] } : {}) },
-        }),
+      // 预先分配 id，使首次插入与租户审计在同一个 withTenant 事务内完成。
+      const id = randomUUID();
+      const result = await withTenant(
+        db,
+        { tenantId: id, actor: { kind: 'platform', userId: null, name: 'tenant-create', ip: null } },
+        async (tx) => {
+          const existing = await findTenantBySlug(tx, want.slug);
+          if (existing) {
+            const same =
+              existing.name === want.name &&
+              existing.packId === want.packId &&
+              existing.locale === want.locale &&
+              existing.region === want.region &&
+              isDeepStrictEqual(await readBrand(tx, existing.id, true), want.brand);
+            return {
+              code: same ? 0 : 2,
+              message: `[tenant-create] 租户 ${want.slug} 已存在${same ? '，字段相同' : '，但字段不同，没有改动'}（id ${existing.id}）`,
+            };
+          }
+          const t = await insertTenant(tx, { id, ...want });
+          await writeAudit(tx, {
+            action: 'platform.tenant_create',
+            targetType: 'tenant',
+            targetId: t.id,
+            diff: { slug: t.slug, name: t.name, packId: t.packId, ...(brand ? { brandFields: [...BRAND_FIELDS] } : {}) },
+          });
+          return { code: 0, message: `[tenant-create] 已建租户 ${t.slug}（id ${t.id}）` };
+        },
       );
-      console.log(`[tenant-create] 已建租户 ${t.slug}（id ${t.id}）`);
-      return 0;
+      (result.code === 0 ? console.log : console.error)(result.message);
+      return result.code;
     } finally {
       await close();
     }
