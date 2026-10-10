@@ -39,6 +39,7 @@ function turn(reply: string, customer = '咨询', state: Snapshot = initial, too
       calls: tools.map((name) => ({ name, args: {}, ms: 0, prefetch: false, resultHead: '{}', resultBytes: 2, startedAt: 1 })),
       llm: [],
       guards: [],
+      guardVerdicts: null,
       draft: reply,
     },
     outcome: 'replied',

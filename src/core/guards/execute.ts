@@ -10,7 +10,13 @@ export interface GuardRunResult {
 
 export interface GuardPipeline<Context extends GuardContext> {
   readonly steps: readonly GuardStep<Context>[];
-  run(ctx: Context): Promise<GuardRunResult>;
+  run(ctx: Context, hooks?: GuardRunHooks): Promise<GuardRunResult>;
+}
+
+/** 完成回调与最后一个同步步骤在同一段执行，消息/trace 落盘前不让出执行权。 */
+export interface GuardRunHooks {
+  onVerdict?(verdict: GuardVerdict): void;
+  onComplete?(result: GuardRunResult): void;
 }
 
 /** 装载时拒绝非法注册并捕获表的副本，不能靠事后改数组绕过校验。 */
@@ -30,17 +36,24 @@ export function loadGuardPipeline<Context extends GuardContext>(steps: readonly 
 
   return Object.freeze({
     steps: loaded,
-    async run(ctx: Context): Promise<GuardRunResult> {
+    async run(ctx: Context, hooks: GuardRunHooks = {}): Promise<GuardRunResult> {
       const verdicts: GuardVerdict[] = [];
       for (const step of loaded) {
         const pending = step.run(ctx);
         // 同步步骤之间不插入 await：后置接管检查到失败判定、最终写消息须连续执行。
         const verdict = 'action' in pending ? pending : await pending;
         verdicts.push({ id: step.id, action: verdict.action });
-        if (verdict.action === 'abort') return { text: ctx.text, aborted: true, verdicts };
+        hooks.onVerdict?.(verdicts.at(-1)!);
+        if (verdict.action === 'abort') {
+          const result = { text: ctx.text, aborted: true, verdicts };
+          hooks.onComplete?.(result);
+          return result;
+        }
         if (verdict.action !== 'pass') ctx.text = verdict.text;
       }
-      return { text: ctx.text, aborted: false, verdicts };
+      const result = { text: ctx.text, aborted: false, verdicts };
+      hooks.onComplete?.(result);
+      return result;
     },
   });
 }

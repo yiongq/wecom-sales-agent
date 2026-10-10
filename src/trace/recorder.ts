@@ -17,6 +17,7 @@ import { normalizeForStore } from '../store/project.js';
 import type { ChatMessage, SalesStage } from '../types.js';
 import type { TurnSignals } from '../handoff/triggers.js';
 import { onUsage } from '../usage.js';
+import type { GuardVerdict } from '../core/pack-api.js';
 
 /** 一次工具调用：参数是执行时的那份，结果只留前 4,096 字节（按 UTF-8，不切开字符） */
 export interface TraceCall {
@@ -70,6 +71,8 @@ export interface TurnContext {
   calls: TraceCall[];
   llm: TraceLlmCall[];
   guards: GuardEvent[];
+  /** 04 R8：每轮一份，未进入主回复流水线为 null。 */
+  guardVerdicts: GuardVerdict[] | null;
   /** 模型原稿（chat() 的 raw）；没调模型的轮次为 null */
   draft: string | null;
 }
@@ -164,6 +167,7 @@ export function startTurn(conversationId: string, input = ''): void {
     calls: [],
     llm: [],
     guards: [],
+    guardVerdicts: null,
     draft: null,
   };
   h.stageBefore = getSession(conversationId)?.stage ?? null;
@@ -178,6 +182,12 @@ export function notePrefix(sopVersion: number | null, prefixHash: string): void 
   if (!h) return;
   h.ctx!.sopVersion = sopVersion;
   h.ctx!.prefixHash = prefixHash;
+}
+
+/** 执行器每完成一步同步送出；中止只保留已经执行的步骤。 */
+export function noteGuardVerdict(verdict: GuardVerdict): void {
+  const h = live();
+  if (h) (h.ctx!.guardVerdicts ??= []).push({ ...verdict });
 }
 
 /** 模型原稿（chat() 的 raw，含 <state> 块）：去掉 NUL、修好孤立代理项，不截长度 */
@@ -432,6 +442,7 @@ function finish(
     calls: t.calls.map(({ startedAt: _s, failed: _f, ...c }) => c),
     llm: t.llm.map(({ startedAt: _s, ...c }) => c),
     signals: h.signals ? { ...h.signals } : null,
+    guardVerdicts: t.guardVerdicts?.map((v) => ({ ...v })) ?? null,
   };
   const guards: GuardRow[] = t.guards.map((g, ord) => ({
     turnId: t.turnId,

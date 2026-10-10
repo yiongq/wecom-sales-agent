@@ -335,6 +335,43 @@ await test('运行入口支持自定义基线、差异判失败、off 跳过比�
     else process.env.CONFIG_TEST_DB = previousDb;
   }
 });
+for (const missing of [false, true]) {
+  await test(missing ? '快照已有 case 被删掉时完整回归失败' : '新增 case 不在快照时通过，自己的裁决与其他断言仍严格检查', async () => {
+    const previous = process.env.EVAL_V2_BASELINE;
+    const previousDb = process.env.CONFIG_TEST_DB;
+    const previousArgv = process.argv;
+    const log = console.log;
+    const output: string[] = [];
+    const target = path.join(selftestDir, 'coverage-snapshot.json');
+    fs.writeFileSync(target, await serializeSnapshot(createSnapshot([snapshotResults[0]])));
+    process.env.EVAL_V2_BASELINE = target;
+    process.env.CONFIG_TEST_DB = '';
+    process.argv = [process.execPath, 'eval/run.ts'];
+    console.log = (...args: unknown[]) => output.push(args.join(' '));
+    try {
+      const added = structuredClone(base);
+      added.id = 'v2-added-case';
+      assert.equal(await runV2(missing ? [added] : [base, added]), !missing);
+      if (missing) assert.match(output.join('\n'), /v2-selftest.*snapshot\.case:.*缺少 case/);
+      else {
+        assert.match(output.join('\n'), /v2 快照比对：1 条 case · 0 处差异/);
+        added.turns[0].expect.guardVerdicts = [];
+        assert.equal(await runV2([base, added]), false);
+        assert.match(output.join('\n'), /v2-added-case.*guardVerdicts/);
+        delete added.turns[0].expect.guardVerdicts;
+        added.turns[0].expect.replyMatches = ['不可能出现的回复'];
+        assert.equal(await runV2([base, added]), false);
+      }
+    } finally {
+      process.argv = previousArgv;
+      console.log = log;
+      if (previous === undefined) delete process.env.EVAL_V2_BASELINE;
+      else process.env.EVAL_V2_BASELINE = previous;
+      if (previousDb === undefined) delete process.env.CONFIG_TEST_DB;
+      else process.env.CONFIG_TEST_DB = previousDb;
+    }
+  });
+}
 console.log(`v2 快照新增自测耗时：${((performance.now() - snapshotStarted) / 1000).toFixed(2)}s`);
 // 每个来源文件取前两条，再补重置、订单全流程及相隔较远的节假日。
 const fullSample = fs
@@ -362,7 +399,7 @@ const badExpect = structuredClone(base);
 badExpect.id = 'v2-pool-expect-failure';
 badExpect.turns[0].expect.replyMatches = ['{{call:missing.payUrl}}'];
 fullSample.push(sessionQuota, badScript, badExpect);
-assert.equal(fullSample.length, 46);
+assert.equal(new Set(fullSample.map((c) => c.id)).size, fullSample.length);
 // 默认覆盖建单、接管、重置、跨年节假日、价格护栏与额度；完整来源覆盖按需开启。
 const sample =
   process.env.EVAL_V2_EQUIV_FULL === '1'

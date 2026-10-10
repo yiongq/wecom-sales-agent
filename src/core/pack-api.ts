@@ -468,6 +468,41 @@ export interface GuardStep<Context extends GuardContext = GuardContext> {
   run(ctx: Context): Promise<StepVerdict> | StepVerdict;
 }
 
+/** 第 16 步：主回复共享旗标的实际形状；步骤表声明它们的首次写入位置。 */
+export interface ReplyGuardFlags extends GuardTurnFlags {
+  emptyModelReply: boolean;
+  wantsOrder: boolean;
+  customPromise: string;
+  handedOverSelfDecided: boolean;
+  guardHit: 'injection' | 'price' | null;
+  preDropSnapshot: string;
+  saidAll: string[];
+}
+
+/** 通用主回复步骤所需的本轮能力；记录、消息追加由引擎绑定。 */
+export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { flags: ReplyGuardFlags }> {
+  raw: string;
+  inputText: string;
+  stageAtStart: SalesStage;
+  ordersBefore: number;
+  handoffDeclined: boolean;
+  takenOver(): boolean;
+  isTerminalStage(stage: SalesStage): boolean;
+  advanceStage(session: Session, turn: StageTurnOutcome): SalesStage;
+  extractProfile(session: Session, calls: GuardToolSource[], text: string): CustomerProfile;
+  fallbackReply(stage: SalesStage): string;
+  answerIdentity(text: string, reply: string): string;
+  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string;
+  departNoteForHandoff(session: Session): string | undefined;
+  failureReason: string;
+  handoffFallback: string;
+  recordGuard(guard: string, before: string, after: string, action: Exclude<StepVerdict['action'], 'pass' | 'abort'>): void;
+  recordSignals(signals: import('../handoff/triggers.js').TurnSignals): void;
+  appendMessage(message: import('../types.js').ChatMessage): void;
+}
+
+export { replyStep } from './guards/reply-step.js';
+
 /** R15：最终文本的站内链接部件，只用于渠道投影，不写入 ChatMessage。 */
 export type { MessagePart } from '../shared/channel-types.js';
 
