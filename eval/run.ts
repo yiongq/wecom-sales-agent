@@ -16,6 +16,52 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installJsonConsole } from '../src/log.js';
+import { loadCases, runV2 } from './v2/run.js';
+import { validateCases } from './v2/schema.js';
+
+// DB 测试装配仍只在此组合根调用（01 的模块边界）；v2 worker 不依赖 db/testing。
+if (process.argv[2] === '--v2-worker') {
+  process.argv.splice(2, 1);
+  const { runWorker } = await import('./v2/worker.js');
+  await runWorker(async (varDir) => {
+    const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../src/db/testing.js');
+    const { initSessionStore } = await import('../src/store.js');
+    const db = await openTestDb();
+    try {
+      await installSeededConfig(db);
+      const fx = await installPgSessionStore(db, { varDir });
+      await initSessionStore(fx.deps);
+      return db;
+    } catch (e) {
+      await db.close();
+      throw e;
+    }
+  });
+}
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const casesArg = process.argv.indexOf('--cases');
+const v2Arg = process.argv.indexOf('--cases-v2');
+const caseData =
+  v2Arg > 0
+    ? []
+    : (JSON.parse(
+        fs.readFileSync(casesArg > 0 ? path.resolve(process.argv[casesArg + 1]!) : path.join(HERE, 'cases.json'), 'utf8'),
+      ) as unknown);
+const entries = Array.isArray(caseData) ? caseData : [caseData];
+const versioned = entries.filter((c) => c && typeof c === 'object' && 'version' in c);
+const v2Cases =
+  v2Arg > 0
+    ? loadCases(path.resolve(process.argv[v2Arg + 1]!))
+    : versioned.length
+      ? validateCases(versioned)
+      : casesArg > 0
+        ? []
+        : loadCases(path.join(HERE, 'cases-v2'), true);
+// 显式指定 v2 时只跑脚本服务，不触发 v1 的真实模型路径。
+if (v2Arg > 0 || (versioned.length && versioned.length === entries.length)) {
+  process.exit((await runV2(v2Cases)) ? 0 : 1);
+}
 
 // LOG_FORMAT=json（02 spec R24）：这个回放器不经 server.ts / profile-boot.ts 启动，没有它 console.* 不会被接到 pino；
 // 没设时什么都不做。放在这里好让「LOG_FORMAT=json 跑一遍 mock eval、扫描输出」这个门禁检查生效
@@ -80,12 +126,8 @@ interface Case {
   realOnly?: boolean;
 }
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 // --cases <path>：换一份用例文件（ADR-003：私有用例放在仓库之外；验收 21 的手动部分只跑 realOnly 的那份）
-const casesArg = process.argv.indexOf('--cases');
-const cases = JSON.parse(
-  fs.readFileSync(casesArg > 0 ? path.resolve(process.argv[casesArg + 1]!) : path.join(HERE, 'cases.json'), 'utf8'),
-) as Case[];
+const cases = entries.filter((c) => !versioned.includes(c)) as Case[];
 
 const argv = process.argv.slice(2);
 const tagFilter = argv.includes('--tags') ? argv[argv.indexOf('--tags') + 1] : null;
@@ -288,7 +330,8 @@ if (jsonOut) {
   console.log(`\n结果已写入 ${jsonOut}`);
 }
 const storeBad = dbStore ? await checkStoredSessions(dbStore) : 0;
-process.exit(failures.length || storeBad ? 1 : 0);
+const v2Ok = v2Cases.length ? await runV2(v2Cases) : true;
+process.exit(failures.length || storeBad || !v2Ok ? 1 : 0);
 
 /**
  * DB 模式跑完：排空写队列，按启动预载的同一条路读回库里的会话，逐个用例核对（02 验收 2）：会话在库里；重建出的窗口与内存经

@@ -1,0 +1,163 @@
+import '../../src/selftest-env.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { validateCase } from './schema.js';
+import { startFakeModel } from './fake-model.js';
+import { normalize, resolveValues, resolvePattern } from './values.js';
+import type { FinishedTurn } from '../../src/trace/recorder.js';
+import type { Order } from '../../src/types.js';
+
+export async function runWorker(prepareDb: (varDir: string) => Promise<{ close(): Promise<void> }>): Promise<void> {
+  const c = validateCase(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')));
+  const varDir = process.argv[3];
+  process.env.VAR_DIR = varDir;
+  if (c.fixtures?.now) {
+    process.env.PARITY_CLOCK_MS = String(Date.parse(c.fixtures.now));
+    await import('../../src/store/parity-clock.js');
+  }
+  const calls = new Map<string, unknown>();
+  let orders = (): Order[] => [];
+  const values = { calls, orders: () => orders() };
+  const fake = await startFakeModel(c.id, values);
+  const failures: string[] = [];
+  let checks = 0;
+  let guardSkipped = 0;
+  const turns: unknown[] = [];
+  let off = () => {};
+  let offTool = () => {};
+  let db: { close(): Promise<void> } | undefined;
+  try {
+    Object.assign(process.env, {
+      LLM_MOCK: '0',
+      LLM_PROVIDER: '',
+      LLM_BASE_URL: fake.url,
+      LLM_API_KEY: 'v2-local',
+      LLM_MODEL: 'v2-local',
+      LLM_MODEL_CHEAP: '',
+      LLM_HEDGE_MODEL: '',
+      LLM_MAX_RETRY: '0',
+      LLM_TIMEOUT_MS: '5000',
+      LLM_ROUND_TIMEOUT_MS: '10000',
+      EMBED_BASE_URL: fake.url,
+      EMBED_API_KEY: 'v2-local',
+      CONFIG_SOURCE: 'file',
+      WECOM_CORP_ID: '',
+      WECOM_APP_SECRET: '',
+      WECOM_KF_OPEN_KFID: '',
+      SOP_PATH: process.env.SOP_PATH || path.resolve('data/sop.md'),
+      ROUTES_PATH: process.env.ROUTES_PATH || path.resolve('data/routes.json'),
+      HOTELS_PATH: process.env.HOTELS_PATH || path.resolve('data/hotels.json'),
+      PUBLIC_BASE_URL: '',
+    });
+    if (c.brand) throw new Error(`brand: 夹具 ${c.brand} 尚未注册（第 3 / 19 步）`);
+    const store = await import('../../src/store.js');
+    if (process.env.CONFIG_TEST_DB === 'pglite') {
+      db = await prepareDb(varDir);
+    }
+    const { handleMessage, onToolCall } = await import('../../src/engine.js');
+    const { onTurnEnd } = await import('../../src/trace/recorder.js');
+    const { buildIndex } = await import('../../src/retrieval.js');
+    const { createQuote } = await import('../../src/tools.js');
+    const sid = `eval:v2-${c.id}`;
+    const session = store.getOrCreateSession(sid, 'simulator');
+    Object.assign(session, c.fixtures?.session, { id: sid, channel: 'simulator' });
+    for (const fixture of c.fixtures?.orders ?? []) {
+      const q = createQuote(fixture);
+      const order = store.createOrder({
+        sessionId: sid,
+        routeId: fixture.routeId,
+        routeTitle: q.routeTitle,
+        travelers: fixture.travelers,
+        departDate: fixture.departDate,
+        totalPrice: q.total,
+      });
+      order.status = fixture.status;
+      if (order.status === 'paid') order.paidAt = Date.now();
+      store.saveOrder(order);
+      session.orderIds.push(order.id);
+    }
+    store.saveSession(session);
+    orders = () => store.listOrders().filter((o) => o.sessionId === sid);
+    offTool = onToolCall((name, _args, sessionId) => {
+      if (sessionId === sid) calls.delete(name);
+    });
+    const observation: { finished?: FinishedTurn } = {};
+    const observedTurn = (): FinishedTurn | undefined => observation.finished;
+    off = onTurnEnd((t) => {
+      if (t.turn.conversationId !== sid) return;
+      observation.finished = t;
+      for (const call of new Map(t.turn.calls.map((call) => [call.name, call])).values()) {
+        // 保留 wire 中的完整结果；其它调用只接受未截断的 JSON，不能沿用旧结果。
+        if (call.resultBytes <= 4096) {
+          try {
+            calls.set(call.name, JSON.parse(call.resultHead));
+          } catch {
+            calls.delete(call.name);
+          }
+        }
+      }
+    });
+    await buildIndex();
+    for (let i = 0; i < c.turns.length; i++) {
+      const t = c.turns[i];
+      fake.begin(i + 1, t.script);
+      observation.finished = undefined;
+      const reply = await handleMessage(sid, t.say, 'simulator');
+      const finished = observedTurn();
+      fake.finish();
+      const expect = resolveValues(t.expect, values) as typeof t.expect;
+      for (const key of ['replyMatches', 'replyExcludes'] as const) {
+        expect[key] = t.expect[key]?.map((pattern) => resolvePattern(pattern, values));
+      }
+      const check = (ok: boolean, path: string, actual: unknown) => {
+        checks++;
+        if (!ok) failures.push(`[${c.id}] 第${i + 1}轮 expect.${path}: 实际 ${JSON.stringify(actual)}`);
+      };
+      for (const pattern of expect.replyMatches ?? [])
+        check(new RegExp(normalize(pattern), 'm').test(normalize(reply.text)), `replyMatches /${pattern}/`, reply.text);
+      for (const pattern of expect.replyExcludes ?? [])
+        check(!new RegExp(normalize(pattern), 'm').test(normalize(reply.text)), `replyExcludes /${pattern}/`, reply.text);
+      if (expect.stage !== undefined) check(reply.stage === expect.stage, 'stage', reply.stage);
+      if (expect.tools !== undefined)
+        check(
+          isDeepStrictEqual(
+            finished?.turn.calls.map((call) => call.name),
+            expect.tools,
+          ),
+          'tools',
+          finished?.turn.calls.map((call) => call.name),
+        );
+      if (expect.silent !== undefined) check(Boolean(reply.silent) === expect.silent, 'silent', reply.silent);
+      if (expect.handoff !== undefined) check(session.handedOver === expect.handoff, 'handoff', session.handedOver);
+      if (expect.orders) {
+        check(orders().length === expect.orders.count, 'orders.count', orders().length);
+        for (const [key, value] of Object.entries(expect.orders.last ?? {})) {
+          const actual = (orders().at(-1) as unknown as Record<string, unknown> | undefined)?.[key];
+          check(isDeepStrictEqual(actual, value), `orders.last.${key}`, actual);
+        }
+      }
+      if (expect.guardVerdicts !== undefined) {
+        const observed = finished?.turn as unknown as { guardVerdicts?: unknown; guard_verdicts?: unknown } | undefined;
+        const top = finished as unknown as { guardVerdicts?: unknown; guard_verdicts?: unknown } | undefined;
+        const verdicts = observed?.guardVerdicts ?? observed?.guard_verdicts ?? top?.guardVerdicts ?? top?.guard_verdicts;
+        if (verdicts === undefined) guardSkipped++;
+        else check(isDeepStrictEqual(verdicts, expect.guardVerdicts), 'guardVerdicts', verdicts);
+      }
+      turns.push({ reply, orders: structuredClone(orders()), trace: finished });
+    }
+    const { undrained } = await store.drainStore(5000);
+    if (undrained.length) throw new Error('临时状态写队列未排空');
+    store.flushStoreNow();
+  } catch (e) {
+    failures.push(`[${c.id}] ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    off();
+    offTool();
+    await fake.close();
+    await db?.close();
+  }
+  failures.push(...fake.errors);
+  fs.writeFileSync(process.argv[4], JSON.stringify({ id: c.id, pass: failures.length === 0, checks, guardSkipped, failures, turns }));
+  process.exit(failures.length ? 1 : 0);
+}
