@@ -36,6 +36,8 @@ import {
 const CHILD = process.env.RECOVERY_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const H = 3_600_000;
+const POISON_UID = 'wm10poison';
+const SPILL_UID = 'wm10spill';
 
 let pass = 0;
 const fails: string[] = [];
@@ -514,6 +516,52 @@ async function parentMain(): Promise<never> {
         ],
       },
     ];
+    SEQS.push(
+      {
+        label: '验收 8 poisoned 后杀进程与 payload 补记',
+        steps: [
+          ['k8', 'kill'],
+          ['r8', 'ok'],
+        ],
+      },
+      {
+        label: '验收 8 spill 回放后零重复',
+        steps: [
+          ['kspill', 'ok'],
+          ['rspill', 'ok'],
+        ],
+        before: (env) => ({
+          rspill: () => {
+            const names = fs.readdirSync(env.VAR_DIR).filter((n) => /^store-spill-.+\.json$/.test(n));
+            type Channel = { inbox?: { state: string }[]; outbound?: { channelMsgid: string; status: string }[] };
+            const docs = names.map(
+              (n) =>
+                JSON.parse(fs.readFileSync(path.join(env.VAR_DIR, n), 'utf8')) as {
+                  sessions: { id: string; channel?: Channel; inflight?: { channel?: Channel } }[];
+                },
+            );
+            const entries = docs.flatMap((d) => d.sessions).filter((e) => e.id === sidOf('r1', SPILL_UID));
+            const parts = entries.flatMap((e) => [e.channel, e.inflight?.channel]);
+            const sent = JSON.parse(fs.readFileSync(path.join(env.RECOVERY_DIR, 'spill-case.json'), 'utf8')) as { sends: SendLine[] };
+            check(
+              '验收 8 · 正常停机真实写出 spill：渠道段带第二句 done 与已发送那一段 accepted、msgid 与假企微一致',
+              names.length === 1 &&
+                entries.length === 1 &&
+                parts.some((p) => p?.inbox?.some((i) => i.state === 'done')) &&
+                parts.some((p) => p?.outbound?.some((o) => o.status === 'accepted' && o.channelMsgid === sent.sends[1]?.msgid)),
+              json(parts),
+            );
+          },
+        }),
+      },
+      {
+        label: '验收 14 网页同 cid 杀进程',
+        steps: [
+          ['kweb', 'kill'],
+          ['rweb', 'ok'],
+        ],
+      },
+    );
     for (const { label, steps, before } of SEQS) {
       // 每一组一个一次性库（createRealPgFixture 会改集群级角色的口令：一组用完再建下一组）
       const fx = await testing.createRealPgFixture(url, { slug: 'recov10' });
@@ -617,6 +665,16 @@ async function childMain(mode: string): Promise<never> {
     else if (mode === 'p1') await poison1(h);
     else if (mode === 'p2' || mode === 'p3') await poisonAgain(h, mode === 'p2' ? 2 : 3);
     else if (mode === 'p4') await poison4(h);
+    else if (mode === 'k8') await killPoisoned(h);
+    else if (mode === 'r8') await restartPoisoned(h);
+    else if (mode === 'kspill') {
+      await stopWithSpill(h);
+      flushLogs();
+      save();
+      process.exit(0); // 正常 exit 钩子同步写 spill，下一子进程回放
+    } else if (mode === 'rspill') await restartSpill(h);
+    else if (mode === 'kweb') await killWeb(h);
+    else if (mode === 'rweb') await restartWeb(h);
     else fails.push(`不认识的子进程 ${mode}`);
     if (mode === 'p1' || mode === 'p2' || mode === 'p3') fails.push(`${mode}：毒消息没有让进程崩溃`);
     if (mode.startsWith('k')) {
@@ -636,6 +694,258 @@ async function childMain(mode: string): Promise<never> {
 }
 
 type Harness = Awaited<ReturnType<typeof harness>>;
+
+// 03 第 22 步：通过真实适配器补 R21 与网页重启的行为断言。
+function spillNames(h: Harness): string[] {
+  return fs.readdirSync(h.varDir).filter((name) => /^store-spill-.+\.json$/.test(name));
+}
+
+async function killPoisoned(h: Harness): Promise<void> {
+  h.start();
+  await h.settle();
+  const sid = await h.mkSession('r1', POISON_UID);
+  // 与 S 一样让会话投影实际撞 CHECK，而不是模拟驱动错误；使用短 id，
+  // 临时 CHECK 可在重启前移除，让 payload 补记后的消息也能实际写进 messages。
+  await h.su(`alter table conversations add constraint recovery_poison_check check (id <> '${sid}') not valid`);
+  const session = h.store.getSession(sid)!;
+  session.profile.notes = ['触发恢复自测 CHECK'];
+  h.store.saveSession(session);
+  const { shortIdOf } = await import('../shared/conversation.js');
+  check('验收 8 · 实际 CHECK 失败把会话标为 poisoned', await waitFor(() => h.store.storeHealth().poisoned.includes(shortIdOf(sid))));
+  const msgs: FakeMsg[] = [];
+  for (const k of [1, 2]) {
+    const text = `R21-${k} 想了解旅行安排`;
+    const model = h.holdModel(text, `R21-${k} 好的，您几位出行？`);
+    const mark = h.holdMark(sid);
+    const m = h.say('r1', POISON_UID, text);
+    msgs.push(m);
+    h.pull('r1');
+    await reached(`poisoned 第 ${k} 句模型生成`, model);
+    check(
+      `验收 8 · poisoned 后第 ${k} 句：模型生成时 recorded 已经短事务提交`,
+      await waitFor(async () => (await h.inboxOf(m.msgid))?.state === 'recorded'),
+    );
+    model.release();
+    await reached(`poisoned 第 ${k} 句 markSending 前`, mark);
+    const pending = await h.su<{ status: string; state: string; same_tx: boolean }>(
+      `select o.status, i.state, o.xmin = i.xmin as same_tx from outbound_sends o
+       join channel_inbox i on i.id = o.inbox_id and i.tenant_id = o.tenant_id where i.msgid = $1`,
+      [m.msgid],
+    );
+    check(
+      `验收 8 · poisoned 后第 ${k} 句：pending 与 replied 在同一短事务提交`,
+      pending.length === 1 && pending[0]!.status === 'pending' && pending[0]!.state === 'replied' && pending[0]!.same_tx,
+      json(pending),
+    );
+    mark.release();
+    const done = await waitFor(async () => (await h.inboxOf(m.msgid))?.state === 'done');
+    const inbox = await h.inboxOf(m.msgid);
+    const out = (await h.outOf(sid)).filter((o) => o.inbox_id === inbox?.id);
+    check(
+      `验收 8 · poisoned 后第 ${k} 句：调用模型一次、假企微恰好一组，入站 done 与出站 accepted 经短事务落库、会话消息仍未落库`,
+      done &&
+        h.llmCalls(text) === 1 &&
+        out.length === 1 &&
+        out[0]!.status === 'accepted' &&
+        h.sendsTo(POISON_UID).filter((x) => x.msgid === out[0]!.msgid).length === 1 &&
+        (await h.customerRows(sid, m.msgid))[0]?.n === '0',
+      json({ out, inbox: await h.inboxOf(m.msgid), sends: h.sendsTo(POISON_UID) }),
+    );
+  }
+  // 已回复两句自然成为 done；另加一条回复尚未生成的 recorded，单独验证
+  // R21 的 payload 补记（按入站恢复表，这条应首次生成回复）。
+  const held = h.holdModel('R21-payload 想了解云南');
+  const recorded = h.say('r1', POISON_UID, 'R21-payload 想了解云南');
+  h.pull('r1');
+  await reached('poisoned 后额外一句在模型生成途中', held);
+  check(
+    '验收 8 · 杀前额外一句 recorded、payload 保留、messages 中缺失；没有 spill',
+    (await waitFor(async () => (await h.inboxOf(recorded.msgid))?.state === 'recorded')) &&
+      (await h.su<{ present: boolean }>('select payload is not null as present from channel_inbox where msgid = $1', [recorded.msgid]))[0]
+        ?.present === true &&
+      (await h.customerRows(sid, recorded.msgid))[0]?.n === '0' &&
+      spillNames(h).length === 0,
+  );
+  fs.writeFileSync(path.join(h.dir, 'poisoned.json'), json({ msgs, recorded, sends: h.sendsTo(POISON_UID) }));
+}
+
+async function restartPoisoned(h: Harness): Promise<void> {
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'poisoned.json'), 'utf8')) as {
+    msgs: FakeMsg[];
+    recorded: FakeMsg;
+    sends: SendLine[];
+  };
+  const sid = sidOf('r1', POISON_UID);
+  check(
+    '验收 8 · SIGKILL 后无 spill，预载的会话仍缺少 recorded 那句',
+    spillNames(h).length === 0 && !h.store.getSession(sid)?.messages.some((m) => m.msgid === saved.recorded.msgid),
+  );
+  h.start();
+  await h.settle();
+  for (const [k, m] of saved.msgs.entries()) {
+    const inbox = await h.inboxOf(m.msgid);
+    const out = (await h.outOf(sid)).filter((o) => o.inbox_id === inbox?.id);
+    check(
+      `验收 8 · poisoned 后已回复第 ${k + 1} 句：SIGKILL 重启不再调模型、不再发送，跨进程仍恰好一组`,
+      h.llmCalls(m.text!.content) === 0 &&
+        inbox?.state === 'done' &&
+        out.length === 1 &&
+        out[0]!.status === 'accepted' &&
+        h.sendsTo(POISON_UID).filter((x) => x.msgid === out[0]!.msgid).length === 1 &&
+        h.sendsTo(POISON_UID).filter((x) => x.p === h.mode && x.msgid === out[0]!.msgid).length === 0,
+      json({ inbox, out, sends: h.sendsTo(POISON_UID) }),
+    );
+  }
+  check(
+    '验收 8 · recorded 而会话缺失的额外一句：由 payload 补进 messages 且仅一次，首次生成一组回复、入站 done',
+    (await h.customerRows(sid, saved.recorded.msgid))[0]?.n === '1' &&
+      h.store.getSession(sid)?.messages.filter((m) => m.msgid === saved.recorded.msgid && m.content === saved.recorded.text!.content)
+        .length === 1 &&
+      h.llmCalls(saved.recorded.text!.content) === 1 &&
+      (await h.inboxOf(saved.recorded.msgid))?.state === 'done' &&
+      h.sendsTo(POISON_UID).filter((x) => x.p === h.mode).length === 1,
+  );
+  h.pull('r1');
+  await h.settle();
+  check(
+    '验收 8 · 再次拉取与排空后 payload 补记仍只一次、已回复两句仍无第二组',
+    (await h.customerRows(sid, saved.recorded.msgid))[0]?.n === '1' && h.sendsTo(POISON_UID).length === saved.sends.length + 1,
+  );
+}
+
+async function stopWithSpill(h: Harness): Promise<void> {
+  h.start();
+  await h.settle();
+  const sid = sidOf('r1', SPILL_UID);
+  const first = h.say('r1', SPILL_UID, 'SPILL-1 想了解云南');
+  h.pull('r1');
+  check('验收 8 · spill 前第一句已回复一组并落库', await waitFor(async () => (await h.inboxOf(first.msgid))?.state === 'done'));
+  await h.settle();
+  const hold = h.holdModel('SPILL-2 想了解川西');
+  const second = h.say('r1', SPILL_UID, 'SPILL-2 想了解川西');
+  h.pull('r1');
+  await reached('spill 第二句模型开始、入站已提交', hold);
+  await h.store.flushSession(sid);
+  const dbName = decodeURIComponent(new URL(process.env.RECOVERY_APP_URL!).pathname.slice(1));
+  if (!/^[a-z0-9_]+$/.test(dbName)) throw new Error('临时库名不合预期');
+  await h.su(`alter database "${dbName}" connection limit 0`);
+  await h.su('select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()');
+  h.ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
+  const retries = h.store.__storeTest.pgStats()!.retries;
+  hold.release();
+  check(
+    '验收 8 · 真实 PG 连接断开后会话落库失败，回复仍到达假企微',
+    await waitFor(() => h.sendsTo(SPILL_UID).length === 2 && h.store.__storeTest.pgStats()!.retries > retries),
+  );
+  await h.idle();
+  check(
+    '验收 8 · 正常停机前第二句入站 recorded、生成的回复未落库',
+    (await h.inboxOf(second.msgid))?.state === 'recorded' &&
+      (await h.su<{ n: string }>(`select count(*)::text as n from messages where conversation_id = $1 and role = 'agent'`, [sid]))[0]?.n ===
+        '1',
+  );
+  fs.writeFileSync(path.join(h.dir, 'spill-case.json'), json({ msgs: [first, second], sends: h.sendsTo(SPILL_UID) }));
+  await h.store.runShutdownHooks(2000);
+}
+
+async function restartSpill(h: Harness): Promise<void> {
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'spill-case.json'), 'utf8')) as { msgs: FakeMsg[]; sends: SendLine[] };
+  check(
+    '验收 8 · 正常退出写出的 spill 已成功回放并删除',
+    h.store.__storeTest.pgStats()!.replayed === 1 &&
+      spillNames(h).length === 0 &&
+      !fs.readdirSync(h.varDir).some((n) => n.endsWith('.failed')),
+  );
+  h.start();
+  await h.settle();
+  const sid = sidOf('r1', SPILL_UID);
+  for (const [k, m] of saved.msgs.entries()) {
+    const inbox = await h.inboxOf(m.msgid);
+    const out = (await h.outOf(sid)).filter((o) => o.inbox_id === inbox?.id);
+    check(
+      `验收 8 · spill 回放并启动恢复后第 ${k + 1} 句：入站 done、出站 accepted、假企微跨进程恰好一组、不再调模型，客户消息仅记一次`,
+      inbox?.state === 'done' &&
+        out.length === 1 &&
+        out[0]!.status === 'accepted' &&
+        h.sendsTo(SPILL_UID).filter((x) => x.msgid === out[0]!.msgid).length === 1 &&
+        h.llmCalls(m.text!.content) === 0 &&
+        (await h.customerRows(sid, m.msgid))[0]?.n === '1',
+      json({ inbox, out, sends: h.sendsTo(SPILL_UID) }),
+    );
+  }
+  check('验收 8 · spill 回放后假企微完整发送日志与停机前相同、零新增回复', json(h.sendsTo(SPILL_UID)) === json(saved.sends));
+}
+
+async function webRequest(cookie: string | undefined, text: string, cid: string): Promise<Response> {
+  const { webRoutes } = await import('../web/routes.js');
+  return webRoutes.request('/api/web/rw/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-web-chat': '1', ...(cookie ? { cookie } : {}) },
+    body: json({ text, cid }),
+  });
+}
+
+async function killWeb(h: Harness): Promise<void> {
+  const first = await webRequest(undefined, 'WEB-init 你好', 'web-init-cid');
+  const cookie = first.headers.get('set-cookie')?.split(';')[0];
+  check('验收 14 · 网页首次 HTTP 请求成功签发访客 cookie', first.status === 200 && !!cookie);
+  if (!cookie) throw new Error('缺访客 cookie');
+  const { webConversationId } = await import('../adapters/web.js');
+  const { accountByKey } = await import('./accounts.js');
+  const sid = webConversationId(accountByKey('rw', 'web')!.id, cookie.split('=')[1]!);
+  await h.store.flushSession(sid);
+  const cid = 'web-kill-cid';
+  const text = 'WEB-crash 想了解旅行安排';
+  const hold = h.holdModel(text);
+  void webRequest(cookie, text, cid);
+  await reached('网页同 cid 的请求正在生成回复', hold);
+  await h.store.flushSession(sid);
+  check(
+    '验收 14 · SIGKILL 前网页客户消息已实际落库一次、回复尚未生成',
+    (await h.customerRows(sid, cid))[0]?.n === '1' && !h.replyAfter(sid, cid) && h.llmCalls(text) === 1,
+  );
+  fs.writeFileSync(path.join(h.dir, 'web-case.json'), json({ cookie, sid, cid, text }));
+}
+
+async function restartWeb(h: Harness): Promise<void> {
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'web-case.json'), 'utf8')) as {
+    cookie: string;
+    sid: string;
+    cid: string;
+    text: string;
+  };
+  check(
+    '验收 14 · 重启预载了同 cid 客户消息且没有该轮回复',
+    h.store.getSession(saved.sid)?.messages.filter((m) => m.msgid === saved.cid && m.content === saved.text).length === 1 &&
+      !h.replyAfter(saved.sid, saved.cid),
+  );
+  const retried = await webRequest(saved.cookie, 'WEB-retry 不应覆盖原文', saved.cid);
+  const body = (await retried.json()) as { reply?: { text: string } };
+  await h.store.flushSession(saved.sid);
+  check(
+    '验收 14 · SIGKILL 重启后同 cid 重发：alreadyRecorded 使用原文生成一次回复，messages 客户消息不重复',
+    retried.status === 200 &&
+      !!body.reply?.text &&
+      h.llmCalls(saved.text) === 1 &&
+      h.llmCalls('WEB-retry') === 0 &&
+      (await h.customerRows(saved.sid, saved.cid))[0]?.n === '1' &&
+      (
+        await h.su<{ n: string }>(
+          `select count(*)::text as n from messages where conversation_id = $1 and role = 'agent' and seq >
+        (select seq from messages where conversation_id = $1 and msgid = $2)`,
+          [saved.sid, saved.cid],
+        )
+      )[0]?.n === '1',
+  );
+  const duplicate = await webRequest(saved.cookie, saved.text, saved.cid);
+  check(
+    '验收 14 · 完成后再次重发同 cid 返回同一回复、模型与消息数不再增加',
+    duplicate.status === 200 &&
+      json(await duplicate.json()) === json(body) &&
+      h.llmCalls(saved.text) === 1 &&
+      (await h.customerRows(saved.sid, saved.cid))[0]?.n === '1',
+  );
+}
 
 async function harness(mode: string) {
   const dir = process.env.RECOVERY_DIR!;
@@ -814,6 +1124,13 @@ async function harness(mode: string) {
   const app = await testing.openGatedDb(process.env.RECOVERY_APP_URL!);
   const sq = await testing.connectSuperQuery(process.env.RECOVERY_SUPER_URL!);
   const su = sq.query;
+  // k8 用临时 CHECK 造数据类故障；修复故障后重启，保留真实入站/出站状态。
+  if (mode === 'r8') await su('alter table conversations drop constraint recovery_poison_check');
+  if (mode === 'rspill') {
+    const dbName = decodeURIComponent(new URL(process.env.RECOVERY_APP_URL!).pathname.slice(1));
+    if (!/^[a-z0-9_]+$/.test(dbName)) throw new Error('临时库名不合预期');
+    await su(`alter database "${dbName}" connection limit -1`);
+  }
   await store.initSessionStore({ db: app.db, tenantId, tenantSlug: 'recov10', varDir });
 
   // ---- 渠道账号：杀进程的那一个建（id 先生成，AAD 要用），重启的那一个读回 ----
@@ -822,6 +1139,13 @@ async function harness(mode: string) {
   const keyRing = { current: { id: 'k10', key: keyBytes }, all: new Map([['k10', keyBytes]]) };
   const ids = new Map<string, string>();
   if (mode.startsWith('k')) {
+    if (mode === 'kweb') {
+      await su(
+        `insert into channel_accounts (tenant_id, key, kind, name, status, settings)
+        values ($1, 'rw', 'web', '网页恢复自测', 'active', '{"dailyNewConversations":100,"dailyTurns":100}')`,
+        [tenantId],
+      );
+    }
     for (const a of ACCTS) {
       const id = randomUUID();
       ids.set(a.key, id);
@@ -839,6 +1163,7 @@ async function harness(mode: string) {
     )) {
       ids.set(r.key, r.id);
       // 假企微的日志只在进程里：重启的子进程先垫到库里的 cursor 那一位，之后客户说的话接在后面（垫的这几条永远拉不到）
+      if (r.key === 'rw') continue;
       const kf = acct(r.key).kf;
       const n = r.cursor?.startsWith(`${kf}:`) ? Number(r.cursor.slice(kf.length + 1)) || 0 : 0;
       fake.logs.set(
@@ -970,6 +1295,8 @@ async function harness(mode: string) {
   return {
     mode,
     fake,
+    dir,
+    varDir,
     alerts,
     say,
     pull,
@@ -1412,6 +1739,12 @@ async function restart2(h: Harness): Promise<void> {
   h.fake.rejectLink.add(U.cd);
   // spec：RESEND_UNKNOWN 经适配器的 __channelTest 在子进程里设（不在产品代码里留按环境变量触发的钩子）
   h.wecom.__channelTest.setResendUnknown(true);
+  const sendingAtRequest: { to: string; msgid: string; status: string | undefined }[] = [];
+  h.fake.beforeSend = async (body) => {
+    if (body.touser !== U.i && body.touser !== U.j) return;
+    const rows = await h.su<{ status: string }>('select status from outbound_sends where channel_msgid = $1', [body.msgid]);
+    sendingAtRequest.push({ to: String(body.touser), msgid: String(body.msgid), status: rows[0]?.status });
+  };
   // TA：恢复补发之前要取 r3 的 token，挂在这里；这期间顾问接手
   const taTok = h.holdToken('r3');
   h.start();
@@ -1447,6 +1780,17 @@ async function restart2(h: Harness): Promise<void> {
       json(cdText.map((x) => x.msgid)) === json([ocd[0]!.msgid, ocd[2]!.msgid]),
     json({ ocd, sends: h.sendsTo(U.cd) }),
   );
+  for (const [uid, original] of [
+    [U.i, before.i],
+    [U.j, before.j],
+  ] as const) {
+    const seen = sendingAtRequest.filter((x) => x.to === uid);
+    check(
+      `验收 4 · RESEND_UNKNOWN 为真 · ${uid === U.i ? '请求已到、回包挂住' : 'markSending 之后请求没到'}：补发请求到达假企微时同一 msgid 在库里仍是 sending`,
+      seen.length === 1 && seen[0]!.msgid === original[0]?.msgid && seen[0]!.status === 'sending',
+      json(seen),
+    );
+  }
   const oi = await h.outOf(sidOf('r1', U.i));
   const oj = await h.outOf(sidOf('r2', U.j));
   const uniq = (xs: SendLine[]): string[] => [...new Set(xs.map((x) => x.msgid))];
