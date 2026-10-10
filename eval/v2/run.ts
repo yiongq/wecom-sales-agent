@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { brandCase } from './brand.js';
 import { validateCases, type CaseV2 } from './schema.js';
 import { compareCaseSnapshot, createSnapshot, readBaseline, serializeSnapshot, type TurnObservation } from './snapshot.js';
 
@@ -188,6 +189,12 @@ export async function runCasesV2(
 
 export async function runV2(cases: CaseV2[]): Promise<boolean> {
   const started = performance.now();
+  const brandIndex = process.argv.indexOf('--brand');
+  if (brandIndex > 0) {
+    const name = process.argv[brandIndex + 1];
+    if (!name || name.startsWith('--')) throw new Error('--brand 需要夹具名');
+    cases = cases.map((c) => brandCase(c, name));
+  }
   const writeIndex = process.argv.indexOf('--v2-snapshot-write');
   const writeTarget = writeIndex > 0 ? process.argv[writeIndex + 1] : undefined;
   if (writeIndex > 0 && (!writeTarget || writeTarget.startsWith('--'))) {

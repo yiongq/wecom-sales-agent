@@ -8435,6 +8435,25 @@ const byIdCalls = (id?: string): number =>
   await d.unmount();
 }
 
+// 品牌切换保留了运营前言时，成员和匿名页都显示服务端提示。
+{
+  const member = await mountPage('/console/sop?section=preamble', travelOwner, { ...CLEAN_SOP, preambleWarning: true });
+  check('成员 SOP 页显示旧品牌前言提示', text(member.box).includes('前言节里可能还有旧品牌名'));
+  await member.unmount();
+  const anon: AnonSopOverview = {
+    published: {
+      versionNo: CLEAN_SOP.published.versionNo!,
+      publishedAt: CLEAN_SOP.published.publishedAt!,
+      promptHash: CLEAN_SOP.published.promptHash!,
+      sections: CLEAN_SOP.published.sections,
+    },
+    preambleWarning: true,
+  };
+  const guest = await mountPage('/console/sop?section=preamble', { kind: 'anon', pack: packOf(TRAVEL) }, anon);
+  check('匿名 SOP 页显示旧品牌前言提示', text(guest.box).includes('前言节里可能还有旧品牌名'));
+  await guest.unmount();
+}
+
 respond = null;
 
 if (fails.length) {

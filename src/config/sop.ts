@@ -36,6 +36,8 @@ import type { SopVersion } from '../shared/console-api.js';
 import { promptHashes, renderInputsFor, type PromptHashes } from './hashes.js';
 import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
 
+import { preambleWarning } from './brand.js';
+
 export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
 
 /** 草稿发布时 rebase 撞上了同一节（或合并保存时缺了撞上的节）：→ 409，带当前发布版本的可编辑节，界面据此提示 */
@@ -140,6 +142,9 @@ async function evaluate(tx: Tx, rt: ReturnType<typeof configRuntime>, sections: 
     toolNames: rt.deps.toolNames,
     knownFields: rt.deps.knownFields,
     baselineEditableChars: baseline,
+    rules: rt.deps.runtime?.contractRules(currentSop().brand ? { brand: currentSop().brand! } : 'legacy'),
+    brand: currentSop().brand,
+    hardRequirements: rt.deps.render(''),
   });
   return {
     merged,
@@ -186,6 +191,7 @@ export async function getSopOverview(ctx: TenantCtx): Promise<{
   draft: (SopVersion & { stale: boolean }) | null;
   spec: readonly SectionSpec[];
   budget: { chars: number; limit: number };
+  preambleWarning?: boolean;
 }> {
   const rt = runtimeFor(ctx);
   return withTenant(
@@ -199,6 +205,7 @@ export async function getSopOverview(ctx: TenantCtx): Promise<{
       const current = draft ?? pub;
       const baseline = imported ? editableChars(imported.sections) : editableChars(pub.sections);
       return {
+        ...(preambleWarning(current.sections, rt.imageSections) ? { preambleWarning: true } : {}),
         published: toVersion(pub),
         draft: draft ? { ...toVersion(draft), stale: draft.basedOn !== pub.id } : null,
         spec: TRAVEL_SOP_SECTIONS,

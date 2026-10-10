@@ -80,7 +80,10 @@ export function createTravelRuntime(sources: PackSources) {
     },
     templates: travelTemplates,
     sopSections: [...TRAVEL_SOP_SECTIONS],
-    contractRules: () => [...SOP_CONTRACT],
+    contractRules: (mode) =>
+      SOP_CONTRACT.map((rule) =>
+        mode !== 'legacy' && rule.id === 'advisor-on-wechat' && rule.kind === 'include' ? { ...rule, text: '顾问会联系您' } : rule,
+      ),
     knownFields,
     stages: runtimeStages,
     tools: catalog.tools,

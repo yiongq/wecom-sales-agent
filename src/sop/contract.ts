@@ -13,6 +13,7 @@ import {
   type SopSection,
 } from './sections.js';
 
+import type { BrandProfile, SopContractRule } from '../core/pack-api.js';
 import { SOP_CONTRACT } from '../packs/travel/sop.js';
 export { SOP_CONTRACT, SOP_KNOWN_FIELDS, KNOWN_FIELD_SOURCES } from '../packs/travel/sop.js';
 export type { SopContractRule as ContractRule } from '../core/pack-api.js';
@@ -28,7 +29,7 @@ const CAMEL = /\b[a-z]+(?:[A-Z][a-z0-9]*)+\b/g;
 
 export function checkSopContract(input: {
   sections: readonly SopSection[];
-  /** 镜像 data/sop.md 切出的节 */
+  /** 按已发布品牌生成的租户镜像；旧版取 data/sop.md */
   imageSections: readonly SopSection[];
   /** render(joinSop(sections)) */
   rendered: string;
@@ -38,6 +39,9 @@ export function checkSopContract(input: {
   /** 该租户导入版本（source='import'）的 editableChars。null 表示不查预算：启动重渲染和导出都传 null */
   baselineEditableChars: number | null;
   spec?: readonly SectionSpec[];
+  rules?: readonly SopContractRule[];
+  brand?: BrandProfile | null;
+  hardRequirements?: string;
 }): ContractViolation[] {
   const spec = input.spec ?? TRAVEL_SOP_SECTIONS;
   const out: ContractViolation[] = [];
@@ -71,13 +75,12 @@ export function checkSopContract(input: {
     if (!s.locked) continue;
     const mine = input.sections.find((x) => x.key === s.key);
     const image = input.imageSections.find((x) => x.key === s.key);
-    if (mine && image && mine.text !== image.text)
-      add('locked_changed', s.key, `锁定节「${s.heading ?? s.key}」与镜像里的 data/sop.md 不一致`);
+    if (mine && image && mine.text !== image.text) add('locked_changed', s.key, `锁定节「${s.heading ?? s.key}」与租户镜像不一致`);
   }
 
   // 短语：对整段 rendered 执行，与 selftest 的断言对象相同
   const holder = (hit: (text: string) => boolean): string | null => input.sections.find((x) => hit(x.text))?.key ?? null;
-  for (const rule of SOP_CONTRACT) {
+  for (const rule of input.rules ?? SOP_CONTRACT) {
     if (rule.kind === 'include') {
       if (!input.rendered.includes(rule.text)) add('phrase_missing', null, `缺少「${rule.text}」（${rule.from}）`, rule.text);
     } else if (rule.kind === 'exclude') {
@@ -97,6 +100,20 @@ export function checkSopContract(input: {
           `不能出现「${m[0]}」（${rule.from}）`,
           m[0],
         );
+    }
+  }
+
+  // 品牌专属检查只管代码所有的锁定节与固定要求；原有检查仍覆盖整个 rendered。
+  if (input.brand) {
+    const fixed = input.sections.filter((s) => spec.some((x) => x.key === s.key && x.locked));
+    fixed.push({ key: 'hard-requirements', text: input.hardRequirements ?? '' });
+    for (const section of fixed) {
+      let text = section.text;
+      // 显式配置成旧品牌仍是模板模式；只排除档案本身允许的品牌名。
+      text = text.split(input.brand.brandName).join('');
+      for (const phrase of ['云途', '微信', 'WeCom', '企微']) {
+        if (text.includes(phrase)) add('phrase_forbidden', section.key, `固定要求不能出现「${phrase}」`, phrase);
+      }
     }
   }
 
