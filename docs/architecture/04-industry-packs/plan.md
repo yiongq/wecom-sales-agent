@@ -56,39 +56,39 @@
   - 建 `src/core/pack-api.ts` 的 R2、R3 接口与注入入口，准备包需要的核心能力出口；不写虚假的包业务实现，不改 `IndustryPack`、会话与订单类型。旅游 SOP 节表、契约规则与已知字段清单移入包，通用节处理保持原行为。
   - `scripts/check-boundaries.ts` 加 core 不引 packs、不引门面、packs 只经 `pack-api` 引核心；既有包的跨层导入一并改走该出口，包内部相互引用照常。原有配置层、后台与自测边界仍有效。漂移测试按 `knownFields.sourceFiles` 扫真实产出位置，不收窄检查范围（验收 2）。
   - 依赖：第 5 步。完成标准：共同门禁；隔离副本故意违反三条边界都被 lint 拦下；默认生产路径仍是旧版旅游。
-- [ ] 7. 通用金额解析（1 工程日，可派 Codex）。
+- [x] 7. 通用金额解析（1 工程日，可派 Codex）：2026-10-10 完成，见「实施记录 · 第 7 步」。
   - 从 `src/price-guard.ts` 搬金额识别、数字归一与句子单元等通用解析到 `src/core/parse/`，经原路径适配保持 `spokenMoney`、金额出处等旧签名；`trace/recorder.ts` 的 `sentenceUnits` 改取核心出口（R1、R2、R12）。
   - `Money` 带币种与原单位，旅游价格裁决仍按数值比出处；下限等行业参数由调用方给，不能固化在 core（验收 11）。不动日期人数、价格规则与引擎。
   - 依赖：第 6 步。完成标准：共同门禁；美元混认的两种出处结果照旧，大小写中文数字、区间与位置边界回归通过。
-- [ ] 8. 通用日期与人数解析（1 工程日，Claude）。
+- [x] 8. 通用日期与人数解析（1 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 8 步」。
   - 对照解析盘点，把引擎、价格规则与工具使用的通用日期、人数逻辑收到 `src/core/parse/`，旅游节假日与可订范围留在包；旧入口做适配，保留不同调用语境的选择（R12、R13；验收 11）。
   - ISO 日期与人数 1–50 的硬校验仍由工具执行端完成，mock 自己的解析本步不碰。依赖：第 7 步；本步改 `src/engine.ts`，与其他引擎步骤串行。
   - 完成标准：共同门禁；过去日期、节假日、人数改口与团体边界结论相同，避免为了统一函数而扩大识别范围。
-- [ ] 9. 旅游价格护栏、规则与阈值（1.5 工程日，Claude）。
+- [x] 9. 旅游价格护栏、规则与阈值（1.5 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 9 步」。
   - 搬 `src/price-guard.ts`、`src/price-rules.ts` 的旅游金额出处与服务规则到包；两处老路径留下门面，core 只留通用解析。包所需订单、产品与本轮能力经 `pack-api` 取得（R1、R12、R13）。
   - 行业阈值的默认值照盘点，不把已有 env 改成常量。金额识别下限 500 / 1000 的切换验证「800 元」是否需要出处，验证后还原 fixture（验收 11）。
   - 依赖：第 8 步。完成标准：共同门禁；锁定价格套件照绿、所有旧签名照用；SOP 字段漂移扫描指向搬家后的真实源码。
-- [ ] 10. 旅游七个工具与核心执行分派（2 工程日，Claude）。
+- [x] 10. 旅游七个工具与核心执行分派（2 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 10 步」。
   - 拆 `src/tools.ts`：旅游搜索、报价、方案与建单实现进包；注册、执行分派与钩子进 `src/core/tools/`，定义顺序与序列化字节照旧（R1–3、R12）。
   - 为每个 `ToolSpec` 明确 `sideEffects`、`cacheable`、`blocksRetry` 与 `onReuse`；`beforeTool` 在调用记录之前、`afterTool` 在结果记录之后。此步为第 11、13 步准备接口，不提前挪引擎处理顺序。
   - 依赖：第 9 步。完成标准：共同门禁；七个工具的校验、订单金额、参数修正与结果相同；旧 `executeTool` 签名与测试出口保留。
-- [ ] 11. 模型客户端与旅游 mock 分离（1.5 工程日，Claude）。
+- [x] 11. 模型客户端与旅游 mock 分离（1.5 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 11 步」。
   - 客户端、历史 wire 拼装、工具循环与通用算法参数进 `src/core/llm/`；旅游 mock 及其解析进包。`src/llm.ts` 按清单保留门面；core 不引用工具门面（R1–3、R13）。
   - 缓存与空回复重试改读 `ToolSpec` 声明，命中不重跑 execute / before / after；同名上次参数不同且命中早前缓存才调 `onReuse`，每次命中仍计 toolReused。模型请求顺序、分块、六轮循环与字节不变。
   - 依赖：第 10 步。完成标准：共同门禁；锁定 llm 的「北京→云南→北京→北京」仍只重放一次，写型工具之后空回复不重试；mock 原文不变。
-- [ ] 12. 阶段推进与画像抽取（1 工程日，Claude）。
+- [x] 12. 阶段推进与画像抽取（1 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 12 步」。
   - 从 `src/engine.ts` 搬客群、画像与阶段推导到包的 `extractProfile`、`advanceStage`，运行时阶段与后台节表同源，core 保留 terminal / handoff 语义（R3；验收 13）。
   - 调用先留在现位置；生成中接管不推进、生成中付款不被覆盖、建单与确定性推荐就地推进的行为照旧。昵称、头像等不进模型（不变量 8）。
   - 依赖：第 11 步。完成标准：共同门禁；阶段与画像逐条同基线，并发仍由保留自测保护。
-- [ ] 13. context、预取、工具参数与模型前判定（2 工程日，Claude）。
+- [x] 13. context、预取、工具参数与模型前判定（2 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 13 步」。
   - 从 `src/engine.ts` 搬旅游推荐、行程能力、参数落地、预取与 context 行业部分到包钩子；通用历史窗口、并发、预算与敏感信息处理留核心（R2、R3；spec「主流程」）。
   - 严格按第 1 步位置表接 `contextNote`、`prefetch`、`preModel`、工具前后钩子；重发支付链接等确定性早返回的归类须先与 spec 一致。阶段推进不在这里提前挪到流水线之前。
   - 依赖：第 12 步。完成标准：共同门禁；预取与模型工具的参数、顺序、画像补齐与结果一致；历史窗口和 context wire 字节照旧。
-- [ ] 14. 检索、跟进、洞察与词表搬家（1 工程日，可派 Codex）。
+- [x] 14. 检索、跟进、洞察与词表搬家（1 工程日，可派 Codex）：2026-10-10 完成，见「实施记录 · 第 14 步」。
   - `src/retrieval.ts` 的行业文本、`src/followup.ts` 的行业模板、`src/insight.ts` 的行业提示与转人工 / dejargon 词表进包；老路径保留清单内出口与调度，尚依赖引擎门面的通用代码等第 18 步收进核心，不能先搬进 core 再 import 旧 engine（R1–3、R13）。
   - 只改这些模块与对应包文件，不改 `src/engine.ts`、执行分派、注册表、`package.json` 或主回复步骤。此步尚不改跟进护栏的执行方式。
   - 依赖：第 11 步，可与第 12–13 步并行。完成标准：共同门禁；模板与检索文本字节不变，旧跟进与洞察测试出口可用。
-- [ ] 15. 护栏步骤执行器与装载校验（1 工程日，可派 Codex）。
+- [x] 15. 护栏步骤执行器与装载校验（1 工程日，可派 Codex）：2026-10-10 完成，见「实施记录 · 第 15 步」。
   - 新建 `src/core/guards/` 执行与校验模块：按开工表校验 `after`、共享键读写、后置接管检查在 `turn_failure` 之前；拒绝时打印冲突的两个标识（R7；验收 7）。
   - `GuardContext` 按 spec 提供本轮状态与副作用方法；执行器的 abort 和裁决序列独立验证。本步只建执行器与自测，不接引擎、不写 DB 迁移、不改 `pack-api.ts` 或 `package.json`，由第 16 步接入门禁。
   - 依赖：第 6 步，可与第 7–14 步并行。完成标准：共同门禁；隔离夹具的合法表、逆序依赖、读后写、abort 路径通过自测。
@@ -105,7 +105,7 @@
   - 通用主流程进 `src/core/engine/`，`src/engine.ts` 只留转发与参数适配；第 14 步暂留的通用调度、检索与洞察代码一起收口，老路径最终只做门面。`src/config/source.ts` 装载时按 pack_id 配对后台包与运行时，再 `bindPack`，文件配置与自测旧入口也能拿到旧版旅游（R1–3）。
   - 注册 R16 的 `src/packs/__fixture/`，只有 `PACK_FIXTURES=1` 才登记；用自己的工具名、阶段规则与一个护栏跑通，核心不加旅游工具名分支（验收 13）。原后台假包规则不受影响。
   - 依赖：第 16、17 步。完成标准：共同门禁；包依赖只经 `pack-api`，core 无门面或 packs 依赖；按 owner 口径记主函数行数，目标不超过 150 行，达不到记原因交 owner 定（验收 2）。
-- [ ] 19. 品牌列、平台命令与审计（1 工程日，Claude）。
+- [x] 19. 品牌列、平台命令与审计（1 工程日，Claude）：2026-10-10 完成，见「实施记录 · 第 19 步」。
   - 本步独占 `tenants.brand` 迁移、仓储、平台列级 UPDATE 授权、`tenant-brand set/clear`、审计动作；`tenant-create --brand-file` 与 prod 下缺品牌以 1 拒绝一并做（R4、R6；验收 5）。
   - set/clear 只改租户待生效配置；审计只含改过的字段名，不含品牌档案原文。本步不接发布品牌，不改变正在运行的旧版输出。
   - 依赖：第 6 步（2026-10-10 由第 18 步提前，见「实施记录 · 第 6 步」）。完成标准：共同门禁；一次性真实 PG 验证授权，命令拒绝、set/clear 与审计回归通过。
@@ -114,7 +114,7 @@
   - 身份、离题、企微与网页欢迎、mock 开场、快捷回复默认模板与静态页占位全部接已发布快照；账号自定义欢迎语仍优先。旧版静态页与默认文字逐字节照旧（验收 3、4）。
   - 此步先完成模板渲染与消费者、旧版发布兼容；模板模式的锁定节和完整发布闭环在第 22 步接通，不临时放宽 SOP 契约，不把半成品模板部署上线。
   - 依赖：第 18、19 步。完成标准：共同门禁；旧版所有品牌出口逐字节同基线，模板 fixture 的出口渲染通过独立回归，品牌状态无即时生效。
-- [ ] 21. 最终文本消息部件与渠道能力（1 工程日，可派 Codex）。
+- [x] 21. 最终文本消息部件与渠道能力（1 工程日，可派 Codex）：2026-10-10 完成，见「实施记录 · 第 21 步」。
   - core 加 `partsOf(text)` 与 `ChannelCaps`；网页 HTTP、同 cid 重试、历史、SSE、顾问回复、付款通知都从最终文本现算，不加 ChatMessage 字段、不落库。`public/web.js` 只按部件渲染（R15；验收 12）。
   - 覆盖补链后、删句后、静默、刷新与重启；站外链接不可点，企微仍用现有文本提卡片，`markdown: false` 不改行为。
   - 依赖：第 6 步（2026-10-10 由第 20 步提前）。完成标准：共同门禁；部件 URL 通过白名单，网页两卡与顾问 / 通知路径通过，企微文本与卡片字节照旧。
@@ -231,6 +231,7 @@
 - [ ] 真实模型目标、费用上限与最终回归结果由 owner 复核；未完成或退步待裁决的不当作通过。
 - [ ] 03 与 02 plan 的上线待办继续有效，不在这里重复客户、合规与值班记录。
 - prod 网页渠道按开放问题 3 的 owner 裁决执行；如果继续封顶为关，本阶段不因为中立锁定节已完成就自行开放。
+- [ ] 以后要在 demo 服务器上用 platform 命令不带品牌建租户（`tenant-create` 不带 `--brand-file`），先在服务器的 `.env.platform` 里加 `DEPLOY_PROFILE=demo`：第 19 步起 prod 与未设置都拒绝（platform 服务只加载 `.env.platform`）。线上 demo 租户早已建好，平时不受影响。
 
 ## 实施记录
 
@@ -1713,6 +1714,107 @@ R10 给出 `id:string` 与占位规则，**没有指定 id 命名规则**（`spe
 - 结果：快照两种配置 0 处差异，`PREFIX sha256` 同第 1 步，锁定 8 个文件零差异。由 Codex 按任务说明完成，协调者审了范围与 `pack-api` 的写法。
 - **本步定的（协调者）**：spec 没写死的若干形状（`LegacyTexts`、`BrandTemplates`、`ToolContext`、`TurnContext`、`TurnOutcome`、`PackThresholds`、`MockPolicy`、`GuardContext` 三个副作用方法的签名等）先由 `PackRuntime` 的类型参数表 `PackRuntimeTypes` 占位，**由搬对应模块的那一步按真实代码填实**，不凭空预定。为并行，`pack-api.ts` 按区块分工：第 7–14 步填解析、工具、模型、阶段画像、context 与辅助模块的类型；第 15 步填 `GuardContext` / `GuardStep` / `StepVerdict`（原文「第 15 步不改 `pack-api.ts`」作废）；第 19–20 步填品牌；第 21 步填部件与渠道能力。同时开的几路只改自己的区块，合并时手工合。
 - **依赖调整（协调者，owner 2026-10-10 要求多路并行提速）**：第 19 步（品牌列、平台命令、审计）只碰迁移、仓储、平台命令与审计，第 21 步（网页消息部件）只碰网页路由、SSE、`public/web.js` 与 core 的 `partsOf`，都不碰引擎，依赖从第 18、20 步提前到第 6 步；第 20 步照旧等第 18、19 步，第 22 步等第 20、21 步。第 19 步的迁移先合，第 16 步的 `guard_verdicts` 迁移合并时排在它后面。
+
+### 第 7 步 · 通用金额解析（2026-10-10）
+
+- 结构：`src/core/parse/money.ts`（数字归一、金额识别、约数与区间，新增 `Money = { amount, currency: 'CNY' | null, unit }`）、`src/core/parse/sentences.ts`（三种句子边界，保留原文位置与链接版本后缀）。`src/price-guard.ts` 变成适配层：14 个旧导出名照旧、旧签名可调，人数与作用域信息、价格裁决留在原处（第 9 步搬进包）；`src/trace/recorder.ts` 的 `sentenceUnits` 改引 core。`pack-api.ts` 转出解析函数与 `Money`、`MoneyParseOptions`、`AmountHit`、`SpokenAmount`。
+- 本步定的：金额下限与精度容差由调用方传入，旅游照旧 1000、0.5；显式人民币单位标 `CNY`，外币与没有明确币种的写法为 `null` 并保留原单位；客户区间端点与回复金额照旧分开解析；价格护栏照旧按数值比出处（R12 的已知缺陷不修）。
+- 自测：新增 `src/price-guard-parse.selftest.ts` 41 项（「每人 12800 美元」→ `{ amount: 12800, currency: null, unit: '美元' }`，无出处拦、有 12800 元出处放行；大小写中文数字、区间、位置边界；下限 500 时认 800、1000 时不认），串进 `test`。锁定价格套件 403 项全绿，快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 给后面：包从 `pack-api` 引解析，核心内部从 `src/core/parse/` 引；客户预算照旧走 `spokenMoney`。
+- 只读评审：89,355 次差分比较无搬家回归，门面与依赖方向符合；1 条 major——英镑、澳元、港元等外币丢原单位（白名单漏了币种，回退成「万」），协调者补了币种表（`CURRENCY_SUFFIX`）与断言，自测增到 51 项。「3.8 万台币」照旧不认作金额（「台」按量词处理，是原有识别口径，不借这次扩大）。
+
+### 第 8 步 · 通用日期与人数解析（2026-10-10）
+
+- 结构：`src/core/parse/dates.ts`（日期选择、改口、月份、位置与 ISO 校验；节日解析由调用方传入）、`src/core/parse/counts.ts`（数字、总人数、集体说法、预算人数、工具参数转换，各自保留原识别范围）；旅游节日表、别名、假期、春节月份、可订截止进 `src/packs/travel/dates.ts`，人数上限 50、可订年限 3 进 `src/packs/travel/thresholds.ts`（默认值等于现值）。`src/engine.ts`、`src/price-rules.ts`、`src/tools.ts` 改为引用，旧入口、调用语境与引擎流程不动；ISO 日期与人数 1–50 的硬校验照旧在三个工具的执行分支。`pack-api.ts` 转出日期、人数函数与相关类型。
+- 本步定的：保留多种解析语境——预算人数取第一处、总人数判断保留 `ambiguous/delta`、集体说法由调用方选择；日期保留 `exact/vague/ongoing`，报价与下单分别处理；日期在调用时取当前时间，不在装载时预计算。
+- 第 1 步「解析调用点」里第 8 步的 99 处，98 处已迁移、适配或按清单保留；`src/price-guard.ts` 的 `parseCount`（第 7 步的文件）留给第 9 步搬价格护栏时一并处理。
+- 自测：`src/core/parse/date-count.selftest.ts` 69 项、`src/packs/travel/dates.selftest.ts` 24 项，串进 `test`；锁定回归（过去日期、节假日、人数改口、团价边界）全绿，快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 只读评审：新旧函数 1,059,188 次对比零差异（正则、人数 1–50、团体 4 人、可订截止、过去日期、几种日期与人数口径、时区），识别范围没有扩大或缩小，依赖方向与门面符合；无问题。
+
+### 第 9 步 · 旅游价格护栏、规则与阈值（2026-10-10）
+
+- 结构：旅游金额出处裁决、白名单与删句进 `src/packs/travel/price-guard.ts`（`createTravelPriceGuard`），预算、季节、稀缺话术与服务承诺规则进 `src/packs/travel/price-rules.ts`（`createTravelPriceRules`）；产品、订单、地名判断、付款模式经能力接口注入。`src/price-guard.ts`、`src/price-rules.ts` 留门面（13 个旧公开函数签名、两个测试出口键集合不变；`price-rules.ts` 延迟读取护栏出口以兼容原有循环引用）。通用解析经 `pack-api` 取 core。
+- 阈值进 `src/packs/travel/thresholds.ts`，默认值等于现值：金额下限 1000、精度容差 0.5、档位容差 5000、人数上限 50、团价门槛 4、折扣 0.95、旺季系数 1.1、低海拔界限 2500；`PRICE_GUARD` 环境变量照旧在调用时读取。验收 11：临时把下限改成 500，「每人 800 元」无出处被拦，改回 1000 不管，默认对象不被修改。
+- 第 8 步留下的 `parseCount` 保留原实现：它对「一十」「二十两」「两十」返回 0 并拒绝，core 的人数解析返回 `null` 或接受这些读法，直接替换会改口径。
+- `pack-api.ts` 新增 `TurnToolCall`、`PriceGuardSources`、`PriceRuleSources`、`PriceThresholds`，转出 `cleanText`、`peakMonths`、`PaymentMode`。SOP 字段漂移扫描指向包内规则源码（配置套件 539 项通过）。
+- 自测 `src/packs/travel/price.selftest.ts` 46 项，串进 `test`；锁定价格套件 403 项全绿，快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 只读评审：同一注入依赖下新旧逻辑 18,492 次纯内存差分零差异，门面与循环引用在三个入口下加载都不会拿到 undefined，依赖方向与阈值一致；无问题。
+
+### 第 10 步 · 旅游七个工具与核心执行分派（2026-10-10）
+
+- 结构：旅游工具实现进 `src/packs/travel/tools/`（`catalog.ts` 目录读取、搜索、详情、定价与会话状态辅助；`index.ts` 七个工具与执行策略），注册、执行分派与钩子进 `src/core/tools/registry.ts`；`src/tools.ts` 缩成门面（原导出、旧签名、默认参数、`__orderTest` 保留），工具定义仍用原 `src/tool-defs.ts`，`JSON.stringify(toolDefs)` 逐字节不变。定价读共享阈值，预算放宽倍数收进 `thresholds.ts`；SOP 字段漂移扫描指向新源码。`pack-api.ts` 填实 `ToolContext`、`ToolHints`、`ToolHooks`、`ToolCallRecorder`、`TravelToolSources`。
+- 钩子顺序：`beforeTool → 调用记录 → execute → 结果记录 → afterTool`；拒绝时返回现有的 `{error}` JSON、照样记调用与结果、跳过执行；执行异常交给调用方。引擎与模型客户端本步没改。
+- 七个工具的声明（依据是 `src/llm.ts` 的缓存白名单、阻止重试白名单与复用条件，`src/engine.ts` 的复用回调）：
+
+  | 工具              | sideEffects              | cacheable | blocksRetry | onReuse      |
+  | ----------------- | ------------------------ | --------- | ----------- | ------------ |
+  | search_routes     | session                  | 是        | 否          | 重放展示状态 |
+  | get_route_detail  | session                  | 是        | 否          | —            |
+  | search_hotels     | —                        | 否        | 否          | —            |
+  | create_quote      | session                  | 否        | 否          | —            |
+  | generate_proposal | session                  | 否        | 否          | —            |
+  | create_order      | session、order、notify   | 否        | 是          | —            |
+  | handoff_to_human  | session、handoff、notify | 否        | 是          | —            |
+
+- 自测：`src/core/tools/registry.selftest.ts`（参数修正、拒绝、异常、记录顺序）、`src/packs/travel/tools/tools.selftest.ts`（声明、复用、定价取整、方案版本、订单幂等、参数校验），串进 `test`；锁定套件全绿，快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 只读评审：394 组新旧差分（结果文本、参数修正、会话写入、订单金额与复用、改单、通知）零差异，七个工具的声明与原判断逐一对应、副作用无漏标，门面兼容；1 条 major——钩子拒绝的调用仍被记成调用并调 afterTool（原引擎直接返回、不记，没执行的建单会被拿去推阶段），协调者改为拒绝时提前返回、不记录不回调，并改了自测断言。门面当时还没接钩子，demo 不受影响。
+
+### 第 11 步 · 模型客户端与旅游 mock 分离（2026-10-10）
+
+- 结构：客户端、历史 wire 拼装、六轮工具循环、通用算法参数与模块级状态进 `src/core/llm/client.ts`（类型在 `src/core/llm/types.ts`），旅游 mock 及其行业解析原样进 `src/packs/travel/mock.ts`；`src/llm.ts` 留门面负责接线与适配（旧导出、签名、`__llmTest` 键集合不变）。`pack-api.ts` 转出 `ChatTurn`、`PrefetchedCall`、`ChatOptions`、`LlmRuntime`，`MockPolicy` 填实为含 `chat(opts)` 的契约。
+- 声明驱动：缓存与空回复重试改读 `ToolSpec.cacheable` / `blocksRetry`（声明经 `src/tools.ts` 新增的只读 `getToolSpec` 出口、由门面注入 core）；保留「hit && moved」才重放、每次命中仍计 `toolReused`、命中不调 execute / before / after；原 `onReuse` 回调经门面适配到 `ToolSpec.onReuse`，`src/engine.ts` 的展示状态重放委托给工具声明。锁定的「北京→云南→北京→北京」仍只重放一次，写型工具之后空回复不重试，mock 原文除导出修饰外逐字节相同。
+- `eval/v2/isolation.ts` 把四个模型私有状态的清理登记迁到新路径，`EVAL_V2_EQUIV_FULL=1` 对照 21/21（两种配置各 46 条逐条等价）。
+- 自测 `src/core/llm/client.selftest.ts`（声明驱动的缓存、重试、钩子跳过、mock 注入），串进 `test`；锁定套件全绿，快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 只读评审：wire、分块、六轮循环、思考与 1210 自愈、对冲、闸门、超时、计费、慢轮日志、缓存与重试 14 组差分探针一致，声明驱动与隔离登记符合；1 条 minor——门面静态引 `tools` 连带提前初始化检索模块（`EMBED_MODEL` 读取时机提前），协调者改为第一次 `chat` 时再装载工具声明（`reuseToolResult` 只在 chat 的工具循环里回调）。
+
+### 第 12 步 · 阶段推进与画像抽取（2026-10-10）
+
+- 结构：阶段、异议、画像、客群与相关预算判断进 `src/packs/travel/progress.ts`；运行时阶段 `src/packs/travel/stages.ts` 从后台阶段定义派生（`src/packs/travel/console-pack.ts` 导出同源定义，以 `SalesStage` 约束），两边同一份数据。`src/engine.ts` 原调用位置改用包实现，没有新增拼 context 前的抽取（spec Revisions 第二条）；生成中接管不推进、在途付款不被覆盖、建单与确定性推荐就地推进照旧；昵称、头像仍经原白名单过滤。
+- 本步定的：本轮工具读取能力经工厂注入，`extractProfile(text, session)` 保持两参数签名，不加共享状态。`pack-api.ts` 新增 `StageTurnOutcome`、`ProfileExtractionSources`，填实 `PackRuntimeTypes.TurnOutcome`，转出 `profileForPrompt`。
+- 自测 `src/packs/travel/progress.selftest.ts`（阶段同源、画像信任边界、日期、隐私契约），串进 `test`；对照搬迁前，754 条 case、1027 轮的阶段与画像无差异；`src/store/parity.selftest.ts` 两种会话存储等价 1381 项通过（生成中付款由它守，plan 第 1 步裁决第 7 条）；快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 只读评审：阶段 140,400 项、画像 6,783 项纯内存差分零差异；本轮工具注入在交错会话下不串；阶段同源、隐私白名单、依赖方向符合；无问题。
+
+### 第 13 步 · context、预取、工具参数与模型前判定（2026-10-10）
+
+- 结构：旅游推荐、参数核正、context 行业部分、预取与重发支付链接进 `src/packs/travel/turn.ts`（`createTravelTurnHooks`），行程能力判断、目标天数与对应话术进 `src/packs/travel/itinerary.ts`；`src/engine.ts` 删掉约 1400 行，接入包钩子与第 10 步的工具注册表，历史窗口、并发、额度、敏感信息与持久化编排留在引擎。dejargon 改取 `src/packs/travel/dejargon-vocab.ts`，引擎里的旧副本删掉（第 14 步留下的那一处）。`pack-api.ts` 填实 `TurnContext`、`PrefetchResult`、`DeterministicReply`，新增 `TurnToolContext`、`TravelTurnSources`。
+- 顺序：七类前置返回照原顺序留核心；只有重发支付链接进包的 `preModel`，仍在 context 与预取之前；context 先于预取；阶段与画像仍在第一次接管检查之后推进。工具按 `beforeTool → 记调用 → execute → 记结果 → afterTool` 执行，被拒绝的调用不记录、不回调；工具提醒在执行包装里补进完整结果再记录，`afterTool` 补库外目的地记录。
+- 自测 `src/packs/travel/turn.selftest.ts`（钩子参数、预取顺序、部分失败恢复、阶段 / 画像边界），串进 `test`；锁定套件全绿（dejargon 333 项）、历史窗口与 context wire 断言照过；`EVAL_V2_EQUIV_FULL=1` 对照 21/21；快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 给后面：第 16 步从包里复用推荐、线路判断与行程能力；第 18 步把 `createTravelTurnHooks` 的能力接线移进组合根。
+- 只读评审：52 个函数、69 个常量只有导出、类型名与格式差异；1,740 组夹具 63,122 次纯内存差分、2,378 次工具执行链比较、87 个预取场景（含部分失败）一致；拒绝调用不记录不回调；没有模块级本轮状态，两个会话并发不串；dejargon 词表逐字相同；无问题。
+
+### 第 14 步 · 检索、跟进、洞察与词表搬家（2026-10-10）
+
+- 结构：线路检索文本拼接进 `src/packs/travel/retrieval.ts`，20 秒检索超时进 `src/core/retrieval.ts` 常量（不新增环境变量，spec Revisions 第二条）；按阶段的沉默间隔 `IDLE_MINUTES`、兜底话术 `TEMPLATE` 与生成提示同表进 `src/packs/travel/followup.ts`；洞察、建议、草稿提示与阶段兜底进 `src/packs/travel/insight.ts`；转人工识别的静态词表与规则数据进 `src/packs/travel/handoff-vocab.ts`。老路径（`src/retrieval.ts`、`src/followup.ts`、`src/insight.ts`、`src/handoff/triggers.ts`）保留索引、资格判断、调度、聚合、缓存、识别算法与原出口。`pack-api.ts` 填实 `FollowupTemplates`、`InsightPrompts`、`HandoffVocab`、`DejargonVocab`。
+- 20 条线路的检索文本、跟进配置、洞察提示与词表逐值核对相同，正则与顺序不变；跟进锁定测试与转人工 3216 项断言通过，快照两种配置 0 处差异。两个 v2 清理出口位置没变。由 Codex 按任务说明完成。
+- **留给第 13 步**：dejargon 词表在 `src/engine.ts` 里，本步按约定不改引擎，只把原样词表备在 `src/packs/travel/dejargon-vocab.ts`（暂未接线）。协调者定：第 13 步改引擎时接上它并删掉引擎里的旧词表，缩短两份并存的时间。
+
+### 第 15 步 · 护栏步骤执行器（2026-10-10）
+
+- 结构：`src/core/guards/validate.ts`（装载校验：`after` 成立、先写后读、后置接管检查在 `turn_failure` 之前，报错带两个冲突标识；不自动排序；允许后面的步骤再更新同一个键，保留 `injection → price` 共用 `guardHit` 的现状）、`src/core/guards/execute.ts`（按注册顺序执行、更新正文、记裁决；abort 记下后立即停止；handoff 之后继续跑剩下的步骤；同步步骤之间不插 `await`，保证后置接管检查到写消息之间连续）。装载后冻结注册表副本。
+- `pack-api.ts` 填实 `GuardContext` 的共享旗标、工具与订单出处、裁决记录类型（新增 `GuardTurnFlags`、`GuardToolSource`、`GuardVerdict`），副作用方法定为建单与调工具返回 `Promise<ToolResult>`、转人工接收 `HandoffRecord`；`StepVerdict` 照 spec 原定义。
+- 自测：`validate.selftest.ts` 18 项（含第 1 步主回复表 28 行的夹具，按表注册校验通过，表里没有读写矛盾）、`execute.selftest.ts` 9 组（全部动作、两次接管 abort、副作用、每轮隔离、同步尾部）。按本步原文不串进 `test`，第 16 步接入。
+- 未接引擎、DB、trace；快照两种配置 0 处差异。由 Codex 按任务说明完成。
+- 给第 16 步：从 `src/core/guards/execute.ts` 引执行器，包只从 `pack-api.ts` 引类型；`aborted: true` 的一轮必须静默；后置接管检查、失败判定与最后写消息保持同步执行；`guard_events` 照旧只记改了文字的裁决、用基础标识。
+
+### 第 19 步 · 品牌列、平台命令与审计（2026-10-10）
+
+- 迁移 `drizzle/0006_tenant_brand.sql`：`tenants.brand json` 可空、不回填；只给 `agent_platform` 这一列的 UPDATE，`agent_app` 对 `tenants` 仍只读。仓储 `src/db/repo/tenants.ts` 加品牌读取、加锁读取、更新与创建时写入。`pack-api.ts` 的品牌区块补 `BrandProfileSchema` 与 `BRAND_FIELDS`（五个字段的接口不变）。
+- 命令：`tenant-brand set/clear`（平台身份）只改待生效配置，不发布、不重渲染；审计与写入同一事务，只记改了的字段名（重复操作照样记一条、字段列表为空），不含品牌原文。`tenant-create --brand-file`；prod profile 下不带它以 1 拒绝，重复创建时比较品牌。品牌文件要求五个非空字符串、拒绝未知字段，错误不回显原文。审计动作登记在 `src/shared/ui-labels.ts`、`src/shared/audit-text.ts`（措辞用「企业信息配置」，console 字体子集里已有这几个字）。
+- 自测 `src/db/brand.selftest.ts` 49 项（命令、审计、审计失败回滚），带 `PG_TEST_URL` 的部分（列级授权正反、真实 PG 的命令与回滚、并发审计、应用身份拒绝）只在 CI 跑；`src/db/db.selftest.ts` 的严格授权期望加上这一列。快照两种配置 0 处差异。由 Codex 按任务说明完成，另一路只读 Codex 评审（结果见下）。
+- 给后面：第 16 步的 `guard_verdicts` 迁移编号排在 0006 之后；本轮回复必须用已发布的品牌快照（第 20 步），不读 `tenants.brand`。
+- 只读评审抓到 2 条 major，续跑一轮已改：一、`tenant-create` 原来先提交租户与品牌、后开审计事务，审计失败时品牌已落库且重试也补不上审计——改为建租户（含品牌）与审计同一事务（复用 `withTenant`、预分配租户 id），重复创建不追加审计。二、platform 服务只加载 `.env.platform`、读不到应用 `.env` 的 `DEPLOY_PROFILE`，`resolveProfile` 默认成 demo，生产上也能不带品牌建租户——改为从严：只有显式 `DEPLOY_PROFILE=demo` 才允许不带 `--brand-file`，prod 与未设置都以 1 拒绝；判断经 `src/profile.ts` 新增的出口（它仍是唯一读取 `DEPLOY_PROFILE` 的地方）；本机压测脚本与相关自测显式传 demo。品牌自测增到 74 项。
+- **上线注意**：以后要在 demo 服务器上用 platform 命令不带品牌建租户，需在 `.env.platform` 里加 `DEPLOY_PROFILE=demo`（线上 demo 租户早已建好，本次不受影响）；记进「上线清单」。
+
+### 第 21 步 · 消息部件（2026-10-10）
+
+- 结构：`src/core/message-parts.ts` 的 `partsOf(text)` 从最终文本取过了白名单的链接（订单、方案书、`/privacy`；完整 URL 另校验配置的站内来源），部件 URL 保留文本原值。形状定义在 `src/shared/channel-types.ts`（shared 不引 core 的边界），经 `pack-api.ts` 转出 `MessagePart`、`ChannelCaps`、`partsOf`。网页的 HTTP 回复、同 cid 重试、`/history`、SSE、菜单、欢迎语都现算部件；`WebMessage` 只多一个出口投影字段，不进 `ChatMessage`、不落库。`public/web.js` 去掉浏览器端的链接提取，只按部件渲染（正文照旧，卡片在下方），`public/web.css` 加卡片样式。网页渠道声明 `markdown: false`，行为不变。企微实现零改动。
+- 自测（`src/web/web.selftest.ts`）：两卡、白名单、补链后、删句后、静默、同 cid 重试、刷新、DB 预载恢复、顾问回复、付款通知。快照两种配置 0 处差异。浏览器实测留第 25 步。由 Codex 按任务说明完成。
+- 给第 20 步：品牌欢迎语渲染之后再算 `welcomeParts`。
+
+### 并行批次的合并（2026-10-10）
+
+- 第 7–15、19、21 步由 Codex 分路实现（第 7、8、9、10、11、12、13、19 步各另派一路只读 Codex 评审，抓到并改掉 5 处：外币丢原单位、建租户审计不同事务、prod 下读不到 profile 也能不带品牌建租户、钩子拒绝的调用被记录、模型门面提前初始化检索）。每步都核过快照两种配置 0 处差异、`PREFIX sha256` 不变、锁定 8 个文件零差异。
+- 合并时的坑：并行的 PR 各自往 `package.json` 的 `test` 一行加自测、各自往 `pack-api.ts` 加类型，前面的合进 dev 后后面的全部冲突，GitHub 对有冲突的 PR 不跑 CI。改为把 #150–#156 串成一条线（后一个合前一个）再按顺序合；`test` 一行按两边并集合，`pack-api.ts` 两边新增都保留，每一层都复核了编译、lint、格式与快照。以后并行几路先串好再开自动合并。
 
 ## 验收记录
 
