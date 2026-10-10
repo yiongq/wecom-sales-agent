@@ -4,7 +4,8 @@ Status: draft
 Phase: 4 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-10 拆分之后的编号）
 Depends on: [03 · 渠道层 v2](../03-channels-v2/spec.md)（开工时须已 implemented）；[01](../01-pg-config-console/spec.md) 的 SOP 节表、锁定节、发布与启动重渲染；[02](../02-conversations-workbench/spec.md) 的 trace 与护栏事件（R16）；[00](../00-baseline/spec.md) 的前缀稳定检查。
 Supersedes in part: 01 不变量 11「当前发布的锁定节与镜像原文逐字节相同」——改为与**租户的镜像**逐字节相同（R5）；01「渲染与哈希」的渲染输入（加品牌）与「启动重渲染」的原因（加 `brand`）；主参考「护栏」一节「每次裁决记一行 `guard_events`」——改为 `guard_events` 只记改了文字的裁决，全部裁决（含放行）记在 `turn_traces.guard_verdicts`（R8）。
-Amends: 03 R17、R18 的「推到阶段 4」在本 spec 落地；03 R19 的欢迎语默认值改为按品牌渲染（demo 不变）；`deploy/rollback-guard.sh` 加一类风险（R14）。
+Amends: 03 R17、R18 的「推到阶段 4」在本 spec 落地；03 R19 的欢迎语默认值改为按品牌渲染（demo 不变）；`deploy.sh` 与 `deploy/rollback-guard.sh` 加一类风险（R14）；01 的配置导出加品牌快照（R17）。
+Revisions: 2026-10-10 起草期两轮评审（一路 Claude Opus、两轮 Codex 交叉评审）之后就地修订，尚无代码依赖。第一轮：品牌接进 01 的发布与启动重渲染（旧版模式 / 模板模式、租户的镜像、品牌快照）；护栏改成带读写声明的步骤表、跟进单列；裁决记录从「新 trace 事件」改为保留 `guard_events` 加 `turn_traces.guard_verdicts` 列；消息部件从「白名单那一步产出」改为从最终文本现算并覆盖历史与重试；外币的现状写错了（实际是按数值混认），改为照旧并记为已知缺陷；补了品牌出现处清单、包钩子与组合根、门面参数适配、cases v2 格式、模拟客户谓词、回滚风险。第二轮：回滚检查要经 `deploy.sh` 的目标判定才会触发，加 `pre-04` 并按已发布版本放行；阶段推进放回护栏之前（原稿挪到了之后，会改变行为）；前言节随品牌切换的规则；契约检查范围不缩小；工具缓存与复用的契约；配置导出带品牌快照；模拟客户的目标格式与结束协议。
 
 ## 背景与问题
 
@@ -48,24 +49,25 @@ Amends: 03 R17、R18 的「推到阶段 4」在本 spec 落地；03 R19 的欢�
 
 ## 开工前裁决
 
-| #   | 主题               | 裁决                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| --- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1  | 门面               | 老路径 `src/engine.ts`、`src/tools.ts`、`src/price-guard.ts`、`src/price-rules.ts`、`src/followup.ts`、`src/retrieval.ts`、`src/llm.ts`、`src/insight.ts` 保留为门面：门面清单里的每个名字仍从原路径导出、按旧签名调用、行为不变（测试出口的键集合不变）。门面可以做参数适配（补上旅游包与 demo 品牌、把旧参数包成新的 ctx），不做业务判断。门面清单之外的名字可以移走。门面永久保留，直到锁定套件解锁（另起 spec）。                                                                                                                                                                                 |
-| R2  | 依赖方向与组合根   | `src/core/**` 不 import `src/packs/**`，也不 import 门面路径；包只经 `src/core/pack-api.ts` 拿核心类型与工具函数。组合根是 `src/config/source.ts` 的启动装载：按租户的 `pack_id` 从 `src/packs/registry.ts` 取 `PackRuntime`，连同已发布的品牌快照调 `bindPack(runtime, brand)` 注入核心。`scripts/check-boundaries.ts` 加三条（core 不引 packs、core 不引门面、packs 只引 `pack-api`），违反时 `pnpm lint` 失败。现在 `config/source.ts` 直接取 `toolDefs` 与 `renderSystemPrompt`、`trace/recorder.ts` 从 `price-guard` 引 `sentenceUnits`、`llm.ts` 转发旅游 mock 的解析，都改成经核心或包接口拿。 |
-| R3  | 包接口             | 现有后台用的 `IndustryPack`（`src/shared/pack.ts`）不动；运行时另定 `PackRuntime`（见「接口与数据流」），两者由注册表按同一个 `pack_id` 配对，`PackRuntime.stages` 与 `IndustryPack.stages` 同源、只能取 `SalesStage` 的子集。                                                                                                                                                                                                                                                                                                                                                                        |
-| R4  | 品牌档案与两种模式 | 新列 `tenants.brand json`（可空）。**为空是旧版模式**：锁定节取 `data/sop.md` 镜像、【硬性要求】与欢迎语等用现在的原文，逐字节照旧（demo 就是这种）。**非空是模板模式**：锁定节、【硬性要求】、欢迎语、离题回复、身份说明按包模板与档案渲染，不点名渠道。把档案显式设成「云途」值也是模板模式，与旧版模式的字节不同；回到旧版模式用 `tenant-brand clear`。                                                                                                                                                                                                                                            |
-| R5  | 租户的镜像         | 锁定节的来源按租户定：旧版模式取 `data/sop.md` 镜像（现状）；模板模式取 `lockedSectionTemplates` 按档案渲染的结果，作为这个租户的镜像，`mergeWithImage`、SOP 契约检查、`imageSopHash` 都用它。导入、发布、回滚、启动重渲染四条写路径不变，只是镜像换成租户的。console 照旧不能改锁定节。                                                                                                                                                                                                                                                                                                              |
-| R6  | 品牌的生效与快照   | 渲染输入从（SOP 节）变成（SOP 节、品牌档案、包）；`render_inputs` 加 `brandHash` 与完整的品牌快照；`sop.rerender` 的原因加 `brand`。`tenant-brand set` / `clear`（平台身份，写审计，只记改了哪些字段）只改 `tenants.brand`，运行中的实例不受影响；下次启动时按原因 `brand` 自动重渲染、发布一版，之后生效。本轮用到品牌的地方（system、身份说明、离题回复、欢迎语）一律取本轮捕获的已发布版本里的品牌快照，不读 `tenants.brand`。                                                                                                                                                                     |
-| R7  | 护栏步骤           | 主回复的每一步是一个 `GuardStep`：22 个护栏执行位置（同一标识的两处用后缀区分，如 `repair_links:mark` 与 `repair_links:fill`），加上前置清理、前后两次接管检查、末尾清理、系统备注。每步声明 `after`、`reads`、`writes`（本轮共享状态 `turn.flags` 的键，如 `guardHit`、`handedOverSelfDecided`、`preDropSnapshot`、`customPromise`）；装载时校验：`after` 成立、读某个键的步骤排在写它的步骤之后、后置接管检查排在 `turn_failure` 之前，违反就启动失败。有副作用的步骤（建单、转人工、补调工具）经 `GuardContext` 的方法做。顺序等于开工步骤表。                                                     |
-| R8  | 裁决记录           | `guard_events` 契约不变（02 R16）：只记改了文字的裁决，护栏名用基础标识（不带后缀），动作是现有六种。另加 `turn_traces.guard_verdicts json`（可空）：按执行顺序 `[{ id, action }]`，`action` 取 `pass`、现有六种、`abort`（接管检查中止）。进了流水线的每一轮恰好一份；前置返回的路径（重置、紧急、已接管、同意菜单）不进流水线，这一列为空。文件存储与 demo 类会话只在内存的 FinishedTurn 里有，经 `onTurnEnd` 可读。                                                                                                                                                                                |
-| R9  | 跟进路径           | 跟进单独一张 11 步的表（开工步骤表的第二张），标识可以与主回复同名，实现各自独立；跟进步骤只能调没有副作用的工具（`ToolSpec.sideEffects` 为空），不建单、不转人工、不补链接；不记 `guard_verdicts`。                                                                                                                                                                                                                                                                                                                                                                                                  |
-| R10 | cases v2           | 格式见「接口与数据流 · 评测」。一条 case 是一段对话；假模型脚本按**模型请求**消费，耗尽或剩余都算失败；动态值用声明式占位（`{{call:create_order.payUrl}}`、`{{order:0.id}}`）；比较前把订单号（`ord_[0-9a-f]{24}`）与方案版本号归一。runner 起本机假模型 HTTP 服务（与自测同一种做法），不走 `LLM_MOCK` 的关键词 mock。需要在途动作的并发场景（生成中接管、生成中付款）不导出，导出映射里写明由哪个保留的自测覆盖。v1 照旧能跑。锁定的 `src/engine.selftest.ts` 与 `eval/cases.json` 不改。基线是「只加了 v2 与模拟客户 runner、引擎未动」的那一步。                                                  |
-| R11 | 模拟客户评测       | 新 runner `eval/sim/`。目标（goal）是数据：隐藏设定（意向、人数、日期、预算、约束、会不会确认下单、什么时候要人工）加一组确定性谓词。判分输入是完整对话、每轮的工具调用与结果、订单与转人工状态的轨迹；谓词作用在订单字段、转人工状态、工具调用、回复正则上，每个目标另带一份禁用短语表（非金额承诺、提示词泄露的标记句）。一段对话在客户模型说结束或满 12 轮时停。pass^k：同一目标跑 5 遍、5 遍全过才算过。每次跑有费用上限（开放问题 2），到了就停。                                                                                                                                                |
-| R12 | 解析与币种         | `Money = { amount: number; currency: 'CNY' \| null; unit: string }`：认得的人民币单位是 `CNY`，外币单位（美元、日元……）是 `null` 并带原单位。本阶段**不改行为**：价格护栏照旧按数值比对出处（「12800 美元」与 12800 元的出处照旧相互认）；这是已知缺陷，修它会改变客户看到的结果，留给阶段 6。金额识别下限、容差、团体规则进包的阈值。工具参数的硬校验（ISO 日期、人数 1–50）留在工具执行端；mock 的解析留在 mock 里。                                                                                                                                                                                |
-| R13 | 阈值分类           | **算法参数**（历史窗口、工具循环轮数、重复与失败判定）进 `core` 常量；**行业规则**（金额下限与容差、团体人数与折扣、旺季系数、搜索放宽、可订日期范围、节假日表）进包的 `thresholds`；**运行配置**（超时、对冲、并发、跟进间隔）保持现有环境变量。旅游包的默认值等于现值。                                                                                                                                                                                                                                                                                                                             |
-| R14 | 回滚               | 03 之前的代码不认模板模式：回滚到 04 之前的镜像，启动重渲染会把锁定节与【硬性要求】换回「云途」「微信」。`rollback-guard.sh` 加一类风险：目标镜像里没有 `src/core/pack-api.ts`、而库里有 `tenants.brand` 不为空的租户，拒绝（退出码 6）并打印「先 `tenant-brand clear`、重启、确认 `promptHash` 回到旧版模式的值，再回滚」。品牌为空的租户照常回滚（新列被忽略）。                                                                                                                                                                                                                                    |
-| R15 | 消息部件（03 R17） | 部件在最后一次 `cleanText` 之后从最终文本算：每个过了站内白名单的链接一项 `{ kind: 'link', linkKind: 'order' \| 'proposal' \| 'site', url }`。服务端对所有发往网页的消息（AI 回复、顾问回复、付款通知）与历史都用同一个 `partsOf(text)` 现算，不落库；HTTP 回复、同一 `cid` 的重试、`/history`、SSE 都带部件。企微忽略部件（卡片照旧从文本提取）。渠道声明能力 `ChannelCaps`，本阶段只有 `markdown: false`，行为不变。                                                                                                                                                                                |
-| R16 | 虚构品牌与假包     | 测试与评测里放「山海旅行」品牌档案 fixture 与它自己的 SOP 前言节（同一份旅游产品库与可编辑节）。假包放 `src/packs/__fixture/`，只在设了 `PACK_FIXTURES=1` 时由注册表登记：它有自己的工具名、阶段推进与一个护栏步骤，用来证明核心没有暗含旅游规则。                                                                                                                                                                                                                                                                                                                                                    |
+| #   | 主题               | 裁决                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| R1  | 门面               | 老路径 `src/engine.ts`、`src/tools.ts`、`src/price-guard.ts`、`src/price-rules.ts`、`src/followup.ts`、`src/retrieval.ts`、`src/llm.ts`、`src/insight.ts` 保留为门面：门面清单里的每个名字仍从原路径导出、按旧签名调用、行为不变（测试出口的键集合不变）。门面可以做参数适配（补上旅游包与 demo 品牌、把旧参数包成新的 ctx），不做业务判断。门面清单之外的名字可以移走。门面永久保留，直到锁定套件解锁（另起 spec）。                                                                                                                                                                                                                                                                |
+| R2  | 依赖方向与组合根   | `src/core/**` 不 import `src/packs/**`，也不 import 门面路径；包只经 `src/core/pack-api.ts` 拿核心类型与工具函数。组合根是 `src/config/source.ts` 的启动装载：按租户的 `pack_id` 从 `src/packs/registry.ts` 取 `PackRuntime`，连同已发布的品牌快照调 `bindPack(runtime, brand)` 注入核心。`scripts/check-boundaries.ts` 加三条（core 不引 packs、core 不引门面、packs 只引 `pack-api`），违反时 `pnpm lint` 失败。现在 `config/source.ts` 直接取 `toolDefs` 与 `renderSystemPrompt`、`trace/recorder.ts` 从 `price-guard` 引 `sentenceUnits`、`llm.ts` 转发旅游 mock 的解析，都改成经核心或包接口拿。                                                                                |
+| R3  | 包接口             | 现有后台用的 `IndustryPack`（`src/shared/pack.ts`）不动；运行时另定 `PackRuntime`（见「接口与数据流」），两者由注册表按同一个 `pack_id` 配对，`PackRuntime.stages` 与 `IndustryPack.stages` 同源、只能取 `SalesStage` 的子集。                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| R4  | 品牌档案与两种模式 | 新列 `tenants.brand json`（可空）。**为空是旧版模式**：锁定节取 `data/sop.md` 镜像、【硬性要求】与欢迎语等用现在的原文，逐字节照旧（demo 就是这种）。**非空是模板模式**：锁定节、【硬性要求】、欢迎语、离题回复、身份说明按包模板与档案渲染，不点名渠道。把档案显式设成「云途」值也是模板模式，与旧版模式的字节不同；回到旧版模式用 `tenant-brand clear`。                                                                                                                                                                                                                                                                                                                           |
+| R5  | 租户的镜像         | 锁定节的来源按租户定：旧版模式取 `data/sop.md` 镜像（现状）；模板模式取 `lockedSectionTemplates` 按档案渲染的结果，作为这个租户的镜像，`mergeWithImage`、SOP 契约检查、`imageSopHash` 都用它。导入、发布、回滚、启动重渲染四条写路径不变，只是镜像换成租户的。console 照旧不能改锁定节。                                                                                                                                                                                                                                                                                                                                                                                             |
+| R6  | 品牌的生效与快照   | 渲染输入从（SOP 节）变成（SOP 节、品牌档案、包）；`render_inputs` 加 `brandHash` 与完整的品牌快照；`sop.rerender` 的原因加 `brand`。`tenant-brand set` / `clear`（平台身份，写审计，只记改了哪些字段）只改 `tenants.brand`，运行中的实例不受影响；下次启动时按原因 `brand` 自动重渲染、发布一版，之后生效。本轮用到品牌的地方（system、身份说明、离题回复、欢迎语）一律取本轮捕获的已发布版本里的品牌快照，不读 `tenants.brand`。                                                                                                                                                                                                                                                    |
+| R7  | 护栏步骤           | 主回复的每一步是一个 `GuardStep`：22 个护栏执行位置（同一标识的两处用后缀区分，如 `repair_links:mark` 与 `repair_links:fill`），加上前置清理、前后两次接管检查、末尾清理、系统备注。每步声明 `after`、`reads`、`writes`（本轮共享状态 `turn.flags` 的键，如 `guardHit`、`handedOverSelfDecided`、`preDropSnapshot`、`customPromise`）；装载时校验：`after` 成立、读某个键的步骤排在写它的步骤之后、后置接管检查排在 `turn_failure` 之前，违反就启动失败。有副作用的步骤（建单、转人工、补调工具）经 `GuardContext` 的方法做。顺序等于开工步骤表。                                                                                                                                    |
+| R8  | 裁决记录           | `guard_events` 契约不变（02 R16）：只记改了文字的裁决，护栏名用基础标识（不带后缀），动作是现有六种。另加 `turn_traces.guard_verdicts json`（可空）：按执行顺序 `[{ id, action }]`，`action` 取 `pass`、现有六种、`abort`（接管检查中止）。进了流水线的每一轮恰好一份；前置返回的路径（重置、紧急、已接管、同意菜单）不进流水线，这一列为空。文件存储与 demo 类会话只在内存的 FinishedTurn 里有，经 `onTurnEnd` 可读。                                                                                                                                                                                                                                                               |
+| R9  | 跟进路径           | 跟进单独一张 11 步的表（开工步骤表的第二张），标识可以与主回复同名，实现各自独立；跟进步骤只能调没有副作用的工具（`ToolSpec.sideEffects` 为空），不建单、不转人工、不补链接；不记 `guard_verdicts`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| R10 | cases v2           | 格式见「接口与数据流 · 评测」。一条 case 是一段对话；假模型脚本按**模型请求**消费，耗尽或剩余都算失败；动态值用声明式占位（`{{call:create_order.payUrl}}`、`{{order:0.id}}`）；比较前把订单号（`ord_[0-9a-f]{24}`）与方案版本号归一。runner 起本机假模型 HTTP 服务（与自测同一种做法），不走 `LLM_MOCK` 的关键词 mock。需要在途动作的并发场景（生成中接管、生成中付款）不导出，导出映射里写明由哪个保留的自测覆盖。v1 照旧能跑。锁定的 `src/engine.selftest.ts` 与 `eval/cases.json` 不改。基线是「只加了 v2 与模拟客户 runner、引擎未动」的那一步。                                                                                                                                 |
+| R11 | 模拟客户评测       | 新 runner `eval/sim/`。目标（goal）是数据：隐藏设定（意向、人数、日期、预算、约束、会不会确认下单、什么时候要人工）加一组确定性谓词。判分输入是完整对话、每轮的工具调用与结果、订单与转人工状态的轨迹；谓词作用在订单字段、转人工状态、工具调用、回复正则上，每个目标另带一份禁用短语表（非金额承诺、提示词泄露的标记句）。一段对话在客户模型说结束或满 12 轮时停。pass^k：同一目标跑 5 遍、5 遍全过才算过。每次跑有费用上限（开放问题 2），到了就停。                                                                                                                                                                                                                               |
+| R12 | 解析与币种         | `Money = { amount: number; currency: 'CNY' \| null; unit: string }`：认得的人民币单位是 `CNY`，外币单位（美元、日元……）是 `null` 并带原单位。本阶段**不改行为**：价格护栏照旧按数值比对出处（「12800 美元」与 12800 元的出处照旧相互认）；这是已知缺陷，修它会改变客户看到的结果，留给阶段 6。金额识别下限、容差、团体规则进包的阈值。工具参数的硬校验（ISO 日期、人数 1–50）留在工具执行端；mock 的解析留在 mock 里。                                                                                                                                                                                                                                                               |
+| R13 | 阈值分类           | **算法参数**（历史窗口、工具循环轮数、重复与失败判定）进 `core` 常量；**行业规则**（金额下限与容差、团体人数与折扣、旺季系数、搜索放宽、可订日期范围、节假日表）进包的 `thresholds`；**运行配置**（超时、对冲、并发、跟进间隔）保持现有环境变量。旅游包的默认值等于现值。                                                                                                                                                                                                                                                                                                                                                                                                            |
+| R14 | 回滚               | 03 之前的代码不认模板模式：回滚到 04 之前的镜像，启动重渲染会把锁定节与【硬性要求】换回「云途」「微信」。`deploy.sh` 的目标判定加 `pre-04`（目标镜像里没有 `src/core/pack-api.ts`），部署旧 tag 与健康检查失败后的自动回滚都经 `rollback-guard.sh`。风险：库里有租户的 `tenants.brand` 不为空，**或**有租户当前发布版本的 `render_inputs` 带品牌快照（clear 了但还没重启重渲染的也拦）；库问不到时，正在跑的是 04 之后的镜像就按有风险处理（与 03 同一种从严）。检查脚本以 6 退出并打印「先 `tenant-brand clear`、重启、确认 `/healthz` 的 `promptHash` 回到旧版模式的值，再回滚」；`deploy.sh` 照现有约定把检查拒绝转成 1、打印的步骤原样透出。两样都没有的照常回滚（新列被忽略）。 |
+| R15 | 消息部件（03 R17） | 部件在最后一次 `cleanText` 之后从最终文本算：每个过了站内白名单的链接一项 `{ kind: 'link', linkKind: 'order' \| 'proposal' \| 'site', url }`。服务端对所有发往网页的消息（AI 回复、顾问回复、付款通知）与历史都用同一个 `partsOf(text)` 现算，不落库；HTTP 回复、同一 `cid` 的重试、`/history`、SSE 都带部件。企微忽略部件（卡片照旧从文本提取）。渠道声明能力 `ChannelCaps`，本阶段只有 `markdown: false`，行为不变。                                                                                                                                                                                                                                                               |
+| R16 | 虚构品牌与假包     | 测试与评测里放「山海旅行」品牌档案 fixture 与它自己的 SOP 前言节（同一份旅游产品库与可编辑节）。假包放 `src/packs/__fixture/`，只在设了 `PACK_FIXTURES=1` 时由注册表登记：它有自己的工具名、阶段推进与一个护栏步骤，用来证明核心没有暗含旅游规则。                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| R17 | 配置导出           | 见「配置导出与文件模式」：导出带已发布的品牌快照，文件模式据此渲染，往返哈希相同。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ## 接口与数据流
 
@@ -100,6 +102,7 @@ export interface PackRuntime {
   contractRules(mode: 'legacy' | { brand: BrandProfile }): SopContractRule[];
   knownFields: { names: string[]; sourceFiles: string[] }; // SOP 契约的已知字段与它们的出处文件（漂移测试扫这些文件）
   // 对话
+  stages: { id: SalesStage; terminal?: boolean }[]; // SalesStage 的子集，与 IndustryPack.stages 同源（R3）
   tools: ToolSpec[]; // 顺序即 tools 数组顺序，序列化字节进 toolsHash
   beforeTool?(name: string, args: unknown, ctx: ToolContext): { args: unknown } | { reject: string };
   afterTool?(name: string, result: ToolResult, ctx: ToolContext): void;
@@ -129,6 +132,12 @@ export interface BrandProfile {
 export interface ToolSpec {
   def: ToolDef; // 现有 tool-defs 的形状
   sideEffects: ReadonlyArray<'session' | 'order' | 'handoff' | 'notify'>; // 读方：跟进步骤只能调空的（R9）
+  /** 同一轮同样参数的调用可以复用结果（现在由模型客户端按旅游工具名判断，改由这里声明） */
+  cacheable: boolean;
+  /** 本轮调过它之后，空回复不整轮重试（现在按工具名判断） */
+  blocksRetry: boolean;
+  /** 命中缓存时：不调 execute、不调 beforeTool；调 onReuse 重放状态（如「最近展示的线路」），再调 afterTool；记录照旧并计 toolReused */
+  onReuse?(result: ToolResult, ctx: ToolContext): void;
   execute(args: unknown, ctx: ToolContext): Promise<ToolResult>;
 }
 
@@ -150,14 +159,15 @@ export type StepVerdict =
 
 ### 主流程
 
-`handleMessage` 的顺序与现在相同，拆成核心函数与包钩子：前置返回（重置、紧急、已接管、同意菜单，原样）→ 记客户消息 → 画像抽取（包）→ 捕获本轮状态、拼 context（核心 + 包的 `contextNote`）→ 预取（包，在拼 context 之后，与现在相同）→ 模型前的确定性判定（包）→ 模型与工具循环（核心，工具经注册表分派，`beforeTool` / `afterTool` 在记录调用之前与之后）→ 主回复步骤表 → 阶段推进（包）→ 写会话、记 trace。生成中顾问接管、生成中客户付款的语义不变。
+`handleMessage` 的顺序与现在相同，拆成核心函数与包钩子：前置返回（重置、紧急、已接管、同意菜单，原样）→ 记客户消息 → 画像抽取（包）→ 捕获本轮状态、拼 context（核心 + 包的 `contextNote`）→ 预取（包，在拼 context 之后，与现在相同）→ 模型前的确定性判定（包）→ 模型与工具循环（核心，工具经注册表分派，`beforeTool` / `afterTool` 在记录调用之前与之后，缓存复用见 `ToolSpec`）→ 阶段推进与按工具结果补画像（包，位置与现在相同，在步骤表之前：护栏的兜底话术读本轮推进之后的阶段）→ 主回复步骤表（建单、确定性推荐等步骤照现在的做法就地更新阶段）→ 写会话、记 trace。生成中顾问接管、生成中客户付款的语义不变。
 
 ### 品牌渲染
 
 - `renderSystemPrompt(sop, mode)`：旧版模式是 `sop` + 空行 + `legacy.hardRequirements`，与开工时 `renderSystemPrompt(sop)` 逐字节相同；模板模式用 `templates.hardRequirements` 按品牌渲染。
 - 品牌出现的每一处（背景里那张清单）都改成取本轮捕获的品牌快照：旧版模式用 `legacy` 原文，模板模式用模板渲染。账号自定义的欢迎语（03 R19）优先于两者。
 - 静态页（`pay.html`、`proposal.html`、`chat.html`）里的品牌名改成服务端在返回页面时替换的占位符；旧版模式替换出的字节与现在相同。
-- 新租户（模板模式）发布第一版 SOP 时，前言节用 `templates.preamble` 渲染；之后运营可以在 console 改前言节，改品牌不重写可编辑节（发布时契约检查只查锁定节与【硬性要求】）。
+- 前言节是可编辑节，里面有品牌名。随品牌切换的规则（启动重渲染时做）：前言节**没被运营改过**（等于切换前那个模式与品牌渲染出的前言）就换成切换后的渲染——旧版模式的前言是 `data/sop.md` 原文，模板模式的是 `templates.preamble` 按品牌渲染；**被改过**就保留原样、启动日志与 console 的 SOP 页提示「前言节里可能还有旧品牌名」，不拦发布。新租户（模板模式）发布第一版时前言节用模板渲染。
+- 01 的契约检查（禁用短语、工具与字段、结构、可编辑预算……）范围不变；本阶段新增的品牌专属检查（锁定节与【硬性要求】里没有别的品牌名与渠道名）只查锁定节与【硬性要求】。
 
 ### 消息部件
 
@@ -169,6 +179,10 @@ export type StepVerdict =
 - `turn_traces` 加列 `guard_verdicts json`（可空）；`agent_app` 按 02 的列级授权方式给写权限。
 - `sop_versions.render_inputs` 的 json 多两个键（`brandHash`、`brand`），不改列。
 - 审计动作加 `tenant.brand_set`、`tenant.brand_clear`；`sop.rerender` 的原因加 `brand`。
+
+### 配置导出与文件模式（R17）
+
+01 的配置导出（`export-config`）在模板模式的租户上多写一个 `brand.json`：内容是**当前发布版本**里的品牌快照，不是待生效的 `tenants.brand`。文件模式装载时，数据目录里有 `brand.json` 就按模板模式渲染，没有就是旧版模式；导出物在文件模式下渲染出的前缀与线上发布版本的哈希相同（01 的往返核对照旧）。
 
 ### 评测
 
@@ -206,6 +220,27 @@ interface CaseV2 {
 - `eval/run.ts` 认 v1 与 v2；`package.json` 的 `test` 跑 v2 的 mock 部分（文件配置与 PGlite 配置两种）。
 - `eval/sim/run.ts`：`--goals <文件>`、`--k 5`、`--budget <元>`、`--model <名>`；输出每个目标每遍的谓词结果与失败原因、pass^k 汇总、模型费用。
 
+```ts
+// eval/sim/goals/*.json 的一项
+interface SimGoal {
+  id: string;
+  persona: string; // 给客户模型的隐藏设定（自然语言），如「两位老人想去不太累、低海拔的地方，预算每人一万以内，会确认下单」
+  brand?: string; // fixture 名；缺省是旧版模式
+  maxTurns?: number; // 缺省 12
+  allowedTools: string[]; // 这段对话里允许出现的工具调用
+  predicates: Predicate[];
+  forbidden: string[]; // 禁用短语（非金额承诺、提示词标记句），出现在任一条回复里就不过
+}
+type Predicate =
+  | { kind: 'order'; count: number; fields?: Record<string, unknown> } // 终态订单数与字段（如 travelers: 2）
+  | { kind: 'no_order_before'; turnMatches: string } // 客户说出匹配这句的话之前不许建单
+  | { kind: 'handoff'; expected: boolean }
+  | { kind: 'tool_called'; name: string; min?: number; max?: number }
+  | { kind: 'reply_matches' | 'reply_excludes'; pattern: string; scope: 'any' | 'all' | 'last' };
+```
+
+客户模型每轮输出一个 JSON：`{ "say": string, "done": boolean }`；`done` 为真或满 `maxTurns` 时停。输出不是合法 JSON 时重试一次，再不合法就这一遍记失败、原因 `customer_protocol`（不算引擎的错，汇总里单列）。plan 里至少写一个完整目标作为样例。
+
 ## 不变量
 
 1. 旧版模式租户（demo）的 `PREFIX sha256` 在每一步结束时都等于开工值；`JSON.stringify(toolDefs)` 逐字节相同。
@@ -239,8 +274,8 @@ interface CaseV2 {
 2. **依赖方向。** 往 `src/core/` 里任一文件加一行 `import … from '../packs/travel/…'`，或加一行 `import … from '../engine.js'`（门面），`pnpm lint` 失败；去掉后通过。`handleMessage` 的核心路径不超过 150 行（口径见开放问题 4）。
 3. **品牌（旧版模式不变）。** demo 不配品牌：system prompt、身份说明、离题回复、两种欢迎语、mock 开场、快捷回复默认模板、支付页、方案书、聊天页与开工时逐字节相同。
 4. **品牌（模板模式）。** 「山海旅行」租户：新客欢迎、回访欢迎、身份问答、离题回复、支付页商户名、方案书抬头里是「山海旅行」、没有「云途」也没有「微信」；锁定节与【硬性要求】里没有「微信」与「云途」，SOP 契约检查通过；用它跑 v2 的 mock 回归全过；它的 system prompt 与 demo 的逐行差异记进 plan。
-5. **品牌的生效。** `tenant-brand set` 之后不重启：客户看到的与 `/healthz` 的 `promptHash` 都不变；重启：审计里一条 `sop.rerender`（原因 `brand`），`promptHash` 变了，身份说明是新品牌；`tenant-brand clear` 再重启：`promptHash` 回到开工值。prod profile 下 `tenant-create` 不带 `--brand-file` 以 1 拒绝。`tenant-brand set` 写一条只含字段名的审计。
-6. **回滚检查。** 库里有品牌不为空的租户、目标是 04 之前的镜像：`deploy.sh` 拒绝（退出码 6）并打印 clear 的步骤；clear、重启之后放行；品牌为空时照常回滚（本机演练，真实 docker，经 `deploy.sh` 的调法）。
+5. **品牌的生效。** `tenant-brand set` 之后不重启：客户看到的与 `/healthz` 的 `promptHash` 都不变；重启：审计里一条 `sop.rerender`（原因 `brand`），`promptHash` 变了，身份说明是新品牌；`tenant-brand clear` 再重启：前言节没改过时 `promptHash` 回到开工值。前言节的三种切换各验一遍：旧版 → 山海、山海 → 另一个虚构品牌、山海 → clear；没改过的前言跟着换、品牌名对；改过的保留原样、启动日志与 SOP 页有提示。prod profile 下 `tenant-create` 不带 `--brand-file` 以 1 拒绝。`tenant-brand set` 写一条只含字段名的审计。
+6. **回滚检查。** 本机演练，真实 docker，经 `deploy.sh`：库里有品牌不为空的租户、部署 03 的 tag：检查脚本 6、`deploy.sh` 拒绝并打印 clear 的步骤；clear 但没重启（当前发布版本仍带品牌快照）：仍拒绝；重启之后放行；品牌为空时照常回滚；健康检查失败后的自动回滚同样经过这道检查。
 7. **步骤表。** 一组让每个步骤至少命中一次的 v2 case：抽取前后客户收到的文本相同（归一之后），`guard_events` 相同；每轮一份 `guard_verdicts`，标识顺序等于开工步骤表，放行也在内；接管检查中止的那一轮是 `abort`；前置返回的那一轮为空。把一个步骤的 `after` 改成依赖排在它后面的步骤、或让它读一个后面才写的键，启动失败并打印两个标识。
 8. **跟进。** 跟进的 11 步与开工时同一份输入下结论相同；一条会触发改行程承诺、缺链接与转接承诺的跟进文本：只删句，不建单、不转人工、不调工具。
 9. **cases v2。** 开工清单里的每个可导出场景都有对应的 v2 case；在基线那一步与最后一步 mock 全绿、结论逐条相同；导出映射里列出不导出的场景与覆盖它们的保留自测。v1 照旧能跑、结论与开工时相同。
