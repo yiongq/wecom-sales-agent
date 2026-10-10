@@ -143,7 +143,21 @@ SENTINEL='restored-from-backup.json'
 mkdir -p "$TMP/sentinel/var"
 printf '{"backupAt":"%s"}\n' "$(date -u +%FT%TZ)" >"$TMP/sentinel/var/${SENTINEL}"
 if [[ -d var ]]; then
-  tar -czf "$TMP/var.tar.gz" var -C "$TMP/sentinel" "var/${SENTINEL}"
+  TAR_VERSION="$(tar --version 2>/dev/null || true)"
+  # GNU tar 的 1 表示读取时文件在变，归档仍已生成；只重试这种情况，其他错误保留原退出码。
+  for attempt in 1 2 3; do
+    if tar -czf "$TMP/var.tar.gz" var -C "$TMP/sentinel" "var/${SENTINEL}"; then
+      break
+    else
+      TAR_RC=$?
+    fi
+    if ((TAR_RC != 1)) || [[ "${TAR_VERSION%%$'\n'*}" != *'GNU tar'* ]]; then
+      exit "$TAR_RC"
+    fi
+    if ((attempt == 3)); then
+      alarm "var/ 打包时有文件在变（GNU tar 退出码 1，已重试 2 次），归档已照常生成"
+    fi
+  done
 else
   alarm "部署目录里没有 var/，这次没备份会话与订单（归档里只有恢复哨兵）"
   tar -czf "$TMP/var.tar.gz" -C "$TMP/sentinel" "var/${SENTINEL}"
