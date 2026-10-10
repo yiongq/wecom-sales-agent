@@ -2464,7 +2464,7 @@ check(
     ['大写', '/audit?actions=SOP.publish'],
     ['空的一项', '/audit?actions=sop.publish,'],
     ['空串', '/audit?actions='],
-    ['33 个', `/audit?actions=${Array.from({ length: 33 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`],
+    ['65 个', `/audit?actions=${Array.from({ length: 65 }, (_, i) => `a.b${'_'.repeat(i % 62)}`).join(',')}`],
     ['一项超过 64 个字符', `/audit?actions=${'a'.repeat(65)}`],
   ] as const;
   const wrong: string[] = [];
@@ -2472,9 +2472,9 @@ check(
     const r = keep(await call('GET', url, O));
     if (!(r.status === 400 && r.body.error === 'bad_request')) wrong.push(`${name}: ${r.status} ${r.text.slice(0, 80)}`);
   }
-  check('AuditQuery.actions：同时给 action 与 actions、格式不对、超过 32 个 → 400 bad_request', wrong.length === 0, wrong.join(' | '));
-  const most = await call('GET', `/audit?limit=1&actions=${Array.from({ length: 32 }, (_, i) => `a.b${'_'.repeat(i)}`).join(',')}`, O);
-  check('AuditQuery.actions：32 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
+  check('AuditQuery.actions：同时给 action 与 actions、格式不对、超过 64 个 → 400 bad_request', wrong.length === 0, wrong.join(' | '));
+  const most = await call('GET', `/audit?limit=1&actions=${Array.from({ length: 64 }, (_, i) => `a.b${'_'.repeat(i % 62)}`).join(',')}`, O);
+  check('AuditQuery.actions：64 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
 
   // AUDIT_ACTIONS 就是系统写审计的全部动作：src/ 下 writeAudit、queueAudit 写的 action 字面量与它逐个相同，新加一种动作要同时给它中文
   const { AUDIT_ACTIONS, auditActionsParam } = await import('../shared/ui-labels.js');
@@ -3368,7 +3368,10 @@ async function workbenchSuite(): Promise<void> {
         /^GET \/pay\/:orderId$/,
         /^GET \/api\/proposal\/:routeId$/,
         /^GET \/proposal\//,
-        /^(GET|POST) \/wecom\/callback$/,
+        /^(GET|POST) \/wecom\/callback(\/:key)?$/,
+        /^GET \/w\/:key$/,
+        /^POST \/api\/web\/:key\/(messages|end)$/,
+        /^GET \/api\/web\/:key\/(history|events)$/,
         /^GET \/kf-qr\.png$/,
         /^GET \/privacy$/,
         /^GET \/console/,
@@ -4393,6 +4396,67 @@ async function dbStoreChild(): Promise<never> {
     const ag = await login(users[1].email, 'agent-db13-password');
     const vw = await login(users[2].email, 'viewer-db13-password');
     const enc = encodeURIComponent;
+
+    // 03 验收 17：详情接口实际经过 workbench 的 wecom delivery 投影。
+    {
+      const { installAccounts } = await import('../channels/accounts.js');
+      const ledger = await import('../quota/ledger.js');
+      const accountId = randomUUID();
+      await su(
+        "insert into channel_accounts (tenant_id,id,key,kind,name,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id) values ($1,$2,'delivery','wecom_kf','投递测试','wecom:delivery:','corp-delivery','kf-delivery',decode('01','hex'),'test')",
+        [fx.deps.tenantId, accountId],
+      );
+      const account: import('../channels/accounts.js').ChannelAccount = {
+        id: accountId,
+        tenantId: fx.deps.tenantId,
+        key: 'delivery',
+        kind: 'wecom_kf',
+        name: '投递测试',
+        status: 'active',
+        source: 'db',
+        wecom: {
+          corpId: 'corp-delivery',
+          openKfId: 'kf-delivery',
+          idPrefix: 'wecom:delivery:',
+          recordOnlyUntil: null,
+          settings: { pollIntervalMs: 60000 },
+        },
+        web: null,
+        inactiveReason: null,
+      };
+      installAccounts([account]);
+      try {
+        for (const status of ['sending', 'failed', 'unknown', 'cancelled', 'accepted'] as const) {
+          const sid = `wecom:delivery:wmD${status}`;
+          const ds = store.getOrCreateSession(sid, 'wecom');
+          ds.channelAccountId = accountId;
+          const message: ChatMessage = { role: 'agent', content: `投递状态 ${status}`, at: Date.now() };
+          ds.messages.push({ role: 'customer', content: '你好', at: Date.now() }, message);
+          store.saveSession(ds);
+          const intents = ledger.planOutbound(account, { sessionId: sid, hasSession: true }, 'ai', message, null, [
+            { msgtype: 'text', text: { content: message.content } },
+          ]);
+          await ledger.commitOutbound(intents);
+          if (status === 'cancelled') ledger.cancelIntents(intents, 'taken_over');
+          else {
+            await ledger.markSending(intents[0]!);
+            if (status !== 'sending') ledger.settleIntent(intents[0]!, status === 'failed' ? 'accepted' : status, { attempts: 1 });
+            if (status === 'failed') ledger.onSendFail(intents[0]!.msgid, 7);
+          }
+          await store.flushSession(sid);
+          const detail = await req('GET', `/conversations/${enc(sid)}`, own);
+          const projected = (detail.body.messages as { text: string; delivery: unknown }[]).find((m) => m.text === message.content);
+          const expected = { status, failType: status === 'failed' ? 7 : null };
+          ck(
+            `详情 delivery：${status} → ${status === 'sending' ? '发送中' : status === 'failed' ? '没送达（原因码 7）' : status === 'unknown' ? '可能没送达' : status === 'cancelled' ? '未发送' : 'accepted（界面不显示）'}`,
+            detail.status === 200 && !!projected && JSON.stringify(projected.delivery) === JSON.stringify(expected),
+            JSON.stringify(projected),
+          );
+        }
+      } finally {
+        installAccounts([]);
+      }
+    }
 
     // ---- trace 类：J 页消息上的 turnId 与改写句数、步骤摘要、改写对照、trace 原文 ----
     const SID = 'wecom:wmDB13trace';

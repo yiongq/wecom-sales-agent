@@ -11,17 +11,26 @@
 //   store         store_conflict、会话 poisoned（含 WindowCorruptError）、lagMs 超过 60 秒、停机写了 spill、10 分钟内丢了遥测行、
 //                 启动时 spill 回放失败；lagMs 回到 5 秒以内恢复
 //   jobs          retention_purge、handoff_notify 用完重试记 failed；没有恢复
+//   channel       03 spec「可观测性」：启动装载那一条（网页账号因 web_channel 关着没有启用、欢迎语不合格按没设处理，只有
+//                 账号 key 与原因）；10 分钟内有「没落库就发」（R6，03 第 8 步）、一组出站没过发送前的校验（R21 的同步校验）；
+//                 入站行出队时记了 poison、too_old（R3，03 第 9 步）；
+//                 恢复截止点让 N 个会话只补记未回复（03 第 12 步：启动后按会话数合成一条，一次）；
+//                 拉取失败、入站卡住、sending 转 unknown 等由 03 第 13 步接上
 import { onTokenError } from '../adapters/wecom.js';
+import { onInboxAbandoned, type InboxAbandoned } from '../channels/inbox.js';
+import { channelStartupWarnings, channelRestartUnknown, channelConditions, refreshChannelObservability } from '../channels/registry.js';
 import { configHealth, onLockEvent, type LockEvent } from '../config/source.js';
 import { onJobFailed, type JobFailure } from '../jobs/runner.js';
 import { scrubConvIds } from '../log.js';
-import { onSendSettled, type SendSettled } from '../quota/ledger.js';
+import { onPlanRejected, onSendSettled, onUnsafeSend, type SendSettled } from '../quota/ledger.js';
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
-export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs';
+export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs' | 'channel';
 
 export interface AlertOpts {
+  /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */
+  scope?: string;
   /** 发一条「已恢复」：这个键没在告警中时什么都不发 */
   resolved?: boolean;
   /** 条件变重（如租户锁确认被别的进程持有、开始停机）：不受 30 分钟去重限制 */
@@ -43,7 +52,7 @@ interface KeyState {
   active: boolean;
   lastSentAt: number;
 }
-const states = new Map<AlertKey, KeyState>();
+const states = new Map<string, KeyState>();
 const sentAt: number[] = [];
 let lastThrottleLog = 0;
 const inflight = new Set<Promise<void>>();
@@ -132,7 +141,8 @@ function deliver(content: string, t: number): void {
 export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
   try {
     const t = clock();
-    const st = states.get(key) ?? { active: false, lastSentAt: 0 };
+    const stateKey = opts.scope ? `${key}:${opts.scope}` : key;
+    const st = states.get(stateKey) ?? { active: false, lastSentAt: 0 };
     if (opts.resolved) {
       if (!st.active) return;
       st.active = false;
@@ -141,7 +151,7 @@ export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
       st.active = true;
       st.lastSentAt = t;
     }
-    states.set(key, st);
+    states.set(stateKey, st);
     deliver(`[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`, t);
   } catch (e) {
     console.error(`[alert] 告警处理出错（${errName(e)}），已忽略`);
@@ -193,28 +203,114 @@ function onTurn(f: FinishedTurn): void {
 
 const WECOM_WINDOW_MS = 10 * 60_000;
 const WECOM_FAILS = 3;
-let wecomFails: { at: number; result: 'rejected' | 'unknown'; errcode: number | null }[] = [];
-let lastWecomFailAt = 0;
+const wecomAccounts = new Map<
+  string,
+  {
+    fails: { at: number; result: 'rejected' | 'unknown'; errcode: number | null }[];
+    lastFailAt: number;
+  }
+>();
+const wecomStateOf = (account: string) => {
+  let st = wecomAccounts.get(account);
+  if (!st) {
+    st = { fails: [], lastFailAt: 0 };
+    wecomAccounts.set(account, st);
+  }
+  return st;
+};
+const wecomScope = (account: string): AlertOpts => (account === 'env' ? {} : { scope: account });
 
 function onSettled(s: SendSettled): void {
   if (s.result === 'accepted') return;
   const t = clock();
-  lastWecomFailAt = t;
-  wecomFails = wecomFails.filter((f) => t - f.at < WECOM_WINDOW_MS);
-  wecomFails.push({ at: t, result: s.result, errcode: s.errcode });
-  if (wecomFails.length < WECOM_FAILS) return;
-  const rejected = wecomFails.filter((f) => f.result === 'rejected').length;
-  const codes = [...new Set(wecomFails.flatMap((f) => (f.errcode === null ? [] : [String(f.errcode)])))];
+  const st = wecomStateOf(s.account);
+  st.lastFailAt = t;
+  st.fails = st.fails.filter((f) => t - f.at < WECOM_WINDOW_MS);
+  st.fails.push({ at: t, result: s.result, errcode: s.errcode });
+  if (st.fails.length < WECOM_FAILS) return;
+  const rejected = st.fails.filter((f) => f.result === 'rejected').length;
+  const codes = [...new Set(st.fails.flatMap((f) => (f.errcode === null ? [] : [String(f.errcode)])))];
   alert(
     'wecom_send',
-    `企微发送 10 分钟内 ${wecomFails.length} 个分段最终失败（rejected ${rejected}、unknown ${wecomFails.length - rejected}` +
-      `${codes.length ? `，错误码 ${codes.map(codeOf).join('、')}` : ''}）`,
+    `企微发送 10 分钟内 ${st.fails.length} 个分段最终失败（rejected ${rejected}、unknown ${st.fails.length - rejected}` +
+      `${codes.length ? `，错误码 ${codes.map(codeOf).join('、')}` : ''}） · 账号 ${codeOf(s.account)}`,
+    wecomScope(s.account),
   );
 }
 
-function onToken(code: string): void {
-  lastWecomFailAt = clock();
-  alert('wecom_send', `取不到企微 access_token（${codeOf(code)}），收发消息都停了`);
+function onToken(code: string, account: string): void {
+  wecomStateOf(account).lastFailAt = clock();
+  alert('wecom_send', `取不到企微 access_token（${codeOf(code)}），收发消息都停了 · 账号 ${codeOf(account)}`, wecomScope(account));
+}
+
+// ---------------- channel（03 第 8 步：没落库就发、出站没过校验） ----------------
+
+/** 「没落库就发」的告警至多 10 分钟一条（channel 键与启动装载那一条共用，那一条的 30 分钟去重不该把它压掉，所以这里自己限频） */
+const UNSAFE_ALERT_MS = 10 * 60_000;
+let lastUnsafeAlertAt = 0;
+
+function onUnsafe(countIn10m: number): void {
+  const t = clock();
+  if (lastUnsafeAlertAt && t - lastUnsafeAlertAt < UNSAFE_ALERT_MS) return;
+  lastUnsafeAlertAt = t;
+  alert(
+    'channel',
+    `最近 10 分钟有 ${countIn10m} 段企微消息在发送状态没落库时照发（库写不进去，R6）：这期间进程崩溃的话这几段可能再发一次`,
+    { escalate: true },
+  );
+}
+
+function onRejected(reason: string): void {
+  alert('channel', `一组企微出站没过发送前的检查（${safeCodes(reason)}），这一组没发，会话里已加说明`, { escalate: true });
+}
+
+/** 入站 poison、too_old 的告警（03 第 9 步）：每种原因每个账号 10 分钟至多一条，带这段时间里的条数（停机两天之后一次过期一批不刷屏） */
+const INBOX_ALERT_MS = 10 * 60_000;
+const inboxAlerted = new Map<string, { at: number; pending: number }>();
+const INBOX_REASON_TEXT: Partial<Record<InboxAbandoned['reason'], string>> = {
+  poison: '处理了三次都没走完（每次都让处理中断）',
+  too_old: '收到时已超过 48 小时发送窗口',
+};
+
+/**
+ * 恢复截止点（03 第 12 步，spec「可观测性」）：启动恢复与之后的拉取里，截止点之前的客户消息只补记、不回复。按会话数（加了说明的会话，
+ * 一个会话一次恢复只加一条）合成一条：最后一个这样的会话之后安静 10 秒、由巡检发；进程里只发一次，停机时还没发的在停机时发
+ */
+const RESTORE_QUIET_MS = 10_000;
+const restoreCutoff = { conversations: 0, lastAt: 0, sent: false };
+
+function restoreCutoffText(): string {
+  return `恢复截止点之前的客户消息只补记、AI 不再回复或补发：${restoreCutoff.conversations} 个会话，会话里已加说明，请人工确认是否已回复、客户是否收到`;
+}
+
+function flushRestoreCutoff(t: number, force: boolean): void {
+  if (restoreCutoff.sent || !restoreCutoff.conversations || (!force && t - restoreCutoff.lastAt < RESTORE_QUIET_MS)) return;
+  restoreCutoff.sent = true;
+  alert('channel', restoreCutoffText(), { escalate: true });
+}
+
+function onInboxGivenUp(e: InboxAbandoned): void {
+  if (e.reason === 'restore_cutoff') {
+    if (e.noted && !restoreCutoff.sent) {
+      restoreCutoff.conversations += 1;
+      restoreCutoff.lastAt = clock();
+    }
+    return;
+  }
+  const why = INBOX_REASON_TEXT[e.reason];
+  if (!why) return;
+  const k = `${e.reason}:${e.account}`;
+  const t = clock();
+  const st = inboxAlerted.get(k) ?? { at: 0, pending: 0 };
+  st.pending += 1;
+  inboxAlerted.set(k, st);
+  if (st.at && t - st.at < INBOX_ALERT_MS) return;
+  const n = st.pending;
+  st.at = t;
+  st.pending = 0;
+  alert('channel', `企微账号 ${safeCodes(e.account)} 有 ${n} 条客户消息 AI 没有处理（${why}），会话里已加说明，请人工回复`, {
+    escalate: true,
+  });
 }
 
 // ---------------- tenant_lock ----------------
@@ -291,17 +387,52 @@ function onJob(f: JobFailure): void {
   else alert('jobs', `启动归位：${f.count} 个任务用完重试次数，记 failed`);
 }
 
+function checkChannelStartup(): void {
+  const channelWarnings = channelStartupWarnings();
+  if (channelWarnings.length) alert('channel', `渠道账号启动检查：${channelWarnings.join('；')}`);
+  for (const { key, count } of channelRestartUnknown()) {
+    alert('channel', `企微账号 ${codeOf(key)} 重启时 ${count} 段 sending 转 unknown`, { scope: `restart:${key}` });
+  }
+}
+
+// ---------------- channel：按账号的拉取与入站巡检（03 第 13 步） ----------------
+
+function checkChannels(now: number): void {
+  for (const c of channelConditions(now)) {
+    const acct = codeOf(c.key);
+    alert(
+      'channel',
+      c.failing ? `企微账号 ${acct} 连续 10 分钟拉取失败或取不到 token（错误码 ${codeOf(c.errorCode)}）` : `企微账号 ${acct} 拉取已恢复`,
+      { scope: `pull:${c.key}`, resolved: !c.failing },
+    );
+    alert(
+      'channel',
+      c.stuck
+        ? `渠道账号 ${acct} 入站或启动恢复超过 5 分钟未结束（入站 ${c.openInbox} 条，错误码 ${codeOf(c.errorCode)}）`
+        : `渠道账号 ${acct} 入站与启动恢复已恢复`,
+      { scope: `stuck:${c.key}`, resolved: !c.stuck },
+    );
+  }
+}
+
 // ---------------- 接线 ----------------
 
 function tick(): void {
   try {
     const t = clock();
     checkStore(t);
-    if (lastWecomFailAt && t - lastWecomFailAt >= WECOM_WINDOW_MS) {
-      lastWecomFailAt = 0;
-      wecomFails = [];
-      alert('wecom_send', '企微发送 10 分钟没有失败', { resolved: true });
+    flushRestoreCutoff(t, false);
+    for (const [account, st] of wecomAccounts) {
+      if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
+        st.lastFailAt = 0;
+        st.fails = [];
+        alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
+      }
     }
+    const p = refreshChannelObservability()
+      .then(() => checkChannels(t))
+      .finally(() => inflight.delete(p));
+    inflight.add(p);
   } catch (e) {
     console.error(`[alert] 巡检出错（${errName(e)}），已忽略`);
   }
@@ -316,6 +447,9 @@ export function startAlerts(): void {
   started = true;
   onTurnEnd(onTurn);
   onSendSettled(onSettled);
+  onUnsafeSend(onUnsafe);
+  onPlanRejected(onRejected);
+  onInboxAbandoned(onInboxGivenUp);
   onTokenError(onToken);
   onLockEvent(onLock);
   onStoreIncident(onIncident);
@@ -323,6 +457,7 @@ export function startAlerts(): void {
   // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
   onShutdown(
     async ({ deadline }) => {
+      flushRestoreCutoff(clock(), true);
       if (!inflight.size) return;
       await Promise.race([Promise.allSettled(inflight), sleep(Math.max(0, deadline - Date.now()))]);
     },
@@ -330,6 +465,8 @@ export function startAlerts(): void {
   );
   // 启动之前就成立的：锁在装载途中就断了；回放失败的 spill 在第一次巡检里报
   if (configHealth().lock === 'lost') onLock('lost');
+  // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
+  checkChannelStartup();
   tick();
   timer = setInterval(tick, TICK_MS);
   timer.unref();
@@ -354,6 +491,7 @@ export const __alertTest = {
     timer = null;
   },
   tick,
+  checkChannelStartup,
   /** 等在途的推送都结束 */
   async settle(): Promise<void> {
     while (inflight.size) await Promise.allSettled(inflight);
@@ -368,8 +506,10 @@ export const __alertTest = {
     okStreak = 0;
     streakKinds = [];
     recentTurns = [];
-    wecomFails = [];
-    lastWecomFailAt = 0;
+    wecomAccounts.clear();
+    lastUnsafeAlertAt = 0;
+    inboxAlerted.clear();
+    Object.assign(restoreCutoff, { conversations: 0, lastAt: 0, sent: false });
     lagAlerted = false;
     poisonedSeen = new Set();
     dropSamples = [];

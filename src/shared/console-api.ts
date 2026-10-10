@@ -3,9 +3,10 @@
 // Hono RPC 据此推出前端 hc 客户端的类型：这里改一个字段名，服务端和 console/src 的使用处都会在 typecheck 报错。
 // 配置层的领域类型（SopVersion、CatalogItem、ContractViolation）也定义在这里，src/config 与 src/sop 再导出，只此一份。
 import { z } from 'zod';
+import type { ChannelKind, ChannelAccountStatus } from './channel-types.js';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
-import type { HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
+import type { DeliveryView, HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
@@ -116,10 +117,10 @@ export const AuditQuery = z
     /** 上一页最后一行的 id */
     before: intParam(Number.MAX_SAFE_INTEGER).optional(),
     action: str.min(1).max(64).optional(),
-    /** 逗号分隔的 action 列表，至多 32 个，只返回其中的动作（后台 UX spec 增补；审计页的类别与「显示登录记录」换算成它） */
+    /** 逗号分隔的 action 列表，至多 64 个，只返回其中的动作（后台 UX spec 增补；审计页的类别与「显示登录记录」换算成它） */
     actions: z
       .string()
-      .regex(/^[a-z_.]{1,64}(,[a-z_.]{1,64}){0,31}$/)
+      .regex(/^[a-z_.]{1,64}(,[a-z_.]{1,64}){0,63}$/)
       .optional(),
   })
   .refine((q) => !(q.action && q.actions), { message: 'action 与 actions 只能给一个' });
@@ -290,7 +291,22 @@ export interface AnonStatus {
   mode: 'db';
 }
 
+export interface ChannelStatus {
+  key: string;
+  kind: ChannelKind;
+  status: ChannelAccountStatus;
+  inactiveReason: string | null;
+  lastSyncAt: string | null;
+  lastErrorCode: string | null;
+  openInbox: number;
+  oldestOpenInboxSec: number;
+  staleOutbound: number;
+  cursorAgeSec: number | null;
+  unknownSends24h: number;
+}
+
 export interface Status {
+  channels: ChannelStatus[];
   mode: 'db';
   tenantSlug: string;
   sop: {
@@ -439,8 +455,11 @@ export interface MessageView {
   turnId: string | null;
   /** 护栏改过这条 AI 回复：删了几句、补了几处（相对模型原稿的净差）；展开时读 /conversations/:id/turns/:turnId/diff */
   guarded: { removed: number; added: number } | null;
-  /** 发送账本里这条消息的状态（企微）：failed 时带原因码；账本里没有这条时为 null */
-  delivery: { status: 'accepted' | 'rejected' | 'unknown' | 'failed'; failType: number | null } | null;
+  /**
+   * 发送账本里这条消息的投递状态（企微）：几段取 deliveryOfSegments 的那一种，failed 时带原因码；账本里没有这条时为 null。
+   * 03 起多 sending（发送中）与 cancelled（未发送）
+   */
+  delivery: DeliveryView | null;
 }
 
 /** J 页右栏与对话里的订单（ConversationDetail.orders、GET /orders） */

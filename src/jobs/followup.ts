@@ -18,7 +18,7 @@ import {
   shouldFollowUp,
   type SessionWithFollowup,
 } from '../followup.js';
-import { takeoverGen } from '../handoff/takeover.js';
+import { prepareChannel, releasePrepared, takeoverGen } from '../handoff/takeover.js';
 import { followupWindowAllows, holdSend, mayHaveDelivered } from '../quota/ledger.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { flushSession, getSession, jobOpApplied, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
@@ -102,6 +102,20 @@ function planOps(s: SessionWithFollowup): JobOp[] {
   known.set(s.id, { key, runAt });
   // 换了阶段，或最后动静往后挪了：先取消旧的再排（只取消 pending 的；唯一索引只拦没结束的）
   return [...(k ? [cancelOp(k.key)] : []), enqueueOp(s.id, due.stage, runAt)];
+}
+
+/**
+ * 保存会话但不据这次保存排、取消跟进（03 第 12 步：恢复截止点之前的消息只补记时调。旧实例在备份之后可能已经发过这一阶段的跟进，
+ * 恢复出的会话不知道；被 restore-cutoff 取消的那一阶段另在会话的 followup 记账里记成已跟过）。到点的任务照常在活对象上重判
+ */
+export function saveSessionSkippingFollowup(s: Session, touch = true): void {
+  const prev = selfSaving;
+  selfSaving = s.id;
+  try {
+    saveSession(s, touch);
+  } finally {
+    selfSaving = prev;
+  }
 }
 
 /** 执行体的 saveSession：账与任务状态在同一段同步代码里排进这个会话的下一次落库 */
@@ -210,6 +224,8 @@ async function sendAfterLedger(a: {
   meta.lastAt = Date.now();
   meta.pendingAt = Date.now();
   saveWith(fresh, [statusOp(job, 'sending', 'running', { report: true })]);
+  // 03：库里的企微账号把这条跟进的分段 pending 排进同一次落库（记账、sending 与 pending 一起提交），推送时交回去
+  const prepared = prepareChannel(sid, text, { kind: 'followup', message });
   ctx.markSending();
   known.set(sid, null);
   try {
@@ -217,6 +233,7 @@ async function sendAfterLedger(a: {
   } catch {
     // 记账没提交上（库积压、会话 poisoned）：不推送。账已在内存里、随之后的落库或 spill 写下，任务记 abandoned（不再执行）
     console.error(`[followup] 跟进 ${short(sid)} 的记账没能落库，不推送`);
+    releasePrepared(prepared, 'aborted');
     queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'ledger_not_committed' })]);
     return { status: 'handled' };
   }
@@ -224,17 +241,19 @@ async function sendAfterLedger(a: {
     // running → sending 提交了却没改中：这一行已不在本次认领手里（租户锁丢失期间另一个进程启动归位、重新认领过它，由那边发）。
     // 不推送；已提交的账不退（多记一次是安全的一侧，宁可漏一条），任务状态以库里的为准
     console.error(`[followup] 跟进 ${short(sid)} 的任务已不在本次认领手里（sending 没改中），不推送`);
+    releasePrepared(prepared, 'aborted');
     return { status: 'handled' };
   }
   if (takeoverGen(sid) !== gen0 || fresh.handedOver) {
     // 记账、等提交期间被接手（或已转人工）：不推送，账不退（已提交，多记一次是安全的一侧）、不重排，任务记 abandoned
     console.error(`[followup] 跟进 ${short(sid)} 推送前发现已被接手，不推送`);
+    releasePrepared(prepared, 'taken_over');
     queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'taken_over' })]);
     return { status: 'handled' };
   }
   let ok: boolean;
   try {
-    ok = await a.push(sid, text, { kind: 'followup', message });
+    ok = await a.push(sid, text, { kind: 'followup', message, prepared });
   } catch (e) {
     // 结果不明（可能已经送达）：按已发处理——账不退、pendingAt 留着，任务记 abandoned，不重试
     console.error(`[followup] 跟进 ${short(sid)} 推送结果不明，按已发处理、不再重试（${e instanceof Error ? e.name : 'unknown'}）`);

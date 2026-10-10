@@ -420,7 +420,8 @@ function AgentBubble({
         </>
       )}
       {pendingSave && <p className="wb-pending-note">已发出，记录稍后保存</p>}
-      {note && <p className="wb-delivery-note">{cjk(note)}</p>}
+      {/* 「发送中」不是出错（03：先落库后发送，分段还在 pending、sending），用灰字；其余没送达、未发送用警示色 */}
+      {note && <p className={m.delivery?.status === 'sending' ? 'wb-pending-note' : 'wb-delivery-note'}>{cjk(note)}</p>}
     </div>
   );
 }

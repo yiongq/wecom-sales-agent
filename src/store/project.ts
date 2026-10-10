@@ -66,6 +66,8 @@ export interface ConversationValuesShape {
   state: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
+  /** 03 R11：会话所属渠道账号（非默认企微账号与网页会话）；NULL 是渠道的默认账号 */
+  channelAccountId: string | null;
 }
 
 /** messages 的一行（repo/messages.ts 的 MessageValues） */
@@ -140,6 +142,7 @@ export function conversationValuesFrom(state: Record<string, unknown>, lastCusto
     state,
     createdAt: toDate(st.createdAt, 'createdAt'),
     updatedAt: toDate(st.updatedAt, 'updatedAt'),
+    channelAccountId: typeof st.channelAccountId === 'string' ? st.channelAccountId : null,
   };
 }
 
@@ -148,9 +151,17 @@ export function sessionToRow(s: Session): ConversationValuesShape {
   return conversationValuesFrom(sessionState(s), lastCustomerAtOf(s.messages));
 }
 
-/** 预载重建：state 原样，再挂上窗口里的消息（按 seq 排好） */
-export function rowToSession(row: { state: Record<string, unknown> }, messages: ChatMessage[]): Session {
-  return { ...row.state, messages } as unknown as Session;
+/**
+ * 预载重建：state 原样，再挂上窗口里的消息（按 seq 排好）。行里带着 channel_account_id 列时以它为准（03 R11：预载以投影为准）：
+ * 非空就写进 channelAccountId，为空（默认账号）就不留这个键；两者本来就由同一次投影写出，正常情况下与 state 里的相同
+ */
+export function rowToSession(row: { state: Record<string, unknown>; channelAccountId?: string | null }, messages: ChatMessage[]): Session {
+  const s = { ...row.state, messages } as Record<string, unknown>;
+  if (row.channelAccountId !== undefined) {
+    if (row.channelAccountId === null) delete s.channelAccountId;
+    else s.channelAccountId = row.channelAccountId;
+  }
+  return s as unknown as Session;
 }
 
 /** 重建一个会话要用的列（repo/conversations.ts 的 ConversationRow 的子集） */
@@ -159,6 +170,8 @@ export interface SessionRowShape {
   state: Record<string, unknown>;
   lastSeq: number;
   windowStartSeq: number;
+  /** 03：conversations.channel_account_id（读回时以它为准）；不读这一列的调用方不给 */
+  channelAccountId?: string | null;
 }
 
 /**

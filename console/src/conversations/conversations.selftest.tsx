@@ -342,7 +342,11 @@ const COUNTS: ConversationCounts = {
     ],
   );
   eq('行：读屏念的名字', rowAria(f01), '企微客户 F01，等人接手，打开工作台');
-  eq('行：网页渠道不写渠道名（sim- 会话本来就不列出）', rowView({ ...SCENE[0]!, channel: 'simulator' }, TRAVEL, NOW).label[0], '网页客户');
+  eq(
+    '行：模拟器渠道叫「演示」（sim- 会话本来就不列出）',
+    rowView({ ...SCENE[0]!, channel: 'simulator' }, TRAVEL, NOW).label[0],
+    '演示客户',
+  );
 }
 
 // ---------------- 2. 在 DOM 里挂载 ----------------

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>网页咨询 · AI 顾问</title>
+  <link rel="stylesheet" href="/web.css">
+  <script type="application/json" id="web-config">__WEB_CONFIG__</script>
+  <script type="module" src="/web.js"></script>
+</head>
+<body>
+  <div class="device">
+    <main class="phone">
+      <header class="topbar">
+        <span class="back" aria-hidden="true">‹</span>
+        <div class="title">
+          <h1 id="title">网页咨询</h1>
+          <div class="status"><span class="dot" aria-hidden="true"></span>AI 旅行顾问 · 可转真人</div>
+        </div>
+        <button class="new-btn" id="endBtn" type="button">结束咨询</button>
+      </header>
+      <div class="msgs" id="msgs" role="log" aria-label="咨询消息" aria-live="polite"></div>
+      <div class="chips" id="chips" hidden>
+        <button class="chip" type="button" data-q="想去西藏，两个人">西藏两人游</button>
+        <button class="chip" type="button" data-q="这个太贵了，能便宜点吗">太贵了能便宜点吗</button>
+        <button class="chip" type="button" data-q="我要人工">转人工</button>
+      </div>
+      <div class="notice" id="notice" role="status" hidden></div>
+      <button class="retry-btn" id="retryBtn" type="button" hidden>重试</button>
+      <form class="inputbar" id="composer">
+        <textarea id="input" rows="2" maxlength="1000" aria-label="咨询内容" placeholder="想去哪儿玩？聊聊您的旅行计划…" enterkeyhint="send" required></textarea>
+        <button id="sendBtn" type="submit">发送</button>
+      </form>
+      <footer class="foot">AI 回复仅供参考，需要真人服务时请回复「人工」。<br><a id="privacy" href="/privacy" target="_blank" rel="noopener noreferrer" hidden>隐私说明</a></footer>
+    </main>
+  </div>
+</body>
+</html>

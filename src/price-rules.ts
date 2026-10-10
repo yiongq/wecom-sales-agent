@@ -419,10 +419,14 @@ const SERVICE_CLAIMS: { re: RegExp; skip: RegExp | ((s: string) => boolean); rep
     replace: '具体档期和余位由顾问跟您确认。',
   },
 ];
-/** 企微拿不到客户手机号：顾问只能在微信上联系，「电话联系您」是一句兑现不了的话 */
-const PHONE_PROMISE: [RegExp, string][] = [
-  [/(?:通过|用)?(?:电话(?:或|和|、)微信|微信(?:或|和|、)电话)/g, '在微信上'],
-  [/(?:打)?电话(?:联系|联络|沟通|回访|回复)(?:您|你)|给(?:您|你)(?:打|回)(?:个)?电话|致电(?:您|你)/g, '在微信上联系您'],
+/** 企微拿不到客户手机号：顾问只能在微信上联系，「电话联系您」是一句兑现不了的话。第三项是网页会话的说法（03 R15） */
+const PHONE_PROMISE: [RegExp, string, string][] = [
+  [/(?:通过|用)?(?:电话(?:或|和|、)微信|微信(?:或|和|、)电话)/g, '在微信上', '在这个页面里'],
+  [
+    /(?:打)?电话(?:联系|联络|沟通|回访|回复)(?:您|你)|给(?:您|你)(?:打|回)(?:个)?电话|致电(?:您|你)/g,
+    '在微信上联系您',
+    '在这个页面里回复您',
+  ],
 ];
 
 // ---------------- 核对 ----------------
@@ -532,7 +536,7 @@ export function dropUnbackedClaims(
 ): { text: string; dropped: string[] } {
   if (process.env.PRICE_GUARD === '0') return { text: visible, dropped: [] };
   let text = visible;
-  for (const [re, to] of PHONE_PROMISE) text = text.replace(re, to);
+  for (const [re, wecom, web] of PHONE_PROMISE) text = text.replace(re, session.channel === 'web' ? web : wecom);
   let routes: Route[] = [];
   try {
     routes = loadRoutes();

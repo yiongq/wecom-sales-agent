@@ -3,9 +3,18 @@
 // 就是 closing），可靠且反映真实行为；画像同理从工具参数沉淀。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AgentReply, ChatMessage, CustomerProfile, Order, Route, SalesSegment, SalesStage, Session } from './types.js';
+import type { AgentReply, ChatMessage, CustomerProfile, Order, PreparedPush, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
-import { deleteOrdersOfSession, getOrCreateSession, getOrder, getSession, noteWindowReset, queueJobs, saveSession } from './store.js';
+import {
+  deleteOrdersOfSession,
+  getOrCreateSession,
+  getOrder,
+  getSession,
+  noteWindowReset,
+  queueInboxState,
+  queueJobs,
+  saveSession,
+} from './store.js';
 import {
   enterHandoff,
   executeTool,
@@ -65,7 +74,7 @@ import {
   withdrawConsent,
 } from './handoff/consent.js';
 import { currentPrivacyNotice } from './privacy/privacy.js';
-import { pushToChannel } from './handoff/takeover.js';
+import { prepareChannel, pushToChannel } from './handoff/takeover.js';
 import { cleanText } from './shared/text.js';
 import { stripAdvisorPrefix, withAdvisorPrefix } from './shared/conversation.js';
 import { convLabel, logQuote } from './log.js';
@@ -462,7 +471,7 @@ function resendPayReply(session: Session, text: string): string | undefined {
   const orderLine = `/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
   // advisor 模式：这条链接不能点开就付，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
   if (paymentMode() === 'advisor') {
-    return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : '顾问会在微信里跟您核对价格并发收款方式。'}`;
+    return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : session.channel === 'web' ? '顾问会在这个页面里跟您核对价格并发收款方式。' : '顾问会在微信里跟您核对价格并发收款方式。'}`;
   }
   return `好的，支付链接给您重新发一次：\n${orderLine}`;
 }
@@ -1247,7 +1256,12 @@ function rewriteUnbackedPrices(
   const onlyNudge = splitSentences(kept).every((s) => !s.trim() || ORDER_NUDGE.test(s));
   const substantive = kept.replace(/[^\p{L}\p{N}]/gu, '').length >= 8 && !(noPrice && (PRICE_ASK.test(text) || onlyNudge));
   if (ctx.customHandoff) return substantive ? kept : '';
-  if (session.handedOver) return substantive ? kept : '具体价格由资深顾问为您核准，已为您转接，顾问会在微信上联系您，请稍候～';
+  if (session.handedOver)
+    return substantive
+      ? kept
+      : session.channel === 'web'
+        ? '具体价格由资深顾问为您核准，已为您转接，顾问会在这个页面里回复您，请稍候～'
+        : '具体价格由资深顾问为您核准，已为您转接，顾问会在微信上联系您，请稍候～';
   const sorry = '不好意思，刚才的价格说得不准，以这次核准的为准：';
   if (substantive) {
     if (!wrongBefore) return kept;
@@ -1321,7 +1335,7 @@ async function strandedReply(ctx: LinkRepairCtx): Promise<string> {
     // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
     const how =
       paymentMode() === 'advisor'
-        ? `订单链接：${payUrl}\n顾问会在微信里跟您核对价格并发收款方式，不用点链接付款。`
+        ? `订单链接：${payUrl}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，不用点链接付款。`
         : `请点此完成支付：${payUrl}\n名额以付款为准～`;
     return `订单已生成，总价 ${yuan(Number(order.total))}。\n${how}`;
   }
@@ -1874,6 +1888,10 @@ const TRANSFER_CLAIM =
 /** 「顾问会在微信上联系您」。说的是联系客户本人：「联系您闺蜜」「联系您家人」是在说别人那一单（C06） */
 const CONTACT_CLAIM =
   /顾问[^。！？\n]{0,10}(?:联系(?:您|你)(?!的|闺蜜|朋友|家人|爸|妈|父母|老公|老婆|先生|太太|爱人|孩子|同事|同伴|们)|加您|找您|跟您联系|与您联系)/;
+const WEB_CONTACT_CLAIM = new RegExp(
+  `${CONTACT_CLAIM.source}|顾问[^。！？\\n]{0,6}在这个页面里[^。！？\\n]{0,4}(?:回复(?:您|你)(?!的|闺蜜|朋友|家人|爸|妈|父母|老公|老婆|先生|太太|爱人|孩子|同事|同伴|们)|跟您确认|与您确认)`,
+);
+const contactClaim = (session?: Session): RegExp => (session?.channel === 'web' ? WEB_CONTACT_CLAIM : CONTACT_CLAIM);
 /**
  * 「顾问会联系您」本身只是陈述，多半说的是正常流程：「付完顾问会在微信上联系您」「付完之后顾问会联系您出后续安排」
  * （C04/C13 建单后）、「由顾问跟您确认，顾问会在微信上联系您」（guard-13 答资金监管）。此前单凭这句就由引擎转了人工，
@@ -1948,11 +1966,11 @@ const AFTER_SALE = /行程细节|确认行程|出行细节|出行前|出团|确�
  * 这句是现在时、不带条件、不是选项的转接动作。contact=false（付过款的客户）时「顾问会联系您」一律不算，见 saysTransfer。
  * done：说的是已经办了、马上就办（「已为您转接」「马上为您转接」「请稍候」「已记录您的需求，顾问会联系您」）
  */
-function transferClaim(sentence: string, contact = true): { done: boolean } | null {
+function transferClaim(sentence: string, contact = true, contactRe = CONTACT_CLAIM): { done: boolean } | null {
   if (OPTION_LINE.test(sentence)) return null;
   const contactNow = contact && !AFTER_SALE.test(sentence) && !AFTER_EVENT.test(sentence) && CONTACT_NOW.test(sentence);
   const byTransfer = TRANSFER_CLAIM.exec(sentence);
-  const m = byTransfer ?? (contactNow ? CONTACT_CLAIM.exec(sentence) : null);
+  const m = byTransfer ?? (contactNow ? contactRe.exec(sentence) : null);
   const before = m ? sentence.slice(0, m.index) : '';
   if (!m || TRANSFER_NOT_NOW.test(before)) return null;
   if (OPTION_BEFORE.test(before) || OPTION_FRAME.test(before) || OPTION_NEAR.test(before)) return null;
@@ -1975,15 +1993,15 @@ const saysTransfer = (text: string, session?: Session): boolean => {
   const parts = transferSentences(text);
   const choosing = asksToChoose(parts.filter((s) => s.trim()).at(-1) ?? '');
   return parts.some((s) => {
-    const c = transferClaim(s, !paid);
+    const c = transferClaim(s, !paid, contactClaim(session));
     return !!c && (c.done || !choosing);
   });
 };
 /** 驳回了转人工、回复却说了转接：把说转接、说顾问会联系的句子摘掉 */
-function dropTransferClaims(text: string): string {
+function dropTransferClaims(text: string, session?: Session): string {
   return tidyLinkText(
     transferSentences(text)
-      .filter((s) => !claimsTransfer(s) && !CONTACT_CLAIM.test(s))
+      .filter((s) => !transferClaim(s, true, contactClaim(session)) && !contactClaim(session).test(s))
       .join(''),
   );
 }
@@ -2028,7 +2046,7 @@ function handoffReply(session: Session, text: string, kind: 'complaint' | 'refun
   // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的；
   // advisor 模式下这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」，第 15 步审查第 5 条）
   if (paymentMode() === 'advisor') {
-    return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式。`;
+    return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}核对价格、发收款方式。`;
   }
   const payEntry = session.channel === 'wecom' ? '付款卡片' : '付款链接';
   return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的${payEntry}仍然有效。`;
@@ -3451,6 +3469,11 @@ export function inboundText(text: string): string {
   return cleanText(text, 2000); // 超长输入截断：防恶意长文刷爆 prompt token
 }
 
+export function trimSessionMessages(session: Session): void {
+  // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
+  if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+}
+
 /** handleMessage 的可选参数（02 spec「消息只追加」） */
 export interface HandleOpts {
   /** 渠道消息 id：企微文本消息带上，记在客户消息上，重放时按它对齐 */
@@ -3459,6 +3482,12 @@ export interface HandleOpts {
   sentAt?: number;
   /** 这句客户原话已经记在会话末尾（企微重放：上次停在「已记下、回复还没生成」），引擎不再 push 一遍 */
   alreadyRecorded?: boolean;
+  /**
+   * 03（spec「入站：channel_inbox」、R3、不变量 3）：这句来自库里企微账号的哪一行入站（channel_inbox.id）。引擎把客户消息写进会话的
+   * 两处（重置口令分支与正常分支）都在那一段同步代码里、saveSession 之后排 recorded（message_seq 取这条消息分到的 seq），
+   * 与这条消息同一次落库提交。alreadyRecorded 时不排（这句上次已经记过）
+   */
+  inboxId?: string;
 }
 
 /** 这一轮写进会话的那条回复消息（02 第 12 步：渠道发送时交给发送账本，账本行据它取 seq）。不往 AgentReply 上加字段 */
@@ -3492,9 +3521,11 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
   const toAsk = noteSensitiveMentions(session, categories, notice.version, cleanText(text, 200));
   if (!toAsk.length) return;
   saveSession(session);
-  for (const category of toAsk) {
+  // 03：库里的企微账号把每张菜单的 pending 排进「问过」的同一次落库（同一段同步代码里），逐张 push 时交回去
+  const prepared = toAsk.map((category) => prepareChannel(sessionId, consentMenuText(category), { kind: 'menu', category }));
+  for (const [i, category] of toAsk.entries()) {
     const content = consentMenuText(category);
-    const ok = await pushToChannel(sessionId, content, { kind: 'menu', category });
+    const ok = await pushToChannel(sessionId, content, { kind: 'menu', category, prepared: prepared[i] ?? null });
     if (ok) {
       session.messages.push({ role: 'agent', content, at: Date.now() });
       saveSession(session);
@@ -3551,14 +3582,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     // 企微的口令带 msgid：先把这句记下、分到 seq（db 存储下随这次落库进库，在重置之后的窗口之外），msgid 就进了 7 天集合，
     // 重放或重新拉到这条时按去重情况 2 跳过，不再重置一遍（02 第 12 步审查 once[5]）。窗口里照旧只留重置回复；文件存储下什么都不变
     if (opts.msgid && !opts.alreadyRecorded) {
-      session.messages.push({
+      const customerMsg: ChatMessage = {
         role: 'customer',
         content: text,
         at: Date.now(),
         msgid: opts.msgid,
         ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
-      });
+      };
+      session.messages.push(customerMsg);
       saveSession(session);
+      // 03：入站行记 recorded，与这句同一次落库（saveSession 刚给它分了 seq）
+      if (opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
     }
     session.stage = 'greeting';
     session.profile = {};
@@ -3595,16 +3629,17 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
 
   // 企微重放时这句可能已经记在会话末尾（见 HandleOpts.alreadyRecorded）：不再记一遍，也不删了重记（消息只追加）
+  let customerMsg: ChatMessage | null = null;
   if (!opts.alreadyRecorded) {
-    session.messages.push({
+    customerMsg = {
       role: 'customer',
       content: text,
       at: Date.now(),
       ...(opts.msgid ? { msgid: opts.msgid } : {}),
       ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
-    });
-    // 会话历史封顶：超过 400 条裁到最近 300，防单会话无限膨胀拖垮全量落盘
-    if (session.messages.length > 400) session.messages.splice(0, session.messages.length - 300);
+    };
+    session.messages.push(customerMsg);
+    trimSessionMessages(session);
   }
   // 跟进的拒绝识别（02 spec「任务表与跟进」，两种存储都做）：客户说「别发了」这类话就记下，此后这个会话不再跟进。
   // 只记标记，这一轮照常回复；db 存储下排着的跟进随这次落库取消（src/jobs/followup.ts 的落库钩子：客户回话即取消）
@@ -3622,6 +3657,8 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   // 「客户刚说了什么 + AI 正在生成回复」。此前要等整轮跑完（4~10 秒）才落盘，
   // 后台看起来像卡住了——延迟其实来自这里，不是 SSE。
   saveSession(session);
+  // 03：入站行记 recorded，与这句同一次落库（与上面 push 是同一段同步代码，saveSession 刚给它分了 seq）
+  if (customerMsg && opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
 
   // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
   // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个
@@ -3843,6 +3880,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     advisorInWindow ? ADVISOR_NOTE : '',
     // 问过还没有结论的敏感信息类别（R23）：提示模型别在回复里主动提它，没问过或已有结论的会话一个字节都不变
     ...SENSITIVE_CATEGORIES.filter((c) => awaitingConsent(session, c)).map(sensitiveContextNote),
+    session.channel === 'web' ? '客户正在网页上咨询，不在微信里；说到顾问跟进时，请说顾问会在这个页面里回复您，不要说在微信上联系。' : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -3998,7 +4036,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
       const how =
         paymentMode() === 'advisor'
-          ? `订单链接：/pay/${existing.id}\n顾问会在微信里跟您核对价格并发收款方式，想改人数或日期的话跟我说一声，我重新为您安排～`
+          ? `订单链接：/pay/${existing.id}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，想改人数或日期的话跟我说一声，我重新为您安排～`
           : `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
       visible = `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n${how}`;
       noteGuard('order_net', before, visible, 'replace');
@@ -4048,7 +4086,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
               : '';
             // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
             const how = advisor
-              ? `订单链接：${res.payUrl}\n顾问会在微信里跟您核对价格并发收款方式，不用点链接付款。`
+              ? `订单链接：${res.payUrl}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，不用点链接付款。`
               : `请点此完成支付：${res.payUrl}\n名额以付款为准，付款后顾问会与您确认行程细节～`;
             const before = visible;
             visible = `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n${how}`;
@@ -4143,7 +4181,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   if (!session.handedOver && !customHandoff && (handoffDeclined || saysTransfer(visible, session))) {
     const beforeClaims = visible;
     if (handoffDeclined || unwarrantedHandoff(session, text, visible)) {
-      const kept = dropTransferClaims(visible);
+      const kept = dropTransferClaims(visible, session);
       if (kept !== visible)
         console.warn(`[engine] 回复说了转接但客户没坚持原目的地，摘掉转接的话（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
       visible = kept || fallbackReply(session.stage);
@@ -4153,10 +4191,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
       // 真转过去 AI 就此沉默，客户接着问资金、问电话都没人回（guard-13 实测）——演示当场卡住。
       // 所以摘掉转接的话、改成「记下了，请顾问确认」，后台记一条待跟进，AI 照常接着聊。
       console.warn(`[engine] 回复说了转接但客户没要找人，改为记下待顾问确认（会话 ${convLabel(session.id)}）：${logQuote(visible)}`);
-      const kept = dropTransferClaims(visible);
+      const kept = dropTransferClaims(visible, session);
       visible = /顾问[^。！？\n]{0,12}(?:确认|核实|跟您|联系)/.test(kept)
         ? kept
-        : `${kept ? `${kept}\n\n` : ''}这个我记下了，会请顾问在微信上跟您确认。`;
+        : `${kept ? `${kept}\n\n` : ''}这个我记下了，会请顾问${session.channel === 'web' ? '在这个页面里' : '在微信上'}跟您确认。`;
       noteGuard('handoff_claims', beforeClaims, visible, 'patch');
       session.messages.push({
         role: 'system',
@@ -4422,7 +4460,9 @@ function promisesContact(text: string, session: Session): boolean {
   });
   return (
     !live &&
-    transferSentences(text).some((s) => CONTACT_CLAIM.test(s) && !OPTION_LINE.test(s) && !AFTER_SALE.test(s) && !AFTER_EVENT.test(s))
+    transferSentences(text).some(
+      (s) => contactClaim(session).test(s) && !OPTION_LINE.test(s) && !AFTER_SALE.test(s) && !AFTER_EVENT.test(s),
+    )
   );
 }
 
@@ -4479,7 +4519,7 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
   // 说了「为您转接顾问」：跟进不转人工，删掉那几句
   if (saysTransfer(visible, session)) {
     const before = visible;
-    visible = dropTransferClaims(visible);
+    visible = dropTransferClaims(visible, session);
     noteGuard('handoff_claims', before, visible, 'drop_sentence');
   }
   // 「由顾问跟您确认」「顾问会在微信上联系您」：AI 回复里说了会给顾问记一条待办，跟进是主动外发，不替顾问揽活，按句删掉
@@ -4513,7 +4553,9 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
  * 支付成功后的主动跟进：写入会话并置 stage=paid，推送由调用方经 adapter 完成。
  * message 是写进会话的那条（推送时交给发送账本，02 第 12 步）
  */
-export async function notifyPaid(orderId: string): Promise<{ sessionId: string; text: string; message: ChatMessage } | null> {
+export async function notifyPaid(
+  orderId: string,
+): Promise<{ sessionId: string; text: string; message: ChatMessage; prepared: PreparedPush | null } | null> {
   const order = getOrder(orderId);
   if (!order?.sessionId) return null;
   const session = getSession(order.sessionId);
@@ -4527,7 +4569,9 @@ export async function notifyPaid(orderId: string): Promise<{ sessionId: string; 
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
   session.messages.push(message);
   saveSession(session);
-  return { sessionId: session.id, text, message };
+  // 03：库里的企微账号把付款确认的分段 pending 排进这条消息的同一次落库（同一段同步代码里），调用方 push 时交回去
+  const prepared = prepareChannel(session.id, text, { kind: 'notice', message });
+  return { sessionId: session.id, text, message, prepared };
 }
 
 /** 仅供自测：确定性转人工触发（handoff.selftest.ts）。应急话术给断言比对 */

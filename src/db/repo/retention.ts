@@ -1,6 +1,8 @@
 // 保留期清理与行权删除（docs/architecture/02-conversations-workbench/spec.md「隐私说明、敏感信息同意、保留期与行权」「数据库」，R23）。
 // 四个 SQL 函数（drizzle/0003_conversations_rls.sql，第 4 步已建好）的 TS 包装：purge_conversation、purge_expired_traces、
 // purge_finished_jobs 只 GRANT 给 agent_app；erase_conversation 只 GRANT 给 agent_platform。都要求调用者已在 withTenant 里。
+// 03（drizzle/0005_channels_rls.sql）：purge_conversation、erase_conversation 的删除范围加 channel_inbox、erase 的返回值加 inbox；
+// 新函数 purge_channel_inbox 只 GRANT 给 agent_app
 import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { conversations, tenants } from '../schema.js';
@@ -61,6 +63,18 @@ export async function purgeExpiredTraces(tx: Tx, now: Date): Promise<number> {
   return r?.n ?? 0;
 }
 
+/**
+ * 入站记录（03 R2）：删结束了 7 天的（done、abandoned，按 updated_at）；收到超过 7 天还没结束的记 abandoned（too_old）、清掉原文。
+ * 返回两类条数之和
+ */
+export async function purgeChannelInbox(tx: Tx, now: Date): Promise<number> {
+  const { tenantId } = currentTenantCtx();
+  const [r] = rowsOf<{ n: number }>(
+    await tx.execute(sql`select purge_channel_inbox(${tenantId}::uuid, ${now.toISOString()}::timestamptz) as n`),
+  );
+  return r?.n ?? 0;
+}
+
 /** 删 30 天前的已结束任务（done、cancelled、abandoned、failed）；返回删除条数 */
 export async function purgeFinishedJobs(tx: Tx, now: Date): Promise<number> {
   const { tenantId } = currentTenantCtx();
@@ -79,6 +93,8 @@ export interface EraseCounts {
   outboundSends: number;
   orders: number;
   jobs: number;
+  /** 03：channel_inbox 里这个会话的入站行 */
+  inbox: number;
 }
 
 /** 行权删除（agent_platform）：不看保留期，删除范围与 purgeConversation 相同；写一行 platform.erase 审计；返回各类条数 */

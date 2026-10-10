@@ -22,6 +22,27 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
 
+// 03 R22：手写 id，不依赖后续步骤的渠道产生方；带 key 的 id 穷举两处冒号的原文、大小写编码与混合编码。
+const channelIds = [
+  { id: 'wecom:wmKeyed0001', code: '0001' },
+  { id: 'wecom:shop-b:wmKeyed0001', code: 'conv-keyed-ref' },
+  { id: 'wecom:shop-c:wmKeyed0001', code: '0001' },
+  { id: 'web:0123456789abcdef0123456789abcdef', code: 'conv-web-ref' },
+  { id: 'web:abcdef0123456789abcdef0123456789', code: '6789' },
+  { id: 'sim-0123456789abcdef01234567', code: '4567' },
+];
+const channelRefs = new Map(channelIds.filter(({ code }) => code.startsWith('conv-')).map(({ id, code }) => [id, code]));
+const channelIdCases = channelIds.flatMap(({ id, code }) => {
+  let variants = [id.split(':')[0]!];
+  for (const part of id.split(':').slice(1)) {
+    variants = variants.flatMap((prefix) => [':', '%3A', '%3a'].map((colon) => `${prefix}${colon}${part}`));
+  }
+  return variants.map((raw) => ({ id, raw, code }));
+});
+const channelIdsHidden = (text: string): boolean =>
+  channelIdCases.every(({ id, raw }) => !text.includes(raw) && !text.includes(id.slice(id.lastIndexOf(':') + 1)));
+const ordinaryWebText = `web: 首页 web:abc web:${'f'.repeat(31)} web:${'f'.repeat(33)}`;
+
 // 服务器时区：上海。下面的「现在」取 UTC 17:30，上海已是第二天 01:30，「今天」按 UTC 算就差一天
 process.env.TZ = 'Asia/Shanghai';
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
@@ -51,6 +72,18 @@ for (const k of [
   'WECOM_CALLBACK_AES_KEY',
 ]) {
   if (!CHILD || !k.startsWith('OTEL_')) process.env[k] = '';
+}
+
+// 03 第 13 步追加：隔离渠道观测测试，全部网络都由假 fetch 接收。
+if (CHILD === 'channel-observation') {
+  try {
+    await channelObservationSelftest();
+  } catch (e) {
+    process.stderr.write(`${e instanceof Error ? e.stack : String(e)}\n`);
+    process.exit(1);
+  }
+  process.stdout.write('CHANNEL OBSERVABILITY SELFTEST PASS\n', () => process.exit(0));
+  await new Promise(() => {});
 }
 
 // ================ 子进程：没设端点时什么都不加载、不连接（不变量 49） ================
@@ -94,6 +127,7 @@ if (CHILD === 'no-otel') {
   await boot({
     initConfig: async () => void calls.push('config'),
     initSessionStore: async () => void calls.push('store'),
+    initChannels: async () => {},
     serve: (onListening) => {
       calls.push('serve');
       onListening();
@@ -104,7 +138,7 @@ if (CHILD === 'no-otel') {
     storeMode: () => 'file',
     startFollowUpScheduler: () => {},
     startJobs: () => {},
-    startWecom: () => void calls.push('wecom'),
+    startChannels: () => void calls.push('wecom'),
     exit: (c) => void calls.push(`exit ${c}`),
     startOtel: async () => {
       called = true;
@@ -224,6 +258,17 @@ if (CHILD === 'json-logs') {
   });
   // 兜底：形如会话原 id 的串、请求路径里编码过的、带凭据的地址与 Bearer
   console.log('兜底：wecom:wmFallbackRaw01 sim-0123456789abcdef01234567 /api/sessions/wecom%3AwmFallbackRaw02/reply');
+  const { setConvRefResolver } = await import('../log.js');
+  setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
+  try {
+    for (const [i, { raw }] of channelIdCases.entries()) {
+      console.log(`渠道 id 兜底 ${i}：${raw}`);
+      log.info(`渠道 id 字段 ${i}`, { nested: { conversation: raw } });
+    }
+    console.log(`普通网页文本：${ordinaryWebText}`);
+  } finally {
+    setConvRefResolver(store.conversationRef);
+  }
   console.warn('凭据：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRETKEY99 Authorization: Bearer tok123secret');
   log.info('redact', {
     authorization: 'Bearer AUTHSECRET1',
@@ -607,6 +652,20 @@ function spawnAsync(
   check(
     'withLogContext 手动给的 req 照写',
     docs.some((d) => msgOf(d) === '手动上下文' && d.req === 'manual-req-1' && d.level === 'warn'),
+  );
+  for (const [i, { raw, code }] of channelIdCases.entries()) {
+    const line = docs.find((d) => msgOf(d).startsWith(`渠道 id 兜底 ${i}：`));
+    const field = docs.find((d) => msgOf(d) === `渠道 id 字段 ${i}`);
+    check(
+      `03 R22 JSON 兜底：${raw} 的正文与嵌套字段换成 ${code}`,
+      msgOf(line ?? {}) === `渠道 id 兜底 ${i}：${code}` && json(field?.nested) === json({ conversation: code }),
+      json({ line, field }),
+    );
+  }
+  check('03 R22 JSON：整份输出没有原 id、external_userid、web hash 与 key:id 残片', channelIdsHidden(all));
+  check(
+    '03 R22 JSON：普通 web 文本与长度不对的 id 原样保留',
+    docs.some((d) => msgOf(d) === `普通网页文本：${ordinaryWebText}`),
   );
 }
 
@@ -1140,6 +1199,7 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
     await boot({
       initConfig: async () => void calls.push('config'),
       initSessionStore: async () => void calls.push('store'),
+      initChannels: async () => {},
       serve: (onListening) => {
         calls.push('serve');
         onListening();
@@ -1150,7 +1210,7 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
       storeMode: () => 'file',
       startFollowUpScheduler: () => {},
       startJobs: () => {},
-      startWecom: () => void calls.push('wecom'),
+      startChannels: () => void calls.push('wecom'),
       exit: (c) => void calls.push(`exit ${c}`),
       startOtel: async () => {
         calls.push('otel');
@@ -1477,7 +1537,8 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
   const c = u?.turn.calls[0];
   check(
     'recorder：执行时抛错的工具调用记下真实耗时、执行时的参数与只在内存的失败标记，没有结果',
-    !!c && c.ms >= 40 && c.failed === true && c.resultBytes === 0 && c.resultHead === '' && json(c.args) === json(args),
+    // 定时器按单调时钟走，用 Date.now() 量可能少 1 毫秒（CI 上见过 39），留一点余量
+    !!c && c.ms >= 35 && c.failed === true && c.resultBytes === 0 && c.resultHead === '' && json(c.args) === json(args),
     json(c),
   );
   // 这一轮已经经 onTurnEnd 交给导出器了（startOtelExport 订阅的），这里只 flush
@@ -1670,6 +1731,24 @@ const logMod = await import('../log.js');
 
 const { __profileTest } = await import('../profile.js');
 const { app: serverApp } = await import('../server.js');
+{
+  check(
+    '03 R22 demo：所有新旧 id 与编码组合的请求路径原样保留',
+    channelIdCases.every(({ raw }) => logMod.convLabelsIn(`/api/sessions/${raw}/reply`) === `/api/sessions/${raw}/reply`),
+  );
+  logMod.setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
+  __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+  try {
+    for (const { raw, code } of channelIdCases) {
+      const out = logMod.convLabelsIn(`/api/sessions/${raw}/reply`);
+      check(`03 R22 prod 请求路径：${raw} 换成 ${code}`, out === `/api/sessions/${code}/reply` && channelIdsHidden(out), out);
+    }
+    check('03 R22 prod 请求路径：普通 web 文本与长度不对的 id 原样保留', logMod.convLabelsIn(ordinaryWebText) === ordinaryWebText);
+  } finally {
+    __profileTest.reset();
+    logMod.setConvRefResolver(store.conversationRef);
+  }
+}
 {
   const before = [console.log, console.info, console.warn, console.error];
   check(
@@ -2408,6 +2487,34 @@ await captureAlertLogs(async () => {
       contents().at(-1)!.startsWith('[selftest] 会话 RT42 出错，见 [地址已略] · '),
       contents().at(-1),
     );
+    logMod.setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
+    __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'x' });
+    try {
+      for (const { raw, code } of channelIdCases) {
+        A.reset();
+        const before = hook.bodies.length;
+        alertMod.alert('jobs', `会话 ${raw} 出错`);
+        await A.settle();
+        const out = contents().at(-1)!;
+        check(
+          `03 R22 告警正文：${raw} 换成 ${code}`,
+          hook.bodies.length === before + 1 && out.startsWith(`[selftest] 会话 ${code} 出错 · `) && channelIdsHidden(hook.bodies.at(-1)!),
+          out,
+        );
+      }
+      A.reset();
+      const before = hook.bodies.length;
+      alertMod.alert('jobs', ordinaryWebText);
+      await A.settle();
+      check(
+        '03 R22 告警正文：普通 web 文本与长度不对的 id 原样保留',
+        hook.bodies.length === before + 1 && contents().at(-1)!.startsWith(`[selftest] ${ordinaryWebText} · `),
+        contents().at(-1),
+      );
+    } finally {
+      __profileTest.reset();
+      logMod.setConvRefResolver(store.conversationRef);
+    }
     process.env.INSTANCE_LABEL = '';
     A.reset();
     alertMod.alert('jobs', '没设实例名');
@@ -2442,7 +2549,8 @@ fakeCmd('docker', [
   '  *RestartCount*) cat "$FAKE_DIR/restart" 2>/dev/null || exit 1 ;;',
   '  *"volume inspect"*) echo "$FAKE_DIR/volume" ;;',
   '  *pg_dumpall*) echo "-- globals" ;;',
-  '  *pg_dump*) if [ -n "${FAKE_DUMP_FAIL:-}" ]; then exit 3; fi; echo dump ;;',
+  // 03 第 12 步：pg_dump 记进调用顺序（FAKE_CALLS），并在线上 var/ 里写一个文件（FAKE_DUMP_TOUCH）：先打包 var/ 的话归档里没有它
+  '  *pg_dump*) if [ -n "${FAKE_DUMP_FAIL:-}" ]; then exit 3; fi; if [ -n "${FAKE_CALLS:-}" ]; then echo pg_dump >> "$FAKE_CALLS"; fi; if [ -n "${FAKE_DUMP_TOUCH:-}" ]; then echo late > "$FAKE_DUMP_TOUCH"; fi; echo dump ;;',
   '  *"pg_restore --list"*) cat >/dev/null; for t in ${FAKE_TOC:-memberships sop_versions catalog_items audit_log conversations messages orders}; do echo "1; 0 0 TABLE DATA public $t agent_owner"; done ;;',
   '  *psql*) echo "2|43|conversations messages orders" ;;',
   '  *) exit 97 ;;',
@@ -2471,6 +2579,9 @@ fakeCmd('df', [
   'fi',
 ]);
 fakeCmd('age', ['out=""', 'while [ $# -gt 1 ]; do if [ "$1" = -o ]; then out="$2"; shift; fi; shift; done', 'cp "$1" "$out"']);
+// 03 第 12 步：tar 记进同一份调用顺序，再交给真的 tar（看 backup.sh 先打包 var/、后 pg_dump）
+const realTar = ['/usr/bin/tar', '/bin/tar'].find((p) => fs.existsSync(p)) ?? 'tar';
+fakeCmd('tar', ['if [ -n "${FAKE_CALLS:-}" ]; then echo "tar $1" >> "$FAKE_CALLS"; fi', `exec ${realTar} "$@"`]);
 const setFake = (k: string, v: string): void => fs.writeFileSync(path.join(wfake, k), v);
 const srv = path.join(wtmp, 'srv');
 const bk = path.join(wtmp, 'bk');
@@ -2734,6 +2845,69 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
     watched.status === 0 && contents().at(-1)!.includes('上次成功的备份是 27 小时前'),
     json(contents().slice(-2)),
   );
+  // 03 第 12 步（spec R7、R19、验收 21 的 backup.sh 部分；「测试与 CI」允许改的 backup.sh 步骤顺序）：先打包 var/、再 pg_dump，
+  // 归档里有恢复哨兵、线上 var/ 里没有。pg_dump 时往线上 var/ 写一个文件：先打包的话归档里没有它
+  {
+    const { RESTORE_SENTINEL } = await import('../channels/markers.js');
+    const { CHANNEL_KEY_ENV } = await import('../channels/secrets.js');
+    const callsFile = path.join(wtmp, 'backup-calls.log');
+    const touched = path.join(srv, 'var', 'written-during-dump.json');
+    fs.rmSync(callsFile, { force: true });
+    const t0 = Date.now();
+    const pushed = contents().length;
+    const ordered = await runBackup({ FAKE_CALLS: callsFile, FAKE_DUMP_TOUCH: touched });
+    const calls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').trim().split('\n') : [];
+    const tarAt = calls.indexOf('tar -czf');
+    check(
+      'backup.sh（03）：先打包 var/、再 pg_dump（调用顺序），成功且这次不推告警',
+      ordered.status === 0 && tarAt >= 0 && calls.indexOf('pg_dump') > tarAt && contents().length === pushed,
+      `${ordered.status} ${json(calls)} ${ordered.out.slice(-300)}`,
+    );
+    const archive = path.join(bk, 'opswatch', day, 'var.tar.gz.age');
+    const listed = (await spawnAsync(realTar, ['-tzf', archive], { cwd: wtmp, env: scriptEnv })).stdout.split('\n').filter(Boolean);
+    check(
+      'backup.sh（03）：归档里是打包那一刻的 var/：有原来的文件，没有 pg_dump 时才写进线上 var/ 的文件',
+      listed.includes('var/sessions.json') && !listed.some((f) => f.endsWith('written-during-dump.json')) && fs.existsSync(touched),
+      json(listed),
+    );
+    const sentinel = await spawnAsync(realTar, ['-xzOf', archive, `var/${RESTORE_SENTINEL}`], { cwd: wtmp, env: scriptEnv });
+    let backupAt = NaN;
+    try {
+      const v = JSON.parse(sentinel.stdout) as { backupAt?: unknown };
+      if (Object.keys(v).join() === 'backupAt' && typeof v.backupAt === 'string' && v.backupAt.endsWith('Z'))
+        backupAt = Date.parse(v.backupAt);
+    } catch {
+      backupAt = NaN;
+    }
+    check(
+      'backup.sh（03）：归档里有恢复哨兵 var/restored-from-backup.json（名字与 markers.ts 一致，内容只有 backupAt，是这次打包的时刻）',
+      sentinel.status === 0 && backupAt >= Math.floor(t0 / 1000) * 1000 && backupAt <= Date.now(),
+      `${sentinel.status} ${sentinel.stdout} ${sentinel.stderr}`,
+    );
+    check(
+      'backup.sh（03）：线上 var/ 里没有恢复哨兵',
+      !fs.existsSync(path.join(srv, 'var', RESTORE_SENTINEL)),
+      fs.readdirSync(path.join(srv, 'var')).join(','),
+    );
+    // 恢复手册（脚本开头）：解开 var/ 之后、起应用之前加两步——确认密钥、跑 restore-cutoff，并写明截止点怎么取（开放问题 5）
+    const manual = fs.readFileSync(path.join(repoRoot, 'deploy', 'backup.sh'), 'utf8').split('\nset -euo pipefail')[0]!;
+    const stepAt = (n: number, re: RegExp): number => {
+      const m = new RegExp(`^#   ${n}\\) (.*)$`, 'm').exec(manual);
+      return m && re.test(manual.slice(m.index, m.index + 900)) ? m.index : -1;
+    };
+    const steps = [
+      stepAt(5, /解开 var\//),
+      stepAt(6, new RegExp(`${CHANNEL_KEY_ENV}[\\s\\S]*secrets_key_id[\\s\\S]*离线保管`)),
+      stepAt(7, /restore-cutoff --tenant <slug> --until <时刻>[\s\S]*最后一次正常回复[\s\S]*恢复开始的时刻/),
+      stepAt(8, /启动/),
+    ];
+    check(
+      'backup.sh（03）：恢复手册第 5 步解开 var/ 之后、起应用之前多两步：确认渠道密钥是同一把，跑 restore-cutoff（截止点怎么取）',
+      steps.every((at, i) => at >= 0 && (i === 0 || at > steps[i - 1]!)),
+      json(steps),
+    );
+    fs.rmSync(touched, { force: true });
+  }
   // 推不出去、没配地址：退出码不变，只写 stderr，不带地址
   writeOps([`ALERT_WEBHOOK_URL=http://127.0.0.1:9/cgi-bin/webhook/send?key=${WATCH_KEY}`]);
   const down = await runBackup({ FAKE_DUMP_FAIL: '1' });
@@ -2880,6 +3054,34 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   receiver.mode = 'ok';
 }
 
+// 03 第 13 步追加：可控时钟下的真实运行时、入站处理链、统计、成员鉴权、告警与日志。
+{
+  const run = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, 'ops.selftest.ts')], {
+      cwd: repoRoot,
+      env: { ...process.env, OPS_SELFTEST_CHILD: 'channel-observation', VAR_DIR: varParent },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (b: Buffer) => {
+      stdout += b.toString('utf8');
+    });
+    child.stderr.on('data', (b: Buffer) => {
+      stderr += b.toString('utf8');
+    });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    });
+  });
+  check(
+    '03 可观测性：验收 10、23、每账号统计、成员鉴权、独立去重与正文脱敏',
+    run.status === 0 && run.stdout.includes('CHANNEL OBSERVABILITY SELFTEST PASS'),
+    json(run),
+  );
+}
+
 // ================ 告警：租户锁被别的进程拿走、停机写 spill（会让本进程不再写库，放在最后） ================
 {
   A.reset();
@@ -2928,3 +3130,554 @@ console.log(
   `OPS SELFTEST PASS: ${pass} 项断言全通（边界 lint / 没设端点不加载、不连接 / 运行数字逐字段、时区、保留期截断、60 秒缓存、文件存储 503、角色 403、参数 / OpenTelemetry 的 span 树与属性、provider、默认无原文、capture、出错与工具失败、匿名引用、端点挂掉、停机 flush 与按时放弃 / 日志：JSON 行与字段、req 与 x-request-id、轮次的 tenant·conv·turn、没有原话与会话原 id、兜底与 redact、纯文本不变 / 告警：五个键的触发与恢复、30 分钟去重、条件变重、限流、超时与失败不抛不阻塞、没配地址只 warn、正文禁止项 / watch.sh 与 backup.sh）`,
 );
 process.exit(0);
+
+/** 03 第 13 步：独立进程保证账号、运行时、profile 与可控时钟不影响 02 的断言。 */
+async function channelObservationSelftest(): Promise<void> {
+  const assert: typeof import('node:assert/strict') = (await import('node:assert/strict')).default;
+  const { randomUUID } = await import('node:crypto');
+  const testing = await import('../db/testing.js');
+  const store = await import('../store.js');
+  const registry = await import('../channels/registry.js');
+  const wecom = await import('../adapters/wecom.js');
+  const { AccountInbox } = await import('../channels/inbox.js');
+  const { sealSecrets } = await import('../channels/secrets.js');
+  const { __profileTest } = await import('../profile.js');
+  const { withTenant } = await import('../db/client.js');
+  const { readInboxStats } = await import('../db/repo/channel-inbox.js');
+  const { readOutboundStats } = await import('../db/repo/outbound.js');
+  const alert = await import('./alert.js');
+  const { consoleApi, __consoleTest } = await import('../console-api/app.js');
+  const { SESSION_COOKIE } = await import('../auth/session.js');
+  const log = await import('../log.js');
+  const t = await testing.openTestDb();
+  await testing.installSeededConfig(t);
+  const fx = await testing.installPgSessionStore(t, { varDir: VAR_DIR });
+  await store.initSessionStore(fx.deps);
+  const tenantId = fx.deps.tenantId;
+  const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+  const su = <R = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<R[]> =>
+    t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (await tx.query<R>(sql, params)).rows;
+    });
+  let now = Date.now();
+  const base = now;
+  registry.__channelsTest.setObservationClock(() => now);
+  wecom.__wecomTest.setObservationClock(() => now);
+  alert.__alertTest.setClock(() => now);
+  __consoleTest.setClock(() => base);
+  process.env.ADMIN_PASS = 'test-only';
+  __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'test-only' });
+  const key = Buffer.alloc(32, 9);
+  const ring = { current: { id: 'obs', key }, all: new Map([['obs', key]]) };
+  const ids = new Map<string, string>();
+  const secrets = { appSecret: 'OBS_SECRET_TEST', callbackToken: 'OBS_CALLBACK_TEST', callbackAesKey: 'OBS_AES_TEST' };
+  for (const name of ['bad', 'good', 'reboot', 'blocked', 'disabled']) {
+    const id = randomUUID();
+    ids.set(name, id);
+    const { ct, keyId } = sealSecrets(ring, { tenantId, accountId: id }, secrets);
+    await su(
+      `insert into channel_accounts (tenant_id,id,key,kind,name,status,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id,cursor,cursor_at)
+      values ($1,$2,$3,'wecom_kf',$3,$4,$5,$6,$7,decode($8,'hex'),$9,'cursor-test',$10)`,
+      [
+        tenantId,
+        id,
+        name,
+        name === 'disabled' ? 'disabled' : 'active',
+        name === 'good' ? 'wecom:' : `wecom:${name}:`,
+        `corp-${name}-private`,
+        `kf-${name}-private`,
+        ct.toString('hex'),
+        keyId,
+        new Date(base - 60_000),
+      ],
+    );
+  }
+  await su(`insert into channel_accounts (tenant_id,key,kind,name,status,settings) values ($1,'website','web','test','active','{}')`, [
+    tenantId,
+  ]);
+  const sendRow = async (name: string, status: string, age: number, suffix: string, nullable = false): Promise<void> => {
+    await su(
+      `insert into outbound_sends (tenant_id,conversation_id,channel_msgid,kind,sent_at,status,account_id,payload)
+      values ($1,'wecom:wmObsSend01',$2,'notice',$3,$4,$5,$6::json)`,
+      [
+        tenantId,
+        suffix,
+        new Date(base - age),
+        status,
+        nullable ? null : ids.get(name),
+        status === 'pending' || status === 'sending' ? '{}' : null,
+      ],
+    );
+  };
+  await sendRow('reboot', 'sending', 10_000, 'restart-segment');
+  const originalFetch = globalThis.fetch;
+  const messages: string[] = [];
+  const jsonRes = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  let tokenFails = true;
+  let syncFails = false;
+  let throwSync = false;
+  let page: unknown[] = [];
+  const apiCalls = new Map<string, number>();
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname === 'alert.invalid') {
+      const body = JSON.parse(String(init?.body)) as { text: { content: string } };
+      messages.push(body.text.content);
+      return jsonRes({ errcode: 0 });
+    }
+    if (url.hostname !== 'qyapi.weixin.qq.com') throw new Error('unexpected network');
+    const ep = url.pathname.split('/').at(-1);
+    if (ep === 'gettoken') {
+      const corp = url.searchParams.get('corpid')!;
+      apiCalls.set(corp, (apiCalls.get(corp) ?? 0) + 1);
+      if (corp === 'corp-bad-private' && apiCalls.get(corp) === 1) throw new Error(`gettoken ${url.href} wmObs01`);
+      return jsonRes(
+        corp === 'corp-bad-private' && tokenFails
+          ? { errcode: 40013, errmsg: 'corp-bad-private OBS_SECRET_TEST wmObs01' }
+          : { access_token: `OBS_TOKEN_${corp}`, expires_in: 7200 },
+      );
+    }
+    if (ep === 'send_msg_on_event') throw new Error(`send_msg_on_event ${url.href} wmObsEnter01`);
+    if (ep === 'sync_msg') {
+      if (throwSync) throw new Error(`fetch ${url.href} wmObs01`);
+      if (syncFails) return jsonRes({ errcode: 95017, errmsg: `fetch ${url.href} corp-good-private` });
+      const body = JSON.parse(String(init?.body)) as { open_kfid: string };
+      const result = body.open_kfid === 'kf-good-private' ? page : [];
+      page = body.open_kfid === 'kf-good-private' ? [] : page;
+      return jsonRes({ errcode: 0, next_cursor: 'next-test', has_more: 0, msg_list: result });
+    }
+    return jsonRes({ errcode: 0 });
+  }) as typeof fetch;
+  process.env.ALERT_WEBHOOK_URL = 'https://alert.invalid/test';
+  process.env.INSTANCE_LABEL = 'selftest';
+  process.env.LLM_MOCK = '1';
+  const logs: string[] = [];
+  const jsonLogs: Record<string, unknown>[] = [];
+  const logger = log.__logTest.createJsonLogger({
+    write(line: string) {
+      jsonLogs.push(JSON.parse(line));
+    },
+  });
+  const originalConsole = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+  const grab = (...args: unknown[]) => {
+    const text = args.map(String).join(' ');
+    logs.push(text);
+    logger.info(text);
+  };
+  console.log = grab;
+  console.warn = grab;
+  console.error = grab;
+  console.info = grab;
+  const originalAttempt = AccountInbox.prototype.beginAttempt;
+  const originalLoad = AccountInbox.prototype.loadForRecovery;
+  let releaseAttempt!: () => void;
+  const attemptGate = new Promise<void>((r) => {
+    releaseAttempt = r;
+  });
+  let releaseRecovery!: () => void;
+  const recoveryGate = new Promise<void>((r) => {
+    releaseRecovery = r;
+  });
+  let attemptEntered = false;
+  let recoveryEntered = false;
+  AccountInbox.prototype.beginAttempt = async function (row) {
+    if (row.accountId === ids.get('good') && !attemptEntered) {
+      attemptEntered = true;
+      await attemptGate;
+    }
+    return originalAttempt.call(this, row);
+  };
+  AccountInbox.prototype.loadForRecovery = async function (accountId) {
+    if (accountId === ids.get('blocked')) {
+      recoveryEntered = true;
+      await recoveryGate;
+    }
+    return originalLoad.call(this, accountId);
+  };
+  const waitFor = async (fn: () => boolean) => {
+    const deadline = Date.now() + 10_000;
+    while (!fn() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(fn(), '等待测试阻塞点超时');
+  };
+  const tick = async () => {
+    alert.__alertTest.tick();
+    await alert.__alertTest.settle();
+  };
+  const pull = (name: string) => wecom.syncAccountFromCallback(ids.get(name)!, 'callback-test');
+  const channelAlerts = (phrase: string) => messages.filter((m) => m.includes(phrase));
+  let releaseStats: () => void = () => undefined;
+  try {
+    await registry.initChannels({ db: fx.deps.db, tenantId, tenantSlug: 'demo', varDir: VAR_DIR, keyRing: ring });
+    registry.startChannels();
+    alert.startAlerts();
+    alert.__alertTest.stopTimer();
+    await waitFor(
+      () =>
+        recoveryEntered && (apiCalls.get('corp-bad-private') ?? 0) > 0 && wecom.wecomObservability(ids.get('good')!)?.lastSyncAt !== null,
+    );
+    await alert.__alertTest.settle();
+    await registry.refreshChannelObservability();
+    assert.equal(registry.__channelsTest.stats().running, true, '启动渠道后启用后台统计刷新');
+    assert.equal(registry.__channelsTest.stats().referenced, false, '统计定时器 unref，不阻止退出');
+    assert.equal(channelAlerts('重启时 1 段 sending 转 unknown').length, 1);
+    assert.equal(channelAlerts('网页账号 website 没有启用').length, 1);
+    alert.__alertTest.checkChannelStartup();
+    await alert.__alertTest.settle();
+    assert.equal(channelAlerts('重启时 1 段 sending 转 unknown').length, 1, '重启告警独立去重');
+    assert.equal(channelAlerts('网页账号 website 没有启用').length, 1, 'prod 开关告警去重');
+    const { app } = await import('../server.js');
+    const health = async () =>
+      (await (await app.request('/healthz')).json()) as { ok: boolean; channels: { failing: number; stuck: number } };
+    page = [
+      {
+        msgid: 'obs-enter',
+        origin: 4,
+        msgtype: 'event',
+        external_userid: 'wmObsEnter01',
+        send_time: Math.floor(Date.now() / 1000),
+        event: { event_type: 'enter_session', external_userid: 'wmObsEnter01', welcome_code: 'test-welcome-code' },
+      },
+      {
+        msgid: 'obs-inbox',
+        origin: 3,
+        msgtype: 'text',
+        external_userid: 'wmObs01',
+        send_time: Math.floor(Date.now() / 1000),
+        text: { content: '想去云南玩' },
+      },
+    ];
+    await pull('good');
+    await waitFor(() => attemptEntered);
+    await su('update channel_inbox set received_at=$1 where tenant_id=$2 and msgid=$3', [new Date(base - 600_000), tenantId, 'obs-inbox']);
+    await registry.refreshChannelObservability();
+    now = base + 59_000;
+    assert.equal((await health()).channels.stuck, 0, '启动后一分钟宽限，即使库里有旧行');
+    await su('update channel_inbox set received_at=$1 where tenant_id=$2 and msgid=$3', [new Date(base), tenantId, 'obs-inbox']);
+    await registry.refreshChannelObservability();
+    now = base + 300_000;
+    assert.equal((await health()).channels.stuck, 0, '恰好五分钟不算超过');
+    now = base + 360_000;
+    let h = await health();
+    assert.equal(h.channels.stuck, 2, '处理链与另一个账号的恢复各卡六分钟');
+    assert.equal(h.ok, false);
+    // 挡住借连接：健康检查只读旧快照，等待刷新超时也不会清零或堆积读取。
+    fx.faults.gate = new Promise<void>((resolve) => {
+      releaseStats = resolve;
+    });
+    registry.__channelsTest.setStatsTiming(50, 500);
+    const acquiresBeforeHealth = fx.stats.acquires;
+    now += 120_001;
+    const healthStarted = performance.now();
+    h = await Promise.race([
+      health(),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('健康检查等待了统计库')), 250);
+        timer.unref();
+      }),
+    ]);
+    assert.ok(performance.now() - healthStarted < 100, '库挂住时健康检查远早于刷新超时返回');
+    assert.equal(fx.stats.acquires, acquiresBeforeHealth, '健康检查没有借数据库连接');
+    assert.equal(h.channels.stuck, 2, '统计超过两分钟未刷新仍保留已知卡住账号');
+    assert.equal(h.ok, false);
+    assert.ok(registry.__channelsTest.stats().ageSec! > 120);
+    const boundedStarted = performance.now();
+    await registry.refreshChannelObservability();
+    assert.ok(performance.now() - boundedStarted < 1500, '借连接挂住的刷新有上限且不抛');
+    const acquiresAfterTimeout = fx.stats.acquires;
+    await registry.refreshChannelObservability();
+    assert.equal(fx.stats.acquires, acquiresAfterTimeout, '超时后的底层读取未结束，不叠加连接请求');
+    assert.equal((await health()).channels.stuck, 2);
+    registry.__channelsTest.stopStatsRefresh();
+    await su('update channel_inbox set received_at=$1 where tenant_id=$2 and msgid=$3', [new Date(now), tenantId, 'obs-inbox']);
+    fx.faults.gate = null;
+    releaseStats();
+    releaseStats = () => undefined;
+    await waitFor(() => !registry.__channelsTest.stats().reading);
+    assert.equal(registry.channelsHealth().stuck, 2, '超时后迟到结果不覆盖上次成功快照');
+    registry.__channelsTest.startStatsRefresh();
+    await waitFor(() => registry.channelsHealth().stuck === 1);
+    assert.equal(registry.__channelsTest.stats().ageSec, 0, '后台定时查询成功更新时间');
+    await su('update channel_inbox set received_at=$1 where tenant_id=$2 and msgid=$3', [new Date(base), tenantId, 'obs-inbox']);
+    await waitFor(() => registry.channelsHealth().stuck === 2);
+    registry.__channelsTest.setStatsTiming();
+    await registry.refreshChannelObservability();
+    fx.faults.acquire = testing.fakeDbError('08006');
+    await registry.refreshChannelObservability();
+    assert.equal((await health()).channels.stuck, 2, '统计读库失败时，已知积压与启动恢复卡住仍可见');
+    fx.faults.acquire = null;
+    await tick();
+    await tick();
+    assert.equal(channelAlerts('账号 good 入站或启动恢复超过').length, 1);
+    assert.equal(channelAlerts('账号 blocked 入站或启动恢复超过').length, 1);
+    assert.equal(h.channels.failing, 0);
+    now = base + 599_999;
+    assert.equal((await health()).channels.failing, 0, '不到十分钟');
+    now = base + 600_000;
+    await pull('bad');
+    await pull('good');
+    await tick();
+    await tick();
+    h = await health();
+    assert.equal(h.channels.failing, 1);
+    assert.equal(channelAlerts('账号 bad 连续 10 分钟').length, 1);
+    assert.equal(channelAlerts('账号 good 连续 10 分钟').length, 0);
+    assert.ok(channelAlerts('账号 bad 连续 10 分钟')[0]!.includes('40013'));
+    assert.ok(wecom.wecomObservability(ids.get('good')!)!.lastSyncAt! >= base + 600_000);
+    // 十一分钟内仍只一条；三十分钟后重报，恢复后再次失败可重新发。
+    now += 60_000;
+    await tick();
+    assert.equal(channelAlerts('账号 bad 连续 10 分钟').length, 1);
+    tokenFails = false;
+    await pull('bad');
+    await tick();
+    assert.equal(channelAlerts('已恢复：企微账号 bad 拉取已恢复').length, 1);
+    syncFails = true;
+    await pull('good');
+    now += 600_000;
+    await tick();
+    assert.equal((await health()).channels.failing, 1, 'sync_msg 返回 errcode 也计时');
+    assert.equal(channelAlerts('账号 good 连续 10 分钟').length, 1);
+    assert.ok(channelAlerts('账号 good 连续 10 分钟')[0]!.includes('95017'));
+    now += 1_799_999;
+    await tick();
+    assert.equal(channelAlerts('账号 good 连续 10 分钟').length, 1, '三十分钟内去重');
+    now += 1;
+    await tick();
+    assert.equal(channelAlerts('账号 good 连续 10 分钟').length, 2, '持续失败三十分钟再报');
+    syncFails = false;
+    await pull('good');
+    await tick();
+    assert.equal((await health()).channels.failing, 0);
+    throwSync = true;
+    await pull('good');
+    assert.equal(wecom.wecomObservability(ids.get('good')!)!.lastErrorCode, 'Error');
+    throwSync = false;
+    await pull('good');
+    await sendRow('good', 'pending', 120_001, 'stale-pending');
+    await sendRow('good', 'sending', 120_001, 'stale-sending');
+    await sendRow('good', 'pending', 120_000, 'edge-pending');
+    await sendRow('good', 'unknown', 86_400_000, 'edge-unknown');
+    await sendRow('good', 'unknown', 86_400_001, 'old-unknown');
+    await sendRow('good', 'unknown', 1000, 'null-unknown', true);
+    // 统计边界按原始 base；另一个账号与另一个租户不混进来。
+    await sendRow('disabled', 'pending', 200_000, 'disabled-pending');
+    const [other] = await su<{ id: string }>(`insert into tenants (slug,name,pack_id) values ('obs-other','other','travel') returning id`);
+    await su(
+      `insert into outbound_sends (tenant_id,conversation_id,channel_msgid,kind,sent_at,status) values ($1,'wecom:wmOther01','foreign','notice',$2,'unknown')`,
+      [other!.id, new Date(base)],
+    );
+    const stats = await withTenant(t.db, ctx, (tx) => readOutboundStats(tx, base, ids.get('good')!), { readOnly: true });
+    const goodStats = stats.find((s) => s.accountId === ids.get('good'))!;
+    assert.deepEqual(goodStats, { accountId: ids.get('good'), staleOutbound: 2, unknownSends24h: 2 });
+    const inboxStats = await withTenant(t.db, ctx, readInboxStats, { readOnly: true });
+    assert.equal(inboxStats.find((s) => s.accountId === ids.get('good'))!.openInbox, 1);
+    assert.equal(inboxStats.find((s) => s.accountId === ids.get('good'))!.oldestAt!.getTime(), base);
+    await su('update channel_accounts set cursor_at=$1 where tenant_id=$2 and id=$3', [new Date(base - 60_000), tenantId, ids.get('good')]);
+    const auth = await import('../auth/accounts.js');
+    await t.pg.exec('SET ROLE agent_platform');
+    const tokens: string[] = [];
+    for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer'] as const) {
+      const result = await auth.createUser(t.db, {
+        tenantSlug: 'demo',
+        email: `${role}@obs.example.com`,
+        name: role,
+        role,
+        password: async () => 'obs-password-test',
+      });
+      assert.equal(result.code, 0);
+    }
+    await t.pg.exec('SET ROLE agent_app');
+    for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer']) {
+      const login = await consoleApi.request('/api/console/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-console-write': '1', 'x-forwarded-for': '203.0.113.99' },
+        body: JSON.stringify({ email: `${role}@obs.example.com`, password: 'obs-password-test' }),
+      });
+      assert.equal(login.status, 200, await login.clone().text());
+      const token = /^__Host-sid=([^;]+)/.exec(login.headers.get('set-cookie') ?? '')?.[1];
+      assert.ok(token);
+      tokens.push(token);
+      const res = await consoleApi.request('/api/console/status', { headers: { cookie: `${SESSION_COOKIE}=${token}` } });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { channels: import('../shared/console-api.js').ChannelStatus[] };
+      assert.equal(body.channels.length, 6);
+      const good = body.channels.find((c) => c.key === 'good')!;
+      assert.deepEqual(
+        Object.keys(good).sort(),
+        [
+          'key',
+          'kind',
+          'status',
+          'inactiveReason',
+          'lastSyncAt',
+          'lastErrorCode',
+          'openInbox',
+          'oldestOpenInboxSec',
+          'staleOutbound',
+          'cursorAgeSec',
+          'unknownSends24h',
+        ].sort(),
+      );
+      assert.equal(good.openInbox, 1);
+      assert.ok(good.oldestOpenInboxSec > 300);
+      assert.equal(good.staleOutbound, 3);
+      assert.equal(good.unknownSends24h, 1);
+      assert.equal(good.cursorAgeSec, Math.max(0, (now - base + 60_000) / 1000));
+      assert.equal(body.channels.find((c) => c.key === 'blocked')!.lastErrorCode, 'recovering');
+      assert.ok(body.channels.find((c) => c.key === 'website')!.inactiveReason);
+      assert.equal(body.channels.find((c) => c.key === 'disabled')!.lastSyncAt, null);
+    }
+    assert.equal((await consoleApi.request('/api/console/status')).status, 401, 'prod 匿名');
+    // 成员身份查询使用另一条测试连接；只挡住渠道统计，验证 /status 有界等待后交旧快照。
+    await waitFor(() => !registry.__channelsTest.stats().reading);
+    fx.faults.gate = new Promise<void>((resolve) => {
+      releaseStats = resolve;
+    });
+    registry.__channelsTest.setStatsTiming(30_000, 500);
+    const statusStarted = performance.now();
+    const slowStatus = await consoleApi.request('/api/console/status', { headers: { cookie: `${SESSION_COOKIE}=${tokens[0]}` } });
+    assert.equal(slowStatus.status, 200);
+    assert.ok(performance.now() - statusStarted < 1500, '成员状态统计挂住时按上限返回');
+    const staleBody = (await slowStatus.json()) as { channels: import('../shared/console-api.js').ChannelStatus[] };
+    assert.equal(staleBody.channels.find((c) => c.key === 'good')!.openInbox, 1, '状态保留上次成功统计');
+    assert.equal(staleBody.channels.find((c) => c.key === 'good')!.staleOutbound, 3);
+    fx.faults.gate = null;
+    releaseStats();
+    releaseStats = () => undefined;
+    await waitFor(() => !registry.__channelsTest.stats().reading);
+    registry.__channelsTest.setStatsTiming();
+    await registry.refreshChannelObservability();
+    assert.equal(
+      (await consoleApi.request('/api/console/status', { headers: { cookie: `${SESSION_COOKIE}=${'a'.repeat(43)}` } })).status,
+      401,
+      '无效成员凭据',
+    );
+    __profileTest.use({ DEPLOY_PROFILE: 'demo' });
+    assert.deepEqual(await (await consoleApi.request('/api/console/status')).json(), { mode: 'db' }, 'demo 匿名投影');
+    __profileTest.use({ DEPLOY_PROFILE: 'prod', ADMIN_PASS: 'test-only' });
+    // 处理链仍挂着，放开另一个账号的启动恢复，验收 23 精确得到 stuck = 1。
+    releaseRecovery();
+    await waitFor(() => wecom.wecomObservability(ids.get('blocked')!)?.recovering === false);
+    await tick();
+    h = await health();
+    assert.equal(h.channels.stuck, 1);
+    assert.equal(h.ok, false);
+    assert.equal(channelAlerts('已恢复：渠道账号 blocked 入站与启动恢复已恢复').length, 1);
+    // 各账号 wecom_send 的三个分段独立累计；已有 token 告警的 bad 不压掉 good。
+    const ledger = await import('../quota/ledger.js');
+    alert.__alertTest.reset();
+    const n0 = messages.length;
+    for (let i = 0; i < 3; i++) {
+      const handle = ledger.recordSend('wecom:wmObsSend02', 'notice', null);
+      handle.attempt();
+      handle.settle('rejected', 40096);
+    }
+    await alert.__alertTest.settle();
+    assert.ok(messages.slice(n0).some((m) => m.includes('3 个分段最终失败') && m.includes('账号 good')));
+    // acct 既在拉取日志又在轮次日志里；JSON 的 acct 是字段。
+    log.withLogContext({ acct: 'good' }, () =>
+      log.withConversationLog('wecom:wmObs01', () => {
+        log.noteTurnLog('wecom:wmObs01', 'turn-test');
+        logger.info('轮次测试');
+      }),
+    );
+    assert.ok(jsonLogs.some((l) => l.acct === 'good' && l.turn === 'turn-test'));
+    assert.ok(jsonLogs.some((l) => l.acct === 'good' && String(l.msg).includes('kf/sync_msg')));
+    assert.ok(
+      jsonLogs.filter((l) => String(l.msg).includes('[wecom acct=good] kf/sync_msg')).every((l) => l.acct === 'good'),
+      '接口拒绝与抛错的拉取日志都有 acct 字段',
+    );
+    const privateValues = [
+      secrets.appSecret,
+      secrets.callbackToken,
+      secrets.callbackAesKey,
+      'wmObs01',
+      'wmObsEnter01',
+      'wecom:wmObs01',
+      ...['bad', 'good', 'reboot', 'blocked', 'disabled'].flatMap((k) => [
+        `corp-${k}-private`,
+        `kf-${k}-private`,
+        `OBS_TOKEN_corp-${k}-private`,
+      ]),
+    ];
+    const publicOutput = JSON.stringify({ messages, jsonLogs, logs });
+    for (const value of privateValues) assert.ok(!publicOutput.includes(value), `泄漏禁止项 ${value}`);
+    assert.ok(!messages.some((m) => m.includes('https://') || m.includes('access_token=')));
+    assert.ok(
+      logs.some((l) => l.includes('欢迎语处理异常') && l.includes('Error')),
+      '欢迎语接口的带 token 异常被转成短码',
+    );
+    assert.deepEqual(Object.keys(h.channels).sort(), ['mode', 'accounts', 'failing', 'stuck'].sort());
+    if (process.env.PG_TEST_URL) {
+      const rpg = await testing.createRealPgFixture(process.env.PG_TEST_URL);
+      const { openDb } = await import('../db/client.js');
+      const db = await openDb(rpg.urls.app, { max: 1 });
+      try {
+        const id = randomUUID();
+        await rpg.query(`insert into channel_accounts (tenant_id,id,key,kind,name) values ($1,$2,'rpg','web','test')`, [rpg.tenantId, id]);
+        await rpg.query(
+          `insert into channel_inbox (tenant_id,account_id,msgid,kind,state,received_at) values ($1,$2,'rpg-in','legacy','received',$3)`,
+          [rpg.tenantId, id, new Date(base)],
+        );
+        await rpg.query(
+          `insert into outbound_sends (tenant_id,account_id,conversation_id,channel_msgid,kind,status,sent_at) values ($1,$2,'wecom:wmRpgObs01','rpg-out','notice','pending',$3)`,
+          [rpg.tenantId, id, new Date(base - 120_001)],
+        );
+        const rctx = { ...ctx, tenantId: rpg.tenantId };
+        const i = await withTenant(db.db, rctx, readInboxStats, { readOnly: true });
+        const o = await withTenant(db.db, rctx, (tx) => readOutboundStats(tx, base, null), { readOnly: true });
+        assert.equal(i[0]!.openInbox, 1);
+        assert.equal(i[0]!.oldestAt!.getTime(), base);
+        assert.equal(o[0]!.staleOutbound, 1);
+        assert.equal(o[0]!.unknownSends24h, 0);
+      } finally {
+        await db.close();
+        await rpg.drop();
+      }
+    }
+    wecom.__wecomTest.closeSends(ids.get('good')!, 0);
+    releaseAttempt();
+    await waitFor(() => wecom.__wecomTest.idle());
+    assert.ok(
+      jsonLogs.some((l) => l.acct === 'good' && l.turn && String(l.msg).includes('本轮完成')),
+      '实际处理轮次有 acct 与 turn 字段',
+    );
+    for (const value of privateValues) assert.ok(!JSON.stringify({ messages, jsonLogs, logs }).includes(value));
+    // db 存储而企微状态已导出：env 账号的 02 旧账本行 account_id 是 NULL，也要在成员状态里计数。
+    registry.__channelsTest.reset();
+    assert.equal(registry.__channelsTest.stats().running, false, '清理渠道时统计定时器停止');
+    await su("update channel_accounts set status='exported' where tenant_id=$1 and kind='wecom_kf'", [tenantId]);
+    const { removeChannelsMarker } = await import('../channels/markers.js');
+    removeChannelsMarker(VAR_DIR);
+    process.env.WECOM_CORP_ID = 'corp-env-private';
+    process.env.WECOM_APP_SECRET = 'OBS_ENV_SECRET';
+    process.env.WECOM_KF_OPEN_KFID = 'kf-env-private';
+    await registry.initChannels({ db: fx.deps.db, tenantId, tenantSlug: 'demo', varDir: VAR_DIR, keyRing: ring });
+    const envStatus = await consoleApi.request('/api/console/status', { headers: { cookie: `${SESSION_COOKIE}=${tokens[0]}` } });
+    assert.equal(envStatus.status, 200);
+    const envBody = (await envStatus.json()) as { channels: import('../shared/console-api.js').ChannelStatus[] };
+    assert.equal(envBody.channels.find((c) => c.key === 'env')!.unknownSends24h, 1);
+    assert.ok(!JSON.stringify(envBody).includes('corp-env-private'));
+  } finally {
+    fx.faults.gate = null;
+    releaseStats();
+    registry.__channelsTest.stopStatsRefresh();
+    await waitFor(() => !registry.__channelsTest.stats().reading);
+    wecom.__wecomTest.closeSends(ids.get('good')!, 0);
+    for (const id of ids.values()) wecom.__wecomTest.setStopping(id, true);
+    releaseAttempt();
+    releaseRecovery();
+    await waitFor(() => wecom.__wecomTest.idle());
+    await store.flushSession('wecom:wmObs01', { timeoutMs: 5000 }).catch(() => undefined);
+    registry.__channelsTest.reset();
+    AccountInbox.prototype.beginAttempt = originalAttempt;
+    AccountInbox.prototype.loadForRecovery = originalLoad;
+    globalThis.fetch = originalFetch;
+    Object.assign(console, originalConsole);
+    await waitFor(() => wecom.__wecomTest.idle());
+    registry.__channelsTest.setObservationClock(null);
+    wecom.__wecomTest.setObservationClock(null);
+    await t.close();
+  }
+}

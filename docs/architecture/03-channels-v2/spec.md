@@ -1,10 +1,18 @@
 # 03 · 渠道层 v2
 
-Status: ready
+Status: implemented
 Phase: 3 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-09 重排之后的编号）
 Depends on: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md)（开工时须已 implemented：PG 会话存储与每会话写队列、spill、发送账本、清除与删除函数、任务表、告警）；[01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、审计）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)
 Amends: 02 的「数据库」（新表 `channel_accounts`、`channel_inbox`；`outbound_sends` 的新列与三个新状态；`conversations.channel_account_id`；授权；清除与删除函数的删除范围加 `channel_inbox`，新函数 `purge_channel_inbox`）、「identity map 与写入 · 停机」（spill 条目多一段渠道行）、02 不变量 42（表清单加 `channel_inbox`）、02 R22（公开路由加企微按账号的回调与网页渠道三组）、「两种会话存储与启动」（`initChannels` 一步、新的启动拒绝原因、`/healthz` 的 `channels`）、02 R24 与「可观测性与告警」（日志脱敏认新的会话 id 形状、新告警键 `channel`、告警带账号 key）；01 的「审计」（新动作）；00 的「部署 profile 与开关」（新开关 `web_channel`，demo 默认开、prod 封顶为关）；后台 UX spec 的渠道中文名（加 `web`→「网页」，`simulator` 改叫「演示」）。只做新增或收紧
-Supersedes in part: [02](../02-conversations-workbench/spec.md) 的 R7「企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解……」那一句与「推迟」格的 `channel_inbox`（04）；「identity map 与写入 · 一次落库」第 6 步把账本行整体写在存档点之内；「企微：发送账本、回执与去重」里「账本行随会话的下一次落库写（存档点之内……）」一句，与「去重与重放对齐」的五种情况；「identity map 与写入 · 停机」里 spill 文件「trace 与账本行不写」中的「账本行不写」（库里账号的出站行要进 spill，R21）。四处都只在企微状态「在库里」时（R1）被取代，文件存储、以及企微状态是「未导入」「已导出」的 db 存储下原文照旧。原因：02 第 26 步的恢复演练复现了重复回复（备份落在「回复已发出、账本行还没落库」那不到 2 秒的窗口里），02 开放问题 5 的裁决是「复现了就在接第一个真实租户之前另写 spec 提前做」，owner 2026-10-09 确认；这几处的机制本身就是那个窗口的来源，改成「先落库、后发送」才能消掉它，见「与 02 及更早 spec 的关系」
+Supersedes in part: [02](../02-conversations-workbench/spec.md) 的 R7「企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解……」那一句与「推迟」格的 `channel_inbox`（04）；「identity map 与写入 · 一次落库」第 6 步把账本行整体写在存档点之内；「企微：发送账本、回执与去重」里「账本行随会话的下一次落库写（存档点之内……）」一句，与「去重与重放对齐」的五种情况；「identity map 与写入 · 停机」里 spill 文件「trace 与账本行不写」中的「账本行不写」（库里账号的出站行要进 spill，R21）。四处都只在企微状态「在库里」时（R1）被取代，文件存储、以及企微状态是「未导入」「已导出」的 db 存储下原文照旧。原因：02 第 26 步的恢复演练复现了重复回复（备份落在「回复已发出、账本行还没落库」那不到 2 秒的窗口里），02 开放问题 5 的裁决是「复现了就在接第一个真实租户之前另写 spec 提前做」，owner 2026-10-09 确认；这几处的机制本身就是那个窗口的来源，改成「先落库、后发送」才能消掉它，见「与 02 及更早 spec 的关系」。另部分取代 [后台 UX 重做](../../features/console-ux/spec.md)「接口改动」里 `AuditQuery.actions` 的「至多 32 个」：改为至多 64 个（2026-10-09 实现期修订，见下面 `Revisions:` 的 plan 第 15 步一条）
+Revisions: 2026-10-09 实现期修订（plan 第 6 步，与实现同一个分支）：一、`initChannels` 在 db 存储、企微状态「未导入」而 `var/` 里有 `channels-in-db.json` 时也以 `channel_state_in_db` 拒绝（原文只写了「已导出」加标记这一种）：标记只在导入之后出现，库说没导入而标记在，说明库与 `var/` 不是同一时刻的（比如库恢复成了导入之前的备份），照常起会按冷启动只认领不回复、丢掉在途消息；文件存储下有恢复哨兵时照「未导入」处理，记一行并删掉（原文没写这一种）。二、`ChannelAccount.inactiveReason` 只表示「这个账号不能启用」，本阶段只有 `web_channel` 关着的网页账号；欢迎语不合格按没设处理、进启动告警，不写进 `inactiveReason`（原接口注释把两者写在一起，写进去会让 `accountByKey` 不返回这个账号、`/w/:key` 404，与 R19「按没设处理」矛盾）。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 15 步，与实现同一个分支）：01「审计」新增的渠道动作只登记已有写入代码的四个（`channel.account_create`、`channel.account_update`、`channel.secrets_update`、`channel.rekey`），`channel.import`、`channel.export`、`channel.restore_cutoff` 由第 14、12 步实现时再登记（审计的一致性检查不许登记没有写入方的动作）。动作一多，审计页「全部类别、不显示登录记录」换算出的 `AuditQuery.actions` 超过后台 UX spec 定的 32 个上限，筛不出来；上限改为 64 个（`src/shared/console-api.ts` 的正则），是对该 spec 一处条款的部分取代，见顶部 `Supersedes in part:`。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 8 步，与实现同一个分支）：「出站 · 发一条 AI 回复」第 3–5 步的接手代次检查只用于 AI 回复、跟进、同意菜单与欢迎语；人工回复与通知（付款确认、顾问确认收款、不同意之后的确认）只比停机截止、不比接手。原文「人工回复、跟进、付款确认、同意菜单……之后同样走第 3–5 步」按字面会让付款确认因为有人接手而取消、客户付了款收不到确认；接手检查是为了不让 AI 抢顾问的话，本 spec 的出站恢复表对通知本来就不看接手，02 发通知也不看接手。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 9 步，与实现同一个分支）：发送失败回执（`send_fail`）插进 `channel_inbox` 之后不排进会话的处理链、不计次、不判 `poison` / `too_old`，照 02 马上处理（出站行改 `failed` 与入站行记 `done` 在同一个短事务）。原文「新插入的行按会话排进处理链」对回执按字面做，回执会排在正在退避重试的那一句后面，出站重试前的终态检查赶不上，这一段会再发一次（与不变量 5 冲突）。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 10 步，与实现同一个分支）：「重启、崩溃与恢复」补四处。一、「恢复做完」指没结束的入站行按 `ord` 派发进各自会话的处理链之后，不等它们处理完（处理链按会话串行，不变量 12 照旧成立；等处理完会让一次慢的模型调用卡住整个账号的拉取）。二、出站恢复表前加一行：指着这一段的发送失败回执还停在 `received`（回执短事务写不进去时留下的）时，这一段不补发，由入站恢复重做回执、迁到 `failed`（守不变量 5）。三、入站 `recorded`、这句之后已有 AI 回复、会话有接手人：把回复的分段排进去随即取消，记「本轮未发送」，与 `replied` 那一行同一口径（不变量 10）。四、`RESEND_UNKNOWN` 为真时，有接手人的会话里还在 `sending` 的 AI 类段（`ai`、`followup`、`menu`、`welcome`）也不补发、记 `unknown`（不变量 10），通知与人工回复照表补发。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 14 步，与实现同一个分支）：`channel-export` 在原有五种拒绝之外再拒绝两种（退出码 2、什么都不动，提示先以 03 起一次让启动恢复处理完、正常停机再导出）：默认账号名下有没结束的入站行而种类不是 `message`（菜单点击、发送失败回执、进入会话、`legacy`——02 的文件状态只有客户消息的在途表，这些行只能进已处理集合，客户的同意决定或失败记录会丢）；没结束的非文本 `message` 名下已有任何出站行（02 重放非文本消息只看会话里有没有引导提示、不查账本，会换 msgid 再发一次）。`channel-import` 与 `channel-export` 在 `var/` 里有没回放的 spill 文件时以 2 拒绝（spill 现在带渠道行，回放会在导入导出之后再往 `outbound_sends` / `channel_inbox` 写行），取到租户锁之后、开事务之前再查一次。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-09 实现期修订（plan 第 12 步，与实现同一个分支）：`channel-account restore-cutoff` 补四处。一、企微状态在库里而 `var/` 里有没回放的 spill 时以 2 拒绝（在持锁的事务里、写任何东西之前查）：命令会给涉及的会话加说明、推进 `last_seq`，之后回放 spill 会撞上 `spill_conflict` 起不来。二、企微状态是「未导入」「已导出」时什么都不做、以 0 退出，哨兵留给应用启动时删（这两种状态下渠道状态在文件里，恢复照 02）。三、`--until` 晚于当前时刻 5 分钟以上、不带时区、格式不对或早于 2000 年都以 1 拒绝（5 分钟留给钟差）。四、「恢复截止点让 N 个会话只补记」的告警在应用启动、只补记做完之后合并发一条（只有会话数），不在命令行发：真正只补记的会话（备份之后才拉到的那几句）只有启动时才知道。被取消的跟进阶段同一事务记进会话的 `state.followup`（与执行体发出一条跟进时的记法相同），启动时只补记那一步也不触发跟进排程，免得同一阶段重新入队、再发一次。命令行另给涉及出站取消或跟进取消的会话加一条说明（「恢复备份之后补记：备份之后的处理记录已丢失，恢复截止点之前没发完的回复与到点的跟进已取消、不会再发，请人工确认是否已回复」），截止点之前还有没结束客户消息的会话不加（启动时那条会加）。审计 diff 除条数外带账号 key 与 `until`。行为、接口与数据形状的其余部分不变
+Revisions: 2026-10-10 owner 确认的修订（plan 第 20 步演练之后，与实现同一个分支）：一、「回退到 02 的镜像」在导出与确认 `WECOM_*` 之后、部署 02 的 tag 之前，先用当前 03 镜像 `up -d app` 把应用起来顶住（已导出，照 02 走 env 账号与 `var/wecom-cursor.json`，`/healthz` 的 `channels.mode = env`）：`deploy.sh` 换容器之前要先跑约 7 分钟门禁，照原文这段时间一直停机；`rollback-guard.sh` 对部署旧 tag 打印的步骤同样加这一步（自动回滚到镜像的分支不变）。二、「接口与数据流 · 入站」恢复截止点那条：入站行已是 `replied`（回复已生成、可能已发）时，说明换成「恢复备份之后补记：上面 AI 的回复可能没送达客户（备份之后的处理记录已丢失，不会再补发），请人工确认客户是否收到」，原话那句对这种会话不准（会话里紧跟着就是那条 AI 回复）；同一会话一次恢复每种说明至多一条，「N 个会话只补记」的告警仍按会话数算，告警措辞改成「只补记、AI 不再回复或补发……请人工确认是否已回复、客户是否收到」。行为、接口与数据形状的其余部分不变
 
 ## 背景与问题
 
@@ -162,7 +170,7 @@ export interface ChannelAccount {
   source: 'env' | 'db';
   wecom: { corpId: string; openKfId: string; idPrefix: string; recordOnlyUntil: number | null; settings: WecomSettings } | null;
   web: WebSettings | null;
-  /** 启动时判定这个账号不能启用的原因（web_channel 开关关着、欢迎语不合格按没设处理之类），给 /status 看；null 表示照常 */
+  /** 启动时判定这个账号不能启用的原因（本阶段只有 web_channel 开关关着的网页账号；欢迎语不合格按没设处理、进启动告警，不算不能启用），给 /status 看；null 表示照常 */
   inactiveReason: string | null;
 }
 export const ENV_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
@@ -209,7 +217,7 @@ export interface ChannelDeps {
 /**
  * boot() 在 initSessionStore 之后、serve 之前调。deps 为 null（文件存储）：var/ 下有 channels-in-db.json 就以 channel_state_in_db
  * reject；否则 WECOM_* 配齐时拼一个 env 账号（状态在文件）。db 存储：读本租户的全部账号，按 R1 判企微状态。
- * 未导入、已导出：已导出而 var/ 下还有标记文件（导出没做完）→ channel_state_in_db；否则照 R1 拼 env 账号，有恢复哨兵就只记一行
+ * 未导入、已导出：var/ 下还有标记文件（已导出：导出没做完；未导入：库是导入之前的、var/ 是导入之后的）→ channel_state_in_db；否则照 R1 拼 env 账号，有恢复哨兵就只记一行
  * 并删掉它（这两种状态下渠道状态在文件里，恢复照 02）。在库里：有 active 的企微账号而没有密钥环 → channel_key_missing；逐个解密
  * active 的，解不开 → channel_decrypt；var/ 下有恢复哨兵而有 active 的企微账号 → channel_restore_pending（没有 active 的：照常起、
  * 不起企微、哨兵留着、日志一行）；var/ 下有 wecom-cursor.json、没有标记文件 → channel_state_in_file；补写标记文件（写不进去只记日志），
@@ -300,7 +308,7 @@ export function writeInboxStateNow(change: { inboxId: string; state: 'done' | 'a
 - **菜单点击**（`menu_click`）：`applyConsentDecision` 改了会话，同一次落库记 `done`；这个类别已经有结论的点击照 02 忽略，同样记 `done`。
 - **发送失败回执**（`send_fail`）：插入时 `payload` 只存 `fail_msgid` 与 `fail_type`。处理是一个短事务：按 `fail_msgid` 把出站行迁到 `failed`（按迁移表）并把入站行记 `done`；会话里的说明照 02 经会话落库。重复的回执不再加说明（02 规则）。
 - **进入会话事件**（`enter_session`）：`acceptPage` 里直接记 `done`，只为去重；欢迎语照 02（`welcome_code` 20 秒就过期，崩溃后不补）。
-- **恢复截止点**：`sent_at` 不晚于账号的 `record_only_until` 的 `message`、`menu_click`，不调引擎：客户消息（不在会话里时）照常写进会话、追加一条 system「恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复」（同一会话一次恢复只加一条），入站行记 `abandoned`（`restore_cutoff`），同一次落库；菜单点击不补记。
+- **恢复截止点**：`sent_at` 不晚于账号的 `record_only_until` 的 `message`、`menu_click`，不调引擎：客户消息（不在会话里时）照常写进会话、追加一条 system「恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复」（同一会话一次恢复只加一条；入站行已是 `replied` 时换一句，见顶部 Revisions 2026-10-10），入站行记 `abandoned`（`restore_cutoff`），同一次落库；菜单点击不补记。
 - 带着 `external_userid` 的行（`conversation_id` 或 `payload` 里有）一律填 `conversation_id`，清除与行权删除按它删得干净；导入的 `legacy` 行只有 msgid，不填。
 - 入站状态的 UPDATE 命中 0 行（会话与它的入站行已被清除）当无操作。
 - `messages.msgid` 仍不建唯一索引（02 的理由不变）；去重在 `channel_inbox` 上做，会话里同一 msgid 不会写第二遍。
@@ -395,7 +403,7 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: 'taken
   4. `markSending`；`not_pending` 不发这一段；`absent` 按上面的注释（这一组提交超时过才继续，否则不发）。凡是要继续发的结果（`marked`、提交超时过的 `absent`、`db_unavailable`），**返回之后、发请求之前都再比一次接手代次与停机截止**（`markSending` 期间可能有人接手或到了截止）：被接手就不发，这一段与其余没发的一并取消；过了截止就不发，其余没发的不动，这一组留给重启后的出站恢复。返回 `marked` 的段库里已是 `sending`，被接手迁到 `cancelled`，过了截止迁回 `pending`；`absent`、`db_unavailable` 的段库里没有 `sending`，取消照 R6 的落库路径写，过了截止什么都不另写。这次比较与发请求之间没有 `await`，接手和截止都插不进来，所以 02「normal 段截止之后不再开始新的 send_msg」对每一种发送结果都成立。迁回 `pending` 的短事务写不成时，这一段留在 `sending`、重启后记 `unknown`（没发过，工作台显示「可能没送达」，告警一条）。
   5. send_msg（同一段的重试沿用 msgid；02 的退避重试里那一行可能先记 `unknown`，见迁移表）→ `settleIntent`。
   6. 全部分段有了结果 → 入站 `done`。
-- 人工回复、跟进、付款确认、同意菜单本来就是「先落库后发送」（02 不变量 20、R17），分段的 `pending` 行加进它们那一次落库，之后同样走第 3–5 步。
+- 人工回复、跟进、付款确认、同意菜单本来就是「先落库后发送」（02 不变量 20、R17），分段的 `pending` 行加进它们那一次落库，之后同样走第 3–5 步（人工回复与通知只比停机截止、不比接手代次，见顶部 2026-10-09 第 8 步那条 `Revisions:`）。
 - **运行时才补的段**（卡片发失败之后补的「标题 + 链接」文字）段号取这一组最大段号加 1，单独一个短事务写成 `pending` 之后再走第 4–5 步。
 - **出站行的 `kind`**：库里账号的每一段都记这一组的种类（`ai`、`human`、`followup`、`notice`、`menu`、`welcome`），卡片段也一样，是不是卡片看 `payload.msgtype`；`card` 只出现在 env 账号与 02 留下的旧行上（它们没有 `pending`、`sending`）。恢复表按 `kind` 分支因此覆盖所有段。
 - **窗口计数**（02 R18 的保守口径）：见上表「计入已用条数」。
@@ -536,7 +544,7 @@ src/cli/channel-account.ts  list | add-wecom | add-web | set-secrets | set | rek
   5. 要演示正式网页渠道时：停 app，`channel-account add-web --tenant demo --key demo --title …`，起 app。注意建了网页账号之后就不能再用 `channel-export` 回退到 02（见下）。
   6. 切换后第一份每晚备份做完恢复验证（验收 6 的线上部分），删掉 `--keep` 里的原件。
   7. 03 验收通过、确定不回退之后，从 `.env` 删掉 `WECOM_*`，重启一次核对仍正常。
-- **回退到 02 的镜像**：`stop app` → `channel-export --var /app/var --keep <var 之外的目录>`（被拒时照提示处理）→ 确认 `.env` 里的 `WECOM_*` 还在 → 部署 02 的 tag。再切回：`stop app` → `channel-import --resync --keep <…>` → `up -d app`。
+- **回退到 02 的镜像**：`stop app` → `channel-export --var /app/var --keep <var 之外的目录>`（被拒时照提示处理）→ 确认 `.env` 里的 `WECOM_*` 还在 → 用当前 03 镜像 `up -d app` 顶住（`channels.mode = env`；顶部 Revisions 2026-10-10）→ 部署 02 的 tag。再切回：`stop app` → `channel-import --resync --keep <…>` → `up -d app`。
 - **回滚检查**（`deploy/rollback-guard.sh`，含健康检查失败后的自动回滚）：目标镜像里没有 `src/channels/registry.ts`（03 之前的镜像），而服务器 `var/` 里有 `channels-in-db.json`、或没有标记但库里 `channel_accounts` 有任何一行不是「前缀为 `wecom:` 的企微账号且 `exported`」（与条目版本同一种问库写法；停用的企微账号、第二个企微账号、任何网页账号都算有风险，与 `channel-export` 的拒绝范围一致；库问不到时，正在跑的是 03 之后的镜像就按有风险处理），拒绝，退出码 5，打印上面的回退步骤（带项目名与端口，02 的写法）。与 02 的会话、条目版本两类风险可以同时出现，各自打印。两个都是 03 之后的镜像时照常回滚。
 
 ### 数据库

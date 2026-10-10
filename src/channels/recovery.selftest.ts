@@ -1,0 +1,2652 @@
+// 03 第 10 步：启动恢复与崩溃点（docs/architecture/03-channels-v2/spec.md「重启、崩溃与恢复」、R5、R6、R21 的保底，不变量 5、6、10、15；
+// 验收 4、7 的杀进程部分、18、20 的重启部分）。两部分：
+//   纯函数（总是跑）：recovery-rules.ts 的出站恢复表、保底与入站恢复表，每一格一条表驱动断言，期望值是照 spec 原表写的独立字面量。
+//   杀进程（PG_TEST_URL 设了才跑；没设打一行「跳过」、以 0 退出；CI 下必须设）：父进程在真实 Postgres 上建一次性库，带上 RECOVERY_CHILD
+//   起三对子进程（单进程 node --import tsx，超时 SIGKILL，不留孤儿）。前一个驱动真实的渠道装载、企微适配器与 PG 会话存储，把每个场景卡在
+//   要杀的那一刻（假企微挂住请求的接收或回包、假模型挂住生成、账本的 markSending 钩子、借连接的闸门），存下结果后自己 SIGKILL；后一个在
+//   同一个库上重启、做完启动恢复之后核对。假企微与假模型都在进程里（替换 fetch，不开端口）；收到的每次 send_msg、模型调用与告警同步追加进
+//   文件，跨进程数「客户恰好收到一组」。
+//     k1 → r1：验收 4 的五个杀点（recorded、replied 而第一段没开始、两段发完第一段、请求已到回包挂住、markSending 之后请求没到）、
+//              验收 7 的 A、验收 20 的重启部分（截止之后才回包、markSending 挂住跨过截止）
+//     k2 → r2（重启之前经 __channelTest 把 RESEND_UNKNOWN 设为真）：验收 4 后两种重跑、验收 7 的 B
+//     k3 → r3：验收 18 每一种没结果的出站行；恢复做完之前到期的跟进等恢复做完才发；等恢复超过上限的人工回复按没发出去处理
+//     k5 → c5 → r5（03 第 12 步，验收 6 的缩小版）：杀的那一刻当作备份快照、杀的时刻当作 T；父进程往 var/ 放恢复哨兵，c5 起应用被
+//              channel_restore_pending 拦住；父进程以 app 身份跑 restore-cutoff --until T，r5 照常起：截止点之前的入站只补记、不调模型、
+//              不发送，sending 的不补发，人工回复与跟进取消，T 之后的新消息照常回复一次，「只补记」告警按会话数一条
+// 用法：npx tsx src/channels/recovery.selftest.ts（杀进程的部分要 PG_TEST_URL 指向一次性的 pgvector/pgvector:pg17 容器）
+import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
+import { spawnSync } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { ChatMessage } from '../types.js';
+import {
+  aiReplyAfter,
+  effectiveInboxState,
+  HUMAN_RESEND_WINDOW_MS,
+  outboundRecovery,
+  RESEND_UNKNOWN,
+  recordedRecovery,
+  repliedRecovery,
+  type OpenOutboundFacts,
+} from './recovery-rules.js';
+
+const CHILD = process.env.RECOVERY_CHILD ?? '';
+const SELF = fileURLToPath(import.meta.url);
+const H = 3_600_000;
+const POISON_UID = 'wm10poison';
+const SPILL_UID = 'wm10spill';
+
+let pass = 0;
+const fails: string[] = [];
+const logBuf: string[] = [];
+function check(name: string, cond: boolean, detail = ''): void {
+  if (cond) pass += 1;
+  else fails.push(`${name}${detail ? `：${detail}` : ''}`);
+}
+const json = (v: unknown): string => JSON.stringify(v);
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+async function waitFor(cond: () => boolean | Promise<boolean>, ms = 15_000): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await cond()) return true;
+    await sleep(20);
+  }
+  return cond();
+}
+
+// ---------------- 账号与客户（假 id 不用 ww、wk 开头；external_userid 是 wm 加至多 13 个字符） ----------------
+
+interface AcctDef {
+  key: string;
+  corp: string;
+  kf: string;
+  prefix: string;
+  seed: number;
+}
+const ACCTS: AcctDef[] = [
+  { key: 'r1', corp: 'corp10a', kf: 'kf10r1', prefix: 'wecom:', seed: 21 },
+  { key: 'r2', corp: 'corp10a', kf: 'kf10r2', prefix: 'wecom:r2:', seed: 22 },
+  { key: 'r3', corp: 'corp10b', kf: 'kf10r3', prefix: 'wecom:r3:', seed: 23 },
+];
+const acct = (key: string): AcctDef => ACCTS.find((a) => a.key === key)!;
+const secretsOf = (a: AcctDef): { appSecret: string; callbackToken: string; callbackAesKey: string } => ({
+  appSecret: `s10-${a.key}-app`,
+  callbackToken: `s10-${a.key}-cb`,
+  callbackAesKey: Buffer.alloc(32, a.seed).toString('base64').slice(0, 43),
+});
+const sidOf = (key: string, uid: string): string => acct(key).prefix + uid;
+
+/** 两段的回复（超过企微 2000 字节的分段上限） */
+const LONG_REPLY = `这条线路的安排是这样的：${'每天早上八点出发，下午四点回到酒店休息，晚上自由活动。'.repeat(30)}您看可以吗？`;
+const DEFAULT_REPLY = '好的～您几位出行、大概什么时候走？';
+
+/** k1 → r1、k2 → r2 的客户（一个场景一个客户） */
+const U = {
+  a: 'wm10a', // recorded：模型生成途中（同一客户一页两句）
+  b: 'wm10b', // replied、第一段没开始
+  c: 'wm10c', // 两段发完第一段、第二段没标 sending
+  d: 'wm10d', // 请求已到假企微、回包挂住
+  e: 'wm10e', // markSending 提交之后、请求没到假企微
+  f: 'wm10f', // 停机截止之后模型才回包
+  g: 'wm10g', // markSending 挂住期间跨过截止
+  h: 'wm10h', // 验收 7 的 A：pending 已提交、markSending 判 db_unavailable、照发之后结果没落库
+  i: 'wm10i', // RESEND_UNKNOWN 重跑：请求已到、回包挂住
+  j: 'wm10j', // RESEND_UNKNOWN 重跑：markSending 之后请求没到
+  k: 'wm10k', // 验收 7 的 B：commitOutbound 超时照发、结果没落库
+  l: 'wm10l', // RESEND_UNKNOWN 重跑：AI 回复的段 sending（请求已到、回包挂住），杀之前顾问接手 → 不补发、记 unknown
+  m: 'wm10m', // RESEND_UNKNOWN 重跑：通知的段 sending，杀之前顾问接手 → 通知照样按同一 msgid 补发
+  cd: 'wm10cd', // RESEND_UNKNOWN 重跑：卡片 sending、它的补文 pending（卡片结果没落库就杀）→ 补文复用已有那一行，同一正文只有一个 msgid
+  ta: 'wm10ta', // RESEND_UNKNOWN 重跑：AI 回复的段 sending，恢复补发等 token 期间顾问接手 → 不补发、记 unknown
+};
+
+/** k3 → r3 的客户（验收 18：每一种没结果的出站行一个客户） */
+const V = {
+  n: 'wm10n', // notice、pending → 补发
+  o: 'wm10o', // followup、pending → cancelled
+  p: 'wm10p', // human、10 分钟内、接手人没变 → 补发
+  q: 'wm10q', // human、超过 10 分钟 → cancelled
+  r: 'wm10r', // human、接手人变了（交还） → cancelled
+  s: 'wm10s', // menu、pending → cancelled
+  t: 'wm10t', // welcome、pending → cancelled
+  u: 'wm10u', // 没有 inbox_id 的 ai（异常道歉）→ cancelled
+  v: 'wm10v', // notice、sending → unknown、不补发
+  w: 'wm10w', // pending、sent_at 不晚于恢复截止点（r3）→ cancelled
+  x: 'wm10x', // pending、有 inbox_id、入站已结束 → cancelled
+  y: 'wm10y', // pending、有 inbox_id、入站没结束 → 入站恢复补发
+  z: 'wm10z', // kind=card 的 pending（不该有）→ cancelled、记一行
+  rc: 'wm10rc', // notice、pending，另有一条指着它的失败回执停在 received（第 9 步：回执的短事务没写成）→ 不补发、回执重做后 failed
+  tk: 'wm10tk', // 入站 replied、分段 pending，杀之前顾问接手了 → 名下 pending 的段 cancelled、记「本轮未发送」
+  rr: 'wm10rr', // 入站 recorded、会话里这句之后已有 AI 回复（库里没有它的出站行）→ 按那条回复切分段照常发、不调模型
+  ro: 'wm10ro', // 入站 received、名下已有 pending 的出站行（保底：按 replied 处理）→ 按同一 msgid 补发、不调模型
+  ht: 'wm10ht', // 人工回复，判定时 10 分钟内，等 markSending 期间过了 10 分钟 → 发请求之前复核不过、cancelled
+  hb: 'wm10hb', // 人工回复，判定时接手人没变，等 markSending 期间交还 AI → 发请求之前复核不过、cancelled
+  fu: 'wm10fu', // 恢复做完之前到期的跟进
+  p2: 'wm10p2', // 恢复做完之前的人工回复，等过上限
+};
+
+/** k4 → p1…p4 的客户（验收 3：一页 3 条；验收 9：毒消息与排在它后面的第二句） */
+const A3 = ['wm10s1', 'wm10s2', 'wm10s3'];
+const PZ = 'wm10pz';
+const POISON_NOTE = '⚠️ 客户有一条消息 AI 未能处理（已重放 2 次仍未处理完），请人工回复';
+
+/** k5 → c5 → r5 的客户（03 第 12 步：恢复截止点） */
+const W = {
+  a: 'wm12a', // 备份之前就聊完了：恢复之后不补发
+  b: 'wm12b', // 备份那一刻第一段 sending（请求到了假企微、回包挂住）：restore-cutoff 记 unknown，启动时入站只补记、不补发
+  c: 'wm12c', // 顾问的人工回复 pending：restore-cutoff 记 cancelled；备份之后又说了一句（T 之前）：只补记、不调模型、不回复
+  d: 'wm12d', // T 之后才来的新客户：照常回复一次
+  e: 'wm12e', // 跟进 pending、run_at 在 T 之前：cancelled
+  f: 'wm12f', // 跟进 running：在启动归位之前就 cancelled
+  g: 'wm12g', // 报价之后符合跟进资格、回复那一段 sending、入站 replied；报价跟进已到点（备份之后旧实例发过）→ 之后不再为这一阶段跟进
+  h: 'wm12h', // 同上但没排过跟进：只补记那一步不排；之后普通的保存照常排、到点照常发一次
+};
+/** 启动时只补记那一步加的说明（spec 原话，src/adapters/wecom.ts 的 RESTORE_CUTOFF_NOTE） */
+const RESTORE_NOTE = '恢复备份之后补记的客户消息，AI 没有回复：备份之后的处理记录已丢失，请人工确认是否已回复';
+/** 入站行已是 replied 时那一句（第 20 步演练，owner 10-10 定） */
+const RESTORE_REPLIED_NOTE =
+  '恢复备份之后补记：上面 AI 的回复可能没送达客户（备份之后的处理记录已丢失，不会再补发），请人工确认客户是否收到';
+
+/** 毒消息那个客户的入站行：原文 → msgid（payload 在入站行结束之后清空，先按原文找到的记下来） */
+const pzMsgids = new Map<string, string>();
+
+/** 子进程：先把结果写下来，再像被 OOM、kill -9 那样硬杀自己（childMain 装上；假企微、假模型在约好的那一刻调它） */
+let die: (() => void) | null = null;
+
+if (CHILD) await childMain(CHILD);
+else await parentMain();
+
+// ======================================================================================
+// 纯函数：恢复表每一格
+// ======================================================================================
+
+function pureSuite(): void {
+  check('RESEND_UNKNOWN 缺省为假（开放问题 4 核实之前）', RESEND_UNKNOWN === false);
+  check('人工回复补发的窗口是 10 分钟（开放问题 6）', HUMAN_RESEND_WINDOW_MS === 10 * 60_000);
+
+  // ---- 出站恢复表：spec 原表一行一组，自上而下第一行命中 ----
+  const now = 1_800_000_000_000;
+  const base: OpenOutboundFacts = {
+    status: 'pending',
+    kind: 'notice',
+    sentAt: now - 60_000,
+    inboxId: null,
+    inboxOpen: false,
+    recordOnlyUntil: null,
+    humanAssigneeSame: true,
+    hasAssignee: false,
+    now,
+    resendUnknown: false,
+    failReceived: false,
+  };
+  const KINDS = ['ai', 'human', 'followup', 'notice', 'menu', 'welcome', 'card'] as const;
+  const show = (r: unknown): string => json(r);
+  // 表前一行：失败回执停在 received、指着这一段 → 留给回执（任何状态、种类，截止点、入站、RESEND_UNKNOWN 都不看）
+  for (const status of ['pending', 'sending'] as const) {
+    for (const kind of KINDS) {
+      for (const extra of [
+        {},
+        { inboxId: 'i1', inboxOpen: true },
+        { recordOnlyUntil: now },
+        { resendUnknown: true },
+        { resendUnknown: true, hasAssignee: true },
+      ]) {
+        check(
+          `出站表 ${status}/${kind} ${json(extra)} 已收到失败回执：留给回执`,
+          show(outboundRecovery({ ...base, ...extra, status, kind, failReceived: true })) === show({ do: 'receipt' }),
+        );
+      }
+    }
+  }
+  // sending（任何种类）：RESEND_UNKNOWN 为假 unknown、为真保持 sending 补发（截止点、入站、人工回复的接手人都不看）；
+  // 为真而会话有接手人：AI 产生的（ai、followup、menu、welcome、card）记 unknown、不补发，通知与人工回复照样补发（不变量 10）
+  const AI_MADE = new Set(['ai', 'followup', 'menu', 'welcome', 'card']);
+  for (const kind of KINDS) {
+    for (const extra of [
+      {},
+      { inboxId: 'i1', inboxOpen: true },
+      { recordOnlyUntil: now },
+      { humanAssigneeSame: false },
+      { hasAssignee: true },
+      { hasAssignee: true, inboxId: 'i1', inboxOpen: true },
+    ]) {
+      const f = { ...base, ...extra, status: 'sending' as const, kind };
+      check(`出站表 sending/${kind} ${json(extra)}：unknown`, show(outboundRecovery(f)) === show({ do: 'unknown' }));
+      const want = f.hasAssignee && AI_MADE.has(kind) ? { do: 'unknown' } : { do: 'resend', alreadySending: true };
+      check(
+        `出站表 sending/${kind} ${json(extra)}、RESEND_UNKNOWN：${json(want)}`,
+        show(outboundRecovery({ ...f, resendUnknown: true })) === show(want),
+      );
+    }
+  }
+  // pending 的各行不看会话有没有接手人（人工回复看的是「接手人没变」，见下）
+  for (const kind of KINDS) {
+    check(
+      `出站表 pending/${kind} 的处理不看会话有没有接手人`,
+      show(outboundRecovery({ ...base, kind, hasAssignee: true })) === show(outboundRecovery({ ...base, kind })),
+    );
+  }
+  // pending，sent_at 不晚于恢复截止点：cancelled（任何种类、有没有入站都先看它；等于截止点也算）
+  for (const kind of KINDS) {
+    for (const extra of [{}, { inboxId: 'i1', inboxOpen: true }]) {
+      for (const sentAt of [now - 2 * H, now - H]) {
+        const f = { ...base, ...extra, kind, sentAt, recordOnlyUntil: now - H };
+        check(
+          `出站表 pending/${kind} ${json(extra)} sent_at ${sentAt === now - H ? '等于' : '早于'}截止点：cancelled（restore_cutoff）`,
+          show(outboundRecovery(f)) === show({ do: 'cancel', why: 'restore_cutoff' }),
+        );
+      }
+    }
+  }
+  // 截止点之后建的行不受截止点影响（下面各行照常）
+  check(
+    '出站表 pending/notice sent_at 晚于截止点：照常补发',
+    show(outboundRecovery({ ...base, recordOnlyUntil: base.sentAt - 1 })) === show({ do: 'resend', alreadySending: false }),
+  );
+  // pending，有 inbox_id：入站行还没结束 → 留给入站恢复；已结束或已被清理 → cancelled（种类不看）
+  for (const kind of KINDS) {
+    check(
+      `出站表 pending/${kind} 有 inbox_id、入站行没结束：留给入站恢复`,
+      show(outboundRecovery({ ...base, kind, inboxId: 'i1', inboxOpen: true })) === show({ do: 'inbound' }),
+    );
+    check(
+      `出站表 pending/${kind} 有 inbox_id、入站行已结束或已清理：cancelled（inbox_finished）`,
+      show(outboundRecovery({ ...base, kind, inboxId: 'i1', inboxOpen: false })) === show({ do: 'cancel', why: 'inbox_finished' }),
+    );
+  }
+  // pending，没有 inbox_id，按种类
+  const EXPECT: Record<(typeof KINDS)[number], unknown> = {
+    followup: { do: 'cancel', why: 'followup' },
+    notice: { do: 'resend', alreadySending: false },
+    human: { do: 'resend', alreadySending: false },
+    menu: { do: 'cancel', why: 'menu' },
+    welcome: { do: 'cancel', why: 'welcome' },
+    ai: { do: 'cancel', why: 'ai_without_inbox' },
+    card: { do: 'cancel', why: 'card' },
+  };
+  for (const kind of KINDS) {
+    check(`出站表 pending/${kind} 没有 inbox_id：${json(EXPECT[kind])}`, show(outboundRecovery({ ...base, kind })) === show(EXPECT[kind]));
+  }
+  // 人工回复：10 分钟内、接手人没变才补发（边界：正好 10 分钟算内，多 1 毫秒算外）；种类之外的不看接手人
+  const human = { ...base, kind: 'human' as const };
+  const HUMAN_CASES: [string, Partial<OpenOutboundFacts>, unknown][] = [
+    ['刚建、接手人没变', { sentAt: now - 1 }, { do: 'resend', alreadySending: false }],
+    ['正好 10 分钟、接手人没变', { sentAt: now - 10 * 60_000 }, { do: 'resend', alreadySending: false }],
+    ['10 分钟多 1 毫秒', { sentAt: now - 10 * 60_000 - 1 }, { do: 'cancel', why: 'human_stale' }],
+    ['10 分钟多 1 毫秒、接手人也变了', { sentAt: now - 10 * 60_000 - 1, humanAssigneeSame: false }, { do: 'cancel', why: 'human_stale' }],
+    ['刚建、接手人变了', { sentAt: now - 1, humanAssigneeSame: false }, { do: 'cancel', why: 'human_assignee_changed' }],
+    ['钟回拨（建行时刻在将来）、接手人没变', { sentAt: now + 60_000 }, { do: 'resend', alreadySending: false }],
+  ];
+  for (const [label, extra, want] of HUMAN_CASES) {
+    check(`出站表 pending/human ${label}：${json(want)}`, show(outboundRecovery({ ...human, ...extra })) === show(want));
+  }
+  for (const kind of KINDS.filter((k) => k !== 'human')) {
+    check(
+      `出站表 pending/${kind} 的处理不看接手人`,
+      show(outboundRecovery({ ...base, kind, humanAssigneeSame: false })) === show(EXPECT[kind]),
+    );
+    check(
+      `出站表 pending/${kind} 的处理不看建行多久`,
+      show(outboundRecovery({ ...base, kind, sentAt: now - 30 * 86_400_000 })) === show(EXPECT[kind]),
+    );
+  }
+
+  // ---- 保底三条（R21）：只对客户消息 ----
+  const STATES = ['received', 'recorded', 'replied'] as const;
+  for (const state of STATES) {
+    for (const inSession of [false, true]) {
+      for (const known of [false, true]) {
+        for (const hasOutbound of [false, true]) {
+          const got = effectiveInboxState({ kind: 'message', state, inSession, known, hasOutbound });
+          let want: { state: string; restore: boolean };
+          if (state === 'received') {
+            want = hasOutbound
+              ? { state: 'replied', restore: false }
+              : inSession || known
+                ? { state: 'recorded', restore: false }
+                : { state: 'received', restore: false };
+          } else if (state === 'recorded') want = { state: 'recorded', restore: !inSession && !known };
+          else want = { state: 'replied', restore: false };
+          check(`保底 message/${state} ${json({ inSession, known, hasOutbound })}：${json(want)}`, json(got) === json(want));
+          for (const kind of ['menu_click', 'send_fail', 'legacy'] as const) {
+            check(
+              `保底只对客户消息：${kind}/${state} ${json({ inSession, known, hasOutbound })} 原样`,
+              json(effectiveInboxState({ kind, state, inSession, known, hasOutbound })) === json({ state, restore: false }),
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // ---- 入站恢复表：recorded 的三行（加「不在窗口里」与「有回复而有接手人」两种）----
+  for (const inWindow of [false, true]) {
+    for (const ai of [false, true]) {
+      for (const handedOver of [false, true]) {
+        for (const hasAssignee of [false, true]) {
+          if (hasAssignee && !handedOver) continue; // 有接手人必在转人工中
+          const got = recordedRecovery({ inWindow, aiReplyAfter: ai, handedOver, hasAssignee });
+          const want = !inWindow
+            ? { do: 'done', why: 'out_of_window' }
+            : ai
+              ? hasAssignee
+                ? { do: 'cancel_reply' }
+                : { do: 'send_reply' }
+              : handedOver
+                ? { do: 'done', why: 'handed_over' }
+                : { do: 'rerun' };
+          check(`入站表 recorded ${json({ inWindow, ai, handedOver, hasAssignee })}：${json(want)}`, json(got) === json(want));
+        }
+      }
+    }
+  }
+  // replied：有接手人 → 取消名下 pending；否则补发；名下没有 pending 的 → done
+  for (const hasAssignee of [false, true]) {
+    for (const pending of [0, 1, 3]) {
+      const want = !pending ? { do: 'done' } : hasAssignee ? { do: 'cancel_pending' } : { do: 'resend_pending' };
+      check(
+        `入站表 replied ${json({ hasAssignee, pending })}：${json(want)}`,
+        json(repliedRecovery({ hasAssignee, pending })) === json(want),
+      );
+    }
+  }
+
+  // ---- 「这句之后有 AI 回复」：下一条客户消息之前、agent 且 author 为空或 ai、不是欢迎语 ----
+  const W = '欢迎来到这里';
+  const welcome = (c: string): boolean => c === W;
+  const m = (role: string, content = 'x', author?: string): { role: string; content: string; author?: string } =>
+    author === undefined ? { role, content } : { role, content, author };
+  const AI_CASES: [string, ReturnType<typeof m>[], number][] = [
+    ['紧跟一条 AI 回复', [m('customer'), m('agent')], 1],
+    ['author=ai 也算', [m('customer'), m('agent', 'x', 'ai')], 1],
+    ['中间夹着 system 与欢迎语', [m('customer'), m('system'), m('agent', W), m('agent', 'y')], 3],
+    ['人工回复、跟进不算', [m('customer'), m('agent', 'h', 'human'), m('agent', 'f', 'followup')], -1],
+    ['下一条客户消息之后的不算', [m('customer'), m('customer'), m('agent')], -1],
+    ['只有欢迎语', [m('customer'), m('agent', W)], -1],
+    ['这句是最后一条', [m('agent'), m('customer')], -1],
+  ];
+  for (const [label, msgs, want] of AI_CASES) {
+    const at = label === '这句是最后一条' ? 1 : 0;
+    check(`AI 回复判定：${label}`, aiReplyAfter(msgs, at, welcome) === want, String(aiReplyAfter(msgs, at, welcome)));
+  }
+}
+
+// ======================================================================================
+// 父进程
+// ======================================================================================
+
+async function parentMain(): Promise<never> {
+  pureSuite();
+  const purePass = pass;
+  const url = process.env.PG_TEST_URL;
+  if (!url) {
+    if (process.env.CI === 'true') fails.push('CI 下必须设 PG_TEST_URL：启动恢复的杀进程自测要在真实 Postgres 上跑');
+    if (!fails.length) {
+      console.log(
+        `RECOVERY SELFTEST PASS: 纯函数 ${purePass} 项（出站恢复表、保底、入站恢复表每一格）；真实 PG 的杀进程部分跳过（没设 PG_TEST_URL）`,
+      );
+      process.exit(0);
+    }
+  } else {
+    const varParent = process.env.VAR_DIR ?? os.tmpdir();
+    fs.mkdirSync(varParent, { recursive: true });
+    const ROOT = fs.mkdtempSync(path.join(varParent, 'recovery-selftest-'));
+    process.on('exit', () => fs.rmSync(ROOT, { recursive: true, force: true }));
+    const testing = await import('../db/testing.js');
+    const runChild = (
+      mode: string,
+      env: Record<string, string>,
+    ): { status: number | null; signal: NodeJS.Signals | null; out: string; result: { pass: number; fails: string[] } | null } => {
+      const resultFile = path.join(ROOT, `${mode}-${Date.now()}.json`);
+      const r = spawnSync(process.execPath, ['--import', 'tsx', SELF], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          RECOVERY_CHILD: mode,
+          RECOVERY_RESULT: resultFile,
+          CONFIG_SOURCE: 'file',
+          // 跟进的夜间时段关掉（真实 PG 的子进程用真钟：库的 now() 拨不动）
+          FOLLOWUP_QUIET_START: '0',
+          FOLLOWUP_QUIET_END: '0',
+          ...env,
+        },
+        timeout: 240_000,
+        killSignal: 'SIGKILL',
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      let result: { pass: number; fails: string[] } | null = null;
+      try {
+        result = JSON.parse(fs.readFileSync(resultFile, 'utf8')) as { pass: number; fails: string[] };
+      } catch {
+        result = null;
+      }
+      return { status: r.status, signal: r.signal, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, result };
+    };
+    const merge = (label: string, r: ReturnType<typeof runChild>): void => {
+      if (!r.result) {
+        fails.push(`${label}：子进程没留下结果（status=${r.status} signal=${r.signal}）${r.out.slice(-3000)}`);
+        return;
+      }
+      pass += r.result.pass;
+      for (const f of r.result.fails) fails.push(`${label}：${f}`);
+      if (r.result.fails.length) fails.push(`${label} 的日志：${r.out.slice(-4000)}`);
+    };
+    // 每一组前后几个子进程连同一个库；kill 的那一个卡到约好的那一刻自己 SIGKILL，ok 的那一个正常结束。before 是起这一步之前
+    // 父进程做的事（恢复哨兵、restore-cutoff 命令行）
+    const restoreSteps = (env: { RECOVERY_DIR: string; VAR_DIR: string; RECOVERY_APP_URL: string }): Record<string, () => void> => ({
+      // 恢复手册第 5 步解开 var/ 之后：归档里的哨兵（backup.sh 写的就是这个名字与形状）
+      c5: () => fs.writeFileSync(path.join(env.VAR_DIR, 'restored-from-backup.json'), '{"backupAt":"2026-10-09T00:00:00Z"}\n'),
+      // 恢复手册第 7 步：以 app 身份跑 restore-cutoff，截止点是 k5 记下的「停的时刻」T（+08:00 的写法）
+      r5: () => {
+        const T = Number(fs.readFileSync(path.join(env.RECOVERY_DIR, 't5'), 'utf8'));
+        const until = new Date(T + 8 * 3_600_000).toISOString().replace('Z', '+08:00');
+        const r = spawnSync(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            'src/cli/channel-account.ts',
+            'restore-cutoff',
+            '--tenant',
+            'recov10',
+            '--until',
+            until,
+            '--var',
+            env.VAR_DIR,
+          ],
+          {
+            cwd: process.cwd(),
+            env: { ...process.env, DATABASE_URL: env.RECOVERY_APP_URL, DATABASE_PLATFORM_URL: '' },
+            timeout: 60_000,
+            killSignal: 'SIGKILL',
+            encoding: 'utf8',
+          },
+        );
+        const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+        check('验收 6 · restore-cutoff --until T 以 0 结束、删了恢复哨兵', r.status === 0 && /已删恢复哨兵/.test(out), out.slice(-1500));
+        check(
+          '验收 6 · restore-cutoff：出站 pending 1 段取消、sending 3 段（B、G、H）记 unknown，跟进 3 个取消，C、E、F 加说明（B、G、H 的留给启动时那一条）',
+          /出站 pending 记 cancelled 1 段、sending 记 unknown 3 段；跟进任务记 cancelled 3 个；3 个会话加了说明/.test(out),
+          out.slice(-1500),
+        );
+      },
+    });
+    const SEQS: { label: string; steps: [string, 'kill' | 'ok'][]; before?: typeof restoreSteps }[] = [
+      {
+        label: '验收 4 的杀点、验收 7 的 A、验收 20',
+        steps: [
+          ['k1', 'kill'],
+          ['r1', 'ok'],
+        ],
+      },
+      {
+        label: 'RESEND_UNKNOWN 为真、验收 7 的 B',
+        steps: [
+          ['k2', 'kill'],
+          ['r2', 'ok'],
+        ],
+      },
+      {
+        label: '验收 18 每一种出站行、跟进等恢复',
+        steps: [
+          ['k3', 'kill'],
+          ['r3', 'ok'],
+        ],
+      },
+      {
+        label: '验收 6 恢复截止点与哨兵',
+        steps: [
+          ['k5', 'kill'],
+          ['c5', 'ok'],
+          ['r5', 'ok'],
+        ],
+        before: restoreSteps,
+      },
+      {
+        label: '验收 3 提交之后立刻杀、验收 9 毒消息',
+        steps: [
+          ['k4', 'kill'],
+          ['p1', 'kill'],
+          ['p2', 'kill'],
+          ['p3', 'kill'],
+          ['p4', 'ok'],
+        ],
+      },
+    ];
+    SEQS.push(
+      {
+        label: '验收 8 poisoned 后杀进程与 payload 补记',
+        steps: [
+          ['k8', 'kill'],
+          ['r8', 'ok'],
+        ],
+      },
+      {
+        label: '验收 8 spill 回放后零重复',
+        steps: [
+          ['kspill', 'ok'],
+          ['rspill', 'ok'],
+        ],
+        before: (env) => ({
+          rspill: () => {
+            const names = fs.readdirSync(env.VAR_DIR).filter((n) => /^store-spill-.+\.json$/.test(n));
+            type Channel = { inbox?: { state: string }[]; outbound?: { channelMsgid: string; status: string }[] };
+            const docs = names.map(
+              (n) =>
+                JSON.parse(fs.readFileSync(path.join(env.VAR_DIR, n), 'utf8')) as {
+                  sessions: { id: string; channel?: Channel; inflight?: { channel?: Channel } }[];
+                },
+            );
+            const entries = docs.flatMap((d) => d.sessions).filter((e) => e.id === sidOf('r1', SPILL_UID));
+            const parts = entries.flatMap((e) => [e.channel, e.inflight?.channel]);
+            const sent = JSON.parse(fs.readFileSync(path.join(env.RECOVERY_DIR, 'spill-case.json'), 'utf8')) as { sends: SendLine[] };
+            check(
+              '验收 8 · 正常停机真实写出 spill：渠道段带第二句 done 与已发送那一段 accepted、msgid 与假企微一致',
+              names.length === 1 &&
+                entries.length === 1 &&
+                parts.some((p) => p?.inbox?.some((i) => i.state === 'done')) &&
+                parts.some((p) => p?.outbound?.some((o) => o.status === 'accepted' && o.channelMsgid === sent.sends[1]?.msgid)),
+              json(parts),
+            );
+          },
+        }),
+      },
+      {
+        label: '验收 14 网页同 cid 杀进程',
+        steps: [
+          ['kweb', 'kill'],
+          ['rweb', 'ok'],
+        ],
+      },
+    );
+    for (const { label, steps, before } of SEQS) {
+      // 每一组一个一次性库（createRealPgFixture 会改集群级角色的口令：一组用完再建下一组）
+      const fx = await testing.createRealPgFixture(url, { slug: 'recov10' });
+      const dir = fs.mkdtempSync(path.join(ROOT, `${steps[0]![0]}-`));
+      const env = {
+        RECOVERY_APP_URL: fx.urls.app,
+        RECOVERY_SUPER_URL: fx.urls.super,
+        RECOVERY_TENANT: fx.tenantId,
+        RECOVERY_DIR: dir,
+        VAR_DIR: fs.mkdtempSync(path.join(dir, 'var-')),
+      };
+      try {
+        const hooks = before?.(env) ?? {};
+        for (const [mode, expect] of steps) {
+          hooks[mode]?.();
+          const r = runChild(mode, env);
+          if (expect === 'kill') {
+            check(`${label}：${mode} 走到约好的那一刻之后被 SIGKILL`, r.signal === 'SIGKILL', `status=${r.status} ${r.out.slice(-2000)}`);
+          } else {
+            check(`${label}：${mode} 重启之后正常结束`, r.status === 0, `status=${r.status} signal=${r.signal} ${r.out.slice(-2000)}`);
+          }
+          merge(`${label}（${mode}）`, r);
+        }
+      } finally {
+        await fx.drop();
+      }
+    }
+  }
+
+  if (fails.length) {
+    console.error(`RECOVERY SELFTEST FAIL：${fails.length} 项（通过 ${pass} 项）`);
+    for (const f of fails) console.error(` - ${f}`);
+    process.exit(1);
+  }
+  console.log(
+    `RECOVERY SELFTEST PASS: ${pass} 项断言全通（纯函数 ${purePass} 项：出站恢复表、保底、入站恢复表每一格 / 真实 PG 子进程 SIGKILL：` +
+      `模型生成途中、回复落库第一段没开始、两段发完第一段、请求已到回包挂住、markSending 之后请求没到、RESEND_UNKNOWN 为真重跑、` +
+      `R6 的 A 与 B、停机截止之后留 pending、每一种没结果的出站行、恢复做完之前跟进与人工回复排队、一页提交之后立刻杀、` +
+      `毒消息第三次重启记 poison、恢复哨兵拦住启动与 restore-cutoff 之后只补记不重复）`,
+  );
+  process.exit(0);
+}
+
+// ======================================================================================
+// 子进程
+// ======================================================================================
+
+interface FakeMsg {
+  msgid: string;
+  open_kfid: string;
+  external_userid: string;
+  send_time: number;
+  origin: number;
+  msgtype: string;
+  text?: { content: string };
+}
+/** 假企微收到的一次 send_msg（跨进程：sends.jsonl） */
+interface SendLine {
+  p: string;
+  to: string;
+  msgid: string;
+  msgtype: string;
+  content: string;
+}
+
+async function childMain(mode: string): Promise<never> {
+  const save = (): void => fs.writeFileSync(process.env.RECOVERY_RESULT!, JSON.stringify({ pass, fails }));
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  for (const k of ['log', 'warn', 'error'] as const) {
+    console[k] = (...args: unknown[]) => {
+      logBuf.push(args.map((a) => (a instanceof Error ? (a.stack ?? a.message) : typeof a === 'string' ? a : json(a))).join(' '));
+      if (logBuf.length > 3000) logBuf.splice(0, logBuf.length - 3000);
+    };
+  }
+  const flushLogs = (): void => {
+    Object.assign(console, orig);
+    if (fails.length) for (const l of logBuf.slice(-150)) console.error(`  ${l}`);
+  };
+  die = (): void => {
+    flushLogs();
+    save();
+    process.kill(process.pid, 'SIGKILL');
+  };
+  try {
+    if (mode === 'c5') {
+      await refusedBySentinel();
+      flushLogs();
+      save();
+      process.exit(0);
+    }
+    const h = await harness(mode);
+    if (mode === 'k1') await kill1(h);
+    else if (mode === 'r1') await restart1(h);
+    else if (mode === 'k2') await kill2(h);
+    else if (mode === 'r2') await restart2(h);
+    else if (mode === 'k3') await kill3(h);
+    else if (mode === 'r3') await restart3(h);
+    else if (mode === 'k4') await kill4(h);
+    else if (mode === 'k5') await kill5(h);
+    else if (mode === 'r5') await restart5(h);
+    else if (mode === 'p1') await poison1(h);
+    else if (mode === 'p2' || mode === 'p3') await poisonAgain(h, mode === 'p2' ? 2 : 3);
+    else if (mode === 'p4') await poison4(h);
+    else if (mode === 'k8') await killPoisoned(h);
+    else if (mode === 'r8') await restartPoisoned(h);
+    else if (mode === 'kspill') {
+      await stopWithSpill(h);
+      flushLogs();
+      save();
+      process.exit(0); // 正常 exit 钩子同步写 spill，下一子进程回放
+    } else if (mode === 'rspill') await restartSpill(h);
+    else if (mode === 'kweb') await killWeb(h);
+    else if (mode === 'rweb') await restartWeb(h);
+    else fails.push(`不认识的子进程 ${mode}`);
+    if (mode === 'p1' || mode === 'p2' || mode === 'p3') fails.push(`${mode}：毒消息没有让进程崩溃`);
+    if (mode.startsWith('k')) {
+      // 卡在要杀的那一刻：先把结果写下来，再像被 OOM、kill -9 那样硬杀（没有停机钩子、没有 spill）
+      flushLogs();
+      save();
+      process.kill(process.pid, 'SIGKILL');
+      await sleep(10_000);
+    }
+    await h.close();
+  } catch (e) {
+    fails.push(`子进程抛错：${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+  }
+  flushLogs();
+  save();
+  process.exit(0);
+}
+
+type Harness = Awaited<ReturnType<typeof harness>>;
+
+// 03 第 22 步：通过真实适配器补 R21 与网页重启的行为断言。
+function spillNames(h: Harness): string[] {
+  return fs.readdirSync(h.varDir).filter((name) => /^store-spill-.+\.json$/.test(name));
+}
+
+async function killPoisoned(h: Harness): Promise<void> {
+  h.start();
+  await h.settle();
+  const sid = await h.mkSession('r1', POISON_UID);
+  // 与 S 一样让会话投影实际撞 CHECK，而不是模拟驱动错误；使用短 id，
+  // 临时 CHECK 可在重启前移除，让 payload 补记后的消息也能实际写进 messages。
+  await h.su(`alter table conversations add constraint recovery_poison_check check (id <> '${sid}') not valid`);
+  const session = h.store.getSession(sid)!;
+  session.profile.notes = ['触发恢复自测 CHECK'];
+  h.store.saveSession(session);
+  const { shortIdOf } = await import('../shared/conversation.js');
+  check('验收 8 · 实际 CHECK 失败把会话标为 poisoned', await waitFor(() => h.store.storeHealth().poisoned.includes(shortIdOf(sid))));
+  const msgs: FakeMsg[] = [];
+  for (const k of [1, 2]) {
+    const text = `R21-${k} 想了解旅行安排`;
+    const model = h.holdModel(text, `R21-${k} 好的，您几位出行？`);
+    const mark = h.holdMark(sid);
+    const m = h.say('r1', POISON_UID, text);
+    msgs.push(m);
+    h.pull('r1');
+    await reached(`poisoned 第 ${k} 句模型生成`, model);
+    check(
+      `验收 8 · poisoned 后第 ${k} 句：模型生成时 recorded 已经短事务提交`,
+      await waitFor(async () => (await h.inboxOf(m.msgid))?.state === 'recorded'),
+    );
+    model.release();
+    await reached(`poisoned 第 ${k} 句 markSending 前`, mark);
+    const pending = await h.su<{ status: string; state: string; same_tx: boolean }>(
+      `select o.status, i.state, o.xmin = i.xmin as same_tx from outbound_sends o
+       join channel_inbox i on i.id = o.inbox_id and i.tenant_id = o.tenant_id where i.msgid = $1`,
+      [m.msgid],
+    );
+    check(
+      `验收 8 · poisoned 后第 ${k} 句：pending 与 replied 在同一短事务提交`,
+      pending.length === 1 && pending[0]!.status === 'pending' && pending[0]!.state === 'replied' && pending[0]!.same_tx,
+      json(pending),
+    );
+    mark.release();
+    const done = await waitFor(async () => (await h.inboxOf(m.msgid))?.state === 'done');
+    const inbox = await h.inboxOf(m.msgid);
+    const out = (await h.outOf(sid)).filter((o) => o.inbox_id === inbox?.id);
+    check(
+      `验收 8 · poisoned 后第 ${k} 句：调用模型一次、假企微恰好一组，入站 done 与出站 accepted 经短事务落库、会话消息仍未落库`,
+      done &&
+        h.llmCalls(text) === 1 &&
+        out.length === 1 &&
+        out[0]!.status === 'accepted' &&
+        h.sendsTo(POISON_UID).filter((x) => x.msgid === out[0]!.msgid).length === 1 &&
+        (await h.customerRows(sid, m.msgid))[0]?.n === '0',
+      json({ out, inbox: await h.inboxOf(m.msgid), sends: h.sendsTo(POISON_UID) }),
+    );
+  }
+  // 已回复两句自然成为 done；另加一条回复尚未生成的 recorded，单独验证
+  // R21 的 payload 补记（按入站恢复表，这条应首次生成回复）。
+  const held = h.holdModel('R21-payload 想了解云南');
+  const recorded = h.say('r1', POISON_UID, 'R21-payload 想了解云南');
+  h.pull('r1');
+  await reached('poisoned 后额外一句在模型生成途中', held);
+  check(
+    '验收 8 · 杀前额外一句 recorded、payload 保留、messages 中缺失；没有 spill',
+    (await waitFor(async () => (await h.inboxOf(recorded.msgid))?.state === 'recorded')) &&
+      (await h.su<{ present: boolean }>('select payload is not null as present from channel_inbox where msgid = $1', [recorded.msgid]))[0]
+        ?.present === true &&
+      (await h.customerRows(sid, recorded.msgid))[0]?.n === '0' &&
+      spillNames(h).length === 0,
+  );
+  fs.writeFileSync(path.join(h.dir, 'poisoned.json'), json({ msgs, recorded, sends: h.sendsTo(POISON_UID) }));
+}
+
+async function restartPoisoned(h: Harness): Promise<void> {
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'poisoned.json'), 'utf8')) as {
+    msgs: FakeMsg[];
+    recorded: FakeMsg;
+    sends: SendLine[];
+  };
+  const sid = sidOf('r1', POISON_UID);
+  check(
+    '验收 8 · SIGKILL 后无 spill，预载的会话仍缺少 recorded 那句',
+    spillNames(h).length === 0 && !h.store.getSession(sid)?.messages.some((m) => m.msgid === saved.recorded.msgid),
+  );
+  h.start();
+  await h.settle();
+  for (const [k, m] of saved.msgs.entries()) {
+    const inbox = await h.inboxOf(m.msgid);
+    const out = (await h.outOf(sid)).filter((o) => o.inbox_id === inbox?.id);
+    check(
+      `验收 8 · poisoned 后已回复第 ${k + 1} 句：SIGKILL 重启不再调模型、不再发送，跨进程仍恰好一组`,
+      h.llmCalls(m.text!.content) === 0 &&
+        inbox?.state === 'done' &&
+        out.length === 1 &&
+        out[0]!.status === 'accepted' &&
+        h.sendsTo(POISON_UID).filter((x) => x.msgid === out[0]!.msgid).length === 1 &&
+        h.sendsTo(POISON_UID).filter((x) => x.p === h.mode && x.msgid === out[0]!.msgid).length === 0,
+      json({ inbox, out, sends: h.sendsTo(POISON_UID) }),
+    );
+  }
+  check(
+    '验收 8 · recorded 而会话缺失的额外一句：由 payload 补进 messages 且仅一次，首次生成一组回复、入站 done',
+    (await h.customerRows(sid, saved.recorded.msgid))[0]?.n === '1' &&
+      h.store.getSession(sid)?.messages.filter((m) => m.msgid === saved.recorded.msgid && m.content === saved.recorded.text!.content)
+        .length === 1 &&
+      h.llmCalls(saved.recorded.text!.content) === 1 &&
+      (await h.inboxOf(saved.recorded.msgid))?.state === 'done' &&
+      h.sendsTo(POISON_UID).filter((x) => x.p === h.mode).length === 1,
+  );
+  h.pull('r1');
+  await h.settle();
+  check(
+    '验收 8 · 再次拉取与排空后 payload 补记仍只一次、已回复两句仍无第二组',
+    (await h.customerRows(sid, saved.recorded.msgid))[0]?.n === '1' && h.sendsTo(POISON_UID).length === saved.sends.length + 1,
+  );
+}
+
+async function stopWithSpill(h: Harness): Promise<void> {
+  h.start();
+  await h.settle();
+  const sid = sidOf('r1', SPILL_UID);
+  const first = h.say('r1', SPILL_UID, 'SPILL-1 想了解云南');
+  h.pull('r1');
+  check('验收 8 · spill 前第一句已回复一组并落库', await waitFor(async () => (await h.inboxOf(first.msgid))?.state === 'done'));
+  await h.settle();
+  const hold = h.holdModel('SPILL-2 想了解川西');
+  const second = h.say('r1', SPILL_UID, 'SPILL-2 想了解川西');
+  h.pull('r1');
+  await reached('spill 第二句模型开始、入站已提交', hold);
+  await h.store.flushSession(sid);
+  const dbName = decodeURIComponent(new URL(process.env.RECOVERY_APP_URL!).pathname.slice(1));
+  if (!/^[a-z0-9_]+$/.test(dbName)) throw new Error('临时库名不合预期');
+  await h.su(`alter database "${dbName}" connection limit 0`);
+  await h.su('select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid()');
+  h.ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
+  const retries = h.store.__storeTest.pgStats()!.retries;
+  hold.release();
+  check(
+    '验收 8 · 真实 PG 连接断开后会话落库失败，回复仍到达假企微',
+    await waitFor(() => h.sendsTo(SPILL_UID).length === 2 && h.store.__storeTest.pgStats()!.retries > retries),
+  );
+  await h.idle();
+  check(
+    '验收 8 · 正常停机前第二句入站 recorded、生成的回复未落库',
+    (await h.inboxOf(second.msgid))?.state === 'recorded' &&
+      (await h.su<{ n: string }>(`select count(*)::text as n from messages where conversation_id = $1 and role = 'agent'`, [sid]))[0]?.n ===
+        '1',
+  );
+  fs.writeFileSync(path.join(h.dir, 'spill-case.json'), json({ msgs: [first, second], sends: h.sendsTo(SPILL_UID) }));
+  await h.store.runShutdownHooks(2000);
+}
+
+async function restartSpill(h: Harness): Promise<void> {
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'spill-case.json'), 'utf8')) as { msgs: FakeMsg[]; sends: SendLine[] };
+  check(
+    '验收 8 · 正常退出写出的 spill 已成功回放并删除',
+    h.store.__storeTest.pgStats()!.replayed === 1 &&
+      spillNames(h).length === 0 &&
+      !fs.readdirSync(h.varDir).some((n) => n.endsWith('.failed')),
+  );
+  h.start();
+  await h.settle();
+  const sid = sidOf('r1', SPILL_UID);
+  for (const [k, m] of saved.msgs.entries()) {
+    const inbox = await h.inboxOf(m.msgid);
+    const out = (await h.outOf(sid)).filter((o) => o.inbox_id === inbox?.id);
+    check(
+      `验收 8 · spill 回放并启动恢复后第 ${k + 1} 句：入站 done、出站 accepted、假企微跨进程恰好一组、不再调模型，客户消息仅记一次`,
+      inbox?.state === 'done' &&
+        out.length === 1 &&
+        out[0]!.status === 'accepted' &&
+        h.sendsTo(SPILL_UID).filter((x) => x.msgid === out[0]!.msgid).length === 1 &&
+        h.llmCalls(m.text!.content) === 0 &&
+        (await h.customerRows(sid, m.msgid))[0]?.n === '1',
+      json({ inbox, out, sends: h.sendsTo(SPILL_UID) }),
+    );
+  }
+  check('验收 8 · spill 回放后假企微完整发送日志与停机前相同、零新增回复', json(h.sendsTo(SPILL_UID)) === json(saved.sends));
+}
+
+async function webRequest(cookie: string | undefined, text: string, cid: string): Promise<Response> {
+  const { webRoutes } = await import('../web/routes.js');
+  return webRoutes.request('/api/web/rw/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-web-chat': '1', ...(cookie ? { cookie } : {}) },
+    body: json({ text, cid }),
+  });
+}
+
+async function killWeb(h: Harness): Promise<void> {
+  const first = await webRequest(undefined, 'WEB-init 你好', 'web-init-cid');
+  const cookie = first.headers.get('set-cookie')?.split(';')[0];
+  check('验收 14 · 网页首次 HTTP 请求成功签发访客 cookie', first.status === 200 && !!cookie);
+  if (!cookie) throw new Error('缺访客 cookie');
+  const { webConversationId } = await import('../adapters/web.js');
+  const { accountByKey } = await import('./accounts.js');
+  const sid = webConversationId(accountByKey('rw', 'web')!.id, cookie.split('=')[1]!);
+  await h.store.flushSession(sid);
+  const cid = 'web-kill-cid';
+  const text = 'WEB-crash 想了解旅行安排';
+  const hold = h.holdModel(text);
+  void webRequest(cookie, text, cid);
+  await reached('网页同 cid 的请求正在生成回复', hold);
+  await h.store.flushSession(sid);
+  check(
+    '验收 14 · SIGKILL 前网页客户消息已实际落库一次、回复尚未生成',
+    (await h.customerRows(sid, cid))[0]?.n === '1' && !h.replyAfter(sid, cid) && h.llmCalls(text) === 1,
+  );
+  fs.writeFileSync(path.join(h.dir, 'web-case.json'), json({ cookie, sid, cid, text }));
+}
+
+async function restartWeb(h: Harness): Promise<void> {
+  const saved = JSON.parse(fs.readFileSync(path.join(h.dir, 'web-case.json'), 'utf8')) as {
+    cookie: string;
+    sid: string;
+    cid: string;
+    text: string;
+  };
+  check(
+    '验收 14 · 重启预载了同 cid 客户消息且没有该轮回复',
+    h.store.getSession(saved.sid)?.messages.filter((m) => m.msgid === saved.cid && m.content === saved.text).length === 1 &&
+      !h.replyAfter(saved.sid, saved.cid),
+  );
+  const retried = await webRequest(saved.cookie, 'WEB-retry 不应覆盖原文', saved.cid);
+  const body = (await retried.json()) as { reply?: { text: string } };
+  await h.store.flushSession(saved.sid);
+  check(
+    '验收 14 · SIGKILL 重启后同 cid 重发：alreadyRecorded 使用原文生成一次回复，messages 客户消息不重复',
+    retried.status === 200 &&
+      !!body.reply?.text &&
+      h.llmCalls(saved.text) === 1 &&
+      h.llmCalls('WEB-retry') === 0 &&
+      (await h.customerRows(saved.sid, saved.cid))[0]?.n === '1' &&
+      (
+        await h.su<{ n: string }>(
+          `select count(*)::text as n from messages where conversation_id = $1 and role = 'agent' and seq >
+        (select seq from messages where conversation_id = $1 and msgid = $2)`,
+          [saved.sid, saved.cid],
+        )
+      )[0]?.n === '1',
+  );
+  const duplicate = await webRequest(saved.cookie, saved.text, saved.cid);
+  check(
+    '验收 14 · 完成后再次重发同 cid 返回同一回复、模型与消息数不再增加',
+    duplicate.status === 200 &&
+      json(await duplicate.json()) === json(body) &&
+      h.llmCalls(saved.text) === 1 &&
+      (await h.customerRows(saved.sid, saved.cid))[0]?.n === '1',
+  );
+}
+
+async function harness(mode: string) {
+  const dir = process.env.RECOVERY_DIR!;
+  const varDir = process.env.VAR_DIR!;
+  Object.assign(process.env, {
+    // 假模型：主机名不可解析（.invalid），请求全被假 fetch 接住，绝不会打到真实模型
+    LLM_MOCK: '0',
+    LLM_PROVIDER: '',
+    LLM_BASE_URL: 'https://llm.selftest.invalid/v1',
+    LLM_API_KEY: 'selftest-fake-key',
+    LLM_MODEL: 'selftest-fake',
+    LLM_MODEL_CHEAP: '',
+    LLM_HEDGE_MODEL: '',
+    LLM_MAX_RETRY: '0',
+    LLM_TIMEOUT_MS: '600000',
+    EMBED_BASE_URL: 'https://llm.selftest.invalid/v1',
+    EMBED_API_KEY: 'selftest-fake-key',
+    PUBLIC_BASE_URL: '',
+    SERVER_SELFTEST: '1',
+    ADMIN_USER: 'admin',
+    ADMIN_PASS: 'selftest-pass',
+    FOLLOWUP_ENABLED: '',
+    DEMO_PRUNE_HOURS: '0',
+    ALERT_WEBHOOK_URL: 'https://alert.selftest.invalid/hook',
+  });
+  const files = {
+    sends: path.join(dir, 'sends.jsonl'),
+    alerts: path.join(dir, 'alerts.jsonl'),
+    llm: path.join(dir, 'llm.jsonl'),
+  };
+  const append = (f: string, o: Record<string, unknown>): void => fs.appendFileSync(f, `${JSON.stringify({ p: mode, ...o })}\n`);
+
+  // ---- 假企微、假模型、假告警群（都在进程里，替换 fetch） ----
+  interface Hold {
+    reached: boolean;
+    gate: Promise<void>;
+    release: () => void;
+  }
+  const newHold = (): Hold => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    return { reached: false, gate, release };
+  };
+  const fake = {
+    logs: new Map<string, FakeMsg[]>(),
+    tokens: new Map<string, string>(),
+    n: 0,
+    /** send_msg 按收件人挂住：before 请求没进去就挂住（不记下）；after 记下之后挂住回包 */
+    sendHolds: new Map<string, Hold & { how: 'before' | 'after' }>(),
+    /** 假模型：客户这句里含 match 的那一轮回 content；有 hold 的先挂住 */
+    model: [] as { match: string; content?: string; hold?: Hold; die?: () => Promise<void> }[],
+    /** 下一页非空的 sync_msg 回 has_more=1；紧接着同一账号的下一次 sync_msg（acceptPage 已提交、刚派发）就地硬杀（验收 3） */
+    killAfterPage: null as string | null,
+    killOnNextSync: null as string | null,
+    /** gettoken 按账号挂住（启动恢复补发之前要取 token：在这里造「等待期间」） */
+    tokenHolds: new Map<string, Hold>(),
+    /** 缩略图上传成功（缺省失败：卡片退回纯文本） */
+    mediaOk: false,
+    /** 发给这些客户的链接卡片一律拒收 */
+    rejectLink: new Set<string>(),
+    /** send_msg 到了、记下之前先等它（看库里的状态、挡住时机） */
+    beforeSend: null as ((body: Record<string, any>) => Promise<void>) | null,
+  };
+  const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const body = (typeof init?.body === 'string' ? JSON.parse(init.body) : {}) as Record<string, any>;
+    if (url.hostname === 'llm.selftest.invalid') {
+      if (url.pathname.endsWith('/embeddings')) {
+        const input = Array.isArray(body.input) ? body.input : [body.input];
+        return res({ data: input.map(() => ({ embedding: [1, 0, 0] })), usage: { prompt_tokens: 1 } });
+      }
+      const user = [...((body.messages ?? []) as { role: string; content: unknown }[])].reverse().find((x) => x.role === 'user');
+      const text = typeof user?.content === 'string' ? user.content : json(user?.content ?? '');
+      append(files.llm, { user: text.slice(0, 120) });
+      const step = fake.model.find((s) => text.includes(s.match));
+      if (step?.die) {
+        // 毒消息（验收 9）：处理到调模型这一步就把进程带崩（先做完要在死之前看的断言）
+        await step.die();
+        die?.();
+        await sleep(10_000);
+      }
+      if (step?.hold) {
+        step.hold.reached = true;
+        await step.hold.gate;
+      }
+      return res({
+        choices: [{ message: { role: 'assistant', content: step?.content ?? DEFAULT_REPLY }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      });
+    }
+    if (url.hostname === 'alert.selftest.invalid') {
+      append(files.alerts, { text: String(body.text?.content ?? '') });
+      return res({ errcode: 0 });
+    }
+    if (url.hostname !== 'qyapi.weixin.qq.com') return realFetch(input, init);
+    const ep = url.pathname.replace(/^\/cgi-bin\//, '');
+    if (ep === 'gettoken') {
+      const a = ACCTS.find(
+        (x) => x.corp === url.searchParams.get('corpid') && secretsOf(x).appSecret === url.searchParams.get('corpsecret'),
+      );
+      if (!a) return res({ errcode: 40013, errmsg: 'selftest: invalid corpid' });
+      const th = fake.tokenHolds.get(a.key);
+      if (th) {
+        th.reached = true;
+        await th.gate;
+      }
+      const tok = `t10-${a.key}-${++fake.n}`;
+      fake.tokens.set(tok, a.key);
+      return res({ errcode: 0, access_token: tok, expires_in: 7200 });
+    }
+    if (!fake.tokens.has(url.searchParams.get('access_token') ?? '')) return res({ errcode: 40014, errmsg: 'selftest: invalid token' });
+    if (ep === 'media/upload') return res(fake.mediaOk ? { errcode: 0, media_id: 'media10' } : { errcode: 40004, errmsg: 'selftest' });
+    if (ep === 'kf/sync_msg') {
+      const kf = String(body.open_kfid);
+      // 同步地硬杀：这一刻上一页的 acceptPage 已提交、新行刚派发，处理链还没写成任何东西（计次要等一次往返）
+      if (fake.killOnNextSync === kf) die?.();
+      const log = fake.logs.get(kf) ?? [];
+      const [k, i] = String(body.cursor ?? '').split(':');
+      const from = k === kf ? Number(i) || 0 : 0;
+      const list = log.slice(from);
+      const more = list.length > 0 && fake.killAfterPage === kf;
+      if (more) {
+        fake.killAfterPage = null;
+        fake.killOnNextSync = kf;
+      }
+      return res({ errcode: 0, next_cursor: `${kf}:${from + list.length}`, has_more: more ? 1 : 0, msg_list: list });
+    }
+    if (ep === 'kf/send_msg') {
+      const to = String(body.touser);
+      if (fake.beforeSend) await fake.beforeSend(body);
+      const hold = fake.sendHolds.get(to);
+      if (hold?.how === 'before') {
+        hold.reached = true;
+        await hold.gate;
+      }
+      append(files.sends, {
+        to,
+        msgid: String(body.msgid ?? ''),
+        msgtype: String(body.msgtype ?? ''),
+        content: String(body.text?.content ?? body.link?.url ?? body.msgmenu?.head_content ?? '').slice(0, 60),
+      });
+      if (hold?.how === 'after') {
+        hold.reached = true;
+        await hold.gate;
+      }
+      if (body.msgtype === 'link' && fake.rejectLink.has(to)) return res({ errcode: 40001, errmsg: 'selftest: 卡片拒收' });
+      return res({ errcode: 0, msgid: body.msgid });
+    }
+    if (ep === 'kf/send_msg_on_event') return res({ errcode: 0 });
+    if (ep === 'kf/customer/batchget') return res({ errcode: 0, customer_list: [] });
+    return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
+  }) as typeof fetch;
+  let seq = 0;
+  /** 客户在这个客服账号上说一句（进假企微的日志，等拉取）；sentAt 给了就是企微的 send_time（毫秒，取整到秒） */
+  const say = (key: string, uid: string, content: string, sentAt = Date.now()): FakeMsg => {
+    const kf = acct(key).kf;
+    const msg: FakeMsg = {
+      msgid: `m10${mode}-${++seq}`,
+      open_kfid: kf,
+      external_userid: uid,
+      send_time: Math.floor(sentAt / 1000),
+      origin: 3,
+      msgtype: 'text',
+      text: { content },
+    };
+    fake.logs.set(kf, [...(fake.logs.get(kf) ?? []), msg]);
+    return msg;
+  };
+
+  // ---- 库与会话存储（真实 PG：父进程建的一次性库，前后几个子进程连同一个库） ----
+  const store = await import('../store.js');
+  const testing = await import('../db/testing.js');
+  const tenantId = process.env.RECOVERY_TENANT!;
+  const app = await testing.openGatedDb(process.env.RECOVERY_APP_URL!);
+  const sq = await testing.connectSuperQuery(process.env.RECOVERY_SUPER_URL!);
+  const su = sq.query;
+  // k8 用临时 CHECK 造数据类故障；修复故障后重启，保留真实入站/出站状态。
+  if (mode === 'r8') await su('alter table conversations drop constraint recovery_poison_check');
+  if (mode === 'rspill') {
+    const dbName = decodeURIComponent(new URL(process.env.RECOVERY_APP_URL!).pathname.slice(1));
+    if (!/^[a-z0-9_]+$/.test(dbName)) throw new Error('临时库名不合预期');
+    await su(`alter database "${dbName}" connection limit -1`);
+  }
+  await store.initSessionStore({ db: app.db, tenantId, tenantSlug: 'recov10', varDir });
+
+  // ---- 渠道账号：杀进程的那一个建（id 先生成，AAD 要用），重启的那一个读回 ----
+  const { sealSecrets } = await import('./secrets.js');
+  const keyBytes = Buffer.alloc(32, 7);
+  const keyRing = { current: { id: 'k10', key: keyBytes }, all: new Map([['k10', keyBytes]]) };
+  const ids = new Map<string, string>();
+  if (mode.startsWith('k')) {
+    if (mode === 'kweb') {
+      await su(
+        `insert into channel_accounts (tenant_id, key, kind, name, status, settings)
+        values ($1, 'rw', 'web', '网页恢复自测', 'active', '{"dailyNewConversations":100,"dailyTurns":100}')`,
+        [tenantId],
+      );
+    }
+    for (const a of ACCTS) {
+      const id = randomUUID();
+      ids.set(a.key, id);
+      const { ct, keyId } = sealSecrets(keyRing, { tenantId, accountId: id }, secretsOf(a));
+      await su(
+        `insert into channel_accounts (tenant_id, id, key, kind, name, status, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id)
+         values ($1, $2, $3, 'wecom_kf', $3, 'active', $4, $5, $6, decode($7, 'hex'), $8)`,
+        [tenantId, id, a.key, a.prefix, a.corp, a.kf, ct.toString('hex'), keyId],
+      );
+    }
+  } else {
+    for (const r of await su<{ id: string; key: string; cursor: string | null }>(
+      'select id, key, cursor from channel_accounts where tenant_id = $1',
+      [tenantId],
+    )) {
+      ids.set(r.key, r.id);
+      // 假企微的日志只在进程里：重启的子进程先垫到库里的 cursor 那一位，之后客户说的话接在后面（垫的这几条永远拉不到）
+      if (r.key === 'rw') continue;
+      const kf = acct(r.key).kf;
+      const n = r.cursor?.startsWith(`${kf}:`) ? Number(r.cursor.slice(kf.length + 1)) || 0 : 0;
+      fake.logs.set(
+        kf,
+        Array.from({ length: n }, (_, i) => ({
+          msgid: `pad-${r.key}-${i}`,
+          open_kfid: kf,
+          external_userid: 'wm10pad',
+          send_time: 0,
+          origin: 3,
+          msgtype: 'text',
+          text: { content: 'pad' },
+        })),
+      );
+    }
+  }
+
+  const reg = await import('./registry.js');
+  const wecom = await import('../adapters/wecom.js');
+  const ledger = await import('../quota/ledger.js');
+  const tk = await import('../handoff/takeover.js');
+  const alerts = await import('../ops/alert.js');
+  await import('../server.js'); // 推送通道（人工回复、跟进经 adapterFor 找到企微适配器）与 prepare 的接线
+  if (mode === 'r3') {
+    // 第 10 步评审：人工回复判定时还在 10 分钟内、等 markSending 期间过了 10 分钟（装载之前把建行时刻挪到 9 分 52 秒前）
+    await su(`update outbound_sends set sent_at = now() - interval '9 minutes 52 seconds' where conversation_id = $1`, [sidOf('r1', V.ht)]);
+  }
+  await reg.initChannels({ db: app.db, tenantId, tenantSlug: 'recov10', varDir, keyRing });
+
+  // ---- markSending 的钩子：按会话（与段号）挂住，或在那一刻挡住写库 ----
+  const markHolds: { match: (i: { sessionId: string; segment: number }) => boolean; hold: Hold; onReach?: () => void }[] = [];
+  ledger.__ledgerTest.setMarkHook(async (intent) => {
+    const i = markHolds.findIndex((x) => !x.hold.reached && x.match(intent));
+    if (i < 0) return;
+    const x = markHolds[i]!;
+    x.hold.reached = true;
+    x.onReach?.();
+    await x.hold.gate;
+  });
+  const holdMark = (sid: string, segment: number | null = null, onReach?: () => void): Hold => {
+    const hold = newHold();
+    markHolds.push({
+      match: (i) => i.sessionId === sid && (segment === null || i.segment === segment),
+      hold,
+      ...(onReach ? { onReach } : {}),
+    });
+    return hold;
+  };
+  const holdSend = (uid: string, how: 'before' | 'after'): Hold => {
+    const hold = { ...newHold(), how };
+    fake.sendHolds.set(uid, hold);
+    return hold;
+  };
+  const holdToken = (key: string): Hold => {
+    const hold = newHold();
+    fake.tokenHolds.set(key, hold);
+    return hold;
+  };
+  const holdModel = (match: string, content?: string): Hold => {
+    const hold = newHold();
+    fake.model.push({ match, hold, ...(content ? { content } : {}) });
+    return hold;
+  };
+
+  const start = (): void => {
+    reg.startChannels();
+    alerts.startAlerts();
+  };
+  const idle = (ms = 30_000): Promise<boolean> => waitFor(() => wecom.__wecomTest.idle(), ms);
+  const settle = async (): Promise<void> => {
+    await idle();
+    for (let i = 0; i < 3; i++) {
+      await sleep(30);
+      await store.drainStore(5000);
+    }
+  };
+  const pull = (key: string): void => void wecom.syncAccountFromCallback(ids.get(key)!, `poll-${key}-${++seq}`);
+  /** 只有一个客户消息、没有入站行的会话（人工回复、通知、跟进等先落库的几类要有会话） */
+  const mkSession = async (key: string, uid: string, ago = 0): Promise<string> => {
+    const sid = sidOf(key, uid);
+    const s = store.getOrCreateSession(sid, 'wecom');
+    if (acct(key).prefix !== 'wecom:') s.channelAccountId = ids.get(key)!;
+    s.messages.push({ role: 'customer', content: '你好', at: Date.now() - ago, msgid: `mk-${uid}`, sentAt: Date.now() - ago });
+    store.saveSession(s);
+    await store.flushSession(sid);
+    return sid;
+  };
+  interface OutRow {
+    msgid: string;
+    status: string;
+    segment: number;
+    kind: string;
+    inbox_id: string | null;
+    message_seq: number | null;
+  }
+  const outOf = (sid: string): Promise<OutRow[]> =>
+    su<OutRow>(
+      `select channel_msgid as msgid, status, segment, kind, inbox_id::text as inbox_id, message_seq from outbound_sends
+       where conversation_id = $1 order by segment, sent_at`,
+      [sid],
+    );
+  interface InRow {
+    id: string;
+    msgid: string;
+    state: string;
+    attempts: number;
+    reason: string | null;
+  }
+  const inboxOf = async (msgid: string): Promise<InRow | null> =>
+    (await su<InRow>('select id::text as id, msgid, state, attempts, reason from channel_inbox where msgid = $1', [msgid]))[0] ?? null;
+  const inboxesOf = (sid: string): Promise<InRow[]> =>
+    su<InRow>('select id::text as id, msgid, state, attempts, reason from channel_inbox where conversation_id = $1 order by ord', [sid]);
+  const sendsTo = (uid: string): SendLine[] => lines<SendLine>(files.sends).filter((x) => x.to === uid);
+  const llmCalls = (match: string, p = mode): number =>
+    lines<{ p: string; user: string }>(files.llm).filter((x) => x.p === p && x.user.includes(match)).length;
+  const alertLines = (p = mode): string[] =>
+    lines<{ p: string; text: string }>(files.alerts)
+      .filter((x) => x.p === p)
+      .map((x) => x.text);
+  const customerRows = (sid: string, msgid: string): Promise<{ n: string }[]> =>
+    su<{ n: string }>(`select count(*)::text as n from messages where conversation_id = $1 and msgid = $2`, [sid, msgid]);
+  /** 会话里这句客户消息之后的第一条 AI 回复（工作台的投递状态挂在它上面） */
+  const replyAfter = (sid: string, msgid: string): ChatMessage | undefined => {
+    const msgs = store.getSession(sid)?.messages ?? [];
+    const at = msgs.findIndex((x) => x.role === 'customer' && x.msgid === msgid);
+    return at < 0 ? undefined : msgs.slice(at + 1).find((x) => x.role === 'agent' && (x.author === undefined || x.author === 'ai'));
+  };
+
+  return {
+    mode,
+    fake,
+    dir,
+    varDir,
+    alerts,
+    say,
+    pull,
+    store,
+    reg,
+    wecom,
+    ledger,
+    tk,
+    ids,
+    su,
+    faults: app.faults,
+    start,
+    idle,
+    settle,
+    mkSession,
+    outOf,
+    inboxOf,
+    inboxesOf,
+    sendsTo,
+    llmCalls,
+    alertLines,
+    customerRows,
+    replyAfter,
+    holdMark,
+    holdSend,
+    holdModel,
+    holdToken,
+    async close(): Promise<void> {
+      await settle();
+      ledger.__ledgerTest.setMarkHook(null);
+      reg.__channelsTest.reset();
+      await app.close();
+      await sq.close();
+    },
+  };
+}
+
+/** 等一个挂住点到了（被调到），超时记一条失败 */
+async function reached(name: string, hold: { reached: boolean }, ms = 20_000): Promise<void> {
+  if (!(await waitFor(() => hold.reached, ms))) fails.push(`（前提）${name}：${ms / 1000} 秒内没走到挂住的那一刻`);
+}
+
+// ======================================================================================
+// k1 → r1：验收 4 的五个杀点、验收 7 的 A、验收 20 的重启部分
+// ======================================================================================
+
+async function kill1(h: Harness): Promise<void> {
+  h.ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
+  h.start();
+  await h.idle();
+  // A：同一客户一页两句，第一句的模型挂住（入站 recorded、第二句 received 从没开始）
+  const aHold = h.holdModel('A1-hang');
+  const a1 = h.say('r1', U.a, 'A1-hang 想去云南看看');
+  const a2 = h.say('r1', U.a, 'A2 两个人五天');
+  // B：回复落库、第一段 markSending 之前挂住
+  const bHold = h.holdMark(sidOf('r1', U.b));
+  const b = h.say('r1', U.b, 'B 想去西藏');
+  // C：两段的回复，第二段 markSending 之前挂住
+  h.fake.model.push({ match: 'C-long', content: LONG_REPLY });
+  const cHold = h.holdMark(sidOf('r1', U.c), 1);
+  const c = h.say('r1', U.c, 'C-long 详细说说行程');
+  // D：请求到了假企微、回包挂住
+  const dHold = h.holdSend(U.d, 'after');
+  const d = h.say('r1', U.d, 'D 想去新疆');
+  // E（r2）：markSending 提交了、请求没进假企微
+  const eHold = h.holdSend(U.e, 'before');
+  const e = h.say('r2', U.e, 'E 想去贵州');
+  h.pull('r1');
+  h.pull('r2');
+  await reached('A 的模型在生成', aHold);
+  await reached('B 的第一段 markSending', bHold);
+  await reached('C 的第二段 markSending', cHold);
+  await reached('D 的请求到了假企微', dHold);
+  await reached('E 的请求在路上（没进假企微）', eHold);
+  const ok = await waitFor(async () => {
+    const [ia1, ia2, ib, ic, id, ie] = await Promise.all([a1, a2, b, c, d, e].map((m) => h.inboxOf(m.msgid)));
+    const [ob, oc, od, oe] = await Promise.all([U.b, U.c, U.d].map((u) => h.outOf(sidOf('r1', u))).concat([h.outOf(sidOf('r2', U.e))]));
+    return (
+      ia1?.state === 'recorded' &&
+      ia1.attempts === 1 &&
+      ia2?.state === 'received' &&
+      ia2.attempts === 0 &&
+      ib?.state === 'replied' &&
+      ob.length >= 1 &&
+      ob.every((x) => x.status === 'pending') &&
+      ic?.state === 'replied' &&
+      oc.length === 2 &&
+      oc[0]!.status === 'accepted' &&
+      oc[1]!.status === 'pending' &&
+      id?.state === 'replied' &&
+      od.length === 1 &&
+      od[0]!.status === 'sending' &&
+      ie?.state === 'replied' &&
+      oe.length === 1 &&
+      oe[0]!.status === 'sending'
+    );
+  });
+  check(
+    '（前提）A recorded、attempts 1，第二句 received、0；B replied、分段全 pending；C 第一段 accepted、第二段 pending；D、E 那一段 sending',
+    ok,
+    json({
+      a: await Promise.all([a1, a2].map((m) => h.inboxOf(m.msgid))),
+      b: await h.outOf(sidOf('r1', U.b)),
+      c: await h.outOf(sidOf('r1', U.c)),
+      d: await h.outOf(sidOf('r1', U.d)),
+      e: await h.outOf(sidOf('r2', U.e)),
+    }),
+  );
+  check(
+    '（前提）D 的请求到了假企微一次；E 的请求没进假企微',
+    h.sendsTo(U.d).length === 1 && h.sendsTo(U.e).length === 0,
+    json({ d: h.sendsTo(U.d), e: h.sendsTo(U.e) }),
+  );
+
+  // 验收 20（r3）：G 的 markSending 挂住、F 的模型挂住 → 跨过停机截止 → 放开：G 迁回 pending、F 的分段落成 pending，都没有请求
+  const gHold = h.holdMark(sidOf('r3', U.g));
+  const fHold = h.holdModel('F-late');
+  const g = h.say('r3', U.g, 'G 想去四川');
+  const f = h.say('r3', U.f, 'F-late 想去北京');
+  h.pull('r3');
+  await reached('G 的 markSending', gHold);
+  await reached('F 的模型在生成', fHold);
+  await waitFor(async () => (await h.inboxOf(f.msgid))?.state === 'recorded');
+  h.wecom.__wecomTest.closeSends(h.ids.get('r3')!, Date.now());
+  gHold.release();
+  fHold.release();
+  const ok20 = await waitFor(async () => {
+    const [og, of] = await Promise.all([h.outOf(sidOf('r3', U.g)), h.outOf(sidOf('r3', U.f))]);
+    const [ig, iF] = await Promise.all([h.inboxOf(g.msgid), h.inboxOf(f.msgid)]);
+    return (
+      og.length === 1 &&
+      og[0]!.status === 'pending' &&
+      of.length >= 1 &&
+      of.every((x) => x.status === 'pending') &&
+      ig?.state === 'replied' &&
+      iF?.state === 'replied'
+    );
+  });
+  check(
+    '（前提）截止之后：G 那一段从 sending 迁回 pending、F 的分段 pending，两条入站都停在 replied，假企微上没有请求',
+    ok20 && h.sendsTo(U.g).length === 0 && h.sendsTo(U.f).length === 0,
+    json({ g: await h.outOf(sidOf('r3', U.g)), f: await h.outOf(sidOf('r3', U.f)), sends: [h.sendsTo(U.g), h.sendsTo(U.f)] }),
+  );
+
+  // 验收 7 的 A（r2）：pending 已提交，markSending 那一刻挡住写库 → db_unavailable → 照发 → 结果落不了库，这时杀
+  const hMark = h.holdMark(sidOf('r2', U.h), null, () => {
+    h.faults.gate = new Promise<void>(() => {});
+  });
+  hMark.release(); // 不挂住：只在走到那一刻时挡住写库
+  const hm = h.say('r2', U.h, 'H 想去海南');
+  h.pull('r2');
+  await reached('H 的 markSending', hMark);
+  const sentH = await waitFor(() => h.sendsTo(U.h).length === 1 && h.alertLines().some((l) => l.includes('没落库时照发')));
+  check(
+    '（前提）验收 7 的 A：markSending 判 db_unavailable 之后照发（假企微收到一次），「没落库就发」告警一条',
+    sentH && h.alertLines().filter((l) => l.includes('没落库时照发')).length === 1,
+    json({ sends: h.sendsTo(U.h), alerts: h.alertLines() }),
+  );
+  await sleep(300);
+  const [ih] = await h.su<{ state: string }>('select state from channel_inbox where msgid = $1', [hm.msgid]);
+  const [oh] = await h.su<{ status: string }>(`select status from outbound_sends where conversation_id = $1`, [sidOf('r2', U.h)]);
+  check(
+    '（前提）验收 7 的 A：杀之前库里这一段还是 pending（结果没落库）、入站 replied',
+    oh?.status === 'pending' && ih?.state === 'replied',
+    json({ ih, oh }),
+  );
+}
+
+async function restart1(h: Harness): Promise<void> {
+  const before = {
+    b: await h.outOf(sidOf('r1', U.b)),
+    c: await h.outOf(sidOf('r1', U.c)),
+    d: await h.outOf(sidOf('r1', U.d)),
+    e: await h.outOf(sidOf('r2', U.e)),
+    f: await h.outOf(sidOf('r3', U.f)),
+    g: await h.outOf(sidOf('r3', U.g)),
+    h: await h.outOf(sidOf('r2', U.h)),
+  };
+  h.start();
+  await h.settle();
+  const sidA = sidOf('r1', U.a);
+  const ia = await h.inboxesOf(sidA);
+  const groups = await Promise.all(
+    ia.map((r) => h.su<{ msgid: string }>('select channel_msgid as msgid from outbound_sends where inbox_id = $1', [r.id])),
+  );
+  const sentA = h.sendsTo(U.a);
+  const idx = (msgid: string): number => sentA.findIndex((x) => x.msgid === msgid);
+  check(
+    '验收 4 · 杀在模型生成途中（recorded）：重启后第一句 attempts 2、第二句 1，都 done；第一句重跑一次模型、第二句一次',
+    json(ia.map((r) => [r.state, r.attempts])) ===
+      json([
+        ['done', 2],
+        ['done', 1],
+      ]) &&
+      h.llmCalls('A1-hang') === 1 &&
+      h.llmCalls('A2 两个人') === 1,
+    json({ ia, calls: [h.llmCalls('A1-hang'), h.llmCalls('A2 两个人')] }),
+  );
+  check(
+    '验收 4 · recorded：假企微上每句恰好一组、每段一次、没有别的；第一句那组在前；客户这句在库里只记了一次',
+    groups.every((g) => g.length >= 1) &&
+      sentA.length === groups.flat().length &&
+      groups.flat().every((x) => sentA.filter((s) => s.msgid === x.msgid).length === 1) &&
+      Math.max(...groups[0]!.map((x) => idx(x.msgid))) < Math.min(...groups[1]!.map((x) => idx(x.msgid))) &&
+      (await h.customerRows(sidA, ia[0]!.msgid))[0]?.n === '1',
+    json({ groups, sentA }),
+  );
+  // B：按同一 msgid 补发，不调模型
+  const ob = await h.outOf(sidOf('r1', U.b));
+  check(
+    '验收 4 · 回复已落库而第一段没开始（replied、pending）：重启后按同一 msgid 补发、恰好一组、不调模型；入站 done',
+    ob.length === before.b.length &&
+      ob.every((x) => x.status === 'accepted') &&
+      json(h.sendsTo(U.b).map((x) => x.msgid)) === json(before.b.map((x) => x.msgid)) &&
+      h.llmCalls('B 想去西藏') === 0 &&
+      (await h.inboxesOf(sidOf('r1', U.b)))[0]?.state === 'done',
+    json({ ob, sent: h.sendsTo(U.b), calls: h.llmCalls('B 想去西藏') }),
+  );
+  // C：只补第二段
+  const oc = await h.outOf(sidOf('r1', U.c));
+  check(
+    '验收 4 · 两段发完第一段、第二段没标 sending：重启后只补第二段（同一 msgid），假企微上恰好一整组两段、没有重复、不调模型',
+    oc.length === 2 &&
+      oc.every((x) => x.status === 'accepted') &&
+      json(h.sendsTo(U.c).map((x) => x.msgid)) === json(before.c.map((x) => x.msgid)) &&
+      h.llmCalls('C-long') === 0 &&
+      (await h.inboxesOf(sidOf('r1', U.c)))[0]?.state === 'done',
+    json({ oc, sent: h.sendsTo(U.c), calls: h.llmCalls('C-long') }),
+  );
+  // D：请求已到、回包挂住 → unknown、不重发、工作台「可能没送达」
+  const od = await h.outOf(sidOf('r1', U.d));
+  const dMsg = (await h.inboxesOf(sidOf('r1', U.d)))[0]!;
+  const dReply = h.replyAfter(sidOf('r1', U.d), dMsg.msgid);
+  check(
+    '验收 4 · 请求已到假企微、回包挂住：重启后不重发，假企微上恰好一组，库里那一段 unknown，工作台「可能没送达」，入站 done',
+    od.length === 1 &&
+      od[0]!.status === 'unknown' &&
+      od[0]!.msgid === before.d[0]!.msgid &&
+      h.sendsTo(U.d).length === 1 &&
+      !!dReply &&
+      h.ledger.deliveryOf(sidOf('r1', U.d), dReply)?.status === 'unknown' &&
+      dMsg.state === 'done',
+    json({ od, sent: h.sendsTo(U.d), delivery: dReply ? h.ledger.deliveryOf(sidOf('r1', U.d), dReply) : null, dMsg }),
+  );
+  // E：markSending 之后、请求没到 → unknown、不重发、客户少收这一段
+  const oe = await h.outOf(sidOf('r2', U.e));
+  const eMsg = (await h.inboxesOf(sidOf('r2', U.e)))[0]!;
+  const eReply = h.replyAfter(sidOf('r2', U.e), eMsg.msgid);
+  check(
+    '验收 4 · markSending 提交之后、请求没到假企微（R5 的边界）：重启后不重发、客户少收这一段，库里 unknown，工作台「可能没送达」',
+    oe.length === 1 &&
+      oe[0]!.status === 'unknown' &&
+      h.sendsTo(U.e).length === 0 &&
+      !!eReply &&
+      h.ledger.deliveryOf(sidOf('r2', U.e), eReply)?.status === 'unknown' &&
+      eMsg.state === 'done',
+    json({ oe, sent: h.sendsTo(U.e), delivery: eReply ? h.ledger.deliveryOf(sidOf('r2', U.e), eReply) : null }),
+  );
+  const unknownAlerts = h.alertLines().filter((l) => l.includes('sending 转 unknown'));
+  check(
+    '验收 4 · sending 转 unknown 的告警：每账号单独一条（r1、r2 各 1 段），没有 external_userid',
+    unknownAlerts.length === 2 &&
+      unknownAlerts.some((l) => l.includes('企微账号 r1 重启时 1 段 sending 转 unknown')) &&
+      unknownAlerts.some((l) => l.includes('企微账号 r2 重启时 1 段 sending 转 unknown')) &&
+      !unknownAlerts.some((l) => /wm10/.test(l)),
+    json(h.alertLines()),
+  );
+  // 验收 20：截止之后留在 pending 的，重启后发一次、同一 msgid、不调模型
+  const of = await h.outOf(sidOf('r3', U.f));
+  const og = await h.outOf(sidOf('r3', U.g));
+  check(
+    '验收 20 · 模型在截止之后才回包（replied、pending）：重启后发一次、msgid 与停机前生成的相同、不调模型；入站 done',
+    of.length === before.f.length &&
+      of.every((x) => x.status === 'accepted') &&
+      json(h.sendsTo(U.f).map((x) => x.msgid)) === json(before.f.map((x) => x.msgid)) &&
+      h.llmCalls('F-late') === 0 &&
+      (await h.inboxesOf(sidOf('r3', U.f)))[0]?.state === 'done',
+    json({ of, sent: h.sendsTo(U.f) }),
+  );
+  check(
+    '验收 20 · markSending 挂住期间跨过截止、迁回 pending 的那一段：重启后按同一 msgid 发一次',
+    og.length === 1 &&
+      og[0]!.status === 'accepted' &&
+      json(h.sendsTo(U.g).map((x) => x.msgid)) === json(before.g.map((x) => x.msgid)) &&
+      h.llmCalls('G 想去四川') === 0,
+    json({ og, sent: h.sendsTo(U.g) }),
+  );
+  // 验收 7 的 A：重启后那一段还是 pending，按同一 msgid 再发一次（至多多一组、msgid 相同）
+  const oh = await h.outOf(sidOf('r2', U.h));
+  const sentH = h.sendsTo(U.h);
+  check(
+    '验收 7 · A（pending 已提交、markSending db_unavailable 照发、结果没落库就杀）：重启后按同一 msgid 再发一次，假企微上多一组、msgid 相同',
+    oh.length === 1 &&
+      oh[0]!.status === 'accepted' &&
+      sentH.length === 2 &&
+      sentH.every((x) => x.msgid === before.h[0]!.msgid) &&
+      sentH.map((x) => x.p).join() === 'k1,r1' &&
+      h.llmCalls('H 想去海南') === 0,
+    json({ oh, sentH }),
+  );
+  const open = await h.su<{ n: string }>(`select count(*)::text as n from outbound_sends where status in ('pending', 'sending')`);
+  const openIn = await h.su<{ n: string }>(
+    `select count(*)::text as n from channel_inbox where state in ('received', 'recorded', 'replied')`,
+  );
+  check(
+    '重启之后库里没有 pending、sending 的出站行，也没有没结束的入站行（不变量 15）',
+    open[0]?.n === '0' && openIn[0]?.n === '0',
+    json({ open, openIn }),
+  );
+}
+
+// ======================================================================================
+// k2 → r2：RESEND_UNKNOWN 为真重跑后两种；验收 7 的 B
+// ======================================================================================
+
+async function kill2(h: Harness): Promise<void> {
+  h.ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
+  h.start();
+  await h.idle();
+  const iHold = h.holdSend(U.i, 'after');
+  const jHold = h.holdSend(U.j, 'before');
+  h.say('r1', U.i, 'I 想去云南');
+  h.say('r2', U.j, 'J 想去西藏');
+  h.pull('r1');
+  h.pull('r2');
+  await reached('I 的请求到了假企微', iHold);
+  await reached('J 的请求在路上', jHold);
+  const ok = await waitFor(async () => {
+    const [oi, oj] = await Promise.all([h.outOf(sidOf('r1', U.i)), h.outOf(sidOf('r2', U.j))]);
+    return oi.length === 1 && oi[0]!.status === 'sending' && oj.length === 1 && oj[0]!.status === 'sending';
+  });
+  check('（前提）I、J 那一段都是 sending；I 的请求进了假企微、J 的没进', ok && h.sendsTo(U.i).length === 1 && h.sendsTo(U.j).length === 0);
+  // L（AI 回复）与 M（通知）：那一段 sending、请求进了假企微、回包挂住；杀之前顾问接手（接手落库之后再杀）
+  const lHold = h.holdSend(U.l, 'after');
+  h.say('r1', U.l, 'L 想去丽江');
+  h.pull('r1');
+  const mSid = await h.mkSession('r1', U.m);
+  const mHold = h.holdSend(U.m, 'after');
+  void h.wecom.wecomAdapter.push(mSid, '您的订单已付款，我们会尽快为您安排', { kind: 'notice' });
+  await reached('L 的请求到了假企微', lHold);
+  await reached('M 的请求到了假企微', mHold);
+  for (const uid of [U.l, U.m]) {
+    h.tk.takeover(sidOf('r1', uid), h.tk.sharedActor());
+    await h.store.flushSession(sidOf('r1', uid));
+  }
+  const okLm = await waitFor(async () => {
+    const [ol, om] = await Promise.all([h.outOf(sidOf('r1', U.l)), h.outOf(sidOf('r1', U.m))]);
+    const assigned = await h.su<{ id: string }>(
+      `select id from conversations where id = any($1::text[]) and handed_over and assignee_name is not null`,
+      [[sidOf('r1', U.l), sidOf('r1', U.m)]],
+    );
+    return ol.length === 1 && ol[0]!.status === 'sending' && om.length === 1 && om[0]!.status === 'sending' && assigned.length === 2;
+  });
+  check('（前提）L（ai）、M（notice）那一段 sending、请求进了假企微，两个会话的接手已落库', okLm);
+
+  // 第 10 步评审（AI 段）：TA 那一段 sending、请求在路上没进假企微（r3）
+  const taHold = h.holdSend(U.ta, 'before');
+  h.say('r3', U.ta, 'TA 想去成都');
+  h.pull('r3');
+  await reached('TA 的请求在路上', taHold);
+  // 第 10 步评审（卡片）：正文一段已送达；卡片被拒、它的补文 pending 已由短事务提交、卡片的结果写不进去（测试触发器在存档点里挡掉）时杀
+  process.env.PUBLIC_BASE_URL = 'https://demo.example.com';
+  h.fake.mediaOk = true;
+  h.fake.rejectLink.add(U.cd);
+  const cdSid = await h.mkSession('r1', U.cd);
+  await h.su(
+    `create or replace function wsa10_block_card() returns trigger language plpgsql as $$
+     begin
+       if old.status = 'sending' and new.status = 'rejected' and new.conversation_id = '${cdSid}' then
+         raise exception 'selftest: 卡片的结果写不进去';
+       end if;
+       return new;
+     end $$`,
+  );
+  await h.su(`create trigger wsa10_block_card before update on outbound_sends for each row execute function wsa10_block_card()`);
+  // 卡片的请求到了：先等正文那一段的结果落库（卡片的结果才是单独一次落库，被触发器挡掉的只有它）
+  h.fake.beforeSend = async (b) => {
+    if (b.touser === U.cd && b.msgtype === 'link')
+      await waitFor(async () => (await h.outOf(cdSid)).find((r) => r.segment === 0)?.status === 'accepted');
+  };
+  const cdHold = h.holdMark(cdSid, 2);
+  void h.wecom.wecomAdapter.push(cdSid, '方案书在这儿 /proposal/r-sichuan-lux/2，您看看', { kind: 'notice' });
+  await reached('CD 的补文 markSending', cdHold);
+  const okCd = await waitFor(async () => {
+    const [ot, oc] = await Promise.all([h.outOf(sidOf('r3', U.ta)), h.outOf(cdSid)]);
+    return (
+      ot.length === 1 &&
+      ot[0]!.status === 'sending' &&
+      json(oc.map((r) => [r.segment, r.status])) ===
+        json([
+          [0, 'accepted'],
+          [1, 'sending'],
+          [2, 'pending'],
+        ])
+    );
+  });
+  check(
+    '（前提）TA 那一段 sending；CD：正文 accepted、卡片 sending（结果没落库）、补文 pending',
+    okCd &&
+      h.sendsTo(U.ta).length === 0 &&
+      h
+        .sendsTo(U.cd)
+        .map((x) => x.msgtype)
+        .join() === 'text,link',
+    json({ ta: await h.outOf(sidOf('r3', U.ta)), cd: await h.outOf(cdSid), sends: h.sendsTo(U.cd) }),
+  );
+  h.fake.beforeSend = null;
+
+  // 验收 7 的 B（r3）：入站与计次照常提交、引擎开始生成之后挡住写库；commitOutbound 等满超时照发；结果没落库就杀
+  const kHold = h.holdModel('K-r6');
+  const k = h.say('r3', U.k, 'K-r6 想去新疆');
+  h.pull('r3');
+  await reached('K 的模型在生成', kHold);
+  await waitFor(async () => (await h.inboxOf(k.msgid))?.state === 'recorded');
+  check('（前提）验收 7 的 B：入站 recorded 已提交、模型在生成', (await h.inboxOf(k.msgid))?.state === 'recorded');
+  h.faults.gate = new Promise<void>(() => {});
+  kHold.release();
+  const sentK = await waitFor(() => h.sendsTo(U.k).length >= 1 && h.alertLines().some((l) => l.includes('没落库时照发')));
+  check(
+    '（前提）验收 7 的 B：commitOutbound 超时之后照发（假企微收到这一组），「没落库就发」告警一条',
+    sentK && h.alertLines().filter((l) => l.includes('没落库时照发')).length === 1,
+    json({ sends: h.sendsTo(U.k), alerts: h.alertLines() }),
+  );
+  await sleep(300);
+}
+
+async function restart2(h: Harness): Promise<void> {
+  const before = { i: await h.outOf(sidOf('r1', U.i)), j: await h.outOf(sidOf('r2', U.j)) };
+  const kIn = (await h.inboxesOf(sidOf('r3', U.k)))[0];
+  check(
+    '（前提）验收 7 的 B：重启时入站停在 recorded、库里没有这一组的出站行',
+    kIn?.state === 'recorded' && (await h.outOf(sidOf('r3', U.k))).length === 0,
+    json({ kIn, out: await h.outOf(sidOf('r3', U.k)) }),
+  );
+  const cdSid = sidOf('r1', U.cd);
+  const cdBefore = await h.outOf(cdSid);
+  await h.su('drop trigger if exists wsa10_block_card on outbound_sends');
+  process.env.PUBLIC_BASE_URL = 'https://demo.example.com';
+  h.fake.mediaOk = true;
+  h.fake.rejectLink.add(U.cd);
+  // spec：RESEND_UNKNOWN 经适配器的 __channelTest 在子进程里设（不在产品代码里留按环境变量触发的钩子）
+  h.wecom.__channelTest.setResendUnknown(true);
+  const sendingAtRequest: { to: string; msgid: string; status: string | undefined }[] = [];
+  h.fake.beforeSend = async (body) => {
+    if (body.touser !== U.i && body.touser !== U.j) return;
+    const rows = await h.su<{ status: string }>('select status from outbound_sends where channel_msgid = $1', [body.msgid]);
+    sendingAtRequest.push({ to: String(body.touser), msgid: String(body.msgid), status: rows[0]?.status });
+  };
+  // TA：恢复补发之前要取 r3 的 token，挂在这里；这期间顾问接手
+  const taTok = h.holdToken('r3');
+  h.start();
+  await reached('恢复补发 TA 之前取 r3 的 token', taTok);
+  h.tk.takeover(sidOf('r3', U.ta), h.tk.sharedActor());
+  taTok.release();
+  await h.settle();
+  const ota = await h.outOf(sidOf('r3', U.ta));
+  const taMsg = (await h.inboxesOf(sidOf('r3', U.ta)))[0]!;
+  const taReply = h.replyAfter(sidOf('r3', U.ta), taMsg.msgid);
+  check(
+    'RESEND_UNKNOWN 为真 · AI 回复的 sending 段，补发等 token 期间顾问接手：不补发（假企微上一次请求都没有）、记 unknown（不是 cancelled）、工作台「可能没送达」',
+    ota.length === 1 &&
+      ota[0]!.status === 'unknown' &&
+      h.sendsTo(U.ta).length === 0 &&
+      !!taReply &&
+      h.ledger.deliveryOf(sidOf('r3', U.ta), taReply)?.status === 'unknown' &&
+      taMsg.state === 'done',
+    json({ ota, sends: h.sendsTo(U.ta), taMsg }),
+  );
+  const ocd = await h.outOf(cdSid);
+  const cdText = h.sendsTo(U.cd).filter((x) => x.msgtype === 'text');
+  check(
+    'RESEND_UNKNOWN 为真 · 卡片 sending、补文 pending：卡片补发再被拒，补文复用已有那一行（库里仍是 3 行），同一正文只有一个 msgid、只发一次',
+    ocd.length === 3 &&
+      json(ocd.map((r) => [r.segment, r.status])) ===
+        json([
+          [0, 'accepted'],
+          [1, 'rejected'],
+          [2, 'accepted'],
+        ]) &&
+      ocd[2]!.msgid === cdBefore[2]!.msgid &&
+      json(cdText.map((x) => x.msgid)) === json([ocd[0]!.msgid, ocd[2]!.msgid]),
+    json({ ocd, sends: h.sendsTo(U.cd) }),
+  );
+  for (const [uid, original] of [
+    [U.i, before.i],
+    [U.j, before.j],
+  ] as const) {
+    const seen = sendingAtRequest.filter((x) => x.to === uid);
+    check(
+      `验收 4 · RESEND_UNKNOWN 为真 · ${uid === U.i ? '请求已到、回包挂住' : 'markSending 之后请求没到'}：补发请求到达假企微时同一 msgid 在库里仍是 sending`,
+      seen.length === 1 && seen[0]!.msgid === original[0]?.msgid && seen[0]!.status === 'sending',
+      json(seen),
+    );
+  }
+  const oi = await h.outOf(sidOf('r1', U.i));
+  const oj = await h.outOf(sidOf('r2', U.j));
+  const uniq = (xs: SendLine[]): string[] => [...new Set(xs.map((x) => x.msgid))];
+  check(
+    'RESEND_UNKNOWN 为真 · 请求已到、回包挂住：重启时保持 sending、按同一 msgid 补发；假企微按 msgid 去重之后恰好一组',
+    oi.length === 1 &&
+      oi[0]!.status === 'accepted' &&
+      h.sendsTo(U.i).length === 2 &&
+      json(uniq(h.sendsTo(U.i))) === json([before.i[0]!.msgid]) &&
+      h.llmCalls('I 想去云南') === 0,
+    json({ oi, sent: h.sendsTo(U.i) }),
+  );
+  check(
+    'RESEND_UNKNOWN 为真 · markSending 之后请求没到：重启时按同一 msgid 补发，客户收到恰好一组',
+    oj.length === 1 &&
+      oj[0]!.status === 'accepted' &&
+      h.sendsTo(U.j).length === 1 &&
+      h.sendsTo(U.j)[0]!.msgid === before.j[0]!.msgid &&
+      h.llmCalls('J 想去西藏') === 0,
+    json({ oj, sent: h.sendsTo(U.j) }),
+  );
+  // 有接手人的会话里 AI 产生的 sending 段：不补发、记 unknown（不变量 10）；通知照表补发
+  const ol = await h.outOf(sidOf('r1', U.l));
+  const lMsg = (await h.inboxesOf(sidOf('r1', U.l)))[0]!;
+  const lReply = h.replyAfter(sidOf('r1', U.l), lMsg.msgid);
+  check(
+    'RESEND_UNKNOWN 为真 · 有接手人的会话里 AI 回复的 sending 段：不补发（假企微上仍只有杀之前那一次）、记 unknown、工作台「可能没送达」',
+    ol.length === 1 &&
+      ol[0]!.status === 'unknown' &&
+      h.sendsTo(U.l).length === 1 &&
+      h.sendsTo(U.l)[0]!.p === 'k2' &&
+      !!lReply &&
+      h.ledger.deliveryOf(sidOf('r1', U.l), lReply)?.status === 'unknown',
+    json({ ol, sent: h.sendsTo(U.l) }),
+  );
+  const om = await h.outOf(sidOf('r1', U.m));
+  check(
+    'RESEND_UNKNOWN 为真 · 有接手人的会话里通知的 sending 段：照表按同一 msgid 补发（去重之后恰好一组）',
+    om.length === 1 && om[0]!.status === 'accepted' && h.sendsTo(U.m).length === 2 && json(uniq(h.sendsTo(U.m))) === json([om[0]!.msgid]),
+    json({ om, sent: h.sendsTo(U.m) }),
+  );
+  const unknownAlerts = h.alertLines().filter((l) => l.includes('sending 转 unknown'));
+  check(
+    'RESEND_UNKNOWN 为真：「sending 转 unknown」的告警只算有接手人的会话里那一段 AI 回复（r1 1 段，r2 没有）',
+    unknownAlerts.length === 1 &&
+      unknownAlerts[0]!.includes('企微账号 r1 重启时 1 段 sending 转 unknown') &&
+      !unknownAlerts[0]!.includes('企微账号 r2'),
+    json(h.alertLines()),
+  );
+  // 验收 7 的 B：入站 recorded、引擎重新生成一组再发（多一组、msgid 不同）
+  const ok = await h.outOf(sidOf('r3', U.k));
+  const sentK = h.sendsTo(U.k);
+  const kNow = (await h.inboxesOf(sidOf('r3', U.k)))[0];
+  check(
+    '验收 7 · B（commitOutbound 超时照发、结果没落库就杀）：重启后入站 recorded → 引擎重新生成一组再发：假企微上多一组、msgid 不同；入站 done',
+    h.llmCalls('K-r6') === 1 &&
+      ok.length >= 1 &&
+      ok.every((x) => x.status === 'accepted') &&
+      sentK.filter((x) => x.p === 'k2').length >= 1 &&
+      sentK.filter((x) => x.p === 'r2').length === ok.length &&
+      sentK.filter((x) => x.p === 'k2').every((x) => !ok.some((o) => o.msgid === x.msgid)) &&
+      kNow?.state === 'done' &&
+      (await h.customerRows(sidOf('r3', U.k), kNow.msgid))[0]?.n === '1',
+    json({ ok, sentK, kNow, calls: h.llmCalls('K-r6') }),
+  );
+}
+
+// ======================================================================================
+// k3 → r3：验收 18 每一种没结果的出站行；恢复做完之前到期的跟进等恢复做完才发
+// ======================================================================================
+
+async function kill3(h: Harness): Promise<void> {
+  h.start();
+  await h.idle();
+  const sid = (k: string, key = 'r1'): string => sidOf(key, k);
+  for (const uid of [V.n, V.o, V.p, V.q, V.r, V.s, V.t, V.u, V.v, V.z, V.rc, V.ht, V.hb]) await h.mkSession('r1', uid);
+  await h.mkSession('r3', V.w);
+  const push = h.wecom.wecomAdapter.push.bind(h.wecom.wecomAdapter);
+  const holds: [string, { reached: boolean }][] = [];
+  const hold = (uid: string, key = 'r1'): void => void holds.push([uid, h.holdMark(sid(uid, key))]);
+  hold(V.n);
+  void push(sid(V.n), '您的订单已付款，我们会尽快为您安排', { kind: 'notice' });
+  hold(V.o);
+  const fuMsg: ChatMessage = { role: 'agent', content: '上次聊的行程还在考虑吗？', at: Date.now(), author: 'followup' };
+  void push(sid(V.o), fuMsg.content, { kind: 'followup', message: fuMsg });
+  for (const uid of [V.p, V.q, V.r, V.ht, V.hb]) {
+    hold(uid);
+    void h.tk.reply(sid(uid), h.tk.sharedActor(), `好的，我来跟进（${uid}）`, `c10-${uid}`).catch(() => undefined);
+  }
+  hold(V.s);
+  void push(sid(V.s), '为了推荐更合适的行程，可以告诉我们同行人的健康情况吗？', { kind: 'menu', category: 'health' });
+  hold(V.t);
+  void push(sid(V.t), '欢迎回来～我是 AI 旅行顾问，需要真人服务时回复「人工」即可。', { kind: 'welcome' });
+  hold(V.u);
+  void push(sid(V.u), '抱歉，系统开小差了，请稍后再发一次，或直接联系人工顾问。', { kind: 'ai' });
+  const vHold = h.holdSend(V.v, 'after');
+  void push(sid(V.v), '顾问已确认收款，订单生效', { kind: 'notice' });
+  hold(V.w, 'r3');
+  void push(sid(V.w, 'r3'), '您的订单已付款', { kind: 'notice' });
+  hold(V.rc);
+  void push(sid(V.rc), '您的订单已付款', { kind: 'notice' });
+  hold(V.tk);
+  h.say('r1', V.tk, 'TK 想去黄山');
+  hold(V.x);
+  const xm = h.say('r1', V.x, 'X 想去海南');
+  hold(V.y);
+  h.say('r1', V.y, 'Y 想去桂林');
+  h.pull('r1');
+  for (const [uid, x] of holds) await reached(`${uid} 的 markSending`, x);
+  await reached('V 的请求到了假企微', vHold);
+  // TK：回复的分段落库之后、发出之前顾问接手（接手落库之后再杀）
+  h.tk.takeover(sid(V.tk), h.tk.sharedActor());
+  await h.store.flushSession(sid(V.tk));
+  // RR、RO：直接造库里的状态（会话部分与入站行、出站行不同步的两种：R6、poisoned 之后的渠道短事务、spill 回放失败会留下）
+  const crafted = async (uid: string, said: string, reply: string): Promise<{ msgid: string; customerSeq: number; replySeq: number }> => {
+    const msgid = `m10k3-${uid}`;
+    const s = h.store.getOrCreateSession(sid(uid), 'wecom');
+    s.messages.push({ role: 'customer', content: said, at: Date.now(), msgid, sentAt: Date.now() });
+    s.messages.push({ role: 'agent', content: reply, at: Date.now() });
+    h.store.saveSession(s);
+    await h.store.flushSession(sid(uid));
+    const seqs = await h.su<{ seq: number; role: string }>('select seq, role from messages where conversation_id = $1 order by seq', [
+      sid(uid),
+    ]);
+    return { msgid, customerSeq: seqs.find((x) => x.role === 'customer')!.seq, replySeq: seqs.find((x) => x.role === 'agent')!.seq };
+  };
+  const kfMsg = (uid: string, msgid: string, content: string): string =>
+    json({
+      msgid,
+      open_kfid: acct('r1').kf,
+      external_userid: uid,
+      send_time: Math.floor(Date.now() / 1000),
+      origin: 3,
+      msgtype: 'text',
+      text: { content },
+    });
+  const rr = await crafted(V.rr, 'RR 想去敦煌', '敦煌 4–10 月最合适～您几位出行？');
+  await h.su(
+    `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, attempts, message_seq, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $1, $2, 'message', $3, now(), 'recorded', 1, $4, $5::json)`,
+    [h.ids.get('r1'), rr.msgid, sid(V.rr), rr.customerSeq, kfMsg(V.rr, rr.msgid, 'RR 想去敦煌')],
+  );
+  const ro = await crafted(V.ro, 'RO 想去青海', '青海湖 7 月油菜花最好看～您几位出行？');
+  const [roIn] = await h.su<{ id: string }>(
+    `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $1, $2, 'message', $3, now(), 'received', $4::json) returning id::text as id`,
+    [h.ids.get('r1'), ro.msgid, sid(V.ro), kfMsg(V.ro, ro.msgid, 'RO 想去青海')],
+  );
+  await h.su(
+    `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, message_seq, kind, sent_at, status, account_id, inbox_id, segment, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $2, $3, $4, 'ai', now(), 'pending', $1, $5, 0, $6::json)`,
+    [
+      h.ids.get('r1'),
+      sid(V.ro),
+      randomBytes(16).toString('hex'),
+      ro.replySeq,
+      roIn!.id,
+      json({ msgtype: 'text', text: { content: '青海湖 7 月油菜花最好看～您几位出行？' } }),
+    ],
+  );
+  // Q：建行时刻挪到 11 分钟前；R：交还 AI（接手人变了）；W：r3 的恢复截止点设在它之后；X：入站已结束；Z：一行 kind=card 的 pending
+  await h.su(`update outbound_sends set sent_at = sent_at - interval '11 minutes' where conversation_id = $1`, [sid(V.q)]);
+  h.tk.release(sid(V.r), h.tk.sharedActor());
+  await h.store.flushSession(sid(V.r));
+  await h.su(`update channel_accounts set record_only_until = now() where id = $1`, [h.ids.get('r3')]);
+  await waitFor(async () => (await h.inboxOf(xm.msgid))?.state === 'replied');
+  await h.su(`update channel_inbox set state = 'done', payload = null where msgid = $1`, [xm.msgid]);
+  const [rcRow] = await h.outOf(sid(V.rc));
+  await h.su(
+    `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $1, 'm10k3-rcpt', 'send_fail', $2, now(), 'received', $3::json)`,
+    [h.ids.get('r1'), sid(V.rc), json({ fail_msgid: rcRow?.msgid, fail_type: 4 })],
+  );
+  await h.su(
+    `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, kind, sent_at, status, account_id, segment, payload)
+     values ((select tenant_id from channel_accounts where id = $1), $2, $3, 'card', now(), 'pending', $1, 0, $4::json)`,
+    [h.ids.get('r1'), sid(V.z), randomBytes(16).toString('hex'), json({ msgtype: 'text', text: { content: '卡片' } })],
+  );
+  const rows = Object.fromEntries(
+    await Promise.all(
+      Object.entries(V)
+        .filter(([k]) => k.length === 1)
+        .map(async ([k, uid]) => [k, (await h.outOf(sid(uid, k === 'w' ? 'r3' : 'r1'))).map((x) => [x.kind, x.status])] as const),
+    ),
+  );
+  const want = {
+    n: [['notice', 'pending']],
+    o: [['followup', 'pending']],
+    p: [['human', 'pending']],
+    q: [['human', 'pending']],
+    r: [['human', 'pending']],
+    s: [['menu', 'pending']],
+    t: [['welcome', 'pending']],
+    u: [['ai', 'pending']],
+    v: [['notice', 'sending']],
+    w: [['notice', 'pending']],
+    x: [['ai', 'pending']],
+    y: [['ai', 'pending']],
+    z: [['card', 'pending']],
+  };
+  check('（前提）每一种没结果的出站行都在库里', json(rows) === json(want), json(rows));
+}
+
+async function restart3(h: Harness): Promise<void> {
+  const sid = (k: string, key = 'r1'): string => sidOf(key, k);
+  const before = Object.fromEntries(
+    await Promise.all(Object.entries(V).map(async ([k, uid]) => [k, await h.outOf(sid(uid, k === 'w' ? 'r3' : 'r1'))] as const)),
+  );
+  // 恢复做完之前到期的跟进：沉默了 3 小时的报价会话，落库时排上跟进（02 的写法）
+  process.env.FOLLOWUP_ENABLED = '1';
+  const runner = await import('../jobs/runner.js');
+  runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
+  const fuSid = sid(V.fu);
+  {
+    const s = h.store.getOrCreateSession(fuSid, 'wecom');
+    s.stage = 'quote';
+    s.messages.push(
+      {
+        role: 'customer',
+        content: '这条线多少钱',
+        at: Date.now() - 3 * H - 60_000,
+        msgid: `q-${V.fu}`,
+        sentAt: Date.now() - 3 * H - 60_000,
+      },
+      { role: 'agent', content: '这条线每人 19,800 元起，您几位出行？', at: Date.now() - 3 * H },
+    );
+    s.updatedAt = Date.now() - 3 * H;
+    h.store.saveSession(s, false);
+    await h.store.flushSession(fuSid);
+  }
+  const p2Sid = await h.mkSession('r1', V.p2);
+  const jobs = await h.su<{ status: string }>(`select status from jobs where kind = 'followup' and payload->>'sessionId' = $1`, [fuSid]);
+  check('（前提）跟进任务已排上', jobs.length === 1 && jobs[0]!.status === 'pending', json(jobs));
+  // 恢复挂在 N 的补发上（请求到了假企微、回包挂住），这期间跟进到期、顾问发人工回复
+  const nHold = h.holdSend(V.n, 'after');
+  // 第 10 步评审：恢复补发的人工回复挂在 markSending 上（HT：建行 9 分 52 秒前；HB：这期间交还 AI）
+  const htHold = h.holdMark(sid(V.ht));
+  const hbHold = h.holdMark(sid(V.hb));
+  const [htRow] = await h.su<{ sent_at: Date }>(`select sent_at from outbound_sends where conversation_id = $1`, [sid(V.ht)]);
+  h.start();
+  // HT 排在 N 前面（建行时刻更早）：判定时还在 10 分钟内，等它过了 10 分钟再放开 markSending
+  await reached('HT 的 markSending（判定时允许补发）', htHold);
+  await waitFor(() => Date.now() - new Date(htRow!.sent_at).getTime() > 10 * 60_000 + 200, 20_000);
+  htHold.release();
+  // HB 与 N 谁先轮到不一定（建行时刻可能落在同一毫秒）：HB 先到就先交还、放开，再等 N
+  let handedBack = false;
+  const handBack = (): void => {
+    h.tk.release(sid(V.hb), h.tk.sharedActor());
+    handedBack = true;
+    hbHold.release();
+  };
+  await waitFor(() => hbHold.reached || nHold.reached, 20_000);
+  if (hbHold.reached) handBack();
+  await reached('N 的补发到了假企微（恢复挂在这里）', nHold);
+  const waitLines = (): number => logBuf.filter((l) => l.includes('启动恢复还没做完，这次推送排队等待')).length;
+  const run = runner.runJobsOnce();
+  await waitFor(() => waitLines() >= 1);
+  await sleep(300);
+  check(
+    '验收 18 · 恢复做完之前到期的跟进：生成好了、推送排队等待，恢复没做完之前假企微上没有它的请求',
+    waitLines() >= 1 && h.sendsTo(V.fu).length === 0 && h.wecom.__wecomTest.inspect(h.ids.get('r1')!)?.recovery === 'recovering',
+    json({ waitLines: waitLines(), sends: h.sendsTo(V.fu) }),
+  );
+  // 等恢复超过上限（自测缩到 300 毫秒）：人工回复按没发出去处理（「未能发送」），它排进库的那一段取消
+  h.wecom.__channelTest.setPushWaitMs(300);
+  const r = await h.tk.reply(p2Sid, h.tk.sharedActor(), '稍等，我查一下', 'c10-p2');
+  h.wecom.__channelTest.setPushWaitMs(null);
+  check(
+    '恢复超过等待上限：人工回复返回没发出去、会话记「未能发送」，假企微上没有它的请求',
+    !r.sent &&
+      h.sendsTo(V.p2).length === 0 &&
+      !!h.store.getSession(p2Sid)?.messages.some((m) => m.role === 'system' && m.content === h.tk.REPLY_FAILED_NOTE),
+    json({ r, last: h.store.getSession(p2Sid)?.messages.at(-1) }),
+  );
+  nHold.release();
+  // HB：判定时接手人没变，挂在 markSending 上的这期间交还 AI
+  if (!handedBack) {
+    await reached('HB 的 markSending（判定时允许补发）', hbHold);
+    handBack();
+  }
+  await run;
+  await h.settle();
+  const after = Object.fromEntries(
+    await Promise.all(Object.entries(V).map(async ([k, uid]) => [k, await h.outOf(sid(uid, k === 'w' ? 'r3' : 'r1'))] as const)),
+  );
+  const st = (k: keyof typeof V): string => after[k]!.map((x) => x.status).join();
+  const once = (k: keyof typeof V): boolean =>
+    json(h.sendsTo(V[k]).map((x) => x.msgid)) === json(before[k]!.map((x) => x.msgid)) && h.sendsTo(V[k]).every((x) => x.p === 'r3');
+  check('验收 18 · notice 的 pending：按同一 msgid 补发一次', st('n') === 'accepted' && once('n'), json({ n: after.n, s: h.sendsTo(V.n) }));
+  check('验收 18 · followup 的 pending：cancelled、不发', st('o') === 'cancelled' && h.sendsTo(V.o).length === 0, json(after.o));
+  check(
+    '验收 18 · 人工回复，10 分钟内、接手人没变：按同一 msgid 补发一次',
+    st('p') === 'accepted' && once('p'),
+    json({ p: after.p, s: h.sendsTo(V.p) }),
+  );
+  for (const [k, label] of [
+    ['q', '超过 10 分钟'],
+    ['r', '接手人变了（交还 AI）'],
+    ['ht', '判定时 10 分钟内、等 markSending 期间过了 10 分钟（发请求之前复核）'],
+    ['hb', '判定时接手人没变、等 markSending 期间交还 AI（发请求之前复核）'],
+  ] as const) {
+    const humanMsg = h.store.getSession(sid(V[k]))?.messages.find((m) => m.author === 'human');
+    check(
+      `验收 18 · 人工回复，${label}：cancelled、不发，工作台这条显示「未发送」`,
+      st(k) === 'cancelled' &&
+        h.sendsTo(V[k]).length === 0 &&
+        !!humanMsg &&
+        h.ledger.deliveryOf(sid(V[k]), humanMsg)?.status === 'cancelled',
+      json({ rows: after[k], delivery: humanMsg ? h.ledger.deliveryOf(sid(V[k]), humanMsg) : null }),
+    );
+  }
+  for (const [k, label] of [
+    ['s', '同意菜单'],
+    ['t', '欢迎语'],
+    ['u', '没有 inbox_id 的 ai（异常道歉）'],
+    ['x', '有 inbox_id、入站行已结束'],
+    ['w', 'sent_at 不晚于恢复截止点'],
+  ] as const) {
+    const uid = V[k];
+    check(`验收 18 · ${label}的 pending：cancelled、不发`, st(k) === 'cancelled' && h.sendsTo(uid).length === 0, json(after[k]));
+  }
+  check(
+    '验收 18 · kind=card 的 pending（库里账号不该有）：cancelled、记一行日志',
+    st('z') === 'cancelled' && logBuf.some((l) => l.includes('kind=card 的 pending')),
+    json(after.z),
+  );
+  check(
+    '验收 18 · sending：unknown、不补发（假企微上仍只有杀之前那一次），告警一条',
+    st('v') === 'unknown' &&
+      h.sendsTo(V.v).length === 1 &&
+      h.sendsTo(V.v)[0]!.p === 'k3' &&
+      h.alertLines().filter((l) => l.includes('企微账号 r1 重启时 1 段 sending 转 unknown')).length === 1,
+    json({ v: after.v, s: h.sendsTo(V.v), alerts: h.alertLines() }),
+  );
+  const tkIn = (await h.inboxesOf(sid(V.tk)))[0];
+  check(
+    '入站 replied、杀之前顾问接手：名下 pending 的段 cancelled、不发，会话记「本轮未发送」，入站 done（不变量 10）',
+    after.tk!.length >= 1 &&
+      st('tk')
+        .split(',')
+        .every((x) => x === 'cancelled') &&
+      h.sendsTo(V.tk).length === 0 &&
+      tkIn?.state === 'done' &&
+      !!h.store.getSession(sid(V.tk))?.messages.some((m) => m.role === 'system' && m.content === h.tk.TAKEN_OVER_NOTE),
+    json({ tk: after.tk, tkIn, sends: h.sendsTo(V.tk) }),
+  );
+  const rrIn = await h.inboxOf('m10k3-wm10rr');
+  check(
+    '入站 recorded、会话里这句之后已有 AI 回复：按那条回复切分段照常发一组、不调模型，入站 done',
+    after.rr!.length >= 1 &&
+      st('rr')
+        .split(',')
+        .every((x) => x === 'accepted') &&
+      h.sendsTo(V.rr).length === after.rr!.length &&
+      h.sendsTo(V.rr)[0]!.content.startsWith('敦煌 4–10 月最合适') &&
+      h.llmCalls('RR 想去敦煌') === 0 &&
+      rrIn?.state === 'done',
+    json({ rr: after.rr, rrIn, sends: h.sendsTo(V.rr) }),
+  );
+  const roIn = await h.inboxOf('m10k3-wm10ro');
+  check(
+    '保底：入站 received 而名下已有 pending 的出站行，按 replied 处理：按同一 msgid 补发、不调模型，入站 done',
+    st('ro') === 'accepted' && once('ro') && h.llmCalls('RO 想去青海') === 0 && roIn?.state === 'done',
+    json({ ro: after.ro, roIn, sends: h.sendsTo(V.ro) }),
+  );
+  const rcpt = await h.inboxOf('m10k3-rcpt');
+  check(
+    '失败回执停在 received、指着一段 pending：出站恢复不补发，入站恢复重做回执短事务，那一段 failed、回执行 done',
+    st('rc') === 'failed' && h.sendsTo(V.rc).length === 0 && rcpt?.state === 'done',
+    json({ rc: after.rc, rcpt, s: h.sendsTo(V.rc) }),
+  );
+  check(
+    '验收 18 · 有入站的 pending（入站没结束）：入站恢复按同一 msgid 补发一次，入站 done',
+    st('y') === 'accepted' && once('y') && (await h.inboxesOf(sid(V.y)))[0]?.state === 'done',
+    json({ y: after.y, s: h.sendsTo(V.y) }),
+  );
+  const fuJob = await h.su<{ status: string }>(`select status from jobs where kind = 'followup' and payload->>'sessionId' = $1`, [fuSid]);
+  const all = lines<SendLine>(path.join(process.env.RECOVERY_DIR!, 'sends.jsonl'));
+  const at = (uid: string): number => all.findIndex((x) => x.to === uid && x.p === 'r3');
+  check(
+    '验收 18 · 恢复做完之后跟进才发：在恢复补发的那几段之后到达假企微，任务 done',
+    h.sendsTo(V.fu).length === 1 && at(V.fu) > at(V.n) && at(V.fu) > at(V.p) && fuJob[0]?.status === 'done',
+    json({ fuJob, order: all.filter((x) => x.p === 'r3').map((x) => x.to) }),
+  );
+  const p2Rows = await h.outOf(p2Sid);
+  check('恢复超过等待上限：那条人工回复排进库的那一段 cancelled', p2Rows.length === 1 && p2Rows[0]!.status === 'cancelled', json(p2Rows));
+  const open = await h.su<{ n: string }>(`select count(*)::text as n from outbound_sends where status in ('pending', 'sending')`);
+  check('重启之后库里没有 pending、sending 的出站行（不变量 15：每一行都给出了处理）', open[0]?.n === '0', json(open));
+}
+
+/** jsonl 文件的行（restart3 里核对先后用） */
+// ======================================================================================
+// k5 → c5 → r5：恢复截止点与哨兵（03 第 12 步，验收 6 的缩小版）
+// ======================================================================================
+
+async function kill5(h: Harness): Promise<void> {
+  h.start();
+  await h.idle();
+  const sid = (uid: string): string => sidOf('r1', uid);
+  // A：备份之前就聊完了
+  const a = h.say('r1', W.a, 'A5 想去云南');
+  h.pull('r1');
+  await waitFor(async () => (await h.inboxOf(a.msgid))?.state === 'done');
+  // B：第一段的请求到了假企微、回包挂住（库里 sending）
+  const bHold = h.holdSend(W.b, 'after');
+  const b = h.say('r1', W.b, 'B5 想去西藏');
+  // C：顾问的人工回复，markSending 之前挂住（库里 pending）；E、F：跟进 pending、running（run_at 都在 T 之前）
+  for (const uid of [W.c, W.e, W.f]) await h.mkSession('r1', uid);
+  const cHold = h.holdMark(sid(W.c));
+  void h.tk.reply(sid(W.c), h.tk.sharedActor(), '好的，我来跟进行程', 'c12-c').catch(() => undefined);
+  const tenant = process.env.RECOVERY_TENANT!;
+  for (const [uid, status, ago] of [
+    [W.e, 'pending', 60_000],
+    [W.f, 'running', 30 * 60_000],
+  ] as const) {
+    await h.su(
+      `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, max_attempts, payload, claimed_at)
+       values ($1, 'followup', $2, $3::timestamptz, $4::text, 3, $5::json, case when $4::text = 'running' then now() end)`,
+      [tenant, `followup:${sid(uid)}`, new Date(Date.now() - ago).toISOString(), status, json({ sessionId: sid(uid) })],
+    );
+  }
+  // G、H（第 12 步评审）：报价之后符合跟进资格（最后一条是 AI 回复）、回复那一段 sending、入站 replied。G 的报价跟进已到点（备份之后
+  // 旧实例发过），H 没排过跟进。会话经存储落库（这个进程没开跟进，不会自动排），入站、出站、任务行直接写
+  for (const [uid, withJob] of [
+    [W.g, true],
+    [W.h, false],
+  ] as const) {
+    const s = h.store.getOrCreateSession(sid(uid), 'wecom');
+    s.stage = 'quote';
+    const msgid = `m12k5-${uid}`;
+    const reply = '这条线每人 19,800 元起，您几位出行？';
+    s.messages.push(
+      { role: 'customer', content: '这条线多少钱', at: Date.now() - 60_000, msgid, sentAt: Date.now() - 60_000 },
+      { role: 'agent', content: reply, at: Date.now() - 50_000 },
+    );
+    h.store.saveSession(s);
+    await h.store.flushSession(sid(uid));
+    const seqs = await h.su<{ seq: number; role: string }>('select seq, role from messages where conversation_id = $1 order by seq', [
+      sid(uid),
+    ]);
+    const kf = { msgid, open_kfid: acct('r1').kf, external_userid: uid, send_time: Math.floor(Date.now() / 1000) - 60 };
+    const [inRow] = await h.su<{ id: string }>(
+      `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, sent_at, state, attempts, message_seq, payload)
+       values ($1, $2, $3, 'message', $4, $7, 'replied', 1, $5, $6::json) returning id::text as id`,
+      [
+        tenant,
+        h.ids.get('r1'),
+        msgid,
+        sid(uid),
+        seqs.find((x) => x.role === 'customer')!.seq,
+        json({ ...kf, origin: 3, msgtype: 'text', text: { content: '这条线多少钱' } }),
+        new Date(Date.now() - 60_000),
+      ],
+    );
+    await h.su(
+      `insert into outbound_sends (tenant_id, conversation_id, channel_msgid, message_seq, kind, sent_at, status, account_id, inbox_id, segment, payload)
+       values ($1, $2, $3, $4, 'ai', $8, 'sending', $5, $6, 0, $7::json)`,
+      [
+        tenant,
+        sid(uid),
+        randomBytes(16).toString('hex'),
+        seqs.find((x) => x.role === 'agent')!.seq,
+        h.ids.get('r1'),
+        inRow!.id,
+        json({ msgtype: 'text', text: { content: reply } }),
+        new Date(), // 时刻都用本机钟（T 也是本机钟；库容器的钟可能差几秒）
+      ],
+    );
+    if (withJob) {
+      await h.su(
+        `insert into jobs (tenant_id, kind, dedupe_key, run_at, status, max_attempts, payload)
+         values ($1, 'followup', $2, $4, 'pending', 3, $3::json)`,
+        [tenant, `followup:${sid(uid)}:quote`, json({ sessionId: sid(uid), stage: 'quote' }), new Date(Date.now() - 60_000)],
+      );
+    }
+  }
+  h.pull('r1');
+  await reached('B 的请求到了假企微', bHold);
+  await reached('C 的人工回复 markSending', cHold);
+  const ok = await waitFor(async () => {
+    const [ob, oc, ib] = await Promise.all([h.outOf(sid(W.b)), h.outOf(sid(W.c)), h.inboxOf(b.msgid)]);
+    return ob.length === 1 && ob[0]!.status === 'sending' && ib?.state === 'replied' && oc.length === 1 && oc[0]!.status === 'pending';
+  });
+  check(
+    '（前提）验收 6：A 聊完；B 的第一段 sending、入站 replied；C 的人工回复 pending；E、F 的跟进 pending、running',
+    ok && h.sendsTo(W.a).length >= 1 && h.sendsTo(W.b).length === 1 && h.sendsTo(W.c).length === 0,
+    json({ b: await h.outOf(sid(W.b)), c: await h.outOf(sid(W.c)), sends: [h.sendsTo(W.a), h.sendsTo(W.b)] }),
+  );
+  // 杀的这一刻当作备份快照，也当作「旧实例停的时刻」T（父进程拿它跑 restore-cutoff）
+  fs.writeFileSync(path.join(process.env.RECOVERY_DIR!, 't5'), String(Date.now()));
+}
+
+/** c5：恢复之后不跑 restore-cutoff 直接起：会话存储照常装上，渠道装载以 channel_restore_pending 拒绝，哨兵留着 */
+async function refusedBySentinel(): Promise<void> {
+  const varDir = process.env.VAR_DIR!;
+  const store = await import('../store.js');
+  const testing = await import('../db/testing.js');
+  const reg = await import('./registry.js');
+  const tenantId = process.env.RECOVERY_TENANT!;
+  const app = await testing.openGatedDb(process.env.RECOVERY_APP_URL!);
+  try {
+    await store.initSessionStore({ db: app.db, tenantId, tenantSlug: 'recov10', varDir });
+    const keyBytes = Buffer.alloc(32, 7);
+    const keyRing = { current: { id: 'k10', key: keyBytes }, all: new Map([['k10', keyBytes]]) };
+    let reason: string | null = null;
+    try {
+      await reg.initChannels({ db: app.db, tenantId, tenantSlug: 'recov10', varDir, keyRing });
+    } catch (e) {
+      reason = e instanceof reg.ChannelStartupError ? e.reason : `抛了别的：${String(e)}`;
+    }
+    check(
+      '验收 6 · 恢复之后不跑 restore-cutoff 直接起：以 channel_restore_pending 拒绝，哨兵留着',
+      reason === 'channel_restore_pending' && fs.existsSync(path.join(varDir, 'restored-from-backup.json')),
+      String(reason),
+    );
+  } finally {
+    await store.drainStore(5000).catch(() => undefined);
+    await app.close();
+  }
+}
+
+async function restart5(h: Harness): Promise<void> {
+  const sid = (uid: string): string => sidOf('r1', uid);
+  const T = Number(fs.readFileSync(path.join(process.env.RECOVERY_DIR!, 't5'), 'utf8'));
+  const sentA = h.sendsTo(W.a).length;
+  const ob0 = await h.outOf(sid(W.b));
+  // C 在备份之后、T 之前又说了一句（假企微里排在库里 cursor 之后，新进程拉得到）；B 同样又说了一句（排在它 replied 的那一行后面）；
+  // D 是 T 之后来的新客户
+  const c = h.say('r1', W.c, 'C5 备份之后又问了一句', T - 2000);
+  const b2 = h.say('r1', W.b, 'B5 备份之后又问了一句', T - 1500);
+  const c2 = h.say('r1', W.c, 'C5 还有一句', T - 1000);
+  const d = h.say('r1', W.d, 'D5 想去桂林');
+  // 跟进开着、落库钩子装上（G、H 的只补记要经过它；自测自己调 runJobsOnce）
+  process.env.FOLLOWUP_ENABLED = '1';
+  const runner = await import('../jobs/runner.js');
+  runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
+  h.start();
+  h.pull('r1');
+  await waitFor(async () => (await h.inboxOf(d.msgid))?.state === 'done');
+  await h.settle();
+  const [ib, ic, ic2] = await Promise.all([h.inboxesOf(sid(W.b)), h.inboxOf(c.msgid), h.inboxOf(c2.msgid)]);
+  const ob = await h.outOf(sid(W.b));
+  check(
+    '验收 6 · B（备份那一刻 sending）：restore-cutoff 记 unknown，重启后不补发、不调模型，入站只补记（abandoned / restore_cutoff）',
+    ob.length === 1 &&
+      ob[0]!.msgid === ob0[0]!.msgid &&
+      ob[0]!.status === 'unknown' &&
+      h.sendsTo(W.b).length === 1 &&
+      h.llmCalls('B5') === 0 &&
+      ib.length === 2 &&
+      ib.every((r) => r.state === 'abandoned' && r.reason === 'restore_cutoff'),
+    json({ ob, ib, sends: h.sendsTo(W.b), calls: h.llmCalls('B5') }),
+  );
+  // 第 20 步演练（owner 10-10 定）：入站行已是 replied 的会话，说明是「回复可能没送达」那句、跟在那条 AI 回复后面；同一会话之后只补记的
+  // 客户消息再加一条原话（每种一条），告警仍按会话数算（见最后一条断言）
+  const msgsB = await h.su<{ role: string; content: string; msgid: string | null }>(
+    'select role, content, msgid from messages where conversation_id = $1 order by seq',
+    [sid(W.b)],
+  );
+  const atB = (pred: (m: (typeof msgsB)[number]) => boolean): number => msgsB.findIndex(pred);
+  const replyB = atB((m) => m.role === 'agent');
+  const repliedNoteB = atB((m) => m.role === 'system' && m.content === RESTORE_REPLIED_NOTE);
+  const customerB2 = atB((m) => m.msgid === b2.msgid);
+  check(
+    '第 20 步 · B：replied 的那一行加「回复可能没送达」的说明（一条、在 AI 回复之后）；之后补记的那一句再加一条原话',
+    replyB >= 0 &&
+      repliedNoteB > replyB &&
+      customerB2 > repliedNoteB &&
+      atB((m) => m.content === RESTORE_NOTE) > customerB2 &&
+      msgsB.filter((m) => m.content === RESTORE_REPLIED_NOTE).length === 1 &&
+      msgsB.filter((m) => m.content === RESTORE_NOTE).length === 1,
+    json(msgsB),
+  );
+  const oc = await h.outOf(sid(W.c));
+  const msgsC = await h.su<{ seq: number; role: string; content: string; msgid: string | null }>(
+    'select seq, role, content, msgid from messages where conversation_id = $1 order by seq',
+    [sid(W.c)],
+  );
+  const at = (pred: (m: (typeof msgsC)[number]) => boolean): number => msgsC.findIndex(pred);
+  const cliNote = at((m) => m.role === 'system' && m.content.startsWith('恢复备份之后补记：'));
+  const customer = at((m) => m.msgid === c.msgid);
+  const customer2 = at((m) => m.msgid === c2.msgid);
+  const note = at((m) => m.role === 'system' && m.content === RESTORE_NOTE);
+  check(
+    '验收 6 · C：人工回复 cancelled、没发；备份之后那两句补记进会话（各一次）、带「恢复备份之后补记」的说明（一个会话一条），不调模型、不回复',
+    oc.length === 1 &&
+      oc[0]!.status === 'cancelled' &&
+      h.sendsTo(W.c).length === 0 &&
+      h.llmCalls('C5') === 0 &&
+      ic?.state === 'abandoned' &&
+      ic.reason === 'restore_cutoff' &&
+      ic2?.state === 'abandoned' &&
+      ic2.reason === 'restore_cutoff' &&
+      msgsC.filter((m) => m.msgid === c.msgid).length === 1 &&
+      msgsC.filter((m) => m.msgid === c2.msgid).length === 1 &&
+      msgsC.filter((m) => m.content === RESTORE_NOTE).length === 1 &&
+      cliNote >= 0 &&
+      customer > cliNote &&
+      note > customer &&
+      customer2 > customer &&
+      msgsC.every((m, i) => m.seq === i + 1),
+    json({ oc, ic, ic2, msgsC, sends: h.sendsTo(W.c), calls: h.llmCalls('C5') }),
+  );
+  const jobs = await h.su<{ k: string; status: string; err: string | null }>(
+    `select dedupe_key as k, status, last_error as err from jobs where kind = 'followup' and dedupe_key in ($1, $2) order by dedupe_key`,
+    [`followup:${sid(W.e)}`, `followup:${sid(W.f)}`],
+  );
+  check(
+    '验收 6 · E、F 的跟进都是 cancelled（restore_cutoff，F 在启动归位之前），没有发出去',
+    json(jobs) ===
+      json([
+        { k: `followup:${sid(W.e)}`, status: 'cancelled', err: 'restore_cutoff' },
+        { k: `followup:${sid(W.f)}`, status: 'cancelled', err: 'restore_cutoff' },
+      ]) &&
+      h.sendsTo(W.e).length === 0 &&
+      h.sendsTo(W.f).length === 0,
+    json({ jobs, e: h.sendsTo(W.e), f: h.sendsTo(W.f) }),
+  );
+  check(
+    '验收 6 · A 没有补发；T 之后的 D 照常回复一次（模型一次、一组）',
+    h.sendsTo(W.a).length === sentA && h.llmCalls('D5') === 1 && h.sendsTo(W.d).length === 1,
+    json({ a: h.sendsTo(W.a), d: h.sendsTo(W.d), calls: h.llmCalls('D5') }),
+  );
+  const open = await h.su<{ n: string }>(
+    `select (select count(*) from channel_inbox where state in ('received', 'recorded', 'replied'))
+          + (select count(*) from outbound_sends where status in ('pending', 'sending')) as n`,
+  );
+  check('验收 6 · 重启之后没有没结束的入站、没结果的出站（不变量 15）', open[0]?.n === '0', json(open));
+  // 第 12 步评审：G 的报价跟进被恢复截止点取消（旧实例在备份之后发过），只补记那一步与之后普通的保存都不能再为这一阶段排一条、再发一次；
+  // H 没排过跟进，只补记那一步不排，之后普通的保存照常排、到点照常发（跟进没被整个关掉）
+  const openFollowups = await h.su<{ k: string }>(
+    `select dedupe_key as k from jobs where kind = 'followup' and status = 'pending' and payload->>'sessionId' in ($1, $2)`,
+    [sid(W.g), sid(W.h)],
+  );
+  check('第 12 步评审 · 只补记那一步不排跟进：G、H 都没有新排的跟进任务', openFollowups.length === 0, json(openFollowups));
+  const ghNotes = await h.su<{ content: string }>(
+    `select content from messages where role = 'system' and conversation_id in ($1, $2) order by conversation_id, seq`,
+    [sid(W.g), sid(W.h)],
+  );
+  check(
+    '第 20 步 · G、H（入站 replied）各加一条「回复可能没送达」的说明，没有「AI 没有回复」那句',
+    json(ghNotes) === json([{ content: RESTORE_REPLIED_NOTE }, { content: RESTORE_REPLIED_NOTE }]),
+    json(ghNotes),
+  );
+  // 之后的一次普通保存（沉默了 3 小时：最后动静往前拨，与第 10 步的跟进场景同一写法），再让任务表跑一拍
+  for (const uid of [W.g, W.h]) {
+    const s = h.store.getSession(sid(uid))!;
+    s.updatedAt = Date.now() - 3 * 3_600_000;
+    h.store.saveSession(s, false);
+    await h.store.flushSession(sid(uid));
+  }
+  await runner.runJobsOnce();
+  await h.settle();
+  const gJobs = await h.su<{ status: string; err: string | null }>(
+    `select status, last_error as err from jobs where kind = 'followup' and payload->>'sessionId' = $1`,
+    [sid(W.g)],
+  );
+  const gFollowup = (h.store.getSession(sid(W.g)) as { followup?: { stages?: string[] } } | undefined)?.followup;
+  check(
+    '第 12 步评审 · G：被恢复截止点取消的报价跟进记成已跟过，之后普通的保存也不再为这一阶段排，没有第二次跟进',
+    h.sendsTo(W.g).length === 0 &&
+      json(gJobs) === json([{ status: 'cancelled', err: 'restore_cutoff' }]) &&
+      !!gFollowup?.stages?.includes('quote'),
+    json({ gJobs, gFollowup, sends: h.sendsTo(W.g) }),
+  );
+  check(
+    '第 12 步评审 · H：之后普通的保存照常排跟进、到点发一次',
+    h.sendsTo(W.h).length === 1,
+    json({ sends: h.sendsTo(W.h), jobs: await h.su(`select status from jobs where payload->>'sessionId' = $1`, [sid(W.h)]) }),
+  );
+  // 「只补记」告警：最后一个这样的会话之后安静 10 秒由巡检发，这里把钟拨过去手动巡检一次；B、C、G、H 四个会话（B、C 各有两句、B 有两条
+  // 说明，按会话数算）
+  h.alerts.__alertTest.setClock(() => Date.now() + 60_000);
+  h.alerts.__alertTest.tick();
+  h.alerts.__alertTest.tick();
+  await h.alerts.__alertTest.settle();
+  h.alerts.__alertTest.setClock(null);
+  const cut = h.alertLines().filter((l) => l.includes('恢复截止点之前的客户消息只补记'));
+  check(
+    '验收 6 · 告警一条：恢复截止点让 4 个会话只补记未回复，只有会话数',
+    cut.length === 1 && cut[0]!.includes('4 个会话') && !/wm12|wecom:/.test(cut[0]!),
+    json(h.alertLines()),
+  );
+}
+
+function lines<T>(f: string): T[] {
+  return fs.existsSync(f)
+    ? fs
+        .readFileSync(f, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as T)
+    : [];
+}
+
+// ======================================================================================
+// k4 → p1 → p2 → p3 → p4：验收 3（一页提交之后立刻杀）、验收 9（每次处理都让进程崩溃的毒消息）
+// ======================================================================================
+
+async function kill4(h: Harness): Promise<void> {
+  h.start();
+  await h.idle();
+  // 验收 3（r2）：假企微一页 3 条；acceptPage 提交之后、这一页回 has_more，紧接着的下一次 sync_msg 就地硬杀
+  for (const [i, uid] of A3.entries()) h.say('r2', uid, `S${i + 1} 想去云南看看`);
+  h.fake.killAfterPage = acct('r2').kf;
+  h.pull('r2');
+  await sleep(30_000);
+  fails.push('k4：acceptPage 提交之后没有被杀');
+}
+
+async function poison1(h: Harness): Promise<void> {
+  // 验收 3：重启之前库里是这一页的 3 行（received、attempts 0），cursor 已随它们推进
+  const rows = await Promise.all(A3.map(async (uid) => (await h.inboxesOf(sidOf('r2', uid)))[0]));
+  const [cur] = await h.su<{ cursor: string | null }>('select cursor from channel_accounts where key = $1', ['r2']);
+  check(
+    '验收 3 · acceptPage 提交之后立刻 SIGKILL：库里有这 3 行（received、attempts 0），cursor 已推进到这一页之后，还没有出站行',
+    rows.every((r) => r?.state === 'received' && r.attempts === 0) &&
+      cur?.cursor === `${acct('r2').kf}:3` &&
+      (await Promise.all(A3.map((uid) => h.outOf(sidOf('r2', uid))))).every((o) => o.length === 0),
+    json({ rows, cur }),
+  );
+  h.start();
+  await h.settle();
+  const after = await Promise.all(
+    A3.map(async (uid) => ({ inbox: (await h.inboxesOf(sidOf('r2', uid)))[0], out: await h.outOf(sidOf('r2', uid)) })),
+  );
+  check(
+    '验收 3 · 重启后这 3 条各回复一次：入站 done、attempts 1，每个客户在假企微上恰好一组、每段一次，各调一次模型',
+    after.every(
+      (x, i) =>
+        x.inbox?.state === 'done' &&
+        x.inbox.attempts === 1 &&
+        x.out.length >= 1 &&
+        x.out.every((o) => o.status === 'accepted') &&
+        json(h.sendsTo(A3[i]!).map((s) => s.msgid)) === json(x.out.map((o) => o.msgid)) &&
+        h.llmCalls(`S${i + 1} 想去云南`) === 1,
+    ),
+    json({ after, sends: A3.map((u) => h.sendsTo(u).length) }),
+  );
+  // 验收 9（r1）：客户先正常聊一句（会话建好），再在一页里发毒消息与第二句；毒消息处理到调模型就把进程带崩（第 1 次）
+  h.say('r1', PZ, 'PZ0 你好');
+  h.pull('r1');
+  await h.settle();
+  check('（前提）验收 9：客户先正常聊了一句，有回复', h.sendsTo(PZ).length >= 1 && !!h.store.getSession(sidOf('r1', PZ)));
+  h.fake.model.push({ match: 'POISON', die: async () => {} });
+  h.say('r1', PZ, 'POISON 每次都让进程崩溃的一句');
+  h.say('r1', PZ, 'PZ2 两个人五天');
+  h.pull('r1');
+  await sleep(30_000);
+}
+
+/** 毒消息、第 n 次处理（重启之后由启动恢复派发）：计次 n 之后调模型、进程又崩；排在后面的第二句一直没出队 */
+async function poisonAgain(h: Harness, n: number): Promise<void> {
+  const [p, q] = await Promise.all([inboxOfText(h, 'POISON'), inboxOfText(h, 'PZ2 两个人')]);
+  check(
+    `验收 9 · 第 ${n - 1} 次重启之前：毒消息 attempts ${n - 1}、第二句 attempts 0、received（不受连累）`,
+    p?.attempts === n - 1 && q?.attempts === 0 && q.state === 'received',
+    json({ p, q }),
+  );
+  h.fake.model.push({
+    match: 'POISON',
+    die: async () => {
+      const [p2, q2] = await Promise.all([inboxOfText(h, 'POISON'), inboxOfText(h, 'PZ2 两个人')]);
+      check(
+        `验收 9 · 第 ${n - 1} 次重启：毒消息出队、计次到 ${n} 之后再把进程带崩；第二句还没出队（attempts 0）`,
+        p2?.attempts === n && q2?.attempts === 0,
+        json({ p2, q2 }),
+      );
+    },
+  });
+  h.start();
+  await sleep(30_000);
+}
+
+async function poison4(h: Harness): Promise<void> {
+  const [p0, q0] = await Promise.all([inboxOfText(h, 'POISON'), inboxOfText(h, 'PZ2 两个人')]);
+  check('（前提）验收 9 · 第三次重启之前：毒消息 attempts 3、第二句 0', p0?.attempts === 3 && q0?.attempts === 0, json({ p0, q0 }));
+  h.start();
+  await h.settle();
+  const sid = sidOf('r1', PZ);
+  const [p, q] = await Promise.all([inboxOfText(h, 'POISON', true), inboxOfText(h, 'PZ2 两个人', true)]);
+  const notes = (h.store.getSession(sid)?.messages ?? []).filter((m) => m.role === 'system' && m.content === POISON_NOTE);
+  check(
+    '验收 9 · 第三次重启：毒消息出队时 attempts 已是 3 → abandoned（poison）、payload 已空，不再调模型；会话里多一条说明',
+    p?.state === 'abandoned' && p.reason === 'poison' && p.attempts === 3 && p.nopay && h.llmCalls('POISON') === 0 && notes.length === 1,
+    json({ p, notes: notes.length, calls: h.llmCalls('POISON') }),
+  );
+  const alerts = h.alertLines().filter((l) => l.includes('处理了三次都没走完'));
+  check(
+    '验收 9 · 告警一条：账号 key 与条数，没有 external_userid',
+    alerts.length === 1 && alerts[0]!.includes('企微账号 r1 有 1 条客户消息') && !alerts[0]!.includes(PZ),
+    json(h.alertLines()),
+  );
+  const qOut = await h.su<{ msgid: string; status: string }>(
+    'select channel_msgid as msgid, status from outbound_sends where inbox_id = $1',
+    [q!.id],
+  );
+  check(
+    '验收 9 · 排在它后面、同一客户的第二句不受连累：attempts 1、done、回复一组（调一次模型）',
+    q?.state === 'done' &&
+      q.attempts === 1 &&
+      qOut.length >= 1 &&
+      qOut.every((o) => o.status === 'accepted') &&
+      h.llmCalls('PZ2 两个人') === 1,
+    json({ q, qOut }),
+  );
+  // 之后的消息照常处理
+  h.say('r1', PZ, 'PZ3 之后再问一句');
+  h.pull('r1');
+  await h.settle();
+  const r = await inboxOfText(h, 'PZ3 之后再问', true);
+  const rOut = r ? await h.su<{ status: string }>('select status from outbound_sends where inbox_id = $1', [r.id]) : [];
+  check(
+    '验收 9 · 之后的消息照常处理：done、attempts 1、回复一组；毒消息从头到尾没有回复（假企微上这个客户只有 PZ0、PZ2、PZ3 三组）',
+    r?.state === 'done' &&
+      r.attempts === 1 &&
+      rOut.length >= 1 &&
+      rOut.every((o) => o.status === 'accepted') &&
+      h.sendsTo(PZ).length ===
+        (await h.su<{ n: string }>(`select count(*)::text as n from outbound_sends where conversation_id = $1`, [sid])).map((x) =>
+          Number(x.n),
+        )[0],
+    json({ r, rOut, sends: h.sendsTo(PZ).length }),
+  );
+}
+
+/** 毒消息那个客户的入站行（按原文找：入站行 payload 在结束之后清空，结束的按 msgid 找回） */
+async function inboxOfText(
+  h: Harness,
+  text: string,
+  withPayloadGone = false,
+): Promise<{ id: string; msgid: string; state: string; attempts: number; reason: string | null; nopay: boolean } | null> {
+  const known = pzMsgids.get(text);
+  const rows = await h.su<{
+    id: string;
+    msgid: string;
+    state: string;
+    attempts: number;
+    reason: string | null;
+    nopay: boolean;
+    said: string | null;
+  }>(
+    `select id::text as id, msgid, state, attempts, reason, payload is null as nopay, payload->'text'->>'content' as said
+       from channel_inbox where conversation_id = $1 order by ord`,
+    [sidOf('r1', PZ)],
+  );
+  const row = rows.find((r) => (known ? r.msgid === known : (r.said ?? '').includes(text)));
+  if (row && !known) pzMsgids.set(text, row.msgid);
+  if (!row && withPayloadGone) {
+    // 结束之后 payload 清空：按会话里记下的客户消息原文找 msgid
+    const [m] = await h.su<{ msgid: string }>(
+      `select msgid from messages where conversation_id = $1 and role = 'customer' and content like $2 order by seq limit 1`,
+      [sidOf('r1', PZ), `%${text}%`],
+    );
+    const hit = m ? rows.find((r) => r.msgid === m.msgid) : undefined;
+    if (hit) return hit;
+  }
+  return row ?? null;
+}

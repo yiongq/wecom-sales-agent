@@ -28,6 +28,7 @@ import {
   reply,
   ReplyTooLongError,
   SendWindowError,
+  setPrepareTransport,
   setReplyTransport,
   sharedActor,
 } from './handoff/takeover.js';
@@ -59,7 +60,11 @@ import { buildIndex } from './retrieval.js';
 import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
-import { startWecom, syncFromCallback, wecomAdapter } from './adapters/wecom.js';
+import { webAdapter } from './adapters/web.js';
+import { webRoutes } from './web/routes.js';
+import { syncFromCallback, wecomAdapter } from './adapters/wecom.js';
+import { accountCallbackGet, accountCallbackPost } from './adapters/wecom-callback.js';
+import { channelKeyRing, channelsHealth, channelsMode, initChannels, startChannels } from './channels/registry.js';
 import { computeSignature, decryptWecom, safeEqual } from './wecom-crypto.js';
 import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
@@ -96,6 +101,7 @@ app.use('/*', requestLogContext);
 function adapterFor(channel: string): ChannelAdapter {
   if (channel === 'wecom') return wecomAdapter;
   if (channel === 'simulator') return simulatorAdapter;
+  if (channel === 'web') return webAdapter;
   return {
     name: 'unknown',
     push(sessionId) {
@@ -107,6 +113,11 @@ function adapterFor(channel: string): ChannelAdapter {
 
 // 人工回复（src/handoff/takeover.ts 的 reply，后台接口与旧 /reply 共用）经会话的渠道发出
 setReplyTransport((sessionId, text, opts) => adapterFor(getSession(sessionId)?.channel ?? '').push(sessionId, text, opts));
+// 03 先落库后发送：人工回复、跟进、付款确认、同意菜单在写会话的同一段同步代码里先 prepare（库里的企微账号把 pending 排进同一次落库）
+setPrepareTransport({
+  prepare: (sessionId, text, opts) => adapterFor(getSession(sessionId)?.channel ?? '').prepare?.(sessionId, text, opts) ?? null,
+  release: (prepared, reason) => adapterFor(getSession(prepared.sessionId)?.channel ?? '').release?.(prepared, reason),
+});
 
 // ---------------- 管理面鉴权 ----------------
 // 分两层，而不是一个「读写一起开关」的总闸：
@@ -299,11 +310,20 @@ function storeSummary(): { mode: string; dirty: number; lagMs: number; conflict:
   return { mode: h.mode, dirty: h.dirty, lagMs: h.lagMs, conflict: h.conflict, poisoned: h.poisoned.length };
 }
 
-// HTTP 状态照旧 200（deploy.sh 只看 revision）；外部拨测看 ok：写库冲突、有会话停写、积压超过 2 分钟、租户锁不在本进程手里时为 false
+// HTTP 状态照旧 200（deploy.sh 只看 revision）；外部拨测看 ok：写库冲突、有会话停写、积压超过 2 分钟、租户锁不在本进程手里、
+// 有启用的企微账号持续拉取失败或入站卡住（03 spec：channels.failing、stuck，第 13 步接实数）时为 false
 app.get('/healthz', (c) => {
   const config = configSummary();
   const store = storeSummary();
-  const ok = !store.conflict && store.poisoned === 0 && store.lagMs <= 120_000 && config.lock !== 'lost';
+  // 03：只有个数（mode、accounts、failing、stuck），不带账号 key 与任何标识
+  const channels = channelsHealth();
+  const ok =
+    !store.conflict &&
+    store.poisoned === 0 &&
+    store.lagMs <= 120_000 &&
+    config.lock !== 'lost' &&
+    channels.failing === 0 &&
+    channels.stuck === 0;
   return c.json({
     ok,
     revision: process.env.APP_REVISION || 'dev',
@@ -313,6 +333,7 @@ app.get('/healthz', (c) => {
     llm: llmStats(),
     config,
     store,
+    channels,
   });
 });
 
@@ -381,6 +402,8 @@ function extractTag(xml: string, tag: string): string | undefined {
   }
   return inner;
 }
+
+app.route('/', webRoutes);
 
 app.post('/api/chat', simulatorOnly, async (c) => {
   if (chatRateLimited(clientKey(c))) return c.json({ error: '发送太频繁了，请稍后再试' }, 429);
@@ -640,6 +663,7 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       const sent = await adapterFor(s?.channel ?? 'simulator').push(followUp.sessionId, followUp.text, {
         kind: 'notice',
         message: followUp.message,
+        prepared: followUp.prepared,
       });
       // 同 /reply：会话里记着「已收到您的支付」，客户却没收到，得让顾问在后台看见、去另行告知。
       // 种子会话除外：对应的企微客户是编造的，推送必然失败，公开演示每付一次就会多一条失败备注
@@ -796,7 +820,23 @@ function receiveIdOk(receiveId: string): boolean {
   return !corpId || !receiveId || receiveId === corpId;
 }
 
+// 03 spec R1、R12、不变量 13、20：企微状态在库里时不读 env 的回调凭据。/wecom/callback/:key 只认库里启用的企微账号，不带 key 的
+// 留给前缀是 wecom: 的那个库里账号；按账号验签、解密、receiveid 与 OpenKfId 分派都在 adapters/wecom-callback.ts。
+// 文件存储与企微状态「未导入」「已导出」时 /wecom/callback 是 env 账号，下面照 02 原样
+app.get('/wecom/callback/:key', (c) => {
+  const r = accountCallbackGet(c.req.param('key'), c.req.query());
+  return c.text(r.text, r.status);
+});
+app.post('/wecom/callback/:key', async (c) => {
+  accountCallbackPost(c.req.param('key'), c.req.query(), extractTag(await c.req.text(), 'Encrypt'), extractTag);
+  return c.text('success');
+});
+
 app.get('/wecom/callback', (c) => {
+  if (channelsMode() === 'db') {
+    const r = accountCallbackGet(null, c.req.query());
+    return c.text(r.text, r.status);
+  }
   const token = process.env.WECOM_CALLBACK_TOKEN;
   const aesKey = process.env.WECOM_CALLBACK_AES_KEY;
   if (!token || !aesKey) return c.text('wecom callback not configured', 501);
@@ -817,6 +857,10 @@ app.get('/wecom/callback', (c) => {
 // kf 事件回调：企微 POST 加密的 kf_msg_or_event 事件 → 解密取 Token → 用它拉消息。
 // 必须尽快回 success（拉取异步做），否则企微超时重推。
 app.post('/wecom/callback', async (c) => {
+  if (channelsMode() === 'db') {
+    accountCallbackPost(null, c.req.query(), extractTag(await c.req.text(), 'Encrypt'), extractTag);
+    return c.text('success');
+  }
   const token = process.env.WECOM_CALLBACK_TOKEN;
   const aesKey = process.env.WECOM_CALLBACK_AES_KEY;
   // 下面三条都必须回 success（否则企微会重推），但**绝不能连日志都不打**：
@@ -919,6 +963,7 @@ function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
   // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
   console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
+  console.log(`[profile] web_channel=${profile().flags.web_channel ? 'on' : 'off'}`);
   // 配置漂移自检：按「实际数据」喊，而不是只描述配置。
   // 「密码没配」这件事单看配置是察觉不到的——没人会定期去翻 .env，
   // 而一旦真实客户已经进来了，它的含义就从「无所谓」变成「你看不到也接管不了他们」。
@@ -980,6 +1025,12 @@ if (!SELFTEST) {
       const { db, tenantId, deps } = configRuntime();
       return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
     },
+    // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
+    initChannels: () => {
+      if (process.env.SESSION_STORE !== 'db') return initChannels(null);
+      const { db, tenantId, deps } = configRuntime();
+      return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
+    },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {
         logStartup(info.port);
@@ -1000,11 +1051,11 @@ if (!SELFTEST) {
     // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
     startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
     startJobs: () => startJobs(pushFollowUp),
-    startWecom,
+    startChannels,
     exit: (code) => process.exit(code),
     // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
     startOtel: startOtelExport,
-    // 告警（02 spec R24）：起企微之后挂上各处的订阅，推送只在后台
+    // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
     startAlerts,
     // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
     startPrivacy: async () => {
