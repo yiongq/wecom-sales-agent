@@ -1,6 +1,6 @@
 // 04 R2、R3：行业包取得核心能力的唯一出口；这里不装载行业包，也不引旧门面。
 import type { SectionSpec } from '../shared/sop-sections.js';
-import type { CustomerProfile, SalesStage, Session } from '../types.js';
+import type { CustomerProfile, HandoffRecord, Order, SalesStage, Session } from '../types.js';
 import type { ToolDef } from '../tool-defs.js';
 import type { CatalogItem } from '../shared/console-api.js';
 import { z } from 'zod';
@@ -22,6 +22,64 @@ export {
 } from '../shared/pack.js';
 export type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
 export type { SectionSpec, SectionSpec as SopSectionDef, SopSection } from '../shared/sop-sections.js';
+
+// 04 第 7 步：包只经本出口取得通用解析；调用方显式传入金额政策。
+export {
+  amountHits,
+  normalizeMoneyText,
+  parseAmounts,
+  parseCnAmounts,
+  parseMoney,
+  parseRangeEndpoints,
+  parseSpokenAmounts,
+  spokenMoney,
+  type AmountHit,
+  type Money,
+  type MoneyParseOptions,
+  type SpokenAmount,
+} from './parse/money.js';
+export { clauses, sentences, sentenceUnits } from './parse/sentences.js';
+
+// 04 第 8 步：日期/人数语境由调用方选，核心不装载旅游节日与范围政策。
+export {
+  budgetHeadcount,
+  groupSizeIn,
+  hasTotalHeadcount,
+  headcountIn,
+  parseCountArg,
+  parseDayCount,
+  spokenHeadcounts,
+  type CountRange,
+  type Headcount,
+  type HeadcountRead,
+} from './parse/counts.js';
+export {
+  addDays,
+  dayInMonth,
+  isAside,
+  isMonthAside,
+  isRealDate,
+  isValidIsoDate,
+  isoOf,
+  latestDepart,
+  MONTH_PATTERN,
+  monthSaid,
+  monthsOf,
+  readDepartDates,
+  resolveDepartDate,
+  saysDay,
+  spokenDepartDate,
+  statedPastDate,
+  whensIn,
+  type DateParsePolicy,
+  type DateReadResult,
+  type DateSpan,
+  type HolidayLeft,
+  type MonthMention,
+  type MonthParsePolicy,
+  type SpokenDate,
+  type YearMonth,
+} from './parse/dates.js';
 
 export type SopContractRule =
   | { id: string; kind: 'include'; text: string; from: string }
@@ -71,15 +129,37 @@ export type StepVerdict =
   | { action: 'handoff'; text: string; reason: string }
   | { action: 'abort' };
 
-/** 方法的具体参数与返回形状需随 spec 补齐；约束它们必须是可调用的核心能力。 */
+/** R8：全部执行过的裁决，保留执行位置后缀；不含客户原文或转人工原因。 */
+export interface GuardVerdict {
+  id: string;
+  action: StepVerdict['action'];
+}
+
+/** 开工表的局部变量映射；正文、会话字段与工具调用不放进 flags。 */
+export interface GuardTurnFlags extends Record<string, unknown> {
+  emptyModelReply?: boolean;
+  wantsOrder?: boolean;
+  friendsOwn?: Order;
+  customPromise?: string | null;
+  handedOverSelfDecided?: boolean;
+  guardHit?: 'injection' | 'price' | null;
+  preDropSnapshot?: string;
+  saidAll?: string[];
+}
+
+/** 与现有本轮工具记录同形，补工具时继续追加，result 是原始 JSON 字符串。 */
+export interface GuardToolSource {
+  name: string;
+  args: Record<string, unknown>;
+  result?: ToolResult;
+}
+
+/** 阈值的字段由搬阈值的步骤填实；允许包用自己的类型收窄。 */
 export interface GuardContextTypes {
-  flags: Record<string, unknown>;
-  toolSources: unknown;
-  orderSources: unknown;
-  thresholds: unknown;
-  createOrder: (...args: never[]) => unknown;
-  enterHandoff: (...args: never[]) => unknown;
-  callTool: (...args: never[]) => unknown;
+  flags: GuardTurnFlags;
+  toolSources: GuardToolSource[];
+  orderSources: readonly Order[];
+  thresholds: object;
 }
 
 /** R7：步骤只经 context 取得状态与副作用能力，不直接 import 存储。 */
@@ -91,29 +171,30 @@ export interface GuardContext<T extends GuardContextTypes = GuardContextTypes> {
   orderSources: T['orderSources'];
   brand: BrandProfile | null;
   thresholds: T['thresholds'];
-  createOrder: T['createOrder'];
-  enterHandoff: T['enterHandoff'];
-  callTool: T['callTool'];
+  /** 绑定本轮会话，经确定性的 create_order 工具建单或复用；不直接写订单表。 */
+  createOrder(args: Record<string, unknown>): Promise<ToolResult>;
+  /** 绑定本轮会话，保留现有转人工记录的形状与语义。 */
+  enterHandoff(record: HandoffRecord): void;
+  /** 绑定本轮会话，经工具分派、观察者与结果记录；不绕过工具安全网。 */
+  callTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
 }
 
 export interface GuardStep<Context extends GuardContext = GuardContext> {
   id: string;
-  after?: string[];
-  reads?: string[];
-  writes?: string[];
+  after?: readonly string[];
+  reads?: readonly string[];
+  writes?: readonly string[];
   run(ctx: Context): Promise<StepVerdict> | StepVerdict;
 }
 
-/** R15：最终文本的站内链接部件；第 21 步接渠道出口。 */
-export interface MessagePart {
-  kind: 'link';
-  linkKind: 'order' | 'proposal' | 'site';
-  url: string;
-}
+/** R15：最终文本的站内链接部件，只用于渠道投影，不写入 ChatMessage。 */
+export type { MessagePart } from '../shared/channel-types.js';
 
 export interface ChannelCaps {
   markdown: false;
 }
+
+export { partsOf } from './message-parts.js';
 
 /**
  * spec 尚未定义这些引用类型的字段与副作用方法签名。
