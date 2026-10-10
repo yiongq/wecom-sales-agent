@@ -244,15 +244,35 @@ export interface ChannelCaps {
   markdown: false;
 }
 
+// 04 第 12 步：阶段推导消费已执行的本轮工具；终态判定由核心传入。
+export { profileForPrompt } from '../types.js';
+
+export interface StageTurnOutcome {
+  calls: readonly TurnToolCall[];
+  terminal: boolean;
+  /** 只在主回复原阶段推进位置传入；就地推进与接管前补推不判异议。 */
+  customerText?: string;
+}
+
+/** 画像的本轮输入由核心注入，包不读取引擎私有变量或会话之外的存储。 */
+export interface ProfileExtractionSources {
+  loadRoutes(): Route[];
+  toolCalls(session: Session): readonly TurnToolCall[];
+  isMonthOnly(args: Record<string, unknown>): boolean;
+  todayIso(): string;
+  liftsBudget(text: string): boolean;
+  budgetLifted: RegExp;
+}
+
 /**
- * spec 尚未定义这些引用类型的字段与副作用方法签名。
+ * spec 尚未定义其余引用类型的字段与副作用方法签名。
  * 保留类型参数，不用伪业务实现或任意字段表补齐；装载前需确认具体契约。
  */
 export interface PackRuntimeTypes {
   LegacyTexts: unknown;
   BrandTemplates: unknown;
   ToolContext: ToolContext;
-  TurnOutcome: unknown;
+  TurnOutcome: StageTurnOutcome;
   TurnContext: unknown;
   PrefetchResult: unknown;
   DeterministicReply: unknown;
