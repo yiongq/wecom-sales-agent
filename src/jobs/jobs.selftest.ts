@@ -488,6 +488,63 @@ async function storeSetup(opts: { dataDir?: string; dbConfig: boolean }) {
 
 // ---------------- main：PGlite 上的进程内各组 ----------------
 
+async function inboxRetentionSuite(
+  su: <R = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<R[]>,
+  tenantId: string,
+  label: string,
+): Promise<void> {
+  const { purgeOnce, runRetentionPurgeJob, retentionPurgeSpec } = await import('./purge.js');
+  const [account] = await su<{ id: string }>(
+    "insert into channel_accounts (tenant_id,key,kind,name,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id) values ($1,'purge-inbox','wecom_kf','入站清理','wecom:purge-inbox:','corp-purge','kf-purge',decode('01','hex'),'test') returning id",
+    [tenantId],
+  );
+  const DAY = 86400000;
+  for (const daily of [false, true]) {
+    const prefix = daily ? 'daily' : 'once';
+    for (const [name, days, state] of [
+      ['old', 8, 'done'],
+      ['recent', 6, 'done'],
+      ['open', 8, 'received'],
+    ] as const) {
+      const oldAt = new Date(Date.now() - days * DAY).toISOString();
+      await su(
+        `insert into channel_inbox (tenant_id,account_id,msgid,kind,conversation_id,state,payload,received_at,updated_at)
+        values ($1,$2,$3,'message','wecom:wmPurgeInbox',$4,$5::json,$6,$6)`,
+        [tenantId, account!.id, `${prefix}-${name}`, state, state === 'done' ? null : JSON.stringify({ text: '过期消息' }), oldAt],
+      );
+    }
+    const spec = retentionPurgeSpec(Date.now());
+    const result = daily
+      ? await runRetentionPurgeJob({ dedupeKey: spec.dedupeKey, runAt: new Date(spec.runAt) } as JobRow, Date.now())
+      : await purgeOnce(Date.now());
+    const rows = await su<{ msgid: string; state: string; reason: string | null; nopay: boolean }>(
+      'select msgid,state,reason,payload is null as nopay from channel_inbox where tenant_id=$1 and account_id=$2 and msgid like $3 order by msgid',
+      [tenantId, account!.id, `${prefix}-%`],
+    );
+    const audit = (
+      await su<{ diff: { inbox: number } }>(
+        "select diff from audit_log where tenant_id=$1 and action='system.purge' order by id desc limit 1",
+        [tenantId],
+      )
+    )[0];
+    check(
+      `${label}：${daily ? '每日清理任务' : 'purgeOnce'} 删除 8 天终态、保留 6 天终态、8 天未结束 abandoned 且 payload 空`,
+      rows.length === 2 &&
+        !rows.some((r) => r.msgid === `${prefix}-old`) &&
+        rows.find((r) => r.msgid === `${prefix}-recent`)?.state === 'done' &&
+        rows.find((r) => r.msgid === `${prefix}-open`)?.state === 'abandoned' &&
+        rows.find((r) => r.msgid === `${prefix}-open`)?.reason === 'too_old' &&
+        rows.find((r) => r.msgid === `${prefix}-open`)?.nopay === true,
+      json(rows),
+    );
+    check(
+      `${label}：${daily ? '每日任务 done' : '返回 inbox=2'}，system.purge 审计 diff.inbox=2`,
+      (daily ? 'status' in result && result.status === 'done' : 'inbox' in result && result.inbox === 2) && audit?.diff.inbox === 2,
+      json({ result, audit }),
+    );
+  }
+}
+
 async function childMainSuite(script: Step[], releaseHung: (content?: string) => Promise<void>, calls: () => number): Promise<void> {
   const { store, fx, lock, su, jobsOf, jobsFor, flush, silent, retire } = await storeSetup({ dbConfig: true });
   const runner = await import('./runner.js');
@@ -500,6 +557,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
   const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('./notify.js');
   const { sendWindow } = await import('../quota/ledger.js');
   const { push, pushes, behave } = makePush();
+  await inboxRetentionSuite(su, fx.deps.tenantId, 'PGlite 入站保留期');
   runner.__jobsTest.start(push);
   const H = 3_600_000;
   const pushedTo = (sid: string) => pushes.filter((p) => p.id === sid);
@@ -1570,6 +1628,7 @@ async function childRealPg(script: Step[], releaseHung: (content?: string) => Pr
     await store.initSessionStore({ db: app.db, tenantId: fx.tenantId, tenantSlug: 'demo', varDir: process.env.VAR_DIR! });
     const runner = await import('./runner.js');
     const { push, pushes } = makePush();
+    await inboxRetentionSuite(fx.query, fx.tenantId, '真实 PG 入站保留期');
     runner.__jobsTest.start(push);
     await runner.runJobsOnce(); // 启动归位与清理的排程先做掉，之后的 running 都是这两个认领者的
     const ctx = { tenantId: fx.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };

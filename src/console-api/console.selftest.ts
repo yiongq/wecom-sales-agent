@@ -4397,6 +4397,67 @@ async function dbStoreChild(): Promise<never> {
     const vw = await login(users[2].email, 'viewer-db13-password');
     const enc = encodeURIComponent;
 
+    // 03 验收 17：详情接口实际经过 workbench 的 wecom delivery 投影。
+    {
+      const { installAccounts } = await import('../channels/accounts.js');
+      const ledger = await import('../quota/ledger.js');
+      const accountId = randomUUID();
+      await su(
+        "insert into channel_accounts (tenant_id,id,key,kind,name,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id) values ($1,$2,'delivery','wecom_kf','投递测试','wecom:delivery:','corp-delivery','kf-delivery',decode('01','hex'),'test')",
+        [fx.deps.tenantId, accountId],
+      );
+      const account: import('../channels/accounts.js').ChannelAccount = {
+        id: accountId,
+        tenantId: fx.deps.tenantId,
+        key: 'delivery',
+        kind: 'wecom_kf',
+        name: '投递测试',
+        status: 'active',
+        source: 'db',
+        wecom: {
+          corpId: 'corp-delivery',
+          openKfId: 'kf-delivery',
+          idPrefix: 'wecom:delivery:',
+          recordOnlyUntil: null,
+          settings: { pollIntervalMs: 60000 },
+        },
+        web: null,
+        inactiveReason: null,
+      };
+      installAccounts([account]);
+      try {
+        for (const status of ['sending', 'failed', 'unknown', 'cancelled', 'accepted'] as const) {
+          const sid = `wecom:delivery:wmD${status}`;
+          const ds = store.getOrCreateSession(sid, 'wecom');
+          ds.channelAccountId = accountId;
+          const message: ChatMessage = { role: 'agent', content: `投递状态 ${status}`, at: Date.now() };
+          ds.messages.push({ role: 'customer', content: '你好', at: Date.now() }, message);
+          store.saveSession(ds);
+          const intents = ledger.planOutbound(account, { sessionId: sid, hasSession: true }, 'ai', message, null, [
+            { msgtype: 'text', text: { content: message.content } },
+          ]);
+          await ledger.commitOutbound(intents);
+          if (status === 'cancelled') ledger.cancelIntents(intents, 'taken_over');
+          else {
+            await ledger.markSending(intents[0]!);
+            if (status !== 'sending') ledger.settleIntent(intents[0]!, status === 'failed' ? 'accepted' : status, { attempts: 1 });
+            if (status === 'failed') ledger.onSendFail(intents[0]!.msgid, 7);
+          }
+          await store.flushSession(sid);
+          const detail = await req('GET', `/conversations/${enc(sid)}`, own);
+          const projected = (detail.body.messages as { text: string; delivery: unknown }[]).find((m) => m.text === message.content);
+          const expected = { status, failType: status === 'failed' ? 7 : null };
+          ck(
+            `详情 delivery：${status} → ${status === 'sending' ? '发送中' : status === 'failed' ? '没送达（原因码 7）' : status === 'unknown' ? '可能没送达' : status === 'cancelled' ? '未发送' : 'accepted（界面不显示）'}`,
+            detail.status === 200 && !!projected && JSON.stringify(projected.delivery) === JSON.stringify(expected),
+            JSON.stringify(projected),
+          );
+        }
+      } finally {
+        installAccounts([]);
+      }
+    }
+
     // ---- trace 类：J 页消息上的 turnId 与改写句数、步骤摘要、改写对照、trace 原文 ----
     const SID = 'wecom:wmDB13trace';
     const s = store.getOrCreateSession(SID, 'simulator');

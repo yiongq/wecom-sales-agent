@@ -1052,6 +1052,56 @@ try {
 } catch { await t.close(); process.exit(90); }
 `,
   );
+  const startupFile = path.join(temp, 'rekey-start.mts');
+  fs.writeFileSync(
+    startupFile,
+    `
+import assert from 'node:assert/strict';
+const {pathToFileURL} = await import('node:url');
+const moduleOf = p => import(pathToFileURL(process.cwd() + '/src/' + p).href);
+const testing = await moduleOf('db/testing.ts');
+const conn = process.env.CHANNEL_STARTUP_DISK
+  ? await testing.openTestDb({dataDir:process.env.CHANNEL_STARTUP_DISK})
+  : await (await moduleOf('db/client.ts')).openDb(process.env.DATABASE_URL);
+if (conn.pg) await conn.pg.exec('SET ROLE agent_app');
+const store = await moduleOf('store.ts');
+const registry = await moduleOf('channels/registry.ts');
+const wecom = await moduleOf('adapters/wecom.ts');
+const calls = new Set();
+globalThis.fetch = async (input,init) => {
+  const url = new URL(String(input));
+  if (url.pathname.endsWith('/sync_msg')) calls.add(JSON.parse(init.body).open_kfid);
+  return new Response(JSON.stringify({errcode:0,access_token:'fake-rekey-access-token',expires_in:7200,
+    next_cursor:'rekey-cursor',has_more:0,msg_list:[]}));
+};
+try {
+  const keyRing = registry.channelKeyRing(process.env);
+  assert.equal(keyRing.all.size,1);
+  assert.equal(keyRing.current.id,'new');
+  const deps = {db:conn.db,tenantId:process.env.CHANNEL_STARTUP_TENANT,tenantSlug:'cli15',varDir:process.env.VAR_DIR,keyRing};
+  await store.initSessionStore(deps);
+  await registry.initChannels(deps);
+  assert.equal(registry.wecomState(),'in_db');
+  const channels = [...registry.loadedChannels().values()].filter(c => c.account.kind === 'wecom_kf');
+  assert.deepEqual(channels.map(c => c.account.key),['second']);
+  registry.startChannels();
+  const until = Date.now()+10000;
+  while (calls.size < 1 && Date.now() < until) await new Promise(r => setTimeout(r,10));
+  assert.equal(calls.size,1,'启用的运行时恢复后实际拉取');
+  for (const channel of channels) {
+    const runtime = wecom.__wecomTest.inspect(channel.account.id);
+    assert.equal(runtime.started,true);
+    assert.equal(runtime.recovery,'done');
+    assert.equal(runtime.backend,'channel_inbox');
+  }
+  console.log('REKEY STARTUP PASS');
+} finally {
+  registry.__channelsTest.reset();
+  await store.drainStore(5000);
+  await conn.close();
+}
+`,
+  );
   interface CliHarness {
     label: string;
     tenantId: string;
@@ -1063,6 +1113,7 @@ try {
     ): Promise<{ status: number | null; out: string; state: CliState }>;
     close(): Promise<void>;
     blocked(): Promise<() => Promise<void>>;
+    startupEnv: Record<string, string>;
   }
   const baseEnv = {
     ...process.env,
@@ -1119,6 +1170,7 @@ try {
         },
         close: async () => {},
         blocked: async () => async () => {},
+        startupEnv: { CHANNEL_STARTUP_DISK: disk },
       };
     },
   ];
@@ -1131,6 +1183,7 @@ try {
         tenantId: fx.tenantId,
         query: fx.query,
         close: fx.drop,
+        startupEnv: { CHANNEL_STARTUP_DISK: '', DATABASE_URL: fx.urls.app },
         run: async (args, env = {}, prep) => {
           if (prep) await fx.query(prep.sql, prep.params);
           const r = spawnSync(process.execPath, ['--import', 'tsx', cli, ...args], {
@@ -1392,6 +1445,22 @@ try {
           assert.deepEqual(a.diff.keys.sort(), ['main', 'second']);
           assert.deepEqual(a.diff.fields, ['secretsCt', 'secretsKeyId']);
           assert.equal(row('site').ct, null);
+        });
+        await acheck(label('rekey 后移除旧密钥：仅新密钥 initChannels 装载成功、企微运行时启动'), async () => {
+          const varDir = path.join(temp, `rekey-start-${h.label.length}`);
+          fs.mkdirSync(varDir);
+          const startup = spawnSync(process.execPath, ['--import', 'tsx', startupFile], {
+            cwd: repo,
+            encoding: 'utf8',
+            timeout: 60000,
+            killSignal: 'SIGKILL',
+            env: { ...baseEnv, ...h.startupEnv, VAR_DIR: varDir, [envName]: newEnv, CHANNEL_STARTUP_TENANT: h.tenantId },
+          });
+          output15 += startup.stdout + startup.stderr;
+          assert.equal(startup.signal, null, '轮换后的启动子进程超时');
+          assert.equal(startup.status, 0, startup.stdout + startup.stderr);
+          assert.match(startup.stdout, /REKEY STARTUP PASS/);
+          assert.ok(!fs.existsSync(path.join(varDir, WECOM_STATE_FILE)));
         });
         await acheck(label('企微全部 exported 时两个 add 都是 2，提示 resync；不改库'), async () => {
           await h.query("update channel_accounts set status = 'exported' where tenant_id = $1 and kind = 'wecom_kf'", [h.tenantId]);

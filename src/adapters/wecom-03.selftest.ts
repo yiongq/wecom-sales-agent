@@ -75,6 +75,17 @@ const secretsOf = (a: AcctDef): { appSecret: string; callbackToken: string; call
   callbackAesKey: Buffer.alloc(32, a.seed).toString('base64').slice(0, 43),
 });
 const UID = 'wm03same';
+const ENV_ACCT: AcctDef = { key: 'env', corp: 'corp03env', kf: 'kf03env', prefix: 'wecom:', status: 'active', seed: 9 };
+const CUSTOM_WELCOME = '您好，我是 AI 咨询助手。需要人工服务请回复「人工」。';
+const CUSTOM_BACK = '欢迎回来，我是 AI 咨询助手。需要人工服务请回复「人工」。';
+// 开工提交 5b697c2 的字面量；文件配置没有已发布隐私说明，withPrivacyLink 原样返回。
+const BASE_WELCOME =
+  '您好呀～欢迎来到云途定制旅行，我是您的 AI 旅行顾问 🌿\n' +
+  '想去哪玩直接跟我说，比如「想去西藏，两个人，预算每人3万」，我马上帮您推荐线路、报价，还能在线下单～\n' +
+  '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！需要真人服务时，回复「人工」即可转真人顾问。';
+const BASE_BACK =
+  '欢迎回来～我是云途定制旅行的 AI 旅行顾问。\n' +
+  '想继续看线路、调整行程，或者换个方向看看，直接说就行～需要真人服务时，回复「人工」即可转真人顾问。';
 
 if (CHILD) await childMain(CHILD);
 else await parentMain();
@@ -144,6 +155,7 @@ async function parentMain(): Promise<never> {
     const env = { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'main-')), WECOM03_DATA_DIR: fs.mkdtempSync(path.join(ROOT, 'pgdata-')) };
     merge('PGlite 三个账号', runChild('main', env));
     merge('PGlite 重启', runChild('restart', env));
+    merge('PGlite 停用与欢迎语重启', runChild('disabled', env));
   }
   {
     const r = runChild('prod', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'prod-')) });
@@ -172,6 +184,7 @@ async function parentMain(): Promise<never> {
       out.includes('acct=a2') && !out.includes(secretsOf(acct('a2')).appSecret) && !out.includes(secretsOf(acct('a2')).callbackToken),
     );
   }
+  merge('未导入 env 回调', runChild('env', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'env-')) }));
   // 03 第 8 步：出站先落库后发送（适配器的整条顺序）
   merge('出站 PGlite', runChild('out', { VAR_DIR: fs.mkdtempSync(path.join(ROOT, 'out-')) }, NOON));
   // 03 第 9 步：入站 channel_inbox 与状态机（不跑跟进，不依赖钟点与时区，用真钟）
@@ -254,6 +267,8 @@ async function childMain(mode: string): Promise<never> {
     const h = await harness(mode);
     if (mode === 'main') await mainSuite(h);
     else if (mode === 'restart') await restartSuite(h);
+    else if (mode === 'disabled') await disabledSuite(h);
+    else if (mode === 'env') await envSuite(h);
     else if (mode === 'prod') await prodSuite(h);
     else if (mode === 'rpg') await realPgSuite(h);
     else if (mode === 'out' || mode === 'rout') await outboundSuite(h);
@@ -300,6 +315,8 @@ async function harness(m: string) {
     logs: new Map<string, FakeMsg[]>(),
     tokens: new Map<string, string>(),
     sends: [] as SendRec[],
+    events: [] as { tokenAcct: string | null; code: string; content: string }[],
+    alerts: [] as string[],
     syncs: [] as SyncRec[],
     gettokens: [] as { corp: string; acct: string | null; ok: boolean }[],
     /** gettoken 一直失败的账号 */
@@ -317,13 +334,18 @@ async function harness(m: string) {
     onLlm: null as (() => void) | null,
   };
   const stateFile = path.join(varDir, 'fake-wecom-logs.json');
-  if (m === 'restart' && fs.existsSync(stateFile)) {
+  if (['restart', 'disabled'].includes(m) && fs.existsSync(stateFile)) {
     for (const [kf, list] of JSON.parse(fs.readFileSync(stateFile, 'utf8')) as [string, FakeMsg[]][]) fake.logs.set(kf, list);
   }
   const res = (o: unknown): Response => new Response(JSON.stringify(o), { headers: { 'content-type': 'application/json' } });
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.hostname === 'alert03.selftest.invalid') {
+      fake.alerts.push(String(JSON.parse(String(init?.body)).text.content));
+      return res({ errcode: 0 });
+    }
+
     if (url.hostname === 'llm.selftest.invalid') {
       fake.onLlm?.();
       return new Response(JSON.stringify({ error: { message: 'selftest: 假模型报错' } }), { status: 400 });
@@ -332,7 +354,9 @@ async function harness(m: string) {
     const ep = url.pathname.replace(/^\/cgi-bin\//, '');
     if (ep === 'gettoken') {
       const corp = url.searchParams.get('corpid') ?? '';
-      const a = ACCTS.find((x) => x.corp === corp && secretsOf(x).appSecret === url.searchParams.get('corpsecret'));
+      const a = [...ACCTS, ENV_ACCT].find(
+        (x) => x.corp === corp && (x.key === 'env' ? 's03-env-app' : secretsOf(x).appSecret) === url.searchParams.get('corpsecret'),
+      );
       const ok = !!a && !fake.failToken.has(a.key);
       fake.gettokens.push({ corp, acct: a?.key ?? null, ok });
       if (!ok) return res({ errcode: 40013, errmsg: 'selftest: invalid corpid' });
@@ -344,7 +368,7 @@ async function harness(m: string) {
     if (tokenAcct && fake.expired.has(tokenAcct)) return res({ errcode: 42001, errmsg: 'selftest: token expired' });
     if (ep === 'media/upload') return res(fake.mediaOk ? { errcode: 0, media_id: 'media03' } : { errcode: 40004, errmsg: 'selftest' });
     const body = (typeof init?.body === 'string' ? JSON.parse(init.body) : {}) as Record<string, any>;
-    const kfAcct = ACCTS.find((x) => x.kf === body.open_kfid)?.key ?? null;
+    const kfAcct = [...ACCTS, ENV_ACCT].find((x) => x.kf === body.open_kfid)?.key ?? null;
     if (ep === 'kf/sync_msg') {
       const kf = String(body.open_kfid);
       const cursor = String(body.cursor ?? '');
@@ -369,12 +393,25 @@ async function harness(m: string) {
       if (r === 'network') throw new TypeError('fetch failed');
       return res(r ?? { errcode: 0, msgid: body.msgid });
     }
-    if (ep === 'kf/send_msg_on_event') return res({ errcode: 0 });
+    if (ep === 'kf/send_msg_on_event') {
+      fake.events.push({ tokenAcct, code: String(body.code), content: String(body.text?.content ?? '') });
+      return res({ errcode: 0 });
+    }
     if (ep === 'kf/customer/batchget') return res({ errcode: 0, customer_list: [] });
     return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
   }) as typeof fetch;
   let seq = 0;
-  const TAGS: Record<string, string> = { restart: 'r', prod: 'p', rpg: 'g', out: 'o', rout: 'q', in: 'i', rin: 'j' };
+  const TAGS: Record<string, string> = {
+    disabled: 'd',
+    env: 'e',
+    restart: 'r',
+    prod: 'p',
+    rpg: 'g',
+    out: 'o',
+    rout: 'q',
+    in: 'i',
+    rin: 'j',
+  };
   const tag = TAGS[m] ?? 'm';
   /** 客户在这个客服账号上发了一句（进假企微的日志，等拉取） */
   const say = (kf: string, uid: string, content: string): FakeMsg => {
@@ -425,7 +462,7 @@ async function harness(m: string) {
       await fx.drop();
     };
   } else {
-    const t = await testing.openTestDb(m === 'prod' || m === 'out' || m === 'in' ? {} : { dataDir: process.env.WECOM03_DATA_DIR! });
+    const t = await testing.openTestDb(['prod', 'out', 'in', 'env'].includes(m) ? {} : { dataDir: process.env.WECOM03_DATA_DIR! });
     const fx = await testing.installPgSessionStore(t, { varDir, slug: 'demo' });
     db = t.db;
     faults = fx.faults;
@@ -444,13 +481,13 @@ async function harness(m: string) {
   const keyBytes = Buffer.alloc(32, 3);
   const keyRing = { current: { id: 'k03', key: keyBytes }, all: new Map([['k03', keyBytes]]) };
   const ids = new Map<string, string>();
-  if (m === 'restart') {
+  if (m === 'restart' || m === 'disabled') {
     for (const r of await su<{ id: string; key: string }>('select id, key from channel_accounts where tenant_id = $1', [tenantId])) {
       ids.set(r.key, r.id);
     }
   } else {
     for (const a of ACCTS) {
-      if (m === 'prod' && a.key === 'b1') continue;
+      if (m === 'env' || (m === 'prod' && a.key === 'b1')) continue;
       const id = randomUUID();
       ids.set(a.key, id);
       const { ct, keyId } = sealSecrets(keyRing, { tenantId, accountId: id }, secretsOf(a));
@@ -517,7 +554,12 @@ async function harness(m: string) {
           (o.openKfId === null ? '' : `<OpenKfId><![CDATA[${o.openKfId ?? o.encFor.kf}]]></OpenKfId>`) +
           '</xml>';
     const enc = encrypt(o.encFor, plain, receiveId);
-    const sig = computeSignature(secretsOf(o.signFor ?? o.encFor).callbackToken, ts, nonce, enc);
+    const sig = computeSignature(
+      (o.signFor ?? o.encFor).key === 'env' ? 's03-env-cb' : secretsOf(o.signFor ?? o.encFor).callbackToken,
+      ts,
+      nonce,
+      enc,
+    );
     const base = route === null ? '/wecom/callback' : `/wecom/callback/${route}`;
     const from = logBuf.length;
     let r: Response;
@@ -765,6 +807,18 @@ async function mainSuite(h: Harness): Promise<void> {
     const g3 = await h.callback('GET', 'a2', { encFor: a2, signFor: a1 });
     check('GET /wecom/callback/a2：用 a1 的 Token 签的不过（404，与不存在分不出来）', g3.status === 404, String(g3.status));
     const g4 = await h.callback('GET', 'a2', { encFor: a2, receiveId: '' });
+    const wrongDefaultGet = await h.callback('GET', null, { encFor: a1, signFor: a2 });
+    const wrongDefaultPost = await h.callback('POST', null, { encFor: a1, signFor: a2 });
+    check(
+      '默认回调用 a2 的 Token 签：GET 404，POST success、恰好一行验签失败、不拉取',
+      wrongDefaultGet.status === 404 &&
+        wrongDefaultPost.text === 'success' &&
+        wrongDefaultPost.logs.length === 1 &&
+        wrongDefaultPost.logs[0]!.includes('验签失败') &&
+        (await h.pulledBy(wrongDefaultPost.token)).length === 0,
+      json(wrongDefaultPost.logs),
+    );
+
     check('GET：库里的账号遇到空 receiveid 不过（404）', g4.status === 404, String(g4.status));
     for (const k of ['w1', 'nope', 'env']) {
       const g = await h.callback('GET', k, { encFor: a2 });
@@ -889,11 +943,108 @@ async function restartSuite(h: Harness): Promise<void> {
   );
   check('重启之后的 cursor 接着推进', (await h.cursors()).a2 === 'kf03a2:8', json(await h.cursors()));
   check('重启之后也不写 var/wecom-cursor.json', !fs.existsSync(path.join(h.varDir, 'wecom-cursor.json')));
+  check(
+    '停用前 b1 已实际收发且仍 active',
+    (await h.su<{ status: string }>("select status from channel_accounts where tenant_id=$1 and key='b1'", [h.tenantId]))[0]?.status ===
+      'active' &&
+      (getSession(`wecom:b1:${UID}`)?.messages.filter((m) => m.role === 'customer').length ?? 0) >= 5 &&
+      !!getSession(`wecom:b1:${UID}`)?.messages.some((m) => m.role === 'agent'),
+  );
+  await h.su("update channel_accounts set status='disabled' where tenant_id=$1 and key='b1'", [h.tenantId]);
+  await h.su("update channel_accounts set settings=$2::json where tenant_id=$1 and key='a2'", [
+    h.tenantId,
+    json({ welcomeText: CUSTOM_WELCOME, welcomeBackText: CUSTOM_BACK }),
+  ]);
+  h.saveFakeLogs();
 }
 
 // ======================================================================================
 // prod：prod profile、LOG_FORMAT=json，非默认账号跑一轮（父进程扫标准输出）
 // ======================================================================================
+
+async function envSuite(h: Harness): Promise<void> {
+  const p = await h.callback('POST', null, { encFor: ENV_ACCT, receiveId: '' });
+  check(
+    '未导入 env 账号：空 receiveid 的有效回调 success、按 02 放行并拉取',
+    h.reg.wecomState() === 'not_imported' &&
+      p.text === 'success' &&
+      json(await h.pulledBy(p.token)) === json(['env']) &&
+      h.fake.syncs.filter((s) => s.token === p.token).every((s) => s.tokenAcct === 'env'),
+  );
+}
+
+async function disabledSuite(h: Harness): Promise<void> {
+  await waitFor(() => h.fake.syncs.some((s) => s.kfAcct === 'a2'));
+  await h.idle();
+  const g = await h.callback('GET', 'b1', { encFor: acct('b1') });
+  const p = await h.callback('POST', 'b1', { encFor: acct('b1') });
+  check(
+    '运行中的 b1 停用后重启：无运行时，GET 404，POST success、记一行、不拉取',
+    !h.wecom.__wecomTest.inspect(h.ids.get('b1')!) &&
+      g.status === 404 &&
+      p.text === 'success' &&
+      p.logs.length === 1 &&
+      (await h.pulledBy(p.token)).length === 0 &&
+      !h.fake.syncs.some((s) => s.kfAcct === 'b1'),
+  );
+  for (const key of ['a1', 'a2']) {
+    h.say(acct(key).kf, UID, '你好，想继续咨询');
+    const cb = await h.callback('POST', key === 'a1' ? null : key, { encFor: acct(key) });
+    await waitFor(() => h.sentTo(UID, key).length > 0);
+    await h.idle();
+    check(
+      `b1 停用后重启：${key} 的回调照常拉取并按自己的 token 收发`,
+      cb.text === 'success' &&
+        json(await h.pulledBy(cb.token)) === json([key]) &&
+        h.sentTo(UID, key).length > 0 &&
+        h.sentTo(UID, key).every((s) => s.tokenAcct === key),
+    );
+  }
+  for (const [key, welcome, back] of [
+    ['a1', BASE_WELCOME, BASE_BACK],
+    ['a2', CUSTOM_WELCOME, CUSTOM_BACK],
+  ]) {
+    const uid = key === 'a1' ? 'wm03base' : 'wm03custom';
+    const code = `welcome03-${key}`;
+    h.emit(acct(key!).kf, {
+      external_userid: uid!,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'enter_session', external_userid: uid!, welcome_code: code },
+    });
+    await pull(h, key!);
+    const events = h.fake.events.filter((e) => e.code === code);
+    check(
+      `${key === 'a1' ? '未设欢迎语' : '设置合格欢迎语后重启'}：新客户实际收到的事件欢迎语全文逐字节相同`,
+      events.length === 1 && events[0]!.tokenAcct === key && events[0]!.content === welcome,
+    );
+    // 无 welcome_code、还没发言的新客户走 send_msg 的 welcomeText 分支。
+    h.emit(acct(key!).kf, {
+      external_userid: uid!,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'enter_session', external_userid: uid! },
+    });
+    await pull(h, key!);
+    check(
+      `${key === 'a1' ? '未设欢迎语' : '设置合格欢迎语后重启'}：无 code 新客户实际收到 welcomeText 全文`,
+      h.sentTo(uid!, key).length === 1 && h.sentTo(uid!, key)[0]!.content === welcome,
+    );
+    // UID 是重启前已有消息的回访客户，与新客户使用不同 id，避免欢迎语去重窗口。
+    const n0 = h.sentTo(UID, key).length;
+    h.emit(acct(key!).kf, {
+      external_userid: UID,
+      origin: 4,
+      msgtype: 'event',
+      event: { event_type: 'enter_session', external_userid: UID },
+    });
+    await pull(h, key!);
+    check(
+      `${key === 'a1' ? '未设欢迎语' : '设置合格欢迎语后重启'}：回访客户实际收到 welcomeBackText 全文逐字节相同`,
+      h.sentTo(UID, key).length === n0 + 1 && h.sentTo(UID, key).at(-1)?.content === back,
+    );
+  }
+}
 
 async function prodSuite(h: Harness): Promise<void> {
   const uid = 'wm03prod';
@@ -911,6 +1062,21 @@ async function prodSuite(h: Harness): Promise<void> {
   // 请求路径里的会话 id（编码形式）也照样不出现在日志里
   await h.app.request(`/api/console/conversations/${encodeURIComponent(sid)}`);
   await h.app.request(`/api/console/conversations/${encodeURIComponent(sid)}/messages`);
+  const alerts = await import('../ops/alert.js');
+  process.env.ALERT_WEBHOOK_URL = 'https://alert03.selftest.invalid/hook';
+  alerts.startAlerts();
+  alerts.__alertTest.stopTimer();
+  h.fake.expired.add('a2');
+  h.fake.failToken.add('a2');
+  await h.wecom.wecomAdapter.push(sid, '触发该账号的 token 告警', { kind: 'human' });
+  await alerts.__alertTest.settle();
+  const forbidden = [uid, sid, encodeURIComponent(sid)];
+  check(
+    'prod、LOG_FORMAT=json：同轮非默认账号告警实际到达假 webhook，无 external_userid、原会话 id 与 %3A 编码',
+    h.fake.alerts.length > 0 &&
+      h.fake.alerts.some((a) => a.includes('a2')) &&
+      h.fake.alerts.every((a) => forbidden.every((v) => !a.includes(v))),
+  );
   await h.store.flushSession(sid);
 }
 
@@ -1520,6 +1686,11 @@ async function outboundSuite(h: Harness): Promise<void> {
       rows.length === sent.length && rows.every((x) => x.status === 'accepted'),
       json(rows),
     );
+    const inbound = await h.su<{ state: string }>(
+      "select state from channel_inbox where tenant_id=$1 and conversation_id=$2 and kind='message'",
+      [h.tenantId, sid],
+    );
+    check('R6 A：放开之后本次入站行 done', inbound.length === 1 && inbound[0]!.state === 'done', json(inbound));
   }
 
   // ---- 验收 7 的 B：生成完时已经挡住，commitOutbound 超时；markSending absent 照发；放开之后先插 pending、再迁 accepted ----
@@ -1558,6 +1729,11 @@ async function outboundSuite(h: Harness): Promise<void> {
       rows.length === sent.length && rows.every((x, i) => x.status === 'accepted' && x.msgid === sent[i]!.msgid),
       json(rows),
     );
+    const inbound = await h.su<{ state: string }>(
+      "select state from channel_inbox where tenant_id=$1 and conversation_id=$2 and kind='message'",
+      [h.tenantId, sid],
+    );
+    check('R6 B：放开之后本次入站行 done', inbound.length === 1 && inbound[0]!.state === 'done', json(inbound));
   }
 
   // ---- markSending 返回 absent、而这一组的 pending 提交过（行又没了：只会是被清除）：不发、记一行错误 ----
@@ -2163,6 +2339,21 @@ async function inboxSuite(h: Harness): Promise<void> {
     await talk('b1', uid, '你好');
     const n0 = h.sentTo(uid).length;
     const from = logBuf.length;
+    const modelEnv = ['LLM_MOCK', 'LLM_PROVIDER', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL', 'LLM_MODEL_CHEAP', 'LLM_HEDGE_MODEL'];
+    const savedModelEnv = Object.fromEntries(modelEnv.map((k) => [k, process.env[k]]));
+    Object.assign(process.env, {
+      LLM_MOCK: '0',
+      LLM_PROVIDER: '',
+      LLM_BASE_URL: 'https://llm.selftest.invalid/v1',
+      LLM_API_KEY: 'selftest-fake-key',
+      LLM_MODEL: 'selftest-fake',
+      LLM_MODEL_CHEAP: 'selftest-fake',
+      LLM_HEDGE_MODEL: '',
+    });
+    let modelCalls = 0;
+    h.fake.onLlm = () => {
+      modelCalls += 1;
+    };
     const old = h.emit(acct('b1').kf, {
       external_userid: uid,
       origin: 3,
@@ -2179,6 +2370,12 @@ async function inboxSuite(h: Harness): Promise<void> {
     });
     await pull(h, 'b1');
     await settle();
+    check('too_old：模型调用计数为 0（关闭 mock、假模型请求直接计数）', modelCalls === 0);
+    h.fake.onLlm = null;
+    for (const [k, v] of Object.entries(savedModelEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     const r = await inboxByMsgid(old.msgid);
     const r2 = await inboxByMsgid(fresh.msgid);
     check(
