@@ -203,6 +203,7 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
   }
   const baselineCases = new Map(baseline?.cases.map((c) => [c.id, c]));
   let differences = 0;
+  let compared = 0;
   const tagIndex = process.argv.indexOf('--tags');
   const selected = tagIndex > 0 ? cases.filter((c) => c.tags.includes(process.argv[tagIndex + 1])) : cases;
   const skipped = selected.filter((c) => c.realOnly).length;
@@ -213,7 +214,8 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
     {
       isolate: process.argv.includes('--v2-isolate'),
       onResult(result, index) {
-        if (baseline) {
+        if (baselineCases.has(result.id)) {
+          compared++;
           const diff = compareCaseSnapshot(result, baselineCases.get(result.id));
           differences += diff.length;
           result.failures.push(...diff);
@@ -241,9 +243,9 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
   }
   console.log(
     `v2 回归评测：${results.filter((r) => r.pass).length}/${results.length} 用例通过 · 跳过 ${skipped} 条 realOnly · ` +
-      `${results.reduce((n, r) => n + r.checks, 0)} 项断言 · guardVerdicts 跳过 ${results.reduce((n, r) => n + r.guardSkipped, 0)} 项（待第 16 步）`,
+      `${results.reduce((n, r) => n + r.checks, 0)} 项断言`,
   );
-  if (baseline) console.log(`v2 快照比对：${results.length} 条 case · ${differences} 处差异`);
+  if (baseline) console.log(`v2 快照比对：${compared} 条 case · ${differences} 处差异`);
   let ok = results.every((r) => r.pass) && differences === 0;
   if (writeTarget && ok) {
     try {

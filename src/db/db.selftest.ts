@@ -254,7 +254,7 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
   // 只能是 tenants 的三个保留期列与品牌列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
-  // UPDATE，03 spec 授权表）。按 JS 的顺序比，不受库的排序规则影响
+  // UPDATE，03 spec 授权表），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
        from pg_attribute a join pg_class c on c.oid = a.attrelid
@@ -264,7 +264,7 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
       order by 1`,
   );
   check(
-    `${label}授权：带列级授权的只有 tenants 的三个保留期列与品牌列（agent_platform 的 UPDATE）与 channel_accounts 的九列（agent_app 的 UPDATE）`,
+    `${label}授权：列级授权仅为 tenants 保留期/品牌 UPDATE、channel_accounts 九列 UPDATE 与 guard_verdicts SELECT/INSERT`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
@@ -274,6 +274,8 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
           (c) => `tenants.${c} agent_platform UPDATE`,
         ),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
+        'turn_traces.guard_verdicts agent_app INSERT',
+        'turn_traces.guard_verdicts agent_app SELECT',
       ]
         .toSorted()
         .join(','),
@@ -4708,6 +4710,20 @@ async function realPostgres(superUrl: string): Promise<void> {
         JSON.stringify(dt),
       );
     }
+    const [verdictPriv] = await sq<{ app_read: boolean; app_insert: boolean; app_update: boolean; platform: boolean }>(
+      `select has_column_privilege('agent_app', 'public.turn_traces', 'guard_verdicts', 'SELECT') as app_read,
+              has_column_privilege('agent_app', 'public.turn_traces', 'guard_verdicts', 'INSERT') as app_insert,
+              has_column_privilege('agent_app', 'public.turn_traces', 'guard_verdicts', 'UPDATE') as app_update,
+              has_column_privilege('agent_platform', 'public.turn_traces', 'guard_verdicts', 'SELECT,INSERT,UPDATE,REFERENCES') as platform`,
+    );
+    check(
+      '真实 PG：guard_verdicts 只允许 agent_app SELECT、INSERT，不能 UPDATE，agent_platform 无列权限',
+      verdictPriv?.app_read === true &&
+        verdictPriv.app_insert === true &&
+        verdictPriv.app_update === false &&
+        verdictPriv.platform === false,
+      JSON.stringify(verdictPriv),
+    );
     // tenants 的三个保留期列：agent_platform 列级 UPDATE，agent_app 一列都不能改
     const UPDATABLE = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days', 'brand'];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(

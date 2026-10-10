@@ -50,6 +50,13 @@
       "when": 1791610758519,
       "tag": "0006_tenant_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791619050660,
+      "tag": "0007_guard_verdicts",
+      "breakpoints": true
     }
   ]
 }

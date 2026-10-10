@@ -36,7 +36,7 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
   const fake = await startFakeModel(c.id, values);
   const failures: string[] = [];
   let checks = 0;
-  let guardSkipped = 0;
+  const guardSkipped = 0;
   const turns: unknown[] = [];
   const observations: TurnObservation[] = [];
   let off = () => {};
@@ -159,11 +159,12 @@ async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runt
         }
       }
       if (expect.guardVerdicts !== undefined) {
-        const observed = finished?.turn as unknown as { guardVerdicts?: unknown; guard_verdicts?: unknown } | undefined;
-        const top = finished as unknown as { guardVerdicts?: unknown; guard_verdicts?: unknown } | undefined;
-        const verdicts = observed?.guardVerdicts ?? observed?.guard_verdicts ?? top?.guardVerdicts ?? top?.guard_verdicts;
-        if (verdicts === undefined) guardSkipped++;
-        else check(isDeepStrictEqual(verdicts, expect.guardVerdicts), 'guardVerdicts', verdicts);
+        const verdicts = finished?.turn.guardVerdicts;
+        check(
+          finished !== undefined && verdicts !== undefined && isDeepStrictEqual(verdicts ?? [], expect.guardVerdicts),
+          'guardVerdicts',
+          verdicts,
+        );
       }
       turns.push({ reply, orders: structuredClone(orders()), trace: finished });
     }

@@ -4,6 +4,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { guardEvents, turnTraces } from '../schema.js';
+import type { GuardVerdict } from '../../core/pack-api.js';
 
 export interface TurnTraceRow {
   id: string;
@@ -22,6 +23,7 @@ export interface TurnTraceRow {
   calls: unknown[];
   llm: unknown[];
   signals: unknown;
+  guardVerdicts?: GuardVerdict[] | null;
 }
 
 export interface GuardEventRow {
@@ -37,7 +39,9 @@ export interface GuardEventRow {
 export async function insertTurnTraces(tx: Tx, rows: readonly TurnTraceRow[]): Promise<void> {
   if (!rows.length) return;
   const { tenantId } = currentTenantCtx();
-  await tx.insert(turnTraces).values(rows.map((r) => ({ tenantId, ...r, signals: r.signals ?? null })));
+  await tx
+    .insert(turnTraces)
+    .values(rows.map((r) => ({ tenantId, ...r, signals: r.signals ?? null, guardVerdicts: r.guardVerdicts ?? null })));
 }
 
 /** 要排在所属 trace 之后写（外键） */
@@ -155,6 +159,7 @@ export async function readTurnTrace(tx: Tx, conversationId: string, turnId: stri
       calls: turnTraces.calls,
       llm: turnTraces.llm,
       signals: turnTraces.signals,
+      guardVerdicts: turnTraces.guardVerdicts,
     })
     .from(turnTraces)
     .where(and(eq(turnTraces.id, turnId), eq(turnTraces.conversationId, conversationId)));

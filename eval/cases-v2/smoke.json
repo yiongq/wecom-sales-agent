@@ -16,7 +16,120 @@
           "orders": { "count": 0 },
           "silent": false,
           "handoff": false,
-          "guardVerdicts": []
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "strip"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            }
+          ]
         }
       }
     ]

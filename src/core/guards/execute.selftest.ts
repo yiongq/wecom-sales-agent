@@ -241,8 +241,27 @@ await loadGuardPipeline([
       return { action: 'pass' };
     },
   },
-]).run(tailContext);
-assert.deepEqual(tailEvents, ['check', 'failure', 'save', 'external']);
+]).run(tailContext, {
+  onVerdict(verdict) {
+    tailEvents.push(verdict.id);
+  },
+  onComplete(result) {
+    assert.equal(tailContext.session.handedOver, false);
+    assert.equal(result.verdicts.length, 4);
+    tailEvents.push('finish');
+  },
+});
+assert.deepEqual(tailEvents, [
+  'async-business',
+  'check',
+  'takeover_check:post',
+  'failure',
+  'turn_failure',
+  'save',
+  'final_clean',
+  'finish',
+  'external',
+]);
 assert.equal(tailContext.session.messages.length, 1);
 count++;
 
