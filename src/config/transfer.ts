@@ -16,7 +16,7 @@ import { toolDefs } from '../tool-defs.js';
 import { runtimeById } from '../packs/registry.js';
 import { packSources } from './source.js';
 import { tenantImage, tenantRenderer, switchPreamble } from './brand.js';
-import { promptHashes, renderInputsFor, type PromptHashes } from './hashes.js';
+import { promptHashes, publishedBrand, renderInputsFor, type PromptHashes } from './hashes.js';
 
 export const EXIT = { ok: 0, error: 1, inconsistent: 2, locked: 3 } as const;
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
@@ -216,11 +216,11 @@ export interface ExportOptions {
 }
 
 /**
- * 在一个 REPEATABLE READ READ ONLY 事务里一次读出已发布版本和全部 active 条目，写成 sop.md、routes.json、hotels.json。
+ * 在一个 REPEATABLE READ READ ONLY 事务里一次读出已发布版本和全部 active 条目，写成 SOP、条目与已发布品牌。
  * 只读库，应用可以照常在跑
  */
 export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
-  const code = o.code ?? imageCode();
+  let code = o.code ?? imageCode();
   const tenant = await findTenantBySlug(o.db, o.tenantSlug);
   if (!tenant) return fail(`tenant_not_found：没有 slug 为「${o.tenantSlug}」的租户`);
   const { pub, items } = await withTenant(
@@ -230,9 +230,18 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
     { isolation: 'repeatable read', readOnly: true },
   );
   if (!pub) return fail(`no_published_sop：租户「${o.tenantSlug}」没有已发布的 SOP`);
+  const runtime = runtimeById(pub.packId, packSources());
+  if (!runtime) return fail('pack_unknown：没有行业包运行时');
+  let brand: ReturnType<typeof publishedBrand>['brand'];
+  try {
+    brand = publishedBrand(pub.renderInputs).brand;
+  } catch (e) {
+    return fail(`品牌快照不合格：${message(e)}`);
+  }
+  if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
   let target: SopSection[];
   try {
-    target = splitSop(o.targetImageSop ?? o.imageSop);
+    target = tenantImage(runtime, o.targetImageSop ?? o.imageSop, brand);
   } catch (e) {
     return fail(`目标镜像的 sop.md 不合格：${message(e)}`);
   }
@@ -249,6 +258,9 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
       toolNames: code.toolNames,
       knownFields: code.knownFields,
       baselineEditableChars: null,
+      rules: runtime.contractRules(brand ? { brand } : 'legacy'),
+      brand,
+      hardRequirements: code.render(''),
     });
     if (violations.length)
       return fail(
@@ -262,6 +274,9 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
   fs.writeFileSync(path.join(o.outDir, 'sop.md'), sopText);
   fs.writeFileSync(path.join(o.outDir, 'routes.json'), `${JSON.stringify(payloads('route'), null, 2)}\n`);
   fs.writeFileSync(path.join(o.outDir, 'hotels.json'), `${JSON.stringify(payloads('hotel'), null, 2)}\n`);
+  const brandFile = path.join(o.outDir, 'brand.json');
+  if (brand) fs.writeFileSync(brandFile, `${JSON.stringify(brand, null, 2)}\n`);
+  else fs.rmSync(brandFile, { force: true });
   return {
     code: EXIT.ok,
     hashes,
