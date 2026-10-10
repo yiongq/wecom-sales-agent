@@ -8,6 +8,7 @@ import { dejargon as coreDejargon } from './core/guards/dejargon.js';
 import { coreReplySteps } from './core/guards/reply.js';
 import { loadGuardPipeline } from './core/guards/execute.js';
 import { travelReplySteps } from './packs/travel/reply-steps.js';
+import { travelFollowupSteps, type FollowupGuardContext } from './packs/travel/followup-steps.js';
 import { travelPriceThresholds } from './packs/travel/thresholds.js';
 import { createTravelTurnHooks } from './packs/travel/turn.js';
 import { CUSTOM_PROMISE } from './packs/travel/itinerary.js';
@@ -130,7 +131,6 @@ const {
   BUDGET_FLOOR,
   haggling,
   requestedDays,
-  neutralizeStandardDays,
   isComplaint,
   isHandoffIntent,
   statedPastDate,
@@ -146,7 +146,6 @@ const {
   routeInFocus,
   routesIn,
   toolHints,
-  travelersKnown,
 } = turnHooks;
 
 const dejargon = (text: string, sessionId: string): string => coreDejargon(text, sessionId, dejargonVocab);
@@ -181,30 +180,31 @@ const {
   keptBesideCustomPromise,
   PROPOSAL_PROMISE,
   LINK_PROMISE,
-  SITE_LINK,
-  HOLE,
-  ANY_HOLE,
-  HOLE_WITH_SPACE,
   markLinkHoles,
   promiseInsertAt,
-  tidyLinkText,
-  dropLinkPromise,
   restoreProposalSuffixes,
   HANDED_OVER_FALLBACK,
   dropProposalOffers,
   claimsTransfer,
-  transferSentences,
-  saysTransfer,
-  dropTransferClaims,
   safetyNetKind,
   handoffReply,
   fallbackReply,
-  allowedPayLinks,
-  whitelistLinks,
-  DEFER_TO_CONSULTANT,
-  promisesContact,
 } = replyHelpers;
 const answerIdentity = (text: string, reply: string): string => coreAnswerIdentity(text, reply, replyHelpers.IDENTITY_ANSWER);
+
+// 第 18 步接 PackRuntime.followupSteps；现在独立装载并校验 11 步跟进表。
+const followupPipeline = loadGuardPipeline(
+  travelFollowupSteps({
+    helpers: replyHelpers,
+    turnHooks,
+    priceGuard: { findUnbackedPriceHits, dropSentences, strandedAfterDrop },
+    priceRules: { dropUnbackedClaims },
+    dejargon,
+    stripMarkdown,
+    trimDangling,
+    stripAdvisorPrefix,
+  }),
+);
 
 // 第 18 步把包装载移到组合根；现在启动时即校验完整 28 步表。
 const replySteps = [
@@ -905,63 +905,28 @@ function logSlowTurn(
  * 不在轮次里调用时 noteGuard 什么都不记（02「逐轮 trace」只记对话轮次）
  */
 export async function guardOutbound(session: Session, text: string, _opts: { kind: 'followup' }): Promise<string> {
-  let visible = cleanText(text);
-  const beforeLinks = visible;
-  visible = whitelistLinks(visible, allowedPayLinks(session), () => false);
-  noteGuard('link_whitelist', beforeLinks, visible, 'strip');
-  const beforeMarkdown = visible;
-  visible = stripMarkdown(visible);
-  noteGuard('markdown', beforeMarkdown, visible, 'strip');
-  // 说了发链接、链接却不在（抹掉的、占位符、冒号后面空着）：这里不补链接，承诺那几句连同空位一起删
-  const beforeHoles = visible;
-  visible = markLinkHoles(visible);
-  for (const kind of ['pay', 'proposal'] as const) {
-    if (visible.includes(HOLE[kind]) || (!SITE_LINK.test(visible) && promiseInsertAt(visible, kind) >= 0)) {
-      visible = dropLinkPromise(visible, kind, HOLE[kind]);
-    }
-  }
-  // 抹掉的无关网址留下的空位连同前面的空格一起去掉（与 repairLinks 收尾相同）
-  visible = tidyLinkText(visible.replace(HOLE_WITH_SPACE, ''));
-  noteGuard('repair_links', beforeHoles, visible, 'drop_sentence');
-  const beforeJargon = visible;
-  visible = dejargon(visible, session.id);
-  noteGuard('dejargon', beforeJargon, visible, 'replace');
-  // 改行程的承诺（系统做不到）：对话轮次里转人工，这里只删那几句
-  const beforeCustom = visible;
-  visible = neutralizeStandardDays(visible, session, []);
-  if (CUSTOM_PROMISE.test(visible)) visible = keptBesideCustomPromise(visible);
-  noteGuard('custom_promise', beforeCustom, visible, 'drop_sentence');
-  // 说了「为您转接顾问」：跟进不转人工，删掉那几句
-  if (saysTransfer(visible, session)) {
-    const before = visible;
-    visible = dropTransferClaims(visible, session);
-    noteGuard('handoff_claims', before, visible, 'drop_sentence');
-  }
-  // 「由顾问跟您确认」「顾问会在微信上联系您」：AI 回复里说了会给顾问记一条待办，跟进是主动外发，不替顾问揽活，按句删掉
-  const deferred = transferSentences(visible);
-  if (deferred.some((s) => DEFER_TO_CONSULTANT.test(s) || promisesContact(s, session))) {
-    const before = visible;
-    visible = tidyLinkText(deferred.filter((s) => !DEFER_TO_CONSULTANT.test(s) && !promisesContact(s, session)).join(''));
-    noteGuard('handoff_claims', before, visible, 'drop_sentence');
-  }
-  const beforeGuards = visible;
-  const saidAll = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
-  const claims = dropUnbackedClaims(visible, session, [], { travelers: travelersKnown(session, saidAll) });
-  if (claims.text !== visible) {
-    noteGuard('unbacked_claims', visible, claims.text, 'drop_sentence');
-    visible = claims.text;
-  }
-  const unbacked = findUnbackedPriceHits(visible, session, '', []);
-  if (unbacked.length) {
-    console.error(`[engine] ⚠️ 跟进话术里有无出处的金额，删掉那几句（会话 ${convLabel(session.id)}）`);
-    const before = visible;
-    visible = dropSentences(visible, unbacked).text;
-    noteGuard('price', before, visible, 'drop_sentence');
-  }
-  if (strandedAfterDrop(beforeGuards, visible)) visible = '';
-  visible = trimDangling(visible);
-  // 与 AI 回复同一个出口：开头的「【顾问】」去掉（不变量 18）
-  return stripAdvisorPrefix(cleanText(visible.replace(ANY_HOLE, ''))).trim();
+  const forbidden = (): never => {
+    throw new Error('跟进护栏不允许建单或转人工');
+  };
+  const ctx: FollowupGuardContext = {
+    session,
+    text,
+    turn: { flags: {} },
+    toolSources: [],
+    orderSources: [],
+    brand: null,
+    thresholds: travelPriceThresholds,
+    createOrder: forbidden,
+    enterHandoff: forbidden,
+    async callTool(name, args) {
+      const tool = getToolSpec(name);
+      if (!tool || tool.sideEffects.length) throw new Error(`跟进护栏不允许调用有副作用或未注册的工具：${name}`);
+      return executeTool(name, args, session);
+    },
+    recordGuard: noteGuard,
+  };
+  // 不接 noteGuardVerdict：执行器的内部裁决不写进跟进 trace（R9）。
+  return (await followupPipeline.run(ctx)).text;
 }
 
 /**
