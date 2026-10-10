@@ -10,6 +10,9 @@
 // 只删那一句、不整条替换：同一条回复里通常还有真实报价和对别的问题的回答（见 price-guard dropSentences）。
 // 判断全是确定性的：比价按线路 bestSeason 算两个日子各自上不上浮，预算按客户原话里的数和这次报价比。
 import { dropSentences, namedRoutes, priceMentions, routeNames, sentenceUnits, spokenMoney } from './price-guard.js';
+import { budgetHeadcount } from './core/parse/counts.js';
+import { MONTH_PATTERN as MONTH, monthsOf as parseMonthsOf, whensIn as parseWhensIn } from './core/parse/dates.js';
+import { PRICE_HOLIDAY_PATTERN as HOLIDAY, travelMonthPolicy } from './packs/travel/dates.js';
 import { cleanText } from './shared/text.js';
 import type { TurnToolCall } from './price-guard.js';
 // tools.ts 也 import 本文件（create_quote 的预算比较），是循环引用：两边都只在函数里用对方的导出，模块加载时不碰，所以安全
@@ -36,17 +39,6 @@ const BUDGET_TALK = /预算|budget|以内|之内|以下|不超过|控制在|封�
 const BUDGET_FLOOR_WORD = /至少|起码|最少|不低于|不少于|以上|往上|打底/;
 const PER_PERSON_WORD = /每人|人均|每位|单人|一个人|一人|[/／]\s*人|per\s*person|\bpp\b|each/i;
 const TOTAL_WORD = /一共|总共|总预算|合计|加起来|总价|总计|全家|全部/;
-const HEADS_SAID =
-  /(?<![\d一二两三四五六七八九十])(\d{1,2}|[一二两三四五六七八九十])\s*(?:个大人|个人|位|口人|大人|人)(?![均次])|(我们俩|咱们俩|咱俩|我俩|俩人|两口子|小两口)/;
-const CN_COUNT: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-function headsIn(t: string): number | undefined {
-  const m = HEADS_SAID.exec(t);
-  if (!m) return undefined;
-  if (m[2]) return 2;
-  const n = /^\d+$/.test(m[1]) ? Number(m[1]) : CN_COUNT[m[1]];
-  return n > 0 ? n : undefined;
-}
-
 /**
  * 客户把预算放开了：「预算不是问题」「不设上限」「钱不是问题」「不差钱」。这句没带数时就是最新的说法，之前说的数不再是上限——
  * 此前没带数的话直接跳过、落回更早那句：客户说完「算了 预算不是问题 想住好一点的」，引擎照样按「一共3万」折成每人 15000 去查马代，
@@ -82,7 +74,7 @@ export function budgetCap(session: Session): BudgetCap | undefined {
       per: PER_PERSON_WORD.test(t) ? 'person' : TOTAL_WORD.test(t) ? 'total' : 'unclear',
       floor: BUDGET_FLOOR_WORD.test(t),
       said: cleanText(t, 40),
-      heads: headsIn(t),
+      heads: budgetHeadcount(t),
     };
   }
   return undefined;
@@ -129,41 +121,12 @@ export function budgetVerdict(
 
 // ---------------- 日子 → 月份 ----------------
 
-const HOLIDAY_MONTHS: Record<string, number[]> = {
-  国庆: [10],
-  十一: [10],
-  黄金周: [10],
-  五一: [5],
-  劳动节: [5],
-  春节: [1, 2],
-  过年: [1, 2],
-  寒假: [1, 2],
-  元旦: [1],
-  暑假: [7, 8],
-  圣诞: [12],
-  中秋: [9, 10],
-  清明: [4],
-  端午: [5, 6],
-};
-// 「十一」只在不是数字的一部分时算国庆：「十一月」「十一个人」「十一点」都不是
-const HOLIDAY =
-  '国庆|黄金周|五一|劳动节|春节|过年|寒假|元旦|暑假|圣诞|中秋|清明|端午|(?<![\\d一二三四五六七八九十])十一(?![月个位人天日号点多万千百年岁])';
-const MONTH = '(?<![\\d一二三四五六七八九十])(?:1[0-2]|0?[1-9]|十[一二]?|[一二三四五六七八九])\\s*月(?:份)?';
-const WHEN_RE = new RegExp(`${HOLIDAY}|${MONTH}`, 'g');
-const CN_MONTH: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 十一: 11, 十二: 12 };
-
+// 节日与月份的规则词口径由旅游包提供，通用月份转换与位置解析在 core。
 function monthsOf(word: string): number[] {
-  if (HOLIDAY_MONTHS[word]) return HOLIDAY_MONTHS[word];
-  const raw = word.replace(/\s+/g, '').replace(/月(?:份)?$/, '');
-  const n = /^\d+$/.test(raw) ? Number(raw) : CN_MONTH[raw];
-  return n >= 1 && n <= 12 ? [n] : [];
+  return parseMonthsOf(word, travelMonthPolicy);
 }
-
-/** 这段话里说到的日子（节日或几月），带位置 */
-function whensIn(s: string): { months: number[]; at: number; end: number }[] {
-  return [...s.matchAll(WHEN_RE)]
-    .map((m) => ({ months: monthsOf(m[0]), at: m.index!, end: m.index! + m[0].length }))
-    .filter((w) => w.months.length);
+function whensIn(text: string) {
+  return parseWhensIn(text, travelMonthPolicy);
 }
 
 // ---------------- 规则词 ----------------

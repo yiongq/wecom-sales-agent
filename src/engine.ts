@@ -2,6 +2,20 @@
 // 销售阶段不靠模型自 report，而是看它这轮实际调了哪些工具（调了 create_order
 // 就是 closing），可靠且反映真实行为；画像同理从工具参数沉淀。
 import fs from 'node:fs';
+import { groupSizeIn, hasTotalHeadcount, headcountIn, parseDayCount, spokenHeadcounts } from './core/parse/counts.js';
+import {
+  dayInMonth as parseDayInMonth,
+  isAside,
+  latestDepart as parseLatestDepart,
+  monthSaid as parseMonthSaid,
+  readDepartDates as parseDepartDates,
+  resolveDepartDate as parseResolvedDate,
+  saysDay,
+  spokenDepartDate as parseSpokenDate,
+  statedPastDate as parseStatedPastDate,
+  type SpokenDate,
+} from './core/parse/dates.js';
+import { holidayIn, travelDatePolicy } from './packs/travel/dates.js';
 import path from 'node:path';
 import type { AgentReply, ChatMessage, CustomerProfile, Order, PreparedPush, Route, SalesSegment, SalesStage, Session } from './types.js';
 import { profileForPrompt, SALES_SEGMENTS } from './types.js';
@@ -1015,7 +1029,7 @@ function otherPartyPending(session: Session, routeId: unknown, travelers: number
 function askOtherOrder(o: Order, text: string): string {
   const n = headcountIn(text);
   // 「她们也是两个人」是另一份的人数，要加上本人这单；「一共4个人」说的已经是总数
-  const total = typeof n === 'number' ? (TOTAL_HEADCOUNT.test(text) ? n : o.travelers + n) : undefined;
+  const total = typeof n === 'number' ? (hasTotalHeadcount(text) ? n : o.travelers + n) : undefined;
   return (
     `您本人这张《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发的订单还在待付款；另外那份还没有下单。\n` +
     `要合并成${total ? ` ${total} 位` : '一单'}一起下，还是请顾问另外单独下一单？`
@@ -1081,18 +1095,6 @@ const DAYS_NUM = '(\\d+|[一二两三四五六七八九十]+)\\s*天';
 /** 「改成/缩到/只要 N 天」——客户要的目标天数 */
 const TARGET_DAYS = new RegExp(`(?:改成|改为|改到|缩到|缩成|缩短到|压到|压成|压缩到|减到|变成|调成|只要|只有|只玩)\\s*${DAYS_NUM}`);
 const ANY_DAYS = new RegExp(DAYS_NUM, 'g');
-const CN_DAY: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-
-function parseDayCount(raw: string): number | null {
-  if (/^\d+$/.test(raw)) return Number(raw) || null;
-  const m = /^([一二两三四五六七八九])?(十)?([一二两三四五六七八九])?$/.exec(raw);
-  if (!m) return null;
-  const [, a, ten, b] = m;
-  if (!ten && a && b) return null; // 「三五天」是约数，不是一个确定的天数
-  const n = ten ? (a ? CN_DAY[a] : 1) * 10 + (b ? CN_DAY[b] : 0) : CN_DAY[a ?? b];
-  return n || null;
-}
-
 /** 从客户原话里取他要的天数，兜底文案里不写死数字。
  *  优先取「改成/缩到 N 天」的目标天数，没有就取最后一个「N 天」——客户说「8天能改成5天吗」，
  *  第一个数字是原线路天数，回「按 8 天重排」读起来就是没在听 */
@@ -1166,34 +1168,6 @@ function cnDate(iso: string): string {
   if (!m) return iso;
   const md = `${Number(m[2])}月${Number(m[3])}号`;
   return m[1] === todayIso().slice(0, 4) ? md : `${m[1]}年${md}`;
-}
-
-// 客户或模型这轮说到的人数（「4个人」「两位」「3大人」）。「每人」「人均」前面没有数，不会被当成人数
-const HEADCOUNT = /(?<![\d,.])(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个大人|个人|位|大人|人)(?![均次])/g;
-/** 「一个人多少钱」问的是单价，不是说这次一个人去 */
-const PER_PERSON_ASK = /^\s*的?话?\s*(?:多少|怎么算|啥价|什么价|价格|价钱|费用|单价|大概多少|要多少)/;
-/** 「再加一个人」「少两位」「至少3个人」说的是增减或范围，不是总数 */
-const HEADCOUNT_DELTA = /(?:加|添|多带|再带|再来|多|少|减|去掉)了?\s*$/;
-
-/**
- * 话里说到的总人数，按出现顺序。此前「一个人多少钱？方案发我看看」被读成 1 人：补发了一份 1 人方案书、
- * 覆盖了 lastQuote，下一轮「就订这个」安全网照着建了一张 1 人的单；「再加一个人」同样读成 1 人。
- * 说单价的「一个人」跳过；出现增减说法时 delta 为真，这时算不出总数，交给调用方去问
- */
-function spokenHeadcounts(s: string): { counts: (number | null)[]; delta: boolean } {
-  const counts: (number | null)[] = [];
-  let delta = false;
-  for (const m of s.matchAll(HEADCOUNT)) {
-    const at = m.index ?? 0;
-    if (HEADCOUNT_DELTA.test(s.slice(Math.max(0, at - 4), at))) {
-      delta = true;
-      continue;
-    }
-    const n = parseDayCount(m[1]);
-    if (n === 1 && PER_PERSON_ASK.test(s.slice(at + m[0].length))) continue;
-    counts.push(n);
-  }
-  return { counts, delta };
 }
 
 /**
@@ -1388,22 +1362,6 @@ async function strandedReply(ctx: LinkRepairCtx): Promise<string> {
     );
   }
   return '价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～';
-}
-
-// 客户话里的总人数。「一共3个人」直接认；数得出孩子个数却没说总数（「两个大人一个孩子」「2大1小」）
-// 时 HEADCOUNT 只数得到大人，按它出方案书就是少算了人头的正式报价，宁可问一句
-const TOTAL_HEADCOUNT = /(?:一共|总共|共|加起来|合计)\s*(\d{1,2}|[一二两三四五六七八九十]{1,3})\s*(?:个大人|个人|位|个|人|口人?)/;
-const KIDS_COUNT =
-  /(?:\d{1,2}|[一二两三四五六七八九十])\s*(?:个|位|名)?\s*(?:小孩|孩子|儿童|娃|小朋友|宝宝|婴儿)|(?:\d|[一二两三四五六七八九])\s*大\s*(?:\d|[一二两三四五六七八九])\s*小/;
-/** 'delta'：说的是增减（「再加一个人」），算不出总数 */
-function headcountIn(s: string): number | 'ambiguous' | 'delta' | undefined {
-  const total = TOTAL_HEADCOUNT.exec(s);
-  if (total) return parseDayCount(total[1]) ?? 'ambiguous';
-  if (KIDS_COUNT.test(s)) return 'ambiguous';
-  const { counts: ns, delta } = spokenHeadcounts(s);
-  if (delta) return 'delta';
-  if (!ns.length) return undefined;
-  return ns.every((n) => n !== null && n === ns[0]) ? (ns[0] as number) : 'ambiguous';
 }
 
 /** 标题里这条线独有的两字词（去掉目的地名、跳过 pool 里别的线也有的） */
@@ -1786,15 +1744,8 @@ function alreadyAsks(rest: string, t: ProposalTarget): boolean {
 //
 // 只认出发日期：「我们2025年10月1号去过云南，这次想去西藏」里的日期说的是上一次出行，
 // 当成出发日期会拦下这轮带日期的报价/建单，还让模型去跟客户「确认出发日期是不是 2025-10-01」。
-const EXPLICIT_DATE_RE = /([0-9]{4})\s*年\s*([0-9]{1,2})\s*月\s*([0-9]{1,2})\s*[号日]/g;
-const PAST_TRIP_AFTER = /^[^，。,！？!?\n]{0,8}(?:去过|来过|玩过|到过|走过)/;
 function statedPastDate(text: string): string | null {
-  for (const m of text.matchAll(EXPLICIT_DATE_RE)) {
-    if (PAST_TRIP_AFTER.test(text.slice((m.index ?? 0) + m[0].length))) continue;
-    const iso = `${m[1]}-${String(Number(m[2])).padStart(2, '0')}-${String(Number(m[3])).padStart(2, '0')}`;
-    return iso < todayIso() ? iso : null;
-  }
-  return null;
+  return parseStatedPastDate(text, todayIso());
 }
 
 // 明确的转人工意图（用于转人工安全网）。只匹配显式诉求，不含单纯「太贵」这类异议。
@@ -2052,292 +2003,24 @@ function handoffReply(session: Session, text: string, kind: 'complaint' | 'refun
   return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的${payEntry}仍然有效。`;
 }
 
-/** y-m-d 是否真实存在的日历日期（拒绝 2 月 31 日这类） */
-function isRealDate(y: number, m: number, d: number): boolean {
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+// 旧日期入口保留调用语境与自测签名；节日与春节月份由旅游包提供。
+function readDepartDates(text: string, today = todayIso()) {
+  return parseDepartDates(text, today, travelDatePolicy);
 }
-
-const isoOf = (y: number, m: number, d: number): string | undefined =>
-  isRealDate(y, m, d) ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : undefined;
-
-// ---------- 客户原话里的出发日期 ----------
-// 客户说过出发时间，模型报价/出方案时却常漏传 departDate，工具就按平日价算：glm-5.2 实测客户说
-// 「国庆假期出发，一共3个人」，方案书报了平日价 59,400、链接不带日期，下一轮又报国庆价 65,340。
-// 所以日期由引擎按客户原话补（见 groundToolArgs）。这里是「客户说的出发日期」唯一的解析口径，
-// 画像、补发方案书、成单安全网（resolveDepartDate）走的也是它。
-
-/** 农历节日的公历日期没有固定规则，只能逐年查表。表只覆盖到 2028 年，超出就当说不准、不补——
- *  宁可按平日价报，也不能拿错的日期去报价。2027 年春节是 2 月 6 日（朔在北京时间 6 日 23:56）；
- *  Node 的 Intl chinese 历会算成 7 日，别拿它来「校正」这张表 */
-const LUNAR_HOLIDAYS: Record<string, string[]> = {
-  春节: ['2026-02-17', '2027-02-06', '2028-01-26'],
-  端午: ['2026-06-19', '2027-06-09', '2028-05-28'],
-  中秋: ['2026-09-25', '2027-09-15', '2028-10-03'],
-};
-/** 节日按当天算（国庆 = 10月1日）。这只是个大概，所以只拿来补报价、方案书，不拿来改下单日期（见 groundToolArgs） */
-const SOLAR_HOLIDAYS: Record<string, string> = { 国庆: '10-01', 五一: '05-01', 元旦: '01-01' };
-const HOLIDAY_ALIAS: Record<string, string> = { 十一: '国庆', 劳动节: '五一', 大年初一: '春节', 八月十五: '中秋' };
-/** 节日假期从节日那天（上面两张表里的日子）算起放几天，按国务院办公厅每年发的放假安排（法定假日连调休）常见的天数：
- *  国庆 10月1日至7日，五一 5月1日至5日，元旦 1月1日至3日，春节从初一到初七，端午、中秋连周末三天（个别年份节日落在
- *  三天里的最后一天，这里一律从节日那天往后数）。只拿来认「这次节日正在放假中」（见 holidayInProgress）。
- *  节日那天之前放的几天（除夕、端午前的周末）不用管：那时节日那天还没到，本来就读成这一次 */
-const HOLIDAY_DAYS: Record<string, number> = { 国庆: 7, 五一: 5, 元旦: 3, 春节: 7, 端午: 3, 中秋: 3 };
-
-/** iso 往后数 n 天 */
-function addDays(iso: string, n: number): string {
-  const t = new Date(`${iso}T00:00:00Z`);
-  t.setUTCDate(t.getUTCDate() + n);
-  return t.toISOString().slice(0, 10);
-}
-
-/** 今天在放的那一次节日假期：start 是节日那天，end 是假期最后一天（没在放就是 undefined）。10月2号的国庆已经过了
- *  「10月1日」那天，readDepartDates 照旧读成明年的国庆，但客户这时顺口问「国庆期间人多吗」，说的多半就是眼下这个 */
-function holidayInProgress(name: string, today: string): { start: string; end: string } | undefined {
-  const days = HOLIDAY_DAYS[name];
-  const solar = SOLAR_HOLIDAYS[name];
-  const starts = solar ? [`${today.slice(0, 4)}-${solar}`] : (LUNAR_HOLIDAYS[name] ?? []);
-  for (const start of days ? starts : []) {
-    const end = addDays(start, days - 1);
-    if (start <= today && today <= end) return { start, end };
-  }
-  return undefined;
-}
-
-/** 认得出具体哪天的说法。只认阿拉伯数字的月日（与此前口径一致）；「十一」只在跟着假期说法时算国庆，
- *  不然「十一个人」「十一天」都成了国庆 */
-const DATE_MENTION = new RegExp(
-  [
-    '(\\d{4})\\s*年\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[号日]',
-    '(明年)?\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*[号日]',
-    '(\\d{4})-(\\d{2})-(\\d{2})',
-    '(下个?月|这个?月|本月)\\s*(\\d{1,2})\\s*[号日]',
-    '(今年|明年|\\d{4}\\s*年)?\\s*(国庆|十一(?=\\s*(?:假期|长假|小长假|黄金周|期间))|五一|劳动节|元旦|春节|大年初一|端午|中秋|八月十五)',
-  ].join('|'),
-  'g',
-);
-/** 说了时间、但说不准哪天（「11月」「月底」「下周」「十月三号」「5号」）。客户最近一次说的是这种时，
- *  不能拿他更早说过的日期去补——他已经改口了，只是改成了引擎认不准的说法。
- *  不收「明天」「周一」：销售对话里它们几乎都是在约联系时间（「明天再说」「周一给你答复」），
- *  算进来的话一句客套就让之后整段对话都补不上日期 */
-const VAGUE_DATE = new RegExp(
-  [
-    '\\d{1,2}\\s*月份?',
-    '(?:[一二三四五六七八九]|十[一二]?)\\s*月',
-    '月[底初中末]|[上中下]旬',
-    '下个?月|这个?月|本月',
-    '(?:下|这|本)个?(?:周末?|星期|礼拜)|周末',
-    '年[底初]|明年|后年|寒假|暑假',
-    // 「过完年 / 过年 / 年后 / 年前」：春节前后、没说哪天（B09 第 2 遍）。「三年前」「两年后」「过年好」不算
-    // 「成年后」「成年前」说的是孩子长大，不是春节
-    '过完年|过了年|过年(?!好|快乐)|(?<![\\d一二两三四五六七八九十几多半去前今明后成])年[前后]',
-    '(?<![\\d第])\\d{1,2}\\s*号(?![线楼院房])',
-  ].join('|'),
-  'g',
-);
-/** 不是这次的出发日期：返程（「7号回来」「10月5号回」「玩到7号」）、过去的经历（「去年国庆」「10月去过」）、
- *  不去了（「国庆人太多，不去了」）、改掉的旧日子（「原定10月2号」）、约的是联系时间（「下周再说」「月底答复您」） */
-const NOT_DEPART_BEFORE =
-  /(?:返程|回程|回来|返回|回国|玩到|待到|呆到|住到|一直到|去年|前年|上次|上回|那次|原定|原计划|原先|原来|避开|错开|除了|不想|不要)[^，。,！？!?；;\n]{0,3}$/;
-const NOT_DEPART_AFTER =
-  /^\s*(?:节|假期|长假|期间|那天|当天|左右|前后)?\s*(?:就|再|才|要|得)?\s*(?:回来|回程|返程|返回|回国|回家|到家|结束|不去|不行|去不了|走不了|没空|太挤|人太多|再说|再聊|再联系|联系|答复|回复|商量|回)/;
-/** 时间后面跟的是别的安排（「这个周末我跟家人商量一下」「明年再考虑日本」「这个月底前给你答复」「孩子下个月还要考试」
- *  「10月8号要上班」）：说的不是出发。只看同一小句里紧跟着的几个字，而且后面明说了出发/走/去的不算（见 DEPART_AFTER） */
-const OTHER_PLAN_AFTER = /^[^，。,！？!?；;\n]{0,6}?(?:商量|考虑|答复|回复|给你|给您|联系|再说|再聊|定下来|考试|开学|上学|上班|开会|生日)/;
-/** 读起来就是出发：后面跟着出发/走/去 */
-const DEPART_AFTER = /^\s*(?:节|假期|长假|小长假|黄金周|期间|那天|当天|左右)?\s*(?:再|就|才)?\s*(?:出发|动身|启程|走|去|飞)/;
-/** 同一句里后面的日子算改口：前面带「改到/改成/推到…」，或后面紧跟「出发/走」（不含「去」：「10月1号出发，3号去丽江」是行程里的一站） */
-const SWITCH_BEFORE = /(?:改到|改成|改为|改在|换到|换成|推到|推迟到|延到|延后到|提前到|挪到|定在|定到)\s*$/;
-const SWITCH_AFTER = /^\s*(?:节|假期|长假|小长假|黄金周|期间|那天|当天|左右)?\s*(?:再|就|才)?\s*(?:出发|动身|启程|走)/;
-/** 「国庆前 / 10月1号之后」：在那天前后，不是那天 */
-const NEAR_NOT_ON = /^\s*(?:节|假期|长假|期间)?\s*(?:前(?!后)|之前|以前|后|之后|以后)/;
-/** 「过完春节 / 过了国庆」：那个节日之后，同样不是那天 */
-const AFTER_HOLIDAY = /(?:过完|过了)\s*$/;
-
-/** 说的节日（没说哪年，或说的就是正在放的那年）今天正在放假：这次假期还剩的几天，今天到假期最后一天。
- *  报价、下单不看它，只拿来认顺口一问说的是不是眼下这次（见 departMonths） */
-interface HolidayLeft {
-  from: string;
-  to: string;
-}
-type SpokenDate =
-  /** iso 为空：说的是一个用不了的日子（2 月 31 日、写明年份的过去日期、这个月已过的日子）。
-   *  说不准哪天的（vague）也可能带 ongoing：农历表里最后一次春节放到初二以后，下一次不在表里，照样在放眼下这次 */
-  { kind: 'date'; iso?: string; exact: boolean; ongoing?: HolidayLeft } | { kind: 'vague'; ongoing?: HolidayLeft };
-
-/**
- * 一句话里客户说的出发日期（pick）和他在这句里明说的所有具体出发日子（exact，下单核日期用）。
- * 先说的那个就是出发日期；后面的只有像改口时才换（「原定10月2号，改到10月5号」「国庆人多，10月3号出发」），
- * 或是把前面说不准的说具体了。此前一律取最后一处，「10月1号出发，玩到10月7号」成了 7 号出发，
- * 「国庆出发吧，孩子下个月还要考试」成了说不准哪天。返程、经历、区间终点（「10月1号到7号」的 7 号）、
- * 别的安排（「这个周末商量一下」）不算；一处都没有返回 pick=null。
- * 节假日取最近的未来那一次，exact=false；这次节日正在放假时另带 ongoing（见 SpokenDate）。today 参数只为自测能模拟任意日期。
- */
-function readDepartDates(
-  text: string,
-  today = todayIso(),
-): {
-  pick: SpokenDate | null;
-  exact: string[];
-  /** 选中的那一处在原文里的位置，和因为不是出发（「春节人太多」「过年要回老家」「玩到7号」）跳过的几处，给 monthSaid 用 */
-  pickAt?: { at: number; end: number };
-  skipped: { at: number; end: number }[];
-} {
-  const year = Number(today.slice(0, 4));
-  const month = Number(today.slice(5, 7));
-  const spans: { at: number; end: number; date: SpokenDate }[] = [];
-  for (const m of text.matchAll(DATE_MENTION)) {
-    const at = m.index ?? 0;
-    let date: SpokenDate;
-    if (m[1]) {
-      // 客户明写了年份就按他说的算，不许改：此前只认「X月Y号」，「2020年1月1号出发」被顺手滚到明年建了单。
-      // 过去的日期不给——交给工具层报错，让模型去问客户
-      const iso = isoOf(Number(m[1]), Number(m[2]), Number(m[3]));
-      date = { kind: 'date', iso: iso && iso >= today ? iso : undefined, exact: true };
-    } else if (m[5]) {
-      // 「X月Y号」按未来最近的那一次；今年已过（含当月已过的日子）就是明年，客户说了「明年」就是明年
-      const [mo, d] = [Number(m[5]), Number(m[6])];
-      const thisYear = isoOf(year, mo, d);
-      const nextYear = !!m[4] || (!!thisYear && thisYear < today);
-      date = { kind: 'date', iso: isoOf(nextYear ? year + 1 : year, mo, d), exact: true };
-    } else if (m[7]) {
-      date = { kind: 'date', iso: isoOf(Number(m[7]), Number(m[8]), Number(m[9])), exact: true };
-    } else if (m[10]) {
-      // 「下个月15号」：下个月（跨年）的那天；「这个月20号」已过就是说错了，不往后滚
-      const next = !m[10].startsWith('这') && !m[10].startsWith('本');
-      const [y, mo] = next ? (month === 12 ? [year + 1, 1] : [year, month + 1]) : [year, month];
-      const iso = isoOf(y, mo, Number(m[11]));
-      date = { kind: 'date', iso: iso && iso >= today ? iso : undefined, exact: true };
-    } else {
-      // 没说哪年就取最近的未来那一次；说了（「明年国庆」「2028年春节」）就是那年的，已经过去的不给
-      const name = HOLIDAY_ALIAS[m[13]] ?? m[13];
-      const solar = SOLAR_HOLIDAYS[name];
-      const want = !m[12] ? undefined : m[12] === '今年' ? year : m[12] === '明年' ? year + 1 : Number(m[12].slice(0, 4));
-      const iso = solar
-        ? `${want ?? (`${year}-${solar}` >= today ? year : year + 1)}-${solar}`
-        : LUNAR_HOLIDAYS[name].find((d) => (want ? d.startsWith(`${want}-`) : d >= today));
-      // 正在放的这次节日：没说哪年的，或说的就是这次的年份（「今年国庆」）才算；「明年国庆」说的不是眼下这次。
-      // 不看 iso 找没找到：2028 年春节初二到初七，表里没有下一次春节，iso 找不到、读成说不准，眼下这次照样在放
-      const now = holidayInProgress(name, today);
-      const ongoing = now && (want === undefined || now.start.startsWith(`${want}-`)) ? { ongoing: { from: today, to: now.end } } : {};
-      date = !iso ? { kind: 'vague', ...ongoing } : { kind: 'date', iso: iso >= today ? iso : undefined, exact: false, ...ongoing };
-    }
-    spans.push({ at, end: at + m[0].length, date });
-  }
-  const items = spans.map((s) => ({ ...s, mention: true }));
-  // 说不准的说法只在不和上面认出来的日子重叠时才算（「10月2号」里的「10月」「2号」不算）
-  for (const m of text.matchAll(VAGUE_DATE)) {
-    const at = m.index ?? 0;
-    const end = at + m[0].length;
-    if (spans.some((s) => at < s.end && end > s.at)) continue;
-    items.push({ at, end, date: { kind: 'vague' }, mention: false });
-  }
-  items.sort((a, b) => a.at - b.at);
-  let found: SpokenDate | null = null;
-  let pickAt: { at: number; end: number } | undefined;
-  const exact: string[] = [];
-  const skipped: { at: number; end: number }[] = [];
-  let prevEnd = -1;
-  for (const it of items) {
-    const before = text.slice(0, it.at);
-    const after = text.slice(it.end);
-    const rangeEnd = prevEnd >= 0 && /^\s*(?:到|至|-|~|～|—)\s*$/.test(text.slice(prevEnd, it.at));
-    prevEnd = it.end;
-    if (
-      rangeEnd ||
-      NOT_DEPART_BEFORE.test(before) ||
-      NOT_DEPART_AFTER.test(after) ||
-      PAST_TRIP_AFTER.test(after) ||
-      (!DEPART_AFTER.test(after) && OTHER_PLAN_AFTER.test(after))
-    ) {
-      skipped.push({ at: it.at, end: it.end });
-      continue;
-    }
-    const date: SpokenDate = it.mention && (NEAR_NOT_ON.test(after) || AFTER_HOLIDAY.test(before)) ? { kind: 'vague' } : it.date;
-    if (date.kind === 'date' && date.exact && date.iso) exact.push(date.iso);
-    if (!found || SWITCH_BEFORE.test(before) || SWITCH_AFTER.test(after) || (found.kind === 'vague' && date.kind === 'date')) {
-      found = date;
-      pickAt = { at: it.at, end: it.end };
-    }
-  }
-  return { pick: found, exact, pickAt, skipped };
-}
-
 function spokenDepartDate(text: string, today = todayIso()): SpokenDate | null {
-  return readDepartDates(text, today).pick;
+  return parseSpokenDate(text, today, travelDatePolicy);
 }
-
-// 顺口问到节假日、月份（「国庆期间景区人多吗」「国庆放几天」「12月冷不冷」）不是在说出发时间：是问句、后面没跟出发/走/去、
-// 也没说改。此前照样算作客户最近说的出发时间，客户早先说过的「10月3号出发」就被一句问话冲成了「国庆」这个大概——
-// 模型按 10月3号 下单被拦下，又去问一遍客户早就说过的日子
-const ASIDE_QUESTION = /吗|？|\?|呢|多不多|几天|怎么样|咋样|如何|冷不冷|热不热|好不好/;
-const ASIDE_NOT = /出发|走|去|动身|启程|飞|改|换|算了|推迟|延|提前|不去/;
-/** 出发时间说法所在的年月（节假日按那天，只说到月份的按 monthSaid）；说不出是哪个月的返回空。
- *  节日正在放假时，这次假期还剩的那几天所在的月份也算（见 HolidayLeft）：此前 10月2号顺口问「国庆期间景区人多吗」只读成明年 10 月，
- *  和客户早先说的「10月3号出发」不在同一个月，这句问话就冲掉了 10月3号，下单被驳回去再问哪天 */
-function departMonths(pick: SpokenDate, text: string, today = todayIso()): string[] {
-  // 假期最长七天，跨不出两个月：今天和假期最后一天所在的月份就是剩下那几天的全部月份。
-  // 2028 年春节放到 2月1日，1月28号问「春节期间人多吗」，客户早先说的「2月1号出发」也在眼下这次假期里
-  const days = pick.ongoing ? [pick.ongoing.from, pick.ongoing.to] : [];
-  if (pick.kind === 'date' && pick.iso) days.push(pick.iso);
-  const months = days.map((d) => d.slice(0, 7));
-  const ym = pick.kind === 'vague' ? monthSaid(text, today) : undefined;
-  if (ym) months.push(`${ym.y}-${String(ym.mo).padStart(2, '0')}`);
-  return [...new Set(months)];
+function latestDepart(customerTexts: string[], today = todayIso()) {
+  return parseLatestDepart(customerTexts, today, travelDatePolicy);
 }
-function isAside(pick: SpokenDate, text: string): boolean {
-  return !(pick.kind === 'date' && pick.exact) && ASIDE_QUESTION.test(text) && !ASIDE_NOT.test(text);
-}
-// 只说到月份的问句（「4月去三亚会不会很热啊」「12月走冷不冷」）：带着「去 / 走」，问的却是那个月的天气人流。
-// C02 客户先说「改到明年4月5号吧」，下一句这么一问，出发日期就被降成「只说了 4 月」，报价回复被要求别写具体哪天，
-// 接着下单还会被驳回去问哪天。这种只在更早说过同一个月的具体哪天时才起作用（见 latestDepart），真改口的说法（改、换、定）不算
-const MONTH_ASIDE_QUESTION =
-  /会不会|是不是|热吗|冷吗|热不热|冷不冷|人多|下雨|天气|温度|气温|几度|适合|好玩|值得|怎么样|咋样|如何|吗|呢|？|\?/;
-const MONTH_ASIDE_NOT = /改|换|算了|推迟|延期|延后|提前|不去|定|订|下单|别的|其他/;
-function isMonthAside(pick: SpokenDate, text: string): boolean {
-  return pick.kind === 'vague' && MONTH_ASIDE_QUESTION.test(text) && !MONTH_ASIDE_NOT.test(text);
-}
-
-/**
- * 会话里客户最近一次说出发时间的那句话读出来的（从最新一句往前找，改口以最新为准），text 是那句原话。
- * 最近那句只是顺口问到节假日、月份（见 isAside）时，往前找：同一个月里更早明说过具体哪天，就以那天为准
- */
-function latestDepart(customerTexts: string[], today = todayIso()): { pick: SpokenDate; exact: string[]; text: string } | null {
-  let aside: { pick: SpokenDate; exact: string[]; text: string; months: string[] } | null = null;
-  const byTheWay = (pick: SpokenDate, t: string): boolean => isAside(pick, t) || isMonthAside(pick, t);
-  for (let i = customerTexts.length - 1; i >= 0; i--) {
-    const r = readDepartDates(customerTexts[i], today);
-    if (!r.pick) continue;
-    const got = { pick: r.pick, exact: r.exact, text: customerTexts[i] };
-    const months = departMonths(r.pick, customerTexts[i], today);
-    if (!aside) {
-      // 说不出是哪个月的问句也记下：往前找时和哪句都对不上，照样以它为准
-      if (!byTheWay(r.pick, customerTexts[i])) return got;
-      aside = { ...got, months };
-      continue;
-    }
-    const asideMonths = aside.months;
-    if (!months.some((m) => asideMonths.includes(m))) break;
-    if (r.pick.kind === 'date' && r.pick.exact) return got;
-    if (!byTheWay(r.pick, customerTexts[i])) break;
-  }
-  return aside && { pick: aside.pick, exact: aside.exact, text: aside.text };
-}
-
-/**
- * 解析出发日期为 YYYY-MM-DD：这句话里客户说了就按他说的（见 spokenDepartDate；说的是「11月」这种
- * 说不准的日子就是没有，不回退到画像里的旧日期——他已经改口了）；这句没提时间才回退到画像 ISO。
- * 只说「X月」不猜具体哪天——猜出来的 15 号会顺着画像流进成单安全网，替客户创建一个他从未确认过日期的真实订单。
- */
 function resolveDepartDate(profile: CustomerProfile, text: string): string | undefined {
-  const said = spokenDepartDate(text);
-  const iso = (profile.dates ?? '').match(/(\d{4})-(\d{2})-(\d{2})/);
-  const known = iso ? isoOf(Number(iso[1]), Number(iso[2]), Number(iso[3])) : undefined;
-  if (!said) return known;
-  if (said.kind === 'date') return said.iso;
-  // 顺口问同一个月怎么样（见 isMonthAside），记着的那天照用
-  const ym = monthSaid(text);
-  return known && ym && isMonthAside(said, text) && known.startsWith(`${ym.y}-${String(ym.mo).padStart(2, '0')}-`) ? known : undefined;
+  return parseResolvedDate(profile.dates, text, todayIso(), travelDatePolicy);
+}
+function monthSaid(text: string, today = todayIso()) {
+  return parseMonthSaid(text, today, travelDatePolicy);
+}
+function dayInMonth(ym: { y: number; mo: number }, today = todayIso()): string | undefined {
+  return parseDayInMonth(ym, today);
 }
 
 /**
@@ -2356,16 +2039,6 @@ function orderDepartDate(session: Session, text: string): string | undefined {
 
 /** 这句话里客户说到了 iso 那一天：「10月3号」「十月三号」「10.3」，或只说日子（「国庆3号走」「1号吧」）。
  *  下单核日期用（见 groundToolArgs）：客户最近的说法是个大概时，模型的日子得是客户说出来的 */
-function saysDay(text: string, iso: string): boolean {
-  const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return false;
-  const [mo, d] = [Number(m[1]), Number(m[2])];
-  const t = text.replace(/[一二两三四五六七八九十]{1,3}(?=\s*[月号日])/g, (w) => String(parseDayCount(w) ?? w));
-  return (
-    new RegExp(`(?<!\\d)${mo}\\s*(?:月|[./-])\\s*${d}(?!\\d)`).test(t) ||
-    new RegExp(`(?<![\\d月./-]\\s*)${d}\\s*(?:号|日(?![游行]))`).test(t)
-  );
-}
 /** 客户在答应（「可以」「对」「就这天」） */
 const AGREES = /^\s*(?:对|是|好|行|可以|没问题|嗯|确认|就这|就那|ok|没错)/i;
 /** 客户说出了 iso 那天：这句或最近说出发时间的那句里说了（「国庆当天走」就是节日那天），
@@ -2388,80 +2061,6 @@ function customerNamedDay(session: Session, latestText: string, iso: string, hol
   return splitSentences(prev).some((s) => day.test(s) && /[？?]|吗|对吧|可以吧|行吧|没问题吧/.test(s));
 }
 
-/**
- * 说到春节前后、没说哪天的（B09 第 2 遍「过完年去」：此前认不出，模型编的 2027-02-20 直接进了 create_quote，也没有 departNote）。
- * 按农历表读成月份——季节价只看月份：过完年 / 年后 / 春节后 = 春节假期过完（春节 +7 天）那个月，2027 年是 2 月；
- * 过年 = 春节那个月；年前 / 春节前 = 春节前一周那个月，2027 年是 1 月。没说哪年取最近还没过去的那次，说了「明年」就是明年的春节；
- * 表外的年份不猜。said 是客户的说法，报价时让模型照着说（「过完年出发」），不写成某一天
- */
-const NEW_YEAR_SAID = new RegExp(
-  '(明年|今年)?\\s*(?:(过完年|过了年|过完春节|过了春节|(?:过年|春节(?:假期|长假)?(?:过)?)(?:之后|以后|后)|(?<![\\d一二两三四五六七八九十几多半去前今明后成])年后)' +
-    '|((?:过年|春节)(?:之前|以前|前)(?!后)|(?<![\\d一二两三四五六七八九十几多半去前今明后成])年前)|(过年(?!好|快乐)|春节))',
-);
-const NEW_YEAR_SAID_ALL = new RegExp(NEW_YEAR_SAID.source, 'g');
-function newYearMonth(text: string, today = todayIso()): { y: number; mo: number; said: string } | undefined {
-  const m = NEW_YEAR_SAID.exec(text);
-  if (!m) return undefined;
-  const shift = m[2] ? 7 : m[3] ? -7 : 0;
-  const year = Number(today.slice(0, 4));
-  const want = m[1] === '明年' ? year + 1 : m[1] === '今年' ? year : undefined;
-  for (const day of LUNAR_HOLIDAYS.春节) {
-    if (want && !day.startsWith(`${want}-`)) continue;
-    const t = new Date(`${day}T00:00:00Z`);
-    t.setUTCDate(t.getUTCDate() + shift);
-    const anchor = t.toISOString().slice(0, 10);
-    if (anchor < today) continue;
-    return { y: Number(anchor.slice(0, 4)), mo: Number(anchor.slice(5, 7)), said: m[2] ?? m[3] ?? m[4] };
-  }
-  return undefined;
-}
-
-/**
- * 只说到月的出发时间（「明年2月」「12月初」「10月中旬」「年底」「过完年」）读成年月；一句话里说了好几个月份的不猜。
- * 春节前后的说法带着 said（见 newYearMonth）。
- * 客户排除掉的时间（readDepartDates 跳过的：「春节人太多」「过年要回老家」「10月人太多」）不读；春节前后的说法还得是
- * readDepartDates 选中的那一处。此前在整句里找：「春节人太多 暑假带孩子去」读成 2 月，报价被引擎改成 2 月 1 日的旺季价、
- * 还让模型说「春节出发」（第五轮复核）
- */
-function monthSaid(text: string, today = todayIso()): { y: number; mo: number; said?: string } | undefined {
-  const year = Number(today.slice(0, 4));
-  const read = readDepartDates(text, today);
-  // 遮掉跳过的那几处（等长替换，位置不变）
-  for (const k of read.skipped) text = text.slice(0, k.at) + '×'.repeat(k.end - k.at) + text.slice(k.end);
-  const months = [...text.matchAll(MONTH_SAID)];
-  if (months.length === 1) {
-    const [, rel, y4, raw] = months[0];
-    const mo = parseDayCount(raw);
-    if (!mo || mo > 12) return undefined;
-    const y = y4
-      ? Number(y4)
-      : rel === '明年'
-        ? year + 1
-        : rel === '后年'
-          ? year + 2
-          : rel === '今年'
-            ? year
-            : mo >= Number(today.slice(5, 7))
-              ? year
-              : year + 1;
-    return { y, mo };
-  }
-  const end = months.length ? null : /(明年|今年)?\s*年[底末]/.exec(text);
-  if (end) return { y: end[1] === '明年' ? year + 1 : year, mo: 12 };
-  const at = read.pickAt;
-  if (months.length || !at) return undefined;
-  // 「暑假或者过年去」选中的是暑假：春节不是客户说的那个出发时间，不拿它来补
-  const ny = [...text.matchAll(NEW_YEAR_SAID_ALL)].find((m) => m.index! < at.end && m.index! + m[0].length > at.at);
-  return ny ? newYearMonth(ny[0], today) : undefined;
-}
-
-/** 那个月里拿来定季节价的一天：季节价只看月份，取 1 号；当月已过 1 号就取今天，整个月都过去了就不给 */
-function dayInMonth(ym: { y: number; mo: number }, today = todayIso()): string | undefined {
-  const first = isoOf(ym.y, ym.mo, 1);
-  if (!first) return undefined;
-  if (first >= today) return first;
-  return today.startsWith(first.slice(0, 8)) ? today : undefined;
-}
 /** 按月份补进报价的日期只是拿来定季节价的，不是客户说的哪天：画像不记它（见 deriveProfile），不然会顺着画像流进下单 */
 const MONTH_ONLY_ARGS = new WeakSet<object>();
 
@@ -2472,9 +2071,6 @@ const MONTH_ONLY_ARGS = new WeakSet<object>();
  * 读法：说到哪天的按 readDepartDates 的口径（「10月12号」→ 最近的未来那天）；只说到月的（「明年2月」「11月」）
  * 这里补读到年月——报价、下单不认这种说法（说不准哪天），给顾问一个年份足够。一句话里说了好几个月份的不猜
  */
-// 「明年1-2月」「1到2月」是个区间：前面紧挨着「数字 + 到/-」的月份不单读，否则只剩 2 月被读成「2027年2月」
-const MONTH_SAID =
-  /(明年|今年|后年|(\d{4})\s*年)?\s*(?<![\d一二三四五六七八九十]\s*(?:-|－|~|～|—|到|至)\s*)(\d{1,2}|十[一二]?|[一二三四五六七八九])\s*月(?!\s*\d{1,2}\s*[号日])/g;
 function departNoteForHandoff(session: Session, today = todayIso()): string | undefined {
   const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
   for (let i = said.length - 1; i >= 0; i--) {
@@ -2649,7 +2245,7 @@ function perPersonBudget(s: string | undefined): number | undefined {
   // parseDayCount 就是 1~99 的中文/阿拉伯数字解析，「三五」这类约数同样返回 null
   const n = /^\d/.test(raw) ? Number(raw) : parseDayCount(raw);
   if (!n) return undefined;
-  const tailK = tail ? (/\d/.test(tail) ? Number(tail) : CN_DAY[tail]) * 1000 : 0;
+  const tailK = tail ? (/\d/.test(tail) ? Number(tail) : parseDayCount(tail)!) * 1000 : 0;
   const v = unit === '万' ? n * 10000 + tailK : unit === '千' ? n * 1000 : n;
   return v >= 1000 ? v : undefined;
 }
@@ -2995,14 +2591,6 @@ function headcountAskNote(session: Session, text: string): string | undefined {
   );
 }
 
-/** 客户说的、落在 iso 那天的节假日叫法（「十一」按国庆说）。一句里说了几个节日时认日子：「去年国庆去过云南了 明年五一想去三亚」是五一 */
-function holidayIn(text: string, iso: string): string | undefined {
-  const names = [
-    ...text.matchAll(/国庆|十一(?=\s*(?:假期|长假|小长假|黄金周|期间|出发|去|走))|五一|劳动节|元旦|春节|大年初一|端午|中秋|八月十五/g),
-  ].map((m) => HOLIDAY_ALIAS[m[0]] ?? m[0]);
-  return names.find((n) => SOLAR_HOLIDAYS[n] === iso.slice(5) || LUNAR_HOLIDAYS[n]?.includes(iso));
-}
-
 // ---------- 只有客户说了算的参数：按客户原话核一遍 ----------
 // 预算、客群、出发日期是客户的事，模型却会替他编：glm-5.3-flashx 实测客户只说了「有点贵」，
 // 它调 search_routes 时自己加上每人 2 万、亲子（另一次 2 人北京游加的是蜜月），工具据此算出
@@ -3054,14 +2642,6 @@ function isBudgetTalk(text: string): boolean {
 /** 「一万到两万」「8000-12000」：区间只有上端能当上限。价格护栏的区间解析只认「两三万」「八到九千」这种，
  *  「一万到两万」两头各读成一个数，这里单独认 */
 const BUDGET_RANGE = /[\d一二两三四五六七八九十]\s*(?:万|千|元|块)?\s*(?:到|至|-|－|~|～|—)\s*[\d一二两三四五六七八九十]/;
-
-/** 「我们三个」「我们俩」「一家三口」：没带「人」字的人数，HEADCOUNT 认不到。只拿来核总预算 ÷ 人数
- *  （「我们三个一起去，预算一共6万」→ 每人两万），不进报价、方案书那几处按人数把关的地方 */
-function groupSizeIn(s: string): number | undefined {
-  if (/我们俩|咱们俩|咱俩|我俩|两口子/.test(s)) return 2;
-  const m = /(?:我们|咱们|俺们|一家)\s*(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:个|口)(?![月天晚周星礼小钟])/.exec(s);
-  return m ? (parseDayCount(m[1]) ?? undefined) : undefined;
-}
 
 /**
  * 按客户原话核过的每人预算上限；undefined 表示不传 maxBudgetPerPerson。看客户最近一次说预算的那句话（改口以最新为准；
@@ -3341,7 +2921,7 @@ function kidsHeadcountUnclear(said: string[]): boolean {
     if (elder) s = s.replace(/儿子|女儿|儿女|子女/g, ''); // 老两口嘴里的儿子女儿是成年人；孙辈另有说法（孩子/娃/孙子）
     return KID_MENTION.test(s);
   };
-  return said.some(mentionsKid) && !said.some((t) => HEADCOUNT_SPLIT.test(t) || TOTAL_HEADCOUNT.test(t) || KIDS_SETTLED.test(t));
+  return said.some(mentionsKid) && !said.some((t) => HEADCOUNT_SPLIT.test(t) || hasTotalHeadcount(t) || KIDS_SETTLED.test(t));
 }
 
 /**

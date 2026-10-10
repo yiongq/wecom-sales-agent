@@ -2,6 +2,10 @@
 // routes.json 由数据模块产出，这里只在调用时用 fs 读取（不 import），
 // 缺失时抛清晰错误；ROUTES_PATH 仅供测试指向 fixture，默认 data/routes.json。
 import fs from 'node:fs';
+import { parseCountArg } from './core/parse/counts.js';
+import { isValidIsoDate } from './core/parse/dates.js';
+import { latestBookableDate } from './packs/travel/dates.js';
+import { travelDateThresholds } from './packs/travel/thresholds.js';
 import path from 'node:path';
 import type { HandoffRecord, Hotel, Route, SalesSegment, Session } from './types.js';
 import { SALES_SEGMENTS } from './types.js';
@@ -1040,17 +1044,7 @@ const advisorPayNote = (session: Session): string =>
 
 /** 解析出行人数：接受数字或纯数字字符串，其余（"两"、"2位"…）判非法 */
 function parseTravelers(v: unknown): number | null {
-  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN;
-  return Number.isInteger(n) && n >= 1 && n <= 50 ? n : null;
-}
-
-/** 是否为真实存在的 YYYY-MM-DD 日历日期（拒绝「明天」、2月31日这类） */
-function isValidIsoDate(s: unknown): s is string {
-  if (typeof s !== 'string') return false;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return false;
-  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  return d.getUTCFullYear() === +m[1] && d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+  return parseCountArg(v, { min: 1, max: travelDateThresholds.maxTravelers });
 }
 
 /** 出发日期必须落在「今天 ~ 三年内」：模型常把「10月2号」解析成训练年代的过去年份，
@@ -1059,7 +1053,7 @@ function pastDateError(s: string): string | null {
   if (s < todayIso()) {
     return `departDate=${s} 是过去的日期（今天是 ${todayIso()}）。客户说的月日请按未来最近的日期理解，改正后重试`;
   }
-  const maxDate = `${new Date().getFullYear() + 3}-12-31`;
+  const maxDate = latestBookableDate();
   if (s > maxDate) {
     return `departDate=${s} 超出可预订范围（最远 ${maxDate}）。请与客户确认真实出行年份`;
   }
