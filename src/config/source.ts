@@ -1026,7 +1026,9 @@ export function fileSopPath(): string {
 function readFileBrand(): BrandProfile | null {
   const file = path.join(path.dirname(fileSopPath()), 'brand.json');
   if (!fs.existsSync(file)) return null;
-  return BrandProfileSchema.parse(JSON.parse(fs.readFileSync(file, 'utf8')));
+  // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验、把损坏的品牌渲染进锁定节
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file));
+  return BrandProfileSchema.parse(JSON.parse(text));
 }
 
 /** 文件模式保留可编辑节，只把锁定节与硬性要求按装载的品牌渲染；旧版原文不经过切分。 */

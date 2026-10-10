@@ -159,6 +159,24 @@ try {
     config.__configTest.reset();
     await assert.rejects(config.initConfig(null));
     checks++;
+    // 合法 JSON、字段齐全，但品牌名里有一个非法 UTF-8 字节：同样拒绝装载
+    const valid = Buffer.from(
+      JSON.stringify({
+        brandName: '山海旅行',
+        advisorTitle: '旅行顾问',
+        aiTitle: 'AI 旅行顾问',
+        scopeNoun: '旅行',
+        identityLine: '我是山海旅行的 AI 旅行顾问',
+      }),
+      'utf8',
+    );
+    const at = valid.indexOf(Buffer.from('山', 'utf8'));
+    const corrupt = Buffer.concat([valid.subarray(0, at), Buffer.from([0xe5, 0xff]), valid.subarray(at + 3)]);
+    fs.writeFileSync(path.join(out, 'brand.json'), corrupt);
+    await config.closeConfig();
+    config.__configTest.reset();
+    await assert.rejects(config.initConfig(null));
+    checks++;
   } finally {
     if (previousPath === undefined) delete process.env.SOP_PATH;
     else process.env.SOP_PATH = previousPath;
