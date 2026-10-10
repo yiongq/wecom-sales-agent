@@ -3,8 +3,9 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { subscribeWeb, webConversationId, type WebEvent } from '../adapters/web.js';
+import { subscribeWeb, webAdapter, webConversationId, type WebEvent } from '../adapters/web.js';
 import { accountByKey, type ChannelAccount } from '../channels/accounts.js';
+import { partsOf, type MessagePart } from '../core/pack-api.js';
 import { handleMessage, inboundText, trimSessionMessages } from '../engine.js';
 import { numEnv } from '../env.js';
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
@@ -92,7 +93,11 @@ function reserveNew(account: ChannelAccount, ip: string): boolean {
   return true;
 }
 
-function limitedReply(s: WebSession, text: string, msgid: string | undefined, recorded: boolean): { text: string } {
+function webReply(text: string): { text: string; parts: MessagePart[] } {
+  return { text, parts: partsOf(text) };
+}
+
+function limitedReply(s: WebSession, text: string, msgid: string | undefined, recorded: boolean): ReturnType<typeof webReply> {
   if (!recorded) s.messages.push({ role: 'customer', content: inboundText(text), at: Date.now(), ...(msgid ? { msgid } : {}) });
   if (!s.webTurnLimited) {
     s.webTurnLimited = true;
@@ -101,7 +106,7 @@ function limitedReply(s: WebSession, text: string, msgid: string | undefined, re
   s.messages.push({ role: 'agent', content: TURN_LIMIT_REPLY, at: Date.now() });
   trimSessionMessages(s);
   saveSession(s);
-  return { text: TURN_LIMIT_REPLY };
+  return webReply(TURN_LIMIT_REPLY);
 }
 
 export const webRoutes = new Hono();
@@ -116,14 +121,16 @@ webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
 webRoutes.get('/w/:key', async (c) => {
   const account = accountByKey(c.req.param('key'), 'web')!;
+  const welcome =
+    account.web!.welcomeText ??
+    '您好，欢迎来到云途定制旅行，我是您的 AI 旅行顾问 ✨\n想去川西藏地、云南雪山，还是新疆看看？和我聊聊您的想法吧～\n需要真人服务时，回复「人工」即可转真人顾问。';
   const config = JSON.stringify({
     key: account.key,
     title: account.web!.title,
-    welcome:
-      account.web!.welcomeText ??
-      '您好，欢迎来到云途定制旅行，我是您的 AI 旅行顾问 ✨\n想去川西藏地、云南雪山，还是新疆看看？和我聊聊您的想法吧～\n需要真人服务时，回复「人工」即可转真人顾问。',
+    welcome,
+    welcomeParts: partsOf(welcome),
     privacyLink: privacyLink(),
-    base: (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, ''),
+    caps: webAdapter.caps,
   }).replaceAll('<', '\\u003c');
   c.header(
     'Content-Security-Policy',
@@ -172,7 +179,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     // 不越过下一条客户消息，避免把另一个轮次的回复误配给崩溃留下的消息。
     for (const m of s.messages.slice(at + 1)) {
       if (m.role === 'customer') break;
-      if (m.role === 'agent' && (!m.author || m.author === 'ai')) return c.json({ reply: { text: m.content } });
+      if (m.role === 'agent' && (!m.author || m.author === 'ai')) return c.json({ reply: webReply(m.content) });
     }
     if (s.handedOver && !s.webTurnLimited) return c.json({ reply: null });
   } else if (body.cid && recentMsgids(s.id).has(body.cid)) return c.json({ reply: null });
@@ -201,7 +208,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       ...(body.cid ? { msgid: body.cid } : {}),
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
-    return c.json({ reply: s.handedOver || !reply.text ? null : { text: reply.text } });
+    return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text) });
   } catch {
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。
     log.error('网页咨询处理失败');
@@ -216,9 +223,11 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
 webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
   const account = accountByKey(c.req.param('key'), 'web')!;
   const s = ownSession(account, visitorToken(c));
-  const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) =>
-    m.role === 'system' ? [] : [{ role: m.role, text: m.author === 'human' ? withAdvisorPrefix(m.content) : m.content, at: m.at }],
-  );
+  const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
+    if (m.role === 'system') return [];
+    const text = m.author === 'human' ? withAdvisorPrefix(m.content) : m.content;
+    return [{ role: m.role, ...webReply(text), at: m.at }];
+  });
   return c.json({ messages });
 });
 

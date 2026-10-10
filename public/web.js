@@ -1,34 +1,3 @@
-// 只认完整的站内订单/方案地址；站外 URL 中的路径不能被单独挖出来。
-export function splitSiteLinks(text, base = '') {
-  const parts = [];
-  const candidates = /(?:[a-z][a-z\d+.-]*:|\/\/|\/)[^\s<>"'`，。！？；、（）【】]+/gi;
-  const sitePath = /^\/(?:pay\/[A-Za-z0-9_-]+|proposal\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?)$/;
-  let offset = 0;
-  for (const match of text.matchAll(candidates)) {
-    const raw = match[0];
-    // 不链接相对片段、邮件、伪协议、反斜杠、编码后的路径或站外域名中的子串。
-    if (match.index > 0 && /[\w./:@%\\-]/.test(text[match.index - 1])) continue;
-    let href = raw;
-    if (/^https?:\/\//i.test(raw)) {
-      if (!base || !raw.startsWith(`${base}/`)) continue;
-      try {
-        const url = new URL(raw);
-        const own = new URL(base);
-        if (!/^https?:$/.test(own.protocol) || url.origin !== own.origin || url.username || url.password) continue;
-      } catch {
-        continue;
-      }
-      href = raw.slice(base.length);
-    }
-    if (!sitePath.test(href)) continue;
-    if (match.index > offset) parts.push({ text: text.slice(offset, match.index) });
-    parts.push({ text: raw, href });
-    offset = match.index + raw.length;
-  }
-  if (offset < text.length) parts.push({ text: text.slice(offset) });
-  return parts;
-}
-
 function startWebChat() {
   const config = JSON.parse(document.getElementById('web-config').textContent);
   const get = (id) => document.getElementById(id);
@@ -81,23 +50,19 @@ function startWebChat() {
   function scrollBottom() {
     msgs.scrollTop = msgs.scrollHeight;
   }
-  function renderText(el, text) {
-    el.textContent = text;
-    const parts = splitSiteLinks(text, config.base);
-    if (!parts.some((part) => part.href)) return;
-    el.replaceChildren();
+  function renderParts(wrap, parts) {
+    const titles = { order: '订单详情', proposal: '行程方案书', site: '查看详情' };
     for (const part of parts) {
-      if (!part.href) el.append(document.createTextNode(part.text));
-      else {
-        const link = node('a', 'paylink', part.text);
-        link.href = part.href;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        el.append(link);
-      }
+      if (part.kind !== 'link') continue;
+      const card = node('a', 'link-card');
+      card.href = part.url;
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
+      card.append(node('strong', '', titles[part.linkKind]), node('span', '', part.url));
+      wrap.append(card);
     }
   }
-  function addMessage(role, text, at = Date.now()) {
+  function addMessage(role, text, at = Date.now(), parts = []) {
     if (at - lastTs > 5 * 60_000) {
       msgs.append(node('div', 'time-chip', new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })));
     }
@@ -109,8 +74,9 @@ function startWebChat() {
     row.append(node('div', 'avatar', me ? '我' : human ? '顾' : 'AI'), wrap);
     if (!me) wrap.append(node('div', 'nick', human ? '真人顾问' : `${config.title} · AI`));
     const bubble = node('div', 'bubble');
-    renderText(bubble, text);
+    bubble.textContent = text;
     wrap.append(bubble);
+    renderParts(wrap, parts);
     msgs.append(row);
     scrollBottom();
     return wrap;
@@ -141,11 +107,11 @@ function startWebChat() {
     });
     source.addEventListener('push', (event) => {
       const data = JSON.parse(event.data);
-      addMessage('agent', data.text);
+      addMessage('agent', data.text, undefined, data.parts);
     });
     source.addEventListener('menu', (event) => {
       const data = JSON.parse(event.data);
-      const wrap = addMessage('agent', data.text);
+      const wrap = addMessage('agent', data.text, undefined, data.parts);
       const actions = node('div', 'menu-actions');
       menus.add(actions);
       for (const item of data.buttons) {
@@ -199,7 +165,7 @@ function startWebChat() {
     showTyping();
     try {
       const data = await post('messages', pending.body);
-      if (data.reply) addMessage('agent', data.reply.text);
+      if (data.reply) addMessage('agent', data.reply.text, undefined, data.reply.parts);
       if (pending.actions) {
         pending.actions.replaceChildren(node('span', '', '已记录您的选择'));
         menus.delete(pending.actions);
@@ -237,7 +203,7 @@ function startWebChat() {
       if (data.messages.length) {
         msgs.replaceChildren();
         lastTs = 0;
-        for (const message of data.messages) addMessage(message.role, message.text, message.at);
+        for (const message of data.messages) addMessage(message.role, message.text, message.at, message.parts);
         chips.hidden = true;
         ensureEvents();
       }
@@ -287,7 +253,7 @@ function startWebChat() {
   window.addEventListener('pageshow', (event) => {
     if (event.persisted) void restore();
   });
-  addMessage('agent', config.welcome);
+  addMessage('agent', config.welcome, undefined, config.welcomeParts);
   chips.hidden = false;
   void restore();
 }
