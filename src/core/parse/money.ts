@@ -484,6 +484,10 @@ export function spokenMoney(text: string, options: MoneyParseOptions): { amounts
   return { amounts: [...parseAmounts(t, options), ...parseCnAmounts(t, options), ...rangeEnds], rangeEnds };
 }
 
+/** 金额后面紧跟的币种：人民币记 CNY，其余外币记 null 并保留原单位（R12）。长的写法排前面（新台币先于台币）。 */
+const CURRENCY_SUFFIX =
+  /^\s*(元|块|人民币|RMB|rmb|美元|美金|美刀|欧元|日元|港币|港元|英镑|澳元|澳币|加元|加币|新加坡元|新币|新台币|台币|韩元|泰铢|卢布|瑞郎|USD|EUR|JPY|HKD|GBP|AUD|CAD|SGD|TWD|KRW|THB)/;
+
 /** 按回复的金额识别口径返回 Money，保留原单位，不做外币换算或出处裁决。 */
 export function parseMoney(text: string, options: MoneyParseOptions): Money[] {
   const t = normalizeMoneyText(text);
@@ -493,7 +497,7 @@ export function parseMoney(text: string, options: MoneyParseOptions): Money[] {
   ].toSorted((a, b) => a.at - b.at);
   return hits.map(({ amount, at, end }) => {
     const body = text.slice(at, end);
-    const suffix = /^\s*(元|块|人民币|RMB|rmb|美元|美金|欧元|日元|港币)/.exec(text.slice(end))?.[1];
+    const suffix = CURRENCY_SUFFIX.exec(text.slice(end))?.[1];
     const explicit = suffix ?? /^(¥|￥)/.exec(body)?.[1] ?? /(元|块)\s*$/.exec(body)?.[1];
     // 无币种标记时保留倍率单位，不推断币种；数字归一逐字替换，原文位置仍能直接用。
     const unit = explicit ?? body.match(/[万萬千仟wWkK]/g)?.at(-1) ?? '';
