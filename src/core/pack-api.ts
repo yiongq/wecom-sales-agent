@@ -194,6 +194,159 @@ export { todayIso } from '../env.js';
 export type { ChatTurn, PrefetchedCall, ChatOptions, MockPolicy, LlmRuntime } from './llm/types.js';
 import type { MockPolicy } from './llm/types.js';
 
+// 04 第 14 步：辅助模块的数据契约；执行与缓存暂留旧路径。
+export interface FollowupTemplates {
+  idleMinutes: Partial<Record<SalesStage, number>>;
+  byStage: Partial<Record<SalesStage, string>>;
+  fallback: string;
+  system: string;
+}
+
+export interface InsightPrompts {
+  insights: string;
+  suggestion: string;
+  draft: string;
+  reach: Record<string, number>;
+  funnelNames: readonly string[];
+  draftFallback: Record<string, string>;
+}
+
+export interface DejargonVocab {
+  english: Record<string, string>;
+  internal: [RegExp, string][];
+}
+
+export type EmergencyKind = 'altitude' | 'injury' | 'medical' | 'documents' | 'stranded';
+
+export interface EmergencyRule {
+  kind: EmergencyKind;
+  /** 带 g：同一小句里同一类的几处逐个看 */
+  re: RegExp;
+  /** 关键词本身就在持续（喘不上气、呼吸困难、联系不上我妈）：不要求了与此刻标记 */
+  ongoing?: boolean;
+  /** 关键词里已经带着人（联系不上我妈、把我们扔下、孩子丢了）：不再找前面的主语 */
+  withParty?: boolean;
+  /** 天灾路况：人要在关键词所在的小句里、关键词前面，前面不是那边、那里、当地 */
+  disaster?: boolean;
+  /** 被困：说了在哪儿（被困在山上、困在电梯里）就算在持续；说的是问题、工作、会议的不算 */
+  trapped?: boolean;
+  /** 叫救护车、打 120：前面是求救（帮我、快、赶紧、请）就算，不然要有人、已经打了 */
+  ambulance?: boolean;
+  /** 摔了一跤、跌倒、滑倒、摔破：同一句话里要说了后果（起不来、动不了、骨折、肿得厉害、流血），摔的不能是东西 */
+  fall?: boolean;
+  /** 车船坏了、抛锚、陷住：同一句话里要说了走不了、出不来、回不去 */
+  vehicle?: boolean;
+  /** 流了好多血：同一句话里要说了伤在哪儿或怎么伤的（「为了这趟旅行流了好多血」说的是花钱） */
+  bleeding?: boolean;
+}
+
+export interface HandoffVocab {
+  TRAD: Record<string, string>;
+  TRAD_RE: RegExp;
+  COND: RegExp;
+  HEARSAY: RegExp;
+  PAST: RegExp;
+  PAST_CUT: RegExp;
+  HEARSAY_CUT: RegExp;
+  NOW_LEAD: RegExp;
+  ASKING_TAIL: RegExp;
+  ASKING_WORDS: RegExp;
+  NOT_A_QUESTION: RegExp;
+  NEG_BEFORE: RegExp;
+  E_ALTITUDE_MARKER: RegExp;
+  E_ALTITUDE_OVERLAP: RegExp;
+  EMERGENCY_RULES: EmergencyRule[];
+  CARELESS: RegExp;
+  E_HYPO: RegExp;
+  E_PRETRIP: RegExp;
+  E_NEAR: RegExp;
+  E_HABIT: RegExp;
+  E_PRICE: RegExp;
+  E_JOKE: RegExp;
+  E_POLICY: RegExp;
+  E_HEARSAY: RegExp;
+  E_NEG_BEFORE: RegExp;
+  E_UNSURE: RegExp;
+  E_EXAGGERATE: RegExp;
+  E_AFTER_SKIP: RegExp;
+  E_ATTACHED: RegExp;
+  E_HAPPENED_BEFORE: RegExp;
+  E_FEVER: RegExp;
+  E_NOW: RegExp;
+  E_ONGOING: RegExp;
+  E_FALL_HURT: RegExp;
+  E_FALL_THING: RegExp;
+  E_VEHICLE_STUCK: RegExp;
+  E_WOUND: RegExp;
+  E_FINE_AFTER: RegExp;
+  E_TRAPPED_AT: RegExp;
+  E_TRAPPED_ABSTRACT: RegExp;
+  E_NOT_STUCK: RegExp;
+  E_ELSEWHERE: RegExp;
+  E_RESCUE_LEAD: RegExp;
+  E_HELP: RegExp;
+  E_IDENTITY: RegExp;
+  E_GREETING: RegExp;
+  E_UNKNOWN: RegExp;
+  E_ASKING: RegExp;
+  E_EVERY: RegExp;
+  E_ARRANGE: RegExp;
+  COMPANION_PHRASE: RegExp;
+  COMPANION_MARK: string;
+  PARTY_MENTION: RegExp;
+  OTHER_MENTION: RegExp;
+  NOT_SUBJECT_LEAD: RegExp;
+  FAMILY_LEAD: RegExp;
+  THIRD_PARTY: RegExp;
+  ASK_TAIL: RegExp;
+  EMBEDDED: RegExp;
+  DEPENDS_LEAD: RegExp;
+  ASK_WORDS: RegExp;
+  EVERY_AFTER: RegExp;
+  EVERY_ANOTA_AFTER: RegExp;
+  NOT_ASKING_REST: RegExp;
+  US: RegExp;
+  OWNED_BY_US: RegExp;
+  OWNED_KIND: RegExp;
+  SELF: RegExp;
+  OTHERS: RegExp;
+  OBJECT_LEAD: RegExp;
+  OTHER_AGENCY: RegExp;
+  JOKE: RegExp;
+  DOUBT_WORD: RegExp;
+  STRONG_DIRECTED: RegExp;
+  INSULT: RegExp;
+  STUPID: RegExp;
+  INSULT_TARGET_AFTER: RegExp;
+  INSULT_OBJECT: RegExp;
+  BARE_FILLER: RegExp;
+  BARE_INSULT: RegExp;
+  BROKEN: RegExp;
+  INTENSIFIER: RegExp;
+  WEAK: RegExp;
+  SLOW_PACE: RegExp;
+  WEAK_US_BEFORE: RegExp;
+  WEAK_RHETORICAL: RegExp;
+  REPEAT_SAID: RegExp;
+  PEOPLE: RegExp;
+  WEAK_DIRECTED: RegExp;
+  POSITIVE_BEFORE: RegExp;
+  WORRY_BEFORE: RegExp;
+  SEG_ASKING: RegExp;
+  COMPLAINT_TAG: RegExp;
+  ONLY_US: RegExp;
+  HEALTH: RegExp;
+  PERSON: RegExp;
+  CHILD_AGE_AFTER: RegExp;
+  CHILD_AGE_BEFORE: RegExp;
+  SCHOOL: RegExp;
+  CHILD_RE: RegExp;
+  WITHDRAW: readonly RegExp[];
+  POLITE_ASK: RegExp;
+  POLICY_ASK: RegExp;
+  NOT_WANTED: RegExp;
+}
+
 export type StepVerdict =
   | { action: 'pass' }
   | { action: 'drop_sentence' | 'replace' | 'patch' | 'append' | 'strip'; text: string; removed?: string[]; added?: string[] }
@@ -277,11 +430,11 @@ export interface PackRuntimeTypes {
   PrefetchResult: unknown;
   DeterministicReply: unknown;
   GuardContext: GuardContext;
-  HandoffVocab: unknown;
-  DejargonVocab: unknown;
+  HandoffVocab: HandoffVocab;
+  DejargonVocab: DejargonVocab;
   PackThresholds: unknown;
-  FollowupTemplates: unknown;
-  InsightPrompts: unknown;
+  FollowupTemplates: FollowupTemplates;
+  InsightPrompts: InsightPrompts;
   MockPolicy: MockPolicy;
 }
 

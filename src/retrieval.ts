@@ -13,6 +13,8 @@ import { llmCfg } from './llm.js';
 import { recordUsage } from './usage.js';
 import { gatedFetch } from './llm-gate.js';
 import type { Route } from './types.js';
+import { routeText } from './packs/travel/retrieval.js';
+import { RETRIEVAL_TIMEOUT_MS } from './core/retrieval.js';
 import { configMode, currentCatalog, onCatalogChanged } from './config/source.js';
 
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
@@ -34,13 +36,6 @@ let retryAttempt = 0;
 let retryTimer: NodeJS.Timeout | null = null;
 const RETRY_BACKOFF_MS = [30_000, 120_000, 600_000];
 let retryBackoff = RETRY_BACKOFF_MS;
-
-/** 检索用的线路文本：把结构化字段拼成一段自然语言，匹配客户的口语化描述 */
-function routeText(r: Route): string {
-  return [r.title, r.destination, `${r.days}天`, r.hotelLevel, `适合${r.tags.join('、')}`, `最佳季节${r.bestSeason}`, ...r.highlights].join(
-    '。',
-  );
-}
 
 /**
  * embedding 的端点与 key。单独读 EMBED_BASE_URL / EMBED_API_KEY，不配时回落到**智谱**配置，
@@ -73,7 +68,7 @@ async function embed(texts: string[]): Promise<number[][] | null> {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
       },
-      () => AbortSignal.timeout(20000),
+      () => AbortSignal.timeout(RETRIEVAL_TIMEOUT_MS),
     );
     if (!res.ok) {
       console.error(`[retrieval] embedding 请求失败 ${res.status}，本次退回关键词匹配`);
