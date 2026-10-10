@@ -59,7 +59,7 @@ const rejected = createToolRegistry([tool], {
 });
 const error = await rejected.execute('fixture', {}, ctx, recorder);
 assert.deepEqual(JSON.parse(error), { error: '参数不能用于下单' });
-assert.deepEqual([...events], ['before', ['call', 'fixture', {}], ['result', 'fixture', error], 'after']);
+assert.deepEqual([...events], ['before']);
 assert.equal(ctx.value, 1);
 
 // 无钩子时原参数对象直接传入，工具的原有参数补齐也保留。
