@@ -38,6 +38,8 @@ export function createFixtureRuntime(): PackRuntime {
       handoffFallback: '顾问会处理',
     },
     templates: {
+      hardRequirements: '只输出{scopeNoun}正文。',
+      lockedSectionTemplates: {},
       identityAnswer: '{identityLine}',
       offTopicReply: '请说明{scopeNoun}需求',
       welcomeText: '欢迎咨询{brandName}',

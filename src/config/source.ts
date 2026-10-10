@@ -1,5 +1,5 @@
 // 配置源（docs/architecture/01-pg-config-console/spec.md「两种模式与启动装载」）。
-// 文件模式（CONFIG_SOURCE 未设、空串或 file）什么都不做，引擎和工具照旧读 data/。
+// 文件模式（CONFIG_SOURCE 未设、空串或 file）读有效 SOP_PATH 同目录品牌，引擎和工具照旧读文件。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
 // 本模块不加载存储与发送能力：启动时按 pack_id 绑定包，运行时能力经延后调用的函数注入。
 // 02 加了产品库条目版本（02 spec「报价快照与产品库字段开放」）：全部版本启动时读进内存，之后的新版本提交后加进来；
@@ -24,19 +24,20 @@ import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
 import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
 import { insertCatalogVersion, readCatalogVersions, type CatalogVersionRow } from '../db/repo/catalog-versions.js';
 import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
-import { findTenantBySlug } from '../db/repo/tenants.js';
+import { findTenantBySlug, readBrand } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
 import { setLogTenant } from '../log.js';
 import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
 import { renderSystemPrompt } from '../core/prompt.js';
 import { packPipelines } from '../core/engine/pipelines.js';
-import { bindPack, boundPack, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
+import { bindPack, boundPack, BrandProfileSchema, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
+import { tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -89,6 +90,8 @@ export interface ConfigHealth {
 export interface ConfigDeps {
   /** 生产组合根按实际 pack_id 的定义渲染；自测显式注入的渲染依赖照旧。 */
   usePackRuntime?: boolean;
+  brand?: BrandProfile | null;
+  runtime?: PackBinding['runtime'];
   db: Db;
   tenantSlug: string;
   /** null = 锁在别人手里 */
@@ -166,6 +169,8 @@ interface Loaded {
   pack: IndustryPack;
   lock: TenantLock;
   imageSections: readonly SopSection[];
+  /** 保留旧版镜像，供预算还原首次导入品牌的默认前言；不能用当前租户镜像替代。 */
+  legacyImageSop: string;
   sop: PublishedSop;
   catalog: CatalogSnapshot;
   /** 快照数组本身不带 ord：另存一份 code → ord，applyCatalogRow 按它插到正确位置 */
@@ -463,12 +468,12 @@ export function toPublishedSop(tenantId: string, row: SopVersionRow, sections: r
   });
 }
 
-// 第 22 步才接待生效品牌的启动重渲染；此处仍只比较旧版渲染输入。
-const CAUSE: Record<Exclude<keyof RenderInputs, 'brand' | 'brandHash'>, string> = {
+const CAUSE: Record<Exclude<keyof RenderInputs, 'brand'>, string> = {
   hardRulesHash: 'hard_rules',
   imageSopHash: 'locked_sections',
   sectionTableHash: 'section_table',
   toolsHash: 'tools',
+  brandHash: 'brand',
 };
 
 /**
@@ -479,9 +484,12 @@ function resolvePublished(
   d: ConfigDeps,
   row: SopVersionRow,
   imageSections: readonly SopSection[],
+  previousImage: readonly SopSection[],
 ): { merged: SopSection[]; rendered: string; causes: string[] } | null {
-  assertIntegrity(row);
-  const merged = mergeWithImage(row.sections, imageSections);
+  const changedBrand =
+    publishedBrand(row.renderInputs).brandHash !== renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null).brandHash;
+  const stored = changedBrand ? switchPreamble(row.sections, previousImage, imageSections) : row.sections;
+  const merged = mergeWithImage(stored, imageSections);
   const rendered = d.render(joinSop(merged));
   if (d.render(joinSop(merged)) !== rendered) throw startup('renderer_nondeterministic', '同一份 SOP 渲染两遍结果不同');
   const violations = checkSopContract({
@@ -491,6 +499,9 @@ function resolvePublished(
     toolNames: d.toolNames,
     knownFields: d.knownFields,
     baselineEditableChars: null,
+    rules: d.runtime?.contractRules(d.brand ? { brand: d.brand } : 'legacy'),
+    brand: d.brand,
+    hardRequirements: d.render(''),
   });
   if (violations.length) {
     throw startup(
@@ -499,10 +510,12 @@ function resolvePublished(
     );
   }
   const toolsHash = sha256(d.toolsJson);
-  if (rendered === row.renderedPrompt && toolsHash === row.toolsHash) return null;
-  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, publishedBrand(row.renderInputs).brand);
+  if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand) return null;
+  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null);
   const before = row.renderInputs;
-  const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[]).filter((k) => !before || before[k] !== now[k]).map((k) => CAUSE[k]);
+  const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[])
+    .filter((k) => (k === 'brandHash' ? changedBrand : !before || before[k] !== now[k]))
+    .map((k) => CAUSE[k]);
   if (!causes.length) throw startup('renderer_nondeterministic', `渲染的输入与 v${row.versionNo} 发布时完全相同，结果却不同`);
   return { merged, rendered, causes };
 }
@@ -567,7 +580,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 }
 
 /**
- * deps 为 null：文件模式，立即返回。否则依次执行，前 8 步只读：
+ * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读：
  *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
  *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
@@ -575,7 +588,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
  */
 export async function initConfig(deps: ConfigDeps | null): Promise<void> {
   if (!deps) {
-    installPack('travel');
+    installPack('travel', readFileBrand());
     return;
   }
   let d = deps;
@@ -622,6 +635,10 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
         render: (sop) => renderSystemPrompt(sop, runtime.legacy.hardRequirements),
       };
     }
+    const legacyImage = d.imageSop;
+    const brand = (await dbStep('读待生效品牌', () => readBrand(d.db, tenant.id))) ?? null;
+    d = { ...d, brand, runtime };
+    if (brand) d = { ...d, render: tenantRenderer(runtime, brand) };
     // 4
     const held = await dbStep('取租户锁', () => d.lock(tenant.id));
     lock = held;
@@ -635,7 +652,8 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
     // 5
     let imageSections: SopSection[];
     try {
-      imageSections = splitSop(d.imageSop);
+      imageSections = tenantImage(runtime, legacyImage, brand);
+      d = { ...d, imageSop: joinSop(imageSections) };
     } catch (e) {
       throw startup('image_sop_invalid', `镜像里的 data/sop.md 不合格：${message(e)}`);
     }
@@ -649,11 +667,14 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
       ),
     );
     if (!row) throw startup('no_published_sop', `租户「${d.tenantSlug}」没有已发布的 SOP，先跑 import-config`);
-    const rerender = resolvePublished(d, row, imageSections);
+    assertIntegrity(row);
+    const previousImage = tenantImage(runtime, legacyImage, publishedBrand(row.renderInputs).brand);
+    const rerender = resolvePublished(d, row, imageSections, previousImage);
     if (!items.some((r) => r.kind === 'route')) throw startup('no_active_routes', `租户「${d.tenantSlug}」没有 active 的线路`);
     // 8
     const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections);
     logDrift(d, merged, imageSections, items);
+    if (preambleWarning(merged, imageSections)) console.warn('[config] 前言节里可能还有旧品牌名');
     // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
     const current = rerender ? await dbStep('写入 rerender 版本', () => writeRerender(d, tenant.id, row, rerender)) : row;
     // 9（02）条目版本的启动补写，两种会话存储都做；补写的版本随后与读到的一起进内存
@@ -668,12 +689,13 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
       pack,
       lock: held,
       imageSections: deepFreeze(imageSections),
+      legacyImageSop: legacyImage,
       sop: toPublishedSop(tenant.id, current, merged),
       catalog: snapshotOf(tenant.id, items, 0, history),
       ords: ordsOf(items),
       history,
     };
-    bindPack(runtime, null);
+    bindPack(runtime, loaded.sop.brand);
     lockState = 'held';
     sopStale = false;
     catalogStale = false;
@@ -716,7 +738,7 @@ async function writeRerender(
       basedOn: row.id,
       renderedPrompt: r.rendered,
       ...hashes,
-      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, publishedBrand(row.renderInputs).brand),
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null),
       changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
       createdBy: null,
       createdByName: 'system',
@@ -748,9 +770,21 @@ export function currentTenant(): { name: string; pack: IndustryPack } {
 // ---------------- 给编辑流程用 ----------------
 
 /** 只给 src/config/sop.ts、catalog.ts 用，以及 boot 给 db 会话存储拼依赖：装载时的库、租户、依赖与镜像节 */
-export function configRuntime(): { db: Db; tenantId: string; deps: ConfigDeps; imageSections: readonly SopSection[] } {
+export function configRuntime(): {
+  db: Db;
+  tenantId: string;
+  deps: ConfigDeps;
+  imageSections: readonly SopSection[];
+  legacyImageSop: string;
+} {
   if (!loaded) throw new ConfigNotReadyError();
-  return { db: loaded.deps.db, tenantId: loaded.tenantId, deps: loaded.deps, imageSections: loaded.imageSections };
+  return {
+    db: loaded.deps.db,
+    tenantId: loaded.tenantId,
+    deps: loaded.deps,
+    imageSections: loaded.imageSections,
+    legacyImageSop: loaded.legacyImageSop,
+  };
 }
 
 /**
@@ -995,14 +1029,35 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
 
 /** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
 export function currentPack(): PackBinding {
-  const binding = boundPack() ?? installPack('travel');
+  const binding = boundPack() ?? installPack('travel', configMode() === 'file' ? readFileBrand() : null);
   return loaded ? { ...binding, brand: loaded.sop.brand } : binding;
 }
 
-function installPack(id: string): PackBinding {
+/** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */
+export function fileSopPath(): string {
+  return process.env.SOP_PATH ?? path.join(process.cwd(), 'data', 'sop.md');
+}
+
+function readFileBrand(): BrandProfile | null {
+  const file = path.join(path.dirname(fileSopPath()), 'brand.json');
+  if (!fs.existsSync(file)) return null;
+  // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验、把损坏的品牌渲染进锁定节
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file));
+  return BrandProfileSchema.parse(JSON.parse(text));
+}
+
+/** 文件模式保留可编辑节，只把锁定节与硬性要求按装载的品牌渲染；旧版原文不经过切分。 */
+export function renderFileSop(sop: string): string {
+  const { runtime, brand } = currentPack();
+  if (brand === null) return renderSystemPrompt(sop, runtime.legacy.hardRequirements);
+  const image = tenantImage(runtime, sop, brand);
+  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(splitSop(sop, runtime.sopSections), image)));
+}
+
+function installPack(id: string, brand: BrandProfile | null = null): PackBinding {
   const runtime = runtimeById(id, packSources());
   if (!runtime) throw new Error(`行业包 ${id} 没有运行时`);
-  bindPack(runtime, null);
+  bindPack(runtime, brand);
   return boundPack()!;
 }
 
@@ -1021,7 +1076,7 @@ function liveSources(): PackSources {
   if (!runtimeSources) throw new Error('运行时能力尚未初始化');
   return runtimeSources;
 }
-function packSources(): PackSources {
+export function packSources(): PackSources {
   return {
     configMode,
     currentCatalog,

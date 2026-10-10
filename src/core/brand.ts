@@ -1,8 +1,10 @@
 // R4、R6：只接收捕获的品牌快照，不读租户表或配置源。
 import type { BrandPage, BrandProfile, BrandTexts, PackRuntime } from './pack-api.js';
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 export function renderBrandTemplate(template: string, brand: BrandProfile, escape: (s: string) => string = (s) => s): string {
-  const values = { ...brand, brandInitial: Array.from(brand.brandName)[0] ?? '' };
+  const values = { ...brand, brandInitial: graphemes.segment(brand.brandName)[Symbol.iterator]().next().value?.segment ?? '' };
   return template.replace(/\{(brandName|advisorTitle|aiTitle|scopeNoun|identityLine|brandInitial)\}/g, (_match, key: keyof typeof values) =>
     escape(values[key]),
   );
@@ -33,6 +35,7 @@ const jsEscape = (s: string): string =>
     .replaceAll('>', '\\u003e')
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
+const jsTemplateEscape = (s: string): string => jsEscape(s).replaceAll('`', '\\`').replaceAll('${', '\\${');
 
 /** 旧版直接返回源文件；模板模式按包声明的槽位一次替换，品牌文本按所在上下文转义。 */
 export function renderBrandPage(html: string, page: BrandPage, runtime: PackRuntime, brand: BrandProfile | null): string {
@@ -46,7 +49,9 @@ export function renderBrandPage(html: string, page: BrandPage, runtime: PackRunt
     .join('|');
   return html.replace(new RegExp(pattern, 'g'), (matched) => {
     const slot = byText.get(matched)!;
-    const text = renderBrandTemplate(slot.template, brand, slot.context === 'js' ? (s) => s : htmlEscape);
-    return slot.context === 'html' ? text : jsEscape(text);
+    const isHtml = slot.context === 'html-text' || slot.context === 'html-attribute';
+    const text = renderBrandTemplate(slot.template, brand, isHtml || slot.htmlContext ? htmlEscape : (s) => s);
+    if (isHtml) return text;
+    return slot.context === 'js-template' ? jsTemplateEscape(text) : jsEscape(text);
   });
 }

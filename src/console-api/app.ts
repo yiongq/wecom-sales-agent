@@ -463,6 +463,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (!c.var.user) {
       const s = currentSop();
       const anon: AnonSopOverview = {
+        ...(s.sections.find((x) => x.key === 'preamble')?.text !== configRuntime().imageSections.find((x) => x.key === 'preamble')?.text
+          ? { preambleWarning: true }
+          : {}),
         published: { versionNo: s.versionNo, publishedAt: s.publishedAt, promptHash: s.promptHash.slice(0, 12), sections: s.sections },
       };
       return c.json(anon, 200);

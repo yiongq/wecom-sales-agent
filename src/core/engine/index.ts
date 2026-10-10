@@ -2,7 +2,6 @@ import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
 import fs from 'node:fs';
-import path from 'node:path';
 import type { AgentReply, ChatMessage, Order, PreparedPush, Session } from '../../types.js';
 import { profileForPrompt } from '../../types.js';
 import {
@@ -30,8 +29,7 @@ import { answerIdentity as coreAnswerIdentity } from '../guards/text.js';
 import { tryReserveVisitorLLM } from '../../budget.js';
 import { numEnv, todayIso } from '../../env.js';
 import { profile } from '../../profile.js';
-import { renderSystemPrompt } from '../prompt.js';
-import { configMode, currentSop, pinCatalogForTurn, currentPack } from '../../config/source.js';
+import { configMode, currentSop, pinCatalogForTurn, currentPack, fileSopPath, renderFileSop } from '../../config/source.js';
 import { promptHashes } from '../../config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage, enterHandoff, terminalStageKey } from '../../handoff/record.js';
 import { TAKEN_OVER_NOTE, takeoverGen, prepareChannel, pushToChannel } from '../../handoff/takeover.js';
@@ -86,7 +84,7 @@ export function historyWindow<T>(msgs: T[]): T[] {
 
 // sop.md 由数据模块产出，运行时读取；SOP_PATH 仅供测试指向 fixture
 function loadSop(): string {
-  const p = process.env.SOP_PATH ?? path.join(process.cwd(), 'data', 'sop.md');
+  const p = fileSopPath();
   if (!fs.existsSync(p)) {
     throw new Error(`销售 SOP 缺失: ${p} 不存在（应由 data/sop.md 提供，见 SPEC 模块 1）`);
   }
@@ -96,7 +94,7 @@ function loadSop(): string {
 // system prompt 的拼装与前缀缓存的讲究见 prompt/system.ts。这里只决定 SOP 从哪来：
 // DB 模式取发布时渲染好的那一串（每轮逐字节复用，从不重新渲染），文件模式每轮按 data/sop.md 现渲染
 export function buildSystemPrompt(): string {
-  return configMode() === 'db' ? currentSop().renderedPrompt : renderSystemPrompt(loadSop(), currentPack().runtime.legacy.hardRequirements);
+  return configMode() === 'db' ? currentSop().renderedPrompt : renderFileSop(loadSop());
 }
 
 /** 文件模式下的 SOP 原文（SOP_PATH 或 data/sop.md），给 /healthz 算 sopHash */

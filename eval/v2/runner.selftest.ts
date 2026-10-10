@@ -50,6 +50,38 @@ await test('缺清理回调时在重置之前报缺失文件与搬家提示', as
   }
 });
 
+await test('品牌夹具在文件和 PGlite 池内切换，恢复 demo 不串品牌', async () => {
+  const previousDb = process.env.CONFIG_TEST_DB;
+  try {
+    for (const db of ['', 'pglite']) {
+      process.env.CONFIG_TEST_DB = db;
+      const cases = [undefined, 'shanhai', undefined, 'shanhai'].map((brand, i): CaseV2 => ({
+        ...base,
+        id: `brand-switch-${i}`,
+        brand,
+        turns: [
+          {
+            say: '你是机器人吗？',
+            script: [{ content: '我是旅行顾问' }],
+            expect: { replyMatches: [brand ? '山海旅行' : '云途定制旅行'], replyExcludes: [brand ? '云途' : '山海'] },
+          },
+        ],
+      }));
+      const results = await runCasesV2(cases, { workers: 1 });
+      assert.ok(
+        results.every((r) => r.pass),
+        results.flatMap((r) => r.failures).join('\n'),
+      );
+    }
+    const result = await runCaseV2({ ...base, brand: 'unknown' });
+    assert.equal(result.pass, false);
+    assert.match(result.failures.join('\n'), /未注册的夹具/);
+  } finally {
+    if (previousDb === undefined) delete process.env.CONFIG_TEST_DB;
+    else process.env.CONFIG_TEST_DB = previousDb;
+  }
+});
+
 await test('脚本耗尽报 case / 轮次 / 请求', async () => {
   const c = structuredClone(base);
   c.turns[0].script = [];

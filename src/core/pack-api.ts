@@ -642,10 +642,14 @@ export interface BrandPageSlot {
   /** 页面中的完整原文片段；一次匹配，避免品牌值再次成为替换目标。 */
   legacy: string;
   template: string;
-  context: 'html' | 'js' | 'html-in-js';
+  context: 'html-text' | 'html-attribute' | 'js-string' | 'js-template' | 'json';
+  /** JS 字面量最终写入 innerHTML 时，先按内层 HTML 上下文转义品牌值。 */
+  htmlContext?: 'text' | 'attribute';
 }
 
 export interface BrandTemplates extends BrandTexts {
+  hardRequirements: string;
+  lockedSectionTemplates: Readonly<Record<string, string>>;
   preamble: string;
   pages: Partial<Record<BrandPage, readonly BrandPageSlot[]>>;
 }

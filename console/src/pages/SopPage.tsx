@@ -352,6 +352,7 @@ function AnonSop({
   return (
     <>
       <PageHeader title={TITLE} status={<span>{cjk(anonStatus(published, now))}</span>} />
+      {data.preambleWarning && <Alert type="warning" showIcon title="前言节里可能还有旧品牌名" />}
       {refetchError && <div className="sop-banners">{refetchError}</div>}
       <Columns
         editor={editor}
@@ -1136,6 +1137,7 @@ function MemberSop({
         }
       />
       {guard}
+      {data.preambleWarning && <Alert type="warning" showIcon title="前言节里可能还有旧品牌名" />}
       {hasBanners && (
         <div className="sop-banners">
           {/* 409 停住时重取失败由下面「载入最新草稿」自己的报错说（重试要接着走完载入），这里不重复 */}
