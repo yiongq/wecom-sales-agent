@@ -1,3 +1,4 @@
+import { identityAnswer, offTopicReply } from './legacy.js';
 // 04 第 16 步：旅游回复/跟进共用的护栏判断与修补；读能力显式注入。
 import {
   convLabel,
@@ -69,8 +70,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
   const ON_TOPIC = /旅行|旅游|线路|行程|目的地|出行|出发|报价|价格|顾问|酒店|蜜月|度假|亲子|海岛|预算|几位|人数|订单|客服/;
 
   // 不提「AI」：客户没直接问身份时不主动自报（直接问时由身份安全网回答）
-  const INJECTION_REPLY =
-    '不好意思，我是云途定制旅行的旅行顾问，只帮您处理旅行相关的事～\n想去哪儿、几位出行、大概什么预算，随时告诉我，我来帮您安排！';
+  const INJECTION_REPLY = offTopicReply;
 
   /**
    * 注入得逞的残留：模型先把被劫持的输出吐出来，再接一句正常的拒绝。
@@ -97,7 +97,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
   /** 回复里有没有「在卖东西」的痕迹 */
   const HAS_PRODUCT = /线路|行程|人均|每人|报价|出行|几位|预算|酒店|方案|天\s*[，,。]|日\s*[，,。]/;
 
-  const IDENTITY_ANSWER = '我是云途定制旅行的 AI 旅行顾问，7×24 在线为您服务～';
+  const IDENTITY_ANSWER = identityAnswer;
 
   /**
    * 改行程护栏命中后，模型原文里还能发给客户的部分。

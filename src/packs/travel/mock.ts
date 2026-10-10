@@ -1,3 +1,6 @@
+import { renderBrandTemplate } from '../../core/pack-api.js';
+import { mockOpening } from './legacy.js';
+import { travelTemplates } from './templates.js';
 import { todayIso, type ChatOptions, type MockPolicy } from '../../core/pack-api.js';
 
 // ---------- Mock 脚本 ----------
@@ -216,11 +219,7 @@ export async function mockChat(opts: ChatOptions): Promise<string> {
     );
   }
 
-  return (
-    '您好呀～我是云途定制旅行的旅行顾问 😊 咱们做高端定制游，先了解下您的想法：' +
-    '这次想去哪个方向玩，大概几位出行呢？' +
-    state('discovery')
-  );
+  return (opts.brand ? renderBrandTemplate(travelTemplates.mockOpening, opts.brand) : mockOpening) + state('discovery');
 }
 
 export const travelMock: MockPolicy = { chat: mockChat };

@@ -1,3 +1,4 @@
+import { brandTexts } from '../core/brand.js';
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
 // 必须链式注册，Hono RPC 才推得出类型（ADR-002）；console/src 只用 import type 引 ConsoleApp。
 // 公共中间件依次是：安全头 → 只在 DB 模式 → 读会话 → 写保护；每个路由再挂自己的权限，没匹配上的路径回 JSON。
@@ -62,6 +63,7 @@ import {
   currentCatalog,
   currentSop,
   currentTenant,
+  currentPack,
 } from '../config/source.js';
 import { isUniqueViolation, withTenant, type TenantCtx, type Tx } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
@@ -781,7 +783,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (empty) {
       // 新租户首次读到空表：按行业包默认模板写入，只写一次（ensureDefaultQuickReplies 抢租户级 advisory 锁、
       // 拿到锁后再确认一遍还是空表才插；并发的几次首次读互相等锁，只有一个真的插）。没配模板的包什么都不写
-      await withTenant(configRuntime().db, ctxOf(c), (tx) => ensureDefaultQuickReplies(tx, defaultQuickRepliesOf(currentTenant().pack.id)));
+      const binding = currentPack();
+      const defaults =
+        binding.brand === null ? defaultQuickRepliesOf(currentTenant().pack.id) : brandTexts(binding.runtime, binding.brand).quickReplies;
+      await withTenant(configRuntime().db, ctxOf(c), (tx) => ensureDefaultQuickReplies(tx, defaults));
     }
     const rows = await readTx(c, (tx) => listQuickReplies(tx));
     return c.json({ items: rows.map(quickReplyView) }, 200);

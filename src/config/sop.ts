@@ -34,7 +34,7 @@ import {
 } from '../sop/sections.js';
 import type { SopVersion } from '../shared/console-api.js';
 import { promptHashes, renderInputsFor, type PromptHashes } from './hashes.js';
-import { assertConfigWritable, configRuntime, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
+import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
 
 export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
 
@@ -371,7 +371,7 @@ export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; chan
       basedOn: pub.id,
       renderedPrompt: ev.rendered,
       ...ev.hashes,
-      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson),
+      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand),
       changeNote: note,
       publishedBy: ctx.actor.userId,
       publishedByName: ctx.actor.name,
@@ -429,7 +429,7 @@ export async function rollbackSop(
       basedOn: target.id,
       renderedPrompt: ev.rendered,
       ...ev.hashes,
-      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson),
+      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand),
       changeNote: note,
       createdBy: ctx.actor.userId,
       createdByName: ctx.actor.name,

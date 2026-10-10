@@ -1,3 +1,5 @@
+import { currentPack } from '../config/source.js';
+import { brandTexts, renderBrandPage } from '../core/brand.js';
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -121,9 +123,8 @@ webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
 webRoutes.get('/w/:key', async (c) => {
   const account = accountByKey(c.req.param('key'), 'web')!;
-  const welcome =
-    account.web!.welcomeText ??
-    '您好，欢迎来到云途定制旅行，我是您的 AI 旅行顾问 ✨\n想去川西藏地、云南雪山，还是新疆看看？和我聊聊您的想法吧～\n需要真人服务时，回复「人工」即可转真人顾问。';
+  const binding = currentPack();
+  const welcome = account.web!.welcomeText ?? brandTexts(binding.runtime, binding.brand).webWelcome;
   const config = JSON.stringify({
     key: account.key,
     title: account.web!.title,
@@ -136,7 +137,7 @@ webRoutes.get('/w/:key', async (c) => {
     'Content-Security-Policy',
     `${CONSOLE_SECURITY_HEADERS['Content-Security-Policy']}; style-src 'self'; base-uri 'none'; form-action 'self'`,
   );
-  const html = await readFile('public/web.html', 'utf8');
+  const html = renderBrandPage(await readFile('public/web.html', 'utf8'), 'web', binding.runtime, binding.brand);
   return c.html(html.replace('__WEB_CONFIG__', () => config));
 });
 

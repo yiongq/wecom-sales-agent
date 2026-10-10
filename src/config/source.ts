@@ -30,14 +30,14 @@ import { setLogTenant } from '../log.js';
 import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
 import { renderSystemPrompt } from '../core/prompt.js';
 import { packPipelines } from '../core/engine/pipelines.js';
-import { bindPack, boundPack, type PackBinding, type PackSources } from '../core/pack-api.js';
+import { bindPack, boundPack, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
-import { promptHashes, renderInputsFor, sha256 } from './hashes.js';
+import { promptHashes, renderInputsFor, sha256, publishedBrand } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
 export type ConfigMode = 'file' | 'db';
@@ -57,6 +57,9 @@ export interface PublishedSop {
   toolsHash: string;
   prefixHash: string;
   sopHash: string;
+  /** 04 R6：来自 render_inputs，绝不从 tenants.brand 现读。 */
+  brand: BrandProfile | null;
+  brandHash: string;
 }
 
 export interface CatalogSnapshot {
@@ -384,6 +387,11 @@ const systemCtx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: '
 
 /** 完整性：存下来的哈希与内容对得上。手工改过已发布行（绕过触发器）时在这里拦住 */
 function assertIntegrity(row: SopVersionRow): void {
+  try {
+    publishedBrand(row.renderInputs);
+  } catch {
+    throw startup('integrity', `已发布版本 v${row.versionNo} 的品牌快照或哈希不合规`);
+  }
   if (!row.renderedPrompt || !row.promptHash || !row.sopHash) throw startup('integrity', `已发布版本 v${row.versionNo} 缺少渲染结果或哈希`);
   if (sha256(row.renderedPrompt) !== row.promptHash)
     throw startup('integrity', `已发布版本 v${row.versionNo} 的 rendered_prompt 与 prompt_hash 对不上`);
@@ -451,10 +459,12 @@ export function toPublishedSop(tenantId: string, row: SopVersionRow, sections: r
     toolsHash: row.toolsHash!,
     prefixHash: row.prefixHash!,
     sopHash: row.sopHash!,
+    ...publishedBrand(row.renderInputs),
   });
 }
 
-const CAUSE: Record<keyof RenderInputs, string> = {
+// 第 22 步才接待生效品牌的启动重渲染；此处仍只比较旧版渲染输入。
+const CAUSE: Record<Exclude<keyof RenderInputs, 'brand' | 'brandHash'>, string> = {
   hardRulesHash: 'hard_rules',
   imageSopHash: 'locked_sections',
   sectionTableHash: 'section_table',
@@ -490,9 +500,9 @@ function resolvePublished(
   }
   const toolsHash = sha256(d.toolsJson);
   if (rendered === row.renderedPrompt && toolsHash === row.toolsHash) return null;
-  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson);
+  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, publishedBrand(row.renderInputs).brand);
   const before = row.renderInputs;
-  const causes = (Object.keys(CAUSE) as (keyof RenderInputs)[]).filter((k) => !before || before[k] !== now[k]).map((k) => CAUSE[k]);
+  const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[]).filter((k) => !before || before[k] !== now[k]).map((k) => CAUSE[k]);
   if (!causes.length) throw startup('renderer_nondeterministic', `渲染的输入与 v${row.versionNo} 发布时完全相同，结果却不同`);
   return { merged, rendered, causes };
 }
@@ -706,7 +716,7 @@ async function writeRerender(
       basedOn: row.id,
       renderedPrompt: r.rendered,
       ...hashes,
-      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson),
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, publishedBrand(row.renderInputs).brand),
       changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
       createdBy: null,
       createdByName: 'system',
@@ -985,7 +995,8 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
 
 /** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
 export function currentPack(): PackBinding {
-  return boundPack() ?? installPack('travel');
+  const binding = boundPack() ?? installPack('travel');
+  return loaded ? { ...binding, brand: loaded.sop.brand } : binding;
 }
 
 function installPack(id: string): PackBinding {

@@ -1,3 +1,5 @@
+import { renderBrandTemplate } from '../../core/pack-api.js';
+import { travelTemplates } from './templates.js';
 // 04 R7：旅游主回复步骤，顺序由核心与本表组合；副作用仅经本轮 context。
 import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGuardContext } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE } from './itinerary.js';
@@ -350,7 +352,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           `[engine] ⚠️ 拦截注入劫持（会话 ${convLabel(session.id)}）：输入=${logQuote(ctx.inputText)} 输出=${logQuote(ctx.text)}`,
         );
         const before = ctx.text;
-        replaceVisible(INJECTION_REPLY);
+        replaceVisible(ctx.brand ? renderBrandTemplate(travelTemplates.offTopicReply, ctx.brand) : INJECTION_REPLY);
         ctx.recordGuard('injection', before, ctx.text, 'replace');
         ctx.turn.flags.guardHit = 'injection';
       }
