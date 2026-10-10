@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { PGlite } from '@electric-sql/pglite';
 
 const root = path.join(import.meta.dirname, '..', '..');
@@ -35,9 +36,10 @@ const baseEnv = {
 const run = (command: string, args: string[], env: Record<string, string> = {}, input?: string) => {
   fs.writeFileSync(log, '');
   fs.rmSync(rolledBack, { force: true });
+  const started = performance.now();
   const r = spawnSync(command, args, { cwd: repo, env: { ...baseEnv, ...env }, input, encoding: 'utf8', timeout: 15_000 });
   assert.ifError(r.error);
-  return { code: r.status, out: r.stdout + r.stderr, log: fs.readFileSync(log, 'utf8') };
+  return { code: r.status, out: r.stdout + r.stderr, log: fs.readFileSync(log, 'utf8'), elapsed: performance.now() - started };
 };
 const guard = (target: string, env: Record<string, string> = {}) =>
   run('bash', ['-s', '--', srv, target, 'side1', '3999'], env, guardSource);
@@ -57,11 +59,39 @@ try {
     'AGENT_DB=brand_fixture\nPOSTGRES_PASSWORD=x\nAGENT_OWNER_PASSWORD=x\nAGENT_APP_PASSWORD=x\nAGENT_PLATFORM_PASSWORD=x\n',
   );
   fs.writeFileSync(path.join(srv, '.env.migrate'), '');
+  // 本机没有 coreutils timeout：监督真实假 docker 子进程，超时杀掉并回 124；测试缩短等待，生产参数照样核对。
+  fs.writeFileSync(
+    path.join(bin, 'timeout'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const [kill, limit, command, ...args] = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_LOG, 'timeout ' + process.argv.slice(2).join(' ') + '\\n');
+if (kill !== '--kill-after=2s' || limit !== '8s') process.exit(99);
+const r = spawnSync(command, args, { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'],
+  timeout: Number(process.env.FAKE_TIMEOUT_MS || 8000), killSignal: 'SIGKILL' });
+process.stdout.write(r.stdout || '');
+process.stderr.write(r.stderr || '');
+process.exit(r.error?.code === 'ETIMEDOUT' ? 124 : (r.status ?? 1));
+`,
+    { mode: 0o755 },
+  );
   fake(
     'docker',
     `
 cat >/dev/null
 echo "docker $*" >> "$FAKE_LOG"
+case "$*" in
+  *psql*)
+    case "$*" in
+      *"PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000"*"-v ON_ERROR_STOP=1"*) ;;
+      *) exit 99 ;;
+    esac
+    case "\${FAKE_HANG:-}:$*" in
+      pending-probe:*information_schema.columns*tenants*|published-probe:*information_schema.columns*sop_versions*|pending:*"from public.tenants"*|published:*"from public.sop_versions"*|catalog-probe:*to_regclass*catalog_item_versions*|catalog:*"from catalog_item_versions"*|channel-probe:*to_regclass*channel_accounts*|channel:*"from channel_accounts where"*)
+        exec perl -e 'sleep 60' ;;
+    esac ;;
+esac
 case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
   *pg-backend.ts*|*registry.ts*|*pack-api.ts*)
@@ -70,9 +100,18 @@ case "$*" in
     [ "$phase" = error ] && exit 125
     case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *) need=4 ;; esac
     [ "$phase" -ge "$need" ] ;;
-  *"from tenants t"*)
-    printf '%s' "\${!#}" > "$FAKE_QUERY"
-    case "\${FAKE_BRAND-f}" in down) exit 1 ;; *) echo "\${FAKE_BRAND-f}" ;; esac ;;
+  *information_schema.columns*tenants*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.pending-probe"
+    case "\${FAKE_PROBE-t}" in down) exit 1 ;; *) echo "\${FAKE_PENDING_SCHEMA-\${FAKE_PROBE-t}}" ;; esac ;;
+  *information_schema.columns*sop_versions*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.published-probe"
+    echo "\${FAKE_PUBLISHED_SCHEMA-\${FAKE_PROBE-t}}" ;;
+  *"from public.tenants t"*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.pending"
+    case "\${FAKE_BRAND-f}" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; *) echo "\${FAKE_PENDING_BRAND-\${FAKE_BRAND-f}}" ;; esac ;;
+  *"from public.sop_versions where"*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.published"
+    echo "\${FAKE_PUBLISHED_BRAND-\${FAKE_BRAND-f}}" ;;
   *to_regclass*channel_accounts*) echo t ;;
   *"from channel_accounts where"*) echo "\${FAKE_CHANNEL:-f}" ;;
   *to_regclass*catalog_item_versions*) echo t ;;
@@ -136,7 +175,7 @@ exit 0`,
   );
   check(
     '品牌查询跨租户使用 postgres 与指定数据库、stdin 未被吞',
-    r.log.includes('exec -T db psql -U postgres -d brand_fixture') && r.out.includes('clear 只改待生效值'),
+    r.log.includes('db psql -U postgres -d brand_fixture') && r.out.includes('clear 只改待生效值'),
     r.log,
   );
   for (const target of ['pre-02', 'pre-03', 'pre-04', 'side1:prev']) {
@@ -145,8 +184,44 @@ exit 0`,
   }
   r = guard('pre-04');
   check('品牌为空放行，当前 04 发布的 brand:null 由 SQL 判断', r.code === 0, r.out);
+  check(
+    '每次品牌探测/查询都有进程超时、SQL/锁超时与失败退出保护',
+    r.log.split('\n').filter((line) => line.startsWith('docker ') && line.includes('psql')).length === 4 &&
+      r.log.split('\n').filter((line) => line.startsWith('timeout --kill-after=2s 8s docker ')).length === 4 &&
+      r.log.includes('PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000') &&
+      r.log.includes('-v ON_ERROR_STOP=1'),
+    r.log,
+  );
+  const sqlTimeouts = r.log.match(/PGOPTIONS=-c statement_timeout=(\d+) -c lock_timeout=(\d+)/)!;
+  r = guard('pre-04', { FAKE_BRAND: 'lock-timeout' });
+  check('SQL 锁超时即使输出 f 也从严拒绝，不当作无风险', r.code === 6 && r.out.includes('问不到库') && r.elapsed < 3000, r.out);
+  r = guard('pre-04', { FAKE_PROBE: 'down' });
+  check('元数据探测连接失败仍从严拒绝', r.code === 6 && r.out.includes('问不到库'), r.out);
+  r = guard('pre-04', { FAKE_PENDING_BRAND: 't', FAKE_RUNNING: '1', FAKE_HANG: 'published-probe', FAKE_TIMEOUT_MS: '180' });
+  check(
+    '已知待生效品牌有风险立即拒绝，另一项超时/旧镜像豁免不能放行',
+    r.code === 6 && !r.log.includes("to_regclass('public.sop_versions')"),
+    r.out,
+  );
+  for (const [phase, target, points] of [
+    ['02', 'pre-02', ['catalog-probe', 'catalog']],
+    ['03', 'pre-03', ['channel-probe', 'channel']],
+    ['04', 'pre-04', ['pending-probe', 'pending', 'published-probe', 'published']],
+  ] as const) {
+    for (const point of points) {
+      for (const running of ['4', '1']) {
+        r = guard(target, { FAKE_HANG: point, FAKE_TIMEOUT_MS: '180', FAKE_HEALTH_FAIL: '1', FAKE_RUNNING: running });
+        const expected = running === '1' ? 0 : phase === '02' ? 4 : phase === '03' ? 5 : 6;
+        check(
+          `${phase} ${point} 进程超时：运行 ${running} 返回 ${expected}，3 秒内结束`,
+          r.code === expected && r.elapsed < 3000 && (expected === 0 || r.out.includes('问不到库')),
+          `${r.elapsed.toFixed(0)}ms ${r.out}`,
+        );
+      }
+    }
+  }
   r = guard('side1:prev', { FAKE_TARGET: '4', FAKE_BRAND: 'down' });
-  check('04 到 04 无需品牌降级检查', r.code === 0 && !r.log.includes('from tenants t'), r.log);
+  check('04 到 04 无需品牌降级检查', r.code === 0 && !r.log.includes('information_schema.columns'), r.log);
   for (const running of ['4', 'error', 'missing']) {
     for (const brand of ['down', 'malformed', '']) {
       r = guard('pre-04', { FAKE_RUNNING: running, FAKE_BRAND: brand, FAKE_HEALTH_FAIL: '1' });
@@ -213,6 +288,12 @@ exit 0`,
   );
   r = deploy('v04', { FAKE_BRAND: 'down', FAKE_RUNNING: '4', FAKE_HEALTH_FAIL: '1' });
   check('健康失败且库不可达也不启动 prev', r.code === 1 && r.out.includes(recovery) && !r.log.includes('up -d --no-deps app'), r.out);
+  r = deploy('v04', { FAKE_HANG: 'published', FAKE_TIMEOUT_MS: '180', FAKE_HEALTH_FAIL: '1' });
+  check(
+    '健康失败后品牌锁等待被限时终止，拒绝自动回滚并透出恢复步骤',
+    r.code === 1 && r.elapsed < 3000 && r.out.includes(recovery) && !r.log.includes('up -d --no-deps app'),
+    `${r.elapsed.toFixed(0)}ms ${r.out}`,
+  );
   r = deploy('v04', { FAKE_BRAND: 't', FAKE_TARGET: '4', FAKE_HEALTH_FAIL: '1' });
   check(
     '04 自动回滚到 04 不受品牌阻拦并恢复服务',
@@ -238,19 +319,44 @@ exit 0`,
   }
 
   // 使用检查脚本真正发出的 SQL，验证旧库、跨租户、历史快照、clear 与重启状态。
-  const query = fs.readFileSync(queryFile, 'utf8');
+  const queries = Object.fromEntries(
+    ['pending-probe', 'published-probe', 'pending', 'published'].map((key) => [key, fs.readFileSync(`${queryFile}.${key}`, 'utf8')]),
+  );
   const pg = new PGlite();
   try {
-    await pg.exec(`create table tenants(id text primary key); create table sop_versions(tenant_id text, status text, render_inputs jsonb);
-      insert into tenants values ('demo'), ('other');
-      insert into sop_versions values ('demo', 'published', null), ('other', 'published', '{}');`);
-    const risky = async (): Promise<boolean> => Object.values((await pg.query<Record<string, boolean>>(query)).rows[0])[0]!;
+    await pg.query("select set_config('statement_timeout', $1, false), set_config('lock_timeout', $2, false)", [
+      sqlTimeouts[1]!,
+      sqlTimeouts[2]!,
+    ]);
+    const settings = (
+      await pg.query<{ statement: string; lock: string }>(
+        "select current_setting('statement_timeout') as statement, current_setting('lock_timeout') as lock",
+      )
+    ).rows[0]!;
+    check('真正传入 psql 的 SQL 超时选项可在 PostgreSQL 设置', settings.statement === '5s' && settings.lock === '2s');
+    const sqlBool = async (key: string): Promise<boolean> =>
+      Object.values((await pg.query<Record<string, boolean>>(queries[key]!)).rows[0])[0]!;
     const state = async (name: string, expected: boolean): Promise<void> => {
-      const risk = await risky();
+      const pendingSchema = await sqlBool('pending-probe');
+      const publishedSchema = await sqlBool('published-probe');
+      const pending = pendingSchema && (await sqlBool('pending'));
+      const published = publishedSchema && (await sqlBool('published'));
+      const risk = pending || published;
       check(`${name}：SQL`, risk === expected);
-      const env = { FAKE_BRAND: risk ? 't' : 'f' };
+      const env = {
+        FAKE_PENDING_SCHEMA: pendingSchema ? 't' : 'f',
+        FAKE_PUBLISHED_SCHEMA: publishedSchema ? 't' : 'f',
+        FAKE_PENDING_BRAND: pending ? 't' : 'f',
+        FAKE_PUBLISHED_BRAND: published ? 't' : 'f',
+      };
       const g = guard('pre-04', env);
       check(`${name}：bash -s`, g.code === (expected ? 6 : 0) && (!expected || g.out.includes(recovery)), g.out);
+      check(
+        `${name}：缺表/列只跳过对应的风险查询`,
+        g.log.includes('from public.tenants t') === pendingSchema &&
+          g.log.includes('from public.sop_versions where') === (publishedSchema && !pending),
+        g.log,
+      );
       const d = deploy('v03', env);
       check(
         `${name}：deploy.sh`,
@@ -260,7 +366,16 @@ exit 0`,
         d.out,
       );
     };
+    await state('空库没有任何表放行', false);
+    await pg.exec(`create table tenants(id text primary key); create table sop_versions(tenant_id text, status text);
+      insert into tenants values ('demo'), ('other');
+      insert into sop_versions values ('demo', 'published'), ('other', 'published');`);
+    await state('旧库有表但缺 brand 与 render_inputs 列放行', false);
+    await pg.exec(`alter table sop_versions add column render_inputs jsonb;
+      update sop_versions set render_inputs = '{}' where tenant_id = 'other';`);
     await state('03 旧库没有 brand 列、快照缺字段放行', false);
+    await pg.exec(`update sop_versions set render_inputs = '{"brand":{"brandName":"山海旅行"}}' where tenant_id = 'other';`);
+    await state('待生效品牌列缺失仍检查当前发布品牌', true);
     await pg.exec(`alter table tenants add column brand json;
       update sop_versions set render_inputs = '{"brand":null,"brandHash":"legacy"}';
       insert into sop_versions values ('other', 'archived', '{"brand":{"brandName":"旧品牌"}}'), ('other', 'draft', '{"brand":{"brandName":"草稿"}}');`);
@@ -273,6 +388,9 @@ exit 0`,
     await pg.exec(`update sop_versions set status = 'archived' where tenant_id = 'other' and status = 'published';
       insert into sop_versions values ('other', 'published', '{"brand":null}');`);
     await state('重启重渲染后放行、历史品牌仍在不算风险', false);
+    await pg.exec(`alter table sop_versions drop column render_inputs;
+      update tenants set brand = '{"brandName":"山海旅行"}' where id = 'other';`);
+    await state('发布快照列缺失仍检查待生效品牌', true);
   } finally {
     await pg.close();
   }

@@ -3587,14 +3587,16 @@ await t.close();
   fake('ssh', ['echo "ssh $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_SSH_LOCAL:-}" ]; then shift; exec bash -c "$*"; fi', 'exit 97']);
   fake('rsync', ['echo "rsync $*" >> "$FAKE_LOG"', 'exit 97']);
   fake('pnpm', ['echo "pnpm $*" >> "$FAKE_LOG"', 'if [ -n "${FAKE_PNPM_OK:-}" ]; then exit 0; fi', 'exit 97']);
+  // 本机没有 coreutils；真正的限时终止与 SQL 超时由 rollback-guard.selftest.ts 验证。
+  fake('timeout', ['[ "$1" = --kill-after=2s ] && [ "$2" = 8s ] || exit 99', 'shift 2', 'exec "$@"']);
   fake('docker', [
     // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
     'case "$1" in exec|compose|run|inspect|image) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *pack-api.ts*|*"from tenants t"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
-    '  *"from tenants t"*) echo f ;;',
+    '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
     '  *pack-api.ts*) exit 1 ;;',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
     '  *registry.ts*) exit "${FAKE_REGISTRY:-1}" ;;',
@@ -4116,7 +4118,7 @@ await t.close();
   const versioned = '{"ok":true,"config":{"mode":"db","catalogVersioned":true},"store":{"mode":"file"}}';
   const catalogRefused = (out: string, why: string): boolean =>
     out.includes('拒绝回滚') && out.includes(why) && out.includes('要回滚只能回到 02 之后的镜像') && !out.includes('export-sessions');
-  const psqlCalls = (g: { docker: string[] }): string[] => g.docker.filter((l) => l.includes('exec -T db psql'));
+  const psqlCalls = (g: { docker: string[] }): string[] => g.docker.filter((l) => l.includes(' db psql -U postgres'));
   check(
     '回滚前检查：问的是本机宿主端口上的 /healthz；/healthz 说了 false 就不问库',
     g1.curl.length === 1 && g1.curl[0]!.includes('http://127.0.0.1:3999/healthz') && psqlCalls(g1).length === 0,
@@ -4143,7 +4145,11 @@ await t.close();
       '问的是这个项目的 db 服务、按 .env.db 的库名（缺省 agent），在 / 下执行',
     g13.code === 0 &&
       psqlCalls(g13).length === 2 &&
-      psqlCalls(g13).every((l) => l.startsWith('docker /|compose -p side1 exec -T db psql -U postgres -d agent -Atc')) &&
+      psqlCalls(g13).every((l) =>
+        l.startsWith(
+          'docker /|compose -p side1 exec -T -e PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000 db psql -U postgres -d agent -v ON_ERROR_STOP=1 -Atc',
+        ),
+      ) &&
       psqlCalls(g13)[1]!.includes('select exists(select 1 from catalog_item_versions where version > 1)'),
     `${g13.code} ${g13.out} ${g13.docker.join(' / ')}`,
   );
@@ -4284,7 +4290,11 @@ await t.close();
           c2.code === (c.risk ? 5 : 0) &&
           (c.risk ? channelSteps(c2.out, 'acme-3') && c2.out.includes('库里的 channel_accounts') : !c2.out.includes('拒绝回滚')) &&
           c2.channelDocker.length === 2 &&
-          c2.channelDocker.every((l) => l.startsWith('docker03 /|compose -p side1 exec -T db psql -U postgres -d agent_side -Atc')) &&
+          c2.channelDocker.every((l) =>
+            l.startsWith(
+              'docker03 /|compose -p side1 exec -T -e PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000 db psql -U postgres -d agent_side -v ON_ERROR_STOP=1 -Atc',
+            ),
+          ) &&
           c2.channelDocker[1]!.endsWith(channelSql ?? 'missing'),
         `${queried} ${c2.code} ${c2.out} ${c2.channelDocker.join(' / ')}`,
       );

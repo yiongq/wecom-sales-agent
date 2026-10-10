@@ -51,38 +51,64 @@ session_risk_count=${#risks[@]}
 pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/store/pg-backend.ts' </dev/null; }
 pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts' </dev/null; }
 pre04_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/pack-api.ts' </dev/null; }
-# 直接问库（与 backup.sh 同一种找法：按项目名找 db 服务，在 / 下执行；超级用户不受 RLS 限制）。打印 t / f / none（表不存在）
-db_versioned() {
-  local db has
+# 所有探测与风险查询共用时限：锁等至多 2 秒、SQL 至多 5 秒；连接或 docker 卡住也在 8 秒后终止，2 秒后强杀。
+# PGOPTIONS 传进容器里的 psql，ON_ERROR_STOP 保证 SQL 超时/错误不会被当成成功的空结果。
+db_query() {
+  local db
   db=$(env_val AGENT_DB "$dir/.env.db")
   db=${db:-agent}
-  has=$( (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select to_regclass('public.catalog_item_versions') is not null" </dev/null) 2>/dev/null) || return 1
+  (cd / && timeout --kill-after=2s 8s docker compose -p "$project" exec -T \
+    -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=2000' db \
+    psql -U postgres -d "$db" -v ON_ERROR_STOP=1 -Atc "$1" </dev/null) 2>/dev/null
+}
+# 直接问库（与 backup.sh 同一种找法：按项目名找 db 服务，在 / 下执行；超级用户不受 RLS 限制）。打印 t / f / none（表不存在）
+db_versioned() {
+  local has
+  has=$(db_query "select to_regclass('public.catalog_item_versions') is not null") || return 1
   case "$has" in
     f) echo none ;;
-    t) (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from catalog_item_versions where version > 1)" </dev/null) 2>/dev/null ;;
+    t) db_query "select exists(select 1 from catalog_item_versions where version > 1)" ;;
     *) return 1 ;;
   esac
 }
 # 全库检查：超级用户跨租户看所有账号，只有默认企微账号且 exported 才能安全回到 env 与文件状态。
 # IS NOT TRUE 也把 NULL 前缀算作风险（网页账号的前缀是 NULL）。
 db_channels() {
-  local db has
-  db=$(env_val AGENT_DB "$dir/.env.db")
-  db=${db:-agent}
-  has=$( (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select to_regclass('public.channel_accounts') is not null" </dev/null) 2>/dev/null) || return 1
+  local has
+  has=$(db_query "select to_regclass('public.channel_accounts') is not null") || return 1
   case "$has" in
     f) echo none ;;
-    t) (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from channel_accounts where (kind = 'wecom_kf' and id_prefix = 'wecom:' and status = 'exported') is not true)" </dev/null) 2>/dev/null ;;
+    t) db_query "select exists(select 1 from channel_accounts where (kind = 'wecom_kf' and id_prefix = 'wecom:' and status = 'exported') is not true)" ;;
     *) return 1 ;;
   esac
 }
 # 超级用户跨租户检查；published 是每个租户唯一的当前发布行，历史 archived 与草稿不算。
-# to_jsonb 兼容 04 之前没有 tenants.brand 列的库；旧快照缺 brand 与 JSON null 都是旧版模式。
+# 先独立探测两种输入的表与列：空库/旧库缺这一项时没有风险，连接/查询失败仍向上传递。
+# 旧快照缺 brand 与 JSON null 都是旧版模式；一项缺失不能跳过另一项。
 db_brand() {
-  local db
-  db=$(env_val AGENT_DB "$dir/.env.db")
-  db=${db:-agent}
-  (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from tenants t where coalesce(to_jsonb(t)->'brand', 'null'::jsonb) <> 'null'::jsonb) or exists(select 1 from sop_versions where status = 'published' and coalesce(render_inputs->'brand', 'null'::jsonb) <> 'null'::jsonb)" </dev/null) 2>/dev/null
+  local has pending=f published=f
+  has=$(db_query "select to_regclass('public.tenants') is not null and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'tenants' and column_name = 'brand')") || return 1
+  case "$has" in
+    f) ;;
+    t) pending=$(db_query "select exists(select 1 from public.tenants t where coalesce(t.brand::jsonb, 'null'::jsonb) <> 'null'::jsonb)") || return 1 ;;
+    *) return 1 ;;
+  esac
+  # 已查到风险立即拒绝，不能让另一项查询失败后的旧镜像豁免冲掉这个确定的风险。
+  case "$pending" in
+    t) echo t; return 0 ;;
+    f) ;;
+    *) return 1 ;;
+  esac
+  has=$(db_query "select to_regclass('public.sop_versions') is not null and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'sop_versions' and column_name = 'render_inputs')") || return 1
+  case "$has" in
+    f) ;;
+    t) published=$(db_query "select exists(select 1 from public.sop_versions where status = 'published' and coalesce(render_inputs->'brand', 'null'::jsonb) <> 'null'::jsonb)") || return 1 ;;
+    *) return 1 ;;
+  esac
+  case "$published" in
+    t | f) echo "$published" ;;
+    *) return 1 ;;
+  esac
 }
 # 有条目版本大于 1（02「报价快照」）：先问正在运行的实例，看不出来再问库，库也问不到再看正在跑的是不是 02 之前的镜像
 catalog_risk=""
