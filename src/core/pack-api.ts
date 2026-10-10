@@ -85,7 +85,7 @@ export {
 // 04 第 9 步：价格护栏的输入与读取能力；旧门面接线，包不直接读取核心存储或工具门面。
 export { cleanText } from '../shared/text.js';
 export { peakMonths } from '../shared/season.js';
-export type { PaymentMode } from '../shared/conversation-types.js';
+export type { PaymentMode, HandoffRecord } from '../shared/conversation-types.js';
 
 export interface TurnToolCall {
   name: string;
@@ -129,16 +129,64 @@ export interface BrandProfile {
   identityLine: string;
 }
 
+// 04 第 10 步：工具运行时与包所需的能力。能力由旧门面接线，调用时读取当前配置/存储。
+export { SALES_SEGMENTS, type SalesSegment } from '../types.js';
+
+export interface ToolHints {
+  elder?: boolean;
+  altitudeWorry?: boolean;
+  handoff?: Pick<import('../shared/conversation-types.js').HandoffRecord, 'quote' | 'departNote'>;
+}
+
+export interface ToolContext {
+  session: Session;
+  hints: ToolHints;
+}
+
+export interface ToolHooks<Context = ToolContext> {
+  beforeTool?(name: string, args: unknown, ctx: Context): { args: unknown } | { reject: string };
+  afterTool?(name: string, result: ToolResult, ctx: Context): void;
+}
+
+/** 调用记录的落点由调用方提供，分派器负责钩子相对它们的执行顺序。 */
+export interface ToolCallRecorder {
+  recordCall(name: string, args: unknown): void;
+  recordResult(name: string, result: ToolResult): void;
+}
+
+export interface TravelToolSources {
+  configMode: typeof import('../config/source.js').configMode;
+  currentCatalog: typeof import('../config/source.js').currentCatalog;
+  catalogVersionKey: typeof import('../config/source.js').catalogVersionKey;
+  catalogItemAt: typeof import('../config/source.js').catalogItemAt;
+  indexReady(): boolean;
+  semanticRecall(query: string, topK?: number): Promise<{ id: string; score: number }[] | null>;
+  budgetVerdict(
+    session: Session,
+    quote: { perPerson: number; total: number; travelers: number },
+  ): { fields: Record<string, unknown>; gap?: number } | undefined;
+  createOrder: typeof import('../store.js').createOrder;
+  getOrder: typeof import('../store.js').getOrder;
+  queueJobs: typeof import('../store.js').queueJobs;
+  saveSession: typeof import('../store.js').saveSession;
+  supersedeOrder: typeof import('../store.js').supersedeOrder;
+  todayIso(): string;
+  paymentMode(): PaymentMode;
+  orderUnconfirmedNotifyOps: typeof import('../jobs/notify.js').orderUnconfirmedNotifyOps;
+  enterHandoff: typeof import('../handoff/record.js').enterHandoff;
+  modelHandoffReason: string;
+}
+
 /** 当前工具的 wire 结果仍是 JSON 字符串，不在本步改变工具契约。 */
 export type ToolResult = string;
 
-export interface ToolSpec<ToolContext = unknown> {
+export interface ToolSpec<Context = ToolContext> {
   def: ToolDef;
   sideEffects: ReadonlyArray<'session' | 'order' | 'handoff' | 'notify'>;
   cacheable: boolean;
   blocksRetry: boolean;
-  onReuse?(result: ToolResult, ctx: ToolContext): void;
-  execute(args: unknown, ctx: ToolContext): Promise<ToolResult>;
+  onReuse?(result: ToolResult, ctx: Context): void;
+  execute(args: unknown, ctx: Context): Promise<ToolResult>;
 }
 
 export type StepVerdict =
@@ -198,7 +246,7 @@ export interface ChannelCaps {
 export interface PackRuntimeTypes {
   LegacyTexts: unknown;
   BrandTemplates: unknown;
-  ToolContext: unknown;
+  ToolContext: ToolContext;
   TurnOutcome: unknown;
   TurnContext: unknown;
   PrefetchResult: unknown;
