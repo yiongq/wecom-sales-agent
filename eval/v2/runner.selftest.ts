@@ -38,9 +38,9 @@ await test('缺清理回调时在重置之前报缺失文件与搬家提示', as
   let calls = 0;
   try {
     for (const name of resetModuleNames) resets.set(name, () => calls++);
-    resets.delete('llm.ts');
+    resets.delete('core/llm/client.ts');
     await assert.rejects(resetCaseState(selftestDir), {
-      message: 'v2 isolation: 清理回调未登记：llm.ts；模块搬家后要同步改 eval/v2/isolation.ts',
+      message: 'v2 isolation: 清理回调未登记：core/llm/client.ts；模块搬家后要同步改 eval/v2/isolation.ts',
     });
     assert.equal(calls, 0);
     assert.ok(fs.existsSync(selftestDir));

@@ -1,7 +1,7 @@
 // 旅游包的界面配置（docs/features/console-ux/spec.md「行业包通用架构」，取值见设计系统 §9.1）。
 // 纯数据，只 import 类型：取值照抄真实代码（各处注释写了出处），由 src/packs/packs.selftest.ts 逐项核对（不变量 14，plan 第 3.1 步）。
 // 这里的标签、帮助、原因都会显示在后台上，也是 UI 优先片的用字来源（scripts/fonts/ui-text.ts）：改了文案要重跑 scripts/fonts/build.ts。
-import type { EntityType, IndustryPack } from '../../core/pack-api.js';
+import type { EntityType, IndustryPack, SalesStage } from '../../core/pack-api.js';
 
 // 锁定表来自 src/shared/catalog.ts 的 LOCKED_WHEN_ACTIVE；字段来自 data/routes.json 与 RouteSchema
 const route: EntityType = {
@@ -285,6 +285,17 @@ const hotel: EntityType = {
   activateLine: '上架后，销售助手会向客户推荐这家酒店，并按每晚 {nightlyFrom} 起介绍',
 };
 
+// 04 R3：后台与运行时同源；留在界面配置中供 UI 字体收集器读取，handoff 是会话状态。
+export const travelStages = [
+  { key: 'greeting', label: '开场' },
+  { key: 'discovery', label: '问需' },
+  { key: 'recommend', label: '推荐' },
+  { key: 'quote', label: '报价' },
+  { key: 'objection', label: '异议', branchOf: 'quote' },
+  { key: 'closing', label: '促成' },
+  { key: 'paid', label: '已支付', terminal: true },
+] satisfies { key: SalesStage; label: string; branchOf?: SalesStage; terminal?: boolean }[];
+
 export const travel: IndustryPack = {
   id: 'travel',
   name: '旅游',
@@ -320,16 +331,7 @@ export const travel: IndustryPack = {
       withinBudget: '在预算内',
     },
   },
-  // src/types.ts 的 SalesStage。'handoff' 不算阶段，它对应会话状态「等人接手」
-  stages: [
-    { key: 'greeting', label: '开场' },
-    { key: 'discovery', label: '问需' },
-    { key: 'recommend', label: '推荐' },
-    { key: 'quote', label: '报价' },
-    { key: 'objection', label: '异议', branchOf: 'quote' },
-    { key: 'closing', label: '促成' },
-    { key: 'paid', label: '已支付', terminal: true },
-  ],
+  stages: travelStages,
   // src/sop/sections.ts 的 TRAVEL_SOP_SECTIONS；原因照 01 spec 的「节表」改写成人话
   sopSections: [
     { key: 'preamble', heading: null, locked: false },

@@ -18,3 +18,6 @@ export const travelPriceThresholds: Readonly<PriceThresholds> = {
   peakMultiplier: 1.1,
   lowlandMaxAltitude: 2500,
 };
+
+// 04 第 10 步：旅游搜索的预算放宽政策。
+export const travelSearchThresholds = { budgetRelax: 1.5 } as const;

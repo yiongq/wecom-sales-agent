@@ -1,7 +1,7 @@
 // 只在常驻评测子进程安装：给没有 reset 出口的私有状态挂清理回调。
 // load hook 仅追加清理函数，不改运行逻辑或磁盘上的 src；串行对照模式不装它。
 // 私有依赖：store 的 sessions/orders/pgBackend/changeTimer/fileBackend，PG factory 的 entries/preRefs/adopted/voidedIds/conflict/lastError/stats/isDirty，
-// budget/usage 的 state/flushTimer/timer/today/blank/warnedUnknown，llm 的 learnedThinking/warnedIgnoredDisabled/requestObserver/stats，usage-daily 的 timer/chain/acc/lastDay，takeover 的 gens 及下面的 __*Test 出口。
+// budget/usage 的 state/flushTimer/timer/today/blank/warnedUnknown，core/llm/client 的 learnedThinking/warnedIgnoredDisabled/requestObserver/stats，usage-daily 的 timer/chain/acc/lastDay，takeover 的 gens 及下面的 __*Test 出口。
 // 模块搬家或私有变量改名后，同步 bodies 的路径与清理代码（PG factory 定位另见 isolation-loader.mjs），再跑池 / 隔离对照自测。
 import { register } from 'node:module';
 
@@ -31,7 +31,7 @@ const bodies: Record<string, string> = {
   'usage.ts': `
     if (timer) clearTimeout(timer);
     timer = null; state = blank(); warnedUnknown.clear();`,
-  'llm.ts': `
+  'core/llm/client.ts': `
     learnedThinking.clear(); warnedIgnoredDisabled.clear(); requestObserver = null;
     for (const k of Object.keys(stats)) stats[k] = 0;`,
   'trace/usage-daily.ts': `
