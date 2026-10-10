@@ -10,8 +10,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../shared/catalog.js';
-import { UNSTORABLE_TEXT } from '../shared/console-api.js';
+import { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../core/pack-api.js';
+import { UNSTORABLE_TEXT } from '../core/pack-api.js';
 import { renovationLPage } from '../shared/pack-fixtures/renovation-l-page.js';
 import { renovation } from '../shared/pack-fixtures/renovation.js';
 import {
@@ -23,11 +23,10 @@ import {
   type FieldDef,
   type IndustryPack,
   type ItemCheck,
-} from '../shared/pack.js';
-import { SOP_KNOWN_FIELDS } from '../sop/contract.js';
-import { TRAVEL_SOP_SECTIONS } from '../sop/sections.js';
-import { toolDefs } from '../tool-defs.js';
-import type { SalesStage } from '../types.js';
+} from '../core/pack-api.js';
+import { SOP_KNOWN_FIELDS, TRAVEL_SOP_SECTIONS } from './travel/sop.js';
+import { toolDefs } from '../core/pack-api.js';
+import type { SalesStage } from '../core/pack-api.js';
 import { PACK_IDS, packById } from './registry.js';
 
 const root = path.join(import.meta.dirname, '..', '..');
