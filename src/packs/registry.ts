@@ -2,9 +2,7 @@
 // 用它的有三处：启动装载按租户的 pack_id 取包，查不到就拒绝启动；GET /api/console/pack 下发；tenant-create 的 --pack 只收这里有的。
 // 加一个行业包：在 src/packs/<包>/console-pack.ts 写配置，登记到下面的 PACKS。公开仓库里的包名还要在
 // scripts/check-public-boundary.ts 的白名单里（ADR-003 决策 4）。假包 src/shared/pack-fixtures/ 不进注册表（不变量 25）。
-import { deepFreeze } from '../shared/freeze.js';
-import type { IndustryPack } from '../shared/pack.js';
-import type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
+import { deepFreeze, type IndustryPack, type QuickReplyDefault } from '../core/pack-api.js';
 import { travel } from './travel/console-pack.js';
 import { travelQuickReplyDefaults } from './travel/quick-reply-defaults.js';
 
