@@ -113,6 +113,7 @@ const codeOf = (fn: () => unknown): number | null => {
 
 const keyBytes = Buffer.alloc(32, 12);
 const keyRing = { current: { id: 'k12', key: keyBytes }, all: new Map([['k12', keyBytes]]) };
+const restoreCiphertexts: Buffer[] = [];
 const SECRETS = { appSecret: 'selftest12-app-value', callbackToken: 'selftest12-cb-value', callbackAesKey: 'selftest12-aes-value' };
 
 interface Snapshot {
@@ -245,6 +246,7 @@ async function realPgSuite(url: string): Promise<Suite & { tenantSeed: string }>
 async function addWecom(s: Suite, tenantId: string, key: string, prefix: string, status = 'active'): Promise<string> {
   const id = randomUUID();
   const { ct, keyId } = sealSecrets(keyRing, { tenantId, accountId: id }, SECRETS);
+  restoreCiphertexts.push(ct);
   await s.su(
     `insert into channel_accounts (tenant_id, id, key, kind, name, status, id_prefix, corp_id, open_kfid, secrets_ct, secrets_key_id)
      values ($1, $2, $3, 'wecom_kf', $3, $4, $5, 'corp12', $6, decode($7, 'hex'), $8)`,
@@ -627,6 +629,14 @@ async function cliScenarios(s: Suite): Promise<void> {
       assert.ok(fs.existsSync(path.join(dir, RESTORE_SENTINEL)), '哨兵留着');
     }
     assert.deepEqual(await snapshot(s), after);
+  });
+  await check(label('输出凭据补扫：密文 base64、hex、Buffer JSON 与 access_token 零命中'), () => {
+    for (const v of [
+      'access_token',
+      ...restoreCiphertexts.flatMap((ct) => [ct.toString('base64'), ct.toString('hex'), JSON.stringify(ct)]),
+    ]) {
+      assert.ok(!output.includes(v), '输出出现密文或 access_token');
+    }
   });
   await check(label('输出里没有凭据、企微标识'), async () => {
     for (const v of [...Object.values(SECRETS), 'corp12', 'kf12main', 'kf12alt', 'wm12']) assert.ok(!output.includes(v), v);

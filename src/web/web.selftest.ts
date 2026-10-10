@@ -942,6 +942,28 @@ try {
   store.pruneStaleVisitorData();
   assert.equal(store.getSession(visitor.id), undefined);
   assert.equal(store.getSession(stale.id), stale, 'sim 访客清理不碰 web');
+  const staleTraceId = '00000000-0000-4000-8000-000000000099';
+  store.queueTelemetry(stale.id, {
+    traces: [
+      {
+        id: staleTraceId,
+        conversationId: stale.id,
+        startedAt: new Date(),
+        durationMs: 1,
+        outcome: 'replied',
+        sopVersion: 1,
+        prefixHash: 'a'.repeat(64),
+        catalogVersions: {},
+        stageBefore: 'greeting',
+        stageAfter: 'greeting',
+        draft: '过期回复',
+        finalText: '过期回复',
+        calls: [],
+        llm: [],
+        signals: null,
+      },
+    ],
+  });
   const drained = await store.drainStore(20_000);
   assert.deepEqual(drained.undrained, []);
   const stored = await sqlQuery<{ id: string; channel: string; state: Record<string, unknown> }>(
@@ -959,11 +981,51 @@ try {
   );
   await sqlQuery('update tenants set retention_lead_days=7 where id=$1', [deps.tenantId]);
   const { purgeOnce } = await import('../jobs/purge.js');
+  assert.equal((await sqlQuery('select 1 from messages where tenant_id=$1 and conversation_id=$2', [deps.tenantId, stale.id])).length, 1);
+  assert.equal(
+    (await sqlQuery('select 1 from turn_traces where tenant_id=$1 and conversation_id=$2', [deps.tenantId, stale.id])).length,
+    1,
+  );
+  // 真正登录后的 console 列表：清理前能看到目标，清理后同一个接口看不到。
+  const { hashPassword } = await import('../auth/password.js');
+  const [listUser] = await sqlQuery<{ id: string }>('insert into users (email,password_hash,display_name) values ($1,$2,$3) returning id', [
+    'purge-web@example.com',
+    await hashPassword('purge-web-password'),
+    '清理测试',
+  ]);
+  await sqlQuery("insert into memberships (tenant_id,user_id,role) values ($1,$2,'owner')", [deps.tenantId, listUser!.id]);
+  const { login, SESSION_COOKIE } = await import('../auth/session.js');
+  const listLogin = await login({
+    now: Date.now(),
+    ip: '198.51.100.250',
+    userAgent: 'selftest',
+    email: 'purge-web@example.com',
+    password: 'purge-web-password',
+  });
+  assert.ok(listLogin);
+  const listConversations = async (): Promise<import('../shared/console-api.js').ConversationRow[]> => {
+    const response = await app.request('/api/console/conversations?limit=100', {
+      headers: { cookie: `${SESSION_COOKIE}=${listLogin.token}` },
+    });
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { items: import('../shared/console-api.js').ConversationRow[] }).items;
+  };
+  assert.ok(
+    (await listConversations()).some((r) => r.id === stale.id),
+    '清理前 console 列表含过期网页会话',
+  );
   const purged = await purgeOnce(Date.now());
   assert.equal(purged.conversations, 1);
   assert.equal(store.getSession(stale.id), undefined);
   assert.ok(!(await sqlQuery<{ id: string }>('select id from conversations where id=$1', [stale.id])).length);
   assert.ok((await sqlQuery<{ id: string }>('select id from conversations where id=$1', [own.s.id])).length);
+  assert.equal((await sqlQuery('select 1 from messages where tenant_id=$1 and conversation_id=$2', [deps.tenantId, stale.id])).length, 0);
+  assert.equal(
+    (await sqlQuery('select 1 from turn_traces where tenant_id=$1 and conversation_id=$2', [deps.tenantId, stale.id])).length,
+    0,
+  );
+  assert.ok(!(await listConversations()).some((r) => r.id === stale.id), '清理后 console 列表没有过期网页会话');
+  report(`${realRun ? '真实 PG' : 'PGlite'}：清除 web 会话连带 messages、turn_traces，console 列表不再显示`);
   report(`${realRun ? '真实 PG' : 'PGlite'}：落库、账号 state、预算状态持久化、不受 sim 清理、7 天保留期清除 8 天前会话`);
 } finally {
   for (const body of liveBodies) {
