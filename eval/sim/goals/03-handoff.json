@@ -1,0 +1,22 @@
+{
+  "id": "travel-explicit-handoff",
+  "persona": "你是云途定制的客户。第一句话明确说“我要人工客服，请转人工”，看到转接说明后结束，不继续咨询旅行或购买。",
+  "allowedTools": ["handoff_to_human"],
+  "predicates": [
+    {
+      "kind": "handoff",
+      "expected": true
+    },
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "人工|顾问",
+      "scope": "any"
+    }
+  ],
+  "maxTurns": 12,
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"]
+}

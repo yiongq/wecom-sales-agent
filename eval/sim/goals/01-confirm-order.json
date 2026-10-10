@@ -1,0 +1,17 @@
+{
+  "id": "travel-confirm-order",
+  "persona": "你是两人出行的客户，想在 2027-03-10 出发去云南，预算每人三万元，不接受擅自缩短天数或升级酒店。先请销售推荐现有线路，再问清报价、日期和人数。只有看到真实报价且满足预算后才决定购买；确认时明确说‘确认下单’。此前只咨询，不说‘就订这个’等购买话。若日期不在可订范围内，先请对方解释，不要自行改日期。拿到两人同日出发的订单链接后结束。不要主动要求人工。",
+  "maxTurns": 12,
+  "allowedTools": ["search_routes", "get_route_detail", "create_quote", "generate_proposal", "create_order"],
+  "predicates": [
+    { "kind": "order", "count": 1, "fields": { "travelers": 2, "departDate": "2027-03-10" } },
+    { "kind": "no_order_before", "turnMatches": "确认下单" },
+    { "kind": "handoff", "expected": false },
+    { "kind": "tool_called", "name": "search_routes", "min": 1 },
+    { "kind": "tool_called", "name": "create_quote", "min": 1 },
+    { "kind": "tool_called", "name": "create_order", "min": 1, "max": 1 },
+    { "kind": "reply_matches", "pattern": "/pay/ord_[0-9a-f]{24}", "scope": "any" },
+    { "kind": "reply_excludes", "pattern": "保证.*(?:有房|成行)", "scope": "all" }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>"]
+}
