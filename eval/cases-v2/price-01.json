@@ -1,0 +1,2294 @@
+[
+  {
+    "version": 2,
+    "id": "travel-price-59-01",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均 33333元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均 33333元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["33333元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-59-02",
+    "desc": "拦截无出处或成交语境不合法的金额：人均 ¥33,333",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "人均 ¥33,333"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["¥33,333"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-59-03",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均 3.8 万左右",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均 3.8 万左右"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["3\\.8 万"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-59-04",
+    "desc": "拦截无出处或成交语境不合法的金额：两位一共 7.6 万",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "两位一共 7.6 万"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["7\\.6 万"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-65-01",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按 6800元 给您锁定，这就帮您下单",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "别家同样线路只要 6800元",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "好的，就按 6800元 给您锁定，这就帮您下单"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6800元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-65-02",
+    "desc": "保留有出处的金额或非金额数字：您说的 6800元 我记下了，不过配置不太一样",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "别家同样线路只要 6800元",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "您说的 6800元 我记下了，不过配置不太一样"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 6800元 我记下了，不过配置不太一样", "^您说的 6800元 我记下了，不过配置不太一样$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-74-01",
+    "desc": "保留有出处的金额或非金额数字：每人 ¥12,800，2 位总价 ¥25,600",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-xian",
+          "routeTitle": "西安 兵马俑·大唐不夜城 5 日",
+          "travelers": 2,
+          "perPerson": 12800,
+          "total": 25600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-xian",
+            "travelers": 2,
+            "perPerson": 12800,
+            "total": 25600
+          }
+        ],
+        "seenRouteIds": ["r-xian"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人 ¥12,800，2 位总价 ¥25,600"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["每人 ¥12,800，2 位总价 ¥25,600", "^每人 ¥12,800，2 位总价 ¥25,600$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-74-02",
+    "desc": "保留有出处的金额或非金额数字：两位一共 2.56 万",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-xian",
+          "routeTitle": "西安 兵马俑·大唐不夜城 5 日",
+          "travelers": 2,
+          "perPerson": 12800,
+          "total": 25600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-xian",
+            "travelers": 2,
+            "perPerson": 12800,
+            "total": 25600
+          }
+        ],
+        "seenRouteIds": ["r-xian"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "两位一共 2.56 万"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["两位一共 2\\.56 万", "^两位一共 2\\.56 万$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-74-03",
+    "desc": "保留有出处的金额或非金额数字：4 位总价 ¥48,640",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-xian",
+            "title": "西安 兵马俑·大唐不夜城 5 日",
+            "priceFrom": 12800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "4 位总价 ¥48,640"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["4 位总价 ¥48,640", "^4 位总价 ¥48,640$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-85-01",
+    "desc": "保留有出处的金额或非金额数字：25 位总价 ¥304,000",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-xian",
+          "routeTitle": "西安 兵马俑·大唐不夜城 5 日",
+          "travelers": 25,
+          "perPerson": 12160,
+          "total": 304000
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-xian",
+            "travelers": 25,
+            "perPerson": 12160,
+            "total": 304000
+          }
+        ],
+        "seenRouteIds": ["r-xian"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "25 位总价 ¥304,000"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["25 位总价 ¥304,000", "^25 位总价 ¥304,000$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-90-01",
+    "desc": "保留有出处的金额或非金额数字：这条线人均 7 万左右这个档",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均 7 万左右这个档"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条线人均 7 万左右这个档", "^这条线人均 7 万左右这个档$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-92-01",
+    "desc": "保留有出处的金额或非金额数字：人均 1.3 万起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-xian",
+            "title": "西安 兵马俑·大唐不夜城 5 日",
+            "priceFrom": 12800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "人均 1.3 万起"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["人均 1\\.3 万起", "^人均 1\\.3 万起$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-98-01",
+    "desc": "保留有出处的金额或非金额数字：Atlantis Sanya 三亚亚特兰蒂斯每晚 3,000 元起",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "Atlantis Sanya 三亚亚特兰蒂斯每晚 3,000 元起"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["Atlantis Sanya 三亚亚特兰蒂斯每晚 3,000 元起", "^Atlantis Sanya 三亚亚特兰蒂斯每晚 3,000 元起$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-98-02",
+    "desc": "保留有出处的金额或非金额数字：Atlantis Sanya 三亚亚特兰蒂斯 0.30 万/晚",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "Atlantis Sanya 三亚亚特兰蒂斯 0.30 万/晚"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["Atlantis Sanya 三亚亚特兰蒂斯 0\\.30 万/晚", "^Atlantis Sanya 三亚亚特兰蒂斯 0\\.30 万/晚$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-98-03",
+    "desc": "拦截无出处或成交语境不合法的金额：住 3 晚一共 9,700 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "住 3 晚一共 9,700 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["9,700 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-103-01",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线每人 6,800 元，就按这个价给您锁定",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线每人 6,800 元，就按这个价给您锁定"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-01",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按每人 6,800 元给您锁定，每晚都住松赞",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "别家同样线路每人 6800，你给我 6800 我立刻订",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "好的，就按每人 6,800 元给您锁定，每晚都住松赞"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-02",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按每晚 6,800 元给您锁定",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "别家同样线路每人 6800，你给我 6800 我立刻订",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "好的，就按每晚 6,800 元给您锁定"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-03",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线每人 12,000 元，含一晚林芝",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线每人 12,000 元，含一晚林芝"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["12,000 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-04",
+    "desc": "拦截无出处或成交语境不合法的金额：升级豪华线每人多 3,800 元，每晚都住松赞",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "升级豪华线每人多 3,800 元，每晚都住松赞"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["3,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-05",
+    "desc": "拦截无出处或成交语境不合法的金额：房价和团费一起算，每人 3,000 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "房价和团费一起算，每人 3,000 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["3,000 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-06",
+    "desc": "拦截无出处或成交语境不合法的金额：比经济线每人贵两千多块，每晚都能住景观房",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比经济线每人贵两千多块，每晚都能住景观房"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["两千多"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-07",
+    "desc": "保留有出处的金额或非金额数字：房价 3,800 元一晚",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "房价 3,800 元一晚"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["房价 3,800 元一晚", "^房价 3,800 元一晚$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-08",
+    "desc": "保留有出处的金额或非金额数字：松赞林卡 ¥3,800/晚",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "松赞林卡 ¥3,800/晚"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["松赞林卡 ¥3,800/晚", "^松赞林卡 ¥3,800/晚$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-09",
+    "desc": "保留有出处的金额或非金额数字：这家3800元起一晚",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这家3800元起一晚"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这家3800元起一晚", "^这家3800元起一晚$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-10",
+    "desc": "保留有出处的金额或非金额数字：四季每晚价格 30,000 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "四季每晚价格 30,000 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["四季每晚价格 30,000 元", "^四季每晚价格 30,000 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-107-11",
+    "desc": "保留有出处的金额或非金额数字：松赞林卡每晚三千八",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "松赞林卡每晚三千八"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["松赞林卡每晚三千八", "^松赞林卡每晚三千八$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-122-01",
+    "desc": "保留有出处的金额或非金额数字：好的，我给您控制在 30,000元 以内",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "预算每人3万",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "那就按之前说的",
+        "script": [
+          {
+            "content": "好的，我给您控制在 30,000元 以内"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["好的，我给您控制在 30,000元 以内", "^好的，我给您控制在 30,000元 以内$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-122-02",
+    "desc": "保留有出处的金额或非金额数字：预算每人 4 万的话，这几条都能覆盖",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "预算每人4万",
+        "script": [
+          {
+            "content": "预算每人 4 万的话，这几条都能覆盖"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["预算每人 4 万的话，这几条都能覆盖", "^预算每人 4 万的话，这几条都能覆盖$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-148-01",
+    "desc": "保留有出处的金额或非金额数字：19999元 我们真做不了，这个价格给您安排不了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "objection",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们预算每人 19999元",
+            "at": 1
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "我们预算每人 19999元",
+        "script": [
+          {
+            "content": "19999元 我们真做不了，这个价格给您安排不了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["19999元 我们真做不了，这个价格给您安排不了", "^19999元 我们真做不了，这个价格给您安排不了$"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-148-02",
+    "desc": "保留有出处的金额或非金额数字：我们没法按这个价 19999元 走",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "objection",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们预算每人 19999元",
+            "at": 1
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "我们预算每人 19999元",
+        "script": [
+          {
+            "content": "我们没法按这个价 19999元 走"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们没法按这个价 19999元 走", "^我们没法按这个价 19999元 走$"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-148-03",
+    "desc": "保留有出处的金额或非金额数字：抱歉，我们暂时没有 19999元 这样的优惠价",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "objection",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们预算每人 19999元",
+            "at": 1
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "我们预算每人 19999元",
+        "script": [
+          {
+            "content": "抱歉，我们暂时没有 19999元 这样的优惠价"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["抱歉，我们暂时没有 19999元 这样的优惠价", "^抱歉，我们暂时没有 19999元 这样的优惠价$"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-153-01",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按 19999元 给您锁定名额，我这就帮您下单",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "objection",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们预算每人 19999元",
+            "at": 1
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "我们预算每人 19999元",
+        "script": [
+          {
+            "content": "好的，就按 19999元 给您锁定名额，我这就帮您下单"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["19999元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-01",
+    "desc": "保留有出处的金额或非金额数字：每人 26,800 元，比您的预算多 6,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "budgetGaps": [6800, 20000],
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ],
+        "seenRouteIds": ["r-tibet-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人 26,800 元，比您的预算多 6,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["每人 26,800 元，比您的预算多 6,800 元", "^每人 26,800 元，比您的预算多 6,800 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-02",
+    "desc": "保留有出处的金额或非金额数字：比您的预算多 0.68 万左右",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "budgetGaps": [6800, 20000],
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ],
+        "seenRouteIds": ["r-tibet-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比您的预算多 0.68 万左右"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["比您的预算多 0\\.68 万左右", "^比您的预算多 0\\.68 万左右$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-03",
+    "desc": "拦截无出处或成交语境不合法的金额：比您的预算多 7,200 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "budgetGaps": [6800, 20000],
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ],
+        "seenRouteIds": ["r-tibet-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比您的预算多 7,200 元"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["7,200 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-04",
+    "desc": "拦截无出处或成交语境不合法的金额：好的，就按 6,800 元给您锁定名额",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "budgetGaps": [6800, 20000],
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ],
+        "seenRouteIds": ["r-tibet-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "好的，就按 6,800 元给您锁定名额"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["6,800 元"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-05",
+    "desc": "保留有出处的金额或非金额数字：您说的 20,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "每人两万左右",
+        "script": [
+          {
+            "content": "您说的 20,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 20,000 元我记下了", "^您说的 20,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-06",
+    "desc": "保留有出处的金额或非金额数字：您说的 35,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "预算三万五",
+        "script": [
+          {
+            "content": "您说的 35,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 35,000 元我记下了", "^您说的 35,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-07",
+    "desc": "保留有出处的金额或非金额数字：您说的 15,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "一万五以内",
+        "script": [
+          {
+            "content": "您说的 15,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 15,000 元我记下了", "^您说的 15,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-08",
+    "desc": "保留有出处的金额或非金额数字：您说的 8,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "每人八千",
+        "script": [
+          {
+            "content": "您说的 8,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 8,000 元我记下了", "^您说的 8,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-09",
+    "desc": "保留有出处的金额或非金额数字：您说的 25,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "两万五千吧",
+        "script": [
+          {
+            "content": "您说的 25,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 25,000 元我记下了", "^您说的 25,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-10",
+    "desc": "保留有出处的金额或非金额数字：您说的 150,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "十五万总预算",
+        "script": [
+          {
+            "content": "您说的 150,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 150,000 元我记下了", "^您说的 150,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-11",
+    "desc": "保留有出处的金额或非金额数字：您说的 35,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "3万5",
+        "script": [
+          {
+            "content": "您说的 35,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 35,000 元我记下了", "^您说的 35,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-12",
+    "desc": "保留有出处的金额或非金额数字：您说的 8,000 元我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "8千",
+        "script": [
+          {
+            "content": "您说的 8,000 元我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 8,000 元我记下了", "^您说的 8,000 元我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-164-13",
+    "desc": "保留有出处的金额或非金额数字：给您控制在每人 20,000 元以内",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "每人两万吧",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的",
+        "script": [
+          {
+            "content": "给您控制在每人 20,000 元以内"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["给您控制在每人 20,000 元以内", "^给您控制在每人 20,000 元以内$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-191-01",
+    "desc": "复述客户中文金额或区间端点：您说的 19,800 元我记下了。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "预算一万九千八",
+        "script": [
+          {
+            "content": "您说的 19,800 元我记下了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 19,800 元我记下了。", "^您说的 19,800 元我记下了。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-191-02",
+    "desc": "复述客户中文金额或区间端点：您说的 2,800 元我记下了。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "差价两千八能接受",
+        "script": [
+          {
+            "content": "您说的 2,800 元我记下了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 2,800 元我记下了。", "^您说的 2,800 元我记下了。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-198-01",
+    "desc": "复述客户中文金额或区间端点：您说的 35,000 元我记下了。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "预算 3 万 5",
+        "script": [
+          {
+            "content": "您说的 35,000 元我记下了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 35,000 元我记下了。", "^您说的 35,000 元我记下了。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-201-01",
+    "desc": "保留有出处的金额或非金额数字：每人五千到六千的预算，目前最便宜的西安线是每人 12,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "预算每人五六千",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人五千到六千的预算，目前最便宜的西安线是每人 12,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "每人五千到六千的预算，目前最便宜的西安线是每人 12,800 元",
+            "^每人五千到六千的预算，目前最便宜的西安线是每人 12,800 元$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-201-02",
+    "desc": "保留有出处的金额或非金额数字：预算八到九千的话，可以看看西安线，每人 12,800 元",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "预算八九千",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "预算八到九千的话，可以看看西安线，每人 12,800 元"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["预算八到九千的话，可以看看西安线，每人 12,800 元", "^预算八到九千的话，可以看看西安线，每人 12,800 元$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-201-03",
+    "desc": "保留有出处的金额或非金额数字：8,000 元到 9,000 元的预算我记下了",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "预算8000-9000元",
+        "script": [
+          {
+            "content": "8,000 元到 9,000 元的预算我记下了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["8,000 元到 9,000 元的预算我记下了", "^8,000 元到 9,000 元的预算我记下了$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-201-04",
+    "desc": "复述客户中文金额或区间端点：您说的 20,000 元到 30,000 元我记下了。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "预算两三万",
+        "script": [
+          {
+            "content": "您说的 20,000 元到 30,000 元我记下了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您说的 20,000 元到 30,000 元我记下了。", "^您说的 20,000 元到 30,000 元我记下了。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-01",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均三万八",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均三万八"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["三万八"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-02",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线人均3万8左右",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线人均3万8左右"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["3万8"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-03",
+    "desc": "拦截无出处或成交语境不合法的金额：这条线三万八千元一位",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条线三万八千元一位"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["三万八千"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-04",
+    "desc": "拦截无出处或成交语境不合法的金额：每人两万四千五",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "每人两万四千五"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["两万四千五"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-05",
+    "desc": "拦截无出处或成交语境不合法的金额：单人三万三千三",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "单人三万三千三"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["三万三千三"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-06",
+    "desc": "拦截无出处或成交语境不合法的金额：两位总共七万六千",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "两位总共七万六千"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["七万六千"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-255-07",
+    "desc": "拦截无出处或成交语境不合法的金额：比丽江那条每人贵两千多块",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "比丽江那条每人贵两千多块"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["两千多"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  }
+]
