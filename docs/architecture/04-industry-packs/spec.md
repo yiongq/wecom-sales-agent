@@ -5,7 +5,7 @@ Phase: 4 of the roadmap in [master-reference](../master-reference.md)「分阶�
 Depends on: [03 · 渠道层 v2](../03-channels-v2/spec.md)（开工时须已 implemented）；[01](../01-pg-config-console/spec.md) 的 SOP 节表、锁定节、发布与启动重渲染；[02](../02-conversations-workbench/spec.md) 的 trace 与护栏事件（R16）；[00](../00-baseline/spec.md) 的前缀稳定检查。
 Supersedes in part: 01 不变量 11「当前发布的锁定节与镜像原文逐字节相同」——改为与**租户的镜像**逐字节相同（R5）；01「渲染与哈希」的渲染输入（加品牌）与「启动重渲染」的原因（加 `brand`）；主参考「护栏」一节「每次裁决记一行 `guard_events`」——改为 `guard_events` 只记改了文字的裁决，全部裁决（含放行）记在 `turn_traces.guard_verdicts`（R8）。
 Amends: 03 R17、R18 的「推到阶段 4」在本 spec 落地；03 R19 的欢迎语默认值改为按品牌渲染（demo 不变）；`deploy.sh` 与 `deploy/rollback-guard.sh` 加一类风险（R14）；01 的配置导出加品牌快照（R17）。
-Revisions: 2026-10-10 起草期两轮评审（一路 Claude Opus、两轮 Codex 交叉评审）之后就地修订，尚无代码依赖。第一轮：品牌接进 01 的发布与启动重渲染（旧版模式 / 模板模式、租户的镜像、品牌快照）；护栏改成带读写声明的步骤表、跟进单列；裁决记录从「新 trace 事件」改为保留 `guard_events` 加 `turn_traces.guard_verdicts` 列；消息部件从「白名单那一步产出」改为从最终文本现算并覆盖历史与重试；外币的现状写错了（实际是按数值混认），改为照旧并记为已知缺陷；补了品牌出现处清单、包钩子与组合根、门面参数适配、cases v2 格式、模拟客户谓词、回滚风险。第二轮：回滚检查要经 `deploy.sh` 的目标判定才会触发，加 `pre-04` 并按已发布版本放行；阶段推进放回护栏之前（原稿挪到了之后，会改变行为）；前言节随品牌切换的规则；契约检查范围不缩小；工具缓存与复用的契约；配置导出带品牌快照；模拟客户的目标格式与结束协议。
+Revisions: 2026-10-10 起草期两轮评审（一路 Claude Opus、两轮 Codex 交叉评审）之后就地修订，尚无代码依赖。第一轮：品牌接进 01 的发布与启动重渲染（旧版模式 / 模板模式、租户的镜像、品牌快照）；护栏改成带读写声明的步骤表、跟进单列；裁决记录从「新 trace 事件」改为保留 `guard_events` 加 `turn_traces.guard_verdicts` 列；消息部件从「白名单那一步产出」改为从最终文本现算并覆盖历史与重试；外币的现状写错了（实际是按数值混认），改为照旧并记为已知缺陷；补了品牌出现处清单、包钩子与组合根、门面参数适配、cases v2 格式、模拟客户谓词、回滚风险。第二轮：回滚检查要经 `deploy.sh` 的目标判定才会触发，加 `pre-04` 并按已发布版本放行；阶段推进放回护栏之前（原稿挪到了之后，会改变行为）；前言节随品牌切换的规则；契约检查范围不缩小；工具缓存与复用的契约；配置导出带品牌快照；模拟客户的目标格式与结束协议。第三轮：阶段推进作为步骤表里的核心步骤，放在第一次接管检查之后（原稿放在整个步骤表之前，会让生成中被接管的那一轮推进阶段）；缓存复用只在现有条件下重放展示状态；导出复用目录时删掉旧的 `brand.json`；01 补反向引用。
 
 ## 背景与问题
 
@@ -57,7 +57,7 @@ Revisions: 2026-10-10 起草期两轮评审（一路 Claude Opus、两轮 Codex 
 | R4  | 品牌档案与两种模式 | 新列 `tenants.brand json`（可空）。**为空是旧版模式**：锁定节取 `data/sop.md` 镜像、【硬性要求】与欢迎语等用现在的原文，逐字节照旧（demo 就是这种）。**非空是模板模式**：锁定节、【硬性要求】、欢迎语、离题回复、身份说明按包模板与档案渲染，不点名渠道。把档案显式设成「云途」值也是模板模式，与旧版模式的字节不同；回到旧版模式用 `tenant-brand clear`。                                                                                                                                                                                                                                                                                                                           |
 | R5  | 租户的镜像         | 锁定节的来源按租户定：旧版模式取 `data/sop.md` 镜像（现状）；模板模式取 `lockedSectionTemplates` 按档案渲染的结果，作为这个租户的镜像，`mergeWithImage`、SOP 契约检查、`imageSopHash` 都用它。导入、发布、回滚、启动重渲染四条写路径不变，只是镜像换成租户的。console 照旧不能改锁定节。                                                                                                                                                                                                                                                                                                                                                                                             |
 | R6  | 品牌的生效与快照   | 渲染输入从（SOP 节）变成（SOP 节、品牌档案、包）；`render_inputs` 加 `brandHash` 与完整的品牌快照；`sop.rerender` 的原因加 `brand`。`tenant-brand set` / `clear`（平台身份，写审计，只记改了哪些字段）只改 `tenants.brand`，运行中的实例不受影响；下次启动时按原因 `brand` 自动重渲染、发布一版，之后生效。本轮用到品牌的地方（system、身份说明、离题回复、欢迎语）一律取本轮捕获的已发布版本里的品牌快照，不读 `tenants.brand`。                                                                                                                                                                                                                                                    |
-| R7  | 护栏步骤           | 主回复的每一步是一个 `GuardStep`：22 个护栏执行位置（同一标识的两处用后缀区分，如 `repair_links:mark` 与 `repair_links:fill`），加上前置清理、前后两次接管检查、末尾清理、系统备注。每步声明 `after`、`reads`、`writes`（本轮共享状态 `turn.flags` 的键，如 `guardHit`、`handedOverSelfDecided`、`preDropSnapshot`、`customPromise`）；装载时校验：`after` 成立、读某个键的步骤排在写它的步骤之后、后置接管检查排在 `turn_failure` 之前，违反就启动失败。有副作用的步骤（建单、转人工、补调工具）经 `GuardContext` 的方法做。顺序等于开工步骤表。                                                                                                                                    |
+| R7  | 护栏步骤           | 主回复的每一步是一个 `GuardStep`：22 个护栏执行位置（同一标识的两处用后缀区分，如 `repair_links:mark` 与 `repair_links:fill`），加上前置清理、前后两次接管检查、阶段推进（`stage_advance`，见「主流程」）、末尾清理、系统备注。每步声明 `after`、`reads`、`writes`（本轮共享状态 `turn.flags` 的键，如 `guardHit`、`handedOverSelfDecided`、`preDropSnapshot`、`customPromise`）；装载时校验：`after` 成立、读某个键的步骤排在写它的步骤之后、后置接管检查排在 `turn_failure` 之前，违反就启动失败。有副作用的步骤（建单、转人工、补调工具）经 `GuardContext` 的方法做。顺序等于开工步骤表。                                                                                         |
 | R8  | 裁决记录           | `guard_events` 契约不变（02 R16）：只记改了文字的裁决，护栏名用基础标识（不带后缀），动作是现有六种。另加 `turn_traces.guard_verdicts json`（可空）：按执行顺序 `[{ id, action }]`，`action` 取 `pass`、现有六种、`abort`（接管检查中止）。进了流水线的每一轮恰好一份；前置返回的路径（重置、紧急、已接管、同意菜单）不进流水线，这一列为空。文件存储与 demo 类会话只在内存的 FinishedTurn 里有，经 `onTurnEnd` 可读。                                                                                                                                                                                                                                                               |
 | R9  | 跟进路径           | 跟进单独一张 11 步的表（开工步骤表的第二张），标识可以与主回复同名，实现各自独立；跟进步骤只能调没有副作用的工具（`ToolSpec.sideEffects` 为空），不建单、不转人工、不补链接；不记 `guard_verdicts`。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | R10 | cases v2           | 格式见「接口与数据流 · 评测」。一条 case 是一段对话；假模型脚本按**模型请求**消费，耗尽或剩余都算失败；动态值用声明式占位（`{{call:create_order.payUrl}}`、`{{order:0.id}}`）；比较前把订单号（`ord_[0-9a-f]{24}`）与方案版本号归一。runner 起本机假模型 HTTP 服务（与自测同一种做法），不走 `LLM_MOCK` 的关键词 mock。需要在途动作的并发场景（生成中接管、生成中付款）不导出，导出映射里写明由哪个保留的自测覆盖。v1 照旧能跑。锁定的 `src/engine.selftest.ts` 与 `eval/cases.json` 不改。基线是「只加了 v2 与模拟客户 runner、引擎未动」的那一步。                                                                                                                                 |
@@ -136,7 +136,10 @@ export interface ToolSpec {
   cacheable: boolean;
   /** 本轮调过它之后，空回复不整轮重试（现在按工具名判断） */
   blocksRetry: boolean;
-  /** 命中缓存时：不调 execute、不调 beforeTool；调 onReuse 重放状态（如「最近展示的线路」），再调 afterTool；记录照旧并计 toolReused */
+  /**
+   * 命中缓存时：不调 execute、beforeTool、afterTool；toolReused 每次都计。只在现在 src/llm.ts 的条件成立时（同名工具上一次调用的参数与这次不同、这次命中的是更早的缓存）
+   * 调 onReuse 重放展示状态（如「最近展示的线路」）；锁定的 llm.selftest.ts 钉着「北京→云南→北京→北京」只重放一次
+   */
   onReuse?(result: ToolResult, ctx: ToolContext): void;
   execute(args: unknown, ctx: ToolContext): Promise<ToolResult>;
 }
@@ -159,7 +162,7 @@ export type StepVerdict =
 
 ### 主流程
 
-`handleMessage` 的顺序与现在相同，拆成核心函数与包钩子：前置返回（重置、紧急、已接管、同意菜单，原样）→ 记客户消息 → 画像抽取（包）→ 捕获本轮状态、拼 context（核心 + 包的 `contextNote`）→ 预取（包，在拼 context 之后，与现在相同）→ 模型前的确定性判定（包）→ 模型与工具循环（核心，工具经注册表分派，`beforeTool` / `afterTool` 在记录调用之前与之后，缓存复用见 `ToolSpec`）→ 阶段推进与按工具结果补画像（包，位置与现在相同，在步骤表之前：护栏的兜底话术读本轮推进之后的阶段）→ 主回复步骤表（建单、确定性推荐等步骤照现在的做法就地更新阶段）→ 写会话、记 trace。生成中顾问接管、生成中客户付款的语义不变。
+`handleMessage` 的顺序与现在相同，拆成核心函数与包钩子：前置返回（重置、紧急、已接管、同意菜单，原样）→ 记客户消息 → 画像抽取（包）→ 捕获本轮状态、拼 context（核心 + 包的 `contextNote`）→ 预取（包，在拼 context 之后，与现在相同）→ 模型前的确定性判定（包）→ 模型与工具循环（核心，工具经注册表分派，`beforeTool` / `afterTool` 在记录调用之前与之后，缓存复用见 `ToolSpec`）→ 主回复步骤表 → 写会话、记 trace。阶段推进与按工具结果补画像（包的 `advanceStage` / `extractProfile`）是步骤表里的一个核心步骤 `stage_advance`，位置与现在相同：在前置清理与第一次接管检查之后（顾问生成中接管时，本轮没发出去的工具结果不推进阶段）、在 `other_order` 与成单等业务步骤之前（兜底话术读推进之后的阶段）；建单、确定性推荐等步骤照现在的做法就地更新阶段。生成中顾问接管、生成中客户付款的语义不变。
 
 ### 品牌渲染
 
@@ -182,7 +185,7 @@ export type StepVerdict =
 
 ### 配置导出与文件模式（R17）
 
-01 的配置导出（`export-config`）在模板模式的租户上多写一个 `brand.json`：内容是**当前发布版本**里的品牌快照，不是待生效的 `tenants.brand`。文件模式装载时，数据目录里有 `brand.json` 就按模板模式渲染，没有就是旧版模式；导出物在文件模式下渲染出的前缀与线上发布版本的哈希相同（01 的往返核对照旧）。
+01 的配置导出（`export-config`）在模板模式的租户上多写一个 `brand.json`：内容是**当前发布版本**里的品牌快照，不是待生效的 `tenants.brand`；旧版模式的导出删掉输出目录里已有的 `brand.json`（输出目录可以复用，不删会残留）。文件模式装载时，有效 `SOP_PATH` 所在目录里有 `brand.json` 就按模板模式渲染，没有就是旧版模式；导出物在文件模式下渲染出的前缀与线上发布版本的哈希相同（01 的往返核对照旧）。
 
 ### 评测
 
@@ -265,7 +268,7 @@ type Predicate =
 
 - 步骤表只是重排调用方式，安全相关的步骤（链接白名单、价格、注入、身份、接管检查）的顺序与判定不变；`after` 与读写校验防止以后插入新步骤时把它们挤错位置。
 - 品牌档案不含凭据；审计只记改了哪些字段。
-- `guard_verdicts` 每轮一份，只有 25 个以内的短标识与动作，不带原文（原文已在 trace 的回复与 `guard_events` 里）。
+- `guard_verdicts` 每轮一份，条数等于开工步骤表的步数（约三十），只有短标识与动作，不带原文（原文已在 trace 的回复与 `guard_events` 里）。
 - 主流程多一层包钩子分派，不加网络往返。
 
 ## 验收标准
@@ -274,7 +277,7 @@ type Predicate =
 2. **依赖方向。** 往 `src/core/` 里任一文件加一行 `import … from '../packs/travel/…'`，或加一行 `import … from '../engine.js'`（门面），`pnpm lint` 失败；去掉后通过。`handleMessage` 的核心路径不超过 150 行（口径见开放问题 4）。
 3. **品牌（旧版模式不变）。** demo 不配品牌：system prompt、身份说明、离题回复、两种欢迎语、mock 开场、快捷回复默认模板、支付页、方案书、聊天页与开工时逐字节相同。
 4. **品牌（模板模式）。** 「山海旅行」租户：新客欢迎、回访欢迎、身份问答、离题回复、支付页商户名、方案书抬头里是「山海旅行」、没有「云途」也没有「微信」；锁定节与【硬性要求】里没有「微信」与「云途」，SOP 契约检查通过；用它跑 v2 的 mock 回归全过；它的 system prompt 与 demo 的逐行差异记进 plan。
-5. **品牌的生效。** `tenant-brand set` 之后不重启：客户看到的与 `/healthz` 的 `promptHash` 都不变；重启：审计里一条 `sop.rerender`（原因 `brand`），`promptHash` 变了，身份说明是新品牌；`tenant-brand clear` 再重启：前言节没改过时 `promptHash` 回到开工值。前言节的三种切换各验一遍：旧版 → 山海、山海 → 另一个虚构品牌、山海 → clear；没改过的前言跟着换、品牌名对；改过的保留原样、启动日志与 SOP 页有提示。prod profile 下 `tenant-create` 不带 `--brand-file` 以 1 拒绝。`tenant-brand set` 写一条只含字段名的审计。
+5. **品牌的生效。** `tenant-brand set` 之后不重启：客户看到的与 `/healthz` 的 `promptHash` 都不变；重启：审计里一条 `sop.rerender`（原因 `brand`），`promptHash` 变了，身份说明是新品牌；`tenant-brand clear` 再重启：前言节没改过时 `promptHash` 回到开工值。导出往返：模板模式导出、文件模式渲染的前缀哈希等于线上；clear、重启之后向同一目录再导出一次，`brand.json` 没了、文件模式回到旧版模式的哈希。前言节的三种切换各验一遍：旧版 → 山海、山海 → 另一个虚构品牌、山海 → clear；没改过的前言跟着换、品牌名对；改过的保留原样、启动日志与 SOP 页有提示。prod profile 下 `tenant-create` 不带 `--brand-file` 以 1 拒绝。`tenant-brand set` 写一条只含字段名的审计。
 6. **回滚检查。** 本机演练，真实 docker，经 `deploy.sh`：库里有品牌不为空的租户、部署 03 的 tag：检查脚本 6、`deploy.sh` 拒绝并打印 clear 的步骤；clear 但没重启（当前发布版本仍带品牌快照）：仍拒绝；重启之后放行；品牌为空时照常回滚；健康检查失败后的自动回滚同样经过这道检查。
 7. **步骤表。** 一组让每个步骤至少命中一次的 v2 case：抽取前后客户收到的文本相同（归一之后），`guard_events` 相同；每轮一份 `guard_verdicts`，标识顺序等于开工步骤表，放行也在内；接管检查中止的那一轮是 `abort`；前置返回的那一轮为空。把一个步骤的 `after` 改成依赖排在它后面的步骤、或让它读一个后面才写的键，启动失败并打印两个标识。
 8. **跟进。** 跟进的 11 步与开工时同一份输入下结论相同；一条会触发改行程承诺、缺链接与转接承诺的跟进文本：只删句，不建单、不转人工、不调工具。

@@ -2,7 +2,8 @@
 
 Status: implemented
 Superseded in part by: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md) — 不变量 4（`SESSION_STORE=db` 时改写，见 02「与 01、后台 UX spec 的关系」；文件存储下原文照旧）。按 02 的 plan 落地，原因见 02 顶部 `Supersedes in part:`
-Superseded in part by: [04 · 行业包抽取](../04-industry-packs/spec.md) — 不变量 11（锁定节改为与租户的镜像逐字节相同，配了品牌的租户的镜像按包模板渲染）；「渲染与哈希」的渲染输入加品牌、「启动重渲染」的原因加 `brand`（见 04 R4–R6）。04 是 draft，ready 之后生效。
+Superseded in part by: [04 · 行业包抽取](../04-industry-packs/spec.md) — 不变量 11（锁定节改为与租户的镜像逐字节相同，配了品牌的租户的镜像按包模板渲染）；「渲染与哈希」的渲染输入加品牌、「启动重渲染」的原因加 `brand`（见 04 R4–R6）。
+Amended by: [04 · 行业包抽取](../04-industry-packs/spec.md)（配置导出在模板模式下多写已发布的品牌快照 `brand.json`，文件模式据此渲染，见 04 R17）。04 是 draft，ready 之后上面两条生效。
 Phase: 1 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」
 Depends on: [00-baseline](../00-baseline/spec.md)（`DEPLOY_PROFILE`、`promptPrefix()`、四个门禁、按 tag 部署）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)、[ADR-002](../../adr/adr-002-console-vite-react.md)、[ADR-003](../../adr/adr-003-open-core-boundary.md)
 Amended by: [后台 UX 重做](../../features/console-ux/spec.md)（只做新增，全文见该 spec「接口改动」：`Me.tenantName`；`ConvQuery` 的 `state`、`stage`、`order` 与 `AuditQuery.actions`；`GET /pack` 与 `GET /conversations/counts`；`ContractViolation.match`；草稿保存的 `rebaseOnto`；`tenant-create --pack` 改读行业包注册表；启动装载的新原因 `pack_unknown`。按该 spec 的 plan 逐步落地）
