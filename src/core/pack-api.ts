@@ -1,6 +1,6 @@
 // 04 R2、R3：行业包取得核心能力的唯一出口；这里不装载行业包，也不引旧门面。
 import type { SectionSpec } from '../shared/sop-sections.js';
-import type { CustomerProfile, SalesStage, Session } from '../types.js';
+import type { CustomerProfile, HandoffRecord, Order, SalesStage, Session } from '../types.js';
 import type { ToolDef } from '../tool-defs.js';
 import type { CatalogItem } from '../shared/console-api.js';
 
@@ -53,15 +53,37 @@ export type StepVerdict =
   | { action: 'handoff'; text: string; reason: string }
   | { action: 'abort' };
 
-/** 方法的具体参数与返回形状需随 spec 补齐；约束它们必须是可调用的核心能力。 */
+/** R8：全部执行过的裁决，保留执行位置后缀；不含客户原文或转人工原因。 */
+export interface GuardVerdict {
+  id: string;
+  action: StepVerdict['action'];
+}
+
+/** 开工表的局部变量映射；正文、会话字段与工具调用不放进 flags。 */
+export interface GuardTurnFlags extends Record<string, unknown> {
+  emptyModelReply?: boolean;
+  wantsOrder?: boolean;
+  friendsOwn?: Order;
+  customPromise?: string | null;
+  handedOverSelfDecided?: boolean;
+  guardHit?: 'injection' | 'price' | null;
+  preDropSnapshot?: string;
+  saidAll?: string[];
+}
+
+/** 与现有本轮工具记录同形，补工具时继续追加，result 是原始 JSON 字符串。 */
+export interface GuardToolSource {
+  name: string;
+  args: Record<string, unknown>;
+  result?: ToolResult;
+}
+
+/** 阈值的字段由搬阈值的步骤填实；允许包用自己的类型收窄。 */
 export interface GuardContextTypes {
-  flags: Record<string, unknown>;
-  toolSources: unknown;
-  orderSources: unknown;
-  thresholds: unknown;
-  createOrder: (...args: never[]) => unknown;
-  enterHandoff: (...args: never[]) => unknown;
-  callTool: (...args: never[]) => unknown;
+  flags: GuardTurnFlags;
+  toolSources: GuardToolSource[];
+  orderSources: readonly Order[];
+  thresholds: object;
 }
 
 /** R7：步骤只经 context 取得状态与副作用能力，不直接 import 存储。 */
@@ -73,16 +95,19 @@ export interface GuardContext<T extends GuardContextTypes = GuardContextTypes> {
   orderSources: T['orderSources'];
   brand: BrandProfile | null;
   thresholds: T['thresholds'];
-  createOrder: T['createOrder'];
-  enterHandoff: T['enterHandoff'];
-  callTool: T['callTool'];
+  /** 绑定本轮会话，经确定性的 create_order 工具建单或复用；不直接写订单表。 */
+  createOrder(args: Record<string, unknown>): Promise<ToolResult>;
+  /** 绑定本轮会话，保留现有转人工记录的形状与语义。 */
+  enterHandoff(record: HandoffRecord): void;
+  /** 绑定本轮会话，经工具分派、观察者与结果记录；不绕过工具安全网。 */
+  callTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
 }
 
 export interface GuardStep<Context extends GuardContext = GuardContext> {
   id: string;
-  after?: string[];
-  reads?: string[];
-  writes?: string[];
+  after?: readonly string[];
+  reads?: readonly string[];
+  writes?: readonly string[];
   run(ctx: Context): Promise<StepVerdict> | StepVerdict;
 }
 
