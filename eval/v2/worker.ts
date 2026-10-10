@@ -2,17 +2,30 @@ import '../../src/selftest-env.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { validateCase } from './schema.js';
+import { validateCase, type CaseV2 } from './schema.js';
+import type { CaseResult } from './run.js';
+import { installResets, loadResetModules, resetCaseState, setCaseClock } from './isolation.js';
 import { startFakeModel } from './fake-model.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Order } from '../../src/types.js';
 
-export async function runWorker(prepareDb: (varDir: string) => Promise<{ close(): Promise<void> }>): Promise<void> {
-  const c = validateCase(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')));
-  const varDir = process.argv[3];
+export interface WorkerDb {
+  close(): Promise<void>;
+  reset(): Promise<void>;
+}
+type PrepareDb = (varDir: string) => Promise<WorkerDb>;
+interface PoolRuntime {
+  db?: WorkerDb;
+  used?: boolean;
+}
+
+async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runtime?: PoolRuntime): Promise<CaseResult> {
   process.env.VAR_DIR = varDir;
-  if (c.fixtures?.now) {
+  if (runtime) {
+    setCaseClock(c.fixtures?.now);
+    if (runtime.used) await resetCaseState(varDir);
+  } else if (c.fixtures?.now) {
     process.env.PARITY_CLOCK_MS = String(Date.parse(c.fixtures.now));
     await import('../../src/store/parity-clock.js');
   }
@@ -26,7 +39,8 @@ export async function runWorker(prepareDb: (varDir: string) => Promise<{ close()
   const turns: unknown[] = [];
   let off = () => {};
   let offTool = () => {};
-  let db: { close(): Promise<void> } | undefined;
+  let db: WorkerDb | undefined;
+  let loadedStore: typeof import('../../src/store.js') | undefined;
   try {
     Object.assign(process.env, {
       LLM_MOCK: '0',
@@ -52,10 +66,13 @@ export async function runWorker(prepareDb: (varDir: string) => Promise<{ close()
     });
     if (c.brand) throw new Error(`brand: 夹具 ${c.brand} 尚未注册（第 3 / 19 步）`);
     const store = await import('../../src/store.js');
+    loadedStore = store;
     if (process.env.CONFIG_TEST_DB === 'pglite') {
-      db = await prepareDb(varDir);
+      db = runtime?.db ?? (await prepareDb(varDir));
+      if (runtime) runtime.db = db;
     }
     const { handleMessage, onToolCall } = await import('../../src/engine.js');
+    if (runtime && !runtime.used) await loadResetModules();
     const { onTurnEnd } = await import('../../src/trace/recorder.js');
     const { buildIndex } = await import('../../src/retrieval.js');
     const { createQuote } = await import('../../src/tools.js');
@@ -146,18 +163,58 @@ export async function runWorker(prepareDb: (varDir: string) => Promise<{ close()
       }
       turns.push({ reply, orders: structuredClone(orders()), trace: finished });
     }
-    const { undrained } = await store.drainStore(5000);
-    if (undrained.length) throw new Error('临时状态写队列未排空');
-    store.flushStoreNow();
   } catch (e) {
     failures.push(`[${c.id}] ${e instanceof Error ? e.message : String(e)}`);
   } finally {
+    // expect/脚本占位报错也可能已产生业务写入，失败路径同样先排空队列。
+    if (loadedStore) {
+      try {
+        const { undrained } = await loadedStore.drainStore(5000);
+        if (undrained.length) failures.push(`[${c.id}] 临时状态写队列未排空`);
+        else loadedStore.flushStoreNow();
+      } catch (e) {
+        failures.push(`[${c.id}] ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     off();
     offTool();
     await fake.close();
-    await db?.close();
+    if (!runtime) await db?.close();
   }
   failures.push(...fake.errors);
-  fs.writeFileSync(process.argv[4], JSON.stringify({ id: c.id, pass: failures.length === 0, checks, guardSkipped, failures, turns }));
-  process.exit(failures.length ? 1 : 0);
+  return { id: c.id, pass: failures.length === 0, checks, guardSkipped, failures, turns };
+}
+
+export async function runWorker(prepareDb: PrepareDb): Promise<never> {
+  const c = validateCase(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')));
+  const result = await executeCase(c, process.argv[3], prepareDb);
+  fs.writeFileSync(process.argv[4], JSON.stringify(result));
+  process.exit(result.pass ? 0 : 1);
+}
+
+export async function runPoolWorker(prepareDb: PrepareDb): Promise<void> {
+  installResets();
+  const varDir = process.argv[2];
+  process.env.VAR_DIR = varDir;
+  const runtime: PoolRuntime = {};
+  // IPC 回包前必须完成清理；清理失败就退出，让父进程换一名干净 worker。
+  let chain = Promise.resolve();
+  process.on('message', (input: unknown) => {
+    chain = chain
+      .then(async () => {
+        const c = validateCase(input);
+        const result = await executeCase(c, varDir, prepareDb, runtime);
+        runtime.used = true;
+        await resetCaseState(varDir);
+        await runtime.db?.reset();
+        process.send!(result);
+      })
+      .catch(() => process.exit(1));
+  });
+  process.once('disconnect', () => {
+    void chain.finally(async () => {
+      await runtime.db?.close();
+      process.exit(0);
+    });
+  });
 }
