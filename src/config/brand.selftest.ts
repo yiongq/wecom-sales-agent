@@ -69,6 +69,13 @@ try {
   assert.equal(rendered.identityAnswer, `${shanhaiBrand.identityLine}～`);
   // 单次替换：品牌里带另一个槽位、$& 等内容时不递归、不展开替换元字符。
   assert.equal(renderBrandTemplate('{brandName}', { ...shanhaiBrand, brandName: '$&{aiTitle}' }), '$&{aiTitle}');
+  for (const initial of ['🇨🇳', '👩‍💼', 'e\u0301']) {
+    assert.equal(renderBrandTemplate('{brandInitial}', { ...shanhaiBrand, brandName: `${initial}旅行` }), initial);
+    assert.match(
+      renderBrandPage(fs.readFileSync('public/chat.html', 'utf8'), 'chat', runtime, { ...shanhaiBrand, brandName: `${initial}旅行` }),
+      new RegExp(`pc-logo">${initial}`),
+    );
+  }
 
   const pages = {
     pay: '4bba75fa0132a1a726b593ff7386c2574b66b4ef3fefb782ebcfaeffbc4af7c6',
@@ -82,7 +89,9 @@ try {
     assert.equal(sha256(html), hash, `${page} 源文件必须与开工时逐字节相同`);
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
-    assert.doesNotMatch(next, /云途/);
+    // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。
+    const customerText = next.replace(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|^\s*\/\/.*$/gm, '').replaceAll('微信支付', '');
+    assert.doesNotMatch(customerText, /云途|微信/);
     if (page === 'pay') assert.equal((next.match(/class="merchant">山海旅行</g) ?? []).length, 2);
     if (page === 'proposal') assert.match(next, /山海旅行 · 行程方案书/);
     if (page === 'chat') {
@@ -91,15 +100,92 @@ try {
       assert.match(next, /pc-logo">山/);
       assert.ok(next.includes(rendered.webWelcome.replaceAll('\n', '\\n')));
     }
-    // 品牌是平台提供的文字，放进 HTML/JS 后也不能产生代码或打断标签。
-    const dangerous: BrandProfile = {
-      ...shanhaiBrand,
-      brandName: `山海'"<&$\u2028\u2029</script><img src=x>`,
-      aiTitle: `AI '"</script>顾问`,
-    };
-    const safe = renderBrandPage(html, name, runtime, dangerous);
-    assert.ok(!safe.includes('<img src=x>'));
-    if (page === 'chat') assert.ok(new vm.Script(/<script>([\s\S]*?)<\/script>/.exec(safe)![1]!));
+    // 每页、每槽位分别验证，再实际执行方案页及聊天页的 HTML 生成代码。
+    for (const payload of [
+      '${globalThis.__brandProbe=41}',
+      String.raw`\x3cimg src=x\x3e`,
+      '`',
+      `山海'"<&$\r\n\u2028\u2029</script><img src=x>`,
+    ]) {
+      const dangerous: BrandProfile = Object.fromEntries(Object.keys(shanhaiBrand).map((key) => [key, payload])) as unknown as BrandProfile;
+      const safe = renderBrandPage(html, name, runtime, dangerous);
+      assert.doesNotMatch(safe, /<img src=x>/);
+      const scripts = [...safe.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
+      assert.equal(scripts.length, [...html.matchAll(/<script\b[^>]*>/g)].length, `${page} 不得新增/提前关闭 script`);
+      for (const js of scripts) assert.ok(new vm.Script(js), `${page} 脚本必须仍可解析`);
+      for (const slot of runtime.templates.pages[name] ?? []) {
+        assert.ok(html.includes(slot.legacy), `${page} 的槽位必须命中页面原文：${slot.legacy}`);
+        const fragment = renderBrandPage(slot.legacy, name, runtime, dangerous);
+        const context: Record<string, unknown> = {};
+        const decoded =
+          slot.context === 'js-template'
+            ? vm.runInNewContext('`' + fragment + '`', context, { timeout: 1000 })
+            : slot.context === 'js-string' || slot.context === 'json'
+              ? vm.runInNewContext('"' + fragment + '"', context, { timeout: 1000 })
+              : fragment;
+        assert.equal(context.__brandProbe, undefined, `${page} 槽位不得执行品牌代码`);
+        if (slot.htmlContext || slot.context.startsWith('html-')) assert.doesNotMatch(decoded, /<img src=x>/);
+        if (payload.includes('\\x3c') && /\{(?:brandName|aiTitle)\}/.test(slot.template)) {
+          assert.ok(decoded.includes(payload), `${page} 不得解释品牌中的反斜杠`);
+        }
+        if (slot.context === 'js-string' && !slot.htmlContext && slot.template.includes('{brandName}')) {
+          assert.ok(decoded.includes(payload), `${page} 普通 JS 字符串必须保持品牌原文`);
+        }
+      }
+      if (page === 'proposal') {
+        const output = { innerHTML: '' };
+        const context = {
+          document: { title: '行程方案书', getElementById: () => output },
+          location: { pathname: '/proposal/test/2', search: '' },
+          URLSearchParams,
+          fetch: async () => ({
+            ok: true,
+            json: async () => ({ route: { title: '测试线路', days: 1 }, quote: { total: 1, perPerson: 1 }, travelers: 2 }),
+          }),
+        };
+        await new vm.Script(scripts[0]!).runInNewContext(context, { timeout: 1000 });
+        assert.match(output.innerHTML, /行程方案书/); // 不得因注入或语法错误走失效页。
+        assert.doesNotMatch(output.innerHTML, /<img src=x>/);
+        assert.equal((context as Record<string, unknown>).__brandProbe, undefined);
+        // alt 保持一个完整的双引号属性，品牌里的引号不能产生额外属性。
+        assert.match(output.innerHTML, /<img class="cover" src="\/share-cover.png" alt="[^"<>]*" width="240" height="240">/);
+      }
+      if (page === 'chat') {
+        const js = scripts[0]!;
+        const contentFns = js.slice(js.indexOf('  const esc ='), js.indexOf('  // 成交消息'));
+        const cardFn = js.slice(js.indexOf('  function payCardHTML('), js.indexOf('  async function fillPayCard('));
+        const welcomeFn = js.slice(js.indexOf('  function welcome()'), js.indexOf('  // 恢复历史'));
+        const nick = /const nick = [^\n]+/.exec(js)![0];
+        const context: Record<string, unknown> = {
+          me: false,
+          showChips: () => {},
+          addMsg: (_role: string, text: string) => {
+            context.welcome = text;
+          },
+        };
+        const output = vm.runInNewContext(
+          contentFns +
+            cardFn +
+            welcomeFn +
+            nick +
+            '\nwelcome(); [payCardHTML({href:"/pay/test"}), nick, renderContent(globalThis.welcome)]',
+          context,
+          { timeout: 1000 },
+        ) as string[];
+        for (const text of output) assert.doesNotMatch(text, /<img src=x>/);
+        assert.equal(context.__brandProbe, undefined);
+        assert.ok(String(context.welcome).includes(payload));
+      }
+      if (page === 'web') {
+        const jsonRuntime = {
+          ...runtime,
+          templates: { ...runtime.templates, pages: { web: [{ legacy: 'brand', template: '{brandName}', context: 'json' as const }] } },
+        };
+        const json = '"' + renderBrandPage('brand', 'web', jsonRuntime, dangerous) + '"';
+        assert.equal(JSON.parse(json), payload);
+        assert.doesNotMatch(json, /<\/script>/);
+      }
+    }
   }
   for (const [url, page] of [
     ['/chat.html', 'chat'],
@@ -280,7 +366,9 @@ try {
   // 欢迎语独立于拉取链，等实际发送任务排空。
   for (let n = 0; n < 100 && sent.length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(sent, [rendered.welcomeText, rendered.welcomeBackText]);
-  console.log('品牌出口自测通过：旧版文本/页面字节、山海出口、HTML/JS 转义、发布快照、平台 set 不即时生效、轮次隔离、自定义欢迎优先');
+  console.log(
+    '品牌出口自测通过：旧版文本/页面字节、山海出口/渠道中立、逐页逐槽位 HTML/JS 转义与脚本执行、字素簇首字、发布快照、平台 set 不即时生效、轮次隔离、自定义欢迎优先',
+  );
 } finally {
   globalThis.fetch = oldFetch;
   installAccounts([]);

@@ -5,8 +5,8 @@ import { webWelcome } from './legacy.js';
 
 const webWelcomeTemplate =
   '您好，欢迎来到{brandName}，我是您的 {aiTitle} ✨\n想去川西藏地、云南雪山，还是新疆看看？和我聊聊您的想法吧～\n需要真人服务时，回复「人工」即可转真人顾问。';
-const brandSlot = { legacy: '云途定制旅行', template: '{brandName}', context: 'html' } as const;
-const chatTitle = { legacy: '云途定制旅行顾问', template: '{brandName} · {advisorTitle}', context: 'html' } as const;
+const brandSlot = { legacy: '云途定制旅行', template: '{brandName}', context: 'html-text' } as const;
+const chatTitle = { legacy: '云途定制旅行顾问', template: '{brandName} · {advisorTitle}', context: 'html-text' } as const;
 
 export const travelTemplates: BrandTemplates = {
   preamble: [
@@ -37,15 +37,56 @@ export const travelTemplates: BrandTemplates = {
       : q,
   ),
   pages: {
-    pay: [brandSlot],
-    proposal: [brandSlot],
+    pay: [
+      brandSlot,
+      {
+        legacy: '价格已确认 · 请按顾问在微信里发的方式付款',
+        template: '价格已确认 · 请按顾问发来的方式付款',
+        context: 'js-string',
+      },
+      {
+        legacy: '订单已提交 · 顾问会在微信里跟您核对价格，并发来收款方式',
+        template: '订单已提交 · 顾问会跟您核对价格，并发来收款方式',
+        context: 'js-string',
+      },
+    ],
+    proposal: [
+      {
+        legacy: '<title>行程方案书 · 云途定制旅行</title>',
+        template: '<title>行程方案书 · {brandName}</title>',
+        context: 'html-text',
+      },
+      {
+        legacy: 'alt="云途定制旅行"',
+        template: 'alt="{brandName}"',
+        context: 'js-template',
+        htmlContext: 'attribute',
+      },
+      {
+        legacy: '云途定制旅行 · 行程方案书',
+        template: '{brandName} · 行程方案书',
+        context: 'js-template',
+        htmlContext: 'text',
+      },
+      {
+        legacy: '如需调整酒店档次、人数或日期，直接在微信里告诉顾问即可。',
+        template: '如需调整酒店档次、人数或日期，直接告诉顾问即可。',
+        context: 'js-template',
+        htmlContext: 'text',
+      },
+    ],
     chat: [
       chatTitle,
-      { ...brandSlot, context: 'html-in-js' },
-      { legacy: '云途定制旅行顾问 · AI', template: '{brandName} · {aiTitle}', context: 'html-in-js' },
-      { legacy: '云</span>', template: '{brandInitial}</span>', context: 'html-in-js' },
-      { legacy: webWelcome.replaceAll('\n', '\\n'), template: webWelcomeTemplate, context: 'js' },
+      { ...brandSlot, context: 'js-string', htmlContext: 'text' },
+      { legacy: '云途定制旅行顾问 · AI', template: '{brandName} · {aiTitle}', context: 'js-string', htmlContext: 'text' },
+      { legacy: '云</span>', template: '{brandInitial}</span>', context: 'js-string', htmlContext: 'text' },
+      { legacy: webWelcome.replaceAll('\n', '\\n'), template: webWelcomeTemplate, context: 'js-string' },
+      {
+        legacy: 'Demo：模拟企业微信会话。生产环境经企微回调接入，界面即企业微信本身。',
+        template: 'Demo：模拟客户咨询会话。生产环境经已配置的接待渠道接入。',
+        context: 'html-text',
+      },
     ],
-    web: [{ legacy: 'AI 旅行顾问 · 可转真人', template: '{aiTitle} · 可转真人', context: 'html' }],
+    web: [{ legacy: 'AI 旅行顾问 · 可转真人', template: '{aiTitle} · 可转真人', context: 'html-text' }],
   },
 };
