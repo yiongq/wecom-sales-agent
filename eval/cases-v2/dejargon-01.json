@@ -1,0 +1,2098 @@
+[
+  {
+    "version": 2,
+    "id": "travel-dejargon-33-01",
+    "desc": "术语替换边界：我按日期帮您确认 availability 和准确报价。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我按日期帮您确认 availability 和准确报价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我按日期帮您确认 档期 和准确报价。", "^我按日期帮您确认 档期 和准确报价。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-33-02",
+    "desc": "术语替换边界：您的 budget 大概多少？",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "您的 budget 大概多少？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您的 预算 大概多少？", "^您的 预算 大概多少？$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-33-03",
+    "desc": "术语替换边界：这个 Package 含接送",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这个 Package 含接送"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这个 套餐 含接送", "^这个 套餐 含接送$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-33-04",
+    "desc": "术语替换边界：确认档期后我发您option两条",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "确认档期后我发您option两条"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["确认档期后我发您选择两条", "^确认档期后我发您选择两条$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-33-05",
+    "desc": "术语替换边界：Confirm 一下出发日期",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "Confirm 一下出发日期"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["确认 一下出发日期", "^确认 一下出发日期$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-33-06",
+    "desc": "术语替换边界：先看 options，再定 price",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "先看 options，再定 price"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["先看 选择，再定 价格", "^先看 选择，再定 价格$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-01",
+    "desc": "术语替换边界：今晚住 成都博舍 The Temple House，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 成都博舍 The Temple House，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 成都博舍 The Temple House，含双早。", "^今晚住 成都博舍 The Temple House，含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-02",
+    "desc": "术语替换边界：今晚住 乌布四季 Sayan 度假村（Four Seasons Resort Bali at Sayan）河谷私人泳池别",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 乌布四季 Sayan 度假村（Four Seasons Resort Bali at Sayan）河谷私人泳池别墅，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 乌布四季 Sayan 度假村（Four Seasons Resort Bali at Sayan）河谷私人泳池别墅，含双早。",
+            "^今晚住 乌布四季 Sayan 度假村（Four Seasons Resort Bali at Sayan）河谷私人泳池别墅，含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-03",
+    "desc": "术语替换边界：今晚住 宝格丽巴厘岛度假村（Bvlgari Resort Bali）海景悬崖别墅，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 宝格丽巴厘岛度假村（Bvlgari Resort Bali）海景悬崖别墅，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 宝格丽巴厘岛度假村（Bvlgari Resort Bali）海景悬崖别墅，含双早。",
+            "^今晚住 宝格丽巴厘岛度假村（Bvlgari Resort Bali）海景悬崖别墅，含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-04",
+    "desc": "术语替换边界：今晚住 Hotel Kämp（赫尔辛基），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Hotel Kämp（赫尔辛基），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 Hotel Kämp（赫尔辛基），含双早。", "^今晚住 Hotel Kämp（赫尔辛基），含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-05",
+    "desc": "术语替换边界：今晚住 Kakslauttanen Arctic Resort 玻璃穹顶屋，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Kakslauttanen Arctic Resort 玻璃穹顶屋，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 Kakslauttanen Arctic Resort 玻璃穹顶屋，含双早。",
+            "^今晚住 Kakslauttanen Arctic Resort 玻璃穹顶屋，含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-06",
+    "desc": "术语替换边界：今晚住 Arctic TreeHouse Hotel（罗瓦涅米），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Arctic TreeHouse Hotel（罗瓦涅米），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 Arctic TreeHouse Hotel（罗瓦涅米），含双早。", "^今晚住 Arctic TreeHouse Hotel（罗瓦涅米），含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-07",
+    "desc": "术语替换边界：今晚住 Levin Iglut Golden Crown（莱维），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Levin Iglut Golden Crown（莱维），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 Levin Iglut Golden Crown（莱维），含双早。", "^今晚住 Levin Iglut Golden Crown（莱维），含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-08",
+    "desc": "术语替换边界：今晚住 One&Only Reethi Rah，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 One&Only Reethi Rah，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 One&Only Reethi Rah，含双早。", "^今晚住 One&Only Reethi Rah，含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-09",
+    "desc": "术语替换边界：今晚住 Soneva Jani 水上别墅，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Soneva Jani 水上别墅，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 Soneva Jani 水上别墅，含双早。", "^今晚住 Soneva Jani 水上别墅，含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-10",
+    "desc": "术语替换边界：今晚住 马尔代夫 Soneva Jani 蜜月 6 日，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 马尔代夫 Soneva Jani 蜜月 6 日，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 马尔代夫 Soneva Jani 蜜月 6 日，含双早。", "^今晚住 马尔代夫 Soneva Jani 蜜月 6 日，含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-11",
+    "desc": "术语替换边界：今晚住 Bürgenstock Hotel & Alpine Spa（布尔根施托克度假村），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Bürgenstock Hotel & Alpine Spa（布尔根施托克度假村），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 Bürgenstock Hotel & Alpine Spa（布尔根施托克度假村），含双早。",
+            "^今晚住 Bürgenstock Hotel & Alpine Spa（布尔根施托克度假村），含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-12",
+    "desc": "术语替换边界：今晚住 Badrutt's Palace Hotel（圣莫里茨），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Badrutt's Palace Hotel（圣莫里茨），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["今晚住 Badrutt's Palace Hotel（圣莫里茨），含双早。", "^今晚住 Badrutt's Palace Hotel（圣莫里茨），含双早。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-13",
+    "desc": "术语替换边界：今晚住 Grand Hotel Zermatterhof（采尔马特），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Grand Hotel Zermatterhof（采尔马特），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 Grand Hotel Zermatterhof（采尔马特），含双早。",
+            "^今晚住 Grand Hotel Zermatterhof（采尔马特），含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-14",
+    "desc": "术语替换边界：今晚住 Victoria-Jungfrau Grand Hotel & Spa（因特拉肯），含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 Victoria-Jungfrau Grand Hotel & Spa（因特拉肯），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 Victoria-Jungfrau Grand Hotel & Spa（因特拉肯），含双早。",
+            "^今晚住 Victoria-Jungfrau Grand Hotel & Spa（因特拉肯），含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-15",
+    "desc": "术语替换边界：今晚住 喜来登满月岛度假村（Sheraton Maldives Full Moon Resort & Spa）水上别墅，",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 喜来登满月岛度假村（Sheraton Maldives Full Moon Resort & Spa）水上别墅，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 喜来登满月岛度假村（Sheraton Maldives Full Moon Resort & Spa）水上别墅，含双早。",
+            "^今晚住 喜来登满月岛度假村（Sheraton Maldives Full Moon Resort & Spa）水上别墅，含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-16",
+    "desc": "术语替换边界：今晚住 芙花芬岛度假村（Huvafen Fushi Maldives）水上别墅，含双早。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 芙花芬岛度假村（Huvafen Fushi Maldives）水上别墅，含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 芙花芬岛度假村（Huvafen Fushi Maldives）水上别墅，含双早。",
+            "^今晚住 芙花芬岛度假村（Huvafen Fushi Maldives）水上别墅，含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-17",
+    "desc": "术语替换边界：今晚住 中央格兰德海岛度假村（Centara Grand Island Resort & Spa Maldives），含",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "今晚住 中央格兰德海岛度假村（Centara Grand Island Resort & Spa Maldives），含双早。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "今晚住 中央格兰德海岛度假村（Centara Grand Island Resort & Spa Maldives），含双早。",
+            "^今晚住 中央格兰德海岛度假村（Centara Grand Island Resort & Spa Maldives），含双早。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-18",
+    "desc": "术语替换边界：入住 Four Seasons Resort Bali at Sayan，推窗是雨林。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "入住 Four Seasons Resort Bali at Sayan，推窗是雨林。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "入住 Four Seasons Resort Bali at Sayan，推窗是雨林。",
+            "^入住 Four Seasons Resort Bali at Sayan，推窗是雨林。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-19",
+    "desc": "术语替换边界：住 Soneva Jani Barefoot Retreat，滑梯直接下海。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "住 Soneva Jani Barefoot Retreat，滑梯直接下海。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["住 Soneva Jani Barefoot Retreat，滑梯直接下海。", "^住 Soneva Jani Barefoot Retreat，滑梯直接下海。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-20",
+    "desc": "术语替换边界：北京住 Aman 颐和安缦，专属侧门进园。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "北京住 Aman 颐和安缦，专属侧门进园。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["北京住 Aman 颐和安缦，专属侧门进园。", "^北京住 Aman 颐和安缦，专属侧门进园。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-21",
+    "desc": "术语替换边界：含 SPA 一次，VIP 通道进场。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "含 SPA 一次，VIP 通道进场。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["含 SPA 一次，VIP 通道进场。", "^含 SPA 一次，VIP 通道进场。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-22",
+    "desc": "术语替换边界：我是云途定制旅行的 AI 旅行顾问。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我是云途定制旅行的 AI 旅行顾问。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我是云途定制旅行的 AI 旅行顾问。", "^我是云途定制旅行的 AI 旅行顾问。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-59-23",
+    "desc": "术语替换边界：您好，想去哪儿玩呢？我帮您看看线路。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "您好，想去哪儿玩呢？我帮您看看线路。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您好，想去哪儿玩呢？我帮您看看线路。", "^您好，想去哪儿玩呢？我帮您看看线路。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-73-01",
+    "desc": "术语替换边界：方案书在这 /proposal/r-guizhou/2 点开看逐日行程",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "方案书在这 {{call:generate_proposal.proposalUrl}} 点开看逐日行程"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "方案书在这 {{call:generate_proposal.proposalUrl}} 点开看逐日行程",
+            "^方案书在这 /proposal/r-guizhou/2 点开看逐日行程$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["generate_proposal"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-73-02",
+    "desc": "术语替换边界：付款链接：/pay/ord_08b08606 名额以付款为准",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      },
+      "orders": [
+        {
+          "routeId": "r-guizhou",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "付款链接：/pay/{{order:0.id}} 名额以付款为准"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["付款链接：/pay/{{order:0.id}} 名额以付款为准", "^付款链接：/pay/{{order:0.id}} 名额以付款为准$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-guizhou",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "status": "pending_payment",
+              "totalPrice": 31600
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-73-03",
+    "desc": "术语替换边界：方案在这 /proposal/r-guizhou/2 我再帮您确认 availability",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "方案在这 {{call:generate_proposal.proposalUrl}} 我再帮您确认 availability"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "方案在这 {{call:generate_proposal.proposalUrl}} 我再帮您确认 档期",
+            "^方案在这 /proposal/r-guizhou/2 我再帮您确认 档期$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["generate_proposal"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-01",
+    "desc": "术语替换边界：另外库里还有一条稻城亚丁8日的，但海拔偏高，带小朋友我就先不主推了。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "另外库里还有一条稻城亚丁8日的，但海拔偏高，带小朋友我就先不主推了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "另外我们这边还有一条稻城亚丁8日的，但海拔偏高，带小朋友我就先不主推了。",
+            "^另外我们这边还有一条稻城亚丁8日的，但海拔偏高，带小朋友我就先不主推了。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-02",
+    "desc": "术语替换边界：目前库里北京线就这一条 5 日深度款。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "目前库里北京线就这一条 5 日深度款。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["目前我们这边北京线就这一条 5 日深度款。", "^目前我们这边北京线就这一条 5 日深度款。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-03",
+    "desc": "术语替换边界：库里暂时没有峨眉山的线路，我帮您看看相近的。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "库里暂时没有峨眉山的线路，我帮您看看相近的。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们这边暂时没有峨眉山的线路，我帮您看看相近的。", "^我们这边暂时没有峨眉山的线路，我帮您看看相近的。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-04",
+    "desc": "术语替换边界：我们库里新疆有两条。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我们库里新疆有两条。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们这边新疆有两条。", "^我们这边新疆有两条。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-05",
+    "desc": "术语替换边界：产品库里没有 5 天的云南线。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "产品库里没有 5 天的云南线。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们的线路里没有 5 天的云南线。", "^我们的线路里没有 5 天的云南线。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-06",
+    "desc": "术语替换边界：这超出了我们的线路库范围",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这超出了我们的线路库范围"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这超出了我们的线路范围", "^这超出了我们的线路范围$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-07",
+    "desc": "术语替换边界：我在精品酒店库里给您挑了两家",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我在精品酒店库里给您挑了两家"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我在我们合作的酒店里给您挑了两家", "^我在我们合作的酒店里给您挑了两家$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-08",
+    "desc": "术语替换边界：库里就这条 /proposal/r-guizhou/2 您看看",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "库里就这条 {{call:generate_proposal.proposalUrl}} 您看看"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们这边就这条 {{call:generate_proposal.proposalUrl}} 您看看", "^我们这边就这条 /proposal/r-guizhou/2 您看看$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["generate_proposal"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-09",
+    "desc": "术语替换边界：酒店地下车库里可以免费停车。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "酒店地下车库里可以免费停车。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["酒店地下车库里可以免费停车。", "^酒店地下车库里可以免费停车。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-10",
+    "desc": "术语替换边界：雪具都放在仓库里，到了直接领。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "雪具都放在仓库里，到了直接领。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["雪具都放在仓库里，到了直接领。", "^雪具都放在仓库里，到了直接领。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-11",
+    "desc": "术语替换边界：晚宴在酒庄的酒库里办，温度常年 14 度。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "晚宴在酒庄的酒库里办，温度常年 14 度。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["晚宴在酒庄的酒库里办，温度常年 14 度。", "^晚宴在酒庄的酒库里办，温度常年 14 度。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-12",
+    "desc": "术语替换边界：水库里可以划皮艇。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "水库里可以划皮艇。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["水库里可以划皮艇。", "^水库里可以划皮艇。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-13",
+    "desc": "术语替换边界：莫高窟是艺术宝库里的明珠。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "莫高窟是艺术宝库里的明珠。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["莫高窟是艺术宝库里的明珠。", "^莫高窟是艺术宝库里的明珠。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-14",
+    "desc": "术语替换边界：牦牛肉从冷库里直接取，很新鲜。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "牦牛肉从冷库里直接取，很新鲜。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["牦牛肉从冷库里直接取，很新鲜。", "^牦牛肉从冷库里直接取，很新鲜。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-16",
+    "desc": "术语替换边界：旺季产品库存紧张，建议尽早定。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "旺季产品库存紧张，建议尽早定。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["旺季产品库存紧张，建议尽早定。", "^旺季产品库存紧张，建议尽早定。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-17",
+    "desc": "术语替换边界：南疆从库尔勒出发，走独库公路。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "南疆从库尔勒出发，走独库公路。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["南疆从库尔勒出发，走独库公路。", "^南疆从库尔勒出发，走独库公路。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-18",
+    "desc": "术语替换边界：劳斯莱斯库里南接机，全程专车。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "劳斯莱斯库里南接机，全程专车。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["劳斯莱斯库里南接机，全程专车。", "^劳斯莱斯库里南接机，全程专车。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-19",
+    "desc": "术语替换边界：酒店地库里停车免费。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "酒店地库里停车免费。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["酒店地库里停车免费。", "^酒店地库里停车免费。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-20",
+    "desc": "术语替换边界：资料库里有攻略，出发前发您。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "资料库里有攻略，出发前发您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["资料库里有攻略，出发前发您。", "^资料库里有攻略，出发前发您。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-21",
+    "desc": "术语替换边界：素材图库里挑了几张给您看看。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "素材图库里挑了几张给您看看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["素材图库里挑了几张给您看看。", "^素材图库里挑了几张给您看看。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-22",
+    "desc": "术语替换边界：斯蒂芬·库里也住过这家。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "斯蒂芬·库里也住过这家。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["斯蒂芬·库里也住过这家。", "^斯蒂芬·库里也住过这家。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-23",
+    "desc": "术语替换边界：雪具可以寄存在库里，到了直接领。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "雪具可以寄存在库里，到了直接领。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["雪具可以寄存在库里，到了直接领。", "^雪具可以寄存在库里，到了直接领。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-24",
+    "desc": "术语替换边界：我们这边库里还有一条稻城亚丁的。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我们这边库里还有一条稻城亚丁的。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们这边还有一条稻城亚丁的。", "^我们这边还有一条稻城亚丁的。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-25",
+    "desc": "术语替换边界：我们的库里新疆有两条。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我们的库里新疆有两条。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们这边新疆有两条。", "^我们这边新疆有两条。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-26",
+    "desc": "术语替换边界：我查了下库里，暂时没有峨眉山的线。",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我查了下库里，暂时没有峨眉山的线。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我查了下我们这边，暂时没有峨眉山的线。", "^我查了下我们这边，暂时没有峨眉山的线。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-87-27",
+    "desc": "术语替换边界：价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～",
+            "^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-dejargon-123-01",
+    "desc": "术语替换边界：房型是 A 区还是 B 区？",
+    "tags": ["dejargon", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "房型是 A 区还是 B 区？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["房型是 A 区还是 B 区？", "^房型是 A 区还是 B 区？$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  }
+]

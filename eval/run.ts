@@ -20,10 +20,11 @@ import { loadCases, runV2 } from './v2/run.js';
 import { validateCases } from './v2/schema.js';
 
 // DB 测试装配仍只在此组合根调用（01 的模块边界）；v2 worker 不依赖 db/testing。
-if (process.argv[2] === '--v2-worker') {
+if (process.argv[2] === '--v2-worker' || process.argv[2] === '--v2-pool-worker') {
+  const pooled = process.argv[2] === '--v2-pool-worker';
   process.argv.splice(2, 1);
-  const { runWorker } = await import('./v2/worker.js');
-  await runWorker(async (varDir) => {
+  const { runWorker, runPoolWorker } = await import('./v2/worker.js');
+  const prepareDb = async (varDir: string) => {
     const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../src/db/testing.js');
     const { initSessionStore } = await import('../src/store.js');
     const db = await openTestDb();
@@ -31,12 +32,28 @@ if (process.argv[2] === '--v2-worker') {
       await installSeededConfig(db);
       const fx = await installPgSessionStore(db, { varDir });
       await initSessionStore(fx.deps);
-      return db;
+      return {
+        close: () => db.close(),
+        async reset() {
+          // 一个 worker 一个一次性库。只清业务表，迁移、租户与发布配置保留。
+          await db.pg.exec('RESET ROLE');
+          try {
+            await db.pg.exec('TRUNCATE conversations, usage_daily, audit_log CASCADE');
+          } finally {
+            await db.pg.exec('SET ROLE agent_app');
+          }
+        },
+      };
     } catch (e) {
       await db.close();
       throw e;
     }
-  });
+  };
+  if (pooled) {
+    await runPoolWorker(prepareDb);
+    // 留在 IPC 循环，不落入 v1/v2 父进程分派。
+    await new Promise(() => {});
+  } else await runWorker(prepareDb);
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
