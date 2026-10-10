@@ -150,7 +150,7 @@ function ensureMigrated(): void {
 function ensureTenant(slug: string, name: string): void {
   const r = sh('npx', ['tsx', 'src/cli/tenant-create.ts', '--slug', slug, '--name', name, '--pack', 'travel'], {
     cwd: REPO_ROOT,
-    env: { DATABASE_PLATFORM_URL: PLATFORM_URL },
+    env: { DATABASE_PLATFORM_URL: PLATFORM_URL, DEPLOY_PROFILE: 'demo' },
     timeoutMs: 30_000,
   });
   mustOk(r, `tenant-create ${slug}`);
