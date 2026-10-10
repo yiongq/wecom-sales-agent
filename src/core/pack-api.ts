@@ -1,7 +1,9 @@
 // 04 R2、R3：行业包取得核心能力的唯一出口；这里不装载行业包，也不引旧门面。
 import type { SectionSpec } from '../shared/sop-sections.js';
-import type { CustomerProfile, SalesStage, Session } from '../types.js';
+import type { CustomerProfile, Hotel, Order, Route, SalesStage, Session } from '../types.js';
 import type { ToolDef } from '../tool-defs.js';
+import type { MoneyParseOptions } from './parse/money.js';
+import type { PaymentMode } from '../shared/conversation-types.js';
 import type { CatalogItem } from '../shared/console-api.js';
 
 export type { CustomerProfile, SalesStage, Session, Order, AgentReply, Route, Hotel } from '../types.js';
@@ -79,6 +81,40 @@ export {
   type SpokenDate,
   type YearMonth,
 } from './parse/dates.js';
+
+// 04 第 9 步：价格护栏的输入与读取能力；旧门面接线，包不直接读取核心存储或工具门面。
+export { cleanText } from '../shared/text.js';
+export { peakMonths } from '../shared/season.js';
+export type { PaymentMode } from '../shared/conversation-types.js';
+
+export interface TurnToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+}
+
+export interface PriceGuardSources {
+  loadRoutes(): Route[];
+  loadHotels(): Hotel[];
+  getOrder(id: string): Order | undefined;
+  isConfigNotReadyError(error: unknown): boolean;
+  mentionsPlace(text: string, word: string): boolean;
+  isOriginMention(text: string, word: string): boolean;
+  offCatalogPlaces(text: string): { kw: string; at: number }[];
+}
+
+export interface PriceRuleSources extends Pick<PriceGuardSources, 'loadRoutes' | 'getOrder' | 'isConfigNotReadyError' | 'mentionsPlace'> {
+  paymentMode(): PaymentMode;
+}
+
+export interface PriceThresholds extends MoneyParseOptions {
+  tierTolerance: number;
+  maxTravelers: number;
+  groupMinimum: number;
+  groupDiscount: number;
+  peakMultiplier: number;
+  lowlandMaxAltitude: number;
+}
 
 export type SopContractRule =
   | { id: string; kind: 'include'; text: string; from: string }

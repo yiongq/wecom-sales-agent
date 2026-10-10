@@ -91,7 +91,7 @@ export const SOP_KNOWN_FIELDS: readonly string[] = Object.freeze([
 ]);
 
 /** 产出工具参数与结果字段的源文件。漂移测试只认这份列表 */
-export const KNOWN_FIELD_SOURCES = ['src/tools.ts', 'src/price-rules.ts'] as const;
+export const KNOWN_FIELD_SOURCES = ['src/tools.ts', 'src/packs/travel/price-rules.ts'] as const;
 
 /** 漂移扫描跟着真实产出源码走；第 9、10 步搬产出实现时同步迁移 sourceFiles。 */
 export const knownFields = Object.freeze({ names: SOP_KNOWN_FIELDS, sourceFiles: KNOWN_FIELD_SOURCES });
