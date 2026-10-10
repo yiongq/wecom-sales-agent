@@ -184,7 +184,7 @@ function ensureMigrated(): void {
 
 function ensureTenant(slug: string, name: string): void {
   const r = sh('npx', ['tsx', 'src/cli/tenant-create.ts', '--slug', slug, '--name', name, '--pack', 'travel'], {
-    env: { DATABASE_PLATFORM_URL: PLATFORM_URL },
+    env: { DATABASE_PLATFORM_URL: PLATFORM_URL, DEPLOY_PROFILE: 'demo' },
     timeoutMs: 30_000,
   });
   // 退出码 0＝新建或已存在且字段相同；2＝已存在但字段不同，这里字段固定不会出现；其余非 0 都是真失败

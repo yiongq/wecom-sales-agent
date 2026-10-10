@@ -6,6 +6,7 @@
 // 列名一律显式写 snake_case，不依赖 casing 推导：迁移 SQL 与 spec 的 DDL 逐列对得上。
 // 改这个文件之后跑 `pnpm db:generate` 生成新迁移，已提交的迁移文件永远不改（lint 会查）。
 import { sql } from 'drizzle-orm';
+import type { BrandProfile } from '../core/pack-api.js';
 import {
   bigint,
   boolean,
@@ -52,6 +53,8 @@ export const tenants = pgTable(
     name: text('name').notNull(),
     /** 'travel'，决定 SOP 节表和产品库的 kind */
     packId: text('pack_id').notNull(),
+    /** 04 R4、R6：待生效品牌；null 为旧版模式，运行时只用已发布快照。 */
+    brand: json('brand').$type<BrandProfile>(),
     /** 海外适配保留的缝，01 没有读方 */
     locale: text('locale').notNull().default('zh-CN'),
     region: text('region').notNull().default('CN'),
