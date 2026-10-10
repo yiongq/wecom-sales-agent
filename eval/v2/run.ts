@@ -203,7 +203,10 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
   }
   let baseline: ReturnType<typeof readBaseline>;
   try {
-    baseline = writeTarget ? undefined : readBaseline();
+    // demo 快照记的是旧版模式的客户文字；换了品牌夹具文字本来就不同，只比用例自己的断言
+    const branded = brandIndex > 0 && process.env.EVAL_V2_BASELINE === undefined;
+    if (branded) console.log('v2：带 --brand 运行，跳过 demo 快照比对（只检查用例断言）');
+    baseline = writeTarget || branded ? undefined : readBaseline();
   } catch (e) {
     console.error(`v2 快照读取失败：${e instanceof Error ? e.message : String(e)}`);
     return false;
