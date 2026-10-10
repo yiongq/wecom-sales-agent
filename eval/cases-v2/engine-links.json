@@ -1,0 +1,3174 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-934-01",
+    "desc": "E9：承诺了链接却没调工具——有报过价的线路就补发真链接，否则以问句收尾，不能叫客户干等。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601654
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601662
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，发我详细方案",
+        "script": [
+          {
+            "content": "好的，方案书已生成，点开看～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，方案书已生成，点开看～\n/proposal/r-yunnan-mid/2/2026-12-10$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-934-02",
+    "desc": "E9：承诺了链接却没调工具——有报过价的线路就补发真链接，否则以问句收尾，不能叫客户干等。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去贵州，12月10号出发",
+        "script": [
+          {
+            "content": "贵州这条的详细行程都在链接里。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^《贵州 荔波小七孔·西江千户苗寨 6 日》的详细方案要按人数出，出发日期我按 12月10号 算，您这次几位出行？$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-950",
+    "desc": "客户这句刚改了人数：不能拿旧报价的人数补发，按他新说的人数出（模型也写的 4 位，两边对得上）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601683
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601691
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "改成4个人，把详细方案发我看看",
+        "script": [
+          {
+            "content": "好的，4位的方案书给您，逐日行程和费用都在链接里～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，4位的方案书给您，逐日行程和费用都在链接里～\n/proposal/r-yunnan-mid/4$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-962",
+    "desc": "人数以客户这句话为准，模型写错了也不回头再问一遍（问了就是没在听）。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601700
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601708
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "其实是3个人，方案发我看看",
+        "script": [
+          {
+            "content": "好的，给您二位的方案书在这，逐日行程都在链接里～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，给您二位的方案书在这，逐日行程都在链接里～\n/proposal/r-yunnan-mid/3$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-965",
+    "desc": "客户这句没说人数、模型却写了个和报价不一样的人数（flashx 会替客户编信息）：不拍板，点名两个数问一句。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "3人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601700
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601708
+          },
+          {
+            "role": "customer",
+            "content": "其实是3个人，方案发我看看",
+            "at": 1790913601708
+          },
+          {
+            "role": "agent",
+            "content": "好的，给您二位的方案书在这，逐日行程都在链接里～\n/proposal/r-yunnan-mid/3",
+            "at": 1790913601717
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 3,
+          "perPerson": 16800,
+          "total": 50400
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          },
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 3,
+            "perPerson": 16800,
+            "total": 50400
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "方案再发我一份",
+        "script": [
+          {
+            "content": "好的，给您四位的方案书在这，逐日行程都在链接里～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^《云南 丽江大理·洱海古城 6 日》的详细方案，按 3 位还是 4 位出？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-998",
+    "desc": "人数取客户本轮原话「一共3个人」；线路是上一轮摆出来的两条里，这句话点到的「6日亲子」那条。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "四川",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "你好",
+            "at": 1790913601725
+          },
+          {
+            "role": "agent",
+            "content": "您好！我是云途定制旅行的旅行顾问 🌿\n\n最近有想好去哪儿玩吗？还是说有某个特别的场景——比如带家人、度蜜月、或者就想找个地方放松一下？聊聊看，我帮您找方向。",
+            "at": 1790913601731
+          },
+          {
+            "role": "customer",
+            "content": "想带老婆孩子去四川玩，孩子8岁",
+            "at": 1790913601732
+          },
+          {
+            "role": "agent",
+            "content": "带8岁小朋友去四川，那选择很对——熊猫、九寨沟都是孩子会兴奋的。我先给您摆一条最合适的：\n\n· 四川 成都熊猫·九寨黄龙 6 日亲子\n· 人均 19800 起，五星精选酒店\n· 亮点：清晨独享大熊猫基地看幼崽进食、青城山六善住亲子房带温泉和稻田、九寨沟悦榕庄连住两晚赶早班车看五花海晨光\n\n6天行程节奏不赶，小朋友不会太累，熊猫那段8岁孩子肯定喜欢。\n\n另外我们这边还有一条稻城亚丁8日的，但海拔偏高，带小朋友我就先不主推了。\n\n您计划几位出行？大概想几月份去？",
+            "at": 1790913601751
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid", "r-sichuan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "国庆假期出发，一共3个人，玩几天比较合适",
+        "script": [
+          {
+            "content": "国庆带全家出行，6天比较合适——前4天玩成都+九寨，最后两天留点余量返程，不赶。\n\n不过国庆是四川最旺的时段，九寨沟尤其抢手，建议尽早定下来。\n\n我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n\n\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^国庆带全家出行，6天比较合适——前4天玩成都\\+九寨，最后两天留点余量返程，不赶。\n\n不过国庆是四川最旺的时段，九寨沟尤其抢手，建议尽早定下来。\n\n我先把这条6日亲子线的详细方案发您看看，里面有逐日行程、住宿、含餐和费用明细：\n/proposal/r-sichuan-mid/3/2027-10-01\n\n您看完行程觉得天数合适的话，我给您出个国庆的准确报价。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1022",
+    "desc": "s06（glm-5.3-flashx）：本轮调了 create_quote + generate_proposal，报对了价、漏贴了链接。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "云南"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "云南玩3天，有合适的吗",
+            "at": 1790913601771
+          },
+          {
+            "role": "agent",
+            "content": "云南这边我们主推两条定制线：\n\n· 丽江大理·洱海古城 6 日，人均 16800 起：连住两晚洱海英迪格全海景房，露台看日出苍山，还有玉龙雪山大索道和沙溪茶马古道\n· 香格里拉·梅里雪山松赞环线 8 日，人均 45800 起：松赞山居连住两晚正对卡瓦格博，守日照金山，追踪野生滇金丝猴\n\n这两条都是 6 天和 8 天的。您只有 3 天的话，多出几天正好是这条线最出彩的部分，我可以让顾问帮您看看能不能压缩。\n\n方便先说下几个人出行、大概几号走吗？我按人数和日期给您出准确报价。",
+            "at": 1790913601781
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid", "r-yunnan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "那6天的也行，两个人多少钱",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              },
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote", "generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1053",
+    "desc": "s11（glm-5.3-flashx）：已报过北京 2 人，这轮没调工具，把「（此处由系统生成）」原样发了出来。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "objection",
+        "profile": {
+          "destinationInterest": "北京",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "北京故宫那条多少钱，两个人",
+            "at": 1790913601798
+          },
+          {
+            "role": "agent",
+            "content": "您看的是这条：北京 故宫深度·长城秘境 5 日\n\n两人报价：\n· 每人 28800 元\n· 两人合计 57600 元\n· 起价，按最终行程微调\n\n亮点是故宫开馆前从东华门入宫，避开人流走中轴线，还住颐和安缦。您大概几号出发？",
+            "at": 1790913601810
+          },
+          {
+            "role": "customer",
+            "content": "我考虑一下，有点贵",
+            "at": 1790913601811
+          },
+          {
+            "role": "agent",
+            "content": "理解，这条确实不便宜——28800 每人主要是颐和安缦和全程私导的成本。\n\n目前我们这边北京线就这一条 5 日深度款。您可以有两个方向：\n\n· 保留行程核心，我可以转资深顾问帮您看能不能压缩天数、换酒店档位重新报价\n· 或者换个性价比更高的目的地，同样预算在云南、贵州能玩得更宽松\n\n您想往哪个方向看？",
+            "at": 1790913601826
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-beijing",
+            "title": "北京 故宫深度·长城秘境 5 日",
+            "priceFrom": 28800
+          }
+        ],
+        "seenRouteIds": ["r-beijing"],
+        "lastQuote": {
+          "routeId": "r-beijing",
+          "routeTitle": "北京 故宫深度·长城秘境 5 日",
+          "travelers": 2,
+          "perPerson": 28800,
+          "total": 57600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-beijing",
+            "travelers": 2,
+            "perPerson": 28800,
+            "total": 57600
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "能不能发个方案给我，我给家里人看看",
+        "script": [
+          {
+            "content": "好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 方案书链接（此处由系统生成）：逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好嘞，我把完整方案书发您，方便您转给家里人看：\n\n👉 /proposal/r-beijing/2\n逐日行程、每晚住宿、含餐情况、费用包含与不含项都在里面，报价也附了。\n\n您和家人看完有任何想调的地方，随时跟我说。$(?![\\s\\S])"
+          ],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1064",
+    "desc": "确定不了线路或人数：删掉承诺句改问一句，不编链接。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "四川"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去四川玩",
+            "at": 1790913601844
+          },
+          {
+            "role": "agent",
+            "content": "四川这边有熊猫·九寨和稻城亚丁两条线，风格差挺多，您几位出行？",
+            "at": 1790913601849
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid", "r-sichuan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我们两个人，把详细方案发我看看",
+        "script": [
+          {
+            "content": "好的，详细方案发您看看，逐日行程、住宿和费用都在里面：\n\n\n\n有想调的随时跟我说。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^有想调的随时跟我说。\n\n《四川 成都熊猫·九寨黄龙 6 日亲子》和《四川 稻城亚丁·色达秘境 8 日》，您想先看哪条的详细方案？$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1071",
+    "desc": "② 什么都不知道，模型还编了个带外部域名的方案链接（被抹掉后留下空位）。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们家有啥好玩的",
+        "script": [
+          {
+            "content": "好的，方案给您：https://www.yuntu.com/proposal/r-fake/2 您先看看～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^详细方案要按线路和人数出，您想看哪条线、几位出行？$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1075",
+    "desc": "③ 方括号占位符 + 只知道线路（单条贵州线）、不知道人数。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去贵州看看",
+        "script": [
+          {
+            "content": "贵州这条苗寨侗寨线很有意思，方案书给您：[方案书链接]"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^贵州这条苗寨侗寨线很有意思。\n\n《贵州 荔波小七孔·西江千户苗寨 6 日》的详细方案要按人数出，您这次几位出行？$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1089",
+    "desc": "④ 客户点名了一条还没看过的线（西安只有一条），人数取他更早说过的「两个人」。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601869
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601877
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "西安那条的方案也发我看看",
+        "script": [
+          {
+            "content": "好的，西安这条的详细方案发您看看～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，西安这条的详细方案发您看看～\n/proposal/r-xian/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1094",
+    "desc": "⑤「12月6日」是日期，不能被当成「6 日」那条线。",
+    "tags": ["engine", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "云南"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去云南玩",
+            "at": 1790913601886
+          },
+          {
+            "role": "agent",
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？",
+            "at": 1790913601892
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-yunnan-lux",
+            "title": "云南 香格里拉·梅里雪山松赞环线 8 日",
+            "priceFrom": 45800
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid", "r-yunnan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我们两个人，12月6日出发，详细方案发我",
+        "script": [
+          {
+            "content": "好的，详细方案发您看看～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^出发日期我按 12月6号 算，《云南 丽江大理·洱海古城 6 日》和《云南 香格里拉·梅里雪山松赞环线 8 日》，您想先看哪条的详细方案？$(?![\\s\\S])"
+          ],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1113-01",
+    "desc": "支付链接：本轮真建了单就插真链接；没建单绝不替客户建，只删承诺、引导确认下单。",
+    "tags": ["engine", "flow", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601900
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601908
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，已为您锁定名额，点此完成支付～名额以付款为准。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，已为您锁定名额，点此完成支付～\n/pay/{{order:0.id}}\n名额以付款为准。$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1113-02",
+    "desc": "支付链接：本轮真建了单就插真链接；没建单绝不替客户建，只删承诺、引导确认下单。",
+    "tags": ["engine", "flow", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601919
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601927
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，怎么付款",
+        "script": [
+          {
+            "content": "好的，支付链接在这：[支付链接]\n名额以付款为准～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^名额以付款为准～\n\n《云南 丽江大理·洱海古城 6 日》2 位出行，您计划几号出发？定了日期我马上给您下单。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1155-01",
+    "desc": "「再发我一下」这类重发请求引擎已确定性处理、不经过模型（见 R3 段），这里换个问法让模型来答。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，已为您锁定名额，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，已为您锁定名额，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款链接是哪个来着",
+        "script": [
+          {
+            "content": "好的，支付链接给您：/pay/{{order:0.id}}，名额以付款为准～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，支付链接给您：/pay/{{order:0.id}}，名额以付款为准～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1155-02",
+    "desc": "「再发我一下」这类重发请求引擎已确定性处理、不经过模型（见 R3 段），这里换个问法让模型来答。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601959
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601967
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "订单已生成，支付链接如下：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^订单已生成，支付链接如下：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1155-03",
+    "desc": "「再发我一下」这类重发请求引擎已确定性处理、不经过模型（见 R3 段），这里换个问法让模型来答。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601977
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601985
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "点开链接完成支付即可 /pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^点开链接完成支付即可 /pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1155-04",
+    "desc": "「再发我一下」这类重发请求引擎已确定性处理、不经过模型（见 R3 段），这里换个问法让模型来答。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "贵州",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去贵州看看",
+            "at": 1790913601995
+          },
+          {
+            "role": "agent",
+            "content": "贵州这条苗寨侗寨线很有意思，您几位？",
+            "at": 1790913602001
+          },
+          {
+            "role": "customer",
+            "content": "两个人，报个价",
+            "at": 1790913602001
+          },
+          {
+            "role": "agent",
+            "content": "贵州这条每人 ¥15,800，2 位总价 ¥31,600。",
+            "at": 1790913602010
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-guizhou"],
+        "lastQuote": {
+          "routeId": "r-guizhou",
+          "routeTitle": "贵州 荔波小七孔·西江千户苗寨 6 日",
+          "travelers": 2,
+          "perPerson": 15800,
+          "total": 31600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-guizhou",
+            "travelers": 2,
+            "perPerson": 15800,
+            "total": 31600
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-guizhou",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "支付链接如下：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^支付链接如下：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-guizhou",
+              "routeTitle": "贵州 荔波小七孔·西江千户苗寨 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 31600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1188-01-01",
+    "desc": "「一个人多少钱」是问单价、「再加一个人」是增减：都不是总人数（第 1 个向量：一个人多少钱？方案发我看看）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602021
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602029
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "一个人多少钱？方案发我看看",
+        "script": [
+          {
+            "content": "每人 16800 起，详细方案发您看看：\n\n\n\n"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^每人 16800 起，详细方案发您看看：\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1188-01-02",
+    "desc": "「一个人多少钱」是问单价、「再加一个人」是增减：都不是总人数（第 2 个向量：就订这个，12月10号出发）。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602021
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602029
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "一个人多少钱？方案发我看看",
+        "script": [
+          {
+            "content": "每人 16800 起，详细方案发您看看：\n\n\n\n"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^每人 16800 起，详细方案发您看看：\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      },
+      {
+        "say": "就订这个，12月10号出发",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、12月10日出发，总价 ¥33,600。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1188-02",
+    "desc": "「一个人多少钱」是问单价、「再加一个人」是增减：都不是总人数。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602047
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602055
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我妈也想去，再加一个人，方案重新发我",
+        "script": [
+          {
+            "content": "好的，方案重新发您看看：\n\n\n\n"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^《云南 丽江大理·洱海古城 6 日》的详细方案要按人数出，加上之后一共几位出行？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1210",
+    "desc": "客户手里有待付款的单：描述支付链接的答疑原样保留；要链接就补那张单的，不推客户重复下单。",
+    "tags": ["engine", "flow", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款链接多久有效？",
+        "script": [
+          {
+            "content": "付款链接24小时内有效，过期了跟我说一声重新生成就行～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^付款链接24小时内有效，过期了跟我说一声重新生成就行～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1213",
+    "desc": "「找不到了 / 再发一下」由引擎直接重发（R3 段），这里换个问法，看模型漏贴链接时的修补。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款链接多久有效？",
+        "script": [
+          {
+            "content": "付款链接24小时内有效，过期了跟我说一声重新生成就行～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^付款链接24小时内有效，过期了跟我说一声重新生成就行～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接在哪儿",
+        "script": [
+          {
+            "content": "没关系，支付链接给您：\n名额以付款为准～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^没关系，支付链接给您：\n/pay/{{order:0.id}}\n名额以付款为准～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1221",
+    "desc": "之后又报了别的线：客户要付的未必是那张旧单，不能把它的链接当成这条的发出去。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行，12月10号出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款链接多久有效？",
+        "script": [
+          {
+            "content": "付款链接24小时内有效，过期了跟我说一声重新生成就行～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^付款链接24小时内有效，过期了跟我说一声重新生成就行～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接在哪儿",
+        "script": [
+          {
+            "content": "没关系，支付链接给您：\n名额以付款为准～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^没关系，支付链接给您：\n/pay/{{order:0.id}}\n名额以付款为准～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "西藏那条两个人呢",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-tibet-mid",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "西藏这条每人 ¥26,800，2 位总价 ¥53,600。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^西藏这条每人 ¥26,800，2 位总价 ¥53,600。$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行，付款链接发我",
+        "script": [
+          {
+            "content": "好的，支付链接给您："
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^《西藏 拉萨·日喀则·珠峰大本营 7 日》2 位、12月10号出发，确认没问题跟我说一声，我马上给您下单。$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1231-01",
+    "desc": "不发、别人发、问要不要发：都不补链接。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602120
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602128
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "先不用发方案了，我再想想",
+        "script": [
+          {
+            "content": "好的，方案我先不发您了，您慢慢考虑，有问题随时找我～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，方案我先不发您了，您慢慢考虑，有问题随时找我～$(?![\\s\\S])"],
+          "stage": "objection",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1231-02",
+    "desc": "不发、别人发、问要不要发：都不补链接。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602134
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602141
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "先不用了",
+        "script": [
+          {
+            "content": "好的，那方案书就先不给您发了，您有需要随时说～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，那方案书就先不给您发了，您有需要随时说～$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1231-03",
+    "desc": "不发、别人发、问要不要发：都不补链接。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602148
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602155
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "能不能按我的想法定制一下",
+        "script": [
+          {
+            "content": "这个我让资深顾问来帮您，稍后他会把定制方案发您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个我让资深顾问来帮您，稍后他会把定制方案发您。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1231-04",
+    "desc": "不发、别人发、问要不要发：都不补链接。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602161
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602168
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "这条住得怎么样",
+        "script": [
+          {
+            "content": "住的都是五星精选酒店，洱海边海景房。要不要我把详细方案发您看看？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^住的都是五星精选酒店，洱海边海景房。要不要我把详细方案发您看看？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1238-01",
+    "desc": "点了一条没给客户看过的线：发那条的，不能默认成报过价的；「玉龙雪山」这种描述不算点了梅里雪山那条。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602175
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602183
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "香格里拉那条也发个方案看看",
+        "script": [
+          {
+            "content": "好的，香格里拉·梅里雪山松赞环线 8 日的详细方案发您看看：\n\n\n\n"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，香格里拉·梅里雪山松赞环线 8 日的详细方案发您看看：\n/proposal/r-yunnan-lux/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1238-02",
+    "desc": "点了一条没给客户看过的线：发那条的，不能默认成报过价的；「玉龙雪山」这种描述不算点了梅里雪山那条。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602193
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602201
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "那梅里雪山那条呢",
+        "script": [
+          {
+            "content": "梅里雪山那条是 8 天的松赞环线，方案发您看看：[方案]"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^梅里雪山那条是 8 天的松赞环线，方案发您看看：\n/proposal/r-yunnan-lux/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1238-03",
+    "desc": "点了一条没给客户看过的线：发那条的，不能默认成报过价的；「玉龙雪山」这种描述不算点了梅里雪山那条。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602209
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602216
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "方案发我看看",
+        "script": [
+          {
+            "content": "好的，这条有玉龙雪山大索道，详细方案发您看看：\n\n\n\n"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，这条有玉龙雪山大索道，详细方案发您看看：\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1251",
+    "desc": "标题里的泛称（三亚那条叫「亲子奢华度假」）不能把人带到别的目的地。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602225
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602232
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "想要奢华度假的感觉，方案发我看看",
+        "script": [
+          {
+            "content": "好的，详细方案发您看看：\n\n\n\n"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，详细方案发您看看：\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1265-01",
+    "desc": "一轮出了两份方案：各归各的标签；没有空位就都附上、各带线路名（第 1 个向量：两条都发我对比下）。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602242
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602250
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "两条都发我对比下",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              },
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-lux",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理 6 日：[方案链接]\n香格里拉 8 日：[方案链接]\n您对比看看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^丽江大理 6 日：\n/proposal/r-yunnan-mid/2\n香格里拉 8 日：\n/proposal/r-yunnan-lux/2\n您对比看看。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal", "generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1265-02",
+    "desc": "一轮出了两份方案：各归各的标签；没有空位就都附上、各带线路名（第 2 个向量：再发一遍）。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602242
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602250
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "两条都发我对比下",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              },
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-lux",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理 6 日：[方案链接]\n香格里拉 8 日：[方案链接]\n您对比看看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^丽江大理 6 日：\n/proposal/r-yunnan-mid/2\n香格里拉 8 日：\n/proposal/r-yunnan-lux/2\n您对比看看。$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal", "generate_proposal"]
+        }
+      },
+      {
+        "say": "再发一遍",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2
+                }
+              },
+              {
+                "name": "generate_proposal",
+                "args": {
+                  "routeId": "r-yunnan-lux",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "两份方案都给您生成好了，您对比看看～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^两份方案都给您生成好了，您对比看看～\n《云南 丽江大理·洱海古城 6 日》\n/proposal/r-yunnan-mid/2\n《云南 香格里拉·梅里雪山松赞环线 8 日》\n/proposal/r-yunnan-lux/2$(?![\\s\\S])"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal", "generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1280-01",
+    "desc": "线路定不下来时：答已发链接的提问不是新承诺；删承诺不能带走正文，也不重复问人数。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602275
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602283
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "方案里的价格是最终价吗",
+        "script": [
+          {
+            "content": "链接里的价格是起价，按最终行程和出发日期微调，大头不会变。您更倾向哪条？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^链接里的价格是起价，按最终行程和出发日期微调，大头不会变。您更倾向哪条？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1280-02",
+    "desc": "线路定不下来时：答已发链接的提问不是新承诺；删承诺不能带走正文，也不重复问人数。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "四川"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去四川玩",
+            "at": 1790913602289
+          },
+          {
+            "role": "agent",
+            "content": "四川这边有熊猫·九寨和稻城亚丁两条线，您几位出行？",
+            "at": 1790913602295
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid", "r-sichuan-lux"]
+      }
+    },
+    "turns": [
+      {
+        "say": "九寨那边酒店有泳池吗",
+        "script": [
+          {
+            "content": "有的，方案发您看看。悦榕庄里面有恒温泳池，孩子会很喜欢。打开窗就是雪山。您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^有的。悦榕庄里面有恒温泳池，孩子会很喜欢。打开窗就是雪山。您几位出行？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1301-01",
+    "desc": "占位符：括号里提到链接不等于占位符；只写「方案书」的方括号、「此处附方案」才是。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602303
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602311
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "信息确认下",
+        "script": [
+          {
+            "content": "门票预约（详见官网链接）我们都会帮您处理，您不用操心～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^门票预约（详见官网链接）我们都会帮您处理，您不用操心～$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1301-02",
+    "desc": "占位符：括号里提到链接不等于占位符；只写「方案书」的方括号、「此处附方案」才是。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602317
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602325
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "信息确认下",
+        "script": [
+          {
+            "content": "订单信息（系统自动生成，请核对）：2位，丽江大理 6 日。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^订单信息（系统自动生成，请核对）：2位，丽江大理 6 日。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1301-03",
+    "desc": "占位符：括号里提到链接不等于占位符；只写「方案书」的方括号、「此处附方案」才是。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602332
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602341
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "雪山要预约吗",
+        "script": [
+          {
+            "content": "需要的，在景区官网 https://www.yulongxueshan.com 预约，行程里我们会提前帮您约好。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^需要的，在景区官网 预约，行程里我们会提前帮您约好。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1301-04-01",
+    "desc": "占位符：括号里提到链接不等于占位符；只写「方案书」的方括号、「此处附方案」才是（第 1 个向量：有什么资料）。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602347
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602355
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "有什么资料",
+        "script": [
+          {
+            "content": "方案书：[方案书]\n您先看看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^方案书：\n/proposal/r-yunnan-mid/2\n您先看看。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1301-04-02",
+    "desc": "占位符：括号里提到链接不等于占位符；只写「方案书」的方括号、「此处附方案」才是（第 2 个向量：有什么资料）。",
+    "tags": ["engine", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913602347
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913602355
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "有什么资料",
+        "script": [
+          {
+            "content": "方案书：[方案书]\n您先看看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^方案书：\n/proposal/r-yunnan-mid/2\n您先看看。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      },
+      {
+        "say": "有什么资料",
+        "script": [
+          {
+            "content": "👉 行程方案书（此处附方案）\n您先看看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^👉 行程方案书\n/proposal/r-yunnan-mid/2\n您先看看。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["generate_proposal"]
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,1469 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-1908-01",
+    "desc": "U1：只说「转人工」不道歉；刚下过单的把订单交代给顾问，待支付的说明付款入口仍有效；只有投诉才道歉。",
+    "tags": ["engine", "tool", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "转人工",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^好的，马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1908-02",
+    "desc": "U1：只说「转人工」不道歉；刚下过单的把订单交代给顾问，待支付的说明付款入口仍有效；只有投诉才道歉。",
+    "tags": ["engine", "tool", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "人工客服",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，马上为您转接资深顾问，请稍候～\n您刚下的《三亚亲子奢华度假 5 日》订单顾问会一并跟进，之前发您的付款链接仍然有效。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1908-03",
+    "desc": "U1：只说「转人工」不道歉；刚下过单的把订单交代给顾问，待支付的说明付款入口仍有效；只有投诉才道歉。",
+    "tags": ["engine", "tool", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "我要退款",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^退改由资深顾问为您处理，马上为您转接，请稍候～\n《三亚亲子奢华度假 5 日》这笔订单顾问会一并为您处理。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1908-04",
+    "desc": "U1：只说「转人工」不道歉；刚下过单的把订单交代给顾问，待支付的说明付款入口仍有效；只有投诉才道歉。",
+    "tags": ["engine", "tool", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "转人工",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^好的，马上为您转接资深顾问，请稍候～\n您预订的《三亚亲子奢华度假 5 日》顾问会一并跟进。$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "paid"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1908-05",
+    "desc": "U1：只说「转人工」不道歉；刚下过单的把订单交代给顾问，待支付的说明付款入口仍有效；只有投诉才道歉。",
+    "tags": ["engine", "tool", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们这是欺骗消费者，我要投诉",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1967",
+    "desc": "走一遍引擎：模型只传了 destination，拿到的仍是非空结果，没被转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去南极",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "南极我们暂时没有现成线路，最接近的是北欧芬兰极光这条。您计划什么时候出发、几位？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^南极我们暂时没有现成线路，最接近的是北欧芬兰极光这条。您计划什么时候出发、几位？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-1992",
+    "desc": "客户坚持：模型转人工，reason 记进后台；转完还许诺「随时告诉我」的那句删掉。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "南极"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去南极",
+            "at": 1790913603057
+          },
+          {
+            "role": "agent",
+            "content": "南极我们暂时没有现成线路，最接近的是北欧芬兰极光这条。您计划什么时候出发、几位？",
+            "at": 1790913603067
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          },
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          },
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-bali", "r-sichuan-lux", "r-yunnan-mid"],
+        "missedDestinations": [
+          {
+            "place": "南极",
+            "at": 1790913603063
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "就要去南极，别的不考虑",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持去南极，出行时间、人数未知"
+                }
+              }
+            ]
+          },
+          {
+            "content": "明白，南极这类定制我马上为您转接资深顾问评估，稍后会联系您。\n\n如果您也想听听国内的高端线路，随时告诉我，我可以马上帮您查～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^明白，南极这类定制我马上为您转接资深顾问评估，稍后会联系您。$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2007",
+    "desc": "整条都是许诺时补一句顾问会联系，不能发空。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能让顾问直接跟我聊吗",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户要真人"
+                }
+              }
+            ]
+          },
+          {
+            "content": "有问题随时找我～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^资深顾问会尽快与您联系，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2111-01",
+    "desc": "客户说的是「12号」：下单用最近的那个 12 号（随便挑一天下单会被当成替客户挑日子退回去，见 D3）。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "segment": "亲子",
+          "destinationInterest": "三亚",
+          "travelers": "2人"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "不用倒时差 带娃能玩水的地方",
+            "at": 1790913603093
+          },
+          {
+            "role": "agent",
+            "content": "带娃玩水最对味的是三亚这条。您几位出行、大概什么时候走？",
+            "at": 1790913603101
+          },
+          {
+            "role": "customer",
+            "content": "两位 12号",
+            "at": 1790913603101
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条的报价给您出好了。",
+            "at": 1790913603110
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-mid",
+            "title": "四川 成都熊猫·九寨黄龙 6 日亲子",
+            "priceFrom": 19800
+          },
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          },
+          {
+            "id": "r-swiss",
+            "title": "瑞士冰川快车全景环线 9 日",
+            "priceFrom": 62800
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid", "r-guizhou", "r-swiss", "r-sanya"],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 2,
+          "perPerson": 15800,
+          "total": 31600
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 2,
+            "perPerson": 15800,
+            "total": 31600
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "可以",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2,
+                  "departDate": "2026-10-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，这单给您下好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，这单给您下好了。\n/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-10-12",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2111-02",
+    "desc": "客户说的是「12号」：下单用最近的那个 12 号（随便挑一天下单会被当成替客户挑日子退回去，见 D3）。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "两大一小，想去三亚玩水",
+            "at": 1790913603121
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条很合适。",
+            "at": 1790913603127
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 3
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2111-03",
+    "desc": "客户说的是「12号」：下单用最近的那个 12 号（随便挑一天下单会被当成替客户挑日子退回去，见 D3）。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去三亚，一家三口",
+            "at": 1790913603135
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条很合适。",
+            "at": 1790913603141
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 3
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2111-04",
+    "desc": "客户说的是「12号」：下单用最近的那个 12 号（随便挑一天下单会被当成替客户挑日子退回去，见 D3）。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去三亚，两个人，不带孩子",
+            "at": 1790913603150
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条很合适。",
+            "at": 1790913603155
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2111-05",
+    "desc": "客户说的是「12号」：下单用最近的那个 12 号（随便挑一天下单会被当成替客户挑日子退回去，见 D3）。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去三亚",
+            "at": 1790913603164
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条很合适。",
+            "at": 1790913603170
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2111-06",
+    "desc": "客户说的是「12号」：下单用最近的那个 12 号（随便挑一天下单会被当成替客户挑日子退回去，见 D3）。",
+    "tags": ["engine", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "三亚",
+          "segment": "亲子"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我和儿子两个人，想去三亚",
+            "at": 1790913603179
+          },
+          {
+            "role": "agent",
+            "content": "三亚这条很合适。",
+            "at": 1790913603184
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-sanya",
+                  "travelers": 2
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2161-01",
+    "desc": "① 转人工那句里就说了要取消、改日期/人数：按退改口径回，不能说「付款卡片仍然有效」。",
+    "tags": ["engine", "handoff", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "转人工，我想取消订单",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^退改由资深顾问为您处理，马上为您转接，请稍候～\n《三亚亲子奢华度假 5 日》这笔订单顾问会一并为您处理。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2161-02",
+    "desc": "① 转人工那句里就说了要取消、改日期/人数：按退改口径回，不能说「付款卡片仍然有效」。",
+    "tags": ["engine", "handoff", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "转人工 我不想去了",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^退改由资深顾问为您处理，马上为您转接，请稍候～\n《三亚亲子奢华度假 5 日》这笔订单顾问会一并为您处理。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2161-03",
+    "desc": "① 转人工那句里就说了要取消、改日期/人数：按退改口径回，不能说「付款卡片仍然有效」。",
+    "tags": ["engine", "handoff", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "能转人工吗我想改日期",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^退改由资深顾问为您处理，马上为您转接，请稍候～\n《三亚亲子奢华度假 5 日》这笔订单顾问会一并为您处理。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2161-04",
+    "desc": "① 转人工那句里就说了要取消、改日期/人数：按退改口径回，不能说「付款卡片仍然有效」。",
+    "tags": ["engine", "handoff", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "转人工，想换个出发时间",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^退改由资深顾问为您处理，马上为您转接，请稍候～\n《三亚亲子奢华度假 5 日》这笔订单顾问会一并为您处理。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2161-05",
+    "desc": "① 转人工那句里就说了要取消、改日期/人数：按退改口径回，不能说「付款卡片仍然有效」。",
+    "tags": ["engine", "handoff", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "greeting",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sanya",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "人工客服，订单人数要改成3个",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^退改由资深顾问为您处理，马上为您转接，请稍候～\n《三亚亲子奢华度假 5 日》这笔订单顾问会一并为您处理。$(?![\\s\\S])"
+          ],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sanya",
+              "routeTitle": "三亚亲子奢华度假 5 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 34760,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2168",
+    "desc": "还没下单的人说要换线路：没有可「退改」的，照普通转人工回。",
+    "tags": ["engine", "flow", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "转人工，想换条线路",
+        "script": [],
+        "expect": {
+          "replyMatches": ["^好的，马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2178",
+    "desc": "② 模型自己转了人工、价格护栏又拦下编的价：兜底要交代已转顾问，不能让客户「告诉我线路和人数」。",
+    "tags": ["engine", "money", "handoff", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "就要去南极，别的不考虑",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持去南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "明白，南极定制一般每人 12 万左右，我马上为您转接资深顾问评估，稍后会联系您。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^具体价格由资深顾问为您核准，已为您转接，顾问会在微信上联系您，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2250-01",
+    "desc": "⑦ 转人工后的许诺和转接说明写在同一句里：只删许诺那几个小句；「再跟我说」也是许诺。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "就要去南极",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持去南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已为您转接资深顾问，稍后联系您，期间有任何问题随时告诉我～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^已为您转接资深顾问，稍后联系您～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2250-02",
+    "desc": "⑦ 转人工后的许诺和转接说明写在同一句里：只删许诺那几个小句；「再跟我说」也是许诺。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "就要去南极",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持去南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的。南极这类行程需要顾问来定制。您先想想出行时间，有什么需要再跟我说哦～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的。南极这类行程需要顾问来定制。$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2250-03",
+    "desc": "⑦ 转人工后的许诺和转接说明写在同一句里：只删许诺那几个小句；「再跟我说」也是许诺。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "就要去南极",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持去南极"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已为您转接资深顾问，如果还想看别的线路，随时告诉我～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^已为您转接资深顾问～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2316",
+    "desc": "只删编了价的那一句；它上面的引出语（「我们有一条南极概念的替代线路：」）底下删空了，一并删掉。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "那有没有别的推荐",
+        "script": [
+          {
+            "content": "南极没有现成线路。我们有一条南极概念的替代线路：\n· 南极深度体验线的替代方向，走冰川、雪原路线，人均起价 68800 起\n您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^南极没有现成线路。\n您几位出行？$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2326-01",
+    "desc": "线上「想去南极」先经引擎预取，实测召回前三就有松赞线——它在本轮算「出现过」，模型照样编这一句。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去南极",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "get_route_detail",
+                "args": {
+                  "routeId": "r-tibet-lux"
+                }
+              }
+            ]
+          },
+          {
+            "content": "南极没有现成线路。我们有一条南极概念的替代线路：\n· 南极深度体验线的替代方向，走冰川、雪原路线，人均起价 68800 起\n您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^南极没有现成线路。\n您几位出行？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["search_routes", "get_route_detail"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2326-02",
+    "desc": "线上「想去南极」先经引擎预取，实测召回前三就有松赞线——它在本轮算「出现过」，模型照样编这一句。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "那有没有别的推荐",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "get_route_detail",
+                "args": {
+                  "routeId": "r-tibet-lux"
+                }
+              }
+            ]
+          },
+          {
+            "content": "这条线人均起价 68800 起。您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这条线人均起价 68800 起。您几位出行？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["get_route_detail"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2495",
+    "desc": "付完款问自己这趟的细节：照样先查详情，阶段仍是已支付——当成新旅程的话，沉默跟进会去打扰已成交的客户。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "paid",
+        "profile": {},
+        "messages": [
+          {
+            "role": "agent",
+            "content": "已收到您的支付，太开心啦 🎉\n《四川 稻城亚丁·色达秘境 8 日》2 位出行、2026-10-20 出发已确认预订。\n专属旅行顾问稍后会与您对接行程细节和出行准备，有任何想法随时跟我说～",
+            "at": 1790913603527
+          }
+        ],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sichuan-lux",
+          "travelers": 2,
+          "departDate": "2026-10-20",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "第三天住哪",
+        "script": [
+          {
+            "content": "第三天住色达金马大酒店。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^第三天住色达金马大酒店。$(?![\\s\\S])"],
+          "stage": "paid",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sichuan-lux",
+              "routeTitle": "四川 稻城亚丁·色达秘境 8 日",
+              "travelers": 2,
+              "departDate": "2026-10-20",
+              "totalPrice": 94160,
+              "status": "paid"
+            }
+          },
+          "tools": ["get_route_detail"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-2518",
+    "desc": "反过来，付完款本轮调了 search_routes，是在问下一趟：视为新旅程，阶段从问需重推，落在 recommend。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "paid",
+        "profile": {},
+        "messages": [
+          {
+            "role": "agent",
+            "content": "已收到您的支付，太开心啦 🎉\n《四川 稻城亚丁·色达秘境 8 日》2 位出行、2026-10-20 出发已确认预订。\n专属旅行顾问稍后会与您对接行程细节和出行准备，有任何想法随时跟我说～",
+            "at": 1790913603536
+          }
+        ],
+        "handedOver": false
+      },
+      "orders": [
+        {
+          "routeId": "r-sichuan-lux",
+          "travelers": 2,
+          "departDate": "2026-10-20",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "下次还想出去玩，有别的线路推荐吗",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "云南"
+                }
+              }
+            ]
+          },
+          {
+            "content": "云南这边有丽江大理和香格里拉两条线，您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^云南这边有丽江大理和香格里拉两条线，您几位出行？$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-sichuan-lux",
+              "routeTitle": "四川 稻城亚丁·色达秘境 8 日",
+              "travelers": 2,
+              "departDate": "2026-10-20",
+              "totalPrice": 94160,
+              "status": "paid"
+            }
+          },
+          "tools": ["search_routes"]
+        }
+      }
+    ]
+  }
+]

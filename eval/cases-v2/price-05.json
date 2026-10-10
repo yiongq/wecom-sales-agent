@@ -1,0 +1,2856 @@
+[
+  {
+    "version": 2,
+    "id": "travel-price-957-02",
+    "desc": "保留如实规则和条件句：3 岁以下小朋友免费入园，以乐园规定为准。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "3 岁以下小朋友免费入园，以乐园规定为准。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["3 岁以下小朋友免费入园，以乐园规定为准。", "^3 岁以下小朋友免费入园，以乐园规定为准。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-03",
+    "desc": "保留如实规则和条件句：因为您只有 5 天假期，推荐这条 5 日的线路，价格也合适。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "因为您只有 5 天假期，推荐这条 5 日的线路，价格也合适。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "因为您只有 5 天假期，推荐这条 5 日的线路，价格也合适。",
+            "^因为您只有 5 天假期，推荐这条 5 日的线路，价格也合适。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-04",
+    "desc": "保留如实规则和条件句：11 月中旬出发正好错开国庆高峰，人少景美，性价比很高。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "11 月中旬出发正好错开国庆高峰，人少景美，性价比很高。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "11 月中旬出发正好错开国庆高峰，人少景美，性价比很高。",
+            "^11 月中旬出发正好错开国庆高峰，人少景美，性价比很高。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-05",
+    "desc": "保留如实规则和条件句：您可以先看方案书确认行程，满意后再付款。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "您可以先看方案书确认行程，满意后再付款。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["您可以先看方案书确认行程，满意后再付款。", "^您可以先看方案书确认行程，满意后再付款。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-06",
+    "desc": "保留如实规则和条件句：儿童价格跟大人一样，都按一位出行算。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "儿童价格跟大人一样，都按一位出行算。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["儿童价格跟大人一样，都按一位出行算。", "^儿童价格跟大人一样，都按一位出行算。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-07",
+    "desc": "保留如实规则和条件句：小朋友价格和大人一样，按一位算。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "小朋友价格和大人一样，按一位算。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["小朋友价格和大人一样，按一位算。", "^小朋友价格和大人一样，按一位算。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-08",
+    "desc": "保留如实规则和条件句：档期没问题的话，我这边就给您下单。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "档期没问题的话，我这边就给您下单。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["档期没问题的话，我这边就给您下单。", "^档期没问题的话，我这边就给您下单。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-09",
+    "desc": "删除不实规则或替换服务承诺：小朋友按儿童价更划算。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "小朋友按儿童价更划算。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["小朋友按儿童价更划算。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-10",
+    "desc": "删除不实规则或替换服务承诺：国庆档期很抢手。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "国庆档期很抢手。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["国庆档期很抢手。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-11",
+    "desc": "删除不实规则或替换服务承诺：小朋友免费，团费只算大人。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "小朋友免费，团费只算大人。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["小朋友免费，团费只算大人。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-957-12",
+    "desc": "删除不实规则或替换服务承诺：档期没问题。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-maldives",
+          "routeTitle": "x",
+          "travelers": 2,
+          "perPerson": 52800,
+          "total": 105600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "档期没问题。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["具体档期和余位由顾问跟您确认。", "^具体档期和余位由顾问跟您确认。$"],
+          "replyExcludes": ["档期没问题。"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-967-01",
+    "desc": "删除不实规则或替换服务承诺：10 月 5 日出发每人 29,480 元，2 位总价 58,960 元，基本在您预算内。要不要我先给您出一份方案书？",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "预算每人2万8 想去西藏",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-tibet-mid",
+          "routeTitle": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+          "travelers": 2,
+          "perPerson": 29480,
+          "total": 58960,
+          "departDate": "2026-10-05"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-tibet-mid",
+            "travelers": 2,
+            "perPerson": 29480,
+            "total": 58960,
+            "departDate": "2026-10-05"
+          }
+        ],
+        "seenRouteIds": ["r-tibet-mid"],
+        "budgetGaps": [1480]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月 5 日出发每人 29,480 元，2 位总价 58,960 元，基本在您预算内。要不要我先给您出一份方案书？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "10 月 5 日出发每人 29,480 元，2 位总价 58,960 元。要不要我先给您出一份方案书？",
+            "^10 月 5 日出发每人 29,480 元，2 位总价 58,960 元。要不要我先给您出一份方案书？$"
+          ],
+          "replyExcludes": ["基本在您预算内"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-967-02",
+    "desc": "删除不实规则或替换服务承诺：4 月 5 日出发每人 15,800 元，价格便宜是因为避开了节日高峰。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 2,
+          "perPerson": 15800,
+          "total": 31600,
+          "departDate": "2027-04-05"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 2,
+            "perPerson": 15800,
+            "total": 31600,
+            "departDate": "2027-04-05"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "4 月 5 日出发每人 15,800 元，价格便宜是因为避开了节日高峰。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["4 月 5 日出发每人 15,800 元。", "^4 月 5 日出发每人 15,800 元。$"],
+          "replyExcludes": ["价格便宜是因为避开了节日高峰"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-983-01",
+    "desc": "按句删除并保留其余内容：给您挑了两条： · 云南 丽江大理·洱海古城 6 日（人均 16,800 起）   洱海边骑行、古城漫步 · 贵州 荔波小七孔 6…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "给您挑了两条：\n· 云南 丽江大理·洱海古城 6 日（人均 16,800 起）\n  洱海边骑行、古城漫步\n· 贵州 荔波小七孔 6 日（人均 13,800 起）\n  苗寨长桌宴、非遗蜡染体验\n您更喜欢哪种？"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "给您挑了两条：\n· 云南 丽江大理·洱海古城 6 日（人均 16,800 起）\n[ \\t]+洱海边骑行、古城漫步\n您更喜欢哪种？",
+            "^给您挑了两条：\n· 云南 丽江大理·洱海古城 6 日（人均 16,800 起）\n 洱海边骑行、古城漫步\n您更喜欢哪种？$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-983-02",
+    "desc": "按句删除并保留其余内容：国庆出发比 11 月贵一些。所以如果预算有限，可以考虑 11 月。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "国庆出发比 11 月贵一些。所以如果预算有限，可以考虑 11 月。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["如果预算有限，可以考虑 11 月。", "^如果预算有限，可以考虑 11 月。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-01",
+    "desc": "删除不实规则或替换服务承诺：如果把行程挪到 11 月底或 12 月初，就按标准价走。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "如果把行程挪到 11 月底或 12 月初，就按标准价走。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["如果把行程挪到 11 月底或 12 月初，就按标准价走。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-02",
+    "desc": "删除不实规则或替换服务承诺：10月是这条线的最佳出行季，价格上浮了10%。换到11月或明年初错峰，我按日期给您实报一个价，对比着看。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10月是这条线的最佳出行季，价格上浮了10%。换到11月或明年初错峰，我按日期给您实报一个价，对比着看。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["10月是这条线的最佳出行季，价格上浮了10%。", "^10月是这条线的最佳出行季，价格上浮了10%。$"],
+          "replyExcludes": ["换到11月或明年初错峰，我按日期给您实报一个价，对比着看。"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-03",
+    "desc": "删除不实规则或替换服务承诺：11 月是淡季，价格会低一些。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "11 月是淡季，价格会低一些。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["11 月是淡季，价格会低一些。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-04",
+    "desc": "保留如实规则和条件句：12 月出发不在最佳季，不上浮。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "12 月出发不在最佳季，不上浮。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["12 月出发不在最佳季，不上浮。", "^12 月出发不在最佳季，不上浮。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-05",
+    "desc": "保留如实规则和条件句：10 月是这条线的最佳出行季，价格上浮 10%。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月是这条线的最佳出行季，价格上浮 10%。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["10 月是这条线的最佳出行季，价格上浮 10%。", "^10 月是这条线的最佳出行季，价格上浮 10%。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-06",
+    "desc": "删除不实规则或替换服务承诺：12 月也是这条线的最佳季，价格上浮 10%。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "12 月也是这条线的最佳季，价格上浮 10%。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["12 月也是这条线的最佳季，价格上浮 10%。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-07",
+    "desc": "保留如实规则和条件句：10月下旬错峰出行，正合适。报价给您：",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 4,
+          "perPerson": 17556,
+          "total": 70224,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 4,
+            "perPerson": 17556,
+            "total": 70224,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10月下旬错峰出行，正合适。报价给您："
+          }
+        ],
+        "expect": {
+          "replyMatches": ["10月下旬错峰出行，正合适。", "^10月下旬错峰出行，正合适。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-08",
+    "desc": "删除不实规则或替换服务承诺：10月18号在最佳季内，如果您能换到11月中以后错开，我可以按那个日期重新实报一版价格。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sichuan-mid",
+          "routeTitle": "四川 成都熊猫·九寨黄龙 6 日亲子",
+          "travelers": 2,
+          "perPerson": 21780,
+          "total": 43560,
+          "departDate": "2026-10-18"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sichuan-mid",
+            "travelers": 2,
+            "perPerson": 21780,
+            "total": 43560,
+            "departDate": "2026-10-18"
+          }
+        ],
+        "seenRouteIds": ["r-sichuan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10月18号在最佳季内，如果您能换到11月中以后错开，我可以按那个日期重新实报一版价格。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["10月18号在最佳季内，如果您能换到11月中以后错开，我可以按那个日期重新实报一版价格。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-09",
+    "desc": "保留如实规则和条件句：11月不在最佳季，按标准价，不上浮。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-bali",
+          "routeTitle": "巴厘岛乌布雨林蜜月 6 日",
+          "travelers": 2,
+          "perPerson": 22800,
+          "total": 45600,
+          "departDate": "2026-11-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-bali",
+            "travelers": 2,
+            "perPerson": 22800,
+            "total": 45600,
+            "departDate": "2026-11-15"
+          }
+        ],
+        "seenRouteIds": ["r-bali"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "11月不在最佳季，按标准价，不上浮。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["11月不在最佳季，按标准价，不上浮。", "^11月不在最佳季，按标准价，不上浮。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-10",
+    "desc": "删除不实规则或替换服务承诺：云南 11 月是淡季，人少价低。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "云南 11 月是淡季，人少价低。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["云南 11 月是淡季，人少价低。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1011-11",
+    "desc": "保留如实规则和条件句：马代 5 月不在最佳季，按标准价。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "马代 5 月不在最佳季，按标准价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["马代 5 月不在最佳季，按标准价。", "^马代 5 月不在最佳季，按标准价。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1034-01",
+    "desc": "删除不实规则或替换服务承诺：我们有一条巴厘岛乌布雨林蜜月 6 日，人均 22800 起，两位的话在 3 万预算内完全可行：",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "我们有一条巴厘岛乌布雨林蜜月 6 日，人均 22800 起，两位的话在 3 万预算内完全可行："
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我们有一条巴厘岛乌布雨林蜜月 6 日，人均 22800 起", "^我们有一条巴厘岛乌布雨林蜜月 6 日，人均 22800 起$"],
+          "replyExcludes": ["两位的话在 3 万预算内完全可行："],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1034-02",
+    "desc": "删除不实规则或替换服务承诺：巴厘岛乌布雨林蜜月 6 日，每人 22800 起。两位的预算按这条算很宽裕，还能升房型或加天数。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "巴厘岛乌布雨林蜜月 6 日，每人 22800 起。两位的预算按这条算很宽裕，还能升房型或加天数。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["巴厘岛乌布雨林蜜月 6 日，每人 22800 起。", "^巴厘岛乌布雨林蜜月 6 日，每人 22800 起。$"],
+          "replyExcludes": ["两位的预算按这条算很宽裕，还能升房型或加天数。"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1034-03",
+    "desc": "删除不实规则或替换服务承诺：人均 22800 起，这个预算玩这条绰绰有余。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "人均 22800 起，这个预算玩这条绰绰有余。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["人均 22800 起。", "^人均 22800 起。$"],
+          "replyExcludes": ["这个预算玩这条绰绰有余"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1034-04",
+    "desc": "删除不实规则或替换服务承诺：人均 22800 起，刚好卡在您预算内。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "人均 22800 起，刚好卡在您预算内。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["人均 22800 起。", "^人均 22800 起。$"],
+          "replyExcludes": ["刚好卡在您预算内"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1034-05",
+    "desc": "保留如实规则和条件句：人均 22800 起，两位的预算按这条算很宽裕。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "预算每人3万 两个人",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "人均 22800 起，两位的预算按这条算很宽裕。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["人均 22800 起，两位的预算按这条算很宽裕。", "^人均 22800 起，两位的预算按这条算很宽裕。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1034-06",
+    "desc": "保留如实规则和条件句：人均 22800 起，按您的预算不太够，差得不少。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "我们刚领证 想去马尔代夫度蜜月 两个人预算一共3万左右",
+            "at": 0
+          }
+        ],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "巴厘岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "人均 22800 起，按您的预算不太够，差得不少。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["人均 22800 起，按您的预算不太够，差得不少。", "^人均 22800 起，按您的预算不太够，差得不少。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1049-01",
+    "desc": "删除不实规则或替换服务承诺：这条性价比很高，还能升房型或加天数。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条性价比很高，还能升房型或加天数。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["这条性价比很高，还能升房型或加天数。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1049-02",
+    "desc": "删除不实规则或替换服务承诺：嫌贵的话可以帮您缩短天数。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "嫌贵的话可以帮您缩短天数。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["嫌贵的话可以帮您缩短天数。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1049-03",
+    "desc": "保留如实规则和条件句：天数和酒店都是固定的，没法加天数，也换不了房型。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "天数和酒店都是固定的，没法加天数，也换不了房型。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["天数和酒店都是固定的，没法加天数，也换不了房型。", "^天数和酒店都是固定的，没法加天数，也换不了房型。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1055-01",
+    "desc": "删除不实规则或替换服务承诺：云南确实更安心——线路大多在 2000 多米，基本不用担心高反，蜜月也合适。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-lux",
+            "title": "西藏 拉萨林芝纳木错·松赞全线 9 日",
+            "priceFrom": 68800
+          },
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "云南确实更安心——线路大多在 2000 多米，基本不用担心高反，蜜月也合适。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["云南确实更安心——线路大多在 2000 多米，基本不用担心高反，蜜月也合适。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1055-02",
+    "desc": "删除不实规则或替换服务承诺：放心，这条不会有高原反应。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-yunnan-mid",
+            "title": "云南 丽江大理·洱海古城 6 日",
+            "priceFrom": 16800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "放心，这条不会有高原反应。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["放心，这条不会有高原反应。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1055-03",
+    "desc": "保留如实规则和条件句：三亚全程海拔不到 50 米，不用担心高反。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sanya",
+            "title": "三亚亲子奢华度假 5 日",
+            "priceFrom": 15800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "三亚全程海拔不到 50 米，不用担心高反。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["三亚全程海拔不到 50 米，不用担心高反。", "^三亚全程海拔不到 50 米，不用担心高反。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-01",
+    "desc": "保留如实规则和条件句：如果这个价不合适，您两个选择：一是看看我们现成更便宜的线路，二是换到非最佳季的日期（比如 11 月去，价格会低不少）。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "如果这个价不合适，您两个选择：一是看看我们现成更便宜的线路，二是换到非最佳季的日期（比如 11 月去，价格会低不少）。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "如果这个价不合适，您两个选择：一是看看我们现成更便宜的线路，二是换到非最佳季的日期（比如 11 月去，价格会低不少）。",
+            "^如果这个价不合适，您两个选择：一是看看我们现成更便宜的线路，二是换到非最佳季的日期（比如 11 月去，价格会低不少）。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-02",
+    "desc": "保留如实规则和条件句：价格便宜是因为 11 月是这条线的最佳出行季，每人上浮 10%；4 月不在最佳季，按标准价走，所以每人省了 1,580 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 3,
+          "perPerson": 15800,
+          "total": 47400,
+          "departDate": "2027-04-05"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-sanya",
+            "travelers": 3,
+            "perPerson": 15800,
+            "total": 47400,
+            "departDate": "2027-04-05"
+          }
+        ],
+        "seenRouteIds": ["r-sanya"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "价格便宜是因为 11 月是这条线的最佳出行季，每人上浮 10%；4 月不在最佳季，按标准价走，所以每人省了 1,580 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "价格便宜是因为 11 月是这条线的最佳出行季，每人上浮 10%；4 月不在最佳季，按标准价走，所以每人省了 1,580 元。",
+            "^价格便宜是因为 11 月是这条线的最佳出行季，每人上浮 10%；4 月不在最佳季，按标准价走，所以每人省了 1,580 元。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-03",
+    "desc": "保留如实规则和条件句：我实报了11月15日（非最佳季）给您对比：",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-bali",
+          "routeTitle": "巴厘岛乌布雨林蜜月 6 日",
+          "travelers": 2,
+          "perPerson": 22800,
+          "total": 45600,
+          "departDate": "2026-11-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-bali",
+            "travelers": 2,
+            "perPerson": 22800,
+            "total": 45600,
+            "departDate": "2026-11-15"
+          }
+        ],
+        "seenRouteIds": ["r-bali"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我实报了11月15日（非最佳季）给您对比："
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我实报了11月15日（非最佳季）给您对比：", "^我实报了11月15日（非最佳季）给您对比：$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-04",
+    "desc": "保留如实规则和条件句：如果日期上灵活的话，出了 10 月（比如 11 月出发）就不在最佳季，按标准价走，会低不少。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-bali",
+          "routeTitle": "巴厘岛乌布雨林蜜月 6 日",
+          "travelers": 2,
+          "perPerson": 25080,
+          "total": 50160,
+          "departDate": "2026-10-30"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-bali",
+            "travelers": 2,
+            "perPerson": 25080,
+            "total": 50160,
+            "departDate": "2026-10-30"
+          }
+        ],
+        "seenRouteIds": ["r-bali"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "如果日期上灵活的话，出了 10 月（比如 11 月出发）就不在最佳季，按标准价走，会低不少。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "如果日期上灵活的话，出了 10 月（比如 11 月出发）就不在最佳季，按标准价走，会低不少。",
+            "^如果日期上灵活的话，出了 10 月（比如 11 月出发）就不在最佳季，按标准价走，会低不少。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-05",
+    "desc": "保留如实规则和条件句：马尔代夫：纯粹的海岛度假，私密性最强。11月-次年4月是最佳季，现在出发（9-10月）反而避开高峰。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-bali",
+          "routeTitle": "巴厘岛乌布雨林蜜月 6 日",
+          "travelers": 2,
+          "perPerson": 25080,
+          "total": 50160,
+          "departDate": "2026-10-30"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-bali",
+            "travelers": 2,
+            "perPerson": 25080,
+            "total": 50160,
+            "departDate": "2026-10-30"
+          }
+        ],
+        "seenRouteIds": ["r-bali"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "马尔代夫：纯粹的海岛度假，私密性最强。11月-次年4月是最佳季，现在出发（9-10月）反而避开高峰。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "马尔代夫：纯粹的海岛度假，私密性最强。11月-次年4月是最佳季，现在出发（9-10月）反而避开高峰。",
+            "^马尔代夫：纯粹的海岛度假，私密性最强。11月-次年4月是最佳季，现在出发（9-10月）反而避开高峰。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-06",
+    "desc": "保留如实规则和条件句：稻城亚丁这条最高要到约 4700 米。 · 贵州荔波小七孔·西江千户苗寨 6 日 · 全程最高约 1200 米，没有高原段",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          },
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "稻城亚丁这条最高要到约 4700 米。\n· 贵州荔波小七孔·西江千户苗寨 6 日\n· 全程最高约 1200 米，没有高原段"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "稻城亚丁这条最高要到约 4700 米。\n· 贵州荔波小七孔·西江千户苗寨 6 日\n· 全程最高约 1200 米，没有高原段",
+            "^稻城亚丁这条最高要到约 4700 米。\n· 贵州荔波小七孔·西江千户苗寨 6 日\n· 全程最高约 1200 米，没有高原段$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-07",
+    "desc": "保留如实规则和条件句：我可以再帮您找找海拔友好又能看雪山的方向。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-sichuan-lux",
+            "title": "四川 稻城亚丁·色达秘境 8 日",
+            "priceFrom": 42800
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "我可以再帮您找找海拔友好又能看雪山的方向。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["我可以再帮您找找海拔友好又能看雪山的方向。", "^我可以再帮您找找海拔友好又能看雪山的方向。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1064-08",
+    "desc": "删除不实规则或替换服务承诺：· 巴厘岛 乌布雨林蜜月 6 日，每人 22800 起——预算还能升级房型或多住一晚",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-bali",
+          "routeTitle": "巴厘岛乌布雨林蜜月 6 日",
+          "travelers": 2,
+          "perPerson": 25080,
+          "total": 50160,
+          "departDate": "2026-10-30"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-bali",
+            "travelers": 2,
+            "perPerson": 25080,
+            "total": 50160,
+            "departDate": "2026-10-30"
+          }
+        ],
+        "seenRouteIds": ["r-bali"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "· 巴厘岛 乌布雨林蜜月 6 日，每人 22800 起——预算还能升级房型或多住一晚"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["· 巴厘岛 乌布雨林蜜月 6 日，每人 22800 起", "^· 巴厘岛 乌布雨林蜜月 6 日，每人 22800 起$"],
+          "replyExcludes": ["预算还能升级房型或多住一晚"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1097-01",
+    "desc": "检查按句删除后的残句处理：先说个实际情况：我们马代的线路起步是中央格兰德一价全包 5 日，人均 28,800 起，两位的话总价 5.7 万左右。  这条的亮…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "先说个实际情况：我们马代的线路起步是中央格兰德一价全包 5 日，人均 28,800 起，两位的话总价 5.7 万左右。\n\n这条的亮点：\n· 一价全包\n· 出别墅就能下水"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["这条的亮点：\n· 一价全包\n· 出别墅就能下水"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1097-02",
+    "desc": "检查按句删除后的残句处理：按 4 人重新报价： 西安 兵马俑 5 日 · 每人 13384 元 · 合计 53536 元 报价为起价。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "按 4 人重新报价：\n西安 兵马俑 5 日\n· 每人 13384 元\n· 合计 53536 元\n报价为起价。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["按 4 人重新报价：\n西安 兵马俑 5 日\n报价为起价。"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1097-03",
+    "desc": "检查按句删除后的残句处理：云南很合适： · 松赞 8 日（人均 38800 起） · 版纳 5 日（人均 18800 起） 想看雪山古城，还是想躺酒店泡泳池…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "云南很合适：\n· 松赞 8 日（人均 38800 起）\n· 版纳 5 日（人均 18800 起）\n想看雪山古城，还是想躺酒店泡泳池？"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["想看雪山古城，还是想躺酒店泡泳池？"],
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1097-04",
+    "desc": "检查按句删除后的残句处理：这条每人 15,800 元，两位 31,600 元。比 11 月省 3,000 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": [],
+        "lastQuote": {
+          "routeId": "r-sanya",
+          "routeTitle": "三亚亲子奢华度假 5 日",
+          "travelers": 2,
+          "perPerson": 15800,
+          "total": 31600
+        }
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条每人 15,800 元，两位 31,600 元。比 11 月省 3,000 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条每人 15,800 元，两位 31,600 元。", "^这条每人 15,800 元，两位 31,600 元。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1097-05",
+    "desc": "检查按句删除后的残句处理：这条的亮点是海景房。国庆名额紧张。您几位出行？",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "seenRouteIds": []
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "这条的亮点是海景房。国庆名额紧张。您几位出行？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["这条的亮点是海景房。您几位出行？", "^这条的亮点是海景房。您几位出行？$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1152-01",
+    "desc": "保留如实规则和条件句：10 月是这条线的最佳出行季，价格上浮 10%，换到淡季价格会低一些。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月是这条线的最佳出行季，价格上浮 10%，换到淡季价格会低一些。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "10 月是这条线的最佳出行季，价格上浮 10%，换到淡季价格会低一些。",
+            "^10 月是这条线的最佳出行季，价格上浮 10%，换到淡季价格会低一些。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1152-02",
+    "desc": "保留如实规则和条件句：您 10 月 24 日出发正赶上最佳季，价格上浮 10%，如果能避开旺季，价格就能回到标准价。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "您 10 月 24 日出发正赶上最佳季，价格上浮 10%，如果能避开旺季，价格就能回到标准价。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "您 10 月 24 日出发正赶上最佳季，价格上浮 10%，如果能避开旺季，价格就能回到标准价。",
+            "^您 10 月 24 日出发正赶上最佳季，价格上浮 10%，如果能避开旺季，价格就能回到标准价。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1152-03",
+    "desc": "保留如实规则和条件句：两位合计 36,960 元。10 月是最佳季所以上浮了 10%，想省点的话可以避开最佳季出发，每人 16,800 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "两位合计 36,960 元。10 月是最佳季所以上浮了 10%，想省点的话可以避开最佳季出发，每人 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "两位合计 36,960 元。10 月是最佳季所以上浮了 10%，想省点的话可以避开最佳季出发，每人 16,800 元。",
+            "^两位合计 36,960 元。10 月是最佳季所以上浮了 10%，想省点的话可以避开最佳季出发，每人 16,800 元。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1152-04",
+    "desc": "保留如实规则和条件句：10 月在最佳季，每人 18,480 元；换个不在最佳季的日子就是标准价 16,800 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月在最佳季，每人 18,480 元；换个不在最佳季的日子就是标准价 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "10 月在最佳季，每人 18,480 元；换个不在最佳季的日子就是标准价 16,800 元。",
+            "^10 月在最佳季，每人 18,480 元；换个不在最佳季的日子就是标准价 16,800 元。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1152-05",
+    "desc": "保留如实规则和条件句：10 月 24 日出发正赶上最佳季，每人 18,480 元，两位 36,960 元，要是能避开旺季，就回到标准价 16,800 元…",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月 24 日出发正赶上最佳季，每人 18,480 元，两位 36,960 元，要是能避开旺季，就回到标准价 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "10 月 24 日出发正赶上最佳季，每人 18,480 元，两位 36,960 元，要是能避开旺季，就回到标准价 16,800 元。",
+            "^10 月 24 日出发正赶上最佳季，每人 18,480 元，两位 36,960 元，要是能避开旺季，就回到标准价 16,800 元。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1154-01",
+    "desc": "删除不实规则或替换服务承诺：如果改到 11 月出发，就是标准价 16,800 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "如果改到 11 月出发，就是标准价 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["如果改到 11 月出发，就是标准价 16,800 元。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1154-02",
+    "desc": "保留如实规则和条件句：要是改到 12 月出发，就不在最佳季，按标准价 16,800 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "要是改到 12 月出发，就不在最佳季，按标准价 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "要是改到 12 月出发，就不在最佳季，按标准价 16,800 元。",
+            "^要是改到 12 月出发，就不在最佳季，按标准价 16,800 元。$"
+          ],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1170-01",
+    "desc": "删除不实规则或替换服务承诺：10 月在最佳季，每人 18,480 元；换到 11 月就是标准价 16,800 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月在最佳季，每人 18,480 元；换到 11 月就是标准价 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["10 月在最佳季，每人 18,480 元；换到 11 月就是标准价 16,800 元。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-price-1170-02",
+    "desc": "删除不实规则或替换服务承诺：10 月 24 日出发每人 18,480 元，两位 36,960 元，改到 11 月就回到标准价 16,800 元。",
+    "tags": ["price", "guard", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "10 月 24 日出发每人 18,480 元，两位 36,960 元，改到 11 月就回到标准价 16,800 元。"
+          }
+        ],
+        "expect": {
+          "replyExcludes": ["10 月 24 日出发每人 18,480 元，两位 36,960 元，改到 11 月就回到标准价 16,800 元。"],
+          "replyMatches": ["^您的想法我记下了～方便说下您的心理预算吗？我帮您看看更合适的档位或替代线路，不让您多花冤枉钱。$"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  }
+]

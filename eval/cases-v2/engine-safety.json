@@ -1,0 +1,4597 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-3372-01",
+    "desc": "W1 模型把客户本人那张叫「您的新订单」「另外那张旧单已作废」：照常补本人订单的链接，不当成别人的单。",
+    "tags": ["engine", "tool", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、12月10日出发，总价 ¥33,600。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "链接在哪",
+        "script": [
+          {
+            "content": "您的新订单支付链接在这里：/pay/ord_fake999"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^您的新订单支付链接在这里：\n/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3372-02",
+    "desc": "W1 模型把客户本人那张叫「您的新订单」「另外那张旧单已作废」：照常补本人订单的链接，不当成别人的单。",
+    "tags": ["engine", "tool", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "改成12月12号吧，重新下单",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 2,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "superseded"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "新的链接发我下",
+        "script": [
+          {
+            "content": "新的支付链接：/pay/ord_fake123\n另外那张旧单已经作废了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^新的支付链接：\n/pay/{{order:0.id}}\n另外那张旧单已经作废了$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 2,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "superseded"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3380",
+    "desc": "模型明说是闺蜜那份：仍不拿本人订单顶上。",
+    "tags": ["engine", "tool"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "改成12月12号吧，重新下单",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 2,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "superseded"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "新的链接发我下",
+        "script": [
+          {
+            "content": "新的支付链接：/pay/ord_fake123\n另外那张旧单已经作废了"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^新的支付链接：\n/pay/{{order:0.id}}\n另外那张旧单已经作废了$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 2,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "superseded"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "链接呢",
+        "script": [
+          {
+            "content": "闺蜜那份的支付链接：/pay/ord_fake777"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^您本人这张《云南 丽江大理·洱海古城 6 日》2 位、12月12日出发的订单还在待付款；另外那份还没有下单。\n要合并成一单一起下，还是请顾问另外单独下一单？$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 2,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "superseded"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3392",
+    "desc": "W2 给别人报了价、客户说「那就订这个」：安全网和模型调 create_order 一样不下单，本人那张不作废。",
+    "tags": ["engine", "money", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "闺蜜她们也想去，3个人，也是12月10号，帮她们报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 3,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "3 位的报价出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^3 位的报价出好了。$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "行，那就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的～\n\n您本人这张《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发的订单还在待付款；另外那份还没有下单。\n要合并成一单一起下，还是请顾问另外单独下一单？$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3405",
+    "desc": "W3 「日期改成12月12号，再下一单」是改单，不是给别人订；「他们 / 她们」多半是同行的爸妈。",
+    "tags": ["engine", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "日期改成12月12号，再下一单",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-12"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 2,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "superseded"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3430-01",
+    "desc": "W4 条件句、以后的事、说转不了的：不算转接，AI 继续应答。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付完款之后呢",
+        "script": [
+          {
+            "content": "付款后我马上为您转接专属顾问，确认行程细节～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^付款后我马上为您转接专属顾问，确认行程细节～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3430-02",
+    "desc": "W4 条件句、以后的事、说转不了的：不算转接，AI 继续应答。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付完款之后呢",
+        "script": [
+          {
+            "content": "您确认日期后我马上为您转接顾问。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^您确认日期后我马上为您转接顾问。$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3430-03",
+    "desc": "W4 条件句、以后的事、说转不了的：不算转接，AI 继续应答。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付完款之后呢",
+        "script": [
+          {
+            "content": "抱歉，目前无法为您转接人工，我先帮您解答～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^抱歉，目前无法为您转接人工，我先帮您解答～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3430-04",
+    "desc": "W4 条件句、以后的事、说转不了的：不算转接，AI 继续应答。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付完款之后呢",
+        "script": [
+          {
+            "content": "支付完成后，顾问会在微信上联系您确认细节。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^支付完成后，顾问会在微信上联系您确认细节。$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3459-01",
+    "desc": "客户没要找人：不整段转走（转了 AI 就沉默，guard-13），改成记下待顾问确认；客户要找人时照转，见 (c)。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "签证我搞不定，你们能帮忙吗",
+        "script": [
+          {
+            "content": "签证这块需要专人办理，已记录您的需求，顾问会在微信上联系您，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^这个我记下了，会请顾问在微信上跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3459-02",
+    "desc": "客户没要找人：不整段转走（转了 AI 就沉默，guard-13），改成记下待顾问确认；客户要找人时照转，见 (c)。",
+    "tags": ["engine", "guard"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604741
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604747
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604744
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "明年2月，两个人",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户仍以冰岛为准"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，顾问会在微信上联系您～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^收到～如果这几条不完全合心意，告诉我您更看重什么（预算 / 酒店 / 玩法），我再帮您精挑一轮。$(?![\\s\\S])"],
+          "stage": "recommend",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3479",
+    "desc": "付过款的客户：「顾问会在微信上联系您」是售后对接，不转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "closing",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913604755
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913604763
+          },
+          {
+            "role": "customer",
+            "content": "就订这个",
+            "at": 1790913604763
+          },
+          {
+            "role": "agent",
+            "content": "好的，点此完成支付：/pay/ord_history",
+            "at": 1790913604771
+          }
+        ],
+        "handedOver": false,
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "接下来呢",
+        "script": [
+          {
+            "content": "顾问会在微信上联系您，给您发行程确认书、拉服务群～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^顾问会在微信上联系您，给您发行程确认书、拉服务群～$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "paid"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3497-01",
+    "desc": "W6 库外目的地之后：客户坚持（就想去 / 还是想去 / 没兴趣）照转；别的理由（折扣、专票、年会）的转人工不驳回。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604779
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604785
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604782
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "我就想去冰岛",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持冰岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3497-02",
+    "desc": "W6 库外目的地之后：客户坚持（就想去 / 还是想去 / 没兴趣）照转；别的理由（折扣、专票、年会）的转人工不驳回。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604794
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604802
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604798
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "我还是想去冰岛，帮我找个人问问",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持冰岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3497-03",
+    "desc": "W6 库外目的地之后：客户坚持（就想去 / 还是想去 / 没兴趣）照转；别的理由（折扣、专票、年会）的转人工不驳回。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604810
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604816
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604812
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "冰岛吧，别的没兴趣",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户坚持冰岛"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3497-04",
+    "desc": "W6 库外目的地之后：客户坚持（就想去 / 还是想去 / 没兴趣）照转；别的理由（折扣、专票、年会）的转人工不驳回。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604825
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604831
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604828
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "算了。我们其实是公司50人年会，要开专票",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "企业50人年会，需开专票"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3497-05",
+    "desc": "W6 库外目的地之后：客户坚持（就想去 / 还是想去 / 没兴趣）照转；别的理由（折扣、专票、年会）的转人工不驳回。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604839
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604846
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604843
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "北欧那条能打个9折吗 能的话今天就定",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户要求北欧线 9 折，超出权限，需顾问申请"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3497-06",
+    "desc": "W6 库外目的地之后：客户坚持（就想去 / 还是想去 / 没兴趣）照转；别的理由（折扣、专票、年会）的转人工不驳回。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "冰岛"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想去冰岛看极光",
+            "at": 1790913604854
+          },
+          {
+            "role": "agent",
+            "content": "冰岛我们暂时没有现成线路，最接近的是北欧芬兰这条。您计划什么时候、几位？",
+            "at": 1790913604860
+          }
+        ],
+        "handedOver": false,
+        "lastShownRoutes": [
+          {
+            "id": "r-aurora",
+            "title": "北欧芬兰极光玻璃屋 8 日",
+            "priceFrom": 46800
+          },
+          {
+            "id": "r-maldives-mid",
+            "title": "马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日",
+            "priceFrom": 35800
+          },
+          {
+            "id": "r-bali",
+            "title": "巴厘岛乌布雨林蜜月 6 日",
+            "priceFrom": 22800
+          }
+        ],
+        "seenRouteIds": ["r-aurora", "r-maldives-mid", "r-bali"],
+        "missedDestinations": [
+          {
+            "place": "冰岛",
+            "at": 1790913604857
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "你们能开增值税专票吗 公司要报销",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户需开增值税专票"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，我马上为您转接资深顾问，请稍候～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，我马上为您转接资深顾问，请稍候～$(?![\\s\\S])"],
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["handoff_to_human"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3510-01",
+    "desc": "W7 「10月3号出发」之后顺口问「国庆期间景区人多吗」：出发日期还是 10月3号，照下单（模型调的、安全网兜的都一样）。",
+    "tags": ["engine", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-10-03"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "10月3号出发，丽江大理两个人报个价",
+            "at": 1790913604871
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913604881
+          },
+          {
+            "role": "customer",
+            "content": "国庆期间景区人多吗",
+            "at": 1790913604881
+          },
+          {
+            "role": "agent",
+            "content": "国庆人会多一些，这条线会错峰安排。",
+            "at": 1790913604888
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-03"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-03"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的\n/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "totalPrice": 36960,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3510-02",
+    "desc": "W7 「10月3号出发」之后顺口问「国庆期间景区人多吗」：出发日期还是 10月3号，照下单（模型调的、安全网兜的都一样）。",
+    "tags": ["engine", "flow", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-10-03"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "10月3号出发，丽江大理两个人报个价",
+            "at": 1790913604899
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913604908
+          },
+          {
+            "role": "customer",
+            "content": "国庆期间景区人多吗",
+            "at": 1790913604908
+          },
+          {
+            "role": "agent",
+            "content": "国庆人会多一些，这条线会错峰安排。",
+            "at": 1790913604915
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-03"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-03"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、10月3日出发，总价 ¥36,960。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-10-03",
+              "totalPrice": 36960,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3525",
+    "desc": "真改了口（「算了，改成国庆出发吧」）照旧按大概处理（D9）；别的月份的问句也不能拿 10月3号去下。",
+    "tags": ["engine", "holiday"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-10-03"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "10月3号出发，丽江大理两个人报个价",
+            "at": 1790913604924
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913604931
+          },
+          {
+            "role": "customer",
+            "content": "12月冷不冷",
+            "at": 1790913604931
+          },
+          {
+            "role": "agent",
+            "content": "12 月丽江白天十几度，早晚冷。",
+            "at": 1790913604937
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-03"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-03"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "那就12月去，订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-03"
+                }
+              }
+            ]
+          },
+          {
+            "content": "12月具体哪天出发？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^12月具体哪天出发？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-01",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 1 个向量：付款前能再给点优惠吗）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-02",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 2 个向量：再给优惠点我就付款）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-03",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 3 个向量：付款后再发我电子发票）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-04",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 4 个向量：能再给个折扣吗 订单还没付）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-05",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 5 个向量：支付链接打不开，另外能开专票吗）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接打不开，另外能开专票吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-06",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 6 个向量：付款链接打不开 能分期吗）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接打不开，另外能开专票吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 能分期吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-07",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 7 个向量：再发下支付链接 顺便问下含保险吗）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接打不开，另外能开专票吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 能分期吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再发下支付链接 顺便问下含保险吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-08",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 8 个向量：付款链接打不开 再发我一次）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接打不开，另外能开专票吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 能分期吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再发下支付链接 顺便问下含保险吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 再发我一次",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，支付链接给您重新发一次：\n/pay/{{order:0.id}}\n《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，合计 ¥33,600。$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-09",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 9 个向量：支付链接找不到了，能再发一下吗）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接打不开，另外能开专票吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 能分期吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再发下支付链接 顺便问下含保险吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 再发我一次",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，支付链接给您重新发一次：\n/pay/{{order:0.id}}\n《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，合计 ¥33,600。$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接找不到了，能再发一下吗",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，支付链接给您重新发一次：\n/pay/{{order:0.id}}\n《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，合计 ¥33,600。$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3542-10",
+    "desc": "W8 重发支付链接只认链接本身的问题：还价、要发票、顺带问别的，都交给模型（第 10 个向量：链接再发我一下）。",
+    "tags": ["engine", "money", "link"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "12月10号出发，丽江大理两个人报个价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "丽江大理这条报价给您出好了。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^丽江大理这条报价给您出好了。$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      },
+      {
+        "say": "就订这个",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，点此完成支付：/pay/{{order:0.id}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，点此完成支付：/pay/{{order:0.id}}$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      },
+      {
+        "say": "付款前能再给点优惠吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再给优惠点我就付款",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款后再发我电子发票",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "能再给个折扣吗 订单还没付",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接打不开，另外能开专票吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 能分期吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "再发下支付链接 顺便问下含保险吗",
+        "script": [
+          {
+            "content": "（模型回答）"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^（模型回答）$(?![\\s\\S])"],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "付款链接打不开 再发我一次",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，支付链接给您重新发一次：\n/pay/{{order:0.id}}\n《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，合计 ¥33,600。$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "支付链接找不到了，能再发一下吗",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，支付链接给您重新发一次：\n/pay/{{order:0.id}}\n《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，合计 ¥33,600。$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "链接再发我一下",
+        "script": [],
+        "expect": {
+          "replyMatches": [
+            "^好的，支付链接给您重新发一次：\n/pay/{{order:0.id}}\n《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，合计 ¥33,600。$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3575-01",
+    "desc": "W9 夸价格、顺口一句「能便宜更好」、说自己比过了，不是还价：安全网照常兜底建单；拒绝的不是价格也照兜。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "挺实惠的，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "replyMatches": [
+            "^好的，订单已生成～\n《云南 丽江大理·洱海古城 6 日》2 位出行、12月10日出发，总价 ¥33,600。\n请点此完成支付：/pay/{{order:0.id}}\n名额以付款为准，付款后顾问会与您确认行程细节～$(?![\\s\\S])"
+          ],
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 1,
+            "last": {
+              "routeId": "r-yunnan-mid",
+              "routeTitle": "云南 丽江大理·洱海古城 6 日",
+              "travelers": 2,
+              "departDate": "2026-12-10",
+              "totalPrice": 33600,
+              "status": "pending_payment"
+            }
+          },
+          "tools": ["create_order"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3593",
+    "desc": "W10 「基本在您预算内」和报价写在同一句：只删这个小句，报价留着。",
+    "tags": ["engine", "money"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "recommend",
+        "profile": {
+          "destinationInterest": "西藏",
+          "budget": "每人2万8"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "预算每人2万8 想去西藏",
+            "at": 1790913605049
+          },
+          {
+            "role": "agent",
+            "content": "西藏这边有珠峰那条。",
+            "at": 1790913605058
+          }
+        ],
+        "handedOver": false,
+        "budgetGaps": [28000],
+        "lastShownRoutes": [
+          {
+            "id": "r-tibet-mid",
+            "title": "西藏 拉萨·日喀则·珠峰大本营 7 日",
+            "priceFrom": 26800
+          }
+        ],
+        "seenRouteIds": ["r-tibet-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "西藏珠峰那条 两个人 10月5号出发 多少钱",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-tibet-mid",
+                  "travelers": 2,
+                  "departDate": "2026-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "好的，10 月 5 日出发每人 29,480 元，2 位总价 58,960 元，基本在您预算内。要不要我先给您出一份方案书？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，10 月 5 日出发每人 29,480 元，2 位总价 58,960 元。要不要我先给您出一份方案书？$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": ["create_quote"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3608-01",
+    "desc": "W11 客户问价、编的价删掉后只剩「要不要我帮您下单？」：按没内容兜底；客户刚问的人数和报价对不上，安全网不按旧人数建单（第 1 个向量：4个人多少钱）。",
+    "tags": ["engine", "money", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-10-08"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理 两个人 10月8号出发 多少钱",
+            "at": 1790913605070
+          },
+          {
+            "role": "agent",
+            "content": "每人 18,480 元，2 位总价 36,960 元。",
+            "at": 1790913605081
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-08"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-08"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "4个人多少钱",
+        "script": [
+          {
+            "content": "4 个人每人 17,300 元，总价 69,200 元。要不要我帮您下单？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3608-02",
+    "desc": "W11 客户问价、编的价删掉后只剩「要不要我帮您下单？」：按没内容兜底；客户刚问的人数和报价对不上，安全网不按旧人数建单（第 2 个向量：好 下单）。",
+    "tags": ["engine", "money", "flow"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-10-08"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理 两个人 10月8号出发 多少钱",
+            "at": 1790913605070
+          },
+          {
+            "role": "agent",
+            "content": "每人 18,480 元，2 位总价 36,960 元。",
+            "at": 1790913605081
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-08"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-08"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "4个人多少钱",
+        "script": [
+          {
+            "content": "4 个人每人 17,300 元，总价 69,200 元。要不要我帮您下单？"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^价格我得核准了再报给您。告诉我想看哪条线路、几位出行，我马上给您出准确报价～$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      },
+      {
+        "say": "好 下单",
+        "script": [
+          {
+            "content": "好的，4 位的价我先给您核一下～"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^好的，4 位的价我先给您核一下～$(?![\\s\\S])"],
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-3670",
+    "desc": "W14 回复说「由顾问跟您确认」却没转人工：后台记一条待确认，不转人工。",
+    "tags": ["engine", "handoff"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们能开增值税专票吗",
+        "script": [
+          {
+            "content": "可以的，专票没问题。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["^发票（含专票）怎么开，由顾问跟您确认。$(?![\\s\\S])"],
+          "stage": "discovery",
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "tools": []
+        }
+      }
+    ]
+  }
+]
