@@ -38,6 +38,8 @@ export function checkSopContract(input: {
   knownFields: readonly string[];
   /** 该租户导入版本（source='import'）的 editableChars。null 表示不查预算：启动重渲染和导出都传 null */
   baselineEditableChars: number | null;
+  /** 系统托管可编辑内容相对导入镜像的字数差额；运营改过的内容不享受此调整。 */
+  systemEditableAdjustment?: number;
   spec?: readonly SectionSpec[];
   rules?: readonly SopContractRule[];
   brand?: BrandProfile | null;
@@ -137,12 +139,13 @@ export function checkSopContract(input: {
   // 预算只管运营能控制的部分：可编辑节的正文
   if (input.baselineEditableChars !== null && structureOk) {
     const chars = editableChars(input.sections, spec);
-    const limit = input.baselineEditableChars * BUDGET_RATIO;
+    const adjustment = input.systemEditableAdjustment ?? 0;
+    const limit = input.baselineEditableChars * BUDGET_RATIO + adjustment;
     if (chars > limit) {
       add(
         'over_budget',
         null,
-        `可编辑节正文共 ${chars} 字，超过上限 ${Math.floor(limit)}（导入时 ${input.baselineEditableChars} 的 ${BUDGET_RATIO} 倍）`,
+        `可编辑节正文共 ${chars} 字，超过上限 ${Math.floor(limit)}（导入时 ${input.baselineEditableChars} 的 ${BUDGET_RATIO} 倍${adjustment === 0 ? '' : `，系统渲染差额 ${adjustment} 字`}）`,
       );
     }
   }
