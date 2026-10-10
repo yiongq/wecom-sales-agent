@@ -24,7 +24,23 @@ function eq(actual: unknown, expected: unknown, label: string): void {
 }
 
 eq(parseMoney('每人 12800 美元', options), [{ amount: 12800, currency: null, unit: '美元' }], '外币保留原单位');
-for (const unit of ['美元', '美金', '日元', '欧元', '港币']) {
+for (const unit of [
+  '美元',
+  '美金',
+  '日元',
+  '欧元',
+  '港币',
+  '港元',
+  '英镑',
+  '澳元',
+  '加元',
+  '新加坡元',
+  '新台币',
+  '韩元',
+  '泰铢',
+  'USD',
+  'GBP',
+]) {
   eq(parseMoney(`每人3.8万${unit}`, options), [{ amount: 38000, currency: null, unit }], `口语外币：${unit}`);
 }
 for (const unit of ['元', '块', '人民币', 'RMB', 'rmb']) {
