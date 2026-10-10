@@ -13,7 +13,7 @@
 # 正在跑的容器本身是 02 之前的镜像就不算（这次回滚不会让条目版本更失真），否则按有风险处理。
 # 03 之前的镜像不认识库里的渠道状态：标记在、或库里有默认企微 exported 账号以外的行时拒绝，先用当前镜像
 # channel-export。库问不到时，仅正在跑的镜像明确没有 registry.ts 才不算风险。两个 03 之后的镜像之间照常回滚。
-# 04 之前的镜像不认识模板品牌：所有租户待生效品牌或当前发布快照任一非空就拒绝；clear 后必须重启重渲染。
+# 04 之前的镜像不认识模板品牌：所有租户待生效品牌或当前发布快照任一非空就拒绝；发布快照带品牌才需重启重渲染。
 # 库问不到时，仅正在跑的镜像明确没有 pack-api.ts 才不算品牌风险。
 #
 # 用法：rollback-guard.sh <部署目录> <目标> [<compose 项目名> [<宿主端口>]]
@@ -24,7 +24,7 @@
 # 打印的命令带上项目名与宿主端口（旁路实例的手工命令也要带，见 deploy/compose.yml 开头）。
 # 退出码：0 照常回滚；3 拒绝，只有会话在库里（先回到文件存储的步骤打在 stderr）；4 拒绝，有条目版本大于 1 或看不出来
 #（只能回到 02 之后的镜像，不打印导出步骤）；5 拒绝，有渠道状态在库里或看不出来（先 channel-export，
-# 若目标同时是 02 之前、会话在库里，再回到文件存储）；6 拒绝，有品牌风险，先 clear、重启并核对旧版 promptHash。
+# 若目标同时是 02 之前、会话在库里，再回到文件存储）；6 拒绝，有品牌风险，按待生效值与发布快照打印恢复步骤。
 # 保留旧风险优先级：4 > 5 > 6 > 3；品牌步骤不因同时有旧风险而省略。
 set -u
 dir="$1" target="$2" project="${3:-wecom-sales-agent}" port="${4:-3210}"
@@ -93,21 +93,20 @@ db_brand() {
     t) pending=$(db_query "select exists(select 1 from public.tenants t where coalesce(t.brand::jsonb, 'null'::jsonb) <> 'null'::jsonb)") || return 1 ;;
     *) return 1 ;;
   esac
-  # 已查到风险立即拒绝，不能让另一项查询失败后的旧镜像豁免冲掉这个确定的风险。
+  # 已查到待生效风险仍查询快照以区分恢复步骤；另一项失败不能让旧镜像豁免冲掉确定的风险。
   case "$pending" in
-    t) echo t; return 0 ;;
-    f) ;;
+    t | f) ;;
     *) return 1 ;;
   esac
-  has=$(db_query "select to_regclass('public.sop_versions') is not null and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'sop_versions' and column_name = 'render_inputs')") || return 1
+  has=$(db_query "select to_regclass('public.sop_versions') is not null and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'sop_versions' and column_name = 'render_inputs')") || has=unknown
   case "$has" in
     f) ;;
-    t) published=$(db_query "select exists(select 1 from public.sop_versions where status = 'published' and coalesce(render_inputs->'brand', 'null'::jsonb) <> 'null'::jsonb)") || return 1 ;;
-    *) return 1 ;;
+    t) published=$(db_query "select exists(select 1 from public.sop_versions where status = 'published' and coalesce(render_inputs->'brand', 'null'::jsonb) <> 'null'::jsonb)") || published=unknown ;;
+    *) published=unknown ;;
   esac
   case "$published" in
-    t | f) echo "$published" ;;
-    *) return 1 ;;
+    t | f) echo "$pending $published" ;;
+    *) [ "$pending" = t ] && echo 't unknown' || return 1 ;;
   esac
 }
 # 有条目版本大于 1（02「报价快照」）：先问正在运行的实例，看不出来再问库，库也问不到再看正在跑的是不是 02 之前的镜像
@@ -190,12 +189,15 @@ if [ "$is_pre03" = 0 ] && [ "$target" != pre-04 ]; then
     *) echo "rollback-guard: 看不出 ${target} 是不是 04 之前的镜像（docker 出错），按 04 之前处理" >&2 ;;
   esac
 fi
-brand_risk=""
+brand_risk="" brand_pending=unknown brand_published=unknown
 if [ "$is_pre04" = 1 ]; then
   brand=$(db_brand) || brand=""
   case "$brand" in
-    f) ;;
-    t) brand_risk="库里有租户的 tenants.brand 不为空，或当前发布版本的 render_inputs.brand 带品牌快照（clear 但未重启也算）" ;;
+    'f f') ;;
+    't f') brand_pending=t; brand_published=f; brand_risk="库里有租户的 tenants.brand 不为空；当前发布版本没有品牌快照" ;;
+    'f t') brand_pending=f; brand_published=t; brand_risk="所有租户待生效品牌已为空；当前发布版本的 render_inputs.brand 仍带品牌快照（clear 但未重启）" ;;
+    't t') brand_pending=t; brand_published=t; brand_risk="库里有租户的 tenants.brand 不为空，且当前发布版本的 render_inputs.brand 带品牌快照" ;;
+    't unknown') brand_pending=t; brand_risk="库里有租户的 tenants.brand 不为空；问不到库里的当前发布品牌快照，按有品牌风险处理" ;;
     *)
       running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
       if [ -z "$running" ] || [ "$(pre04_image "$running" >/dev/null 2>&1; echo $?)" != 1 ]; then
@@ -224,13 +226,48 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
   fi
   for r in "${risks[@]}"; do echo "  - ${r}"; done
   if [ -n "$brand_risk" ]; then
-    echo '先 tenant-brand clear、重启、确认 /healthz 的 promptHash 回到旧版模式的值，再回滚。'
-    echo "对所有有品牌风险的租户用当前（04 之后的）镜像执行（在 ${dir} 下）："
-    echo "  ${dc} run --rm platform node --import tsx src/cli/tenant-brand.ts clear --tenant <slug>"
-    echo "  ${dc} restart app"
-    echo "  curl -fsS http://127.0.0.1:${port}/healthz"
-    echo "  （确认 promptHash 回到该租户旧版模式的值）"
-    echo "clear 只改待生效值：重启重渲染后当前发布快照的 brand 也须为空，再重跑回滚检查。"
+    brand_auto=0
+    case "$target" in pre-02 | pre-03 | pre-04) ;; *) brand_auto=1 ;; esac
+    echo "品牌恢复步骤（在 ${dir} 下，对所有有品牌风险的租户处理）："
+    if [ "$brand_auto" = 1 ]; then
+      echo "这是健康检查失败后的自动回滚：${project}:current 是坏的新镜像，${target} 是 pre-04。"
+      if [ "$brand_published" != f ]; then
+        echo "坏的新镜像起不来，${target} 不支持品牌重渲染；先部署一个已知可用的 04 之后的 tag，或用服务器上已有的 04 之后镜像恢复服务。"
+        echo "以下用已有镜像（把占位 tag 换成已知可用的 04 之后镜像，不用 :current、:latest 或 ${target}）："
+        echo "  RECOVERY_IMAGE='${project}:<已知可用的04之后tag>'"
+        echo "  APP_IMAGE=\${RECOVERY_IMAGE} ${dc} up -d --no-deps app && docker tag \"\${RECOVERY_IMAGE}\" ${project}:current"
+        echo "  curl -fsS http://127.0.0.1:${port}/healthz"
+      fi
+    fi
+    if [ "$brand_pending" = f ]; then
+      echo "待生效品牌已经为空，无需再次 tenant-brand clear。"
+    else
+      [ "$brand_pending" = unknown ] && echo "先确认待生效品牌；若仍非空，对这些租户执行 tenant-brand clear："
+      [ "$brand_pending" = t ] && echo "先 tenant-brand clear，清空所有非空的待生效品牌（用 04 之后的镜像执行）："
+      echo "  ${dc} run --rm platform node --import tsx src/cli/tenant-brand.ts clear --tenant <slug>"
+    fi
+    if [ "$brand_published" = f ]; then
+      echo "当前发布版本没有品牌快照，clear 后无需重启或重渲染。"
+    else
+      echo "clear 只改待生效值：用 04 之后的镜像重启一次，按原因 brand 重渲染，当前发布快照的 brand 也须为空。"
+      if [ "$brand_auto" = 1 ]; then
+        echo "  ${dc} stop app"
+        echo "  APP_IMAGE=\${RECOVERY_IMAGE} ${dc} up -d --no-deps app"
+      else
+        echo "  ${dc} restart app"
+      fi
+      echo "  curl -fsS http://127.0.0.1:${port}/healthz"
+      echo "  （确认 promptHash 回到该租户旧版模式的值）"
+    fi
+    echo "再重跑回滚检查，确认品牌风险已消除；其他风险也须按下面的步骤消除。"
+    if [ "$brand_auto" = 1 ]; then
+      echo "检查退出码 0 后，直接起目标镜像并重打 :current（不跑迁移）："
+      echo "  APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} ${project}:current"
+      echo "  curl -fsS http://127.0.0.1:${port}/healthz"
+      echo "  （确认 revision 是 ${target} 的 APP_REVISION）"
+    else
+      echo "完成上面的品牌恢复步骤、回滚检查通过后，再部署旧 tag。"
+    fi
     case "$brand_risk" in *问不到库*) echo "先确认 db 在跑（docker compose -p ${project} ps db），能查库之后再确认所有租户的两种品牌值。" ;; esac
   fi
   if [ -n "$catalog_risk" ]; then
