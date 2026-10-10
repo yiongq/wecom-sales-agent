@@ -1,0 +1,818 @@
+[
+  {
+    "id": "clean",
+    "input": "  想去哪儿？\u0000  ",
+    "session": {
+      "id": "simulator:followup-clean",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "想去哪儿？",
+    "steps": [
+      "  想去哪儿？  ",
+      "  想去哪儿？  ",
+      " 想去哪儿？ ",
+      "想去哪儿？",
+      "想去哪儿？",
+      "想去哪儿？",
+      "想去哪儿？",
+      "想去哪儿？",
+      "想去哪儿？",
+      "想去哪儿？",
+      "想去哪儿？"
+    ],
+    "events": []
+  },
+  {
+    "id": "links",
+    "input": "可以看看：https://example.invalid/other。方案书：/proposal/r-yunnan/2。支付：/pay/missing。想去哪儿？",
+    "session": {
+      "id": "simulator:followup-links",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "可以看看：。想去哪儿？",
+    "steps": [
+      "可以看看：https://example.invalid/other。方案书：/proposal/r-yunnan/2。支付：/pay/missing。想去哪儿？",
+      "可以看看：\u0003。方案书：\u0001。支付：\u0002。想去哪儿？",
+      "可以看看：\u0003。方案书：\u0001。支付：\u0002。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？",
+      "可以看看：。想去哪儿？"
+    ],
+    "events": [
+      {
+        "guard": "link_whitelist",
+        "action": "strip"
+      },
+      {
+        "guard": "repair_links",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "markdown",
+    "input": "# **之前的线路**\n- 您更喜欢哪条？",
+    "session": {
+      "id": "simulator:followup-markdown",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "之前的线路\n· 您更喜欢哪条？",
+    "steps": [
+      "# **之前的线路**\n- 您更喜欢哪条？",
+      "# **之前的线路**\n- 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？",
+      "之前的线路\n· 您更喜欢哪条？"
+    ],
+    "events": [
+      {
+        "guard": "markdown",
+        "action": "strip"
+      }
+    ]
+  },
+  {
+    "id": "pay-promise",
+    "input": "我把付款链接发给您。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-pay-promise",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "我把付款链接发给您。您更喜欢哪条线路？",
+      "我把付款链接发给您。您更喜欢哪条线路？",
+      "我把付款链接发给您。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "repair_links",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "proposal-promise",
+    "input": "我把方案书链接发给您： [链接]。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-proposal-promise",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "我把方案书链接发给您： [链接]。您更喜欢哪条线路？",
+      "我把方案书链接发给您： [链接]。您更喜欢哪条线路？",
+      "我把方案书链接发给您： [链接]。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "repair_links",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "jargon",
+    "input": "我帮您确认 availability。想去哪儿？",
+    "session": {
+      "id": "simulator:followup-jargon",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "我帮您确认 档期。想去哪儿？",
+    "steps": [
+      "我帮您确认 availability。想去哪儿？",
+      "我帮您确认 availability。想去哪儿？",
+      "我帮您确认 availability。想去哪儿？",
+      "我帮您确认 availability。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？",
+      "我帮您确认 档期。想去哪儿？"
+    ],
+    "events": [
+      {
+        "guard": "dejargon",
+        "action": "replace"
+      }
+    ]
+  },
+  {
+    "id": "custom",
+    "input": "好的，我按 5 天帮您重排行程。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-custom",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "好的，我按 5 天帮您重排行程。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "custom_promise",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "handoff-a",
+    "input": "我已为您转接顾问。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-handoff-a",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "我已为您转接顾问。您更喜欢哪条线路？",
+      "我已为您转接顾问。您更喜欢哪条线路？",
+      "我已为您转接顾问。您更喜欢哪条线路？",
+      "我已为您转接顾问。您更喜欢哪条线路？",
+      "我已为您转接顾问。您更喜欢哪条线路？",
+      "我已为您转接顾问。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "handoff_claims",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "handoff-b",
+    "input": "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-handoff-b",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "handoff_claims",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "handoff-web",
+    "input": "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-handoff-web",
+      "channel": "web",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+      "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+      "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+      "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+      "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+      "顾问会在这个页面里联系您。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "handoff_claims",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "handoff-conditional",
+    "input": "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-handoff-conditional",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+    "steps": [
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？",
+      "需要的话我可以为您转接顾问。您更喜欢哪条线路？"
+    ],
+    "events": []
+  },
+  {
+    "id": "rules",
+    "input": "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-rules",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "发票（含专票）怎么开，由顾问跟您确认。您更喜欢哪条线路？",
+    "steps": [
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "儿童价还能更便宜。名额很紧张。我们支持开专票。您更喜欢哪条线路？",
+      "发票（含专票）怎么开，由顾问跟您确认。您更喜欢哪条线路？",
+      "发票（含专票）怎么开，由顾问跟您确认。您更喜欢哪条线路？",
+      "发票（含专票）怎么开，由顾问跟您确认。您更喜欢哪条线路？",
+      "发票（含专票）怎么开，由顾问跟您确认。您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "unbacked_claims",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "price",
+    "input": "每人只要 98765 元。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-price",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "",
+    "steps": [
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "每人只要 98765 元。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "",
+      ""
+    ],
+    "events": [
+      {
+        "guard": "price",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "stranded",
+    "input": "每人只要 98765 元。这个价格怎么样？",
+    "session": {
+      "id": "simulator:followup-stranded",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "",
+    "steps": [
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "每人只要 98765 元。这个价格怎么样？",
+      "这个价格怎么样？",
+      "",
+      ""
+    ],
+    "events": [
+      {
+        "guard": "price",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "dangling",
+    "input": "想去哪儿？可以直接说：",
+    "session": {
+      "id": "simulator:followup-dangling",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "想去哪儿？",
+    "steps": [
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？可以直接说：",
+      "想去哪儿？",
+      "想去哪儿？"
+    ],
+    "events": []
+  },
+  {
+    "id": "prefix",
+    "input": "【顾问】 想去哪儿？",
+    "session": {
+      "id": "simulator:followup-prefix",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "想去哪儿？",
+    "steps": [
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "【顾问】 想去哪儿？",
+      "想去哪儿？"
+    ],
+    "events": []
+  },
+  {
+    "id": "empty",
+    "input": "",
+    "session": {
+      "id": "simulator:followup-empty",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "",
+    "steps": ["", "", "", "", "", "", "", "", "", "", ""],
+    "events": []
+  },
+  {
+    "id": "combined",
+    "input": "好的，我按 5 天帮您重排行程。我把付款链接发给您。我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-combined",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "好的，我按 5 天帮您重排行程。我把付款链接发给您。我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。我把付款链接发给您。我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。我把付款链接发给您。我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "好的，我按 5 天帮您重排行程。我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "我已为您转接顾问。由顾问跟您确认。顾问会在微信上联系您。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "repair_links",
+        "action": "drop_sentence"
+      },
+      {
+        "guard": "custom_promise",
+        "action": "drop_sentence"
+      },
+      {
+        "guard": "handoff_claims",
+        "action": "drop_sentence"
+      },
+      {
+        "guard": "handoff_claims",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "quoted",
+    "input": "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-quoted",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "lastQuote": {
+        "routeId": "r-sichuan-mid",
+        "routeTitle": "四川",
+        "travelers": 2,
+        "perPerson": 12800,
+        "total": 25600
+      }
+    },
+    "orderStatus": null,
+    "text": "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+    "steps": [
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？",
+      "上次给您的报价是每人 12800 元。您更喜欢哪条线路？"
+    ],
+    "events": []
+  },
+  {
+    "id": "budget",
+    "input": "您说预算是每人两万元。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-budget",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [
+        {
+          "role": "customer",
+          "content": "每人预算两万元",
+          "at": 0
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": null,
+    "text": "您说预算是每人两万元。您更喜欢哪条线路？",
+    "steps": [
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？",
+      "您说预算是每人两万元。您更喜欢哪条线路？"
+    ],
+    "events": []
+  },
+  {
+    "id": "standard-days",
+    "input": "四川 6 天版给您报价。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-standard-days",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "lastQuote": {
+        "routeId": "r-sichuan-mid",
+        "routeTitle": "四川",
+        "travelers": 2,
+        "perPerson": 12800,
+        "total": 25600
+      }
+    },
+    "orderStatus": null,
+    "text": "四川 6 天这条给您报价。您更喜欢哪条线路？",
+    "steps": [
+      "四川 6 天版给您报价。您更喜欢哪条线路？",
+      "四川 6 天版给您报价。您更喜欢哪条线路？",
+      "四川 6 天版给您报价。您更喜欢哪条线路？",
+      "四川 6 天版给您报价。您更喜欢哪条线路？",
+      "四川 6 天版给您报价。您更喜欢哪条线路？",
+      "四川 6 天这条给您报价。您更喜欢哪条线路？",
+      "四川 6 天这条给您报价。您更喜欢哪条线路？",
+      "四川 6 天这条给您报价。您更喜欢哪条线路？",
+      "四川 6 天这条给您报价。您更喜欢哪条线路？",
+      "四川 6 天这条给您报价。您更喜欢哪条线路？",
+      "四川 6 天这条给您报价。您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "custom_promise",
+        "action": "drop_sentence"
+      }
+    ]
+  },
+  {
+    "id": "live-order",
+    "input": "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+    "session": {
+      "id": "simulator:followup-live-order",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": "pending_payment",
+    "text": "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+    "steps": [
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。",
+      "支付链接：/pay/{{order}}。顾问会在微信上联系您。"
+    ],
+    "events": []
+  },
+  {
+    "id": "old-order",
+    "input": "支付链接：/pay/{{order}}。您更喜欢哪条线路？",
+    "session": {
+      "id": "simulator:followup-old-order",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {},
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "orderStatus": "superseded",
+    "text": "您更喜欢哪条线路？",
+    "steps": [
+      "支付链接：/pay/{{order}}。您更喜欢哪条线路？",
+      "支付链接：\u0002。您更喜欢哪条线路？",
+      "支付链接：\u0002。您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？",
+      "您更喜欢哪条线路？"
+    ],
+    "events": [
+      {
+        "guard": "link_whitelist",
+        "action": "strip"
+      },
+      {
+        "guard": "repair_links",
+        "action": "drop_sentence"
+      }
+    ]
+  }
+]
