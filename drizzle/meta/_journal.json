@@ -43,6 +43,13 @@
       "when": 1791518565931,
       "tag": "0005_channels_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791610758519,
+      "tag": "0006_tenant_brand",
+      "breakpoints": true
     }
   ]
 }
