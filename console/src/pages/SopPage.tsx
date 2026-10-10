@@ -484,6 +484,18 @@ function MemberSop({
     send: (list, base) => unwrap(api.sop.draft.$put({ json: { basedOn: base.basedOn, rev: base.rev, edits: list } })),
     onSaved: (v) => {
       qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) => (old && 'spec' in old ? withSavedDraft(old, v) : old));
+      // 模板模式下改了系统托管的前言，服务端的可编辑上限会变（04 第 22 步）：只取回上限合进缓存，
+      // 草稿与没保存的编辑都不动，额度条与发布检查用同一个上限；取不到就等下次重取
+      void unwrap(api.sop.$get())
+        .then((fresh) => {
+          if (!('budget' in fresh)) return;
+          qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) =>
+            old && 'spec' in old && old.budget.limit !== fresh.budget.limit
+              ? { ...old, budget: { ...old.budget, limit: fresh.budget.limit } }
+              : old,
+          );
+        })
+        .catch(() => {});
       clearResults();
     },
     onConflict: (list) => setLost((prev) => ({ edits: list, loaded: prev?.loaded ?? [] })),
