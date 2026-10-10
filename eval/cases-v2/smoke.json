@@ -1,0 +1,77 @@
+[
+  {
+    "version": 2,
+    "id": "travel-engine-164-smoke",
+    "desc": "问需纯文本脚本回复",
+    "tags": ["冒烟"],
+    "fixtures": { "now": "2026-10-02T12:00:00+08:00" },
+    "turns": [
+      {
+        "say": "你好，想了解旅游",
+        "script": [{ "content": "您好，请问想去哪里玩？<state>{\"stage\":\"discovery\"}</state>" }],
+        "expect": {
+          "replyMatches": ["^您好，请问想去哪里玩？$"],
+          "stage": "discovery",
+          "tools": [],
+          "orders": { "count": 0 },
+          "silent": false,
+          "handoff": false,
+          "guardVerdicts": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-164-order-smoke",
+    "desc": "一次建单调用及工具结果和订单占位",
+    "tags": ["冒烟"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": { "stage": "quote", "profile": { "travelers": "2人", "dates": "2026-12-10" }, "seenRouteIds": ["r-yunnan-mid"] }
+    },
+    "turns": [
+      {
+        "say": "就订云南这条，2人，2026-12-10出发",
+        "script": [
+          { "toolCalls": [{ "name": "create_order", "args": { "routeId": "r-yunnan-mid", "travelers": 2, "departDate": "2026-12-10" } }] },
+          { "content": "请点击付款链接：{{call:create_order.payUrl}}<state>{\"stage\":\"closing\"}</state>" }
+        ],
+        "expect": {
+          "replyMatches": ["/pay/{{order:0.id}}"],
+          "replyExcludes": ["脚本耗尽"],
+          "stage": "closing",
+          "tools": ["create_order"],
+          "orders": {
+            "count": 1,
+            "last": { "id": "{{call:create_order.orderId}}", "travelers": 2, "departDate": "2026-12-10", "status": "pending_payment" }
+          },
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "travel-engine-196-smoke",
+    "desc": "预置接管后静默与预置订单",
+    "tags": ["冒烟"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": { "stage": "handoff", "handedOver": true },
+      "orders": [{ "routeId": "r-yunnan-mid", "travelers": 2, "departDate": "2026-12-10", "status": "paid" }]
+    },
+    "turns": [
+      {
+        "say": "还在吗",
+        "expect": {
+          "silent": true,
+          "handoff": true,
+          "stage": "handoff",
+          "tools": [],
+          "orders": { "count": 1, "last": { "status": "paid", "travelers": 2 } }
+        }
+      }
+    ]
+  }
+]
