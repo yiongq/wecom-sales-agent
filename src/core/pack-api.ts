@@ -39,6 +39,47 @@ export {
 } from './parse/money.js';
 export { clauses, sentences, sentenceUnits } from './parse/sentences.js';
 
+// 04 第 8 步：日期/人数语境由调用方选，核心不装载旅游节日与范围政策。
+export {
+  budgetHeadcount,
+  groupSizeIn,
+  hasTotalHeadcount,
+  headcountIn,
+  parseCountArg,
+  parseDayCount,
+  spokenHeadcounts,
+  type CountRange,
+  type Headcount,
+  type HeadcountRead,
+} from './parse/counts.js';
+export {
+  addDays,
+  dayInMonth,
+  isAside,
+  isMonthAside,
+  isRealDate,
+  isValidIsoDate,
+  isoOf,
+  latestDepart,
+  MONTH_PATTERN,
+  monthSaid,
+  monthsOf,
+  readDepartDates,
+  resolveDepartDate,
+  saysDay,
+  spokenDepartDate,
+  statedPastDate,
+  whensIn,
+  type DateParsePolicy,
+  type DateReadResult,
+  type DateSpan,
+  type HolidayLeft,
+  type MonthMention,
+  type MonthParsePolicy,
+  type SpokenDate,
+  type YearMonth,
+} from './parse/dates.js';
+
 export type SopContractRule =
   | { id: string; kind: 'include'; text: string; from: string }
   | { id: string; kind: 'exclude'; text: string; from: string }
