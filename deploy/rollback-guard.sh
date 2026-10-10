@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 回滚前检查（02、03 spec「导入、导出与切换」）。在服务器上跑：deploy.sh 部署一个旧 tag、
+# 回滚前检查（02、03「导入、导出与切换」、04 R14）。在服务器上跑：deploy.sh 部署一个旧 tag、
 # 以及健康检查失败后自动回滚到 :prev 之前，经 ssh 把本脚本交给 bash -s。
 # 本脚本经 bash -s 从标准输入读，所有外部命令必须 </dev/null（管道下游只读管道），不能读走后续脚本。
 # 01 的镜像不认识 SESSION_STORE、不读库里的会话：真实会话在库里时（var/ 里有 sessions-in-db.json，或 .env 里是
@@ -13,15 +13,19 @@
 # 正在跑的容器本身是 02 之前的镜像就不算（这次回滚不会让条目版本更失真），否则按有风险处理。
 # 03 之前的镜像不认识库里的渠道状态：标记在、或库里有默认企微 exported 账号以外的行时拒绝，先用当前镜像
 # channel-export。库问不到时，仅正在跑的镜像明确没有 registry.ts 才不算风险。两个 03 之后的镜像之间照常回滚。
+# 04 之前的镜像不认识模板品牌：所有租户待生效品牌或当前发布快照任一非空就拒绝；clear 后必须重启重渲染。
+# 库问不到时，仅正在跑的镜像明确没有 pack-api.ts 才不算品牌风险。
 #
 # 用法：rollback-guard.sh <部署目录> <目标> [<compose 项目名> [<宿主端口>]]
 #   <目标> 是镜像名（如 wecom-sales-agent:prev）：自动回滚。看镜像里有没有 /app/src/store/pg-backend.ts；docker 出错、判断不了时按 02 之前算
 #   <目标> 是 pre-02：部署旧 tag，调用方已经按 tag 的文件树判定它是 02 之前的（镜像还没建）
 #   <目标> 是 pre-03：部署旧 tag，调用方已判定它是 02 之后、03 之前的
+#   <目标> 是 pre-04：部署旧 tag，调用方已判定它是 03 之后、04 之前的
 # 打印的命令带上项目名与宿主端口（旁路实例的手工命令也要带，见 deploy/compose.yml 开头）。
 # 退出码：0 照常回滚；3 拒绝，只有会话在库里（先回到文件存储的步骤打在 stderr）；4 拒绝，有条目版本大于 1 或看不出来
 #（只能回到 02 之后的镜像，不打印导出步骤）；5 拒绝，有渠道状态在库里或看不出来（先 channel-export，
-# 若目标同时是 02 之前、会话在库里，再回到文件存储）。优先级：4 > 5 > 3。
+# 若目标同时是 02 之前、会话在库里，再回到文件存储）；6 拒绝，有品牌风险，先 clear、重启并核对旧版 promptHash。
+# 保留旧风险优先级：4 > 5 > 6 > 3；品牌步骤不因同时有旧风险而省略。
 set -u
 dir="$1" target="$2" project="${3:-wecom-sales-agent}" port="${4:-3210}"
 marker="$dir/var/sessions-in-db.json"
@@ -42,9 +46,11 @@ fi
 if [ "$(env_val SESSION_STORE "$env_file")" = db ]; then
   risks+=(".env 里是 SESSION_STORE=db：真实会话在库里（db 存储）")
 fi
+session_risk_count=${#risks[@]}
 # 02 之前的镜像里没有 pg-backend.ts：0 是 02 之后的，1 是 02 之前的，其余是 docker 出错、看不出来
 pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/store/pg-backend.ts' </dev/null; }
 pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts' </dev/null; }
+pre04_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/pack-api.ts' </dev/null; }
 # 直接问库（与 backup.sh 同一种找法：按项目名找 db 服务，在 / 下执行；超级用户不受 RLS 限制）。打印 t / f / none（表不存在）
 db_versioned() {
   local db has
@@ -70,6 +76,14 @@ db_channels() {
     *) return 1 ;;
   esac
 }
+# 超级用户跨租户检查；published 是每个租户唯一的当前发布行，历史 archived 与草稿不算。
+# to_jsonb 兼容 04 之前没有 tenants.brand 列的库；旧快照缺 brand 与 JSON null 都是旧版模式。
+db_brand() {
+  local db
+  db=$(env_val AGENT_DB "$dir/.env.db")
+  db=${db:-agent}
+  (cd / && docker compose -p "$project" exec -T db psql -U postgres -d "$db" -Atc "select exists(select 1 from tenants t where coalesce(to_jsonb(t)->'brand', 'null'::jsonb) <> 'null'::jsonb) or exists(select 1 from sop_versions where status = 'published' and coalesce(render_inputs->'brand', 'null'::jsonb) <> 'null'::jsonb)" </dev/null) 2>/dev/null
+}
 # 有条目版本大于 1（02「报价快照」）：先问正在运行的实例，看不出来再问库，库也问不到再看正在跑的是不是 02 之前的镜像
 catalog_risk=""
 health=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/healthz" </dev/null 2>/dev/null)
@@ -94,7 +108,7 @@ esac
 is_pre02=0
 case "$target" in
   pre-02) is_pre02=1 ;;
-  pre-03) ;;
+  pre-03 | pre-04) ;;
   *)
     if [ ${#risks[@]} -gt 0 ]; then
       pre02_image "$target" >/dev/null 2>&1
@@ -109,9 +123,12 @@ esac
 if [ "$is_pre02" = 0 ]; then
   risks=()
   catalog_risk=""
+  session_risk_count=0
 fi
 is_pre03=1
-if [ "$is_pre02" = 0 ] && [ "$target" != pre-03 ]; then
+if [ "$target" = pre-04 ]; then
+  is_pre03=0
+elif [ "$is_pre02" = 0 ] && [ "$target" != pre-03 ]; then
   pre03_image "$target" >/dev/null 2>&1
   case $? in
     0) is_pre03=0 ;;
@@ -138,6 +155,30 @@ if [ "$is_pre03" = 1 ]; then
   fi
 fi
 [ -n "$channel_risk" ] && risks+=("$channel_risk")
+is_pre04=1
+if [ "$is_pre03" = 0 ] && [ "$target" != pre-04 ]; then
+  pre04_image "$target" >/dev/null 2>&1
+  case $? in
+    0) is_pre04=0 ;;
+    1) ;;
+    *) echo "rollback-guard: 看不出 ${target} 是不是 04 之前的镜像（docker 出错），按 04 之前处理" >&2 ;;
+  esac
+fi
+brand_risk=""
+if [ "$is_pre04" = 1 ]; then
+  brand=$(db_brand) || brand=""
+  case "$brand" in
+    f) ;;
+    t) brand_risk="库里有租户的 tenants.brand 不为空，或当前发布版本的 render_inputs.brand 带品牌快照（clear 但未重启也算）" ;;
+    *)
+      running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
+      if [ -z "$running" ] || [ "$(pre04_image "$running" >/dev/null 2>&1; echo $?)" != 1 ]; then
+        brand_risk="问不到库，看不出待生效品牌与当前发布品牌快照，按有品牌风险处理"
+      fi
+      ;;
+  esac
+fi
+[ -n "$brand_risk" ] && risks+=("$brand_risk")
 [ ${#risks[@]} -eq 0 ] && exit 0
 
 # 打印的命令里的租户：标记文件的 tenant，没有就取 .env 的 DEFAULT_TENANT_SLUG；字符集不对（或都没有）就留 <slug> 让人填
@@ -150,10 +191,22 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
 {
   if [ "$is_pre02" = 1 ]; then
     echo "拒绝回滚：目标是 02 之前的镜像（没有 src/store/pg-backend.ts），而"
-  else
+  elif [ "$is_pre03" = 1 ]; then
     echo "拒绝回滚：目标是 03 之前的镜像（没有 src/channels/registry.ts），而"
+  else
+    echo "拒绝回滚：目标是 04 之前的镜像（没有 src/core/pack-api.ts），而"
   fi
   for r in "${risks[@]}"; do echo "  - ${r}"; done
+  if [ -n "$brand_risk" ]; then
+    echo '先 tenant-brand clear、重启、确认 /healthz 的 promptHash 回到旧版模式的值，再回滚。'
+    echo "对所有有品牌风险的租户用当前（04 之后的）镜像执行（在 ${dir} 下）："
+    echo "  ${dc} run --rm platform node --import tsx src/cli/tenant-brand.ts clear --tenant <slug>"
+    echo "  ${dc} restart app"
+    echo "  curl -fsS http://127.0.0.1:${port}/healthz"
+    echo "  （确认 promptHash 回到该租户旧版模式的值）"
+    echo "clear 只改待生效值：重启重渲染后当前发布快照的 brand 也须为空，再重跑回滚检查。"
+    case "$brand_risk" in *问不到库*) echo "先确认 db 在跑（docker compose -p ${project} ps db），能查库之后再确认所有租户的两种品牌值。" ;; esac
+  fi
   if [ -n "$catalog_risk" ]; then
     echo "02 之前的镜像不写条目版本：那期间发出的方案书链接回到 02 之后会按版本 1 显示旧价。回到文件存储也去不掉这一条，"
     echo "要回滚只能回到 02 之后的镜像（会话在库里也不用先导出）。"
@@ -161,6 +214,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     # 回到文件存储的步骤帮不上忙，不打印
     exit 4
   fi
+  if [ -n "$brand_risk" ] && [ ${#risks[@]} -eq 1 ]; then exit 6; fi
   if [ -n "$channel_risk" ]; then
     echo "先用当前（03 之后的）镜像导出渠道状态（在 ${dir} 下）："
     if [ "$target" != pre-02 ] && [ "$target" != pre-03 ]; then
@@ -174,7 +228,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     echo "      有默认企微账号以外的任何账号，不论状态，只能回到 03 之后的镜像；部分送达或未发的人工回复、通知需以 03 起一次、恢复发完、正常停机再导出。）"
     echo "  3. 确认退出码 0、var/channels-in-db.json 没了、默认企微账号（kind = wecom_kf、id_prefix = wecom:）是 exported，.env 里的 WECOM_* 还在。"
     case "$channel_risk" in *问不到库*) echo "     先确认 db 在跑（docker compose -p ${project} ps db），能查库之后再确认上述状态。" ;; esac
-    if [ "$is_pre02" = 1 ] && [ ${#risks[@]} -gt 1 ]; then
+    if [ "$is_pre02" = 1 ] && [ "$session_risk_count" -gt 0 ]; then
       echo "  4. 目标同时是 02 之前、会话在库里：接着按下面的步骤回到文件存储，再起目标镜像。"
     else
       if [ "$target" = pre-02 ] || [ "$target" = pre-03 ]; then
@@ -216,4 +270,5 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
   fi
 } >&2
 [ -n "$channel_risk" ] && exit 5
+[ -n "$brand_risk" ] && exit 6
 exit 3

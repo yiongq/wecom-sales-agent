@@ -3592,8 +3592,10 @@ await t.close();
     'case "$1" in exec|compose|run|inspect|image) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *pack-api.ts*|*"from tenants t"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
+    '  *"from tenants t"*) echo f ;;',
+    '  *pack-api.ts*) exit 1 ;;',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
     '  *registry.ts*) exit "${FAKE_REGISTRY:-1}" ;;',
     // rollback-guard.sh 看镜像里有没有 pg-backend.ts：FAKE_PG_BACKEND 是 test 的退出码（0 有、1 没有、其余当 docker 出错）；
@@ -4441,7 +4443,7 @@ await t.close();
     d3.code !== 0 && !d3.out.includes('拒绝回滚') && d3.log.includes('rsync ') && !d3.log.includes('bash -s -- ' + dsrv + ' pre-02'),
     `${d3.code} ${d3.out.slice(-400)}`,
   );
-  commitAndTag('v03', ['src/channels/registry.ts']);
+  commitAndTag('v04', ['src/channels/registry.ts', 'src/core/pack-api.ts']);
   const deployChannel = (tag: string, channelMarker: boolean, channels = 'none') => {
     const cm = path.join(dsrv, 'var', 'channels-in-db.json');
     if (channelMarker) fs.writeFileSync(cm, '{}\n');
@@ -4480,9 +4482,9 @@ await t.close();
     d7.log.includes(`bash -s -- ${dsrv} pre-03`) && d7.log.includes('rsync ') && !d7.out.includes('拒绝回滚'),
     d7.out,
   );
-  const d8 = deployChannel('v03', true, 'down');
+  const d8 = deployChannel('v04', true, 'down');
   check(
-    'deploy.sh：03 tag 有 registry.ts，不调用旧镜像检查，渠道标记与库故障不拦下部署',
+    'deploy.sh：04 tag 有 pack-api.ts，不调用旧镜像检查，渠道标记与库故障不拦下部署',
     d8.log.includes('rsync ') && !d8.log.includes(`bash -s -- ${dsrv} pre-`) && !d8.out.includes('拒绝回滚'),
     d8.out,
   );
@@ -4495,7 +4497,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345*]\) echo "[^\n]*" >&2 ;;\n){4} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[3456*]\) echo "[^\n]*" >&2 ;;\n){5} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );
