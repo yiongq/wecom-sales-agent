@@ -3,6 +3,7 @@ import type { SectionSpec } from '../shared/sop-sections.js';
 import type { CustomerProfile, SalesStage, Session } from '../types.js';
 import type { ToolDef } from '../tool-defs.js';
 import type { CatalogItem } from '../shared/console-api.js';
+import { z } from 'zod';
 
 export type { CustomerProfile, SalesStage, Session, Order, AgentReply, Route, Hotel } from '../types.js';
 export { toolDefs, type ToolDef } from '../tool-defs.js';
@@ -34,6 +35,23 @@ export interface BrandProfile {
   scopeNoun: string;
   identityLine: string;
 }
+
+/** 平台输入是完整档案；不接受额外字段（尤其是凭据），不改写品牌文字。 */
+const brandText = z.string().refine((text) => text.trim().length > 0, '品牌字段不能为空');
+export const BrandProfileSchema: z.ZodType<BrandProfile> = z.strictObject({
+  brandName: brandText,
+  advisorTitle: brandText,
+  aiTitle: brandText,
+  scopeNoun: brandText,
+  identityLine: brandText,
+});
+export const BRAND_FIELDS = [
+  'brandName',
+  'advisorTitle',
+  'aiTitle',
+  'scopeNoun',
+  'identityLine',
+] as const satisfies readonly (keyof BrandProfile)[];
 
 /** 当前工具的 wire 结果仍是 JSON 字符串，不在本步改变工具契约。 */
 export type ToolResult = string;

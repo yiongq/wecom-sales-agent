@@ -1,6 +1,7 @@
 // 租户（spec「数据库」）：tenants 不带 RLS，agent_app 只读，agent_platform 能新建。不经 withTenant
 import { eq } from 'drizzle-orm';
-import type { Db } from '../client.js';
+import type { BrandProfile } from '../../core/pack-api.js';
+import type { Db, Tx } from '../client.js';
 import { tenants } from '../schema.js';
 
 export interface TenantRow {
@@ -31,10 +32,22 @@ export async function findTenantBySlug(db: Db, slug: string): Promise<TenantRow 
 
 export async function insertTenant(
   db: Db,
-  t: { slug: string; name: string; packId: string; locale: string; region: string },
+  t: { slug: string; name: string; packId: string; locale: string; region: string; brand?: BrandProfile | null },
 ): Promise<TenantRow> {
   const [row] = await db.insert(tenants).values(t).returning();
   return row!;
+}
+
+/** 平台命令读待生效配置；forUpdate 在审计事务里串行化并发的 set/clear。 */
+export async function readBrand(db: Db | Tx, tenantId: string, forUpdate = false): Promise<BrandProfile | null | undefined> {
+  const query = db.select({ brand: tenants.brand }).from(tenants).where(eq(tenants.id, tenantId));
+  const [row] = await (forUpdate ? query.for('update') : query);
+  return row?.brand;
+}
+
+/** 只写 brand，不发布、不重渲染；调用方与字段名审计一起提交。 */
+export async function updateBrand(tx: Tx, tenantId: string, brand: BrandProfile | null): Promise<void> {
+  await tx.update(tenants).set({ brand }).where(eq(tenants.id, tenantId));
 }
 
 export interface RetentionSettings {

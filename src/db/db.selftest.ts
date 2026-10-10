@@ -253,7 +253,7 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     );
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
-  // 只能是 tenants 的三个保留期列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
+  // 只能是 tenants 的三个保留期列与品牌列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
   // UPDATE，03 spec 授权表）。按 JS 的顺序比，不受库的排序规则影响
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
@@ -264,13 +264,15 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
       order by 1`,
   );
   check(
-    `${label}授权：带列级授权的只有 tenants 的三个保留期列（agent_platform 的 UPDATE）与 channel_accounts 的九列（agent_app 的 UPDATE）`,
+    `${label}授权：带列级授权的只有 tenants 的三个保留期列与品牌列（agent_platform 的 UPDATE）与 channel_accounts 的九列（agent_app 的 UPDATE）`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
       .join(',') ===
       [
-        ...['retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map((c) => `tenants.${c} agent_platform UPDATE`),
+        ...['brand', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map(
+          (c) => `tenants.${c} agent_platform UPDATE`,
+        ),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
       ]
         .toSorted()
@@ -4707,18 +4709,18 @@ async function realPostgres(superUrl: string): Promise<void> {
       );
     }
     // tenants 的三个保留期列：agent_platform 列级 UPDATE，agent_app 一列都不能改
-    const RETENTION = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days'];
+    const UPDATABLE = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days', 'brand'];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(
       `select a.attname as col, has_column_privilege('agent_platform', 'public.tenants', a.attname, 'UPDATE') as platform,
               has_column_privilege('agent_app', 'public.tenants', a.attname, 'UPDATE') as app
          from pg_attribute a where a.attrelid = 'public.tenants'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
     );
     check(
-      '真实 PG：agent_platform 只能 UPDATE tenants 的三个保留期列，agent_app 一列都不能',
+      '真实 PG：agent_platform 只能 UPDATE tenants 的三个保留期列与品牌列，agent_app 一列都不能',
       colPriv
         .filter((c) => c.platform)
         .map((c) => c.col)
-        .join(',') === RETENTION.join(',') && colPriv.every((c) => !c.app),
+        .join(',') === UPDATABLE.join(',') && colPriv.every((c) => !c.app),
       JSON.stringify(colPriv.filter((c) => c.platform || c.app)),
     );
     // 03：channel_accounts 上 agent_app 只能 UPDATE 九列（身份五列、tenant_id、id、created_at 改不了），agent_platform 一列都没有
