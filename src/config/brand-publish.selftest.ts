@@ -11,8 +11,8 @@ import * as config from './source.js';
 import * as sop from './sop.js';
 import { tenantImage, tenantRenderer, preambleWarning } from './brand.js';
 import { shanhaiBrand } from '../packs/travel/brand-fixture.js';
-import { joinSop, sectionBody, withBody } from '../sop/sections.js';
-import { checkSopContract } from '../sop/contract.js';
+import { editableChars, joinSop, sectionBody, withBody } from '../sop/sections.js';
+import { BUDGET_RATIO, checkSopContract } from '../sop/contract.js';
 import { sha256 } from './hashes.js';
 import type { BrandProfile } from '../core/pack-api.js';
 
@@ -122,6 +122,118 @@ async function transition(before: BrandProfile | null, after: BrandProfile | nul
   await config.closeConfig();
 }
 
+/** 发布占满原预算的 SOP，再反复改长、改短、改回与 clear，余量不能漂移。 */
+async function budgetRoundTrip(before: BrandProfile | null, edited: boolean, n: number) {
+  config.__configTest.reset();
+  const slug = `budget-${n}`;
+  await t.pg.exec('RESET ROLE');
+  await t.pg.query("insert into tenants (slug, name, pack_id, brand) values ($1, $1, 'travel', $2)", [slug, JSON.stringify(before)]);
+  await t.pg.exec('SET ROLE agent_app');
+  const deps = testConfigDeps(t, { tenantSlug: slug });
+  const imported = await importConfig({ db: t.db, tenantSlug: slug, dataDir: 'data', imageSop: md, lock: async () => fakeLock() });
+  assert.equal(imported.code, 0, imported.message);
+  await config.initConfig(deps);
+  const first = config.currentSop();
+  const ctx = { tenantId: first.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+  const originalChars = editableChars(first.sections);
+  const originalLimit = Math.floor(originalChars * BUDGET_RATIO);
+  const initialOverview = await sop.getSopOverview(ctx);
+  check(() => assert.deepEqual(initialOverview.budget, { chars: originalChars, limit: originalLimit }));
+  const toneSpec = runtime.sopSections.find((s) => s.key === 'tone')!;
+  const preambleSpec = runtime.sopSections.find((s) => s.key === 'preamble')!;
+  const originalPreamble = first.sections.find((s) => s.key === 'preamble')!;
+  const customPreamble = withBody(preambleSpec, originalPreamble.text.trimEnd() + '运营自写前言。', false);
+  const sections = first.sections.map((s) => (edited && s.key === 'preamble' ? customPreamble : s));
+  const toneBody = sectionBody(
+    first.sections.find((s) => s.key === 'tone')!,
+    toneSpec,
+  ).trimEnd();
+  const fullTone = toneBody + '补'.repeat(originalLimit - editableChars(sections));
+  let draft = await sop.saveSopDraft(ctx, {
+    basedOn: first.versionId,
+    rev: null,
+    edits: [{ key: 'tone', body: fullTone }, ...(edited ? [{ key: 'preamble', body: customPreamble.text }] : [])],
+  });
+  let checked = await sop.checkSopDraft(ctx);
+  check(() => assert.equal(checked.chars, originalLimit));
+  check(() => assert.equal(checked.limit, originalLimit));
+  check(() => assert.deepEqual(checked.violations, []));
+  await sop.publishSopDraft(ctx, { rev: draft.rev!, changeNote: '占满原发布预算' });
+
+  const longer = { ...shanhaiBrand, brandName: '山海定制旅行' };
+  const shorter = { ...shanhaiBrand, brandName: '山海' };
+  for (const after of [longer, shorter, before, null, longer, before, null, before]) {
+    await t.pg.exec('RESET ROLE');
+    await withTenant(t.db, { ...ctx, actor: { ...ctx.actor, kind: 'platform' } }, (tx) => updateBrand(tx, ctx.tenantId, after));
+    await t.pg.exec('SET ROLE agent_app');
+    await config.closeConfig();
+    config.__configTest.reset();
+    await config.initConfig(deps);
+    const current = config.currentSop();
+    const image = tenantImage(runtime, md, after);
+    const preamble = current.sections.find((s) => s.key === 'preamble')!;
+    const delta = edited ? 0 : image.find((s) => s.key === 'preamble')!.text.length - originalPreamble.text.length;
+    check(() => assert.equal(preamble.text, edited ? customPreamble.text : image.find((s) => s.key === 'preamble')!.text));
+    check(() => assert.deepEqual(current.brand, after));
+    const currentOverview = await sop.getSopOverview(ctx);
+    check(() => assert.deepEqual(currentOverview.budget, { chars: originalLimit + delta, limit: originalLimit + delta }));
+    draft = await sop.saveSopDraft(ctx, { basedOn: current.versionId, rev: null, edits: [] });
+    checked = await sop.checkSopDraft(ctx);
+    check(() => assert.equal(checked.limit, originalLimit + delta));
+    check(() => assert.equal(checked.chars, checked.limit));
+    check(() => assert.deepEqual(checked.violations, []));
+    const full = await sop.publishSopDraft(ctx, { rev: draft.rev!, changeNote: '品牌切换后无编辑发布' });
+    check(() => assert.equal(full.promptHash, current.promptHash));
+    // 同一品牌下回滚也必须用相同预算，不能因系统差额拒绝满额版本。
+    await sop.rollbackSop(ctx, { versionId: full.id, changeNote: '回滚满额版本' });
+    checks++;
+    draft = await sop.saveSopDraft(ctx, {
+      basedOn: config.currentSop().versionId,
+      rev: null,
+      edits: [{ key: 'tone', body: fullTone + '多' }],
+    });
+    checked = await sop.checkSopDraft(ctx);
+    check(() => assert.equal(checked.chars, checked.limit + 1));
+    check(() =>
+      assert.deepEqual(
+        checked.violations.map((v) => v.code),
+        ['over_budget'],
+      ),
+    );
+    const overview = await sop.getSopOverview(ctx);
+    check(() => assert.deepEqual(overview.budget, { chars: checked.chars, limit: checked.limit }));
+    await assert.rejects(
+      sop.publishSopDraft(ctx, { rev: draft.rev!, changeNote: '超过原余量一字' }),
+      (e: unknown) => e instanceof sop.SopContractError && e.violations.some((v) => v.code === 'over_budget'),
+    );
+    checks++;
+    await sop.discardSopDraft(ctx, { rev: draft.rev! });
+    // 一旦运营接管前言，全部正文照原预算计算，不能继续享受品牌差额。
+    draft = await sop.saveSopDraft(ctx, {
+      basedOn: config.currentSop().versionId,
+      rev: null,
+      edits: [{ key: 'preamble', body: preamble.text.trimEnd() + '多'.repeat(Math.abs(delta) + 1) }],
+    });
+    checked = await sop.checkSopDraft(ctx);
+    check(() => assert.equal(checked.limit, originalLimit));
+    check(() =>
+      assert.deepEqual(
+        checked.violations.map((v) => v.code),
+        ['over_budget'],
+      ),
+    );
+    const customOverview = await sop.getSopOverview(ctx);
+    check(() => assert.equal(customOverview.budget.limit, originalLimit));
+    await assert.rejects(
+      sop.publishSopDraft(ctx, { rev: draft.rev!, changeNote: '运营前言超预算' }),
+      (e: unknown) => e instanceof sop.SopContractError && e.violations.some((v) => v.code === 'over_budget'),
+    );
+    checks++;
+    await sop.discardSopDraft(ctx, { rev: draft.rev! });
+  }
+  await config.closeConfig();
+}
+
 try {
   let n = 0;
   for (const [before, after] of [
@@ -131,6 +243,7 @@ try {
   ] as const)
     for (const edited of [false, true]) await transition(before, after, edited, ++n);
   await transition(shanhaiBrand, { ...shanhaiBrand, aiTitle: 'AI 定制顾问' }, false, ++n, true);
+  for (const before of [shanhaiBrand, null]) for (const edited of [false, true]) await budgetRoundTrip(before, edited, ++n);
   const image = tenantImage(runtime, md, shanhaiBrand);
   const render = tenantRenderer(runtime, shanhaiBrand);
   const base = {
@@ -172,7 +285,7 @@ try {
   check(() =>
     assert.ok(checkSopContract({ ...base, hardRequirements: render('') + '微信' }).some((v) => v.sectionKey === 'hard-requirements')),
   );
-  console.log(`BRAND PUBLISH SELFTEST：${checks} 项通过（六种前言切换、四条写路径、契约范围）`);
+  console.log(`BRAND PUBLISH SELFTEST：${checks} 项通过（六种前言切换、四条写路径、契约范围、满额品牌预算往返与 demo 原预算）`);
 } finally {
   console.warn = warn;
   await config.closeConfig();
