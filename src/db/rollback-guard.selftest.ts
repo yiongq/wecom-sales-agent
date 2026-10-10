@@ -16,7 +16,7 @@ const log = path.join(tmp, 'calls');
 const queryFile = path.join(tmp, 'brand-query');
 const rolledBack = path.join(tmp, 'rolled-back');
 const guardSource = fs.readFileSync(path.join(root, 'deploy/rollback-guard.sh'), 'utf8');
-const recovery = '先 tenant-brand clear、重启、确认 /healthz 的 promptHash 回到旧版模式的值，再回滚。';
+const recovery = '再重跑回滚检查，确认品牌风险已消除';
 let checks = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
   assert.ok(ok, `${name}: ${detail}`);
@@ -161,6 +161,67 @@ esac
 exit 0`,
   );
 
+  const dc = 'APP_CONTAINER=side1 HOST_PORT=3999 docker compose -p side1 -f deploy/compose.yml';
+  const clear = `${dc} run --rm platform node --import tsx src/cli/tenant-brand.ts clear --tenant <slug>`;
+  const restore = `APP_IMAGE=side1:prev ${dc} up -d --no-deps app && docker tag side1:prev side1:current`;
+  for (const [name, pending, published] of [
+    ['只有待生效品牌', 't', 'f'],
+    ['只有发布快照（clear 未重启）', 'f', 't'],
+    ['待生效与发布快照都有', 't', 't'],
+  ] as const) {
+    for (const auto of [false, true]) {
+      const label = `${name} × ${auto ? '自动回滚' : '部署旧 tag'}`;
+      const env = { FAKE_PENDING_BRAND: pending, FAKE_PUBLISHED_BRAND: published, ...(auto ? { FAKE_HEALTH_FAIL: '1' } : {}) };
+      const g = guard(auto ? 'side1:prev' : 'pre-04', env);
+      check(`${label}：仍拒绝 6`, g.code === 6, g.out);
+      check(
+        `${label}：只对非空待生效值建议 clear`,
+        g.out.includes(clear) === (pending === 't') &&
+          g.out.includes('先 tenant-brand clear') === (pending === 't') &&
+          (pending === 't' || g.out.includes('待生效品牌已经为空，无需再次 tenant-brand clear')),
+        g.out,
+      );
+      check(
+        `${label}：只有发布快照需要 04 重渲染和 hash 核对`,
+        g.out.includes('按原因 brand 重渲染') === (published === 't') &&
+          g.out.includes('promptHash') === (published === 't') &&
+          g.out.includes(`${dc} restart app`) === (!auto && published === 't') &&
+          (published === 't' || g.out.includes('clear 后无需重启或重渲染')),
+        g.out,
+      );
+      check(
+        `${label}：恢复命令带项目、端口与目标镜像`,
+        auto
+          ? g.out.includes(restore) && !g.out.includes('restart app') && g.out.indexOf(recovery) < g.out.indexOf(restore)
+          : !g.out.includes('APP_IMAGE=') && g.out.includes('再部署旧 tag'),
+        g.out,
+      );
+      const useRecovery = `APP_IMAGE=\${RECOVERY_IMAGE} ${dc} up -d --no-deps app`;
+      check(
+        `${label}：自动回滚有快照先起已知可用 04，再 clear、重启、核对后起 prev`,
+        auto && published === 't'
+          ? g.out.includes("RECOVERY_IMAGE='side1:<已知可用的04之后tag>'") &&
+              g.out.includes(`${useRecovery} && docker tag "\${RECOVERY_IMAGE}" side1:current`) &&
+              g.out.includes(`${dc} stop app\n  ${useRecovery}`) &&
+              (pending === 'f' || g.out.indexOf(useRecovery) < g.out.indexOf(clear)) &&
+              g.out.indexOf('按原因 brand 重渲染') < g.out.indexOf('promptHash') &&
+              g.out.indexOf('promptHash') < g.out.indexOf(restore)
+          : !g.out.includes('RECOVERY_IMAGE'),
+        g.out,
+      );
+      const d = deploy(auto ? 'v04' : 'v03', env);
+      check(
+        `${label}：deploy.sh 把 6 转成 1、原样透出，收尾不误导`,
+        d.code === 1 &&
+          d.out.includes(g.out.trim()) &&
+          d.out.includes('按上面对应品牌状态的步骤恢复') &&
+          (auto ? !d.log.includes('up -d --no-deps app') && !d.out.includes('restart app') : !d.log.includes('rsync ')) &&
+          (pending === 't' || (!d.out.includes('先 tenant-brand clear') && !d.out.includes(clear))),
+        d.out,
+      );
+    }
+  }
+
   // 假 docker 输出只控制查询结果；下方执行同一条捕获的 SQL 证明两种品牌输入均被检查。
   let r = guard('pre-04', { FAKE_BRAND: 't' });
   check(
@@ -197,12 +258,23 @@ exit 0`,
   check('SQL 锁超时即使输出 f 也从严拒绝，不当作无风险', r.code === 6 && r.out.includes('问不到库') && r.elapsed < 3000, r.out);
   r = guard('pre-04', { FAKE_PROBE: 'down' });
   check('元数据探测连接失败仍从严拒绝', r.code === 6 && r.out.includes('问不到库'), r.out);
-  r = guard('pre-04', { FAKE_PENDING_BRAND: 't', FAKE_RUNNING: '1', FAKE_HANG: 'published-probe', FAKE_TIMEOUT_MS: '180' });
-  check(
-    '已知待生效品牌有风险立即拒绝，另一项超时/旧镜像豁免不能放行',
-    r.code === 6 && !r.log.includes("to_regclass('public.sop_versions')"),
-    r.out,
-  );
+  for (const point of ['published-probe', 'published']) {
+    for (const running of ['4', '1']) {
+      r = guard('side1:prev', { FAKE_PENDING_BRAND: 't', FAKE_RUNNING: running, FAKE_HANG: point, FAKE_TIMEOUT_MS: '180' });
+      check(
+        `已知待生效品牌有风险，${point} 超时/运行 ${running} 不能放行或误提示只需 clear`,
+        r.code === 6 &&
+          r.out.includes('tenants.brand 不为空') &&
+          r.out.includes('问不到库') &&
+          r.elapsed < 3000 &&
+          r.out.includes('RECOVERY_IMAGE=') &&
+          r.out.includes(restore) &&
+          !r.out.includes('restart app') &&
+          !r.out.includes('无需重启或重渲染'),
+        r.out,
+      );
+    }
+  }
   for (const [phase, target, points] of [
     ['02', 'pre-02', ['catalog-probe', 'catalog']],
     ['03', 'pre-03', ['channel-probe', 'channel']],
@@ -353,8 +425,7 @@ exit 0`,
       check(`${name}：bash -s`, g.code === (expected ? 6 : 0) && (!expected || g.out.includes(recovery)), g.out);
       check(
         `${name}：缺表/列只跳过对应的风险查询`,
-        g.log.includes('from public.tenants t') === pendingSchema &&
-          g.log.includes('from public.sop_versions where') === (publishedSchema && !pending),
+        g.log.includes('from public.tenants t') === pendingSchema && g.log.includes('from public.sop_versions where') === publishedSchema,
         g.log,
       );
       const d = deploy('v03', env);
