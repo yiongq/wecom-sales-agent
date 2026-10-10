@@ -1,6 +1,6 @@
 # 04 · 行业包抽取
 
-Status: ready
+Status: implemented
 Phase: 4 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-10 拆分之后的编号）
 Depends on: [03 · 渠道层 v2](../03-channels-v2/spec.md)（开工时须已 implemented）；[01](../01-pg-config-console/spec.md) 的 SOP 节表、锁定节、发布与启动重渲染；[02](../02-conversations-workbench/spec.md) 的 trace 与护栏事件（R16）；[00](../00-baseline/spec.md) 的前缀稳定检查。
 Supersedes in part: 01 不变量 11「当前发布的锁定节与镜像原文逐字节相同」——改为与**租户的镜像**逐字节相同（R5）；01「渲染与哈希」的渲染输入（加品牌）与「启动重渲染」的原因（加 `brand`）；主参考「护栏」一节「每次裁决记一行 `guard_events`」——改为 `guard_events` 只记改了文字的裁决，全部裁决（含放行）记在 `turn_traces.guard_verdicts`（R8）。
