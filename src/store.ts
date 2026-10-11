@@ -1,3 +1,4 @@
+import { scopedState } from './tenancy/scoped-state.js';
 import {
   currentRuntime,
   hostRuntime,
@@ -42,7 +43,7 @@ import {
   type StoreBackend,
   type StoreHealth,
 } from './store/backend.js';
-import { onCommitted, onHandoffUnsaved, type DomainEvent, type HandoffStartedEvent } from './store/events.js';
+import { onCommitted, onHandoffUnsaved, type DomainEvent, type DomainEventInput, type HandoffStartedEvent } from './store/events.js';
 import { createFileBackend } from './store/file-backend.js';
 import {
   JobsTxRefused,
@@ -61,6 +62,19 @@ import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
 import { linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
 import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
 import type { ChatMessage, MessageAuthor, Session, Order } from './types.js';
+
+const tenantState = scopedState(() => ({
+  incidentHooks: new Set<(i: StoreIncident) => void>(),
+  saveHooks: new Set<(s: Session) => void>(),
+  outboundCommitHooks: new Set<(rows: readonly OutboundRow[]) => void>(),
+}));
+const hookState = tenantState.get;
+// 固定账本能力接线，不捕获导入时的租户；发出方显式传所属运行时。
+const instanceSaveHooks = new Set<(rt: TenantRuntime, s: Session) => void>();
+const instanceOutboundHooks = new Set<(rt: TenantRuntime, rows: readonly OutboundRow[]) => void>();
+registerTenantState({ name: 'store.incidentHooks', ...tenantState.registration('incidentHooks') });
+registerTenantState({ name: 'store.saveHooks', ...tenantState.registration('saveHooks') });
+registerTenantState({ name: 'store.outboundCommitHooks', ...tenantState.registration('outboundCommitHooks') });
 
 export { gracefulExit, onShutdown, runShutdownHooks } from './shutdown.js';
 export {
@@ -107,13 +121,13 @@ export const storeEvents = new Proxy(new EventEmitter(), {
  * spill 是 drain 段结束时还有真实会话没落库、退出时要写进 spill 文件。只带会话短码与个数
  */
 export type StoreIncident = { kind: 'conflict'; detail: string } | { kind: 'spill'; sessions: number };
-const incidentHooks = new Set<(i: StoreIncident) => void>();
 export function onStoreIncident(cb: (i: StoreIncident) => void): () => void {
-  incidentHooks.add(cb);
-  return () => incidentHooks.delete(cb);
+  const hooks = hookState().incidentHooks;
+  hooks.add(cb);
+  return () => hooks.delete(cb);
 }
 function incident(i: StoreIncident): void {
-  for (const cb of incidentHooks) {
+  for (const cb of hookState().incidentHooks) {
     try {
       cb(i);
     } catch {
@@ -131,8 +145,6 @@ export function varDir(): string {
 }
 
 // 模块订阅能力留给第 9 步搬迁；发出时同步沿用所属运行时作用域。
-const saveHooks = new Set<(s: Session) => void>();
-const outboundCommitHooks = new Set<(rows: readonly OutboundRow[]) => void>();
 let forgetSessionProbe: ((sessionId: string) => void) | null = null;
 export interface TenantStore {
   sessions: Map<string, Session>;
@@ -298,7 +310,15 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
       if (currentRuntime().isHost) fileBackendOf(state).markChanged(ids);
     },
     outboundCommitted: (rows) => {
-      for (const cb of outboundCommitHooks) {
+      const rt = currentRuntime();
+      for (const cb of instanceOutboundHooks) {
+        try {
+          withoutTenantScope(() => cb(rt, rows));
+        } catch (e) {
+          console.error('[store] 出站行实例订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+        }
+      }
+      for (const cb of hookState().outboundCommitHooks) {
         try {
           cb(rows);
         } catch (e) {
@@ -377,9 +397,9 @@ export async function drainStore(timeoutMs: number): Promise<{ undrained: string
 }
 
 /** 改动随这个会话的下一次落库提交；提交后才交给 onCommitted 的订阅者 */
-export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
+export function emitAfterCommit(sessionId: string, ev: DomainEventInput): void {
   const state = storeState();
-  (pgFor(sessionId) ?? fileBackendOf(state)).emitAfterCommit(sessionId, ev);
+  (pgFor(sessionId) ?? fileBackendOf(state)).emitAfterCommit(sessionId, { ...ev, tenantId: currentRuntime().id } as DomainEvent);
 }
 
 // ---------------- 排进「这个会话下一次落库」的附带行 ----------------
@@ -518,8 +538,15 @@ export function withJobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 /** saveSession 之后的订阅者：只为 db 存储的真实会话调（排、取消跟进，src/jobs/followup.ts）。与 saveSession 同一段同步代码，排出的附带行进同一次落库 */
 
 export function onSessionSaved(cb: (s: Session) => void): () => void {
-  saveHooks.add(cb);
-  return () => saveHooks.delete(cb);
+  const hooks = hookState().saveHooks;
+  hooks.add(cb);
+  return () => hooks.delete(cb);
+}
+
+/** 固定能力订阅所有运行时；允许空作用域注册，回调须进入参数 rt。 */
+export function onAnySessionSaved(cb: (rt: TenantRuntime, s: Session) => void): () => void {
+  instanceSaveHooks.add(cb);
+  return () => void instanceSaveHooks.delete(cb);
 }
 
 /** 企微去重集合（第 12 步用）：db 存储下是预载的最近 7 天带 msgid 的客户消息，加上本进程记下的；文件存储下为空 */
@@ -548,8 +575,15 @@ export function writeStandaloneOutbound(rows: readonly OutboundRow[]): Promise<v
 
 /** 主事务里的出站行随会话提交之后调（poisoned 之后的短事务提交了也调；行对象就是 queueOutboundRows 交进来的那几个） */
 export function onOutboundCommitted(cb: (rows: readonly OutboundRow[]) => void): () => void {
-  outboundCommitHooks.add(cb);
-  return () => outboundCommitHooks.delete(cb);
+  const hooks = hookState().outboundCommitHooks;
+  hooks.add(cb);
+  return () => hooks.delete(cb);
+}
+
+/** 账本提交接线，与 onAnySessionSaved 相同的实例级约定。 */
+export function onAnyOutboundCommitted(cb: (rt: TenantRuntime, rows: readonly OutboundRow[]) => void): () => void {
+  instanceOutboundHooks.add(cb);
+  return () => void instanceOutboundHooks.delete(cb);
 }
 /**
  * 出站 pending 插入与 cancelled 排进这个会话的下一次落库（主事务）。db 存储的真实会话、内存里有这个会话时返回 true；
@@ -892,7 +926,15 @@ export function saveSession(s: Session, touch = true): void {
   b.schedule(s);
   emitSaved(s, unseq);
   if (b !== state.pgBackend) return;
-  for (const cb of saveHooks) {
+  const rt = currentRuntime();
+  for (const cb of instanceSaveHooks) {
+    try {
+      withoutTenantScope(() => cb(rt, s));
+    } catch (e) {
+      console.error('[store] saveSession 实例订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+    }
+  }
+  for (const cb of hookState().saveHooks) {
     try {
       cb(s);
     } catch (e) {
@@ -1124,3 +1166,32 @@ registerTenantState({ name: 'store.pgBackend', ...storeRegistration('store.pgBac
 if (process.env.TENANCY_STRICT !== '1' && process.env.APP_ROLE !== 'sandbox') {
   startStoreMaintenance(hostRuntime());
 }
+
+function eventRegistration(key: 'storeEvents' | 'changeTimer') {
+  return {
+    keyCount: (id: string) => {
+      const rt = tenantRuntimes().find((r) => r.id === id);
+      if (!rt) return 0;
+      return key === 'storeEvents'
+        ? rt.events.storeEvents.eventNames().reduce((n, e) => n + rt.events.storeEvents.listenerCount(e), 0)
+        : Number(!!tenantStoreIfLoaded(rt)?.changeTimer);
+    },
+    drop: (id: string) => {
+      const rt = tenantRuntimes().find((r) => r.id === id);
+      if (!rt) return;
+      if (key === 'storeEvents') rt.events.storeEvents.removeAllListeners();
+      else {
+        const s = tenantStoreIfLoaded(rt);
+        if (s?.changeTimer) {
+          clearTimeout(s.changeTimer);
+          s.changeTimer = null;
+        }
+      }
+    },
+    reset: () => {
+      for (const rt of tenantRuntimes()) eventRegistration(key).drop(rt.id);
+    },
+  };
+}
+registerTenantState({ name: 'store.storeEvents', ...eventRegistration('storeEvents') });
+registerTenantState({ name: 'store.changeTimer', ...eventRegistration('changeTimer') });

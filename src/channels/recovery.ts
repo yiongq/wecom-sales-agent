@@ -50,7 +50,7 @@ let pushWaitMs = PUSH_WAIT_MS;
 /** 一个账号的启动恢复做没做完：没做完时 push 在这里等 */
 export class RecoveryGate {
   private opened: boolean;
-  private readonly waiters = new Set<() => void>();
+  private readonly waiters = new Set<(ok: boolean) => void>();
   constructor(opened: boolean) {
     this.opened = opened;
   }
@@ -61,16 +61,20 @@ export class RecoveryGate {
   open(): void {
     if (this.opened) return;
     this.opened = true;
-    for (const w of this.waiters) w();
+    for (const w of this.waiters) w(true);
+    this.waiters.clear();
+  }
+  cancel(): void {
+    for (const w of this.waiters) w(false);
     this.waiters.clear();
   }
   /** 等恢复做完，至多 30 秒：做完了 true，超时 false（跟进按 02 的明确失败处理，人工回复记「未能发送」） */
   wait(): Promise<boolean> {
     if (this.opened) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
-      const wake = (): void => {
+      const wake = (ok: boolean): void => {
         clearTimeout(timer);
-        resolve(true);
+        resolve(ok);
       };
       const timer = setTimeout(() => {
         this.waiters.delete(wake);

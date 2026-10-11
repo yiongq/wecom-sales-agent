@@ -1,3 +1,4 @@
+import { currentRuntime, tenantCallback, withoutTenantScope } from '../tenancy/runtime.js';
 // 企微 env 账号的拉取状态（docs/architecture/03-channels-v2/spec.md R1、R10、不变量 13）：cursor、已认领的 msgid（handled）、在途表、
 // 冷启动截止，都在 var/wecom-cursor.json（FileWecomState）。env 账号是文件存储、企微状态「未导入」「已导出」时的那一个账号：
 // 02 的文件状态层原样挪过来，行为逐字节不变（锁定的 wecom.selftest.ts、02 的 wecom-02.selftest.ts 与 quota.selftest.ts 守它）。
@@ -102,6 +103,14 @@ export class FileWecomState implements WecomStateBackend {
   coldStartCutoff = 0;
   readonly handled = new Map<string, number>();
   readonly inflight = new Map<string, PendingEntry>();
+  private readonly owner = currentRuntime();
+  dispose(): void {
+    if (this.stateSaveTimer) clearTimeout(this.stateSaveTimer);
+    this.stateSaveTimer = null;
+    this.handled.clear();
+    this.inflight.clear();
+    this.cursor = '';
+  }
   private saveChain: Promise<void> = Promise.resolve();
   private stateSaveTimer: NodeJS.Timeout | null = null;
 
@@ -178,10 +187,15 @@ export class FileWecomState implements WecomStateBackend {
   /** 去抖落盘：同一时段多条消息先后处理完，不必各写一次盘 */
   scheduleSave(): void {
     if (this.stateSaveTimer) return;
-    this.stateSaveTimer = setTimeout(() => {
-      this.stateSaveTimer = null;
-      void this.save();
-    }, 500);
+    this.stateSaveTimer = withoutTenantScope(() =>
+      setTimeout(
+        tenantCallback(this.owner, () => {
+          this.stateSaveTimer = null;
+          void this.save();
+        }),
+        500,
+      ),
+    );
     this.stateSaveTimer.unref();
   }
 

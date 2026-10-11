@@ -170,7 +170,7 @@ if (!mode) {
         r.identifyRuntime(pgRt, { id: fixture.deps.tenantId, slug: pgRt.slug, isHost: true });
         await r.withTenantScope(pgRt, () => s.initSessionStore(fixture.deps));
         const committed: string[] = [];
-        const off = s.onCommitted(() => committed.push(r.currentRuntime().id));
+        const off = r.withTenantScope(pgRt, () => s.onCommitted(() => committed.push(r.currentRuntime().id)));
         try {
           await r.withTenantScope(pgRt, () =>
             withTenant(db.db, { tenantId: pgRt.id, actor: { kind: 'system', userId: null, name: null, ip: null } }, async () => {

@@ -1,4 +1,14 @@
-import { hostRuntime, scopedRuntime, withTenantScope, withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import {
+  scopedRuntime,
+  withTenantScope,
+  withoutTenantScope,
+  tenantCallback,
+  tenantRuntimes,
+  currentRuntime,
+  tenantStoreIfLoaded,
+} from '../tenancy/runtime.js';
 // 任务表（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」，R17、不变量 38）：只在 db 存储下有。
 // 排程：与会话有关的（跟进、转人工通知，payload 必带 sessionId）随这个会话的下一次落库提交（store 的 queueJobs），其余单独一个事务。
 // 认领：每 5 秒一批，status='pending' AND run_at <= now ORDER BY run_at LIMIT 10 FOR UPDATE SKIP LOCKED，改成 running 并提交，再逐个执行。
@@ -26,6 +36,24 @@ import { onShutdown, queueJobs, sessionStoreMode, withJobsTx, type JobOp } from 
 import { installUnsavedNotices, runHandoffNotifyJob } from '../notify/handoff.js';
 import { followupJobs, type PushFn } from './followup.js';
 import { retentionPurgeSpec, runRetentionPurgeJob, setRunningJobChecker } from './purge.js';
+
+const tenantState = scopedState(() => ({
+  initialized: false,
+  mine: new Map<string, { job: JobRow; phase: Phase }>(),
+  recovered: false,
+  recovering: null as Promise<boolean> | null,
+  laneTasks: new Map<string, Promise<number>>(),
+  lastPurgeEnsure: 0,
+  unsettled: new Map<string, { job: JobRow; out: JobOutcome & { attemptsDelta?: number } }>(),
+}));
+const state = tenantState.get;
+registerTenantState({ name: 'jobs.initialized', ...tenantState.registration('initialized') });
+registerTenantState({ name: 'jobs.mine', ...tenantState.registration('mine') });
+registerTenantState({ name: 'jobs.recovered', ...tenantState.registration('recovered') });
+registerTenantState({ name: 'jobs.recovering', ...tenantState.registration('recovering') });
+registerTenantState({ name: 'jobs.laneTasks', ...tenantState.registration('laneTasks') });
+registerTenantState({ name: 'jobs.lastPurgeEnsure', ...tenantState.registration('lastPurgeEnsure') });
+registerTenantState({ name: 'jobs.unsettled', ...tenantState.registration('unsettled') });
 
 export type { JobKind, JobRow, JobStatus };
 
@@ -76,7 +104,8 @@ export function sessionIdOf(payload: unknown): string | null {
 
 /** 这个会话有没有本进程正在处理（认领中、还没写下结果）的任务（第 16 步：保留期清理据此跳过有任务在跑的会话） */
 export function hasRunningJob(sessionId: string): boolean {
-  for (const { job } of mine.values()) if (sessionIdOf(job.payload) === sessionId) return true;
+  const own = state();
+  for (const { job } of own.mine.values()) if (sessionIdOf(job.payload) === sessionId) return true;
   return false;
 }
 // purge.ts 不能直接 import 本模块（本模块已经 import 了 purge.ts）：经注入打破循环
@@ -129,21 +158,15 @@ const handlers: Record<JobKind, JobHandler> = {
 
 /** 本进程认领了、还没写下结果的任务：claimed（排着没开始）、started（执行中）、sending（跟进已进 sending）、settling（结果在写） */
 type Phase = 'claimed' | 'started' | 'sending' | 'settling';
-const mine = new Map<string, { job: JobRow; phase: Phase }>();
 
 let started = false;
 let stopping = false;
-let recovered = false;
 /** 启动归位只做一次：两条道同一拍开始时共用这一次 */
-let recovering: Promise<boolean> | null = null;
 let timer: NodeJS.Timeout | null = null;
 /** 每条道正在跑的那一批 */
-const laneTasks = new Map<string, Promise<number>>();
-let lastPurgeEnsure = 0;
 let lastClaimLog = 0;
 
 /** 结果没写进库的：下一拍先补写一次（照样带令牌），再失败就留给下次启动归位 */
-const unsettled = new Map<string, { job: JobRow; out: JobOutcome & { attemptsDelta?: number } }>();
 
 /** 租户锁在本进程手里：锁连接断开（lost，正在重取）或已被另一个进程拿走时，不认领、不执行 */
 const lockHeld = (): boolean => configHealth().lock === 'held' && !tenantLockTaken();
@@ -230,7 +253,8 @@ function afterSettled(job: JobRow, out: JobOutcome): void {
 }
 
 async function runClaimed(job: JobRow, now: number): Promise<void> {
-  const slot = mine.get(job.id)!;
+  const own = state();
+  const slot = own.mine.get(job.id)!;
   slot.phase = 'started';
   let out: JobOutcome & { attemptsDelta?: number };
   try {
@@ -250,25 +274,27 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
 
 /** 写下结果；没写进去（库抖动、语句超时）就进待补队列，下一拍补写（任务留在 running，本进程不会再认领它） */
 async function settleOrQueue(job: JobRow, out: JobOutcome & { attemptsDelta?: number }): Promise<void> {
-  const slot = mine.get(job.id);
+  const own = state();
+  const slot = own.mine.get(job.id);
   if (slot) slot.phase = 'settling';
   try {
     await settle(job, out);
   } catch (e) {
     console.error(`[jobs] ${job.kind} 的结果没写进库（${errName(e)}），下一拍补写`);
-    unsettled.set(job.id, { job, out });
+    own.unsettled.set(job.id, { job, out });
     return;
   } finally {
-    mine.delete(job.id);
+    own.mine.delete(job.id);
   }
   afterSettled(job, out);
 }
 
 /** 补写上一拍没写进去的结果（结果已知，带令牌只改仍是本次认领的 running，写两次也一样）；再失败就留给下次启动归位 */
 async function retryUnsettled(): Promise<void> {
+  const own = state();
   // 一拍里只补这一次：补写失败的不再放回队列（删掉正在遍历的这一项不影响 Map 的遍历）
-  for (const [id, { job, out }] of unsettled) {
-    unsettled.delete(id);
+  for (const [id, { job, out }] of own.unsettled) {
+    own.unsettled.delete(id);
     try {
       await settle(job, out);
     } catch (e) {
@@ -282,9 +308,10 @@ async function retryUnsettled(): Promise<void> {
 
 /** 启动时归位上一个进程留下的 running 与 sending。没做成之前不认领：本进程认领的 running 会被当成上一个进程的 */
 async function recover(): Promise<boolean> {
+  const own = state();
   try {
     const r = await withJobsTx(recoverJobsAtStartup);
-    recovered = true;
+    own.recovered = true;
     const n = r.followupRequeued + r.followupAbandoned + r.otherRequeued + r.otherFailed;
     if (r.otherFailed) jobFailed({ kind: null, lastError: null, count: r.otherFailed });
     if (n) {
@@ -301,7 +328,8 @@ async function recover(): Promise<boolean> {
 }
 
 async function ensurePurge(now: number): Promise<void> {
-  if (now - lastPurgeEnsure < PURGE_ENSURE_MS) return;
+  const own = state();
+  if (now - own.lastPurgeEnsure < PURGE_ENSURE_MS) return;
   const spec = retentionPurgeSpec(now);
   try {
     await withJobsTx((tx) =>
@@ -313,7 +341,7 @@ async function ensurePurge(now: number): Promise<void> {
         maxAttempts: spec.maxAttempts,
       }),
     );
-    lastPurgeEnsure = now;
+    own.lastPurgeEnsure = now;
   } catch (e) {
     console.error(`[jobs] retention_purge 没排上（${errName(e)}），下一拍再试`);
   }
@@ -321,15 +349,16 @@ async function ensurePurge(now: number): Promise<void> {
 
 /** 每一拍认领之前做一次：查租户锁、启动归位（只做一次）、补写上一拍没写进去的结果、补排清理。返回这一拍能不能认领 */
 async function prelude(now: number): Promise<boolean> {
+  const own = state();
   if (!lockHeld()) {
     logThrottled('[jobs] 租户锁不在本进程手里，不认领、不执行（重新取到锁之后照常）');
     return false;
   }
-  if (!recovered) {
-    recovering ??= recover().finally(() => {
-      recovering = null;
+  if (!own.recovered) {
+    own.recovering ??= recover().finally(() => {
+      own.recovering = null;
     });
-    if (!(await recovering)) return false;
+    if (!(await own.recovering)) return false;
   }
   await retryUnsettled();
   await ensurePurge(now);
@@ -338,6 +367,7 @@ async function prelude(now: number): Promise<boolean> {
 
 /** 一条道认领一批（只认领这条道的几类）并逐个执行 */
 async function tickLane(lane: Lane, now: number): Promise<number> {
+  const own = state();
   let claimed: JobRow[];
   try {
     claimed = await withJobsTx((tx) => claimDueJobs(tx, new Date(now), BATCH, lane.kinds));
@@ -345,7 +375,7 @@ async function tickLane(lane: Lane, now: number): Promise<number> {
     logThrottled(`[jobs] 认领失败（${errName(e)}），5 秒后再试`);
     return 0;
   }
-  for (const job of claimed) mine.set(job.id, { job, phase: 'claimed' });
+  for (const job of claimed) own.mine.set(job.id, { job, phase: 'claimed' });
   const t0 = Date.now();
   for (const [i, job] of claimed.entries()) {
     if (stopping) break; // 没开始的留在 running：跟进由停机钩子改回 pending，其余由下次启动归位
@@ -365,8 +395,10 @@ async function tickLane(lane: Lane, now: number): Promise<number> {
  * 一条道上一批没跑完就不给它叠一批，另一条道照常
  */
 export function runJobsOnce(now = Date.now()): Promise<number> {
-  if (stopping || sessionStoreMode() !== 'db') return Promise.resolve(0);
-  const idle = LANES.filter((lane) => !laneTasks.has(lane.name));
+  const own = state();
+  if (currentRuntime().kind !== 'standard' || currentRuntime().state !== 'serving' || stopping || sessionStoreMode() !== 'db')
+    return Promise.resolve(0);
+  const idle = LANES.filter((lane) => !own.laneTasks.has(lane.name));
   if (!idle.length) return Promise.resolve(0);
   const ready = prelude(now).catch((e: unknown) => {
     logThrottled(`[jobs] 认领之前的准备出错（${errName(e)}），5 秒后再试`);
@@ -376,9 +408,9 @@ export function runJobsOnce(now = Date.now()): Promise<number> {
     const task = ready
       .then((ok) => (ok ? tickLane(lane, now) : 0))
       .finally(() => {
-        if (laneTasks.get(lane.name) === task) laneTasks.delete(lane.name);
+        if (own.laneTasks.get(lane.name) === task) own.laneTasks.delete(lane.name);
       });
-    laneTasks.set(lane.name, task);
+    own.laneTasks.set(lane.name, task);
     return task;
   });
   return Promise.all(runs).then((ns) => ns.reduce((a, b) => a + b, 0));
@@ -389,13 +421,14 @@ export function runJobsOnce(now = Date.now()): Promise<number> {
  * 再等手上那条推送回来（好把结果记进会话与任务），等不到也不影响会不会重发
  */
 async function stopJobs(): Promise<void> {
+  const own = state();
   stopping = true;
   if (timer) {
     clearInterval(timer);
     timer = null;
   }
   followupJobs.stop();
-  const back = [...mine.values()]
+  const back = [...own.mine.values()]
     .filter((m) => m.job.kind === 'followup' && (m.phase === 'claimed' || m.phase === 'started'))
     .map((m) => m.job);
   if (back.length) {
@@ -405,13 +438,13 @@ async function stopJobs(): Promise<void> {
           await setJobStatus(tx, job.id, 'pending', { from: ['running'], claimedAt: job.claimedAt ?? undefined });
         }
       });
-      for (const job of back) mine.delete(job.id);
+      for (const job of back) own.mine.delete(job.id);
       console.log(`[jobs] 停机：${back.length} 个还没发出的跟进改回 pending，下次启动再追`);
     } catch (e) {
       console.error(`[jobs] 停机时跟进没能改回 pending（${errName(e)}），下次启动归位`);
     }
   }
-  await Promise.all([...laneTasks.values()].map((t) => t.catch(() => undefined)));
+  await Promise.all([...own.laneTasks.values()].map((t) => t.catch(() => undefined)));
 }
 
 /**
@@ -419,23 +452,32 @@ async function stopJobs(): Promise<void> {
  * 第一批之前先做启动归位。push 是推给客户的那一下（server 传 adapterFor 的 push），跟进到点时用。文件存储下什么都不做
  */
 export function startJobs(push: PushFn): void {
-  const rt = scopedRuntime() ?? hostRuntime();
-  withTenantScope(rt, () => startJobsInScope(push));
+  for (const rt of tenantRuntimes())
+    if (rt.kind === 'standard' && rt.state === 'serving' && tenantStoreIfLoaded(rt)) withTenantScope(rt, () => startJobsInScope(push));
 }
 function startJobsInScope(push: PushFn): void {
+  const own = state();
   const rt = scopedRuntime()!;
   if (sessionStoreMode() !== 'db') {
     console.log('[jobs] 文件存储没有任务表：跟进由扫描器驱动');
     return;
   }
-  if (started) return;
-  started = true;
+  if (own.initialized) return;
+  own.initialized = true;
   followupJobs.install(push);
   installUnsavedNotices();
-  withoutTenantScope(() => onShutdown(tenantCallback(rt, stopJobs)));
+  onShutdown(tenantCallback(rt, stopJobs));
   console.log(`[jobs] 任务表已启动：每 ${TICK_MS / 1000} 秒认领一批（跟进${process.env.FOLLOWUP_ENABLED === '1' ? '已启用' : '未启用'}）`);
   void tenantCallback(rt, runJobsOnce)();
-  timer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, runJobsOnce)(), TICK_MS));
+  if (started) return;
+  started = true;
+  timer = withoutTenantScope(() =>
+    setInterval(() => {
+      for (const owner of tenantRuntimes())
+        if (owner.kind === 'standard' && owner.state === 'serving' && tenantState.peek(owner)?.initialized)
+          void tenantCallback(owner, runJobsOnce)();
+    }, TICK_MS),
+  );
   timer.unref();
 }
 
@@ -443,27 +485,30 @@ function startJobsInScope(push: PushFn): void {
 export const __jobsTest = {
   /** 装上跟进钩子与停机钩子、不起定时器（自测自己调 runJobsOnce） */
   start(push: PushFn): void {
-    if (started) return;
-    started = true;
+    const own = state();
+    if (own.initialized) return;
+    own.initialized = true;
     followupJobs.install(push);
     installUnsavedNotices();
-    onShutdown(stopJobs);
+    const rt = currentRuntime();
+    onShutdown(tenantCallback(rt, stopJobs));
   },
   stop: stopJobs,
   /** 清回刚启动的样子（不卸钩子）：之后第一批之前照样先做启动归位 */
   reset(): void {
+    const own = state();
     stopping = false;
-    recovered = false;
-    recovering = null;
-    laneTasks.clear();
-    lastPurgeEnsure = 0;
-    mine.clear();
-    unsettled.clear();
+    own.recovered = false;
+    own.recovering = null;
+    own.laneTasks.clear();
+    own.lastPurgeEnsure = 0;
+    own.mine.clear();
+    own.unsettled.clear();
     followupJobs.reset();
   },
-  mine: () => [...mine.values()].map((m) => ({ id: m.job.id, kind: m.job.kind, phase: m.phase })),
+  mine: () => [...state().mine.values()].map((m) => ({ id: m.job.id, kind: m.job.kind, phase: m.phase })),
   /** 结果没写进库、等着下一拍补写的任务 id */
-  unsettled: () => [...unsettled.keys()],
+  unsettled: () => [...state().unsettled.keys()],
   /** 换掉某一类的执行体（第 14、16 步之前的通知与清理不会出错，告警的自测要它抛错），返回原来的 */
   setHandler(kind: JobKind, fn: JobHandler): JobHandler {
     const prev = handlers[kind];
@@ -475,9 +520,11 @@ export const __jobsTest = {
    * 这条跳过条件原来零覆盖——真实认领要起完整的 runner、等它恰好卡在处理中间，时序不可控，直接插进 mine 更可靠）
    */
   markRunningForTest(sessionId: string, jobId = `test-running-${sessionId}`): void {
-    mine.set(jobId, { job: { id: jobId, payload: { sessionId } } as JobRow, phase: 'claimed' });
+    const own = state();
+    own.mine.set(jobId, { job: { id: jobId, payload: { sessionId } } as JobRow, phase: 'claimed' });
   },
   clearRunningForTest(jobId: string): void {
-    mine.delete(jobId);
+    const own = state();
+    own.mine.delete(jobId);
   },
 };
