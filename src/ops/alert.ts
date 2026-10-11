@@ -444,7 +444,12 @@ let timer: NodeJS.Timeout | null = null;
 
 /** 挂上各处的订阅（模型、企微、租户锁、写库、任务）与每 5 秒一次的巡检。两种存储都挂，文件存储下与库相关的键自然不触发。可以调多次 */
 export function startAlerts(): void {
-  if (started) return;
+  if (started) {
+    // boot 先挂订阅，起渠道后再调用；sending 转 unknown 要到 startChannels 才产生。
+    // 只补查启动告警（由 alert 去重），不重复订阅或创建巡检定时器。
+    checkChannelStartup();
+    return;
+  }
   started = true;
   // 这里的 exit 控制注册分支、停机钩子与 timer，不改变同步订阅的发出方上下文；巡检逐 rt 进入作用域。
   withoutTenantScope(() => {

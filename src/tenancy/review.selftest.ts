@@ -1,25 +1,33 @@
 // 第 6 步评审回归：真实 boot 边界、HTTP 错误、模块装载、文件拒绝与退出恢复。
 import '../selftest-env.js';
 import assert from 'node:assert/strict';
-import { AsyncResource } from 'node:async_hooks';
+import { AsyncResource, createHook } from 'node:async_hooks';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
 const mode = process.argv[2];
 if (!mode) {
-  for (const child of ['single', 'multi', 'zero', 'storage', 'schema']) {
+  for (const child of ['single', 'multi', 'zero', 'storage', 'schema', 'otel-strict', 'otel-multi']) {
     const result = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), child], {
-      env: { ...process.env, CONFIG_SOURCE: 'file', TENANCY_STRICT: '1', APP_ROLE: child === 'zero' ? 'sandbox' : 'host' },
+      env: {
+        ...process.env,
+        CONFIG_SOURCE: 'file',
+        TENANCY_STRICT: child === 'otel-multi' ? '' : '1',
+        APP_ROLE: child === 'zero' ? 'sandbox' : 'host',
+      },
       encoding: 'utf8',
       timeout: 45_000,
     });
     assert.equal(result.status, 0, `${child}: ${result.stdout}\n${result.stderr}`);
     if (result.stdout.includes('EPERM')) console.log(`${child}: listen 被沙箱拒绝，已验证 boot 创建的 HTTP 异步资源与应用请求路径`);
   }
-  console.log('TENANCY REVIEW SELFTEST PASS: 启动 / 模块订阅 / HTTP 500 / SSE 摘监听 / 文件拒绝 / exit / schema');
+  console.log(
+    'TENANCY REVIEW SELFTEST PASS: 启动 / 模块订阅 / HTTP 500 / SSE 摘监听 / 文件拒绝 / exit / schema / 严格与多 standard 的真实 OTLP 导出',
+  );
 } else {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tenant-review-'));
   process.env.VAR_DIR = path.join(dir, 'host');
@@ -122,6 +130,152 @@ if (!mode) {
           (e: unknown) => e instanceof ConfigStartupError && e.reason === 'schema_behind',
         );
       } finally {
+        await db.close();
+      }
+    } else if (mode.startsWith('otel-')) {
+      // 走 boot → startOtelExport → recorder → 真 OTLP/HTTP，不能用 exportTurn 的直调替代接线。
+      const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../db/testing.js');
+      const { boot } = await import('../boot.js');
+      const { startOtelExport } = await import('../ops/otel.js');
+      const { startAlerts, __alertTest } = await import('../ops/alert.js');
+      const { runShutdownHooks } = await import('../shutdown.js');
+      const recorder = await import('../trace/recorder.js');
+      const db = await openTestDb();
+      const owners = [r.hostRuntime(), r.createTenantRuntime({ id: 'otel-b', slug: 'review-b' })];
+      r.registerRuntime(owners[1]!);
+      r.configureTenancy({ role: 'host', standardCount: owners.length });
+      assert.throws(r.currentRuntime, r.TenantScopeMissing);
+      type Span = { name: string; attributes: { key: string; value: { stringValue?: string } }[] };
+      const spans: Span[] = [];
+      const receiver = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString()) as {
+            resourceSpans: { scopeSpans: { spans: Span[] }[] }[];
+          };
+          for (const resource of body.resourceSpans) for (const scope of resource.scopeSpans) spans.push(...scope.spans);
+          res.setHeader('content-type', 'application/json');
+          res.end('{}');
+        });
+      });
+      let warnings = 0;
+      const error = console.error;
+      console.error = (...args) => {
+        if (args[0] === '[tenancy] tenant_scope_missing') warnings++;
+        else error(...args);
+      };
+      try {
+        await new Promise<void>((resolve, reject) => {
+          receiver.once('error', reject);
+          receiver.listen(0, '127.0.0.1', resolve);
+        });
+        const endpoint = `http://127.0.0.1:${(receiver.address() as import('node:net').AddressInfo).port}`;
+        Object.assign(process.env, {
+          OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${endpoint}/v1/traces`,
+          OTEL_EXPORTER_OTLP_HEADERS: '',
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: '',
+          OTEL_EXPORTER_OTLP_COMPRESSION: '',
+          OTEL_EXPORTER_OTLP_TRACES_COMPRESSION: '',
+          OTEL_EXPORTER_OTLP_TIMEOUT: '1000',
+          OTEL_CAPTURE_CONTENT: '',
+          ALERT_WEBHOOK_URL: '',
+        });
+        const empty = () => assert.equal(r.scopedRuntime(), undefined);
+        await boot({
+          initConfig: async () => {
+            for (const [i, rt] of owners.entries())
+              await r.withTenantScope(rt, () => installSeededConfig(db, { slug: i === 0 ? 'review-a' : 'review-b' }));
+          },
+          initSessionStore: async () => {
+            for (const rt of owners)
+              await r.withTenantScope(rt, async () => {
+                const fixture = await installPgSessionStore(db, { slug: rt.slug, varDir: path.join(dir, rt.slug) });
+                await s.initSessionStore(fixture.deps);
+              });
+          },
+          initChannels: async () => {},
+          startAlerts: () => {
+            empty();
+            startAlerts();
+          },
+          startPrivacy: async () => {
+            empty();
+            // 模拟最早后台入口遗漏作用域：必须由已挂好的真实告警订阅收到。
+            r.currentRuntime();
+          },
+          startOtel: async () => {
+            empty();
+            assert.equal(__alertTest.isActive('tenant_scope_missing'), true);
+            await startOtelExport();
+          },
+          serve: (onListening) => {
+            empty();
+            onListening();
+          },
+          preflight: empty,
+          buildIndex: async () => empty(),
+          storeMode: () => 'db',
+          startChannels: empty,
+          startJobs: empty,
+          startFollowUpScheduler: () => assert.fail('db 不能起文件扫描器'),
+          exit: () => assert.fail('不应拒绝启动'),
+        });
+        assert.equal(warnings, 1);
+        const id = 'wecom:wmOtelReview';
+        const refs: string[] = [];
+        const timerScopes: (string | undefined)[] = [];
+        const hook = createHook({
+          init: (_id, type) => {
+            if (type === 'Timeout') timerScopes.push(r.scopedRuntime()?.slug);
+          },
+        });
+        // 同一个会话 id，在两份租户存储里有不同 ref/channel；每轮元信息必须取当前 owner。
+        for (const [i, rt] of owners.entries())
+          await r.withTenantScope(rt, () =>
+            recorder.withTurnScope(async () => {
+              s.getOrCreateSession(id, i === 0 ? 'wecom' : 'web');
+              recorder.startTurn(id);
+              await Promise.resolve();
+              // 轮次结束触发的实例批处理/去抖定时器必须在空作用域创建。
+              hook.enable();
+              try {
+                recorder.endTurn('replied', '好的', 'greeting', 'greeting');
+              } finally {
+                hook.disable();
+              }
+              refs.push(s.conversationRef(id)!);
+              await s.flushSession(id);
+            }),
+          );
+        const otel = await import('../otel/export.js');
+        await r.withoutTenantScope(otel.flushOtel);
+        assert.ok(timerScopes.length > 0, '真实接线应创建批处理定时器');
+        assert.ok(
+          timerScopes.every((scope) => scope === undefined),
+          '实例定时器不能继承首轮租户',
+        );
+        assert.notEqual(refs[0], refs[1]);
+        assert.equal(spans.length, 2, '严格模式下两个轮次都必须经订阅实际导出');
+        const metadata = spans.map((span) => Object.fromEntries(span.attributes.map((a) => [a.key, a.value.stringValue])));
+        for (const [i, rt] of owners.entries()) {
+          const attrs = metadata.find((attrs) => attrs['app.tenant'] === rt.slug);
+          assert.ok(attrs, `没有导出 ${rt.slug} 的轮次`);
+          assert.equal(attrs['gen_ai.agent.name'], 'travel');
+          assert.equal(attrs['gen_ai.conversation.id'], refs[i]);
+          assert.equal(attrs['app.channel'], i === 0 ? 'wecom' : 'web');
+        }
+        assert.equal(warnings, 1, '正常导出不能产生作用域遗漏');
+      } finally {
+        __alertTest.stopTimer();
+        await r.withoutTenantScope(() => runShutdownHooks(3000));
+        console.error = error;
+        if (receiver.listening)
+          await new Promise<void>((resolve) => {
+            receiver.close(() => resolve());
+            receiver.closeAllConnections();
+          });
         await db.close();
       }
     } else {

@@ -1090,7 +1090,7 @@ if (!SELFTEST) {
     exit: (code) => process.exit(code),
     // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
     startOtel: startOtelExport,
-    // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
+    // 告警（02 spec R24）：后台入口之前挂订阅，起渠道后补查启动告警；推送只在后台
     startAlerts,
     // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
     startPrivacy: async () => {
