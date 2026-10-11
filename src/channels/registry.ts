@@ -396,9 +396,13 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
  * 检查全部通过之后才装上：账号表、注册表，再做文件动作、打日志。企微状态在库里时装上的账号里有库里的企微账号，适配器据此
  * 不再走 env 的老路（不读 WECOM_*、不写 var/wecom-cursor.json，不变量 13）
  */
+function publishAccountLookup(): void {
+  // 公开路由按租户过滤这份查找表；装载或重置一个租户不能覆盖其他租户的账号。
+  installAccounts(tenantRuntimes().flatMap((rt) => tenantState.peek(rt)?.registry?.accounts ?? []));
+}
+
 function commit(plan: Plan, db: Db | null): void {
   const own = state();
-  installAccounts(plan.accounts);
   startedAt = observationClock();
   own.lastStatsAt = null;
   own.observations.clear();
@@ -420,6 +424,7 @@ function commit(plan: Plan, db: Db | null): void {
     db,
     accounts: Object.freeze([...plan.accounts]),
   };
+  publishAccountLookup();
   for (const fx of plan.effects) fx();
   for (const line of plan.logs) console.log(line);
   for (const w of plan.warnings) console.warn(`[channels] ⚠️ ${w}`);
@@ -692,7 +697,7 @@ export const __channelsTest = {
     own.observations.clear();
     own.restartUnknown = [];
     own.registry = null;
-    installAccounts([]);
+    publishAccountLookup();
   },
 };
 

@@ -21,7 +21,7 @@ const simulator = await import('../adapters/simulator.js');
 // 回归：严格模式、尚无租户作用域时导入账本必须成功。
 const ledger = await import('../quota/ledger.js');
 const a = r.createTenantRuntime({ id: 'a', slug: 'events-a', isHost: true });
-const b = r.createTenantRuntime({ id: 'b', slug: 'events-b' });
+const b = r.createTenantRuntime({ id: 'b', slug: 'events-b', publicBase: 'https://events-b.example.invalid' });
 r.registerRuntime(a);
 r.registerRuntime(b);
 const web = await import('../adapters/web.js');
@@ -44,7 +44,7 @@ const key = Buffer.alloc(32, 7);
 const ring = { current: { id: 'fixture', key }, all: new Map([['fixture', key]]) };
 const accountIds = new Map<string, string>();
 const originalFetch = globalThis.fetch;
-const sent: { msgid: string; touser: string; open_kfid: string }[] = [];
+const sent: { msgid: string; touser: string; open_kfid: string; text?: { content: string } }[] = [];
 globalThis.fetch = async (input, init) => {
   const url = String(input);
   if (url.includes('/gettoken')) return Response.json({ errcode: 0, access_token: 'fixture-token', expires_in: 7200 });
@@ -126,12 +126,34 @@ try {
   await cutoff(b);
   // 与 boot 一样只从宿主调一次，同时装上已装载的另一 standard。
   await inScope(a, () => channels.initChannels({ ...fixture.get(a.id)!.deps, keyRing: ring }));
+  const { accountByKey, accountForSession } = await import('../channels/accounts.js');
   for (const rt of [a, b]) {
     assert.equal(
       inScope(rt, () => channels.installedChannelAccounts().find((account) => account.key === 'same')?.name),
       rt.slug,
     );
+    assert.equal(
+      inScope(rt, () => accountByKey('main', 'wecom_kf')?.id),
+      accountIds.get(rt.id),
+      '后装载的租户不覆盖先装载租户的 key 查找',
+    );
+    assert.equal(
+      inScope(rt, () => accountForSession(sameId)?.id),
+      accountIds.get(rt.id),
+      '相同会话前缀只匹配本租户账号',
+    );
   }
+  inScope(b, channels.__channelsTest.reset);
+  assert.equal(
+    inScope(b, () => accountByKey('main', 'wecom_kf')),
+    undefined,
+  );
+  assert.equal(
+    inScope(a, () => accountByKey('main', 'wecom_kf')?.id),
+    accountIds.get(a.id),
+    '重置 B 不清除 A 的 key 查找',
+  );
+  await inScope(b, () => channels.initChannels({ ...fixture.get(b.id)!.deps, keyRing: ring }));
   const compat = r.createTenantRuntime({ id: 'compat-file', slug: '', isHost: true });
   r.registerRuntime(compat);
   const { createFileBackend } = await import('../store/file-backend.js');
@@ -320,7 +342,7 @@ try {
       assert.equal(wecom.__wecomTest.inspect(accountIds.get(rt === a ? b.id : a.id)!), null);
       assert.equal(wecom.__wecomTest.routeAccount(sameId), accountIds.get(rt.id));
     });
-  // 账本的 accountByKey 表待第 8 步合并；此处使用最后装载的 B 验证句柄本身不可跨租户消费。
+  // 同 key 的两个账号都已装载；准备的句柄仍不可跨租户消费。
   const prepared = inScope(b, () => wecom.wecomAdapter.prepare!(sameId, b.slug, { kind: 'human' }));
   assert.ok(prepared);
   assert.equal(await inScope(a, () => wecom.wecomAdapter.push(sameId, 'cross', { kind: 'human', prepared })), false);
@@ -345,7 +367,7 @@ try {
     s.messages.push({ role: 'customer', content: '测试请求', at: Date.now() });
     store.saveSession(s);
     await store.flushSession(sendId);
-    const msg = { role: 'agent' as const, content: '测试回复', at: Date.now() };
+    const msg = { role: 'agent' as const, content: '测试回复 /pay/merge', at: Date.now() };
     assert.equal(
       await Promise.race([
         wecom.wecomAdapter.push(sendId, msg.content, { kind: 'human', message: msg }),
@@ -372,6 +394,7 @@ try {
     assert.notEqual(rows[0]!.message_seq, null);
   });
   assert.equal(sent.filter((body) => body.touser === 'wmReview').length, 1);
+  assert.match(sent.find((body) => body.touser === 'wmReview')!.text!.content, /https:\/\/events-b\.example\.invalid\/pay\/merge/);
   let erased = false;
   ledger.__ledgerTest.setMarkHook(async (intent) => {
     if (intent.sessionId !== sendId) return;
