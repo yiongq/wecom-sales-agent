@@ -23,8 +23,9 @@
    - 多阶段 Dockerfile 构建出 `console/dist`，由 Hono 在 `/console/*` 下提供静态文件，并做 SPA 回退。
    - 开发时 Vite 把 `/api` 代理到本地服务端。
    - 始终是一个进程、一个端口、一个镜像。
+     （2026-10-11 注：原意是不另起前端服务。05 的沙箱进程是同一镜像、同一代码的第二个角色（`APP_ROLE=sandbox`、compose 服务 `sandbox`），不违背这一条，见 05 spec R1。）
    - 四个门禁名不变，内容扩到 `console/`：`typecheck` 同时检查根目录和 `console/`（例如 `tsc --noEmit && tsc --noEmit -p console`，或改用 `tsc -b` 项目引用）；`lint` 和 `format:check` 的范围覆盖 `console/`。hook、CI、Stop hook 都不用改。现在根目录的 `tsconfig.json` 只 include `src` 和 `eval`，也没有 JSX 和 DOM 配置，不扩的话 `console/` 不受类型检查。
-4. **面向客户的页面保留原生 HTML**：chat、pay、proposal、guide。
+4. **面向客户的页面保留原生 HTML**：chat、pay、proposal、guide。（2026-10-11 注：guide 随 05 删掉，见 05 spec R23。）
 5. **过渡**：
    - demo 上保留 `admin.html`，等后台做到 P0 功能对齐再重定向到 `/console`。guide 页上的演示链接不变。
    - demo 的匿名只读模式下，后台不展示审计日志，因为里面有操作者和 IP。
