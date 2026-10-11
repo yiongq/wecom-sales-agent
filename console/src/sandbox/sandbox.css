@@ -30,6 +30,7 @@
   min-width: 0;
 }
 .sandbox-checklist {
+  order: 1;
   box-sizing: border-box;
   flex: 0 0 260px;
   padding: 16px;
@@ -89,11 +90,12 @@
 }
 @media (max-width: 1439px) {
   .sandbox-body {
-    flex-direction: column-reverse;
+    flex-direction: column;
     overflow: auto;
   }
   .sandbox-checklist,
   .sandbox-checklist.is-collapsed {
+    order: 0;
     flex: none;
     border-left: 0;
     border-bottom: 1px solid var(--divider);

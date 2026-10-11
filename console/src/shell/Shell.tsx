@@ -134,13 +134,15 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const [drawerAt, setDrawerAt] = useState<string | null>(null);
   const drawerOpen = drawerAt === path;
   const menuRef = useRef<HTMLButtonElement>(null);
-  // 面板自己滚动（路由的滚动还原只管 window）：换了地址回到顶上
+  // 桌面滚动 shell-scroll；窄屏沙箱滚动外层 sandbox-body。换页时两者都回顶，覆盖跨断点后的残留位置。
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sandboxScrollRef = useRef<HTMLDivElement>(null);
   const scrolledFor = useRef(path);
   useEffect(() => {
     if (scrolledFor.current === path) return;
     scrolledFor.current = path;
     scrollRef.current?.scrollTo({ top: 0 });
+    sandboxScrollRef.current?.scrollTo({ top: 0 });
   }, [path]);
   const mode = sidebarMode(tier, collapsed);
   // 换页以后焦点到主要内容（spec「可访问性与响应式 · 焦点」）：点了侧栏、⌘K、页面里的链接，或者后退前进，新的一页画出来以后
@@ -282,7 +284,16 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       )}
       <div className="shell-panel">
         {sandbox && <SandboxBanner sandbox={sandbox} />}
-        <div className={sandbox ? 'sandbox-body' : 'shell-body'}>
+        <div className={sandbox ? 'sandbox-body' : 'shell-body'} ref={sandbox ? sandboxScrollRef : undefined}>
+          {sandbox && v.kind === 'member' && (
+            <SandboxChecklist
+              key={v.me.tenantSlug}
+              slug={v.me.tenantSlug}
+              sandbox={sandbox}
+              error={progress.error}
+              onRetry={() => void progress.refetch()}
+            />
+          )}
           <div className="shell-scroll" ref={scrollRef}>
             <main id="main" tabIndex={-1} className="shell-content">
               {sv.kind === 'member' && logoutError !== null && (
@@ -293,15 +304,6 @@ function Frame({ viewer: v }: { viewer: Framed }) {
               <Outlet />
             </main>
           </div>
-          {sandbox && v.kind === 'member' && (
-            <SandboxChecklist
-              key={v.me.tenantSlug}
-              slug={v.me.tenantSlug}
-              sandbox={sandbox}
-              error={progress.error}
-              onRetry={() => void progress.refetch()}
-            />
-          )}
         </div>
       </div>
       {mode === 'hidden' && (
