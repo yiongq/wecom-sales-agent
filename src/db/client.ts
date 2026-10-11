@@ -75,6 +75,7 @@ export function redactUrl(url: string): string {
 export async function openDb(url: string, opts: { max?: number } = {}): Promise<{ db: Db; close(): Promise<void> }> {
   assertPgUrl(url);
   const pool = new pg.Pool({ connectionString: url, max: opts.max ?? 5 });
+  // EventEmitter 不捕获注册时 ALS；实例日志回调执行时 exit，租户锁通知由订阅者显式进入所属 rt。
   // 空闲连接断开时 Pool 会发 error 事件，没人监听会让进程崩掉；下次借连接时 Pool 自己会新建
   withoutTenantScope(() =>
     pool.on('error', (err) => withoutTenantScope(() => console.warn(`[db] 空闲连接出错（${redactUrl(url)}）：${err.message}`))),

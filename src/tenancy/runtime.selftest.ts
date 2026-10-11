@@ -118,13 +118,18 @@ if (!mode) {
 
     if (strict) {
       let warnings = 0,
-        alerts = 0;
+        alerts = 0,
+        legacyLogs = 0;
       const oldError = console.error;
       const off = r.onTenantScopeMissing(() => {
         alerts++;
         assert.throws(r.currentRuntime, r.TenantScopeMissing);
       });
       console.error = (...args) => {
+        if (args[0] === '[wecom] 回调指向的企微账号没有运行时（没启用或没起来），这次不拉') {
+          legacyLogs++;
+          return;
+        }
         assert.equal(args[0], '[tenancy] tenant_scope_missing');
         warnings++;
       };
@@ -144,10 +149,11 @@ if (!mode) {
         assert.equal(warnings, 2);
         assert.equal(alerts, 2);
         // 回调热路径是 void 异步派发：缺租户时不能留下未捕获的 rejection。
-        const wecom = await r.withTenantScope(a, () => import('../adapters/wecom.js'));
+        const wecom = await import('../adapters/wecom.js');
         await wecom.syncAccountFromCallback('missing', 'unused');
-        assert.equal(warnings, 3);
-        assert.equal(alerts, 3);
+        assert.equal(legacyLogs, 1);
+        assert.equal(warnings, 2);
+        assert.equal(alerts, 2);
       } finally {
         console.error = oldError;
         off();

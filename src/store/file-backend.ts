@@ -43,6 +43,9 @@ const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
 export function createFileBackend(d: FileBackendDeps): FileBackend {
   const rt = d.runtime ?? currentRuntime();
   const scopedTimeout = (fn: () => void, ms: number): NodeJS.Timeout => withoutTenantScope(() => setTimeout(tenantCallback(rt, fn), ms));
+  const assertHost = (): void => {
+    if (!rt.isHost) throw new Error('只有宿主运行时允许文件存储');
+  };
   const SESSIONS_FILE = path.join(d.varDir, SESSIONS_JSON);
   const ORDERS_FILE = path.join(d.varDir, ORDERS_JSON);
 
@@ -170,20 +173,24 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
       }
     },
     schedule(s) {
+      assertHost();
       assignSeqs(s, 'lenient');
       markDirty(s.id);
       schedulePersist();
     },
     scheduleOrder(orderId) {
+      assertHost();
       const o = d.orders.get(orderId);
       if (o) markDirty(o.sessionId);
       schedulePersist();
     },
     markChanged(ids) {
+      assertHost();
       for (const id of ids) markDirty(id);
       schedulePersist();
     },
     emitAfterCommit(sessionId, ev) {
+      assertHost();
       pendingEvents.push(ev);
       markDirty(sessionId);
       schedulePersist();
@@ -218,6 +225,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
       return 0;
     },
     flushNow() {
+      assertHost();
       cancelTimer();
       if (persistNow()) d.afterPersist();
     },

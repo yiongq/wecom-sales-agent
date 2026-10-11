@@ -2592,6 +2592,11 @@ async function syncFromCallbackInScope(syncToken: string): Promise<void> {
 
 /** 库里的企微账号：按账号的回调（adapters/wecom-callback.ts）验签、按 OpenKfId 找到账号之后调用 */
 export async function syncAccountFromCallback(accountId: string, syncToken: string): Promise<void> {
+  // 账号停用或启动尚未装载时保留原行为；只有存在账号却找不到所属租户才是作用域遗漏。
+  if (accountId === ENV_ACCOUNT_ID || !runtimes.has(accountId)) {
+    await syncAccountFromCallbackInScope(accountId, syncToken);
+    return;
+  }
   await backgroundEntry(() =>
     withTenantScope(ownerRuntime(accountId === ENV_ACCOUNT_ID ? envRuntime : runtimes.get(accountId)), () =>
       syncAccountFromCallbackInScope(accountId, syncToken),

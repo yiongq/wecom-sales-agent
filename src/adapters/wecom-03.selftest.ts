@@ -667,6 +667,33 @@ async function mainSuite(h: Harness): Promise<void> {
     json(h.fake.syncs),
   );
 
+  // 05 第 6 步回归：停用 / 尚未启动的账号保留旧日志；存在账号丢了租户才推作用域告警。
+  const tenancy = await import('../tenancy/runtime.js');
+  const owner = tenancy.hostRuntime();
+  let missingAlerts = 0;
+  const offMissing = tenancy.onTenantScopeMissing(() => {
+    missingAlerts++;
+  });
+  const logStart = logBuf.length;
+  const syncStart = h.fake.syncs.length;
+  try {
+    await h.wecom.syncAccountFromCallback(h.ids.get('d1')!, 'disabled');
+    check(
+      '没有账号运行时：旧日志一行、不推作用域告警',
+      logsSince(logStart).filter((x) => x.includes('没有运行时')).length === 1 && missingAlerts === 0,
+    );
+    tenancy.unregisterRuntime(owner.id);
+    await h.wecom.syncAccountFromCallback(h.ids.get('a1')!, 'owner-missing');
+    check(
+      '账号存在但租户缺失：日志一行、作用域告警一条',
+      logsSince(logStart).filter((x) => x.includes('[tenancy] tenant_scope_missing')).length === 1 && missingAlerts === 1,
+    );
+    check('两种拒绝都不拉取账号', h.fake.syncs.length === syncStart);
+  } finally {
+    tenancy.registerRuntime(owner);
+    offMissing();
+  }
+
   // ---- 同一个 external_userid 在三个账号上交错各发 5 句 ----
   for (let i = 1; i <= 5; i++) {
     for (const k of live) h.say(acct(k).kf, UID, `你好，第${i}句`);

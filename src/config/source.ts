@@ -259,8 +259,7 @@ export function catalogVersioned(): boolean {
 
 /** 产品库快照变化后回调；retrieval.ts 在加载时注册，用来失效并重建索引 */
 export function onCatalogChanged(cb: (snap: CatalogSnapshot) => void): void {
-  const state = configState();
-  if (scopedRuntime()) state.catalogListeners.push(cb);
+  if (scopedRuntime()) configState().catalogListeners.push(cb);
   else catalogSubscriptions.push(cb);
 }
 
@@ -369,6 +368,11 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
   };
 }
 
+async function loadStandardTenants(deps: ConfigDeps) {
+  await checkConfigDatabase(deps);
+  return dbStep('读 standard 租户清单', () => standardTenants(deps.db));
+}
+
 /** 只回显看起来像个取值的短词：配错位置的整行环境变量里可能带着连接串口令 */
 const shownValue = (name: string, v: string): string => (/^[a-z]{1,16}$/i.test(v) ? `${name}=${v}` : `${name} 的值`);
 
@@ -398,7 +402,7 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
   const deps = await productionConfigDeps(env, gracefulExit);
   let hostLocks: TenantLock | null = null;
   try {
-    const standards = await standardTenants(deps.db);
+    const standards = await loadStandardTenants(deps);
     const host = standards.find((t) => t.slug === deps.tenantSlug);
     if (!host) throw startup('tenant_not_found', '宿主必须是 standard 租户');
     const selected = standards.filter((t) => t.id === host.id || t.publicHost);
@@ -652,6 +656,30 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
   const rt = scopedRuntime() ?? hostRuntime();
   return withTenantScope(rt, () => loadConfig(deps));
 }
+/** 启动清单与单租户装载都必须先核对编码和迁移，保持原有错误归类。 */
+async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
+  // 1
+  let encoding: string;
+  try {
+    encoding = await serverEncoding(d.db);
+  } catch (e) {
+    throw startup('db_unreachable', message(e));
+  }
+  if (encoding !== 'UTF8') throw startup('db_encoding', `server_encoding 是 ${encoding}，要求 UTF8`);
+  // 2 镜像里的每条迁移都要在库里；库里多出来的（来自更新的镜像，回滚到 :prev 时就是这样）只警告
+  let applied: string[];
+  try {
+    applied = await appliedMigrationHashes(d.db);
+  } catch (e) {
+    throw startup('schema_behind', `读不到迁移记录（从没跑过迁移？）：${message(e)}`);
+  }
+  const image = imageMigrationHashes();
+  const missing = image.filter((h) => !applied.includes(h));
+  if (missing.length) throw startup('schema_behind', `镜像里有 ${missing.length} 条迁移没在库里，先跑 migrate`);
+  const extra = applied.filter((h) => !image.includes(h));
+  if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
+}
+
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
@@ -663,26 +691,7 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   state.dbInstalled = true;
   let lock: TenantLock | null = null;
   try {
-    // 1
-    let encoding: string;
-    try {
-      encoding = await serverEncoding(d.db);
-    } catch (e) {
-      throw startup('db_unreachable', message(e));
-    }
-    if (encoding !== 'UTF8') throw startup('db_encoding', `server_encoding 是 ${encoding}，要求 UTF8`);
-    // 2 镜像里的每条迁移都要在库里；库里多出来的（来自更新的镜像，回滚到 :prev 时就是这样）只警告
-    let applied: string[];
-    try {
-      applied = await appliedMigrationHashes(d.db);
-    } catch (e) {
-      throw startup('schema_behind', `读不到迁移记录（从没跑过迁移？）：${message(e)}`);
-    }
-    const image = imageMigrationHashes();
-    const missing = image.filter((h) => !applied.includes(h));
-    if (missing.length) throw startup('schema_behind', `镜像里有 ${missing.length} 条迁移没在库里，先跑 migrate`);
-    const extra = applied.filter((h) => !image.includes(h));
-    if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
+    await checkConfigDatabase(d);
     // 3
     const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));
     if (!tenant) throw startup('tenant_not_found', `没有 slug 为「${d.tenantSlug}」的租户`);
@@ -1066,6 +1075,7 @@ export async function closeConfig(): Promise<void> {
 
 /** 仅供自测：卸下配置源、清空缓存，回到文件模式 */
 export const __configTest = {
+  loadStandardTenants,
   reset(): void {
     withTenantScope(scopedRuntime() ?? hostRuntime(), () => resetConfig());
   },

@@ -1,6 +1,9 @@
 // 租户运行时与作用域（05 R3）。严格策略在启动时固定，运行时增删不能启用回落。
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
+import type { Buffered } from '../console-api/events.js';
+import type { ConsoleEventMap } from '../shared/console-api.js';
 import type { MiddlewareHandler } from 'hono';
 import type { PackBinding } from '../core/pack-api.js';
 import { createTenantConfig, type TenantConfig } from '../config/state.js';
@@ -28,6 +31,14 @@ export class InflightRegistry {
 /** 第 9 步把 console 环接到这里；store 发出方始终在所属租户作用域内。 */
 export interface ConsoleEventHub {
   readonly storeEvents: EventEmitter;
+  readonly boot: string;
+  readonly ring: Buffered[];
+  last: number;
+  readonly listeners: Set<(event: Buffered) => void>;
+  countsOf: (() => ConsoleEventMap['counts']) | null;
+  countsTimer: NodeJS.Timeout | null;
+  unsubscribe: (() => void) | null;
+  timing: { heartbeatMs: number; recheckMs: number; countsDebounceMs: number };
 }
 export interface TenantRuntime {
   readonly id: string;
@@ -64,6 +75,8 @@ export function installTenantStoreFactory(factory: (rt: TenantRuntime) => Tenant
 export function withTenantScope<T>(rt: TenantRuntime, fn: () => T): T {
   return als.run(rt, fn);
 }
+/** 创建异步资源时清空 ALS。EventEmitter / EventTarget 不捕获注册时的 ALS：
+ * 同步监听继承发出方；实例回调要在执行时 exit，租户回调要显式进入 owner。 */
 export function withoutTenantScope<T>(fn: () => T): T {
   return als.exit(fn);
 }
@@ -136,8 +149,21 @@ class Runtime implements TenantRuntime {
   readonly config = createTenantConfig();
   pack!: PackBinding;
   readonly budget = createStandardBudget();
-  readonly events = { storeEvents: new EventEmitter().setMaxListeners(100) };
+  readonly events: ConsoleEventHub = {
+    storeEvents: new EventEmitter().setMaxListeners(100),
+    boot: randomBytes(6).toString('hex'),
+    ring: [],
+    last: 0,
+    listeners: new Set(),
+    countsOf: null,
+    countsTimer: null,
+    unsubscribe: null,
+    timing: { heartbeatMs: 20_000, recheckMs: 50_000, countsDebounceMs: 300 },
+  };
   private storage?: TenantStore;
+  peekStore(): TenantStore | undefined {
+    return this.storage;
+  }
   get store(): TenantStore {
     if (!this.storage) {
       if (!storeFactory) throw new Error('会话存储工厂尚未接线');
@@ -148,6 +174,10 @@ class Runtime implements TenantRuntime {
 }
 export function createTenantRuntime(opts: RuntimeOptions): TenantRuntime {
   return new Runtime({ ...opts });
+}
+/** 停机与删除证明不得为了检查存储而惰性装载文件。 */
+export function tenantStoreIfLoaded(rt: TenantRuntime): TenantStore | undefined {
+  return rt instanceof Runtime ? rt.peekStore() : undefined;
 }
 /** 文件兼容宿主在入口显式装载；DB 解析后补身份，保留已读文件数据与后端闭包所属对象。 */
 export function hostRuntime(): TenantRuntime {
@@ -209,7 +239,7 @@ export function tenantCallback<A extends unknown[], T>(rt: TenantRuntime, fn: (.
 export const tenantScopeMiddleware: MiddlewareHandler = async (_c, next) => {
   if (scopedRuntime()) return next();
   const all = tenantRuntimes().filter((rt) => rt.kind === 'standard');
-  if (all.length > 1) throw new TenantScopeMissing();
+  if (all.length > 1 || (strict && all.length !== 1)) throw new TenantScopeMissing();
   const rt = all[0] ?? hostRuntime();
   await withTenantScope(rt, next);
 };

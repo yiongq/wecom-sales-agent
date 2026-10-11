@@ -4,7 +4,14 @@
 // demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
-import { tenantScopeMiddleware, hostRuntime, tenantRuntimes, withTenantScope } from './tenancy/runtime.js';
+import {
+  tenantScopeMiddleware,
+  hostRuntime,
+  tenantRuntimes,
+  withTenantScope,
+  currentRuntime,
+  TenantScopeMissing,
+} from './tenancy/runtime.js';
 import { currentPack } from './config/source.js';
 import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
@@ -48,7 +55,6 @@ import {
   queueAudit,
   saveSession,
   sessionStoreMode,
-  storeEvents,
   storeHealth,
   StoreLaggingError,
   varDir,
@@ -456,15 +462,16 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 // admin.html 已有的 30 秒轮询兜底照常（01 spec「鉴权」）
 app.get('/api/admin/stream', async (c) => {
   if (!profile().flags.anon_readonly_admin && !(await consoleSession(c))) return c.json({ error: '需要登录后台' }, 401);
+  const events = currentRuntime().events.storeEvents;
   return streamSSE(c, async (stream) => {
     let alive = true;
     const onChange = () => {
       void stream.writeSSE({ event: 'change', data: String(Date.now()) });
     };
-    storeEvents.on('change', onChange);
+    events.on('change', onChange);
     stream.onAbort(() => {
       alive = false;
-      storeEvents.off('change', onChange);
+      events.off('change', onChange);
     });
     await stream.writeSSE({ event: 'change', data: 'init' }); // 连上先触发一次首屏加载
     // alive 由上面的 onAbort 回调置 false，不是死循环
@@ -480,7 +487,8 @@ app.get('/api/admin/stream', async (c) => {
 app.get('/api/insights', adminAuth, async (c) => {
   try {
     return c.json({ insights: await getInsights() });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     return c.json({ insights: [] });
   }
 });
@@ -491,7 +499,8 @@ app.get('/api/sessions/:id/suggestion', adminAuth, async (c) => {
   if (!s) return c.json({ suggestion: '' }, 404);
   try {
     return c.json({ suggestion: await getSuggestion(s) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     return c.json({ suggestion: '' });
   }
 });
@@ -561,7 +570,9 @@ app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, as
   // 交还已经在内存生效：admin.html 不许改（R11），它把非 2xx 一律显示成「交还失败、仍处于人工接管状态」，
   // 还不清 S.taken[id]——可改动其实已经生效，AI 已经恢复应答，页面却一直显示错的。等提交只是让库尽快跟上，
   // 超时、poisoned、冲突都不改这次交还本身是不是生效了，不能让这里的等待把 200 变成 503（审查第 9 条，compat[2]）
-  await flushSession(s.id, { timeoutMs: 5000 }).catch(() => {});
+  await flushSession(s.id, { timeoutMs: 5000 }).catch((e: unknown) => {
+    if (e instanceof TenantScopeMissing) throw e;
+  });
   return c.json(getSession(s.id) ?? s);
 });
 
@@ -572,7 +583,8 @@ app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   if (!s) return c.json({ draft: '' }, 404);
   try {
     return c.json({ draft: await getDraftReply(s) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     return c.json({ draft: '' });
   }
 });
@@ -854,6 +866,7 @@ app.get('/wecom/callback', (c) => {
     if (!receiveIdOk(receiveId)) return c.text('receiveid mismatch', 403);
     return c.text(msg);
   } catch (err) {
+    if (err instanceof TenantScopeMissing) throw err;
     console.error('[wecom] echostr 解密失败:', err);
     return c.text('decrypt failed', 400);
   }
@@ -897,6 +910,7 @@ app.post('/wecom/callback', async (c) => {
     console.log(`[wecom] 收到回调事件${syncToken ? '（含 token，立即拉取）' : '（无 token）'}`);
     if (syncToken) void syncFromCallback(syncToken);
   } catch (err) {
+    if (err instanceof TenantScopeMissing) throw err;
     console.error('[wecom] 回调事件解析失败:', err);
   }
   return c.text('success');
@@ -959,7 +973,7 @@ app.onError((err, c) => {
   // 日志不打会话原 id（不变量 48）：convLabelsIn 把实际路径（含 external_userid）里形如会话原 id 的串换成短码
   console.error(`[server] 未捕获异常 ${c.req.method} ${convLabelsIn(c.req.path)}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
-  if (c.req.path === '/api/chat') {
+  if (!(err instanceof TenantScopeMissing) && c.req.path === '/api/chat') {
     return c.json({ reply: { text: '抱歉，我这边卡了一下，麻烦您再发一次～', stage: 'discovery' } }, 200);
   }
   return c.json({ error: '服务暂时不可用，请稍后重试' }, 500);
@@ -1033,55 +1047,55 @@ if (!SELFTEST) {
     for (const rt of tenantRuntimes()) withTenantScope(rt, markConfigShuttingDown);
   });
   onShutdown(() => Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, closeConfig))), { phase: 'late' });
-  await withTenantScope(hostRuntime(), () =>
-    boot({
-      initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
-      // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
-      initSessionStore: async () => {
-        if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
-        for (const rt of tenantRuntimes())
-          await withTenantScope(rt, () => {
-            const { db, tenantId, deps } = configRuntime();
-            return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
-          });
-      },
-      // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
-      initChannels: () => {
+  await boot({
+    initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
+    // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
+    initSessionStore: async () => {
+      if (process.env.SESSION_STORE !== 'db') return withTenantScope(hostRuntime(), () => initSessionStore(null));
+      for (const rt of tenantRuntimes())
+        await withTenantScope(rt, () => {
+          const { db, tenantId, deps } = configRuntime();
+          return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
+        });
+    },
+    // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
+    initChannels: () =>
+      withTenantScope(hostRuntime(), () => {
         if (process.env.SESSION_STORE !== 'db') return initChannels(null);
         const { db, tenantId, deps } = configRuntime();
         return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
-      },
-      serve: (onListening) =>
-        void serve({ fetch: app.fetch, port }, (info) => {
-          logStartup(info.port);
-          onListening();
-        }),
-      // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-      preflight: () => {
+      }),
+    serve: (onListening) =>
+      void serve({ fetch: app.fetch, port }, (info) => {
+        withTenantScope(hostRuntime(), () => logStartup(info.port));
+        onListening();
+      }),
+    // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
+    preflight: () =>
+      withTenantScope(hostRuntime(), () => {
         try {
           loadRoutes();
           loadHotels();
         } catch (e) {
           console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
         }
-      },
-      // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
-      buildIndex,
-      storeMode: sessionStoreMode,
-      // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
-      startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
-      startJobs: () => startJobs(pushFollowUp),
-      startChannels,
-      exit: (code) => process.exit(code),
-      // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
-      startOtel: startOtelExport,
-      // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
-      startAlerts,
-      // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
-      startPrivacy: async () => {
-        await initPrivacy();
-        startPrivacyPoll();
-      },
-    }),
-  );
+      }),
+    // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
+    buildIndex: () => withTenantScope(hostRuntime(), buildIndex),
+    storeMode: () => withTenantScope(hostRuntime(), sessionStoreMode),
+    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
+    startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
+    startJobs: () => startJobs(pushFollowUp),
+    startChannels,
+    exit: (code) => process.exit(code),
+    // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
+    startOtel: startOtelExport,
+    // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
+    startAlerts,
+    // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
+    startPrivacy: async () => {
+      await withTenantScope(hostRuntime(), initPrivacy);
+      startPrivacyPoll();
+    },
+  });
 }

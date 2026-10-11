@@ -341,6 +341,7 @@ export function noteToolError(args: Record<string, unknown>): void {
   p!.call.failed = true;
 }
 
+// 同步订阅在发出方的轮次/租户作用域执行；注册时 exit 不会改变回调上下文。
 // llm.ts 在一次调用结束（成功或失败）时通知，带这次的耗时：开始时刻倒推出来
 withoutTenantScope(() =>
   onLlmCall((c) => {

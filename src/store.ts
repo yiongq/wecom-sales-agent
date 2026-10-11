@@ -3,6 +3,7 @@ import {
   hostRuntime,
   scopedRuntime,
   tenantRuntimes,
+  tenantStoreIfLoaded,
   withTenantScope,
   withoutTenantScope,
   tenantCallback,
@@ -138,7 +139,7 @@ export interface TenantStore {
   orders: Map<string, Order>;
   tombstoned: WeakSet<Session>;
   pgBackend: PgBackend | null;
-  fileBackend: FileBackend;
+  fileBackend: FileBackend | null;
   changeTimer: NodeJS.Timeout | null;
   maintenanceTimer: NodeJS.Timeout | null;
 }
@@ -152,7 +153,7 @@ export function createTenantStore(rt: TenantRuntime): TenantStore {
     orders: new Map(),
     tombstoned: new WeakSet(),
     pgBackend: null,
-    fileBackend: null!,
+    fileBackend: null,
     changeTimer: null,
     maintenanceTimer: null,
   };
@@ -162,32 +163,38 @@ export function createTenantStore(rt: TenantRuntime): TenantStore {
 
   /** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
 
-  state.fileBackend = createFileBackend({
-    runtime: rt,
-    varDir: VAR_DIR,
-    sessions,
-    orders,
-    owns: (id) => !state.pgBackend || isDemoClassId(id),
-    // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
-    // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
-    ownsOrder: (o) =>
-      !state.pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || state.pgBackend.adoptedUncommitted(o.id),
-    isReal: (id) => !isDemoClassId(id),
-    afterPersist: tenantCallback(rt, () => rt.events.storeEvents.emit('change')),
-  });
+  if (rt.isHost)
+    state.fileBackend = createFileBackend({
+      runtime: rt,
+      varDir: VAR_DIR,
+      sessions,
+      orders,
+      owns: (id) => !state.pgBackend || isDemoClassId(id),
+      // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
+      // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
+      ownsOrder: (o) =>
+        !state.pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || state.pgBackend.adoptedUncommitted(o.id),
+      isReal: (id) => !isDemoClassId(id),
+      afterPersist: tenantCallback(rt, () => rt.events.storeEvents.emit('change')),
+    });
   if (rt.isHost) {
-    state.fileBackend.load();
-    state.fileBackend.probe();
+    state.fileBackend!.load();
+    state.fileBackend!.probe();
   }
 
   return state;
 }
 
 installTenantStoreFactory(createTenantStore);
+/** 非宿主没有文件后端；在调用热路径同步拒绝，不能把错误留到去抖定时器。 */
+function fileBackendOf(state: TenantStore): FileBackend {
+  if (!state.fileBackend) throw new Error('只有宿主运行时允许文件存储');
+  return state.fileBackend;
+}
 /** 这个会话的改动交给哪个后端：db 存储下真实会话走 PG，其余（demo 类、文件存储）走文件 */
 const backendFor = (sessionId: string): StoreBackend => {
   const state = storeState();
-  return state.pgBackend && !isDemoClassId(sessionId) ? state.pgBackend : state.fileBackend;
+  return state.pgBackend && !isDemoClassId(sessionId) ? state.pgBackend : fileBackendOf(state);
 };
 /** 只管内存里有的会话的 PG 后端：db 存储下的真实会话；孤儿订单（所属会话不在内存里）与 demo 类归文件后端 */
 const pgFor = (sessionId: string): PgBackend | null =>
@@ -288,7 +295,7 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
     ordersTaken: (ids) => {
-      if (currentRuntime().isHost) state.fileBackend.markChanged(ids);
+      if (currentRuntime().isHost) fileBackendOf(state).markChanged(ids);
     },
     outboundCommitted: (rows) => {
       for (const cb of outboundCommitHooks) {
@@ -364,14 +371,16 @@ export function flushSession(id: string, opts?: { timeoutMs?: number }): Promise
 /** drain 阶段调用：排空所有写队列；超时返回还没落库的会话 id（日志只写短码） */
 export async function drainStore(timeoutMs: number): Promise<{ undrained: string[] }> {
   const state = storeState();
-  const parts = await Promise.all([state.fileBackend, ...(state.pgBackend ? [state.pgBackend] : [])].map((b) => b.drain(timeoutMs)));
+  const parts = await Promise.all(
+    [...(state.fileBackend ? [state.fileBackend] : []), ...(state.pgBackend ? [state.pgBackend] : [])].map((b) => b.drain(timeoutMs)),
+  );
   return { undrained: parts.flatMap((p) => p.undrained) };
 }
 
 /** 改动随这个会话的下一次落库提交；提交后才交给 onCommitted 的订阅者 */
 export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
   const state = storeState();
-  (pgFor(sessionId) ?? state.fileBackend).emitAfterCommit(sessionId, ev);
+  (pgFor(sessionId) ?? fileBackendOf(state)).emitAfterCommit(sessionId, ev);
 }
 
 // ---------------- 排进「这个会话下一次落库」的附带行 ----------------
@@ -666,7 +675,7 @@ export function withChannelTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 /** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
 export function storeHealth(): StoreHealth {
   const state = storeState();
-  return (state.pgBackend ?? state.fileBackend).health();
+  return (state.pgBackend ?? fileBackendOf(state)).health();
 }
 
 /**
@@ -686,19 +695,27 @@ export function storeCounters(): { telemetryDropped: number; replayFailedFiles: 
  */
 export function flushStoreNow(): void {
   const state = storeState();
-  state.fileBackend.flushNow();
+  fileBackendOf(state).flushNow();
 }
 
-// 退出兜底：没落盘的变更在进程结束前同步写出（文件），没落库的真实会话写进 spill 文件（PG）
-withoutTenantScope(() =>
-  process.on('exit', () => {
-    for (const rt of tenantRuntimes())
-      tenantCallback(rt, () => {
-        rt.store.fileBackend.spillSync();
-        rt.store.pgBackend?.spillSync();
-      })();
-  }),
-);
+/** 每个已装载的后端独立收尾，坏租户不能跳过宿主；检查不触发 store 创建。 */
+export function spillStoresSync(): void {
+  const runtimes = tenantRuntimes().toSorted((a, b) => Number(b.isHost) - Number(a.isHost));
+  for (const rt of runtimes) {
+    const state = tenantStoreIfLoaded(rt);
+    if (!state) continue;
+    for (const backend of [state.fileBackend, state.pgBackend]) {
+      if (!backend) continue;
+      try {
+        tenantCallback(rt, () => backend.spillSync())();
+      } catch (e) {
+        console.error('[store] 退出收尾失败:', e instanceof Error ? e.name : 'unknown');
+      }
+    }
+  }
+}
+// exit 不创建异步资源；真正防线是执行时逐租户进作用域，而非监听注册时的 ALS。
+process.on('exit', spillStoresSync);
 
 // ---------------- demo 数据保鲜 ----------------
 // 种子演示会话（id 形如 wecom:cust_B01，真实企微 external_userid 不会长这样）的时间戳
@@ -733,7 +750,7 @@ export function freshenDemoData(): void {
       if (o.confirmedAt != null) o.confirmedAt += delta;
     }
   }
-  state.fileBackend.markChanged(demo.map((s) => s.id));
+  fileBackendOf(state).markChanged(demo.map((s) => s.id));
   console.log(`[store] demo 保鲜：${demo.length} 个演示会话时间前移 ${(delta / 3_600_000).toFixed(1)} 小时`);
 }
 
@@ -775,7 +792,7 @@ function evictExcessVisitorSessions(): void {
     state.sessions.delete(s.id);
     for (const oid of s.orderIds ?? []) state.orders.delete(oid);
   }
-  state.fileBackend.markChanged(victims.map((s) => s.id));
+  fileBackendOf(state).markChanged(victims.map((s) => s.id));
   if (victims.length) {
     console.warn(`[store] 网页访客会话超过上限 ${VISITOR_SESSION_MAX}，已淘汰最旧的 ${victims.length} 个`);
   }
@@ -796,7 +813,7 @@ export function pruneStaleVisitorData(): void {
   }
   const n = gone.length;
   if (n) {
-    state.fileBackend.markChanged(gone);
+    fileBackendOf(state).markChanged(gone);
     console.log(`[store] 已清理 ${n} 个闲置网页访客会话（阈值 ${PRUNE_MS / 3_600_000}h，仅 sim-）`);
   }
 }
@@ -933,7 +950,7 @@ function emitOrder(o: Order): void {
 export function saveOrder(o: Order): void {
   const state = storeState();
   if (state.orders.get(o.id) !== o) return;
-  (pgFor(o.sessionId) ?? state.fileBackend).scheduleOrder(o.id);
+  (pgFor(o.sessionId) ?? fileBackendOf(state)).scheduleOrder(o.id);
   emitOrder(o);
 }
 
@@ -949,7 +966,7 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   state.orders.set(order.id, order);
-  (pgFor(order.sessionId) ?? state.fileBackend).scheduleOrder(order.id);
+  (pgFor(order.sessionId) ?? fileBackendOf(state)).scheduleOrder(order.id);
   emitOrder(order);
   return order;
 }
@@ -972,7 +989,7 @@ export function markOrderPaid(id: string): Order | undefined {
     o.paidAt = Date.now();
     const s = state.sessions.get(o.sessionId);
     o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
-    (pgFor(o.sessionId) ?? state.fileBackend).scheduleOrder(id);
+    (pgFor(o.sessionId) ?? fileBackendOf(state)).scheduleOrder(id);
     emitOrder(o);
   }
   return o;
@@ -985,7 +1002,7 @@ export function supersedeOrder(id: string, byId: string): boolean {
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  (pgFor(o.sessionId) ?? state.fileBackend).scheduleOrder(id);
+  (pgFor(o.sessionId) ?? fileBackendOf(state)).scheduleOrder(id);
   emitOrder(o);
   return true;
 }
@@ -1008,7 +1025,7 @@ export function deleteOrdersOfSession(sessionId: string): number {
       n += 1;
     }
   }
-  if (n && !pg) state.fileBackend.markChanged([sessionId]);
+  if (n && !pg) fileBackendOf(state).markChanged([sessionId]);
   return n;
 }
 
@@ -1061,22 +1078,24 @@ function storeRegistration(name: 'store.sessions' | 'store.orders' | 'store.file
     keyCount: (id: string) => {
       const rt = tenantRuntimes().find((r) => r.id === id);
       if (!rt) return 0;
-      const s = rt.store;
+      const s = tenantStoreIfLoaded(rt);
+      if (!s) return 0;
       return name === 'store.sessions'
         ? s.sessions.size
         : name === 'store.orders'
           ? s.orders.size
           : name === 'store.pgBackend'
             ? Number(s.pgBackend !== null)
-            : s.fileBackend.keyCount();
+            : (s.fileBackend?.keyCount() ?? 0);
     },
     drop: (id: string) => {
       const rt = tenantRuntimes().find((r) => r.id === id);
       if (!rt) return;
-      const s = rt.store;
+      const s = tenantStoreIfLoaded(rt);
+      if (!s) return;
       if (name === 'store.sessions') s.sessions.clear();
       else if (name === 'store.orders') s.orders.clear();
-      else if (name === 'store.fileBackend') s.fileBackend.reset();
+      else if (name === 'store.fileBackend') s.fileBackend?.reset();
       else {
         dropShutdownHooks(rt);
         void s.pgBackend?.close();
@@ -1088,9 +1107,11 @@ function storeRegistration(name: 'store.sessions' | 'store.orders' | 'store.file
     },
     reset: () => {
       for (const rt of tenantRuntimes()) {
-        rt.store.sessions.clear();
-        rt.store.orders.clear();
-        rt.store.fileBackend.reset();
+        const s = tenantStoreIfLoaded(rt);
+        if (!s) continue;
+        s.sessions.clear();
+        s.orders.clear();
+        s.fileBackend?.reset();
       }
     },
   };

@@ -1,3 +1,4 @@
+import { TenantScopeMissing } from '../tenancy/runtime.js';
 import { tenantScopeMiddleware, withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts, renderBrandPage } from '../core/brand.js';
@@ -214,7 +215,8 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
     return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。
     log.error('网页咨询处理失败');
     return c.json({ error: 'temporarily_unavailable' }, 503);

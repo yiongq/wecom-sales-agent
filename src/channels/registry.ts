@@ -1,3 +1,4 @@
+import { withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
 import { scopedRuntime, runtimeOf, hostRuntime, identifyRuntime, withTenantScope } from '../tenancy/runtime.js';
 // 渠道注册表与启动装载（docs/architecture/03-channels-v2/spec.md「接口与数据流」的 registry.ts 与启动顺序、R1、R7 的哨兵、R8、R15、
 // R19、不变量 13、14）。
@@ -118,8 +119,9 @@ function stopStatsRefresh(): void {
 
 function startStatsRefresh(): void {
   if (!registry?.db || statsTimer) return;
-  void refreshChannelObservability();
-  statsTimer = setInterval(() => void refreshChannelObservability(), statsRefreshMs);
+  const rt = scopedRuntime() ?? hostRuntime();
+  void tenantCallback(rt, refreshChannelObservability)();
+  statsTimer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, refreshChannelObservability)(), statsRefreshMs));
   statsTimer.unref();
 }
 
