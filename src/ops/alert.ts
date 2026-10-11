@@ -1,3 +1,6 @@
+import { TenantLocal } from '../tenancy/local-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { currentRuntime, scopedRuntime, TenantScopeMissing } from '../tenancy/runtime.js';
 import { tenantRuntimes, withTenantScope, withoutTenantScope, onTenantScopeMissing, backgroundEntry } from '../tenancy/runtime.js';
 // 告警（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 告警」、R24、不变量 32、50）。
 // 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] 中文说明 · 时间」，只有计数、短码、错误码：不含客户原话、
@@ -32,6 +35,8 @@ export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' |
 export interface AlertOpts {
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */
   scope?: string;
+  /** 进程资源的事实（模型、恢复汇总等），不借用某个租户的去重表。 */
+  instance?: boolean;
   /** 发一条「已恢复」：这个键没在告警中时什么都不发 */
   resolved?: boolean;
   /** 条件变重（如租户锁确认被别的进程持有、开始停机）：不受 30 分钟去重限制 */
@@ -53,7 +58,41 @@ interface KeyState {
   active: boolean;
   lastSentAt: number;
 }
-const states = new Map<string, KeyState>();
+const instanceStates = new Map<string, KeyState>();
+const tenants = new TenantLocal(
+  () => ({
+    states: new Map<string, KeyState>(),
+    wecomAccounts: new Map<
+      string,
+      { fails: { at: number; result: 'rejected' | 'unknown'; errcode: number | null }[]; lastFailAt: number }
+    >(),
+    inboxAlerted: new Map<string, { at: number; pending: number }>(),
+    poisonedSeen: new Set<string>(),
+    lagAlerted: false,
+    dropSamples: [] as { at: number; n: number }[],
+    replayFailedSeen: 0,
+  }),
+  (s) => {
+    s.states.clear();
+    s.wecomAccounts.clear();
+    s.inboxAlerted.clear();
+    s.poisonedSeen.clear();
+    s.dropSamples.length = 0;
+  },
+);
+const tenantAlerts = () => tenants.get();
+function statesFor(key: AlertKey, instance = false): Map<string, KeyState> {
+  if (instance || key === 'model_errors' || key === 'tenant_scope_missing') return instanceStates;
+  return tenantAlerts().states;
+}
+registerTenantState({ name: 'alert.states', ...tenants.registration((s) => s.states.size) });
+registerTenantState({ name: 'alert.wecomAccounts', ...tenants.registration((s) => s.wecomAccounts.size) });
+registerTenantState({ name: 'alert.inboxAlerted', ...tenants.registration((s) => s.inboxAlerted.size) });
+registerTenantState({ name: 'alert.poisonedSeen', ...tenants.registration((s) => s.poisonedSeen.size) });
+registerTenantState({
+  name: 'alert.storeSamples',
+  ...tenants.registration((s) => s.dropSamples.length + Number(s.lagAlerted) + Number(s.replayFailedSeen !== 0)),
+});
 const sentAt: number[] = [];
 let lastThrottleLog = 0;
 const inflight = new Set<Promise<void>>();
@@ -141,7 +180,10 @@ function deliver(content: string, t: number): void {
  */
 export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
   try {
+    const owner = scopedRuntime();
+    if (owner && owner.state !== 'serving') return;
     const t = clock();
+    const states = statesFor(key, opts.instance);
     const stateKey = opts.scope ? `${key}:${opts.scope}` : key;
     const st = states.get(stateKey) ?? { active: false, lastSentAt: 0 };
     if (opts.resolved) {
@@ -155,11 +197,12 @@ export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
     states.set(stateKey, st);
     deliver(`[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`, t);
   } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     console.error(`[alert] 告警处理出错（${errName(e)}），已忽略`);
   }
 }
 
-const isActive = (key: AlertKey): boolean => states.get(key)?.active ?? false;
+const isActive = (key: AlertKey): boolean => statesFor(key).get(key)?.active ?? false;
 
 // ---------------- model_errors ----------------
 
@@ -204,14 +247,8 @@ function onTurn(f: FinishedTurn): void {
 
 const WECOM_WINDOW_MS = 10 * 60_000;
 const WECOM_FAILS = 3;
-const wecomAccounts = new Map<
-  string,
-  {
-    fails: { at: number; result: 'rejected' | 'unknown'; errcode: number | null }[];
-    lastFailAt: number;
-  }
->();
 const wecomStateOf = (account: string) => {
+  const wecomAccounts = tenantAlerts().wecomAccounts;
   let st = wecomAccounts.get(account);
   if (!st) {
     st = { fails: [], lastFailAt: 0 };
@@ -222,6 +259,7 @@ const wecomStateOf = (account: string) => {
 const wecomScope = (account: string): AlertOpts => (account === 'env' ? {} : { scope: account });
 
 function onSettled(s: SendSettled): void {
+  if (currentRuntime().state !== 'serving') return;
   if (s.result === 'accepted') return;
   const t = clock();
   const st = wecomStateOf(s.account);
@@ -240,6 +278,7 @@ function onSettled(s: SendSettled): void {
 }
 
 function onToken(code: string, account: string): void {
+  if (currentRuntime().state !== 'serving') return;
   wecomStateOf(account).lastFailAt = clock();
   alert('wecom_send', `取不到企微 access_token（${codeOf(code)}），收发消息都停了 · 账号 ${codeOf(account)}`, wecomScope(account));
 }
@@ -257,7 +296,7 @@ function onUnsafe(countIn10m: number): void {
   alert(
     'channel',
     `最近 10 分钟有 ${countIn10m} 段企微消息在发送状态没落库时照发（库写不进去，R6）：这期间进程崩溃的话这几段可能再发一次`,
-    { escalate: true },
+    { escalate: true, instance: true },
   );
 }
 
@@ -267,7 +306,7 @@ function onRejected(reason: string): void {
 
 /** 入站 poison、too_old 的告警（03 第 9 步）：每种原因每个账号 10 分钟至多一条，带这段时间里的条数（停机两天之后一次过期一批不刷屏） */
 const INBOX_ALERT_MS = 10 * 60_000;
-const inboxAlerted = new Map<string, { at: number; pending: number }>();
+
 const INBOX_REASON_TEXT: Partial<Record<InboxAbandoned['reason'], string>> = {
   poison: '处理了三次都没走完（每次都让处理中断）',
   too_old: '收到时已超过 48 小时发送窗口',
@@ -287,7 +326,7 @@ function restoreCutoffText(): string {
 function flushRestoreCutoff(t: number, force: boolean): void {
   if (restoreCutoff.sent || !restoreCutoff.conversations || (!force && t - restoreCutoff.lastAt < RESTORE_QUIET_MS)) return;
   restoreCutoff.sent = true;
-  alert('channel', restoreCutoffText(), { escalate: true });
+  alert('channel', restoreCutoffText(), { escalate: true, instance: true });
 }
 
 function onInboxGivenUp(e: InboxAbandoned): void {
@@ -299,9 +338,11 @@ function onInboxGivenUp(e: InboxAbandoned): void {
     return;
   }
   const why = INBOX_REASON_TEXT[e.reason];
+  if (currentRuntime().state !== 'serving') return;
   if (!why) return;
   const k = `${e.reason}:${e.account}`;
   const t = clock();
+  const inboxAlerted = tenantAlerts().inboxAlerted;
   const st = inboxAlerted.get(k) ?? { at: 0, pending: 0 };
   st.pending += 1;
   inboxAlerted.set(k, st);
@@ -327,10 +368,6 @@ function onLock(ev: LockEvent): void {
 const LAG_ALERT_MS = 60_000;
 const LAG_OK_MS = 5_000;
 const DROP_WINDOW_MS = 10 * 60_000;
-let lagAlerted = false;
-let poisonedSeen = new Set<string>();
-let dropSamples: { at: number; n: number }[] = [];
-let replayFailedSeen = 0;
 
 /** 自测可以换掉读写库健康与计数的地方（积压要 60 秒才造得出来） */
 let probe: { health: () => StoreHealth; counters: () => ReturnType<typeof storeCounters> } = {
@@ -348,34 +385,35 @@ function onIncident(i: StoreIncident): void {
 const safeCodes = (s: string): string => s.replace(/[^\w\s·:\-\p{Script=Han}]/gu, '').slice(0, 60);
 
 function checkStore(t: number): void {
+  const local = tenantAlerts();
   const h = probe.health();
   if (h.conflict) alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机');
-  const fresh = h.poisoned.filter((c) => !poisonedSeen.has(c));
+  const fresh = h.poisoned.filter((c) => !local.poisonedSeen.has(c));
   if (fresh.length) {
-    for (const c of fresh) poisonedSeen.add(c);
+    for (const c of fresh) local.poisonedSeen.add(c);
     alert(
       'store',
       `会话 ${fresh.map(codeOf).join('、')} 停止落库（poisoned，${safeCodes(h.lastError ?? '原因见日志')}），内存照旧服务客户`,
     );
   }
   if (h.lagMs > LAG_ALERT_MS) {
-    lagAlerted = true;
+    local.lagAlerted = true;
     alert('store', `写库积压 ${Math.round(h.lagMs / 1000)} 秒（${h.dirty} 个会话有没落库的改动）`);
-  } else if (lagAlerted && h.lagMs <= LAG_OK_MS) {
-    lagAlerted = false;
+  } else if (local.lagAlerted && h.lagMs <= LAG_OK_MS) {
+    local.lagAlerted = false;
     if (!h.conflict && h.poisoned.length === 0) alert('store', '写库积压回到 5 秒以内', { resolved: true });
   }
   const c = probe.counters();
   if (!c) return;
-  if (c.replayFailedFiles > replayFailedSeen) {
-    replayFailedSeen = c.replayFailedFiles;
+  if (c.replayFailedFiles > local.replayFailedSeen) {
+    local.replayFailedSeen = c.replayFailedFiles;
     alert('store', `启动时 ${c.replayFailedFiles} 个 spill 文件回放失败，已改名 .failed，需要人工处理`);
   }
   // 丢掉的遥测批次：第一次读到的是基线（startAlerts 时就读一次），之后比上一次多了就报，报的是最近 10 分钟里的批数
-  const prev = dropSamples.at(-1)?.n;
-  dropSamples = dropSamples.filter((s) => t - s.at <= DROP_WINDOW_MS);
-  const before = dropSamples[0]?.n ?? prev ?? c.telemetryDropped;
-  dropSamples.push({ at: t, n: c.telemetryDropped });
+  const prev = local.dropSamples.at(-1)?.n;
+  local.dropSamples = local.dropSamples.filter((s) => t - s.at <= DROP_WINDOW_MS);
+  const before = local.dropSamples[0]?.n ?? prev ?? c.telemetryDropped;
+  local.dropSamples.push({ at: t, n: c.telemetryDropped });
   if (prev !== undefined && c.telemetryDropped > prev) {
     alert('store', `最近 10 分钟有 ${c.telemetryDropped - before} 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃`);
   }
@@ -421,17 +459,31 @@ function checkChannels(now: number): void {
 function tick(): void {
   try {
     const t = clock();
-    for (const rt of tenantRuntimes()) backgroundEntry(() => withTenantScope(rt, () => checkStore(t)));
+    for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving'))
+      backgroundEntry(() => withTenantScope(rt, () => checkStore(t)));
     flushRestoreCutoff(t, false);
-    for (const [account, st] of wecomAccounts) {
-      if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
-        st.lastFailAt = 0;
-        st.fails = [];
-        alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
-      }
-    }
-    const p = Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, () => refreshChannelObservability())))
-      .then(() => checkChannels(t))
+    for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving'))
+      withTenantScope(rt, () => {
+        for (const [account, st] of tenantAlerts().wecomAccounts) {
+          if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
+            st.lastFailAt = 0;
+            st.fails = [];
+            alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
+          }
+        }
+      });
+    const p = Promise.all(
+      tenantRuntimes()
+        .filter((rt) => rt.state === 'serving')
+        .map((rt) =>
+          withTenantScope(rt, async () => {
+            const local = tenants.get(rt);
+            await refreshChannelObservability();
+            if (tenants.owns(rt, local)) checkChannels(t);
+          }),
+        ),
+    )
+      .then(() => undefined)
       .finally(() => inflight.delete(p));
     inflight.add(p);
   } catch (e) {
@@ -447,7 +499,7 @@ export function startAlerts(): void {
   if (started) {
     // boot 先挂订阅，起渠道后再调用；sending 转 unknown 要到 startChannels 才产生。
     // 只补查启动告警（由 alert 去重），不重复订阅或创建巡检定时器。
-    checkChannelStartup();
+    for (const rt of tenantRuntimes()) withTenantScope(rt, checkChannelStartup);
     return;
   }
   started = true;
@@ -478,7 +530,7 @@ export function startAlerts(): void {
         if (configHealth().lock === 'lost') onLock('lost');
       });
     // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
-    checkChannelStartup();
+    for (const rt of tenantRuntimes()) withTenantScope(rt, checkChannelStartup);
     tick();
     timer = withoutTenantScope(() => setInterval(tick, TICK_MS));
     timer.unref();
@@ -512,21 +564,16 @@ export const __alertTest = {
   inflight: () => inflight.size,
   /** 清掉去重、限流与各键的计数（订阅不动） */
   reset(): void {
-    states.clear();
+    tenants.registration(() => 0).reset();
+    instanceStates.clear();
     sentAt.length = 0;
     lastThrottleLog = 0;
     failStreak = 0;
     okStreak = 0;
     streakKinds = [];
     recentTurns = [];
-    wecomAccounts.clear();
     lastUnsafeAlertAt = 0;
-    inboxAlerted.clear();
     Object.assign(restoreCutoff, { conversations: 0, lastAt: 0, sent: false });
-    lagAlerted = false;
-    poisonedSeen = new Set();
-    dropSamples = [];
-    replayFailedSeen = 0;
   },
   isActive,
 };

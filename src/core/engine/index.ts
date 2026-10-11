@@ -1,3 +1,6 @@
+import { TenantLocal } from '../../tenancy/local-state.js';
+import { registerTenantState } from '../../tenancy/state.js';
+import { currentRuntime, withoutTenantScope } from '../../tenancy/runtime.js';
 import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
@@ -141,18 +144,28 @@ export function onToolCall(fn: ToolObserver): () => void {
   return () => toolObservers.delete(fn);
 }
 // 逐轮 trace 的订阅者（02 spec「逐轮 trace」）：调用记进当前这一轮，结果由 runTool 执行完补上（noteToolResult）
-onToolCall(traceToolCall);
+withoutTenantScope(() => onToolCall(traceToolCall));
 
 // 同会话串行：一个客户手快连发几条、或网络重发时，多个 handleMessage 会并发跑。
 // 它们共享同一个 session 对象，谁先 await 回来谁先 push——实测四条消息倒序入库，
 // 且每条回复都没看到其他几条的上下文（回「什么时候去合适」时还在问「您想去哪」）。
 // 企微侧本来就按客户分组串行，网页侧一直漏着。这里按会话排成一条链，跨会话仍并发。
-const sessionChain = new Map<string, Promise<unknown>>();
+const chains = new TenantLocal(
+  () => new Map<string, Promise<unknown>>(),
+  (m) => m.clear(),
+);
+registerTenantState({ name: 'engine.sessionChain', ...chains.registration((m) => m.size) });
 
 /** 把同一会话的处理排队；链上任何一环失败都不影响后续（catch 掉再续） */
 function serialize<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const rt = currentRuntime();
+  const sessionChain = chains.get(rt);
+  const run = (): Promise<T> => {
+    if (!chains.owns(rt, sessionChain)) return Promise.reject(new Error('tenant_closing'));
+    return fn();
+  };
   const prev = sessionChain.get(sessionId) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
+  const next = rt.inflight.track(prev.then(run, run));
   // 只保留链尾，且不让 rejected promise 挂在 Map 上产生 unhandled rejection
   const tail = next.catch(() => undefined);
   sessionChain.set(sessionId, tail);

@@ -1,3 +1,6 @@
+import { currentRuntime } from '../tenancy/runtime.js';
+import { TenantLocal } from '../tenancy/local-state.js';
+import { registerTenantState } from '../tenancy/state.js';
 // 运行数字（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 运行数字」、R24）：GET /api/console/metrics 的
 // 窗口、换算与 60 秒缓存。SQL 在 src/db/repo/metrics.ts（四条，在 turn_traces、usage_daily 上现算）。
 // 窗口是近 days 个自然日、含今天，起点是 days-1 天前那天的 0 点，「今天」与 usage_daily.day 同一个口径：服务器时区（TZ）。
@@ -48,16 +51,27 @@ function cached<T>(cache: Cache<T>, key: string, now: number, fn: () => Promise<
 }
 
 /** 租户的 trace 保留期（按租户）与运行数字（按租户与实际天数：请求 60 与 90 截到同一个保留期时共用一份） */
-const retention: Cache<number> = new Map();
-const views: Cache<MetricsView> = new Map();
+const metrics = new TenantLocal(
+  () => ({ retention: new Map() as Cache<number>, views: new Map() as Cache<MetricsView> }),
+  (s) => {
+    s.retention.clear();
+    s.views.clear();
+  },
+);
+registerTenantState({ name: 'metrics.retention', ...metrics.registration((s) => s.retention.size) });
+registerTenantState({ name: 'metrics.views', ...metrics.registration((s) => s.views.size) });
 
 /** now 是调用方的时钟（后台接口的 clock）：窗口与缓存都按它算 */
 export async function readMetricsView(ctx: TenantCtx, days: number, now: number): Promise<MetricsView> {
   const { db, tenantId } = configRuntime();
-  if (ctx.tenantId !== tenantId) throw new Error('这个租户不是本进程装载的租户');
+  if (ctx.tenantId !== tenantId) throw new Error('请求的租户与作用域不符');
+  const rt = currentRuntime();
+  const state = metrics.get(rt);
+  const { retention, views } = state;
   const keep = await cached(retention, ctx.tenantId, now, () =>
     withTenant(db, ctx, (tx) => readTraceRetentionDays(tx, ctx.tenantId), { readOnly: true }),
   );
+  if (!metrics.owns(rt, state)) throw new Error('tenant_closing');
   const effective = Math.min(days, keep);
   return cached(views, `${ctx.tenantId}|${effective}`, now, () => compute(ctx, effective, now));
 }
@@ -65,7 +79,6 @@ export async function readMetricsView(ctx: TenantCtx, days: number, now: number)
 /** 仅供自测：清空缓存 */
 export const __metricsTest = {
   reset(): void {
-    retention.clear();
-    views.clear();
+    metrics.registration(() => 0).reset();
   },
 };

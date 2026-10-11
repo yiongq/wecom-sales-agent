@@ -1,3 +1,6 @@
+import { currentRuntime } from '../tenancy/runtime.js';
+import { TenantLocal } from '../tenancy/local-state.js';
+import { registerTenantState } from '../tenancy/state.js';
 // 接手、交还、人工回复的状态机（docs/architecture/02-conversations-workbench/spec.md「接手、人工回复与交还」，R10、R11）。
 // takeover、release 是同步的内存操作（在 identity map 的活对象上比较并设置，单进程下两个并发的接手恰有一个成功），之后 saveSession；
 // reply 先同步检查（不通过就什么都不改），再入库、等提交、发送。调用方（后台接口、旧接口）都再 await flushSession(id, { timeoutMs: 5000 })。
@@ -114,11 +117,16 @@ export class ReplyTooLongError extends Error {
   }
 }
 
-const gens = new Map<string, number>();
+const generations = new TenantLocal(
+  () => new Map<string, number>(),
+  (m) => m.clear(),
+);
+const gens = () => generations.get();
+registerTenantState({ name: 'takeover.gens', ...generations.registration((m) => m.size) });
 
 /** 接手代次：进程内计数，不进 Session */
 export function takeoverGen(sessionId: string): number {
-  return gens.get(sessionId) ?? 0;
+  return gens().get(sessionId) ?? 0;
 }
 
 /** 接手人是不是这个操作者：成员比 user id，共享工作台与共享工作台算同一个 */
@@ -197,7 +205,7 @@ export function takeover(sessionId: string, actor: Actor, opts: { force?: boolea
     );
   }
   s.assignee = { userId: actor.userId, name: actor.name, at: now };
-  gens.set(s.id, takeoverGen(s.id) + 1);
+  gens().set(s.id, takeoverGen(s.id) + 1);
   emitAfterCommit(s.id, { type: 'conversation.assigned', id: s.id, assigneeName: actor.name });
   auditConversation(s, actor, cur ? { action: 'conversation.reassign', diff: { from: cur.name } } : { action: 'conversation.takeover' });
   saveSession(s);
@@ -301,11 +309,16 @@ export function releasePrepared(prepared: PreparedPush | null | undefined, reaso
 
 /** clientId 去重：10 分钟内同一会话、同一 clientId 的重复提交返回第一次的结果，不重发 */
 const CLIENT_ID_TTL_MS = 10 * 60_000;
-const recent = new Map<string, { at: number; result: Promise<ReplyResult> }>();
+const replies = new TenantLocal(
+  () => new Map<string, { at: number; result: Promise<ReplyResult> }>(),
+  (m) => m.clear(),
+);
+const recent = () => replies.get();
+registerTenantState({ name: 'takeover.recent', ...replies.registration((m) => m.size) });
 function pruneRecent(now: number): void {
-  for (const [k, v] of recent) {
+  for (const [k, v] of recent()) {
     if (now - v.at < CLIENT_ID_TTL_MS) break; // 按插入顺序，越往后越新
-    recent.delete(k);
+    recent().delete(k);
   }
 }
 
@@ -330,7 +343,7 @@ function replySync(sessionId: string, actor: Actor, text: string, clientId: stri
   const now = Date.now();
   pruneRecent(now);
   const key = `${sessionId}\u0000${clientId}`;
-  const hit = recent.get(key);
+  const hit = recent().get(key);
   if (hit) return hit.result;
   const s = sessionOf(sessionId);
   if (!HANDLERS.has(actor.role)) throw new ForbiddenError();
@@ -362,9 +375,12 @@ function replySync(sessionId: string, actor: Actor, text: string, clientId: stri
   saveSession(s);
   // 03：库里的企微账号把分段的 pending 排进这条消息的同一次落库（同一段同步代码里），提交之后才发
   const prepared = prepareChannel(s.id, content, { kind: 'human', message });
-  const result = deliver(s.id, message, releaseHold, prepared);
-  recent.set(key, { at: now, result });
-  result.catch(() => recent.delete(key));
+  const result = currentRuntime().inflight.track(deliver(s.id, message, releaseHold, prepared));
+  const cache = recent();
+  cache.set(key, { at: now, result });
+  result.catch(() => {
+    if (cache.get(key)?.result === result) cache.delete(key);
+  });
   return result;
 }
 
@@ -389,6 +405,7 @@ async function deliver(
   releaseHold: () => void,
   prepared: PreparedPush | null,
 ): Promise<ReplyResult> {
+  const rt = currentRuntime();
   const seq = seqOf(message) ?? 0;
   let persisted: boolean;
   try {
@@ -397,20 +414,21 @@ async function deliver(
     // 不会再提交：不发，记一条没发出去的说明（内容还留在内存里，停机时进 spill，修好原因后重启回放）
     releasePrepared(prepared, 'aborted');
     releaseHold();
-    const s = getSession(sessionId);
+    const s = rt.state === 'serving' ? getSession(sessionId) : undefined;
     if (s) {
       s.messages.push({ role: 'system', content: REPLY_UNRECOVERABLE_NOTE, at: Date.now() });
       saveSession(s, false);
     }
     throw e;
   }
+  if (rt.state !== 'serving') return { sent: false, seq, persisted };
   let sent = false;
   try {
     sent = await pushToChannel(sessionId, message.content, { kind: 'human', message, prepared });
   } finally {
     releaseHold();
   }
-  if (!sent) {
+  if (!sent && rt.state === 'serving') {
     // 发送失败必须让操作者知道：否则后台显示「已回复」、客户实际什么都没收到
     const s = getSession(sessionId);
     if (s) {
@@ -424,10 +442,10 @@ async function deliver(
 /** 仅供自测：模拟一次接手的代次变化（不改会话）；清掉 clientId 去重表 */
 export const __takeoverTest = {
   bump(sessionId: string): void {
-    gens.set(sessionId, takeoverGen(sessionId) + 1);
+    gens().set(sessionId, takeoverGen(sessionId) + 1);
   },
   resetRecent(): void {
-    recent.clear();
+    recent().clear();
   },
-  recentSize: (): number => recent.size,
+  recentSize: (): number => recent().size,
 };
