@@ -10,14 +10,18 @@
                          13 个会话、同样的时间定位，另外 A01 由「等人接手」改成「顾问处理中」（接手人小林），
                          F01 补一条转人工原因「客户投诉价格太贵」。7F3A（14 个会话里的第 14 个）不在这里，由
                          走查脚本经假企微接口和脚本化的 mock LLM 真跑出来
-  --now 2026-09-26T14:30+08:00  钉住「现在」（ISO 8601，不带时区按本机时区）；不带时取当前时间"""
+  --now 2026-09-26T14:30+08:00  钉住「现在」（ISO 8601，不带时区按本机时区）；不带时取当前时间
+  --fixture  默认场景的沙箱种子 JSON 输出到 stdout；时间是相对最新消息的毫秒偏移"""
 import argparse, json, time, sys
 from datetime import date, datetime, timedelta, time as clock
 
 ap = argparse.ArgumentParser(description="生成 demo 后台的样例会话与订单")
 ap.add_argument("--scenario", choices=["default", "console-ux", "console-ux-02"], default="default", help="场景，默认 default")
 ap.add_argument("--now", help="钉住现在，如 2026-09-26T14:30+08:00")
+ap.add_argument("--fixture", action="store_true", help="输出默认场景的相对时间沙箱种子，不写 demo 文件")
 args = ap.parse_args()
+if args.fixture and args.scenario != "default":
+    ap.error("--fixture 只支持默认场景")
 now_dt = datetime.fromisoformat(args.now) if args.now else datetime.now()
 if now_dt.tzinfo is None:
     now_dt = now_dt.astimezone()  # 不带时区的按本机时区；带了的保留，日历日按 --now 自己的时区算
@@ -214,6 +218,55 @@ if args.scenario in ("console-ux", "console-ux-02"):
         o["createdAt"] = created[o["sessionId"]]
         if "paidAt" in o:
             o["paidAt"] = o["createdAt"] + 8 * M
+
+if args.fixture:
+    from pathlib import Path
+
+    # 仅沙箱夹具修正默认种子里已不存在的线路；普通 demo 输出保持原样。
+    with open(Path(__file__).resolve().parent.parent / "data/routes.json", encoding="utf-8") as routes_file:
+        bali = next(r for r in json.load(routes_file) if r["id"] == "r-bali")
+    bali_order = next(o for o in O if o["routeId"] == "r-bali-lux")
+    bali_order["routeId"] = bali["id"]
+    bali_order["routeTitle"] = bali["title"]
+    bali_order["totalPrice"] = bali["priceFrom"] * bali_order["travelers"]
+    bali_session = next(s for s in S if s["id"] == bali_order["sessionId"])
+    bali_session["messages"][1]["content"] = f'{bali["title"]}了解一下？私人泳池俯瞰雨林～'
+    bali_session["messages"][3]["content"] = (
+        f'已为您生成订单，{bali["title"]}，{bali_order["travelers"]} 人共 '
+        f'{bali_order["totalPrice"]:,} 元，请点链接支付～'
+    )
+    for s in S:
+        s["updatedAt"] = s["messages"][-1]["at"]
+    latest = max(m["at"] for s in S for m in s["messages"])
+
+    def relative_times(value):
+        if isinstance(value, list):
+            return [relative_times(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: item - latest if key in ("at", "createdAt", "updatedAt", "paidAt") else relative_times(item)
+                for key, item in value.items()
+            }
+        return value
+
+    fixture = {
+        "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。"
+                    "仅夹具将旧 r-bali-lux 样例改为目录中的 r-bali，标题与单价取目录、总价为单价乘人数；"
+                    "各会话 updatedAt 等于最后一条消息时间。"
+                    "所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；"
+                    "开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。"
+                    "会话 id、channel 与订单引用在开通时重映射。",
+        "sessions": relative_times(S),
+        "orders": relative_times(O),
+    }
+    rendered = json.dumps(fixture, ensure_ascii=False, indent=2)
+    # 仓库格式约定把短的标量数组放在一行；生成器直接遵守，CI 不需要另跑格式化工具。
+    for s in S:
+        expanded = json.dumps(s["orderIds"], ensure_ascii=False, indent=2).replace("\n", "\n      ")
+        compact = json.dumps(s["orderIds"], ensure_ascii=False)
+        rendered = rendered.replace('"orderIds": ' + expanded, '"orderIds": ' + compact)
+    sys.stdout.write(rendered + "\n")
+    sys.exit(0)
 
 json.dump(S, open("/tmp/seed_sessions.json", "w"), ensure_ascii=False, indent=2)
 json.dump(O, open("/tmp/seed_orders.json", "w"), ensure_ascii=False, indent=2)
