@@ -866,7 +866,11 @@ export const consoleApi = new Hono<ConsoleEnv>()
       };
       // 补发、首条与订阅在同一段同步代码里排进写队列：中间不会漏掉也不会乱序
       const missed = lastEventId ? replayAfter(lastEventId) : [];
-      const off = addListener(write);
+      const off = addListener(write, () => {
+        open = false;
+        wake();
+        void stream.abort();
+      });
       // 等下一次心跳或复核：连接一断就醒（不留着计时器把进程拖住）
       let wake = (): void => {};
       const wait = (ms: number): Promise<void> =>

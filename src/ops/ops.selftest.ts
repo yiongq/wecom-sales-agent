@@ -21,7 +21,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 // 03 R22：手写 id，不依赖后续步骤的渠道产生方；带 key 的 id 穷举两处冒号的原文、大小写编码与混合编码。
 const channelIds = [
   { id: 'wecom:wmKeyed0001', code: '0001' },
@@ -88,7 +91,7 @@ if (CHILD === 'channel-observation') {
 
 // ================ 子进程：没设端点时什么都不加载、不连接（不变量 49） ================
 if (CHILD === 'no-otel') {
-  const { registerHooks, createRequire } = await import('node:module');
+  const { registerHooks, createRequire } = await withoutTenantScope(() => import('node:module'));
   const resolved = new Set<string>();
   // 进程内的同步加载钩子：import 与 require 都经过它（含 tsx 之后的解析），解析到 @opentelemetry/* 就记下是哪个包
   registerHooks({
@@ -99,7 +102,7 @@ if (CHILD === 'no-otel') {
       return r;
     },
   });
-  const net = await import('node:net');
+  const net = await withoutTenantScope(() => import('node:net'));
   let connects = 0;
   const origConnect = net.Socket.prototype.connect;
   net.Socket.prototype.connect = function (this: import('node:net').Socket, ...a: unknown[]) {
@@ -119,9 +122,9 @@ if (CHILD === 'no-otel') {
   process.env.LLM_MOCK = '1';
   process.env.CONFIG_SOURCE = 'file';
   // 服务器的整张静态 import 图（含 src/ops/otel.ts、boot.ts）
-  await import('../server.js');
-  const { boot } = await import('../boot.js');
-  const { startOtelExport } = await import('./otel.js');
+  await withoutTenantScope(() => import('../server.js'));
+  const { boot } = await withoutTenantScope(() => import('../boot.js'));
+  const { startOtelExport } = await withoutTenantScope(() => import('./otel.js'));
   let called = false;
   const calls: string[] = [];
   await boot({
@@ -145,7 +148,7 @@ if (CHILD === 'no-otel') {
       await startOtelExport();
     },
   });
-  const { handleMessage } = await import('../engine.js');
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
   const r = await handleMessage('sim-ops-no-otel', '你好，想去云南玩', 'simulator');
   const out = {
     calls: calls.join(','),
@@ -157,7 +160,7 @@ if (CHILD === 'no-otel') {
     // 对照：钩子与连接计数确实看得见（动态加载导出器、连一次接收端）
     control: { resolved: 0, cache: 0, connects: 0 },
   };
-  await import('../otel/export.js');
+  await withoutTenantScope(() => import('../otel/export.js'));
   out.control.resolved = resolved.size;
   out.control.cache = otelInCache().length;
   await fetch(`${process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}/control`).catch(() => undefined);
@@ -227,12 +230,12 @@ if (CHILD === 'json-logs') {
     LLM_MAX_RETRY: '0',
   });
   // 导入 server.ts：profile-boot 在导入期就把 console.* 接到 pino（[profile] 那一行也是 JSON）
-  const { app } = await import('../server.js');
-  const { log, withLogContext } = await import('../log.js');
-  const store = await import('../store.js');
-  const recorder = await import('../trace/recorder.js');
-  const testing = await import('../db/testing.js');
-  const { handleMessage } = await import('../engine.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
+  const { log, withLogContext } = await withoutTenantScope(() => import('../log.js'));
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const recorder = await withoutTenantScope(() => import('../trace/recorder.js'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
   const t = await testing.openTestDb();
   await testing.installSeededConfig(t);
   const fx = await testing.installPgSessionStore(t, { varDir: VAR_DIR });
@@ -258,7 +261,7 @@ if (CHILD === 'json-logs') {
   });
   // 兜底：形如会话原 id 的串、请求路径里编码过的、带凭据的地址与 Bearer
   console.log('兜底：wecom:wmFallbackRaw01 sim-0123456789abcdef01234567 /api/sessions/wecom%3AwmFallbackRaw02/reply');
-  const { setConvRefResolver } = await import('../log.js');
+  const { setConvRefResolver } = await withoutTenantScope(() => import('../log.js'));
   setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
   try {
     for (const [i, { raw }] of channelIdCases.entries()) {
@@ -732,20 +735,20 @@ process.env.EMBED_API_KEY = 'selftest-fake-key';
 process.env.LLM_HEDGE_MODEL = '';
 process.env.LLM_MAX_RETRY = '0';
 
-const store = await import('../store.js');
-const recorder = await import('../trace/recorder.js');
-const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await import('../db/testing.js');
-const { withTenant, queryCount } = await import('../db/client.js');
-const { readMetrics, readTraceRetentionDays } = await import('../db/repo/metrics.js');
-const { shortIdOf } = await import('../shared/conversation.js');
-const accounts = await import('../auth/accounts.js');
-const { SESSION_COOKIE } = await import('../auth/session.js');
-const { consoleApi, __consoleTest } = await import('../console-api/app.js');
-const { metricsWindow, __metricsTest } = await import('./metrics.js');
-const { boot } = await import('../boot.js');
-const { startOtelExport, providerName } = await import('./otel.js');
-const { handleMessage } = await import('../engine.js');
-const { createRequire } = await import('node:module');
+const store = await withoutTenantScope(() => import('../store.js'));
+const recorder = await withoutTenantScope(() => import('../trace/recorder.js'));
+const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
+const { withTenant, queryCount } = await withoutTenantScope(() => import('../db/client.js'));
+const { readMetrics, readTraceRetentionDays } = await withoutTenantScope(() => import('../db/repo/metrics.js'));
+const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
+const accounts = await withoutTenantScope(() => import('../auth/accounts.js'));
+const { SESSION_COOKIE } = await withoutTenantScope(() => import('../auth/session.js'));
+const { consoleApi, __consoleTest } = await withoutTenantScope(() => import('../console-api/app.js'));
+const { metricsWindow, __metricsTest } = await withoutTenantScope(() => import('./metrics.js'));
+const { boot } = await withoutTenantScope(() => import('../boot.js'));
+const { startOtelExport, providerName } = await withoutTenantScope(() => import('./otel.js'));
+const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
+const { createRequire } = await withoutTenantScope(() => import('node:module'));
 const otelLoaded = (): number =>
   Object.keys(createRequire(import.meta.url).cache).filter((k) => /[/\\]@opentelemetry[/+\\]/.test(k)).length;
 
@@ -1077,8 +1080,8 @@ __metricsTest.reset();
     if (process.env.CI === 'true') fails.push('CI 下必须设 PG_TEST_URL：运行数字的 SQL 要在真实 Postgres 上跑一遍，不能静默跳过');
     else console.log('OPS SELFTEST：没有 PG_TEST_URL，跳过真实 Postgres 部分（运行数字的 SQL 经 agent_app 与 RLS）');
   } else {
-    const { createRealPgFixture } = await import('../db/testing.js');
-    const { openDb } = await import('../db/client.js');
+    const { createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
+    const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
     const fxr = await createRealPgFixture(PG_TEST_URL);
     try {
       const [o] = await fxr.query<{ id: string }>(
@@ -1244,7 +1247,7 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
   check('boot：设了端点，真的 startOtelExport 起来了', json(ok) === json(['config', 'store', 'otel', 'serve', 'wecom']), json(ok));
   check('设了端点之后才加载 @opentelemetry/*', otelLoaded() > 0);
 }
-const otel = await import('../otel/export.js');
+const otel = await withoutTenantScope(() => import('../otel/export.js'));
 const flush = async (): Promise<Got[]> => {
   await otel.flushOtel();
   return spansReceived();
@@ -1679,7 +1682,7 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
 }
 
 // ================ 日志：JSON 兜底的字段级 redact 与连接串/Cookie（scrubLine，审查第 2–4 条） ================
-const logMod = await import('../log.js');
+const logMod = await withoutTenantScope(() => import('../log.js'));
 {
   const { scrubLine } = logMod.__logTest;
   for (const [depth, obj] of [
@@ -1729,8 +1732,8 @@ const logMod = await import('../log.js');
   );
 }
 
-const { __profileTest } = await import('../profile.js');
-const { app: serverApp } = await import('../server.js');
+const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
+const { app: serverApp } = await withoutTenantScope(() => import('../server.js'));
 {
   check(
     '03 R22 demo：所有新旧 id 与编码组合的请求路径原样保留',
@@ -1909,12 +1912,12 @@ const { app: serverApp } = await import('../server.js');
 }
 
 // ================ 告警：app 侧五个键（本机假 webhook） ================
-const alertMod = await import('./alert.js');
-const wecom = await import('../adapters/wecom.js');
-const ledger = await import('../quota/ledger.js');
-const runner = await import('../jobs/runner.js');
-const { __configTest, configHealth } = await import('../config/source.js');
-const { enqueueJob } = await import('../db/repo/jobs.js');
+const alertMod = await withoutTenantScope(() => import('./alert.js'));
+const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
+const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
+const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
+const { __configTest, configHealth } = await withoutTenantScope(() => import('../config/source.js'));
+const { enqueueJob } = await withoutTenantScope(() => import('../db/repo/jobs.js'));
 // 假 webhook：ok 照收；hang 收下不回；s500 回 500；errcode 回企微的错误码；收到的都记下（含失败的那几次）
 const hook = { bodies: [] as string[], hits: 0, mode: 'ok' as 'ok' | 'hang' | 's500' | 'errcode', urls: [] as string[] };
 const hookSrv = http.createServer((req, res) => {
@@ -1998,7 +2001,7 @@ await captureAlertLogs(async () => {
 
   // 05：事件租户不匹配只丢该事件，实际告警接线仍发一条并按事故键去重。
   {
-    const events = await import('../store/events.js');
+    const events = await withoutTenantScope(() => import('../store/events.js'));
     const n0 = hook.bodies.length;
     events.deliverCommitted([{ type: 'conversation.changed', id: 'sim-mismatch', tenantId: 'foreign' }]);
     events.deliverCommitted([{ type: 'conversation.changed', id: 'sim-mismatch', tenantId: 'foreign' }]);
@@ -2878,8 +2881,8 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   // 03 第 12 步（spec R7、R19、验收 21 的 backup.sh 部分；「测试与 CI」允许改的 backup.sh 步骤顺序）：先打包 var/、再 pg_dump，
   // 归档里有恢复哨兵、线上 var/ 里没有。pg_dump 时往线上 var/ 写一个文件：先打包的话归档里没有它
   {
-    const { RESTORE_SENTINEL } = await import('../channels/markers.js');
-    const { CHANNEL_KEY_ENV } = await import('../channels/secrets.js');
+    const { RESTORE_SENTINEL } = await withoutTenantScope(() => import('../channels/markers.js'));
+    const { CHANNEL_KEY_ENV } = await withoutTenantScope(() => import('../channels/secrets.js'));
     const callsFile = path.join(wtmp, 'backup-calls.log');
     const touched = path.join(srv, 'var', 'written-during-dump.json');
     fs.rmSync(callsFile, { force: true });
@@ -3202,22 +3205,22 @@ process.exit(0);
 
 /** 03 第 13 步：独立进程保证账号、运行时、profile 与可控时钟不影响 02 的断言。 */
 async function channelObservationSelftest(): Promise<void> {
-  const assert: typeof import('node:assert/strict') = (await import('node:assert/strict')).default;
-  const { randomUUID } = await import('node:crypto');
-  const testing = await import('../db/testing.js');
-  const store = await import('../store.js');
-  const registry = await import('../channels/registry.js');
-  const wecom = await import('../adapters/wecom.js');
-  const { AccountInbox } = await import('../channels/inbox.js');
-  const { sealSecrets } = await import('../channels/secrets.js');
-  const { __profileTest } = await import('../profile.js');
-  const { withTenant } = await import('../db/client.js');
-  const { readInboxStats } = await import('../db/repo/channel-inbox.js');
-  const { readOutboundStats } = await import('../db/repo/outbound.js');
-  const alert = await import('./alert.js');
-  const { consoleApi, __consoleTest } = await import('../console-api/app.js');
-  const { SESSION_COOKIE } = await import('../auth/session.js');
-  const log = await import('../log.js');
+  const assert: typeof import('node:assert/strict') = (await withoutTenantScope(() => import('node:assert/strict'))).default;
+  const { randomUUID } = await withoutTenantScope(() => import('node:crypto'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const registry = await withoutTenantScope(() => import('../channels/registry.js'));
+  const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
+  const { AccountInbox } = await withoutTenantScope(() => import('../channels/inbox.js'));
+  const { sealSecrets } = await withoutTenantScope(() => import('../channels/secrets.js'));
+  const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
+  const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const { readInboxStats } = await withoutTenantScope(() => import('../db/repo/channel-inbox.js'));
+  const { readOutboundStats } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
+  const alert = await withoutTenantScope(() => import('./alert.js'));
+  const { consoleApi, __consoleTest } = await withoutTenantScope(() => import('../console-api/app.js'));
+  const { SESSION_COOKIE } = await withoutTenantScope(() => import('../auth/session.js'));
+  const log = await withoutTenantScope(() => import('../log.js'));
   const t = await testing.openTestDb();
   await testing.installSeededConfig(t);
   const fx = await testing.installPgSessionStore(t, { varDir: VAR_DIR });
@@ -3395,7 +3398,7 @@ async function channelObservationSelftest(): Promise<void> {
     await alert.__alertTest.settle();
     assert.equal(channelAlerts('重启时 1 段 sending 转 unknown').length, 1, '重启告警独立去重');
     assert.equal(channelAlerts('网页账号 website 没有启用').length, 1, 'prod 开关告警去重');
-    const { app } = await import('../server.js');
+    const { app } = await withoutTenantScope(() => import('../server.js'));
     const health = async () =>
       (await (await app.request('/healthz')).json()) as { ok: boolean; channels: { failing: number; stuck: number } };
     page = [
@@ -3543,7 +3546,7 @@ async function channelObservationSelftest(): Promise<void> {
     assert.equal(inboxStats.find((s) => s.accountId === ids.get('good'))!.openInbox, 1);
     assert.equal(inboxStats.find((s) => s.accountId === ids.get('good'))!.oldestAt!.getTime(), base);
     await su('update channel_accounts set cursor_at=$1 where tenant_id=$2 and id=$3', [new Date(base - 60_000), tenantId, ids.get('good')]);
-    const auth = await import('../auth/accounts.js');
+    const auth = await withoutTenantScope(() => import('../auth/accounts.js'));
     await t.pg.exec('SET ROLE agent_platform');
     const tokens: string[] = [];
     for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer'] as const) {
@@ -3634,7 +3637,7 @@ async function channelObservationSelftest(): Promise<void> {
     assert.equal(h.ok, false);
     assert.equal(channelAlerts('已恢复：渠道账号 blocked 入站与启动恢复已恢复').length, 1);
     // 各账号 wecom_send 的三个分段独立累计；已有 token 告警的 bad 不压掉 good。
-    const ledger = await import('../quota/ledger.js');
+    const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
     alert.__alertTest.reset();
     const n0 = messages.length;
     for (let i = 0; i < 3; i++) {
@@ -3680,7 +3683,7 @@ async function channelObservationSelftest(): Promise<void> {
     assert.deepEqual(Object.keys(h.channels).sort(), ['mode', 'accounts', 'failing', 'stuck'].sort());
     if (process.env.PG_TEST_URL) {
       const rpg = await testing.createRealPgFixture(process.env.PG_TEST_URL);
-      const { openDb } = await import('../db/client.js');
+      const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
       const db = await openDb(rpg.urls.app, { max: 1 });
       try {
         const id = randomUUID();
@@ -3717,7 +3720,7 @@ async function channelObservationSelftest(): Promise<void> {
     registry.__channelsTest.reset();
     assert.equal(registry.__channelsTest.stats().running, false, '清理渠道时统计定时器停止');
     await su("update channel_accounts set status='exported' where tenant_id=$1 and kind='wecom_kf'", [tenantId]);
-    const { removeChannelsMarker } = await import('../channels/markers.js');
+    const { removeChannelsMarker } = await withoutTenantScope(() => import('../channels/markers.js'));
     removeChannelsMarker(VAR_DIR);
     process.env.WECOM_CORP_ID = 'corp-env-private';
     process.env.WECOM_APP_SECRET = 'OBS_ENV_SECRET';

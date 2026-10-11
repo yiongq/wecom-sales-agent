@@ -1,3 +1,4 @@
+import { TenantObservers } from '../../tenancy/observers.js';
 import { TenantLocal } from '../../tenancy/local-state.js';
 import { registerTenantState } from '../../tenancy/state.js';
 import { currentRuntime, withoutTenantScope } from '../../tenancy/runtime.js';
@@ -138,10 +139,10 @@ export interface ToolCallMeta {
   prefetch?: boolean;
 }
 type ToolObserver = (name: string, args: Record<string, unknown>, sessionId: string, meta?: ToolCallMeta) => void;
-const toolObservers = new Set<ToolObserver>();
+const toolObservers = new TenantObservers<ToolObserver>();
+registerTenantState({ name: 'index.toolObservers', ...toolObservers.registration() });
 export function onToolCall(fn: ToolObserver): () => void {
-  toolObservers.add(fn);
-  return () => toolObservers.delete(fn);
+  return toolObservers.subscribe(fn);
 }
 // 逐轮 trace 的订阅者（02 spec「逐轮 trace」）：调用记进当前这一轮，结果由 runTool 执行完补上（noteToolResult）
 withoutTenantScope(() => onToolCall(traceToolCall));

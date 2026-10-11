@@ -6,7 +6,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { PGlite } from '@electric-sql/pglite';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const root = path.join(import.meta.dirname, '..', '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rollback-brand-'));
 const bin = path.join(tmp, 'bin');

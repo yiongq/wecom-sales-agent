@@ -67,6 +67,7 @@ const tenantState = scopedState(
     refreshing: null as Promise<void> | null,
     pendingRead: null as { expired: boolean } | null,
     lastStatsAt: null as number | null,
+    startedAt: null as number | null,
   }),
   {
     pendingRead: (v) => {
@@ -81,6 +82,7 @@ registerTenantState({ name: 'channels.registry.observations', ...tenantState.reg
 registerTenantState({ name: 'channels.registry.refreshing', ...tenantState.registration('refreshing') });
 registerTenantState({ name: 'channels.registry.pendingRead', ...tenantState.registration('pendingRead') });
 registerTenantState({ name: 'channels.registry.lastStatsAt', ...tenantState.registration('lastStatsAt') });
+registerTenantState({ name: 'channels.registry.startedAt', ...tenantState.registration('startedAt') });
 
 export { ChannelStartupError } from './startup-error.js';
 export type { ChannelStartupReason } from './startup-error.js';
@@ -127,8 +129,7 @@ interface Registry {
   accounts: readonly ChannelAccount[];
 }
 
-// 实例级启动时间与总巡检定时器；查询和账号观察值按所属租户分开。
-let startedAt = Date.now();
+// 实例级总巡检定时器；启动时间、查询和账号观察值按所属租户分开。
 let observationClock = (): number => Date.now();
 interface DbObservation {
   openInbox: number;
@@ -404,7 +405,7 @@ function publishAccountLookup(): void {
 
 function commit(plan: Plan, db: Db | null): void {
   const own = state();
-  startedAt = observationClock();
+  own.startedAt = observationClock();
   own.lastStatsAt = null;
   own.observations.clear();
   for (const c of plan.channels.values()) {
@@ -640,7 +641,7 @@ export function channelConditions(now = observationClock()) {
     .map((a) => {
       const rt = a.kind === 'wecom_kf' ? wecomObservability(a.id) : null;
       const db = own.observations.get(a.id);
-      const graceOver = now - (rt?.startedAt ?? startedAt) > 60_000;
+      const graceOver = now - (rt?.startedAt ?? own.startedAt ?? now) > 60_000;
       return {
         key: a.key,
         failing: rt?.failingSince != null && now - rt.failingSince >= 600_000,
@@ -692,6 +693,7 @@ export const __channelsTest = {
     own.refreshing = null;
     own.pendingRead = null;
     own.lastStatsAt = null;
+    own.startedAt = null;
     statsRefreshMs = 30_000;
     statsTimeoutMs = 5_000;
     stopWecomAccounts();

@@ -13,7 +13,10 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { Order, Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
 const VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-trace-selftest-'));
@@ -153,26 +156,26 @@ async function waitFor(cond: () => boolean, ms = 5000): Promise<boolean> {
 }
 
 // store 先于一切会记用量的模块：usage_daily 的累加器在它的导入期订阅 onUsage
-const store = await import('../store.js');
-const usage = await import('../usage.js');
+const store = await withoutTenantScope(() => import('../store.js'));
+const usage = await withoutTenantScope(() => import('../usage.js'));
 const events: import('../usage.js').UsageEvent[] = [];
 usage.onUsage((e) => events.push(e));
-const recorder = await import('./recorder.js');
-const usageDaily = await import('./usage-daily.js');
-const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await import('../db/testing.js');
-const { withTenant, queryCount } = await import('../db/client.js');
-const traceRepo = await import('../db/repo/traces.js');
-const { readMetrics } = await import('../db/repo/metrics.js');
-const config = await import('../config/source.js');
-const cat = await import('../config/catalog.js');
-const { handleMessage, onToolCall } = await import('../engine.js');
-const { __takeoverTest } = await import('../handoff/takeover.js');
-const { getInsights, getSuggestion, getDraftReply } = await import('../insight.js');
-const { deferQuiet } = await import('../followup.js');
-const jobs = await import('../jobs/runner.js');
-const { buildIndex } = await import('../retrieval.js');
-const { __llmTest } = await import('../llm.js');
-const { todayIso } = await import('../env.js');
+const recorder = await withoutTenantScope(() => import('./recorder.js'));
+const usageDaily = await withoutTenantScope(() => import('./usage-daily.js'));
+const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
+const { withTenant, queryCount } = await withoutTenantScope(() => import('../db/client.js'));
+const traceRepo = await withoutTenantScope(() => import('../db/repo/traces.js'));
+const { readMetrics } = await withoutTenantScope(() => import('../db/repo/metrics.js'));
+const config = await withoutTenantScope(() => import('../config/source.js'));
+const cat = await withoutTenantScope(() => import('../config/catalog.js'));
+const { handleMessage, onToolCall } = await withoutTenantScope(() => import('../engine.js'));
+const { __takeoverTest } = await withoutTenantScope(() => import('../handoff/takeover.js'));
+const { getInsights, getSuggestion, getDraftReply } = await withoutTenantScope(() => import('../insight.js'));
+const { deferQuiet } = await withoutTenantScope(() => import('../followup.js'));
+const jobs = await withoutTenantScope(() => import('../jobs/runner.js'));
+const { buildIndex } = await withoutTenantScope(() => import('../retrieval.js'));
+const { __llmTest } = await withoutTenantScope(() => import('../llm.js'));
+const { todayIso } = await withoutTenantScope(() => import('../env.js'));
 process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 
 // ---------------- 纯函数：按句对比、模型失败的分类 ----------------
@@ -309,8 +312,8 @@ async function say(
 
 // ---------------- 文件存储、文件配置模式：照样收集这一轮（只在内存），前缀是这一轮请求的 ----------------
 {
-  const { promptPrefix } = await import('../engine.js');
-  const { promptHashes } = await import('../config/hashes.js');
+  const { promptPrefix } = await withoutTenantScope(() => import('../engine.js'));
+  const { promptHashes } = await withoutTenantScope(() => import('../config/hashes.js'));
   check('前提：这时是文件存储、文件配置模式', store.sessionStoreMode() === 'file' && config.configMode() === 'file');
   // demo 类会话：之后装 db 存储时 JSON 里不许有真实会话（real_in_json）
   const sid = 'wecom:cust_TraceFile';
@@ -794,7 +797,7 @@ const YUNNAN = 'r-yunnan-mid';
 
 // ---------------- 企微非文本消息：不经引擎，同样记一轮（回提示 deterministic、已转人工 silent），提示消息关联 turn_id ----------------
 {
-  const wecom = await import('../adapters/wecom.js');
+  const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
   // 假企微服务端：sync_msg 按 cursor 返回之后的消息，send_msg 记下发了什么；别的请求（假模型）照常走
   const realFetch = globalThis.fetch;
   const wxLog: Record<string, unknown>[] = [];
@@ -931,7 +934,7 @@ const YUNNAN = 'r-yunnan-mid';
 
 // ---------------- 存档点：真实的 trace 写失败，会话照常提交 ----------------
 {
-  const sid = 'wecom:wmTraceSavepoint';
+  const sid = 'wecom:wmTraceSave';
   await su("ALTER TABLE turn_traces ADD CONSTRAINT trace_selftest_reject CHECK (outcome <> 'replied') NOT VALID");
   const d0 = pgStats().telemetryDropped;
   const { reply } = await say(sid, '你好', [{ content: '您好呀～这次想去哪儿玩呢？' }]);
@@ -1191,7 +1194,7 @@ async function usageMatches(label: string): Promise<void> {
   await say('wecom:wmTraceUsage2', '你好', [{ content: '您好呀～这次想去哪儿玩呢？' }]);
   script.push({ content: '再来一条洞察' });
   // 洞察缓存 10 分钟：直接经 completeText 记一笔（purpose 照传）
-  const { completeText } = await import('../llm.js');
+  const { completeText } = await withoutTenantScope(() => import('../llm.js'));
   await completeText('s', 'u', { purpose: 'insight' });
   await usageDaily.flushUsageDaily();
   await usageMatches('又有新用量之后再写');
@@ -1230,7 +1233,7 @@ async function usageMatches(label: string): Promise<void> {
 
 // ---------------- 重启预载：messages.turn_id 记回 WeakMap ----------------
 {
-  const { openPgBackend } = await import('../store/pg-backend.js');
+  const { openPgBackend } = await withoutTenantScope(() => import('../store/pg-backend.js'));
   const sessions = new Map<string, Session>();
   const orders = new Map<string, Order>();
   const probeVar = fs.mkdtempSync(path.join(VAR_DIR, 'probe-'));

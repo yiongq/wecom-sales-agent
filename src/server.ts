@@ -5,7 +5,16 @@
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
 import { publicHostMiddleware, publicBase } from './tenancy/hosts.js';
-import { hostRuntime, tenantRuntimes, withTenantScope, currentRuntime, TenantScopeMissing } from './tenancy/runtime.js';
+import {
+  hostRuntime,
+  tenantRuntimes,
+  tenantStoreIfLoaded,
+  withTenantScope,
+  withoutTenantScope,
+  tenantCallback,
+  currentRuntime,
+  TenantScopeMissing,
+} from './tenancy/runtime.js';
 import { currentPack } from './config/source.js';
 import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
@@ -92,11 +101,17 @@ import { sandboxTryUrl } from './console-api/entry.js';
 import { convLabel, convLabelsIn, requestLogContext } from './log.js';
 import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
+import { logRole } from './tenancy/sandbox/role.js';
+import { SandboxProcess, sandboxApp } from './tenancy/sandbox/process.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
-// 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
-app.use('/*', requestLogContext, publicHostMiddleware);
+const sandbox = process.env.APP_ROLE === 'sandbox' ? new SandboxProcess(process.env) : null;
+const sandboxHttp = sandbox ? sandboxApp(sandbox, process.env.SANDBOX_HOST ?? '') : null;
+// 每个请求一个 req（响应头 x-request-id），两个角色都在任何路由分派之前建立日志上下文。
+app.use('/*', requestLogContext);
+if (sandboxHttp) app.use('/*', async (c) => sandboxHttp.fetch(c.req.raw));
+app.use('/*', publicHostMiddleware);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -331,10 +346,25 @@ app.get('/healthz', (c) => {
     store.lagMs <= 120_000 &&
     config.lock !== 'lost' &&
     channels.failing === 0 &&
-    channels.stuck === 0;
+    channels.stuck === 0 &&
+    tenantRuntimes()
+      .filter((rt) => rt.kind === 'standard' && !rt.isHost)
+      .every((rt) =>
+        withTenantScope(rt, () => {
+          const otherStore = tenantStoreIfLoaded(rt)?.pgBackend?.health();
+          const otherChannels = channelsHealth();
+          return (
+            (!otherStore || (!otherStore.conflict && otherStore.poisoned.length === 0 && otherStore.lagMs <= 120_000)) &&
+            (configMode() !== 'db' || configHealth().lock !== 'lost') &&
+            otherChannels.failing === 0 &&
+            otherChannels.stuck === 0
+          );
+        }),
+      );
   return c.json({
     ok,
     revision: process.env.APP_REVISION || 'dev',
+    role: 'host',
     models: activeModels(),
     visitorLLM: budgetStatus(),
     llmGate: gateStatus(),
@@ -434,15 +464,43 @@ app.post('/api/chat', simulatorOnly, async (c) => {
 // SSE 推送通道：服务端主动消息（支付跟进、人工回复）经此下发
 app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
   const sessionId = c.req.param('sessionId');
+  const rt = currentRuntime();
   return streamSSE(c, async (stream) => {
-    const unsubscribe = subscribe(sessionId, (text) => {
-      // 文本包 JSON，换行符才能安全穿过 SSE 分帧
-      void stream.writeSSE({ event: 'push', data: JSON.stringify({ text }) });
-    });
-    stream.onAbort(() => unsubscribe());
-    while (!stream.aborted) {
-      await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
-      await stream.sleep(15000);
+    let wake = (): void => {};
+    const unsubscribe = subscribe(
+      sessionId,
+      (text) => {
+        // 文本包 JSON，换行符才能安全穿过 SSE 分帧
+        void stream.writeSSE({ event: 'push', data: JSON.stringify({ text }) }).catch(() => undefined);
+      },
+      () => {
+        wake();
+        stream.abort();
+      },
+    );
+    withoutTenantScope(() =>
+      stream.onAbort(
+        tenantCallback(rt, () => {
+          unsubscribe();
+          wake();
+        }),
+      ),
+    );
+    try {
+      while (!stream.aborted) {
+        await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
+        if (stream.aborted) break;
+        await new Promise<void>((resolve) => {
+          const timer = withoutTenantScope(() => setTimeout(resolve, 15000));
+          timer.unref();
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+    } finally {
+      unsubscribe();
     }
   });
 });
@@ -461,23 +519,39 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 // admin.html 已有的 30 秒轮询兜底照常（01 spec「鉴权」）
 app.get('/api/admin/stream', async (c) => {
   if (!profile().flags.anon_readonly_admin && !(await consoleSession(c))) return c.json({ error: '需要登录后台' }, 401);
-  const events = currentRuntime().events.storeEvents;
+  const rt = currentRuntime();
+  const events = rt.events.storeEvents;
   return streamSSE(c, async (stream) => {
-    let alive = true;
+    let wake = (): void => {};
     const onChange = () => {
-      void stream.writeSSE({ event: 'change', data: String(Date.now()) });
+      void stream.writeSSE({ event: 'change', data: String(Date.now()) }).catch(() => undefined);
     };
-    events.on('change', onChange);
-    stream.onAbort(() => {
-      alive = false;
+    const close = tenantCallback(rt, () => {
       events.off('change', onChange);
+      events.off('close', close);
+      wake();
+      stream.abort();
     });
-    await stream.writeSSE({ event: 'change', data: 'init' }); // 连上先触发一次首屏加载
-    // alive 由上面的 onAbort 回调置 false，不是死循环
-    // oxlint-disable-next-line no-unmodified-loop-condition
-    while (alive) {
-      await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
-      await stream.sleep(20000);
+    events.on('change', onChange);
+    events.once('close', close);
+    withoutTenantScope(() => stream.onAbort(close));
+    try {
+      await stream.writeSSE({ event: 'change', data: 'init' });
+      while (!stream.aborted) {
+        await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
+        if (stream.aborted) break;
+        await new Promise<void>((resolve) => {
+          const timer = withoutTenantScope(() => setTimeout(resolve, 20000));
+          timer.unref();
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+    } finally {
+      events.off('change', onChange);
+      events.off('close', close);
     }
   });
 });
@@ -988,6 +1062,7 @@ const port = Number(process.env.PORT) || 3200;
 /** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
 function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
+  logRole('host', profile().flags);
   // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
   console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
   console.log(`[profile] web_channel=${profile().flags.web_channel ? 'on' : 'off'}`);
@@ -1040,7 +1115,29 @@ function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise
   return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
 }
 
-if (!SELFTEST) {
+if (!SELFTEST && sandbox) {
+  try {
+    await sandbox.start();
+    onShutdown(() => {
+      for (const rt of tenantRuntimes()) {
+        rt.state = 'closing';
+        withTenantScope(rt, markConfigShuttingDown);
+      }
+    });
+    onShutdown(() => sandbox.close(), { phase: 'late' });
+    withoutTenantScope(() =>
+      serve({ fetch: app.fetch, port }, (info) => {
+        console.log(`[server] 沙箱已启动 http://localhost:${info.port}`);
+        logRole('sandbox', profile().flags);
+      }),
+    );
+  } catch (error) {
+    console.error('[sandbox] 启动失败：', error instanceof Error ? error.message : 'sandbox_startup_failed');
+    process.exit(1);
+  }
+}
+
+if (!SELFTEST && !sandbox) {
   // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
   onShutdown(() => {
     for (const rt of tenantRuntimes()) withTenantScope(rt, markConfigShuttingDown);
@@ -1058,12 +1155,19 @@ if (!SELFTEST) {
         });
     },
     // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
-    initChannels: () =>
-      withTenantScope(hostRuntime(), () => {
-        if (process.env.SESSION_STORE !== 'db') return initChannels(null);
-        const { db, tenantId, deps } = configRuntime();
-        return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
-      }),
+    initChannels: async () => {
+      await Promise.all(
+        tenantRuntimes()
+          .filter((rt) => rt.kind === 'standard')
+          .map((rt) =>
+            withTenantScope(rt, () => {
+              if (process.env.SESSION_STORE !== 'db') return initChannels(null);
+              const { db, tenantId, deps } = configRuntime();
+              return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
+            }),
+          ),
+      );
+    },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {
         withTenantScope(hostRuntime(), () => logStartup(info.port));

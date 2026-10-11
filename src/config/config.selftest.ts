@@ -9,7 +9,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 // 先设临时 VAR_DIR 再动态 import：engine 会连带加载 store.ts，它在加载时就读 VAR_DIR
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
@@ -20,14 +23,14 @@ process.env.CONFIG_SOURCE = 'file';
 
 const root = path.join(import.meta.dirname, '..', '..');
 const { TRAVEL_SOP_SECTIONS, splitSop, joinSop, sectionBody, withBody, normalizeBody, mergeWithImage, editableChars, assertSopEncoding } =
-  await import('../sop/sections.js');
-const { SOP_CONTRACT, SOP_KNOWN_FIELDS, BUDGET_RATIO, checkSopContract } = await import('../sop/contract.js');
-const { knownFields } = await import('../packs/travel/sop.js');
-const { renderSystemPrompt } = await import('../prompt/system.js');
-const toolDefsModule = await import('../tool-defs.js');
-const { toolDefs: toolDefsViaTools } = await import('../tools.js');
-const { promptPrefix, __engineTest } = await import('../engine.js');
-const { loadRoutes, loadHotels, searchHotels } = await import('../tools.js');
+  await withoutTenantScope(() => import('../sop/sections.js'));
+const { SOP_CONTRACT, SOP_KNOWN_FIELDS, BUDGET_RATIO, checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
+const { knownFields } = await withoutTenantScope(() => import('../packs/travel/sop.js'));
+const { renderSystemPrompt } = await withoutTenantScope(() => import('../prompt/system.js'));
+const toolDefsModule = await withoutTenantScope(() => import('../tool-defs.js'));
+const { toolDefs: toolDefsViaTools } = await withoutTenantScope(() => import('../tools.js'));
+const { promptPrefix, __engineTest } = await withoutTenantScope(() => import('../engine.js'));
+const { loadRoutes, loadHotels, searchHotels } = await withoutTenantScope(() => import('../tools.js'));
 const {
   RouteSchema,
   HotelSchema,
@@ -37,9 +40,9 @@ const {
   LOCKED_WHEN_ACTIVE,
   ALWAYS_LOCKED,
   REPRICE_FIELDS,
-} = await import('../shared/catalog.js');
-const { deepFreeze } = await import('../shared/freeze.js');
-const { sha256 } = await import('./hashes.js');
+} = await withoutTenantScope(() => import('../shared/catalog.js'));
+const { deepFreeze } = await withoutTenantScope(() => import('../shared/freeze.js'));
+const { sha256 } = await withoutTenantScope(() => import('./hashes.js'));
 type SopSection = import('../sop/sections.js').SopSection;
 type ViolationCode = import('../sop/contract.js').ViolationCode;
 
@@ -515,8 +518,8 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
 
 // ---------------- 产品库：CSV 解析与逐行校验的边界（第 15 步） ----------------
 {
-  const { parseCsv } = await import('../shared/csv.js');
-  const { prepareCatalogCsv, CatalogCsvError } = await import('../shared/catalog-csv.js');
+  const { parseCsv } = await withoutTenantScope(() => import('../shared/csv.js'));
+  const { prepareCatalogCsv, CatalogCsvError } = await withoutTenantScope(() => import('../shared/catalog-csv.js'));
   const head = 'id,name,destination,stars,nightlyFrom,roomType,highlights,tags';
   // 合格返回 ok: 加上 payload，不合格返回按行列出的问题
   const outcome = (text: string): string => {
@@ -716,7 +719,7 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
 
 // ---------------- 依赖边界的 lint 也查 .jsx（spec「模块与依赖方向」，验收 20） ----------------
 {
-  const { spawnSync } = await import('node:child_process');
+  const { spawnSync } = await withoutTenantScope(() => import('node:child_process'));
   // 不在 git 工作区里的临时目录：脚本改查目录树。租户 GUC 名拆开拼，免得本文件自己命中那条规则
   const dir = fs.mkdtempSync(path.join(process.env.VAR_DIR!, 'boundaries-'));
   const put = (rel: string, text: string): void => {
@@ -784,14 +787,14 @@ const freshHotels = (): Record<string, unknown>[] => JSON.parse(hotelsRaw) as Re
 }
 
 // ================ DB 模式：配置源、启动顺序、导入导出（第 6 步） ================
-const { openTestDb, installSeededConfig, testConfigDeps, fakeLock } = await import('../db/testing.js');
-const cfg = await import('./source.js');
-const { importConfig, exportConfig, EXIT, imageCode } = await import('./transfer.js');
-const { boot } = await import('../boot.js');
-const { queryCount } = await import('../db/client.js');
-const { executeTool } = await import('../tools.js');
-const { getOrCreateSession, getSession } = await import('../store.js');
-const { handleMessage } = await import('../engine.js');
+const { openTestDb, installSeededConfig, testConfigDeps, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
+const cfg = await withoutTenantScope(() => import('./source.js'));
+const { importConfig, exportConfig, EXIT, imageCode } = await withoutTenantScope(() => import('./transfer.js'));
+const { boot } = await withoutTenantScope(() => import('../boot.js'));
+const { queryCount } = await withoutTenantScope(() => import('../db/client.js'));
+const { executeTool } = await withoutTenantScope(() => import('../tools.js'));
+const { getOrCreateSession, getSession } = await withoutTenantScope(() => import('../store.js'));
+const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
 type ToolHints = import('../tools.js').ToolHints;
 type ConfigDeps = import('./source.js').ConfigDeps;
 type Route = import('../shared/catalog-types.js').Route;
@@ -915,7 +918,7 @@ check('DB：装载之后是 DB 模式', cfg.configMode() === 'db' && cfg.current
 
 // ---------------- 每轮可追溯：日志记这一轮开始时用的版本 ----------------
 {
-  const { onToolCall } = await import('../engine.js');
+  const { onToolCall } = await withoutTenantScope(() => import('../engine.js'));
   const used = cfg.currentSop();
   const logs: string[] = [];
   const origLog = console.log;
@@ -944,7 +947,7 @@ check('DB：装载之后是 DB 模式', cfg.configMode() === 'db' && cfg.current
 // ---------------- /healthz 的 config ----------------
 {
   process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
-  const { app } = await import('../server.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
   const body = (await (await app.request('/healthz')).json()) as { config: Record<string, unknown> };
   const sop = cfg.currentSop();
   check(
@@ -1175,7 +1178,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   );
   check('锁：lost 期间对话照常（读缓存）', loadRoutes().length > 0 && cfg.currentSop().versionNo === 1);
   // 02 spec「两种会话存储与启动」：租户锁不在本进程手里时 /healthz 的 ok 为 false，HTTP 照旧 200（外部拨测看 ok）
-  const { app: healthApp } = await import('../server.js');
+  const { app: healthApp } = await withoutTenantScope(() => import('../server.js'));
   const healthOf = async (): Promise<{ status: number; ok: boolean }> => {
     const r = await healthApp.request('/healthz');
     return { status: r.status, ok: ((await r.json()) as { ok: boolean }).ok };
@@ -1258,7 +1261,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   await asSuper(() => t.pg.query(`delete from catalog_items where code = 'r-reload-test'`));
 
   // 下面几条要在事务提交之后、归还连接时插一脚：配置源换用一个与 t.db 同一个 PGlite、另登记借连接方式的 Db
-  const { registerDriver, resetSessionTenant } = await import('../db/client.js');
+  const { registerDriver, resetSessionTenant } = await withoutTenantScope(() => import('../db/client.js'));
   let onNextRelease: (() => Promise<void>) | null = null;
   const hooked = new Proxy(t.db, {});
   registerDriver(hooked, {
@@ -1276,8 +1279,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   });
   cfg.__configTest.reset();
   await cfg.initConfig(testConfigDeps({ db: hooked }));
-  const sopApi = await import('./sop.js');
-  const cat = await import('./catalog.js');
+  const sopApi = await withoutTenantScope(() => import('./sop.js'));
+  const cat = await withoutTenantScope(() => import('./catalog.js'));
   const tenantId = cfg.currentCatalog().tenantId;
   const ctx: import('../db/client.js').TenantCtx = { tenantId, actor: { kind: 'user', userId: null, name: '运营丁', ip: null } };
   const outcome = (p: Promise<unknown>): Promise<string> =>
@@ -1496,7 +1499,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   await expectFail('另一个进程已持有该租户的锁', 'lock_held', d({ lock: async () => null }));
 
   // 第 1 步之后库才断：解析租户、取锁、读快照、写 rerender 版本各自失败，同样以 db_unreachable 拒绝启动
-  const { registerDriver } = await import('../db/client.js');
+  const { registerDriver } = await withoutTenantScope(() => import('../db/client.js'));
   const dropped = (): never => {
     throw new Error('Connection terminated unexpectedly');
   };
@@ -1571,8 +1574,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 }
 // ---------------- SOP 编辑流程（第 7 步：验收 5、6、7、8，以及 10 的 SOP 部分） ----------------
 {
-  const sopApi = await import('./sop.js');
-  const { observeRequests } = await import('../llm.js');
+  const sopApi = await withoutTenantScope(() => import('./sop.js'));
+  const { observeRequests } = await withoutTenantScope(() => import('../llm.js'));
   const reinit = async (over: Partial<ConfigDeps> = {}): Promise<void> => {
     cfg.__configTest.reset();
     await cfg.initConfig(testConfigDeps(t, over));
@@ -2089,7 +2092,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
 // ---------------- 产品库编辑流程（第 8 步：验收 9，以及 10 的产品库部分） ----------------
 {
-  const cat = await import('./catalog.js');
+  const cat = await withoutTenantScope(() => import('./catalog.js'));
   cfg.__configTest.reset();
   await cfg.initConfig(testConfigDeps(t));
   const tenantId = cfg.currentCatalog().tenantId;
@@ -2162,7 +2165,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
   // 改 highlights：200，下一次 get_route_detail 返回新内容；其他条目不变，这一条除 highlights 外的字节也不变
   const proposalQuote = async (): Promise<string> => {
-    const { app } = await import('../server.js');
+    const { app } = await withoutTenantScope(() => import('../server.js'));
     const body = (await (await app.request(`/api/proposal/${CODE}?travelers=2&departDate=${peakDate}`)).json()) as { quote?: unknown };
     return JSON.stringify(body.quote);
   };
@@ -2355,10 +2358,10 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
 // ---------------- 后台新建的目的地：地名按整词认，大区叫法也认得新线路 ----------------
 {
-  const cat = await import('./catalog.js');
-  const { searchRoutes, offCatalogPlaces, visitedDestinations } = await import('../tools.js');
-  const { routeNames, namedRoutes } = (await import('../price-guard.js')).__priceGuardTest;
-  const { dropUnbackedClaims } = await import('../price-rules.js');
+  const cat = await withoutTenantScope(() => import('./catalog.js'));
+  const { searchRoutes, offCatalogPlaces, visitedDestinations } = await withoutTenantScope(() => import('../tools.js'));
+  const { routeNames, namedRoutes } = (await withoutTenantScope(() => import('../price-guard.js'))).__priceGuardTest;
+  const { dropUnbackedClaims } = await withoutTenantScope(() => import('../price-rules.js'));
   const base = (JSON.parse(routesRaw) as Record<string, unknown>[])[0]!;
   const noAliases = Object.fromEntries(Object.entries(base).filter(([k]) => k !== 'aliases'));
   const ids = async (destination: string): Promise<string> => (await searchRoutes({ destination })).map((r) => r.id).join(',');
@@ -2494,9 +2497,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
 // ---------------- 公开页：产品库文本是不可信输入（spec「编辑规则」最后一条） ----------------
 {
-  const vm = await import('node:vm');
-  const { app } = await import('../server.js');
-  const { createOrder, supersedeOrder } = await import('../store.js');
+  const vm = await withoutTenantScope(() => import('node:vm'));
+  const { app } = await withoutTenantScope(() => import('../server.js'));
+  const { createOrder, supersedeOrder } = await withoutTenantScope(() => import('../store.js'));
   const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
   const titleOf = (html: string): string | undefined => /<title>([\s\S]*?)<\/title>/.exec(html)?.[1];
   const scripts = (html: string): number => html.split('<script').length - 1;
@@ -2592,9 +2595,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
 // ---------------- 检索（第 9 步：验收 11） ----------------
 {
-  const http = await import('node:http');
-  const retrieval = await import('../retrieval.js');
-  const cat = await import('./catalog.js');
+  const http = await withoutTenantScope(() => import('node:http'));
+  const retrieval = await withoutTenantScope(() => import('../retrieval.js'));
+  const cat = await withoutTenantScope(() => import('./catalog.js'));
   // 计数的假 embedding 服务：只数建索引的请求（一次送整库，input 不止一条），不数 semanticRecall 的单条查询。
   // 向量按字符码位落到 1024 维上，用罕见字就能让某条线路在召回里排第一
   let buildRequests = 0;
@@ -2798,11 +2801,11 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
 // ---------------- 条目版本、按版本渲染的方案书、按轮固定快照（02 第 8 步：验收 19，不变量 35–37） ----------------
 {
-  const cat = await import('./catalog.js');
-  const http = await import('node:http');
+  const cat = await withoutTenantScope(() => import('./catalog.js'));
+  const http = await withoutTenantScope(() => import('node:http'));
   process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
-  const { app } = await import('../server.js');
-  const { onToolCall } = await import('../engine.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
+  const { onToolCall } = await withoutTenantScope(() => import('../engine.js'));
   const getJson = async (url: string): Promise<{ status: number; body: Record<string, unknown> }> => {
     const res = await app.request(url);
     return { status: res.status, body: res.ok ? ((await res.json()) as Record<string, unknown>) : {} };
@@ -2839,7 +2842,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     );
     const s = freshSession();
     await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s);
-    const { getOrder } = await import('../store.js');
+    const { getOrder } = await withoutTenantScope(() => import('../store.js'));
     check('版本·文件模式：订单记 catalogVersion 1', getOrder(getSession(s.id)!.orderIds[0]!)?.catalogVersion === 1);
     check(
       '版本·文件模式：/healthz 的 catalogVersioned 是 false',
@@ -3006,7 +3009,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   // ?v=4 还不存在 → 404，期间没有数据库查询；已有订单金额不变；改 title 仍 422
   const s1 = freshSession();
   await executeTool('create_order', { routeId: 'r-xian', travelers: 2, departDate: offDate }, s1);
-  const { getOrder } = await import('../store.js');
+  const { getOrder } = await withoutTenantScope(() => import('../store.js'));
   const order1 = getOrder(getSession(s1.id)!.orderIds[0]!)!;
   check('版本：订单记下单时线路的版本（2）', order1.catalogVersion === 2 && order1.totalPrice === before.total);
   const price0 = (cfg.currentCatalog().routes.find((r) => r.id === 'r-xian') as Route).priceFrom;
@@ -3331,7 +3334,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       // ?v= 的半角问号不是句末：链接后面同一行接着会被按句删、截半句的话，链接不会被切成「/2?」（不带 v，点开是版本 1 的旧价）。
       // 同一句话放在版本 1 的线路（r-guizhou）上对照：护栏连着链接整句删掉的，版本 2 也整句删、不留半截；版本 1 留下链接的，
       // 版本 2 留下带完整 ?v=2 的链接，企微卡片也按 ?v=2 出
-      const { __test: wecomCard } = await import('../adapters/wecom.js');
+      const { __test: wecomCard } = await withoutTenantScope(() => import('../adapters/wecom.js'));
       const LINK = '\u0001';
       const sameLine: [string, string][] = [
         ['提议发方案', `详细方案给您：${LINK} 需要的话我也可以把方案书发您`],
@@ -3430,7 +3433,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       }
       // 正文里没有 ?v= 时切句与开工时相同（锁定的 price-guard.selftest 另有全套）：「?」照常断句
       {
-        const { sentenceUnits } = await import('../price-guard.js');
+        const { sentenceUnits } = await withoutTenantScope(() => import('../price-guard.js'));
         const units = (t: string): string[] => sentenceUnits(t).map((u) => t.slice(u.start, u.end));
         check(
           '?v= 不断句：只在「?」后面紧跟 v=数字 时不断，别的「?」照常是句末',
@@ -3550,7 +3553,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
   // 企微卡片认 ?v=：卡片链接带着后缀、挖掉的原文也带着；不存在的版本不做卡片（原样发纯文本）
   {
-    const { __test: wecomTest } = await import('../adapters/wecom.js');
+    const { __test: wecomTest } = await withoutTenantScope(() => import('../adapters/wecom.js'));
     const BASE = 'https://x.test';
     const body = `方案书在这：${BASE}/proposal/r-beijing/2?v=2 您先看看`;
     const card = wecomTest.extractCard(body, BASE);
@@ -3571,7 +3574,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   // 网页模拟器（chat.html）与旧后台（admin.html）的站内链接正则认 ?v= 后缀，点开的才是发出时的那一版；旧后台的方案书卡片按链接上的
   // 版本取线路（缓存按线路 + 版本），接口 404 时不画卡片、不再请求（与企微 extractCard 同规则）。从页面里抽出这几段原样在 vm 里跑
   {
-    const vm = await import('node:vm');
+    const vm = await withoutTenantScope(() => import('node:vm'));
     const pub = (f: string): string => fs.readFileSync(path.join(root, 'public', f), 'utf8');
     const cut = (src: string, start: string, end: string): string => {
       const a = src.indexOf(start);
@@ -3686,8 +3689,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
 // ---------------- 部署 profile：配了企微凭据就必须显式设置（00 开放问题 1，2026-09-26 owner 定） ----------------
 {
-  const { resolveProfile } = await import('../profile.js');
-  const { spawnSync } = await import('node:child_process');
+  const { resolveProfile } = await withoutTenantScope(() => import('../profile.js'));
+  const { spawnSync } = await withoutTenantScope(() => import('node:child_process'));
   const reason = (env: Record<string, string>): string => {
     try {
       resolveProfile(env);
@@ -3736,8 +3739,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 // load() 与 sigOf() 一个字节不改：401 判断放在 api()（统一出口），顶部提示是一段独立逻辑；都在 load()/sigOf() 之外，
 // 原样从页面抽出来在 vm 里跑（跟上面「方案书卡片按版本」那段同一个办法）。
 {
-  const vm = await import('node:vm');
-  const { execFileSync } = await import('node:child_process');
+  const vm = await withoutTenantScope(() => import('node:vm'));
+  const { execFileSync } = await withoutTenantScope(() => import('node:child_process'));
   const admin = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
   const cut = (src: string, start: string, end: string): string => {
     const a = src.indexOf(start);

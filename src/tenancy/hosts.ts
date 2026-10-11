@@ -1,7 +1,7 @@
 // 05 R4：请求 Host 与平台命令共用；只接受主机名（可带端口），不接受 URL 或转发头列表。
 import { isIP } from 'node:net';
 import type { MiddlewareHandler } from 'hono';
-import { currentRuntime, hostRuntime, scopedRuntime, tenantRuntimes, withTenantScope, type TenantRuntime } from './runtime.js';
+import { currentRuntime, hostRuntime, tenantRuntimes, withTenantScope, type TenantRuntime } from './runtime.js';
 
 /** 去端口、去末尾点、转小写；非法 Host 返回 null。IPv6 保留方括号，便于拼绝对链接。 */
 export function normalizeHost(raw: string): string | null {
@@ -79,11 +79,17 @@ export function hostOnlyPath(path: string): boolean {
 }
 
 export const publicHostMiddleware: MiddlewareHandler = async (c, next) => {
-  if (scopedRuntime()) return next(); // 嵌入子应用时沿用外层的选择。
-  if (c.req.path === '/healthz') return withTenantScope(hostRuntime(), next);
+  const selected = c.get('publicHostRuntime') as TenantRuntime | undefined;
+  if (selected) return withTenantScope(selected, next); // 同一请求的外层选择，不能沿用调用者的 ALS。
+  if (c.req.path === '/healthz') {
+    const rt = hostRuntime();
+    c.set('publicHostRuntime', rt);
+    return withTenantScope(rt, next);
+  }
   // 文件模式 HTTP 自测未运行 boot；真实 DB 进程在开始监听前已装载。
   if (tenantRuntimes().length === 0 && process.env.CONFIG_SOURCE !== 'db' && process.env.APP_ROLE !== 'sandbox') hostRuntime();
   const rt = resolveHost(c.req.header('host'));
   if (!rt || (!rt.isHost && hostOnlyPath(c.req.path))) return c.notFound();
+  c.set('publicHostRuntime', rt);
   return withTenantScope(rt, next);
 };

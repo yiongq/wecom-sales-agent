@@ -14,7 +14,10 @@ import { auditAction } from '../shared/ui-labels.js';
 import { openDb, type Db } from './client.js';
 import { readBrand } from './repo/tenants.js';
 import { createRealPgFixture, installSeededConfig, openTestDb } from './testing.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-brand-selftest-'));
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const brand: BrandProfile = {

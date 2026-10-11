@@ -1,3 +1,4 @@
+import { assertSandboxRunning } from './tenancy/sandbox/lifecycle.js';
 import { currentRuntime, withoutTenantScope } from './tenancy/runtime.js';
 import { costOf, type UsagePurpose } from './usage.js';
 // LLM 请求的并发闸 + 退避重试。
@@ -14,7 +15,7 @@ import { costOf, type UsagePurpose } from './usage.js';
 import { numEnv } from './env.js';
 
 /** 同时在飞的 LLM 请求上限。0 表示不限制 */
-const MAX_INFLIGHT = Math.max(0, numEnv('LLM_MAX_INFLIGHT', 8));
+const MAX_INFLIGHT = Math.max(0, numEnv('LLM_MAX_INFLIGHT', process.env.APP_ROLE === 'sandbox' ? 2 : 8));
 /** 失败重试次数（不含首次）。0 表示不重试 */
 const MAX_RETRY = Math.max(0, numEnv('LLM_MAX_RETRY', 2));
 
@@ -173,6 +174,7 @@ export async function gatedFetch(
         if (signal.aborted) throw signal.reason;
       }
       // 预占在拿到实例名额后、每次真正发请求前；拒绝不进入重试分支。
+      assertSandboxRunning();
       const reservation = rt.budget.reserve(usage.purpose, usage.estimateMilli);
       if (!reservation) throw new BudgetExhausted();
       let settled = false;

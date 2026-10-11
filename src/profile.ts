@@ -131,11 +131,20 @@ export function capFlags(name: DeployProfileName, requested: Partial<DeployFlags
   return flags;
 }
 
+/** 05 R16：沙箱强制封顶，不读取对应 FLAG_* 的放宽值。 */
+export function sandboxFlags(flags: Readonly<DeployFlags>): Readonly<DeployFlags> {
+  return Object.freeze({ ...flags, anon_readonly_admin: false, seed_freshen: false, legacy_admin_writes: false, web_channel: false });
+}
+
 let current: DeployProfile | null = null;
 
 /** 当前进程的 profile：首次调用时解析 process.env，之后缓存 */
 export function profile(): DeployProfile {
-  return (current ??= resolveProfile(process.env));
+  if (!current) {
+    const resolved = resolveProfile(process.env);
+    current = process.env.APP_ROLE === 'sandbox' ? Object.freeze({ ...resolved, flags: sandboxFlags(resolved.flags) }) : resolved;
+  }
+  return current;
 }
 
 /** 仅供自测：在同一进程里切换 profile。用完调 reset()，下一次 profile() 重新解析 process.env */

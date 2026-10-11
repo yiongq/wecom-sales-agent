@@ -76,6 +76,18 @@ try {
   ]);
   assert.equal(await a.text(), host.id);
   assert.equal(await b.text(), other.id);
+  assert.equal(
+    await (await withTenantScope(host, () => probe.request('/probe', { headers: { host: 'other.example.invalid' } }))).text(),
+    other.id,
+    '调用者 ALS 不能替代请求 Host',
+  );
+  assert.equal((await withTenantScope(host, () => probe.request('/probe', { headers: { host: 'unknown.invalid' } }))).status, 404);
+  const nested = new Hono().use('*', publicHostMiddleware).route('/nested', probe);
+  assert.equal(
+    await (await nested.request('/nested/probe', { headers: { host: 'other.example.invalid' } })).text(),
+    other.id,
+    '子应用沿用同一请求的外层选择',
+  );
   for (const name of ['unknown.invalid', 'host.example.invalid,other.example.invalid', 'host.example.invalid/path']) {
     assert.equal((await request('/api/orders/shared', name)).status, 404);
     assert.equal((await request('/console/', name)).status, 404);
@@ -128,6 +140,17 @@ try {
     assert.equal((await request(url, 'other.example.invalid')).status, 404, `${url} 只给宿主`);
   // healthz 不参与 Host 选择，始终在宿主作用域投影。
   assert.equal((await request('/healthz', 'unknown.invalid')).status, 200);
+  const healthy = await (await request('/healthz', 'unknown.invalid')).json();
+  assert.equal(healthy.role, 'host');
+  assert.equal(healthy.ok, true, '只装载配置时健康检查不创建非宿主文件后端');
+  const lockState = other.config.lockState;
+  try {
+    other.config.lockState = 'lost';
+    assert.equal((await (await request('/healthz', 'unknown.invalid')).json()).ok, false, '其他 standard 丢锁也使宿主健康为 false');
+  } finally {
+    other.config.lockState = lockState;
+  }
+
   const web = (tenantId: string, id: string): ChannelAccount => ({
     id,
     tenantId,

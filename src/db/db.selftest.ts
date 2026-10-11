@@ -17,17 +17,20 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
 process.env.VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-db-selftest-'));
 // 真实 PG 部分会加载引擎，引擎连带读开发机的 .env：CONFIG_SOURCE=db 写在那里也不能影响这组
 process.env.CONFIG_SOURCE = 'file';
 
-const { sql, asc, eq } = await import('drizzle-orm');
-const { openTestDb } = await import('./testing.js');
-const { withTenant, currentTenantCtx, lockTenantConfig, queryCount, rowsOf } = await import('./client.js');
-const { catalogItems } = await import('./schema.js');
+const { sql, asc, eq } = await withoutTenantScope(() => import('drizzle-orm'));
+const { openTestDb } = await withoutTenantScope(() => import('./testing.js'));
+const { withTenant, currentTenantCtx, lockTenantConfig, queryCount, rowsOf } = await withoutTenantScope(() => import('./client.js'));
+const { catalogItems } = await withoutTenantScope(() => import('./schema.js'));
 type Tx = import('./client.js').Tx;
 type SQL = import('drizzle-orm').SQL;
 type TenantCtx = import('./client.js').TenantCtx;
@@ -1098,10 +1101,10 @@ async function channelChecks(env: PurgeEnv, label: string): Promise<void> {
 // ---------------- 02：条目版本的按租户回填 ----------------
 // 先只跑到 01 的两个迁移、造 01 时期的产品库，再跑全部：FORCE 之下属主也只看得到设了租户的行，回填要按租户逐个做
 {
-  const { PGlite } = await import('@electric-sql/pglite');
-  const { drizzle } = await import('drizzle-orm/pglite');
-  const { migrate } = await import('drizzle-orm/pglite/migrator');
-  const { MIGRATIONS_DIR } = await import('./migrate.js');
+  const { PGlite } = await withoutTenantScope(() => import('@electric-sql/pglite'));
+  const { drizzle } = await withoutTenantScope(() => import('drizzle-orm/pglite'));
+  const { migrate } = await withoutTenantScope(() => import('drizzle-orm/pglite/migrator'));
+  const { MIGRATIONS_DIR } = await withoutTenantScope(() => import('./migrate.js'));
   const pg2 = new PGlite();
   const dbName = (await pg2.query<{ d: string }>('select current_database() as d')).rows[0]!.d;
   await pg2.exec(`
@@ -1197,10 +1200,10 @@ async function channelChecks(env: PurgeEnv, label: string): Promise<void> {
 // 旧行原样通过（迁移 lint 标注里写的「旧镜像写的值都在新集合里」「新列为空或取默认值」），新列取空或缺省值；
 // 改写之后的清除函数照常删 02 的会话
 {
-  const { PGlite } = await import('@electric-sql/pglite');
-  const { drizzle } = await import('drizzle-orm/pglite');
-  const { migrate } = await import('drizzle-orm/pglite/migrator');
-  const { MIGRATIONS_DIR } = await import('./migrate.js');
+  const { PGlite } = await withoutTenantScope(() => import('@electric-sql/pglite'));
+  const { drizzle } = await withoutTenantScope(() => import('drizzle-orm/pglite'));
+  const { migrate } = await withoutTenantScope(() => import('drizzle-orm/pglite/migrator'));
+  const { MIGRATIONS_DIR } = await withoutTenantScope(() => import('./migrate.js'));
   const pg3 = new PGlite();
   const dbName = (await pg3.query<{ d: string }>('select current_database() as d')).rows[0]!.d;
   await pg3.exec(`
@@ -1662,8 +1665,8 @@ check('触发器：source=console 的已发布版本被拒', (await why(insertPu
 
 // ---------------- 连接串脱敏 ----------------
 {
-  const { redactUrl } = await import('./client.js');
-  const pg = (await import('pg')).default;
+  const { redactUrl } = await withoutTenantScope(() => import('./client.js'));
+  const pg = (await withoutTenantScope(() => import('pg'))).default;
   /** node-postgres 自己从连接串里解析出的口令：脱敏之后的串里不能再有它 */
   const passwordOf = (url: string): string => (new pg.Client({ connectionString: url }) as unknown as { password: string }).password;
   const cases: [string, string, string][] = [
@@ -2168,7 +2171,7 @@ await expectWhy([
 
 // ---------------- 02：withTenant 的 longRunning 与 inTenantTx ----------------
 {
-  const { inTenantTx } = await import('./client.js');
+  const { inTenantTx } = await withoutTenantScope(() => import('./client.js'));
   const timeouts = async (tx: Tx): Promise<{ st: string; it: string }> =>
     rowsOf<{ st: string; it: string }>(
       await tx.execute(
@@ -2197,19 +2200,19 @@ await expectWhy([
 
 // ---------------- 02：仓储函数冒烟（agent_app 经 withTenant，与生产相同） ----------------
 {
-  const repoConv = await import('./repo/conversations.js');
-  const repoMsg = await import('./repo/messages.js');
-  const repoOrders = await import('./repo/orders.js');
-  const repoVersions = await import('./repo/catalog-versions.js');
-  const repoTraces = await import('./repo/traces.js');
-  const repoUsage = await import('./repo/usage.js');
-  const repoJobs = await import('./repo/jobs.js');
-  const repoOutbound = await import('./repo/outbound.js');
-  const repoQr = await import('./repo/quick-replies.js');
-  const repoConsents = await import('./repo/consents.js');
-  const repoPrivacy = await import('./repo/privacy.js');
-  const repoMetrics = await import('./repo/metrics.js');
-  const { writeAudit, writeAuditAs } = await import('./repo/audit.js');
+  const repoConv = await withoutTenantScope(() => import('./repo/conversations.js'));
+  const repoMsg = await withoutTenantScope(() => import('./repo/messages.js'));
+  const repoOrders = await withoutTenantScope(() => import('./repo/orders.js'));
+  const repoVersions = await withoutTenantScope(() => import('./repo/catalog-versions.js'));
+  const repoTraces = await withoutTenantScope(() => import('./repo/traces.js'));
+  const repoUsage = await withoutTenantScope(() => import('./repo/usage.js'));
+  const repoJobs = await withoutTenantScope(() => import('./repo/jobs.js'));
+  const repoOutbound = await withoutTenantScope(() => import('./repo/outbound.js'));
+  const repoQr = await withoutTenantScope(() => import('./repo/quick-replies.js'));
+  const repoConsents = await withoutTenantScope(() => import('./repo/consents.js'));
+  const repoPrivacy = await withoutTenantScope(() => import('./repo/privacy.js'));
+  const repoMetrics = await withoutTenantScope(() => import('./repo/metrics.js'));
+  const { writeAudit, writeAuditAs } = await withoutTenantScope(() => import('./repo/audit.js'));
   const [{ id: R }] = await q<{ id: string }>(`insert into tenants (slug, name, pack_id) values ('repo-a', 'R', 'travel') returning id`);
   const T0 = Date.parse('2026-09-30T08:00:00.123Z');
   const values = (id: string, over: Partial<ConversationValues> = {}): ConversationValues => ({
@@ -2893,11 +2896,11 @@ await expectWhy([
 
 // ================ 03：渠道表（约束、ord、迁移表每一格、仓储冒烟；授权以真实 PG 为准） ================
 {
-  const repoAcct = await import('./repo/channel-accounts.js');
-  const repoInbox = await import('./repo/channel-inbox.js');
-  const repoOutbound = await import('./repo/outbound.js');
-  const { OUTBOUND_TRANSITIONS, INBOX_TRANSITIONS } = await import('../channels/transitions.js');
-  const { INBOX_STATES, OUTBOUND_STATUSES } = await import('../shared/channel-types.js');
+  const repoAcct = await withoutTenantScope(() => import('./repo/channel-accounts.js'));
+  const repoInbox = await withoutTenantScope(() => import('./repo/channel-inbox.js'));
+  const repoOutbound = await withoutTenantScope(() => import('./repo/outbound.js'));
+  const { OUTBOUND_TRANSITIONS, INBOX_TRANSITIONS } = await withoutTenantScope(() => import('../channels/transitions.js'));
+  const { INBOX_STATES, OUTBOUND_STATUSES } = await withoutTenantScope(() => import('../shared/channel-types.js'));
   type OutboundStatus = import('../shared/channel-types.js').OutboundStatus;
   type InboxState = import('../shared/channel-types.js').InboxState;
   type OutboundWriter = import('../channels/transitions.js').OutboundWriter;
@@ -4259,7 +4262,7 @@ await t.close();
   );
   const channelSql = guardSrc.match(/select exists\(select 1 from channel_accounts where [^"\n]+\)/)?.[0];
   check('渠道回滚：查询脚本检查所有账号，没有 tenant 或 active 过滤', !!channelSql && !channelSql.includes('tenant_id'), channelSql);
-  const { PGlite } = await import('@electric-sql/pglite');
+  const { PGlite } = await withoutTenantScope(() => import('@electric-sql/pglite'));
   const channelPg = new PGlite();
   const accountCases: { name: string; rows: [string, string | null, string][]; risk: boolean }[] = [
     { name: '无账号', rows: [], risk: false },
@@ -4554,9 +4557,9 @@ if (PG_TEST_URL) {
 }
 
 async function realPostgres(superUrl: string): Promise<void> {
-  const { default: pg } = await import('pg');
-  const { openDb, holdTenantLock } = await import('./client.js');
-  const { runMigrations } = await import('./migrate.js');
+  const { default: pg } = await withoutTenantScope(() => import('pg'));
+  const { openDb, holdTenantLock } = await withoutTenantScope(() => import('./client.js'));
+  const { runMigrations } = await withoutTenantScope(() => import('./migrate.js'));
   const lit = (v: string): string => `'${v.replaceAll("'", "''")}'`;
   const ident = (v: string): string => `"${v.replaceAll('"', '""')}"`;
   const cleanup: (() => Promise<unknown>)[] = [];
@@ -5325,7 +5328,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       check('真实 PG 并发：会话与刚落库的消息都在', left?.c === 1 && left.m === 2, JSON.stringify(left));
 
       // (b) 十二个到期任务；第一个认领拿到 5 个、不提交，第二个认领不等它，拿另外 5 个
-      const { claimDueJobs } = await import('./repo/jobs.js');
+      const { claimDueJobs } = await withoutTenantScope(() => import('./repo/jobs.js'));
       for (let i = 0; i < 12; i++) {
         await sq(
           `insert into jobs (tenant_id, kind, dedupe_key, run_at, max_attempts, payload) values ($1, 'followup', $2, now() - make_interval(secs => $3), 1, '{}')`,
@@ -5549,10 +5552,10 @@ async function realPostgres(superUrl: string): Promise<void> {
     }
 
     // 文件模式取一遍，再以 node-postgres 装成配置源取一遍：前缀与产品库逐字节相同
-    const { promptPrefix } = await import('../engine.js');
-    const { loadRoutes, loadHotels } = await import('../tools.js');
-    const cfg = await import('../config/source.js');
-    const { testConfigDeps } = await import('./testing.js');
+    const { promptPrefix } = await withoutTenantScope(() => import('../engine.js'));
+    const { loadRoutes, loadHotels } = await withoutTenantScope(() => import('../tools.js'));
+    const cfg = await withoutTenantScope(() => import('../config/source.js'));
+    const { testConfigDeps } = await withoutTenantScope(() => import('./testing.js'));
     const fileView = JSON.stringify([promptPrefix(), loadRoutes(), loadHotels()]);
     const pgDb = await openDb(APP);
     cleanup.push(() => pgDb.close());

@@ -23,7 +23,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import type { ChatMessage, Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.QUOTA_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const H = 3_600_000;
@@ -66,7 +69,7 @@ async function parentMain(): Promise<never> {
 
   // 纯函数：「【顾问】」的加与去
   {
-    const { ADVISOR_PREFIX, stripAdvisorPrefix, withAdvisorPrefix } = await import('../shared/conversation.js');
+    const { ADVISOR_PREFIX, stripAdvisorPrefix, withAdvisorPrefix } = await withoutTenantScope(() => import('../shared/conversation.js'));
     check('「【顾问】」：正文前加一次', withAdvisorPrefix('明天给您回电话') === '【顾问】明天给您回电话');
     check('「【顾问】」：已经以它开头的不叠两遍', withAdvisorPrefix('【顾问】明天给您回电话') === '【顾问】明天给您回电话');
     check(
@@ -344,11 +347,11 @@ async function harness() {
     return res({ errcode: 40001, errmsg: `selftest: 未模拟的接口 ${ep}` });
   }) as typeof fetch;
 
-  const store = await import('../store.js');
-  const wecom = await import('../adapters/wecom.js');
-  const ledger = await import('./ledger.js');
-  const { __takeoverTest } = await import('../handoff/takeover.js');
-  const { onTurnEnd } = await import('../trace/recorder.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
+  const ledger = await withoutTenantScope(() => import('./ledger.js'));
+  const { __takeoverTest } = await withoutTenantScope(() => import('../handoff/takeover.js'));
+  const { onTurnEnd } = await withoutTenantScope(() => import('../trace/recorder.js'));
 
   let seq = 0;
   const customerMsg = (uid: string, content: string, opts: { msgid?: string; ageMs?: number; msgtype?: string } = {}): FakeMsg => {
@@ -482,8 +485,8 @@ function seedSession(
 
 async function fileSuite(h: Harness): Promise<void> {
   const { store, wecom, ledger } = h;
-  const { app } = await import('../server.js');
-  const { subscribe } = await import('../adapters/simulator.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
+  const { subscribe } = await withoutTenantScope(() => import('../adapters/simulator.js'));
   const events: { type: string; id: string; failType?: number | null }[] = [];
   store.onCommitted((ev) => events.push(ev as { type: string; id: string; failType?: number | null }));
   await h.sync(); // 第一次拉取：建出状态文件（冷启动，没有消息）
@@ -1070,7 +1073,7 @@ async function fileSuite(h: Harness): Promise<void> {
 
   // ---------------- 文件存储的扫描器：跟进的分段只超时 → 客户只收到一次、账不退、之后不再发这一阶段 ----------------
   {
-    const followup = await import('../followup.js');
+    const followup = await withoutTenantScope(() => import('../followup.js'));
     const uid = 'wmQscan';
     const sid = `wecom:${uid}`;
     const s = h.store.getOrCreateSession(sid, 'wecom') as Session & {
@@ -1121,7 +1124,7 @@ async function fileSuite(h: Harness): Promise<void> {
 // ======================================================================================
 
 async function pgSetup(h: Harness, opts: { dataDir?: string } = {}) {
-  const { openTestDb, installPgSessionStore } = await import('../db/testing.js');
+  const { openTestDb, installPgSessionStore } = await withoutTenantScope(() => import('../db/testing.js'));
   const t = await openTestDb(opts.dataDir ? { dataDir: opts.dataDir } : {});
   const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
   await h.store.initSessionStore(fx.deps);
@@ -1442,7 +1445,7 @@ async function dbSuite(h: Harness): Promise<void> {
 
   // ---- 跟进：额度用发送账本（剩 1 条、窗口剩不到 2 小时都不调模型、不重排；剩 2 条照发）；经真企微适配器只超时按已发处理 ----
   {
-    const runner = await import('../jobs/runner.js');
+    const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
     process.env.FOLLOWUP_ENABLED = '1';
     runner.__jobsTest.start((id, text, opts) => wecom.wecomAdapter.push(id, text, opts));
     await runner.runJobsOnce(); // 启动归位与清理的排程先做掉
@@ -1725,8 +1728,8 @@ async function stoppedSuite(h: Harness): Promise<void> {
 // ======================================================================================
 
 async function realPgSuite(h: Harness): Promise<void> {
-  const { createRealPgFixture } = await import('../db/testing.js');
-  const { openDb } = await import('../db/client.js');
+  const { createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
+  const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
   const fx = await createRealPgFixture(process.env.PG_TEST_URL!);
   const app = await openDb(fx.urls.app);
   try {

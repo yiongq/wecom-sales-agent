@@ -21,7 +21,10 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { Actor } from '../handoff/takeover.js';
 import type { ChatMessage, Order, Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 /** 第 6 步导入导出夹具里的真实会话 id（子进程入口在下面就要用，所以放在最前面） */
 const XFER = { alpha: 'wecom:wmXferAlpha01', beta: 'wecom:wmXferBeta02', gamma: 'wecom:wmXferGamma03', delta: 'wecom:wmXferDelta04' };
 
@@ -58,7 +61,9 @@ const session = (id: string, messages: ChatMessage[], channel = 'wecom'): Sessio
 
 // ---------------- seq：两种分配模式（纯函数） ----------------
 {
-  const { assignSeqs, seedSeqs, seqOf, lastSeqOf, windowStartOf, noteWindowReset, WindowCorruptError } = await import('./seq.js');
+  const { assignSeqs, seedSeqs, seqOf, lastSeqOf, windowStartOf, noteWindowReset, WindowCorruptError } = await withoutTenantScope(
+    () => import('./seq.js'),
+  );
   const seqsOf = (s: Session) => s.messages.map((m) => seqOf(m) ?? null);
   const throws = (fn: () => unknown): string | null => {
     try {
@@ -183,7 +188,7 @@ const session = (id: string, messages: ChatMessage[], channel = 'wecom'): Sessio
 
 // ---------------- project：会话、订单、消息与行的往返（纯函数，plan 第 5 步） ----------------
 {
-  const p = await import('./project.js');
+  const p = await withoutTenantScope(() => import('./project.js'));
   const NUL = String.fromCharCode(0);
   const LONE = String.fromCharCode(0xd83d); // 孤立的高位代理项
   const REPL = String.fromCharCode(0xfffd);
@@ -421,9 +426,9 @@ const fixtureOrders = (): Order[] => [
 fs.writeFileSync(SESSIONS_FILE, JSON.stringify(fixtureSessions(), null, 2));
 fs.writeFileSync(ORDERS_FILE, JSON.stringify(fixtureOrders(), null, 2));
 
-const store = await import('../store.js');
-const shutdown = await import('../shutdown.js');
-const { SessionStoreStartupError, StoreLaggingError } = await import('./backend.js');
+const store = await withoutTenantScope(() => import('../store.js'));
+const shutdown = await withoutTenantScope(() => import('../shutdown.js'));
+const { SessionStoreStartupError, StoreLaggingError } = await withoutTenantScope(() => import('./backend.js'));
 // store 的 exit 钩子可能在最后再写一次 JSON：清理排在它之后（exit 监听按注册顺序执行），中途抛错也照样清
 process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 const readDisk = (): Session[] => JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')) as Session[];
@@ -434,7 +439,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
   check('文件存储：导入期读进 JSON', !!u1 && !!store.getSession('wecom:cust_A01') && !!store.getOrder('ord_fixture1'));
   check('文件存储：读 JSON 时按条数记 seq', u1.messages.map((m) => store.seqOf(m)).join() === '1,2,3');
   check('文件存储：sessionStoreMode 是 file', store.sessionStoreMode() === 'file');
-  const proj = await import('./project.js');
+  const proj = await withoutTenantScope(() => import('./project.js'));
   check(
     'store 再导出的 isDemoClassId、SESSIONS_IN_DB_MARKER 就是 project.ts 的',
     store.isDemoClassId === proj.isDemoClassId && store.SESSIONS_IN_DB_MARKER === proj.SESSIONS_IN_DB_MARKER,
@@ -597,7 +602,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
 
 // ---------------- SESSION_STORE 的校验（接在 01 的 initConfigFromEnv 上） ----------------
 {
-  const { initConfigFromEnv, ConfigStartupError } = await import('../config/source.js');
+  const { initConfigFromEnv, ConfigStartupError } = await withoutTenantScope(() => import('../config/source.js'));
   const tryEnv = async (env: Record<string, string>): Promise<string> => {
     try {
       await initConfigFromEnv(env, () => {});
@@ -644,7 +649,7 @@ const onDisk = (id: string): Session | undefined => readDisk().find((s) => s.id 
 
 // ---------------- boot()：会话存储在配置之后、监听之前 ----------------
 {
-  const { boot } = await import('../boot.js');
+  const { boot } = await withoutTenantScope(() => import('../boot.js'));
   const run = async (init: { config?: () => Promise<void>; store?: () => Promise<void>; mode?: 'file' | 'db' }) => {
     const calls: string[] = [];
     const exits: number[] = [];
@@ -818,7 +823,21 @@ const runFile = (file: string, env: Record<string, string | undefined>) => {
 };
 const runChild = (name: string, code: string, env: Record<string, string | undefined>) => {
   const file = path.join(VAR_DIR, `${name}.mts`);
-  fs.writeFileSync(file, code);
+  const imports = code.match(/^import[^\n]*\n/gm) ?? [];
+  const body = code
+    .replace(/^import[^\n]*\n/gm, '')
+    .replace(/await import\(([^)]+)\)/g, 'await fixtureOutside(() => import($1))')
+    .replaceAll(
+      `await fixtureOutside(() => import(${JSON.stringify(storeUrl)}))`,
+      `await fixtureOutside(() => import(${JSON.stringify(storeUrl)})).then((store) => { store.startStoreMaintenance(fixtureRuntime()); return store; })`,
+    );
+  const runtimeUrl = pathToFileURL(path.join(import.meta.dirname, '..', 'tenancy', 'runtime.ts')).href;
+  fs.writeFileSync(
+    file,
+    imports.join('') +
+      `const {hostRuntime: fixtureRuntime, withTenantScope: fixtureScope, withoutTenantScope: fixtureOutside} = await import(${JSON.stringify(runtimeUrl)});\n` +
+      `await fixtureScope(fixtureRuntime(), async () => {\n${body}\n});\n`,
+  );
   return runFile(file, env);
 };
 /** 一个装好 fixture 的独立数据目录 */
@@ -1036,7 +1055,7 @@ const sessionsIn = (dir: string): Session[] => JSON.parse(fs.readFileSync(path.j
 // ---------------- /healthz 的 store 与 ok ----------------
 {
   process.env.SERVER_SELFTEST = '1';
-  const { app } = await import('../server.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
   const health = async () => (await app.request('/healthz')).json() as Promise<{ ok: boolean; store: Record<string, unknown> }>;
   const h = await health();
   check(
@@ -1296,12 +1315,14 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
   const step = process.env.XFER_STEP ?? '';
   const v = process.env.VAR_DIR!;
   const keep = process.env.XFER_KEEP!;
-  const { openTestDb, installPgSessionStore, fakeLock } = await import('../db/testing.js');
-  const { withTenant } = await import('../db/client.js');
-  const { readConversationsAfter } = await import('../db/repo/conversations.js');
-  const { readMessagesFrom } = await import('../db/repo/messages.js');
-  const { importSessions, exportSessions } = await import('../cli/session-transfer.js');
-  const { isDemoClassId, normalizeForStore, rowToMessage, sessionState, SESSIONS_IN_DB_MARKER } = await import('./project.js');
+  const { openTestDb, installPgSessionStore, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
+  const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const { readConversationsAfter } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
+  const { readMessagesFrom } = await withoutTenantScope(() => import('../db/repo/messages.js'));
+  const { importSessions, exportSessions } = await withoutTenantScope(() => import('../cli/session-transfer.js'));
+  const { isDemoClassId, normalizeForStore, rowToMessage, sessionState, SESSIONS_IN_DB_MARKER } = await withoutTenantScope(
+    () => import('./project.js'),
+  );
   const t = await openTestDb({ dataDir: process.env.STORE_DATA_DIR! });
   // 主链用 demo 租户；中途崩溃（crash*）与补写标记（fresh）各用自己的租户与 var/
   const slug = process.env.XFER_SLUG ?? 'demo';
@@ -1387,8 +1408,8 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
   };
   const fx6 = xferFixture();
   const realOf = (all: Session[]): Session[] => all.filter((s) => fx6.real.includes(s.id));
-  const store = (): Promise<StoreMod> => import('../store.js');
-  const { SessionStoreStartupError } = await import('./backend.js');
+  const store = (): Promise<StoreMod> => withoutTenantScope(() => import('../store.js'));
+  const { SessionStoreStartupError } = await withoutTenantScope(() => import('./backend.js'));
   const startupReason = async (st: StoreMod, deps: Parameters<StoreMod['initSessionStore']>[0]): Promise<string> =>
     st.initSessionStore(deps).then(
       () => 'ok',
@@ -2048,8 +2069,8 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
 
   if (step === 'export2') {
     // 同 id 以库为准：JSON 里有真实会话的陈旧副本、库里已作废订单的陈旧副本、改过金额的订单副本时，导出之后都是库里的样子
-    const { readSessionBatch } = await import('../db/repo/conversations.js');
-    const { rebuildSessions, rowToOrder } = await import('./project.js');
+    const { readSessionBatch } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
+    const { rebuildSessions, rowToOrder } = await withoutTenantScope(() => import('./project.js'));
     const ctx = { tenantId: fx.deps.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     const sj = JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[];
     const oj = JSON.parse(read(v, 'orders.json') ?? '[]') as Order[];
@@ -2192,7 +2213,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
       (JSON.parse(read(v, 'sessions.json') ?? '[]') as Session[]).every((s) => !fx6.real.includes(s.id)),
     );
     process.env.LLM_MOCK = '1';
-    const { handleMessage } = await import('../engine.js');
+    const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
     await handleMessage(XFER.alpha, '还有别的推荐吗', 'wecom');
     await handleMessage(XFER.gamma, '你好', 'wecom');
     const drained = await st.drainStore(5000);
@@ -2203,7 +2224,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
   if (step === 'filechat') {
     ck('导出之后（标记文件删了）文件存储照常启动', (await startupReason(st, null)) === 'ok' && st.sessionStoreMode() === 'file');
     process.env.LLM_MOCK = '1';
-    const { handleMessage } = await import('../engine.js');
+    const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
     await handleMessage(XFER.alpha, '想再加一个人', 'wecom');
     await handleMessage(XFER.alpha, '三个人多少钱', 'wecom');
     await handleMessage(XFER.gamma, '在吗', 'wecom');
@@ -2260,16 +2281,18 @@ async function childPg(ck: Ck): Promise<void> {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const NUL = String.fromCharCode(0);
   const LONE = String.fromCharCode(0xdc00);
-  const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock, fakeDbError } = await import('../db/testing.js');
-  const { withTenant, queryCount, inTenantTx } = await import('../db/client.js');
-  const convRepo = await import('../db/repo/conversations.js');
-  const msgRepo = await import('../db/repo/messages.js');
-  const ordRepo = await import('../db/repo/orders.js');
-  const proj = await import('./project.js');
-  const { openPgBackend } = await import('./pg-backend.js');
-  const { SessionStoreStartupError } = await import('./backend.js');
-  const { shortIdOf } = await import('../shared/conversation.js');
-  const config = await import('../config/source.js');
+  const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock, fakeDbError } = await withoutTenantScope(
+    () => import('../db/testing.js'),
+  );
+  const { withTenant, queryCount, inTenantTx } = await withoutTenantScope(() => import('../db/client.js'));
+  const convRepo = await withoutTenantScope(() => import('../db/repo/conversations.js'));
+  const msgRepo = await withoutTenantScope(() => import('../db/repo/messages.js'));
+  const ordRepo = await withoutTenantScope(() => import('../db/repo/orders.js'));
+  const proj = await withoutTenantScope(() => import('./project.js'));
+  const { openPgBackend } = await withoutTenantScope(() => import('./pg-backend.js'));
+  const { SessionStoreStartupError } = await withoutTenantScope(() => import('./backend.js'));
+  const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
+  const config = await withoutTenantScope(() => import('../config/source.js'));
 
   const t = await openTestDb();
   const lock = fakeLock();
@@ -2767,8 +2790,8 @@ async function childPg(ck: Ck): Promise<void> {
     b.close();
   }
 
-  const store = await import('../store.js');
-  const { handleMessage } = await import('../engine.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
   // ---- 装上之前：库连不上 ----
   fx.faults.acquire = fakeDbError('08006');
   ck(
@@ -2968,7 +2991,7 @@ async function childPg(ck: Ck): Promise<void> {
 
   // ---- 同一段同步代码里的复合改动合进一个事务：重置一个带订单、已转人工的会话，只借一次连接，库里没有半个重置 ----
   {
-    const { enterHandoff } = await import('../handoff/record.js');
+    const { enterHandoff } = await withoutTenantScope(() => import('../handoff/record.js'));
     const sid = 'wecom:wmResetTx1';
     for (const text of ['想去云南玩', '2个人，11月1号出发', '就订这个']) await handleMessage(sid, text, 'wecom');
     const s = store.getSession(sid)!;
@@ -3186,7 +3209,7 @@ async function childPg(ck: Ck): Promise<void> {
     );
     await sleep(30);
     ck('WindowCorruptError：库里不动', (await convRow(w.id))?.last_seq === 3);
-    const { app } = await import('../server.js');
+    const { app } = await withoutTenantScope(() => import('../server.js'));
     const hz = (await (await app.request('/healthz')).json()) as { ok: boolean; store: Record<string, unknown> };
     ck(
       '/healthz：db 存储、有 poisoned 时 ok 为 false，poisoned 只给个数、不带会话 id',
@@ -3198,8 +3221,8 @@ async function childPg(ck: Ck): Promise<void> {
   // ---- 审查第 4、5 条（concurrency[0][1]）：等提交时发现这次改动不会再提交（poisoned），人工回复、确认收款都不照发，
   // 抛 StoreLaggingError（调用方据此回 503），不是「超时也照发」那一支 ----
   {
-    const tk = await import('../handoff/takeover.js');
-    const orders = await import('../payment/orders.js');
+    const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
+    const orders = await withoutTenantScope(() => import('../payment/orders.js'));
     const pushed: string[] = [];
     tk.setReplyTransport(async (_sid, text) => {
       pushed.push(text);
@@ -3338,7 +3361,7 @@ async function childPg(ck: Ck): Promise<void> {
 
   // ---- chat() 与 withTenant ----
   {
-    const { chat } = await import('../llm.js');
+    const { chat } = await withoutTenantScope(() => import('../llm.js'));
     const opts = { system: 's', messages: [{ role: 'user' as const, content: '你好' }], tools: [], executeTool: async () => '{}' };
     let inside = '';
     await withTenant(t.db, ctxOf(tid), async () => {
@@ -3608,8 +3631,8 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
   const steps = (process.env.STORE_STEPS ?? '').split(',').filter(Boolean);
   const tag = process.env.STORE_TAG ?? '';
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const { openTestDb, installPgSessionStore, fakeDbError } = await import('../db/testing.js');
-  const { withTenant } = await import('../db/client.js');
+  const { openTestDb, installPgSessionStore, fakeDbError } = await withoutTenantScope(() => import('../db/testing.js'));
+  const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
   const t = await openTestDb({ dataDir: process.env.STORE_DATA_DIR! });
   const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
   const ctx = { tenantId: fx.deps.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
@@ -3626,8 +3649,8 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
       return [];
     }
   };
-  const store = await import('../store.js');
-  const { SessionStoreStartupError } = await import('./backend.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { SessionStoreStartupError } = await withoutTenantScope(() => import('./backend.js'));
   try {
     await store.initSessionStore(fx.deps);
   } catch (e) {
@@ -3642,7 +3665,7 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
   if (steps.includes('dump')) {
     res.data.dump = memDump(store);
     const rows = await withTenant(fx.deps.db, ctx, async (tx) => {
-      const { readConversationsAfter } = await import('../db/repo/conversations.js');
+      const { readConversationsAfter } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
       return readConversationsAfter(tx, null, 1000);
     });
     // 内存与库一致：每个会话库里的 last_seq 与窗口起点就是内存里 seq 的样子
@@ -3655,9 +3678,9 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
         (store.seqOf(s.messages.at(-1) ?? first!) ?? r.lastSeq) === r.lastSeq
       );
     });
-    const { readMessagesFrom } = await import('../db/repo/messages.js');
+    const { readMessagesFrom } = await withoutTenantScope(() => import('../db/repo/messages.js'));
     res.data.audits = await withTenant(fx.deps.db, ctx, async (tx) => {
-      const { readAudit } = await import('../db/repo/audit.js');
+      const { readAudit } = await withoutTenantScope(() => import('../db/repo/audit.js'));
       return (await readAudit(tx, { limit: 100 })).map((a) => a.action).filter((a) => a.startsWith('selftest.'));
     });
     res.data.dbMessages = Object.fromEntries(
@@ -3701,7 +3724,7 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
   if (scenario === 'turns20') {
     // 20 轮（两个客户各 10 轮，含报价与下单）之后 SIGTERM：重启后的 identity map 与停机前相同（验收 4）
     process.env.LLM_MOCK = '1';
-    const { handleMessage } = await import('../engine.js');
+    const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
     const scripts: Record<string, string[]> = {
       'wecom:wmR20a': [
         '你好',
@@ -3731,7 +3754,7 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
   }
   if (scenario === 'midturn') {
     // mock LLM 延迟 6 秒的一轮进行中发 SIGTERM：normal 段等处理链（企微适配器的停机钩子同样这么做），重启后这一轮的客户消息与回复都在库里
-    const http = await import('node:http');
+    const http = await withoutTenantScope(() => import('node:http'));
     let calls = 0;
     const fake = http.createServer((req, rs) => {
       const chunks: Buffer[] = [];
@@ -3765,7 +3788,7 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
       LLM_HEDGE_MODEL: '',
       LLM_MAX_RETRY: '0',
     });
-    const { handleMessage } = await import('../engine.js');
+    const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
     const t0 = Date.now();
     const turn = handleMessage('wecom:wmMid1', '你好，想去云南看看', 'wecom');
     // normal 段等这一轮；回复那次落库失败一次、停在退避里，这一轮结束之后才恢复：只有 drain 段立即重试才排得空
@@ -3863,9 +3886,9 @@ async function childDisk(res: ChildResult, save: () => void): Promise<void> {
     say(s, 'customer', '冲突前');
     await store.flushSession(s.id);
     // 另一写者：照样锁行、插一条消息、把 last_seq 推前一格（库本身仍然自洽，只是接不上本进程的「已提交到第几条」）
-    const { lockConversation, updateConversation } = await import('../db/repo/conversations.js');
-    const { insertMessages } = await import('../db/repo/messages.js');
-    const proj = await import('./project.js');
+    const { lockConversation, updateConversation } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
+    const { insertMessages } = await withoutTenantScope(() => import('../db/repo/messages.js'));
+    const proj = await withoutTenantScope(() => import('./project.js'));
     await withTenant(fx.deps.db, ctx, async (tx) => {
       const cur = (await lockConversation(tx, s.id))!;
       await insertMessages(tx, s.id, [proj.messageToRow({ role: 'agent', content: '另一写者写的', at: Date.now() }, cur.lastSeq + 1)]);
@@ -3960,9 +3983,9 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
   const APP = process.env.STORE_APP_URL!;
   const tenantId = process.env.STORE_TENANT_ID!;
   const varDir = process.env.VAR_DIR!;
-  const { openDb, withTenant } = await import('../db/client.js');
-  const { openFlakyDb } = await import('../db/testing.js');
-  const store = await import('../store.js');
+  const { openDb, withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const { openFlakyDb } = await withoutTenantScope(() => import('../db/testing.js'));
+  const store = await withoutTenantScope(() => import('../store.js'));
   const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
   const say = (s: Session, role: ChatMessage['role'], content: string): void => {
     s.messages.push({ role, content, at: Date.now() });
@@ -3977,9 +4000,9 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     // 另一写者：另一条 agent_app 连接把 last_seq 推前一格
     const other = await openDb(APP, { max: 1 });
     // 另一写者：照样锁行、插一条消息、把 last_seq 推前一格（库本身仍然自洽，只是接不上本进程的「已提交到第几条」）
-    const { lockConversation, updateConversation } = await import('../db/repo/conversations.js');
-    const { insertMessages } = await import('../db/repo/messages.js');
-    const proj = await import('./project.js');
+    const { lockConversation, updateConversation } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
+    const { insertMessages } = await withoutTenantScope(() => import('../db/repo/messages.js'));
+    const proj = await withoutTenantScope(() => import('./project.js'));
     await withTenant(other.db, ctx, async (tx) => {
       const cur = (await lockConversation(tx, s.id))!;
       await insertMessages(tx, s.id, [proj.messageToRow({ role: 'agent', content: '另一写者写的', at: Date.now() }, cur.lastSeq + 1)]);
@@ -4018,8 +4041,8 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
       flushed = String(e);
     });
     const check = await openDb(APP, { max: 1 });
-    const { readMessagesFrom } = await import('../db/repo/messages.js');
-    const { lockConversation } = await import('../db/repo/conversations.js');
+    const { readMessagesFrom } = await withoutTenantScope(() => import('../db/repo/messages.js'));
+    const { lockConversation } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
     const inDb = await withTenant(check.db, ctx, async (tx) => ({
       seqs: (await readMessagesFrom(tx, s.id, 1)).map((m) => m.seq),
       row: await lockConversation(tx, s.id),
@@ -4055,8 +4078,8 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
       flushed = String(e);
     });
     const check = await openDb(APP, { max: 1 });
-    const { readMessagesFrom } = await import('../db/repo/messages.js');
-    const { readConversationsAfter } = await import('../db/repo/conversations.js');
+    const { readMessagesFrom } = await withoutTenantScope(() => import('../db/repo/messages.js'));
+    const { readConversationsAfter } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
     const inDb = await withTenant(check.db, ctx, async (tx) => ({
       seqs: (await readMessagesFrom(tx, s.id, 1)).map((m) => m.seq),
       rows: (await readConversationsAfter(tx, null, 100)).filter((r) => r.id === s.id).map((r) => r.lastSeq),
@@ -4104,14 +4127,14 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     // 清理让路、写照常落库，不是靠真实网络延迟赌时序
     const sqlRace = mk('SqlRace', 8);
     // lead2（活到最后）顺带验一次敏感信息同意真的记进了 consents 表（变异测试发现的缺口：文件存储下的单测看不到 DB 落库）
-    const consent = await import('../handoff/consent.js');
+    const consent = await withoutTenantScope(() => import('../handoff/consent.js'));
     consent.noteSensitiveMentions(lead2, ['health'], 1, '测试证据：我妈有高血压');
     for (const s of [lead1, lead2, cust1, cust2, race, sqlRace]) await store.flushSession(s.id);
     // lead1（被清的那个）顺带给它造一条发送账本行与一条待办任务：purge_conversation 的 SQL 函数本身已经会删这两类
     // （第 4 步），但 store.selftest 走的是 purge.ts 的整条调用路径，之前这个夹具里从没出现过这两类行，调用参数传错了
     // 也测不出来——补上，让这条调用路径也真的核到（02 审查第 16 步「删除与保留期」minor 第 3 条）
-    const { insertOutboundSends } = await import('../db/repo/outbound.js');
-    const { enqueueJob } = await import('../db/repo/jobs.js');
+    const { insertOutboundSends } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
+    const { enqueueJob } = await withoutTenantScope(() => import('../db/repo/jobs.js'));
     await withTenant(main.db, ctx, async (tx) => {
       await insertOutboundSends(tx, [
         {
@@ -4151,7 +4174,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     const cust2Order = payOrder(cust2);
     for (const s of [cust1, cust2]) await store.flushSession(s.id);
     // lead2 的一条过期 trace（没有走真实轮次，startedAt 手动钉在 8 天前；用 db/repo 的 insertTurnTraces，不碰 drizzle-orm）
-    const { insertTurnTraces } = await import('../db/repo/traces.js');
+    const { insertTurnTraces } = await withoutTenantScope(() => import('../db/repo/traces.js'));
     await withTenant(main.db, ctx, (tx) =>
       insertTurnTraces(tx, [
         {
@@ -4180,7 +4203,7 @@ async function childRealPg(res: ChildResult, save: () => void): Promise<void> {
     race.messages.push({ role: 'customer', content: '清理前一刻又说了一句', at: now });
     store.saveSession(race);
     const pendingRightAfterSave = store.pendingWrite(race.id);
-    const purge = await import('../jobs/purge.js');
+    const purge = await withoutTenantScope(() => import('../jobs/purge.js'));
     // 「返回 true 就在同一个 tick 里移出内存」（spec「任务表与跟进」）：不能只看「最后不在内存里」——那样把 forgetSession
     // 延到下一拍（比如包一层 setTimeout）也测不出来。做法：purgeConversation 的 SQL 一 resolve 就标一下（purgeTickHook）、
     // 顺手排一个微任务检查点；forgetSession 真的调用时（forgetSessionProbe）看这个检查点有没有先跑过——没跨过一次微任务
@@ -4693,7 +4716,7 @@ async function pgSuites(): Promise<void> {
     return;
   }
   realPgRan = true;
-  const { createRealPgFixture } = await import('../db/testing.js');
+  const { createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
   const fxr = await createRealPgFixture(PG_TEST_URL);
   const repo = path.join(import.meta.dirname, '..', '..');
   const cleanup: (() => unknown)[] = [];
@@ -4713,7 +4736,7 @@ async function pgSuites(): Promise<void> {
     check('真实 PG：import-config 导入配置（给 server 启动用）', imported.status === 0, `${imported.stdout}${imported.stderr}`.slice(-300));
     // 第一个进程：真的 server.ts，SESSION_STORE=db
     const portOf = async (): Promise<number> => {
-      const net = await import('node:net');
+      const net = await withoutTenantScope(() => import('node:net'));
       return new Promise((resolve) => {
         const srv = net.createServer();
         srv.listen(0, '127.0.0.1', () => {

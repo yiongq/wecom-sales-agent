@@ -1,3 +1,4 @@
+import { TenantObservers } from './tenancy/observers.js';
 import { currentRuntime, withTenantScope, withoutTenantScope, type TenantRuntime } from './tenancy/runtime.js';
 import { registerTenantState } from './tenancy/state.js';
 // 模型调用用量与成本核算。此前 API 响应里的 usage 字段从头到尾没被读过，
@@ -191,12 +192,12 @@ export interface UsageEvent {
   cny: number;
 }
 
-const usageListeners = new Set<(e: UsageEvent) => void>();
+const usageListeners = new TenantObservers<(e: UsageEvent) => void>();
+registerTenantState({ name: 'usage.usageListeners', ...usageListeners.registration() });
 
 /** 订阅每一笔用量，返回退订函数。订阅者出错不影响记账与对话 */
 export function onUsage(cb: (e: UsageEvent) => void): () => void {
-  usageListeners.add(cb);
-  return () => usageListeners.delete(cb);
+  return usageListeners.subscribe(cb);
 }
 
 /** 每次真实模型调用后记一笔。sessionId 可空（后台洞察/建议这类非会话调用）；purpose 缺省 chat */

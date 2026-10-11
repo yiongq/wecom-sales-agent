@@ -159,6 +159,40 @@ if (!mode) {
         off();
       }
     }
+    if (strict) {
+      let missing = 0;
+      const off = r.onTenantScopeMissing(() => {
+        missing++;
+      });
+      const oldError = console.error;
+      console.error = () => {};
+      try {
+        assert.equal(
+          r.withTenantScope(a, () => r.backgroundEntry(r.currentRuntime)),
+          undefined,
+          '后台入口不能继承调用者的作用域',
+        );
+        assert.equal(
+          await r.withTenantScope(a, () =>
+            r.backgroundEntry(async () => {
+              await Promise.resolve();
+              return r.currentRuntime();
+            }),
+          ),
+          undefined,
+        );
+        assert.equal(missing, 2);
+        assert.equal(
+          r.withTenantScope(a, () => r.backgroundEntry(() => r.withTenantScope(b, r.currentRuntime))),
+          b,
+          '显式选择 owner 仍正常',
+        );
+        assert.equal(missing, 2);
+      } finally {
+        console.error = oldError;
+        off();
+      }
+    }
     if (mode === 'pg') {
       const { openTestDb, installPgSessionStore } = await import('../db/testing.js');
       const { withTenant } = await import('../db/client.js');

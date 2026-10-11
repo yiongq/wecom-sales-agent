@@ -75,6 +75,13 @@ export function installTenantStoreFactory(factory: (rt: TenantRuntime) => Tenant
 export function withTenantScope<T>(rt: TenantRuntime, fn: () => T): T {
   return als.run(rt, fn);
 }
+/** 仅供 testing.ts 建立独立自测进程的默认作用域；生产入口仍用 withTenantScope。 */
+export const __tenantTest = Object.freeze({
+  missingExpectation: new AsyncLocalStorage<string>(),
+  enterScope(rt: TenantRuntime): void {
+    als.enterWith(rt);
+  },
+});
 /** 创建异步资源时清空 ALS。EventEmitter / EventTarget 不捕获注册时的 ALS：
  * 同步监听继承发出方；实例回调要在执行时 exit，租户回调要显式进入 owner。 */
 export function withoutTenantScope<T>(fn: () => T): T {
@@ -218,7 +225,8 @@ function reportMissing(): void {
 }
 export function backgroundEntry<T>(fn: () => T): T | undefined {
   try {
-    const result = fn();
+    // 后台入口必须自己选 owner；调用者或测试夹具的 ALS 不能替它补作用域。
+    const result = withoutTenantScope(fn);
     if (result instanceof Promise)
       return result.catch((e: unknown) => {
         if (!(e instanceof TenantScopeMissing)) throw e;

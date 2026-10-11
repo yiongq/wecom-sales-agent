@@ -377,6 +377,8 @@ export interface PurgeHold {
 export interface PgBackend extends StoreBackend {
   /** 把预载的会话与订单放进 identity map（initSessionStore 在全部校验通过之后同步调） */
   install(): void;
+  /** 登记表重置：只允许在排空后清除队列、去重与统计，保留数据库接线。 */
+  reset(): void;
   /** saveSession 之前：map 里有同 id 的另一个对象就拒绝（日志一行、不落库），不变量 3 */
   accepts(s: Session): boolean;
   /** 收养了、还没随会话在库里提交过一次的孤儿订单：这段时间里仍归文件后端，orders.json 照写（崩溃不丢） */
@@ -965,7 +967,8 @@ export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
   const rt = d.runtime ?? currentRuntime();
   return withTenantScope(rt, async () => {
     let pre = await detached(() => preload(d));
-    const replay = await replaySpills(d);
+    const replay =
+      rt.kind === 'sandbox' ? { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 } : await replaySpills(d);
     if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
     return createBackend(d, pre, replay);
   });
@@ -1854,12 +1857,35 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const e = entries.get(sessionId);
       return !!e && (isDirty(e) || e.inflight !== null);
     },
+    reset: () => {
+      for (const e of entries.values()) {
+        if (e.inflight || e.pcRun || isDirty(e)) throw new Error('租户重置：PG 写队列未排空');
+      }
+      for (const e of entries.values()) {
+        if (e.timer) clearTimeout(e.timer);
+        if (e.pcTimer) clearTimeout(e.pcTimer);
+      }
+      entries.clear();
+      preRefs.clear();
+      adopted.clear();
+      voidedIds.clear();
+      conflict = false;
+      lastError = null;
+      for (const key of Object.keys(stats)) stats[key as keyof PgStoreStats] = 0;
+    },
     forget: (sessionId) => {
       const e = entries.get(sessionId);
       // 极窄的残留窗口（第 16 步审查第二轮，holdForPurge 的 stillClean 已经在提交之前核过一次干净）：清除事务已经提交、
       // forgetSession 这一刻之间真的又来一笔写（COMMIT 的网络往返那一瞬），这个 entry 会带着没提交的改动被摘掉——
       // spec 墓碑设计认可的结果（不静默吞到查不出来），记一行日志
       if (e && isDirty(e)) console.warn(`[store] 会话 ${short(sessionId)} 刚被保留期清理删除，一笔极窄窗口里赶上的改动一并丢弃`);
+      if (e?.timer) clearTimeout(e.timer);
+      if (e?.pcTimer) clearTimeout(e.pcTimer);
+      for (const order of d.orders.values())
+        if (order.sessionId === sessionId) {
+          adopted.delete(order.id);
+          voidedIds.delete(order.id);
+        }
       entries.delete(sessionId);
       preRefs.delete(sessionId);
     },
@@ -1935,6 +1961,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return { undrained: [...entries.values()].filter(isDirty).map((e) => e.id) };
     },
     spillSync() {
+      if (rt.kind === 'sandbox') {
+        const count = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null).length;
+        console.log(`[sandbox] 停机丢弃未落库会话 ${count}`);
+        return count;
+      }
       try {
         // poisoned 的会话总是脏的；渠道行还没写完的也一并写出（防御）
         const dirty = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null);

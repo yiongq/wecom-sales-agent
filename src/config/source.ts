@@ -325,7 +325,11 @@ const PRIVILEGED = ['DATABASE_OWNER_URL', 'DATABASE_PLATFORM_URL', 'POSTGRES_PAS
  * 从环境变量构造生产依赖。CONFIG_SOURCE 由 initConfigFromEnv 先查；这里要求 DATABASE_URL 是 postgres:// 或 postgresql://，
  * DEFAULT_TENANT_SLUG 与 DEPLOY_PROFILE 显式设置；环境里不能有 owner / platform / 超级用户的凭据。连接串一律脱敏
  */
-export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit: (code: number) => void): Promise<ConfigDeps> {
+export async function productionConfigDeps(
+  env: NodeJS.ProcessEnv,
+  gracefulExit: (code: number) => void,
+  opts: { tenantSlug?: string } = {},
+): Promise<ConfigDeps> {
   const privileged = [...PRIVILEGED, ...Object.keys(env).filter((k) => /^AGENT_[A-Z0-9_]+_PASSWORD$/.test(k))].filter((k) => env[k]);
   if (privileged.length) {
     throw startup(
@@ -335,7 +339,7 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
   }
   const url = env.DATABASE_URL ?? '';
   if (!/^postgres(ql)?:\/\//.test(url)) throw startup('env_invalid', 'DB 模式要设 DATABASE_URL，只接受 postgres:// 或 postgresql://');
-  const tenantSlug = env.DEFAULT_TENANT_SLUG ?? '';
+  const tenantSlug = opts.tenantSlug ?? env.DEFAULT_TENANT_SLUG ?? '';
   if (!tenantSlug) throw startup('env_invalid', 'DB 模式要设 DEFAULT_TENANT_SLUG');
   if (!env.DEPLOY_PROFILE) throw startup('env_invalid', 'DB 模式要显式设置 DEPLOY_PROFILE，不接受缺省的 demo');
   for (const k of ['SOP_PATH', 'ROUTES_PATH', 'HOTELS_PATH']) {
@@ -663,7 +667,7 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
   return withTenantScope(rt, () => loadConfig(deps));
 }
 /** 启动清单与单租户装载都必须先核对编码和迁移，保持原有错误归类。 */
-async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
+export async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
   // 1
   let encoding: string;
   try {
@@ -931,6 +935,8 @@ function onLockLost(): void {
   const state = configState();
   if (state.shuttingDown || !state.loaded) return;
   state.lockState = 'lost';
+  // 沙箱的共享锁连接由组合根 fail-stop，永远不在原进程重取。
+  if (currentRuntime().kind === 'sandbox') return;
   console.error(`[config] 租户锁连接断开：配置写入暂停，对话照常；每 ${state.reacquireMs / 1000} 秒重取`);
   lockEvent('lost');
   scheduleReacquire();

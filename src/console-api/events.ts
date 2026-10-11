@@ -104,10 +104,13 @@ export function ensureEventHub(counts: () => ConsoleEventMap['counts']): void {
   if (!hub().unsubscribe) hub().unsubscribe = onCommitted(relay);
 }
 
-export function addListener(fn: (b: Buffered) => void): () => void {
+type EventListener = ((b: Buffered) => void) & { close?: () => void };
+export function addListener(fn: (b: Buffered) => void, close?: () => void): () => void {
   const listeners = hub().listeners;
-  listeners.add(fn);
-  return () => void listeners.delete(fn);
+  const listener: EventListener = (event) => fn(event);
+  listener.close = close;
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
 }
 
 /** 当前最后一条的 id（还没有事件时是「启动标识-0」）：连上时随首个 counts 下发，前端重连从它接着 */
@@ -149,8 +152,10 @@ function eventRegistration(key: 'ring' | 'last' | 'listeners' | 'countsOf' | 'co
   const clear = (events: ConsoleEventHub): void => {
     if (key === 'ring') events.ring.length = 0;
     else if (key === 'last') events.last = 0;
-    else if (key === 'listeners') events.listeners.clear();
-    else if (key === 'countsOf') events.countsOf = null;
+    else if (key === 'listeners') {
+      for (const listener of events.listeners) (listener as EventListener).close?.();
+      events.listeners.clear();
+    } else if (key === 'countsOf') events.countsOf = null;
     else if (key === 'countsTimer') {
       if (events.countsTimer) clearTimeout(events.countsTimer);
       events.countsTimer = null;

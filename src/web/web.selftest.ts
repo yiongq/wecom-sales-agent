@@ -6,12 +6,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const varDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-copy-selftest-'));
 process.env.VAR_DIR = varDir;
 process.env.CONFIG_SOURCE = 'file';
 process.env.PARITY_CLOCK_MS = '1790913600000';
-await import('../store/parity-clock.js');
+await withoutTenantScope(() => import('../store/parity-clock.js'));
 process.env.SOP_PATH = path.resolve('data/sop.md');
 process.env.ROUTES_PATH = path.resolve('data/routes.json');
 process.env.LLM_MOCK = '0'; // 走真实请求拼装，fetch 只返回下面的假模型脚本。
@@ -74,12 +77,13 @@ globalThis.fetch = async (input, init) => {
 };
 process.on('exit', () => fs.rmSync(varDir, { recursive: true, force: true }));
 
-const { handleMessage, promptPrefix, guardOutbound } = await import('../engine.js');
-const store = await import('../store.js');
-const { dropUnbackedClaims } = await import('../price-rules.js');
-const { resolveProfile, capFlags, BASELINE_FLAG_NAMES, PROFILE_ENV_NAMES, ProfileConfigError, __profileTest } =
-  await import('../profile.js');
-const { channelCustomerLabel } = await import('../shared/conversation.js');
+const { handleMessage, promptPrefix, guardOutbound } = await withoutTenantScope(() => import('../engine.js'));
+const store = await withoutTenantScope(() => import('../store.js'));
+const { dropUnbackedClaims } = await withoutTenantScope(() => import('../price-rules.js'));
+const { resolveProfile, capFlags, BASELINE_FLAG_NAMES, PROFILE_ENV_NAMES, ProfileConfigError, __profileTest } = await withoutTenantScope(
+  () => import('../profile.js'),
+);
+const { channelCustomerLabel } = await withoutTenantScope(() => import('../shared/conversation.js'));
 const WEB_NOTE = '客户正在网页上咨询，不在微信里；说到顾问跟进时，请说顾问会在这个页面里回复您，不要说在微信上联系。';
 const SYSTEM_SHA = 'dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60';
 const TOOLS_SHA = '64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1';
@@ -404,16 +408,18 @@ process.env.WEB_SSE_MAX_TOTAL = '2000';
 process.env.ALERT_WEBHOOK_URL = '';
 process.env.NOTIFY_WEBHOOK_URL = '';
 for (const s of store.listSessions()) if (!store.isDemoClassId(s.id)) store.forgetSession(s.id);
-const { openTestDb, installPgSessionStore, createRealPgFixture, testConfigDeps } = await import('../db/testing.js');
-const { importConfig } = await import('../config/transfer.js');
-const { initConfig, closeConfig, __configTest } = await import('../config/source.js');
-const { openDb } = await import('../db/client.js');
-const { installAccounts } = await import('../channels/accounts.js');
-const { partsOf } = await import('../core/pack-api.js');
-const { webAdapter, webConversationId, subscribeWeb } = await import('../adapters/web.js');
-const { __privacyTest } = await import('../privacy/privacy.js');
-const { __logTest } = await import('../log.js');
-const { execFileSync } = await import('node:child_process');
+const { openTestDb, installPgSessionStore, createRealPgFixture, testConfigDeps } = await withoutTenantScope(
+  () => import('../db/testing.js'),
+);
+const { importConfig } = await withoutTenantScope(() => import('../config/transfer.js'));
+const { initConfig, closeConfig, __configTest } = await withoutTenantScope(() => import('../config/source.js'));
+const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
+const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
+const { partsOf } = await withoutTenantScope(() => import('../core/pack-api.js'));
+const { webAdapter, webConversationId, subscribeWeb } = await withoutTenantScope(() => import('../adapters/web.js'));
+const { __privacyTest } = await withoutTenantScope(() => import('../privacy/privacy.js'));
+const { __logTest } = await withoutTenantScope(() => import('../log.js'));
+const { execFileSync } = await withoutTenantScope(() => import('node:child_process'));
 const realRun = process.env.WEB_BACKEND_REAL_PG === '1';
 if (realRun) globalThis.Date = Object.getPrototypeOf(Date) as DateConstructor;
 const pgTest = realRun ? await createRealPgFixture(process.env.PG_TEST_URL!) : null;
@@ -439,10 +445,10 @@ const sqlQuery = async <R>(sql: string, params: unknown[] = []): Promise<R[]> =>
     return (await tx.query<R>(sql, params)).rows;
   });
 };
-const { app } = await import('../server.js');
-const { __webTest } = await import('./routes.js');
-const { enterHandoff } = await import('../handoff/record.js');
-const { release } = await import('../handoff/takeover.js');
+const { app } = await withoutTenantScope(() => import('../server.js'));
+const { __webTest } = await withoutTenantScope(() => import('./routes.js'));
+const { enterHandoff } = await withoutTenantScope(() => import('../handoff/record.js'));
+const { release } = await withoutTenantScope(() => import('../handoff/takeover.js'));
 type Account = import('../channels/accounts.js').ChannelAccount;
 const accounts: Account[] = [];
 async function account(key: string, settings: Partial<NonNullable<Account['web']>> = {}): Promise<Account> {
@@ -733,7 +739,7 @@ try {
     assert.ok(raw.startsWith('event: push\n'));
     return JSON.parse(/^data: (.+)$/m.exec(raw)![1]!);
   };
-  const { reply: advisorReply, sharedActor } = await import('../handoff/takeover.js');
+  const { reply: advisorReply, sharedActor } = await withoutTenantScope(() => import('../handoff/takeover.js'));
   const actor = sharedActor();
   const advisorText = `\0请看 ${orderUrl} 和 ${proposalUrl}，外站 https://evil.test/pay/nope`;
   assert.equal((await advisorReply(partOwn.s.id, actor, advisorText, 'parts-advisor')).sent, true);
@@ -747,7 +753,7 @@ try {
     }),
   );
   assert.deepEqual(silent, { reply: null }, '已接手静默一轮没有部件');
-  const { confirmOrder, markPaidByAdvisor } = await import('../payment/orders.js');
+  const { confirmOrder, markPaidByAdvisor } = await withoutTenantScope(() => import('../payment/orders.js'));
   confirmOrder(partOwn.s.orderIds[0]!, actor);
   await markPaidByAdvisor(partOwn.s.orderIds[0]!, actor);
   const noticeEvent = await readPartEvent();
@@ -1080,7 +1086,7 @@ try {
   });
   const drained = await store.drainStore(20_000);
   assert.deepEqual(drained.undrained, []);
-  const { openPgBackend } = await import('../store/pg-backend.js');
+  const { openPgBackend } = await withoutTenantScope(() => import('../store/pg-backend.js'));
   const recoveredSessions = new Map<string, Session>();
   const recovered = await openPgBackend({
     ...deps,
@@ -1120,21 +1126,21 @@ try {
     '预算已触发状态持久化',
   );
   await sqlQuery('update tenants set retention_lead_days=7 where id=$1', [deps.tenantId]);
-  const { purgeOnce } = await import('../jobs/purge.js');
+  const { purgeOnce } = await withoutTenantScope(() => import('../jobs/purge.js'));
   assert.equal((await sqlQuery('select 1 from messages where tenant_id=$1 and conversation_id=$2', [deps.tenantId, stale.id])).length, 1);
   assert.equal(
     (await sqlQuery('select 1 from turn_traces where tenant_id=$1 and conversation_id=$2', [deps.tenantId, stale.id])).length,
     1,
   );
   // 真正登录后的 console 列表：清理前能看到目标，清理后同一个接口看不到。
-  const { hashPassword } = await import('../auth/password.js');
+  const { hashPassword } = await withoutTenantScope(() => import('../auth/password.js'));
   const [listUser] = await sqlQuery<{ id: string }>('insert into users (email,password_hash,display_name) values ($1,$2,$3) returning id', [
     'purge-web@example.com',
     await hashPassword('purge-web-password'),
     '清理测试',
   ]);
   await sqlQuery("insert into memberships (tenant_id,user_id,role) values ($1,$2,'owner')", [deps.tenantId, listUser!.id]);
-  const { login, SESSION_COOKIE } = await import('../auth/session.js');
+  const { login, SESSION_COOKIE } = await withoutTenantScope(() => import('../auth/session.js'));
   const listLogin = await login({
     now: Date.now(),
     ip: '198.51.100.250',
@@ -1199,9 +1205,9 @@ if (!realRun) {
 console.log('PASS web.selftest：第 17 步后端验收');
 
 // 03 第 18 步：页面安全与浏览器脚本契约；只用内存 DOM，不监听端口。
-const { CONSOLE_SECURITY_HEADERS } = await import('../shared/security-headers.js');
-const { runInNewContext } = await import('node:vm');
-const { randomUUID } = await import('node:crypto');
+const { CONSOLE_SECURITY_HEADERS } = await withoutTenantScope(() => import('../shared/security-headers.js'));
+const { runInNewContext } = await withoutTenantScope(() => import('node:vm'));
+const { randomUUID } = await withoutTenantScope(() => import('node:crypto'));
 const webHtml = fs.readFileSync('public/web.html', 'utf8');
 const webJs = fs.readFileSync('public/web.js', 'utf8');
 const webCss = fs.readFileSync('public/web.css', 'utf8');

@@ -15,7 +15,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const root = fs.mkdtempSync(path.join(process.env.VAR_DIR ?? os.tmpdir(), 'wecom-restore-cutoff-selftest-'));
 process.env.VAR_DIR = path.join(root, 'app-var');
 fs.mkdirSync(process.env.VAR_DIR);
@@ -23,12 +26,12 @@ process.on('exit', () => fs.rmSync(root, { recursive: true, force: true }));
 process.env.CONFIG_SOURCE = 'file';
 process.env.ALERT_WEBHOOK_URL = '';
 
-const { parseUntil, RESTORE_CUTOFF_CLI_NOTE } = await import('../cli/channel-account.js');
-const { RESTORE_SENTINEL, CHANNELS_IN_DB_MARKER, hasRestoreSentinel } = await import('./markers.js');
-const { sealSecrets, CHANNEL_KEY_ENV } = await import('./secrets.js');
-const { openTestDb, createRealPgFixture } = await import('../db/testing.js');
-const { holdTenantLock } = await import('../db/client.js');
-const { AUDIT_ACTIONS } = await import('../shared/ui-labels.js');
+const { parseUntil, RESTORE_CUTOFF_CLI_NOTE } = await withoutTenantScope(() => import('../cli/channel-account.js'));
+const { RESTORE_SENTINEL, CHANNELS_IN_DB_MARKER, hasRestoreSentinel } = await withoutTenantScope(() => import('./markers.js'));
+const { sealSecrets, CHANNEL_KEY_ENV } = await withoutTenantScope(() => import('./secrets.js'));
+const { openTestDb, createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
+const { holdTenantLock } = await withoutTenantScope(() => import('../db/client.js'));
+const { AUDIT_ACTIONS } = await withoutTenantScope(() => import('../shared/ui-labels.js'));
 
 let pass = 0;
 async function check(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -707,7 +710,9 @@ async function sentinelEndToEnd(disk: string, s: Suite): Promise<void> {
     assert.ok(fs.existsSync(path.join(restoredVar, CHANNELS_IN_DB_MARKER)));
   });
 
-  const { initChannels, loadedChannels, channelsMode, ChannelStartupError, __channelsTest } = await import('./registry.js');
+  const { initChannels, loadedChannels, channelsMode, ChannelStartupError, __channelsTest } = await withoutTenantScope(
+    () => import('./registry.js'),
+  );
   const init = async (): Promise<{ reason: string | null; until: number | null; mode: string }> => {
     const db = await openTestDb({ dataDir: disk });
     // 应用的身份：受 RLS 约束，只看得见本租户的账号
@@ -748,8 +753,8 @@ async function sentinelEndToEnd(disk: string, s: Suite): Promise<void> {
 // ================ 「只补记」告警：按会话数合成一条（进程内，不连库） ================
 
 async function restoreAlert(): Promise<void> {
-  const { __alertTest, startAlerts } = await import('../ops/alert.js');
-  const { noteInboxAbandoned } = await import('./inbox.js');
+  const { __alertTest, startAlerts } = await withoutTenantScope(() => import('../ops/alert.js'));
+  const { noteInboxAbandoned } = await withoutTenantScope(() => import('./inbox.js'));
   const warned: string[] = [];
   const warn = console.warn;
   console.warn = (...a: unknown[]) => void warned.push(a.map(String).join(' '));
