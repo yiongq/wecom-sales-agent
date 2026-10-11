@@ -202,6 +202,15 @@ export function flushUsageDaily(): Promise<void> {
   return state.chain;
 }
 
+/** R12 ③：普通刷新保留失败批次；删除必须确认它们已写入，不能把吞错当成功。 */
+export async function flushUsageDailyForPurge(): Promise<void> {
+  const rt = currentRuntime();
+  const state = states.get(rt.id);
+  if (!state) return;
+  await flushUsageDaily();
+  if (state.queued || [...state.acc.values()].some((a) => a.calls > 0 || a.milli >= 1 - 1e-6)) throw new Error('sandbox_usage_pending');
+}
+
 /** 每租户接一份 writer；启动、drain 均由所属 rt 调用。 */
 export function startUsageDaily(write: (deltas: UsageDailyDelta[]) => Promise<void>, intervalMs = 30_000): Promise<void> {
   const rt = currentRuntime();

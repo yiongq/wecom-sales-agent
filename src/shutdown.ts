@@ -1,4 +1,5 @@
 import { scopedRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from './tenancy/runtime.js';
+import { registerTenantState } from './tenancy/state.js';
 // 优雅停机（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）：信号接线与三段停机钩子。
 // 从 store.ts 搬来，store.ts 原样再导出 onShutdown、runShutdownHooks、gracefulExit；两种会话存储下都在导入期注册。
 //
@@ -95,3 +96,13 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 export function dropShutdownHooks(rt: TenantRuntime): void {
   for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => h.runtime !== rt);
 }
+registerTenantState({
+  name: 'shutdown.hooks',
+  keyCount: (id) => PHASES.reduce((n, phase) => n + hooks[phase].filter((h) => h.runtime?.id === id).length, 0),
+  drop: (id) => {
+    for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => h.runtime?.id !== id);
+  },
+  reset: () => {
+    for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => !h.runtime);
+  },
+});

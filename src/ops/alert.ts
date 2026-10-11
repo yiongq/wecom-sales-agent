@@ -31,7 +31,15 @@ import { onPlanRejected, onSendSettled, onUnsafeSend, type SendSettled } from '.
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
-export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs' | 'channel' | 'tenant_scope_missing';
+export type AlertKey =
+  | 'model_errors'
+  | 'wecom_send'
+  | 'tenant_lock'
+  | 'store'
+  | 'jobs'
+  | 'channel'
+  | 'tenant_scope_missing'
+  | 'sandbox_purge';
 
 export interface AlertOpts {
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */

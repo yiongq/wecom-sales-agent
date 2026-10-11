@@ -257,6 +257,7 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
   return serialize(sessionId, async () => {
     const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
+    if (currentRuntime().state !== 'serving') return reply;
     try {
       await maybeAskConsent(sessionId, text);
     } catch (e) {
@@ -290,7 +291,14 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
   const ordersBefore = session.orderIds.length;
   const stageAtStart = session.stage;
-  const model = await callModel(state, turnContext, tools.runTool);
+  let model: Awaited<ReturnType<typeof callModel>>;
+  try {
+    model = await callModel(state, turnContext, tools.runTool);
+  } catch (error) {
+    if (currentRuntime().state !== 'serving') return state.unsentTakenOver();
+    throw error;
+  }
+  if (currentRuntime().state !== 'serving') return state.unsentTakenOver();
   return finishTurn(state, model, tools, stageAtStart, ordersBefore);
 }
 
@@ -327,8 +335,9 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   // 接手代次（02 spec「接手、人工回复与交还」、不变量 28）：这一轮开始时记下，模型返回之后与 AI 回复 push 进会话之前各同步比一次，
   // 变了（这一轮里有人接手，含接手之后又交还）就不发，记一条「本轮未发送（顾问已接手）」
   const turnGen = takeoverGen(sessionId);
-  const takenOver = (): boolean => takeoverGen(sessionId) !== turnGen;
+  const takenOver = (): boolean => currentRuntime().state !== 'serving' || takeoverGen(sessionId) !== turnGen;
   const unsentTakenOver = (): AgentReply => {
+    if (currentRuntime().state !== 'serving') return { text: '', stage: session.stage, silent: true };
     session.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
     saveSession(session);
     return done('silent', { text: '', stage: session.stage, ...(session.handedOver ? { handoff: true } : {}), silent: true });

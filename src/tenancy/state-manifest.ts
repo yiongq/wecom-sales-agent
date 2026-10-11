@@ -563,7 +563,7 @@ export const STATE_MANIFEST: Record<
   'src/shutdown.ts:PHASES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shutdown.ts:SHUTDOWN_TIMEOUT_MS': { kind: 'instance', why: '按启动角色固定的停机时限；宿主 8 秒、沙箱至多 10 秒。' },
   'src/shutdown.ts:SHARE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
-  'src/shutdown.ts:hooks': { kind: 'instance', why: '进程停机编排；租户钩子归所属 rt，drop 注销（见表后）' },
+  'src/shutdown.ts:hooks': { kind: 'instance', why: '进程停机编排；租户闭包按 shutdown.hooks 登记计数与 drop，删除后不再调用。' },
   'src/shutdown.ts:shuttingDown': { kind: 'instance', why: '进程停机编排；租户钩子由第 6 步逐运行时执行' },
   'src/store.ts:INBOX_CHANGE_STATES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/store.ts:PRUNE_MS': { kind: 'instance', why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。' },

@@ -1184,6 +1184,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
    * 正在等 1 秒后再试
    */
   function pumpPoisoned(e: Entry): void {
+    if (rt.kind === 'sandbox' && rt.state !== 'serving') return;
     if (!e.poisoned || e.pcRun || e.pcTimer || !hasChannelRows(e.pc)) return;
     if (closed || conflict) return;
     if (e.inflight && !e.inflight.dead) return;
@@ -1196,6 +1197,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
 
   async function runPoisoned(e: Entry, rows: ChannelRows): Promise<void> {
     const r = await nowTx((tx) => writeChannelRows(tx, rows));
+    if (rt.kind === 'sandbox' && rt.state !== 'serving') return;
     e.pcRun = null;
     if (r.ok) {
       if (e.pcFailing) {
@@ -1300,6 +1302,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
    * 租户锁在别的进程手里（held_by_other）时不起落库：改动留给 exit 时的 spill，免得把新的持锁进程也撞成 store_conflict
    */
   function kick(e: Entry): void {
+    if (rt.kind === 'sandbox' && rt.state !== 'serving') return;
     if (closed || conflict || e.poisoned || e.inflight || e.purgeHeld || !isDirty(e) || !d.writable()) return;
     detached(() => {
       let snap: Snap;
@@ -1366,6 +1369,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
   }
 
   async function runFlush(e: Entry, snap: Snap): Promise<void> {
+    if (rt.kind === 'sandbox' && rt.state !== 'serving') return;
     stats.attempts++;
     const t0 = Date.now();
     let error: unknown = null;
@@ -1376,6 +1380,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       if (err instanceof AlreadyCommitted) recognized = true;
       else error = err;
     }
+    if (rt.kind === 'sandbox' && rt.state !== 'serving') return;
     const ms = Date.now() - t0;
     if (ms > SLOW_TX_MS) {
       stats.slowTx++;

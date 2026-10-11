@@ -152,6 +152,9 @@ class Runtime implements TenantRuntime {
   state: TenantRuntime['state'] = 'serving';
   private readonly controller = new AbortController();
   readonly cancel = this.controller.signal;
+  abort(): void {
+    this.controller.abort(new Error('tenant_closing'));
+  }
   readonly inflight = new InflightRegistry();
   readonly config = createTenantConfig();
   pack!: PackBinding;
@@ -181,6 +184,10 @@ class Runtime implements TenantRuntime {
 }
 export function createTenantRuntime(opts: RuntimeOptions): TenantRuntime {
   return new Runtime({ ...opts });
+}
+/** R12 取消只发信号；登记的 promise 仍须真正落定。 */
+export function cancelTenantRuntime(rt: TenantRuntime): void {
+  if (rt instanceof Runtime) rt.abort();
 }
 /** 停机与删除证明不得为了检查存储而惰性装载文件。 */
 export function tenantStoreIfLoaded(rt: TenantRuntime): TenantStore | undefined {

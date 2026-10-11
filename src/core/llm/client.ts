@@ -1,4 +1,5 @@
 import { TenantLocal } from '../../tenancy/local-state.js';
+import { currentRuntime } from '../../tenancy/runtime.js';
 import { registerTenantState } from '../../tenancy/state.js';
 import { TenantObservers } from '../../tenancy/observers.js';
 // OpenAI 兼容 chat completions 封装（默认智谱），含多轮工具调用循环。
@@ -259,6 +260,11 @@ class LlmHttpError extends Error {
  * 对冲时只有胜出的那个该记，由调用方决定。
  */
 async function requestModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
+  const rt = currentRuntime();
+  const work = readModel(ep, model, payload, signal);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work;
+}
+async function readModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
   const send = (forceThink: boolean) =>
     gatedFetch(
       ep.baseUrl + '/chat/completions',
@@ -297,6 +303,7 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
     throw e;
   }
   settleUsage(data);
+  if (currentRuntime().state !== 'serving') throw new Error('tenant_closing');
   // 发了 disabled 却照样思考：多半是正则没收录的强制思考模型，在按默认最高档想，延迟会翻几倍。
   // 只告警不自动切：自动给老模型加 reasoning_effort 可能换来 400，那比慢更糟
   const think = thinkingParams(ep.baseUrl, model) as { thinking?: { type?: string } };

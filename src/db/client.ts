@@ -1,5 +1,5 @@
 import { assertSandboxRunning } from '../tenancy/sandbox/lifecycle.js';
-import { withoutTenantScope } from '../tenancy/runtime.js';
+import { runtimeOf, scopedRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 // 数据库连接、租户上下文与租户锁（docs/architecture/01-pg-config-console/spec.md「数据库 · withTenant」）。
 // 全仓只有 src/db/** 能 import pg / drizzle-orm / PGlite；租户 GUC 的名字也只出现在本文件和迁移 SQL 里（lint 守着）。
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -232,7 +232,10 @@ export interface WithTenantOpts {
  * 仓储与审计函数。在 withTenant 里再嵌套 withTenant 会抛错，不管租户是否相同。
  */
 export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Promise<T>, opts: WithTenantOpts = {}): Promise<T> {
-  return tenantTransaction(
+  const scoped = scopedRuntime();
+  const rt = scoped?.id === ctx.tenantId ? scoped : runtimeOf(ctx.tenantId);
+  // 从借连接之前登记，直到 COMMIT / ROLLBACK 和归还连接完成；abort 不摘登记。
+  const work = tenantTransaction(
     db,
     async (tx) => {
       await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
@@ -240,6 +243,7 @@ export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Prom
     },
     opts,
   );
+  return rt?.kind === 'sandbox' ? rt.inflight.track(work) : work;
 }
 
 /** 开通与复制共用一个事务；创建函数返回后才建立新租户的 GUC 与异步上下文（05 R9）。 */
