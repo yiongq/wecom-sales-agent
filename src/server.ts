@@ -88,6 +88,7 @@ import {
   prefixSummary,
 } from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
+import { sandboxTryUrl } from './console-api/entry.js';
 import { convLabel, convLabelsIn, requestLogContext } from './log.js';
 import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
@@ -272,6 +273,10 @@ const publicOrder = (o: Order): PublicOrder => ({
 
 // 主站入口统一进工作台（05 spec R23），不受部署 profile、配置来源或模拟器开关影响。
 app.get('/', (c) => c.redirect('/console/'));
+app.get('/try', (c) => {
+  const url = sandboxTryUrl();
+  return url ? c.redirect(url) : c.notFound();
+});
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
 // llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。
 // revision 是部署时的 git tag（deploy.sh 经 Dockerfile 的 APP_REVISION 写进镜像）：回滚到 :prev 后报的是上一版的 tag，

@@ -60,7 +60,7 @@ function Whole({ heading, children }: { heading?: string; children: ReactNode })
 
 /** 启动时两个请求都没回来：侧栏骨架（租户行、搜索、6 行导航）加面板骨架，延迟 300ms 出现 */
 function BootSkeleton() {
-  useDocumentTitle('后台');
+  useDocumentTitle('wecom-sales-agent · 企业微信AI销售助手');
   return (
     <div className="shell shell-expanded state-skeleton" role="status" aria-label="正在载入">
       <div className="sidebar boot-sidebar" aria-hidden="true">
@@ -102,7 +102,7 @@ export function Shell() {
       </Whole>
     );
   }
-  if (v.kind === 'login') return <LoginPage demo={v.demo} />;
+  if (v.kind === 'login') return <LoginPage demo={v.demo} tryUrl={v.tryUrl} />;
   return <Frame viewer={v} />;
 }
 
