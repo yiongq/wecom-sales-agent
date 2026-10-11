@@ -150,6 +150,19 @@ export async function gatedFetch(
   opts: GateUsage = {},
 ): Promise<GateResult> {
   const rt = currentRuntime();
+  if (rt.cancel.aborted) throw new Error('tenant_closing');
+  const signal = () => AbortSignal.any([rt.cancel, signalFactory()]);
+  const work = () => fetchThroughGate(url, init, signal, opts);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
+}
+
+async function fetchThroughGate(
+  url: string,
+  init: RequestInit,
+  signalFactory: () => AbortSignal,
+  opts: GateUsage = {},
+): Promise<GateResult> {
+  const rt = currentRuntime();
   const usage = requestUsage(init, url, opts);
   // 排队用的信号同样带着一个从此刻起算的单次超时，所以排队本身也不会超过 LLM_TIMEOUT_MS
   await acquire(signalFactory());
@@ -175,6 +188,7 @@ export async function gatedFetch(
       }
       // 预占在拿到实例名额后、每次真正发请求前；拒绝不进入重试分支。
       assertSandboxRunning();
+      if (rt.cancel.aborted) throw new Error('tenant_closing');
       const reservation = rt.budget.reserve(usage.purpose, usage.estimateMilli);
       if (!reservation) throw new BudgetExhausted();
       let settled = false;
@@ -186,6 +200,10 @@ export async function gatedFetch(
       };
       try {
         const res = await fetch(url, { ...init, signal });
+        if (rt.cancel.aborted) {
+          await res.body?.cancel().catch(() => {});
+          throw new Error('tenant_closing');
+        }
         if (res.ok) {
           handedOff = true;
           return { res, attempts: attempt + 1, settleUsage };

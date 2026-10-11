@@ -1,3 +1,4 @@
+import { assertSandboxNewConversation } from './tenancy/sandbox/limits.js';
 import { scopedState } from './tenancy/scoped-state.js';
 import {
   currentRuntime,
@@ -332,9 +333,23 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
   if (currentRuntime().isHost) ensureMarker(deps);
   onShutdown(
     tenantCallback(currentRuntime(), async ({ deadline }: { deadline: number }) => {
+      if (currentRuntime().kind === 'sandbox') {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            currentRuntime().inflight.drain(),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
       const real = undrained.filter((id) => !isDemoClassId(id));
       if (currentRuntime().kind === 'sandbox') {
+        await flushUsageDaily();
         console.log(`[sandbox] 排空结束，未落库会话 ${real.length}（退出时丢弃）`);
         return;
       }
@@ -497,6 +512,8 @@ export function forgetSession(sessionId: string): void {
 
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
+  // 沙箱不执行跟进或群通知；丢弃任务而不拒绝整次会话落库（05 R11）。
+  if (currentRuntime().kind === 'sandbox') return;
   pgFor(sessionId)?.queueJobs(sessionId, ops);
 }
 /**
@@ -878,6 +895,7 @@ export function getOrCreateSession(id: string, channel: string): Session {
   const state = storeState();
   let s = state.sessions.get(id);
   if (!s) {
+    assertSandboxNewConversation(state.sessions.values());
     const now = Date.now();
     s = {
       id,

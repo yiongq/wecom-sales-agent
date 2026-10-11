@@ -425,7 +425,7 @@ function finish(
     };
     const rt = currentRuntime();
     for (const { fn, owner, conversationId } of endObservers) {
-      if (owner && (owner !== rt || owner.state !== 'serving')) continue;
+      if (owner && (owner !== rt || owner.cancel.aborted || owner.state === 'closed')) continue;
       if (conversationId !== undefined && conversationId !== t.conversationId) continue;
       try {
         fn(done);

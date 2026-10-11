@@ -3,6 +3,8 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/tenancy/sandbox/limits.ts:provisioned': { kind: 'instance', why: '进程开通的小时与 IP 日计数；崩溃归零，不随沙箱删除减去。' },
+  'src/tenancy/sandbox/limits.ts:tenantState': { kind: 'tenant', state: 'sandbox.limits.writes' },
   'src/tenancy/sandbox/provision.ts:provisioning': { kind: 'instance', why: '开通的进程互斥链；不缓存租户或令牌，失败后仍可继续。' },
   'src/server.ts:sandbox': { kind: 'instance', why: '沙箱进程的组合根；epoch、进程锁与停止策略只有一份。' },
   'src/server.ts:sandboxHttp': { kind: 'instance', why: '沙箱角色的 HTTP 路由能力；请求阶段才建立租户作用域。' },
@@ -563,7 +565,7 @@ export const STATE_MANIFEST: Record<
   'src/shutdown.ts:PHASES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shutdown.ts:SHUTDOWN_TIMEOUT_MS': { kind: 'instance', why: '按启动角色固定的停机时限；宿主 8 秒、沙箱至多 10 秒。' },
   'src/shutdown.ts:SHARE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
-  'src/shutdown.ts:hooks': { kind: 'instance', why: '进程停机编排；租户钩子归所属 rt，drop 注销（见表后）' },
+  'src/shutdown.ts:hooks': { kind: 'instance', why: '进程停机编排；租户闭包按 shutdown.hooks 登记计数与 drop，删除后不再调用。' },
   'src/shutdown.ts:shuttingDown': { kind: 'instance', why: '进程停机编排；租户钩子由第 6 步逐运行时执行' },
   'src/store.ts:INBOX_CHANGE_STATES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/store.ts:PRUNE_MS': { kind: 'instance', why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。' },

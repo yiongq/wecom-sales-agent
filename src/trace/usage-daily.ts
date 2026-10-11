@@ -83,7 +83,7 @@ function daily(): DailyState {
 withoutTenantScope(() =>
   onUsage((e: UsageEvent) => {
     const rt = currentRuntime();
-    if (rt.state !== 'serving') return;
+    if (rt.state === 'closed') return;
     const state = daily();
     const { acc, writer } = state;
     // 没有写入函数（文件存储）时只留当天的：换天就把前一天的丢掉，免得长期运行的文件存储实例越攒越多
@@ -200,6 +200,15 @@ export function flushUsageDaily(): Promise<void> {
       state.queued--;
     });
   return state.chain;
+}
+
+/** R12 ③：普通刷新保留失败批次；删除必须确认它们已写入，不能把吞错当成功。 */
+export async function flushUsageDailyForPurge(): Promise<void> {
+  const rt = currentRuntime();
+  const state = states.get(rt.id);
+  if (!state) return;
+  await flushUsageDaily();
+  if (state.queued || [...state.acc.values()].some((a) => a.calls > 0 || a.milli >= 1 - 1e-6)) throw new Error('sandbox_usage_pending');
 }
 
 /** 每租户接一份 writer；启动、drain 均由所属 rt 调用。 */

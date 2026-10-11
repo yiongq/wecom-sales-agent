@@ -12,8 +12,8 @@ export class TenantLocal<T> {
   get(rt = currentRuntime()): T {
     let value = Reflect.get(rt, this.slot) as T | undefined;
     if (value === undefined) {
-      // 关闭后的只读探测可取空值，但不能重新登记或强引用已删除的运行时。
-      if (rt.state !== 'serving') return this.create();
+      // 取消或已删除后的只读探测可取空值，但不能重新登记或强引用运行时。
+      if (rt.cancel.aborted || rt.state === 'closed') return this.create();
       value = this.create();
       Reflect.set(rt, this.slot, value);
       this.owners.add(rt);
@@ -21,7 +21,8 @@ export class TenantLocal<T> {
     return value;
   }
   owns(rt: TenantRuntime, value: T): boolean {
-    return rt.state === 'serving' && Reflect.get(rt, this.slot) === value;
+    // 归属与取消分开：正常停机的 closing 仍要让已接收的轮次排空。
+    return Reflect.get(rt, this.slot) === value;
   }
   registration(count: (value: T) => number) {
     const remove = (rt: TenantRuntime): void => {

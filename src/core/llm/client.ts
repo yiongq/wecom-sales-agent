@@ -1,4 +1,5 @@
 import { TenantLocal } from '../../tenancy/local-state.js';
+import { currentRuntime } from '../../tenancy/runtime.js';
 import { registerTenantState } from '../../tenancy/state.js';
 import { TenantObservers } from '../../tenancy/observers.js';
 // OpenAI 兼容 chat completions 封装（默认智谱），含多轮工具调用循环。
@@ -259,6 +260,11 @@ class LlmHttpError extends Error {
  * 对冲时只有胜出的那个该记，由调用方决定。
  */
 async function requestModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
+  const rt = currentRuntime();
+  const work = () => readModel(ep, model, payload, signal);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
+}
+async function readModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
   const send = (forceThink: boolean) =>
     gatedFetch(
       ep.baseUrl + '/chat/completions',
@@ -297,6 +303,7 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
     throw e;
   }
   settleUsage(data);
+  if (currentRuntime().cancel.aborted) throw new Error('tenant_closing');
   // 发了 disabled 却照样思考：多半是正则没收录的强制思考模型，在按默认最高档想，延迟会翻几倍。
   // 只告警不自动切：自动给老模型加 reasoning_effort 可能换来 400，那比慢更糟
   const think = thinkingParams(ep.baseUrl, model) as { thinking?: { type?: string } };
@@ -635,10 +642,12 @@ async function realChat(opts: ChatOptions, runtime: LlmRuntime): Promise<string>
       const moved = lastKey.get(name) !== key;
       lastKey.set(name, key);
       if (hit && moved && opts.onReuse)
-        void hit.then(
-          (r) => opts.onReuse!(name, args, r),
-          () => {},
-        );
+        void hit
+          .then(
+            (r) => opts.onReuse!(name, args, r),
+            () => {},
+          )
+          .catch(() => console.warn('[llm] 工具缓存重放已取消或失败，跳过落地'));
       if (hit) {
         stats.toolReused += 1;
         trace.at(-1)?.reused.push(name);
@@ -648,9 +657,11 @@ async function realChat(opts: ChatOptions, runtime: LlmRuntime): Promise<string>
       const run = opts.executeTool(name, args);
       reusable.set(key, run);
       // 执行失败不缓存：同一个调用再来一次可能就成了（例如线路文件刚好在写）
-      run.catch(() => {
-        if (reusable.get(key) === run) reusable.delete(key);
-      });
+      void run
+        .catch(() => {
+          if (reusable.get(key) === run) reusable.delete(key);
+        })
+        .catch(() => console.warn('[llm] 工具缓存清理失败'));
       return run;
     },
   };

@@ -71,7 +71,7 @@ export function initializeStandardBudget(rt: TenantRuntime): Promise<void> {
   const work = withTenantScope(rt, async () => {
     // runtime 的构造依赖预算；用量入口也依赖 runtime。调用时再接快照队列，避免模块加载环。
     const { withUsageDailySnapshot } = await import('../trace/usage-daily.js');
-    if (state.dropped || rt.state !== 'serving' || state.day !== day) return;
+    if (state.dropped || rt.cancel.aborted || rt.state === 'closed' || state.day !== day) return;
     return withUsageDailySnapshot(day, (persistedMilli) =>
       withTenant(
         loaded.deps.db,
@@ -90,7 +90,7 @@ export function initializeStandardBudget(rt: TenantRuntime): Promise<void> {
             columns: { costMilliCny: true },
             where: (t, { and, eq }) => and(eq(t.tenantId, rt.id), eq(t.day, day)),
           });
-          if (state.dropped || state.day !== day || rt.state !== 'serving') return;
+          if (state.dropped || state.day !== day || rt.cancel.aborted || rt.state === 'closed') return;
           if (!state.capLoaded) {
             state.alertMilli = tenant?.llmDailyAlertMilli ?? null;
             state.capLoaded = true;
@@ -136,13 +136,13 @@ export function createStandardBudget(): TenantBudget {
     reserve: (_purpose, estimateMilli) => {
       const rt = owner();
       rollDay(state);
-      void initializeStandardBudget(rt);
+      void initializeStandardBudget(rt).catch(() => console.warn('[budget] llm_daily_alert_load_cancelled'));
       state.calls++;
       let settled = false;
       return {
         settle(actualMilli) {
           if (settled) return;
-          if (state.dropped || rt.state !== 'serving') {
+          if (state.dropped || rt.cancel.aborted || rt.state === 'closed') {
             settled = true;
             return;
           }

@@ -55,7 +55,7 @@ export function createTravelTools(sources: TravelToolSources) {
           /* 工具报错返回的非 JSON 没有展示状态可重放 */
         }
       },
-      async execute(input, { session, hints }) {
+      async execute(input, { session, hints, cancel }) {
         const args = input as Record<string, unknown>;
         const elder = !!hints.elder || session.profile.segment === '银发';
         // 客群从画像自动补齐。只把 segment 写进工具描述是不够的——模型常常漏传，
@@ -71,6 +71,7 @@ export function createTravelTools(sources: TravelToolSources) {
           elder,
           altitudeWorry: hints.altitudeWorry,
         });
+        cancel?.throwIfAborted();
         // 工具替模型算好的超预算差额记进会话：价格护栏据此认出「比您预算多 6,800 元」
         // 是工具给的数。只留最近几次搜索的，旧的差额早已不在对话焦点里
         const gaps = found
