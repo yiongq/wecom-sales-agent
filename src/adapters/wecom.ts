@@ -1836,6 +1836,8 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
     console.log(`${rt.tag} 已回复（阶段=${reply.stage}，耗时 ${Date.now() - t0}ms）`);
   } catch (err) {
     console.error(`${rt.tag} 处理消息失败:`, apiErrorCode(err));
+    // 异常兜底也受 normal 段截止约束；留住在途消息，重启后按已记客户消息重放。
+    if (sendsClosed(rt)) return 'deferred';
     await sendText(rt, cfg, msg.external_userid, SORRY_TEXT, { kind: 'ai', message: null });
   }
 }
