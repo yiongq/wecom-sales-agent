@@ -82,6 +82,9 @@ if (v2Arg > 0 || (versioned.length && versioned.length === entries.length)) {
   process.exit((await runV2(v2Cases)) ? 0 : 1);
 }
 
+const { hostRuntime } = await import('../src/tenancy/runtime.js');
+const { enterTenantScopeForTest } = await import('../src/tenancy/testing.js');
+enterTenantScopeForTest(hostRuntime());
 // LOG_FORMAT=json（02 spec R24）：这个回放器不经 server.ts / profile-boot.ts 启动，没有它 console.* 不会被接到 pino；
 // 没设时什么都不做。放在这里好让「LOG_FORMAT=json 跑一遍 mock eval、扫描输出」这个门禁检查生效
 installJsonConsole();

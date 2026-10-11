@@ -75,6 +75,12 @@ export function installTenantStoreFactory(factory: (rt: TenantRuntime) => Tenant
 export function withTenantScope<T>(rt: TenantRuntime, fn: () => T): T {
   return als.run(rt, fn);
 }
+/** 仅供 testing.ts 建立独立自测进程的默认作用域；生产入口仍用 withTenantScope。 */
+export const __tenantTest = Object.freeze({
+  enterScope(rt: TenantRuntime): void {
+    als.enterWith(rt);
+  },
+});
 /** 创建异步资源时清空 ALS。EventEmitter / EventTarget 不捕获注册时的 ALS：
  * 同步监听继承发出方；实例回调要在执行时 exit，租户回调要显式进入 owner。 */
 export function withoutTenantScope<T>(fn: () => T): T {

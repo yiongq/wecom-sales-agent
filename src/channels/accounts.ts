@@ -1,3 +1,4 @@
+import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, runtimeOf } from '../tenancy/runtime.js';
 // 渠道账号（docs/architecture/03-channels-v2/spec.md「接口与数据流 · 渠道账号与凭据」、R1、R8、R11、R15、R19）：
 // 账号的进程内形状、从库里读出与解密、env 账号的拼法、按 key 与按会话找账号、欢迎语的 AI 显式标识检查。
@@ -207,6 +208,16 @@ export function openAccountSecrets(ring: KeyRing, tenantId: string, row: Channel
 // 是 env 账号（配齐时）与库里的网页账号
 
 let installed: readonly ChannelAccount[] = [];
+registerTenantState({
+  name: 'channels.accounts',
+  keyCount: (id) => installed.filter((account) => account.tenantId === id).length,
+  drop: (id) => {
+    installed = Object.freeze(installed.filter((account) => account.tenantId !== id));
+  },
+  reset: () => {
+    installed = [];
+  },
+});
 
 /** 仅供 src/channels/registry.ts：装载成功之后整份换上；自测的 reset 传空数组 */
 export function installAccounts(list: readonly ChannelAccount[]): void {

@@ -15,7 +15,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const root = fs.mkdtempSync(path.join(process.env.VAR_DIR ?? os.tmpdir(), 'wecom-restore-cutoff-selftest-'));
 process.env.VAR_DIR = path.join(root, 'app-var');
 fs.mkdirSync(process.env.VAR_DIR);

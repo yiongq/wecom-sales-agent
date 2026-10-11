@@ -507,7 +507,9 @@ export function startAlerts(): void {
   // 这里的 exit 控制注册分支、停机钩子与 timer，不改变同步订阅的发出方上下文；巡检逐 rt 进入作用域。
   withoutTenantScope(() => {
     onTenantScopeMissing(() => alert('tenant_scope_missing', '后台入口缺少租户作用域'));
-    onDomainEventMismatch(() => alert('store', '领域事件租户不匹配，已跳过该事件', { scope: 'domain_event_tenant_mismatch' }));
+    onDomainEventMismatch(() =>
+      alert('store', '领域事件租户不匹配，已跳过该事件', { scope: 'domain_event_tenant_mismatch', instance: true }),
+    );
     onTurnEnd(onTurn);
     onSendSettled(onSettled);
     onUnsafeSend(onUnsafe);

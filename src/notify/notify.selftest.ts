@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.NOTIFY_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const CLOCK_MODULE = fileURLToPath(new URL('../store/parity-clock.ts', import.meta.url));

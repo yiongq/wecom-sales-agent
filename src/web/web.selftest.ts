@@ -6,7 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const varDir = fs.mkdtempSync(path.join(os.tmpdir(), 'web-copy-selftest-'));
 process.env.VAR_DIR = varDir;
 process.env.CONFIG_SOURCE = 'file';

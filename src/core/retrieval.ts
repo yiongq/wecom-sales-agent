@@ -1,6 +1,6 @@
 import { TenantLocal } from '../tenancy/local-state.js';
 import { registerTenantState } from '../tenancy/state.js';
-import { currentRuntime, tenantCallback, withoutTenantScope, TenantScopeMissing } from '../tenancy/runtime.js';
+import { currentRuntime, tenantCallback, withoutTenantScope, TenantScopeMissing, type TenantRuntime } from '../tenancy/runtime.js';
 // 线路语义召回。原先 目录搜索 是 String.includes 子串匹配，客户说
 // 「不用倒时差、带娃能玩水」这类没有目的地关键词的需求直接搜不到东西——
 // 而真实客户十有八九就是这么说话的。
@@ -46,7 +46,23 @@ const indexes = new TenantLocal(
 );
 const state = () => indexes.get();
 // 内容相同才共用；只缓存成功的只读内容，不共享租户引用、代次或正在发的收费请求。
-const shared = new Map<string, readonly Indexed[]>();
+const shared = new Map<string, { items: readonly Indexed[]; owners: Set<TenantRuntime> }>();
+function cacheShared(key: string, items: readonly Indexed[]): void {
+  const owners = shared.get(key)?.owners ?? new Set<TenantRuntime>();
+  owners.add(currentRuntime());
+  shared.set(key, { items, owners });
+}
+registerTenantState({
+  name: 'retrieval.shared',
+  keyCount: (id) => [...shared.values()].filter((entry) => [...entry.owners].some((owner) => owner.id === id)).length,
+  drop: (id) => {
+    for (const [key, entry] of shared) {
+      for (const owner of entry.owners) if (owner.id === id) entry.owners.delete(owner);
+      if (!entry.owners.size) shared.delete(key);
+    }
+  },
+  reset: () => shared.clear(),
+});
 const RETRY_BACKOFF_MS = [30_000, 120_000, 600_000];
 let retryBackoff = RETRY_BACKOFF_MS;
 
@@ -145,7 +161,9 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
   const key = `${EMBED_MODEL}:${fp}`;
   const rt = currentRuntime();
   const local = state();
-  const reusable = shared.get(key);
+  const cached = shared.get(key);
+  cached?.owners.add(currentRuntime());
+  const reusable = cached?.items;
   if (reusable) return reusable;
   if (rt.isHost && process.env.APP_ROLE !== 'sandbox') {
     try {
@@ -153,7 +171,7 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
       if (cached.fp === fp && cached.model === EMBED_MODEL && cached.items?.length === routes.length) {
         console.log(`[retrieval] 语义索引命中缓存：${cached.items.length} 条线路`);
         const items = freezeIndex(cached.items);
-        shared.set(key, items);
+        cacheShared(key, items);
         return items;
       }
     } catch {
@@ -163,7 +181,7 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
   const vecs = await embed(routes.map((item) => currentPack().runtime.retrievalText(item)));
   if (!indexes.owns(rt, local) || !vecs || vecs.length !== routes.length) return null;
   const items = freezeIndex(routes.map((r, i) => ({ id: r.code, vec: vecs[i] })));
-  shared.set(key, items);
+  cacheShared(key, items);
   if (shared.size > 64) shared.delete(shared.keys().next().value!);
   writeCache(fp, items);
   console.log(`[retrieval] 语义索引已构建：${items.length} 条线路 · ${EMBED_MODEL}`);

@@ -23,7 +23,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import type { ChatMessage, Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.QUOTA_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const H = 3_600_000;

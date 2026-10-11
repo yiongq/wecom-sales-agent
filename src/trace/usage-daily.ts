@@ -80,37 +80,39 @@ function daily(): DailyState {
   return state;
 }
 
-onUsage((e: UsageEvent) => {
-  const rt = currentRuntime();
-  if (rt.state !== 'serving') return;
-  const state = daily();
-  const { acc, writer } = state;
-  // 没有写入函数（文件存储）时只留当天的：换天就把前一天的丢掉，免得长期运行的文件存储实例越攒越多
-  if (!writer && e.day !== state.lastDay) acc.clear();
-  state.lastDay = e.day;
-  const key = JSON.stringify([rt.id, e.day, e.model, e.purpose]);
-  let a = acc.get(key);
-  if (!a) {
-    a = {
-      day: e.day,
-      model: e.model,
-      purpose: e.purpose,
-      calls: 0,
-      promptTokens: 0,
-      completionTokens: 0,
-      cachedTokens: 0,
-      reasoningTokens: 0,
-      milli: 0,
-    };
-    acc.set(key, a);
-  }
-  a.calls += 1;
-  a.promptTokens += e.promptTokens;
-  a.completionTokens += e.completionTokens;
-  a.cachedTokens += e.cachedTokens;
-  a.reasoningTokens += e.reasoningTokens;
-  a.milli += e.cny * 1000;
-});
+withoutTenantScope(() =>
+  onUsage((e: UsageEvent) => {
+    const rt = currentRuntime();
+    if (rt.state !== 'serving') return;
+    const state = daily();
+    const { acc, writer } = state;
+    // 没有写入函数（文件存储）时只留当天的：换天就把前一天的丢掉，免得长期运行的文件存储实例越攒越多
+    if (!writer && e.day !== state.lastDay) acc.clear();
+    state.lastDay = e.day;
+    const key = JSON.stringify([rt.id, e.day, e.model, e.purpose]);
+    let a = acc.get(key);
+    if (!a) {
+      a = {
+        day: e.day,
+        model: e.model,
+        purpose: e.purpose,
+        calls: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        milli: 0,
+      };
+      acc.set(key, a);
+    }
+    a.calls += 1;
+    a.promptTokens += e.promptTokens;
+    a.completionTokens += e.completionTokens;
+    a.cachedTokens += e.cachedTokens;
+    a.reasoningTokens += e.reasoningTokens;
+    a.milli += e.cny * 1000;
+  }),
+);
 
 /** 把累加的部分写一次。先从累加器里扣掉再写（写入期间来的新用量另起一份），写失败就加回去、下一次再试 */
 async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {

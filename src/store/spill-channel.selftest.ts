@@ -27,7 +27,10 @@ import type { InboxStateWrite } from '../db/repo/channel-inbox.js';
 import type { OutboundWriteRow } from '../db/repo/outbound.js';
 import type { GuardEventRow } from '../db/repo/traces.js';
 import type { ChatMessage, Order, Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.SPILL_CHANNEL_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 

@@ -10,7 +10,10 @@ import { importConfig } from '../config/transfer.js';
 import { closeConfig, initConfig } from '../config/source.js';
 import { __takeoverTest } from '../handoff/takeover.js';
 import type { FinishedTurn } from './recorder.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 if (!process.env.PG_TEST_URL) {
   if (process.env.CI === 'true') throw new Error('CI 下必须设 PG_TEST_URL：guard_verdicts 须在真实 PG 验证');
   console.log('GUARD VERDICTS SELFTEST：没有 PG_TEST_URL，跳过真实 PG 迁移、授权与每轮一份裁决');

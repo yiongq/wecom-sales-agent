@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { ChatMessage, Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 type Mode = 'file' | 'db';
 
 /** 第 13 步的后台成员（坐席）：接手人、人工回复的作者。两个子进程都在库里建这一行（PG 那边 assignee_user_id 有外键） */

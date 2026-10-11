@@ -1,3 +1,4 @@
+import { TenantObservers } from '../tenancy/observers.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import {
@@ -231,10 +232,10 @@ export interface JobFailure {
   lastError: string | null;
   count: number;
 }
-const failedListeners = new Set<(f: JobFailure) => void>();
+const failedListeners = new TenantObservers<(f: JobFailure) => void>();
+registerTenantState({ name: 'runner.failedListeners', ...failedListeners.registration() });
 export function onJobFailed(cb: (f: JobFailure) => void): () => void {
-  failedListeners.add(cb);
-  return () => failedListeners.delete(cb);
+  return failedListeners.subscribe(cb);
 }
 function jobFailed(f: JobFailure): void {
   for (const cb of failedListeners) {

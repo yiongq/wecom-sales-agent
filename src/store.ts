@@ -420,7 +420,7 @@ export function queueAudit(sessionId: string, actor: AuditActor, entry: AuditEnt
 }
 
 /** 文件存储下审计的短事务在空的异步上下文里起：调用方在 withTenant 回调里排审计也不会嵌套（同 PG 后端的写队列） */
-const detachedAudit = AsyncLocalStorage.snapshot();
+const detachedAudit = withoutTenantScope(() => AsyncLocalStorage.snapshot());
 async function writeFileModeAudit(actor: AuditActor, entry: AuditEntry): Promise<void> {
   const rt = currentRuntime();
   try {
@@ -1150,17 +1150,20 @@ function storeRegistration(name: 'store.sessions' | 'store.orders' | 'store.file
       for (const rt of tenantRuntimes()) {
         const s = tenantStoreIfLoaded(rt);
         if (!s) continue;
-        s.sessions.clear();
-        s.orders.clear();
-        s.fileBackend?.reset();
+        if (name === 'store.pgBackend') s.pgBackend?.reset();
+        else if (name === 'store.sessions') s.sessions.clear();
+        else if (name === 'store.orders') s.orders.clear();
+        else s.fileBackend?.reset();
+        if (s.changeTimer) clearTimeout(s.changeTimer);
+        s.changeTimer = null;
       }
     },
   };
 }
+registerTenantState({ name: 'store.pgBackend', ...storeRegistration('store.pgBackend') });
 registerTenantState({ name: 'store.sessions', ...storeRegistration('store.sessions') });
 registerTenantState({ name: 'store.orders', ...storeRegistration('store.orders') });
 registerTenantState({ name: 'store.fileBackend', ...storeRegistration('store.fileBackend') });
-registerTenantState({ name: 'store.pgBackend', ...storeRegistration('store.pgBackend') });
 
 // 文件兼容入口显式装载宿主：旧自测只 import store 也保留启动清理行为。
 if (process.env.TENANCY_STRICT !== '1' && process.env.APP_ROLE !== 'sandbox') {
@@ -1179,7 +1182,11 @@ function eventRegistration(key: 'storeEvents' | 'changeTimer') {
     drop: (id: string) => {
       const rt = tenantRuntimes().find((r) => r.id === id);
       if (!rt) return;
-      if (key === 'storeEvents') rt.events.storeEvents.removeAllListeners();
+      if (key === 'storeEvents')
+        withTenantScope(rt, () => {
+          rt.events.storeEvents.emit('close');
+          rt.events.storeEvents.removeAllListeners();
+        });
       else {
         const s = tenantStoreIfLoaded(rt);
         if (s?.changeTimer) {

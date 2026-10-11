@@ -1,3 +1,6 @@
+import { TenantLocal } from '../../tenancy/local-state.js';
+import { registerTenantState } from '../../tenancy/state.js';
+import { TenantObservers } from '../../tenancy/observers.js';
 // OpenAI 兼容 chat completions 封装（默认智谱），含多轮工具调用循环。
 // 离线脚本与工具缓存/重试声明由运行时注入，核心不装载行业包。
 import { inTenantTx } from '../../db/client.js';
@@ -47,13 +50,14 @@ export interface ObservedRequest {
   system: string;
   tools: string;
 }
-let requestObserver: ((req: ObservedRequest) => void) | null = null;
+const requestObserver = new TenantLocal(() => ({ fn: null as ((req: ObservedRequest) => void) | null }));
+registerTenantState({ name: 'llm.requestObserver', ...requestObserver.registration((value) => Number(value.fn !== null)) });
 /**
  * 只读的请求观察钩子，默认什么都不做。自测和 DB 模式的 eval 用它记录每个请求实际发出的 system 与 tools，
  * 核对它们与 /healthz 报的哈希一致（01 spec 验收 21）。传 null 卸下
  */
 export function observeRequests(cb: ((req: ObservedRequest) => void) | null): void {
-  requestObserver = cb;
+  requestObserver.get().fn = cb;
 }
 
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
@@ -61,7 +65,7 @@ export async function chat(opts: ChatOptions, runtime: LlmRuntime): Promise<stri
   // 落库事务的回调里不调模型（02 不变量 9）：在 withTenant 里调到这里，说明有人把模型调用放进了事务，持锁跨过整次生成
   if (inTenantTx()) throw new Error('chat() 不能在 withTenant 的回调里调用：落库事务里只有 SQL，不调模型（02 不变量 9）');
   // 在 mock 与真实分支之前看：两条路发出去的前缀是同一份
-  requestObserver?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
+  requestObserver.get().fn?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
   return process.env.LLM_MOCK === '1' || opts.forceMock ? runtime.mock.chat(opts) : realChat(opts, runtime);
 }
 
@@ -695,14 +699,14 @@ export interface CallTrace {
   error: LlmErrorKind;
 }
 
-const llmCallObservers = new Set<(c: CallTrace) => void>();
+const llmCallObservers = new TenantObservers<(c: CallTrace) => void>();
+registerTenantState({ name: 'client.llmCallObservers', ...llmCallObservers.registration() });
 /**
  * 主对话每次模型调用（含失败的那次）都通知订阅者，在这一轮的异步上下文里同步调用。传的是同一个对象：之后这次调用要的工具、
  * 工具耗时与复用还会记到它上面，订阅者在轮次结束时再读。用量随后经 usage.ts 的 onUsage 另行送达（先通知这里、再记用量）
  */
 export function onLlmCall(fn: (c: CallTrace) => void): () => void {
-  llmCallObservers.add(fn);
-  return () => llmCallObservers.delete(fn);
+  return llmCallObservers.subscribe(fn);
 }
 function notifyLlmCall(c: CallTrace): void {
   for (const fn of llmCallObservers) {

@@ -12,7 +12,10 @@ import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import type { ConversationCounts, ConversationDetail, ConversationRow, OrderView, SopSectionText } from '../shared/console-api.js';
 import type { ChatMessage, Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 // 先设临时 VAR_DIR 再动态 import：server 会连带加载 store.ts，它在加载时就读 VAR_DIR
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });

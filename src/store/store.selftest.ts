@@ -21,7 +21,10 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { Actor } from '../handoff/takeover.js';
 import type { ChatMessage, Order, Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 /** 第 6 步导入导出夹具里的真实会话 id（子进程入口在下面就要用，所以放在最前面） */
 const XFER = { alpha: 'wecom:wmXferAlpha01', beta: 'wecom:wmXferBeta02', gamma: 'wecom:wmXferGamma03', delta: 'wecom:wmXferDelta04' };
 
@@ -818,7 +821,20 @@ const runFile = (file: string, env: Record<string, string | undefined>) => {
 };
 const runChild = (name: string, code: string, env: Record<string, string | undefined>) => {
   const file = path.join(VAR_DIR, `${name}.mts`);
-  fs.writeFileSync(file, code);
+  const imports = code.match(/^import[^\n]*\n/gm) ?? [];
+  const body = code
+    .replace(/^import[^\n]*\n/gm, '')
+    .replaceAll(
+      `await import(${JSON.stringify(storeUrl)})`,
+      `await import(${JSON.stringify(storeUrl)}).then((store) => { store.startStoreMaintenance(fixtureRuntime()); return store; })`,
+    );
+  const runtimeUrl = pathToFileURL(path.join(import.meta.dirname, '..', 'tenancy', 'runtime.ts')).href;
+  fs.writeFileSync(
+    file,
+    imports.join('') +
+      `const {hostRuntime: fixtureRuntime, withTenantScope: fixtureScope} = await import(${JSON.stringify(runtimeUrl)});\n` +
+      `await fixtureScope(fixtureRuntime(), async () => {\n${body}\n});\n`,
+  );
   return runFile(file, env);
 };
 /** 一个装好 fixture 的独立数据目录 */

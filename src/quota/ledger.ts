@@ -1,3 +1,4 @@
+import { TenantObservers } from '../tenancy/observers.js';
 import { TenantLocal } from '../tenancy/local-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, withTenantScope, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
@@ -435,10 +436,10 @@ export interface SendSettled {
   errcode: number | null;
   kind: OutboundKind;
 }
-const settledListeners = new Set<(s: SendSettled) => void>();
+const settledListeners = new TenantObservers<(s: SendSettled) => void>();
+registerTenantState({ name: 'ledger.settledListeners', ...settledListeners.registration() });
 export function onSendSettled(cb: (s: SendSettled) => void): () => void {
-  settledListeners.add(cb);
-  return () => settledListeners.delete(cb);
+  return settledListeners.subscribe(cb);
 }
 function notifySettled(s: SendSettled): void {
   for (const cb of settledListeners) {
@@ -609,11 +610,11 @@ function planProblem(
   return null;
 }
 
-const planRejectedListeners = new Set<(reason: string) => void>();
+const planRejectedListeners = new TenantObservers<(reason: string) => void>();
+registerTenantState({ name: 'ledger.planRejectedListeners', ...planRejectedListeners.registration() });
 /** planOutbound 的校验没过（告警 channel 订阅，只有原因、不带会话与正文） */
 export function onPlanRejected(cb: (reason: string) => void): () => void {
-  planRejectedListeners.add(cb);
-  return () => planRejectedListeners.delete(cb);
+  return planRejectedListeners.subscribe(cb);
 }
 function planRejected(reason: string): OutboundPlanError {
   for (const cb of planRejectedListeners) {
@@ -1056,17 +1057,24 @@ export function pendingIntentsOfInbox(inboxId: string): OutboundIntent[] {
 
 // ---------------- 03 R6：没落库就发 ----------------
 
-let unsafeAt: number[] = [];
-const unsafeListeners = new Set<(countIn10m: number) => void>();
+const unsafeHistory = new TenantLocal<number[]>(
+  () => [],
+  (value) => {
+    value.length = 0;
+  },
+);
+registerTenantState({ name: 'ledger.unsafeAt', ...unsafeHistory.registration((value) => value.length) });
+const unsafeListeners = new TenantObservers<(countIn10m: number) => void>();
+registerTenantState({ name: 'ledger.unsafeListeners', ...unsafeListeners.registration() });
 /** 「没落库就发」（R6）：每次计数，订阅者（告警 channel）收到最近 10 分钟的次数 */
 export function onUnsafeSend(cb: (countIn10m: number) => void): () => void {
-  unsafeListeners.add(cb);
-  return () => unsafeListeners.delete(cb);
+  return unsafeListeners.subscribe(cb);
 }
 /** 调用方决定照发的那一刻调：这一段的 sending 没在发请求之前提交（pending 等不到提交、markSending 库不可用） */
 export function noteUnsafeSend(): void {
   const t = Date.now();
-  unsafeAt = unsafeAt.filter((x) => t - x < UNSAFE_WINDOW_MS);
+  const unsafeAt = unsafeHistory.get();
+  while (unsafeAt.length && t - unsafeAt[0]! >= UNSAFE_WINDOW_MS) unsafeAt.shift();
   unsafeAt.push(t);
   for (const cb of unsafeListeners) {
     try {
@@ -1078,7 +1086,7 @@ export function noteUnsafeSend(): void {
 }
 /** 最近 10 分钟「没落库就发」的次数（/status 用，第 13 步） */
 export function unsafeSendsIn10m(now = Date.now()): number {
-  return unsafeAt.filter((x) => now - x < UNSAFE_WINDOW_MS).length;
+  return unsafeHistory.get().filter((x) => now - x < UNSAFE_WINDOW_MS).length;
 }
 
 // ======================================================================================
@@ -1333,7 +1341,7 @@ export const __ledgerTest = {
   },
   reset(): void {
     ledger.registration(() => 0).drop(currentRuntime().id);
-    unsafeAt = [];
+    unsafeHistory.get().length = 0;
     markHook = null;
     planHook = null;
   },

@@ -1,3 +1,5 @@
+import { registerTenantState } from '../tenancy/state.js';
+import { TenantObservers } from '../tenancy/observers.js';
 // 入站：channel_inbox（docs/architecture/03-channels-v2/spec.md「入站：channel_inbox」、R2、R3、不变量 1、2、8、11、12）。
 // 库里的企微账号用；env 账号照旧用 var/wecom-cursor.json（src/adapters/wecom-state.ts 的 FileWecomState）。
 // 一个账号一个 AccountInbox（企微运行时持有它）：
@@ -137,10 +139,10 @@ export interface InboxAbandoned {
   /** restore_cutoff：这一行给会话加了恢复说明（同一会话一次恢复只加一条），告警据此数会话数（03 第 12 步） */
   noted?: boolean;
 }
-const abandonedListeners = new Set<(e: InboxAbandoned) => void>();
+const abandonedListeners = new TenantObservers<(e: InboxAbandoned) => void>();
+registerTenantState({ name: 'inbox.abandonedListeners', ...abandonedListeners.registration() });
 export function onInboxAbandoned(cb: (e: InboxAbandoned) => void): () => void {
-  abandonedListeners.add(cb);
-  return () => abandonedListeners.delete(cb);
+  return abandonedListeners.subscribe(cb);
 }
 export function noteInboxAbandoned(e: InboxAbandoned): void {
   for (const cb of abandonedListeners) {

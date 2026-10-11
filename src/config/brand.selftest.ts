@@ -11,7 +11,10 @@ import { brandTexts, renderBrandPage, renderBrandTemplate } from '../core/brand.
 import { bindPack, partsOf, type BrandProfile } from '../core/pack-api.js';
 import { toolDefs } from '../tool-defs.js';
 import { renderSystemPrompt } from '../prompt/system.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'brand-outlets-'));
 process.env.VAR_DIR = dir;
 process.env.CONFIG_SOURCE = 'file';

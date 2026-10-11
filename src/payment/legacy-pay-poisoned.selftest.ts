@@ -7,7 +7,10 @@ import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与�
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
 process.env.VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-s15-poisoned-'));

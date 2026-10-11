@@ -1,4 +1,5 @@
 import '../../src/selftest-env.js';
+import { hostRuntime, withTenantScope } from '../../src/tenancy/runtime.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -22,7 +23,11 @@ interface PoolRuntime {
   used?: boolean;
 }
 
-async function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runtime?: PoolRuntime): Promise<CaseResult> {
+function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runtime?: PoolRuntime): Promise<CaseResult> {
+  return withTenantScope(hostRuntime(), () => executeCaseInScope(c, varDir, prepareDb, runtime));
+}
+
+async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareDb, runtime?: PoolRuntime): Promise<CaseResult> {
   process.env.VAR_DIR = varDir;
   if (runtime) {
     setCaseClock(c.fixtures?.now);

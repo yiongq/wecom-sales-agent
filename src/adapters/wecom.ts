@@ -1,3 +1,4 @@
+import { TenantObservers } from '../tenancy/observers.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, scopedRuntime, tenantRuntimes } from '../tenancy/runtime.js';
@@ -165,10 +166,10 @@ export function isWecomEnabled(): boolean {
  * 账本里什么都没有，所以挂在这里而不是账本上。只交企微的错误码（没有就是错误名）与账号 key，不交地址与密钥。
  * 订阅出口是进程级的（03 spec R10：按账号拆开的是运行时，订阅者只有一份），每次回调带上是哪个账号
  */
-const tokenErrorListeners = new Set<(code: string, account: string) => void>();
+const tokenErrorListeners = new TenantObservers<(code: string, account: string) => void>();
+registerTenantState({ name: 'wecom.tokenErrorListeners', ...tokenErrorListeners.registration() });
 export function onTokenError(cb: (code: string, account: string) => void): () => void {
-  tokenErrorListeners.add(cb);
-  return () => tokenErrorListeners.delete(cb);
+  return tokenErrorListeners.subscribe(cb);
 }
 function tokenFailed(rt: WecomRuntime, e: unknown): void {
   const code = apiErrorCode(e);

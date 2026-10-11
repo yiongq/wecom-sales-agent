@@ -32,7 +32,10 @@ import {
   repliedRecovery,
   type OpenOutboundFacts,
 } from './recovery-rules.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.RECOVERY_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const H = 3_600_000;

@@ -13,7 +13,10 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { Order, Session } from '../types.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
 const VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-trace-selftest-'));
@@ -931,7 +934,7 @@ const YUNNAN = 'r-yunnan-mid';
 
 // ---------------- 存档点：真实的 trace 写失败，会话照常提交 ----------------
 {
-  const sid = 'wecom:wmTraceSavepoint';
+  const sid = 'wecom:wmTraceSave';
   await su("ALTER TABLE turn_traces ADD CONSTRAINT trace_selftest_reject CHECK (outcome <> 'replied') NOT VALID");
   const d0 = pgStats().telemetryDropped;
   const { reply } = await say(sid, '你好', [{ content: '您好呀～这次想去哪儿玩呢？' }]);

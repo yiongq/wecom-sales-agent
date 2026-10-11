@@ -21,7 +21,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 // 03 R22：手写 id，不依赖后续步骤的渠道产生方；带 key 的 id 穷举两处冒号的原文、大小写编码与混合编码。
 const channelIds = [
   { id: 'wecom:wmKeyed0001', code: '0001' },

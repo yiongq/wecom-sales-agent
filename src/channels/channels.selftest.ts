@@ -12,7 +12,10 @@ import { inspect } from 'node:util';
 import { __logTest } from '../log.js';
 import { ChannelKeyError, ChannelSecretError, Redacted, keyRingFromEnv, openSecrets, sealSecrets } from './secrets.js';
 import type { KeyRing, WecomSecrets } from './secrets.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 let pass = 0;
 function check(name: string, fn: () => void): void {
   fn();
@@ -1058,6 +1061,8 @@ try {
     `
 import assert from 'node:assert/strict';
 const {pathToFileURL} = await import('node:url');
+const {hostRuntime,withTenantScope} = await import(pathToFileURL(process.cwd() + '/src/tenancy/runtime.ts').href);
+await withTenantScope(hostRuntime(), async () => {
 const moduleOf = p => import(pathToFileURL(process.cwd() + '/src/' + p).href);
 const testing = await moduleOf('db/testing.ts');
 const conn = process.env.CHANNEL_STARTUP_DISK
@@ -1100,6 +1105,7 @@ try {
   await store.drainStore(5000);
   await conn.close();
 }
+});
 `,
   );
   interface CliHarness {

@@ -1,36 +1,18 @@
 // 只在常驻评测子进程安装：给没有 reset 出口的私有状态挂清理回调。
 // load hook 仅追加清理函数，不改运行逻辑或磁盘上的 src；串行对照模式不装它。
-// 私有依赖：store 的 sessions/orders/pgBackend/changeTimer/fileBackend，PG factory 的 entries/preRefs/adopted/voidedIds/conflict/lastError/stats/isDirty，
-// core/llm/client 的 learnedThinking/warnedIgnoredDisabled/requestObserver/stats、retrieval 的共享缓存与退避设置。
+// 私有依赖仅限实例级：core/llm/client 的 learnedThinking/warnedIgnoredDisabled/stats、retrieval 的退避设置。
 // 已登记的租户状态经 resetTenantState 清理，不依赖模块首次加载晚于 hook（预算依赖可提前加载用量模块）。
-// 模块搬家或私有变量改名后，同步 bodies 的路径与清理代码（PG factory 定位另见 isolation-loader.mjs），再跑池 / 隔离对照自测。
+// 模块搬家或私有变量改名后，同步 bodies 的路径与清理代码，再跑池 / 隔离对照自测。
 import { register } from 'node:module';
 
 const resets = new Map<string, () => void | Promise<void>>();
 const key = Symbol.for('wecom.eval.v2.resets');
 Object.defineProperty(globalThis, key, { value: resets, configurable: true });
 const bodies: Record<string, string> = {
-  'store.ts': `
-    const state = currentRuntime().store;
-    const { sessions, orders, pgBackend, fileBackend } = state;
-    for (const id of sessions.keys()) pgBackend?.forget(id);
-    sessions.clear(); orders.clear();
-    if (state.changeTimer) clearTimeout(state.changeTimer);
-    state.changeTimer = null;
-    fileBackend.flushNow();`,
-  'store/pg-backend.ts': `
-    for (const e of entries.values()) {
-      if (e.inflight || e.pcRun || isDirty(e)) throw new Error('v2 isolation: PG 写队列未排空');
-      if (e.timer) clearTimeout(e.timer);
-      if (e.pcTimer) clearTimeout(e.pcTimer);
-    }
-    entries.clear(); preRefs.clear(); adopted.clear(); voidedIds.clear();
-    conflict = false; lastError = null;
-    for (const k of Object.keys(stats)) stats[k] = 0;`,
   'core/llm/client.ts': `
-    learnedThinking.clear(); warnedIgnoredDisabled.clear(); requestObserver = null;
+    learnedThinking.clear(); warnedIgnoredDisabled.clear();
     for (const k of Object.keys(stats)) stats[k] = 0;`,
-  'core/retrieval.ts': 'shared.clear(); retryBackoff = RETRY_BACKOFF_MS;',
+  'core/retrieval.ts': 'retryBackoff = RETRY_BACKOFF_MS;',
 };
 export const resetModuleNames = Object.freeze(Object.keys(bodies));
 
@@ -50,6 +32,7 @@ export async function loadResetModules(): Promise<void> {
   await Promise.all(
     [
       ...resetModuleNames,
+      'store.ts',
       'budget.ts',
       'usage.ts',
       'trace/usage-daily.ts',
@@ -86,9 +69,7 @@ export async function resetCaseState(varDir: string): Promise<void> {
     });
   const restoreWriters = __usageDailyTest.captureWriters();
   // PG 的队列/timer 在摘掉 identity map 之前清，且必须确认没有在途写入。
-  await resets.get('store/pg-backend.ts')!();
-  for (const { rt } of fixtures)
-    for (const name of resetModuleNames) if (name !== 'store/pg-backend.ts') await withTenantScope(rt, () => resets.get(name)!());
+  for (const { rt } of fixtures) for (const name of resetModuleNames) await withTenantScope(rt, () => resets.get(name)!());
   resetTenantState();
   for (const { rt, config, pack } of fixtures) {
     Object.assign(rt.config, config);
