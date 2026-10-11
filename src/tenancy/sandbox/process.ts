@@ -1,4 +1,4 @@
-// 05 第 12 步组合根：不启动渠道注册表、任务、宿主文件状态或体验客服。
+// 05 沙箱组合根：不启动渠道注册表、任务或宿主文件状态。
 import { Hono } from 'hono';
 import { assertSandboxWriteRate, validateSandboxLimits, SandboxLimitError } from './limits.js';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -52,6 +52,7 @@ import {
   withTenantScope,
   withoutTenantScope,
 } from '../runtime.js';
+import { createSandboxWecom, type SandboxWecom } from './wecom.js';
 import { assertSandboxRunning, sandboxStopped, stopSandboxProcess } from './lifecycle.js';
 import { resolveRole, sandboxFlags } from './role.js';
 import { loadSandboxRuntime } from './load.js';
@@ -65,6 +66,7 @@ export class SandboxProcess {
   private unsubscribe: (() => void) | null = null;
   private accepting = false;
   private reaper: SandboxReaper | null = null;
+  private wecom: SandboxWecom | null = null;
   epoch: string | null = null;
 
   constructor(
@@ -76,6 +78,7 @@ export class SandboxProcess {
   failStop = (): void => {
     if (sandboxStopped()) return;
     stopSandboxProcess();
+    this.wecom?.stop();
     this.reaper?.stop();
     for (const rt of tenantRuntimes()) {
       rt.state = 'closed';
@@ -135,6 +138,9 @@ export class SandboxProcess {
           console.error('[sandbox] sandbox_data_invalid，已标到期并跳过');
         }
       }
+      this.wecom = createSandboxWecom(this.env, this.deps.db, this.epoch);
+      await withoutTenantScope(() => this.wecom?.start());
+      withoutTenantScope(() => onShutdown(() => this.wecom?.close()));
       this.unsubscribe = withoutTenantScope(() =>
         onTenantScopeMissing(() => {
           this.scopeMissing++;
@@ -183,6 +189,8 @@ export class SandboxProcess {
 
   async close(): Promise<void> {
     this.accepting = false;
+    await this.wecom?.close();
+    this.wecom = null;
     stopAlertPolling();
     this.reaper?.stop();
     await this.reaper?.drain();
@@ -203,6 +211,10 @@ export class SandboxProcess {
     this.lock = null;
     this.deps = null;
     this.epoch = null;
+  }
+
+  wecomRoutes(): Hono | null {
+    return this.wecom?.routes ?? null;
   }
 
   async health() {
@@ -226,13 +238,17 @@ export class SandboxProcess {
       pool: { ...pool, capMilli: Number(this.env.SANDBOX_POOL_DAILY_CNY ?? 10) * 1000 },
       llmGate: gateStatus(),
       store: { lagMs: Math.max(0, ...health.map((h) => h.lagMs)), poisoned: health.reduce((n, h) => n + h.poisoned.length, 0) },
-      wecom: { configured: false, full: false, bound: 0, lastSyncOkAt: null, failing: false },
+      wecom: this.wecom?.health() ?? { configured: false, full: false, bound: 0, lastSyncOkAt: null, failing: false },
     };
   }
 }
 
 /** 沙箱边界在共用路由之前运行；选择结果沿 Hono Context 传给 console 与公开页面。 */
-export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 'provision' | 'end'>, host: string, routes?: Hono) {
+export function sandboxApp(
+  process: Pick<SandboxProcess, 'health' | 'resolve' | 'provision' | 'end'> & Partial<Pick<SandboxProcess, 'wecomRoutes'>>,
+  host: string,
+  routes?: Hono,
+) {
   const app = new Hono();
   app.use('/*', requestLogContext);
   app.use('/*', async (c, next) => {
@@ -242,6 +258,8 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
     return next();
   });
   app.get('/healthz', async (c) => c.json(await process.health()));
+  // app 在 start() 之前创建：每次请求现取已启动的实例路由，不捕获启动前的 null。
+  app.all('/wecom/callback', (c) => process.wecomRoutes?.()?.fetch(c.req.raw) ?? c.notFound());
   app.use('/console/assets/*', async (c) => consolePages.fetch(c.req.raw));
   app.get('/share-cover.png', serveStatic({ root: './public' }));
   app.get('/web.css', serveStatic({ root: './public' }));
