@@ -269,8 +269,8 @@ const publicOrder = (o: Order): PublicOrder => ({
   supersededBy: o.supersededBy ?? null,
 });
 
-// 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
-app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
+// 主站入口统一进工作台（05 spec R23），不受部署 profile、配置来源或模拟器开关影响。
+app.get('/', (c) => c.redirect('/console/'));
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
 // llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。
 // revision 是部署时的 git tag（deploy.sh 经 Dockerfile 的 APP_REVISION 写进镜像）：回滚到 :prev 后报的是上一版的 tag，
@@ -903,7 +903,7 @@ app.post('/wecom/callback', async (c) => {
 
 // 客服二维码从 var/ 读、不入库：它编码的是真实 open_kfid，等同凭据——扫到的人能直接
 // 消耗企微未认证主体那 100 个「不可回收」的接待名额，并烧掉真实 LLM 预算。
-// 没放图就 404，guide.html 据此自动退回网页模拟器入口（克隆下来零配置也能跑通）。
+// 没放图就 404。
 app.get('/kf-qr.png', async (c) => {
   const dir = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
   try {
@@ -932,13 +932,13 @@ app.get('/privacy', (c) => {
 app.route('/', consoleApi);
 app.route('/', consolePages);
 
-// 静态资源兜底（admin.html / chat.html / pay.html / guide.html）。
+// 静态资源兜底（admin.html / chat.html / pay.html / proposal.html）。
 // admin.html 页面本身不再鉴权：它进来只会看到演示数据，页面内的登录框负责换取
 // 真实客户会话与写权限。页面是空壳，凭据永远由下面的 API 层判定。
-// 网页模拟器的两个页面在 visitor_simulator 关掉（prod）时当作不存在，其余页面照常。按文件名比、不分大小写：
+// 网页模拟器页面在 visitor_simulator 关掉（prod）时当作不存在，其余页面照常。按文件名比、不分大小写：
 // macOS 的文件系统不分大小写，/CHAT.html 也读得到 chat.html。c.req.path 已经解过码（/%63hat.html 在这里就是
-// /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这两个文件名。
-const SIMULATOR_PAGE_RE = /\/(?:chat|guide)\.html$/i;
+// /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这个文件名。
+const SIMULATOR_PAGE_RE = /\/chat\.html$/i;
 app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATOR_PAGE_RE.test(c.req.path) ? next() : c.notFound()));
 // 原始文件保持旧版字节；含品牌的静态入口也经过同一已发布快照。
 app.use('/*', async (c, next) => {
