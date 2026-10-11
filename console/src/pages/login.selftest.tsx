@@ -1,7 +1,7 @@
 // 登录页的自测（console UX spec「登录」「外壳 · 启动」、错误文案表，plan 第 15 步）。在 happy-dom 里挂真的 Shell（登录与否由它判断），
 // 加照服务端规则的假接口：/me、/pack 按 prod、demo 与是否登录回 200 或 401，登录接口可以指定回什么。
 // 1. prod（/me、/pack 都 401）：一栏的登录页，标题「运营后台」与一句说明；「邮箱」「密码」两个标签连着各自的输入框、不加冒号，
-//    全页没有「口令」；邮箱的占位符以「例：」开头；焦点在邮箱上；没有外壳，也没有「返回演示」；标签页标题「登录」。
+//    全页没有「口令」；邮箱的占位符以「例：」开头；焦点在邮箱上；没有外壳，也没有「只看演示数据」；标签页标题是产品名。
 // 2. 没填就提交：不发请求，控件下方写「没填邮箱」「没填密码」（前置图标），两个控件都画成出错的样子，aria-invalid、
 //    aria-describedby 连上，焦点到第一个没填的；焦点本来就在那里时，看不见的 polite 区域念一遍没填的几项。填上一个，它的原因就消失。
 //    表单不用浏览器自带的校验，输入框的长度上限与 LoginBody 相同；格式不对的邮箱、只有空格的密码照样提交，由服务端判。
@@ -9,9 +9,9 @@
 //    detail 不上页面（只在折叠的技术详情里），不弹 toast；只留一条 Alert。
 // 4. 提交中：按钮 loading，这时再提交不发第二个请求；上一条错误先收起。
 // 5. 登录成功：请求体是输入的邮箱与密码，之后重新判断来者、进成员外壳，地址不变。
-// 6. demo：从匿名外壳侧栏的「登录」和横幅的「登录后编辑」进来，表单下方有「返回演示」，它是指向当前地址（带 /console 与 search）的
-//    链接，标签页标题「登录 · 演示」；左键点它回到匿名外壳，地址不变，不重新取 /me、/pack，焦点到内容面板；带修饰键或中键点不拦。
-// 7. 就地登录框（成员身份下会话失效）：同一个表单，不自动聚焦，没有「返回演示」；没填时先画上原因再挪焦点，服务端的错在框里的
+// 6. demo：首次先登录，从「只看演示数据」进入匿名只读外壳；从匿名外壳侧栏的「登录」和横幅的「登录后编辑」进来，表单下方有「只看演示数据」，它是指向当前地址（带 /console 与 search）的
+//    链接，标签页标题是产品名；左键点它回到匿名外壳，地址不变，不重新取 /me、/pack，焦点到内容面板；带修饰键或中键点不拦。
+// 7. 就地登录框（成员身份下会话失效）：同一个表单，不自动聚焦，没有「只看演示数据」；没填时先画上原因再挪焦点，服务端的错在框里的
 //    Alert 里；登录后框收起，页面没卸载，被拦下的请求重放。
 // 8. 外壳的焦点与地标（plan 第 16 步）：换页以后焦点在 main（只换 search、页面自己放了焦点、第一次打开都不动）；侧栏是 banner，
 //    铃铛弹层与用户菜单是有名字的区域，菜单项里没有嵌套的按钮；没有这个页面时有 h1。
@@ -98,6 +98,8 @@ type LoginMode = 'check' | 'network' | 'hang' | { status: number; body: unknown 
 interface Server {
   demo: boolean;
   loggedIn: boolean;
+  tryUrl?: string | null;
+  entryFailure?: boolean;
   login: LoginMode;
   /** 给了就让 /me 回这个（启动出错的整页） */
   me?: { status: number; body: unknown };
@@ -121,6 +123,8 @@ function checkLogin(body: { email?: string; password?: string }): Response {
 
 async function respond(method: string, url: URL, body: unknown): Promise<Response> {
   const p = url.pathname.replace(/^\/api\/console/, '');
+  if (method === 'GET' && p === '/entry')
+    return server.entryFailure ? json(500, { error: 'internal' }) : json(200, { tryUrl: server.tryUrl ?? null });
   if (method === 'GET' && p === '/me')
     return server.me ? json(server.me.status, server.me.body) : server.loggedIn ? json(200, ME) : unauthorized();
   if (method === 'GET' && p === '/pack') return server.loggedIn || server.demo ? json(200, PACK) : unauthorized();
@@ -271,7 +275,7 @@ async function mount(path: string, pages: { path: string; component: () => React
   const anon: Viewer = { kind: 'anon', pack: PACK };
   eq('toLogin：从 demo 匿名来的带着原来的匿名视图', toLogin(anon), { kind: 'login', demo: anon });
   eq(
-    'toLogin：别的来处不带（没有「返回演示」）',
+    'toLogin：别的来处不带（没有「只看演示数据」）',
     [toLogin(undefined), toLogin({ kind: 'member', me: ME, pack: PACK })],
     [{ kind: 'login' }, { kind: 'login' }],
   );
@@ -311,8 +315,15 @@ async function mount(path: string, pages: { path: string; component: () => React
   check('prod：全页没有「口令」', !m.box.textContent!.includes('口令'), m.box.textContent ?? '');
   check('prod：焦点在邮箱上', document.activeElement === m.email());
   eq('prod：没点「登录」之前不写原因', [m.fieldErrors(), m.email()?.getAttribute('aria-invalid') ?? null], [[], null]);
-  check('prod：没有「返回演示」', m.$('.login-back') === null && !m.box.textContent!.includes('返回演示'));
-  eq('prod：标签页标题', document.title, '登录');
+  check('prod：没有「只看演示数据」', m.$('.login-back') === null && !m.box.textContent!.includes('只看演示数据'));
+  eq('prod：标签页标题是产品名', document.title, 'wecom-sales-agent · 企业微信AI销售助手');
+  check('prod：没有体验按钮', m.$('.login-try') === null);
+  const cover = m.$<HTMLImageElement>('.login-cover');
+  eq(
+    '登录页：真实产品图在标题上方',
+    [cover?.getAttribute('src'), cover?.width, cover?.height, cover !== null && (cover.compareDocumentPosition(m.$('h1')!) & 4) !== 0],
+    ['/share-cover.png', 96, 96, true],
+  );
   eq(
     'prod：按钮只有一个主按钮「登录」，占满一栏',
     [m.$$('button[type="submit"]').map(m.text), m.$('.login-submit')?.classList.contains('ant-btn-block')],
@@ -491,7 +502,10 @@ async function mount(path: string, pages: { path: string; component: () => React
     '就地登录框：不自动聚焦到输入框',
     dlgInput(0) !== null && document.activeElement !== dlgInput(0) && document.activeElement !== dlgInput(1),
   );
-  check('就地登录框：没有「返回演示」', document.querySelector('.login-back') === null && !document.body.textContent!.includes('返回演示'));
+  check(
+    '就地登录框：没有「只看演示数据」',
+    document.querySelector('.login-back') === null && !document.body.textContent!.includes('只看演示数据'),
+  );
 
   // 没填就提交：焦点落到邮箱时，原因已经画上、连好了（读屏读控件时连原因一起读），这时不另外念
   let describedAtFocus: string | null = null;
@@ -537,7 +551,13 @@ async function mount(path: string, pages: { path: string; component: () => React
   server = { demo: true, loggedIn: false, login: 'check' };
   requests = [];
   const m = await mount('/console/catalog/route?status=draft');
-  check('demo：匿名外壳（侧栏有「登录」按钮）', m.$('.sb-login') !== null && m.$('.login-page') === null);
+  check('demo：首次打开是登录页，没有匿名外壳', m.$('.login-page') !== null && m.$('.sb-login') === null);
+  check('demo 无体验 Host：没有体验按钮', m.$('.login-try') === null);
+  await m.click(m.$('.login-back a'));
+  check('demo：点「只看演示数据」后进匿名外壳', m.$('.sb-login') !== null && m.$('.login-page') === null);
+  await act(async () => void m.qc.invalidateQueries({ queryKey: VIEWER_KEY }));
+  await settle(m.qc);
+  check('demo：查询刷新保留用户选择的匿名外壳', m.$('.sb-login') !== null && m.$('.login-page') === null);
   const bootRequests = [count('GET /api/console/me'), count('GET /api/console/pack')];
 
   // 侧栏的「登录」
@@ -545,19 +565,19 @@ async function mount(path: string, pages: { path: string; component: () => React
   const back = (): HTMLAnchorElement | null => m.$<HTMLAnchorElement>('.login-back a');
   check('demo 点「登录」：进登录页', m.$('.login-page') !== null && document.querySelector('.sidebar') === null);
   eq(
-    'demo：表单下方有「返回演示」',
+    'demo：表单下方有「只看演示数据」',
     [m.text(back()), back() !== null && (m.$('.login-form')!.compareDocumentPosition(back()!) & 4) !== 0],
-    ['返回演示', true],
+    ['只看演示数据', true],
   );
   eq(
-    'demo：「返回演示」是指向当前地址的链接（带 /console 与 search）',
+    'demo：「只看演示数据」是指向当前地址的链接（带 /console 与 search）',
     back()?.getAttribute('href'),
     '/console/catalog/route?status=draft',
   );
-  eq('demo：标签页标题', document.title, '登录 · 演示');
+  eq('demo：标签页标题是产品名', document.title, 'wecom-sales-agent · 企业微信AI销售助手');
   check('demo：焦点在邮箱上', document.activeElement === m.email());
 
-  // 点「返回演示」：prevented 记下页面自己拦没拦（document 上的监听在 React 之后跑，记完替浏览器拦住，不真的跳转）。
+  // 点「只看演示数据」：prevented 记下页面自己拦没拦（document 上的监听在 React 之后跑，记完替浏览器拦住，不真的跳转）。
   // 链接不在就不点，prevented 留着 null，由后面的断言按名字报
   let prevented: boolean | null = null;
   const spy = (e: Event): void => {
@@ -582,20 +602,20 @@ async function mount(path: string, pages: { path: string; component: () => React
   };
   // 带修饰键点：不拦，交给浏览器（新开标签）
   await clickBack({ ctrlKey: true });
-  eq('demo：Ctrl 点「返回演示」不拦，还在登录页', [prevented, m.$('.login-page') !== null], [false, true]);
+  eq('demo：Ctrl 点「只看演示数据」不拦，还在登录页', [prevented, m.$('.login-page') !== null], [false, true]);
   await clickBack({ metaKey: true });
-  eq('demo：⌘ 点「返回演示」同样不拦', [prevented, m.$('.login-page') !== null], [false, true]);
+  eq('demo：⌘ 点「只看演示数据」同样不拦', [prevented, m.$('.login-page') !== null], [false, true]);
   await clickBack({ shiftKey: true });
-  eq('demo：Shift 点「返回演示」不拦（新窗口）', [prevented, m.$('.login-page') !== null], [false, true]);
+  eq('demo：Shift 点「只看演示数据」不拦（新窗口）', [prevented, m.$('.login-page') !== null], [false, true]);
   await clickBack({ altKey: true });
-  eq('demo：Alt 点「返回演示」不拦（下载）', [prevented, m.$('.login-page') !== null], [false, true]);
+  eq('demo：Alt 点「只看演示数据」不拦（下载）', [prevented, m.$('.login-page') !== null], [false, true]);
   await clickBack({ button: 1 });
-  eq('demo：中键点「返回演示」不拦', [prevented, m.$('.login-page') !== null], [false, true]);
+  eq('demo：中键点「只看演示数据」不拦', [prevented, m.$('.login-page') !== null], [false, true]);
 
   // 左键点
   await clickBack({ button: 0 });
   document.removeEventListener('click', spy);
-  check('demo：左键点「返回演示」拦下了链接的跳转', prevented === true);
+  check('demo：左键点「只看演示数据」拦下了链接的跳转', prevented === true);
   check('demo 返回：回到匿名外壳与这一页', m.$('.login-page') === null && m.$('.sb-login') !== null && m.text(m.$('h1')) === '测试页');
   eq('demo 返回：地址不变', m.url(), '/catalog/route?status=draft');
   eq('demo 返回：不重新取 /me、/pack', [count('GET /api/console/me'), count('GET /api/console/pack')], bootRequests);
@@ -607,7 +627,7 @@ async function mount(path: string, pages: { path: string; component: () => React
   // 横幅的「登录后编辑」
   const bannerLogin = m.$$('.anon-banner button').find((b) => m.text(b) === '登录后编辑');
   if (bannerLogin) await m.click(bannerLogin);
-  check('demo 横幅「登录后编辑」：进登录页，也有「返回演示」', m.$('.login-page') !== null && back() !== null);
+  check('demo 横幅「登录后编辑」：进登录页，也有「只看演示数据」', m.$('.login-page') !== null && back() !== null);
 
   // 从演示登录：进成员外壳
   if (m.email() && m.password()) {
@@ -619,6 +639,32 @@ async function mount(path: string, pages: { path: string; component: () => React
     'demo 登录成功：进成员外壳，地址不变',
     document.querySelector('.sidebar') !== null && m.$('.login-page') === null && m.url() === '/catalog/route?status=draft',
   );
+  await m.unmount();
+}
+
+// 05 R23：体验入口按服务端 entry 与 demo 身份显示，失败时保留账号登录与只读入口。
+for (const [demo, tryUrl, entryFailure] of [
+  [true, '/try', false],
+  [false, '/try', false],
+  [true, '/try', true],
+] as const) {
+  server = { demo, tryUrl, entryFailure, loggedIn: false, login: 'check' };
+  const m = await mount('/console/catalog/route');
+  const enabled = demo && !entryFailure;
+  eq(
+    `入口配置 demo=${demo} entryFailure=${entryFailure}：次级按钮`,
+    [m.text(m.$('.login-try-button')), m.$('.login-try-button')?.getAttribute('href') ?? null],
+    enabled ? ['免登录体验', '/try'] : ['', null],
+  );
+  eq('入口配置：只看演示数据只在 demo 显示', !!m.$('.login-back'), demo);
+  check('入口配置：主按钮仍是账号登录', m.text(m.$('.login-submit')) === '登录');
+  if (enabled) {
+    eq('体验说明：寿命与回复范围', m.text(m.$('.login-try-note')), '临时环境、24小时后删除、回复只发到你自己的微信');
+    check('体验按钮是次级按钮', !m.$('.login-try-button')?.classList.contains('ant-btn-primary'));
+    await m.click(m.$('.login-back a'));
+    await m.click(m.$('.sb-login'));
+    eq('匿名外壳登录回到登录页后仍有体验入口', m.$('.login-try-button')?.getAttribute('href'), '/try');
+  }
   await m.unmount();
 }
 
