@@ -1,0 +1,106 @@
+.sandbox-banner {
+  flex: none;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--selected);
+}
+.sandbox-banner-row,
+.sandbox-banner-actions,
+.sandbox-checklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sandbox-banner-row {
+  flex-wrap: wrap;
+}
+.sandbox-banner p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.sandbox-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.sandbox-body > .shell-scroll {
+  min-width: 0;
+}
+.sandbox-checklist {
+  box-sizing: border-box;
+  flex: 0 0 260px;
+  padding: 16px;
+  border-left: 1px solid var(--divider);
+  overflow: auto;
+}
+.sandbox-checklist.is-collapsed {
+  flex-basis: 220px;
+}
+.sandbox-checklist h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.sandbox-checklist h2 span {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.sandbox-checklist ol {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+}
+.sandbox-checklist li {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+.sandbox-checklist h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.sandbox-checklist p {
+  margin: 6px 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.sandbox-checklist a {
+  font-size: 13px;
+}
+.sandbox-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-full);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.is-done .sandbox-step-mark {
+  background: var(--selected);
+  color: var(--text);
+}
+@media (max-width: 1439px) {
+  .sandbox-body {
+    flex-direction: column-reverse;
+    overflow: auto;
+  }
+  .sandbox-checklist,
+  .sandbox-checklist.is-collapsed {
+    flex: none;
+    border-left: 0;
+    border-bottom: 1px solid var(--divider);
+    overflow: visible;
+  }
+  .sandbox-body > .shell-scroll {
+    flex: 1 0 auto;
+    overflow: visible;
+  }
+}

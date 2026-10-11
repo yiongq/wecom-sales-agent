@@ -6,10 +6,12 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDb, type Db } from '../../db/client.js';
+import { writeAudit } from '../../db/repo/audit.js';
+import { readSandboxSteps } from '../../db/repo/sandbox-steps.js';
+import { openDb, withTenant, type Db } from '../../db/client.js';
 import { createRealPgFixture, fakeLock, openTestDb, testConfigDeps, purgeTestSandbox } from '../../db/testing.js';
 import { importConfig } from '../../config/transfer.js';
-import { closeConfig, initConfig, currentSop, currentCatalog } from '../../config/source.js';
+import { closeConfig, initConfig, currentSop, currentCatalog, currentTenant } from '../../config/source.js';
 import { expireBrokenSandbox } from '../../db/sandbox-process.js';
 import { sandboxSessionResolve } from '../../db/repo/sandbox.js';
 import { csrfFor, __authTest } from '../../auth/session.js';
@@ -215,6 +217,11 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     registerRuntime(a);
   }
   await expect(await request('/api/console/me', token, { headers: goodIp }), 200);
+  const progress = async (cookieToken = token): Promise<boolean[]> => {
+    const r = await request('/api/console/me', cookieToken);
+    await expect(r, 200);
+    return ((await r.json()) as Me).sandbox!.steps;
+  };
   const status = (await (await request('/api/console/status', token)).json()) as { channels: unknown[]; tenantSlug: string };
   check(() => assert.deepEqual(status.channels, []));
   check(() => assert.equal(status.tenantSlug, a.slug));
@@ -334,6 +341,8 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.equal(newChatBody.sessionId, `sbx-${newId.slice(4)}`));
   await withTenantScope(a, () => flushSession(`sbx-${newId.slice(4)}`, { timeoutMs: 5000 }));
 
+  const awaitedChatSteps = await progress();
+  check(() => assert.deepEqual(awaitedChatSteps, [true, false, false, false]));
   // 接手、回复、交还、模拟器继续、标已付与 reset 的耐久后端回归。
   const pushes: string[] = [];
   const off = withTenantScope(a, () => subscribe(sbxId, (text) => pushes.push(text)));
@@ -344,8 +353,12 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   await reader.read(); // 首个 ping：已经订阅。
   try {
     await expect(await post(`/api/console/conversations/${sbxId}/takeover`, token), 200);
+    const afterTakeover = await progress();
+    check(() => assert.equal(afterTakeover[2], false, '接手但未回复不算完成'));
     await expect(await post(`/api/console/conversations/${sbxId}/reply`, token, { text: '体验访客回复', clientId: randomUUID() }), 200);
     check(() => assert.ok(pushes.some((s) => s.includes('【顾问】体验访客回复'))));
+    const afterReply = await progress();
+    check(() => assert.equal(afterReply[2], true, '人工接管后的回复算完成'));
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const pushed = await Promise.race([
@@ -398,6 +411,8 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     headers: { 'content-type': 'application/json', 'x-csrf': csrfFor(token) },
   });
   await expect(patch, 200);
+  const afterPrice = await progress();
+  check(() => assert.equal(afterPrice[3], true, '修改价格完成第四步'));
   check(() =>
     assert.equal(
       withTenantScope(a, () => currentCatalog().routes.find((r) => r.id === item.code)!.priceFrom),
@@ -448,6 +463,35 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
       beforeHash,
     ),
   );
+  const allSteps = await progress();
+  check(() => assert.deepEqual(allSteps, [true, true, true, true]));
+  const untouchedSteps = await progress(bResult.token);
+  check(() => assert.deepEqual(untouchedSteps, [false, false, false, false], 'A 的进度不进入 B'));
+  // 第四步的三个独立分支；事务回滚保留 B 的初始状态，不删除审计。
+  const bMe = (await (await request('/api/console/me', bResult.token)).json()) as Me;
+  for (const [action, targetType, diff, done] of [
+    ['catalog.update', 'route', { title: ['旧标题', '新标题'] }, false],
+    ['catalog.update', 'route', { priceFrom: [100, 100] }, false],
+    ['catalog.update', 'route', { priceFrom: [100, 200] }, true],
+    ['order.mark_paid', 'order', {}, true],
+    ['sop.publish', 'sop_version', {}, true],
+  ] as const) {
+    const rollback = new Error('rollback_probe');
+    await assert.rejects(
+      withTenantScope(b, () =>
+        withTenant(db, { tenantId: b.id, actor: { kind: 'user', userId: bMe.userId, name: bMe.displayName, ip: null } }, async (tx) => {
+          await writeAudit(tx, { action, targetType, diff });
+          const steps = await readSandboxSteps(
+            tx,
+            withTenantScope(b, () => currentTenant().pack),
+          );
+          check(() => assert.deepEqual(steps, [false, false, false, done], action));
+          throw rollback;
+        }),
+      ),
+      (e: unknown) => e === rollback,
+    );
+  }
   const afterTemplate = await templateSnapshot();
   check(() => assert.deepEqual(afterTemplate, originalTemplate, '沙箱改价与发布 SOP 不改宿主模板的库行'));
 
