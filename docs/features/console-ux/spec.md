@@ -1,6 +1,8 @@
 # 后台 UX 重做：「利落」与行业包通用界面
 
 Status: implemented
+Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../../architecture/05-tenancy-sandbox/spec.md) — 「外壳 · 启动」表的 demo 匿名入口、「行业包通用架构 · 下发」的 demo 匿名外壳一句、「登录」的返回演示链接（05 R23、开放问题 15）。
+Amended by: [05 · 同部署多租户 + 一键体验沙箱](../../architecture/05-tenancy-sandbox/spec.md)（Me 新增 sandbox，console 新增匿名接口 GET /api/console/entry，见 05 R10、R22、R23）。
 Superseded in part by: [02 · 会话入库 + 坐席工作台](../../architecture/02-conversations-workbench/spec.md) — 不变量 27 的最后一句（「会话接口的响应里没有客户画像字段和消息正文」）；「外壳」铃铛弹层行尾「打开工作台」新标签打开 `admin.html#s=<id>`，与「计数刷新」的 30 秒轮询（改由 SSE 驱动）；「会话列表（I 页）」的状态句「接手和回复目前在工作台里完成」，主按钮、点一行与「打开工作台」新标签打开 `/admin.html`（`#s=<id>`）；验收 20 的「点一行，新标签页打开工作台并选中该会话」（改为在当前标签打开 J 页并选中该会话）与同条「带 `ADMIN_PASS` 时，对一个真实会话再走一次：登录框走完后仍然选中」（随之不再适用）。按 02 的 plan 落地，改写后的条文见 02「与 01、后台 UX spec 的关系」，原因见 02 顶部 `Supersedes in part:`
 Superseded in part by: [03 · 渠道层 v2](../../architecture/03-channels-v2/spec.md) — 「接口改动」里 `AuditQuery.actions` 的「至多 32 个」（改为至多 64 个：加了渠道的审计动作之后，审计页「全部类别、不显示登录记录」换算出的动作超过 32 个）。按 03 的 plan 第 15 步落地，原因见 03 顶部 `Revisions:`
 Revisions: 2026-09-27 整份就地重写（本 spec 仍是 draft，没有代码依赖它）。视觉方向由「青绿长卷」（纸色、石青石绿、思源宋体子集、钢印、目的地长卷）改为 owner 当天选定的方案 A「利落」；字体改为 Geist、Geist Mono 与思源黑体 Noto Sans SC；产品库、导航、话术词汇改为按行业包配置渲染（上一稿按线路、酒店写死字段表）；会话与总览分成「今天」和「02 之后」两期；视觉与内容细则挪到同目录的 [design-system.md](design-system.md)。上一稿里仍然成立的部分保留：五处接口增补、话术自动保存与冲突合并、CSV 的 GBK 兜底与防公式注入、按路由拆包与压缩。重写的原因见「背景与问题」，放弃的做法见「被否决的方案」。同日按规格、代码核对、决定三路评审再改：开放问题 1 扩成「01 里所有非新增改动」；验收 15、25 写明安全头断言的例外；不变量 11 改成能断言的写法；外壳补启动的加载与出错；会话过期的判定限定成员身份；走查种子改由已提交的脚本生成并钉住时钟；⌘K 不再用 J / K；plan 把总览用到的审计与字数函数提前。

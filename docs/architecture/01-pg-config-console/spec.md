@@ -1,6 +1,8 @@
 # 01 · Postgres 底座 + 配置入库 + 后台 v0
 
 Status: implemented
+Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 不变量 3、23、24，R9 末句的单租户装载与公开路由（05 R1、R2、R4、R7）。
+Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（「数据库」的 tenants 五列、沙箱表与四个函数及授权、channel_accounts INSERT 触发器，tenant-host / tenant-budget / sandbox 命令与审计动作，见 05 R7、R13、R15、R21、R22）。
 Superseded in part by: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md) — 不变量 4（`SESSION_STORE=db` 时改写，见 02「与 01、后台 UX spec 的关系」；文件存储下原文照旧）。按 02 的 plan 落地，原因见 02 顶部 `Supersedes in part:`
 Superseded in part by: [04 · 行业包抽取](../04-industry-packs/spec.md) — 不变量 11（锁定节改为与租户的镜像逐字节相同，配了品牌的租户的镜像按包模板渲染）；「渲染与哈希」的渲染输入加品牌、「启动重渲染」的原因加 `brand`（见 04 R4–R6）。
 Amended by: [04 · 行业包抽取](../04-industry-packs/spec.md)（配置导出在模板模式下多写已发布的品牌快照 `brand.json`，文件模式据此渲染，见 04 R17）。（04 于 2026-10-11 implemented。）

@@ -1,6 +1,8 @@
 # 00 · 基线与生产开关
 
 Status: implemented
+Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 「部署 profile 与开关」表 visitor_simulator 行的根路径跳转、验收 4d 的根路径跳转（05 R23）。
+Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（「部署 profile 与开关」的 APP_ROLE=sandbox 与宿主环境约束，见 05 R16）。
 Phase: 0 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」
 Owner: architecture decided by the owner (decision records tracked privately, 另记); implementation in Claude Code / Codex
 Amended by: [03 · 渠道层 v2](../03-channels-v2/spec.md)（只做新增或收紧：「部署 profile 与开关」加开关 `web_channel`（环境变量 `FLAG_WEB_CHANNEL`），demo 缺省开、prod 封顶为关，不进 `[profile]` 启动行，见该 spec R15）
