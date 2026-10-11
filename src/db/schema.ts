@@ -1,6 +1,7 @@
 // 01 的七张表（docs/architecture/01-pg-config-console/spec.md「数据库 · DDL」），与 02 的十二张表、tenants 的三个保留期列、
 // catalog_items.version（docs/architecture/02-conversations-workbench/spec.md「数据库」与各节的 DDL），03 的两张渠道表、
 // outbound_sends 的新列与新状态、conversations.channel_account_id（docs/architecture/03-channels-v2/spec.md「数据库」）。
+// 05 的 tenants 五列、四张沙箱表见 docs/architecture/05-tenancy-sandbox/spec.md「数据库」。
 // 这里只写表、索引和约束，由 drizzle-kit 生成迁移；RLS、策略、触发器、函数、授权，以及 drizzle 表达不了的约束
 // （orders 那条带列清单的 ON DELETE SET NULL (session_id)）在 custom 迁移里。
 // 列名一律显式写 snake_case，不依赖 casing 推导：迁移 SQL 与 spec 的 DDL 逐列对得上。
@@ -8,6 +9,7 @@
 import { sql } from 'drizzle-orm';
 import type { BrandProfile, GuardVerdict } from '../core/pack-api.js';
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -55,6 +57,13 @@ export const tenants = pgTable(
     packId: text('pack_id').notNull(),
     /** 04 R4、R6：待生效品牌；null 为旧版模式，运行时只用已发布快照。 */
     brand: json('brand').$type<BrandProfile>(),
+    kind: text('kind', { enum: ['standard', 'sandbox'] })
+      .notNull()
+      .default('standard'),
+    expiresAt: tstz('expires_at'),
+    templateTenantId: uuid('template_tenant_id').references((): AnyPgColumn => tenants.id),
+    publicHost: text('public_host'),
+    llmDailyAlertMilli: bigint('llm_daily_alert_milli', { mode: 'number' }),
     /** 海外适配保留的缝，01 没有读方 */
     locale: text('locale').notNull().default('zh-CN'),
     region: text('region').notNull().default('CN'),
@@ -68,6 +77,20 @@ export const tenants = pgTable(
     retentionTraceDays: integer('retention_trace_days').notNull().default(90),
   },
   (t) => [
+    check('tenants_kind_check', sql`${t.kind} IN ('standard', 'sandbox')`),
+    check('tenants_expiry_check', sql`(${t.kind} = 'sandbox') = (${t.expiresAt} IS NOT NULL)`),
+    check(
+      'tenants_sandbox_check',
+      sql`${t.kind} = 'standard' OR (${t.publicHost} IS NULL AND ${t.templateTenantId} IS NOT NULL AND ${t.llmDailyAlertMilli} IS NULL)`,
+    ),
+    check(
+      'tenants_public_host_check',
+      sql`${t.publicHost} ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$' AND length(${t.publicHost}) <= 253`,
+    ),
+    check('tenants_llm_daily_alert_check', sql`${t.llmDailyAlertMilli} >= 0`),
+    uniqueIndex('tenants_public_host_uq')
+      .on(t.publicHost)
+      .where(sql`${t.publicHost} IS NOT NULL`),
     check('tenants_slug_check', sql`${t.slug} ~ '^[a-z0-9][a-z0-9-]{1,62}$'`),
     check('tenants_status_check', sql`${t.status} IN ('trial', 'active', 'suspended')`),
     check('tenants_retention_lead_days_check', sql`${t.retentionLeadDays} BETWEEN 7 AND 3650`),
@@ -777,4 +800,53 @@ export const channelInbox = pgTable(
       .on(t.tenantId, t.updatedAt)
       .where(sql`${t.state} IN ('done', 'abandoned')`),
   ],
+);
+
+// 05：池统计与进程状态不带 tenant_id；微信绑定按租户套 FORCE RLS。
+export const sandboxPoolDaily = pgTable(
+  'sandbox_pool_daily',
+  {
+    day: date('day').primaryKey(),
+    provisioned: integer('provisioned').notNull().default(0),
+    purged: integer('purged').notNull().default(0),
+    calls: bigint('calls', { mode: 'number' }).notNull().default(0),
+    costMilli: bigint('cost_milli', { mode: 'number' }).notNull().default(0),
+  },
+  (t) => [
+    check('sandbox_pool_daily_provisioned_check', sql`${t.provisioned} >= 0`),
+    check('sandbox_pool_daily_purged_check', sql`${t.purged} >= 0`),
+    check('sandbox_pool_daily_calls_check', sql`${t.calls} >= 0`),
+    check('sandbox_pool_daily_cost_check', sql`${t.costMilli} >= 0`),
+  ],
+);
+export const sandboxWechat = pgTable(
+  'sandbox_wechat',
+  {
+    tenantId: uuid('tenant_id')
+      .primaryKey()
+      .references(() => tenants.id),
+    linkToken: text('link_token').notNull().unique(),
+    codeHash: bytea('code_hash').unique(),
+    codeExpiresAt: tstz('code_expires_at'),
+    externalUserid: text('external_userid'),
+    boundAt: tstz('bound_at'),
+  },
+  (t) => [
+    check('sandbox_wechat_code_check', sql`(${t.codeHash} IS NULL) = (${t.codeExpiresAt} IS NULL)`),
+    check('sandbox_wechat_binding_check', sql`(${t.externalUserid} IS NULL) = (${t.boundAt} IS NULL)`),
+  ],
+);
+export const sandboxWecomState = pgTable('sandbox_wecom_state', {
+  openKfid: text('open_kfid').primaryKey(),
+  cursor: text('cursor'),
+  fullSince: tstz('full_since'),
+  updatedAt: tstz('updated_at').notNull().defaultNow(),
+});
+export const sandboxProcessEpoch = pgTable(
+  'sandbox_process_epoch',
+  {
+    id: smallint('id').primaryKey(),
+    epoch: bigint('epoch', { mode: 'bigint' }).notNull(),
+  },
+  (t) => [check('sandbox_process_epoch_id_check', sql`${t.id} = 1`)],
 );

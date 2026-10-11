@@ -57,6 +57,13 @@
       "when": 1791619050660,
       "tag": "0007_guard_verdicts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791687324325,
+      "tag": "0008_tenancy_sandbox",
+      "breakpoints": true
     }
   ]
 }

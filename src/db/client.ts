@@ -181,6 +181,54 @@ export interface WithTenantOpts {
  * 仓储与审计函数。在 withTenant 里再嵌套 withTenant 会抛错，不管租户是否相同。
  */
 export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Promise<T>, opts: WithTenantOpts = {}): Promise<T> {
+  return tenantTransaction(
+    db,
+    async (tx) => {
+      await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
+      return tenantStore.run(ctx, () => fn(tx));
+    },
+    opts,
+  );
+}
+
+/** 开通与复制共用一个事务；创建函数返回后才建立新租户的 GUC 与异步上下文（05 R9）。 */
+export interface NewSandboxTenantInput {
+  slug: string;
+  templateTenantId: string;
+  brand: import('../core/pack-api.js').BrandProfile | null;
+  tokenHash: Buffer;
+  ip: string | null;
+  userAgent: string | null;
+}
+export interface NewSandboxTenant {
+  tenantId: string;
+  userId: string;
+  expiresAt: Date;
+}
+export async function withNewSandboxTenant<T>(
+  db: Db,
+  input: NewSandboxTenantInput,
+  fn: (tx: Tx, created: NewSandboxTenant) => Promise<T>,
+): Promise<T> {
+  return tenantTransaction(db, async (tx) => {
+    const [row] = rowsOf<{ o_tenant: string; o_user: string; o_expires_at: Date | string }>(
+      await tx.execute(sql`
+      select * from public.sandbox_tenant_create(${input.slug}, ${input.templateTenantId}::uuid,
+        ${JSON.stringify(input.brand)}::json, ${input.tokenHash}, ${input.ip}::inet, ${input.userAgent})`),
+    );
+    if (!row) throw new Error('sandbox_tenant_create 未返回租户');
+    const created = { tenantId: row.o_tenant, userId: row.o_user, expiresAt: new Date(row.o_expires_at) };
+    const ctx: TenantCtx = {
+      tenantId: created.tenantId,
+      actor: { kind: 'user', userId: created.userId, name: '体验访客', ip: input.ip },
+    };
+    await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
+    return tenantStore.run(ctx, () => fn(tx, created));
+  });
+}
+
+/** 两种租户事务都检查会话级泄漏并归还连接；异常时由驱动回滚。 */
+async function tenantTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>, opts: WithTenantOpts = {}): Promise<T> {
   if (tenantStore.getStore()) throw new Error('withTenant 不能嵌套');
   const driver = drivers.get(db);
   if (!driver) throw new Error('这个 Db 不是经 openDb / openTestDb 打开的');
@@ -203,8 +251,7 @@ export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Prom
         leaked = true;
         throw new Error('这条连接上有会话级的 app.tenant_id（有人在事务外 SET 过），已销毁这条连接');
       }
-      await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
-      return tenantStore.run(ctx, () => fn(tx));
+      return fn(tx);
     }, config);
   } finally {
     await conn.release(leaked);
