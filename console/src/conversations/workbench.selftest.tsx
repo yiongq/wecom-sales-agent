@@ -453,7 +453,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   return respond(method, url, typeof init?.body === 'string' ? init.body : '{}');
 }) as typeof fetch;
 
-const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
+const me = (role: Role): Me => ({
+  userId: 'u1',
+  displayName: '老板',
+  role,
+  csrf: 'c1',
+  tenantSlug: 'yuntu',
+  tenantName: '云途定制旅行',
+  sandbox: null,
+});
 const member = (role: Role): Viewer => ({ kind: 'member', me: me(role), pack: TRAVEL });
 
 async function settle(qc: QueryClient): Promise<void> {

@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
+import { sql } from 'drizzle-orm';
 import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
@@ -71,6 +72,13 @@ export async function openTestDb(opts: { dataDir?: string } = {}): Promise<TestD
 }
 
 // ---------------- 装成配置源 ----------------
+
+/** HTTP 自测删除已结束的沙箱；SQL 留在 db 层，按生产函数要求建立租户事务。 */
+export async function purgeTestSandbox(db: Db, tenantId: string): Promise<void> {
+  await withTenant(db, { tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } }, (tx) =>
+    tx.execute(sql`select sandbox_tenant_purge(${tenantId}::uuid)`),
+  );
+}
 
 /** 可控的假租户锁：lose() 模拟锁连接断开，next 决定下一次 reacquire 的结果 */
 export interface FakeLock extends TenantLock {

@@ -109,6 +109,7 @@ const me = (role: Role, name = '老板'): Me => ({
   csrf: 'c1',
   tenantSlug: 'yuntu',
   tenantName: '云途定制旅行',
+  sandbox: null,
 });
 const member = (role: Role): ShellViewer => ({ kind: 'member', me: me(role) });
 const ANON: ShellViewer = { kind: 'anon' };

@@ -284,6 +284,7 @@ export interface Me {
   tenantSlug: string;
   /** tenants.name（后台 UX spec 增补）：侧栏租户行和 document.title 用；多租户以后防止改错租户 */
   tenantName: string;
+  sandbox: { expiresAt: string; wechat: 'off' | 'full' | 'unbound' | 'bound'; steps: [boolean, boolean, boolean, boolean] } | null;
 }
 
 /** 匿名（demo）只有 mode */

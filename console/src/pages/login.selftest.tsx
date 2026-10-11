@@ -88,7 +88,15 @@ const PACK: IndustryPack = {
 };
 const EMAIL = 'boss@yuntu.test';
 const PASSWORD = 'correct horse battery';
-const ME: Me = { userId: 'u1', displayName: '老板', role: 'owner', csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' };
+const ME: Me = {
+  userId: 'u1',
+  displayName: '老板',
+  role: 'owner',
+  csrf: 'c1',
+  tenantSlug: 'yuntu',
+  tenantName: '云途定制旅行',
+  sandbox: null,
+};
 const BUSY_DETAIL = '密码校验排队超时，请稍后再试';
 
 // ---------------- 假接口 ----------------

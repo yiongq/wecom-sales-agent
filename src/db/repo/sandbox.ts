@@ -1,6 +1,6 @@
 // 05 R9：模板只读快照与新沙箱的附属行；所有 SQL 留在数据库层。
 import { and, eq, sql } from 'drizzle-orm';
-import { currentTenantCtx, withTenant, type Db, type Tx } from '../client.js';
+import { currentTenantCtx, withTenant, rowsOf, pgErrorOf, type Db, type Tx } from '../client.js';
 import { sandboxWechat, tenants } from '../schema.js';
 import { readPublishedSop } from './sop.js';
 import { readActiveCatalog } from './catalog.js';
@@ -40,4 +40,21 @@ export async function insertSandboxWechat(tx: Tx, linkToken: string): Promise<vo
 export async function seedSandboxPrivacy(tx: Tx, body: string): Promise<void> {
   const { tenantId } = currentTenantCtx();
   await tx.execute(sql`select public.sandbox_privacy_seed(${tenantId}::uuid, ${body})`);
+}
+
+export type SandboxSessionRow = { status: 'invalid' | 'expired' } | { status: 'ok'; tenantId: string; userId: string; expiresAt: string };
+
+export async function sandboxSessionResolve(db: Db, tokenHash: Buffer): Promise<SandboxSessionRow> {
+  try {
+    const [r] = rowsOf<{ o_status: 'ok' | 'expired' | 'invalid'; o_tenant: string; o_user: string; o_expires_at: Date | string }>(
+      await db.execute(sql`select * from public.sandbox_session_resolve(${tokenHash})`),
+    );
+    if (!r) return { status: 'invalid' };
+    if (r.o_status !== 'ok') return { status: r.o_status };
+    return { status: 'ok', tenantId: r.o_tenant, userId: r.o_user, expiresAt: new Date(r.o_expires_at).toISOString() };
+  } catch (error) {
+    // 0008 按 R7 拒绝 standard token；HTTP 解析契约按 R10 统一为 invalid。
+    if (pgErrorOf(error).code === '22023') return { status: 'invalid' };
+    throw error;
+  }
 }

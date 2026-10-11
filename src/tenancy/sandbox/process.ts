@@ -1,6 +1,21 @@
 // 05 第 12 步组合根：不启动渠道注册表、任务、宿主文件状态或体验客服。
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { consolePages } from '../../console-api/host.js';
+import { getCookie } from 'hono/cookie';
+import { isIP } from 'node:net';
+import { clientKey, isCrossSite } from '../../http-guards.js';
+import { requestLogContext } from '../../log.js';
+import {
+  sandboxCookie,
+  SANDBOX_COOKIE,
+  clearSandboxCookie,
+  resolveSandboxSession,
+  sandboxRefusal,
+  setSandboxSession,
+  sandboxSessionOf,
+  type SandboxSession,
+} from './session.js';
 import {
   checkConfigDatabase,
   closeConfig,
@@ -132,6 +147,17 @@ export class SandboxProcess {
     });
   }
 
+  resolve(token: string | undefined): Promise<SandboxSession> {
+    if (!this.deps) return Promise.reject(new SandboxProvisionError(503, 'sandbox_unavailable'));
+    return withoutTenantScope(() => resolveSandboxSession(this.deps!.db, token));
+  }
+
+  async end(tenantId: string): Promise<void> {
+    assertSandboxRunning();
+    if (!this.deps) throw new SandboxProvisionError(503, 'sandbox_unavailable');
+    await withoutTenantScope(() => expireBrokenSandbox(this.deps!.db, tenantId));
+  }
+
   async close(): Promise<void> {
     this.accepting = false;
     await drainSandboxProvisioning();
@@ -175,15 +201,67 @@ export class SandboxProcess {
   }
 }
 
-/** 后续第 15、16 步接免密租户解析与页面；本步只挂健康检查及不带数据的静态资源。 */
-export function sandboxApp(process: SandboxProcess, host: string): Hono {
+/** 沙箱边界在共用路由之前运行；选择结果沿 Hono Context 传给 console 与公开页面。 */
+export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 'provision' | 'end'>, host: string, routes?: Hono) {
   const app = new Hono();
+  app.use('/*', requestLogContext);
   app.use('/*', async (c, next) => {
     if (sandboxStopped()) return c.json({ error: 'sandbox_process_stopped' }, 503);
     if (c.req.path !== '/healthz' && normalizeHost(c.req.header('host') ?? '') !== normalizeHost(host)) return c.notFound();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && isCrossSite(c)) return c.json({ error: 'cross_site' }, 403);
     return next();
   });
   app.get('/healthz', async (c) => c.json(await process.health()));
-  app.use('/console/assets/*', serveStatic({ root: './console/dist', rewriteRequestPath: (p) => p.replace(/^\/console/, '') }));
+  app.use('/console/assets/*', async (c) => consolePages.fetch(c.req.raw));
+  app.get('/share-cover.png', serveStatic({ root: './public' }));
+  app.get('/web.css', serveStatic({ root: './public' }));
+  app.get('/web.js', serveStatic({ root: './public' }));
+  app.use('/*', async (c, next) => {
+    // 固定不存在的入口不能落进宿主路由或匿名静态兜底。
+    if (
+      /^\/api\/console\/auth\/(?:login|logout)\/?$/.test(c.req.path) ||
+      /^\/(?:guide\.html|admin\.html|kf-qr\.png|wecom(?:\/|$)|w(?:\/|$)|wx(?:\/|$))/i.test(c.req.path) ||
+      /^\/api\/(?:admin|web|usage|insights)(?:\/|$)/.test(c.req.path) ||
+      /^\/api\/(?:sessions|orders)\/?$/.test(c.req.path) ||
+      /^\/api\/sessions\/[^/]+\//.test(c.req.path)
+    )
+      return c.notFound();
+    const session = await process.resolve(getCookie(c, SANDBOX_COOKIE));
+    if (session.status !== 'ok') {
+      if (c.req.path !== '/try' && !(c.req.path === '/api/sandbox' && c.req.method === 'POST')) return sandboxRefusal(c, session.status);
+      clearSandboxCookie(c);
+      return next();
+    }
+    setSandboxSession(c, session);
+    return withTenantScope(session.runtime, next);
+  });
+  // 第 16 步替换为完整开通页；GET 永远不建租户。
+  app.get('/try', (c) =>
+    c.html('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>体验工作台</title><body>体验工作台</body></html>'),
+  );
+  app.post('/api/sandbox', async (c) => {
+    if (!/^application\/json\s*(?:;|$)/i.test(c.req.header('content-type') ?? '')) return c.json({ error: 'unsupported_media_type' }, 415);
+    const session = sandboxSessionOf(c);
+    if (session) return c.json({ url: '/console/', expiresAt: session.expiresAt }, 200);
+    const ip = clientKey(c).replace(/%.*$/, '');
+    const result = await process.provision({ ip: isIP(ip) ? ip : null, userAgent: c.req.header('user-agent')?.slice(0, 512) ?? null });
+    c.header('Set-Cookie', sandboxCookie(result.token, result.expiresAt.toISOString()));
+    return c.json({ url: '/console/', expiresAt: result.expiresAt.toISOString() }, 201);
+  });
+  app.post('/api/sandbox/end', async (c) => {
+    const session = sandboxSessionOf(c)!;
+    await process.end(session.user.tenantId);
+    clearSandboxCookie(c);
+    return c.json({ ok: true }, 200);
+  });
+  if (routes) app.route('/', routes);
+  app.onError((error, c) => {
+    if (error instanceof SandboxProvisionError) {
+      if (error.retryAfter) c.header('Retry-After', String(error.retryAfter));
+      return c.json({ error: error.reason }, error.status);
+    }
+    console.error('[sandbox-http] 请求失败', error instanceof Error ? error.name : 'unknown');
+    return c.json({ error: 'sandbox_unavailable' }, 503);
+  });
   return app;
 }

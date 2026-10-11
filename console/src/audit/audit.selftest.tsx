@@ -997,7 +997,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
 const auditRequests = (): string[] => requests.filter((r) => r.startsWith('GET /api/console/audit'));
 const paramsOf = (r: string): URLSearchParams => new URL(r.slice(4), 'http://localhost').searchParams;
 
-const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
+const me = (role: Role): Me => ({
+  userId: 'u1',
+  displayName: '老板',
+  role,
+  csrf: 'c1',
+  tenantSlug: 'yuntu',
+  tenantName: '云途定制旅行',
+  sandbox: null,
+});
 const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(role), pack });
 
 async function settle(qc: QueryClient): Promise<void> {
