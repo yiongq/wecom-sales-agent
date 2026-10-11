@@ -35,7 +35,7 @@ import {
 } from '../../db/sandbox-process.js';
 import type { ProcessTenantLock } from '../../db/client.js';
 import { gateStatus } from '../../llm-gate.js';
-import { alert } from '../../ops/alert.js';
+import { alert, startAlerts, stopAlertPolling } from '../../ops/alert.js';
 import { profile } from '../../profile.js';
 import { storeHealth } from '../../store.js';
 import { SessionStoreStartupError } from '../../store/backend.js';
@@ -128,6 +128,7 @@ export class SandboxProcess {
       );
       console.log(`[sandbox] 已启动，装载沙箱 ${tenantRuntimes().length}`);
       this.accepting = true;
+      withoutTenantScope(startAlerts);
     } catch (error) {
       await this.close();
       throw error;
@@ -161,6 +162,7 @@ export class SandboxProcess {
 
   async close(): Promise<void> {
     this.accepting = false;
+    stopAlertPolling();
     await drainSandboxProvisioning();
     this.unsubscribe?.();
     this.unsubscribe = null;
