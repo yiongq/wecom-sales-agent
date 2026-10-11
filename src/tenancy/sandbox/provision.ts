@@ -1,6 +1,6 @@
 // 05 第 14 步：HTTP / cookie 之外的开通核心。第 15 步直接调用，只有成功装载才交出登录令牌。
 import { createHash, randomBytes } from 'node:crypto';
-import type { ConfigDeps } from '../../config/source.js';
+import { ConfigStartupError, type ConfigDeps } from '../../config/source.js';
 import { publishedBrand } from '../../config/hashes.js';
 import { writeTemplateConfig } from '../../config/transfer.js';
 import { writeSeedSessions } from '../../cli/session-transfer.js';
@@ -9,6 +9,8 @@ import { expireBrokenSandbox, sandboxStartupRows } from '../../db/sandbox-proces
 import { writeAudit } from '../../db/repo/audit.js';
 import { readSandboxTemplate, insertSandboxWechat, seedSandboxPrivacy } from '../../db/repo/sandbox.js';
 import { copyQuickReplies } from '../../db/repo/quick-replies.js';
+import { alert } from '../../ops/alert.js';
+import { SessionStoreStartupError } from '../../store/backend.js';
 import { withoutTenantScope } from '../runtime.js';
 import { assertSandboxRunning } from './lifecycle.js';
 import { loadSandboxRuntime } from './load.js';
@@ -22,8 +24,9 @@ export class SandboxProvisionError extends Error {
     readonly status: 429 | 503,
     readonly reason: 'sandbox_limited' | 'sandbox_unavailable',
     readonly retryAfter?: number,
+    options?: ErrorOptions,
   ) {
-    super(reason);
+    super(reason, options);
   }
 }
 export interface ProvisionOptions {
@@ -57,6 +60,41 @@ export function provisionSandbox(o: ProvisionOptions): Promise<ProvisionedSandbo
 /** 正常停机先关开通入口，再等当前开通确认提交或回滚，才释放进程锁。 */
 export async function drainSandboxProvisioning(): Promise<void> {
   await provisioning;
+}
+
+// 不输出异常正文、SQL 参数或地址；只认内部固定原因与驱动错误码。
+function failureCode(error: unknown): string {
+  for (let e = error, depth = 0; e && typeof e === 'object' && depth < 8; depth++) {
+    if (e instanceof ConfigStartupError || e instanceof SessionStoreStartupError) return e.reason;
+    const { code, reason, message, cause } = e as { code?: unknown; reason?: unknown; message?: unknown; cause?: unknown };
+    for (const candidate of [reason, message]) {
+      if (
+        typeof candidate === 'string' &&
+        [
+          'sandbox_template_unpublished_inputs',
+          'sandbox_template_contract_failed',
+          'sandbox_template_invalid',
+          'sandbox_tenant_lock_held',
+          'sandbox_already_loaded',
+          'sandbox_epoch_stale',
+          'sandbox_process_stopped',
+          'pack_unknown',
+          'no_published_sop',
+        ].includes(candidate)
+      )
+        return candidate;
+    }
+    if (typeof code === 'string' && (/^[0-9A-Z]{5}$/.test(code) || /^E[A-Z_]{2,30}$/.test(code))) return code;
+    e = cause;
+  }
+  return 'unknown';
+}
+
+function reportFailure(stage: 'provision' | 'expire', error: unknown): void {
+  const code = failureCode(error);
+  const text = stage === 'expire' ? '沙箱装载失败后标记到期也失败' : '沙箱开通失败';
+  console.error(`[sandbox] ${text}（${code}）`);
+  alert('store', `${text}（${code}）`, { instance: true, scope: `sandbox_${stage}:${code}` });
 }
 
 async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
@@ -96,8 +134,13 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
       const rt = await loadSandboxRuntime(o.deps, { id: created.tenantId, slug, expiresAt: created.expiresAt }, o.host, o.acquireTenant);
       if (!rt) throw new Error('sandbox_tenant_lock_held');
     } catch (error) {
-      await expireBrokenSandbox(o.deps.db, created.tenantId);
-      throw error;
+      reportFailure('provision', error);
+      try {
+        await expireBrokenSandbox(o.deps.db, created.tenantId);
+      } catch (expireError) {
+        reportFailure('expire', expireError);
+      }
+      throw new SandboxProvisionError(503, 'sandbox_unavailable', undefined, { cause: error });
     }
     return {
       ...created,
@@ -107,6 +150,7 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
     };
   } catch (error) {
     if (error instanceof SandboxProvisionError) throw error;
-    throw new SandboxProvisionError(503, 'sandbox_unavailable');
+    reportFailure('provision', error);
+    throw new SandboxProvisionError(503, 'sandbox_unavailable', undefined, { cause: error });
   }
 }

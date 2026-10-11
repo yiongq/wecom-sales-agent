@@ -8,9 +8,11 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
 import { createRealPgFixture, openTestDb, fakeLock, testConfigDeps } from '../../db/testing.js';
-import { holdTenantLocks, openDb, type Db, type TenantLock } from '../../db/client.js';
+import { holdTenantLocks, openDb, pgErrorOf, type Db, type TenantLock } from '../../db/client.js';
+import { expireBrokenSandbox } from '../../db/sandbox-process.js';
+import { __alertTest } from '../../ops/alert.js';
 import { importConfig } from '../../config/transfer.js';
-import { closeConfig, currentCatalog, currentSop } from '../../config/source.js';
+import { closeConfig, currentCatalog, currentSop, ConfigStartupError } from '../../config/source.js';
 import { readSandboxTemplate } from '../../db/repo/sandbox.js';
 import { listSessions, getOrder } from '../../store.js';
 import { currentPrivacyNotice } from '../../privacy/privacy.js';
@@ -36,6 +38,27 @@ let checks = 0;
 function check(fn: () => void): void {
   fn();
   checks++;
+}
+
+async function captureDiagnostics(fn: () => Promise<void>) {
+  const errors: string[] = [];
+  const alerts: string[] = [];
+  const previous = { error: console.error, warn: console.warn, webhook: process.env.ALERT_WEBHOOK_URL };
+  process.env.ALERT_WEBHOOK_URL = '';
+  __alertTest.reset();
+  console.error = (...args) => errors.push(args.map(String).join(' '));
+  console.warn = (...args) => alerts.push(args.map(String).join(' '));
+  try {
+    await fn();
+    await __alertTest.settle();
+    return { errors, alerts };
+  } finally {
+    console.error = previous.error;
+    console.warn = previous.warn;
+    if (previous.webhook === undefined) delete process.env.ALERT_WEBHOOK_URL;
+    else process.env.ALERT_WEBHOOK_URL = previous.webhook;
+    __alertTest.reset();
+  }
 }
 async function releaseRuntimes(): Promise<void> {
   for (const rt of tenantRuntimes()) {
@@ -205,11 +228,152 @@ async function suite(
   checks++;
   const poolAfter = await q('select * from sandbox_pool_daily');
   check(() => assert.deepEqual(poolAfter, poolBefore));
+
+  // 第二条种子消息失败：身份、配置、隐私、快捷回复及第一条消息已经写入同一个事务。
+  const provisionRows = async () => {
+    const counts: Record<string, unknown> = {};
+    for (const table of [
+      'tenants',
+      'users',
+      'memberships',
+      'auth_sessions',
+      'sandbox_pool_daily',
+      'sop_versions',
+      'catalog_items',
+      'catalog_item_versions',
+      'privacy_notices',
+      'quick_replies',
+      'conversations',
+      'messages',
+      'orders',
+      'sandbox_wechat',
+      'audit_log',
+    ]) {
+      counts[table] = (await q<{ n: number }>(`select count(*)::int as n from public.${table}`))[0]!.n;
+    }
+    counts.pool = await q('select * from sandbox_pool_daily order by day');
+    return counts;
+  };
+  const rowsBefore = await provisionRows();
+  const privateDetail = 'selftest-private-detail';
+  await q(`create function public.selftest_seed_failure() returns trigger language plpgsql as $$
+    begin
+      if new.seq = 2 then
+        if not exists(select 1 from public.messages where tenant_id=new.tenant_id and seq=1)
+           or not exists(select 1 from public.sop_versions where tenant_id=new.tenant_id and status='published')
+           or not exists(select 1 from public.privacy_notices where tenant_id=new.tenant_id)
+           or not exists(select 1 from public.quick_replies where tenant_id=new.tenant_id) then
+          raise exception '复制尚未走到预期位置' using errcode='P0002';
+        end if;
+        raise exception '${privateDetail}' using errcode='P0001';
+      end if;
+      return new;
+    end;
+  $$`);
+  let copyDiagnostics: Awaited<ReturnType<typeof captureDiagnostics>>;
+  try {
+    await q(
+      'create trigger selftest_seed_failure before insert on public.messages for each row execute function public.selftest_seed_failure()',
+    );
+    copyDiagnostics = await captureDiagnostics(async () => {
+      for (let i = 0; i < 2; i++) {
+        await assert.rejects(
+          () => provisionSandbox(base),
+          (error) => {
+            assert.ok(error instanceof SandboxProvisionError);
+            check(() => assert.equal(pgErrorOf(error.cause).code, 'P0001'));
+            check(() => assert.equal(error.message, 'sandbox_unavailable'));
+            return unavailable(error);
+          },
+        );
+        check(() => assert.equal(tenantRuntimes().filter((r) => r.kind === 'sandbox').length, 1));
+        const rowsAfter = await provisionRows();
+        check(() => assert.deepEqual(rowsAfter, rowsBefore));
+      }
+    });
+  } finally {
+    await q('drop trigger if exists selftest_seed_failure on public.messages');
+    await q('drop function public.selftest_seed_failure()');
+  }
+  check(() => assert.equal(copyDiagnostics.errors.length, 2));
+  check(() => assert.ok(copyDiagnostics.errors.every((line) => line.includes('P0001'))));
+  check(() => assert.equal(copyDiagnostics.alerts.length, 1, '同一复制错误按实例错误码去重'));
+  check(() => assert.ok(!JSON.stringify(copyDiagnostics).includes(privateDetail)));
+
+  const hashMismatch = new Error('sandbox_template_unpublished_inputs');
+  const sensitiveError = new Error(privateDetail);
+  const codes = await captureDiagnostics(async () => {
+    for (const cause of [hashMismatch, hashMismatch, sensitiveError, new ConfigStartupError('integrity', privateDetail)])
+      await assert.rejects(
+        () =>
+          provisionSandbox({
+            ...base,
+            admit: async () => {
+              throw cause;
+            },
+          }),
+        (error) => {
+          assert.ok(error instanceof SandboxProvisionError);
+          check(() => assert.equal(error.cause, cause));
+          check(() => assert.equal(error.message, 'sandbox_unavailable'));
+          check(() => assert.ok(!JSON.stringify(error).includes(privateDetail)));
+          return unavailable(error);
+        },
+      );
+  });
+  check(() => assert.equal(codes.errors.length, 4));
+  check(() => assert.equal(codes.alerts.length, 3, '不同错误码独立去重'));
+  check(() => assert.ok(codes.alerts.some((line) => line.includes('sandbox_template_unpublished_inputs'))));
+  check(() => assert.ok(codes.alerts.some((line) => line.includes('unknown'))));
+  check(() => assert.ok(codes.alerts.some((line) => line.includes('integrity'))));
+  check(() => assert.ok(!JSON.stringify(codes).includes(privateDetail)));
+
   // 取不到新租户锁：已提交的数据标到期，运行时不得发布。
   await assert.rejects(() => provisionSandbox({ ...base, acquireTenant: async () => null }), unavailable);
   const [expired] = await q<{ n: number }>("select count(*)::int as n from tenants where kind='sandbox' and expires_at<=now()");
   check(() => assert.equal(expired!.n, 1));
   check(() => assert.equal(tenantRuntimes().filter((r) => r.kind === 'sandbox').length, 1));
+
+  // 已提交后的装载与到期写入同时失败，保留前一个 cause，分别记录并告警。
+  const beforeLoadFailure = await q<{ id: string }>('select id from tenants');
+  await q('revoke execute on function public.sandbox_tenant_expire(uuid) from agent_app');
+  const loadError = new Error('sandbox_tenant_lock_held');
+  let loadDiagnostics: Awaited<ReturnType<typeof captureDiagnostics>>;
+  try {
+    loadDiagnostics = await captureDiagnostics(async () => {
+      await assert.rejects(
+        () =>
+          provisionSandbox({
+            ...base,
+            acquireTenant: async () => {
+              throw loadError;
+            },
+          }),
+        (error) => {
+          assert.ok(error instanceof SandboxProvisionError);
+          check(() => assert.equal(error.cause, loadError));
+          return unavailable(error);
+        },
+      );
+    });
+  } finally {
+    await q('grant execute on function public.sandbox_tenant_expire(uuid) to agent_app');
+  }
+  const failed = (await q<{ id: string; live: boolean }>('select id,expires_at>now() as live from tenants')).filter(
+    (row) => !beforeLoadFailure.some((old) => old.id === row.id),
+  );
+  try {
+    check(() => assert.equal(failed.length, 1));
+    check(() => assert.equal(failed[0]!.live, true));
+    check(() => assert.equal(runtimeOf(failed[0]!.id), undefined));
+    check(() => assert.equal(loadDiagnostics.errors.length, 2));
+    check(() => assert.ok(loadDiagnostics.errors.some((line) => line.includes('sandbox_tenant_lock_held'))));
+    check(() => assert.ok(loadDiagnostics.errors.some((line) => line.includes('42501'))));
+    check(() => assert.equal(loadDiagnostics.alerts.length, 2));
+    check(() => assert.ok(loadDiagnostics.alerts.some((line) => line.includes('标记到期也失败'))));
+  } finally {
+    for (const row of failed) await expireBrokenSandbox(db, row.id);
+  }
   const ids = listSessionIds(rt);
   // 回滚后互斥链仍可开通；成功开满 20 个，包括并发的最后两个请求。
   for (let i = 0; i < 18; i++) await open();
