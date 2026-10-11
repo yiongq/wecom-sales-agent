@@ -390,11 +390,14 @@ function onJob(f: JobFailure): void {
 }
 
 function checkChannelStartup(): void {
-  const channelWarnings = channelStartupWarnings();
-  if (channelWarnings.length) alert('channel', `渠道账号启动检查：${channelWarnings.join('；')}`);
-  for (const { key, count } of channelRestartUnknown()) {
-    alert('channel', `企微账号 ${codeOf(key)} 重启时 ${count} 段 sending 转 unknown`, { scope: `restart:${key}` });
-  }
+  for (const rt of tenantRuntimes())
+    withTenantScope(rt, () => {
+      const channelWarnings = channelStartupWarnings();
+      if (channelWarnings.length) alert('channel', `渠道账号启动检查：${channelWarnings.join('；')}`);
+      for (const { key, count } of channelRestartUnknown()) {
+        alert('channel', `企微账号 ${codeOf(key)} 重启时 ${count} 段 sending 转 unknown`, { scope: `restart:${key}` });
+      }
+    });
 }
 
 // ---------------- channel：按账号的拉取与入站巡检（03 第 13 步） ----------------
@@ -431,8 +434,15 @@ function tick(): void {
         alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
       }
     }
-    const p = Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, () => refreshChannelObservability())))
-      .then(() => checkChannels(t))
+    const p = Promise.all(
+      tenantRuntimes().map((rt) =>
+        withTenantScope(rt, async () => {
+          await refreshChannelObservability();
+          checkChannels(t);
+        }),
+      ),
+    )
+      .then(() => undefined)
       .finally(() => inflight.delete(p));
     inflight.add(p);
   } catch (e) {

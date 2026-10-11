@@ -62,6 +62,26 @@ try {
     const fx = await inScope(rt, () => testing.installPgSessionStore(db, { slug: rt.slug, varDir: dir }));
     fixture.set(rt.id, fx);
     await inScope(rt, () => store.initSessionStore(fx.deps));
+    if (rt === a) {
+      // 单 standard 未导入时照 02/03 删除哨兵；库里的未装载租户与旧完成凭据不能改变行为。
+      const markers = await import('../channels/markers.js');
+      const sentinel = path.join(dir, markers.RESTORE_SENTINEL);
+      fs.writeFileSync(sentinel, '{"backupAt":"2026-10-09T00:00:00Z"}\n');
+      markers.clearTenantRestoreSentinel(dir, a.id, true);
+      r.unregisterRuntime(b.id);
+      const oldLog = console.log;
+      const logs: string[] = [];
+      console.log = (...args) => logs.push(args.join(' '));
+      try {
+        await inScope(a, () => channels.initChannels({ ...fx.deps, keyRing: ring }));
+        assert.equal(fs.existsSync(sentinel), false);
+        assert.ok(logs.includes('[channels] 有恢复哨兵 restored-from-backup.json：企微状态未导入，渠道状态在文件里、恢复照 02，已删掉'));
+      } finally {
+        console.log = oldLog;
+        inScope(a, channels.__channelsTest.reset);
+        r.registerRuntime(b);
+      }
+    }
     await su(
       `insert into channel_accounts (tenant_id, key, name, kind, status, settings) values ($1, 'same', $2, 'web', 'disabled', '{}')`,
       [rt.id, rt.slug],
@@ -334,6 +354,21 @@ try {
     offMismatch();
   }
   channels.startChannels();
+  // 实例告警从空作用域启动和巡检，读取渠道时仍须逐个进入所属租户。
+  const alerts = await import('../ops/alert.js');
+  let alertScopeMissing = 0;
+  const offAlertScope = r.onTenantScopeMissing(() => alertScopeMissing++);
+  try {
+    r.withoutTenantScope(alerts.startAlerts);
+    alerts.__alertTest.stopTimer();
+    r.withoutTenantScope(alerts.startAlerts);
+    r.withoutTenantScope(alerts.__alertTest.tick);
+    await alerts.__alertTest.settle();
+    assert.equal(alertScopeMissing, 0);
+  } finally {
+    offAlertScope();
+    alerts.__alertTest.stopTimer();
+  }
   const wecom = await import('../adapters/wecom.js');
   for (let i = 0; i < 100 && ![a, b].every((rt) => inScope(rt, wecom.__wecomTest.idle)); i++) await pause(10);
   for (const rt of [a, b])

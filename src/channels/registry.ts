@@ -1,6 +1,5 @@
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
-import { standardTenants } from '../db/repo/tenants.js';
 import { withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
 import {
   scopedRuntime,
@@ -250,6 +249,8 @@ function planFileStore(varDir: string): Plan {
 /** db 存储：读本租户的全部账号（一个只读快照），按 R1 判企微状态 */
 async function planDbStore(deps: ChannelDeps): Promise<Plan> {
   const { db, tenantId, varDir } = deps;
+  // 只看本进程装载的 standard；库里的测试/演练租户不共享这个运行时的数据目录。
+  const shared = tenantRuntimes().filter((rt) => rt.kind === 'standard').length > 1;
   // 账号与启用企微账号没结束的入站、出站行在同一个快照里读：只读，库里什么都不改（拒绝时 cursor 也就不动）
   const { rows, open } = await withTenant(
     db,
@@ -295,8 +296,8 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
     const env = currentRuntime().isHost ? envAccountFrom(process.env, tenantId) : null;
     const label = state === 'not_imported' ? '未导入（库里没有企微账号）' : `已导出（默认账号 ${wecomRows[0]!.key} 是 exported）`;
     const effects: (() => void)[] = [];
-    if (hasRestoreSentinel(varDir, tenantId))
-      effects.push(dropSentinel(varDir, state === 'not_imported' ? '未导入' : '已导出', tenantId, (await standardTenants(db)).length > 1));
+    if (hasRestoreSentinel(varDir, shared ? tenantId : undefined))
+      effects.push(dropSentinel(varDir, state === 'not_imported' ? '未导入' : '已导出', tenantId, shared));
     return {
       mode: 'env',
       wecomState: state,
