@@ -4749,15 +4749,22 @@ async function realPostgres(superUrl: string): Promise<void> {
         verdictPriv.platform === false,
       JSON.stringify(verdictPriv),
     );
-    // tenants 的三个保留期列：agent_platform 列级 UPDATE，agent_app 一列都不能改
-    const UPDATABLE = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days', 'brand'];
+    // tenants 的保留期、品牌、公开域名与预算告警列：agent_platform 列级 UPDATE，agent_app 一列都不能改
+    const UPDATABLE = [
+      'retention_lead_days',
+      'retention_customer_days',
+      'retention_trace_days',
+      'brand',
+      'public_host',
+      'llm_daily_alert_milli',
+    ];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(
       `select a.attname as col, has_column_privilege('agent_platform', 'public.tenants', a.attname, 'UPDATE') as platform,
               has_column_privilege('agent_app', 'public.tenants', a.attname, 'UPDATE') as app
          from pg_attribute a where a.attrelid = 'public.tenants'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
     );
     check(
-      '真实 PG：agent_platform 只能 UPDATE tenants 的三个保留期列与品牌列，agent_app 一列都不能',
+      '真实 PG：agent_platform 只能 UPDATE tenants 的保留期、品牌、公开域名与预算告警列，agent_app 一列都不能',
       colPriv
         .filter((c) => c.platform)
         .map((c) => c.col)
@@ -4794,7 +4801,11 @@ async function realPostgres(superUrl: string): Promise<void> {
     );
     for (const f of fnPriv) {
       const name = f.fn.slice(0, f.fn.indexOf('('));
-      const grantee = Object.hasOwn(PURGE_FNS, name) ? PURGE_FNS[name] : name.startsWith('auth_') ? 'agent_app' : null;
+      const grantee = Object.hasOwn(PURGE_FNS, name)
+        ? PURGE_FNS[name]
+        : name.startsWith('auth_') || SANDBOX_FNS.includes(name)
+          ? 'agent_app'
+          : null;
       const app = grantee === 'agent_app';
       const plat = grantee === 'agent_platform';
       check(
